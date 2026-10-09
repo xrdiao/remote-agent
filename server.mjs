@@ -744,19 +744,29 @@ function pageHelpers() {
     const el = CONTROLS[name]?.();
     return el ? center(el) : null;
   };
+  const clickControl = name => {
+    const el = CONTROLS[name]?.();
+    if (!el) return false;
+    el.click();
+    return true;
+  };
 
   const MENU_ITEMS = {
     mode: () => [...document.querySelectorAll('.composer-unified-context-menu-item')].map(e => ({ el: e, label: e.innerText.trim().split('\n')[0], checked: !!e.querySelector('.codicon-check') })),
     model: () => {
       const classic = [...document.querySelectorAll('.ui-menu__row')].filter(e => e.querySelector('.ui-model-picker__item-content-name'));
       if (classic.length) return classic.map(e => ({ el: e, id: e.dataset.testid, params: !!e.querySelector('[data-testid=parameter-edit-btn]'), label: normLabel(e.querySelector('.ui-model-picker__item-content-name').innerText), checked: !!e.querySelector('.codicon-check, .ui-model-picker__item-right-section [class*=check]') }));
-      const cursorItems = [...document.querySelectorAll('[data-testid^="model-item-"], [data-testid="auto-mode-select"]')].filter(vis).map(e => ({
-        el: e,
-        id: e.getAttribute('data-testid'),
-        params: false,
-        label: normLabel(e.innerText).split('\n')[0].slice(0, 60),
-        checked: !!e.querySelector('[class*=check]') || e.getAttribute('aria-checked') === 'true',
-      }));
+      const currentModel = normLabel(modelButton()?.innerText || '').split('\n')[0];
+      const cursorItems = [...document.querySelectorAll('[data-testid^="model-item-"], [data-testid="auto-mode-select"]')].filter(vis).map(e => {
+        const label = normLabel(e.innerText).split('\n')[0].slice(0, 60);
+        return {
+          el: e,
+          id: e.getAttribute('data-testid'),
+          params: false,
+          label,
+          checked: label === currentModel || !!e.querySelector('[class*=check]') || e.getAttribute('aria-checked') === 'true',
+        };
+      });
       if (cursorItems.length) return cursorItems;
       const pop = devinModelMenu();
       if (!pop) return [];
@@ -773,12 +783,24 @@ function pageHelpers() {
     },
   };
 
-  const menuItems = kind => (MENU_ITEMS[kind]?.() || []).filter(x => vis(x.el) && x.label).map(({ el, ...rest }) => rest);
+  const menuItems = kind => (MENU_ITEMS[kind]?.() || []).filter(x => {
+    if (!x.label) return false;
+    if (vis(x.el)) return true;
+    const menu = x.el.closest('.ui-menu, [role=menu]');
+    return !!(menu && vis(menu) && (x.el.innerText || '').trim());
+  }).map(({ el, ...rest }) => rest);
 
   const menuOpen = () => [...document.querySelectorAll('.ui-menu, .composer-unified-context-menu-item, .composer-history-hover-menu')].some(vis) || !!devinModelMenu();
+  const modelListRow = () => [...document.querySelectorAll('[role=menuitem]')].find(el => vis(el) && /^Model\b/.test(normLabel(el.innerText)));
   const modelListTrigger = () => {
-    const e = [...document.querySelectorAll('[role=menuitem]')].find(el => vis(el) && /^Model\b/.test(normLabel(el.innerText)));
+    const e = modelListRow();
     return e ? center(e) : null;
+  };
+  const clickModelListTrigger = () => {
+    const e = modelListRow();
+    if (!e) return false;
+    e.click();
+    return true;
   };
 
   // Model parameters (context size, effort, fast…) live in a per-model submenu behind its "Edit" button.
@@ -976,7 +998,31 @@ function pageHelpers() {
     return center(buttons[0]);
   };
   const labeled = name => [...document.querySelectorAll('button, [role=button]')].find(e => vis(e) && (e.getAttribute('aria-label') || '') === name);
-  const settingsOpen = () => !!labeled('Close Settings');
+  const onScreen = e => {
+    const b = e.getBoundingClientRect();
+    return b.width > 2 && b.height > 2 && b.bottom > 0 && b.right > 0 && b.top < innerHeight && b.left < innerWidth;
+  };
+  // The gear's label flips to "Close Settings". Devin opens a settings editor tab instead.
+  const settingsOpen = () => {
+    if ([...document.querySelectorAll('button, [role=button]')].some(e => onScreen(e) && e.getAttribute('aria-label') === 'Close Settings')) return true;
+    if ([...document.querySelectorAll('input')].some(e => onScreen(e) && /search settings/i.test(e.getAttribute('aria-label') || ''))) return true;
+    const tab = [...document.querySelectorAll('.tab.active')].find(onScreen);
+    return /settings/i.test(tab?.getAttribute('aria-label') || tab?.innerText || '');
+  };
+  const clickSettingsButton = () => {
+    const b = [...document.querySelectorAll('button, [role=button]')].find(e => onScreen(e) && e.getAttribute('aria-label') === 'Settings');
+    if (!b) return false;
+    b.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    b.click();
+    return true;
+  };
+  const clickCloseSettings = () => {
+    const b = [...document.querySelectorAll('button, [role=button]')].find(e => onScreen(e) && e.getAttribute('aria-label') === 'Close Settings');
+    if (b) { b.click(); return 'button'; }
+    const tab = [...document.querySelectorAll('.tab.active')].find(onScreen);
+    if (/settings/i.test(tab?.getAttribute('aria-label') || '')) return 'tab';
+    return '';
+  };
   const openSettingsTarget = () => { const b = labeled('Settings'); return b ? center(b) : null; };
   const closeSettingsTarget = () => { const b = labeled('Close Settings'); return b ? center(b) : null; };
   const settingsPanel = () => {
@@ -1018,6 +1064,31 @@ function pageHelpers() {
       return sw && vis(sw) ? center(sw) : null;
     }
     return null;
+  };
+  const DEVIN_SETTINGS_NAV = /^(General|Plan information|Extensions|Agents|Configuration|Customizations|User interface|Devin Tab|Shortcuts|Advanced)$/;
+  const devinSettingsNav = () => [...document.querySelectorAll('button')].filter(e => onScreen(e) && DEVIN_SETTINGS_NAV.test((e.innerText || '').trim())).map(e => (e.innerText || '').trim());
+  const devinSettingsClick = name => {
+    const b = [...document.querySelectorAll('button')].find(e => onScreen(e) && (e.innerText || '').trim() === name);
+    if (!b) return false;
+    b.click();
+    return true;
+  };
+  const devinSettingsCards = () => {
+    const root = [...document.querySelectorAll('.editor-instance')].find(onScreen);
+    if (!root) return [];
+    const seen = new Set();
+    const items = [];
+    for (const e of root.querySelectorAll('div')) {
+      const cls = (e.className || '').toString();
+      if (!cls.includes('rounded-[10px]') || !onScreen(e)) continue;
+      if ([...e.querySelectorAll('div')].some(c => (c.className || '').toString().includes('rounded-[10px]') && onScreen(c))) continue;
+      const lines = (e.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
+      const label = (lines[0] || '').slice(0, 80);
+      if (label.length < 3 || seen.has(label)) continue;
+      seen.add(label);
+      items.push({ label, detail: lines.slice(1, 3).join(' · ').slice(0, 140), toggle: false });
+    }
+    return items;
   };
   const usageNavTarget = () => {
     const root = settingsPanel();
@@ -1063,6 +1134,41 @@ function pageHelpers() {
     return (n & 255) + 1;
   };
   const cellFlags = cell => (cell.isBold() ? 1 : 0) | (cell.isItalic() ? 2 : 0) | (cell.isUnderline() ? 4 : 0) | (cell.isDim() ? 8 : 0) | (cell.isInverse() ? 16 : 0);
+  // The shell prompt stays on the cursor line; history recall only replaces the command after it.
+  const commandFromPrompt = line => {
+    const m = /^(?:.*?(?:[$%#]|[❯➜]))\s(.*)$/.exec(line);
+    if (m) return m[1].replace(/\s+$/, '');
+    const fish = /^>\s(.*)$/.exec(line);
+    if (fish) return fish[1].replace(/\s+$/, '');
+    return null;
+  };
+  const terminalCommand = () => {
+    const host = document.querySelector('.terminal-wrapper.active .xterm-wrapper') || document.querySelector('.xterm-wrapper');
+    const term = host?.xterm;
+    const buf = term?.buffer?.active;
+    if (!buf) return null;
+    const logical = start => {
+      let text = '';
+      for (let i = start; i < buf.length; i++) {
+        const row = buf.getLine(i);
+        if (!row) break;
+        if (i > start && !row.isWrapped) break;
+        text += row.translateToString(true);
+        if (!buf.getLine(i + 1)?.isWrapped) break;
+      }
+      return text.replace(/\s+$/, '');
+    };
+    let y = buf.baseY + buf.cursorY;
+    while (y > 0 && buf.getLine(y)?.isWrapped) y--;
+    const here = commandFromPrompt(logical(y));
+    if (here != null) return here;
+    if (y > 0) {
+      let py = y - 1;
+      while (py > 0 && buf.getLine(py)?.isWrapped) py--;
+      if (commandFromPrompt(logical(py)) === '') return logical(y);
+    }
+    return null;
+  };
   const terminalDump = prev => {
     const host = document.querySelector('.terminal-wrapper.active .xterm-wrapper') || document.querySelector('.xterm-wrapper');
     const term = host?.xterm;
@@ -1118,8 +1224,9 @@ function pageHelpers() {
   };
 
   return { extract, locate, panelRect, control, menuItems, menuItem, quickOpenRows, agentList, agentTarget, agentState, queueTarget, stopTarget, focusQueueEdit,
-    terminalList, terminalTarget, terminalCloseTarget, terminalRect, terminalFocus, newTerminalDirect, newTerminalMenu, newTerminalItem, terminalDump, modelListTrigger,
-    settingsOpen, openSettingsTarget, closeSettingsTarget, readSettings, settingTarget, usageNavTarget, readUsage,
+    terminalList, terminalTarget, terminalCloseTarget, terminalRect, terminalFocus, newTerminalDirect, newTerminalMenu, newTerminalItem, terminalDump, terminalCommand, modelListTrigger,
+    settingsOpen, clickSettingsButton, clickCloseSettings, openSettingsTarget, closeSettingsTarget, readSettings, settingTarget, usageNavTarget, readUsage,
+    clickControl, clickModelListTrigger, devinSettingsNav, devinSettingsClick, devinSettingsCards,
     menuOpen, maxToggle, modelTarget, modelParams, paramTarget, subTarget, activeChatTab, tabTarget, hasComposer, filesState, fileTarget, questionTarget,
     closedThinkingIndexes, clickThinking, closeThinkingIfOpen };
 }
@@ -1350,6 +1457,11 @@ class Session {
 
   async sendTerminal(text) {
     await this.focusTerminal();
+    // History recall already put a command on the prompt. Replace that line so an edit is not appended.
+    if (typeof await this.cdp.evaluate(helpersCall('terminalCommand()')) === 'string') {
+      await this.key('Ctrl+a');
+      await this.key('Ctrl+k');
+    }
     const lines = String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
     for (let i = 0; i < lines.length; i++) {
       if (lines[i]) await this.cdp.send('Input.insertText', { text: lines[i] });
@@ -1358,27 +1470,45 @@ class Session {
   }
 
   async ensureSettings() {
+    const waitOpen = async () => {
+      for (let i = 0; i < 10; i++) {
+        await new Promise(r => setTimeout(r, 120));
+        if (await this.cdp.evaluate(helpersCall('settingsOpen()'))) return true;
+      }
+      return false;
+    };
     if (await this.cdp.evaluate(helpersCall('settingsOpen()'))) return;
-    const pos = await this.cdp.evaluate(helpersCall('openSettingsTarget()'));
-    if (!pos) throw new Error('找不到设置按钮');
-    await this.tapCss(pos.x, pos.y);
-    for (let i = 0; i < 12; i++) {
-      await new Promise(r => setTimeout(r, 150));
-      if (await this.cdp.evaluate(helpersCall('settingsOpen()'))) return;
-    }
+    // Click the gear directly. A coordinate click on the 24px footer button often misses.
+    await this.cdp.evaluate(helpersCall('clickSettingsButton()'));
+    if (await waitOpen()) return;
+    // Cursor and Devin both bind Settings to Ctrl+Comma.
+    const comma = { key: ',', code: 'Comma', windowsVirtualKeyCode: 188, modifiers: 2 };
+    await this.cdp.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...comma });
+    await this.cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...comma });
+    if (await waitOpen()) return;
     throw new Error('设置没有打开');
   }
 
   async closeSettings() {
-    const pos = await this.cdp.evaluate(helpersCall('closeSettingsTarget()'));
-    if (pos) await this.tapCss(pos.x, pos.y);
+    const how = await this.cdp.evaluate(helpersCall('clickCloseSettings()'));
+    if (how === 'tab') await this.key('Ctrl+w');
   }
 
   async showSettings() {
     await this.ensureSettings();
     let sections = [];
-    try { sections = await this.cdp.evaluate(helpersCall('readSettings()')) || []; }
-    finally { await this.closeSettings(); }
+    try {
+      sections = await this.cdp.evaluate(helpersCall('readSettings()')) || [];
+      if (!sections.length) {
+        const nav = await this.cdp.evaluate(helpersCall('devinSettingsNav()')) || [];
+        for (const name of nav) {
+          await this.cdp.evaluate(helpersCall(`devinSettingsClick(${JSON.stringify(name)})`));
+          await new Promise(r => setTimeout(r, 180));
+          const items = await this.cdp.evaluate(helpersCall('devinSettingsCards()')) || [];
+          if (items.length) sections.push({ title: name, items });
+        }
+      }
+    } finally { await this.closeSettings(); }
     this.emit({ t: 'settings', sections });
   }
 
@@ -1617,6 +1747,8 @@ class Session {
   }
 
   async pressControl(name) {
+    const clicked = await this.cdp.evaluate(helpersCall(`clickControl(${JSON.stringify(name)})`));
+    if (clicked) return;
     const pos = await this.cdp.evaluate(helpersCall(`control(${JSON.stringify(name)})`));
     if (!pos) throw new Error('当前窗口里没有这个按钮（可能是 Cursor 版本或布局不同）');
     await this.tapCss(pos.x, pos.y);
@@ -1630,8 +1762,11 @@ class Session {
       await new Promise(r => setTimeout(r, 150));
       items = await this.cdp.evaluate(helpersCall(`menuItems(${JSON.stringify(kind)})`));
       if (kind === 'model' && !items.length) {
-        const sub = await this.cdp.evaluate(helpersCall('modelListTrigger()'));
-        if (sub) await this.tapCss(sub.x, sub.y);
+        const opened = await this.cdp.evaluate(helpersCall('clickModelListTrigger()'));
+        if (!opened) {
+          const sub = await this.cdp.evaluate(helpersCall('modelListTrigger()'));
+          if (sub) await this.tapCss(sub.x, sub.y);
+        }
       }
     }
     const max = kind === 'model' ? await this.cdp.evaluate(helpersCall('maxToggle()?.on ?? null')) : null;
@@ -1706,6 +1841,8 @@ class Session {
     await this.pressControl(kind);
     if (kind === 'model') {
       for (let i = 0; i < 8; i++) {
+        const opened = await this.cdp.evaluate(helpersCall('clickModelListTrigger()'));
+        if (opened) break;
         const sub = await this.cdp.evaluate(helpersCall('modelListTrigger()'));
         if (sub) { await this.tapCss(sub.x, sub.y); break; }
         await new Promise(r => setTimeout(r, 120));
@@ -1936,6 +2073,8 @@ class Session {
 
   async key(combo, opts = {}) {
     if (opts.focusTerminal) await this.focusTerminal();
+    const recall = opts.focusTerminal && (combo === 'ArrowUp' || combo === 'ArrowDown');
+    const before = recall ? await this.cdp.evaluate(helpersCall('terminalCommand()')) : undefined;
     const parts = combo.split('+');
     const name = parts.pop();
     const modifiers = parts.reduce((m, p) => m | (MOD[p] || 0), 0);
@@ -1949,6 +2088,15 @@ class Session {
     const ev = { key: name, code: spec.code, windowsVirtualKeyCode: spec.vk, nativeVirtualKeyCode: spec.vk, modifiers };
     await this.cdp.send('Input.dispatchKeyEvent', { type: withText ? 'keyDown' : 'rawKeyDown', ...ev, ...(withText ? { text: spec.text } : {}) });
     await this.cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...ev });
+    if (!recall) return;
+    let cmd = before;
+    for (let i = 0; i < 8; i++) {
+      await new Promise(r => setTimeout(r, 40));
+      const next = await this.cdp.evaluate(helpersCall('terminalCommand()'));
+      if (typeof next === 'string' && next !== before) { cmd = next; break; }
+      if (i === 7 && typeof next === 'string') cmd = next;
+    }
+    if (typeof cmd === 'string') this.emit({ t: 'termInput', text: cmd });
   }
 
   async typeText(text) {
