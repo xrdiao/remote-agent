@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #1e1e1e; color: #d4d4d4; font: 15px/1.6 -apple-system, "PingFang SC", "HarmonyOS Sans SC", sans-serif; padding: 56px 24px 24px; }
+  h2 { margin: 0 0 8px; color: #eee; font-size: 22px; }
+  p { color: #aaa; margin: 0 0 16px; }
+  input, button { width: 100%; font: inherit; font-size: 16px; padding: 12px; border-radius: 8px; border: 1px solid #3c3c3c; background: #2d2d2d; color: #eee; }
+  button { margin-top: 12px; background: #0e639c; border-color: #1177bb; color: #fff; font-weight: 600; }
+  button.ghost { background: #2d2d2d; border-color: #3c3c3c; color: #ddd; font-weight: 400; }
+  .err { color: #f77; }
+  .hint { font-size: 13px; color: #888; margin-top: 18px; }
+  code { background: #333; padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<div id="offline" hidden>
+  <h2>打不开</h2>
+  <p class="err">连不上 App 地址，请检查手机网络。</p>
+  <button id="retry">重试</button>
+  <button id="change" class="ghost">更换 App 地址</button>
+</div>
+<div id="setup" hidden>
+  <h2>Remote Agent</h2>
+  <p>在电脑上运行 <code>npm run pair</code>，把显示的<b>配对链接</b>粘贴到这里（也可以只填 App 地址，之后再配对）。只需一次。</p>
+  <input id="url" type="url" inputmode="url" autocapitalize="off" autocorrect="off" placeholder="粘贴配对链接 或 App 地址">
+  <div id="msg" class="err"></div>
+  <button id="save">打开</button>
+  <div class="hint">以后要换地址：App 右上角「⋯ → 更换 App 地址」。</div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const zh = /^zh\b/i.test(navigator.language || '');
+const T = zh ? s => s : s => ({
+  '地址必须是 https': 'The address must use https', '请填写地址': 'Enter an address', '地址格式不对': 'That address is not valid',
+}[s] || s);
+if (!zh) {
+  document.documentElement.lang = 'en';
+  $('offline').innerHTML = '<h2>Can\'t open</h2><p class="err">Cannot reach the app address. Check your phone\'s network.</p>'
+    + '<button id="retry">Retry</button><button id="change" class="ghost">Change app address</button>';
+  $('setup').querySelector('p').innerHTML = 'Run <code>npm run pair</code> on the computer and paste the <b>pairing link</b> here (or just the app address and pair later). Only needed once.';
+  $('url').placeholder = 'Paste pairing link or app address';
+  $('save').textContent = 'Open';
+  $('setup').querySelector('.hint').textContent = 'To change the address later: "⋯ → Change app address" at the top right of the app.';
+}
+const q = new URLSearchParams(location.search);
+const app = window.CursorRemoteApp;
+const current = app ? app.getUrl() : '';
+if (q.has('offline') && current) $('offline').hidden = false;
+else $('setup').hidden = false;
+$('url').value = current.replace(/^https:\/\//, '');
+
+function normalize(s) {
+  s = s.trim();
+  if (!s) return '';
+  if (!/^https?:\/\//i.test(s)) s = 'https://' + s;
+  const u = new URL(s);
+  if (u.protocol !== 'https:') throw new Error(T('地址必须是 https'));
+  if (!u.pathname.endsWith('/')) u.pathname += '/';
+  return u.toString();
+}
+
+$('save').onclick = () => {
+  try {
+    const url = normalize($('url').value);
+    if (!url) return ($('msg').textContent = T('请填写地址'));
+    app.setUrl(url);
+  } catch (e) {
+    $('msg').textContent = e.message.includes('https') ? e.message : T('地址格式不对');
+  }
+};
+$('url').onkeydown = e => { if (e.key === 'Enter') $('save').click(); };
+$('retry').onclick = () => app.retry();
+$('change').onclick = () => { $('offline').hidden = true; $('setup').hidden = false; };
+</script>
+</body>
+</html>

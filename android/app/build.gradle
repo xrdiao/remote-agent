@@ -1,0 +1,29 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.cursorremote.lite'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.cursorremote.lite'
+        minSdk 24
+        targetSdk 34
+        versionCode((System.getenv('VERSION_CODE') ?: '1') as int)
+        versionName System.getenv('VERSION_NAME') ?: '1.0'
+        // Optional: forks can bake in their own app address; otherwise the user enters it on first launch.
+        resValue 'string', 'default_url', System.getenv('APP_URL') ?: ''
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

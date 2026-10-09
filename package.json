@@ -1,0 +1,34 @@
+{
+  "name": "remote-agent",
+  "version": "1.0.0",
+  "description": "Remote Agent: use Cursor and Devin on this computer from your phone. Free and self-hosted.",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "setup": "node setup.mjs",
+    "start": "node server.mjs",
+    "public": "node server.mjs --tunnel",
+    "pair": "node devices.mjs pair",
+    "devices": "node devices.mjs",
+    "2fa": "node twofa.mjs",
+    "reset": "node -e \"const d=require('os').homedir()+'/.cursor-remote-lite/';for(const f of ['url-key','devices.json','pairing.json','totp.json','config.json','state.json'])require('fs').rmSync(d+f,{force:true});console.log('已重置：所有设备需要重新配对，二次验证已关闭')\""
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "cursor",
+    "remote",
+    "mobile",
+    "cdp",
+    "agent",
+    "pwa"
+  ],
+  "author": "xrdiao",
+  "license": "MIT",
+  "dependencies": {
+    "qrcode-terminal": "^0.12.0",
+    "web-push": "^3.6.7",
+    "ws": "^8.18.0"
+  }
+}
