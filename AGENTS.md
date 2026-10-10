@@ -75,6 +75,41 @@ agent apps (Cursor, Devin) over CDP. Android is a WebView wrapper around `app/`.
   message plus the rows up to the next one; turns fold (`data-fold`, state stored with
   the session); older rows are windowed (`SC.show`, "显示更早的本地记录"). Cursor chats
   have no session key and render exactly as before.
+- Devin "@" mentions: typing `@` in the Slate prompt opens a `[role=listbox]` (root rows: Files,
+  Directories, Git, Rules, Skills, Conversations, Terminal, Codemaps; Enter on a category types
+  `@terminal:` etc. and lists its items; `@file:ser` lists files with their folder as second line).
+  Clicking an option replaces the typed text with a chip. The relay (`mentionQuery`, `insertMention`,
+  `typeWithMentions`) drives that typeahead: the phone sends `{t:'mentionQuery', q|cat, seq}` while
+  you type, and `mentions:[{token,q,label,sub}]` with `send`; at each `@token` the chip is inserted
+  in order. Queries type then undo (Escape + Backspace) so the desktop prompt is left as it was.
+- File upload: the phone's paperclip sends `{t:'upload', id, seq, last, name, size, data}` in 384 KB
+  base64 chunks, one `uploadAck` per chunk before the next (`receiveUpload`); files are saved to
+  `DATA_DIR/uploads/<stamp>-<id>/<name>` (name sanitised, 100 MB limit, pruned after 14 days) and
+  `{t:'uploaded', path}` makes the phone add an "Uploaded file: <path>" line to the message.
+  Images still use the native attach (`{t:'image'}`).
+- Android notification actions (Devin only): `agentState()` for Devin adds `actions` (single-choice
+  options, `opt:<i>`), `devin`, `changed`; notify.mjs `extras()` puts `reply:true` and `actions` (+ `acceptAll`
+  on "done" when files changed) in the event. NotifyService shows them as buttons / a RemoteInput and
+  ActionReceiver POSTs `{win, act:'opt'|'reply'|'acceptAll', index?, text?}` to `/api/act`, which runs it
+  through `actOnWindow()` (a short-lived Session: no polling, no screencast). Needs the rebuilt APK.
+- Background connection: NotifyService's notification shows connecting/connected/retry, reconnects at
+  once when the network changes (`registerDefaultNetworkCallback`) or on `nudge()`, and the web menu
+  "后台连接" shows `listenStatus()` / `batteryOk()` and asks for the battery-optimization exemption.
+- Native history store (APK only): `HistoryDb` (SQLite in app-private storage) behind the
+  `AgentRemoteApp.hist*` bridge; the web `SC` layer uses it instead of IndexedDB when present (old
+  IndexedDB sessions are copied once, flag `histMig1`) and indexes message text for `histSearch`.
+- Devin working directory (Agent surface, new-session screen only): the chip row has "Local ▾" (Local /
+  Worktree / Cloud, `role=menuitem`) and the folder chip, which opens a quick pick
+  (`role=listbox aria-label="Select a directory"`, rows `aria-label="name, path"`, last row "Browse..." =
+  native dialog, not offered). In a running session both are disabled. Picking a folder is a WORKSPACE
+  SWITCH: the chip reads "Switching workspace..." and the window reloads the folder for a few seconds (same
+  CDP target id). `chat.workdir = {name, extra, env, editable}`; messages `workdir` / `workdirs`,
+  `workdirPick {name,path}`, `envPick {label}`. Never "test-click" a folder row on a live window.
+- Devin permission mode: the prompt toolbar chip (`button[aria-haspopup=menu]` reading Code / Smart / Ask /
+  Plan / Bypass Permissions) feeds `chat.mode` and `CONTROLS.mode`; its menu opens ONLY for real mouse
+  events (`clickControl` returns false for it so `pressControl` taps), rows are `role=menuitem` with a
+  description and a second trailing svg on the current one (`devinModeRows`). The phone confirms before
+  switching to Bypass Permissions.
 - Surfaces (Devin): `button.switch-segment.{agent,editor}-segment` in the
   titlebar; `devinSurface()` reads the visible `.active` one and is sent as
   `chat.surface`. Agent: sessions are the sidebar `li[data-slot]` list and New

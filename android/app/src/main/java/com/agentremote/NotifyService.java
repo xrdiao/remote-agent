@@ -4,21 +4,28 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.app.RemoteInput;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
+import android.graphics.drawable.Icon;
+import android.net.ConnectivityManager;
+import android.net.Network;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.IBinder;
 import android.util.Base64;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -30,15 +37,24 @@ import javax.crypto.spec.SecretKeySpec;
 
 // Keeps one event stream open to the relay and turns its events into notifications.
 // Android WebView has no Web Push, and Google's push service is missing on Huawei phones, so the app listens itself.
+// Notifications from Devin carry actions (pick an option, accept the changes, reply); they go back to the relay
+// through POST /api/act, so nothing has to be opened.
 public class NotifyService extends Service {
     static final String PREF = "notify";
     private static final String CH_EVENTS = "events";
     private static final String CH_LISTEN = "listen";
     private static final int LISTEN_ID = 1;
+    static final String ACT_NUDGE = "com.agentremote.NUDGE";
+
+    // "off", "connecting", "connected" or "retry"; the web app shows it under Menu > Background connection.
+    static volatile String status = "off";
 
     private volatile boolean running;
     private volatile HttpURLConnection conn;
     private Thread worker;
+    private final Object gate = new Object();
+    private ConnectivityManager cm;
+    private ConnectivityManager.NetworkCallback netCallback;
 
     // Native text follows the phone's language; the web app has its own setting.
     static String tr(String zh, String en) {
@@ -56,39 +72,50 @@ public class NotifyService extends Service {
         else c.startService(i);
     }
 
+    // Reconnect right now instead of waiting out the retry delay (menu button, network came back).
+    static void nudge(Context c) {
+        if (!enabled(c)) return;
+        Intent i = new Intent(c, NotifyService.class).setAction(ACT_NUDGE);
+        if (Build.VERSION.SDK_INT >= 26) c.startForegroundService(i);
+        else c.startService(i);
+    }
+
     private static SharedPreferences prefs(Context c) {
-        return c.getSharedPreferences("agent-remote", MODE_PRIVATE);
+        return c.getSharedPreferences("agent-remote", Context.MODE_PRIVATE);
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         createChannels();
-        Notification listening = builder(CH_LISTEN)
-                .setContentTitle(tr("Remote Agent 正在等待 Agent 的消息", "Remote Agent is listening for the Agent"))
-                .setContentText(tr("Agent 完成或需要你确认时会提醒你", "You'll be alerted when the Agent finishes or needs your OK"))
-                .setContentIntent(openApp(null, 0))
-                .setOngoing(true)
-                .build();
-        if (Build.VERSION.SDK_INT >= 34) startForeground(LISTEN_ID, listening, ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING);
-        else startForeground(LISTEN_ID, listening);
-
+        startForegroundCompat(listening());
         if (!enabled(this)) {
+            status = "off";
             stopSelf();
             return START_NOT_STICKY;
         }
+        if (intent != null && ACT_NUDGE.equals(intent.getAction())) wake(true);
         if (worker == null || !worker.isAlive()) {
             running = true;
             worker = new Thread(this::loop, "agent-remote-notify");
             worker.start();
+            watchNetwork();
         }
         return START_STICKY;
+    }
+
+    private void startForegroundCompat(Notification n) {
+        if (Build.VERSION.SDK_INT >= 34) startForeground(LISTEN_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING);
+        else startForeground(LISTEN_ID, n);
     }
 
     @Override
     public void onDestroy() {
         running = false;
-        HttpURLConnection c = conn;
-        if (c != null) c.disconnect();
+        status = "off";
+        if (cm != null && netCallback != null) {
+            try { cm.unregisterNetworkCallback(netCallback); } catch (Exception ignored) {}
+        }
+        wake(true);
         if (worker != null) worker.interrupt();
         super.onDestroy();
     }
@@ -98,28 +125,84 @@ public class NotifyService extends Service {
         return null;
     }
 
+    // A dropped connection or a new network (Wi-Fi to mobile data) should reconnect at once, not after the backoff.
+    private void watchNetwork() {
+        try {
+            cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            netCallback = new ConnectivityManager.NetworkCallback() {
+                @Override
+                public void onAvailable(Network n) {
+                    wake(!"connected".equals(status));
+                }
+            };
+            cm.registerDefaultNetworkCallback(netCallback);
+        } catch (Exception ignored) {}
+    }
+
+    private void wake(boolean dropCurrent) {
+        if (dropCurrent) {
+            HttpURLConnection c = conn;
+            if (c != null) {
+                // disconnect() blocks on some stacks while the read is pending, so do it off the caller's thread.
+                new Thread(c::disconnect, "agent-remote-drop").start();
+            }
+        }
+        synchronized (gate) { gate.notifyAll(); }
+    }
+
+    private void setStatus(String s) {
+        if (s.equals(status)) return;
+        status = s;
+        try {
+            ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).notify(LISTEN_ID, listening());
+        } catch (Exception ignored) {}
+    }
+
+    private Notification listening() {
+        String text;
+        switch (status) {
+            case "connected": text = tr("已连接电脑。Agent 完成或需要你确认时会提醒你", "Connected to your computer. You'll be alerted when the Agent finishes or needs your OK"); break;
+            case "retry": text = tr("和电脑的连接断开了，正在重连…", "Lost the connection to your computer, reconnecting…"); break;
+            default: text = tr("正在连接电脑…", "Connecting to your computer…");
+        }
+        return builder(CH_LISTEN)
+                .setContentTitle(tr("Remote Agent 后台连接", "Remote Agent background connection"))
+                .setContentText(text)
+                .setContentIntent(openApp(null, 0))
+                .setOngoing(true)
+                .build();
+    }
+
     private void loop() {
         long backoff = 2000;
         while (running) {
             try {
+                setStatus("connecting");
                 JSONObject cfg = new JSONObject(prefs(this).getString(PREF, "{}"));
                 listen(resolveRelay(cfg.getString("app"), cfg.optString("key")), cfg.getString("token"));
                 backoff = 2000;
             } catch (Unauthorized e) {
                 // Device was removed or needs 2FA again; the app turns this back on after re-pairing.
                 prefs(this).edit().remove(PREF).apply();
+                status = "off";
                 stopSelf();
                 return;
             } catch (Exception e) {
                 if (!running) return;
-                try { Thread.sleep(backoff); } catch (InterruptedException ie) { return; }
-                backoff = Math.min(backoff * 2, 60000);
             }
+            if (!running) return;
+            setStatus("retry");
+            try {
+                synchronized (gate) { gate.wait(backoff); }
+            } catch (InterruptedException ie) {
+                return;
+            }
+            backoff = Math.min(backoff * 2, 60000);
         }
     }
 
     // Same lookup as the web app: url.json on GitHub Pages holds the relay address, AES-GCM encrypted with the paired key.
-    private String resolveRelay(String app, String key) throws Exception {
+    static String resolveRelay(String app, String key) throws Exception {
         JSONObject info = new JSONObject(get(app + (app.endsWith("/") ? "" : "/") + "url.json?t=" + System.currentTimeMillis()));
         if (info.optBoolean("self")) {
             Uri u = Uri.parse(app);
@@ -162,6 +245,7 @@ public class NotifyService extends Service {
         try {
             if (c.getResponseCode() == 401) throw new Unauthorized();
             if (c.getResponseCode() != 200) throw new Exception("HTTP " + c.getResponseCode());
+            setStatus("connected");
             BufferedReader r = new BufferedReader(new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8));
             for (String line; running && (line = r.readLine()) != null; ) {
                 if (line.startsWith("data:")) show(new JSONObject(line.substring(5).trim()));
@@ -172,18 +256,92 @@ public class NotifyService extends Service {
         }
     }
 
+    private static int notificationId(String win) {
+        // One notification per window: a newer event replaces the older one.
+        return win.isEmpty() ? 2 : 3 + (win.hashCode() & 0x7fffffff) % 100000;
+    }
+
     private void show(JSONObject e) {
         String win = e.optString("win", "");
-        // One notification per window: a newer event replaces the older one.
-        int id = win.isEmpty() ? 2 : 3 + (win.hashCode() & 0x7fffffff) % 100000;
-        Notification n = builder(CH_EVENTS)
+        int id = notificationId(win);
+        Notification.Builder b = builder(CH_EVENTS)
                 .setContentTitle(e.optString("title", "Remote Agent"))
                 .setContentText(e.optString("body", ""))
                 .setStyle(new Notification.BigTextStyle().bigText(e.optString("body", "")))
                 .setContentIntent(openApp(win, id))
-                .setAutoCancel(true)
-                .build();
-        ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).notify(id, n);
+                .setAutoCancel(true);
+        // Android shows three action buttons; Reply (with its text field) always gets one of them.
+        boolean reply = e.optBoolean("reply");
+        JSONArray acts = e.optJSONArray("actions");
+        int room = reply ? 2 : 3;
+        for (int i = 0; acts != null && i < acts.length() && i < room; i++) {
+            JSONObject a = acts.optJSONObject(i);
+            if (a == null) continue;
+            String aid = a.optString("id");
+            String label = a.optString("label", "");
+            if (label.isEmpty()) label = "acceptAll".equals(aid) ? tr("全部接受", "Accept all") : aid;
+            b.addAction(new Notification.Action.Builder(Icon.createWithResource(this, R.drawable.ic_notify), label, actionIntent(win, aid, id, false)).build());
+        }
+        if (reply && !win.isEmpty()) {
+            RemoteInput ri = new RemoteInput.Builder("text").setLabel(tr("回复 Agent…", "Reply to the Agent…")).build();
+            b.addAction(new Notification.Action.Builder(Icon.createWithResource(this, R.drawable.ic_notify), tr("回复", "Reply"), actionIntent(win, "reply", id, true))
+                    .addRemoteInput(ri).build());
+        }
+        ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).notify(id, b.build());
+    }
+
+    private PendingIntent actionIntent(String win, String act, int notifId, boolean mutable) {
+        Intent i = new Intent(this, ActionReceiver.class).setAction("com.agentremote.ACT." + notifId + "." + act)
+                .putExtra("win", win).putExtra("act", act).putExtra("nid", notifId);
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT | (mutable ? (Build.VERSION.SDK_INT >= 31 ? PendingIntent.FLAG_MUTABLE : 0) : PendingIntent.FLAG_IMMUTABLE);
+        return PendingIntent.getBroadcast(this, (notifId * 31 + act.hashCode()) & 0x7fffffff, i, flags);
+    }
+
+    // Runs on a worker thread from ActionReceiver: sends the chosen action to the relay and updates the notification.
+    static void handleAction(Context c, Intent intent) {
+        String win = intent.getStringExtra("win");
+        String act = intent.getStringExtra("act");
+        int nid = intent.getIntExtra("nid", 2);
+        String text = null;
+        Bundle in = RemoteInput.getResultsFromIntent(intent);
+        if (in != null && in.getCharSequence("text") != null) text = in.getCharSequence("text").toString();
+        try {
+            JSONObject body = new JSONObject().put("win", win);
+            if (act != null && act.startsWith("opt:")) body.put("act", "opt").put("index", Integer.parseInt(act.substring(4)));
+            else if ("reply".equals(act)) body.put("act", "reply").put("text", text == null ? "" : text);
+            else body.put("act", act);
+            JSONObject cfg = new JSONObject(prefs(c).getString(PREF, "{}"));
+            String relay = resolveRelay(cfg.getString("app"), cfg.optString("key"));
+            HttpURLConnection h = (HttpURLConnection) new URL(relay + "/api/act").openConnection();
+            h.setConnectTimeout(15000);
+            h.setReadTimeout(60000);
+            h.setRequestMethod("POST");
+            h.setDoOutput(true);
+            h.setRequestProperty("Authorization", "Bearer " + cfg.getString("token"));
+            h.setRequestProperty("Content-Type", "application/json");
+            try (OutputStream out = h.getOutputStream()) { out.write(body.toString().getBytes(StandardCharsets.UTF_8)); }
+            int code = h.getResponseCode();
+            String msg = "";
+            if (code != 200) {
+                try (InputStream err = h.getErrorStream()) { if (err != null) msg = new JSONObject(new String(readAll(err), StandardCharsets.UTF_8)).optString("error"); } catch (Exception ignored) {}
+            }
+            h.disconnect();
+            if (code == 200) result(c, nid, true, "reply".equals(act) ? text : null);
+            else result(c, nid, false, msg.isEmpty() ? "HTTP " + code : msg);
+        } catch (Exception ex) {
+            result(c, nid, false, String.valueOf(ex.getMessage()));
+        }
+    }
+
+    // Replaces the notification (this also ends the "sending" spinner a reply leaves behind) and lets it go away.
+    private static void result(Context c, int id, boolean ok, String detail) {
+        Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(c, CH_EVENTS) : new Notification.Builder(c);
+        b.setSmallIcon(R.drawable.ic_notify)
+                .setContentTitle(ok ? tr("已发送给 Agent", "Sent to the Agent") : tr("没发出去", "Couldn't send"))
+                .setAutoCancel(true);
+        if (detail != null && !detail.isEmpty()) b.setContentText(detail);
+        if (Build.VERSION.SDK_INT >= 26) b.setTimeoutAfter(ok ? 4000 : 15000);
+        ((NotificationManager) c.getSystemService(NOTIFICATION_SERVICE)).notify(id, b.build());
     }
 
     private PendingIntent openApp(String win, int requestCode) {

@@ -89,6 +89,23 @@
   main { flex: 1; min-height: 0; position: relative; }
   .view { position: absolute; inset: 0; display: none; flex-direction: column; min-width: 0; }
   .view.active { display: flex; }
+  /* Landscape chat: messages on the left, everything you control on the right (title, status, sessions, banners, input).
+     .land is the device orientation (set from screen.orientation); the viewport shape is not used because an open keyboard makes a portrait viewport wider than tall. */
+  @media (min-width: 560px) {
+    body.land.chatmode { display: grid; grid-template-columns: minmax(0, 1fr) clamp(300px, 40vw, 460px); grid-template-rows: auto auto auto minmax(0, 1fr) auto auto auto auto; }
+    body.land.chatmode main, body.land.chatmode #chatView { display: contents; }
+    body.land.chatmode #listWrap { grid-column: 1; grid-row: 1 / -1; border-right: 1px solid var(--line); min-width: 0; }
+    body.land.chatmode header, body.land.chatmode #meters, body.land.chatmode #sessBar, body.land.chatmode #qnBar, body.land.chatmode #queueBar, body.land.chatmode #actionBar, body.land.chatmode footer { grid-column: 2; min-width: 0; }
+    body.land.chatmode header { grid-row: 1; }
+    body.land.chatmode #meters { grid-row: 2; }
+    body.land.chatmode #sessBar { grid-row: 3; }
+    body.land.chatmode #qnBar { grid-row: 5; max-height: 30dvh; }
+    body.land.chatmode #queueBar { grid-row: 6; max-height: 22dvh; }
+    body.land.chatmode #actionBar { grid-row: 7; }
+    body.land.chatmode footer { grid-row: 8; }
+    body.land.chatmode textarea { max-height: 24dvh; }
+    body.land.chatmode #sessBar .sessChip { max-width: 34vw; }
+  }
 
   /* chat view */
   #meters { flex: none; display: flex; flex-direction: column; gap: 3px; padding: 4px 10px 3px; background: var(--bg); border-bottom: 1px solid var(--line); }
@@ -130,6 +147,20 @@
   .human .bubble .math { white-space: normal; }
   #mathPrev { max-height: 22vh; overflow: auto; padding: 6px 10px; border: 1px dashed var(--line2); border-radius: 10px; background: var(--ctrl); color: var(--hi); font-size: 14px; white-space: pre-wrap; }
   #mathPrev[hidden] { display: none; }
+  #attStrip { display: flex; gap: 8px; overflow-x: auto; padding: 2px 0; }
+  #attStrip[hidden] { display: none; }
+  #attStrip .att { position: relative; flex: none; display: inline-flex; align-items: center; min-width: 44px; height: 56px; border: 1px solid var(--line2); border-radius: 8px; background: var(--ctrl); }
+  #attStrip .att img { height: 54px; max-width: 120px; object-fit: cover; border-radius: 7px; display: block; }
+  #attStrip .attName { padding: 0 26px 0 10px; font-size: 12.5px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--mid); }
+  #attStrip .attX { position: absolute; top: -7px; right: -7px; width: 22px; height: 22px; padding: 0; border-radius: 50%; font-size: 11px; line-height: 1; background: var(--panel); border: 1px solid var(--line2); color: var(--muted); }
+  #mentionBox { max-height: 38vh; overflow-y: auto; display: flex; flex-direction: column; border: 1px solid var(--line2); border-radius: 10px; background: var(--panel); }
+  #mentionBox[hidden] { display: none; }
+  #mentionBox .mnRow { text-align: left; display: flex; flex-direction: column; gap: 1px; padding: 7px 12px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: none; }
+  #mentionBox .mnRow b { font-weight: 600; color: var(--hi); font-size: 14px; overflow-wrap: anywhere; }
+  #mentionBox .mnRow small { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  #mentionBox .mnRow.cat::after { content: '›'; position: absolute; right: 14px; }
+  #mentionBox .mnRow.cat { position: relative; }
+  #mentionBox .mnHint { padding: 10px 12px; color: var(--muted); font-size: 13px; }
   .assistant table { border-collapse: collapse; display: block; overflow-x: auto; font-size: 13px; margin: 0 0 .6em; }
   .assistant td, .assistant th { border: 1px solid var(--border); padding: 4px 6px; }
   .assistant blockquote { margin: 0 0 .6em; padding-left: 10px; border-left: 3px solid var(--line2); color: var(--muted2); }
@@ -193,6 +224,8 @@
   .surfSeg button.on { background: var(--ctrl); color: var(--hi); }
   .msg.human .rv { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; align-self: center; margin-left: 6px; }
   .foldBtn { font-size: 12px; padding: 0 8px; line-height: 1.5; background: none; border: 1px solid var(--line); color: var(--muted); }
+  .endFold { display: block; margin: 6px 0 0 auto; font-size: 12px; padding: 2px 10px; background: none; border: 1px solid var(--line); color: var(--muted); }
+  .flash { outline: 2px solid var(--accent-b); outline-offset: 2px; border-radius: 8px; }
   .turnSum { font-size: 11px; color: var(--muted); text-align: right; }
   .turnSum:empty { display: none; }
   #cachedMore { display: block; margin: 0 auto 10px; font-size: 13px; color: var(--muted2); background: transparent; }
@@ -274,7 +307,8 @@
   #chatTools, #termTools { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; min-width: 0; }
   #chatTools::-webkit-scrollbar, #termTools::-webkit-scrollbar { display: none; }
   #chatTools button, #termTools button { font-size: 12.5px; padding: 3px 10px; border-radius: 14px; flex: none; white-space: nowrap; }
-  body.term #img, body.term #mic { display: none !important; }
+  body.term #img, body.term #mic, body.term #attach { display: none !important; }
+  #chatTools #pickMode.bypass { color: var(--warn); border-color: var(--warn); }
   #chatTools #pickModel { flex: 0 0 auto; max-width: 46%; overflow: hidden; text-overflow: ellipsis; }
   .row { display: flex; gap: 8px; min-width: 0; align-items: flex-end; }
   textarea { flex: 1; min-width: 0; min-height: 40px; max-height: 32vh; padding: 9px 10px; resize: none; font-size: 16px; line-height: 1.35; }
@@ -284,7 +318,10 @@
   #mic.on { color: #fff; background: var(--bad); border-color: var(--bad-b); animation: pulse 1.2s ease-in-out infinite; }
   #sendNow { flex: none; height: 40px; padding: 0 16px; font-weight: 600; }
   #sendNow[hidden] { display: none; }
-  body.split #send, body.split #sendNow { width: 92px; padding: 0; text-align: center; white-space: nowrap; }
+  /* Queue + Send now: the text box gets a full row, the two buttons share the row below with the attach icons. */
+  body.split .row { flex-wrap: wrap; }
+  body.split textarea { flex: 1 1 100%; }
+  body.split #send, body.split #sendNow { flex: 1 1 0; min-width: 0; padding: 0; text-align: center; white-space: nowrap; }
   #send { flex: none; height: 40px; padding: 0 16px; background: var(--accent); border-color: var(--accent-b); color: #fff; font-weight: 600; }
   #msg { font-size: 12px; color: var(--muted); min-height: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #msg.err { color: var(--err); }
@@ -461,13 +498,18 @@
     <button id="pickAgents" title="切换电脑上的 Agent">Agent</button>
     <!-- 旧版输入框旁的对话历史。Agents 和 Devin 改由左侧会话列表切换，见 README。 -->
     <button id="pickHistory" hidden>历史</button>
+    <button id="pickDir" hidden></button>
     <button id="newChat">＋ 新建</button>
   </div>
+  <div id="attStrip" hidden></div>
+  <div id="mentionBox" hidden></div>
   <div id="mathPrev" hidden></div>
   <div class="row">
     <textarea id="text" rows="1" placeholder="发给 Cursor Agent…" enterkeyhint="send"></textarea>
     <button id="img" title="附加图片" aria-label="附加图片"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/></svg></button>
     <input id="imgFile" type="file" accept="image/*" hidden>
+    <button id="attach" title="上传文件到电脑" aria-label="上传文件到电脑"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.4 11.1-9.2 9.2a5.5 5.5 0 0 1-7.8-7.8l9.2-9.2a3.7 3.7 0 0 1 5.2 5.2l-9.2 9.2a1.8 1.8 0 0 1-2.6-2.6l8.5-8.5"/></svg></button>
+    <input id="attachFile" type="file" multiple hidden>
     <button id="mic" title="语音输入" aria-label="语音输入"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
     <button id="send">发送</button>
     <button id="sendNow" hidden>立即发送</button>
@@ -522,6 +564,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 let base = null, info = null, ws = null, authed = false, failures = 0;
 let mode = store.get('mode') || 'chat';
+document.body.classList.toggle('chatmode', mode === 'chat');
 let crop = store.get('crop') !== 'full';
 let frame = { w: 1000, h: 800 }, panel = null, zoom = 1;
 let windows = [], currentWindow = null;
@@ -547,6 +590,15 @@ function fitViewport() {
 window.visualViewport?.addEventListener('resize', fitViewport);
 window.visualViewport?.addEventListener('scroll', fitViewport);
 fitViewport();
+
+// window.screen explicitly: a top-level const named screen (the screen view) is declared further down.
+function fitOrientation() {
+  const t = window.screen.orientation?.type;
+  document.body.classList.toggle('land', t ? t.startsWith('landscape') : window.screen.width > window.screen.height);
+}
+window.screen.orientation?.addEventListener('change', fitOrientation);
+window.addEventListener('orientationchange', fitOrientation);
+fitOrientation();
 
 // In-progress lines end with … and are cleared when the result arrives, or after a few seconds
 // so a finished action cannot leave "正在…" on screen. A short result then fades on its own.
@@ -1044,6 +1096,14 @@ function connect() {
       })();
     }
     else if (m.t === 'trunc') scTrunc(m.from);
+    else if (m.t === 'workdirs') showWorkdirs(m);
+    else if (m.t === 'uploadAck') upAcks.get(`${m.id}:${m.seq}`)?.(m);
+    else if (m.t === 'uploaded') {
+      text.value = `${text.value}${text.value && !text.value.endsWith('\n') ? '\n' : ''}Uploaded file: ${m.path}\n`;
+      autosize();
+      status(`已上传：${m.name}`);
+    }
+    else if (m.t === 'mentions') onMentions(m);
     else if (m.t === 'unqueued') {
       text.value = text.value.trim() ? `${text.value.replace(/\s+$/, '')}\n${m.text}` : m.text;
       autosize();
@@ -1149,6 +1209,9 @@ function fusionBlock(fusion) {
     + `<button class="opt" data-fusion="fast"><span class="lbl">Fast Mode</span><span class="switch ${fusion.fast ? 'on' : ''}"></span></button>`
     + '<div class="hint">Lead 负责规划和关键判断，Sidekick 负责具体执行。</div>';
 }
+// Devin's permission modes: the desktop's own description, plus a Chinese one when the app is in Chinese.
+const MODE_ZH = { Code: '写代码、改文件，正常提问', Smart: '模型判断安全的操作自动批准', Ask: '只回答问题，不改代码', Plan: '先做方案，再动手', 'Bypass Permissions': '自动批准所有工具调用（不再询问）' };
+const modeDesc = it => (I18N.lang === 'zh' && MODE_ZH[it.label]) || it.desc;
 function showMenu(kind, items, max, fusion) {
   const picking = String(kind || '').startsWith('fusion-');
   if (!items?.length && !fusion) return status('菜单是空的，可能 Cursor 版本不同', false);
@@ -1159,7 +1222,7 @@ function showMenu(kind, items, max, fusion) {
   const rows = (items || []).map(it => {
     const pick = picking
       ? `<button class="opt ${it.checked ? 'cur' : ''}" data-fusion-pick="${esc(part)}" data-label="${esc(it.label)}"><span class="lbl">${esc(it.label)}</span></button>`
-      : `<button class="opt ${it.checked ? 'cur' : ''}" data-kind="${kind}" data-label="${esc(it.label)}"><span class="lbl">${esc(it.label)}</span></button>`;
+      : `<button class="opt ${it.checked ? 'cur' : ''}" data-kind="${kind}" data-label="${esc(it.label)}"><span class="lbl">${esc(it.label)}${it.desc ? `<span class="sub">${esc(modeDesc(it))}</span>` : ''}</span>${it.label === 'Bypass Permissions' ? '<span class="tag" style="color:var(--warn)">⚠</span>' : ''}</button>`;
     return it.params ? `<div class="optRow">${pick}<button class="paramBtn" data-params="${esc(it.id)}" data-plabel="${esc(it.label)}">参数</button></div>` : pick;
   }).join('');
   openSheet('menu', `<h3>${MENU_TITLE[kind] || ''}</h3>` + (picking ? '' : fusionBlock(fusion)) + maxRow + rows);
@@ -1269,7 +1332,6 @@ function showMainMenu() {
   openSheet('main', `<h3>菜单</h3>
     ${appName ? `<div class="pSec">${appName}</div>` : ''}
     <button class="opt" data-act="model"><span class="lbl">更换模型<span class="sub" id="menuModel">${esc(lastChat?.model || '选择当前 Agent 的模型')}</span></span></button>
-    <button class="opt" data-act="projects"><span class="lbl">打开项目<span class="sub">最近用过的本地文件夹</span></span></button>
     <button class="opt" data-act="docs"><span class="lbl">查看文档<span class="sub">README 和代码</span></span></button>
     <button class="opt" data-act="settings"><span class="lbl">${appName ? appName + ' 设置' : '设置'}</span></button>
     <button class="opt" data-act="screen"><span class="lbl">画面<span class="sub">直接看电脑上的 ${appName || 'Cursor'}</span></span></button>
@@ -1280,6 +1342,7 @@ function showMainMenu() {
     <button class="opt" data-act="reconnect"><span class="lbl">重新连接</span></button>
     <button class="opt" data-act="voice"><span class="lbl">语音按钮<span class="sub">输入法键盘自带麦克风的话用不着</span></span><span class="switch ${store.get('voice') === 'on' ? 'on' : ''}"></span></button>
     <button class="opt" data-act="theme"><span class="lbl">主题<span class="sub">深色 / 浅色 / 跟随系统（当前：${themeName()}）</span></span></button>
+    ${inApp && window.AgentRemoteApp?.listenStatus ? '<button class="opt" data-act="bg"><span class="lbl">后台连接<span class="sub">状态、电池优化、立即重连</span></span></button>' : ''}
     <button class="opt" data-act="cache"><span class="lbl">会话缓存<span class="sub">手机上保存的对话记录，可折叠、可清除</span></span></button>
     <button class="opt" data-act="lang"><span class="lbl">语言 / Language<span class="sub">中文 · English（${I18N.lang === 'en' ? 'English' : '中文'}）</span></span></button>
     <button class="opt" data-act="computers"><span class="lbl">电脑<span class="sub">${esc(currentComputer()?.name || '未配对')}</span></span></button>
@@ -1415,6 +1478,27 @@ $('sheet').addEventListener('click', async e => {
       return showCacheSheet();
     }
   }
+  if (b.dataset.wd != null) {
+    const r = $('sheet')._wd?.[Number(b.dataset.wd)];
+    if (!r) return;
+    if (r.name !== workdir?.name && !await ask(`把 Devin 的工作目录换成「${r.name}」？\nDevin 会切换工作区并重新载入这个文件夹，需要几秒钟，正在运行的任务可能被打断。`, '更换')) return;
+    closeSheet();
+    status('正在更换工作目录…');
+    return send({ t: 'workdirPick', name: r.name, path: r.path });
+  }
+  if (b.dataset.env) { closeSheet(); status('正在更换运行位置…'); return send({ t: 'envPick', label: b.dataset.env }); }
+  if (b.dataset.scHit) {
+    const key = b.dataset.scHit, id = b.dataset.scId;
+    if (key === SC.key) { closeSheet(); scJump(id); return; }
+    const title = key.split('|').slice(2).join('|');
+    if ((lastChat?.session?.tabs || []).some(t => t.title === title)) {
+      SC.jump = id;
+      closeSheet();
+      status('正在切换会话…');
+      return send({ t: 'openAgent', id: `tab:${title}` });
+    }
+    return status('这个会话现在没有在电脑上打开，先到「会话」里打开它', false);
+  }
   if (b.dataset.scDel) {
     if (!await ask('清除这个会话在手机上的缓存？\n电脑上的对话不受影响。', '清除')) return;
     await scClear(b.dataset.scDel);
@@ -1443,7 +1527,12 @@ $('sheet').addEventListener('click', async e => {
     if (b.dataset.fusion === 'fast') return send({ t: 'fusionPick', part: 'fast' });
     return send({ t: 'fusionOptions', part: b.dataset.fusion });
   }
-  if (b.dataset.kind) { closeSheet(); beginSwitch(b.dataset.kind); return send({ t: 'pickMenu', kind: b.dataset.kind, label: b.dataset.label }); }
+  if (b.dataset.kind) {
+    // Bypass Permissions lets the Agent run every tool call (commands, edits, deletes) without asking.
+    if (b.dataset.kind === 'mode' && b.dataset.label === 'Bypass Permissions' && !b.classList.contains('cur')
+      && !await ask('切到「Bypass Permissions」？\nAgent 之后的所有操作（运行命令、改文件、删文件）都会自动批准，不再询问你。', '切换')) return;
+    closeSheet(); beginSwitch(b.dataset.kind); return send({ t: 'pickMenu', kind: b.dataset.kind, label: b.dataset.label });
+  }
   if (b.dataset.chopen) { closeSheet(); return openFile(b.dataset.chopen); }
   if (b.dataset.ch) {
     const undo = b.dataset.act2 === 'undo';
@@ -1491,6 +1580,9 @@ $('sheet').addEventListener('click', async e => {
     showMainMenu();
   }
   else if (act === 'cache') showCacheSheet();
+  else if (act === 'bg') showBgSheet();
+  else if (act === 'bgBattery') { window.AgentRemoteApp.askBattery(); closeSheet(); }
+  else if (act === 'bgReconnect') { window.AgentRemoteApp.reconnectListen(); status('正在重连…'); setTimeout(showBgSheet, 1500); }
   else if (act === 'lang') I18N.set(I18N.lang === 'en' ? 'zh' : 'en');
   else if (act === 'computers') showComputers();
   else if (act === 'addComputer') addComputer();
@@ -1601,6 +1693,7 @@ function setMode(m) {
   $('screenKeys').hidden = m === 'terminal';
   view.classList.toggle('gesture', m === 'screen' || m === 'terminal');
   document.body.classList.toggle('term', m === 'terminal');
+  document.body.classList.toggle('chatmode', m === 'chat');
   text.placeholder = m === 'terminal' ? '发给终端…' : currentApp === 'devin' ? '发给 Devin…' : '发给 Cursor Agent…';
   updateSendMode();
   if (m !== 'terminal') $('termBusy').hidden = true;
@@ -1654,7 +1747,12 @@ const cache = new Map();
 $('cachedMore').onclick = () => { SC.show += 400; if (lastChat) renderChat(lastChat); };
 itemsEl.addEventListener('click', async e => {
   const fold = e.target.closest('[data-fold]');
-  if (fold) return scFold(fold.dataset.fold);
+  if (fold) {
+    const turn = fold.dataset.fold, fromEnd = fold.classList.contains('endFold');
+    scFold(turn);
+    if (fromEnd) requestAnimationFrame(() => itemsEl.querySelector(`[data-i="${CSS.escape(turn)}"]`)?.scrollIntoView({ block: 'center' }));
+    return;
+  }
   const rv = e.target.closest('[data-revert]');
   if (rv) {
     if (!await ask('回退到这条消息？之后的对话和文件改动会被撤销。', '回退')) return;
@@ -1867,8 +1965,12 @@ function paintSessions(chat) {
   }
   const tabs = s?.tabs || [];
   bar.hidden = !s || !tabs.length;
-  bar.innerHTML = tabs.map(t => `<span class="sessTab ${t.active ? 'on' : ''}"><button class="sessChip ${t.active ? 'on' : ''}" data-sess="${esc(t.title)}" title="${esc(t.title)}">${esc(t.title)}</button>${tabs.length > 1 ? `<button class="sessX" data-sessx="${esc(t.title)}" title="关闭会话标签" aria-label="关闭会话标签">✕</button>` : ''}</span>`).join('');
-  bar.querySelector('.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  const chipsHtml = tabs.map(t => `<span class="sessTab ${t.active ? 'on' : ''}"><button class="sessChip ${t.active ? 'on' : ''}" data-sess="${esc(t.title)}" title="${esc(t.title)}">${esc(t.title)}</button>${tabs.length > 1 ? `<button class="sessX" data-sessx="${esc(t.title)}" title="关闭会话标签" aria-label="关闭会话标签">✕</button>` : ''}</span>`).join('');
+  if (bar._sig !== chipsHtml) {
+    bar._sig = chipsHtml;
+    bar.innerHTML = chipsHtml;
+    bar.querySelector('.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
   return changed;
 }
 $('sessBar').onclick = async e => {
@@ -1905,10 +2007,52 @@ const scReq = (mode, fn) => scDb().then(db => new Promise((res, rej) => {
   rq.onsuccess = () => res(rq.result);
   rq.onerror = () => rej(rq.error);
 })).catch(() => null);
-const scGet = k => scReq('readonly', s => s.get(k));
-const scPut = (k, v) => scReq('readwrite', s => s.put(v, k));
-const scDel = k => scReq('readwrite', s => s.delete(k));
-const scKeys = () => scReq('readonly', s => s.getAllKeys());
+const idbGet = k => scReq('readonly', s => s.get(k));
+const idbPut = (k, v) => scReq('readwrite', s => s.put(v, k));
+const idbDel = k => scReq('readwrite', s => s.delete(k));
+const idbKeys = () => scReq('readonly', s => s.getAllKeys());
+// The Android app keeps the sessions in its own SQLite database (not in WebView storage, which Android may
+// clear); in a browser they stay in IndexedDB. Keys are 'h:<key>' (rows) and 'm:<key>' (size, count, time).
+const nativeHist = () => (window.AgentRemoteApp && window.AgentRemoteApp.histGet) ? window.AgentRemoteApp : null;
+const parseJson = s => { try { return s ? JSON.parse(s) : null; } catch { return null; } };
+const scGet = k => {
+  const n = nativeHist();
+  if (!n) return idbGet(k);
+  return Promise.resolve(parseJson(k.startsWith('h:') ? n.histGet(k.slice(2)) : n.histMeta(k.slice(2))));
+};
+const scDel = k => {
+  const n = nativeHist();
+  if (!n) return idbDel(k);
+  n.histDel(k.slice(2));
+  return Promise.resolve();
+};
+const scKeys = () => {
+  const n = nativeHist();
+  return n ? Promise.resolve((parseJson(n.histKeys()) || []).map(k => 'm:' + k)) : idbKeys();
+};
+const htmlText = h => h.replace(/<[^>]+>/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
+// Plain text of every message, for searching all sessions.
+const scIndex = items => items.flatMap(it => it.k === 'human' && it.t ? [{ id: it.i, role: 'human', body: it.t.slice(0, 4000) }]
+  : it.k === 'assistant' && it.h ? [{ id: it.i, role: 'assistant', body: htmlText(it.h).slice(0, 6000) }] : []);
+function scSave(key, items, collapsed) {
+  const json = JSON.stringify({ items, collapsed });
+  const meta = { n: items.length, bytes: json.length, updated: Date.now() };
+  const n = nativeHist();
+  if (n) return n.histPut(key, json, JSON.stringify(meta), JSON.stringify(scIndex(items)));
+  idbPut('h:' + key, { items, collapsed });
+  idbPut('m:' + key, meta);
+}
+// Sessions saved before the native database existed (IndexedDB) are copied over once.
+async function scMigrate() {
+  const n = nativeHist();
+  if (!n || store.get('histMig1')) return;
+  for (const mk of (await idbKeys() || []).map(String).filter(k => k.startsWith('m:'))) {
+    const key = mk.slice(2), h = await idbGet('h:' + key);
+    if (h?.items && !n.histGet(key)) scSave(key, h.items, h.collapsed || []);
+  }
+  store.set('histMig1', 1);
+}
+setTimeout(scMigrate, 2000);
 const scKeyFor = sess => `${currentComputer()?.id || '-'}|${currentApp || '?'}|${sess}`;
 // A newer copy of a row replaces the stored one, except where the stored one holds more (thought text, task items).
 function scKeep(prev, it) {
@@ -1927,9 +2071,7 @@ function scFlush() {
   SC.dirty = false;
   let items = [...SC.items.values()].sort((a, b) => acpNum(a.i) - acpNum(b.i));
   if (items.length > SC_MAX) items = items.slice(-SC_MAX);
-  const k = SC.key;
-  scPut('h:' + k, { items, collapsed: [...SC.collapsed] });
-  scPut('m:' + k, { n: items.length, bytes: JSON.stringify(items).length, updated: Date.now() });
+  scSave(SC.key, items, [...SC.collapsed]);
 }
 function scDirty() {
   SC.dirty = true;
@@ -1977,7 +2119,7 @@ function scMerge(chat) {
   let items = all.filter(it => it.k === 'human' || !SC.collapsed.has(turnOf.get(it.i)));
   let older = 0;
   if (items.length > SC.show) { older = items.length - SC.show; items = items.slice(-SC.show); }
-  return { items, all, older, stat };
+  return { items, all, older, stat, turnOf };
 }
 function scFold(turn, to) {
   if (!SC.key) return;
@@ -1996,6 +2138,32 @@ function scTrunc(from) {
   scDirty();
   if (lastChat) renderChat(lastChat);
 }
+function scJump(id) {
+  if (!SC.items.has(id)) return false;
+  const all = [...SC.items.values()].sort((a, b) => acpNum(a.i) - acpNum(b.i));
+  let turn = null, pos = 0;
+  all.forEach((it, n) => { if (it.k === 'human') turn = it.i; if (it.i === id) { if (turn) SC.collapsed.delete(turn); pos = n; } });
+  SC.show = Math.max(SC.show, all.length - pos + 20);
+  scDirty();
+  if (lastChat) renderChat(lastChat);
+  requestAnimationFrame(() => {
+    const el = itemsEl.querySelector(`[data-i="${CSS.escape(id)}"]`);
+    if (!el) return;
+    el.scrollIntoView({ block: 'center' });
+    el.classList.add('flash');
+    setTimeout(() => el.classList.remove('flash'), 1800);
+  });
+  return true;
+}
+function scSearch(q) {
+  const out = $('scResults');
+  const n = nativeHist();
+  const hits = n && q.trim() ? parseJson(n.histSearch(q)) || [] : [];
+  out.innerHTML = !q.trim() ? '' : hits.length ? hits.map(h => {
+    const title = h.k.split('|').slice(2).join('|') || '(未命名)';
+    return `<button class="opt" data-sc-hit="${esc(h.k)}" data-sc-id="${esc(h.id)}"><span class="lbl">${esc(h.snip)}<span class="sub">${esc(title)} · ${h.role === 'human' ? '我' : 'Agent'}</span></span></button>`;
+  }).join('') : '<div class="hint">没有找到。</div>';
+}
 async function scClear(key) {
   await scDel('h:' + key);
   await scDel('m:' + key);
@@ -2003,6 +2171,19 @@ async function scClear(key) {
     SC.items = new Map(); SC.sig = new Map(); SC.collapsed = new Set(); SC.dirty = false;
     if (lastChat) renderChat(lastChat);
   }
+}
+function showBgSheet() {
+  const app = window.AgentRemoteApp;
+  if (!app?.listenStatus) return;
+  const st = app.listenStatus();
+  const label = { connected: '已连接', connecting: '连接中…', retry: '断开了，正在重连…', off: '未开启' }[st] || st;
+  const battery = app.batteryOk();
+  openSheet('bg', `<h3>后台连接</h3>
+    <div class="hint">App 退到后台时，由一个常驻的通知保持和电脑的连接，Agent 完成或需要你确认时提醒你，也可以直接在通知里回复或选择。</div>
+    <div class="opt" style="pointer-events:none"><span class="lbl">连接状态<span class="sub">${label}${st === 'off' ? '（先在菜单里开启通知）' : ''}</span></span></div>
+    <div class="opt" style="pointer-events:none"><span class="lbl">电池优化<span class="sub">${battery ? '已放行，系统不会为了省电断开它' : '没放行：锁屏一段时间后系统可能会断开连接'}</span></span></div>
+    ${battery ? '' : '<button class="opt" data-act="bgBattery"><span class="lbl">去放行电池优化</span></button>'}
+    <button class="opt" data-act="bgReconnect"><span class="lbl">立即重连</span></button>`);
 }
 async function showCacheSheet() {
   scFlush();
@@ -2014,18 +2195,84 @@ async function showCacheSheet() {
   }).join('');
   openSheet('cache', `<h3>会话缓存</h3>`
     + `<div class="hint">手机上保存了每个会话的完整对话，重启电脑端也不会丢；只有你清除时才会删除。</div>`
+    + (nativeHist() ? '<input id="scQ" type="search" placeholder="搜索所有会话里的对话" style="width:100%;box-sizing:border-box;margin:8px 0"><div id="scResults"></div>' : '')
     + (SC.key ? `<div class="pRow" style="margin:10px 0"><button data-sc="fold">折叠所有轮次</button><button data-sc="unfold">展开所有轮次</button></div>` : '')
     + (list || '<div class="hint">还没有缓存的会话。</div>')
     + (rows.length ? `<button class="opt" data-sc="clearAll"><span class="lbl">清除全部会话缓存</span></button>` : ''));
+  let t = 0;
+  $('scQ')?.addEventListener('input', e => { clearTimeout(t); t = setTimeout(() => scSearch(e.target.value), 250); });
 }
+// A selection inside the chat is lost when its nodes are replaced, so while text is selected the message list
+// is left alone (the bars below still update) and drawn once the selection is gone; unchanged messages are
+// never detached, so a selection in an older message survives a streaming update.
+function userSelecting() {
+  const sel = getSelection();
+  return !!sel && !sel.isCollapsed && sel.rangeCount > 0 && itemsEl.contains(sel.getRangeAt(0).commonAncestorContainer);
+}
+let deferredRender = false;
+document.addEventListener('selectionchange', () => {
+  if (deferredRender && !userSelecting()) { deferredRender = false; if (lastChat) renderChat(lastChat); }
+});
+function syncChildren(parent, els) {
+  let i = 0;
+  for (const el of els) {
+    const cur = parent.children[i++];
+    if (cur !== el) parent.insertBefore(el, cur || null);
+  }
+  while (parent.children.length > els.length) parent.lastElementChild.remove();
+}
+// Pictures / files attached to Devin's prompt, with an x that takes them off again.
+// Devin's working directory (Agent view). Changeable only on a new session, before the first message.
+let workdir = null, wantDir = false;
+function paintWorkdir(wd) {
+  workdir = wd || null;
+  const b = $('pickDir');
+  b.hidden = !wd;
+  if (!wd) return;
+  b.textContent = `📁 ${wd.name}${wd.extra ? ' ' + wd.extra : ''} ▾`;
+  b.title = wd.editable ? '更换工作目录' : '这个会话的工作目录';
+  if (wantDir && wd.editable) { wantDir = false; send({ t: 'workdir' }); }
+}
+$('pickDir').onclick = async () => {
+  if (!workdir) return;
+  if (workdir.editable) return send({ t: 'workdir' });
+  if (!await ask('工作目录只能在新会话发出第一条消息之前更换。\n现在新建一个对话来更换吗？', '新建')) return;
+  wantDir = true;
+  send({ t: 'newChat' });
+};
+function showWorkdirs(m) {
+  const cur = m.info?.name;
+  const envs = ['Local', 'Worktree', 'Cloud'].map(e => `<button class="opt ${e === m.info?.env ? 'cur' : ''}" data-env="${e}" style="flex:1;justify-content:center"><span class="lbl">${e === 'Local' ? '本地' : e === 'Worktree' ? 'Worktree' : '云端'}</span></button>`).join('');
+  const rows = m.rows.map((r, i) => `<button class="opt ${r.name === cur ? 'cur' : ''}" data-wd="${i}"><span class="lbl">${esc(r.name)}<span class="sub">${esc(r.path)}</span></span>${r.name === cur ? '<span class="tag">当前</span>' : ''}</button>`).join('');
+  openSheet('workdir', `<h3>工作目录</h3><div class="pSec">运行位置</div><div class="pRow" style="display:flex;gap:6px;margin-bottom:8px">${envs}</div><div class="pSec">文件夹</div>${rows || '<div class="hint">没有读到文件夹列表。</div>'}<div class="hint">要选列表里没有的文件夹，请在电脑上点「Browse…」。</div>`);
+  $('sheet')._wd = m.rows;
+}
+let attSig = '';
+function renderAttachments(list) {
+  const sig = JSON.stringify((list || []).map(a => [a.i, a.alt, a.thumb?.length || 0]));
+  if (sig === attSig) return;
+  attSig = sig;
+  const box = $('attStrip');
+  box.hidden = !list?.length;
+  box.innerHTML = (list || []).map(a => `<span class="att">${/^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(a.thumb || '') ? `<img src="${a.thumb}" alt="${esc(a.alt)}">` : `<span class="attName">${esc(a.alt)}</span>`}<button class="attX" data-att="${a.i}" aria-label="移除附件" title="移除附件">✕</button></span>`).join('');
+}
+$('attStrip').onclick = e => {
+  const b = e.target.closest('[data-att]');
+  if (!b) return;
+  status('正在移除附件…');
+  send({ t: 'removeAttachment', i: Number(b.dataset.att) });
+};
 function renderChat(chat) {
   lastChat = chat;
+  renderAttachments(chat?.attachments);
+  paintWorkdir(chat?.workdir);
   if (chat && 'context' in chat) renderContext(chat.context);
   $('empty').hidden = !!chat;
   $('older').hidden = !chat || chat.earlier === false;
   $('pickMode').hidden = !chat?.mode;
   $('pickModel').hidden = false;
-  if (chat?.mode) $('pickMode').textContent = chat.mode + ' ▾';
+  if (chat?.mode) $('pickMode').textContent = (chat.mode === 'Bypass Permissions' ? '⚠ ' : '') + chat.mode + ' ▾';
+  $('pickMode').classList.toggle('bypass', chat?.mode === 'Bypass Permissions');
   const fusionLabel = chat?.model === 'Fusion' && chat.fusion ? `Fusion · ${fusionShort(chat.fusion.lead)} / ${fusionShort(chat.fusion.sidekick)}` : '';
   $('pickModel').textContent = (fusionLabel || chat?.model || '模型') + ' ▾';
   $('pickModel').title = chat?.fusion ? `${chat.fusion.lead} · ${chat.fusion.effort} · ${chat.fusion.sidekick}${chat.fusion.fast ? ' · Fast' : ''}` : (chat?.model || '更换模型');
@@ -2036,6 +2283,15 @@ function renderChat(chat) {
   if (!chat) { itemsEl.replaceChildren(); renderQueue(false, []); renderQuestions(null); paintSessions(null); return; }
   const sessionChanged = paintSessions(chat);
   const V = scMerge(chat);
+  if (!sessionChanged && userSelecting()) {
+    deferredRender = true;
+    $('actionBar').innerHTML = buttonsHtml(chat.global, 'g');
+    $('actionBar').classList.toggle('show', chat.global.length > 0);
+    renderQueue(chat.busy, chat.queued || [], chat.subagents || [], chat.readonly, chat.changed, chat.queuedCount);
+    renderQuestions(chat.readonly ? null : chat.questions);
+    noteSwitch(chat);
+    return;
+  }
   if (SC.key && V.all.length) $('older').hidden = Math.min(...V.all.map(it => acpNum(it.i)).filter(n => n >= 0), Infinity) <= 0;
   $('cachedMore').hidden = !V.older;
   $('cachedMore').textContent = `↑ 显示更早的本地记录（${V.older} 条）`;
@@ -2070,7 +2326,25 @@ function renderChat(chat) {
     const sm = el.querySelector('.turnSum');
     if (sm) sm.textContent = folded && st.n ? `${st.n} 条回复${st.tools ? ` · ${st.tools} 个工具` : ''}` : '';
   });
-  itemsEl.replaceChildren(...els);
+  // A fold button after the last reply of every turn, so a long answer can be folded from its end.
+  if (V.turnOf) {
+    const last = new Map();
+    V.items.forEach((it, n) => { if (it.k === 'assistant' && V.turnOf.get(it.i)) last.set(V.turnOf.get(it.i), n); });
+    const keep = new Set(last.values());
+    V.items.forEach((it, n) => {
+      const el = els[n];
+      let b = el.querySelector(':scope > .endFold');
+      if (!keep.has(n)) return b?.remove();
+      if (!b) {
+        b = document.createElement('button');
+        b.className = 'endFold';
+        b.textContent = '▴ 折叠这一轮';
+        el.append(b);
+      }
+      b.dataset.fold = V.turnOf.get(it.i);
+    });
+  }
+  syncChildren(itemsEl, els);
   latestTasks = V.all.filter(it => it.k === 'tasks').pop() || null;
   $('taskChip').hidden = !latestTasks;
   if (latestTasks) $('taskChip').innerHTML = `<span>${I18N.tr('任务')}</span> ${latestTasks.done}/${latestTasks.total}`;
@@ -2090,6 +2364,7 @@ function renderChat(chat) {
   }
   updateToBottom();
   noteSwitch(chat);
+  if (SC.jump && SC.items.has(SC.jump)) { const j = SC.jump; SC.jump = null; scJump(j); }
 }
 
 let subsOpen = false;
@@ -2776,6 +3051,82 @@ document.querySelectorAll('[data-key]').forEach(b => b.onclick = () => send({ t:
 const text = $('text');
 function autosize() { text.style.height = 'auto'; text.style.height = text.scrollHeight + 'px'; updateMathPrev(); }
 text.addEventListener('input', autosize);
+
+// ---- "@" mentions (Devin): the relay drives Devin's own typeahead, so a mention ends up as a real chip ----
+// Typing "@" (or "@file:ser") asks for the list; tapping a row puts "@label" into the text. When the message is
+// sent, the relay types the text and, at each "@label", lets Devin's typeahead insert the chip.
+const MN = { seq: 0, timer: 0, q: null, root: false, mentions: [], used: '' };
+function mentionToken() {
+  if (currentApp !== 'devin' || mode !== 'chat') return null;
+  const caret = text.selectionStart ?? text.value.length;
+  const m = /(^|\s)@([^\s@]*)$/.exec(text.value.slice(0, caret));
+  return m ? { start: caret - m[2].length - 1, caret, q: m[2] } : null;
+}
+function mentionHide() {
+  clearTimeout(MN.timer);
+  MN.q = null;
+  MN.seq++;
+  $('mentionBox').hidden = true;
+}
+function mentionAsk(o) {
+  MN.seq++;
+  send({ t: 'mentionQuery', seq: MN.seq, ...o });
+  const box = $('mentionBox');
+  if (box.hidden) { box.innerHTML = '<div class="mnHint">加载中…</div>'; box.hidden = false; }
+}
+function mentionUpdate() {
+  const t = mentionToken();
+  clearTimeout(MN.timer);
+  if (!t) return mentionHide();
+  if (t.q === MN.q) return;
+  MN.q = t.q;
+  MN.timer = setTimeout(() => mentionAsk({ q: t.q }), 220);
+  if ($('mentionBox').hidden) { $('mentionBox').innerHTML = '<div class="mnHint">加载中…</div>'; $('mentionBox').hidden = false; }
+}
+text.addEventListener('input', mentionUpdate);
+text.addEventListener('blur', () => setTimeout(mentionHide, 200));
+$('mentionBox').addEventListener('pointerdown', e => e.preventDefault());
+function onMentions(m) {
+  if (m.seq !== MN.seq) return;
+  const t = mentionToken();
+  if (!t) return mentionHide();
+  const box = $('mentionBox');
+  if (m.prefix) {
+    // A category was chosen: the token becomes "@terminal:" and the list below is what that category offers.
+    text.setRangeText(m.prefix, t.start, t.caret, 'end');
+    autosize();
+    MN.q = m.prefix.slice(1);
+    MN.used = MN.q;
+  } else MN.used = m.q;
+  MN.root = !!m.root;
+  box.innerHTML = m.rows.length
+    ? m.rows.map((r, i) => `<button class="mnRow${m.root ? ' cat' : ''}" data-mi="${i}"><b>${esc(r.label)}</b>${r.sub ? `<small>${esc(r.sub)}</small>` : ''}</button>`).join('')
+    : '<div class="mnHint">没有匹配的结果</div>';
+  box.hidden = false;
+  box._rows = m.rows;
+}
+$('mentionBox').addEventListener('click', e => {
+  const b = e.target.closest('[data-mi]');
+  const r = b && $('mentionBox')._rows?.[Number(b.dataset.mi)];
+  const t = mentionToken();
+  if (!r || !t) return;
+  if (MN.root) return mentionAsk({ cat: r.label });
+  const token = `@${r.label}`;
+  text.setRangeText(token + ' ', t.start, t.caret, 'end');
+  // From a category ("@file:") the relay must type the file's name too, or Devin only lists its default entries.
+  const q = MN.used.endsWith(':') && !r.label.startsWith(MN.used) ? MN.used + r.label : MN.used;
+  MN.mentions.push({ token, q, label: r.label, sub: r.sub || '' });
+  autosize();
+  mentionHide();
+  text.focus();
+});
+// Mentions still present in the text, in the order they appear.
+const mentionsFor = v => { const ms = takeMentions(v); return ms.length ? { mentions: ms } : {}; };
+function takeMentions(v) {
+  const list = MN.mentions.map(m => ({ ...m, at: v.indexOf(m.token) })).filter(m => m.at >= 0).sort((a, b) => a.at - b.at).map(({ at, ...m }) => m);
+  MN.mentions = [];
+  return list;
+}
 text.addEventListener('focus', () => {
   stickOnKeyboard = nearBottom();
   fitViewport();
@@ -2800,7 +3151,7 @@ $('send').onclick = () => {
   const v = text.value;
   if (!v.trim()) return;
   if (mode === 'terminal') send({ t: 'termSend', text: v });
-  else send({ t: 'send', text: v, submit: true, ...(devinBusySplit() ? { when: 'queue' } : {}) });
+  else send({ t: 'send', text: v, submit: true, ...(devinBusySplit() ? { when: 'queue' } : {}), ...mentionsFor(v) });
   text.value = ''; autosize();
   if (mode === 'chat') list.scrollTop = list.scrollHeight;
 };
@@ -2808,7 +3159,7 @@ $('sendNow').onclick = async () => {
   const v = text.value;
   if (!v.trim()) return;
   if (!await ask('立即打断当前任务并发送？', '立即发送')) return;
-  send({ t: 'send', text: v, submit: true, when: 'now' });
+  send({ t: 'send', text: v, submit: true, when: 'now', ...mentionsFor(v) });
   text.value = ''; autosize();
   list.scrollTop = list.scrollHeight;
 };
@@ -2876,6 +3227,34 @@ $('imgFile').onchange = async () => {
     send({ t: 'image', data: url.slice(url.indexOf(',') + 1), name: img.name, type: img.type });
   } catch {
     status('读不了这张图片，换一张试试', false);
+  }
+};
+
+// Files go to the computer in 384 KB chunks, each acknowledged before the next one; the relay saves them and
+// answers with the path on the computer, which is put into the message for the agent to read.
+const UPLOAD_MAX = 100 * 1048576, UPLOAD_CHUNK = 384 * 1024;
+const upAcks = new Map();
+async function uploadFile(file) {
+  if (file.size > UPLOAD_MAX) throw new Error('文件太大（上限 100 MB）');
+  const id = Math.random().toString(36).slice(2, 8) + Date.now().toString(36);
+  const total = Math.max(1, Math.ceil(file.size / UPLOAD_CHUNK));
+  for (let seq = 0; seq < total; seq++) {
+    const url = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file.slice(seq * UPLOAD_CHUNK, (seq + 1) * UPLOAD_CHUNK)); });
+    const key = `${id}:${seq}`;
+    const ack = new Promise(res => { upAcks.set(key, res); setTimeout(() => res({ ok: false, msg: '上传超时，请重试' }), 30000); });
+    send({ t: 'upload', id, seq, last: seq === total - 1, name: file.name, size: file.size, data: url.slice(url.indexOf(',') + 1) });
+    const a = await ack;
+    upAcks.delete(key);
+    if (!a.ok) throw new Error(a.msg || '上传失败');
+    status(`正在上传 ${file.name} ${Math.round((seq + 1) / total * 100)}%`);
+  }
+}
+$('attach').onclick = () => $('attachFile').click();
+$('attachFile').onchange = async () => {
+  const files = [...$('attachFile').files];
+  $('attachFile').value = '';
+  for (const f of files) {
+    try { await uploadFile(f); } catch (e) { return status(e.message || '上传失败', false); }
   }
 };
 

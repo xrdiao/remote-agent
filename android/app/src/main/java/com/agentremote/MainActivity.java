@@ -47,6 +47,7 @@ public class MainActivity extends Activity {
     private WebView web;
     private ValueCallback<Uri[]> pickFile;
     private SharedPreferences prefs;
+    private HistoryDb hist;
 
     private final BroadcastReceiver downloaded = new BroadcastReceiver() {
         @Override
@@ -281,7 +282,58 @@ public class MainActivity extends Activity {
         else super.onBackPressed();
     }
 
+    private synchronized HistoryDb hist() {
+        if (hist == null) hist = new HistoryDb(getApplicationContext());
+        return hist;
+    }
+
     private class Bridge {
+        // ---- the phone's own copy of every session (app-private SQLite, not WebView storage) ----
+        @JavascriptInterface
+        public String histGet(String k) { return hist().get(k); }
+
+        @JavascriptInterface
+        public String histMeta(String k) { return hist().meta(k); }
+
+        @JavascriptInterface
+        public boolean histPut(String k, String data, String meta, String msgs) { return hist().put(k, data, meta, msgs); }
+
+        @JavascriptInterface
+        public void histDel(String k) { hist().delete(k); }
+
+        @JavascriptInterface
+        public String histKeys() { return hist().keys(); }
+
+        @JavascriptInterface
+        public String histSearch(String q) { return hist().search(q, 50); }
+
+        // ---- the background connection ----
+        // "off", "connecting", "connected" or "retry".
+        @JavascriptInterface
+        public String listenStatus() {
+            return NotifyService.enabled(MainActivity.this) ? NotifyService.status : "off";
+        }
+
+        @JavascriptInterface
+        public boolean batteryOk() {
+            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+            return pm.isIgnoringBatteryOptimizations(getPackageName());
+        }
+
+        @JavascriptInterface
+        public void askBattery() {
+            runOnUiThread(() -> {
+                try {
+                    startActivity(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + getPackageName())));
+                } catch (Exception e) {
+                    try { startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)); } catch (Exception ignored) {}
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void reconnectListen() { NotifyService.nudge(MainActivity.this); }
+
         @JavascriptInterface
         public String getUrl() {
             return appUrl();

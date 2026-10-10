@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { WebSocketServer } from 'ws';
 import qrcode from 'qrcode-terminal';
 import { workspaces, workspaceForTitle, fileSize, readFile, parseRef, listProject, locateWritable, writeTextFile, resolveLocal } from './files.mjs';
@@ -744,6 +744,103 @@ function pageHelpers() {
     const submit = qnAction(box, /continue|submit|继续|提交/i);
     return { list, canSubmit: !!submit && submit.dataset.disabled !== 'true' };
   };
+  // Agent surface, new-session screen: "Local ▾" (where the agent runs: Local / Worktree / Cloud) and the folder
+  // chip next to it. Both are only enabled before the first message; in a running session Local is disabled.
+  // The folder chip opens a quick pick (role=listbox aria-label="Select a directory"; rows "name, path" and Browse...).
+  const workdirChips = () => {
+    if (!devinSurface()) return null;
+    const btns = [...document.querySelectorAll('button')].filter(b => vis(b) && b.getBoundingClientRect().y > 120);
+    const env = btns.find(b => /^(Local|Worktree|Cloud)$/.test((b.innerText || '').trim()) && b.getAttribute('aria-haspopup') === 'menu');
+    if (!env) return null;
+    const er = env.getBoundingClientRect();
+    const folder = btns.filter(b => b !== env && Math.abs(b.getBoundingClientRect().y - er.y) < 8 && b.getBoundingClientRect().x > er.x && (b.innerText || '').trim())
+      .sort((a, b) => a.getBoundingClientRect().x - b.getBoundingClientRect().x)[0];
+    return folder ? { env, folder } : null;
+  };
+  const workdirInfo = () => {
+    const c = workdirChips();
+    if (!c) return null;
+    const lines = (c.folder.innerText || '').split('\n').map(x => x.trim()).filter(Boolean);
+    return { name: lines[0] || '', extra: lines[1] || '', env: (c.env.innerText || '').trim(), editable: !c.env.disabled && !c.folder.disabled };
+  };
+  const workdirTarget = which => {
+    const c = workdirChips();
+    return c ? center(which === 'env' ? c.env : c.folder) : null;
+  };
+  const workdirRows = () => {
+    const lb = [...document.querySelectorAll('[role="listbox"][aria-label="Select a directory"]')].find(vis);
+    if (!lb) return null;
+    return [...lb.querySelectorAll('[role="option"]')].filter(vis).map(o => {
+      const label = o.getAttribute('aria-label') || (o.innerText || '').trim();
+      const at = label.indexOf(', ');
+      const r = o.getBoundingClientRect();
+      return { name: at < 0 ? label : label.slice(0, at), path: at < 0 ? '' : label.slice(at + 2), browse: /Browse\.\.\./i.test(label), x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    });
+  };
+  const envRows = () => [...document.querySelectorAll('[role="menuitem"]')].filter(e => vis(e) && /^(Local|Worktree|Cloud)$/.test((e.innerText || '').trim()))
+    .map(e => { const r = e.getBoundingClientRect(); return { label: (e.innerText || '').trim(), x: r.x + r.width / 2, y: r.y + r.height / 2 }; });
+  // Files and pictures attached to the Devin prompt: `div.group/attachment` holding an <img> (or a file name)
+  // and a `button[aria-label="Remove attachment"]`. They live next to the prompt, not in the transcript.
+  const composerScope = () => {
+    const ed = [...document.querySelectorAll('[role="textbox"][aria-label="Prompt"]')].find(vis);
+    let p = ed;
+    for (let i = 0; i < 14 && p; i++) {
+      p = p.parentElement;
+      if (p?.querySelector('button[aria-label="Add context"]')) return p;
+    }
+    return null;
+  };
+  const thumbOf = img => {
+    const cache = (window.__crThumbs = window.__crThumbs || new Map());
+    const key = `${img.src.length}:${img.src.slice(-48)}`;
+    if (cache.has(key)) return cache.get(key);
+    let url = '';
+    try {
+      const w = img.naturalWidth || 96, h = img.naturalHeight || 96, k = Math.min(1, 96 / Math.max(w, h, 1));
+      const cv = document.createElement('canvas');
+      cv.width = Math.max(1, Math.round(w * k));
+      cv.height = Math.max(1, Math.round(h * k));
+      cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+      url = cv.toDataURL('image/jpeg', 0.7);
+    } catch {}
+    cache.set(key, url);
+    return url;
+  };
+  const composerAttachments = () => {
+    const scope = composerScope();
+    if (!scope) return [];
+    return [...scope.querySelectorAll('[class*="group/attachment"]')].filter(vis).map((el, i) => {
+      const img = el.querySelector('img');
+      return { i, alt: (img?.alt || (el.innerText || '').trim() || 'file').slice(0, 60), thumb: img ? thumbOf(img) : '' };
+    });
+  };
+  const attachmentRemoveTarget = i => {
+    const el = [...(composerScope()?.querySelectorAll('[class*="group/attachment"]') || [])].filter(vis)[Number(i)];
+    const b = el && [...el.querySelectorAll('button')].find(x => x.getAttribute('aria-label') === 'Remove attachment');
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    return r.width > 2 ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null;
+  };
+  // Devin "@" mentions: typing "@" in the prompt opens a listbox (root: Files, Directories, Git, Rules, Skills,
+  // Conversations, Terminal, Codemaps; "@file:ser" lists files, "@terminal:" lists terminals). Clicking an option
+  // swaps the typed text for a chip. composerState() is the prompt's text without placeholder / zero-width marks.
+  const composerState = () => {
+    const ed = [...document.querySelectorAll('[role="textbox"][aria-label="Prompt"]')].find(vis);
+    if (!ed) return null;
+    const ph = ed.querySelector('[data-slate-placeholder]')?.innerText || '';
+    let t = ed.innerText || '';
+    if (ph) t = t.split(ph).join('');
+    return t.replace(/[\u200b\ufeff]/g, '').trim();
+  };
+  const mentionRows = () => {
+    const lb = [...document.querySelectorAll('[role="listbox"]')].find(e => vis(e) && e.getBoundingClientRect().height > 20 && e.querySelector('[role="option"]'));
+    if (!lb) return null;
+    return [...lb.querySelectorAll('[role="option"]')].filter(vis).map(o => {
+      const r = o.getBoundingClientRect();
+      const lines = (o.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
+      return { label: lines[0] || '', sub: lines.slice(1).join(' · ').slice(0, 120), sel: o.getAttribute('aria-selected') === 'true', x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    }).filter(r => r.label && r.label !== 'Loading…');
+  };
   // Devin: the question card sits in a `[data-band-item]` above the composer, one question at a time
   // ("1 of 2" pager, Skip, option rows `div[role=button]`; multi-select rows carry a role=checkbox and the
   // card has a Submit button). A single choice answers as soon as its row is clicked. Free text goes
@@ -909,7 +1006,9 @@ function pageHelpers() {
     const btn = stopGenerationButton();
     if (btn) return center(btn);
     const icon = legacyStopIcon();
-    return icon ? center(icon.closest('button, [role=button], .anysphere-icon-button') || icon) : null;
+    if (icon) return center(icon.closest('button, [role=button], .anysphere-icon-button') || icon);
+    const cancel = devinLog() && [...document.querySelectorAll('button[aria-label="Cancel"]')].find(e => vis(e) && !e.disabled && e.querySelector('svg'));
+    return cancel ? center(cancel) : null;
   };
 
   const modelButton = () => {
@@ -1184,9 +1283,9 @@ function pageHelpers() {
         subagents: subagents(),
         changed: changedCount(),
         questions: null,
-        ...(devinSurface() ? { session: devinSession() } : {}),
+        ...(devinSurface() ? { session: devinSession(), workdir: workdirInfo() } : {}),
         readonly: !hasComposer(),
-        mode: null,
+        mode: (devinModeChip()?.innerText || '').trim() || null,
         model: modelEl ? normLabel(modelEl.innerText).split('\n')[0].slice(0, 60) : null,
         context: contextPct(),
       };
@@ -1212,9 +1311,10 @@ function pageHelpers() {
       subagents: subagents(),
       changed: changedCount(),
       questions: devinLog() ? devinQuestions() : questions(),
-      ...(devinLog() ? { session: devinSession() } : {}),
+      ...(devinLog() ? { session: devinSession(), attachments: composerAttachments() } : {}),
+      ...(devinSurface() ? { workdir: workdirInfo() } : {}),
       readonly: !hasComposer(),
-      mode: modeEl ? modeEl.innerText.trim() || modeEl.dataset.mode : null,
+      mode: modeEl ? modeEl.innerText.trim() || modeEl.dataset.mode : ((devinModeChip()?.innerText || '').trim() || null),
       model: modelEl ? normLabel(modelEl.innerText).split('\n')[0].slice(0, 60) : null,
       context: contextPct(),
       ...(devinSurface() ? { surface: devinSurface() } : {}),
@@ -1227,8 +1327,19 @@ function pageHelpers() {
   };
 
   // Named controls in Cursor's UI; each entry lists fallbacks from newest to oldest Cursor layouts.
+  // Devin's permission mode: a chip in the prompt toolbar (Code / Smart / Ask / Plan / Bypass Permissions). Its menu
+  // only opens for real mouse events (a JS click does nothing), rows are role=menuitem with a description and a
+  // second trailing svg on the current one.
+  const DEVIN_MODES = /^(Code|Smart|Ask|Plan|Bypass Permissions)$/;
+  const devinModeChip = () => !devinSurface() ? null : [...document.querySelectorAll('button[aria-haspopup="menu"]')]
+    .find(b => vis(b) && b.getBoundingClientRect().y > 120 && DEVIN_MODES.test((b.innerText || '').trim()));
+  const devinModeRows = () => [...document.querySelectorAll('[role="menuitem"]')].filter(e => vis(e) && /^(Code|Smart|Ask|Plan|Bypass Permissions)\b/.test((e.innerText || '').trim()))
+    .map(e => {
+      const lines = (e.innerText || '').split('\n').map(x => x.trim()).filter(Boolean);
+      return { el: e, label: lines[0], desc: lines[1] || '', checked: e.querySelectorAll(':scope > svg').length > 1 };
+    });
   const CONTROLS = {
-    mode: () => [...document.querySelectorAll('.composer-unified-dropdown[data-mode]')].find(vis),
+    mode: () => [...document.querySelectorAll('.composer-unified-dropdown[data-mode]')].find(vis) || devinModeChip(),
     model: () => modelButton(),
     history: () => [...document.querySelectorAll('[aria-label^="Show Chat History"], [aria-label^="Show Agent History"]')].find(vis),
     newChat: () => [...document.querySelectorAll('[aria-label="New Agent"], [aria-label^="New Chat"], [aria-label="New session"], [data-action-id="new-agent"]')].find(vis),
@@ -1246,12 +1357,16 @@ function pageHelpers() {
   const clickControl = name => {
     const el = CONTROLS[name]?.();
     if (!el) return false;
+    if (name === 'mode' && el === devinModeChip()) return false;
     el.click();
     return true;
   };
 
   const MENU_ITEMS = {
-    mode: () => [...document.querySelectorAll('.composer-unified-context-menu-item')].map(e => ({ el: e, label: e.innerText.trim().split('\n')[0], checked: !!e.querySelector('.codicon-check') })),
+    mode: () => {
+      const cursor = [...document.querySelectorAll('.composer-unified-context-menu-item')].map(e => ({ el: e, label: e.innerText.trim().split('\n')[0], checked: !!e.querySelector('.codicon-check') }));
+      return cursor.length ? cursor : devinModeRows();
+    },
     model: () => {
       const currentModel = normLabel(modelButton()?.innerText || '').split('\n')[0];
       // Auto is its own row and has no .ui-model-picker__item-content-name, so the list below would skip it.
@@ -1301,7 +1416,7 @@ function pageHelpers() {
     return !!(menu && vis(menu) && (x.el.innerText || '').trim());
   }).map(({ el, ...rest }) => rest);
 
-  const menuOpen = () => [...document.querySelectorAll('.ui-menu, .composer-unified-context-menu-item, .composer-history-hover-menu')].some(vis) || !!devinModelMenu() || !!fusionPanel();
+  const menuOpen = () => [...document.querySelectorAll('.ui-menu, .composer-unified-context-menu-item, .composer-history-hover-menu')].some(vis) || !!devinModelMenu() || !!fusionPanel() || devinModeRows().length > 0;
   const modelListRow = () => [...document.querySelectorAll('[role=menuitem]')].find(el => vis(el) && /^Model\b/.test(normLabel(el.innerText)));
   const modelListTrigger = () => {
     const e = modelListRow();
@@ -1401,15 +1516,21 @@ function pageHelpers() {
     }
     const global = buttonsIn(panel, true).filter(x => !inItem(x.el) && !inQn(x.el) && WAIT.test(x.label)).map(x => x.label);
     if (!waiting && global.length) { waiting = `g:${global.join('/')}`; waitingText = global.join(' / '); }
-    const qs = questions();
+    const devin = !!devinLog();
+    const qs = devin ? devinQuestions() : questions();
+    let actions;
     if (qs?.list.length) {
       const text = qs.list.map(q => q.text).join(' / ');
-      waiting = `q:${text.slice(0, 120)}`;
+      waiting = `q:${text.slice(0, 120)}${qs.pager ? `:${qs.pager.cur}` : ''}`;
       waitingText = text;
+      // Devin: single-choice options can be answered from the notification (Android shows three buttons).
+      if (devin && !qs.list[0].multi) actions = qs.list[0].options.slice(0, 3).map((o, i) => ({ id: `opt:${i}`, label: o.label.slice(0, 40) }));
     }
-    const lastReply = [...items].reverse().find(el => el.matches('[data-message-kind="assistant"]') || el.querySelector('[data-message-kind="assistant"]'));
+    const lastReply = devin
+      ? [...document.querySelectorAll('[role="group"][aria-label="Devin message"]')].pop()
+      : [...items].reverse().find(el => el.matches('[data-message-kind="assistant"]') || el.querySelector('[data-message-kind="assistant"]'));
     const last = lastReply ? lastReply.innerText.trim().replace(/\s+/g, ' ').slice(0, 160) : '';
-    return { busy, waiting, waitingText, last };
+    return { busy, waiting, waitingText, last, ...(actions ? { actions } : {}), ...(devin ? { devin: true, changed: changedCount() } : {}) };
   };
 
   // Cursor Agents window: the left sidebar lists conversations as row:<agent id>.
@@ -1787,7 +1908,7 @@ function pageHelpers() {
     fusionConfig, clickFusionCombo, clickFusionFast, fusionOptionItems, fusionOptionTarget,
     menuOpen, maxToggle, modelTarget, modelParams, paramTarget, subTarget, activeChatTab, tabTarget, hasComposer, filesState, fileTarget, questionTarget,
     closedThinkingIndexes, clickThinking, closeThinkingIfOpen, thoughtIndexFor, setTasksOpen, devinQueueTarget,
-    devinSession, devinTabTarget, devinTabCloseTarget, devinQuestions, thoughtState, setThoughtOpen, thoughtBodyText, devinQueued, devinQueueClearTarget, devinQueueCount, revertTarget, revertDialog, revertDialogButton, revertState, devinSurface, surfaceTarget, transcriptVisible, sessionSearchTarget, sessionPickerRows, sessionPickerTarget };
+    workdirInfo, workdirTarget, workdirRows, envRows, composerAttachments, attachmentRemoveTarget, composerState, mentionRows, devinSession, devinTabTarget, devinTabCloseTarget, devinQuestions, thoughtState, setThoughtOpen, thoughtBodyText, devinQueued, devinQueueClearTarget, devinQueueCount, revertTarget, revertDialog, revertDialogButton, revertState, devinSurface, surfaceTarget, transcriptVisible, sessionSearchTarget, sessionPickerRows, sessionPickerTarget };
 }
 
 const helpersCall = call => `(${pageHelpers.toString()})().${call}`;
@@ -2723,16 +2844,25 @@ class Session {
 
   async stopAgent() {
     const pos = await this.cdp.evaluate(helpersCall('stopTarget()'));
-    if (!pos) throw new Error('Agent 当前没有在运行');
-    await this.tapCss(pos.x, pos.y);
+    const running = !!(await this.cdp.evaluate(helpersCall('agentState()')))?.busy;
+    if (!pos && !(this.app === 'devin' && running)) throw new Error('Agent 当前没有在运行');
+    if (pos) await this.tapCss(pos.x, pos.y);
+    else {
+      // Devin shows "Queue" instead of "Cancel" while the desktop prompt holds a draft, so there is no stop
+      // button; its own cancel shortcut (shown in the button tooltip: Ctrl+Alt+C, Ctrl+C on a Mac) still works.
+      if (!await this.cdp.evaluate(FOCUS_COMPOSER)) throw new Error('没找到可见的聊天输入框');
+      await this.key(process.platform === 'darwin' ? 'Ctrl+c' : 'Ctrl+Alt+c');
+    }
+    this.emit({ t: 'status', ok: true, msg: '正在停止…' });
+    // A running command has to be killed first, so Devin can take several seconds to finish cancelling.
     let busy = true;
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 48; i++) {
       await new Promise(r => setTimeout(r, 250));
       busy = !!(await this.cdp.evaluate(helpersCall('agentState()')))?.busy;
       if (!busy) break;
     }
     await this.pollChat().catch(() => {});
-    if (busy) throw new Error('没有停下来，Agent 仍在运行');
+    if (busy) throw new Error(pos ? '没有停下来，Agent 仍在运行，请到电脑上看一下' : '没有停下来：电脑上的输入框里还有没发出的文字，Devin 没有停止按钮。清空输入框，或在电脑上按 Ctrl+Alt+C');
     this.emit({ t: 'status', ok: true, msg: '已停止 Agent' });
   }
 
@@ -3398,12 +3528,116 @@ class Session {
     }
   }
 
+  // ---- Devin "@" mentions: drive Devin's own typeahead so the result is a real chip ----
+  // Waits until the listbox stops changing (it loads asynchronously) and returns its rows.
+  async mentionSettle() {
+    let last = '', same = 0, rows = null;
+    for (let i = 0; i < 18; i++) {
+      await new Promise(r => setTimeout(r, 150));
+      rows = await this.cdp.evaluate(helpersCall('mentionRows()'));
+      const sig = JSON.stringify((rows || []).map(r => [r.label, r.sub]));
+      same = sig === last ? same + 1 : 0;
+      last = sig;
+      if (rows?.length && same >= 1 && i >= 2) break;
+    }
+    return rows || [];
+  }
+
+  // Remove what was typed for a query (Escape closes the menu, Backspace removes the text) and check that the
+  // prompt looks like it did before; if it does not and it was empty, clear it.
+  async mentionUndo(typed, before) {
+    await this.key('Escape');
+    await new Promise(r => setTimeout(r, 150));
+    for (let i = 0; i < typed; i++) await this.key('Backspace');
+    await new Promise(r => setTimeout(r, 250));
+    const now = await this.cdp.evaluate(helpersCall('composerState()'));
+    if (now !== before && !before) {
+      await this.key(process.platform === 'darwin' ? 'Meta+A' : 'Ctrl+A');
+      await this.key('Backspace');
+    }
+  }
+
+  async withMentionLock(seq, fn) {
+    while (this.mentionBusy) {
+      await new Promise(r => setTimeout(r, 80));
+      if (seq != null && this.mentionSeq !== seq) return null;
+    }
+    this.mentionBusy = true;
+    try { return await fn(); } finally { this.mentionBusy = false; }
+  }
+
+  // Phone typed "@q" (or tapped a category): list what Devin offers, then put the prompt back.
+  async mentionQuery(q, cat, seq) {
+    if (this.app !== 'devin') return;
+    this.mentionSeq = seq;
+    const out = await this.withMentionLock(seq, async () => {
+      if (this.mentionSeq !== seq) return null;
+      if (!await this.cdp.evaluate(FOCUS_COMPOSER)) throw new Error('没找到可见的聊天输入框');
+      const before = await this.cdp.evaluate(helpersCall('composerState()'));
+      let typed = 1, prefix = '';
+      await this.cdp.send('Input.insertText', { text: '@' });
+      await new Promise(r => setTimeout(r, 450));
+      if (cat) {
+        const root = await this.mentionSettle();
+        const idx = root.findIndex(r => r.label.toLowerCase() === cat.toLowerCase());
+        if (idx >= 0) {
+          for (let i = 0; i < idx; i++) await this.key('ArrowDown');
+          await this.key('Enter');
+          await new Promise(r => setTimeout(r, 350));
+          const now = await this.cdp.evaluate(helpersCall('composerState()'));
+          prefix = (now || '').slice((before || '').length).trim();
+          typed = prefix.length || typed;
+        }
+      } else if (q) {
+        await this.cdp.send('Input.insertText', { text: q });
+        typed += q.length;
+      }
+      const rows = await this.mentionSettle();
+      await this.mentionUndo(typed, before);
+      return { rows, prefix };
+    }).catch(e => { this.emit({ t: 'status', ok: false, msg: e.message }); return null; });
+    if (out && this.mentionSeq === seq) {
+      this.emit({ t: 'mentions', seq, q, cat, prefix: out.prefix, root: !q && !cat, rows: out.rows.slice(0, 40).map(r => ({ label: r.label, sub: r.sub })) });
+    }
+  }
+
+  // Type "@q" and click the option with this label (and folder) so Devin turns it into a chip. False = not found.
+  async insertMention(m) {
+    return this.withMentionLock(null, async () => {
+      const before = await this.cdp.evaluate(helpersCall('composerState()'));
+      await this.cdp.send('Input.insertText', { text: '@' });
+      await new Promise(r => setTimeout(r, 450));
+      if (m.q) await this.cdp.send('Input.insertText', { text: m.q });
+      const rows = await this.mentionSettle();
+      const hit = rows.find(r => r.label === m.label && r.sub === (m.sub || '')) || rows.find(r => r.label === m.label);
+      if (!hit) { await this.mentionUndo(1 + (m.q || '').length, before); return false; }
+      await this.tapCss(hit.x, hit.y);
+      await new Promise(r => setTimeout(r, 400));
+      return true;
+    });
+  }
+
+  // Text with @tokens: type the text, and at every token let Devin's typeahead insert the real chip.
+  async typeWithMentions(text, mentions) {
+    let rest = text;
+    for (const m of mentions) {
+      const at = rest.indexOf(m.token);
+      if (at < 0) continue;
+      if (at > 0) await this.typeText(rest.slice(0, at));
+      rest = rest.slice(at + m.token.length);
+      if (await this.insertMention(m)) rest = rest.replace(/^ /, '');
+      else await this.typeText(m.token);
+    }
+    if (rest) await this.typeText(rest);
+  }
+
   // Devin while busy: Enter queues (the default), Ctrl/⌘+Enter interrupts the turn and sends now.
-  async sendMessage(text, submit, when) {
+  async sendMessage(text, submit, when, mentions) {
     const found = await this.cdp.evaluate(FOCUS_COMPOSER);
     if (!found) throw new Error('没找到可见的聊天输入框：先在画面里打开 Agent 面板（或点「打开聊天」）');
     const busy = submit && await this.cdp.evaluate(helpersCall('agentState()?.busy'));
-    await this.typeText(text);
+    if (this.app === 'devin' && mentions?.length) await this.typeWithMentions(text, mentions);
+    else await this.typeText(text);
     const now = this.app === 'devin' && when === 'now' && !!busy;
     if (submit) await this.key(now ? (process.platform === 'darwin' ? 'Meta+Enter' : 'Ctrl+Enter') : 'Enter');
     if (now) this.emit({ t: 'status', ok: true, msg: '已打断当前任务并发送' });
@@ -3422,6 +3656,119 @@ class Session {
       if (text) await this.typeText(text);
       else await this.key('Backspace');
     }
+    setTimeout(() => this.pollChat().catch(() => {}), 300);
+  }
+
+  // Files from the phone arrive in base64 chunks ({t:'upload', id, seq, last, name, size, data}); each chunk is
+  // acknowledged so the phone sends the next one only after this one was written. The file lands in
+  // DATA_DIR/uploads/<stamp>/<name> (outside every project) and the phone gets its absolute path back.
+  async receiveUpload(m) {
+    const id = String(m.id ?? '').replace(/[^\w-]/g, '').slice(0, 40);
+    const ack = (ok, msg) => this.emit({ t: 'uploadAck', id, seq: m.seq, ok, ...(msg ? { msg } : {}) });
+    const abort = msg => {
+      const u = this.uploads?.get(id);
+      if (u) { try { fs.closeSync(u.fd); fs.rmSync(path.dirname(u.file), { recursive: true, force: true }); } catch {} this.uploads.delete(id); }
+      ack(false, msg);
+    };
+    try {
+      if (!id) throw new Error('上传参数不对');
+      if (!this.uploads) this.uploads = new Map();
+      let u = this.uploads.get(id);
+      if (m.seq === 0) {
+        const size = Number(m.size) || 0;
+        if (size > UPLOAD_MAX) throw new Error(`文件太大（上限 ${UPLOAD_MAX >> 20} MB）`);
+        const name = path.basename(String(m.name || 'file')).replace(/[\u0000-\u001f<>:"/\\|?*]/g, '_').replace(/^\.+/, '').slice(0, 120) || 'file';
+        pruneUploads();
+        const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+        const dir = path.join(UPLOAD_DIR, `${stamp}-${crypto.randomBytes(3).toString('hex')}`);
+        fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+        const file = path.join(dir, name);
+        u = { fd: fs.openSync(file, 'w', 0o600), file, name, size: 0, next: 0 };
+        this.uploads.set(id, u);
+      }
+      if (!u || m.seq !== u.next) throw new Error('上传中断了，请重新选择文件');
+      const buf = Buffer.from(String(m.data ?? ''), 'base64');
+      if (u.size + buf.length > UPLOAD_MAX) throw new Error(`文件太大（上限 ${UPLOAD_MAX >> 20} MB）`);
+      fs.writeSync(u.fd, buf);
+      u.size += buf.length;
+      u.next++;
+      if (m.last) {
+        fs.closeSync(u.fd);
+        this.uploads.delete(id);
+        ack(true);
+        this.emit({ t: 'uploaded', id, name: u.name, path: u.file, size: u.size });
+      } else ack(true);
+    } catch (e) {
+      abort(e.message);
+    }
+  }
+
+  // ---- Devin working directory (Agent surface, before the first message) ----
+  async openWorkdirChip(which) {
+    const pos = await this.cdp.evaluate(helpersCall(`workdirTarget(${JSON.stringify(which)})`));
+    if (!pos) throw new Error('现在没有可以更换的工作目录');
+    await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pos.x, y: pos.y });
+    await this.tapCss(pos.x, pos.y);
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => setTimeout(r, 120));
+      const rows = await this.cdp.evaluate(helpersCall(which === 'env' ? 'envRows()' : 'workdirRows()'));
+      if (rows?.length) return rows;
+    }
+    return [];
+  }
+
+  async workdirInfoChecked() {
+    const info = await this.cdp.evaluate(helpersCall('workdirInfo()'));
+    if (!info) throw new Error('这里没有工作目录选项（要在 Agent 界面、新会话里）');
+    if (!info.editable) throw new Error('这个会话已经开始了，工作目录只能在新会话发出第一条消息之前更换');
+    return info;
+  }
+
+  async workdirList() {
+    const info = await this.workdirInfoChecked();
+    const rows = await this.openWorkdirChip('folder');
+    await this.key('Escape');
+    this.emit({ t: 'workdirs', info, rows: rows.filter(r => !r.browse).map(({ name, path }) => ({ name, path })) });
+  }
+
+  async workdirPick(name, dirPath) {
+    await this.workdirInfoChecked();
+    const rows = await this.openWorkdirChip('folder');
+    const hit = rows.find(r => r.name === name && r.path === dirPath) || rows.find(r => r.name === name);
+    if (!hit) { await this.key('Escape'); throw new Error('这个文件夹已经不在列表里'); }
+    await this.tapCss(hit.x, hit.y);
+    // Devin switches the whole workspace: the chip reads "Switching workspace..." and the window reloads the
+    // folder, which takes a few seconds (the page is gone for a moment, so evaluations may fail meanwhile).
+    this.emit({ t: 'status', ok: true, msg: '正在切换工作区，Devin 会重新载入文件夹…' });
+    let info = null;
+    for (let i = 0; i < 80; i++) {
+      await new Promise(r => setTimeout(r, 250));
+      info = await this.cdp.evaluate(helpersCall('workdirInfo()')).catch(() => null);
+      if (info?.name === name) break;
+    }
+    this.lastChat = '';
+    this.emit({ t: 'status', ok: info?.name === name, msg: info?.name === name ? `工作目录：${name}` : '没有切换成功，请到电脑上看一下' });
+    setTimeout(() => this.pollChat().catch(() => {}), 300);
+  }
+
+  async envPick(label) {
+    if (!['Local', 'Worktree', 'Cloud'].includes(label)) throw new Error('不支持的运行位置');
+    await this.workdirInfoChecked();
+    const rows = await this.openWorkdirChip('env');
+    const hit = rows.find(r => r.label === label);
+    if (!hit) { await this.key('Escape'); throw new Error('没找到这个选项'); }
+    await this.tapCss(hit.x, hit.y);
+    await new Promise(r => setTimeout(r, 500));
+    this.emit({ t: 'status', ok: true, msg: `运行位置：${label}` });
+    setTimeout(() => this.pollChat().catch(() => {}), 300);
+  }
+
+  // Take a picture / file off the prompt again (the little x on its thumbnail on the desktop).
+  async removeAttachment(i) {
+    const pos = await this.cdp.evaluate(helpersCall(`attachmentRemoveTarget(${Number(i) || 0})`));
+    if (!pos) throw new Error('这个附件已经不在了');
+    await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pos.x, y: pos.y });
+    await this.tapCss(pos.x, pos.y);
     setTimeout(() => this.pollChat().catch(() => {}), 300);
   }
 
@@ -3475,6 +3822,11 @@ class Session {
       case 'subagent': return this.subagentAction(msg.name, msg.part === 'stop' ? 'stop' : 'open');
       case 'mainChat': return this.backToMain();
       case 'image': return this.attachImage(msg.data, msg.name, msg.type);
+      case 'upload': return this.receiveUpload(msg);
+      case 'removeAttachment': return this.removeAttachment(msg.i);
+      case 'workdir': return this.workdirList();
+      case 'workdirPick': return this.workdirPick(String(msg.name ?? '').slice(0, 200), String(msg.path ?? '').slice(0, 400));
+      case 'envPick': return this.envPick(String(msg.label ?? ''));
       case 'question': return this.answerQuestion(msg.qi, msg.oi, ['option', 'submit', 'skip', 'prev', 'next'].includes(msg.part) ? msg.part : 'option', msg.text);
       case 'changes': return this.listChanges();
       case 'thought': return this.thought(String(msg.i ?? ''));
@@ -3488,7 +3840,8 @@ class Session {
       case 'wheel': return this.wheel(msg.x, msg.y, msg.dx || 0, msg.dy || 0);
       case 'key': return this.key(String(msg.key || ''), { focusTerminal: msg.focus === 'terminal' });
       case 'type': return this.typeText(String(msg.text ?? ''));
-      case 'send': return this.sendMessage(String(msg.text ?? ''), msg.submit !== false, msg.when);
+      case 'send': return this.sendMessage(String(msg.text ?? ''), msg.submit !== false, msg.when, cleanMentions(msg.mentions));
+      case 'mentionQuery': return this.mentionQuery(String(msg.q ?? '').slice(0, 80), msg.cat ? String(msg.cat).slice(0, 40) : '', Number(msg.seq) || 0);
       case 'refresh': return this.snapshot(true);
       case 'quality':
         this.screencast.quality = Math.min(this.mode === 'terminal' ? 95 : 90, Math.max(20, Number(msg.quality) || 60));
@@ -3501,6 +3854,8 @@ class Session {
   }
 
   dispose() {
+    for (const u of this.uploads?.values() || []) { try { fs.closeSync(u.fd); fs.rmSync(path.dirname(u.file), { recursive: true, force: true }); } catch {} }
+    this.uploads?.clear();
     clearInterval(this.idleTimer);
     clearTimeout(this.ackTimer);
     this.detach();
@@ -3525,6 +3880,24 @@ const MIME = {
   '.css': 'text/css; charset=utf-8',
   '.woff2': 'font/woff2',
 };
+
+// Uploaded files live outside every project, one folder per upload, and are removed after two weeks.
+const UPLOAD_MAX = 100 * 1024 * 1024;
+const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
+function pruneUploads() {
+  try {
+    const cutoff = Date.now() - 14 * 86400e3;
+    for (const d of fs.readdirSync(UPLOAD_DIR)) {
+      const p = path.join(UPLOAD_DIR, d);
+      if (fs.statSync(p).mtimeMs < cutoff) fs.rmSync(p, { recursive: true, force: true });
+    }
+  } catch {}
+}
+
+// Mention tokens from the phone: short strings only, at most a dozen.
+const cleanMentions = list => (Array.isArray(list) ? list : []).slice(0, 12)
+  .map(m => ({ token: String(m?.token ?? '').slice(0, 200), q: String(m?.q ?? '').slice(0, 200), label: String(m?.label ?? '').slice(0, 200), sub: String(m?.sub ?? '').slice(0, 200) }))
+  .filter(m => m.token && m.label);
 
 function corsHeaders(req) {
   const origin = req.headers.origin;
@@ -3560,6 +3933,31 @@ async function readJson(req) {
 
 function deviceView(d, current) {
   return { id: d.id, name: d.name, created: d.created, lastSeen: d.lastSeen, current: d.id === current?.id };
+}
+
+// A short-lived controller for one window: no screencast, no polling, no window resizing; just the same
+// relay methods the phone's own session uses, so a notification action behaves like the in-app one.
+async function actOnWindow(deviceId, { win, act, index, text }) {
+  const wins = await listWindows();
+  const w = wins.find(x => x.id === String(win));
+  if (!w || w.app !== 'devin') throw new Error('找不到这个窗口，或它不支持通知里的操作');
+  const s = new Session({ readyState: 3, send() {} }, deviceId);
+  clearInterval(s.idleTimer);
+  try {
+    s.cdp = new Cdp(w.ws);
+    await s.cdp.connect();
+    s.app = w.app;
+    s.targetId = w.id;
+    const reply = String(text ?? '').trim().slice(0, 3000);
+    if (act === 'opt') await s.answerQuestion(0, Math.max(0, Number(index) || 0), 'option');
+    else if (act === 'reply') {
+      if (!reply) throw new Error('回复内容为空');
+      await s.sendMessage(reply, true);
+    } else if (act === 'acceptAll') await s.changeAction(0, 'Accept all', 'bar');
+    else throw new Error('不支持的操作');
+  } finally {
+    s.dispose();
+  }
 }
 
 async function handleApi(req, res, route) {
@@ -3618,6 +4016,16 @@ async function handleApi(req, res, route) {
   }
 
   if (route === '/api/events') return openEventStream(req, res, device.id);
+  // Actions from an Android notification (reply / pick an option / accept the changes), run on that window.
+  if (route === '/api/act' && req.method === 'POST') {
+    const body = await readJson(req);
+    try {
+      await actOnWindow(device.id, body);
+      return json(req, res, 200, { ok: true });
+    } catch (e) {
+      return json(req, res, 409, { error: e.message });
+    }
+  }
   if (route === '/api/push/key') return json(req, res, 200, { key: pushPublicKey() });
   if (route === '/api/push/subscribe' && req.method === 'POST') {
     const { sub } = await readJson(req);
@@ -3719,9 +4127,22 @@ function printQr(label, url) {
   qrcode.generate(url, { small: true });
 }
 
+// A terminal opened before GitHub CLI was installed does not have it on PATH; on Windows look in its usual folders.
+let ghPathCache = null;
+function ghCmd() {
+  if (ghPathCache) return ghPathCache;
+  ghPathCache = 'gh';
+  if (spawnSync('gh', ['--version'], { stdio: 'ignore' }).error && process.platform === 'win32') {
+    const dirs = [process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs')].filter(Boolean);
+    const hit = dirs.map(d => path.join(d, 'GitHub CLI', 'gh.exe')).find(p => fs.existsSync(p));
+    if (hit) ghPathCache = hit;
+  }
+  return ghPathCache;
+}
+
 function run(cmd, args, input) {
   return new Promise((resolve, reject) => {
-    const p = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    const p = spawn(cmd === 'gh' ? ghCmd() : cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] });
     let out = '', err = '';
     p.stdout.on('data', d => { out += d; });
     p.stderr.on('data', d => { err += d; });
