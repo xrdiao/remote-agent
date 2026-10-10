@@ -1053,6 +1053,7 @@ function foldSection(name, inner, open, count) {
   return `<button type="button" class="fold" data-fold aria-expanded="${open ? 'true' : 'false'}"><span class="lbl">${esc(name)}</span><span class="tag">${count}</span><span class="chev">${open ? '▾' : '▸'}</span></button><div class="foldBody"${open ? '' : ' hidden'}>${inner}</div>`;
 }
 function showAgents(list) {
+  const newest = items => Math.max(0, ...items.map(a => a.lastUsed || 0));
   if (currentAppName === 'Codex') list = [...list].sort((a, b) => (b.lastUsed || 0) - (a.lastUsed || 0));
   const order = [];
   const byWindow = new Map();
@@ -1061,6 +1062,7 @@ function showAgents(list) {
     if (!byWindow.has(win)) { byWindow.set(win, []); order.push(win); }
     byWindow.get(win).push(a);
   }
+  if (currentAppName === 'Codex') order.sort((a, b) => newest(byWindow.get(b)) - newest(byWindow.get(a)));
   const anyCurrent = list.some(a => a.current);
   const rows = order.map((win, index) => {
     const items = byWindow.get(win);
@@ -1072,7 +1074,10 @@ function showAgents(list) {
       if (!g) groups.push(g = { name: a.group, items: [] });
       g.items.push(a);
     }
-    if (currentAppName === 'Codex') loose.sort((a, b) => Number(!!b.ui) - Number(!!a.ui));
+    if (currentAppName === 'Codex') {
+      loose.sort((a, b) => Number(!!b.ui) - Number(!!a.ui));
+      groups.sort((a, b) => newest(b.items) - newest(a.items));
+    }
     const body = loose.map(agentButton).join('') + groups.map(g => foldSection(
       g.name, g.items.map(agentButton).join(''), g.items.some(a => a.current), g.items.length,
     )).join('');
