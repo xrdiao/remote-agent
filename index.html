@@ -344,6 +344,7 @@
   <a id="gateApp" class="primary-link" hidden>在 App 中打开</a>
   <div id="gateActions">
     <button id="gateRetry">重试</button>
+    <button id="gateComputers" hidden>选择电脑</button>
     <button id="gateRepair">重新配对</button>
   </div>
   <div id="gateInfo"></div>
@@ -428,13 +429,15 @@ function send(obj) {
 
 /* ---------- gate: pairing / 2FA / offline ---------- */
 let gateSubmit = null;
-function gate({ msg = '', err = false, input = null, retry = false, repair = false, appLink = null } = {}) {
+let gateRetryFn = null;
+function gate({ msg = '', err = false, input = null, retry = false, repair = false, computers = false, appLink = null, onRetry = null } = {}) {
   $('gate').classList.add('open');
   $('gateMsg').textContent = msg;
   $('gateMsg').className = err ? 'err' : '';
   const inp = $('gateInput');
   inp.hidden = $('gateBtn').hidden = !input;
   gateSubmit = input?.submit || null;
+  gateRetryFn = onRetry;
   if (input) {
     inp.value = '';
     inp.placeholder = input.placeholder;
@@ -448,14 +451,16 @@ function gate({ msg = '', err = false, input = null, retry = false, repair = fal
   if (appLink) $('gateApp').href = appLink;
   $('gateRetry').hidden = !retry;
   $('gateRetry').textContent = typeof retry === 'string' ? retry : '重试';
+  $('gateComputers').hidden = !computers;
   $('gateRepair').hidden = !repair;
-  $('gateActions').classList.toggle('show', !!(retry || repair));
+  $('gateActions').classList.toggle('show', !!(retry || repair || computers));
   $('gateInfo').textContent = info?.updated ? '电脑端地址更新于 ' + new Date(info.updated).toLocaleString() : '';
 }
 const ungate = () => $('gate').classList.remove('open');
 $('gateBtn').onclick = () => gateSubmit?.($('gateInput').value.trim());
 $('gateInput').onkeydown = e => { if (e.key === 'Enter') $('gateBtn').click(); };
-$('gateRetry').onclick = () => boot();
+$('gateRetry').onclick = () => { if (gateRetryFn) gateRetryFn(); else boot(); };
+$('gateComputers').onclick = () => showComputers();
 let connGen = 0;
 function repairPairing() {
   connGen++;
@@ -492,22 +497,25 @@ function loadComputers() {
 function currentComputer() {
   const list = loadComputers();
   const id = store.get('computer');
-  return list.find(c => c.id && c.id === id) || list[0] || null;
+  const key = store.get('key');
+  return list.find(c => id && c.id === id) || list.find(c => key && c.key === key) || (list.length === 1 ? list[0] : null);
 }
-function saveComputers(list, currentId) {
-  store.set('computers', JSON.stringify(list));
-  if (currentId != null) store.set('computer', currentId);
-  const cur = list.find(c => c.id === store.get('computer')) || list[0] || null;
+function saveComputers(list, current) {
+  const clean = (Array.isArray(list) ? list : []).filter(c => c && c.key && c.token);
+  store.set('computers', JSON.stringify(clean));
+  const cur = current ? clean.find(c => c.key === current || c.id === current) || null : null;
+  store.set('computer', cur?.id || '');
   store.set('key', cur?.key || null);
   store.set('token', cur?.token || null);
   return cur;
 }
 function rememberComputer(comp) {
+  if (!comp?.key || !comp?.token) return currentComputer();
   const list = loadComputers();
-  const i = list.findIndex(c => c.id === comp.id || c.key === comp.key);
-  if (i >= 0) list[i] = { ...list[i], ...comp };
+  const i = list.findIndex(c => c.key === comp.key);
+  if (i >= 0) list[i] = { ...list[i], ...comp, key: list[i].key, token: comp.token || list[i].token };
   else list.push(comp);
-  return saveComputers(list, comp.id);
+  return saveComputers(list, comp.key);
 }
 async function decryptEntry(keyText, entry) {
   const key = await crypto.subtle.importKey('raw', b64u(keyText), 'AES-GCM', false, ['decrypt']);
@@ -522,7 +530,7 @@ async function resolveBase() {
   if (!comp?.key) throw Object.assign(new Error(''), { unpaired: true });
   if (info.v === 2 && info.data) {
     try { return await decryptEntry(comp.key, info); }
-    catch { throw Object.assign(new Error('配对信息已失效（电脑端重置过），请重新配对'), { unpaired: true, stale: true }); }
+    catch { throw offline('这台电脑的地址对不上当前发布的记录，配对还在，可以换一台或稍后重试'); }
   }
   if (info.v !== 3 || !Array.isArray(info.computers)) throw offline('电脑端还没有发布地址（或还在用旧版本），请在电脑上重启服务');
   const id = comp.id || await computerIdFromKey(comp.key);
@@ -539,7 +547,7 @@ async function resolveBase() {
   }
   if (!comp.id || (entry.name && entry.name !== comp.name)) rememberComputer({ ...comp, id: entry.id, name: entry.name || comp.name || '电脑' });
   try { return await decryptEntry(comp.key, entry); }
-  catch { throw Object.assign(new Error('配对信息已失效（电脑端重置过），请重新配对'), { unpaired: true, stale: true }); }
+  catch { throw offline('这台电脑的地址对不上当前发布的记录，配对还在，可以换一台或稍后重试'); }
 }
 
 async function api(path, opts = {}) {
@@ -601,7 +609,7 @@ function pastePair(text) {
   const here = location.origin + location.pathname;
   // A link for another app address: switch to it (the Android app remembers the new address).
   if (target && /^https?:$/.test(target.protocol) && target.origin + target.pathname !== here) {
-    if (inApp) return window.CursorRemoteApp.setUrl(target.href);
+    if (inApp) return window.AgentRemoteApp.setUrl(target.href);
     location.href = target.href;
     return;
   }
@@ -642,13 +650,21 @@ async function explainOffline() {
   return '连不上云端：手机打不开隧道地址。\nGitHub 页面能打开，所以是手机到 Cloudflare 这段不通，还不能判断电脑是否开机。\n' + host;
 }
 let offlineGen = 0;
+function offerComputers(msg, { err = true } = {}) {
+  const many = loadComputers().length > 1;
+  gate({ msg, err, retry: true, repair: true, computers: many });
+  if (many) showComputers(msg);
+  else autoRetry();
+}
 async function showOffline() {
   const gen = ++offlineGen;
-  autoRetry();
-  gate({ msg: '正在判断连不上的是云端还是电脑…' });
+  const many = loadComputers().length > 1;
+  if (!many) autoRetry();
+  gate({ msg: '正在判断连不上的是云端还是电脑…', computers: many });
   const msg = await explainOffline();
   if (gen !== offlineGen) return;
-  gate({ msg, err: true, retry: true, repair: true });
+  gate({ msg, err: true, retry: true, repair: true, computers: many });
+  if (many) showComputers(msg);
 }
 
 async function pair(totp) {
@@ -664,7 +680,7 @@ async function pair(totp) {
     const id = body.id || await computerIdFromKey(pending.key);
     const list = loadComputers().filter(c => c.id !== id && c.key !== pending.key);
     list.push({ id, name: body.name || '电脑', key: pending.key, token: body.token, win: '' });
-    saveComputers(list, id);
+    saveComputers(list, pending.key);
     store.set('window', null);
     pending = null;
     return connect();
@@ -693,7 +709,7 @@ async function boot() {
   clearTimeout(retryTimer);
   // Android browser opened a pairing link: offer to hand it to the installed app instead.
   if (pending && /Android/.test(navigator.userAgent) && !inApp && !pending.stay) {
-    const link = `cursorremote://pair?app=${encodeURIComponent(location.origin + location.pathname)}&d=${pending.key}.${pending.code}`;
+    const link = `agentremote://pair?app=${encodeURIComponent(location.origin + location.pathname)}&d=${pending.key}.${pending.code}`;
     gate({ msg: '已收到配对链接。\n装了安卓 App 就在 App 里打开；否则直接在浏览器里用。', appLink: link, retry: '在浏览器里继续' });
     pending.stay = true;
     return;
@@ -713,31 +729,26 @@ async function boot() {
   try {
     base = await resolveBase();
   } catch (e) {
-    if (e.offline) return gate({ msg: e.message, retry: true, repair: true });
-    if (e.stale) {
-      const cur = currentComputer();
-      if (cur) saveComputers(loadComputers().filter(c => c.key !== cur.key), '');
-    }
-    if (!loadComputers().length) return showUnpaired(e.message);
-    showComputers();
-    return;
+    if (!loadComputers().length) return e.unpaired ? showUnpaired(e.message) : gate({ msg: e.message, err: true, retry: true, repair: true });
+    return offerComputers(e.message);
   }
-  if (!store.get('token')) return showUnpaired();
+  if (!currentComputer()) return loadComputers().length ? offerComputers('选择要连接的电脑', { err: false }) : showUnpaired();
   const chosen = currentComputer();
   if (chosen?.win) store.set('window', chosen.win);
-  let me;
+  let meRes, me;
   try {
-    me = await api('/api/me').then(r => r.json());
+    meRes = await api('/api/me');
+    me = await meRes.json();
   } catch {
     return showOffline();
   }
+  if (!meRes.ok || !me || typeof me.paired !== 'boolean') return showOffline();
   if (!me.paired) {
     const cur = currentComputer();
     const list = loadComputers().filter(c => c.key !== cur?.key);
-    saveComputers(list, list[0]?.id || '');
+    saveComputers(list, '');
     if (!list.length) return showUnpaired('这台设备已被移除，请重新配对');
-    showComputers();
-    return;
+    return offerComputers('这台电脑上的配对已失效，已从列表移除。可以换一台，或重新配对。');
   }
   if (me.id || me.name) rememberComputer({ ...currentComputer(), id: me.id || currentComputer()?.id, name: me.name || currentComputer()?.name || '电脑' });
   if (me.needTotp) return showTotp(verifyTotp);
@@ -793,11 +804,12 @@ function connect() {
       if (!m.ok) { rejected = true; return; }
       authed = true; failures = 0;
       ungate();
+      if (sheetKind === 'computers') closeSheet();
       $('dot').className = 'ok';
       status('已连接');
       send({ t: 'mode', mode });
       send({ t: 'windows' });
-      const fromNotice = window.CursorRemoteApp?.takeOpenWin?.();
+      const fromNotice = window.AgentRemoteApp?.takeOpenWin?.();
       if (fromNotice) store.set('window', fromNotice);
       send({ t: 'attach', id: store.get('window') || '' });
       sentWidth = 0;
@@ -1062,15 +1074,15 @@ function showMainMenu() {
 }
 $('menuBtn').onclick = showMainMenu;
 
-const inApp = /CursorRemoteApp/.test(navigator.userAgent);
-const APK_RELEASE = 'https://github.com/xrdiao/remote-agent/releases/latest/download/CursorRemote.apk';
+const inApp = /AgentRemoteApp/.test(navigator.userAgent);
+const APK_RELEASE = 'https://github.com/xrdiao/remote-agent/releases/latest/download/AgentRemote.apk';
 // A copy on the user's own GitHub Pages downloads more reliably in mainland China than GitHub Releases.
 let apkUrl = APK_RELEASE;
-fetch('CursorRemote.apk', { method: 'HEAD' }).then(r => { if (r.ok) apkUrl = new URL('CursorRemote.apk', location.href).href; }).catch(() => {});
+fetch('AgentRemote.apk', { method: 'HEAD' }).then(r => { if (r.ok) apkUrl = new URL('AgentRemote.apk', location.href).href; }).catch(() => {});
 const appAddress = () => location.origin + location.pathname.replace(/index\.html$/, '');
 
 // The page itself updates with GitHub Pages; only the Android shell needs a new APK now and then.
-const appVersion = /CursorRemoteApp\/v?([\d.]+)/.exec(navigator.userAgent)?.[1];
+const appVersion = /AgentRemoteApp\/v?([\d.]+)/.exec(navigator.userAgent)?.[1];
 const newerThan = (a, b) => {
   const x = a.split('.').map(Number), y = b.split('.').map(Number);
   for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -1096,8 +1108,8 @@ async function checkAppUpdate(manual = false) {
   else if (manual) status('已经是最新版本');
 }
 function installAppUpdate() {
-  if (window.CursorRemoteApp?.update) {
-    window.CursorRemoteApp.update(apkUrl);
+  if (window.AgentRemoteApp?.update) {
+    window.AgentRemoteApp.update(apkUrl);
     status('正在下载新版本，下载完会弹出安装界面');
   }
   // Older shells can't download: an off-site link opens in the system browser instead.
@@ -1106,7 +1118,7 @@ function installAppUpdate() {
 
 /* ---------- notifications ---------- */
 // Android app: its own background listener. Elsewhere: Web Push (iPhone only from the home-screen app).
-const nativeNotify = () => Boolean(window.CursorRemoteApp?.setNotify);
+const nativeNotify = () => Boolean(window.AgentRemoteApp?.setNotify);
 const webPush = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
 let notifyOn = false;
 
@@ -1118,8 +1130,8 @@ const nativeConfig = () => JSON.stringify({ app: appAddress(), key: store.get('k
 async function syncNotify() {
   try {
     if (nativeNotify()) {
-      notifyOn = window.CursorRemoteApp.notifyEnabled();
-      if (notifyOn) window.CursorRemoteApp.setNotify(nativeConfig());
+      notifyOn = window.AgentRemoteApp.notifyEnabled();
+      if (notifyOn) window.AgentRemoteApp.setNotify(nativeConfig());
       return;
     }
     const sub = await pushSub();
@@ -1130,7 +1142,7 @@ async function syncNotify() {
 
 async function enableNotify() {
   if (nativeNotify()) {
-    window.CursorRemoteApp.setNotify(nativeConfig());
+    window.AgentRemoteApp.setNotify(nativeConfig());
     notifyOn = true;
     return status('通知已开启。华为等手机请在「设置 → 应用启动管理」里允许本 App 后台活动');
   }
@@ -1156,7 +1168,7 @@ async function enableNotify() {
 }
 
 async function disableNotify() {
-  if (nativeNotify()) window.CursorRemoteApp.setNotify('');
+  if (nativeNotify()) window.AgentRemoteApp.setNotify('');
   else {
     await (await pushSub().catch(() => null))?.unsubscribe().catch(() => {});
     await post('/api/push/unsubscribe').catch(() => {});
@@ -1225,7 +1237,7 @@ $('sheet').addEventListener('click', async e => {
   else if (act === 'docs') { status('正在读取文档…'); return send({ t: 'docs' }); }
   else if (act === 'settings') { status('正在读取设置…'); return send({ t: 'settings' }); }
   else if (act === 'screen') { closeSheet(); return setMode('screen'); }
-  else if (act === 'changeUrl') window.CursorRemoteApp?.changeUrl();
+  else if (act === 'changeUrl') window.AgentRemoteApp?.changeUrl();
   else if (act === 'notifyOn') { closeSheet(); enableNotify(); }
   else if (act === 'notifyOff') { closeSheet(); disableNotify(); }
   else if (act === 'notifyTest') {
@@ -1251,20 +1263,23 @@ $('sheet').addEventListener('click', async e => {
     await post('/api/devices/remove', { id: b.dataset.remove }).catch(() => {});
     showDevices();
   }
-  else if (b.dataset.computer) { closeSheet(); return useComputer(b.dataset.computer); }
-  else if (b.dataset.computerDel) return removeComputer(b.dataset.computerDel, b.dataset.computerName);
+  else if (b.dataset.computerI != null) { closeSheet(); return useComputer(b.dataset.computerI); }
+  else if (b.dataset.computerDel != null) return removeComputer(b.dataset.computerDel);
   else if (act === 'logout') {
     const cur = currentComputer();
     if (!cur) return;
-    return removeComputer(cur.id, cur.name);
+    const i = loadComputers().findIndex(c => c.key === cur.key);
+    if (i < 0) return;
+    return removeComputer(i);
   }
 });
 
-function showComputers() {
+function showComputers(note = '') {
   const list = loadComputers();
-  const cur = store.get('computer');
-  const rows = list.map(c => `<div class="optRow"><button class="opt ${c.id === cur ? 'cur' : ''}" data-computer="${esc(c.id)}"><span class="lbl">${esc(c.name || '电脑')}${c.id === cur ? '<span class="sub">当前</span>' : ''}</span></button><button class="paramBtn" data-computer-del="${esc(c.id)}" data-computer-name="${esc(c.name || '电脑')}">删除</button></div>`).join('');
-  openSheet('computers', `<h3>电脑</h3>${rows || '<div class="hint">还没有配对的电脑。</div>'}<button class="opt" data-act="addComputer"><span class="lbl">＋ 配对另一台电脑</span></button><div class="hint">在那台电脑上运行 npm run pair，把链接粘贴过来。已有的电脑会保留。</div>`);
+  const cur = currentComputer();
+  const rows = list.map((c, i) => `<div class="optRow"><button class="opt ${cur && c.key === cur.key ? 'cur' : ''}" data-computer-i="${i}"><span class="lbl">${esc(c.name || '电脑')}${cur && c.key === cur.key ? '<span class="sub">当前</span>' : ''}</span></button><button class="paramBtn" data-computer-del="${i}">删除</button></div>`).join('');
+  const hint = note ? `<div class="hint">${esc(note).replace(/\n/g, '<br>')}</div>` : '';
+  openSheet('computers', `<h3>电脑</h3>${hint}${rows || '<div class="hint">还没有配对的电脑。</div>'}<button class="opt" data-act="addComputer"><span class="lbl">＋ 配对另一台电脑</span></button><div class="hint">在那台电脑上运行 npm run pair，把链接粘贴过来。已有的电脑会保留。</div>`);
 }
 function addComputer() {
   closeSheet();
@@ -1272,12 +1287,14 @@ function addComputer() {
     msg: '配对另一台电脑。\n在那台电脑上运行 npm run pair，把链接粘贴到下面。已有的电脑会保留。',
     input: { placeholder: '粘贴配对链接', button: '配对', submit: pastePair },
     retry: '返回',
+    onRetry: () => loadComputers().length ? showComputers() : showUnpaired(),
   });
 }
-function useComputer(id) {
-  const c = loadComputers().find(x => x.id === id);
-  if (!c) return;
-  saveComputers(loadComputers(), id);
+function useComputer(i) {
+  const list = loadComputers();
+  const c = list[Number(i)];
+  if (!c) return showComputers();
+  saveComputers(list, c.key);
   store.set('window', c.win || null);
   connGen++;
   offlineGen++;
@@ -1288,14 +1305,17 @@ function useComputer(id) {
   closeSheet();
   boot();
 }
-async function removeComputer(id, name) {
-  if (!await ask(`删除电脑「${name || '电脑'}」？\n这台手机不再连接它。`, '删除')) return showComputers();
+async function removeComputer(i) {
+  const list = loadComputers();
+  const c = list[Number(i)];
+  if (!c) return showComputers();
+  if (!await ask(`删除电脑「${c.name || '电脑'}」？\n这台手机不再连接它。`, '删除')) return showComputers();
   const cur = currentComputer();
-  const removingCurrent = cur && (cur.id === id || cur.name === name);
+  const removingCurrent = cur && cur.key === c.key;
   if (removingCurrent && authed) await post('/api/logout').catch(() => {});
-  const list = loadComputers().filter(c => c.id !== id);
-  const next = list[0];
-  saveComputers(list, next?.id || '');
+  const nextList = loadComputers().filter(x => x.key !== c.key);
+  const next = nextList[0];
+  saveComputers(nextList, removingCurrent ? '' : (cur?.key || ''));
   if (!next) {
     connGen++;
     authed = false;
@@ -1304,7 +1324,7 @@ async function removeComputer(id, name) {
     closeSheet();
     return showUnpaired();
   }
-  if (removingCurrent) return useComputer(next.id);
+  if (removingCurrent) return useComputer(loadComputers().findIndex(x => x.key === next.key));
   showComputers();
 }
 
@@ -2160,8 +2180,8 @@ $('imgFile').onchange = async () => {
 };
 
 $('mic').onclick = () => {
-  if (window.CursorRemoteApp?.voice) {
-    if (!window.CursorRemoteApp.voice(I18N.speech)) return status('手机上没有语音识别服务，可以用输入法键盘上的麦克风', false);
+  if (window.AgentRemoteApp?.voice) {
+    if (!window.AgentRemoteApp.voice(I18N.speech)) return status('手机上没有语音识别服务，可以用输入法键盘上的麦克风', false);
     $('mic').classList.add('on');
     return status('请说话…');
   }
