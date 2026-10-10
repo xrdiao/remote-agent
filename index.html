@@ -682,10 +682,10 @@ function showTotp(onCode, err = '') {
   });
 }
 
-async function testEndpoint(url, relay = false) {
+async function testEndpoint(url, relay = false, timeout = 8000) {
   const start = performance.now();
   const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), 8000);
+  const timer = setTimeout(() => ctl.abort(), timeout);
   try {
     const response = await fetch(url + '?t=' + Date.now(), { cache: 'no-store', signal: ctl.signal });
     if (!response.ok) return { ok: false, detail: 'HTTP ' + response.status };
@@ -693,7 +693,7 @@ async function testEndpoint(url, relay = false) {
     const valid = relay ? data?.self === true : data?.self === true || (data?.v === 3 && Array.isArray(data.computers)) || (data?.v === 2 && !!data.data);
     return { ok: valid, detail: valid ? `正常 · ${Math.round(performance.now() - start)} ms` : '返回内容不符合预期' };
   } catch (error) {
-    return { ok: false, detail: error.name === 'AbortError' ? '请求超时（8 秒）' : error instanceof SyntaxError ? '返回内容不是 JSON' : '请求失败（网络、DNS、证书或跨域原因未确定）' };
+    return { ok: false, timedOut: ctl.signal.aborted, detail: ctl.signal.aborted ? `请求超时（${timeout / 1000} 秒）` : error instanceof SyntaxError ? '返回内容不是 JSON' : '请求失败（网络、DNS、证书或跨域原因未确定）' };
   } finally { clearTimeout(timer); }
 }
 let offlineGen = 0;
@@ -716,10 +716,25 @@ async function diagnoseConnection(failure, gen) {
     }
     box.append(row); return result;
   });
-  const results = await Promise.all(endpoints.map(endpoint => endpoint.url ? testEndpoint(endpoint.url, endpoint === endpoints[1]) : Promise.resolve({ ok: false, detail: '尚未获取隧道地址' })));
+  $('gateFailure').textContent = `失败阶段：${failure.stage}${failure.error ? '\n' + failure.error : ''}`;
+  const results = await Promise.all(endpoints.map(async (endpoint, i) => {
+    let result = endpoint.url ? await testEndpoint(endpoint.url, i === 1) : { ok: false, detail: '尚未获取隧道地址' };
+    if (gen !== offlineGen) return result;
+    rows[i].textContent = result.detail; rows[i].className = result.ok ? 'ok' : 'err';
+    if (i === 1 && result.timedOut) {
+      rows[i].textContent = '8 秒超时，正在进行 30 秒复测…';
+      $('gateMsg').textContent = '正在区分隧道响应慢与持续访问失败…';
+      result = await testEndpoint(endpoint.url, true, 30000);
+      result.slow = result.ok;
+      if (result.ok) result.detail = '复测可达 · ' + result.detail;
+    }
+    return result;
+  }));
   if (gen !== offlineGen) return;
   results.forEach((result, i) => { rows[i].textContent = result.detail; rows[i].className = result.ok ? 'ok' : 'err'; });
-  const conclusion = !relay ? '尚未获取隧道地址；当前只能检测页面地址发布。'
+  const conclusion = results[1].slow ? '隧道复测可达；可能是慢连接或短暂波动，首次 8 秒检测超时。'
+    : results[0].ok && results[1].timedOut ? '页面地址发布正常，隧道 30 秒复测仍超时；请切换 Wi-Fi 对比，尚不能确定具体网络原因。'
+    : !relay ? '尚未获取隧道地址；当前只能检测页面地址发布。'
     : !results[0].ok && results[1].ok ? '电脑服务可达，页面地址发布请求异常。'
     : results[0].ok && !results[1].ok ? '页面地址发布正常，隧道请求异常。'
     : results.every(result => result.ok) ? '两个网址现在都正常；检查下方失败阶段。此前也可能是短暂网络波动。'
