@@ -872,10 +872,10 @@ function connect() {
       currentAppName = m.appName;
       updateAppText();
       renderChat(null);
-      if (m.app === 'devin' || m.app === 'codex') {
-        renderQuota({ bars: [] });
-        renderContext(null);
-      } else send({ t: 'usage' });
+      renderContext(null);
+      $('quotaMeters').innerHTML = '';
+      $('quotaMeters').title = '';
+      send({ t: 'usage' });
       send({ t: 'windows' });
     }
     else if (m.t === 'agents') { finishPending(['正在读取 Agent 列表…']); showAgents(m.list || []); }
@@ -1123,7 +1123,7 @@ function renderQuota(m) {
   const bars = [...(m.quota || []), ...(m.limits || []), ...((m.quota || m.limits) ? [] : (m.bars || []))]
     .filter(b => b?.label && !/^loading\b/i.test(String(b.label)));
   const when = m.updated ? new Date(m.updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
-  if (m.missing || !bars.length) {
+  if (m.missing) {
     $('quotaMeters').title = when ? `更新于 ${when}` : '';
     $('quotaMeters').innerHTML = `<button class="meter" type="button"><span>没有额度数据</span></button>`;
     $('quotaMeters').querySelector('button').onclick = () => { status('正在读取额度…'); send({ t: 'usage' }); };
