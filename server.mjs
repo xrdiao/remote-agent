@@ -825,6 +825,39 @@ function pageHelpers() {
   };
 
   const codexThread = () => [...doc.querySelectorAll('[data-response-annotation-conversation]')].find(vis)?.getAttribute('data-response-annotation-conversation') || '';
+  const attachmentRows = () => {
+    const ed = [...doc.querySelectorAll(`${COMPOSER}, [data-slate-editor="true"][contenteditable="true"]`)].filter(vis).at(-1);
+    if (!ed) return [];
+    let box = ed;
+    for (let i = 0; i < 8 && box.parentElement; i++) box = box.parentElement;
+    return [...box.querySelectorAll('button[aria-label^="Remove "]')].filter(button => button.parentElement.querySelector('img')).map(button => {
+      if (!button.dataset.remoteAttachment) button.dataset.remoteAttachment = crypto.randomUUID();
+      const img = button.parentElement.querySelector('img');
+      let preview = '';
+      if (img?.complete && img.naturalWidth) {
+        const canvas = doc.createElement('canvas');
+        canvas.width = 96; canvas.height = Math.max(1, Math.round(96 * img.naturalHeight / img.naturalWidth));
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        preview = canvas.toDataURL('image/jpeg', 0.6);
+      }
+      const label = button.getAttribute('aria-label').slice(7);
+      const name = img?.alt && img.alt !== 'User attachment' ? img.alt.replace(/^User uploaded image (\d+)$/, '图片 $1') : label;
+      return { id: button.dataset.remoteAttachment, name, preview };
+    });
+  };
+  const removeAttachment = id => {
+    if (!attachmentRows().some(f => f.id === id)) return false;
+    const button = [...doc.querySelectorAll('button[data-remote-attachment]')].find(b => b.dataset.remoteAttachment === id);
+    if (!button) return false;
+    button.click();
+    return true;
+  };
+  const submitCodexMessage = () => {
+    const button = [...doc.querySelectorAll('button[aria-label="Send"]')].filter(vis).at(-1);
+    if (!button || button.disabled) return false;
+    button.click();
+    return true;
+  };
   const activeThread = () => codexThread() || agentList().find(a => a.current)?.id || '';
   const codexTurnData = el => codexFiberProps(el.querySelector('[class*="agent-activity"], button[aria-expanded]') || el).find(p => p.turn)?.turn;
   // One Codex turn can contain several markdown blocks. Keep them in order instead of keeping only the first reply.
@@ -846,10 +879,10 @@ function pageHelpers() {
         if (item.phase === 'commentary') out.push({ i: id, k: 'thinking', t: `工作过程\n${item.content}`, live: !item.completed });
         else out.push({ i: id, k: 'assistant', h: block ? clean(block) : esc(item.content).replace(/\n/g, '<br>') });
       } else if (item.type === 'exec') {
-        out.push({ i: id, k: 'tool', t: (item.cmd || []).join('\n').slice(0, 240) });
+        out.push({ i: id, k: 'tool', t: (item.cmd || []).join('\n').slice(0, 240), done: turn.status === 'complete' });
       } else if (item.type === 'patch') {
         const files = Object.keys(item.changes || {});
-        out.push({ i: id, k: 'tool', t: `修改 ${files.join(', ')}`.slice(0, 240), f: files[0] });
+        out.push({ i: id, k: 'tool', t: `修改 ${files.join(', ')}`.slice(0, 240), f: files[0], done: turn.status === 'complete' });
       }
     }
     return out;
@@ -943,7 +976,7 @@ function pageHelpers() {
   const refreshCodexUsage = async (refresh = true) => {
     const client = codexQueryClient();
     if (!client) throw new Error('没找到 Codex 的额度查询');
-    if (refresh) await client.refetchQueries({ queryKey: ['rate-limit-status'], exact: true, type: 'all' }, { throwOnError: true });
+    if (refresh) await client.refetchQueries({ queryKey: ['rate-limit-status'], exact: true, type: 'all' }, { throwOnError: true, cancelRefetch: false });
     const data = client.getQueryData(['rate-limit-status']);
     if (!data?.rate_limit && !refresh) return null;
     if (!data?.rate_limit) throw new Error('没有读到额度');
@@ -1621,7 +1654,7 @@ function pageHelpers() {
     return null;
   };
 
-  return { extract, activeThread, codexThread, codexViewState, codexRecentPoint, codexNewPoint, codexAccountPoint, codexMenuPoint, clickLabeled, codexChatRows, codexChatPoint, locate, panelRect, control, menuItems, menuItem, quickOpenRows, agentList, agentTarget, agentState, agentStates, queueTarget, stopTarget, focusQueueEdit,
+  return { attachmentRows, removeAttachment, submitCodexMessage, extract, activeThread, codexThread, codexViewState, codexRecentPoint, codexNewPoint, codexAccountPoint, codexMenuPoint, clickLabeled, codexChatRows, codexChatPoint, locate, panelRect, control, menuItems, menuItem, quickOpenRows, agentList, agentTarget, agentState, agentStates, queueTarget, stopTarget, focusQueueEdit,
     terminalList, terminalTarget, terminalCloseTarget, terminalRect, terminalFocus, newTerminalDirect, newTerminalMenu, newTerminalItem, terminalDump, terminalCommand, modelListTrigger,
     settingsOpen, clickSettingsButton, clickCloseSettings, openSettingsTarget, closeSettingsTarget, readSettings, settingTarget, usageNavTarget, readUsage, readDevinUsage, refreshCodexUsage, codexWorkspaceRoots, contextPct,
     clickControl, clickModelListTrigger, devinSettingsNav, devinSettingsClick, devinSettingsCards,
@@ -1631,6 +1664,8 @@ function pageHelpers() {
 }
 
 const helpersCall = call => `(${pageHelpers.toString()})().${call}`;
+const uploads = new Map();
+const codexUsage = { data: null, refresh: null, retryAt: 0, failures: 0 };
 
 const CURSOR_BIN = fs.existsSync('/usr/share/cursor/bin/cursor') ? '/usr/share/cursor/bin/cursor' : 'cursor';
 
@@ -1873,6 +1908,7 @@ class Session {
   clearViewState() {
     this.sel = (this.sel || 0) + 1;
     this.lastChat = '';
+    this.lastAttachments = null;
     this.latestThink = null;
     this.thinkTries = new Map();
     this.thinking = new Map();
@@ -1902,6 +1938,7 @@ class Session {
     const prev = this.itemCache.get(thread) || [];
     chat.items = [...new Map([...prev, ...chat.items].map(it => [it.i, it])).values()].slice(-400);
     if (!chat.busy) chat.items.filter(it => it.k === 'thinking').forEach(it => { it.live = false; });
+    if (!chat.busy) chat.items.filter(it => it.k === 'tool').forEach(it => { it.done = true; });
     this.itemCache.set(thread, chat.items);
   }
 
@@ -1969,6 +2006,7 @@ class Session {
         if (this.fusion) chat.fusion = this.fusion;
         else this.queueFusionRead();
       } else this.fusion = null;
+      await this.syncAttachments();
       const json = JSON.stringify(chat);
       if (!this.liveRead(cdp, sel)) return;
       if (json !== this.lastChat) {
@@ -2134,22 +2172,37 @@ class Session {
     } finally { await this.closeSettings(); }
   }
 
-  async showUsage(automatic = false) {
+  showUsage(automatic = false) {
+    if (this.usageRead?.sel === this.sel) {
+      if (!automatic) this.usageRead.manual = true;
+      return this.usageRead.promise;
+    }
+    const request = { sel: this.sel, manual: !automatic };
+    this.usageRead = request;
+    request.promise = this.fetchUsage(request).finally(() => {
+      if (this.usageRead === request) this.usageRead = null;
+    });
+    return request.promise;
+  }
+
+  async fetchUsage(request) {
+    const automatic = !request.manual;
     const cdp = this.cdp, sel = this.sel;
     let context;
     try { context = await this.cdp.evaluate(helpersCall('contextPct()')); }
     catch { context = undefined; }
     try {
-      const account = this.app === 'codex' ? await this.readCodexAccount()
+      const account = this.app === 'codex' ? await this.readCodexAccount(request)
         : this.app === 'devin' ? await this.cdp.evaluate(helpersCall('readDevinUsage()'))
         : await this.readCursorUsage(automatic);
       if (!this.liveRead(cdp, sel)) return;
-      if (!account && automatic) { this.emit({ t: 'usage', ...(context === undefined ? {} : { context }) }); return; }
+      if (!account && !request.manual) { this.emit({ t: 'usage', sel: this.selectionKey(), ...(context === undefined ? {} : { context }) }); return; }
       if (!account) throw new Error('没有读到额度');
       this.emit({ t: 'usage', sel: this.selectionKey(), updated: Date.now(), ...(context === undefined ? {} : { context }), ...account });
     } catch (e) {
       if (!this.liveRead(cdp, sel)) return;
-      this.emit({ t: 'usage', sel: this.selectionKey(), error: e.message, updated: Date.now(), ...(context === undefined ? {} : { context }) });
+      const error = /timeout|timed out|超时/i.test(e.message) ? '额度查询超时' : !this.cdp ? '电脑连接已断开' : '额度接口请求失败';
+      this.emit({ t: 'usage', sel: this.selectionKey(), error, detail: e.message, automatic: !request.manual, ...(context === undefined ? {} : { context }) });
     }
   }
 
@@ -2172,11 +2225,30 @@ class Session {
     } finally { if (!wasOpen) await this.closeSettings(); }
   }
 
-  async readCodexAccount() {
+  async readCodexAccount(request) {
     const cdp = this.cdp, sel = this.sel;
-    const cached = await cdp.evaluate(helpersCall('refreshCodexUsage(false)'));
-    if (cached && this.liveRead(cdp, sel)) this.emit({ t: 'usage', sel: this.selectionKey(), ...cached });
-    return cdp.evaluate(helpersCall('refreshCodexUsage()'));
+    const native = await cdp.evaluate(helpersCall('refreshCodexUsage(false)'));
+    if (native && (!codexUsage.data || native.updated > codexUsage.data.updated)) {
+      codexUsage.data = native;
+      codexUsage.retryAt = 0;
+      codexUsage.failures = 0;
+    }
+    if (codexUsage.data && this.liveRead(cdp, sel)) this.emit({ t: 'usage', sel: this.selectionKey(), ...codexUsage.data, cached: true });
+    if (!request.manual && Date.now() < codexUsage.retryAt) throw codexUsage.error;
+    if (!request.manual && codexUsage.data && Date.now() - codexUsage.data.updated < 60000) return { ...codexUsage.data, cached: true };
+    if (!codexUsage.refresh) {
+      codexUsage.refresh = cdp.evaluate(helpersCall('refreshCodexUsage()')).then(data => {
+        codexUsage.data = data;
+        codexUsage.failures = 0;
+        codexUsage.retryAt = 0;
+        return data;
+      }).catch(error => {
+        codexUsage.error = error;
+        codexUsage.retryAt = Date.now() + Math.min(60000 * 2 ** ++codexUsage.failures, 300000);
+        throw error;
+      }).finally(() => { codexUsage.refresh = null; });
+    }
+    return codexUsage.refresh;
   }
 
   showProjects(dir) {
@@ -3127,11 +3199,19 @@ class Session {
   }
 
   async sendMessage(text, submit) {
+    const files = [...uploads.values()].filter(f => f.pending && f.sel === this.selectionKey());
+    if (files.length) text += '\n\n附加文件（请读取这些电脑端文件）：\n' + files.map(f => f.path).join('\n');
     const found = await this.cdp.evaluate(FOCUS_COMPOSER);
     if (!found) throw new Error(this.appMessage('没找到 {app} 的聊天输入框：先在画面里打开 Agent 面板（或点「打开聊天」）'));
     const busy = submit && await this.cdp.evaluate(helpersCall('agentState()?.busy'));
     await this.typeText(text);
-    if (submit) await this.key('Enter');
+    if (submit) {
+      if (this.app === 'codex') {
+        if (!await this.cdp.evaluate(helpersCall('submitCodexMessage()'))) throw new Error('Codex 发送按钮当前不可用');
+      } else await this.key('Enter');
+    }
+    if (submit) files.forEach(f => { f.pending = false; });
+    await this.syncAttachments();
     if (this.mode === 'chat') setTimeout(() => this.pollChat().catch(() => {}), 300);
     return Boolean(busy);
   }
@@ -3155,7 +3235,38 @@ class Session {
     const ok = await this.cdp.evaluate(pasteImage(data, String(name || 'image').replace(/[^\w.\-]/g, '_').slice(0, 60), type));
     if (ok === null) throw new Error(this.appMessage('没找到 {app} 的聊天输入框：先在画面里打开 Agent 面板（或点「打开聊天」）'));
     if (!ok) throw new Error(this.appMessage('{app} 没有接收这张图片（当前模型可能不支持图片）'));
+    await this.syncAttachments();
     this.emit({ t: 'status', ok: true, msg: this.appMessage('图片已附加到 {app} 输入框，写好文字后点发送') });
+  }
+
+  async syncAttachments() {
+    const cdp = this.cdp, sel = this.sel;
+    if (!cdp) return;
+    const list = await cdp.evaluate(helpersCall('attachmentRows()'));
+    if (!this.liveRead(cdp, sel)) return;
+    list.push(...[...uploads.entries()].filter(([, f]) => f.pending && f.sel === this.selectionKey()).map(([id, f]) => ({ id, name: f.name, size: f.size })));
+    const json = JSON.stringify(list);
+    if (json === this.lastAttachments) return;
+    this.lastAttachments = json;
+    this.emit({ t: 'attachments', sel: this.selectionKey(), list });
+  }
+
+  async removeAttachment(id) {
+    const file = uploads.get(id);
+    if (file?.pending && file.sel === this.selectionKey()) {
+      fs.rmSync(path.dirname(file.path), { recursive: true });
+      uploads.delete(id);
+    } else {
+      const removed = await this.cdp.evaluate(helpersCall(`removeAttachment(${JSON.stringify(id)})`));
+      if (!removed) throw new Error('附件已不在当前输入框中');
+      for (let i = 0; i < 8; i++) {
+        await new Promise(r => setTimeout(r, 100));
+        const list = await this.cdp.evaluate(helpersCall('attachmentRows()'));
+        if (!list.some(f => f.id === id)) break;
+        if (i === 7) throw new Error('附件没有删除成功');
+      }
+    }
+    await this.syncAttachments();
   }
 
   async handle(msg) {
@@ -3202,6 +3313,8 @@ class Session {
       case 'subagent': return this.subagentAction(msg.name, msg.part === 'stop' ? 'stop' : 'open');
       case 'mainChat': return this.backToMain();
       case 'image': return this.attachImage(msg.data, msg.name, msg.type);
+      case 'attachments': return this.syncAttachments();
+      case 'removeAttachment': return this.removeAttachment(String(msg.id));
       case 'question': return this.answerQuestion(msg.qi, msg.oi, ['option', 'submit', 'skip'].includes(msg.part) ? msg.part : 'option', msg.text);
       case 'changes': return this.listChanges();
       case 'change': return this.changeAction(msg.i, msg.name, msg.act);
@@ -3323,6 +3436,31 @@ async function handleApi(req, res, route) {
     return json(req, res, 200, { ok: true });
   }
   if (needsTotp(device)) return json(req, res, 401, { needTotp: true, error: '需要二次验证' });
+
+  if (route === '/api/upload' && req.method === 'POST') {
+    const query = new URL(req.url, 'http://localhost').searchParams;
+    const name = path.basename(query.get('name') || '');
+    if (!/\.(txt|md|csv|json|py|js|ts|tsx|jsx|sh|yaml|yml|toml|ini|log|xml|html|css|c|cpp|h|rs|go)$/i.test(name)) return json(req, res, 400, { error: '目前支持文本、Markdown、CSV、JSON 和代码文件' });
+    const id = crypto.randomUUID();
+    const dir = path.join(DATA_DIR, 'uploads', id);
+    try {
+      const chunks = [];
+      let size = 0;
+      for await (const chunk of req) {
+        size += chunk.length;
+        if (size > 20 * 1024 * 1024) throw new Error('文件不能超过 20 MB');
+        chunks.push(chunk);
+      }
+      fs.mkdirSync(dir, { recursive: true });
+      const filePath = path.join(dir, name);
+      fs.writeFileSync(filePath, Buffer.concat(chunks));
+      uploads.set(id, { name, size, path: filePath, sel: query.get('sel') || '', deviceId: device.id, pending: true });
+      return json(req, res, 200, { id, name, size });
+    } catch (error) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      return json(req, res, 400, { error: error.message });
+    }
+  }
 
   if (route === '/api/devices') return json(req, res, 200, { devices: listDevices().map(d => deviceView(d, device)) });
   if (route === '/api/devices/remove' && req.method === 'POST') {

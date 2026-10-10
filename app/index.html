@@ -47,6 +47,14 @@
   #meters { flex: none; display: flex; flex-direction: column; gap: 3px; padding: 4px 10px 3px; background: #1e1e1e; border-bottom: 1px solid #2a2a2a; }
   #quotaMeters { display: flex; gap: 8px; min-width: 0; }
   #quotaMeters:empty { display: none; }
+  #quotaStatus { font-size: 11px; color: #c8a24a; }
+  #attachments { display: flex; gap: 6px; overflow-x: auto; }
+  #attachments:empty { display: none; }
+  .attachment { display: flex; align-items: center; gap: 6px; padding: 5px 8px; background: #303030; border-radius: 8px; }
+  .attachment img { width: 36px; height: 36px; object-fit: cover; border-radius: 4px; }
+  .attachment span { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+  .attachment button { padding: 3px 8px; }
+
   .meter { display: flex; align-items: center; gap: 5px; width: 100%; min-width: 0; margin: 0; padding: 0; background: none; border: none; color: #9a9a9a; font-size: 10px; line-height: 1.2; text-align: left; }
   #quotaMeters .meter { flex: 1; }
   .meter > span:first-child { flex: 0 1 auto; max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -277,7 +285,7 @@
   <section id="chatView" class="view active">
     <div id="meters">
       <button class="meter" id="meterCtx" type="button"><span>上下文</span><span class="track"><i id="meterCtxFill"></i></span><b id="meterCtxPct">–</b></button>
-      <div id="quotaMeters"></div>
+      <div id="quotaMeters"></div><span id="quotaStatus"></span>
     </div>
     <div id="list">
       <button id="older">↑ 加载更早的消息</button>
@@ -335,10 +343,12 @@
     <button id="pickHistory" hidden>历史</button>
     <button id="newChat">＋ 新建</button>
   </div>
+  <div id="attachments"></div>
   <div class="row">
     <textarea id="text" rows="1" placeholder="发给 Agent…" enterkeyhint="send"></textarea>
     <button id="img" title="附加图片" aria-label="附加图片"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/></svg></button>
     <input id="imgFile" type="file" accept="image/*" hidden>
+    <input id="docFile" type="file" accept=".txt,.md,.csv,.json,.py,.js,.ts,.tsx,.jsx,.sh,.yaml,.yml,.toml,.ini,.log,.xml,.html,.css,.c,.cpp,.h,.rs,.go" hidden>
     <button id="mic" title="语音输入" aria-label="语音输入"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
     <button id="send">发送</button>
   </div>
@@ -568,7 +578,7 @@ function applySelection(m, clearChat = true) {
     windowId: m.windowId ?? here.windowId ?? '',
     threadId: m.threadId ?? here.threadId ?? '',
   });
-  if (changed) restoreDraft();
+  if (changed) { restoreDraft(); $('attachments').innerHTML = ''; send({ t: 'attachments' }); }
   if (m.project) currentProject = m.project;
   updateTitle();
   if (clearChat && changed) renderChat(null);
@@ -607,11 +617,12 @@ async function resolveBase() {
 }
 
 async function api(path, opts = {}) {
-  const headers = { 'content-type': 'application/json', ...(store.get('token') ? { authorization: 'Bearer ' + store.get('token') } : {}) };
+  const { timeout = 10000, ...request } = opts;
+  const headers = { 'content-type': 'application/json', ...(store.get('token') ? { authorization: 'Bearer ' + store.get('token') } : {}), ...opts.headers };
   const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), 10000);
+  const timer = setTimeout(() => ctl.abort(), timeout);
   try {
-    return await fetch(base + path, { ...opts, headers, signal: ctl.signal, cache: 'no-store' });
+    return await fetch(base + path, { ...request, headers, signal: ctl.signal, cache: 'no-store' });
   } finally {
     clearTimeout(timer);
   }
@@ -932,6 +943,7 @@ function connect() {
       if (drafts.get(m.draft) === m.text) drafts.delete(m.draft);
       if (draftKey() === m.draft && text.value === m.text) { text.value = ''; autosize(); }
     }
+    else if (m.t === 'attachments') { if (m.sel === viewSel) renderAttachments(m.list); }
     else if (m.t === 'chat') { if (!m.sel || !viewSel || m.sel === viewSel) renderChat(m.chat); }
     else if (m.t === 'thread') applySelection(m);
     else if (m.t === 'frame') onFrame(m);
@@ -972,8 +984,7 @@ function connect() {
     else if (m.t === 'settings') { finishPending(['正在读取设置…', '正在修改…']); showSettings(m.sections || []); }
     else if (m.t === 'usage') {
       if (m.sel && viewSel && m.sel !== viewSel) return;
-      if (m.error) status(m.error, false);
-      else if (m.missing) status('没有额度数据');
+      if (m.missing) status('没有额度数据');
       renderQuota(m);
       if (!m.cached) finishPending(['正在读取额度…']);
     }
@@ -1223,7 +1234,9 @@ const quotaCache = new Map();
 const quotaKey = () => [currentComputer()?.id || '', ...viewSel.split('|').slice(0, 2)].join('|');
 function renderQuota(m) {
   if ('context' in m) renderContext(m.context);
-  if (m.error) { $('quotaMeters').title += ' · ' + m.error; status('额度刷新失败：' + m.error, false); return; }
+  if (m.error) { $('quotaStatus').textContent = m.error; $('quotaStatus').title = m.detail || m.error; if (!m.automatic) status('额度刷新失败：' + m.error, false); return; }
+  if (!m.cached || m.updated > (quotaCache.get(quotaKey())?.updated || 0)) $('quotaStatus').textContent = '';
+
   if (m.loading) return;
   if (!('quota' in m) && !('limits' in m) && !('bars' in m)) {
     if (!$('quotaMeters').children.length) $('quotaMeters').innerHTML = '<button class="meter" onclick="status(\'正在读取额度…\');send({t:\'usage\'})">点击读取额度</button>';
@@ -1790,7 +1803,8 @@ function renderChat(chat) {
       if (el.offsetTop + el.offsetHeight > list.scrollTop) { anchor = el.dataset.i; anchorTop = el.offsetTop - list.scrollTop; break; }
     }
   }
-  const els = chat.items.map(it => {
+  const visibleItems = chat.items.filter(it => !(it.k === 'tool' && it.done));
+  const els = visibleItems.map(it => {
     const key = JSON.stringify(it);
     const hit = cache.get(it.i);
     if (it.k === 'thinking' && hit?.el) {
@@ -1807,7 +1821,7 @@ function renderChat(chat) {
   const liveEls = new Set(els);
   for (const child of [...itemsEl.children]) if (!liveEls.has(child)) child.remove();
   els.forEach((el, i) => { if (itemsEl.children[i] !== el) itemsEl.insertBefore(el, itemsEl.children[i] || null); });
-  const live = new Set(chat.items.map(it => it.i));
+  const live = new Set(visibleItems.map(it => it.i));
   for (const k of cache.keys()) if (!live.has(k)) cache.delete(k);
 
   $('actionBar').innerHTML = buttonsHtml(chat.global, 'g');
@@ -2520,7 +2534,7 @@ text.addEventListener('blur', () => {
 });
 $('send').onclick = () => {
   const v = text.value;
-  if (!v.trim()) return;
+  if (!v.trim() && !$('attachments').children.length) return;
   saveDraft();
   if (mode === 'terminal') send({ t: 'termSend', text: v, draft: activeDraft });
   else send({ t: 'send', text: v, submit: true, draft: activeDraft });
@@ -2578,7 +2592,34 @@ async function shrinkImage(file) {
   return new File([blob], file.name.replace(/\.\w+$/, '') + '.jpg', { type: 'image/jpeg' });
 }
 
-$('img').onclick = () => $('imgFile').click();
+function renderAttachments(list) {
+  $('attachments').innerHTML = list.map(f => `<div class="attachment">${f.preview ? `<img src="${esc(f.preview)}" alt="">` : ''}<span title="${esc(f.name)}">${esc(f.name)}${f.size != null ? ` (${Math.ceil(f.size / 1024)} KB)` : ''}</span><button data-remove-attachment="${esc(f.id)}" aria-label="删除 ${esc(f.name)}">×</button></div>`).join('');
+}
+$('attachments').onclick = e => {
+  const b = e.target.closest('[data-remove-attachment]');
+  if (b) send({ t: 'removeAttachment', id: b.dataset.removeAttachment });
+};
+$('img').title = $('img').ariaLabel = '添加附件';
+$('img').onclick = () => {
+  openSheet('attachment', '<h3>添加附件</h3><button class="opt" id="attachPhoto">图片</button><button class="opt" id="attachDocument">文件</button>');
+  $('attachPhoto').onclick = () => { closeSheet(); $('imgFile').click(); };
+  $('attachDocument').onclick = () => { closeSheet(); $('docFile').click(); };
+};
+$('docFile').onchange = async () => {
+  const file = $('docFile').files[0];
+  $('docFile').value = '';
+  if (!file) return;
+  if (file.size > 20 * 1024 * 1024) return status('文件不能超过 20 MB', false);
+  const sel = viewSel;
+  status('正在上传文件…');
+  try {
+    const response = await api('/api/upload?name=' + encodeURIComponent(file.name) + '&sel=' + encodeURIComponent(sel), { method: 'POST', body: file, headers: { 'content-type': 'application/octet-stream' }, timeout: 60000 });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error);
+    if (sel === viewSel) send({ t: 'attachments' });
+    status('文件已上传，写好文字后点发送');
+  } catch (error) { status(error.name === 'AbortError' ? '文件上传超时' : error.message, false); }
+};
 $('imgFile').onchange = async () => {
   const file = $('imgFile').files[0];
   $('imgFile').value = '';
