@@ -65,6 +65,7 @@
   .human { display: flex; justify-content: flex-end; }
   .human .bubble { max-width: 88%; background: #264f78; color: #fff; padding: 8px 12px; border-radius: 14px 14px 4px 14px; white-space: pre-wrap; }
   .assistant { padding: 2px 2px; }
+  .quotaUpdated { font-size: 10px; color: #999; align-self: center; }
   .assistant a { color: #6cb6ff; overflow-wrap: anywhere; }
   .codebox .openLink { display: inline-block; margin: 0 0 8px 8px; }
   .assistant p { margin: 0 0 .6em; }
@@ -908,7 +909,7 @@ function connect() {
       send({ t: 'visible', v: document.visibilityState === 'visible' });
       send({ t: 'lang', v: I18N.lang });
       clearInterval(usageTimer);
-      usageTimer = setInterval(() => { if (authed) send({ t: 'usage', automatic: true }); }, 10 * 60 * 1000);
+      usageTimer = setInterval(() => { if (authed && document.visibilityState === 'visible') send({ t: 'usage', automatic: true }); }, 60 * 1000);
       syncNotify();
       setTimeout(checkAppUpdate, 3000);
     }
@@ -954,10 +955,11 @@ function connect() {
     else if (m.t === 'docs') { finishPending(['正在读取文档…']); showDocs(m); }
     else if (m.t === 'settings') { finishPending(['正在读取设置…', '正在修改…']); showSettings(m.sections || []); }
     else if (m.t === 'usage') {
+      if (m.sel && viewSel && m.sel !== viewSel) return;
       if (m.error) status(m.error, false);
       else if (m.missing) status('没有额度数据');
       renderQuota(m);
-      finishPending(['正在读取额度…']);
+      if (!m.cached) finishPending(['正在读取额度…']);
     }
     else if (m.t === 'menu') showMenu(m.kind, m.items, m.max, m.fusion);
     else if (m.t === 'params') showParams(m);
@@ -1211,6 +1213,7 @@ function renderQuota(m) {
     const num = n == null ? (b.value ?? '–') : (basis === 'remaining' ? `剩余 ${n}%` : `${n}%`);
     return `<button class="meter" type="button" title="${esc(b.reset || '')}"><span>${esc(b.label)}</span><span class="track"><i class="${meterFill(n, basis)}" style="width:${n ?? 0}%"></i></span><b>${esc(String(num))}</b></button>`;
   }).join('');
+  if (when) $('quotaMeters').insertAdjacentHTML('beforeend', `<span class="quotaUpdated">${m.cached ? '缓存 ' : ''}${esc(when)}</span>`);
   $('quotaMeters').querySelectorAll('button').forEach(btn => btn.onclick = () => { status('正在读取额度…'); send({ t: 'usage' }); });
 }
 let usageTimer = null;
@@ -1371,7 +1374,10 @@ function openWin(id) {
 window.openWin = openWin;
 navigator.serviceWorker?.addEventListener('message', e => { if (e.data?.openWin) openWin(e.data.openWin); });
 document.addEventListener('visibilitychange', () => {
-  if (authed) send({ t: 'visible', v: document.visibilityState === 'visible' });
+  if (authed) {
+    send({ t: 'visible', v: document.visibilityState === 'visible' });
+    if (document.visibilityState === 'visible') send({ t: 'usage', automatic: true });
+  }
 });
 
 $('sheet').addEventListener('click', async e => {
