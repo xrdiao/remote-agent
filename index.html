@@ -1803,7 +1803,8 @@ function renderChat(chat) {
       if (el.offsetTop + el.offsetHeight > list.scrollTop) { anchor = el.dataset.i; anchorTop = el.offsetTop - list.scrollTop; break; }
     }
   }
-  const els = chat.items.map(it => {
+  const visibleItems = chat.items.filter(it => !(it.k === 'tool' && it.done));
+  const els = visibleItems.map(it => {
     const key = JSON.stringify(it);
     const hit = cache.get(it.i);
     if (it.k === 'thinking' && hit?.el) {
@@ -1820,7 +1821,7 @@ function renderChat(chat) {
   const liveEls = new Set(els);
   for (const child of [...itemsEl.children]) if (!liveEls.has(child)) child.remove();
   els.forEach((el, i) => { if (itemsEl.children[i] !== el) itemsEl.insertBefore(el, itemsEl.children[i] || null); });
-  const live = new Set(chat.items.map(it => it.i));
+  const live = new Set(visibleItems.map(it => it.i));
   for (const k of cache.keys()) if (!live.has(k)) cache.delete(k);
 
   $('actionBar').innerHTML = buttonsHtml(chat.global, 'g');
