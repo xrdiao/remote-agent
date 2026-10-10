@@ -65,6 +65,8 @@
   .human { display: flex; justify-content: flex-end; }
   .human .bubble { max-width: 88%; background: #264f78; color: #fff; padding: 8px 12px; border-radius: 14px 14px 4px 14px; white-space: pre-wrap; }
   .assistant { padding: 2px 2px; }
+  .assistant a { color: #6cb6ff; overflow-wrap: anywhere; }
+  .codebox .openLink { display: inline-block; margin: 0 0 8px 8px; }
   .assistant p { margin: 0 0 .6em; }
   .assistant ul, .assistant ol { margin: 0 0 .6em; padding-left: 1.3em; }
   .assistant h1, .assistant h2, .assistant h3, .assistant h4 { font-size: 1.05em; margin: .8em 0 .4em; }
@@ -688,9 +690,9 @@ async function explainOffline() {
   try { host = new URL(base).host; } catch {}
   if (!base || info?.self) return '连不上电脑：这个页面就是电脑自己提供的，服务没有响应。';
   const kind = await probeCloud(base);
-  if (kind === 'edge') return '云端能到，电脑没接上。\n手机能打开 Cloudflare 隧道，但这台电脑的服务没有正常返回。可能是关机、睡眠，或中继没在跑。\n' + host;
-  if (kind === 'timeout') return '连不上云端：访问隧道地址超时。\nGitHub 页面能打开，所以是手机到 Cloudflare 这段不通，还不能判断电脑是否开机。\n' + host;
-  return '连不上云端：手机打不开隧道地址。\nGitHub 页面能打开，所以是手机到 Cloudflare 这段不通，还不能判断电脑是否开机。\n' + host;
+  if (kind === 'edge') return '隧道地址有响应，但应用连接失败。\n可能是服务、认证、跨域或实时连接异常，尚不能确定电脑是否离线。\n' + host;
+  if (kind === 'timeout') return '访问隧道地址超时，将自动重试。\n可能是临时网络波动或隧道响应慢，尚不能确定故障位置。\n' + host;
+  return '本次隧道请求失败，将自动重试。\n可能与网络、DNS、证书或隧道状态有关，尚不能确定故障位置。\n' + host;
 }
 let offlineGen = 0;
 function publishedComputers() {
@@ -1863,6 +1865,24 @@ function typesetMath(root) {
   });
 }
 function dressMessage(el) {
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) if (!walker.currentNode.parentElement.closest('a, pre, code, textarea, .math')) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    const parts = node.textContent.split(/(https?:\/\/[^\s<>"`]+)/g);
+    if (parts.length === 1) continue;
+    const fragment = document.createDocumentFragment();
+    parts.forEach((part, i) => {
+      if (i % 2 === 0) fragment.append(part);
+      else {
+        const url = part.replace(/[.,;!?，。；！？]+$/, '');
+        const a = document.createElement('a'); a.href = url; a.textContent = url;
+        fragment.append(a, part.slice(url.length));
+      }
+    });
+    node.replaceWith(fragment);
+  }
+
   el.querySelectorAll('.codebox').forEach(box => {
     if (box.querySelector('.copy')) return;
     const btn = document.createElement('button');
@@ -1870,12 +1890,20 @@ function dressMessage(el) {
     btn.className = 'copy';
     btn.textContent = '复制';
     box.appendChild(btn);
+    const url = blockText(box.querySelector('pre')).trim();
+    if (/^https?:\/\/\S+$/i.test(url)) {
+      const a = document.createElement('a'); a.href = url; a.textContent = '打开'; a.className = 'openLink'; box.append(a);
+    }
   });
   el.querySelectorAll('code').forEach(code => {
     if (code.closest('pre') || code.dataset.file) return;
     const t = code.textContent.trim();
+    if (/^https?:\/\/\S+$/i.test(t) && !code.closest('a')) {
+      const a = document.createElement('a'); a.href = t; a.textContent = t; code.replaceChildren(a); return;
+    }
     if (t.length >= 8 || /\s/.test(t)) code.classList.add('copyable');
   });
+  el.querySelectorAll('a[href]').forEach(a => { a.target = inApp ? '_self' : '_blank'; a.rel = 'noopener noreferrer'; });
   typesetMath(el);
 }
 window.addEventListener('load', () => typesetMath($('items')));
@@ -1908,7 +1936,7 @@ async function copyText(text, btn, terminal = true) {
 }
 document.addEventListener('click', async e => {
   const copyBtn = e.target.closest('.copy');
-  const copyCode = !copyBtn && e.target.closest('code.copyable');
+  const copyCode = !copyBtn && !e.target.closest('a') && e.target.closest('code.copyable');
   if (copyBtn || copyCode) {
     e.preventDefault();
     const pre = copyBtn?.parentElement?.querySelector('pre');
