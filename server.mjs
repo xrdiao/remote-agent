@@ -9,7 +9,7 @@ import { WebSocketServer } from 'ws';
 import qrcode from 'qrcode-terminal';
 import { workspaces, workspaceForTitle, fileSize, readFile, parseRef, listProject, locateWritable, writeTextFile } from './files.mjs';
 import {
-  DATA_DIR, publishRecord, computerId, computerName, createPairing, pairingValid, consumePairing, listDevices, addDevice, findDevice, updateDevice,
+  DATA_DIR, publishRecord, opensEntry, computerId, computerName, createPairing, pairingValid, consumePairing, listDevices, addDevice, findDevice, updateDevice,
   removeDevice, totpConfig, verifyTotp, needsTotp, saveState, readState, appBase,
 } from './auth.mjs';
 import { pushPublicKey, openEventStream, closeEventStreams, addViewer, removeViewer, deliver, startWatcher } from './notify.mjs';
@@ -2760,15 +2760,20 @@ async function readUrlDoc() {
     const meta = JSON.parse(await run('gh', ['api', `repos/${PUBLISH_REPO}/contents/url.json${q}`]));
     const text = Buffer.from(String(meta.content || '').replace(/\n/g, ''), 'base64').toString('utf8');
     return { sha: meta.sha, json: JSON.parse(text) };
-  } catch {
-    return { sha: null, json: null };
+  } catch (e) {
+    if (/404|Not Found/i.test(String(e.message || e))) return { sha: null, json: null };
+    throw e;
   }
 }
 
 function registryWith(existing, mine) {
-  const others = existing?.v === 3 && Array.isArray(existing.computers)
-    ? existing.computers.filter(c => c && c.id && c.id !== mine.id)
-    : [];
+  let others = [];
+  if (existing?.v === 3 && Array.isArray(existing.computers)) {
+    others = existing.computers.filter(c => c && c.id && c.id !== mine.id && c.iv && c.data);
+  } else if (existing?.v === 2 && existing.iv && existing.data && !opensEntry(existing)) {
+    const id = crypto.createHash('sha256').update(String(existing.data)).digest().subarray(0, 8).toString('hex');
+    others = [{ id, name: existing.name || '另一台电脑', iv: existing.iv, data: existing.data, updated: existing.updated }];
+  }
   const computers = [...others, mine].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   return { v: 3, computers };
 }

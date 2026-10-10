@@ -67,6 +67,19 @@ export function encryptUrl(url) {
   return { v: 2, iv: iv.toString('base64'), data: data.toString('base64'), updated: new Date().toISOString() };
 }
 
+export function opensEntry(entry) {
+  try {
+    const iv = Buffer.from(entry.iv, 'base64');
+    const raw = Buffer.from(entry.data, 'base64');
+    if (raw.length < 17) return false;
+    const decipher = crypto.createDecipheriv('aes-256-gcm', urlKey(), iv);
+    decipher.setAuthTag(raw.subarray(raw.length - 16));
+    decipher.update(raw.subarray(0, raw.length - 16));
+    decipher.final();
+    return true;
+  } catch { return false; }
+}
+
 // One public url.json holds every computer. Each entry is encrypted with that computer's own key.
 export function publishRecord(url) {
   const slot = encryptUrl(url);

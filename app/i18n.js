@@ -106,6 +106,10 @@ const I18N = (() => {
     '选择要连接的电脑': 'Choose a computer to connect',
     '这台电脑的地址对不上当前发布的记录，配对还在，可以换一台或稍后重试': 'This computer\'s address does not match the published record. Pairing is kept; switch computers or try again shortly.',
     '这台电脑上的配对已失效，已从列表移除。可以换一台，或重新配对。': 'Pairing on this computer is no longer valid, so it was removed from the list. Switch computers, or pair again.',
+    '这台电脑不认当前配对。记录还在，可以换一台，或重新配对这台。': 'This computer does not accept the saved pairing. The record is kept; switch computers, or pair this one again.',
+    '还没在这只手机上配对。': 'is not paired on this phone yet.',
+    '已配对的电脑会保留。': 'Computers you already paired stay.',
+    '在那台电脑上运行 npm run pair，把链接粘贴到下面。已配对的电脑会保留。': 'Run npm run pair on that computer and paste the link below. Computers you already paired stay.',
     '＋ 配对另一台电脑': '+ Pair another computer',
     '在那台电脑上运行 npm run pair，把链接粘贴过来。已有的电脑会保留。': 'Run npm run pair on that computer and paste the link. Computers you already paired stay.',
     '配对另一台电脑。\n在那台电脑上运行 npm run pair，把链接粘贴到下面。已有的电脑会保留。': 'Pair another computer.\nRun npm run pair on that computer and paste the link below. Computers you already paired stay.',
@@ -175,6 +179,7 @@ const I18N = (() => {
 
   // Strings with a variable part.
   const PATTERNS = [
+    [/^「(.+)」还没在这只手机上配对。$/, '“$1” is not paired on this phone yet.'],
     [/^电脑端地址更新于 (.+)$/, 'Computer address updated $1'],
     [/^配对于 (.+) · 最近使用 (.+)$/, 'Paired $1 · last used $2'],
     [/^更新安卓 App（v(.+) → v(.+)）$/, 'Update the Android app (v$1 → v$2)'],

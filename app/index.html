@@ -650,20 +650,28 @@ async function explainOffline() {
   return '连不上云端：手机打不开隧道地址。\nGitHub 页面能打开，所以是手机到 Cloudflare 这段不通，还不能判断电脑是否开机。\n' + host;
 }
 let offlineGen = 0;
+function publishedComputers() {
+  if (info?.v === 3 && Array.isArray(info.computers)) return info.computers.filter(c => c && c.id);
+  return [];
+}
+function unseenPublished() {
+  const saved = loadComputers();
+  return publishedComputers().filter(p => !saved.some(c => c.id && c.id === p.id));
+}
 function offerComputers(msg, { err = true } = {}) {
-  const many = loadComputers().length > 1;
-  gate({ msg, err, retry: true, repair: true, computers: many });
+  const many = loadComputers().length > 1 || unseenPublished().length > 0;
+  gate({ msg, err, retry: true, repair: true, computers: many || loadComputers().length > 0 });
   if (many) showComputers(msg);
   else autoRetry();
 }
 async function showOffline() {
   const gen = ++offlineGen;
-  const many = loadComputers().length > 1;
+  const many = loadComputers().length > 1 || unseenPublished().length > 0;
   if (!many) autoRetry();
-  gate({ msg: '正在判断连不上的是云端还是电脑…', computers: many });
+  gate({ msg: '正在判断连不上的是云端还是电脑…', computers: many || loadComputers().length > 0 });
   const msg = await explainOffline();
   if (gen !== offlineGen) return;
-  gate({ msg, err: true, retry: true, repair: true, computers: many });
+  gate({ msg, err: true, retry: true, repair: true, computers: many || loadComputers().length > 0 });
   if (many) showComputers(msg);
 }
 
@@ -678,8 +686,9 @@ async function pair(totp) {
   }
   if (r.ok) {
     const id = body.id || await computerIdFromKey(pending.key);
-    const list = loadComputers().filter(c => c.id !== id && c.key !== pending.key);
-    list.push({ id, name: body.name || '电脑', key: pending.key, token: body.token, win: '' });
+    const prev = loadComputers().find(c => c.key === pending.key);
+    const list = loadComputers().filter(c => c.key !== pending.key);
+    list.push({ id, name: body.name || prev?.name || '电脑', key: pending.key, token: body.token, win: prev?.win || '' });
     saveComputers(list, pending.key);
     store.set('window', null);
     pending = null;
@@ -743,14 +752,12 @@ async function boot() {
     return showOffline();
   }
   if (!meRes.ok || !me || typeof me.paired !== 'boolean') return showOffline();
-  if (!me.paired) {
+  if (!me.paired) return offerComputers('这台电脑不认当前配对。记录还在，可以换一台，或重新配对这台。');
+  if (me.id || me.name) {
     const cur = currentComputer();
-    const list = loadComputers().filter(c => c.key !== cur?.key);
-    saveComputers(list, '');
-    if (!list.length) return showUnpaired('这台设备已被移除，请重新配对');
-    return offerComputers('这台电脑上的配对已失效，已从列表移除。可以换一台，或重新配对。');
+    const same = cur && (!me.id || me.id === cur.id || me.id === await computerIdFromKey(cur.key));
+    if (cur && same) rememberComputer({ ...cur, id: me.id || cur.id, name: me.name || cur.name || '电脑' });
   }
-  if (me.id || me.name) rememberComputer({ ...currentComputer(), id: me.id || currentComputer()?.id, name: me.name || currentComputer()?.name || '电脑' });
   if (me.needTotp) return showTotp(verifyTotp);
   connect();
 }
@@ -1263,6 +1270,7 @@ $('sheet').addEventListener('click', async e => {
     await post('/api/devices/remove', { id: b.dataset.remove }).catch(() => {});
     showDevices();
   }
+  else if (b.dataset.computerPub != null) return pairPublished(b.dataset.computerName);
   else if (b.dataset.computerI != null) { closeSheet(); return useComputer(b.dataset.computerI); }
   else if (b.dataset.computerDel != null) return removeComputer(b.dataset.computerDel);
   else if (act === 'logout') {
@@ -1277,9 +1285,24 @@ $('sheet').addEventListener('click', async e => {
 function showComputers(note = '') {
   const list = loadComputers();
   const cur = currentComputer();
-  const rows = list.map((c, i) => `<div class="optRow"><button class="opt ${cur && c.key === cur.key ? 'cur' : ''}" data-computer-i="${i}"><span class="lbl">${esc(c.name || '电脑')}${cur && c.key === cur.key ? '<span class="sub">当前</span>' : ''}</span></button><button class="paramBtn" data-computer-del="${i}">删除</button></div>`).join('');
+  const saved = list.map((c, i) => {
+    const pub = publishedComputers().find(p => p.id === c.id);
+    const name = (pub?.name && (c.name === '电脑' || c.name === '这台电脑')) ? pub.name : (c.name || pub?.name || '电脑');
+    const here = cur && c.key === cur.key;
+    return `<div class="optRow"><button class="opt ${here ? 'cur' : ''}" data-computer-i="${i}"><span class="lbl">${esc(name)}${here ? '<span class="sub">当前</span>' : ''}</span></button><button class="paramBtn" data-computer-del="${i}">删除</button></div>`;
+  }).join('');
+  const extra = unseenPublished().map(p => `<button class="opt" data-computer-pub="${esc(p.id)}" data-computer-name="${esc(p.name || '电脑')}"><span class="lbl">${esc(p.name || '电脑')}<span class="sub">未配对</span></span></button>`).join('');
   const hint = note ? `<div class="hint">${esc(note).replace(/\n/g, '<br>')}</div>` : '';
-  openSheet('computers', `<h3>电脑</h3>${hint}${rows || '<div class="hint">还没有配对的电脑。</div>'}<button class="opt" data-act="addComputer"><span class="lbl">＋ 配对另一台电脑</span></button><div class="hint">在那台电脑上运行 npm run pair，把链接粘贴过来。已有的电脑会保留。</div>`);
+  openSheet('computers', `<h3>电脑</h3>${hint}${saved}${extra || (saved ? '' : '<div class="hint">还没有配对的电脑。</div>')}<button class="opt" data-act="addComputer"><span class="lbl">＋ 配对另一台电脑</span></button><div class="hint">在那台电脑上运行 npm run pair，把链接粘贴过来。已配对的电脑会保留。</div>`);
+}
+function pairPublished(name) {
+  closeSheet();
+  gate({
+    msg: `「${name || '这台电脑'}」还没在这只手机上配对。\n在那台电脑上运行 npm run pair，把链接粘贴到下面。已配对的电脑会保留。`,
+    input: { placeholder: '粘贴配对链接', button: '配对', submit: pastePair },
+    retry: '返回',
+    onRetry: () => showComputers(),
+  });
 }
 function addComputer() {
   closeSheet();
