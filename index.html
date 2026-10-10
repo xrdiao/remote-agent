@@ -525,6 +525,18 @@ function rememberComputer(comp) {
   else list.push(comp);
   return saveComputers(list, comp.key);
 }
+function applySelection(m, clearChat = true) {
+  const changed = (m.sel || '') !== viewSel;
+  if (changed) { viewSel = m.sel || ''; cache.clear(); }
+  const here = currentComputer();
+  if (here) rememberComputer({
+    ...here,
+    win: m.id || here.win,
+    windowId: m.windowId ?? here.windowId ?? '',
+    threadId: m.threadId ?? here.threadId ?? '',
+  });
+  if (clearChat && changed) renderChat(null);
+}
 async function decryptEntry(keyText, entry) {
   const key = await crypto.subtle.importKey('raw', b64u(keyText), 'AES-GCM', false, ['decrypt']);
   const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64(entry.iv) }, key, b64(entry.data));
@@ -839,14 +851,14 @@ function connect() {
       setTimeout(checkAppUpdate, 3000);
     }
     else if (m.t === 'chat') { if (!m.sel || !viewSel || m.sel === viewSel) renderChat(m.chat); }
+    else if (m.t === 'thread') applySelection(m);
     else if (m.t === 'frame') onFrame(m);
     else if (m.t === 'panel') { panel = m.rect; updateTermEmpty(); layoutStage(); applyQuality(); }
     else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; if (sheetKind === 'windows') showWindows(); }
     else if (m.t === 'attached') {
-      if ((m.sel || '') !== viewSel) { viewSel = m.sel || ''; cache.clear(); }
+      if (m.keepQuota) { applySelection(m); return; }
       store.set('window', m.id);
-      const here = currentComputer();
-      if (here) rememberComputer({ ...here, win: m.id, windowId: m.windowId || '', threadId: m.threadId || '' });
+      applySelection(m, false);
       currentWindow = m.id;
       if (m.closed) { status('这个窗口已经关闭，请重新选择', false); send({ t: 'agents' }); return; }
       $('titleText').textContent = m.app === 'devin' ? 'Devin agent' : m.app === 'codex' ? 'Codex' : winLabel(m.title).name;
@@ -951,7 +963,7 @@ function showAgents(list) {
     g.items.push(a);
   }
   const rows = groups.map(g => (g.name ? `<div class="pSec">${esc(g.name)}</div>` : '') + g.items.map(a =>
-    `<button class="opt ${a.current ? 'cur' : ''}" data-agent="${esc(a.id)}"><span class="lbl">${esc(a.title)}</span>${a.running && !a.current ? '<span class="tag">运行中</span>' : ''}${a.current ? '<span class="tag">当前</span>' : ''}</button>`).join('')).join('');
+    `<button class="opt ${a.current ? 'cur' : ''}" data-agent="${esc(a.id)}">${a.ui ? esc(a.title) : `<span class="lbl">${esc(a.title)}</span>`}${a.running && !a.current ? '<span class="tag">运行中</span>' : ''}${a.current ? '<span class="tag">当前</span>' : ''}</button>`).join('')).join('');
   openSheet('agents', `<h3>切换 Agent</h3>${rows || `<div class="hint">${esc(appMessage('没有找到 {app} 的 Agent。请在电脑上打开对应的会话窗口。'))}</div>`}`);
 }
 $('title').onclick = () => { send({ t: 'windows' }); showWindows(); };
