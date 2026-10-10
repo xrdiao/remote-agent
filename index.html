@@ -1044,7 +1044,8 @@ function showTerminals(list) {
   openSheet('terminals', `<h3>终端</h3>${rows || '<div class="hint">还没有终端。</div>'}<button class="opt" data-act="newTerm"><span class="lbl">＋ 新建终端</span></button>`);
 }
 function agentButton(a) {
-  const label = a.ui ? esc(a.title) : `<span class="lbl">${esc(a.title)}</span>`;
+  const folder = currentAppName === 'Codex' ? [a.window, a.group].filter(Boolean).join(' · ') : '';
+  const label = a.ui ? esc(a.title) : `<span class="lbl">${esc(a.title)}${folder ? `<span class="sub">${esc(folder)}</span>` : ''}</span>`;
   const tags = `${a.running && !a.current ? '<span class="tag">运行中</span>' : ''}${a.current ? '<span class="tag">当前</span>' : ''}`;
   return `<button class="opt ${a.current ? 'cur' : ''}" data-agent="${esc(a.id)}">${label}${tags}</button>`;
 }
@@ -1053,6 +1054,10 @@ function foldSection(name, inner, open, count) {
   return `<button type="button" class="fold" data-fold aria-expanded="${open ? 'true' : 'false'}"><span class="lbl">${esc(name)}</span><span class="tag">${count}</span><span class="chev">${open ? '▾' : '▸'}</span></button><div class="foldBody"${open ? '' : ' hidden'}>${inner}</div>`;
 }
 function showAgents(list) {
+  if (currentAppName === 'Codex') {
+    const sorted = [...list].sort((a, b) => Number(!!b.ui) - Number(!!a.ui) || (b.lastUsed || 0) - (a.lastUsed || 0));
+    return openSheet('agents', `<h3>切换 Agent</h3>${sorted.map(agentButton).join('') || `<div class="hint">${esc(appMessage('没有找到 {app} 的 Agent。请在电脑上打开对应的会话窗口。'))}</div>`}`);
+  }
   const order = [];
   const byWindow = new Map();
   for (const a of list) {
