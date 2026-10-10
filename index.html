@@ -990,10 +990,11 @@ function connect() {
 let sheetKind = null;
 let pendingAgentOpen = '';
 const agentOpened = JSON.parse(store.get('agent-opened') || '{}');
-const agentOpenedKey = thread => `${currentComputer()?.id || ''}|${thread}`;
+const agentOpenedKey = thread => `${currentComputer()?.id || ''}|${currentAppName}|${thread}`;
 function rememberAgentOpen(m) {
   const target = /^(?:thread|win|new):([^:]+)(?::(.+))?$/.exec(pendingAgentOpen);
-  if (!m.closed && m.app === 'codex' && target && m.windowId === target[1] && m.threadId && (!target[2] || m.threadId === target[2])) {
+  const matched = m.app === 'codex' ? target && m.windowId === target[1] && (!target[2] || m.threadId === target[2]) : pendingAgentOpen === m.threadId;
+  if (!m.closed && pendingAgentOpen && matched && m.threadId) {
     agentOpened[agentOpenedKey(m.threadId)] = Date.now();
     store.set('agent-opened', JSON.stringify(agentOpened));
     pendingAgentOpen = '';
@@ -1067,7 +1068,7 @@ function foldSection(name, inner, open, count) {
 }
 function showAgents(list) {
   const newest = items => Math.max(0, ...items.map(a => a.lastUsed || 0));
-  if (currentAppName === 'Codex') list = list.map(a => ({ ...a, lastUsed: Math.max(a.lastUsed || 0, agentOpened[agentOpenedKey(a.id.split(':').slice(2).join(':'))] || 0) }))
+  list = list.map(a => ({ ...a, lastUsed: Math.max(a.lastUsed || 0, agentOpened[agentOpenedKey(currentAppName === 'Codex' ? a.id.split(':').slice(2).join(':') : a.id)] || 0) }))
     .sort((a, b) => (b.lastUsed || 0) - (a.lastUsed || 0));
   const order = [];
   const byWindow = new Map();
@@ -1076,7 +1077,7 @@ function showAgents(list) {
     if (!byWindow.has(win)) { byWindow.set(win, []); order.push(win); }
     byWindow.get(win).push(a);
   }
-  if (currentAppName === 'Codex') order.sort((a, b) => newest(byWindow.get(b)) - newest(byWindow.get(a)));
+  order.sort((a, b) => newest(byWindow.get(b)) - newest(byWindow.get(a)));
   const anyCurrent = list.some(a => a.current);
   const rows = order.map((win, index) => {
     const items = byWindow.get(win);
@@ -1088,10 +1089,8 @@ function showAgents(list) {
       if (!g) groups.push(g = { name: a.group, items: [] });
       g.items.push(a);
     }
-    if (currentAppName === 'Codex') {
-      loose.sort((a, b) => Number(!!b.ui) - Number(!!a.ui));
-      groups.sort((a, b) => newest(b.items) - newest(a.items));
-    }
+    loose.sort((a, b) => Number(!!b.ui) - Number(!!a.ui));
+    groups.sort((a, b) => newest(b.items) - newest(a.items));
     const body = loose.map(agentButton).join('') + groups.map(g => foldSection(
       g.name, g.items.map(agentButton).join(''), g.items.some(a => a.current), g.items.length,
     )).join('');
@@ -1682,7 +1681,7 @@ function thinkingTitle(raw) {
 const thinkingPref = new Map();
 function thinkingWantOpen(it) {
   if (thinkingPref.has(it.i)) return thinkingPref.get(it.i);
-  return !!it.live;
+  return !!it.live || (it.t || '').startsWith('工作过程\n');
 }
 function paintThinking(el, it) {
   const open = thinkingWantOpen(it);
