@@ -1235,7 +1235,7 @@ const quotaKey = () => [currentComputer()?.id || '', ...viewSel.split('|').slice
 function renderQuota(m) {
   if ('context' in m) renderContext(m.context);
   if (m.error) { $('quotaStatus').textContent = m.error; $('quotaStatus').title = m.detail || m.error; if (!m.automatic) status('额度刷新失败：' + m.error, false); return; }
-  if (!m.cached) $('quotaStatus').textContent = '';
+  if (!m.cached || m.updated > (quotaCache.get(quotaKey())?.updated || 0)) $('quotaStatus').textContent = '';
 
   if (m.loading) return;
   if (!('quota' in m) && !('limits' in m) && !('bars' in m)) {
@@ -2608,6 +2608,7 @@ $('docFile').onchange = async () => {
   const file = $('docFile').files[0];
   $('docFile').value = '';
   if (!file) return;
+  if (file.size > 20 * 1024 * 1024) return status('文件不能超过 20 MB', false);
   const sel = viewSel;
   status('正在上传文件…');
   try {
