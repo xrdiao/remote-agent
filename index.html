@@ -261,7 +261,7 @@
     <div id="list">
       <button id="older">↑ 加载更早的消息</button>
       <div id="items"></div>
-      <div id="empty" hidden>没找到聊天面板。<br>请在 Cursor 里打开 Agent 对话，或切到「画面」查看。</div>
+      <div id="empty" hidden>没找到聊天面板。<br><span id="emptyHint"></span></div>
     </div>
     <button id="toBottom">↓ 最新</button>
     <div id="qnBar"></div>
@@ -315,7 +315,7 @@
     <button id="newChat">＋ 新建</button>
   </div>
   <div class="row">
-    <textarea id="text" rows="1" placeholder="发给 Cursor Agent…" enterkeyhint="send"></textarea>
+    <textarea id="text" rows="1" placeholder="发给 Agent…" enterkeyhint="send"></textarea>
     <button id="img" title="附加图片" aria-label="附加图片"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/></svg></button>
     <input id="imgFile" type="file" accept="image/*" hidden>
     <button id="mic" title="语音输入" aria-label="语音输入"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
@@ -367,6 +367,12 @@ let mode = store.get('mode') || 'chat';
 let crop = store.get('crop') !== 'full';
 let frame = { w: 1000, h: 800 }, panel = null, zoom = 1;
 let windows = [], currentWindow = null;
+let currentAppName = I18N.tr('当前应用');
+const appMessage = template => I18N.tr(template).replaceAll('{app}', currentAppName);
+function updateAppText() {
+  $('emptyHint').textContent = appMessage('请在 {app} 里打开 Agent 对话，或切到「画面」查看。');
+  text.placeholder = mode === 'terminal' ? I18N.tr('发给终端…') : appMessage('发给 {app} Agent…');
+}
 
 // iOS scrolls the page to reveal the focused field, which throws the chat off screen.
 // Pin the shell to the visible area above the keyboard instead.
@@ -840,7 +846,8 @@ function connect() {
       if (here) rememberComputer({ ...here, win: m.id });
       currentWindow = m.id;
       $('titleText').textContent = m.app === 'devin' ? 'Devin agent' : m.app === 'codex' ? 'Codex' : winLabel(m.title).name;
-      $('text').placeholder = m.app === 'devin' ? '发给 Devin…' : m.app === 'codex' ? '发给 Codex…' : '发给 Cursor Agent…';
+      currentAppName = m.appName;
+      updateAppText();
       renderChat(null);
       if (m.app === 'devin' || m.app === 'codex') {
         renderQuota({ bars: [] });
@@ -941,7 +948,7 @@ function showAgents(list) {
   }
   const rows = groups.map(g => (g.name ? `<div class="pSec">${esc(g.name)}</div>` : '') + g.items.map(a =>
     `<button class="opt ${a.current ? 'cur' : ''}" data-agent="${esc(a.id)}"><span class="lbl">${esc(a.title)}</span>${a.running && !a.current ? '<span class="tag">运行中</span>' : ''}${a.current ? '<span class="tag">当前</span>' : ''}</button>`).join('')).join('');
-  openSheet('agents', `<h3>切换 Agent</h3>${rows || '<div class="hint">没有找到 Agent。Cursor 要打开 Agents 窗口；Devin 的会话在侧边栏；Codex 的每个窗口是一个 Agent。</div>'}`);
+  openSheet('agents', `<h3>切换 Agent</h3>${rows || `<div class="hint">${esc(appMessage('没有找到 {app} 的 Agent。请在电脑上打开对应的会话窗口。'))}</div>`}`);
 }
 $('title').onclick = () => { send({ t: 'windows' }); showWindows(); };
 
@@ -963,7 +970,7 @@ function fusionBlock(fusion) {
 }
 function showMenu(kind, items, max, fusion) {
   const picking = String(kind || '').startsWith('fusion-');
-  if (!items?.length && !fusion) return status('菜单是空的，可能 Cursor 版本不同', false);
+  if (!items?.length && !fusion) return status(appMessage('菜单是空的，可能 {app} 版本不同'), false);
   status('');
   const maxRow = typeof max === 'boolean'
     ? `<button class="opt" data-max><span class="lbl">MAX Mode<span class="sub">更大上下文、更贵</span></span><span class="switch ${max ? 'on' : ''}"></span></button>` : '';
@@ -995,7 +1002,7 @@ function showParams(m) {
   status('');
   openSheet('params', `<h3>${esc(m.label || '模型')} 参数</h3>` + m.sections.map(s => `<div class="pSec">${esc(s.title)}</div><div class="pRow">`
     + s.items.map(it => `<button class="${it.checked ? 'on' : ''} ${it.toggle ? 'tg' : ''}" data-model="${esc(m.model)}" data-plabel="${esc(m.label)}" data-section="${esc(s.title)}" data-value="${esc(it.label)}">${esc(it.label)}${it.toggle ? (it.checked ? '：开' : '：关') : ''}</button>`).join('')
-    + '</div>').join('') + '<div class="hint">改动会直接应用到电脑上 Cursor 的这个模型。</div>');
+    + '</div>').join('') + `<div class="hint">${esc(appMessage('改动会直接应用到电脑上 {app} 的这个模型。'))}</div>`);
 }
 
 async function showDevices() {
@@ -1080,7 +1087,7 @@ function showMainMenu() {
     <button class="opt" data-act="projects"><span class="lbl">打开项目<span class="sub">最近用过的本地文件夹</span></span></button>
     <button class="opt" data-act="docs"><span class="lbl">查看文档<span class="sub">README 和代码</span></span></button>
     <button class="opt" data-act="settings"><span class="lbl">设置</span></button>
-    <button class="opt" data-act="screen"><span class="lbl">画面<span class="sub">直接看电脑上的 Cursor</span></span></button>
+    <button class="opt" data-act="screen"><span class="lbl">画面<span class="sub">${esc(appMessage('直接看电脑上的 {app}'))}</span></span></button>
     ${notifyItem}
     ${inApp && appVersion ? update : ''}
     ${inApp ? '<button class="opt" data-act="changeUrl"><span class="lbl">更换 App 地址</span></button>' : ''}
@@ -1382,7 +1389,7 @@ function setMode(m) {
   $('screenKeys').hidden = m === 'terminal';
   view.classList.toggle('gesture', m === 'screen' || m === 'terminal');
   document.body.classList.toggle('term', m === 'terminal');
-  text.placeholder = m === 'terminal' ? '发给终端…' : '发给 Cursor Agent…';
+  updateAppText();
   if (m !== 'terminal') $('termBusy').hidden = true;
   sentWidth = 0;
   if (authed) send({ t: 'mode', mode: m });
@@ -1819,7 +1826,7 @@ function showFile(m) {
   $('vPath').textContent = m.path ? '\u200e' + (m.host ? m.host + ':' : '') + m.path + (m.size != null ? ` · ${fmtSize(m.size)}` : '') : '';
   const body = $('vBody');
   if (m.error) {
-    body.innerHTML = `<div class="note err">${esc(m.error)}</div><div class="note">可以切到「画面」在 Cursor 里打开</div>`;
+    body.innerHTML = `<div class="note err">${esc(m.error)}</div><div class="note">${esc(appMessage('可以切到「画面」在 {app} 里打开'))}</div>`;
     return;
   }
   if (m.image) {
