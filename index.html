@@ -838,7 +838,7 @@ function connect() {
       const here = currentComputer();
       if (here) rememberComputer({ ...here, win: m.id });
       currentWindow = m.id;
-      $('titleText').textContent = m.app === 'devin' ? 'Devin agent' : m.app === 'codex' ? 'codex' : winLabel(m.title).name;
+      $('titleText').textContent = m.app === 'devin' ? 'Devin agent' : m.app === 'codex' ? 'Codex' : winLabel(m.title).name;
       $('text').placeholder = m.app === 'devin' ? '发给 Devin…' : m.app === 'codex' ? '发给 Codex…' : '发给 Cursor Agent…';
       renderChat(null);
       if (m.app === 'devin' || m.app === 'codex') {
@@ -919,7 +919,7 @@ function showWindows() {
       return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">Devin agent</span></button>`;
     }
     if (w.app === 'codex') {
-      return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">codex</span></button>`;
+      return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">Codex</span></button>`;
     }
     const label = winLabel(w.title || w.id);
     return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}">
