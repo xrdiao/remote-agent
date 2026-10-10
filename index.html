@@ -260,7 +260,7 @@
 <main>
   <section id="chatView" class="view active">
     <div id="meters">
-      <div class="meter" id="meterCtx"><span>上下文</span><span class="track"><i id="meterCtxFill"></i></span><b id="meterCtxPct">–</b></div>
+      <button class="meter" id="meterCtx" type="button"><span>上下文</span><span class="track"><i id="meterCtxFill"></i></span><b id="meterCtxPct">–</b></button>
       <div id="quotaMeters"></div>
     </div>
     <div id="list">
@@ -892,6 +892,8 @@ function connect() {
     else if (m.t === 'docs') { finishPending(['正在读取文档…']); showDocs(m); }
     else if (m.t === 'settings') { finishPending(['正在读取设置…', '正在修改…']); showSettings(m.sections || []); }
     else if (m.t === 'usage') {
+      if (m.error) status(m.error, false);
+      else if (m.missing) status('没有额度数据');
       renderQuota(m);
       finishPending(['正在读取额度…']);
     }
@@ -1098,28 +1100,42 @@ function showSettings(sections) {
   }).join('')).join('');
   openSheet('settings', `<h3>设置</h3>${body || '<div class="hint">没有读到设置。</div>'}`);
 }
-function meterFill(pct) {
+function meterFill(pct, basis) {
   if (pct == null) return '';
-  return pct >= 90 ? 'hot' : pct >= 75 ? 'warm' : '';
+  const tight = basis === 'remaining' ? pct <= 10 : pct >= 90;
+  const warm = basis === 'remaining' ? pct <= 25 : pct >= 75;
+  return tight ? 'hot' : warm ? 'warm' : '';
 }
-function renderContext(pct) {
-  const n = pct == null ? null : Math.max(0, Math.min(100, pct));
-  $('meterCtxPct').textContent = n == null ? '–' : n + '%';
+function renderContext(info) {
+  const basis = info && typeof info === 'object' ? (info.basis || 'used') : 'used';
+  const pct = info == null ? null : typeof info === 'object' ? info.pct : info;
+  const n = pct == null || pct === '' ? null : Math.max(0, Math.min(100, Number(pct)));
+  $('meterCtxPct').textContent = n == null ? '–' : (basis === 'remaining' ? '剩余 ' : '') + n + '%';
   const fill = $('meterCtxFill');
   fill.style.width = (n ?? 0) + '%';
+  fill.className = meterFill(n, basis);
+  $('meterCtx').title = basis === 'remaining' ? '剩余' : '已用';
+  $('meterCtx').onclick = () => { status('正在读取额度…'); send({ t: 'usage' }); };
 }
 function renderQuota(m) {
-  const bars = (m.bars || []).filter(b => b?.label && !/^loading\b/i.test(String(b.label)));
-  if (!bars.length) {
-    $('quotaMeters').innerHTML = '';
-    $('quotaMeters').title = '';
+  if ('context' in m) renderContext(m.context);
+  if (m.error) return;
+  const bars = [...(m.quota || []), ...(m.limits || []), ...((m.quota || m.limits) ? [] : (m.bars || []))]
+    .filter(b => b?.label && !/^loading\b/i.test(String(b.label)));
+  const when = m.updated ? new Date(m.updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  if (m.missing || !bars.length) {
+    $('quotaMeters').title = when ? `更新于 ${when}` : '';
+    $('quotaMeters').innerHTML = `<button class="meter" type="button"><span>没有额度数据</span></button>`;
+    $('quotaMeters').querySelector('button').onclick = () => { status('正在读取额度…'); send({ t: 'usage' }); };
     return;
   }
-  const reset = (m.lines || []).find(l => /reset/i.test(l)) || '';
-  $('quotaMeters').title = reset;
+  const reset = [...new Set(bars.map(b => b.reset).filter(Boolean))].join(' · ') || (m.lines || []).find(l => /reset/i.test(l)) || '';
+  $('quotaMeters').title = [reset, when ? `更新于 ${when}` : ''].filter(Boolean).join(' · ');
   $('quotaMeters').innerHTML = bars.map(b => {
-    const n = b.pct == null ? null : Math.max(0, Math.min(100, b.pct));
-    return `<button class="meter" type="button"><span>${esc(b.label)}</span><span class="track"><i class="${meterFill(n)}" style="width:${n ?? 0}%"></i></span><b>${n == null ? '–' : n + '%'}</b></button>`;
+    const basis = b.basis || 'used';
+    const n = b.pct == null ? null : Math.max(0, Math.min(100, Number(b.pct)));
+    const num = n == null ? (b.value ?? '–') : (basis === 'remaining' ? `剩余 ${n}%` : `${n}%`);
+    return `<button class="meter" type="button" title="${esc(b.reset || '')}"><span>${esc(b.label)}</span><span class="track"><i class="${meterFill(n, basis)}" style="width:${n ?? 0}%"></i></span><b>${esc(String(num))}</b></button>`;
   }).join('');
   $('quotaMeters').querySelectorAll('button').forEach(btn => btn.onclick = () => { status('正在读取额度…'); send({ t: 'usage' }); });
 }
