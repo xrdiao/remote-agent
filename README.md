@@ -3,7 +3,7 @@
 用手机操作这台电脑上的 Cursor 和 Devin。对话、切换 Agent 和模型、看终端、批准确认，都在手机浏览器里完成。两个程序在手机的窗口列表里切换。
 
 <p>
-<img src="docs/phone.png" alt="手机上新建一条对话并发送你好" width="280">
+<img src="docs/phone.png" alt="手机上新建一条对话并询问你是什么模型" width="280">
 <img src="docs/terminal.png" alt="手机上的终端" width="280">
 </p>
 

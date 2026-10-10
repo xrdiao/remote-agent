@@ -3,7 +3,7 @@
 Control Cursor and Devin on this computer from a phone: chat, switch agents and models, read the terminal, and approve steps.
 
 <p>
-<img src="docs/phone.png" alt="A new phone chat after sending hello" width="280">
+<img src="docs/phone.png" alt="A new phone chat asking which model this is" width="280">
 <img src="docs/terminal.png" alt="The phone terminal" width="280">
 </p>
 
