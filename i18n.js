@@ -5,6 +5,9 @@ const I18N = (() => {
   const lang = saved === 'zh' || saved === 'en' ? saved : /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
 
   const EN = {
+    '添加附件': 'Add attachment', '图片': 'Image', '文件': 'File',
+    '正在上传文件…': 'Uploading file…', '文件已上传，写好文字后点发送': 'File uploaded. Add your message and tap Send.',
+    '文件上传超时': 'File upload timed out', '额度查询超时': 'Usage query timed out', '额度接口请求失败': 'Usage request failed',
     '没找到 Codex 的额度查询': 'Codex usage query was not found', '额度限制': 'Usage limit',
     '尚未获取隧道地址；当前只能检测页面地址发布。': 'The tunnel address is not available; only the published app address can be tested.',
     '重新检测': 'Test again', '页面地址发布': 'Published app address', '隧道和电脑服务': 'Tunnel and computer service',
