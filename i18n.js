@@ -5,6 +5,9 @@ const I18N = (() => {
   const lang = saved === 'zh' || saved === 'en' ? saved : /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
 
   const EN = {
+    '粘贴': 'Paste', '缩进': 'Indent', '反缩进': 'Outdent', '搜索': 'Find', '更多': 'More', '重做': 'Redo', '全选': 'Select all',
+    '搜索当前文档': 'Find in this file', '已复制全文': 'Copied entire file', '请长按编辑框粘贴': 'Long press the editor to paste',
+    '↓ 有新消息': '↓ New messages', '点击读取额度': 'Tap to load usage', '正在切换窗口…': 'Switching window…', '正在新建对话…': 'Starting a chat…',
     '当前应用': 'the current app', '发给 Agent…': 'Message Agent…',
     '连接中…': 'Connecting…', '对话': 'Chat', '画面': 'Screen', '↑ 加载更早的消息': '↑ Load earlier messages',
     '没找到聊天面板。': 'No chat panel found.', '请在 {app} 里打开 Agent 对话，或切到「画面」查看。': 'Open an Agent chat in {app}, or switch to "Screen".',
