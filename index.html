@@ -594,11 +594,12 @@ function parsePair(text) {
 }
 let pending = parsePair(location.hash);
 if (pending) history.replaceState(null, '', location.pathname + location.search);
-// Opened from a notification: <app>#win=<window id>.
+// Opened from a notification: <app>#win=<window id or JSON with windowId and threadId>.
+let pendingNotice = '';
 {
   const m = /[#&]win=([^&]+)/.exec(location.hash);
   if (m) {
-    store.set('window', decodeURIComponent(m[1]));
+    pendingNotice = decodeURIComponent(m[1]);
     history.replaceState(null, '', location.pathname + location.search);
   }
 }
@@ -841,8 +842,9 @@ function connect() {
       status('已连接');
       send({ t: 'mode', mode });
       send({ t: 'windows' });
-      const fromNotice = window.AgentRemoteApp?.takeOpenWin?.();
-      if (fromNotice) store.set('window', fromNotice);
+      const fromNotice = window.AgentRemoteApp?.takeOpenWin?.() || pendingNotice;
+      pendingNotice = '';
+      if (fromNotice) rememberNotice(fromNotice);
       const chosen = currentComputer();
       send({ t: 'attach', id: chosen?.win || store.get('window') || '', windowId: chosen?.windowId || '', threadId: chosen?.threadId || '' });
       sentWidth = 0;
@@ -1250,13 +1252,34 @@ async function disableNotify() {
   status('通知已关闭');
 }
 
+function noticeTarget(raw) {
+  if (!raw) return null;
+  let win = String(raw), windowId = '', threadId = '';
+  if (win.startsWith('{')) {
+    try {
+      const o = JSON.parse(win);
+      win = o.win || '';
+      windowId = o.windowId || '';
+      threadId = o.threadId || '';
+    } catch { return null; }
+  }
+  return win ? { win, windowId, threadId } : null;
+}
+function rememberNotice(raw) {
+  const n = noticeTarget(raw);
+  if (!n) return;
+  store.set('window', n.win);
+  const here = currentComputer();
+  if (here) rememberComputer({ ...here, win: n.win, windowId: n.windowId, threadId: n.threadId });
+}
 function openWin(id) {
-  if (!id) return;
-  store.set('window', id);
-  if (authed) send({ t: 'attach', id });
+  rememberNotice(id);
+  if (!authed) return;
+  const here = currentComputer();
+  send({ t: 'attach', id: here?.win || store.get('window') || '', windowId: here?.windowId || '', threadId: here?.threadId || '' });
 }
 window.openWin = openWin;
-navigator.serviceWorker?.addEventListener('message', e => openWin(e.data?.openWin));
+navigator.serviceWorker?.addEventListener('message', e => { if (e.data?.openWin) openWin(e.data.openWin); });
 document.addEventListener('visibilitychange', () => {
   if (authed) send({ t: 'visible', v: document.visibilityState === 'visible' });
 });
