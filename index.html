@@ -838,10 +838,10 @@ function connect() {
       const here = currentComputer();
       if (here) rememberComputer({ ...here, win: m.id });
       currentWindow = m.id;
-      $('titleText').textContent = m.app === 'devin' ? 'Devin agent' : winLabel(m.title).name;
-      $('text').placeholder = m.app === 'devin' ? '发给 Devin…' : '发给 Cursor Agent…';
+      $('titleText').textContent = m.app === 'devin' ? 'Devin agent' : m.app === 'codex' ? 'Codex' : winLabel(m.title).name;
+      $('text').placeholder = m.app === 'devin' ? '发给 Devin…' : m.app === 'codex' ? '发给 Codex…' : '发给 Cursor Agent…';
       renderChat(null);
-      if (m.app === 'devin') {
+      if (m.app === 'devin' || m.app === 'codex') {
         renderQuota({ bars: [] });
         renderContext(null);
       } else send({ t: 'usage' });
@@ -918,11 +918,15 @@ function showWindows() {
     if (w.app === 'devin') {
       return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">Devin agent</span></button>`;
     }
+    if (w.app === 'codex') {
+      const label = winLabel(w.title || w.id);
+      return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="tag">Codex</span><span class="lbl">${esc(label.name)}</span></button>`;
+    }
     const label = winLabel(w.title || w.id);
     return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}">
       <span class="tag">${KIND_TAG[w.kind] || ''}</span><span class="lbl">${esc(label.name)}${label.file ? `<span class="sub">${esc(label.file)}</span>` : ''}</span></button>`;
   }).join('');
-  openSheet('windows', `<h3>切换窗口</h3><div class="hint">Cursor 和 Devin 都在这里。点一个就切到那个程序。</div>${rows || '<div class="hint">没有找到窗口</div>'}`);
+  openSheet('windows', `<h3>切换窗口</h3><div class="hint">Cursor、Devin 和 Codex 都在这里。点一个就切到那个程序。</div>${rows || '<div class="hint">没有找到窗口</div>'}`);
 }
 function showTerminals(list) {
   const rows = list.map(t => `<div class="optRow"><button class="opt ${t.current ? 'cur' : ''}" data-term="${esc(t.id)}"><span class="lbl">${esc(t.title)}</span>${t.current ? '<span class="tag">当前</span>' : ''}</button><button data-term-del="${esc(t.id)}" data-term-name="${esc(t.title)}">删除</button></div>`).join('');
