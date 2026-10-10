@@ -460,14 +460,13 @@ let connGen = 0;
 function repairPairing() {
   connGen++;
   clearTimeout(retryTimer);
+  offlineGen++;
   pending = null;
   authed = false;
-  store.set('token', null);
-  store.set('key', null);
   const old = ws;
   ws = null;
   try { old?.close(); } catch {}
-  showUnpaired();
+  addComputer();
 }
 $('gateRepair').onclick = () => repairPairing();
 
@@ -475,20 +474,72 @@ $('gateRepair').onclick = () => repairPairing();
 const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 const b64u = s => b64(s.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - s.length % 4) % 4));
 
-// On GitHub Pages, url.json holds the relay address encrypted with a random key that only paired devices hold.
-async function decryptUrl(keyText) {
+// On GitHub Pages, url.json holds one encrypted address per computer. Each computer's key opens only its own entry.
+async function computerIdFromKey(keyText) {
+  const digest = await crypto.subtle.digest('SHA-256', b64u(keyText));
+  return [...new Uint8Array(digest)].slice(0, 8).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+function loadComputers() {
+  let list = [];
+  try { list = JSON.parse(store.get('computers') || '[]'); } catch {}
+  if (!Array.isArray(list)) list = [];
+  list = list.filter(c => c && c.key && c.token);
+  if (!list.length && store.get('key') && store.get('token')) {
+    list = [{ id: store.get('computer') || '', name: '这台电脑', key: store.get('key'), token: store.get('token'), win: store.get('window') || '' }];
+  }
+  return list;
+}
+function currentComputer() {
+  const list = loadComputers();
+  const id = store.get('computer');
+  return list.find(c => c.id && c.id === id) || list[0] || null;
+}
+function saveComputers(list, currentId) {
+  store.set('computers', JSON.stringify(list));
+  if (currentId != null) store.set('computer', currentId);
+  const cur = list.find(c => c.id === store.get('computer')) || list[0] || null;
+  store.set('key', cur?.key || null);
+  store.set('token', cur?.token || null);
+  return cur;
+}
+function rememberComputer(comp) {
+  const list = loadComputers();
+  const i = list.findIndex(c => c.id === comp.id || c.key === comp.key);
+  if (i >= 0) list[i] = { ...list[i], ...comp };
+  else list.push(comp);
+  return saveComputers(list, comp.id);
+}
+async function decryptEntry(keyText, entry) {
   const key = await crypto.subtle.importKey('raw', b64u(keyText), 'AES-GCM', false, ['decrypt']);
-  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64(info.iv) }, key, b64(info.data));
+  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64(entry.iv) }, key, b64(entry.data));
   return JSON.parse(new TextDecoder().decode(plain)).url;
 }
 
 const offline = msg => Object.assign(new Error(msg), { offline: true });
 async function resolveBase() {
   if (info.self) return location.origin;
-  if (info.v !== 2 || !info.data) throw offline('电脑端还没有发布地址（或还在用旧版本），请在电脑上重启服务');
-  const key = store.get('key');
-  if (!key) throw Object.assign(new Error(''), { unpaired: true });
-  try { return await decryptUrl(key); } catch { throw Object.assign(new Error('配对信息已失效（电脑端重置过），请重新配对'), { unpaired: true, stale: true }); }
+  const comp = currentComputer();
+  if (!comp?.key) throw Object.assign(new Error(''), { unpaired: true });
+  if (info.v === 2 && info.data) {
+    try { return await decryptEntry(comp.key, info); }
+    catch { throw Object.assign(new Error('配对信息已失效（电脑端重置过），请重新配对'), { unpaired: true, stale: true }); }
+  }
+  if (info.v !== 3 || !Array.isArray(info.computers)) throw offline('电脑端还没有发布地址（或还在用旧版本），请在电脑上重启服务');
+  const id = comp.id || await computerIdFromKey(comp.key);
+  let entry = info.computers.find(c => c.id === id);
+  if (!entry) {
+    for (const c of info.computers) {
+      try {
+        const url = await decryptEntry(comp.key, c);
+        rememberComputer({ ...comp, id: c.id, name: c.name || comp.name || '电脑' });
+        return url;
+      } catch {}
+    }
+    throw offline('这台电脑还没有发布地址，请在那台电脑上重启服务');
+  }
+  if (!comp.id || (entry.name && entry.name !== comp.name)) rememberComputer({ ...comp, id: entry.id, name: entry.name || comp.name || '电脑' });
+  try { return await decryptEntry(comp.key, entry); }
+  catch { throw Object.assign(new Error('配对信息已失效（电脑端重置过），请重新配对'), { unpaired: true, stale: true }); }
 }
 
 async function api(path, opts = {}) {
@@ -610,7 +661,11 @@ async function pair(totp) {
     return showOffline();
   }
   if (r.ok) {
-    store.set('token', body.token);
+    const id = body.id || await computerIdFromKey(pending.key);
+    const list = loadComputers().filter(c => c.id !== id && c.key !== pending.key);
+    list.push({ id, name: body.name || '电脑', key: pending.key, token: body.token, win: '' });
+    saveComputers(list, id);
+    store.set('window', null);
     pending = null;
     return connect();
   }
@@ -650,16 +705,26 @@ async function boot() {
     autoRetry();
     return gate({ msg: '读取失败，请检查手机网络', err: true, retry: true, repair: true });
   }
-  if (pending) store.set('key', pending.key);
+  if (pending) {
+    try { base = await resolvePending(); }
+    catch (e) { return showUnpaired(e.message || '这台电脑还没有发布地址'); }
+    return pair();
+  }
   try {
     base = await resolveBase();
   } catch (e) {
     if (e.offline) return gate({ msg: e.message, retry: true, repair: true });
-    if (e.stale) { store.set('key', null); store.set('token', null); }
-    return showUnpaired(e.message);
+    if (e.stale) {
+      const cur = currentComputer();
+      if (cur) saveComputers(loadComputers().filter(c => c.key !== cur.key), '');
+    }
+    if (!loadComputers().length) return showUnpaired(e.message);
+    showComputers();
+    return;
   }
-  if (pending) return pair();
   if (!store.get('token')) return showUnpaired();
+  const chosen = currentComputer();
+  if (chosen?.win) store.set('window', chosen.win);
   let me;
   try {
     me = await api('/api/me').then(r => r.json());
@@ -667,11 +732,31 @@ async function boot() {
     return showOffline();
   }
   if (!me.paired) {
-    store.set('token', null);
-    return showUnpaired('这台设备已被移除，请重新配对');
+    const cur = currentComputer();
+    const list = loadComputers().filter(c => c.key !== cur?.key);
+    saveComputers(list, list[0]?.id || '');
+    if (!list.length) return showUnpaired('这台设备已被移除，请重新配对');
+    showComputers();
+    return;
   }
+  if (me.id || me.name) rememberComputer({ ...currentComputer(), id: me.id || currentComputer()?.id, name: me.name || currentComputer()?.name || '电脑' });
   if (me.needTotp) return showTotp(verifyTotp);
   connect();
+}
+
+async function resolvePending() {
+  if (info.self) return location.origin;
+  if (info.v === 2 && info.data) return decryptEntry(pending.key, info);
+  if (info.v !== 3 || !Array.isArray(info.computers)) throw new Error('电脑端还没有发布地址，请在那台电脑上重启服务');
+  const id = await computerIdFromKey(pending.key);
+  let entry = info.computers.find(c => c.id === id);
+  if (!entry) {
+    for (const c of info.computers) {
+      try { await decryptEntry(pending.key, c); entry = c; break; } catch {}
+    }
+  }
+  if (!entry) throw new Error('这台电脑还没有发布地址，请在那台电脑上重启服务');
+  return decryptEntry(pending.key, entry);
 }
 
 let retryTimer = null;
@@ -731,6 +816,8 @@ function connect() {
     else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; if (sheetKind === 'windows') showWindows(); }
     else if (m.t === 'attached') {
       store.set('window', m.id);
+      const here = currentComputer();
+      if (here) rememberComputer({ ...here, win: m.id });
       currentWindow = m.id;
       $('titleText').textContent = m.app === 'devin' ? 'Devin agent' : winLabel(m.title).name;
       $('text').placeholder = m.app === 'devin' ? '发给 Devin…' : '发给 Cursor Agent…';
@@ -969,8 +1056,9 @@ function showMainMenu() {
     ${inApp ? '<button class="opt" data-act="changeUrl"><span class="lbl">更换 App 地址</span></button>' : ''}
     <button class="opt" data-act="reconnect"><span class="lbl">重新连接</span></button>
     <button class="opt" data-act="voice"><span class="lbl">语音按钮<span class="sub">输入法键盘自带麦克风的话用不着</span></span><span class="switch ${store.get('voice') === 'on' ? 'on' : ''}"></span></button>
+    <button class="opt" data-act="computers"><span class="lbl">电脑<span class="sub">${esc(currentComputer()?.name || '未配对')}</span></span></button>
     <button class="opt" data-act="devices"><span class="lbl">已配对设备</span></button>
-    <button class="opt" data-act="logout"><span class="lbl">取消本机配对</span></button>`);
+    <button class="opt" data-act="logout"><span class="lbl">删除这台电脑</span></button>`);
 }
 $('menuBtn').onclick = showMainMenu;
 
@@ -1155,19 +1243,70 @@ $('sheet').addEventListener('click', async e => {
     document.body.classList.toggle('voice', store.get('voice') === 'on');
     b.querySelector('.switch').classList.toggle('on', store.get('voice') === 'on');
   }
+  else if (act === 'computers') showComputers();
+  else if (act === 'addComputer') addComputer();
   else if (act === 'devices') showDevices();
   else if (b.dataset.remove) {
     if (!await ask(`移除「${b.dataset.name}」？它会立即断开，要重新配对才能再用。`, '移除')) return showDevices();
     await post('/api/devices/remove', { id: b.dataset.remove }).catch(() => {});
     showDevices();
   }
+  else if (b.dataset.computer) { closeSheet(); return useComputer(b.dataset.computer); }
+  else if (b.dataset.computerDel) return removeComputer(b.dataset.computerDel, b.dataset.computerName);
   else if (act === 'logout') {
-    if (!await ask('取消本机配对？之后要在电脑上重新运行 npm run pair 才能再用。', '取消配对')) return;
-    await post('/api/logout').catch(() => {});
-    store.set('token', null); store.set('key', null);
-    authed = false; ws?.close();
+    const cur = currentComputer();
+    if (!cur) return;
+    return removeComputer(cur.id, cur.name);
   }
 });
+
+function showComputers() {
+  const list = loadComputers();
+  const cur = store.get('computer');
+  const rows = list.map(c => `<div class="optRow"><button class="opt ${c.id === cur ? 'cur' : ''}" data-computer="${esc(c.id)}"><span class="lbl">${esc(c.name || '电脑')}${c.id === cur ? '<span class="sub">当前</span>' : ''}</span></button><button class="paramBtn" data-computer-del="${esc(c.id)}" data-computer-name="${esc(c.name || '电脑')}">删除</button></div>`).join('');
+  openSheet('computers', `<h3>电脑</h3>${rows || '<div class="hint">还没有配对的电脑。</div>'}<button class="opt" data-act="addComputer"><span class="lbl">＋ 配对另一台电脑</span></button><div class="hint">在那台电脑上运行 npm run pair，把链接粘贴过来。已有的电脑会保留。</div>`);
+}
+function addComputer() {
+  closeSheet();
+  gate({
+    msg: '配对另一台电脑。\n在那台电脑上运行 npm run pair，把链接粘贴到下面。已有的电脑会保留。',
+    input: { placeholder: '粘贴配对链接', button: '配对', submit: pastePair },
+    retry: '返回',
+  });
+}
+function useComputer(id) {
+  const c = loadComputers().find(x => x.id === id);
+  if (!c) return;
+  saveComputers(loadComputers(), id);
+  store.set('window', c.win || null);
+  connGen++;
+  offlineGen++;
+  authed = false;
+  const old = ws;
+  ws = null;
+  try { old?.close(); } catch {}
+  closeSheet();
+  boot();
+}
+async function removeComputer(id, name) {
+  if (!await ask(`删除电脑「${name || '电脑'}」？\n这台手机不再连接它。`, '删除')) return showComputers();
+  const cur = currentComputer();
+  const removingCurrent = cur && (cur.id === id || cur.name === name);
+  if (removingCurrent && authed) await post('/api/logout').catch(() => {});
+  const list = loadComputers().filter(c => c.id !== id);
+  const next = list[0];
+  saveComputers(list, next?.id || '');
+  if (!next) {
+    connGen++;
+    authed = false;
+    try { ws?.close(); } catch {}
+    ws = null;
+    closeSheet();
+    return showUnpaired();
+  }
+  if (removingCurrent) return useComputer(next.id);
+  showComputers();
+}
 
 /* ---------- mode switching ---------- */
 let termState = '';
