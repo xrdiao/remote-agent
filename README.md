@@ -1,6 +1,6 @@
 # Remote Agent
 
-用手机操作这台电脑上的 Cursor 和 Devin。对话、切换 Agent 和模型、看终端、批准确认，都在手机浏览器里完成。两个程序在手机的窗口列表里切换。
+用手机操作这台电脑上的 Cursor、Devin 和 VS Code 里的 Codex。对话、切换 Agent 和模型、看终端、批准确认，都在手机浏览器里完成。这些程序在手机的窗口列表里切换。
 
 <p>
 <img src="docs/phone.png" alt="手机上新建一条对话并询问你是什么模型" width="280">
@@ -33,14 +33,22 @@ cursor --remote-debugging-port=9222
 
 如果 Devin 已经在运行，但没有调试端口，先退出 Devin，再运行一次这个脚本。
 
-3. 安装依赖并打开公网隧道：
+3. 启动 VS Code 里的 Codex，并打开调试端口（默认 `9224`）。这不会关掉 Cursor 或 Devin。如果 VS Code 已经开着但没有调试端口，先退出 VS Code，再运行：
+
+```bash
+./start-codex.sh
+```
+
+打开 Codex 侧边栏之后，手机窗口列表里会多一项 Codex。
+
+4. 安装依赖并打开公网隧道：
 
 ```bash
 npm install
 npm run public
 ```
 
-4. 配对手机。终端会打印一次性链接，用手机 Safari 打开：
+5. 配对手机。终端会打印一次性链接，用手机 Safari 打开：
 
 ```bash
 npm run pair
@@ -64,7 +72,7 @@ kill <隧道进程号>
 - 看上下文占用和额度。额度条点一下会重新读取。
 - 对话里的公式按数学式显示。代码块可以点「复制」，较长的行内命令点一下也会复制。
 - 从手机附加图片到输入框。
-- 在窗口列表里切换 Cursor 和 Devin。Devin 的会话显示为 Devin agent。
+- 在窗口列表里切换 Cursor、Devin 和 Codex。Devin 的会话显示为 Devin agent，Codex 显示为 Codex。
 
 ## 常用命令
 
@@ -76,4 +84,5 @@ kill <隧道进程号>
 | `npm run devices` | 查看已配对设备 |
 | `npm run 2fa` | 可选的 Authenticator 二次验证 |
 | `./start-devin.sh` | 启动 Devin，并打开调试端口 9223 |
+| `./start-codex.sh` | 启动 VS Code，并打开调试端口 9224，供 Codex 使用 |
 

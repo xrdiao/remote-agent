@@ -19,9 +19,11 @@ const PORT = Number(process.env.PORT || 3939);
 const HOST = process.env.HOST || '0.0.0.0';
 const CDP_URL = (process.env.CDP_URL || 'http://127.0.0.1:9222').replace(/\/$/, '');
 const DEVIN_CDP_URL = (process.env.DEVIN_CDP_URL || 'http://127.0.0.1:9223').replace(/\/$/, '');
+const CODEX_CDP_URL = (process.env.CODEX_CDP_URL || 'http://127.0.0.1:9224').replace(/\/$/, '');
 const EDITORS = [
   { app: 'cursor', url: CDP_URL },
   { app: 'devin', url: DEVIN_CDP_URL },
+  { app: 'codex', url: CODEX_CDP_URL },
 ];
 const TUNNEL = process.argv.includes('--tunnel');
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
@@ -95,6 +97,12 @@ function originAllowed(req) {
 async function listWindows() {
   const lists = await Promise.all(EDITORS.map(async ed => {
     try {
+      if (ed.app === 'codex') {
+        const pages = await codexWindows(ed.url);
+        if (!pages.length) return [];
+        // Several VS Code windows are agents inside one Codex entry, not separate phone windows.
+        return [{ id: 'codex', title: 'Codex', ws: pages[0].ws, port: ed.url, app: 'codex', kind: 'local' }];
+      }
       const targets = await (await fetch(`${ed.url}/json/list`, { signal: AbortSignal.timeout(1500) })).json();
       return targets
         .filter(t => t.type === 'page' && /workbench/.test(t.url))
@@ -102,6 +110,7 @@ async function listWindows() {
           id: `${ed.app}:${t.id}`,
           title: t.title,
           ws: t.webSocketDebuggerUrl,
+          port: ed.url,
           app: ed.app,
           kind: t.title === 'Cursor Agents' ? 'agents' : /\[SSH: /.test(t.title) ? 'ssh' : 'local',
         }))
@@ -112,8 +121,62 @@ async function listWindows() {
     }
   }));
   const wins = lists.flat();
-  if (!wins.length) throw new Error('连不上 Cursor 或 Devin。Cursor 用调试端口 9222，Devin 用 ./start-devin.sh（端口 9223）');
+  if (!wins.length) throw new Error('连不上 Cursor、Devin 或 Codex。Cursor 用调试端口 9222，Devin 用 ./start-devin.sh（端口 9223），Codex 用 ./start-codex.sh（端口 9224）');
   return wins;
+}
+
+// Each VS Code window has its own Codex sidebar. The phone shows one Codex window and lists these as agents.
+const codexViewIds = new Map();
+
+function codexFolder(title) {
+  const parts = String(title || '').replace(/\s+-\s+Visual Studio Code$/, '').split(' - ').map(s => s.trim()).filter(Boolean);
+  if (parts[0] === 'Welcome' && parts.length > 1) return parts[parts.length - 1];
+  return (parts.length > 1 ? parts[parts.length - 1] : parts[0]) || 'Codex';
+}
+
+async function webviewKey(wsUrl) {
+  const cdp = new Cdp(wsUrl);
+  try {
+    await cdp.connect();
+    const src = await cdp.evaluate(`document.querySelector('iframe[src*="extensionId=openai.chatgpt"]')?.src || ''`);
+    return /[?&]id=([^&]+)/.exec(String(src))?.[1] || '';
+  } catch {
+    return '';
+  } finally {
+    try { cdp.close(); } catch {}
+  }
+}
+
+async function codexWindows(base) {
+  let targets = [];
+  try {
+    targets = await (await fetch(`${base}/json/list`, { signal: AbortSignal.timeout(1500) })).json();
+  } catch {
+    return [];
+  }
+  const pages = targets.filter(t => t.type === 'page' && /workbench/.test(t.url || ''));
+  const viewByKey = new Map();
+  for (const v of targets) {
+    if (!v.webSocketDebuggerUrl || !/extensionId=openai\.chatgpt/.test(v.url || '') || !/purpose=webviewView/.test(v.url || '')) continue;
+    const key = /[?&]id=([^&]+)/.exec(v.url || '')?.[1];
+    if (key) viewByKey.set(key, v.webSocketDebuggerUrl);
+  }
+  const out = [];
+  for (const p of pages) {
+    let key = codexViewIds.get(p.id);
+    if (!key || !viewByKey.has(key)) {
+      key = await webviewKey(p.webSocketDebuggerUrl);
+      if (key) codexViewIds.set(p.id, key);
+    }
+    out.push({
+      pageId: p.id,
+      title: codexFolder(p.title),
+      rawTitle: p.title || '',
+      ws: p.webSocketDebuggerUrl,
+      chatWs: viewByKey.get(key) || null,
+    });
+  }
+  return out;
 }
 
 class Cdp {
@@ -187,16 +250,18 @@ const NAMED_KEYS = {
 
 // Cursor's chat composer is a ProseMirror contenteditable; selectors ordered from most to least specific.
 const FOCUS_COMPOSER = `(() => {
+  // Codex draws its prompt inside a same-origin iframe. Cursor and Devin use this page.
+  const doc = document.getElementById('active-frame')?.contentDocument || document;
   // Same reveal as pageHelpers.revealDevinComposer: a new Devin session's prompt
   // stays in a hidden welcome layer while a file tab is open.
-  for (const group of document.querySelectorAll('.editor-group-container')) {
+  for (const group of doc.querySelectorAll('.editor-group-container')) {
     if (group.classList.contains('has-pending-new-session-welcome')) continue;
     for (const el of group.querySelectorAll('[data-crl-devin-reveal]')) {
       el.style.removeProperty('display');
       el.removeAttribute('data-crl-devin-reveal');
     }
   }
-  for (const group of document.querySelectorAll('.editor-group-container.has-pending-new-session-welcome')) {
+  for (const group of doc.querySelectorAll('.editor-group-container.has-pending-new-session-welcome')) {
     const welcome = group.querySelector(':scope > .windsurf-welcome-container');
     const editor = group.querySelector(':scope > .editor-container');
     if (welcome && getComputedStyle(welcome).display === 'none') {
@@ -209,17 +274,17 @@ const FOCUS_COMPOSER = `(() => {
     }
   }
   const visible = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-  const selectors = ['.aislash-editor-input[contenteditable="true"]', '.ui-prompt-input-editor__input[contenteditable="true"]', '.composer-bar [contenteditable="true"]', '.auxiliarybar [contenteditable="true"]'];
+  const selectors = ['.aislash-editor-input[contenteditable="true"]', '.ui-prompt-input-editor__input[contenteditable="true"]', '.ProseMirror[contenteditable="true"]', '.composer-bar [contenteditable="true"]', '.auxiliarybar [contenteditable="true"]'];
   let eds = [];
-  for (const s of selectors) { eds = [...document.querySelectorAll(s)].filter(visible); if (eds.length) break; }
-  if (!eds.length) eds = [...document.querySelectorAll('[contenteditable="true"]')].filter(e => visible(e) && !e.closest('.monaco-editor, [aria-label="User message"], [aria-label="Devin message"]'));
+  for (const s of selectors) { eds = [...doc.querySelectorAll(s)].filter(visible); if (eds.length) break; }
+  if (!eds.length) eds = [...doc.querySelectorAll('[contenteditable="true"]')].filter(e => visible(e) && !e.closest('.monaco-editor, [aria-label="User message"], [aria-label="Devin message"]'));
   if (!eds.length) return null;
-  const el = eds.find(e => e.contains(document.activeElement)) || eds[eds.length - 1];
+  const el = eds.find(e => e.contains(doc.activeElement)) || eds[eds.length - 1];
   el.focus();
-  const range = document.createRange();
+  const range = doc.createRange();
   range.selectNodeContents(el);
   range.collapse(false);
-  const sel = getSelection();
+  const sel = doc.defaultView.getSelection();
   sel.removeAllRanges();
   sel.addRange(range);
   return true;
@@ -249,6 +314,8 @@ const pasteImage = (b64, name, type) => `(async () => {
 
 // Runs inside Cursor's renderer (injected via toString). Emits only whitelisted tags with escaped text, never raw DOM HTML.
 function pageHelpers() {
+  // Codex draws inside a same-origin iframe. Cursor and Devin use this page.
+  const doc = document.getElementById('active-frame')?.contentDocument || document;
   const vis = e => { const b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0; };
   const esc = s => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
   const SKIP = /ui-collapsible-header|md-clickable-code|output-preview|codicon-find|widget-close|model-picker/;
@@ -266,14 +333,14 @@ function pageHelpers() {
 
   // Older Cursor builds mark each transcript row with data-flat-index. The Agents window in
   // current builds uses data-message-kind instead, and past bubbles contain their own editors.
-  const ITEM_SEL = '[data-flat-index], [data-message-kind], [role=group][aria-label="User message"], [role=group][aria-label="Devin message"]';
-  const COMPOSER = '.aislash-editor-input, .ui-prompt-input-editor__input';
+  const ITEM_SEL = '[data-flat-index], [data-message-kind], [data-turn-key], [role=group][aria-label="User message"], [role=group][aria-label="Devin message"]';
+  const COMPOSER = '.aislash-editor-input, .ui-prompt-input-editor__input, .ProseMirror';
   const inItem = el => !!el.closest(ITEM_SEL);
   const itemKey = el => {
     const existing = el.dataset.flatIndex || el.dataset.messageId || el.querySelector('[data-message-id]')?.dataset.messageId;
     if (existing) return existing;
     if (el.getAttribute('data-side')) {
-      const i = [...document.querySelectorAll('[role=group][data-side]')].indexOf(el);
+      const i = [...doc.querySelectorAll('[role=group][data-side]')].indexOf(el);
       return i >= 0 ? `d${i}` : '';
     }
     return '';
@@ -281,8 +348,8 @@ function pageHelpers() {
   const itemByKey = (panel, key) => panel.querySelector(`[data-flat-index="${CSS.escape(key)}"], [data-message-id="${CSS.escape(key)}"]`);
 
   const findPanel = () => {
-    const real = [...document.querySelectorAll(COMPOSER)].filter(e => vis(e) && !e.closest(ITEM_SEL));
-    const eds = real.length ? real : [...document.querySelectorAll(COMPOSER)].filter(vis);
+    const real = [...doc.querySelectorAll(COMPOSER)].filter(e => vis(e) && !e.closest(ITEM_SEL));
+    const eds = real.length ? real : [...doc.querySelectorAll(COMPOSER)].filter(vis);
     for (const ed of eds) {
       let p = ed;
       while (p && !p.querySelector(ITEM_SEL)) p = p.parentElement;
@@ -290,15 +357,16 @@ function pageHelpers() {
     }
     // Devin's prompt is not a Cursor composer. The first message's parent is only that
     // bubble, so climb until every visible message sits in one transcript.
-    const items = [...document.querySelectorAll(ITEM_SEL)].filter(vis);
+    const items = [...doc.querySelectorAll(ITEM_SEL)].filter(vis);
     if (!items.length) return null;
     let p = items[0].parentElement;
     for (let i = 0; i < 14 && p?.parentElement && !items.every(it => p.contains(it)); i++) p = p.parentElement;
     return p;
   };
 
+  const isPermissionButton = b => b.getAttribute('data-composer-navigation-target') === 'permissions' || b.getAttribute('aria-label') === 'Change permissions';
   const buttonsIn = (root, strict) => [...root.querySelectorAll('button, [role=button], .anysphere-button, .anysphere-secondary-button, .composer-run-button, .composer-skip-button')]
-    .filter(b => vis(b) && !b.closest('.human-message-action-slot') && !SKIP.test(b.className) && !b.parentElement.closest('button, [role=button]'))
+    .filter(b => vis(b) && !isPermissionButton(b) && !b.closest('.human-message-action-slot') && !SKIP.test(b.className) && !b.parentElement.closest('button, [role=button]'))
     .map(b => ({ el: b, label: ((b.innerText || '').trim() || b.getAttribute('aria-label') || b.title || '').split('\n')[0].slice(0, 30) }))
     .filter(x => x.label && x.label !== 'Shell command options' && (!strict || ACTION.test(x.label)));
 
@@ -396,8 +464,8 @@ function pageHelpers() {
     || !!el.querySelector('[data-loading]')
     || /^thinking\b/i.test(thinkingTitleOf(el));
   const thinkingNodes = () => {
-    const rooted = [...document.querySelectorAll(THINKING_ROOT)].filter(el => el.matches('.ui-thinking-collapsible, .chat-thinking-box') || /^(thinking|thoughts|thought(?: for)? )\b/i.test(thinkingTitleOf(el)));
-    const rows = [...document.querySelectorAll('[data-message-kind="thinking"]')].filter(el => !rooted.some(r => r === el || r.contains(el) || el.contains(r)));
+    const rooted = [...doc.querySelectorAll(THINKING_ROOT)].filter(el => el.matches('.ui-thinking-collapsible, .chat-thinking-box') || /^(thinking|thoughts|thought(?: for)? )\b/i.test(thinkingTitleOf(el)));
+    const rows = [...doc.querySelectorAll('[data-message-kind="thinking"]')].filter(el => !rooted.some(r => r === el || r.contains(el) || el.contains(r)));
     return [...rooted, ...rows];
   };
   // 'live' is still generating; 'done' has finished and folded its body away.
@@ -429,18 +497,18 @@ function pageHelpers() {
 
   // Messages sent while the Agent is running wait in Cursor's queue tray until the current turn ends.
   const QUEUE_ROW = '[data-queue-row], .composer-toolbar-queue-item[data-queue-item-id]';
-  const queueRows = () => [...document.querySelectorAll(QUEUE_ROW)].filter(vis);
+  const queueRows = () => [...doc.querySelectorAll(QUEUE_ROW)].filter(vis);
   const queued = () => queueRows().map(e => ({
     id: e.dataset.queueItemId,
     t: (e.dataset.queueItemQuery || e.innerText || '').trim().slice(0, 4000),
   }));
   // The submit button becomes "Stop generation" while a turn is running.
   // The stop icon on a human bubble (Ctrl+Shift+Backspace) reverts that message instead.
-  const stopGenerationButton = () => [...document.querySelectorAll('button, [role=button]')].find(e => {
+  const stopGenerationButton = () => [...doc.querySelectorAll('button, [role=button]')].find(e => {
     if (!vis(e) || e.closest('.composer-human-message, .human-message-action-slot')) return false;
     return /^stop generation\b/i.test((e.getAttribute('aria-label') || '').trim());
   });
-  const legacyStopIcon = () => [...document.querySelectorAll('.composer-button-area .codicon-debug-stop, .send-with-mode .codicon-debug-stop')].find(e => vis(e) && !e.closest('.composer-human-message, .human-message-action-slot'));
+  const legacyStopIcon = () => [...doc.querySelectorAll('.composer-button-area .codicon-debug-stop, .send-with-mode .codicon-debug-stop')].find(e => vis(e) && !e.closest('.composer-human-message, .human-message-action-slot'));
   const isBusy = () => !!stopGenerationButton() || !!legacyStopIcon();
 
   // First call (no action) returns the row center to hover over; hover-only buttons appear after that.
@@ -460,17 +528,17 @@ function pageHelpers() {
   const subRowName = e => e.querySelector('.composer-toolbar-background-job-item-text')?.innerText.trim() || '';
   const subagents = () => {
     const names = new Set();
-    for (const h of document.querySelectorAll('.task-tool-call-header')) {
+    for (const h of doc.querySelectorAll('.task-tool-call-header')) {
       if (!vis(h) || !h.closest(ITEM_SEL)?.querySelector('.ui-subagent-status-indicator--running-loader, .task-subagent-header-pill-button--stop')) continue;
       const n = h.querySelector('span.truncate')?.childNodes[0]?.textContent.trim();
       if (n) names.add(n);
     }
-    for (const r of document.querySelectorAll(SUB_ROW)) if (subRowName(r)) names.add(subRowName(r));
+    for (const r of doc.querySelectorAll(SUB_ROW)) if (subRowName(r)) names.add(subRowName(r));
     return [...names];
   };
-  const subTrayHeader = () => [...document.querySelectorAll('div')].find(e => vis(e) && [...e.childNodes].some(n => n.nodeType === 3 && /^\d+ subagents? running$/.test(n.textContent.trim())));
+  const subTrayHeader = () => [...doc.querySelectorAll('div')].find(e => vis(e) && [...e.childNodes].some(n => n.nodeType === 3 && /^\d+ subagents? running$/.test(n.textContent.trim())));
   const subTarget = (name, part) => {
-    const row = [...document.querySelectorAll(SUB_ROW)].find(r => vis(r) && subRowName(r) === name);
+    const row = [...doc.querySelectorAll(SUB_ROW)].find(r => vis(r) && subRowName(r) === name);
     if (!row) { const h = subTrayHeader(); return h ? { expand: true, ...center(h) } : null; }
     if (part === 'stop') {
       const s = [...row.querySelectorAll('span.truncate')].find(e => e.innerText.trim() === 'Stop');
@@ -478,16 +546,16 @@ function pageHelpers() {
     }
     return center(row.querySelector('.composer-toolbar-background-job-item-text') || row);
   };
-  const activeChatTab = () => [...document.querySelectorAll('.tab.active')].map(e => e.getAttribute('aria-label') || '').find(l => /Chat Editors/.test(l)) || null;
+  const activeChatTab = () => [...doc.querySelectorAll('.tab.active')].map(e => e.getAttribute('aria-label') || '').find(l => /Chat Editors/.test(l)) || null;
   const tabTarget = label => {
-    const t = [...document.querySelectorAll('.tab')].find(e => vis(e) && e.getAttribute('aria-label') === label);
+    const t = [...doc.querySelectorAll('.tab')].find(e => vis(e) && e.getAttribute('aria-label') === label);
     return t ? center(t) : null;
   };
   // A new Devin session draws its composer inside the welcome layer. Devin hides that
   // layer while any file tab is open, so the model chip and prompt have a 0-size box.
   // Show the welcome until the new session is no longer pending. The file tab stays open.
   const revealDevinComposer = () => {
-    const groups = [...document.querySelectorAll('.editor-group-container')];
+    const groups = [...doc.querySelectorAll('.editor-group-container')];
     for (const group of groups) {
       if (group.classList.contains('has-pending-new-session-welcome')) continue;
       for (const el of group.querySelectorAll('[data-crl-devin-reveal]')) {
@@ -514,14 +582,14 @@ function pageHelpers() {
   };
   const hasComposer = () => {
     revealDevinComposer();
-    if ([...document.querySelectorAll('.aislash-editor-input[contenteditable="true"], .ui-prompt-input-editor__input[contenteditable="true"]')].some(vis)) return true;
+    if ([...doc.querySelectorAll('.aislash-editor-input[contenteditable="true"], .ui-prompt-input-editor__input[contenteditable="true"]')].some(vis)) return true;
     // Devin's prompt is a plain contenteditable. Its message bubbles are role=group too, so only those are excluded.
-    return [...document.querySelectorAll('[contenteditable="true"]')].some(e => vis(e) && !e.closest('.monaco-editor, [aria-label="User message"], [aria-label="Devin message"]'));
+    return [...doc.querySelectorAll('[contenteditable="true"]')].some(e => vis(e) && !e.closest('.monaco-editor, [aria-label="User message"], [aria-label="Devin message"]'));
   };
 
   // The Agent's ask-question tool renders as a toolbar above the composer, outside the message list.
   const QN = '.composer-questionnaire-toolbar';
-  const qnBox = () => [...document.querySelectorAll(QN)].find(vis);
+  const qnBox = () => [...doc.querySelectorAll(QN)].find(vis);
   const inQn = el => !!el.closest(QN);
   const qnOptions = q => [...q.querySelectorAll('.composer-questionnaire-toolbar-option')];
   const qnAction = (box, re) => [...box.querySelectorAll('.composer-questionnaire-toolbar-actions > *')].find(e => vis(e) && re.test(e.innerText));
@@ -557,9 +625,9 @@ function pageHelpers() {
   };
 
   // Files changed by the Agent: the "N Files" toggle above the composer expands a list with per-file undo / keep.
-  const filesToggle = () => [...document.querySelectorAll('span.cursor-pointer')].find(e => vis(e) && /^\d+ Files?$/.test(e.innerText.trim().replace(/\s+/g, ' ')));
+  const filesToggle = () => [...doc.querySelectorAll('span.cursor-pointer')].find(e => vis(e) && /^\d+ Files?$/.test(e.innerText.trim().replace(/\s+/g, ' ')));
   const changedCount = () => parseInt(filesToggle()?.innerText || '0', 10) || 0;
-  const changedRows = () => [...document.querySelectorAll('.composer-file-list-item')].filter(vis);
+  const changedRows = () => [...doc.querySelectorAll('.composer-file-list-item')].filter(vis);
   const changedFiles = () => changedRows().map(r => {
     const stat = [...r.querySelectorAll('.tabular-nums span')].map(s => s.innerText.trim());
     return {
@@ -591,7 +659,7 @@ function pageHelpers() {
 
   // Editing a queued message loads it into the main composer, which is tagged with the item id until saved.
   const focusQueueEdit = id => {
-    const bar = [...document.querySelectorAll('[data-editing-queue-item-id]')].find(e => vis(e) && e.dataset.editingQueueItemId === id);
+    const bar = [...doc.querySelectorAll('[data-editing-queue-item-id]')].find(e => vis(e) && e.dataset.editingQueueItemId === id);
     const ed = bar && [...bar.querySelectorAll('[contenteditable="true"]')].find(vis);
     if (!ed) return false;
     ed.focus();
@@ -605,12 +673,26 @@ function pageHelpers() {
     return icon ? center(icon.closest('button, [role=button], .anysphere-icon-button') || icon) : null;
   };
 
+  const permissionLabel = () => {
+    const b = doc.querySelector('[data-composer-navigation-target="permissions"], button[aria-label="Change permissions"]');
+    if (!b || !vis(b)) return null;
+    return (b.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 40) || null;
+  };
+  const codexModelName = () => {
+    const name = doc.querySelector('[class*="ModelPickerTriggerModelText"]')?.textContent?.trim();
+    if (!name) return null;
+    const effort = doc.querySelector('[data-selected-reasoning-effort]')?.getAttribute('data-selected-reasoning-effort') || '';
+    const pretty = effort.split(/[\s-]+/).filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1)).join(' ');
+    return pretty ? `${name} · ${pretty}` : name;
+  };
   const modelButton = () => {
-    const known = [...document.querySelectorAll('.ui-model-picker__trigger, .composer-unified-dropdown-model')].find(vis);
+    const codex = doc.querySelector('[data-codex-intelligence-trigger]');
+    if (codex && vis(codex)) return codex;
+    const known = [...doc.querySelectorAll('.ui-model-picker__trigger, .composer-unified-dropdown-model')].find(vis);
     if (known) return known;
     // Model sits in the prompt toolbar, on the opposite side from voice / send.
     // Status chips such as "commit" live outside that toolbar and must not match.
-    const bar = document.querySelector('.ui-prompt-input-toolbar');
+    const bar = doc.querySelector('.ui-prompt-input-toolbar');
     if (!bar) return devinModelButton();
     const right = bar.querySelector('.ui-prompt-input-toolbar__right');
     const STATUS = /^(commit|committing|generating|applying|reading|searching|running|planning|thinking|working|editing|indexing)\b/i;
@@ -623,16 +705,16 @@ function pageHelpers() {
   const DEVIN_MODEL = /^(SWE|GPT|Claude|Gemini|GLM|Kimi|Fusion)\b/;
   const devinModelButton = () => {
     revealDevinComposer();
-    return [...document.querySelectorAll('button')].find(e => {
+    return [...doc.querySelectorAll('button')].find(e => {
       if (!vis(e) || e.closest('.space-y-2')) return false;
       const text = (e.innerText || '').replace(/\s+/g, ' ').trim();
       return DEVIN_MODEL.test(text) && text.length < 50;
     });
   };
-  const devinModelMenu = () => [...document.querySelectorAll('div')].find(e => vis(e) && (e.innerText || '').includes('Recently Used') && (e.innerText || '').includes('See more') && (e.innerText || '').length < 2500);
+  const devinModelMenu = () => [...doc.querySelectorAll('div')].find(e => vis(e) && (e.innerText || '').includes('Recently Used') && (e.innerText || '').includes('See more') && (e.innerText || '').length < 2500);
   const normLabel = s => (s || '').replace(/[\u200b\u200c\u200d\ufeff]/g, '').replace(/\s+/g, ' ').trim();
   // Fusion is a lead + sidekick pairing. The detail panel only exists while that model menu is open.
-  const fusionPanel = () => [...document.querySelectorAll('div')].find(e => {
+  const fusionPanel = () => [...doc.querySelectorAll('div')].find(e => {
     if (!vis(e)) return false;
     const t = e.innerText || '';
     const b = e.getBoundingClientRect();
@@ -665,7 +747,7 @@ function pageHelpers() {
   const fusionOptionItems = () => {
     const seen = new Set();
     const items = [];
-    for (const el of document.querySelectorAll('[role=option]')) {
+    for (const el of doc.querySelectorAll('[role=option]')) {
       if (!vis(el)) continue;
       const label = fusionLine(el);
       if (!label || label.length > 60 || seen.has(label)) continue;
@@ -676,7 +758,7 @@ function pageHelpers() {
   };
   const fusionOptionTarget = label => {
     const want = normLabel(label);
-    const el = [...document.querySelectorAll('[role=option]')].find(e => vis(e) && fusionLine(e) === want);
+    const el = [...doc.querySelectorAll('[role=option]')].find(e => vis(e) && fusionLine(e) === want);
     if (!el) return null;
     el.scrollIntoView({ block: 'nearest' });
     return center(el);
@@ -746,12 +828,22 @@ function pageHelpers() {
         questions: null,
         readonly: !hasComposer(),
         mode: null,
-        model: modelEl ? normLabel(modelEl.innerText).split('\n')[0].slice(0, 60) : null,
+        model: codexModelName() || (modelEl ? normLabel(modelEl.innerText).split('\n')[0].slice(0, 60) : null),
+        permission: permissionLabel(),
         context: contextPct(),
       };
     }
     const r = panel.getBoundingClientRect();
     const items = topItems(panel).flatMap(el => {
+      if (el.hasAttribute?.('data-turn-key')) {
+        const user = el.querySelector('[class*="group/user-message"] [class*="MarkdownRoot"]');
+        const asst = [...el.querySelectorAll('[class*="MarkdownRoot"]')].find(n => !n.closest('[class*="group/user-message"]'));
+        const out = [];
+        const key = el.getAttribute('data-turn-key');
+        if (user?.innerText.trim()) out.push({ i: `${key}:u`, k: 'human', t: user.innerText.trim() });
+        if (asst) out.push({ i: `${key}:a`, k: 'assistant', h: clean(asst) });
+        return out;
+      }
       const thoughts = thinkingInside(el).map((th, n) => thinkingItem(th, el, n));
       if (isThinking(el)) return thoughts.length ? thoughts : [thinkingItem(el, el, 0)];
       const main = messageItem(el);
@@ -759,7 +851,7 @@ function pageHelpers() {
       return [...thoughts, main];
     });
     const global = buttonsIn(panel, true).filter(x => !inItem(x.el) && !inQn(x.el) && !/^stop generation\b/i.test(x.label)).map(x => x.label);
-    const modeEl = [...document.querySelectorAll('.composer-unified-dropdown[data-mode]')].find(vis);
+    const modeEl = [...doc.querySelectorAll('.composer-unified-dropdown[data-mode]')].find(vis);
     const modelEl = modelButton();
     return {
       rect: [r.x, r.y, r.width, r.height].map(Math.round),
@@ -772,22 +864,24 @@ function pageHelpers() {
       questions: questions(),
       readonly: !hasComposer(),
       mode: modeEl ? modeEl.innerText.trim() || modeEl.dataset.mode : null,
-      model: modelEl ? normLabel(modelEl.innerText).split('\n')[0].slice(0, 60) : null,
+      permission: permissionLabel(),
+      model: codexModelName() || (modelEl ? normLabel(modelEl.innerText).split('\n')[0].slice(0, 60) : null),
       context: contextPct(),
     };
   };
   const contextPct = () => {
-    const el = [...document.querySelectorAll('button, [role=button]')].find(e => vis(e) && /^Context(?:\s+usage)?:?\s*\d+%/i.test(((e.getAttribute('aria-label') || e.innerText || '').replace(/\s+/g, ' ').trim())));
+    const el = [...doc.querySelectorAll('button, [role=button]')].find(e => vis(e) && /^Context(?:\s+usage)?:?\s*\d+%/i.test(((e.getAttribute('aria-label') || e.innerText || '').replace(/\s+/g, ' ').trim())));
     const m = el && /(\d+)%/.exec((el.getAttribute('aria-label') || el.innerText || '').replace(/\s+/g, ' '));
     return m ? Number(m[1]) : null;
   };
 
   // Named controls in Cursor's UI; each entry lists fallbacks from newest to oldest Cursor layouts.
   const CONTROLS = {
-    mode: () => [...document.querySelectorAll('.composer-unified-dropdown[data-mode]')].find(vis),
+    mode: () => [...doc.querySelectorAll('.composer-unified-dropdown[data-mode]')].find(vis),
     model: () => modelButton(),
-    history: () => [...document.querySelectorAll('[aria-label^="Show Chat History"], [aria-label^="Show Agent History"]')].find(vis),
-    newChat: () => [...document.querySelectorAll('[aria-label="New Agent"], [aria-label^="New Chat"], [aria-label="New session"], [data-action-id="new-agent"]')].find(vis),
+    history: () => [...doc.querySelectorAll('[aria-label^="Show Chat History"], [aria-label^="Show Agent History"]')].find(vis),
+    newChat: () => [...doc.querySelectorAll('[aria-label="New Agent"], [aria-label="New chat"], [aria-label^="New Chat"], [aria-label="New session"], [data-action-id="new-agent"]')].find(vis),
+    permission: () => doc.querySelector('[data-composer-navigation-target="permissions"], button[aria-label="Change permissions"]'),
   };
 
   const center = el => {
@@ -802,16 +896,23 @@ function pageHelpers() {
   const clickControl = name => {
     const el = CONTROLS[name]?.();
     if (!el) return false;
+    // Radix menus ignore element.click(); a real mouse event is required.
+    if (name === 'permission') return false;
     el.click();
     return true;
   };
 
   const MENU_ITEMS = {
-    mode: () => [...document.querySelectorAll('.composer-unified-context-menu-item')].map(e => ({ el: e, label: e.innerText.trim().split('\n')[0], checked: !!e.querySelector('.codicon-check') })),
+    mode: () => [...doc.querySelectorAll('.composer-unified-context-menu-item')].map(e => ({ el: e, label: e.innerText.trim().split('\n')[0], checked: !!e.querySelector('.codicon-check') })),
     model: () => {
+      const codexRows = [...doc.querySelectorAll('[role=menuitemradio]')].filter(vis);
+      if (codexRows.length) return codexRows.map(e => {
+        const label = normLabel(e.innerText).split('\n')[0].slice(0, 60);
+        return { el: e, id: label, params: false, label, checked: e.getAttribute('aria-checked') === 'true' };
+      });
       const currentModel = normLabel(modelButton()?.innerText || '').split('\n')[0];
       // Auto is its own row and has no .ui-model-picker__item-content-name, so the list below would skip it.
-      const autoRows = [...document.querySelectorAll('[data-testid="auto-mode-select"]')].filter(vis).map(e => {
+      const autoRows = [...doc.querySelectorAll('[data-testid="auto-mode-select"]')].filter(vis).map(e => {
         const label = normLabel(e.innerText).split('\n')[0].slice(0, 60) || 'Auto';
         return {
           el: e,
@@ -821,9 +922,9 @@ function pageHelpers() {
           checked: label === currentModel || !!e.querySelector('[class*=check]') || e.getAttribute('aria-checked') === 'true',
         };
       });
-      const classic = [...document.querySelectorAll('.ui-menu__row')].filter(e => e.getAttribute('data-testid') !== 'auto-mode-select' && e.querySelector('.ui-model-picker__item-content-name'));
+      const classic = [...doc.querySelectorAll('.ui-menu__row')].filter(e => e.getAttribute('data-testid') !== 'auto-mode-select' && e.querySelector('.ui-model-picker__item-content-name'));
       if (classic.length) return [...autoRows, ...classic.map(e => ({ el: e, id: e.dataset.testid, params: !!e.querySelector('[data-testid=parameter-edit-btn]'), label: normLabel(e.querySelector('.ui-model-picker__item-content-name').innerText), checked: !!e.querySelector('.codicon-check, .ui-model-picker__item-right-section [class*=check]') }))];
-      const cursorItems = [...document.querySelectorAll('[data-testid^="model-item-"], [data-testid="auto-mode-select"]')].filter(vis).map(e => {
+      const cursorItems = [...doc.querySelectorAll('[data-testid^="model-item-"], [data-testid="auto-mode-select"]')].filter(vis).map(e => {
         const label = normLabel(e.innerText).split('\n')[0].slice(0, 60);
         return {
           el: e,
@@ -843,10 +944,19 @@ function pageHelpers() {
         return { el: e, id: label, params: false, label, checked: label === current };
       }).filter(x => DEVIN_MODEL.test(x.label));
     },
+    permission: () => {
+      const btn = doc.querySelector('[data-composer-navigation-target="permissions"], button[aria-label="Change permissions"]');
+      if (!btn) return [];
+      const current = (btn.innerText || '').replace(/\s+/g, ' ').trim();
+      return [...doc.querySelectorAll('[role=menuitem]')].filter(vis).map(e => {
+        const label = (e.innerText || '').trim().split('\n')[0].trim().slice(0, 40);
+        return { el: e, label, checked: label === current };
+      }).filter(x => /^(Ask for approval|Approve for me|Full access)$/.test(x.label));
+    },
     history: () => {
-      const rows = [...document.querySelectorAll('.composer-history-hover-menu .ui-menu__row')];
+      const rows = [...doc.querySelectorAll('.composer-history-hover-menu .ui-menu__row')];
       if (rows.length) return rows.map(e => ({ el: e, label: (e.querySelector('.compact-agent-history-react-menu-label, .ui-menu__item-content') || e).innerText.trim().split('\n')[0].slice(0, 80), checked: e.getAttribute('aria-checked') === 'true' || /\b(selected|active|current)\b/.test(e.className) }));
-      return [...document.querySelectorAll('.quick-input-widget .monaco-list-row')].map(e => ({ el: e, label: (e.getAttribute('aria-label') || e.innerText).trim().split('\n')[0].slice(0, 80), checked: e.classList.contains('focused') }));
+      return [...doc.querySelectorAll('.quick-input-widget .monaco-list-row')].map(e => ({ el: e, label: (e.getAttribute('aria-label') || e.innerText).trim().split('\n')[0].slice(0, 80), checked: e.classList.contains('focused') }));
     },
   };
 
@@ -857,8 +967,8 @@ function pageHelpers() {
     return !!(menu && vis(menu) && (x.el.innerText || '').trim());
   }).map(({ el, ...rest }) => rest);
 
-  const menuOpen = () => [...document.querySelectorAll('.ui-menu, .composer-unified-context-menu-item, .composer-history-hover-menu')].some(vis) || !!devinModelMenu() || !!fusionPanel();
-  const modelListRow = () => [...document.querySelectorAll('[role=menuitem]')].find(el => vis(el) && /^Model\b/.test(normLabel(el.innerText)));
+  const menuOpen = () => [...doc.querySelectorAll('.ui-menu, .composer-unified-context-menu-item, .composer-history-hover-menu, [role=menu]')].some(vis) || !!devinModelMenu() || !!fusionPanel();
+  const modelListRow = () => [...doc.querySelectorAll('[role=menuitem]')].find(el => vis(el) && /^Model\b/.test(normLabel(el.innerText)));
   const modelListTrigger = () => {
     const e = modelListRow();
     return e ? center(e) : null;
@@ -872,11 +982,11 @@ function pageHelpers() {
 
   // Model parameters (context size, effort, fast…) live in a per-model submenu behind its "Edit" button.
   const maxToggle = () => {
-    const t = [...document.querySelectorAll('[data-testid=max-mode-toggle]')].find(vis);
+    const t = [...doc.querySelectorAll('[data-testid=max-mode-toggle]')].find(vis);
     return t ? { ...center(t), on: t.getAttribute('aria-checked') === 'true' } : null;
   };
   const modelTarget = (id, part) => {
-    const row = [...document.querySelectorAll('[data-testid=model-picker-menu] .ui-menu__row')].find(e => e.dataset.testid === id);
+    const row = [...doc.querySelectorAll('[data-testid=model-picker-menu] .ui-menu__row')].find(e => e.dataset.testid === id);
     if (!row) return null;
     row.scrollIntoView({ block: 'nearest' });
     if (part !== 'edit') return center(row);
@@ -884,7 +994,7 @@ function pageHelpers() {
     return b && vis(b) ? center(b) : null;
   };
   const paramRows = () => {
-    const menu = [...document.querySelectorAll('[data-testid=parameter-submenu]')].find(vis);
+    const menu = [...doc.querySelectorAll('[data-testid=parameter-submenu]')].find(vis);
     if (!menu) return null;
     return [...menu.querySelectorAll('.ui-menu__section')].map(s => ({
       title: s.querySelector('.ui-menu__section-title')?.innerText.trim() || '',
@@ -957,8 +1067,8 @@ function pageHelpers() {
   // Cursor Agents window: the left sidebar lists conversations as row:<agent id>.
   const DEVIN_NAV = new Set(['New session', 'Sessions', 'Review', 'Automations', 'Security', 'Wiki', 'Cloud settings']);
   const agentList = () => {
-    const active = document.querySelector('[data-glass-agent-id]')?.getAttribute('data-glass-agent-id') || '';
-    const cursor = [...document.querySelectorAll('[data-sidebar-item-key^="row:"]')].filter(vis).map(row => {
+    const active = doc.querySelector('[data-glass-agent-id]')?.getAttribute('data-glass-agent-id') || '';
+    const cursor = [...doc.querySelectorAll('[data-sidebar-item-key^="row:"]')].filter(vis).map(row => {
       const id = row.getAttribute('data-sidebar-item-key').slice(4);
       const title = (row.querySelector('.ui-sidebar-menu-button-content .ui-text') || row).innerText.trim().split('\n')[0];
       const group = row.closest('[data-sidebar-group]')?.querySelector('[data-sidebar-group-label]')?.innerText.trim() || '';
@@ -972,7 +1082,7 @@ function pageHelpers() {
     }).filter(a => a.id && a.title);
     if (cursor.length) return cursor;
     // Devin sessions live in the same sidebar as New session / Sessions. The label is the id.
-    return [...document.querySelectorAll('li[data-slot="sidebar-menu-item"]')].filter(vis).map(li => {
+    return [...doc.querySelectorAll('li[data-slot="sidebar-menu-item"]')].filter(vis).map(li => {
       const btn = [...li.querySelectorAll('button[aria-label]')].find(vis);
       const title = (btn?.getAttribute('aria-label') || '').trim();
       if (!title || DEVIN_NAV.has(title)) return null;
@@ -987,13 +1097,13 @@ function pageHelpers() {
     }).filter(Boolean);
   };
   const agentTarget = id => {
-    const row = [...document.querySelectorAll('[data-sidebar-item-key]')].find(e => e.getAttribute('data-sidebar-item-key') === `row:${id}`);
+    const row = [...doc.querySelectorAll('[data-sidebar-item-key]')].find(e => e.getAttribute('data-sidebar-item-key') === `row:${id}`);
     if (row && vis(row)) {
       row.scrollIntoView({ block: 'nearest' });
       const hit = row.querySelector('.ui-sidebar-menu-button-content') || row.querySelector('[data-sidebar-menu-button]') || row;
       return center(hit);
     }
-    const btn = [...document.querySelectorAll('li[data-slot="sidebar-menu-item"] button[aria-label]')].find(e => vis(e) && e.getAttribute('aria-label') === id);
+    const btn = [...doc.querySelectorAll('li[data-slot="sidebar-menu-item"] button[aria-label]')].find(e => vis(e) && e.getAttribute('aria-label') === id);
     if (!btn) return null;
     btn.scrollIntoView({ block: 'nearest' });
     return center(btn);
@@ -1002,7 +1112,7 @@ function pageHelpers() {
   // Integrated terminals: the Agents window puts them in editor tabs (aria-controls contains terminal-).
   // Older editor layouts use .terminal-tab. The xterm canvas itself is only used for the crop rectangle.
   const terminalEntries = () => {
-    const glass = [...document.querySelectorAll('.ui-tab-system-tab')].filter(t => vis(t) && /terminal-/i.test(t.getAttribute('aria-controls') || ''));
+    const glass = [...doc.querySelectorAll('.ui-tab-system-tab')].filter(t => vis(t) && /terminal-/i.test(t.getAttribute('aria-controls') || ''));
     if (glass.length) {
       return glass.map(tab => {
         const id = (/terminal-([0-9a-f-]{8,})/i.exec(tab.getAttribute('aria-controls') || '') || [])[1] || '';
@@ -1016,7 +1126,7 @@ function pageHelpers() {
         };
       }).filter(t => t.id);
     }
-    return [...document.querySelectorAll('.terminal-tabs-list .terminal-tab')].filter(vis).map((tab, i) => ({
+    return [...doc.querySelectorAll('.terminal-tabs-list .terminal-tab')].filter(vis).map((tab, i) => ({
       id: tab.id || `classic-${i}`,
       title: (tab.querySelector('.label-name, a') || tab).innerText.trim().split('\n')[0].slice(0, 80) || `终端 ${i + 1}`,
       current: tab.classList.contains('active') || tab.getAttribute('aria-selected') === 'true',
@@ -1041,21 +1151,21 @@ function pageHelpers() {
     return b && vis(b) ? center(b) : null;
   };
   const terminalRect = () => {
-    const el = [...document.querySelectorAll('.terminal-wrapper.active .xterm, .terminal.xterm')].find(vis);
+    const el = [...doc.querySelectorAll('.terminal-wrapper.active .xterm, .terminal.xterm')].find(vis);
     if (!el) return null;
     const r = el.getBoundingClientRect();
     return [r.x, r.y, r.width, r.height].map(Math.round);
   };
   const terminalFocus = () => {
-    const el = [...document.querySelectorAll('.terminal-wrapper.active .xterm, .terminal.xterm')].find(vis);
+    const el = [...doc.querySelectorAll('.terminal-wrapper.active .xterm, .terminal.xterm')].find(vis);
     return el ? center(el) : null;
   };
   const newTerminalDirect = () => {
-    const b = [...document.querySelectorAll('[aria-label="New Terminal"], [aria-label^="New Terminal"]')].find(vis);
+    const b = [...doc.querySelectorAll('[aria-label="New Terminal"], [aria-label^="New Terminal"]')].find(vis);
     return b ? center(b) : null;
   };
   const newTerminalMenu = () => {
-    const buttons = [...document.querySelectorAll('button')].filter(e => vis(e) && e.getAttribute('aria-label') === 'Open new tab menu');
+    const buttons = [...doc.querySelectorAll('button')].filter(e => vis(e) && e.getAttribute('aria-label') === 'Open new tab menu');
     if (!buttons.length) return null;
     const active = terminalEntries().find(t => t.current)?.tab;
     if (active) {
@@ -1064,36 +1174,36 @@ function pageHelpers() {
     }
     return center(buttons[0]);
   };
-  const labeled = name => [...document.querySelectorAll('button, [role=button]')].find(e => vis(e) && (e.getAttribute('aria-label') || '') === name);
+  const labeled = name => [...doc.querySelectorAll('button, [role=button]')].find(e => vis(e) && (e.getAttribute('aria-label') || '') === name);
   const onScreen = e => {
     const b = e.getBoundingClientRect();
     return b.width > 2 && b.height > 2 && b.bottom > 0 && b.right > 0 && b.top < innerHeight && b.left < innerWidth;
   };
   // The gear's label flips to "Close Settings". Devin opens a settings editor tab instead.
   const settingsOpen = () => {
-    if ([...document.querySelectorAll('button, [role=button]')].some(e => onScreen(e) && e.getAttribute('aria-label') === 'Close Settings')) return true;
-    if ([...document.querySelectorAll('input')].some(e => onScreen(e) && /search settings/i.test(e.getAttribute('aria-label') || ''))) return true;
-    const tab = [...document.querySelectorAll('.tab.active')].find(onScreen);
+    if ([...doc.querySelectorAll('button, [role=button]')].some(e => onScreen(e) && e.getAttribute('aria-label') === 'Close Settings')) return true;
+    if ([...doc.querySelectorAll('input')].some(e => onScreen(e) && /search settings/i.test(e.getAttribute('aria-label') || ''))) return true;
+    const tab = [...doc.querySelectorAll('.tab.active')].find(onScreen);
     return /settings/i.test(tab?.getAttribute('aria-label') || tab?.innerText || '');
   };
   const clickSettingsButton = () => {
-    const b = [...document.querySelectorAll('button, [role=button]')].find(e => onScreen(e) && e.getAttribute('aria-label') === 'Settings');
+    const b = [...doc.querySelectorAll('button, [role=button]')].find(e => onScreen(e) && e.getAttribute('aria-label') === 'Settings');
     if (!b) return false;
     b.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     b.click();
     return true;
   };
   const clickCloseSettings = () => {
-    const b = [...document.querySelectorAll('button, [role=button]')].find(e => onScreen(e) && e.getAttribute('aria-label') === 'Close Settings');
+    const b = [...doc.querySelectorAll('button, [role=button]')].find(e => onScreen(e) && e.getAttribute('aria-label') === 'Close Settings');
     if (b) { b.click(); return 'button'; }
-    const tab = [...document.querySelectorAll('.tab.active')].find(onScreen);
+    const tab = [...doc.querySelectorAll('.tab.active')].find(onScreen);
     if (/settings/i.test(tab?.getAttribute('aria-label') || '')) return 'tab';
     return '';
   };
   const openSettingsTarget = () => { const b = labeled('Settings'); return b ? center(b) : null; };
   const closeSettingsTarget = () => { const b = labeled('Close Settings'); return b ? center(b) : null; };
   const settingsPanel = () => {
-    const close = [...document.querySelectorAll('button')].find(b => b.getAttribute('aria-label') === 'Close Settings');
+    const close = [...doc.querySelectorAll('button')].find(b => b.getAttribute('aria-label') === 'Close Settings');
     if (!close || !vis(close)) return null;
     let p = close;
     for (let i = 0; i < 16 && p; i++) {
@@ -1133,15 +1243,15 @@ function pageHelpers() {
     return null;
   };
   const DEVIN_SETTINGS_NAV = /^(General|Plan information|Extensions|Agents|Configuration|Customizations|User interface|Devin Tab|Shortcuts|Advanced)$/;
-  const devinSettingsNav = () => [...document.querySelectorAll('button')].filter(e => onScreen(e) && DEVIN_SETTINGS_NAV.test((e.innerText || '').trim())).map(e => (e.innerText || '').trim());
+  const devinSettingsNav = () => [...doc.querySelectorAll('button')].filter(e => onScreen(e) && DEVIN_SETTINGS_NAV.test((e.innerText || '').trim())).map(e => (e.innerText || '').trim());
   const devinSettingsClick = name => {
-    const b = [...document.querySelectorAll('button')].find(e => onScreen(e) && (e.innerText || '').trim() === name);
+    const b = [...doc.querySelectorAll('button')].find(e => onScreen(e) && (e.innerText || '').trim() === name);
     if (!b) return false;
     b.click();
     return true;
   };
   const devinSettingsCards = () => {
-    const root = [...document.querySelectorAll('.editor-instance')].find(onScreen);
+    const root = [...doc.querySelectorAll('.editor-instance')].find(onScreen);
     if (!root) return [];
     const seen = new Set();
     const items = [];
@@ -1185,7 +1295,7 @@ function pageHelpers() {
   };
 
   const newTerminalItem = () => {
-    const rows = [...document.querySelectorAll('[role=listbox] [role=option], [role=listbox] button, [role=menu] [role=menuitem]')];
+    const rows = [...doc.querySelectorAll('[role=listbox] [role=option], [role=listbox] button, [role=menu] [role=menuitem]')];
     const hit = rows.find(e => vis(e) && /^Terminal\b/.test((e.innerText || e.getAttribute('aria-label') || '').trim()));
     return hit ? center(hit) : null;
   };
@@ -1210,7 +1320,7 @@ function pageHelpers() {
     return null;
   };
   const terminalCommand = () => {
-    const host = document.querySelector('.terminal-wrapper.active .xterm-wrapper') || document.querySelector('.xterm-wrapper');
+    const host = doc.querySelector('.terminal-wrapper.active .xterm-wrapper') || doc.querySelector('.xterm-wrapper');
     const term = host?.xterm;
     const buf = term?.buffer?.active;
     if (!buf) return null;
@@ -1237,7 +1347,7 @@ function pageHelpers() {
     return null;
   };
   const terminalDump = prev => {
-    const host = document.querySelector('.terminal-wrapper.active .xterm-wrapper') || document.querySelector('.xterm-wrapper');
+    const host = doc.querySelector('.terminal-wrapper.active .xterm-wrapper') || doc.querySelector('.xterm-wrapper');
     const term = host?.xterm;
     const buf = term?.buffer?.active;
     if (!buf) return null;
@@ -1282,7 +1392,7 @@ function pageHelpers() {
   };
 
   const quickOpenRows = () => {
-    const w = document.querySelector('.quick-input-widget');
+    const w = doc.querySelector('.quick-input-widget');
     if (!w || !vis(w)) return null;
     return [...w.querySelectorAll('.monaco-list-row')].filter(vis).map(e => ({
       name: e.querySelector('.label-name')?.innerText.trim() || '',
@@ -1346,10 +1456,11 @@ function projectList(dir) {
 }
 
 const DEVIN_BIN = fs.existsSync('/usr/share/devin-desktop/devin-desktop') ? '/usr/share/devin-desktop/devin-desktop' : 'devin-desktop';
+const CODE_BIN = process.env.CODE_BIN || 'code';
 
 function openFolder(folder, app) {
   const { real } = safeHomePath(folder);
-  const bin = app === 'devin' ? DEVIN_BIN : CURSOR_BIN;
+  const bin = app === 'devin' ? DEVIN_BIN : app === 'codex' ? CODE_BIN : CURSOR_BIN;
   const child = spawn(bin, ['-r', real], { detached: true, stdio: 'ignore' });
   child.unref();
   return real;
@@ -1373,6 +1484,7 @@ class Session {
     this.thinkingTried = new Map();
     this.keptThink = new Map();
     this.app = 'cursor';
+    this.codexPageId = '';
     this.lastPanel = '';
     this.lastBusy = null;
     this.lastTermHash = undefined;
@@ -1722,7 +1834,7 @@ class Session {
   }
 
   async showUsage() {
-    if (this.app === 'devin') {
+    if (this.app === 'devin' || this.app === 'codex') {
       this.emit({ t: 'usage', lines: [], bars: [] });
       return;
     }
@@ -1926,11 +2038,29 @@ class Session {
   }
 
   async listAgents() {
+    if (this.app === 'codex') {
+      const pages = await codexWindows(CODEX_CDP_URL);
+      this.emit({ t: 'agents', list: pages.map(p => ({
+        id: p.pageId,
+        title: p.title,
+        group: '',
+        current: p.pageId === this.codexPageId,
+        running: false,
+      })) });
+      return;
+    }
     const list = await this.cdp.evaluate(helpersCall('agentList()'));
     this.emit({ t: 'agents', list: list || [] });
   }
 
   async openAgent(id) {
+    if (this.app === 'codex') {
+      if (!id || id.length > 80) throw new Error('这条 Agent 已经不在列表里');
+      this.codexPageId = id;
+      await this.attach('codex');
+      this.emit({ t: 'status', ok: true, msg: '已切换 Agent' });
+      return;
+    }
     if (!id || id.length > 200) throw new Error('这条 Agent 已经不在列表里');
     const pos = await this.cdp.evaluate(helpersCall(`agentTarget(${JSON.stringify(id)})`));
     if (!pos) throw new Error('这条 Agent 已经不在列表里');
@@ -2239,11 +2369,25 @@ class Session {
   }
 
   async attach(targetId) {
+    if (String(targetId || '').startsWith('codex:')) {
+      this.codexPageId = this.codexPageId || String(targetId).slice('codex:'.length);
+      targetId = 'codex';
+    }
     this.detach();
     const wins = await listWindows();
     const win = wins.find(w => w.id === targetId) || wins.find(w => w.id.endsWith(':' + targetId)) || wins[0];
-    if (!win) throw new Error('没有找到 Cursor 或 Devin 窗口。Cursor 用调试端口 9222，Devin 用 ./start-devin.sh');
-    const cdp = new Cdp(win.ws);
+    if (!win) throw new Error('没有找到 Cursor、Devin 或 Codex 窗口。Cursor 用调试端口 9222，Devin 用 ./start-devin.sh，Codex 用 ./start-codex.sh');
+    let chatWs = null;
+    if (win.app === 'codex') {
+      const pages = await codexWindows(win.port);
+      const picked = pages.find(p => p.pageId === this.codexPageId)
+        || pages.find(p => !/^Welcome\b/.test(p.rawTitle) && p.chatWs)
+        || pages.find(p => p.chatWs)
+        || pages[0];
+      this.codexPageId = picked?.pageId || '';
+      chatWs = picked?.chatWs || null;
+    }
+    const cdp = new Cdp(chatWs || win.ws);
     await cdp.connect();
     this.cdp = cdp;
     this.targetId = win.id;
