@@ -216,12 +216,18 @@
   #viewer .names { flex: 1; min-width: 0; line-height: 1.25; }
   #vName { font-size: 14px; color: #eee; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #vPath { font-size: 11px; color: #888; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+  #vTools, #vSearch { flex: none; display: flex; gap: 6px; padding: 6px 10px; overflow-x: auto; align-items: center; }
+  #vTools button { flex: none; padding: 6px 10px; }
+  #vSearch input { flex: 1; min-width: 0; padding: 6px; }
+  #vSearch span { flex: none; font-size: 12px; }
+  #vTools[hidden], #vSearch[hidden] { display: none; }
   #vBody { flex: 1; min-height: 0; overflow: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
   #vBody .code { font: 12px/1.5 ui-monospace, Menlo, monospace; padding: 6px 0 40px; min-width: max-content; }
   #vBody.wrap .code { min-width: 0; }
   #vBody .l { display: flex; white-space: pre; }
   #vBody.wrap .l { white-space: pre-wrap; overflow-wrap: anywhere; }
   #vBody .l i { flex: none; width: 3.6em; padding-right: 10px; text-align: right; color: #5a5a5a; font-style: normal; user-select: none; -webkit-user-select: none; }
+  #vBody .l.searchHit { background: #5c4b13; }
   #vBody .l.hl { background: #264f7855; }
   #vBody img { display: block; max-width: 100%; margin: 12px auto; background: #fff1; }
   #vBody .note { padding: 30px 20px; color: #999; text-align: center; line-height: 1.7; }
@@ -337,8 +343,16 @@
     <button id="vClose">←</button>
     <div class="names"><div id="vName"></div><div id="vPath"></div></div>
     <button id="vEdit" hidden>编辑</button>
+    <button id="vFind">搜索</button>
     <button id="vWrap">换行</button>
   </div>
+  <div id="vTools" hidden>
+    <button data-edit="copy">复制</button><button data-edit="paste">粘贴</button>
+    <button data-edit="indent">缩进</button><button data-edit="outdent">反缩进</button><button data-edit="search">搜索</button>
+    <button data-edit="more">更多</button>
+    <button data-edit="undo" hidden>撤销</button><button data-edit="redo" hidden>重做</button><button data-edit="all" hidden>全选</button>
+  </div>
+  <div id="vSearch" hidden><input id="vQuery" placeholder="搜索当前文档"><span id="vCount"></span><button id="vPrev">↑</button><button id="vNext">↓</button><button id="vSearchClose">×</button></div>
   <div id="vBody"></div>
 </div>
 
@@ -400,10 +414,9 @@ window.visualViewport?.addEventListener('resize', fitViewport);
 window.visualViewport?.addEventListener('scroll', fitViewport);
 fitViewport();
 
-// In-progress lines end with … and are cleared when the result arrives, or after a few seconds
-// so a finished action cannot leave "正在…" on screen. A short result then fades on its own.
+// Keep action progress until its result arrives; fade short completion messages.
 const ACTION_PENDING = new Set([
-  '正在切换 Agent…', '正在读取 Agent 列表…', '正在打开子 Agent…', '返回主对话…',
+  '正在新建对话…', '正在切换窗口…', '正在切换 Agent…', '正在读取 Agent 列表…', '正在打开子 Agent…', '返回主对话…',
   '正在切换终端…', '正在删除终端…', '正在新建终端…', '正在读取终端列表…',
   '正在打开项目…', '正在读取项目…', '正在读取文件夹…', '正在读取文档…', '正在保存…',
   '正在读取设置…', '正在修改…', '正在读取额度…', '正在停止…',
@@ -421,8 +434,8 @@ function status(text, ok = true) {
   $('msg').textContent = text || '';
   $('msg').className = ok ? '' : 'err';
   const keep = text === '已连接' || (ok && /…$/.test(text || '') && !pendingStatus);
-  if (!text || !ok || keep) return;
-  const wait = pendingStatus ? 8000 : 2800;
+  if (!text || !ok || keep || pendingStatus) return;
+  const wait = 2800;
   statusTimer = setTimeout(() => {
     if (gen !== statusGen) return;
     statusGen++;
@@ -532,6 +545,7 @@ function rememberComputer(comp) {
 }
 function applySelection(m, clearChat = true) {
   const changed = (m.sel || '') !== viewSel;
+  if (changed) saveDraft();
   if (changed) { viewSel = m.sel || ''; cache.clear(); }
   const here = currentComputer();
   if (here) rememberComputer({
@@ -540,6 +554,9 @@ function applySelection(m, clearChat = true) {
     windowId: m.windowId ?? here.windowId ?? '',
     threadId: m.threadId ?? here.threadId ?? '',
   });
+  if (changed) restoreDraft();
+  if (m.project) currentProject = m.project;
+  updateTitle();
   if (clearChat && changed) renderChat(null);
 }
 async function decryptEntry(keyText, entry) {
@@ -852,9 +869,13 @@ function connect() {
       send({ t: 'visible', v: document.visibilityState === 'visible' });
       send({ t: 'lang', v: I18N.lang });
       clearInterval(usageTimer);
-      usageTimer = setInterval(() => { if (authed) send({ t: 'usage' }); }, 10 * 60 * 1000);
+      usageTimer = setInterval(() => { if (authed) send({ t: 'usage', automatic: true }); }, 10 * 60 * 1000);
       syncNotify();
       setTimeout(checkAppUpdate, 3000);
+    }
+    else if (m.t === 'sent') {
+      if (drafts.get(m.draft) === m.text) drafts.delete(m.draft);
+      if (draftKey() === m.draft && text.value === m.text) { text.value = ''; autosize(); }
     }
     else if (m.t === 'chat') { if (!m.sel || !viewSel || m.sel === viewSel) renderChat(m.chat); }
     else if (m.t === 'thread') applySelection(m);
@@ -863,18 +884,21 @@ function connect() {
     else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; if (sheetKind === 'windows') showWindows(); }
     else if (m.t === 'attached') {
       if (m.keepQuota) { applySelection(m); return; }
+      finishPending(['正在切换窗口…', '正在切换 Agent…']);
       store.set('window', m.id);
       applySelection(m, false);
       currentWindow = m.id;
       if (m.closed) { status('这个窗口已经关闭，请重新选择', false); send({ t: 'agents' }); return; }
       $('titleText').textContent = m.app === 'devin' ? 'Devin agent' : m.app === 'codex' ? 'Codex' : winLabel(m.title).name;
       currentAppName = m.appName;
-      updateAppText();
+      currentProject = m.project || winLabel(m.title).name;
+      updateAppText(); updateTitle();
       renderChat(null);
       renderContext(null);
       $('quotaMeters').innerHTML = '';
       $('quotaMeters').title = '';
-      send({ t: 'usage' });
+      renderQuota(quotaCache.get(quotaKey()) || {});
+      send({ t: 'usage', automatic: true });
       send({ t: 'windows' });
     }
     else if (m.t === 'agents') { finishPending(['正在读取 Agent 列表…']); showAgents(m.list || []); }
@@ -1019,6 +1043,7 @@ function fusionBlock(fusion) {
     + '<div class="hint">Lead 负责规划和关键判断，Sidekick 负责具体执行。</div>';
 }
 function showMenu(kind, items, max, fusion) {
+  finishPending(['读取模式列表…', '读取模型列表…', '读取历史对话…', '设置中…']);
   const picking = String(kind || '').startsWith('fusion-');
   if (!items?.length && !fusion) return status(appMessage('菜单是空的，可能 {app} 版本不同'), false);
   status('');
@@ -1037,6 +1062,7 @@ function showMenu(kind, items, max, fusion) {
 }
 
 function showChanges(m) {
+  finishPending(['正在撤销…', '正在保留…', '处理中…']);
   status('');
   if (!m.files.length) { if (sheetKind === 'changes') closeSheet(); return status('没有待处理的改动'); }
   openSheet('changes', `<h3>Agent 改动的文件（${m.files.length}）</h3>`
@@ -1049,6 +1075,7 @@ function showChanges(m) {
 }
 
 function showParams(m) {
+  finishPending(['读取模型参数…', '设置中…']);
   status('');
   openSheet('params', `<h3>${esc(m.label || '模型')} 参数</h3>` + m.sections.map(s => `<div class="pSec">${esc(s.title)}</div><div class="pRow">`
     + s.items.map(it => `<button class="${it.checked ? 'on' : ''} ${it.toggle ? 'tg' : ''}" data-model="${esc(m.model)}" data-plabel="${esc(m.label)}" data-section="${esc(s.title)}" data-value="${esc(it.label)}">${esc(it.label)}${it.toggle ? (it.checked ? '：开' : '：关') : ''}</button>`).join('')
@@ -1116,12 +1143,21 @@ function renderContext(info) {
   $('meterCtx').title = basis === 'remaining' ? '剩余' : '已用';
   $('meterCtx').onclick = () => { status('正在读取额度…'); send({ t: 'usage' }); };
 }
+const quotaCache = new Map();
+const quotaKey = () => [currentComputer()?.id || '', ...viewSel.split('|').slice(0, 2)].join('|');
 function renderQuota(m) {
   if ('context' in m) renderContext(m.context);
-  if (m.error) return;
+  if (m.error) { $('quotaMeters').title += ' · ' + m.error; status('额度刷新失败：' + m.error, false); return; }
+  if (m.loading) return;
+  if (!('quota' in m) && !('limits' in m) && !('bars' in m)) {
+    if (!$('quotaMeters').children.length) $('quotaMeters').innerHTML = '<button class="meter" onclick="status(\'正在读取额度…\');send({t:\'usage\'})">点击读取额度</button>';
+    return;
+  }
+  if (!m.missing && !m.loading) quotaCache.set(quotaKey(), m);
   const bars = [...(m.quota || []), ...(m.limits || []), ...((m.quota || m.limits) ? [] : (m.bars || []))]
     .filter(b => b?.label && !/^loading\b/i.test(String(b.label)));
   const when = m.updated ? new Date(m.updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  if (m.missing && $('quotaMeters').querySelector('.track')) { $('quotaMeters').title += ' · 没有额度数据'; return; }
   if (m.missing) {
     $('quotaMeters').title = when ? `更新于 ${when}` : '';
     $('quotaMeters').innerHTML = `<button class="meter" type="button"><span>没有额度数据</span></button>`;
@@ -1311,7 +1347,7 @@ $('sheet').addEventListener('click', async e => {
     if (body) body.hidden = !open;
     return;
   }
-  if (b.dataset.win) { closeSheet(); return send({ t: 'attach', id: b.dataset.win }); }
+  if (b.dataset.win) { closeSheet(); status('正在切换窗口…'); return send({ t: 'attach', id: b.dataset.win }); }
   if (b.dataset.agent) { closeSheet(); status('正在切换 Agent…'); return send({ t: 'openAgent', id: b.dataset.agent }); }
   if (b.dataset.term) { closeSheet(); status('正在切换终端…'); return send({ t: 'openTerminal', id: b.dataset.term }); }
   if (b.dataset.open) { closeSheet(); status('正在打开项目…'); return send({ t: 'openProject', path: b.dataset.open }); }
@@ -1430,7 +1466,9 @@ function useComputer(i) {
   const list = loadComputers();
   const c = list[Number(i)];
   if (!c) return showComputers();
+  saveDraft();
   saveComputers(list, c.key);
+  restoreDraft();
   store.set('window', c.win || null);
   connGen++;
   offlineGen++;
@@ -1472,7 +1510,9 @@ function updateTermEmpty() {
   $('termText').hidden = !(mode === 'terminal' && termState === 'text');
 }
 function setMode(m) {
+  saveDraft();
   mode = m;
+  restoreDraft(); updateTitle();
   store.set('mode', m);
   $('tabChat').classList.toggle('on', m === 'chat');
   $('tabTerm').classList.toggle('on', m === 'terminal');
@@ -1640,8 +1680,15 @@ function noteSwitch(chat) {
 }
 
 let lastChat = null;
+let currentProject = '', currentTerminal = '';
+function updateTitle() {
+  const first = lastChat?.items?.find(it => it.k === 'user');
+  const conversation = mode === 'terminal' ? currentTerminal : (lastChat?.title || first?.t || '');
+  $('titleText').textContent = [currentAppName, currentProject, conversation.split('\n')[0].slice(0, 40)].filter(Boolean).join(' · ');
+}
 function renderChat(chat) {
-  lastChat = chat;
+  const previous = lastChat;
+  lastChat = chat; updateTitle();
   if (chat && 'context' in chat) renderContext(chat.context);
   $('empty').hidden = !!chat;
   $('older').hidden = !chat;
@@ -1677,7 +1724,9 @@ function renderChat(chat) {
     cache.set(it.i, { key, el });
     return el;
   });
-  itemsEl.replaceChildren(...els);
+  const liveEls = new Set(els);
+  for (const child of [...itemsEl.children]) if (!liveEls.has(child)) child.remove();
+  els.forEach((el, i) => { if (itemsEl.children[i] !== el) itemsEl.insertBefore(el, itemsEl.children[i] || null); });
   const live = new Set(chat.items.map(it => it.i));
   for (const k of cache.keys()) if (!live.has(k)) cache.delete(k);
 
@@ -1691,6 +1740,7 @@ function renderChat(chat) {
     const el = [...itemsEl.children].find(e => e.dataset.i === anchor);
     if (el) list.scrollTop = el.offsetTop - anchorTop;
   }
+  if (!stick && previous && JSON.stringify(previous.items) !== JSON.stringify(chat.items)) $('toBottom').textContent = '↓ 有新消息';
   updateToBottom();
   noteSwitch(chat);
 }
@@ -1795,6 +1845,7 @@ $('queueBar').onclick = async e => {
 };
 
 function updateToBottom() {
+  if (nearBottom()) $('toBottom').textContent = '↓ 最新';
   $('toBottom').style.display = nearBottom() ? 'none' : 'block';
 }
 list.addEventListener('scroll', updateToBottom);
@@ -1837,8 +1888,8 @@ function blockText(pre) {
 function forTerminalPaste(text) {
   return text.replace(/\n/g, '\r\n');
 }
-async function copyText(text, btn) {
-  const payload = forTerminalPaste(text);
+async function copyText(text, btn, terminal = true) {
+  const payload = terminal ? forTerminalPaste(text) : text;
   try {
     await navigator.clipboard.writeText(payload);
   } catch {
@@ -1878,7 +1929,7 @@ $('pickModel').onclick = () => { status('读取模型列表…'); send({ t: 'ope
 $('pickPerm').onclick = () => { status('读取权限…'); send({ t: 'openMenu', kind: 'permission' }); };
 $('pickAgents').onclick = () => { status('正在读取 Agent 列表…'); send({ t: 'agents' }); };
 $('pickHistory').onclick = () => { status('读取历史对话…'); send({ t: 'openMenu', kind: 'history' }); };
-$('newChat').onclick = () => { send({ t: 'newChat' }); status('已新建对话'); };
+$('newChat').onclick = () => { status('正在新建对话…'); send({ t: 'newChat' }); };
 
 /* ---------- file viewer ---------- */
 $('vBody').classList.toggle('wrap', store.get('wrap') !== 'off');
@@ -1886,7 +1937,7 @@ $('vWrap').classList.toggle('on', store.get('wrap') !== 'off');
 
 let viewing = null;
 let editing = false;
-let editBase = '';
+let editBase = '', saving = null;
 function dirtyEdit() {
   const box = $('vEditBox');
   return editing && box && box.value !== editBase;
@@ -1896,6 +1947,9 @@ function leaveEdit() {
   $('vBody').classList.remove('editing');
   $('vEdit').textContent = '编辑';
   $('vWrap').hidden = false;
+  $('vFind').hidden = false;
+  $('vTools').hidden = true;
+  $('vSearch').hidden = true;
 }
 function openFile(ref) {
   leaveEdit();
@@ -1915,7 +1969,9 @@ function showFile(m) {
   if (!$('viewer').classList.contains('open') || m.loading) return;
   leaveEdit();
   viewing = m.text != null ? m : null;
+  $('vFind').hidden = m.text == null;
   $('vEdit').hidden = !m.editable;
+  $('vEdit').disabled = Boolean(saving);
   $('vName').textContent = m.name || '';
   // Leading LRM keeps the rtl ellipsis from reordering the path's slashes.
   $('vPath').textContent = m.path ? '\u200e' + (m.host ? m.host + ':' : '') + m.path + (m.size != null ? ` · ${fmtSize(m.size)}` : '') : '';
@@ -1941,23 +1997,27 @@ function showFile(m) {
 
 const fmtSize = n => n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
 
-function paintFile(text) {
-  const body = $('vBody');
-  const lines = String(text).replace(/\n$/, '').split('\n');
-  body.innerHTML = `<div class="code">${lines.map(l => `<div class="l"><i></i>${esc(l) || ' '}</div>`).join('')}</div>`;
-  body.querySelectorAll('.l i').forEach((el, n) => { el.textContent = n + 1; });
-  body.scrollTop = 0;
-}
 function onSaved(m) {
   finishPending(['正在保存…']);
+  const submitted = saving;
+  if (!submitted || m.path !== submitted.path || (m.host || '') !== submitted.host) return;
+  saving = null;
+  $('vEdit').disabled = false;
   if (!m.ok) return status(m.error || '保存失败', false);
-  if (!viewing || viewing.path !== m.path) return;
-  viewing.text = editBase = $('vEditBox')?.value ?? viewing.text;
+  if (!viewing || viewing.path !== submitted.path || (viewing.host || '') !== submitted.host) return;
+  viewing.text = editBase = submitted.text;
   viewing.size = m.size;
-  leaveEdit();
-  paintFile(viewing.text);
   status('已保存');
 }
+function saveEdit() {
+  if (!editing || saving) return;
+  if (!authed) return status('未连接', false);
+  saving = { path: viewing.path, host: viewing.host || '', text: $('vEditBox').value };
+  $('vEdit').disabled = true;
+  status('正在保存…');
+  send({ t: 'saveFile', ...saving });
+}
+
 function closeViewer() {
   if (dirtyEdit() && !confirm('还有没保存的修改，确定离开？')) {
     if (!history.state?.viewer) history.pushState({ viewer: true }, '');
@@ -1982,11 +2042,13 @@ $('vEdit').onclick = () => {
     $('vEditBox').value = viewing.text;
     $('vEdit').textContent = '保存';
     $('vWrap').hidden = true;
+    $('vFind').hidden = true;
+    $('vTools').hidden = false;
+    $('vEditBox').addEventListener('input', () => { if (!$('vSearch').hidden) findInFile(0); });
     $('vEditBox').focus();
     return;
   }
-  status('正在保存…');
-  send({ t: 'saveFile', path: viewing.path, host: viewing.host || '', text: $('vEditBox').value });
+  saveEdit();
 };
 $('vWrap').onclick = () => {
   const on = !$('vBody').classList.contains('wrap');
@@ -1994,6 +2056,98 @@ $('vWrap').onclick = () => {
   $('vWrap').classList.toggle('on', on);
   store.set('wrap', on ? null : 'off');
 };
+
+function editInsert(value) {
+  const box = $('vEditBox');
+  box.focus();
+  document.execCommand('insertText', false, value);
+}
+function indentEdit(remove = false) {
+  const box = $('vEditBox'), value = box.value;
+  const a = box.selectionStart, b = box.selectionEnd;
+  const existing = /^([ \t]+)\S/m.exec(value)?.[1] || '';
+  const unit = existing.includes('\t') ? '\t' : ' '.repeat(existing.length === 2 ? 2 : 4);
+  if (a === b && !remove) { editInsert(unit); return; }
+  const start = a === 0 ? 0 : value.lastIndexOf('\n', a - 1) + 1;
+  const last = b > a && value[b - 1] === '\n' ? b - 1 : b;
+  const next = value.indexOf('\n', last);
+  const end = next < 0 ? value.length : next;
+  const lines = value.slice(start, end).split('\n');
+  const changes = lines.map(line => remove ? -(line[0] === '\t' ? 1 : Math.min(unit.length, /^ */.exec(line)[0].length)) : unit.length);
+  const result = lines.map((line, i) => remove ? line.slice(-changes[i]) : unit + line).join('\n');
+  box.setSelectionRange(start, end);
+  editInsert(result);
+  const shift = remove ? -Math.min(-changes[0], a - start) : changes[0];
+  box.setSelectionRange(a + shift, a === b ? a + shift : b + changes.reduce((n, d) => n + d, 0));
+}
+let searchIndex = -1, searchQuery = '';
+function findInFile(step = 0) {
+  const query = $('vQuery').value;
+  const value = editing ? $('vEditBox').value : viewing?.text || '';
+  const hits = [];
+  if (query) for (let at = value.indexOf(query); at >= 0; at = value.indexOf(query, at + query.length)) hits.push(at);
+  if (query !== searchQuery) { searchIndex = -1; searchQuery = query; }
+  searchIndex = hits.length ? ((searchIndex < 0 ? 0 : searchIndex + step) % hits.length + hits.length) % hits.length : -1;
+  $('vCount').textContent = hits.length ? `${searchIndex + 1} / ${hits.length}` : '0 / 0';
+  if (editing) {
+    if (hits.length) {
+      const box = $('vEditBox'), at = hits[searchIndex];
+      box.setSelectionRange(at, at + query.length);
+      box.scrollTop = Math.max(0, (value.slice(0, at).split('\n').length - 3) * parseFloat(getComputedStyle(box).lineHeight));
+    }
+  } else {
+    const line = hits.length ? value.slice(0, hits[searchIndex]).split('\n').length - 1 : -1;
+    $('vBody').querySelectorAll('.l').forEach((el, i) => el.classList.toggle('searchHit', i === line));
+    $('vBody').querySelector('.searchHit')?.scrollIntoView({ block: 'center' });
+  }
+}
+function openSearch() {
+  $('vSearch').hidden = false;
+  $('vQuery').focus();
+  $('vQuery').select();
+  findInFile();
+}
+function closeSearch() {
+  $('vSearch').hidden = true;
+  $('vBody').querySelector('.searchHit')?.classList.remove('searchHit');
+  if (editing) $('vEditBox').focus();
+}
+async function editAction(action) {
+  const box = $('vEditBox');
+  if (action === 'search') return openSearch();
+  if (action === 'more') {
+    for (const button of $('vTools').querySelectorAll('[data-edit="undo"], [data-edit="redo"], [data-edit="all"]')) button.hidden = !button.hidden;
+    return;
+  }
+  if (!editing) return;
+  if (action === 'copy') {
+    const selected = box.value.slice(box.selectionStart, box.selectionEnd);
+    await copyText(selected || box.value, null, false);
+    status(selected ? '已复制' : '已复制全文');
+  } else if (action === 'paste') {
+    try { const value = await navigator.clipboard.readText(); editInsert(value); }
+    catch { status('请长按编辑框粘贴', false); }
+  } else if (action === 'indent' || action === 'outdent') indentEdit(action === 'outdent');
+  else if (action === 'all') { box.focus(); box.select(); }
+  else { box.focus(); document.execCommand(action); }
+}
+function editKey(e) {
+  if (e.isComposing || e.keyCode === 229) return;
+  const command = e.ctrlKey || e.metaKey;
+  if (command && e.key.toLowerCase() === 'f') { e.preventDefault(); openSearch(); }
+  else if (command && e.key.toLowerCase() === 's' && editing) { e.preventDefault(); saveEdit(); }
+  else if (e.key === 'Escape' && !$('vSearch').hidden) { e.preventDefault(); closeSearch(); }
+  else if (e.key === 'Tab' && e.target.id === 'vEditBox') { e.preventDefault(); indentEdit(e.shiftKey); }
+}
+$('viewer').addEventListener('keydown', editKey);
+$('vTools').addEventListener('pointerdown', e => { if (e.target.closest('button')) e.preventDefault(); });
+$('vTools').addEventListener('click', e => { const button = e.target.closest('[data-edit]'); if (button) editAction(button.dataset.edit); });
+$('vQuery').addEventListener('input', () => findInFile());
+$('vQuery').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); findInFile(e.shiftKey ? -1 : 1); } });
+$('vFind').onclick = openSearch;
+$('vPrev').onclick = () => findInFile(-1);
+$('vNext').onclick = () => findInFile(1);
+$('vSearchClose').onclick = closeSearch;
 
 /* ---------- screen view ---------- */
 const view = $('view'), stage = $('stage'), screen = $('screen');
@@ -2027,7 +2181,7 @@ function layoutStage() {
 
 let sentWidth = 0;
 function applyQuality() {
-  if ((mode !== 'screen' && mode !== 'terminal') || !authed || (mode === 'terminal' && !panel)) return;
+  if (mode !== 'screen' || !authed) return;
   const [, , rw] = cropRect();
   if (!rw) return;
   // The stream is a photo of the whole window. Ask for enough pixels that the cropped
@@ -2211,18 +2365,27 @@ function renderTermLine(line, caretAt) {
   }
   return html + '\n';
 }
+let termLines = [], termCursor = [];
 function renderTerm(m) {
   const box = $('termText');
   if (!m.lines) {
     termState = 'empty';
-    box.textContent = '';
+    box.textContent = ''; termLines = []; termCursor = [];
     updateTermEmpty();
     return;
   }
   termState = 'text';
   const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 64;
   const [cy, cx] = m.cursor || [];
-  box.innerHTML = m.lines.map((line, y) => renderTermLine(line, y === cy ? cx : null)).join('');
+  currentTerminal = m.name || ''; updateTitle();
+  m.lines.forEach((line, y) => {
+    if (JSON.stringify(line) === JSON.stringify(termLines[y]) && y !== cy && y !== termCursor[0]) return;
+    const row = document.createElement('span');
+    row.innerHTML = renderTermLine(line, y === cy ? cx : null);
+    if (box.children[y]) box.children[y].replaceWith(row); else box.append(row);
+  });
+  while (box.children.length > m.lines.length) box.lastElementChild.remove();
+  termLines = m.lines; termCursor = m.cursor || [];
   updateTermEmpty();
   if (stick) box.scrollTop = box.scrollHeight;
 }
@@ -2232,8 +2395,13 @@ document.querySelectorAll('[data-key]').forEach(b => b.onclick = () => send({ t:
 
 /* ---------- composer ---------- */
 const text = $('text');
+const drafts = new Map();
+let activeDraft = '';
+function draftKey() { return [currentComputer()?.id || '', viewSel, mode].join('|'); }
+function saveDraft() { if (activeDraft) drafts.set(activeDraft, text.value); }
+function restoreDraft() { activeDraft = draftKey(); text.value = drafts.get(activeDraft) || ''; autosize(); }
 function autosize() { text.style.height = 'auto'; text.style.height = text.scrollHeight + 'px'; }
-text.addEventListener('input', autosize);
+text.addEventListener('input', () => { autosize(); saveDraft(); });
 text.addEventListener('focus', () => {
   stickOnKeyboard = nearBottom();
   fitViewport();
@@ -2247,9 +2415,9 @@ text.addEventListener('blur', () => {
 $('send').onclick = () => {
   const v = text.value;
   if (!v.trim()) return;
-  if (mode === 'terminal') send({ t: 'termSend', text: v });
-  else send({ t: 'send', text: v, submit: true });
-  text.value = ''; autosize();
+  saveDraft();
+  if (mode === 'terminal') send({ t: 'termSend', text: v, draft: activeDraft });
+  else send({ t: 'send', text: v, submit: true, draft: activeDraft });
   if (mode === 'chat') list.scrollTop = list.scrollHeight;
 };
 // Enter sends. Shift+Enter keeps a newline. Ignore Enter that is confirming an IME candidate.
