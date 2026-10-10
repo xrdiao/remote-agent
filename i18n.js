@@ -40,6 +40,7 @@ const I18N = (() => {
     '文件太长，只能查看不能保存': 'This file is too long to edit',
     '内容太长，不能保存': 'The text is too long to save',
     '只能修改已打开过的项目里的文件': 'You can only edit files in previously opened projects',
+    '有多个同名工作区，不能确定保存到哪一个': 'Several workspaces share this name, so the file cannot be saved to a specific one',
     '没有可查看的项目。': 'No projects to view.', '这个文件夹里没有可查看的文档或代码。': 'No documents or code in this folder.',
     '文档': 'Doc', '代码': 'Code', '文件夹': 'Folder', '正在读取文档…': 'Loading files…',
     '只能查看这个项目里的文件': 'You can only view files inside this project',
@@ -243,7 +244,7 @@ const I18N = (() => {
   const tr = s => lang === 'zh' || s == null ? s : String(s).split('\n').map(line).join('\n');
 
   // Content mirrored from Cursor or the computer's files is never translated.
-  const SKIP = '#items, #vBody, #vName, #vPath, #titleText, .qt, [data-label] .lbl, [data-win] .lbl, [data-agent] .lbl, [data-term] .lbl, [data-docs-file] .lbl, [data-docs-dir] .lbl, [data-docs-root] .lbl, .qnQ, .qnOpt span';
+  const SKIP = '#items, #vBody, #vName, #vPath, #titleText, .qt, [data-label] .lbl, [data-win] .lbl, [data-agent] .lbl, [data-fold] .lbl, [data-term] .lbl, [data-docs-file] .lbl, [data-docs-dir] .lbl, [data-docs-root] .lbl, .qnQ, .qnOpt span';
   const ATTRS = ['placeholder', 'title', 'aria-label'];
   const fix = node => {
     if (node.nodeType === 3) {
