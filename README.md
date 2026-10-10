@@ -39,7 +39,7 @@ cursor --remote-debugging-port=9222
 ./start-codex.sh
 ```
 
-打开 Codex 侧边栏之后，手机窗口列表里会多一项 Codex。
+打开 Codex 侧边栏之后，手机窗口列表里只有一项 Codex。Codex 要单独开一个 VS Code 窗口才能工作，这些窗口不会再各占一条。点手机上的「Agent」切换，名字用文件夹，不用整段窗口标题。
 
 4. 安装依赖并打开公网隧道：
 
@@ -67,12 +67,15 @@ kill <隧道进程号>
 ## 手机上能做什么
 
 - 看 Agent 对话，回车发送，Shift+回车换行。
-- 切换 Agent 和模型。旧版 Cursor 在输入框旁有「历史」，用来打开这一条 Agent 里以前的聊天。现在 Cursor Agents 和 Devin 都把这些会话放在左侧列表里，手机上用「Agent」切换，工具栏不再放「历史」。
+- 切换 Agent 和模型。旧版 Cursor 在输入框旁有「历史」，用来打开这一条 Agent 里以前的聊天。现在 Cursor Agents 和 Devin 都把这些会话放在左侧列表里，手机上用「Agent」切换，工具栏不再放「历史」。Codex 的每个 VS Code 窗口也在这个列表里。
+- Codex 的权限在模型旁边，不挡对话。三档是每次询问、代为批准、完全访问。Cursor 和 Devin 的输入栏没有这个开关。
 - 看终端文字，新建、切换、关闭终端，并执行命令。
 - 看上下文占用和额度。额度条点一下会重新读取。
 - 对话里的公式按数学式显示。代码块可以点「复制」，较长的行内命令点一下也会复制。
 - 从手机附加图片到输入框。
-- 在窗口列表里切换 Cursor、Devin 和 Codex。Devin 的会话显示为 Devin agent，Codex 显示为 Codex。
+- 在窗口列表里切换 Cursor、Devin 和 Codex。Devin 显示为 Devin agent，Codex 只显示为 Codex。
+- 一台手机可以配对多台电脑。菜单里的「电脑」用来切换和删除。配对另一台时，用那台电脑自己打印的 `npm run pair` 链接，已经配对的电脑会保留。
+- 连不上时，手机会区分是到不了云端，还是云端能到、但这台电脑没接上。
 
 ## 常用命令
 
