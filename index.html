@@ -240,6 +240,13 @@
 
   /* gate (login / offline) */
   #gate { position: fixed; inset: 0; z-index: 20; background: #1e1e1e; display: none; flex-direction: column; gap: 12px; padding: calc(60px + env(safe-area-inset-top)) 24px 24px; }
+  #gate { overflow-y: auto; }
+  #gateDiagnostics[hidden] { display: none; }
+  .connectionTest { display: flex; flex-direction: column; gap: 4px; margin: 12px 0; font-size: 13px; }
+  .connectionTest a { color: #6cb6ff; overflow-wrap: anywhere; }
+  .connectionTest .ok { color: #73c991; }
+  .connectionTest .err { color: #f77; }
+  #gateFailure { white-space: pre-wrap; font-size: 13px; margin: 10px 0; }
   #gate.open { display: flex; }
   #gate h2 { margin: 0 0 6px; font-size: 20px; color: #eee; }
   #gate input { font-size: 16px; padding: 11px; }
@@ -369,6 +376,9 @@
     <button id="gateComputers" hidden>选择电脑</button>
     <button id="gateRepair">重新配对</button>
   </div>
+  <div id="gateDiagnostics" hidden>
+    <div id="gateTests"></div><div id="gateFailure"></div><button id="gateTestRetry">重新检测</button>
+  </div>
   <div id="gateInfo"></div>
 </div>
 
@@ -460,6 +470,7 @@ let gateSubmit = null;
 let gateRetryFn = null;
 function gate({ msg = '', err = false, input = null, retry = false, repair = false, computers = false, appLink = null, onRetry = null } = {}) {
   $('gate').classList.add('open');
+  $('gateDiagnostics').hidden = true;
   $('gateMsg').textContent = msg;
   $('gateMsg').className = err ? 'err' : '';
   const inp = $('gateInput');
@@ -670,31 +681,53 @@ function showTotp(onCode, err = '') {
   });
 }
 
-// url.json already loaded, so GitHub Pages is reachable. A no-cors request tells the
-// tunnel host apart from the computer: any HTTP answer means Cloudflare replied;
-// a network error means the phone never reached the cloud.
-async function probeCloud(url) {
+async function testEndpoint(url, relay = false) {
+  const start = performance.now();
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 8000);
   try {
-    await fetch(url + '/url.json?t=' + Date.now(), { mode: 'no-cors', cache: 'no-store', signal: ctl.signal });
-    return 'edge';
-  } catch (e) {
-    return e?.name === 'AbortError' ? 'timeout' : 'net';
-  } finally {
-    clearTimeout(timer);
-  }
-}
-async function explainOffline() {
-  let host = '';
-  try { host = new URL(base).host; } catch {}
-  if (!base || info?.self) return '连不上电脑：这个页面就是电脑自己提供的，服务没有响应。';
-  const kind = await probeCloud(base);
-  if (kind === 'edge') return '隧道地址有响应，但应用连接失败。\n可能是服务、认证、跨域或实时连接异常，尚不能确定电脑是否离线。\n' + host;
-  if (kind === 'timeout') return '访问隧道地址超时，将自动重试。\n可能是临时网络波动或隧道响应慢，尚不能确定故障位置。\n' + host;
-  return '本次隧道请求失败，将自动重试。\n可能与网络、DNS、证书或隧道状态有关，尚不能确定故障位置。\n' + host;
+    const response = await fetch(url + '?t=' + Date.now(), { cache: 'no-store', signal: ctl.signal });
+    if (!response.ok) return { ok: false, detail: 'HTTP ' + response.status };
+    const data = await response.json();
+    const valid = relay ? data?.self === true : data?.self === true || (data?.v === 3 && Array.isArray(data.computers)) || (data?.v === 2 && !!data.data);
+    return { ok: valid, detail: valid ? `正常 · ${Math.round(performance.now() - start)} ms` : '返回内容不符合预期' };
+  } catch (error) {
+    return { ok: false, detail: error.name === 'AbortError' ? '请求超时（8 秒）' : error instanceof SyntaxError ? '返回内容不是 JSON' : '请求失败（网络、DNS、证书或跨域原因未确定）' };
+  } finally { clearTimeout(timer); }
 }
 let offlineGen = 0;
+let lastFailure = { stage: '应用连接', error: '' };
+async function diagnoseConnection(failure, gen) {
+  const page = new URL('url.json', location.href).href;
+  const relay = base ? base.replace(/\/$/, '') + '/url.json' : '';
+  const endpoints = [{ label: '页面地址发布', url: page }, { label: '隧道和电脑服务', url: relay }];
+  const box = $('gateTests');
+  box.replaceChildren();
+  $('gateDiagnostics').hidden = false;
+  const rows = endpoints.map(endpoint => {
+    const row = document.createElement('div'); row.className = 'connectionTest';
+    const name = document.createElement('strong'); name.textContent = endpoint.label;
+    const result = document.createElement('span'); result.textContent = endpoint.url ? '正在测试…' : '尚未获取隧道地址';
+    row.append(name, result);
+    if (endpoint.url) {
+      const link = document.createElement('a'); link.href = endpoint.url; link.textContent = endpoint.url;
+      link.target = inApp ? '_self' : '_blank'; link.rel = 'noopener noreferrer'; row.append(link);
+    }
+    box.append(row); return result;
+  });
+  const results = await Promise.all(endpoints.map(endpoint => endpoint.url ? testEndpoint(endpoint.url, endpoint === endpoints[1]) : Promise.resolve({ ok: false, detail: '尚未获取隧道地址' })));
+  if (gen !== offlineGen) return;
+  results.forEach((result, i) => { rows[i].textContent = result.detail; rows[i].className = result.ok ? 'ok' : 'err'; });
+  const conclusion = !relay ? '尚未获取隧道地址；当前只能检测页面地址发布。'
+    : !results[0].ok && results[1].ok ? '电脑服务可达，页面地址发布请求异常。'
+    : results[0].ok && !results[1].ok ? '页面地址发布正常，隧道请求异常。'
+    : results.every(result => result.ok) ? '两个网址现在都正常；检查下方失败阶段。此前也可能是短暂网络波动。'
+    : '两个请求均未通过；仅凭浏览器请求不能确定是手机网络、入口还是服务异常。';
+  $('gateMsg').textContent = conclusion;
+  $('gateFailure').textContent = `失败阶段：${failure.stage}${failure.error ? '\n' + failure.error : ''}`;
+}
+$('gateTestRetry').onclick = () => showOffline(lastFailure);
+
 function publishedComputers() {
   if (info?.v === 3 && Array.isArray(info.computers)) return info.computers.filter(c => c && c.id);
   return [];
@@ -709,15 +742,13 @@ function offerComputers(msg, { err = true } = {}) {
   if (many) showComputers(msg);
   else autoRetry();
 }
-async function showOffline() {
+async function showOffline(failure = { stage: '应用连接', error: '' }) {
   const gen = ++offlineGen;
-  const many = loadComputers().length > 1 || unseenPublished().length > 0;
-  if (!many) autoRetry();
-  gate({ msg: '正在判断连不上的是云端还是电脑…', computers: many || loadComputers().length > 0 });
-  const msg = await explainOffline();
-  if (gen !== offlineGen) return;
-  gate({ msg, err: true, retry: true, repair: true, computers: many || loadComputers().length > 0 });
-  if (many) showComputers(msg);
+  lastFailure = failure;
+  clearTimeout(retryTimer);
+  gate({ msg: '正在检测页面地址和隧道…', err: true, retry: true, computers: loadComputers().length > 0 });
+  await diagnoseConnection(failure, gen);
+  if (gen === offlineGen) autoRetry();
 }
 
 async function pair(totp) {
@@ -770,10 +801,10 @@ async function boot() {
   }
   gate({ msg: '正在查找电脑…' });
   try {
-    info = await fetch('url.json?t=' + Date.now(), { cache: 'no-store' }).then(r => r.json());
-  } catch {
-    autoRetry();
-    return gate({ msg: '读取失败，请检查手机网络', err: true, retry: true, repair: true });
+    info = await fetch('url.json?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+  } catch (error) {
+    base = currentComputer()?.relay || '';
+    return showOffline({ stage: '页面地址读取', error: error.message });
   }
   if (pending) {
     try { base = await resolvePending(); }
@@ -788,15 +819,16 @@ async function boot() {
   }
   if (!currentComputer()) return loadComputers().length ? offerComputers('选择要连接的电脑', { err: false }) : showUnpaired();
   const chosen = currentComputer();
+  rememberComputer({ ...chosen, relay: base });
   if (chosen?.win) store.set('window', chosen.win);
   let meRes, me;
   try {
     meRes = await api('/api/me');
     me = await meRes.json();
-  } catch {
-    return showOffline();
+  } catch (error) {
+    return showOffline({ stage: '电脑身份接口 /api/me', error: error.message });
   }
-  if (!meRes.ok || !me || typeof me.paired !== 'boolean') return showOffline();
+  if (!meRes.ok || !me || typeof me.paired !== 'boolean') return showOffline({ stage: '电脑身份接口 /api/me', error: 'HTTP ' + meRes.status });
   if (!me.paired) return offerComputers('这台电脑不认当前配对。记录还在，可以换一台，或重新配对这台。');
   if (me.id || me.name) {
     const cur = currentComputer();
@@ -832,28 +864,33 @@ function connect() {
   clearTimeout(retryTimer);
   const gen = ++connGen;
   ws = new WebSocket(base.replace(/^http/, 'ws') + '/ws');
-  ws.onopen = () => ws.send(JSON.stringify({ t: 'auth', token: store.get('token') }));
+  let opened = false;
+  const socket = ws;
+  const connectTimer = setTimeout(() => { if (gen === connGen && !authed) socket.close(); }, 10000);
+  ws.onopen = () => { opened = true; socket.send(JSON.stringify({ t: 'auth', token: store.get('token') })); };
   let rejected = false;
-  ws.onclose = async () => {
+  ws.onclose = async event => {
+    clearTimeout(connectTimer);
     if (gen !== connGen) return;
     $('dot').className = '';
     if (!authed) {
       // boot() asks /api/me whether the device was removed or needs 2FA again.
-      await sleep(rejected ? 0 : 2000);
-      return boot();
+      if (rejected) return boot();
+      return showOffline({ stage: opened ? '实时连接认证' : '实时连接建立', error: 'WebSocket 关闭码 ' + event.code });
     }
     authed = false;
     failures++;
     status('断开，重连中…', false);
     await sleep(Math.min(8000, 800 * failures));
     // After repeated failures the relay may have restarted on a new address; rediscover it.
-    if (failures >= 3) { failures = 0; return boot(); }
+    if (failures >= 3) { failures = 0; return showOffline({ stage: '实时连接中断', error: 'WebSocket 关闭码 ' + event.code }); }
     connect();
   };
   ws.onmessage = ev => {
     const m = JSON.parse(ev.data);
     if (m.t === 'auth') {
       if (!m.ok) { rejected = true; return; }
+      clearTimeout(connectTimer);
       authed = true; failures = 0;
       ungate();
       if (sheetKind === 'computers') closeSheet();
