@@ -919,7 +919,11 @@ function showWindows() {
       return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">Devin agent</span></button>`;
     }
     if (w.app === 'codex') {
-      return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">Codex</span></button>`;
+      const many = windows.filter(x => x.app === 'codex').length > 1;
+      const parts = String(w.title || '').replace(/\s+-\s+Visual Studio Code$/, '').split(' - ').map(s => s.trim()).filter(Boolean);
+      const folder = parts.length > 1 ? parts[parts.length - 1] : '';
+      const name = many && folder ? `Codex · ${folder}` : 'Codex';
+      return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">${esc(name)}</span></button>`;
     }
     const label = winLabel(w.title || w.id);
     return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}">
