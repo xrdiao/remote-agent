@@ -9,52 +9,184 @@ const TEXT_LIMIT = 512 * 1024;
 const IMAGE_LIMIT = 8 * 1024 * 1024;
 const IMAGE_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.bmp': 'image/bmp' };
 
-const STORAGE_DIRS = {
-  darwin: ['~/Library/Application Support/Cursor/User/workspaceStorage', '~/Library/Application Support/Devin/User/workspaceStorage'],
-  linux: ['~/.config/Cursor/User/workspaceStorage', '~/.config/Devin/User/workspaceStorage'],
-  win32: [`${process.env.APPDATA}/Cursor/User/workspaceStorage`, `${process.env.APPDATA}/Devin/User/workspaceStorage`],
+const APP_DIRS = {
+  darwin: {
+    code: '~/Library/Application Support/Code/User',
+    cursor: '~/Library/Application Support/Cursor/User',
+    devin: '~/Library/Application Support/Devin/User',
+  },
+  linux: {
+    code: '~/.config/Code/User',
+    cursor: '~/.config/Cursor/User',
+    devin: '~/.config/Devin/User',
+  },
+  win32: {
+    code: `${process.env.APPDATA}/Code/User`,
+    cursor: `${process.env.APPDATA}/Cursor/User`,
+    devin: `${process.env.APPDATA}/Devin/User`,
+  },
 };
+
+function appUserDir(app) {
+  const dirs = APP_DIRS[process.platform] || APP_DIRS.linux;
+  return String(dirs[app] || '').replace(/^~/, os.homedir());
+}
 
 // vscode-remote://ssh-remote+<host or hex-encoded {"hostName":...}>/path
 function parseFolderUri(uri) {
   const u = new URL(uri);
-  if (u.protocol === 'file:') return { host: null, root: decodeURIComponent(u.pathname) };
+  if (u.protocol === 'file:') return { host: null, root: decodeURIComponent(u.pathname).replace(/\/+$/, '') || '/' };
   if (u.protocol !== 'vscode-remote:') return null;
   const authority = decodeURIComponent(u.host);
-  const m = /^ssh-remote\+(.+)$/.exec(authority);
-  if (!m) return null;
-  let host = m[1];
-  if (/^[0-9a-f]+$/i.test(host) && host.length % 2 === 0) {
-    try { host = JSON.parse(Buffer.from(host, 'hex').toString('utf8')).hostName || host; } catch {}
+  const ssh = /^ssh-remote\+(.+)$/.exec(authority);
+  let host = authority;
+  if (ssh) {
+    host = ssh[1];
+    if (/^[0-9a-f]+$/i.test(host) && host.length % 2 === 0) {
+      try { host = JSON.parse(Buffer.from(host, 'hex').toString('utf8')).hostName || host; } catch {}
+    }
   }
-  return { host, root: decodeURIComponent(u.pathname) };
+  return { host, root: decodeURIComponent(u.pathname).replace(/\/+$/, '') || '/' };
 }
 
-// Every folder Cursor has opened, newest first.
-export function workspaces() {
-  const dirs = STORAGE_DIRS[process.platform] || STORAGE_DIRS.linux;
+function workspaceIdentity(w) {
+  return `${w.host || ''}\0${String(w.root || '').replace(/\\/g, '/')}`;
+}
+
+// A .code-workspace file lists every root. Relative paths are resolved from the file's folder.
+function readCodeWorkspace(file, mtime, source) {
+  let data;
+  try { data = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return []; }
+  const folders = Array.isArray(data.folders) ? data.folders : [];
+  const base = path.dirname(file);
   const out = [];
-  for (const raw of dirs) {
-    const dir = raw.replace(/^~/, os.homedir());
+  for (const folder of folders) {
+    if (typeof folder?.uri === 'string') {
+      const ws = parseFolderUri(folder.uri);
+      if (ws) out.push({ ...ws, mtime, source, workspaceFile: file });
+    } else if (typeof folder?.path === 'string') {
+      const root = path.isAbsolute(folder.path) ? folder.path : path.resolve(base, folder.path);
+      out.push({ host: null, root: root.replace(/\\/g, '/'), mtime, source, workspaceFile: file });
+    }
+  }
+  return out;
+}
+
+function rootsFromWorkspaceJson(file, source) {
+  const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const mtime = fs.statSync(file).mtimeMs;
+  if (typeof data.folder === 'string') {
+    const ws = parseFolderUri(data.folder);
+    return ws ? [{ ...ws, mtime, source, workspaceFile: '' }] : [];
+  }
+  if (typeof data.workspace !== 'string') return [];
+  const pointed = parseFolderUri(data.workspace);
+  if (!pointed || pointed.host) return pointed ? [{ ...pointed, mtime, source, workspaceFile: data.workspace }] : [];
+  if (/\.code-workspace$/i.test(pointed.root) || /workspace\.json$/i.test(pointed.root)) {
+    const roots = readCodeWorkspace(pointed.root, mtime, source);
+    if (roots.length) return roots;
+  }
+  return [{ ...pointed, mtime, source, workspaceFile: '' }];
+}
+
+// Every folder Cursor, Devin, or VS Code has opened, newest first. Same host and path stay one entry.
+export function workspaces() {
+  const apps = ['code', 'cursor', 'devin'];
+  const byId = new Map();
+  for (const app of apps) {
+    const dir = path.join(appUserDir(app), 'workspaceStorage');
     let entries = [];
     try { entries = fs.readdirSync(dir); } catch { continue; }
     for (const name of entries) {
       const file = path.join(dir, name, 'workspace.json');
-      try {
-        const { folder } = JSON.parse(fs.readFileSync(file, 'utf8'));
-        const ws = folder && parseFolderUri(folder);
-        if (ws) out.push({ ...ws, mtime: fs.statSync(file).mtimeMs });
-      } catch {}
+      let rows = [];
+      try { rows = rootsFromWorkspaceJson(file, app); } catch { continue; }
+      for (const row of rows) {
+        const id = workspaceIdentity(row);
+        const prev = byId.get(id);
+        if (!prev || row.mtime > prev.mtime) byId.set(id, { ...row, id, sources: [...new Set([...(prev?.sources || []), app])] });
+        else if (!prev.sources.includes(app)) prev.sources.push(app);
+      }
     }
   }
-  return out.sort((a, b) => b.mtime - a.mtime);
+  return [...byId.values()].sort((a, b) => b.mtime - a.mtime);
+}
+
+function openedFolders(app) {
+  const file = path.join(appUserDir(app), 'globalStorage', 'storage.json');
+  let data;
+  try { data = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return []; }
+  const wins = data?.windowsState?.openedWindows;
+  if (!Array.isArray(wins)) return [];
+  const out = [];
+  for (const win of wins) {
+    const uri = typeof win?.workspace === 'string' ? win.workspace : typeof win?.folder === 'string' ? win.folder : '';
+    if (!uri) continue;
+    const pointed = parseFolderUri(uri);
+    if (!pointed) continue;
+    const windowName = path.posix.basename(pointed.root).replace(/\.code-workspace$/i, '');
+    if (!pointed.host && (/\.code-workspace$/i.test(pointed.root) || /workspace\.json$/i.test(pointed.root))) {
+      for (const folder of readCodeWorkspace(pointed.root, 0, app)) out.push({ ...folder, windowName });
+      continue;
+    }
+    out.push({ ...pointed, source: app, workspaceFile: '', windowName: path.posix.basename(pointed.root) });
+  }
+  return out;
+}
+
+export function titleFolder(title, app) {
+  if (app === 'code' || app === 'codex') {
+    const parts = String(title || '').replace(/\s+-\s+Visual Studio Code$/, '').split(' - ').map(s => s.trim()).filter(Boolean);
+    if (parts[0] === 'Welcome' && parts.length > 1) return { name: parts[parts.length - 1], host: null };
+    return { name: (parts.length > 1 ? parts[parts.length - 1] : parts[0]) || '', host: null };
+  }
+  const host = /\[SSH: ([^\]]+)\]/.exec(String(title || ''))?.[1] || null;
+  const name = String(title || '').replace(/\s*\[SSH: [^\]]+\]\s*$/, '').split(' — ').pop().replace(/^●\s*/, '').trim();
+  return { name, host };
+}
+
+// Folders belonging to the window that is open now. Same folder names stay separate by full path and host.
+export function windowRoots(title, app, preferRoot = '') {
+  const storageApp = app === 'codex' ? 'code' : app === 'devin' ? 'devin' : app === 'code' ? 'code' : 'cursor';
+  const { name, host } = titleFolder(title, storageApp === 'code' && app !== 'cursor' ? 'code' : app);
+  const samePlace = (w, root, itemHost = host) => String(w.root || '').replace(/\\/g, '/') === String(root || '').replace(/\\/g, '/') && (w.host || null) === (itemHost || null);
+  const open = openedFolders(storageApp).filter(w => w.windowName === name && (w.host || null) === host);
+  let matched = open.length ? open : workspaces().filter(w => path.posix.basename(w.root) === name && (w.host || null) === host && (w.sources || [w.source]).includes(storageApp));
+  if (matched.length > 1 && !open.length) matched = [];
+  if (preferRoot) {
+    const known = workspaces().find(w => samePlace(w, preferRoot, host));
+    const local = !known && !host && fs.existsSync(preferRoot);
+    if (known || local) {
+      const pref = known || { host: null, root: preferRoot, source: storageApp, sources: [storageApp], workspaceFile: '', windowName: path.posix.basename(preferRoot), id: `\0${preferRoot}` };
+      return [pref, ...matched.filter(w => !samePlace(w, pref.root, pref.host))];
+    }
+  }
+  return matched;
 }
 
 // Window titles look like "file.py — Folder [SSH: host]" or "Folder".
-export function workspaceForTitle(title) {
-  const host = /\[SSH: ([^\]]+)\]/.exec(title)?.[1] || null;
-  const folder = title.replace(/\s*\[SSH: [^\]]+\]\s*$/, '').split(' — ').pop().replace(/^●\s*/, '').trim();
-  return workspaces().find(w => w.host === host && path.posix.basename(w.root) === folder) || null;
+export function workspaceForTitle(title, app = 'cursor') {
+  return windowRoots(title, app)[0] || null;
+}
+
+// Two folders can share a name. The label keeps a parent path, and a host, until it is unique.
+export function workspaceLabel(w, all = workspaces()) {
+  const name = path.posix.basename(w.root) || w.root;
+  const same = all.filter(x => path.posix.basename(x.root) === name);
+  const parts = String(w.root || '').split(/[/\\]/).filter(Boolean);
+  let detail = w.host || '';
+  if (same.length > 1) {
+    for (let n = 2; n <= parts.length; n++) {
+      const tail = parts.slice(-n).join('/');
+      const clash = same.some(x => x !== w && (x.host || '') === (w.host || '') && String(x.root || '').split(/[/\\]/).filter(Boolean).slice(-n).join('/') === tail);
+      if (!clash) {
+        detail = [w.host, parts.slice(0, -1).slice(-(n - 1)).join('/')].filter(Boolean).join(':');
+        break;
+      }
+    }
+    if (!detail) detail = [w.host, w.root].filter(Boolean).join(':');
+  }
+  return { name, detail };
 }
 
 const shq = s => `'${String(s).replace(/'/g, `'\\''`)}'`;
@@ -130,27 +262,35 @@ export async function readFile(host, p, size) {
   return { text: buf.toString('utf8'), truncated: size > TEXT_LIMIT };
 }
 
-// Longest Cursor workspace that contains this file, so a save cannot leave that project.
-export function locateWritable(filePath) {
+// Longest workspace that contains this file. host '' is this computer; a named host is that SSH machine.
+// Same path on two machines is not one file, so a save has to name the machine.
+export function locateWritable(filePath, host) {
   const raw = String(filePath || '');
-  let best = null;
+  const want = host == null ? undefined : (host || null);
+  const found = [];
   for (const w of workspaces()) {
+    if (want !== undefined && (w.host || null) !== want) continue;
     if (w.host) {
       const root = path.posix.normalize(w.root.replace(/\\/g, '/'));
       const target = path.posix.normalize(raw.replace(/\\/g, '/'));
       const inside = target === root || target.startsWith(root.endsWith('/') ? root : root + '/');
-      if (inside && (!best || root.length > best.root.length)) best = { host: w.host, path: target, root };
+      if (inside) found.push({ host: w.host, path: target, root });
       continue;
     }
     try {
       const root = fs.realpathSync(w.root.replace(/^~(?=\/)/, os.homedir()));
       const target = fs.realpathSync(raw.replace(/^~(?=\/)/, os.homedir()));
-      if ((target === root || target.startsWith(root + path.sep)) && (!best || root.length > best.root.length)) {
-        best = { host: null, path: target, root };
-      }
+      if (target === root || target.startsWith(root + path.sep)) found.push({ host: null, path: target, root });
     } catch {}
   }
-  return best;
+  if (!found.length) return null;
+  const hosts = new Set(found.map(w => w.host || ''));
+  if (hosts.size > 1) {
+    const err = new Error('有多个同名工作区，不能确定保存到哪一个');
+    err.code = 'ambiguous-workspace';
+    throw err;
+  }
+  return found.sort((a, b) => b.root.length - a.root.length)[0];
 }
 
 function sshStdin(host, command, input) {
@@ -243,7 +383,7 @@ export async function listProject(host, root, dir) {
   docs.sort((a, b) => (/^readme/i.test(b.name) - /^readme/i.test(a.name)) || byName(a, b));
   code.sort(byName);
   const parent = here === base ? null : path.posix.dirname(here.replace(/\\/g, '/'));
-  return { root: base, path: here.replace(/\\/g, '/'), parent, name: path.basename(base), folders, docs: docs.slice(0, 40), code: code.slice(0, 200) };
+  return { root: base, path: here.replace(/\\/g, '/'), parent, name: path.basename(base), host: host || '', folders, docs: docs.slice(0, 40), code: code.slice(0, 200) };
 }
 
 // "src/a.py:12", "a.py#L12-20", "a.py (lines 3-9)" → path + first line.

@@ -174,21 +174,30 @@ public class NotifyService extends Service {
 
     private void show(JSONObject e) {
         String win = e.optString("win", "");
-        // One notification per window: a newer event replaces the older one.
-        int id = win.isEmpty() ? 2 : 3 + (win.hashCode() & 0x7fffffff) % 100000;
+        String windowId = e.optString("windowId", "");
+        String threadId = e.optString("threadId", "");
+        // One notification per thread, so a second session does not replace the first.
+        String key = win + "|" + windowId + "|" + threadId;
+        int id = key.replace("|", "").isEmpty() ? 2 : 3 + (key.hashCode() & 0x7fffffff) % 100000;
         Notification n = builder(CH_EVENTS)
                 .setContentTitle(e.optString("title", "Remote Agent"))
                 .setContentText(e.optString("body", ""))
                 .setStyle(new Notification.BigTextStyle().bigText(e.optString("body", "")))
-                .setContentIntent(openApp(win, id))
+                .setContentIntent(openApp(win, windowId, threadId, id))
                 .setAutoCancel(true)
                 .build();
         ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).notify(id, n);
     }
 
     private PendingIntent openApp(String win, int requestCode) {
+        return openApp(win, "", "", requestCode);
+    }
+
+    private PendingIntent openApp(String win, String windowId, String threadId, int requestCode) {
         Intent i = new Intent(this, MainActivity.class).setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         if (win != null && !win.isEmpty()) i.putExtra("win", win);
+        if (windowId != null && !windowId.isEmpty()) i.putExtra("windowId", windowId);
+        if (threadId != null && !threadId.isEmpty()) i.putExtra("threadId", threadId);
         return PendingIntent.getActivity(this, requestCode, i, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
     }
 

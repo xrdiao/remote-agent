@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn, execFileSync } from 'node:child_process';
 import { WebSocketServer } from 'ws';
 import qrcode from 'qrcode-terminal';
-import { workspaces, workspaceForTitle, fileSize, readFile, parseRef, listProject, locateWritable, writeTextFile } from './files.mjs';
+import { workspaces, windowRoots, workspaceLabel, fileSize, readFile, parseRef, listProject, locateWritable, writeTextFile } from './files.mjs';
 import {
   DATA_DIR, publishRecord, opensEntry, computerId, computerName, createPairing, pairingValid, consumePairing, listDevices, addDevice, findDevice, updateDevice,
   removeDevice, totpConfig, verifyTotp, needsTotp, saveState, readState, appBase,
@@ -21,9 +21,9 @@ const CDP_URL = (process.env.CDP_URL || 'http://127.0.0.1:9222').replace(/\/$/, 
 const DEVIN_CDP_URL = (process.env.DEVIN_CDP_URL || 'http://127.0.0.1:9223').replace(/\/$/, '');
 const CODEX_CDP_URL = (process.env.CODEX_CDP_URL || 'http://127.0.0.1:9224').replace(/\/$/, '');
 const EDITORS = [
-  { app: 'cursor', url: CDP_URL },
-  { app: 'devin', url: DEVIN_CDP_URL },
-  { app: 'codex', url: CODEX_CDP_URL },
+  { app: 'cursor', name: 'Cursor', url: CDP_URL },
+  { app: 'devin', name: 'Devin', url: DEVIN_CDP_URL },
+  { app: 'codex', name: 'Codex', url: CODEX_CDP_URL },
 ];
 const TUNNEL = process.argv.includes('--tunnel');
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
@@ -246,6 +246,7 @@ const NAMED_KEYS = {
   ArrowDown: { code: 'ArrowDown', vk: 40 },
   ArrowLeft: { code: 'ArrowLeft', vk: 37 },
   ArrowRight: { code: 'ArrowRight', vk: 39 },
+  '`': { code: 'Backquote', vk: 192, text: '`' },
 };
 
 // Cursor's chat composer is a ProseMirror contenteditable; selectors ordered from most to least specific.
@@ -322,7 +323,7 @@ function pageHelpers() {
   const ACTION = /^(run|skip|allow|accept|reject|deny|approve|keep|undo|continue|stop|cancel|build|retry|yes|no\b|运行|跳过|允许|接受|拒绝|继续|停止|取消)/i;
   const BLOCK = new Set(['P', 'UL', 'OL', 'LI', 'H1', 'H2', 'H3', 'H4', 'H5', 'BLOCKQUOTE', 'TABLE', 'THEAD', 'TBODY', 'TR', 'TD', 'TH', 'DIV']);
   const INLINE = new Set(['STRONG', 'B', 'EM', 'I', 'CODE', 'DEL']);
-  const CODE_BLOCK = '.composer-code-block-container, .composer-message-codeblock, .ui-code-block, pre';
+  const CODE_BLOCK = '.composer-code-block-container, .composer-message-codeblock, .ui-code-block, pre, [data-markdown-copy="code-block"]';
   const FILE_REF = 'code.md-inline-path-filename-like';
 
   // Edit/read tool cards keep the absolute path in the header's title; fall back to the shown file name.
@@ -414,13 +415,17 @@ function pageHelpers() {
         const tex = (n.querySelector('annotation')?.textContent || '').trim();
         if (tex) { out += `<span class="math" data-tex="${esc(tex)}">${esc(tex)}</span>`; continue; }
       }
-      if (n.matches(CODE_BLOCK)) {
-        const content = n.querySelector('.ui-code-block-content') || n;
+      if (n.matches(CODE_BLOCK) || n.getAttribute('data-markdown-copy') === 'code-block') {
+        const content = n.querySelector('code') || n.querySelector('.ui-code-block-content') || n;
         const lines = [...content.querySelectorAll('.view-line')];
         const plainLine = el => (el.innerText || '').replace(/\u00a0/g, ' ').replace(/\n/g, '');
         const plain = (lines.length ? lines.map(plainLine).join('\n') : (content.innerText || '').replace(/\u00a0/g, ' ')).replace(/\n$/, '');
-        const body = (lines.length ? lines.map(l => clean(l)).join('\n') : clean(content)).replace(/\n$/, '');
+        const body = (lines.length ? lines.map(l => clean(l)).join('\n') : esc(plain));
         out += `<div class="codebox"><textarea class="src" hidden readonly>${esc(plain)}</textarea><pre>${body}</pre></div>`;
+        continue;
+      }
+      if (n.getAttribute('data-markdown-copy') === 'inline-code') {
+        out += `<code>${esc((n.innerText || '').trim())}</code>`;
         continue;
       }
       const tag = n.tagName;
@@ -509,7 +514,8 @@ function pageHelpers() {
     return /^stop generation\b/i.test((e.getAttribute('aria-label') || '').trim());
   });
   const legacyStopIcon = () => [...doc.querySelectorAll('.composer-button-area .codicon-debug-stop, .send-with-mode .codicon-debug-stop')].find(e => vis(e) && !e.closest('.composer-human-message, .human-message-action-slot'));
-  const isBusy = () => !!stopGenerationButton() || !!legacyStopIcon();
+  const isBusy = () => !!stopGenerationButton() || !!legacyStopIcon()
+    || [...doc.querySelectorAll('button')].some(e => vis(e) && /^(Stop|Stop generating)$/i.test((e.getAttribute('aria-label') || '').trim()));
 
   // First call (no action) returns the row center to hover over; hover-only buttons appear after that.
   const queueTarget = (id, action) => {
@@ -811,6 +817,25 @@ function pageHelpers() {
     return item;
   };
 
+  const codexThread = () => doc.querySelector('[data-response-annotation-conversation]')?.getAttribute('data-response-annotation-conversation') || '';
+  // One Codex turn can contain several markdown blocks. Keep them in order instead of keeping only the first reply.
+  const codexTurnItems = el => {
+    const thread = codexThread();
+    const key = el.getAttribute('data-turn-key') || 'turn';
+    const blocks = [...el.querySelectorAll('[class*="MarkdownRoot"], [class*="agent-activity"]')];
+    const out = [];
+    let n = 0;
+    for (const block of blocks) {
+      if (block.querySelector('[class*="MarkdownRoot"]') && !/MarkdownRoot/.test(String(block.className))) continue;
+      const text = (block.innerText || '').replace(/\u00a0/g, ' ').trim();
+      if (!text) continue;
+      const id = `${thread}:${key}:${n++}`;
+      if (block.closest('[class*="group/user-message"]')) out.push({ i: id, k: 'human', t: text });
+      else if (/activity/.test(String(block.className)) && !/MarkdownRoot/.test(String(block.className))) out.push({ i: id, k: 'tool', t: text.slice(0, 240) });
+      else out.push({ i: id, k: 'assistant', h: clean(block) });
+    }
+    return out;
+  };
   const extract = () => {
     const panel = findPanel();
     // A brand-new Devin session has a composer and model chip, but no message list yet.
@@ -830,20 +855,13 @@ function pageHelpers() {
         mode: null,
         model: codexModelName() || (modelEl ? normLabel(modelEl.innerText).split('\n')[0].slice(0, 60) : null),
         permission: permissionLabel(),
+        thread: codexThread(),
         context: contextPct(),
       };
     }
     const r = panel.getBoundingClientRect();
     const items = topItems(panel).flatMap(el => {
-      if (el.hasAttribute?.('data-turn-key')) {
-        const user = el.querySelector('[class*="group/user-message"] [class*="MarkdownRoot"]');
-        const asst = [...el.querySelectorAll('[class*="MarkdownRoot"]')].find(n => !n.closest('[class*="group/user-message"]'));
-        const out = [];
-        const key = el.getAttribute('data-turn-key');
-        if (user?.innerText.trim()) out.push({ i: `${key}:u`, k: 'human', t: user.innerText.trim() });
-        if (asst) out.push({ i: `${key}:a`, k: 'assistant', h: clean(asst) });
-        return out;
-      }
+      if (el.hasAttribute?.('data-turn-key')) return codexTurnItems(el);
       const thoughts = thinkingInside(el).map((th, n) => thinkingItem(th, el, n));
       if (isThinking(el)) return thoughts.length ? thoughts : [thinkingItem(el, el, 0)];
       const main = messageItem(el);
@@ -865,14 +883,47 @@ function pageHelpers() {
       readonly: !hasComposer(),
       mode: modeEl ? modeEl.innerText.trim() || modeEl.dataset.mode : null,
       permission: permissionLabel(),
+      thread: codexThread(),
       model: codexModelName() || (modelEl ? normLabel(modelEl.innerText).split('\n')[0].slice(0, 60) : null),
       context: contextPct(),
     };
   };
   const contextPct = () => {
-    const el = [...doc.querySelectorAll('button, [role=button]')].find(e => vis(e) && /^Context(?:\s+usage)?:?\s*\d+%/i.test(((e.getAttribute('aria-label') || e.innerText || '').replace(/\s+/g, ' ').trim())));
-    const m = el && /(\d+)%/.exec((el.getAttribute('aria-label') || el.innerText || '').replace(/\s+/g, ' '));
-    return m ? Number(m[1]) : null;
+    const el = [...doc.querySelectorAll('button, [role=button], [role=img]')].find(e => vis(e) && /^Context(?:\s+usage)?:?\s*\d+%/i.test(((e.getAttribute('aria-label') || e.innerText || '').replace(/\s+/g, ' ').trim())));
+    if (!el) return null;
+    const text = ((el.getAttribute('aria-label') || el.innerText || '').replace(/\s+/g, ' ').trim());
+    const m = /(\d+)%/.exec(text);
+    if (!m) return null;
+    return { pct: Number(m[1]), basis: /left|remaining|剩余/i.test(text) ? 'remaining' : 'used' };
+  };
+  const readDevinUsage = () => {
+    const text = [...doc.querySelectorAll('p')].map(e => (e.innerText || '').replace(/\s+/g, ' ').trim()).find(t => /usage quota/i.test(t));
+    if (!text) return { missing: true, quota: [], limits: [] };
+    const reset = (/resets\s+(.+?)\.?$/i.exec(text) || [])[1] || '';
+    const limits = [];
+    const used = /(\d+)%\s+used/i.exec(text);
+    const left = /(\d+)%\s+(?:left|remaining)/i.exec(text);
+    if (used) limits.push({ label: '每周额度', kind: 'limit', basis: 'used', pct: Number(used[1]), reset });
+    else if (left) limits.push({ label: '每周额度', kind: 'limit', basis: 'remaining', pct: Number(left[1]), reset });
+    else if (/exhausted/i.test(text)) limits.push({ label: '每周额度', kind: 'limit', basis: 'used', pct: 100, reset, detail: '包含额度已用完' });
+    else limits.push({ label: '每周额度', kind: 'limit', basis: 'used', pct: null, reset, detail: text.slice(0, 160) });
+    return { missing: false, quota: [], limits };
+  };
+  const readCodexUsage = () => {
+    const text = (doc.body?.innerText || '').replace(/\s+/g, ' ');
+    if (/Loading usage settings|Loading usage limit/i.test(text) && !/\d+%\s+left/i.test(text)) return { loading: true, quota: [], limits: [] };
+    const limits = [];
+    const take = (label, marker, re) => {
+      const m = re.exec(text);
+      if (!m) return;
+      const basis = /left|remaining/i.test(m[2] || '') ? 'remaining' : 'used';
+      const block = [...doc.querySelectorAll('div')].find(e => (e.innerText || '').replace(/\s+/g, ' ').includes(marker) && (e.innerText || '').length < 240);
+      const resetEl = block?.querySelector('span[title]');
+      limits.push({ label, kind: 'limit', basis, pct: Number(m[1]), reset: resetEl?.getAttribute('title') || '' });
+    };
+    take('每周限制', 'Weekly limit', /Weekly limit[\s\S]{0,180}?(\d+)%\s+(left|used)/i);
+    take('5 小时限制', '5-hour limit', /5-hour limit[\s\S]{0,180}?(\d+)%\s+(left|used)/i);
+    return { loading: false, missing: !limits.length, quota: [], limits };
   };
 
   // Named controls in Cursor's UI; each entry lists fallbacks from newest to oldest Cursor layouts.
@@ -1042,8 +1093,17 @@ function pageHelpers() {
   // "Run in background" shows up on any command running longer than ~5 s; it is not a request for approval.
   const WAIT = /^(?!.*(background|后台))(run|allow|accept|approve|continue|yes\b|运行|允许|接受|批准|继续)/i;
   const agentState = () => {
+    const buttons = [...doc.querySelectorAll('button')].filter(vis);
+    const back = buttons.findIndex(b => (b.getAttribute('aria-label') || '') === 'Back');
+    const title = back >= 0 ? ((buttons[back + 1]?.innerText || '').split('\n')[0] || '').trim().slice(0, 80) : '';
+    const recent = buttons.find(b => (b.getAttribute('aria-label') || '').startsWith('Recent chats'));
+    const progress = Number((/(\d+) in progress/.exec(recent?.getAttribute('aria-label') || '') || [])[1] || 0);
+    const thread = codexThread();
     const panel = findPanel();
-    if (!panel) return null;
+    if (!panel) {
+      if (!thread && !hasComposer()) return null;
+      return { busy: isBusy(), waiting: null, waitingText: '', last: '', thread, title, progress };
+    }
     const busy = isBusy();
     const items = topItems(panel);
     let waiting = null, waitingText = '';
@@ -1060,8 +1120,12 @@ function pageHelpers() {
       waitingText = text;
     }
     const lastReply = [...items].reverse().find(el => el.matches('[data-message-kind="assistant"]') || el.querySelector('[data-message-kind="assistant"]'));
-    const last = lastReply ? lastReply.innerText.trim().replace(/\s+/g, ' ').slice(0, 160) : '';
-    return { busy, waiting, waitingText, last };
+    let last = lastReply ? lastReply.innerText.trim().replace(/\s+/g, ' ').slice(0, 160) : '';
+    if (!last) {
+      const tail = [...doc.querySelectorAll('[class*="MarkdownRoot"]')].filter(e => !e.closest('[class*="group/user-message"]')).at(-1);
+      if (tail) last = tail.innerText.trim().replace(/\s+/g, ' ').slice(0, 160);
+    }
+    return { busy, waiting, waitingText, last, thread, title, progress };
   };
 
   // Cursor Agents window: the left sidebar lists conversations as row:<agent id>.
@@ -1126,10 +1190,15 @@ function pageHelpers() {
         };
       }).filter(t => t.id);
     }
-    return [...doc.querySelectorAll('.terminal-tabs-list .terminal-tab')].filter(vis).map((tab, i) => ({
+    const single = doc.querySelector('.part.panel .single-terminal-tab');
+    if (single && vis(single)) return [{
+      id: 'classic-0', title: single.innerText.trim() || '终端', current: true, tab: single,
+      close: doc.querySelector('.part.panel .title-actions [aria-label="Kill Terminal"]'),
+    }];
+    return [...doc.querySelectorAll('.terminal-tabs-list .terminal-tab, .monaco-list-row:has(.terminal-tabs-entry)')].filter(vis).map((tab, i) => ({
       id: tab.id || `classic-${i}`,
       title: (tab.querySelector('.label-name, a') || tab).innerText.trim().split('\n')[0].slice(0, 80) || `终端 ${i + 1}`,
-      current: tab.classList.contains('active') || tab.getAttribute('aria-selected') === 'true',
+      current: tab.classList.contains('active') || !!tab.querySelector('.terminal-tabs-entry.is-active') || tab.getAttribute('aria-selected') === 'true',
       tab,
       close: tab.querySelector('[aria-label="Kill Terminal"], [aria-label^="Kill"]'),
     }));
@@ -1282,16 +1351,30 @@ function pageHelpers() {
     const best = candidates.find(e => /Included in|On-Demand|Cursor Models/.test(e.innerText) && !(e.innerText || '').split('\n').some(l => l.trim() === 'Agents'))
       || candidates[0];
     if (!best) return { lines: [] };
-    const bars = [...root.querySelectorAll('[role=progressbar]')].filter(vis).map(e => {
+    const rawBars = [...root.querySelectorAll('[role=progressbar]')].filter(vis);
+    const loading = rawBars.some(e => /^loading\b/i.test((e.getAttribute('aria-label') || '').trim()));
+    const limits = rawBars.map(e => {
       const now = Number(e.getAttribute('aria-valuenow'));
       const max = Number(e.getAttribute('aria-valuemax')) || 100;
       const label = (e.getAttribute('aria-label') || '').trim();
       if (!label || /^loading\b/i.test(label) || !Number.isFinite(now) || !max) return null;
-      return { label: label.slice(0, 40), pct: Math.max(0, Math.min(100, Math.round(now / max * 100))) };
+      const pct = Math.max(0, Math.min(100, Math.round(now / max * 100)));
+      let node = e;
+      let basis = 'used';
+      for (let i = 0; i < 8 && node; i++) {
+        const around = (node.innerText || '').replace(/\s+/g, ' ');
+        if (around.length < 500) {
+          if (new RegExp(pct + '%\\s+(?:left|remaining)', 'i').test(around)) { basis = 'remaining'; break; }
+          if (new RegExp(pct + '%\\s+used', 'i').test(around)) { basis = 'used'; break; }
+        }
+        node = node.parentElement;
+      }
+      return { label: label.slice(0, 40), kind: 'limit', basis, pct };
     }).filter(Boolean);
-    if (!best) return { lines: [], bars };
+    if (!best) return { lines: [], quota: [], limits, loading, missing: !limits.length && !loading };
     const lines = (best.innerText || '').split('\n').map(s => s.trim()).filter(s => s && !nav.has(s)).slice(0, 32);
-    return { lines: lines.map(l => l.slice(0, 180)), bars };
+    const reset = lines.find(l => /reset/i.test(l)) || '';
+    return { lines: lines.map(l => l.slice(0, 180)), quota: [], limits: limits.map(b => ({ ...b, reset })), loading, missing: !limits.length && !loading };
   };
 
   const newTerminalItem = () => {
@@ -1319,9 +1402,9 @@ function pageHelpers() {
     if (fish) return fish[1].replace(/\s+$/, '');
     return null;
   };
+  const activeTerminal = () => doc.querySelector('.terminal-wrapper.active .xterm-wrapper')?.xterm || doc.querySelector('.terminal-wrapper.active')?.xterm || doc.querySelector('.xterm-wrapper')?.xterm;
   const terminalCommand = () => {
-    const host = doc.querySelector('.terminal-wrapper.active .xterm-wrapper') || doc.querySelector('.xterm-wrapper');
-    const term = host?.xterm;
+    const term = activeTerminal();
     const buf = term?.buffer?.active;
     if (!buf) return null;
     const logical = start => {
@@ -1347,8 +1430,7 @@ function pageHelpers() {
     return null;
   };
   const terminalDump = prev => {
-    const host = doc.querySelector('.terminal-wrapper.active .xterm-wrapper') || doc.querySelector('.xterm-wrapper');
-    const term = host?.xterm;
+    const term = activeTerminal();
     const buf = term?.buffer?.active;
     if (!buf) return null;
     const cursorY = buf.baseY + buf.cursorY;
@@ -1400,9 +1482,95 @@ function pageHelpers() {
     }));
   };
 
-  return { extract, locate, panelRect, control, menuItems, menuItem, quickOpenRows, agentList, agentTarget, agentState, queueTarget, stopTarget, focusQueueEdit,
+  const codexButton = label => [...doc.querySelectorAll('button')].find(e => vis(e) && (e.getAttribute('aria-label') || '') === label)
+    || [...doc.querySelectorAll('button')].find(e => vis(e) && (e.getAttribute('aria-label') || '').startsWith(label));
+  const codexPoint = el => {
+    const c = center(el);
+    const frame = document.getElementById('active-frame');
+    if (!frame || doc === document) return c;
+    const o = frame.getBoundingClientRect();
+    return { x: c.x + o.x, y: c.y + o.y };
+  };
+  const codexRecentPoint = () => { const b = codexButton('Recent chats'); return b ? codexPoint(b) : null; };
+  const codexNewPoint = () => { const b = codexButton('New chat'); return b ? codexPoint(b) : null; };
+  const codexAccountPoint = () => {
+    const buttons = [...doc.querySelectorAll('button')].filter(e => {
+      const r = e.getBoundingClientRect();
+      if (r.width < 8 || r.height < 8 || r.y < 0 || r.y > 70) return false;
+      if ((e.getAttribute('aria-label') || '') || (e.innerText || '').trim()) return false;
+      return (e.getAttribute('aria-haspopup') || e.parentElement?.getAttribute('aria-haspopup')) === 'menu';
+    });
+    return buttons[0] ? codexPoint(buttons[0]) : null;
+  };
+  const codexMenuPoint = label => {
+    const el = [...doc.querySelectorAll('button, [role=menuitem], a')].find(e => {
+      const r = e.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2 || r.bottom < 0) return false;
+      const text = ((e.getAttribute('aria-label') || e.innerText || '').replace(/\s+/g, ' ').trim());
+      return text === label || text.startsWith(label);
+    });
+    return el ? codexPoint(el) : null;
+  };
+  const clickLabeled = label => {
+    const el = [...doc.querySelectorAll('button, [role=menuitem], a')].find(e => {
+      const r = e.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) return false;
+      const text = ((e.getAttribute('aria-label') || e.innerText || '').replace(/\s+/g, ' ').trim());
+      return text === label || text.startsWith(label);
+    });
+    if (!el) return false;
+    el.scrollIntoView({ block: 'center', inline: 'nearest' });
+    el.click();
+    return true;
+  };
+  const codexViewState = () => ({ thread: codexThread(), turns: doc.querySelectorAll('[data-turn-key]').length });
+  const codexFiberProps = el => {
+    const key = Object.keys(el).find(k => k.startsWith('__reactFiber'));
+    let fiber = key ? el[key] : null;
+    const props = [];
+    for (let i = 0; i < 16 && fiber; i++) {
+      if (fiber.memoizedProps && typeof fiber.memoizedProps === 'object') props.push(fiber.memoizedProps);
+      fiber = fiber.return;
+    }
+    return props;
+  };
+  // Recent-chat rows carry the conversation id on the React node, not on a stable attribute.
+  const codexChatRows = () => {
+    const menu = [...doc.querySelectorAll('[role=menu]')].find(e => /Search recent chats/.test(e.innerText || ''));
+    if (!menu) return [];
+    const seen = new Set();
+    const rows = [];
+    for (const el of menu.querySelectorAll('[role=button]')) {
+      let id = '', title = '', current = false, workspace = '', running = false;
+      for (const p of codexFiberProps(el)) {
+        if (p.conversationId) id = String(p.conversationId);
+        else if (typeof p.href === 'string' && p.href.startsWith('/local/')) id = p.href.split('/').pop();
+        if (typeof p.title === 'string' && p.title) title = p.title;
+        if (p.isActive === true) current = true;
+        if (typeof p.envTooltip === 'string') workspace = p.envTooltip;
+        if (p.isRunning === true || p.running === true) running = true;
+      }
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      const text = (el.innerText || '').replace(/\s+/g, ' ').trim();
+      if (/in progress/i.test(text)) running = true;
+      rows.push({ id, title: (title || text).split('\n')[0].slice(0, 80), current, workspace, running });
+    }
+    return rows;
+  };
+  const codexChatPoint = id => {
+    const menu = [...doc.querySelectorAll('[role=menu]')].find(e => /Search recent chats/.test(e.innerText || ''));
+    if (!menu) return null;
+    for (const el of menu.querySelectorAll('[role=button]')) {
+      const hit = codexFiberProps(el).some(p => p.conversationId === id || (typeof p.href === 'string' && p.href.endsWith('/' + id)));
+      if (hit) { el.scrollIntoView({ block: 'nearest' }); return codexPoint(el); }
+    }
+    return null;
+  };
+
+  return { extract, codexThread, codexViewState, codexRecentPoint, codexNewPoint, codexAccountPoint, codexMenuPoint, clickLabeled, codexChatRows, codexChatPoint, locate, panelRect, control, menuItems, menuItem, quickOpenRows, agentList, agentTarget, agentState, queueTarget, stopTarget, focusQueueEdit,
     terminalList, terminalTarget, terminalCloseTarget, terminalRect, terminalFocus, newTerminalDirect, newTerminalMenu, newTerminalItem, terminalDump, terminalCommand, modelListTrigger,
-    settingsOpen, clickSettingsButton, clickCloseSettings, openSettingsTarget, closeSettingsTarget, readSettings, settingTarget, usageNavTarget, readUsage,
+    settingsOpen, clickSettingsButton, clickCloseSettings, openSettingsTarget, closeSettingsTarget, readSettings, settingTarget, usageNavTarget, readUsage, readDevinUsage, readCodexUsage, contextPct,
     clickControl, clickModelListTrigger, devinSettingsNav, devinSettingsClick, devinSettingsCards,
     fusionConfig, clickFusionCombo, clickFusionFast, fusionOptionItems, fusionOptionTarget,
     menuOpen, maxToggle, modelTarget, modelParams, paramTarget, subTarget, activeChatTab, tabTarget, hasComposer, filesState, fileTarget, questionTarget,
@@ -1473,6 +1641,7 @@ class Session {
     // The phone reports when the app goes to the background; notifications skip the window it is looking at.
     this.visible = true;
     this.cdp = null;
+    this.editorCdp = null;
     this.viewport = { w: 1000, h: 800 };
     this.screencast = { format: 'jpeg', quality: 60, maxWidth: 1280, maxHeight: 2400 };
     this.awaitingAck = null;
@@ -1483,26 +1652,35 @@ class Session {
     this.thinking = new Map();
     this.thinkingTried = new Map();
     this.keptThink = new Map();
-    this.app = 'cursor';
+    this.app = null;
+    this.sel = 0;
+    this.windowId = '';
+    this.threadId = '';
     this.codexPageId = '';
+    this.itemCache = new Map();
     this.lastPanel = '';
     this.lastBusy = null;
     this.lastTermHash = undefined;
     this.idleTimer = setInterval(() => this.pollIfIdle(), 2000);
   }
 
+  appMessage(template) {
+    const name = EDITORS.find(ed => ed.app === this.app)?.name || '当前应用';
+    return template.replaceAll('{app}', name);
+  }
+
   async setMode(mode) {
     this.mode = mode === 'screen' || mode === 'terminal' ? mode : 'chat';
     clearInterval(this.chatTimer);
     clearInterval(this.termTimer);
-    if (!this.cdp) return;
+    if (!this.editorCdp) return;
     if (this.mode === 'chat') {
-      await this.cdp.send('Page.stopScreencast').catch(() => {});
+      await this.editorCdp.send('Page.stopScreencast').catch(() => {});
       this.lastChat = '';
       this.chatTimer = setInterval(() => this.pollChat().catch(() => {}), 700);
       await this.pollChat();
     } else if (this.mode === 'terminal') {
-      await this.cdp.send('Page.stopScreencast').catch(() => {});
+      await this.editorCdp.send('Page.stopScreencast').catch(() => {});
       this.lastTermHash = undefined;
       await this.pollTerminal();
       this.termTimer = setInterval(() => this.pollTerminal().catch(() => {}), 700);
@@ -1563,12 +1741,9 @@ class Session {
     }
     const last = thoughts[thoughts.length - 1];
     const carried = this.latestThink;
-    if (last && carried?.body && !last.live && this.thinkingBody(last).length < carried.body.length) {
-      const fresh = !this.thinkingBody(last) && Date.now() - carried.at < 20000;
-      if (last.i === carried.id || fresh) {
-        itAssign(last, carried.body);
-        this.thinking.set(last.i, { body: carried.body });
-      }
+    if (last && carried?.body && last.i === carried.id && this.thinkingBody(last).length < carried.body.length) {
+      itAssign(last, carried.body);
+      this.thinking.set(last.i, { body: carried.body });
     }
     // Always send the newest trace. Drop older bodies once the payload gets large.
     let used = 0;
@@ -1637,29 +1812,83 @@ class Session {
     }
   }
 
+  selectionKey() {
+    return [this.app || '', this.windowId || '', this.threadId || ''].join('|');
+  }
+
+  clearViewState() {
+    this.sel = (this.sel || 0) + 1;
+    this.lastChat = '';
+    this.latestThink = null;
+    this.thinkTries = new Map();
+    this.thinking = new Map();
+    this.thinkingTried = new Map();
+    this.keptThink = new Map();
+    this.itemCache = new Map();
+    this.polling = null;
+  }
+
+  liveRead(cdp, sel) {
+    return cdp && cdp === this.cdp && sel === this.sel;
+  }
+
+  // A virtualized Codex list unmounts older turns. Keep text we already read for this thread.
+  mergeCodexItems(chat) {
+    if (this.app !== 'codex' || !chat?.items) return;
+    const thread = chat.thread || '';
+    if (thread && this.threadId && thread !== this.threadId) {
+      this.latestThink = null;
+      this.thinkTries = new Map();
+      this.thinking = new Map();
+      this.thinkingTried = new Map();
+      this.keptThink = new Map();
+    }
+    if (thread) this.threadId = thread;
+    if (!this.itemCache) this.itemCache = new Map();
+    const prev = this.itemCache.get(thread) || [];
+    const seen = new Set(chat.items.map(it => it.i));
+    chat.items = [...prev.filter(it => !seen.has(it.i)), ...chat.items].slice(-400);
+    this.itemCache.set(thread, chat.items);
+  }
+
   async pollChat() {
-    if (!this.cdp || this.polling) return;
-    this.polling = true;
+    const cdp = this.cdp;
+    const sel = this.sel;
+    if (!cdp || this.polling === sel) return;
+    this.polling = sel;
     try {
-      let chat = await this.cdp.evaluate(helpersCall('extract()'));
+      let chat = await cdp.evaluate(helpersCall('extract()'));
+      if (!this.liveRead(cdp, sel)) return;
       const liveClosed = (chat?.items || []).some(it => it.k === 'thinking' && it.live && !(it.t || '').includes('\n'));
       if (liveClosed) {
-        const idxs = await this.cdp.evaluate(helpersCall(`closedThinkingIndexes('live')`));
+        const idxs = await cdp.evaluate(helpersCall(`closedThinkingIndexes('live')`));
+        if (!this.liveRead(cdp, sel)) return;
         if (idxs?.length) {
-          await this.cdp.evaluate(helpersCall(`clickThinking(${JSON.stringify(idxs)})`));
+          await cdp.evaluate(helpersCall(`clickThinking(${JSON.stringify(idxs)})`));
           await new Promise(r => setTimeout(r, 250));
-          chat = await this.cdp.evaluate(helpersCall('extract()'));
+          if (!this.liveRead(cdp, sel)) return;
+          chat = await cdp.evaluate(helpersCall('extract()'));
         }
       }
+      if (!this.liveRead(cdp, sel)) return;
       const needFinal = (chat?.items || []).some(it => it.k === 'thinking' && !it.live && !(it.t || '').includes('\n') && !this.thinkingTried.has(it.i));
       if (needFinal) {
-        const idxs = await this.cdp.evaluate(helpersCall(`closedThinkingIndexes('done')`));
+        const idxs = await cdp.evaluate(helpersCall(`closedThinkingIndexes('done')`));
+        if (!this.liveRead(cdp, sel)) return;
         if (idxs?.length) {
-          await this.cdp.evaluate(helpersCall(`clickThinking(${JSON.stringify(idxs)})`));
+          await cdp.evaluate(helpersCall(`clickThinking(${JSON.stringify(idxs)})`));
           await new Promise(r => setTimeout(r, 250));
-          chat = await this.cdp.evaluate(helpersCall('extract()'));
-          await this.cdp.evaluate(helpersCall(`closeThinkingIfOpen(${JSON.stringify(idxs)})`));
+          if (!this.liveRead(cdp, sel)) return;
+          chat = await cdp.evaluate(helpersCall('extract()'));
+          await cdp.evaluate(helpersCall(`closeThinkingIfOpen(${JSON.stringify(idxs)})`));
         }
+      }
+      if (!this.liveRead(cdp, sel) || !chat) return;
+      const prevThread = this.threadId || '';
+      this.mergeCodexItems(chat);
+      if (this.app === 'codex' && this.threadId && this.threadId !== prevThread) {
+        this.lastChat = '';
+        this.publishThread('桌面上的会话已切换');
       }
       this.fillThinking(chat);
       this.rememberThinking(chat);
@@ -1681,99 +1910,110 @@ class Session {
         else this.queueFusionRead();
       } else this.fusion = null;
       const json = JSON.stringify(chat);
+      if (!this.liveRead(cdp, sel)) return;
       if (json !== this.lastChat) {
         this.lastChat = json;
-        this.emit({ t: 'chat', chat });
+        this.emit({ t: 'chat', sel: this.selectionKey(), chat });
       }
     } finally {
-      this.polling = false;
+      if (this.polling === sel) this.polling = null;
     }
   }
 
   async pollTerminal() {
-    if (!this.cdp || this.mode !== 'terminal') return;
-    const dump = await this.cdp.evaluate(helpersCall(`terminalDump(${JSON.stringify(this.lastTermHash || '')})`));
-    if (!dump) {
-      if (this.lastTermHash !== null) {
-        this.lastTermHash = null;
-        this.emit({ t: 'termText', lines: null });
+    const cdp = this.cdp, editorCdp = this.editorCdp, sel = this.sel;
+    if (!editorCdp || this.mode !== 'terminal' || this.termPolling === sel) return;
+    this.termPolling = sel;
+    try {
+      const dump = await editorCdp.evaluate(helpersCall(`terminalDump(${JSON.stringify(this.lastTermHash || '')})`));
+      if (!this.liveRead(cdp, sel) || editorCdp !== this.editorCdp || this.mode !== 'terminal') return;
+      if (!dump) {
+        if (this.lastTermHash !== null) {
+          this.lastTermHash = null;
+          this.emit({ t: 'termText', sel: this.selectionKey(), lines: null });
+        }
+      } else if (dump.hash !== this.lastTermHash) {
+        this.lastTermHash = dump.hash;
+        if (dump.lines) this.emit({ t: 'termText', sel: this.selectionKey(), lines: dump.lines, cursor: dump.cursor });
       }
-    } else if (dump.hash !== this.lastTermHash) {
-      this.lastTermHash = dump.hash;
-      if (dump.lines) this.emit({ t: 'termText', lines: dump.lines, cursor: dump.cursor });
-    }
-    const state = await this.cdp.evaluate(helpersCall('agentState()'));
-    const busy = !!state?.busy;
-    if (busy !== this.lastBusy) {
-      this.lastBusy = busy;
-      this.emit({ t: 'agentBusy', busy });
+      const state = await cdp.evaluate(helpersCall('agentState()'));
+      if (!this.liveRead(cdp, sel) || editorCdp !== this.editorCdp || this.mode !== 'terminal') return;
+      const busy = !!state?.busy;
+      if (busy !== this.lastBusy) {
+        this.lastBusy = busy;
+        this.emit({ t: 'agentBusy', busy });
+      }
+    } finally {
+      if (this.termPolling === sel) this.termPolling = null;
     }
   }
 
   async listTerminals() {
-    const list = await this.cdp.evaluate(helpersCall('terminalList()'));
+    const list = await this.editorCdp.evaluate(helpersCall('terminalList()'));
     this.emit({ t: 'terminals', list: list || [] });
   }
 
   async openTerminal(id) {
     if (!/^[\w-]{8,}$/.test(id)) throw new Error('这个终端已经不在了');
-    const pos = await this.cdp.evaluate(helpersCall(`terminalTarget(${JSON.stringify(id)})`));
+    const pos = await this.editorCdp.evaluate(helpersCall(`terminalTarget(${JSON.stringify(id)})`));
     if (!pos) throw new Error('这个终端已经不在了');
-    await this.tapCss(pos.x, pos.y);
+    await this.tapCss(pos.x, pos.y, 'left', this.editorCdp);
     this.emit({ t: 'status', ok: true, msg: '已切换终端' });
     setTimeout(() => this.pollTerminal().catch(() => {}), 300);
   }
 
   async closeTerminal(id) {
     if (!/^[\w-]{8,}$/.test(id)) throw new Error('这个终端已经不在了');
-    const pos = await this.cdp.evaluate(helpersCall(`terminalCloseTarget(${JSON.stringify(id)})`));
+    const pos = await this.editorCdp.evaluate(helpersCall(`terminalCloseTarget(${JSON.stringify(id)})`));
     if (!pos) throw new Error('这个终端已经不在了');
-    await this.tapCss(pos.x, pos.y);
+    await this.tapCss(pos.x, pos.y, 'left', this.editorCdp);
     this.emit({ t: 'status', ok: true, msg: '已关闭终端' });
     setTimeout(() => this.pollTerminal().catch(() => {}), 300);
   }
 
   async newTerminal() {
-    const direct = await this.cdp.evaluate(helpersCall('newTerminalDirect()'));
+    const direct = await this.editorCdp.evaluate(helpersCall('newTerminalDirect()'));
     if (direct) {
-      await this.tapCss(direct.x, direct.y);
+      await this.tapCss(direct.x, direct.y, 'left', this.editorCdp);
+    } else if (this.app === 'codex') {
+      await this.key('Ctrl+Shift+`', { cdp: this.editorCdp });
     } else {
-      const menu = await this.cdp.evaluate(helpersCall('newTerminalMenu()'));
+      const menu = await this.editorCdp.evaluate(helpersCall('newTerminalMenu()'));
       if (!menu) throw new Error('当前窗口里找不到新建终端的按钮');
-      await this.tapCss(menu.x, menu.y);
+      await this.tapCss(menu.x, menu.y, 'left', this.editorCdp);
       let item = null;
       for (let i = 0; i < 10 && !item; i++) {
         await new Promise(r => setTimeout(r, 120));
-        item = await this.cdp.evaluate(helpersCall('newTerminalItem()'));
+        item = await this.editorCdp.evaluate(helpersCall('newTerminalItem()'));
       }
       if (!item) {
-        await this.key('Escape');
+        await this.key('Escape', { cdp: this.editorCdp });
         throw new Error('菜单里没有终端这一项');
       }
-      await this.tapCss(item.x, item.y);
+      await this.tapCss(item.x, item.y, 'left', this.editorCdp);
     }
     this.emit({ t: 'status', ok: true, msg: '已新建终端' });
     setTimeout(() => this.pollTerminal().catch(() => {}), 500);
   }
 
   async focusTerminal() {
-    const pos = await this.cdp.evaluate(helpersCall('terminalFocus()'));
+    const pos = await this.editorCdp.evaluate(helpersCall('terminalFocus()'));
     if (!pos) throw new Error('没有打开的终端。先新建一个。');
-    await this.tapCss(pos.x, pos.y);
+    await this.tapCss(pos.x, pos.y, 'left', this.editorCdp);
     await new Promise(r => setTimeout(r, 80));
   }
 
   async sendTerminal(text) {
     await this.focusTerminal();
     // History recall already put a command on the prompt. Replace that line so an edit is not appended.
-    if (typeof await this.cdp.evaluate(helpersCall('terminalCommand()')) === 'string') {
-      await this.key('Ctrl+a');
-      await this.key('Ctrl+k');
+    if (typeof await this.editorCdp.evaluate(helpersCall('terminalCommand()')) === 'string') {
+      await this.key('Ctrl+a', { cdp: this.editorCdp });
+      await this.key('Ctrl+k', { cdp: this.editorCdp });
     }
     const lines = String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
     for (let i = 0; i < lines.length; i++) {
-      if (lines[i]) await this.cdp.send('Input.insertText', { text: lines[i] });
-      if (i < lines.length - 1 || lines[i]) await this.key('Enter');
+      if (lines[i]) await this.editorCdp.send('Input.insertText', { text: lines[i] });
+      if (i < lines.length - 1 || lines[i]) await this.key('Enter', { cdp: this.editorCdp });
     }
   }
 
@@ -1781,38 +2021,38 @@ class Session {
     const waitOpen = async () => {
       for (let i = 0; i < 10; i++) {
         await new Promise(r => setTimeout(r, 120));
-        if (await this.cdp.evaluate(helpersCall('settingsOpen()'))) return true;
+        if (await this.editorCdp.evaluate(helpersCall('settingsOpen()'))) return true;
       }
       return false;
     };
-    if (await this.cdp.evaluate(helpersCall('settingsOpen()'))) return;
+    if (await this.editorCdp.evaluate(helpersCall('settingsOpen()'))) return;
     // Click the gear directly. A coordinate click on the 24px footer button often misses.
-    await this.cdp.evaluate(helpersCall('clickSettingsButton()'));
+    await this.editorCdp.evaluate(helpersCall('clickSettingsButton()'));
     if (await waitOpen()) return;
     // Cursor and Devin both bind Settings to Ctrl+Comma.
     const comma = { key: ',', code: 'Comma', windowsVirtualKeyCode: 188, modifiers: 2 };
-    await this.cdp.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...comma });
-    await this.cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...comma });
+    await this.editorCdp.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...comma });
+    await this.editorCdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...comma });
     if (await waitOpen()) return;
     throw new Error('设置没有打开');
   }
 
   async closeSettings() {
-    const how = await this.cdp.evaluate(helpersCall('clickCloseSettings()'));
-    if (how === 'tab') await this.key('Ctrl+w');
+    const how = await this.editorCdp.evaluate(helpersCall('clickCloseSettings()'));
+    if (how === 'tab') await this.key('Ctrl+w', { cdp: this.editorCdp });
   }
 
   async showSettings() {
     await this.ensureSettings();
     let sections = [];
     try {
-      sections = await this.cdp.evaluate(helpersCall('readSettings()')) || [];
+      sections = await this.editorCdp.evaluate(helpersCall('readSettings()')) || [];
       if (!sections.length) {
-        const nav = await this.cdp.evaluate(helpersCall('devinSettingsNav()')) || [];
+        const nav = await this.editorCdp.evaluate(helpersCall('devinSettingsNav()')) || [];
         for (const name of nav) {
-          await this.cdp.evaluate(helpersCall(`devinSettingsClick(${JSON.stringify(name)})`));
+          await this.editorCdp.evaluate(helpersCall(`devinSettingsClick(${JSON.stringify(name)})`));
           await new Promise(r => setTimeout(r, 180));
-          const items = await this.cdp.evaluate(helpersCall('devinSettingsCards()')) || [];
+          const items = await this.editorCdp.evaluate(helpersCall('devinSettingsCards()')) || [];
           if (items.length) sections.push({ title: name, items });
         }
       }
@@ -1823,41 +2063,130 @@ class Session {
   async toggleSetting(label) {
     await this.ensureSettings();
     try {
-      const pos = await this.cdp.evaluate(helpersCall(`settingTarget(${JSON.stringify(String(label))})`));
+      const pos = await this.editorCdp.evaluate(helpersCall(`settingTarget(${JSON.stringify(String(label))})`));
       if (!pos) throw new Error('找不到这项设置');
-      await this.tapCss(pos.x, pos.y);
+      await this.tapCss(pos.x, pos.y, 'left', this.editorCdp);
       await new Promise(r => setTimeout(r, 250));
-      const sections = await this.cdp.evaluate(helpersCall('readSettings()')) || [];
+      const sections = await this.editorCdp.evaluate(helpersCall('readSettings()')) || [];
       this.emit({ t: 'settings', sections });
       this.emit({ t: 'status', ok: true, msg: '已更新设置' });
     } finally { await this.closeSettings(); }
   }
 
   async showUsage() {
-    if (this.app === 'devin' || this.app === 'codex') {
-      this.emit({ t: 'usage', lines: [], bars: [] });
-      return;
+    const updated = Date.now();
+    let context;
+    try { context = await this.cdp.evaluate(helpersCall('contextPct()')); }
+    catch { context = undefined; }
+    try {
+      const account = this.app === 'codex' ? await this.readCodexAccount()
+        : this.app === 'devin' ? await this.cdp.evaluate(helpersCall('readDevinUsage()'))
+        : await this.readCursorUsage();
+      if (!account) throw new Error('没有读到额度');
+      this.emit({ t: 'usage', updated, ...(context === undefined ? {} : { context }), ...account });
+    } catch (e) {
+      this.emit({ t: 'usage', error: e.message, updated, ...(context === undefined ? {} : { context }) });
     }
+  }
+
+  async readCursorUsage() {
     await this.ensureSettings();
     try {
       const nav = await this.cdp.evaluate(helpersCall('usageNavTarget()'));
-      if (!nav) {
-        this.emit({ t: 'usage', lines: [] });
-        return;
-      }
+      if (!nav) return { missing: true, quota: [], limits: [] };
       await this.tapCss(nav.x, nav.y);
-      await new Promise(r => setTimeout(r, 500));
-      const usage = await this.cdp.evaluate(helpersCall('readUsage()'));
-      this.emit({ t: 'usage', lines: usage?.lines || [], bars: usage?.bars || [] });
+      let usage = null;
+      for (let i = 0; i < 8; i++) {
+        await new Promise(r => setTimeout(r, 250));
+        usage = await this.cdp.evaluate(helpersCall('readUsage()'));
+        if (usage && !usage.loading) break;
+      }
+      if (usage?.loading) throw new Error('额度还在加载');
+      return usage || { missing: true, quota: [], limits: [] };
     } finally { await this.closeSettings(); }
+  }
+
+  async readCodexAccount() {
+    const before = await this.cdp.evaluate(helpersCall('codexThread()')).catch(() => '');
+    let settings = await this.codexSettingsCdp();
+    const opened = !settings;
+    let usage = null;
+    try {
+      if (opened) {
+        const gear = await this.cdp.evaluate(helpersCall('codexAccountPoint()'));
+        if (!gear) throw new Error('这个窗口里没有额度入口');
+        await this.tapCss(gear.x, gear.y);
+        let item = null;
+        for (let i = 0; i < 8 && !item; i++) {
+          await new Promise(r => setTimeout(r, 120));
+          item = await this.cdp.evaluate(helpersCall('codexMenuPoint("Codex settings")'));
+        }
+        if (!item) {
+          await this.key('Escape');
+          throw new Error('这个窗口里没有额度入口');
+        }
+        await this.tapCss(item.x, item.y);
+        for (let i = 0; i < 40 && !settings; i++) {
+          await new Promise(r => setTimeout(r, 300));
+          settings = await this.codexSettingsCdp();
+        }
+        if (!settings) {
+          await this.key('Escape').catch(() => {});
+          throw new Error('额度页面没有打开');
+        }
+      }
+      for (let attempt = 0; attempt < 3 && !(usage?.limits?.length || usage?.quota?.length); attempt++) {
+        const opened = await settings.evaluate(helpersCall('clickLabeled("Usage & billing")'));
+        if (!opened) {
+          const billing = await settings.evaluate(helpersCall('codexMenuPoint("Usage & billing")'));
+          if (billing) await this.tapCss(billing.x, billing.y, 'left', settings);
+        }
+        for (let i = 0; i < 8; i++) {
+          await new Promise(r => setTimeout(r, 300));
+          usage = await settings.evaluate(helpersCall('readCodexUsage()'));
+          if (usage?.limits?.length || usage?.quota?.length) break;
+        }
+      }
+      if (usage?.loading) throw new Error('额度还在加载');
+      if (!usage?.limits?.length && !usage?.quota?.length) throw new Error('额度页面没有打开');
+      return usage;
+    } finally {
+      try { settings?.close(); } catch {}
+      const open = await this.editorCdp.evaluate(`(() => /Codex Settings/i.test(document.title || ''))()`).catch(() => false);
+      if (opened && open) await this.key('Ctrl+w', { cdp: this.editorCdp });
+      const after = await this.cdp.evaluate(helpersCall('codexThread()')).catch(() => '');
+      if (before && after && before !== after) this.emit({ t: 'status', ok: false, msg: '读取额度后会话变了' });
+    }
+  }
+
+  async codexSettingsCdp() {
+    const ids = await this.editorCdp.evaluate(`([...document.querySelectorAll('iframe[src*="extensionId=openai.chatgpt"]')].filter(e => !e.src.includes('purpose=webviewView')).map(e => new URL(e.src).searchParams.get('id')))`);
+    const targets = await (await fetch(`${CODEX_CDP_URL}/json/list`)).json();
+    const candidates = targets.filter(t => t.webSocketDebuggerUrl && /extensionId=openai\.chatgpt/.test(t.url || '')
+      && ids.includes((/[?&]id=([^&]+)/.exec(t.url || '') || [])[1]));
+    for (const hit of candidates) {
+      const cdp = new Cdp(hit.webSocketDebuggerUrl);
+      try {
+        await cdp.connect();
+        for (let i = 0; i < 8; i++) {
+          const ready = await cdp.evaluate(`(() => !!(document.getElementById('active-frame')?.contentDocument || document).querySelector('button[aria-label="Usage & billing"]'))()`).catch(() => false);
+          if (ready) return cdp;
+          await new Promise(r => setTimeout(r, 200));
+        }
+      } catch {}
+      try { cdp.close(); } catch {}
+    }
+    return null;
   }
 
   showProjects(dir) {
     this.emit({ t: 'projects', ...projectList(dir || '') });
   }
 
-  workspaceByRoot(root) {
+  workspaceByRoot(root, host) {
+    const want = host || null;
     for (const w of workspaces()) {
+      if ((w.host || null) !== want) continue;
       if (w.host) {
         if (w.root === root) return w;
         continue;
@@ -1869,29 +2198,45 @@ class Session {
     return null;
   }
 
-  async showDocs(root, dir) {
+  async currentRoots() {
+    const prefer = this.app === 'codex' ? (this.codexRoots?.get(this.threadId) || '') : '';
+    if (this.app === 'codex') {
+      const pages = await codexWindows(CODEX_CDP_URL);
+      const page = pages.find(p => p.pageId === this.codexPageId);
+      return windowRoots(page?.rawTitle || page?.title || '', 'code', prefer);
+    }
+    return windowRoots(this.winTitle || '', this.app === 'devin' ? 'devin' : 'cursor', prefer);
+  }
+
+  projectRows(list) {
+    const all = workspaces();
+    return list.map(w => {
+      const label = workspaceLabel(w, all);
+      return { name: label.name, path: w.root, host: w.host || '', detail: label.detail || '' };
+    });
+  }
+
+  async showDocs(root, dir, host) {
     try {
       if (!root) {
-        const ws = workspaceForTitle(this.winTitle || '');
-        if (ws) {
-          this.emit({ t: 'docs', ...(await listProject(ws.host, ws.root, ws.root)) });
+        const roots = await this.currentRoots();
+        if (roots.length === 1) {
+          const ws = roots[0];
+          this.emit({ t: 'docs', ...(await listProject(ws.host, ws.root, ws.root)), host: ws.host || '' });
           return;
         }
-        const seen = new Set();
-        const projects = [];
-        for (const w of workspaces()) {
-          const key = `${w.host || ''}\0${w.root}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          projects.push({ name: path.basename(w.root) || w.root, path: w.root, host: w.host || '' });
-          if (projects.length >= 12) break;
+        if (roots.length > 1) {
+          this.emit({ t: 'docs', projects: this.projectRows(roots) });
+          return;
         }
-        this.emit({ t: 'docs', projects });
+        const app = this.app === 'codex' ? 'code' : this.app === 'devin' ? 'devin' : 'cursor';
+        const mine = workspaces().filter(w => (w.sources || [w.source]).includes(app));
+        this.emit({ t: 'docs', projects: this.projectRows(mine).slice(0, 20) });
         return;
       }
-      const ws = this.workspaceByRoot(root);
-      if (!ws) throw new Error('只能查看 Cursor 打开过的项目');
-      this.emit({ t: 'docs', ...(await listProject(ws.host, ws.root, dir || ws.root)) });
+      const ws = this.workspaceByRoot(root, host || '');
+      if (!ws) throw new Error('只能查看已打开过的项目');
+      this.emit({ t: 'docs', ...(await listProject(ws.host, ws.root, dir || ws.root)), host: ws.host || '' });
     } catch (e) {
       this.emit({ t: 'docs', error: e.message });
     }
@@ -1903,7 +2248,7 @@ class Session {
   }
 
   async sendPanelRect() {
-    const rect = await this.cdp.evaluate(helpersCall('panelRect()')).catch(() => null);
+    const rect = await this.editorCdp.evaluate(helpersCall('panelRect()')).catch(() => null);
     const json = JSON.stringify(rect);
     if (json !== this.lastPanel) {
       this.lastPanel = json;
@@ -1927,7 +2272,7 @@ class Session {
       await new Promise(r => setTimeout(r, 100));
       ok = await focus();
     }
-    if (!ok) throw new Error('Cursor 没有进入编辑状态，没改动');
+    if (!ok) throw new Error(this.appMessage('{app} 没有进入编辑状态，没改动'));
     await this.key(process.platform === 'darwin' ? 'Meta+A' : 'Ctrl+A');
     await this.typeText(text);
     await this.key('Enter');
@@ -1945,7 +2290,7 @@ class Session {
       await new Promise(r => setTimeout(r, 80));
       pos = await call(action);
     }
-    if (!pos) throw new Error('没找到排队消息的操作按钮（可能 Cursor 版本不同）');
+    if (!pos) throw new Error(this.appMessage('没找到排队消息的操作按钮（可能 {app} 版本不同）'));
     await this.tapCss(pos.x, pos.y);
     setTimeout(() => this.pollChat().catch(() => {}), 300);
   }
@@ -1960,7 +2305,7 @@ class Session {
         pos = await this.cdp.evaluate(helpersCall(call));
       }
     }
-    if (!pos || pos.expand) throw new Error('这个子 Agent 已经结束了，或者 Cursor 里找不到它');
+    if (!pos || pos.expand) throw new Error(this.appMessage('这个子 Agent 已经结束了，或者 {app} 里找不到它'));
     if (part === 'open') {
       const tab = await this.cdp.evaluate(helpersCall('activeChatTab()'));
       if (tab && await this.cdp.evaluate(helpersCall('hasComposer()'))) this.mainTab = tab;
@@ -2007,7 +2352,7 @@ class Session {
         await new Promise(r => setTimeout(r, 120));
       }
       const pos = await this.cdp.evaluate(call(act));
-      if (!pos) throw new Error('没找到这个按钮（可能 Cursor 版本不同）');
+      if (!pos) throw new Error(this.appMessage('没找到这个按钮（可能 {app} 版本不同）'));
       await this.tapCss(pos.x, pos.y);
       await new Promise(r => setTimeout(r, 400));
     });
@@ -2037,16 +2382,169 @@ class Session {
     this.emit({ t: 'status', ok: true, msg: '已停止 Agent' });
   }
 
+  publishThread(statusMsg) {
+    const msg = {
+      t: 'attached', id: this.targetId || 'codex', title: 'Codex', app: 'codex', appName: 'Codex',
+      windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(), keepQuota: true,
+    };
+    this.emit(msg);
+    this.emit({ t: 'thread', windowId: msg.windowId, threadId: msg.threadId, sel: msg.sel });
+    if (statusMsg) this.emit({ t: 'status', ok: true, msg: statusMsg });
+  }
+
+  async selectCodexThread(convId) {
+    const pos = await this.cdp.evaluate(helpersCall('codexRecentPoint()'));
+    if (!pos) return false;
+    await this.tapCss(pos.x, pos.y);
+    let point = null;
+    for (let i = 0; i < 8 && !point; i++) {
+      await new Promise(r => setTimeout(r, 120));
+      point = await this.cdp.evaluate(helpersCall(`codexChatPoint(${JSON.stringify(convId)})`));
+    }
+    if (!point) {
+      await this.key('Escape');
+      return false;
+    }
+    await this.tapCss(point.x, point.y);
+    for (let i = 0; i < 12; i++) {
+      await new Promise(r => setTimeout(r, 150));
+      const actual = await this.cdp.evaluate(helpersCall('codexThread()')) || '';
+      if (actual === convId) {
+        this.threadId = actual;
+        return true;
+      }
+    }
+    await this.key('Escape');
+    return false;
+  }
+
+  async adoptCodexThread(thread, statusMsg) {
+    this.clearViewState();
+    this.threadId = thread || '';
+    this.publishThread(statusMsg);
+    await this.pollChat();
+  }
+
+  async newCodexChat() {
+    if (!this.cdp) throw new Error('还没有连上 Codex');
+    const before = await this.cdp.evaluate(helpersCall('codexThread()')) || '';
+    const pos = await this.cdp.evaluate(helpersCall('codexNewPoint()'));
+    if (!pos) throw new Error('这个窗口里没有新建对话');
+    await this.tapCss(pos.x, pos.y);
+    let thread = before;
+    let turns = 1;
+    for (let i = 0; i < 12; i++) {
+      await new Promise(r => setTimeout(r, 150));
+      const view = await this.cdp.evaluate(helpersCall('codexViewState()'));
+      thread = view?.thread || '';
+      turns = view?.turns ?? 1;
+      if ((thread && thread !== before) || (!thread && turns === 0)) break;
+    }
+    if (thread === before && turns > 0) throw new Error('新建会话没有生效');
+    await this.adoptCodexThread(thread === before ? '' : thread, '已新建会话');
+  }
+
+  async openCodexAgent(id) {
+    if (id.startsWith('win:')) {
+      await this.attach({ id: 'codex', windowId: id.slice(4), threadId: '' });
+      this.emit({ t: 'status', ok: true, msg: '已切换窗口' });
+      return;
+    }
+    if (id.startsWith('new:')) {
+      const pageId = id.slice(4);
+      if (pageId && pageId !== this.codexPageId) await this.attach({ id: 'codex', windowId: pageId, threadId: '' });
+      await this.newCodexChat();
+      return;
+    }
+    const match = /^thread:([^:]+):(.+)$/.exec(id || '');
+    if (!match) throw new Error('这条会话已经不在列表里');
+    const pageId = match[1];
+    const convId = match[2];
+    if (pageId !== this.codexPageId) await this.attach({ id: 'codex', windowId: pageId, threadId: '' });
+    if (!this.cdp) throw new Error('还没有连上 Codex');
+    if ((await this.cdp.evaluate(helpersCall('codexThread()')) || '') === convId) {
+      this.threadId = convId;
+      this.emit({ t: 'status', ok: true, msg: '已是当前会话' });
+      return;
+    }
+    const ok = await this.selectCodexThread(convId);
+    if (!ok) throw new Error('没有找到这个会话');
+    const actual = await this.cdp.evaluate(helpersCall('codexThread()')) || '';
+    if (actual !== convId) throw new Error('切换后的会话和选择的不一致');
+    await this.adoptCodexThread(actual, '已切换会话');
+  }
+
+  async probeCodex(page) {
+    if (!page?.chatWs && page?.pageId !== this.codexPageId) return null;
+    if (page.pageId === this.codexPageId && this.cdp) {
+      try { return await this.cdp.evaluate(helpersCall('agentState()')); } catch { return null; }
+    }
+    if (!page.chatWs) return null;
+    const cdp = new Cdp(page.chatWs);
+    try {
+      await cdp.connect();
+      return await cdp.evaluate(helpersCall('agentState()'));
+    } catch {
+      return null;
+    } finally {
+      try { cdp.close(); } catch {}
+    }
+  }
+
+  rememberCodexRoots(rows) {
+    if (!this.codexRoots) this.codexRoots = new Map();
+    for (const row of rows || []) {
+      if (row?.id && row.workspace) this.codexRoots.set(row.id, row.workspace);
+    }
+  }
+
+  async codexThreadRows() {
+    const pos = await this.cdp.evaluate(helpersCall('codexRecentPoint()'));
+    if (!pos) return [];
+    await this.tapCss(pos.x, pos.y);
+    let rows = [];
+    for (let i = 0; i < 8 && !rows.length; i++) {
+      await new Promise(r => setTimeout(r, 120));
+      rows = await this.cdp.evaluate(helpersCall('codexChatRows()')) || [];
+    }
+    await this.key('Escape');
+    return rows;
+  }
+
   async listAgents() {
     if (this.app === 'codex') {
       const pages = await codexWindows(CODEX_CDP_URL);
-      this.emit({ t: 'agents', list: pages.map(p => ({
-        id: p.pageId,
-        title: p.title,
-        group: '',
-        current: p.pageId === this.codexPageId,
-        running: false,
-      })) });
+      const list = [];
+      for (const p of pages) {
+        const group = p.title;
+        if (p.pageId === this.codexPageId && this.cdp) {
+          list.push({ id: `new:${p.pageId}`, title: '＋ 新建会话', window: group, group: '', current: false, running: false, ui: true });
+          const state = await this.probeCodex(p);
+          let rows = [];
+          try { rows = await this.codexThreadRows(); }
+          catch { await this.key('Escape').catch(() => {}); }
+          this.rememberCodexRoots(rows);
+          const folderOf = ws => {
+            const parts = String(ws || '').split(/[/\\]/).filter(Boolean);
+            return parts.at(-1) || '';
+          };
+          for (const row of rows) {
+            const folder = folderOf(row.workspace);
+            list.push({
+              id: `thread:${p.pageId}:${row.id}`,
+              title: row.title,
+              window: group,
+              group: folder && folder !== group ? folder : '',
+              current: row.id === this.threadId,
+              running: row.id === state?.thread ? !!state?.busy || !!row.running : !!row.running,
+            });
+          }
+        } else {
+          const state = await this.probeCodex(p);
+          list.push({ id: `win:${p.pageId}`, title: '打开这个窗口', window: group, group: '', current: false, running: !!state?.busy || (state?.progress > 0), ui: true });
+        }
+      }
+      this.emit({ t: 'agents', list });
       return;
     }
     const list = await this.cdp.evaluate(helpersCall('agentList()'));
@@ -2055,10 +2553,7 @@ class Session {
 
   async openAgent(id) {
     if (this.app === 'codex') {
-      if (!id || id.length > 80) throw new Error('这条 Agent 已经不在列表里');
-      this.codexPageId = id;
-      await this.attach('codex');
-      this.emit({ t: 'status', ok: true, msg: '已切换 Agent' });
+      await this.openCodexAgent(id);
       return;
     }
     if (!id || id.length > 200) throw new Error('这条 Agent 已经不在列表里');
@@ -2078,7 +2573,7 @@ class Session {
     const clicked = await this.cdp.evaluate(helpersCall(`clickControl(${JSON.stringify(name)})`));
     if (clicked) return;
     const pos = await this.cdp.evaluate(helpersCall(`control(${JSON.stringify(name)})`));
-    if (!pos) throw new Error('当前窗口里没有这个按钮（可能是 Cursor 版本或布局不同）');
+    if (!pos) throw new Error(this.appMessage('当前窗口里没有这个按钮（可能是 {app} 版本或布局不同）'));
     await this.tapCss(pos.x, pos.y);
   }
 
@@ -2144,7 +2639,7 @@ class Session {
     if (!edit) { await this.closeMenus(); throw new Error('这个模型没有可调的参数'); }
     await this.tapCss(edit.x, edit.y);
     const params = await this.waitFor('modelParams()');
-    if (!params) { await this.closeMenus(); throw new Error('参数菜单没有打开（可能 Cursor 版本不同）'); }
+    if (!params) { await this.closeMenus(); throw new Error(this.appMessage('参数菜单没有打开（可能 {app} 版本不同）')); }
     return params;
   }
 
@@ -2280,31 +2775,32 @@ class Session {
 
   // Asks Cursor's own Cmd+P index where a bare file name lives, then closes the picker again.
   async quickOpen(name) {
-    await this.key(process.platform === 'darwin' ? 'Meta+p' : 'Ctrl+p');
+    await this.key(process.platform === 'darwin' ? 'Meta+p' : 'Ctrl+p', { cdp: this.editorCdp });
     try {
       let rows = null;
       for (let i = 0; i < 6 && !rows; i++) {
         await new Promise(r => setTimeout(r, 150));
-        rows = await this.cdp.evaluate(helpersCall('quickOpenRows()'));
+        rows = await this.editorCdp.evaluate(helpersCall('quickOpenRows()'));
       }
       if (!rows) return [];
-      await this.cdp.send('Input.insertText', { text: name });
+      await this.editorCdp.send('Input.insertText', { text: name });
       let hits = [];
       for (let i = 0; i < 12; i++) {
         await new Promise(r => setTimeout(r, 250));
-        hits = (await this.cdp.evaluate(helpersCall('quickOpenRows()')) || []).filter(r => r.name === name);
+        hits = (await this.editorCdp.evaluate(helpersCall('quickOpenRows()')) || []).filter(r => r.name === name);
         if (hits.length) break;
       }
       return hits;
     } finally {
-      await this.key('Escape');
+      await this.key('Escape', { cdp: this.editorCdp });
     }
   }
 
   async resolveFile(text) {
     const { p, line } = parseRef(text);
     if (!p) throw new Error('不是文件路径');
-    const ws = workspaceForTitle(this.winTitle || '');
+    const roots = await this.currentRoots();
+    const ws = roots[0] || null;
     const host = ws ? ws.host : /\[SSH: ([^\]]+)\]/.exec(this.winTitle || '')?.[1] || null;
     const isAbs = /^(\/|~\/)/.test(p);
     const tried = [];
@@ -2315,11 +2811,20 @@ class Session {
       return size == null ? null : { host: h, path: abs, size, line };
     };
     if (isAbs) {
-      const hit = await tryPath(host, p);
-      if (hit) return hit;
-    } else if (ws) {
-      const hit = await tryPath(ws.host, path.posix.join(ws.root, p));
-      if (hit) return hit;
+      const hosts = [];
+      const addHost = h => { const key = h || null; if (!hosts.some(x => (x || null) === key)) hosts.push(key); };
+      addHost(host);
+      for (const root of roots) addHost(root.host);
+      addHost(null);
+      for (const h of hosts) {
+        const hit = await tryPath(h, p);
+        if (hit) return hit;
+      }
+    } else if (roots.length) {
+      for (const root of roots) {
+        const hit = await tryPath(root.host, path.posix.join(root.root, p));
+        if (hit) return hit;
+      }
     }
     if (this.winTitle === 'Cursor Agents') {
       // The Agents window mixes projects, so try recently opened folders.
@@ -2355,10 +2860,10 @@ class Session {
     }
   }
 
-  async saveFile(filePath, text) {
+  async saveFile(filePath, text, host) {
     try {
-      const loc = locateWritable(filePath);
-      if (!loc) throw new Error('只能修改 Cursor 打开过的项目里的文件');
+      const loc = locateWritable(filePath, host == null ? undefined : host);
+      if (!loc) throw new Error('只能修改已打开过的项目里的文件');
       const size = await writeTextFile(loc.host, loc.path, text);
       this.emit({ t: 'saved', ok: true, path: filePath, host: loc.host || '', size });
       this.emit({ t: 'status', ok: true, msg: '已保存' });
@@ -2368,28 +2873,62 @@ class Session {
     }
   }
 
-  async attach(targetId) {
-    if (String(targetId || '').startsWith('codex:')) {
-      this.codexPageId = this.codexPageId || String(targetId).slice('codex:'.length);
-      targetId = 'codex';
+  async attach(target) {
+    const req = target && typeof target === 'object' ? target : { id: target || '' };
+    let appId = String(req.id || '');
+    let windowId = String(req.windowId || '');
+    const threadId = String(req.threadId || '');
+    if (appId.startsWith('codex:')) {
+      windowId = windowId || appId.slice('codex:'.length);
+      appId = 'codex';
     }
     this.detach();
+    this.clearViewState();
     const wins = await listWindows();
-    const win = wins.find(w => w.id === targetId) || wins.find(w => w.id.endsWith(':' + targetId)) || wins[0];
-    if (!win) throw new Error('没有找到 Cursor、Devin 或 Codex 窗口。Cursor 用调试端口 9222，Devin 用 ./start-devin.sh，Codex 用 ./start-codex.sh');
-    let chatWs = null;
-    if (win.app === 'codex') {
-      const pages = await codexWindows(win.port);
-      const picked = pages.find(p => p.pageId === this.codexPageId)
-        || pages.find(p => !/^Welcome\b/.test(p.rawTitle) && p.chatWs)
-        || pages.find(p => p.chatWs)
-        || pages[0];
-      this.codexPageId = picked?.pageId || '';
-      chatWs = picked?.chatWs || null;
+    if (appId === 'codex') {
+      const pages = await codexWindows(CODEX_CDP_URL);
+      if (windowId && !pages.some(p => p.pageId === windowId)) {
+        this.app = 'codex';
+        this.windowId = windowId;
+        this.threadId = threadId;
+        this.codexPageId = windowId;
+        this.targetId = 'codex';
+        this.emit({ t: 'attached', id: 'codex', title: 'Codex', app: 'codex', appName: 'Codex', windowId, threadId, sel: this.selectionKey(), closed: true });
+        this.emit({ t: 'status', ok: false, msg: '这个 Codex 窗口已经关闭，请重新选择' });
+        return;
+      }
+      const picked = windowId
+        ? pages.find(p => p.pageId === windowId)
+        : (pages.find(p => !/^Welcome\b/.test(p.rawTitle || '') && p.chatWs) || pages.find(p => p.chatWs) || pages[0]);
+      if (!picked) throw new Error('没有找到 Codex 窗口。请用 ./start-codex.sh 启动，并打开 Codex 侧边栏');
+      this.codexPageId = picked.pageId;
+      this.windowId = picked.pageId;
+      this.threadId = threadId;
+      const entry = wins.find(w => w.id === 'codex');
+      if (!entry) throw new Error('没有找到 Codex 窗口。请用 ./start-codex.sh 启动，并打开 Codex 侧边栏');
+      await this.openBound(entry, picked.ws, picked.chatWs);
+      if (!picked.chatWs) this.emit({ t: 'status', ok: false, msg: 'Codex 侧边栏还没打开' });
+      return;
     }
-    const cdp = new Cdp(chatWs || win.ws);
-    await cdp.connect();
+    const win = wins.find(w => w.id === appId) || wins.find(w => appId && w.id.endsWith(':' + appId));
+    if (appId && !win) {
+      this.emit({ t: 'attached', id: appId, title: '', app: '', windowId: '', threadId: '', sel: '', closed: true });
+      this.emit({ t: 'status', ok: false, msg: '这个窗口已经关闭，请重新选择' });
+      return;
+    }
+    const chosen = win || wins[0];
+    if (!chosen) throw new Error('没有找到 Cursor、Devin 或 Codex 窗口。Cursor 用调试端口 9222，Devin 用 ./start-devin.sh，Codex 用 ./start-codex.sh');
+    this.windowId = chosen.id;
+    await this.openBound(chosen, chosen.ws, null);
+  }
+
+  async openBound(win, editorWs, chatWs) {
+    const editorCdp = new Cdp(editorWs);
+    await editorCdp.connect();
+    this.editorCdp = editorCdp;
+    const cdp = chatWs ? new Cdp(chatWs) : editorCdp;
     this.cdp = cdp;
+    if (cdp !== editorCdp) await cdp.connect();
     this.targetId = win.id;
     this.winTitle = win.title;
     this.app = win.app || 'cursor';
@@ -2397,37 +2936,55 @@ class Session {
     this.thinking = new Map();
     this.thinkingTried = new Map();
     this.keptThink = new Map();
-    cdp.onclose = () => {
-      if (this.cdp === cdp) {
-        this.cdp = null;
-        this.emit({ t: 'status', ok: false, msg: 'Cursor 窗口连接已断开' });
-      }
+    const onclose = () => {
+      if (this.cdp !== cdp && this.editorCdp !== editorCdp) return;
+      this.detach();
+      this.emit({ t: 'status', ok: false, msg: this.appMessage('{app} 窗口连接已断开') });
     };
-    cdp.on('Page.screencastFrame', p => this.onFrame(p));
-    await cdp.send('Page.enable');
-    await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
+    for (const connection of new Set([cdp, editorCdp])) {
+      connection.onclose = onclose;
+      await connection.send('Page.enable');
+      await connection.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
+    }
+    editorCdp.on('Page.screencastFrame', p => this.onFrame(p));
     await this.refreshViewport();
-    this.emit({ t: 'attached', id: win.id, title: win.title, app: win.app });
+    if (this.app === 'codex' && this.cdp) {
+      const live = await this.cdp.evaluate(helpersCall('codexThread()')).catch(() => '') || '';
+      const wanted = this.threadId || '';
+      if (wanted && wanted !== live) {
+        const ok = await this.selectCodexThread(wanted);
+        if (!ok) {
+          this.threadId = live;
+          this.emit({ t: 'status', ok: false, msg: '没有找到上次的会话，已留在当前会话' });
+        }
+      } else if (live) this.threadId = live;
+    }
+    this.emit({
+      t: 'attached', id: win.id, title: this.app === 'codex' ? 'Codex' : win.title, app: win.app,
+      appName: this.appMessage('{app}'), windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(),
+    });
     await this.setMode(this.mode);
   }
 
   detach() {
     clearInterval(this.chatTimer);
     clearInterval(this.termTimer);
-    if (this.cdp) {
-      const cdp = this.cdp;
-      this.cdp = null;
-      cdp.send('Page.stopScreencast').catch(() => {}).finally(() => cdp.close());
+    clearTimeout(this.ackTimer);
+    this.awaitingAck = null;
+    const connections = new Set([this.cdp, this.editorCdp]);
+    this.cdp = this.editorCdp = null;
+    for (const cdp of connections) {
+      if (cdp) cdp.send('Page.stopScreencast').catch(() => {}).finally(() => cdp.close());
     }
   }
 
   async refreshViewport() {
-    const v = await this.cdp.evaluate('({ w: innerWidth, h: innerHeight })');
+    const v = await this.editorCdp.evaluate('({ w: innerWidth, h: innerHeight })');
     if (v) this.viewport = v;
   }
 
   async startScreencast() {
-    await this.cdp.send('Page.startScreencast', { ...this.screencast, everyNthFrame: 1 });
+    await this.editorCdp.send('Page.startScreencast', { ...this.screencast, everyNthFrame: 1 });
   }
 
   onFrame({ data, metadata, sessionId }) {
@@ -2442,10 +2999,10 @@ class Session {
 
   ack() {
     clearTimeout(this.ackTimer);
-    if (this.awaitingAck == null || !this.cdp) return;
+    if (this.awaitingAck == null || !this.editorCdp) return;
     const sessionId = this.awaitingAck;
     this.awaitingAck = null;
-    this.cdp.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
+    this.editorCdp.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
   }
 
   sendFrame(data, force = false) {
@@ -2457,15 +3014,14 @@ class Session {
 
   // Electron stops painting occluded/minimized windows, so screencast goes quiet; fall back to screenshots.
   async pollIfIdle() {
-    if (!this.cdp || (this.mode !== 'screen' && this.mode !== 'terminal')) return;
-    if (this.mode === 'terminal') { await this.pollTerminal(); return; }
+    if (!this.editorCdp || this.mode !== 'screen') return;
     await this.sendPanelRect();
     if (Date.now() - this.lastFrameAt < 2000) return;
     await this.snapshot(false).catch(() => {});
   }
 
   async snapshot(force) {
-    const { data } = await this.cdp.send('Page.captureScreenshot', { format: 'jpeg', quality: this.screencast.quality });
+    const { data } = await this.editorCdp.send('Page.captureScreenshot', { format: 'jpeg', quality: this.screencast.quality });
     this.sendFrame(data, force);
   }
 
@@ -2475,25 +3031,26 @@ class Session {
 
   async tap(nx, ny, button = 'left') {
     const { x, y } = this.toCss(nx, ny);
-    await this.tapCss(x, y, button);
+    await this.tapCss(x, y, button, this.editorCdp);
   }
 
-  async tapCss(x, y, button = 'left') {
+  async tapCss(x, y, button = 'left', cdp = this.cdp) {
     const base = { x, y, button, clickCount: 1 };
-    await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
-    await this.cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...base });
-    await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base });
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...base });
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base });
   }
 
   async wheel(nx, ny, dx, dy) {
     const { x, y } = this.toCss(nx, ny);
-    await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x, y, deltaX: dx, deltaY: dy });
+    await this.editorCdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x, y, deltaX: dx, deltaY: dy });
   }
 
   async key(combo, opts = {}) {
+    const cdp = opts.focusTerminal ? this.editorCdp : (opts.cdp || this.cdp);
     if (opts.focusTerminal) await this.focusTerminal();
     const recall = opts.focusTerminal && (combo === 'ArrowUp' || combo === 'ArrowDown');
-    const before = recall ? await this.cdp.evaluate(helpersCall('terminalCommand()')) : undefined;
+    const before = recall ? await cdp.evaluate(helpersCall('terminalCommand()')) : undefined;
     const parts = combo.split('+');
     const name = parts.pop();
     const modifiers = parts.reduce((m, p) => m | (MOD[p] || 0), 0);
@@ -2505,30 +3062,30 @@ class Session {
     if (!spec) throw new Error(`未知按键: ${combo}`);
     const withText = spec.text && !(modifiers & (MOD.Ctrl | MOD.Meta));
     const ev = { key: name, code: spec.code, windowsVirtualKeyCode: spec.vk, nativeVirtualKeyCode: spec.vk, modifiers };
-    await this.cdp.send('Input.dispatchKeyEvent', { type: withText ? 'keyDown' : 'rawKeyDown', ...ev, ...(withText ? { text: spec.text } : {}) });
-    await this.cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...ev });
+    await cdp.send('Input.dispatchKeyEvent', { type: withText ? 'keyDown' : 'rawKeyDown', ...ev, ...(withText ? { text: spec.text } : {}) });
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...ev });
     if (!recall) return;
     let cmd = before;
     for (let i = 0; i < 8; i++) {
       await new Promise(r => setTimeout(r, 40));
-      const next = await this.cdp.evaluate(helpersCall('terminalCommand()'));
+      const next = await cdp.evaluate(helpersCall('terminalCommand()'));
       if (typeof next === 'string' && next !== before) { cmd = next; break; }
       if (i === 7 && typeof next === 'string') cmd = next;
     }
     if (typeof cmd === 'string') this.emit({ t: 'termInput', text: cmd });
   }
 
-  async typeText(text) {
+  async typeText(text, cdp = this.cdp) {
     const lines = text.split('\n');
     for (let i = 0; i < lines.length; i++) {
-      if (i > 0) await this.key('Shift+Enter');
-      if (lines[i]) await this.cdp.send('Input.insertText', { text: lines[i] });
+      if (i > 0) await this.key('Shift+Enter', { cdp });
+      if (lines[i]) await cdp.send('Input.insertText', { text: lines[i] });
     }
   }
 
   async sendMessage(text, submit) {
     const found = await this.cdp.evaluate(FOCUS_COMPOSER);
-    if (!found) throw new Error('没找到可见的聊天输入框：先在画面里打开 Agent 面板（或点「打开聊天」）');
+    if (!found) throw new Error(this.appMessage('没找到 {app} 的聊天输入框：先在画面里打开 Agent 面板（或点「打开聊天」）'));
     const busy = submit && await this.cdp.evaluate(helpersCall('agentState()?.busy'));
     await this.typeText(text);
     if (submit) await this.key('Enter');
@@ -2553,18 +3110,19 @@ class Session {
   async attachImage(data, name, type) {
     if (!/^image\/(png|jpeg|gif|webp)$/.test(type) || typeof data !== 'string' || !/^[A-Za-z0-9+/=]+$/.test(data)) throw new Error('只支持 PNG / JPEG / GIF / WebP 图片');
     const ok = await this.cdp.evaluate(pasteImage(data, String(name || 'image').replace(/[^\w.\-]/g, '_').slice(0, 60), type));
-    if (ok === null) throw new Error('没找到可见的聊天输入框：先在画面里打开 Agent 面板（或点「打开聊天」）');
-    if (!ok) throw new Error('Cursor 没有接收这张图片（当前模型可能不支持图片）');
-    this.emit({ t: 'status', ok: true, msg: '图片已附加到 Cursor 输入框，写好文字后点发送' });
+    if (ok === null) throw new Error(this.appMessage('没找到 {app} 的聊天输入框：先在画面里打开 Agent 面板（或点「打开聊天」）'));
+    if (!ok) throw new Error(this.appMessage('{app} 没有接收这张图片（当前模型可能不支持图片）'));
+    this.emit({ t: 'status', ok: true, msg: this.appMessage('图片已附加到 {app} 输入框，写好文字后点发送') });
   }
 
   async handle(msg) {
     if (msg.t === 'windows') return this.emit({ t: 'windows', list: (await listWindows()).map(({ id, title, kind, app }) => ({ id, title, kind, app })), current: this.targetId });
-    if (msg.t === 'attach') return this.attach(msg.id);
+    if (msg.t === 'attach') return this.attach(msg);
+    if (msg.t === 'agents' && this.app === 'codex') return this.listAgents();
     if (msg.t === 'mode') return this.setMode(msg.mode);
     if (msg.t === 'visible') { this.visible = Boolean(msg.v); return; }
     if (msg.t === 'lang') { updateDevice(this.deviceId, { lang: msg.v === 'en' ? 'en' : 'zh' }); return; }
-    if (!this.cdp) throw new Error('尚未连接到 Cursor 窗口');
+    if (!this.cdp) throw new Error(this.appMessage('尚未连接到 {app} 窗口'));
     switch (msg.t) {
       case 'openMenu': return this.openMenu(msg.kind);
       case 'pickMenu': return this.pickMenu(msg.kind, msg.label);
@@ -2581,14 +3139,14 @@ class Session {
       case 'newTerminal': return this.newTerminal();
       case 'termSend': return this.sendTerminal(String(msg.text ?? ''));
       case 'projects': return this.showProjects(String(msg.path ?? ''));
-      case 'docs': return this.showDocs(String(msg.root ?? ''), String(msg.path ?? ''));
+      case 'docs': return this.showDocs(String(msg.root ?? ''), String(msg.path ?? ''), String(msg.host ?? ''));
       case 'openProject': return this.useProject(String(msg.path ?? ''));
       case 'settings': return this.showSettings();
       case 'toggleSetting': return this.toggleSetting(String(msg.label ?? ''));
       case 'usage': return this.showUsage();
-      case 'newChat': return this.pressControl('newChat');
+      case 'newChat': return this.app === 'codex' ? this.newCodexChat() : this.pressControl('newChat');
       case 'file': return this.openFile(String(msg.path ?? ''));
-      case 'saveFile': return this.saveFile(String(msg.path ?? ''), String(msg.text ?? ''));
+      case 'saveFile': return this.saveFile(String(msg.path ?? ''), String(msg.text ?? ''), msg.host == null ? undefined : String(msg.host));
       case 'click': return this.clickButton(msg.item, msg.n);
       case 'queue': return msg.action === 'edit' ? this.editQueued(msg.id, String(msg.text ?? '')) : this.queueAction(msg.id, msg.action);
       case 'stop': return this.stopAgent();
@@ -2601,15 +3159,15 @@ class Session {
       case 'scrollChat': return this.scrollChat(Number(msg.dy) || 0);
       case 'tap': return this.tap(msg.x, msg.y, msg.button);
       case 'wheel': return this.wheel(msg.x, msg.y, msg.dx || 0, msg.dy || 0);
-      case 'key': return this.key(String(msg.key || ''), { focusTerminal: msg.focus === 'terminal' });
-      case 'type': return this.typeText(String(msg.text ?? ''));
+      case 'key': return this.key(String(msg.key || ''), { focusTerminal: msg.focus === 'terminal', cdp: this.mode === 'chat' ? this.cdp : this.editorCdp });
+      case 'type': return this.typeText(String(msg.text ?? ''), this.mode === 'chat' ? this.cdp : this.editorCdp);
       case 'send': return this.sendMessage(String(msg.text ?? ''), msg.submit !== false);
       case 'refresh': return this.snapshot(true);
       case 'quality':
         this.screencast.quality = Math.min(this.mode === 'terminal' ? 95 : 90, Math.max(20, Number(msg.quality) || 60));
         this.screencast.maxWidth = Math.min(this.mode === 'terminal' ? 4096 : 2560, Math.max(480, Number(msg.maxWidth) || 1280));
         if (this.mode !== 'screen' && this.mode !== 'terminal') return;
-        await this.cdp.send('Page.stopScreencast');
+        await this.editorCdp.send('Page.stopScreencast');
         return this.startScreencast();
       default: throw new Error(`未知指令: ${msg.t}`);
     }
@@ -3055,12 +3613,23 @@ async function startTunnel() {
   }, 400);
 }
 
+// Notifications follow each real Codex chat, not the single merged Codex entry.
+async function watchTargets() {
+  const wins = await listWindows();
+  const out = wins.filter(w => w.app !== 'codex');
+  for (const p of await codexWindows(CODEX_CDP_URL)) {
+    if (!p.chatWs) continue;
+    out.push({ id: `codex:${p.pageId}`, title: p.title, ws: p.chatWs, app: 'codex', pageId: p.pageId, kind: 'local' });
+  }
+  return out;
+}
+
 server.listen(PORT, TUNNEL ? '127.0.0.1' : HOST, async () => {
   console.log(`Remote Agent 已启动，端口 ${PORT}`);
   console.log(`数据目录：${DATA_DIR}`);
   console.log(`已配对 ${listDevices().length} 台设备。添加新设备：npm run pair`);
   startWatcher({
-    listWindows,
+    listWindows: watchTargets,
     openCdp: async ws => { const c = new Cdp(ws); await c.connect(); return c; },
     probe: helpersCall('agentState()'),
   });

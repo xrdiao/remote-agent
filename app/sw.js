@@ -1,5 +1,5 @@
 // Caches the app shell so the installed app opens instantly; live data (url.json, relay) always goes to the network.
-const CACHE = 'remote-agent-v1';
+const CACHE = 'remote-agent-v2';
 const SHELL = ['./', 'index.html', 'i18n.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
@@ -29,27 +29,29 @@ self.addEventListener('fetch', e => {
 function showPush(text) {
   let d = {};
   try { d = JSON.parse(text); } catch {}
+  const tag = [d.win, d.windowId, d.threadId].filter(Boolean).join('|') || 'remote-agent';
   return self.registration.showNotification(d.title || 'Remote Agent', {
     body: d.body || '',
-    tag: d.win || 'remote-agent',
+    tag,
     renotify: true,
     icon: 'icon-192.png',
     badge: 'icon-192.png',
-    data: { win: d.win || '' },
+    data: { win: d.win || '', windowId: d.windowId || '', threadId: d.threadId || '' },
   });
 }
 self.addEventListener('push', e => e.waitUntil(showPush(e.data ? e.data.text() : '')));
 
-// Tapping a notification opens the app on the window it came from.
+// Tapping a notification opens that window and thread. Receiving the push does not.
 self.addEventListener('notificationclick', e => {
   e.notification.close();
-  const win = e.notification.data?.win || '';
+  const data = e.notification.data || {};
+  const payload = JSON.stringify({ win: data.win || '', windowId: data.windowId || '', threadId: data.threadId || '' });
   e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
     const client = list[0];
     if (client) {
-      client.postMessage({ openWin: win });
+      client.postMessage({ openWin: payload });
       return client.focus();
     }
-    return self.clients.openWindow('./' + (win ? '#win=' + encodeURIComponent(win) : ''));
+    return self.clients.openWindow('./#win=' + encodeURIComponent(payload));
   }));
 });

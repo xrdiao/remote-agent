@@ -53,7 +53,13 @@ export function closeEventStreams(deviceId) {
 export const addViewer = v => viewers.add(v);
 export const removeViewer = v => viewers.delete(v);
 
-const watching = (deviceId, targetId) => [...viewers].some(v => v.deviceId === deviceId && v.visible && v.targetId === targetId);
+// A phone that is looking at this exact thread does not need a push for it.
+// Another thread, even in the same Codex window, still notifies.
+const watching = (deviceId, event) => [...viewers].some(v => {
+  if (v.deviceId !== deviceId || !v.visible) return false;
+  if (event.threadId) return v.windowId === event.windowId && v.threadId === event.threadId;
+  return v.targetId === event.win;
+});
 const wanted = () => streams.size > 0 || listDevices().some(d => d.push);
 
 /* ---------- delivery ---------- */
@@ -62,7 +68,7 @@ const wanted = () => streams.size > 0 || listDevices().some(d => d.push);
 export async function deliver(event, onlyDevice = null) {
   const { en, ...zh } = event;
   for (const d of listDevices()) {
-    if (onlyDevice ? d.id !== onlyDevice : watching(d.id, event.win)) continue;
+    if (onlyDevice ? d.id !== onlyDevice : watching(d.id, event)) continue;
     const payload = JSON.stringify(d.lang === 'en' && en ? { ...zh, ...en } : zh);
     for (const s of streams) if (s.deviceId === d.id) s.res.write(`data: ${payload}\n\n`);
     if (!d.push) continue;
@@ -85,23 +91,41 @@ const windowName = title => {
 };
 
 function check(win, w, s) {
-  const first = !w.seen;
-  w.seen = true;
+  const thread = s.thread || '';
   const name = windowName(win.title);
-
-  if (s.waiting !== w.waiting) { w.waiting = s.waiting; w.waitPolls = 0; w.told = first; }
+  const threadName = s.title && s.title !== name ? s.title : '';
+  const where = [name, threadName].filter(Boolean).join(' · ');
   const pc = os.hostname().replace(/\.local$/, '').slice(0, 24);
+  const event = extra => ({
+    win: win.app === 'codex' ? 'codex' : win.id,
+    windowId: win.pageId || '',
+    threadId: thread,
+    ...extra,
+  });
+  // Opening a different thread is not that thread finishing. Start tracking it fresh.
+  if (w.thread !== thread) {
+    w.thread = thread;
+    w.seen = true;
+    w.busy = !!s.busy;
+    w.idle = 0;
+    w.waiting = s.waiting || null;
+    w.waitPolls = 0;
+    w.told = true;
+    return;
+  }
+
+  if (s.waiting !== w.waiting) { w.waiting = s.waiting; w.waitPolls = 0; w.told = false; }
   if (s.waiting && !w.told && ++w.waitPolls >= WAIT_POLLS) {
     w.told = true;
-    deliver({ kind: 'waiting', win: win.id, title: `${pc} · 等你确认 · ${name}`, body: s.waitingText || 'Agent 在等你确认',
-      en: { title: `${pc} · Needs your OK · ${name}`, body: s.waitingText || 'The Agent is waiting for you' } });
+    deliver(event({ kind: 'waiting', title: `${pc} · 等你确认 · ${where}`, body: s.waitingText || 'Agent 在等你确认',
+      en: { title: `${pc} · Needs your OK · ${where}`, body: s.waitingText || 'The Agent is waiting for you' } }));
   }
 
   if (s.busy) { w.busy = true; w.idle = 0; return; }
   if (!w.busy || ++w.idle < IDLE_POLLS) return;
   w.busy = false;
-  if (!s.waiting) deliver({ kind: 'done', win: win.id, title: `${pc} · 已完成 · ${name}`, body: s.last || 'Agent 已停止',
-    en: { title: `${pc} · Done · ${name}`, body: s.last || 'The Agent has stopped' } });
+  if (!s.waiting) deliver(event({ kind: 'done', title: `${pc} · 已完成 · ${where}`, body: s.last || 'Agent 已停止',
+    en: { title: `${pc} · Done · ${where}`, body: s.last || 'The Agent has stopped' } }));
 }
 
 // listWindows/openCdp/probe come from the relay so this module shares its CDP code.

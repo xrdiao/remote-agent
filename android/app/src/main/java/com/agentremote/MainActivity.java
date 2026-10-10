@@ -99,8 +99,7 @@ public class MainActivity extends Activity {
         else registerReceiver(downloaded, done);
 
         if (!openPairLink(getIntent())) {
-            String win = getIntent().getStringExtra("win");
-            if (win != null) prefs.edit().putString("openWin", win).apply();
+            saveOpen(getIntent());
             if (state != null) web.restoreState(state);
             else load();
         }
@@ -162,7 +161,22 @@ public class MainActivity extends Activity {
         super.onNewIntent(intent);
         if (openPairLink(intent)) return;
         String win = intent.getStringExtra("win");
-        if (win != null) web.evaluateJavascript("window.openWin && openWin(" + JSONObject.quote(win) + ")", null);
+        if (win != null) {
+            saveOpen(intent);
+            web.evaluateJavascript("window.openWin && openWin(" + JSONObject.quote(prefs.getString("openWin", "")) + ")", null);
+        }
+    }
+
+    private void saveOpen(Intent intent) {
+        String win = intent.getStringExtra("win");
+        if (win == null || win.isEmpty()) return;
+        try {
+            JSONObject o = new JSONObject();
+            o.put("win", win);
+            o.put("windowId", intent.getStringExtra("windowId") == null ? "" : intent.getStringExtra("windowId"));
+            o.put("threadId", intent.getStringExtra("threadId") == null ? "" : intent.getStringExtra("threadId"));
+            prefs.edit().putString("openWin", o.toString()).apply();
+        } catch (Exception ignored) {}
     }
 
     private void enableNotify(String config) {

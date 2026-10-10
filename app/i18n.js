@@ -5,13 +5,24 @@ const I18N = (() => {
   const lang = saved === 'zh' || saved === 'en' ? saved : /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
 
   const EN = {
+    '当前应用': 'the current app', '发给 Agent…': 'Message Agent…',
     '连接中…': 'Connecting…', '对话': 'Chat', '画面': 'Screen', '↑ 加载更早的消息': '↑ Load earlier messages',
-    '没找到聊天面板。': 'No chat panel found.', '请在 Cursor 里打开 Agent 对话，或切到「画面」查看。': 'Open an Agent chat in Cursor, or switch to "Screen".',
+    '没找到聊天面板。': 'No chat panel found.', '请在 {app} 里打开 Agent 对话，或切到「画面」查看。': 'Open an Agent chat in {app}, or switch to "Screen".',
     '↓ 最新': '↓ Latest', '聊天面板': 'Chat panel', '整个窗口': 'Whole window', '点击': 'Tap', '滚动': 'Scroll', '刷新': 'Refresh',
     '回车': 'Enter', '适应': 'Fit', '历史': 'History', '＋ 新建': '+ New',
     '切换 Agent': 'Switch Agent', '没有找到 Agent 列表。请在电脑上打开 Cursor 的 Agents 窗口。': 'No agent list found. Open Cursor\'s Agents window on the computer.',
-    '没有找到 Agent。Cursor 要打开 Agents 窗口；Devin 的会话在侧边栏；Codex 的每个窗口是一个 Agent。': 'No agents found. Open Cursor\'s Agents window, use Devin\'s sidebar, or open another VS Code window for Codex.',
+    '没有找到 {app} 的 Agent。请在电脑上打开对应的会话窗口。': 'No agents found in {app}. Open the corresponding session window on the computer.',
     '运行中': 'Running', '当前': 'Current', '正在读取 Agent 列表…': 'Loading agents…', '正在切换 Agent…': 'Switching agent…',
+    '＋ 新建会话': '+ New chat', '打开这个窗口': 'Open this window',
+    '已新建会话': 'New chat started', '已切换会话': 'Switched chat', '已是当前会话': 'Already the current chat',
+    '已切换窗口': 'Switched window', '桌面上的会话已切换': 'The desktop chat changed',
+    '这个窗口里没有新建对话': 'This window has no New chat button',
+    '这个窗口里没有最近对话': 'This window has no recent chats',
+    '没有找到这个会话': 'That chat was not found',
+    '切换后的会话和选择的不一致': 'The open chat does not match the one you selected',
+    '这条会话已经不在列表里': 'That chat is no longer in the list',
+    '新建会话没有生效': 'New chat did not open',
+    '没有找到上次的会话，已留在当前会话': 'The previous chat was not found; staying on the current one',
     '这条 Agent 已经不在列表里': 'That agent is no longer in the list',
     '终端': 'Terminal', '列表': 'List', '＋ 新建': '+ New', '发给终端…': 'Message the terminal…',
     '没有打开的终端': 'No terminal is open', '新建终端': 'New terminal', '＋ 新建终端': '+ New terminal',
@@ -28,27 +39,35 @@ const I18N = (() => {
     '还有没保存的修改，确定离开？': 'Leave without saving your changes?',
     '文件太长，只能查看不能保存': 'This file is too long to edit',
     '内容太长，不能保存': 'The text is too long to save',
-    '只能修改 Cursor 打开过的项目里的文件': 'You can only edit files in projects Cursor has opened',
+    '只能修改已打开过的项目里的文件': 'You can only edit files in previously opened projects',
+    '有多个同名工作区，不能确定保存到哪一个': 'Several workspaces share this name, so the file cannot be saved to a specific one',
     '没有可查看的项目。': 'No projects to view.', '这个文件夹里没有可查看的文档或代码。': 'No documents or code in this folder.',
     '文档': 'Doc', '代码': 'Code', '文件夹': 'Folder', '正在读取文档…': 'Loading files…',
     '只能查看这个项目里的文件': 'You can only view files inside this project',
-    '只能查看 Cursor 打开过的项目': 'You can only view projects Cursor has opened',
+    '只能查看已打开过的项目': 'You can only view previously opened projects',
     '更换模型': 'Change model', '模型 ▾': 'Model ▾', '选择当前 Agent 的模型': 'Choose the current Agent model',
     '权限': 'Permissions', '读取权限…': 'Loading permissions…',
     '每次询问': 'Ask each time', '代为批准': 'Approve for me', '完全访问': 'Full access',
     '改外部文件和上网前都会询问': 'Ask before editing outside the project or using the internet',
     '只在可能不安全时询问': 'Ask only when an action looks unsafe',
     '可以访问网络和这台电脑上的文件': 'Can use the network and files on this computer',
-    '画面': 'Screen', '直接看电脑上的 Cursor': 'Look at Cursor on the computer',
+    '画面': 'Screen', '直接看电脑上的 {app}': 'Look at {app} on the computer',
     '浏览文件夹': 'Browse folders', '上级目录': 'Up', '打开此文件夹': 'Open this folder',
     '还没有最近打开的本地项目。': 'No recent local projects.', '没有子文件夹。': 'No subfolders.',
     '没有读到设置。': 'Could not read settings.', '这里看不到额度。': 'Usage is not shown here.', '刷新': 'Refresh',
     '正在读取项目…': 'Loading projects…', '正在读取文件夹…': 'Loading folder…', '正在打开项目…': 'Opening project…',
     '正在读取设置…': 'Loading settings…', '正在修改…': 'Updating…', '正在读取额度…': 'Loading usage…',
+    '没有额度数据': 'No usage data', '剩余': 'Left', '已用': 'Used',
+    '每周限制': 'Weekly limit', '每周额度': 'Weekly quota', '5 小时限制': '5-hour limit', '额度': 'Credits',
+    '包含额度已用完': 'Included quota is used up',
+    '这个窗口里没有额度入口': 'This window has no usage page',
+    '额度页面没有打开': 'The usage page did not open',
+    '没有读到额度': 'Could not read usage', '额度还在加载': 'Usage is still loading',
+    '读取额度后会话变了': 'The chat changed while reading usage',
     '找不到这个文件夹': 'Folder not found', '只能打开家目录里的文件夹': 'Only folders in your home directory can be opened',
     '读不了这个文件夹': 'Cannot read this folder', '找不到设置按钮': 'Settings button not found', '设置没有打开': 'Settings did not open',
     '找不到这项设置': 'That setting was not found',
-    '发给 Cursor Agent…': 'Message Cursor Agent…', '发给 Devin…': 'Message Devin…', '发给 Codex…': 'Message Codex…', '发送': 'Send', '换行': 'Wrap', '在 App 中打开': 'Open in app', '重试': 'Retry', '重新配对': 'Pair again',
+    '发给 {app} Agent…': 'Message {app} Agent…', '发给 Devin…': 'Message Devin…', '发给 Codex…': 'Message Codex…', '发送': 'Send', '换行': 'Wrap', '在 App 中打开': 'Open in app', '重试': 'Retry', '重新配对': 'Pair again',
     'Lead 负责规划和关键判断，Sidekick 负责具体执行。': 'The lead plans and reviews. The sidekick does the work.',
     '先把模型切换到 Fusion': 'Switch the model to Fusion first',
     '没有这个 Fusion 选项': 'That Fusion option is not available',
@@ -80,8 +99,8 @@ const I18N = (() => {
     '切换窗口': 'Switch window', '切换 Cursor 窗口': 'Switch Cursor window', '没有找到窗口': 'No windows found', '本地': 'Local',
     'Cursor、Devin 和 Codex 都在这里。点一个就切到那个程序。': 'Cursor, Devin, and Codex are all listed. Tap one to switch to that app.',
     '「Agents」是 Cursor 专门跑 Agent 的窗口；其他是普通编辑器窗口（IDE 模式），SSH 远程窗口也在这里。': '"Agents" is Cursor\'s dedicated Agent window; the others are regular editor windows (IDE mode), including SSH remotes.',
-    '选择模式': 'Mode', '选择模型': 'Model', '历史对话': 'Chat history', '菜单是空的，可能 Cursor 版本不同': 'The menu is empty; your Cursor version may differ',
-    '更大上下文、更贵': 'Larger context, costs more', '参数': 'Params', '模型': 'Model', '改动会直接应用到电脑上 Cursor 的这个模型。': 'Changes apply directly to this model in Cursor on your computer.',
+    '选择模式': 'Mode', '选择模型': 'Model', '历史对话': 'Chat history', '菜单是空的，可能 {app} 版本不同': 'The menu is empty; your {app} version may differ',
+    '更大上下文、更贵': 'Larger context, costs more', '参数': 'Params', '模型': 'Model', '改动会直接应用到电脑上 {app} 的这个模型。': 'Changes apply directly to this model in {app} on your computer.',
     '：开': ': on', '：关': ': off',
     '已配对设备': 'Paired devices', '移除': 'Remove', '添加新设备：在电脑上运行 npm run pair。': 'Add a device: run npm run pair on the computer.',
     '开启 Authenticator 二次验证：npm run 2fa。': 'Turn on Authenticator 2FA: npm run 2fa.',
@@ -135,7 +154,7 @@ const I18N = (() => {
     '正在停止…': 'Stopping…', '没有停下来，Agent 仍在运行': 'It did not stop; the Agent is still running', 'Agent 当前没有在运行': 'The Agent is not running',
     '已立即发送这条排队消息': 'Queued message sent now', '已删除这条排队消息': 'Queued message deleted',
     '读取模式列表…': 'Loading modes…', '读取模型列表…': 'Loading models…', '读取历史对话…': 'Loading chat history…', '已新建对话': 'New chat started',
-    '正在从电脑读取…': 'Reading from the computer…', '可以切到「画面」在 Cursor 里打开': 'You can open it in Cursor from the "Screen" tab',
+    '正在从电脑读取…': 'Reading from the computer…', '可以切到「画面」在 {app} 里打开': 'You can open it in {app} from the "Screen" tab',
     '文件太长，只显示了前 512 KB': 'File too long; showing the first 512 KB',
     '语言 / Language': '语言 / Language', '请说话…（再点一下结束）': 'Listening… (tap again to stop)', '请说话…': 'Listening…',
     '没听清，再试一次': 'Didn\'t catch that, try again', '没有麦克风权限': 'No microphone permission',
@@ -150,9 +169,9 @@ const I18N = (() => {
     '立即发送这条消息？': 'Send this message now?', 'Agent 当前这一轮会被打断。': 'The Agent\'s current turn will be interrupted.',
     '删除这条排队消息？': 'Delete this queued message?',
     '附加图片': 'Attach image', '正在处理图片…': 'Processing image…', '读不了这张图片，换一张试试': "Couldn't read that image; try another",
-    '图片已附加到 Cursor 输入框，写好文字后点发送': 'Image attached in Cursor; type your message and tap Send',
+    '图片已附加到 {app} 输入框，写好文字后点发送': 'Image attached in {app}; type your message and tap Send',
     '只支持 PNG / JPEG / GIF / WebP 图片': 'Only PNG / JPEG / GIF / WebP images are supported',
-    'Cursor 没有接收这张图片（当前模型可能不支持图片）': "Cursor didn't accept the image (the current model may not support images)",
+    '{app} 没有接收这张图片（当前模型可能不支持图片）': "{app} didn't accept the image (the current model may not support images)",
     '❓ Agent 在问你': '❓ The Agent is asking you', '其他…': 'Other…', '填入': 'Set', '跳过': 'Skip', '提交': 'Submit', '已跳过': 'Skipped', '已提交': 'Submitted',
     '这个问题已经不在了（可能已在电脑上回答）': 'That question is gone (maybe it was answered on the computer)',
     '保留': 'Keep', '撤销': 'Undo', '读取改动的文件…': 'Loading changed files…', '没有待处理的改动': 'No pending changes',
@@ -160,22 +179,22 @@ const I18N = (() => {
     '点文件名查看内容。「保留」接受这个文件的改动，「撤销」把它恢复成改动前的样子。': 'Tap a file name to view it. "Keep" accepts the change to that file; "Undo" restores it to how it was before.',
     '文件会恢复成 Agent 改之前的样子。': 'The file goes back to how it was before the Agent changed it.',
     '不支持的操作': 'Unsupported action', '文件列表已经变了，请重新打开': 'The file list changed; open it again',
-    '没找到这个按钮（可能 Cursor 版本不同）': 'Button not found (your Cursor version may differ)',
+    '没找到这个按钮（可能 {app} 版本不同）': 'Button not found (your {app} version may differ)',
     // Relay messages
     '已修改，仍在排队': 'Updated, still queued', 'Agent 正在运行，已加入排队，这一轮结束后自动发送': 'Agent is running; queued, and it sends automatically when this turn ends',
-    '按钮已经不在了，可能状态已变化': 'That button is gone; the state may have changed', 'Cursor 没有进入编辑状态，没改动': 'Cursor did not enter edit mode; nothing changed',
+    '按钮已经不在了，可能状态已变化': 'That button is gone; the state may have changed', '{app} 没有进入编辑状态，没改动': '{app} did not enter edit mode; nothing changed',
     '不支持的排队操作': 'Unsupported queue action', '这条排队消息已经不在了（可能刚被发出）': 'That queued message is gone (it may have just been sent)',
-    '没找到排队消息的操作按钮（可能 Cursor 版本不同）': 'Could not find the queue buttons (your Cursor version may differ)',
-    '这个子 Agent 已经结束了，或者 Cursor 里找不到它': 'That subagent has finished, or Cursor cannot find it',
+    '没找到排队消息的操作按钮（可能 {app} 版本不同）': 'Could not find the queue buttons (your {app} version may differ)',
+    '这个子 Agent 已经结束了，或者 {app} 里找不到它': 'That subagent has finished, or {app} cannot find it',
     '找不到原来的主对话标签页，请在「画面」里手动切回': 'Cannot find the main chat tab; switch back manually in "Screen"',
-    'Agent 当前没有在运行': 'The Agent is not running', '当前窗口里没有这个按钮（可能是 Cursor 版本或布局不同）': 'This window has no such button (your Cursor version or layout may differ)',
+    'Agent 当前没有在运行': 'The Agent is not running', '当前窗口里没有这个按钮（可能是 {app} 版本或布局不同）': 'This window has no such button (your {app} version or layout may differ)',
     '这个 Cursor 版本没有 MAX Mode 开关': 'This Cursor version has no MAX Mode toggle', '模型列表里找不到这个模型': 'That model is not in the list',
-    '这个模型没有可调的参数': 'This model has no adjustable parameters', '参数菜单没有打开（可能 Cursor 版本不同）': 'The parameter menu did not open (your Cursor version may differ)',
+    '这个模型没有可调的参数': 'This model has no adjustable parameters', '参数菜单没有打开（可能 {app} 版本不同）': 'The parameter menu did not open (your {app} version may differ)',
     '不是文件路径': 'Not a file path', '二进制文件，不能预览': 'Binary file; cannot preview',
     '没有找到 Cursor 窗口，确认 Cursor 是以 --remote-debugging-port=9222 启动的': 'No Cursor window found; make sure Cursor was started with --remote-debugging-port=9222',
-    'Cursor 窗口连接已断开': 'Lost connection to the Cursor window',
-    '没找到可见的聊天输入框：先在画面里打开 Agent 面板（或点「打开聊天」）': 'No visible chat input: open the Agent panel in "Screen" first (or tap "Open chat")',
-    '尚未连接到 Cursor 窗口': 'Not connected to a Cursor window yet',
+    '{app} 窗口连接已断开': 'Lost connection to {app}',
+    '没找到 {app} 的聊天输入框：先在画面里打开 Agent 面板（或点「打开聊天」）': 'No chat input found in {app}: open the Agent panel in "Screen" first (or tap "Open chat")',
+    '尚未连接到 {app} 窗口': 'Not connected to {app} yet',
     '连不上 Cursor：Cursor 没有用 start-cursor.sh 启动（调试端口未开启）': 'Cannot reach Cursor: it was not started with start-cursor.sh (debug port is off)',
     '尝试次数过多，请 15 分钟后再试': 'Too many attempts; try again in 15 minutes',
     '配对链接无效或已过期（10 分钟内有效，只能用一次）。请在电脑上重新运行 npm run pair': 'The pairing link is invalid or expired (valid 10 minutes, single use). Run npm run pair on the computer again.',
@@ -215,6 +234,12 @@ const I18N = (() => {
     [/^(.*)（(安卓 App|安卓浏览器|Mac 浏览器|浏览器)）$/, (m, a, b) => `${a} (${{ '安卓 App': 'Android app', '安卓浏览器': 'Android browser', 'Mac 浏览器': 'Mac browser', '浏览器': 'browser' }[b]})`],
   ];
 
+  for (const [template, translation] of Object.entries(EN)) {
+    if (!template.includes('{app}')) continue;
+    const pattern = template.split('{app}').map(s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('(.+?)');
+    PATTERNS.push([new RegExp('^' + pattern + '$'), (match, app) => translation.replaceAll('{app}', EN[app] || app)]);
+  }
+
   const line = s => {
     const key = s.trim();
     if (!key || !/[\u4e00-\u9fa5（）「」：]/.test(key)) return s;
@@ -226,7 +251,7 @@ const I18N = (() => {
   const tr = s => lang === 'zh' || s == null ? s : String(s).split('\n').map(line).join('\n');
 
   // Content mirrored from Cursor or the computer's files is never translated.
-  const SKIP = '#items, #vBody, #vName, #vPath, #titleText, .qt, [data-label] .lbl, [data-win] .lbl, [data-agent] .lbl, [data-term] .lbl, [data-docs-file] .lbl, [data-docs-dir] .lbl, [data-docs-root] .lbl, .qnQ, .qnOpt span';
+  const SKIP = '#items, #vBody, #vName, #vPath, #titleText, .qt, [data-label] .lbl, [data-win] .lbl, [data-agent] .lbl, [data-fold] .lbl, [data-term] .lbl, [data-docs-file] .lbl, [data-docs-dir] .lbl, [data-docs-root] .lbl, .qnQ, .qnOpt span';
   const ATTRS = ['placeholder', 'title', 'aria-label'];
   const fix = node => {
     if (node.nodeType === 3) {

@@ -72,7 +72,7 @@
   .codebox { position: relative; margin: 0 0 .6em; }
   .codebox .src { display: none; }
   .codebox pre, .assistant pre { background: #111; padding: 8px 64px 8px 10px; border-radius: 8px; overflow-x: auto; font: 12.5px/1.45 ui-monospace, Menlo, monospace; white-space: pre; margin: 0 0 .6em; }
-  .codebox pre { margin: 0; }
+  .codebox pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .assistant pre code { background: none; color: inherit; padding: 0; }
   .codebox .copy { position: absolute; top: 6px; right: 6px; z-index: 1; font-size: 12px; padding: 2px 8px; }
   .assistant code.copyable { cursor: pointer; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 2px; }
@@ -191,6 +191,11 @@
   .sub .add { color: #73c991; }
   .sub .del { color: #f14c4c; }
   .pSec { font-size: 12px; color: #999; margin: 10px 4px 6px; }
+  button.fold { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: transparent; border: 0; color: #ccc; font-size: 13px; font-weight: 600; padding: 8px 4px 4px; margin-top: 4px; }
+  button.fold .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  button.fold .tag { flex: none; font-size: 11px; font-weight: 500; color: #888; background: transparent; padding: 0; }
+  button.fold .chev { flex: none; color: #888; font-size: 12px; }
+  .foldBody { margin-left: 8px; }
   .pRow { display: flex; flex-wrap: wrap; gap: 6px; }
   .pRow button { padding: 8px 12px; font-size: 13.5px; }
   .pRow button.on { border-color: #1177bb; background: #0e639c; color: #fff; }
@@ -255,13 +260,13 @@
 <main>
   <section id="chatView" class="view active">
     <div id="meters">
-      <div class="meter" id="meterCtx"><span>上下文</span><span class="track"><i id="meterCtxFill"></i></span><b id="meterCtxPct">–</b></div>
+      <button class="meter" id="meterCtx" type="button"><span>上下文</span><span class="track"><i id="meterCtxFill"></i></span><b id="meterCtxPct">–</b></button>
       <div id="quotaMeters"></div>
     </div>
     <div id="list">
       <button id="older">↑ 加载更早的消息</button>
       <div id="items"></div>
-      <div id="empty" hidden>没找到聊天面板。<br>请在 Cursor 里打开 Agent 对话，或切到「画面」查看。</div>
+      <div id="empty" hidden>没找到聊天面板。<br><span id="emptyHint"></span></div>
     </div>
     <button id="toBottom">↓ 最新</button>
     <div id="qnBar"></div>
@@ -315,7 +320,7 @@
     <button id="newChat">＋ 新建</button>
   </div>
   <div class="row">
-    <textarea id="text" rows="1" placeholder="发给 Cursor Agent…" enterkeyhint="send"></textarea>
+    <textarea id="text" rows="1" placeholder="发给 Agent…" enterkeyhint="send"></textarea>
     <button id="img" title="附加图片" aria-label="附加图片"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/></svg></button>
     <input id="imgFile" type="file" accept="image/*" hidden>
     <button id="mic" title="语音输入" aria-label="语音输入"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
@@ -367,6 +372,13 @@ let mode = store.get('mode') || 'chat';
 let crop = store.get('crop') !== 'full';
 let frame = { w: 1000, h: 800 }, panel = null, zoom = 1;
 let windows = [], currentWindow = null;
+let currentAppName = I18N.tr('当前应用');
+let viewSel = '';
+const appMessage = template => I18N.tr(template).replaceAll('{app}', currentAppName);
+function updateAppText() {
+  $('emptyHint').textContent = appMessage('请在 {app} 里打开 Agent 对话，或切到「画面」查看。');
+  text.placeholder = mode === 'terminal' ? I18N.tr('发给终端…') : appMessage('发给 {app} Agent…');
+}
 
 // iOS scrolls the page to reveal the focused field, which throws the chat off screen.
 // Pin the shell to the visible area above the keyboard instead.
@@ -518,6 +530,18 @@ function rememberComputer(comp) {
   else list.push(comp);
   return saveComputers(list, comp.key);
 }
+function applySelection(m, clearChat = true) {
+  const changed = (m.sel || '') !== viewSel;
+  if (changed) { viewSel = m.sel || ''; cache.clear(); }
+  const here = currentComputer();
+  if (here) rememberComputer({
+    ...here,
+    win: m.id || here.win,
+    windowId: m.windowId ?? here.windowId ?? '',
+    threadId: m.threadId ?? here.threadId ?? '',
+  });
+  if (clearChat && changed) renderChat(null);
+}
 async function decryptEntry(keyText, entry) {
   const key = await crypto.subtle.importKey('raw', b64u(keyText), 'AES-GCM', false, ['decrypt']);
   const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64(entry.iv) }, key, b64(entry.data));
@@ -570,11 +594,12 @@ function parsePair(text) {
 }
 let pending = parsePair(location.hash);
 if (pending) history.replaceState(null, '', location.pathname + location.search);
-// Opened from a notification: <app>#win=<window id>.
+// Opened from a notification: <app>#win=<window id or JSON with windowId and threadId>.
+let pendingNotice = '';
 {
   const m = /[#&]win=([^&]+)/.exec(location.hash);
   if (m) {
-    store.set('window', decodeURIComponent(m[1]));
+    pendingNotice = decodeURIComponent(m[1]);
     history.replaceState(null, '', location.pathname + location.search);
   }
 }
@@ -817,41 +842,45 @@ function connect() {
       status('已连接');
       send({ t: 'mode', mode });
       send({ t: 'windows' });
-      const fromNotice = window.AgentRemoteApp?.takeOpenWin?.();
-      if (fromNotice) store.set('window', fromNotice);
-      send({ t: 'attach', id: store.get('window') || '' });
+      const fromNotice = window.AgentRemoteApp?.takeOpenWin?.() || pendingNotice;
+      pendingNotice = '';
+      if (fromNotice) rememberNotice(fromNotice);
+      const chosen = currentComputer();
+      send({ t: 'attach', id: chosen?.win || store.get('window') || '', windowId: chosen?.windowId || '', threadId: chosen?.threadId || '' });
       sentWidth = 0;
       applyQuality();
       send({ t: 'visible', v: document.visibilityState === 'visible' });
       send({ t: 'lang', v: I18N.lang });
-      send({ t: 'usage' });
       clearInterval(usageTimer);
       usageTimer = setInterval(() => { if (authed) send({ t: 'usage' }); }, 10 * 60 * 1000);
       syncNotify();
       setTimeout(checkAppUpdate, 3000);
     }
-    else if (m.t === 'chat') renderChat(m.chat);
+    else if (m.t === 'chat') { if (!m.sel || !viewSel || m.sel === viewSel) renderChat(m.chat); }
+    else if (m.t === 'thread') applySelection(m);
     else if (m.t === 'frame') onFrame(m);
     else if (m.t === 'panel') { panel = m.rect; updateTermEmpty(); layoutStage(); applyQuality(); }
     else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; if (sheetKind === 'windows') showWindows(); }
     else if (m.t === 'attached') {
+      if (m.keepQuota) { applySelection(m); return; }
       store.set('window', m.id);
-      const here = currentComputer();
-      if (here) rememberComputer({ ...here, win: m.id });
+      applySelection(m, false);
       currentWindow = m.id;
+      if (m.closed) { status('这个窗口已经关闭，请重新选择', false); send({ t: 'agents' }); return; }
       $('titleText').textContent = m.app === 'devin' ? 'Devin agent' : m.app === 'codex' ? 'Codex' : winLabel(m.title).name;
-      $('text').placeholder = m.app === 'devin' ? '发给 Devin…' : m.app === 'codex' ? '发给 Codex…' : '发给 Cursor Agent…';
+      currentAppName = m.appName;
+      updateAppText();
       renderChat(null);
-      if (m.app === 'devin' || m.app === 'codex') {
-        renderQuota({ bars: [] });
-        renderContext(null);
-      } else send({ t: 'usage' });
+      renderContext(null);
+      $('quotaMeters').innerHTML = '';
+      $('quotaMeters').title = '';
+      send({ t: 'usage' });
       send({ t: 'windows' });
     }
     else if (m.t === 'agents') { finishPending(['正在读取 Agent 列表…']); showAgents(m.list || []); }
     else if (m.t === 'terminals') { finishPending(['正在读取终端列表…']); showTerminals(m.list || []); }
     else if (m.t === 'agentBusy') $('termBusy').hidden = !(mode === 'terminal' && m.busy);
-    else if (m.t === 'termText') renderTerm(m);
+    else if (m.t === 'termText') { if (!m.sel || !viewSel || m.sel === viewSel) renderTerm(m); }
     else if (m.t === 'termInput' && mode === 'terminal') {
       text.value = m.text || '';
       const end = text.value.length;
@@ -862,6 +891,8 @@ function connect() {
     else if (m.t === 'docs') { finishPending(['正在读取文档…']); showDocs(m); }
     else if (m.t === 'settings') { finishPending(['正在读取设置…', '正在修改…']); showSettings(m.sections || []); }
     else if (m.t === 'usage') {
+      if (m.error) status(m.error, false);
+      else if (m.missing) status('没有额度数据');
       renderQuota(m);
       finishPending(['正在读取额度…']);
     }
@@ -932,16 +963,42 @@ function showTerminals(list) {
   const rows = list.map(t => `<div class="optRow"><button class="opt ${t.current ? 'cur' : ''}" data-term="${esc(t.id)}"><span class="lbl">${esc(t.title)}</span>${t.current ? '<span class="tag">当前</span>' : ''}</button><button data-term-del="${esc(t.id)}" data-term-name="${esc(t.title)}">删除</button></div>`).join('');
   openSheet('terminals', `<h3>终端</h3>${rows || '<div class="hint">还没有终端。</div>'}<button class="opt" data-act="newTerm"><span class="lbl">＋ 新建终端</span></button>`);
 }
+function agentButton(a) {
+  const label = a.ui ? esc(a.title) : `<span class="lbl">${esc(a.title)}</span>`;
+  const tags = `${a.running && !a.current ? '<span class="tag">运行中</span>' : ''}${a.current ? '<span class="tag">当前</span>' : ''}`;
+  return `<button class="opt ${a.current ? 'cur' : ''}" data-agent="${esc(a.id)}">${label}${tags}</button>`;
+}
+function foldSection(name, inner, open, count) {
+  if (!name) return inner;
+  return `<button type="button" class="fold" data-fold aria-expanded="${open ? 'true' : 'false'}"><span class="lbl">${esc(name)}</span><span class="tag">${count}</span><span class="chev">${open ? '▾' : '▸'}</span></button><div class="foldBody"${open ? '' : ' hidden'}>${inner}</div>`;
+}
 function showAgents(list) {
-  const groups = [];
+  const order = [];
+  const byWindow = new Map();
   for (const a of list) {
-    let g = groups.find(x => x.name === (a.group || ''));
-    if (!g) groups.push(g = { name: a.group || '', items: [] });
-    g.items.push(a);
+    const win = a.window || '';
+    if (!byWindow.has(win)) { byWindow.set(win, []); order.push(win); }
+    byWindow.get(win).push(a);
   }
-  const rows = groups.map(g => (g.name ? `<div class="pSec">${esc(g.name)}</div>` : '') + g.items.map(a =>
-    `<button class="opt ${a.current ? 'cur' : ''}" data-agent="${esc(a.id)}"><span class="lbl">${esc(a.title)}</span>${a.running && !a.current ? '<span class="tag">运行中</span>' : ''}${a.current ? '<span class="tag">当前</span>' : ''}</button>`).join('')).join('');
-  openSheet('agents', `<h3>切换 Agent</h3>${rows || '<div class="hint">没有找到 Agent。Cursor 要打开 Agents 窗口；Devin 的会话在侧边栏；Codex 的每个窗口是一个 Agent。</div>'}`);
+  const anyCurrent = list.some(a => a.current);
+  const rows = order.map((win, index) => {
+    const items = byWindow.get(win);
+    const loose = [];
+    const groups = [];
+    for (const a of items) {
+      if (!a.group) { loose.push(a); continue; }
+      let g = groups.find(x => x.name === a.group);
+      if (!g) groups.push(g = { name: a.group, items: [] });
+      g.items.push(a);
+    }
+    const body = loose.map(agentButton).join('') + groups.map(g => foldSection(
+      g.name, g.items.map(agentButton).join(''), g.items.some(a => a.current), g.items.length,
+    )).join('');
+    if (!win) return body;
+    const open = items.some(a => a.current) || (!anyCurrent && index === 0);
+    return foldSection(win, body, open, items.length);
+  }).join('');
+  openSheet('agents', `<h3>切换 Agent</h3>${rows || `<div class="hint">${esc(appMessage('没有找到 {app} 的 Agent。请在电脑上打开对应的会话窗口。'))}</div>`}`);
 }
 $('title').onclick = () => { send({ t: 'windows' }); showWindows(); };
 
@@ -963,7 +1020,7 @@ function fusionBlock(fusion) {
 }
 function showMenu(kind, items, max, fusion) {
   const picking = String(kind || '').startsWith('fusion-');
-  if (!items?.length && !fusion) return status('菜单是空的，可能 Cursor 版本不同', false);
+  if (!items?.length && !fusion) return status(appMessage('菜单是空的，可能 {app} 版本不同'), false);
   status('');
   const maxRow = typeof max === 'boolean'
     ? `<button class="opt" data-max><span class="lbl">MAX Mode<span class="sub">更大上下文、更贵</span></span><span class="switch ${max ? 'on' : ''}"></span></button>` : '';
@@ -995,7 +1052,7 @@ function showParams(m) {
   status('');
   openSheet('params', `<h3>${esc(m.label || '模型')} 参数</h3>` + m.sections.map(s => `<div class="pSec">${esc(s.title)}</div><div class="pRow">`
     + s.items.map(it => `<button class="${it.checked ? 'on' : ''} ${it.toggle ? 'tg' : ''}" data-model="${esc(m.model)}" data-plabel="${esc(m.label)}" data-section="${esc(s.title)}" data-value="${esc(it.label)}">${esc(it.label)}${it.toggle ? (it.checked ? '：开' : '：关') : ''}</button>`).join('')
-    + '</div>').join('') + '<div class="hint">改动会直接应用到电脑上 Cursor 的这个模型。</div>');
+    + '</div>').join('') + `<div class="hint">${esc(appMessage('改动会直接应用到电脑上 {app} 的这个模型。'))}</div>`);
 }
 
 async function showDevices() {
@@ -1011,12 +1068,13 @@ async function showDevices() {
 function showDocs(m) {
   if (m.error) { closeSheet(); return status(m.error, false); }
   if (m.projects) {
-    const rows = m.projects.map(p => `<button class="opt" data-docs-root="${esc(p.path)}"><span class="lbl">${esc(p.name)}${p.host ? `<span class="sub">${esc(p.host)}</span>` : ''}</span></button>`).join('');
+    const rows = m.projects.map(p => `<button class="opt" data-docs-root="${esc(p.path)}" data-docs-host="${esc(p.host || '')}"><span class="lbl">${esc(p.name)}${p.detail ? `<span class="sub">${esc(p.detail)}</span>` : ''}</span></button>`).join('');
     openSheet('docs', `<h3>查看文档</h3><div class="hint">选择要查看的项目</div>${rows || '<div class="hint">没有可查看的项目。</div>'}`);
     return;
   }
-  const up = `<button class="opt" data-docs-up="${esc(m.parent || '')}" data-root="${esc(m.root)}"><span class="lbl">返回上一级</span></button>`;
-  const folders = (m.folders || []).map(d => `<button class="opt" data-docs-root="${esc(m.root)}" data-docs-dir="${esc(d.path)}"><span class="lbl">${esc(d.name)}</span><span class="sub">文件夹</span></button>`).join('');
+  const hostAttr = ` data-docs-host="${esc(m.host || '')}"`;
+  const up = `<button class="opt" data-docs-up="${esc(m.parent || '')}" data-root="${esc(m.root)}"${hostAttr}><span class="lbl">返回上一级</span></button>`;
+  const folders = (m.folders || []).map(d => `<button class="opt" data-docs-root="${esc(m.root)}" data-docs-dir="${esc(d.path)}"${hostAttr}><span class="lbl">${esc(d.name)}</span><span class="sub">文件夹</span></button>`).join('');
   const row = (f, tag) => `<button class="opt" data-docs-file="${esc(f.path)}"><span class="lbl">${esc(f.name)}</span><span class="sub">${tag}</span></button>`;
   const docs = (m.docs || []).map(f => row(f, '文档')).join('');
   const code = (m.code || []).map(f => row(f, '代码')).join('');
@@ -1041,28 +1099,42 @@ function showSettings(sections) {
   }).join('')).join('');
   openSheet('settings', `<h3>设置</h3>${body || '<div class="hint">没有读到设置。</div>'}`);
 }
-function meterFill(pct) {
+function meterFill(pct, basis) {
   if (pct == null) return '';
-  return pct >= 90 ? 'hot' : pct >= 75 ? 'warm' : '';
+  const tight = basis === 'remaining' ? pct <= 10 : pct >= 90;
+  const warm = basis === 'remaining' ? pct <= 25 : pct >= 75;
+  return tight ? 'hot' : warm ? 'warm' : '';
 }
-function renderContext(pct) {
-  const n = pct == null ? null : Math.max(0, Math.min(100, pct));
-  $('meterCtxPct').textContent = n == null ? '–' : n + '%';
+function renderContext(info) {
+  const basis = info && typeof info === 'object' ? (info.basis || 'used') : 'used';
+  const pct = info == null ? null : typeof info === 'object' ? info.pct : info;
+  const n = pct == null || pct === '' ? null : Math.max(0, Math.min(100, Number(pct)));
+  $('meterCtxPct').textContent = n == null ? '–' : (basis === 'remaining' ? '剩余 ' : '') + n + '%';
   const fill = $('meterCtxFill');
   fill.style.width = (n ?? 0) + '%';
+  fill.className = meterFill(n, basis);
+  $('meterCtx').title = basis === 'remaining' ? '剩余' : '已用';
+  $('meterCtx').onclick = () => { status('正在读取额度…'); send({ t: 'usage' }); };
 }
 function renderQuota(m) {
-  const bars = (m.bars || []).filter(b => b?.label && !/^loading\b/i.test(String(b.label)));
-  if (!bars.length) {
-    $('quotaMeters').innerHTML = '';
-    $('quotaMeters').title = '';
+  if ('context' in m) renderContext(m.context);
+  if (m.error) return;
+  const bars = [...(m.quota || []), ...(m.limits || []), ...((m.quota || m.limits) ? [] : (m.bars || []))]
+    .filter(b => b?.label && !/^loading\b/i.test(String(b.label)));
+  const when = m.updated ? new Date(m.updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  if (m.missing) {
+    $('quotaMeters').title = when ? `更新于 ${when}` : '';
+    $('quotaMeters').innerHTML = `<button class="meter" type="button"><span>没有额度数据</span></button>`;
+    $('quotaMeters').querySelector('button').onclick = () => { status('正在读取额度…'); send({ t: 'usage' }); };
     return;
   }
-  const reset = (m.lines || []).find(l => /reset/i.test(l)) || '';
-  $('quotaMeters').title = reset;
+  const reset = [...new Set(bars.map(b => b.reset).filter(Boolean))].join(' · ') || (m.lines || []).find(l => /reset/i.test(l)) || '';
+  $('quotaMeters').title = [reset, when ? `更新于 ${when}` : ''].filter(Boolean).join(' · ');
   $('quotaMeters').innerHTML = bars.map(b => {
-    const n = b.pct == null ? null : Math.max(0, Math.min(100, b.pct));
-    return `<button class="meter" type="button"><span>${esc(b.label)}</span><span class="track"><i class="${meterFill(n)}" style="width:${n ?? 0}%"></i></span><b>${n == null ? '–' : n + '%'}</b></button>`;
+    const basis = b.basis || 'used';
+    const n = b.pct == null ? null : Math.max(0, Math.min(100, Number(b.pct)));
+    const num = n == null ? (b.value ?? '–') : (basis === 'remaining' ? `剩余 ${n}%` : `${n}%`);
+    return `<button class="meter" type="button" title="${esc(b.reset || '')}"><span>${esc(b.label)}</span><span class="track"><i class="${meterFill(n, basis)}" style="width:${n ?? 0}%"></i></span><b>${esc(String(num))}</b></button>`;
   }).join('');
   $('quotaMeters').querySelectorAll('button').forEach(btn => btn.onclick = () => { status('正在读取额度…'); send({ t: 'usage' }); });
 }
@@ -1080,7 +1152,7 @@ function showMainMenu() {
     <button class="opt" data-act="projects"><span class="lbl">打开项目<span class="sub">最近用过的本地文件夹</span></span></button>
     <button class="opt" data-act="docs"><span class="lbl">查看文档<span class="sub">README 和代码</span></span></button>
     <button class="opt" data-act="settings"><span class="lbl">设置</span></button>
-    <button class="opt" data-act="screen"><span class="lbl">画面<span class="sub">直接看电脑上的 Cursor</span></span></button>
+    <button class="opt" data-act="screen"><span class="lbl">画面<span class="sub">${esc(appMessage('直接看电脑上的 {app}'))}</span></span></button>
     ${notifyItem}
     ${inApp && appVersion ? update : ''}
     ${inApp ? '<button class="opt" data-act="changeUrl"><span class="lbl">更换 App 地址</span></button>' : ''}
@@ -1195,13 +1267,34 @@ async function disableNotify() {
   status('通知已关闭');
 }
 
+function noticeTarget(raw) {
+  if (!raw) return null;
+  let win = String(raw), windowId = '', threadId = '';
+  if (win.startsWith('{')) {
+    try {
+      const o = JSON.parse(win);
+      win = o.win || '';
+      windowId = o.windowId || '';
+      threadId = o.threadId || '';
+    } catch { return null; }
+  }
+  return win ? { win, windowId, threadId } : null;
+}
+function rememberNotice(raw) {
+  const n = noticeTarget(raw);
+  if (!n) return;
+  store.set('window', n.win);
+  const here = currentComputer();
+  if (here) rememberComputer({ ...here, win: n.win, windowId: n.windowId, threadId: n.threadId });
+}
 function openWin(id) {
-  if (!id) return;
-  store.set('window', id);
-  if (authed) send({ t: 'attach', id });
+  rememberNotice(id);
+  if (!authed) return;
+  const here = currentComputer();
+  send({ t: 'attach', id: here?.win || store.get('window') || '', windowId: here?.windowId || '', threadId: here?.threadId || '' });
 }
 window.openWin = openWin;
-navigator.serviceWorker?.addEventListener('message', e => openWin(e.data?.openWin));
+navigator.serviceWorker?.addEventListener('message', e => { if (e.data?.openWin) openWin(e.data.openWin); });
 document.addEventListener('visibilitychange', () => {
   if (authed) send({ t: 'visible', v: document.visibilityState === 'visible' });
 });
@@ -1209,6 +1302,15 @@ document.addEventListener('visibilitychange', () => {
 $('sheet').addEventListener('click', async e => {
   const b = e.target.closest('button');
   if (!b) return;
+  if ('fold' in b.dataset) {
+    const open = b.getAttribute('aria-expanded') !== 'true';
+    b.setAttribute('aria-expanded', open ? 'true' : 'false');
+    const chev = b.querySelector('.chev');
+    if (chev) chev.textContent = open ? '▾' : '▸';
+    const body = b.nextElementSibling;
+    if (body) body.hidden = !open;
+    return;
+  }
   if (b.dataset.win) { closeSheet(); return send({ t: 'attach', id: b.dataset.win }); }
   if (b.dataset.agent) { closeSheet(); status('正在切换 Agent…'); return send({ t: 'openAgent', id: b.dataset.agent }); }
   if (b.dataset.term) { closeSheet(); status('正在切换终端…'); return send({ t: 'openTerminal', id: b.dataset.term }); }
@@ -1218,9 +1320,9 @@ $('sheet').addEventListener('click', async e => {
   if ('docsUp' in b.dataset) {
     status('正在读取文档…');
     if (!b.dataset.docsUp) return send({ t: 'docs' });
-    return send({ t: 'docs', root: b.dataset.root, path: b.dataset.docsUp });
+    return send({ t: 'docs', root: b.dataset.root, host: b.dataset.docsHost || '', path: b.dataset.docsUp });
   }
-  if (b.dataset.docsRoot) { status('正在读取文档…'); return send({ t: 'docs', root: b.dataset.docsRoot, path: b.dataset.docsDir || b.dataset.docsRoot }); }
+  if (b.dataset.docsRoot) { status('正在读取文档…'); return send({ t: 'docs', root: b.dataset.docsRoot, host: b.dataset.docsHost || '', path: b.dataset.docsDir || b.dataset.docsRoot }); }
   if (b.dataset.setting) { status('正在修改…'); return send({ t: 'toggleSetting', label: b.dataset.setting }); }
   if (b.dataset.termDel) {
     if (!await ask(`删除终端「${b.dataset.termName || ''}」？\n里面正在跑的命令会停掉。`, '删除')) return;
@@ -1382,7 +1484,7 @@ function setMode(m) {
   $('screenKeys').hidden = m === 'terminal';
   view.classList.toggle('gesture', m === 'screen' || m === 'terminal');
   document.body.classList.toggle('term', m === 'terminal');
-  text.placeholder = m === 'terminal' ? '发给终端…' : '发给 Cursor Agent…';
+  updateAppText();
   if (m !== 'terminal') $('termBusy').hidden = true;
   sentWidth = 0;
   if (authed) send({ t: 'mode', mode: m });
@@ -1819,7 +1921,7 @@ function showFile(m) {
   $('vPath').textContent = m.path ? '\u200e' + (m.host ? m.host + ':' : '') + m.path + (m.size != null ? ` · ${fmtSize(m.size)}` : '') : '';
   const body = $('vBody');
   if (m.error) {
-    body.innerHTML = `<div class="note err">${esc(m.error)}</div><div class="note">可以切到「画面」在 Cursor 里打开</div>`;
+    body.innerHTML = `<div class="note err">${esc(m.error)}</div><div class="note">${esc(appMessage('可以切到「画面」在 {app} 里打开'))}</div>`;
     return;
   }
   if (m.image) {
@@ -1884,7 +1986,7 @@ $('vEdit').onclick = () => {
     return;
   }
   status('正在保存…');
-  send({ t: 'saveFile', path: viewing.path, text: $('vEditBox').value });
+  send({ t: 'saveFile', path: viewing.path, host: viewing.host || '', text: $('vEditBox').value });
 };
 $('vWrap').onclick = () => {
   const on = !$('vBody').classList.contains('wrap');
