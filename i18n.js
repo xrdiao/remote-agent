@@ -5,6 +5,7 @@ const I18N = (() => {
   const lang = saved === 'zh' || saved === 'en' ? saved : /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
 
   const EN = {
+    '没找到 Codex 的额度查询': 'Codex usage query was not found', '额度限制': 'Usage limit',
     '尚未获取隧道地址；当前只能检测页面地址发布。': 'The tunnel address is not available; only the published app address can be tested.',
     '重新检测': 'Test again', '页面地址发布': 'Published app address', '隧道和电脑服务': 'Tunnel and computer service',
     '正在测试…': 'Testing…', '尚未获取隧道地址': 'Tunnel address not available yet',
