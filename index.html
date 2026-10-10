@@ -153,7 +153,7 @@
   #chatTools::-webkit-scrollbar, #termTools::-webkit-scrollbar { display: none; }
   #chatTools button, #termTools button { font-size: 12.5px; padding: 3px 10px; border-radius: 14px; flex: none; white-space: nowrap; }
   body.term #img, body.term #mic { display: none !important; }
-  #chatTools #pickModel { flex: 0 0 auto; max-width: 46%; overflow: hidden; text-overflow: ellipsis; }
+  #chatTools #pickModel, #chatTools #pickPerm { flex: 0 0 auto; max-width: 42%; overflow: hidden; text-overflow: ellipsis; }
   .row { display: flex; gap: 8px; min-width: 0; align-items: flex-end; }
   textarea { flex: 1; min-width: 0; min-height: 40px; max-height: 32vh; padding: 9px 10px; resize: none; font-size: 16px; line-height: 1.35; }
   #img { flex: none; height: 40px; width: 40px; padding: 0; display: flex; align-items: center; justify-content: center; color: #bbb; }
@@ -308,6 +308,7 @@
   <div id="chatTools">
     <button id="pickMode" hidden></button>
     <button id="pickModel" title="更换模型">模型 ▾</button>
+    <button id="pickPerm" title="权限" hidden>权限 ▾</button>
     <button id="pickAgents" title="切换电脑上的 Agent">Agent</button>
     <!-- 旧版输入框旁的对话历史。Agents 和 Devin 改由左侧会话列表切换，见 README。 -->
     <button id="pickHistory" hidden>历史</button>
@@ -919,11 +920,7 @@ function showWindows() {
       return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">Devin agent</span></button>`;
     }
     if (w.app === 'codex') {
-      const many = windows.filter(x => x.app === 'codex').length > 1;
-      const parts = String(w.title || '').replace(/\s+-\s+Visual Studio Code$/, '').split(' - ').map(s => s.trim()).filter(Boolean);
-      const folder = parts.length > 1 ? parts[parts.length - 1] : '';
-      const name = many && folder ? `Codex · ${folder}` : 'Codex';
-      return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">${esc(name)}</span></button>`;
+      return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">Codex</span></button>`;
     }
     const label = winLabel(w.title || w.id);
     return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}">
@@ -944,11 +941,16 @@ function showAgents(list) {
   }
   const rows = groups.map(g => (g.name ? `<div class="pSec">${esc(g.name)}</div>` : '') + g.items.map(a =>
     `<button class="opt ${a.current ? 'cur' : ''}" data-agent="${esc(a.id)}"><span class="lbl">${esc(a.title)}</span>${a.running && !a.current ? '<span class="tag">运行中</span>' : ''}${a.current ? '<span class="tag">当前</span>' : ''}</button>`).join('')).join('');
-  openSheet('agents', `<h3>切换 Agent</h3>${rows || '<div class="hint">没有找到 Agent。Cursor 要打开 Agents 窗口；Devin 的会话在侧边栏。</div>'}`);
+  openSheet('agents', `<h3>切换 Agent</h3>${rows || '<div class="hint">没有找到 Agent。Cursor 要打开 Agents 窗口；Devin 的会话在侧边栏；Codex 的每个窗口是一个 Agent。</div>'}`);
 }
 $('title').onclick = () => { send({ t: 'windows' }); showWindows(); };
 
-const MENU_TITLE = { mode: '选择模式', model: '选择模型', history: '历史对话', 'fusion-lead': 'Fusion Lead', 'fusion-effort': 'Fusion Effort', 'fusion-sidekick': 'Fusion Sidekick' };
+const MENU_TITLE = { mode: '选择模式', model: '选择模型', history: '历史对话', permission: '权限', 'fusion-lead': 'Fusion Lead', 'fusion-effort': 'Fusion Effort', 'fusion-sidekick': 'Fusion Sidekick' };
+const PERM_LABEL = {
+  'Ask for approval': ['每次询问', '改外部文件和上网前都会询问'],
+  'Approve for me': ['代为批准', '只在可能不安全时询问'],
+  'Full access': ['完全访问', '可以访问网络和这台电脑上的文件'],
+};
 function fusionShort(name) {
   return String(name || '').replace(/^(Claude|Gemini)\s+/i, '').replace(/\s+(Low|Medium|High|Max|Thinking)$/i, '').trim();
 }
@@ -967,9 +969,11 @@ function showMenu(kind, items, max, fusion) {
     ? `<button class="opt" data-max><span class="lbl">MAX Mode<span class="sub">更大上下文、更贵</span></span><span class="switch ${max ? 'on' : ''}"></span></button>` : '';
   const part = picking ? kind.slice(7) : '';
   const rows = (items || []).map(it => {
+    const perm = kind === 'permission' ? PERM_LABEL[it.label] : null;
+    const shown = perm ? `${esc(perm[0])}<span class="sub">${esc(perm[1])}</span>` : esc(it.label);
     const pick = picking
       ? `<button class="opt ${it.checked ? 'cur' : ''}" data-fusion-pick="${esc(part)}" data-label="${esc(it.label)}"><span class="lbl">${esc(it.label)}</span></button>`
-      : `<button class="opt ${it.checked ? 'cur' : ''}" data-kind="${kind}" data-label="${esc(it.label)}"><span class="lbl">${esc(it.label)}</span></button>`;
+      : `<button class="opt ${it.checked ? 'cur' : ''}" data-kind="${kind}" data-label="${esc(it.label)}"><span class="lbl">${shown}</span></button>`;
     return it.params ? `<div class="optRow">${pick}<button class="paramBtn" data-params="${esc(it.id)}" data-plabel="${esc(it.label)}">参数</button></div>` : pick;
   }).join('');
   openSheet('menu', `<h3>${MENU_TITLE[kind] || ''}</h3>` + (picking ? '' : fusionBlock(fusion)) + maxRow + rows);
@@ -1545,7 +1549,10 @@ function renderChat(chat) {
   const fusionLabel = chat?.model === 'Fusion' && chat.fusion ? `Fusion · ${fusionShort(chat.fusion.lead)} / ${fusionShort(chat.fusion.sidekick)}` : '';
   $('pickModel').textContent = (fusionLabel || chat?.model || '模型') + ' ▾';
   $('pickModel').title = chat?.fusion ? `${chat.fusion.lead} · ${chat.fusion.effort} · ${chat.fusion.sidekick}${chat.fusion.fast ? ' · Fast' : ''}` : (chat?.model || '更换模型');
-  if (!chat) { itemsEl.replaceChildren(); renderQueue(false, []); renderQuestions(null); return; }
+  const permName = PERM_LABEL[chat?.permission]?.[0];
+  $('pickPerm').hidden = !chat?.permission;
+  if (chat?.permission) $('pickPerm').textContent = (permName || chat.permission) + ' ▾';
+  if (!chat) { itemsEl.replaceChildren(); renderQueue(false, []); renderQuestions(null); $('pickPerm').hidden = true; return; }
   const stick = nearBottom();
   // Anchor on the first visible item so loading older messages doesn't jump.
   let anchor = null, anchorTop = 0;
@@ -1766,6 +1773,7 @@ document.addEventListener('click', async e => {
 
 $('pickMode').onclick = () => { status('读取模式列表…'); send({ t: 'openMenu', kind: 'mode' }); };
 $('pickModel').onclick = () => { status('读取模型列表…'); send({ t: 'openMenu', kind: 'model' }); };
+$('pickPerm').onclick = () => { status('读取权限…'); send({ t: 'openMenu', kind: 'permission' }); };
 $('pickAgents').onclick = () => { status('正在读取 Agent 列表…'); send({ t: 'agents' }); };
 $('pickHistory').onclick = () => { status('读取历史对话…'); send({ t: 'openMenu', kind: 'history' }); };
 $('newChat').onclick = () => { send({ t: 'newChat' }); status('已新建对话'); };
