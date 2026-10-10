@@ -773,6 +773,7 @@ function rememberComputer(comp) {
   return saveComputers(list, comp.key);
 }
 function applySelection(m, clearChat = true) {
+  if (m.app) currentApp = m.app;
   const changed = (m.sel || '') !== viewSel;
   if (changed) saveDraft();
   if (changed) { viewSel = m.sel || ''; cache.clear(); }
