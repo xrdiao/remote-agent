@@ -5,6 +5,14 @@ const I18N = (() => {
   const lang = saved === 'zh' || saved === 'en' ? saved : /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
 
   const EN = {
+    '打开': 'Open',
+    '隧道地址有响应，但应用连接失败。': 'The tunnel responded, but the app could not connect.',
+    '可能是服务、认证、跨域或实时连接异常，尚不能确定电脑是否离线。': 'The service, authentication, CORS or real-time connection may have failed; computer availability is not confirmed.',
+    '访问隧道地址超时，将自动重试。': 'The tunnel request timed out. Retrying automatically.',
+    '可能是临时网络波动或隧道响应慢，尚不能确定故障位置。': 'The network or tunnel may be slow; the failing stage is not confirmed.',
+    '本次隧道请求失败，将自动重试。': 'This tunnel request failed. Retrying automatically.',
+    '可能与网络、DNS、证书或隧道状态有关，尚不能确定故障位置。': 'Network, DNS, certificate or tunnel issues are possible; the failing stage is not confirmed.',
+
     '粘贴': 'Paste', '缩进': 'Indent', '反缩进': 'Outdent', '搜索': 'Find', '更多': 'More', '重做': 'Redo', '全选': 'Select all',
     '搜索当前文档': 'Find in this file', '已复制全文': 'Copied entire file', '请长按编辑框粘贴': 'Long press the editor to paste',
     '↓ 有新消息': '↓ New messages', '点击读取额度': 'Tap to load usage', '正在切换窗口…': 'Switching window…', '正在新建对话…': 'Starting a chat…',
