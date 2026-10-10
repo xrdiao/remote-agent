@@ -15,6 +15,8 @@ The Chinese notes in [README.md](README.md) describe how this machine is started
 - Devin is started with `./start-devin.sh` on port 9223.
 - Codex is the VS Code sidebar, started with `./start-codex.sh` on port 9224. The phone window list has one Codex entry. Each VS Code window is an agent, named by its folder.
 - Codex permissions sit beside the model: ask each time, approve for me, or full access. They are not a banner over the chat. Cursor and Devin do not expose that control.
+- View and edit files with copy, paste, indentation and search. Use Ctrl/⌘+S to save, Ctrl/⌘+F to find, and Tab/Shift+Tab to indent or outdent.
+- Codex usage refreshes every minute while the app is visible and when returning to the foreground; tap a usage meter to refresh immediately.
 - One phone can pair several computers. Use the pair link printed on the computer you are adding. Computers already paired stay.
 
 The old History button opened past chats for the current Agent. Cursor Agents and Devin keep those chats in the sidebar, so the phone uses the Agent list instead.

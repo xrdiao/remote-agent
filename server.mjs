@@ -138,7 +138,7 @@ async function webviewKey(wsUrl) {
   const cdp = new Cdp(wsUrl);
   try {
     await cdp.connect();
-    const src = await cdp.evaluate(`document.querySelector('iframe[src*="extensionId=openai.chatgpt"]')?.src || ''`);
+    const src = await cdp.evaluate(`document.querySelector('iframe[src*="extensionId=openai.chatgpt"][src*="purpose=webviewView"]')?.src || ''`);
     return /[?&]id=([^&]+)/.exec(String(src))?.[1] || '';
   } catch {
     return '';
@@ -294,20 +294,22 @@ const FOCUS_COMPOSER = `(() => {
 // Cursor accepts images pasted into the composer; a synthetic paste event carrying a File works the same way.
 const pasteImage = (b64, name, type) => `(async () => {
   if (!${FOCUS_COMPOSER}) return null;
-  const ed = document.activeElement.closest('[contenteditable="true"]') || document.activeElement;
+  const doc = document.getElementById('active-frame')?.contentDocument || document;
+  const ed = doc.activeElement.closest('[contenteditable="true"]') || doc.activeElement;
   let box = ed;
   for (let i = 0; i < 8 && box.parentElement; i++) box = box.parentElement;
-  const nodes = () => [...document.querySelectorAll('.context-pill-image, .image-pill-img, img[alt="Attached image"], .agent-panel-composer-pill')];
+  const nodes = () => [...doc.querySelectorAll('.context-pill-image, .image-pill-img, img[alt="Attached image"], .agent-panel-composer-pill')];
   const before = new Set(nodes());
+  const beforeImages = box.querySelectorAll('img').length;
   const html = ed.innerHTML;
   const bin = Uint8Array.from(atob(${JSON.stringify(b64)}), c => c.charCodeAt(0));
-  const dt = new DataTransfer();
-  dt.items.add(new File([bin], ${JSON.stringify(name)}, { type: ${JSON.stringify(type)} }));
-  ed.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+  const dt = new doc.defaultView.DataTransfer();
+  dt.items.add(new doc.defaultView.File([bin], ${JSON.stringify(name)}, { type: ${JSON.stringify(type)} }));
+  ed.dispatchEvent(new doc.defaultView.ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
   for (let i = 0; i < 30; i++) {
     if (nodes().some(el => !before.has(el))) return true;
     if (ed.innerHTML !== html && /<img|blob:|Attached image/i.test(ed.innerHTML)) return true;
-    if (box.querySelectorAll('img').length > [...before].filter(el => box.contains(el) && el.tagName === 'IMG').length) return true;
+    if (box.querySelectorAll('img').length > beforeImages) return true;
     await new Promise(r => setTimeout(r, 100));
   }
   return nodes().some(el => !before.has(el));
@@ -432,6 +434,10 @@ function pageHelpers() {
       if (['STYLE', 'SCRIPT', 'BUTTON', 'svg', 'SVG', 'IMG'].includes(tag)) continue;
       if (tag === 'BR') { out += '<br>'; continue; }
       if (tag === 'HR') { out += '<hr>'; continue; }
+      if (tag === 'A' && /^https?:\/\//i.test(n.getAttribute('href') || '')) {
+        out += `<a href="${esc(n.getAttribute('href'))}">${clean(n)}</a>`;
+        continue;
+      }
       if (n.matches(FILE_REF)) { out += `<code data-file="${esc(n.innerText.trim())}"${colorAttr(n)}>${esc(n.innerText.trim())}</code>`; continue; }
       const inner = clean(n);
       const t = tag.toLowerCase();
@@ -450,7 +456,7 @@ function pageHelpers() {
   // block and the older chat thinking box drop the body until the header is opened.
   const THINKING_ROOT = '.ui-thinking-collapsible, .chat-thinking-box, .highlight-wrapper';
   const ROW_SEL = `${ITEM_SEL}, ${THINKING_ROOT}`;
-  const topItems = panel => [...panel.querySelectorAll(ROW_SEL)].filter(e => !e.parentElement?.closest(ROW_SEL));
+  const topItems = panel => [...panel.querySelectorAll(ROW_SEL)].filter(e => vis(e) && !e.parentElement?.closest(ROW_SEL));
   const thinkingHeaderEl = el => el.matches('.ui-thinking-collapsible')
     ? el.querySelector('.ui-collapsible-header')
     : el.matches('.chat-thinking-box')
@@ -511,7 +517,8 @@ function pageHelpers() {
   // The stop icon on a human bubble (Ctrl+Shift+Backspace) reverts that message instead.
   const stopGenerationButton = () => [...doc.querySelectorAll('button, [role=button]')].find(e => {
     if (!vis(e) || e.closest('.composer-human-message, .human-message-action-slot')) return false;
-    return /^stop generation\b/i.test((e.getAttribute('aria-label') || '').trim());
+    const label = (e.getAttribute('aria-label') || '').trim();
+    return /^stop generation\b/i.test(label) || (doc.querySelector('[data-turn-key]') && /^(Stop|Stop generating)$/i.test(label));
   });
   const legacyStopIcon = () => [...doc.querySelectorAll('.composer-button-area .codicon-debug-stop, .send-with-mode .codicon-debug-stop')].find(e => vis(e) && !e.closest('.composer-human-message, .human-message-action-slot'));
   const isBusy = () => !!stopGenerationButton() || !!legacyStopIcon()
@@ -773,7 +780,7 @@ function pageHelpers() {
   const thinkingItem = (el, host, n) => {
     const title = thinkingTitleOf(el) || '思考';
     const body = thinkingPlain(el).trim();
-    const base = itemKey(host && host !== el ? host : el) || 'row';
+    const base = itemKey(host && host !== el ? host : el) || `${activeThread()}:thinking:${thinkingNodes().indexOf(el)}`;
     const item = { i: `${base}:think:${n}`, k: 'thinking', t: body ? `${title}\n${body}` : title };
     if (thinkingLive(el)) item.live = true;
     return item;
@@ -817,22 +824,33 @@ function pageHelpers() {
     return item;
   };
 
-  const codexThread = () => doc.querySelector('[data-response-annotation-conversation]')?.getAttribute('data-response-annotation-conversation') || '';
+  const codexThread = () => [...doc.querySelectorAll('[data-response-annotation-conversation]')].find(vis)?.getAttribute('data-response-annotation-conversation') || '';
+  const activeThread = () => codexThread() || agentList().find(a => a.current)?.id || '';
+  const codexTurnData = el => codexFiberProps(el.querySelector('[class*="agent-activity"], button[aria-expanded]') || el).find(p => p.turn)?.turn;
   // One Codex turn can contain several markdown blocks. Keep them in order instead of keeping only the first reply.
   const codexTurnItems = el => {
     const thread = codexThread();
-    const key = el.getAttribute('data-turn-key') || 'turn';
-    const blocks = [...el.querySelectorAll('[class*="MarkdownRoot"], [class*="agent-activity"]')];
+    const blocks = [...el.querySelectorAll('[class*="MarkdownRoot"]')];
     const out = [];
-    let n = 0;
-    for (const block of blocks) {
-      if (block.querySelector('[class*="MarkdownRoot"]') && !/MarkdownRoot/.test(String(block.className))) continue;
-      const text = (block.innerText || '').replace(/\u00a0/g, ' ').trim();
-      if (!text) continue;
-      const id = `${thread}:${key}:${n++}`;
-      if (block.closest('[class*="group/user-message"]')) out.push({ i: id, k: 'human', t: text });
-      else if (/activity/.test(String(block.className)) && !/MarkdownRoot/.test(String(block.className))) out.push({ i: id, k: 'tool', t: text.slice(0, 240) });
-      else out.push({ i: id, k: 'assistant', h: clean(block) });
+    const turn = codexTurnData(el);
+    const markdown = new Map(blocks.map(block => [codexFiberProps(block).find(p => p.item?.type === 'assistant-message')?.item?.responseAnnotationTargetId, block]));
+    for (const item of turn?.items || []) {
+      const id = `${thread}:${item.type}:${item.sourceItemId || item.callId || item.responseAnnotationTargetId || item.clientUserMessageId || item.id}`;
+      if (item.type === 'reasoning') {
+        const body = (item.content || '').replace(/\u00a0/g, ' ').trim();
+        if (body) out.push({ i: id, k: 'thinking', t: `${item.completed ? 'Thoughts' : 'Thinking'}\n${body}`, live: !item.completed });
+      } else if (item.type === 'user-message') {
+        out.push({ i: id, k: 'human', t: item.message || '' });
+      } else if (item.type === 'assistant-message' && item.content) {
+        const block = markdown.get(item.responseAnnotationTargetId);
+        if (item.phase === 'commentary') out.push({ i: id, k: 'thinking', t: `工作过程\n${item.content}`, live: !item.completed });
+        else out.push({ i: id, k: 'assistant', h: block ? clean(block) : esc(item.content).replace(/\n/g, '<br>') });
+      } else if (item.type === 'exec') {
+        out.push({ i: id, k: 'tool', t: (item.cmd || []).join('\n').slice(0, 240) });
+      } else if (item.type === 'patch') {
+        const files = Object.keys(item.changes || {});
+        out.push({ i: id, k: 'tool', t: `修改 ${files.join(', ')}`.slice(0, 240), f: files[0] });
+      }
     }
     return out;
   };
@@ -855,7 +873,8 @@ function pageHelpers() {
         mode: null,
         model: codexModelName() || (modelEl ? normLabel(modelEl.innerText).split('\n')[0].slice(0, 60) : null),
         permission: permissionLabel(),
-        thread: codexThread(),
+        thread: activeThread(),
+        title: agentState()?.title || '',
         context: contextPct(),
       };
     }
@@ -868,7 +887,8 @@ function pageHelpers() {
       if (main.k === 'assistant' && !main.h && !main.b) return thoughts;
       return [...thoughts, main];
     });
-    const global = buttonsIn(panel, true).filter(x => !inItem(x.el) && !inQn(x.el) && !/^stop generation\b/i.test(x.label)).map(x => x.label);
+    const global = buttonsIn(panel, true).filter(x => !inItem(x.el) && !inQn(x.el) && !/^stop generation\b/i.test(x.label)
+      && !(panel.querySelector('[data-turn-key]') && /^(stop|stop generating|停止)$/i.test(x.label))).map(x => x.label);
     const modeEl = [...doc.querySelectorAll('.composer-unified-dropdown[data-mode]')].find(vis);
     const modelEl = modelButton();
     return {
@@ -883,7 +903,8 @@ function pageHelpers() {
       readonly: !hasComposer(),
       mode: modeEl ? modeEl.innerText.trim() || modeEl.dataset.mode : null,
       permission: permissionLabel(),
-      thread: codexThread(),
+      thread: activeThread(),
+      title: agentState()?.title || '',
       model: codexModelName() || (modelEl ? normLabel(modelEl.innerText).split('\n')[0].slice(0, 60) : null),
       context: contextPct(),
     };
@@ -909,21 +930,29 @@ function pageHelpers() {
     else limits.push({ label: '每周额度', kind: 'limit', basis: 'used', pct: null, reset, detail: text.slice(0, 160) });
     return { missing: false, quota: [], limits };
   };
-  const readCodexUsage = () => {
-    const text = (doc.body?.innerText || '').replace(/\s+/g, ' ');
-    if (/Loading usage settings|Loading usage limit/i.test(text) && !/\d+%\s+left/i.test(text)) return { loading: true, quota: [], limits: [] };
-    const limits = [];
-    const take = (label, marker, re) => {
-      const m = re.exec(text);
-      if (!m) return;
-      const basis = /left|remaining/i.test(m[2] || '') ? 'remaining' : 'used';
-      const block = [...doc.querySelectorAll('div')].find(e => (e.innerText || '').replace(/\s+/g, ' ').includes(marker) && (e.innerText || '').length < 240);
-      const resetEl = block?.querySelector('span[title]');
-      limits.push({ label, kind: 'limit', basis, pct: Number(m[1]), reset: resetEl?.getAttribute('title') || '' });
-    };
-    take('每周限制', 'Weekly limit', /Weekly limit[\s\S]{0,180}?(\d+)%\s+(left|used)/i);
-    take('5 小时限制', '5-hour limit', /5-hour limit[\s\S]{0,180}?(\d+)%\s+(left|used)/i);
-    return { loading: false, missing: !limits.length, quota: [], limits };
+  const codexQueryClient = () => {
+    const el = doc.querySelector('button[aria-label^="Recent chats"]');
+    let fiber = el?.[Object.keys(el).find(k => k.startsWith('__reactFiber'))];
+    for (; fiber; fiber = fiber.return) {
+      const client = fiber.memoizedProps?.value;
+      if (typeof client?.getQueryData === 'function') return client;
+    }
+    return null;
+  };
+  const codexWorkspaceRoots = () => codexQueryClient()?.getQueryData(['vscode', 'workspace-root-options', '{"hostId":"local"}'])?.roots || [];
+  const refreshCodexUsage = async (refresh = true) => {
+    const client = codexQueryClient();
+    if (!client) throw new Error('没找到 Codex 的额度查询');
+    if (refresh) await client.refetchQueries({ queryKey: ['rate-limit-status'], exact: true, type: 'all' }, { throwOnError: true });
+    const data = client.getQueryData(['rate-limit-status']);
+    if (!data?.rate_limit && !refresh) return null;
+    if (!data?.rate_limit) throw new Error('没有读到额度');
+    const limits = [data.rate_limit.primary_window, data.rate_limit.secondary_window].filter(Boolean).map(window => ({
+      label: window.limit_window_seconds === 604800 ? '每周限制' : window.limit_window_seconds === 18000 ? '5 小时限制' : '额度限制',
+      kind: 'limit', basis: 'remaining', pct: 100 - window.used_percent,
+      reset: new Date(window.reset_at * 1000).toLocaleString('zh-CN'),
+    }));
+    return { cached: !refresh, updated: client.getQueryState(['rate-limit-status']).dataUpdatedAt, missing: !limits.length, quota: [], limits };
   };
 
   // Named controls in Cursor's UI; each entry lists fallbacks from newest to oldest Cursor layouts.
@@ -1095,14 +1124,16 @@ function pageHelpers() {
   const agentState = () => {
     const buttons = [...doc.querySelectorAll('button')].filter(vis);
     const back = buttons.findIndex(b => (b.getAttribute('aria-label') || '') === 'Back');
-    const title = back >= 0 ? ((buttons[back + 1]?.innerText || '').split('\n')[0] || '').trim().slice(0, 80) : '';
+    const active = agentList().find(a => a.current);
+    const title = active?.title || (back >= 0 ? ((buttons[back + 1]?.innerText || '').split('\n')[0] || '').trim().slice(0, 80) : '');
     const recent = buttons.find(b => (b.getAttribute('aria-label') || '').startsWith('Recent chats'));
     const progress = Number((/(\d+) in progress/.exec(recent?.getAttribute('aria-label') || '') || [])[1] || 0);
-    const thread = codexThread();
+    const thread = activeThread();
+    const roots = codexWorkspaceRoots();
     const panel = findPanel();
     if (!panel) {
       if (!thread && !hasComposer()) return null;
-      return { busy: isBusy(), waiting: null, waitingText: '', last: '', thread, title, progress };
+      return { busy: isBusy(), waiting: null, waitingText: '', last: '', thread, agentId: active?.id || '', title, progress, roots };
     }
     const busy = isBusy();
     const items = topItems(panel);
@@ -1119,19 +1150,25 @@ function pageHelpers() {
       waiting = `q:${text.slice(0, 120)}`;
       waitingText = text;
     }
-    const lastReply = [...items].reverse().find(el => el.matches('[data-message-kind="assistant"]') || el.querySelector('[data-message-kind="assistant"]'));
+    const recentItems = items.slice(items.findLastIndex(el => el.matches('[data-message-kind="human"], [role=group][aria-label="User message"]') || el.querySelector('.composer-human-message, [data-message-kind="human"]')) + 1);
+    const lastReply = [...recentItems].reverse().find(el => el.matches('[data-message-kind="assistant"], [role=group][aria-label="Devin message"]') || el.querySelector('[data-message-kind="assistant"]'));
     let last = lastReply ? lastReply.innerText.trim().replace(/\s+/g, ' ').slice(0, 160) : '';
     if (!last) {
-      const tail = [...doc.querySelectorAll('[class*="MarkdownRoot"]')].filter(e => !e.closest('[class*="group/user-message"]')).at(-1);
+      const tail = recentItems.flatMap(el => [...el.querySelectorAll('[class*="MarkdownRoot"]')]).filter(e => vis(e) && !e.closest('[class*="group/user-message"]')).at(-1);
       if (tail) last = tail.innerText.trim().replace(/\s+/g, ' ').slice(0, 160);
     }
-    return { busy, waiting, waitingText, last, thread, title, progress };
+    if (codexThread()) {
+      const latest = items.filter(el => el.hasAttribute('data-turn-key')).at(-1);
+      const reply = latest && codexTurnData(latest)?.items?.filter(it => it.type === 'assistant-message' && it.phase !== 'commentary' && it.completed).at(-1);
+      last = (reply?.content || '').trim().replace(/\s+/g, ' ').slice(0, 160);
+    }
+    return { busy, waiting, waitingText, last, thread, agentId: active?.id || '', title, progress, roots };
   };
 
   // Cursor Agents window: the left sidebar lists conversations as row:<agent id>.
   const DEVIN_NAV = new Set(['New session', 'Sessions', 'Review', 'Automations', 'Security', 'Wiki', 'Cloud settings']);
   const agentList = () => {
-    const active = doc.querySelector('[data-glass-agent-id]')?.getAttribute('data-glass-agent-id') || '';
+    const active = [...doc.querySelectorAll('[data-glass-agent-id]')].find(vis)?.getAttribute('data-glass-agent-id') || '';
     const cursor = [...doc.querySelectorAll('[data-sidebar-item-key^="row:"]')].filter(vis).map(row => {
       const id = row.getAttribute('data-sidebar-item-key').slice(4);
       const title = (row.querySelector('.ui-sidebar-menu-button-content .ui-text') || row).innerText.trim().split('\n')[0];
@@ -1145,32 +1182,46 @@ function pageHelpers() {
       };
     }).filter(a => a.id && a.title);
     if (cursor.length) return cursor;
-    // Devin sessions live in the same sidebar as New session / Sessions. The label is the id.
+    // Read the native session id; titles can repeat or change.
     return [...doc.querySelectorAll('li[data-slot="sidebar-menu-item"]')].filter(vis).map(li => {
       const btn = [...li.querySelectorAll('button[aria-label]')].find(vis);
       const title = (btn?.getAttribute('aria-label') || '').trim();
       if (!title || DEVIN_NAV.has(title)) return null;
+      const session = codexFiberProps(li).find(p => p.session)?.session;
+      if (!session) return null;
       const slot = li.querySelector('[data-slot="sidebar-menu-button"]');
       return {
-        id: title.slice(0, 180),
+        id: session.sessionId,
         title: title.slice(0, 80),
         group: '',
         current: slot?.getAttribute('data-active') === 'true',
-        running: false,
+        running: ['active', 'pending', 'canceling'].includes(session.status),
+        lastUsed: Date.parse(session.updatedAt) || 0,
+        last: session.agentStopMessage || '',
       };
     }).filter(Boolean);
   };
-  const agentTarget = id => {
+  const agentTarget = (id, click = false) => {
     const row = [...doc.querySelectorAll('[data-sidebar-item-key]')].find(e => e.getAttribute('data-sidebar-item-key') === `row:${id}`);
     if (row && vis(row)) {
       row.scrollIntoView({ block: 'nearest' });
       const hit = row.querySelector('.ui-sidebar-menu-button-content') || row.querySelector('[data-sidebar-menu-button]') || row;
       return center(hit);
     }
-    const btn = [...doc.querySelectorAll('li[data-slot="sidebar-menu-item"] button[aria-label]')].find(e => vis(e) && e.getAttribute('aria-label') === id);
+    const li = [...doc.querySelectorAll('li[data-slot="sidebar-menu-item"]')].find(e => codexFiberProps(e).some(p => p.session?.sessionId === id));
+    const btn = li && [...li.querySelectorAll('button[aria-label]')].find(vis);
     if (!btn) return null;
     btn.scrollIntoView({ block: 'nearest' });
+    if (click) { btn.click(); return true; }
     return center(btn);
+  };
+  const agentStates = () => {
+    const current = agentState();
+    if (codexThread()) return current ? [current] : [];
+    const agents = agentList();
+    return agents.length ? agents.map(a => a.current && current ? current : {
+      thread: a.id, agentId: a.id, title: a.title, busy: a.running, waiting: null, last: a.last || '',
+    }) : current ? [current] : [];
   };
 
   // Integrated terminals: the Agents window puts them in editor tabs (aria-controls contains terminal-).
@@ -1465,7 +1516,7 @@ function pageHelpers() {
     }
     let end = lines.length;
     while (end > cursorY + 1 && end > 0 && lines[end - 1] === '') end--;
-    const body = { lines: lines.slice(0, end), cursor: [cursorY, cursorX] };
+    const body = { lines: lines.slice(0, end), cursor: [cursorY, cursorX], name: terminalList().find(t => t.current)?.title || '' };
     const raw = JSON.stringify(body);
     let h = 2166136261;
     for (let i = 0; i < raw.length; i++) h = Math.imul(h ^ raw.charCodeAt(i), 16777619);
@@ -1523,7 +1574,7 @@ function pageHelpers() {
     el.click();
     return true;
   };
-  const codexViewState = () => ({ thread: codexThread(), turns: doc.querySelectorAll('[data-turn-key]').length });
+  const codexViewState = () => ({ thread: codexThread(), turns: [...doc.querySelectorAll('[data-turn-key]')].filter(vis).length });
   const codexFiberProps = el => {
     const key = Object.keys(el).find(k => k.startsWith('__reactFiber'));
     let fiber = key ? el[key] : null;
@@ -1536,10 +1587,12 @@ function pageHelpers() {
   };
   // Recent-chat rows carry the conversation id on the React node, not on a stable attribute.
   const codexChatRows = () => {
-    const menu = [...doc.querySelectorAll('[role=menu]')].find(e => /Search recent chats/.test(e.innerText || ''));
+    const menu = [...doc.querySelectorAll('[role=menu]')].find(e => vis(e) && /Search recent chats/.test(e.innerText || ''));
     if (!menu) return [];
     const seen = new Set();
     const rows = [];
+    const recent = codexQueryClient()?.getQueryData(['recent-conversations-meta', 'updated_at', '[]', 'live']) || [];
+    const usedAt = new Map(recent.map(thread => [thread.conversationId, thread.updatedAt]));
     for (const el of menu.querySelectorAll('[role=button]')) {
       let id = '', title = '', current = false, workspace = '', running = false;
       for (const p of codexFiberProps(el)) {
@@ -1554,12 +1607,12 @@ function pageHelpers() {
       seen.add(id);
       const text = (el.innerText || '').replace(/\s+/g, ' ').trim();
       if (/in progress/i.test(text)) running = true;
-      rows.push({ id, title: (title || text).split('\n')[0].slice(0, 80), current, workspace, running });
+      rows.push({ id, title: (title || text).split('\n')[0].slice(0, 80), current, workspace, running, lastUsed: usedAt.get(id) || 0 });
     }
     return rows;
   };
   const codexChatPoint = id => {
-    const menu = [...doc.querySelectorAll('[role=menu]')].find(e => /Search recent chats/.test(e.innerText || ''));
+    const menu = [...doc.querySelectorAll('[role=menu]')].find(e => vis(e) && /Search recent chats/.test(e.innerText || ''));
     if (!menu) return null;
     for (const el of menu.querySelectorAll('[role=button]')) {
       const hit = codexFiberProps(el).some(p => p.conversationId === id || (typeof p.href === 'string' && p.href.endsWith('/' + id)));
@@ -1568,9 +1621,9 @@ function pageHelpers() {
     return null;
   };
 
-  return { extract, codexThread, codexViewState, codexRecentPoint, codexNewPoint, codexAccountPoint, codexMenuPoint, clickLabeled, codexChatRows, codexChatPoint, locate, panelRect, control, menuItems, menuItem, quickOpenRows, agentList, agentTarget, agentState, queueTarget, stopTarget, focusQueueEdit,
+  return { extract, activeThread, codexThread, codexViewState, codexRecentPoint, codexNewPoint, codexAccountPoint, codexMenuPoint, clickLabeled, codexChatRows, codexChatPoint, locate, panelRect, control, menuItems, menuItem, quickOpenRows, agentList, agentTarget, agentState, agentStates, queueTarget, stopTarget, focusQueueEdit,
     terminalList, terminalTarget, terminalCloseTarget, terminalRect, terminalFocus, newTerminalDirect, newTerminalMenu, newTerminalItem, terminalDump, terminalCommand, modelListTrigger,
-    settingsOpen, clickSettingsButton, clickCloseSettings, openSettingsTarget, closeSettingsTarget, readSettings, settingTarget, usageNavTarget, readUsage, readDevinUsage, readCodexUsage, contextPct,
+    settingsOpen, clickSettingsButton, clickCloseSettings, openSettingsTarget, closeSettingsTarget, readSettings, settingTarget, usageNavTarget, readUsage, readDevinUsage, refreshCodexUsage, codexWorkspaceRoots, contextPct,
     clickControl, clickModelListTrigger, devinSettingsNav, devinSettingsClick, devinSettingsCards,
     fusionConfig, clickFusionCombo, clickFusionFast, fusionOptionItems, fusionOptionTarget,
     menuOpen, maxToggle, modelTarget, modelParams, paramTarget, subTarget, activeChatTab, tabTarget, hasComposer, filesState, fileTarget, questionTarget,
@@ -1671,6 +1724,7 @@ class Session {
 
   async setMode(mode) {
     this.mode = mode === 'screen' || mode === 'terminal' ? mode : 'chat';
+    this.lastChatAt = this.lastTermAt = 0;
     clearInterval(this.chatTimer);
     clearInterval(this.termTimer);
     if (!this.editorCdp) return;
@@ -1829,7 +1883,7 @@ class Session {
   }
 
   liveRead(cdp, sel) {
-    return cdp && cdp === this.cdp && sel === this.sel;
+    return cdp && cdp === this.cdp && sel === this.sel && !this.switchingThread;
   }
 
   // A virtualized Codex list unmounts older turns. Keep text we already read for this thread.
@@ -1846,15 +1900,16 @@ class Session {
     if (thread) this.threadId = thread;
     if (!this.itemCache) this.itemCache = new Map();
     const prev = this.itemCache.get(thread) || [];
-    const seen = new Set(chat.items.map(it => it.i));
-    chat.items = [...prev.filter(it => !seen.has(it.i)), ...chat.items].slice(-400);
+    chat.items = [...new Map([...prev, ...chat.items].map(it => [it.i, it])).values()].slice(-400);
+    if (!chat.busy) chat.items.filter(it => it.k === 'thinking').forEach(it => { it.live = false; });
     this.itemCache.set(thread, chat.items);
   }
 
   async pollChat() {
     const cdp = this.cdp;
     const sel = this.sel;
-    if (!cdp || this.polling === sel) return;
+    if (!cdp || !this.visible || this.switchingThread || this.polling === sel || Date.now() - (this.lastChatAt || 0) < (this.lastBusy ? 650 : 1800)) return;
+    this.lastChatAt = Date.now();
     this.polling = sel;
     try {
       let chat = await cdp.evaluate(helpersCall('extract()'));
@@ -1880,16 +1935,21 @@ class Session {
           await new Promise(r => setTimeout(r, 250));
           if (!this.liveRead(cdp, sel)) return;
           chat = await cdp.evaluate(helpersCall('extract()'));
+          if (!this.liveRead(cdp, sel)) return;
           await cdp.evaluate(helpersCall(`closeThinkingIfOpen(${JSON.stringify(idxs)})`));
         }
       }
       if (!this.liveRead(cdp, sel) || !chat) return;
       const prevThread = this.threadId || '';
-      this.mergeCodexItems(chat);
-      if (this.app === 'codex' && this.threadId && this.threadId !== prevThread) {
-        this.lastChat = '';
+      if (chat.thread !== prevThread) {
+        this.clearViewState();
+        this.threadId = chat.thread || '';
         this.publishThread('桌面上的会话已切换');
+        this.lastChatAt = 0;
+        return;
       }
+      this.lastBusy = !!chat.busy;
+      this.mergeCodexItems(chat);
       this.fillThinking(chat);
       this.rememberThinking(chat);
       this.retainThinking(chat);
@@ -1922,7 +1982,8 @@ class Session {
 
   async pollTerminal() {
     const cdp = this.cdp, editorCdp = this.editorCdp, sel = this.sel;
-    if (!editorCdp || this.mode !== 'terminal' || this.termPolling === sel) return;
+    if (!editorCdp || !this.visible || this.mode !== 'terminal' || this.termPolling === sel || Date.now() - (this.lastTermAt || 0) < (this.lastBusy ? 650 : 1800)) return;
+    this.lastTermAt = Date.now();
     this.termPolling = sel;
     try {
       const dump = await editorCdp.evaluate(helpersCall(`terminalDump(${JSON.stringify(this.lastTermHash || '')})`));
@@ -1934,7 +1995,7 @@ class Session {
         }
       } else if (dump.hash !== this.lastTermHash) {
         this.lastTermHash = dump.hash;
-        if (dump.lines) this.emit({ t: 'termText', sel: this.selectionKey(), lines: dump.lines, cursor: dump.cursor });
+        if (dump.lines) this.emit({ t: 'termText', sel: this.selectionKey(), lines: dump.lines, cursor: dump.cursor, name: dump.name });
       }
       const state = await cdp.evaluate(helpersCall('agentState()'));
       if (!this.liveRead(cdp, sel) || editorCdp !== this.editorCdp || this.mode !== 'terminal') return;
@@ -2073,23 +2134,28 @@ class Session {
     } finally { await this.closeSettings(); }
   }
 
-  async showUsage() {
-    const updated = Date.now();
+  async showUsage(automatic = false) {
+    const cdp = this.cdp, sel = this.sel;
     let context;
     try { context = await this.cdp.evaluate(helpersCall('contextPct()')); }
     catch { context = undefined; }
     try {
       const account = this.app === 'codex' ? await this.readCodexAccount()
         : this.app === 'devin' ? await this.cdp.evaluate(helpersCall('readDevinUsage()'))
-        : await this.readCursorUsage();
+        : await this.readCursorUsage(automatic);
+      if (!this.liveRead(cdp, sel)) return;
+      if (!account && automatic) { this.emit({ t: 'usage', ...(context === undefined ? {} : { context }) }); return; }
       if (!account) throw new Error('没有读到额度');
-      this.emit({ t: 'usage', updated, ...(context === undefined ? {} : { context }), ...account });
+      this.emit({ t: 'usage', sel: this.selectionKey(), updated: Date.now(), ...(context === undefined ? {} : { context }), ...account });
     } catch (e) {
-      this.emit({ t: 'usage', error: e.message, updated, ...(context === undefined ? {} : { context }) });
+      if (!this.liveRead(cdp, sel)) return;
+      this.emit({ t: 'usage', sel: this.selectionKey(), error: e.message, updated: Date.now(), ...(context === undefined ? {} : { context }) });
     }
   }
 
-  async readCursorUsage() {
+  async readCursorUsage(automatic = false) {
+    const wasOpen = await this.cdp.evaluate(helpersCall('settingsOpen()'));
+    if (automatic && wasOpen) return this.cdp.evaluate(helpersCall('readUsage()'));
     await this.ensureSettings();
     try {
       const nav = await this.cdp.evaluate(helpersCall('usageNavTarget()'));
@@ -2103,80 +2169,14 @@ class Session {
       }
       if (usage?.loading) throw new Error('额度还在加载');
       return usage || { missing: true, quota: [], limits: [] };
-    } finally { await this.closeSettings(); }
+    } finally { if (!wasOpen) await this.closeSettings(); }
   }
 
   async readCodexAccount() {
-    const before = await this.cdp.evaluate(helpersCall('codexThread()')).catch(() => '');
-    let settings = await this.codexSettingsCdp();
-    const opened = !settings;
-    let usage = null;
-    try {
-      if (opened) {
-        const gear = await this.cdp.evaluate(helpersCall('codexAccountPoint()'));
-        if (!gear) throw new Error('这个窗口里没有额度入口');
-        await this.tapCss(gear.x, gear.y);
-        let item = null;
-        for (let i = 0; i < 8 && !item; i++) {
-          await new Promise(r => setTimeout(r, 120));
-          item = await this.cdp.evaluate(helpersCall('codexMenuPoint("Codex settings")'));
-        }
-        if (!item) {
-          await this.key('Escape');
-          throw new Error('这个窗口里没有额度入口');
-        }
-        await this.tapCss(item.x, item.y);
-        for (let i = 0; i < 40 && !settings; i++) {
-          await new Promise(r => setTimeout(r, 300));
-          settings = await this.codexSettingsCdp();
-        }
-        if (!settings) {
-          await this.key('Escape').catch(() => {});
-          throw new Error('额度页面没有打开');
-        }
-      }
-      for (let attempt = 0; attempt < 3 && !(usage?.limits?.length || usage?.quota?.length); attempt++) {
-        const opened = await settings.evaluate(helpersCall('clickLabeled("Usage & billing")'));
-        if (!opened) {
-          const billing = await settings.evaluate(helpersCall('codexMenuPoint("Usage & billing")'));
-          if (billing) await this.tapCss(billing.x, billing.y, 'left', settings);
-        }
-        for (let i = 0; i < 8; i++) {
-          await new Promise(r => setTimeout(r, 300));
-          usage = await settings.evaluate(helpersCall('readCodexUsage()'));
-          if (usage?.limits?.length || usage?.quota?.length) break;
-        }
-      }
-      if (usage?.loading) throw new Error('额度还在加载');
-      if (!usage?.limits?.length && !usage?.quota?.length) throw new Error('额度页面没有打开');
-      return usage;
-    } finally {
-      try { settings?.close(); } catch {}
-      const open = await this.editorCdp.evaluate(`(() => /Codex Settings/i.test(document.title || ''))()`).catch(() => false);
-      if (opened && open) await this.key('Ctrl+w', { cdp: this.editorCdp });
-      const after = await this.cdp.evaluate(helpersCall('codexThread()')).catch(() => '');
-      if (before && after && before !== after) this.emit({ t: 'status', ok: false, msg: '读取额度后会话变了' });
-    }
-  }
-
-  async codexSettingsCdp() {
-    const ids = await this.editorCdp.evaluate(`([...document.querySelectorAll('iframe[src*="extensionId=openai.chatgpt"]')].filter(e => !e.src.includes('purpose=webviewView')).map(e => new URL(e.src).searchParams.get('id')))`);
-    const targets = await (await fetch(`${CODEX_CDP_URL}/json/list`)).json();
-    const candidates = targets.filter(t => t.webSocketDebuggerUrl && /extensionId=openai\.chatgpt/.test(t.url || '')
-      && ids.includes((/[?&]id=([^&]+)/.exec(t.url || '') || [])[1]));
-    for (const hit of candidates) {
-      const cdp = new Cdp(hit.webSocketDebuggerUrl);
-      try {
-        await cdp.connect();
-        for (let i = 0; i < 8; i++) {
-          const ready = await cdp.evaluate(`(() => !!(document.getElementById('active-frame')?.contentDocument || document).querySelector('button[aria-label="Usage & billing"]'))()`).catch(() => false);
-          if (ready) return cdp;
-          await new Promise(r => setTimeout(r, 200));
-        }
-      } catch {}
-      try { cdp.close(); } catch {}
-    }
-    return null;
+    const cdp = this.cdp, sel = this.sel;
+    const cached = await cdp.evaluate(helpersCall('refreshCodexUsage(false)'));
+    if (cached && this.liveRead(cdp, sel)) this.emit({ t: 'usage', sel: this.selectionKey(), ...cached });
+    return cdp.evaluate(helpersCall('refreshCodexUsage()'));
   }
 
   showProjects(dir) {
@@ -2384,8 +2384,8 @@ class Session {
 
   publishThread(statusMsg) {
     const msg = {
-      t: 'attached', id: this.targetId || 'codex', title: 'Codex', app: 'codex', appName: 'Codex',
-      windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(), keepQuota: true,
+      t: 'attached', id: this.targetId, title: this.app === 'codex' ? 'Codex' : this.winTitle, app: this.app, appName: this.appMessage('{app}'),
+      project: this.app === 'codex' ? codexFolder(this.winTitle) : '', windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(), keepQuota: true,
     };
     this.emit(msg);
     this.emit({ t: 'thread', windowId: msg.windowId, threadId: msg.threadId, sel: msg.sel });
@@ -2458,20 +2458,25 @@ class Session {
     }
     const match = /^thread:([^:]+):(.+)$/.exec(id || '');
     if (!match) throw new Error('这条会话已经不在列表里');
-    const pageId = match[1];
-    const convId = match[2];
-    if (pageId !== this.codexPageId) await this.attach({ id: 'codex', windowId: pageId, threadId: '' });
-    if (!this.cdp) throw new Error('还没有连上 Codex');
-    if ((await this.cdp.evaluate(helpersCall('codexThread()')) || '') === convId) {
-      this.threadId = convId;
-      this.emit({ t: 'status', ok: true, msg: '已是当前会话' });
-      return;
+    const pageId = match[1], convId = match[2];
+    this.clearViewState();
+    this.switchingThread = true;
+    const switchedWindow = pageId !== this.codexPageId;
+    try {
+      if (switchedWindow) await this.attach({ id: 'codex', windowId: pageId, threadId: convId });
+      if (!this.cdp) throw new Error('还没有连上 Codex');
+      const current = await this.cdp.evaluate(helpersCall('codexThread()')) || '';
+      if (current !== convId && (switchedWindow || !await this.selectCodexThread(convId))) throw new Error('没有找到这个会话');
+      this.emit({ t: 'status', ok: true, msg: !switchedWindow && current === convId ? '已是当前会话' : '已切换会话' });
+    } finally {
+      this.switchingThread = false;
+      if (this.cdp) {
+        this.threadId = await this.cdp.evaluate(helpersCall('codexThread()')) || '';
+        this.publishThread();
+        this.lastChatAt = 0;
+        await this.pollChat();
+      }
     }
-    const ok = await this.selectCodexThread(convId);
-    if (!ok) throw new Error('没有找到这个会话');
-    const actual = await this.cdp.evaluate(helpersCall('codexThread()')) || '';
-    if (actual !== convId) throw new Error('切换后的会话和选择的不一致');
-    await this.adoptCodexThread(actual, '已切换会话');
   }
 
   async probeCodex(page) {
@@ -2498,16 +2503,16 @@ class Session {
     }
   }
 
-  async codexThreadRows() {
-    const pos = await this.cdp.evaluate(helpersCall('codexRecentPoint()'));
+  async codexThreadRows(cdp = this.cdp) {
+    const pos = await cdp.evaluate(helpersCall('codexRecentPoint()'));
     if (!pos) return [];
-    await this.tapCss(pos.x, pos.y);
+    await this.tapCss(pos.x, pos.y, 'left', cdp);
     let rows = [];
     for (let i = 0; i < 8 && !rows.length; i++) {
       await new Promise(r => setTimeout(r, 120));
-      rows = await this.cdp.evaluate(helpersCall('codexChatRows()')) || [];
+      rows = await cdp.evaluate(helpersCall('codexChatRows()')) || [];
     }
-    await this.key('Escape');
+    await this.key('Escape', { cdp });
     return rows;
   }
 
@@ -2515,32 +2520,41 @@ class Session {
     if (this.app === 'codex') {
       const pages = await codexWindows(CODEX_CDP_URL);
       const list = [];
+      const seen = new Set();
+      const states = await Promise.all(pages.map(p => this.probeCodex(p)));
       for (const p of pages) {
         const group = p.title;
-        if (p.pageId === this.codexPageId && this.cdp) {
+        if (p.chatWs) {
           list.push({ id: `new:${p.pageId}`, title: '＋ 新建会话', window: group, group: '', current: false, running: false, ui: true });
-          const state = await this.probeCodex(p);
+          const cdp = p.pageId === this.codexPageId ? this.cdp : new Cdp(p.chatWs);
           let rows = [];
-          try { rows = await this.codexThreadRows(); }
-          catch { await this.key('Escape').catch(() => {}); }
+          try {
+            if (cdp !== this.cdp) await cdp.connect();
+            rows = await this.codexThreadRows(cdp);
+          } finally { if (cdp !== this.cdp) cdp.close(); }
           this.rememberCodexRoots(rows);
           const folderOf = ws => {
             const parts = String(ws || '').split(/[/\\]/).filter(Boolean);
             return parts.at(-1) || '';
           };
           for (const row of rows) {
+            if (seen.has(row.id)) continue;
+            seen.add(row.id);
+            const owner = pages.find((page, i) => states[i]?.roots?.includes(row.workspace)) || p;
+            const state = states[pages.indexOf(owner)];
             const folder = folderOf(row.workspace);
             list.push({
-              id: `thread:${p.pageId}:${row.id}`,
+              id: `thread:${owner.pageId}:${row.id}`,
               title: row.title,
-              window: group,
-              group: folder && folder !== group ? folder : '',
-              current: row.id === this.threadId,
+              lastUsed: row.lastUsed,
+              window: folder || owner.title,
+              group: '',
+              current: owner.pageId === this.codexPageId && row.id === this.threadId,
               running: row.id === state?.thread ? !!state?.busy || !!row.running : !!row.running,
             });
           }
         } else {
-          const state = await this.probeCodex(p);
+          const state = states[pages.indexOf(p)];
           list.push({ id: `win:${p.pageId}`, title: '打开这个窗口', window: group, group: '', current: false, running: !!state?.busy || (state?.progress > 0), ui: true });
         }
       }
@@ -2557,16 +2571,44 @@ class Session {
       return;
     }
     if (!id || id.length > 200) throw new Error('这条 Agent 已经不在列表里');
-    const pos = await this.cdp.evaluate(helpersCall(`agentTarget(${JSON.stringify(id)})`));
-    if (!pos) throw new Error('这条 Agent 已经不在列表里');
-    await this.tapCss(pos.x, pos.y);
-    this.thinking?.clear();
-    this.thinkingTried?.clear();
-    this.keptThink?.clear();
-    this.latestThink = null;
-    this.lastChat = '';
-    this.emit({ t: 'status', ok: true, msg: '已切换 Agent' });
-    setTimeout(() => this.pollChat().catch(() => {}), 500);
+    this.clearViewState();
+    this.switchingThread = true;
+    try {
+      const pos = await this.cdp.evaluate(helpersCall(`agentTarget(${JSON.stringify(id)}, ${this.app === 'devin'})`));
+      if (!pos) throw new Error('这条 Agent 已经不在列表里');
+      if (this.app !== 'devin') await this.tapCss(pos.x, pos.y);
+      for (let i = 0; i < 12; i++) {
+        await new Promise(r => setTimeout(r, 150));
+        const thread = await this.cdp.evaluate(helpersCall('activeThread()'));
+        if (thread !== id) continue;
+        this.threadId = thread;
+        this.publishThread('已切换 Agent');
+        return;
+      }
+      throw new Error('会话切换没有生效');
+    } finally {
+      this.switchingThread = false;
+      this.lastChatAt = 0;
+      await this.pollChat();
+    }
+  }
+
+  async newChat() {
+    if (this.app === 'codex') return this.newCodexChat();
+    const before = await this.cdp.evaluate(helpersCall('activeThread()'));
+    await this.pressControl('newChat');
+    for (let i = 0; i < 12; i++) {
+      await new Promise(r => setTimeout(r, 150));
+      const chat = await this.cdp.evaluate(helpersCall('extract()'));
+      if (!chat || (chat.thread === before && chat.items.length)) continue;
+      this.clearViewState();
+      this.threadId = chat.thread || '';
+      this.publishThread('已新建对话');
+      this.lastChatAt = 0;
+      await this.pollChat();
+      return;
+    }
+    throw new Error('新建对话没有生效');
   }
 
   async pressControl(name) {
@@ -2854,7 +2896,7 @@ class Session {
     try {
       const f = await this.resolveFile(text);
       const body = await readFile(f.host, f.path, f.size);
-      this.emit({ t: 'file', name: path.posix.basename(f.path), path: f.path, host: f.host, size: f.size, line: f.line, editable: Boolean(body.text) && !body.truncated, ...body });
+      this.emit({ t: 'file', name: path.posix.basename(f.path), path: f.path, host: f.host, size: f.size, line: f.line, editable: typeof body.text === 'string' && !body.truncated, ...body });
     } catch (e) {
       this.emit({ t: 'file', error: e.message, name: path.posix.basename(parseRef(text).p) });
     }
@@ -2868,7 +2910,7 @@ class Session {
       this.emit({ t: 'saved', ok: true, path: filePath, host: loc.host || '', size });
       this.emit({ t: 'status', ok: true, msg: '已保存' });
     } catch (e) {
-      this.emit({ t: 'saved', ok: false, error: e.message, path: filePath });
+      this.emit({ t: 'saved', ok: false, error: e.message, path: filePath, host: host || '' });
       this.emit({ t: 'status', ok: false, msg: e.message });
     }
   }
@@ -2906,7 +2948,7 @@ class Session {
       this.threadId = threadId;
       const entry = wins.find(w => w.id === 'codex');
       if (!entry) throw new Error('没有找到 Codex 窗口。请用 ./start-codex.sh 启动，并打开 Codex 侧边栏');
-      await this.openBound(entry, picked.ws, picked.chatWs);
+      await this.openBound({ ...entry, title: picked.rawTitle }, picked.ws, picked.chatWs);
       if (!picked.chatWs) this.emit({ t: 'status', ok: false, msg: 'Codex 侧边栏还没打开' });
       return;
     }
@@ -2920,6 +2962,7 @@ class Session {
     if (!chosen) throw new Error('没有找到 Cursor、Devin 或 Codex 窗口。Cursor 用调试端口 9222，Devin 用 ./start-devin.sh，Codex 用 ./start-codex.sh');
     this.windowId = chosen.id;
     await this.openBound(chosen, chosen.ws, null);
+    if (threadId && threadId !== this.threadId) await this.openAgent(threadId);
   }
 
   async openBound(win, editorWs, chatWs) {
@@ -2958,10 +3001,10 @@ class Session {
           this.emit({ t: 'status', ok: false, msg: '没有找到上次的会话，已留在当前会话' });
         }
       } else if (live) this.threadId = live;
-    }
+    } else this.threadId = await this.cdp.evaluate(helpersCall('activeThread()')) || '';
     this.emit({
       t: 'attached', id: win.id, title: this.app === 'codex' ? 'Codex' : win.title, app: win.app,
-      appName: this.appMessage('{app}'), windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(),
+      appName: this.appMessage('{app}'), project: this.app === 'codex' ? codexFolder(this.winTitle) : '', windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(),
     });
     await this.setMode(this.mode);
   }
@@ -3014,7 +3057,7 @@ class Session {
 
   // Electron stops painting occluded/minimized windows, so screencast goes quiet; fall back to screenshots.
   async pollIfIdle() {
-    if (!this.editorCdp || this.mode !== 'screen') return;
+    if (!this.editorCdp || !this.visible || this.mode !== 'screen') return;
     await this.sendPanelRect();
     if (Date.now() - this.lastFrameAt < 2000) return;
     await this.snapshot(false).catch(() => {});
@@ -3120,7 +3163,13 @@ class Session {
     if (msg.t === 'attach') return this.attach(msg);
     if (msg.t === 'agents' && this.app === 'codex') return this.listAgents();
     if (msg.t === 'mode') return this.setMode(msg.mode);
-    if (msg.t === 'visible') { this.visible = Boolean(msg.v); return; }
+    if (msg.t === 'visible') {
+      this.visible = Boolean(msg.v);
+      if (!this.editorCdp) return;
+      if (!this.visible && this.mode === 'screen') return this.editorCdp.send('Page.stopScreencast');
+      if (this.visible) return this.setMode(this.mode);
+      return;
+    }
     if (msg.t === 'lang') { updateDevice(this.deviceId, { lang: msg.v === 'en' ? 'en' : 'zh' }); return; }
     if (!this.cdp) throw new Error(this.appMessage('尚未连接到 {app} 窗口'));
     switch (msg.t) {
@@ -3143,8 +3192,8 @@ class Session {
       case 'openProject': return this.useProject(String(msg.path ?? ''));
       case 'settings': return this.showSettings();
       case 'toggleSetting': return this.toggleSetting(String(msg.label ?? ''));
-      case 'usage': return this.showUsage();
-      case 'newChat': return this.app === 'codex' ? this.newCodexChat() : this.pressControl('newChat');
+      case 'usage': return this.showUsage(msg.automatic === true);
+      case 'newChat': return this.newChat();
       case 'file': return this.openFile(String(msg.path ?? ''));
       case 'saveFile': return this.saveFile(String(msg.path ?? ''), String(msg.text ?? ''), msg.host == null ? undefined : String(msg.host));
       case 'click': return this.clickButton(msg.item, msg.n);
@@ -3166,7 +3215,7 @@ class Session {
       case 'quality':
         this.screencast.quality = Math.min(this.mode === 'terminal' ? 95 : 90, Math.max(20, Number(msg.quality) || 60));
         this.screencast.maxWidth = Math.min(this.mode === 'terminal' ? 4096 : 2560, Math.max(480, Number(msg.maxWidth) || 1280));
-        if (this.mode !== 'screen' && this.mode !== 'terminal') return;
+        if (this.mode !== 'screen') return;
         await this.editorCdp.send('Page.stopScreencast');
         return this.startScreencast();
       default: throw new Error(`未知指令: ${msg.t}`);
@@ -3358,9 +3407,12 @@ wss.on('connection', (ws, req) => {
     }
     // Frame acks bypass the queue so a slow command never stalls the stream.
     if (msg.t === 'ack') return session.ack();
+    if (msg.t === 'usage' && session.app === 'codex') return session.showUsage(msg.automatic === true);
     queue = queue.then(async () => {
       try {
         const queued = await session.handle(msg);
+        if (msg.t === 'send' || msg.t === 'termSend') session.emit({ t: 'sent', draft: msg.draft, text: msg.text });
+        if (msg.t === 'termSend') session.emit({ t: 'status', ok: true, msg: '已发送' });
         if (msg.t === 'type') session.emit({ t: 'status', ok: true, msg: '已发送' });
         if (msg.t === 'queue' && msg.action === 'edit') session.emit({ t: 'status', ok: true, msg: '已修改，仍在排队' });
         if (msg.t === 'send') session.emit({ t: 'status', ok: true, msg: queued ? 'Agent 正在运行，已加入排队，这一轮结束后自动发送' : '已发送' });
@@ -3631,7 +3683,7 @@ server.listen(PORT, TUNNEL ? '127.0.0.1' : HOST, async () => {
   startWatcher({
     listWindows: watchTargets,
     openCdp: async ws => { const c = new Cdp(ws); await c.connect(); return c; },
-    probe: helpersCall('agentState()'),
+    probe: helpersCall('agentStates()'),
   });
   try {
     const wins = await listWindows();

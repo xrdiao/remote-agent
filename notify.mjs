@@ -1,4 +1,4 @@
-// Watches every Cursor window and tells paired phones when an Agent finishes or is waiting for a decision.
+// Watches agent windows and tells paired phones when an Agent finishes or is waiting for a decision.
 // Delivery: Web Push (iPhone home-screen app, browsers) and a server-sent event stream (the Android app).
 import fs from 'node:fs';
 import os from 'node:os';
@@ -92,19 +92,21 @@ const windowName = title => {
 
 function check(win, w, s) {
   const thread = s.thread || '';
+  const conversation = thread || s.agentId || '';
   const name = windowName(win.title);
   const threadName = s.title && s.title !== name ? s.title : '';
-  const where = [name, threadName].filter(Boolean).join(' · ');
+  const app = { cursor: 'Cursor', codex: 'Codex', devin: 'Devin' }[win.app] || '';
+  const where = [app, name, threadName].filter(Boolean).join(' · ');
   const pc = os.hostname().replace(/\.local$/, '').slice(0, 24);
   const event = extra => ({
     win: win.app === 'codex' ? 'codex' : win.id,
-    windowId: win.pageId || '',
+    windowId: win.pageId || win.id,
     threadId: thread,
     ...extra,
   });
   // Opening a different thread is not that thread finishing. Start tracking it fresh.
-  if (w.thread !== thread) {
-    w.thread = thread;
+  if (w.thread !== conversation) {
+    w.thread = conversation;
     w.seen = true;
     w.busy = !!s.busy;
     w.idle = 0;
@@ -148,8 +150,13 @@ export function startWatcher({ listWindows, openCdp, probe }) {
         watched.set(win.id, w);
       }
       try {
-        const s = await w.cdp.evaluate(probe);
-        if (s) check(win, w, s);
+        const states = await w.cdp.evaluate(probe);
+        if (!w.threads) w.threads = new Map();
+        for (const s of states || []) {
+          const id = s.thread || s.agentId || '';
+          if (!w.threads.has(id)) w.threads.set(id, {});
+          check(win, w.threads.get(id), s);
+        }
       } catch {}
     }));
   };

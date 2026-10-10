@@ -65,6 +65,9 @@
   .human { display: flex; justify-content: flex-end; }
   .human .bubble { max-width: 88%; background: #264f78; color: #fff; padding: 8px 12px; border-radius: 14px 14px 4px 14px; white-space: pre-wrap; }
   .assistant { padding: 2px 2px; }
+  .quotaUpdated { font-size: 10px; color: #999; align-self: center; }
+  .assistant a { color: #6cb6ff; overflow-wrap: anywhere; }
+  .codebox .openLink { display: inline-block; margin: 0 0 8px 8px; }
   .assistant p { margin: 0 0 .6em; }
   .assistant ul, .assistant ol { margin: 0 0 .6em; padding-left: 1.3em; }
   .assistant h1, .assistant h2, .assistant h3, .assistant h4 { font-size: 1.05em; margin: .8em 0 .4em; }
@@ -216,12 +219,18 @@
   #viewer .names { flex: 1; min-width: 0; line-height: 1.25; }
   #vName { font-size: 14px; color: #eee; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #vPath { font-size: 11px; color: #888; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+  #vTools, #vSearch { flex: none; display: flex; gap: 6px; padding: 6px 10px; overflow-x: auto; align-items: center; }
+  #vTools button { flex: none; padding: 6px 10px; }
+  #vSearch input { flex: 1; min-width: 0; padding: 6px; }
+  #vSearch span { flex: none; font-size: 12px; }
+  #vTools[hidden], #vSearch[hidden] { display: none; }
   #vBody { flex: 1; min-height: 0; overflow: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
   #vBody .code { font: 12px/1.5 ui-monospace, Menlo, monospace; padding: 6px 0 40px; min-width: max-content; }
   #vBody.wrap .code { min-width: 0; }
   #vBody .l { display: flex; white-space: pre; }
   #vBody.wrap .l { white-space: pre-wrap; overflow-wrap: anywhere; }
   #vBody .l i { flex: none; width: 3.6em; padding-right: 10px; text-align: right; color: #5a5a5a; font-style: normal; user-select: none; -webkit-user-select: none; }
+  #vBody .l.searchHit { background: #5c4b13; }
   #vBody .l.hl { background: #264f7855; }
   #vBody img { display: block; max-width: 100%; margin: 12px auto; background: #fff1; }
   #vBody .note { padding: 30px 20px; color: #999; text-align: center; line-height: 1.7; }
@@ -232,6 +241,13 @@
 
   /* gate (login / offline) */
   #gate { position: fixed; inset: 0; z-index: 20; background: #1e1e1e; display: none; flex-direction: column; gap: 12px; padding: calc(60px + env(safe-area-inset-top)) 24px 24px; }
+  #gate { overflow-y: auto; }
+  #gateDiagnostics[hidden] { display: none; }
+  .connectionTest { display: flex; flex-direction: column; gap: 4px; margin: 12px 0; font-size: 13px; }
+  .connectionTest a { color: #6cb6ff; overflow-wrap: anywhere; }
+  .connectionTest .ok { color: #73c991; }
+  .connectionTest .err { color: #f77; }
+  #gateFailure { white-space: pre-wrap; font-size: 13px; margin: 10px 0; }
   #gate.open { display: flex; }
   #gate h2 { margin: 0 0 6px; font-size: 20px; color: #eee; }
   #gate input { font-size: 16px; padding: 11px; }
@@ -337,8 +353,16 @@
     <button id="vClose">←</button>
     <div class="names"><div id="vName"></div><div id="vPath"></div></div>
     <button id="vEdit" hidden>编辑</button>
+    <button id="vFind">搜索</button>
     <button id="vWrap">换行</button>
   </div>
+  <div id="vTools" hidden>
+    <button data-edit="copy">复制</button><button data-edit="paste">粘贴</button>
+    <button data-edit="indent">缩进</button><button data-edit="outdent">反缩进</button><button data-edit="search">搜索</button>
+    <button data-edit="more">更多</button>
+    <button data-edit="undo" hidden>撤销</button><button data-edit="redo" hidden>重做</button><button data-edit="all" hidden>全选</button>
+  </div>
+  <div id="vSearch" hidden><input id="vQuery" placeholder="搜索当前文档"><span id="vCount"></span><button id="vPrev">↑</button><button id="vNext">↓</button><button id="vSearchClose">×</button></div>
   <div id="vBody"></div>
 </div>
 
@@ -352,6 +376,9 @@
     <button id="gateRetry">重试</button>
     <button id="gateComputers" hidden>选择电脑</button>
     <button id="gateRepair">重新配对</button>
+  </div>
+  <div id="gateDiagnostics" hidden>
+    <div id="gateTests"></div><div id="gateFailure"></div><button id="gateTestRetry">重新检测</button>
   </div>
   <div id="gateInfo"></div>
 </div>
@@ -400,10 +427,9 @@ window.visualViewport?.addEventListener('resize', fitViewport);
 window.visualViewport?.addEventListener('scroll', fitViewport);
 fitViewport();
 
-// In-progress lines end with … and are cleared when the result arrives, or after a few seconds
-// so a finished action cannot leave "正在…" on screen. A short result then fades on its own.
+// Keep action progress until its result arrives; fade short completion messages.
 const ACTION_PENDING = new Set([
-  '正在切换 Agent…', '正在读取 Agent 列表…', '正在打开子 Agent…', '返回主对话…',
+  '正在新建对话…', '正在切换窗口…', '正在切换 Agent…', '正在读取 Agent 列表…', '正在打开子 Agent…', '返回主对话…',
   '正在切换终端…', '正在删除终端…', '正在新建终端…', '正在读取终端列表…',
   '正在打开项目…', '正在读取项目…', '正在读取文件夹…', '正在读取文档…', '正在保存…',
   '正在读取设置…', '正在修改…', '正在读取额度…', '正在停止…',
@@ -421,8 +447,8 @@ function status(text, ok = true) {
   $('msg').textContent = text || '';
   $('msg').className = ok ? '' : 'err';
   const keep = text === '已连接' || (ok && /…$/.test(text || '') && !pendingStatus);
-  if (!text || !ok || keep) return;
-  const wait = pendingStatus ? 8000 : 2800;
+  if (!text || !ok || keep || pendingStatus) return;
+  const wait = 2800;
   statusTimer = setTimeout(() => {
     if (gen !== statusGen) return;
     statusGen++;
@@ -445,6 +471,7 @@ let gateSubmit = null;
 let gateRetryFn = null;
 function gate({ msg = '', err = false, input = null, retry = false, repair = false, computers = false, appLink = null, onRetry = null } = {}) {
   $('gate').classList.add('open');
+  $('gateDiagnostics').hidden = true;
   $('gateMsg').textContent = msg;
   $('gateMsg').className = err ? 'err' : '';
   const inp = $('gateInput');
@@ -532,6 +559,7 @@ function rememberComputer(comp) {
 }
 function applySelection(m, clearChat = true) {
   const changed = (m.sel || '') !== viewSel;
+  if (changed) saveDraft();
   if (changed) { viewSel = m.sel || ''; cache.clear(); }
   const here = currentComputer();
   if (here) rememberComputer({
@@ -540,6 +568,9 @@ function applySelection(m, clearChat = true) {
     windowId: m.windowId ?? here.windowId ?? '',
     threadId: m.threadId ?? here.threadId ?? '',
   });
+  if (changed) restoreDraft();
+  if (m.project) currentProject = m.project;
+  updateTitle();
   if (clearChat && changed) renderChat(null);
 }
 async function decryptEntry(keyText, entry) {
@@ -651,31 +682,68 @@ function showTotp(onCode, err = '') {
   });
 }
 
-// url.json already loaded, so GitHub Pages is reachable. A no-cors request tells the
-// tunnel host apart from the computer: any HTTP answer means Cloudflare replied;
-// a network error means the phone never reached the cloud.
-async function probeCloud(url) {
+async function testEndpoint(url, relay = false, timeout = 8000) {
+  const start = performance.now();
   const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), 8000);
+  const timer = setTimeout(() => ctl.abort(), timeout);
   try {
-    await fetch(url + '/url.json?t=' + Date.now(), { mode: 'no-cors', cache: 'no-store', signal: ctl.signal });
-    return 'edge';
-  } catch (e) {
-    return e?.name === 'AbortError' ? 'timeout' : 'net';
-  } finally {
-    clearTimeout(timer);
-  }
-}
-async function explainOffline() {
-  let host = '';
-  try { host = new URL(base).host; } catch {}
-  if (!base || info?.self) return '连不上电脑：这个页面就是电脑自己提供的，服务没有响应。';
-  const kind = await probeCloud(base);
-  if (kind === 'edge') return '云端能到，电脑没接上。\n手机能打开 Cloudflare 隧道，但这台电脑的服务没有正常返回。可能是关机、睡眠，或中继没在跑。\n' + host;
-  if (kind === 'timeout') return '连不上云端：访问隧道地址超时。\nGitHub 页面能打开，所以是手机到 Cloudflare 这段不通，还不能判断电脑是否开机。\n' + host;
-  return '连不上云端：手机打不开隧道地址。\nGitHub 页面能打开，所以是手机到 Cloudflare 这段不通，还不能判断电脑是否开机。\n' + host;
+    const response = await fetch(url + '?t=' + Date.now(), { cache: 'no-store', signal: ctl.signal });
+    if (!response.ok) return { ok: false, detail: 'HTTP ' + response.status };
+    const data = await response.json();
+    const valid = relay ? data?.self === true : data?.self === true || (data?.v === 3 && Array.isArray(data.computers)) || (data?.v === 2 && !!data.data);
+    return { ok: valid, detail: valid ? `正常 · ${Math.round(performance.now() - start)} ms` : '返回内容不符合预期' };
+  } catch (error) {
+    return { ok: false, timedOut: ctl.signal.aborted, detail: ctl.signal.aborted ? `请求超时（${timeout / 1000} 秒）` : error instanceof SyntaxError ? '返回内容不是 JSON' : '请求失败（网络、DNS、证书或跨域原因未确定）' };
+  } finally { clearTimeout(timer); }
 }
 let offlineGen = 0;
+let lastFailure = { stage: '应用连接', error: '' };
+async function diagnoseConnection(failure, gen) {
+  const page = new URL('url.json', location.href).href;
+  const relay = base ? base.replace(/\/$/, '') + '/url.json' : '';
+  const endpoints = [{ label: '页面地址发布', url: page }, { label: '隧道和电脑服务', url: relay }];
+  const box = $('gateTests');
+  box.replaceChildren();
+  $('gateDiagnostics').hidden = false;
+  const rows = endpoints.map(endpoint => {
+    const row = document.createElement('div'); row.className = 'connectionTest';
+    const name = document.createElement('strong'); name.textContent = endpoint.label;
+    const result = document.createElement('span'); result.textContent = endpoint.url ? '正在测试…' : '尚未获取隧道地址';
+    row.append(name, result);
+    if (endpoint.url) {
+      const link = document.createElement('a'); link.href = endpoint.url; link.textContent = endpoint.url;
+      link.target = inApp ? '_self' : '_blank'; link.rel = 'noopener noreferrer'; row.append(link);
+    }
+    box.append(row); return result;
+  });
+  $('gateFailure').textContent = `失败阶段：${failure.stage}${failure.error ? '\n' + failure.error : ''}`;
+  const results = await Promise.all(endpoints.map(async (endpoint, i) => {
+    let result = endpoint.url ? await testEndpoint(endpoint.url, i === 1) : { ok: false, detail: '尚未获取隧道地址' };
+    if (gen !== offlineGen) return result;
+    rows[i].textContent = result.detail; rows[i].className = result.ok ? 'ok' : 'err';
+    if (i === 1 && result.timedOut) {
+      rows[i].textContent = '8 秒超时，正在进行 30 秒复测…';
+      $('gateMsg').textContent = '正在区分隧道响应慢与持续访问失败…';
+      result = await testEndpoint(endpoint.url, true, 30000);
+      result.slow = result.ok;
+      if (result.ok) result.detail = '复测可达 · ' + result.detail;
+    }
+    return result;
+  }));
+  if (gen !== offlineGen) return;
+  results.forEach((result, i) => { rows[i].textContent = result.detail; rows[i].className = result.ok ? 'ok' : 'err'; });
+  const conclusion = results[1].slow ? '隧道复测可达；可能是慢连接或短暂波动，首次 8 秒检测超时。'
+    : results[0].ok && results[1].timedOut ? '页面地址发布正常，隧道 30 秒复测仍超时；请切换 Wi-Fi 对比，尚不能确定具体网络原因。'
+    : !relay ? '尚未获取隧道地址；当前只能检测页面地址发布。'
+    : !results[0].ok && results[1].ok ? '电脑服务可达，页面地址发布请求异常。'
+    : results[0].ok && !results[1].ok ? '页面地址发布正常，隧道请求异常。'
+    : results.every(result => result.ok) ? '两个网址现在都正常；检查下方失败阶段。此前也可能是短暂网络波动。'
+    : '两个请求均未通过；仅凭浏览器请求不能确定是手机网络、入口还是服务异常。';
+  $('gateMsg').textContent = conclusion;
+  $('gateFailure').textContent = `失败阶段：${failure.stage}${failure.error ? '\n' + failure.error : ''}`;
+}
+$('gateTestRetry').onclick = () => showOffline(lastFailure);
+
 function publishedComputers() {
   if (info?.v === 3 && Array.isArray(info.computers)) return info.computers.filter(c => c && c.id);
   return [];
@@ -690,15 +758,13 @@ function offerComputers(msg, { err = true } = {}) {
   if (many) showComputers(msg);
   else autoRetry();
 }
-async function showOffline() {
+async function showOffline(failure = { stage: '应用连接', error: '' }) {
   const gen = ++offlineGen;
-  const many = loadComputers().length > 1 || unseenPublished().length > 0;
-  if (!many) autoRetry();
-  gate({ msg: '正在判断连不上的是云端还是电脑…', computers: many || loadComputers().length > 0 });
-  const msg = await explainOffline();
-  if (gen !== offlineGen) return;
-  gate({ msg, err: true, retry: true, repair: true, computers: many || loadComputers().length > 0 });
-  if (many) showComputers(msg);
+  lastFailure = failure;
+  clearTimeout(retryTimer);
+  gate({ msg: '正在检测页面地址和隧道…', err: true, retry: true, computers: loadComputers().length > 0 });
+  await diagnoseConnection(failure, gen);
+  if (gen === offlineGen) autoRetry();
 }
 
 async function pair(totp) {
@@ -751,10 +817,10 @@ async function boot() {
   }
   gate({ msg: '正在查找电脑…' });
   try {
-    info = await fetch('url.json?t=' + Date.now(), { cache: 'no-store' }).then(r => r.json());
-  } catch {
-    autoRetry();
-    return gate({ msg: '读取失败，请检查手机网络', err: true, retry: true, repair: true });
+    info = await fetch('url.json?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+  } catch (error) {
+    base = currentComputer()?.relay || '';
+    return showOffline({ stage: '页面地址读取', error: error.message });
   }
   if (pending) {
     try { base = await resolvePending(); }
@@ -769,15 +835,16 @@ async function boot() {
   }
   if (!currentComputer()) return loadComputers().length ? offerComputers('选择要连接的电脑', { err: false }) : showUnpaired();
   const chosen = currentComputer();
+  rememberComputer({ ...chosen, relay: base });
   if (chosen?.win) store.set('window', chosen.win);
   let meRes, me;
   try {
     meRes = await api('/api/me');
     me = await meRes.json();
-  } catch {
-    return showOffline();
+  } catch (error) {
+    return showOffline({ stage: '电脑身份接口 /api/me', error: error.message });
   }
-  if (!meRes.ok || !me || typeof me.paired !== 'boolean') return showOffline();
+  if (!meRes.ok || !me || typeof me.paired !== 'boolean') return showOffline({ stage: '电脑身份接口 /api/me', error: 'HTTP ' + meRes.status });
   if (!me.paired) return offerComputers('这台电脑不认当前配对。记录还在，可以换一台，或重新配对这台。');
   if (me.id || me.name) {
     const cur = currentComputer();
@@ -813,28 +880,33 @@ function connect() {
   clearTimeout(retryTimer);
   const gen = ++connGen;
   ws = new WebSocket(base.replace(/^http/, 'ws') + '/ws');
-  ws.onopen = () => ws.send(JSON.stringify({ t: 'auth', token: store.get('token') }));
+  let opened = false;
+  const socket = ws;
+  const connectTimer = setTimeout(() => { if (gen === connGen && !authed) socket.close(); }, 10000);
+  ws.onopen = () => { opened = true; socket.send(JSON.stringify({ t: 'auth', token: store.get('token') })); };
   let rejected = false;
-  ws.onclose = async () => {
+  ws.onclose = async event => {
+    clearTimeout(connectTimer);
     if (gen !== connGen) return;
     $('dot').className = '';
     if (!authed) {
       // boot() asks /api/me whether the device was removed or needs 2FA again.
-      await sleep(rejected ? 0 : 2000);
-      return boot();
+      if (rejected) return boot();
+      return showOffline({ stage: opened ? '实时连接认证' : '实时连接建立', error: 'WebSocket 关闭码 ' + event.code });
     }
     authed = false;
     failures++;
     status('断开，重连中…', false);
     await sleep(Math.min(8000, 800 * failures));
     // After repeated failures the relay may have restarted on a new address; rediscover it.
-    if (failures >= 3) { failures = 0; return boot(); }
+    if (failures >= 3) { failures = 0; return showOffline({ stage: '实时连接中断', error: 'WebSocket 关闭码 ' + event.code }); }
     connect();
   };
   ws.onmessage = ev => {
     const m = JSON.parse(ev.data);
     if (m.t === 'auth') {
       if (!m.ok) { rejected = true; return; }
+      clearTimeout(connectTimer);
       authed = true; failures = 0;
       ungate();
       if (sheetKind === 'computers') closeSheet();
@@ -852,9 +924,13 @@ function connect() {
       send({ t: 'visible', v: document.visibilityState === 'visible' });
       send({ t: 'lang', v: I18N.lang });
       clearInterval(usageTimer);
-      usageTimer = setInterval(() => { if (authed) send({ t: 'usage' }); }, 10 * 60 * 1000);
+      usageTimer = setInterval(() => { if (authed && document.visibilityState === 'visible') send({ t: 'usage', automatic: true }); }, 60 * 1000);
       syncNotify();
       setTimeout(checkAppUpdate, 3000);
+    }
+    else if (m.t === 'sent') {
+      if (drafts.get(m.draft) === m.text) drafts.delete(m.draft);
+      if (draftKey() === m.draft && text.value === m.text) { text.value = ''; autosize(); }
     }
     else if (m.t === 'chat') { if (!m.sel || !viewSel || m.sel === viewSel) renderChat(m.chat); }
     else if (m.t === 'thread') applySelection(m);
@@ -862,19 +938,23 @@ function connect() {
     else if (m.t === 'panel') { panel = m.rect; updateTermEmpty(); layoutStage(); applyQuality(); }
     else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; if (sheetKind === 'windows') showWindows(); }
     else if (m.t === 'attached') {
+      rememberAgentOpen(m);
       if (m.keepQuota) { applySelection(m); return; }
+      finishPending(['正在切换窗口…', '正在切换 Agent…']);
       store.set('window', m.id);
       applySelection(m, false);
       currentWindow = m.id;
       if (m.closed) { status('这个窗口已经关闭，请重新选择', false); send({ t: 'agents' }); return; }
       $('titleText').textContent = m.app === 'devin' ? 'Devin agent' : m.app === 'codex' ? 'Codex' : winLabel(m.title).name;
       currentAppName = m.appName;
-      updateAppText();
+      currentProject = m.project || winLabel(m.title).name;
+      updateAppText(); updateTitle();
       renderChat(null);
       renderContext(null);
       $('quotaMeters').innerHTML = '';
       $('quotaMeters').title = '';
-      send({ t: 'usage' });
+      renderQuota(quotaCache.get(quotaKey()) || {});
+      send({ t: 'usage', automatic: true });
       send({ t: 'windows' });
     }
     else if (m.t === 'agents') { finishPending(['正在读取 Agent 列表…']); showAgents(m.list || []); }
@@ -891,27 +971,41 @@ function connect() {
     else if (m.t === 'docs') { finishPending(['正在读取文档…']); showDocs(m); }
     else if (m.t === 'settings') { finishPending(['正在读取设置…', '正在修改…']); showSettings(m.sections || []); }
     else if (m.t === 'usage') {
+      if (m.sel && viewSel && m.sel !== viewSel) return;
       if (m.error) status(m.error, false);
       else if (m.missing) status('没有额度数据');
       renderQuota(m);
-      finishPending(['正在读取额度…']);
+      if (!m.cached) finishPending(['正在读取额度…']);
     }
     else if (m.t === 'menu') showMenu(m.kind, m.items, m.max, m.fusion);
     else if (m.t === 'params') showParams(m);
     else if (m.t === 'changes') showChanges(m);
     else if (m.t === 'file') showFile(m);
     else if (m.t === 'saved') onSaved(m);
-    else if (m.t === 'status') { clearSwitchWatch(); status(m.msg, m.ok); }
+    else if (m.t === 'status') { if (!m.ok) pendingAgentOpen = ''; clearSwitchWatch(); status(m.msg, m.ok); }
   };
 }
 
 /* ---------- bottom sheet ---------- */
 let sheetKind = null;
+let pendingAgentOpen = '';
+const agentOpened = JSON.parse(store.get('agent-opened') || '{}');
+const agentOpenedKey = thread => `${currentComputer()?.id || ''}|${currentAppName}|${thread}`;
+function rememberAgentOpen(m) {
+  const target = /^(?:thread|win|new):([^:]+)(?::(.+))?$/.exec(pendingAgentOpen);
+  const matched = m.app === 'codex' ? target && m.windowId === target[1] && (!target[2] || m.threadId === target[2]) : pendingAgentOpen === m.threadId;
+  if (!m.closed && pendingAgentOpen && matched && m.threadId) {
+    agentOpened[agentOpenedKey(m.threadId)] = Date.now();
+    store.set('agent-opened', JSON.stringify(agentOpened));
+    pendingAgentOpen = '';
+  }
+}
 function openSheet(kind, html) {
   sheetKind = kind;
   $('sheet').innerHTML = html;
   $('shade').classList.add('open');
   $('sheet').classList.add('open');
+  if (kind === 'agents') $('sheet').scrollTop = 0;
 }
 function closeSheet() {
   sheetKind = null;
@@ -973,6 +1067,9 @@ function foldSection(name, inner, open, count) {
   return `<button type="button" class="fold" data-fold aria-expanded="${open ? 'true' : 'false'}"><span class="lbl">${esc(name)}</span><span class="tag">${count}</span><span class="chev">${open ? '▾' : '▸'}</span></button><div class="foldBody"${open ? '' : ' hidden'}>${inner}</div>`;
 }
 function showAgents(list) {
+  const newest = items => Math.max(0, ...items.map(a => a.lastUsed || 0));
+  list = list.map(a => ({ ...a, lastUsed: Math.max(a.lastUsed || 0, agentOpened[agentOpenedKey(currentAppName === 'Codex' ? a.id.split(':').slice(2).join(':') : a.id)] || 0) }))
+    .sort((a, b) => (b.lastUsed || 0) - (a.lastUsed || 0));
   const order = [];
   const byWindow = new Map();
   for (const a of list) {
@@ -980,6 +1077,7 @@ function showAgents(list) {
     if (!byWindow.has(win)) { byWindow.set(win, []); order.push(win); }
     byWindow.get(win).push(a);
   }
+  order.sort((a, b) => newest(byWindow.get(b)) - newest(byWindow.get(a)));
   const anyCurrent = list.some(a => a.current);
   const rows = order.map((win, index) => {
     const items = byWindow.get(win);
@@ -991,6 +1089,8 @@ function showAgents(list) {
       if (!g) groups.push(g = { name: a.group, items: [] });
       g.items.push(a);
     }
+    loose.sort((a, b) => Number(!!b.ui) - Number(!!a.ui));
+    groups.sort((a, b) => newest(b.items) - newest(a.items));
     const body = loose.map(agentButton).join('') + groups.map(g => foldSection(
       g.name, g.items.map(agentButton).join(''), g.items.some(a => a.current), g.items.length,
     )).join('');
@@ -1019,6 +1119,7 @@ function fusionBlock(fusion) {
     + '<div class="hint">Lead 负责规划和关键判断，Sidekick 负责具体执行。</div>';
 }
 function showMenu(kind, items, max, fusion) {
+  finishPending(['读取模式列表…', '读取模型列表…', '读取历史对话…', '设置中…']);
   const picking = String(kind || '').startsWith('fusion-');
   if (!items?.length && !fusion) return status(appMessage('菜单是空的，可能 {app} 版本不同'), false);
   status('');
@@ -1037,6 +1138,7 @@ function showMenu(kind, items, max, fusion) {
 }
 
 function showChanges(m) {
+  finishPending(['正在撤销…', '正在保留…', '处理中…']);
   status('');
   if (!m.files.length) { if (sheetKind === 'changes') closeSheet(); return status('没有待处理的改动'); }
   openSheet('changes', `<h3>Agent 改动的文件（${m.files.length}）</h3>`
@@ -1049,6 +1151,7 @@ function showChanges(m) {
 }
 
 function showParams(m) {
+  finishPending(['读取模型参数…', '设置中…']);
   status('');
   openSheet('params', `<h3>${esc(m.label || '模型')} 参数</h3>` + m.sections.map(s => `<div class="pSec">${esc(s.title)}</div><div class="pRow">`
     + s.items.map(it => `<button class="${it.checked ? 'on' : ''} ${it.toggle ? 'tg' : ''}" data-model="${esc(m.model)}" data-plabel="${esc(m.label)}" data-section="${esc(s.title)}" data-value="${esc(it.label)}">${esc(it.label)}${it.toggle ? (it.checked ? '：开' : '：关') : ''}</button>`).join('')
@@ -1116,12 +1219,21 @@ function renderContext(info) {
   $('meterCtx').title = basis === 'remaining' ? '剩余' : '已用';
   $('meterCtx').onclick = () => { status('正在读取额度…'); send({ t: 'usage' }); };
 }
+const quotaCache = new Map();
+const quotaKey = () => [currentComputer()?.id || '', ...viewSel.split('|').slice(0, 2)].join('|');
 function renderQuota(m) {
   if ('context' in m) renderContext(m.context);
-  if (m.error) return;
+  if (m.error) { $('quotaMeters').title += ' · ' + m.error; status('额度刷新失败：' + m.error, false); return; }
+  if (m.loading) return;
+  if (!('quota' in m) && !('limits' in m) && !('bars' in m)) {
+    if (!$('quotaMeters').children.length) $('quotaMeters').innerHTML = '<button class="meter" onclick="status(\'正在读取额度…\');send({t:\'usage\'})">点击读取额度</button>';
+    return;
+  }
+  if (!m.missing && !m.loading) quotaCache.set(quotaKey(), m);
   const bars = [...(m.quota || []), ...(m.limits || []), ...((m.quota || m.limits) ? [] : (m.bars || []))]
     .filter(b => b?.label && !/^loading\b/i.test(String(b.label)));
   const when = m.updated ? new Date(m.updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  if (m.missing && $('quotaMeters').querySelector('.track')) { $('quotaMeters').title += ' · 没有额度数据'; return; }
   if (m.missing) {
     $('quotaMeters').title = when ? `更新于 ${when}` : '';
     $('quotaMeters').innerHTML = `<button class="meter" type="button"><span>没有额度数据</span></button>`;
@@ -1136,6 +1248,7 @@ function renderQuota(m) {
     const num = n == null ? (b.value ?? '–') : (basis === 'remaining' ? `剩余 ${n}%` : `${n}%`);
     return `<button class="meter" type="button" title="${esc(b.reset || '')}"><span>${esc(b.label)}</span><span class="track"><i class="${meterFill(n, basis)}" style="width:${n ?? 0}%"></i></span><b>${esc(String(num))}</b></button>`;
   }).join('');
+  if (when) $('quotaMeters').insertAdjacentHTML('beforeend', `<span class="quotaUpdated">${m.cached ? '缓存 ' : ''}${esc(when)}</span>`);
   $('quotaMeters').querySelectorAll('button').forEach(btn => btn.onclick = () => { status('正在读取额度…'); send({ t: 'usage' }); });
 }
 let usageTimer = null;
@@ -1296,7 +1409,10 @@ function openWin(id) {
 window.openWin = openWin;
 navigator.serviceWorker?.addEventListener('message', e => { if (e.data?.openWin) openWin(e.data.openWin); });
 document.addEventListener('visibilitychange', () => {
-  if (authed) send({ t: 'visible', v: document.visibilityState === 'visible' });
+  if (authed) {
+    send({ t: 'visible', v: document.visibilityState === 'visible' });
+    if (document.visibilityState === 'visible') send({ t: 'usage', automatic: true });
+  }
 });
 
 $('sheet').addEventListener('click', async e => {
@@ -1311,8 +1427,8 @@ $('sheet').addEventListener('click', async e => {
     if (body) body.hidden = !open;
     return;
   }
-  if (b.dataset.win) { closeSheet(); return send({ t: 'attach', id: b.dataset.win }); }
-  if (b.dataset.agent) { closeSheet(); status('正在切换 Agent…'); return send({ t: 'openAgent', id: b.dataset.agent }); }
+  if (b.dataset.win) { closeSheet(); status('正在切换窗口…'); return send({ t: 'attach', id: b.dataset.win }); }
+  if (b.dataset.agent) { pendingAgentOpen = b.dataset.agent; closeSheet(); status('正在切换 Agent…'); return send({ t: 'openAgent', id: b.dataset.agent }); }
   if (b.dataset.term) { closeSheet(); status('正在切换终端…'); return send({ t: 'openTerminal', id: b.dataset.term }); }
   if (b.dataset.open) { closeSheet(); status('正在打开项目…'); return send({ t: 'openProject', path: b.dataset.open }); }
   if (b.dataset.dir) { status('正在读取文件夹…'); return send({ t: 'projects', path: b.dataset.dir }); }
@@ -1430,7 +1546,9 @@ function useComputer(i) {
   const list = loadComputers();
   const c = list[Number(i)];
   if (!c) return showComputers();
+  saveDraft();
   saveComputers(list, c.key);
+  restoreDraft();
   store.set('window', c.win || null);
   connGen++;
   offlineGen++;
@@ -1472,7 +1590,9 @@ function updateTermEmpty() {
   $('termText').hidden = !(mode === 'terminal' && termState === 'text');
 }
 function setMode(m) {
+  saveDraft();
   mode = m;
+  restoreDraft(); updateTitle();
   store.set('mode', m);
   $('tabChat').classList.toggle('on', m === 'chat');
   $('tabTerm').classList.toggle('on', m === 'terminal');
@@ -1561,7 +1681,7 @@ function thinkingTitle(raw) {
 const thinkingPref = new Map();
 function thinkingWantOpen(it) {
   if (thinkingPref.has(it.i)) return thinkingPref.get(it.i);
-  return !!it.live;
+  return !!it.live || (it.t || '').startsWith('工作过程\n');
 }
 function paintThinking(el, it) {
   const open = thinkingWantOpen(it);
@@ -1640,8 +1760,15 @@ function noteSwitch(chat) {
 }
 
 let lastChat = null;
+let currentProject = '', currentTerminal = '';
+function updateTitle() {
+  const first = lastChat?.items?.find(it => it.k === 'user');
+  const conversation = mode === 'terminal' ? currentTerminal : (lastChat?.title || first?.t || '');
+  $('titleText').textContent = [currentAppName, currentProject, conversation.split('\n')[0].slice(0, 40)].filter(Boolean).join(' · ');
+}
 function renderChat(chat) {
-  lastChat = chat;
+  const previous = lastChat;
+  lastChat = chat; updateTitle();
   if (chat && 'context' in chat) renderContext(chat.context);
   $('empty').hidden = !!chat;
   $('older').hidden = !chat;
@@ -1677,7 +1804,9 @@ function renderChat(chat) {
     cache.set(it.i, { key, el });
     return el;
   });
-  itemsEl.replaceChildren(...els);
+  const liveEls = new Set(els);
+  for (const child of [...itemsEl.children]) if (!liveEls.has(child)) child.remove();
+  els.forEach((el, i) => { if (itemsEl.children[i] !== el) itemsEl.insertBefore(el, itemsEl.children[i] || null); });
   const live = new Set(chat.items.map(it => it.i));
   for (const k of cache.keys()) if (!live.has(k)) cache.delete(k);
 
@@ -1691,6 +1820,7 @@ function renderChat(chat) {
     const el = [...itemsEl.children].find(e => e.dataset.i === anchor);
     if (el) list.scrollTop = el.offsetTop - anchorTop;
   }
+  if (!stick && previous && JSON.stringify(previous.items) !== JSON.stringify(chat.items)) $('toBottom').textContent = '↓ 有新消息';
   updateToBottom();
   noteSwitch(chat);
 }
@@ -1795,6 +1925,7 @@ $('queueBar').onclick = async e => {
 };
 
 function updateToBottom() {
+  if (nearBottom()) $('toBottom').textContent = '↓ 最新';
   $('toBottom').style.display = nearBottom() ? 'none' : 'block';
 }
 list.addEventListener('scroll', updateToBottom);
@@ -1812,6 +1943,24 @@ function typesetMath(root) {
   });
 }
 function dressMessage(el) {
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) if (!walker.currentNode.parentElement.closest('a, pre, code, textarea, .math')) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    const parts = node.textContent.split(/(https?:\/\/[^\s<>"`]+)/g);
+    if (parts.length === 1) continue;
+    const fragment = document.createDocumentFragment();
+    parts.forEach((part, i) => {
+      if (i % 2 === 0) fragment.append(part);
+      else {
+        const url = part.replace(/[.,;!?，。；！？]+$/, '');
+        const a = document.createElement('a'); a.href = url; a.textContent = url;
+        fragment.append(a, part.slice(url.length));
+      }
+    });
+    node.replaceWith(fragment);
+  }
+
   el.querySelectorAll('.codebox').forEach(box => {
     if (box.querySelector('.copy')) return;
     const btn = document.createElement('button');
@@ -1819,12 +1968,20 @@ function dressMessage(el) {
     btn.className = 'copy';
     btn.textContent = '复制';
     box.appendChild(btn);
+    const url = blockText(box.querySelector('pre')).trim();
+    if (/^https?:\/\/\S+$/i.test(url)) {
+      const a = document.createElement('a'); a.href = url; a.textContent = '打开'; a.className = 'openLink'; box.append(a);
+    }
   });
   el.querySelectorAll('code').forEach(code => {
     if (code.closest('pre') || code.dataset.file) return;
     const t = code.textContent.trim();
+    if (/^https?:\/\/\S+$/i.test(t) && !code.closest('a')) {
+      const a = document.createElement('a'); a.href = t; a.textContent = t; code.replaceChildren(a); return;
+    }
     if (t.length >= 8 || /\s/.test(t)) code.classList.add('copyable');
   });
+  el.querySelectorAll('a[href]').forEach(a => { a.target = inApp ? '_self' : '_blank'; a.rel = 'noopener noreferrer'; });
   typesetMath(el);
 }
 window.addEventListener('load', () => typesetMath($('items')));
@@ -1837,8 +1994,8 @@ function blockText(pre) {
 function forTerminalPaste(text) {
   return text.replace(/\n/g, '\r\n');
 }
-async function copyText(text, btn) {
-  const payload = forTerminalPaste(text);
+async function copyText(text, btn, terminal = true) {
+  const payload = terminal ? forTerminalPaste(text) : text;
   try {
     await navigator.clipboard.writeText(payload);
   } catch {
@@ -1857,7 +2014,7 @@ async function copyText(text, btn) {
 }
 document.addEventListener('click', async e => {
   const copyBtn = e.target.closest('.copy');
-  const copyCode = !copyBtn && e.target.closest('code.copyable');
+  const copyCode = !copyBtn && !e.target.closest('a') && e.target.closest('code.copyable');
   if (copyBtn || copyCode) {
     e.preventDefault();
     const pre = copyBtn?.parentElement?.querySelector('pre');
@@ -1878,7 +2035,7 @@ $('pickModel').onclick = () => { status('读取模型列表…'); send({ t: 'ope
 $('pickPerm').onclick = () => { status('读取权限…'); send({ t: 'openMenu', kind: 'permission' }); };
 $('pickAgents').onclick = () => { status('正在读取 Agent 列表…'); send({ t: 'agents' }); };
 $('pickHistory').onclick = () => { status('读取历史对话…'); send({ t: 'openMenu', kind: 'history' }); };
-$('newChat').onclick = () => { send({ t: 'newChat' }); status('已新建对话'); };
+$('newChat').onclick = () => { status('正在新建对话…'); send({ t: 'newChat' }); };
 
 /* ---------- file viewer ---------- */
 $('vBody').classList.toggle('wrap', store.get('wrap') !== 'off');
@@ -1886,7 +2043,7 @@ $('vWrap').classList.toggle('on', store.get('wrap') !== 'off');
 
 let viewing = null;
 let editing = false;
-let editBase = '';
+let editBase = '', saving = null;
 function dirtyEdit() {
   const box = $('vEditBox');
   return editing && box && box.value !== editBase;
@@ -1896,6 +2053,9 @@ function leaveEdit() {
   $('vBody').classList.remove('editing');
   $('vEdit').textContent = '编辑';
   $('vWrap').hidden = false;
+  $('vFind').hidden = false;
+  $('vTools').hidden = true;
+  $('vSearch').hidden = true;
 }
 function openFile(ref) {
   leaveEdit();
@@ -1915,7 +2075,9 @@ function showFile(m) {
   if (!$('viewer').classList.contains('open') || m.loading) return;
   leaveEdit();
   viewing = m.text != null ? m : null;
+  $('vFind').hidden = m.text == null;
   $('vEdit').hidden = !m.editable;
+  $('vEdit').disabled = Boolean(saving);
   $('vName').textContent = m.name || '';
   // Leading LRM keeps the rtl ellipsis from reordering the path's slashes.
   $('vPath').textContent = m.path ? '\u200e' + (m.host ? m.host + ':' : '') + m.path + (m.size != null ? ` · ${fmtSize(m.size)}` : '') : '';
@@ -1941,23 +2103,27 @@ function showFile(m) {
 
 const fmtSize = n => n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
 
-function paintFile(text) {
-  const body = $('vBody');
-  const lines = String(text).replace(/\n$/, '').split('\n');
-  body.innerHTML = `<div class="code">${lines.map(l => `<div class="l"><i></i>${esc(l) || ' '}</div>`).join('')}</div>`;
-  body.querySelectorAll('.l i').forEach((el, n) => { el.textContent = n + 1; });
-  body.scrollTop = 0;
-}
 function onSaved(m) {
   finishPending(['正在保存…']);
+  const submitted = saving;
+  if (!submitted || m.path !== submitted.path || (m.host || '') !== submitted.host) return;
+  saving = null;
+  $('vEdit').disabled = false;
   if (!m.ok) return status(m.error || '保存失败', false);
-  if (!viewing || viewing.path !== m.path) return;
-  viewing.text = editBase = $('vEditBox')?.value ?? viewing.text;
+  if (!viewing || viewing.path !== submitted.path || (viewing.host || '') !== submitted.host) return;
+  viewing.text = editBase = submitted.text;
   viewing.size = m.size;
-  leaveEdit();
-  paintFile(viewing.text);
   status('已保存');
 }
+function saveEdit() {
+  if (!editing || saving) return;
+  if (!authed) return status('未连接', false);
+  saving = { path: viewing.path, host: viewing.host || '', text: $('vEditBox').value };
+  $('vEdit').disabled = true;
+  status('正在保存…');
+  send({ t: 'saveFile', ...saving });
+}
+
 function closeViewer() {
   if (dirtyEdit() && !confirm('还有没保存的修改，确定离开？')) {
     if (!history.state?.viewer) history.pushState({ viewer: true }, '');
@@ -1982,11 +2148,13 @@ $('vEdit').onclick = () => {
     $('vEditBox').value = viewing.text;
     $('vEdit').textContent = '保存';
     $('vWrap').hidden = true;
+    $('vFind').hidden = true;
+    $('vTools').hidden = false;
+    $('vEditBox').addEventListener('input', () => { if (!$('vSearch').hidden) findInFile(0); });
     $('vEditBox').focus();
     return;
   }
-  status('正在保存…');
-  send({ t: 'saveFile', path: viewing.path, host: viewing.host || '', text: $('vEditBox').value });
+  saveEdit();
 };
 $('vWrap').onclick = () => {
   const on = !$('vBody').classList.contains('wrap');
@@ -1994,6 +2162,98 @@ $('vWrap').onclick = () => {
   $('vWrap').classList.toggle('on', on);
   store.set('wrap', on ? null : 'off');
 };
+
+function editInsert(value) {
+  const box = $('vEditBox');
+  box.focus();
+  document.execCommand('insertText', false, value);
+}
+function indentEdit(remove = false) {
+  const box = $('vEditBox'), value = box.value;
+  const a = box.selectionStart, b = box.selectionEnd;
+  const existing = /^([ \t]+)\S/m.exec(value)?.[1] || '';
+  const unit = existing.includes('\t') ? '\t' : ' '.repeat(existing.length === 2 ? 2 : 4);
+  if (a === b && !remove) { editInsert(unit); return; }
+  const start = a === 0 ? 0 : value.lastIndexOf('\n', a - 1) + 1;
+  const last = b > a && value[b - 1] === '\n' ? b - 1 : b;
+  const next = value.indexOf('\n', last);
+  const end = next < 0 ? value.length : next;
+  const lines = value.slice(start, end).split('\n');
+  const changes = lines.map(line => remove ? -(line[0] === '\t' ? 1 : Math.min(unit.length, /^ */.exec(line)[0].length)) : unit.length);
+  const result = lines.map((line, i) => remove ? line.slice(-changes[i]) : unit + line).join('\n');
+  box.setSelectionRange(start, end);
+  editInsert(result);
+  const shift = remove ? -Math.min(-changes[0], a - start) : changes[0];
+  box.setSelectionRange(a + shift, a === b ? a + shift : b + changes.reduce((n, d) => n + d, 0));
+}
+let searchIndex = -1, searchQuery = '';
+function findInFile(step = 0) {
+  const query = $('vQuery').value;
+  const value = editing ? $('vEditBox').value : viewing?.text || '';
+  const hits = [];
+  if (query) for (let at = value.indexOf(query); at >= 0; at = value.indexOf(query, at + query.length)) hits.push(at);
+  if (query !== searchQuery) { searchIndex = -1; searchQuery = query; }
+  searchIndex = hits.length ? ((searchIndex < 0 ? 0 : searchIndex + step) % hits.length + hits.length) % hits.length : -1;
+  $('vCount').textContent = hits.length ? `${searchIndex + 1} / ${hits.length}` : '0 / 0';
+  if (editing) {
+    if (hits.length) {
+      const box = $('vEditBox'), at = hits[searchIndex];
+      box.setSelectionRange(at, at + query.length);
+      box.scrollTop = Math.max(0, (value.slice(0, at).split('\n').length - 3) * parseFloat(getComputedStyle(box).lineHeight));
+    }
+  } else {
+    const line = hits.length ? value.slice(0, hits[searchIndex]).split('\n').length - 1 : -1;
+    $('vBody').querySelectorAll('.l').forEach((el, i) => el.classList.toggle('searchHit', i === line));
+    $('vBody').querySelector('.searchHit')?.scrollIntoView({ block: 'center' });
+  }
+}
+function openSearch() {
+  $('vSearch').hidden = false;
+  $('vQuery').focus();
+  $('vQuery').select();
+  findInFile();
+}
+function closeSearch() {
+  $('vSearch').hidden = true;
+  $('vBody').querySelector('.searchHit')?.classList.remove('searchHit');
+  if (editing) $('vEditBox').focus();
+}
+async function editAction(action) {
+  const box = $('vEditBox');
+  if (action === 'search') return openSearch();
+  if (action === 'more') {
+    for (const button of $('vTools').querySelectorAll('[data-edit="undo"], [data-edit="redo"], [data-edit="all"]')) button.hidden = !button.hidden;
+    return;
+  }
+  if (!editing) return;
+  if (action === 'copy') {
+    const selected = box.value.slice(box.selectionStart, box.selectionEnd);
+    await copyText(selected || box.value, null, false);
+    status(selected ? '已复制' : '已复制全文');
+  } else if (action === 'paste') {
+    try { const value = await navigator.clipboard.readText(); editInsert(value); }
+    catch { status('请长按编辑框粘贴', false); }
+  } else if (action === 'indent' || action === 'outdent') indentEdit(action === 'outdent');
+  else if (action === 'all') { box.focus(); box.select(); }
+  else { box.focus(); document.execCommand(action); }
+}
+function editKey(e) {
+  if (e.isComposing || e.keyCode === 229) return;
+  const command = e.ctrlKey || e.metaKey;
+  if (command && e.key.toLowerCase() === 'f') { e.preventDefault(); openSearch(); }
+  else if (command && e.key.toLowerCase() === 's' && editing) { e.preventDefault(); saveEdit(); }
+  else if (e.key === 'Escape' && !$('vSearch').hidden) { e.preventDefault(); closeSearch(); }
+  else if (e.key === 'Tab' && e.target.id === 'vEditBox') { e.preventDefault(); indentEdit(e.shiftKey); }
+}
+$('viewer').addEventListener('keydown', editKey);
+$('vTools').addEventListener('pointerdown', e => { if (e.target.closest('button')) e.preventDefault(); });
+$('vTools').addEventListener('click', e => { const button = e.target.closest('[data-edit]'); if (button) editAction(button.dataset.edit); });
+$('vQuery').addEventListener('input', () => findInFile());
+$('vQuery').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); findInFile(e.shiftKey ? -1 : 1); } });
+$('vFind').onclick = openSearch;
+$('vPrev').onclick = () => findInFile(-1);
+$('vNext').onclick = () => findInFile(1);
+$('vSearchClose').onclick = closeSearch;
 
 /* ---------- screen view ---------- */
 const view = $('view'), stage = $('stage'), screen = $('screen');
@@ -2027,7 +2287,7 @@ function layoutStage() {
 
 let sentWidth = 0;
 function applyQuality() {
-  if ((mode !== 'screen' && mode !== 'terminal') || !authed || (mode === 'terminal' && !panel)) return;
+  if (mode !== 'screen' || !authed) return;
   const [, , rw] = cropRect();
   if (!rw) return;
   // The stream is a photo of the whole window. Ask for enough pixels that the cropped
@@ -2211,18 +2471,27 @@ function renderTermLine(line, caretAt) {
   }
   return html + '\n';
 }
+let termLines = [], termCursor = [];
 function renderTerm(m) {
   const box = $('termText');
   if (!m.lines) {
     termState = 'empty';
-    box.textContent = '';
+    box.textContent = ''; termLines = []; termCursor = [];
     updateTermEmpty();
     return;
   }
   termState = 'text';
   const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 64;
   const [cy, cx] = m.cursor || [];
-  box.innerHTML = m.lines.map((line, y) => renderTermLine(line, y === cy ? cx : null)).join('');
+  currentTerminal = m.name || ''; updateTitle();
+  m.lines.forEach((line, y) => {
+    if (JSON.stringify(line) === JSON.stringify(termLines[y]) && y !== cy && y !== termCursor[0]) return;
+    const row = document.createElement('span');
+    row.innerHTML = renderTermLine(line, y === cy ? cx : null);
+    if (box.children[y]) box.children[y].replaceWith(row); else box.append(row);
+  });
+  while (box.children.length > m.lines.length) box.lastElementChild.remove();
+  termLines = m.lines; termCursor = m.cursor || [];
   updateTermEmpty();
   if (stick) box.scrollTop = box.scrollHeight;
 }
@@ -2232,8 +2501,13 @@ document.querySelectorAll('[data-key]').forEach(b => b.onclick = () => send({ t:
 
 /* ---------- composer ---------- */
 const text = $('text');
+const drafts = new Map();
+let activeDraft = '';
+function draftKey() { return [currentComputer()?.id || '', viewSel, mode].join('|'); }
+function saveDraft() { if (activeDraft) drafts.set(activeDraft, text.value); }
+function restoreDraft() { activeDraft = draftKey(); text.value = drafts.get(activeDraft) || ''; autosize(); }
 function autosize() { text.style.height = 'auto'; text.style.height = text.scrollHeight + 'px'; }
-text.addEventListener('input', autosize);
+text.addEventListener('input', () => { autosize(); saveDraft(); });
 text.addEventListener('focus', () => {
   stickOnKeyboard = nearBottom();
   fitViewport();
@@ -2247,9 +2521,9 @@ text.addEventListener('blur', () => {
 $('send').onclick = () => {
   const v = text.value;
   if (!v.trim()) return;
-  if (mode === 'terminal') send({ t: 'termSend', text: v });
-  else send({ t: 'send', text: v, submit: true });
-  text.value = ''; autosize();
+  saveDraft();
+  if (mode === 'terminal') send({ t: 'termSend', text: v, draft: activeDraft });
+  else send({ t: 'send', text: v, submit: true, draft: activeDraft });
   if (mode === 'chat') list.scrollTop = list.scrollHeight;
 };
 // Enter sends. Shift+Enter keeps a newline. Ignore Enter that is confirming an IME candidate.
