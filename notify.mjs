@@ -1,6 +1,7 @@
 // Watches every Cursor window and tells paired phones when an Agent finishes or is waiting for a decision.
 // Delivery: Web Push (iPhone home-screen app, browsers) and a server-sent event stream (the Android app).
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import webpush from 'web-push';
 import { DATA_DIR, listDevices, updateDevice } from './auth.mjs';
@@ -89,17 +90,18 @@ function check(win, w, s) {
   const name = windowName(win.title);
 
   if (s.waiting !== w.waiting) { w.waiting = s.waiting; w.waitPolls = 0; w.told = first; }
+  const pc = os.hostname().replace(/\.local$/, '').slice(0, 24);
   if (s.waiting && !w.told && ++w.waitPolls >= WAIT_POLLS) {
     w.told = true;
-    deliver({ kind: 'waiting', win: win.id, title: `等你确认 · ${name}`, body: s.waitingText || 'Agent 在等你确认',
-      en: { title: `Needs your OK · ${name}`, body: s.waitingText || 'The Agent is waiting for you' } });
+    deliver({ kind: 'waiting', win: win.id, title: `${pc} · 等你确认 · ${name}`, body: s.waitingText || 'Agent 在等你确认',
+      en: { title: `${pc} · Needs your OK · ${name}`, body: s.waitingText || 'The Agent is waiting for you' } });
   }
 
   if (s.busy) { w.busy = true; w.idle = 0; return; }
   if (!w.busy || ++w.idle < IDLE_POLLS) return;
   w.busy = false;
-  if (!s.waiting) deliver({ kind: 'done', win: win.id, title: `已完成 · ${name}`, body: s.last || 'Agent 已停止',
-    en: { title: `Done · ${name}`, body: s.last || 'The Agent has stopped' } });
+  if (!s.waiting) deliver({ kind: 'done', win: win.id, title: `${pc} · 已完成 · ${name}`, body: s.last || 'Agent 已停止',
+    en: { title: `${pc} · Done · ${name}`, body: s.last || 'The Agent has stopped' } });
 }
 
 // listWindows/openCdp/probe come from the relay so this module shares its CDP code.

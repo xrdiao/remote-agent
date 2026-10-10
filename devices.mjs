@@ -13,7 +13,8 @@ if (cmd === 'pair') {
     console.log('还不知道手机 App 的地址：先运行 npm run setup 设置固定地址，或先启动服务（npm run public / npm start）。');
     process.exit(1);
   }
-  const { link, minutes } = createPairing(base);
+  const { link, minutes, replacing } = createPairing(base);
+  if (replacing) console.log('\n刚才那条还没过期的配对链接已经作废，只用下面这一条。');
   console.log(`\n用手机扫码，或把下面的链接发到手机上打开（${minutes} 分钟内有效，只能配对一台设备）：\n`);
   qrcode.generate(link, { small: true });
   console.log(`\n${link}\n`);

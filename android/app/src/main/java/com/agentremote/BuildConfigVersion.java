@@ -1,4 +1,4 @@
-package com.cursorremote.lite;
+package com.agentremote;
 
 import android.content.Context;
 

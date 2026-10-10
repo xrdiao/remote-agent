@@ -11,5 +11,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = 'CursorRemote'
+rootProject.name = 'AgentRemote'
 include ':app'

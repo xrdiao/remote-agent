@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { DATA_DIR } from './auth.mjs';
 
 const TEXT_LIMIT = 512 * 1024;
 const IMAGE_LIMIT = 8 * 1024 * 1024;
@@ -62,7 +63,7 @@ const remotePath = p => p.startsWith('~/') ? `"$HOME"/${shq(p.slice(2))}` : shq(
 
 // One shared master connection per host: faster, and avoids sshd's MaxStartups dropping bursts of new connections.
 const SSH_OPTS = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'ControlMaster=auto',
-  '-o', `ControlPath=${path.join(os.homedir(), '.cursor-remote-lite', 'ssh-%C')}`, '-o', 'ControlPersist=120'];
+  '-o', `ControlPath=${path.join(DATA_DIR, 'ssh-%C')}`, '-o', 'ControlPersist=120'];
 
 async function ssh(host, command, limit) {
   try {

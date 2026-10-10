@@ -21,7 +21,10 @@ if [[ ! -x "$BIN" ]]; then
   exit 1
 fi
 
-LOG="${HOME}/.cursor-remote-lite/start-devin.log"
+if [[ -d "${HOME}/.agent-remote" ]]; then DATA="${HOME}/.agent-remote"
+elif [[ -d "${HOME}/.cursor-remote-lite" ]]; then DATA="${HOME}/.cursor-remote-lite"
+else DATA="${HOME}/.agent-remote"; fi
+LOG="${DATA}/start-devin.log"
 mkdir -p "$(dirname "$LOG")"
 nohup "$BIN" --remote-debugging-port="${PORT}" >>"$LOG" 2>&1 &
 disown

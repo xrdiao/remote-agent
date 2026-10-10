@@ -1,4 +1,4 @@
-package com.cursorremote.lite;
+package com.agentremote;
 
 import android.app.Activity;
 import android.app.DownloadManager;
@@ -34,7 +34,7 @@ import java.util.ArrayList;
 public class MainActivity extends Activity {
     private static final String SETUP = "file:///android_asset/setup.html";
     private static final String APK_MIME = "application/vnd.android.package-archive";
-    private static final String UPDATE_FILE = "CursorRemote-update.apk";
+    private static final String UPDATE_FILE = "AgentRemote-update.apk";
     private static final int VOICE = 7;
     private static final int PICK = 8;
     private WebView web;
@@ -52,7 +52,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
-        prefs = getSharedPreferences("cursor-remote", MODE_PRIVATE);
+        prefs = getSharedPreferences("agent-remote", MODE_PRIVATE);
         web = new WebView(this);
         web.setBackgroundColor(0xFF1E1E1E);
         setContentView(web);
@@ -60,9 +60,9 @@ public class MainActivity extends Activity {
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
-        s.setUserAgentString(s.getUserAgentString() + " CursorRemoteApp/" + BuildConfigVersion.name(this));
+        s.setUserAgentString(s.getUserAgentString() + " AgentRemoteApp/" + BuildConfigVersion.name(this));
 
-        web.addJavascriptInterface(new Bridge(), "CursorRemoteApp");
+        web.addJavascriptInterface(new Bridge(), "AgentRemoteApp");
         web.setWebChromeClient(new WebChromeClient() {
             @Override
             public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
@@ -133,7 +133,7 @@ public class MainActivity extends Activity {
         File dir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
         if (dir != null) new File(dir, UPDATE_FILE).delete();
         DownloadManager.Request r = new DownloadManager.Request(Uri.parse(url))
-                .setTitle(NotifyService.tr("Cursor Remote 更新", "Cursor Remote update"))
+                .setTitle(NotifyService.tr("Remote Agent 更新", "Remote Agent update"))
                 .setMimeType(APK_MIME)
                 .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
                 .setDestinationInExternalFilesDir(this, Environment.DIRECTORY_DOWNLOADS, UPDATE_FILE);
@@ -186,10 +186,10 @@ public class MainActivity extends Activity {
         stopService(new Intent(this, NotifyService.class));
     }
 
-    // cursorremote://pair?app=<https app address>&d=<url key>.<one-time code>, handed over by the web app in a browser.
+    // agentremote://pair?app=<https app address>&d=<url key>.<one-time code>, handed over by the web app in a browser.
     private boolean openPairLink(Intent intent) {
         Uri u = intent == null ? null : intent.getData();
-        if (u == null || !"cursorremote".equals(u.getScheme())) return false;
+        if (u == null || !"agentremote".equals(u.getScheme())) return false;
         String app = u.getQueryParameter("app");
         String d = u.getQueryParameter("d");
         if (app == null || d == null || !app.startsWith("https://") || !d.matches("[\\w-]+\\.[\\w-]+")) return false;

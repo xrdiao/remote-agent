@@ -4,7 +4,27 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-export const DATA_DIR = path.join(os.homedir(), '.cursor-remote-lite');
+const NEW_DIR = path.join(os.homedir(), '.agent-remote');
+const OLD_DIR = path.join(os.homedir(), '.cursor-remote-lite');
+function rankDir(dir) {
+  if (!fs.existsSync(dir)) return -1;
+  let n = 0;
+  if (fs.existsSync(path.join(dir, 'devices.json'))) n += 100;
+  if (fs.existsSync(path.join(dir, 'config.json'))) n += 10;
+  if (fs.existsSync(path.join(dir, 'url-key'))) n += 1;
+  return n;
+}
+function dataDir() {
+  const nr = rankDir(NEW_DIR);
+  const or = rankDir(OLD_DIR);
+  if (nr > or) return NEW_DIR;
+  if (or < 0) return NEW_DIR;
+  if (nr < 0) {
+    try { fs.renameSync(OLD_DIR, NEW_DIR); return NEW_DIR; } catch { return OLD_DIR; }
+  }
+  return OLD_DIR;
+}
+export const DATA_DIR = dataDir();
 const PAIR_TTL = 10 * 60 * 1000;
 
 const file = name => path.join(DATA_DIR, name);
@@ -32,6 +52,14 @@ export function urlKey() {
   return k;
 }
 
+export function computerId() {
+  return crypto.createHash('sha256').update(urlKey()).digest().subarray(0, 8).toString('hex');
+}
+
+export function computerName() {
+  return os.hostname().replace(/\.local$/, '').slice(0, 40) || '电脑';
+}
+
 export function encryptUrl(url) {
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', urlKey(), iv);
@@ -39,13 +67,21 @@ export function encryptUrl(url) {
   return { v: 2, iv: iv.toString('base64'), data: data.toString('base64'), updated: new Date().toISOString() };
 }
 
+// One public url.json holds every computer. Each entry is encrypted with that computer's own key.
+export function publishRecord(url) {
+  const slot = encryptUrl(url);
+  return { id: computerId(), name: computerName(), iv: slot.iv, data: slot.data, updated: slot.updated };
+}
+
 /* ---------- pairing ---------- */
 
 // The link carries the url key and a one-time code in the #fragment, which browsers never send to any server.
 export function createPairing(appBase) {
+  const existing = readJson('pairing.json', null);
+  const replacing = Boolean(existing && existing.expires > Date.now());
   const code = crypto.randomBytes(16).toString('base64url');
   writeJson('pairing.json', { hash: sha256(code), expires: Date.now() + PAIR_TTL });
-  return { link: `${appBase}#pair=${urlKey().toString('base64url')}.${code}`, minutes: PAIR_TTL / 60000 };
+  return { link: `${appBase}#pair=${urlKey().toString('base64url')}.${code}`, minutes: PAIR_TTL / 60000, replacing };
 }
 
 export function pairingValid(code) {

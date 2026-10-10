@@ -3,11 +3,11 @@ plugins {
 }
 
 android {
-    namespace 'com.cursorremote.lite'
+    namespace 'com.agentremote'
     compileSdk 34
 
     defaultConfig {
-        applicationId 'com.cursorremote.lite'
+        applicationId 'com.agentremote'
         minSdk 24
         targetSdk 34
         versionCode((System.getenv('VERSION_CODE') ?: '1') as int)

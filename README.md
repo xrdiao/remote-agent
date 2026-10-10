@@ -11,7 +11,13 @@
 
 ## 这台机器上怎么用
 
-需要 Node.js 22 或更高版本，以及本机的 `cloudflared`（放在 `~/.local/bin`，不改系统环境）。
+需要 Node.js 22 或更高版本，以及本机的 `cloudflared`（放在 `~/.local/bin`，不改系统环境）。Linux 上可以这样安装：
+
+```bash
+mkdir -p ~/.local/bin
+curl -L --fail -o ~/.local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+chmod +x ~/.local/bin/cloudflared
+```
 
 1. 让 Cursor 打开调试端口后再启动（端口默认 `9222`）：
 
@@ -40,7 +46,7 @@ npm run public
 npm run pair
 ```
 
-配对记录保存在电脑上的 `~/.cursor-remote-lite/`。公网隧道单独在后台运行，之后重启 `npm run public` 会沿用同一个地址，已配对的手机不用重新配对。只有关机，或手动结束隧道进程，地址才会变。
+配对记录保存在电脑上的 `~/.agent-remote/`。旧目录 `~/.cursor-remote-lite/` 会在下次启动时改名过来。公网隧道单独在后台运行，之后重启 `npm run public` 会沿用同一个地址，已配对的手机不用重新配对。只有关机，或手动结束隧道进程，地址才会变。
 
 终端里会打印隧道进程号。要彻底关掉公网：
 

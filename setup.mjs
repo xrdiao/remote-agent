@@ -1,13 +1,12 @@
 // Interactive first-run setup: checks dependencies, creates the GitHub Pages app, installs the service.
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline/promises';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { DATA_DIR } from './auth.mjs';
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = path.join(os.homedir(), '.cursor-remote-lite');
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 const isMac = process.platform === 'darwin';
 
@@ -49,7 +48,7 @@ if (has('gh') && await yes('  要设置吗？')) {
     if (interactive('gh', ['auth', 'login']).status !== 0) { console.log('  GitHub 登录没有完成，可以单独运行 gh auth login 后再运行 npm run setup'); process.exit(1); }
   }
   const login = run('gh', ['api', 'user', '--jq', '.login']).stdout.trim();
-  const name = await ask('  仓库名', config.publishRepo?.split('/')[1] || 'cursor-remote-app');
+  const name = await ask('  仓库名', config.publishRepo?.split('/')[1] || 'remote-agent');
   const repo = `${login}/${name}`;
   if (run('gh', ['repo', 'view', repo]).status !== 0) {
     const r = run('gh', ['repo', 'create', repo, '--public', '--description', 'My Remote Agent phone app']);

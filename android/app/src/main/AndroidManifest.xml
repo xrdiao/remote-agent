@@ -16,7 +16,7 @@
     </queries>
 
     <application
-        android:label="Cursor Remote"
+        android:label="Remote Agent"
         android:icon="@mipmap/ic_launcher"
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="false">
@@ -34,7 +34,7 @@
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="cursorremote" android:host="pair" />
+                <data android:scheme="agentremote" android:host="pair" />
             </intent-filter>
         </activity>
         <service

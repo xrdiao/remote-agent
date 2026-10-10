@@ -11,7 +11,7 @@
     "pair": "node devices.mjs pair",
     "devices": "node devices.mjs",
     "2fa": "node twofa.mjs",
-    "reset": "node -e \"const d=require('os').homedir()+'/.cursor-remote-lite/';for(const f of ['url-key','devices.json','pairing.json','totp.json','config.json','state.json'])require('fs').rmSync(d+f,{force:true});console.log('已重置：所有设备需要重新配对，二次验证已关闭')\""
+    "reset": "node -e \"const d=require('os').homedir()+'/.agent-remote/';for(const f of ['url-key','devices.json','pairing.json','totp.json','config.json','state.json'])require('fs').rmSync(d+f,{force:true});console.log('已重置：所有设备需要重新配对，二次验证已关闭')\""
   },
   "engines": {
     "node": ">=22"

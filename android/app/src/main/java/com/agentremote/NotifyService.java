@@ -1,4 +1,4 @@
-package com.cursorremote.lite;
+package com.agentremote;
 
 import android.app.Notification;
 import android.app.NotificationChannel;
@@ -57,14 +57,14 @@ public class NotifyService extends Service {
     }
 
     private static SharedPreferences prefs(Context c) {
-        return c.getSharedPreferences("cursor-remote", MODE_PRIVATE);
+        return c.getSharedPreferences("agent-remote", MODE_PRIVATE);
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         createChannels();
         Notification listening = builder(CH_LISTEN)
-                .setContentTitle(tr("Cursor Remote 正在等待 Agent 的消息", "Cursor Remote is listening for the Agent"))
+                .setContentTitle(tr("Remote Agent 正在等待 Agent 的消息", "Remote Agent is listening for the Agent"))
                 .setContentText(tr("Agent 完成或需要你确认时会提醒你", "You'll be alerted when the Agent finishes or needs your OK"))
                 .setContentIntent(openApp(null, 0))
                 .setOngoing(true)
@@ -78,7 +78,7 @@ public class NotifyService extends Service {
         }
         if (worker == null || !worker.isAlive()) {
             running = true;
-            worker = new Thread(this::loop, "cursor-remote-notify");
+            worker = new Thread(this::loop, "agent-remote-notify");
             worker.start();
         }
         return START_STICKY;
@@ -177,7 +177,7 @@ public class NotifyService extends Service {
         // One notification per window: a newer event replaces the older one.
         int id = win.isEmpty() ? 2 : 3 + (win.hashCode() & 0x7fffffff) % 100000;
         Notification n = builder(CH_EVENTS)
-                .setContentTitle(e.optString("title", "Cursor Remote"))
+                .setContentTitle(e.optString("title", "Remote Agent"))
                 .setContentText(e.optString("body", ""))
                 .setStyle(new Notification.BigTextStyle().bigText(e.optString("body", "")))
                 .setContentIntent(openApp(win, id))

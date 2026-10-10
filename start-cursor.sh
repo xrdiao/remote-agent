@@ -12,7 +12,10 @@ if curl -s --max-time 1 "http://127.0.0.1:${PORT}/json/version" >/dev/null; then
   exit 1
 fi
 
-LOG="$HOME/.cursor-remote-lite/start-cursor.log"
+if [[ -d "$HOME/.agent-remote" ]]; then DATA="$HOME/.agent-remote"
+elif [[ -d "$HOME/.cursor-remote-lite" ]]; then DATA="$HOME/.cursor-remote-lite"
+else DATA="$HOME/.agent-remote"; fi
+LOG="$DATA/start-cursor.log"
 mkdir -p "$(dirname "$LOG")"
 
 # Detached so it survives when launched from Cursor's own terminal, which dies with Cursor.

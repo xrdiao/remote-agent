@@ -9,7 +9,7 @@ import { WebSocketServer } from 'ws';
 import qrcode from 'qrcode-terminal';
 import { workspaces, workspaceForTitle, fileSize, readFile, parseRef, listProject, locateWritable, writeTextFile } from './files.mjs';
 import {
-  DATA_DIR, encryptUrl, createPairing, pairingValid, consumePairing, listDevices, addDevice, findDevice, updateDevice,
+  DATA_DIR, publishRecord, computerId, computerName, createPairing, pairingValid, consumePairing, listDevices, addDevice, findDevice, updateDevice,
   removeDevice, totpConfig, verifyTotp, needsTotp, saveState, readState, appBase,
 } from './auth.mjs';
 import { pushPublicKey, openEventStream, closeEventStreams, addViewer, removeViewer, deliver, startWatcher } from './notify.mjs';
@@ -31,6 +31,7 @@ fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
 
 const CONFIG = loadConfig();
 const PUBLISH_REPO = process.argv.find(a => a.startsWith('--publish='))?.slice('--publish='.length) || process.env.CR_PUBLISH_REPO || CONFIG.publishRepo || '';
+const PAGES_BRANCH = process.env.CR_PAGES_BRANCH || CONFIG.pagesBranch || '';
 const APP_ORIGIN = PUBLISH_REPO ? `https://${PUBLISH_REPO.split('/')[0].toLowerCase()}.github.io` : '';
 const ALLOWED_ORIGINS = new Set([APP_ORIGIN, ...(process.env.CR_ALLOWED_ORIGINS || '').split(',')].filter(Boolean));
 
@@ -388,25 +389,30 @@ function pageHelpers() {
     ? el.querySelector('.ui-collapsible-content')
     : el.matches('.chat-thinking-box')
       ? el.querySelector('.chat-thinking-item')
-      : el.querySelector('.self-start');
-  const thinkingPlain = el => (thinkingBodyEl(el)?.textContent || '').replace(/\u00a0/g, ' ').trim();
+      : el.querySelector('.ui-collapsible-content, .self-start');
+  const thinkingPlain = el => (thinkingBodyEl(el)?.textContent || '').replace(/\u00a0/g, ' ').replace(/\s+$/, '');
   const thinkingTitleOf = el => (thinkingHeaderEl(el)?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 80);
   const thinkingLive = el => el.classList.contains('chat-thinking-active')
     || !!el.querySelector('[data-loading]')
     || /^thinking\b/i.test(thinkingTitleOf(el));
-  // Phone shows the moving tail, not the whole trace in one shot when thinking ends.
-  const thinkingTail = plain => {
-    const lines = String(plain || '').split('\n').map(s => s.trimEnd()).filter(s => s.trim());
-    const tail = (lines.length ? lines.slice(-6) : []).join('\n');
-    return tail.slice(-500);
+  const thinkingNodes = () => {
+    const rooted = [...document.querySelectorAll(THINKING_ROOT)].filter(el => el.matches('.ui-thinking-collapsible, .chat-thinking-box') || /^(thinking|thoughts|thought(?: for)? )\b/i.test(thinkingTitleOf(el)));
+    const rows = [...document.querySelectorAll('[data-message-kind="thinking"]')].filter(el => !rooted.some(r => r === el || r.contains(el) || el.contains(r)));
+    return [...rooted, ...rows];
   };
-  const thinkingNodes = () => [...document.querySelectorAll(THINKING_ROOT)].filter(el => el.matches('.ui-thinking-collapsible, .chat-thinking-box') || /^(thinking|thoughts|thought(?: for)? )\b/i.test(thinkingTitleOf(el)));
-  const closedThinkingIndexes = () => thinkingNodes().flatMap((el, i) => {
-    if (!thinkingLive(el) || thinkingPlain(el)) return [];
-    const header = thinkingToggleEl(el);
-    if (!header || header.getAttribute('aria-expanded') === 'true') return [];
-    return [i];
-  }).slice(0, 4);
+  // 'live' is still generating; 'done' has finished and folded its body away.
+  const closedThinkingIndexes = (which = 'live') => {
+    const idxs = thinkingNodes().flatMap((el, i) => {
+      const live = thinkingLive(el);
+      if (which === 'live' ? !live : live) return [];
+      if (thinkingPlain(el).trim()) return [];
+      const header = thinkingToggleEl(el);
+      if (!header || header.getAttribute('aria-expanded') === 'true') return [];
+      return [i];
+    });
+    // Finished blocks: read the newest ones. Older traces are optional.
+    return (which === 'done' ? idxs.slice(-2) : idxs.slice(0, 4));
+  };
   const clickThinking = indexes => {
     const nodes = thinkingNodes();
     for (const i of indexes || []) nodes[i] && thinkingToggleEl(nodes[i])?.click();
@@ -614,7 +620,7 @@ function pageHelpers() {
       return text && !STATUS.test(text);
     }) || devinModelButton();
   };
-  const DEVIN_MODEL = /^(SWE|GPT|Claude|Gemini|GLM|Kimi)\b/;
+  const DEVIN_MODEL = /^(SWE|GPT|Claude|Gemini|GLM|Kimi|Fusion)\b/;
   const devinModelButton = () => {
     revealDevinComposer();
     return [...document.querySelectorAll('button')].find(e => {
@@ -625,12 +631,62 @@ function pageHelpers() {
   };
   const devinModelMenu = () => [...document.querySelectorAll('div')].find(e => vis(e) && (e.innerText || '').includes('Recently Used') && (e.innerText || '').includes('See more') && (e.innerText || '').length < 2500);
   const normLabel = s => (s || '').replace(/[\u200b\u200c\u200d\ufeff]/g, '').replace(/\s+/g, ' ').trim();
+  // Fusion is a lead + sidekick pairing. The detail panel only exists while that model menu is open.
+  const fusionPanel = () => [...document.querySelectorAll('div')].find(e => {
+    if (!vis(e)) return false;
+    const t = e.innerText || '';
+    const b = e.getBoundingClientRect();
+    return b.width > 200 && b.width < 520 && t.includes('Lead') && t.includes('Sidekick') && t.includes('Fast Mode') && t.length < 900;
+  });
+  const fusionLine = el => normLabel((el?.innerText || '').split('\n')[0]).slice(0, 60);
+  const fusionConfig = () => {
+    const panel = fusionPanel();
+    if (!panel) return null;
+    const boxes = [...panel.querySelectorAll('[role=combobox]')].filter(vis);
+    if (boxes.length < 3) return null;
+    const sw = panel.querySelector('[role=switch]');
+    return { lead: fusionLine(boxes[0]), effort: fusionLine(boxes[1]), sidekick: fusionLine(boxes[2]), fast: sw?.getAttribute('aria-checked') === 'true' };
+  };
+  const clickFusionCombo = part => {
+    const panel = fusionPanel();
+    const boxes = panel ? [...panel.querySelectorAll('[role=combobox]')].filter(vis) : [];
+    const i = part === 'lead' ? 0 : part === 'effort' ? 1 : part === 'sidekick' ? 2 : -1;
+    const el = boxes[i];
+    if (!el) return false;
+    el.click();
+    return true;
+  };
+  const clickFusionFast = () => {
+    const sw = fusionPanel()?.querySelector('[role=switch]');
+    if (!sw) return false;
+    sw.click();
+    return true;
+  };
+  const fusionOptionItems = () => {
+    const seen = new Set();
+    const items = [];
+    for (const el of document.querySelectorAll('[role=option]')) {
+      if (!vis(el)) continue;
+      const label = fusionLine(el);
+      if (!label || label.length > 60 || seen.has(label)) continue;
+      seen.add(label);
+      items.push({ label, checked: el.getAttribute('aria-selected') === 'true' });
+    }
+    return items;
+  };
+  const fusionOptionTarget = label => {
+    const want = normLabel(label);
+    const el = [...document.querySelectorAll('[role=option]')].find(e => vis(e) && fusionLine(e) === want);
+    if (!el) return null;
+    el.scrollIntoView({ block: 'nearest' });
+    return center(el);
+  };
 
   const thinkingItem = (el, host, n) => {
     const title = thinkingTitleOf(el) || '思考';
-    const tail = thinkingTail(thinkingPlain(el));
+    const body = thinkingPlain(el).trim();
     const base = itemKey(host && host !== el ? host : el) || 'row';
-    const item = { i: `${base}:think:${n}`, k: 'thinking', t: tail ? `${title}\n${tail}` : title };
+    const item = { i: `${base}:think:${n}`, k: 'thinking', t: body ? `${title}\n${body}` : title };
     if (thinkingLive(el)) item.live = true;
     return item;
   };
@@ -656,8 +712,7 @@ function pageHelpers() {
       const title = [action || 'Thought', details].filter(Boolean).join(' ').slice(0, 80);
       const content = el.querySelector('.ui-collapsible-content');
       const plain = (content?.textContent || '').replace(/\u00a0/g, ' ').trim();
-      const tail = thinkingTail(plain);
-      item.t = tail ? `${title}\n${tail}` : title;
+      item.t = plain ? `${title}\n${plain}` : title;
       if (/^thinking\b/i.test(action) || el.querySelector('[data-loading]')) item.live = true;
       return item;
     }
@@ -754,9 +809,20 @@ function pageHelpers() {
   const MENU_ITEMS = {
     mode: () => [...document.querySelectorAll('.composer-unified-context-menu-item')].map(e => ({ el: e, label: e.innerText.trim().split('\n')[0], checked: !!e.querySelector('.codicon-check') })),
     model: () => {
-      const classic = [...document.querySelectorAll('.ui-menu__row')].filter(e => e.querySelector('.ui-model-picker__item-content-name'));
-      if (classic.length) return classic.map(e => ({ el: e, id: e.dataset.testid, params: !!e.querySelector('[data-testid=parameter-edit-btn]'), label: normLabel(e.querySelector('.ui-model-picker__item-content-name').innerText), checked: !!e.querySelector('.codicon-check, .ui-model-picker__item-right-section [class*=check]') }));
       const currentModel = normLabel(modelButton()?.innerText || '').split('\n')[0];
+      // Auto is its own row and has no .ui-model-picker__item-content-name, so the list below would skip it.
+      const autoRows = [...document.querySelectorAll('[data-testid="auto-mode-select"]')].filter(vis).map(e => {
+        const label = normLabel(e.innerText).split('\n')[0].slice(0, 60) || 'Auto';
+        return {
+          el: e,
+          id: e.getAttribute('data-testid'),
+          params: false,
+          label,
+          checked: label === currentModel || !!e.querySelector('[class*=check]') || e.getAttribute('aria-checked') === 'true',
+        };
+      });
+      const classic = [...document.querySelectorAll('.ui-menu__row')].filter(e => e.getAttribute('data-testid') !== 'auto-mode-select' && e.querySelector('.ui-model-picker__item-content-name'));
+      if (classic.length) return [...autoRows, ...classic.map(e => ({ el: e, id: e.dataset.testid, params: !!e.querySelector('[data-testid=parameter-edit-btn]'), label: normLabel(e.querySelector('.ui-model-picker__item-content-name').innerText), checked: !!e.querySelector('.codicon-check, .ui-model-picker__item-right-section [class*=check]') }))];
       const cursorItems = [...document.querySelectorAll('[data-testid^="model-item-"], [data-testid="auto-mode-select"]')].filter(vis).map(e => {
         const label = normLabel(e.innerText).split('\n')[0].slice(0, 60);
         return {
@@ -771,7 +837,8 @@ function pageHelpers() {
       const pop = devinModelMenu();
       if (!pop) return [];
       const current = normLabel(devinModelButton()?.innerText || '');
-      return [...pop.querySelectorAll('button')].filter(vis).map(e => {
+      const pairing = fusionPanel();
+      return [...pop.querySelectorAll('button')].filter(e => vis(e) && !pairing?.contains(e)).map(e => {
         const label = normLabel(e.innerText).split('\n')[0].slice(0, 60);
         return { el: e, id: label, params: false, label, checked: label === current };
       }).filter(x => DEVIN_MODEL.test(x.label));
@@ -790,7 +857,7 @@ function pageHelpers() {
     return !!(menu && vis(menu) && (x.el.innerText || '').trim());
   }).map(({ el, ...rest }) => rest);
 
-  const menuOpen = () => [...document.querySelectorAll('.ui-menu, .composer-unified-context-menu-item, .composer-history-hover-menu')].some(vis) || !!devinModelMenu();
+  const menuOpen = () => [...document.querySelectorAll('.ui-menu, .composer-unified-context-menu-item, .composer-history-hover-menu')].some(vis) || !!devinModelMenu() || !!fusionPanel();
   const modelListRow = () => [...document.querySelectorAll('[role=menuitem]')].find(el => vis(el) && /^Model\b/.test(normLabel(el.innerText)));
   const modelListTrigger = () => {
     const e = modelListRow();
@@ -1227,6 +1294,7 @@ function pageHelpers() {
     terminalList, terminalTarget, terminalCloseTarget, terminalRect, terminalFocus, newTerminalDirect, newTerminalMenu, newTerminalItem, terminalDump, terminalCommand, modelListTrigger,
     settingsOpen, clickSettingsButton, clickCloseSettings, openSettingsTarget, closeSettingsTarget, readSettings, settingTarget, usageNavTarget, readUsage,
     clickControl, clickModelListTrigger, devinSettingsNav, devinSettingsClick, devinSettingsCards,
+    fusionConfig, clickFusionCombo, clickFusionFast, fusionOptionItems, fusionOptionTarget,
     menuOpen, maxToggle, modelTarget, modelParams, paramTarget, subTarget, activeChatTab, tabTarget, hasComposer, filesState, fileTarget, questionTarget,
     closedThinkingIndexes, clickThinking, closeThinkingIfOpen };
 }
@@ -1303,6 +1371,7 @@ class Session {
     this.lastChat = '';
     this.thinking = new Map();
     this.thinkingTried = new Map();
+    this.keptThink = new Map();
     this.app = 'cursor';
     this.lastPanel = '';
     this.lastBusy = null;
@@ -1333,25 +1402,126 @@ class Session {
     }
   }
 
+  thinkingBody(it) {
+    return (it?.t || '').split('\n').slice(1).join('\n');
+  }
+
+  thinkingTitle(it) {
+    return (it?.t || '').split('\n')[0] || '思考';
+  }
+
+  // The live block's id often changes when the turn finishes. Keep that text on the newest block.
+  noteLiveThinking(it) {
+    const body = this.thinkingBody(it);
+    if (!it?.live || !body) return;
+    const prev = this.latestThink?.id === it.i ? (this.latestThink.body || '') : '';
+    this.latestThink = { id: it.i, body: body.length >= prev.length ? body : prev, at: Date.now() };
+  }
+
   rememberThinking(chat) {
     for (const it of chat?.items || []) {
       if (it.k !== 'thinking') continue;
-      const tail = (it.t || '').split('\n').slice(1).join('\n');
-      if (tail) this.thinking.set(it.i, { tail });
+      const body = this.thinkingBody(it);
+      const prev = this.thinking.get(it.i)?.body || '';
+      const next = body.length >= prev.length ? body : prev;
+      if (next) this.thinking.set(it.i, { body: next });
+      this.noteLiveThinking(it);
     }
-    while (this.thinking.size > 40) this.thinking.delete(this.thinking.keys().next().value);
+    const keep = this.latestThink?.id;
+    while (this.thinking.size > 12) {
+      const oldest = this.thinking.keys().next().value;
+      if (oldest === keep) {
+        const saved = this.thinking.get(oldest);
+        this.thinking.delete(oldest);
+        this.thinking.set(oldest, saved);
+        if (this.thinking.size === 1) break;
+        continue;
+      }
+      this.thinking.delete(oldest);
+    }
   }
 
   fillThinking(chat) {
-    for (const it of chat?.items || []) {
-      if (it.k !== 'thinking') continue;
-      const title = (it.t || '').split('\n')[0];
-      const tail = (it.t || '').split('\n').slice(1).join('\n');
-      const hit = this.thinking.get(it.i);
-      // A finished block unmounts its body. Keep the tail already streamed, don't load the full trace.
-      if (!tail && hit?.tail) it.t = `${title}\n${hit.tail}`;
-      delete it.closed;
+    const thoughts = (chat?.items || []).filter(it => it.k === 'thinking');
+    for (const it of thoughts) {
+      const saved = this.thinking.get(it.i)?.body || '';
+      const body = this.thinkingBody(it);
+      if (saved.length > body.length) it.t = `${this.thinkingTitle(it)}\n${saved}`;
+      this.noteLiveThinking(it);
+    }
+    const last = thoughts[thoughts.length - 1];
+    const carried = this.latestThink;
+    if (last && carried?.body && !last.live && this.thinkingBody(last).length < carried.body.length) {
+      const fresh = !this.thinkingBody(last) && Date.now() - carried.at < 20000;
+      if (last.i === carried.id || fresh) {
+        itAssign(last, carried.body);
+        this.thinking.set(last.i, { body: carried.body });
+      }
+    }
+    // Always send the newest trace. Drop older bodies once the payload gets large.
+    let used = 0;
+    const budget = 80000;
+    for (let i = thoughts.length - 1; i >= 0; i--) {
+      const it = thoughts[i];
+      const title = this.thinkingTitle(it);
+      const body = this.thinkingBody(it);
+      const newest = i === thoughts.length - 1;
+      if (!newest && body && used + body.length > budget) {
+        it.t = title;
+        continue;
+      }
+      used += body.length;
       delete it.h;
+    }
+    function itAssign(it, body) {
+      it.t = `${(it.t || '').split('\n')[0] || '思考'}\n${body}`;
+    }
+  }
+
+  // Cursor removes a finished thinking row from the transcript. Put the text we already
+  // streamed back in front of that reply. Older traces are omitted once the payload is large.
+  retainThinking(chat) {
+    if (!chat?.items) return;
+    if (!this.keptThink) this.keptThink = new Map();
+    const items = chat.items;
+    let prev = null;
+    for (const it of items) {
+      if (it.k !== 'thinking') { prev = it.i; continue; }
+      const body = this.thinkingBody(it);
+      const old = this.keptThink.get(it.i);
+      const best = body.length >= (old?.body || '').length ? body : (old?.body || '');
+      let title = this.thinkingTitle(it);
+      if (/^thinking$/i.test(title) && old?.title && !/^thinking$/i.test(old.title)) title = old.title;
+      this.keptThink.set(it.i, { i: it.i, title, body: best, after: prev, at: Date.now() });
+    }
+    const present = new Set(items.map(it => it.i));
+    let missing = [...this.keptThink.values()].filter(k => k.body && !present.has(k.i) && k.after && items.some(it => it.i === k.after));
+    missing.sort((a, b) => b.at - a.at);
+    let used = items.filter(it => it.k === 'thinking').reduce((n, it) => n + this.thinkingBody(it).length, 0);
+    const allow = new Set();
+    for (const k of missing) {
+      if (!allow.size || used + k.body.length <= 80000) {
+        allow.add(k.i);
+        used += k.body.length;
+      }
+    }
+    missing = missing.filter(k => allow.has(k.i)).sort((a, b) => a.at - b.at);
+    const placed = new Map();
+    for (const k of missing) {
+      const at = items.findIndex(it => it.i === k.after);
+      if (at < 0) continue;
+      const n = placed.get(k.after) || 0;
+      const title = /^thinking$/i.test(k.title) ? 'Thought' : k.title;
+      items.splice(at + 1 + n, 0, { i: k.i, k: 'thinking', t: `${title}\n${k.body}` });
+      placed.set(k.after, n + 1);
+    }
+    if (this.keptThink.size > 24) {
+      const ranked = [...this.keptThink.entries()].sort((a, b) => a[1].at - b[1].at);
+      for (const [id] of ranked) {
+        if (this.keptThink.size <= 16) break;
+        if (id === this.latestThink?.id) continue;
+        this.keptThink.delete(id);
+      }
     }
   }
 
@@ -1360,18 +1530,44 @@ class Session {
     this.polling = true;
     try {
       let chat = await this.cdp.evaluate(helpersCall('extract()'));
-      this.fillThinking(chat);
-      const live = (chat?.items || []).some(it => it.live && !(it.t || '').includes('\n'));
-      if (live) {
-        const idxs = await this.cdp.evaluate(helpersCall('closedThinkingIndexes()'));
+      const liveClosed = (chat?.items || []).some(it => it.k === 'thinking' && it.live && !(it.t || '').includes('\n'));
+      if (liveClosed) {
+        const idxs = await this.cdp.evaluate(helpersCall(`closedThinkingIndexes('live')`));
         if (idxs?.length) {
           await this.cdp.evaluate(helpersCall(`clickThinking(${JSON.stringify(idxs)})`));
           await new Promise(r => setTimeout(r, 250));
           chat = await this.cdp.evaluate(helpersCall('extract()'));
-          this.fillThinking(chat);
         }
       }
+      const needFinal = (chat?.items || []).some(it => it.k === 'thinking' && !it.live && !(it.t || '').includes('\n') && !this.thinkingTried.has(it.i));
+      if (needFinal) {
+        const idxs = await this.cdp.evaluate(helpersCall(`closedThinkingIndexes('done')`));
+        if (idxs?.length) {
+          await this.cdp.evaluate(helpersCall(`clickThinking(${JSON.stringify(idxs)})`));
+          await new Promise(r => setTimeout(r, 250));
+          chat = await this.cdp.evaluate(helpersCall('extract()'));
+          await this.cdp.evaluate(helpersCall(`closeThinkingIfOpen(${JSON.stringify(idxs)})`));
+        }
+      }
+      this.fillThinking(chat);
       this.rememberThinking(chat);
+      this.retainThinking(chat);
+      const finished = (chat?.items || []).filter(it => it.k === 'thinking' && !it.live);
+      finished.forEach((it, i) => {
+        const has = this.thinkingBody(it).length > 0;
+        const newest = i === finished.length - 1;
+        if (has || !newest) this.thinkingTried.set(it.i, 1);
+        else {
+          const n = (this.thinkTries?.get(it.i) || 0) + 1;
+          if (!this.thinkTries) this.thinkTries = new Map();
+          this.thinkTries.set(it.i, n);
+          if (n >= 3) this.thinkingTried.set(it.i, 1);
+        }
+      });
+      if (chat?.model === 'Fusion') {
+        if (this.fusion) chat.fusion = this.fusion;
+        else this.queueFusionRead();
+      } else this.fusion = null;
       const json = JSON.stringify(chat);
       if (json !== this.lastChat) {
         this.lastChat = json;
@@ -1741,6 +1937,8 @@ class Session {
     await this.tapCss(pos.x, pos.y);
     this.thinking?.clear();
     this.thinkingTried?.clear();
+    this.keptThink?.clear();
+    this.latestThink = null;
     this.lastChat = '';
     this.emit({ t: 'status', ok: true, msg: '已切换 Agent' });
     setTimeout(() => this.pollChat().catch(() => {}), 500);
@@ -1770,8 +1968,13 @@ class Session {
       }
     }
     const max = kind === 'model' ? await this.cdp.evaluate(helpersCall('maxToggle()?.on ?? null')) : null;
+    let fusion = null;
+    if (kind === 'model') {
+      fusion = await this.cdp.evaluate(helpersCall('fusionConfig()'));
+      if (fusion) this.fusion = fusion;
+    }
     await this.closeMenus();
-    this.emit({ t: 'menu', kind, items, max });
+    this.emit({ t: 'menu', kind, items, max, fusion });
   }
 
   async closeMenus() {
@@ -1859,7 +2062,78 @@ class Session {
     }
     await this.tapCss(pos.x, pos.y);
     this.emit({ t: 'status', ok: true, msg: `已切换到 ${label}` });
+    if (kind === 'model' && label === 'Fusion') {
+      this.fusion = null;
+      this.fusionMiss = false;
+      await new Promise(r => setTimeout(r, 300));
+      await this.closeMenus();
+      await this.openMenu('model');
+      return;
+    }
     setTimeout(() => this.pollChat().catch(() => {}), 500);
+  }
+
+  queueFusionRead() {
+    if (this.fusionLoading || this.fusionMiss) return;
+    this.fusionLoading = true;
+    this.readFusion(true).then(cfg => {
+      if (cfg) { this.fusion = cfg; this.fusionMiss = false; this.lastChat = ''; }
+      else this.fusionMiss = true;
+    }).catch(() => { this.fusionMiss = true; }).finally(() => { this.fusionLoading = false; });
+  }
+
+  async readFusion(open) {
+    let cfg = await this.cdp.evaluate(helpersCall('fusionConfig()'));
+    if (cfg || !open) return cfg;
+    await this.pressControl('model');
+    cfg = await this.waitFor('fusionConfig()');
+    await this.closeMenus();
+    return cfg;
+  }
+
+  async fusionOptions(part) {
+    if (!['lead', 'effort', 'sidekick'].includes(part)) throw new Error('没有这个 Fusion 选项');
+    await this.pressControl('model');
+    const fusion = await this.waitFor('fusionConfig()');
+    if (!fusion) { await this.closeMenus(); throw new Error('先把模型切换到 Fusion'); }
+    const opened = await this.cdp.evaluate(helpersCall(`clickFusionCombo(${JSON.stringify(part)})`));
+    if (!opened) { await this.closeMenus(); throw new Error('Fusion 的这项没有打开'); }
+    let items = [];
+    for (let i = 0; i < 8 && !items.length; i++) {
+      await new Promise(r => setTimeout(r, 120));
+      items = await this.cdp.evaluate(helpersCall('fusionOptionItems()')) || [];
+    }
+    const current = fusion[part];
+    items = items.map(it => ({ ...it, checked: it.label === current }));
+    await this.closeMenus();
+    if (!items.length) throw new Error('没有读到可切换的模型');
+    this.emit({ t: 'menu', kind: `fusion-${part}`, items, fusion });
+  }
+
+  async fusionPick(part, value) {
+    await this.pressControl('model');
+    const ready = await this.waitFor('fusionConfig()');
+    if (!ready) { await this.closeMenus(); throw new Error('先把模型切换到 Fusion'); }
+    if (part === 'fast') {
+      const ok = await this.cdp.evaluate(helpersCall('clickFusionFast()'));
+      if (!ok) throw new Error('没有找到 Fast Mode');
+    } else {
+      if (!['lead', 'effort', 'sidekick'].includes(part)) throw new Error('没有这个 Fusion 选项');
+      const opened = await this.cdp.evaluate(helpersCall(`clickFusionCombo(${JSON.stringify(part)})`));
+      if (!opened) throw new Error('Fusion 的这项没有打开');
+      const pos = await this.waitFor(`fusionOptionTarget(${JSON.stringify(String(value))})`);
+      if (!pos) { await this.closeMenus(); throw new Error(`没找到选项：${value}`); }
+      await this.tapCss(pos.x, pos.y);
+    }
+    await new Promise(r => setTimeout(r, 250));
+    const fusion = await this.waitFor('fusionConfig()') || ready;
+    this.fusion = fusion;
+    this.fusionMiss = false;
+    this.lastChat = '';
+    await this.closeMenus();
+    this.emit({ t: 'status', ok: true, msg: part === 'fast' ? `Fast Mode 已${fusion.fast ? '打开' : '关闭'}` : `已切换到 ${value}` });
+    await this.openMenu('model');
+    setTimeout(() => this.pollChat().catch(() => {}), 300);
   }
 
   async scrollChat(dy) {
@@ -1978,6 +2252,7 @@ class Session {
     this.lastChat = '';
     this.thinking = new Map();
     this.thinkingTried = new Map();
+    this.keptThink = new Map();
     cdp.onclose = () => {
       if (this.cdp === cdp) {
         this.cdp = null;
@@ -2149,6 +2424,8 @@ class Session {
     switch (msg.t) {
       case 'openMenu': return this.openMenu(msg.kind);
       case 'pickMenu': return this.pickMenu(msg.kind, msg.label);
+      case 'fusionOptions': return this.fusionOptions(String(msg.part ?? ''));
+      case 'fusionPick': return this.fusionPick(String(msg.part ?? ''), msg.value);
       case 'toggleMax': return this.toggleMax();
       case 'params': return this.showParams(String(msg.model ?? ''), String(msg.label ?? ''));
       case 'pickParam': return this.pickParam(String(msg.model ?? ''), String(msg.label ?? ''), msg.section, msg.value);
@@ -2262,7 +2539,7 @@ async function handleApi(req, res, route) {
   const device = deviceFor(req);
 
   if (route === '/api/me') {
-    return json(req, res, 200, { paired: Boolean(device), needTotp: needsTotp(device), totp: Boolean(totpConfig()) });
+    return json(req, res, 200, { paired: Boolean(device), needTotp: needsTotp(device), totp: Boolean(totpConfig()), id: computerId(), name: computerName(), device: device?.id || '' });
   }
 
   if (route === '/api/pair' && req.method === 'POST') {
@@ -2279,7 +2556,7 @@ async function handleApi(req, res, route) {
     consumePairing();
     const { device: added, token } = addDevice(name);
     console.log(`[pair] 新设备「${added.name}」 ip=${ip}`);
-    return json(req, res, 200, { token });
+    return json(req, res, 200, { token, id: computerId(), name: computerName() });
   }
 
   if (!device) return json(req, res, 401, { error: '设备未配对' });
@@ -2441,21 +2718,34 @@ function appUrl() {
 const gitBlobSha = buf => crypto.createHash('sha1').update(`blob ${buf.length}\0`).update(buf).digest('hex');
 
 async function putFile(name, buf, sha) {
-  const body = { message: `update ${name}`, content: buf.toString('base64'), ...(sha ? { sha } : {}) };
+  const body = { message: `update ${name}`, content: buf.toString('base64'), ...(PAGES_BRANCH ? { branch: PAGES_BRANCH } : {}), ...(sha ? { sha } : {}) };
   await run('gh', ['api', '-X', 'PUT', `repos/${PUBLISH_REPO}/contents/${name}`, '--input', '-'], JSON.stringify(body));
 }
 
 async function remoteShas() {
-  const out = await run('gh', ['api', `repos/${PUBLISH_REPO}/contents`, '--jq', '.[] | [.name, .sha] | @tsv']).catch(() => '');
+  const spec = PAGES_BRANCH
+    ? [`repos/${PUBLISH_REPO}/git/trees/${PAGES_BRANCH}?recursive=1`, '--jq', '.tree[] | select(.type=="blob") | [.path, .sha] | @tsv']
+    : [`repos/${PUBLISH_REPO}/contents`, '--jq', '.[] | [.name, .sha] | @tsv'];
+  const out = await run('gh', ['api', ...spec]).catch(() => '');
   return new Map(out.split('\n').filter(Boolean).map(l => l.split('\t')));
+}
+
+function appFiles(dir = APP_DIR, prefix = '') {
+  const out = [];
+  for (const name of fs.readdirSync(dir)) {
+    const abs = path.join(dir, name);
+    const rel = prefix ? `${prefix}/${name}` : name;
+    if (fs.statSync(abs).isDirectory()) out.push(...appFiles(abs, rel));
+    else if (MIME[path.extname(name)] && rel !== 'url.json') out.push(rel);
+  }
+  return out;
 }
 
 // Keeps the GitHub Pages copy of the app identical to app/, uploading only files that changed.
 async function syncApp() {
   const remote = await remoteShas();
   let changed = 0;
-  for (const name of fs.readdirSync(APP_DIR)) {
-    if (!MIME[path.extname(name)] || name === 'url.json') continue;
+  for (const name of appFiles()) {
     const buf = fs.readFileSync(path.join(APP_DIR, name));
     if (remote.get(name) === gitBlobSha(buf)) continue;
     await putFile(name, buf, remote.get(name));
@@ -2464,7 +2754,26 @@ async function syncApp() {
   if (changed) console.log(`已同步 ${changed} 个 App 文件到 GitHub Pages`);
 }
 
-// Writes the current tunnel address (encrypted) to url.json, so the app on GitHub Pages can find this relay.
+async function readUrlDoc() {
+  const q = PAGES_BRANCH ? `?ref=${encodeURIComponent(PAGES_BRANCH)}` : '';
+  try {
+    const meta = JSON.parse(await run('gh', ['api', `repos/${PUBLISH_REPO}/contents/url.json${q}`]));
+    const text = Buffer.from(String(meta.content || '').replace(/\n/g, ''), 'base64').toString('utf8');
+    return { sha: meta.sha, json: JSON.parse(text) };
+  } catch {
+    return { sha: null, json: null };
+  }
+}
+
+function registryWith(existing, mine) {
+  const others = existing?.v === 3 && Array.isArray(existing.computers)
+    ? existing.computers.filter(c => c && c.id && c.id !== mine.id)
+    : [];
+  const computers = [...others, mine].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  return { v: 3, computers };
+}
+
+// Writes this computer's tunnel address into the shared url.json without removing the others.
 async function publishUrl(url) {
   try {
     await syncApp();
@@ -2473,13 +2782,31 @@ async function publishUrl(url) {
   }
   if (!await waitReachable(url)) console.log('!! 新地址暂时无法从外网访问，仍然尝试发布');
   try {
-    const remote = await remoteShas();
-    await putFile('url.json', Buffer.from(JSON.stringify(encryptUrl(url)) + '\n'), remote.get('url.json'));
+    const mine = publishRecord(url);
+    let lastErr = null;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const cur = await readUrlDoc();
+      try {
+        await putFile('url.json', Buffer.from(JSON.stringify(registryWith(cur.json, mine)) + '\n'), cur.sha);
+        lastErr = null;
+        break;
+      } catch (e) {
+        lastErr = e;
+        if (!/409|does not match|sha/i.test(String(e.message))) break;
+      }
+    }
+    if (lastErr) throw lastErr;
     console.log(`已发布最新地址（GitHub Pages 约 1 分钟后生效）。手机 App 固定地址：${appUrl()}`);
     offerFirstPairing();
   } catch (e) {
     console.log(`!! 发布地址失败：${e.message}`);
   }
+}
+
+function cloudflaredBin() {
+  const local = path.join(os.homedir(), '.local', 'bin', 'cloudflared');
+  if (fs.existsSync(local)) return local;
+  return 'cloudflared';
 }
 
 function findTunnelPid() {
@@ -2537,29 +2864,32 @@ async function startTunnel() {
   fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   fs.writeFileSync(logPath, '');
   const fd = fs.openSync(logPath, 'a');
+  const bin = cloudflaredBin();
   let child;
+  let timer;
+  const missing = () => console.log('!! 找不到 cloudflared。在这台电脑上执行：\nmkdir -p ~/.local/bin\ncurl -L --fail -o ~/.local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64\nchmod +x ~/.local/bin/cloudflared\n然后重新运行 npm run public');
   try {
-    child = spawn('cloudflared', ['tunnel', '--no-autoupdate', '--url', `http://127.0.0.1:${PORT}`], {
+    child = spawn(bin, ['tunnel', '--no-autoupdate', '--url', `http://127.0.0.1:${PORT}`], {
       detached: true,
       stdio: ['ignore', fd, fd],
     });
   } catch (e) {
     fs.closeSync(fd);
-    console.log(`!! 找不到 cloudflared：${e.message}`);
+    missing();
     return;
   }
   child.unref();
   fs.closeSync(fd);
-  child.on('error', () => console.log('!! 找不到 cloudflared，请先安装到 ~/.local/bin 或 PATH 里'));
+  child.on('error', () => { if (timer) clearInterval(timer); missing(); });
   const started = Date.now();
-  const timer = setInterval(() => {
+  timer = setInterval(() => {
     let text = '';
     try { text = fs.readFileSync(logPath, 'utf8'); } catch { return; }
     const m = text.match(/https:\/\/[a-z0-9]+(?:-[a-z0-9]+)+\.trycloudflare\.com/);
     if (!m) {
       if (Date.now() - started > 40000) {
         clearInterval(timer);
-        console.log('!! 隧道超时没有拿到地址，查看 ~/.cursor-remote-lite/tunnel.log');
+        console.log('!! 隧道超时没有拿到地址，查看 ~/.agent-remote/tunnel.log');
       }
       return;
     }
@@ -2578,6 +2908,7 @@ async function startTunnel() {
 
 server.listen(PORT, TUNNEL ? '127.0.0.1' : HOST, async () => {
   console.log(`Remote Agent 已启动，端口 ${PORT}`);
+  console.log(`数据目录：${DATA_DIR}`);
   console.log(`已配对 ${listDevices().length} 台设备。添加新设备：npm run pair`);
   startWatcher({
     listWindows,

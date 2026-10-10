@@ -47,7 +47,7 @@ if (!zh) {
   $('setup').querySelector('.hint').textContent = 'To change the address later: "⋯ → Change app address" at the top right of the app.';
 }
 const q = new URLSearchParams(location.search);
-const app = window.CursorRemoteApp;
+const app = window.AgentRemoteApp;
 const current = app ? app.getUrl() : '';
 if (q.has('offline') && current) $('offline').hidden = false;
 else $('setup').hidden = false;
