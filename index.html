@@ -1707,12 +1707,12 @@ $('sheet').addEventListener('click', async e => {
   if (b.dataset.scHit) {
     const key = b.dataset.scHit, id = b.dataset.scId;
     if (key === SC.key) { closeSheet(); scJump(id); return; }
-    const title = key.split('|').slice(2).join('|');
-    if ((lastChat?.session?.tabs || []).some(t => t.title === title)) {
+    const sessionId = key.split('|').slice(3).join('|');
+    if ((lastChat?.session?.tabs || []).some(t => t.id === sessionId)) {
       SC.jump = id;
       closeSheet();
       status('正在切换会话…');
-      return send({ t: 'openAgent', id: `tab:${title}` });
+      return send({ t: 'openAgent', id: `tab:${sessionId}` });
     }
     return status('这个会话现在没有在电脑上打开，先到「会话」里打开它', false);
   }
@@ -2201,7 +2201,7 @@ function paintSessions(chat) {
   }
   const tabs = s?.tabs || [];
   bar.hidden = !s || !tabs.length;
-  const chipsHtml = tabs.map(t => `<span class="sessTab ${t.active ? 'on' : ''}"><button class="sessChip ${t.active ? 'on' : ''}" data-sess="${esc(t.title)}" title="${esc(t.title)}">${esc(t.title)}</button>${tabs.length > 1 ? `<button class="sessX" data-sessx="${esc(t.title)}" title="关闭会话标签" aria-label="关闭会话标签">✕</button>` : ''}</span>`).join('');
+  const chipsHtml = tabs.map(t => `<span class="sessTab ${t.active ? 'on' : ''}"><button class="sessChip ${t.active ? 'on' : ''}" data-sess="${esc(t.id)}" title="${esc(t.title)}">${esc(t.title)}</button>${tabs.length > 1 ? `<button class="sessX" data-sessx="${esc(t.id)}" title="关闭会话标签" aria-label="关闭会话标签">✕</button>` : ''}</span>`).join('');
   if (bar._sig !== chipsHtml) {
     bar._sig = chipsHtml;
     bar.innerHTML = chipsHtml;
@@ -2212,9 +2212,9 @@ function paintSessions(chat) {
 $('sessBar').onclick = async e => {
   const x = e.target.closest('[data-sessx]');
   if (x) {
-    if (!await ask(`关闭会话标签「${x.dataset.sessx}」？\n会话本身不会删除，之后还能从「会话」里重新打开。`, '关闭')) return;
+    if (!await ask(`关闭会话标签「${x.closest('.sessTab').querySelector('.sessChip').title}」？\n会话本身不会删除，之后还能从「会话」里重新打开。`, '关闭')) return;
     status('正在关闭会话标签…');
-    return send({ t: 'closeTab', title: x.dataset.sessx });
+    return send({ t: 'closeTab', id: x.dataset.sessx });
   }
   const b = e.target.closest('[data-sess]');
   if (!b || b.classList.contains('on')) return;
@@ -3062,6 +3062,7 @@ $('vEdit').onclick = () => {
     $('vWrap').hidden = true;
     $('vFind').hidden = true;
     $('vTools').hidden = false;
+    $('vChanges').hidden = true;
     $('vEditBox').addEventListener('input', () => { if (!$('vSearch').hidden) findInFile(0); });
     $('vEditBox').focus();
     return;
