@@ -1147,8 +1147,8 @@ function connect() {
       setTimeout(checkAppUpdate, 3000);
     }
     else if (m.t === 'sent') {
-      if (drafts.get(m.draft) === m.text) drafts.delete(m.draft);
-      if (draftKey() === m.draft && text.value === m.text) { text.value = ''; autosize(); }
+      if (drafts.get(m.draft) === m.text) { drafts.delete(m.draft); draftMentions.delete(m.draft); }
+      if (draftKey() === m.draft && text.value === m.text) { text.value = ''; MN.mentions = []; autosize(); }
     }
     else if (m.t === 'attachments') { if (m.sel === viewSel) renderAttachments(m.list); }
     else if (m.t === 'chat') { if (!m.sel || !viewSel || m.sel === viewSel) renderChat(m.chat); }
@@ -1458,7 +1458,7 @@ function showSettings(sections) {
     if (it.toggle === false) return `<div class="opt static">${label}</div>`;
     return `<button class="opt" data-setting="${esc(it.label)}">${label}<span class="switch ${it.on ? 'on' : ''}"></span></button>`;
   }).join('')).join('');
-  const appName = currentApp === 'devin' ? 'Devin' : currentApp === 'cursor' ? 'Cursor' : '';
+  const appName = currentAppName;
   openSheet('settings', `<h3>${appName ? appName + ' 设置' : '设置'}</h3>${body || '<div class="hint">没有读到设置。</div>'}`);
 }
 function meterFill(pct, basis) {
@@ -1521,7 +1521,7 @@ function showMainMenu() {
   const update = apkUpdate()
     ? `<button class="opt" data-act="appUpdate"><span class="lbl">更新安卓 App（v${esc(appVersion)} → v${esc(apkUpdate())}）</span><span class="tag">新</span></button>`
     : `<button class="opt" data-act="appUpdate"><span class="lbl">检查 App 更新（当前 v${esc(appVersion)}）</span></button>`;
-  const appName = currentApp === 'devin' ? 'Devin' : currentApp === 'cursor' ? 'Cursor' : '';
+  const appName = currentAppName;
   openSheet('main', `<h3>菜单</h3>
     ${appName ? `<div class="pSec">${appName}</div>` : ''}
     <button class="opt" data-act="model"><span class="lbl">更换模型<span class="sub" id="menuModel">${esc(lastChat?.model || '选择当前 Agent 的模型')}</span></span></button>
@@ -3413,11 +3413,11 @@ document.querySelectorAll('[data-key]').forEach(b => b.onclick = () => send({ t:
 
 /* ---------- composer ---------- */
 const text = $('text');
-const drafts = new Map();
+const drafts = new Map(), draftMentions = new Map();
 let activeDraft = '';
 function draftKey() { return [currentComputer()?.id || '', viewSel, mode].join('|'); }
-function saveDraft() { if (activeDraft) drafts.set(activeDraft, text.value); }
-function restoreDraft() { activeDraft = draftKey(); text.value = drafts.get(activeDraft) || ''; autosize(); }
+function saveDraft() { if (activeDraft) { drafts.set(activeDraft, text.value); draftMentions.set(activeDraft, MN.mentions.slice()); } }
+function restoreDraft() { activeDraft = draftKey(); text.value = drafts.get(activeDraft) || ''; MN.mentions = draftMentions.get(activeDraft)?.slice() || []; mentionHide(); autosize(); }
 function autosize() { text.style.height = 'auto'; text.style.height = text.scrollHeight + 'px'; updateMathPrev(); }
 text.addEventListener('input', () => { autosize(); saveDraft(); });
 // ---- "@" mentions (Devin): the relay drives Devin's own typeahead, so a mention ends up as a real chip ----
@@ -3492,7 +3492,6 @@ $('mentionBox').addEventListener('click', e => {
 const mentionsFor = v => { const ms = takeMentions(v); return ms.length ? { mentions: ms } : {}; };
 function takeMentions(v) {
   const list = MN.mentions.map(m => ({ ...m, at: v.indexOf(m.token) })).filter(m => m.at >= 0).sort((a, b) => a.at - b.at).map(({ at, ...m }) => m);
-  MN.mentions = [];
   return list;
 }
 text.addEventListener('focus', () => {
@@ -3596,6 +3595,23 @@ $('img').onclick = () => {
   $('attachPhoto').onclick = () => { closeSheet(); $('imgFile').click(); };
   $('attachDocument').onclick = () => { closeSheet(); $('docFile').click(); };
 };
+function uploadDocument(file, sel) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open('POST', base + '/api/upload?name=' + encodeURIComponent(file.name) + '&sel=' + encodeURIComponent(sel));
+    request.setRequestHeader('authorization', 'Bearer ' + store.get('token'));
+    request.setRequestHeader('content-type', 'application/octet-stream');
+    request.timeout = 60000;
+    request.upload.onprogress = e => { if (e.lengthComputable) status(`正在上传 ${file.name} ${Math.round(e.loaded / e.total * 100)}%`); };
+    request.onload = () => {
+      try { const result = JSON.parse(request.responseText); if (request.status !== 200) throw new Error(result.error); resolve(result); }
+      catch (error) { reject(error); }
+    };
+    request.onerror = () => reject(new Error('文件上传失败'));
+    request.ontimeout = () => reject(new Error('文件上传超时'));
+    request.send(file);
+  });
+}
 $('docFile').onchange = async () => {
   const file = $('docFile').files[0];
   $('docFile').value = '';
@@ -3604,9 +3620,7 @@ $('docFile').onchange = async () => {
   const sel = viewSel;
   status('正在上传文件…');
   try {
-    const response = await api('/api/upload?name=' + encodeURIComponent(file.name) + '&sel=' + encodeURIComponent(sel), { method: 'POST', body: file, headers: { 'content-type': 'application/octet-stream' }, timeout: 60000 });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error);
+    await uploadDocument(file, sel);
     if (sel === viewSel) send({ t: 'attachments' });
     status('文件已上传，写好文字后点发送');
   } catch (error) { status(error.name === 'AbortError' ? '文件上传超时' : error.message, false); }
