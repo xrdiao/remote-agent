@@ -5,6 +5,18 @@ const I18N = (() => {
   const lang = saved === 'zh' || saved === 'en' ? saved : /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
 
   const EN = {
+    '尚未获取隧道地址；当前只能检测页面地址发布。': 'The tunnel address is not available; only the published app address can be tested.',
+    '重新检测': 'Test again', '页面地址发布': 'Published app address', '隧道和电脑服务': 'Tunnel and computer service',
+    '正在测试…': 'Testing…', '尚未获取隧道地址': 'Tunnel address not available yet',
+    '正在检测页面地址和隧道…': 'Testing the published address and tunnel…',
+    '返回内容不符合预期': 'Unexpected response content', '返回内容不是 JSON': 'Response is not JSON',
+    '请求超时（8 秒）': 'Request timed out (8 seconds)',
+    '请求失败（网络、DNS、证书或跨域原因未确定）': 'Request failed; network, DNS, certificate or CORS cause is not confirmed',
+    '电脑服务可达，页面地址发布请求异常。': 'The computer service is reachable; the published address request failed.',
+    '页面地址发布正常，隧道请求异常。': 'The published address is reachable; the tunnel request failed.',
+    '两个网址现在都正常；检查下方失败阶段。此前也可能是短暂网络波动。': 'Both URLs work now. Check the failing stage below; the earlier failure may have been temporary.',
+    '两个请求均未通过；仅凭浏览器请求不能确定是手机网络、入口还是服务异常。': 'Neither request passed; browser requests alone cannot locate the network, entry point or service failure.',
+
     '打开': 'Open',
     '隧道地址有响应，但应用连接失败。': 'The tunnel responded, but the app could not connect.',
     '可能是服务、认证、跨域或实时连接异常，尚不能确定电脑是否离线。': 'The service, authentication, CORS or real-time connection may have failed; computer availability is not confirmed.',
