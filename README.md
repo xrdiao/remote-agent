@@ -1,79 +1,168 @@
 # Remote Agent
 
-用手机操作这台电脑上的 Cursor 和 Devin。对话、切换 Agent 和模型、看终端、批准确认，都在手机浏览器里完成。两个程序在手机的窗口列表里切换。
+用手机控制这台电脑上的 Cursor 和 Devin：对话、切换 Agent 和模型、看终端、批准确认。免费、自托管，手机只需要一个浏览器。
 
 <p>
 <img src="docs/phone.png" alt="手机上新建一条对话并询问你是什么模型" width="280">
 <img src="docs/terminal.png" alt="手机上的终端" width="280">
 </p>
 
-参考仓库：[https://github.com/Suchenl/cursor-remote-lite](https://github.com/Suchenl/cursor-remote-lite)
+英文版本：[README.en.md](README.en.md)。参考仓库：[cursor-remote-lite](https://github.com/Suchenl/cursor-remote-lite)。
 
-## 这台机器上怎么用
+## 工作原理
 
-需要 Node.js 22 或更高版本，以及本机的 `cloudflared`（放在 `~/.local/bin`，不改系统环境）。Linux 上可以这样安装：
-
-```bash
-mkdir -p ~/.local/bin
-curl -L --fail -o ~/.local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-chmod +x ~/.local/bin/cloudflared
+```
+手机浏览器  <--互联网-->  Cloudflare 隧道  <-->  中继（本仓库，端口 3939）  <-->  Cursor（调试端口 9222）
+                                                                            <-->  Devin （调试端口 9223）
 ```
 
-1. 让 Cursor 打开调试端口后再启动（端口默认 `9222`）：
+中继运行在开着 Cursor/Devin 的电脑上，通过它们的 Chrome 调试端口与应用通信，并向手机提供一个网页应用。免费的 Cloudflare 隧道给中继一个公网地址，手机在任何地方都能用（家里 Wi-Fi、移动数据）。手机通过一次性配对登录，无需密码。
+
+## 开始前
+
+你需要：
+
+| 需要什么 | 为什么 | 检查命令 |
+|---|---|---|
+| 一台保持开机的电脑，装有 Cursor 和/或 Devin | 中继控制它上面的应用 | |
+| Node.js 22 或更高版本 | 运行中继 | `node -v` |
+| Git（或直接下载仓库 ZIP） | 获取本代码 | `git --version` |
+| `cloudflared` | 公网隧道。手机与电脑同一 Wi-Fi 时可选 | `cloudflared --version` |
+| 一部装有现代浏览器的手机 | 遥控器 | |
+
+以下命令在终端中执行：macOS 用 Terminal，Linux 用任意 shell，Windows 用 PowerShell。`.sh` 辅助脚本需要 bash，Windows 上请用 Git Bash 或 WSL 运行，或改用文中给出的手动命令。
+
+> 中继控制的是电脑上真实的应用，包括终端。只配对你自己的手机，并保管好配对链接。
+
+## 第 1 步：获取代码并安装
+
+npm 随 Node.js 一起安装。如果 `node -v` 失败或提示 `npm`「不是内部或外部命令」（新装的 Windows 上很常见），先安装 Node.js 22 或更高版本（LTS）：
+
+- Windows：`winget install OpenJS.NodeJS.LTS`，或使用 https://nodejs.org 的安装包
+- macOS：`brew install node`
+- Linux：用发行版的包管理器，或 https://nodejs.org
+
+然后关闭并重开终端让 PATH 生效，用 `node -v` 和 `npm -v` 验证。
 
 ```bash
-cursor --remote-debugging-port=9222
-```
-
-2. 启动 Devin，并打开它自己的调试端口（默认 `9223`）。这不会关掉 Cursor，也不会关掉已经开着调试端口的 Devin：
-
-```bash
-./start-devin.sh
-```
-
-如果 Devin 已经在运行，但没有调试端口，先退出 Devin，再运行一次这个脚本。
-
-3. 安装依赖并打开公网隧道：
-
-```bash
+git clone https://github.com/<your-account>/remote-agent.git
+cd remote-agent
 npm install
-npm run public
 ```
 
-4. 配对手机。终端会打印一次性链接，用手机 Safari 打开：
+用你实际获取本仓库的地址。没有 Git？下载 ZIP 解压后，在该文件夹打开终端即可。
+
+## 第 2 步：安装 cloudflared（用于从外面访问）
+
+如果手机始终和电脑在同一 Wi-Fi，可跳过本步，并在第 5 步使用 `npm run start`。
+
+- macOS：`brew install cloudflared`
+- Windows：`winget install --id Cloudflare.cloudflared`
+- Linux（无需 root）：
+  ```bash
+  mkdir -p ~/.local/bin
+  curl -L --fail -o ~/.local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+  chmod +x ~/.local/bin/cloudflared
+  ```
+  ARM 机器请改用 `arm64` 文件。
+
+其他系统见 [Cloudflare 下载页](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)。
+
+## 第 3 步：以调试端口启动 Cursor 和/或 Devin
+
+中继只能看到以调试端口启动的应用。如果应用已经开着，先退出再启动。可以只用一个，也可以两个都用。
+
+**Cursor（端口 9222）**
+
+- macOS：`./start-cursor.sh`（会先退出 Cursor，再带端口重新打开）
+- Windows（PowerShell）：`& "$env:LOCALAPPDATA\Programs\cursor\Cursor.exe" --remote-debugging-port=9222`
+- Linux：`cursor --remote-debugging-port=9222`
+
+**Devin（端口 9223）**
+
+- Linux：`./start-devin.sh`
+- macOS / Windows：用 `--remote-debugging-port=9223` 启动 Devin Desktop 可执行文件。macOS 上也可以把 `DEVIN_BIN` 设为可执行文件路径，再运行 `./start-devin.sh`。
+
+在电脑浏览器打开 `http://127.0.0.1:9222/json/version`（Cursor）或 `http://127.0.0.1:9223/json/version`（Devin）验证是否成功，看到一页 JSON 即表示端口已开。安装路径在你机器上可能不同，找不到应用时请相应调整。
+
+## 第 4 步：（可选）运行设置向导
+
+```bash
+npm run setup
+```
+
+它会检查 `cloudflared` 和 `gh`，并可选择：在你自己的 GitHub Pages 上发布一个固定的手机端地址、安装开机自启服务（仅 macOS）、开启两步验证。只想先试试可以跳过。向导界面为中文。
+
+## 第 5 步：启动中继
+
+- 任何地方都能访问（公网隧道）：`npm run public`
+- 仅同一 Wi-Fi：`npm run start`
+
+保持这个终端开着。它会打印地址（`公网地址` 为公网 URL，`局域网地址` 为局域网 URL）以及连接到了哪些窗口。如果提示连不上，回到第 3 步。
+
+## 第 6 步：配对手机
+
+在同一文件夹再开一个终端：
 
 ```bash
 npm run pair
 ```
 
-配对记录保存在电脑上的 `~/.agent-remote/`。旧目录 `~/.cursor-remote-lite/` 会在下次启动时改名过来。公网隧道单独在后台运行，之后重启 `npm run public` 会沿用同一个地址，已配对的手机不用重新配对。只有关机，或手动结束隧道进程，地址才会变。
+它会打印一个二维码和一条一次性链接，几分钟内有效，且只对一部手机有效。用手机相机扫码，或把链接发到手机上用浏览器打开。配对后手机会被记住。
 
-终端里会打印隧道进程号。要彻底关掉公网：
+- iPhone：用 Safari，点「分享」，然后「添加到主屏幕」获得应用图标。
+- Android：用 Chrome，菜单里选「安装应用」或「添加到主屏幕」。`android/` 目录里还有一个可粘贴配对链接的安卓壳应用。
+- 其他任何带浏览器的设备也可以用。
 
-```bash
-kill <隧道进程号>
-```
+## 第 7 步：使用
 
-只在局域网用时，把 `npm run public` 换成 `npm run start`。
-
-## 手机上能做什么
+在手机上打开应用。
 
 - 看 Agent 对话，回车发送，Shift+回车换行。
-- 切换 Agent 和模型。旧版 Cursor 在输入框旁有「历史」，用来打开这一条 Agent 里以前的聊天。现在 Cursor Agents 和 Devin 都把这些会话放在左侧列表里，手机上用「Agent」切换，工具栏不再放「历史」。
-- 看终端文字，新建、切换、关闭终端，并执行命令。
-- 看上下文占用和额度。额度条点一下会重新读取。
-- 对话里的公式按数学式显示。代码块可以点「复制」，较长的行内命令点一下也会复制。
-- 从手机附加图片到输入框。
-- 在窗口列表里切换 Cursor 和 Devin。Devin 的会话显示为 Devin agent。
+- 切换 Agent 和模型。Cursor 和 Devin 都把历史聊天放在左侧列表里，所以手机上用「Agent」切换，而不是「历史」按钮。
+- 看终端，新建、切换、关闭终端并执行命令。
+- 看上下文占用和额度，点额度条可刷新。
+- 数学公式按公式渲染。代码块有「复制」按钮，较长的行内命令点一下也会复制。
+- 从手机附加图片。
+- 在窗口列表里切换 Cursor 和 Devin。
 
-## 常用命令
+## 日常使用
+
+每次要用时：
+
+1. 以调试端口启动 Cursor/Devin（第 3 步）。
+2. 运行 `npm run public`（第 5 步）。
+3. 在已配对的手机上打开应用，无需重新配对。
+
+隧道在后台运行，重启 `npm run public` 会沿用同一个地址。只有电脑重启或手动结束隧道进程，地址才会变。
+
+要彻底关闭公网访问，运行 `kill <隧道进程号>`，中继会打印该 PID。Windows 上在任务管理器里结束 `cloudflared` 进程。
+
+## 命令一览
 
 | 命令 | 作用 |
 |---|---|
-| `npm run public` | 启动中继，并使用公网隧道 |
-| `npm run start` | 只在本机或局域网启动 |
-| `npm run pair` | 生成一次性配对链接 |
+| `npm run setup` | 首次运行向导 |
+| `npm run public` | 启动中继并使用公网隧道 |
+| `npm run start` | 只在本机/局域网启动中继 |
+| `npm run pair` | 生成一次性配对链接和二维码 |
 | `npm run devices` | 查看已配对设备 |
+| `npm run devices remove <id>` | 移除设备（立即断开） |
 | `npm run 2fa` | 可选的 Authenticator 二次验证 |
-| `./start-devin.sh` | 启动 Devin，并打开调试端口 9223 |
+| `npm run reset` | 清除所有配对并关闭两步验证 |
+| `./start-cursor.sh` | macOS：以端口 9222 重启 Cursor |
+| `./start-devin.sh` | Linux：以端口 9223 启动 Devin |
+| `./service.sh install` | macOS：登录时运行中继，崩溃自动重启 |
 
+配对数据保存在 `~/.agent-remote/`（旧的 `~/.cursor-remote-lite/` 会在下次启动时改名过来）。
+
+## 故障排查
+
+- **中继显示没有窗口 /「无法连接」**：Cursor 或 Devin 没有以调试端口启动。退出后重做第 3 步。
+- **提示 `npm` 不是命令**：安装 Node.js 22 或更高版本（见第 1 步），然后关闭并重开终端让 PATH 生效。
+- **找不到 `cloudflared`**：完成第 2 步，并重开一个终端让它进入 PATH。
+- **配对链接过期**：重新运行 `npm run pair`，新链接会使旧链接失效。
+- **手机打不开地址**：公网地址可能需要稍等片刻才可访问。用 `npm run start` 时，手机必须与电脑在同一 Wi-Fi，且防火墙要放行 3939 端口。
+- **手机丢失或被盗**：`npm run devices`，然后 `npm run devices remove <id>`。要全部清空，用 `npm run reset`。
+- **3939 端口被占用**：换端口运行，例如 `PORT=4000 npm run public`（PowerShell：`$env:PORT=4000; npm run public`）。
+- **调试端口不是默认端口号**：启动中继时设置 `CDP_URL`（Cursor）或 `DEVIN_CDP_URL`（Devin）。
