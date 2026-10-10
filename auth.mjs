@@ -215,9 +215,22 @@ export const saveState = state => writeJson('state.json', { ...readJson('state.j
 export const readState = () => readJson('state.json', {});
 export const readConfig = () => readJson('config.json', {});
 
-// Where the phone app lives: the GitHub Pages copy if configured, else the relay itself.
+// Normalizes a configured app address: https only, forced trailing slash, or null.
+export function normalizeAppUrl(u) {
+  try {
+    const url = new URL(String(u || '').trim());
+    if (url.protocol !== 'https:') return null;
+    url.hash = '';
+    return url.href.replace(/\/?$/, '/');
+  } catch { return null; }
+}
+
+// Where the phone app lives: a configured fixed address, the GitHub Pages copy if configured, else the relay itself.
 export function appBase() {
-  const repo = readConfig().publishRepo;
+  const cfg = readConfig();
+  const fixed = normalizeAppUrl(cfg.appUrl);
+  if (fixed) return fixed;
+  const repo = cfg.publishRepo;
   if (repo) {
     const [owner, name] = repo.split('/');
     return `https://${owner.toLowerCase()}.github.io/${name}/`;

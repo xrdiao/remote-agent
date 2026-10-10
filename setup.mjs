@@ -4,7 +4,7 @@ import path from 'node:path';
 import readline from 'node:readline/promises';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { DATA_DIR } from './auth.mjs';
+import { DATA_DIR, normalizeAppUrl } from './auth.mjs';
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
@@ -13,7 +13,7 @@ const isMac = process.platform === 'darwin';
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 const ask = async (q, def = '') => (await rl.question(def ? `${q} [${def}] ` : `${q} `)).trim() || def;
 const yes = async (q, def = 'y') => /^y/i.test(await ask(`${q} (y/n)`, def));
-const has = cmd => spawnSync('sh', ['-c', `command -v ${cmd}`]).status === 0;
+const has = cmd => (process.platform === 'win32' ? spawnSync('where', [cmd]) : spawnSync('sh', ['-c', `command -v ${cmd}`])).status === 0;
 const run = (cmd, args, opts = {}) => spawnSync(cmd, args, { encoding: 'utf8', ...opts });
 // readline keeps the TTY in raw mode even when paused; child prompts need cooked mode to see Enter.
 const interactive = (cmd, args) => {
@@ -62,8 +62,15 @@ if (has('gh') && await yes('  要设置吗？')) {
   });
   run('gh', ['api', '-X', 'POST', `repos/${repo}/pages`, '-f', 'source[branch]=main', '-f', 'source[path]=/']);
   config.publishRepo = repo;
+  // Pages on a user site with a custom domain serves project sites from that domain; record the real address.
+  let appAddr = `https://${login.toLowerCase()}.github.io/${name}/`;
+  const u = normalizeAppUrl(run('gh', ['api', `repos/${repo}/pages`, '--jq', '.html_url']).stdout.trim());
+  if (u) {
+    appAddr = u;
+    if (new URL(u).origin !== `https://${login.toLowerCase()}.github.io`) config.appUrl = u;
+  }
   saveConfig();
-  console.log(`  手机 App 地址：https://${login.toLowerCase()}.github.io/${name}/`);
+  console.log(`  手机 App 地址：${appAddr}`);
 }
 
 console.log('\n3/4 后台服务');

@@ -5,5 +5,13 @@ android/.gradle/
 android/build/
 android/app/build/
 android/local.properties
+android/.idea/
+android/.kotlin/
+android/captures/
+android/**/.cxx/
+android/**/*.iml
+android/app/release/
+android/app/debug/
 *.p12
+_shots/
 *.jks

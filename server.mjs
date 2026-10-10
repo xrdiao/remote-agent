@@ -7,10 +7,13 @@ import { fileURLToPath } from 'node:url';
 import { spawn, execFileSync } from 'node:child_process';
 import { WebSocketServer } from 'ws';
 import qrcode from 'qrcode-terminal';
-import { workspaces, workspaceForTitle, fileSize, readFile, parseRef, listProject, locateWritable, writeTextFile } from './files.mjs';
+import { workspaces, workspaceForTitle, fileSize, readFile, parseRef, listProject, locateWritable, writeTextFile, resolveLocal } from './files.mjs';
+import { findTheme } from './theme.mjs';
+import { highlightText } from './highlight.mjs';
+import { gitMarks, agentMarks } from './marks.mjs';
 import {
   DATA_DIR, publishRecord, opensEntry, computerId, computerName, createPairing, pairingValid, consumePairing, listDevices, addDevice, findDevice, updateDevice,
-  removeDevice, totpConfig, verifyTotp, needsTotp, saveState, readState, appBase,
+  removeDevice, totpConfig, verifyTotp, needsTotp, saveState, readState, appBase, normalizeAppUrl,
 } from './auth.mjs';
 import { pushPublicKey, openEventStream, closeEventStreams, addViewer, removeViewer, deliver, startWatcher } from './notify.mjs';
 
@@ -32,7 +35,12 @@ fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
 const CONFIG = loadConfig();
 const PUBLISH_REPO = process.argv.find(a => a.startsWith('--publish='))?.slice('--publish='.length) || process.env.CR_PUBLISH_REPO || CONFIG.publishRepo || '';
 const PAGES_BRANCH = process.env.CR_PAGES_BRANCH || CONFIG.pagesBranch || '';
-const APP_ORIGIN = PUBLISH_REPO ? `https://${PUBLISH_REPO.split('/')[0].toLowerCase()}.github.io` : '';
+// The Pages app may sit on a custom domain; config.appUrl records its real address when one is known.
+const APP_ORIGIN = (() => {
+  const fixed = normalizeAppUrl(CONFIG.appUrl);
+  if (fixed) return new URL(fixed).origin;
+  return PUBLISH_REPO ? `https://${PUBLISH_REPO.split('/')[0].toLowerCase()}.github.io` : '';
+})();
 const ALLOWED_ORIGINS = new Set([APP_ORIGIN, ...(process.env.CR_ALLOWED_ORIGINS || '').split(',')].filter(Boolean));
 
 function loadConfig() {
@@ -272,6 +280,9 @@ function pageHelpers() {
   const itemKey = el => {
     const existing = el.dataset.flatIndex || el.dataset.messageId || el.querySelector('[data-message-id]')?.dataset.messageId;
     if (existing) return existing;
+    const acp = el.closest?.('[role="log"][aria-label="Session transcript"]')
+      ? el.closest('[data-acp-msg-index]')?.getAttribute('data-acp-msg-index') : null;
+    if (acp != null) return `acp${acp}`;
     if (el.getAttribute('data-side')) {
       const i = [...document.querySelectorAll('[role=group][data-side]')].indexOf(el);
       return i >= 0 ? `d${i}` : '';
@@ -333,7 +344,8 @@ function pageHelpers() {
     return col && parent && col !== parent ? ` style="color:${col}"` : '';
   };
 
-  const clean = node => {
+  // devin: also keep links (http/https only) and h6 for Devin's markdown renderer; Cursor never sets it.
+  const clean = (node, devin = false) => {
     let out = '';
     for (const n of node.childNodes) {
       if (n.nodeType === 3) { out += esc(n.textContent); continue; }
@@ -351,7 +363,7 @@ function pageHelpers() {
         const lines = [...content.querySelectorAll('.view-line')];
         const plainLine = el => (el.innerText || '').replace(/\u00a0/g, ' ').replace(/\n/g, '');
         const plain = (lines.length ? lines.map(plainLine).join('\n') : (content.innerText || '').replace(/\u00a0/g, ' ')).replace(/\n$/, '');
-        const body = (lines.length ? lines.map(l => clean(l)).join('\n') : clean(content)).replace(/\n$/, '');
+        const body = (lines.length ? lines.map(l => clean(l, devin)).join('\n') : clean(content, devin)).replace(/\n$/, '');
         out += `<div class="codebox"><textarea class="src" hidden readonly>${esc(plain)}</textarea><pre>${body}</pre></div>`;
         continue;
       }
@@ -360,12 +372,36 @@ function pageHelpers() {
       if (tag === 'BR') { out += '<br>'; continue; }
       if (tag === 'HR') { out += '<hr>'; continue; }
       if (n.matches(FILE_REF)) { out += `<code data-file="${esc(n.innerText.trim())}"${colorAttr(n)}>${esc(n.innerText.trim())}</code>`; continue; }
-      const inner = clean(n);
+      if (devin && tag === 'A' && /^https?:\/\//i.test(n.getAttribute('href') || '')) {
+        out += `<a href="${esc(n.getAttribute('href'))}" target="_blank" rel="noopener noreferrer">${clean(n, devin)}</a>`;
+        continue;
+      }
+      const inner = clean(n, devin);
       const t = tag.toLowerCase();
       const paint = colorAttr(n);
-      out += BLOCK.has(tag) || INLINE.has(tag) ? `<${t}${paint}>${inner}</${t}>` : (paint && inner ? `<span${paint}>${inner}</span>` : inner);
+      const block = BLOCK.has(tag) || (devin && tag === 'H6');
+      out += block || INLINE.has(tag) ? `<${t}${paint}>${inner}</${t}>` : (paint && inner ? `<span${paint}>${inner}</span>` : inner);
     }
     return out;
+  };
+
+  // Devin's code blocks are line divs (no .view-line); keep line breaks and drop the copy chrome.
+  const blockText = node => {
+    if (node.nodeType === 3) return node.textContent;
+    if (node.nodeType !== 1) return '';
+    if (/^(BUTTON|SVG|STYLE|SCRIPT)$/.test(node.tagName) || node.getAttribute('role') === 'button') return '';
+    if (node.tagName === 'BR') return '\n';
+    const inner = [...node.childNodes].map(blockText).join('');
+    return /^(DIV|P|LI|TR|PRE)$/.test(node.tagName) ? inner + '\n' : inner;
+  };
+  const devinRich = root => {
+    const c = root.cloneNode(true);
+    c.querySelectorAll('[data-md-code-block]').forEach(b => {
+      const pre = document.createElement('pre');
+      pre.textContent = blockText(b).replace(/\u00a0/g, ' ').replace(/\n+$/, '');
+      b.replaceWith(pre);
+    });
+    return clean(c, true);
   };
 
   const summary = el => {
@@ -418,6 +454,147 @@ function pageHelpers() {
     for (const i of indexes || []) nodes[i] && thinkingToggleEl(nodes[i])?.click();
     return true;
   };
+  // Devin's two surfaces are titlebar segments (Agent: sidebar sessions; Editor: chat in the right panel).
+  const devinSurface = () => {
+    const seg = [...document.querySelectorAll('button.switch-segment')].find(e => vis(e) && e.classList.contains('active'));
+    return seg ? (seg.classList.contains('agent-segment') ? 'agent' : 'editor') : null;
+  };
+  const surfaceTarget = to => {
+    const seg = [...document.querySelectorAll(`button.switch-segment.${to}-segment`)].find(vis);
+    return seg ? center(seg) : null;
+  };
+  const transcriptVisible = () => { const l = devinLog(); return (!!l && vis(l)) || [...document.querySelectorAll('[role="textbox"][aria-label="Prompt"]')].some(vis); };
+  // Editor surface: the titlebar "Search agents" button opens a quick pick listing every session by name.
+  const sessionSearchTarget = () => {
+    const b = [...document.querySelectorAll('button[aria-label]')].find(e => vis(e) && /^Search agents\b/.test(e.getAttribute('aria-label')));
+    return b ? center(b) : null;
+  };
+  const sessionPickerRows = () => {
+    const w = [...document.querySelectorAll('.quick-input-widget')].find(vis);
+    if (!w) return null;
+    return [...w.querySelectorAll('.monaco-list-row')].filter(vis).map(row => {
+      const title = ((row.querySelector('.label-name') || row).innerText || '').trim().split('\n')[0].slice(0, 80);
+      return { id: title, title, running: /\bworking\b/i.test(row.innerText || '') };
+    }).filter(r => r.title);
+  };
+  // Devin sessions are identified by their title. The Editor surface keeps the open sessions as tabs above
+  // the transcript (the active one has the active-tab background); the Agent surface uses the sidebar.
+  const sessNorm = s => String(s || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  // The tabs live in the chat panel (#chat) even when the open session is empty and has no transcript.
+  const devinTabEls = () => [...document.querySelectorAll('#chat [draggable="true"]')].filter(e => vis(e) && /h-\[34px\]/.test(String(e.className)));
+  const devinTabs = () => devinTabEls().map(t => ({
+    title: sessNorm((t.querySelector('span') || t).innerText),
+    active: /bg-ide-tab-active-background-color/.test(String(t.className)),
+  })).filter(t => t.title);
+  const devinSession = () => {
+    if (!devinLog() && !devinSurface()) return null;
+    const tabs = devinTabs(), surface = devinSurface();
+    let title = tabs.find(t => t.active)?.title || '';
+    if (!title && surface === 'agent') title = sessNorm(agentList().find(a => a.current)?.title);
+    return { key: title, title, surface, tabs };
+  };
+  const devinTabTarget = title => {
+    const want = sessNorm(title);
+    const el = devinTabEls().find(t => sessNorm((t.querySelector('span') || t).innerText) === want);
+    if (!el) return null;
+    const r = (el.querySelector('span') || el).getBoundingClientRect();
+    return { x: r.x + Math.min(r.width / 2, 40), y: r.y + r.height / 2 };
+  };
+  // The tab's own close button (an icon at its right edge, hover-revealed); null while it has no size.
+  const devinTabCloseTarget = title => {
+    const want = sessNorm(title);
+    const el = devinTabEls().find(t => sessNorm((t.querySelector('span') || t).innerText) === want);
+    const b = el?.querySelector('button');
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    return r.width > 2 && r.height > 2 ? { x: r.x + r.width * 0.78, y: r.y + r.height / 2 } : null;
+  };
+  const sessionPickerTarget = id => {
+    const row = [...document.querySelectorAll('.quick-input-widget .monaco-list-row')].filter(vis)
+      .find(r => (((r.querySelector('.label-name') || r).innerText || '').trim().split('\n')[0].slice(0, 80)) === id);
+    if (!row) return null;
+    row.scrollIntoView({ block: 'nearest' });
+    return center(row);
+  };
+
+  // Devin "Revert to this point": a hover-only button at the left edge of a user message row.
+  // Unverified on the live window (never clicked while developing); the dialog is read generically.
+  const revertTarget = (i, part) => {
+    const row = [...(devinLog()?.children || [])].find(r => itemKey(r) === i);
+    if (!row || !row.querySelector('[role=group][aria-label="User message"]')) return null;
+    if (part === 'row') { row.scrollIntoView({ block: 'center' }); return center(row); }
+    const b = [...row.querySelectorAll('button')].find(x => /absolute/.test(x.className) && /left-full/.test(x.className));
+    return b && vis(b) ? center(b) : null;
+  };
+  // Revert opens a preview that either confirms by itself (no file changes to undo: the transcript just
+  // rewinds, no dialog) or, after ~0.5 s, a dialog listing the file changes with an "Apply these reverts"
+  // checkbox and a Confirm (or Force revert) button.
+  const revertConfirmBtn = () => [...document.querySelectorAll('button')].find(b => vis(b) && /^(Confirm|Force revert)$/.test((b.innerText || '').trim()) && !b.closest('[data-band-item]'));
+  const revertDialogEl = () => {
+    const b = revertConfirmBtn();
+    if (!b) return null;
+    const d = b.closest('[role="dialog"], [role="alertdialog"]');
+    if (d) return d;
+    let p = b;
+    for (let i = 0; i < 8 && p.parentElement; i++) {
+      p = p.parentElement;
+      if (/^(fixed|absolute)$/.test(getComputedStyle(p).position) && p.getBoundingClientRect().width > 200) return p;
+    }
+    return b.parentElement?.parentElement || null;
+  };
+  const revertDialog = () => {
+    const d = revertDialogEl();
+    if (!d) return null;
+    const box = d.querySelector('input[type="checkbox"]');
+    return {
+      title: ((d.querySelector('h1, h2, h3') || {}).innerText || '').trim().slice(0, 120),
+      body: (d.innerText || '').trim().slice(0, 1200),
+      apply: box ? box.checked : null,
+      force: /force/i.test(revertConfirmBtn()?.innerText || ''),
+    };
+  };
+  const revertDialogButton = which => {
+    const d = revertDialogEl();
+    if (!d) return null;
+    if (which === 'toggle') { const t = d.querySelector('label') || d.querySelector('input[type="checkbox"]'); return t ? center(t) : null; }
+    const cancel = b => /cancel|close|取消|关闭/i.test((b.innerText || b.getAttribute('aria-label') || '').trim());
+    const btns = [...d.querySelectorAll('button')].filter(vis);
+    const b = which === 'cancel' ? btns.find(cancel) : revertConfirmBtn();
+    return b ? center(b) : null;
+  };
+  // Is the user message still in the transcript, and what is the highest index mounted?
+  const revertState = i => {
+    const rows = [...(devinLog()?.children || [])];
+    const nums = rows.map(r => Number(/^acp(\d+)/.exec(itemKey(r) || '')?.[1])).filter(n => Number.isFinite(n));
+    const row = rows.find(r => itemKey(r) === i);
+    return { rowHas: !!row && !!row.querySelector('[role=group][aria-label="User message"]'), max: nums.length ? Math.max(...nums) : -1 };
+  };
+
+  // Devin thoughts by item id (acpN:think): the row's chevron, its open state, and its body text
+  // (same lines devinItems reads: the event group minus its title). Collapsed rows carry no body.
+  const thoughtRow = id => [...(devinLog()?.children || [])].find(r => itemKey(r) === String(id).replace(/:think$/, ''));
+  const thoughtState = id => {
+    const b = thoughtRow(id)?.querySelector('button[aria-expanded]');
+    return b ? { expanded: b.getAttribute('aria-expanded') === 'true' } : null;
+  };
+  const setThoughtOpen = (id, open) => {
+    const b = thoughtRow(id)?.querySelector('button[aria-expanded]');
+    if (!b) return false;
+    if ((b.getAttribute('aria-expanded') === 'true') !== open) b.click();
+    return true;
+  };
+  const thoughtBodyText = id => {
+    const row = thoughtRow(id);
+    const eg = row && (row.classList.contains('event-group') ? row : row.querySelector('.event-group'));
+    if (!eg) return '';
+    return (eg.innerText || '').split('\n').map(s => s.trim()).filter(Boolean).slice(1).join('\n');
+  };
+
+  // Devin: transcript index (for clickThinking) of the thought with item id `acpN:think`.
+  const thoughtIndexFor = id => thinkingNodes().findIndex(el => {
+    const row = el.closest('[data-acp-msg-index]');
+    return !!row && `${itemKey(row)}:think` === id;
+  });
   const closeThinkingIfOpen = indexes => {
     const nodes = thinkingNodes();
     for (const i of indexes || []) {
@@ -441,7 +618,32 @@ function pageHelpers() {
     return /^stop generation\b/i.test((e.getAttribute('aria-label') || '').trim());
   });
   const legacyStopIcon = () => [...document.querySelectorAll('.composer-button-area .codicon-debug-stop, .send-with-mode .codicon-debug-stop')].find(e => vis(e) && !e.closest('.composer-human-message, .human-message-action-slot'));
-  const isBusy = () => !!stopGenerationButton() || !!legacyStopIcon();
+  // Devin: while a turn runs the submit button reads "Cancel" (empty input) or "Queue" (typed text).
+  const devinSubmitBusy = () => !!devinLog() && [...document.querySelectorAll('button[aria-label]')].some(e => vis(e) && /^(Cancel|Queue)$/.test(e.getAttribute('aria-label')) && !!e.querySelector('svg'));
+  const isBusy = () => !!stopGenerationButton() || !!legacyStopIcon() || devinSubmitBusy();
+  // Devin's queue (verified live): a bar "N message(s) queued" with a "Clear all" button, then an <ol>
+  // of li[role=button] rows holding the message text. Hovering a row reveals "Edit message",
+  // "Remove from queue" and "Send now" (hidden until hover). Rows are read from textContent.
+  const devinQueueBar = () => [...document.querySelectorAll('span.text-12')].find(s => /\d+ messages? queued/.test(s.innerText || ''));
+  const devinQueueCount = () => Number(/(\d+) messages? queued/.exec(devinQueueBar()?.innerText || '')?.[1]) || 0;
+  const devinQueueRows = () => devinQueueBar() ? [...document.querySelectorAll('ol li[role="button"]')].filter(e => /cursor-grab/.test(e.className)) : [];
+  const devinQueued = () => devinQueueRows().map((row, n) => ({
+    id: `dq${n}`,
+    t: (row.innerText || '').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim().slice(0, 4000),
+    src: 'devin',
+  }));
+  const devinQueueTarget = (n, action) => {
+    const row = devinQueueRows()[Number(n)];
+    if (!row || !vis(row)) return null;
+    if (!action) return center(row);
+    const label = { send: 'Send now', remove: 'Remove from queue' }[action];
+    const b = label && [...row.querySelectorAll('button[aria-label]')].find(e => vis(e) && e.getAttribute('aria-label') === label);
+    return b ? center(b) : null;
+  };
+  const devinQueueClearTarget = () => {
+    const b = [...document.querySelectorAll('button[aria-label="Clear all"]')].find(vis);
+    return b && devinQueueBar() ? center(b) : null;
+  };
 
   // First call (no action) returns the row center to hover over; hover-only buttons appear after that.
   const queueTarget = (id, action) => {
@@ -542,7 +744,50 @@ function pageHelpers() {
     const submit = qnAction(box, /continue|submit|继续|提交/i);
     return { list, canSubmit: !!submit && submit.dataset.disabled !== 'true' };
   };
+  // Devin: the question card sits in a `[data-band-item]` above the composer, one question at a time
+  // ("1 of 2" pager, Skip, option rows `div[role=button]`; multi-select rows carry a role=checkbox and the
+  // card has a Submit button). A single choice answers as soon as its row is clicked. Free text goes
+  // through the normal composer ("Other answer" placeholder).
+  const devinQnBand = () => !devinLog() ? null : [...document.querySelectorAll('[data-band-item]')]
+    .find(e => vis(e) && /\b\d+ of \d+\b/.test(e.innerText || '') && e.querySelector('button[aria-label="Skip"]'));
+  const devinQnRows = band => [...band.querySelectorAll('[data-slot="scroll-area-viewport"] > [role="button"]')];
+  const devinQnButton = (band, name) => [...band.querySelectorAll('button')].find(b => vis(b) && (b.getAttribute('aria-label') === name || (b.innerText || '').trim() === name));
+  const devinQuestions = () => {
+    const band = devinQnBand();
+    if (!band) return null;
+    const pg = /\b(\d+) of (\d+)\b/.exec(band.innerText || '');
+    const rows = devinQnRows(band);
+    const options = rows.map(r => {
+      const cb = r.querySelector('[role="checkbox"]');
+      const ps = [...r.querySelectorAll('p')].map(p => (p.innerText || '').trim());
+      return { label: ps[0] || (r.innerText || '').trim(), desc: ps[1] || '', sel: cb ? cb.getAttribute('aria-checked') === 'true' : false };
+    });
+    const multi = rows.some(r => r.querySelector('[role="checkbox"]'));
+    const text = [...band.querySelectorAll('p')].find(p => !p.closest('[data-slot="scroll-area"]'))?.innerText.trim() || '';
+    const submit = devinQnButton(band, 'Submit') || devinQnButton(band, 'Continue');
+    const prev = devinQnButton(band, 'Previous question'), next = devinQnButton(band, 'Next question');
+    return {
+      devin: true, src: 'devin', list: [{ text, options, multi }],
+      pager: pg ? { cur: Number(pg[1]), total: Number(pg[2]) } : null,
+      canPrev: !!prev && !prev.disabled, canNext: !!next && !next.disabled,
+      hasSubmit: !!submit, canSubmit: !!submit && !submit.disabled,
+    };
+  };
+  const devinQuestionTarget = (oi, part) => {
+    const band = devinQnBand();
+    if (!band) return null;
+    if (part === 'option') {
+      const row = devinQnRows(band)[oi];
+      if (!row) return null;
+      row.scrollIntoView({ block: 'nearest' });
+      return center(row);
+    }
+    const name = { skip: 'Skip', prev: 'Previous question', next: 'Next question' }[part];
+    const b = part === 'submit' ? (devinQnButton(band, 'Submit') || devinQnButton(band, 'Continue')) : devinQnButton(band, name);
+    return b && !b.disabled ? center(b) : null;
+  };
   const questionTarget = (qi, oi, part) => {
+    if (devinQnBand()) return devinQuestionTarget(oi, part);
     const box = qnBox();
     if (!box) return null;
     if (part === 'submit' || part === 'skip') {
@@ -558,27 +803,89 @@ function pageHelpers() {
 
   // Files changed by the Agent: the "N Files" toggle above the composer expands a list with per-file undo / keep.
   const filesToggle = () => [...document.querySelectorAll('span.cursor-pointer')].find(e => vis(e) && /^\d+ Files?$/.test(e.innerText.trim().replace(/\s+/g, ' ')));
-  const changedCount = () => parseInt(filesToggle()?.innerText || '0', 10) || 0;
+  // Devin's review bar: a "N files with changes" header above the composer, per-row
+  // Accept file (check icon) / Reject file (x icon) buttons and Reject all / Accept all spans.
+  const stripBidi = s => (s || '').replace(/[⁦-⁩]/g, '');
+  // The bar is "N files | +a -d | Quick review | Reject all | Accept all" when collapsed; the
+  // expanded list box sits above it. Collapsed, the list keeps its text but is display:none.
+  const devinChangesHdr = () => [...document.querySelectorAll('div.group.cursor-pointer')]
+    .find(e => /files? with changes/.test(stripBidi(e.innerText)));
+  const devinChangesBox = () => {
+    const h = devinChangesHdr();
+    if (h) return h.closest('div.flex.min-w-0.flex-col.gap-1') || h.parentElement;
+    return [...document.querySelectorAll('div.flex.min-w-0.flex-col.gap-1')].find(e => vis(e) && /\bReject all\b/.test(e.innerText || '')) || null;
+  };
+  const devinChangedRows = () => [...(devinChangesBox()?.querySelectorAll('div.group.cursor-pointer.hover\\:bg-tint-secondary') || [])];
+  const devinBarLeft = () => [...(devinChangesBox()?.querySelectorAll('div.select-none') || [])]
+    .find(e => vis(e) && /^\d+ files?\b/.test(e.innerText.trim()) && !/with changes/.test(e.innerText));
+  const devinOpen = () => devinChangedRows().some(vis);
+  // Devin's editor surface can drop the chat bar while its "Review N files" button (editor pane) still counts.
+  const devinCascadeCount = () => devinLog() ? Number(/Review\s+(\d+)\s+files?/.exec(stripBidi([...document.querySelectorAll('.cascade-bar')].map(b => b.innerText || '').join(' ')))?.[1]) || 0 : 0;
+  const changedCount = () => parseInt(filesToggle()?.innerText || '0', 10) || 0
+    || Number(/(\d+)\s+files?\b/.exec(stripBidi(devinChangesBox()?.innerText))?.[1]) || devinCascadeCount();
   const changedRows = () => [...document.querySelectorAll('.composer-file-list-item')].filter(vis);
-  const changedFiles = () => changedRows().map(r => {
-    const stat = [...r.querySelectorAll('.tabular-nums span')].map(s => s.innerText.trim());
-    return {
-      name: r.querySelector('span[style*="nowrap"]')?.innerText.trim() || r.innerText.trim().split('\n')[0],
-      add: stat.find(s => s.startsWith('+')) || '',
-      del: stat.find(s => /^[-−]/.test(s)) || '',
-    };
-  });
+  const changedFiles = () => {
+    const rows = changedRows();
+    if (rows.length) return rows.map(r => {
+      const stat = [...r.querySelectorAll('.tabular-nums span')].map(s => s.innerText.trim());
+      return {
+        name: r.querySelector('span[style*="nowrap"]')?.innerText.trim() || r.innerText.trim().split('\n')[0],
+        add: stat.find(s => s.startsWith('+')) || '',
+        del: stat.find(s => /^[-−]/.test(s)) || '',
+      };
+    });
+    return devinChangedRows().map(r => {
+      const texts = [...r.querySelectorAll('span')].map(s => stripBidi(s.innerText).trim()).filter(Boolean);
+      // Directory-prefixed rows render as two leaves ("app/" + "index.html"); join them.
+      const name = texts.filter(t => !/^[+−-]\s?\d+$/.test(t)).join('') || stripBidi(r.innerText).split('\n').filter(Boolean)[0] || '';
+      return {
+        name,
+        add: (texts.find(t => /^\+\s?\d+$/.test(t)) || '').replace(/\s+/g, ''),
+        del: (texts.find(t => /^[−-]\s?\d+$/.test(t)) || '').replace(/\s+/g, ''),
+      };
+    });
+  };
   const filesBar = () => {
     let t = filesToggle();
     while (t && !t.querySelector('[data-click-ready]')) t = t.parentElement;
     return t;
   };
   // Bar-level actions besides Stop (handled elsewhere) and Review (desktop-only diff view), e.g. Keep All / Undo All.
-  const fileBarButtons = () => [...(filesBar()?.querySelectorAll('[data-click-ready]') || [])].filter(vis)
-    .map(e => ({ el: e, label: (e.querySelector('.truncate') || e).innerText.trim() }))
-    .filter(x => x.label && !/^(stop|review)$/i.test(x.label));
-  const filesState = () => ({ files: changedFiles(), actions: fileBarButtons().map(x => x.label) });
+  const fileBarButtons = () => {
+    const cur = [...(filesBar()?.querySelectorAll('[data-click-ready]') || [])].filter(vis)
+      .map(e => ({ el: e, label: (e.querySelector('.truncate') || e).innerText.trim() }))
+      .filter(x => x.label && !/^(stop|review)$/i.test(x.label));
+    if (cur.length) return cur;
+    const box = devinChangesBox();
+    if (!box) return [];
+    return [...box.querySelectorAll('span')].filter(e => vis(e) && /^(Reject all|Accept all)$/.test((e.innerText || '').trim()))
+      .map(e => ({ el: e, label: e.innerText.trim() }));
+  };
+  const filesState = () => ({
+    files: changedFiles(),
+    actions: fileBarButtons().map(x => x.label),
+    open: changedRows().length > 0 || (!!devinChangesBox() && devinOpen()),
+    count: changedCount(),
+  });
+  // Devin: hovering a file row reveals two 18px icon buttons — first the check
+  // ("Accept file", act 'keep'), then the x ("Reject file", act 'undo'). The
+  // 'toggle' is the collapsed "N files" bar item, which expands/collapses the list.
+  const devinFileTarget = (i, name, act) => {
+    if (act === 'toggle') {
+      // Folded: the "N files" group opens the list. Expanded: its header "N files with changes" folds it.
+      const l = devinBarLeft() || (devinChangesHdr() && vis(devinChangesHdr()) ? devinChangesHdr() : null);
+      return l ? center(l) : null;
+    }
+    if (act === 'bar') { const b = fileBarButtons().find(x => x.label === name); return b ? center(b.el) : null; }
+    const row = devinChangedRows()[i];
+    if (!row || !vis(row) || changedFiles()[i]?.name !== name) return null;
+    row.scrollIntoView({ block: 'nearest' });
+    if (act === 'row') return center(row);
+    const pick = row.querySelectorAll('button')[act === 'undo' ? 1 : 0];
+    return pick && vis(pick) ? center(pick) : null;
+  };
   const fileTarget = (i, name, act) => {
+    if (devinChangesBox()) return devinFileTarget(i, name, act);
     if (act === 'toggle') { const t = filesToggle(); return t ? center(t) : null; }
     if (act === 'bar') return (b => b ? center(b.el) : null)(fileBarButtons().find(x => x.label === name));
     const row = changedRows()[i];
@@ -698,6 +1005,22 @@ function pageHelpers() {
     clone.querySelectorAll(THINKING_ROOT).forEach(n => n.remove());
     return clone;
   };
+  // Devin user messages: rendered KaTeX would read twice through innerText (MathML + glyphs), so rebuild the
+  // text with the math as $tex$ / $$tex$$ from the KaTeX annotation. Without math the plain text is unchanged.
+  const devinUserText = root => {
+    if (!root.querySelector('.katex')) return root.innerText.trim();
+    const tex = n => (n.querySelector('annotation')?.textContent || '').trim();
+    const walk = n => {
+      if (n.nodeType === 3) return n.textContent;
+      if (n.nodeType !== 1 || n.matches('button, style, script, svg')) return '';
+      if (n.matches('.katex-display, .katex-block') && tex(n)) return `\n$$${tex(n)}$$\n`;
+      if (n.matches('.katex') && tex(n)) return `$${tex(n)}$`;
+      if (n.tagName === 'BR') return '\n';
+      const inner = [...n.childNodes].map(walk).join('');
+      return /^(P|DIV|LI|UL|OL|PRE|BLOCKQUOTE|H[1-6]|TABLE|TR)$/.test(n.tagName) ? `\n${inner}\n` : inner;
+    };
+    return walk(root).replace(/\u00a0/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  };
   const messageItem = el => {
     const kindEl = el.matches('[data-message-kind]') ? el : el.querySelector('[data-message-kind]');
     const aria = el.getAttribute('aria-label');
@@ -717,10 +1040,11 @@ function pageHelpers() {
       return item;
     }
     const readable = el.querySelector('.aislash-editor-input-readonly, .composer-human-message') || withoutThinking(el);
-    if (k === 'human') item.t = readable.innerText.trim();
+    if (k === 'human') item.t = aria === 'User message' ? devinUserText(readable) : readable.innerText.trim();
     else if (k === 'assistant') {
+      const devinRoot = aria === 'Devin message' ? el.querySelector('.prose-main') : null;
       const md = [...el.querySelectorAll('.markdown-root, .ui-markdown, .rendered-markdown')].find(n => !n.closest(THINKING_ROOT));
-      item.h = md ? clean(md) : esc((withoutThinking(el).innerText || '').trim()).replace(/\n/g, '<br>');
+      item.h = devinRoot ? devinRich(devinRoot) : md ? clean(md) : esc((withoutThinking(el).innerText || '').trim()).replace(/\n/g, '<br>');
     }
     else item.t = summary(withoutThinking(el));
     if (k === 'tool') { const f = toolFile(el); if (f) item.f = f; }
@@ -729,10 +1053,126 @@ function pageHelpers() {
     return item;
   };
 
+  /* ---------- Devin transcript rows ---------- */
+
+  const devinLog = () => document.querySelector('[role="log"][aria-label="Session transcript"]');
+
+  // Event-group tool rows: "Searched<query>", "Explored<file> and searched <q>", "Read<file> #L…".
+  const devinEventTool = (eg, i, lines) => {
+    const title = lines[0] || '';
+    const m = /^([A-Z][a-z]+)/.exec(title);
+    const label = m ? m[1] : '';
+    const kind = /^searched/i.test(label) ? 'search' : /^explored/i.test(label) ? 'explore' : /^read/i.test(label) ? 'read' : 'other';
+    const rest = title.slice(label.length);
+    const t = `${label} ${[rest, ...lines.slice(1)].join(' · ')}`.replace(/\s+/g, ' ').trim();
+    const codes = [...eg.querySelectorAll('code')].map(c => (c.innerText || '').trim()).filter(Boolean).slice(0, 6);
+    const item = { i, k: 'tool', kind, t, chips: codes.map(c => c.replace(/\n/g, ' ').slice(0, 120)) };
+    const fileish = codes.map(c => c.split('\n')[0].trim())
+      .filter(c => /^[\w.\-~/\\:]+$/.test(c) && (/\.[A-Za-z0-9]{1,10}$/.test(c) || /^[A-Za-z]:\\|^\//.test(c)));
+    if (fileish.length === 1) {
+      item.f = fileish[0];
+      const code = codes.find(c => c.startsWith(fileish[0]));
+      const r = /(#L[\d,\-]+)/.exec(code || '');
+      if (r) item.r = r[1];
+    }
+    return item;
+  };
+
+  // "Command <what> in <dir>" rows: medium title, optional "30s" duration, then the command text.
+  const devinCommand = (row, i) => {
+    const med = row.querySelector('span.codeium-text-medium');
+    const t = (med?.innerText || '').trim();
+    if (!t || !/^command\b/i.test(t)) return null;
+    const rest = (row.innerText || '').split('\n').slice(1);
+    let d = '';
+    if (rest.length && /^\d+\s*[smh]\b/i.test(rest[0].trim())) d = rest.shift().trim();
+    return { i, k: 'tool', kind: 'command', t, d, cmd: rest.join('\n').trim().slice(0, 4000) };
+  };
+
+  // "N / M tasks done" rows (Devin's todo list). The counts are always there; the checklist
+  // items only exist while the row is expanded (see setTasksOpen).
+  const devinTasks = (row, i) => {
+    const sp = [...row.querySelectorAll('span')].find(s => /^\d+\s*\/\s*\d+\s+tasks?\s+done$/.test((s.innerText || '').trim()));
+    if (!sp) return null;
+    const m = /^(\d+)\s*\/\s*(\d+)/.exec(sp.innerText.trim());
+    const rowsEl = [...row.querySelectorAll('div.flex.items-start')].filter(r => r.querySelector('span.block'));
+    const items = rowsEl.map(r => ({
+      t: (r.querySelector('span.block')?.innerText || '').trim().slice(0, 300),
+      status: r.querySelector('.animate-spin') ? 'in_progress' : r.querySelector('svg.text-text-green') ? 'done' : 'pending',
+    })).filter(x => x.t);
+    return { i, k: 'tasks', done: Number(m[1]), total: Number(m[2]), ...(rowsEl.length ? { items } : {}) };
+  };
+  // Expands or folds a tasks row by its acp id (the chevron button only; caller restores).
+  const setTasksOpen = (id, open) => {
+    const row = [...(devinLog()?.children || [])].find(r => itemKey(r) === id);
+    const btn = row?.querySelector('button[aria-expanded]');
+    if (!btn) return false;
+    if (btn.getAttribute('aria-expanded') !== String(open)) btn.click();
+    return true;
+  };
+
+  // File-edit rows: medium file name, +N/-N counters, then a .diff-code-block of line divs.
+  const devinEdit = (row, i) => {
+    const block = row.querySelector('.diff-code-block');
+    const med = row.querySelector('span.codeium-text-medium');
+    if (!block || !med) return null;
+    const diff = [...block.children].map(d => {
+      const c = String(d.className || '');
+      const type = /insert/.test(c) ? '+' : /delete/.test(c) ? '-' : ' ';
+      return [type, (d.innerText || '').replace(/\n+$/, '')];
+    }).filter(l => l[1] !== '');
+    const over = diff.length > 200;
+    const nums = [...row.querySelectorAll('span')].map(s => (s.textContent || '').trim());
+    const num = re => Number((nums.find(t => re.test(t)) || '').slice(1)) || 0;
+    const item = { i, k: 'tool', kind: 'edit', f: med.innerText.trim(), add: num(/^\+\d+$/), del: num(/^-\d+$/), diff: over ? diff.slice(0, 200) : diff };
+    if (over) item.diff.push(['…', `… 省略 ${diff.length - 200} 行`]);
+    return item;
+  };
+
+  // Iterate the Devin transcript's direct children in order: messages, thought groups,
+  // tool event rows, commands and file edits all become items. Unknown rows are skipped.
+  const devinItems = log => {
+    const rows = [...log.children].filter(vis);
+    const last = [...rows].reverse().find(r => (r.innerText || '').trim());
+    const items = [];
+    rows.forEach((row, n) => {
+      const i = itemKey(row) || `acpx${n}`;
+      const msg = row.querySelector('[role=group][aria-label="User message"], [role=group][aria-label="Devin message"]');
+      if (msg) {
+        const it = messageItem(msg);
+        if (!it.i) it.i = i;
+        items.push(it);
+        return;
+      }
+      const tasks = devinTasks(row, i);
+      if (tasks) { items.push(tasks); return; }
+      const eg = row.classList.contains('event-group') ? row : row.querySelector('.event-group');
+      if (eg) {
+        const lines = (eg.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
+        const title = lines[0] || '';
+        if (/^(thoughts?|thinking)\b/i.test(title)) {
+          const body = lines.slice(1).join('\n');
+          const it = { i: `${i}:think`, k: 'thinking', t: body ? `${title}\n${body}` : title };
+          if (row === last && !/\d/.test(title)) it.live = true;
+          items.push(it);
+          return;
+        }
+        items.push(devinEventTool(eg, i, lines));
+        return;
+      }
+      const edit = devinEdit(row, i);
+      if (edit) { items.push(edit); return; }
+      const cmd = devinCommand(row, i);
+      if (cmd) { items.push(cmd); return; }
+    });
+    return items.filter(Boolean).map(it => ({ ...it, src: 'devin' }));
+  };
+
   const extract = () => {
     const panel = findPanel();
+    const log = devinLog();
     // A brand-new Devin session has a composer and model chip, but no message list yet.
-    if (!panel) {
+    if (!panel && !log) {
       const modelEl = modelButton();
       if (!modelEl && !hasComposer()) return null;
       return {
@@ -744,21 +1184,22 @@ function pageHelpers() {
         subagents: subagents(),
         changed: changedCount(),
         questions: null,
+        ...(devinSurface() ? { session: devinSession() } : {}),
         readonly: !hasComposer(),
         mode: null,
         model: modelEl ? normLabel(modelEl.innerText).split('\n')[0].slice(0, 60) : null,
         context: contextPct(),
       };
     }
-    const r = panel.getBoundingClientRect();
-    const items = topItems(panel).flatMap(el => {
+    const r = panel ? panel.getBoundingClientRect() : { x: 0, y: 0, width: 0, height: 0 };
+    const items = log ? devinItems(log) : topItems(panel).flatMap(el => {
       const thoughts = thinkingInside(el).map((th, n) => thinkingItem(th, el, n));
       if (isThinking(el)) return thoughts.length ? thoughts : [thinkingItem(el, el, 0)];
       const main = messageItem(el);
       if (main.k === 'assistant' && !main.h && !main.b) return thoughts;
       return [...thoughts, main];
     });
-    const global = buttonsIn(panel, true).filter(x => !inItem(x.el) && !inQn(x.el) && !/^stop generation\b/i.test(x.label)).map(x => x.label);
+    const global = buttonsIn(panel || document, true).filter(x => !inItem(x.el) && !inQn(x.el) && !/^stop generation\b/i.test(x.label)).map(x => x.label);
     const modeEl = [...document.querySelectorAll('.composer-unified-dropdown[data-mode]')].find(vis);
     const modelEl = modelButton();
     return {
@@ -766,14 +1207,17 @@ function pageHelpers() {
       items,
       global,
       busy: isBusy(),
-      queued: queued(),
+      queued: devinLog() ? devinQueued() : queued(),
+      ...(devinLog() ? { queuedCount: devinQueueCount() } : {}),
       subagents: subagents(),
       changed: changedCount(),
-      questions: questions(),
+      questions: devinLog() ? devinQuestions() : questions(),
+      ...(devinLog() ? { session: devinSession() } : {}),
       readonly: !hasComposer(),
       mode: modeEl ? modeEl.innerText.trim() || modeEl.dataset.mode : null,
       model: modelEl ? normLabel(modelEl.innerText).split('\n')[0].slice(0, 60) : null,
       context: contextPct(),
+      ...(devinSurface() ? { surface: devinSurface() } : {}),
     };
   };
   const contextPct = () => {
@@ -921,8 +1365,22 @@ function pageHelpers() {
     return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
   };
 
+  // Devin scrolls a `.cascade-scrollbar` ancestor of the transcript log, not the log itself.
+  const devinScroller = () => {
+    const log = devinLog();
+    if (!log) return null;
+    let p = log;
+    while (p && p !== document.body) {
+      const st = getComputedStyle(p);
+      if ((st.overflowY === 'auto' || st.overflowY === 'scroll') && p.scrollHeight > p.clientHeight) return p;
+      p = p.parentElement;
+    }
+    return log;
+  };
   const panelRect = () => {
-    const p = findPanel();
+    // findPanel's fallback can climb to Devin's whole virtualized log (taller than
+    // the screen); the wheel must land inside the visible scroll container instead.
+    const p = devinLog() ? devinScroller() : findPanel();
     if (!p) return null;
     const r = p.getBoundingClientRect();
     return [r.x, r.y, r.width, r.height].map(Math.round);
@@ -1016,13 +1474,30 @@ function pageHelpers() {
         };
       }).filter(t => t.id);
     }
-    return [...document.querySelectorAll('.terminal-tabs-list .terminal-tab')].filter(vis).map((tab, i) => ({
+    const classic = [...document.querySelectorAll('.terminal-tabs-list .terminal-tab')].filter(vis);
+    if (classic.length) return classic.map((tab, i) => ({
       id: tab.id || `classic-${i}`,
       title: (tab.querySelector('.label-name, a') || tab).innerText.trim().split('\n')[0].slice(0, 80) || `终端 ${i + 1}`,
       current: tab.classList.contains('active') || tab.getAttribute('aria-selected') === 'true',
       tab,
       close: tab.querySelector('[aria-label="Kill Terminal"], [aria-label^="Kill"]'),
     }));
+    // Devin / VS Code monaco list: rows labelled "Terminal 1 cloudflared".
+    // Kill/Split action anchors exist in the row but get a size only on hover.
+    const vt = [...document.querySelectorAll('[aria-label="Terminal tabs"] .monaco-list-row')].filter(vis);
+    if (vt.length) return vt.map(tab => {
+      const m = /^Terminal (\d+)\s*(.*)$/.exec((tab.getAttribute('aria-label') || '').trim());
+      return {
+        id: `term-vt${m?.[1] || vt.indexOf(tab)}`,
+        title: ((m?.[2] || '').trim() || `终端 ${m?.[1] || ''}`.trim()).slice(0, 80),
+        current: tab.getAttribute('aria-selected') === 'true',
+        tab,
+        close: tab.querySelector('a.action-label[aria-label^="Kill"], [aria-label^="Kill"]'),
+      };
+    });
+    const solo = [...document.querySelectorAll('.terminal-wrapper.active .xterm')].filter(vis);
+    if (solo.length === 1) return [{ id: 'term-solo', title: '终端', current: true, tab: solo[0], close: null }];
+    return [];
   };
   const terminalList = () => terminalEntries().map(({ id, title, current }) => ({ id, title, current }));
   const terminalById = id => terminalEntries().find(t => t.id === id);
@@ -1040,14 +1515,27 @@ function pageHelpers() {
     const b = terminalById(id)?.close;
     return b && vis(b) ? center(b) : null;
   };
+  // The xterm canvas to show: when several .terminal-wrapper are visible (Devin keeps a
+  // shared session terminal next to the panel one), pick the one inside the same pane as
+  // the "Terminal tabs" list.
+  const terminalEl = () => {
+    const sel = '.terminal-wrapper.active .xterm, .terminal.xterm';
+    const tabs = document.querySelector('[aria-label="Terminal tabs"]');
+    if (tabs) {
+      const pane = tabs.closest('.pane') || tabs.parentElement;
+      const inPane = [...(pane?.querySelectorAll(sel) || [])].find(vis);
+      if (inPane) return inPane;
+    }
+    return [...document.querySelectorAll(sel)].find(vis) || null;
+  };
   const terminalRect = () => {
-    const el = [...document.querySelectorAll('.terminal-wrapper.active .xterm, .terminal.xterm')].find(vis);
+    const el = terminalEl();
     if (!el) return null;
     const r = el.getBoundingClientRect();
     return [r.x, r.y, r.width, r.height].map(Math.round);
   };
   const terminalFocus = () => {
-    const el = [...document.querySelectorAll('.terminal-wrapper.active .xterm, .terminal.xterm')].find(vis);
+    const el = terminalEl();
     return el ? center(el) : null;
   };
   const newTerminalDirect = () => {
@@ -1238,7 +1726,9 @@ function pageHelpers() {
   };
   const terminalDump = prev => {
     const host = document.querySelector('.terminal-wrapper.active .xterm-wrapper') || document.querySelector('.xterm-wrapper');
-    const term = host?.xterm;
+    let term = host?.xterm;
+    // Devin: each .terminal-wrapper carries the xterm.js instance as its own `xterm` property.
+    if (!term && document.querySelector('[aria-label="Terminal tabs"]')) term = terminalEl()?.closest('.terminal-wrapper')?.xterm;
     const buf = term?.buffer?.active;
     if (!buf) return null;
     const cursorY = buf.baseY + buf.cursorY;
@@ -1296,7 +1786,8 @@ function pageHelpers() {
     clickControl, clickModelListTrigger, devinSettingsNav, devinSettingsClick, devinSettingsCards,
     fusionConfig, clickFusionCombo, clickFusionFast, fusionOptionItems, fusionOptionTarget,
     menuOpen, maxToggle, modelTarget, modelParams, paramTarget, subTarget, activeChatTab, tabTarget, hasComposer, filesState, fileTarget, questionTarget,
-    closedThinkingIndexes, clickThinking, closeThinkingIfOpen };
+    closedThinkingIndexes, clickThinking, closeThinkingIfOpen, thoughtIndexFor, setTasksOpen, devinQueueTarget,
+    devinSession, devinTabTarget, devinTabCloseTarget, devinQuestions, thoughtState, setThoughtOpen, thoughtBodyText, devinQueued, devinQueueClearTarget, devinQueueCount, revertTarget, revertDialog, revertDialogButton, revertState, devinSurface, surfaceTarget, transcriptVisible, sessionSearchTarget, sessionPickerRows, sessionPickerTarget };
 }
 
 const helpersCall = call => `(${pageHelpers.toString()})().${call}`;
@@ -1371,7 +1862,9 @@ class Session {
     this.lastChat = '';
     this.thinking = new Map();
     this.thinkingTried = new Map();
+    this.tasksTried = new Map();
     this.keptThink = new Map();
+    this.devinHist = new Map();
     this.app = 'cursor';
     this.lastPanel = '';
     this.lastBusy = null;
@@ -1385,12 +1878,13 @@ class Session {
     clearInterval(this.termTimer);
     if (!this.cdp) return;
     if (this.mode === 'chat') {
-      await this.cdp.send('Page.stopScreencast').catch(() => {});
+      await this.stopScreencast();
       this.lastChat = '';
       this.chatTimer = setInterval(() => this.pollChat().catch(() => {}), 700);
       await this.pollChat();
     } else if (this.mode === 'terminal') {
-      await this.cdp.send('Page.stopScreencast').catch(() => {});
+      await this.stopScreencast();
+      this.termImg = '';
       this.lastTermHash = undefined;
       await this.pollTerminal();
       this.termTimer = setInterval(() => this.pollTerminal().catch(() => {}), 700);
@@ -1525,11 +2019,106 @@ class Session {
     }
   }
 
+  // Devin sessions: everything remembered from a transcript (rows, thought bodies, task lists) belongs to ONE
+  // session. When the desktop shows another session (a tab was clicked there, the phone switched, a new
+  // session started) park this session's state under its title and load the other's, never merge them.
+  // A rename (the title changed while the set of tabs stayed the same) keeps the state.
+  syncSession(chat) {
+    const sess = chat?.session;
+    if (this.app !== 'devin' || !sess) return;
+    const titles = (sess.tabs || []).map(t => t.title);
+    const prevTitles = this.sessTitles || [];
+    this.sessTitles = titles;
+    if (this.curSession === undefined || this.curSession === sess.key) { this.curSession = sess.key; return; }
+    const renamed = titles.length > 0 && titles.length === prevTitles.length
+      && !titles.includes(this.curSession) && !prevTitles.includes(sess.key);
+    if (renamed) { this.curSession = sess.key; return; }
+    if (!this.sessStore) this.sessStore = new Map();
+    const FIELDS = ['devinHist', 'thinking', 'thinkingTried', 'keptThink', 'tasksTried', 'thoughtFails', 'latestThink'];
+    const fresh = () => ({ devinHist: new Map(), thinking: new Map(), thinkingTried: new Map(), keptThink: new Map(), tasksTried: new Map(), thoughtFails: new Map(), latestThink: null });
+    const saved = {};
+    for (const f of FIELDS) saved[f] = this[f];
+    this.sessStore.set(this.curSession, saved);
+    const next = this.sessStore.get(sess.key) || fresh();
+    for (const f of FIELDS) this[f] = next[f];
+    while (this.sessStore.size > 24) this.sessStore.delete(this.sessStore.keys().next().value);
+    this.curSession = sess.key;
+    this.lastChat = '';
+    this.thoughtPoll = 0;
+  }
+
+  // Devin virtualizes its transcript: only rows near the viewport stay mounted, so a poll
+  // sees a sliding window of acp-indexed rows. Merge each window into per-session history
+  // keyed by the stable acp ids; remembered rows keep their last seen content. Sorted by
+  // acp index (a thinking item `acpN:think` travels with row N) and capped at ~1500 items.
+  mergeDevinHistory(chat) {
+    if (!chat?.items) return;
+    if (!chat.items.some(it => it.src === 'devin') && !(this.devinHist?.size && !chat.items.length)) return;
+    if (!this.devinHist) this.devinHist = new Map();
+    const hist = this.devinHist;
+    const num = id => {
+      const m = /^acp(\d+)/.exec(id || '');
+      return m ? Number(m[1]) : -1;
+    };
+    const mounted = chat.items.map(it => num(it.i)).filter(n => n >= 0);
+    const minM = mounted.length ? Math.min(...mounted) : Infinity;
+    const maxM = mounted.length ? Math.max(...mounted) : -1;
+    if (hist.size && mounted.length) {
+      const known = [...hist.keys()].map(num).filter(n => n >= 0);
+      if (known.length) {
+        const minR = Math.min(...known), maxR = Math.max(...known);
+        const overlap = mounted.some(n => n >= minR && n <= maxR);
+        // A new session restarts indexes at 0; sliding to a range entirely below what we
+        // remember means the window was switched without an attach reset.
+        if (maxM < minR || (!overlap && minM === 0)) hist.clear();
+      }
+    }
+    // Sticky thoughts: a remounted collapsed thought has no body; keep the body we already have.
+    for (const it of chat.items) {
+      const next = it.src === 'devin' ? it : { ...it, src: 'devin' };
+      const prev = hist.get(it.i);
+      const pb = prev?.k === 'thinking' ? this.thinkingBody(prev) : '';
+      if (next.k === 'tasks' && !next.items && prev?.items && prev.total === next.total) hist.set(it.i, { ...next, items: prev.items });
+      else hist.set(it.i, next.k === 'thinking' && pb.length > this.thinkingBody(next).length
+        ? { ...next, t: `${this.thinkingTitle(next)}\n${pb}` }
+        : next);
+    }
+    const merged = [...hist.values()].sort((a, b) => num(a.i) - num(b.i));
+    while (merged.length > 1500) hist.delete(merged.shift().i);
+    // Thought bodies are kept up to ~2 MB in total; the oldest drop to title-only first.
+    let kept = 0;
+    for (const it of merged.slice().reverse()) {
+      if (it.k !== 'thinking') continue;
+      const n = this.thinkingBody(it).length;
+      if (!n) continue;
+      if (kept + n > 2000000) hist.set(it.i, { ...it, t: this.thinkingTitle(it) });
+      else kept += n;
+    }
+    // Payload: newest thoughts (12 or 80 KB) carry their body; older ones are title-only with more:true
+    // and their body is requested on demand with {t:'thought', i}.
+    let used = 0, count = 0;
+    const full = [...hist.values()].sort((a, b) => num(a.i) - num(b.i));
+    const sent = new Set();
+    for (const it of full.slice().reverse()) {
+      if (it.k !== 'thinking') continue;
+      const n = this.thinkingBody(it).length;
+      if (!n) continue;
+      if (count < 12 && used + n <= 80000) { used += n; count++; sent.add(it.i); }
+    }
+    chat.items = full.map(it => it.k === 'thinking' && this.thinkingBody(it) && !sent.has(it.i)
+      ? { ...it, t: this.thinkingTitle(it), more: true }
+      : it);
+    const known = [...hist.keys()].map(num).filter(n => n >= 0);
+    const floor = known.length ? Math.min(...known) : minM;
+    chat.earlier = floor > 0;
+  }
+
   async pollChat() {
     if (!this.cdp || this.polling) return;
     this.polling = true;
     try {
       let chat = await this.cdp.evaluate(helpersCall('extract()'));
+      this.syncSession(chat);
       const liveClosed = (chat?.items || []).some(it => it.k === 'thinking' && it.live && !(it.t || '').includes('\n'));
       if (liveClosed) {
         const idxs = await this.cdp.evaluate(helpersCall(`closedThinkingIndexes('live')`));
@@ -1539,7 +2128,7 @@ class Session {
           chat = await this.cdp.evaluate(helpersCall('extract()'));
         }
       }
-      const needFinal = (chat?.items || []).some(it => it.k === 'thinking' && !it.live && !(it.t || '').includes('\n') && !this.thinkingTried.has(it.i));
+      const needFinal = this.app !== 'devin' && (chat?.items || []).some(it => it.k === 'thinking' && !it.live && !(it.t || '').includes('\n') && !this.thinkingTried.has(it.i));
       if (needFinal) {
         const idxs = await this.cdp.evaluate(helpersCall(`closedThinkingIndexes('done')`));
         if (idxs?.length) {
@@ -1549,10 +2138,23 @@ class Session {
           await this.cdp.evaluate(helpersCall(`closeThinkingIfOpen(${JSON.stringify(idxs)})`));
         }
       }
+      // Devin task lists: expand a row whose checklist we have not read for its current count, read it, fold it back.
+      const taskRow = (chat?.items || []).find(it => it.k === 'tasks' && !it.items && this.tasksTried.get(it.i) !== it.total);
+      if (taskRow) {
+        this.tasksTried.set(taskRow.i, taskRow.total);
+        if (await this.cdp.evaluate(helpersCall(`setTasksOpen(${JSON.stringify(taskRow.i)}, true)`))) {
+          await new Promise(r => setTimeout(r, 250));
+          const opened = await this.cdp.evaluate(helpersCall('extract()'));
+          await this.cdp.evaluate(helpersCall(`setTasksOpen(${JSON.stringify(taskRow.i)}, false)`));
+          if (opened?.items?.some(it => it.k === 'tasks' && it.i === taskRow.i && it.items)) chat = opened;
+        }
+      }
+      await this.captureThoughts(chat);
       this.fillThinking(chat);
       this.rememberThinking(chat);
       this.retainThinking(chat);
-      const finished = (chat?.items || []).filter(it => it.k === 'thinking' && !it.live);
+      this.mergeDevinHistory(chat);
+      const finished = this.app === 'devin' ? [] : (chat?.items || []).filter(it => it.k === 'thinking' && !it.live);
       finished.forEach((it, i) => {
         const has = this.thinkingBody(it).length > 0;
         const newest = i === finished.length - 1;
@@ -1582,13 +2184,30 @@ class Session {
     if (!this.cdp || this.mode !== 'terminal') return;
     const dump = await this.cdp.evaluate(helpersCall(`terminalDump(${JSON.stringify(this.lastTermHash || '')})`));
     if (!dump) {
-      if (this.lastTermHash !== null) {
+      // No readable xterm buffer (Devin uses canvas terminals): show a cropped
+      // photo of the terminal rectangle instead of the "no terminal" overlay.
+      const rect = await this.cdp.evaluate(helpersCall('terminalRect()'));
+      const tag = rect ? 'img' : '';
+      if (this.lastTermHash !== null || this.termImg !== tag) {
         this.lastTermHash = null;
-        this.emit({ t: 'termText', lines: null });
+        this.termImg = tag;
+        this.emit({ t: 'termText', lines: null, img: !!rect });
       }
-    } else if (dump.hash !== this.lastTermHash) {
-      this.lastTermHash = dump.hash;
-      if (dump.lines) this.emit({ t: 'termText', lines: dump.lines, cursor: dump.cursor });
+      if (rect) {
+        const json = JSON.stringify(rect);
+        if (json !== this.lastPanel) {
+          this.lastPanel = json;
+          this.emit({ t: 'panel', rect });
+        }
+        if (!this.casting) await this.startScreencast();
+      } else if (this.casting) await this.stopScreencast();
+    } else {
+      this.termImg = '';
+      if (this.casting) await this.stopScreencast();
+      if (dump.hash !== this.lastTermHash) {
+        this.lastTermHash = dump.hash;
+        if (dump.lines) this.emit({ t: 'termText', lines: dump.lines, cursor: dump.cursor });
+      }
     }
     const state = await this.cdp.evaluate(helpersCall('agentState()'));
     const busy = !!state?.busy;
@@ -1614,6 +2233,13 @@ class Session {
 
   async closeTerminal(id) {
     if (!/^[\w-]{8,}$/.test(id)) throw new Error('这个终端已经不在了');
+    if (this.app === 'devin') {
+      // The kill anchor in a monaco tab row only gets a size while the row is hovered.
+      const row = await this.cdp.evaluate(helpersCall(`terminalTarget(${JSON.stringify(id)})`));
+      if (!row) throw new Error('这个终端已经不在了');
+      await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: row.x, y: row.y });
+      await new Promise(r => setTimeout(r, 150));
+    }
     const pos = await this.cdp.evaluate(helpersCall(`terminalCloseTarget(${JSON.stringify(id)})`));
     if (!pos) throw new Error('这个终端已经不在了');
     await this.tapCss(pos.x, pos.y);
@@ -1824,6 +2450,7 @@ class Session {
 
   async queueAction(id, action) {
     if (!['send', 'remove', 'edit'].includes(action)) throw new Error('不支持的排队操作');
+    if (this.app === 'devin') return this.devinQueueAction(id, action);
     const call = a => this.cdp.evaluate(helpersCall(`queueTarget(${JSON.stringify(String(id))}${a ? `, ${JSON.stringify(a)}` : ''})`));
     const row = await call();
     if (!row) throw new Error('这条排队消息已经不在了（可能刚被发出）');
@@ -1835,6 +2462,40 @@ class Session {
     }
     if (!pos) throw new Error('没找到排队消息的操作按钮（可能 Cursor 版本不同）');
     await this.tapCss(pos.x, pos.y);
+    setTimeout(() => this.pollChat().catch(() => {}), 300);
+  }
+
+  // Devin queue rows: hover the row (buttons appear on hover), then tap Send now / Remove from queue.
+  // Edit and reorder are not offered. "Clear all" is a bar-level button.
+  async devinQueueAction(id, action) {
+    if (!['send', 'remove'].includes(action)) throw new Error('不支持的排队操作');
+    const n = /^dq(\d+)$/.exec(String(id))?.[1];
+    const row = n == null ? null : await this.cdp.evaluate(helpersCall(`devinQueueTarget(${n})`));
+    if (!row) throw new Error('这条排队消息已经不在了（可能刚被发出）');
+    await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: row.x, y: row.y });
+    let pos = null;
+    for (let i = 0; i < 6 && !pos; i++) {
+      await new Promise(r => setTimeout(r, 80));
+      pos = await this.cdp.evaluate(helpersCall(`devinQueueTarget(${n}, ${JSON.stringify(action)})`));
+    }
+    if (!pos) throw new Error('没找到排队消息的操作按钮（可能 Devin 版本不同）');
+    await this.tapCss(pos.x, pos.y);
+    setTimeout(() => this.pollChat().catch(() => {}), 300);
+  }
+
+  // Devin "edit": take the queued message out of the queue and hand its text to the phone's input box.
+  async devinTakeOut(id) {
+    const q = (await this.cdp.evaluate(helpersCall('devinQueued()')) || []).find(x => x.id === id);
+    if (!q || !q.t) throw new Error('这条排队消息已经不在了（可能刚被发出）');
+    await this.devinQueueAction(id, 'remove');
+    this.emit({ t: 'unqueued', id, text: q.t });
+  }
+
+  async devinClearQueue() {
+    const pos = await this.cdp.evaluate(helpersCall('devinQueueClearTarget()'));
+    if (!pos) throw new Error('没找到清空排队消息的按钮（可能 Devin 版本不同）');
+    await this.tapCss(pos.x, pos.y);
+    this.emit({ t: 'status', ok: true, msg: '已清空排队消息' });
     setTimeout(() => this.pollChat().catch(() => {}), 300);
   }
 
@@ -1858,15 +2519,42 @@ class Session {
   }
 
   // Opens Cursor's changed-files list if needed, runs fn, then puts the list back the way it was.
-  async withFiles(fn) {
+  // Devin: the rows are readable while the list is folded (display:none), so reading does not toggle it.
+  // Rows can mount late, so wait for as many as the bar counts. Actions open the list, then fold it again.
+  async withFiles(fn, { act = false } = {}) {
+    if (this.app !== 'devin') return this.withCursorFiles(fn);
+    const state = () => this.cdp.evaluate(helpersCall('filesState()'));
+    const settle = async (s, ok) => { for (let i = 0; i < 15 && !ok(s); i++) { await new Promise(r => setTimeout(r, 100)); s = await state(); } return s; };
+    let s = await settle(await state(), x => x.files.length >= x.count);
+    if (!act) return fn(s);
+    let toggled = false;
+    if (!s.open) {
+      const t = await this.cdp.evaluate(helpersCall('fileTarget(0, "", "toggle")'));
+      if (t) {
+        await this.tapCss(t.x, t.y);
+        toggled = true;
+        s = await settle(s, x => x.open);
+      }
+    }
+    try {
+      return await fn(s);
+    } finally {
+      if (toggled && (await state()).open) {
+        const t = await this.cdp.evaluate(helpersCall('fileTarget(0, "", "toggle")'));
+        if (t) await this.tapCss(t.x, t.y);
+      }
+    }
+  }
+
+  async withCursorFiles(fn) {
     const state = () => this.cdp.evaluate(helpersCall('filesState()'));
     let s = await state();
-    const opened = !s.files.length;
+    const opened = !s.open;
     if (opened) {
       const t = await this.cdp.evaluate(helpersCall('fileTarget(0, "", "toggle")'));
       if (!t) return fn(s);
       await this.tapCss(t.x, t.y);
-      for (let i = 0; i < 8 && !s.files.length; i++) {
+      for (let i = 0; i < 8 && !s.open; i++) {
         await new Promise(r => setTimeout(r, 120));
         s = await state();
       }
@@ -1875,18 +2563,141 @@ class Session {
       return await fn(s);
     } finally {
       const t = opened && await this.cdp.evaluate(helpersCall('fileTarget(0, "", "toggle")'));
-      if (t && (await state()).files.length) await this.tapCss(t.x, t.y);
+      if (t && (await state()).open) await this.tapCss(t.x, t.y);
     }
+  }
+
+  // Devin thoughts beyond the payload budget are title-only; the body is read from the history,
+  // or expanded in the transcript once (and folded back) when it was never captured.
+  async thought(id) {
+    if (!/^acp\d+:think$/.test(id)) return this.emit({ t: 'thought', i: id, text: null });
+    const it = this.devinHist.get(id);
+    let body = it ? this.thinkingBody(it) : '';
+    if (!body && this.cdp) {
+      body = await this.readThought(id);
+      if (body && it) this.devinHist.set(id, { ...it, t: `${this.thinkingTitle(it)}\n${body}` });
+    }
+    this.emit({ t: 'thought', i: id, text: body || null });
+  }
+
+  // Devin: a collapsed thought has no body in the DOM. Expand it (only if the user has not), wait up to
+  // ~1.5 s for the body to render, read it, and fold it back to the state it was in. Returns '' if not read.
+  async readThought(id) {
+    const st = await this.cdp.evaluate(helpersCall(`thoughtState(${JSON.stringify(id)})`));
+    if (!st) return '';
+    if (st.expanded) return this.cdp.evaluate(helpersCall(`thoughtBodyText(${JSON.stringify(id)})`)).then(t => t || '');
+    await this.cdp.evaluate(helpersCall(`setThoughtOpen(${JSON.stringify(id)}, true)`));
+    let body = '';
+    for (let k = 0; k < 15 && !body; k++) {
+      await new Promise(r => setTimeout(r, 100));
+      body = (await this.cdp.evaluate(helpersCall(`thoughtBodyText(${JSON.stringify(id)})`))) || '';
+    }
+    await this.cdp.evaluate(helpersCall(`setThoughtOpen(${JSON.stringify(id)}, false)`));
+    return body;
+  }
+
+  // Devin: finished thoughts in the mounted transcript that have no body yet. Up to 2 per poll; a
+  // thought is only marked tried once its body was read, or after 3 failed reads on different polls.
+  async captureThoughts(chat) {
+    if (this.app !== 'devin') return;
+    this.thoughtPoll = (this.thoughtPoll || 0) + 1;
+    this.thoughtFails = this.thoughtFails || new Map();
+    const todo = (chat?.items || []).filter(it => it.k === 'thinking' && !it.live && it.src === 'devin'
+      && !this.thinkingBody(it) && !this.thinkingTried.has(it.i) && !(this.devinHist.get(it.i) && this.thinkingBody(this.devinHist.get(it.i))))
+      .reverse().slice(0, 2);
+    for (const it of todo) {
+      const body = await this.readThought(it.i);
+      if (body) {
+        it.t = `${this.thinkingTitle(it)}\n${body}`;
+        this.thinkingTried.set(it.i, 1);
+        continue;
+      }
+      const f = this.thoughtFails.get(it.i) || { n: 0, poll: 0 };
+      if (f.poll !== this.thoughtPoll) f.n++;
+      f.poll = this.thoughtPoll;
+      this.thoughtFails.set(it.i, f);
+      if (f.n >= 3) this.thinkingTried.set(it.i, 1);
+    }
+  }
+
+  // Devin revert: hover + click the row's revert button. Devin then either rewinds the transcript at once
+  // (nothing on disk to undo: no dialog) or shows a confirmation with the file changes. Nothing is
+  // confirmed here; the phone answers with revertOk (confirm) or revertCancel.
+  async revert(i) {
+    if (this.app !== 'devin' || !/^acp\d+$/.test(String(i))) throw new Error('不支持的操作');
+    this.pendingRevert = null;
+    const num = Number(/\d+/.exec(i)[0]);
+    const row = await this.cdp.evaluate(helpersCall(`revertTarget(${JSON.stringify(i)}, 'row')`));
+    if (!row) throw new Error('这条消息已经不在了');
+    await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: row.x, y: row.y });
+    await new Promise(r => setTimeout(r, 150));
+    let btn = null;
+    for (let k = 0; k < 6 && !btn; k++) {
+      btn = await this.cdp.evaluate(helpersCall(`revertTarget(${JSON.stringify(i)}, 'btn')`));
+      if (!btn) await new Promise(r => setTimeout(r, 100));
+    }
+    if (!btn) throw new Error('没找到回退按钮（可能 Devin 版本不同）');
+    await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: btn.x, y: btn.y });
+    await this.tapCss(btn.x, btn.y);
+    const gone = async () => { const s = await this.cdp.evaluate(helpersCall(`revertState(${JSON.stringify(i)})`)); return !s.rowHas || s.max < num; };
+    let dlg = null, done = false;
+    for (let k = 0; k < 40 && !dlg && !done; k++) {
+      await new Promise(r => setTimeout(r, 200));
+      dlg = await this.cdp.evaluate(helpersCall('revertDialog()'));
+      if (!dlg) done = await gone();
+    }
+    if (done) return this.afterRevert(num);
+    if (!dlg) throw new Error('没有出现回退确认框，也没看到对话被回退，请到电脑上看一下');
+    this.pendingRevert = { i, num };
+    this.emit({ t: 'revertConfirm', i, title: dlg.title || '回退到这条消息？', body: dlg.body || '', apply: dlg.apply, force: !!dlg.force });
+  }
+
+  async revertAnswer(ok, apply) {
+    const pr = this.pendingRevert;
+    if (!pr) return;
+    this.pendingRevert = null;
+    if (ok && typeof apply === 'boolean') {
+      const d = await this.cdp.evaluate(helpersCall('revertDialog()'));
+      if (d && d.apply !== null && d.apply !== apply) {
+        const t = await this.cdp.evaluate(helpersCall('revertDialogButton("toggle")'));
+        if (t) await this.tapCss(t.x, t.y);
+      }
+    }
+    const pos = await this.cdp.evaluate(helpersCall(`revertDialogButton(${ok ? '"confirm"' : '"cancel"'})`));
+    if (pos) await this.tapCss(pos.x, pos.y);
+    else if (!ok) await this.key('Escape');
+    else throw new Error('没找到回退确认按钮（可能 Devin 版本不同）');
+    if (!ok) return void setTimeout(() => this.pollChat().catch(() => {}), 500);
+    for (let k = 0; k < 40; k++) {
+      await new Promise(r => setTimeout(r, 250));
+      const s = await this.cdp.evaluate(helpersCall(`revertState(${JSON.stringify(pr.i)})`));
+      if (!s.rowHas || s.max < pr.num) return this.afterRevert(pr.num);
+    }
+    this.emit({ t: 'status', ok: false, msg: '已点了确认，但还没看到对话被回退，请到电脑上看一下' });
+  }
+
+  // The transcript was rewound: rows from the reverted message on no longer exist. Forget them here and tell
+  // the phone to drop them from its local copy too.
+  afterRevert(num) {
+    const n = id => Number(/^acp(\d+)/.exec(id || '')?.[1] ?? -1);
+    for (const m of [this.devinHist, this.thinking, this.keptThink, this.thinkingTried, this.tasksTried, this.thoughtFails]) {
+      for (const k of [...(m?.keys() || [])]) if (n(k) >= num) m.delete(k);
+    }
+    this.lastChat = '';
+    this.emit({ t: 'trunc', from: num });
+    this.emit({ t: 'status', ok: true, msg: '已回退到这条消息之前' });
+    setTimeout(() => this.pollChat().catch(() => {}), 300);
   }
 
   async listChanges() {
     const s = await this.withFiles(async s => s);
-    this.emit({ t: 'changes', ...s });
+    this.emit({ t: 'changes', ...s, ...(this.app === 'devin' ? { devin: true } : {}) });
   }
 
   async changeAction(i, name, act) {
     if (!['keep', 'undo', 'bar'].includes(act)) throw new Error('不支持的操作');
-    await this.withFiles(async () => {
+    await this.withFiles(async s => {
+      if (this.app === 'devin' && s.count && !s.files.length) throw new Error('这个界面看不到逐个文件的改动，请先切到 Agent 界面');
       const call = a => helpersCall(`fileTarget(${Number(i) || 0}, ${JSON.stringify(String(name))}, ${JSON.stringify(a)})`);
       if (act !== 'bar') {
         const row = await this.cdp.evaluate(call('row'));
@@ -1898,7 +2709,7 @@ class Session {
       if (!pos) throw new Error('没找到这个按钮（可能 Cursor 版本不同）');
       await this.tapCss(pos.x, pos.y);
       await new Promise(r => setTimeout(r, 400));
-    });
+    }, { act: act !== 'bar' });
     await this.listChanges();
     setTimeout(() => this.pollChat().catch(() => {}), 300);
   }
@@ -1926,19 +2737,151 @@ class Session {
   }
 
   async listAgents() {
+    if (this.app === 'devin') {
+      const surface = await this.cdp.evaluate(helpersCall('devinSurface()'));
+      if (surface === 'editor') return this.emit({ t: 'agents', list: await this.editorSessions(), surface });
+      const list = await this.cdp.evaluate(helpersCall('agentList()'));
+      return this.emit({ t: 'agents', list: list || [], ...(surface ? { surface } : {}) });
+    }
     const list = await this.cdp.evaluate(helpersCall('agentList()'));
     this.emit({ t: 'agents', list: list || [] });
   }
 
+  // Devin's Editor surface has no session list in the panel; the titlebar "Search agents" quick pick
+  // lists every session by name. It is opened, read, and closed again with Escape.
+  async openSessionPicker() {
+    const pos = await this.cdp.evaluate(helpersCall('sessionSearchTarget()'));
+    if (!pos) throw new Error('没找到会话搜索按钮（可能 Devin 版本不同）');
+    await this.tapCss(pos.x, pos.y);
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => setTimeout(r, 100));
+      if (await this.cdp.evaluate(helpersCall('sessionPickerRows()'))) return true;
+    }
+    return false;
+  }
+
+  async editorSessions() {
+    const sess = await this.cdp.evaluate(helpersCall('devinSession()'));
+    const tabs = sess?.tabs || [];
+    let rows = null, opened = false;
+    try {
+      opened = await this.openSessionPicker();
+      rows = opened ? await this.cdp.evaluate(helpersCall('sessionPickerRows()')) : null;
+    } catch (e) {
+      if (!tabs.length) throw e;
+    }
+    if (opened) await this.key('Escape');
+    if (!opened && !tabs.length) throw new Error('没有读到会话列表，请先切到 Agent 界面再试');
+    const norm = s => String(s || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+    const open = tabs.map(t => ({ id: `tab:${t.title}`, title: t.title, group: '已打开的会话', current: t.active, running: !!(rows || []).find(r => norm(r.title) === t.title)?.running }));
+    const rest = (rows || []).filter(r => !tabs.some(t => t.title === norm(r.title))).map(r => ({ id: r.id, title: r.title, group: tabs.length ? '全部会话' : '', current: false, running: !!r.running }));
+    return [...open, ...rest];
+  }
+
+  // Close a session tab (Editor surface). The session itself stays in Devin's session list.
+  async closeTab(title) {
+    if (this.app !== 'devin') throw new Error('不支持的操作');
+    const before = await this.cdp.evaluate(helpersCall('devinSession()'));
+    const tabs = before?.tabs || [];
+    if (!tabs.some(t => t.title === title)) throw new Error('这个会话标签已经关闭了');
+    if (tabs.length <= 1) throw new Error('这是唯一打开的会话标签，不能关闭');
+    const pos = await this.cdp.evaluate(helpersCall(`devinTabTarget(${JSON.stringify(title)})`));
+    if (!pos) throw new Error('这个会话标签已经关闭了');
+    await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pos.x, y: pos.y });
+    let x = null;
+    for (let i = 0; i < 8 && !x; i++) {
+      await new Promise(r => setTimeout(r, 80));
+      x = await this.cdp.evaluate(helpersCall(`devinTabCloseTarget(${JSON.stringify(title)})`));
+    }
+    if (!x) throw new Error('没找到这个标签的关闭按钮（可能 Devin 版本不同）');
+    await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x.x, y: x.y });
+    await this.tapCss(x.x, x.y);
+    let gone = false;
+    for (let i = 0; i < 20 && !gone; i++) {
+      await new Promise(r => setTimeout(r, 100));
+      gone = !((await this.cdp.evaluate(helpersCall('devinSession()')))?.tabs || []).some(t => t.title === title);
+    }
+    this.resetDevinView();
+    this.emit({ t: 'status', ok: gone, msg: gone ? '已关闭会话标签' : '没有关掉，Devin 可能在等你确认，请到电脑上看一下' });
+    setTimeout(() => this.pollChat().catch(() => {}), 300);
+  }
+
+  // Editor surface: the open sessions are tabs above the transcript; clicking one switches the transcript.
+  async switchTab(title) {
+    const pos = await this.cdp.evaluate(helpersCall(`devinTabTarget(${JSON.stringify(String(title))})`));
+    if (!pos) throw new Error('这个会话标签已经关闭了');
+    await this.tapCss(pos.x, pos.y);
+    let on = false;
+    for (let i = 0; i < 15 && !on; i++) {
+      await new Promise(r => setTimeout(r, 100));
+      on = (await this.cdp.evaluate(helpersCall('devinSession()')))?.title === title;
+    }
+    this.resetDevinView();
+    this.emit({ t: 'status', ok: on, msg: on ? '已切换会话' : '这个会话还没有切过去，请稍后再试' });
+    setTimeout(() => this.pollChat().catch(() => {}), 300);
+  }
+
+  // Switching surface resets what was read from the old transcript, like opening another agent.
+  resetDevinView() {
+    this.lastChat = '';
+  }
+
+  async setSurface(to) {
+    if (this.app !== 'devin') throw new Error('不支持的操作');
+    const want = to === 'editor' ? 'editor' : 'agent';
+    const cur = await this.cdp.evaluate(helpersCall('devinSurface()'));
+    if (cur === want) return this.emit({ t: 'status', ok: true, msg: want === 'editor' ? '已在 Editor 界面' : '已在 Agent 界面' });
+    const pos = await this.cdp.evaluate(helpersCall(`surfaceTarget(${JSON.stringify(want)})`));
+    if (!pos) throw new Error('找不到 Agent / Editor 切换按钮');
+    await this.tapCss(pos.x, pos.y);
+    let ready = false;
+    for (let i = 0; i < 20 && !ready; i++) {
+      await new Promise(r => setTimeout(r, 100));
+      ready = (await this.cdp.evaluate(helpersCall('devinSurface()'))) === want && await this.cdp.evaluate(helpersCall('transcriptVisible()'));
+    }
+    this.resetDevinView();
+    if (!ready) this.emit({ t: 'status', ok: false, msg: '这个界面还没有加载完，请稍后再试' });
+    else this.emit({ t: 'status', ok: true, msg: want === 'editor' ? '已切到 Editor 界面' : '已切到 Agent 界面' });
+    setTimeout(() => this.pollChat().catch(() => {}), 300);
+  }
+
+  // Devin "New": the Agent surface has the New session control. The Editor surface has none
+  // visible, so it switches to Agent first and stays there (the new session lives in Agent).
+  async devinNewChat() {
+    const surface = await this.cdp.evaluate(helpersCall('devinSurface()'));
+    const switched = surface === 'editor';
+    if (switched) await this.setSurface('agent');
+    await this.pressControl('newChat');
+    this.resetDevinView();
+    this.emit({ t: 'status', ok: true, msg: switched ? '已切到 Agent 界面并新建对话' : '已新建对话' });
+  }
+
   async openAgent(id) {
     if (!id || id.length > 200) throw new Error('这条 Agent 已经不在列表里');
+    if (this.app === 'devin' && id.startsWith('tab:')) return this.switchTab(id.slice(4));
+    if (this.app === 'devin' && await this.cdp.evaluate(helpersCall('devinSurface()')) === 'editor') {
+      const opened = await this.openSessionPicker();
+      const pos = opened && await this.cdp.evaluate(helpersCall(`sessionPickerTarget(${JSON.stringify(id)})`));
+      if (!pos) {
+        if (opened) await this.key('Escape');
+        throw new Error('这条 Agent 已经不在列表里');
+      }
+      await this.tapCss(pos.x, pos.y);
+      this.resetDevinView();
+      this.emit({ t: 'status', ok: true, msg: '已切换 Agent' });
+      setTimeout(() => this.pollChat().catch(() => {}), 500);
+      return;
+    }
     const pos = await this.cdp.evaluate(helpersCall(`agentTarget(${JSON.stringify(id)})`));
     if (!pos) throw new Error('这条 Agent 已经不在列表里');
     await this.tapCss(pos.x, pos.y);
-    this.thinking?.clear();
-    this.thinkingTried?.clear();
-    this.keptThink?.clear();
-    this.latestThink = null;
+    if (this.app !== 'devin') {
+      this.thinking?.clear();
+      this.thinkingTried?.clear();
+      this.keptThink?.clear();
+      this.devinHist?.clear();
+      this.latestThink = null;
+    }
     this.lastChat = '';
     this.emit({ t: 'status', ok: true, msg: '已切换 Agent' });
     setTimeout(() => this.pollChat().catch(() => {}), 500);
@@ -2082,19 +3025,44 @@ class Session {
     }).catch(() => { this.fusionMiss = true; }).finally(() => { this.fusionLoading = false; });
   }
 
+  // Reuses the panel if the model menu is already open (pressing the button again would close it),
+  // and expands the model list like openMenu does when the panel does not show up on its own.
+  async openFusionPanel() {
+    let fusion = await this.cdp.evaluate(helpersCall('fusionConfig()'));
+    if (fusion) return fusion;
+    await this.pressControl('model');
+    for (let i = 0; i < 14 && !fusion; i++) {
+      await new Promise(r => setTimeout(r, 150));
+      fusion = await this.cdp.evaluate(helpersCall('fusionConfig()'));
+      if (fusion) break;
+      // The panel opens while the mouse hovers the Fusion row. Clicking that row would pick it and close the menu.
+      const row = await this.cdp.evaluate(helpersCall(`menuItem('model', 'Fusion')`));
+      if (row) { await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: row.x, y: row.y }); continue; }
+      if (i < 4) continue;
+      const opened = await this.cdp.evaluate(helpersCall('clickModelListTrigger()'));
+      if (opened) continue;
+      const sub = await this.cdp.evaluate(helpersCall('modelListTrigger()'));
+      if (sub) await this.tapCss(sub.x, sub.y);
+    }
+    return fusion;
+  }
+
+  async idleFusionRead() {
+    for (let i = 0; i < 40 && this.fusionLoading; i++) await new Promise(r => setTimeout(r, 100));
+  }
+
   async readFusion(open) {
     let cfg = await this.cdp.evaluate(helpersCall('fusionConfig()'));
     if (cfg || !open) return cfg;
-    await this.pressControl('model');
-    cfg = await this.waitFor('fusionConfig()');
+    cfg = await this.openFusionPanel();
     await this.closeMenus();
     return cfg;
   }
 
   async fusionOptions(part) {
     if (!['lead', 'effort', 'sidekick'].includes(part)) throw new Error('没有这个 Fusion 选项');
-    await this.pressControl('model');
-    const fusion = await this.waitFor('fusionConfig()');
+    await this.idleFusionRead();
+    const fusion = await this.openFusionPanel();
     if (!fusion) { await this.closeMenus(); throw new Error('先把模型切换到 Fusion'); }
     const opened = await this.cdp.evaluate(helpersCall(`clickFusionCombo(${JSON.stringify(part)})`));
     if (!opened) { await this.closeMenus(); throw new Error('Fusion 的这项没有打开'); }
@@ -2111,8 +3079,8 @@ class Session {
   }
 
   async fusionPick(part, value) {
-    await this.pressControl('model');
-    const ready = await this.waitFor('fusionConfig()');
+    await this.idleFusionRead();
+    const ready = await this.openFusionPanel();
     if (!ready) { await this.closeMenus(); throw new Error('先把模型切换到 Fusion'); }
     if (part === 'fast') {
       const ok = await this.cdp.evaluate(helpersCall('clickFusionFast()'));
@@ -2176,7 +3144,9 @@ class Session {
     if (!p) throw new Error('不是文件路径');
     const ws = workspaceForTitle(this.winTitle || '');
     const host = ws ? ws.host : /\[SSH: ([^\]]+)\]/.exec(this.winTitle || '')?.[1] || null;
-    const isAbs = /^(\/|~\/)/.test(p);
+    // Devin has no quick-open; resolve purely on disk (absolute, root-relative, basename search).
+    if (this.app === 'devin') return resolveLocal(ws, text);
+    const isAbs = /^(\/|~\/|[a-zA-Z]:[\\/])/.test(p);
     const tried = [];
     const tryPath = async (h, abs) => {
       if (tried.some(t => t.h === h && t.abs === abs)) return null;
@@ -2214,12 +3184,44 @@ class Session {
     throw new Error(`找不到文件（可能已被删除或移动）：${p}`);
   }
 
+  // The desktop app's own colour theme, once per attached app; falls back to a
+  // shiki builtin matching the phone's light/dark choice (sent via {t:'appTheme'}).
+  async fileTheme() {
+    if (this._theme?.app === this.app) return this._theme.theme;
+    let theme = null;
+    try { theme = findTheme(this.app, { port: this.app === 'devin' ? 9223 : 9222 }); } catch {}
+    this._theme = { app: this.app, theme: theme || (this.dark === false ? 'light-plus' : 'dark-plus') };
+    return this._theme.theme;
+  }
+
+  async fileMarks(f, text) {
+    if (f.host) return null;
+    const git = await gitMarks(f.path).catch(() => null);
+    if (git) {
+      if (git.newFile) return { marks: { add: [], mod: [], del: [] }, markSource: 'git', newFile: true };
+      if (git.add.length || git.mod.length || git.del.length) {
+        return { marks: { add: git.add, mod: git.mod, del: git.del }, markSource: 'git' };
+      }
+    }
+    if (this.app === 'devin') {
+      const m = agentMarks(this.devinHist, f.path, text);
+      if (m && (m.add.length || m.del.length)) return { marks: m, markSource: 'agent' };
+    }
+    return git && !git.newFile ? null : (git?.newFile ? { marks: { add: [], mod: [], del: [] }, markSource: 'git', newFile: true } : null);
+  }
+
   async openFile(text) {
     this.emit({ t: 'file', loading: true, name: path.posix.basename(parseRef(text).p) });
     try {
       const f = await this.resolveFile(text);
       const body = await readFile(f.host, f.path, f.size);
-      this.emit({ t: 'file', name: path.posix.basename(f.path), path: f.path, host: f.host, size: f.size, line: f.line, editable: Boolean(body.text) && !body.truncated, ...body });
+      let hl = null, marked = null;
+      if (body.text) {
+        const theme = await this.fileTheme();
+        hl = await highlightText(body.text, f.path, theme).catch(() => null);
+        marked = await this.fileMarks(f, body.text).catch(() => null);
+      }
+      this.emit({ t: 'file', name: path.posix.basename(f.path), path: f.path, host: f.host, size: f.size, line: f.line, editable: Boolean(body.text) && !body.truncated, ...body, ...(hl ? { hl } : {}), ...(marked?.marks ? { marks: marked.marks, markSource: marked.markSource } : {}), ...(marked?.newFile ? { newFile: true } : {}) });
     } catch (e) {
       this.emit({ t: 'file', error: e.message, name: path.posix.basename(parseRef(text).p) });
     }
@@ -2252,7 +3254,14 @@ class Session {
     this.lastChat = '';
     this.thinking = new Map();
     this.thinkingTried = new Map();
+    this.tasksTried = new Map();
     this.keptThink = new Map();
+    this.devinHist = new Map();
+    this.thoughtFails = new Map();
+    this.latestThink = null;
+    this.sessStore = new Map();
+    this.curSession = undefined;
+    this.sessTitles = [];
     cdp.onclose = () => {
       if (this.cdp === cdp) {
         this.cdp = null;
@@ -2273,6 +3282,7 @@ class Session {
     if (this.cdp) {
       const cdp = this.cdp;
       this.cdp = null;
+      this.casting = false;
       cdp.send('Page.stopScreencast').catch(() => {}).finally(() => cdp.close());
     }
   }
@@ -2283,7 +3293,13 @@ class Session {
   }
 
   async startScreencast() {
+    this.casting = true;
     await this.cdp.send('Page.startScreencast', { ...this.screencast, everyNthFrame: 1 });
+  }
+
+  async stopScreencast() {
+    this.casting = false;
+    await this.cdp.send('Page.stopScreencast').catch(() => {});
   }
 
   onFrame({ data, metadata, sessionId }) {
@@ -2382,14 +3398,17 @@ class Session {
     }
   }
 
-  async sendMessage(text, submit) {
+  // Devin while busy: Enter queues (the default), Ctrl/⌘+Enter interrupts the turn and sends now.
+  async sendMessage(text, submit, when) {
     const found = await this.cdp.evaluate(FOCUS_COMPOSER);
     if (!found) throw new Error('没找到可见的聊天输入框：先在画面里打开 Agent 面板（或点「打开聊天」）');
     const busy = submit && await this.cdp.evaluate(helpersCall('agentState()?.busy'));
     await this.typeText(text);
-    if (submit) await this.key('Enter');
+    const now = this.app === 'devin' && when === 'now' && !!busy;
+    if (submit) await this.key(now ? (process.platform === 'darwin' ? 'Meta+Enter' : 'Ctrl+Enter') : 'Enter');
+    if (now) this.emit({ t: 'status', ok: true, msg: '已打断当前任务并发送' });
     if (this.mode === 'chat') setTimeout(() => this.pollChat().catch(() => {}), 300);
-    return Boolean(busy);
+    return Boolean(busy) && !now;
   }
 
   async answerQuestion(qi, oi, part, text) {
@@ -2442,24 +3461,34 @@ class Session {
       case 'settings': return this.showSettings();
       case 'toggleSetting': return this.toggleSetting(String(msg.label ?? ''));
       case 'usage': return this.showUsage();
-      case 'newChat': return this.pressControl('newChat');
+      case 'newChat': if (this.app === 'devin') return this.devinNewChat(); this.devinHist?.clear(); return this.pressControl('newChat');
+      case 'surface': return this.setSurface(String(msg.to ?? ''));
+      case 'closeTab': return this.closeTab(String(msg.title ?? ''));
       case 'file': return this.openFile(String(msg.path ?? ''));
       case 'saveFile': return this.saveFile(String(msg.path ?? ''), String(msg.text ?? ''));
       case 'click': return this.clickButton(msg.item, msg.n);
-      case 'queue': return msg.action === 'edit' ? this.editQueued(msg.id, String(msg.text ?? '')) : this.queueAction(msg.id, msg.action);
+      case 'queue':
+        if (msg.action === 'clear' && this.app === 'devin') return this.devinClearQueue();
+        if (msg.action === 'edit' && this.app === 'devin') return this.devinTakeOut(msg.id);
+        return msg.action === 'edit' ? this.editQueued(msg.id, String(msg.text ?? '')) : this.queueAction(msg.id, msg.action);
       case 'stop': return this.stopAgent();
       case 'subagent': return this.subagentAction(msg.name, msg.part === 'stop' ? 'stop' : 'open');
       case 'mainChat': return this.backToMain();
       case 'image': return this.attachImage(msg.data, msg.name, msg.type);
-      case 'question': return this.answerQuestion(msg.qi, msg.oi, ['option', 'submit', 'skip'].includes(msg.part) ? msg.part : 'option', msg.text);
+      case 'question': return this.answerQuestion(msg.qi, msg.oi, ['option', 'submit', 'skip', 'prev', 'next'].includes(msg.part) ? msg.part : 'option', msg.text);
       case 'changes': return this.listChanges();
+      case 'thought': return this.thought(String(msg.i ?? ''));
+      case 'revert': return this.revert(String(msg.i ?? ''));
+      case 'revertOk': return this.revertAnswer(true, typeof msg.apply === 'boolean' ? msg.apply : undefined);
+      case 'revertCancel': return this.revertAnswer(false);
       case 'change': return this.changeAction(msg.i, msg.name, msg.act);
       case 'scrollChat': return this.scrollChat(Number(msg.dy) || 0);
+      case 'appTheme': this.dark = msg.dark !== false; return;
       case 'tap': return this.tap(msg.x, msg.y, msg.button);
       case 'wheel': return this.wheel(msg.x, msg.y, msg.dx || 0, msg.dy || 0);
       case 'key': return this.key(String(msg.key || ''), { focusTerminal: msg.focus === 'terminal' });
       case 'type': return this.typeText(String(msg.text ?? ''));
-      case 'send': return this.sendMessage(String(msg.text ?? ''), msg.submit !== false);
+      case 'send': return this.sendMessage(String(msg.text ?? ''), msg.submit !== false, msg.when);
       case 'refresh': return this.snapshot(true);
       case 'quality':
         this.screencast.quality = Math.min(this.mode === 'terminal' ? 95 : 90, Math.max(20, Number(msg.quality) || 60));
@@ -2711,8 +3740,25 @@ async function waitReachable(url) {
 }
 
 function appUrl() {
+  const fixed = normalizeAppUrl(loadConfig().appUrl);
+  if (fixed) return fixed;
   const [owner, repo] = PUBLISH_REPO.split('/');
   return `https://${owner.toLowerCase()}.github.io/${repo}/`;
+}
+
+// Pages on a user site with a custom domain serves project sites from that domain too.
+// Ask gh for the real address once, persist it, and allow its origin. Best effort only.
+async function detectAppUrl() {
+  if (!PUBLISH_REPO || normalizeAppUrl(loadConfig().appUrl)) return;
+  try {
+    const u = normalizeAppUrl(await run('gh', ['api', `repos/${PUBLISH_REPO}/pages`, '--jq', '.html_url']));
+    if (!u || new URL(u).origin === `https://${PUBLISH_REPO.split('/')[0].toLowerCase()}.github.io`) return;
+    const cfg = loadConfig();
+    cfg.appUrl = u;
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
+    ALLOWED_ORIGINS.add(new URL(u).origin);
+    console.log(`检测到自定义域名，手机 App 固定地址：${u}`);
+  } catch {}
 }
 
 const gitBlobSha = buf => crypto.createHash('sha1').update(`blob ${buf.length}\0`).update(buf).digest('hex');
@@ -2723,9 +3769,7 @@ async function putFile(name, buf, sha) {
 }
 
 async function remoteShas() {
-  const spec = PAGES_BRANCH
-    ? [`repos/${PUBLISH_REPO}/git/trees/${PAGES_BRANCH}?recursive=1`, '--jq', '.tree[] | select(.type=="blob") | [.path, .sha] | @tsv']
-    : [`repos/${PUBLISH_REPO}/contents`, '--jq', '.[] | [.name, .sha] | @tsv'];
+  const spec = [`repos/${PUBLISH_REPO}/git/trees/${PAGES_BRANCH || 'HEAD'}?recursive=1`, '--jq', '.tree[] | select(.type=="blob") | [.path, .sha] | @tsv'];
   const out = await run('gh', ['api', ...spec]).catch(() => '');
   return new Map(out.split('\n').filter(Boolean).map(l => l.split('\t')));
 }
@@ -2915,6 +3959,7 @@ server.listen(PORT, TUNNEL ? '127.0.0.1' : HOST, async () => {
   console.log(`Remote Agent 已启动，端口 ${PORT}`);
   console.log(`数据目录：${DATA_DIR}`);
   console.log(`已配对 ${listDevices().length} 台设备。添加新设备：npm run pair`);
+  detectAppUrl();
   startWatcher({
     listWindows,
     openCdp: async ws => { const c = new Cdp(ws); await c.connect(); return c; },

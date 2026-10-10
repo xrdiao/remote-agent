@@ -15,10 +15,18 @@ const STORAGE_DIRS = {
   win32: [`${process.env.APPDATA}/Cursor/User/workspaceStorage`, `${process.env.APPDATA}/Devin/User/workspaceStorage`],
 };
 
+const WIN32 = process.platform === 'win32';
+// Windows file URIs decode to "/e:/Codes/…"; Node wants "e:/Codes/…" (or "E:\…").
+const sameName = (a, b) => WIN32 ? String(a).toLowerCase() === String(b).toLowerCase() : a === b;
+
 // vscode-remote://ssh-remote+<host or hex-encoded {"hostName":...}>/path
 function parseFolderUri(uri) {
   const u = new URL(uri);
-  if (u.protocol === 'file:') return { host: null, root: decodeURIComponent(u.pathname) };
+  if (u.protocol === 'file:') {
+    let root = decodeURIComponent(u.pathname);
+    if (WIN32 && /^\/[a-zA-Z]:/.test(root)) root = root.slice(1);
+    return { host: null, root };
+  }
   if (u.protocol !== 'vscode-remote:') return null;
   const authority = decodeURIComponent(u.host);
   const m = /^ssh-remote\+(.+)$/.exec(authority);
@@ -50,11 +58,15 @@ export function workspaces() {
   return out.sort((a, b) => b.mtime - a.mtime);
 }
 
-// Window titles look like "file.py — Folder [SSH: host]" or "Folder".
+// Window titles look like "file.py — Folder [SSH: host]" or "Folder";
+// Devin's look like "folder - Devin - active.file".
 export function workspaceForTitle(title) {
   const host = /\[SSH: ([^\]]+)\]/.exec(title)?.[1] || null;
+  const base = w => path.posix.basename(String(w.root).replace(/\\/g, '/'));
+  const dm = /^(.*) - Devin(?: - .*)?$/.exec(title);
+  if (dm) return workspaces().find(w => !w.host && sameName(base(w), dm[1].trim())) || null;
   const folder = title.replace(/\s*\[SSH: [^\]]+\]\s*$/, '').split(' — ').pop().replace(/^●\s*/, '').trim();
-  return workspaces().find(w => w.host === host && path.posix.basename(w.root) === folder) || null;
+  return workspaces().find(w => w.host === host && base(w) === folder) || null;
 }
 
 const shq = s => `'${String(s).replace(/'/g, `'\\''`)}'`;
@@ -253,4 +265,63 @@ export function parseRef(text) {
   const m = /(?::(\d+)(?::\d+)?(?:-\d+)?|#L(\d+)(?:-L?\d+)?)$/.exec(s);
   if (m) { line = Number(m[1] || m[2]); s = s.slice(0, m.index); }
   return { p: s, line };
+}
+
+const SEARCH_SKIP = new Set([...SKIP_DIRS, '.gradle']);
+// Bare file name → full path under root. Bounded recursive search (depth ≤ 6,
+// ~20000 entries); prefers paths ending with the ref's directory suffix, then the shortest.
+function findByBasename(root, ref) {
+  const want = path.posix.basename(ref.replace(/\\/g, '/')).toLowerCase();
+  if (!want) return null;
+  const suffix = '/' + ref.replace(/\\/g, '/');
+  let best = null;
+  let visited = 0;
+  const walk = (dir, depth) => {
+    if (depth > 6 || visited > 20000 || best?.score === 0) return;
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (++visited > 20000) return;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (!SEARCH_SKIP.has(e.name) && !e.name.startsWith('.')) walk(full, depth + 1);
+      } else if (e.isFile() && e.name.toLowerCase() === want) {
+        const norm = full.replace(/\\/g, '/');
+        const score = norm.endsWith(suffix) ? 0 : 1;
+        if (!best || score < best.score || (score === best.score && norm.length < best.path.length)) best = { path: full, score };
+      }
+    }
+  };
+  walk(root, 0);
+  return best?.path || null;
+}
+
+// Resolves a chat file reference against a workspace purely on disk — for apps like
+// Devin that have no quick-open to search by name: absolute path → root-relative →
+// bounded basename search inside the workspace.
+export async function resolveLocal(ws, refText) {
+  let { p, line } = parseRef(refText);
+  if (WIN32 && /^\/[a-zA-Z]:[\\/]/.test(p)) p = p.slice(1);
+  if (!p) throw new Error('不是文件路径');
+  const hit = async q => {
+    const size = await fileSize(ws?.host || null, q);
+    return size == null ? null : { host: ws?.host || null, path: q, size, line };
+  };
+  const abs = /^(\/|~\/)/.test(p) || /^[a-zA-Z]:[\\/]/.test(p);
+  if (abs) {
+    const found = await hit(p);
+    if (found) return found;
+  } else if (ws) {
+    const found = await hit(path.posix.join(String(ws.root).replace(/\\/g, '/'), p));
+    if (found) return found;
+    if (!ws.host) {
+      let local = null;
+      try { local = findByBasename(fs.realpathSync(ws.root.replace(/^~(?=\/)/, os.homedir())), p); } catch {}
+      if (local) {
+        const found = await hit(local);
+        if (found) return found;
+      }
+    }
+  }
+  throw new Error(`找不到文件（可能已被删除或移动）：${p}`);
 }

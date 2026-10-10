@@ -91,7 +91,7 @@ Check that it worked by opening `http://127.0.0.1:9222/json/version` (Cursor) or
 npm run setup
 ```
 
-It checks for `cloudflared` and `gh` and offers to publish a fixed phone-app address on your own GitHub Pages, install a start-at-login service (macOS only), and enable 2FA. Skip it if you just want to try things out. The wizard is written in Chinese.
+It checks for `cloudflared` and `gh` and offers to publish a fixed phone-app address on your own GitHub Pages, install a start-at-login service (macOS only), and enable 2FA. Skip it if you just want to try things out. The wizard is written in Chinese. If your GitHub account has a custom domain on its user site, project sites are served from that domain; the app records the real address as `appUrl` in `~/.agent-remote/config.json` automatically (you can also set it there by hand).
 
 ## Step 5. Start the relay
 
@@ -111,7 +111,7 @@ npm run pair
 It prints a QR code and a one-time link, valid for a few minutes and for one phone. Scan the QR code with your phone camera, or send the link to the phone and open it in its browser. After pairing, the phone is remembered.
 
 - iPhone: use Safari. Tap Share, then "Add to Home Screen" to get an app icon.
-- Android: use Chrome, then menu, then "Install app" or "Add to Home screen". There is also an Android wrapper app in `android/` that can paste the pairing link.
+- Android: use Chrome, then menu, then "Install app" or "Add to Home screen". There is also an Android wrapper app in `android/` that can scan the QR code directly.
 - Any other device with a browser also works.
 
 ## Step 7. Use it
@@ -162,6 +162,7 @@ Pairing data is stored in `~/.agent-remote/` (an older `~/.cursor-remote-lite/` 
 - **`npm` is not recognized**: install Node.js 22 or newer (see Step 1), then close and reopen the terminal so PATH refreshes.
 - **`cloudflared` not found**: finish Step 2 and open a new terminal so it is on PATH.
 - **Pairing link expired**: run `npm run pair` again. A new link cancels the old one.
+- **Fixed address does not load / is refused**: if your GitHub user site uses a custom domain, the project page lives under that domain. The wizard and the relay record it as `appUrl` in `~/.agent-remote/config.json`; set it there yourself if needed.
 - **Phone cannot open the address**: the public address can take a short while to become reachable. With `npm run start`, the phone must be on the same Wi-Fi as the computer, and the firewall must allow port 3939.
 - **Lost or stolen phone**: `npm run devices`, then `npm run devices remove <id>`. To drop everything, `npm run reset`.
 - **Port 3939 already in use**: run with a different port, for example `PORT=4000 npm run public` (PowerShell: `$env:PORT=4000; npm run public`).

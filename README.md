@@ -91,7 +91,7 @@ npm install
 npm run setup
 ```
 
-它会检查 `cloudflared` 和 `gh`，并可选择：在你自己的 GitHub Pages 上发布一个固定的手机端地址、安装开机自启服务（仅 macOS）、开启两步验证。只想先试试可以跳过。向导界面为中文。
+它会检查 `cloudflared` 和 `gh`，并可选择：在你自己的 GitHub Pages 上发布一个固定的手机端地址、安装开机自启服务（仅 macOS）、开启两步验证。只想先试试可以跳过。向导界面为中文。如果你的 GitHub 用户站点绑了自定义域名，项目页面会从该域名提供；App 会自动把真实地址记入 `~/.agent-remote/config.json` 的 `appUrl`（也可以手动填）。
 
 ## 第 5 步：启动中继
 
@@ -111,7 +111,7 @@ npm run pair
 它会打印一个二维码和一条一次性链接，几分钟内有效，且只对一部手机有效。用手机相机扫码，或把链接发到手机上用浏览器打开。配对后手机会被记住。
 
 - iPhone：用 Safari，点「分享」，然后「添加到主屏幕」获得应用图标。
-- Android：用 Chrome，菜单里选「安装应用」或「添加到主屏幕」。`android/` 目录里还有一个可粘贴配对链接的安卓壳应用。
+- Android：用 Chrome，菜单里选「安装应用」或「添加到主屏幕」。`android/` 目录里还有一个可以直接扫码配对的安卓壳应用。
 - 其他任何带浏览器的设备也可以用。
 
 ## 第 7 步：使用
@@ -162,6 +162,7 @@ npm run pair
 - **提示 `npm` 不是命令**：安装 Node.js 22 或更高版本（见第 1 步），然后关闭并重开终端让 PATH 生效。
 - **找不到 `cloudflared`**：完成第 2 步，并重开一个终端让它进入 PATH。
 - **配对链接过期**：重新运行 `npm run pair`，新链接会使旧链接失效。
+- **固定地址打不开/被拒绝**：如果 GitHub 用户站点用了自定义域名，项目页面就在该域名下。向导和中继会把它记入 `~/.agent-remote/config.json` 的 `appUrl`，需要时也可手动设置。
 - **手机打不开地址**：公网地址可能需要稍等片刻才可访问。用 `npm run start` 时，手机必须与电脑在同一 Wi-Fi，且防火墙要放行 3939 端口。
 - **手机丢失或被盗**：`npm run devices`，然后 `npm run devices remove <id>`。要全部清空，用 `npm run reset`。
 - **3939 端口被占用**：换端口运行，例如 `PORT=4000 npm run public`（PowerShell：`$env:PORT=4000; npm run public`）。
