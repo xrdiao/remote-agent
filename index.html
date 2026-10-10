@@ -938,6 +938,7 @@ function connect() {
     else if (m.t === 'panel') { panel = m.rect; updateTermEmpty(); layoutStage(); applyQuality(); }
     else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; if (sheetKind === 'windows') showWindows(); }
     else if (m.t === 'attached') {
+      rememberAgentOpen(m);
       if (m.keepQuota) { applySelection(m); return; }
       finishPending(['正在切换窗口…', '正在切换 Agent…']);
       store.set('window', m.id);
@@ -981,17 +982,29 @@ function connect() {
     else if (m.t === 'changes') showChanges(m);
     else if (m.t === 'file') showFile(m);
     else if (m.t === 'saved') onSaved(m);
-    else if (m.t === 'status') { clearSwitchWatch(); status(m.msg, m.ok); }
+    else if (m.t === 'status') { if (!m.ok) pendingAgentOpen = ''; clearSwitchWatch(); status(m.msg, m.ok); }
   };
 }
 
 /* ---------- bottom sheet ---------- */
 let sheetKind = null;
+let pendingAgentOpen = '';
+const agentOpened = JSON.parse(store.get('agent-opened') || '{}');
+const agentOpenedKey = thread => `${currentComputer()?.id || ''}|${thread}`;
+function rememberAgentOpen(m) {
+  const target = /^(?:thread|win|new):([^:]+)(?::(.+))?$/.exec(pendingAgentOpen);
+  if (!m.closed && m.app === 'codex' && target && m.windowId === target[1] && m.threadId && (!target[2] || m.threadId === target[2])) {
+    agentOpened[agentOpenedKey(m.threadId)] = Date.now();
+    store.set('agent-opened', JSON.stringify(agentOpened));
+    pendingAgentOpen = '';
+  }
+}
 function openSheet(kind, html) {
   sheetKind = kind;
   $('sheet').innerHTML = html;
   $('shade').classList.add('open');
   $('sheet').classList.add('open');
+  if (kind === 'agents') $('sheet').scrollTop = 0;
 }
 function closeSheet() {
   sheetKind = null;
@@ -1054,7 +1067,8 @@ function foldSection(name, inner, open, count) {
 }
 function showAgents(list) {
   const newest = items => Math.max(0, ...items.map(a => a.lastUsed || 0));
-  if (currentAppName === 'Codex') list = [...list].sort((a, b) => (b.lastUsed || 0) - (a.lastUsed || 0));
+  if (currentAppName === 'Codex') list = list.map(a => ({ ...a, lastUsed: Math.max(a.lastUsed || 0, agentOpened[agentOpenedKey(a.id.split(':').slice(2).join(':'))] || 0) }))
+    .sort((a, b) => (b.lastUsed || 0) - (a.lastUsed || 0));
   const order = [];
   const byWindow = new Map();
   for (const a of list) {
@@ -1415,7 +1429,7 @@ $('sheet').addEventListener('click', async e => {
     return;
   }
   if (b.dataset.win) { closeSheet(); status('正在切换窗口…'); return send({ t: 'attach', id: b.dataset.win }); }
-  if (b.dataset.agent) { closeSheet(); status('正在切换 Agent…'); return send({ t: 'openAgent', id: b.dataset.agent }); }
+  if (b.dataset.agent) { pendingAgentOpen = b.dataset.agent; closeSheet(); status('正在切换 Agent…'); return send({ t: 'openAgent', id: b.dataset.agent }); }
   if (b.dataset.term) { closeSheet(); status('正在切换终端…'); return send({ t: 'openTerminal', id: b.dataset.term }); }
   if (b.dataset.open) { closeSheet(); status('正在打开项目…'); return send({ t: 'openProject', path: b.dataset.open }); }
   if (b.dataset.dir) { status('正在读取文件夹…'); return send({ t: 'projects', path: b.dataset.dir }); }
