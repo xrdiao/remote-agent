@@ -141,6 +141,10 @@ function openedFolders(app) {
 }
 
 export function titleFolder(title, app) {
+  if (app === 'devin') {
+    const match = /^(.*) - Devin(?: - .*)?$/.exec(String(title || ''));
+    if (match) return { name: match[1].trim(), host: /\[SSH: ([^\]]+)\]/.exec(String(title || ''))?.[1] || null };
+  }
   if (app === 'code' || app === 'codex') {
     const parts = String(title || '').replace(/\s+-\s+Visual Studio Code$/, '').split(' - ').map(s => s.trim()).filter(Boolean);
     if (parts[0] === 'Welcome' && parts.length > 1) return { name: parts[parts.length - 1], host: null };
@@ -156,8 +160,9 @@ export function windowRoots(title, app, preferRoot = '') {
   const storageApp = app === 'codex' ? 'code' : app === 'devin' ? 'devin' : app === 'code' ? 'code' : 'cursor';
   const { name, host } = titleFolder(title, storageApp === 'code' && app !== 'cursor' ? 'code' : app);
   const samePlace = (w, root, itemHost = host) => String(w.root || '').replace(/\\/g, '/') === String(root || '').replace(/\\/g, '/') && (w.host || null) === (itemHost || null);
-  const open = openedFolders(storageApp).filter(w => w.windowName === name && (w.host || null) === host);
-  let matched = open.length ? open : workspaces().filter(w => path.posix.basename(w.root) === name && (w.host || null) === host && (w.sources || [w.source]).includes(storageApp));
+  const sameName = (a, b) => WIN32 ? a.toLowerCase() === b.toLowerCase() : a === b;
+  const open = openedFolders(storageApp).filter(w => sameName(w.windowName, name) && (w.host || null) === host);
+  let matched = open.length ? open : workspaces().filter(w => sameName(path.posix.basename(w.root.replace(/\\/g, '/')), name) && (w.host || null) === host && (w.sources || [w.source]).includes(storageApp));
   if (matched.length > 1 && !open.length) matched = [];
   if (preferRoot) {
     const known = workspaces().find(w => samePlace(w, preferRoot, host));
@@ -435,6 +440,7 @@ function findByBasename(root, ref) {
 // bounded basename search inside the workspace.
 export async function resolveLocal(ws, refText) {
   let { p, line } = parseRef(refText);
+  if (WIN32 && !ws?.host) p = p.replace(/\\/g, '/');
   if (WIN32 && /^\/[a-zA-Z]:[\\/]/.test(p)) p = p.slice(1);
   if (!p) throw new Error('不是文件路径');
   const hit = async q => {
