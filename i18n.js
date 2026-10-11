@@ -7,6 +7,7 @@ const I18N = (() => {
   const EN = {
     '添加附件': 'Add attachment', '图片': 'Image', '文件': 'File',
     '正在上传文件…': 'Uploading file…', '文件已上传，写好文字后点发送': 'File uploaded. Add your message and tap Send.',
+    '历史会话': 'Chat history', 'Fusion 历史会话': 'Fusion chat history', '新 Fusion 会话': 'New Fusion chat', '暂无历史会话': 'No chat history', '未选择': 'Not selected',
     '上传图片': 'Upload image', '上下文说明': 'Context details', '额度说明': 'Usage details', '刷新数据': 'Refresh', '未获取': 'Unavailable', '周额度': 'Weekly usage', '缓存数据': 'Cached data', '最近更新': 'Updated',
     '项目 ▾': 'Project ▾', '上传文档': 'Upload document', '新建会话': 'New chat',
     '输入你的问题，或粘贴图片、文档…': 'Ask a question, or paste an image or document…',
