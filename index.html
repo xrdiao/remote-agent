@@ -75,19 +75,19 @@
   button.on, button.primary { background: var(--accent); border-color: var(--accent-b); color: #fff; }
   [hidden] { display: none !important; }
 
-  header { flex: none; display: flex; align-items: center; gap: 6px; padding: 10px 10px 6px; min-width: 0; }
+  header { flex: none; display: flex; align-items: center; gap: 4px; padding: 7px 8px 3px; min-width: 0; }
   #dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); flex: none; }
   #dot.ok { background: var(--ok); box-shadow: 0 0 12px #22cc5533; }
-  #title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 9px; padding: 9px 10px; text-align: left; border-radius: 14px; background: var(--panel); }
+  #title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; height: 44px; padding: 5px 8px; text-align: left; border-radius: 14px; background: var(--panel); }
   .titleLabels { flex: 1; min-width: 0; }
   #titleText, #titleProject { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #titleText { font-size: 15px; font-weight: 600; }
-  #titleProject { font-size: 11px; color: var(--muted2); }
+  #titleText { font-size: 13px; line-height: 1.3; font-weight: 600; }
+  #titleProject { font-size: 10px; line-height: 1.3; color: var(--muted2); }
   #title::after { content: "⌄"; color: var(--muted); }
-  .seg { display: flex; flex: none; margin: 4px 10px 8px; padding: 3px; border: 1px solid var(--border); border-radius: 14px; background: var(--panel); }
-  .seg button { display: flex; align-items: center; justify-content: center; gap: 8px; flex: 1; border: none; border-radius: 11px; padding: 9px 8px; background: transparent; color: var(--muted2); }
+  .seg { display: flex; flex: none; margin: 3px 8px 5px; padding: 2px; border: 1px solid var(--border); border-radius: 14px; background: var(--panel); }
+  .seg button { display: flex; align-items: center; justify-content: center; gap: 8px; flex: 1; border: none; border-radius: 9px; padding: 4px 8px; font-size: 13px; background: transparent; color: var(--muted2); }
   .seg button.on { background: var(--accent); color: #fff; box-shadow: inset 0 1px 0 #ffffff22; }
-  #menuBtn { flex: none; height: 48px; width: 34px; padding: 0; border-radius: 12px; }
+  #menuBtn { flex: none; height: 38px; width: 30px; padding: 0; border-radius: 12px; }
 
   main { flex: 1; min-height: 0; position: relative; }
   .view { position: absolute; inset: 0; display: none; flex-direction: column; min-width: 0; }
@@ -111,18 +111,20 @@
   }
 
   /* chat view */
-  #meters { flex: 0 0 140px; display: flex; align-items: center; gap: 5px; min-width: 0; }
+  #meters { flex: 0 0 156px; display: flex; align-items: center; gap: 4px; min-width: 0; }
   #quotaMeters { display: flex; flex: 1; overflow-x: auto; scrollbar-width: none; }
   #quotaMeters:empty { display: none; }
   #quotaStatus { display: none; }
-  .meter { flex: none; display: flex; align-items: center; gap: 4px; height: 48px; padding: 6px; border-radius: 12px; background: var(--panel); font-size: 11px; }
-  .meter > span:first-child, .quotaUpdated { display: none; }
-  .meter .track { position: relative; flex: none; width: 25px; height: 25px; border-radius: 50%; --ring: var(--ok); background: conic-gradient(var(--ring) calc(var(--pct, 0) * 1%), var(--line) 0); }
-  .meter .track::after { content: ""; position: absolute; inset: 4px; border-radius: 50%; background: var(--panel); }
+  .meter { flex: none; display: flex; align-items: center; gap: 4px; width: 76px; height: 38px; padding: 4px 5px; border-radius: 10px; background: var(--panel); font-size: 10px; }
+  .quotaUpdated { display: none; }
+  .meterText { flex: 1; min-width: 0; text-align: left; }
+  .meterLabel { display: block; font-size: 9px; line-height: 1.25; color: var(--muted2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meter .track { position: relative; flex: none; width: 18px; height: 18px; border-radius: 50%; --ring: var(--ok); background: conic-gradient(var(--ring) calc(var(--pct, 0) * 1%), var(--line) 0); }
+  .meter .track::after { content: ""; position: absolute; inset: 3px; border-radius: 50%; background: var(--panel); }
   .meter .track:has(.warm) { --ring: var(--warn); }
   .meter .track:has(.hot) { --ring: var(--hot); }
   .meter i { display: none; }
-  .meter b { font-weight: 500; }
+  .meter b { display: block; font-size: 9px; line-height: 1.3; font-weight: 500; white-space: nowrap; }
   #meterCtx .track { --ring: var(--ctx); }
   #attachments { display: flex; flex: 1; gap: 8px; overflow-x: auto; min-width: 0; }
   #attachments:empty { display: none; }
@@ -456,7 +458,7 @@
 <header>
   <button id="title"><span id="dot"></span><span class="titleLabels"><span id="titleText">连接中…</span><span id="titleProject"></span></span></button>
     <div id="meters">
-      <button class="meter" id="meterCtx" type="button"><span>上下文</span><span class="track"><i id="meterCtxFill"></i></span><b id="meterCtxPct">–</b></button>
+      <button class="meter" id="meterCtx" type="button"><span class="track"><i id="meterCtxFill"></i></span><span class="meterText"><span class="meterLabel">上下文</span><b id="meterCtxPct">未获取</b></span></button>
       <div id="quotaMeters"></div><span id="quotaStatus"></span>
     </div>
   <button id="menuBtn" aria-label="菜单">⋯</button>
@@ -1511,18 +1513,20 @@ function meterFill(pct, basis) {
   const warm = basis === 'remaining' ? pct <= 25 : pct >= 75;
   return tight ? 'hot' : warm ? 'warm' : '';
 }
+let contextInfo = null, quotaInfo = null;
 function renderContext(info) {
   const basis = info && typeof info === 'object' ? (info.basis || 'used') : 'used';
   const pct = info == null ? null : typeof info === 'object' ? info.pct : info;
   const n = pct == null || pct === '' ? null : Math.max(0, Math.min(100, Number(pct)));
-  $('meterCtxPct').textContent = n == null ? '–' : n + '%';
+  contextInfo = { pct: n, basis };
+  $('meterCtxPct').textContent = n == null ? '未获取' : (basis === 'remaining' ? '剩余' : '已用') + n + '%';
   const fill = $('meterCtxFill');
   fill.style.width = (n ?? 0) + '%';
   fill.parentElement.style.setProperty('--pct', n ?? 0);
   fill.className = meterFill(n, basis);
   $('meterCtx').title = '上下文 · ' + (basis === 'remaining' ? '剩余' : '已用') + ' ' + (n ?? '–') + '%';
   $('meterCtx').setAttribute('aria-label', $('meterCtx').title);
-  $('meterCtx').onclick = () => { status('正在读取额度…'); send({ t: 'usage' }); };
+  $('meterCtx').onclick = () => showUsageDetails('context');
 }
 const quotaCache = new Map();
 const quotaKey = () => [currentComputer()?.id || '', ...viewSel.split('|').slice(0, 2)].join('|');
@@ -1532,19 +1536,19 @@ function renderQuota(m) {
   if (!m.cached || m.updated > (quotaCache.get(quotaKey())?.updated || 0)) $('quotaStatus').textContent = '';
 
   if (m.loading) return;
+  quotaInfo = m;
   if (!('quota' in m) && !('limits' in m) && !('bars' in m)) {
-    if (!$('quotaMeters').children.length) $('quotaMeters').innerHTML = '<button class="meter" onclick="status(\'正在读取额度…\');send({t:\'usage\'})" title="点击读取额度" aria-label="点击读取额度">–</button>';
+    $('quotaMeters').innerHTML = '<button class="meter" onclick="showUsageDetails(\'quota\')"><span class="track"></span><span class="meterText"><span class="meterLabel">额度</span><b>未获取</b></span></button>';
     return;
   }
   if (!m.missing && !m.loading) quotaCache.set(quotaKey(), m);
   const bars = [...(m.quota || []), ...(m.limits || []), ...((m.quota || m.limits) ? [] : (m.bars || []))]
     .filter(b => b?.label && !/^loading\b/i.test(String(b.label)));
   const when = m.updated ? new Date(m.updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
-  if (m.missing && $('quotaMeters').querySelector('.track')) { $('quotaMeters').title += ' · 没有额度数据'; return; }
   if (m.missing) {
     $('quotaMeters').title = '没有额度数据' + (when ? ` · 更新于 ${when}` : '');
-    $('quotaMeters').innerHTML = `<button class="meter" type="button"><span class="track"></span><b>–</b></button>`;
-    $('quotaMeters').querySelector('button').onclick = () => { status('正在读取额度…'); send({ t: 'usage' }); };
+    $('quotaMeters').innerHTML = `<button class="meter" type="button"><span class="track"></span><span class="meterText"><span class="meterLabel">额度</span><b>未获取</b></span></button>`;
+    $('quotaMeters').querySelector('button').onclick = () => showUsageDetails('quota');
     return;
   }
   const reset = [...new Set(bars.map(b => b.reset).filter(Boolean))].join(' · ') || (m.lines || []).find(l => /reset/i.test(l)) || '';
@@ -1552,11 +1556,23 @@ function renderQuota(m) {
   $('quotaMeters').innerHTML = bars.map(b => {
     const basis = b.basis || 'used';
     const n = b.pct == null ? null : Math.max(0, Math.min(100, Number(b.pct)));
-    const num = n == null ? (b.value ?? '–') : `${n}%`;
-    return `<button class="meter" type="button" title="${esc(b.label + ' · ' + basis + ' · ' + (b.reset || ''))}" aria-label="${esc(b.label + ' ' + num)}"><span>${esc(b.label)}</span><span class="track" style="--pct:${n ?? 0}"><i class="${meterFill(n, basis)}" style="width:${n ?? 0}%"></i></span><b>${esc(String(num))}</b></button>`;
+    const num = n == null ? (b.value ?? '未获取') : (basis === 'remaining' ? '剩余' : '已用') + `${n}%`;
+    const label = /week|每周|周额度/i.test(b.label) ? '周额度' : b.label;
+    return `<button class="meter" type="button" title="${esc(b.label + ' · ' + basis + ' · ' + (b.reset || ''))}" aria-label="${esc(b.label + ' ' + num)}"><span class="track" style="--pct:${n ?? 0}"><i class="${meterFill(n, basis)}" style="width:${n ?? 0}%"></i></span><span class="meterText"><span class="meterLabel">${esc(label)}</span><b>${esc(String(num))}</b></span></button>`;
   }).join('');
   if (when) $('quotaMeters').insertAdjacentHTML('beforeend', `<span class="quotaUpdated">${m.cached ? '缓存 ' : ''}${esc(when)}</span>`);
-  $('quotaMeters').querySelectorAll('button').forEach(btn => btn.onclick = () => { status('正在读取额度…'); send({ t: 'usage' }); });
+  $('quotaMeters').querySelectorAll('button').forEach(btn => btn.onclick = () => showUsageDetails('quota'));
+}
+function showUsageDetails(kind) {
+  const context = kind === 'context';
+  const m = quotaInfo || {};
+  const bars = [...(m.quota || []), ...(m.limits || []), ...((m.quota || m.limits) ? [] : (m.bars || []))];
+  const value = b => b?.pct == null ? String(b?.value || '未获取') : `${b.basis === 'remaining' ? '剩余' : '已用'} ${b.pct}%`;
+  const rows = context ? `<p>${esc(value(contextInfo))}</p><p class="hint">上下文表示当前会话的上下文容量使用情况，与账号额度分别统计。</p>`
+    : `<p class="hint">额度表示账号在对应周期内的使用限制，已用或剩余以指标说明为准。</p>` + (m.missing || !bars.length ? '<p>未获取额度数据</p>' : bars.map(b => `<p>${esc(b.label)} · ${esc(value(b))}${b.reset ? `<br><span class="hint">${esc(b.reset)}</span>` : ''}</p>`).join(''));
+  const updated = m.updated ? new Date(m.updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  openSheet('usage', `<h3>${context ? '上下文说明' : '额度说明'}</h3>${rows}${!context && updated ? `<p class="hint">${m.cached ? '缓存数据' : '最近更新'} · ${esc(updated)}</p>` : ''}${!context && $('quotaStatus').textContent ? `<p class="hint">${esc($('quotaStatus').textContent)}</p>` : ''}<button id="refreshUsage" class="opt">刷新数据</button>`);
+  $('refreshUsage').onclick = () => { closeSheet(); status('正在读取额度…'); send({ t: 'usage' }); };
 }
 let usageTimer = null;
 function showMainMenu() {
@@ -3801,12 +3817,8 @@ $('attachments').onclick = e => {
   if (b) send({ t: 'removeAttachment', id: b.dataset.removeAttachment });
 };
 $('uploadDoc').onclick = () => $('docFile').click();
-$('img').title = $('img').ariaLabel = '添加附件';
-$('img').onclick = () => {
-  openSheet('attachment', '<h3>添加附件</h3><button class="opt" id="attachPhoto">图片</button><button class="opt" id="attachDocument">文件</button>');
-  $('attachPhoto').onclick = () => { closeSheet(); $('imgFile').click(); };
-  $('attachDocument').onclick = () => { closeSheet(); $('docFile').click(); };
-};
+$('img').title = $('img').ariaLabel = '上传图片';
+$('img').onclick = () => $('imgFile').click();
 function uploadDocument(file, sel) {
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
