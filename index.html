@@ -430,13 +430,43 @@
   #vEditBox { flex: 1; min-height: 0; width: 100%; box-sizing: border-box; margin: 0; border: 0; outline: none; resize: none;
               background: var(--bg); color: var(--hi); font: 13px/1.5 ui-monospace, Menlo, monospace; padding: 10px 12px 24px; }
 
-  #fusionConfig { display: grid; gap: 5px; margin-bottom: 7px; }
-  #fusionConfig button { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; padding: 7px 9px; font-size: 12px; }
-  .fusionConfigRow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, .8fr); gap: 5px; }
-  #fusionShared { font-size: 11px; color: var(--muted2); }
-  #fusionMeters { flex: none; margin: 0 8px 5px; }
-  .fusionMeterRow { display: flex; gap: 4px; align-items: center; margin-bottom: 4px; }
-  .fusionMeterName { flex: 1; min-width: 0; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #fusionHeader { display: flex; flex: 1; min-width: 0; align-items: center; border: 1px solid var(--border); border-radius: 14px; background: var(--panel); height: 44px; }
+  .fusionAgent { display: flex; flex: 1; min-width: 0; align-items: center; gap: 3px; padding: 3px; }
+  .fusionAgent + .fusionAgent { border-left: 1px solid var(--line); }
+  .fusionAgent > button { padding: 2px; background: transparent; border: 0; font-size: 12px; font-weight: 600; }
+  .fusionRing { flex: none; width: 18px; height: 18px; border-radius: 50%; background: conic-gradient(var(--agent-color) calc(var(--pct, 0) * 1%), var(--line) 0); position: relative; }
+  .fusionRing::after { content: ''; position: absolute; inset: 3px; border-radius: 50%; background: var(--panel); }
+  .fusionAgent:first-child { --agent-color: var(--ctx); }
+  .fusionAgent:last-child { --agent-color: var(--ok); }
+  .fusionInlineMeters { display: flex; align-items: center; gap: 3px; min-width: 0; flex: 1; }
+  .fusionMetricText { min-width: 0; flex: 1; }
+  .fusionMetricText button { display: block; width: 100%; padding: 0; border: 0; background: transparent; font-size: 9px; line-height: 1.7; text-align: left; overflow: hidden; text-overflow: ellipsis; }
+  body.fusion #title { flex: 0 0 100px; gap: 5px; }
+  body.fusion #titleProject { display: none; }
+  body.fusion .seg button { padding: 7px 8px; }
+  body.fusion #chatTools { gap: 4px; overflow: visible; }
+  body.fusion #chatTools > #add, body.fusion #chatTools > #img, body.fusion #chatTools > #uploadDoc { width: 29px; }
+  #fusionConfig { display: flex; gap: 4px; flex: 1; min-width: 0; }
+  #chatTools #fusionConfig button { flex: 1; min-width: 0; padding: 5px 4px; font-size: 10px; overflow: hidden; text-overflow: ellipsis; }
+  #chatTools #fusionConfig #fusionProject { flex: 0 0 54px; }
+  body.fusion #text { min-height: 88px; }
+  body.fusion #send { height: 46px; }
+  #fusionWelcome { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 20px 0; }
+  body.fusion #list:has(#fusionWelcome:not([hidden]))::before { display: none; }
+  .fusionIllustration { display: flex; align-items: center; justify-content: center; margin-bottom: 24px; }
+  .fusionIllustration span { display: grid; place-items: center; width: 110px; height: 110px; border-radius: 50%; border: 1px solid var(--ctx); background: color-mix(in srgb, var(--ctx) 8%, transparent); color: var(--ctx); font-size: 40px; font-weight: 600; }
+  .fusionIllustration span:last-child { margin-left: -28px; border-color: var(--ok); color: var(--ok); background: color-mix(in srgb, var(--ok) 6%, transparent); }
+  .fusionIllustration i { width: 0; z-index: 1; transform: translateX(-22px); color: var(--ctx); font-size: 25px; font-style: normal; }
+  #fusionWelcome h2 { font-size: 20px; color: var(--hi); margin: 0 0 10px; }
+  #fusionWelcome p { font-size: 12px; color: var(--muted2); margin: 2px 0; }
+  #fusionBar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+  @media (max-width: 350px) {
+    body.fusion #title { flex-basis: 88px; gap: 3px; padding: 5px 6px; }
+    body.fusion #titleText { font-size: 12px; }
+    .fusionRing { width: 14px; height: 14px; }
+    .fusionMetricText button { font-size: 8px; }
+    .fusionAgent { padding: 3px 2px; gap: 2px; }
+  }
   .fusionTree details { margin: 4px 0 4px 10px; }
   .fusionTree summary { padding: 10px 4px; cursor: pointer; font-size: 14px; }
   .fusionTree > details { margin-left: 0; }
@@ -471,11 +501,14 @@
       <button class="meter" id="meterCtx" type="button"><span class="track"><i id="meterCtxFill"></i></span><span class="meterText"><span class="meterLabel">上下文</span><b id="meterCtxPct">未获取</b></span></button>
       <div id="quotaMeters"></div><span id="quotaStatus"></span>
     </div>
+  <div id="fusionHeader" hidden>
+    <div class="fusionAgent"><button id="fusionA" aria-label="选择 A">A ▾</button><span id="fusionMetersA" class="fusionInlineMeters"></span></div>
+    <div class="fusionAgent"><button id="fusionB" aria-label="选择 B">B ▾</button><span id="fusionMetersB" class="fusionInlineMeters"></span></div>
+  </div>
   <button id="menuBtn" aria-label="菜单">⋯</button>
 </header>
 <div class="seg"><button id="tabChat" class="on"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-8l-6 4v-4H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/><path d="M7 9h10M7 13h6"/></svg> 对话</button><button id="tabTerm"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3 3-3 3m6 0h4"/></svg> 终端</button></div>
 
-<div id="fusionMeters" hidden></div>
 <main>
   <section id="chatView" class="view active">
     <div id="sessBar" hidden></div>
@@ -485,6 +518,7 @@
       <button id="cachedMore" hidden></button>
       <button id="taskChip" hidden></button>
       <div id="fusionBar" hidden></div>
+      <div id="fusionWelcome" hidden><div class="fusionIllustration" aria-hidden="true"><span>A</span><i>+</i><span>B</span></div><h2>让两个 AI 一起完成任务</h2><p>A 负责方案与检查，B 负责执行</p><p>协同思考、编写代码、完成复杂任务</p></div>
       <div id="items"></div>
       <div id="empty" hidden>没找到聊天面板。<br><span id="emptyHint"></span></div>
     </div>
@@ -535,16 +569,11 @@
   <div id="mentionBox" hidden></div>
   <div id="mathPrev" hidden></div>
   <div class="composerBox"><textarea id="text" rows="1" placeholder="发给 Agent…" enterkeyhint="send"></textarea>
-  <div id="fusionConfig" hidden>
-    <button id="fusionProject">选择项目 ▾</button>
-    <div class="fusionConfigRow"><button id="fusionA">选择 A</button><button id="fusionModelA">A 模型</button></div>
-    <div class="fusionConfigRow"><button id="fusionB">选择 B</button><button id="fusionModelB">B 模型</button></div>
-    <div id="fusionShared" hidden>同一会话：A/B 共享上下文，执行时分别切换模型。</div>
-  </div>
   <div id="chatTools">
     <button id="add" title="添加功能" aria-label="添加功能">＋</button>
     <button id="img" title="附加图片" aria-label="附加图片"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/></svg></button>
     <button id="uploadDoc" title="上传文档" aria-label="上传文档"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M6 3h8l4 4v14H6zM14 3v5h4"/></svg></button>
+    <div id="fusionConfig" hidden><button id="fusionModelA">A 模型 ▾</button><button id="fusionModelB">B 模型 ▾</button><button id="fusionProject">项目 ▾</button></div>
     <button id="mic" title="语音输入" aria-label="语音输入"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
     <button id="pickMode" hidden></button>
     <button id="pickModel" title="更换模型">模型 ▾</button>
@@ -1339,32 +1368,36 @@ function paintFusion(fx) {
   const on = !!fx;
   $('fusionConfig').hidden = !on;
   $('fusionBar').hidden = !on;
+  document.body.classList.toggle('fusion', currentApp === 'fusion');
+  $('fusionHeader').hidden = currentApp !== 'fusion';
+  $('fusionWelcome').hidden = !on || !!lastChat?.items?.length;
   $('newChat').hidden = on;
   $('meters').hidden = currentApp === 'fusion';
-  $('fusionMeters').hidden = !on;
   if (on) { $('pickModel').hidden = true; $('pickAgents').hidden = true; $('pickMode').hidden = true; }
   else $('pickAgents').hidden = false;
   if (!on) return;
   renderFusionMeters(fx);
-  $('fusionProject').textContent = fx.project ? `项目 · ${fx.project.name} ▾` : '选择项目 ▾';
+  $('fusionProject').textContent = '项目 ▾';
   $('fusionProject').title = fx.project?.root || '';
   $('fusionProject').disabled = !!fx.busy;
   for (const side of ['a', 'b']) {
     $('fusion' + side.toUpperCase()).disabled = !fx.project || !!fx.busy;
     $('fusionModel' + side.toUpperCase()).disabled = !fx[side] || !!fx.busy;
   }
-  $('fusionShared').hidden = !(fx.a && fx.b && fx.a.id === fx.b.id);
   const short = s => String(s || '').slice(0, 28);
   const roleTitle = s => `${({ codex: 'Codex', cursor: 'Cursor', devin: 'Devin' })[s.app] || s.app} · ${s.conversationTitle || s.title}`;
-  $('fusionA').textContent = fx.a ? `A · ${short(roleTitle(fx.a))}` : '选择 A';
-  $('fusionB').textContent = fx.b ? `B · ${short(roleTitle(fx.b))}` : '选择 B';
-  $('fusionModelA').textContent = fx.a?.model ? short(fx.a.model) : 'A 模型';
-  $('fusionModelB').textContent = fx.b?.model ? short(fx.b.model) : 'B 模型';
+  for (const side of ['a', 'b']) {
+    const label = side.toUpperCase(), spec = fx[side];
+    $('fusion' + label).title = spec ? roleTitle(spec) : `选择 ${label}`;
+    $('fusionModel' + label).textContent = spec?.model ? `${label} · ${short(spec.model)} ▾` : `${label} 模型 ▾`;
+    $('fusionModel' + label).title = spec?.model || `${label} 模型`;
+  }
   const acts = fx.phase === 'plan' ? '<button type="button" data-fusion-act="go">交给 B</button>'
     : fx.phase === 'disagree' ? '<button type="button" data-fusion-act="go">按 A 的说明继续</button>'
     : fx.phase === 'check' ? '<button type="button" data-fusion-act="done">完成</button><button type="button" data-fusion-act="fix">小修</button><button type="button" data-fusion-act="return">退回 B</button>'
     : '';
-  $('fusionBar').innerHTML = `<button type="button" data-fusion-act="history">历史会话</button><button type="button" data-fusion-act="new" ${fx.busy ? 'disabled' : ''}>＋ 新建</button><span class="hint">第 ${fx.round || 0} 轮 · ${FUSION_PHASE[fx.phase] || fx.phase}</span>${acts}`;
+  $('fusionBar').hidden = fx.phase === 'idle';
+  $('fusionBar').innerHTML = `<span class="hint">第 ${fx.round || 0} 轮 · ${FUSION_PHASE[fx.phase] || fx.phase}</span>${acts}`;
 }
 function showFusionProjects(m) {
   finishPending(['正在读取项目…']);
@@ -1372,14 +1405,14 @@ function showFusionProjects(m) {
 }
 function showFusionSides(m) {
   const selected = lastChat?.fusion?.[m.side]?.id;
-  const apps = new Map();
+  const apps = new Map((m.apps || []).map(a => [a.app, new Map()]));
   for (const s of m.list || []) {
     if (!apps.has(s.app)) apps.set(s.app, new Map());
     const wins = apps.get(s.app);
     if (!wins.has(s.windowId)) wins.set(s.windowId, { title: s.windowTitle, rows: [] });
     wins.get(s.windowId).rows.push(s);
   }
-  const rows = [...apps].map(([app, wins]) => `<details ${[...wins.values()].some(w => w.rows.some(s => s.id === selected)) ? 'open' : ''}><summary>${esc(({ codex: 'Codex', cursor: 'Cursor', devin: 'Devin' })[app] || app)}</summary>${[...wins.values()].map(w => `<details ${w.rows.some(s => s.id === selected) ? 'open' : ''}><summary>${esc(w.title)}</summary>${w.rows.map(s => `<button class="opt ${s.id === selected ? 'cur' : ''}" data-fusion-pick="${esc(m.side)}" data-fusion-id="${esc(s.id)}"><span class="lbl">${esc(s.conversationTitle)}</span></button>`).join('')}</details>`).join('')}</details>`).join('');
+  const rows = [...apps].map(([app, wins]) => `<details ${[...wins.values()].some(w => w.rows.some(s => s.id === selected)) ? 'open' : ''}><summary>${esc(({ codex: 'Codex', cursor: 'Cursor', devin: 'Devin' })[app] || app)}</summary>${wins.size ? [...wins.values()].map(w => `<details ${w.rows.some(s => s.id === selected) ? 'open' : ''}><summary>${esc(w.title)}</summary>${w.rows.map(s => `<button class="opt ${s.id === selected ? 'cur' : ''}" data-fusion-pick="${esc(m.side)}" data-fusion-id="${esc(s.id)}"><span class="lbl">${esc(s.conversationTitle)}</span></button>`).join('')}</details>`).join('') : '<div class="hint">当前项目没有已打开的会话</div>'}</details>`).join('');
   openSheet('fusion-side', `<h3>选择 ${m.side === 'b' ? 'B 执行' : 'A 方案'}</h3><div class="hint">仅显示所选项目。按软件、窗口、对话依次展开，再选择模型。A/B 可以使用同一软件或同一会话。</div><div class="fusionTree">${rows || '<div class="hint">没有可选的对话</div>'}</div>`);
 }
 function showFusionHistory(m) {
@@ -1392,14 +1425,14 @@ function fusionMetricValue(b) {
   return b?.pct == null ? String(b?.value || '未获取') : `${b.basis === 'remaining' ? '剩余' : '已用'} ${b.pct}%`;
 }
 function renderFusionMeters(fx) {
-  $('fusionMeters').innerHTML = ['a', 'b'].map(side => {
+  for (const side of ['a', 'b']) {
     const spec = fx?.[side], usage = spec?.usage || {};
     const context = typeof usage.context === 'number' ? { pct: usage.context } : usage.context;
     const bars = fusionUsageBars(usage);
     const quota = bars.find(b => /week|每周|周额度/i.test(b.label)) || bars[0];
-    const meter = (kind, label, b) => `<button class="meter" data-side="${side}" data-metric="${kind}"><span class="track" style="--pct:${b?.pct ?? 0}"><i class="${meterFill(b?.pct, b?.basis)}"></i></span><span class="meterText"><span class="meterLabel">${esc(label)}</span><b>${esc(fusionMetricValue(b))}</b></span></button>`;
-    return `<div class="fusionMeterRow"><span class="fusionMeterName" title="${esc(spec?.title || '')}">${side.toUpperCase()} · ${esc(spec ? spec.title + (spec.model ? ' · ' + spec.model : '') : '未选择')}</span>${meter('context', '上下文', context)}${meter('quota', quota && /week|每周|周额度/i.test(quota.label) ? '周额度' : '额度', quota)}</div>`;
-  }).join('');
+    const metric = (kind, label, b) => `<button type="button" data-side="${side}" data-metric="${kind}" title="${esc(label + ' · ' + fusionMetricValue(b))}">${esc(label)} ${esc(b?.pct == null ? '未获取' : b.pct + '%')}</button>`;
+    $('fusionMeters' + side.toUpperCase()).innerHTML = `<span class="fusionRing" style="--pct:${context?.pct ?? 0}"></span><span class="fusionMetricText">${metric('context', '上下文', context)}${metric('quota', '额度', quota)}</span>`;
+  }
 }
 function showFusionUsage(side, kind) {
   const spec = lastChat?.fusion?.[side], m = spec?.usage || {};
@@ -1408,10 +1441,10 @@ function showFusionUsage(side, kind) {
     : `<p class="hint">额度属于账号，已用或剩余以指标说明为准。</p>${fusionUsageBars(m).map(b => `<p>${esc(b.label)} · ${esc(fusionMetricValue(b))}${b.reset ? `<br>${esc(b.reset)}` : ''}</p>`).join('') || '<p>未获取额度数据</p>'}`;
   openSheet('fusion-usage', `<h3>${side.toUpperCase()} · ${kind === 'context' ? '上下文说明' : '额度说明'}</h3><p>${esc(spec?.title || '未选择')}</p>${rows}${m.updated ? `<p class="hint">${m.cached ? '缓存数据' : '最近更新'} · ${esc(new Date(m.updated).toLocaleString())}</p>` : ''}${m.error ? `<p class="hint">${esc(m.error)}</p>` : ''}${spec ? `<button class="opt" data-fusion-refresh="${side}">刷新数据</button>` : ''}`);
 }
-$('fusionMeters').onclick = e => {
+$('fusionHeader').addEventListener('click', e => {
   const b = e.target.closest('[data-metric]');
   if (b) showFusionUsage(b.dataset.side, b.dataset.metric);
-};
+});
 function showTerminals(list) {
   const rows = list.map(t => `<div class="optRow"><button class="opt ${t.current ? 'cur' : ''}" data-term="${esc(t.id)}"><span class="lbl">${esc(t.title)}</span>${t.current ? '<span class="tag">当前</span>' : ''}</button><button data-term-del="${esc(t.id)}" data-term-name="${esc(t.title)}">删除</button></div>`).join('');
   openSheet('terminals', `<h3>终端</h3>${rows || '<div class="hint">还没有终端。</div>'}<button class="opt" data-act="newTerm"><span class="lbl">＋ 新建终端</span></button>`);
@@ -1661,7 +1694,7 @@ function showMainMenu() {
   const appName = currentAppName;
   openSheet('main', `<h3>菜单</h3>
     ${appName ? `<div class="pSec">${appName}</div>` : ''}
-    <button class="opt" data-act="model"><span class="lbl">更换模型<span class="sub" id="menuModel">${esc(lastChat?.model || '选择当前 Agent 的模型')}</span></span></button>
+    ${currentApp === 'fusion' ? `<button class="opt" data-act="fusionHistory">历史会话</button><button class="opt" data-act="fusionNew" ${lastChat?.fusion?.busy ? 'disabled' : ''}>＋ 新建</button>` : `<button class="opt" data-act="model"><span class="lbl">更换模型<span class="sub" id="menuModel">${esc(lastChat?.model || '选择当前 Agent 的模型')}</span></span></button>`}
     <button class="opt" data-act="docs"><span class="lbl">查看文档<span class="sub">README 和代码</span></span></button>
     <button class="opt" data-act="settings"><span class="lbl">设置</span></button>
     <button class="opt" data-act="screen"><span class="lbl">画面<span class="sub">${esc(appMessage('直接看电脑上的 {app}'))}</span></span></button>
@@ -1926,6 +1959,8 @@ $('sheet').addEventListener('click', async e => {
   if (b.dataset.section) { status('设置中…'); return send({ t: 'pickParam', model: b.dataset.model, label: b.dataset.plabel, section: b.dataset.section, value: b.dataset.value }); }
   const act = b.dataset.act;
   if (act === 'newTerm') { closeSheet(); status('正在新建终端…'); return send({ t: 'newTerminal' }); }
+  else if (act === 'fusionHistory') { closeSheet(); return send({ t: 'fusionHistory' }); }
+  else if (act === 'fusionNew') { closeSheet(); return send({ t: 'fusionNew' }); }
   else if (act === 'model') { status('读取模型列表…'); return send({ t: 'openMenu', kind: 'model' }); }
   else if (act === 'projects') { status('正在读取项目…'); return send({ t: 'projects' }); }
   else if (act === 'docs') { status('正在读取文档…'); return send({ t: 'docs' }); }
@@ -2601,6 +2636,7 @@ function userSelecting() {
   return !!sel && !sel.isCollapsed && sel.rangeCount > 0 && itemsEl.contains(sel.getRangeAt(0).commonAncestorContainer);
 }
 let deferredRender = false;
+let chatScrolling = false, scrollIdle = 0, deferredScrollRender = false;
 document.addEventListener('selectionchange', () => {
   if (deferredRender && !userSelecting()) { deferredRender = false; if (lastChat) renderChat(lastChat); }
 });
@@ -2656,7 +2692,7 @@ function renderChat(chat) {
   $('pickPerm').hidden = !chat?.permission;
   if (chat?.permission) $('pickPerm').textContent = (permName || chat.permission) + ' ▾';
   const codexBar = currentApp === 'codex' ? chat?.codex : null;
-  $('add').hidden = currentApp === 'fusion';
+  $('add').hidden = false;
   $('pickPlan').hidden = true;
   if (codexBar) $('pickPlan').textContent = codexBar.plan ? 'Plan：开' : 'Plan：关';
   $('pickIde').hidden = true;
@@ -2676,6 +2712,12 @@ function renderChat(chat) {
   if (!chat) { itemsEl.replaceChildren(); renderQueue(false, []); renderQuestions(null); paintSessions(null); return; }
   const sessionChanged = paintSessions(chat);
   const V = scMerge(chat);
+  if (!sessionChanged && chatScrolling && !nearBottom()) {
+    deferredScrollRender = true;
+    renderQueue(chat.busy, chat.queued || [], chat.subagents || [], chat.readonly, chat.changed, chat.queuedCount);
+    renderQuestions(chat.readonly ? null : chat.questions);
+    return;
+  }
   if (!sessionChanged && userSelecting()) {
     deferredRender = true;
     $('actionBar').innerHTML = buttonsHtml(chat.global, 'g');
@@ -2700,12 +2742,12 @@ function renderChat(chat) {
   const els = visibleItems.map(it => {
     const key = JSON.stringify(it);
     const hit = cache.get(it.i);
+    if (hit && hit.key === key) return hit.el;
     if (it.k === 'thinking' && hit?.el) {
       paintThinking(hit.el, it);
       cache.set(it.i, { key, el: hit.el });
       return hit.el;
     }
-    if (hit && hit.key === key) return hit.el;
     const el = renderItem(it);
     el.dataset.i = it.i;
     cache.set(it.i, { key, el });
@@ -2921,7 +2963,7 @@ function updateToBottom() {
 }
 let historyPrefetch = '', historyTimer = 0;
 function preloadCodexHistory() {
-  if (currentApp !== 'codex' || !lastChat || lastChat.earlier === false || list.scrollTop > Math.max(1200, list.clientHeight * 2) || historyTimer) return;
+  if (currentApp !== 'codex' || !lastChat || lastChat.earlier === false || list.scrollTop > Math.max(5000, list.clientHeight * 5) || historyTimer) return;
   const key = viewSel + ':' + itemsEl.firstElementChild?.dataset.i;
   if (historyPrefetch === key) return;
   historyTimer = setTimeout(() => {
@@ -2932,7 +2974,16 @@ function preloadCodexHistory() {
     else send({ t: 'scrollChat', dy: -1800 });
   }, 150);
 }
-list.addEventListener('scroll', () => { updateToBottom(); preloadCodexHistory(); }, { passive: true });
+list.addEventListener('scroll', () => {
+  chatScrolling = true;
+  clearTimeout(scrollIdle);
+  scrollIdle = setTimeout(() => {
+    chatScrolling = false;
+    if (deferredScrollRender && lastChat) { deferredScrollRender = false; renderChat(lastChat); }
+  }, 140);
+  updateToBottom();
+  preloadCodexHistory();
+}, { passive: true });
 $('toBottom').onclick = () => { list.scrollTop = list.scrollHeight; };
 $('older').onclick = () => send({ t: 'scrollChat', dy: -900 });
 
@@ -3081,6 +3132,11 @@ function showCodexSkills(rows) {
   paint();
 }
 $('add').onclick = () => {
+  if (currentApp === 'fusion') {
+    openSheet('add', '<h3>添加附件</h3><button class="opt" data-control="img">上传图片</button><button class="opt" data-control="uploadDoc">上传文档</button>');
+    $('sheet').querySelectorAll('[data-control]').forEach(b => b.onclick = () => { closeSheet(); $(b.dataset.control).click(); });
+    return;
+  }
   const c = lastChat?.codex;
   if (!c) {
     const controls = ['newChat', 'pickMode', 'pickPerm', 'pickDir'].filter(id => !$(id).hidden);
