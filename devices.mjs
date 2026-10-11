@@ -19,7 +19,7 @@ if (cmd === 'pair') {
   qrcode.generate(link, { small: true });
   console.log(`\n${link}\n`);
   if (totpConfig()) console.log('已开启二次验证：配对时还要输入 Authenticator 里的 6 位验证码。\n');
-  console.log('安卓 App：在 App 里「粘贴配对链接」，或用浏览器打开链接后点「在 App 中打开」。');
+  console.log('安卓 App：在 App 里点「扫码配对」，也可以粘贴配对链接，或用浏览器打开链接后点「在 App 中打开」。');
 } else if (cmd === 'remove') {
   if (!arg) { console.log('用法：npm run devices remove <设备ID>'); process.exit(1); }
   console.log(removeDevice(arg) ? `已移除设备 ${arg}，它会立即断开` : `没有找到设备 ${arg}`);

@@ -4,13 +4,16 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { WebSocketServer } from 'ws';
 import qrcode from 'qrcode-terminal';
-import { workspaces, windowRoots, workspaceLabel, fileSize, readFile, parseRef, listProject, locateWritable, writeTextFile } from './files.mjs';
+import { workspaces, windowRoots, workspaceLabel, fileSize, readFile, parseRef, listProject, locateWritable, writeTextFile, resolveLocal } from './files.mjs';
+import { findTheme } from './theme.mjs';
+import { highlightText } from './highlight.mjs';
+import { gitMarks, agentMarks } from './marks.mjs';
 import {
   DATA_DIR, publishRecord, opensEntry, computerId, computerName, createPairing, pairingValid, consumePairing, listDevices, addDevice, findDevice, updateDevice,
-  removeDevice, totpConfig, verifyTotp, needsTotp, saveState, readState, appBase,
+  removeDevice, totpConfig, verifyTotp, needsTotp, saveState, readState, appBase, normalizeAppUrl,
 } from './auth.mjs';
 import { pushPublicKey, openEventStream, closeEventStreams, addViewer, removeViewer, deliver, startWatcher } from './notify.mjs';
 
@@ -34,7 +37,12 @@ fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
 const CONFIG = loadConfig();
 const PUBLISH_REPO = process.argv.find(a => a.startsWith('--publish='))?.slice('--publish='.length) || process.env.CR_PUBLISH_REPO || CONFIG.publishRepo || '';
 const PAGES_BRANCH = process.env.CR_PAGES_BRANCH || CONFIG.pagesBranch || '';
-const APP_ORIGIN = PUBLISH_REPO ? `https://${PUBLISH_REPO.split('/')[0].toLowerCase()}.github.io` : '';
+// The Pages app may sit on a custom domain; config.appUrl records its real address when one is known.
+const APP_ORIGIN = (() => {
+  const fixed = normalizeAppUrl(CONFIG.appUrl);
+  if (fixed) return new URL(fixed).origin;
+  return PUBLISH_REPO ? `https://${PUBLISH_REPO.split('/')[0].toLowerCase()}.github.io` : '';
+})();
 const ALLOWED_ORIGINS = new Set([APP_ORIGIN, ...(process.env.CR_ALLOWED_ORIGINS || '').split(',')].filter(Boolean));
 
 function loadConfig() {
@@ -342,13 +350,16 @@ function pageHelpers() {
   const itemKey = el => {
     const existing = el.dataset.flatIndex || el.dataset.messageId || el.querySelector('[data-message-id]')?.dataset.messageId;
     if (existing) return existing;
+    const acp = el.closest?.('[role="log"][aria-label="Session transcript"]')
+      ? el.closest('[data-acp-msg-index]')?.getAttribute('data-acp-msg-index') : null;
+    if (acp != null) return `acp${acp}`;
     if (el.getAttribute('data-side')) {
       const i = [...doc.querySelectorAll('[role=group][data-side]')].indexOf(el);
       return i >= 0 ? `d${i}` : '';
     }
     return '';
   };
-  const itemByKey = (panel, key) => panel.querySelector(`[data-flat-index="${CSS.escape(key)}"], [data-message-id="${CSS.escape(key)}"]`);
+  const itemByKey = (panel, key) => panel.querySelector(`[data-flat-index="${CSS.escape(key)}"], [data-message-id="${CSS.escape(key)}"], [data-turn-key="${CSS.escape(key)}"]`);
 
   const findPanel = () => {
     const real = [...doc.querySelectorAll(COMPOSER)].filter(e => vis(e) && !e.closest(ITEM_SEL));
@@ -404,7 +415,8 @@ function pageHelpers() {
     return col && parent && col !== parent ? ` style="color:${col}"` : '';
   };
 
-  const clean = node => {
+  // devin: also keep links (http/https only) and h6 for Devin's markdown renderer; Cursor never sets it.
+  const clean = (node, devin = false) => {
     let out = '';
     for (const n of node.childNodes) {
       if (n.nodeType === 3) { out += esc(n.textContent); continue; }
@@ -439,12 +451,36 @@ function pageHelpers() {
         continue;
       }
       if (n.matches(FILE_REF)) { out += `<code data-file="${esc(n.innerText.trim())}"${colorAttr(n)}>${esc(n.innerText.trim())}</code>`; continue; }
-      const inner = clean(n);
+      if (devin && tag === 'A' && /^https?:\/\//i.test(n.getAttribute('href') || '')) {
+        out += `<a href="${esc(n.getAttribute('href'))}" target="_blank" rel="noopener noreferrer">${clean(n, devin)}</a>`;
+        continue;
+      }
+      const inner = clean(n, devin);
       const t = tag.toLowerCase();
       const paint = colorAttr(n);
-      out += BLOCK.has(tag) || INLINE.has(tag) ? `<${t}${paint}>${inner}</${t}>` : (paint && inner ? `<span${paint}>${inner}</span>` : inner);
+      const block = BLOCK.has(tag) || (devin && tag === 'H6');
+      out += block || INLINE.has(tag) ? `<${t}${paint}>${inner}</${t}>` : (paint && inner ? `<span${paint}>${inner}</span>` : inner);
     }
     return out;
+  };
+
+  // Devin's code blocks are line divs (no .view-line); keep line breaks and drop the copy chrome.
+  const blockText = node => {
+    if (node.nodeType === 3) return node.textContent;
+    if (node.nodeType !== 1) return '';
+    if (/^(BUTTON|SVG|STYLE|SCRIPT)$/.test(node.tagName) || node.getAttribute('role') === 'button') return '';
+    if (node.tagName === 'BR') return '\n';
+    const inner = [...node.childNodes].map(blockText).join('');
+    return /^(DIV|P|LI|TR|PRE)$/.test(node.tagName) ? inner + '\n' : inner;
+  };
+  const devinRich = root => {
+    const c = root.cloneNode(true);
+    c.querySelectorAll('[data-md-code-block]').forEach(b => {
+      const pre = document.createElement('pre');
+      pre.textContent = blockText(b).replace(/\u00a0/g, ' ').replace(/\n+$/, '');
+      b.replaceWith(pre);
+    });
+    return clean(c, true);
   };
 
   const summary = el => {
@@ -497,6 +533,151 @@ function pageHelpers() {
     for (const i of indexes || []) nodes[i] && thinkingToggleEl(nodes[i])?.click();
     return true;
   };
+  // Devin's two surfaces are titlebar segments (Agent: sidebar sessions; Editor: chat in the right panel).
+  const devinSurface = () => {
+    const seg = [...document.querySelectorAll('button.switch-segment')].find(e => vis(e) && e.classList.contains('active'));
+    return seg ? (seg.classList.contains('agent-segment') ? 'agent' : 'editor') : null;
+  };
+  const surfaceTarget = to => {
+    const seg = [...document.querySelectorAll(`button.switch-segment.${to}-segment`)].find(vis);
+    return seg ? center(seg) : null;
+  };
+  const transcriptVisible = () => { const l = devinLog(); return (!!l && vis(l)) || [...document.querySelectorAll('[role="textbox"][aria-label="Prompt"]')].some(vis); };
+  // Editor surface: the titlebar "Search agents" button opens a quick pick listing every session by name.
+  const sessionSearchTarget = () => {
+    const b = [...document.querySelectorAll('button[aria-label]')].find(e => vis(e) && /^Search agents\b/.test(e.getAttribute('aria-label')));
+    return b ? center(b) : null;
+  };
+  const sessionPickerRows = () => {
+    const w = [...document.querySelectorAll('.quick-input-widget')].find(vis);
+    if (!w) return null;
+    return [...w.querySelectorAll('.monaco-list-row')].filter(vis).map(row => {
+      const title = ((row.querySelector('.label-name') || row).innerText || '').trim().split('\n')[0].slice(0, 80);
+      return { id: `pick:${row.getAttribute('data-index')}`, title, running: /\bworking\b/i.test(row.innerText || '') };
+    }).filter(r => r.title);
+  };
+  // Devin sessions are identified by their title. The Editor surface keeps the open sessions as tabs above
+  // the transcript (the active one has the active-tab background); the Agent surface uses the sidebar.
+  const sessNorm = s => String(s || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  // The tabs live in the chat panel (#chat) even when the open session is empty and has no transcript.
+  const devinTabEls = () => [...document.querySelectorAll('#chat [draggable="true"]')].filter(e => vis(e) && /h-\[34px\]/.test(String(e.className)));
+  const devinTabs = () => devinTabEls().map(t => ({
+    id: codexFiberProps(t, 24).find(p => p.sessionId)?.sessionId || '',
+    title: sessNorm((t.querySelector('span') || t).innerText),
+    active: /bg-ide-tab-active-background-color/.test(String(t.className)),
+  })).filter(t => t.title);
+  const devinSession = () => {
+    if (!devinLog() && !devinSurface()) return null;
+    const tabs = devinTabs(), surface = devinSurface();
+    const active = agentList().find(a => a.current);
+    const tab = devinTabEls()[tabs.findIndex(t => t.active)];
+    const node = devinLog() || tab;
+    const props = node ? codexFiberProps(node, 24) : [];
+    const session = props.find(p => p.session?.sessionId)?.session;
+    const key = session?.sessionId || props.find(p => p.sessionId)?.sessionId || active?.id || '';
+    const title = tabs.find(t => t.active)?.title || active?.title || '';
+    return { key, title, surface, tabs };
+  };
+  const devinTabTarget = id => {
+    const el = devinTabEls().find(t => codexFiberProps(t, 24).some(p => p.sessionId === id));
+    if (!el) return null;
+    const r = (el.querySelector('span') || el).getBoundingClientRect();
+    return { x: r.x + Math.min(r.width / 2, 40), y: r.y + r.height / 2 };
+  };
+  // The tab's own close button (an icon at its right edge, hover-revealed); null while it has no size.
+  const devinTabCloseTarget = id => {
+    const el = devinTabEls().find(t => codexFiberProps(t, 24).some(p => p.sessionId === id));
+    const b = el?.querySelector('button');
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    return r.width > 2 && r.height > 2 ? { x: r.x + r.width * 0.78, y: r.y + r.height / 2 } : null;
+  };
+  const sessionPickerTarget = id => {
+    const row = [...document.querySelectorAll('.quick-input-widget .monaco-list-row')].filter(vis)
+      .find(r => `pick:${r.getAttribute('data-index')}` === id);
+    if (!row) return null;
+    row.scrollIntoView({ block: 'nearest' });
+    return center(row);
+  };
+
+  // Devin "Revert to this point": a hover-only button at the left edge of a user message row.
+  // Unverified on the live window (never clicked while developing); the dialog is read generically.
+  const revertTarget = (i, part) => {
+    const row = [...(devinLog()?.children || [])].find(r => itemKey(r) === i);
+    if (!row || !row.querySelector('[role=group][aria-label="User message"]')) return null;
+    if (part === 'row') { row.scrollIntoView({ block: 'center' }); return center(row); }
+    const b = [...row.querySelectorAll('button')].find(x => /absolute/.test(x.className) && /left-full/.test(x.className));
+    return b && vis(b) ? center(b) : null;
+  };
+  // Revert opens a preview that either confirms by itself (no file changes to undo: the transcript just
+  // rewinds, no dialog) or, after ~0.5 s, a dialog listing the file changes with an "Apply these reverts"
+  // checkbox and a Confirm (or Force revert) button.
+  const revertConfirmBtn = () => [...document.querySelectorAll('button')].find(b => vis(b) && /^(Confirm|Force revert)$/.test((b.innerText || '').trim()) && !b.closest('[data-band-item]'));
+  const revertDialogEl = () => {
+    const b = revertConfirmBtn();
+    if (!b) return null;
+    const d = b.closest('[role="dialog"], [role="alertdialog"]');
+    if (d) return d;
+    let p = b;
+    for (let i = 0; i < 8 && p.parentElement; i++) {
+      p = p.parentElement;
+      if (/^(fixed|absolute)$/.test(getComputedStyle(p).position) && p.getBoundingClientRect().width > 200) return p;
+    }
+    return b.parentElement?.parentElement || null;
+  };
+  const revertDialog = () => {
+    const d = revertDialogEl();
+    if (!d) return null;
+    const box = d.querySelector('input[type="checkbox"]');
+    return {
+      title: ((d.querySelector('h1, h2, h3') || {}).innerText || '').trim().slice(0, 120),
+      body: (d.innerText || '').trim().slice(0, 1200),
+      apply: box ? box.checked : null,
+      force: /force/i.test(revertConfirmBtn()?.innerText || ''),
+    };
+  };
+  const revertDialogButton = which => {
+    const d = revertDialogEl();
+    if (!d) return null;
+    if (which === 'toggle') { const t = d.querySelector('label') || d.querySelector('input[type="checkbox"]'); return t ? center(t) : null; }
+    const cancel = b => /cancel|close|取消|关闭/i.test((b.innerText || b.getAttribute('aria-label') || '').trim());
+    const btns = [...d.querySelectorAll('button')].filter(vis);
+    const b = which === 'cancel' ? btns.find(cancel) : revertConfirmBtn();
+    return b ? center(b) : null;
+  };
+  // Is the user message still in the transcript, and what is the highest index mounted?
+  const revertState = i => {
+    const rows = [...(devinLog()?.children || [])];
+    const nums = rows.map(r => Number(/^acp(\d+)/.exec(itemKey(r) || '')?.[1])).filter(n => Number.isFinite(n));
+    const row = rows.find(r => itemKey(r) === i);
+    return { rowHas: !!row && !!row.querySelector('[role=group][aria-label="User message"]'), max: nums.length ? Math.max(...nums) : -1 };
+  };
+
+  // Devin thoughts by item id (acpN:think): the row's chevron, its open state, and its body text
+  // (same lines devinItems reads: the event group minus its title). Collapsed rows carry no body.
+  const thoughtRow = id => [...(devinLog()?.children || [])].find(r => itemKey(r) === String(id).replace(/:think$/, ''));
+  const thoughtState = id => {
+    const b = thoughtRow(id)?.querySelector('button[aria-expanded]');
+    return b ? { expanded: b.getAttribute('aria-expanded') === 'true' } : null;
+  };
+  const setThoughtOpen = (id, open) => {
+    const b = thoughtRow(id)?.querySelector('button[aria-expanded]');
+    if (!b) return false;
+    if ((b.getAttribute('aria-expanded') === 'true') !== open) b.click();
+    return true;
+  };
+  const thoughtBodyText = id => {
+    const row = thoughtRow(id);
+    const eg = row && (row.classList.contains('event-group') ? row : row.querySelector('.event-group'));
+    if (!eg) return '';
+    return (eg.innerText || '').split('\n').map(s => s.trim()).filter(Boolean).slice(1).join('\n');
+  };
+
+  // Devin: transcript index (for clickThinking) of the thought with item id `acpN:think`.
+  const thoughtIndexFor = id => thinkingNodes().findIndex(el => {
+    const row = el.closest('[data-acp-msg-index]');
+    return !!row && `${itemKey(row)}:think` === id;
+  });
   const closeThinkingIfOpen = indexes => {
     const nodes = thinkingNodes();
     for (const i of indexes || []) {
@@ -520,9 +701,33 @@ function pageHelpers() {
     const label = (e.getAttribute('aria-label') || '').trim();
     return /^stop generation\b/i.test(label) || (doc.querySelector('[data-turn-key]') && /^(Stop|Stop generating)$/i.test(label));
   });
-  const legacyStopIcon = () => [...doc.querySelectorAll('.composer-button-area .codicon-debug-stop, .send-with-mode .codicon-debug-stop')].find(e => vis(e) && !e.closest('.composer-human-message, .human-message-action-slot'));
-  const isBusy = () => !!stopGenerationButton() || !!legacyStopIcon()
-    || [...doc.querySelectorAll('button')].some(e => vis(e) && /^(Stop|Stop generating)$/i.test((e.getAttribute('aria-label') || '').trim()));
+  const legacyStopIcon = () => [...document.querySelectorAll('.composer-button-area .codicon-debug-stop, .send-with-mode .codicon-debug-stop')].find(e => vis(e) && !e.closest('.composer-human-message, .human-message-action-slot'));
+  // Devin: while a turn runs the submit button reads "Cancel" (empty input) or "Queue" (typed text).
+  const devinSubmitBusy = () => !!devinLog() && [...document.querySelectorAll('button[aria-label]')].some(e => vis(e) && /^(Cancel|Queue)$/.test(e.getAttribute('aria-label')) && !!e.querySelector('svg'));
+  const isBusy = () => !!stopGenerationButton() || !!legacyStopIcon() || devinSubmitBusy() || [...doc.querySelectorAll('button')].some(e => vis(e) && /^(Stop|Stop generating)$/i.test((e.getAttribute('aria-label') || '').trim()));
+  // Devin's queue (verified live): a bar "N message(s) queued" with a "Clear all" button, then an <ol>
+  // of li[role=button] rows holding the message text. Hovering a row reveals "Edit message",
+  // "Remove from queue" and "Send now" (hidden until hover). Rows are read from textContent.
+  const devinQueueBar = () => [...document.querySelectorAll('span.text-12')].find(s => /\d+ messages? queued/.test(s.innerText || ''));
+  const devinQueueCount = () => Number(/(\d+) messages? queued/.exec(devinQueueBar()?.innerText || '')?.[1]) || 0;
+  const devinQueueRows = () => devinQueueBar() ? [...document.querySelectorAll('ol li[role="button"]')].filter(e => /cursor-grab/.test(e.className)) : [];
+  const devinQueued = () => devinQueueRows().map((row, n) => ({
+    id: `dq${n}`,
+    t: (row.innerText || '').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim().slice(0, 4000),
+    src: 'devin',
+  }));
+  const devinQueueTarget = (n, action) => {
+    const row = devinQueueRows()[Number(n)];
+    if (!row || !vis(row)) return null;
+    if (!action) return center(row);
+    const label = { send: 'Send now', remove: 'Remove from queue' }[action];
+    const b = label && [...row.querySelectorAll('button[aria-label]')].find(e => vis(e) && e.getAttribute('aria-label') === label);
+    return b ? center(b) : null;
+  };
+  const devinQueueClearTarget = () => {
+    const b = [...document.querySelectorAll('button[aria-label="Clear all"]')].find(vis);
+    return b && devinQueueBar() ? center(b) : null;
+  };
 
   // First call (no action) returns the row center to hover over; hover-only buttons appear after that.
   const queueTarget = (id, action) => {
@@ -623,7 +828,105 @@ function pageHelpers() {
     const submit = qnAction(box, /continue|submit|继续|提交/i);
     return { list, canSubmit: !!submit && submit.dataset.disabled !== 'true' };
   };
+  // Agent surface, new-session screen: "Local ▾" (where the agent runs: Local / Worktree / Cloud) and the folder
+  // chip next to it. Both are only enabled before the first message; in a running session Local is disabled.
+  // The folder chip opens a quick pick (role=listbox aria-label="Select a directory"; rows "name, path" and Browse...).
+  const workdirChips = () => {
+    if (!devinSurface()) return null;
+    const btns = [...document.querySelectorAll('button')].filter(b => vis(b) && b.getBoundingClientRect().y > 120);
+    const env = btns.find(b => /^(Local|Worktree|Cloud)$/.test((b.innerText || '').trim()) && b.getAttribute('aria-haspopup') === 'menu');
+    if (!env) return null;
+    const er = env.getBoundingClientRect();
+    const folder = btns.filter(b => b !== env && Math.abs(b.getBoundingClientRect().y - er.y) < 8 && b.getBoundingClientRect().x > er.x && (b.innerText || '').trim())
+      .sort((a, b) => a.getBoundingClientRect().x - b.getBoundingClientRect().x)[0];
+    return folder ? { env, folder } : null;
+  };
+  const workdirInfo = () => {
+    const c = workdirChips();
+    if (!c) return null;
+    const lines = (c.folder.innerText || '').split('\n').map(x => x.trim()).filter(Boolean);
+    return { name: lines[0] || '', extra: lines[1] || '', env: (c.env.innerText || '').trim(), editable: !c.env.disabled && !c.folder.disabled };
+  };
+  const workdirTarget = which => {
+    const c = workdirChips();
+    return c ? center(which === 'env' ? c.env : c.folder) : null;
+  };
+  const workdirRows = () => {
+    const lb = [...document.querySelectorAll('[role="listbox"][aria-label="Select a directory"]')].find(vis);
+    if (!lb) return null;
+    return [...lb.querySelectorAll('[role="option"]')].filter(vis).map(o => {
+      const label = o.getAttribute('aria-label') || (o.innerText || '').trim();
+      const at = label.indexOf(', ');
+      const r = o.getBoundingClientRect();
+      return { name: at < 0 ? label : label.slice(0, at), path: at < 0 ? '' : label.slice(at + 2), browse: /Browse\.\.\./i.test(label), x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    });
+  };
+  const envRows = () => [...document.querySelectorAll('[role="menuitem"]')].filter(e => vis(e) && /^(Local|Worktree|Cloud)$/.test((e.innerText || '').trim()))
+    .map(e => { const r = e.getBoundingClientRect(); return { label: (e.innerText || '').trim(), x: r.x + r.width / 2, y: r.y + r.height / 2 }; });
+  // Devin "@" mentions: typing "@" in the prompt opens a listbox (root: Files, Directories, Git, Rules, Skills,
+  // Conversations, Terminal, Codemaps; "@file:ser" lists files, "@terminal:" lists terminals). Clicking an option
+  // swaps the typed text for a chip. composerState() is the prompt's text without placeholder / zero-width marks.
+  const composerState = () => {
+    const ed = [...document.querySelectorAll('[role="textbox"][aria-label="Prompt"]')].find(vis);
+    if (!ed) return null;
+    const ph = ed.querySelector('[data-slate-placeholder]')?.innerText || '';
+    let t = ed.innerText || '';
+    if (ph) t = t.split(ph).join('');
+    return t.replace(/[\u200b\ufeff]/g, '').trim();
+  };
+  const mentionRows = () => {
+    const lb = [...document.querySelectorAll('[role="listbox"]')].find(e => vis(e) && e.getBoundingClientRect().height > 20 && e.querySelector('[role="option"]'));
+    if (!lb) return null;
+    return [...lb.querySelectorAll('[role="option"]')].filter(vis).map(o => {
+      const r = o.getBoundingClientRect();
+      const lines = (o.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
+      return { label: lines[0] || '', sub: lines.slice(1).join(' · ').slice(0, 120), sel: o.getAttribute('aria-selected') === 'true', x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    }).filter(r => r.label && r.label !== 'Loading…');
+  };
+  // Devin: the question card sits in a `[data-band-item]` above the composer, one question at a time
+  // ("1 of 2" pager, Skip, option rows `div[role=button]`; multi-select rows carry a role=checkbox and the
+  // card has a Submit button). A single choice answers as soon as its row is clicked. Free text goes
+  // through the normal composer ("Other answer" placeholder).
+  const devinQnBand = () => !devinLog() ? null : [...document.querySelectorAll('[data-band-item]')]
+    .find(e => vis(e) && /\b\d+ of \d+\b/.test(e.innerText || '') && e.querySelector('button[aria-label="Skip"]'));
+  const devinQnRows = band => [...band.querySelectorAll('[data-slot="scroll-area-viewport"] > [role="button"]')];
+  const devinQnButton = (band, name) => [...band.querySelectorAll('button')].find(b => vis(b) && (b.getAttribute('aria-label') === name || (b.innerText || '').trim() === name));
+  const devinQuestions = () => {
+    const band = devinQnBand();
+    if (!band) return null;
+    const pg = /\b(\d+) of (\d+)\b/.exec(band.innerText || '');
+    const rows = devinQnRows(band);
+    const options = rows.map(r => {
+      const cb = r.querySelector('[role="checkbox"]');
+      const ps = [...r.querySelectorAll('p')].map(p => (p.innerText || '').trim());
+      return { label: ps[0] || (r.innerText || '').trim(), desc: ps[1] || '', sel: cb ? cb.getAttribute('aria-checked') === 'true' : false };
+    });
+    const multi = rows.some(r => r.querySelector('[role="checkbox"]'));
+    const text = [...band.querySelectorAll('p')].find(p => !p.closest('[data-slot="scroll-area"]'))?.innerText.trim() || '';
+    const submit = devinQnButton(band, 'Submit') || devinQnButton(band, 'Continue');
+    const prev = devinQnButton(band, 'Previous question'), next = devinQnButton(band, 'Next question');
+    return {
+      devin: true, src: 'devin', list: [{ text, options, multi }],
+      pager: pg ? { cur: Number(pg[1]), total: Number(pg[2]) } : null,
+      canPrev: !!prev && !prev.disabled, canNext: !!next && !next.disabled,
+      hasSubmit: !!submit, canSubmit: !!submit && !submit.disabled,
+    };
+  };
+  const devinQuestionTarget = (oi, part) => {
+    const band = devinQnBand();
+    if (!band) return null;
+    if (part === 'option') {
+      const row = devinQnRows(band)[oi];
+      if (!row) return null;
+      row.scrollIntoView({ block: 'nearest' });
+      return center(row);
+    }
+    const name = { skip: 'Skip', prev: 'Previous question', next: 'Next question' }[part];
+    const b = part === 'submit' ? (devinQnButton(band, 'Submit') || devinQnButton(band, 'Continue')) : devinQnButton(band, name);
+    return b && !b.disabled ? center(b) : null;
+  };
   const questionTarget = (qi, oi, part) => {
+    if (devinQnBand()) return devinQuestionTarget(oi, part);
     const box = qnBox();
     if (!box) return null;
     if (part === 'submit' || part === 'skip') {
@@ -638,28 +941,90 @@ function pageHelpers() {
   };
 
   // Files changed by the Agent: the "N Files" toggle above the composer expands a list with per-file undo / keep.
-  const filesToggle = () => [...doc.querySelectorAll('span.cursor-pointer')].find(e => vis(e) && /^\d+ Files?$/.test(e.innerText.trim().replace(/\s+/g, ' ')));
-  const changedCount = () => parseInt(filesToggle()?.innerText || '0', 10) || 0;
-  const changedRows = () => [...doc.querySelectorAll('.composer-file-list-item')].filter(vis);
-  const changedFiles = () => changedRows().map(r => {
-    const stat = [...r.querySelectorAll('.tabular-nums span')].map(s => s.innerText.trim());
-    return {
-      name: r.querySelector('span[style*="nowrap"]')?.innerText.trim() || r.innerText.trim().split('\n')[0],
-      add: stat.find(s => s.startsWith('+')) || '',
-      del: stat.find(s => /^[-−]/.test(s)) || '',
-    };
-  });
+  const filesToggle = () => [...document.querySelectorAll('span.cursor-pointer')].find(e => vis(e) && /^\d+ Files?$/.test(e.innerText.trim().replace(/\s+/g, ' ')));
+  // Devin's review bar: a "N files with changes" header above the composer, per-row
+  // Accept file (check icon) / Reject file (x icon) buttons and Reject all / Accept all spans.
+  const stripBidi = s => (s || '').replace(/[⁦-⁩]/g, '');
+  // The bar is "N files | +a -d | Quick review | Reject all | Accept all" when collapsed; the
+  // expanded list box sits above it. Collapsed, the list keeps its text but is display:none.
+  const devinChangesHdr = () => [...document.querySelectorAll('div.group.cursor-pointer')]
+    .find(e => /files? with changes/.test(stripBidi(e.innerText)));
+  const devinChangesBox = () => {
+    const h = devinChangesHdr();
+    if (h) return h.closest('div.flex.min-w-0.flex-col.gap-1') || h.parentElement;
+    return [...document.querySelectorAll('div.flex.min-w-0.flex-col.gap-1')].find(e => vis(e) && /\bReject all\b/.test(e.innerText || '')) || null;
+  };
+  const devinChangedRows = () => [...(devinChangesBox()?.querySelectorAll('div.group.cursor-pointer.hover\\:bg-tint-secondary') || [])];
+  const devinBarLeft = () => [...(devinChangesBox()?.querySelectorAll('div.select-none') || [])]
+    .find(e => vis(e) && /^\d+ files?\b/.test(e.innerText.trim()) && !/with changes/.test(e.innerText));
+  const devinOpen = () => devinChangedRows().some(vis);
+  // Devin's editor surface can drop the chat bar while its "Review N files" button (editor pane) still counts.
+  const devinCascadeCount = () => devinLog() ? Number(/Review\s+(\d+)\s+files?/.exec(stripBidi([...document.querySelectorAll('.cascade-bar')].map(b => b.innerText || '').join(' ')))?.[1]) || 0 : 0;
+  const changedCount = () => codexThread() ? codexChanges().count : parseInt(filesToggle()?.innerText || '0', 10) || 0
+    || Number(/(\d+)\s+files?\b/.exec(stripBidi(devinChangesBox()?.innerText))?.[1]) || devinCascadeCount();
+  const changedRows = () => [...document.querySelectorAll('.composer-file-list-item')].filter(vis);
+  const changedFiles = () => {
+    const rows = changedRows();
+    if (rows.length) return rows.map(r => {
+      const stat = [...r.querySelectorAll('.tabular-nums span')].map(s => s.innerText.trim());
+      return {
+        name: r.querySelector('span[style*="nowrap"]')?.innerText.trim() || r.innerText.trim().split('\n')[0],
+        add: stat.find(s => s.startsWith('+')) || '',
+        del: stat.find(s => /^[-−]/.test(s)) || '',
+      };
+    });
+    return devinChangedRows().map(r => {
+      const texts = [...r.querySelectorAll('span')].map(s => stripBidi(s.innerText).trim()).filter(Boolean);
+      // Directory-prefixed rows render as two leaves ("app/" + "index.html"); join them.
+      const name = texts.filter(t => !/^[+−-]\s?\d+$/.test(t)).join('') || stripBidi(r.innerText).split('\n').filter(Boolean)[0] || '';
+      return {
+        name,
+        add: (texts.find(t => /^\+\s?\d+$/.test(t)) || '').replace(/\s+/g, ''),
+        del: (texts.find(t => /^[−-]\s?\d+$/.test(t)) || '').replace(/\s+/g, ''),
+      };
+    });
+  };
   const filesBar = () => {
     let t = filesToggle();
     while (t && !t.querySelector('[data-click-ready]')) t = t.parentElement;
     return t;
   };
   // Bar-level actions besides Stop (handled elsewhere) and Review (desktop-only diff view), e.g. Keep All / Undo All.
-  const fileBarButtons = () => [...(filesBar()?.querySelectorAll('[data-click-ready]') || [])].filter(vis)
-    .map(e => ({ el: e, label: (e.querySelector('.truncate') || e).innerText.trim() }))
-    .filter(x => x.label && !/^(stop|review)$/i.test(x.label));
-  const filesState = () => ({ files: changedFiles(), actions: fileBarButtons().map(x => x.label) });
+  const fileBarButtons = () => {
+    const cur = [...(filesBar()?.querySelectorAll('[data-click-ready]') || [])].filter(vis)
+      .map(e => ({ el: e, label: (e.querySelector('.truncate') || e).innerText.trim() }))
+      .filter(x => x.label && !/^(stop|review)$/i.test(x.label));
+    if (cur.length) return cur;
+    const box = devinChangesBox();
+    if (!box) return [];
+    return [...box.querySelectorAll('span')].filter(e => vis(e) && /^(Reject all|Accept all)$/.test((e.innerText || '').trim()))
+      .map(e => ({ el: e, label: e.innerText.trim() }));
+  };
+  const filesState = () => ({
+    files: changedFiles(),
+    actions: fileBarButtons().map(x => x.label),
+    open: changedRows().length > 0 || (!!devinChangesBox() && devinOpen()),
+    count: changedCount(),
+  });
+  // Devin: hovering a file row reveals two 18px icon buttons — first the check
+  // ("Accept file", act 'keep'), then the x ("Reject file", act 'undo'). The
+  // 'toggle' is the collapsed "N files" bar item, which expands/collapses the list.
+  const devinFileTarget = (i, name, act) => {
+    if (act === 'toggle') {
+      // Folded: the "N files" group opens the list. Expanded: its header "N files with changes" folds it.
+      const l = devinBarLeft() || (devinChangesHdr() && vis(devinChangesHdr()) ? devinChangesHdr() : null);
+      return l ? center(l) : null;
+    }
+    if (act === 'bar') { const b = fileBarButtons().find(x => x.label === name); return b ? center(b.el) : null; }
+    const row = devinChangedRows()[i];
+    if (!row || !vis(row) || changedFiles()[i]?.name !== name) return null;
+    row.scrollIntoView({ block: 'nearest' });
+    if (act === 'row') return center(row);
+    const pick = row.querySelectorAll('button')[act === 'undo' ? 1 : 0];
+    return pick && vis(pick) ? center(pick) : null;
+  };
   const fileTarget = (i, name, act) => {
+    if (devinChangesBox()) return devinFileTarget(i, name, act);
     if (act === 'toggle') { const t = filesToggle(); return t ? center(t) : null; }
     if (act === 'bar') return (b => b ? center(b.el) : null)(fileBarButtons().find(x => x.label === name));
     const row = changedRows()[i];
@@ -683,7 +1048,9 @@ function pageHelpers() {
     const btn = stopGenerationButton();
     if (btn) return center(btn);
     const icon = legacyStopIcon();
-    return icon ? center(icon.closest('button, [role=button], .anysphere-icon-button') || icon) : null;
+    if (icon) return center(icon.closest('button, [role=button], .anysphere-icon-button') || icon);
+    const cancel = devinLog() && [...document.querySelectorAll('button[aria-label="Cancel"]')].find(e => vis(e) && !e.disabled && e.querySelector('svg'));
+    return cancel ? center(cancel) : null;
   };
 
   const permissionLabel = () => {
@@ -793,6 +1160,22 @@ function pageHelpers() {
     clone.querySelectorAll(THINKING_ROOT).forEach(n => n.remove());
     return clone;
   };
+  // Devin user messages: rendered KaTeX would read twice through innerText (MathML + glyphs), so rebuild the
+  // text with the math as $tex$ / $$tex$$ from the KaTeX annotation. Without math the plain text is unchanged.
+  const devinUserText = root => {
+    if (!root.querySelector('.katex')) return root.innerText.trim();
+    const tex = n => (n.querySelector('annotation')?.textContent || '').trim();
+    const walk = n => {
+      if (n.nodeType === 3) return n.textContent;
+      if (n.nodeType !== 1 || n.matches('button, style, script, svg')) return '';
+      if (n.matches('.katex-display, .katex-block') && tex(n)) return `\n$$${tex(n)}$$\n`;
+      if (n.matches('.katex') && tex(n)) return `$${tex(n)}$`;
+      if (n.tagName === 'BR') return '\n';
+      const inner = [...n.childNodes].map(walk).join('');
+      return /^(P|DIV|LI|UL|OL|PRE|BLOCKQUOTE|H[1-6]|TABLE|TR)$/.test(n.tagName) ? `\n${inner}\n` : inner;
+    };
+    return walk(root).replace(/\u00a0/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  };
   const messageItem = el => {
     const kindEl = el.matches('[data-message-kind]') ? el : el.querySelector('[data-message-kind]');
     const aria = el.getAttribute('aria-label');
@@ -812,10 +1195,11 @@ function pageHelpers() {
       return item;
     }
     const readable = el.querySelector('.aislash-editor-input-readonly, .composer-human-message') || withoutThinking(el);
-    if (k === 'human') item.t = readable.innerText.trim();
+    if (k === 'human') item.t = aria === 'User message' ? devinUserText(readable) : readable.innerText.trim();
     else if (k === 'assistant') {
+      const devinRoot = aria === 'Devin message' ? el.querySelector('.prose-main') : null;
       const md = [...el.querySelectorAll('.markdown-root, .ui-markdown, .rendered-markdown')].find(n => !n.closest(THINKING_ROOT));
-      item.h = md ? clean(md) : esc((withoutThinking(el).innerText || '').trim()).replace(/\n/g, '<br>');
+      item.h = devinRoot ? devinRich(devinRoot) : md ? clean(md) : esc((withoutThinking(el).innerText || '').trim()).replace(/\n/g, '<br>');
     }
     else item.t = summary(withoutThinking(el));
     if (k === 'tool') { const f = toolFile(el); if (f) item.f = f; }
@@ -858,7 +1242,7 @@ function pageHelpers() {
     button.click();
     return true;
   };
-  const activeThread = () => codexThread() || agentList().find(a => a.current)?.id || '';
+  const activeThread = () => codexThread() || (devinSurface() ? devinSession()?.key : '') || agentList().find(a => a.current)?.id || '';
   const codexTurnData = el => codexFiberProps(el.querySelector('[class*="agent-activity"], button[aria-expanded]') || el).find(p => p.turn)?.turn;
   // One Codex turn can contain several markdown blocks. Keep them in order instead of keeping only the first reply.
   const codexTurnItems = el => {
@@ -867,32 +1251,189 @@ function pageHelpers() {
     const out = [];
     const turn = codexTurnData(el);
     const markdown = new Map(blocks.map(block => [codexFiberProps(block).find(p => p.item?.type === 'assistant-message')?.item?.responseAnnotationTargetId, block]));
+    const textOf = v => typeof v === 'string' ? v.replace(/\u00a0/g, ' ').trim() : '';
+    const finished = turn?.status === 'complete';
     for (const item of turn?.items || []) {
-      const id = `${thread}:${item.type}:${item.sourceItemId || item.callId || item.responseAnnotationTargetId || item.clientUserMessageId || item.id}`;
+      const id = `${thread}:${item.type}:${item.sourceItemId || item.callId || item.responseAnnotationTargetId || item.clientUserMessageId || item.id || ''}`;
       if (item.type === 'reasoning') {
-        const body = (item.content || '').replace(/\u00a0/g, ' ').trim();
+        const body = textOf(item.content);
         if (body) out.push({ i: id, k: 'thinking', t: `${item.completed ? 'Thoughts' : 'Thinking'}\n${body}`, live: !item.completed });
       } else if (item.type === 'user-message') {
-        out.push({ i: id, k: 'human', t: item.message || '' });
+        const imgs = Array.isArray(item.images) ? item.images.length : 0;
+        const atts = Array.isArray(item.uploadedFileAttachments) ? item.uploadedFileAttachments.length : (Array.isArray(item.attachments) ? item.attachments.length : 0);
+        let t = item.message || '';
+        if (imgs) t += `${t ? '\n' : ''}[图片 ${imgs}]`;
+        if (atts) t += `${t ? '\n' : ''}[附件 ${atts}]`;
+        out.push({ i: id, k: 'human', t });
       } else if (item.type === 'assistant-message' && item.content) {
         const block = markdown.get(item.responseAnnotationTargetId);
         if (item.phase === 'commentary') out.push({ i: id, k: 'thinking', t: `工作过程\n${item.content}`, live: !item.completed });
         else out.push({ i: id, k: 'assistant', h: block ? clean(block) : esc(item.content).replace(/\n/g, '<br>') });
       } else if (item.type === 'exec') {
-        out.push({ i: id, k: 'tool', t: (item.cmd || []).join('\n').slice(0, 240), done: turn.status === 'complete' });
+        out.push({ i: id, k: 'tool', t: (item.cmd || []).join('\n').slice(0, 240), done: finished });
       } else if (item.type === 'patch') {
         const files = Object.keys(item.changes || {});
-        out.push({ i: id, k: 'tool', t: `修改 ${files.join(', ')}`.slice(0, 240), f: files[0], done: turn.status === 'complete' });
+        out.push({ i: id, k: 'tool', t: `修改 ${files.join(', ')}`.slice(0, 240), f: files[0], done: finished });
+      } else if (item.type === 'todo-list') {
+        const steps = Array.isArray(item.plan) ? item.plan : (Array.isArray(item.items) ? item.items : []);
+        const tasks = steps.map(step => ({
+          t: textOf(step.step || step.text || step.title).slice(0, 300),
+          status: step.status === 'completed' || step.completed ? 'done' : step.status === 'in_progress' ? 'in_progress' : 'pending',
+        })).filter(step => step.t);
+        out.push({ i: id, k: 'tasks', done: tasks.filter(step => step.status === 'done').length, total: tasks.length, items: tasks });
+      } else if (item.type === 'web-search') {
+        out.push({ i: id, k: 'tool', kind: 'search', src: 'codex', t: `搜索 ${textOf(item.query)}`.trim().slice(0, 240) });
+      } else if (item.type === 'mcp-tool-call' || item.type === 'dynamic-tool-call') {
+        const name = textOf(item.toolName || item.name || item.server) || item.type;
+        const status = textOf(item.status || item.executionStatus);
+        const raw = item.result ?? item.output ?? item.content;
+        const result = (typeof raw === 'string' ? raw : raw == null ? '' : JSON.stringify(raw)).slice(0, 4000);
+        out.push({ i: id, k: 'tool', kind: 'other', src: 'codex', t: `${item.type === 'mcp-tool-call' ? 'MCP' : '工具'} ${name}${status ? ' · ' + status : ''}${result ? ' · ' + result : ''}`.slice(0, 4400), keep: true });
+      } else if (item.type === 'generated-image' || item.type === 'chatgpt-delayed-image-gen' || item.type === 'chatgpt-delayed-image-gen-received') {
+        const images = [...el.querySelectorAll('img')].filter(vis).map(img => img.currentSrc || img.src).filter(src => /^(https?:|data:image\/|blob:)/.test(src));
+        out.push({ i: id, k: 'tool', kind: 'other', src: 'codex', t: item.type === 'chatgpt-delayed-image-gen' ? '正在生成图片' : '生成的图片', images, keep: true });
+      } else if (item.type === 'chatgpt-tool-approval') {
+        out.push({ i: id, k: 'tool', kind: 'other', src: 'codex', t: `等待批准 ${textOf(item.title)}`.trim().slice(0, 240) });
+      } else if (item.type === 'collabAgentToolCall' || item.type === 'chatgpt-subagent-activity') {
+        out.push({ i: id, k: 'tool', src: 'codex', kind: 'other', t: `${item.tool || '子 Agent'} · ${item.status || ''}\n${JSON.stringify(item.agentsStates || item.agents || item.receiverThreadIds || [])}`, agents: (item.receiverThreadIds || []).map(id => ({ id, title: item.agentsStates?.[id]?.nickname || id })), keep: true });
+      } else if (item.type === 'stream-error') {
+        if (!finished) out.push({ i: id, k: 'thinking', t: `连接\n${textOf(item.content)}`.slice(0, 400), live: true });
+      } else if (item.type === 'turn-diff') {
+        out.push({ i: id, k: 'tool', kind: 'other', src: 'codex', t: '文件改动' });
+      } else if (item.type !== 'automatic-approval-review' && item.type !== 'worked-for') {
+        const body = textOf(item.content || item.message || item.query || item.title);
+        if (body) out.push({ i: id, k: 'tool', kind: 'other', src: 'codex', t: body.slice(0, 400), done: finished && /exec|patch|command/.test(item.type) });
       }
+    }
+    const turnButtons = buttonsIn(el, false).map(x => x.label).filter(l => /^(Copy message|Fork chat from here|View changed files|View changes|Undo|Open agent|View agent|View subagent|Stop agent|Apply|Revert)$/.test(l));
+    if (turnButtons.length) {
+      const host = [...out].reverse().find(it => it.k === 'assistant') || out.at(-1);
+      if (host) { host.b = turnButtons; host.btnItem = el.getAttribute('data-turn-key') || host.i; }
     }
     return out;
   };
+  /* ---------- Devin transcript rows ---------- */
+
+  const devinLog = () => [...doc.querySelectorAll('[role="log"][aria-label="Session transcript"]')].find(vis);
+
+  // Event-group tool rows: "Searched<query>", "Explored<file> and searched <q>", "Read<file> #L…".
+  const devinEventTool = (eg, i, lines) => {
+    const title = lines[0] || '';
+    const m = /^([A-Z][a-z]+)/.exec(title);
+    const label = m ? m[1] : '';
+    const kind = /^searched/i.test(label) ? 'search' : /^explored/i.test(label) ? 'explore' : /^read/i.test(label) ? 'read' : 'other';
+    const rest = title.slice(label.length);
+    const t = `${label} ${[rest, ...lines.slice(1)].join(' · ')}`.replace(/\s+/g, ' ').trim();
+    const codes = [...eg.querySelectorAll('code')].map(c => (c.innerText || '').trim()).filter(Boolean).slice(0, 6);
+    const item = { i, k: 'tool', kind, t, chips: codes.map(c => c.replace(/\n/g, ' ').slice(0, 120)) };
+    const fileish = codes.map(c => c.split('\n')[0].trim())
+      .filter(c => /^[\w.\-~/\\:]+$/.test(c) && (/\.[A-Za-z0-9]{1,10}$/.test(c) || /^[A-Za-z]:\\|^\//.test(c)));
+    if (fileish.length === 1) {
+      item.f = fileish[0];
+      const code = codes.find(c => c.startsWith(fileish[0]));
+      const r = /(#L[\d,\-]+)/.exec(code || '');
+      if (r) item.r = r[1];
+    }
+    return item;
+  };
+
+  // "Command <what> in <dir>" rows: medium title, optional "30s" duration, then the command text.
+  const devinCommand = (row, i) => {
+    const med = row.querySelector('span.codeium-text-medium');
+    const t = (med?.innerText || '').trim();
+    if (!t || !/^command\b/i.test(t)) return null;
+    const rest = (row.innerText || '').split('\n').slice(1);
+    let d = '';
+    if (rest.length && /^\d+\s*[smh]\b/i.test(rest[0].trim())) d = rest.shift().trim();
+    return { i, k: 'tool', kind: 'command', t, d, cmd: rest.join('\n').trim().slice(0, 4000) };
+  };
+
+  // "N / M tasks done" rows (Devin's todo list). The counts are always there; the checklist
+  // items only exist while the row is expanded (see setTasksOpen).
+  const devinTasks = (row, i) => {
+    const sp = [...row.querySelectorAll('span')].find(s => /^\d+\s*\/\s*\d+\s+tasks?\s+done$/.test((s.innerText || '').trim()));
+    if (!sp) return null;
+    const m = /^(\d+)\s*\/\s*(\d+)/.exec(sp.innerText.trim());
+    const rowsEl = [...row.querySelectorAll('div.flex.items-start')].filter(r => r.querySelector('span.block'));
+    const items = rowsEl.map(r => ({
+      t: (r.querySelector('span.block')?.innerText || '').trim().slice(0, 300),
+      status: r.querySelector('.animate-spin') ? 'in_progress' : r.querySelector('svg.text-text-green') ? 'done' : 'pending',
+    })).filter(x => x.t);
+    return { i, k: 'tasks', done: Number(m[1]), total: Number(m[2]), ...(rowsEl.length ? { items } : {}) };
+  };
+  // Expands or folds a tasks row by its acp id (the chevron button only; caller restores).
+  const setTasksOpen = (id, open) => {
+    const row = [...(devinLog()?.children || [])].find(r => itemKey(r) === id);
+    const btn = row?.querySelector('button[aria-expanded]');
+    if (!btn) return false;
+    if (btn.getAttribute('aria-expanded') !== String(open)) btn.click();
+    return true;
+  };
+
+  // File-edit rows: medium file name, +N/-N counters, then a .diff-code-block of line divs.
+  const devinEdit = (row, i) => {
+    const block = row.querySelector('.diff-code-block');
+    const med = row.querySelector('span.codeium-text-medium');
+    if (!block || !med) return null;
+    const diff = [...block.children].map(d => {
+      const c = String(d.className || '');
+      const type = /insert/.test(c) ? '+' : /delete/.test(c) ? '-' : ' ';
+      return [type, (d.innerText || '').replace(/\n+$/, '')];
+    }).filter(l => l[1] !== '');
+    const over = diff.length > 200;
+    const nums = [...row.querySelectorAll('span')].map(s => (s.textContent || '').trim());
+    const num = re => Number((nums.find(t => re.test(t)) || '').slice(1)) || 0;
+    const item = { i, k: 'tool', kind: 'edit', f: med.innerText.trim(), add: num(/^\+\d+$/), del: num(/^-\d+$/), diff: over ? diff.slice(0, 200) : diff };
+    if (over) item.diff.push(['…', `… 省略 ${diff.length - 200} 行`]);
+    return item;
+  };
+
+  // Iterate the Devin transcript's direct children in order: messages, thought groups,
+  // tool event rows, commands and file edits all become items. Unknown rows are skipped.
+  const devinItems = log => {
+    const rows = [...log.children].filter(vis);
+    const last = [...rows].reverse().find(r => (r.innerText || '').trim());
+    const items = [];
+    rows.forEach((row, n) => {
+      const i = itemKey(row) || `acpx${n}`;
+      const msg = row.querySelector('[role=group][aria-label="User message"], [role=group][aria-label="Devin message"]');
+      if (msg) {
+        const it = messageItem(msg);
+        if (!it.i) it.i = i;
+        items.push(it);
+        return;
+      }
+      const tasks = devinTasks(row, i);
+      if (tasks) { items.push(tasks); return; }
+      const eg = row.classList.contains('event-group') ? row : row.querySelector('.event-group');
+      if (eg) {
+        const lines = (eg.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
+        const title = lines[0] || '';
+        if (/^(thoughts?|thinking)\b/i.test(title)) {
+          const body = lines.slice(1).join('\n');
+          const it = { i: `${i}:think`, k: 'thinking', t: body ? `${title}\n${body}` : title };
+          if (row === last && !/\d/.test(title)) it.live = true;
+          items.push(it);
+          return;
+        }
+        items.push(devinEventTool(eg, i, lines));
+        return;
+      }
+      const edit = devinEdit(row, i);
+      if (edit) { items.push(edit); return; }
+      const cmd = devinCommand(row, i);
+      if (cmd) { items.push(cmd); return; }
+    });
+    return items.filter(Boolean).map(it => ({ ...it, src: 'devin' }));
+  };
+
   const extract = () => {
-    const panel = findPanel();
+    const log = devinLog();
+    const panel = findPanel() || log;
     // A brand-new Devin session has a composer and model chip, but no message list yet.
-    if (!panel) {
+    if (!panel && !log) {
       const modelEl = modelButton();
-      if (!modelEl && !hasComposer()) return null;
+      if (!modelEl && !hasComposer() && !devinSurface()) return null;
       return {
         rect: [0, 0, 0, 0],
         items: [],
@@ -902,17 +1443,20 @@ function pageHelpers() {
         subagents: subagents(),
         changed: changedCount(),
         questions: null,
+        ...(devinSurface() ? { session: devinSession(), workdir: workdirInfo() } : {}),
         readonly: !hasComposer(),
-        mode: null,
+        mode: devinModeChip()?.innerText.trim() || null,
+        ...(devinSurface() ? { surface: devinSurface() } : {}),
         model: codexModelName() || (modelEl ? normLabel(modelEl.innerText).split('\n')[0].slice(0, 60) : null),
         permission: permissionLabel(),
         thread: activeThread(),
         title: agentState()?.title || '',
         context: contextPct(),
+        ...(codexFacts()?.view ? { codex: codexFacts().view } : {}),
       };
     }
-    const r = panel.getBoundingClientRect();
-    const items = topItems(panel).flatMap(el => {
+    const r = (log || panel).getBoundingClientRect();
+    const items = log ? devinItems(log) : topItems(panel).flatMap(el => {
       if (el.hasAttribute?.('data-turn-key')) return codexTurnItems(el);
       const thoughts = thinkingInside(el).map((th, n) => thinkingItem(th, el, n));
       if (isThinking(el)) return thoughts.length ? thoughts : [thinkingItem(el, el, 0)];
@@ -929,17 +1473,22 @@ function pageHelpers() {
       items,
       global,
       busy: isBusy(),
-      queued: queued(),
+      queued: devinLog() ? devinQueued() : (codexFacts()?.queued || queued()),
+      ...(devinLog() ? { queuedCount: devinQueueCount() } : {}),
       subagents: subagents(),
       changed: changedCount(),
-      questions: questions(),
+      questions: devinLog() ? devinQuestions() : codexThread() ? { codex: true, requests: codexRequestData() } : questions(),
+      ...(devinLog() ? { session: devinSession() } : {}),
+      ...(devinSurface() ? { workdir: workdirInfo() } : {}),
       readonly: !hasComposer(),
-      mode: modeEl ? modeEl.innerText.trim() || modeEl.dataset.mode : null,
+      mode: devinModeChip()?.innerText.trim() || (modeEl ? modeEl.innerText.trim() || modeEl.dataset.mode : null),
       permission: permissionLabel(),
       thread: activeThread(),
       title: agentState()?.title || '',
       model: codexModelName() || (modelEl ? normLabel(modelEl.innerText).split('\n')[0].slice(0, 60) : null),
       context: contextPct(),
+      ...(devinSurface() ? { surface: devinSurface() } : {}),
+      ...(codexFacts()?.view ? { codex: codexFacts().view } : {}),
     };
   };
   const contextPct = () => {
@@ -989,8 +1538,19 @@ function pageHelpers() {
   };
 
   // Named controls in Cursor's UI; each entry lists fallbacks from newest to oldest Cursor layouts.
+  // Devin's permission mode: a chip in the prompt toolbar (Code / Smart / Ask / Plan / Bypass Permissions). Its menu
+  // only opens for real mouse events (a JS click does nothing), rows are role=menuitem with a description and a
+  // second trailing svg on the current one.
+  const DEVIN_MODES = /^(Code|Smart|Ask|Plan|Bypass Permissions)$/;
+  const devinModeChip = () => !devinSurface() ? null : [...document.querySelectorAll('button[aria-haspopup="menu"]')]
+    .find(b => vis(b) && b.getBoundingClientRect().y > 120 && DEVIN_MODES.test((b.innerText || '').trim()));
+  const devinModeRows = () => [...document.querySelectorAll('[role="menuitem"]')].filter(e => vis(e) && /^(Code|Smart|Ask|Plan|Bypass Permissions)\b/.test((e.innerText || '').trim()))
+    .map(e => {
+      const lines = (e.innerText || '').split('\n').map(x => x.trim()).filter(Boolean);
+      return { el: e, label: lines[0], desc: lines[1] || '', checked: e.querySelectorAll(':scope > svg').length > 1 };
+    });
   const CONTROLS = {
-    mode: () => [...doc.querySelectorAll('.composer-unified-dropdown[data-mode]')].find(vis),
+    mode: () => [...document.querySelectorAll('.composer-unified-dropdown[data-mode]')].find(vis) || devinModeChip(),
     model: () => modelButton(),
     history: () => [...doc.querySelectorAll('[aria-label^="Show Chat History"], [aria-label^="Show Agent History"]')].find(vis),
     newChat: () => [...doc.querySelectorAll('[aria-label="New Agent"], [aria-label="New chat"], [aria-label^="New Chat"], [aria-label="New session"], [data-action-id="new-agent"]')].find(vis),
@@ -1010,13 +1570,16 @@ function pageHelpers() {
     const el = CONTROLS[name]?.();
     if (!el) return false;
     // Radix menus ignore element.click(); a real mouse event is required.
-    if (name === 'permission') return false;
+    if (name === 'permission' || (name === 'mode' && devinModeChip())) return false;
     el.click();
     return true;
   };
 
   const MENU_ITEMS = {
-    mode: () => [...doc.querySelectorAll('.composer-unified-context-menu-item')].map(e => ({ el: e, label: e.innerText.trim().split('\n')[0], checked: !!e.querySelector('.codicon-check') })),
+    mode: () => {
+      const cursor = [...document.querySelectorAll('.composer-unified-context-menu-item')].map(e => ({ el: e, label: e.innerText.trim().split('\n')[0], checked: !!e.querySelector('.codicon-check') }));
+      return cursor.length ? cursor : devinModeRows();
+    },
     model: () => {
       const codexRows = [...doc.querySelectorAll('[role=menuitemradio]')].filter(vis);
       if (codexRows.length) return codexRows.map(e => {
@@ -1136,7 +1699,8 @@ function pageHelpers() {
     if (!panel) return null;
     const root = item === 'g' ? panel : itemByKey(panel, item);
     if (!root) return null;
-    const list = item === 'g' ? buttonsIn(panel, true).filter(x => !inItem(x.el) && !inQn(x.el)) : buttonsIn(root, false);
+    let list = item === 'g' ? buttonsIn(panel, true).filter(x => !inItem(x.el) && !inQn(x.el)) : buttonsIn(root, false);
+    if (root.hasAttribute?.('data-turn-key')) list = list.filter(x => /^(Copy message|Fork chat from here|View changed files|View changes|Undo|Open agent|View agent|View subagent|Stop agent|Apply|Revert)$/.test(x.label));
     const b = list[n]?.el;
     if (!b) return null;
     b.scrollIntoView({ block: 'center' });
@@ -1144,8 +1708,22 @@ function pageHelpers() {
     return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
   };
 
+  // Devin scrolls a `.cascade-scrollbar` ancestor of the transcript log, not the log itself.
+  const devinScroller = () => {
+    const log = devinLog();
+    if (!log) return null;
+    let p = log;
+    while (p && p !== document.body) {
+      const st = getComputedStyle(p);
+      if ((st.overflowY === 'auto' || st.overflowY === 'scroll') && p.scrollHeight > p.clientHeight) return p;
+      p = p.parentElement;
+    }
+    return log;
+  };
   const panelRect = () => {
-    const p = findPanel();
+    // findPanel's fallback can climb to Devin's whole virtualized log (taller than
+    // the screen); the wheel must land inside the visible scroll container instead.
+    const p = devinLog() ? devinScroller() : findPanel();
     if (!p) return null;
     const r = p.getBoundingClientRect();
     return [r.x, r.y, r.width, r.height].map(Math.round);
@@ -1177,11 +1755,15 @@ function pageHelpers() {
     }
     const global = buttonsIn(panel, true).filter(x => !inItem(x.el) && !inQn(x.el) && WAIT.test(x.label)).map(x => x.label);
     if (!waiting && global.length) { waiting = `g:${global.join('/')}`; waitingText = global.join(' / '); }
-    const qs = questions();
+    const devin = !!devinLog();
+    const qs = devin ? devinQuestions() : questions();
+    let actions;
     if (qs?.list.length) {
       const text = qs.list.map(q => q.text).join(' / ');
-      waiting = `q:${text.slice(0, 120)}`;
+      waiting = `q:${text.slice(0, 120)}${qs.pager ? `:${qs.pager.cur}` : ''}`;
       waitingText = text;
+      // Devin: single-choice options can be answered from the notification (Android shows three buttons).
+      if (devin && !qs.list[0].multi) actions = qs.list[0].options.slice(0, 3).map((o, i) => ({ id: `opt:${i}`, label: o.label.slice(0, 40) }));
     }
     const recentItems = items.slice(items.findLastIndex(el => el.matches('[data-message-kind="human"], [role=group][aria-label="User message"]') || el.querySelector('.composer-human-message, [data-message-kind="human"]')) + 1);
     const lastReply = [...recentItems].reverse().find(el => el.matches('[data-message-kind="assistant"], [role=group][aria-label="Devin message"]') || el.querySelector('[data-message-kind="assistant"]'));
@@ -1195,7 +1777,7 @@ function pageHelpers() {
       const reply = latest && codexTurnData(latest)?.items?.filter(it => it.type === 'assistant-message' && it.phase !== 'commentary' && it.completed).at(-1);
       last = (reply?.content || '').trim().replace(/\s+/g, ' ').slice(0, 160);
     }
-    return { busy, waiting, waitingText, last, thread, agentId: active?.id || '', title, progress, roots };
+    return { busy, waiting, waitingText, last, thread, agentId: active?.id || '', title, progress, roots, ...(actions ? { actions } : {}), ...(devin ? { devin: true, changed: changedCount() } : {}) };
   };
 
   // Cursor Agents window: the left sidebar lists conversations as row:<agent id>.
@@ -1286,6 +1868,22 @@ function pageHelpers() {
       tab,
       close: tab.querySelector('[aria-label="Kill Terminal"], [aria-label^="Kill"]'),
     }));
+    // Devin / VS Code monaco list: rows labelled "Terminal 1 cloudflared".
+    // Kill/Split action anchors exist in the row but get a size only on hover.
+    const vt = [...document.querySelectorAll('[aria-label="Terminal tabs"] .monaco-list-row')].filter(vis);
+    if (vt.length) return vt.map(tab => {
+      const m = /^Terminal (\d+)\s*(.*)$/.exec((tab.getAttribute('aria-label') || '').trim());
+      return {
+        id: `term-vt${m?.[1] || vt.indexOf(tab)}`,
+        title: ((m?.[2] || '').trim() || `终端 ${m?.[1] || ''}`.trim()).slice(0, 80),
+        current: tab.getAttribute('aria-selected') === 'true',
+        tab,
+        close: tab.querySelector('a.action-label[aria-label^="Kill"], [aria-label^="Kill"]'),
+      };
+    });
+    const solo = [...document.querySelectorAll('.terminal-wrapper.active .xterm')].filter(vis);
+    if (solo.length === 1) return [{ id: 'term-solo', title: '终端', current: true, tab: solo[0], close: null }];
+    return [];
   };
   const terminalList = () => terminalEntries().map(({ id, title, current }) => ({ id, title, current }));
   const terminalById = id => terminalEntries().find(t => t.id === id);
@@ -1302,6 +1900,19 @@ function pageHelpers() {
   const terminalCloseTarget = id => {
     const b = terminalById(id)?.close;
     return b && vis(b) ? center(b) : null;
+  };
+  // The xterm canvas to show: when several .terminal-wrapper are visible (Devin keeps a
+  // shared session terminal next to the panel one), pick the one inside the same pane as
+  // the "Terminal tabs" list.
+  const terminalEl = () => {
+    const sel = '.terminal-wrapper.active .xterm, .terminal.xterm';
+    const tabs = document.querySelector('[aria-label="Terminal tabs"]');
+    if (tabs) {
+      const pane = tabs.closest('.pane') || tabs.parentElement;
+      const inPane = [...(pane?.querySelectorAll(sel) || [])].find(vis);
+      if (inPane) return inPane;
+    }
+    return [...document.querySelectorAll(sel)].find(vis) || null;
   };
   const terminalRect = () => {
     const el = [...doc.querySelectorAll('.terminal-wrapper.active .xterm, .terminal.xterm')].find(vis);
@@ -1608,11 +2219,11 @@ function pageHelpers() {
     return true;
   };
   const codexViewState = () => ({ thread: codexThread(), turns: [...doc.querySelectorAll('[data-turn-key]')].filter(vis).length });
-  const codexFiberProps = el => {
+  const codexFiberProps = (el, depth = 16) => {
     const key = Object.keys(el).find(k => k.startsWith('__reactFiber'));
     let fiber = key ? el[key] : null;
     const props = [];
-    for (let i = 0; i < 16 && fiber; i++) {
+    for (let i = 0; i < depth && fiber; i++) {
       if (fiber.memoizedProps && typeof fiber.memoizedProps === 'object') props.push(fiber.memoizedProps);
       fiber = fiber.return;
     }
@@ -1654,13 +2265,210 @@ function pageHelpers() {
     return null;
   };
 
-  return { attachmentRows, removeAttachment, submitCodexMessage, extract, activeThread, codexThread, codexViewState, codexRecentPoint, codexNewPoint, codexAccountPoint, codexMenuPoint, clickLabeled, codexChatRows, codexChatPoint, locate, panelRect, control, menuItems, menuItem, quickOpenRows, agentList, agentTarget, agentState, agentStates, queueTarget, stopTarget, focusQueueEdit,
+  const codexPromptEl = () => doc.querySelector('.ProseMirror[contenteditable="true"]');
+  const codexPromptText = () => {
+    const ed = codexPromptEl();
+    if (!ed) return null;
+    return (ed.innerText || '').replace(/[\u200b\ufeff]/g, '').replace(/^\n/, '').replace(/\n+$/g, '');
+  };
+  const codexSelectPrompt = () => {
+    const ed = codexPromptEl();
+    if (!ed) return false;
+    ed.focus();
+    const sel = ed.ownerDocument.getSelection();
+    const range = ed.ownerDocument.createRange();
+    range.selectNodeContents(ed);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    return true;
+  };
+  const codexPromptPoint = () => {
+    const ed = codexPromptEl();
+    if (!ed || !vis(ed)) return null;
+    const r = ed.getBoundingClientRect();
+    return codexPoint(ed);
+  };
+  const codexButtonPoint = which => {
+    const buttons = [...doc.querySelectorAll('button')].filter(vis);
+    const el = which === 'ide' ? buttons.find(b => /IDE context/i.test(b.getAttribute('aria-label') || ''))
+      : which === 'run' ? buttons.find(b => (b.getAttribute('aria-label') || '') === 'Select where to run the chat')
+      : which === 'actions' ? buttons.find(b => (b.getAttribute('aria-label') || '') === 'Chat actions')
+      : null;
+    return el ? codexPoint(el) : null;
+  };
+  const codexMentionRows = () => {
+    const root = doc.querySelector('[data-mention-list-scroll-area]');
+    if (!root || root.getBoundingClientRect().height < 8) return [];
+    const rows = [];
+    for (const sec of doc.querySelectorAll('[data-mention-section-id]')) {
+      const section = sec.getAttribute('data-mention-section-id') || '';
+      for (const item of sec.querySelectorAll('[data-list-navigation-item]')) {
+        const r = item.getBoundingClientRect();
+        if (r.height < 8 || r.width < 8) continue;
+        const lines = (item.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
+        let key = '';
+        for (const p of codexFiberProps(item, 8)) {
+          if (typeof p.key === 'string' && p.key) { key = p.key; break; }
+        }
+        const label = (lines[0] || '').slice(0, 80);
+        if (!label) continue;
+        rows.push({
+          section, key: key || `${section}:${label}:${lines.slice(1).join(' ')}`, label,
+          sub: lines.slice(1).join(' ').slice(0, 160),
+          ...codexPoint(item),
+        });
+      }
+    }
+    return rows;
+  };
+  const codexRunItems = () => [...doc.querySelectorAll('[role=menuitem]')].filter(vis).map(e => {
+    const label = (e.innerText || '').replace(/\s+/g, ' ').trim();
+    const r = e.getBoundingClientRect();
+    return { label, ...codexPoint(e) };
+  }).filter(x => x.label);
+  const codexQueued = () => {
+    const thread = codexThread();
+    const value = codexQueryClient()?.getQueryData(['vscode', 'get-global-state', '{"key":"queued-follow-ups"}'])?.value;
+    const raw = value && typeof value === 'object' ? value[thread] : null;
+    if (!Array.isArray(raw)) return [];
+    return raw.map((m, n) => ({
+      id: String(m?.id || `cq${n}`),
+      t: String(m?.text || m?.message || m?.content || '').slice(0, 4000),
+      src: 'codex',
+    })).filter(m => m.t);
+  };
+  const codexQueueAction = async (id, action) => {
+    if (!codexQueued().some(m => m.id === id)) return false;
+    const name = { send: 'onSendNowMessage', remove: 'onDeleteMessage', edit: 'onEditMessage' }[action];
+    for (const el of doc.querySelectorAll('button')) {
+      for (const p of codexFiberProps(el, 32)) {
+        const actions = p.messageListActions || p;
+        if (typeof actions[name] === 'function') { await actions[name](id); return true; }
+      }
+    }
+    return false;
+  };
+  // Read pending native cards, keeping their real controls rather than reproducing approval semantics.
+  const codexRequests = () => {
+    if (!codexThread()) return [];
+    const rows = new Map();
+    for (const el of doc.querySelectorAll('button, input, textarea, select, [role=radio], [role=checkbox]')) {
+      if (!vis(el) || el.closest('[contenteditable=true]')) continue;
+      const props = codexFiberProps(el, 32).find(p => p.request?.item?.requestId || (p.item?.requestId && (p.onReply || p.onApprove || p.onSubmit)));
+      const request = props?.request || (props?.item ? props : null);
+      const item = request?.item;
+      if (!item) continue;
+      const id = String(item.requestId);
+      if (!rows.has(id)) rows.set(id, { id, text: item.title || item.reason || item.command || (item.questions || []).map(q => q.question || q.header).join('\n') || request.kind || 'Codex 请求', buttons: [], fields: [] });
+      const row = rows.get(id);
+      if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) && !/^(checkbox|radio|hidden)$/.test(el.type)) {
+        row.fields.push({ el, label: el.getAttribute('aria-label') || el.placeholder || el.name || '回答', value: el.value || '', type: el.type, options: el.tagName === 'SELECT' ? [...el.options].map(o => ({ value: o.value, label: o.text })) : null });
+      } else {
+        const label = (el.getAttribute('aria-label') || el.innerText || '').trim();
+        if (label && !row.buttons.some(b => b.el === el)) row.buttons.push({ el, label, selected: el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-pressed') === 'true' || el.getAttribute('data-state') === 'checked', disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true', ...codexPoint(el) });
+      }
+    }
+    for (const dialog of [...doc.querySelectorAll('[role=dialog]')].filter(vis)) {
+      if ([...rows.values()].some(r => r.buttons.some(b => dialog.contains(b.el)))) continue;
+      const title = dialog.getAttribute('aria-label') || dialog.querySelector('h1,h2,h3')?.innerText || 'Codex';
+      const id = 'dialog:' + title;
+      rows.set(id, {
+        id, text: (dialog.innerText || title).slice(0, 6000),
+        buttons: [...dialog.querySelectorAll('button, [role=radio], [role=checkbox]')].filter(vis).map(el => ({ el, label: el.getAttribute('aria-label') || el.innerText || el.title || '确认', selected: el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-pressed') === 'true' || el.getAttribute('data-state') === 'checked', disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true', ...codexPoint(el) })),
+        fields: [...dialog.querySelectorAll('input:not([type=checkbox]):not([type=radio]), textarea, select')].filter(vis).map(el => ({ el, label: el.getAttribute('aria-label') || el.placeholder || el.name || '输入', value: el.value || '', type: el.type, options: el.tagName === 'SELECT' ? [...el.options].map(o => ({ value: o.value, label: o.text })) : null })),
+      });
+    }
+    return [...rows.values()];
+  };
+  const codexRequestData = () => codexRequests().map(r => ({ id: r.id, text: String(r.text).slice(0, 6000), buttons: r.buttons.map(({ label, disabled, selected }) => ({ label, disabled, selected })), fields: r.fields.map(({ label, value, type, options }) => ({ label, value, type, options })) }));
+  const codexRequestTarget = (id, n) => { const b = codexRequests().find(r => r.id === id)?.buttons[n]; return b ? codexPoint(b.el) : null; };
+  const codexRequestField = (id, n, value) => {
+    const el = codexRequests().find(r => r.id === id)?.fields[n]?.el;
+    if (!el) return false;
+    const w = el.ownerDocument.defaultView;
+    const proto = el.tagName === 'TEXTAREA' ? w.HTMLTextAreaElement.prototype : el.tagName === 'SELECT' ? w.HTMLSelectElement.prototype : w.HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value);
+    el.dispatchEvent(new w.Event('input', { bubbles: true }));
+    el.dispatchEvent(new w.Event('change', { bubbles: true }));
+    return true;
+  };
+  const codexImage = async src => {
+    const r = await fetch(src);
+    if (!r.ok) throw new Error('图片读取失败');
+    const blob = await r.blob();
+    if (!blob.type.startsWith('image/') || blob.size > 8 * 1024 * 1024) throw new Error('图片超过预览限制');
+    return await new Promise((resolve, reject) => { const f = new FileReader(); f.onload = () => resolve(f.result); f.onerror = reject; f.readAsDataURL(blob); });
+  };
+  const codexSkills = () => {
+    const queries = codexQueryClient()?.getQueryCache().getAll().filter(q => q.queryKey[0] === 'skills') || [];
+    const skills = queries.flatMap(q => q.state.data?.data || []).flatMap(d => d.skills || []).filter(s => s.enabled);
+    return [...new Map(skills.map(s => [s.path, { label: s.interface?.displayName || s.name, q: s.interface?.displayName || s.name, sub: `${s.name} · ${s.interface?.shortDescription || s.description || ''}`, section: 'skills', trigger: '/' }])).values()];
+  };
+  const codexChanges = () => {
+    const files = new Map();
+    const turns = [...doc.querySelectorAll('[data-turn-key]')];
+    for (const el of turns) for (const item of codexTurnData(el)?.items || []) {
+      if (item.type !== 'patch') continue;
+      for (const [name, change] of Object.entries(item.changes || {})) {
+        const diff = typeof change === 'string' ? change : change.diff || change.unifiedDiff || '';
+        const lines = diff.split('\n');
+        files.set(name, { name, add: '+' + lines.filter(l => l.startsWith('+') && !l.startsWith('+++')).length, del: '-' + lines.filter(l => l.startsWith('-') && !l.startsWith('---')).length });
+      }
+    }
+    const last = [...turns].reverse().find(el => buttonsIn(el, false).some(b => /^(Undo|Apply|Revert|View changes|View changed files)$/.test(b.label)));
+    const actions = last ? buttonsIn(last, false).filter(b => /^(Undo|Apply|Revert|View changes|View changed files)$/.test(b.label)).map(b => b.label) : [];
+    return { files: [...files.values()], actions, count: files.size, turn: last?.getAttribute('data-turn-key') || '' };
+  };
+  const codexChangeTarget = label => {
+    const turn = codexChanges().turn;
+    const el = [...doc.querySelectorAll('[data-turn-key]')].find(el => el.getAttribute('data-turn-key') === turn);
+    const b = el && buttonsIn(el, false).find(b => b.label === label);
+    return b ? codexPoint(b.el) : null;
+  };
+  const codexFacts = () => {
+    if (!doc.querySelector('button[aria-label="Add files and more"]')) return null;
+    let plan = false, ideStatus = '', autoContext;
+    const add = doc.querySelector('button[aria-label="Add files and more"]');
+    let fiber = add?.[Object.keys(add).find(k => k.startsWith('__reactFiber'))];
+    for (let i = 0; i < 40 && fiber; i++) {
+      const props = fiber.memoizedProps || {};
+      if (!plan && props.activeCollaborationMode?.mode) plan = props.activeCollaborationMode.mode === 'plan';
+      if (!ideStatus && typeof props.ideContextStatus === 'string') ideStatus = props.ideContextStatus;
+      if (typeof props.isAutoContextOn === 'boolean') autoContext = props.isAutoContextOn;
+      fiber = fiber.return;
+    }
+    const ideBtn = [...doc.querySelectorAll('button')].find(e => vis(e) && /IDE context/i.test(e.getAttribute('aria-label') || ''));
+    const runBtn = [...doc.querySelectorAll('button')].find(e => vis(e) && (e.getAttribute('aria-label') || '') === 'Select where to run the chat');
+    const ideOn = autoContext ?? (ideBtn ? /^turn off/i.test(ideBtn.getAttribute('aria-label') || '') : false);
+    let file = null;
+    if (ideOn) {
+      const active = codexQueryClient()?.getQueryData(['ide-context', null])?.activeFile;
+      const sel = active?.selection;
+      const start = sel?.start?.line;
+      const end = sel?.end?.line;
+      const range = Number.isInteger(start) && (start !== end || sel.start.character !== sel.end.character) ? `${start + 1}-${(end ?? start) + 1}` : '';
+      if (active?.label) file = { label: active.label, path: active.path || '', range };
+    }
+    const follow = codexQueryClient()?.getQueryData(['vscode', 'get-settings'])?.values?.followUpQueueMode || '';
+    const run = runBtn ? (runBtn.innerText || '').replace(/\s+/g, ' ').trim() : '';
+    return {
+      queued: codexQueued(),
+      view: {
+        plan, follow, run,
+        actions: !!codexButtonPoint('actions'),
+        ide: ideBtn || ideStatus ? { on: ideOn, file: ideOn ? file : null } : null,
+      },
+    };
+  };
+
+  return { attachmentRows, removeAttachment, submitCodexMessage, extract, activeThread, codexThread, codexViewState, codexRecentPoint, codexNewPoint, codexAccountPoint, codexMenuPoint, clickLabeled, codexChatRows, codexChatPoint, codexPromptText, codexSelectPrompt, codexPromptPoint, codexButtonPoint, codexMentionRows, codexRunItems, codexFacts, codexQueueAction, codexSkills, codexChanges, codexChangeTarget, codexRequestData, codexRequestTarget, codexRequestField, codexImage, locate, panelRect, control, menuItems, menuItem, quickOpenRows, agentList, agentTarget, agentState, agentStates, queueTarget, stopTarget, focusQueueEdit,
     terminalList, terminalTarget, terminalCloseTarget, terminalRect, terminalFocus, newTerminalDirect, newTerminalMenu, newTerminalItem, terminalDump, terminalCommand, modelListTrigger,
     settingsOpen, clickSettingsButton, clickCloseSettings, openSettingsTarget, closeSettingsTarget, readSettings, settingTarget, usageNavTarget, readUsage, readDevinUsage, refreshCodexUsage, codexWorkspaceRoots, contextPct,
     clickControl, clickModelListTrigger, devinSettingsNav, devinSettingsClick, devinSettingsCards,
     fusionConfig, clickFusionCombo, clickFusionFast, fusionOptionItems, fusionOptionTarget,
     menuOpen, maxToggle, modelTarget, modelParams, paramTarget, subTarget, activeChatTab, tabTarget, hasComposer, filesState, fileTarget, questionTarget,
-    closedThinkingIndexes, clickThinking, closeThinkingIfOpen };
+    closedThinkingIndexes, clickThinking, closeThinkingIfOpen, thoughtIndexFor, setTasksOpen, devinQueueTarget,
+    workdirInfo, workdirTarget, workdirRows, envRows, composerState, mentionRows, devinSession, devinTabTarget, devinTabCloseTarget, devinQuestions, thoughtState, setThoughtOpen, thoughtBodyText, devinQueued, devinQueueClearTarget, devinQueueCount, revertTarget, revertDialog, revertDialogButton, revertState, devinSurface, surfaceTarget, transcriptVisible, sessionSearchTarget, sessionPickerRows, sessionPickerTarget };
 }
 
 const helpersCall = call => `(${pageHelpers.toString()})().${call}`;
@@ -1739,6 +2547,10 @@ class Session {
     this.lastChat = '';
     this.thinking = new Map();
     this.thinkingTried = new Map();
+    this.tasksTried = new Map();
+    this.devinHist = new Map();
+    this.thoughtFails = new Map();
+    this.curSession = undefined;
     this.keptThink = new Map();
     this.app = null;
     this.sel = 0;
@@ -1938,8 +2750,96 @@ class Session {
     const prev = this.itemCache.get(thread) || [];
     chat.items = [...new Map([...prev, ...chat.items].map(it => [it.i, it])).values()].slice(-400);
     if (!chat.busy) chat.items.filter(it => it.k === 'thinking').forEach(it => { it.live = false; });
-    if (!chat.busy) chat.items.filter(it => it.k === 'tool').forEach(it => { it.done = true; });
+    if (!chat.busy) chat.items.filter(it => it.k === 'tool' && !it.keep).forEach(it => { it.done = true; });
     this.itemCache.set(thread, chat.items);
+  }
+
+  // Devin sessions: everything remembered from a transcript (rows, thought bodies, task lists) belongs to ONE
+  // session. When the desktop shows another session (a tab was clicked there, the phone switched, a new
+  // session started) park this session's state under its title and load the other's, never merge them.
+  // A rename (the title changed while the set of tabs stayed the same) keeps the state.
+  syncSession(chat) {
+    const sess = chat?.session;
+    if (this.app !== 'devin' || !sess) return;
+    if (this.curSession === undefined || this.curSession === sess.key) { this.curSession = sess.key; return; }
+    if (!this.sessStore) this.sessStore = new Map();
+    const FIELDS = ['devinHist', 'thinking', 'thinkingTried', 'keptThink', 'tasksTried', 'thoughtFails', 'latestThink'];
+    const fresh = () => ({ devinHist: new Map(), thinking: new Map(), thinkingTried: new Map(), keptThink: new Map(), tasksTried: new Map(), thoughtFails: new Map(), latestThink: null });
+    const saved = {};
+    for (const f of FIELDS) saved[f] = this[f];
+    this.sessStore.set(this.curSession, saved);
+    const next = this.sessStore.get(sess.key) || fresh();
+    for (const f of FIELDS) this[f] = next[f];
+    while (this.sessStore.size > 24) this.sessStore.delete(this.sessStore.keys().next().value);
+    this.curSession = sess.key;
+    this.lastChat = '';
+    this.thoughtPoll = 0;
+  }
+
+  // Devin virtualizes its transcript: only rows near the viewport stay mounted, so a poll
+  // sees a sliding window of acp-indexed rows. Merge each window into per-session history
+  // keyed by the stable acp ids; remembered rows keep their last seen content. Sorted by
+  // acp index (a thinking item `acpN:think` travels with row N) and capped at ~1500 items.
+  mergeDevinHistory(chat) {
+    if (!chat?.items) return;
+    if (!chat.items.some(it => it.src === 'devin') && !(this.devinHist?.size && !chat.items.length)) return;
+    if (!this.devinHist) this.devinHist = new Map();
+    const hist = this.devinHist;
+    const num = id => {
+      const m = /^acp(\d+)/.exec(id || '');
+      return m ? Number(m[1]) : -1;
+    };
+    const mounted = chat.items.map(it => num(it.i)).filter(n => n >= 0);
+    const minM = mounted.length ? Math.min(...mounted) : Infinity;
+    const maxM = mounted.length ? Math.max(...mounted) : -1;
+    if (hist.size && mounted.length) {
+      const known = [...hist.keys()].map(num).filter(n => n >= 0);
+      if (known.length) {
+        const minR = Math.min(...known), maxR = Math.max(...known);
+        const overlap = mounted.some(n => n >= minR && n <= maxR);
+        // A new session restarts indexes at 0; sliding to a range entirely below what we
+        // remember means the window was switched without an attach reset.
+        if (maxM < minR || (!overlap && minM === 0)) hist.clear();
+      }
+    }
+    // Sticky thoughts: a remounted collapsed thought has no body; keep the body we already have.
+    for (const it of chat.items) {
+      const next = it.src === 'devin' ? it : { ...it, src: 'devin' };
+      const prev = hist.get(it.i);
+      const pb = prev?.k === 'thinking' ? this.thinkingBody(prev) : '';
+      if (next.k === 'tasks' && !next.items && prev?.items && prev.total === next.total) hist.set(it.i, { ...next, items: prev.items });
+      else hist.set(it.i, next.k === 'thinking' && pb.length > this.thinkingBody(next).length
+        ? { ...next, t: `${this.thinkingTitle(next)}\n${pb}` }
+        : next);
+    }
+    const merged = [...hist.values()].sort((a, b) => num(a.i) - num(b.i));
+    while (merged.length > 1500) hist.delete(merged.shift().i);
+    // Thought bodies are kept up to ~2 MB in total; the oldest drop to title-only first.
+    let kept = 0;
+    for (const it of merged.slice().reverse()) {
+      if (it.k !== 'thinking') continue;
+      const n = this.thinkingBody(it).length;
+      if (!n) continue;
+      if (kept + n > 2000000) hist.set(it.i, { ...it, t: this.thinkingTitle(it) });
+      else kept += n;
+    }
+    // Payload: newest thoughts (12 or 80 KB) carry their body; older ones are title-only with more:true
+    // and their body is requested on demand with {t:'thought', i}.
+    let used = 0, count = 0;
+    const full = [...hist.values()].sort((a, b) => num(a.i) - num(b.i));
+    const sent = new Set();
+    for (const it of full.slice().reverse()) {
+      if (it.k !== 'thinking') continue;
+      const n = this.thinkingBody(it).length;
+      if (!n) continue;
+      if (count < 12 && used + n <= 80000) { used += n; count++; sent.add(it.i); }
+    }
+    chat.items = full.map(it => it.k === 'thinking' && this.thinkingBody(it) && !sent.has(it.i)
+      ? { ...it, t: this.thinkingTitle(it), more: true }
+      : it);
+    const known = [...hist.keys()].map(num).filter(n => n >= 0);
+    const floor = known.length ? Math.min(...known) : minM;
+    chat.earlier = floor > 0;
   }
 
   async pollChat() {
@@ -1951,7 +2851,8 @@ class Session {
     try {
       let chat = await cdp.evaluate(helpersCall('extract()'));
       if (!this.liveRead(cdp, sel)) return;
-      const liveClosed = (chat?.items || []).some(it => it.k === 'thinking' && it.live && !(it.t || '').includes('\n'));
+      this.syncSession(chat);
+      const liveClosed = this.app !== 'devin' && (chat?.items || []).some(it => it.k === 'thinking' && it.live && !(it.t || '').includes('\n'));
       if (liveClosed) {
         const idxs = await cdp.evaluate(helpersCall(`closedThinkingIndexes('live')`));
         if (!this.liveRead(cdp, sel)) return;
@@ -1963,7 +2864,7 @@ class Session {
         }
       }
       if (!this.liveRead(cdp, sel)) return;
-      const needFinal = (chat?.items || []).some(it => it.k === 'thinking' && !it.live && !(it.t || '').includes('\n') && !this.thinkingTried.has(it.i));
+      const needFinal = this.app !== 'devin' && (chat?.items || []).some(it => it.k === 'thinking' && !it.live && !(it.t || '').includes('\n') && !this.thinkingTried.has(it.i));
       if (needFinal) {
         const idxs = await cdp.evaluate(helpersCall(`closedThinkingIndexes('done')`));
         if (!this.liveRead(cdp, sel)) return;
@@ -1979,18 +2880,44 @@ class Session {
       if (!this.liveRead(cdp, sel) || !chat) return;
       const prevThread = this.threadId || '';
       if (chat.thread !== prevThread) {
-        this.clearViewState();
+        if (this.app === 'devin') { this.sel++; this.lastChat = ''; this.lastAttachments = null; }
+        else this.clearViewState();
         this.threadId = chat.thread || '';
         this.publishThread('桌面上的会话已切换');
         this.lastChatAt = 0;
         return;
       }
       this.lastBusy = !!chat.busy;
+      if (this.app === 'codex') {
+        for (const it of chat.items.filter(it => it.images?.length)) {
+          const old = this.itemCache?.get(chat.thread)?.find(x => x.i === it.i);
+          const sources = [...it.images];
+          it.images = await Promise.all(it.images.map(async (src, n) => {
+            if (old?.imageSources?.[n] === src && old.images?.[n]) return old.images[n];
+            try { return await cdp.evaluate(helpersCall(`codexImage(${JSON.stringify(src)})`)); } catch { return src; }
+          }));
+          it.imageSources = sources;
+        }
+        if (!this.liveRead(cdp, sel)) return;
+      }
       this.mergeCodexItems(chat);
+      // Devin task lists: expand a row whose checklist we have not read for its current count, read it, fold it back.
+      const taskRow = (chat?.items || []).find(it => it.k === 'tasks' && !it.items && this.tasksTried.get(it.i) !== it.total);
+      if (taskRow) {
+        this.tasksTried.set(taskRow.i, taskRow.total);
+        if (await this.cdp.evaluate(helpersCall(`setTasksOpen(${JSON.stringify(taskRow.i)}, true)`))) {
+          await new Promise(r => setTimeout(r, 250));
+          const opened = await this.cdp.evaluate(helpersCall('extract()'));
+          await this.cdp.evaluate(helpersCall(`setTasksOpen(${JSON.stringify(taskRow.i)}, false)`));
+          if (opened?.items?.some(it => it.k === 'tasks' && it.i === taskRow.i && it.items)) chat = opened;
+        }
+      }
+      await this.captureThoughts(chat);
       this.fillThinking(chat);
       this.rememberThinking(chat);
       this.retainThinking(chat);
-      const finished = (chat?.items || []).filter(it => it.k === 'thinking' && !it.live);
+      this.mergeDevinHistory(chat);
+      const finished = this.app === 'devin' ? [] : (chat?.items || []).filter(it => it.k === 'thinking' && !it.live);
       finished.forEach((it, i) => {
         const has = this.thinkingBody(it).length > 0;
         const newest = i === finished.length - 1;
@@ -2338,6 +3265,14 @@ class Session {
   async editQueued(id, text) {
     if (!text.trim()) throw new Error('内容不能为空；不想要这条就点「删除」');
     await this.queueAction(id, 'edit');
+    if (this.app === 'codex') {
+      await this.codexFocusPrompt();
+      await this.cdp.evaluate(helpersCall('codexSelectPrompt()'));
+      await this.cdp.send('Input.insertText', { text });
+      if (!await this.cdp.evaluate(helpersCall('submitCodexMessage()'))) throw new Error('Codex 保存排队消息的按钮不可用');
+      setTimeout(() => this.pollChat().catch(() => {}), 300);
+      return;
+    }
     const focus = () => this.cdp.evaluate(helpersCall(`focusQueueEdit(${JSON.stringify(String(id))})`));
     let ok = false;
     for (let i = 0; i < 10 && !ok; i++) {
@@ -2353,6 +3288,12 @@ class Session {
 
   async queueAction(id, action) {
     if (!['send', 'remove', 'edit'].includes(action)) throw new Error('不支持的排队操作');
+    if (this.app === 'devin') return this.devinQueueAction(id, action);
+    if (this.app === 'codex') {
+      if (!await this.cdp.evaluate(helpersCall(`codexQueueAction(${JSON.stringify(String(id))}, ${JSON.stringify(action)})`))) throw new Error('Codex 排队消息或操作入口已不存在');
+      setTimeout(() => this.pollChat().catch(() => {}), 300);
+      return;
+    }
     const call = a => this.cdp.evaluate(helpersCall(`queueTarget(${JSON.stringify(String(id))}${a ? `, ${JSON.stringify(a)}` : ''})`));
     const row = await call();
     if (!row) throw new Error('这条排队消息已经不在了（可能刚被发出）');
@@ -2364,6 +3305,40 @@ class Session {
     }
     if (!pos) throw new Error(this.appMessage('没找到排队消息的操作按钮（可能 {app} 版本不同）'));
     await this.tapCss(pos.x, pos.y);
+    setTimeout(() => this.pollChat().catch(() => {}), 300);
+  }
+
+  // Devin queue rows: hover the row (buttons appear on hover), then tap Send now / Remove from queue.
+  // Edit and reorder are not offered. "Clear all" is a bar-level button.
+  async devinQueueAction(id, action) {
+    if (!['send', 'remove'].includes(action)) throw new Error('不支持的排队操作');
+    const n = /^dq(\d+)$/.exec(String(id))?.[1];
+    const row = n == null ? null : await this.cdp.evaluate(helpersCall(`devinQueueTarget(${n})`));
+    if (!row) throw new Error('这条排队消息已经不在了（可能刚被发出）');
+    await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: row.x, y: row.y });
+    let pos = null;
+    for (let i = 0; i < 6 && !pos; i++) {
+      await new Promise(r => setTimeout(r, 80));
+      pos = await this.cdp.evaluate(helpersCall(`devinQueueTarget(${n}, ${JSON.stringify(action)})`));
+    }
+    if (!pos) throw new Error('没找到排队消息的操作按钮（可能 Devin 版本不同）');
+    await this.tapCss(pos.x, pos.y);
+    setTimeout(() => this.pollChat().catch(() => {}), 300);
+  }
+
+  // Devin "edit": take the queued message out of the queue and hand its text to the phone's input box.
+  async devinTakeOut(id) {
+    const q = (await this.cdp.evaluate(helpersCall('devinQueued()')) || []).find(x => x.id === id);
+    if (!q || !q.t) throw new Error('这条排队消息已经不在了（可能刚被发出）');
+    await this.devinQueueAction(id, 'remove');
+    this.emit({ t: 'unqueued', id, text: q.t });
+  }
+
+  async devinClearQueue() {
+    const pos = await this.cdp.evaluate(helpersCall('devinQueueClearTarget()'));
+    if (!pos) throw new Error('没找到清空排队消息的按钮（可能 Devin 版本不同）');
+    await this.tapCss(pos.x, pos.y);
+    this.emit({ t: 'status', ok: true, msg: '已清空排队消息' });
     setTimeout(() => this.pollChat().catch(() => {}), 300);
   }
 
@@ -2387,15 +3362,42 @@ class Session {
   }
 
   // Opens Cursor's changed-files list if needed, runs fn, then puts the list back the way it was.
-  async withFiles(fn) {
+  // Devin: the rows are readable while the list is folded (display:none), so reading does not toggle it.
+  // Rows can mount late, so wait for as many as the bar counts. Actions open the list, then fold it again.
+  async withFiles(fn, { act = false } = {}) {
+    if (this.app !== 'devin') return this.withCursorFiles(fn);
+    const state = () => this.cdp.evaluate(helpersCall('filesState()'));
+    const settle = async (s, ok) => { for (let i = 0; i < 15 && !ok(s); i++) { await new Promise(r => setTimeout(r, 100)); s = await state(); } return s; };
+    let s = await settle(await state(), x => x.files.length >= x.count);
+    if (!act) return fn(s);
+    let toggled = false;
+    if (!s.open) {
+      const t = await this.cdp.evaluate(helpersCall('fileTarget(0, "", "toggle")'));
+      if (t) {
+        await this.tapCss(t.x, t.y);
+        toggled = true;
+        s = await settle(s, x => x.open);
+      }
+    }
+    try {
+      return await fn(s);
+    } finally {
+      if (toggled && (await state()).open) {
+        const t = await this.cdp.evaluate(helpersCall('fileTarget(0, "", "toggle")'));
+        if (t) await this.tapCss(t.x, t.y);
+      }
+    }
+  }
+
+  async withCursorFiles(fn) {
     const state = () => this.cdp.evaluate(helpersCall('filesState()'));
     let s = await state();
-    const opened = !s.files.length;
+    const opened = !s.open;
     if (opened) {
       const t = await this.cdp.evaluate(helpersCall('fileTarget(0, "", "toggle")'));
       if (!t) return fn(s);
       await this.tapCss(t.x, t.y);
-      for (let i = 0; i < 8 && !s.files.length; i++) {
+      for (let i = 0; i < 8 && !s.open; i++) {
         await new Promise(r => setTimeout(r, 120));
         s = await state();
       }
@@ -2404,18 +3406,150 @@ class Session {
       return await fn(s);
     } finally {
       const t = opened && await this.cdp.evaluate(helpersCall('fileTarget(0, "", "toggle")'));
-      if (t && (await state()).files.length) await this.tapCss(t.x, t.y);
+      if (t && (await state()).open) await this.tapCss(t.x, t.y);
     }
   }
 
+  // Devin thoughts beyond the payload budget are title-only; the body is read from the history,
+  // or expanded in the transcript once (and folded back) when it was never captured.
+  async thought(id) {
+    if (!/^acp\d+:think$/.test(id)) return this.emit({ t: 'thought', i: id, text: null });
+    const it = this.devinHist.get(id);
+    let body = it ? this.thinkingBody(it) : '';
+    if (!body && this.cdp) {
+      body = await this.readThought(id);
+      if (body && it) this.devinHist.set(id, { ...it, t: `${this.thinkingTitle(it)}\n${body}` });
+    }
+    this.emit({ t: 'thought', i: id, text: body || null });
+  }
+
+  // Devin: a collapsed thought has no body in the DOM. Expand it (only if the user has not), wait up to
+  // ~1.5 s for the body to render, read it, and fold it back to the state it was in. Returns '' if not read.
+  async readThought(id) {
+    const st = await this.cdp.evaluate(helpersCall(`thoughtState(${JSON.stringify(id)})`));
+    if (!st) return '';
+    if (st.expanded) return this.cdp.evaluate(helpersCall(`thoughtBodyText(${JSON.stringify(id)})`)).then(t => t || '');
+    await this.cdp.evaluate(helpersCall(`setThoughtOpen(${JSON.stringify(id)}, true)`));
+    let body = '';
+    for (let k = 0; k < 15 && !body; k++) {
+      await new Promise(r => setTimeout(r, 100));
+      body = (await this.cdp.evaluate(helpersCall(`thoughtBodyText(${JSON.stringify(id)})`))) || '';
+    }
+    await this.cdp.evaluate(helpersCall(`setThoughtOpen(${JSON.stringify(id)}, false)`));
+    return body;
+  }
+
+  // Devin: finished thoughts in the mounted transcript that have no body yet. Up to 2 per poll; a
+  // thought is only marked tried once its body was read, or after 3 failed reads on different polls.
+  async captureThoughts(chat) {
+    if (this.app !== 'devin') return;
+    this.thoughtPoll = (this.thoughtPoll || 0) + 1;
+    this.thoughtFails = this.thoughtFails || new Map();
+    const todo = (chat?.items || []).filter(it => it.k === 'thinking' && !it.live && it.src === 'devin'
+      && !this.thinkingBody(it) && !this.thinkingTried.has(it.i) && !(this.devinHist.get(it.i) && this.thinkingBody(this.devinHist.get(it.i))))
+      .reverse().slice(0, 2);
+    for (const it of todo) {
+      const body = await this.readThought(it.i);
+      if (body) {
+        it.t = `${this.thinkingTitle(it)}\n${body}`;
+        this.thinkingTried.set(it.i, 1);
+        continue;
+      }
+      const f = this.thoughtFails.get(it.i) || { n: 0, poll: 0 };
+      if (f.poll !== this.thoughtPoll) f.n++;
+      f.poll = this.thoughtPoll;
+      this.thoughtFails.set(it.i, f);
+      if (f.n >= 3) this.thinkingTried.set(it.i, 1);
+    }
+  }
+
+  // Devin revert: hover + click the row's revert button. Devin then either rewinds the transcript at once
+  // (nothing on disk to undo: no dialog) or shows a confirmation with the file changes. Nothing is
+  // confirmed here; the phone answers with revertOk (confirm) or revertCancel.
+  async revert(i) {
+    if (this.app !== 'devin' || !/^acp\d+$/.test(String(i))) throw new Error('不支持的操作');
+    this.pendingRevert = null;
+    const num = Number(/\d+/.exec(i)[0]);
+    const row = await this.cdp.evaluate(helpersCall(`revertTarget(${JSON.stringify(i)}, 'row')`));
+    if (!row) throw new Error('这条消息已经不在了');
+    await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: row.x, y: row.y });
+    await new Promise(r => setTimeout(r, 150));
+    let btn = null;
+    for (let k = 0; k < 6 && !btn; k++) {
+      btn = await this.cdp.evaluate(helpersCall(`revertTarget(${JSON.stringify(i)}, 'btn')`));
+      if (!btn) await new Promise(r => setTimeout(r, 100));
+    }
+    if (!btn) throw new Error('没找到回退按钮（可能 Devin 版本不同）');
+    await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: btn.x, y: btn.y });
+    await this.tapCss(btn.x, btn.y);
+    const gone = async () => { const s = await this.cdp.evaluate(helpersCall(`revertState(${JSON.stringify(i)})`)); return !s.rowHas || s.max < num; };
+    let dlg = null, done = false;
+    for (let k = 0; k < 40 && !dlg && !done; k++) {
+      await new Promise(r => setTimeout(r, 200));
+      dlg = await this.cdp.evaluate(helpersCall('revertDialog()'));
+      if (!dlg) done = await gone();
+    }
+    if (done) return this.afterRevert(num);
+    if (!dlg) throw new Error('没有出现回退确认框，也没看到对话被回退，请到电脑上看一下');
+    this.pendingRevert = { i, num };
+    this.emit({ t: 'revertConfirm', i, title: dlg.title || '回退到这条消息？', body: dlg.body || '', apply: dlg.apply, force: !!dlg.force });
+  }
+
+  async revertAnswer(ok, apply) {
+    const pr = this.pendingRevert;
+    if (!pr) return;
+    this.pendingRevert = null;
+    if (ok && typeof apply === 'boolean') {
+      const d = await this.cdp.evaluate(helpersCall('revertDialog()'));
+      if (d && d.apply !== null && d.apply !== apply) {
+        const t = await this.cdp.evaluate(helpersCall('revertDialogButton("toggle")'));
+        if (t) await this.tapCss(t.x, t.y);
+      }
+    }
+    const pos = await this.cdp.evaluate(helpersCall(`revertDialogButton(${ok ? '"confirm"' : '"cancel"'})`));
+    if (pos) await this.tapCss(pos.x, pos.y);
+    else if (!ok) await this.key('Escape');
+    else throw new Error('没找到回退确认按钮（可能 Devin 版本不同）');
+    if (!ok) return void setTimeout(() => this.pollChat().catch(() => {}), 500);
+    for (let k = 0; k < 40; k++) {
+      await new Promise(r => setTimeout(r, 250));
+      const s = await this.cdp.evaluate(helpersCall(`revertState(${JSON.stringify(pr.i)})`));
+      if (!s.rowHas || s.max < pr.num) return this.afterRevert(pr.num);
+    }
+    this.emit({ t: 'status', ok: false, msg: '已点了确认，但还没看到对话被回退，请到电脑上看一下' });
+  }
+
+  // The transcript was rewound: rows from the reverted message on no longer exist. Forget them here and tell
+  // the phone to drop them from its local copy too.
+  afterRevert(num) {
+    const n = id => Number(/^acp(\d+)/.exec(id || '')?.[1] ?? -1);
+    for (const m of [this.devinHist, this.thinking, this.keptThink, this.thinkingTried, this.tasksTried, this.thoughtFails]) {
+      for (const k of [...(m?.keys() || [])]) if (n(k) >= num) m.delete(k);
+    }
+    this.lastChat = '';
+    this.emit({ t: 'trunc', from: num });
+    this.emit({ t: 'status', ok: true, msg: '已回退到这条消息之前' });
+    setTimeout(() => this.pollChat().catch(() => {}), 300);
+  }
+
   async listChanges() {
+    if (this.app === 'codex') return this.emit({ t: 'changes', codex: true, ...await this.cdp.evaluate(helpersCall('codexChanges()')) });
     const s = await this.withFiles(async s => s);
-    this.emit({ t: 'changes', ...s });
+    this.emit({ t: 'changes', ...s, ...(this.app === 'devin' ? { devin: true } : {}) });
   }
 
   async changeAction(i, name, act) {
+    if (this.app === 'codex') {
+      if (act !== 'bar') throw new Error('Codex 当前没有逐个文件的接受或撤销入口');
+      const pos = await this.cdp.evaluate(helpersCall(`codexChangeTarget(${JSON.stringify(String(name))})`));
+      if (!pos) throw new Error('文件操作入口已不存在');
+      await this.tapCss(pos.x, pos.y);
+      await this.listChanges();
+      return;
+    }
     if (!['keep', 'undo', 'bar'].includes(act)) throw new Error('不支持的操作');
-    await this.withFiles(async () => {
+    await this.withFiles(async s => {
+      if (this.app === 'devin' && s.count && !s.files.length) throw new Error('这个界面看不到逐个文件的改动，请先切到 Agent 界面');
       const call = a => helpersCall(`fileTarget(${Number(i) || 0}, ${JSON.stringify(String(name))}, ${JSON.stringify(a)})`);
       if (act !== 'bar') {
         const row = await this.cdp.evaluate(call('row'));
@@ -2427,7 +3561,7 @@ class Session {
       if (!pos) throw new Error(this.appMessage('没找到这个按钮（可能 {app} 版本不同）'));
       await this.tapCss(pos.x, pos.y);
       await new Promise(r => setTimeout(r, 400));
-    });
+    }, { act: act !== 'bar' });
     await this.listChanges();
     setTimeout(() => this.pollChat().catch(() => {}), 300);
   }
@@ -2441,16 +3575,25 @@ class Session {
 
   async stopAgent() {
     const pos = await this.cdp.evaluate(helpersCall('stopTarget()'));
-    if (!pos) throw new Error('Agent 当前没有在运行');
-    await this.tapCss(pos.x, pos.y);
+    const running = !!(await this.cdp.evaluate(helpersCall('agentState()')))?.busy;
+    if (!pos && !(this.app === 'devin' && running)) throw new Error('Agent 当前没有在运行');
+    if (pos) await this.tapCss(pos.x, pos.y);
+    else {
+      // Devin shows "Queue" instead of "Cancel" while the desktop prompt holds a draft, so there is no stop
+      // button; its own cancel shortcut (shown in the button tooltip: Ctrl+Alt+C, Ctrl+C on a Mac) still works.
+      if (!await this.cdp.evaluate(FOCUS_COMPOSER)) throw new Error('没找到可见的聊天输入框');
+      await this.key(process.platform === 'darwin' ? 'Ctrl+c' : 'Ctrl+Alt+c');
+    }
+    this.emit({ t: 'status', ok: true, msg: '正在停止…' });
+    // A running command has to be killed first, so Devin can take several seconds to finish cancelling.
     let busy = true;
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 48; i++) {
       await new Promise(r => setTimeout(r, 250));
       busy = !!(await this.cdp.evaluate(helpersCall('agentState()')))?.busy;
       if (!busy) break;
     }
     await this.pollChat().catch(() => {});
-    if (busy) throw new Error('没有停下来，Agent 仍在运行');
+    if (busy) throw new Error(pos ? '没有停下来，Agent 仍在运行，请到电脑上看一下' : '没有停下来：电脑上的输入框里还有没发出的文字，Devin 没有停止按钮。清空输入框，或在电脑上按 Ctrl+Alt+C');
     this.emit({ t: 'status', ok: true, msg: '已停止 Agent' });
   }
 
@@ -2633,8 +3776,126 @@ class Session {
       this.emit({ t: 'agents', list });
       return;
     }
+    if (this.app === 'devin') {
+      const surface = await this.cdp.evaluate(helpersCall('devinSurface()'));
+      if (surface === 'editor') return this.emit({ t: 'agents', list: await this.editorSessions(), surface });
+      const list = await this.cdp.evaluate(helpersCall('agentList()'));
+      return this.emit({ t: 'agents', list: list || [], ...(surface ? { surface } : {}) });
+    }
     const list = await this.cdp.evaluate(helpersCall('agentList()'));
     this.emit({ t: 'agents', list: list || [] });
+  }
+
+  // Devin's Editor surface has no session list in the panel; the titlebar "Search agents" quick pick
+  // lists every session by name. It is opened, read, and closed again with Escape.
+  async openSessionPicker() {
+    const pos = await this.cdp.evaluate(helpersCall('sessionSearchTarget()'));
+    if (!pos) throw new Error('没找到会话搜索按钮（可能 Devin 版本不同）');
+    await this.tapCss(pos.x, pos.y);
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => setTimeout(r, 100));
+      if (await this.cdp.evaluate(helpersCall('sessionPickerRows()'))) return true;
+    }
+    return false;
+  }
+
+  async editorSessions() {
+    const sess = await this.cdp.evaluate(helpersCall('devinSession()'));
+    const tabs = sess?.tabs || [];
+    let rows = null, opened = false;
+    try {
+      opened = await this.openSessionPicker();
+      rows = opened ? await this.cdp.evaluate(helpersCall('sessionPickerRows()')) : null;
+    } catch (e) {
+      if (!tabs.length) throw e;
+    }
+    if (opened) await this.key('Escape');
+    if (!opened && !tabs.length) throw new Error('没有读到会话列表，请先切到 Agent 界面再试');
+    const norm = s => String(s || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+    const open = tabs.map(t => ({ id: `tab:${t.id}`, title: t.title, group: '已打开的会话', current: t.active, running: !!(rows || []).find(r => norm(r.title) === t.title)?.running }));
+    const rest = (rows || []).filter(r => !tabs.some(t => t.title === norm(r.title))).map(r => ({ id: r.id, title: r.title, group: tabs.length ? '全部会话' : '', current: false, running: !!r.running }));
+    return [...open, ...rest];
+  }
+
+  // Close a session tab (Editor surface). The session itself stays in Devin's session list.
+  async closeTab(title) {
+    if (this.app !== 'devin') throw new Error('不支持的操作');
+    const before = await this.cdp.evaluate(helpersCall('devinSession()'));
+    const tabs = before?.tabs || [];
+    if (!tabs.some(t => t.id === title)) throw new Error('这个会话标签已经关闭了');
+    if (tabs.length <= 1) throw new Error('这是唯一打开的会话标签，不能关闭');
+    const pos = await this.cdp.evaluate(helpersCall(`devinTabTarget(${JSON.stringify(title)})`));
+    if (!pos) throw new Error('这个会话标签已经关闭了');
+    await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pos.x, y: pos.y });
+    let x = null;
+    for (let i = 0; i < 8 && !x; i++) {
+      await new Promise(r => setTimeout(r, 80));
+      x = await this.cdp.evaluate(helpersCall(`devinTabCloseTarget(${JSON.stringify(title)})`));
+    }
+    if (!x) throw new Error('没找到这个标签的关闭按钮（可能 Devin 版本不同）');
+    await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x.x, y: x.y });
+    await this.tapCss(x.x, x.y);
+    let gone = false;
+    for (let i = 0; i < 20 && !gone; i++) {
+      await new Promise(r => setTimeout(r, 100));
+      gone = !((await this.cdp.evaluate(helpersCall('devinSession()')))?.tabs || []).some(t => t.id === title);
+    }
+    this.resetDevinView();
+    this.emit({ t: 'status', ok: gone, msg: gone ? '已关闭会话标签' : '没有关掉，Devin 可能在等你确认，请到电脑上看一下' });
+    setTimeout(() => this.pollChat().catch(() => {}), 300);
+  }
+
+  // Editor surface: the open sessions are tabs above the transcript; clicking one switches the transcript.
+  async switchTab(title) {
+    const pos = await this.cdp.evaluate(helpersCall(`devinTabTarget(${JSON.stringify(String(title))})`));
+    if (!pos) throw new Error('这个会话标签已经关闭了');
+    await this.tapCss(pos.x, pos.y);
+    let on = false;
+    for (let i = 0; i < 15 && !on; i++) {
+      await new Promise(r => setTimeout(r, 100));
+      on = (await this.cdp.evaluate(helpersCall('devinSession()')))?.key === title;
+    }
+    this.resetDevinView();
+    this.emit({ t: 'status', ok: on, msg: on ? '已切换会话' : '这个会话还没有切过去，请稍后再试' });
+    setTimeout(() => this.pollChat().catch(() => {}), 300);
+  }
+
+  // Switching surface resets what was read from the old transcript, like opening another agent.
+  resetDevinView() {
+    this.lastChat = '';
+  }
+
+  async setSurface(to) {
+    if (this.app !== 'devin') throw new Error('不支持的操作');
+    const want = to === 'editor' ? 'editor' : 'agent';
+    const cur = await this.cdp.evaluate(helpersCall('devinSurface()'));
+    if (cur === want && await this.cdp.evaluate(helpersCall('transcriptVisible()'))) return this.emit({ t: 'status', ok: true, msg: want === 'editor' ? '已在 Editor 界面' : '已在 Agent 界面' });
+    const pos = await this.cdp.evaluate(helpersCall(`surfaceTarget(${JSON.stringify(want)})`));
+    if (!pos) throw new Error('找不到 Agent / Editor 切换按钮');
+    await this.tapCss(pos.x, pos.y);
+    let ready = false;
+    for (let i = 0; i < 20 && !ready; i++) {
+      await new Promise(r => setTimeout(r, 100));
+      ready = (await this.cdp.evaluate(helpersCall('devinSurface()'))) === want && await this.cdp.evaluate(helpersCall('transcriptVisible()'));
+      if (!ready && want === 'editor' && i === 3) await this.key(process.platform === 'darwin' ? 'Meta+l' : 'Ctrl+l');
+    }
+    this.resetDevinView();
+    if (!ready) this.emit({ t: 'status', ok: false, msg: '这个界面还没有加载完，请稍后再试' });
+    else this.emit({ t: 'status', ok: true, msg: want === 'editor' ? '已切到 Editor 界面' : '已切到 Agent 界面' });
+    setTimeout(() => this.pollChat().catch(() => {}), 300);
+  }
+
+  // Devin "New": the Agent surface has the New session control. The Editor surface has none
+  // visible, so it switches to Agent first and stays there (the new session lives in Agent).
+  async devinNewChat() {
+    const surface = await this.cdp.evaluate(helpersCall('devinSurface()'));
+    const switched = surface === 'editor';
+    if (switched) await this.setSurface('agent');
+    await this.pressControl('newChat');
+    this.resetDevinView();
+    this.lastChatAt = 0;
+    await this.pollChat();
+    this.emit({ t: 'status', ok: true, msg: switched ? '已切到 Agent 界面并新建对话' : '已新建对话' });
   }
 
   async openAgent(id) {
@@ -2642,8 +3903,23 @@ class Session {
       await this.openCodexAgent(id);
       return;
     }
+    if (this.app === 'devin' && id.startsWith('tab:')) return this.switchTab(id.slice(4));
+    if (this.app === 'devin' && await this.cdp.evaluate(helpersCall('devinSurface()')) === 'editor') {
+      const opened = await this.openSessionPicker();
+      const pos = opened && await this.cdp.evaluate(helpersCall(`sessionPickerTarget(${JSON.stringify(id)})`));
+      if (!pos) {
+        if (opened) await this.key('Escape');
+        throw new Error('这条 Agent 已经不在列表里');
+      }
+      await this.tapCss(pos.x, pos.y);
+      this.resetDevinView();
+      this.emit({ t: 'status', ok: true, msg: '已切换 Agent' });
+      setTimeout(() => this.pollChat().catch(() => {}), 500);
+      return;
+    }
     if (!id || id.length > 200) throw new Error('这条 Agent 已经不在列表里');
-    this.clearViewState();
+    if (this.app === 'devin') { this.sel++; this.lastChat = ''; this.lastAttachments = null; }
+    else this.clearViewState();
     this.switchingThread = true;
     try {
       const pos = await this.cdp.evaluate(helpersCall(`agentTarget(${JSON.stringify(id)}, ${this.app === 'devin'})`));
@@ -2667,6 +3943,7 @@ class Session {
 
   async newChat() {
     if (this.app === 'codex') return this.newCodexChat();
+    if (this.app === 'devin') return this.devinNewChat();
     const before = await this.cdp.evaluate(helpersCall('activeThread()'));
     await this.pressControl('newChat');
     for (let i = 0; i < 12; i++) {
@@ -2779,7 +4056,9 @@ class Session {
     setTimeout(() => this.pollChat().catch(() => {}), 300);
   }
 
-  async pickMenu(kind, label) {
+  async pickMenu(kind, label, name) {
+    if (kind === 'codex-run') return this.codexRunPick(String(label || ''));
+    if (kind === 'codex-chat') return this.codexChatPick(String(label || ''), name ? String(name).slice(0, 80) : '');
     await this.pressControl(kind);
     if (kind === 'model') {
       for (let i = 0; i < 8; i++) {
@@ -2821,19 +4100,44 @@ class Session {
     }).catch(() => { this.fusionMiss = true; }).finally(() => { this.fusionLoading = false; });
   }
 
+  // Reuses the panel if the model menu is already open (pressing the button again would close it),
+  // and expands the model list like openMenu does when the panel does not show up on its own.
+  async openFusionPanel() {
+    let fusion = await this.cdp.evaluate(helpersCall('fusionConfig()'));
+    if (fusion) return fusion;
+    await this.pressControl('model');
+    for (let i = 0; i < 14 && !fusion; i++) {
+      await new Promise(r => setTimeout(r, 150));
+      fusion = await this.cdp.evaluate(helpersCall('fusionConfig()'));
+      if (fusion) break;
+      // The panel opens while the mouse hovers the Fusion row. Clicking that row would pick it and close the menu.
+      const row = await this.cdp.evaluate(helpersCall(`menuItem('model', 'Fusion')`));
+      if (row) { await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: row.x, y: row.y }); continue; }
+      if (i < 4) continue;
+      const opened = await this.cdp.evaluate(helpersCall('clickModelListTrigger()'));
+      if (opened) continue;
+      const sub = await this.cdp.evaluate(helpersCall('modelListTrigger()'));
+      if (sub) await this.tapCss(sub.x, sub.y);
+    }
+    return fusion;
+  }
+
+  async idleFusionRead() {
+    for (let i = 0; i < 40 && this.fusionLoading; i++) await new Promise(r => setTimeout(r, 100));
+  }
+
   async readFusion(open) {
     let cfg = await this.cdp.evaluate(helpersCall('fusionConfig()'));
     if (cfg || !open) return cfg;
-    await this.pressControl('model');
-    cfg = await this.waitFor('fusionConfig()');
+    cfg = await this.openFusionPanel();
     await this.closeMenus();
     return cfg;
   }
 
   async fusionOptions(part) {
     if (!['lead', 'effort', 'sidekick'].includes(part)) throw new Error('没有这个 Fusion 选项');
-    await this.pressControl('model');
-    const fusion = await this.waitFor('fusionConfig()');
+    await this.idleFusionRead();
+    const fusion = await this.openFusionPanel();
     if (!fusion) { await this.closeMenus(); throw new Error('先把模型切换到 Fusion'); }
     const opened = await this.cdp.evaluate(helpersCall(`clickFusionCombo(${JSON.stringify(part)})`));
     if (!opened) { await this.closeMenus(); throw new Error('Fusion 的这项没有打开'); }
@@ -2850,8 +4154,8 @@ class Session {
   }
 
   async fusionPick(part, value) {
-    await this.pressControl('model');
-    const ready = await this.waitFor('fusionConfig()');
+    await this.idleFusionRead();
+    const ready = await this.openFusionPanel();
     if (!ready) { await this.closeMenus(); throw new Error('先把模型切换到 Fusion'); }
     if (part === 'fast') {
       const ok = await this.cdp.evaluate(helpersCall('clickFusionFast()'));
@@ -2916,7 +4220,9 @@ class Session {
     const roots = await this.currentRoots();
     const ws = roots[0] || null;
     const host = ws ? ws.host : /\[SSH: ([^\]]+)\]/.exec(this.winTitle || '')?.[1] || null;
-    const isAbs = /^(\/|~\/)/.test(p);
+    // Devin has no quick-open; resolve purely on disk (absolute, root-relative, basename search).
+    if (this.app === 'devin') return resolveLocal(ws, text);
+    const isAbs = /^(\/|~\/|[a-zA-Z]:[\\/])/.test(p);
     const tried = [];
     const tryPath = async (h, abs) => {
       if (tried.some(t => t.h === h && t.abs === abs)) return null;
@@ -2963,12 +4269,51 @@ class Session {
     throw new Error(`找不到文件（可能已被删除或移动）：${p}`);
   }
 
+  // The desktop app's own colour theme, once per attached app; falls back to a
+  // shiki builtin matching the phone's light/dark choice (sent via {t:'appTheme'}).
+  async fileTheme() {
+    if (this._theme?.app === this.app) return this._theme.theme;
+    let theme = null;
+    try { theme = findTheme(this.app, { port: Number(new URL(EDITORS.find(e => e.app === this.app)?.url || CDP_URL).port) }); } catch {}
+    this._theme = { app: this.app, theme: theme || (this.dark === false ? 'light-plus' : 'dark-plus') };
+    return this._theme.theme;
+  }
+
+  async fileMarks(f, text) {
+    if (f.host) return null;
+    const git = await gitMarks(f.path).catch(() => null);
+    if (git) {
+      if (git.newFile) return { marks: { add: [], mod: [], del: [] }, markSource: 'git', newFile: true };
+      if (git.add.length || git.mod.length || git.del.length) {
+        return { marks: { add: git.add, mod: git.mod, del: git.del }, markSource: 'git' };
+      }
+    }
+    if (this.app === 'devin') {
+      const m = agentMarks(this.devinHist, f.path, text);
+      if (m && (m.add.length || m.del.length)) return { marks: m, markSource: 'agent' };
+    }
+    return git && !git.newFile ? null : (git?.newFile ? { marks: { add: [], mod: [], del: [] }, markSource: 'git', newFile: true } : null);
+  }
+
   async openFile(text) {
+    if (this.app === 'codex') {
+      const run = (await this.cdp.evaluate(helpersCall('codexFacts()')))?.view?.run || '';
+      if (run && !/local|本地/i.test(run)) {
+        this.emit({ t: 'file', error: '当前执行位置不是本机，不能把远程路径当成电脑上的文件打开', name: path.posix.basename(parseRef(text).p) });
+        return;
+      }
+    }
     this.emit({ t: 'file', loading: true, name: path.posix.basename(parseRef(text).p) });
     try {
       const f = await this.resolveFile(text);
       const body = await readFile(f.host, f.path, f.size);
-      this.emit({ t: 'file', name: path.posix.basename(f.path), path: f.path, host: f.host, size: f.size, line: f.line, editable: typeof body.text === 'string' && !body.truncated, ...body });
+      let hl = null, marked = null;
+      if (body.text) {
+        const theme = await this.fileTheme();
+        hl = await highlightText(body.text, f.path, theme).catch(() => null);
+        marked = await this.fileMarks(f, body.text).catch(() => null);
+      }
+      this.emit({ t: 'file', name: path.posix.basename(f.path), path: f.path, host: f.host, size: f.size, line: f.line, editable: Boolean(body.text) && !body.truncated, ...body, ...(hl ? { hl } : {}), ...(marked?.marks ? { marks: marked.marks, markSource: marked.markSource } : {}), ...(marked?.newFile ? { newFile: true } : {}) });
     } catch (e) {
       this.emit({ t: 'file', error: e.message, name: path.posix.basename(parseRef(text).p) });
     }
@@ -3050,6 +4395,10 @@ class Session {
     this.lastChat = '';
     this.thinking = new Map();
     this.thinkingTried = new Map();
+    this.tasksTried = new Map();
+    this.devinHist = new Map();
+    this.thoughtFails = new Map();
+    this.curSession = undefined;
     this.keptThink = new Map();
     const onclose = () => {
       if (this.cdp !== cdp && this.editorCdp !== editorCdp) return;
@@ -3100,6 +4449,11 @@ class Session {
 
   async startScreencast() {
     await this.editorCdp.send('Page.startScreencast', { ...this.screencast, everyNthFrame: 1 });
+  }
+
+  async stopScreencast() {
+    this.casting = false;
+    await this.cdp.send('Page.stopScreencast').catch(() => {});
   }
 
   onFrame({ data, metadata, sessionId }) {
@@ -3198,22 +4552,393 @@ class Session {
     }
   }
 
-  async sendMessage(text, submit) {
+  // ---- Devin "@" mentions: drive Devin's own typeahead so the result is a real chip ----
+  // Waits until the listbox stops changing (it loads asynchronously) and returns its rows.
+  async mentionSettle() {
+    let last = '', same = 0, rows = null;
+    for (let i = 0; i < 18; i++) {
+      await new Promise(r => setTimeout(r, 150));
+      rows = await this.cdp.evaluate(helpersCall('mentionRows()'));
+      const sig = JSON.stringify((rows || []).map(r => [r.label, r.sub]));
+      same = sig === last ? same + 1 : 0;
+      last = sig;
+      if (rows?.length && same >= 1 && i >= 2) break;
+    }
+    return rows || [];
+  }
+
+  // Remove what was typed for a query (Escape closes the menu, Backspace removes the text) and check that the
+  // prompt looks like it did before; if it does not and it was empty, clear it.
+  async mentionUndo(typed, before) {
+    await this.key('Escape');
+    await new Promise(r => setTimeout(r, 150));
+    for (let i = 0; i < typed; i++) await this.key('Backspace');
+    await new Promise(r => setTimeout(r, 250));
+    const now = await this.cdp.evaluate(helpersCall('composerState()'));
+    if (now !== before && !before) {
+      await this.key(process.platform === 'darwin' ? 'Meta+A' : 'Ctrl+A');
+      await this.key('Backspace');
+    }
+  }
+
+  async withMentionLock(seq, fn) {
+    while (this.mentionBusy) {
+      await new Promise(r => setTimeout(r, 80));
+      if (seq != null && this.mentionSeq !== seq) return null;
+    }
+    this.mentionBusy = true;
+    try { return await fn(); } finally { this.mentionBusy = false; }
+  }
+
+  // Phone typed "@q" (or tapped a category): list what Devin offers, then put the prompt back.
+  async mentionQuery(q, cat, seq, trigger) {
+    if (this.app === 'codex') return this.codexMentionQuery(q, trigger === '/' ? '/' : '@', seq);
+    if (this.app !== 'devin') return;
+    this.mentionSeq = seq;
+    const out = await this.withMentionLock(seq, async () => {
+      if (this.mentionSeq !== seq) return null;
+      if (!await this.cdp.evaluate(FOCUS_COMPOSER)) throw new Error('没找到可见的聊天输入框');
+      const before = await this.cdp.evaluate(helpersCall('composerState()'));
+      let typed = 1, prefix = '';
+      await this.cdp.send('Input.insertText', { text: '@' });
+      await new Promise(r => setTimeout(r, 450));
+      if (cat) {
+        const root = await this.mentionSettle();
+        const idx = root.findIndex(r => r.label.toLowerCase() === cat.toLowerCase());
+        if (idx >= 0) {
+          for (let i = 0; i < idx; i++) await this.key('ArrowDown');
+          await this.key('Enter');
+          await new Promise(r => setTimeout(r, 350));
+          const now = await this.cdp.evaluate(helpersCall('composerState()'));
+          prefix = (now || '').slice((before || '').length).trim();
+          typed = prefix.length || typed;
+        }
+      } else if (q) {
+        await this.cdp.send('Input.insertText', { text: q });
+        typed += q.length;
+      }
+      const rows = await this.mentionSettle();
+      await this.mentionUndo(typed, before);
+      return { rows, prefix };
+    }).catch(e => { this.emit({ t: 'status', ok: false, msg: e.message }); return null; });
+    if (out && this.mentionSeq === seq) {
+      this.emit({ t: 'mentions', seq, q, cat, prefix: out.prefix, root: !q && !cat, rows: out.rows.slice(0, 40).map(r => ({ label: r.label, sub: r.sub })) });
+    }
+  }
+
+  // Type "@q" and click the option with this label (and folder) so Devin turns it into a chip. False = not found.
+  async insertMention(m) {
+    return this.withMentionLock(null, async () => {
+      const before = await this.cdp.evaluate(helpersCall('composerState()'));
+      await this.cdp.send('Input.insertText', { text: '@' });
+      await new Promise(r => setTimeout(r, 450));
+      if (m.q) await this.cdp.send('Input.insertText', { text: m.q });
+      const rows = await this.mentionSettle();
+      const hit = rows.find(r => r.label === m.label && r.sub === (m.sub || '')) || rows.find(r => r.label === m.label);
+      if (!hit) { await this.mentionUndo(1 + (m.q || '').length, before); return false; }
+      await this.tapCss(hit.x, hit.y);
+      await new Promise(r => setTimeout(r, 400));
+      return true;
+    });
+  }
+
+  async codexPrompt() {
+    const text = await this.cdp.evaluate(helpersCall('codexPromptText()'));
+    return typeof text === 'string' ? text : '';
+  }
+
+  async codexFocusPrompt() {
+    if (!await this.cdp.evaluate(FOCUS_COMPOSER)) throw new Error('没找到 Codex 的输入框');
+    const pos = await this.cdp.evaluate(helpersCall('codexPromptPoint()'));
+    if (pos) await this.tapCss(pos.x, pos.y);
+  }
+
+  async codexRestorePrompt(before) {
+    let now = await this.codexPrompt();
+    if (now === before) return;
+    await this.key('Escape');
+    await new Promise(r => setTimeout(r, 120));
+    now = await this.codexPrompt();
+    if (now === before) return;
+    if (before && now.startsWith(before)) {
+      const extra = now.slice(before.length);
+      for (let i = 0; i < extra.length; i++) await this.key('Backspace');
+      if (await this.codexPrompt() === before) return;
+    }
+    if (!before) {
+      await this.cdp.evaluate(helpersCall('codexSelectPrompt()'));
+      await this.key('Backspace');
+      await new Promise(r => setTimeout(r, 80));
+    }
+  }
+
+  async codexMentionSettle() {
+    let last = '', rows = [];
+    for (let i = 0; i < 16; i++) {
+      await new Promise(r => setTimeout(r, 140));
+      rows = await this.cdp.evaluate(helpersCall('codexMentionRows()')) || [];
+      const sig = JSON.stringify(rows.map(r => [r.section, r.key, r.label]));
+      if (rows.length && sig === last && i >= 2) break;
+      last = sig;
+    }
+    return rows;
+  }
+
+  mentionPayload(rows) {
+    return rows.slice(0, 40).map(r => ({ label: r.label, sub: r.sub || '', key: r.key || '', section: r.section || '' }));
+  }
+
+  async codexMentionQuery(q, trigger, seq) {
+    this.mentionSeq = seq;
+    const out = await this.withMentionLock(seq, async () => {
+      if (this.mentionSeq !== seq) return null;
+      await this.codexFocusPrompt();
+      const before = await this.codexPrompt();
+      const typed = trigger + String(q || '');
+      await this.cdp.send('Input.insertText', { text: typed });
+      const rows = await this.codexMentionSettle();
+      await this.codexRestorePrompt(before);
+      let after = await this.codexPrompt();
+      if (after !== before && !before) {
+        await this.cdp.evaluate(helpersCall('codexSelectPrompt()'));
+        await this.key('Backspace');
+        after = await this.codexPrompt();
+      }
+      if (after !== before) throw new Error('查询菜单后没能恢复原来的输入');
+      return rows;
+    }).catch(e => { this.emit({ t: 'status', ok: false, msg: e.message }); return null; });
+    if (out && this.mentionSeq === seq) this.emit({ t: 'mentions', seq, q, trigger, rows: this.mentionPayload(out) });
+  }
+
+  async codexOpenMention(trigger, q) {
+    await this.codexFocusPrompt();
+    await this.cdp.send('Input.insertText', { text: trigger + String(q || '') });
+    return this.codexMentionSettle();
+  }
+
+  async codexPick(msg) {
+    if (this.app !== 'codex') return;
+    const before = await this.withMentionLock(null, async () => {
+      await this.codexFocusPrompt();
+      return this.codexPrompt();
+    });
+    const trigger = msg.section === 'commands' || msg.section === 'Skills' ? '/' : '@';
+    const parentQ = String(msg.parentQ || msg.q || '').slice(0, 60);
+    try {
+      let rows = await this.codexOpenMention(trigger, parentQ);
+      if (msg.parentKey) {
+        const parent = rows.find(r => r.key === msg.parentKey) || rows.find(r => r.label === msg.parentLabel) || rows.find(r => msg.parentLabel && r.label.startsWith(msg.parentLabel));
+        if (!parent) throw new Error('电脑上的菜单里没有上一级');
+        await this.tapCss(parent.x, parent.y);
+        await new Promise(r => setTimeout(r, 350));
+        rows = await this.codexMentionSettle();
+      }
+      const hit = rows.find(r => msg.key && r.key === msg.key) || rows.find(r => r.label === msg.label) || rows.find(r => msg.label && (r.label === msg.label || r.label.startsWith(msg.label)));
+      if (!hit) throw new Error('电脑上的菜单里没有这一项');
+      await this.tapCss(hit.x, hit.y);
+      await new Promise(r => setTimeout(r, 400));
+      const dialog = await this.cdp.evaluate(`(() => { const doc = document.getElementById('active-frame')?.contentDocument || document; return [...doc.querySelectorAll('[role=dialog]')].some(e => e.getBoundingClientRect().height > 40); })()`);
+      if (dialog) {
+        this.emit({ t: 'status', ok: true, msg: '请在请求卡片中确认' });
+        setTimeout(() => this.pollChat().catch(() => {}), 300);
+        return;
+      }
+      const next = await this.cdp.evaluate(helpersCall('codexMentionRows()')) || [];
+      const branched = next.length && !next.some(r => r.key === hit.key && r.label === hit.label);
+      if (branched) {
+        await this.codexRestorePrompt(before);
+        this.emit({
+          t: 'mentions', seq: Number(msg.seq) || 0, submenu: true, q: '',
+          parent: { key: hit.key, label: hit.label, q: parentQ, section: hit.section || msg.section || '' },
+          rows: this.mentionPayload(next),
+        });
+        return;
+      }
+      await this.codexRestorePrompt(before);
+      const after = await this.codexPrompt();
+      if (after !== before && !before) await this.codexRestorePrompt('');
+      this.emit({ t: 'status', ok: true, msg: `已执行 ${hit.label.split('\n')[0]}` });
+      setTimeout(() => this.pollChat().catch(() => {}), 300);
+    } catch (e) {
+      await this.codexRestorePrompt(before).catch(() => {});
+      throw e;
+    }
+  }
+
+  async codexSkillList() {
+    const rows = await this.withMentionLock(null, async () => {
+      await this.codexFocusPrompt();
+      const before = await this.codexPrompt();
+      try {
+        // Opening the native menu loads skills even after its query cache has expired.
+        await this.codexOpenMention('/', '');
+        return await this.cdp.evaluate(helpersCall('codexSkills()'));
+      } finally { await this.codexRestorePrompt(before); }
+    });
+    this.emit({ t: 'codexSkills', rows });
+  }
+
+  async codexTogglePlan() {
+    const before = (await this.cdp.evaluate(helpersCall('codexFacts()')))?.view?.plan;
+    await this.codexPick({ section: 'commands', key: 'plan-mode', label: 'Plan mode', q: '' });
+    const after = (await this.cdp.evaluate(helpersCall('codexFacts()')))?.view?.plan;
+    if (after === before) throw new Error('Plan 模式没有跟着电脑变化');
+    this.emit({ t: 'status', ok: true, msg: after ? '已打开 Plan' : '已关闭 Plan' });
+  }
+
+  async codexToggleIde() {
+    const before = (await this.cdp.evaluate(helpersCall('codexFacts()')))?.view?.ide?.on;
+    await this.codexPick({ section: 'commands', label: 'IDE context', q: 'ide' });
+    let after = before;
+    for (let i = 0; i < 12 && after === before; i++) {
+      await new Promise(r => setTimeout(r, 150));
+      after = (await this.cdp.evaluate(helpersCall('codexFacts()')))?.view?.ide?.on;
+    }
+    if (after === before) throw new Error('IDE 上下文没有切换成功');
+    this.emit({ t: 'status', ok: true, msg: after ? 'IDE 上下文已打开' : 'IDE 上下文已关闭' });
+  }
+
+  async codexRunMenu() {
+    const pos = await this.cdp.evaluate(helpersCall(`codexButtonPoint('run')`));
+    if (!pos) throw new Error('当前没有执行位置菜单');
+    await this.tapCss(pos.x, pos.y);
+    let items = [];
+    for (let i = 0; i < 10 && !items.length; i++) {
+      await new Promise(r => setTimeout(r, 120));
+      items = await this.cdp.evaluate(helpersCall('codexRunItems()')) || [];
+    }
+    await this.key('Escape');
+    this.emit({ t: 'menu', kind: 'codex-run', items: items.filter(it => /^(Local|Cloud|Worktree|Connect Codex web)\b/.test(it.label)).map(it => ({ label: it.label, checked: false })) });
+  }
+
+  async codexRunPick(label) {
+    const pos = await this.cdp.evaluate(helpersCall(`codexButtonPoint('run')`));
+    if (!pos) throw new Error('当前没有执行位置菜单');
+    await this.tapCss(pos.x, pos.y);
+    let hit = null;
+    for (let i = 0; i < 10 && !hit; i++) {
+      await new Promise(r => setTimeout(r, 120));
+      const items = await this.cdp.evaluate(helpersCall('codexRunItems()')) || [];
+      hit = items.find(it => it.label === label);
+    }
+    if (!hit) { await this.key('Escape'); throw new Error(`没找到执行位置：${label}`); }
+    await this.tapCss(hit.x, hit.y);
+    await new Promise(r => setTimeout(r, 300));
+    const run = (await this.cdp.evaluate(helpersCall('codexFacts()')))?.view?.run || '';
+    this.emit({ t: 'status', ok: true, msg: run ? `执行位置：${run}` : `已选择 ${label}` });
+    setTimeout(() => this.pollChat().catch(() => {}), 300);
+  }
+
+  async codexChatMenu() {
+    const pos = await this.cdp.evaluate(helpersCall(`codexButtonPoint('actions')`));
+    if (!pos) throw new Error('当前会话没有 Chat actions');
+    await this.tapCss(pos.x, pos.y);
+    let items = [];
+    for (let i = 0; i < 10 && !items.length; i++) {
+      await new Promise(r => setTimeout(r, 120));
+      items = await this.cdp.evaluate(helpersCall('codexRunItems()')) || [];
+    }
+    await this.key('Escape');
+    this.emit({ t: 'menu', kind: 'codex-chat', items: items.map(it => ({ label: it.label, checked: false })) });
+  }
+
+  async codexChatPick(label, name) {
+    const pos = await this.cdp.evaluate(helpersCall(`codexButtonPoint('actions')`));
+    if (!pos) throw new Error('当前会话没有 Chat actions');
+    await this.tapCss(pos.x, pos.y);
+    let hit = null;
+    for (let i = 0; i < 10 && !hit; i++) {
+      await new Promise(r => setTimeout(r, 120));
+      const items = await this.cdp.evaluate(helpersCall('codexRunItems()')) || [];
+      hit = items.find(it => it.label === label);
+    }
+    if (!hit) { await this.key('Escape'); throw new Error(`没找到会话操作：${label}`); }
+    const thread = await this.cdp.evaluate(helpersCall('codexThread()'));
+    await this.tapCss(hit.x, hit.y);
+    await new Promise(r => setTimeout(r, 300));
+    if (label === 'Rename' && name) {
+      const opened = await this.cdp.evaluate(`(() => {
+        const doc = document.getElementById('active-frame')?.contentDocument || document;
+        const input = [...doc.querySelectorAll('input, textarea')].find(e => e.getBoundingClientRect().height > 8);
+        if (!input) return false;
+        input.focus();
+        input.select?.();
+        return true;
+      })()`);
+      if (!opened) throw new Error('重命名输入框没有出现');
+      await this.typeText(String(name).slice(0, 80));
+      await this.key('Enter');
+    }
+    this.emit({ t: 'status', ok: true, msg: `已执行 ${label}` });
+    const now = await this.cdp.evaluate(helpersCall('codexThread()'));
+    if (now && now !== thread) this.emit({ t: 'thread', threadId: now, windowId: this.windowId });
+    setTimeout(() => this.pollChat().catch(() => {}), 300);
+    setTimeout(() => this.listAgents().catch(() => {}), 400);
+  }
+
+  async insertCodexMention(m, before) {
+    const trigger = m.trigger === '/' ? '/' : '@';
+    const typed = trigger + (m.q || m.label);
+    await this.cdp.send('Input.insertText', { text: typed });
+    const rows = await this.codexMentionSettle();
+    const hit = rows.find(r => m.key && r.key === m.key) || rows.find(r => r.label === m.label) || rows.find(r => m.label && r.label.startsWith(m.label));
+    if (!hit) { await this.codexRestorePrompt(before); return false; }
+    await this.tapCss(hit.x, hit.y);
+    await new Promise(r => setTimeout(r, 250));
+    return true;
+  }
+
+  async typeWithCodexMentions(text, mentions) {
+    let rest = text;
+    for (const m of mentions) {
+      const at = rest.indexOf(m.token);
+      if (at < 0) continue;
+      if (at > 0) await this.typeText(rest.slice(0, at));
+      rest = rest.slice(at + m.token.length);
+      const before = await this.codexPrompt();
+      if (await this.insertCodexMention(m, before)) rest = rest.replace(/^ /, '');
+      else await this.typeText(m.token);
+    }
+    if (rest) await this.typeText(rest);
+  }
+
+  // Text with @tokens: type the text, and at every token let Devin's typeahead insert the real chip.
+  async typeWithMentions(text, mentions) {
+    let rest = text;
+    for (const m of mentions) {
+      const at = rest.indexOf(m.token);
+      if (at < 0) continue;
+      if (at > 0) await this.typeText(rest.slice(0, at));
+      rest = rest.slice(at + m.token.length);
+      if (await this.insertMention(m)) rest = rest.replace(/^ /, '');
+      else await this.typeText(m.token);
+    }
+    if (rest) await this.typeText(rest);
+  }
+
+  async sendMessage(text, submit, when, mentions) {
     const files = [...uploads.values()].filter(f => f.pending && f.sel === this.selectionKey());
     if (files.length) text += '\n\n附加文件（请读取这些电脑端文件）：\n' + files.map(f => f.path).join('\n');
     const found = await this.cdp.evaluate(FOCUS_COMPOSER);
     if (!found) throw new Error(this.appMessage('没找到 {app} 的聊天输入框：先在画面里打开 Agent 面板（或点「打开聊天」）'));
     const busy = submit && await this.cdp.evaluate(helpersCall('agentState()?.busy'));
-    await this.typeText(text);
+    if (this.app === 'devin' && mentions?.length) await this.typeWithMentions(text, mentions);
+    else if (this.app === 'codex' && mentions?.length) await this.typeWithCodexMentions(text, mentions);
+    else await this.typeText(text);
+    const now = this.app === 'devin' && when === 'now' && !!busy;
     if (submit) {
       if (this.app === 'codex') {
-        if (!await this.cdp.evaluate(helpersCall('submitCodexMessage()'))) throw new Error('Codex 发送按钮当前不可用');
-      } else await this.key('Enter');
+        const follow = (await this.cdp.evaluate(helpersCall('codexFacts()')))?.view?.follow || '';
+        const opposite = !!busy && ((when === 'now' && follow !== 'steer') || (when === 'queue' && follow === 'steer'));
+        if (opposite) await this.key(process.platform === 'darwin' ? 'Meta+Shift+Enter' : 'Ctrl+Shift+Enter');
+        else if (!await this.cdp.evaluate(helpersCall('submitCodexMessage()'))) throw new Error('Codex 发送按钮当前不可用');
+      } else await this.key(now ? (process.platform === 'darwin' ? 'Meta+Enter' : 'Ctrl+Enter') : 'Enter');
     }
     if (submit) files.forEach(f => { f.pending = false; });
     await this.syncAttachments();
+    if (now) this.emit({ t: 'status', ok: true, msg: '已打断当前任务并发送' });
     if (this.mode === 'chat') setTimeout(() => this.pollChat().catch(() => {}), 300);
-    return Boolean(busy);
+    return Boolean(busy) && !now;
   }
 
   async answerQuestion(qi, oi, part, text) {
@@ -3230,6 +4955,67 @@ class Session {
     setTimeout(() => this.pollChat().catch(() => {}), 300);
   }
 
+  // ---- Devin working directory (Agent surface, before the first message) ----
+  async openWorkdirChip(which) {
+    const pos = await this.cdp.evaluate(helpersCall(`workdirTarget(${JSON.stringify(which)})`));
+    if (!pos) throw new Error('现在没有可以更换的工作目录');
+    await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pos.x, y: pos.y });
+    await this.tapCss(pos.x, pos.y);
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => setTimeout(r, 120));
+      const rows = await this.cdp.evaluate(helpersCall(which === 'env' ? 'envRows()' : 'workdirRows()'));
+      if (rows?.length) return rows;
+    }
+    return [];
+  }
+
+  async workdirInfoChecked() {
+    const info = await this.cdp.evaluate(helpersCall('workdirInfo()'));
+    if (!info) throw new Error('这里没有工作目录选项（要在 Agent 界面、新会话里）');
+    if (!info.editable) throw new Error('这个会话已经开始了，工作目录只能在新会话发出第一条消息之前更换');
+    return info;
+  }
+
+  async workdirList() {
+    const info = await this.workdirInfoChecked();
+    const rows = await this.openWorkdirChip('folder');
+    await this.key('Escape');
+    this.emit({ t: 'workdirs', info, rows: rows.filter(r => !r.browse).map(({ name, path }) => ({ name, path })) });
+  }
+
+  async workdirPick(name, dirPath) {
+    await this.workdirInfoChecked();
+    const rows = await this.openWorkdirChip('folder');
+    const hit = rows.find(r => r.name === name && r.path === dirPath) || rows.find(r => r.name === name);
+    if (!hit) { await this.key('Escape'); throw new Error('这个文件夹已经不在列表里'); }
+    await this.tapCss(hit.x, hit.y);
+    // Devin switches the whole workspace: the chip reads "Switching workspace..." and the window reloads the
+    // folder, which takes a few seconds (the page is gone for a moment, so evaluations may fail meanwhile).
+    this.emit({ t: 'status', ok: true, msg: '正在切换工作区，Devin 会重新载入文件夹…' });
+    let info = null;
+    for (let i = 0; i < 80; i++) {
+      await new Promise(r => setTimeout(r, 250));
+      info = await this.cdp.evaluate(helpersCall('workdirInfo()')).catch(() => null);
+      if (info?.name === name) break;
+    }
+    this.lastChat = '';
+    this.emit({ t: 'status', ok: info?.name === name, msg: info?.name === name ? `工作目录：${name}` : '没有切换成功，请到电脑上看一下' });
+    setTimeout(() => this.pollChat().catch(() => {}), 300);
+  }
+
+  async envPick(label) {
+    if (!['Local', 'Worktree', 'Cloud'].includes(label)) throw new Error('不支持的运行位置');
+    await this.workdirInfoChecked();
+    const rows = await this.openWorkdirChip('env');
+    const hit = rows.find(r => r.label === label);
+    if (!hit) { await this.key('Escape'); throw new Error('没找到这个选项'); }
+    await this.tapCss(hit.x, hit.y);
+    await new Promise(r => setTimeout(r, 500));
+    this.emit({ t: 'status', ok: true, msg: `运行位置：${label}` });
+    setTimeout(() => this.pollChat().catch(() => {}), 300);
+  }
+
+  // Take a picture / file off the prompt again (the little x on its thumbnail on the desktop).
   async attachImage(data, name, type) {
     if (!/^image\/(png|jpeg|gif|webp)$/.test(type) || typeof data !== 'string' || !/^[A-Za-z0-9+/=]+$/.test(data)) throw new Error('只支持 PNG / JPEG / GIF / WebP 图片');
     const ok = await this.cdp.evaluate(pasteImage(data, String(name || 'image').replace(/[^\w.\-]/g, '_').slice(0, 60), type));
@@ -3285,7 +5071,7 @@ class Session {
     if (!this.cdp) throw new Error(this.appMessage('尚未连接到 {app} 窗口'));
     switch (msg.t) {
       case 'openMenu': return this.openMenu(msg.kind);
-      case 'pickMenu': return this.pickMenu(msg.kind, msg.label);
+      case 'pickMenu': return this.pickMenu(msg.kind, msg.label, msg.name);
       case 'fusionOptions': return this.fusionOptions(String(msg.part ?? ''));
       case 'fusionPick': return this.fusionPick(String(msg.part ?? ''), msg.value);
       case 'toggleMax': return this.toggleMax();
@@ -3305,25 +5091,57 @@ class Session {
       case 'toggleSetting': return this.toggleSetting(String(msg.label ?? ''));
       case 'usage': return this.showUsage(msg.automatic === true);
       case 'newChat': return this.newChat();
+      case 'surface': return this.setSurface(String(msg.to ?? ''));
+      case 'closeTab': return this.closeTab(String(msg.id ?? ''));
       case 'file': return this.openFile(String(msg.path ?? ''));
       case 'saveFile': return this.saveFile(String(msg.path ?? ''), String(msg.text ?? ''), msg.host == null ? undefined : String(msg.host));
       case 'click': return this.clickButton(msg.item, msg.n);
-      case 'queue': return msg.action === 'edit' ? this.editQueued(msg.id, String(msg.text ?? '')) : this.queueAction(msg.id, msg.action);
+      case 'queue':
+        if (msg.action === 'clear' && this.app === 'devin') return this.devinClearQueue();
+        if (msg.action === 'edit' && this.app === 'devin') return this.devinTakeOut(msg.id);
+        return msg.action === 'edit' ? this.editQueued(msg.id, String(msg.text ?? '')) : this.queueAction(msg.id, msg.action);
       case 'stop': return this.stopAgent();
       case 'subagent': return this.subagentAction(msg.name, msg.part === 'stop' ? 'stop' : 'open');
       case 'mainChat': return this.backToMain();
       case 'image': return this.attachImage(msg.data, msg.name, msg.type);
       case 'attachments': return this.syncAttachments();
       case 'removeAttachment': return this.removeAttachment(String(msg.id));
-      case 'question': return this.answerQuestion(msg.qi, msg.oi, ['option', 'submit', 'skip'].includes(msg.part) ? msg.part : 'option', msg.text);
+      case 'question': return this.answerQuestion(msg.qi, msg.oi, ['option', 'submit', 'skip', 'prev', 'next'].includes(msg.part) ? msg.part : 'option', msg.text);
+      case 'workdir': return this.workdirList();
+      case 'workdirPick': return this.workdirPick(String(msg.name ?? '').slice(0, 200), String(msg.path ?? '').slice(0, 400));
+      case 'envPick': return this.envPick(String(msg.label ?? ''));
       case 'changes': return this.listChanges();
+      case 'thought': return this.thought(String(msg.i ?? ''));
+      case 'revert': return this.revert(String(msg.i ?? ''));
+      case 'revertOk': return this.revertAnswer(true, typeof msg.apply === 'boolean' ? msg.apply : undefined);
+      case 'revertCancel': return this.revertAnswer(false);
       case 'change': return this.changeAction(msg.i, msg.name, msg.act);
       case 'scrollChat': return this.scrollChat(Number(msg.dy) || 0);
+      case 'appTheme': this.dark = msg.dark !== false; this._theme = null; return;
       case 'tap': return this.tap(msg.x, msg.y, msg.button);
       case 'wheel': return this.wheel(msg.x, msg.y, msg.dx || 0, msg.dy || 0);
       case 'key': return this.key(String(msg.key || ''), { focusTerminal: msg.focus === 'terminal', cdp: this.mode === 'chat' ? this.cdp : this.editorCdp });
       case 'type': return this.typeText(String(msg.text ?? ''), this.mode === 'chat' ? this.cdp : this.editorCdp);
-      case 'send': return this.sendMessage(String(msg.text ?? ''), msg.submit !== false);
+      case 'send': return this.sendMessage(String(msg.text ?? ''), msg.submit !== false, msg.when, cleanMentions(msg.mentions));
+      case 'mentionQuery': return this.mentionQuery(String(msg.q ?? '').slice(0, 80), msg.cat ? String(msg.cat).slice(0, 40) : '', Number(msg.seq) || 0, msg.trigger === '/' ? '/' : '@');
+      case 'codexRequest': {
+        if (this.app !== 'codex') return;
+        if (msg.field != null) {
+          if (!await this.cdp.evaluate(helpersCall(`codexRequestField(${JSON.stringify(String(msg.id))}, ${Number(msg.field)}, ${JSON.stringify(String(msg.value || ''))})`))) throw new Error('请求输入框已不存在');
+        } else {
+          const pos = await this.cdp.evaluate(helpersCall(`codexRequestTarget(${JSON.stringify(String(msg.id))}, ${Number(msg.n)})`));
+          if (!pos) throw new Error('请求已经处理或不存在');
+          await this.tapCss(pos.x, pos.y);
+        }
+        setTimeout(() => this.pollChat().catch(() => {}), 300);
+        return;
+      }
+      case 'codexPick': return this.codexPick(msg);
+      case 'codexSkills': return this.codexSkillList();
+      case 'codexPlan': return this.codexTogglePlan();
+      case 'codexIde': return this.codexToggleIde();
+      case 'codexRun': return this.codexRunMenu();
+      case 'codexChat': return this.codexChatMenu();
       case 'refresh': return this.snapshot(true);
       case 'quality':
         this.screencast.quality = Math.min(this.mode === 'terminal' ? 95 : 90, Math.max(20, Number(msg.quality) || 60));
@@ -3361,6 +5179,16 @@ const MIME = {
   '.woff2': 'font/woff2',
 };
 
+// Mention tokens from the phone: short strings only, at most a dozen.
+const cleanMentions = list => (Array.isArray(list) ? list : []).slice(0, 12)
+  .map(m => ({
+    token: String(m?.token ?? '').slice(0, 200), q: String(m?.q ?? '').slice(0, 200),
+    label: String(m?.label ?? '').slice(0, 200), sub: String(m?.sub ?? '').slice(0, 200),
+    key: String(m?.key ?? '').slice(0, 240), section: String(m?.section ?? '').slice(0, 40),
+    trigger: m?.trigger === '/' ? '/' : '@',
+  }))
+  .filter(m => m.token && m.label);
+
 function corsHeaders(req) {
   const origin = req.headers.origin;
   if (!origin || !originAllowed(req)) return {};
@@ -3395,6 +5223,34 @@ async function readJson(req) {
 
 function deviceView(d, current) {
   return { id: d.id, name: d.name, created: d.created, lastSeen: d.lastSeen, current: d.id === current?.id };
+}
+
+async function actOnWindow(deviceId, { win, threadId, act, index, text, question }) {
+  const wins = await listWindows();
+  const w = wins.find(x => x.id === String(win));
+  if (!w || w.app !== 'devin') throw new Error('找不到这个窗口，或它不支持通知里的操作');
+  const s = new Session({ readyState: 3, send() {} }, deviceId);
+  clearInterval(s.idleTimer);
+  try {
+    s.cdp = new Cdp(w.ws);
+    await s.cdp.connect();
+    s.app = w.app;
+    s.targetId = w.id;
+    s.windowId = w.id;
+    s.editorCdp = s.cdp;
+    s.threadId = await s.cdp.evaluate(helpersCall('activeThread()'));
+    if (!threadId || s.threadId !== threadId) throw new Error('通知对应的会话已切换，请打开该会话后操作');
+    if (question && question !== (await s.cdp.evaluate(helpersCall('agentState()')))?.waiting) throw new Error('通知中的问题已变更，请查看最新问题');
+    const reply = String(text ?? '').trim().slice(0, 3000);
+    if (act === 'opt') await s.answerQuestion(0, Math.max(0, Number(index) || 0), 'option');
+    else if (act === 'reply') {
+      if (!reply) throw new Error('回复内容为空');
+      await s.sendMessage(reply, true);
+    } else if (act === 'acceptAll') await s.changeAction(0, 'Accept all', 'bar');
+    else throw new Error('不支持的操作');
+  } finally {
+    s.dispose();
+  }
 }
 
 async function handleApi(req, res, route) {
@@ -3440,7 +5296,7 @@ async function handleApi(req, res, route) {
   if (route === '/api/upload' && req.method === 'POST') {
     const query = new URL(req.url, 'http://localhost').searchParams;
     const name = path.basename(query.get('name') || '');
-    if (!/\.(txt|md|csv|json|py|js|ts|tsx|jsx|sh|yaml|yml|toml|ini|log|xml|html|css|c|cpp|h|rs|go)$/i.test(name)) return json(req, res, 400, { error: '目前支持文本、Markdown、CSV、JSON 和代码文件' });
+    if (!/\.(pdf|doc|docx|xlsx|pptx|txt|md|csv|json|py|js|ts|tsx|jsx|sh|yaml|yml|toml|ini|log|xml|html|css|c|cpp|h|rs|go)$/i.test(name)) return json(req, res, 400, { error: '目前支持文档、表格、文本和代码文件' });
     const id = crypto.randomUUID();
     const dir = path.join(DATA_DIR, 'uploads', id);
     try {
@@ -3478,6 +5334,16 @@ async function handleApi(req, res, route) {
   }
 
   if (route === '/api/events') return openEventStream(req, res, device.id);
+  // Actions from an Android notification (reply / pick an option / accept the changes), run on that window.
+  if (route === '/api/act' && req.method === 'POST') {
+    const body = await readJson(req);
+    try {
+      await actOnWindow(device.id, body);
+      return json(req, res, 200, { ok: true });
+    } catch (e) {
+      return json(req, res, 409, { error: e.message });
+    }
+  }
   if (route === '/api/push/key') return json(req, res, 200, { key: pushPublicKey() });
   if (route === '/api/push/subscribe' && req.method === 'POST') {
     const { sub } = await readJson(req);
@@ -3582,9 +5448,22 @@ function printQr(label, url) {
   qrcode.generate(url, { small: true });
 }
 
+// A terminal opened before GitHub CLI was installed does not have it on PATH; on Windows look in its usual folders.
+let ghPathCache = null;
+function ghCmd() {
+  if (ghPathCache) return ghPathCache;
+  ghPathCache = 'gh';
+  if (spawnSync('gh', ['--version'], { stdio: 'ignore' }).error && process.platform === 'win32') {
+    const dirs = [process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs')].filter(Boolean);
+    const hit = dirs.map(d => path.join(d, 'GitHub CLI', 'gh.exe')).find(p => fs.existsSync(p));
+    if (hit) ghPathCache = hit;
+  }
+  return ghPathCache;
+}
+
 function run(cmd, args, input) {
   return new Promise((resolve, reject) => {
-    const p = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    const p = spawn(cmd === 'gh' ? ghCmd() : cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] });
     let out = '', err = '';
     p.stdout.on('data', d => { out += d; });
     p.stderr.on('data', d => { err += d; });
@@ -3603,8 +5482,25 @@ async function waitReachable(url) {
 }
 
 function appUrl() {
+  const fixed = normalizeAppUrl(loadConfig().appUrl);
+  if (fixed) return fixed;
   const [owner, repo] = PUBLISH_REPO.split('/');
   return `https://${owner.toLowerCase()}.github.io/${repo}/`;
+}
+
+// Pages on a user site with a custom domain serves project sites from that domain too.
+// Ask gh for the real address once, persist it, and allow its origin. Best effort only.
+async function detectAppUrl() {
+  if (!PUBLISH_REPO || normalizeAppUrl(loadConfig().appUrl)) return;
+  try {
+    const u = normalizeAppUrl(await run('gh', ['api', `repos/${PUBLISH_REPO}/pages`, '--jq', '.html_url']));
+    if (!u || new URL(u).origin === `https://${PUBLISH_REPO.split('/')[0].toLowerCase()}.github.io`) return;
+    const cfg = loadConfig();
+    cfg.appUrl = u;
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
+    ALLOWED_ORIGINS.add(new URL(u).origin);
+    console.log(`检测到自定义域名，手机 App 固定地址：${u}`);
+  } catch {}
 }
 
 const gitBlobSha = buf => crypto.createHash('sha1').update(`blob ${buf.length}\0`).update(buf).digest('hex');
@@ -3615,9 +5511,7 @@ async function putFile(name, buf, sha) {
 }
 
 async function remoteShas() {
-  const spec = PAGES_BRANCH
-    ? [`repos/${PUBLISH_REPO}/git/trees/${PAGES_BRANCH}?recursive=1`, '--jq', '.tree[] | select(.type=="blob") | [.path, .sha] | @tsv']
-    : [`repos/${PUBLISH_REPO}/contents`, '--jq', '.[] | [.name, .sha] | @tsv'];
+  const spec = [`repos/${PUBLISH_REPO}/git/trees/${PAGES_BRANCH || 'HEAD'}?recursive=1`, '--jq', '.tree[] | select(.type=="blob") | [.path, .sha] | @tsv'];
   const out = await run('gh', ['api', ...spec]).catch(() => '');
   return new Map(out.split('\n').filter(Boolean).map(l => l.split('\t')));
 }
@@ -3818,6 +5712,7 @@ server.listen(PORT, TUNNEL ? '127.0.0.1' : HOST, async () => {
   console.log(`Remote Agent 已启动，端口 ${PORT}`);
   console.log(`数据目录：${DATA_DIR}`);
   console.log(`已配对 ${listDevices().length} 台设备。添加新设备：npm run pair`);
+  detectAppUrl();
   startWatcher({
     listWindows: watchTargets,
     openCdp: async ws => { const c = new Cdp(ws); await c.connect(); return c; },

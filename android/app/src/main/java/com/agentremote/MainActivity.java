@@ -15,6 +15,7 @@ import android.os.Environment;
 import android.os.PowerManager;
 import android.provider.Settings;
 import android.speech.RecognizerIntent;
+import android.view.View;
 import android.widget.Toast;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
@@ -24,6 +25,12 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+
+import androidx.core.content.ContextCompat;
+
+import com.google.zxing.integration.android.IntentIntegrator;
+import com.google.zxing.integration.android.IntentResult;
+import com.google.zxing.client.android.Intents;
 
 import org.json.JSONObject;
 
@@ -40,6 +47,7 @@ public class MainActivity extends Activity {
     private WebView web;
     private ValueCallback<Uri[]> pickFile;
     private SharedPreferences prefs;
+    private HistoryDb hist;
 
     private final BroadcastReceiver downloaded = new BroadcastReceiver() {
         @Override
@@ -54,8 +62,8 @@ public class MainActivity extends Activity {
         super.onCreate(state);
         prefs = getSharedPreferences("agent-remote", MODE_PRIVATE);
         web = new WebView(this);
-        web.setBackgroundColor(0xFF1E1E1E);
         setContentView(web);
+        applyTheme(prefs.getBoolean("light", false));
 
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
@@ -95,8 +103,7 @@ public class MainActivity extends Activity {
 
         IntentFilter done = new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
         // The broadcast comes from the system download provider, a separate app.
-        if (Build.VERSION.SDK_INT >= 33) registerReceiver(downloaded, done, Context.RECEIVER_EXPORTED);
-        else registerReceiver(downloaded, done);
+        ContextCompat.registerReceiver(this, downloaded, done, ContextCompat.RECEIVER_EXPORTED);
 
         if (!openPairLink(getIntent())) {
             saveOpen(getIntent());
@@ -123,6 +130,19 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         unregisterReceiver(downloaded);
         super.onDestroy();
+    }
+
+    // Keeps the WebView background and system-bar icon contrast in sync with the web app's theme.
+    private void applyTheme(boolean light) {
+        web.setBackgroundColor(light ? 0xFFFFFFFF : 0xFF1E1E1E);
+        if (Build.VERSION.SDK_INT >= 23) {
+            View d = getWindow().getDecorView();
+            int flags = d.getSystemUiVisibility();
+            flags = light ? flags | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR : flags & ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+            if (Build.VERSION.SDK_INT >= 26)
+                flags = light ? flags | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR : flags & ~View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+            d.setSystemUiVisibility(flags);
+        }
     }
 
     private void downloadUpdate(String url) {
@@ -202,7 +222,10 @@ public class MainActivity extends Activity {
 
     // agentremote://pair?app=<https app address>&d=<url key>.<one-time code>, handed over by the web app in a browser.
     private boolean openPairLink(Intent intent) {
-        Uri u = intent == null ? null : intent.getData();
+        return openPairLink(intent == null ? null : intent.getData());
+    }
+
+    private boolean openPairLink(Uri u) {
         if (u == null || !"agentremote".equals(u.getScheme())) return false;
         String app = u.getQueryParameter("app");
         String d = u.getQueryParameter("d");
@@ -242,6 +265,15 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        IntentResult scan = IntentIntegrator.parseActivityResult(request, result, data);
+        if (scan != null) {
+            String s = scan.getContents();
+            if (s == null) return;
+            if (s.startsWith("agentremote://")) openPairLink(Uri.parse(s));
+            else if (s.startsWith("https://")) new Bridge().setUrl(s);
+            else Toast.makeText(this, NotifyService.tr("这不是 Remote Agent 的配对二维码", "Not a Remote Agent pairing QR code"), Toast.LENGTH_LONG).show();
+            return;
+        }
         if (request == PICK) {
             if (pickFile != null) pickFile.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(result, data));
             pickFile = null;
@@ -264,7 +296,58 @@ public class MainActivity extends Activity {
         else super.onBackPressed();
     }
 
+    private synchronized HistoryDb hist() {
+        if (hist == null) hist = new HistoryDb(getApplicationContext());
+        return hist;
+    }
+
     private class Bridge {
+        // ---- the phone's own copy of every session (app-private SQLite, not WebView storage) ----
+        @JavascriptInterface
+        public String histGet(String k) { return hist().get(k); }
+
+        @JavascriptInterface
+        public String histMeta(String k) { return hist().meta(k); }
+
+        @JavascriptInterface
+        public boolean histPut(String k, String data, String meta, String msgs) { return hist().put(k, data, meta, msgs); }
+
+        @JavascriptInterface
+        public void histDel(String k) { hist().delete(k); }
+
+        @JavascriptInterface
+        public String histKeys() { return hist().keys(); }
+
+        @JavascriptInterface
+        public String histSearch(String q) { return hist().search(q, 50); }
+
+        // ---- the background connection ----
+        // "off", "connecting", "connected" or "retry".
+        @JavascriptInterface
+        public String listenStatus() {
+            return NotifyService.enabled(MainActivity.this) ? NotifyService.status : "off";
+        }
+
+        @JavascriptInterface
+        public boolean batteryOk() {
+            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+            return pm.isIgnoringBatteryOptimizations(getPackageName());
+        }
+
+        @JavascriptInterface
+        public void askBattery() {
+            runOnUiThread(() -> {
+                try {
+                    startActivity(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + getPackageName())));
+                } catch (Exception e) {
+                    try { startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)); } catch (Exception ignored) {}
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void reconnectListen() { NotifyService.nudge(MainActivity.this); }
+
         @JavascriptInterface
         public String getUrl() {
             return appUrl();
@@ -324,6 +407,29 @@ public class MainActivity extends Activity {
                 try { startActivityForResult(i, VOICE); } catch (Exception e) { voiceResult(""); }
             });
             return true;
+        }
+
+        // The web app reports its effective theme so the WebView background behind it matches.
+        @JavascriptInterface
+        public void setTheme(boolean light) {
+            prefs.edit().putBoolean("light", light).apply();
+            runOnUiThread(() -> applyTheme(light));
+        }
+
+        @JavascriptInterface
+        public boolean isLight() {
+            return prefs.getBoolean("light", false);
+        }
+
+        @JavascriptInterface
+        public void scan() {
+            runOnUiThread(() -> new IntentIntegrator(MainActivity.this)
+                    .setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
+                    .setPrompt(NotifyService.tr("扫描电脑上 npm run pair 显示的二维码", "Scan the QR code shown by npm run pair"))
+                    .setBeepEnabled(false)
+                    .setOrientationLocked(false)
+                    .addExtra(Intents.Scan.SCAN_TYPE, Intents.Scan.MIXED_SCAN)
+                    .initiateScan());
         }
 
         @JavascriptInterface

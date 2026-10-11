@@ -90,6 +90,12 @@ const windowName = title => {
   return host ? `${folder} · ${host}` : folder;
 };
 
+// Devin notifications can be answered in place: reply, pick a single-choice option, accept the file changes.
+// The ids are handled by the relay's POST /api/act; the Android app supplies the labels.
+const extras = (s, done) => s.devin
+  ? { reply: true, actions: [...(s.actions || []), ...(done && s.changed > 0 ? [{ id: 'acceptAll' }] : [])] }
+  : {};
+
 function check(win, w, s) {
   const thread = s.thread || '';
   const conversation = thread || s.agentId || '';
@@ -102,6 +108,7 @@ function check(win, w, s) {
     win: win.app === 'codex' ? 'codex' : win.id,
     windowId: win.pageId || win.id,
     threadId: thread,
+    question: s.waiting || '',
     ...extra,
   });
   // Opening a different thread is not that thread finishing. Start tracking it fresh.
@@ -119,14 +126,14 @@ function check(win, w, s) {
   if (s.waiting !== w.waiting) { w.waiting = s.waiting; w.waitPolls = 0; w.told = false; }
   if (s.waiting && !w.told && ++w.waitPolls >= WAIT_POLLS) {
     w.told = true;
-    deliver(event({ kind: 'waiting', title: `${pc} · 等你确认 · ${where}`, body: s.waitingText || 'Agent 在等你确认',
+    deliver(event({ kind: 'waiting', ...extras(s, false), title: `${pc} · 等你确认 · ${where}`, body: s.waitingText || 'Agent 在等你确认',
       en: { title: `${pc} · Needs your OK · ${where}`, body: s.waitingText || 'The Agent is waiting for you' } }));
   }
 
   if (s.busy) { w.busy = true; w.idle = 0; return; }
   if (!w.busy || ++w.idle < IDLE_POLLS) return;
   w.busy = false;
-  if (!s.waiting) deliver(event({ kind: 'done', title: `${pc} · 已完成 · ${where}`, body: s.last || 'Agent 已停止',
+  if (!s.waiting) deliver(event({ kind: 'done', ...extras(s, true), title: `${pc} · 已完成 · ${where}`, body: s.last || 'Agent 已停止',
     en: { title: `${pc} · Done · ${where}`, body: s.last || 'The Agent has stopped' } }));
 }
 

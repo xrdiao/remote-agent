@@ -69,12 +69,17 @@ kill <隧道进程号>
 - 看 Agent 对话，回车发送，Shift+回车换行。
 - 查看 Codex 提供的思考摘要和工作过程，生成时实时更新，完成后可展开或收起；未返回摘要正文时不展示空卡片。
 - 切换 Agent 和模型。旧版 Cursor 在输入框旁有「历史」，用来打开这一条 Agent 里以前的聊天。现在 Cursor Agents 和 Devin 都把这些会话放在左侧列表里，手机上用「Agent」切换，工具栏不再放「历史」。Codex 的每个 VS Code 窗口也在这个列表里。
+- Codex 输入框左侧的「＋」集中提供 Plan、技能搜索、文件引用、扩展命令、IDE 上下文、执行位置和会话操作；技能通过原生引用插入。
 - Codex 的权限在模型旁边，不挡对话。三档是每次询问、代为批准、完全访问。Cursor 和 Devin 的输入栏没有这个开关。
 - 看终端文字，新建、切换、关闭终端，并执行命令。
 - 看上下文占用和额度。Codex 在前台每分钟请求一次最新额度，回到前台时也会更新；点额度条可立即刷新。
 - 查看和编辑文档，支持复制、粘贴、缩进和搜索。外接键盘可用 Ctrl/⌘+S 保存、Ctrl/⌘+F 搜索、Tab/Shift+Tab 缩进或反缩进。
 - 对话里的公式按数学式显示。代码块可以点「复制」，较长的行内命令点一下也会复制。
-- 从手机附加图片，发送前可点附件旁的「×」撤下。支持上传 TXT、Markdown、CSV、JSON 和代码文件（单文件最多 20 MB），发送时交给当前 Agent 读取，取消时删除临时文件。
+- Devin 支持思考正文、工具详情、任务清单和排版后的回复；可切换会话及 Agent / Editor 界面，回答提问、管理排队消息、接受或拒绝文件改动。
+- Devin 输入支持 `@` 引用；新会话可选择工作目录及 Local / Worktree / Cloud，权限菜单提供应用实际支持的模式。
+- 文件查看按电脑端应用主题进行语法高亮，标记相对 Git HEAD 的改动行，保留搜索及编辑快捷按钮。超过 200 KB 或 5000 行时显示普通文本。
+- 安卓 App 支持扫码配对、通知直接回复及选项操作、后台网络重连和本地历史搜索，需要安装包含这些功能的新 APK；浏览器使用 IndexedDB 保存 Devin 已读取的会话记录。
+- 从手机附加图片，发送前可点附件旁的「×」撤下。支持上传 PDF、Office 文档、TXT、Markdown、CSV、JSON 和代码文件（是否能解析由当前 Agent 决定）（单文件最多 20 MB），发送时交给当前 Agent 读取，取消时删除临时文件。
 - 在窗口列表里切换 Cursor、Devin 和 Codex。Devin 显示为 Devin agent，Codex 只显示为 Codex。
 - 一台手机可以配对多台电脑。菜单里的「电脑」用来切换和删除。配对另一台时，用那台电脑自己打印的 `npm run pair` 链接，已经配对的电脑会保留。
 - 连不上时自动检测页面地址和隧道，显示请求结果及失败阶段；隧道 8 秒超时后自动进行 30 秒复测，区分复测可达与持续超时，也可手动重新检测。
@@ -91,3 +96,9 @@ kill <隧道进程号>
 | `./start-devin.sh` | 启动 Devin，并打开调试端口 9223 |
 | `./start-codex.sh` | 启动 VS Code，并打开调试端口 9224，供 Codex 使用 |
 
+
+## Windows 与安卓构建
+
+Linux 使用前面的启动脚本。Windows 可用 PowerShell 启动中继（`npm install`、`npm run public`、`npm run pair`），桌面应用需自行以 `--remote-debugging-port` 参数启动；`.sh` 脚本需要 Bash。Windows 盘符文件路径已处理，隧道进程复用仍依赖 Unix `ps`，Windows 下重启可能创建新隧道；此平台尚未实机验证。
+
+安卓构建需要 Java 17 和 Android SDK 34，在 `android/` 执行 `./gradlew assembleDebug`（Windows 用 `gradlew.bat assembleDebug`）。扫码、通知操作和 SQLite 历史搜索需通过新 APK 验证。
