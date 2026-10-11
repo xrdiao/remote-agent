@@ -615,12 +615,12 @@ function pageHelpers() {
     if (!devinLog() && !devinSurface()) return null;
     const tabs = devinTabs(), surface = devinSurface();
     const active = agentList().find(a => a.current);
-    const tab = devinTabEls()[tabs.findIndex(t => t.active)];
+    const tab = surface === 'editor' ? devinTabEls()[tabs.findIndex(t => t.active)] : null;
     const node = devinLog() || tab;
     const props = node ? codexFiberProps(node, 24) : [];
     const session = props.find(p => p.session?.sessionId)?.session;
     const key = session?.sessionId || props.find(p => p.sessionId)?.sessionId || active?.id || '';
-    const title = tabs.find(t => t.active)?.title || active?.title || '';
+    const title = (surface === 'editor' ? tabs.find(t => t.active)?.title : active?.title) || '';
     return { key, title, surface, tabs };
   };
   const devinTabTarget = id => {
@@ -1375,7 +1375,10 @@ function pageHelpers() {
   };
   /* ---------- Devin transcript rows ---------- */
 
-  const devinLog = () => [...doc.querySelectorAll('[role="log"][aria-label="Session transcript"]')].find(vis);
+  const devinLog = () => {
+    const selected = devinSurface() === 'agent' ? agentList().find(a => a.current)?.id : devinTabs().find(t => t.active)?.id;
+    return [...doc.querySelectorAll('[role="log"][aria-label="Session transcript"]')].find(e => vis(e) && (!selected || codexFiberProps(e, 24).some(p => p.sessionId === selected || p.session?.sessionId === selected)));
+  };
 
   // Event-group tool rows: "Searched<query>", "Explored<file> and searched <q>", "Read<file> #L…".
   const devinEventTool = (eg, i, lines) => {
@@ -1406,15 +1409,19 @@ function pageHelpers() {
     const rest = (row.innerText || '').split('\n').slice(1);
     let d = '';
     if (rest.length && /^\d+\s*[smh]\b/i.test(rest[0].trim())) d = rest.shift().trim();
-    const code = row.querySelector('pre, code');
-    return { i, k: 'tool', kind: 'command', t, d, cmd: (code?.innerText || rest.join('\n')).trim().slice(0, 4000) };
+    const props = codexFiberProps(med, 16);
+    const command = props.find(p => typeof p.commandLine === 'string');
+    const output = props.find(p => Array.isArray(p.outputs));
+    return { i, k: 'tool', kind: 'command', t, d,
+      cmd: (command?.commandLine || row.querySelector('.terminal-text .monaco-tokenized-source')?.textContent || '').trim(),
+      output: (output?.outputs.map(o => o.full || '').join('\n') || row.querySelector('pre')?.innerText || rest.join('\n')).trim().slice(0, 4000) };
   };
 
   const setCommandOpen = (id, open) => {
     const row = [...(devinLog()?.children || [])].find(r => itemKey(r) === id);
-    const btn = row?.querySelector('button[aria-expanded]');
+    const btn = row?.querySelector('button[aria-expanded], .command-card .group\\/header');
     if (!btn) return null;
-    const previous = btn.getAttribute('aria-expanded') === 'true';
+    const previous = btn.getAttribute('aria-expanded') === 'true' || !!btn.querySelector('.lucide-chevron-down');
     if (previous !== open) btn.click();
     return previous;
   };
@@ -1454,7 +1461,10 @@ function pageHelpers() {
     const over = diff.length > 200;
     const nums = [...row.querySelectorAll('span')].map(s => (s.textContent || '').trim());
     const num = re => Number((nums.find(t => re.test(t)) || '').slice(1)) || 0;
-    const item = { i, k: 'tool', kind: 'edit', f: med.innerText.trim(), add: num(/^\+\d+$/), del: num(/^-\d+$/), diff: over ? diff.slice(0, 200) : diff };
+    const props = codexFiberProps(med, 16);
+    const file = props.find(p => typeof p.fileUri === 'string');
+    const tool = props.find(p => p.toolCall?.rawInput?.file_path)?.toolCall;
+    const item = { i, k: 'tool', kind: 'edit', f: file?.fileUri || tool?.rawInput.file_path || med.innerText.trim(), add: num(/^\+\d+$/), del: num(/^[-−]\d+$/), diff: over ? diff.slice(0, 200) : diff };
     if (over) item.diff.push(['…', `… 省略 ${diff.length - 200} 行`]);
     return item;
   };
@@ -1500,7 +1510,7 @@ function pageHelpers() {
 
   const extract = () => {
     const log = devinLog();
-    const panel = findPanel() || log;
+    const panel = log || (devinSurface() ? null : findPanel());
     // A brand-new Devin session has a composer and model chip, but no message list yet.
     if (!panel && !log) {
       const modelEl = modelButton();
@@ -1508,6 +1518,7 @@ function pageHelpers() {
       return {
         rect: [0, 0, 0, 0],
         items: [],
+        ...(devinSurface() ? { empty: true } : {}),
         global: [],
         busy: isBusy(),
         queued: queued(),
@@ -2909,17 +2920,18 @@ class Session {
   syncSession(chat) {
     const sess = chat?.session;
     if (this.app !== 'devin' || !sess) return;
-    if (this.curSession === undefined || this.curSession === sess.key) { this.curSession = sess.key; return; }
+    const key = chat.thread || sess.key;
+    if (this.curSession === undefined || this.curSession === key) { this.curSession = key; return; }
     if (!this.sessStore) this.sessStore = new Map();
     const FIELDS = ['devinHist', 'thinking', 'thinkingTried', 'keptThink', 'tasksTried', 'thoughtFails', 'latestThink'];
     const fresh = () => ({ devinHist: new Map(), thinking: new Map(), thinkingTried: new Map(), keptThink: new Map(), tasksTried: new Map(), thoughtFails: new Map(), latestThink: null });
     const saved = {};
     for (const f of FIELDS) saved[f] = this[f];
     this.sessStore.set(this.curSession, saved);
-    const next = this.sessStore.get(sess.key) || fresh();
+    const next = this.sessStore.get(key) || fresh();
     for (const f of FIELDS) this[f] = next[f];
     while (this.sessStore.size > 24) this.sessStore.delete(this.sessStore.keys().next().value);
-    this.curSession = sess.key;
+    this.curSession = key;
     this.lastChat = '';
     this.thoughtPoll = 0;
   }
@@ -2930,6 +2942,8 @@ class Session {
   // acp index (a thinking item `acpN:think` travels with row N) and capped at ~1500 items.
   mergeDevinHistory(chat) {
     if (!chat?.items) return;
+    this.syncSession(chat);
+    if (chat.empty) { this.devinHist.clear(); chat.earlier = false; return; }
     if (!chat.items.some(it => it.src === 'devin') && !(this.devinHist?.size && !chat.items.length)) return;
     if (!this.devinHist) this.devinHist = new Map();
     const hist = this.devinHist;
@@ -2990,10 +3004,10 @@ class Session {
     chat.earlier = floor > 0;
   }
 
-  async pollChat() {
+  async pollChat(immediate = false) {
     const cdp = this.cdp;
     const sel = this.sel;
-    if (!cdp || !this.visible || this.switchingThread || this.historyLoading || (this.fusionHold?.app === this.app && this.fusionHold?.windowId === this.windowId) || this.polling === sel || Date.now() - (this.lastChatAt || 0) < (this.lastBusy ? 650 : 1800)) return;
+    if (!cdp || !this.visible || this.switchingThread || this.historyLoading || (this.fusionHold?.app === this.app && this.fusionHold?.windowId === this.windowId) || this.polling === sel || (!immediate && Date.now() - (this.lastChatAt || 0) < (this.lastBusy ? 650 : 1800))) return;
     this.lastChatAt = Date.now();
     this.polling = sel;
     try {
@@ -3056,6 +3070,16 @@ class Session {
         if (!this.liveRead(cdp, sel)) return;
       }
       this.mergeCodexItems(chat);
+      if (immediate) {
+        this.fillThinking(chat);
+        this.retainThinking(chat);
+        this.mergeDevinHistory(chat);
+        const json = JSON.stringify(chat);
+        if (json !== this.lastChat && this.liveRead(cdp, sel)) {
+          this.lastChat = json;
+          this.emit({ t: 'chat', sel: this.selectionKey(), chat });
+        }
+      }
       // Devin task lists: expand a row whose checklist we have not read for its current count, read it, fold it back.
       const taskRow = (chat?.items || []).find(it => it.k === 'tasks' && !it.items && this.tasksTried.get(it.i) !== `${it.done}/${it.total}`);
       if (taskRow) {
@@ -3705,6 +3729,18 @@ class Session {
   async listChanges() {
     if (this.app === 'codex') return this.emit({ t: 'changes', codex: true, ...await this.cdp.evaluate(helpersCall('codexChanges()')) });
     const s = await this.withFiles(async s => s);
+    if (this.app === 'devin' && !s.count) {
+      const chat = await this.cdp.evaluate(helpersCall('extract()'));
+      this.syncSession(chat);
+      this.mergeDevinHistory(chat);
+      const files = new Map();
+      for (const it of chat?.items || []) if (it.kind === 'edit' && it.f) {
+        const prev = files.get(it.f);
+        const add = (prev?.add || 0) + (it.add || 0), del = (prev?.del || 0) + (it.del || 0);
+        files.set(it.f, { name: it.f, add, del });
+      }
+      return this.emit({ t: 'changes', devin: true, historical: true, files: [...files.values()].map(f => ({ ...f, add: `+${f.add}`, del: `-${f.del}` })), actions: [], count: files.size });
+    }
     this.emit({ t: 'changes', ...s, ...(this.app === 'devin' ? { devin: true } : {}) });
   }
 
@@ -4033,6 +4069,7 @@ class Session {
   // Switching surface resets what was read from the old transcript, like opening another agent.
   resetDevinView() {
     this.lastChat = '';
+    this.lastChatAt = 0;
   }
 
   async setSurface(to) {
@@ -5763,7 +5800,10 @@ class Session {
     if (submit) files.forEach(f => { f.pending = false; });
     await this.syncAttachments();
     if (now) this.emit({ t: 'status', ok: true, msg: '已打断当前任务并发送' });
-    if (this.mode === 'chat') setTimeout(() => this.pollChat().catch(() => {}), 300);
+    if (this.mode === 'chat') {
+      this.lastChatAt = 0;
+      setTimeout(() => this.pollChat(true).catch(() => {}), 300);
+    }
     return queued;
   }
 

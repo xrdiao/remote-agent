@@ -57,6 +57,8 @@ const I18N = (() => {
     '运行中': 'Running', '当前': 'Current', '正在读取 Agent 列表…': 'Loading agents…', '正在切换 Agent…': 'Switching agent…',
     '＋ 新建会话': '+ New chat', '打开这个窗口': 'Open this window',
     '归档': 'Archive', '正在归档…': 'Archiving…', '已归档': 'Archived', '已删除': 'Deleted',
+    '会话修改记录': 'Chat edit history',
+    '点文件名查看当前内容。这里显示会话中的修改记录。': 'Select a file to view its current content. These are edits recorded in this chat.',
     '它会从当前列表移除，历史记录仍保留。': 'It leaves the current list. The history is kept.',
     '会话已移除，请重新选择': 'That chat was removed. Choose it again.',
     '已新建会话': 'New chat started', '已切换会话': 'Switched chat', '已是当前会话': 'Already the current chat',

@@ -21,10 +21,12 @@ The Chinese notes in [README.md](README.md) describe how this machine is started
 
 The old History button opened past chats for the current Agent. Cursor Agents and Devin keep those chats in the sidebar, so the phone uses the Agent list instead.
 
-Devin supports thought bodies, rich tool output, task lists, formatted replies, session and Agent/Editor switching, question answers, queue actions, file review, native @ mentions, working directories and permission modes. Sessions are keyed by native IDs.
+Devin supports thought bodies, rich tool output, collapsible task lists, formatted replies, session and Agent/Editor switching, question answers, queue actions, file review, native @ mentions, working directories and permission modes. Sessions are keyed by native IDs. Commands and output are shown separately, and file references preserve full Windows paths. When there are no pending changes, the changes panel shows session edit records and opens current file contents without review actions.
 
 Attachments can be removed before sending. Document uploads show progress and support PDF, Office, text and code files up to 20 MB; parsing depends on the selected agent. File viewing uses the desktop theme and marks changes against Git HEAD, while preserving search and editing controls. Files above 200 KB or 5000 lines remain plain text.
 
-The Android app adds QR pairing, notification replies/actions, network reconnection and local history search. These require a rebuilt APK (Java 17, Android SDK 34; `cd android && ./gradlew assembleDebug`). Windows drive paths are supported, but tunnel reuse still depends on Unix `ps`; Windows restarts may create a new tunnel and require device verification.
+The Android app adds QR pairing, notification replies/actions, network reconnection and local history search. These require a rebuilt APK (Java 17, Android SDK 34; `cd android && ./gradlew assembleDebug`). Windows Devin file opening, highlighting, change markers, commands/output, edit records and session switching have been checked in a paired browser. Accept/reject actions still need a real pending-change check. Tunnel reuse still depends on Unix `ps`, so Windows restarts may create a new tunnel. See [Windows Devin maintenance (Chinese)](docs/windows-devin-maintenance.md). Android history bridge checks passed locally; APK device testing remains outstanding.
 
-Codex’s **＋** button to the left of the prompt opens Plan, skill search, file references, commands, IDE context, execution location, and chat actions. Skills are inserted as native references.
+Codex’s **＋** button in the composer toolbar opens Plan, skill search, file references, commands, IDE context, execution location, and chat actions. Skills are inserted as native references.
+
+Codex sessions can be archived through the native desktop action; this is not permanent deletion. Fusion selects a shared project, then an agent, session and model for each side. Both sides may use the same agent with different models. It coordinates planning, execution and review, and retains conversation history.
