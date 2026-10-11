@@ -1592,6 +1592,20 @@ function pageHelpers() {
     return { pct: Number(m[1]), basis: /left|remaining|剩余/i.test(text) ? 'remaining' : 'used' };
   };
   const readDevinUsage = () => {
+    // The status bar shows the plan and quota percentages; the breakdown holds the reset dates and extra balance.
+    const anchor = [...doc.querySelectorAll('[aria-label*="quota used"]')].find(a => a.getBoundingClientRect().width > 0);
+    if (anchor) {
+      const aria = anchor.getAttribute('aria-label');
+      const sections = [...doc.querySelectorAll('.breakdown-details .quota-section')];
+      const section = word => sections.find(s => (s.querySelector('.quota-label')?.textContent || '').trim().startsWith(word));
+      const limits = [['每日额度', 'Daily'], ['每周额度', 'Weekly']].map(([label, word]) => {
+        const pct = new RegExp(`${word}:\\s*(\\d+)%\\s*quota used`).exec(aria)?.[1];
+        const reset = section(word)?.querySelector('.quota-reset-label')?.textContent.trim() || '';
+        return pct == null ? null : { label, kind: 'limit', basis: 'used', pct: Number(pct), reset };
+      }).filter(Boolean);
+      const extra = section('Extra')?.querySelector('.quota-value')?.textContent.trim() || '';
+      return { missing: false, quota: [], limits, plan: aria.split(',')[0].trim(), extra };
+    }
     const text = [...doc.querySelectorAll('p')].map(e => (e.innerText || '').replace(/\s+/g, ' ').trim()).find(t => /usage quota/i.test(t));
     if (!text) return { missing: true, quota: [], limits: [] };
     const reset = (/resets\s+(.+?)\.?$/i.exec(text) || [])[1] || '';
