@@ -529,7 +529,6 @@
       <button id="older">↑ 加载更早的消息</button>
       <button id="cachedMore" hidden></button>
       <button id="taskChip" hidden></button>
-      <div id="fusionBar" hidden></div>
       <div id="fusionWelcome" hidden><div class="fusionIllustration" aria-hidden="true"><span>A</span><i>+</i><span>B</span></div><h2>让两个 AI 一起完成任务</h2><p>A 负责方案与检查，B 负责执行</p><p>协同思考、编写代码、完成复杂任务</p></div>
       <div id="items"></div>
       <div id="empty" hidden>没找到聊天面板。<br><span id="emptyHint"></span></div>
@@ -580,6 +579,7 @@
   <div class="attachmentRow"><div id="attachments"></div></div>
   <div id="mentionBox" hidden></div>
   <div id="mathPrev" hidden></div>
+  <div id="fusionBar" hidden></div>
   <div class="composerBox"><div class="composerField"><textarea id="text" rows="1" placeholder="发给 Agent…" enterkeyhint="send"></textarea><button id="stop" title="停止生成" aria-label="停止生成" hidden>■</button></div>
   <div id="chatTools">
     <button id="add" title="添加功能" aria-label="添加功能">＋</button>
@@ -1375,7 +1375,7 @@ function showWindows() {
   }).join('');
   openSheet('windows', `<h3>切换窗口</h3><div class="hint">Cursor、Devin、Codex 和 Fusion 都在这里。点一个就切过去。</div>${rows || '<div class="hint">没有找到窗口</div>'}`);
 }
-const FUSION_PHASE = { idle: '待开始', planning: 'A 正在写方案', plan: '方案待确认', echo: 'B 正在复述', 'echo-check': 'A 正在核对复述', execute: 'B 正在执行', review: 'A 正在检查', fix: 'A 正在小修', disagree: '理解不一致', check: '请选择下一步', done: '完成' };
+const FUSION_PHASE = { idle: '待开始', planning: '正在生成方案', plan: '方案待确认', execute: '正在执行方案', review: '正在检查结果', fix: '正在小修', disagree: '方案待确认', check: '请选择下一步', stopped: '未完成，已停止', done: '完成' };
 function paintFusion(fx) {
   const on = !!fx;
   $('fusionConfig').hidden = !on;
@@ -1404,7 +1404,7 @@ function paintFusion(fx) {
     $('fusionModel' + label).textContent = `${label} 模型 ▾`;
     $('fusionModel' + label).title = spec?.model || `${label} 模型`;
   }
-  const acts = fx.phase === 'plan' ? '<button type="button" data-fusion-act="go">交给 B</button>'
+  const acts = fx.phase === 'plan' ? '<button type="button" data-fusion-act="go">执行方案</button>'
     : fx.phase === 'disagree' ? '<button type="button" data-fusion-act="go">按 A 的说明继续</button>'
     : fx.phase === 'check' ? '<button type="button" data-fusion-act="done">完成</button><button type="button" data-fusion-act="fix">小修</button><button type="button" data-fusion-act="return">退回 B</button>'
     : '';
