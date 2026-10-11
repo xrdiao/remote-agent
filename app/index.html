@@ -869,8 +869,19 @@ async function decryptEntry(keyText, entry) {
 }
 
 const offline = msg => Object.assign(new Error(msg), { offline: true });
+function discoveryUrl() {
+  return pending?.discovery || currentComputer()?.discovery || new URL('url.json', location.href).href;
+}
+function computerLink(url, current = '') {
+  const target = new URL(url);
+  const params = new URLSearchParams(target.hash.slice(1));
+  params.set('computers', JSON.stringify(loadComputers().map(c => ({ ...c, discovery: c.discovery || new URL('url.json', location.href).href }))));
+  if (current) params.set('computer', current);
+  target.hash = params.toString();
+  return target.href;
+}
 async function resolveBase() {
-  if (info.self) return location.origin;
+  if (info.self) return new URL(discoveryUrl()).origin;
   const comp = currentComputer();
   if (!comp?.key) throw Object.assign(new Error(''), { unpaired: true });
   if (info.v === 2 && info.data) {
@@ -913,6 +924,23 @@ function parsePair(text) {
   const m = /[#&]pair=([\w-]{43})\.([\w-]{16,})/.exec(text || '');
   return m ? { key: m[1], code: m[2] } : null;
 }
+{
+  const params = new URLSearchParams(location.hash.slice(1));
+  if (params.has('computers')) {
+    const list = loadComputers();
+    try {
+      for (const c of JSON.parse(params.get('computers'))) {
+        if (!c?.key || !c?.token) continue;
+        const i = list.findIndex(old => old.key === c.key);
+        if (i < 0) list.push(c); else list[i] = c;
+      }
+      saveComputers(list, params.get('computer') || currentComputer()?.key || '');
+    } catch {}
+    params.delete('computers');
+    params.delete('computer');
+    history.replaceState(null, '', location.pathname + location.search + (params.size ? '#' + params.toString() : ''));
+  }
+}
 let pending = parsePair(location.hash);
 if (pending) history.replaceState(null, '', location.pathname + location.search);
 // Opened from a notification: <app>#win=<window id or JSON with windowId and threadId>.
@@ -953,14 +981,19 @@ function pastePair(text) {
   if (!p) return showUnpaired('这不是配对链接（应包含 #pair=…）');
   let target;
   try { target = new URL(text.trim()); } catch {}
-  const here = location.origin + location.pathname;
-  // A link for another app address: switch to it (the Android app remembers the new address).
-  if (target && /^https?:$/.test(target.protocol) && target.origin + target.pathname !== here) {
-    if (inApp) return window.AgentRemoteApp.setUrl(target.href);
-    location.href = target.href;
+  if (target && /^https?:$/.test(target.protocol) && target.origin !== location.origin) {
+    const link = computerLink(target.href);
+    if (inApp) return window.AgentRemoteApp.setUrl(link);
+    location.href = link;
     return;
   }
+  if (target && /^https?:$/.test(target.protocol)) p.discovery = new URL('url.json', target).href;
   pending = p;
+  connGen++;
+  authed = false;
+  const old = ws;
+  ws = null;
+  try { old?.close(); } catch {}
   boot();
 }
 
@@ -989,7 +1022,7 @@ async function testEndpoint(url, relay = false, timeout = 8000) {
 let offlineGen = 0;
 let lastFailure = { stage: '应用连接', error: '' };
 async function diagnoseConnection(failure, gen) {
-  const page = new URL('url.json', location.href).href;
+  const page = discoveryUrl();
   const relay = base ? base.replace(/\/$/, '') + '/url.json' : '';
   const endpoints = [{ label: '页面地址发布', url: page }, { label: '隧道和电脑服务', url: relay }];
   const box = $('gateTests');
@@ -1070,7 +1103,7 @@ async function pair(totp) {
     const id = body.id || await computerIdFromKey(pending.key);
     const prev = loadComputers().find(c => c.key === pending.key);
     const list = loadComputers().filter(c => c.key !== pending.key);
-    list.push({ id, name: body.name || prev?.name || '电脑', key: pending.key, token: body.token, win: prev?.win || '' });
+    list.push({ id, name: body.name || prev?.name || '电脑', key: pending.key, token: body.token, win: prev?.win || '', discovery: discoveryUrl(), relay: base });
     saveComputers(list, pending.key);
     store.set('window', null);
     pending = null;
@@ -1107,7 +1140,7 @@ async function boot() {
   }
   gate({ msg: '正在查找电脑…' });
   try {
-    info = await fetch('url.json?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+    info = await fetch(discoveryUrl() + '?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
   } catch (error) {
     base = currentComputer()?.relay || '';
     return showOffline({ stage: '页面地址读取', error: error.message });
@@ -1146,7 +1179,7 @@ async function boot() {
 }
 
 async function resolvePending() {
-  if (info.self) return location.origin;
+  if (info.self) return new URL(discoveryUrl()).origin;
   if (info.v === 2 && info.data) return decryptEntry(pending.key, info);
   if (info.v !== 3 || !Array.isArray(info.computers)) throw new Error('电脑端还没有发布地址，请在那台电脑上重启服务');
   const id = await computerIdFromKey(pending.key);
@@ -2087,6 +2120,12 @@ function useComputer(i) {
   const c = list[Number(i)];
   if (!c) return showComputers();
   saveDraft();
+  if (c.discovery && new URL(c.discovery).origin !== location.origin) {
+    const link = computerLink(new URL('./', c.discovery).href, c.key);
+    if (inApp) return window.AgentRemoteApp.setUrl(link);
+    location.href = link;
+    return;
+  }
   saveComputers(list, c.key);
   restoreDraft();
   store.set('window', c.win || null);
