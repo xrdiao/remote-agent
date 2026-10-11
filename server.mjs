@@ -136,12 +136,28 @@ async function listWindows() {
 
 const FUSION_ACTIVE = ['planning', 'echo', 'echo-check', 'execute', 'review', 'fix'];
 const fusionHistory = readState().fusionHistory || {};
+const fusionWorkers = new Map();
+const fusionViewers = new Set();
 for (const saved of Object.values(fusionHistory)) {
   for (const run of saved.runs || []) if (FUSION_ACTIVE.includes(run.phase)) run.phase = 'idle';
 }
 function newFusionRun() {
   return { id: crypto.randomUUID(), created: Date.now(), updated: Date.now(), history: [], turn: 0,
     project: null, a: null, b: null, phase: 'idle', round: 0, miss: 0, task: '', plan: '', brief: '', echo: '', result: '', diff: '', review: '' };
+}
+
+function fusionCursorProjects() {
+  const projects = new Map();
+  for (const w of workspaces().filter(w => !w.host && (w.sources || [w.source]).includes('cursor'))) {
+    try {
+      const remote = execFileSync('git', ['-C', w.root, 'config', '--get', 'remote.origin.url'], { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      const repository = remote.replace(/^\w+:\/\//, '').replace(/^.*@/, '').replace(':', '/').replace(/\.git$/, '').replace(/\/$/, '');
+      const project = fusionProject(w.root);
+      if (!projects.has(repository)) projects.set(repository, project);
+      else if (projects.get(repository)?.id !== project.id) projects.set(repository, null);
+    } catch { continue; }
+  }
+  return projects;
 }
 
 function fusionProject(root, host = '') {
@@ -881,9 +897,7 @@ function pageHelpers() {
     const btns = [...document.querySelectorAll('button')].filter(b => vis(b) && b.getBoundingClientRect().y > 120);
     const env = btns.find(b => /^(Local|Worktree|Cloud)$/.test((b.innerText || '').trim()) && b.getAttribute('aria-haspopup') === 'menu');
     if (!env) return null;
-    const er = env.getBoundingClientRect();
-    const folder = btns.filter(b => b !== env && Math.abs(b.getBoundingClientRect().y - er.y) < 8 && b.getBoundingClientRect().x > er.x && (b.innerText || '').trim())
-      .sort((a, b) => a.getBoundingClientRect().x - b.getBoundingClientRect().x)[0];
+    const folder = env.nextElementSibling;
     return folder ? { env, folder } : null;
   };
   const workdirInfo = () => {
@@ -1302,7 +1316,7 @@ function pageHelpers() {
     const turn = el && codexTurnData(el);
     const user = turn?.items?.find(it => it.type === 'user-message');
     const reply = turn?.items?.filter(it => it.type === 'assistant-message' && it.phase !== 'commentary').at(-1);
-    return { id: el?.getAttribute('data-turn-key') || '', ids: rows.map(e => e.getAttribute('data-turn-key')), user: user?.message || '', text: reply?.content || '', completed: turn?.status === 'complete' && !!reply?.completed };
+    return { id: el?.getAttribute('data-turn-key') || '', ids: rows.map(e => e.getAttribute('data-turn-key')), user: user?.message || '', text: reply?.content || '', completed: turn?.status === 'complete' && !!reply?.completed, items: el ? codexTurnItems(el) : [] };
   };
   // One Codex turn can contain several markdown blocks. Keep them in order instead of keeping only the first reply.
   const codexTurnItems = el => {
@@ -1872,24 +1886,53 @@ function pageHelpers() {
 
   // Cursor Agents window: the left sidebar lists conversations as row:<agent id>.
   const DEVIN_NAV = new Set(['New session', 'Sessions', 'Review', 'Automations', 'Security', 'Wiki', 'Cloud settings']);
+  const cursorProjectPicker = () => {
+    let el = [...doc.querySelectorAll('.aislash-editor-input[contenteditable="true"], .ui-prompt-input-editor__input[contenteditable="true"]')].find(vis);
+    while (el && !Object.keys(el).some(k => k.startsWith('__reactFiber'))) el = el.parentElement;
+    return el ? codexFiberProps(el, 40).find(p => p.projectSelectorProps)?.projectSelectorProps : null;
+  };
+  const cursorSelectProject = (root, host = '') => {
+    const picker = cursorProjectPicker();
+    const row = picker?.recentProjects?.find(p => {
+      const uri = p.workspaceIdentifier?.uri;
+      return (uri?.fsPath || uri?.path) === root && (uri.scheme === 'file' ? '' : uri.authority.replace(/^ssh-remote\+/, '')) === host;
+    });
+    if (!row) return false;
+    picker.onSelectTarget({ type: 'workspace', id: row.workspaceIdentifier, displayName: row.name, repoUrls: row.repoUrls });
+    return true;
+  };
+  const cursorWorkspace = id => {
+    const el = [...doc.querySelectorAll('[data-glass-agent-id]')].find(e => !id || e.getAttribute('data-glass-agent-id') === id);
+    const props = el && codexFiberProps(el, 24).find(p => p.agentWorkspace);
+    const uri = props?.agentWorkspace.workspaceIdentifier?.uri || (!id && cursorProjectPicker()?.selectedTarget?.id?.uri);
+    return uri ? { root: uri.fsPath || uri.path, host: uri.scheme === 'file' ? '' : uri.authority.replace(/^ssh-remote\+/, '') } : null;
+  };
   const agentList = () => {
     const active = [...doc.querySelectorAll('[data-glass-agent-id]')].find(vis)?.getAttribute('data-glass-agent-id') || '';
-    const cursor = [...doc.querySelectorAll('[data-sidebar-item-key^="row:"]')].filter(vis).map(row => {
+    const recentProjects = cursorProjectPicker()?.recentProjects || [];
+    const cursor = [...doc.querySelectorAll('[data-sidebar-item-key^="row:"]')].map(row => {
       const id = row.getAttribute('data-sidebar-item-key').slice(4);
-      const title = (row.querySelector('.ui-sidebar-menu-button-content .ui-text') || row).innerText.trim().split('\n')[0];
-      const group = row.closest('[data-sidebar-group]')?.querySelector('[data-sidebar-group-label]')?.innerText.trim() || '';
+      const title = (row.querySelector('.ui-sidebar-menu-button-label') || row).textContent.trim().split('\n')[0];
+      const repository = codexFiberProps(row).find(p => p.data?.kind === 'sidebar-agent')?.data?.dropSectionId?.replace(/^repo:/, '') || '';
+      const projects = recentProjects.filter(p => p.repoUrls?.includes(repository));
+      const uri = projects.length === 1 ? projects[0].workspaceIdentifier?.uri : null;
+      const workspace = cursorWorkspace(id) || (uri && { root: uri.fsPath || uri.path, host: uri.scheme === 'file' ? '' : uri.authority.replace(/^ssh-remote\+/, '') });
+      const group = row.closest('[data-sidebar-group]')?.querySelector('[data-sidebar-group-label]')?.textContent.trim() || '';
       return {
         id,
         title: title.slice(0, 80),
         group,
+        repository,
+        workspace: workspace?.root || '',
+        host: workspace?.host || '',
         current: id === active || !!row.querySelector('[data-active="true"]'),
         running: !!row.querySelector('.ui-dot-grid-loader'),
       };
     }).filter(a => a.id && a.title);
     if (cursor.length) return cursor;
     // Read the native session id; titles can repeat or change.
-    return [...doc.querySelectorAll('li[data-slot="sidebar-menu-item"]')].filter(vis).map(li => {
-      const btn = [...li.querySelectorAll('button[aria-label]')].find(vis);
+    return [...doc.querySelectorAll('li[data-slot="sidebar-menu-item"]')].map(li => {
+      const btn = li.querySelector('button[aria-label]');
       const title = (btn?.getAttribute('aria-label') || '').trim();
       if (!title || DEVIN_NAV.has(title)) return null;
       const session = codexFiberProps(li).find(p => p.session)?.session;
@@ -1897,6 +1940,7 @@ function pageHelpers() {
       const slot = li.querySelector('[data-slot="sidebar-menu-button"]');
       return {
         id: session.sessionId,
+        workspace: session.cwd || '',
         title: title.slice(0, 80),
         group: '',
         current: slot?.getAttribute('data-active') === 'true',
@@ -1908,9 +1952,10 @@ function pageHelpers() {
   };
   const agentTarget = (id, click = false) => {
     const row = [...doc.querySelectorAll('[data-sidebar-item-key]')].find(e => e.getAttribute('data-sidebar-item-key') === `row:${id}`);
-    if (row && vis(row)) {
+    if (row && (click || vis(row))) {
       row.scrollIntoView({ block: 'nearest' });
       const hit = row.querySelector('.ui-sidebar-menu-button-content') || row.querySelector('[data-sidebar-menu-button]') || row;
+      if (click) { hit.click(); return true; }
       return center(hit);
     }
     const li = [...doc.querySelectorAll('li[data-slot="sidebar-menu-item"]')].find(e => codexFiberProps(e).some(p => p.session?.sessionId === id));
@@ -2316,6 +2361,12 @@ function pageHelpers() {
         if (typeof restore === 'number') { el.scrollTop = restore; return null; }
         const scrollTop = el.scrollTop;
         if (restore === false) return { ...codexPoint(el), scrollTop };
+        if (restore === 'latest') {
+          const rows = [...doc.querySelectorAll('[data-turn-key]')];
+          if (rows.some(row => codexFiberProps(row, 16).some(p => p.entry?.isLatestTurn))) return null;
+          el.scrollTop = getComputedStyle(el).flexDirection === 'column-reverse' ? 0 : el.scrollHeight;
+          return { scrollTop, thread: codexThread() };
+        }
         first.scrollIntoView({ block: 'start' });
         return { ...codexPoint(el), scrollTop };
       }
@@ -2614,7 +2665,7 @@ function pageHelpers() {
     };
   };
 
-  return { scrollCodexHistory, setCommandOpen, attachmentRows, removeAttachment, submitCodexMessage, extract, activeThread, codexThread, codexViewState, codexRecentPoint, codexNewPoint, codexAccountPoint, codexMenuPoint, clickLabeled, codexChatRows, codexChatPoint, codexArchiveTarget, codexArchiveConfirm, codexPromptText, codexSelectPrompt, codexPromptPoint, codexButtonPoint, codexMentionRows, codexRunItems, codexFacts, codexQueueAction, codexSkills, codexChanges, codexChangeTarget, codexRequestData, codexRequestTarget, codexRequestField, codexImage, locate, panelRect, control, menuItems, menuItem, quickOpenRows, agentList, agentTarget, agentState, agentStates, queueTarget, stopTarget, focusQueueEdit,
+  return { cursorSelectProject, cursorWorkspace, scrollCodexHistory, setCommandOpen, attachmentRows, removeAttachment, submitCodexMessage, extract, activeThread, codexThread, codexViewState, codexRecentPoint, codexNewPoint, codexAccountPoint, codexMenuPoint, clickLabeled, codexChatRows, codexChatPoint, codexArchiveTarget, codexArchiveConfirm, codexPromptText, codexSelectPrompt, codexPromptPoint, codexButtonPoint, codexMentionRows, codexRunItems, codexFacts, codexQueueAction, codexSkills, codexChanges, codexChangeTarget, codexRequestData, codexRequestTarget, codexRequestField, codexImage, locate, panelRect, control, menuItems, menuItem, quickOpenRows, agentList, agentTarget, agentState, agentStates, queueTarget, stopTarget, focusQueueEdit,
     terminalList, terminalTarget, terminalCloseTarget, terminalRect, terminalFocus, newTerminalDirect, newTerminalMenu, newTerminalItem, terminalDump, terminalCommand, modelListTrigger,
     settingsOpen, clickSettingsButton, clickCloseSettings, openSettingsTarget, closeSettingsTarget, readSettings, settingTarget, usageNavTarget, readUsage, readDevinUsage, refreshCodexUsage, codexWorkspaceRoots, contextPct,
     clickControl, clickModelListTrigger, devinSettingsNav, devinSettingsClick, devinSettingsCards,
@@ -2672,13 +2723,17 @@ function projectList(dir) {
   };
 }
 
-const DEVIN_BIN = fs.existsSync('/usr/share/devin-desktop/devin-desktop') ? '/usr/share/devin-desktop/devin-desktop' : 'devin-desktop';
+const DEVIN_BIN = fs.existsSync('/usr/share/devin-desktop/bin/devin-desktop') ? '/usr/share/devin-desktop/bin/devin-desktop' : 'devin-desktop';
 const CODE_BIN = process.env.CODE_BIN || 'code';
 
-function openFolder(folder, app) {
+async function openFolder(folder, app) {
   const { real } = safeHomePath(folder);
   const bin = app === 'devin' ? DEVIN_BIN : app === 'codex' ? CODE_BIN : CURSOR_BIN;
-  const child = spawn(bin, ['-r', real], { detached: true, stdio: 'ignore' });
+  const env = { ...process.env };
+  delete env.ELECTRON_RUN_AS_NODE;
+  delete env.VSCODE_IPC_HOOK_CLI;
+  const child = spawn(bin, ['-r', real], { env, detached: true, stdio: 'ignore' });
+  await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
   child.unref();
   return real;
 }
@@ -2687,6 +2742,7 @@ class Session {
   constructor(client, deviceId) {
     this.client = client;
     this.deviceId = deviceId;
+    fusionViewers.add(this);
     this.fusionSaved = fusionHistory[deviceId] ||= { current: '', runs: [] };
     this.fusionRun = this.fusionSaved.runs.find(f => f.id === this.fusionSaved.current);
     // The phone reports when the app goes to the background; notifications skip the window it is looking at.
@@ -3011,7 +3067,16 @@ class Session {
     this.lastChatAt = Date.now();
     this.polling = sel;
     try {
-      let chat = await cdp.evaluate(helpersCall('extract()'));
+      const before = this.app === 'codex' ? await cdp.evaluate(helpersCall("scrollCodexHistory('latest')")) : null;
+      let chat;
+      try {
+        if (before) await new Promise(r => setTimeout(r, 150));
+        chat = await cdp.evaluate(helpersCall('extract()'));
+      } finally {
+        if (before && this.liveRead(cdp, sel) && await cdp.evaluate(helpersCall('codexThread()')) === before.thread) {
+          await cdp.evaluate(helpersCall(`scrollCodexHistory(${before.scrollTop})`));
+        }
+      }
       if (!this.liveRead(cdp, sel) || this.historyLoading) return;
       this.syncSession(chat);
       const liveClosed = this.app !== 'devin' && (chat?.items || []).some(it => it.k === 'thinking' && it.live && !(it.t || '').includes('\n'));
@@ -3436,7 +3501,7 @@ class Session {
   }
 
   async useProject(folder) {
-    const real = openFolder(folder, this.app);
+    const real = await openFolder(folder, this.app);
     this.emit({ t: 'status', ok: true, msg: `已打开 ${path.basename(real)}` });
   }
 
@@ -4129,9 +4194,9 @@ class Session {
     else this.clearViewState();
     this.switchingThread = true;
     try {
-      const pos = await this.cdp.evaluate(helpersCall(`agentTarget(${JSON.stringify(id)}, ${this.app === 'devin'})`));
+      const pos = await this.cdp.evaluate(helpersCall(`agentTarget(${JSON.stringify(id)}, true)`));
       if (!pos) throw new Error('这条 Agent 已经不在列表里');
-      if (this.app !== 'devin') await this.tapCss(pos.x, pos.y);
+      if (pos !== true) await this.tapCss(pos.x, pos.y);
       for (let i = 0; i < 12; i++) {
         await new Promise(r => setTimeout(r, 150));
         const thread = await this.cdp.evaluate(helpersCall('activeThread()'));
@@ -5266,16 +5331,67 @@ class Session {
     if (rest) await this.typeText(rest);
   }
 
+  fusionWorker() {
+    const key = JSON.stringify([this.deviceId, this.fusionRun.id]);
+    let worker = fusionWorkers.get(key);
+    if (!worker) {
+      worker = new Session({ readyState: 3, send() {} }, this.deviceId);
+      clearInterval(worker.idleTimer);
+      fusionViewers.delete(worker);
+      worker.app = worker.windowId = worker.targetId = 'fusion';
+      worker.threadId = this.fusionRun.id;
+      worker.fusionRun = this.fusionRun;
+      worker.fusionWorkerKey = key;
+      worker.emit = obj => {
+        for (const viewer of fusionViewers) {
+          if (viewer.deviceId === worker.deviceId && viewer.app === 'fusion' && viewer.fusionRun?.id === worker.fusionRun.id) viewer.emit(obj);
+        }
+      };
+      fusionWorkers.set(key, worker);
+    }
+    return worker;
+  }
+
+  fusionFinishJob() {
+    this.fusionJob = null;
+    this.fusionFlushUsage();
+    if (fusionWorkers.get(this.fusionWorkerKey) === this) fusionWorkers.delete(this.fusionWorkerKey);
+  }
+
+  fusionProgress(side, items, complete = false) {
+    const f = this.fusionRun;
+    const prefix = `${f.id}:${f.turn}:${f.round}:${f.phase}:${side}:`;
+    const known = new Map((f.progress || []).map(it => [it.i, it]));
+    for (const it of items) {
+      if (it.k === 'human' || (it.k === 'thinking' && !it.t?.includes('\n'))) continue;
+      const i = prefix + it.i;
+      const entry = { ...it, i, fusionPhase: f.phase, b: undefined, agents: undefined, btnItem: undefined, f: undefined };
+      if (it.k === 'assistant') entry.h = `<div class="hint">${side.toUpperCase()}</div>` + (it.h || fusionHtml(it.t));
+      if (it.k === 'thinking') entry.t = `${side.toUpperCase()} · ${it.t}`;
+      known.set(i, entry);
+    }
+    if (complete) for (const [id, it] of known) {
+      if (id.startsWith(prefix) && it.k === 'assistant') known.delete(id);
+      else if (id.startsWith(prefix)) it.live = false;
+    }
+    const next = [...known.values()];
+    if (JSON.stringify(next) !== JSON.stringify(f.progress || [])) {
+      f.progress = next;
+      this.fusionEmit();
+    }
+  }
+
   fusionItems(f = this.fusionRun) {
     if (!f) return [];
     const prefix = `${f.id}:${f.turn || 0}`;
     const push = (i, k, t) => t ? (k === 'human' ? { i: `${prefix}:${i}`, k, t } : { i: `${prefix}:${i}`, k: 'assistant', h: fusionHtml(t) }) : null;
+    const progress = phase => (f.progress || []).filter(it => it.fusionPhase === phase);
     return [
-      push('task', 'human', f.task), push('plan', 'assistant', f.plan ? `方案\n${f.plan}` : ''),
+      push('task', 'human', f.task), ...progress('planning'), push('plan', 'assistant', f.plan ? `方案\n${f.plan}` : ''),
       push('echo', 'assistant', f.echo ? `B 的复述\n${f.echo}` : ''),
-      push('result', 'assistant', f.result ? `B 的结果\n${f.result}` : ''),
+      ...progress('execute'), push('result', 'assistant', f.result ? `B 的结果\n${f.result}` : ''),
       push('diff', 'assistant', f.diff ? `文件变更\n${f.diff}` : ''),
-      push('review', 'assistant', f.review ? `A 的检查\n${f.review}` : ''),
+      ...progress('review'), ...progress('fix'), push('review', 'assistant', f.review ? `A 的检查\n${f.review}` : ''),
     ].filter(Boolean);
   }
 
@@ -5283,7 +5399,7 @@ class Session {
     const f = this.fusionRun;
     if (!f) return;
     f.updated = Date.now();
-    this.fusionSaved.current = f.id;
+    if (!this.fusionWorkerKey) this.fusionSaved.current = f.id;
     const index = this.fusionSaved.runs.findIndex(r => r.id === f.id);
     if (index < 0) this.fusionSaved.runs.push(f);
     else this.fusionSaved.runs[index] = f;
@@ -5305,6 +5421,7 @@ class Session {
   }
 
   async fusionOpenHistory(id) {
+    if (this.fusionCreating) throw new Error('正在创建会话，请稍后再切换');
     if (this.fusionJob) throw new Error('Fusion 正在进行，先停止再切换历史');
     const f = id ? this.fusionSaved.runs.find(f => f.id === id) : newFusionRun();
     if (!f) throw new Error('没有这个 Fusion 会话');
@@ -5327,6 +5444,10 @@ class Session {
   }
 
   async fusionUsage(automatic = false, only = '') {
+    if (!this.fusionWorkerKey && this.fusionRun) {
+      const worker = fusionWorkers.get(JSON.stringify([this.deviceId, this.fusionRun.id]));
+      if (worker) return worker.fusionUsage(automatic, only);
+    }
     if (this.fusionHold || this.fusionJob) {
       this.fusionUsagePending = { automatic, only };
       return this.fusionUsageEmit();
@@ -5371,6 +5492,7 @@ class Session {
   }
 
   fusionSetProject(id) {
+    if (this.fusionCreating) throw new Error('正在创建会话，请稍后再切换项目');
     if (this.fusionJob || FUSION_ACTIVE.includes(this.fusionRun.phase)) throw new Error('这一轮还在进行，先停止再更换项目');
     const workspace = workspaces().find(w => fusionProject(w.root, w.host || '')?.id === id);
     const project = workspace && fusionProject(workspace.root, workspace.host || '');
@@ -5384,8 +5506,11 @@ class Session {
 
   async fusionCheckProject(project) {
     if (this.app === 'cursor' && this.winTitle === 'Cursor Agents') {
-      const known = workspaces().find(w => fusionProject(w.root, w.host || '')?.id === project?.id);
-      if (known && (known.sources || [known.source]).includes('cursor')) return;
+      const current = await this.cdp.evaluate(helpersCall('cursorWorkspace()'));
+      if (fusionProject(current?.root, current?.host || '')?.id === project?.id) return;
+      if (current?.root) throw new Error('当前会话不属于所选项目，请重新选择');
+      const row = (await this.cdp.evaluate(helpersCall('agentList()'))).find(a => a.current);
+      if (fusionCursorProjects().get(row?.repository)?.id === project?.id) return;
     }
     const current = this.app === 'codex' ? await this.cdp.evaluate(helpersCall('codexCurrentProject()'))
       : windowRoots(await this.editorCdp.evaluate('document.title'), this.app)[0];
@@ -5394,6 +5519,7 @@ class Session {
 
   async fusionCatalog() {
     const sides = [];
+    const cursorProjects = fusionCursorProjects();
     for (const w of await listWindows()) {
       if (w.app === 'fusion') continue;
       const windows = w.app === 'codex' ? await codexWindows(CODEX_CDP_URL) : [w];
@@ -5404,18 +5530,21 @@ class Session {
           ws: p.ws, chatWs: p.chatWs || null };
         const rows = await this.withFusionSideSpec(spec, async function () {
           if (this.app === 'codex') return this.codexThreadRows();
-          if (this.app === 'devin' && await this.cdp.evaluate(helpersCall('devinSurface()')) === 'editor') return this.editorSessions();
+          if (this.app === 'devin' && await this.cdp.evaluate(helpersCall('devinSurface()')) === 'editor') {
+            const rows = await this.cdp.evaluate(helpersCall('agentList()'));
+            if (rows?.length) return rows;
+            await this.setSurface('agent');
+            try { return await this.cdp.evaluate(helpersCall('agentList()')) || []; }
+            finally { await this.setSurface('editor'); }
+          }
+          if (this.app === 'cursor' && await this.cdp.evaluate(helpersCall('clickCloseSettings()'))) await new Promise(r => setTimeout(r, 100));
           return await this.cdp.evaluate(helpersCall('agentList()')) || [];
-        });
-        const selected = this.fusionRun?.project;
-        const selectedWorkspace = selected && workspaces().find(w => fusionProject(w.root, w.host || '')?.id === selected.id);
+        }, false);
         for (const row of rows) {
           const roots = windowRoots(spec.windowTitle, spec.app);
-          const cursorProject = w.app === 'cursor' && spec.windowTitle === 'Cursor Agents'
-            && selectedWorkspace && (selectedWorkspace.sources || [selectedWorkspace.source]).includes('cursor')
-            ? selectedWorkspace : null;
-          const root = w.app === 'codex' ? row.workspace : cursorProject?.root || (roots.length === 1 ? roots[0].root : '');
-          const host = w.app === 'codex' ? row.host || '' : cursorProject?.host || roots[0]?.host || '';
+          const cursorProject = w.app === 'cursor' && spec.windowTitle === 'Cursor Agents' ? cursorProjects.get(row.repository) : null;
+          const root = row.workspace || cursorProject?.root || (roots.length === 1 ? roots[0].root : '');
+          const host = row.workspace ? row.host || '' : cursorProject?.host || roots[0]?.host || '';
           const project = fusionProject(root, host);
           sides.push({ ...spec, id: `${spec.id}:${row.id}`, agentId: row.id,
             conversationTitle: row.title, project,
@@ -5424,17 +5553,25 @@ class Session {
         }
       }
     }
+    for (const side of ['a', 'b']) {
+      const spec = this.fusionRun?.[side];
+      if (spec?.draft && !sides.some(s => s.id === spec.id)) sides.push(spec);
+    }
     this.fusionSides = sides;
     return sides;
   }
 
   async fusionListSides(side) {
     if (!this.fusionRun.project) throw new Error('先选择项目');
-    const list = (await this.fusionCatalog()).filter(s => s.project?.id === this.fusionRun.project.id);
-    this.emit({ t: 'fusionSides', side: side === 'b' ? 'b' : 'a', apps: EDITORS.map(({ app, name }) => ({ app, name })), list: list.map(({ id, app, title, windowId, windowTitle, agentId, conversationTitle }) => ({ id, app, title, windowId, windowTitle, agentId, conversationTitle })) });
+    const catalog = await this.fusionCatalog();
+    const list = catalog.filter(s => s.project?.id === this.fusionRun.project.id);
+    this.emit({ t: 'fusionSides', side: side === 'b' ? 'b' : 'a', apps: EDITORS.map(({ app, name }) => ({ app, name,
+      unavailable: catalog.some(s => s.app === app && s.project && s.project.id !== this.fusionRun.project.id) ? '已打开的会话属于其他项目，请先在电脑上打开所选项目' : catalog.some(s => s.app === app && !s.project) ? '无法确认会话所属项目，请先在电脑上打开所选项目' : '当前项目没有已打开的会话',
+    })), list: list.map(({ id, app, title, windowId, windowTitle, agentId, conversationTitle }) => ({ id, app, title, windowId, windowTitle, agentId, conversationTitle })) });
   }
 
   async fusionSetSide(side, id) {
+    if (this.fusionCreating) throw new Error('正在创建会话，请稍后再更换');
     const which = side === 'b' ? 'b' : 'a';
     if (!this.fusionRun) this.fusionRun = newFusionRun();
     if (['planning', 'echo', 'echo-check', 'execute', 'review', 'fix'].includes(this.fusionRun.phase)) throw new Error('这一轮还在进行，先停止再更换');
@@ -5453,12 +5590,78 @@ class Session {
     await this.fusionModelMenu(which);
   }
 
+  async fusionNewSide(side, app) {
+    if (this.fusionCreating) return;
+    if (!['cursor', 'devin'].includes(app)) throw new Error('请选择 Cursor 或 Devin');
+    const f = this.fusionRun, project = f?.project, which = side === 'a' ? 'a' : 'b';
+    if (!project) throw new Error('先选择项目');
+    if (FUSION_ACTIVE.includes(f.phase)) throw new Error('这一轮还在进行，先停止再新建');
+    this.fusionCreating = true;
+    try {
+      let target;
+      for (let i = 0; i < 40 && !target; i++) {
+        for (const w of (await listWindows()).filter(w => w.app === app)) {
+          const matches = await this.withFusionSideSpec({ ...w, windowId: w.id, windowTitle: w.title }, async function () {
+            if (app === 'cursor') await this.cdp.evaluate(helpersCall('clickCloseSettings()'));
+            const current = app === 'cursor' ? await this.cdp.evaluate(helpersCall('cursorWorkspace()')) : windowRoots(await this.editorCdp.evaluate('document.title'), app)[0];
+            return fusionProject(current?.root, current?.host || '')?.id === project.id;
+          }, false);
+          if (matches || (app === 'devin' && !project.host)) { target = w; break; }
+        }
+        if (!target) {
+          if (!i) {
+            if (project.host) throw new Error('远程项目尚未打开，请先在电脑上打开所选项目');
+            this.emit({ t: 'status', ok: true, msg: '正在打开项目…' }); await openFolder(project.root, app);
+          }
+          await new Promise(r => setTimeout(r, 250));
+        }
+      }
+      if (!target) throw new Error('项目没有打开成功，请检查电脑上的软件窗口');
+      this.emit({ t: 'status', ok: true, msg: '正在创建会话…' });
+      const spec = { ...target, windowId: target.id, windowTitle: target.title, project, workspace: project.root };
+      const created = await this.withFusionSideSpec(spec, async function () {
+        if (app === 'devin' && await this.cdp.evaluate(helpersCall('devinSurface()')) === 'editor') await this.setSurface('agent');
+        const before = await this.cdp.evaluate(helpersCall('activeThread()'));
+        await this.pressControl('newChat');
+        if (app === 'cursor') {
+          await new Promise(r => setTimeout(r, 200));
+          if (!await this.cdp.evaluate(helpersCall(`cursorSelectProject(${JSON.stringify(project.root)}, ${JSON.stringify(project.host || '')})`))) throw new Error('新会话的项目选项尚未加载');
+        }
+        if (app === 'devin') {
+          for (let i = 0; i < 20 && !await this.cdp.evaluate(helpersCall('workdirInfo()')); i++) await new Promise(r => setTimeout(r, 150));
+          const current = windowRoots(await this.editorCdp.evaluate('document.title'), app)[0];
+          if (fusionProject(current?.root, current?.host || '')?.id !== project.id) await this.workdirPick(project.name, project.root, 60000);
+        }
+        for (let i = 0; i < 20; i++) {
+          await new Promise(r => setTimeout(r, 150));
+          const chat = await this.cdp.evaluate(helpersCall('extract()'));
+          if (chat && (!chat.thread || chat.thread !== before) && !chat.items?.length && await this.cdp.evaluate(helpersCall('hasComposer()'))) {
+            await this.fusionCheckProject(project);
+            return chat;
+          }
+        }
+        throw new Error('没有读到新会话，请检查电脑上的新建界面');
+      }, false);
+      f[which] = { ...spec, id: `${target.id}:${created.thread || crypto.randomUUID()}`, agentId: created.thread || '', draft: !created.thread,
+        conversationTitle: created.title || '新会话', title: `${app === 'cursor' ? 'Cursor' : 'Devin'} · 新会话`, ...fusionModelSpec(created.model) };
+      this.fusionEmit();
+      await this.fusionListSides(which);
+      this.emit({ t: 'status', ok: true, msg: '已创建并选择新会话' });
+      await this.fusionModelMenu(which);
+    } finally { this.fusionCreating = false; }
+  }
+
   async withFusionSideSpec(spec, fn, select = true) {
     const previous = this.fusionAccess || Promise.resolve();
     const operation = previous.catch(() => {}).then(async () => {
       this.fusionHold = { app: spec.app, windowId: spec.windowId };
       const session = Object.create(this);
       session.fusionOwner = this;
+      session.thinking = new Map();
+      session.thinkingTried = new Map();
+      session.keptThink = new Map();
+      session.devinHist = new Map();
+      session.thoughtFails = new Map();
       let editor, chat;
       try {
         editor = new Cdp(spec.ws);
@@ -5474,6 +5677,12 @@ class Session {
         session.winTitle = spec.windowTitle;
         session.windowId = spec.windowId;
         session.codexPageId = spec.app === 'codex' ? spec.windowId : '';
+        if (select && spec.app === 'cursor' && await session.cdp.evaluate(helpersCall('clickCloseSettings()'))) await new Promise(r => setTimeout(r, 100));
+        if (select && spec.draft && await session.cdp.evaluate(helpersCall('activeThread()'))) {
+          await session.pressControl('newChat');
+          await new Promise(r => setTimeout(r, 200));
+          if (spec.app === 'cursor') await session.cdp.evaluate(helpersCall(`cursorSelectProject(${JSON.stringify(spec.project.root)}, ${JSON.stringify(spec.project.host || '')})`));
+        }
         if (select && spec.agentId) {
           if (spec.app === 'codex') {
             if (await session.cdp.evaluate(helpersCall('codexThread()')) !== spec.agentId && !await session.selectCodexThread(spec.agentId)) throw new Error('没有找到选中的会话');
@@ -5484,9 +5693,9 @@ class Session {
           } else if (await session.cdp.evaluate(helpersCall('activeThread()')) !== spec.agentId) {
             const editorSurface = spec.app === 'devin' && await session.cdp.evaluate(helpersCall('devinSurface()')) === 'editor';
             if (editorSurface) await session.openSessionPicker();
-            const pos = await session.cdp.evaluate(helpersCall(editorSurface ? `sessionPickerTarget(${JSON.stringify(spec.agentId)})` : `agentTarget(${JSON.stringify(spec.agentId)}, false)`));
+            const pos = await session.cdp.evaluate(helpersCall(editorSurface ? `sessionPickerTarget(${JSON.stringify(spec.agentId)})` : `agentTarget(${JSON.stringify(spec.agentId)}, ${spec.app === 'cursor'})`));
             if (!pos) throw new Error('没有找到选中的会话');
-            await session.tapCss(pos.x, pos.y);
+            if (pos !== true) await session.tapCss(pos.x, pos.y);
           }
           let active = false;
           for (let i = 0; i < 12 && !active; i++) {
@@ -5549,9 +5758,16 @@ class Session {
       while (Date.now() < deadline) {
         if (this.fusionCancel) throw new Error('已停止');
         await new Promise(r => setTimeout(r, 1200));
+        if (this.fusionCancel) throw new Error('已停止');
         const chat = await this.cdp.evaluate(helpersCall('extract()'));
         if (this.app !== 'codex' && before?.thread && chat?.thread !== before.thread) throw new Error('等待回复时会话发生变化');
         const spec = this.fusionRun[side];
+        if (spec.draft && chat?.thread && chat.items?.some(it => it.k === 'human' && !humanIds.has(it.i) && normalize(it.t) === normalize(message))) {
+          spec.agentId = chat.thread;
+          spec.id = `${spec.windowId}:${chat.thread}`;
+          spec.draft = false;
+          this.fusionOwner.fusionEmit();
+        }
         spec.usage = { ...spec.usage, context: chat?.context ?? await this.cdp.evaluate(helpersCall('contextPct()')) };
         this.fusionOwner.fusionUsageEmit();
         let last;
@@ -5564,8 +5780,51 @@ class Session {
           if (human) requestId = human.i;
           last = requestId ? fusionLastAssistant(chat, requestId) : { text: '' };
         }
+        let items = [];
+        if (this.app === 'codex') items = last.items || [];
+        else if (requestId) {
+          const start = chat.items.findIndex(it => it.i === requestId) + 1;
+          if (start) {
+            items = chat.items.slice(start);
+            const end = items.findIndex(it => it.k === 'human');
+            if (end >= 0) items = items.slice(0, end);
+            const current = { ...chat, items };
+            this.fusionOwner.fusionProgress(side, items);
+            if (this.app === 'devin') {
+              const live = items.find(it => it.k === 'thinking' && it.live && !this.thinkingBody(it));
+              if (live) {
+                const body = await this.readThought(live.i);
+                if (body) live.t = `${this.thinkingTitle(live)}\n${body}`;
+              }
+            } else {
+              const ids = items.filter(it => it.k === 'thinking' && !this.thinkingBody(it)).map(it => it.i);
+              const closed = ids.length ? await this.cdp.evaluate(helpersCall(`(() => { const wanted = ${JSON.stringify(ids)}.map(thoughtIndexFor); return [...closedThinkingIndexes('live'), ...closedThinkingIndexes('done')].filter(i => wanted.includes(i)); })()`)) : [];
+              if (closed.length) {
+                await this.cdp.evaluate(helpersCall(`clickThinking(${JSON.stringify(closed)})`));
+                await new Promise(r => setTimeout(r, 250));
+                const expanded = await this.cdp.evaluate(helpersCall('extract()'));
+                if (expanded?.thread === chat.thread) {
+                  for (const it of items) {
+                    const full = expanded.items?.find(x => x.i === it.i);
+                    if (full) Object.assign(it, full);
+                  }
+                }
+                await this.cdp.evaluate(helpersCall(`closeThinkingIfOpen(${JSON.stringify(closed)})`));
+              }
+            }
+            await this.captureThoughts(current);
+            this.fillThinking(current);
+            this.rememberThinking(current);
+            this.retainThinking(current);
+            items = current.items;
+          }
+        }
+        this.fusionOwner.fusionProgress(side, items);
         const ready = last.text && (this.app === 'codex' ? last.completed : !chat?.busy && last.completed !== false);
-        if (ready && settled === last.text) return last.text;
+        if (ready && settled === last.text) {
+          this.fusionOwner.fusionProgress(side, items, true);
+          return last.text;
+        }
         settled = ready ? last.text : '';
       }
       throw new Error(`等待 ${side.toUpperCase()} 本轮回复超时（阶段：${this.fusionRun.phase}）`);
@@ -5658,6 +5917,7 @@ class Session {
   }
 
   fusionStop() {
+    if (!this.fusionWorkerKey) return this.fusionWorker().fusionStop();
     this.fusionCancel = true;
     if (this.fusionRun) this.fusionRun.phase = 'idle';
     const live = this.fusionSideLive;
@@ -5667,6 +5927,7 @@ class Session {
   }
 
   fusionUserSend(text) {
+    if (!this.fusionWorkerKey) return this.fusionWorker().fusionUserSend(text);
     const f = this.fusionRun;
     if (!f?.a || !f?.b) throw new Error('先选择 A 和 B');
     if (!f.project || f.a.project?.id !== f.project.id || f.b.project?.id !== f.project.id) throw new Error('先为同一项目选择 A 和 B');
@@ -5676,6 +5937,7 @@ class Session {
     f.history = [...(f.history || []), ...this.fusionItems(f)];
     f.turn = (f.turn || 0) + 1;
     f.task = text;
+    f.progress = [];
     f.plan = f.brief = f.echo = f.result = f.diff = f.review = '';
     f.round = 1;
     f.miss = 0;
@@ -5686,7 +5948,7 @@ class Session {
       if (this.fusionRun) this.fusionRun.phase = 'idle';
       this.fusionEmit();
       this.emit({ t: 'status', ok: false, msg: e.message });
-    }).finally(() => { this.fusionJob = null; this.fusionFlushUsage(); });
+    }).finally(() => { this.fusionFinishJob(); });
   }
 
   async fusionPlan(text) {
@@ -5700,6 +5962,7 @@ class Session {
   }
 
   fusionGo() {
+    if (!this.fusionWorkerKey) return this.fusionWorker().fusionGo();
     const f = this.fusionRun;
     if (!f || this.fusionJob) throw new Error('Fusion 正在进行');
     if (f.phase !== 'plan' && f.phase !== 'disagree') throw new Error('现在还不能交给 B');
@@ -5708,7 +5971,7 @@ class Session {
       if (this.fusionRun) this.fusionRun.phase = 'idle';
       this.fusionEmit();
       this.emit({ t: 'status', ok: false, msg: e.message });
-    }).finally(() => { this.fusionJob = null; this.fusionFlushUsage(); });
+    }).finally(() => { this.fusionFinishJob(); });
   }
 
   async fusionExecute() {
@@ -5759,6 +6022,7 @@ class Session {
   }
 
   fusionDecide(kind) {
+    if (!this.fusionWorkerKey) return this.fusionWorker().fusionDecide(kind);
     const f = this.fusionRun;
     if (!f || f.phase !== 'check') throw new Error('现在不需要选择');
     if (!['done', 'fix', 'return'].includes(kind)) throw new Error('没有这个决定');
@@ -5766,7 +6030,7 @@ class Session {
     this.fusionCancel = false;
     this.fusionJob = this.fusionApply({ kind, body: f.review || f.brief }).catch(e => {
       this.emit({ t: 'status', ok: false, msg: e.message });
-    }).finally(() => { this.fusionJob = null; this.fusionFlushUsage(); });
+    }).finally(() => { this.fusionFinishJob(); });
   }
 
   async sendMessage(text, submit, when, mentions) {
@@ -5849,7 +6113,7 @@ class Session {
     this.emit({ t: 'workdirs', info, rows: rows.filter(r => !r.browse).map(({ name, path }) => ({ name, path })) });
   }
 
-  async workdirPick(name, dirPath) {
+  async workdirPick(name, dirPath, waitMs = 20000) {
     await this.workdirInfoChecked();
     const rows = await this.openWorkdirChip('folder');
     const hit = rows.find(r => r.name === name && r.path === dirPath) || rows.find(r => r.name === name);
@@ -5859,7 +6123,7 @@ class Session {
     // folder, which takes a few seconds (the page is gone for a moment, so evaluations may fail meanwhile).
     this.emit({ t: 'status', ok: true, msg: '正在切换工作区，Devin 会重新载入文件夹…' });
     let info = null;
-    for (let i = 0; i < 80; i++) {
+    for (let i = 0; i < Math.ceil(waitMs / 250); i++) {
       await new Promise(r => setTimeout(r, 250));
       info = await this.cdp.evaluate(helpersCall('workdirInfo()')).catch(() => null);
       if (info?.name === name) break;
@@ -5934,7 +6198,7 @@ class Session {
       return;
     }
     if (msg.t === 'lang') { updateDevice(this.deviceId, { lang: msg.v === 'en' ? 'en' : 'zh' }); return; }
-    const fusionFree = this.app === 'fusion' && (['fusionProjects', 'fusionProject', 'fusionSides', 'fusionSide', 'fusionHistory', 'fusionOpen', 'fusionNew', 'fusionUsage', 'fusionModel', 'fusionGo', 'fusionDecide', 'send', 'usage', 'refresh', 'attachments', 'quality', 'appTheme'].includes(msg.t) || (msg.t === 'pickMenu' && /^fusion-(model|effort)-/.test(String(msg.kind || ''))));
+    const fusionFree = this.app === 'fusion' && (['fusionProjects', 'fusionProject', 'fusionSides', 'fusionSide', 'fusionNewSide', 'fusionHistory', 'fusionOpen', 'fusionNew', 'fusionUsage', 'fusionModel', 'fusionGo', 'fusionDecide', 'send', 'usage', 'refresh', 'attachments', 'quality', 'appTheme'].includes(msg.t) || (msg.t === 'pickMenu' && /^fusion-(model|effort)-/.test(String(msg.kind || ''))));
     if (fusionFree) {
       if (msg.t === 'refresh') return this.fusionEmit();
     } else if (!this.cdp) throw new Error(this.appMessage('尚未连接到 {app} 窗口'));
@@ -5967,6 +6231,7 @@ class Session {
       case 'fusionUsage': return this.fusionUsage(msg.automatic === true, msg.side === 'b' ? 'b' : 'a');
       case 'fusionSides': return this.fusionListSides(msg.side);
       case 'fusionSide': return this.fusionSetSide(msg.side, String(msg.id || ''));
+      case 'fusionNewSide': return this.fusionNewSide(msg.side, String(msg.app || ''));
       case 'fusionModel': return this.fusionModelMenu(msg.side);
       case 'fusionGo': return this.fusionGo();
       case 'fusionDecide': return this.fusionDecide(msg.kind);
@@ -6036,6 +6301,7 @@ class Session {
   }
 
   dispose() {
+    fusionViewers.delete(this);
     clearInterval(this.idleTimer);
     clearTimeout(this.ackTimer);
     this.detach();
