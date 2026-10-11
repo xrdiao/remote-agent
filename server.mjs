@@ -401,7 +401,8 @@ function pageHelpers() {
   const buttonsIn = (root, strict) => [...root.querySelectorAll('button, [role=button], .anysphere-button, .anysphere-secondary-button, .composer-run-button, .composer-skip-button')]
     .filter(b => vis(b) && !isPermissionButton(b) && !b.closest('.human-message-action-slot') && !SKIP.test(b.className) && !b.parentElement.closest('button, [role=button]'))
     .map(b => ({ el: b, label: ((b.innerText || '').trim() || b.getAttribute('aria-label') || b.title || '').split('\n')[0].slice(0, 30) }))
-    .filter(x => x.label && x.label !== 'Shell command options' && (!strict || ACTION.test(x.label)));
+    .filter(x => x.label && x.label !== 'Shell command options' && (!strict || ACTION.test(x.label)))
+    .filter((x, i, rows) => !root.hasAttribute('data-turn-key') || x.label !== 'Copy message' || !rows.slice(0, i).some(b => b.label === x.label));
 
   const codeText = n => {
     const lines = n.querySelectorAll('.view-line');
@@ -2216,7 +2217,7 @@ function pageHelpers() {
   const codexPoint = el => {
     const c = center(el);
     const frame = document.getElementById('active-frame');
-    if (!frame || doc === document) return c;
+    if (!frame || el.ownerDocument === document) return c;
     const o = frame.getBoundingClientRect();
     return { x: c.x + o.x, y: c.y + o.y };
   };
@@ -2401,7 +2402,8 @@ function pageHelpers() {
   const codexRequests = () => {
     if (!codexThread()) return [];
     const rows = new Map();
-    for (const el of doc.querySelectorAll('button, input, textarea, select, [role=radio], [role=checkbox]')) {
+    const query = selector => [...new Set([doc, document])].flatMap(d => [...d.querySelectorAll(selector)]);
+    for (const el of query('button, input, textarea, select, [role=radio], [role=checkbox]')) {
       if (!vis(el) || el.closest('[contenteditable=true]')) continue;
       const props = codexFiberProps(el, 32).find(p => p.request?.item?.requestId || (p.item?.requestId && (p.onReply || p.onApprove || p.onSubmit)));
       const request = props?.request || (props?.item ? props : null);
@@ -2417,14 +2419,24 @@ function pageHelpers() {
         if (label && !row.buttons.some(b => b.el === el)) row.buttons.push({ el, label, selected: el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-pressed') === 'true' || el.getAttribute('data-state') === 'checked', disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true', ...codexPoint(el) });
       }
     }
-    for (const dialog of [...doc.querySelectorAll('[role=dialog]')].filter(vis)) {
-      if ([...rows.values()].some(r => r.buttons.some(b => dialog.contains(b.el)))) continue;
+    const questionCards = new Set(query('[role=dialog]').filter(vis));
+    for (const field of query('textarea,input,[contenteditable=true]').filter(vis)) {
+      for (let card = field.parentElement, depth = 0; card && depth < 7; card = card.parentElement, depth++) {
+        const heading = [...card.querySelectorAll('h1,h2,h3,[role=heading],span,p,div')].find(e => e.children.length === 0 && /^(Question|提问|问题)$/.test(e.textContent.trim()));
+        if (heading) { questionCards.add(card); break; }
+      }
+    }
+    for (const dialog of questionCards) {
+      if ([...rows.values()].some(r => [...r.buttons, ...r.fields].some(b => dialog.contains(b.el)))) continue;
       const title = dialog.getAttribute('aria-label') || dialog.querySelector('h1,h2,h3')?.innerText || 'Codex';
-      const id = 'dialog:' + title;
+      const content = dialog.cloneNode(true);
+      content.querySelectorAll('button,input,textarea,select,[contenteditable=true],[role=radio],[role=checkbox]').forEach(el => el.remove());
+      const text = (content.textContent || title).trim();
+      const id = 'dialog:' + title + ':' + text.slice(0, 160);
       rows.set(id, {
-        id, text: (dialog.innerText || title).slice(0, 6000),
+        id, text: text.slice(0, 6000),
         buttons: [...dialog.querySelectorAll('button, [role=radio], [role=checkbox]')].filter(vis).map(el => ({ el, label: el.getAttribute('aria-label') || el.innerText || el.title || '确认', selected: el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-pressed') === 'true' || el.getAttribute('data-state') === 'checked', disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true', ...codexPoint(el) })),
-        fields: [...dialog.querySelectorAll('input:not([type=checkbox]):not([type=radio]), textarea, select')].filter(vis).map(el => ({ el, label: el.getAttribute('aria-label') || el.placeholder || el.name || '输入', value: el.value || '', type: el.type, options: el.tagName === 'SELECT' ? [...el.options].map(o => ({ value: o.value, label: o.text })) : null })),
+        fields: [...dialog.querySelectorAll('input:not([type=checkbox]):not([type=radio]), textarea, select, [contenteditable=true]')].filter(vis).map(el => ({ el, label: el.getAttribute('aria-label') || el.placeholder || el.name || '输入', value: el.value ?? el.innerText ?? '', type: el.type, options: el.tagName === 'SELECT' ? [...el.options].map(o => ({ value: o.value, label: o.text })) : null })),
       });
     }
     return [...rows.values()];
@@ -2435,6 +2447,12 @@ function pageHelpers() {
     const el = codexRequests().find(r => r.id === id)?.fields[n]?.el;
     if (!el) return false;
     const w = el.ownerDocument.defaultView;
+    if (el.isContentEditable) {
+      el.focus();
+      el.ownerDocument.execCommand('selectAll', false);
+      el.ownerDocument.execCommand('insertText', false, value);
+      return true;
+    }
     const proto = el.tagName === 'TEXTAREA' ? w.HTMLTextAreaElement.prototype : el.tagName === 'SELECT' ? w.HTMLSelectElement.prototype : w.HTMLInputElement.prototype;
     Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value);
     el.dispatchEvent(new w.Event('input', { bubbles: true }));
@@ -2456,12 +2474,16 @@ function pageHelpers() {
   const codexChanges = () => {
     const files = new Map();
     const turns = [...doc.querySelectorAll('[data-turn-key]')];
-    for (const el of turns) for (const item of codexTurnData(el)?.items || []) {
+    const changedTurn = [...turns].reverse().find(el => codexTurnData(el)?.items?.some(item => item.type === 'patch'));
+    for (const item of codexTurnData(changedTurn || doc.body)?.items || []) {
       if (item.type !== 'patch') continue;
       for (const [name, change] of Object.entries(item.changes || {})) {
-        const diff = typeof change === 'string' ? change : change.diff || change.unifiedDiff || '';
+        const diff = typeof change === 'string' ? change : change.unified_diff || change.diff || change.unifiedDiff || (change.type === 'add' ? String(change.content || '').replace(/\n$/, '').split('\n').map(l => '+' + l).join('\n') : '');
         const lines = diff.split('\n');
-        files.set(name, { name, add: '+' + lines.filter(l => l.startsWith('+') && !l.startsWith('+++')).length, del: '-' + lines.filter(l => l.startsWith('-') && !l.startsWith('---')).length });
+        const previous = files.get(name);
+        const add = lines.filter(l => l.startsWith('+') && !l.startsWith('+++')).length;
+        const del = lines.filter(l => l.startsWith('-') && !l.startsWith('---')).length;
+        files.set(name, { name, add: diff ? '+' + (add + Number(previous?.add || 0)) : '未获取', del: diff ? '-' + (del + Math.abs(Number(previous?.del || 0))) : '', diff: [previous?.diff, diff].filter(Boolean).join('\n') });
       }
     }
     const last = [...turns].reverse().find(el => buttonsIn(el, false).some(b => /^(Undo|Apply|Revert|View changes|View changed files)$/.test(b.label)));
@@ -4384,12 +4406,23 @@ class Session {
 
   async fileMarks(f, text) {
     if (f.host) return null;
+    const changes = this.app === 'codex' ? await this.cdp.evaluate(helpersCall('codexChanges()')) : null;
+    const diff = changes?.files.find(file => file.name.replace(/\\/g, '/') === f.path.replace(/\\/g, '/'))?.diff;
     const git = await gitMarks(f.path).catch(() => null);
     if (git) {
-      if (git.newFile) return { marks: { add: [], mod: [], del: [] }, markSource: 'git', newFile: true };
+      if (git.newFile) return { marks: { add: [], mod: [], del: [] }, markSource: 'git', newFile: true, diff };
       if (git.add.length || git.mod.length || git.del.length) {
-        return { marks: { add: git.add, mod: git.mod, del: git.del }, markSource: 'git' };
+        return { marks: { add: git.add, mod: git.mod, del: git.del }, markSource: 'git', diff };
       }
+    }
+    if (this.app === 'codex') {
+      const edits = new Map();
+      for (const file of changes.files) for (const hunk of (file.diff || '').split(/^@@[^\n]*\n/m)) {
+        const diff = hunk.split('\n').filter(l => /^[ +\-]/.test(l) && !/^---|^\+\+\+/.test(l)).map(l => [l[0], l.slice(1)]);
+        if (diff.length) edits.set(edits.size, { kind: 'edit', f: file.name, diff });
+      }
+      const marks = agentMarks(edits, f.path, text);
+      if (marks) return { marks, markSource: 'agent', diff };
     }
     if (this.app === 'devin') {
       const m = agentMarks(this.devinHist, f.path, text);
@@ -4416,7 +4449,7 @@ class Session {
         hl = await highlightText(body.text, f.path, theme).catch(() => null);
         marked = await this.fileMarks(f, body.text).catch(() => null);
       }
-      this.emit({ t: 'file', name: path.posix.basename(f.path), path: f.path, host: f.host, size: f.size, line: f.line, editable: Boolean(body.text) && !body.truncated, ...body, ...(hl ? { hl } : {}), ...(marked?.marks ? { marks: marked.marks, markSource: marked.markSource } : {}), ...(marked?.newFile ? { newFile: true } : {}) });
+      this.emit({ t: 'file', name: path.posix.basename(f.path), path: f.path, host: f.host, size: f.size, line: f.line, editable: Boolean(body.text) && !body.truncated, ...body, ...(hl ? { hl } : {}), ...(marked?.marks ? { marks: marked.marks, markSource: marked.markSource } : {}), ...(marked?.newFile ? { newFile: true } : {}), ...(marked?.diff ? { diff: marked.diff } : {}) });
     } catch (e) {
       this.emit({ t: 'file', error: e.message, name: path.posix.basename(parseRef(text).p) });
     }

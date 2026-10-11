@@ -3105,7 +3105,7 @@ function renderFileCode(m) {
   const vars = [
     hl ? `background:${col('bg') || 'var(--pre-bg)'};color:${col('fg') || 'inherit'}` : '',
     `--ga:${col('gutterAdd') || '#2ea043'}`, `--gm:${col('gutterMod') || '#3b8eea'}`, `--gd:${col('gutterDel') || '#f14c4c'}`,
-    `--ab:${col('addBg') || 'transparent'}`, `--mb:${col('modBg') || 'transparent'}`,
+    `--ab:${col('addBg') || 'rgba(46,160,67,.15)'}`, `--mb:${col('modBg') || 'rgba(59,142,234,.15)'}`,
     `--ln:${col('lineNo') || ''}`, `--sel:${col('selection') || ''}`,
   ].filter(Boolean).join(';');
   const code = document.createElement('div');
@@ -3138,6 +3138,12 @@ function renderFileCode(m) {
   };
   const rangeHtml = (a, b) => { let s = ''; for (let k = a; k <= b; k++) s += lineHtml(k); return s; };
   body.replaceChildren(code);
+  if (m.diff) {
+    const diff = document.createElement('details');
+    diff.className = 'toolrow open';
+    diff.innerHTML = '<summary>本轮修改内容</summary><div class="tdiff">' + m.diff.split('\n').map(l => `<div class="dl ${l.startsWith('+') ? 'di' : l.startsWith('-') ? 'dd' : ''}">${esc(l)}</div>`).join('') + '</div>';
+    body.prepend(diff);
+  }
   renderChunk();
   if (m.truncated) code.insertAdjacentHTML('beforeend', '<div class="note">文件太长，只显示了前 512 KB</div>');
 }
