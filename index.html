@@ -215,7 +215,7 @@
   .tlist .done .tt { color: var(--muted); text-decoration: line-through; }
   .tlist .in_progress { color: var(--hi); font-weight: 600; }
   .tlist .in_progress .ti { color: var(--warn); }
-  #taskChip { margin: 6px 10px; font-size: 12px; }
+  #taskChip { position: sticky; top: 0; z-index: 2; background: var(--panel); margin: 6px 10px; font-size: 12px; }
   #sessBar { flex: none; display: flex; gap: 6px; padding: 6px 10px; overflow-x: auto; background: var(--panel); border-bottom: 1px solid var(--line); -webkit-overflow-scrolling: touch; }
   #sessBar[hidden] { display: none; }
   #sessBar .sessTab { flex: none; display: inline-flex; align-items: stretch; }
@@ -478,6 +478,7 @@
       <button id="older">↑ 加载更早的消息</button>
       <button id="cachedMore" hidden></button>
       <button id="taskChip" hidden></button>
+      <div id="fusionBar" hidden></div>
       <div id="items"></div>
       <div id="empty" hidden>没找到聊天面板。<br><span id="emptyHint"></span></div>
     </div>
@@ -534,6 +535,10 @@
     <button id="pickRun" title="执行位置" hidden></button>
     <button id="pickChat" title="会话操作" hidden>会话 ▾</button>
     <button id="pickAgents" title="切换电脑上的 Agent">Agent</button>
+    <button id="fusionA" hidden>选择 A</button>
+    <button id="fusionB" hidden>选择 B</button>
+    <button id="fusionModelA" hidden>A 模型</button>
+    <button id="fusionModelB" hidden>B 模型</button>
     <!-- 旧版输入框旁的对话历史。Agents 和 Devin 改由左侧会话列表切换，见 README。 -->
     <button id="pickHistory" hidden>历史</button>
     <button id="pickDir" hidden></button>
@@ -1169,6 +1174,7 @@ function connect() {
     else if (m.t === 'frame') onFrame(m);
     else if (m.t === 'panel') { panel = m.rect; updateTermEmpty(); layoutStage(); applyQuality(); }
     else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; if (sheetKind === 'windows') showWindows(); }
+    else if (m.t === 'fusionSides') showFusionSides(m);
     else if (m.t === 'attached') {
       rememberAgentOpen(m);
       if (m.keepQuota) { applySelection(m); return; }
@@ -1178,9 +1184,9 @@ function connect() {
       currentWindow = m.id;
       currentApp = m.app || null;
       if (m.closed) { status('这个窗口已经关闭，请重新选择', false); send({ t: 'agents' }); return; }
-      $('titleText').textContent = m.app === 'devin' ? 'Devin agent' : m.app === 'codex' ? 'Codex' : winLabel(m.title).name;
+      $('titleText').textContent = m.app === 'fusion' ? 'Fusion' : m.app === 'devin' ? 'Devin agent' : m.app === 'codex' ? 'Codex' : winLabel(m.title).name;
       currentAppName = m.appName;
-      currentProject = m.project || winLabel(m.title).name;
+      currentProject = m.app === 'fusion' ? '' : (m.project || winLabel(m.title).name);
       updateAppText(); updateTitle();
       renderChat(null);
       renderContext(null);
@@ -1299,11 +1305,38 @@ function showWindows() {
     if (w.app === 'codex') {
       return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">Codex</span></button>`;
     }
+    if (w.app === 'fusion') {
+      return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">Fusion</span></button>`;
+    }
     const label = winLabel(w.title || w.id);
     return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}">
       <span class="tag">${KIND_TAG[w.kind] || ''}</span><span class="lbl">${esc(label.name)}${label.file ? `<span class="sub">${esc(label.file)}</span>` : ''}</span></button>`;
   }).join('');
-  openSheet('windows', `<h3>切换窗口</h3><div class="hint">Cursor、Devin 和 Codex 都在这里。点一个就切到那个程序。</div>${rows || '<div class="hint">没有找到窗口</div>'}`);
+  openSheet('windows', `<h3>切换窗口</h3><div class="hint">Cursor、Devin、Codex 和 Fusion 都在这里。点一个就切过去。</div>${rows || '<div class="hint">没有找到窗口</div>'}`);
+}
+const FUSION_PHASE = { idle: '待开始', planning: 'A 正在写方案', plan: '方案待确认', echo: 'B 正在复述', 'echo-check': 'A 正在核对复述', execute: 'B 正在执行', review: 'A 正在检查', fix: 'A 正在小修', disagree: '理解不一致', check: '请选择下一步', done: '完成' };
+function paintFusion(fx) {
+  const on = !!fx;
+  for (const id of ['fusionA', 'fusionB', 'fusionModelA', 'fusionModelB']) $(id).hidden = !on;
+  $('fusionBar').hidden = !on;
+  $('newChat').hidden = on;
+  if (on) { $('pickModel').hidden = true; $('pickAgents').hidden = true; $('pickMode').hidden = true; }
+  else $('pickAgents').hidden = false;
+  if (!on) return;
+  const short = s => String(s || '').replace(/^Codex · /, '').slice(0, 28);
+  $('fusionA').textContent = fx.a ? `A ${short(fx.a.title)}` : '选择 A';
+  $('fusionB').textContent = fx.b ? `B ${short(fx.b.title)}` : '选择 B';
+  $('fusionModelA').textContent = fx.a?.model ? short(fx.a.model) : 'A 模型';
+  $('fusionModelB').textContent = fx.b?.model ? short(fx.b.model) : 'B 模型';
+  const acts = fx.phase === 'plan' ? '<button type="button" data-fusion-act="go">交给 B</button>'
+    : fx.phase === 'disagree' ? '<button type="button" data-fusion-act="go">按 A 的说明继续</button>'
+    : fx.phase === 'check' ? '<button type="button" data-fusion-act="done">完成</button><button type="button" data-fusion-act="fix">小修</button><button type="button" data-fusion-act="return">退回 B</button>'
+    : '';
+  $('fusionBar').innerHTML = `<span class="hint">第 ${fx.round || 0} 轮 · ${FUSION_PHASE[fx.phase] || fx.phase}</span>${acts}`;
+}
+function showFusionSides(m) {
+  const rows = (m.list || []).map(s => `<button class="opt" data-fusion-pick="${esc(m.side)}" data-fusion-id="${esc(s.id)}"><span class="lbl">${esc(s.title)}</span></button>`).join('');
+  openSheet('fusion-side', `<h3>选择 ${m.side === 'b' ? 'B 执行' : 'A 方案'}</h3><div class="hint">A 写方案并检查，B 按说明执行。两边要选不同的会话。</div>${rows || '<div class="hint">没有可选的窗口</div>'}`);
 }
 function showTerminals(list) {
   const rows = list.map(t => `<div class="optRow"><button class="opt ${t.current ? 'cur' : ''}" data-term="${esc(t.id)}"><span class="lbl">${esc(t.title)}</span>${t.current ? '<span class="tag">当前</span>' : ''}</button><button data-term-del="${esc(t.id)}" data-term-name="${esc(t.title)}">删除</button></div>`).join('');
@@ -1368,7 +1401,7 @@ function showAgents(list) {
 }
 $('title').onclick = () => { send({ t: 'windows' }); showWindows(); };
 
-const MENU_TITLE = { mode: '选择模式', model: '选择模型', history: '历史对话', permission: '权限', 'codex-run': '执行位置', 'codex-chat': '会话操作', 'fusion-lead': 'Fusion Lead', 'fusion-effort': 'Fusion Effort', 'fusion-sidekick': 'Fusion Sidekick' };
+const MENU_TITLE = { mode: '选择模式', model: '选择模型', history: '历史对话', permission: '权限', 'codex-run': '执行位置', 'codex-chat': '会话操作', 'fusion-model-a': 'A 模型', 'fusion-model-b': 'B 模型', 'fusion-effort-a': 'A 推理强度', 'fusion-effort-b': 'B 推理强度', 'fusion-lead': 'Fusion Lead', 'fusion-effort': 'Fusion Effort', 'fusion-sidekick': 'Fusion Sidekick' };
 const PERM_LABEL = {
   'Ask for approval': ['每次询问', '改外部文件和上网前都会询问'],
   'Approve for me': ['代为批准', '只在可能不安全时询问'],
@@ -1389,7 +1422,7 @@ const MODE_ZH = { Code: '写代码、改文件，正常提问', Smart: '模型�
 const modeDesc = it => (I18N.lang === 'zh' && MODE_ZH[it.label]) || it.desc;
 function showMenu(kind, items, max, fusion) {
   finishPending(['读取模式列表…', '读取模型列表…', '读取历史对话…', '设置中…']);
-  const picking = String(kind || '').startsWith('fusion-');
+  const picking = /^fusion-(lead|effort|sidekick)$/.test(String(kind || ''));
   if (!items?.length && !fusion) return status(appMessage('菜单是空的，可能 {app} 版本不同'), false);
   status('');
   const maxRow = typeof max === 'boolean'
@@ -1745,6 +1778,7 @@ $('sheet').addEventListener('click', async e => {
     return;
   }
   if (b.dataset.win) { closeSheet(); status('正在切换窗口…'); return send({ t: 'attach', id: b.dataset.win }); }
+  if (b.dataset.fusionId) { closeSheet(); return send({ t: 'fusionSide', side: b.dataset.fusionPick, id: b.dataset.fusionId }); }
   if (b.dataset.agent) { pendingAgentOpen = b.dataset.agent; closeSheet(); status('正在切换 Agent…'); return send({ t: 'openAgent', id: b.dataset.agent }); }
   if (b.dataset.term) { closeSheet(); status('正在切换终端…'); return send({ t: 'openTerminal', id: b.dataset.term }); }
   if (b.dataset.open) { closeSheet(); status('正在打开项目…'); return send({ t: 'openProject', path: b.dataset.open }); }
@@ -1779,7 +1813,7 @@ $('sheet').addEventListener('click', async e => {
     if (b.dataset.kind === 'mode' && b.dataset.label === 'Bypass Permissions' && !b.classList.contains('cur')
       && !await ask('切到「Bypass Permissions」？\nAgent 之后的所有操作（运行命令、改文件、删文件）都会自动批准，不再询问你。', '切换')) return;
     closeSheet();
-    if (b.dataset.kind !== 'codex-run' && b.dataset.kind !== 'codex-chat') beginSwitch(b.dataset.kind);
+    if (b.dataset.kind !== 'codex-run' && b.dataset.kind !== 'codex-chat' && !/^fusion-(model|effort)-/.test(String(b.dataset.kind || ''))) beginSwitch(b.dataset.kind);
     return send({ t: 'pickMenu', kind: b.dataset.kind, label: b.dataset.label });
   }
   if (b.dataset.chopen) { closeSheet(); return openFile(b.dataset.chopen); }
@@ -2128,6 +2162,7 @@ function renderTool(el, it) {
 }
 
 // Devin's todo list ("N / M tasks done"): progress bar + checklist; the same markup feeds the Tasks sheet.
+const taskOpen = new Set();
 const TASK_ICON = { done: '✓', in_progress: '◐', pending: '○' };
 function tasksHtml(it) {
   const pct = it.total ? Math.round(it.done / it.total * 100) : 0;
@@ -2137,7 +2172,7 @@ function tasksHtml(it) {
 function renderItem(it) {
   const el = document.createElement('div');
   el.className = 'msg ' + it.k;
-  if (it.k === 'tasks') { el.innerHTML = `<div class="tcard"><div class="tprog-head">${I18N.tr('任务')} ${it.done}/${it.total}</div>${tasksHtml(it)}</div>`; return el; }
+  if (it.k === 'tasks') { el.innerHTML = `<details class="tcard" data-task="${esc(it.i)}" ${taskOpen.has(it.i) ? 'open' : ''}><summary class="tprog-head">${I18N.tr('任务')} ${it.done}/${it.total}</summary>${tasksHtml(it)}</details>`; return el; }
   if (it.k === 'human') {
     const mh = it.src === 'devin' ? mathHtml(it.t || '') : null;
     el.innerHTML = `<div class="bubble">${mh?.any ? mh.html : esc(it.t || '')}</div>`;
@@ -2330,7 +2365,7 @@ function scFlush() {
   SC.timer = 0;
   if (!SC.key || !SC.dirty) return;
   SC.dirty = false;
-  let items = [...SC.items.values()].sort((a, b) => acpNum(a.i) - acpNum(b.i));
+  let items = [...SC.items.values()].sort((a, b) => (a.order ?? acpNum(a.i)) - (b.order ?? acpNum(b.i)));
   if (items.length > SC_MAX) items = items.slice(-SC_MAX);
   scSave(SC.key, items, [...SC.collapsed]);
 }
@@ -2369,7 +2404,7 @@ function scMerge(chat) {
     changed = true;
   }
   if (changed) scDirty();
-  const all = [...SC.items.values()].sort((a, b) => acpNum(a.i) - acpNum(b.i));
+  const all = [...SC.items.values()].sort((a, b) => (a.order ?? acpNum(a.i)) - (b.order ?? acpNum(b.i)));
   const stat = new Map(), turnOf = new Map();
   let turn = null;
   for (const it of all) {
@@ -2401,7 +2436,7 @@ function scTrunc(from) {
 }
 function scJump(id) {
   if (!SC.items.has(id)) return false;
-  const all = [...SC.items.values()].sort((a, b) => acpNum(a.i) - acpNum(b.i));
+  const all = [...SC.items.values()].sort((a, b) => (a.order ?? acpNum(a.i)) - (b.order ?? acpNum(b.i)));
   let turn = null, pos = 0;
   all.forEach((it, n) => { if (it.k === 'human') turn = it.i; if (it.i === id) { if (turn) SC.collapsed.delete(turn); pos = n; } });
   SC.show = Math.max(SC.show, all.length - pos + 20);
@@ -2538,6 +2573,7 @@ function renderChat(chat) {
   $('pickRun').hidden = true;
   if (codexBar?.run) $('pickRun').textContent = codexBar.run + ' ▾';
   $('pickChat').hidden = true;
+  paintFusion(currentApp === 'fusion' ? chat?.fusion : null);
   chatBusy = !!chat?.busy;
   updateSendMode();
   currentSurface = chat?.surface || null;
@@ -2627,6 +2663,7 @@ function renderChat(chat) {
   }
   if (!stick && previous && JSON.stringify(previous.items) !== JSON.stringify(chat.items)) $('toBottom').textContent = '↓ 有新消息';
   updateToBottom();
+  preloadCodexHistory();
   noteSwitch(chat);
   if (SC.jump && SC.items.has(SC.jump)) { const j = SC.jump; SC.jump = null; scJump(j); }
 }
@@ -2640,6 +2677,7 @@ function showTasks() {
 }
 itemsEl.addEventListener('click', e => { const b = e.target.closest('[data-codex-agent]'); if (b) send({ t: 'openAgent', id: b.dataset.codexAgent }); });
 $('taskChip').onclick = () => showTasks();
+itemsEl.addEventListener('toggle', e => { const id = e.target.dataset.task; if (id) e.target.open ? taskOpen.add(id) : taskOpen.delete(id); }, true);
 $('qnBar').addEventListener('click', e => {
   const b = e.target.closest('[data-action][data-request]');
   if (b) send({ t: 'codexRequest', id: b.dataset.request, n: Number(b.dataset.action) });
@@ -2791,7 +2829,20 @@ function updateToBottom() {
   if (nearBottom()) $('toBottom').textContent = '↓ 最新';
   $('toBottom').style.display = nearBottom() ? 'none' : 'block';
 }
-list.addEventListener('scroll', updateToBottom);
+let historyPrefetch = '', historyTimer = 0;
+function preloadCodexHistory() {
+  if (currentApp !== 'codex' || !lastChat || lastChat.earlier === false || list.scrollTop > Math.max(1200, list.clientHeight * 2) || historyTimer) return;
+  const key = viewSel + ':' + itemsEl.firstElementChild?.dataset.i;
+  if (historyPrefetch === key) return;
+  historyTimer = setTimeout(() => {
+    historyTimer = 0;
+    if (currentApp !== 'codex' || key !== viewSel + ':' + itemsEl.firstElementChild?.dataset.i) return;
+    historyPrefetch = key;
+    if (!$('cachedMore').hidden) { SC.show += 100; renderChat(lastChat); }
+    else send({ t: 'scrollChat', dy: -1800 });
+  }, 150);
+}
+list.addEventListener('scroll', () => { updateToBottom(); preloadCodexHistory(); }, { passive: true });
 $('toBottom').onclick = () => { list.scrollTop = list.scrollHeight; };
 $('older').onclick = () => send({ t: 'scrollChat', dy: -900 });
 
@@ -3637,15 +3688,26 @@ function codexFollow() {
 function updateSendMode() {
   const split = devinBusySplit();
   const follow = codexFollow();
-  const label = split || follow === 'queue' ? '排队' : follow === 'steer' ? '立即追加' : '发送';
+  const label = currentApp === 'fusion' ? '发给 A' : split || follow === 'queue' ? '排队' : follow === 'steer' ? '立即追加' : '发送';
   if ($('send').textContent !== label) $('send').textContent = label;
   $('sendNow').hidden = !split && !follow;
   $('sendNow').textContent = follow === 'steer' ? '改为排队' : '立即追加';
   if (split) $('sendNow').textContent = '立即发送';
   document.body.classList.toggle('split', split || !!follow);
 }
+$('fusionA').onclick = () => send({ t: 'fusionSides', side: 'a' });
+$('fusionB').onclick = () => send({ t: 'fusionSides', side: 'b' });
+$('fusionModelA').onclick = () => { status('读取 A 的模型…'); send({ t: 'fusionModel', side: 'a' }); };
+$('fusionModelB').onclick = () => { status('读取 B 的模型…'); send({ t: 'fusionModel', side: 'b' }); };
+$('fusionBar').onclick = e => {
+  const b = e.target.closest('[data-fusion-act]');
+  if (!b) return;
+  if (b.dataset.fusionAct === 'go') return send({ t: 'fusionGo' });
+  send({ t: 'fusionDecide', kind: b.dataset.fusionAct });
+};
 $('send').onclick = () => {
   const v = text.value;
+  if (currentApp === 'fusion' && lastChat?.fusion?.busy) return status('Fusion 正在进行');
   if (!v.trim() && !$('attachments').children.length) return;
   saveDraft();
   const follow = codexFollow();
