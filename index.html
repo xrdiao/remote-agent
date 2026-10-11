@@ -1515,7 +1515,7 @@ function renderContext(info) {
   const basis = info && typeof info === 'object' ? (info.basis || 'used') : 'used';
   const pct = info == null ? null : typeof info === 'object' ? info.pct : info;
   const n = pct == null || pct === '' ? null : Math.max(0, Math.min(100, Number(pct)));
-  $('meterCtxPct').textContent = n == null ? '–' : (basis === 'remaining' ? '剩余 ' : '') + n + '%';
+  $('meterCtxPct').textContent = n == null ? '–' : n + '%';
   const fill = $('meterCtxFill');
   fill.style.width = (n ?? 0) + '%';
   fill.parentElement.style.setProperty('--pct', n ?? 0);
