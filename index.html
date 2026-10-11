@@ -433,7 +433,7 @@
   #fusionHeader { display: flex; flex: 1; min-width: 0; align-items: center; border: 1px solid var(--border); border-radius: 11px; background: var(--panel); height: 40px; }
   .fusionAgent { display: flex; flex: 1; min-width: 0; align-items: center; gap: 3px; padding: 3px; }
   .fusionAgent + .fusionAgent { border-left: 1px solid var(--line); }
-  .fusionAgent > button { padding: 2px; background: transparent; border: 0; font-size: 12px; font-weight: 600; }
+  .fusionAgent > button { align-self: stretch; min-width: 27px; padding: 2px; background: transparent; border: 0; font-size: 12px; font-weight: 600; }
   .fusionRing { flex: none; width: 21px; height: 21px; border-radius: 50%; background: conic-gradient(var(--agent-color) calc(var(--pct, 0) * 1%), var(--line) 0); position: relative; }
   .fusionRing::after { content: ''; position: absolute; inset: 3px; border-radius: 50%; background: var(--panel); }
   .fusionAgent:first-child { --agent-color: var(--ctx); }
@@ -1392,7 +1392,7 @@ function paintFusion(fx) {
   $('fusionProject').disabled = !!fx.busy;
   for (const side of ['a', 'b']) {
     $('fusion' + side.toUpperCase()).disabled = !fx.project || !!fx.busy;
-    $('fusionModel' + side.toUpperCase()).disabled = !fx[side] || !!fx.busy;
+    $('fusionModel' + side.toUpperCase()).disabled = !fx.project || !!fx.busy;
   }
   const short = s => String(s || '').slice(0, 28);
   const roleTitle = s => `${({ codex: 'Codex', cursor: 'Cursor', devin: 'Devin' })[s.app] || s.app} · ${s.conversationTitle || s.title}`;
@@ -1553,7 +1553,9 @@ function showMenu(kind, items, max, fusion) {
       : `<button class="opt ${it.checked ? 'cur' : ''}" data-kind="${kind}" data-label="${esc(it.label)}"><span class="lbl">${esc(it.label)}${it.desc ? `<span class="sub">${esc(modeDesc(it))}</span>` : ''}</span>${it.label === 'Bypass Permissions' ? '<span class="tag" style="color:var(--warn)">⚠</span>' : ''}</button>`;
     return it.params ? `<div class="optRow">${pick}<button class="paramBtn" data-params="${esc(it.id)}" data-plabel="${esc(it.label)}">参数</button></div>` : pick;
   }).join('');
-  openSheet('menu', `<h3>${MENU_TITLE[kind] || ''}</h3>` + (picking ? '' : fusionBlock(fusion)) + maxRow + rows);
+  const role = /^fusion-model-([ab])$/.exec(kind || '')?.[1];
+  const agentRow = role ? `<button class="opt" data-fusion-select="${role}"><span class="lbl">更换 ${role.toUpperCase()} Agent / 会话<span class="sub">${esc(lastChat?.fusion?.[role]?.title || '未选择')}</span></span></button>` : '';
+  openSheet('menu', `<h3>${MENU_TITLE[kind] || ''}</h3>` + agentRow + (picking ? '' : fusionBlock(fusion)) + maxRow + rows);
 }
 
 function showChanges(m) {
@@ -1914,6 +1916,7 @@ $('sheet').addEventListener('click', async e => {
   if (b.dataset.fusionProject) { closeSheet(); return send({ t: 'fusionProject', id: b.dataset.fusionProject }); }
   if (b.dataset.fusionHistory) { closeSheet(); return send({ t: 'fusionOpen', id: b.dataset.fusionHistory }); }
   if (b.dataset.fusionRefresh) { closeSheet(); status('正在读取额度…'); return send({ t: 'fusionUsage', side: b.dataset.fusionRefresh }); }
+  if (b.dataset.fusionSelect) { closeSheet(); return send({ t: 'fusionSides', side: b.dataset.fusionSelect }); }
   if (b.dataset.fusionId) { closeSheet(); return send({ t: 'fusionSide', side: b.dataset.fusionPick, id: b.dataset.fusionId }); }
   if (b.dataset.agent) { pendingAgentOpen = b.dataset.agent; closeSheet(); status('正在切换 Agent…'); return send({ t: 'openAgent', id: b.dataset.agent }); }
   if (b.dataset.term) { closeSheet(); status('正在切换终端…'); return send({ t: 'openTerminal', id: b.dataset.term }); }
@@ -3880,8 +3883,10 @@ function updateSendMode() {
 $('fusionProject').onclick = () => { status('正在读取项目…'); send({ t: 'fusionProjects' }); };
 $('fusionA').onclick = () => send({ t: 'fusionSides', side: 'a' });
 $('fusionB').onclick = () => send({ t: 'fusionSides', side: 'b' });
-$('fusionModelA').onclick = () => { status('读取 A 的模型…'); send({ t: 'fusionModel', side: 'a' }); };
-$('fusionModelB').onclick = () => { status('读取 B 的模型…'); send({ t: 'fusionModel', side: 'b' }); };
+for (const side of ['a', 'b']) $('fusionModel' + side.toUpperCase()).onclick = () => {
+  status(lastChat?.fusion?.[side] ? `读取 ${side.toUpperCase()} 的模型…` : `正在选择 ${side.toUpperCase()} Agent…`);
+  send({ t: lastChat?.fusion?.[side] ? 'fusionModel' : 'fusionSides', side });
+};
 $('fusionBar').onclick = e => {
   const b = e.target.closest('[data-fusion-act]');
   if (!b) return;
