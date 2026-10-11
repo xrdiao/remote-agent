@@ -5,6 +5,10 @@ const I18N = (() => {
   const lang = saved === 'zh' || saved === 'en' ? saved : /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
 
   const EN = {
+    '让两个 AI 一起完成任务': 'Let two AIs work together',
+    'A 负责方案与检查，B 负责执行': 'A plans and reviews; B executes',
+    '协同思考、编写代码、完成复杂任务': 'Think together, write code, and solve complex tasks',
+    'A 模型 ▾': 'A model ▾', 'B 模型 ▾': 'B model ▾',
     '添加附件': 'Add attachment', '图片': 'Image', '文件': 'File',
     '正在上传文件…': 'Uploading file…', '文件已上传，写好文字后点发送': 'File uploaded. Add your message and tap Send.',
     '选择 Fusion 项目': 'Choose a Fusion project', '选择项目 ▾': 'Choose project ▾', '没有已确认的项目': 'No confirmed projects',
