@@ -1812,7 +1812,8 @@ async function enableNotify() {
   if (nativeNotify()) {
     window.AgentRemoteApp.setNotify(nativeConfig());
     notifyOn = true;
-    return status('通知已开启。华为等手机请在「设置 → 应用启动管理」里允许本 App 后台活动');
+    setTimeout(() => { if (window.AgentRemoteApp.listenStatus?.() !== 'connected') showBgSheet(); }, 4000);
+    return status('通知已开启，正在连接电脑。华为等手机请在「设置 → 应用启动管理」里允许本 App 后台活动');
   }
   if (inApp) return status('请先在菜单里更新安卓 App，新版才支持通知', false);
   if (!webPush()) {
@@ -2028,6 +2029,7 @@ $('sheet').addEventListener('click', async e => {
   else if (act === 'cache') showCacheSheet();
   else if (act === 'bg') showBgSheet();
   else if (act === 'bgBattery') { window.AgentRemoteApp.askBattery(); closeSheet(); }
+  else if (act === 'bgNotifySettings') { window.AgentRemoteApp.openNotifySettings(); closeSheet(); }
   else if (act === 'bgReconnect') { window.AgentRemoteApp.reconnectListen(); status('正在重连…'); setTimeout(showBgSheet, 1500); }
   else if (act === 'lang') I18N.set(I18N.lang === 'en' ? 'zh' : 'en');
   else if (act === 'computers') showComputers();
@@ -2642,13 +2644,18 @@ function showBgSheet() {
   const app = window.AgentRemoteApp;
   if (!app?.listenStatus) return;
   const st = app.listenStatus();
-  const label = { connected: '已连接', connecting: '连接中…', retry: '断开了，正在重连…', off: '未开启' }[st] || st;
+  const err = app.listenError?.() || '';
+  const label = (st === 'retry' || st === 'connecting') && err ? `断开了，正在重连…（${esc(err)}）`
+    : { connected: '已连接', connecting: '连接中…', retry: '断开了，正在重连…', off: '未开启' }[st] || st;
   const battery = app.batteryOk();
+  const notify = app.notifyAllowed ? app.notifyAllowed() : null;
   openSheet('bg', `<h3>后台连接</h3>
     <div class="hint">App 退到后台时，由一个常驻的通知保持和电脑的连接，Agent 完成或需要你确认时提醒你，也可以直接在通知里回复或选择。</div>
     <div class="opt" style="pointer-events:none"><span class="lbl">连接状态<span class="sub">${label}${st === 'off' ? '（先在菜单里开启通知）' : ''}</span></span></div>
     <div class="opt" style="pointer-events:none"><span class="lbl">电池优化<span class="sub">${battery ? '已放行，系统不会为了省电断开它' : '没放行：锁屏一段时间后系统可能会断开连接'}</span></span></div>
     ${battery ? '' : '<button class="opt" data-act="bgBattery"><span class="lbl">去放行电池优化</span></button>'}
+    ${notify === null ? '' : `<div class="opt" style="pointer-events:none"><span class="lbl">系统通知权限<span class="sub">${notify ? '已允许' : '被关闭：收不到任何提醒'}</span></span></div>`}
+    ${notify === false ? '<button class="opt" data-act="bgNotifySettings"><span class="lbl">去打开通知权限</span></button>' : ''}
     <button class="opt" data-act="bgReconnect"><span class="lbl">立即重连</span></button>`);
 }
 async function showCacheSheet() {

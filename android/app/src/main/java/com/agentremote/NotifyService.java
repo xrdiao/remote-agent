@@ -26,9 +26,11 @@ import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.Locale;
 
 import javax.crypto.Cipher;
@@ -43,18 +45,22 @@ public class NotifyService extends Service {
     static final String PREF = "notify";
     private static final String CH_EVENTS = "events";
     private static final String CH_LISTEN = "listen";
+    private static final String CH_WORK = "work";
     private static final int LISTEN_ID = 1;
     static final String ACT_NUDGE = "com.agentremote.NUDGE";
 
     // "off", "connecting", "connected" or "retry"; the web app shows it under Menu > Background connection.
     static volatile String status = "off";
+    static volatile String lastError = "";
 
     private volatile boolean running;
+    private volatile boolean skipWait;
     private volatile HttpURLConnection conn;
     private Thread worker;
     private final Object gate = new Object();
     private ConnectivityManager cm;
     private ConnectivityManager.NetworkCallback netCallback;
+    private long backoff = 2000;
 
     // Native text follows the phone's language; the web app has its own setting.
     static String tr(String zh, String en) {
@@ -141,6 +147,7 @@ public class NotifyService extends Service {
 
     private void wake(boolean dropCurrent) {
         if (dropCurrent) {
+            skipWait = true;
             HttpURLConnection c = conn;
             if (c != null) {
                 // disconnect() blocks on some stacks while the read is pending, so do it off the caller's thread.
@@ -174,13 +181,11 @@ public class NotifyService extends Service {
     }
 
     private void loop() {
-        long backoff = 2000;
         while (running) {
             try {
                 setStatus("connecting");
                 JSONObject cfg = new JSONObject(prefs(this).getString(PREF, "{}"));
                 listen(resolveRelay(cfg.getString("app"), cfg.optString("key")), cfg.getString("token"));
-                backoff = 2000;
             } catch (Unauthorized e) {
                 // Device was removed or needs 2FA again; the app turns this back on after re-pairing.
                 prefs(this).edit().remove(PREF).apply();
@@ -188,12 +193,14 @@ public class NotifyService extends Service {
                 stopSelf();
                 return;
             } catch (Exception e) {
+                lastError = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
                 if (!running) return;
             }
             if (!running) return;
             setStatus("retry");
             try {
-                synchronized (gate) { gate.wait(backoff); }
+                if (skipWait) skipWait = false;
+                else synchronized (gate) { gate.wait(backoff); }
             } catch (InterruptedException ie) {
                 return;
             }
@@ -208,11 +215,38 @@ public class NotifyService extends Service {
             Uri u = Uri.parse(app);
             return u.getScheme() + "://" + u.getAuthority();
         }
-        Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
         byte[] k = Base64.decode(key, Base64.URL_SAFE | Base64.NO_PADDING | Base64.NO_WRAP);
-        c.init(Cipher.DECRYPT_MODE, new SecretKeySpec(k, "AES"), new GCMParameterSpec(128, Base64.decode(info.getString("iv"), Base64.DEFAULT)));
-        byte[] plain = c.doFinal(Base64.decode(info.getString("data"), Base64.DEFAULT));
+        if (info.optInt("v") != 3 || info.optJSONArray("computers") == null) return decrypt(k, info);
+        JSONArray list = info.getJSONArray("computers");
+        String id = computerId(k);
+        for (int i = 0; i < list.length(); i++) {
+            JSONObject e = list.optJSONObject(i);
+            if (e != null && id.equals(e.optString("id"))) {
+                try { return decrypt(k, e); } catch (Exception ignored) {}
+            }
+        }
+        // A wrong key fails AES-GCM authentication, so an entry that opens is the one for this computer.
+        for (int i = 0; i < list.length(); i++) {
+            JSONObject e = list.optJSONObject(i);
+            if (e != null && !id.equals(e.optString("id"))) {
+                try { return decrypt(k, e); } catch (Exception ignored) {}
+            }
+        }
+        throw new Exception("No address for this computer in url.json");
+    }
+
+    private static String decrypt(byte[] k, JSONObject entry) throws Exception {
+        Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+        c.init(Cipher.DECRYPT_MODE, new SecretKeySpec(k, "AES"), new GCMParameterSpec(128, Base64.decode(entry.getString("iv"), Base64.DEFAULT)));
+        byte[] plain = c.doFinal(Base64.decode(entry.getString("data"), Base64.DEFAULT));
         return new JSONObject(new String(plain, StandardCharsets.UTF_8)).getString("url");
+    }
+
+    private static String computerId(byte[] k) throws Exception {
+        byte[] h = MessageDigest.getInstance("SHA-256").digest(k);
+        StringBuilder s = new StringBuilder();
+        for (int i = 0; i < 8; i++) s.append(String.format(Locale.ROOT, "%02x", h[i]));
+        return s.toString();
     }
 
     private static String get(String url) throws Exception {
@@ -242,10 +276,17 @@ public class NotifyService extends Service {
         c.setReadTimeout(70000);
         c.setRequestProperty("Authorization", "Bearer " + token);
         c.setRequestProperty("Accept", "text/event-stream");
+        // Quick tunnels buffer GET event streams until they close; POST is streamed.
+        c.setRequestMethod("POST");
+        c.setDoOutput(true);
+        c.setFixedLengthStreamingMode(0);
         try {
+            c.getOutputStream().close();
             if (c.getResponseCode() == 401) throw new Unauthorized();
             if (c.getResponseCode() != 200) throw new Exception("HTTP " + c.getResponseCode());
             setStatus("connected");
+            lastError = "";
+            backoff = 2000;
             BufferedReader r = new BufferedReader(new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8));
             for (String line; running && (line = r.readLine()) != null; ) {
                 if (line.startsWith("data:")) show(new JSONObject(line.substring(5).trim()));
@@ -268,6 +309,10 @@ public class NotifyService extends Service {
         // One notification per thread, so a second session does not replace the first.
         String key = win + "|" + windowId + "|" + threadId;
         int id = key.replace("|", "").isEmpty() ? 2 : 3 + (key.hashCode() & 0x7fffffff) % 100000;
+        String kind = e.optString("kind");
+        if ("end".equals(kind)) { ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).cancel(id); return; }
+        if ("working".equals(kind)) { showWorking(e, id, win, windowId, threadId); return; }
+        if ("tasks".equals(kind)) { showTasks(e, win, windowId, threadId); return; }
         Notification.Builder b = builder(CH_EVENTS)
                 .setContentTitle(e.optString("title", "Remote Agent"))
                 .setContentText(e.optString("body", ""))
@@ -292,6 +337,71 @@ public class NotifyService extends Service {
                     .addRemoteInput(ri).build());
         }
         ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).notify(id, b.build());
+    }
+
+    // Android 16 shows the ongoing notification as a live status chip when it is promoted; older versions get a spinner.
+    private void showWorking(JSONObject e, int id, String win, String windowId, String threadId) {
+        Notification.Builder b = builder(CH_WORK)
+                .setContentTitle(e.optString("title", "Remote Agent"))
+                .setContentText(e.optString("body", ""))
+                .setContentIntent(openApp(win, windowId, threadId, id))
+                .setOngoing(true)
+                .setCategory(Notification.CATEGORY_PROGRESS)
+                .setWhen(e.optLong("startedAt", System.currentTimeMillis()))
+                .setShowWhen(true)
+                .setUsesChronometer(true);
+        if (Build.VERSION.SDK_INT >= 26) b.setOnlyAlertOnce(true).setTimeoutAfter(30 * 60 * 1000L);
+        if (Build.VERSION.SDK_INT >= 36 && !e.optBoolean("quiet")) {
+            b.getExtras().putBoolean("android.requestPromotedOngoing", true);
+            try {
+                Notification.Style style = (Notification.Style) Class.forName("android.app.Notification$ProgressStyle").getConstructor().newInstance();
+                style.getClass().getMethod("setProgressIndeterminate", boolean.class).invoke(style, true);
+                b.setStyle(style);
+            } catch (Exception ex) {
+                b.setProgress(0, 0, true);
+            }
+        } else {
+            b.setProgress(0, 0, true);
+        }
+        ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).notify(id, b.build());
+    }
+
+    // Devin's todo list as a progress chip; its own id, so the run's end and alerts leave it alone.
+    private void showTasks(JSONObject e, String win, String windowId, String threadId) {
+        String key = win + "|" + windowId + "|" + threadId;
+        int tid = 3 + ((key + "|tasks").hashCode() & 0x7fffffff) % 100000;
+        int done = e.optInt("done"), total = e.optInt("total");
+        boolean complete = total > 0 && done >= total;
+        boolean finished = complete || e.optBoolean("stopped");
+        Notification.Builder b = builder(CH_WORK)
+                .setContentTitle(e.optString("title", "Remote Agent"))
+                .setContentText(e.optString("body", ""))
+                .setContentIntent(openApp(win, windowId, threadId, tid))
+                .setCategory(Notification.CATEGORY_PROGRESS)
+                .setOngoing(!finished)
+                .setAutoCancel(finished);
+        if (Build.VERSION.SDK_INT >= 26) b.setOnlyAlertOnce(true).setTimeoutAfter(finished ? 60 * 60 * 1000L : 12 * 60 * 60 * 1000L);
+        if (complete) {
+            b.setProgress(0, 0, false);
+        } else if (finished || Build.VERSION.SDK_INT < 36) {
+            b.setProgress(total, done, false);
+        } else {
+            b.getExtras().putBoolean("android.requestPromotedOngoing", true);
+            try {
+                Notification.Style style = (Notification.Style) Class.forName("android.app.Notification$ProgressStyle").getConstructor().newInstance();
+                Class<?> seg = Class.forName("android.app.Notification$ProgressStyle$Segment");
+                style.getClass().getMethod("setProgressIndeterminate", boolean.class).invoke(style, false);
+                style.getClass().getMethod("addProgressSegment", seg).invoke(style, seg.getConstructor(int.class).newInstance(total));
+                style.getClass().getMethod("setProgress", int.class).invoke(style, done);
+                b.setStyle(style);
+            } catch (Exception ex) {
+                b.setProgress(total, done, false);
+            }
+            try {
+                Notification.Builder.class.getMethod("setShortCriticalText", String.class).invoke(b, done + "/" + total);
+            } catch (Exception ignored) {}
+        }
+        ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).notify(tid, b.build());
     }
 
     private PendingIntent actionIntent(String win, String windowId, String threadId, String question, String act, int notifId, boolean mutable) {
@@ -372,6 +482,9 @@ public class NotifyService extends Service {
         NotificationChannel listen = new NotificationChannel(CH_LISTEN, tr("后台连接", "Background connection"), NotificationManager.IMPORTANCE_MIN);
         listen.setShowBadge(false);
         nm.createNotificationChannel(listen);
+        NotificationChannel work = new NotificationChannel(CH_WORK, tr("Agent 进行中", "Agent running"), NotificationManager.IMPORTANCE_LOW);
+        work.setShowBadge(false);
+        nm.createNotificationChannel(work);
     }
 
     private static class Unauthorized extends Exception {}

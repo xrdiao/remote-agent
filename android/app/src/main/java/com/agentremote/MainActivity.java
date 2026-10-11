@@ -2,6 +2,7 @@ package com.agentremote;
 
 import android.app.Activity;
 import android.app.DownloadManager;
+import android.app.NotificationManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -200,6 +201,7 @@ public class MainActivity extends Activity {
     }
 
     private void enableNotify(String config) {
+        String old = prefs.getString(NotifyService.PREF, null);
         prefs.edit().putString(NotifyService.PREF, config).apply();
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 1);
@@ -212,7 +214,8 @@ public class MainActivity extends Activity {
                 startActivity(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + getPackageName())));
             } catch (Exception ignored) {}
         }
-        NotifyService.start(this);
+        if (old != null && !old.equals(config)) NotifyService.nudge(this);
+        else NotifyService.start(this);
     }
 
     private void disableNotify() {
@@ -347,6 +350,25 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void reconnectListen() { NotifyService.nudge(MainActivity.this); }
+
+        @JavascriptInterface
+        public String listenError() { return NotifyService.lastError; }
+
+        @JavascriptInterface
+        public boolean notifyAllowed() {
+            return ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).areNotificationsEnabled();
+        }
+
+        @JavascriptInterface
+        public void openNotifySettings() {
+            runOnUiThread(() -> {
+                try {
+                    startActivity(new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName()));
+                } catch (Exception e) {
+                    try { startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName()))); } catch (Exception ignored) {}
+                }
+            });
+        }
 
         @JavascriptInterface
         public String getUrl() {
