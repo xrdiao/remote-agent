@@ -7,6 +7,9 @@ const I18N = (() => {
   const EN = {
     '添加附件': 'Add attachment', '图片': 'Image', '文件': 'File',
     '正在上传文件…': 'Uploading file…', '文件已上传，写好文字后点发送': 'File uploaded. Add your message and tap Send.',
+    '上传图片': 'Upload image', '上下文说明': 'Context details', '额度说明': 'Usage details', '刷新数据': 'Refresh', '未获取': 'Unavailable', '周额度': 'Weekly usage', '缓存数据': 'Cached data', '最近更新': 'Updated',
+    '项目 ▾': 'Project ▾', '上传文档': 'Upload document', '新建会话': 'New chat',
+    '输入你的问题，或粘贴图片、文档…': 'Ask a question, or paste an image or document…',
     '文件上传超时': 'File upload timed out', '额度查询超时': 'Usage query timed out', '额度接口请求失败': 'Usage request failed',
     '没找到 Codex 的额度查询': 'Codex usage query was not found', '额度限制': 'Usage limit',
     '尚未获取隧道地址；当前只能检测页面地址发布。': 'The tunnel address is not available; only the published app address can be tested.',

@@ -1257,7 +1257,7 @@ function pageHelpers() {
     return true;
   };
   const submitCodexMessage = () => {
-    const button = [...doc.querySelectorAll('button[aria-label="Send"]')].filter(vis).at(-1);
+    const button = [...doc.querySelectorAll('button[aria-label="Send"],button[aria-label="Queue"],button[aria-label="Steer"]')].filter(vis).at(-1);
     if (!button || button.disabled) return false;
     button.click();
     return true;
@@ -2525,7 +2525,7 @@ function pageHelpers() {
     return {
       queued: codexQueued(),
       view: {
-        plan, follow, run,
+        plan, follow, run, enter: codexQueryClient()?.getQueryData(['vscode', 'get-settings'])?.values?.composerEnterBehavior || 'enter',
         actions: !!codexButtonPoint('actions'),
         ide: ideBtn || ideStatus ? { on: ideOn, file: ideOn ? file : null } : null,
       },
@@ -5445,19 +5445,28 @@ class Session {
     else if (this.app === 'codex' && mentions?.length) await this.typeWithCodexMentions(text, mentions);
     else await this.typeText(text);
     const now = this.app === 'devin' && when === 'now' && !!busy;
+    let queued = Boolean(busy) && !now;
     if (submit) {
       if (this.app === 'codex') {
-        const follow = (await this.cdp.evaluate(helpersCall('codexFacts()')))?.view?.follow || '';
+        const view = (await this.cdp.evaluate(helpersCall('codexFacts()')))?.view;
+        const follow = view?.follow || 'queue';
+        queued = !!busy && (when === 'queue' || (!when && follow === 'queue'));
         const opposite = !!busy && ((when === 'now' && follow !== 'steer') || (when === 'queue' && follow === 'steer'));
-        if (opposite) await this.key(process.platform === 'darwin' ? 'Meta+Shift+Enter' : 'Ctrl+Shift+Enter');
+        if (opposite) {
+          await this.cdp.evaluate(FOCUS_COMPOSER);
+          await this.key((process.platform === 'darwin' ? 'Meta+' : 'Ctrl+') + (view?.enter === 'enter' ? '' : 'Shift+') + 'Enter');
+        }
         else if (!await this.cdp.evaluate(helpersCall('submitCodexMessage()'))) throw new Error('Codex 发送按钮当前不可用');
+        for (let i = 0; i < 12 && await this.cdp.evaluate(helpersCall('codexPromptText()')); i++) await new Promise(r => setTimeout(r, 100));
+        if (await this.cdp.evaluate(helpersCall('codexPromptText()'))) throw new Error('Codex 未接受发送，草稿已保留');
+        if (busy && !queued) this.emit({ t: 'status', ok: true, msg: '已追加到当前任务' });
       } else await this.key(now ? (process.platform === 'darwin' ? 'Meta+Enter' : 'Ctrl+Enter') : 'Enter');
     }
     if (submit) files.forEach(f => { f.pending = false; });
     await this.syncAttachments();
     if (now) this.emit({ t: 'status', ok: true, msg: '已打断当前任务并发送' });
     if (this.mode === 'chat') setTimeout(() => this.pollChat().catch(() => {}), 300);
-    return Boolean(busy) && !now;
+    return queued;
   }
 
   async answerQuestion(qi, oi, part, text) {
