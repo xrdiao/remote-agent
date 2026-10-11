@@ -129,7 +129,7 @@
   #attachments { display: flex; flex: 1; gap: 8px; overflow-x: auto; min-width: 0; }
   #attachments:empty { display: none; }
   .attachmentRow { display: flex; align-items: flex-end; gap: 8px; }
-  .attachmentRow:has(#attachments:empty):has(#stop[hidden]) { display: none; }
+  .attachmentRow:has(#attachments:empty) { display: none; }
   .attachment { display: flex; align-items: center; gap: 8px; padding: 7px; border: 1px solid var(--border); background: var(--panel); border-radius: 13px; }
   .attachment img { width: 56px; height: 42px; object-fit: cover; border-radius: 7px; }
   .attachment span { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
@@ -318,6 +318,8 @@
   footer { flex: none; padding: 6px 10px max(8px, env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 8px; min-width: 0; background: var(--bg); }
   body.kb footer { padding-bottom: 8px; }
   .composerBox { background: var(--panel); border: 1px solid var(--border); border-radius: 18px; padding: 10px; }
+  .composerField { position: relative; min-width: 0; }
+  .composerField:has(#stop:not([hidden])) #text { padding-right: 42px; }
   #text { display: block; width: 100%; min-width: 0; min-height: 52px; max-height: 28dvh; padding: 5px 2px 12px; resize: none; border: none; background: transparent; font-size: 16px; line-height: 1.4; outline: none; }
   #chatTools, #termTools { display: flex; align-items: center; gap: 7px; overflow-x: auto; scrollbar-width: none; min-width: 0; }
   #chatTools::-webkit-scrollbar, #termTools::-webkit-scrollbar { display: none; }
@@ -327,7 +329,7 @@
   #chatTools #add { font-size: 25px; }
   #chatTools #pickMode, #chatTools #pickPerm, #chatTools #pickDir, #chatTools #newChat { display: none; }
   #pickAgents { max-width: 100px; overflow: hidden; text-overflow: ellipsis; }
-  #stop { flex: none; margin-left: auto; width: 36px; height: 36px; padding: 0; border-radius: 11px; }
+  #stop { position: absolute; top: 0; right: 0; z-index: 2; width: 36px; height: 36px; padding: 0; border-radius: 11px; }
   #mic { display: none; }
   body.voice #mic { display: block; }
   #mic.on { color: #fff; background: var(--bad); animation: pulse 1.2s ease-in-out infinite; }
@@ -575,10 +577,10 @@
     <button data-termkey="ArrowDown">↓</button>
     <button data-termkey="Tab">Tab</button>
   </div>
-  <div class="attachmentRow"><div id="attachments"></div><button id="stop" title="停止生成" aria-label="停止生成" hidden>■</button></div>
+  <div class="attachmentRow"><div id="attachments"></div></div>
   <div id="mentionBox" hidden></div>
   <div id="mathPrev" hidden></div>
-  <div class="composerBox"><textarea id="text" rows="1" placeholder="发给 Agent…" enterkeyhint="send"></textarea>
+  <div class="composerBox"><div class="composerField"><textarea id="text" rows="1" placeholder="发给 Agent…" enterkeyhint="send"></textarea><button id="stop" title="停止生成" aria-label="停止生成" hidden>■</button></div>
   <div id="chatTools">
     <button id="add" title="添加功能" aria-label="添加功能">＋</button>
     <button id="img" title="附加图片" aria-label="附加图片"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/></svg></button>
