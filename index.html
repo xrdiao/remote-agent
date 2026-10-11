@@ -315,6 +315,12 @@
   body.term #img, body.term #mic { display: none !important; }
   #chatTools #pickModel, #chatTools #pickPerm { flex: 0 0 auto; max-width: 42%; overflow: hidden; text-overflow: ellipsis; }
   #chatTools #pickMode.bypass { color: var(--warn); border-color: var(--warn); }
+  .qnAct button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+  .composerInput { flex: 1; min-width: 0; display: flex; align-items: flex-end; gap: 8px; }
+  .composerInput textarea { flex: 1; }
+  #add { flex: none; height: 40px; width: 40px; padding: 0; font-size: 24px; }
+  body.split .composerInput { flex: 1 1 100%; }
+  body.term #add { display: none; }
   .row { display: flex; gap: 8px; min-width: 0; align-items: flex-end; }
   textarea { flex: 1; min-width: 0; min-height: 40px; max-height: 32vh; padding: 9px 10px; resize: none; font-size: 16px; line-height: 1.35; }
   #img { flex: none; height: 40px; width: 40px; padding: 0; display: flex; align-items: center; justify-content: center; color: var(--muted2); }
@@ -521,6 +527,10 @@
     <button id="pickModel" title="更换模型">模型 ▾</button>
     <span id="surfSeg" class="surfSeg" hidden><button data-surf="agent">Agent</button><button data-surf="editor">Editor</button></span>
     <button id="pickPerm" title="权限" hidden>权限 ▾</button>
+    <button id="pickPlan" title="Plan 模式" hidden>Plan</button>
+    <button id="pickIde" title="IDE 上下文" hidden>IDE</button>
+    <button id="pickRun" title="执行位置" hidden></button>
+    <button id="pickChat" title="会话操作" hidden>会话 ▾</button>
     <button id="pickAgents" title="切换电脑上的 Agent">Agent</button>
     <!-- 旧版输入框旁的对话历史。Agents 和 Devin 改由左侧会话列表切换，见 README。 -->
     <button id="pickHistory" hidden>历史</button>
@@ -531,7 +541,8 @@
   <div id="mentionBox" hidden></div>
   <div id="mathPrev" hidden></div>
   <div class="row">
-    <textarea id="text" rows="1" placeholder="发给 Agent…" enterkeyhint="send"></textarea>
+    <div class="composerInput"><button id="add" title="添加功能" aria-label="添加功能" hidden>＋</button>
+    <textarea id="text" rows="1" placeholder="发给 Agent…" enterkeyhint="send"></textarea></div>
     <button id="img" title="附加图片" aria-label="附加图片"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/></svg></button>
     <input id="imgFile" type="file" accept="image/*" hidden>
     <input id="docFile" type="file" accept=".pdf,.doc,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.py,.js,.ts,.tsx,.jsx,.sh,.yaml,.yml,.toml,.ini,.log,.xml,.html,.css,.c,.cpp,.h,.rs,.go" hidden>
@@ -1213,6 +1224,7 @@ function connect() {
     else if (m.t === 'trunc') scTrunc(m.from);
     else if (m.t === 'workdirs') showWorkdirs(m);
     else if (m.t === 'mentions') onMentions(m);
+    else if (m.t === 'codexSkills') showCodexSkills(m.rows || []);
     else if (m.t === 'unqueued') {
       text.value = text.value.trim() ? `${text.value.replace(/\s+$/, '')}\n${m.text}` : m.text;
       autosize();
@@ -1354,7 +1366,7 @@ function showAgents(list) {
 }
 $('title').onclick = () => { send({ t: 'windows' }); showWindows(); };
 
-const MENU_TITLE = { mode: '选择模式', model: '选择模型', history: '历史对话', permission: '权限', 'fusion-lead': 'Fusion Lead', 'fusion-effort': 'Fusion Effort', 'fusion-sidekick': 'Fusion Sidekick' };
+const MENU_TITLE = { mode: '选择模式', model: '选择模型', history: '历史对话', permission: '权限', 'codex-run': '执行位置', 'codex-chat': '会话操作', 'fusion-lead': 'Fusion Lead', 'fusion-effort': 'Fusion Effort', 'fusion-sidekick': 'Fusion Sidekick' };
 const PERM_LABEL = {
   'Ask for approval': ['每次询问', '改外部文件和上网前都会询问'],
   'Approve for me': ['代为批准', '只在可能不安全时询问'],
@@ -1403,9 +1415,9 @@ function showChanges(m) {
     + (m.actions.length ? `<div class="pRow" style="margin-bottom:10px">${m.actions.map(a => `<button data-chbar="${esc(a)}">${esc(a)}</button>`).join('')}</div>` : '')
     + m.files.map((f, i) => `<div class="optRow"><button class="opt" data-chopen="${esc(f.name)}"><span class="lbl">${esc(f.name)}`
       + `<span class="sub"><span class="add">${esc(f.add)}</span> <span class="del">${esc(f.del)}</span></span></span></button>`
-      + `<button class="paramBtn" data-ch="${i}" data-name="${esc(f.name)}" data-act2="keep">保留</button>`
-      + `<button class="paramBtn" data-ch="${i}" data-name="${esc(f.name)}" data-act2="undo">撤销</button></div>`).join('')
-    + '<div class="hint">点文件名查看内容。「保留」接受这个文件的改动，「撤销」把它恢复成改动前的样子。</div>');
+      + (m.codex ? '' : `<button class="paramBtn" data-ch="${i}" data-name="${esc(f.name)}" data-act2="keep">保留</button>`)
+      + (m.codex ? '' : `<button class="paramBtn" data-ch="${i}" data-name="${esc(f.name)}" data-act2="undo">撤销</button>`) + '</div>').join('')
+    + `<div class="hint">${m.codex ? '点文件名查看内容。操作范围与 Codex 原生按钮一致。' : '点文件名查看内容。「保留」接受这个文件的改动，「撤销」把它恢复成改动前的样子。'}</div>`);
 }
 
 function showParams(m) {
@@ -1754,10 +1766,19 @@ $('sheet').addEventListener('click', async e => {
     return send({ t: 'fusionOptions', part: b.dataset.fusion });
   }
   if (b.dataset.kind) {
+    if (b.dataset.kind === 'codex-chat' && b.dataset.label === 'Archive' && !await ask('归档当前会话？', '归档')) return;
+    if (b.dataset.kind === 'codex-chat' && b.dataset.label === 'Rename') {
+      const name = window.prompt('新的会话名称');
+      if (!name) return;
+      closeSheet();
+      return send({ t: 'pickMenu', kind: 'codex-chat', label: 'Rename', name });
+    }
     // Bypass Permissions lets the Agent run every tool call (commands, edits, deletes) without asking.
     if (b.dataset.kind === 'mode' && b.dataset.label === 'Bypass Permissions' && !b.classList.contains('cur')
       && !await ask('切到「Bypass Permissions」？\nAgent 之后的所有操作（运行命令、改文件、删文件）都会自动批准，不再询问你。', '切换')) return;
-    closeSheet(); beginSwitch(b.dataset.kind); return send({ t: 'pickMenu', kind: b.dataset.kind, label: b.dataset.label });
+    closeSheet();
+    if (b.dataset.kind !== 'codex-run' && b.dataset.kind !== 'codex-chat') beginSwitch(b.dataset.kind);
+    return send({ t: 'pickMenu', kind: b.dataset.kind, label: b.dataset.label });
   }
   if (b.dataset.chopen) { closeSheet(); return openFile(b.dataset.chopen); }
   if (b.dataset.ch) {
@@ -2125,14 +2146,16 @@ function renderItem(it) {
   else if (it.k === 'assistant') { el.innerHTML = it.h || ''; dressMessage(el); }
   else if (it.k === 'thinking') paintThinking(el, it);
   else if (it.k === 'tool') {
-    if (it.kind && it.src === 'devin') { renderTool(el, it); el.classList.add('toolrow'); }
+    if (it.kind && (it.src === 'devin' || it.src === 'codex')) { renderTool(el, it); el.classList.add('toolrow'); }
     else {
       el.innerHTML = `<div class="txt">${esc(it.t || '')}</div>`;
       if (it.f) el.dataset.file = it.f;
     }
   }
   else el.textContent = it.t || '';
-  if (it.b && it.k !== 'human') el.insertAdjacentHTML('beforeend', `<div class="btns">${buttonsHtml(it.b, it.i)}</div>`);
+  if (it.agents?.length) el.insertAdjacentHTML('beforeend', `<div class="btns">${it.agents.map(a => `<button data-codex-agent="${esc(a.id)}">查看 ${esc(a.title)}</button>`).join('')}</div>`);
+  if (it.images?.length) el.insertAdjacentHTML('beforeend', it.images.filter(src => /^(https?:|data:image\/)/.test(src)).map(src => `<a href="${esc(src)}" target="_blank" rel="noopener"><img src="${esc(src)}" alt="生成的图片" style="max-width:100%;border-radius:8px"></a>`).join(''));
+  if (it.b && it.k !== 'human') el.insertAdjacentHTML('beforeend', `<div class="btns">${buttonsHtml(it.b, it.btnItem || it.i)}</div>`);
   return el;
 }
 
@@ -2500,6 +2523,19 @@ function renderChat(chat) {
   const permName = PERM_LABEL[chat?.permission]?.[0];
   $('pickPerm').hidden = !chat?.permission;
   if (chat?.permission) $('pickPerm').textContent = (permName || chat.permission) + ' ▾';
+  const codexBar = currentApp === 'codex' ? chat?.codex : null;
+  $('add').hidden = !codexBar;
+  $('pickPlan').hidden = true;
+  if (codexBar) $('pickPlan').textContent = codexBar.plan ? 'Plan：开' : 'Plan：关';
+  $('pickIde').hidden = true;
+  if (codexBar?.ide) {
+    const file = codexBar.ide.file;
+    $('pickIde').textContent = 'IDE：' + (codexBar.ide.on ? '开' : '关');
+    $('pickIde').title = file ? `${file.label}${file.range ? ' ' + file.range : ''}` : 'IDE 上下文';
+  }
+  $('pickRun').hidden = true;
+  if (codexBar?.run) $('pickRun').textContent = codexBar.run + ' ▾';
+  $('pickChat').hidden = true;
   chatBusy = !!chat?.busy;
   updateSendMode();
   currentSurface = chat?.surface || null;
@@ -2600,7 +2636,12 @@ function showTasks() {
   if (!latestTasks) return closeSheet();
   openSheet('tasks', `<h3>${I18N.tr('任务')} ${latestTasks.done}/${latestTasks.total}</h3><div class="sheetTasks">${tasksHtml(latestTasks)}</div>`);
 }
+itemsEl.addEventListener('click', e => { const b = e.target.closest('[data-codex-agent]'); if (b) send({ t: 'openAgent', id: b.dataset.codexAgent }); });
 $('taskChip').onclick = () => showTasks();
+$('qnBar').addEventListener('click', e => {
+  const b = e.target.closest('[data-action][data-request]');
+  if (b) send({ t: 'codexRequest', id: b.dataset.request, n: Number(b.dataset.action) });
+});
 // The Agent's ask-question tool: a card with the questions, options, a free-text answer and submit / skip.
 let qnSig = '';
 function renderQuestions(qs) {
@@ -2608,6 +2649,14 @@ function renderQuestions(qs) {
   const sig = JSON.stringify(qs);
   if (sig === qnSig) return;
   qnSig = sig;
+  if (qs?.codex) {
+    bar.innerHTML = qs.requests.map(r => `<div class="qnQ">${esc(r.text)}</div>`
+      + r.fields.map((f, n) => `<label class="qnFree">${esc(f.label)}${f.options ? `<select data-request="${esc(r.id)}" data-field="${n}">${f.options.map(o => `<option value="${esc(o.value)}" ${o.value === f.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>` : `<input data-request="${esc(r.id)}" data-field="${n}" type="${f.type === 'password' ? 'password' : 'text'}" value="${esc(f.value)}">`}</label>`).join('')
+      + `<div class="qnAct">${r.buttons.map((b, n) => `<button data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div>`).join('');
+    bar.classList.toggle('show', qs.requests.length > 0);
+    bar.querySelectorAll('[data-field]').forEach(el => el.onchange = () => send({ t: 'codexRequest', id: el.dataset.request, field: Number(el.dataset.field), value: el.value }));
+    return;
+  }
   if (!qs?.list?.length) { bar.innerHTML = ''; bar.classList.remove('show'); return; }
   if (qs.devin) {
     const q = qs.list[0], pg = qs.pager;
@@ -2869,6 +2918,49 @@ document.addEventListener('click', async e => {
 $('pickMode').onclick = () => { status('读取模式列表…'); send({ t: 'openMenu', kind: 'mode' }); };
 $('pickModel').onclick = () => { status('读取模型列表…'); send({ t: 'openMenu', kind: 'model' }); };
 $('pickPerm').onclick = () => { status('读取权限…'); send({ t: 'openMenu', kind: 'permission' }); };
+function showCodexSkills(rows) {
+  openSheet('skills', '<h3>Skill · 技能</h3><input id="skillSearch" placeholder="搜索技能" style="width:100%;box-sizing:border-box;margin-bottom:8px"><div id="skillRows"></div>');
+  const paint = () => {
+    const q = $('skillSearch').value.toLowerCase();
+    $('skillRows').innerHTML = rows.map((r, n) => ({ r, n })).filter(({ r }) => (r.label + ' ' + r.sub).toLowerCase().includes(q)).map(({ r, n }) => `<button class="opt" data-skill="${n}"><span>${esc(r.label)}<small class="sub">${esc(r.sub)}</small></span></button>`).join('') || '<div class="mnHint">没有匹配的可用技能</div>';
+  };
+  $('skillSearch').oninput = paint;
+  $('skillRows').onclick = e => {
+    const b = e.target.closest('[data-skill]');
+    if (!b) return;
+    const r = rows[Number(b.dataset.skill)], token = '/' + r.label;
+    closeSheet(); text.focus();
+    text.setRangeText(token + ' ', text.selectionStart, text.selectionEnd, 'end');
+    MN.mentions.push({ ...r, token });
+    autosize(); saveDraft();
+  };
+  paint();
+}
+$('add').onclick = () => {
+  const c = lastChat?.codex;
+  if (!c) return;
+  const rows = [['plan', `Plan：${c.plan ? '开' : '关'}`], ['skills', 'Skill · 技能'], ['files', '引用文件'], ['commands', '扩展与命令']];
+  if (c.ide) rows.push(['ide', `IDE 上下文：${c.ide.on ? '开' : '关'}`]);
+  if (c.run) rows.push(['run', `执行位置：${c.run}`]);
+  if (c.actions) rows.push(['chat', '会话操作']);
+  openSheet('add', '<h3>Codex</h3>' + rows.map(([key, label]) => `<button class="opt" data-add="${key}">${esc(label)}</button>`).join(''));
+  $('sheet').querySelectorAll('[data-add]').forEach(b => b.onclick = () => {
+    closeSheet();
+    const key = b.dataset.add;
+    if (key === 'plan') return send({ t: 'codexPlan' });
+    if (key === 'ide') return send({ t: 'codexIde' });
+    if (key === 'run') return send({ t: 'codexRun' });
+    if (key === 'chat') return send({ t: 'codexChat' });
+    if (key === 'skills') return send({ t: 'codexSkills' });
+    text.focus();
+    text.setRangeText(key === 'files' ? '@' : '/', text.selectionStart, text.selectionEnd, 'end');
+    autosize(); saveDraft(); mentionUpdate();
+  });
+};
+$('pickPlan').onclick = () => { status('正在切换 Plan…'); send({ t: 'codexPlan' }); };
+$('pickIde').onclick = () => send({ t: 'codexIde' });
+$('pickRun').onclick = () => { status('读取执行位置…'); send({ t: 'codexRun' }); };
+$('pickChat').onclick = () => { status('读取会话操作…'); send({ t: 'codexChat' }); };
 $('pickAgents').onclick = () => { status('正在读取 Agent 列表…'); send({ t: 'agents' }); };
 $('pickHistory').onclick = () => { status('读取历史对话…'); send({ t: 'openMenu', kind: 'history' }); };
 $('newChat').onclick = () => { status('正在新建对话…'); send({ t: 'newChat' }); };
@@ -3426,20 +3518,27 @@ text.addEventListener('input', () => { autosize(); saveDraft(); });
 // sent, the relay types the text and, at each "@label", lets Devin's typeahead insert the chip.
 const MN = { seq: 0, timer: 0, q: null, root: false, mentions: [], used: '' };
 function mentionToken() {
-  if (currentApp !== 'devin' || mode !== 'chat') return null;
+  if (mode !== 'chat' || (currentApp !== 'devin' && currentApp !== 'codex')) return null;
   const caret = text.selectionStart ?? text.value.length;
-  const m = /(^|\s)@([^\s@]*)$/.exec(text.value.slice(0, caret));
-  return m ? { start: caret - m[2].length - 1, caret, q: m[2] } : null;
+  const head = text.value.slice(0, caret);
+  if (currentApp === 'codex') {
+    const m = /(^|\s)([@/])([^\s@]*)$/.exec(head);
+    return m ? { start: caret - m[3].length - 1, caret, q: m[3], trigger: m[2] } : null;
+  }
+  const m = /(^|\s)@([^\s@]*)$/.exec(head);
+  return m ? { start: caret - m[2].length - 1, caret, q: m[2], trigger: '@' } : null;
 }
 function mentionHide() {
   clearTimeout(MN.timer);
   MN.q = null;
+  MN.parent = null;
   MN.seq++;
   $('mentionBox').hidden = true;
 }
 function mentionAsk(o) {
   MN.seq++;
-  send({ t: 'mentionQuery', seq: MN.seq, ...o });
+  const token = mentionToken();
+  send({ t: 'mentionQuery', seq: MN.seq, trigger: token?.trigger || '@', ...o });
   const box = $('mentionBox');
   if (box.hidden) { box.innerHTML = '<div class="mnHint">加载中…</div>'; box.hidden = false; }
 }
@@ -3447,8 +3546,9 @@ function mentionUpdate() {
   const t = mentionToken();
   clearTimeout(MN.timer);
   if (!t) return mentionHide();
-  if (t.q === MN.q) return;
-  MN.q = t.q;
+  const queryKey = (t.trigger || '@') + t.q;
+  if (queryKey === MN.q) return;
+  MN.q = queryKey;
   MN.timer = setTimeout(() => mentionAsk({ q: t.q }), 220);
   if ($('mentionBox').hidden) { $('mentionBox').innerHTML = '<div class="mnHint">加载中…</div>'; $('mentionBox').hidden = false; }
 }
@@ -3456,9 +3556,10 @@ text.addEventListener('input', mentionUpdate);
 text.addEventListener('blur', () => setTimeout(mentionHide, 200));
 $('mentionBox').addEventListener('pointerdown', e => e.preventDefault());
 function onMentions(m) {
-  if (m.seq !== MN.seq) return;
+  if (!m.submenu && m.seq !== MN.seq) return;
   const t = mentionToken();
-  if (!t) return mentionHide();
+  if (!m.submenu && !t) return mentionHide();
+  MN.parent = m.parent || null;
   const box = $('mentionBox');
   if (m.prefix) {
     // A category was chosen: the token becomes "@terminal:" and the list below is what that category offers.
@@ -3478,13 +3579,31 @@ $('mentionBox').addEventListener('click', e => {
   const b = e.target.closest('[data-mi]');
   const r = b && $('mentionBox')._rows?.[Number(b.dataset.mi)];
   const t = mentionToken();
-  if (!r || !t) return;
+  if (!r || (!t && !MN.parent)) return;
   if (MN.root) return mentionAsk({ cat: r.label });
-  const token = `@${r.label}`;
+  if (currentApp === 'codex' && (r.key === 'context-action:pick-local-files' || (r.section === 'context-actions' && r.label === 'Files and folders'))) {
+    status('继续输入文件名，从列表里选择');
+    return;
+  }
+  const command = currentApp === 'codex' && (MN.parent || r.section === 'commands' || r.section === 'context-actions' || r.section === 'plugins' || r.section === 'apps');
+  if (command) {
+    if (t) text.setRangeText('', t.start, t.caret, 'end');
+    autosize();
+    const parent = MN.parent;
+    mentionHide();
+    send({
+      t: 'codexPick', key: r.key, label: r.label, section: r.section || '',
+      q: MN.used || '', parentKey: parent?.key || '', parentLabel: parent?.label || '', parentQ: parent?.q || MN.used || '',
+    });
+    return;
+  }
+  if (!t) return;
+  const trigger = t.trigger || '@';
+  const token = `${trigger}${r.label}`;
   text.setRangeText(token + ' ', t.start, t.caret, 'end');
   // From a category ("@file:") the relay must type the file's name too, or Devin only lists its default entries.
-  const q = MN.used.endsWith(':') && !r.label.startsWith(MN.used) ? MN.used + r.label : MN.used;
-  MN.mentions.push({ token, q, label: r.label, sub: r.sub || '' });
+  const q = MN.used.endsWith(':') && !r.label.startsWith(MN.used) ? MN.used + r.label : (MN.used || r.label.split(' ')[0]);
+  MN.mentions.push({ token, q, label: r.label, sub: r.sub || '', key: r.key || '', section: r.section || '', trigger });
   autosize();
   mentionHide();
   text.focus();
@@ -3508,27 +3627,38 @@ text.addEventListener('blur', () => {
 // Devin while its turn runs: Queue (default, Enter) or Send now (interrupts the turn, after confirmation).
 let chatBusy = false;
 function devinBusySplit() { return mode === 'chat' && currentApp === 'devin' && chatBusy; }
+function codexFollow() {
+  const follow = lastChat?.codex?.follow;
+  return mode === 'chat' && currentApp === 'codex' && chatBusy && (follow === 'queue' || follow === 'steer') ? follow : '';
+}
 function updateSendMode() {
   const split = devinBusySplit();
-  const label = split ? '排队' : '发送';
+  const follow = codexFollow();
+  const label = split || follow === 'queue' ? '排队' : follow === 'steer' ? '立即追加' : '发送';
   if ($('send').textContent !== label) $('send').textContent = label;
-  $('sendNow').hidden = !split;
-  document.body.classList.toggle('split', split);
+  $('sendNow').hidden = !split && !follow;
+  $('sendNow').textContent = follow === 'steer' ? '改为排队' : '立即追加';
+  if (split) $('sendNow').textContent = '立即发送';
+  document.body.classList.toggle('split', split || !!follow);
 }
 $('send').onclick = () => {
   const v = text.value;
   if (!v.trim() && !$('attachments').children.length) return;
   saveDraft();
+  const follow = codexFollow();
+  const when = devinBusySplit() || follow === 'queue' ? 'queue' : follow === 'steer' ? 'now' : '';
   if (mode === 'terminal') send({ t: 'termSend', text: v, draft: activeDraft });
-  else send({ t: 'send', text: v, submit: true, draft: activeDraft, ...(devinBusySplit() ? { when: 'queue' } : {}), ...mentionsFor(v) });
+  else send({ t: 'send', text: v, submit: true, draft: activeDraft, ...(when ? { when } : {}), ...mentionsFor(v) });
   if (mode === 'chat') list.scrollTop = list.scrollHeight;
 };
 $('sendNow').onclick = async () => {
   const v = text.value;
   if (!v.trim()) return;
-  if (!await ask('立即打断当前任务并发送？', '立即发送')) return;
-  send({ t: 'send', text: v, submit: true, when: 'now', ...mentionsFor(v) });
-  text.value = ''; autosize();
+  const follow = codexFollow();
+  const steer = !follow || follow === 'queue';
+  if (!await ask(steer ? '立即追加到当前任务？' : '改为排队，等当前任务结束后再发送？', steer ? '立即追加' : '排队')) return;
+  send({ t: 'send', text: v, submit: true, draft: activeDraft, when: steer ? 'now' : 'queue', ...mentionsFor(v) });
+  if (currentApp !== 'codex') { text.value = ''; autosize(); }
   list.scrollTop = list.scrollHeight;
 };
 // Enter sends. Shift+Enter keeps a newline. Ignore Enter that is confirming an IME candidate.
