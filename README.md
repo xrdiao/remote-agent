@@ -99,6 +99,11 @@ kill <隧道进程号>
 | `./start-codex.sh` | 启动 VS Code，并打开调试端口 9224，供 Codex 使用 |
 
 
+## 贡献者
+
+- [xrdiao](https://github.com/xrdiao)：项目开发与维护。
+- [Jean（zw87652015）](https://github.com/zw87652015)：LetMeTeachYou 分支作者，贡献 Devin 交互功能、Windows 与安卓适配；主线已整合并参考这些实现。
+
 ## Windows 与安卓构建
 
 Linux 使用前面的启动脚本。Windows 可用 PowerShell 启动中继（`npm install`、`npm run public`、`npm run pair`），桌面应用需自行以 `--remote-debugging-port` 参数启动；`.sh` 脚本需要 Bash。Windows Devin 已通过配对浏览器检查文件打开、语法高亮和改动标记、命令与输出、会话修改记录及会话切换。待审阅改动的接受／拒绝仍需有真实待处理任务时验收。隧道自动复用仍依赖 Unix `ps`，Windows 下重启 `npm run public` 可能创建新隧道。更新与排查步骤见 [Windows Devin 维护文档](docs/windows-devin-maintenance.md)。

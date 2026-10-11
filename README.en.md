@@ -30,3 +30,8 @@ The Android app adds QR pairing, notification replies/actions, network reconnect
 Codex’s **＋** button in the composer toolbar opens Plan, skill search, file references, commands, IDE context, execution location, and chat actions. Skills are inserted as native references.
 
 Codex sessions can be archived through the native desktop action; this is not permanent deletion. Fusion selects a shared project, then an agent, session and model for each side. Both sides may use the same agent with different models. It coordinates planning, execution and review, and retains conversation history.
+
+## Contributors
+
+- [xrdiao](https://github.com/xrdiao): project development and maintenance.
+- [Jean (zw87652015)](https://github.com/zw87652015): author of the LetMeTeachYou branch, contributing Devin interactions and Windows and Android support. The main branch incorporates and builds on these implementations.
