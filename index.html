@@ -7,7 +7,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Remote Agent">
-<meta name="theme-color" content="#1e1e1e">
+<meta name="theme-color" content="#0b131b">
 <script>
 // Apply the saved theme before first paint so there is no flash. Store key 'cr-theme': dark (default) | light | auto.
 (() => {
@@ -17,7 +17,7 @@
   const apply = () => {
     const light = t === 'light' || (t === 'auto' && mq.matches);
     document.documentElement.dataset.theme = light ? 'light' : 'dark';
-    if (meta) meta.content = light ? '#ffffff' : '#1e1e1e';
+    if (meta) meta.content = light ? '#ffffff' : '#0b131b';
     window.AgentRemoteApp?.setTheme?.(light);
   };
   window.setAppTheme = v => { t = v; if (v === 'dark') localStorage.removeItem('cr-theme'); else localStorage.setItem('cr-theme', v); apply(); };
@@ -36,15 +36,15 @@
 <style>
   :root {
     color-scheme: dark;
-    --bg: #1e1e1e; --panel: #252526; --bar: #2a2d2e; --queuebg: #23272e; --warnbg: #2a2620;
-    --ctrl: #2d2d2d; --border: #3c3c3c; --line: #333; --line2: #555; --thline: #6b6b6b;
+    --bg: #0b131b; --panel: #121c27; --bar: #182430; --queuebg: #23272e; --warnbg: #2a2620;
+    --ctrl: #17232f; --border: #293644; --line: #24313d; --line2: #555; --thline: #6b6b6b;
     --text: #d4d4d4; --hi: #e6e6e6; --mid: #ccc; --muted: #999; --muted2: #aaa; --faint: #777; --lnno: #5a5a5a;
-    --pre-bg: #111; --code-bg: #333; --think-bg: #1a1a1a;
-    --accent: #0e639c; --accent-b: #1177bb;
+    --pre-bg: #111; --code-bg: #333; --think-bg: #101b26;
+    --accent: #087bd8; --accent-b: #2297ef;
     --blue: #9cc8ff; --code-fg: #7cb7ff; --file: #6cb6ff; --hl: #4af; --ctx: #3b8eea;
     --ok: #3c3; --bad: #c33; --bad-b: #e55; --err: #f77; --del: #f14c4c; --hot: #e06c75;
     --warn: #e5c07b; --warn-d: #c8a24a; --warn-t: #e6c57a; --warnsel: #3a3220;
-    --add: #73c991; --addbg: #73c99126; --delbg: #f14c4c26; --bubble: #264f78; --hlbg: #264f7855;
+    --add: #73c991; --addbg: #73c99126; --delbg: #f14c4c26; --bubble: #075caa; --hlbg: #264f7855;
     --tag: #3a3d41; --tagtx: #bbb; --tooltx: #9da5b4;
     --danger: #a1260d; --danger-b: #c4321a;
     --shade: #0008; --float: #333d; --imgbg: #fff1;
@@ -67,7 +67,7 @@
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 15px/1.55 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; overflow: hidden; }
   body { position: fixed; left: 0; top: 0; width: 100%; height: 100dvh; display: flex; flex-direction: column;
-         padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+         padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left); }
   body.kb { padding-bottom: 0; }
   button, select, textarea, input { font: inherit; color: var(--hi); background: var(--ctrl); border: 1px solid var(--border); border-radius: 8px; }
   button { padding: 6px 12px; white-space: nowrap; cursor: pointer; }
@@ -75,16 +75,19 @@
   button.on, button.primary { background: var(--accent); border-color: var(--accent-b); color: #fff; }
   [hidden] { display: none !important; }
 
-  header { flex: none; display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--panel); border-bottom: 1px solid var(--line); min-width: 0; }
-  #dot { width: 9px; height: 9px; border-radius: 50%; background: var(--bad); flex: none; }
-  #dot.ok { background: var(--ok); }
-  #title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px; background: none; border: none; padding: 4px 2px; text-align: left; color: var(--mid); font-size: 14px; }
-  #title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #title::after { content: "▾"; color: var(--muted); flex: none; }
-  .seg { display: flex; flex: none; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-  .seg button { border: none; border-radius: 0; padding: 5px 8px; background: var(--ctrl); }
-  .seg button.on { background: var(--accent); }
-  #menuBtn { flex: none; padding: 5px 10px; }
+  header { flex: none; display: flex; align-items: center; gap: 6px; padding: 10px 10px 6px; min-width: 0; }
+  #dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); flex: none; }
+  #dot.ok { background: var(--ok); box-shadow: 0 0 12px #22cc5533; }
+  #title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 9px; padding: 9px 10px; text-align: left; border-radius: 14px; background: var(--panel); }
+  .titleLabels { flex: 1; min-width: 0; }
+  #titleText, #titleProject { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #titleText { font-size: 15px; font-weight: 600; }
+  #titleProject { font-size: 11px; color: var(--muted2); }
+  #title::after { content: "⌄"; color: var(--muted); }
+  .seg { display: flex; flex: none; margin: 4px 10px 8px; padding: 3px; border: 1px solid var(--border); border-radius: 14px; background: var(--panel); }
+  .seg button { display: flex; align-items: center; justify-content: center; gap: 8px; flex: 1; border: none; border-radius: 11px; padding: 9px 8px; background: transparent; color: var(--muted2); }
+  .seg button.on { background: var(--accent); color: #fff; box-shadow: inset 0 1px 0 #ffffff22; }
+  #menuBtn { flex: none; height: 48px; width: 34px; padding: 0; border-radius: 12px; }
 
   main { flex: 1; min-height: 0; position: relative; }
   .view { position: absolute; inset: 0; display: none; flex-direction: column; min-width: 0; }
@@ -97,7 +100,7 @@
     body.land.chatmode #listWrap { grid-column: 1; grid-row: 1 / -1; border-right: 1px solid var(--line); min-width: 0; }
     body.land.chatmode header, body.land.chatmode #meters, body.land.chatmode #sessBar, body.land.chatmode #qnBar, body.land.chatmode #queueBar, body.land.chatmode #actionBar, body.land.chatmode footer { grid-column: 2; min-width: 0; }
     body.land.chatmode header { grid-row: 1; }
-    body.land.chatmode #meters { grid-row: 2; }
+    body.land.chatmode > .seg { grid-column: 2; grid-row: 2; }
     body.land.chatmode #sessBar { grid-row: 3; }
     body.land.chatmode #qnBar { grid-row: 5; max-height: 30dvh; }
     body.land.chatmode #queueBar { grid-row: 6; max-height: 22dvh; }
@@ -108,35 +111,35 @@
   }
 
   /* chat view */
-  #meters { flex: none; display: flex; flex-direction: column; gap: 3px; padding: 4px 10px 3px; background: var(--bg); border-bottom: 1px solid var(--line); }
-  #quotaMeters { display: flex; gap: 8px; min-width: 0; }
+  #meters { flex: 0 0 140px; display: flex; align-items: center; gap: 5px; min-width: 0; }
+  #quotaMeters { display: flex; flex: 1; overflow-x: auto; scrollbar-width: none; }
   #quotaMeters:empty { display: none; }
-  #quotaStatus { font-size: 11px; color: #c8a24a; }
-  #attachments { display: flex; gap: 6px; overflow-x: auto; }
+  #quotaStatus { display: none; }
+  .meter { flex: none; display: flex; align-items: center; gap: 4px; height: 48px; padding: 6px; border-radius: 12px; background: var(--panel); font-size: 11px; }
+  .meter > span:first-child, .quotaUpdated { display: none; }
+  .meter .track { position: relative; flex: none; width: 25px; height: 25px; border-radius: 50%; --ring: var(--ok); background: conic-gradient(var(--ring) calc(var(--pct, 0) * 1%), var(--line) 0); }
+  .meter .track::after { content: ""; position: absolute; inset: 4px; border-radius: 50%; background: var(--panel); }
+  .meter .track:has(.warm) { --ring: var(--warn); }
+  .meter .track:has(.hot) { --ring: var(--hot); }
+  .meter i { display: none; }
+  .meter b { font-weight: 500; }
+  #meterCtx .track { --ring: var(--ctx); }
+  #attachments { display: flex; flex: 1; gap: 8px; overflow-x: auto; min-width: 0; }
   #attachments:empty { display: none; }
-  .attachment { display: flex; align-items: center; gap: 6px; padding: 5px 8px; background: #303030; border-radius: 8px; }
-  .attachment img { width: 36px; height: 36px; object-fit: cover; border-radius: 4px; }
+  .attachmentRow { display: flex; align-items: flex-end; gap: 8px; }
+  .attachmentRow:has(#attachments:empty):has(#stop[hidden]) { display: none; }
+  .attachment { display: flex; align-items: center; gap: 8px; padding: 7px; border: 1px solid var(--border); background: var(--panel); border-radius: 13px; }
+  .attachment img { width: 56px; height: 42px; object-fit: cover; border-radius: 7px; }
   .attachment span { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-  .attachment button { padding: 3px 8px; }
-
-  .meter { display: flex; align-items: center; gap: 5px; width: 100%; min-width: 0; margin: 0; padding: 0; background: none; border: none; color: #9a9a9a; font-size: 10px; line-height: 1.2; text-align: left; }
-  #quotaMeters .meter { flex: 1; }
-  .meter > span:first-child { flex: 0 1 auto; max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #meterCtx > span:first-child { max-width: 8em; }
-  .meter .track { flex: 1; height: 4px; background: var(--line); border-radius: 4px; overflow: hidden; }
-  .meter i { display: block; height: 100%; width: 0; background: var(--ok); border-radius: 4px; }
-  .meter i.warm { background: var(--warn); }
-  .meter i.hot { background: var(--hot); }
-  #meterCtx i { background: var(--ctx); }
-  .meter b { flex: none; min-width: 2.2em; text-align: right; font-weight: 600; color: var(--mid); }
+  .attachment button { padding: 3px 6px; border: none; background: transparent; color: var(--muted2); }
   #list { flex: 1; display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; padding: 10px 12px 16px; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
   /* Short threads sit on the composer. The spacer shrinks away once the thread scrolls. */
   #list::before { content: ""; flex: 1 1 auto; min-height: 0; }
   #older { display: block; margin: 0 auto 10px; font-size: 13px; color: var(--muted2); background: transparent; }
   .msg { margin: 8px 0; min-width: 0; overflow-wrap: anywhere; }
   .human { display: flex; justify-content: flex-end; }
-  .human .bubble { max-width: 88%; background: var(--bubble); color: #fff; padding: 8px 12px; border-radius: 14px 14px 4px 14px; white-space: pre-wrap; }
-  .assistant { padding: 2px 2px; }
+  .human .bubble { max-width: 88%; background: var(--bubble); color: #fff; padding: 8px 12px; border-radius: 15px 15px 5px 15px; border: 1px solid var(--accent-b); white-space: pre-wrap; }
+  .assistant { padding: 12px 14px; border: 1px solid var(--border); background: var(--panel); border-radius: 16px; }
   .quotaUpdated { font-size: 10px; color: #999; align-self: center; }
   .assistant a { color: #6cb6ff; overflow-wrap: anywhere; }
   .codebox .openLink { display: inline-block; margin: 0 0 8px 8px; }
@@ -197,14 +200,14 @@
   @keyframes brainpulse { 50% { opacity: .35; } }
   @media (prefers-reduced-motion: reduce) { .thinking.live .brain { animation: none; } }
   .other { font-size: 12px; color: var(--faint); padding-left: 2px; }
-  .thinking { font-size: 13px; line-height: 1.45; color: var(--mid); background: var(--think-bg); border-left: 3px solid var(--thline); border-radius: 8px; padding: 8px 10px; }
+  .thinking { font-size: 13px; line-height: 1.45; color: var(--mid); background: var(--think-bg); border-left: 3px solid var(--thline); border-radius: 14px; padding: 10px 12px; }
   .thinking .thbtn { display: flex; align-items: center; gap: 8px; width: 100%; margin: 0; padding: 0; background: none; border: none; color: var(--muted); font-size: 11px; text-align: left; }
   .thinking .tht { flex: 1; min-width: 0; }
   .thinking .tha { flex: none; color: var(--blue); }
   .thinking .thb { white-space: pre-wrap; max-height: 42vh; overflow: auto; margin-top: 4px; }
   .thinking.live { border-left-color: var(--warn-d); }
   .thinking .thb.loading { font-style: italic; color: var(--muted); }
-  .tcard { font-size: 13px; line-height: 1.45; color: var(--mid); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  .tcard { font-size: 13px; line-height: 1.45; color: var(--mid); background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px; }
   .tprog-head { font-weight: 600; color: var(--hi); margin-bottom: 4px; }
   .tprog { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; margin-bottom: 6px; }
   .tprog i { display: block; height: 100%; background: var(--ok); }
@@ -309,38 +312,28 @@
   #view.gesture { touch-action: none; }
   #ripple { position: absolute; width: 26px; height: 26px; margin: -13px 0 0 -13px; border-radius: 50%; border: 2px solid var(--hl); pointer-events: none; opacity: 0; transition: opacity .4s; }
 
-  /* composer */
-  footer { flex: none; background: var(--panel); border-top: 1px solid var(--line); padding: 6px 10px 8px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-  #chatTools, #termTools { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; min-width: 0; }
+  /* Shared composer for all agents. */
+  footer { flex: none; padding: 6px 10px max(8px, env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 8px; min-width: 0; background: var(--bg); }
+  body.kb footer { padding-bottom: 8px; }
+  .composerBox { background: var(--panel); border: 1px solid var(--border); border-radius: 18px; padding: 10px; }
+  #text { display: block; width: 100%; min-width: 0; min-height: 52px; max-height: 28dvh; padding: 5px 2px 12px; resize: none; border: none; background: transparent; font-size: 16px; line-height: 1.4; outline: none; }
+  #chatTools, #termTools { display: flex; align-items: center; gap: 7px; overflow-x: auto; scrollbar-width: none; min-width: 0; }
   #chatTools::-webkit-scrollbar, #termTools::-webkit-scrollbar { display: none; }
-  #chatTools button, #termTools button { font-size: 12.5px; padding: 3px 10px; border-radius: 14px; flex: none; white-space: nowrap; }
-  body.term #img, body.term #mic { display: none !important; }
-  #chatTools #pickModel, #chatTools #pickPerm { flex: 0 0 auto; max-width: 42%; overflow: hidden; text-overflow: ellipsis; }
-  #chatTools #pickMode.bypass { color: var(--warn); border-color: var(--warn); }
-  .qnAct button[aria-pressed="true"] { background: var(--accent); color: #fff; }
-  .composerInput { flex: 1; min-width: 0; display: flex; align-items: stretch; gap: 8px; }
-  .composerInput textarea { flex: 1; }
-  .composerActions { display: flex; flex-direction: column; gap: 8px; flex: none; }
-  body.term .composerActions { display: none; }
-  #chatTools #stop { position: sticky; right: 0; margin-left: auto; border-radius: 8px; background: var(--panel); width: 34px; padding: 3px; }
-  #stop[hidden] { display: none; }
-  #add { flex: none; height: 40px; width: 40px; padding: 0; font-size: 24px; }
-  body.split .composerInput { flex: 1 1 100%; }
-  body.term #add { display: none; }
-  .row { display: flex; gap: 8px; min-width: 0; align-items: flex-end; }
-  textarea { flex: 1; min-width: 0; min-height: 40px; max-height: 32vh; padding: 9px 10px; resize: none; font-size: 16px; line-height: 1.35; }
-  #img { flex: none; height: 40px; width: 40px; padding: 0; display: flex; align-items: center; justify-content: center; color: var(--muted2); }
+  #chatTools button, #termTools button { flex: none; white-space: nowrap; font-size: 12px; height: 38px; padding: 5px 9px; border-radius: 10px; }
+  #chatTools #pickModel { flex: 1 0 105px; max-width: 44%; overflow: hidden; text-overflow: ellipsis; }
+  #chatTools #add, #chatTools #img, #chatTools #uploadDoc { width: 34px; padding: 0; display: flex; align-items: center; justify-content: center; }
+  #chatTools #add { font-size: 25px; }
+  #chatTools #pickMode, #chatTools #pickPerm, #chatTools #pickDir, #chatTools #newChat { display: none; }
+  #pickAgents { max-width: 100px; overflow: hidden; text-overflow: ellipsis; }
+  #stop { flex: none; margin-left: auto; width: 36px; height: 36px; padding: 0; border-radius: 11px; }
   #mic { display: none; }
-  body.voice #mic { flex: none; height: 40px; width: 40px; padding: 0; display: flex; align-items: center; justify-content: center; color: var(--muted2); }
-  #mic.on { color: #fff; background: var(--bad); border-color: var(--bad-b); animation: pulse 1.2s ease-in-out infinite; }
-  #sendNow { flex: none; height: 40px; padding: 0 16px; font-weight: 600; }
-  #sendNow[hidden] { display: none; }
-  /* Queue + Send now: the text box gets a full row, the two buttons share the row below with the attach icons. */
-  body.split .row { flex-wrap: wrap; }
-  body.split textarea { flex: 1 1 100%; }
-  body.split #send, body.split #sendNow { flex: 1 1 0; min-width: 0; padding: 0; text-align: center; white-space: nowrap; }
-  #send { flex: none; height: 40px; padding: 0 16px; background: var(--accent); border-color: var(--accent-b); color: #fff; font-weight: 600; }
-  #msg { font-size: 12px; color: var(--muted); min-height: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  body.voice #mic { display: block; }
+  #mic.on { color: #fff; background: var(--bad); animation: pulse 1.2s ease-in-out infinite; }
+  .sendRow { display: flex; gap: 8px; }
+  #send, #sendNow { flex: 1; min-width: 0; height: 42px; padding: 0 12px; font-weight: 600; border-radius: 12px; }
+  #send { background: var(--accent); border-color: var(--accent-b); color: #fff; }
+  #msg { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #msg:empty { display: none; }
   #msg.err { color: var(--err); }
 
   /* bottom sheet */
@@ -389,7 +382,7 @@
   .assistant code[data-file] { color: var(--file); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--file) 40%, transparent); text-underline-offset: 2px; }
   .tool[data-file] .txt::before { content: "📄 "; }
   #viewer { position: fixed; inset: 0; z-index: 25; background: var(--bg); display: none; flex-direction: column;
-            padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+            padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left); }
   #viewer.open { display: flex; }
   #viewer .bar { flex: none; display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--panel); border-bottom: 1px solid var(--line); min-width: 0; }
   #viewer .names { flex: 1; min-width: 0; line-height: 1.25; }
@@ -461,21 +454,17 @@
 </head>
 <body>
 <header>
-  <span id="dot"></span>
-  <button id="title"><span id="titleText">连接中…</span></button>
-  <div class="seg">
-    <button id="tabChat" class="on">对话</button>
-    <button id="tabTerm">终端</button>
-  </div>
-  <button id="menuBtn">⋯</button>
-</header>
-
-<main>
-  <section id="chatView" class="view active">
+  <button id="title"><span id="dot"></span><span class="titleLabels"><span id="titleText">连接中…</span><span id="titleProject"></span></span></button>
     <div id="meters">
       <button class="meter" id="meterCtx" type="button"><span>上下文</span><span class="track"><i id="meterCtxFill"></i></span><b id="meterCtxPct">–</b></button>
       <div id="quotaMeters"></div><span id="quotaStatus"></span>
     </div>
+  <button id="menuBtn" aria-label="菜单">⋯</button>
+</header>
+<div class="seg"><button id="tabChat" class="on"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-8l-6 4v-4H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/><path d="M7 9h10M7 13h6"/></svg> 对话</button><button id="tabTerm"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3 3-3 3m6 0h4"/></svg> 终端</button></div>
+
+<main>
+  <section id="chatView" class="view active">
     <div id="sessBar" hidden></div>
     <div id="listWrap">
     <div id="list">
@@ -529,7 +518,15 @@
     <button data-termkey="ArrowDown">↓</button>
     <button data-termkey="Tab">Tab</button>
   </div>
+  <div class="attachmentRow"><div id="attachments"></div><button id="stop" title="停止生成" aria-label="停止生成" hidden>■</button></div>
+  <div id="mentionBox" hidden></div>
+  <div id="mathPrev" hidden></div>
+  <div class="composerBox"><textarea id="text" rows="1" placeholder="发给 Agent…" enterkeyhint="send"></textarea>
   <div id="chatTools">
+    <button id="add" title="添加功能" aria-label="添加功能">＋</button>
+    <button id="img" title="附加图片" aria-label="附加图片"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/></svg></button>
+    <button id="uploadDoc" title="上传文档" aria-label="上传文档"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M6 3h8l4 4v14H6zM14 3v5h4"/></svg></button>
+    <button id="mic" title="语音输入" aria-label="语音输入"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
     <button id="pickMode" hidden></button>
     <button id="pickModel" title="更换模型">模型 ▾</button>
     <span id="surfSeg" class="surfSeg" hidden><button data-surf="agent">Agent</button><button data-surf="editor">Editor</button></span>
@@ -538,7 +535,7 @@
     <button id="pickIde" title="IDE 上下文" hidden>IDE</button>
     <button id="pickRun" title="执行位置" hidden></button>
     <button id="pickChat" title="会话操作" hidden>会话 ▾</button>
-    <button id="pickAgents" title="切换电脑上的 Agent">Agent</button>
+    <button id="pickAgents" title="选择项目与会话">项目 ▾</button>
     <button id="fusionA" hidden>选择 A</button>
     <button id="fusionB" hidden>选择 B</button>
     <button id="fusionModelA" hidden>A 模型</button>
@@ -547,22 +544,11 @@
     <button id="pickHistory" hidden>历史</button>
     <button id="pickDir" hidden></button>
     <button id="newChat">＋ 新建</button>
-    <button id="stop" title="停止生成" aria-label="停止生成" hidden>■</button>
   </div>
-  <div id="attachments"></div>
-  <div id="mentionBox" hidden></div>
-  <div id="mathPrev" hidden></div>
-  <div class="row">
-    <div class="composerInput"><div class="composerActions"><button id="add" title="添加功能" aria-label="添加功能" hidden>＋</button>
-    <button id="img" title="附加图片" aria-label="附加图片"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/></svg></button>
-    </div>
-    <textarea id="text" rows="1" placeholder="发给 Agent…" enterkeyhint="send"></textarea></div>
-    <input id="imgFile" type="file" accept="image/*" hidden>
-    <input id="docFile" type="file" accept=".pdf,.doc,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.py,.js,.ts,.tsx,.jsx,.sh,.yaml,.yml,.toml,.ini,.log,.xml,.html,.css,.c,.cpp,.h,.rs,.go" hidden>
-    <button id="mic" title="语音输入" aria-label="语音输入"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
-    <button id="send">发送</button>
-    <button id="sendNow" hidden>立即发送</button>
   </div>
+<input id="imgFile" type="file" accept="image/*" hidden>
+<input id="docFile" type="file" accept=".pdf,.doc,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.py,.js,.ts,.tsx,.jsx,.sh,.yaml,.yml,.toml,.ini,.log,.xml,.html,.css,.c,.cpp,.h,.rs,.go" hidden>
+  <div class="sendRow"><button id="send">发送</button><button id="sendNow" hidden>立即发送</button></div>
   <div id="msg"></div>
 </footer>
 
@@ -631,7 +617,7 @@ let viewSel = '';
 const appMessage = template => I18N.tr(template).replaceAll('{app}', currentAppName);
 function updateAppText() {
   $('emptyHint').textContent = appMessage('请在 {app} 里打开 Agent 对话，或切到「画面」查看。');
-  text.placeholder = mode === 'terminal' ? I18N.tr('发给终端…') : appMessage('发给 {app} Agent…');
+  text.placeholder = mode === 'terminal' ? I18N.tr('发给终端…') : I18N.tr('输入你的问题，或粘贴图片、文档…');
 }
 
 // iOS scrolls the page to reveal the focused field, which throws the chat off screen.
@@ -641,15 +627,20 @@ let vvApplied = '';
 function fitViewport() {
   const vv = window.visualViewport;
   if (!vv) return;
-  const key = `${Math.round(vv.height)}:${Math.round(vv.offsetTop)}`;
+  const focused = /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
+  const keyboard = !!focused && (vv.offsetTop > 0 || vv.height < window.innerHeight - 80);
+  const key = `${keyboard}:${Math.round(vv.height)}:${Math.round(vv.offsetTop)}`;
   if (key !== vvApplied) {
     vvApplied = key;
-    document.body.style.height = Math.round(vv.height) + 'px';
-    document.body.style.transform = `translateY(${Math.max(0, Math.round(vv.offsetTop))}px)`;
-    document.body.classList.toggle('kb', vv.offsetTop > 0 || vv.height < window.innerHeight - 80);
+    document.body.style.height = keyboard ? Math.round(vv.height) + 'px' : '';
+    document.body.style.transform = keyboard ? `translateY(${Math.max(0, Math.round(vv.offsetTop))}px)` : '';
+    document.body.classList.toggle('kb', keyboard);
   }
   if (stickOnKeyboard) list.scrollTop = list.scrollHeight;
 }
+window.addEventListener('resize', fitViewport);
+window.addEventListener('pageshow', fitViewport);
+document.addEventListener('focusout', () => { fitViewport(); setTimeout(fitViewport, 350); });
 window.visualViewport?.addEventListener('resize', fitViewport);
 window.visualViewport?.addEventListener('scroll', fitViewport);
 fitViewport();
@@ -1354,7 +1345,7 @@ function paintSurface() {
   const devin = currentApp === 'devin';
   $('surfSeg').hidden = !(devin && currentSurface);
   for (const b of $('surfSeg').children) b.classList.toggle('on', b.dataset.surf === currentSurface);
-  $('pickAgents').textContent = devin ? '会话' : 'Agent';
+  $('pickAgents').textContent = '项目 ▾';
 }
 $('surfSeg').onclick = e => {
   const b = e.target.closest('[data-surf]');
@@ -1527,8 +1518,10 @@ function renderContext(info) {
   $('meterCtxPct').textContent = n == null ? '–' : (basis === 'remaining' ? '剩余 ' : '') + n + '%';
   const fill = $('meterCtxFill');
   fill.style.width = (n ?? 0) + '%';
+  fill.parentElement.style.setProperty('--pct', n ?? 0);
   fill.className = meterFill(n, basis);
-  $('meterCtx').title = basis === 'remaining' ? '剩余' : '已用';
+  $('meterCtx').title = '上下文 · ' + (basis === 'remaining' ? '剩余' : '已用') + ' ' + (n ?? '–') + '%';
+  $('meterCtx').setAttribute('aria-label', $('meterCtx').title);
   $('meterCtx').onclick = () => { status('正在读取额度…'); send({ t: 'usage' }); };
 }
 const quotaCache = new Map();
@@ -1540,7 +1533,7 @@ function renderQuota(m) {
 
   if (m.loading) return;
   if (!('quota' in m) && !('limits' in m) && !('bars' in m)) {
-    if (!$('quotaMeters').children.length) $('quotaMeters').innerHTML = '<button class="meter" onclick="status(\'正在读取额度…\');send({t:\'usage\'})">点击读取额度</button>';
+    if (!$('quotaMeters').children.length) $('quotaMeters').innerHTML = '<button class="meter" onclick="status(\'正在读取额度…\');send({t:\'usage\'})" title="点击读取额度" aria-label="点击读取额度">–</button>';
     return;
   }
   if (!m.missing && !m.loading) quotaCache.set(quotaKey(), m);
@@ -1549,8 +1542,8 @@ function renderQuota(m) {
   const when = m.updated ? new Date(m.updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
   if (m.missing && $('quotaMeters').querySelector('.track')) { $('quotaMeters').title += ' · 没有额度数据'; return; }
   if (m.missing) {
-    $('quotaMeters').title = when ? `更新于 ${when}` : '';
-    $('quotaMeters').innerHTML = `<button class="meter" type="button"><span>没有额度数据</span></button>`;
+    $('quotaMeters').title = '没有额度数据' + (when ? ` · 更新于 ${when}` : '');
+    $('quotaMeters').innerHTML = `<button class="meter" type="button"><span class="track"></span><b>–</b></button>`;
     $('quotaMeters').querySelector('button').onclick = () => { status('正在读取额度…'); send({ t: 'usage' }); };
     return;
   }
@@ -1559,8 +1552,8 @@ function renderQuota(m) {
   $('quotaMeters').innerHTML = bars.map(b => {
     const basis = b.basis || 'used';
     const n = b.pct == null ? null : Math.max(0, Math.min(100, Number(b.pct)));
-    const num = n == null ? (b.value ?? '–') : (basis === 'remaining' ? `剩余 ${n}%` : `${n}%`);
-    return `<button class="meter" type="button" title="${esc(b.reset || '')}"><span>${esc(b.label)}</span><span class="track"><i class="${meterFill(n, basis)}" style="width:${n ?? 0}%"></i></span><b>${esc(String(num))}</b></button>`;
+    const num = n == null ? (b.value ?? '–') : `${n}%`;
+    return `<button class="meter" type="button" title="${esc(b.label + ' · ' + basis + ' · ' + (b.reset || ''))}" aria-label="${esc(b.label + ' ' + num)}"><span>${esc(b.label)}</span><span class="track" style="--pct:${n ?? 0}"><i class="${meterFill(n, basis)}" style="width:${n ?? 0}%"></i></span><b>${esc(String(num))}</b></button>`;
   }).join('');
   if (when) $('quotaMeters').insertAdjacentHTML('beforeend', `<span class="quotaUpdated">${m.cached ? '缓存 ' : ''}${esc(when)}</span>`);
   $('quotaMeters').querySelectorAll('button').forEach(btn => btn.onclick = () => { status('正在读取额度…'); send({ t: 'usage' }); });
@@ -2246,7 +2239,9 @@ let currentProject = '', currentTerminal = '';
 function updateTitle() {
   const first = lastChat?.items?.find(it => it.k === 'user');
   const conversation = mode === 'terminal' ? currentTerminal : (lastChat?.title || first?.t || '');
-  $('titleText').textContent = [currentAppName, currentProject, conversation.split('\n')[0].slice(0, 40)].filter(Boolean).join(' · ');
+  $('titleText').textContent = currentAppName || '连接中…';
+  $('titleProject').textContent = currentProject.replace(/\s+-\s+Devin(?:\s+-.*)?$/, '') || conversation.split('\n')[0].slice(0, 40);
+  $('title').title = [currentProject, conversation].filter(Boolean).join(' · ');
 }
 // Devin sessions: each session has its own rows, thought bodies, tasks, questions and queue. When the desktop
 // shows another session, drop everything cached for the old one so the two never mix in one scroll.
@@ -2567,7 +2562,7 @@ function renderChat(chat) {
   $('pickPerm').hidden = !chat?.permission;
   if (chat?.permission) $('pickPerm').textContent = (permName || chat.permission) + ' ▾';
   const codexBar = currentApp === 'codex' ? chat?.codex : null;
-  $('add').hidden = !codexBar;
+  $('add').hidden = currentApp === 'fusion';
   $('pickPlan').hidden = true;
   if (codexBar) $('pickPlan').textContent = codexBar.plan ? 'Plan：开' : 'Plan：关';
   $('pickIde').hidden = true;
@@ -2993,8 +2988,13 @@ function showCodexSkills(rows) {
 }
 $('add').onclick = () => {
   const c = lastChat?.codex;
-  if (!c) return;
-  const rows = [['plan', `Plan：${c.plan ? '开' : '关'}`], ['skills', 'Skill · 技能'], ['files', '引用文件'], ['commands', '扩展与命令']];
+  if (!c) {
+    const controls = ['newChat', 'pickMode', 'pickPerm', 'pickDir'].filter(id => !$(id).hidden);
+    openSheet('add', '<h3>' + esc(currentAppName) + '</h3>' + controls.map(id => `<button class="opt" data-control="${id}">${esc($(id).textContent)}</button>`).join(''));
+    $('sheet').querySelectorAll('[data-control]').forEach(b => b.onclick = () => { closeSheet(); $(b.dataset.control).click(); });
+    return;
+  }
+  const rows = [['new', '新建会话'], ['permission', '权限模式'], ['plan', `Plan：${c.plan ? '开' : '关'}`], ['skills', 'Skill · 技能'], ['files', '引用文件'], ['commands', '扩展与命令']];
   if (c.ide) rows.push(['ide', `IDE 上下文：${c.ide.on ? '开' : '关'}`]);
   if (c.run) rows.push(['run', `执行位置：${c.run}`]);
   if (c.actions) rows.push(['chat', '会话操作']);
@@ -3002,6 +3002,8 @@ $('add').onclick = () => {
   $('sheet').querySelectorAll('[data-add]').forEach(b => b.onclick = () => {
     closeSheet();
     const key = b.dataset.add;
+    if (key === 'new') return $('newChat').click();
+    if (key === 'permission') return $('pickPerm').click();
     if (key === 'plan') return send({ t: 'codexPlan' });
     if (key === 'ide') return send({ t: 'codexIde' });
     if (key === 'run') return send({ t: 'codexRun' });
@@ -3798,6 +3800,7 @@ $('attachments').onclick = e => {
   const b = e.target.closest('[data-remove-attachment]');
   if (b) send({ t: 'removeAttachment', id: b.dataset.removeAttachment });
 };
+$('uploadDoc').onclick = () => $('docFile').click();
 $('img').title = $('img').ariaLabel = '添加附件';
 $('img').onclick = () => {
   openSheet('attachment', '<h3>添加附件</h3><button class="opt" id="attachPhoto">图片</button><button class="opt" id="attachDocument">文件</button>');
