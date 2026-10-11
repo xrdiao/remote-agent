@@ -430,6 +430,10 @@
   #vEditBox { flex: 1; min-height: 0; width: 100%; box-sizing: border-box; margin: 0; border: 0; outline: none; resize: none;
               background: var(--bg); color: var(--hi); font: 13px/1.5 ui-monospace, Menlo, monospace; padding: 10px 12px 24px; }
 
+  #fusionConfig { display: grid; gap: 5px; margin-bottom: 7px; }
+  #fusionConfig button { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; padding: 7px 9px; font-size: 12px; }
+  .fusionConfigRow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, .8fr); gap: 5px; }
+  #fusionShared { font-size: 11px; color: var(--muted2); }
   #fusionMeters { flex: none; margin: 0 8px 5px; }
   .fusionMeterRow { display: flex; gap: 4px; align-items: center; margin-bottom: 4px; }
   .fusionMeterName { flex: 1; min-width: 0; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -531,6 +535,12 @@
   <div id="mentionBox" hidden></div>
   <div id="mathPrev" hidden></div>
   <div class="composerBox"><textarea id="text" rows="1" placeholder="发给 Agent…" enterkeyhint="send"></textarea>
+  <div id="fusionConfig" hidden>
+    <button id="fusionProject">选择项目 ▾</button>
+    <div class="fusionConfigRow"><button id="fusionA">选择 A</button><button id="fusionModelA">A 模型</button></div>
+    <div class="fusionConfigRow"><button id="fusionB">选择 B</button><button id="fusionModelB">B 模型</button></div>
+    <div id="fusionShared" hidden>同一会话：A/B 共享上下文，执行时分别切换模型。</div>
+  </div>
   <div id="chatTools">
     <button id="add" title="添加功能" aria-label="添加功能">＋</button>
     <button id="img" title="附加图片" aria-label="附加图片"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/></svg></button>
@@ -545,10 +555,6 @@
     <button id="pickRun" title="执行位置" hidden></button>
     <button id="pickChat" title="会话操作" hidden>会话 ▾</button>
     <button id="pickAgents" title="选择项目与会话">项目 ▾</button>
-    <button id="fusionA" hidden>选择 A</button>
-    <button id="fusionB" hidden>选择 B</button>
-    <button id="fusionModelA" hidden>A 模型</button>
-    <button id="fusionModelB" hidden>B 模型</button>
     <!-- 旧版输入框旁的对话历史。Agents 和 Devin 改由左侧会话列表切换，见 README。 -->
     <button id="pickHistory" hidden>历史</button>
     <button id="pickDir" hidden></button>
@@ -1180,6 +1186,7 @@ function connect() {
     else if (m.t === 'frame') onFrame(m);
     else if (m.t === 'panel') { panel = m.rect; updateTermEmpty(); layoutStage(); applyQuality(); }
     else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; if (sheetKind === 'windows') showWindows(); }
+    else if (m.t === 'fusionProjects') showFusionProjects(m);
     else if (m.t === 'fusionSides') showFusionSides(m);
     else if (m.t === 'fusionHistory') showFusionHistory(m);
     else if (m.t === 'fusionUsage') {
@@ -1330,7 +1337,7 @@ function showWindows() {
 const FUSION_PHASE = { idle: '待开始', planning: 'A 正在写方案', plan: '方案待确认', echo: 'B 正在复述', 'echo-check': 'A 正在核对复述', execute: 'B 正在执行', review: 'A 正在检查', fix: 'A 正在小修', disagree: '理解不一致', check: '请选择下一步', done: '完成' };
 function paintFusion(fx) {
   const on = !!fx;
-  for (const id of ['fusionA', 'fusionB', 'fusionModelA', 'fusionModelB']) $(id).hidden = !on;
+  $('fusionConfig').hidden = !on;
   $('fusionBar').hidden = !on;
   $('newChat').hidden = on;
   $('meters').hidden = currentApp === 'fusion';
@@ -1339,9 +1346,18 @@ function paintFusion(fx) {
   else $('pickAgents').hidden = false;
   if (!on) return;
   renderFusionMeters(fx);
-  const short = s => String(s || '').replace(/^Codex · /, '').slice(0, 28);
-  $('fusionA').textContent = fx.a ? `A ${short(fx.a.title)}` : '选择 A';
-  $('fusionB').textContent = fx.b ? `B ${short(fx.b.title)}` : '选择 B';
+  $('fusionProject').textContent = fx.project ? `项目 · ${fx.project.name} ▾` : '选择项目 ▾';
+  $('fusionProject').title = fx.project?.root || '';
+  $('fusionProject').disabled = !!fx.busy;
+  for (const side of ['a', 'b']) {
+    $('fusion' + side.toUpperCase()).disabled = !fx.project || !!fx.busy;
+    $('fusionModel' + side.toUpperCase()).disabled = !fx[side] || !!fx.busy;
+  }
+  $('fusionShared').hidden = !(fx.a && fx.b && fx.a.id === fx.b.id);
+  const short = s => String(s || '').slice(0, 28);
+  const roleTitle = s => `${({ codex: 'Codex', cursor: 'Cursor', devin: 'Devin' })[s.app] || s.app} · ${s.conversationTitle || s.title}`;
+  $('fusionA').textContent = fx.a ? `A · ${short(roleTitle(fx.a))}` : '选择 A';
+  $('fusionB').textContent = fx.b ? `B · ${short(roleTitle(fx.b))}` : '选择 B';
   $('fusionModelA').textContent = fx.a?.model ? short(fx.a.model) : 'A 模型';
   $('fusionModelB').textContent = fx.b?.model ? short(fx.b.model) : 'B 模型';
   const acts = fx.phase === 'plan' ? '<button type="button" data-fusion-act="go">交给 B</button>'
@@ -1349,6 +1365,10 @@ function paintFusion(fx) {
     : fx.phase === 'check' ? '<button type="button" data-fusion-act="done">完成</button><button type="button" data-fusion-act="fix">小修</button><button type="button" data-fusion-act="return">退回 B</button>'
     : '';
   $('fusionBar').innerHTML = `<button type="button" data-fusion-act="history">历史会话</button><button type="button" data-fusion-act="new" ${fx.busy ? 'disabled' : ''}>＋ 新建</button><span class="hint">第 ${fx.round || 0} 轮 · ${FUSION_PHASE[fx.phase] || fx.phase}</span>${acts}`;
+}
+function showFusionProjects(m) {
+  finishPending(['正在读取项目…']);
+  openSheet('fusion-project', `<h3>选择 Fusion 项目</h3>${(m.list || []).map(p => `<button class="opt ${p.id === lastChat?.fusion?.project?.id ? 'cur' : ''}" data-fusion-project="${esc(p.id)}"><span class="lbl">${esc(p.name)}<span class="sub">${esc(p.host ? p.host + ':' + p.root : p.root)}</span></span></button>`).join('') || '<div class="hint">没有已确认的项目</div>'}${m.unknown ? `<div class="hint">${m.unknown} 个对话的项目未确认，未加入候选。</div>` : ''}`);
 }
 function showFusionSides(m) {
   const selected = lastChat?.fusion?.[m.side]?.id;
@@ -1360,7 +1380,7 @@ function showFusionSides(m) {
     wins.get(s.windowId).rows.push(s);
   }
   const rows = [...apps].map(([app, wins]) => `<details ${[...wins.values()].some(w => w.rows.some(s => s.id === selected)) ? 'open' : ''}><summary>${esc(({ codex: 'Codex', cursor: 'Cursor', devin: 'Devin' })[app] || app)}</summary>${[...wins.values()].map(w => `<details ${w.rows.some(s => s.id === selected) ? 'open' : ''}><summary>${esc(w.title)}</summary>${w.rows.map(s => `<button class="opt ${s.id === selected ? 'cur' : ''}" data-fusion-pick="${esc(m.side)}" data-fusion-id="${esc(s.id)}"><span class="lbl">${esc(s.conversationTitle)}</span></button>`).join('')}</details>`).join('')}</details>`).join('');
-  openSheet('fusion-side', `<h3>选择 ${m.side === 'b' ? 'B 执行' : 'A 方案'}</h3><div class="hint">按软件、窗口、对话依次展开。A 写方案并检查，B 执行。</div><div class="fusionTree">${rows || '<div class="hint">没有可选的对话</div>'}</div>`);
+  openSheet('fusion-side', `<h3>选择 ${m.side === 'b' ? 'B 执行' : 'A 方案'}</h3><div class="hint">仅显示所选项目。按软件、窗口、对话依次展开，再选择模型。A/B 可以使用同一软件或同一会话。</div><div class="fusionTree">${rows || '<div class="hint">没有可选的对话</div>'}</div>`);
 }
 function showFusionHistory(m) {
   openSheet('fusion-history', `<h3>Fusion 历史会话</h3>${(m.list || []).map(f => `<button class="opt ${f.id === m.current ? 'cur' : ''}" data-fusion-history="${esc(f.id)}"><span class="lbl">${esc(f.title)}<span class="sub">${esc(new Date(f.updated).toLocaleString())}</span></span></button>`).join('') || '<div class="hint">暂无历史会话</div>'}`);
@@ -1378,7 +1398,7 @@ function renderFusionMeters(fx) {
     const bars = fusionUsageBars(usage);
     const quota = bars.find(b => /week|每周|周额度/i.test(b.label)) || bars[0];
     const meter = (kind, label, b) => `<button class="meter" data-side="${side}" data-metric="${kind}"><span class="track" style="--pct:${b?.pct ?? 0}"><i class="${meterFill(b?.pct, b?.basis)}"></i></span><span class="meterText"><span class="meterLabel">${esc(label)}</span><b>${esc(fusionMetricValue(b))}</b></span></button>`;
-    return `<div class="fusionMeterRow"><span class="fusionMeterName" title="${esc(spec?.title || '')}">${side.toUpperCase()} · ${esc(spec?.title || '未选择')}</span>${meter('context', '上下文', context)}${meter('quota', quota && /week|每周|周额度/i.test(quota.label) ? '周额度' : '额度', quota)}</div>`;
+    return `<div class="fusionMeterRow"><span class="fusionMeterName" title="${esc(spec?.title || '')}">${side.toUpperCase()} · ${esc(spec ? spec.title + (spec.model ? ' · ' + spec.model : '') : '未选择')}</span>${meter('context', '上下文', context)}${meter('quota', quota && /week|每周|周额度/i.test(quota.label) ? '周额度' : '额度', quota)}</div>`;
   }).join('');
 }
 function showFusionUsage(side, kind) {
@@ -1848,6 +1868,7 @@ $('sheet').addEventListener('click', async e => {
     return;
   }
   if (b.dataset.win) { closeSheet(); status('正在切换窗口…'); return send({ t: 'attach', id: b.dataset.win }); }
+  if (b.dataset.fusionProject) { closeSheet(); return send({ t: 'fusionProject', id: b.dataset.fusionProject }); }
   if (b.dataset.fusionHistory) { closeSheet(); return send({ t: 'fusionOpen', id: b.dataset.fusionHistory }); }
   if (b.dataset.fusionRefresh) { closeSheet(); status('正在读取额度…'); return send({ t: 'fusionUsage', side: b.dataset.fusionRefresh }); }
   if (b.dataset.fusionId) { closeSheet(); return send({ t: 'fusionSide', side: b.dataset.fusionPick, id: b.dataset.fusionId }); }
@@ -3782,6 +3803,7 @@ function updateSendMode() {
   if (split) $('sendNow').textContent = '立即发送';
   document.body.classList.toggle('split', split || !!follow);
 }
+$('fusionProject').onclick = () => { status('正在读取项目…'); send({ t: 'fusionProjects' }); };
 $('fusionA').onclick = () => send({ t: 'fusionSides', side: 'a' });
 $('fusionB').onclick = () => send({ t: 'fusionSides', side: 'b' });
 $('fusionModelA').onclick = () => { status('读取 A 的模型…'); send({ t: 'fusionModel', side: 'a' }); };
