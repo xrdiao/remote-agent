@@ -274,6 +274,8 @@
   #qnBar .qnHint { font-size: 12px; color: var(--muted); }
   #qnBar .qnAct { display: flex; gap: 8px; justify-content: flex-end; }
   #qnBar .qnAct button { padding: 7px 16px; }
+  #qnBar.codex .qnQ { max-height: 28vh; overflow-y: auto; flex: none; }
+  #qnBar.codex .qnAct { flex-wrap: wrap; flex: none; }
   #qnBar .qnAct .primary { background: var(--accent); border-color: var(--accent-b); color: #fff; font-weight: 600; }
   #qnBar .qnAct .primary:disabled { opacity: .45; }
   #queueBar .run { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--blue); flex-wrap: nowrap; }
@@ -2646,6 +2648,7 @@ $('qnBar').addEventListener('click', e => {
 let qnSig = '';
 function renderQuestions(qs) {
   const bar = $('qnBar');
+  bar.classList.toggle('codex', !!qs?.codex);
   const sig = JSON.stringify(qs);
   if (sig === qnSig) return;
   qnSig = sig;

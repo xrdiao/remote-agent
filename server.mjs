@@ -4079,7 +4079,12 @@ class Session {
       throw new Error(`没找到选项：${label}`);
     }
     await this.tapCss(pos.x, pos.y);
-    this.emit({ t: 'status', ok: true, msg: `已切换到 ${label}` });
+    let pending = false;
+    if (this.app === 'codex' && kind === 'permission') {
+      await new Promise(r => setTimeout(r, 150));
+      pending = (await this.cdp.evaluate(helpersCall('codexRequestData()'))).length > 0;
+    }
+    this.emit({ t: 'status', ok: true, msg: pending ? '请在下方确认权限变更' : `已切换到 ${label}` });
     if (kind === 'model' && label === 'Fusion') {
       this.fusion = null;
       this.fusionMiss = false;
