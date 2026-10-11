@@ -430,6 +430,12 @@
   #vEditBox { flex: 1; min-height: 0; width: 100%; box-sizing: border-box; margin: 0; border: 0; outline: none; resize: none;
               background: var(--bg); color: var(--hi); font: 13px/1.5 ui-monospace, Menlo, monospace; padding: 10px 12px 24px; }
 
+  #fusionMeters { flex: none; margin: 0 8px 5px; }
+  .fusionMeterRow { display: flex; gap: 4px; align-items: center; margin-bottom: 4px; }
+  .fusionMeterName { flex: 1; min-width: 0; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fusionTree details { margin: 4px 0 4px 10px; }
+  .fusionTree summary { padding: 10px 4px; cursor: pointer; font-size: 14px; }
+  .fusionTree > details { margin-left: 0; }
   /* gate (login / offline) */
   #gate { position: fixed; inset: 0; z-index: 20; background: #1e1e1e; display: none; flex-direction: column; gap: 12px; padding: calc(60px + env(safe-area-inset-top)) 24px 24px; }
   #gate { overflow-y: auto; }
@@ -465,6 +471,7 @@
 </header>
 <div class="seg"><button id="tabChat" class="on"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-8l-6 4v-4H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/><path d="M7 9h10M7 13h6"/></svg> 对话</button><button id="tabTerm"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3 3-3 3m6 0h4"/></svg> 终端</button></div>
 
+<div id="fusionMeters" hidden></div>
 <main>
   <section id="chatView" class="view active">
     <div id="sessBar" hidden></div>
@@ -1174,6 +1181,13 @@ function connect() {
     else if (m.t === 'panel') { panel = m.rect; updateTermEmpty(); layoutStage(); applyQuality(); }
     else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; if (sheetKind === 'windows') showWindows(); }
     else if (m.t === 'fusionSides') showFusionSides(m);
+    else if (m.t === 'fusionHistory') showFusionHistory(m);
+    else if (m.t === 'fusionUsage') {
+      if (currentApp !== 'fusion' || (m.sel && m.sel !== viewSel) || !lastChat?.fusion) return;
+      for (const side of ['a', 'b']) if (lastChat.fusion[side]) lastChat.fusion[side].usage = m[side];
+      renderFusionMeters(lastChat.fusion);
+      finishPending(['正在读取额度…']);
+    }
     else if (m.t === 'attached') {
       rememberAgentOpen(m);
       if (m.keepQuota) { applySelection(m); return; }
@@ -1210,7 +1224,7 @@ function connect() {
     else if (m.t === 'docs') { finishPending(['正在读取文档…']); showDocs(m); }
     else if (m.t === 'settings') { finishPending(['正在读取设置…', '正在修改…']); showSettings(m.sections || []); }
     else if (m.t === 'usage') {
-      if (m.sel && viewSel && m.sel !== viewSel) return;
+      if (currentApp === 'fusion' || (m.sel && viewSel && m.sel !== viewSel)) return;
       if (m.missing) status('没有额度数据');
       renderQuota(m);
       if (!m.cached) finishPending(['正在读取额度…']);
@@ -1319,9 +1333,12 @@ function paintFusion(fx) {
   for (const id of ['fusionA', 'fusionB', 'fusionModelA', 'fusionModelB']) $(id).hidden = !on;
   $('fusionBar').hidden = !on;
   $('newChat').hidden = on;
+  $('meters').hidden = currentApp === 'fusion';
+  $('fusionMeters').hidden = !on;
   if (on) { $('pickModel').hidden = true; $('pickAgents').hidden = true; $('pickMode').hidden = true; }
   else $('pickAgents').hidden = false;
   if (!on) return;
+  renderFusionMeters(fx);
   const short = s => String(s || '').replace(/^Codex · /, '').slice(0, 28);
   $('fusionA').textContent = fx.a ? `A ${short(fx.a.title)}` : '选择 A';
   $('fusionB').textContent = fx.b ? `B ${short(fx.b.title)}` : '选择 B';
@@ -1331,12 +1348,50 @@ function paintFusion(fx) {
     : fx.phase === 'disagree' ? '<button type="button" data-fusion-act="go">按 A 的说明继续</button>'
     : fx.phase === 'check' ? '<button type="button" data-fusion-act="done">完成</button><button type="button" data-fusion-act="fix">小修</button><button type="button" data-fusion-act="return">退回 B</button>'
     : '';
-  $('fusionBar').innerHTML = `<span class="hint">第 ${fx.round || 0} 轮 · ${FUSION_PHASE[fx.phase] || fx.phase}</span>${acts}`;
+  $('fusionBar').innerHTML = `<button type="button" data-fusion-act="history">历史会话</button><button type="button" data-fusion-act="new" ${fx.busy ? 'disabled' : ''}>＋ 新建</button><span class="hint">第 ${fx.round || 0} 轮 · ${FUSION_PHASE[fx.phase] || fx.phase}</span>${acts}`;
 }
 function showFusionSides(m) {
-  const rows = (m.list || []).map(s => `<button class="opt" data-fusion-pick="${esc(m.side)}" data-fusion-id="${esc(s.id)}"><span class="lbl">${esc(s.title)}</span></button>`).join('');
-  openSheet('fusion-side', `<h3>选择 ${m.side === 'b' ? 'B 执行' : 'A 方案'}</h3><div class="hint">A 写方案并检查，B 按说明执行。两边要选不同的会话。</div>${rows || '<div class="hint">没有可选的窗口</div>'}`);
+  const selected = lastChat?.fusion?.[m.side]?.id;
+  const apps = new Map();
+  for (const s of m.list || []) {
+    if (!apps.has(s.app)) apps.set(s.app, new Map());
+    const wins = apps.get(s.app);
+    if (!wins.has(s.windowId)) wins.set(s.windowId, { title: s.windowTitle, rows: [] });
+    wins.get(s.windowId).rows.push(s);
+  }
+  const rows = [...apps].map(([app, wins]) => `<details ${[...wins.values()].some(w => w.rows.some(s => s.id === selected)) ? 'open' : ''}><summary>${esc(({ codex: 'Codex', cursor: 'Cursor', devin: 'Devin' })[app] || app)}</summary>${[...wins.values()].map(w => `<details ${w.rows.some(s => s.id === selected) ? 'open' : ''}><summary>${esc(w.title)}</summary>${w.rows.map(s => `<button class="opt ${s.id === selected ? 'cur' : ''}" data-fusion-pick="${esc(m.side)}" data-fusion-id="${esc(s.id)}"><span class="lbl">${esc(s.conversationTitle)}</span></button>`).join('')}</details>`).join('')}</details>`).join('');
+  openSheet('fusion-side', `<h3>选择 ${m.side === 'b' ? 'B 执行' : 'A 方案'}</h3><div class="hint">按软件、窗口、对话依次展开。A 写方案并检查，B 执行。</div><div class="fusionTree">${rows || '<div class="hint">没有可选的对话</div>'}</div>`);
 }
+function showFusionHistory(m) {
+  openSheet('fusion-history', `<h3>Fusion 历史会话</h3>${(m.list || []).map(f => `<button class="opt ${f.id === m.current ? 'cur' : ''}" data-fusion-history="${esc(f.id)}"><span class="lbl">${esc(f.title)}<span class="sub">${esc(new Date(f.updated).toLocaleString())}</span></span></button>`).join('') || '<div class="hint">暂无历史会话</div>'}`);
+}
+function fusionUsageBars(m) {
+  return [...(m.quota || []), ...(m.limits || []), ...((m.quota || m.limits) ? [] : (m.bars || []))];
+}
+function fusionMetricValue(b) {
+  return b?.pct == null ? String(b?.value || '未获取') : `${b.basis === 'remaining' ? '剩余' : '已用'} ${b.pct}%`;
+}
+function renderFusionMeters(fx) {
+  $('fusionMeters').innerHTML = ['a', 'b'].map(side => {
+    const spec = fx?.[side], usage = spec?.usage || {};
+    const context = typeof usage.context === 'number' ? { pct: usage.context } : usage.context;
+    const bars = fusionUsageBars(usage);
+    const quota = bars.find(b => /week|每周|周额度/i.test(b.label)) || bars[0];
+    const meter = (kind, label, b) => `<button class="meter" data-side="${side}" data-metric="${kind}"><span class="track" style="--pct:${b?.pct ?? 0}"><i class="${meterFill(b?.pct, b?.basis)}"></i></span><span class="meterText"><span class="meterLabel">${esc(label)}</span><b>${esc(fusionMetricValue(b))}</b></span></button>`;
+    return `<div class="fusionMeterRow"><span class="fusionMeterName" title="${esc(spec?.title || '')}">${side.toUpperCase()} · ${esc(spec?.title || '未选择')}</span>${meter('context', '上下文', context)}${meter('quota', quota && /week|每周|周额度/i.test(quota.label) ? '周额度' : '额度', quota)}</div>`;
+  }).join('');
+}
+function showFusionUsage(side, kind) {
+  const spec = lastChat?.fusion?.[side], m = spec?.usage || {};
+  const context = typeof m.context === 'number' ? { pct: m.context } : m.context;
+  const rows = kind === 'context' ? `<p>${esc(fusionMetricValue(context))}</p><p class="hint">上下文表示该对话的容量使用情况。</p>`
+    : `<p class="hint">额度属于账号，已用或剩余以指标说明为准。</p>${fusionUsageBars(m).map(b => `<p>${esc(b.label)} · ${esc(fusionMetricValue(b))}${b.reset ? `<br>${esc(b.reset)}` : ''}</p>`).join('') || '<p>未获取额度数据</p>'}`;
+  openSheet('fusion-usage', `<h3>${side.toUpperCase()} · ${kind === 'context' ? '上下文说明' : '额度说明'}</h3><p>${esc(spec?.title || '未选择')}</p>${rows}${m.updated ? `<p class="hint">${m.cached ? '缓存数据' : '最近更新'} · ${esc(new Date(m.updated).toLocaleString())}</p>` : ''}${m.error ? `<p class="hint">${esc(m.error)}</p>` : ''}${spec ? `<button class="opt" data-fusion-refresh="${side}">刷新数据</button>` : ''}`);
+}
+$('fusionMeters').onclick = e => {
+  const b = e.target.closest('[data-metric]');
+  if (b) showFusionUsage(b.dataset.side, b.dataset.metric);
+};
 function showTerminals(list) {
   const rows = list.map(t => `<div class="optRow"><button class="opt ${t.current ? 'cur' : ''}" data-term="${esc(t.id)}"><span class="lbl">${esc(t.title)}</span>${t.current ? '<span class="tag">当前</span>' : ''}</button><button data-term-del="${esc(t.id)}" data-term-name="${esc(t.title)}">删除</button></div>`).join('');
   openSheet('terminals', `<h3>终端</h3>${rows || '<div class="hint">还没有终端。</div>'}<button class="opt" data-act="newTerm"><span class="lbl">＋ 新建终端</span></button>`);
@@ -1793,6 +1848,8 @@ $('sheet').addEventListener('click', async e => {
     return;
   }
   if (b.dataset.win) { closeSheet(); status('正在切换窗口…'); return send({ t: 'attach', id: b.dataset.win }); }
+  if (b.dataset.fusionHistory) { closeSheet(); return send({ t: 'fusionOpen', id: b.dataset.fusionHistory }); }
+  if (b.dataset.fusionRefresh) { closeSheet(); status('正在读取额度…'); return send({ t: 'fusionUsage', side: b.dataset.fusionRefresh }); }
   if (b.dataset.fusionId) { closeSheet(); return send({ t: 'fusionSide', side: b.dataset.fusionPick, id: b.dataset.fusionId }); }
   if (b.dataset.agent) { pendingAgentOpen = b.dataset.agent; closeSheet(); status('正在切换 Agent…'); return send({ t: 'openAgent', id: b.dataset.agent }); }
   if (b.dataset.term) { closeSheet(); status('正在切换终端…'); return send({ t: 'openTerminal', id: b.dataset.term }); }
@@ -3732,6 +3789,8 @@ $('fusionModelB').onclick = () => { status('读取 B 的模型…'); send({ t: '
 $('fusionBar').onclick = e => {
   const b = e.target.closest('[data-fusion-act]');
   if (!b) return;
+  if (b.dataset.fusionAct === 'history') return send({ t: 'fusionHistory' });
+  if (b.dataset.fusionAct === 'new') return send({ t: 'fusionNew' });
   if (b.dataset.fusionAct === 'go') return send({ t: 'fusionGo' });
   send({ t: 'fusionDecide', kind: b.dataset.fusionAct });
 };
