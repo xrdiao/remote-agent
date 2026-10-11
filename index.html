@@ -430,36 +430,46 @@
   #vEditBox { flex: 1; min-height: 0; width: 100%; box-sizing: border-box; margin: 0; border: 0; outline: none; resize: none;
               background: var(--bg); color: var(--hi); font: 13px/1.5 ui-monospace, Menlo, monospace; padding: 10px 12px 24px; }
 
-  #fusionHeader { display: flex; flex: 1; min-width: 0; align-items: center; border: 1px solid var(--border); border-radius: 14px; background: var(--panel); height: 44px; }
+  #fusionHeader { display: flex; flex: 1; min-width: 0; align-items: center; border: 1px solid var(--border); border-radius: 11px; background: var(--panel); height: 40px; }
   .fusionAgent { display: flex; flex: 1; min-width: 0; align-items: center; gap: 3px; padding: 3px; }
   .fusionAgent + .fusionAgent { border-left: 1px solid var(--line); }
   .fusionAgent > button { padding: 2px; background: transparent; border: 0; font-size: 12px; font-weight: 600; }
-  .fusionRing { flex: none; width: 18px; height: 18px; border-radius: 50%; background: conic-gradient(var(--agent-color) calc(var(--pct, 0) * 1%), var(--line) 0); position: relative; }
+  .fusionRing { flex: none; width: 21px; height: 21px; border-radius: 50%; background: conic-gradient(var(--agent-color) calc(var(--pct, 0) * 1%), var(--line) 0); position: relative; }
   .fusionRing::after { content: ''; position: absolute; inset: 3px; border-radius: 50%; background: var(--panel); }
   .fusionAgent:first-child { --agent-color: var(--ctx); }
   .fusionAgent:last-child { --agent-color: var(--ok); }
   .fusionInlineMeters { display: flex; align-items: center; gap: 3px; min-width: 0; flex: 1; }
   .fusionMetricText { min-width: 0; flex: 1; }
   .fusionMetricText button { display: block; width: 100%; padding: 0; border: 0; background: transparent; font-size: 9px; line-height: 1.7; text-align: left; overflow: hidden; text-overflow: ellipsis; }
-  body.fusion #title { flex: 0 0 100px; gap: 5px; }
+  body.fusion header { padding: 10px 12px 5px; gap: 7px; }
+  body.fusion #title { flex: 0 0 94px; height: 36px; border-radius: 10px; gap: 5px; }
+  body.fusion #menuBtn { width: 32px; height: 36px; border-radius: 10px; }
   body.fusion #titleProject { display: none; }
-  body.fusion .seg button { padding: 7px 8px; }
-  body.fusion #chatTools { gap: 4px; overflow: visible; }
+  body.fusion .seg { margin: 8px 12px 5px; padding: 0; border-radius: 11px; }
+  body.fusion .seg button { height: 36px; border-radius: 10px; padding: 7px 8px; }
+  body.fusion .seg button.on, body.fusion #send { background: linear-gradient(110deg, #0079ff, #075cff); border-color: #087aff; }
+  body.fusion #chatTools { gap: 7px; overflow: visible; border-top: 1px solid var(--line); padding-top: 7px; }
   body.fusion #chatTools > #add, body.fusion #chatTools > #img, body.fusion #chatTools > #uploadDoc { width: 29px; }
-  #fusionConfig { display: flex; gap: 4px; flex: 1; min-width: 0; }
+  #fusionConfig { display: flex; gap: 7px; flex: 1; min-width: 0; border-left: 1px solid var(--line); padding-left: 7px; }
   #chatTools #fusionConfig button { flex: 1; min-width: 0; padding: 5px 4px; font-size: 10px; overflow: hidden; text-overflow: ellipsis; }
   #chatTools #fusionConfig #fusionProject { flex: 0 0 54px; }
-  body.fusion #text { min-height: 88px; }
-  body.fusion #send { height: 46px; }
+  body.fusion .composerBox { border-radius: 11px; padding: 8px; }
+  body.fusion #text { min-height: 74px; }
+  body.fusion #send { height: 36px; border-radius: 10px; }
+  body.fusion footer { padding-left: 12px; padding-right: 12px; }
   #fusionWelcome { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 20px 0; }
   body.fusion #list:has(#fusionWelcome:not([hidden]))::before { display: none; }
   .fusionIllustration { display: flex; align-items: center; justify-content: center; margin-bottom: 24px; }
-  .fusionIllustration span { display: grid; place-items: center; width: 110px; height: 110px; border-radius: 50%; border: 1px solid var(--ctx); background: color-mix(in srgb, var(--ctx) 8%, transparent); color: var(--ctx); font-size: 40px; font-weight: 600; }
-  .fusionIllustration span:last-child { margin-left: -28px; border-color: var(--ok); color: var(--ok); background: color-mix(in srgb, var(--ok) 6%, transparent); }
-  .fusionIllustration i { width: 0; z-index: 1; transform: translateX(-22px); color: var(--ctx); font-size: 25px; font-style: normal; }
+  .fusionIllustration span { display: grid; place-items: center; width: 114px; height: 114px; border-radius: 50%; border: 1px solid #087aff; background: radial-gradient(circle, #006bff20, #006bff06); color: #008cff; text-shadow: 0 0 14px #007aff55; font-size: 32px; font-weight: 600; }
+  .fusionIllustration span:last-child { margin-left: -38px; border-color: #00aa85; color: #00d981; background: radial-gradient(circle, #00d98116, #00d98104); }
+  .fusionIllustration i { width: 0; z-index: 1; transform: translateX(-25px); color: #65aaff; text-shadow: 0 0 9px #007aff; font-size: 25px; font-style: normal; }
   #fusionWelcome h2 { font-size: 20px; color: var(--hi); margin: 0 0 10px; }
   #fusionWelcome p { font-size: 12px; color: var(--muted2); margin: 2px 0; }
   #fusionBar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+  body.fusion.kb .fusionIllustration { margin-bottom: 8px; }
+  body.fusion.kb .fusionIllustration span { width: 64px; height: 64px; font-size: 24px; }
+  body.fusion.kb #fusionWelcome { padding: 4px 0; }
+  body.fusion.kb #fusionWelcome h2 { font-size: 16px; margin-bottom: 4px; }
   @media (max-width: 350px) {
     body.fusion #title { flex-basis: 88px; gap: 3px; padding: 5px 6px; }
     body.fusion #titleText { font-size: 12px; }
@@ -1389,7 +1399,7 @@ function paintFusion(fx) {
   for (const side of ['a', 'b']) {
     const label = side.toUpperCase(), spec = fx[side];
     $('fusion' + label).title = spec ? roleTitle(spec) : `选择 ${label}`;
-    $('fusionModel' + label).textContent = spec?.model ? `${label} · ${short(spec.model)} ▾` : `${label} 模型 ▾`;
+    $('fusionModel' + label).textContent = `${label} 模型 ▾`;
     $('fusionModel' + label).title = spec?.model || `${label} 模型`;
   }
   const acts = fx.phase === 'plan' ? '<button type="button" data-fusion-act="go">交给 B</button>'
@@ -2676,6 +2686,14 @@ function showWorkdirs(m) {
 }
 function renderChat(chat) {
   const previous = lastChat;
+  if (currentApp === 'codex' && chatScrolling && chat && previous?.thread === chat.thread && !nearBottom()) {
+    lastChat = chat;
+    deferredScrollRender = true;
+    chatBusy = !!chat.busy;
+    updateSendMode();
+    renderQuestions(chat.readonly ? null : chat.questions);
+    return;
+  }
   lastChat = chat; updateTitle();
   paintWorkdir(chat?.workdir);
   if (chat && 'context' in chat) renderContext(chat.context);
@@ -2712,12 +2730,6 @@ function renderChat(chat) {
   if (!chat) { itemsEl.replaceChildren(); renderQueue(false, []); renderQuestions(null); paintSessions(null); return; }
   const sessionChanged = paintSessions(chat);
   const V = scMerge(chat);
-  if (!sessionChanged && chatScrolling && !nearBottom()) {
-    deferredScrollRender = true;
-    renderQueue(chat.busy, chat.queued || [], chat.subagents || [], chat.readonly, chat.changed, chat.queuedCount);
-    renderQuestions(chat.readonly ? null : chat.questions);
-    return;
-  }
   if (!sessionChanged && userSelecting()) {
     deferredRender = true;
     $('actionBar').innerHTML = buttonsHtml(chat.global, 'g');
@@ -2734,9 +2746,15 @@ function renderChat(chat) {
   // Anchor on the first visible item so loading older messages doesn't jump.
   let anchor = null, anchorTop = 0;
   if (!stick) {
-    for (const el of itemsEl.children) {
-      if (el.offsetTop + el.offsetHeight > list.scrollTop) { anchor = el.dataset.i; anchorTop = el.offsetTop - list.scrollTop; break; }
+    const top = list.getBoundingClientRect().top;
+    let lo = 0, hi = itemsEl.children.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (itemsEl.children[mid].getBoundingClientRect().bottom > top) hi = mid;
+      else lo = mid + 1;
     }
+    const el = itemsEl.children[lo];
+    if (el) { anchor = el.dataset.i; anchorTop = el.getBoundingClientRect().top - top; }
   }
   const visibleItems = V.items.filter(it => !(it.k === 'tool' && it.done));
   const els = visibleItems.map(it => {
@@ -2796,7 +2814,7 @@ function renderChat(chat) {
   if (stick) list.scrollTop = list.scrollHeight;
   else if (anchor) {
     const el = [...itemsEl.children].find(e => e.dataset.i === anchor);
-    if (el) list.scrollTop = el.offsetTop - anchorTop;
+    if (el) list.scrollTop += el.getBoundingClientRect().top - list.getBoundingClientRect().top - anchorTop;
   }
   if (!stick && previous && JSON.stringify(previous.items) !== JSON.stringify(chat.items)) $('toBottom').textContent = '↓ 有新消息';
   updateToBottom();
@@ -2971,7 +2989,7 @@ function preloadCodexHistory() {
     if (currentApp !== 'codex' || key !== viewSel + ':' + itemsEl.firstElementChild?.dataset.i) return;
     historyPrefetch = key;
     if (!$('cachedMore').hidden) { SC.show += 100; renderChat(lastChat); }
-    else send({ t: 'scrollChat', dy: -1800 });
+    else send({ t: 'scrollChat', dy: -3200 });
   }, 150);
 }
 list.addEventListener('scroll', () => {
@@ -2980,7 +2998,7 @@ list.addEventListener('scroll', () => {
   scrollIdle = setTimeout(() => {
     chatScrolling = false;
     if (deferredScrollRender && lastChat) { deferredScrollRender = false; renderChat(lastChat); }
-  }, 140);
+  }, 220);
   updateToBottom();
   preloadCodexHistory();
 }, { passive: true });
@@ -3852,7 +3870,7 @@ function updateSendMode() {
   $('stop').hidden = mode !== 'chat' || !chatBusy || !!lastChat?.readonly;
   const split = devinBusySplit();
   const follow = codexFollow();
-  const label = currentApp === 'fusion' ? '发给 A' : split || follow === 'queue' ? '排队' : follow === 'steer' ? '立即追加' : '发送';
+  const label = split || follow === 'queue' ? '排队' : follow === 'steer' ? '立即追加' : '发送';
   if ($('send').textContent !== label) $('send').textContent = label;
   $('sendNow').hidden = !split && !follow;
   $('sendNow').textContent = follow === 'steer' ? '改为排队' : '立即追加';
