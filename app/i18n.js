@@ -5,8 +5,15 @@ const I18N = (() => {
   const lang = saved === 'zh' || saved === 'en' ? saved : /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
 
   const EN = {
+    '让两个 AI 一起完成任务': 'Let two AIs work together',
+    'A 负责方案与检查，B 负责执行': 'A plans and reviews; B executes',
+    '协同思考、编写代码、完成复杂任务': 'Think together, write code, and solve complex tasks',
+    'A 模型 ▾': 'A model ▾', 'B 模型 ▾': 'B model ▾',
     '添加附件': 'Add attachment', '图片': 'Image', '文件': 'File',
     '正在上传文件…': 'Uploading file…', '文件已上传，写好文字后点发送': 'File uploaded. Add your message and tap Send.',
+    '选择 Fusion 项目': 'Choose a Fusion project', '选择项目 ▾': 'Choose project ▾', '没有已确认的项目': 'No confirmed projects',
+    '同一会话：A/B 共享上下文，执行时分别切换模型。': 'Same chat: A/B share context and switch models before executing.',
+    '历史会话': 'Chat history', 'Fusion 历史会话': 'Fusion chat history', '新 Fusion 会话': 'New Fusion chat', '暂无历史会话': 'No chat history', '未选择': 'Not selected',
     '上传图片': 'Upload image', '上下文说明': 'Context details', '额度说明': 'Usage details', '刷新数据': 'Refresh', '未获取': 'Unavailable', '周额度': 'Weekly usage', '缓存数据': 'Cached data', '最近更新': 'Updated',
     '项目 ▾': 'Project ▾', '上传文档': 'Upload document', '新建会话': 'New chat',
     '输入你的问题，或粘贴图片、文档…': 'Ask a question, or paste an image or document…',
@@ -49,6 +56,9 @@ const I18N = (() => {
     '没有找到 {app} 的 Agent。请在电脑上打开对应的会话窗口。': 'No agents found in {app}. Open the corresponding session window on the computer.',
     '运行中': 'Running', '当前': 'Current', '正在读取 Agent 列表…': 'Loading agents…', '正在切换 Agent…': 'Switching agent…',
     '＋ 新建会话': '+ New chat', '打开这个窗口': 'Open this window',
+    '归档': 'Archive', '正在归档…': 'Archiving…', '已归档': 'Archived', '已删除': 'Deleted',
+    '它会从当前列表移除，历史记录仍保留。': 'It leaves the current list. The history is kept.',
+    '会话已移除，请重新选择': 'That chat was removed. Choose it again.',
     '已新建会话': 'New chat started', '已切换会话': 'Switched chat', '已是当前会话': 'Already the current chat',
     '已切换窗口': 'Switched window', '桌面上的会话已切换': 'The desktop chat changed',
     '这个窗口里没有新建对话': 'This window has no New chat button',
@@ -304,6 +314,7 @@ const I18N = (() => {
     [/^(\d+) 条回复(?: · (\d+) 个工具)?$/, (m, a, b) => `${a} replies${b ? ` · ${b} tools` : ''}`],
     [/^(\w+) · (\d+) 条 · (.+)$/, '$1 · $2 items · $3'],
     [/^关闭会话标签「(.+)」？$/, 'Close session tab "$1"?'],
+    [/^归档「(.+)」？$/, 'Archive "$1"?'],
     [/^正在上传 (.+) (\d+)%$/, 'Uploading $1 $2%'],
     [/^已上传：(.+)$/, 'Uploaded: $1'],
     [/^工作目录：(.+)$/, 'Working directory: $1'],
