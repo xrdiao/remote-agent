@@ -318,8 +318,12 @@
   #chatTools #pickModel, #chatTools #pickPerm { flex: 0 0 auto; max-width: 42%; overflow: hidden; text-overflow: ellipsis; }
   #chatTools #pickMode.bypass { color: var(--warn); border-color: var(--warn); }
   .qnAct button[aria-pressed="true"] { background: var(--accent); color: #fff; }
-  .composerInput { flex: 1; min-width: 0; display: flex; align-items: flex-end; gap: 8px; }
+  .composerInput { flex: 1; min-width: 0; display: flex; align-items: stretch; gap: 8px; }
   .composerInput textarea { flex: 1; }
+  .composerActions { display: flex; flex-direction: column; gap: 8px; flex: none; }
+  body.term .composerActions { display: none; }
+  #chatTools #stop { position: sticky; right: 0; margin-left: auto; border-radius: 8px; background: var(--panel); width: 34px; padding: 3px; }
+  #stop[hidden] { display: none; }
   #add { flex: none; height: 40px; width: 40px; padding: 0; font-size: 24px; }
   body.split .composerInput { flex: 1 1 100%; }
   body.term #add { display: none; }
@@ -543,14 +547,16 @@
     <button id="pickHistory" hidden>历史</button>
     <button id="pickDir" hidden></button>
     <button id="newChat">＋ 新建</button>
+    <button id="stop" title="停止生成" aria-label="停止生成" hidden>■</button>
   </div>
   <div id="attachments"></div>
   <div id="mentionBox" hidden></div>
   <div id="mathPrev" hidden></div>
   <div class="row">
-    <div class="composerInput"><button id="add" title="添加功能" aria-label="添加功能" hidden>＋</button>
-    <textarea id="text" rows="1" placeholder="发给 Agent…" enterkeyhint="send"></textarea></div>
+    <div class="composerInput"><div class="composerActions"><button id="add" title="添加功能" aria-label="添加功能" hidden>＋</button>
     <button id="img" title="附加图片" aria-label="附加图片"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/></svg></button>
+    </div>
+    <textarea id="text" rows="1" placeholder="发给 Agent…" enterkeyhint="send"></textarea></div>
     <input id="imgFile" type="file" accept="image/*" hidden>
     <input id="docFile" type="file" accept=".pdf,.doc,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.py,.js,.ts,.tsx,.jsx,.sh,.yaml,.yml,.toml,.ini,.log,.xml,.html,.css,.c,.cpp,.h,.rs,.go" hidden>
     <button id="mic" title="语音输入" aria-label="语音输入"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
@@ -2763,7 +2769,6 @@ function renderQueue(busy, queued, subs = [], readonly = false, changed = 0, qCo
     if (subsOpen) html += subs.map(n => `<div class="q"><span class="qt sa">${esc(n)}</span>`
       + ibtn('eye', '查看', `data-sub="${esc(n)}" data-part="open"`) + ibtn('stop', '停止', `data-sub="${esc(n)}" data-part="stop"`, 'del') + '</div>').join('');
   }
-  if (busy && !readonly) html += `<div class="run"><i></i><span>Stop generation</span>${ibtn('stop', '停止', 'data-stop', 'del')}</div>`;
   const n = Math.max(queued.length, devin ? qCount || 0 : 0);
   if (n) {
     html += `<div class="qh">排队中 ${n} 条${devin ? ' ' + ibtn('trash', '清空', 'data-a="clear" data-q=""', 'del') : ''}</div>`;
@@ -2800,10 +2805,6 @@ $('queueBar').onclick = async e => {
   if (!b) return;
   if ('changes' in b.dataset) { status('读取改动的文件…'); return send({ t: 'changes' }); }
   if ('fold' in b.dataset) { subsOpen = !subsOpen; return renderQueue(lastChat?.busy, lastChat?.queued || [], lastChat?.subagents || [], lastChat?.readonly, lastChat?.changed, lastChat?.queuedCount); }
-  if ('stop' in b.dataset) {
-    if (!await ask('停止 Agent？\n它这一轮正在做的事会中断。', '停止')) return;
-    send({ t: 'stop' }); status('正在停止…'); return;
-  }
   if ('main' in b.dataset) { send({ t: 'mainChat' }); status('返回主对话…'); return; }
   if (b.dataset.sub) {
     if (b.dataset.part === 'stop' && !await ask(`停止子 Agent「${b.dataset.sub}」？\n它做到一半的工作会中断。`, '停止')) return;
@@ -3691,7 +3692,12 @@ function codexFollow() {
   const follow = lastChat?.codex?.follow;
   return mode === 'chat' && currentApp === 'codex' && chatBusy && (follow === 'queue' || follow === 'steer') ? follow : '';
 }
+$('stop').onclick = async () => {
+  if (!await ask('停止 Agent？\n它这一轮正在做的事会中断。', '停止')) return;
+  send({ t: 'stop' }); status('正在停止…');
+};
 function updateSendMode() {
+  $('stop').hidden = mode !== 'chat' || !chatBusy || !!lastChat?.readonly;
   const split = devinBusySplit();
   const follow = codexFollow();
   const label = currentApp === 'fusion' ? '发给 A' : split || follow === 'queue' ? '排队' : follow === 'steer' ? '立即追加' : '发送';
@@ -3724,7 +3730,8 @@ $('send').onclick = () => {
 };
 $('sendNow').onclick = async () => {
   const v = text.value;
-  if (!v.trim()) return;
+  if (!v.trim() && !$('attachments').children.length) return;
+  saveDraft();
   const follow = codexFollow();
   const steer = !follow || follow === 'queue';
   if (!await ask(steer ? '立即追加到当前任务？' : '改为排队，等当前任务结束后再发送？', steer ? '立即追加' : '排队')) return;
