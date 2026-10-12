@@ -1,0 +1,20 @@
+Agent logos used on the connection screen (geometry unchanged from upstream).
+
+Cursor
+  Source: Official Cursor brand assets (cursor.com/brand → cursor-brand-assets.zip)
+  File:   General Logos/Cube/SVG/CUBE_2D_DARK.svg / CUBE_2D_LIGHT.svg
+  Notes:  Cube mark only; fills remapped for dark/light tiles. ViewBox padded to square.
+
+Devin
+  Source: Official Cognition / Devin brand kit (devin.ai/brand → brand-kit.zip)
+  File:   Brand Logos 2026/Devin/SVG/DEVIN_AVATAR_SQUARE_*.svg
+          (same path as /assets/brand/logos/devin/symbol-light.svg)
+  Notes:  Background rect removed; propeller path only; fills remapped for dark/light tiles.
+
+Codex
+  Source: Official OpenAI Codex VS Code extension (publisher openai, extension chatgpt /
+          "Codex – OpenAI’s coding agent"), packaged asset:
+          webview/assets/codex_new-*.svg
+  Notes:  Product mark (cloud outline with >_ ). White fill on dark tiles, original #0D0D0D on light.
+  Also shipped beside blossom-*.svg (OpenAI monoblossom) as the extension marketplace icon;
+  the cloud mark is the Codex-specific product symbol used inside the extension UI.
