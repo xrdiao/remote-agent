@@ -490,18 +490,14 @@
     .fusionMetricText button { font-size: 8px; }
     .fusionAgent { padding: 3px 2px; gap: 2px; }
   }
+  .codexSettingsNav { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 10px; }
+  .codexSettingsNav button { flex-shrink: 0; white-space: nowrap; }
   .fusionTree details { margin: 4px 0 4px 10px; }
   .fusionTree summary { padding: 10px 4px; cursor: pointer; font-size: 14px; }
   .fusionTree > details { margin-left: 0; }
   /* gate (login / offline) */
   #gate { position: fixed; inset: 0; z-index: 20; background: #1e1e1e; display: none; flex-direction: column; gap: 12px; padding: calc(60px + env(safe-area-inset-top)) 24px 24px; }
   #gate { overflow-y: auto; }
-  #gateDiagnostics[hidden] { display: none; }
-  .connectionTest { display: flex; flex-direction: column; gap: 4px; margin: 12px 0; font-size: 13px; }
-  .connectionTest a { color: #6cb6ff; overflow-wrap: anywhere; }
-  .connectionTest .ok { color: #73c991; }
-  .connectionTest .err { color: #f77; }
-  #gateFailure { white-space: pre-wrap; font-size: 13px; margin: 10px 0; }
   #gate.open { display: flex; }
   #gate h2 { margin: 0 0 6px; font-size: 20px; color: var(--hi); }
   #gate input { font-size: 16px; padding: 11px; }
@@ -523,6 +519,14 @@
   :root[data-theme="light"] #conn { --c-ok: #3f9a6a; --c-ok-t: #1f7a4d; --c-load: #3d8ad6; --c-load-t: #1f66b0; --c-load-dim: rgba(61,138,214,.25); --c-err: #cc4f4b; --c-err-t: #b2302c;
           --c-tint-ok: rgba(63,154,106,.1); --c-tint-err: rgba(204,79,75,.1); --c-go-bg: #242424; --c-go-fg: #fff; --c-go-b: #242424; }
   #conn.open { display: flex; }
+  #connAgents .cItem.err .cRow { padding-bottom: 13px; }
+  #connAgents .cRow { gap: 8px; }
+  #connAgents .cSt { font-size: 12px; gap: 4px; }
+  #connAgents .cWhy { background: none; border: 0; padding: 4px 0; color: var(--muted2); flex: none; }
+  #connAgents .cErr .cBtn { min-height: 44px; height: auto; }
+  #connAuto { text-align: center; }
+  #connAuto[hidden], #connLead:empty { display: none; }
+
 
 
   #conn > * { flex-shrink: 0; }
@@ -566,6 +570,51 @@
   .cSpin { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--c-load-dim); border-top-color: var(--c-load); animation: cRot .9s linear infinite; flex: none; }
   @keyframes cRot { to { transform: rotate(360deg); } }
   .cItem.wait .cRow { opacity: .6; }
+  .cItem.err .cRow { padding-bottom: 4px; }
+  .cItem.wait .cRow { opacity: .6; }
+  .cActs .cBtn.ghost:first-child { margin-left: -6px; }
+  .cErr { padding: 0 14px 13px 62px; }
+  .cReason { font-size: 12.5px; color: var(--c-err-t); line-height: 1.5; overflow-wrap: anywhere; }
+  .cDetail { margin: 6px 0 0; font: 11.5px/1.5 ui-monospace, Menlo, monospace; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .cActs { display: flex; gap: 8px; margin-top: 9px; }
+  .cBtn { height: 30px; padding: 0 13px; display: inline-flex; align-items: center; gap: 6px; color: var(--hi); }
+  .cBtn svg { width: 13px; height: 13px; stroke: currentColor; }
+  .cBtn.ghost { background: transparent; border-color: transparent; color: var(--muted2); padding: 0 6px; }
+  #connHostLabel[hidden], #connAgentsWrap[hidden], #connMore[hidden] { display: none; }
+  #conn.failure .cTop { margin-bottom: 32px; }
+  #conn.failure h2 { font-size: 26px; }
+  #conn.failure #connLead { margin-top: 10px; }
+  #conn.failure #connHost { margin-top: 36px; padding: 18px; border-radius: 16px; }
+  #conn.failure .cRow { padding: 0 0 18px; gap: 12px; }
+  #conn.failure .cTile { width: 40px; height: 40px; }
+  #conn.failure .cSub { white-space: normal; }
+  .cDiagSummary { border-top: 1px solid var(--line2); padding-top: 16px; display: flex; align-items: center; gap: 10px; }
+  .cDiagDots { display: flex; gap: 5px; flex: none; }
+  .cDiagDot { width: 7px; height: 7px; border-radius: 50%; background: var(--line2); }
+  .cDiagDot.ok { background: var(--c-ok); }
+  .cDiagDot.load { background: var(--c-load); }
+  .cDiagDot.err { background: var(--c-err); }
+  .cDiagText { flex: 1; min-width: 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+  .cDiagText b { color: var(--hi); }
+  .cDiagSummary button { border: 0; background: none; color: var(--muted2); padding: 8px 0; flex: none; }
+  .cDiagDetails { margin-top: 18px; }
+  .cDiagCheck { display: flex; align-items: center; gap: 10px; padding: 12px 0; font-size: 13px; }
+  .cDiagCheck + .cDiagCheck { border-top: 1px solid var(--line); }
+  .cDiagCheck > span:first-child { flex: 1; }
+  .cDiagCheck .cCheckNote { color: var(--muted); font-size: 12px; }
+  .cDiagCheck .cCheckState { display: flex; align-items: center; gap: 6px; }
+  .cCheckState.ok { color: var(--c-ok-t); }
+  .cCheckState.load { color: var(--c-load-t); }
+  .cCheckState.err { color: var(--c-err-t); }
+  .cTechnical { margin: 12px 0 0; padding: 14px; border-radius: 12px; background: var(--ctrl); font: 11.5px/1.65 ui-monospace, Menlo, monospace; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .cTechnical a { color: inherit; }
+  #conn.failure #connNote { margin-bottom: 6px; }
+  #conn.failure #connMore { justify-content: center; gap: 28px; margin-top: 8px; }
+  #conn.failure #connMore button { flex: none; border: 0; background: none; color: var(--muted2); padding: 8px 0; }
+
+  .cDetail a { color: var(--c-load-t); }
+  #connMore { display: flex; gap: 8px; }
+  #connMore button { flex: 1; }
   #conn .cFoot { margin-top: auto; padding-top: 24px; display: flex; flex-direction: column; gap: 10px; }
   #connNote { margin: 0 0 2px; font-size: 12.5px; color: var(--muted); text-align: center; line-height: 1.5; }
   #connNote:empty { display: none; }
@@ -717,9 +766,6 @@
     <button id="gateComputers" hidden>选择电脑</button>
     <button id="gateRepair">重新配对</button>
   </div>
-  <div id="gateDiagnostics" hidden>
-    <div id="gateTests"></div><div id="gateFailure"></div><button id="gateTestRetry">重新检测</button>
-  </div>
   <button id="gateLang">中文 / English</button>
   <div id="gateInfo"></div>
 </div>
@@ -727,11 +773,15 @@
 <div id="conn" role="dialog" aria-labelledby="connTitle">
   <div class="cTop"><span class="cBrand"><img src="icon-192.png" alt="">Remote Agent</span><button id="connSwitch" class="cLink">切换电脑</button></div>
   <h2 id="connTitle"></h2><p id="connLead"></p>
-  <div class="cLabel">主机</div><div class="cGroup" id="connHost"></div>
+  <div class="cLabel" id="connHostLabel">主机</div><div class="cGroup" id="connHost" aria-live="polite"></div>
+  <div id="connAgentsWrap">
   <div class="cLabel"><span>Agent</span><span id="connSum"></span></div>
   <div class="cBar" id="connBar" aria-hidden="true"></div>
   <div class="cGroup" id="connAgents" aria-live="polite"></div>
-  <div class="cFoot"><p id="connNote"></p><button id="connGo" class="cGo" hidden>进入</button></div>
+  </div>
+  <div class="cFoot"><p id="connNote"></p><button id="connGo" class="cGo" hidden>进入</button><button id="connAuto" class="cLink" hidden>下次遇到部分失败时直接进入</button>
+    <div id="connMore" hidden><button id="connPick">切换电脑</button><button id="connRepair">重新配对</button></div>
+  </div>
 </div>
 
 <script src="i18n.js"></script>
@@ -747,6 +797,8 @@ const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统'
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 let base = null, info = null, ws = null, authed = false, failures = 0;
+let menuRequest = 0;
+let codexSettingsRequest = 0;
 let mode = store.get('mode') || 'chat';
 document.body.classList.toggle('chatmode', mode === 'chat');
 let crop = store.get('crop') !== 'full';
@@ -857,6 +909,8 @@ function finishPending(list) {
 }
 
 function send(obj) {
+  if (obj.t === 'openMenu') obj.requestId = ++menuRequest;
+  if (currentApp === 'codex' && ['settings', 'codexSetting'].includes(obj.t)) obj.requestId = ++codexSettingsRequest;
   if (ws && ws.readyState === 1 && authed) ws.send(JSON.stringify(obj));
   else status('未连接', false);
 }
@@ -867,7 +921,6 @@ let gateRetryFn = null;
 function gate({ msg = '', err = false, input = null, retry = false, repair = false, computers = false, appLink = null, onRetry = null } = {}) {
   connHide();
   $('gate').classList.add('open');
-  $('gateDiagnostics').hidden = true;
   $('gateMsg').textContent = msg;
   $('gateMsg').className = err ? 'err' : '';
   const inp = $('gateInput');
@@ -918,7 +971,55 @@ $('gateRepair').onclick = () => repairPairing();
 const CONN_AGENTS = [
   { app: 'cursor', name: 'Cursor' }, { app: 'devin', name: 'Devin' }, { app: 'codex', name: 'Codex' },
 ];
-const conn = { active: false, host: false, phase: '', agents: null, timer: 0 };
+const conn = { active: false, host: false, phase: '', agents: null, timer: 0, failure: null, conclusion: '', checks: [], diagRunning: false, open: new Set() };
+const CONN_TEXT = { ok: '已连接', load: '连接中…', err: '连接失败', wait: '等待主机' };
+const CONN_ICON = {
+  ok: '<span class="cIc"><svg viewBox="0 0 12 12" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6.2l2.3 2.3 4.7-4.9"/></svg></span>',
+  load: '<span class="cSpin"></span>', err: '<span class="cIc">!</span>', wait: '<span class="cIc"></span>',
+};
+const CONN_RETRY_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 8A5.5 5.5 0 1 1 11.9 4.1"/><path d="M12.2 1.8v2.6H9.6"/></svg>';
+const CONN_HOST_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="12" rx="2"/><path d="M9 20h6M12 16.5V20"/></svg>';
+const ct = (tpl, vars = {}) => I18N.tr(tpl).replace(/\{(\w+)\}/g, (m, k) => vars[k] ?? m);
+const DIAG_TEXT = { ok: '通过', load: '检测中…', err: '未通过', wait: '等待' };
+function diagReason(r) {
+  return ct({ offline: '手机处于离线状态，请检查 Wi-Fi 或移动数据', nourl: '尚未获取隧道地址', timeout: '{s} 秒内没有响应', http: '服务器返回 {v}', invalid: '返回内容不符合预期', json: '返回内容不是 JSON' }[r.code] || '请求失败：网络、DNS、证书或跨域原因未确定', { s: r.timeout || 8, v: r.http || '' });
+}
+function connRenderDiag() {
+  const tr = I18N.tr, checks = conn.checks, f = conn.failure || {};
+  const ok = checks.filter(c => c.st === 'ok').length;
+  const realtime = /实时连接/.test(f.stage || '');
+  const passed = checks.length === 3 && ok === 3 && !conn.diagRunning;
+  const hostSub = realtime ? '实时连接未建立' : '电脑连接未建立';
+  const lead = conn.diagRunning || !checks.length ? '正在检测连接…'
+    : passed ? realtime ? '地址正常，实时连接未建立，请重试。' : '地址正常，电脑连接未建立，请重试。'
+    : checks.find(c => c.key === 'net')?.st === 'err' ? '手机网络不可用，请检查网络连接。'
+    : checks.find(c => c.key === 'page')?.st === 'err' ? '页面地址检测未通过，请重试。'
+    : checks.find(c => c.key === 'relay')?.st === 'err' ? '隧道服务暂时无法访问，请重试。' : '连接未建立，请重试。';
+  $('connLead').textContent = tr(lead);
+  const summary = conn.diagRunning || !checks.length ? tr('正在检测连接…')
+    : ct('{n}/{total} 检测通过', { n: ok, total: checks.length }) + (passed ? ' · ' + tr(realtime ? '失败在实时连接' : '失败在电脑连接') : ' · ' + tr('部分检测未通过'));
+  const open = conn.open.has('connection-details');
+  const rows = checks.map(c => {
+    const label = { net: '手机网络', page: '页面地址', relay: '隧道服务' }[c.key];
+    const note = c.st === 'ok' ? c.key === 'net' ? tr('在线') : ct('{ms} ms', { ms: c.ms ?? 0 }) : c.st === 'err' ? tr(c.code === 'timeout' ? '超时' : '异常') : tr('检测中…');
+    return `<div class="cDiagCheck"><span>${esc(tr(label))}</span><span class="cCheckNote">${esc(note)}</span><span class="cCheckState ${c.st}"><i class="cDiagDot ${c.st}" aria-hidden="true"></i>${esc(tr(DIAG_TEXT[c.st]))}</span></div>`;
+  }).join('');
+  const technical = [ct('失败阶段：{v}', { v: tr(f.stage || '应用连接') }), f.error, ...checks.filter(c => c.st === 'err').map(c => tr(c.label) + '：' + diagReason(c))].filter(Boolean).map(esc);
+  for (const c of checks.filter(c => c.url)) {
+    const label = tr(c.key === 'page' ? '页面' : '隧道');
+    technical.push(`${esc(label)}: ${/^https?:\/\//.test(c.url) ? `<a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">${esc(c.url)}</a>` : esc(c.url)}`);
+  }
+  if (realtime && base) technical.push(esc('WebSocket: ' + base.replace(/^http/, 'ws') + '/ws'));
+  $('connHost').innerHTML = `<div class="cItem err"><div class="cRow"><div class="cTile">${CONN_HOST_SVG}</div><div class="cMeta"><div class="cName">${esc(currentComputer()?.name || tr('电脑'))}</div><div class="cSub">${esc(tr(hostSub))}</div></div><div class="cSt">${CONN_ICON.err}<span>${esc(tr('连接失败'))}</span></div></div></div>`
+    + `<div class="cDiagSummary"><span class="cDiagDots" aria-hidden="true">${checks.map(c => `<i class="cDiagDot ${c.st}"></i>`).join('')}</span><span class="cDiagText">${esc(summary)}</span><button data-conn-why="connection-details" aria-expanded="${open}" aria-controls="connDetails">${esc(tr(open ? '收起' : '详情'))}</button></div>`
+    + (open ? `<div class="cDiagDetails" id="connDetails">${rows}<pre class="cTechnical">${technical.join('\n')}</pre></div>` : '');
+}
+
+function connOffline(failure, conclusion = '') {
+  Object.assign(conn, { active: true, host: 'err', failure, conclusion });
+  $('conn').classList.add('open');
+  connRender();
+}
 function connHide() {
   clearTimeout(conn.timer);
   conn.active = false;
@@ -926,7 +1027,8 @@ function connHide() {
 }
 function connShow(phase) {
   clearTimeout(conn.timer);
-  Object.assign(conn, { active: true, host: false, phase, agents: null });
+  Object.assign(conn, { active: true, host: false, phase, agents: null, failure: null, conclusion: '', checks: [], diagRunning: false });
+  conn.open.clear();
   $('conn').classList.add('open');
   connRender();
 }
@@ -934,33 +1036,96 @@ function connHostOk() {
   if (!conn.active) return;
   conn.host = true;
   connRender();
+  send({ t: 'connAgents' });
 }
 function connWindows(list) {
-  if (!conn.active || !conn.host) return;
-  conn.agents = CONN_AGENTS.map(a => ({ ...a, windows: list.filter(w => w.app === a.app).length }));
+  if (!conn.active || conn.host !== true) return;
+  // The connection page uses its own per-agent probe, including raw errors.
+}
+function connAgentResults(results) {
+  if (!conn.active || conn.host !== true) return;
+  conn.agents = CONN_AGENTS.map(a => ({ ...a, ...results.find(r => r.app === a.app) }));
   connRender();
   clearTimeout(conn.timer);
-  if (list.length) conn.timer = setTimeout(connHide, 900);
+  const ready = conn.agents.filter(a => a.windows);
+  const signature = ready.map(a => a.app).join(',');
+  if (ready.length === CONN_AGENTS.length || (ready.length && store.get('conn-auto-partial') === signature))
+    conn.timer = setTimeout(connHide, 600);
 }
+
 function connRender() {
   const tr = I18N.tr;
+  const failed = conn.host === 'err';
+  $('conn').classList.toggle('failure', failed);
+  $('connHostLabel').hidden = failed;
+  $('connAgentsWrap').hidden = failed;
+  $('connMore').hidden = !failed;
+  $('connAuto').hidden = true;
+  $('connPick').hidden = !failed && !loadComputers().length;
+  if (failed) {
+    $('connTitle').textContent = tr('连不上电脑');
+    connRenderDiag();
+    $('connGo').hidden = false;
+    $('connGo').textContent = tr('重试');
+    $('connNote').textContent = tr('每 15 秒自动重试');
+    return;
+  }
+  $('connGo').textContent = tr('进入');
   const icon = st => st === 'load' ? '<span class="cSpin"></span>' : `<span class="cIc">${st === 'ok' ? '✓' : st === 'err' ? '!' : ''}</span>`;
   const row = (st, tile, name, sub, label, brand = false) => `<div class="cItem ${st}"><div class="cRow"><div class="cTile${brand ? ' cBrand' : ''}">${tile}</div><div class="cMeta"><div class="cName">${esc(name)}</div><div class="cSub">${esc(sub)}</div></div><div class="cSt">${icon(st)}<span>${esc(tr(label))}</span></div></div></div>`;
   const ready = conn.agents?.filter(a => a.windows).length || 0;
   const settled = conn.agents !== null;
-  $('connTitle').textContent = tr(!conn.host ? '正在连接电脑' : !settled ? '正在读取 Agent' : ready ? 'Agent 已就绪' : '没有检测到 Agent 窗口');
-  $('connLead').textContent = tr(!conn.host ? '连接进度会在这里显示。' : !settled ? '正在读取电脑上的 Agent 窗口…' : '主机已连接，继续使用当前会话。');
-  $('connHost').innerHTML = row(conn.host ? 'ok' : 'load', '<svg viewBox="0 0 24 24" fill="none" stroke-width="1.6"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M9 21h6M12 17v4"/></svg>', currentComputer()?.name || tr('电脑'), tr(conn.host ? '实时连接已建立' : conn.phase), conn.host ? '已连接' : '连接中…');
   const agents = conn.agents || CONN_AGENTS;
   const state = a => !conn.host ? 'wait' : !settled ? 'load' : a.windows ? 'ok' : 'err';
-  $('connAgents').innerHTML = agents.map(a => row(state(a), `<img class="on-dark" src="logo-${a.app}-dark.svg" alt=""><img class="on-light" src="logo-${a.app}-light.svg" alt="">`, a.name, !conn.host ? tr('等待主机') : !settled ? tr('正在读取窗口…') : a.windows ? tr('检测到窗口') : tr('请在电脑上打开 Agent 的调试窗口'), !conn.host ? '等待主机' : !settled ? '检测中…' : a.windows ? '可用' : '未检测到', true)).join('');
-  $('connSum').textContent = settled ? `${ready}/${CONN_AGENTS.length} ${tr('可用')}` : tr(conn.host ? '检测中…' : '等待主机');
+  const names = agents.filter(a => a.windows).map(a => a.name).join(I18N.lang === 'en' ? ', ' : '、');
+  const missing = agents.filter(a => !a.windows).map(a => a.name).join(I18N.lang === 'en' ? ', ' : '、');
+  $('connTitle').textContent = !conn.host ? tr('正在连接电脑') : !settled ? agents.map(a => ct('{agent} 连接中', { agent: a.name })).join(' · ')
+    : ready === agents.length ? tr('全部已连接 · 正在进入…') : ready ? ct('{ready} 已可用，{missing} 可稍后重试', { ready: names, missing }) : tr('没有可用的 Agent');
+  $('connLead').textContent = '';
+  $('connHost').innerHTML = row(conn.host ? 'ok' : 'load', CONN_HOST_SVG, currentComputer()?.name || tr('电脑'), tr(conn.host ? '实时连接已建立' : conn.phase), conn.host ? '已连接' : '连接中…');
+  $('connAgents').innerHTML = agents.map(a => {
+    const st = state(a), open = conn.open.has(a.app);
+    const reason = a.timeout ? ct('超时，请检查 {agent} 是否卡住', { agent: a.name }) : a.error ? ct('连接失败，请检查 {agent} 是否已启动', { agent: a.name }) : tr('未找到窗口，请打开项目');
+    const sub = st === 'ok' ? ct('{n} 个窗口可用', { n: a.windows }) : st === 'err' ? reason : tr(st === 'wait' ? '等待主机' : '正在读取窗口…');
+    const detail = [ct('地址：{v}', { v: a.address || '' }), a.error || tr('调试服务已响应，但未找到可用的项目窗口。'), a.app === 'cursor' ? tr('启动指引：在电脑上以远程调试模式启动 Cursor，然后重试。') : ct('启动指引：在电脑上运行 {command}，然后重试。', { command: './start-' + a.app + '.sh' })].join('\n');
+    return `<div class="cItem ${st}"><div class="cRow"><div class="cTile cBrand"><img class="on-dark" src="logo-${a.app}-dark.svg" alt=""><img class="on-light" src="logo-${a.app}-light.svg" alt=""></div><div class="cMeta"><div class="cName">${a.name}</div><div class="cSub">${esc(sub)}</div></div><div class="cSt" aria-label="${esc(tr(CONN_TEXT[st]))}">${CONN_ICON[st]}${st === 'err' ? `<span>${esc(tr('连接失败'))}</span>` : ''}</div>${st === 'err' ? `<button class="cWhy" data-conn-why="${a.app}" aria-expanded="${open}">${esc(tr(open ? '收起' : '查看原因'))}</button>` : ''}</div>${st === 'err' && open ? `<div class="cErr"><pre class="cDetail">${esc(detail)}</pre><div class="cActs"><button class="cBtn" data-conn-retry="agents">${CONN_RETRY_SVG}${esc(tr('重试'))}</button><button class="cBtn ghost" data-conn-why="${a.app}">${esc(tr('收起'))}</button></div></div>` : ''}</div>`;
+  }).join('');
+  $('connSum').textContent = settled ? `${ready}/${CONN_AGENTS.length} ${tr('可用')}` : '';
   $('connBar').style.gridTemplateColumns = `repeat(${CONN_AGENTS.length}, 1fr)`;
   $('connBar').innerHTML = agents.map(a => `<i class="${conn.host ? state(a) : ''}"></i>`).join('');
-  $('connGo').hidden = !conn.host;
-  $('connNote').textContent = conn.host && !settled ? tr('也可以直接进入，窗口列表会继续加载。') : '';
+  $('connGo').hidden = !settled || ready === agents.length;
+  $('connGo').textContent = ready ? ct('先进入 · 使用 {agents}', { agents: names }) : tr('全部重试');
+  $('connAuto').hidden = !settled || !ready || ready === agents.length;
+  $('connMore').hidden = !settled || !!ready;
+  $('connPick').hidden = true;
+  $('connNote').textContent = settled && !ready ? tr('请在电脑上启动 Agent 的调试窗口，再点击全部重试。') : '';
+
 }
-$('connGo').onclick = connHide;
+$('connGo').onclick = () => {
+  if (conn.host === 'err') return boot();
+  if (!conn.agents?.some(a => a.windows)) return connRetryAgents();
+  connHide();
+};
+function connRetryAgents() {
+  clearTimeout(conn.timer);
+  conn.agents = null;
+  connRender();
+  send({ t: 'connAgents' });
+}
+$('connAuto').onclick = () => {
+  store.set('conn-auto-partial', conn.agents.filter(a => a.windows).map(a => a.app).join(','));
+  connHide();
+};
+$('connPick').onclick = () => showComputers();
+$('connRepair').onclick = () => repairPairing();
+$('conn').addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  if (b.dataset.connRetry === 'agents') return connRetryAgents();
+  if (b.dataset.connRetry === 'diag') return showOffline(lastFailure);
+  const key = b.dataset.connWhy;
+  if (key) { conn.open.has(key) ? conn.open.delete(key) : conn.open.add(key); connRender(); }
+});
 $('connSwitch').onclick = () => showComputers();
 
 /* ---------- relay discovery & auth ---------- */
@@ -1008,7 +1173,7 @@ function rememberComputer(comp) {
 function applySelection(m, clearChat = true) {
   if (m.app) currentApp = m.app;
   const changed = (m.sel || '') !== viewSel;
-  if (changed) saveDraft();
+  if (changed) { menuRequest++; saveDraft(); }
   if (changed) { viewSel = m.sel || ''; cache.clear(); $('sessionNotice').hidden = true; }
   const here = currentComputer();
   if (here) rememberComputer({
@@ -1174,12 +1339,12 @@ async function testEndpoint(url, relay = false, timeout = 8000) {
   const timer = setTimeout(() => ctl.abort(), timeout);
   try {
     const response = await fetch(url + '?t=' + Date.now(), { cache: 'no-store', signal: ctl.signal });
-    if (!response.ok) return { ok: false, detail: 'HTTP ' + response.status };
+    if (!response.ok) return { ok: false, code: 'http', http: 'HTTP ' + response.status, detail: 'HTTP ' + response.status };
     const data = await response.json();
     const valid = relay ? data?.self === true : data?.self === true || (data?.v === 3 && Array.isArray(data.computers)) || (data?.v === 2 && !!data.data);
-    return { ok: valid, detail: valid ? `正常 · ${Math.round(performance.now() - start)} ms` : '返回内容不符合预期' };
+    return { ok: valid, ms: Math.round(performance.now() - start), code: valid ? '' : 'invalid', detail: valid ? `正常 · ${Math.round(performance.now() - start)} ms` : '返回内容不符合预期' };
   } catch (error) {
-    return { ok: false, timedOut: ctl.signal.aborted, detail: ctl.signal.aborted ? `请求超时（${timeout / 1000} 秒）` : error instanceof SyntaxError ? '返回内容不是 JSON' : '请求失败（网络、DNS、证书或跨域原因未确定）' };
+    return { ok: false, timedOut: ctl.signal.aborted, timeout: timeout / 1000, code: ctl.signal.aborted ? 'timeout' : error instanceof SyntaxError ? 'json' : 'network', detail: ctl.signal.aborted ? `请求超时（${timeout / 1000} 秒）` : error instanceof SyntaxError ? '返回内容不是 JSON' : '请求失败（网络、DNS、证书或跨域原因未确定）' };
   } finally { clearTimeout(timer); }
 }
 let offlineGen = 0;
@@ -1187,48 +1352,43 @@ let lastFailure = { stage: '应用连接', error: '' };
 async function diagnoseConnection(failure, gen) {
   const page = discoveryUrl();
   const relay = base ? base.replace(/\/$/, '') + '/url.json' : '';
-  const endpoints = [{ label: '页面地址发布', url: page }, { label: '隧道和电脑服务', url: relay }];
-  const box = $('gateTests');
-  box.replaceChildren();
-  $('gateDiagnostics').hidden = false;
-  const rows = endpoints.map(endpoint => {
-    const row = document.createElement('div'); row.className = 'connectionTest';
-    const name = document.createElement('strong'); name.textContent = endpoint.label;
-    const result = document.createElement('span'); result.textContent = endpoint.url ? '正在测试…' : '尚未获取隧道地址';
-    row.append(name, result);
-    if (endpoint.url) {
-      const link = document.createElement('a'); link.href = endpoint.url; link.textContent = endpoint.url;
-      link.target = inApp ? '_self' : '_blank'; link.rel = 'noopener noreferrer'; row.append(link);
-    }
-    box.append(row); return result;
-  });
-  $('gateFailure').textContent = `失败阶段：${failure.stage}${failure.error ? '\n' + failure.error : ''}`;
-  const results = await Promise.all(endpoints.map(async (endpoint, i) => {
-    let result = endpoint.url ? await testEndpoint(endpoint.url, i === 1) : { ok: false, detail: '尚未获取隧道地址' };
+  const online = navigator.onLine !== false;
+  conn.checks = [
+    { key: 'net', label: '手机网络', st: online ? 'ok' : 'err', code: online ? '' : 'offline' },
+    { key: 'page', label: '页面地址发布', url: page, st: 'load' },
+    { key: 'relay', label: '隧道和电脑服务', url: relay, st: relay ? 'load' : 'err', code: relay ? '' : 'nourl', detail: relay ? '' : '尚未获取隧道地址' },
+  ];
+  conn.diagRunning = true;
+  const draw = () => { if (gen === offlineGen && conn.active) connRender(); };
+  draw();
+  const run = async (check, relayCheck) => {
+    if (!check.url) return { ok: false, code: 'nourl', detail: '尚未获取隧道地址' };
+    let result = await testEndpoint(check.url, relayCheck);
     if (gen !== offlineGen) return result;
-    rows[i].textContent = result.detail; rows[i].className = result.ok ? 'ok' : 'err';
-    if (i === 1 && result.timedOut) {
-      rows[i].textContent = '8 秒超时，正在进行 30 秒复测…';
-      $('gateMsg').textContent = '正在区分隧道响应慢与持续访问失败…';
-      result = await testEndpoint(endpoint.url, true, 30000);
+    if (relayCheck && result.timedOut) {
+      Object.assign(check, { retest: true });
+      draw();
+      result = await testEndpoint(check.url, true, 30000);
       result.slow = result.ok;
       if (result.ok) result.detail = '复测可达 · ' + result.detail;
     }
+    Object.assign(check, { st: result.ok ? 'ok' : 'err', code: result.code, http: result.http, timeout: result.timeout, ms: result.ms, slow: !!result.slow, detail: result.detail, retest: false });
+    draw();
     return result;
-  }));
-  if (gen !== offlineGen) return;
-  results.forEach((result, i) => { rows[i].textContent = result.detail; rows[i].className = result.ok ? 'ok' : 'err'; });
-  const conclusion = results[1].slow ? '隧道复测可达；可能是慢连接或短暂波动，首次 8 秒检测超时。'
+  };
+  const results = await Promise.all([run(conn.checks[1], false), run(conn.checks[2], true)]);
+  if (gen !== offlineGen) return '';
+  conn.diagRunning = false;
+  const conclusion = !online ? '手机处于离线状态，请检查 Wi-Fi 或移动数据'
+    : results[1].slow ? '隧道复测可达；可能是慢连接或短暂波动，首次 8 秒检测超时。'
     : results[0].ok && results[1].timedOut ? '页面地址发布正常，隧道 30 秒复测仍超时；请切换 Wi-Fi 对比，尚不能确定具体网络原因。'
     : !relay ? '尚未获取隧道地址；当前只能检测页面地址发布。'
     : !results[0].ok && results[1].ok ? '电脑服务可达，页面地址发布请求异常。'
     : results[0].ok && !results[1].ok ? '页面地址发布正常，隧道请求异常。'
     : results.every(result => result.ok) ? '两个网址现在都正常；检查下方失败阶段。此前也可能是短暂网络波动。'
     : '两个请求均未通过；仅凭浏览器请求不能确定是手机网络、入口还是服务异常。';
-  $('gateMsg').textContent = conclusion;
-  $('gateFailure').textContent = `失败阶段：${failure.stage}${failure.error ? '\n' + failure.error : ''}`;
+  return conclusion;
 }
-$('gateTestRetry').onclick = () => showOffline(lastFailure);
 
 function publishedComputers() {
   if (info?.v === 3 && Array.isArray(info.computers)) return info.computers.filter(c => c && c.id);
@@ -1248,9 +1408,14 @@ async function showOffline(failure = { stage: '应用连接', error: '' }) {
   const gen = ++offlineGen;
   lastFailure = failure;
   clearTimeout(retryTimer);
-  gate({ msg: '正在检测页面地址和隧道…', err: true, retry: true, computers: loadComputers().length > 0 });
-  await diagnoseConnection(failure, gen);
-  if (gen === offlineGen) autoRetry();
+  ungate();
+  conn.open.delete('connection-details');
+  conn.checks = [];
+  connOffline(failure);
+  const conclusion = await diagnoseConnection(failure, gen);
+  if (gen !== offlineGen) return;
+  connOffline(failure, conclusion);
+  autoRetry();
 }
 
 async function pair(totp) {
@@ -1420,6 +1585,11 @@ function connect() {
     else if (m.t === 'sent') {
       confirmSent(m);
     }
+    else if (m.t === 'clickDone') {
+      if (m.sel !== viewSel) return;
+      const button = [...$('items').querySelectorAll('button[data-item]')].find(b => b.dataset.item === String(m.item) && b.dataset.actionId === (m.actionId || ''));
+      button?.closest('.btns')?.querySelectorAll('button').forEach(b => { b.disabled = false; });
+    }
     else if (m.t === 'sendFailed') pendingSends.delete(m.requestId);
     else if (m.t === 'attachments') { if (m.sel === viewSel) renderAttachments(m.list); }
     else if (m.t === 'chat') { if (!m.sel || !viewSel || m.sel === viewSel) renderChat(m.chat); }
@@ -1427,6 +1597,7 @@ function connect() {
     else if (m.t === 'thread') applySelection(m);
     else if (m.t === 'frame') onFrame(m);
     else if (m.t === 'panel') { panel = m.rect; updateTermEmpty(); layoutStage(); applyQuality(); }
+    else if (m.t === 'connAgents') connAgentResults(m.agents);
     else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; connWindows(m.list); if (sheetKind === 'windows') showWindows(); }
     else if (m.t === 'fusionTrust') openSheet('fusion-trust', `<h3>确认项目可信</h3><div class="hint">${esc(m.path)}</div><button class="opt" data-fusion-trust="yes"><span class="lbl">信任并创建会话</span></button><button class="opt" data-fusion-trust="no"><span class="lbl">取消</span></button>`);
     else if (m.t === 'fusionProjects') showFusionProjects(m);
@@ -1495,14 +1666,17 @@ function connect() {
       if (editorBrowsing) startEditor();
     }
     else if (m.t === 'docs') { finishPending(['正在读取文档…', '正在读取项目文件…']); showDocs(m); }
-    else if (m.t === 'settings') { finishPending(['正在读取设置…', '正在修改…']); showSettings(m.sections || []); }
+    else if (m.t === 'settings') { if (m.codex && m.requestId !== codexSettingsRequest) return; finishPending(['正在读取设置…', '正在修改…']); m.codex ? showCodexSettings(m) : showSettings(m.sections || []); }
     else if (m.t === 'usage') {
       if (currentApp === 'fusion' || (m.sel && viewSel && m.sel !== viewSel)) return;
       if (m.missing) status('没有额度数据');
       renderQuota(m);
       if (!m.cached) finishPending(['正在读取额度…']);
     }
-    else if (m.t === 'menu') showMenu(m.kind, m.items, m.max, m.fusion, m.fast, m.model);
+    else if (m.t === 'menu') {
+      if (m.requestId != null && (m.requestId !== menuRequest || (m.sel && m.sel !== viewSel))) return;
+      showMenu(m.kind, m.items, m.max, m.fusion, m.fast, m.model);
+    }
     else if (m.t === 'params') showParams(m);
     else if (m.t === 'changes') showChanges(m);
     else if (m.t === 'file') showFile(m);
@@ -1552,6 +1726,8 @@ function openSheet(kind, html) {
   if (kind === 'agents') $('sheet').scrollTop = 0;
 }
 function closeSheet() {
+  menuRequest++;
+  if (sheetKind === 'codex-settings') { codexSettingsRequest++; send({ t: 'closeCodexSettings' }); status(''); }
   sheetKind = null;
   $('shade').classList.remove('open');
   $('sheet').classList.remove('open');
@@ -1591,21 +1767,13 @@ function winLabel(title) {
 
 function showWindows() {
   const rows = windows.map(w => {
-    if (w.app === 'devin') {
-      return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">Devin agent</span></button>`;
-    }
-    if (w.app === 'codex') {
-      return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">Codex</span></button>`;
-    }
-    if (w.app === 'fusion') {
-      return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">Fusion</span></button>`;
-    }
-    const label = winLabel(w.title || w.id);
-    return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}">
-      <span class="tag">${KIND_TAG[w.kind] || ''}</span><span class="lbl">${esc(label.name)}${label.file ? `<span class="sub">${esc(label.file)}</span>` : ''}</span></button>`;
+    const software = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion' }[w.app] || w.app;
+    const label = w.app === 'cursor' && w.kind !== 'agents' ? winLabel(w.title || w.id) : null;
+    return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">${esc(software)}${label?.name ? `<span class="sub">${esc(label.name)}</span>` : ''}</span></button>`;
   }).join('');
-  openSheet('windows', `<h3>切换窗口</h3><div class="hint">Cursor、Devin、Codex 和 Fusion 都在这里。点一个就切过去。</div>${rows || '<div class="hint">没有找到窗口</div>'}`);
+  openSheet('windows', `<h3>切换窗口</h3>${rows || '<div class="hint">没有找到窗口</div>'}`);
 }
+
 const FUSION_PHASE = { idle: '待开始', planning: '正在生成方案', plan: '方案待确认', execute: '正在执行方案', review: '正在检查结果', fix: '正在小修', disagree: '方案待确认', check: '请选择下一步', stopped: '未完成，已停止', done: '完成' };
 function paintFusion(fx) {
   const on = !!fx;
@@ -1877,6 +2045,18 @@ function showProjects(m) {
   const up = m.parent ? `<button class="opt" data-dir="${esc(m.parent)}"><span class="lbl">上级目录</span></button>` : '';
   const dirs = (m.dirs || []).map(d => `<button class="opt" data-dir="${esc(d.path)}"><span class="lbl">${esc(d.name)}</span></button>`).join('');
   openSheet('projects', `<h3>浏览文件夹</h3><div class="hint">${esc(m.path)}</div><button class="opt" data-open="${esc(m.path)}"><span class="lbl">打开此文件夹</span></button><button class="opt" data-project-chat="${esc(m.path)}"><span class="lbl">在此项目新建会话</span></button><button class="opt" data-project-new="${esc(m.path)}"><span class="lbl">新建项目并创建会话</span></button>${pathInput}${up}${drives}${dirs || '<div class="hint">没有子文件夹。</div>'}`);
+}
+function showCodexSettings(m) {
+  const button = c => `<button class="paramBtn ${c.on || c.current ? 'cur' : ''}" data-codex-setting="${esc(c.id)}" ${c.disabled ? 'disabled' : ''}>${esc(c.label)}</button>`;
+  const nav = `<div class="codexSettingsNav">${(m.nav || []).map(button).join('')}</div>`;
+  const choices = m.choices?.length ? `<div class="pSec">选项</div>${m.choices.map(c => `<button class="opt ${c.on ? 'cur' : ''}" data-codex-setting="${esc(c.id)}"><span class="lbl">${esc(c.label)}</span></button>`).join('')}` : '';
+  const rows = (m.rows || []).map(row => {
+    const sw = row.controls.find(c => c.role === 'switch');
+    const detail = row.detail ? `<div class="hint">${esc(row.detail)}</div>` : '';
+    if (sw) return `<button class="opt" data-codex-setting="${esc(sw.id)}" ${sw.disabled ? 'disabled' : ''}><span class="lbl">${esc(row.label)}</span><span class="switch ${sw.on ? 'on' : ''}"></span></button>`;
+    return `<div class="pSec">${esc(row.label)}</div>${detail}<div class="paramRow">${row.controls.map(button).join('')}</div>`;
+  }).join('');
+  openSheet('codex-settings', `<h3>Codex 设置</h3>${nav}${choices}${rows || '<div class="hint">当前页面没有可操作的设置项。</div>'}`);
 }
 function showSettings(sections) {
   const body = sections.map(s => `<div class="pSec">${esc(s.title)}</div>` + s.items.map(it => {
@@ -2198,6 +2378,11 @@ $('sheet').addEventListener('click', async e => {
     closeSheet(); status('正在创建会话…');
     return send({ t: 'fusionContinue', side: b.dataset.fusionSide, id: b.dataset.fusionContinue });
   }
+  if (b.dataset.codexSetting) {
+    const label = b.textContent.trim();
+    if (RISKY.test(label) && !await ask(label + '？')) return;
+    status('正在读取设置…'); return send({ t: 'codexSetting', id: b.dataset.codexSetting });
+  }
   if (b.dataset.fusionProject) { closeSheet(); return send({ t: 'fusionProject', id: b.dataset.fusionProject }); }
   if (b.dataset.fusionHistory) { closeSheet(); return send({ t: 'fusionOpen', id: b.dataset.fusionHistory }); }
   if (b.dataset.fusionRefresh) { closeSheet(); status('正在读取额度…'); return send({ t: 'fusionUsage', side: b.dataset.fusionRefresh }); }
@@ -2257,7 +2442,7 @@ $('sheet').addEventListener('click', async e => {
     // Bypass Permissions lets the Agent run every tool call (commands, edits, deletes) without asking.
     if (b.dataset.kind === 'mode' && b.dataset.label === 'Bypass Permissions' && !b.classList.contains('cur')
       && !await ask('切到「Bypass Permissions」？\nAgent 之后的所有操作（运行命令、改文件、删文件）都会自动批准，不再询问你。', '切换')) return;
-    if (b.dataset.kind !== 'model' && b.dataset.kind !== 'effort') closeSheet();
+    closeSheet();
     if (b.dataset.kind !== 'codex-run' && b.dataset.kind !== 'codex-chat' && !/^fusion-(model|effort)-/.test(String(b.dataset.kind || ''))) beginSwitch(b.dataset.kind);
     return send({ t: 'pickMenu', kind: b.dataset.kind, label: b.dataset.label });
   }
@@ -2539,9 +2724,9 @@ function onThought(m) {
   box.textContent = m.text ?? '内容未保存';
 }
 
-function buttonsHtml(labels, item) {
+function buttonsHtml(labels, item, actions = []) {
   return labels.map((l, n) =>
-    `<button class="${PRIMARY.test(l) ? 'primary' : ''}" data-item="${esc(item)}" data-n="${n}">${esc(l)}</button>`).join('');
+    `<button class="${PRIMARY.test(l) ? 'primary' : ''}" data-item="${esc(item)}" data-n="${n}" data-action-id="${esc(actions[n] || '')}" data-action-label="${esc(l)}">${esc(l)}</button>`).join('');
 }
 
 function thinkingTitle(raw) {
@@ -2655,7 +2840,7 @@ function renderItem(it) {
   else el.textContent = it.t || '';
   if (it.agents?.length) el.insertAdjacentHTML('beforeend', `<div class="btns">${it.agents.map(a => `<button data-codex-agent="${esc(a.id)}">查看 ${esc(a.title)}</button>`).join('')}</div>`);
   if (it.images?.length) el.insertAdjacentHTML('beforeend', it.images.filter(src => /^(https?:|data:image\/)/.test(src)).map(src => `<a href="${esc(src)}" target="_blank" rel="noopener"><img src="${esc(src)}" alt="生成的图片" style="max-width:100%;border-radius:8px"></a>`).join(''));
-  if (it.b && it.k !== 'human') el.insertAdjacentHTML('beforeend', `<div class="btns">${buttonsHtml(it.b, it.btnItem || it.i)}</div>`);
+  if (it.b && it.k !== 'human') el.insertAdjacentHTML('beforeend', `<div class="btns">${buttonsHtml(it.b, it.btnItem || it.i, it.actions)}</div>`);
   if (it.k !== 'human') addImageCopyButtons(el);
   return el;
 }
@@ -3593,7 +3778,8 @@ document.addEventListener('click', async e => {
   if (f) return openFile(f.dataset.file);
   if (!b) return;
   if (RISKY.test(b.textContent.trim()) && !await ask(`确定要点「${b.textContent.trim()}」吗？`, b.textContent.trim())) return;
-  send({ t: 'click', item: b.dataset.item, n: Number(b.dataset.n) });
+  b.closest('.btns')?.querySelectorAll('button').forEach(button => { button.disabled = true; });
+  send({ t: 'click', item: b.dataset.item, n: Number(b.dataset.n), actionId: b.dataset.actionId, label: b.dataset.actionLabel, sel: viewSel });
   status('已点击：' + b.textContent);
 });
 
