@@ -1,6 +1,9 @@
 // Caches the app shell so the installed app opens instantly; live data (url.json, relay) always goes to the network.
-const CACHE = 'remote-agent-v4';
-const SHELL = ['./', 'index.html', 'i18n.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
+const CACHE = 'remote-agent-v20';
+const SHELL = ['./', 'index.html', 'i18n.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png',
+  'logo-cursor-dark.svg', 'logo-cursor-light.svg',
+  'logo-devin-dark.svg', 'logo-devin-light.svg',
+  'logo-codex-dark.svg', 'logo-codex-light.svg'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
