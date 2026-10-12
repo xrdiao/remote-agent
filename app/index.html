@@ -910,7 +910,8 @@ async function decryptEntry(keyText, entry) {
 
 const offline = msg => Object.assign(new Error(msg), { offline: true });
 function discoveryUrl() {
-  return pending?.discovery || currentComputer()?.discovery || new URL('url.json', location.href).href;
+  const page = new URL('url.json', location.href).href;
+  return pending ? pending.discovery || page : currentComputer()?.discovery || page;
 }
 function computerLink(url, current = '') {
   const target = new URL(url);
