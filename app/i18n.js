@@ -5,6 +5,16 @@ const I18N = (() => {
   const lang = saved === 'zh' || saved === 'en' ? saved : /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
 
   const EN = {
+    '主机': 'Host', '正在连接电脑': 'Connecting to computer', '正在建立实时连接…': 'Opening live connection…',
+    '正在读取 Agent': 'Reading agents', 'Agent 已就绪': 'Agents ready', '没有检测到 Agent 窗口': 'No agent windows detected',
+    '连接进度会在这里显示。': 'Connection progress appears here.',
+    '正在读取电脑上的 Agent 窗口…': 'Reading agent windows on the computer…',
+    '主机已连接，继续使用当前会话。': 'Host connected. Continue with your current session.',
+    '实时连接已建立': 'Live connection established', '等待主机': 'Waiting for host',
+    '正在读取窗口…': 'Reading windows…', '检测到窗口': 'Window detected',
+    '请在电脑上打开 Agent 的调试窗口': 'Open the agent with its debugging port on the computer',
+    '检测中…': 'Checking…', '未检测到': 'Not detected', '可用': 'Available', '进入': 'Continue',
+    '也可以直接进入，窗口列表会继续加载。': 'You can continue now while the window list loads.',
     '复制图片': 'Copy image', '已复制图片': 'Image copied',
     '复制图片失败：': 'Failed to copy image: ',
     '浏览器不支持图片复制，请打开图片后保存': 'This browser cannot copy images. Open the image to save it.',
