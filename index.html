@@ -1619,14 +1619,14 @@ function connect() {
       finishPending(['正在读取额度…']);
     }
     else if (m.t === 'attached') {
+      if (m.closed) { setWindowReady(m.ready === true); status('这个窗口已经关闭，请重新选择', false); send({ t: 'windows' }); return; }
       rememberAgentOpen(m);
-      if (m.keepQuota) { applySelection(m); return; }
+      if (m.keepQuota) { applySelection(m); setWindowReady(true); return; }
       finishPending(['正在切换窗口…', '正在切换 Agent…']);
       store.set('window', m.id);
       applySelection(m, false);
       currentWindow = m.id;
       currentApp = m.app || null;
-      if (m.closed) { status('这个窗口已经关闭，请重新选择', false); send({ t: 'agents' }); return; }
       setWindowReady(true);
       $('dot').className = 'ok';
       status('已连接');
@@ -1638,7 +1638,7 @@ function connect() {
       renderContext(null);
       $('quotaMeters').innerHTML = '';
       $('quotaMeters').title = '';
-      renderQuota(quotaCache.get(quotaKey()) || {});
+      renderQuota(quotaCache.get(quotaKey()) || { missing: true, quota: [], limits: [] });
       send({ t: 'usage', automatic: true });
       send({ t: 'appTheme', dark: document.documentElement.dataset.theme !== 'light' });
       send({ t: 'windows' });
@@ -2104,15 +2104,14 @@ const quotaCache = new Map();
 const quotaKey = () => [currentComputer()?.id || '', ...viewSel.split('|').slice(0, 2)].join('|');
 function renderQuota(m) {
   if ('context' in m) renderContext(m.context);
-  if (m.error) { $('quotaStatus').textContent = m.error; $('quotaStatus').title = m.detail || m.error; if (!m.automatic) status('额度刷新失败：' + m.error, false); return; }
+  if (m.error) { $('quotaStatus').textContent = m.error; $('quotaStatus').title = $('quotaMeters').title = m.detail || m.error; if (!m.automatic) status('额度刷新失败：' + m.error, false); return; }
   if (!m.cached || m.updated > (quotaCache.get(quotaKey())?.updated || 0)) $('quotaStatus').textContent = '';
 
   if (m.loading) return;
-  quotaInfo = m;
   if (!('quota' in m) && !('limits' in m) && !('bars' in m)) {
-    $('quotaMeters').innerHTML = '<button class="meter" onclick="showUsageDetails(\'quota\')"><span class="track"></span><span class="meterText"><span class="meterLabel">额度</span><b>未获取</b></span></button>';
     return;
   }
+  quotaInfo = m;
   if (!m.missing && !m.loading) quotaCache.set(quotaKey(), m);
   const bars = [...(m.quota || []), ...(m.limits || []), ...((m.quota || m.limits) ? [] : (m.bars || []))]
     .filter(b => b?.label && !/^loading\b/i.test(String(b.label)));
@@ -2710,18 +2709,31 @@ itemsEl.addEventListener('click', async e => {
   const box = b.closest('.thinking');
   const body = box?.querySelector('.thb');
   const next = !box.classList.contains('open');
-  thinkingPref.set(b.dataset.think, next);
+  thinkingPref.set(viewSel + '|' + b.dataset.think, next);
   box.classList.toggle('open', next);
   b.querySelector('.tha').textContent = next ? '收起' : '展开';
   if (body) body.hidden = !next;
   // Devin thoughts beyond the payload budget arrive title-only; fetch the body on first open.
   if (next && b.dataset.more && !thoughtFull.has(b.dataset.think)) {
-    thoughtFull.set(b.dataset.think, undefined);
-    if (body) { body.textContent = '加载中…'; body.classList.add('loading'); }
-    send({ t: 'thought', i: b.dataset.think });
+    requestThought(b.dataset.think);
   }
 });
 const thoughtFull = new Map();
+function requestThought(id) {
+  if (thoughtFull.has(id)) return;
+  thoughtFull.set(id, undefined);
+  const body = itemsEl.querySelector(`[data-think="${CSS.escape(id)}"]`)?.closest('.thinking')?.querySelector('.thb');
+  if (body) { body.textContent = '加载中…'; body.classList.add('loading'); }
+  send({ t: 'thought', i: id });
+}
+const thoughtObserver = new IntersectionObserver(entries => {
+  for (const entry of entries) {
+    if (!entry.target.isConnected) { thoughtObserver.unobserve(entry.target); continue; }
+    if (!entry.isIntersecting || !entry.target.classList.contains('open')) continue;
+    thoughtObserver.unobserve(entry.target);
+    requestThought(entry.target.querySelector('[data-think]').dataset.think);
+  }
+}, { root: list, rootMargin: '100px' });
 function onThought(m) {
   thoughtFull.set(m.i, m.text ?? null);
   const box = document.querySelector(`[data-think="${CSS.escape(m.i)}"]`)?.closest('.thinking')?.querySelector('.thb');
@@ -2756,7 +2768,8 @@ const ICON = {
 const TOOL_LABEL = { search: 'Searched', explore: 'Explored', read: 'Read', command: 'Command', edit: 'Edited' };
 const thinkingPref = new Map();
 function thinkingWantOpen(it) {
-  if (thinkingPref.has(it.i)) return thinkingPref.get(it.i);
+  const key = viewSel + '|' + it.i;
+  if (thinkingPref.has(key)) return thinkingPref.get(key);
   return true;
 }
 function paintThinking(el, it) {
@@ -2767,10 +2780,6 @@ function paintThinking(el, it) {
   const full = thoughtFull.get(it.i);
   if (!rest && typeof full === 'string') rest = full;
   const more = !!it.more && !rest;
-  if (open && more && !thoughtFull.has(it.i)) {
-    thoughtFull.set(it.i, undefined);
-    send({ t: 'thought', i: it.i });
-  }
   let btn = el.querySelector('.thbtn');
   let box = el.querySelector('.thb');
   if (!btn || !box) {
@@ -2785,6 +2794,7 @@ function paintThinking(el, it) {
   const follow = box.scrollHeight - box.scrollTop - box.clientHeight < 48;
   if (box.textContent !== rest) box.textContent = rest;
   box.hidden = !open;
+  if (open && more && !thoughtFull.has(it.i)) thoughtObserver.observe(el);
   if (open && it.live && follow) box.scrollTop = box.scrollHeight;
 }
 
@@ -3321,7 +3331,7 @@ function renderChat(chat) {
   const stick = followBottom || sessionChanged;
   // Anchor on the first visible item so loading older messages doesn't jump.
   let anchor = savedAnchor;
-  if (anchor && !V.items.some(it => String(it.i) === anchor.id)) anchor = null;
+  if (anchor && !V.items.some(it => String(it.i) === anchor.id && !(it.k === 'tool' && it.done))) anchor = null;
   if (!stick && !anchor) {
     const top = list.getBoundingClientRect().top;
     let lo = 0, hi = itemsEl.children.length;
@@ -3330,7 +3340,7 @@ function renderChat(chat) {
       if (itemsEl.children[mid].getBoundingClientRect().bottom > top) hi = mid;
       else lo = mid + 1;
     }
-    const retained = new Set(V.items.map(it => String(it.i)));
+    const retained = new Set(V.items.filter(it => !(it.k === 'tool' && it.done)).map(it => String(it.i)));
     for (let n = lo; n < itemsEl.children.length; n++) {
       const el = itemsEl.children[n];
       if (retained.has(el.dataset.i)) { anchor = { id: el.dataset.i, top: el.getBoundingClientRect().top - top }; break; }
@@ -3340,7 +3350,7 @@ function renderChat(chat) {
       if (retained.has(el.dataset.i)) { anchor = { id: el.dataset.i, top: el.getBoundingClientRect().top - top }; break; }
     }
   }
-  const visibleItems = V.items;
+  const visibleItems = V.items.filter(it => !(it.k === 'tool' && it.done));
   const els = visibleItems.map(it => {
     const key = JSON.stringify(it);
     const hit = cache.get(it.i);
@@ -3351,6 +3361,12 @@ function renderChat(chat) {
       return hit.el;
     }
     const el = renderItem(it);
+    if (it.k === 'tool' && hit?.el.classList.contains('toolrow')) {
+      const open = hit.el.classList.contains('open');
+      el.classList.toggle('open', open);
+      const chev = el.querySelector('.chev');
+      if (chev) chev.textContent = open ? '▾' : '▸';
+    }
     el.dataset.i = it.i;
     cache.set(it.i, { key, el });
     return el;
