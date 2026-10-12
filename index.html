@@ -84,6 +84,8 @@
   #titleText { font-size: 13px; line-height: 1.3; font-weight: 600; }
   #titleProject { font-size: 10px; line-height: 1.3; color: var(--muted2); }
   #title::after { content: "⌄"; color: var(--muted); }
+  body.devin #meters { flex: none; }
+  body.devin #quotaMeters { flex: none; }
   .seg { display: flex; flex: none; margin: 3px 8px 5px; padding: 2px; border: 1px solid var(--border); border-radius: 14px; background: var(--panel); }
   .seg button { display: flex; align-items: center; justify-content: center; gap: 8px; flex: 1; border: none; border-radius: 9px; padding: 4px 8px; font-size: 13px; background: transparent; color: var(--muted2); }
   .seg button.on { background: var(--accent); color: #fff; box-shadow: inset 0 1px 0 #ffffff22; }
@@ -114,6 +116,7 @@
   #meters { flex: 0 0 156px; display: flex; align-items: center; gap: 4px; min-width: 0; }
   #quotaMeters { display: flex; flex: 1; overflow-x: auto; scrollbar-width: none; }
   #quotaMeters:empty { display: none; }
+  #quotaMeters.devinLimits { gap: 4px; }
   #quotaStatus { display: none; }
   .meter { flex: none; display: flex; align-items: center; gap: 4px; width: 76px; height: 38px; padding: 4px 5px; border-radius: 10px; background: var(--panel); font-size: 10px; }
   .quotaUpdated { display: none; }
@@ -134,7 +137,7 @@
   .attachment img { width: 56px; height: 42px; object-fit: cover; border-radius: 7px; }
   .attachment span { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
   .attachment button { padding: 3px 6px; border: none; background: transparent; color: var(--muted2); }
-  #list { flex: 1; display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; padding: 10px 12px 16px; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+  #list { flex: 1; display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; padding: 10px 12px 16px; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; overflow-anchor: none; }
   /* Short threads sit on the composer. The spacer shrinks away once the thread scrolls. */
   #list::before { content: ""; flex: 1 1 auto; min-height: 0; }
   #older { display: block; margin: 0 auto 10px; font-size: 13px; color: var(--muted2); background: transparent; }
@@ -228,10 +231,6 @@
   #sessBar .sessX:active { color: var(--err); }
   #sessBar .sessChip { flex: none; max-width: 52vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; padding: 4px 10px; color: var(--muted); }
   #sessBar .sessChip.on { color: var(--hi); border-color: var(--accent-b); background: var(--ctrl); }
-  .surfSeg { display: inline-flex; border: 1px solid var(--line2); border-radius: 8px; overflow: hidden; flex: none; }
-  .surfSeg[hidden] { display: none; }
-  .surfSeg button { border: 0; border-radius: 0; background: none; color: var(--muted); padding: 4px 9px; font-size: 12px; }
-  .surfSeg button.on { background: var(--ctrl); color: var(--hi); }
   .msg.human .rv { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; align-self: center; margin-left: 6px; }
   .foldBtn { font-size: 12px; padding: 0 8px; line-height: 1.5; background: none; border: 1px solid var(--line); color: var(--muted); }
   .endFold { display: block; margin: 6px 0 0 auto; font-size: 12px; padding: 2px 10px; background: none; border: 1px solid var(--line); color: var(--muted); }
@@ -243,6 +242,7 @@
   #items > .msg { content-visibility: auto; contain-intrinsic-size: auto 72px; }
   .revertBtn { font-size: 11px; padding: 2px 8px; color: var(--muted); background: none; border: 1px solid var(--line); }
   #taskChip span { color: var(--muted); }
+  #sessionNotice { padding: 12px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); color: var(--text); }
   .sheetTasks li { display: flex; gap: 8px; padding: 4px 2px; }
   .sheetTasks .ti { flex: none; width: 1em; text-align: center; color: var(--muted); }
   .sheetTasks .done .ti { color: var(--ok); }
@@ -324,10 +324,17 @@
   #chatTools, #termTools { display: flex; align-items: center; gap: 7px; overflow-x: auto; scrollbar-width: none; min-width: 0; }
   #chatTools::-webkit-scrollbar, #termTools::-webkit-scrollbar { display: none; }
   #chatTools button, #termTools button { flex: none; white-space: nowrap; font-size: 12px; height: 38px; padding: 5px 9px; border-radius: 10px; }
-  #chatTools #pickModel { flex: 1 0 105px; max-width: 44%; overflow: hidden; text-overflow: ellipsis; }
+  #chatTools { flex-wrap: nowrap; gap: 4px; }
+  #chatTools button { padding: 5px clamp(3px, 1.2vw, 8px); }
+  #chatTools #pickModel { flex: 1.4 1 80px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  #chatTools #pickMode, #chatTools #pickEditor, #chatTools #pickAgents { flex: 1 1 56px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  #chatTools #pickMode, #chatTools #pickPerm { max-width: 58px; overflow: hidden; text-overflow: ellipsis; }
+  #chatTools #pickPerm { display: none; }
+  .msg.notice { padding: 9px 12px; color: var(--muted); border-left: 2px solid var(--border); font-size: 13px; }
+  .msg.notice.live { color: var(--text); }
   #chatTools #add, #chatTools #img, #chatTools #uploadDoc { width: 34px; padding: 0; display: flex; align-items: center; justify-content: center; }
   #chatTools #add { font-size: 25px; }
-  #chatTools #pickMode, #chatTools #pickPerm, #chatTools #pickDir, #chatTools #newChat { display: none; }
+  #chatTools #pickDir, #chatTools #newChat { display: none; }
   #pickAgents { max-width: 100px; overflow: hidden; text-overflow: ellipsis; }
   #stop { position: absolute; top: 0; right: 0; z-index: 2; width: 36px; height: 36px; padding: 0; border-radius: 11px; }
   #mic { display: none; }
@@ -359,6 +366,7 @@
   button.danger { background: var(--danger); border-color: var(--danger-b); color: #fff; font-weight: 600; }
   .optRow { display: flex; gap: 6px; align-items: stretch; margin-bottom: 6px; }
   .optRow .opt { margin-bottom: 0; flex: 1; min-width: 0; }
+  .optRow .archBtn { flex: none; width: 52px; padding: 0 6px; }
   .paramBtn { flex: none; padding: 0 12px; font-size: 13px; }
   .switch { flex: none; width: 36px; height: 20px; border-radius: 10px; background: var(--line2); position: relative; transition: background .15s; }
   .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--hi); transition: left .15s; }
@@ -388,6 +396,8 @@
   #viewer { position: fixed; inset: 0; z-index: 25; background: var(--bg); display: none; flex-direction: column;
             padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left); }
   #viewer.open { display: flex; }
+  #vStatus { flex: none; padding: 6px 10px; color: var(--muted); }
+  #vStatus.err { color: var(--err); }
   #viewer .bar { flex: none; display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--panel); border-bottom: 1px solid var(--line); min-width: 0; }
   #viewer .names { flex: 1; min-width: 0; line-height: 1.25; }
   #vName { font-size: 14px; color: #eee; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -426,7 +436,8 @@
   #vBody .dm::before { content: '▲'; position: absolute; left: -12px; top: -8px; font-size: 8px; color: var(--gd); }
   #vBody .gap { display: flex; padding: 3px 0 3px 3.6em; color: var(--muted); border-top: 1px dashed var(--line); border-bottom: 1px dashed var(--line); cursor: pointer; user-select: none; -webkit-user-select: none; }
   #vBody .l.hl { background: var(--sel, var(--hlbg)); }
-  #vBody .l { content-visibility: auto; }
+  .generatedImage { margin: 8px 0; }
+  .generatedImage button { display: block; margin-top: 6px; font-size: 12px; }
   #vBody .l.searchHit { background: #5c4b13; }
   #vBody.editing { display: flex; overflow: hidden; }
   #vEditBox { flex: 1; min-height: 0; width: 100%; box-sizing: border-box; margin: 0; border: 0; outline: none; resize: none;
@@ -504,6 +515,67 @@
   #gateInput.code { font-size: 26px; letter-spacing: 8px; text-align: center; }
   #gateMsg.err { color: var(--err); }
   #gateInfo { font-size: 12px; color: var(--faint); }
+  /* connection screen: host + per-agent status while connecting (sits above #gate) */
+  #conn { --c-ok: #4FB37E; --c-ok-t: #7CCB9F; --c-load: #4C9AE6; --c-load-t: #86B9EE; --c-load-dim: rgba(76,154,230,.28); --c-err: #D9625E; --c-err-t: #EE8B87;
+          --c-tint-ok: rgba(79,179,126,.12); --c-tint-err: rgba(217,98,94,.12); --c-go-bg: #e6e6e6; --c-go-fg: #0b131b; --c-go-b: #fff;
+          position: fixed; inset: 0; z-index: 21; background: var(--bg); display: none; flex-direction: column; overflow-y: auto;
+          padding: calc(18px + env(safe-area-inset-top)) 20px calc(20px + env(safe-area-inset-bottom)); }
+  :root[data-theme="light"] #conn { --c-ok: #3f9a6a; --c-ok-t: #1f7a4d; --c-load: #3d8ad6; --c-load-t: #1f66b0; --c-load-dim: rgba(61,138,214,.25); --c-err: #cc4f4b; --c-err-t: #b2302c;
+          --c-tint-ok: rgba(63,154,106,.1); --c-tint-err: rgba(204,79,75,.1); --c-go-bg: #242424; --c-go-fg: #fff; --c-go-b: #242424; }
+  #conn.open { display: flex; }
+
+
+  #conn > * { flex-shrink: 0; }
+  #conn button { font-size: 13px; }
+  #conn .cTop { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+  #conn .cBrand { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  #conn .cBrand img { width: 20px; height: 20px; border-radius: 5px; border: 1px solid var(--border); }
+  #conn .cLink { background: none; border: 0; color: var(--muted2); padding: 4px 0 4px 10px; }
+  #conn h2 { margin: 0; font-size: 22px; line-height: 1.3; font-weight: 600; color: var(--hi); }
+  #connLead { margin: 4px 0 0; font-size: 13.5px; color: var(--muted); line-height: 1.5; }
+  #conn .cLabel { font-size: 12.5px; color: var(--faint); margin: 22px 4px 8px; display: flex; justify-content: space-between; align-items: baseline; }
+  #connSum { color: var(--muted); }
+  #connSum b { color: var(--hi); font-weight: 600; font-size: 15px; font-variant-numeric: tabular-nums; }
+  .cBar { display: grid; gap: 4px; margin: 0 0 10px; }
+  .cBar i { height: 4px; border-radius: 2px; background: var(--line); position: relative; overflow: hidden; }
+  .cBar i.ok { background: var(--c-ok); }
+  .cBar i.err { background: var(--c-err); }
+  .cBar i.load { background: var(--c-load-dim); }
+  .cBar i.load::after { content: ""; position: absolute; top: 0; bottom: 0; width: 40%; left: -40%; background: var(--c-load); border-radius: 2px; animation: cSlide 1.4s ease-in-out infinite; }
+  @keyframes cSlide { to { left: 100%; } }
+  .cGroup { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
+  .cItem + .cItem { border-top: 1px solid var(--line); }
+  .cRow { display: flex; align-items: center; gap: 12px; padding: 13px 14px; min-height: 64px; }
+  .cTile { flex: none; width: 36px; height: 36px; border-radius: 9px; background: var(--ctrl); border: 1px solid var(--border); display: grid; place-items: center; color: var(--hi); font-weight: 600; font-size: 14px; }
+  .cTile svg { width: 18px; height: 18px; stroke: var(--muted2); }
+  .cTile.cBrand { padding: 6px; }
+  .cTile.cBrand img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .cTile.cBrand .on-light { display: none; }
+  :root[data-theme="light"] .cTile.cBrand .on-dark { display: none; }
+  :root[data-theme="light"] .cTile.cBrand .on-light { display: block; }
+  .cMeta { flex: 1; min-width: 0; }
+  .cName { font-size: 15px; font-weight: 600; color: var(--hi); line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cSub { font-size: 12.5px; color: var(--muted); line-height: 1.4; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cSub .mono { font: 11.5px ui-monospace, Menlo, monospace; }
+  .cSt { flex: none; display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 500; color: var(--muted); }
+  .cIc { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; flex: none; border: 1px solid var(--line2); font-size: 11px; font-weight: 700; line-height: 1; }
+  .cIc svg { width: 11px; height: 11px; stroke: currentColor; }
+  .cItem.ok .cSt { color: var(--c-ok-t); } .cItem.ok .cIc { background: var(--c-tint-ok); border-color: var(--c-ok); }
+  .cItem.load .cSt { color: var(--c-load-t); }
+  .cItem.err .cSt { color: var(--c-err-t); } .cItem.err .cIc { background: var(--c-tint-err); border-color: var(--c-err); }
+  .cSpin { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--c-load-dim); border-top-color: var(--c-load); animation: cRot .9s linear infinite; flex: none; }
+  @keyframes cRot { to { transform: rotate(360deg); } }
+  .cItem.wait .cRow { opacity: .6; }
+  #conn .cFoot { margin-top: auto; padding-top: 24px; display: flex; flex-direction: column; gap: 10px; }
+  #connNote { margin: 0 0 2px; font-size: 12.5px; color: var(--muted); text-align: center; line-height: 1.5; }
+  #connNote:empty { display: none; }
+  #conn .cGo { width: 100%; height: 48px; border-radius: 12px; border: 1px solid var(--c-go-b); background: var(--c-go-bg); color: var(--c-go-fg); font-size: 16px; font-weight: 600; }
+  #conn .cGo small { font-weight: 400; opacity: .62; font-size: 13px; margin-left: 4px; }
+  #conn .cGo:disabled { opacity: .4; }
+  @media (prefers-reduced-motion: reduce) {
+    .cSpin { animation: none; border-color: var(--c-load); border-right-color: var(--c-load-dim); }
+    .cBar i.load::after { animation: none; left: 30%; }
+  }
 </style>
 </head>
 <body>
@@ -527,8 +599,10 @@
     <div id="listWrap">
     <div id="list">
       <button id="older">↑ 加载更早的消息</button>
+      <div id="historyStatus" class="hint" hidden role="status"></div>
       <button id="cachedMore" hidden></button>
       <button id="taskChip" hidden></button>
+      <div id="sessionNotice" hidden role="status"></div>
       <div id="fusionWelcome" hidden><div class="fusionIllustration" aria-hidden="true"><span>A</span><i>+</i><span>B</span></div><h2>让两个 AI 一起完成任务</h2><p>A 负责方案与检查，B 负责执行</p><p>协同思考、编写代码、完成复杂任务</p></div>
       <div id="items"></div>
       <div id="empty" hidden>没找到聊天面板。<br><span id="emptyHint"></span></div>
@@ -589,7 +663,7 @@
     <button id="mic" title="语音输入" aria-label="语音输入"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
     <button id="pickMode" hidden></button>
     <button id="pickModel" title="更换模型">模型 ▾</button>
-    <span id="surfSeg" class="surfSeg" hidden><button data-surf="agent">Agent</button><button data-surf="editor">Editor</button></span>
+    <button id="pickEditor" title="浏览和编辑当前项目文件" hidden>Editor</button>
     <button id="pickPerm" title="权限" hidden>权限 ▾</button>
     <button id="pickPlan" title="Plan 模式" hidden>Plan</button>
     <button id="pickIde" title="IDE 上下文" hidden>IDE</button>
@@ -619,6 +693,7 @@
     <button id="vFind">搜索</button>
     <button id="vWrap">换行</button>
   </div>
+  <div id="vStatus" hidden role="status"></div>
   <div id="vTools" hidden>
     <button data-edit="copy">复制</button><button data-edit="paste">粘贴</button>
     <button data-edit="indent">缩进</button><button data-edit="outdent">反缩进</button><button data-edit="search">搜索</button>
@@ -649,6 +724,16 @@
   <div id="gateInfo"></div>
 </div>
 
+<div id="conn" role="dialog" aria-labelledby="connTitle">
+  <div class="cTop"><span class="cBrand"><img src="icon-192.png" alt="">Remote Agent</span><button id="connSwitch" class="cLink">切换电脑</button></div>
+  <h2 id="connTitle"></h2><p id="connLead"></p>
+  <div class="cLabel">主机</div><div class="cGroup" id="connHost"></div>
+  <div class="cLabel"><span>Agent</span><span id="connSum"></span></div>
+  <div class="cBar" id="connBar" aria-hidden="true"></div>
+  <div class="cGroup" id="connAgents" aria-live="polite"></div>
+  <div class="cFoot"><p id="connNote"></p><button id="connGo" class="cGo" hidden>进入</button></div>
+</div>
+
 <script src="i18n.js"></script>
 <script>
 const $ = id => document.getElementById(id);
@@ -668,6 +753,32 @@ let crop = store.get('crop') !== 'full';
 let frame = { w: 1000, h: 800 }, panel = null, zoom = 1;
 let windows = [], currentWindow = null;
 let currentApp = null;
+let editorBrowsing = false, editorDirectory = null, returnToEditor = null;
+const agentLists = new Map();
+const agentListKey = () => (currentComputer()?.key || '') + ':' + currentApp;
+function receiveAgents(m) {
+  if (m.app && m.app !== currentApp) return;
+  const key = agentListKey();
+  const previous = agentLists.get(key) || [];
+  let list = m.list || [];
+  list = list.map(a => ({ ...a, title: a.title || previous.find(b => b.id === a.id)?.title || '未命名会话' }));
+  if (m.partial) {
+    const remaining = (agentLists.get(key) || []).filter(a => String(a.id).startsWith('pick:'));
+    list = [...list, ...remaining.filter(a => !list.some(b => b.title === a.title))];
+  }
+  const changed = JSON.stringify(agentLists.get(key)) !== JSON.stringify(list);
+  agentLists.set(key, list);
+  if (!m.silent || (sheetKind === 'agents' && changed)) {
+    finishPending(['正在读取 Agent 列表…', '正在归档…']);
+    showAgents(list);
+  }
+}
+function openAgentList(refresh = false) {
+  const cached = agentLists.get(agentListKey());
+  if (cached && !refresh) showAgents(cached);
+  else status('正在读取 Agent 列表…');
+  send({ t: 'agents', automatic: !!cached && !refresh, silent: !!cached && !refresh });
+}
 let currentAppName = I18N.tr('当前应用');
 let viewSel = '';
 const appMessage = template => I18N.tr(template).replaceAll('{app}', currentAppName);
@@ -754,6 +865,7 @@ function send(obj) {
 let gateSubmit = null;
 let gateRetryFn = null;
 function gate({ msg = '', err = false, input = null, retry = false, repair = false, computers = false, appLink = null, onRetry = null } = {}) {
+  connHide();
   $('gate').classList.add('open');
   $('gateDiagnostics').hidden = true;
   $('gateMsg').textContent = msg;
@@ -802,6 +914,55 @@ function repairPairing() {
 }
 $('gateRepair').onclick = () => repairPairing();
 
+// Presentation only: use the existing authentication and window-list messages.
+const CONN_AGENTS = [
+  { app: 'cursor', name: 'Cursor' }, { app: 'devin', name: 'Devin' }, { app: 'codex', name: 'Codex' },
+];
+const conn = { active: false, host: false, phase: '', agents: null, timer: 0 };
+function connHide() {
+  clearTimeout(conn.timer);
+  conn.active = false;
+  $('conn').classList.remove('open');
+}
+function connShow(phase) {
+  clearTimeout(conn.timer);
+  Object.assign(conn, { active: true, host: false, phase, agents: null });
+  $('conn').classList.add('open');
+  connRender();
+}
+function connHostOk() {
+  if (!conn.active) return;
+  conn.host = true;
+  connRender();
+}
+function connWindows(list) {
+  if (!conn.active || !conn.host) return;
+  conn.agents = CONN_AGENTS.map(a => ({ ...a, windows: list.filter(w => w.app === a.app).length }));
+  connRender();
+  clearTimeout(conn.timer);
+  if (list.length) conn.timer = setTimeout(connHide, 900);
+}
+function connRender() {
+  const tr = I18N.tr;
+  const icon = st => st === 'load' ? '<span class="cSpin"></span>' : `<span class="cIc">${st === 'ok' ? '✓' : st === 'err' ? '!' : ''}</span>`;
+  const row = (st, tile, name, sub, label, brand = false) => `<div class="cItem ${st}"><div class="cRow"><div class="cTile${brand ? ' cBrand' : ''}">${tile}</div><div class="cMeta"><div class="cName">${esc(name)}</div><div class="cSub">${esc(sub)}</div></div><div class="cSt">${icon(st)}<span>${esc(tr(label))}</span></div></div></div>`;
+  const ready = conn.agents?.filter(a => a.windows).length || 0;
+  const settled = conn.agents !== null;
+  $('connTitle').textContent = tr(!conn.host ? '正在连接电脑' : !settled ? '正在读取 Agent' : ready ? 'Agent 已就绪' : '没有检测到 Agent 窗口');
+  $('connLead').textContent = tr(!conn.host ? '连接进度会在这里显示。' : !settled ? '正在读取电脑上的 Agent 窗口…' : '主机已连接，继续使用当前会话。');
+  $('connHost').innerHTML = row(conn.host ? 'ok' : 'load', '<svg viewBox="0 0 24 24" fill="none" stroke-width="1.6"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M9 21h6M12 17v4"/></svg>', currentComputer()?.name || tr('电脑'), tr(conn.host ? '实时连接已建立' : conn.phase), conn.host ? '已连接' : '连接中…');
+  const agents = conn.agents || CONN_AGENTS;
+  const state = a => !conn.host ? 'wait' : !settled ? 'load' : a.windows ? 'ok' : 'err';
+  $('connAgents').innerHTML = agents.map(a => row(state(a), `<img class="on-dark" src="logo-${a.app}-dark.svg" alt=""><img class="on-light" src="logo-${a.app}-light.svg" alt="">`, a.name, !conn.host ? tr('等待主机') : !settled ? tr('正在读取窗口…') : a.windows ? tr('检测到窗口') : tr('请在电脑上打开 Agent 的调试窗口'), !conn.host ? '等待主机' : !settled ? '检测中…' : a.windows ? '可用' : '未检测到', true)).join('');
+  $('connSum').textContent = settled ? `${ready}/${CONN_AGENTS.length} ${tr('可用')}` : tr(conn.host ? '检测中…' : '等待主机');
+  $('connBar').style.gridTemplateColumns = `repeat(${CONN_AGENTS.length}, 1fr)`;
+  $('connBar').innerHTML = agents.map(a => `<i class="${conn.host ? state(a) : ''}"></i>`).join('');
+  $('connGo').hidden = !conn.host;
+  $('connNote').textContent = conn.host && !settled ? tr('也可以直接进入，窗口列表会继续加载。') : '';
+}
+$('connGo').onclick = connHide;
+$('connSwitch').onclick = () => showComputers();
+
 /* ---------- relay discovery & auth ---------- */
 const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 const b64u = s => b64(s.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - s.length % 4) % 4));
@@ -848,7 +1009,7 @@ function applySelection(m, clearChat = true) {
   if (m.app) currentApp = m.app;
   const changed = (m.sel || '') !== viewSel;
   if (changed) saveDraft();
-  if (changed) { viewSel = m.sel || ''; cache.clear(); }
+  if (changed) { viewSel = m.sel || ''; cache.clear(); $('sessionNotice').hidden = true; }
   const here = currentComputer();
   if (here) rememberComputer({
     ...here,
@@ -857,6 +1018,8 @@ function applySelection(m, clearChat = true) {
     threadId: m.threadId ?? here.threadId ?? '',
   });
   if (changed) { restoreDraft(); $('attachments').innerHTML = ''; send({ t: 'attachments' }); }
+  const cachedAgents = agentLists.get(agentListKey());
+  if (cachedAgents && m.threadId) agentLists.set(agentListKey(), cachedAgents.map(a => ({ ...a, current: a.id === m.threadId || a.id === 'tab:' + m.threadId || a.id === 'thread:' + m.windowId + ':' + m.threadId })));
   if (m.project) currentProject = m.project;
   updateTitle();
   if (clearChat && changed) renderChat(null);
@@ -868,8 +1031,20 @@ async function decryptEntry(keyText, entry) {
 }
 
 const offline = msg => Object.assign(new Error(msg), { offline: true });
+function discoveryUrl() {
+  const page = new URL('url.json', location.href).href;
+  return pending ? pending.discovery || page : currentComputer()?.discovery || page;
+}
+function computerLink(url, current = '') {
+  const target = new URL(url);
+  const params = new URLSearchParams(target.hash.slice(1));
+  params.set('computers', JSON.stringify(loadComputers().map(c => ({ ...c, discovery: c.discovery || new URL('url.json', location.href).href }))));
+  if (current) params.set('computer', current);
+  target.hash = params.toString();
+  return target.href;
+}
 async function resolveBase() {
-  if (info.self) return location.origin;
+  if (info.self) return new URL(discoveryUrl()).origin;
   const comp = currentComputer();
   if (!comp?.key) throw Object.assign(new Error(''), { unpaired: true });
   if (info.v === 2 && info.data) {
@@ -912,6 +1087,23 @@ function parsePair(text) {
   const m = /[#&]pair=([\w-]{43})\.([\w-]{16,})/.exec(text || '');
   return m ? { key: m[1], code: m[2] } : null;
 }
+{
+  const params = new URLSearchParams(location.hash.slice(1));
+  if (params.has('computers')) {
+    const list = loadComputers();
+    try {
+      for (const c of JSON.parse(params.get('computers'))) {
+        if (!c?.key || !c?.token) continue;
+        const i = list.findIndex(old => old.key === c.key);
+        if (i < 0) list.push(c); else list[i] = c;
+      }
+      saveComputers(list, params.get('computer') || currentComputer()?.key || '');
+    } catch {}
+    params.delete('computers');
+    params.delete('computer');
+    history.replaceState(null, '', location.pathname + location.search + (params.size ? '#' + params.toString() : ''));
+  }
+}
 let pending = parsePair(location.hash);
 if (pending) history.replaceState(null, '', location.pathname + location.search);
 // Opened from a notification: <app>#win=<window id or JSON with windowId and threadId>.
@@ -952,14 +1144,19 @@ function pastePair(text) {
   if (!p) return showUnpaired('这不是配对链接（应包含 #pair=…）');
   let target;
   try { target = new URL(text.trim()); } catch {}
-  const here = location.origin + location.pathname;
-  // A link for another app address: switch to it (the Android app remembers the new address).
-  if (target && /^https?:$/.test(target.protocol) && target.origin + target.pathname !== here) {
-    if (inApp) return window.AgentRemoteApp.setUrl(target.href);
-    location.href = target.href;
+  if (target && /^https?:$/.test(target.protocol) && target.origin !== location.origin) {
+    const link = computerLink(target.href);
+    if (inApp) return window.AgentRemoteApp.setUrl(link);
+    location.href = link;
     return;
   }
+  if (target && /^https?:$/.test(target.protocol)) p.discovery = new URL('url.json', target).href;
   pending = p;
+  connGen++;
+  authed = false;
+  const old = ws;
+  ws = null;
+  try { old?.close(); } catch {}
   boot();
 }
 
@@ -988,7 +1185,7 @@ async function testEndpoint(url, relay = false, timeout = 8000) {
 let offlineGen = 0;
 let lastFailure = { stage: '应用连接', error: '' };
 async function diagnoseConnection(failure, gen) {
-  const page = new URL('url.json', location.href).href;
+  const page = discoveryUrl();
   const relay = base ? base.replace(/\/$/, '') + '/url.json' : '';
   const endpoints = [{ label: '页面地址发布', url: page }, { label: '隧道和电脑服务', url: relay }];
   const box = $('gateTests');
@@ -1069,7 +1266,7 @@ async function pair(totp) {
     const id = body.id || await computerIdFromKey(pending.key);
     const prev = loadComputers().find(c => c.key === pending.key);
     const list = loadComputers().filter(c => c.key !== pending.key);
-    list.push({ id, name: body.name || prev?.name || '电脑', key: pending.key, token: body.token, win: prev?.win || '' });
+    list.push({ id, name: body.name || prev?.name || '电脑', key: pending.key, token: body.token, win: prev?.win || '', discovery: discoveryUrl(), relay: base });
     saveComputers(list, pending.key);
     store.set('window', null);
     pending = null;
@@ -1105,8 +1302,9 @@ async function boot() {
     return;
   }
   gate({ msg: '正在查找电脑…' });
+  if (!pending && currentComputer()) connShow('正在查找电脑…');
   try {
-    info = await fetch('url.json?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+    info = await fetch(discoveryUrl() + '?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
   } catch (error) {
     base = currentComputer()?.relay || '';
     return showOffline({ stage: '页面地址读取', error: error.message });
@@ -1145,7 +1343,7 @@ async function boot() {
 }
 
 async function resolvePending() {
-  if (info.self) return location.origin;
+  if (info.self) return new URL(discoveryUrl()).origin;
   if (info.v === 2 && info.data) return decryptEntry(pending.key, info);
   if (info.v !== 3 || !Array.isArray(info.computers)) throw new Error('电脑端还没有发布地址，请在那台电脑上重启服务');
   const id = await computerIdFromKey(pending.key);
@@ -1167,6 +1365,7 @@ function autoRetry() {
 
 function connect() {
   clearTimeout(retryTimer);
+  if (conn.active || $('gate').classList.contains('open')) connShow('正在建立实时连接…');
   const gen = ++connGen;
   ws = new WebSocket(base.replace(/^http/, 'ws') + '/ws');
   let opened = false;
@@ -1198,6 +1397,7 @@ function connect() {
       clearTimeout(connectTimer);
       authed = true; failures = 0;
       ungate();
+      connHostOk();
       if (sheetKind === 'computers') closeSheet();
       $('dot').className = 'ok';
       status('已连接');
@@ -1218,15 +1418,16 @@ function connect() {
       setTimeout(checkAppUpdate, 3000);
     }
     else if (m.t === 'sent') {
-      if (drafts.get(m.draft) === m.text) { drafts.delete(m.draft); draftMentions.delete(m.draft); }
-      if (draftKey() === m.draft && text.value === m.text) { text.value = ''; MN.mentions = []; autosize(); }
+      confirmSent(m);
     }
+    else if (m.t === 'sendFailed') pendingSends.delete(m.requestId);
     else if (m.t === 'attachments') { if (m.sel === viewSel) renderAttachments(m.list); }
     else if (m.t === 'chat') { if (!m.sel || !viewSel || m.sel === viewSel) renderChat(m.chat); }
+    else if (m.t === 'historyDone') finishHistory(m);
     else if (m.t === 'thread') applySelection(m);
     else if (m.t === 'frame') onFrame(m);
     else if (m.t === 'panel') { panel = m.rect; updateTermEmpty(); layoutStage(); applyQuality(); }
-    else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; if (sheetKind === 'windows') showWindows(); }
+    else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; connWindows(m.list); if (sheetKind === 'windows') showWindows(); }
     else if (m.t === 'fusionProjects') showFusionProjects(m);
     else if (m.t === 'fusionSides') showFusionSides(m);
     else if (m.t === 'fusionHistory') showFusionHistory(m);
@@ -1258,7 +1459,14 @@ function connect() {
       send({ t: 'appTheme', dark: document.documentElement.dataset.theme !== 'light' });
       send({ t: 'windows' });
     }
-    else if (m.t === 'agents') { finishPending(['正在读取 Agent 列表…']); showAgents(m.list || [], m.surface); }
+    else if (m.t === 'agents') receiveAgents(m);
+    else if (m.t === 'codexArchived') {
+      const conv = String(m.id || '').split(':').slice(2).join(':');
+      if (conv) scKeys().then(keys => Promise.all((keys || []).map(async k => {
+        const key = String(k).startsWith('m:') ? String(k).slice(2) : String(k);
+        if (key.endsWith('|' + conv)) await scClear(key);
+      }))).catch(() => {});
+    }
     else if (m.t === 'terminals') { finishPending(['正在读取终端列表…']); showTerminals(m.list || []); }
     else if (m.t === 'agentBusy') $('termBusy').hidden = !(mode === 'terminal' && m.busy);
     else if (m.t === 'termText') { if (!m.sel || !viewSel || m.sel === viewSel) renderTerm(m); }
@@ -1268,8 +1476,24 @@ function connect() {
       text.setSelectionRange(end, end);
       autosize();
     }
-    else if (m.t === 'projects') { finishPending(['正在读取项目…', '正在读取文件夹…']); showProjects(m); }
-    else if (m.t === 'docs') { finishPending(['正在读取文档…']); showDocs(m); }
+    else if (m.t === 'projects') { finishPending(['正在读取项目…', '正在读取文件夹…', '正在新建对话…']); showProjects(m); }
+    else if (m.t === 'projectTrust') {
+      finishPending(['正在打开项目…', '正在新建对话…']);
+      openSheet('project-trust', `<h3>信任此项目？</h3><p class="hint">信任后，Agent 和扩展可运行此项目的代码。只信任你了解来源的项目。</p><p>${esc(m.path)}</p><button class="opt" data-project-trust="yes">信任此项目</button><button class="opt" data-project-trust="no">保持限制模式</button>`);
+    }
+    else if (m.t === 'projectReady') {
+      if (m.sel && m.sel !== viewSel) return;
+      finishPending(['正在打开项目…', '正在新建对话…']);
+      closeSheet(); currentProject = m.name;
+      if (m.chat) renderChat(m.chat);
+      $('titleProject').textContent = m.name;
+      $('sessionNotice').hidden = !m.newSession;
+      $('sessionNotice').textContent = I18N.tr('会话创建成功，尚未发送消息。') + ' ' + m.name;
+      status(m.newSession ? '已在所选项目新建会话' : '已打开项目');
+      send({ t: 'agents', automatic: true, silent: true });
+      if (editorBrowsing) startEditor();
+    }
+    else if (m.t === 'docs') { finishPending(['正在读取文档…', '正在读取项目文件…']); showDocs(m); }
     else if (m.t === 'settings') { finishPending(['正在读取设置…', '正在修改…']); showSettings(m.sections || []); }
     else if (m.t === 'usage') {
       if (currentApp === 'fusion' || (m.sel && viewSel && m.sel !== viewSel)) return;
@@ -1277,7 +1501,7 @@ function connect() {
       renderQuota(m);
       if (!m.cached) finishPending(['正在读取额度…']);
     }
-    else if (m.t === 'menu') showMenu(m.kind, m.items, m.max, m.fusion);
+    else if (m.t === 'menu') showMenu(m.kind, m.items, m.max, m.fusion, m.fast, m.model);
     else if (m.t === 'params') showParams(m);
     else if (m.t === 'changes') showChanges(m);
     else if (m.t === 'file') showFile(m);
@@ -1301,7 +1525,7 @@ function connect() {
       status('已取出，放回输入框');
     }
     else if (m.t === 'saved') onSaved(m);
-    else if (m.t === 'status') { if (!m.ok) pendingAgentOpen = ''; clearSwitchWatch(); status(m.msg, m.ok); }
+    else if (m.t === 'status') { if (!m.ok) pendingAgentOpen = ''; if (!m.ok && String(m.msg).startsWith('连不上 Cursor、Devin 或 Codex。')) connWindows([]); clearSwitchWatch(); status(m.msg, m.ok); }
   };
 }
 
@@ -1351,9 +1575,15 @@ const RISKY = /^(stop|reject|deny|undo|discard|revert|cancel|delete|remove|停�
 const KIND_TAG = { agents: 'Agents', ssh: 'SSH', local: '本地' };
 
 // Cursor titles look like "file.py — Folder [SSH: host]"; the window is identified by folder (+ host), not the open file.
+function cleanWindowTitle(title) {
+  return String(title || '').replace(/\s*\[(?:Administrator|Administer)\]/gi, '').trim();
+}
 function winLabel(title) {
+  title = cleanWindowTitle(title);
+  const windowsTitle = /\s+-\s+(?:Cursor|Devin|Visual Studio Code)$/.test(title);
+  title = title.replace(/\s+-\s+(?:Cursor|Devin|Visual Studio Code)$/, '');
   const host = /\[SSH: ([^\]]+)\]/.exec(title)?.[1];
-  const parts = title.replace(/\s*\[SSH: [^\]]+\]\s*$/, '').split(' — ').map(s => s.replace(/^●\s*/, '').trim());
+  const parts = title.replace(/\s*\[SSH: [^\]]+\]\s*$/, '').split(windowsTitle ? / — | - / : ' — ').map(s => s.replace(/^●\s*/, '').trim());
   const folder = parts.pop() || title;
   return { name: host ? `${folder} · ${host}` : folder, file: parts.join(' — ') };
 }
@@ -1397,7 +1627,7 @@ function paintFusion(fx) {
     $('fusionModel' + side.toUpperCase()).disabled = !fx.project || !!fx.busy;
   }
   const short = s => String(s || '').slice(0, 28);
-  const roleTitle = s => `${({ codex: 'Codex', cursor: 'Cursor', devin: 'Devin' })[s.app] || s.app} · ${s.conversationTitle || s.title}`;
+  const roleTitle = s => `${({ codex: 'Codex', cursor: 'Cursor', devin: 'Devin' })[s.app] || s.app} · ${cleanWindowTitle(s.conversationTitle || s.title)}`;
   for (const side of ['a', 'b']) {
     const label = side.toUpperCase(), spec = fx[side];
     $('fusion' + label).title = spec ? roleTitle(spec) : `选择 ${label}`;
@@ -1421,10 +1651,10 @@ function showFusionSides(m) {
   for (const s of m.list || []) {
     if (!apps.has(s.app)) apps.set(s.app, new Map());
     const wins = apps.get(s.app);
-    if (!wins.has(s.windowId)) wins.set(s.windowId, { title: s.windowTitle, rows: [] });
-    wins.get(s.windowId).rows.push(s);
+    if (!wins.has(s.windowId)) wins.set(s.windowId, { title: cleanWindowTitle(s.windowTitle), rows: [] });
+    wins.get(s.windowId).rows.push({ ...s, conversationTitle: cleanWindowTitle(s.conversationTitle) });
   }
-  const rows = [...apps].map(([app, wins]) => `<details ${[...wins.values()].some(w => w.rows.some(s => s.id === selected)) ? 'open' : ''}><summary>${esc(({ codex: 'Codex', cursor: 'Cursor', devin: 'Devin' })[app] || app)}</summary>${wins.size ? [...wins.values()].map(w => `<details ${w.rows.some(s => s.id === selected) ? 'open' : ''}><summary>${esc(w.title)}</summary>${w.rows.map(s => `<button class="opt ${s.id === selected ? 'cur' : ''}" data-fusion-pick="${esc(m.side)}" data-fusion-id="${esc(s.id)}"><span class="lbl">${esc(s.conversationTitle)}</span></button>`).join('')}</details>`).join('') : '<div class="hint">当前项目没有已打开的会话</div>'}</details>`).join('');
+  const rows = [...apps].map(([app, wins]) => `<details ${[...wins.values()].some(w => w.rows.some(s => s.id === selected)) ? 'open' : ''}><summary>${esc(({ codex: 'Codex', cursor: 'Cursor', devin: 'Devin' })[app] || app)}</summary>${wins.size ? [...wins.values()].map(w => `<details ${w.rows.some(s => s.id === selected) ? 'open' : ''}><summary>${esc(w.title)}</summary>${w.rows.map(s => `<button class="opt ${s.id === selected ? 'cur' : ''}" data-fusion-pick="${esc(m.side)}" data-fusion-id="${esc(s.id)}"><span class="lbl">${esc(s.conversationTitle)}</span></button>`).join('')}</details>`).join('') : `<div class="hint">${esc(m.apps?.find(a => a.app === app)?.unavailable || '当前项目没有已打开的会话')}</div>`}${['cursor', 'devin'].includes(app) ? `<button class="opt" data-fusion-new="${esc(app)}" data-fusion-side="${esc(m.side)}"><span class="lbl">＋ 新增会话</span></button>` : ''}</details>`).join('');
   openSheet('fusion-side', `<h3>选择 ${m.side === 'b' ? 'B 执行' : 'A 方案'}</h3><div class="hint">仅显示所选项目。按软件、窗口、对话依次展开，再选择模型。A/B 可以使用同一软件或同一会话。</div><div class="fusionTree">${rows || '<div class="hint">没有可选的对话</div>'}</div>`);
 }
 function showFusionHistory(m) {
@@ -1465,26 +1695,33 @@ function showTerminals(list) {
 let currentSurface = null;
 function paintSurface() {
   const devin = currentApp === 'devin';
-  $('surfSeg').hidden = !(devin && currentSurface);
-  for (const b of $('surfSeg').children) b.classList.toggle('on', b.dataset.surf === currentSurface);
+  document.body.classList.toggle('devin', devin);
+  $('pickEditor').hidden = !['cursor', 'devin', 'codex'].includes(currentApp);
   $('pickAgents').textContent = '项目 ▾';
 }
-$('surfSeg').onclick = e => {
-  const b = e.target.closest('[data-surf]');
-  if (!b || b.dataset.surf === currentSurface) return;
-  status('正在切换界面…');
-  send({ t: 'surface', to: b.dataset.surf });
-};
+function startEditor() {
+  editorBrowsing = true;
+  editorDirectory = null;
+  status('正在读取项目文件…');
+  send({ t: 'docs', editor: true });
+}
+$('pickEditor').onclick = startEditor;
 function agentButton(a) {
   const label = a.ui ? esc(a.title) : `<span class="lbl">${esc(a.title)}</span>`;
   const tags = `${a.running && !a.current ? '<span class="tag">运行中</span>' : ''}${a.current ? '<span class="tag">当前</span>' : ''}`;
-  return `<button class="opt ${a.current ? 'cur' : ''}" data-agent="${esc(a.id)}">${label}${tags}</button>`;
+  const main = `<button class="opt ${a.current ? 'cur' : ''}" data-agent="${esc(a.id)}" data-agent-title="${esc(a.title)}">${label}${tags}</button>`;
+  if (a.ui || !String(a.id || '').startsWith('thread:')) return main;
+  return `<div class="optRow">${main}<button type="button" class="archBtn" data-codex-archive="${esc(a.id)}" data-codex-name="${esc(a.title)}" title="归档" aria-label="归档">归档</button></div>`;
 }
 function foldSection(name, inner, open, count) {
   if (!name) return inner;
   return `<button type="button" class="fold" data-fold aria-expanded="${open ? 'true' : 'false'}"><span class="lbl">${esc(name)}</span><span class="tag">${count}</span><span class="chev">${open ? '▾' : '▸'}</span></button><div class="foldBody"${open ? '' : ' hidden'}>${inner}</div>`;
 }
 function showAgents(list) {
+  list = list.map(a => ({ ...a, window: cleanWindowTitle(a.window), group: cleanWindowTitle(a.group), title: cleanWindowTitle(a.title) }));
+  const keep = sheetKind === 'agents';
+  const scroll = keep ? $('sheet').scrollTop : 0;
+  const opened = keep ? new Set([...$('sheet').querySelectorAll('button.fold[aria-expanded="true"] > .lbl')].map(n => n.textContent)) : null;
   const newest = items => Math.max(0, ...items.map(a => a.lastUsed || 0));
   list = list.map(a => ({ ...a, lastUsed: Math.max(a.lastUsed || 0, agentOpened[agentOpenedKey(currentAppName === 'Codex' ? a.id.split(':').slice(2).join(':') : a.id)] || 0) }))
     .sort((a, b) => (b.lastUsed || 0) - (a.lastUsed || 0));
@@ -1510,17 +1747,18 @@ function showAgents(list) {
     loose.sort((a, b) => Number(!!b.ui) - Number(!!a.ui));
     groups.sort((a, b) => newest(b.items) - newest(a.items));
     const body = loose.map(agentButton).join('') + groups.map(g => foldSection(
-      g.name, g.items.map(agentButton).join(''), g.items.some(a => a.current), g.items.length,
+      g.name, g.items.map(agentButton).join(''), opened ? opened.has(g.name) : g.items.some(a => a.current), g.items.length,
     )).join('');
     if (!win) return body;
-    const open = items.some(a => a.current) || (!anyCurrent && index === 0);
+    const open = opened ? opened.has(win) : items.some(a => a.current) || (!anyCurrent && index === 0);
     return foldSection(win, body, open, items.length);
   }).join('');
-  openSheet('agents', `<h3>切换 Agent</h3>${rows || `<div class="hint">${esc(appMessage('没有找到 {app} 的 Agent。请在电脑上打开对应的会话窗口。'))}</div>`}`);
+  openSheet('agents', `<h3>项目与会话</h3><button class="opt" data-act="agentsRefresh">刷新项目与会话</button><button class="opt" data-act="projects"><span class="lbl">选择文件夹／新建项目</span></button><button class="opt" data-act="projectNewChat"><span class="lbl">在当前项目新建会话</span></button>${rows || `<div class="hint">${esc(appMessage('没有找到 {app} 的 Agent。请在电脑上打开对应的会话窗口。'))}</div>`}`);
+  if (keep) requestAnimationFrame(() => { $('sheet').scrollTop = scroll; });
 }
 $('title').onclick = () => { send({ t: 'windows' }); showWindows(); };
 
-const MENU_TITLE = { mode: '选择模式', model: '选择模型', history: '历史对话', permission: '权限', 'codex-run': '执行位置', 'codex-chat': '会话操作', 'fusion-model-a': 'A 模型', 'fusion-model-b': 'B 模型', 'fusion-effort-a': 'A 推理强度', 'fusion-effort-b': 'B 推理强度', 'fusion-lead': 'Fusion Lead', 'fusion-effort': 'Fusion Effort', 'fusion-sidekick': 'Fusion Sidekick' };
+const MENU_TITLE = { effort: '选择思考强度', mode: '选择模式', model: '选择模型', history: '历史对话', permission: '权限', 'codex-run': '执行位置', 'codex-chat': '会话操作', 'fusion-model-a': 'A 模型', 'fusion-model-b': 'B 模型', 'fusion-effort-a': 'A 推理强度', 'fusion-effort-b': 'B 推理强度', 'fusion-lead': 'Fusion Lead', 'fusion-effort': 'Fusion Effort', 'fusion-sidekick': 'Fusion Sidekick' };
 const PERM_LABEL = {
   'Ask for approval': ['每次询问', '改外部文件和上网前都会询问'],
   'Approve for me': ['代为批准', '只在可能不安全时询问'],
@@ -1533,47 +1771,53 @@ function fusionBlock(fusion) {
   if (!fusion) return '';
   const row = (part, title, value) => `<button class="opt" data-fusion="${part}"><span class="lbl">${title}<span class="sub">${esc(value || '')}</span></span></button>`;
   return `<div class="pSec">Fusion</div>${row('lead', 'Lead', fusion.lead)}${row('effort', 'Effort', fusion.effort)}${row('sidekick', 'Sidekick', fusion.sidekick)}`
-    + `<button class="opt" data-fusion="fast"><span class="lbl">Fast Mode</span><span class="switch ${fusion.fast ? 'on' : ''}"></span></button>`
+    + (fusion.fastSupported ? `<button class="opt" data-fusion="fast"><span class="lbl">Fast Mode</span><span class="switch ${fusion.fast ? 'on' : ''}"></span></button>` : '')
     + '<div class="hint">Lead 负责规划和关键判断，Sidekick 负责具体执行。</div>';
 }
 // Devin's permission modes: the desktop's own description, plus a Chinese one when the app is in Chinese.
 const MODE_ZH = { Code: '写代码、改文件，正常提问', Smart: '模型判断安全的操作自动批准', Ask: '只回答问题，不改代码', Plan: '先做方案，再动手', 'Bypass Permissions': '自动批准所有工具调用（不再询问）' };
 const modeDesc = it => (I18N.lang === 'zh' && MODE_ZH[it.label]) || it.desc;
-function showMenu(kind, items, max, fusion) {
-  finishPending(['读取模式列表…', '读取模型列表…', '读取历史对话…', '设置中…']);
+function showMenu(kind, items, max, fusion, fast, model) {
+  finishPending(['读取思考强度…', '读取权限…', '读取模式列表…', '读取模型列表…', '读取历史对话…', '设置中…']);
   const picking = /^fusion-(lead|effort|sidekick)$/.test(String(kind || ''));
-  if (!items?.length && !fusion) return status(appMessage('菜单是空的，可能 {app} 版本不同'), false);
+  if (!items?.length && !fusion && kind !== 'effort') return status(appMessage('菜单是空的，可能 {app} 版本不同'), false);
   status('');
   const maxRow = typeof max === 'boolean'
     ? `<button class="opt" data-max><span class="lbl">MAX Mode<span class="sub">更大上下文、更贵</span></span><span class="switch ${max ? 'on' : ''}"></span></button>` : '';
   const part = picking ? kind.slice(7) : '';
   const rows = (items || []).map(it => {
     const perm = kind === 'permission' ? PERM_LABEL[it.label] : null;
-    const shown = perm ? `${esc(perm[0])}<span class="sub">${esc(perm[1])}</span>` : esc(it.label);
+    const effort = kind === 'effort' ? { low: '低', medium: '中', high: '高', xhigh: '很高', ultra: '最高', max: '最大', 'extra high': '很高' }[it.label.toLowerCase()] : '';
+    const shown = perm ? `${esc(perm[0])}<span class="sub">${esc(perm[1])}</span>` : effort ? `${esc(effort)} · ${esc(it.label)}` : esc(it.label);
     const pick = picking
       ? `<button class="opt ${it.checked ? 'cur' : ''}" data-fusion-pick="${esc(part)}" data-label="${esc(it.label)}"><span class="lbl">${esc(it.label)}</span></button>`
-      : `<button class="opt ${it.checked ? 'cur' : ''}" data-kind="${kind}" data-label="${esc(it.label)}"><span class="lbl">${esc(it.label)}${it.desc ? `<span class="sub">${esc(modeDesc(it))}</span>` : ''}</span>${it.label === 'Bypass Permissions' ? '<span class="tag" style="color:var(--warn)">⚠</span>' : ''}</button>`;
+      : `<button class="opt ${it.checked ? 'cur' : ''}" data-kind="${kind}" data-label="${esc(it.label)}"><span class="lbl">${shown}${it.desc ? `<span class="sub">${esc(modeDesc(it))}</span>` : ''}</span>${it.label === 'Bypass Permissions' ? '<span class="tag" style="color:var(--warn)">⚠</span>' : ''}</button>`;
     return it.params ? `<div class="optRow">${pick}<button class="paramBtn" data-params="${esc(it.id)}" data-plabel="${esc(it.label)}">参数</button></div>` : pick;
   }).join('');
   const role = /^fusion-model-([ab])$/.exec(kind || '')?.[1];
   const agentRow = role ? `<button class="opt" data-fusion-select="${role}"><span class="lbl">更换 ${role.toUpperCase()} Agent / 会话<span class="sub">${esc(lastChat?.fusion?.[role]?.title || '未选择')}</span></span></button>` : '';
-  openSheet('menu', `<h3>${MENU_TITLE[kind] || ''}</h3>` + agentRow + (picking ? '' : fusionBlock(fusion)) + maxRow + rows);
+  const fastRow = fast && !fusion ? `<button class="opt" data-fast="${fast.on ? 'off' : 'on'}" data-fast-menu="${kind}"><span class="lbl">Fast 模式${fast.description ? `<span class="sub">${esc(fast.description)}</span>` : ''}</span><span class="switch ${fast.on ? 'on' : ''}"></span></button>` : '';
+  const navigation = kind === 'effort' ? `<button class="opt" data-model-back>← 返回模型列表</button><p>${esc(model || lastChat?.model || '')}</p>${!items?.length ? '<p class="hint">这个模型没有可选的思考强度。</p>' : ''}` : '';
+  const done = kind === 'effort' ? '<button class="opt" data-model-done>完成</button>' : '';
+  openSheet('menu', `<h3>${MENU_TITLE[kind] || ''}</h3>` + navigation + agentRow + (picking ? '' : fusionBlock(fusion)) + fastRow + maxRow + rows + done);
 }
 
+let changeFiles = [];
 function showChanges(m) {
+  changeFiles = m.files;
   finishPending(['正在撤销…', '正在保留…', '处理中…']);
   status('');
   if (!m.files.length && m.devin && m.count) {
     return openSheet('changes', `<h3>Agent 改动的文件（${m.count}）</h3><div class="hint">这个界面里读不到逐个文件的改动。切到 Agent 界面可以看到完整列表。</div>`);
   }
   if (!m.files.length) { if (sheetKind === 'changes') closeSheet(); return status('没有待处理的改动'); }
-  openSheet('changes', `<h3>Agent 改动的文件（${m.files.length}）</h3>`
+  openSheet('changes', `<h3>${m.historical ? '会话修改记录' : 'Agent 改动的文件'}（${m.files.length}）</h3>`
     + (m.actions.length ? `<div class="pRow" style="margin-bottom:10px">${m.actions.map(a => `<button data-chbar="${esc(a)}">${esc(a)}</button>`).join('')}</div>` : '')
     + m.files.map((f, i) => `<div class="optRow"><button class="opt" data-chopen="${esc(f.name)}"><span class="lbl">${esc(f.name)}`
       + `<span class="sub"><span class="add">${esc(f.add)}</span> <span class="del">${esc(f.del)}</span></span></span></button>`
-      + (m.codex ? '' : `<button class="paramBtn" data-ch="${i}" data-name="${esc(f.name)}" data-act2="keep">保留</button>`)
-      + (m.codex ? '' : `<button class="paramBtn" data-ch="${i}" data-name="${esc(f.name)}" data-act2="undo">撤销</button>`) + '</div>').join('')
-    + `<div class="hint">${m.codex ? '点文件名查看内容。操作范围与 Codex 原生按钮一致。' : '点文件名查看内容。「保留」接受这个文件的改动，「撤销」把它恢复成改动前的样子。'}</div>`);
+      + (m.codex || m.historical ? '' : `<button class="paramBtn" data-ch="${i}" data-name="${esc(f.name)}" data-act2="keep">保留</button>`)
+      + (m.codex || m.historical ? '' : `<button class="paramBtn" data-ch="${i}" data-name="${esc(f.name)}" data-act2="undo">撤销</button>`) + '</div>').join('')
+    + `<div class="hint">${m.historical ? '点文件名查看当前内容。这里显示会话中的修改记录。' : m.codex ? '点文件名查看内容。操作范围与 Codex 原生按钮一致。' : '点文件名查看内容。「保留」接受这个文件的改动，「撤销」把它恢复成改动前的样子。'}</div>`);
 }
 
 function showParams(m) {
@@ -1595,30 +1839,37 @@ async function showDevices() {
 }
 
 function showDocs(m) {
+  editorBrowsing = !!m.editor;
+  const heading = m.editor ? 'Editor · 项目文件' : '查看文档';
+  const back = m.editor ? '<button class="opt" data-editor-return>返回对话</button>' : '';
+  if (m.editor && m.root) editorDirectory = { root: m.root, path: m.path, host: m.host || '' };
   if (m.error) { closeSheet(); return status(m.error, false); }
   if (m.projects) {
     const rows = m.projects.map(p => `<button class="opt" data-docs-root="${esc(p.path)}" data-docs-host="${esc(p.host || '')}"><span class="lbl">${esc(p.name)}${p.detail ? `<span class="sub">${esc(p.detail)}</span>` : ''}</span></button>`).join('');
-    openSheet('docs', `<h3>查看文档</h3><div class="hint">选择要查看的项目</div>${rows || '<div class="hint">没有可查看的项目。</div>'}`);
+    openSheet('docs', `<h3>${heading}</h3>${back}<div class="hint">选择要查看的项目</div>${rows || '<div class="hint">没有可查看的项目。</div><button class="opt" data-act="projects">选择文件夹／新建项目</button>'}`);
     return;
   }
   const hostAttr = ` data-docs-host="${esc(m.host || '')}"`;
   const up = `<button class="opt" data-docs-up="${esc(m.parent || '')}" data-root="${esc(m.root)}"${hostAttr}><span class="lbl">返回上一级</span></button>`;
   const folders = (m.folders || []).map(d => `<button class="opt" data-docs-root="${esc(m.root)}" data-docs-dir="${esc(d.path)}"${hostAttr}><span class="lbl">${esc(d.name)}</span><span class="sub">文件夹</span></button>`).join('');
-  const row = (f, tag) => `<button class="opt" data-docs-file="${esc(f.path)}"><span class="lbl">${esc(f.name)}</span><span class="sub">${tag}</span></button>`;
+  const row = (f, tag) => `<button class="opt" data-docs-file="${esc(f.path)}" data-docs-editor="${!!m.editor}"><span class="lbl">${esc(f.name)}</span><span class="sub">${tag}</span></button>`;
   const docs = (m.docs || []).map(f => row(f, '文档')).join('');
   const code = (m.code || []).map(f => row(f, '代码')).join('');
-  const empty = !folders && !docs && !code ? '<div class="hint">这个文件夹里没有可查看的文档或代码。</div>' : '';
-  openSheet('docs', `<h3>查看文档</h3><div class="hint">${esc(m.name || '')}${m.path ? ' · ' + esc(m.path) : ''}</div>${up}${folders}${docs}${code}${empty}`);
+  const files = (m.files || []).map(f => row(f, '文件')).join('');
+  const empty = !folders && !docs && !code && !files ? '<div class="hint">这个文件夹里没有可查看的文档或代码。</div>' : '';
+  openSheet('docs', `<h3>${heading}</h3>${back}<div class="hint">${esc(m.name || '')}${m.path ? ' · ' + esc(m.path) : ''}</div>${up}${folders}${docs}${code}${files}${empty}`);
 }
 function showProjects(m) {
+  const pathInput = '<button class="opt" data-project-path><span class="lbl">输入文件夹路径</span></button>';
+  const drives = (m.drives || []).map(p => `<button class="opt" data-dir="${esc(p)}"><span class="lbl">${esc(p)}</span></button>`).join('');
   if (!m.browsing) {
     const rows = (m.recent || []).map(p => `<button class="opt" data-open="${esc(p.path)}"><span class="lbl">${esc(p.name)}<span class="sub">${esc(p.path)}</span></span></button>`).join('');
-    openSheet('projects', `<h3>打开项目</h3>${rows || '<div class="hint">还没有最近打开的本地项目。</div>'}<button class="opt" data-dir="${esc(m.path)}"><span class="lbl">浏览文件夹</span></button>`);
+    openSheet('projects', `<h3>打开项目</h3>${rows || '<div class="hint">还没有最近打开的本地项目。</div>'}<button class="opt" data-dir="${esc(m.path)}"><span class="lbl">浏览文件夹</span></button>${pathInput}${drives}`);
     return;
   }
   const up = m.parent ? `<button class="opt" data-dir="${esc(m.parent)}"><span class="lbl">上级目录</span></button>` : '';
   const dirs = (m.dirs || []).map(d => `<button class="opt" data-dir="${esc(d.path)}"><span class="lbl">${esc(d.name)}</span></button>`).join('');
-  openSheet('projects', `<h3>浏览文件夹</h3><div class="hint">${esc(m.path)}</div><button class="opt" data-open="${esc(m.path)}"><span class="lbl">打开此文件夹</span></button>${up}${dirs || '<div class="hint">没有子文件夹。</div>'}`);
+  openSheet('projects', `<h3>浏览文件夹</h3><div class="hint">${esc(m.path)}</div><button class="opt" data-open="${esc(m.path)}"><span class="lbl">打开此文件夹</span></button><button class="opt" data-project-chat="${esc(m.path)}"><span class="lbl">在此项目新建会话</span></button><button class="opt" data-project-new="${esc(m.path)}"><span class="lbl">新建项目并创建会话</span></button>${pathInput}${up}${drives}${dirs || '<div class="hint">没有子文件夹。</div>'}`);
 }
 function showSettings(sections) {
   const body = sections.map(s => `<div class="pSec">${esc(s.title)}</div>` + s.items.map(it => {
@@ -1666,6 +1917,7 @@ function renderQuota(m) {
   if (!m.missing && !m.loading) quotaCache.set(quotaKey(), m);
   const bars = [...(m.quota || []), ...(m.limits || []), ...((m.quota || m.limits) ? [] : (m.bars || []))]
     .filter(b => b?.label && !/^loading\b/i.test(String(b.label)));
+  $('quotaMeters').classList.toggle('devinLimits', currentApp === 'devin' && bars.length > 1);
   const when = m.updated ? new Date(m.updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
   if (m.missing) {
     $('quotaMeters').title = '没有额度数据' + (when ? ` · 更新于 ${when}` : '');
@@ -1679,7 +1931,7 @@ function renderQuota(m) {
     const basis = b.basis || 'used';
     const n = b.pct == null ? null : Math.max(0, Math.min(100, Number(b.pct)));
     const num = n == null ? (b.value ?? '未获取') : (basis === 'remaining' ? '剩余' : '已用') + `${n}%`;
-    const label = /week|每周|周额度/i.test(b.label) ? '周额度' : b.label;
+    const label = /week|每周|周额度/i.test(b.label) ? '周额度' : /daily|每日|日额度/i.test(b.label) ? '日额度' : b.label;
     return `<button class="meter" type="button" title="${esc(b.label + ' · ' + basis + ' · ' + (b.reset || ''))}" aria-label="${esc(b.label + ' ' + num)}"><span class="track" style="--pct:${n ?? 0}"><i class="${meterFill(n, basis)}" style="width:${n ?? 0}%"></i></span><span class="meterText"><span class="meterLabel">${esc(label)}</span><b>${esc(String(num))}</b></span></button>`;
   }).join('');
   if (when) $('quotaMeters').insertAdjacentHTML('beforeend', `<span class="quotaUpdated">${m.cached ? '缓存 ' : ''}${esc(when)}</span>`);
@@ -1691,7 +1943,8 @@ function showUsageDetails(kind) {
   const bars = [...(m.quota || []), ...(m.limits || []), ...((m.quota || m.limits) ? [] : (m.bars || []))];
   const value = b => b?.pct == null ? String(b?.value || '未获取') : `${b.basis === 'remaining' ? '剩余' : '已用'} ${b.pct}%`;
   const rows = context ? `<p>${esc(value(contextInfo))}</p><p class="hint">上下文表示当前会话的上下文容量使用情况，与账号额度分别统计。</p>`
-    : `<p class="hint">额度表示账号在对应周期内的使用限制，已用或剩余以指标说明为准。</p>` + (m.missing || !bars.length ? '<p>未获取额度数据</p>' : bars.map(b => `<p>${esc(b.label)} · ${esc(value(b))}${b.reset ? `<br><span class="hint">${esc(b.reset)}</span>` : ''}</p>`).join(''));
+    : `<p class="hint">额度表示账号在对应周期内的使用限制，已用或剩余以指标说明为准。</p>` + (m.plan ? `<p>方案 · ${esc(m.plan)}</p>` : '') + (m.missing || !bars.length ? '<p>未获取额度数据</p>' : bars.map(b => `<p>${esc(b.label)} · ${esc(value(b))}${b.reset ? `<br><span class="hint">${esc(b.reset)}</span>` : ''}</p>`).join(''))
+      + (m.extra ? `<p>额外用量余额 · ${esc(m.extra)}</p>` : '');
   const updated = m.updated ? new Date(m.updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
   openSheet('usage', `<h3>${context ? '上下文说明' : '额度说明'}</h3>${rows}${!context && updated ? `<p class="hint">${m.cached ? '缓存数据' : '最近更新'} · ${esc(updated)}</p>` : ''}${!context && $('quotaStatus').textContent ? `<p class="hint">${esc($('quotaStatus').textContent)}</p>` : ''}<button id="refreshUsage" class="opt">刷新数据</button>`);
   $('refreshUsage').onclick = () => { closeSheet(); status('正在读取额度…'); send({ t: 'usage' }); };
@@ -1709,7 +1962,10 @@ function showMainMenu() {
   openSheet('main', `<h3>菜单</h3>
     ${appName ? `<div class="pSec">${appName}</div>` : ''}
     ${currentApp === 'fusion' ? `<button class="opt" data-act="fusionHistory">历史会话</button><button class="opt" data-act="fusionNew" ${lastChat?.fusion?.busy ? 'disabled' : ''}>＋ 新建</button>` : `<button class="opt" data-act="model"><span class="lbl">更换模型<span class="sub" id="menuModel">${esc(lastChat?.model || '选择当前 Agent 的模型')}</span></span></button>`}
-    <button class="opt" data-act="docs"><span class="lbl">查看文档<span class="sub">README 和代码</span></span></button>
+    ${lastChat?.permission || (currentApp === 'devin' && lastChat?.mode) ? `<button class="opt" data-act="permission"><span class="lbl">权限模式<span class="sub">${esc(lastChat.permission || lastChat.mode)}</span></span></button>` : ''}
+    ${['cursor', 'devin', 'codex'].includes(currentApp) ? '<button class="opt" data-act="editor"><span class="lbl">Editor · 项目文件编辑</span></button>' : ''}
+    ${['cursor', 'devin', 'codex'].includes(currentApp) ? '<button class="opt" data-act="projects"><span class="lbl">打开项目<span class="sub">选择文件夹或新建项目</span></span></button>' : ''}
+    ${currentApp === 'codex' ? '<button class="opt" data-act="codexResetHelp"><span class="lbl">Codex 额度重置</span></button>' : ''}
     <button class="opt" data-act="settings"><span class="lbl">设置</span></button>
     <button class="opt" data-act="screen"><span class="lbl">画面<span class="sub">${esc(appMessage('直接看电脑上的 {app}'))}</span></span></button>
     <div class="pSec">此手机 App</div>
@@ -1798,7 +2054,8 @@ async function enableNotify() {
   if (nativeNotify()) {
     window.AgentRemoteApp.setNotify(nativeConfig());
     notifyOn = true;
-    return status('通知已开启。华为等手机请在「设置 → 应用启动管理」里允许本 App 后台活动');
+    setTimeout(() => { if (window.AgentRemoteApp.listenStatus?.() !== 'connected') showBgSheet(); }, 4000);
+    return status('通知已开启，正在连接电脑。华为等手机请在「设置 → 应用启动管理」里允许本 App 后台活动');
   }
   if (inApp) return status('请先在菜单里更新安卓 App，新版才支持通知', false);
   if (!webPush()) {
@@ -1869,6 +2126,12 @@ document.addEventListener('visibilitychange', () => {
 $('sheet').addEventListener('click', async e => {
   const b = e.target.closest('button');
   if (!b) return;
+  if ('modelBack' in b.dataset) { status('读取模型列表…'); return send({ t: 'openMenu', kind: 'model' }); }
+  if ('modelDone' in b.dataset) { closeSheet(); return; }
+  if (b.dataset.fast) { status('设置中…'); return send({ t: 'pickMenu', kind: 'fast', label: b.dataset.fast, name: b.dataset.fastMenu }); }
+  if ('editorChat' in b.dataset) { closeSheet(); status('正在打开聊天面板…'); return send({ t: 'openEditorChat' }); }
+  if ('editorReturn' in b.dataset) { editorBrowsing = false; editorDirectory = null; closeSheet(); return; }
+  if (b.dataset.nativeSurface) { closeSheet(); status('正在切换界面…'); return send({ t: 'surface', to: b.dataset.nativeSurface }); }
   if (b.dataset.sc) {
     if (b.dataset.sc === 'fold' || b.dataset.sc === 'unfold') { scFold('*', b.dataset.sc === 'fold'); return showCacheSheet(); }
     if (b.dataset.sc === 'clearAll') {
@@ -1919,18 +2182,39 @@ $('sheet').addEventListener('click', async e => {
   if (b.dataset.fusionHistory) { closeSheet(); return send({ t: 'fusionOpen', id: b.dataset.fusionHistory }); }
   if (b.dataset.fusionRefresh) { closeSheet(); status('正在读取额度…'); return send({ t: 'fusionUsage', side: b.dataset.fusionRefresh }); }
   if (b.dataset.fusionSelect) { closeSheet(); return send({ t: 'fusionSides', side: b.dataset.fusionSelect }); }
+  if (b.dataset.fusionNew) { closeSheet(); status('正在创建会话…'); return send({ t: 'fusionNewSide', side: b.dataset.fusionSide, app: b.dataset.fusionNew }); }
   if (b.dataset.fusionId) { closeSheet(); return send({ t: 'fusionSide', side: b.dataset.fusionPick, id: b.dataset.fusionId }); }
-  if (b.dataset.agent) { pendingAgentOpen = b.dataset.agent; closeSheet(); status('正在切换 Agent…'); return send({ t: 'openAgent', id: b.dataset.agent }); }
+  if (b.dataset.codexArchive) {
+    const id = b.dataset.codexArchive, name = b.dataset.codexName || '';
+    if (!await ask(`归档「${name}」？\n它会从当前列表移除，历史记录仍保留。`, '归档')) { send({ t: 'agents' }); return; }
+    status('正在归档…');
+    return send({ t: 'codexArchive', id });
+  }
+  if (b.dataset.agent) { pendingAgentOpen = b.dataset.agent; closeSheet(); status('正在切换 Agent…'); return send({ t: 'openAgent', id: b.dataset.agent, title: b.dataset.agentTitle || '' }); }
   if (b.dataset.term) { closeSheet(); status('正在切换终端…'); return send({ t: 'openTerminal', id: b.dataset.term }); }
+  if ('projectPath' in b.dataset) {
+    const path = window.prompt(I18N.tr('电脑上的文件夹完整路径'));
+    if (!path?.trim()) return;
+    status('正在读取文件夹…');
+    return send({ t: 'projects', path: path.trim() });
+  }
+  if ('projectNew' in b.dataset) {
+    const name = window.prompt(I18N.tr('新项目的文件夹名称'));
+    if (!name?.trim()) return;
+    closeSheet(); status('正在打开项目…');
+    return send({ t: 'newProject', parent: b.dataset.projectNew, name: name.trim(), newSession: true });
+  }
+  if ('projectChat' in b.dataset) { closeSheet(); status('正在打开项目…'); return send({ t: 'openProject', path: b.dataset.projectChat, newSession: true }); }
+  if ('projectTrust' in b.dataset) { closeSheet(); status('正在打开项目…'); return send({ t: 'projectTrust', approve: b.dataset.projectTrust === 'yes' }); }
   if (b.dataset.open) { closeSheet(); status('正在打开项目…'); return send({ t: 'openProject', path: b.dataset.open }); }
   if (b.dataset.dir) { status('正在读取文件夹…'); return send({ t: 'projects', path: b.dataset.dir }); }
-  if (b.dataset.docsFile) { closeSheet(); return openFile(b.dataset.docsFile); }
+  if (b.dataset.docsFile) { closeSheet(); return openFile(b.dataset.docsFile, b.dataset.docsEditor === 'true'); }
   if ('docsUp' in b.dataset) {
     status('正在读取文档…');
-    if (!b.dataset.docsUp) return send({ t: 'docs' });
-    return send({ t: 'docs', root: b.dataset.root, host: b.dataset.docsHost || '', path: b.dataset.docsUp });
+    if (!b.dataset.docsUp) return send({ t: 'docs', editor: editorBrowsing });
+    return send({ t: 'docs', editor: editorBrowsing, root: b.dataset.root, host: b.dataset.docsHost || '', path: b.dataset.docsUp });
   }
-  if (b.dataset.docsRoot) { status('正在读取文档…'); return send({ t: 'docs', root: b.dataset.docsRoot, host: b.dataset.docsHost || '', path: b.dataset.docsDir || b.dataset.docsRoot }); }
+  if (b.dataset.docsRoot) { status('正在读取文档…'); return send({ t: 'docs', editor: editorBrowsing, root: b.dataset.docsRoot, host: b.dataset.docsHost || '', path: b.dataset.docsDir || b.dataset.docsRoot }); }
   if (b.dataset.setting) { status('正在修改…'); return send({ t: 'toggleSetting', label: b.dataset.setting }); }
   if (b.dataset.termDel) {
     if (!await ask(`删除终端「${b.dataset.termName || ''}」？\n里面正在跑的命令会停掉。`, '删除')) return;
@@ -1953,11 +2237,11 @@ $('sheet').addEventListener('click', async e => {
     // Bypass Permissions lets the Agent run every tool call (commands, edits, deletes) without asking.
     if (b.dataset.kind === 'mode' && b.dataset.label === 'Bypass Permissions' && !b.classList.contains('cur')
       && !await ask('切到「Bypass Permissions」？\nAgent 之后的所有操作（运行命令、改文件、删文件）都会自动批准，不再询问你。', '切换')) return;
-    closeSheet();
+    if (b.dataset.kind !== 'model' && b.dataset.kind !== 'effort') closeSheet();
     if (b.dataset.kind !== 'codex-run' && b.dataset.kind !== 'codex-chat' && !/^fusion-(model|effort)-/.test(String(b.dataset.kind || ''))) beginSwitch(b.dataset.kind);
     return send({ t: 'pickMenu', kind: b.dataset.kind, label: b.dataset.label });
   }
-  if (b.dataset.chopen) { closeSheet(); return openFile(b.dataset.chopen); }
+  if (b.dataset.chopen) { const diff = changeFiles.find(f => f.name === b.dataset.chopen)?.diff || ''; closeSheet(); return openFile(b.dataset.chopen, false, diff); }
   if (b.dataset.ch) {
     const undo = b.dataset.act2 === 'undo';
     if (undo && !await ask(`撤销「${b.dataset.name}」的改动？\n文件会恢复成 Agent 改之前的样子。`, '撤销')) return send({ t: 'changes' });
@@ -1977,8 +2261,14 @@ $('sheet').addEventListener('click', async e => {
   else if (act === 'fusionHistory') { closeSheet(); return send({ t: 'fusionHistory' }); }
   else if (act === 'fusionNew') { closeSheet(); return send({ t: 'fusionNew' }); }
   else if (act === 'model') { status('读取模型列表…'); return send({ t: 'openMenu', kind: 'model' }); }
+  else if (act === 'permission') { status('读取权限…'); return send({ t: 'openMenu', kind: lastChat?.permission ? 'permission' : 'mode' }); }
+  else if (act === 'agentsRefresh') return openAgentList(true);
   else if (act === 'projects') { status('正在读取项目…'); return send({ t: 'projects' }); }
-  else if (act === 'docs') { status('正在读取文档…'); return send({ t: 'docs' }); }
+  else if (act === 'projectNewChat') { closeSheet(); status('正在新建对话…'); return send({ t: 'newProjectChat' }); }
+  else if (act === 'codexResetHelp') {
+    openSheet('codex-reset', `<h3>Codex 额度重置</h3><p>官方发放的重置券用于恢复指定的额度窗口，不是充值余额。</p><ol><li>登录与电脑端 Codex 相同的 ChatGPT 账号，打开官方额度页面。</li><li>找到 Usage limit resets → Available，检查可用次数、重置范围和到期时间。</li><li>点击所选券的 Use reset，按官方页面提示确认。</li><li>完成后回到这里，点击额度展示并刷新数据。</li></ol><p class="hint">Full reset 用于恢复 5 小时和每周额度；具体范围以券的说明为准。已使用记录可在 History 查看。</p><a class="opt" href="https://chatgpt.com/codex/settings/usage" target="_blank" rel="noopener noreferrer">打开官方额度页面</a>`);
+  }
+  else if (act === 'editor') { return startEditor(); }
   else if (act === 'settings') { status('正在读取设置…'); return send({ t: 'settings' }); }
   else if (act === 'screen') { closeSheet(); return setMode('screen'); }
   else if (act === 'changeUrl') window.AgentRemoteApp?.changeUrl();
@@ -2008,6 +2298,7 @@ $('sheet').addEventListener('click', async e => {
   else if (act === 'cache') showCacheSheet();
   else if (act === 'bg') showBgSheet();
   else if (act === 'bgBattery') { window.AgentRemoteApp.askBattery(); closeSheet(); }
+  else if (act === 'bgNotifySettings') { window.AgentRemoteApp.openNotifySettings(); closeSheet(); }
   else if (act === 'bgReconnect') { window.AgentRemoteApp.reconnectListen(); status('正在重连…'); setTimeout(showBgSheet, 1500); }
   else if (act === 'lang') I18N.set(I18N.lang === 'en' ? 'zh' : 'en');
   else if (act === 'computers') showComputers();
@@ -2066,6 +2357,12 @@ function useComputer(i) {
   const c = list[Number(i)];
   if (!c) return showComputers();
   saveDraft();
+  if (c.discovery && new URL(c.discovery).origin !== location.origin) {
+    const link = computerLink(new URL('./', c.discovery).href, c.key);
+    if (inApp) return window.AgentRemoteApp.setUrl(link);
+    location.href = link;
+    return;
+  }
   saveComputers(list, c.key);
   restoreDraft();
   store.set('window', c.win || null);
@@ -2174,7 +2471,7 @@ document.querySelector('main').addEventListener('touchcancel', () => { swipe = n
 /* ---------- chat view ---------- */
 const list = $('list'), itemsEl = $('items');
 const cache = new Map();
-$('cachedMore').onclick = () => { SC.show += 400; if (lastChat) renderChat(lastChat); };
+$('cachedMore').onclick = () => loadOlderMessages();
 itemsEl.addEventListener('click', async e => {
   const fold = e.target.closest('[data-fold]');
   if (fold) {
@@ -2249,7 +2546,7 @@ const TOOL_LABEL = { search: 'Searched', explore: 'Explored', read: 'Read', comm
 const thinkingPref = new Map();
 function thinkingWantOpen(it) {
   if (thinkingPref.has(it.i)) return thinkingPref.get(it.i);
-  return !!it.live || (it.t || '').startsWith('工作过程\n');
+  return false;
 }
 function paintThinking(el, it) {
   const open = thinkingWantOpen(it);
@@ -2287,8 +2584,10 @@ function renderTool(el, it) {
   }).join('');
   if (it.kind === 'command') {
     const cmd = it.cmd || '';
-    el.innerHTML = `<div class="trow toggle" data-ttoggle>${icon}<span class="tl">${esc(it.t || TOOL_LABEL.command)}</span>${it.d ? `<span class="dur">${esc(it.d)}</span>` : ''}${cmd.includes('\n') ? '<span class="chev">▸</span>' : ''}</div>`
-      + (cmd ? `<pre class="tcmd">${esc(cmd)}</pre>` : '');
+    const output = it.output || '';
+    el.innerHTML = `<div class="trow toggle" data-ttoggle>${icon}<span class="tl">${esc(it.t || TOOL_LABEL.command)}</span>${it.d ? `<span class="dur">${esc(it.d)}</span>` : ''}${cmd || output ? '<span class="chev">▸</span>' : ''}</div>`
+      + (cmd ? `<pre class="tcmd">${esc(cmd)}</pre>` : '')
+      + (output ? `<pre class="tcmd">${esc(output)}</pre>` : '');
     return;
   }
   if (it.kind === 'edit') {
@@ -2315,6 +2614,7 @@ function tasksHtml(it) {
 function renderItem(it) {
   const el = document.createElement('div');
   el.className = 'msg ' + it.k;
+  if (it.k === 'notice') { el.textContent = it.t; el.setAttribute('role', 'status'); el.classList.toggle('live', !!it.live); return el; }
   if (it.k === 'tasks') { el.innerHTML = `<details class="tcard" data-task="${esc(it.i)}" ${taskOpen.has(it.i) ? 'open' : ''}><summary class="tprog-head">${I18N.tr('任务')} ${it.done}/${it.total}</summary>${tasksHtml(it)}</details>`; return el; }
   if (it.k === 'human') {
     const mh = it.src === 'devin' ? mathHtml(it.t || '') : null;
@@ -2336,6 +2636,7 @@ function renderItem(it) {
   if (it.agents?.length) el.insertAdjacentHTML('beforeend', `<div class="btns">${it.agents.map(a => `<button data-codex-agent="${esc(a.id)}">查看 ${esc(a.title)}</button>`).join('')}</div>`);
   if (it.images?.length) el.insertAdjacentHTML('beforeend', it.images.filter(src => /^(https?:|data:image\/)/.test(src)).map(src => `<a href="${esc(src)}" target="_blank" rel="noopener"><img src="${esc(src)}" alt="生成的图片" style="max-width:100%;border-radius:8px"></a>`).join(''));
   if (it.b && it.k !== 'human') el.insertAdjacentHTML('beforeend', `<div class="btns">${buttonsHtml(it.b, it.btnItem || it.i)}</div>`);
+  if (it.k !== 'human') addImageCopyButtons(el);
   return el;
 }
 
@@ -2384,8 +2685,8 @@ function updateTitle() {
   const first = lastChat?.items?.find(it => it.k === 'user');
   const conversation = mode === 'terminal' ? currentTerminal : (lastChat?.title || first?.t || '');
   $('titleText').textContent = currentAppName || '连接中…';
-  $('titleProject').textContent = currentProject.replace(/\s+-\s+Devin(?:\s+-.*)?$/, '') || conversation.split('\n')[0].slice(0, 40);
-  $('title').title = [currentProject, conversation].filter(Boolean).join(' · ');
+  $('titleProject').textContent = cleanWindowTitle(currentProject).replace(/\s+-\s+Devin(?:\s+-.*)?$/, '') || conversation.split('\n')[0].slice(0, 40);
+  $('title').title = [cleanWindowTitle(currentProject), conversation].filter(Boolean).join(' · ');
 }
 // Devin sessions: each session has its own rows, thought bodies, tasks, questions and queue. When the desktop
 // shows another session, drop everything cached for the old one so the two never mix in one scroll.
@@ -2502,7 +2803,7 @@ function scKeep(prev, it) {
     const body = t => (t || '').split('\n').slice(1).join('\n');
     if (body(prev.t).length > body(it.t).length) { const m = { ...it, t: prev.t }; delete m.more; return m; }
   }
-  if (it.k === 'tasks' && prev.k === 'tasks' && prev.items && !it.items) return { ...it, items: prev.items };
+  if (it.k === 'tasks' && prev.k === 'tasks' && prev.items && !it.items && prev.done === it.done && prev.total === it.total) return { ...it, items: prev.items };
   return it;
 }
 function scFlush() {
@@ -2527,7 +2828,7 @@ function scSwitch(sess) {
   const k = SC.key;
   if (!k) return;
   scGet('h:' + k).then(v => {
-    if (SC.key !== k || !v) return;
+    if (SC.key !== k || !v || lastChat?.empty) return;
     for (const it of v.items || []) {
       const cur = SC.items.get(it.i);
       SC.items.set(it.i, cur ? scKeep(it, cur) : it);
@@ -2540,6 +2841,9 @@ function scSwitch(sess) {
 // to SC.show), minus the replies of folded turns. A turn is a user message plus everything up to the next one.
 function scMerge(chat) {
   if (!SC.key) return { items: chat.items, all: chat.items, older: 0, stat: null };
+  if (chat.empty && SC.items.size) {
+    SC.items.clear(); SC.sig.clear(); SC.collapsed.clear(); scDirty();
+  }
   let changed = false;
   for (const it of chat.items) {
     const sig = JSON.stringify(it);
@@ -2617,13 +2921,18 @@ function showBgSheet() {
   const app = window.AgentRemoteApp;
   if (!app?.listenStatus) return;
   const st = app.listenStatus();
-  const label = { connected: '已连接', connecting: '连接中…', retry: '断开了，正在重连…', off: '未开启' }[st] || st;
+  const err = app.listenError?.() || '';
+  const label = (st === 'retry' || st === 'connecting') && err ? `断开了，正在重连…（${esc(err)}）`
+    : { connected: '已连接', connecting: '连接中…', retry: '断开了，正在重连…', off: '未开启' }[st] || st;
   const battery = app.batteryOk();
+  const notify = app.notifyAllowed ? app.notifyAllowed() : null;
   openSheet('bg', `<h3>后台连接</h3>
     <div class="hint">App 退到后台时，由一个常驻的通知保持和电脑的连接，Agent 完成或需要你确认时提醒你，也可以直接在通知里回复或选择。</div>
     <div class="opt" style="pointer-events:none"><span class="lbl">连接状态<span class="sub">${label}${st === 'off' ? '（先在菜单里开启通知）' : ''}</span></span></div>
     <div class="opt" style="pointer-events:none"><span class="lbl">电池优化<span class="sub">${battery ? '已放行，系统不会为了省电断开它' : '没放行：锁屏一段时间后系统可能会断开连接'}</span></span></div>
     ${battery ? '' : '<button class="opt" data-act="bgBattery"><span class="lbl">去放行电池优化</span></button>'}
+    ${notify === null ? '' : `<div class="opt" style="pointer-events:none"><span class="lbl">系统通知权限<span class="sub">${notify ? '已允许' : '被关闭：收不到任何提醒'}</span></span></div>`}
+    ${notify === false ? '<button class="opt" data-act="bgNotifySettings"><span class="lbl">去打开通知权限</span></button>' : ''}
     <button class="opt" data-act="bgReconnect"><span class="lbl">立即重连</span></button>`);
 }
 async function showCacheSheet() {
@@ -2651,17 +2960,48 @@ function userSelecting() {
   return !!sel && !sel.isCollapsed && sel.rangeCount > 0 && itemsEl.contains(sel.getRangeAt(0).commonAncestorContainer);
 }
 let deferredRender = false;
-let chatScrolling = false, scrollIdle = 0, deferredScrollRender = false;
+let chatScrolling = false, chatTouching = false, scrollIdle = 0, deferredScrollRender = false;
+let historyRequest = null, historyRendering = false, historyExpanded = false, historyArmed = false, historySerial = 0, historyAtEnd = false;
+let restoringChatScroll = false, readingAnchor = null;
+function captureChatAnchor() {
+  const top = list.getBoundingClientRect().top;
+  let lo = 0, hi = itemsEl.children.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (itemsEl.children[mid].getBoundingClientRect().bottom > top) hi = mid;
+    else lo = mid + 1;
+  }
+  const el = itemsEl.children[lo];
+  return el ? { id: el.dataset.i, top: el.getBoundingClientRect().top - top } : null;
+}
+function restoreChatPosition(anchor, stick = false) {
+  restoringChatScroll = true;
+  if (stick) list.scrollTop = list.scrollHeight;
+  else if (anchor) {
+    const el = [...itemsEl.children].find(e => e.dataset.i === anchor.id);
+    if (el) list.scrollTop += el.getBoundingClientRect().top - list.getBoundingClientRect().top - anchor.top;
+  }
+  readingAnchor = stick ? null : captureChatAnchor();
+  requestAnimationFrame(() => { restoringChatScroll = false; });
+}
+new ResizeObserver(() => {
+  if (!chatScrolling && !chatTouching && readingAnchor) restoreChatPosition(readingAnchor);
+}).observe(itemsEl);
 document.addEventListener('selectionchange', () => {
   if (deferredRender && !userSelecting()) { deferredRender = false; if (lastChat) renderChat(lastChat); }
 });
 function syncChildren(parent, els) {
-  let i = 0;
+  const keep = new Set(els);
+  for (const child of [...parent.children]) if (!keep.has(child)) child.remove();
+  let cursor = parent.firstElementChild;
+  const fragment = document.createDocumentFragment();
+  const flush = () => { if (fragment.childNodes.length) parent.insertBefore(fragment, cursor); };
   for (const el of els) {
-    const cur = parent.children[i++];
-    if (cur !== el) parent.insertBefore(el, cur || null);
+    if (el === cursor) { flush(); cursor = cursor.nextElementSibling; }
+    else if (el.parentNode === parent) { flush(); parent.insertBefore(el, cursor); }
+    else fragment.append(el);
   }
-  while (parent.children.length > els.length) parent.lastElementChild.remove();
+  flush();
 }
 // Pictures / files attached to Devin's prompt, with an x that takes them off again.
 // Devin's working directory (Agent view). Changeable only on a new session, before the first message.
@@ -2686,34 +3026,49 @@ function showWorkdirs(m) {
   const cur = m.info?.name;
   const envs = ['Local', 'Worktree', 'Cloud'].map(e => `<button class="opt ${e === m.info?.env ? 'cur' : ''}" data-env="${e}" style="flex:1;justify-content:center"><span class="lbl">${e === 'Local' ? '本地' : e === 'Worktree' ? 'Worktree' : '云端'}</span></button>`).join('');
   const rows = m.rows.map((r, i) => `<button class="opt ${r.name === cur ? 'cur' : ''}" data-wd="${i}"><span class="lbl">${esc(r.name)}<span class="sub">${esc(r.path)}</span></span>${r.name === cur ? '<span class="tag">当前</span>' : ''}</button>`).join('');
-  openSheet('workdir', `<h3>工作目录</h3><div class="pSec">运行位置</div><div class="pRow" style="display:flex;gap:6px;margin-bottom:8px">${envs}</div><div class="pSec">文件夹</div>${rows || '<div class="hint">没有读到文件夹列表。</div>'}<div class="hint">要选列表里没有的文件夹，请在电脑上点「Browse…」。</div>`);
+  openSheet('workdir', `<h3>工作目录</h3><div class="pSec">运行位置</div><div class="pRow" style="display:flex;gap:6px;margin-bottom:8px">${envs}</div><div class="pSec">文件夹</div><button class="opt" data-act="projects">选择文件夹／新建项目</button>${rows || '<div class="hint">没有读到文件夹列表。</div>'}`);
   $('sheet')._wd = m.rows;
 }
 function renderChat(chat) {
+  if (chat?.items?.some(it => it.k === 'human')) $('sessionNotice').hidden = true;
   const previous = lastChat;
-  if (currentApp === 'codex' && chatScrolling && chat && previous?.thread === chat.thread && !nearBottom()) {
+  if (!chat || previous?.thread !== chat.thread) {
+    historyRequest = null; historyRendering = false; historyExpanded = false; historyArmed = false; historyAtEnd = false; readingAnchor = null;
+    $('older').disabled = false;
+    $('historyStatus').hidden = true;
+  }
+  if (chat && previous?.thread === chat.thread && historyExpanded && currentApp !== 'devin') {
+    const rows = historyRequest ? [...chat.items, ...previous.items] : [...previous.items, ...chat.items];
+    const updates = new Map(chat.items.map(it => [it.i, it]));
+    const merged = [...new Map(rows.map(it => [it.i, updates.get(it.i) || it])).values()];
+    if (merged.every(it => Number.isFinite(it.order))) merged.sort((a, b) => a.order - b.order);
+    chat = { ...chat, items: merged };
+  }
+  if (chatScrolling && chat && previous?.thread === chat.thread) {
     lastChat = chat;
     deferredScrollRender = true;
     chatBusy = !!chat.busy;
     updateSendMode();
-    renderQuestions(chat.readonly ? null : chat.questions);
+    renderQuestions(chat.readonly && !chat.questions?.codex ? null : chat.questions);
     return;
   }
+  const followBottom = !historyRequest && !historyRendering && nearBottom();
+  const savedAnchor = followBottom ? null : captureChatAnchor();
   lastChat = chat; updateTitle();
   paintWorkdir(chat?.workdir);
   if (chat && 'context' in chat) renderContext(chat.context);
   $('empty').hidden = !!chat;
   $('older').hidden = !chat || chat.earlier === false;
-  $('pickMode').hidden = !chat?.mode;
+  $('pickMode').hidden = currentApp === 'devin' || !chat?.mode;
   $('pickModel').hidden = false;
-  if (chat?.mode) $('pickMode').textContent = (chat.mode === 'Bypass Permissions' ? '⚠ ' : '') + chat.mode + ' ▾';
+  if (chat?.mode) { $('pickMode').textContent = (chat.mode === 'Bypass Permissions' ? '⚠绕过' : chat.mode) + ' ▾'; $('pickMode').title = chat.mode; }
   $('pickMode').classList.toggle('bypass', chat?.mode === 'Bypass Permissions');
   const fusionLabel = chat?.model === 'Fusion' && chat.fusion ? `Fusion · ${fusionShort(chat.fusion.lead)} / ${fusionShort(chat.fusion.sidekick)}` : '';
   $('pickModel').textContent = (fusionLabel || chat?.model || '模型') + ' ▾';
   $('pickModel').title = chat?.fusion ? `${chat.fusion.lead} · ${chat.fusion.effort} · ${chat.fusion.sidekick}${chat.fusion.fast ? ' · Fast' : ''}` : (chat?.model || '更换模型');
   const permName = PERM_LABEL[chat?.permission]?.[0];
-  $('pickPerm').hidden = !chat?.permission;
-  if (chat?.permission) $('pickPerm').textContent = (permName || chat.permission) + ' ▾';
+  $('pickPerm').hidden = true;
+  if (chat?.permission) { $('pickPerm').textContent = ({ 'Ask for approval': '询问', 'Approve for me': '替我审核', 'Full access': '完全批准' }[chat.permission] || permName || chat.permission) + ' ▾'; $('pickPerm').title = permName || chat.permission; }
   const codexBar = currentApp === 'codex' ? chat?.codex : null;
   $('add').hidden = false;
   $('pickPlan').hidden = true;
@@ -2740,17 +3095,19 @@ function renderChat(chat) {
     $('actionBar').innerHTML = buttonsHtml(chat.global, 'g');
     $('actionBar').classList.toggle('show', chat.global.length > 0);
     renderQueue(chat.busy, chat.queued || [], chat.subagents || [], chat.readonly, chat.changed, chat.queuedCount);
-    renderQuestions(chat.readonly ? null : chat.questions);
+    renderQuestions(chat.readonly && !chat.questions?.codex ? null : chat.questions);
     noteSwitch(chat);
     return;
   }
   if (SC.key && V.all.length) $('older').hidden = Math.min(...V.all.map(it => acpNum(it.i)).filter(n => n >= 0), Infinity) <= 0;
+  $('older').hidden ||= historyAtEnd;
   $('cachedMore').hidden = !V.older;
   $('cachedMore').textContent = `↑ 显示更早的本地记录（${V.older} 条）`;
-  const stick = nearBottom() || sessionChanged;
+  const stick = followBottom || sessionChanged;
   // Anchor on the first visible item so loading older messages doesn't jump.
-  let anchor = null, anchorTop = 0;
-  if (!stick) {
+  let anchor = savedAnchor;
+  if (anchor && !V.items.some(it => String(it.i) === anchor.id && !(it.k === 'tool' && it.done))) anchor = null;
+  if (!stick && !anchor) {
     const top = list.getBoundingClientRect().top;
     let lo = 0, hi = itemsEl.children.length;
     while (lo < hi) {
@@ -2758,8 +3115,15 @@ function renderChat(chat) {
       if (itemsEl.children[mid].getBoundingClientRect().bottom > top) hi = mid;
       else lo = mid + 1;
     }
-    const el = itemsEl.children[lo];
-    if (el) { anchor = el.dataset.i; anchorTop = el.getBoundingClientRect().top - top; }
+    const retained = new Set(V.items.filter(it => !(it.k === 'tool' && it.done)).map(it => String(it.i)));
+    for (let n = lo; n < itemsEl.children.length; n++) {
+      const el = itemsEl.children[n];
+      if (retained.has(el.dataset.i)) { anchor = { id: el.dataset.i, top: el.getBoundingClientRect().top - top }; break; }
+    }
+    if (!anchor) for (let n = lo - 1; n >= 0; n--) {
+      const el = itemsEl.children[n];
+      if (retained.has(el.dataset.i)) { anchor = { id: el.dataset.i, top: el.getBoundingClientRect().top - top }; break; }
+    }
   }
   const visibleItems = V.items.filter(it => !(it.k === 'tool' && it.done));
   const els = visibleItems.map(it => {
@@ -2814,16 +3178,12 @@ function renderChat(chat) {
   $('actionBar').innerHTML = buttonsHtml(chat.global, 'g');
   $('actionBar').classList.toggle('show', chat.global.length > 0);
   renderQueue(chat.busy, chat.queued || [], chat.subagents || [], chat.readonly, chat.changed, chat.queuedCount);
-  renderQuestions(chat.readonly ? null : chat.questions);
+  renderQuestions(chat.readonly && !chat.questions?.codex ? null : chat.questions);
 
-  if (stick) list.scrollTop = list.scrollHeight;
-  else if (anchor) {
-    const el = [...itemsEl.children].find(e => e.dataset.i === anchor);
-    if (el) list.scrollTop += el.getBoundingClientRect().top - list.getBoundingClientRect().top - anchorTop;
-  }
+  restoreChatPosition(anchor, stick);
+  historyRendering = false;
   if (!stick && previous && JSON.stringify(previous.items) !== JSON.stringify(chat.items)) $('toBottom').textContent = '↓ 有新消息';
   updateToBottom();
-  preloadCodexHistory();
   noteSwitch(chat);
   if (SC.jump && SC.items.has(SC.jump)) { const j = SC.jump; SC.jump = null; scJump(j); }
 }
@@ -2899,6 +3259,7 @@ $('qnBar').onclick = e => {
 $('qnBar').addEventListener('keydown', e => {
   if (e.key !== 'Enter' || !e.target.matches('input')) return;
   e.preventDefault();
+  if ('field' in e.target.dataset) { e.target.blur(); return; }
   e.target.nextElementSibling.click();
 });
 
@@ -2984,31 +3345,72 @@ function updateToBottom() {
   if (nearBottom()) $('toBottom').textContent = '↓ 最新';
   $('toBottom').style.display = nearBottom() ? 'none' : 'block';
 }
-let historyPrefetch = '', historyTimer = 0;
-function preloadCodexHistory() {
-  if (currentApp !== 'codex' || !lastChat || lastChat.earlier === false || list.scrollTop > Math.max(5000, list.clientHeight * 5) || historyTimer) return;
-  const key = viewSel + ':' + itemsEl.firstElementChild?.dataset.i;
-  if (historyPrefetch === key) return;
-  historyTimer = setTimeout(() => {
-    historyTimer = 0;
-    if (currentApp !== 'codex' || key !== viewSel + ':' + itemsEl.firstElementChild?.dataset.i) return;
-    historyPrefetch = key;
-    if (!$('cachedMore').hidden) { SC.show += 100; renderChat(lastChat); }
-    else send({ t: 'scrollChat', dy: -3200 });
-  }, 150);
+function loadOlderMessages() {
+  if (!lastChat || historyRequest || chatScrolling || chatTouching) return;
+  historyArmed = false;
+  if (!$('cachedMore').hidden) {
+    historyRendering = true;
+    SC.show += 80;
+    renderChat(lastChat);
+    return;
+  }
+  if (historyAtEnd || $('older').hidden) {
+    $('historyStatus').hidden = false;
+    $('historyStatus').textContent = I18N.tr('已到最早消息');
+    return;
+  }
+  if (currentApp === 'codex' && lastChat.busy) {
+    $('historyStatus').hidden = false;
+    $('historyStatus').textContent = I18N.tr('生成中，稍后上滑加载历史');
+    return;
+  }
+  historyRequest = { id: String(++historySerial), sel: viewSel };
+  historyRendering = true;
+  historyExpanded = true;
+  const anchor = captureChatAnchor();
+  $('older').disabled = true;
+  $('historyStatus').hidden = false;
+  $('historyStatus').textContent = I18N.tr('正在加载更早的消息…');
+  restoreChatPosition(anchor);
+  send({ t: 'scrollChat', dy: -900, automatic: true, history: true, requestId: historyRequest.id });
 }
-list.addEventListener('scroll', () => {
+function finishHistory(m) {
+  if (!historyRequest || m.requestId !== historyRequest.id || m.sel !== historyRequest.sel) return;
+  const anchor = captureChatAnchor();
+  historyRequest = null;
+  historyArmed = false;
+  $('older').disabled = false;
+  $('historyStatus').hidden = false;
+  $('historyStatus').textContent = I18N.tr(m.error || (m.blocked ? '生成中，稍后上滑加载历史' : m.earlier === false && $('cachedMore').hidden ? '已到最早消息' : '继续上滑可加载更早的消息'));
+  if (m.earlier === false) { historyAtEnd = true; $('older').hidden = true; }
+  if (!chatScrolling && !chatTouching) restoreChatPosition(anchor);
+  if (!deferredScrollRender) historyRendering = false;
+}
+function maybeLoadOlder() {
+  if (historyArmed && list.scrollTop <= 100) loadOlderMessages();
+}
+function settleChatScroll() {
+  if (restoringChatScroll) { updateToBottom(); return; }
   chatScrolling = true;
   clearTimeout(scrollIdle);
   scrollIdle = setTimeout(() => {
+    if (chatTouching) return;
     chatScrolling = false;
     if (deferredScrollRender && lastChat) { deferredScrollRender = false; renderChat(lastChat); }
+    readingAnchor = nearBottom() ? null : captureChatAnchor();
+    maybeLoadOlder();
   }, 220);
   updateToBottom();
-  preloadCodexHistory();
-}, { passive: true });
+}
+list.addEventListener('scroll', settleChatScroll, { passive: true });
+let historyTouchY = 0;
+list.addEventListener('wheel', e => { restoringChatScroll = false; if (e.deltaY < 0) historyArmed = true; settleChatScroll(); }, { passive: true });
+list.addEventListener('pointerdown', () => { historyArmed = true; }, { passive: true });
+list.addEventListener('touchstart', e => { historyTouchY = e.touches[0].clientY; chatTouching = true; chatScrolling = true; clearTimeout(scrollIdle); }, { passive: true });
+list.addEventListener('touchmove', e => { restoringChatScroll = false; if (e.touches[0].clientY > historyTouchY) historyArmed = true; historyTouchY = e.touches[0].clientY; }, { passive: true });
+for (const event of ['touchend', 'touchcancel']) list.addEventListener(event, () => { chatTouching = false; settleChatScroll(); }, { passive: true });
 $('toBottom').onclick = () => { list.scrollTop = list.scrollHeight; };
-$('older').onclick = () => send({ t: 'scrollChat', dy: -900 });
+$('older').onclick = () => loadOlderMessages();
 
 // LaTeX in text typed by the user ($..$, $..$, \\(..\\), \\[..\\]): turned into .math placeholders for KaTeX.
 const TEX_RE = /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|(?<![\\$\d])\$(?!\s)([^$\n]+?)(?<!\s)\$(?!\d)/g;
@@ -3097,6 +3499,46 @@ function blockText(pre) {
 function forTerminalPaste(text) {
   return text.replace(/\n/g, '\r\n');
 }
+function addImageCopyButtons(root) {
+  for (const img of root.querySelectorAll('img')) {
+    if (img.closest('.generatedImage') || !/^(https?:|data:image)/i.test(img.src)) continue;
+    const target = img.parentElement?.tagName === 'A' ? img.parentElement : img;
+    const wrap = document.createElement('div');
+    wrap.className = 'generatedImage';
+    target.replaceWith(wrap);
+    wrap.appendChild(target);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.dataset.copyImage = '';
+    button.textContent = '复制图片';
+    wrap.appendChild(button);
+  }
+}
+async function copyGeneratedImage(img, btn) {
+  try {
+    if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') throw new Error('浏览器不支持图片复制，请打开图片后保存');
+    const png = (async () => {
+      const response = await fetch(img.src);
+      if (!response.ok) throw new Error('图片读取失败');
+      const blob = await response.blob();
+      if (blob.type === 'image/png') return blob;
+      const url = URL.createObjectURL(blob);
+      try {
+        const image = new Image();
+        image.src = url;
+        await image.decode();
+        const canvas = document.createElement('canvas');
+        canvas.width = image.naturalWidth;
+        canvas.height = image.naturalHeight;
+        canvas.getContext('2d').drawImage(image, 0, 0);
+        return await new Promise((resolve, reject) => canvas.toBlob(b => b ? resolve(b) : reject(new Error('图片转换失败')), 'image/png'));
+      } finally { URL.revokeObjectURL(url); }
+    })();
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
+    btn.textContent = '已复制图片';
+    setTimeout(() => { btn.textContent = '复制图片'; }, 1200);
+  } catch (e) { status('复制图片失败：' + e.message); }
+}
 async function copyText(text, btn, terminal = true) {
   const payload = terminal ? forTerminalPaste(text) : text;
   try {
@@ -3116,6 +3558,8 @@ async function copyText(text, btn, terminal = true) {
   } else status('已复制');
 }
 document.addEventListener('click', async e => {
+  const imageCopy = e.target.closest('[data-copy-image]');
+  if (imageCopy) { e.preventDefault(); await copyGeneratedImage(imageCopy.closest('.generatedImage').querySelector('img'), imageCopy); return; }
   const copyBtn = e.target.closest('.copy');
   const copyCode = !copyBtn && !e.target.closest('a') && e.target.closest('code.copyable');
   if (copyBtn || copyCode) {
@@ -3162,12 +3606,14 @@ $('add').onclick = () => {
   }
   const c = lastChat?.codex;
   if (!c) {
-    const controls = ['newChat', 'pickMode', 'pickPerm', 'pickDir'].filter(id => !$(id).hidden);
-    openSheet('add', '<h3>' + esc(currentAppName) + '</h3>' + controls.map(id => `<button class="opt" data-control="${id}">${esc($(id).textContent)}</button>`).join(''));
+    const controls = ['newChat', 'pickMode', 'pickDir'].filter(id => !$(id).hidden);
+    const editorRow = currentApp === 'devin'
+      ? `<div class="pSec">电脑端 Devin 界面</div><button class="opt ${currentSurface === 'agent' ? 'cur' : ''}" data-native-surface="agent">Agent 界面</button><button class="opt ${currentSurface === 'editor' ? 'cur' : ''}" data-native-surface="editor">Editor 界面</button>${currentSurface === 'editor' ? '<button class="opt" data-editor-chat>打开聊天面板</button>' : ''}` : '';
+    openSheet('add', '<h3>' + esc(currentAppName) + '</h3>' + editorRow + controls.map(id => `<button class="opt" data-control="${id}">${esc($(id).textContent)}</button>`).join(''));
     $('sheet').querySelectorAll('[data-control]').forEach(b => b.onclick = () => { closeSheet(); $(b.dataset.control).click(); });
     return;
   }
-  const rows = [['new', '新建会话'], ['permission', '权限模式'], ['plan', `Plan：${c.plan ? '开' : '关'}`], ['skills', 'Skill · 技能'], ['files', '引用文件'], ['commands', '扩展与命令']];
+  const rows = [['new', '新建会话'], ['plan', `Plan：${c.plan ? '开' : '关'}`], ['skills', 'Skill · 技能'], ['files', '引用文件'], ['commands', '扩展与命令']];
   if (c.ide) rows.push(['ide', `IDE 上下文：${c.ide.on ? '开' : '关'}`]);
   if (c.run) rows.push(['run', `执行位置：${c.run}`]);
   if (c.actions) rows.push(['chat', '会话操作']);
@@ -3176,7 +3622,6 @@ $('add').onclick = () => {
     closeSheet();
     const key = b.dataset.add;
     if (key === 'new') return $('newChat').click();
-    if (key === 'permission') return $('pickPerm').click();
     if (key === 'plan') return send({ t: 'codexPlan' });
     if (key === 'ide') return send({ t: 'codexIde' });
     if (key === 'run') return send({ t: 'codexRun' });
@@ -3191,7 +3636,7 @@ $('pickPlan').onclick = () => { status('正在切换 Plan…'); send({ t: 'codex
 $('pickIde').onclick = () => send({ t: 'codexIde' });
 $('pickRun').onclick = () => { status('读取执行位置…'); send({ t: 'codexRun' }); };
 $('pickChat').onclick = () => { status('读取会话操作…'); send({ t: 'codexChat' }); };
-$('pickAgents').onclick = () => { status('正在读取 Agent 列表…'); send({ t: 'agents' }); };
+$('pickAgents').onclick = () => openAgentList();
 $('pickHistory').onclick = () => { status('读取历史对话…'); send({ t: 'openMenu', kind: 'history' }); };
 $('newChat').onclick = () => { status('正在新建对话…'); send({ t: 'newChat' }); };
 
@@ -3215,9 +3660,11 @@ function leaveEdit() {
   $('vTools').hidden = true;
   $('vSearch').hidden = true;
 }
-function openFile(ref) {
+function openFile(ref, fromEditor = false, diff = '') {
+  returnToEditor = fromEditor ? { ...editorDirectory } : null;
   leaveEdit();
   viewing = null;
+  $('vStatus').hidden = true;
   vOnly = false;
   vExpand.clear();
   $('vTools').hidden = true;
@@ -3230,7 +3677,7 @@ function openFile(ref) {
     $('viewer').classList.add('open');
     history.pushState({ viewer: true }, '');
   }
-  send({ t: 'file', path: ref });
+  send({ t: 'file', path: ref, diff });
 }
 
 function showFile(m) {
@@ -3349,17 +3796,24 @@ function onSaved(m) {
   if (!submitted || m.path !== submitted.path || (m.host || '') !== submitted.host) return;
   saving = null;
   $('vEdit').disabled = false;
-  if (!m.ok) return status(m.error || '保存失败', false);
+  if (!m.ok) { editorStatus(m.error || '保存失败', false); return status(m.error || '保存失败', false); }
   if (!viewing || viewing.path !== submitted.path || (viewing.host || '') !== submitted.host) return;
   viewing.text = editBase = submitted.text;
   viewing.size = m.size;
+  editorStatus('已保存');
   status('已保存');
+}
+function editorStatus(message, ok = true) {
+  $('vStatus').hidden = false;
+  $('vStatus').textContent = I18N.tr(message);
+  $('vStatus').className = ok ? '' : 'err';
 }
 function saveEdit() {
   if (!editing || saving) return;
-  if (!authed) return status('未连接', false);
+  if (!authed || !ws || ws.readyState !== 1) { editorStatus('未连接', false); return; }
   saving = { path: viewing.path, host: viewing.host || '', text: $('vEditBox').value };
   $('vEdit').disabled = true;
+  editorStatus('正在保存…');
   status('正在保存…');
   send({ t: 'saveFile', ...saving });
 }
@@ -3375,6 +3829,11 @@ function closeViewer() {
   $('vEdit').hidden = true;
   $('viewer').classList.remove('open');
   $('vBody').innerHTML = '';
+  if (returnToEditor) {
+    const directory = returnToEditor;
+    returnToEditor = null;
+    send({ t: 'docs', ...directory, editor: true });
+  }
 }
 $('vClose').onclick = () => history.state?.viewer ? history.back() : closeViewer();
 window.addEventListener('popstate', () => { if ($('viewer').classList.contains('open')) closeViewer(); });
@@ -3743,12 +4202,30 @@ document.querySelectorAll('[data-key]').forEach(b => b.onclick = () => send({ t:
 /* ---------- composer ---------- */
 const text = $('text');
 const drafts = new Map(), draftMentions = new Map();
+const pendingSends = new Map(), draftVersions = new Map();
+let inputRevision = 0;
 let activeDraft = '';
+function sendReceipt(value) {
+  const requestId = [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
+  pendingSends.set(requestId, { draft: activeDraft, text: value, computer: currentComputer()?.id || '', mode, version: draftVersions.get(activeDraft) || 0, revision: inputRevision });
+  return { requestId, draft: activeDraft };
+}
+function confirmSent(m) {
+  const sent = pendingSends.get(m.requestId);
+  if (!sent) return;
+  pendingSends.delete(m.requestId);
+  if (drafts.get(sent.draft) === sent.text && (draftVersions.get(sent.draft) || 0) === sent.version) { drafts.delete(sent.draft); draftMentions.delete(sent.draft); }
+  const here = (currentComputer()?.id || '') === sent.computer && mode === sent.mode && (draftKey() === sent.draft || m.sel === viewSel);
+  if (here && inputRevision === sent.revision && text.value === sent.text) {
+    drafts.delete(activeDraft); draftMentions.delete(activeDraft);
+    text.value = ''; MN.mentions = []; autosize();
+  }
+}
 function draftKey() { return [currentComputer()?.id || '', viewSel, mode].join('|'); }
 function saveDraft() { if (activeDraft) { drafts.set(activeDraft, text.value); draftMentions.set(activeDraft, MN.mentions.slice()); } }
 function restoreDraft() { activeDraft = draftKey(); text.value = drafts.get(activeDraft) || ''; MN.mentions = draftMentions.get(activeDraft)?.slice() || []; mentionHide(); autosize(); }
 function autosize() { text.style.height = 'auto'; text.style.height = text.scrollHeight + 'px'; updateMathPrev(); }
-text.addEventListener('input', () => { autosize(); saveDraft(); });
+text.addEventListener('input', () => { inputRevision++; draftVersions.set(activeDraft, (draftVersions.get(activeDraft) || 0) + 1); autosize(); saveDraft(); });
 // ---- "@" mentions (Devin): the relay drives Devin's own typeahead, so a mention ends up as a real chip ----
 // Typing "@" (or "@file:ser") asks for the list; tapping a row puts "@label" into the text. When the message is
 // sent, the relay types the text and, at each "@label", lets Devin's typeahead insert the chip.
@@ -3904,8 +4381,9 @@ $('send').onclick = () => {
   saveDraft();
   const follow = codexFollow();
   const when = devinBusySplit() || follow === 'queue' ? 'queue' : follow === 'steer' ? 'now' : '';
-  if (mode === 'terminal') send({ t: 'termSend', text: v, draft: activeDraft });
-  else send({ t: 'send', text: v, submit: true, draft: activeDraft, ...(when ? { when } : {}), ...mentionsFor(v) });
+  const receipt = sendReceipt(v);
+  if (mode === 'terminal') send({ t: 'termSend', text: v, ...receipt });
+  else send({ t: 'send', text: v, submit: true, ...receipt, ...(when ? { when } : {}), ...mentionsFor(v) });
   if (mode === 'chat') list.scrollTop = list.scrollHeight;
 };
 $('sendNow').onclick = async () => {
@@ -3915,7 +4393,7 @@ $('sendNow').onclick = async () => {
   const follow = codexFollow();
   const steer = !follow || follow === 'queue';
   if (!await ask(steer ? '立即追加到当前任务？' : '改为排队，等当前任务结束后再发送？', steer ? '立即追加' : '排队')) return;
-  send({ t: 'send', text: v, submit: true, draft: activeDraft, when: steer ? 'now' : 'queue', ...mentionsFor(v) });
+  send({ t: 'send', text: v, submit: true, ...sendReceipt(v), when: steer ? 'now' : 'queue', ...mentionsFor(v) });
   if (currentApp !== 'codex') { text.value = ''; autosize(); }
   list.scrollTop = list.scrollHeight;
 };
@@ -3998,10 +4476,7 @@ function uploadDocument(file, sel) {
     request.send(file);
   });
 }
-$('docFile').onchange = async () => {
-  const file = $('docFile').files[0];
-  $('docFile').value = '';
-  if (!file) return;
+async function attachDocumentFile(file) {
   if (file.size > 20 * 1024 * 1024) return status('文件不能超过 20 MB', false);
   const sel = viewSel;
   status('正在上传文件…');
@@ -4010,11 +4485,13 @@ $('docFile').onchange = async () => {
     if (sel === viewSel) send({ t: 'attachments' });
     status('文件已上传，写好文字后点发送');
   } catch (error) { status(error.name === 'AbortError' ? '文件上传超时' : error.message, false); }
+}
+$('docFile').onchange = async () => {
+  const file = $('docFile').files[0];
+  $('docFile').value = '';
+  if (file) await attachDocumentFile(file);
 };
-$('imgFile').onchange = async () => {
-  const file = $('imgFile').files[0];
-  $('imgFile').value = '';
-  if (!file) return;
+async function attachImageFile(file) {
   status('正在处理图片…');
   try {
     const img = await shrinkImage(file);
@@ -4023,7 +4500,26 @@ $('imgFile').onchange = async () => {
   } catch {
     status('读不了这张图片，换一张试试', false);
   }
+}
+$('imgFile').onchange = async () => {
+  const file = $('imgFile').files[0];
+  $('imgFile').value = '';
+  if (file) await attachImageFile(file);
 };
+text.addEventListener('paste', async e => {
+  const files = [...e.clipboardData.files];
+  if (!files.length) return;
+  e.preventDefault();
+  const value = e.clipboardData.getData('text/plain');
+  if (value) {
+    text.setRangeText(value, text.selectionStart, text.selectionEnd, 'end');
+    text.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  for (const file of files) {
+    if (file.type.startsWith('image/')) await attachImageFile(file);
+    else await attachDocumentFile(file);
+  }
+});
 
 $('mic').onclick = () => {
   if (window.AgentRemoteApp?.voice) {
