@@ -56,7 +56,8 @@ function parseFolderUri(uri) {
 }
 
 function workspaceIdentity(w) {
-  return `${w.host || ''}\0${String(w.root || '').replace(/\\/g, '/')}`;
+  const root = String(w.root || '').replace(/\\/g, '/');
+  return `${w.host || ''}\0${WIN32 && !w.host ? root.toLowerCase() : root}`;
 }
 
 // A .code-workspace file lists every root. Relative paths are resolved from the file's folder.
@@ -141,6 +142,8 @@ function openedFolders(app) {
 }
 
 export function titleFolder(title, app) {
+  if (WIN32) title = String(title || '').replace(/\s+\[(?:Administrator|Administer)\]$/i, '');
+  if (WIN32 && app === 'cursor') title = String(title || '').replace(/\s+-\s+Cursor$/, '');
   if (app === 'devin') {
     const match = /^(.*) - Devin(?: - .*)?$/.exec(String(title || ''));
     if (match) return { name: match[1].trim(), host: /\[SSH: ([^\]]+)\]/.exec(String(title || ''))?.[1] || null };
@@ -151,7 +154,7 @@ export function titleFolder(title, app) {
     return { name: (parts.length > 1 ? parts[parts.length - 1] : parts[0]) || '', host: null };
   }
   const host = /\[SSH: ([^\]]+)\]/.exec(String(title || ''))?.[1] || null;
-  const name = String(title || '').replace(/\s*\[SSH: [^\]]+\]\s*$/, '').split(' — ').pop().replace(/^●\s*/, '').trim();
+  const name = String(title || '').replace(/\s*\[SSH: [^\]]+\]\s*$/, '').split(WIN32 && app === 'cursor' ? / — | - / : ' — ').pop().replace(/^●\s*/, '').trim();
   return { name, host };
 }
 
@@ -291,7 +294,9 @@ export function locateWritable(filePath, host) {
     try {
       const root = fs.realpathSync(w.root.replace(/^~(?=\/)/, os.homedir()));
       const target = fs.realpathSync(raw.replace(/^~(?=\/)/, os.homedir()));
-      if (target === root || target.startsWith(root + path.sep)) found.push({ host: null, path: target, root });
+      const comparedRoot = WIN32 ? root.toLowerCase() : root;
+      const comparedTarget = WIN32 ? target.toLowerCase() : target;
+      if (comparedTarget === comparedRoot || comparedTarget.startsWith(comparedRoot + path.sep)) found.push({ host: null, path: target, root });
     } catch {}
   }
   if (!found.length) return null;
@@ -364,7 +369,7 @@ async function listDir(host, dir) {
 }
 
 // README and source files inside one project. dir must stay inside root.
-export async function listProject(host, root, dir) {
+export async function listProject(host, root, dir, allFiles = false) {
   let base, here;
   if (!host) {
     const home = dir => dir.replace(/^~(?=\/)/, os.homedir());
@@ -380,21 +385,24 @@ export async function listProject(host, root, dir) {
   try { items = await listDir(host, here); }
   catch (e) { throw new Error(host ? e.message : '读不了这个文件夹'); }
   const byName = (a, b) => a.name.localeCompare(b.name, 'zh');
-  const folders = items.filter(i => i.dir && !i.name.startsWith('.') && !SKIP_DIRS.has(i.name))
+  const folders = items.filter(i => i.dir && (allFiles || !i.name.startsWith('.')) && !SKIP_DIRS.has(i.name))
     .map(i => ({ name: i.name, path: path.posix.join(here.replace(/\\/g, '/'), i.name) }))
     .sort(byName).slice(0, 80);
   const docs = [];
   const code = [];
-  for (const item of items.filter(i => i.file && !i.name.startsWith('.'))) {
+  const files = [];
+  for (const item of items.filter(i => i.file && (allFiles || !i.name.startsWith('.')))) {
     const kind = fileKind(item.name);
     const row = { name: item.name, path: path.posix.join(here.replace(/\\/g, '/'), item.name) };
     if (kind === 'doc') docs.push(row);
     else if (kind === 'code') code.push(row);
+    else if (allFiles) files.push(row);
   }
   docs.sort((a, b) => (/^readme/i.test(b.name) - /^readme/i.test(a.name)) || byName(a, b));
   code.sort(byName);
+  files.sort(byName);
   const parent = here === base ? null : path.posix.dirname(here.replace(/\\/g, '/'));
-  return { root: base, path: here.replace(/\\/g, '/'), parent, name: path.basename(base), host: host || '', folders, docs: docs.slice(0, 40), code: code.slice(0, 200) };
+  return { root: base, path: here.replace(/\\/g, '/'), parent, name: path.basename(base), host: host || '', folders, docs: docs.slice(0, 40), code: code.slice(0, 200), ...(allFiles ? { files: files.slice(0, 200) } : {}) };
 }
 
 // "src/a.py:12", "a.py#L12-20", "a.py (lines 3-9)" → path + first line.
