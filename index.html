@@ -1180,7 +1180,7 @@ function applySelection(m, clearChat = true) {
   if (m.app) currentApp = m.app;
   const changed = (m.sel || '') !== viewSel;
   if (changed) { menuRequest++; saveDraft(); }
-  if (changed) { viewSel = m.sel || ''; cache.clear(); $('sessionNotice').hidden = true; }
+  if (changed) { viewSel = m.sel || ''; thoughtObserver.disconnect(); cache.clear(); $('sessionNotice').hidden = true; }
   const here = currentComputer();
   const id = m.id || here?.win;
   const selection = { windowId: m.windowId ?? here?.windowId ?? '', threadId: m.threadId ?? here?.threadId ?? '' };
@@ -2141,7 +2141,7 @@ function showUsageDetails(kind) {
   const bars = [...(m.quota || []), ...(m.limits || []), ...((m.quota || m.limits) ? [] : (m.bars || []))];
   const value = b => b?.pct == null ? String(b?.value || '未获取') : `${b.basis === 'remaining' ? '剩余' : '已用'} ${b.pct}%`;
   const rows = context ? `<p>${esc(value(contextInfo))}</p><p class="hint">上下文表示当前会话的上下文容量使用情况，与账号额度分别统计。</p>`
-    : `<p class="hint">额度表示账号在对应周期内的使用限制，已用或剩余以指标说明为准。</p>` + (m.plan ? `<p>方案 · ${esc(m.plan)}</p>` : '') + (m.missing || !bars.length ? '<p>未获取额度数据</p>' : bars.map(b => `<p>${esc(b.label)} · ${esc(value(b))}${b.reset ? `<br><span class="hint">${esc(b.reset)}</span>` : ''}</p>`).join(''))
+    : `<p class="hint">额度表示账号在对应周期内的使用限制，已用或剩余以指标说明为准。</p>` + (m.plan ? `<p>方案 · ${esc(m.plan)}</p>` : '') + (m.missing || !bars.length ? '<p>未获取额度数据</p>' : bars.map(b => `<p>${esc(b.label)} · ${esc(value(b))}${b.detail ? `<br><span class="hint">${esc(b.detail)}</span>` : ''}${b.reset ? `<br><span class="hint">${esc(b.reset)}</span>` : ''}</p>`).join(''))
       + (m.extra ? `<p>额外用量余额 · ${esc(m.extra)}</p>` : '');
   const updated = m.updated ? new Date(m.updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
   openSheet('usage', `<h3>${context ? '上下文说明' : '额度说明'}</h3>${rows}${!context && updated ? `<p class="hint">${m.cached ? '缓存数据' : '最近更新'} · ${esc(updated)}</p>` : ''}${!context && $('quotaStatus').textContent ? `<p class="hint">${esc($('quotaStatus').textContent)}</p>` : ''}<button id="refreshUsage" class="opt">刷新数据</button>`);
@@ -2922,6 +2922,7 @@ function paintSessions(chat) {
   const changed = key !== curSessKey;
   if (changed) {
     curSessKey = key;
+    thoughtObserver.disconnect();
     cache.clear();
     thoughtFull.clear();
     qnSig = '';
@@ -3404,7 +3405,7 @@ function renderChat(chat) {
   if (latestTasks) $('taskChip').innerHTML = `<span>${I18N.tr('任务')}</span> ${latestTasks.done}/${latestTasks.total}`;
   if (sheetKind === 'tasks') showTasks();
   const live = new Set(visibleItems.map(it => it.i));
-  for (const k of cache.keys()) if (!live.has(k)) cache.delete(k);
+  for (const k of cache.keys()) if (!live.has(k)) { thoughtObserver.unobserve(cache.get(k).el); cache.delete(k); }
 
   $('actionBar').innerHTML = buttonsHtml(chat.global, 'g');
   $('actionBar').classList.toggle('show', chat.global.length > 0);
