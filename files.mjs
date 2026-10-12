@@ -143,7 +143,7 @@ function openedFolders(app) {
 
 export function titleFolder(title, app) {
   if (WIN32) title = String(title || '').replace(/\s+\[(?:Administrator|Administer)\]$/i, '');
-  if (WIN32 && app === 'cursor') title = String(title || '').replace(/\s+-\s+Cursor$/, '');
+  if (app === 'cursor') title = String(title || '').replace(/\s+-\s+Cursor$/, '');
   if (app === 'devin') {
     const match = /^(.*) - Devin(?: - .*)?$/.exec(String(title || ''));
     if (match) return { name: match[1].trim(), host: /\[SSH: ([^\]]+)\]/.exec(String(title || ''))?.[1] || null };
@@ -154,7 +154,7 @@ export function titleFolder(title, app) {
     return { name: (parts.length > 1 ? parts[parts.length - 1] : parts[0]) || '', host: null };
   }
   const host = /\[SSH: ([^\]]+)\]/.exec(String(title || ''))?.[1] || null;
-  const name = String(title || '').replace(/\s*\[SSH: [^\]]+\]\s*$/, '').split(WIN32 && app === 'cursor' ? / — | - / : ' — ').pop().replace(/^●\s*/, '').trim();
+  const name = String(title || '').replace(/\s*\[SSH: [^\]]+\]\s*$/, '').split(app === 'cursor' ? / — | - / : ' — ').pop().replace(/^●\s*/, '').trim();
   return { name, host };
 }
 
