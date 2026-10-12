@@ -68,10 +68,13 @@ const wanted = () => streams.size > 0 || listDevices().some(d => d.push);
 export async function deliver(event, onlyDevice = null) {
   const { en, ...zh } = event;
   for (const d of listDevices()) {
-    if (onlyDevice ? d.id !== onlyDevice : watching(d.id, event)) continue;
+    const skip = onlyDevice ? d.id !== onlyDevice : event.kind !== 'end' && event.kind !== 'tasks' && watching(d.id, event);
+    const mine = [...streams].filter(s => s.deviceId === d.id);
+    if (event.kind !== 'test' && (mine.length || skip && watching(d.id, event))) console.log(`[事件] ${event.kind} → ${d.name}：${skip ? '手机正在看这个会话，已跳过' : `${mine.length} 条连接`}`);
+    if (skip) continue;
     const payload = JSON.stringify(d.lang === 'en' && en ? { ...zh, ...en } : zh);
-    for (const s of streams) if (s.deviceId === d.id) s.res.write(`data: ${payload}\n\n`);
-    if (!d.push) continue;
+    for (const s of mine) s.res.write(`data: ${payload}\n\n`);
+    if (!d.push || ['working', 'end', 'tasks'].includes(event.kind)) continue;
     try {
       await webpush.sendNotification(d.push, payload, { TTL: 3600, urgency: 'high' });
     } catch (e) {
@@ -111,6 +114,8 @@ function check(win, w, s) {
     question: s.waiting || '',
     ...extra,
   });
+  const working = quiet => deliver(event({ kind: 'working', quiet: !!quiet, startedAt: w.startedAt || Date.now(), title: `${pc} · 工作中 · ${where}`, body: '正在工作…',
+    en: { title: `${pc} · Working · ${where}`, body: 'Working…' } }));
   // Opening a different thread is not that thread finishing. Start tracking it fresh.
   if (w.thread !== conversation) {
     w.thread = conversation;
@@ -120,19 +125,58 @@ function check(win, w, s) {
     w.waiting = s.waiting || null;
     w.waitPolls = 0;
     w.told = true;
+    w.taskSig = undefined;
+    w.taskShown = false;
+    w.startedAt = s.busy ? Date.now() : 0;
+    if (s.busy) working(false);
     return;
   }
+  if (s.busy && !w.busy) w.startedAt = Date.now();
 
   if (s.waiting !== w.waiting) { w.waiting = s.waiting; w.waitPolls = 0; w.told = false; }
   if (s.waiting && !w.told && ++w.waitPolls >= WAIT_POLLS) {
     w.told = true;
+    w.waitShown = true;
+    deliver(event({ kind: 'end' }));
     deliver(event({ kind: 'waiting', ...extras(s, false), title: `${pc} · 等你确认 · ${where}`, body: s.waitingText || 'Agent 在等你确认',
       en: { title: `${pc} · Needs your OK · ${where}`, body: s.waitingText || 'The Agent is waiting for you' } }));
   }
 
+  const t = s.tasks;
+  if (t && t.total > 0) {
+    const sig = `${t.done}/${t.total}`;
+    if (sig !== w.taskSig) {
+      if (w.taskSig !== undefined || (s.busy && t.done < t.total)) {
+        const wasShown = w.taskShown;
+        w.taskShown = true;
+        deliver(event({ kind: 'tasks', done: t.done, total: t.total, current: t.current || '', title: `${pc} · 任务 ${t.done}/${t.total} · ${where}`,
+          body: t.done >= t.total ? '全部任务已完成' : (t.current || '进行中'),
+          en: { title: `${pc} · Tasks ${t.done}/${t.total} · ${where}`, body: t.done >= t.total ? 'All tasks done' : (t.current || 'In progress') } }));
+        if (t.done >= t.total) {
+          w.taskShown = false;
+          if (s.busy) working(false);
+        } else if (!wasShown && s.busy) {
+          working(true);
+        }
+      }
+      w.taskSig = sig;
+    }
+  }
+
+  const waitCleared = w.waitShown && !s.waiting;
+  if (waitCleared) w.waitShown = false;
+  if (s.busy && (!w.busy || waitCleared)) working(w.taskShown);
   if (s.busy) { w.busy = true; w.idle = 0; return; }
   if (!w.busy || ++w.idle < IDLE_POLLS) return;
   w.busy = false;
+  w.startedAt = 0;
+  deliver(event({ kind: 'end' }));
+  if (w.taskShown && !s.waiting) {
+    const [done, total] = w.taskSig.split('/').map(Number);
+    deliver(event({ kind: 'tasks', stopped: true, done, total, current: '', title: `${pc} · 任务已停止 ${done}/${total} · ${where}`, body: 'Agent 已停止，任务未全部完成',
+      en: { title: `${pc} · Tasks stopped ${done}/${total} · ${where}`, body: 'The Agent stopped before all tasks were done' } }));
+    w.taskShown = false;
+  }
   if (!s.waiting) deliver(event({ kind: 'done', ...extras(s, true), title: `${pc} · 已完成 · ${where}`, body: s.last || 'Agent 已停止',
     en: { title: `${pc} · Done · ${where}`, body: s.last || 'The Agent has stopped' } }));
 }

@@ -943,11 +943,11 @@ function pageHelpers() {
     }).filter(r => r.label && r.label !== 'Loading…');
   };
   // Devin: the question card sits in a `[data-band-item]` above the composer, one question at a time
-  // ("1 of 2" pager, Skip, option rows `div[role=button]`; multi-select rows carry a role=checkbox and the
+  // (Skip, a "1 of 2" pager only when there are several, option rows `div[role=button]`; multi-select rows carry a role=checkbox and the
   // card has a Submit button). A single choice answers as soon as its row is clicked. Free text goes
   // through the normal composer ("Other answer" placeholder).
   const devinQnBand = () => !devinLog() ? null : [...document.querySelectorAll('[data-band-item]')]
-    .find(e => vis(e) && /\b\d+ of \d+\b/.test(e.innerText || '') && e.querySelector('button[aria-label="Skip"]'));
+    .find(e => vis(e) && e.querySelector('button[aria-label="Skip"]'));
   const devinQnRows = band => [...band.querySelectorAll('[data-slot="scroll-area-viewport"] > [role="button"]')];
   const devinQnButton = (band, name) => [...band.querySelectorAll('button')].find(b => vis(b) && (b.getAttribute('aria-label') === name || (b.innerText || '').trim() === name));
   const devinQuestions = () => {
@@ -1462,6 +1462,16 @@ function pageHelpers() {
     return true;
   };
 
+  // Latest todo list of the Devin session (the phone's task notification); current = the item being worked on.
+  const devinTaskState = () => {
+    for (const row of [...(devinLog()?.children || [])].slice(-40).reverse()) {
+      if (!/tasks? done/.test(row.textContent)) continue;
+      const t = devinTasks(row, '');
+      if (t) return { done: t.done, total: t.total, current: t.items?.find(x => x.status === 'in_progress')?.t || '' };
+    }
+    return null;
+  };
+
   // File-edit rows: medium file name, +N/-N counters, then a .diff-code-block of line divs.
   const devinEdit = (row, i) => {
     const block = row.querySelector('.diff-code-block');
@@ -1596,6 +1606,20 @@ function pageHelpers() {
     return { pct: Number(m[1]), basis: /left|remaining|剩余/i.test(text) ? 'remaining' : 'used' };
   };
   const readDevinUsage = () => {
+    // The status bar shows the plan and quota percentages; the breakdown holds the reset dates and extra balance.
+    const anchor = [...doc.querySelectorAll('[aria-label*="quota used"]')].find(a => a.getBoundingClientRect().width > 0);
+    if (anchor) {
+      const aria = anchor.getAttribute('aria-label');
+      const sections = [...doc.querySelectorAll('.breakdown-details .quota-section')];
+      const section = word => sections.find(s => (s.querySelector('.quota-label')?.textContent || '').trim().startsWith(word));
+      const limits = [['每日额度', 'Daily'], ['每周额度', 'Weekly']].map(([label, word]) => {
+        const pct = new RegExp(`${word}:\\s*(\\d+)%\\s*quota used`).exec(aria)?.[1];
+        const reset = section(word)?.querySelector('.quota-reset-label')?.textContent.trim() || '';
+        return pct == null ? null : { label, kind: 'limit', basis: 'used', pct: Number(pct), reset };
+      }).filter(Boolean);
+      const extra = section('Extra')?.querySelector('.quota-value')?.textContent.trim() || '';
+      return { missing: false, quota: [], limits, plan: aria.split(',')[0].trim(), extra };
+    }
     const text = [...doc.querySelectorAll('p')].map(e => (e.innerText || '').replace(/\s+/g, ' ').trim()).find(t => /usage quota/i.test(t));
     if (!text) return { missing: true, quota: [], limits: [] };
     const reset = (/resets\s+(.+?)\.?$/i.exec(text) || [])[1] || '';
@@ -1881,7 +1905,7 @@ function pageHelpers() {
       const reply = latest && codexTurnData(latest)?.items?.filter(it => it.type === 'assistant-message' && it.phase !== 'commentary' && it.completed).at(-1);
       last = (reply?.content || '').trim().replace(/\s+/g, ' ').slice(0, 160);
     }
-    return { busy, waiting, waitingText, last, thread, agentId: active?.id || '', title, progress, roots, ...(actions ? { actions } : {}), ...(devin ? { devin: true, changed: changedCount() } : {}) };
+    return { busy, waiting, waitingText, last, thread, agentId: active?.id || '', title, progress, roots, ...(actions ? { actions } : {}), ...(devin ? { devin: true, changed: changedCount(), tasks: devinTaskState() } : {}) };
   };
 
   // Cursor Agents window: the left sidebar lists conversations as row:<agent id>.
@@ -6481,6 +6505,7 @@ async function handleApi(req, res, route) {
     return json(req, res, 200, { ok: true });
   }
 
+  // The Android app holds this open with POST: quick tunnels buffer GET event streams.
   if (route === '/api/events') return openEventStream(req, res, device.id);
   // Actions from an Android notification (reply / pick an option / accept the changes), run on that window.
   if (route === '/api/act' && req.method === 'POST') {

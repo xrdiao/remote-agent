@@ -1726,7 +1726,7 @@ function renderQuota(m) {
     const basis = b.basis || 'used';
     const n = b.pct == null ? null : Math.max(0, Math.min(100, Number(b.pct)));
     const num = n == null ? (b.value ?? '未获取') : (basis === 'remaining' ? '剩余' : '已用') + `${n}%`;
-    const label = /week|每周|周额度/i.test(b.label) ? '周额度' : b.label;
+    const label = /week|每周|周额度/i.test(b.label) ? '周额度' : /day|每日|日额度/i.test(b.label) ? '日额度' : b.label;
     return `<button class="meter" type="button" title="${esc(b.label + ' · ' + basis + ' · ' + (b.reset || ''))}" aria-label="${esc(b.label + ' ' + num)}"><span class="track" style="--pct:${n ?? 0}"><i class="${meterFill(n, basis)}" style="width:${n ?? 0}%"></i></span><span class="meterText"><span class="meterLabel">${esc(label)}</span><b>${esc(String(num))}</b></span></button>`;
   }).join('');
   if (when) $('quotaMeters').insertAdjacentHTML('beforeend', `<span class="quotaUpdated">${m.cached ? '缓存 ' : ''}${esc(when)}</span>`);
@@ -1738,7 +1738,8 @@ function showUsageDetails(kind) {
   const bars = [...(m.quota || []), ...(m.limits || []), ...((m.quota || m.limits) ? [] : (m.bars || []))];
   const value = b => b?.pct == null ? String(b?.value || '未获取') : `${b.basis === 'remaining' ? '剩余' : '已用'} ${b.pct}%`;
   const rows = context ? `<p>${esc(value(contextInfo))}</p><p class="hint">上下文表示当前会话的上下文容量使用情况，与账号额度分别统计。</p>`
-    : `<p class="hint">额度表示账号在对应周期内的使用限制，已用或剩余以指标说明为准。</p>` + (m.missing || !bars.length ? '<p>未获取额度数据</p>' : bars.map(b => `<p>${esc(b.label)} · ${esc(value(b))}${b.reset ? `<br><span class="hint">${esc(b.reset)}</span>` : ''}</p>`).join(''));
+    : `<p class="hint">额度表示账号在对应周期内的使用限制，已用或剩余以指标说明为准。</p>` + (m.plan ? `<p>方案 · ${esc(m.plan)}</p>` : '') + (m.missing || !bars.length ? '<p>未获取额度数据</p>' : bars.map(b => `<p>${esc(b.label)} · ${esc(value(b))}${b.reset ? `<br><span class="hint">${esc(b.reset)}</span>` : ''}</p>`).join(''))
+      + (m.extra ? `<p>额外用量余额 · ${esc(m.extra)}</p>` : '');
   const updated = m.updated ? new Date(m.updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
   openSheet('usage', `<h3>${context ? '上下文说明' : '额度说明'}</h3>${rows}${!context && updated ? `<p class="hint">${m.cached ? '缓存数据' : '最近更新'} · ${esc(updated)}</p>` : ''}${!context && $('quotaStatus').textContent ? `<p class="hint">${esc($('quotaStatus').textContent)}</p>` : ''}<button id="refreshUsage" class="opt">刷新数据</button>`);
   $('refreshUsage').onclick = () => { closeSheet(); status('正在读取额度…'); send({ t: 'usage' }); };
@@ -1845,7 +1846,8 @@ async function enableNotify() {
   if (nativeNotify()) {
     window.AgentRemoteApp.setNotify(nativeConfig());
     notifyOn = true;
-    return status('通知已开启。华为等手机请在「设置 → 应用启动管理」里允许本 App 后台活动');
+    setTimeout(() => { if (window.AgentRemoteApp.listenStatus?.() !== 'connected') showBgSheet(); }, 4000);
+    return status('通知已开启，正在连接电脑。华为等手机请在「设置 → 应用启动管理」里允许本 App 后台活动');
   }
   if (inApp) return status('请先在菜单里更新安卓 App，新版才支持通知', false);
   if (!webPush()) {
@@ -2062,6 +2064,7 @@ $('sheet').addEventListener('click', async e => {
   else if (act === 'cache') showCacheSheet();
   else if (act === 'bg') showBgSheet();
   else if (act === 'bgBattery') { window.AgentRemoteApp.askBattery(); closeSheet(); }
+  else if (act === 'bgNotifySettings') { window.AgentRemoteApp.openNotifySettings(); closeSheet(); }
   else if (act === 'bgReconnect') { window.AgentRemoteApp.reconnectListen(); status('正在重连…'); setTimeout(showBgSheet, 1500); }
   else if (act === 'lang') I18N.set(I18N.lang === 'en' ? 'zh' : 'en');
   else if (act === 'computers') showComputers();
@@ -2682,13 +2685,18 @@ function showBgSheet() {
   const app = window.AgentRemoteApp;
   if (!app?.listenStatus) return;
   const st = app.listenStatus();
-  const label = { connected: '已连接', connecting: '连接中…', retry: '断开了，正在重连…', off: '未开启' }[st] || st;
+  const err = app.listenError?.() || '';
+  const label = (st === 'retry' || st === 'connecting') && err ? `断开了，正在重连…（${esc(err)}）`
+    : { connected: '已连接', connecting: '连接中…', retry: '断开了，正在重连…', off: '未开启' }[st] || st;
   const battery = app.batteryOk();
+  const notify = app.notifyAllowed ? app.notifyAllowed() : null;
   openSheet('bg', `<h3>后台连接</h3>
     <div class="hint">App 退到后台时，由一个常驻的通知保持和电脑的连接，Agent 完成或需要你确认时提醒你，也可以直接在通知里回复或选择。</div>
     <div class="opt" style="pointer-events:none"><span class="lbl">连接状态<span class="sub">${label}${st === 'off' ? '（先在菜单里开启通知）' : ''}</span></span></div>
     <div class="opt" style="pointer-events:none"><span class="lbl">电池优化<span class="sub">${battery ? '已放行，系统不会为了省电断开它' : '没放行：锁屏一段时间后系统可能会断开连接'}</span></span></div>
     ${battery ? '' : '<button class="opt" data-act="bgBattery"><span class="lbl">去放行电池优化</span></button>'}
+    ${notify === null ? '' : `<div class="opt" style="pointer-events:none"><span class="lbl">系统通知权限<span class="sub">${notify ? '已允许' : '被关闭：收不到任何提醒'}</span></span></div>`}
+    ${notify === false ? '<button class="opt" data-act="bgNotifySettings"><span class="lbl">去打开通知权限</span></button>' : ''}
     <button class="opt" data-act="bgReconnect"><span class="lbl">立即重连</span></button>`);
 }
 async function showCacheSheet() {
