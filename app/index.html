@@ -797,6 +797,7 @@ const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统'
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 let base = null, info = null, ws = null, authed = false, failures = 0;
+let windowReady = false;
 let menuRequest = 0;
 let codexSettingsRequest = 0;
 let mode = store.get('mode') || 'chat';
@@ -807,7 +808,7 @@ let windows = [], currentWindow = null;
 let currentApp = null;
 let editorBrowsing = false, editorDirectory = null, returnToEditor = null;
 const agentLists = new Map();
-const agentListKey = () => (currentComputer()?.key || '') + ':' + currentApp;
+const agentListKey = () => (currentComputer()?.key || '') + ':' + currentApp + (currentApp === 'cursor' ? ':' + (currentComputer()?.windowId || currentWindow || '') : '');
 function receiveAgents(m) {
   if (m.app && m.app !== currentApp) return;
   const key = agentListKey();
@@ -909,10 +910,15 @@ function finishPending(list) {
 }
 
 function send(obj) {
+  if (obj.t === 'attach') setWindowReady(false);
   if (obj.t === 'openMenu') obj.requestId = ++menuRequest;
   if (currentApp === 'codex' && ['settings', 'codexSetting'].includes(obj.t)) obj.requestId = ++codexSettingsRequest;
   if (ws && ws.readyState === 1 && authed) ws.send(JSON.stringify(obj));
   else status('未连接', false);
+}
+function setWindowReady(ready) {
+  windowReady = ready;
+  $('send').disabled = $('sendNow').disabled = !ready;
 }
 
 /* ---------- gate: pairing / 2FA / offline ---------- */
@@ -1174,13 +1180,15 @@ function applySelection(m, clearChat = true) {
   if (m.app) currentApp = m.app;
   const changed = (m.sel || '') !== viewSel;
   if (changed) { menuRequest++; saveDraft(); }
-  if (changed) { viewSel = m.sel || ''; cache.clear(); $('sessionNotice').hidden = true; }
+  if (changed) { viewSel = m.sel || ''; thoughtObserver.disconnect(); cache.clear(); $('sessionNotice').hidden = true; }
   const here = currentComputer();
+  const id = m.id || here?.win;
+  const selection = { windowId: m.windowId ?? here?.windowId ?? '', threadId: m.threadId ?? here?.threadId ?? '' };
   if (here) rememberComputer({
     ...here,
-    win: m.id || here.win,
-    windowId: m.windowId ?? here.windowId ?? '',
-    threadId: m.threadId ?? here.threadId ?? '',
+    win: id,
+    ...selection,
+    selections: { ...here.selections, [id]: selection },
   });
   if (changed) { restoreDraft(); $('attachments').innerHTML = ''; send({ t: 'attachments' }); }
   const cachedAgents = agentLists.get(agentListKey());
@@ -1529,6 +1537,7 @@ function autoRetry() {
 }
 
 function connect() {
+  setWindowReady(false);
   clearTimeout(retryTimer);
   if (conn.active || $('gate').classList.contains('open')) connShow('正在建立实时连接…');
   const gen = ++connGen;
@@ -1541,6 +1550,7 @@ function connect() {
   ws.onclose = async event => {
     clearTimeout(connectTimer);
     if (gen !== connGen) return;
+    setWindowReady(false);
     $('dot').className = '';
     if (!authed) {
       // boot() asks /api/me whether the device was removed or needs 2FA again.
@@ -1564,8 +1574,7 @@ function connect() {
       ungate();
       connHostOk();
       if (sheetKind === 'computers') closeSheet();
-      $('dot').className = 'ok';
-      status('已连接');
+      status('正在切换窗口…');
       send({ t: 'mode', mode });
       send({ t: 'windows' });
       const fromNotice = window.AgentRemoteApp?.takeOpenWin?.() || pendingNotice;
@@ -1610,14 +1619,17 @@ function connect() {
       finishPending(['正在读取额度…']);
     }
     else if (m.t === 'attached') {
+      if (m.closed) { setWindowReady(m.ready === true); status('这个窗口已经关闭，请重新选择', false); send({ t: 'windows' }); return; }
       rememberAgentOpen(m);
-      if (m.keepQuota) { applySelection(m); return; }
+      if (m.keepQuota) { applySelection(m); setWindowReady(true); return; }
       finishPending(['正在切换窗口…', '正在切换 Agent…']);
       store.set('window', m.id);
       applySelection(m, false);
       currentWindow = m.id;
       currentApp = m.app || null;
-      if (m.closed) { status('这个窗口已经关闭，请重新选择', false); send({ t: 'agents' }); return; }
+      setWindowReady(true);
+      $('dot').className = 'ok';
+      status('已连接');
       $('titleText').textContent = m.app === 'fusion' ? 'Fusion' : m.app === 'devin' ? 'Devin agent' : m.app === 'codex' ? 'Codex' : winLabel(m.title).name;
       currentAppName = m.appName;
       currentProject = m.app === 'fusion' ? '' : (m.project || winLabel(m.title).name);
@@ -1626,11 +1638,12 @@ function connect() {
       renderContext(null);
       $('quotaMeters').innerHTML = '';
       $('quotaMeters').title = '';
-      renderQuota(quotaCache.get(quotaKey()) || {});
+      renderQuota(quotaCache.get(quotaKey()) || { missing: true, quota: [], limits: [] });
       send({ t: 'usage', automatic: true });
       send({ t: 'appTheme', dark: document.documentElement.dataset.theme !== 'light' });
       send({ t: 'windows' });
     }
+    else if (m.t === 'attachFailed') setWindowReady(m.ready);
     else if (m.t === 'agents') receiveAgents(m);
     else if (m.t === 'codexArchived') {
       const conv = String(m.id || '').split(':').slice(2).join(':');
@@ -2091,15 +2104,14 @@ const quotaCache = new Map();
 const quotaKey = () => [currentComputer()?.id || '', ...viewSel.split('|').slice(0, 2)].join('|');
 function renderQuota(m) {
   if ('context' in m) renderContext(m.context);
-  if (m.error) { $('quotaStatus').textContent = m.error; $('quotaStatus').title = m.detail || m.error; if (!m.automatic) status('额度刷新失败：' + m.error, false); return; }
+  if (m.error) { $('quotaStatus').textContent = m.error; $('quotaStatus').title = $('quotaMeters').title = m.detail || m.error; if (!m.automatic) status('额度刷新失败：' + m.error, false); return; }
   if (!m.cached || m.updated > (quotaCache.get(quotaKey())?.updated || 0)) $('quotaStatus').textContent = '';
 
   if (m.loading) return;
-  quotaInfo = m;
   if (!('quota' in m) && !('limits' in m) && !('bars' in m)) {
-    $('quotaMeters').innerHTML = '<button class="meter" onclick="showUsageDetails(\'quota\')"><span class="track"></span><span class="meterText"><span class="meterLabel">额度</span><b>未获取</b></span></button>';
     return;
   }
+  quotaInfo = m;
   if (!m.missing && !m.loading) quotaCache.set(quotaKey(), m);
   const bars = [...(m.quota || []), ...(m.limits || []), ...((m.quota || m.limits) ? [] : (m.bars || []))]
     .filter(b => b?.label && !/^loading\b/i.test(String(b.label)));
@@ -2129,7 +2141,7 @@ function showUsageDetails(kind) {
   const bars = [...(m.quota || []), ...(m.limits || []), ...((m.quota || m.limits) ? [] : (m.bars || []))];
   const value = b => b?.pct == null ? String(b?.value || '未获取') : `${b.basis === 'remaining' ? '剩余' : '已用'} ${b.pct}%`;
   const rows = context ? `<p>${esc(value(contextInfo))}</p><p class="hint">上下文表示当前会话的上下文容量使用情况，与账号额度分别统计。</p>`
-    : `<p class="hint">额度表示账号在对应周期内的使用限制，已用或剩余以指标说明为准。</p>` + (m.plan ? `<p>方案 · ${esc(m.plan)}</p>` : '') + (m.missing || !bars.length ? '<p>未获取额度数据</p>' : bars.map(b => `<p>${esc(b.label)} · ${esc(value(b))}${b.reset ? `<br><span class="hint">${esc(b.reset)}</span>` : ''}</p>`).join(''))
+    : `<p class="hint">额度表示账号在对应周期内的使用限制，已用或剩余以指标说明为准。</p>` + (m.plan ? `<p>方案 · ${esc(m.plan)}</p>` : '') + (m.missing || !bars.length ? '<p>未获取额度数据</p>' : bars.map(b => `<p>${esc(b.label)} · ${esc(value(b))}${b.detail ? `<br><span class="hint">${esc(b.detail)}</span>` : ''}${b.reset ? `<br><span class="hint">${esc(b.reset)}</span>` : ''}</p>`).join(''))
       + (m.extra ? `<p>额外用量余额 · ${esc(m.extra)}</p>` : '');
   const updated = m.updated ? new Date(m.updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
   openSheet('usage', `<h3>${context ? '上下文说明' : '额度说明'}</h3>${rows}${!context && updated ? `<p class="hint">${m.cached ? '缓存数据' : '最近更新'} · ${esc(updated)}</p>` : ''}${!context && $('quotaStatus').textContent ? `<p class="hint">${esc($('quotaStatus').textContent)}</p>` : ''}<button id="refreshUsage" class="opt">刷新数据</button>`);
@@ -2159,10 +2171,10 @@ function showMainMenu() {
     ${inApp && appVersion ? update : ''}
     ${inApp ? '<button class="opt" data-act="changeUrl"><span class="lbl">更换 App 地址</span></button>' : ''}
     <button class="opt" data-act="reconnect"><span class="lbl">重新连接</span></button>
-    <button class="opt" data-act="voice"><span class="lbl">语音按钮<span class="sub">输入法键盘自带麦克风的话用不着</span></span><span class="switch ${store.get('voice') === 'on' ? 'on' : ''}"></span></button>
     <button class="opt" data-act="theme"><span class="lbl">主题<span class="sub">深色 / 浅色 / 跟随系统（当前：${themeName()}）</span></span></button>
     ${inApp && window.AgentRemoteApp?.listenStatus ? '<button class="opt" data-act="bg"><span class="lbl">后台连接<span class="sub">状态、电池优化、立即重连</span></span></button>' : ''}
     <button class="opt" data-act="cache"><span class="lbl">会话缓存<span class="sub">手机上保存的对话记录，可折叠、可清除</span></span></button>
+    <button class="opt" data-act="lang"><span class="lbl">语言 / Language<span class="sub">中文 · English（${I18N.lang === 'en' ? 'English' : '中文'}）</span></span></button>
     <button class="opt" data-act="computers"><span class="lbl">电脑<span class="sub">${esc(currentComputer()?.name || '未配对')}</span></span></button>
     <button class="opt" data-act="devices"><span class="lbl">已配对设备</span></button>
     <button class="opt" data-act="logout"><span class="lbl">删除这台电脑</span></button>`);
@@ -2362,7 +2374,7 @@ $('sheet').addEventListener('click', async e => {
     if (body) body.hidden = !open;
     return;
   }
-  if (b.dataset.win) { closeSheet(); status('正在切换窗口…'); return send({ t: 'attach', id: b.dataset.win }); }
+  if (b.dataset.win) { closeSheet(); status('正在切换窗口…'); return send({ t: 'attach', id: b.dataset.win, ...currentComputer()?.selections?.[b.dataset.win] }); }
   if ('fusionTrust' in b.dataset) { closeSheet(); return send({ t: 'fusionTrust', approve: b.dataset.fusionTrust === 'yes' }); }
   if ('fusionDir' in b.dataset) { status('正在读取项目…'); return send({ t: 'fusionProjects', path: b.dataset.fusionDir }); }
   if ('fusionPath' in b.dataset) {
@@ -2487,11 +2499,6 @@ $('sheet').addEventListener('click', async e => {
     else { await checkAppUpdate(true); if (apkUpdate()) showMainMenu(); }
   }
   else if (act === 'reconnect') { closeSheet(); ws?.close(); }
-  else if (act === 'voice') {
-    store.set('voice', store.get('voice') === 'on' ? null : 'on');
-    document.body.classList.toggle('voice', store.get('voice') === 'on');
-    b.querySelector('.switch').classList.toggle('on', store.get('voice') === 'on');
-  }
   else if (act === 'theme') {
     const next = { dark: 'light', light: 'auto', auto: 'dark' }[store.get('theme') || 'dark'];
     setAppTheme(next);
@@ -2503,6 +2510,7 @@ $('sheet').addEventListener('click', async e => {
   else if (act === 'bgBattery') { window.AgentRemoteApp.askBattery(); closeSheet(); }
   else if (act === 'bgNotifySettings') { window.AgentRemoteApp.openNotifySettings(); closeSheet(); }
   else if (act === 'bgReconnect') { window.AgentRemoteApp.reconnectListen(); status('正在重连…'); setTimeout(showBgSheet, 1500); }
+  else if (act === 'lang') I18N.set(I18N.lang === 'en' ? 'zh' : 'en');
   else if (act === 'computers') showComputers();
   else if (act === 'addComputer') addComputer();
   else if (act === 'devices') showDevices();
@@ -2701,18 +2709,31 @@ itemsEl.addEventListener('click', async e => {
   const box = b.closest('.thinking');
   const body = box?.querySelector('.thb');
   const next = !box.classList.contains('open');
-  thinkingPref.set(b.dataset.think, next);
+  thinkingPref.set(viewSel + '|' + b.dataset.think, next);
   box.classList.toggle('open', next);
   b.querySelector('.tha').textContent = next ? '收起' : '展开';
   if (body) body.hidden = !next;
   // Devin thoughts beyond the payload budget arrive title-only; fetch the body on first open.
   if (next && b.dataset.more && !thoughtFull.has(b.dataset.think)) {
-    thoughtFull.set(b.dataset.think, undefined);
-    if (body) { body.textContent = '加载中…'; body.classList.add('loading'); }
-    send({ t: 'thought', i: b.dataset.think });
+    requestThought(b.dataset.think);
   }
 });
 const thoughtFull = new Map();
+function requestThought(id) {
+  if (thoughtFull.has(id)) return;
+  thoughtFull.set(id, undefined);
+  const body = itemsEl.querySelector(`[data-think="${CSS.escape(id)}"]`)?.closest('.thinking')?.querySelector('.thb');
+  if (body) { body.textContent = '加载中…'; body.classList.add('loading'); }
+  send({ t: 'thought', i: id });
+}
+const thoughtObserver = new IntersectionObserver(entries => {
+  for (const entry of entries) {
+    if (!entry.target.isConnected) { thoughtObserver.unobserve(entry.target); continue; }
+    if (!entry.isIntersecting || !entry.target.classList.contains('open')) continue;
+    thoughtObserver.unobserve(entry.target);
+    requestThought(entry.target.querySelector('[data-think]').dataset.think);
+  }
+}, { root: list, rootMargin: '100px' });
 function onThought(m) {
   thoughtFull.set(m.i, m.text ?? null);
   const box = document.querySelector(`[data-think="${CSS.escape(m.i)}"]`)?.closest('.thinking')?.querySelector('.thb');
@@ -2747,8 +2768,9 @@ const ICON = {
 const TOOL_LABEL = { search: 'Searched', explore: 'Explored', read: 'Read', command: 'Command', edit: 'Edited' };
 const thinkingPref = new Map();
 function thinkingWantOpen(it) {
-  if (thinkingPref.has(it.i)) return thinkingPref.get(it.i);
-  return false;
+  const key = viewSel + '|' + it.i;
+  if (thinkingPref.has(key)) return thinkingPref.get(key);
+  return true;
 }
 function paintThinking(el, it) {
   const open = thinkingWantOpen(it);
@@ -2772,6 +2794,7 @@ function paintThinking(el, it) {
   const follow = box.scrollHeight - box.scrollTop - box.clientHeight < 48;
   if (box.textContent !== rest) box.textContent = rest;
   box.hidden = !open;
+  if (open && more && !thoughtFull.has(it.i)) thoughtObserver.observe(el);
   if (open && it.live && follow) box.scrollTop = box.scrollHeight;
 }
 
@@ -2787,7 +2810,7 @@ function renderTool(el, it) {
   if (it.kind === 'command') {
     const cmd = it.cmd || '';
     const output = it.output || '';
-    el.innerHTML = `<div class="trow toggle" data-ttoggle>${icon}<span class="tl">${esc(it.t || TOOL_LABEL.command)}</span>${it.d ? `<span class="dur">${esc(it.d)}</span>` : ''}${cmd || output ? '<span class="chev">▸</span>' : ''}</div>`
+    el.innerHTML = `<div class="trow toggle" data-ttoggle>${icon}<span class="tl">${esc(it.t || TOOL_LABEL.command)}</span>${it.d ? `<span class="dur">${esc(it.d)}</span>` : ''}${cmd || output ? '<span class="chev">▾</span>' : ''}</div>`
       + (cmd ? `<pre class="tcmd">${esc(cmd)}</pre>` : '')
       + (output ? `<pre class="tcmd">${esc(output)}</pre>` : '');
     return;
@@ -2795,7 +2818,7 @@ function renderTool(el, it) {
   if (it.kind === 'edit') {
     const diff = (it.diff || []).map(([ty, text]) => `<div class="dl ${ty === '+' ? 'di' : ty === '-' ? 'dd' : ty === '…' ? 'dm' : ''}">${esc(ty === '…' ? text : ty + ' ' + text)}</div>`).join('');
     el.innerHTML = `<div class="trow toggle" data-ttoggle>${icon}<span class="tl">${esc(TOOL_LABEL.edit)}</span><code class="chip" data-file="${esc(it.f || '')}">${esc(it.f || '')}</code>`
-      + `<span class="stat add">+${it.add || 0}</span><span class="stat del">-${it.del || 0}</span><span class="chev">▸</span></div>`
+      + `<span class="stat add">+${it.add || 0}</span><span class="stat del">-${it.del || 0}</span><span class="chev">▾</span></div>`
       + `<div class="tdiff">${diff}</div>`;
     return;
   }
@@ -2828,7 +2851,7 @@ function renderItem(it) {
   else if (it.k === 'assistant') { el.innerHTML = it.h || ''; dressMessage(el); }
   else if (it.k === 'thinking') paintThinking(el, it);
   else if (it.k === 'tool') {
-    if (it.kind && (it.src === 'devin' || it.src === 'codex')) { renderTool(el, it); el.classList.add('toolrow'); }
+    if (it.kind && (it.src === 'devin' || it.src === 'codex')) { renderTool(el, it); el.classList.add('toolrow', 'open'); }
     else {
       el.innerHTML = `<div class="txt">${esc(it.t || '')}</div>`;
       if (it.f) el.dataset.file = it.f;
@@ -2899,6 +2922,7 @@ function paintSessions(chat) {
   const changed = key !== curSessKey;
   if (changed) {
     curSessKey = key;
+    thoughtObserver.disconnect();
     cache.clear();
     thoughtFull.clear();
     qnSig = '';
@@ -3358,6 +3382,12 @@ function renderChat(chat) {
       return hit.el;
     }
     const el = renderItem(it);
+    if (it.k === 'tool' && hit?.el.classList.contains('toolrow')) {
+      const open = hit.el.classList.contains('open');
+      el.classList.toggle('open', open);
+      const chev = el.querySelector('.chev');
+      if (chev) chev.textContent = open ? '▾' : '▸';
+    }
     el.dataset.i = it.i;
     cache.set(it.i, { key, el });
     return el;
@@ -3395,7 +3425,7 @@ function renderChat(chat) {
   if (latestTasks) $('taskChip').innerHTML = `<span>${I18N.tr('任务')}</span> ${latestTasks.done}/${latestTasks.total}`;
   if (sheetKind === 'tasks') showTasks();
   const live = new Set(visibleItems.map(it => it.i));
-  for (const k of cache.keys()) if (!live.has(k)) cache.delete(k);
+  for (const k of cache.keys()) if (!live.has(k)) { thoughtObserver.unobserve(cache.get(k).el); cache.delete(k); }
 
   $('actionBar').innerHTML = buttonsHtml(chat.global, 'g');
   $('actionBar').classList.toggle('show', chat.global.length > 0);

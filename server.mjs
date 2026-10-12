@@ -1489,7 +1489,7 @@ function pageHelpers() {
     button.click();
     return true;
   };
-  const activeThread = () => codexThread() || (devinSurface() ? devinSession()?.key : '') || agentList().find(a => a.current)?.id || '';
+  const activeThread = () => codexThread() || (devinSurface() ? devinSession()?.key : '') || [...doc.querySelectorAll('[data-glass-agent-id]')].find(vis)?.getAttribute('data-glass-agent-id') || window.__SSG_COMPOSER_PROVIDER__?.getStates?.().find(c => c.state === 'focused')?.id || agentList().find(a => a.current)?.id || '';
   const codexTurnData = el => codexFiberProps(el.querySelector('[class*="agent-activity"]') || el.querySelector('button[aria-expanded]') || el, 40).find(p => p.turn)?.turn;
   const codexFusionTurn = (id = '', message = '', previous = []) => {
     const rows = [...doc.querySelectorAll('[data-turn-key]')];
@@ -1795,6 +1795,17 @@ function pageHelpers() {
     return { pct: Number(m[1]), basis: /left|remaining|剩余/i.test(text) ? 'remaining' : 'used' };
   };
   const readDevinUsage = () => {
+    const input = [...doc.querySelectorAll(`${COMPOSER}, [data-slate-editor="true"]`)].filter(e => vis(e) && e.isContentEditable && !inItem(e)).at(-1);
+    const api = input && codexFiberProps(input, Infinity).find(p => p.value?.api?.windsurfSettingsPage?.planInfo)?.value.api.windsurfSettingsPage.planInfo;
+    const info = api?.getPlanInfo();
+    if (info) return {
+      missing: false, quota: [], plan: info.planName, updated: Date.now(),
+      limits: [['每日额度', info.dailyRemainingPercent, info.dailyResetAtUnix, info.hideDailyQuota], ['每周额度', info.weeklyRemainingPercent, info.weeklyResetAtUnix, info.hideWeeklyQuota]].map(([label, pct, reset, hidden]) => ({
+        label, kind: 'limit', basis: 'remaining', pct: !hidden && Number.isFinite(pct) ? pct : null,
+        ...(hidden ? { value: '不适用', detail: '电脑端套餐不显示此额度' } : {}),
+        reset: Number(reset) ? new Date(Number(reset) * 1000).toLocaleString('zh-CN') : '',
+      })),
+    };
     const status = document.getElementById('codeium.windsurf.settings.planInfo') || [...doc.querySelectorAll('[aria-label*="quota used"]')].find(a => a.getBoundingClientRect().width > 0);
     const summary = status?.getAttribute('aria-label') || '';
     const sections = [...doc.querySelectorAll('.breakdown-details .quota-section')];
@@ -1817,14 +1828,17 @@ function pageHelpers() {
     else limits.push({ label: '每周额度', kind: 'limit', basis: 'used', pct: null, reset, detail: text.slice(0, 160) });
     return { missing: false, quota: [], limits };
   };
-  const codexQueryClient = () => {
+  const codexRootProps = () => {
     const el = doc.querySelector('button[aria-label^="Recent chats"]');
-    let fiber = el?.[Object.keys(el).find(k => k.startsWith('__reactFiber'))];
-    for (; fiber; fiber = fiber.return) {
-      const client = fiber.memoizedProps?.value;
-      if (typeof client?.getQueryData === 'function') return client;
-    }
-    return null;
+    return el ? codexFiberProps(el, Infinity) : [];
+  };
+  const codexQueryClient = () => codexRootProps().find(p => typeof p.value?.getQueryData === 'function')?.value || null;
+  const openCodexThread = async id => {
+    if (!codexChatRows(true).some(row => row.id === id)) return false;
+    const router = codexRootProps().find(p => typeof p.value?.router?.navigate === 'function')?.value.router;
+    if (!router) return false;
+    await router.navigate(`/local/${id}`);
+    return true;
   };
   const codexWorkspaceRoots = () => codexQueryClient()?.getQueryData(['vscode', 'workspace-root-options', '{"hostId":"local"}'])?.roots || [];
   const codexCurrentProject = () => {
@@ -2154,9 +2168,10 @@ function pageHelpers() {
     if (cursor.length) return cursor;
     const tabs = [...doc.querySelectorAll('.tab[data-resource-name]')].filter(t => t.querySelector('.composer-tab-label'));
     const loaded = window.__SSG_COMPOSER_PROVIDER__?.getStates?.() || [];
+    const focused = loaded.find(c => c.state === 'focused')?.id;
     if (tabs.length || loaded.length) return [...new Map([
       ...loaded.map(c => [c.id, { id: c.id, title: c.title || '新会话', current: c.state === 'focused', running: c.state === 'generating', workspace: '', host: '', group: '' }]),
-      ...tabs.map(t => [t.dataset.resourceName, { id: t.dataset.resourceName, title: t.querySelector('.label-name')?.textContent || '新会话', current: t.classList.contains('active'), workspace: '', host: '', group: '' }]),
+      ...tabs.map(t => [t.dataset.resourceName, { id: t.dataset.resourceName, title: t.querySelector('.label-name')?.textContent || '新会话', current: focused ? t.dataset.resourceName === focused : t.classList.contains('active'), workspace: '', host: '', group: '' }]),
     ]).values()];
     // Read the native session id; titles can repeat or change.
     return [...doc.querySelectorAll('li[data-slot="sidebar-menu-item"]')].map(li => {
@@ -2179,8 +2194,13 @@ function pageHelpers() {
     }).filter(Boolean);
   };
   const agentTarget = (id, click = false) => {
+    if (id && activeThread() === id) return true;
     const tab = [...doc.querySelectorAll('.tab[data-resource-name]')].find(t => t.dataset.resourceName === id && t.querySelector('.composer-tab-label'));
     if (tab) { const r = tab.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; }
+    if (click && window.__SSG_COMPOSER_PROVIDER__?.getStates?.().some(c => c.id === id)) {
+      const services = [...doc.querySelectorAll('[data-message-id]')].flatMap(el => codexFiberProps(el, 40)).find(p => p.uiContextMenuServices)?.uiContextMenuServices;
+      if (services) return services.commandService.executeCommand('composer.openComposer', id).then(() => true);
+    }
     const row = [...doc.querySelectorAll('[data-sidebar-item-key]')].find(e => e.getAttribute('data-sidebar-item-key') === `row:${id}`);
     if (row && (click || vis(row))) {
       row.scrollIntoView({ block: 'nearest' });
@@ -2316,7 +2336,7 @@ function pageHelpers() {
     return /settings/i.test(tab?.getAttribute('aria-label') || tab?.innerText || '');
   };
   const clickSettingsButton = () => {
-    const b = [...doc.querySelectorAll('button, [role=button]')].find(e => onScreen(e) && e.getAttribute('aria-label') === 'Settings');
+    const b = [...doc.querySelectorAll('button, [role=button]')].find(e => onScreen(e) && /^(Settings|Open Cursor Settings)$/.test(e.getAttribute('aria-label') || ''));
     if (!b) return false;
     b.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     b.click();
@@ -2332,12 +2352,11 @@ function pageHelpers() {
   const openSettingsTarget = () => { const b = labeled('Settings'); return b ? center(b) : null; };
   const closeSettingsTarget = () => { const b = labeled('Close Settings'); return b ? center(b) : null; };
   const settingsPanel = () => {
-    const close = [...doc.querySelectorAll('button')].find(b => b.getAttribute('aria-label') === 'Close Settings');
-    if (!close || !vis(close)) return null;
-    let p = close;
+    const nav = [...doc.querySelectorAll('button, [role=button], .cursor-settings-sidebar-nav-cell')].find(e => vis(e) && (e.innerText || '').trim() === 'Plan & Usage');
+    let p = nav;
     for (let i = 0; i < 16 && p; i++) {
       const box = p.getBoundingClientRect();
-      if ((p.innerText || '').includes('Plan & Usage') && box.width > 300 && box.height > 200) return p;
+      if (p.querySelector('h1, h2, .ui-section') && box.width > 300 && box.height > 200) return p;
       p = p.parentElement;
     }
     return null;
@@ -2418,7 +2437,7 @@ function pageHelpers() {
   const usageNavTarget = () => {
     const root = settingsPanel();
     if (!root) return null;
-    const e = [...root.querySelectorAll('button, [role=button]')].find(el => vis(el) && (el.innerText || '').trim() === 'Plan & Usage');
+    const e = [...root.querySelectorAll('button, [role=button], .cursor-settings-sidebar-nav-cell')].find(el => vis(el) && (el.innerText || '').trim() === 'Plan & Usage');
     return e ? center(e) : null;
   };
   const readUsage = () => {
@@ -2429,10 +2448,10 @@ function pageHelpers() {
     candidates.sort((a, b) => a.innerText.length - b.innerText.length);
     const best = candidates.find(e => /Included in|On-Demand|Cursor Models/.test(e.innerText) && !(e.innerText || '').split('\n').some(l => l.trim() === 'Agents'))
       || candidates[0];
-    if (!best) return { lines: [] };
     const rawBars = [...root.querySelectorAll('[role=progressbar]')].filter(vis);
     const loading = rawBars.some(e => /^loading\b/i.test((e.getAttribute('aria-label') || '').trim()));
     const limits = rawBars.map(e => {
+      if (!e.hasAttribute('aria-valuenow')) return null;
       const now = Number(e.getAttribute('aria-valuenow'));
       const max = Number(e.getAttribute('aria-valuemax')) || 100;
       const label = (e.getAttribute('aria-label') || '').trim();
@@ -2450,8 +2469,7 @@ function pageHelpers() {
       }
       return { label: label.slice(0, 40), kind: 'limit', basis, pct };
     }).filter(Boolean);
-    if (!best) return { lines: [], quota: [], limits, loading, missing: !limits.length && !loading };
-    const lines = (best.innerText || '').split('\n').map(s => s.trim()).filter(s => s && !nav.has(s)).slice(0, 32);
+    const lines = ((best || root).innerText || '').split('\n').map(s => s.trim()).filter(s => s && !nav.has(s)).slice(0, 32);
     const reset = lines.find(l => /reset/i.test(l)) || '';
     return { lines: lines.map(l => l.slice(0, 180)), quota: [], limits: limits.map(b => ({ ...b, reset })), loading, missing: !limits.length && !loading };
   };
@@ -2625,7 +2643,8 @@ function pageHelpers() {
   };
   const codexViewState = () => ({ thread: codexThread(), turns: [...doc.querySelectorAll('[data-turn-key]')].filter(vis).length });
   const codexFiberProps = (el, depth = 16) => {
-    const key = Object.keys(el).find(k => k.startsWith('__reactFiber'));
+    while (el && !Object.keys(el).some(k => k.startsWith('__reactFiber'))) el = el.parentElement;
+    const key = el && Object.keys(el).find(k => k.startsWith('__reactFiber'));
     let fiber = key ? el[key] : null;
     const props = [];
     for (let i = 0; i < depth && fiber; i++) {
@@ -2935,7 +2954,7 @@ function pageHelpers() {
     };
   };
 
-  return { historyAtStart, cursorSelectProject, cursorWorkspace, scrollCodexHistory, setCommandOpen, attachmentRows, removeAttachment, submitCodexMessage, extract, activeThread, codexThread, codexViewState, codexRecentPoint, codexNewPoint, codexAccountPoint, codexMenuPoint, clickLabeled, codexChatRows, codexChatPoint, codexArchiveTarget, codexArchiveConfirm, codexPromptText, codexSelectPrompt, codexPromptPoint, codexButtonPoint, codexMentionRows, codexRunItems, codexFacts, codexQueueAction, codexSkills, codexChanges, codexChangeTarget, codexRequestData, codexRequestTarget, codexRequestAction, codexRequestField, codexImage, locate, panelRect, control, menuItems, menuItem, quickOpenRows, agentList, agentTarget, agentState, agentStates, queueTarget, stopTarget, focusQueueEdit,
+  return { historyAtStart, cursorSelectProject, cursorWorkspace, scrollCodexHistory, setCommandOpen, attachmentRows, removeAttachment, submitCodexMessage, extract, activeThread, codexThread, openCodexThread, codexViewState, codexRecentPoint, codexNewPoint, codexAccountPoint, codexMenuPoint, clickLabeled, codexChatRows, codexChatPoint, codexArchiveTarget, codexArchiveConfirm, codexPromptText, codexSelectPrompt, codexPromptPoint, codexButtonPoint, codexMentionRows, codexRunItems, codexFacts, codexQueueAction, codexSkills, codexChanges, codexChangeTarget, codexRequestData, codexRequestTarget, codexRequestAction, codexRequestField, codexImage, locate, panelRect, control, menuItems, menuItem, quickOpenRows, agentList, agentTarget, agentState, agentStates, queueTarget, stopTarget, focusQueueEdit,
     terminalList, terminalTarget, terminalCloseTarget, terminalRect, terminalFocus, newTerminalDirect, newTerminalMenu, newTerminalItem, terminalDump, terminalCommand, modelListTrigger,
     codexSettingsData, codexSettingPoint, settingsOpen, clickSettingsButton, clickCloseSettings, openSettingsTarget, closeSettingsTarget, readSettings, settingTarget, usageNavTarget, readUsage, readDevinUsage, refreshCodexUsage, codexWorkspaceRoots, contextPct,
     clickControl, clickModelListTrigger, effortItems, pickEffort, effortTrigger, closeCodexMenu, closeModelMenu, fastInfo, pickFast, fastTarget, clickCursorFast, devinVariants, devinPickerProps, attachmentPoint, devinSettingsNav, devinSettingsClick, devinSettingsCards,
@@ -3566,7 +3585,7 @@ class Session {
     const direct = await this.editorCdp.evaluate(helpersCall('newTerminalDirect()'));
     if (direct) {
       await this.tapCss(direct.x, direct.y, 'left', this.editorCdp);
-    } else if (this.app === 'codex') {
+    } else if (this.app === 'codex' || this.app === 'cursor') {
       await this.key('Ctrl+Shift+`', { cdp: this.editorCdp });
     } else {
       const menu = await this.editorCdp.evaluate(helpersCall('newTerminalMenu()'));
@@ -3757,6 +3776,7 @@ class Session {
       ? windowsCodexContext(await this.cdp.evaluate(helpersCall('codexThread()')))
       : await this.cdp.evaluate(helpersCall('contextPct()')); }
     catch { context = undefined; }
+    if (!this.liveRead(cdp, sel)) return;
     try {
       const account = this.app === 'codex' ? await this.readCodexAccount(request)
         : this.app === 'devin' ? await this.cdp.evaluate(helpersCall('readDevinUsage()'))
@@ -3774,7 +3794,6 @@ class Session {
 
   async readCursorUsage(automatic = false) {
     const wasOpen = await this.cdp.evaluate(helpersCall('settingsOpen()'));
-    if (automatic && wasOpen) return this.cdp.evaluate(helpersCall('readUsage()'));
     await this.ensureSettings();
     try {
       const nav = await this.cdp.evaluate(helpersCall('usageNavTarget()'));
@@ -4360,29 +4379,15 @@ class Session {
     if (statusMsg) this.emit({ t: 'status', ok: true, msg: statusMsg });
   }
 
-  async selectCodexThread(convId) {
-    const pos = await this.cdp.evaluate(helpersCall('codexRecentPoint()'));
-    if (!pos) return false;
-    await this.tapCss(pos.x, pos.y);
-    let point = null;
-    for (let i = 0; i < 8 && !point; i++) {
-      await new Promise(r => setTimeout(r, 120));
-      point = await this.cdp.evaluate(helpersCall(`codexChatPoint(${JSON.stringify(convId)})`));
-    }
-    if (!point) {
-      await this.closeMenus();
-      return false;
-    }
-    await this.tapCss(point.x, point.y);
+  async selectCodexThread(convId, cdp = this.cdp) {
+    if (!await cdp.evaluate(helpersCall(`openCodexThread(${JSON.stringify(convId)})`))) return false;
     for (let i = 0; i < 12; i++) {
       await new Promise(r => setTimeout(r, 150));
-      const actual = await this.cdp.evaluate(helpersCall('codexThread()')) || '';
+      const actual = await cdp.evaluate(helpersCall('codexThread()')) || '';
       if (actual === convId) {
-        this.threadId = actual;
         return true;
       }
     }
-    await this.closeMenus();
     return false;
   }
 
@@ -4445,6 +4450,20 @@ class Session {
         await this.pollChat();
       }
     }
+  }
+
+  async codexPageForThread(pages, threadId) {
+    const matches = await Promise.all(pages.filter(p => p.chatWs).map(async page => {
+      const cdp = new Cdp(page.chatWs);
+      try {
+        await cdp.connect();
+        const state = await cdp.evaluate(helpersCall('agentState()'));
+        const rows = await cdp.evaluate(helpersCall('codexChatRows(true)'));
+        const row = rows.find(r => r.id === threadId);
+        return { page, active: state?.thread === threadId, inWorkspace: !!row && (!row.workspace || state?.roots?.includes(row.workspace)) };
+      } finally { cdp.close(); }
+    }));
+    return matches.find(m => m.active)?.page || matches.find(m => m.inWorkspace)?.page || null;
   }
 
   async probeCodex(page) {
@@ -5288,9 +5307,22 @@ class Session {
       windowId = windowId || appId.slice('codex:'.length);
       appId = 'codex';
     }
-    this.detach();
-    this.clearViewState();
+    let codexPages;
+    if (appId === 'codex') {
+      try {
+        codexPages = await codexWindows(CODEX_CDP_URL, true);
+        if (windowId && !codexPages.some(p => p.pageId === windowId) && threadId) {
+          const recovered = await this.codexPageForThread(codexPages, threadId);
+          if (recovered) windowId = recovered.pageId;
+        }
+      } catch (error) {
+        this.emit({ t: 'attachFailed', ready: this.app === 'fusion' || !!this.cdp });
+        throw new Error(`读取 Codex 调试接口失败，请重试：${error.message}`);
+      }
+    }
     if (appId === 'fusion') {
+      this.detach();
+      this.clearViewState();
       this.app = 'fusion';
       this.targetId = 'fusion';
       this.windowId = 'fusion';
@@ -5305,50 +5337,60 @@ class Session {
     }
     const wins = await listWindows();
     if (appId === 'codex') {
-      const pages = await codexWindows(CODEX_CDP_URL);
+      const pages = codexPages;
       if (windowId && !pages.some(p => p.pageId === windowId)) {
-        this.app = 'codex';
-        this.windowId = windowId;
-        this.threadId = threadId;
-        this.codexPageId = windowId;
-        this.targetId = 'codex';
-        this.emit({ t: 'attached', id: 'codex', title: 'Codex', app: 'codex', appName: 'Codex', windowId, threadId, sel: this.selectionKey(), closed: true });
-        this.emit({ t: 'status', ok: false, msg: '这个 Codex 窗口已经关闭，请重新选择' });
+        this.emit({ t: 'attached', id: 'codex', title: 'Codex', app: 'codex', windowId, threadId, closed: true, ready: this.app === 'fusion' || !!this.cdp });
+        this.emit({ t: 'status', ok: false, msg: pages.length && threadId ? '没有找到上次的 Codex 会话，请重新选择' : '这个 Codex 窗口已经关闭，请重新选择' });
         return;
       }
       const picked = windowId
         ? pages.find(p => p.pageId === windowId)
         : (pages.find(p => !/^Welcome\b/.test(p.rawTitle || '') && p.chatWs) || pages.find(p => p.chatWs) || pages[0]);
       if (!picked) throw new Error('没有找到 Codex 窗口。请用 ./start-codex.sh 启动，并打开 Codex 侧边栏');
-      this.codexPageId = picked.pageId;
-      this.windowId = picked.pageId;
-      this.threadId = threadId;
       const entry = wins.find(w => w.id === 'codex');
       if (!entry) throw new Error('没有找到 Codex 窗口。请用 ./start-codex.sh 启动，并打开 Codex 侧边栏');
-      await this.openBound({ ...entry, title: picked.rawTitle }, picked.ws, picked.chatWs);
+      await this.openBound({ ...entry, title: picked.rawTitle }, picked.ws, picked.chatWs, { windowId: picked.pageId, threadId });
       if (!picked.chatWs) this.emit({ t: 'status', ok: false, msg: 'Codex 侧边栏还没打开' });
       return;
     }
     const win = wins.find(w => w.id === appId) || wins.find(w => appId && w.id.endsWith(':' + appId));
     if (appId && !win) {
-      this.emit({ t: 'attached', id: appId, title: '', app: '', windowId: '', threadId: '', sel: '', closed: true });
+      this.emit({ t: 'attached', id: appId, closed: true, ready: this.app === 'fusion' || !!this.cdp });
       this.emit({ t: 'status', ok: false, msg: '这个窗口已经关闭，请重新选择' });
       return;
     }
     const chosen = win || wins[0];
     if (!chosen) throw new Error('没有找到 Cursor、Devin 或 Codex 窗口。Cursor 用调试端口 9222，Devin 用 ./start-devin.sh，Codex 用 ./start-codex.sh');
-    this.windowId = chosen.id;
-    await this.openBound(chosen, chosen.ws, null);
+    await this.openBound(chosen, chosen.ws, null, { windowId: chosen.id });
     if (threadId && threadId !== this.threadId) await this.openAgent(threadId);
   }
 
-  async openBound(win, editorWs, chatWs) {
+  async openBound(win, editorWs, chatWs, selection) {
     const editorCdp = new Cdp(editorWs);
-    await editorCdp.connect();
-    this.editorCdp = editorCdp;
     const cdp = chatWs ? new Cdp(chatWs) : editorCdp;
+    let thread = '';
+    try {
+      await editorCdp.connect();
+      if (cdp !== editorCdp) await cdp.connect();
+      if (win.app === 'codex') {
+        thread = await cdp.evaluate(helpersCall('codexThread()')) || '';
+        if (selection.threadId && selection.threadId !== thread) {
+          if (!await this.selectCodexThread(selection.threadId, cdp)) throw new Error('没有找到上次的 Codex 会话，请重新选择');
+          thread = selection.threadId;
+        }
+      }
+    } catch (error) {
+      for (const connection of new Set([cdp, editorCdp])) connection.close();
+      this.emit({ t: 'attachFailed', ready: this.app === 'fusion' || !!this.cdp });
+      throw error;
+    }
+    this.detach();
+    this.clearViewState();
+    this.editorCdp = editorCdp;
     this.cdp = cdp;
-    if (cdp !== editorCdp) await cdp.connect();
+    this.windowId = selection.windowId;
+    if (win.app === 'codex') this.codexPageId = selection.windowId;
+    this.threadId = thread;
     this.targetId = win.id;
     this.winTitle = win.title;
     this.app = win.app || 'cursor';
@@ -5372,17 +5414,7 @@ class Session {
     }
     editorCdp.on('Page.screencastFrame', p => this.onFrame(p));
     await this.refreshViewport();
-    if (this.app === 'codex' && this.cdp) {
-      const live = await this.cdp.evaluate(helpersCall('codexThread()')).catch(() => '') || '';
-      const wanted = this.threadId || '';
-      if (wanted && wanted !== live) {
-        const ok = await this.selectCodexThread(wanted);
-        if (!ok) {
-          this.threadId = live;
-          this.emit({ t: 'status', ok: false, msg: '没有找到上次的会话，已留在当前会话' });
-        }
-      } else if (live) this.threadId = live;
-    } else this.threadId = await this.cdp.evaluate(helpersCall('activeThread()')) || '';
+    if (this.app !== 'codex') this.threadId = await this.cdp.evaluate(helpersCall('activeThread()')) || '';
     this.emit({
       t: 'attached', id: win.id, title: this.app === 'codex' ? 'Codex' : win.title, app: win.app,
       appName: this.appMessage('{app}'), project: this.app === 'codex' ? codexFolder(this.winTitle) : '', windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(),

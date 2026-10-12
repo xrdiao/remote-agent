@@ -5,6 +5,8 @@ const I18N = (() => {
   const lang = saved === 'zh' || saved === 'en' ? saved : /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
 
   const EN = {
+    '不适用': 'Not applicable',
+    '电脑端套餐不显示此额度': 'The desktop plan does not display this limit',
     "实时连接未建立": "Live connection not established",
     "电脑连接未建立": "Computer connection not established",
     "正在检测连接…": "Checking the connection\u2026",
