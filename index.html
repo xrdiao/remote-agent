@@ -1643,6 +1643,7 @@ function connect() {
       send({ t: 'appTheme', dark: document.documentElement.dataset.theme !== 'light' });
       send({ t: 'windows' });
     }
+    else if (m.t === 'attachFailed') setWindowReady(m.ready);
     else if (m.t === 'agents') receiveAgents(m);
     else if (m.t === 'codexArchived') {
       const conv = String(m.id || '').split(':').slice(2).join(':');
