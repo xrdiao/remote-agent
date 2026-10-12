@@ -1768,8 +1768,7 @@ function winLabel(title) {
 function showWindows() {
   const rows = windows.map(w => {
     const software = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion' }[w.app] || w.app;
-    const label = w.app === 'cursor' && w.kind !== 'agents' ? winLabel(w.title || w.id) : null;
-    return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">${esc(software)}${label?.name ? `<span class="sub">${esc(label.name)}</span>` : ''}</span></button>`;
+    return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">${esc(software)}</span></button>`;
   }).join('');
   openSheet('windows', `<h3>切换窗口</h3>${rows || '<div class="hint">没有找到窗口</div>'}`);
 }
@@ -2164,7 +2163,6 @@ function showMainMenu() {
     <button class="opt" data-act="theme"><span class="lbl">主题<span class="sub">深色 / 浅色 / 跟随系统（当前：${themeName()}）</span></span></button>
     ${inApp && window.AgentRemoteApp?.listenStatus ? '<button class="opt" data-act="bg"><span class="lbl">后台连接<span class="sub">状态、电池优化、立即重连</span></span></button>' : ''}
     <button class="opt" data-act="cache"><span class="lbl">会话缓存<span class="sub">手机上保存的对话记录，可折叠、可清除</span></span></button>
-    <button class="opt" data-act="lang"><span class="lbl">语言 / Language<span class="sub">中文 · English（${I18N.lang === 'en' ? 'English' : '中文'}）</span></span></button>
     <button class="opt" data-act="computers"><span class="lbl">电脑<span class="sub">${esc(currentComputer()?.name || '未配对')}</span></span></button>
     <button class="opt" data-act="devices"><span class="lbl">已配对设备</span></button>
     <button class="opt" data-act="logout"><span class="lbl">删除这台电脑</span></button>`);
@@ -2505,7 +2503,6 @@ $('sheet').addEventListener('click', async e => {
   else if (act === 'bgBattery') { window.AgentRemoteApp.askBattery(); closeSheet(); }
   else if (act === 'bgNotifySettings') { window.AgentRemoteApp.openNotifySettings(); closeSheet(); }
   else if (act === 'bgReconnect') { window.AgentRemoteApp.reconnectListen(); status('正在重连…'); setTimeout(showBgSheet, 1500); }
-  else if (act === 'lang') I18N.set(I18N.lang === 'en' ? 'zh' : 'en');
   else if (act === 'computers') showComputers();
   else if (act === 'addComputer') addComputer();
   else if (act === 'devices') showDevices();
