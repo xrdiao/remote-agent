@@ -3,9 +3,9 @@
 Control Cursor and Devin on your computer from your phone: chat, switch agents and models, read the terminal, and approve steps. Free and self-hosted. Your phone only needs a web browser.
 
 <p>
-<img src="docs/phone.png" alt="A new phone chat asking which model this is" width="280">
-<img src="docs/terminal.png" alt="The phone terminal" width="280">
-</p>
+< img src="docs/phone.png" alt="A new phone chat asking which model this is" width="280">
+< img src="docs/terminal.png" alt="The phone terminal" width="280">
+</p >
 
 Chinese version: [README.md](README.md). Reference repository: [cursor-remote-lite](https://github.com/Suchenl/cursor-remote-lite).
 

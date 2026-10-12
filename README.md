@@ -3,9 +3,9 @@
 用手机控制这台电脑上的 Cursor 和 Devin：对话、切换 Agent 和模型、看终端、批准确认。免费、自托管，手机只需要一个浏览器。
 
 <p>
-<img src="docs/phone.png" alt="手机上新建一条对话并询问你是什么模型" width="280">
-<img src="docs/terminal.png" alt="手机上的终端" width="280">
-</p>
+< img src="docs/phone.png" alt="手机上新建一条对话并询问你是什么模型" width="280">
+< img src="docs/terminal.png" alt="手机上的终端" width="280">
+</p >
 
 英文版本：[README.en.md](README.en.md)。参考仓库：[cursor-remote-lite](https://github.com/Suchenl/cursor-remote-lite)。
 
