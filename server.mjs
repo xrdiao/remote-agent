@@ -10,7 +10,7 @@ import qrcode from 'qrcode-terminal';
 import { workspaces, windowRoots, workspaceLabel, fileSize, readFile, parseRef, listProject, locateWritable, writeTextFile, resolveLocal } from './files.mjs';
 import { findTheme } from './theme.mjs';
 import { highlightText } from './highlight.mjs';
-import { gitMarks, agentMarks } from './marks.mjs';
+import { gitMarks, agentMarks, parseGitDiff } from './marks.mjs';
 import {
   DATA_DIR, publishRecord, opensEntry, computerId, computerName, createPairing, pairingValid, consumePairing, listDevices, addDevice, findDevice, updateDevice,
   removeDevice, totpConfig, verifyTotp, needsTotp, saveState, readState, appBase, normalizeAppUrl,
@@ -5058,10 +5058,18 @@ class Session {
     return this._theme.theme;
   }
 
-  async fileMarks(f, text) {
+  async fileMarks(f, text, reviewDiff = '') {
+    if (reviewDiff) {
+      const marks = /^@@ /m.test(reviewDiff) ? parseGitDiff(reviewDiff) : agentMarks(new Map([[0, {
+        kind: 'edit', f: f.path,
+        diff: reviewDiff.split('\n').filter(l => /^[ +\-]/.test(l) && !/^---|^\+\+\+/.test(l)).map(l => [l[0], l.slice(1)]),
+      }]]), f.path, text);
+      return { marks, markSource: 'agent', diff: reviewDiff };
+    }
     if (f.host) return null;
     const changes = this.app === 'codex' ? await this.cdp.evaluate(helpersCall('codexChanges()')) : null;
-    const diff = changes?.files.find(file => file.name.replace(/\\/g, '/') === f.path.replace(/\\/g, '/'))?.diff;
+    const normalized = p => process.platform === 'win32' ? path.posix.normalize(p.replace(/\\/g, '/')).toLowerCase() : path.posix.normalize(p.replace(/\\/g, '/'));
+    const diff = changes?.files.find(file => normalized(file.name) === normalized(f.path) || normalized(f.path).endsWith('/' + normalized(file.name)))?.diff;
     const git = await gitMarks(f.path).catch(() => null);
     if (git) {
       if (git.newFile) return { marks: { add: [], mod: [], del: [] }, markSource: 'git', newFile: true, diff };
@@ -5085,7 +5093,7 @@ class Session {
     return git && !git.newFile ? null : (git?.newFile ? { marks: { add: [], mod: [], del: [] }, markSource: 'git', newFile: true } : null);
   }
 
-  async openFile(text) {
+  async openFile(text, reviewDiff = '') {
     if (this.app === 'codex') {
       const run = (await this.cdp.evaluate(helpersCall('codexFacts()')))?.view?.run || '';
       if (run && !/local|本地/i.test(run)) {
@@ -5101,7 +5109,7 @@ class Session {
       if (body.text) {
         const theme = await this.fileTheme();
         hl = await highlightText(body.text, f.path, theme).catch(() => null);
-        marked = await this.fileMarks(f, body.text).catch(() => null);
+        marked = await this.fileMarks(f, body.text, reviewDiff).catch(() => null);
       }
       this.emit({ t: 'file', name: path.posix.basename(f.path), path: f.path, host: f.host, size: f.size, line: f.line, editable: body.text != null && !body.truncated, ...body, ...(hl ? { hl } : {}), ...(marked?.marks ? { marks: marked.marks, markSource: marked.markSource } : {}), ...(marked?.newFile ? { newFile: true } : {}), ...(marked?.diff ? { diff: marked.diff } : {}) });
     } catch (e) {
@@ -6716,7 +6724,7 @@ class Session {
       case 'surface': return this.setSurface(String(msg.to ?? ''));
       case 'openEditorChat': return this.openEditorChat();
       case 'closeTab': return this.closeTab(String(msg.id ?? ''));
-      case 'file': return this.openFile(String(msg.path ?? ''));
+      case 'file': return this.openFile(String(msg.path ?? ''), String(msg.diff ?? ''));
       case 'click': return this.clickButton(msg.item, msg.n);
       case 'queue':
         if (msg.action === 'clear' && this.app === 'devin') return this.devinClearQueue();

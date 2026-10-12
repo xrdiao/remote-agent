@@ -436,7 +436,8 @@
   #vBody .dm::before { content: '▲'; position: absolute; left: -12px; top: -8px; font-size: 8px; color: var(--gd); }
   #vBody .gap { display: flex; padding: 3px 0 3px 3.6em; color: var(--muted); border-top: 1px dashed var(--line); border-bottom: 1px dashed var(--line); cursor: pointer; user-select: none; -webkit-user-select: none; }
   #vBody .l.hl { background: var(--sel, var(--hlbg)); }
-  #vBody .l { content-visibility: auto; }
+  .generatedImage { margin: 8px 0; }
+  .generatedImage button { display: block; margin-top: 6px; font-size: 12px; }
   #vBody .l.searchHit { background: #5c4b13; }
   #vBody.editing { display: flex; overflow: hidden; }
   #vEditBox { flex: 1; min-height: 0; width: 100%; box-sizing: border-box; margin: 0; border: 0; outline: none; resize: none;
@@ -1677,7 +1678,9 @@ function showMenu(kind, items, max, fusion, fast, model) {
   openSheet('menu', `<h3>${MENU_TITLE[kind] || ''}</h3>` + navigation + agentRow + (picking ? '' : fusionBlock(fusion)) + fastRow + maxRow + rows + done);
 }
 
+let changeFiles = [];
 function showChanges(m) {
+  changeFiles = m.files;
   finishPending(['正在撤销…', '正在保留…', '处理中…']);
   status('');
   if (!m.files.length && m.devin && m.count) {
@@ -2114,7 +2117,7 @@ $('sheet').addEventListener('click', async e => {
     if (b.dataset.kind !== 'codex-run' && b.dataset.kind !== 'codex-chat' && !/^fusion-(model|effort)-/.test(String(b.dataset.kind || ''))) beginSwitch(b.dataset.kind);
     return send({ t: 'pickMenu', kind: b.dataset.kind, label: b.dataset.label });
   }
-  if (b.dataset.chopen) { closeSheet(); return openFile(b.dataset.chopen); }
+  if (b.dataset.chopen) { const diff = changeFiles.find(f => f.name === b.dataset.chopen)?.diff || ''; closeSheet(); return openFile(b.dataset.chopen, false, diff); }
   if (b.dataset.ch) {
     const undo = b.dataset.act2 === 'undo';
     if (undo && !await ask(`撤销「${b.dataset.name}」的改动？\n文件会恢复成 Agent 改之前的样子。`, '撤销')) return send({ t: 'changes' });
@@ -2509,6 +2512,7 @@ function renderItem(it) {
   if (it.agents?.length) el.insertAdjacentHTML('beforeend', `<div class="btns">${it.agents.map(a => `<button data-codex-agent="${esc(a.id)}">查看 ${esc(a.title)}</button>`).join('')}</div>`);
   if (it.images?.length) el.insertAdjacentHTML('beforeend', it.images.filter(src => /^(https?:|data:image\/)/.test(src)).map(src => `<a href="${esc(src)}" target="_blank" rel="noopener"><img src="${esc(src)}" alt="生成的图片" style="max-width:100%;border-radius:8px"></a>`).join(''));
   if (it.b && it.k !== 'human') el.insertAdjacentHTML('beforeend', `<div class="btns">${buttonsHtml(it.b, it.btnItem || it.i)}</div>`);
+  if (it.k !== 'human') addImageCopyButtons(el);
   return el;
 }
 
@@ -3371,6 +3375,46 @@ function blockText(pre) {
 function forTerminalPaste(text) {
   return text.replace(/\n/g, '\r\n');
 }
+function addImageCopyButtons(root) {
+  for (const img of root.querySelectorAll('img')) {
+    if (img.closest('.generatedImage') || !/^(https?:|data:image)/i.test(img.src)) continue;
+    const target = img.parentElement?.tagName === 'A' ? img.parentElement : img;
+    const wrap = document.createElement('div');
+    wrap.className = 'generatedImage';
+    target.replaceWith(wrap);
+    wrap.appendChild(target);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.dataset.copyImage = '';
+    button.textContent = '复制图片';
+    wrap.appendChild(button);
+  }
+}
+async function copyGeneratedImage(img, btn) {
+  try {
+    if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') throw new Error('浏览器不支持图片复制，请打开图片后保存');
+    const png = (async () => {
+      const response = await fetch(img.src);
+      if (!response.ok) throw new Error('图片读取失败');
+      const blob = await response.blob();
+      if (blob.type === 'image/png') return blob;
+      const url = URL.createObjectURL(blob);
+      try {
+        const image = new Image();
+        image.src = url;
+        await image.decode();
+        const canvas = document.createElement('canvas');
+        canvas.width = image.naturalWidth;
+        canvas.height = image.naturalHeight;
+        canvas.getContext('2d').drawImage(image, 0, 0);
+        return await new Promise((resolve, reject) => canvas.toBlob(b => b ? resolve(b) : reject(new Error('图片转换失败')), 'image/png'));
+      } finally { URL.revokeObjectURL(url); }
+    })();
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
+    btn.textContent = '已复制图片';
+    setTimeout(() => { btn.textContent = '复制图片'; }, 1200);
+  } catch (e) { status('复制图片失败：' + e.message); }
+}
 async function copyText(text, btn, terminal = true) {
   const payload = terminal ? forTerminalPaste(text) : text;
   try {
@@ -3390,6 +3434,8 @@ async function copyText(text, btn, terminal = true) {
   } else status('已复制');
 }
 document.addEventListener('click', async e => {
+  const imageCopy = e.target.closest('[data-copy-image]');
+  if (imageCopy) { e.preventDefault(); await copyGeneratedImage(imageCopy.closest('.generatedImage').querySelector('img'), imageCopy); return; }
   const copyBtn = e.target.closest('.copy');
   const copyCode = !copyBtn && !e.target.closest('a') && e.target.closest('code.copyable');
   if (copyBtn || copyCode) {
@@ -3490,7 +3536,7 @@ function leaveEdit() {
   $('vTools').hidden = true;
   $('vSearch').hidden = true;
 }
-function openFile(ref, fromEditor = false) {
+function openFile(ref, fromEditor = false, diff = '') {
   returnToEditor = fromEditor ? { ...editorDirectory } : null;
   leaveEdit();
   viewing = null;
@@ -3507,7 +3553,7 @@ function openFile(ref, fromEditor = false) {
     $('viewer').classList.add('open');
     history.pushState({ viewer: true }, '');
   }
-  send({ t: 'file', path: ref });
+  send({ t: 'file', path: ref, diff });
 }
 
 function showFile(m) {
@@ -4306,10 +4352,7 @@ function uploadDocument(file, sel) {
     request.send(file);
   });
 }
-$('docFile').onchange = async () => {
-  const file = $('docFile').files[0];
-  $('docFile').value = '';
-  if (!file) return;
+async function attachDocumentFile(file) {
   if (file.size > 20 * 1024 * 1024) return status('文件不能超过 20 MB', false);
   const sel = viewSel;
   status('正在上传文件…');
@@ -4318,6 +4361,11 @@ $('docFile').onchange = async () => {
     if (sel === viewSel) send({ t: 'attachments' });
     status('文件已上传，写好文字后点发送');
   } catch (error) { status(error.name === 'AbortError' ? '文件上传超时' : error.message, false); }
+}
+$('docFile').onchange = async () => {
+  const file = $('docFile').files[0];
+  $('docFile').value = '';
+  if (file) await attachDocumentFile(file);
 };
 async function attachImageFile(file) {
   status('正在处理图片…');
@@ -4335,15 +4383,18 @@ $('imgFile').onchange = async () => {
   if (file) await attachImageFile(file);
 };
 text.addEventListener('paste', async e => {
-  const images = [...e.clipboardData.items].filter(item => item.kind === 'file' && item.type.startsWith('image/')).map(item => item.getAsFile());
-  if (!images.length) return;
+  const files = [...e.clipboardData.files];
+  if (!files.length) return;
   e.preventDefault();
   const value = e.clipboardData.getData('text/plain');
   if (value) {
     text.setRangeText(value, text.selectionStart, text.selectionEnd, 'end');
     text.dispatchEvent(new Event('input', { bubbles: true }));
   }
-  for (const file of images) await attachImageFile(file);
+  for (const file of files) {
+    if (file.type.startsWith('image/')) await attachImageFile(file);
+    else await attachDocumentFile(file);
+  }
 });
 
 $('mic').onclick = () => {
