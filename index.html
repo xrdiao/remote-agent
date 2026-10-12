@@ -797,6 +797,7 @@ const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统'
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 let base = null, info = null, ws = null, authed = false, failures = 0;
+let windowReady = false;
 let menuRequest = 0;
 let codexSettingsRequest = 0;
 let mode = store.get('mode') || 'chat';
@@ -909,10 +910,15 @@ function finishPending(list) {
 }
 
 function send(obj) {
+  if (obj.t === 'attach') setWindowReady(false);
   if (obj.t === 'openMenu') obj.requestId = ++menuRequest;
   if (currentApp === 'codex' && ['settings', 'codexSetting'].includes(obj.t)) obj.requestId = ++codexSettingsRequest;
   if (ws && ws.readyState === 1 && authed) ws.send(JSON.stringify(obj));
   else status('未连接', false);
+}
+function setWindowReady(ready) {
+  windowReady = ready;
+  $('send').disabled = $('sendNow').disabled = !ready;
 }
 
 /* ---------- gate: pairing / 2FA / offline ---------- */
@@ -1176,11 +1182,13 @@ function applySelection(m, clearChat = true) {
   if (changed) { menuRequest++; saveDraft(); }
   if (changed) { viewSel = m.sel || ''; cache.clear(); $('sessionNotice').hidden = true; }
   const here = currentComputer();
+  const id = m.id || here?.win;
+  const selection = { windowId: m.windowId ?? here?.windowId ?? '', threadId: m.threadId ?? here?.threadId ?? '' };
   if (here) rememberComputer({
     ...here,
-    win: m.id || here.win,
-    windowId: m.windowId ?? here.windowId ?? '',
-    threadId: m.threadId ?? here.threadId ?? '',
+    win: id,
+    ...selection,
+    selections: { ...here.selections, [id]: selection },
   });
   if (changed) { restoreDraft(); $('attachments').innerHTML = ''; send({ t: 'attachments' }); }
   const cachedAgents = agentLists.get(agentListKey());
@@ -1529,6 +1537,7 @@ function autoRetry() {
 }
 
 function connect() {
+  setWindowReady(false);
   clearTimeout(retryTimer);
   if (conn.active || $('gate').classList.contains('open')) connShow('正在建立实时连接…');
   const gen = ++connGen;
@@ -1541,6 +1550,7 @@ function connect() {
   ws.onclose = async event => {
     clearTimeout(connectTimer);
     if (gen !== connGen) return;
+    setWindowReady(false);
     $('dot').className = '';
     if (!authed) {
       // boot() asks /api/me whether the device was removed or needs 2FA again.
@@ -1564,8 +1574,7 @@ function connect() {
       ungate();
       connHostOk();
       if (sheetKind === 'computers') closeSheet();
-      $('dot').className = 'ok';
-      status('已连接');
+      status('正在切换窗口…');
       send({ t: 'mode', mode });
       send({ t: 'windows' });
       const fromNotice = window.AgentRemoteApp?.takeOpenWin?.() || pendingNotice;
@@ -1618,6 +1627,9 @@ function connect() {
       currentWindow = m.id;
       currentApp = m.app || null;
       if (m.closed) { status('这个窗口已经关闭，请重新选择', false); send({ t: 'agents' }); return; }
+      setWindowReady(true);
+      $('dot').className = 'ok';
+      status('已连接');
       $('titleText').textContent = m.app === 'fusion' ? 'Fusion' : m.app === 'devin' ? 'Devin agent' : m.app === 'codex' ? 'Codex' : winLabel(m.title).name;
       currentAppName = m.appName;
       currentProject = m.app === 'fusion' ? '' : (m.project || winLabel(m.title).name);
@@ -2362,7 +2374,7 @@ $('sheet').addEventListener('click', async e => {
     if (body) body.hidden = !open;
     return;
   }
-  if (b.dataset.win) { closeSheet(); status('正在切换窗口…'); return send({ t: 'attach', id: b.dataset.win }); }
+  if (b.dataset.win) { closeSheet(); status('正在切换窗口…'); return send({ t: 'attach', id: b.dataset.win, ...currentComputer()?.selections?.[b.dataset.win] }); }
   if ('fusionTrust' in b.dataset) { closeSheet(); return send({ t: 'fusionTrust', approve: b.dataset.fusionTrust === 'yes' }); }
   if ('fusionDir' in b.dataset) { status('正在读取项目…'); return send({ t: 'fusionProjects', path: b.dataset.fusionDir }); }
   if ('fusionPath' in b.dataset) {
@@ -2744,7 +2756,7 @@ const TOOL_LABEL = { search: 'Searched', explore: 'Explored', read: 'Read', comm
 const thinkingPref = new Map();
 function thinkingWantOpen(it) {
   if (thinkingPref.has(it.i)) return thinkingPref.get(it.i);
-  return false;
+  return true;
 }
 function paintThinking(el, it) {
   const open = thinkingWantOpen(it);
@@ -2754,6 +2766,10 @@ function paintThinking(el, it) {
   const full = thoughtFull.get(it.i);
   if (!rest && typeof full === 'string') rest = full;
   const more = !!it.more && !rest;
+  if (open && more && !thoughtFull.has(it.i)) {
+    thoughtFull.set(it.i, undefined);
+    send({ t: 'thought', i: it.i });
+  }
   let btn = el.querySelector('.thbtn');
   let box = el.querySelector('.thb');
   if (!btn || !box) {
@@ -2783,7 +2799,7 @@ function renderTool(el, it) {
   if (it.kind === 'command') {
     const cmd = it.cmd || '';
     const output = it.output || '';
-    el.innerHTML = `<div class="trow toggle" data-ttoggle>${icon}<span class="tl">${esc(it.t || TOOL_LABEL.command)}</span>${it.d ? `<span class="dur">${esc(it.d)}</span>` : ''}${cmd || output ? '<span class="chev">▸</span>' : ''}</div>`
+    el.innerHTML = `<div class="trow toggle" data-ttoggle>${icon}<span class="tl">${esc(it.t || TOOL_LABEL.command)}</span>${it.d ? `<span class="dur">${esc(it.d)}</span>` : ''}${cmd || output ? '<span class="chev">▾</span>' : ''}</div>`
       + (cmd ? `<pre class="tcmd">${esc(cmd)}</pre>` : '')
       + (output ? `<pre class="tcmd">${esc(output)}</pre>` : '');
     return;
@@ -2791,7 +2807,7 @@ function renderTool(el, it) {
   if (it.kind === 'edit') {
     const diff = (it.diff || []).map(([ty, text]) => `<div class="dl ${ty === '+' ? 'di' : ty === '-' ? 'dd' : ty === '…' ? 'dm' : ''}">${esc(ty === '…' ? text : ty + ' ' + text)}</div>`).join('');
     el.innerHTML = `<div class="trow toggle" data-ttoggle>${icon}<span class="tl">${esc(TOOL_LABEL.edit)}</span><code class="chip" data-file="${esc(it.f || '')}">${esc(it.f || '')}</code>`
-      + `<span class="stat add">+${it.add || 0}</span><span class="stat del">-${it.del || 0}</span><span class="chev">▸</span></div>`
+      + `<span class="stat add">+${it.add || 0}</span><span class="stat del">-${it.del || 0}</span><span class="chev">▾</span></div>`
       + `<div class="tdiff">${diff}</div>`;
     return;
   }
@@ -2824,7 +2840,7 @@ function renderItem(it) {
   else if (it.k === 'assistant') { el.innerHTML = it.h || ''; dressMessage(el); }
   else if (it.k === 'thinking') paintThinking(el, it);
   else if (it.k === 'tool') {
-    if (it.kind && (it.src === 'devin' || it.src === 'codex')) { renderTool(el, it); el.classList.add('toolrow'); }
+    if (it.kind && (it.src === 'devin' || it.src === 'codex')) { renderTool(el, it); el.classList.add('toolrow', 'open'); }
     else {
       el.innerHTML = `<div class="txt">${esc(it.t || '')}</div>`;
       if (it.f) el.dataset.file = it.f;
@@ -3304,7 +3320,7 @@ function renderChat(chat) {
   const stick = followBottom || sessionChanged;
   // Anchor on the first visible item so loading older messages doesn't jump.
   let anchor = savedAnchor;
-  if (anchor && !V.items.some(it => String(it.i) === anchor.id && !(it.k === 'tool' && it.done))) anchor = null;
+  if (anchor && !V.items.some(it => String(it.i) === anchor.id)) anchor = null;
   if (!stick && !anchor) {
     const top = list.getBoundingClientRect().top;
     let lo = 0, hi = itemsEl.children.length;
@@ -3313,7 +3329,7 @@ function renderChat(chat) {
       if (itemsEl.children[mid].getBoundingClientRect().bottom > top) hi = mid;
       else lo = mid + 1;
     }
-    const retained = new Set(V.items.filter(it => !(it.k === 'tool' && it.done)).map(it => String(it.i)));
+    const retained = new Set(V.items.map(it => String(it.i)));
     for (let n = lo; n < itemsEl.children.length; n++) {
       const el = itemsEl.children[n];
       if (retained.has(el.dataset.i)) { anchor = { id: el.dataset.i, top: el.getBoundingClientRect().top - top }; break; }
@@ -3323,7 +3339,7 @@ function renderChat(chat) {
       if (retained.has(el.dataset.i)) { anchor = { id: el.dataset.i, top: el.getBoundingClientRect().top - top }; break; }
     }
   }
-  const visibleItems = V.items.filter(it => !(it.k === 'tool' && it.done));
+  const visibleItems = V.items;
   const els = visibleItems.map(it => {
     const key = JSON.stringify(it);
     const hit = cache.get(it.i);
