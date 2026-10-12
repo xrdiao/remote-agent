@@ -2706,6 +2706,8 @@ function paintSessions(chat) {
     list.scrollTop = list.scrollHeight;
   }
   const tabs = s?.tabs || [];
+  for (const t of tabs) if (t.id) scSetTitle(scKeyFor(t.id), t.title);
+  if (key) scSetTitle(key, s.title);
   bar.hidden = !s || !tabs.length;
   const chipsHtml = tabs.map(t => `<span class="sessTab ${t.active ? 'on' : ''}"><button class="sessChip ${t.active ? 'on' : ''}" data-sess="${esc(t.id)}" title="${esc(t.title)}">${esc(t.title)}</button>${tabs.length > 1 ? `<button class="sessX" data-sessx="${esc(t.id)}" title="关闭会话标签" aria-label="关闭会话标签">✕</button>` : ''}</span>`).join('');
   if (bar._sig !== chipsHtml) {
@@ -2757,6 +2759,17 @@ const idbKeys = () => scReq('readonly', s => s.getAllKeys());
 // clear); in a browser they stay in IndexedDB. Keys are 'h:<key>' (rows) and 'm:<key>' (size, count, time).
 const nativeHist = () => (window.AgentRemoteApp && window.AgentRemoteApp.histGet) ? window.AgentRemoteApp : null;
 const parseJson = s => { try { return s ? JSON.parse(s) : null; } catch { return null; } };
+// Cache keys are '<computer>|<app>|<window>|<session id>'; the readable session name is kept beside them.
+const SC_APPS = { devin: 'Devin', cursor: 'Cursor', codex: 'Codex' };
+const scTitles = parseJson(store.get('scTitles')) || {};
+function scSetTitle(key, title) {
+  title = String(title || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  if (!key || !title || scTitles[key] === title) return;
+  scTitles[key] = title;
+  const ks = Object.keys(scTitles);
+  if (ks.length > 500) delete scTitles[ks[0]];
+  store.set('scTitles', JSON.stringify(scTitles));
+}
 const scGet = k => {
   const n = nativeHist();
   if (!n) return idbGet(k);
@@ -2905,7 +2918,7 @@ function scSearch(q) {
   const n = nativeHist();
   const hits = n && q.trim() ? parseJson(n.histSearch(q)) || [] : [];
   out.innerHTML = !q.trim() ? '' : hits.length ? hits.map(h => {
-    const title = h.k.split('|').slice(2).join('|') || '(未命名)';
+    const title = scTitles[h.k] || '(未命名)';
     return `<button class="opt" data-sc-hit="${esc(h.k)}" data-sc-id="${esc(h.id)}"><span class="lbl">${esc(h.snip)}<span class="sub">${esc(title)} · ${h.role === 'human' ? '我' : 'Agent'}</span></span></button>`;
   }).join('') : '<div class="hint">没有找到。</div>';
 }
@@ -2938,11 +2951,18 @@ function showBgSheet() {
 async function showCacheSheet() {
   scFlush();
   const keys = ((await scKeys()) || []).map(String).filter(k => k.startsWith('m:')).map(k => k.slice(2));
-  const rows = (await Promise.all(keys.map(async k => ({ k, m: await scGet('m:' + k) })))).filter(x => x.m).sort((a, b) => b.m.updated - a.m.updated);
-  const list = rows.map(({ k, m }) => {
-    const [, app, ...rest] = k.split('|');
-    return `<div class="optRow"><button class="opt ${k === SC.key ? 'cur' : ''}" data-sc-noop><span class="lbl">${esc(rest.join('|') || '(未命名)')}<span class="sub">${esc(app)} · ${m.n} 条 · ${fmtSize(m.bytes || 0)}</span></span>${k === SC.key ? '<span class="tag">当前</span>' : ''}</button><button data-sc-del="${esc(k)}">清除</button></div>`;
-  }).join('');
+  const rows = (await Promise.all(keys.map(async k => {
+    const m = await scGet('m:' + k);
+    if (m && !scTitles[k]) {
+      const first = ((await scGet('h:' + k))?.items || []).find(it => it.k === 'human' && it.t);
+      if (first) scSetTitle(k, first.t.trim().split('\n')[0]);
+    }
+    return { k, m, app: k.split('|')[1] || '?', title: scTitles[k] || '(未命名)' };
+  }))).filter(x => x.m).sort((a, b) => b.m.updated - a.m.updated);
+  const order = Object.keys(SC_APPS);
+  const apps = [...new Set(rows.map(r => r.app))].sort((a, b) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99));
+  const list = apps.map(app => `<div class="pSec">${esc(SC_APPS[app] || app)}</div>` + rows.filter(r => r.app === app).map(({ k, m, title }) =>
+    `<div class="optRow"><button class="opt ${k === SC.key ? 'cur' : ''}" data-sc-noop><span class="lbl">${esc(title)}<span class="sub">${m.n} 条 · ${fmtSize(m.bytes || 0)}</span></span>${k === SC.key ? '<span class="tag">当前</span>' : ''}</button><button data-sc-del="${esc(k)}">清除</button></div>`).join('')).join('');
   openSheet('cache', `<h3>会话缓存</h3>`
     + `<div class="hint">手机上保存了每个会话的完整对话，重启电脑端也不会丢；只有你清除时才会删除。</div>`
     + (nativeHist() ? '<input id="scQ" type="search" placeholder="搜索所有会话里的对话" style="width:100%;box-sizing:border-box;margin:8px 0"><div id="scResults"></div>' : '')
