@@ -5,6 +5,10 @@ const I18N = (() => {
   const lang = saved === 'zh' || saved === 'en' ? saved : /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
 
   const EN = {
+    '复制图片': 'Copy image', '已复制图片': 'Image copied',
+    '复制图片失败：': 'Failed to copy image: ',
+    '浏览器不支持图片复制，请打开图片后保存': 'This browser cannot copy images. Open the image to save it.',
+    '图片读取失败': 'Failed to read image', '图片转换失败': 'Failed to convert image',
     '已到最早消息': 'Beginning of conversation',
     '生成中，稍后上滑加载历史': 'Generating. Scroll up later to load history.',
     '正在加载更早的消息…': 'Loading earlier messages…',

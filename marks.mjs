@@ -9,18 +9,27 @@ import path from 'node:path';
 // the new file. del = the line AFTER which lines were removed (0 = before line 1).
 export function parseGitDiff(diff) {
   const add = new Set(), mod = new Set(), del = new Set();
-  for (const m of String(diff).matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)) {
-    const oldStart = Number(m[1]), oldLen = Number(m[2] ?? 1);
-    const newStart = Number(m[3]), newLen = Number(m[4] ?? 1);
-    if (newLen === 0) del.add(newStart); // pure deletion: marker on the preceding line (0 = before line 1)
-    else if (oldLen === 0) for (let i = 0; i < newLen; i++) add.add(newStart + i);
-    else {
-      const overlap = Math.min(oldLen, newLen);
-      for (let i = 0; i < overlap; i++) mod.add(newStart + i);
-      for (let i = overlap; i < newLen; i++) add.add(newStart + i);
-      if (oldLen > newLen) del.add(newStart + overlap - 1);
-    }
+  let line = 0, removed = 0, added = 0, inHunk = false;
+  const flush = () => {
+    const overlap = Math.min(removed, added);
+    for (let i = 0; i < overlap; i++) mod.add(line + i);
+    for (let i = overlap; i < added; i++) add.add(line + i);
+    if (removed > added) del.add(Math.max(0, line + added - 1));
+    line += added;
+    removed = added = 0;
+  };
+  for (const row of String(diff).split('\n')) {
+    const hunk = row.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
+    if (hunk) {
+      flush();
+      line = Number(hunk[1]) + (hunk[2] === '0' ? 1 : 0);
+      inHunk = true;
+    } else if (inHunk && row.startsWith('-')) removed++;
+    else if (inHunk && row.startsWith('+')) added++;
+    else if (inHunk && row.startsWith(' ')) { flush(); line++; }
+    else if (row.startsWith('diff --git')) { flush(); inHunk = false; }
   }
+  flush();
   return { add: [...add], mod: [...mod], del: [...del] };
 }
 
@@ -77,7 +86,7 @@ export function agentMarks(items, filePath, text) {
   const edits = [...(items?.values?.() || [])]
     .filter(it => it?.kind === 'edit' && Array.isArray(it.diff))
     .filter(it => {
-      const f = String(it.f || '').toLowerCase();
+      const f = String(it.f || '').replace(/\\/g, '/').toLowerCase();
       return f === base || norm.endsWith('/' + f) || f.endsWith('/' + base);
     });
   if (!edits.length) return null;
