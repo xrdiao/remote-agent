@@ -1428,6 +1428,7 @@ function connect() {
     else if (m.t === 'frame') onFrame(m);
     else if (m.t === 'panel') { panel = m.rect; updateTermEmpty(); layoutStage(); applyQuality(); }
     else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; connWindows(m.list); if (sheetKind === 'windows') showWindows(); }
+    else if (m.t === 'fusionTrust') openSheet('fusion-trust', `<h3>确认项目可信</h3><div class="hint">${esc(m.path)}</div><button class="opt" data-fusion-trust="yes"><span class="lbl">信任并创建会话</span></button><button class="opt" data-fusion-trust="no"><span class="lbl">取消</span></button>`);
     else if (m.t === 'fusionProjects') showFusionProjects(m);
     else if (m.t === 'fusionSides') showFusionSides(m);
     else if (m.t === 'fusionHistory') showFusionHistory(m);
@@ -1643,7 +1644,12 @@ function paintFusion(fx) {
 }
 function showFusionProjects(m) {
   finishPending(['正在读取项目…']);
-  openSheet('fusion-project', `<h3>选择 Fusion 项目</h3>${(m.list || []).map(p => `<button class="opt ${p.id === lastChat?.fusion?.project?.id ? 'cur' : ''}" data-fusion-project="${esc(p.id)}"><span class="lbl">${esc(p.name)}<span class="sub">${esc(p.host ? p.host + ':' + p.root : p.root)}</span></span></button>`).join('') || '<div class="hint">没有已确认的项目</div>'}${m.unknown ? `<div class="hint">${m.unknown} 个对话的项目未确认，未加入候选。</div>` : ''}`);
+  if (m.browse) {
+    const b = m.browse;
+    const dirs = (b.dirs || []).map(d => `<button class="opt" data-fusion-dir="${esc(d.path)}"><span class="lbl">${esc(d.name)}</span></button>`).join('');
+    return openSheet('fusion-project', `<h3>选择项目目录</h3><div class="hint">${esc(b.path)}</div><button class="opt" data-fusion-folder="${esc(b.path)}"><span class="lbl">选择此目录</span></button>${b.parent ? `<button class="opt" data-fusion-dir="${esc(b.parent)}"><span class="lbl">上级目录</span></button>` : ''}<button class="opt" data-fusion-path><span class="lbl">输入文件夹路径</span></button>${(b.drives || []).map(d => `<button class="opt" data-fusion-dir="${esc(d)}"><span class="lbl">${esc(d)}</span></button>`).join('')}${dirs}`);
+  }
+  openSheet('fusion-project', `<h3>选择 Fusion 项目</h3><button class="opt" data-fusion-dir=""><span class="lbl">＋ 选择本地目录</span></button>${(m.list || []).map(p => `<button class="opt ${p.id === lastChat?.fusion?.project?.id ? 'cur' : ''}" data-fusion-project="${esc(p.id)}"><span class="lbl">${esc(p.name)}<span class="sub">${esc(p.host ? p.host + ':' + p.root : p.root)}</span></span></button>`).join('') || '<div class="hint">没有已确认的项目</div>'}${m.unknown ? `<div class="hint">${m.unknown} 个对话的项目未确认，未加入候选。</div>` : ''}`);
 }
 function showFusionSides(m) {
   const selected = lastChat?.fusion?.[m.side]?.id;
@@ -1654,8 +1660,9 @@ function showFusionSides(m) {
     if (!wins.has(s.windowId)) wins.set(s.windowId, { title: cleanWindowTitle(s.windowTitle), rows: [] });
     wins.get(s.windowId).rows.push({ ...s, conversationTitle: cleanWindowTitle(s.conversationTitle) });
   }
-  const rows = [...apps].map(([app, wins]) => `<details ${[...wins.values()].some(w => w.rows.some(s => s.id === selected)) ? 'open' : ''}><summary>${esc(({ codex: 'Codex', cursor: 'Cursor', devin: 'Devin' })[app] || app)}</summary>${wins.size ? [...wins.values()].map(w => `<details ${w.rows.some(s => s.id === selected) ? 'open' : ''}><summary>${esc(w.title)}</summary>${w.rows.map(s => `<button class="opt ${s.id === selected ? 'cur' : ''}" data-fusion-pick="${esc(m.side)}" data-fusion-id="${esc(s.id)}"><span class="lbl">${esc(s.conversationTitle)}</span></button>`).join('')}</details>`).join('') : `<div class="hint">${esc(m.apps?.find(a => a.app === app)?.unavailable || '当前项目没有已打开的会话')}</div>`}${['cursor', 'devin'].includes(app) ? `<button class="opt" data-fusion-new="${esc(app)}" data-fusion-side="${esc(m.side)}"><span class="lbl">＋ 新增会话</span></button>` : ''}</details>`).join('');
-  openSheet('fusion-side', `<h3>选择 ${m.side === 'b' ? 'B 执行' : 'A 方案'}</h3><div class="hint">仅显示所选项目。按软件、窗口、对话依次展开，再选择模型。A/B 可以使用同一软件或同一会话。</div><div class="fusionTree">${rows || '<div class="hint">没有可选的对话</div>'}</div>`);
+  const rows = [...apps].map(([app, wins]) => `<details ${[...wins.values()].some(w => w.rows.some(s => s.id === selected)) ? 'open' : ''}><summary>${esc(({ codex: 'Codex', cursor: 'Cursor', devin: 'Devin' })[app] || app)}</summary>${wins.size ? [...wins.values()].map(w => `<details ${w.rows.some(s => s.id === selected) ? 'open' : ''}><summary>${esc(w.title)}</summary>${w.rows.map(s => `<button class="opt ${s.id === selected ? 'cur' : ''}" data-fusion-pick="${esc(m.side)}" data-fusion-id="${esc(s.id)}" ${s.unavailable ? 'disabled' : ''}><span class="lbl">${esc(s.conversationTitle)}${s.unavailable ? `<span class="sub">${esc(s.unavailable)}</span>` : ''}</span></button>`).join('')}</details>`).join('') : `<div class="hint">${esc(m.apps?.find(a => a.app === app)?.unavailable || '当前项目没有已打开的会话')}</div>`}${['cursor', 'devin', 'codex'].includes(app) ? `<button class="opt" data-fusion-new="${esc(app)}" data-fusion-side="${esc(m.side)}"><span class="lbl">＋ 新增会话</span></button>` : ''}</details>`).join('');
+  const other = (m.other || []).map(s => `<button class="opt" data-fusion-continue="${esc(s.id)}" data-fusion-side="${esc(m.side)}"><span class="lbl">${esc(s.conversationTitle)}<span class="sub">${esc(s.app)} · ${esc(s.project?.root || '目录未确认')} · 在当前项目续接</span></span></button>`).join('');
+  openSheet('fusion-side', `<h3>选择 ${m.side === 'b' ? 'B 执行' : 'A 方案'}</h3><div class="hint">仅显示所选项目。按软件、窗口、对话依次展开，再选择模型。A/B 可以使用同一软件或同一会话。</div><div class="fusionTree">${rows || '<div class="hint">没有可选的对话</div>'}${other ? `<details><summary>其它项目的会话</summary><div class="hint">续接会创建新会话并携带最近历史摘录，原会话保留。</div>${other}</details>` : ''}</div>`);
 }
 function showFusionHistory(m) {
   openSheet('fusion-history', `<h3>Fusion 历史会话</h3>${(m.list || []).map(f => `<button class="opt ${f.id === m.current ? 'cur' : ''}" data-fusion-history="${esc(f.id)}"><span class="lbl">${esc(f.title)}<span class="sub">${esc(new Date(f.updated).toLocaleString())}</span></span></button>`).join('') || '<div class="hint">暂无历史会话</div>'}`);
@@ -2178,6 +2185,19 @@ $('sheet').addEventListener('click', async e => {
     return;
   }
   if (b.dataset.win) { closeSheet(); status('正在切换窗口…'); return send({ t: 'attach', id: b.dataset.win }); }
+  if ('fusionTrust' in b.dataset) { closeSheet(); return send({ t: 'fusionTrust', approve: b.dataset.fusionTrust === 'yes' }); }
+  if ('fusionDir' in b.dataset) { status('正在读取项目…'); return send({ t: 'fusionProjects', path: b.dataset.fusionDir }); }
+  if ('fusionPath' in b.dataset) {
+    const path = window.prompt(I18N.tr('电脑上的文件夹完整路径'));
+    if (path?.trim()) { status('正在读取项目…'); send({ t: 'fusionProjects', path: path.trim() }); }
+    return;
+  }
+  if (b.dataset.fusionFolder) { closeSheet(); return send({ t: 'fusionProject', path: b.dataset.fusionFolder }); }
+  if (b.dataset.fusionContinue) {
+    if (!await ask('在当前项目创建新会话，并携带旧会话最近的历史摘录？原会话保留，不会发送任务。', '续接')) return;
+    closeSheet(); status('正在创建会话…');
+    return send({ t: 'fusionContinue', side: b.dataset.fusionSide, id: b.dataset.fusionContinue });
+  }
   if (b.dataset.fusionProject) { closeSheet(); return send({ t: 'fusionProject', id: b.dataset.fusionProject }); }
   if (b.dataset.fusionHistory) { closeSheet(); return send({ t: 'fusionOpen', id: b.dataset.fusionHistory }); }
   if (b.dataset.fusionRefresh) { closeSheet(); status('正在读取额度…'); return send({ t: 'fusionUsage', side: b.dataset.fusionRefresh }); }
