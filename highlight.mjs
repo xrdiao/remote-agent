@@ -122,6 +122,14 @@ export function packTokens(tokenLines, theme) {
   return { theme: meta, palette, lines };
 }
 
+// Preloads the shiki engine and the common grammars so the first file open
+// doesn't pay ~1 s of module/grammar init.
+export function warmHighlighter() {
+  return getHighlighter()
+    .then(h => Promise.allSettled(['javascript', 'typescript', 'json', 'html', 'css', 'markdown', 'python', 'shellscript', 'ignore', 'yaml'].map(l => ensureLang(h, l))))
+    .catch(() => null);
+}
+
 // Main entry: file text + resolved theme → hl payload, or null when the file is
 // too big / language unknown / shiki fails (caller then sends plain text).
 export async function highlightText(text, filePath, theme) {

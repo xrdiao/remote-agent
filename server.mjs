@@ -8,8 +8,8 @@ import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { WebSocketServer } from 'ws';
 import qrcode from 'qrcode-terminal';
 import { workspaces, windowRoots, workspaceLabel, fileSize, readFile, parseRef, listProject, locateWritable, writeTextFile, resolveLocal } from './files.mjs';
-import { findTheme } from './theme.mjs';
-import { highlightText } from './highlight.mjs';
+import { themeFor } from './theme.mjs';
+import { highlightText, warmHighlighter } from './highlight.mjs';
 import { gitMarks, agentMarks, parseGitDiff } from './marks.mjs';
 import {
   DATA_DIR, publishRecord, opensEntry, computerId, computerName, createPairing, pairingValid, consumePairing, listDevices, addDevice, findDevice, updateDevice,
@@ -5473,7 +5473,7 @@ class Session {
       this.chatBySel.set(obj.sel, obj.chat);
       if (this.chatBySel.size > 12) this.chatBySel.delete(this.chatBySel.keys().next().value);
     }
-    if (this.client.readyState === 1) this.client.send(JSON.stringify(obj));
+    if (this.client.readyState === 1) this.client.send(JSON.stringify(obj), obj?.t === 'frame' ? { compress: false } : undefined);
   }
 
   // Asks Cursor's own Cmd+P index where a bare file name lives, then closes the picker again.
@@ -5558,14 +5558,13 @@ class Session {
     throw new Error(`找不到文件（可能已被删除或移动）：${p}`);
   }
 
-  // The desktop app's own colour theme, once per attached app; falls back to a
-  // shiki builtin matching the phone's light/dark choice (sent via {t:'appTheme'}).
+  // The desktop app's own colour theme, cached process-wide per app (theme.mjs
+  // themeFor); falls back to a shiki builtin matching the phone's light/dark
+  // choice (sent via {t:'appTheme'}).
   async fileTheme() {
-    if (this._theme?.app === this.app) return this._theme.theme;
-    let theme = null;
-    try { theme = findTheme(this.app, { port: Number(new URL(EDITORS.find(e => e.app === this.app)?.url || CDP_URL).port) }); } catch {}
-    this._theme = { app: this.app, theme: theme || (this.dark === false ? 'light-plus' : 'dark-plus') };
-    return this._theme.theme;
+    const port = Number(new URL(EDITORS.find(e => e.app === this.app)?.url || CDP_URL).port);
+    const theme = await themeFor(this.app, { port });
+    return theme || (this.dark === false ? 'light-plus' : 'dark-plus');
   }
 
   async fileMarks(f, text, reviewDiff = '') {
@@ -5615,13 +5614,18 @@ class Session {
     try {
       const f = await this.resolveFile(text);
       const body = await readFile(f.host, f.path, f.size);
-      let hl = null, marked = null;
+      let hl = null;
       if (body.text) {
         const theme = await this.fileTheme();
         hl = await highlightText(body.text, f.path, theme).catch(() => null);
-        marked = await this.fileMarks(f, body.text, reviewDiff).catch(() => null);
       }
-      this.emit({ t: 'file', name: path.posix.basename(f.path), path: f.path, host: f.host, size: f.size, line: f.line, editable: body.text != null && !body.truncated, ...body, ...(hl ? { hl } : {}), ...(marked?.marks ? { marks: marked.marks, markSource: marked.markSource } : {}), ...(marked?.newFile ? { newFile: true } : {}), ...(marked?.diff ? { diff: marked.diff } : {}) });
+      this.emit({ t: 'file', name: path.posix.basename(f.path), path: f.path, host: f.host, size: f.size, line: f.line, editable: body.text != null && !body.truncated, ...body, ...(hl ? { hl } : {}) });
+      // Gutter marks come afterwards — the git calls shouldn't hold the first paint.
+      if (body.text) {
+        this.fileMarks(f, body.text, reviewDiff).then(marked => {
+          if (marked?.marks || marked?.newFile || marked?.diff) this.emit({ t: 'fileMarks', path: f.path, host: f.host, ...(marked?.marks ? { marks: marked.marks, markSource: marked.markSource } : {}), ...(marked?.newFile ? { newFile: true } : {}), ...(marked?.diff ? { diff: marked.diff } : {}) });
+        }).catch(() => {});
+      }
     } catch (e) {
       this.emit({ t: 'file', error: e.message, name: path.posix.basename(parseRef(text).p) });
     }
@@ -7709,7 +7713,11 @@ const server = http.createServer(async (req, res) => {
   res.writeHead(404, SECURITY_HEADERS).end('not found');
 });
 
-const wss = new WebSocketServer({ noServer: true, maxPayload: 4 << 20 });
+const wss = new WebSocketServer({
+  noServer: true,
+  maxPayload: 4 << 20,
+  perMessageDeflate: { threshold: 1024, zlibDeflateOptions: { level: 6 } },
+});
 
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, 'http://x');
@@ -8070,6 +8078,15 @@ server.listen(PORT, TUNNEL ? '127.0.0.1' : HOST, async () => {
   } catch (e) {
     console.log(`!! ${e.message}`);
   }
+  // Warm the file-viewer caches (theme discovery + shiki) after startup so the
+  // phone's first file open doesn't pay the one-time scan/init cost.
+  setTimeout(() => {
+    warmHighlighter();
+    for (const e of EDITORS) {
+      const port = Number(new URL(e.url || CDP_URL).port);
+      themeFor(e.app, { port }).catch(() => {});
+    }
+  }, 2000);
   if (TUNNEL) {
     console.log('正在建立 Cloudflare 公网隧道…');
     startTunnel();

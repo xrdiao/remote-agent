@@ -30,12 +30,30 @@ const INSTALL_DIRS = {
   },
 };
 
+// Fixed local drive letters, resolved once — probing unmapped letters with
+// existsSync stalls for seconds, so ask wmic (or fsutil) for the list instead.
+let fixedDrives = null;
+function localDrives() {
+  if (fixedDrives) return fixedDrives;
+  try {
+    const out = execFileSync('wmic', ['logicaldisk', 'get', 'drivetype,name'], { timeout: 5000, encoding: 'utf8' });
+    fixedDrives = [...out.matchAll(/^\s*3\s+([A-Z]):/gim)].map(m => m[1]);
+  } catch {}
+  if (!fixedDrives?.length) {
+    try {
+      const out = execFileSync('fsutil', ['fsinfo', 'drives'], { timeout: 5000, encoding: 'utf8' });
+      fixedDrives = [...out.matchAll(/([A-Z]):\\/g)].map(m => m[1]);
+    } catch {}
+  }
+  if (!fixedDrives?.length) fixedDrives = ['C'];
+  return fixedDrives;
+}
+
 // Windows installs can live on any drive (this machine has Devin under E:\Program Files).
 function winInstallDirs(app) {
   const out = [];
   const exe = APP_EXE[app];
-  for (let c = 67; c <= 90 && out.length < 4; c++) { // C..Z
-    const d = String.fromCharCode(c);
+  for (const d of localDrives()) {
     for (const pf of ['Program Files', 'Program Files (x86)']) {
       const p = `${d}:\\${pf}\\${exe}`;
       if (fs.existsSync(p)) out.push(p);
@@ -89,14 +107,17 @@ function installFromPort(port) {
   return null;
 }
 
-// Candidate install roots, most reliable first.
+// Candidate install roots, most reliable first. Cheap sources only when the
+// previous ones came up empty: a port→exe lookup spawns PowerShell (~4 s) and
+// the drive scan is a last resort.
 function installRoots(app, port) {
-  const roots = [];
+  const known = INSTALL_DIRS[app]?.[plat()] || [];
+  const roots = known.filter(d => fs.existsSync(d));
+  if (roots.length) return roots;
   const fromProc = port && installFromPort(port);
   if (fromProc) roots.push(fromProc);
-  const known = INSTALL_DIRS[app]?.[plat()] || [];
-  const extra = plat() === 'win32' ? winInstallDirs(app) : [];
-  for (const d of [...known, ...extra]) if (fs.existsSync(d)) roots.push(d);
+  if (roots.length || plat() !== 'win32') return roots;
+  for (const d of winInstallDirs(app)) if (fs.existsSync(d)) roots.push(d);
   return roots;
 }
 
@@ -176,4 +197,21 @@ export function findTheme(app, { port } = {}) {
     settings: t.settings,
     file: pick.file,
   };
+}
+
+// Process-wide per-app cache. Settings.json mtime is the invalidation key so a
+// theme switch on the desktop is picked up on the next file open.
+const themeCache = new Map();
+function settingsMtime(app) {
+  const dir = APP_DIRS[app]?.[plat()];
+  if (!dir) return 0;
+  try { return fs.statSync(path.join(home(dir), 'settings.json')).mtimeMs; } catch { return 0; }
+}
+export function themeFor(app, { port } = {}) {
+  const mtime = settingsMtime(app);
+  const hit = themeCache.get(app);
+  if (hit && hit.mtime === mtime) return hit.promise;
+  const promise = Promise.resolve().then(() => findTheme(app, { port })).catch(() => null);
+  themeCache.set(app, { mtime, promise });
+  return promise;
 }

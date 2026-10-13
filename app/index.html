@@ -1731,6 +1731,17 @@ function connect() {
     else if (m.t === 'params') showParams(m);
     else if (m.t === 'changes') showChanges(m);
     else if (m.t === 'file') showFile(m);
+    else if (m.t === 'fileMarks') {
+      if (viewing && viewing.path === m.path && String(viewing.host || '') === String(m.host || '')) {
+        viewing.marks = m.marks || null;
+        viewing.markSource = m.markSource;
+        if (m.newFile) viewing.newFile = true;
+        if (m.diff) viewing.diff = m.diff;
+        const body = $('vBody'), y = body.scrollTop;
+        renderFileCode(viewing);
+        body.scrollTop = y;
+      }
+    }
     else if (m.t === 'thought') onThought(m);
     else if (m.t === 'revertConfirm') {
       (async () => {
