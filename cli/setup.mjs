@@ -5,6 +5,7 @@ import readline from 'node:readline/promises';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { DATA_DIR, normalizeAppUrl } from '../lib/auth.mjs';
+import { appFiles, putFile, remoteShas, gitBlobSha } from '../server/publish/pages.mjs';
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
@@ -54,12 +55,14 @@ if (has('gh') && await yes('  要设置吗？')) {
     const r = run('gh', ['repo', 'create', repo, '--public', '--description', 'My Remote Agent phone app']);
     if (r.status !== 0) { console.log(r.stderr); process.exit(1); }
   }
-  // Pages needs at least one commit before it can be enabled; the server uploads the rest on start.
-  const index = fs.readFileSync(path.join(DIR, '..', 'app', 'index.html'));
-  const sha = run('gh', ['api', `repos/${repo}/contents/index.html`, '--jq', '.sha']).stdout.trim();
-  run('gh', ['api', '-X', 'PUT', `repos/${repo}/contents/index.html`, '--input', '-'], {
-    input: JSON.stringify({ message: 'add app', content: index.toString('base64'), ...(sha ? { sha } : {}) }),
-  });
+  // Pages needs at least one commit before it can be enabled; the server keeps them in sync on start.
+  const appDir = path.join(DIR, '..', 'app');
+  const remote = await remoteShas(repo);
+  for (const name of appFiles()) {
+    const buf = fs.readFileSync(path.join(appDir, name));
+    if (remote.get(name) === gitBlobSha(buf)) continue;
+    await putFile(name, buf, remote.get(name), repo);
+  }
   run('gh', ['api', '-X', 'POST', `repos/${repo}/pages`, '-f', 'source[branch]=main', '-f', 'source[path]=/']);
   config.publishRepo = repo;
   // Pages on a user site with a custom domain serves project sites from that domain; record the real address.

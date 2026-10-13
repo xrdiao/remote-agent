@@ -8,7 +8,8 @@ import { json, readJson, originAllowed } from './static.mjs';
 import { listWindows } from '../windows.mjs';
 import { Cdp } from '../cdp.mjs';
 import { helpersCall } from '../page/build.mjs';
-import { Session, uploads } from '../session.mjs';
+import { Session } from '../session.mjs';
+import { uploads } from '../agent/context.mjs';
 
 // A device is usable once paired and, when 2FA asks for it, re-verified.
 function deviceFor(req) {

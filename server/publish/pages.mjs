@@ -20,20 +20,20 @@ export function run(cmd, args, input) {
   });
 }
 
-const gitBlobSha = buf => crypto.createHash('sha1').update(`blob ${buf.length}\0`).update(buf).digest('hex');
+export const gitBlobSha = buf => crypto.createHash('sha1').update(`blob ${buf.length}\0`).update(buf).digest('hex');
 
-async function putFile(name, buf, sha) {
+export async function putFile(name, buf, sha, repo = PUBLISH_REPO) {
   const body = { message: `update ${name}`, content: buf.toString('base64'), ...(PAGES_BRANCH ? { branch: PAGES_BRANCH } : {}), ...(sha ? { sha } : {}) };
-  await run('gh', ['api', '-X', 'PUT', `repos/${PUBLISH_REPO}/contents/${name}`, '--input', '-'], JSON.stringify(body));
+  await run('gh', ['api', '-X', 'PUT', `repos/${repo}/contents/${name}`, '--input', '-'], JSON.stringify(body));
 }
 
-async function remoteShas() {
-  const spec = [`repos/${PUBLISH_REPO}/git/trees/${PAGES_BRANCH || 'HEAD'}?recursive=1`, '--jq', '.tree[] | select(.type=="blob") | [.path, .sha] | @tsv'];
+export async function remoteShas(repo = PUBLISH_REPO) {
+  const spec = [`repos/${repo}/git/trees/${PAGES_BRANCH || 'HEAD'}?recursive=1`, '--jq', '.tree[] | select(.type=="blob") | [.path, .sha] | @tsv'];
   const out = await run('gh', ['api', ...spec]).catch(() => '');
   return new Map(out.split('\n').filter(Boolean).map(l => l.split('\t')));
 }
 
-function appFiles(dir = APP_DIR, prefix = '') {
+export function appFiles(dir = APP_DIR, prefix = '') {
   const out = [];
   for (const name of fs.readdirSync(dir)) {
     const abs = path.join(dir, name);
