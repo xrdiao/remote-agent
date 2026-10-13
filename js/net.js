@@ -436,6 +436,7 @@ function autoRetry() {
 }
 
 function connect() {
+  draftEpoch = '';
   setWindowReady(false);
   clearTimeout(retryTimer);
   if (conn.active || $('gate').classList.contains('open')) connShow('正在建立实时连接…');
@@ -501,8 +502,8 @@ function connect() {
     else if (m.t === 'questionDone') finishQuestion(m);
     else if (m.t === 'attachments') { if (m.sel === viewSel) renderAttachments(m.list); }
     else if (m.t === 'chat') { if (!m.sel || !viewSel || m.sel === viewSel) { if (m.chat) lruPut(chatBySel, m.sel || viewSel, m.chat, 12); renderChat(m.chat, !!m.cached); } }
-    else if (m.t === 'draft') { if (!m.sel || m.sel === viewSel) { if ((text.value === '' || text.value === mirroredDraft) && m.text !== text.value) { text.value = m.text; autosize(); } mirroredDraft = m.text; } }
-    else if (m.t === 'draftAck') { if (m.ok && (!m.sel || m.sel === viewSel) && text.value === m.text) mirroredDraft = m.text; }
+    else if (m.t === 'draft') { if ((m.draftEpoch || '') === draftEpoch && (!m.sel || m.sel === viewSel)) { if ((text.value === '' || text.value === mirroredDraft) && m.text !== text.value) { text.value = m.text; autosize(); } mirroredDraft = m.text; } }
+    else if (m.t === 'draftAck') { if ((m.draftEpoch || '') === draftEpoch && m.ok && (!m.sel || m.sel === viewSel) && text.value === m.text) mirroredDraft = m.text; }
     else if (m.t === 'historyDone') finishHistory(m);
     else if (m.t === 'thread') applySelection(m);
     else if (m.t === 'frame') onFrame(m);
