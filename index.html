@@ -81,8 +81,11 @@
   #title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; height: 44px; padding: 5px 8px; text-align: left; border-radius: 14px; background: var(--panel); }
   .titleLabels { flex: 1; min-width: 0; }
   #titleText, #titleProject { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #titleText { font-size: 13px; line-height: 1.3; font-weight: 600; }
+  .titleRow { display: flex; align-items: baseline; gap: 5px; min-width: 0; }
+  #titleText { font-size: 13px; line-height: 1.3; font-weight: 600; min-width: 0; }
+  #titlePlan { flex: none; font-size: 10px; line-height: 1.3; font-weight: 500; color: var(--muted2); }
   #titleProject { font-size: 10px; line-height: 1.3; color: var(--muted2); }
+  .winPlan { font-size: 10px; font-weight: 500; color: var(--muted2); margin-left: 6px; }
   #title::after { content: "⌄"; color: var(--muted); }
   body.devin #meters { flex: none; }
   body.devin #quotaMeters { flex: none; }
@@ -140,6 +143,7 @@
   #list { flex: 1; display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; padding: 10px 12px 16px; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; overflow-anchor: none; }
   /* Short threads sit on the composer. The spacer shrinks away once the thread scrolls. */
   #list::before { content: ""; flex: 1 1 auto; min-height: 0; }
+  #items.stale [data-action], #items.stale [data-request], #items.stale [data-btn] { pointer-events: none; opacity: .55; }
   #older { display: block; margin: 0 auto 10px; font-size: 13px; color: var(--muted2); background: transparent; }
   .msg { margin: 8px 0; min-width: 0; overflow-wrap: anywhere; }
   .human { display: flex; justify-content: flex-end; }
@@ -192,8 +196,8 @@
   .tool .stat { flex: none; font-weight: 700; font-size: 11px; }
   .tool .stat.add { color: var(--add); }
   .tool .stat.del { color: var(--del); }
-  .tcmd { margin: 4px 0 0; background: var(--pre-bg); color: var(--text); padding: 6px 8px; border-radius: 6px; white-space: pre; overflow: hidden; max-height: 1.5em; font-size: 12px; }
-  .toolrow.open .tcmd { max-height: 40vh; overflow: auto; }
+  .tcmd { margin: 4px 0 0; background: var(--pre-bg); color: var(--text); padding: 6px 8px; border-radius: 6px; white-space: pre; overflow: hidden; font-size: 12px; display: none; }
+  .toolrow.open .tcmd { display: block; max-height: 40vh; overflow: auto; }
   .tdiff { margin: 4px 0 0; background: var(--pre-bg); border-radius: 6px; overflow-x: auto; display: none; font-size: 12px; }
   .toolrow.open .tdiff { display: block; }
   .tdiff .dl { white-space: pre; padding: 0 8px; color: var(--muted); }
@@ -629,7 +633,7 @@
 </head>
 <body>
 <header>
-  <button id="title"><span id="dot"></span><span class="titleLabels"><span id="titleText">连接中…</span><span id="titleProject"></span></span></button>
+  <button id="title"><span id="dot"></span><span class="titleLabels"><span class="titleRow"><span id="titleText">连接中…</span><span id="titlePlan" hidden></span></span><span id="titleProject"></span></span></button>
     <div id="meters">
       <button class="meter" id="meterCtx" type="button"><span class="track"><i id="meterCtxFill"></i></span><span class="meterText"><span class="meterLabel">上下文</span><b id="meterCtxPct">未获取</b></span></button>
       <div id="quotaMeters"></div><span id="quotaStatus"></span>
@@ -804,7 +808,7 @@ let mode = store.get('mode') || 'chat';
 document.body.classList.toggle('chatmode', mode === 'chat');
 let crop = store.get('crop') !== 'full';
 let frame = { w: 1000, h: 800 }, panel = null, zoom = 1;
-let windows = [], currentWindow = null;
+let windows = [], currentWindow = null, appPlans = {};
 let currentApp = null;
 let editorBrowsing = false, editorDirectory = null, returnToEditor = null;
 const agentLists = new Map();
@@ -1033,7 +1037,7 @@ function connHide() {
 }
 function connShow(phase) {
   clearTimeout(conn.timer);
-  Object.assign(conn, { active: true, host: false, phase, agents: null, failure: null, conclusion: '', checks: [], diagRunning: false });
+  Object.assign(conn, { active: true, host: false, phase, agents: null, failure: null, conclusion: '', checks: [], diagRunning: false, readyRedirect: false, readyPending: false });
   conn.open.clear();
   $('conn').classList.add('open');
   connRender();
@@ -1052,11 +1056,34 @@ function connAgentResults(results) {
   if (!conn.active || conn.host !== true) return;
   conn.agents = CONN_AGENTS.map(a => ({ ...a, ...results.find(r => r.app === a.app) }));
   connRender();
+  ensureReadyAgent();
   clearTimeout(conn.timer);
   const ready = conn.agents.filter(a => a.windows);
   const signature = ready.map(a => a.app).join(',');
   if (ready.length === CONN_AGENTS.length || (ready.length && store.get('conn-auto-partial') === signature))
     conn.timer = setTimeout(connHide, 600);
+}
+
+function ensureReadyAgent() {
+  if (conn.readyRedirect) return;
+  const ready = (conn.agents || []).filter(a => a.windows).map(a => a.app);
+  if (!ready.length || currentApp === 'fusion') return;
+  const appOf = id => String(id || '').split(':')[0];
+  const want = currentApp || appOf(currentComputer()?.win);
+  if (ready.includes(want)) return;
+  const target = CONN_AGENTS.map(a => a.app).find(a => ready.includes(a));
+  if (!target) return;
+  const wins = windows || [];
+  if (!wins.length) {
+    if (!conn.readyPending) { conn.readyPending = true; send({ t: 'windows' }); }
+    return;
+  }
+  const sel = currentComputer()?.selections || {};
+  const pick = wins.find(w => appOf(w.id) === target && sel[w.id]) || wins.find(w => appOf(w.id) === target);
+  if (!pick) return;
+  conn.readyRedirect = true;
+  status('正在切换窗口…');
+  send({ t: 'attach', id: pick.id, ...sel[pick.id] });
 }
 
 function connRender() {
@@ -1110,6 +1137,7 @@ function connRender() {
 $('connGo').onclick = () => {
   if (conn.host === 'err') return boot();
   if (!conn.agents?.some(a => a.windows)) return connRetryAgents();
+  ensureReadyAgent();
   connHide();
 };
 function connRetryAgents() {
@@ -1120,6 +1148,7 @@ function connRetryAgents() {
 }
 $('connAuto').onclick = () => {
   store.set('conn-auto-partial', conn.agents.filter(a => a.windows).map(a => a.app).join(','));
+  ensureReadyAgent();
   connHide();
 };
 $('connPick').onclick = () => showComputers();
@@ -1190,12 +1219,12 @@ function applySelection(m, clearChat = true) {
     ...selection,
     selections: { ...here.selections, [id]: selection },
   });
-  if (changed) { restoreDraft(); $('attachments').innerHTML = ''; send({ t: 'attachments' }); }
+  if (changed) { mirroredDraft = ''; restoreDraft(); $('attachments').innerHTML = ''; send({ t: 'attachments' }); }
   const cachedAgents = agentLists.get(agentListKey());
   if (cachedAgents && m.threadId) agentLists.set(agentListKey(), cachedAgents.map(a => ({ ...a, current: a.id === m.threadId || a.id === 'tab:' + m.threadId || a.id === 'thread:' + m.windowId + ':' + m.threadId })));
   if (m.project) currentProject = m.project;
   updateTitle();
-  if (clearChat && changed) renderChat(null);
+  if (clearChat && changed) { const cc = chatBySel.get(m.sel || viewSel); renderChat(cc || null, !!cc); }
 }
 async function decryptEntry(keyText, entry) {
   const key = await crypto.subtle.importKey('raw', b64u(keyText), 'AES-GCM', false, ['decrypt']);
@@ -1601,13 +1630,16 @@ function connect() {
     }
     else if (m.t === 'sendFailed') pendingSends.delete(m.requestId);
     else if (m.t === 'attachments') { if (m.sel === viewSel) renderAttachments(m.list); }
-    else if (m.t === 'chat') { if (!m.sel || !viewSel || m.sel === viewSel) renderChat(m.chat); }
+    else if (m.t === 'chat') { if (!m.sel || !viewSel || m.sel === viewSel) { if (m.chat) lruPut(chatBySel, m.sel || viewSel, m.chat, 12); renderChat(m.chat, !!m.cached); } }
+    else if (m.t === 'draft') { if (!m.sel || m.sel === viewSel) { if ((text.value === '' || text.value === mirroredDraft) && m.text !== text.value) { text.value = m.text; autosize(); } mirroredDraft = m.text; } }
+    else if (m.t === 'draftAck') { if (m.ok && (!m.sel || m.sel === viewSel) && text.value === m.text) mirroredDraft = m.text; }
     else if (m.t === 'historyDone') finishHistory(m);
     else if (m.t === 'thread') applySelection(m);
     else if (m.t === 'frame') onFrame(m);
     else if (m.t === 'panel') { panel = m.rect; updateTermEmpty(); layoutStage(); applyQuality(); }
     else if (m.t === 'connAgents') connAgentResults(m.agents);
-    else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; connWindows(m.list); if (sheetKind === 'windows') showWindows(); }
+    else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; connWindows(m.list); if (m.plans) { appPlans = { ...appPlans, ...m.plans }; updateTitle(); } if (conn.readyPending) { conn.readyPending = false; ensureReadyAgent(); } if (sheetKind === 'windows') showWindows(); }
+    else if (m.t === 'plans') { if (m.plans) { appPlans = { ...appPlans, ...m.plans }; updateTitle(); if (sheetKind === 'windows') showWindows(); } }
     else if (m.t === 'fusionTrust') openSheet('fusion-trust', `<h3>确认项目可信</h3><div class="hint">${esc(m.path)}</div><button class="opt" data-fusion-trust="yes"><span class="lbl">信任并创建会话</span></button><button class="opt" data-fusion-trust="no"><span class="lbl">取消</span></button>`);
     else if (m.t === 'fusionProjects') showFusionProjects(m);
     else if (m.t === 'fusionSides') showFusionSides(m);
@@ -1620,6 +1652,7 @@ function connect() {
     }
     else if (m.t === 'attached') {
       if (m.closed) { setWindowReady(m.ready === true); status('这个窗口已经关闭，请重新选择', false); send({ t: 'windows' }); return; }
+      if (m.plans) appPlans = { ...appPlans, ...m.plans };
       rememberAgentOpen(m);
       if (m.keepQuota) { applySelection(m); setWindowReady(true); return; }
       finishPending(['正在切换窗口…', '正在切换 Agent…']);
@@ -1634,7 +1667,8 @@ function connect() {
       currentAppName = m.appName;
       currentProject = m.app === 'fusion' ? '' : (m.project || winLabel(m.title).name);
       updateAppText(); updateTitle();
-      renderChat(null);
+      const cachedChat = m.sel ? chatBySel.get(m.sel) : null;
+      renderChat(cachedChat || null, !!cachedChat);
       renderContext(null);
       $('quotaMeters').innerHTML = '';
       $('quotaMeters').title = '';
@@ -1682,17 +1716,32 @@ function connect() {
     else if (m.t === 'settings') { if (m.codex && m.requestId !== codexSettingsRequest) return; finishPending(['正在读取设置…', '正在修改…']); m.codex ? showCodexSettings(m) : showSettings(m.sections || []); }
     else if (m.t === 'usage') {
       if (currentApp === 'fusion' || (m.sel && viewSel && m.sel !== viewSel)) return;
+      if (m.plan) { appPlans = { ...appPlans, [currentApp]: m.plan }; updateTitle(); }
       if (m.missing) status('没有额度数据');
       renderQuota(m);
       if (!m.cached) finishPending(['正在读取额度…']);
     }
     else if (m.t === 'menu') {
-      if (m.requestId != null && (m.requestId !== menuRequest || (m.sel && m.sel !== viewSel))) return;
+      if (m.sel && viewSel && m.sel !== viewSel) return;
+      lruPut(menuCache, menuCacheKey(m.kind), m, 24);
+      if (m.requestId != null && m.requestId !== menuRequest) return;
+      if (m.requestId == null && !(sheetKind === 'menu' && menuSheetKind === m.kind)) return;
       showMenu(m.kind, m.items, m.max, m.fusion, m.fast, m.model);
     }
     else if (m.t === 'params') showParams(m);
     else if (m.t === 'changes') showChanges(m);
     else if (m.t === 'file') showFile(m);
+    else if (m.t === 'fileMarks') {
+      if (viewing && viewing.path === m.path && String(viewing.host || '') === String(m.host || '')) {
+        viewing.marks = m.marks || null;
+        viewing.markSource = m.markSource;
+        if (m.newFile) viewing.newFile = true;
+        if (m.diff) viewing.diff = m.diff;
+        const body = $('vBody'), y = body.scrollTop;
+        renderFileCode(viewing);
+        body.scrollTop = y;
+      }
+    }
     else if (m.t === 'thought') onThought(m);
     else if (m.t === 'revertConfirm') {
       (async () => {
@@ -1741,7 +1790,7 @@ function openSheet(kind, html) {
 function closeSheet() {
   menuRequest++;
   if (sheetKind === 'codex-settings') { codexSettingsRequest++; send({ t: 'closeCodexSettings' }); status(''); }
-  sheetKind = null;
+  sheetKind = null; menuSheetKind = '';
   $('shade').classList.remove('open');
   $('sheet').classList.remove('open');
 }
@@ -1781,7 +1830,8 @@ function winLabel(title) {
 function showWindows() {
   const rows = windows.map(w => {
     const software = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion' }[w.app] || w.app;
-    return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">${esc(software)}</span></button>`;
+    const plan = appPlans[w.app] ? `<span class="winPlan">${esc(appPlans[w.app])}</span>` : '';
+    return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">${esc(software)}${plan}</span></button>`;
   }).join('');
   openSheet('windows', `<h3>切换窗口</h3>${rows || '<div class="hint">没有找到窗口</div>'}`);
 }
@@ -1964,8 +2014,16 @@ function fusionBlock(fusion) {
 // Devin's permission modes: the desktop's own description, plus a Chinese one when the app is in Chinese.
 const MODE_ZH = { Code: '写代码、改文件，正常提问', Smart: '模型判断安全的操作自动批准', Ask: '只回答问题，不改代码', Plan: '先做方案，再动手', 'Bypass Permissions': '自动批准所有工具调用（不再询问）' };
 const modeDesc = it => (I18N.lang === 'zh' && MODE_ZH[it.label]) || it.desc;
-function showMenu(kind, items, max, fusion, fast, model) {
+const menuCacheKey = kind => `${currentApp}|${viewSel}|${kind}`;
+function requestMenu(kind, loadingMsg) {
+  const cached = menuCache.get(menuCacheKey(kind));
+  if (cached) showMenu(kind, cached.items, cached.max, cached.fusion, cached.fast, cached.model, true);
+  else status(loadingMsg);
+  send({ t: 'openMenu', kind });
+}
+function showMenu(kind, items, max, fusion, fast, model, refreshing) {
   finishPending(['读取思考强度…', '读取权限…', '读取模式列表…', '读取模型列表…', '读取历史对话…', '设置中…']);
+  menuSheetKind = kind;
   const picking = /^fusion-(lead|effort|sidekick)$/.test(String(kind || ''));
   if (!items?.length && !fusion && kind !== 'effort') return status(appMessage('菜单是空的，可能 {app} 版本不同'), false);
   status('');
@@ -1984,9 +2042,10 @@ function showMenu(kind, items, max, fusion, fast, model) {
   const role = /^fusion-model-([ab])$/.exec(kind || '')?.[1];
   const agentRow = role ? `<button class="opt" data-fusion-select="${role}"><span class="lbl">更换 ${role.toUpperCase()} Agent / 会话<span class="sub">${esc(lastChat?.fusion?.[role]?.title || '未选择')}</span></span></button>` : '';
   const fastRow = fast && !fusion ? `<button class="opt" data-fast="${fast.on ? 'off' : 'on'}" data-fast-menu="${kind}"><span class="lbl">Fast 模式${fast.description ? `<span class="sub">${esc(fast.description)}</span>` : ''}</span><span class="switch ${fast.on ? 'on' : ''}"></span></button>` : '';
+  const effortEntry = kind === 'model' ? `<button class="opt" data-effort-open><span class="lbl">思考强度<span class="sub">${esc(lastChat?.effort || '')}</span></span></button>` : '';
   const navigation = kind === 'effort' ? `<button class="opt" data-model-back>← 返回模型列表</button><p>${esc(model || lastChat?.model || '')}</p>${!items?.length ? '<p class="hint">这个模型没有可选的思考强度。</p>' : ''}` : '';
   const done = kind === 'effort' ? '<button class="opt" data-model-done>完成</button>' : '';
-  openSheet('menu', `<h3>${MENU_TITLE[kind] || ''}</h3>` + navigation + agentRow + (picking ? '' : fusionBlock(fusion)) + fastRow + maxRow + rows + done);
+  openSheet('menu', `<h3>${MENU_TITLE[kind] || ''}${refreshing ? ' <span class="hint">更新中…</span>' : ''}</h3>` + navigation + agentRow + (picking ? '' : fusionBlock(fusion)) + effortEntry + fastRow + maxRow + rows + done);
 }
 
 let changeFiles = [];
@@ -2117,8 +2176,19 @@ function renderQuota(m) {
     .filter(b => b?.label && !/^loading\b/i.test(String(b.label)));
   $('quotaMeters').classList.toggle('devinLimits', currentApp === 'devin' && bars.length > 1);
   const when = m.updated ? new Date(m.updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  if (currentApp === 'cursor' && (m.missing || !bars.length)) {
+    $('quotaMeters').title = '';
+    $('quotaMeters').innerHTML = '';
+    return;
+  }
   if (m.missing) {
     $('quotaMeters').title = '没有额度数据' + (when ? ` · 更新于 ${when}` : '');
+    $('quotaMeters').innerHTML = `<button class="meter" type="button"><span class="track"></span><span class="meterText"><span class="meterLabel">额度</span><b>未获取</b></span></button>`;
+    $('quotaMeters').querySelector('button').onclick = () => showUsageDetails('quota');
+    return;
+  }
+  if (!bars.length) {
+    $('quotaMeters').title = '没有额度指标' + (when ? ` · 更新于 ${when}` : '');
     $('quotaMeters').innerHTML = `<button class="meter" type="button"><span class="track"></span><span class="meterText"><span class="meterLabel">额度</span><b>未获取</b></span></button>`;
     $('quotaMeters').querySelector('button').onclick = () => showUsageDetails('quota');
     return;
@@ -2323,7 +2393,8 @@ document.addEventListener('visibilitychange', () => {
 $('sheet').addEventListener('click', async e => {
   const b = e.target.closest('button');
   if (!b) return;
-  if ('modelBack' in b.dataset) { status('读取模型列表…'); return send({ t: 'openMenu', kind: 'model' }); }
+  if ('modelBack' in b.dataset) return requestMenu('model', '读取模型列表…');
+  if ('effortOpen' in b.dataset) return requestMenu('effort', '读取思考强度…');
   if ('modelDone' in b.dataset) { closeSheet(); return; }
   if (b.dataset.fast) { status('设置中…'); return send({ t: 'pickMenu', kind: 'fast', label: b.dataset.fast, name: b.dataset.fastMenu }); }
   if ('editorChat' in b.dataset) { closeSheet(); status('正在打开聊天面板…'); return send({ t: 'openEditorChat' }); }
@@ -2439,6 +2510,8 @@ $('sheet').addEventListener('click', async e => {
   if (b.dataset.fusion) {
     status('正在修改…');
     if (b.dataset.fusion === 'fast') return send({ t: 'fusionPick', part: 'fast' });
+    const fm = menuCache.get(menuCacheKey(`fusion-${b.dataset.fusion}`));
+    if (fm) showMenu(fm.kind, fm.items, fm.max, fm.fusion, fm.fast, fm.model, true);
     return send({ t: 'fusionOptions', part: b.dataset.fusion });
   }
   if (b.dataset.kind) {
@@ -2475,8 +2548,8 @@ $('sheet').addEventListener('click', async e => {
   if (act === 'newTerm') { closeSheet(); status('正在新建终端…'); return send({ t: 'newTerminal' }); }
   else if (act === 'fusionHistory') { closeSheet(); return send({ t: 'fusionHistory' }); }
   else if (act === 'fusionNew') { closeSheet(); return send({ t: 'fusionNew' }); }
-  else if (act === 'model') { status('读取模型列表…'); return send({ t: 'openMenu', kind: 'model' }); }
-  else if (act === 'permission') { status('读取权限…'); return send({ t: 'openMenu', kind: lastChat?.permission ? 'permission' : 'mode' }); }
+  else if (act === 'model') return requestMenu('model', '读取模型列表…');
+  else if (act === 'permission') return requestMenu(lastChat?.permission ? 'permission' : 'mode', '读取权限…');
   else if (act === 'agentsRefresh') return openAgentList(true);
   else if (act === 'projects') { status('正在读取项目…'); return send({ t: 'projects' }); }
   else if (act === 'projectNewChat') { closeSheet(); status('正在新建对话…'); return send({ t: 'newProjectChat' }); }
@@ -2702,6 +2775,7 @@ itemsEl.addEventListener('click', async e => {
     box.classList.toggle('open');
     const chev = tr.querySelector('.chev');
     if (chev) chev.textContent = box.classList.contains('open') ? '▾' : '▸';
+    if (pinnedBottom) { list.scrollTop = list.scrollHeight; requestAnimationFrame(() => { list.scrollTop = list.scrollHeight; }); }
     return;
   }
   const b = e.target.closest('[data-think]');
@@ -2810,7 +2884,7 @@ function renderTool(el, it) {
   if (it.kind === 'command') {
     const cmd = it.cmd || '';
     const output = it.output || '';
-    el.innerHTML = `<div class="trow toggle" data-ttoggle>${icon}<span class="tl">${esc(it.t || TOOL_LABEL.command)}</span>${it.d ? `<span class="dur">${esc(it.d)}</span>` : ''}${cmd || output ? '<span class="chev">▾</span>' : ''}</div>`
+    el.innerHTML = `<div class="trow toggle" data-ttoggle>${icon}<span class="tl">${esc(it.t || TOOL_LABEL.command)}</span>${it.d ? `<span class="dur">${esc(it.d)}</span>` : ''}${cmd || output ? '<span class="chev">▸</span>' : ''}</div>`
       + (cmd ? `<pre class="tcmd">${esc(cmd)}</pre>` : '')
       + (output ? `<pre class="tcmd">${esc(output)}</pre>` : '');
     return;
@@ -2851,7 +2925,7 @@ function renderItem(it) {
   else if (it.k === 'assistant') { el.innerHTML = it.h || ''; dressMessage(el); }
   else if (it.k === 'thinking') paintThinking(el, it);
   else if (it.k === 'tool') {
-    if (it.kind && (it.src === 'devin' || it.src === 'codex')) { renderTool(el, it); el.classList.add('toolrow', 'open'); }
+    if (it.kind && (it.src === 'devin' || it.src === 'codex')) { renderTool(el, it); el.classList.add('toolrow'); if (it.kind !== 'command') el.classList.add('open'); }
     else {
       el.innerHTML = `<div class="txt">${esc(it.t || '')}</div>`;
       if (it.f) el.dataset.file = it.f;
@@ -2904,12 +2978,18 @@ function noteSwitch(chat) {
   status(w.kind === 'model' && chat.model ? `已切换到 ${chat.model}` : '已切换');
 }
 
-let lastChat = null;
+let lastChat = null, mirroredDraft = '';
+const chatBySel = new Map(), menuCache = new Map();
+const lruPut = (map, key, val, max) => { map.delete(key); map.set(key, val); while (map.size > max) map.delete(map.keys().next().value); };
+let menuSheetKind = '', chatStale = false;
 let currentProject = '', currentTerminal = '';
 function updateTitle() {
   const first = lastChat?.items?.find(it => it.k === 'user');
   const conversation = mode === 'terminal' ? currentTerminal : (lastChat?.title || first?.t || '');
   $('titleText').textContent = currentAppName || '连接中…';
+  const plan = appPlans[currentApp] || '';
+  $('titlePlan').textContent = plan;
+  $('titlePlan').hidden = !plan;
   $('titleProject').textContent = cleanWindowTitle(currentProject).replace(/\s+-\s+Devin(?:\s+-.*)?$/, '') || conversation.split('\n')[0].slice(0, 40);
   $('title').title = [cleanWindowTitle(currentProject), conversation].filter(Boolean).join(' · ');
 }
@@ -3220,8 +3300,10 @@ function captureChatAnchor() {
   const el = itemsEl.children[lo];
   return el ? { id: el.dataset.i, top: el.getBoundingClientRect().top - top } : null;
 }
+let pinnedBottom = false;
 function restoreChatPosition(anchor, stick = false) {
   restoringChatScroll = true;
+  pinnedBottom = !!stick;
   if (stick) list.scrollTop = list.scrollHeight;
   else if (anchor) {
     const el = [...itemsEl.children].find(e => e.dataset.i === anchor.id);
@@ -3231,7 +3313,12 @@ function restoreChatPosition(anchor, stick = false) {
   requestAnimationFrame(() => { restoringChatScroll = false; });
 }
 new ResizeObserver(() => {
-  if (!chatScrolling && !chatTouching && readingAnchor) restoreChatPosition(readingAnchor);
+  if (chatScrolling || chatTouching) return;
+  if (pinnedBottom) {
+    restoringChatScroll = true;
+    list.scrollTop = list.scrollHeight;
+    requestAnimationFrame(() => { restoringChatScroll = false; });
+  } else if (readingAnchor) restoreChatPosition(readingAnchor);
 }).observe(itemsEl);
 document.addEventListener('selectionchange', () => {
   if (deferredRender && !userSelecting()) { deferredRender = false; if (lastChat) renderChat(lastChat); }
@@ -3275,7 +3362,8 @@ function showWorkdirs(m) {
   openSheet('workdir', `<h3>工作目录</h3><div class="pSec">运行位置</div><div class="pRow" style="display:flex;gap:6px;margin-bottom:8px">${envs}</div><div class="pSec">文件夹</div><button class="opt" data-act="projects">选择文件夹／新建项目</button>${rows || '<div class="hint">没有读到文件夹列表。</div>'}`);
   $('sheet')._wd = m.rows;
 }
-function renderChat(chat) {
+function renderChat(chat, stale) {
+  chatStale = !!stale;
   if (chat?.items?.some(it => it.k === 'human')) $('sessionNotice').hidden = true;
   const previous = lastChat;
   if (!chat || previous?.thread !== chat.thread) {
@@ -3310,7 +3398,10 @@ function renderChat(chat) {
   if (chat?.mode) { $('pickMode').textContent = (chat.mode === 'Bypass Permissions' ? '⚠绕过' : chat.mode) + ' ▾'; $('pickMode').title = chat.mode; }
   $('pickMode').classList.toggle('bypass', chat?.mode === 'Bypass Permissions');
   const fusionLabel = chat?.model === 'Fusion' && chat.fusion ? `Fusion · ${fusionShort(chat.fusion.lead)} / ${fusionShort(chat.fusion.sidekick)}` : '';
-  $('pickModel').textContent = (fusionLabel || chat?.model || '模型') + ' ▾';
+  const mdl = fusionLabel || chat?.model || '模型';
+  const effLabel = chat?.effort && chat.effort !== 'Effort' ? String(chat.effort).replace(/^([a-z])/, c => c.toUpperCase()) : '';
+  const effSuffix = !fusionLabel && chat?.model !== 'Fusion' && effLabel && !mdl.toLowerCase().includes(effLabel.toLowerCase()) ? ` · ${effLabel}` : '';
+  $('pickModel').textContent = mdl + effSuffix + ' ▾';
   $('pickModel').title = chat?.fusion ? `${chat.fusion.lead} · ${chat.fusion.effort} · ${chat.fusion.sidekick}${chat.fusion.fast ? ' · Fast' : ''}` : (chat?.model || '更换模型');
   const permName = PERM_LABEL[chat?.permission]?.[0];
   $('pickPerm').hidden = true;
@@ -3333,7 +3424,7 @@ function renderChat(chat) {
   updateSendMode();
   currentSurface = chat?.surface || null;
   paintSurface();
-  if (!chat) { itemsEl.replaceChildren(); renderQueue(false, []); renderQuestions(null); paintSessions(null); return; }
+  if (!chat) { itemsEl.replaceChildren(); itemsEl.classList.remove('stale'); renderQueue(false, []); renderQuestions(null); paintSessions(null); latestTasks = null; $('taskChip').hidden = true; return; }
   const sessionChanged = paintSessions(chat);
   const V = scMerge(chat);
   if (!sessionChanged && userSelecting()) {
@@ -3420,17 +3511,19 @@ function renderChat(chat) {
     });
   }
   syncChildren(itemsEl, els);
-  latestTasks = V.all.filter(it => it.k === 'tasks').pop() || null;
+  itemsEl.classList.toggle('stale', chatStale);
+  latestTasks = (chat.items || []).filter(it => it.k === 'tasks').pop() || null;
   $('taskChip').hidden = !latestTasks;
   if (latestTasks) $('taskChip').innerHTML = `<span>${I18N.tr('任务')}</span> ${latestTasks.done}/${latestTasks.total}`;
   if (sheetKind === 'tasks') showTasks();
   const live = new Set(visibleItems.map(it => it.i));
   for (const k of cache.keys()) if (!live.has(k)) { thoughtObserver.unobserve(cache.get(k).el); cache.delete(k); }
 
-  $('actionBar').innerHTML = buttonsHtml(chat.global, 'g');
-  $('actionBar').classList.toggle('show', chat.global.length > 0);
-  renderQueue(chat.busy, chat.queued || [], chat.subagents || [], chat.readonly, chat.changed, chat.queuedCount);
-  renderQuestions(chat.readonly && !chat.questions?.codex ? null : chat.questions);
+  // A cached render is display-only: no action buttons, questions or queue actions until the fresh chat arrives.
+  $('actionBar').innerHTML = chatStale ? '' : buttonsHtml(chat.global, 'g');
+  $('actionBar').classList.toggle('show', !chatStale && chat.global.length > 0);
+  renderQueue(chatStale ? false : chat.busy, chatStale ? [] : (chat.queued || []), chat.subagents || [], chat.readonly, chat.changed, chat.queuedCount);
+  renderQuestions(chatStale || (chat.readonly && !chat.questions?.codex) ? null : chat.questions);
 
   restoreChatPosition(anchor, stick);
   historyRendering = false;
@@ -3643,6 +3736,7 @@ function maybeLoadOlder() {
 }
 function settleChatScroll() {
   if (restoringChatScroll) { updateToBottom(); return; }
+  if (pinnedBottom && !nearBottom()) pinnedBottom = false;
   chatScrolling = true;
   clearTimeout(scrollIdle);
   scrollIdle = setTimeout(() => {
@@ -3656,10 +3750,10 @@ function settleChatScroll() {
 }
 list.addEventListener('scroll', settleChatScroll, { passive: true });
 let historyTouchY = 0;
-list.addEventListener('wheel', e => { restoringChatScroll = false; if (e.deltaY < 0) historyArmed = true; settleChatScroll(); }, { passive: true });
+list.addEventListener('wheel', e => { restoringChatScroll = false; if (e.deltaY < 0) { historyArmed = true; pinnedBottom = false; } settleChatScroll(); }, { passive: true });
 list.addEventListener('pointerdown', () => { historyArmed = true; }, { passive: true });
 list.addEventListener('touchstart', e => { historyTouchY = e.touches[0].clientY; chatTouching = true; chatScrolling = true; clearTimeout(scrollIdle); }, { passive: true });
-list.addEventListener('touchmove', e => { restoringChatScroll = false; if (e.touches[0].clientY > historyTouchY) historyArmed = true; historyTouchY = e.touches[0].clientY; }, { passive: true });
+list.addEventListener('touchmove', e => { restoringChatScroll = false; if (e.touches[0].clientY > historyTouchY) { historyArmed = true; pinnedBottom = false; } historyTouchY = e.touches[0].clientY; }, { passive: true });
 for (const event of ['touchend', 'touchcancel']) list.addEventListener(event, () => { chatTouching = false; settleChatScroll(); }, { passive: true });
 $('toBottom').onclick = () => { list.scrollTop = list.scrollHeight; };
 $('older').onclick = () => loadOlderMessages();
@@ -3830,9 +3924,9 @@ document.addEventListener('click', async e => {
   status('已点击：' + b.textContent);
 });
 
-$('pickMode').onclick = () => { status('读取模式列表…'); send({ t: 'openMenu', kind: 'mode' }); };
-$('pickModel').onclick = () => { status('读取模型列表…'); send({ t: 'openMenu', kind: 'model' }); };
-$('pickPerm').onclick = () => { status('读取权限…'); send({ t: 'openMenu', kind: 'permission' }); };
+$('pickMode').onclick = () => requestMenu('mode', '读取模式列表…');
+$('pickModel').onclick = () => requestMenu('model', '读取模型列表…');
+$('pickPerm').onclick = () => requestMenu('permission', '读取权限…');
 function showCodexSkills(rows) {
   openSheet('skills', '<h3>Skill · 技能</h3><input id="skillSearch" placeholder="搜索技能" style="width:100%;box-sizing:border-box;margin-bottom:8px"><div id="skillRows"></div>');
   const paint = () => {
@@ -3890,7 +3984,7 @@ $('pickIde').onclick = () => send({ t: 'codexIde' });
 $('pickRun').onclick = () => { status('读取执行位置…'); send({ t: 'codexRun' }); };
 $('pickChat').onclick = () => { status('读取会话操作…'); send({ t: 'codexChat' }); };
 $('pickAgents').onclick = () => openAgentList();
-$('pickHistory').onclick = () => { status('读取历史对话…'); send({ t: 'openMenu', kind: 'history' }); };
+$('pickHistory').onclick = () => requestMenu('history', '读取历史对话…');
 $('newChat').onclick = () => { status('正在新建对话…'); send({ t: 'newChat' }); };
 
 /* ---------- file viewer ---------- */
@@ -4471,14 +4565,22 @@ function confirmSent(m) {
   const here = (currentComputer()?.id || '') === sent.computer && mode === sent.mode && (draftKey() === sent.draft || m.sel === viewSel);
   if (here && inputRevision === sent.revision && text.value === sent.text) {
     drafts.delete(activeDraft); draftMentions.delete(activeDraft);
-    text.value = ''; MN.mentions = []; autosize();
+    text.value = ''; MN.mentions = []; autosize(); mirroredDraft = '';
   }
 }
 function draftKey() { return [currentComputer()?.id || '', viewSel, mode].join('|'); }
 function saveDraft() { if (activeDraft) { drafts.set(activeDraft, text.value); draftMentions.set(activeDraft, MN.mentions.slice()); } }
 function restoreDraft() { activeDraft = draftKey(); text.value = drafts.get(activeDraft) || ''; MN.mentions = draftMentions.get(activeDraft)?.slice() || []; mentionHide(); autosize(); }
 function autosize() { text.style.height = 'auto'; text.style.height = text.scrollHeight + 'px'; updateMathPrev(); }
-text.addEventListener('input', () => { inputRevision++; draftVersions.set(activeDraft, (draftVersions.get(activeDraft) || 0) + 1); autosize(); saveDraft(); });
+let draftPushTimer = 0;
+text.addEventListener('input', () => {
+  inputRevision++; draftVersions.set(activeDraft, (draftVersions.get(activeDraft) || 0) + 1); autosize(); saveDraft();
+  clearTimeout(draftPushTimer);
+  draftPushTimer = setTimeout(() => {
+    if (composing || mode !== 'chat' || currentApp === 'fusion' || MN.mentions.length) return;
+    send({ t: 'draft', text: text.value });
+  }, 400);
+});
 // ---- "@" mentions (Devin): the relay drives Devin's own typeahead, so a mention ends up as a real chip ----
 // Typing "@" (or "@file:ser") asks for the list; tapping a row puts "@label" into the text. When the message is
 // sent, the relay types the text and, at each "@label", lets Devin's typeahead insert the chip.
