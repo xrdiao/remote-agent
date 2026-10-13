@@ -1,0 +1,952 @@
+// ---- local per-session history (Devin) ----
+// The relay only remembers what it has seen since it started (and caps it), so the phone keeps its own copy of
+// every row of every session: merged by item id, stored in IndexedDB, dropped only when the user clears it.
+const SC = { key: null, items: new Map(), sig: new Map(), collapsed: new Set(), show: 400, dirty: false, timer: 0 };
+const SC_MAX = 8000;
+const acpNum = id => { const m = /^acp(\d+)/.exec(id || ''); return m ? Number(m[1]) : -1; };
+let scDbP = null;
+function scDb() {
+  if (!scDbP) scDbP = new Promise((res, rej) => {
+    if (!window.indexedDB) return rej(new Error('no indexedDB'));
+    const r = indexedDB.open('cr-sessions', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('s');
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+  return scDbP;
+}
+const scReq = (mode, fn) => scDb().then(db => new Promise((res, rej) => {
+  const rq = fn(db.transaction('s', mode).objectStore('s'));
+  rq.onsuccess = () => res(rq.result);
+  rq.onerror = () => rej(rq.error);
+})).catch(() => null);
+const idbGet = k => scReq('readonly', s => s.get(k));
+const idbPut = (k, v) => scReq('readwrite', s => s.put(v, k));
+const idbDel = k => scReq('readwrite', s => s.delete(k));
+const idbKeys = () => scReq('readonly', s => s.getAllKeys());
+// The Android app keeps the sessions in its own SQLite database (not in WebView storage, which Android may
+// clear); in a browser they stay in IndexedDB. Keys are 'h:<key>' (rows) and 'm:<key>' (size, count, time).
+const nativeHist = () => (window.AgentRemoteApp && window.AgentRemoteApp.histGet) ? window.AgentRemoteApp : null;
+const parseJson = s => { try { return s ? JSON.parse(s) : null; } catch { return null; } };
+// Cache keys are '<computer>|<app>|<window>|<session id>'; the readable session name is kept beside them.
+const SC_APPS = { devin: 'Devin', cursor: 'Cursor', codex: 'Codex' };
+const scTitles = parseJson(store.get('scTitles')) || {};
+function scSetTitle(key, title) {
+  title = String(title || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  if (!key || !title || scTitles[key] === title) return;
+  scTitles[key] = title;
+  const ks = Object.keys(scTitles);
+  if (ks.length > 500) delete scTitles[ks[0]];
+  store.set('scTitles', JSON.stringify(scTitles));
+}
+const scGet = k => {
+  const n = nativeHist();
+  if (!n) return idbGet(k);
+  return Promise.resolve(parseJson(k.startsWith('h:') ? n.histGet(k.slice(2)) : n.histMeta(k.slice(2))));
+};
+const scDel = k => {
+  const n = nativeHist();
+  if (!n) return idbDel(k);
+  n.histDel(k.slice(2));
+  return Promise.resolve();
+};
+const scKeys = () => {
+  const n = nativeHist();
+  return n ? Promise.resolve((parseJson(n.histKeys()) || []).map(k => 'm:' + k)) : idbKeys();
+};
+const htmlText = h => h.replace(/<[^>]+>/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
+// Plain text of every message, for searching all sessions.
+const scIndex = items => items.flatMap(it => it.k === 'human' && it.t ? [{ id: it.i, role: 'human', body: it.t.slice(0, 4000) }]
+  : it.k === 'assistant' && it.h ? [{ id: it.i, role: 'assistant', body: htmlText(it.h).slice(0, 6000) }] : []);
+function scSave(key, items, collapsed) {
+  const json = JSON.stringify({ items, collapsed });
+  const meta = { n: items.length, bytes: json.length, updated: Date.now() };
+  const n = nativeHist();
+  if (n) return n.histPut(key, json, JSON.stringify(meta), JSON.stringify(scIndex(items)));
+  idbPut('h:' + key, { items, collapsed });
+  idbPut('m:' + key, meta);
+}
+// Sessions saved before the native database existed (IndexedDB) are copied over once.
+async function scMigrate() {
+  const n = nativeHist();
+  if (!n || store.get('histMig1')) return;
+  for (const mk of (await idbKeys() || []).map(String).filter(k => k.startsWith('m:'))) {
+    const key = mk.slice(2), h = await idbGet('h:' + key);
+    if (h?.items && !n.histGet(key)) scSave(key, h.items, h.collapsed || []);
+  }
+  store.set('histMig1', 1);
+}
+setTimeout(scMigrate, 2000);
+const scKeyFor = sess => `${currentComputer()?.id || '-'}|${currentApp || '?'}|${currentComputer()?.windowId || ''}|${sess}`;
+// A newer copy of a row replaces the stored one, except where the stored one holds more (thought text, task items).
+function scKeep(prev, it) {
+  if (!prev) return it;
+  if (it.k === 'thinking' && prev.k === 'thinking') {
+    const body = t => (t || '').split('\n').slice(1).join('\n');
+    if (body(prev.t).length > body(it.t).length) { const m = { ...it, t: prev.t }; delete m.more; return m; }
+  }
+  if (it.k === 'tasks' && prev.k === 'tasks' && prev.items && !it.items && prev.done === it.done && prev.total === it.total) return { ...it, items: prev.items };
+  return it;
+}
+function scFlush() {
+  clearTimeout(SC.timer);
+  SC.timer = 0;
+  if (!SC.key || !SC.dirty) return;
+  SC.dirty = false;
+  let items = [...SC.items.values()].sort((a, b) => (a.order ?? acpNum(a.i)) - (b.order ?? acpNum(b.i)));
+  if (items.length > SC_MAX) items = items.slice(-SC_MAX);
+  scSave(SC.key, items, [...SC.collapsed]);
+}
+function scDirty() {
+  SC.dirty = true;
+  if (!SC.timer) SC.timer = setTimeout(scFlush, 3000);
+}
+document.addEventListener('visibilitychange', () => { if (document.hidden) scFlush(); });
+addEventListener('pagehide', scFlush);
+function scSwitch(sess) {
+  scFlush();
+  SC.key = sess ? scKeyFor(sess) : null;
+  SC.items = new Map(); SC.sig = new Map(); SC.collapsed = new Set(); SC.show = 400;
+  const k = SC.key;
+  if (!k) return;
+  scGet('h:' + k).then(v => {
+    if (SC.key !== k || !v || lastChat?.empty) return;
+    for (const it of v.items || []) {
+      const cur = SC.items.get(it.i);
+      SC.items.set(it.i, cur ? scKeep(it, cur) : it);
+    }
+    for (const c of v.collapsed || []) SC.collapsed.add(c);
+    if (lastChat) renderChat(lastChat);
+  });
+}
+// Merge what the relay sent into the stored session and return what to draw: all rows (older ones windowed
+// to SC.show), minus the replies of folded turns. A turn is a user message plus everything up to the next one.
+function scMerge(chat) {
+  if (!SC.key) return { items: chat.items, all: chat.items, older: 0, stat: null };
+  if (chat.empty && SC.items.size) {
+    SC.items.clear(); SC.sig.clear(); SC.collapsed.clear(); scDirty();
+  }
+  let changed = false;
+  for (const it of chat.items) {
+    const sig = JSON.stringify(it);
+    if (SC.sig.get(it.i) === sig && SC.items.has(it.i)) continue;
+    SC.sig.set(it.i, sig);
+    SC.items.set(it.i, scKeep(SC.items.get(it.i), it));
+    changed = true;
+  }
+  if (changed) scDirty();
+  const all = [...SC.items.values()].sort((a, b) => (a.order ?? acpNum(a.i)) - (b.order ?? acpNum(b.i)));
+  const stat = new Map(), turnOf = new Map();
+  let turn = null;
+  for (const it of all) {
+    if (it.k === 'human') { turn = it.i; stat.set(turn, { n: 0, tools: 0 }); }
+    else if (turn) { const s = stat.get(turn); s.n++; if (it.k === 'tool') s.tools++; }
+    turnOf.set(it.i, turn);
+  }
+  let items = all.filter(it => it.k === 'human' || !SC.collapsed.has(turnOf.get(it.i)));
+  let older = 0;
+  if (items.length > SC.show) { older = items.length - SC.show; items = items.slice(-SC.show); }
+  return { items, all, older, stat, turnOf };
+}
+function scFold(turn, to) {
+  if (!SC.key) return;
+  const want = to ?? !SC.collapsed.has(turn);
+  if (turn === '*') {
+    SC.collapsed = new Set(want ? [...SC.items.values()].filter(it => it.k === 'human').map(it => it.i) : []);
+  } else if (want) SC.collapsed.add(turn); else SC.collapsed.delete(turn);
+  scDirty();
+  if (lastChat) renderChat(lastChat);
+}
+// The desktop rewound the session (revert): rows from `from` on no longer exist, here or on the computer.
+function scTrunc(from) {
+  if (!SC.key || !(from >= 0)) return;
+  for (const k of [...SC.items.keys()]) if (acpNum(k) >= from) { SC.items.delete(k); SC.sig.delete(k); }
+  for (const c of [...SC.collapsed]) if (acpNum(c) >= from) SC.collapsed.delete(c);
+  scDirty();
+  if (lastChat) renderChat(lastChat);
+}
+function scJump(id) {
+  if (!SC.items.has(id)) return false;
+  const all = [...SC.items.values()].sort((a, b) => (a.order ?? acpNum(a.i)) - (b.order ?? acpNum(b.i)));
+  let turn = null, pos = 0;
+  all.forEach((it, n) => { if (it.k === 'human') turn = it.i; if (it.i === id) { if (turn) SC.collapsed.delete(turn); pos = n; } });
+  SC.show = Math.max(SC.show, all.length - pos + 20);
+  scDirty();
+  if (lastChat) renderChat(lastChat);
+  requestAnimationFrame(() => {
+    const el = itemsEl.querySelector(`[data-i="${CSS.escape(id)}"]`);
+    if (!el) return;
+    el.scrollIntoView({ block: 'center' });
+    el.classList.add('flash');
+    setTimeout(() => el.classList.remove('flash'), 1800);
+  });
+  return true;
+}
+function scSearch(q) {
+  const out = $('scResults');
+  const n = nativeHist();
+  const hits = n && q.trim() ? parseJson(n.histSearch(q)) || [] : [];
+  out.innerHTML = !q.trim() ? '' : hits.length ? hits.map(h => {
+    const title = scTitles[h.k] || '(未命名)';
+    return `<button class="opt" data-sc-hit="${esc(h.k)}" data-sc-id="${esc(h.id)}"><span class="lbl">${esc(h.snip)}<span class="sub">${esc(title)} · ${h.role === 'human' ? '我' : 'Agent'}</span></span></button>`;
+  }).join('') : '<div class="hint">没有找到。</div>';
+}
+async function scClear(key) {
+  await scDel('h:' + key);
+  await scDel('m:' + key);
+  if (key === SC.key) {
+    SC.items = new Map(); SC.sig = new Map(); SC.collapsed = new Set(); SC.dirty = false;
+    if (lastChat) renderChat(lastChat);
+  }
+}
+function showBgSheet() {
+  const app = window.AgentRemoteApp;
+  if (!app?.listenStatus) return;
+  const st = app.listenStatus();
+  const err = app.listenError?.() || '';
+  const label = (st === 'retry' || st === 'connecting') && err ? `断开了，正在重连…（${esc(err)}）`
+    : { connected: '已连接', connecting: '连接中…', retry: '断开了，正在重连…', off: '未开启' }[st] || st;
+  const battery = app.batteryOk();
+  const notify = app.notifyAllowed ? app.notifyAllowed() : null;
+  openSheet('bg', `<h3>后台连接</h3>
+    <div class="hint">App 退到后台时，由一个常驻的通知保持和电脑的连接，Agent 完成或需要你确认时提醒你，也可以直接在通知里回复或选择。</div>
+    <div class="opt" style="pointer-events:none"><span class="lbl">连接状态<span class="sub">${label}${st === 'off' ? '（先在菜单里开启通知）' : ''}</span></span></div>
+    <div class="opt" style="pointer-events:none"><span class="lbl">电池优化<span class="sub">${battery ? '已放行，系统不会为了省电断开它' : '没放行：锁屏一段时间后系统可能会断开连接'}</span></span></div>
+    ${battery ? '' : '<button class="opt" data-act="bgBattery"><span class="lbl">去放行电池优化</span></button>'}
+    ${notify === null ? '' : `<div class="opt" style="pointer-events:none"><span class="lbl">系统通知权限<span class="sub">${notify ? '已允许' : '被关闭：收不到任何提醒'}</span></span></div>`}
+    ${notify === false ? '<button class="opt" data-act="bgNotifySettings"><span class="lbl">去打开通知权限</span></button>' : ''}
+    <button class="opt" data-act="bgReconnect"><span class="lbl">立即重连</span></button>`);
+}
+async function showCacheSheet() {
+  scFlush();
+  const keys = ((await scKeys()) || []).map(String).filter(k => k.startsWith('m:')).map(k => k.slice(2));
+  const rows = (await Promise.all(keys.map(async k => {
+    const m = await scGet('m:' + k);
+    if (m && !scTitles[k]) {
+      const first = ((await scGet('h:' + k))?.items || []).find(it => it.k === 'human' && it.t);
+      if (first) scSetTitle(k, first.t.trim().split('\n')[0]);
+    }
+    return { k, m, app: k.split('|')[1] || '?', title: scTitles[k] || '(未命名)' };
+  }))).filter(x => x.m).sort((a, b) => b.m.updated - a.m.updated);
+  const order = Object.keys(SC_APPS);
+  const apps = [...new Set(rows.map(r => r.app))].sort((a, b) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99));
+  const list = apps.map(app => `<div class="pSec">${esc(SC_APPS[app] || app)}</div>` + rows.filter(r => r.app === app).map(({ k, m, title }) =>
+    `<div class="optRow"><button class="opt ${k === SC.key ? 'cur' : ''}" data-sc-noop><span class="lbl">${esc(title)}<span class="sub">${m.n} 条 · ${fmtSize(m.bytes || 0)}</span></span>${k === SC.key ? '<span class="tag">当前</span>' : ''}</button><button data-sc-del="${esc(k)}">清除</button></div>`).join('')).join('');
+  openSheet('cache', `<h3>会话缓存</h3>`
+    + `<div class="hint">手机上保存了每个会话的完整对话，重启电脑端也不会丢；只有你清除时才会删除。</div>`
+    + (nativeHist() ? '<input id="scQ" type="search" placeholder="搜索所有会话里的对话" style="width:100%;box-sizing:border-box;margin:8px 0"><div id="scResults"></div>' : '')
+    + (SC.key ? `<div class="pRow" style="margin:10px 0"><button data-sc="fold">折叠所有轮次</button><button data-sc="unfold">展开所有轮次</button></div>` : '')
+    + (list || '<div class="hint">还没有缓存的会话。</div>')
+    + (rows.length ? `<button class="opt" data-sc="clearAll"><span class="lbl">清除全部会话缓存</span></button>` : ''));
+  let t = 0;
+  $('scQ')?.addEventListener('input', e => { clearTimeout(t); t = setTimeout(() => scSearch(e.target.value), 250); });
+}
+// A selection inside the chat is lost when its nodes are replaced, so while text is selected the message list
+// is left alone (the bars below still update) and drawn once the selection is gone; unchanged messages are
+// never detached, so a selection in an older message survives a streaming update.
+function userSelecting() {
+  const sel = getSelection();
+  return !!sel && !sel.isCollapsed && sel.rangeCount > 0 && itemsEl.contains(sel.getRangeAt(0).commonAncestorContainer);
+}
+let deferredRender = false;
+let chatScrolling = false, chatTouching = false, scrollIdle = 0, deferredScrollRender = false;
+let historyRequest = null, historyRendering = false, historyExpanded = false, historyArmed = false, historySerial = 0, historyAtEnd = false;
+let restoringChatScroll = false, readingAnchor = null;
+function captureChatAnchor() {
+  const top = list.getBoundingClientRect().top;
+  let lo = 0, hi = itemsEl.children.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (itemsEl.children[mid].getBoundingClientRect().bottom > top) hi = mid;
+    else lo = mid + 1;
+  }
+  const el = itemsEl.children[lo];
+  return el ? { id: el.dataset.i, top: el.getBoundingClientRect().top - top } : null;
+}
+let pinnedBottom = false;
+function restoreChatPosition(anchor, stick = false) {
+  restoringChatScroll = true;
+  pinnedBottom = !!stick;
+  if (stick) list.scrollTop = list.scrollHeight;
+  else if (anchor) {
+    const el = [...itemsEl.children].find(e => e.dataset.i === anchor.id);
+    if (el) list.scrollTop += el.getBoundingClientRect().top - list.getBoundingClientRect().top - anchor.top;
+  }
+  readingAnchor = stick ? null : captureChatAnchor();
+  requestAnimationFrame(() => { restoringChatScroll = false; });
+}
+new ResizeObserver(() => {
+  if (chatScrolling || chatTouching) return;
+  if (pinnedBottom) {
+    restoringChatScroll = true;
+    list.scrollTop = list.scrollHeight;
+    requestAnimationFrame(() => { restoringChatScroll = false; });
+  } else if (readingAnchor) restoreChatPosition(readingAnchor);
+}).observe(itemsEl);
+document.addEventListener('selectionchange', () => {
+  if (deferredRender && !userSelecting()) { deferredRender = false; if (lastChat) renderChat(lastChat); }
+});
+function syncChildren(parent, els) {
+  const keep = new Set(els);
+  for (const child of [...parent.children]) if (!keep.has(child)) child.remove();
+  let cursor = parent.firstElementChild;
+  const fragment = document.createDocumentFragment();
+  const flush = () => { if (fragment.childNodes.length) parent.insertBefore(fragment, cursor); };
+  for (const el of els) {
+    if (el === cursor) { flush(); cursor = cursor.nextElementSibling; }
+    else if (el.parentNode === parent) { flush(); parent.insertBefore(el, cursor); }
+    else fragment.append(el);
+  }
+  flush();
+}
+// Pictures / files attached to Devin's prompt, with an x that takes them off again.
+// Devin's working directory (Agent view). Changeable only on a new session, before the first message.
+let workdir = null, wantDir = false;
+function paintWorkdir(wd) {
+  workdir = wd || null;
+  const b = $('pickDir');
+  b.hidden = !wd;
+  if (!wd) return;
+  b.textContent = `📁 ${wd.name}${wd.extra ? ' ' + wd.extra : ''} ▾`;
+  b.title = wd.editable ? '更换工作目录' : '这个会话的工作目录';
+  if (wantDir && wd.editable) { wantDir = false; send({ t: 'workdir' }); }
+}
+$('pickDir').onclick = async () => {
+  if (!workdir) return;
+  if (workdir.editable) return send({ t: 'workdir' });
+  if (!await ask('工作目录只能在新会话发出第一条消息之前更换。\n现在新建一个对话来更换吗？', '新建')) return;
+  wantDir = true;
+  send({ t: 'newProjectChat' });
+};
+function showWorkdirs(m) {
+  const cur = m.info?.name;
+  const envs = ['Local', 'Worktree', 'Cloud'].map(e => `<button class="opt ${e === m.info?.env ? 'cur' : ''}" data-env="${e}" style="flex:1;justify-content:center"><span class="lbl">${e === 'Local' ? '本地' : e === 'Worktree' ? 'Worktree' : '云端'}</span></button>`).join('');
+  const rows = m.rows.map((r, i) => `<button class="opt ${r.name === cur ? 'cur' : ''}" data-wd="${i}"><span class="lbl">${esc(r.name)}<span class="sub">${esc(r.path)}</span></span>${r.name === cur ? '<span class="tag">当前</span>' : ''}</button>`).join('');
+  openSheet('workdir', `<h3>工作目录</h3><div class="pSec">运行位置</div><div class="pRow" style="display:flex;gap:6px;margin-bottom:8px">${envs}</div><div class="pSec">文件夹</div><button class="opt" data-act="projects">选择文件夹／新建项目</button>${rows || '<div class="hint">没有读到文件夹列表。</div>'}`);
+  $('sheet')._wd = m.rows;
+}
+function renderChat(chat, stale) {
+  chatStale = !!stale;
+  if (chat?.items?.some(it => it.k === 'human')) $('sessionNotice').hidden = true;
+  const previous = lastChat;
+  if (!chat || previous?.thread !== chat.thread) {
+    historyRequest = null; historyRendering = false; historyExpanded = false; historyArmed = false; historyAtEnd = false; readingAnchor = null;
+    $('older').disabled = false;
+    $('historyStatus').hidden = true;
+  }
+  if (chat && previous?.thread === chat.thread && historyExpanded && currentApp !== 'devin') {
+    const rows = historyRequest ? [...chat.items, ...previous.items] : [...previous.items, ...chat.items];
+    const updates = new Map(chat.items.map(it => [it.i, it]));
+    const merged = [...new Map(rows.map(it => [it.i, updates.get(it.i) || it])).values()];
+    if (merged.every(it => Number.isFinite(it.order))) merged.sort((a, b) => a.order - b.order);
+    chat = { ...chat, items: merged };
+  }
+  if (chatScrolling && chat && previous?.thread === chat.thread) {
+    lastChat = chat;
+    deferredScrollRender = true;
+    chatBusy = !!chat.busy;
+    updateSendMode();
+    renderQuestions(chat.readonly && !chat.questions?.codex ? null : chat.questions);
+    return;
+  }
+  const followBottom = !historyRequest && !historyRendering && nearBottom();
+  const savedAnchor = followBottom ? null : captureChatAnchor();
+  lastChat = chat; updateTitle();
+  paintWorkdir(chat?.workdir);
+  if (chat && 'context' in chat) renderContext(chat.context);
+  $('empty').hidden = !!chat;
+  $('older').hidden = !chat || chat.earlier === false;
+  $('pickMode').hidden = currentApp === 'devin' || !chat?.mode;
+  $('pickModel').hidden = false;
+  if (chat?.mode) { $('pickMode').textContent = (chat.mode === 'Bypass Permissions' ? '⚠绕过' : chat.mode) + ' ▾'; $('pickMode').title = chat.mode; }
+  $('pickMode').classList.toggle('bypass', chat?.mode === 'Bypass Permissions');
+  const fusionLabel = chat?.model === 'Fusion' && chat.fusion ? `Fusion · ${fusionShort(chat.fusion.lead)} / ${fusionShort(chat.fusion.sidekick)}` : '';
+  const mdl = fusionLabel || chat?.model || '模型';
+  const effLabel = chat?.effort && chat.effort !== 'Effort' ? String(chat.effort).replace(/^([a-z])/, c => c.toUpperCase()) : '';
+  const effSuffix = !fusionLabel && chat?.model !== 'Fusion' && effLabel && !mdl.toLowerCase().includes(effLabel.toLowerCase()) ? ` · ${effLabel}` : '';
+  $('pickModel').textContent = mdl + effSuffix + ' ▾';
+  $('pickModel').title = chat?.fusion ? `${chat.fusion.lead} · ${chat.fusion.effort} · ${chat.fusion.sidekick}${chat.fusion.fast ? ' · Fast' : ''}` : (chat?.model || '更换模型');
+  const permName = PERM_LABEL[chat?.permission]?.[0];
+  $('pickPerm').hidden = true;
+  if (chat?.permission) { $('pickPerm').textContent = ({ 'Ask for approval': '询问', 'Approve for me': '替我审核', 'Full access': '完全批准' }[chat.permission] || permName || chat.permission) + ' ▾'; $('pickPerm').title = permName || chat.permission; }
+  const codexBar = currentApp === 'codex' ? chat?.codex : null;
+  $('add').hidden = false;
+  $('pickPlan').hidden = true;
+  if (codexBar) $('pickPlan').textContent = codexBar.plan ? 'Plan：开' : 'Plan：关';
+  $('pickIde').hidden = true;
+  if (codexBar?.ide) {
+    const file = codexBar.ide.file;
+    $('pickIde').textContent = 'IDE：' + (codexBar.ide.on ? '开' : '关');
+    $('pickIde').title = file ? `${file.label}${file.range ? ' ' + file.range : ''}` : 'IDE 上下文';
+  }
+  $('pickRun').hidden = true;
+  if (codexBar?.run) $('pickRun').textContent = codexBar.run + ' ▾';
+  $('pickChat').hidden = true;
+  paintFusion(currentApp === 'fusion' ? chat?.fusion : null);
+  chatBusy = !!chat?.busy;
+  updateSendMode();
+  currentSurface = chat?.surface || null;
+  paintSurface();
+  if (!chat) { itemsEl.replaceChildren(); itemsEl.classList.remove('stale'); renderQueue(false, []); renderQuestions(null); paintSessions(null); latestTasks = null; $('taskChip').hidden = true; return; }
+  const sessionChanged = paintSessions(chat);
+  const V = scMerge(chat);
+  if (!sessionChanged && userSelecting()) {
+    deferredRender = true;
+    $('actionBar').innerHTML = buttonsHtml(chat.global, 'g');
+    $('actionBar').classList.toggle('show', chat.global.length > 0);
+    renderQueue(chat.busy, chat.queued || [], chat.subagents || [], chat.readonly, chat.changed, chat.queuedCount);
+    renderQuestions(chat.readonly && !chat.questions?.codex ? null : chat.questions);
+    noteSwitch(chat);
+    return;
+  }
+  if (SC.key && V.all.length) $('older').hidden = Math.min(...V.all.map(it => acpNum(it.i)).filter(n => n >= 0), Infinity) <= 0;
+  $('older').hidden ||= historyAtEnd;
+  $('cachedMore').hidden = !V.older;
+  $('cachedMore').textContent = `↑ 显示更早的本地记录（${V.older} 条）`;
+  const stick = followBottom || sessionChanged;
+  // Anchor on the first visible item so loading older messages doesn't jump.
+  let anchor = savedAnchor;
+  if (anchor && !V.items.some(it => String(it.i) === anchor.id && !(it.k === 'tool' && it.done))) anchor = null;
+  if (!stick && !anchor) {
+    const top = list.getBoundingClientRect().top;
+    let lo = 0, hi = itemsEl.children.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (itemsEl.children[mid].getBoundingClientRect().bottom > top) hi = mid;
+      else lo = mid + 1;
+    }
+    const retained = new Set(V.items.filter(it => !(it.k === 'tool' && it.done)).map(it => String(it.i)));
+    for (let n = lo; n < itemsEl.children.length; n++) {
+      const el = itemsEl.children[n];
+      if (retained.has(el.dataset.i)) { anchor = { id: el.dataset.i, top: el.getBoundingClientRect().top - top }; break; }
+    }
+    if (!anchor) for (let n = lo - 1; n >= 0; n--) {
+      const el = itemsEl.children[n];
+      if (retained.has(el.dataset.i)) { anchor = { id: el.dataset.i, top: el.getBoundingClientRect().top - top }; break; }
+    }
+  }
+  const visibleItems = V.items.filter(it => !(it.k === 'tool' && it.done));
+  const els = visibleItems.map(it => {
+    const key = JSON.stringify(it);
+    const hit = cache.get(it.i);
+    if (hit && hit.key === key) return hit.el;
+    if (it.k === 'thinking' && hit?.el) {
+      paintThinking(hit.el, it);
+      cache.set(it.i, { key, el: hit.el });
+      return hit.el;
+    }
+    const el = renderItem(it);
+    if (it.k === 'tool' && hit?.el.classList.contains('toolrow')) {
+      const open = hit.el.classList.contains('open');
+      el.classList.toggle('open', open);
+      const chev = el.querySelector('.chev');
+      if (chev) chev.textContent = open ? '▾' : '▸';
+    }
+    el.dataset.i = it.i;
+    cache.set(it.i, { key, el });
+    return el;
+  });
+  visibleItems.forEach((it, n) => {
+    const st = it.k === 'human' && V.stat?.get(it.i);
+    if (!st) return;
+    const el = els[n], folded = SC.collapsed.has(it.i);
+    const fb = el.querySelector('[data-fold]');
+    if (fb) fb.textContent = folded ? '▸' : '▾';
+    const sm = el.querySelector('.turnSum');
+    if (sm) sm.textContent = folded && st.n ? `${st.n} 条回复${st.tools ? ` · ${st.tools} 个工具` : ''}` : '';
+  });
+  // A fold button after the last reply of every turn, so a long answer can be folded from its end.
+  if (V.turnOf) {
+    const last = new Map();
+    visibleItems.forEach((it, n) => { if (it.k === 'assistant' && V.turnOf.get(it.i)) last.set(V.turnOf.get(it.i), n); });
+    const keep = new Set(last.values());
+    visibleItems.forEach((it, n) => {
+      const el = els[n];
+      let b = el.querySelector(':scope > .endFold');
+      if (!keep.has(n)) return b?.remove();
+      if (!b) {
+        b = document.createElement('button');
+        b.className = 'endFold';
+        b.textContent = '▴ 折叠这一轮';
+        el.append(b);
+      }
+      b.dataset.fold = V.turnOf.get(it.i);
+    });
+  }
+  syncChildren(itemsEl, els);
+  itemsEl.classList.toggle('stale', chatStale);
+  latestTasks = (chat.items || []).filter(it => it.k === 'tasks').pop() || null;
+  $('taskChip').hidden = !latestTasks || (latestTasks.done >= latestTasks.total && !chat.busy);
+  if (latestTasks) $('taskChip').innerHTML = `<span>${I18N.tr('任务')}</span> ${latestTasks.done}/${latestTasks.total}`;
+  if (sheetKind === 'tasks') showTasks();
+  const live = new Set(visibleItems.map(it => it.i));
+  for (const k of cache.keys()) if (!live.has(k)) { thoughtObserver.unobserve(cache.get(k).el); cache.delete(k); }
+
+  // A cached render is display-only: no action buttons, questions or queue actions until the fresh chat arrives.
+  $('actionBar').innerHTML = chatStale ? '' : buttonsHtml(chat.global, 'g');
+  $('actionBar').classList.toggle('show', !chatStale && chat.global.length > 0);
+  renderQueue(chatStale ? false : chat.busy, chatStale ? [] : (chat.queued || []), chat.subagents || [], chat.readonly, chat.changed, chat.queuedCount);
+  renderQuestions(chatStale || (chat.readonly && !chat.questions?.codex) ? null : chat.questions);
+
+  restoreChatPosition(anchor, stick);
+  historyRendering = false;
+  if (!stick && previous && JSON.stringify(previous.items) !== JSON.stringify(chat.items)) $('toBottom').textContent = '↓ 有新消息';
+  updateToBottom();
+  noteSwitch(chat);
+  if (SC.jump && SC.items.has(SC.jump)) { const j = SC.jump; SC.jump = null; scJump(j); }
+}
+
+let subsOpen = false;
+// Newest Devin task list (highest acp index); the chip above the chat and its sheet show it.
+let latestTasks = null;
+function showTasks() {
+  if (!latestTasks) return closeSheet();
+  openSheet('tasks', `<h3>${I18N.tr('任务')} ${latestTasks.done}/${latestTasks.total}</h3><div class="sheetTasks">${tasksHtml(latestTasks)}</div>`);
+}
+itemsEl.addEventListener('click', e => { const b = e.target.closest('[data-codex-agent]'); if (b) send({ t: 'openAgent', id: b.dataset.codexAgent }); });
+$('taskChip').onclick = () => showTasks();
+itemsEl.addEventListener('toggle', e => { const id = e.target.dataset.task; if (id) e.target.open ? taskOpen.add(id) : taskOpen.delete(id); }, true);
+$('qnBar').addEventListener('click', e => {
+  const b = e.target.closest('[data-action][data-request]');
+  if (b) send({ t: 'codexRequest', id: b.dataset.request, n: Number(b.dataset.action) });
+});
+// The Agent's ask-question tool: a card with the questions, options, a free-text answer and submit / skip.
+let qnSig = '';
+function renderQuestions(qs) {
+  const bar = $('qnBar');
+  bar.classList.toggle('codex', !!qs?.codex);
+  const sig = JSON.stringify(qs);
+  if (sig === qnSig) return;
+  qnSig = sig;
+  if (qs?.codex) {
+    bar.innerHTML = qs.requests.map(r => `<div class="qnQ">${esc(r.text)}</div>`
+      + r.fields.map((f, n) => `<label class="qnFree">${esc(f.label)}${f.options ? `<select data-request="${esc(r.id)}" data-field="${n}">${f.options.map(o => `<option value="${esc(o.value)}" ${o.value === f.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>` : `<input data-request="${esc(r.id)}" data-field="${n}" type="${f.type === 'password' ? 'password' : 'text'}" value="${esc(f.value)}">`}</label>`).join('')
+      + `<div class="qnAct">${r.buttons.map((b, n) => `<button data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div>`).join('');
+    bar.classList.toggle('show', qs.requests.length > 0);
+    bar.querySelectorAll('[data-field]').forEach(el => el.onchange = () => send({ t: 'codexRequest', id: el.dataset.request, field: Number(el.dataset.field), value: el.value }));
+    return;
+  }
+  if (!qs?.list?.length) { bar.innerHTML = ''; bar.classList.remove('show'); return; }
+  if (qs.devin) {
+    const q = qs.list[0], pg = qs.pager;
+    bar.innerHTML = `<div class="qnHead">❓ Devin 在问你${pg ? `（${pg.cur}/${pg.total}）` : ''}`
+      + (pg && pg.total > 1 ? `<span class="qnPg"><button data-qpart="prev" ${qs.canPrev ? '' : 'disabled'}>‹</button><button data-qpart="next" ${qs.canNext ? '' : 'disabled'}>›</button></span>` : '') + '</div>'
+      + `<div class="qnQ">${esc(q.text)}</div><div class="qnOpts">`
+      + q.options.map((o, oi) => `<button class="qnOpt ${o.sel ? 'on' : ''}" data-qi="0" data-oi="${oi}"><b>${q.multi ? (o.sel ? '☑' : '☐') : String.fromCharCode(65 + oi)}</b><span>${esc(o.label)}${o.desc ? `<small>${esc(o.desc)}</small>` : ''}</span></button>`).join('')
+      + `</div><div class="qnHint">想自己回答？直接在下方输入框写</div>`
+      + `<div class="qnAct"><button data-qpart="skip">跳过</button>${qs.hasSubmit ? `<button class="primary" data-qpart="submit" ${qs.canSubmit ? '' : 'disabled'}>提交</button>` : ''}</div>`;
+    bar.classList.add('show');
+    return;
+  }
+  bar.innerHTML = `<div class="qnHead">❓ Agent 在问你${qs.list.length > 1 ? `（${qs.list.length} 个问题）` : ''}</div>`
+    + qs.list.map((q, qi) => `<div class="qnQ">${qs.list.length > 1 ? `${qi + 1}. ` : ''}${esc(q.text)}</div><div class="qnOpts">`
+      + q.options.map((o, oi) => {
+        const letter = String.fromCharCode(65 + oi);
+        return o.free
+          ? `<div class="qnFree ${o.sel ? 'on' : ''}"><input data-qi="${qi}" data-oi="${oi}" placeholder="其他…" value="${esc(o.value)}" enterkeyhint="done"><button data-qfree="${qi}:${oi}">填入</button></div>`
+          : `<button class="qnOpt ${o.sel ? 'on' : ''}" data-qi="${qi}" data-oi="${oi}"><b>${letter}</b><span>${esc(o.label)}</span></button>`;
+      }).join('') + '</div>').join('')
+    + `<div class="qnAct"><button data-qpart="skip">跳过</button><button class="primary" data-qpart="submit" ${qs.canSubmit ? '' : 'disabled'}>提交</button></div>`;
+  bar.classList.add('show');
+}
+
+$('qnBar').onclick = e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  if (b.dataset.qpart) {
+    const p = b.dataset.qpart;
+    if (p === 'skip' || p === 'submit') status(p === 'skip' ? '已跳过' : '已提交');
+    return send({ t: 'question', part: p });
+  }
+  if (b.dataset.qfree) {
+    const [qi, oi] = b.dataset.qfree.split(':').map(Number);
+    return send({ t: 'question', qi, oi, part: 'option', text: b.previousElementSibling.value });
+  }
+  if (b.dataset.qi) send({ t: 'question', qi: Number(b.dataset.qi), oi: Number(b.dataset.oi), part: 'option' });
+};
+$('qnBar').addEventListener('keydown', e => {
+  if (e.key !== 'Enter' || !e.target.matches('input')) return;
+  e.preventDefault();
+  if ('field' in e.target.dataset) { e.target.blur(); return; }
+  e.target.nextElementSibling.click();
+});
+
+// Small stroke icons for the queue / stop controls (the text is in title and aria-label).
+const ICONS = {
+  edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+  enter: '<polyline points="9 10 4 15 9 20"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/>',
+  x: '<path d="M18 6 6 18M6 6l12 12"/>',
+  trash: '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M6 6l1 14h10l1-14"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/>',
+  eye: '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>',
+  back: '<path d="M19 12H5"/><path d="m12 19-7-7 7-7"/>',
+};
+const ibtn = (icon, label, attrs = '', cls = '') => `<button class="ib ${cls}" ${attrs} title="${label}" aria-label="${label}"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[icon]}</svg></button>`;
+function renderQueue(busy, queued, subs = [], readonly = false, changed = 0, qCount = 0) {
+  const bar = $('queueBar');
+  const devin = currentApp === 'devin';
+  let html = '';
+  if (readonly) html += `<div class="run sub"><span>正在查看子 Agent 的对话（只读）</span>${ibtn('back', '返回主对话', 'data-main')}</div>`;
+  if (subs.length && !readonly) {
+    html += `<button class="qh fold" data-fold>${subsOpen ? '▾' : '▸'} <span>子 Agent 运行中 ${subs.length} 个</span></button>`;
+    if (subsOpen) html += subs.map(n => `<div class="q"><span class="qt sa">${esc(n)}</span>`
+      + ibtn('eye', '查看', `data-sub="${esc(n)}" data-part="open"`) + ibtn('stop', '停止', `data-sub="${esc(n)}" data-part="stop"`, 'del') + '</div>').join('');
+  }
+  const n = Math.max(queued.length, devin ? qCount || 0 : 0);
+  if (n) {
+    html += `<div class="qh">排队中 ${n} 条${devin ? ' ' + ibtn('trash', '清空', 'data-a="clear" data-q=""', 'del') : ''}</div>`;
+    html += queued.map(q => `<div class="q"><span class="qt">${esc(q.t || '(空)')}</span>`
+      + ibtn('edit', devin ? '从队列取出，放回输入框' : '修改', `data-q="${esc(q.id)}" data-a="edit"`)
+      + ibtn('enter', '打断当前这一轮，立刻发送', `data-q="${esc(q.id)}" data-a="send"`)
+      + ibtn('x', '删除', `data-q="${esc(q.id)}" data-a="remove"`, 'del') + '</div>').join('');
+    if (devin && !queued.length) html += `<div class="q"><span class="qt">内容读不到，只显示数量</span></div>`;
+  }
+  if (changed && !readonly) html += `<button class="qh fold" data-changes>改动了 ${changed} 个文件 ›</button>`;
+  bar.innerHTML = html;
+  bar.classList.toggle('show', Boolean(html));
+}
+
+function editQueued(id) {
+  const q = (lastChat?.queued || []).find(x => x.id === id);
+  if (!q) return status('这条排队消息已经不在了', false);
+  if (currentApp === 'devin') { status('正在取出…'); return send({ t: 'queue', id, action: 'edit' }); }
+  openSheet('queueEdit', `<h3>修改排队消息</h3>
+    <textarea id="qEdit" style="width:100%;box-sizing:border-box;min-height:120px;max-height:50dvh;margin-bottom:10px"></textarea>
+    <button class="opt" id="qSave" style="justify-content:center;background:var(--accent);border-color:var(--accent-b);color:#fff;font-weight:600">保存（仍在排队）</button>`);
+  $('qEdit').value = q.t;
+  $('qSave').onclick = () => {
+    const v = $('qEdit').value;
+    if (!v.trim()) return status('内容不能为空；不想要这条就点「删除」', false);
+    send({ t: 'queue', id, action: 'edit', text: v });
+    closeSheet();
+    status('正在修改排队消息…');
+  };
+}
+
+$('queueBar').onclick = async e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  if ('changes' in b.dataset) { status('读取改动的文件…'); return send({ t: 'changes' }); }
+  if ('fold' in b.dataset) { subsOpen = !subsOpen; return renderQueue(lastChat?.busy, lastChat?.queued || [], lastChat?.subagents || [], lastChat?.readonly, lastChat?.changed, lastChat?.queuedCount); }
+  if ('main' in b.dataset) { send({ t: 'mainChat' }); status('返回主对话…'); return; }
+  if (b.dataset.sub) {
+    if (b.dataset.part === 'stop' && !await ask(`停止子 Agent「${b.dataset.sub}」？\n它做到一半的工作会中断。`, '停止')) return;
+    send({ t: 'subagent', name: b.dataset.sub, part: b.dataset.part });
+    status(b.dataset.part === 'stop' ? '已停止子 Agent' : '正在打开子 Agent…');
+    if (b.dataset.part === 'open') list.scrollTop = list.scrollHeight;
+    return;
+  }
+  if (b.dataset.a === 'edit') return editQueued(b.dataset.q);
+  if (b.dataset.a === 'clear') {
+    if (!await ask('清空 Devin 的排队消息？', '清空')) return;
+    send({ t: 'queue', id: '', action: 'clear' });
+    status('正在清空排队消息…');
+    return;
+  }
+  if (b.dataset.a === 'send' && !await ask('立即发送这条消息？\nAgent 当前这一轮会被打断。', '立即发送')) return;
+  if (b.dataset.a === 'remove' && !await ask('删除这条排队消息？', '删除')) return;
+  send({ t: 'queue', id: b.dataset.q, action: b.dataset.a });
+  status(b.dataset.a === 'send' ? '已立即发送这条排队消息' : '已删除这条排队消息');
+};
+
+function updateToBottom() {
+  if (nearBottom()) $('toBottom').textContent = '↓ 最新';
+  $('toBottom').style.display = nearBottom() ? 'none' : 'block';
+}
+function loadOlderMessages() {
+  if (!lastChat || historyRequest || chatScrolling || chatTouching) return;
+  historyArmed = false;
+  if (!$('cachedMore').hidden) {
+    historyRendering = true;
+    SC.show += 80;
+    renderChat(lastChat);
+    return;
+  }
+  if (historyAtEnd || $('older').hidden) {
+    $('historyStatus').hidden = false;
+    $('historyStatus').textContent = I18N.tr('已到最早消息');
+    return;
+  }
+  if (currentApp === 'codex' && lastChat.busy) {
+    $('historyStatus').hidden = false;
+    $('historyStatus').textContent = I18N.tr('生成中，稍后上滑加载历史');
+    return;
+  }
+  historyRequest = { id: String(++historySerial), sel: viewSel };
+  historyRendering = true;
+  historyExpanded = true;
+  const anchor = captureChatAnchor();
+  $('older').disabled = true;
+  $('historyStatus').hidden = false;
+  $('historyStatus').textContent = I18N.tr('正在加载更早的消息…');
+  restoreChatPosition(anchor);
+  send({ t: 'scrollChat', dy: -900, automatic: true, history: true, requestId: historyRequest.id });
+}
+function finishHistory(m) {
+  if (!historyRequest || m.requestId !== historyRequest.id || m.sel !== historyRequest.sel) return;
+  const anchor = captureChatAnchor();
+  historyRequest = null;
+  historyArmed = false;
+  $('older').disabled = false;
+  $('historyStatus').hidden = false;
+  $('historyStatus').textContent = I18N.tr(m.error || (m.blocked ? '生成中，稍后上滑加载历史' : m.earlier === false && $('cachedMore').hidden ? '已到最早消息' : '继续上滑可加载更早的消息'));
+  if (m.earlier === false) { historyAtEnd = true; $('older').hidden = true; }
+  if (!chatScrolling && !chatTouching) restoreChatPosition(anchor);
+  if (!deferredScrollRender) historyRendering = false;
+}
+function maybeLoadOlder() {
+  if (historyArmed && list.scrollTop <= 100) loadOlderMessages();
+}
+function settleChatScroll() {
+  if (restoringChatScroll) { updateToBottom(); return; }
+  if (pinnedBottom && !nearBottom()) pinnedBottom = false;
+  chatScrolling = true;
+  clearTimeout(scrollIdle);
+  scrollIdle = setTimeout(() => {
+    if (chatTouching) return;
+    chatScrolling = false;
+    if (deferredScrollRender && lastChat) { deferredScrollRender = false; renderChat(lastChat); }
+    readingAnchor = nearBottom() ? null : captureChatAnchor();
+    maybeLoadOlder();
+  }, 220);
+  updateToBottom();
+}
+list.addEventListener('scroll', settleChatScroll, { passive: true });
+let historyTouchY = 0;
+list.addEventListener('wheel', e => { restoringChatScroll = false; if (e.deltaY < 0) { historyArmed = true; pinnedBottom = false; } settleChatScroll(); }, { passive: true });
+list.addEventListener('pointerdown', () => { historyArmed = true; }, { passive: true });
+list.addEventListener('touchstart', e => { historyTouchY = e.touches[0].clientY; chatTouching = true; chatScrolling = true; clearTimeout(scrollIdle); }, { passive: true });
+list.addEventListener('touchmove', e => { restoringChatScroll = false; if (e.touches[0].clientY > historyTouchY) { historyArmed = true; pinnedBottom = false; } historyTouchY = e.touches[0].clientY; }, { passive: true });
+for (const event of ['touchend', 'touchcancel']) list.addEventListener(event, () => { chatTouching = false; settleChatScroll(); }, { passive: true });
+$('toBottom').onclick = () => { list.scrollTop = list.scrollHeight; };
+$('older').onclick = () => loadOlderMessages();
+
+// LaTeX in text typed by the user ($..$, $..$, \\(..\\), \\[..\\]): turned into .math placeholders for KaTeX.
+const TEX_RE = /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|(?<![\\$\d])\$(?!\s)([^$\n]+?)(?<!\s)\$(?!\d)/g;
+function mathHtml(src) {
+  let out = '', last = 0, any = false, m;
+  TEX_RE.lastIndex = 0;
+  while ((m = TEX_RE.exec(src))) {
+    const block = m[1] != null || m[2] != null;
+    const tex = (m[1] ?? m[2] ?? m[3] ?? m[4]).trim();
+    out += esc(src.slice(last, m.index)) + (block
+      ? `<div class="math" data-tex="${esc(tex)}">${esc(m[0])}</div>`
+      : `<span class="math" data-tex="${esc(tex)}">${esc(m[0])}</span>`);
+    last = m.index + m[0].length;
+    any = true;
+  }
+  return { html: out + esc(src.slice(last)), any };
+}
+function updateMathPrev() {
+  const box = $('mathPrev');
+  const r = mode === 'terminal' ? { any: false } : mathHtml($('text').value);
+  box.hidden = !r.any;
+  if (!r.any) return;
+  box.innerHTML = r.html;
+  typesetMath(box);
+}
+addEventListener('load', () => typesetMath(document.body));
+function typesetMath(root) {
+  if (!root || !window.katex) return;
+  root.querySelectorAll('.math[data-tex]').forEach(el => {
+    if (el.dataset.typeset) return;
+    try {
+      window.katex.render(el.dataset.tex, el, { displayMode: el.tagName === 'DIV', throwOnError: false, output: 'html' });
+      el.dataset.typeset = '1';
+    } catch {}
+  });
+}
+function dressMessage(el) {
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) if (!walker.currentNode.parentElement.closest('a, pre, code, textarea, .math')) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    const parts = node.textContent.split(/(https?:\/\/[^\s<>"`]+)/g);
+    if (parts.length === 1) continue;
+    const fragment = document.createDocumentFragment();
+    parts.forEach((part, i) => {
+      if (i % 2 === 0) fragment.append(part);
+      else {
+        const url = part.replace(/[.,;!?，。；！？]+$/, '');
+        const a = document.createElement('a'); a.href = url; a.textContent = url;
+        fragment.append(a, part.slice(url.length));
+      }
+    });
+    node.replaceWith(fragment);
+  }
+
+  el.querySelectorAll('.codebox').forEach(box => {
+    if (box.querySelector('.copy')) return;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'copy';
+    btn.textContent = '复制';
+    box.appendChild(btn);
+    const url = blockText(box.querySelector('pre')).trim();
+    if (/^https?:\/\/\S+$/i.test(url)) {
+      const a = document.createElement('a'); a.href = url; a.textContent = '打开'; a.className = 'openLink'; box.append(a);
+    }
+  });
+  el.querySelectorAll('code').forEach(code => {
+    if (code.closest('pre') || code.dataset.file) return;
+    const t = code.textContent.trim();
+    if (/^https?:\/\/\S+$/i.test(t) && !code.closest('a')) {
+      const a = document.createElement('a'); a.href = t; a.textContent = t; code.replaceChildren(a); return;
+    }
+    if (t.length >= 8 || /\s/.test(t)) code.classList.add('copyable');
+  });
+  el.querySelectorAll('a[href]').forEach(a => { a.target = inApp ? '_self' : '_blank'; a.rel = 'noopener noreferrer'; });
+  typesetMath(el);
+}
+window.addEventListener('load', () => typesetMath($('items')));
+function blockText(pre) {
+  const src = pre.parentElement?.querySelector('textarea.src');
+  const raw = src ? src.value : pre.textContent;
+  return raw.replace(/\u00a0/g, ' ').replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n+$/, '');
+}
+// Terminals treat CR as a new line. A lone LF is often ignored and the command collapses into one line.
+function forTerminalPaste(text) {
+  return text.replace(/\n/g, '\r\n');
+}
+function addImageCopyButtons(root) {
+  for (const img of root.querySelectorAll('img')) {
+    if (img.closest('.generatedImage') || !/^(https?:|data:image)/i.test(img.src)) continue;
+    const target = img.parentElement?.tagName === 'A' ? img.parentElement : img;
+    const wrap = document.createElement('div');
+    wrap.className = 'generatedImage';
+    target.replaceWith(wrap);
+    wrap.appendChild(target);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.dataset.copyImage = '';
+    button.textContent = '复制图片';
+    wrap.appendChild(button);
+  }
+}
+async function copyGeneratedImage(img, btn) {
+  try {
+    if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') throw new Error('浏览器不支持图片复制，请打开图片后保存');
+    const png = (async () => {
+      const response = await fetch(img.src);
+      if (!response.ok) throw new Error('图片读取失败');
+      const blob = await response.blob();
+      if (blob.type === 'image/png') return blob;
+      const url = URL.createObjectURL(blob);
+      try {
+        const image = new Image();
+        image.src = url;
+        await image.decode();
+        const canvas = document.createElement('canvas');
+        canvas.width = image.naturalWidth;
+        canvas.height = image.naturalHeight;
+        canvas.getContext('2d').drawImage(image, 0, 0);
+        return await new Promise((resolve, reject) => canvas.toBlob(b => b ? resolve(b) : reject(new Error('图片转换失败')), 'image/png'));
+      } finally { URL.revokeObjectURL(url); }
+    })();
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
+    btn.textContent = '已复制图片';
+    setTimeout(() => { btn.textContent = '复制图片'; }, 1200);
+  } catch (e) { status('复制图片失败：' + e.message); }
+}
+async function copyText(text, btn, terminal = true) {
+  const payload = terminal ? forTerminalPaste(text) : text;
+  try {
+    await navigator.clipboard.writeText(payload);
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = payload;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  }
+  if (btn) {
+    const old = btn.textContent;
+    btn.textContent = '已复制';
+    setTimeout(() => { btn.textContent = old; }, 1200);
+  } else status('已复制');
+}
+document.addEventListener('click', async e => {
+  const imageCopy = e.target.closest('[data-copy-image]');
+  if (imageCopy) { e.preventDefault(); await copyGeneratedImage(imageCopy.closest('.generatedImage').querySelector('img'), imageCopy); return; }
+  const copyBtn = e.target.closest('.copy');
+  const copyCode = !copyBtn && !e.target.closest('a') && e.target.closest('code.copyable');
+  if (copyBtn || copyCode) {
+    e.preventDefault();
+    const pre = copyBtn?.parentElement?.querySelector('pre');
+    await copyText(pre ? blockText(pre) : copyCode.textContent, copyBtn);
+    return;
+  }
+  const b = e.target.closest('button[data-item]');
+  const f = !b && e.target.closest('#items [data-file]');
+  if (f) return openFile(f.dataset.file);
+  if (!b) return;
+  if (RISKY.test(b.textContent.trim()) && !await ask(`确定要点「${b.textContent.trim()}」吗？`, b.textContent.trim())) return;
+  b.closest('.btns')?.querySelectorAll('button').forEach(button => { button.disabled = true; });
+  send({ t: 'click', item: b.dataset.item, n: Number(b.dataset.n), actionId: b.dataset.actionId, label: b.dataset.actionLabel, sel: viewSel });
+  status('已点击：' + b.textContent);
+});
+
+$('pickMode').onclick = () => requestMenu('mode', '读取模式列表…');
+$('pickModel').onclick = () => requestMenu('model', '读取模型列表…');
+$('pickPerm').onclick = () => requestMenu('permission', '读取权限…');
+function showCodexSkills(rows) {
+  openSheet('skills', '<h3>Skill · 技能</h3><input id="skillSearch" placeholder="搜索技能" style="width:100%;box-sizing:border-box;margin-bottom:8px"><div id="skillRows"></div>');
+  const paint = () => {
+    const q = $('skillSearch').value.toLowerCase();
+    $('skillRows').innerHTML = rows.map((r, n) => ({ r, n })).filter(({ r }) => (r.label + ' ' + r.sub).toLowerCase().includes(q)).map(({ r, n }) => `<button class="opt" data-skill="${n}"><span>${esc(r.label)}<small class="sub">${esc(r.sub)}</small></span></button>`).join('') || '<div class="mnHint">没有匹配的可用技能</div>';
+  };
+  $('skillSearch').oninput = paint;
+  $('skillRows').onclick = e => {
+    const b = e.target.closest('[data-skill]');
+    if (!b) return;
+    const r = rows[Number(b.dataset.skill)], token = '/' + r.label;
+    closeSheet(); text.focus();
+    text.setRangeText(token + ' ', text.selectionStart, text.selectionEnd, 'end');
+    MN.mentions.push({ ...r, token });
+    autosize(); saveDraft();
+  };
+  paint();
+}
+$('add').onclick = () => {
+  if (currentApp === 'fusion') {
+    openSheet('add', '<h3>添加附件</h3><button class="opt" data-control="img">上传图片</button><button class="opt" data-control="uploadDoc">上传文档</button>');
+    $('sheet').querySelectorAll('[data-control]').forEach(b => b.onclick = () => { closeSheet(); $(b.dataset.control).click(); });
+    return;
+  }
+  const c = lastChat?.codex;
+  if (!c) {
+    const controls = ['newChat', 'pickMode', 'pickDir'].filter(id => !$(id).hidden);
+    const editorRow = currentApp === 'devin'
+      ? `<div class="pSec">电脑端 Devin 界面</div><button class="opt ${currentSurface === 'agent' ? 'cur' : ''}" data-native-surface="agent">Agent 界面</button><button class="opt ${currentSurface === 'editor' ? 'cur' : ''}" data-native-surface="editor">Editor 界面</button>${currentSurface === 'editor' ? '<button class="opt" data-editor-chat>打开聊天面板</button>' : ''}` : '';
+    openSheet('add', '<h3>' + esc(currentAppName) + '</h3>' + editorRow + controls.map(id => `<button class="opt" data-control="${id}">${esc($(id).textContent)}</button>`).join(''));
+    $('sheet').querySelectorAll('[data-control]').forEach(b => b.onclick = () => { closeSheet(); $(b.dataset.control).click(); });
+    return;
+  }
+  const rows = [['new', '新建会话'], ['plan', `Plan：${c.plan ? '开' : '关'}`], ['skills', 'Skill · 技能'], ['files', '引用文件'], ['commands', '扩展与命令']];
+  if (c.ide) rows.push(['ide', `IDE 上下文：${c.ide.on ? '开' : '关'}`]);
+  if (c.run) rows.push(['run', `执行位置：${c.run}`]);
+  if (c.actions) rows.push(['chat', '会话操作']);
+  openSheet('add', '<h3>Codex</h3>' + rows.map(([key, label]) => `<button class="opt" data-add="${key}">${esc(label)}</button>`).join(''));
+  $('sheet').querySelectorAll('[data-add]').forEach(b => b.onclick = () => {
+    closeSheet();
+    const key = b.dataset.add;
+    if (key === 'new') return $('newChat').click();
+    if (key === 'plan') return send({ t: 'codexPlan' });
+    if (key === 'ide') return send({ t: 'codexIde' });
+    if (key === 'run') return send({ t: 'codexRun' });
+    if (key === 'chat') return send({ t: 'codexChat' });
+    if (key === 'skills') return send({ t: 'codexSkills' });
+    text.focus();
+    text.setRangeText(key === 'files' ? '@' : '/', text.selectionStart, text.selectionEnd, 'end');
+    autosize(); saveDraft(); mentionUpdate();
+  });
+};
+$('pickPlan').onclick = () => { status('正在切换 Plan…'); send({ t: 'codexPlan' }); };
+$('pickIde').onclick = () => send({ t: 'codexIde' });
+$('pickRun').onclick = () => { status('读取执行位置…'); send({ t: 'codexRun' }); };
+$('pickChat').onclick = () => { status('读取会话操作…'); send({ t: 'codexChat' }); };
+$('pickAgents').onclick = () => openAgentList();
+$('pickHistory').onclick = () => requestMenu('history', '读取历史对话…');
+$('newChat').onclick = () => { status('正在新建对话…'); send({ t: 'newProjectChat' }); };
+
