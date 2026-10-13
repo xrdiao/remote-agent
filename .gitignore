@@ -12,6 +12,10 @@ android/**/.cxx/
 android/**/*.iml
 android/app/release/
 android/app/debug/
+ios/**/xcuserdata/
+ios/build/
+ios/DerivedData/
+ios/Local.xcconfig
 *.p12
 _shots/
 *.jks
