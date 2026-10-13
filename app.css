@@ -539,7 +539,7 @@
   @media (max-height: 740px) {
     #gate.pairing { padding: calc(18px + env(safe-area-inset-top)) 24px max(18px, env(safe-area-inset-bottom)); }
     #gate.pairing .pairHero { margin: 2.5vh 0 16px; }
-    #gate.pairing .pairLogo { width: min(40vw, 17vh); margin-bottom: 16px; }
+    #gate.pairing .pairLogo { width: min(40vw, 22vh); margin-bottom: 16px; }
     #gate.pairing h2 { font-size: 26px; margin-bottom: 12px; }
     #gate.pairing #gateEntry { padding: 12px; }
     #gate.pairing #gateInput { padding-top: 13px; padding-bottom: 13px; }
