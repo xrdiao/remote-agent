@@ -11,7 +11,8 @@ function sendReceipt(value) {
     clearTimeout(draftPushTimer);
     draftEpoch = requestId;
   }
-  pendingSends.set(requestId, { draft: activeDraft, text: value, computer: currentComputer()?.id || '', mode, version: draftVersions.get(activeDraft) || 0, revision: inputRevision });
+  pendingSends.set(requestId, { draft: activeDraft, text: value, computer: currentComputer()?.id || '', mode, version: draftVersions.get(activeDraft) || 0, revision: inputRevision,
+    ...(mode === 'chat' ? { scope: messageScope(), thread: lastChat?.thread || '', before: new Set((lastChat?.items || []).filter(it => it.k === 'human').map(it => it.i)) } : {}) });
   return { requestId, draft: activeDraft, draftEpoch };
 }
 function confirmSent(m) {
@@ -23,6 +24,10 @@ function confirmSent(m) {
   if (here && inputRevision === sent.revision && text.value === sent.text) {
     drafts.delete(activeDraft); draftMentions.delete(activeDraft);
     text.value = ''; MN.mentions = []; autosize(); mirroredDraft = '';
+  }
+  if (sent.mode === 'chat') {
+    submittedMessages.push({ ...sent, sentAt: m.sentAt || Date.now() });
+    if (here && lastChat) renderChat(lastChat, chatStale);
   }
 }
 function draftKey() { return [currentComputer()?.id || '', viewSel, mode].join('|'); }
