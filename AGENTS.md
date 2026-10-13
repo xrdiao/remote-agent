@@ -10,6 +10,7 @@
 - `app/` — 手机端 PWA
 - `android/` — Android WebView 壳；`ios/` — iOS WKWebView 壳（setup.html 直接引用 android 的那份；签名放 `ios/Local.xcconfig`，不提交）
   - iOS 模拟器构建：`xcodebuild -project ios/AgentRemote.xcodeproj -scheme AgentRemote -destination 'platform=iOS Simulator,name=iPhone 17' build`
+  - 上传 TestFlight：`scripts/ios-testflight.sh`（不需要注册设备；`DESTINATION=export` 只导出 ipa）
 - `scripts/` — `check.mjs` 和 start-*.sh / service.sh
 
 ## 检查
