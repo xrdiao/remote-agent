@@ -1250,6 +1250,39 @@ function pageHelpers() {
     return codexFiberProps(btn, 90).find(p => Array.isArray(p.models) && p.models.length > 5 && (p.selections || p.initialSelections) && typeof p.onSelectionChange === 'function') || null;
   };
   const normKey = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  // Prop-based model list: no visible menu is opened. Returns null when only the DOM path can answer.
+  const modelItemsFast = () => {
+    if (doc.querySelector('[data-codex-intelligence-trigger]')) {
+      const items = MENU_ITEMS.model();
+      return items.length ? items : null;
+    }
+    if (devinSurface()) {
+      const p = devinPickerProps();
+      if (!p) return null;
+      const fusion = !!fusionConfig();
+      const seen = new Set(['Fusion']);
+      const rows = [{ label: 'Fusion', checked: fusion }];
+      // The native picker lists one default variant per family (plus the Adaptive router);
+      // other effort variants are reachable through the effort list.
+      for (const c of devinConfigs(p, true)) {
+        if (c.disabled || !c.label || seen.has(c.label) || !DEVIN_MODEL.test(c.label) || /^Fusion \(/.test(c.label)) continue;
+        if (!c.isDefaultModelInFamily && c.displayOption !== 'model-router') continue;
+        seen.add(c.label);
+        rows.push({ label: c.label, checked: !fusion && (p.selectedModels || []).includes(c.modelUid) });
+      }
+      return rows.length > 1 ? rows : null;
+    }
+    return null;
+  };
+  const pickDevinModel = label => {
+    const p = devinPickerProps();
+    if (!p || normKey(label) === 'fusion') return false;
+    const want = normKey(label);
+    const c = devinConfigs(p).find(c => !c.disabled && normKey(c.label) === want);
+    if (!c) return false;
+    p.onModelSelect(c);
+    return true;
+  };
   const pickCodexModel = label => {
     const p = codexPickerProps();
     if (!p) return false;
@@ -1270,7 +1303,9 @@ function pageHelpers() {
     const button = devinSurface() && devinModelButton();
     return button ? codexFiberProps(button, 40).find(p => p.visibleModelConfigs && p.onModelSelect) : null;
   };
-  const devinConfigs = p => [...new Map([...(p?.visibleModelConfigs || []), ...(p?.modelSorts || []).flatMap(s => (s.groups || []).flatMap(g => g.options || []))].map(c => [c.modelUid, c])).values()];
+  const devinConfigs = (p, visibleOnly) => visibleOnly
+    ? [...new Map((p?.visibleModelConfigs || []).map(c => [c.modelUid, c])).values()]
+    : [...new Map([...(p?.visibleModelConfigs || []), ...(p?.modelSorts || []).flatMap(s => (s.groups || []).flatMap(g => g.options || []))].map(c => [c.modelUid, c])).values()];
   const devinSelectedModel = p => devinConfigs(p).find(c => p.selectedModels?.includes(c.modelUid));
   const devinVariants = part => {
     const p = devinPickerProps(), current = devinSelectedModel(p);
@@ -3119,7 +3154,7 @@ function pageHelpers() {
   return { historyAtStart, cursorSelectProject, cursorWorkspace, scrollCodexHistory, setCommandOpen, attachmentRows, removeAttachment, submitCodexMessage, extract, activeThread, codexThread, openCodexThread, codexViewState, codexRecentPoint, codexNewPoint, codexAccountPoint, codexMenuPoint, clickLabeled, codexChatRows, codexChatPoint, codexArchiveTarget, codexArchiveConfirm, codexPromptText, codexSelectPrompt, codexPromptPoint, codexButtonPoint, composerDraft, composerFocused, setComposerDraft, codexMentionRows, codexRunItems, codexFacts, codexQueueAction, codexSkills, codexChanges, codexChangeTarget, codexRequestData, codexRequestTarget, codexRequestAction, codexRequestField, codexImage, locate, panelRect, control, menuItems, menuItem, quickOpenRows, agentList, agentTarget, agentState, agentStates, queueTarget, stopTarget, focusQueueEdit,
     terminalList, terminalTarget, terminalCloseTarget, terminalRect, terminalFocus, newTerminalDirect, newTerminalMenu, newTerminalItem, terminalDump, terminalCommand, modelListTrigger,
     codexSettingsData, codexSettingPoint, settingsOpen, clickSettingsButton, clickCloseSettings, openSettingsTarget, closeSettingsTarget, readSettings, settingTarget, usageNavTarget, readUsage, readDevinUsage, refreshCodexUsage, codexWorkspaceRoots, contextPct,
-    clickControl, clickModelListTrigger, effortItems, pickEffort, effortTrigger, closeCodexMenu, closeModelMenu, fastInfo, pickFast, fastTarget, clickCursorFast, devinVariants, devinPickerProps, codexPickerProps, pickCodexModel, attachmentPoint, devinSettingsNav, devinSettingsClick, devinSettingsCards,
+    clickControl, clickModelListTrigger, effortItems, pickEffort, effortTrigger, closeCodexMenu, closeModelMenu, fastInfo, pickFast, fastTarget, clickCursorFast, devinVariants, devinPickerProps, codexPickerProps, pickCodexModel, modelItemsFast, pickDevinModel, attachmentPoint, devinSettingsNav, devinSettingsClick, devinSettingsCards,
     codexFusionTurn, codexCurrentProject, fusionConfig, clickFusionCombo, clickFusionFast, fusionOptionItems, fusionOptionTarget,
     menuOpen, maxToggle, modelTarget, modelParams, paramTarget, subTarget, activeChatTab, tabTarget, hasComposer, filesState, fileTarget, questionTarget,
     closedThinkingIndexes, clickThinking, closeThinkingIfOpen, thoughtIndexFor, setTasksOpen, devinQueueTarget, workspaceTrustState,
@@ -5073,6 +5108,20 @@ class Session {
       if (this.sel === sel) this.emit({ t: 'menu', kind, items, fast, model: chat?.model, requestId, sel: this.selectionKey() });
       return;
     }
+    if (kind === 'model') {
+      // Prop-driven lists (Codex options, Devin visibleModelConfigs) need no visible menu.
+      const [items, fast, fusion] = await Promise.all([
+        this.cdp.evaluate(helpersCall('modelItemsFast()')),
+        this.cdp.evaluate(helpersCall('fastInfo()')),
+        this.cdp.evaluate(helpersCall('fusionConfig()')),
+      ]);
+      if (items?.length) {
+        if (fusion) this.fusion = fusion;
+        const chat = await this.cdp.evaluate(helpersCall('extract()'));
+        if (this.sel === sel) this.emit({ t: 'menu', kind, items, fast, fusion, model: chat?.model, requestId, sel: this.selectionKey() });
+        return;
+      }
+    }
     await this.pressControl(kind);
     let items = [];
     let fast = null;
@@ -5194,7 +5243,7 @@ class Session {
         await this.tapCss(pos.x, pos.y);
         await this.closeMenus();
       }
-      await this.pollChat();
+      this.pollChat().catch(() => {});
       this.emit({ t: 'status', ok: true, msg: `已切换到 ${label}` });
       return;
     }
@@ -5202,6 +5251,12 @@ class Session {
     if (String(kind || '').startsWith('fusion-model-')) return this.fusionModelPick(kind.slice('fusion-model-'.length), label);
     if (kind === 'codex-run') return this.codexRunPick(String(label || ''));
     if (kind === 'codex-chat') return this.codexChatPick(String(label || ''), name ? String(name).slice(0, 80) : '');
+    if (kind === 'model' && this.app === 'devin' && await this.cdp.evaluate(helpersCall(`pickDevinModel(${JSON.stringify(String(label))})`))) {
+      this.emit({ t: 'status', ok: true, msg: `已切换到 ${label}` });
+      this.pollChat().catch(() => {});
+      await this.openMenu('effort').catch(() => {});
+      return;
+    }
     if (kind === 'model' && this.app === 'codex' && await this.cdp.evaluate(helpersCall(`pickCodexModel(${JSON.stringify(String(label))})`))) {
       await new Promise(r => setTimeout(r, 150));
       await this.closeMenus();
@@ -5413,6 +5468,11 @@ class Session {
   }
 
   emit(obj) {
+    if (obj?.t === 'chat' && obj.sel && obj.chat) {
+      (this.chatBySel ||= new Map()).delete(obj.sel);
+      this.chatBySel.set(obj.sel, obj.chat);
+      if (this.chatBySel.size > 12) this.chatBySel.delete(this.chatBySel.keys().next().value);
+    }
     if (this.client.readyState === 1) this.client.send(JSON.stringify(obj));
   }
 
@@ -5706,7 +5766,26 @@ class Session {
       appName: this.appMessage('{app}'), project: this.app === 'codex' ? codexFolder(this.winTitle) : '', windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(), plans: appPlans,
     });
     if (staleSelect) this.emit({ t: 'status', ok: false, msg: '没有找到上次的会话，已留在当前会话' });
+    const cachedChat = this.chatBySel?.get(this.selectionKey());
+    if (cachedChat) this.emit({ t: 'chat', sel: this.selectionKey(), chat: cachedChat, cached: true });
     await this.setMode(this.mode);
+    setTimeout(() => this.prefetchMenus().catch(() => {}), 800);
+  }
+
+  // Warms the phone's sheet caches with whatever can be read without opening visible UI.
+  async prefetchMenus() {
+    const cdp = this.cdp;
+    if (!cdp || this.app === 'fusion' || !this.visible) return;
+    const sel = this.selectionKey();
+    const [items, fast, models] = await Promise.all([
+      cdp.evaluate(helpersCall('effortItems()')).catch(() => null),
+      cdp.evaluate(helpersCall('fastInfo()')).catch(() => null),
+      cdp.evaluate(helpersCall('modelItemsFast()')).catch(() => null),
+    ]);
+    if (!this.liveRead(cdp, this.sel)) return;
+    if (items?.length) this.emit({ t: 'menu', kind: 'effort', items, fast, cached: true, sel });
+    if (models?.length) this.emit({ t: 'menu', kind: 'model', items: models, fast, cached: true, sel });
+    this.listAgents(true, true).catch(() => {});
   }
 
   // Focus emulation breaks real typing while it is on, so it only wraps phone-driven
