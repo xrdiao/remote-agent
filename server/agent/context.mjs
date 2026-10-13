@@ -368,6 +368,7 @@ export class AgentContext {
   async pollChat(immediate = false) {
     const cdp = this.cdp;
     const sel = this.sel;
+    const sendGen = this.sendGen || 0;
     if (!cdp || !this.visible || this.switchingThread || this.historyLoading || (this.fusionHold?.app === this.app && this.fusionHold?.windowId === this.windowId) || this.polling === sel || (!immediate && Date.now() - (this.lastChatAt || 0) < (this.lastBusy ? 650 : 1800))) return;
     this.lastChatAt = Date.now();
     this.polling = sel;
@@ -453,7 +454,8 @@ export class AgentContext {
           this.emit({ t: 'chat', sel: this.selectionKey(), chat });
         }
       }
-      if (draft !== undefined && draft !== this.lastDraft && this.liveRead(cdp, sel)) {
+      // A draft read before or during a send is the text being sent; pushing it would refill the phone's box.
+      if (draft !== undefined && draft !== this.lastDraft && !this.sending && (this.sendGen || 0) === sendGen && this.liveRead(cdp, sel)) {
         this.lastDraft = draft;
         this.emit({ t: 'draft', sel: this.selectionKey(), text: draft });
       }
@@ -1509,18 +1511,26 @@ export class AgentContext {
     }
     const files = [...uploads.values()].filter(f => f.pending && f.sel === this.selectionKey());
     if (files.length) text += '\n\n附加文件（请读取这些电脑端文件）：\n' + files.map(f => f.path).join('\n');
-    const found = await this.cdp.evaluate(FOCUS_COMPOSER);
-    if (!found) throw new Error(this.appMessage('没找到 {app} 的聊天输入框：先在画面里打开 Agent 面板（或点「打开聊天」）'));
-    const draftCleared = await this.cdp.evaluate(helpersCall(`setComposerDraft('')`));
-    for (let i = 0; !draftCleared && i < 2 && await this.cdp.evaluate(helpersCall('composerFocused()')) && await this.cdp.evaluate(helpersCall('composerDraft()')); i++) {
-      await this.key(mod('A'));
-      await this.key('Backspace');
+    this.sendGen = (this.sendGen || 0) + 1;
+    this.sending = true;
+    let busy, now, queued;
+    try {
+      const found = await this.cdp.evaluate(FOCUS_COMPOSER);
+      if (!found) throw new Error(this.appMessage('没找到 {app} 的聊天输入框：先在画面里打开 Agent 面板（或点「打开聊天」）'));
+      const draftCleared = await this.cdp.evaluate(helpersCall(`setComposerDraft('')`));
+      for (let i = 0; !draftCleared && i < 2 && await this.cdp.evaluate(helpersCall('composerFocused()')) && await this.cdp.evaluate(helpersCall('composerDraft()')); i++) {
+        await this.key(mod('A'));
+        await this.key('Backspace');
+      }
+      busy = submit && await this.cdp.evaluate(helpersCall('agentState()?.busy'));
+      await this.adapter.typeDraft.call(this, text, mentions);
+      now = this.app === 'devin' && when === 'now' && !!busy;
+      queued = Boolean(busy) && !now;
+      if (submit) queued = await this.adapter.submitPrompt.call(this, now, busy, when, queued);
+    } finally {
+      this.sending = false;
+      this.sendGen++;
     }
-    const busy = submit && await this.cdp.evaluate(helpersCall('agentState()?.busy'));
-    await this.adapter.typeDraft.call(this, text, mentions);
-    const now = this.app === 'devin' && when === 'now' && !!busy;
-    let queued = Boolean(busy) && !now;
-    if (submit) queued = await this.adapter.submitPrompt.call(this, now, busy, when, queued);
     if (submit) files.forEach(f => { f.pending = false; });
     if (submit && receipt) this.emit({ t: 'sent', ...receipt, sel: this.selectionKey() });
     if (this.mode === 'chat') {
