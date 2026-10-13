@@ -6,7 +6,7 @@ import { findBin } from '../../lib/platform.mjs';
 import { publishRecord, opensEntry } from '../../lib/auth.mjs';
 import { PUBLISH_REPO, PAGES_BRANCH, APP_DIR } from '../config.mjs';
 import { MIME } from '../http/static.mjs';
-import { waitReachable, appUrl, offerFirstPairing } from '../util.mjs';
+import { appUrl, offerFirstPairing } from '../util.mjs';
 
 export function run(cmd, args, input) {
   return new Promise((resolve, reject) => {
@@ -82,13 +82,7 @@ function registryWith(existing, mine) {
 }
 
 // Writes this computer's tunnel address into the shared url.json without removing the others.
-export async function publishUrl(url) {
-  try {
-    await syncApp();
-  } catch (e) {
-    console.log(`!! 同步 App 文件失败：${e.message}`);
-  }
-  if (!await waitReachable(url)) console.log('!! 新地址暂时无法从外网访问，仍然尝试发布');
+export async function publishUrl(url, { syncAppFiles = true, offerPairing = true } = {}) {
   try {
     const mine = publishRecord(url);
     let lastErr = null;
@@ -105,8 +99,14 @@ export async function publishUrl(url) {
     }
     if (lastErr) throw lastErr;
     console.log(`已发布最新地址（GitHub Pages 约 1 分钟后生效）。手机 App 固定地址：${appUrl()}`);
-    offerFirstPairing();
   } catch (e) {
     console.log(`!! 发布地址失败：${e.message}`);
+    return false;
   }
+  if (syncAppFiles) {
+    try { await syncApp(); }
+    catch (e) { console.log(`!! 同步 App 文件失败：${e.message}`); }
+  }
+  if (offerPairing) offerFirstPairing();
+  return true;
 }

@@ -91,7 +91,8 @@ server.listen(PORT, TUNNEL ? '127.0.0.1' : HOST, async () => {
       .filter(i => i && i.family === 'IPv4' && !i.internal).map(i => i.address);
     for (const ip of ips) console.log(`  局域网地址：http://${ip}:${PORT}/`);
     if (ips[0]) {
-      saveState({ relayUrl: `http://${ips[0]}:${PORT}/` });
+      const localUrl = `http://${ips[0]}:${PORT}/`;
+      saveState({ localUrl, ...(!PUBLISH_REPO ? { relayUrl: localUrl } : {}) });
       offerFirstPairing();
     }
   }
