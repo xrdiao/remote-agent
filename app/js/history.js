@@ -639,6 +639,8 @@ const ICONS = {
   back: '<path d="M19 12H5"/><path d="m12 19-7-7 7-7"/>',
 };
 const ibtn = (icon, label, attrs = '', cls = '') => `<button class="ib ${cls}" ${attrs} title="${label}" aria-label="${label}"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[icon]}</svg></button>`;
+const hiddenChangeNotices = new Set();
+const changeNoticeKey = () => `${currentComputer()?.id || ''}|${viewSel}`;
 function renderQueue(busy, queued, subs = [], readonly = false, changed = 0, qCount = 0) {
   const bar = $('queueBar');
   const devin = currentApp === 'devin';
@@ -658,9 +660,12 @@ function renderQueue(busy, queued, subs = [], readonly = false, changed = 0, qCo
       + ibtn('x', '删除', `data-q="${esc(q.id)}" data-a="remove"`, 'del') + '</div>').join('');
     if (devin && !queued.length) html += `<div class="q"><span class="qt">内容读不到，只显示数量</span></div>`;
   }
-  if (changed && !readonly) html += `<button class="qh fold" data-changes>改动了 ${changed} 个文件 ›</button>`;
+  if (changed && !readonly) html += hiddenChangeNotices.has(changeNoticeKey())
+    ? `<button class="changesRestore" data-toggle-changes>显示改动</button>`
+    : `<div class="changesNotice"><button class="qh fold" data-changes>改动了 ${changed} 个文件 ›</button>${ibtn('x', '隐藏改动提示', 'data-toggle-changes')}</div>`;
   bar.innerHTML = html;
   bar.classList.toggle('show', Boolean(html));
+  if (document.body.classList.contains('kb')) fitViewport();
 }
 
 function editQueued(id) {
@@ -683,6 +688,11 @@ function editQueued(id) {
 $('queueBar').onclick = async e => {
   const b = e.target.closest('button');
   if (!b) return;
+  if ('toggleChanges' in b.dataset) {
+    const key = changeNoticeKey();
+    if (hiddenChangeNotices.has(key)) hiddenChangeNotices.delete(key); else hiddenChangeNotices.add(key);
+    return renderQueue(lastChat?.busy, lastChat?.queued || [], lastChat?.subagents || [], lastChat?.readonly, lastChat?.changed, lastChat?.queuedCount);
+  }
   if ('changes' in b.dataset) { status('读取改动的文件…'); return send({ t: 'changes' }); }
   if ('fold' in b.dataset) { subsOpen = !subsOpen; return renderQueue(lastChat?.busy, lastChat?.queued || [], lastChat?.subagents || [], lastChat?.readonly, lastChat?.changed, lastChat?.queuedCount); }
   if ('main' in b.dataset) { send({ t: 'mainChat' }); status('返回主对话…'); return; }

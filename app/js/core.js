@@ -68,6 +68,12 @@ function fitViewport() {
     document.body.style.transform = keyboard ? `translateY(${Math.max(0, Math.round(vv.offsetTop))}px)` : '';
     document.body.classList.toggle('kb', keyboard);
   }
+  if (keyboard) {
+    const input = $('text');
+    const overflow = Math.max(0, input.closest('footer').getBoundingClientRect().bottom - vv.height - Math.max(0, vv.offsetTop));
+    const available = input.offsetHeight + $('listWrap').clientHeight - 72 - overflow;
+    document.body.style.setProperty('--composer-max-height', Math.max(52, Math.floor(Math.min(vv.height * .28, available))) + 'px');
+  } else document.body.style.removeProperty('--composer-max-height');
   if (stickOnKeyboard) list.scrollTop = list.scrollHeight;
 }
 window.addEventListener('resize', fitViewport);
