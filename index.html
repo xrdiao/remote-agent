@@ -163,18 +163,19 @@
 </div>
 
 <div id="gate">
-  <h2>Remote Agent</h2>
+  <div id="gateLang" aria-label="语言 / Language"><button data-lang="zh">中</button><span>|</span><button data-lang="en">EN</button></div>
+  <div class="pairHero"><img src="icon-512.png" alt="" class="pairLogo"><h2>Remote Agent</h2><p id="pairIntro">在电脑端运行 npm run pair，<br>然后扫描二维码或输入配对码进行连接。</p></div>
   <div id="gateMsg"></div>
-  <input id="gateInput" autocapitalize="off" autocorrect="off" spellcheck="false">
-  <button id="gateBtn" class="primary"></button>
-  <button id="gateScan" hidden>扫码配对</button>
+  <div id="gateEntry"><div class="pairInput"><input id="gateInput" autocapitalize="off" autocorrect="off" spellcheck="false"><button id="gatePaste" aria-label="粘贴" title="粘贴"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="16" rx="2"/><rect x="9" y="3" width="6" height="4" rx="1"/></svg></button></div><button id="gateBtn" class="primary"></button></div>
+  <div id="pairOr" hidden><span></span><span>或</span><span></span></div>
+  <button id="gateScan" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3M7 12h10"/></svg><span>扫码连接</span></button>
   <a id="gateApp" class="primary-link" hidden>在 App 中打开</a>
   <div id="gateActions">
     <button id="gateRetry">重试</button>
     <button id="gateComputers" hidden>选择电脑</button>
     <button id="gateRepair">重新配对</button>
   </div>
-  <button id="gateLang">中文 / English</button>
+  <button id="gateHelp" hidden>配对遇到问题？ <span aria-hidden="true">›</span></button>
   <div id="gateInfo"></div>
 </div>
 
@@ -192,9 +193,19 @@
   </div>
 </div>
 
+<div id="scanner" role="dialog" aria-modal="true" aria-labelledby="scannerTitle" hidden>
+  <video id="scannerVideo" autoplay muted playsinline></video>
+  <div class="scannerShade"></div>
+  <div class="scannerNav"><button id="scannerBack" aria-label="返回"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m14 6-6 6 6 6"/></svg></button><h2 id="scannerTitle">扫码连接</h2></div>
+  <div class="scannerContent"><div class="scannerFrame"><i></i><i></i><i></i><i></i><span class="scanLine"></span></div><p class="scannerHint">扫描电脑端 npm run pair 生成的二维码</p><p id="scannerMessage" role="status"></p><button id="scannerAlbum"><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="2"/><path d="m3 17 6-6 4 4 3-3 5 5"/></svg></span>从相册识别</button></div>
+  <button id="scannerManual">手动输入配对码 <span aria-hidden="true">›</span></button>
+  <input id="scannerFile" type="file" accept="image/*" hidden>
+</div>
+
 <script src="i18n.js"></script>
 <script src="js/core.js"></script>
 <script src="js/gate.js"></script>
+<script src="js/scanner.js"></script>
 <script src="js/net.js"></script>
 <script src="js/sheets.js"></script>
 <script src="js/notify.js"></script>
