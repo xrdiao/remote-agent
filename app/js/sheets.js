@@ -485,7 +485,7 @@ const APK_RELEASE = 'https://github.com/xrdiao/remote-agent/releases/latest/down
 // A copy on the user's own GitHub Pages downloads more reliably in mainland China than GitHub Releases.
 let apkUrl = APK_RELEASE;
 // Only the Android app / an Android browser can install the APK, so other clients never probe for it.
-if (inApp || /Android/i.test(navigator.userAgent))
+if ((inApp && !iosApp) || /Android/i.test(navigator.userAgent))
   fetch('AgentRemote.apk', { method: 'HEAD' }).then(r => { if (r.ok) apkUrl = new URL('AgentRemote.apk', location.href).href; }).catch(() => {});
 const appAddress = () => location.origin + location.pathname.replace(/index\.html$/, '');
 
