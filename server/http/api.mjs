@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { DATA_DIR, findDevice, needsTotp, totpConfig, verifyTotp, pairingValid, consumePairing, addDevice, listDevices, removeDevice, updateDevice, computerId, computerName } from '../../lib/auth.mjs';
+import { DATA_DIR, findDevice, needsTotp, totpConfig, verifyTotp, pairingValid, consumePairing, addDevice, listDevices, removeDevice, updateDevice, computerId, computerName, urlKey } from '../../lib/auth.mjs';
 import { pushPublicKey, openEventStream, closeEventStreams, deliver } from '../../lib/notify.mjs';
 import { clientIp, lockedOut, recordFailure } from './ratelimit.mjs';
 import { json, readJson, originAllowed } from './static.mjs';
@@ -65,18 +65,23 @@ export async function handleApi(req, res, route) {
   if (route === '/api/pair' && req.method === 'POST') {
     if (lockedOut(ip)) return json(req, res, 429, { error: '尝试次数过多，请 15 分钟后再试' });
     const { code, name, totp } = await readJson(req);
-    if (!pairingValid(code)) {
+    if (!device && !pairingValid(code)) {
       recordFailure(ip);
       return json(req, res, 401, { error: '配对链接无效或已过期（10 分钟内有效，只能用一次）。请在电脑上重新运行 npm run pair' });
     }
-    if (totpConfig() && !verifyTotp(totp)) {
+    const needsVerification = totpConfig() && (!device || needsTotp(device));
+    if (needsVerification && !verifyTotp(totp)) {
       if (totp) recordFailure(ip);
       return json(req, res, 401, { needTotp: true, error: totp ? '验证码不对' : '' });
+    }
+    if (device) {
+      if (needsVerification) updateDevice(device.id, { verifiedAt: Date.now() });
+      return json(req, res, 200, { token: bearer(req), id: computerId(), name: computerName(), device: device.id, key: urlKey().toString('base64url') });
     }
     consumePairing();
     const { device: added, token } = addDevice(name);
     console.log(`[pair] 新设备「${added.name}」 ip=${ip}`);
-    return json(req, res, 200, { token, id: computerId(), name: computerName() });
+    return json(req, res, 200, { token, id: computerId(), name: computerName(), device: added.id, key: urlKey().toString('base64url') });
   }
 
   if (!device) return json(req, res, 401, { error: '设备未配对' });

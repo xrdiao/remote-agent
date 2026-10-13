@@ -14,7 +14,7 @@ function gate({ msg = '', err = false, input = null, retry = false, repair = fal
     inp.value = '';
     inp.placeholder = input.placeholder;
     inp.className = input.code ? 'code' : '';
-    inp.inputMode = input.code ? 'numeric' : 'url';
+    inp.inputMode = input.code ? 'numeric' : input.inputMode || 'url';
     inp.autocomplete = input.code ? 'one-time-code' : 'off';
     $('gateBtn').textContent = input.button;
     if (input.code) setTimeout(() => inp.focus(), 50);
