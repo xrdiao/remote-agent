@@ -81,8 +81,11 @@
   #title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; height: 44px; padding: 5px 8px; text-align: left; border-radius: 14px; background: var(--panel); }
   .titleLabels { flex: 1; min-width: 0; }
   #titleText, #titleProject { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #titleText { font-size: 13px; line-height: 1.3; font-weight: 600; }
+  .titleRow { display: flex; align-items: baseline; gap: 5px; min-width: 0; }
+  #titleText { font-size: 13px; line-height: 1.3; font-weight: 600; min-width: 0; }
+  #titlePlan { flex: none; font-size: 10px; line-height: 1.3; font-weight: 500; color: var(--muted2); }
   #titleProject { font-size: 10px; line-height: 1.3; color: var(--muted2); }
+  .winPlan { font-size: 10px; font-weight: 500; color: var(--muted2); margin-left: 6px; }
   #title::after { content: "⌄"; color: var(--muted); }
   body.devin #meters { flex: none; }
   body.devin #quotaMeters { flex: none; }
@@ -192,8 +195,8 @@
   .tool .stat { flex: none; font-weight: 700; font-size: 11px; }
   .tool .stat.add { color: var(--add); }
   .tool .stat.del { color: var(--del); }
-  .tcmd { margin: 4px 0 0; background: var(--pre-bg); color: var(--text); padding: 6px 8px; border-radius: 6px; white-space: pre; overflow: hidden; max-height: 1.5em; font-size: 12px; }
-  .toolrow.open .tcmd { max-height: 40vh; overflow: auto; }
+  .tcmd { margin: 4px 0 0; background: var(--pre-bg); color: var(--text); padding: 6px 8px; border-radius: 6px; white-space: pre; overflow: hidden; font-size: 12px; display: none; }
+  .toolrow.open .tcmd { display: block; max-height: 40vh; overflow: auto; }
   .tdiff { margin: 4px 0 0; background: var(--pre-bg); border-radius: 6px; overflow-x: auto; display: none; font-size: 12px; }
   .toolrow.open .tdiff { display: block; }
   .tdiff .dl { white-space: pre; padding: 0 8px; color: var(--muted); }
@@ -629,7 +632,7 @@
 </head>
 <body>
 <header>
-  <button id="title"><span id="dot"></span><span class="titleLabels"><span id="titleText">连接中…</span><span id="titleProject"></span></span></button>
+  <button id="title"><span id="dot"></span><span class="titleLabels"><span class="titleRow"><span id="titleText">连接中…</span><span id="titlePlan" hidden></span></span><span id="titleProject"></span></span></button>
     <div id="meters">
       <button class="meter" id="meterCtx" type="button"><span class="track"><i id="meterCtxFill"></i></span><span class="meterText"><span class="meterLabel">上下文</span><b id="meterCtxPct">未获取</b></span></button>
       <div id="quotaMeters"></div><span id="quotaStatus"></span>
@@ -804,7 +807,7 @@ let mode = store.get('mode') || 'chat';
 document.body.classList.toggle('chatmode', mode === 'chat');
 let crop = store.get('crop') !== 'full';
 let frame = { w: 1000, h: 800 }, panel = null, zoom = 1;
-let windows = [], currentWindow = null;
+let windows = [], currentWindow = null, appPlans = {};
 let currentApp = null;
 let editorBrowsing = false, editorDirectory = null, returnToEditor = null;
 const agentLists = new Map();
@@ -1033,7 +1036,7 @@ function connHide() {
 }
 function connShow(phase) {
   clearTimeout(conn.timer);
-  Object.assign(conn, { active: true, host: false, phase, agents: null, failure: null, conclusion: '', checks: [], diagRunning: false });
+  Object.assign(conn, { active: true, host: false, phase, agents: null, failure: null, conclusion: '', checks: [], diagRunning: false, readyRedirect: false, readyPending: false });
   conn.open.clear();
   $('conn').classList.add('open');
   connRender();
@@ -1052,11 +1055,34 @@ function connAgentResults(results) {
   if (!conn.active || conn.host !== true) return;
   conn.agents = CONN_AGENTS.map(a => ({ ...a, ...results.find(r => r.app === a.app) }));
   connRender();
+  ensureReadyAgent();
   clearTimeout(conn.timer);
   const ready = conn.agents.filter(a => a.windows);
   const signature = ready.map(a => a.app).join(',');
   if (ready.length === CONN_AGENTS.length || (ready.length && store.get('conn-auto-partial') === signature))
     conn.timer = setTimeout(connHide, 600);
+}
+
+function ensureReadyAgent() {
+  if (conn.readyRedirect) return;
+  const ready = (conn.agents || []).filter(a => a.windows).map(a => a.app);
+  if (!ready.length || currentApp === 'fusion') return;
+  const appOf = id => String(id || '').split(':')[0];
+  const want = currentApp || appOf(currentComputer()?.win);
+  if (ready.includes(want)) return;
+  const target = CONN_AGENTS.map(a => a.app).find(a => ready.includes(a));
+  if (!target) return;
+  const wins = windows || [];
+  if (!wins.length) {
+    if (!conn.readyPending) { conn.readyPending = true; send({ t: 'windows' }); }
+    return;
+  }
+  const sel = currentComputer()?.selections || {};
+  const pick = wins.find(w => appOf(w.id) === target && sel[w.id]) || wins.find(w => appOf(w.id) === target);
+  if (!pick) return;
+  conn.readyRedirect = true;
+  status('正在切换窗口…');
+  send({ t: 'attach', id: pick.id, ...sel[pick.id] });
 }
 
 function connRender() {
@@ -1110,6 +1136,7 @@ function connRender() {
 $('connGo').onclick = () => {
   if (conn.host === 'err') return boot();
   if (!conn.agents?.some(a => a.windows)) return connRetryAgents();
+  ensureReadyAgent();
   connHide();
 };
 function connRetryAgents() {
@@ -1120,6 +1147,7 @@ function connRetryAgents() {
 }
 $('connAuto').onclick = () => {
   store.set('conn-auto-partial', conn.agents.filter(a => a.windows).map(a => a.app).join(','));
+  ensureReadyAgent();
   connHide();
 };
 $('connPick').onclick = () => showComputers();
@@ -1190,7 +1218,7 @@ function applySelection(m, clearChat = true) {
     ...selection,
     selections: { ...here.selections, [id]: selection },
   });
-  if (changed) { restoreDraft(); $('attachments').innerHTML = ''; send({ t: 'attachments' }); }
+  if (changed) { mirroredDraft = ''; restoreDraft(); $('attachments').innerHTML = ''; send({ t: 'attachments' }); }
   const cachedAgents = agentLists.get(agentListKey());
   if (cachedAgents && m.threadId) agentLists.set(agentListKey(), cachedAgents.map(a => ({ ...a, current: a.id === m.threadId || a.id === 'tab:' + m.threadId || a.id === 'thread:' + m.windowId + ':' + m.threadId })));
   if (m.project) currentProject = m.project;
@@ -1602,12 +1630,15 @@ function connect() {
     else if (m.t === 'sendFailed') pendingSends.delete(m.requestId);
     else if (m.t === 'attachments') { if (m.sel === viewSel) renderAttachments(m.list); }
     else if (m.t === 'chat') { if (!m.sel || !viewSel || m.sel === viewSel) renderChat(m.chat); }
+    else if (m.t === 'draft') { if (!m.sel || m.sel === viewSel) { if ((text.value === '' || text.value === mirroredDraft) && m.text !== text.value) { text.value = m.text; autosize(); } mirroredDraft = m.text; } }
+    else if (m.t === 'draftAck') { if (m.ok && (!m.sel || m.sel === viewSel) && text.value === m.text) mirroredDraft = m.text; }
     else if (m.t === 'historyDone') finishHistory(m);
     else if (m.t === 'thread') applySelection(m);
     else if (m.t === 'frame') onFrame(m);
     else if (m.t === 'panel') { panel = m.rect; updateTermEmpty(); layoutStage(); applyQuality(); }
     else if (m.t === 'connAgents') connAgentResults(m.agents);
-    else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; connWindows(m.list); if (sheetKind === 'windows') showWindows(); }
+    else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; connWindows(m.list); if (m.plans) { appPlans = { ...appPlans, ...m.plans }; updateTitle(); } if (conn.readyPending) { conn.readyPending = false; ensureReadyAgent(); } if (sheetKind === 'windows') showWindows(); }
+    else if (m.t === 'plans') { if (m.plans) { appPlans = { ...appPlans, ...m.plans }; updateTitle(); if (sheetKind === 'windows') showWindows(); } }
     else if (m.t === 'fusionTrust') openSheet('fusion-trust', `<h3>确认项目可信</h3><div class="hint">${esc(m.path)}</div><button class="opt" data-fusion-trust="yes"><span class="lbl">信任并创建会话</span></button><button class="opt" data-fusion-trust="no"><span class="lbl">取消</span></button>`);
     else if (m.t === 'fusionProjects') showFusionProjects(m);
     else if (m.t === 'fusionSides') showFusionSides(m);
@@ -1620,6 +1651,7 @@ function connect() {
     }
     else if (m.t === 'attached') {
       if (m.closed) { setWindowReady(m.ready === true); status('这个窗口已经关闭，请重新选择', false); send({ t: 'windows' }); return; }
+      if (m.plans) appPlans = { ...appPlans, ...m.plans };
       rememberAgentOpen(m);
       if (m.keepQuota) { applySelection(m); setWindowReady(true); return; }
       finishPending(['正在切换窗口…', '正在切换 Agent…']);
@@ -1682,6 +1714,7 @@ function connect() {
     else if (m.t === 'settings') { if (m.codex && m.requestId !== codexSettingsRequest) return; finishPending(['正在读取设置…', '正在修改…']); m.codex ? showCodexSettings(m) : showSettings(m.sections || []); }
     else if (m.t === 'usage') {
       if (currentApp === 'fusion' || (m.sel && viewSel && m.sel !== viewSel)) return;
+      if (m.plan) { appPlans = { ...appPlans, [currentApp]: m.plan }; updateTitle(); }
       if (m.missing) status('没有额度数据');
       renderQuota(m);
       if (!m.cached) finishPending(['正在读取额度…']);
@@ -1781,7 +1814,8 @@ function winLabel(title) {
 function showWindows() {
   const rows = windows.map(w => {
     const software = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion' }[w.app] || w.app;
-    return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">${esc(software)}</span></button>`;
+    const plan = appPlans[w.app] ? `<span class="winPlan">${esc(appPlans[w.app])}</span>` : '';
+    return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">${esc(software)}${plan}</span></button>`;
   }).join('');
   openSheet('windows', `<h3>切换窗口</h3>${rows || '<div class="hint">没有找到窗口</div>'}`);
 }
@@ -1984,9 +2018,10 @@ function showMenu(kind, items, max, fusion, fast, model) {
   const role = /^fusion-model-([ab])$/.exec(kind || '')?.[1];
   const agentRow = role ? `<button class="opt" data-fusion-select="${role}"><span class="lbl">更换 ${role.toUpperCase()} Agent / 会话<span class="sub">${esc(lastChat?.fusion?.[role]?.title || '未选择')}</span></span></button>` : '';
   const fastRow = fast && !fusion ? `<button class="opt" data-fast="${fast.on ? 'off' : 'on'}" data-fast-menu="${kind}"><span class="lbl">Fast 模式${fast.description ? `<span class="sub">${esc(fast.description)}</span>` : ''}</span><span class="switch ${fast.on ? 'on' : ''}"></span></button>` : '';
+  const effortEntry = kind === 'model' ? `<button class="opt" data-effort-open><span class="lbl">思考强度<span class="sub">${esc(lastChat?.effort || '')}</span></span></button>` : '';
   const navigation = kind === 'effort' ? `<button class="opt" data-model-back>← 返回模型列表</button><p>${esc(model || lastChat?.model || '')}</p>${!items?.length ? '<p class="hint">这个模型没有可选的思考强度。</p>' : ''}` : '';
   const done = kind === 'effort' ? '<button class="opt" data-model-done>完成</button>' : '';
-  openSheet('menu', `<h3>${MENU_TITLE[kind] || ''}</h3>` + navigation + agentRow + (picking ? '' : fusionBlock(fusion)) + fastRow + maxRow + rows + done);
+  openSheet('menu', `<h3>${MENU_TITLE[kind] || ''}</h3>` + navigation + agentRow + (picking ? '' : fusionBlock(fusion)) + effortEntry + fastRow + maxRow + rows + done);
 }
 
 let changeFiles = [];
@@ -2117,8 +2152,19 @@ function renderQuota(m) {
     .filter(b => b?.label && !/^loading\b/i.test(String(b.label)));
   $('quotaMeters').classList.toggle('devinLimits', currentApp === 'devin' && bars.length > 1);
   const when = m.updated ? new Date(m.updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  if (currentApp === 'cursor' && (m.missing || !bars.length)) {
+    $('quotaMeters').title = '';
+    $('quotaMeters').innerHTML = '';
+    return;
+  }
   if (m.missing) {
     $('quotaMeters').title = '没有额度数据' + (when ? ` · 更新于 ${when}` : '');
+    $('quotaMeters').innerHTML = `<button class="meter" type="button"><span class="track"></span><span class="meterText"><span class="meterLabel">额度</span><b>未获取</b></span></button>`;
+    $('quotaMeters').querySelector('button').onclick = () => showUsageDetails('quota');
+    return;
+  }
+  if (!bars.length) {
+    $('quotaMeters').title = '没有额度指标' + (when ? ` · 更新于 ${when}` : '');
     $('quotaMeters').innerHTML = `<button class="meter" type="button"><span class="track"></span><span class="meterText"><span class="meterLabel">额度</span><b>未获取</b></span></button>`;
     $('quotaMeters').querySelector('button').onclick = () => showUsageDetails('quota');
     return;
@@ -2324,6 +2370,7 @@ $('sheet').addEventListener('click', async e => {
   const b = e.target.closest('button');
   if (!b) return;
   if ('modelBack' in b.dataset) { status('读取模型列表…'); return send({ t: 'openMenu', kind: 'model' }); }
+  if ('effortOpen' in b.dataset) { status('读取思考强度…'); return send({ t: 'openMenu', kind: 'effort' }); }
   if ('modelDone' in b.dataset) { closeSheet(); return; }
   if (b.dataset.fast) { status('设置中…'); return send({ t: 'pickMenu', kind: 'fast', label: b.dataset.fast, name: b.dataset.fastMenu }); }
   if ('editorChat' in b.dataset) { closeSheet(); status('正在打开聊天面板…'); return send({ t: 'openEditorChat' }); }
@@ -2702,6 +2749,7 @@ itemsEl.addEventListener('click', async e => {
     box.classList.toggle('open');
     const chev = tr.querySelector('.chev');
     if (chev) chev.textContent = box.classList.contains('open') ? '▾' : '▸';
+    if (pinnedBottom) { list.scrollTop = list.scrollHeight; requestAnimationFrame(() => { list.scrollTop = list.scrollHeight; }); }
     return;
   }
   const b = e.target.closest('[data-think]');
@@ -2810,7 +2858,7 @@ function renderTool(el, it) {
   if (it.kind === 'command') {
     const cmd = it.cmd || '';
     const output = it.output || '';
-    el.innerHTML = `<div class="trow toggle" data-ttoggle>${icon}<span class="tl">${esc(it.t || TOOL_LABEL.command)}</span>${it.d ? `<span class="dur">${esc(it.d)}</span>` : ''}${cmd || output ? '<span class="chev">▾</span>' : ''}</div>`
+    el.innerHTML = `<div class="trow toggle" data-ttoggle>${icon}<span class="tl">${esc(it.t || TOOL_LABEL.command)}</span>${it.d ? `<span class="dur">${esc(it.d)}</span>` : ''}${cmd || output ? '<span class="chev">▸</span>' : ''}</div>`
       + (cmd ? `<pre class="tcmd">${esc(cmd)}</pre>` : '')
       + (output ? `<pre class="tcmd">${esc(output)}</pre>` : '');
     return;
@@ -2851,7 +2899,7 @@ function renderItem(it) {
   else if (it.k === 'assistant') { el.innerHTML = it.h || ''; dressMessage(el); }
   else if (it.k === 'thinking') paintThinking(el, it);
   else if (it.k === 'tool') {
-    if (it.kind && (it.src === 'devin' || it.src === 'codex')) { renderTool(el, it); el.classList.add('toolrow', 'open'); }
+    if (it.kind && (it.src === 'devin' || it.src === 'codex')) { renderTool(el, it); el.classList.add('toolrow'); if (it.kind !== 'command') el.classList.add('open'); }
     else {
       el.innerHTML = `<div class="txt">${esc(it.t || '')}</div>`;
       if (it.f) el.dataset.file = it.f;
@@ -2904,12 +2952,15 @@ function noteSwitch(chat) {
   status(w.kind === 'model' && chat.model ? `已切换到 ${chat.model}` : '已切换');
 }
 
-let lastChat = null;
+let lastChat = null, mirroredDraft = '';
 let currentProject = '', currentTerminal = '';
 function updateTitle() {
   const first = lastChat?.items?.find(it => it.k === 'user');
   const conversation = mode === 'terminal' ? currentTerminal : (lastChat?.title || first?.t || '');
   $('titleText').textContent = currentAppName || '连接中…';
+  const plan = appPlans[currentApp] || '';
+  $('titlePlan').textContent = plan;
+  $('titlePlan').hidden = !plan;
   $('titleProject').textContent = cleanWindowTitle(currentProject).replace(/\s+-\s+Devin(?:\s+-.*)?$/, '') || conversation.split('\n')[0].slice(0, 40);
   $('title').title = [cleanWindowTitle(currentProject), conversation].filter(Boolean).join(' · ');
 }
@@ -3220,8 +3271,10 @@ function captureChatAnchor() {
   const el = itemsEl.children[lo];
   return el ? { id: el.dataset.i, top: el.getBoundingClientRect().top - top } : null;
 }
+let pinnedBottom = false;
 function restoreChatPosition(anchor, stick = false) {
   restoringChatScroll = true;
+  pinnedBottom = !!stick;
   if (stick) list.scrollTop = list.scrollHeight;
   else if (anchor) {
     const el = [...itemsEl.children].find(e => e.dataset.i === anchor.id);
@@ -3231,7 +3284,12 @@ function restoreChatPosition(anchor, stick = false) {
   requestAnimationFrame(() => { restoringChatScroll = false; });
 }
 new ResizeObserver(() => {
-  if (!chatScrolling && !chatTouching && readingAnchor) restoreChatPosition(readingAnchor);
+  if (chatScrolling || chatTouching) return;
+  if (pinnedBottom) {
+    restoringChatScroll = true;
+    list.scrollTop = list.scrollHeight;
+    requestAnimationFrame(() => { restoringChatScroll = false; });
+  } else if (readingAnchor) restoreChatPosition(readingAnchor);
 }).observe(itemsEl);
 document.addEventListener('selectionchange', () => {
   if (deferredRender && !userSelecting()) { deferredRender = false; if (lastChat) renderChat(lastChat); }
@@ -3310,7 +3368,10 @@ function renderChat(chat) {
   if (chat?.mode) { $('pickMode').textContent = (chat.mode === 'Bypass Permissions' ? '⚠绕过' : chat.mode) + ' ▾'; $('pickMode').title = chat.mode; }
   $('pickMode').classList.toggle('bypass', chat?.mode === 'Bypass Permissions');
   const fusionLabel = chat?.model === 'Fusion' && chat.fusion ? `Fusion · ${fusionShort(chat.fusion.lead)} / ${fusionShort(chat.fusion.sidekick)}` : '';
-  $('pickModel').textContent = (fusionLabel || chat?.model || '模型') + ' ▾';
+  const mdl = fusionLabel || chat?.model || '模型';
+  const effLabel = chat?.effort && chat.effort !== 'Effort' ? String(chat.effort).replace(/^([a-z])/, c => c.toUpperCase()) : '';
+  const effSuffix = !fusionLabel && chat?.model !== 'Fusion' && effLabel && !mdl.toLowerCase().includes(effLabel.toLowerCase()) ? ` · ${effLabel}` : '';
+  $('pickModel').textContent = mdl + effSuffix + ' ▾';
   $('pickModel').title = chat?.fusion ? `${chat.fusion.lead} · ${chat.fusion.effort} · ${chat.fusion.sidekick}${chat.fusion.fast ? ' · Fast' : ''}` : (chat?.model || '更换模型');
   const permName = PERM_LABEL[chat?.permission]?.[0];
   $('pickPerm').hidden = true;
@@ -3333,7 +3394,7 @@ function renderChat(chat) {
   updateSendMode();
   currentSurface = chat?.surface || null;
   paintSurface();
-  if (!chat) { itemsEl.replaceChildren(); renderQueue(false, []); renderQuestions(null); paintSessions(null); return; }
+  if (!chat) { itemsEl.replaceChildren(); renderQueue(false, []); renderQuestions(null); paintSessions(null); latestTasks = null; $('taskChip').hidden = true; return; }
   const sessionChanged = paintSessions(chat);
   const V = scMerge(chat);
   if (!sessionChanged && userSelecting()) {
@@ -3420,7 +3481,7 @@ function renderChat(chat) {
     });
   }
   syncChildren(itemsEl, els);
-  latestTasks = V.all.filter(it => it.k === 'tasks').pop() || null;
+  latestTasks = (chat.items || []).filter(it => it.k === 'tasks').pop() || null;
   $('taskChip').hidden = !latestTasks;
   if (latestTasks) $('taskChip').innerHTML = `<span>${I18N.tr('任务')}</span> ${latestTasks.done}/${latestTasks.total}`;
   if (sheetKind === 'tasks') showTasks();
@@ -3643,6 +3704,7 @@ function maybeLoadOlder() {
 }
 function settleChatScroll() {
   if (restoringChatScroll) { updateToBottom(); return; }
+  if (pinnedBottom && !nearBottom()) pinnedBottom = false;
   chatScrolling = true;
   clearTimeout(scrollIdle);
   scrollIdle = setTimeout(() => {
@@ -3656,10 +3718,10 @@ function settleChatScroll() {
 }
 list.addEventListener('scroll', settleChatScroll, { passive: true });
 let historyTouchY = 0;
-list.addEventListener('wheel', e => { restoringChatScroll = false; if (e.deltaY < 0) historyArmed = true; settleChatScroll(); }, { passive: true });
+list.addEventListener('wheel', e => { restoringChatScroll = false; if (e.deltaY < 0) { historyArmed = true; pinnedBottom = false; } settleChatScroll(); }, { passive: true });
 list.addEventListener('pointerdown', () => { historyArmed = true; }, { passive: true });
 list.addEventListener('touchstart', e => { historyTouchY = e.touches[0].clientY; chatTouching = true; chatScrolling = true; clearTimeout(scrollIdle); }, { passive: true });
-list.addEventListener('touchmove', e => { restoringChatScroll = false; if (e.touches[0].clientY > historyTouchY) historyArmed = true; historyTouchY = e.touches[0].clientY; }, { passive: true });
+list.addEventListener('touchmove', e => { restoringChatScroll = false; if (e.touches[0].clientY > historyTouchY) { historyArmed = true; pinnedBottom = false; } historyTouchY = e.touches[0].clientY; }, { passive: true });
 for (const event of ['touchend', 'touchcancel']) list.addEventListener(event, () => { chatTouching = false; settleChatScroll(); }, { passive: true });
 $('toBottom').onclick = () => { list.scrollTop = list.scrollHeight; };
 $('older').onclick = () => loadOlderMessages();
@@ -4471,14 +4533,22 @@ function confirmSent(m) {
   const here = (currentComputer()?.id || '') === sent.computer && mode === sent.mode && (draftKey() === sent.draft || m.sel === viewSel);
   if (here && inputRevision === sent.revision && text.value === sent.text) {
     drafts.delete(activeDraft); draftMentions.delete(activeDraft);
-    text.value = ''; MN.mentions = []; autosize();
+    text.value = ''; MN.mentions = []; autosize(); mirroredDraft = '';
   }
 }
 function draftKey() { return [currentComputer()?.id || '', viewSel, mode].join('|'); }
 function saveDraft() { if (activeDraft) { drafts.set(activeDraft, text.value); draftMentions.set(activeDraft, MN.mentions.slice()); } }
 function restoreDraft() { activeDraft = draftKey(); text.value = drafts.get(activeDraft) || ''; MN.mentions = draftMentions.get(activeDraft)?.slice() || []; mentionHide(); autosize(); }
 function autosize() { text.style.height = 'auto'; text.style.height = text.scrollHeight + 'px'; updateMathPrev(); }
-text.addEventListener('input', () => { inputRevision++; draftVersions.set(activeDraft, (draftVersions.get(activeDraft) || 0) + 1); autosize(); saveDraft(); });
+let draftPushTimer = 0;
+text.addEventListener('input', () => {
+  inputRevision++; draftVersions.set(activeDraft, (draftVersions.get(activeDraft) || 0) + 1); autosize(); saveDraft();
+  clearTimeout(draftPushTimer);
+  draftPushTimer = setTimeout(() => {
+    if (composing || mode !== 'chat' || currentApp === 'fusion' || MN.mentions.length) return;
+    send({ t: 'draft', text: text.value });
+  }, 400);
+});
 // ---- "@" mentions (Devin): the relay drives Devin's own typeahead, so a mention ends up as a real chip ----
 // Typing "@" (or "@file:ser") asks for the list; tapping a row puts "@label" into the text. When the message is
 // sent, the relay types the text and, at each "@label", lets Devin's typeahead insert the chip.
