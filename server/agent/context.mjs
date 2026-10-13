@@ -1523,12 +1523,12 @@ export class AgentContext {
     if (submit) queued = await this.adapter.submitPrompt.call(this, now, busy, when, queued);
     if (submit) files.forEach(f => { f.pending = false; });
     if (submit && receipt) this.emit({ t: 'sent', ...receipt, sel: this.selectionKey() });
-    await this.syncAttachments();
-    if (now) this.emit({ t: 'status', ok: true, msg: '已打断当前任务并发送' });
     if (this.mode === 'chat') {
       this.lastChatAt = 0;
-      setTimeout(() => this.pollChat(true).catch(() => {}), 300);
+      this.pollChat(true).catch(() => {});
     }
+    await this.syncAttachments();
+    if (now) this.emit({ t: 'status', ok: true, msg: '已打断当前任务并发送' });
     return queued;
   }
 

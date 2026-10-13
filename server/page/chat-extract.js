@@ -240,6 +240,12 @@
     const t = `${label} ${[rest, ...lines.slice(1)].join(' · ')}`.replace(/\s+/g, ' ').trim();
     const codes = [...eg.querySelectorAll('code')].map(c => (c.innerText || '').trim()).filter(Boolean).slice(0, 6);
     const item = { i, k: 'tool', kind, t, chips: codes.map(c => c.replace(/\n/g, ' ').slice(0, 120)) };
+    item.chipFiles = codes.map(c => {
+      const file = c.split(/\n|\s+#L/)[0].trim();
+      const line = /#L(\d+)/.exec(c)?.[1];
+      return /\.[A-Za-z0-9]{1,10}$/.test(file) || /^[A-Za-z]:[\\/]|^\//.test(file)
+        ? file + (line ? ':' + line : '') : '';
+    });
     const fileish = codes.map(c => c.split('\n')[0].trim())
       .filter(c => /\.[A-Za-z0-9]{1,10}$/.test(c) || /^[A-Za-z]:[\\/]|^\//.test(c));
     if (fileish.length === 1) {

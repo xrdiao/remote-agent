@@ -124,6 +124,17 @@
         out += `<div class="codebox"><textarea class="src" hidden readonly>${esc(plain)}</textarea><pre>${body}</pre></div>`;
         continue;
       }
+      const href = n.tagName === 'A' ? n.getAttribute('href') || '' : '';
+      const localHref = /^(?:file:\/\/|\/|~\/|[A-Za-z]:[\\/]|\.{1,2}\/)/.test(href)
+        || (!/^[A-Za-z][\w+.-]*:/.test(href) && /\.[A-Za-z0-9]{1,10}(?:#L\d+(?:-L?\d+)?)?$/.test(href));
+      const filePath = n.getAttribute('data-file-reference') === 'true'
+        ? n.getAttribute('data-prompt-link-href') || n.getAttribute('data-markdown-copy-text')
+        : n.matches(FILE_REF) ? n.innerText.trim()
+        : localHref ? (href.startsWith('file://') ? decodeURIComponent(new URL(href).pathname) + new URL(href).hash : href) : null;
+      if (filePath) {
+        out += `<code data-file="${esc(filePath)}"${colorAttr(n)}>${esc(n.getAttribute('data-prompt-link-label') || n.innerText.trim())}</code>`;
+        continue;
+      }
       if (n.getAttribute('data-markdown-copy') === 'inline-code') {
         out += `<code>${esc((n.innerText || '').trim())}</code>`;
         continue;
@@ -136,7 +147,6 @@
         out += `<a href="${esc(n.getAttribute('href'))}">${clean(n)}</a>`;
         continue;
       }
-      if (n.matches(FILE_REF)) { out += `<code data-file="${esc(n.innerText.trim())}"${colorAttr(n)}>${esc(n.innerText.trim())}</code>`; continue; }
       if (devin && tag === 'A' && /^https?:\/\//i.test(n.getAttribute('href') || '')) {
         out += `<a href="${esc(n.getAttribute('href'))}" target="_blank" rel="noopener noreferrer">${clean(n, devin)}</a>`;
         continue;
