@@ -143,6 +143,7 @@
   #list { flex: 1; display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; padding: 10px 12px 16px; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; overflow-anchor: none; }
   /* Short threads sit on the composer. The spacer shrinks away once the thread scrolls. */
   #list::before { content: ""; flex: 1 1 auto; min-height: 0; }
+  #items.stale [data-action], #items.stale [data-request], #items.stale [data-btn] { pointer-events: none; opacity: .55; }
   #older { display: block; margin: 0 auto 10px; font-size: 13px; color: var(--muted2); background: transparent; }
   .msg { margin: 8px 0; min-width: 0; overflow-wrap: anywhere; }
   .human { display: flex; justify-content: flex-end; }
@@ -1223,7 +1224,7 @@ function applySelection(m, clearChat = true) {
   if (cachedAgents && m.threadId) agentLists.set(agentListKey(), cachedAgents.map(a => ({ ...a, current: a.id === m.threadId || a.id === 'tab:' + m.threadId || a.id === 'thread:' + m.windowId + ':' + m.threadId })));
   if (m.project) currentProject = m.project;
   updateTitle();
-  if (clearChat && changed) renderChat(null);
+  if (clearChat && changed) { const cc = chatBySel.get(m.sel || viewSel); renderChat(cc || null, !!cc); }
 }
 async function decryptEntry(keyText, entry) {
   const key = await crypto.subtle.importKey('raw', b64u(keyText), 'AES-GCM', false, ['decrypt']);
@@ -1629,7 +1630,7 @@ function connect() {
     }
     else if (m.t === 'sendFailed') pendingSends.delete(m.requestId);
     else if (m.t === 'attachments') { if (m.sel === viewSel) renderAttachments(m.list); }
-    else if (m.t === 'chat') { if (!m.sel || !viewSel || m.sel === viewSel) renderChat(m.chat); }
+    else if (m.t === 'chat') { if (!m.sel || !viewSel || m.sel === viewSel) { if (m.chat) lruPut(chatBySel, m.sel || viewSel, m.chat, 12); renderChat(m.chat, !!m.cached); } }
     else if (m.t === 'draft') { if (!m.sel || m.sel === viewSel) { if ((text.value === '' || text.value === mirroredDraft) && m.text !== text.value) { text.value = m.text; autosize(); } mirroredDraft = m.text; } }
     else if (m.t === 'draftAck') { if (m.ok && (!m.sel || m.sel === viewSel) && text.value === m.text) mirroredDraft = m.text; }
     else if (m.t === 'historyDone') finishHistory(m);
@@ -1666,7 +1667,8 @@ function connect() {
       currentAppName = m.appName;
       currentProject = m.app === 'fusion' ? '' : (m.project || winLabel(m.title).name);
       updateAppText(); updateTitle();
-      renderChat(null);
+      const cachedChat = m.sel ? chatBySel.get(m.sel) : null;
+      renderChat(cachedChat || null, !!cachedChat);
       renderContext(null);
       $('quotaMeters').innerHTML = '';
       $('quotaMeters').title = '';
@@ -1720,7 +1722,10 @@ function connect() {
       if (!m.cached) finishPending(['正在读取额度…']);
     }
     else if (m.t === 'menu') {
-      if (m.requestId != null && (m.requestId !== menuRequest || (m.sel && m.sel !== viewSel))) return;
+      if (m.sel && viewSel && m.sel !== viewSel) return;
+      lruPut(menuCache, menuCacheKey(m.kind), m, 24);
+      if (m.requestId != null && m.requestId !== menuRequest) return;
+      if (m.requestId == null && !(sheetKind === 'menu' && menuSheetKind === m.kind)) return;
       showMenu(m.kind, m.items, m.max, m.fusion, m.fast, m.model);
     }
     else if (m.t === 'params') showParams(m);
@@ -1774,7 +1779,7 @@ function openSheet(kind, html) {
 function closeSheet() {
   menuRequest++;
   if (sheetKind === 'codex-settings') { codexSettingsRequest++; send({ t: 'closeCodexSettings' }); status(''); }
-  sheetKind = null;
+  sheetKind = null; menuSheetKind = '';
   $('shade').classList.remove('open');
   $('sheet').classList.remove('open');
 }
@@ -1998,8 +2003,16 @@ function fusionBlock(fusion) {
 // Devin's permission modes: the desktop's own description, plus a Chinese one when the app is in Chinese.
 const MODE_ZH = { Code: '写代码、改文件，正常提问', Smart: '模型判断安全的操作自动批准', Ask: '只回答问题，不改代码', Plan: '先做方案，再动手', 'Bypass Permissions': '自动批准所有工具调用（不再询问）' };
 const modeDesc = it => (I18N.lang === 'zh' && MODE_ZH[it.label]) || it.desc;
-function showMenu(kind, items, max, fusion, fast, model) {
+const menuCacheKey = kind => `${currentApp}|${viewSel}|${kind}`;
+function requestMenu(kind, loadingMsg) {
+  const cached = menuCache.get(menuCacheKey(kind));
+  if (cached) showMenu(kind, cached.items, cached.max, cached.fusion, cached.fast, cached.model, true);
+  else status(loadingMsg);
+  send({ t: 'openMenu', kind });
+}
+function showMenu(kind, items, max, fusion, fast, model, refreshing) {
   finishPending(['读取思考强度…', '读取权限…', '读取模式列表…', '读取模型列表…', '读取历史对话…', '设置中…']);
+  menuSheetKind = kind;
   const picking = /^fusion-(lead|effort|sidekick)$/.test(String(kind || ''));
   if (!items?.length && !fusion && kind !== 'effort') return status(appMessage('菜单是空的，可能 {app} 版本不同'), false);
   status('');
@@ -2021,7 +2034,7 @@ function showMenu(kind, items, max, fusion, fast, model) {
   const effortEntry = kind === 'model' ? `<button class="opt" data-effort-open><span class="lbl">思考强度<span class="sub">${esc(lastChat?.effort || '')}</span></span></button>` : '';
   const navigation = kind === 'effort' ? `<button class="opt" data-model-back>← 返回模型列表</button><p>${esc(model || lastChat?.model || '')}</p>${!items?.length ? '<p class="hint">这个模型没有可选的思考强度。</p>' : ''}` : '';
   const done = kind === 'effort' ? '<button class="opt" data-model-done>完成</button>' : '';
-  openSheet('menu', `<h3>${MENU_TITLE[kind] || ''}</h3>` + navigation + agentRow + (picking ? '' : fusionBlock(fusion)) + effortEntry + fastRow + maxRow + rows + done);
+  openSheet('menu', `<h3>${MENU_TITLE[kind] || ''}${refreshing ? ' <span class="hint">更新中…</span>' : ''}</h3>` + navigation + agentRow + (picking ? '' : fusionBlock(fusion)) + effortEntry + fastRow + maxRow + rows + done);
 }
 
 let changeFiles = [];
@@ -2369,8 +2382,8 @@ document.addEventListener('visibilitychange', () => {
 $('sheet').addEventListener('click', async e => {
   const b = e.target.closest('button');
   if (!b) return;
-  if ('modelBack' in b.dataset) { status('读取模型列表…'); return send({ t: 'openMenu', kind: 'model' }); }
-  if ('effortOpen' in b.dataset) { status('读取思考强度…'); return send({ t: 'openMenu', kind: 'effort' }); }
+  if ('modelBack' in b.dataset) return requestMenu('model', '读取模型列表…');
+  if ('effortOpen' in b.dataset) return requestMenu('effort', '读取思考强度…');
   if ('modelDone' in b.dataset) { closeSheet(); return; }
   if (b.dataset.fast) { status('设置中…'); return send({ t: 'pickMenu', kind: 'fast', label: b.dataset.fast, name: b.dataset.fastMenu }); }
   if ('editorChat' in b.dataset) { closeSheet(); status('正在打开聊天面板…'); return send({ t: 'openEditorChat' }); }
@@ -2486,6 +2499,8 @@ $('sheet').addEventListener('click', async e => {
   if (b.dataset.fusion) {
     status('正在修改…');
     if (b.dataset.fusion === 'fast') return send({ t: 'fusionPick', part: 'fast' });
+    const fm = menuCache.get(menuCacheKey(`fusion-${b.dataset.fusion}`));
+    if (fm) showMenu(fm.kind, fm.items, fm.max, fm.fusion, fm.fast, fm.model, true);
     return send({ t: 'fusionOptions', part: b.dataset.fusion });
   }
   if (b.dataset.kind) {
@@ -2522,8 +2537,8 @@ $('sheet').addEventListener('click', async e => {
   if (act === 'newTerm') { closeSheet(); status('正在新建终端…'); return send({ t: 'newTerminal' }); }
   else if (act === 'fusionHistory') { closeSheet(); return send({ t: 'fusionHistory' }); }
   else if (act === 'fusionNew') { closeSheet(); return send({ t: 'fusionNew' }); }
-  else if (act === 'model') { status('读取模型列表…'); return send({ t: 'openMenu', kind: 'model' }); }
-  else if (act === 'permission') { status('读取权限…'); return send({ t: 'openMenu', kind: lastChat?.permission ? 'permission' : 'mode' }); }
+  else if (act === 'model') return requestMenu('model', '读取模型列表…');
+  else if (act === 'permission') return requestMenu(lastChat?.permission ? 'permission' : 'mode', '读取权限…');
   else if (act === 'agentsRefresh') return openAgentList(true);
   else if (act === 'projects') { status('正在读取项目…'); return send({ t: 'projects' }); }
   else if (act === 'projectNewChat') { closeSheet(); status('正在新建对话…'); return send({ t: 'newProjectChat' }); }
@@ -2953,6 +2968,9 @@ function noteSwitch(chat) {
 }
 
 let lastChat = null, mirroredDraft = '';
+const chatBySel = new Map(), menuCache = new Map();
+const lruPut = (map, key, val, max) => { map.delete(key); map.set(key, val); while (map.size > max) map.delete(map.keys().next().value); };
+let menuSheetKind = '', chatStale = false;
 let currentProject = '', currentTerminal = '';
 function updateTitle() {
   const first = lastChat?.items?.find(it => it.k === 'user');
@@ -3333,7 +3351,8 @@ function showWorkdirs(m) {
   openSheet('workdir', `<h3>工作目录</h3><div class="pSec">运行位置</div><div class="pRow" style="display:flex;gap:6px;margin-bottom:8px">${envs}</div><div class="pSec">文件夹</div><button class="opt" data-act="projects">选择文件夹／新建项目</button>${rows || '<div class="hint">没有读到文件夹列表。</div>'}`);
   $('sheet')._wd = m.rows;
 }
-function renderChat(chat) {
+function renderChat(chat, stale) {
+  chatStale = !!stale;
   if (chat?.items?.some(it => it.k === 'human')) $('sessionNotice').hidden = true;
   const previous = lastChat;
   if (!chat || previous?.thread !== chat.thread) {
@@ -3394,7 +3413,7 @@ function renderChat(chat) {
   updateSendMode();
   currentSurface = chat?.surface || null;
   paintSurface();
-  if (!chat) { itemsEl.replaceChildren(); renderQueue(false, []); renderQuestions(null); paintSessions(null); latestTasks = null; $('taskChip').hidden = true; return; }
+  if (!chat) { itemsEl.replaceChildren(); itemsEl.classList.remove('stale'); renderQueue(false, []); renderQuestions(null); paintSessions(null); latestTasks = null; $('taskChip').hidden = true; return; }
   const sessionChanged = paintSessions(chat);
   const V = scMerge(chat);
   if (!sessionChanged && userSelecting()) {
@@ -3481,6 +3500,7 @@ function renderChat(chat) {
     });
   }
   syncChildren(itemsEl, els);
+  itemsEl.classList.toggle('stale', chatStale);
   latestTasks = (chat.items || []).filter(it => it.k === 'tasks').pop() || null;
   $('taskChip').hidden = !latestTasks;
   if (latestTasks) $('taskChip').innerHTML = `<span>${I18N.tr('任务')}</span> ${latestTasks.done}/${latestTasks.total}`;
@@ -3488,10 +3508,11 @@ function renderChat(chat) {
   const live = new Set(visibleItems.map(it => it.i));
   for (const k of cache.keys()) if (!live.has(k)) { thoughtObserver.unobserve(cache.get(k).el); cache.delete(k); }
 
-  $('actionBar').innerHTML = buttonsHtml(chat.global, 'g');
-  $('actionBar').classList.toggle('show', chat.global.length > 0);
-  renderQueue(chat.busy, chat.queued || [], chat.subagents || [], chat.readonly, chat.changed, chat.queuedCount);
-  renderQuestions(chat.readonly && !chat.questions?.codex ? null : chat.questions);
+  // A cached render is display-only: no action buttons, questions or queue actions until the fresh chat arrives.
+  $('actionBar').innerHTML = chatStale ? '' : buttonsHtml(chat.global, 'g');
+  $('actionBar').classList.toggle('show', !chatStale && chat.global.length > 0);
+  renderQueue(chatStale ? false : chat.busy, chatStale ? [] : (chat.queued || []), chat.subagents || [], chat.readonly, chat.changed, chat.queuedCount);
+  renderQuestions(chatStale || (chat.readonly && !chat.questions?.codex) ? null : chat.questions);
 
   restoreChatPosition(anchor, stick);
   historyRendering = false;
@@ -3892,9 +3913,9 @@ document.addEventListener('click', async e => {
   status('已点击：' + b.textContent);
 });
 
-$('pickMode').onclick = () => { status('读取模式列表…'); send({ t: 'openMenu', kind: 'mode' }); };
-$('pickModel').onclick = () => { status('读取模型列表…'); send({ t: 'openMenu', kind: 'model' }); };
-$('pickPerm').onclick = () => { status('读取权限…'); send({ t: 'openMenu', kind: 'permission' }); };
+$('pickMode').onclick = () => requestMenu('mode', '读取模式列表…');
+$('pickModel').onclick = () => requestMenu('model', '读取模型列表…');
+$('pickPerm').onclick = () => requestMenu('permission', '读取权限…');
 function showCodexSkills(rows) {
   openSheet('skills', '<h3>Skill · 技能</h3><input id="skillSearch" placeholder="搜索技能" style="width:100%;box-sizing:border-box;margin-bottom:8px"><div id="skillRows"></div>');
   const paint = () => {
@@ -3952,7 +3973,7 @@ $('pickIde').onclick = () => send({ t: 'codexIde' });
 $('pickRun').onclick = () => { status('读取执行位置…'); send({ t: 'codexRun' }); };
 $('pickChat').onclick = () => { status('读取会话操作…'); send({ t: 'codexChat' }); };
 $('pickAgents').onclick = () => openAgentList();
-$('pickHistory').onclick = () => { status('读取历史对话…'); send({ t: 'openMenu', kind: 'history' }); };
+$('pickHistory').onclick = () => requestMenu('history', '读取历史对话…');
 $('newChat').onclick = () => { status('正在新建对话…'); send({ t: 'newChat' }); };
 
 /* ---------- file viewer ---------- */
