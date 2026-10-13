@@ -326,6 +326,8 @@ function showWorkdirs(m) {
   $('sheet')._wd = m.rows;
 }
 function renderChat(chat, stale) {
+  chat = withMessageTimes(chat);
+  updateGenerationTime(chat, stale);
   chatStale = !!stale;
   if (chat?.items?.some(it => it.k === 'human')) $('sessionNotice').hidden = true;
   const previous = lastChat;
@@ -343,6 +345,7 @@ function renderChat(chat, stale) {
   }
   if (chatScrolling && chat && previous?.thread === chat.thread) {
     lastChat = chat;
+    paintGenerationTime();
     deferredScrollRender = true;
     chatBusy = !!chat.busy;
     updateSendMode();
@@ -352,6 +355,7 @@ function renderChat(chat, stale) {
   const followBottom = !historyRequest && !historyRendering && nearBottom();
   const savedAnchor = followBottom ? null : captureChatAnchor();
   lastChat = chat; updateTitle();
+  paintGenerationTime();
   paintWorkdir(chat?.workdir);
   if (chat && 'context' in chat) renderContext(chat.context);
   $('empty').hidden = !!chat;
