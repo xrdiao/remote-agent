@@ -186,6 +186,13 @@
     return { label, ...codexPoint(e) };
   }).filter(x => x.label);
   const codexQueued = () => {
+    // Newer Codex keeps the queue in the composer's own rows (props carry messageId / fullMessageText);
+    // older builds kept it in the queued-follow-ups global state read below.
+    const rows = [...doc.querySelectorAll('[aria-label^="Preview queued message"]')]
+      .map(el => codexFiberProps(el, 16).find(p => typeof p.messageId === 'string' && 'fullMessageText' in p)).filter(Boolean);
+    if (rows.length) return [...new Map(rows.map(p => [p.messageId, p])).values()].map(p => ({
+      id: p.messageId, t: String(p.fullMessageText || p.messageText || '').slice(0, 4000), src: 'codex',
+    })).filter(m => m.t);
     const thread = codexThread();
     const value = codexQueryClient()?.getQueryData(['vscode', 'get-global-state', '{"key":"queued-follow-ups"}'])?.value;
     const raw = value && typeof value === 'object' ? value[thread] : null;
