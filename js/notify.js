@@ -251,6 +251,7 @@ $('sheet').addEventListener('click', async e => {
   if (b.dataset.params) { status('读取模型参数…'); return send({ t: 'params', model: b.dataset.params, label: b.dataset.plabel }); }
   if (b.dataset.section) { status('设置中…'); return send({ t: 'pickParam', model: b.dataset.model, label: b.dataset.plabel, section: b.dataset.section, value: b.dataset.value }); }
   const act = b.dataset.act;
+  if (act === 'toggleChanges') { toggleChangeNotice(); return closeSheet(); }
   if (act === 'newTerm') { closeSheet(); status('正在新建终端…'); return send({ t: 'newTerminal' }); }
   else if (act === 'fusionHistory') { closeSheet(); return send({ t: 'fusionHistory' }); }
   else if (act === 'fusionNew') { closeSheet(); return send({ t: 'fusionNew' }); }
