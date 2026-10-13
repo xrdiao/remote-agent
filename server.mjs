@@ -315,10 +315,16 @@ class Cdp {
     });
   }
 
-  send(method, params = {}) {
+  send(method, params = {}, timeoutMs = 15000) {
     return new Promise((resolve, reject) => {
       const id = ++this.nextId;
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        if (this.pending.delete(id)) reject(new Error('CDP 调用超时: ' + method));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: v => { clearTimeout(timer); resolve(v); },
+        reject: e => { clearTimeout(timer); reject(e); },
+      });
       this.ws.send(JSON.stringify({ id, method, params }));
     });
   }
@@ -327,8 +333,8 @@ class Cdp {
     this.handlers.set(method, fn);
   }
 
-  async evaluate(expression) {
-    const r = await this.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+  async evaluate(expression, opts = {}) {
+    const r = await this.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, opts.timeout ?? 30000);
     if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || 'evaluate failed');
     return r.result.value;
   }
@@ -383,7 +389,8 @@ const FOCUS_COMPOSER = `(() => {
   for (const s of selectors) { eds = [...doc.querySelectorAll(s)].filter(visible); if (eds.length) break; }
   if (!eds.length) eds = [...doc.querySelectorAll('[contenteditable="true"]')].filter(e => visible(e) && !e.closest('.monaco-editor, [aria-label="User message"], [aria-label="Devin message"]'));
   if (!eds.length) return null;
-  const el = eds.find(e => e.contains(doc.activeElement)) || eds[eds.length - 1];
+  const selId = doc.querySelector('[data-sidebar-item-key] [data-active="true"]')?.closest('[data-sidebar-item-key]')?.getAttribute('data-sidebar-item-key')?.slice(4);
+  const el = eds.find(e => e.contains(doc.activeElement)) || (selId && eds.find(e => e.closest('[data-glass-agent-id]')?.getAttribute('data-glass-agent-id') === selId)) || eds[eds.length - 1];
   el.focus();
   const range = doc.createRange();
   range.selectNodeContents(el);
@@ -471,7 +478,10 @@ function pageHelpers() {
 
   const findPanel = () => {
     const real = [...doc.querySelectorAll(COMPOSER)].filter(e => vis(e) && !e.closest(ITEM_SEL));
-    const eds = real.length ? real : [...doc.querySelectorAll(COMPOSER)].filter(vis);
+    const base = real.length ? real : [...doc.querySelectorAll(COMPOSER)].filter(vis);
+    // Cursor's Agents window can show several cards at once; read the card the sidebar marks selected.
+    const selId = doc.querySelector('[data-sidebar-item-key] [data-active="true"]')?.closest('[data-sidebar-item-key]')?.getAttribute('data-sidebar-item-key')?.slice(4);
+    const eds = selId ? [...base].sort((a, b) => (a.closest('[data-glass-agent-id]')?.getAttribute('data-glass-agent-id') === selId ? 0 : 1) - (b.closest('[data-glass-agent-id]')?.getAttribute('data-glass-agent-id') === selId ? 0 : 1)) : base;
     for (const ed of eds) {
       let p = ed;
       while (p && !p.querySelector(ITEM_SEL)) p = p.parentElement;
@@ -1182,6 +1192,16 @@ function pageHelpers() {
     return (b.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 40) || null;
   };
   const codexModelName = () => {
+    const cp = codexPickerProps();
+    if (cp) {
+      const sel = (cp.modelOptions || []).find(o => o.model?.id === cp.model)?.model;
+      const eff = cp.powerSelections?.find(x => x.id === cp.selectedPowerSelection?.id)?.reasoningEffort;
+      const pretty = eff ? eff[0].toUpperCase() + eff.slice(1) : '';
+      if (sel) {
+        const base = String(sel.displayName || sel.id).replace(/-/g, ' ');
+        return pretty ? `${base} · ${pretty}` : base;
+      }
+    }
     const name = [...doc.querySelectorAll('[class*="ModelPickerTriggerModelText"]')].find(vis)?.textContent?.trim();
     if (!name) return null;
     const effort = [...doc.querySelectorAll('[data-selected-reasoning-effort]')].find(vis)?.getAttribute('data-selected-reasoning-effort') || '';
@@ -1191,33 +1211,61 @@ function pageHelpers() {
   const modelButton = () => {
     const codex = [...doc.querySelectorAll('[data-codex-intelligence-trigger]')].find(vis);
     if (codex && vis(codex)) return codex;
-    const composer = [...doc.querySelectorAll(COMPOSER)].filter(e => vis(e) && !e.closest(ITEM_SEL)).at(-1);
+    const composer = pickComposer([...doc.querySelectorAll(COMPOSER)].filter(e => vis(e) && !e.closest(ITEM_SEL)));
     const toolbar = composer?.closest('.ai-input-full-input-box') || composer?.parentElement?.closest('.ui-prompt-input');
     const known = [...(toolbar || doc).querySelectorAll('.ui-model-picker__trigger, .vscode-model-picker__trigger, .composer-unified-dropdown-model')].filter(vis).at(-1);
     if (known) return known;
     // Model sits in the prompt toolbar, on the opposite side from voice / send.
     // Status chips such as "commit" live outside that toolbar and must not match.
-    const bar = doc.querySelector('.ui-prompt-input-toolbar');
+    const bar = toolbar?.querySelector('.ui-prompt-input-toolbar') || doc.querySelector('.ui-prompt-input-toolbar');
     if (!bar) return devinModelButton();
     const right = bar.querySelector('.ui-prompt-input-toolbar__right');
     const STATUS = /^(commit|committing|generating|applying|reading|searching|running|planning|thinking|working|editing|indexing)\b/i;
-    return [...bar.querySelectorAll('button, [role=button]')].find(e => {
+    const cand = [...bar.querySelectorAll('button, [role=button]')].filter(e => {
       if (!vis(e) || (right && right.contains(e))) return false;
       const text = (e.innerText || '').replace(/\s+/g, ' ').trim();
       return text && !STATUS.test(text);
-    }) || devinModelButton();
+    });
+    return cand.find(e => e.getAttribute('aria-haspopup') === 'menu') || cand[0] || devinModelButton();
   };
   const DEVIN_MODEL = /^(SWE|GPT|Claude|Gemini|GLM|Kimi|Fusion)\b/;
   const devinModelButton = () => {
     revealDevinComposer();
     return [...doc.querySelectorAll('button')].find(e => {
-      if (!vis(e) || e.closest('.space-y-2')) return false;
-      const text = (e.innerText || '').replace(/\s+/g, ' ').trim();
-      return DEVIN_MODEL.test(text) && text.length < 50;
+      // textContent first: innerText forces layout for every button on the page.
+      const text = (e.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!DEVIN_MODEL.test(text) || text.length >= 50) return false;
+      return vis(e) && !e.closest('.space-y-2');
     });
   };
   const devinModelMenu = () => [...doc.querySelectorAll('div')].find(e => vis(e) && /Recently Used|Recommended/.test(e.innerText || '') && (e.innerText || '').includes('See more') && (e.innerText || '').length < 2500);
   const powerProps = () => doc.querySelector('[data-codex-intelligence-trigger]') ? codexFiberProps(modelButton(), 40).find(p => p.powerSelections && p.onCommitPower) : null;
+  const codexPickerProps = () => {
+    const trg = [...doc.querySelectorAll('[data-codex-intelligence-trigger]')].find(vis);
+    return trg ? codexFiberProps(trg, 70).find(p => p.modelOptions && p.onSelectModelOption) : null;
+  };
+  const cursorPickerProps = () => {
+    const btn = modelButton();
+    if (!btn) return null;
+    return codexFiberProps(btn, 90).find(p => Array.isArray(p.models) && p.models.length > 5 && (p.selections || p.initialSelections) && typeof p.onSelectionChange === 'function') || null;
+  };
+  const normKey = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const pickCodexModel = label => {
+    const p = codexPickerProps();
+    if (!p) return false;
+    const want = normKey(label);
+    const opt = (p.modelOptions || []).find(o => !o.disabled && normKey(o.model?.displayName || o.model?.id) === want);
+    if (!opt) {
+      if (/^default/.test(want)) {
+        if (p.onSelectDefault) { p.onSelectDefault(); p.onSelectComplete?.(); return true; }
+        try { p.onSelectModel?.('default'); return true; } catch { return false; }
+      }
+      return false;
+    }
+    p.onSelectModel(opt.model?.id || opt.model?.model || opt.model?.displayName);
+    p.onSelectComplete?.();
+    return true;
+  };
   const devinPickerProps = () => {
     const button = devinSurface() && devinModelButton();
     return button ? codexFiberProps(button, 40).find(p => p.visibleModelConfigs && p.onModelSelect) : null;
@@ -1233,6 +1281,15 @@ function pageHelpers() {
   const effortItems = () => {
     const p = powerProps();
     if (p) return p.powerSelections.filter(x => !x.isLocked).map(x => ({ label: x.reasoningEffort, checked: x.id === p.selectedPowerSelection?.id }));
+    const cp = devinSurface() ? null : cursorPickerProps();
+    if (cp) {
+      const sel = (cp.selections || cp.initialSelections || [])[0];
+      const model = cp.models.find(m => m.name === sel?.modelId || m.id === sel?.modelId);
+      const def = model?.parameterDefinitions?.find(d => d.id === 'reasoning_effort');
+      const cur = sel?.parameters?.find(x => x.id === 'reasoning_effort')?.value;
+      const vals = def?.parameterType?.enumParameter?.values;
+      if (vals?.length) return vals.filter(v => v.displayName).map(v => ({ label: v.displayName, checked: v.value === cur }));
+    }
     return devinVariants('effort').sort((a, b) => a.order - b.order).map(({ label, checked }) => ({ label, checked }));
   };
   const effortName = () => effortItems().find(x => x.checked)?.label || (doc.querySelector('.vscode-model-picker__trigger') ? /\b(Low|Medium|High|Max|Extra High|Ultra)(?: Fast)?$/i.exec(normLabel(modelButton()?.innerText))?.[1] || 'Effort' : null);
@@ -1406,7 +1463,7 @@ function pageHelpers() {
       return item;
     }
     const readable = el.querySelector('.aislash-editor-input-readonly, .composer-human-message') || withoutThinking(el);
-    if (k === 'human') item.t = aria === 'User message' ? devinUserText(readable) : readable.innerText.trim();
+    if (k === 'human') item.t = aria === 'User message' ? devinUserText(readable) : (readable.innerText || readable.textContent || '').trim();
     else if (k === 'assistant') {
       const devinRoot = aria === 'Devin message' ? el.querySelector('.prose-main') : null;
       const md = [...el.querySelectorAll('.markdown-root, .ui-markdown, .rendered-markdown')].find(n => !n.closest(THINKING_ROOT));
@@ -1489,7 +1546,12 @@ function pageHelpers() {
     button.click();
     return true;
   };
-  const activeThread = () => codexThread() || (devinSurface() ? devinSession()?.key : '') || [...doc.querySelectorAll('[data-glass-agent-id]')].find(vis)?.getAttribute('data-glass-agent-id') || window.__SSG_COMPOSER_PROVIDER__?.getStates?.().find(c => c.state === 'focused')?.id || agentList().find(a => a.current)?.id || '';
+  const activeThread = () => {
+    const glass = [...doc.querySelectorAll('[data-glass-agent-id]')].filter(vis);
+    // Cursor's composer provider keeps a stale 'focused' composer; the sidebar's data-active row is the selected one.
+    const cursorSel = [...doc.querySelectorAll('[data-sidebar-item-key^="row:"]')].find(r => r.querySelector('[data-active="true"]'))?.getAttribute('data-sidebar-item-key').slice(4);
+    return codexThread() || (devinSurface() ? devinSession()?.key : '') || (glass.length === 1 ? glass[0].getAttribute('data-glass-agent-id') : '') || cursorSel || window.__SSG_COMPOSER_PROVIDER__?.getStates?.().find(c => c.state === 'focused')?.id || agentList().find(a => a.current)?.id || '';
+  };
   const codexTurnData = el => codexFiberProps(el.querySelector('[class*="agent-activity"]') || el.querySelector('button[aria-expanded]') || el, 40).find(p => p.turn)?.turn;
   const codexFusionTurn = (id = '', message = '', previous = []) => {
     const rows = [...doc.querySelectorAll('[data-turn-key]')];
@@ -1747,6 +1809,7 @@ function pageHelpers() {
         thread: activeThread(),
         title: agentState()?.title || '',
         context: contextPct(),
+        draft: composerDraft(),
         ...(codexFacts()?.view ? { codex: codexFacts().view } : {}),
       };
     }
@@ -1782,6 +1845,7 @@ function pageHelpers() {
       title: agentState()?.title || '',
       model: codexModelName() || (modelEl ? normLabel(modelEl.innerText).split('\n')[0].slice(0, 60) : null),
       context: contextPct(),
+      draft: composerDraft(),
       ...(devinSurface() ? { surface: devinSurface() } : {}),
       ...(codexFacts()?.view ? { codex: codexFacts().view } : {}),
     };
@@ -1794,17 +1858,92 @@ function pageHelpers() {
     if (!m) return null;
     return { pct: Number(m[1]), basis: /left|remaining|剩余/i.test(text) ? 'remaining' : 'used' };
   };
+  // Cursor's Agents window shows several agent cards, each with its own composer; the selected one is the
+  // sidebar row with data-active.
+  const selCardId = () => doc.querySelector('[data-sidebar-item-key] [data-active="true"]')?.closest('[data-sidebar-item-key]')?.getAttribute('data-sidebar-item-key')?.slice(4) || '';
+  const pickComposer = eds => {
+    const sel = selCardId();
+    return eds.find(e => e.contains(doc.activeElement))
+      || (sel && eds.find(e => e.closest('[data-glass-agent-id]')?.getAttribute('data-glass-agent-id') === sel))
+      || eds.at(-1);
+  };
+  const composerDraft = () => {
+    if (doc.querySelector('#active-frame')) return codexPromptText() || '';
+    const eds = [...doc.querySelectorAll(`${COMPOSER}, [data-slate-editor="true"][contenteditable="true"]`)].filter(e => vis(e) && !inItem(e));
+    const ed = pickComposer(eds);
+    if (!ed || ed.querySelector('[data-slate-placeholder]')) return '';
+    return (ed.innerText || '').replace(/\n+$/g, '');
+  };
+  const composerFocused = () => {
+    const a = doc.activeElement;
+    return !!a?.closest?.(`${COMPOSER}, [data-slate-editor="true"]`) && !inItem(a);
+  };
+  // Write the composer via the editor's own API (no keyboard, no focus). Returns true only when it worked.
+  const setComposerDraft = text => {
+    text = String(text ?? '');
+    if (doc.querySelector('#active-frame')) {
+      // Codex ProseMirror has no editor ref on the DOM node; find the EditorView in React props/state.
+      const ed = [...doc.querySelectorAll('.ProseMirror[contenteditable="true"]')].find(e => vis(e));
+      if (!ed) return false;
+      let view = codexFiberProps(ed, Infinity).flatMap(p => Object.values(p || {}))
+        .find(v => v && typeof v === 'object' && typeof v.dispatch === 'function' && v.state?.doc && v.state?.tr);
+      if (!view) view = codexFiberProps(ed, Infinity).flatMap(p => Object.values(p || {}))
+        .map(v => v?.current).find(v => v && typeof v === 'object' && typeof v.dispatch === 'function' && v.state?.doc && v.state?.tr);
+      if (!view) return false;
+      const schema = view.state.schema;
+      const Frag = view.state.doc.content.constructor;
+      const children = text.split('\n').map(line => (schema.nodes.paragraph || Object.values(schema.nodes).find(n => n.isBlock && n.name !== 'doc')).create(null, line ? schema.text(line) : null));
+      view.dispatch(view.state.tr.replaceWith(0, view.state.doc.content.size, Frag.from(children)));
+      return composerDraft() === text.replace(/\n+$/g, '');
+    }
+    const eds = [...doc.querySelectorAll(`${COMPOSER}, [data-slate-editor="true"][contenteditable="true"]`)].filter(e => vis(e) && !inItem(e));
+    const sel = selCardId();
+    const selEds = sel ? eds.filter(e => e.closest('[data-glass-agent-id]')?.getAttribute('data-glass-agent-id') === sel) : [];
+    const ed = (selEds.length ? selEds : eds).filter(e => e.editor?.commands?.setContent).at(-1)
+      || (selEds.length ? selEds : eds).find(e => e.contains(doc.activeElement))
+      || (selEds.length ? selEds.at(-1) : eds.at(-1));
+    if (!ed) return false;
+    // Cursor tiptap keeps the Editor on the DOM node.
+    const cmd = ed.editor?.commands;
+    if (cmd?.setContent) {
+      const content = [{ type: 'paragraph', content: String(text).split('\n').flatMap((line, i) => [...(i ? [{ type: 'hardBreak' }] : []), ...(line ? [{ type: 'text', text: line }] : [])]) }];
+      cmd.setContent({ type: 'doc', content });
+      return composerDraft() === text.replace(/\n+$/g, '');
+    }
+    // Devin Slate: find the editor object on the fiber.
+    const slate = codexFiberProps(ed, Infinity).flatMap(p => Object.values(p || {}))
+      .find(v => v && typeof v === 'object' && typeof v.apply === 'function' && Array.isArray(v.children));
+    if (slate) {
+      let path = [], node = { children: slate.children }, last = { text: '' };
+      while (node?.children?.length) { path.push(node.children.length - 1); node = node.children[node.children.length - 1]; }
+      if (node && typeof node.text === 'string') last = node;
+      const range = { anchor: { path: [0, 0], offset: 0 }, focus: { path, offset: last.text.length } };
+      if (typeof slate.select === 'function') slate.select(range);
+      else slate.apply({ type: 'set_selection', properties: null, newProperties: range });
+      if (typeof slate.deleteFragment === 'function') slate.deleteFragment();
+      else slate.delete({ at: range });
+      text.split('\n').forEach((line, i) => {
+        if (i) slate.insertBreak();
+        if (line) slate.insertText(line);
+      });
+      return composerDraft() === text.replace(/\n+$/g, '');
+    }
+    return false;
+  };
   const readDevinUsage = () => {
     const input = [...doc.querySelectorAll(`${COMPOSER}, [data-slate-editor="true"]`)].filter(e => vis(e) && e.isContentEditable && !inItem(e)).at(-1);
-    const api = input && codexFiberProps(input, Infinity).find(p => p.value?.api?.windsurfSettingsPage?.planInfo)?.value.api.windsurfSettingsPage.planInfo;
-    const info = api?.getPlanInfo();
+    const api = input && codexFiberProps(input, Infinity).find(p => p.value?.api?.windsurfSettingsPage?.planInfo)?.value.api;
+    // The extension refreshes planInfo on window focus; nudge it so quota reads aren't stale.
+    try { api?.onWindowFocusChange?.(true); } catch {}
+    const info = api?.windsurfSettingsPage?.planInfo?.getPlanInfo();
     if (info) return {
       missing: false, quota: [], plan: info.planName, updated: Date.now(),
-      limits: [['每日额度', info.dailyRemainingPercent, info.dailyResetAtUnix, info.hideDailyQuota], ['每周额度', info.weeklyRemainingPercent, info.weeklyResetAtUnix, info.hideWeeklyQuota]].map(([label, pct, reset, hidden]) => ({
-        label, kind: 'limit', basis: 'remaining', pct: !hidden && Number.isFinite(pct) ? pct : null,
-        ...(hidden ? { value: '不适用', detail: '电脑端套餐不显示此额度' } : {}),
-        reset: Number(reset) ? new Date(Number(reset) * 1000).toLocaleString('zh-CN') : '',
-      })),
+      limits: [['每日额度', info.dailyRemainingPercent, info.dailyResetAtUnix, info.hideDailyQuota], ['每周额度', info.weeklyRemainingPercent, info.weeklyResetAtUnix, info.hideWeeklyQuota]]
+        .filter(([, , , hidden]) => !hidden)
+        .map(([label, pct, reset]) => ({
+          label, kind: 'limit', basis: 'remaining', pct: Number.isFinite(pct) ? pct : null,
+          reset: Number(reset) ? new Date(Number(reset) * 1000).toLocaleString('zh-CN') : '',
+        })),
     };
     const status = document.getElementById('codeium.windsurf.settings.planInfo') || [...doc.querySelectorAll('[aria-label*="quota used"]')].find(a => a.getBoundingClientRect().width > 0);
     const summary = status?.getAttribute('aria-label') || '';
@@ -1857,7 +1996,8 @@ function pageHelpers() {
       kind: 'limit', basis: 'remaining', pct: 100 - window.used_percent,
       reset: new Date(window.reset_at * 1000).toLocaleString('zh-CN'),
     }));
-    return { cached: !refresh, updated: client.getQueryState(['rate-limit-status']).dataUpdatedAt, missing: !limits.length, quota: [], limits };
+    const plan = data.plan_type ? data.plan_type[0].toUpperCase() + data.plan_type.slice(1) : '';
+    return { cached: !refresh, updated: client.getQueryState(['rate-limit-status']).dataUpdatedAt, missing: !limits.length, quota: [], limits, ...(plan ? { plan } : {}) };
   };
 
   // Named controls in Cursor's UI; each entry lists fallbacks from newest to oldest Cursor layouts.
@@ -1892,8 +2032,8 @@ function pageHelpers() {
   const clickControl = name => {
     const el = CONTROLS[name]?.();
     if (!el) return false;
-    // Radix menus ignore element.click(); a real mouse event is required.
-    if (name === 'permission' || (name === 'mode' && devinModeChip())) return false;
+    // Radix / Base UI menus ignore element.click(); a real mouse event is required.
+    if (name === 'permission' || (name === 'mode' && devinModeChip()) || (name === 'model' && [...el.attributes].some(a => a.name.startsWith('data-base-ui')))) return false;
     el.click();
     return true;
   };
@@ -1905,6 +2045,16 @@ function pageHelpers() {
       return cursor.length ? cursor : devinModeRows();
     },
     model: () => {
+      const cp = codexPickerProps();
+      if (cp) {
+        const rows = (cp.modelOptions || []).filter(o => !o.disabled && !o.model?.hidden).map(o => ({
+          el: null, id: o.model.id, params: false,
+          label: (o.model.displayName || o.model.id).replace(/-/g, ' '),
+          checked: o.model.id === cp.model,
+        }));
+        if (cp.onSelectDefault) rows.unshift({ el: null, id: 'default', params: false, label: 'Default Recommended set of models', checked: cp.selectionMode === 'default' });
+        if (rows.length) return rows;
+      }
       const codexRows = [...doc.querySelectorAll('[role=menuitemradio]')].filter(e => {
         if (!vis(e)) return false;
         return true;
@@ -1966,6 +2116,7 @@ function pageHelpers() {
   const menuItems = kind => (MENU_ITEMS[kind]?.() || []).filter((x, i, rows) => {
     if (!x.label) return false;
     if (rows.findIndex(row => row.label === x.label) !== i) return false;
+    if (!x.el) return true;
     if (vis(x.el)) return true;
     const menu = x.el.closest('.ui-menu, [role=menu]');
     return !!(menu && vis(menu) && (x.el.innerText || '').trim());
@@ -2197,16 +2348,16 @@ function pageHelpers() {
     if (id && activeThread() === id) return true;
     const tab = [...doc.querySelectorAll('.tab[data-resource-name]')].find(t => t.dataset.resourceName === id && t.querySelector('.composer-tab-label'));
     if (tab) { const r = tab.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; }
-    if (click && window.__SSG_COMPOSER_PROVIDER__?.getStates?.().some(c => c.id === id)) {
-      const services = [...doc.querySelectorAll('[data-message-id]')].flatMap(el => codexFiberProps(el, 40)).find(p => p.uiContextMenuServices)?.uiContextMenuServices;
-      if (services) return services.commandService.executeCommand('composer.openComposer', id).then(() => true);
-    }
     const row = [...doc.querySelectorAll('[data-sidebar-item-key]')].find(e => e.getAttribute('data-sidebar-item-key') === `row:${id}`);
     if (row && (click || vis(row))) {
       row.scrollIntoView({ block: 'nearest' });
       const hit = row.querySelector('.ui-sidebar-menu-button-content') || row.querySelector('[data-sidebar-menu-button]') || row;
       if (click) { hit.click(); return true; }
       return center(hit);
+    }
+    if (click && window.__SSG_COMPOSER_PROVIDER__?.getStates?.().some(c => c.id === id)) {
+      const services = [...doc.querySelectorAll('[data-message-id]')].flatMap(el => codexFiberProps(el, 40)).find(p => p.uiContextMenuServices)?.uiContextMenuServices;
+      if (services) return services.commandService.executeCommand('composer.openComposer', id).then(() => true);
     }
     const li = [...doc.querySelectorAll('li[data-slot="sidebar-menu-item"]')].find(e => codexFiberProps(e).some(p => p.session?.sessionId === id));
     const btn = li && [...li.querySelectorAll('button[aria-label]')].find(vis);
@@ -2352,6 +2503,15 @@ function pageHelpers() {
   const openSettingsTarget = () => { const b = labeled('Settings'); return b ? center(b) : null; };
   const closeSettingsTarget = () => { const b = labeled('Close Settings'); return b ? center(b) : null; };
   const settingsPanel = () => {
+    const close = [...doc.querySelectorAll('button')].find(b => b.getAttribute('aria-label') === 'Close Settings');
+    if (close && vis(close)) {
+      let p = close;
+      for (let i = 0; i < 16 && p; i++) {
+        const box = p.getBoundingClientRect();
+        if ((p.innerText || '').includes('Plan & Usage') && box.width > 300 && box.height > 200) return p;
+        p = p.parentElement;
+      }
+    }
     const nav = [...doc.querySelectorAll('button, [role=button], .cursor-settings-sidebar-nav-cell')].find(e => vis(e) && (e.innerText || '').trim() === 'Plan & Usage');
     let p = nav;
     for (let i = 0; i < 16 && p; i++) {
@@ -2471,7 +2631,9 @@ function pageHelpers() {
     }).filter(Boolean);
     const lines = ((best || root).innerText || '').split('\n').map(s => s.trim()).filter(s => s && !nav.has(s)).slice(0, 32);
     const reset = lines.find(l => /reset/i.test(l)) || '';
-    return { lines: lines.map(l => l.slice(0, 180)), quota: [], limits: limits.map(b => ({ ...b, reset })), loading, missing: !limits.length && !loading };
+    const planIdx = lines.findIndex(l => l === 'CURRENT PLAN');
+    const plan = planIdx >= 0 && lines[planIdx + 1] ? lines[planIdx + 1] : '';
+    return { lines: lines.map(l => l.slice(0, 180)), quota: [], plan, limits: limits.map(b => ({ ...b, reset })), loading, missing: !limits.length && !loading };
   };
 
   const newTerminalItem = () => {
@@ -2954,10 +3116,10 @@ function pageHelpers() {
     };
   };
 
-  return { historyAtStart, cursorSelectProject, cursorWorkspace, scrollCodexHistory, setCommandOpen, attachmentRows, removeAttachment, submitCodexMessage, extract, activeThread, codexThread, openCodexThread, codexViewState, codexRecentPoint, codexNewPoint, codexAccountPoint, codexMenuPoint, clickLabeled, codexChatRows, codexChatPoint, codexArchiveTarget, codexArchiveConfirm, codexPromptText, codexSelectPrompt, codexPromptPoint, codexButtonPoint, codexMentionRows, codexRunItems, codexFacts, codexQueueAction, codexSkills, codexChanges, codexChangeTarget, codexRequestData, codexRequestTarget, codexRequestAction, codexRequestField, codexImage, locate, panelRect, control, menuItems, menuItem, quickOpenRows, agentList, agentTarget, agentState, agentStates, queueTarget, stopTarget, focusQueueEdit,
+  return { historyAtStart, cursorSelectProject, cursorWorkspace, scrollCodexHistory, setCommandOpen, attachmentRows, removeAttachment, submitCodexMessage, extract, activeThread, codexThread, openCodexThread, codexViewState, codexRecentPoint, codexNewPoint, codexAccountPoint, codexMenuPoint, clickLabeled, codexChatRows, codexChatPoint, codexArchiveTarget, codexArchiveConfirm, codexPromptText, codexSelectPrompt, codexPromptPoint, codexButtonPoint, composerDraft, composerFocused, setComposerDraft, codexMentionRows, codexRunItems, codexFacts, codexQueueAction, codexSkills, codexChanges, codexChangeTarget, codexRequestData, codexRequestTarget, codexRequestAction, codexRequestField, codexImage, locate, panelRect, control, menuItems, menuItem, quickOpenRows, agentList, agentTarget, agentState, agentStates, queueTarget, stopTarget, focusQueueEdit,
     terminalList, terminalTarget, terminalCloseTarget, terminalRect, terminalFocus, newTerminalDirect, newTerminalMenu, newTerminalItem, terminalDump, terminalCommand, modelListTrigger,
     codexSettingsData, codexSettingPoint, settingsOpen, clickSettingsButton, clickCloseSettings, openSettingsTarget, closeSettingsTarget, readSettings, settingTarget, usageNavTarget, readUsage, readDevinUsage, refreshCodexUsage, codexWorkspaceRoots, contextPct,
-    clickControl, clickModelListTrigger, effortItems, pickEffort, effortTrigger, closeCodexMenu, closeModelMenu, fastInfo, pickFast, fastTarget, clickCursorFast, devinVariants, devinPickerProps, attachmentPoint, devinSettingsNav, devinSettingsClick, devinSettingsCards,
+    clickControl, clickModelListTrigger, effortItems, pickEffort, effortTrigger, closeCodexMenu, closeModelMenu, fastInfo, pickFast, fastTarget, clickCursorFast, devinVariants, devinPickerProps, codexPickerProps, pickCodexModel, attachmentPoint, devinSettingsNav, devinSettingsClick, devinSettingsCards,
     codexFusionTurn, codexCurrentProject, fusionConfig, clickFusionCombo, clickFusionFast, fusionOptionItems, fusionOptionTarget,
     menuOpen, maxToggle, modelTarget, modelParams, paramTarget, subTarget, activeChatTab, tabTarget, hasComposer, filesState, fileTarget, questionTarget,
     closedThinkingIndexes, clickThinking, closeThinkingIfOpen, thoughtIndexFor, setTasksOpen, devinQueueTarget, workspaceTrustState,
@@ -2967,6 +3129,87 @@ function pageHelpers() {
 const helpersCall = call => `(${pageHelpers.toString()})().${call}`;
 const uploads = new Map();
 const codexUsage = { data: null, refresh: null, retryAt: 0, failures: 0 };
+const appPlans = {};
+
+// Fills appPlans right after the phone's connAgents probe so plan badges don't wait for a usage read.
+let plansRead = null;
+const tapPoint = async (cdp, x, y) => {
+  const base = { x, y, button: 'left', clickCount: 1 };
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...base });
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base });
+};
+async function cursorPlanFor(cdp) {
+  const wasOpen = await cdp.evaluate(helpersCall('settingsOpen()'));
+  if (wasOpen) return (await cdp.evaluate(helpersCall('readUsage()')))?.plan || '';
+  await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
+  try {
+    await cdp.evaluate(helpersCall('clickSettingsButton()'));
+    for (let i = 0; i < 10 && !(await cdp.evaluate(helpersCall('settingsOpen()'))); i++) await new Promise(r => setTimeout(r, 120));
+    if (!await cdp.evaluate(helpersCall('settingsOpen()'))) {
+      const comma = { key: ',', code: 'Comma', windowsVirtualKeyCode: 188, modifiers: 2 };
+      await cdp.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...comma });
+      await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...comma });
+      for (let i = 0; i < 10 && !(await cdp.evaluate(helpersCall('settingsOpen()'))); i++) await new Promise(r => setTimeout(r, 120));
+    }
+    if (!await cdp.evaluate(helpersCall('settingsOpen()'))) return '';
+    const nav = await cdp.evaluate(helpersCall('usageNavTarget()'));
+    if (nav) await tapPoint(cdp, nav.x, nav.y);
+    let usage = null;
+    for (let i = 0; i < 8; i++) {
+      await new Promise(r => setTimeout(r, 250));
+      usage = await cdp.evaluate(helpersCall('readUsage()'));
+      if (usage && !usage.loading) break;
+    }
+    return usage?.plan || '';
+  } finally {
+    try {
+      const how = await cdp.evaluate(helpersCall('clickCloseSettings()'));
+      if (how === 'tab') {
+        const ev = { key: 'w', code: 'KeyW', windowsVirtualKeyCode: 87, nativeVirtualKeyCode: 87, modifiers: 2 };
+        await cdp.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...ev });
+        await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...ev });
+      }
+    } catch {}
+    await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {});
+  }
+}
+function readAllPlans(session) {
+  if (plansRead) return plansRead;
+  plansRead = (async () => {
+    try {
+      const wins = await listWindows();
+      const codex = wins.find(w => w.app === 'codex');
+      if (codex && !appPlans.codex) {
+        const page = (await codexWindows(CODEX_CDP_URL)).find(p => p.chatWs);
+        if (page) {
+          const cdp = new Cdp(page.chatWs);
+          try {
+            await cdp.connect();
+            const u = await cdp.evaluate(helpersCall('refreshCodexUsage(false)'), { timeout: 30000 }).catch(() => null);
+            if (u?.plan) appPlans.codex = u.plan;
+          } finally { cdp.close(); }
+        }
+      }
+      for (const w of wins) {
+        if (appPlans[w.app] || (w.app !== 'devin' && w.app !== 'cursor')) continue;
+        const cdp = new Cdp(w.ws);
+        try {
+          await cdp.connect();
+          if (w.app === 'devin') {
+            const u = await cdp.evaluate(helpersCall('readDevinUsage()'), { timeout: 30000 }).catch(() => null);
+            if (u?.plan) appPlans.devin = u.plan;
+          } else {
+            const plan = await cursorPlanFor(cdp).catch(() => '');
+            if (plan) appPlans.cursor = plan;
+          }
+        } finally { cdp.close(); }
+      }
+      session.emit({ t: 'plans', plans: appPlans });
+    } catch {}
+  })().finally(() => { plansRead = null; });
+  return plansRead;
+}
 
 const CURSOR_BIN = fs.existsSync('/usr/share/cursor/bin/cursor') ? '/usr/share/cursor/bin/cursor' : 'cursor';
 
@@ -3092,6 +3335,8 @@ class Session {
     this.lastBusy = null;
     this.lastTermHash = undefined;
     this.idleTimer = setInterval(() => this.pollIfIdle(), 2000);
+    this.focusCount = 0;
+    this.focusTimer = null;
   }
 
   appMessage(template) {
@@ -3260,6 +3505,7 @@ class Session {
     this.itemCache = new Map();
     this.pendingThread = '';
     this.polling = null;
+    this.lastDraft = undefined;
   }
 
   liveRead(cdp, sel) {
@@ -3447,13 +3693,15 @@ class Session {
           const sources = [...it.images];
           it.images = await Promise.all(it.images.map(async (src, n) => {
             if (old?.imageSources?.[n] === src && old.images?.[n]) return old.images[n];
-            try { return await cdp.evaluate(helpersCall(`codexImage(${JSON.stringify(src)})`)); } catch { return src; }
+            try { return await cdp.evaluate(helpersCall(`codexImage(${JSON.stringify(src)})`), { timeout: 60000 }); } catch { return src; }
           }));
           it.imageSources = sources;
         }
         if (!this.liveRead(cdp, sel)) return;
       }
       this.mergeCodexItems(chat);
+      const draft = chat.draft;
+      delete chat.draft;
       if (immediate) {
         this.fillThinking(chat);
         this.retainThinking(chat);
@@ -3463,6 +3711,10 @@ class Session {
           this.lastChat = json;
           this.emit({ t: 'chat', sel: this.selectionKey(), chat });
         }
+      }
+      if (draft !== undefined && draft !== this.lastDraft && this.liveRead(cdp, sel)) {
+        this.lastDraft = draft;
+        this.emit({ t: 'draft', sel: this.selectionKey(), text: draft });
       }
       // Devin task lists: read details for the current count and restore the original expansion state.
       const taskRow = (chat?.items || []).find(it => it.k === 'tasks' && !it.items && this.tasksTried.get(it.i) !== `${it.done}/${it.total}`);
@@ -3776,12 +4028,14 @@ class Session {
       ? windowsCodexContext(await this.cdp.evaluate(helpersCall('codexThread()')))
       : await this.cdp.evaluate(helpersCall('contextPct()')); }
     catch { context = undefined; }
+    if (context !== undefined && cdp === this.cdp && this.liveRead(cdp, sel)) this.emit({ t: 'usage', sel: this.selectionKey(), context });
     if (!this.liveRead(cdp, sel)) return;
     try {
       const account = this.app === 'codex' ? await this.readCodexAccount(request)
         : this.app === 'devin' ? await this.cdp.evaluate(helpersCall('readDevinUsage()'))
         : await this.readCursorUsage(automatic);
       if (!this.liveRead(cdp, sel)) return;
+      if (typeof account?.plan === 'string' && account.plan) appPlans[this.app] = account.plan;
       if (!account && !request.manual) { this.emit({ t: 'usage', sel: this.selectionKey(), ...(context === undefined ? {} : { context }) }); return; }
       if (!account) throw new Error('没有读到额度');
       this.emit({ t: 'usage', sel: this.selectionKey(), updated: Date.now(), ...(context === undefined ? {} : { context }), ...account });
@@ -3794,6 +4048,7 @@ class Session {
 
   async readCursorUsage(automatic = false) {
     const wasOpen = await this.cdp.evaluate(helpersCall('settingsOpen()'));
+    if (automatic && wasOpen) return this.cdp.evaluate(helpersCall('readUsage()'));
     await this.ensureSettings();
     try {
       const nav = await this.cdp.evaluate(helpersCall('usageNavTarget()'));
@@ -3822,7 +4077,7 @@ class Session {
     if (!request.manual && Date.now() < codexUsage.retryAt) throw codexUsage.error;
     if (!request.manual && codexUsage.data && Date.now() - codexUsage.data.updated < 60000) return { ...codexUsage.data, cached: true };
     if (!codexUsage.refresh) {
-      codexUsage.refresh = cdp.evaluate(helpersCall('refreshCodexUsage()')).then(data => {
+      codexUsage.refresh = cdp.evaluate(helpersCall('refreshCodexUsage()'), { timeout: 120000 }).then(data => {
         codexUsage.data = data;
         codexUsage.failures = 0;
         codexUsage.retryAt = 0;
@@ -4380,14 +4635,30 @@ class Session {
   }
 
   async selectCodexThread(convId, cdp = this.cdp) {
-    if (!await cdp.evaluate(helpersCall(`openCodexThread(${JSON.stringify(convId)})`))) return false;
-    for (let i = 0; i < 12; i++) {
-      await new Promise(r => setTimeout(r, 150));
-      const actual = await cdp.evaluate(helpersCall('codexThread()')) || '';
-      if (actual === convId) {
-        return true;
+    const waitActive = async () => {
+      for (let i = 0; i < 12; i++) {
+        await new Promise(r => setTimeout(r, 150));
+        const actual = await cdp.evaluate(helpersCall('codexThread()')) || '';
+        if (actual === convId) return true;
       }
+      return false;
+    };
+    if (await cdp.evaluate(helpersCall(`openCodexThread(${JSON.stringify(convId)})`)) && await waitActive()) return true;
+    const pos = await cdp.evaluate(helpersCall('codexRecentPoint()'));
+    if (!pos) return false;
+    await this.tapCss(pos.x, pos.y, 'left', cdp);
+    let point = null;
+    for (let i = 0; i < 8 && !point; i++) {
+      await new Promise(r => setTimeout(r, 120));
+      point = await cdp.evaluate(helpersCall(`codexChatPoint(${JSON.stringify(convId)})`));
     }
+    if (!point) {
+      await cdp.evaluate(helpersCall('closeCodexMenu()'));
+      return false;
+    }
+    await this.tapCss(point.x, point.y, 'left', cdp);
+    if (await waitActive()) return true;
+    await cdp.evaluate(helpersCall('closeCodexMenu()'));
     return false;
   }
 
@@ -4453,7 +4724,7 @@ class Session {
   }
 
   async codexPageForThread(pages, threadId) {
-    const matches = await Promise.all(pages.filter(p => p.chatWs).map(async page => {
+    const settled = await Promise.allSettled(pages.filter(p => p.chatWs).map(async page => {
       const cdp = new Cdp(page.chatWs);
       try {
         await cdp.connect();
@@ -4463,6 +4734,7 @@ class Session {
         return { page, active: state?.thread === threadId, inWorkspace: !!row && (!row.workspace || state?.roots?.includes(row.workspace)) };
       } finally { cdp.close(); }
     }));
+    const matches = settled.filter(s => s.status === 'fulfilled').map(s => s.value);
     return matches.find(m => m.active)?.page || matches.find(m => m.inWorkspace)?.page || null;
   }
 
@@ -4787,7 +5059,7 @@ class Session {
       let fast = await this.cdp.evaluate(helpersCall('fastInfo()'));
       if (!items.length) {
         await this.pressControl('model');
-        await new Promise(r => setTimeout(r, 200));
+        await this.waitFor('menuOpen()');
         fast = await this.cdp.evaluate(helpersCall('fastInfo()'));
         const pos = await this.cdp.evaluate(helpersCall('effortTrigger()'));
         if (pos) {
@@ -4930,9 +5202,18 @@ class Session {
     if (String(kind || '').startsWith('fusion-model-')) return this.fusionModelPick(kind.slice('fusion-model-'.length), label);
     if (kind === 'codex-run') return this.codexRunPick(String(label || ''));
     if (kind === 'codex-chat') return this.codexChatPick(String(label || ''), name ? String(name).slice(0, 80) : '');
+    if (kind === 'model' && this.app === 'codex' && await this.cdp.evaluate(helpersCall(`pickCodexModel(${JSON.stringify(String(label))})`))) {
+      await new Promise(r => setTimeout(r, 150));
+      await this.closeMenus();
+      this.emit({ t: 'status', ok: true, msg: `已切换到 ${label}` });
+      this.pollChat().catch(() => {});
+      await this.openMenu('effort').catch(() => {});
+      return;
+    }
     await this.pressControl(kind);
     if (kind === 'model' && this.app !== 'codex') {
       for (let i = 0; i < 8; i++) {
+        if (await this.cdp.evaluate(helpersCall('menuItems("model").length'))) break;
         const opened = await this.cdp.evaluate(helpersCall('clickModelListTrigger()'));
         if (opened) break;
         const sub = await this.cdp.evaluate(helpersCall('modelListTrigger()'));
@@ -4940,9 +5221,9 @@ class Session {
         await new Promise(r => setTimeout(r, 120));
       }
     }
-    let pos = null;
+    let pos = await this.cdp.evaluate(helpersCall(`menuItem(${JSON.stringify(kind)}, ${JSON.stringify(String(label))})`));
     for (let i = 0; i < 10 && !pos; i++) {
-      await new Promise(r => setTimeout(r, 150));
+      await new Promise(r => setTimeout(r, 100));
       pos = await this.cdp.evaluate(helpersCall(`menuItem(${JSON.stringify(kind)}, ${JSON.stringify(String(label))})`));
     }
     if (!pos) {
@@ -4951,10 +5232,11 @@ class Session {
     }
     await this.tapCss(pos.x, pos.y);
     if (kind === 'model' && label !== 'Fusion') {
-      await new Promise(r => setTimeout(r, 250));
+      await new Promise(r => setTimeout(r, 150));
       await this.closeMenus();
-      await this.pollChat();
       this.emit({ t: 'status', ok: true, msg: `已切换到 ${label}` });
+      this.pollChat().catch(() => {});
+      await this.openMenu('effort').catch(() => {});
       return;
     }
     let pending = false;
@@ -5019,7 +5301,7 @@ class Session {
 
   async fusionOptions(part) {
     if (!['lead', 'effort', 'sidekick'].includes(part)) throw new Error('没有这个 Fusion 选项');
-    const native = await this.cdp.evaluate(helpersCall(`fusionConfig()?.lead && devinVariants(${JSON.stringify(part)}).map(({label, checked}) => ({label, checked}))`));
+    const native = await this.cdp.evaluate(`(() => { const h = (${pageHelpers.toString()})(); if (!h.fusionConfig()?.lead) return null; return h.devinVariants(${JSON.stringify(part)}).map(({ label, checked }) => ({ label, checked })); })()`);
     if (native?.length) {
       this.emit({ t: 'menu', kind: `fusion-${part}`, items: native, fusion: await this.cdp.evaluate(helpersCall('fusionConfig()')) });
       return;
@@ -5338,12 +5620,12 @@ class Session {
     const wins = await listWindows();
     if (appId === 'codex') {
       const pages = codexPages;
-      if (windowId && !pages.some(p => p.pageId === windowId)) {
+      if (!pages.length) {
         this.emit({ t: 'attached', id: 'codex', title: 'Codex', app: 'codex', windowId, threadId, closed: true, ready: this.app === 'fusion' || !!this.cdp });
-        this.emit({ t: 'status', ok: false, msg: pages.length && threadId ? '没有找到上次的 Codex 会话，请重新选择' : '这个 Codex 窗口已经关闭，请重新选择' });
+        this.emit({ t: 'status', ok: false, msg: '这个 Codex 窗口已经关闭，请重新选择' });
         return;
       }
-      const picked = windowId
+      const picked = windowId && pages.some(p => p.pageId === windowId)
         ? pages.find(p => p.pageId === windowId)
         : (pages.find(p => !/^Welcome\b/.test(p.rawTitle || '') && p.chatWs) || pages.find(p => p.chatWs) || pages[0]);
       if (!picked) throw new Error('没有找到 Codex 窗口。请用 ./start-codex.sh 启动，并打开 Codex 侧边栏');
@@ -5353,7 +5635,8 @@ class Session {
       if (!picked.chatWs) this.emit({ t: 'status', ok: false, msg: 'Codex 侧边栏还没打开' });
       return;
     }
-    const win = wins.find(w => w.id === appId) || wins.find(w => appId && w.id.endsWith(':' + appId));
+    const win = wins.find(w => w.id === appId) || wins.find(w => appId && w.id.endsWith(':' + appId))
+      || (appId ? wins.find(w => w.app === appId.split(':')[0]) : null);
     if (appId && !win) {
       this.emit({ t: 'attached', id: appId, closed: true, ready: this.app === 'fusion' || !!this.cdp });
       this.emit({ t: 'status', ok: false, msg: '这个窗口已经关闭，请重新选择' });
@@ -5362,21 +5645,25 @@ class Session {
     const chosen = win || wins[0];
     if (!chosen) throw new Error('没有找到 Cursor、Devin 或 Codex 窗口。Cursor 用调试端口 9222，Devin 用 ./start-devin.sh，Codex 用 ./start-codex.sh');
     await this.openBound(chosen, chosen.ws, null, { windowId: chosen.id });
-    if (threadId && threadId !== this.threadId) await this.openAgent(threadId);
+    if (threadId && threadId !== this.threadId) {
+      try { await this.openAgent(threadId); }
+      catch { this.emit({ t: 'status', ok: false, msg: '没有找到上次的会话，已留在当前会话' }); }
+    }
   }
 
   async openBound(win, editorWs, chatWs, selection) {
     const editorCdp = new Cdp(editorWs);
     const cdp = chatWs ? new Cdp(chatWs) : editorCdp;
     let thread = '';
+    let staleSelect = '';
     try {
       await editorCdp.connect();
       if (cdp !== editorCdp) await cdp.connect();
       if (win.app === 'codex') {
         thread = await cdp.evaluate(helpersCall('codexThread()')) || '';
         if (selection.threadId && selection.threadId !== thread) {
-          if (!await this.selectCodexThread(selection.threadId, cdp)) throw new Error('没有找到上次的 Codex 会话，请重新选择');
-          thread = selection.threadId;
+          if (await this.selectCodexThread(selection.threadId, cdp)) thread = selection.threadId;
+          else staleSelect = selection.threadId;
         }
       }
     } catch (error) {
@@ -5410,19 +5697,44 @@ class Session {
     for (const connection of new Set([cdp, editorCdp])) {
       connection.onclose = onclose;
       await connection.send('Page.enable');
-      await connection.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
     }
     editorCdp.on('Page.screencastFrame', p => this.onFrame(p));
     await this.refreshViewport();
     if (this.app !== 'codex') this.threadId = await this.cdp.evaluate(helpersCall('activeThread()')) || '';
     this.emit({
       t: 'attached', id: win.id, title: this.app === 'codex' ? 'Codex' : win.title, app: win.app,
-      appName: this.appMessage('{app}'), project: this.app === 'codex' ? codexFolder(this.winTitle) : '', windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(),
+      appName: this.appMessage('{app}'), project: this.app === 'codex' ? codexFolder(this.winTitle) : '', windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(), plans: appPlans,
     });
+    if (staleSelect) this.emit({ t: 'status', ok: false, msg: '没有找到上次的会话，已留在当前会话' });
     await this.setMode(this.mode);
   }
 
+  // Focus emulation breaks real typing while it is on, so it only wraps phone-driven
+  // actions that type/tap, and is switched off again shortly after they finish.
+  async withFocus(fn) {
+    this.focusCount++;
+    const connections = [...new Set([this.cdp, this.editorCdp].filter(Boolean))];
+    if (this.focusCount === 1) {
+      clearTimeout(this.focusTimer);
+      this.focusTimer = null;
+      for (const c of connections) await c.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
+    }
+    try { return await fn(); }
+    finally {
+      this.focusCount = Math.max(0, this.focusCount - 1);
+      if (!this.focusCount && !this.focusTimer) {
+        this.focusTimer = setTimeout(() => {
+          this.focusTimer = null;
+          for (const c of connections) if (c === this.cdp || c === this.editorCdp) c.send('Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {});
+        }, 1500);
+      }
+    }
+  }
+
   detach() {
+    clearTimeout(this.focusTimer);
+    this.focusTimer = null;
+    this.focusCount = 0;
     clearInterval(this.chatTimer);
     clearInterval(this.termTimer);
     clearTimeout(this.ackTimer);
@@ -5430,7 +5742,9 @@ class Session {
     const connections = new Set([this.cdp, this.editorCdp]);
     this.cdp = this.editorCdp = null;
     for (const cdp of connections) {
-      if (cdp) cdp.send('Page.stopScreencast').catch(() => {}).finally(() => cdp.close());
+      if (cdp) cdp.send('Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {})
+        .then(() => cdp.send('Page.stopScreencast').catch(() => {}))
+        .finally(() => cdp.close());
     }
   }
 
@@ -5574,7 +5888,9 @@ class Session {
   }
 
   async withMentionLock(seq, fn) {
+    const deadline = Date.now() + 20000;
     while (this.mentionBusy) {
+      if (Date.now() > deadline) return null;
       await new Promise(r => setTimeout(r, 80));
       if (seq != null && this.mentionSeq !== seq) return null;
     }
@@ -6116,7 +6432,7 @@ class Session {
           : spec.usage?.context;
         try {
           const account = spec.app === 'codex' ? await this.readCodexAccount({ manual: !automatic, fusion: true })
-            : spec.app === 'devin' ? await this.cdp.evaluate(helpersCall('readDevinUsage()')) : await this.readCursorUsage(automatic);
+            : spec.app === 'devin' ? await this.cdp.evaluate(helpersCall('readDevinUsage()')) : await this.withFocus(() => this.readCursorUsage(automatic));
           return { context, updated: Date.now(), ...(account || { missing: true }) };
         } catch (e) { return { ...spec.usage, context, error: e.message, cached: true }; }
       }, false).catch(e => ({ ...spec.usage, error: e.message, cached: true }));
@@ -6468,12 +6784,14 @@ class Session {
       const humanIds = new Set((before?.items || []).filter(it => it.k === 'human').map(it => it.i));
       const message = spec.resumeContext ? `以下为旧会话的历史摘录，仅作背景；执行目录为 ${this.fusionRun.project.root}，请以本次要求为准。\n${spec.resumeContext}\n\n${prompt}` : String(prompt);
       const normalize = text => String(text || '').replace(/\s+/g, ' ').trim();
-      const found = await this.cdp.evaluate(FOCUS_COMPOSER);
-      if (!found) throw new Error('没找到这一边的输入框');
-      await this.typeText(message);
-      if (this.app === 'codex') {
-        if (!await this.cdp.evaluate(helpersCall('submitCodexMessage()'))) throw new Error('这一边的发送按钮当前不可用');
-      } else await this.key('Enter');
+      await this.withFocus(async () => {
+        const found = await this.cdp.evaluate(FOCUS_COMPOSER);
+        if (!found) throw new Error('没找到这一边的输入框');
+        await this.typeText(message);
+        if (this.app === 'codex') {
+          if (!await this.cdp.evaluate(helpersCall('submitCodexMessage()'))) throw new Error('这一边的发送按钮当前不可用');
+        } else await this.key('Enter');
+      });
       const deadline = Date.now() + 8 * 60 * 1000;
       let settled = '';
       let requestId = '';
@@ -6767,6 +7085,11 @@ class Session {
     if (files.length) text += '\n\n附加文件（请读取这些电脑端文件）：\n' + files.map(f => f.path).join('\n');
     const found = await this.cdp.evaluate(FOCUS_COMPOSER);
     if (!found) throw new Error(this.appMessage('没找到 {app} 的聊天输入框：先在画面里打开 Agent 面板（或点「打开聊天」）'));
+    const draftCleared = await this.cdp.evaluate(helpersCall(`setComposerDraft('')`));
+    for (let i = 0; !draftCleared && i < 2 && await this.cdp.evaluate(helpersCall('composerFocused()')) && await this.cdp.evaluate(helpersCall('composerDraft()')); i++) {
+      await this.key(process.platform === 'darwin' ? 'Meta+A' : 'Ctrl+A');
+      await this.key('Backspace');
+    }
     const busy = submit && await this.cdp.evaluate(helpersCall('agentState()?.busy'));
     if (this.app === 'devin' && mentions?.length) await this.typeWithMentions(text, mentions);
     else if (this.app === 'codex' && mentions?.length) await this.typeWithCodexMentions(text, mentions);
@@ -6884,6 +7207,13 @@ class Session {
     this.emit({ t: 'status', ok: true, msg: this.appMessage('图片已附加到 {app} 输入框，写好文字后点发送') });
   }
 
+  async setDraft(text) {
+    if (this.app === 'fusion' || text.length > 20000) return false;
+    if (text === this.lastDraft) return true;
+    if (this.cdp && await this.cdp.evaluate(helpersCall(`setComposerDraft(${JSON.stringify(text)})`))) { this.lastDraft = text; return true; }
+    return false;
+  }
+
   async syncAttachments() {
     const cdp = this.cdp, sel = this.sel;
     if (!cdp) return;
@@ -6924,9 +7254,10 @@ class Session {
     if (msg.t === 'connAgents') {
       const agents = [];
       try { await listWindows(agents); } catch {}
+      readAllPlans(this).catch(() => {});
       return this.emit({ t: 'connAgents', agents });
     }
-    if (msg.t === 'windows') return this.emit({ t: 'windows', list: phoneWindows(await listWindows(), this.targetId), current: this.targetId });
+    if (msg.t === 'windows') return this.emit({ t: 'windows', list: phoneWindows(await listWindows(), this.targetId), current: this.targetId, plans: appPlans });
     if (msg.t === 'attach') return this.attach(msg);
     if (msg.t === 'agents' && this.app === 'codex') return this.listAgents(msg.silent === true, msg.automatic === true);
     if (msg.t === 'mode') return this.setMode(msg.mode);
@@ -6938,6 +7269,18 @@ class Session {
       return;
     }
     if (msg.t === 'lang') { updateDevice(this.deviceId, { lang: msg.v === 'en' ? 'en' : 'zh' }); return; }
+    if (msg.t === 'draft') {
+      const text = String(msg.text ?? '');
+      let ok = false;
+      try { ok = await this.setDraft(text); } catch {}
+      return this.emit({ t: 'draftAck', sel: this.selectionKey(), ok, text });
+    }
+    const readOnly = ['refresh', 'attachments', 'thought'].includes(msg.t)
+      || (msg.t === 'agents' && msg.silent === true) || (msg.t === 'usage' && msg.automatic === true);
+    return readOnly ? this.dispatch(msg) : this.withFocus(() => this.dispatch(msg));
+  }
+
+  async dispatch(msg) {
     const fusionFree = this.app === 'fusion' && (['fusionTrust', 'fusionContinue', 'fusionProjects', 'fusionProject', 'fusionSides', 'fusionSide', 'fusionNewSide', 'fusionHistory', 'fusionOpen', 'fusionNew', 'fusionUsage', 'fusionModel', 'fusionGo', 'fusionDecide', 'send', 'usage', 'refresh', 'attachments', 'quality', 'appTheme'].includes(msg.t) || (msg.t === 'pickMenu' && /^fusion-(model|effort)-/.test(String(msg.kind || ''))));
     if (fusionFree) {
       if (msg.t === 'refresh') return this.fusionEmit();
@@ -7325,14 +7668,18 @@ wss.on('connection', (ws, req) => {
     if (msg.t === 'stop' && session.app === 'fusion') { session.fusionStop(); return; }
     if (msg.t === 'usage' && session.app === 'codex') return session.showUsage(msg.automatic === true);
     queue = queue.then(async () => {
+      const q0 = Date.now();
       try {
         const queued = await session.handle(msg);
+        const ms = Date.now() - q0;
+        if (ms > 3000) console.log(`[slow] ${msg.t} ${ms}ms ${session.app || ''}`);
         if (msg.t === 'termSend') session.emit({ t: 'sent', requestId: msg.requestId, draft: msg.draft, text: msg.text, sel: session.selectionKey() });
         if (msg.t === 'termSend') session.emit({ t: 'status', ok: true, msg: '已发送' });
         if (msg.t === 'type') session.emit({ t: 'status', ok: true, msg: '已发送' });
         if (msg.t === 'queue' && msg.action === 'edit') session.emit({ t: 'status', ok: true, msg: '已修改，仍在排队' });
         if (msg.t === 'send') session.emit({ t: 'status', ok: true, msg: queued ? 'Agent 正在运行，已加入排队，这一轮结束后自动发送' : '已发送' });
       } catch (e) {
+        console.log(`[err] ${msg.t}: ${e.message}`);
         if (msg.t === 'send' || msg.t === 'termSend') session.emit({ t: 'sendFailed', requestId: msg.requestId });
         session.emit({ t: 'status', ok: false, msg: e.message });
       }
