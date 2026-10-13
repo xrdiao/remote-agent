@@ -476,7 +476,7 @@
   #gate { position: fixed; inset: 0; z-index: 20; background: #0b131b; color: #eaf0f6; display: none; flex-direction: column; gap: 12px; padding: calc(60px + env(safe-area-inset-top)) 24px 24px; }
   #gate { overflow-y: auto; }
   #gate.open { display: flex; }
-  #gate h2 { margin: 0 0 6px; font-size: 20px; color: var(--hi); }
+  #gate h2 { margin: 0 0 6px; font-size: 20px; color: #eaf0f6; }
   #gate input { font-size: 16px; padding: 11px; }
   #gate button { padding: 11px; }
   #gateActions { display: none; gap: 8px; }
@@ -548,7 +548,7 @@
     #gate.pairing #gateScan { min-height: 48px; }
     #gate.pairing #gateHelp { padding-top: 16px; }
   }
-  #gateMsg { color: var(--muted2); line-height: 1.6; white-space: pre-line; }
+  #gateMsg { color: #95a2b0; line-height: 1.6; white-space: pre-line; }
   .primary-link { display: block; text-align: center; padding: 11px; border-radius: 8px; background: var(--accent); color: #fff; text-decoration: none; font-weight: 600; }
   #gateInput.code { font-size: 26px; letter-spacing: 8px; text-align: center; }
   #gateMsg.err { color: var(--err); }
