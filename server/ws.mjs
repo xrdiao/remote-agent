@@ -4,6 +4,7 @@ import { addViewer, removeViewer } from '../lib/notify.mjs';
 import { clientIp } from './http/ratelimit.mjs';
 import { originAllowed } from './http/static.mjs';
 import { Session } from './session.mjs';
+import { ROUTES, flag } from './routes.mjs';
 
 export function attachWss(server) {
 const wss = new WebSocketServer({
@@ -45,21 +46,18 @@ wss.on('connection', (ws, req) => {
     }
     // Frame acks bypass the queue so a slow command never stalls the stream.
     if (msg.t === 'ack') return session.ack();
-    if (msg.t === 'stop' && session.app === 'fusion') { session.fusionStop(); return; }
-    if (msg.t === 'usage' && (session.app === 'codex' || (session.app === 'devin' && msg.automatic === true))) return session.showUsage(msg.automatic === true);
+    const route = ROUTES[msg.t];
+    if (route && flag(route.fast, session, msg)) { route.fastRun(session, msg); return; }
     queue = queue.then(async () => {
       const q0 = Date.now();
       try {
         const queued = await session.handle(msg);
         const ms = Date.now() - q0;
         if (ms > 3000) console.log(`[slow] ${msg.t} ${ms}ms ${session.app || ''}`);
-        if (msg.t === 'termSend') session.emit({ t: 'sent', requestId: msg.requestId, draft: msg.draft, text: msg.text, sel: session.selectionKey() });
-        if (msg.t === 'termSend') session.emit({ t: 'status', ok: true, msg: '已发送' });
-        if (msg.t === 'queue' && msg.action === 'edit') session.emit({ t: 'status', ok: true, msg: '已修改，仍在排队' });
-        if (msg.t === 'send') session.emit({ t: 'status', ok: true, msg: queued ? 'Agent 正在运行，已加入排队，这一轮结束后自动发送' : '已发送' });
+        route?.after?.(session, msg, queued);
       } catch (e) {
         console.log(`[err] ${msg.t}: ${e.message}`);
-        if (msg.t === 'send' || msg.t === 'termSend') session.emit({ t: 'sendFailed', requestId: msg.requestId });
+        route?.fail?.(session, msg);
         session.emit({ t: 'status', ok: false, msg: e.message });
       }
     });

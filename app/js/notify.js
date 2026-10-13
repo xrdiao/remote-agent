@@ -1,0 +1,389 @@
+/* ---------- notifications ---------- */
+// Android app: its own background listener. Elsewhere: Web Push (iPhone only from the home-screen app).
+const nativeNotify = () => Boolean(window.AgentRemoteApp?.setNotify);
+const webPush = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+let notifyOn = false;
+
+const swReady = () => Promise.race([navigator.serviceWorker.ready, sleep(5000).then(() => { throw new Error('通知组件没有加载，请刷新后再试'); })]);
+const pushSub = async () => webPush() ? (await swReady()).pushManager.getSubscription() : null;
+const nativeConfig = () => JSON.stringify({ app: appAddress(), key: store.get('key') || '', token: store.get('token') || '' });
+
+// After every connect: refresh the menu state and re-register, since re-pairing gives the device a new id.
+async function syncNotify() {
+  try {
+    if (nativeNotify()) {
+      notifyOn = window.AgentRemoteApp.notifyEnabled();
+      if (notifyOn) window.AgentRemoteApp.setNotify(nativeConfig());
+      return;
+    }
+    const sub = await pushSub();
+    notifyOn = Boolean(sub);
+    if (sub) await post('/api/push/subscribe', { sub: sub.toJSON() });
+  } catch {}
+}
+
+async function enableNotify() {
+  if (nativeNotify()) {
+    window.AgentRemoteApp.setNotify(nativeConfig());
+    notifyOn = true;
+    setTimeout(() => { if (window.AgentRemoteApp.listenStatus?.() !== 'connected') showBgSheet(); }, 4000);
+    return status('通知已开启，正在连接电脑。华为等手机请在「设置 → 应用启动管理」里允许本 App 后台活动');
+  }
+  if (inApp) return status('请先在菜单里更新安卓 App，新版才支持通知', false);
+  if (!webPush()) {
+    const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
+    return status(ios && !standalone() ? 'iPhone 要先「分享 → 添加到主屏幕」，从桌面图标打开后才能开启通知' : '这个浏览器不支持通知', false);
+  }
+  // Must be the first await: iOS only shows the permission prompt directly inside a tap.
+  const permission = await Notification.requestPermission();
+  if (permission !== 'granted') return status('没有通知权限，请在系统设置里允许本 App 发通知', false);
+  try {
+    const { key } = await api('/api/push/key').then(r => r.json());
+    const reg = await swReady();
+    const sub = await reg.pushManager.getSubscription() || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64u(key) });
+    const r = await post('/api/push/subscribe', { sub: sub.toJSON() });
+    if (!r.ok) throw new Error((await r.json()).error || '注册失败');
+    notifyOn = true;
+    status('通知已开启');
+  } catch (e) {
+    status('开启通知失败：' + e.message, false);
+  }
+}
+
+async function disableNotify() {
+  if (nativeNotify()) window.AgentRemoteApp.setNotify('');
+  else {
+    await (await pushSub().catch(() => null))?.unsubscribe().catch(() => {});
+    await post('/api/push/unsubscribe').catch(() => {});
+  }
+  notifyOn = false;
+  status('通知已关闭');
+}
+
+function noticeTarget(raw) {
+  if (!raw) return null;
+  let win = String(raw), windowId = '', threadId = '';
+  if (win.startsWith('{')) {
+    try {
+      const o = JSON.parse(win);
+      win = o.win || '';
+      windowId = o.windowId || '';
+      threadId = o.threadId || '';
+    } catch { return null; }
+  }
+  return win ? { win, windowId, threadId } : null;
+}
+function rememberNotice(raw) {
+  const n = noticeTarget(raw);
+  if (!n) return;
+  store.set('window', n.win);
+  const here = currentComputer();
+  if (here) rememberComputer({ ...here, win: n.win, windowId: n.windowId, threadId: n.threadId });
+}
+function openWin(id) {
+  rememberNotice(id);
+  if (!authed) return;
+  const here = currentComputer();
+  send({ t: 'attach', id: here?.win || store.get('window') || '', windowId: here?.windowId || '', threadId: here?.threadId || '' });
+}
+window.openWin = openWin;
+navigator.serviceWorker?.addEventListener('message', e => { if (e.data?.openWin) openWin(e.data.openWin); });
+document.addEventListener('visibilitychange', () => {
+  if (authed) {
+    send({ t: 'visible', v: document.visibilityState === 'visible' });
+    if (document.visibilityState === 'visible') send({ t: 'usage', automatic: true });
+  }
+});
+
+$('sheet').addEventListener('click', async e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  if ('modelBack' in b.dataset) return requestMenu('model', '读取模型列表…');
+  if ('effortOpen' in b.dataset) return requestMenu('effort', '读取思考强度…');
+  if ('modelDone' in b.dataset) { closeSheet(); return; }
+  if (b.dataset.fast) { status('设置中…'); return send({ t: 'pickMenu', kind: 'fast', label: b.dataset.fast, name: b.dataset.fastMenu }); }
+  if ('editorChat' in b.dataset) { closeSheet(); status('正在打开聊天面板…'); return send({ t: 'openEditorChat' }); }
+  if ('editorReturn' in b.dataset) { editorBrowsing = false; editorDirectory = null; closeSheet(); return; }
+  if (b.dataset.nativeSurface) { closeSheet(); status('正在切换界面…'); return send({ t: 'surface', to: b.dataset.nativeSurface }); }
+  if (b.dataset.sc) {
+    if (b.dataset.sc === 'fold' || b.dataset.sc === 'unfold') { scFold('*', b.dataset.sc === 'fold'); return showCacheSheet(); }
+    if (b.dataset.sc === 'clearAll') {
+      if (!await ask('清除手机上保存的全部会话缓存？\n电脑上的对话不受影响。', '清除')) return;
+      for (const k of ((await scKeys()) || []).map(String)) await scDel(k);
+      SC.items = new Map(); SC.sig = new Map(); SC.collapsed = new Set(); SC.dirty = false;
+      if (lastChat) renderChat(lastChat);
+      return showCacheSheet();
+    }
+  }
+  if (b.dataset.wd != null) {
+    const r = $('sheet')._wd?.[Number(b.dataset.wd)];
+    if (!r) return;
+    if (r.name !== workdir?.name && !await ask(`把 Devin 的工作目录换成「${r.name}」？\nDevin 会切换工作区并重新载入这个文件夹，需要几秒钟，正在运行的任务可能被打断。`, '更换')) return;
+    closeSheet();
+    status('正在更换工作目录…');
+    return send({ t: 'workdirPick', name: r.name, path: r.path });
+  }
+  if (b.dataset.env) { closeSheet(); status('正在更换运行位置…'); return send({ t: 'envPick', label: b.dataset.env }); }
+  if (b.dataset.scHit) {
+    const key = b.dataset.scHit, id = b.dataset.scId;
+    if (key === SC.key) { closeSheet(); scJump(id); return; }
+    const sessionId = key.split('|').slice(3).join('|');
+    if ((lastChat?.session?.tabs || []).some(t => t.id === sessionId)) {
+      SC.jump = id;
+      closeSheet();
+      status('正在切换会话…');
+      return send({ t: 'openAgent', id: `tab:${sessionId}` });
+    }
+    return status('这个会话现在没有在电脑上打开，先到「会话」里打开它', false);
+  }
+  if (b.dataset.scDel) {
+    if (!await ask('清除这个会话在手机上的缓存？\n电脑上的对话不受影响。', '清除')) return;
+    await scClear(b.dataset.scDel);
+    return showCacheSheet();
+  }
+  if ('fold' in b.dataset) {
+    const open = b.getAttribute('aria-expanded') !== 'true';
+    b.setAttribute('aria-expanded', open ? 'true' : 'false');
+    const chev = b.querySelector('.chev');
+    if (chev) chev.textContent = open ? '▾' : '▸';
+    const body = b.nextElementSibling;
+    if (body) body.hidden = !open;
+    return;
+  }
+  if (b.dataset.win) { closeSheet(); status('正在切换窗口…'); return send({ t: 'attach', id: b.dataset.win, ...currentComputer()?.selections?.[b.dataset.win] }); }
+  if ('fusionTrust' in b.dataset) { closeSheet(); return send({ t: 'fusionTrust', approve: b.dataset.fusionTrust === 'yes' }); }
+  if ('fusionDir' in b.dataset) { status('正在读取项目…'); return send({ t: 'fusionProjects', path: b.dataset.fusionDir }); }
+  if ('fusionPath' in b.dataset) {
+    const path = window.prompt(I18N.tr('电脑上的文件夹完整路径'));
+    if (path?.trim()) { status('正在读取项目…'); send({ t: 'fusionProjects', path: path.trim() }); }
+    return;
+  }
+  if (b.dataset.fusionFolder) { closeSheet(); return send({ t: 'fusionProject', path: b.dataset.fusionFolder }); }
+  if (b.dataset.fusionContinue) {
+    if (!await ask('在当前项目创建新会话，并携带旧会话最近的历史摘录？原会话保留，不会发送任务。', '续接')) return;
+    closeSheet(); status('正在创建会话…');
+    return send({ t: 'fusionContinue', side: b.dataset.fusionSide, id: b.dataset.fusionContinue });
+  }
+  if (b.dataset.codexSetting) {
+    const label = b.textContent.trim();
+    if (RISKY.test(label) && !await ask(label + '？')) return;
+    status('正在读取设置…'); return send({ t: 'codexSetting', id: b.dataset.codexSetting });
+  }
+  if (b.dataset.fusionProject) { closeSheet(); return send({ t: 'fusionProject', id: b.dataset.fusionProject }); }
+  if (b.dataset.fusionHistory) { closeSheet(); return send({ t: 'fusionOpen', id: b.dataset.fusionHistory }); }
+  if (b.dataset.fusionRefresh) { closeSheet(); status('正在读取额度…'); return send({ t: 'fusionUsage', side: b.dataset.fusionRefresh }); }
+  if (b.dataset.fusionSelect) { closeSheet(); return send({ t: 'fusionSides', side: b.dataset.fusionSelect }); }
+  if (b.dataset.fusionNew) { closeSheet(); status('正在创建会话…'); return send({ t: 'fusionNewSide', side: b.dataset.fusionSide, app: b.dataset.fusionNew }); }
+  if (b.dataset.fusionId) { closeSheet(); return send({ t: 'fusionSide', side: b.dataset.fusionPick, id: b.dataset.fusionId }); }
+  if (b.dataset.codexArchive) {
+    const id = b.dataset.codexArchive, name = b.dataset.codexName || '';
+    if (!await ask(`归档「${name}」？\n它会从当前列表移除，历史记录仍保留。`, '归档')) { send({ t: 'agents' }); return; }
+    status('正在归档…');
+    return send({ t: 'codexArchive', id });
+  }
+  if (b.dataset.agent) { pendingAgentOpen = b.dataset.agent; closeSheet(); status('正在切换 Agent…'); return send({ t: 'openAgent', id: b.dataset.agent, title: b.dataset.agentTitle || '' }); }
+  if (b.dataset.term) { closeSheet(); status('正在切换终端…'); return send({ t: 'openTerminal', id: b.dataset.term }); }
+  if ('projectPath' in b.dataset) {
+    const path = window.prompt(I18N.tr('电脑上的文件夹完整路径'));
+    if (!path?.trim()) return;
+    status('正在读取文件夹…');
+    return send({ t: 'projects', path: path.trim() });
+  }
+  if ('projectNew' in b.dataset) {
+    const name = window.prompt(I18N.tr('新项目的文件夹名称'));
+    if (!name?.trim()) return;
+    closeSheet(); status('正在打开项目…');
+    return send({ t: 'newProject', parent: b.dataset.projectNew, name: name.trim(), newSession: true });
+  }
+  if ('projectChat' in b.dataset) { closeSheet(); status('正在打开项目…'); return send({ t: 'openProject', path: b.dataset.projectChat, newSession: true }); }
+  if ('projectTrust' in b.dataset) { closeSheet(); status('正在打开项目…'); return send({ t: 'projectTrust', approve: b.dataset.projectTrust === 'yes' }); }
+  if (b.dataset.open) { closeSheet(); status('正在打开项目…'); return send({ t: 'openProject', path: b.dataset.open }); }
+  if (b.dataset.dir) { status('正在读取文件夹…'); return send({ t: 'projects', path: b.dataset.dir }); }
+  if (b.dataset.docsFile) { closeSheet(); return openFile(b.dataset.docsFile, b.dataset.docsEditor === 'true'); }
+  if ('docsUp' in b.dataset) {
+    status('正在读取文档…');
+    if (!b.dataset.docsUp) return send({ t: 'docs', editor: editorBrowsing });
+    return send({ t: 'docs', editor: editorBrowsing, root: b.dataset.root, host: b.dataset.docsHost || '', path: b.dataset.docsUp });
+  }
+  if (b.dataset.docsRoot) { status('正在读取文档…'); return send({ t: 'docs', editor: editorBrowsing, root: b.dataset.docsRoot, host: b.dataset.docsHost || '', path: b.dataset.docsDir || b.dataset.docsRoot }); }
+  if (b.dataset.setting) { status('正在修改…'); return send({ t: 'toggleSetting', label: b.dataset.setting }); }
+  if (b.dataset.termDel) {
+    if (!await ask(`删除终端「${b.dataset.termName || ''}」？\n里面正在跑的命令会停掉。`, '删除')) return;
+    closeSheet(); status('正在删除终端…'); return send({ t: 'closeTerminal', id: b.dataset.termDel });
+  }
+  if (b.dataset.fusionPick) { menuSheetKind = 'model'; status('正在修改…'); return send({ t: 'fusionPick', part: b.dataset.fusionPick, value: b.dataset.label }); }
+  if (b.dataset.fusion) {
+    status('正在修改…');
+    if (b.dataset.fusion === 'fast') return send({ t: 'fusionPick', part: 'fast' });
+    menuSheetKind = `fusion-${b.dataset.fusion}`;
+    const fm = menuCache.get(menuCacheKey(`fusion-${b.dataset.fusion}`));
+    if (fm) showMenu(fm.kind, fm.items, fm.max, fm.fusion, fm.fast, fm.model, true);
+    return send({ t: 'fusionOptions', part: b.dataset.fusion });
+  }
+  if (b.dataset.kind) {
+    if (b.dataset.kind === 'codex-chat' && b.dataset.label === 'Archive' && !await ask('归档当前会话？', '归档')) return;
+    if (b.dataset.kind === 'codex-chat' && b.dataset.label === 'Rename') {
+      const name = window.prompt('新的会话名称');
+      if (!name) return;
+      closeSheet();
+      return send({ t: 'pickMenu', kind: 'codex-chat', label: 'Rename', name });
+    }
+    // Bypass Permissions lets the Agent run every tool call (commands, edits, deletes) without asking.
+    if (b.dataset.kind === 'mode' && b.dataset.label === 'Bypass Permissions' && !b.classList.contains('cur')
+      && !await ask('切到「Bypass Permissions」？\nAgent 之后的所有操作（运行命令、改文件、删文件）都会自动批准，不再询问你。', '切换')) return;
+    closeSheet();
+    if (b.dataset.kind !== 'codex-run' && b.dataset.kind !== 'codex-chat' && !/^fusion-(model|effort)-/.test(String(b.dataset.kind || ''))) beginSwitch(b.dataset.kind);
+    return send({ t: 'pickMenu', kind: b.dataset.kind, label: b.dataset.label });
+  }
+  if (b.dataset.chopen) { const diff = changeFiles.find(f => f.name === b.dataset.chopen)?.diff || ''; closeSheet(); return openFile(b.dataset.chopen, false, diff); }
+  if (b.dataset.ch) {
+    const undo = b.dataset.act2 === 'undo';
+    if (undo && !await ask(`撤销「${b.dataset.name}」的改动？\n文件会恢复成 Agent 改之前的样子。`, '撤销')) return send({ t: 'changes' });
+    status(undo ? '正在撤销…' : '正在保留…');
+    return send({ t: 'change', i: Number(b.dataset.ch), name: b.dataset.name, act: b.dataset.act2 });
+  }
+  if (b.dataset.chbar) {
+    if (RISKY.test(b.dataset.chbar) && !await ask(`确定要点「${b.dataset.chbar}」吗？`, b.dataset.chbar)) return send({ t: 'changes' });
+    status('处理中…');
+    return send({ t: 'change', i: 0, name: b.dataset.chbar, act: 'bar' });
+  }
+  if ('max' in b.dataset) { status('切换 MAX Mode…'); return send({ t: 'toggleMax' }); }
+  if (b.dataset.params) { status('读取模型参数…'); return send({ t: 'params', model: b.dataset.params, label: b.dataset.plabel }); }
+  if (b.dataset.section) { status('设置中…'); return send({ t: 'pickParam', model: b.dataset.model, label: b.dataset.plabel, section: b.dataset.section, value: b.dataset.value }); }
+  const act = b.dataset.act;
+  if (act === 'newTerm') { closeSheet(); status('正在新建终端…'); return send({ t: 'newTerminal' }); }
+  else if (act === 'fusionHistory') { closeSheet(); return send({ t: 'fusionHistory' }); }
+  else if (act === 'fusionNew') { closeSheet(); return send({ t: 'fusionNew' }); }
+  else if (act === 'model') return requestMenu('model', '读取模型列表…');
+  else if (act === 'permission') return requestMenu(lastChat?.permission ? 'permission' : 'mode', '读取权限…');
+  else if (act === 'agentsRefresh') return openAgentList(true);
+  else if (act === 'projects') { status('正在读取项目…'); return send({ t: 'projects' }); }
+  else if (act === 'projectNewChat') { closeSheet(); status('正在新建对话…'); return send({ t: 'newProjectChat' }); }
+  else if (act === 'codexResetHelp') {
+    openSheet('codex-reset', `<h3>Codex 额度重置</h3><p>官方发放的重置券用于恢复指定的额度窗口，不是充值余额。</p><ol><li>登录与电脑端 Codex 相同的 ChatGPT 账号，打开官方额度页面。</li><li>找到 Usage limit resets → Available，检查可用次数、重置范围和到期时间。</li><li>点击所选券的 Use reset，按官方页面提示确认。</li><li>完成后回到这里，点击额度展示并刷新数据。</li></ol><p class="hint">Full reset 用于恢复 5 小时和每周额度；具体范围以券的说明为准。已使用记录可在 History 查看。</p><a class="opt" href="https://chatgpt.com/codex/settings/usage" target="_blank" rel="noopener noreferrer">打开官方额度页面</a>`);
+  }
+  else if (act === 'editor') { return startEditor(); }
+  else if (act === 'settings') { status('正在读取设置…'); return send({ t: 'settings' }); }
+  else if (act === 'screen') { closeSheet(); return setMode('screen'); }
+  else if (act === 'changeUrl') window.AgentRemoteApp?.changeUrl();
+  else if (act === 'notifyOn') { closeSheet(); enableNotify(); }
+  else if (act === 'notifyOff') { closeSheet(); disableNotify(); }
+  else if (act === 'notifyTest') {
+    closeSheet();
+    const r = await post('/api/push/test').catch(() => null);
+    status(r?.ok ? '已发送测试通知，几秒内应该收到' : '发送失败', Boolean(r?.ok));
+  }
+  else if (act === 'appUpdate') {
+    if (apkUpdate()) { closeSheet(); installAppUpdate(); }
+    else { await checkAppUpdate(true); if (apkUpdate()) showMainMenu(); }
+  }
+  else if (act === 'reconnect') { closeSheet(); ws?.close(); }
+  else if (act === 'theme') {
+    const next = { dark: 'light', light: 'auto', auto: 'dark' }[store.get('theme') || 'dark'];
+    setAppTheme(next);
+    send({ t: 'appTheme', dark: document.documentElement.dataset.theme !== 'light' });
+    showMainMenu();
+  }
+  else if (act === 'cache') showCacheSheet();
+  else if (act === 'bg') showBgSheet();
+  else if (act === 'bgBattery') { window.AgentRemoteApp.askBattery(); closeSheet(); }
+  else if (act === 'bgNotifySettings') { window.AgentRemoteApp.openNotifySettings(); closeSheet(); }
+  else if (act === 'bgReconnect') { window.AgentRemoteApp.reconnectListen(); status('正在重连…'); setTimeout(showBgSheet, 1500); }
+  else if (act === 'lang') I18N.set(I18N.lang === 'en' ? 'zh' : 'en');
+  else if (act === 'computers') showComputers();
+  else if (act === 'addComputer') addComputer();
+  else if (act === 'devices') showDevices();
+  else if (b.dataset.remove) {
+    if (!await ask(`移除「${b.dataset.name}」？它会立即断开，要重新配对才能再用。`, '移除')) return showDevices();
+    await post('/api/devices/remove', { id: b.dataset.remove }).catch(() => {});
+    showDevices();
+  }
+  else if (b.dataset.computerPub != null) return pairPublished(b.dataset.computerName);
+  else if (b.dataset.computerI != null) { closeSheet(); return useComputer(b.dataset.computerI); }
+  else if (b.dataset.computerDel != null) return removeComputer(b.dataset.computerDel);
+  else if (act === 'logout') {
+    const cur = currentComputer();
+    if (!cur) return;
+    const i = loadComputers().findIndex(c => c.key === cur.key);
+    if (i < 0) return;
+    return removeComputer(i);
+  }
+});
+
+function showComputers(note = '') {
+  const list = loadComputers();
+  const cur = currentComputer();
+  const saved = list.map((c, i) => {
+    const pub = publishedComputers().find(p => p.id === c.id);
+    const name = (pub?.name && (c.name === '电脑' || c.name === '这台电脑')) ? pub.name : (c.name || pub?.name || '电脑');
+    const here = cur && c.key === cur.key;
+    return `<div class="optRow"><button class="opt ${here ? 'cur' : ''}" data-computer-i="${i}"><span class="lbl">${esc(name)}${here ? '<span class="sub">当前</span>' : ''}</span></button><button class="paramBtn" data-computer-del="${i}">删除</button></div>`;
+  }).join('');
+  const extra = unseenPublished().map(p => `<button class="opt" data-computer-pub="${esc(p.id)}" data-computer-name="${esc(p.name || '电脑')}"><span class="lbl">${esc(p.name || '电脑')}<span class="sub">未配对</span></span></button>`).join('');
+  const hint = note ? `<div class="hint">${esc(note).replace(/\n/g, '<br>')}</div>` : '';
+  openSheet('computers', `<h3>电脑</h3>${hint}${saved}${extra || (saved ? '' : '<div class="hint">还没有配对的电脑。</div>')}<button class="opt" data-act="addComputer"><span class="lbl">＋ 配对另一台电脑</span></button><div class="hint">在那台电脑上运行 npm run pair，把链接粘贴过来。已配对的电脑会保留。</div>`);
+}
+function pairPublished(name) {
+  closeSheet();
+  gate({
+    msg: `「${name || '这台电脑'}」还没在这只手机上配对。\n在那台电脑上运行 npm run pair，扫码或把链接粘贴到下面。已配对的电脑会保留。`,
+    input: { placeholder: '粘贴配对链接', button: '配对', submit: pastePair, scan: true },
+    retry: '返回',
+    onRetry: () => showComputers(),
+  });
+}
+function addComputer() {
+  closeSheet();
+  gate({
+    msg: '配对另一台电脑。\n在那台电脑上运行 npm run pair，扫码或把链接粘贴到下面。已有的电脑会保留。',
+    input: { placeholder: '粘贴配对链接', button: '配对', submit: pastePair, scan: true },
+    retry: '返回',
+    onRetry: () => loadComputers().length ? showComputers() : showUnpaired(),
+  });
+}
+function useComputer(i) {
+  const list = loadComputers();
+  const c = list[Number(i)];
+  if (!c) return showComputers();
+  saveDraft();
+  if (c.discovery && new URL(c.discovery).origin !== location.origin) {
+    const link = computerLink(new URL('./', c.discovery).href, c.key);
+    if (inApp) return window.AgentRemoteApp.setUrl(link);
+    location.href = link;
+    return;
+  }
+  saveComputers(list, c.key);
+  restoreDraft();
+  store.set('window', c.win || null);
+  connGen++;
+  offlineGen++;
+  authed = false;
+  const old = ws;
+  ws = null;
+  try { old?.close(); } catch {}
+  closeSheet();
+  boot();
+}
+async function removeComputer(i) {
+  const list = loadComputers();
+  const c = list[Number(i)];
+  if (!c) return showComputers();
+  if (!await ask(`删除电脑「${c.name || '电脑'}」？\n这台手机不再连接它。`, '删除')) return showComputers();
+  const cur = currentComputer();
+  const removingCurrent = cur && cur.key === c.key;
+  if (removingCurrent && authed) await post('/api/logout').catch(() => {});
+  const nextList = loadComputers().filter(x => x.key !== c.key);
+  const next = nextList[0];
+  saveComputers(nextList, removingCurrent ? '' : (cur?.key || ''));
+  if (!next) {
+    connGen++;
+    authed = false;
+    try { ws?.close(); } catch {}
+    ws = null;
+    closeSheet();
+    return showUnpaired();
+  }
+  if (removingCurrent) return useComputer(loadComputers().findIndex(x => x.key === next.key));
+  showComputers();
+}
+

@@ -64,10 +64,9 @@ const grab = (files, re) => {
 
 const sent = grab(appFiles, /send\(\{\s*t:\s*'([A-Za-z]+)'/g);
 for (const t of SEND_EXTRA) sent.add(t);
-const handled = new Set([
-  ...grab(serverFiles, /case '([A-Za-z]+)'/g),
-  ...grab(serverFiles, /msg\.t === '([A-Za-z]+)'/g),
-]);
+// Server-handled types come from the route table; auth/ack are handled inside ws.mjs itself.
+const { ROUTES } = await import(pathToFileURL(path.join(ROOT, 'server', 'routes.mjs')));
+const handled = new Set([...Object.keys(ROUTES), 'auth', 'ack']);
 const missingHandlers = [...sent].filter(t => !handled.has(t));
 if (missingHandlers.length) fail(`frontend sends but server never handles: ${missingHandlers.join(', ')}`);
 else console.log(`ok   protocol: ${sent.size} sent types all handled`);

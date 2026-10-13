@@ -1,0 +1,238 @@
+/* ---------- gate: pairing / 2FA / offline ---------- */
+let gateSubmit = null;
+let gateRetryFn = null;
+function gate({ msg = '', err = false, input = null, retry = false, repair = false, computers = false, appLink = null, onRetry = null } = {}) {
+  connHide();
+  $('gate').classList.add('open');
+  $('gateMsg').textContent = msg;
+  $('gateMsg').className = err ? 'err' : '';
+  const inp = $('gateInput');
+  inp.hidden = $('gateBtn').hidden = !input;
+  gateSubmit = input?.submit || null;
+  gateRetryFn = onRetry;
+  if (input) {
+    inp.value = '';
+    inp.placeholder = input.placeholder;
+    inp.className = input.code ? 'code' : '';
+    inp.inputMode = input.code ? 'numeric' : 'url';
+    inp.autocomplete = input.code ? 'one-time-code' : 'off';
+    $('gateBtn').textContent = input.button;
+    if (input.code) setTimeout(() => inp.focus(), 50);
+  }
+  $('gateScan').hidden = !(input?.scan && window.AgentRemoteApp?.scan);
+  $('gateApp').hidden = !appLink;
+  if (appLink) $('gateApp').href = appLink;
+  $('gateRetry').hidden = !retry;
+  $('gateRetry').textContent = typeof retry === 'string' ? retry : '重试';
+  $('gateComputers').hidden = !computers;
+  $('gateRepair').hidden = !repair;
+  $('gateActions').classList.toggle('show', !!(retry || repair || computers));
+  $('gateInfo').textContent = info?.updated ? '电脑端地址更新于 ' + new Date(info.updated).toLocaleString() : '';
+}
+const ungate = () => $('gate').classList.remove('open');
+$('gateBtn').onclick = () => gateSubmit?.($('gateInput').value.trim());
+$('gateScan').onclick = () => window.AgentRemoteApp?.scan?.();
+$('gateInput').onkeydown = e => { if (e.key === 'Enter') $('gateBtn').click(); };
+$('gateLang').onclick = () => I18N.set(I18N.lang === 'en' ? 'zh' : 'en');
+$('gateRetry').onclick = () => { if (gateRetryFn) gateRetryFn(); else boot(); };
+$('gateComputers').onclick = () => showComputers();
+let connGen = 0;
+function repairPairing() {
+  connGen++;
+  clearTimeout(retryTimer);
+  offlineGen++;
+  pending = null;
+  authed = false;
+  const old = ws;
+  ws = null;
+  try { old?.close(); } catch {}
+  addComputer();
+}
+$('gateRepair').onclick = () => repairPairing();
+
+// Presentation only: use the existing authentication and window-list messages.
+const CONN_AGENTS = [
+  { app: 'cursor', name: 'Cursor' }, { app: 'devin', name: 'Devin' }, { app: 'codex', name: 'Codex' },
+];
+const conn = { active: false, host: false, phase: '', agents: null, timer: 0, failure: null, conclusion: '', checks: [], diagRunning: false, open: new Set() };
+const CONN_TEXT = { ok: '已连接', load: '连接中…', err: '连接失败', wait: '等待主机' };
+const CONN_ICON = {
+  ok: '<span class="cIc"><svg viewBox="0 0 12 12" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6.2l2.3 2.3 4.7-4.9"/></svg></span>',
+  load: '<span class="cSpin"></span>', err: '<span class="cIc">!</span>', wait: '<span class="cIc"></span>',
+};
+const CONN_RETRY_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 8A5.5 5.5 0 1 1 11.9 4.1"/><path d="M12.2 1.8v2.6H9.6"/></svg>';
+const CONN_HOST_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="12" rx="2"/><path d="M9 20h6M12 16.5V20"/></svg>';
+const ct = (tpl, vars = {}) => I18N.tr(tpl).replace(/\{(\w+)\}/g, (m, k) => vars[k] ?? m);
+const DIAG_TEXT = { ok: '通过', load: '检测中…', err: '未通过', wait: '等待' };
+function diagReason(r) {
+  return ct({ offline: '手机处于离线状态，请检查 Wi-Fi 或移动数据', nourl: '尚未获取隧道地址', timeout: '{s} 秒内没有响应', http: '服务器返回 {v}', invalid: '返回内容不符合预期', json: '返回内容不是 JSON' }[r.code] || '请求失败：网络、DNS、证书或跨域原因未确定', { s: r.timeout || 8, v: r.http || '' });
+}
+function connRenderDiag() {
+  const tr = I18N.tr, checks = conn.checks, f = conn.failure || {};
+  const ok = checks.filter(c => c.st === 'ok').length;
+  const realtime = /实时连接/.test(f.stage || '');
+  const passed = checks.length === 3 && ok === 3 && !conn.diagRunning;
+  const hostSub = realtime ? '实时连接未建立' : '电脑连接未建立';
+  const lead = conn.diagRunning || !checks.length ? '正在检测连接…'
+    : passed ? realtime ? '地址正常，实时连接未建立，请重试。' : '地址正常，电脑连接未建立，请重试。'
+    : checks.find(c => c.key === 'net')?.st === 'err' ? '手机网络不可用，请检查网络连接。'
+    : checks.find(c => c.key === 'page')?.st === 'err' ? '页面地址检测未通过，请重试。'
+    : checks.find(c => c.key === 'relay')?.st === 'err' ? '隧道服务暂时无法访问，请重试。' : '连接未建立，请重试。';
+  $('connLead').textContent = tr(lead);
+  const summary = conn.diagRunning || !checks.length ? tr('正在检测连接…')
+    : ct('{n}/{total} 检测通过', { n: ok, total: checks.length }) + (passed ? ' · ' + tr(realtime ? '失败在实时连接' : '失败在电脑连接') : ' · ' + tr('部分检测未通过'));
+  const open = conn.open.has('connection-details');
+  const rows = checks.map(c => {
+    const label = { net: '手机网络', page: '页面地址', relay: '隧道服务' }[c.key];
+    const note = c.st === 'ok' ? c.key === 'net' ? tr('在线') : ct('{ms} ms', { ms: c.ms ?? 0 }) : c.st === 'err' ? tr(c.code === 'timeout' ? '超时' : '异常') : tr('检测中…');
+    return `<div class="cDiagCheck"><span>${esc(tr(label))}</span><span class="cCheckNote">${esc(note)}</span><span class="cCheckState ${c.st}"><i class="cDiagDot ${c.st}" aria-hidden="true"></i>${esc(tr(DIAG_TEXT[c.st]))}</span></div>`;
+  }).join('');
+  const technical = [ct('失败阶段：{v}', { v: tr(f.stage || '应用连接') }), f.error, ...checks.filter(c => c.st === 'err').map(c => tr(c.label) + '：' + diagReason(c))].filter(Boolean).map(esc);
+  for (const c of checks.filter(c => c.url)) {
+    const label = tr(c.key === 'page' ? '页面' : '隧道');
+    technical.push(`${esc(label)}: ${/^https?:\/\//.test(c.url) ? `<a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">${esc(c.url)}</a>` : esc(c.url)}`);
+  }
+  if (realtime && base) technical.push(esc('WebSocket: ' + base.replace(/^http/, 'ws') + '/ws'));
+  $('connHost').innerHTML = `<div class="cItem err"><div class="cRow"><div class="cTile">${CONN_HOST_SVG}</div><div class="cMeta"><div class="cName">${esc(currentComputer()?.name || tr('电脑'))}</div><div class="cSub">${esc(tr(hostSub))}</div></div><div class="cSt">${CONN_ICON.err}<span>${esc(tr('连接失败'))}</span></div></div></div>`
+    + `<div class="cDiagSummary"><span class="cDiagDots" aria-hidden="true">${checks.map(c => `<i class="cDiagDot ${c.st}"></i>`).join('')}</span><span class="cDiagText">${esc(summary)}</span><button data-conn-why="connection-details" aria-expanded="${open}" aria-controls="connDetails">${esc(tr(open ? '收起' : '详情'))}</button></div>`
+    + (open ? `<div class="cDiagDetails" id="connDetails">${rows}<pre class="cTechnical">${technical.join('\n')}</pre></div>` : '');
+}
+
+function connOffline(failure, conclusion = '') {
+  Object.assign(conn, { active: true, host: 'err', failure, conclusion });
+  $('conn').classList.add('open');
+  connRender();
+}
+function connHide() {
+  clearTimeout(conn.timer);
+  conn.active = false;
+  $('conn').classList.remove('open');
+}
+function connShow(phase) {
+  clearTimeout(conn.timer);
+  Object.assign(conn, { active: true, host: false, phase, agents: null, failure: null, conclusion: '', checks: [], diagRunning: false, readyRedirect: false, readyPending: false });
+  conn.open.clear();
+  $('conn').classList.add('open');
+  connRender();
+}
+function connHostOk() {
+  if (!conn.active) return;
+  conn.host = true;
+  connRender();
+  send({ t: 'connAgents' });
+}
+function connWindows(list) {
+  if (!conn.active || conn.host !== true) return;
+  // The connection page uses its own per-agent probe, including raw errors.
+}
+function connAgentResults(results) {
+  if (!conn.active || conn.host !== true) return;
+  conn.agents = CONN_AGENTS.map(a => ({ ...a, ...results.find(r => r.app === a.app) }));
+  connRender();
+  ensureReadyAgent();
+  clearTimeout(conn.timer);
+  const ready = conn.agents.filter(a => a.windows);
+  const signature = ready.map(a => a.app).join(',');
+  if (ready.length === CONN_AGENTS.length || (ready.length && store.get('conn-auto-partial') === signature))
+    conn.timer = setTimeout(connHide, 600);
+}
+
+function ensureReadyAgent() {
+  if (conn.readyRedirect) return;
+  const ready = (conn.agents || []).filter(a => a.windows).map(a => a.app);
+  if (!ready.length || currentApp === 'fusion') return;
+  const appOf = id => String(id || '').split(':')[0];
+  const want = currentApp || appOf(currentComputer()?.win);
+  if (ready.includes(want)) return;
+  const target = CONN_AGENTS.map(a => a.app).find(a => ready.includes(a));
+  if (!target) return;
+  const wins = windows || [];
+  if (!wins.length) {
+    if (!conn.readyPending) { conn.readyPending = true; send({ t: 'windows' }); }
+    return;
+  }
+  const sel = currentComputer()?.selections || {};
+  const pick = wins.find(w => appOf(w.id) === target && sel[w.id]) || wins.find(w => appOf(w.id) === target);
+  if (!pick) return;
+  conn.readyRedirect = true;
+  status('正在切换窗口…');
+  send({ t: 'attach', id: pick.id, ...sel[pick.id] });
+}
+
+function connRender() {
+  const tr = I18N.tr;
+  const failed = conn.host === 'err';
+  $('conn').classList.toggle('failure', failed);
+  $('connHostLabel').hidden = failed;
+  $('connAgentsWrap').hidden = failed;
+  $('connMore').hidden = !failed;
+  $('connAuto').hidden = true;
+  $('connPick').hidden = !failed && !loadComputers().length;
+  if (failed) {
+    $('connTitle').textContent = tr('连不上电脑');
+    connRenderDiag();
+    $('connGo').hidden = false;
+    $('connGo').textContent = tr('重试');
+    $('connNote').textContent = tr('每 15 秒自动重试');
+    return;
+  }
+  $('connGo').textContent = tr('进入');
+  const icon = st => st === 'load' ? '<span class="cSpin"></span>' : `<span class="cIc">${st === 'ok' ? '✓' : st === 'err' ? '!' : ''}</span>`;
+  const row = (st, tile, name, sub, label, brand = false) => `<div class="cItem ${st}"><div class="cRow"><div class="cTile${brand ? ' cBrand' : ''}">${tile}</div><div class="cMeta"><div class="cName">${esc(name)}</div><div class="cSub">${esc(sub)}</div></div><div class="cSt">${icon(st)}<span>${esc(tr(label))}</span></div></div></div>`;
+  const ready = conn.agents?.filter(a => a.windows).length || 0;
+  const settled = conn.agents !== null;
+  const agents = conn.agents || CONN_AGENTS;
+  const state = a => !conn.host ? 'wait' : !settled ? 'load' : a.windows ? 'ok' : 'err';
+  const names = agents.filter(a => a.windows).map(a => a.name).join(I18N.lang === 'en' ? ', ' : '、');
+  const missing = agents.filter(a => !a.windows).map(a => a.name).join(I18N.lang === 'en' ? ', ' : '、');
+  $('connTitle').textContent = !conn.host ? tr('正在连接电脑') : !settled ? agents.map(a => ct('{agent} 连接中', { agent: a.name })).join(' · ')
+    : ready === agents.length ? tr('全部已连接 · 正在进入…') : ready ? ct('{ready} 已可用，{missing} 可稍后重试', { ready: names, missing }) : tr('没有可用的 Agent');
+  $('connLead').textContent = '';
+  $('connHost').innerHTML = row(conn.host ? 'ok' : 'load', CONN_HOST_SVG, currentComputer()?.name || tr('电脑'), tr(conn.host ? '实时连接已建立' : conn.phase), conn.host ? '已连接' : '连接中…');
+  $('connAgents').innerHTML = agents.map(a => {
+    const st = state(a), open = conn.open.has(a.app);
+    const reason = a.timeout ? ct('超时，请检查 {agent} 是否卡住', { agent: a.name }) : a.error ? ct('连接失败，请检查 {agent} 是否已启动', { agent: a.name }) : tr('未找到窗口，请打开项目');
+    const sub = st === 'ok' ? ct('{n} 个窗口可用', { n: a.windows }) : st === 'err' ? reason : tr(st === 'wait' ? '等待主机' : '正在读取窗口…');
+    const detail = [ct('地址：{v}', { v: a.address || '' }), a.error || tr('调试服务已响应，但未找到可用的项目窗口。'), a.app === 'cursor' ? tr('启动指引：在电脑上以远程调试模式启动 Cursor，然后重试。') : ct('启动指引：在电脑上运行 {command}，然后重试。', { command: './scripts/start-' + a.app + '.sh' })].join('\n');
+    return `<div class="cItem ${st}"><div class="cRow"><div class="cTile cBrand"><img class="on-dark" src="logo-${a.app}-dark.svg" alt=""><img class="on-light" src="logo-${a.app}-light.svg" alt=""></div><div class="cMeta"><div class="cName">${a.name}</div><div class="cSub">${esc(sub)}</div></div><div class="cSt" aria-label="${esc(tr(CONN_TEXT[st]))}">${CONN_ICON[st]}${st === 'err' ? `<span>${esc(tr('连接失败'))}</span>` : ''}</div>${st === 'err' ? `<button class="cWhy" data-conn-why="${a.app}" aria-expanded="${open}">${esc(tr(open ? '收起' : '查看原因'))}</button>` : ''}</div>${st === 'err' && open ? `<div class="cErr"><pre class="cDetail">${esc(detail)}</pre><div class="cActs"><button class="cBtn" data-conn-retry="agents">${CONN_RETRY_SVG}${esc(tr('重试'))}</button><button class="cBtn ghost" data-conn-why="${a.app}">${esc(tr('收起'))}</button></div></div>` : ''}</div>`;
+  }).join('');
+  $('connSum').textContent = settled ? `${ready}/${CONN_AGENTS.length} ${tr('可用')}` : '';
+  $('connBar').style.gridTemplateColumns = `repeat(${CONN_AGENTS.length}, 1fr)`;
+  $('connBar').innerHTML = agents.map(a => `<i class="${conn.host ? state(a) : ''}"></i>`).join('');
+  $('connGo').hidden = !settled || ready === agents.length;
+  $('connGo').textContent = ready ? ct('先进入 · 使用 {agents}', { agents: names }) : tr('全部重试');
+  $('connAuto').hidden = !settled || !ready || ready === agents.length;
+  $('connMore').hidden = !settled || !!ready;
+  $('connPick').hidden = true;
+  $('connNote').textContent = settled && !ready ? tr('请在电脑上启动 Agent 的调试窗口，再点击全部重试。') : '';
+
+}
+$('connGo').onclick = () => {
+  if (conn.host === 'err') return boot();
+  if (!conn.agents?.some(a => a.windows)) return connRetryAgents();
+  ensureReadyAgent();
+  connHide();
+};
+function connRetryAgents() {
+  clearTimeout(conn.timer);
+  conn.agents = null;
+  connRender();
+  send({ t: 'connAgents' });
+}
+$('connAuto').onclick = () => {
+  store.set('conn-auto-partial', conn.agents.filter(a => a.windows).map(a => a.app).join(','));
+  ensureReadyAgent();
+  connHide();
+};
+$('connPick').onclick = () => showComputers();
+$('connRepair').onclick = () => repairPairing();
+$('conn').addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  if (b.dataset.connRetry === 'agents') return connRetryAgents();
+  if (b.dataset.connRetry === 'diag') return showOffline(lastFailure);
+  const key = b.dataset.connWhy;
+  if (key) { conn.open.has(key) ? conn.open.delete(key) : conn.open.add(key); connRender(); }
+});
+$('connSwitch').onclick = () => showComputers();
+
