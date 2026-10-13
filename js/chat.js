@@ -124,9 +124,10 @@ function paintThinking(el, it) {
 function renderTool(el, it) {
   const icon = ICON[it.kind] || ICON.other;
   const fileRef = (f, r) => f + (r ? ':' + ((String(r).match(/\d+/) || [''])[0]) : '');
-  const chips = (it.chips || []).map(c => {
+  const chips = (it.chips || []).map((c, index) => {
     const isFile = it.f && (c === it.f || c.startsWith(it.f + ' ') || c.startsWith(it.f + '#'));
-    return `<code class="chip"${isFile ? ` data-file="${esc(fileRef(it.f, it.r))}"` : ''}>${esc(c)}${isFile && it.r ? ' ' + esc(it.r) : ''}</code>`;
+    const path = it.chipFiles?.[index] || (isFile ? fileRef(it.f, it.r) : '');
+    return `<code class="chip"${path ? ` data-file="${esc(path)}"` : ''}>${esc(c)}${isFile && it.r ? ' ' + esc(it.r) : ''}</code>`;
   }).join('');
   if (it.kind === 'command') {
     const cmd = it.cmd || '';
