@@ -4145,19 +4145,20 @@ class Session {
     return null;
   }
 
+  // Only local workspaces: remote (SSH / Cursor cloud agent) files are not read from the phone.
   async currentRoots() {
     if (this.app === 'cursor' && this.winTitle === 'Cursor Agents') {
       const workspace = await this.cdp.evaluate(helpersCall('cursorWorkspace()'));
-      return workspace ? [workspace] : [];
+      return workspace && !workspace.host ? [workspace] : [];
     }
     const prefer = this.app === 'codex' ? (this.codexRoots?.get(this.threadId) || '') : '';
     if (this.app === 'codex') {
       const pages = await codexWindows(CODEX_CDP_URL);
       const page = pages.find(p => p.pageId === this.codexPageId);
-      return windowRoots(page?.rawTitle || page?.title || '', 'code', prefer);
+      return windowRoots(page?.rawTitle || page?.title || '', 'code', prefer).filter(w => !w.host);
     }
     const title = process.platform === 'win32' ? await this.editorCdp.evaluate('document.title') : this.winTitle || '';
-    return windowRoots(title, this.app === 'devin' ? 'devin' : 'cursor', prefer);
+    return windowRoots(title, this.app === 'devin' ? 'devin' : 'cursor', prefer).filter(w => !w.host);
   }
 
   projectRows(list) {
@@ -4183,11 +4184,12 @@ class Session {
           return;
         }
         const app = this.app === 'codex' ? 'code' : this.app === 'devin' ? 'devin' : 'cursor';
-        const mine = workspaces().filter(w => (w.sources || [w.source]).includes(app));
+        const mine = workspaces().filter(w => !w.host && (w.sources || [w.source]).includes(app));
         emit({ projects: this.projectRows(mine).slice(0, 20) });
         return;
       }
-      const ws = this.workspaceByRoot(root, host || '');
+      if (host) throw new Error('只支持查看本地文件');
+      const ws = this.workspaceByRoot(root, '');
       if (!ws) throw new Error('只能查看已打开过的项目');
       emit({ ...(await listProject(ws.host, ws.root, dir || ws.root, editor)), host: ws.host || '' });
     } catch (e) {
@@ -5504,7 +5506,7 @@ class Session {
     if (!p) throw new Error('不是文件路径');
     const roots = await this.currentRoots();
     const ws = roots[0] || null;
-    const host = ws ? ws.host : /\[SSH: ([^\]]+)\]/.exec(this.winTitle || '')?.[1] || null;
+    const host = null;
     // Devin has no quick-open; resolve purely on disk (absolute, root-relative, basename search).
     if (this.app === 'devin') {
       for (const root of roots.length ? roots : [null]) {
@@ -5537,7 +5539,7 @@ class Session {
     }
     if (this.winTitle === 'Cursor Agents') {
       // The Agents window mixes projects, so try recently opened folders.
-      for (const w of workspaces().slice(0, 8)) {
+      for (const w of workspaces().filter(w => !w.host).slice(0, 8)) {
         const hit = await tryPath(w.host, isAbs ? p : path.posix.join(w.root, p));
         if (hit) return hit;
       }
@@ -5633,7 +5635,8 @@ class Session {
 
   async saveFile(filePath, text, host) {
     try {
-      const loc = locateWritable(filePath, host == null ? undefined : host);
+      if (host) throw new Error('只支持修改本地文件');
+      const loc = locateWritable(filePath, '');
       if (!loc) throw new Error('只能修改已打开过的项目里的文件');
       const size = await writeTextFile(loc.host, loc.path, text);
       this.emit({ t: 'saved', ok: true, path: filePath, host: loc.host || '', size });
