@@ -43,13 +43,25 @@ function runGit(args, cwd) {
   });
 }
 
+// Membership probes (rev-parse per dir, ls-files per file) are spawn-heavy on
+// Windows (~100 ms each); results are stable enough to reuse for 30 s.
+const GIT_MEMO = new Map();
+const memo = (key, ms, fn) => {
+  const hit = GIT_MEMO.get(key);
+  if (hit && Date.now() - hit.t < ms) return hit.p;
+  const p = fn();
+  GIT_MEMO.set(key, { t: Date.now(), p });
+  if (GIT_MEMO.size > 200) GIT_MEMO.delete(GIT_MEMO.keys().next().value);
+  return p;
+};
+
 // Marks for a local file inside a git work tree; null when not a repo / git fails.
 export async function gitMarks(filePath) {
   const cwd = path.dirname(path.resolve(filePath));
   const base = path.basename(filePath);
-  const inside = await runGit(['rev-parse', '--is-inside-work-tree'], cwd);
+  const inside = await memo(`rp|${cwd}`, 30000, () => runGit(['rev-parse', '--is-inside-work-tree'], cwd));
   if (!inside || inside.trim() !== 'true') return null;
-  const tracked = await runGit(['ls-files', '--error-unmatch', '--', base], cwd);
+  const tracked = await memo(`ls|${cwd}|${base}`, 30000, () => runGit(['ls-files', '--error-unmatch', '--', base], cwd));
   if (tracked === null) return { add: [], mod: [], del: [], newFile: true };
   const diff = await runGit(['diff', '--no-color', '-U0', 'HEAD', '--', base], cwd);
   if (diff == null || !diff.trim()) return { add: [], mod: [], del: [] };
