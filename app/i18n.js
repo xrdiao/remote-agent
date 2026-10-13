@@ -254,7 +254,7 @@ const I18N = (() => {
     '没有读到可切换的模型': 'No models were found to switch',
     '没有找到 Fast Mode': 'Fast Mode was not found',
     '展开': 'Expand', '收起': 'Collapse', '思考中': 'Thinking', '思考': 'Thought',
-    '未连接': 'Not connected', '已连接': 'Connected', '断开，重连中…': 'Disconnected, reconnecting…', '已发送': 'Sent',
+    '未连接': 'Not connected', '已连接': 'Connected', '断开，重连中…': 'Disconnected, reconnecting…', '已发送': 'Sent', '正在发送…': 'Sending…',
     '电脑端还没有发布地址（或还在用旧版本），请在电脑上重启服务': 'The computer has not published its address yet (or runs an old version). Restart the service on the computer.',
     '配对信息已失效（电脑端重置过），请重新配对': 'Pairing is no longer valid (the computer was reset). Please pair again.',
     '这台设备还没有配对。': 'This device is not paired yet.',

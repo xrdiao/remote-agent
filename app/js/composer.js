@@ -189,6 +189,7 @@ $('send').onclick = () => {
   const follow = codexFollow();
   const when = devinBusySplit() || follow === 'queue' ? 'queue' : follow === 'steer' ? 'now' : '';
   const receipt = sendReceipt(v);
+  if (mode === 'chat') status('正在发送…');
   if (mode === 'terminal') send({ t: 'termSend', text: v, ...receipt });
   else send({ t: 'send', text: v, submit: true, ...receipt, ...(when ? { when } : {}), ...mentionsFor(v) });
   if (mode === 'chat') list.scrollTop = list.scrollHeight;
@@ -200,6 +201,7 @@ $('sendNow').onclick = async () => {
   const follow = codexFollow();
   const steer = !follow || follow === 'queue';
   if (!await ask(steer ? '立即追加到当前任务？' : '改为排队，等当前任务结束后再发送？', steer ? '立即追加' : '排队')) return;
+  status('正在发送…');
   send({ t: 'send', text: v, submit: true, ...sendReceipt(v), when: steer ? 'now' : 'queue', ...mentionsFor(v) });
   if (currentApp !== 'codex') { text.value = ''; autosize(); }
   list.scrollTop = list.scrollHeight;
