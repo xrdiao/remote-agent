@@ -2176,11 +2176,6 @@ function renderQuota(m) {
     .filter(b => b?.label && !/^loading\b/i.test(String(b.label)));
   $('quotaMeters').classList.toggle('devinLimits', currentApp === 'devin' && bars.length > 1);
   const when = m.updated ? new Date(m.updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
-  if (currentApp === 'cursor' && (m.missing || !bars.length)) {
-    $('quotaMeters').title = '';
-    $('quotaMeters').innerHTML = '';
-    return;
-  }
   if (m.missing) {
     $('quotaMeters').title = '没有额度数据' + (when ? ` · 更新于 ${when}` : '');
     $('quotaMeters').innerHTML = `<button class="meter" type="button"><span class="track"></span><span class="meterText"><span class="meterLabel">额度</span><b>未获取</b></span></button>`;

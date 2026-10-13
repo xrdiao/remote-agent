@@ -3164,6 +3164,7 @@ function pageHelpers() {
 const helpersCall = call => `(${pageHelpers.toString()})().${call}`;
 const uploads = new Map();
 const codexUsage = { data: null, refresh: null, retryAt: 0, failures: 0 };
+const cursorUsage = { data: null, initial: null };
 const appPlans = {};
 
 // Fills appPlans right after the phone's connAgents probe so plan badges don't wait for a usage read.
@@ -3175,40 +3176,9 @@ const tapPoint = async (cdp, x, y) => {
   await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base });
 };
 async function cursorPlanFor(cdp) {
-  const wasOpen = await cdp.evaluate(helpersCall('settingsOpen()'));
-  if (wasOpen) return (await cdp.evaluate(helpersCall('readUsage()')))?.plan || '';
-  await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
-  try {
-    await cdp.evaluate(helpersCall('clickSettingsButton()'));
-    for (let i = 0; i < 10 && !(await cdp.evaluate(helpersCall('settingsOpen()'))); i++) await new Promise(r => setTimeout(r, 120));
-    if (!await cdp.evaluate(helpersCall('settingsOpen()'))) {
-      const comma = { key: ',', code: 'Comma', windowsVirtualKeyCode: 188, modifiers: 2 };
-      await cdp.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...comma });
-      await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...comma });
-      for (let i = 0; i < 10 && !(await cdp.evaluate(helpersCall('settingsOpen()'))); i++) await new Promise(r => setTimeout(r, 120));
-    }
-    if (!await cdp.evaluate(helpersCall('settingsOpen()'))) return '';
-    const nav = await cdp.evaluate(helpersCall('usageNavTarget()'));
-    if (nav) await tapPoint(cdp, nav.x, nav.y);
-    let usage = null;
-    for (let i = 0; i < 8; i++) {
-      await new Promise(r => setTimeout(r, 250));
-      usage = await cdp.evaluate(helpersCall('readUsage()'));
-      if (usage && !usage.loading) break;
-    }
-    return usage?.plan || '';
-  } finally {
-    try {
-      const how = await cdp.evaluate(helpersCall('clickCloseSettings()'));
-      if (how === 'tab') {
-        const ev = { key: 'w', code: 'KeyW', windowsVirtualKeyCode: 87, nativeVirtualKeyCode: 87, modifiers: 2 };
-        await cdp.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...ev });
-        await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...ev });
-      }
-    } catch {}
-    await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {});
-  }
+  return (await cdp.evaluate(helpersCall('readUsage()')))?.plan || '';
 }
+
 function readAllPlans(session) {
   if (plansRead) return plansRead;
   plansRead = (async () => {
@@ -4082,20 +4052,33 @@ class Session {
   }
 
   async readCursorUsage(automatic = false) {
+    if (automatic) {
+      const usage = await this.cdp.evaluate(helpersCall('readUsage()'));
+      if (usage?.limits?.length && !usage.loading && !usage.missing) {
+        cursorUsage.data = { ...usage, updated: Date.now() };
+        return cursorUsage.data;
+      }
+      if (cursorUsage.data) return { ...cursorUsage.data, cached: true };
+      if (!cursorUsage.initial) cursorUsage.initial = this.withFocus(() => this.readCursorUsage(false));
+      return cursorUsage.initial;
+    }
     const wasOpen = await this.cdp.evaluate(helpersCall('settingsOpen()'));
-    if (automatic && wasOpen) return this.cdp.evaluate(helpersCall('readUsage()'));
     await this.ensureSettings();
     try {
       const nav = await this.cdp.evaluate(helpersCall('usageNavTarget()'));
       if (!nav) return { missing: true, quota: [], limits: [] };
       await this.tapCss(nav.x, nav.y);
       let usage = null;
-      for (let i = 0; i < 8; i++) {
+      for (let i = 0; i < 32; i++) {
         await new Promise(r => setTimeout(r, 250));
         usage = await this.cdp.evaluate(helpersCall('readUsage()'));
-        if (usage && !usage.loading) break;
+        if (usage?.limits?.length && !usage.loading && !usage.missing) break;
       }
       if (usage?.loading) throw new Error('额度还在加载');
+      if (usage?.limits?.length && !usage.missing) {
+        cursorUsage.data = { ...usage, updated: Date.now() };
+        return cursorUsage.data;
+      }
       return usage || { missing: true, quota: [], limits: [] };
     } finally { if (!wasOpen) await this.closeSettings(); }
   }
