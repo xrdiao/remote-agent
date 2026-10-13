@@ -249,7 +249,7 @@ function userSelecting() {
   return !!sel && !sel.isCollapsed && sel.rangeCount > 0 && itemsEl.contains(sel.getRangeAt(0).commonAncestorContainer);
 }
 let deferredRender = false;
-let chatScrolling = false, chatTouching = false, scrollIdle = 0, deferredScrollRender = false;
+let chatScrolling = false, chatTouching = false, scrollIdle = 0, deferredScrollRender = false, lastScrollTop = 0;
 let historyRequest = null, historyRendering = false, historyExpanded = false, historyArmed = false, historySerial = 0, historyAtEnd = false;
 let restoringChatScroll = false, readingAnchor = null;
 function captureChatAnchor() {
@@ -730,6 +730,14 @@ function loadOlderMessages() {
     renderChat(lastChat);
     return;
   }
+  requestOlderRemote();
+}
+// Asks the desktop for an older batch. Unlike the cached-rows path this may fire mid-gesture
+// (maybePrefetchOlder): it must not write scrollTop then, but the request itself is safe — the
+// incoming chat render is deferred until the scroll settles.
+function requestOlderRemote() {
+  if (!lastChat || historyRequest) return;
+  historyArmed = false;
   if (historyAtEnd || $('older').hidden) {
     $('historyStatus').hidden = false;
     $('historyStatus').textContent = I18N.tr('已到最早消息');
@@ -747,26 +755,33 @@ function loadOlderMessages() {
   $('older').disabled = true;
   $('historyStatus').hidden = false;
   $('historyStatus').textContent = I18N.tr('正在加载更早的消息…');
-  restoreChatPosition(anchor);
+  if (!chatScrolling && !chatTouching) restoreChatPosition(anchor);
   send({ t: 'scrollChat', dy: -900, automatic: true, history: true, requestId: historyRequest.id });
 }
 function finishHistory(m) {
   if (!historyRequest || m.requestId !== historyRequest.id || m.sel !== historyRequest.sel) return;
   const anchor = captureChatAnchor();
   historyRequest = null;
-  historyArmed = false;
   $('older').disabled = false;
   $('historyStatus').hidden = false;
   $('historyStatus').textContent = I18N.tr(m.error || (m.blocked ? '生成中，稍后上滑加载历史' : m.earlier === false && $('cachedMore').hidden ? '已到最早消息' : '继续上滑可加载更早的消息'));
   if (m.earlier === false) { historyAtEnd = true; $('older').hidden = true; }
   if (!chatScrolling && !chatTouching) restoreChatPosition(anchor);
   if (!deferredScrollRender) historyRendering = false;
+  maybePrefetchOlder();
 }
+const prefetchZone = () => Math.max(600, list.clientHeight * 1.5);
 function maybeLoadOlder() {
-  if (historyArmed && list.scrollTop <= 100) loadOlderMessages();
+  if (historyArmed && list.scrollTop <= prefetchZone()) loadOlderMessages();
+}
+function maybePrefetchOlder() {
+  if (historyArmed && list.scrollTop <= prefetchZone() && !historyRequest && !deferredScrollRender && $('cachedMore').hidden && !historyAtEnd && !$('older').hidden) requestOlderRemote();
 }
 function settleChatScroll() {
-  if (restoringChatScroll) { updateToBottom(); return; }
+  const top = list.scrollTop;
+  if (restoringChatScroll) { lastScrollTop = top; updateToBottom(); return; }
+  if (top < lastScrollTop) { historyArmed = true; pinnedBottom = false; }
+  lastScrollTop = top;
   if (pinnedBottom && !nearBottom()) pinnedBottom = false;
   chatScrolling = true;
   clearTimeout(scrollIdle);
@@ -776,8 +791,9 @@ function settleChatScroll() {
     if (deferredScrollRender && lastChat) { deferredScrollRender = false; renderChat(lastChat); }
     readingAnchor = nearBottom() ? null : captureChatAnchor();
     maybeLoadOlder();
-  }, 220);
+  }, 150);
   updateToBottom();
+  maybePrefetchOlder();
 }
 list.addEventListener('scroll', settleChatScroll, { passive: true });
 let historyTouchY = 0;
