@@ -44,12 +44,12 @@ npm run pair
 ```powershell
 git pull --ff-only
 npm install
-node --check server.mjs
+npm run check
 node --check app/i18n.js
 git diff --check
 ```
 
-有本地未提交修改时，先处理这些修改再拉取，不用重置仓库。更新 `server.mjs` 不会让正在运行的 Node 进程自动加载新代码：在原中继终端按 Ctrl+C，再运行 `npm run public`。不要结束全部 `node.exe`、Devin 或 `cloudflared` 进程。
+有本地未提交修改时，先处理这些修改再拉取，不用重置仓库。更新 `server/` 代码不会让正在运行的 Node 进程自动加载新代码：在原中继终端按 Ctrl+C，再运行 `npm run public`。不要结束全部 `node.exe`、Devin 或 `cloudflared` 进程。
 
 检查中继端口和进程：
 
@@ -76,7 +76,7 @@ Windows 手机窗口列表只显示一项 Devin。打开多个 Devin 窗口时�
 
 | 现象 | 检查位置与正确行为 |
 |---|---|
-| 文件打不开，或打开了同名的其他文件 | `server.mjs` 的 `devinEdit` 应保留 `fileUri` / `toolCall.rawInput.file_path` 中的完整路径；不能用界面上的文件名替代路径。`files.mjs` 处理盘符和文件 URI。 |
+| 文件打不开，或打开了同名的其他文件 | `server/page/` 的 `devinEdit` 应保留 `fileUri` / `toolCall.rawInput.file_path` 中的完整路径；不能用界面上的文件名替代路径。`lib/files.mjs` 处理盘符和文件 URI。 |
 | 全新安装后没有项目，或管理员窗口无法识别项目 | 在「菜单 → 打开项目」浏览文件夹、选择盘符或输入完整路径；父目录内可新建空项目文件夹。Windows 从调试端口对应进程获取安装目录，调用应用自带的命令行启动脚本并检查退出码，不依赖固定安装目录或命令在 PATH 中；项目标题解析会移除 `[Administrator]` / `[Administer]` 后缀，并识别 `项目 - Cursor` 标题。Windows 读取当前窗口标题，避免打开新项目后继续使用旧标题。Linux 保留原启动命令和家目录范围。 |
 | 只能看到 Command 标题，看不到命令 | `devinCommand` 读取原生 `commandLine` 和 `outputs[].full`；`setCommandOpen` 负责展开原生命令卡。`app/index.html` 的 `renderTool` 分别显示命令与输出。目前输出最多显示 4000 字符。 |
 | 修改文件列表为空 | 原生待审阅列表与历史编辑记录是两类内容。`listChanges` 在无待审阅改动时返回 `historical: true` 的会话记录；`showChanges` 显示“会话修改记录”，点击查看文件当前内容。 |

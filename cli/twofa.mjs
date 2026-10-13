@@ -4,7 +4,7 @@
 import os from 'node:os';
 import readline from 'node:readline/promises';
 import qrcode from 'qrcode-terminal';
-import { totpConfig, newTotpSecret, totpUri, checkTotp, enableTotp, disableTotp } from './auth.mjs';
+import { totpConfig, newTotpSecret, totpUri, checkTotp, enableTotp, disableTotp } from '../lib/auth.mjs';
 
 const cmd = process.argv[2] || 'on';
 const cfg = totpConfig();

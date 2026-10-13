@@ -12,9 +12,7 @@ if curl -s --max-time 1 "http://127.0.0.1:${PORT}/json/version" >/dev/null; then
   exit 1
 fi
 
-if [[ -d "$HOME/.agent-remote" ]]; then DATA="$HOME/.agent-remote"
-elif [[ -d "$HOME/.cursor-remote-lite" ]]; then DATA="$HOME/.cursor-remote-lite"
-else DATA="$HOME/.agent-remote"; fi
+DATA="${HOME}/.agent-remote"
 LOG="$DATA/start-cursor.log"
 mkdir -p "$(dirname "$LOG")"
 

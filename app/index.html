@@ -1120,7 +1120,7 @@ function connRender() {
     const st = state(a), open = conn.open.has(a.app);
     const reason = a.timeout ? ct('超时，请检查 {agent} 是否卡住', { agent: a.name }) : a.error ? ct('连接失败，请检查 {agent} 是否已启动', { agent: a.name }) : tr('未找到窗口，请打开项目');
     const sub = st === 'ok' ? ct('{n} 个窗口可用', { n: a.windows }) : st === 'err' ? reason : tr(st === 'wait' ? '等待主机' : '正在读取窗口…');
-    const detail = [ct('地址：{v}', { v: a.address || '' }), a.error || tr('调试服务已响应，但未找到可用的项目窗口。'), a.app === 'cursor' ? tr('启动指引：在电脑上以远程调试模式启动 Cursor，然后重试。') : ct('启动指引：在电脑上运行 {command}，然后重试。', { command: './start-' + a.app + '.sh' })].join('\n');
+    const detail = [ct('地址：{v}', { v: a.address || '' }), a.error || tr('调试服务已响应，但未找到可用的项目窗口。'), a.app === 'cursor' ? tr('启动指引：在电脑上以远程调试模式启动 Cursor，然后重试。') : ct('启动指引：在电脑上运行 {command}，然后重试。', { command: './scripts/start-' + a.app + '.sh' })].join('\n');
     return `<div class="cItem ${st}"><div class="cRow"><div class="cTile cBrand"><img class="on-dark" src="logo-${a.app}-dark.svg" alt=""><img class="on-light" src="logo-${a.app}-light.svg" alt=""></div><div class="cMeta"><div class="cName">${a.name}</div><div class="cSub">${esc(sub)}</div></div><div class="cSt" aria-label="${esc(tr(CONN_TEXT[st]))}">${CONN_ICON[st]}${st === 'err' ? `<span>${esc(tr('连接失败'))}</span>` : ''}</div>${st === 'err' ? `<button class="cWhy" data-conn-why="${a.app}" aria-expanded="${open}">${esc(tr(open ? '收起' : '查看原因'))}</button>` : ''}</div>${st === 'err' && open ? `<div class="cErr"><pre class="cDetail">${esc(detail)}</pre><div class="cActs"><button class="cBtn" data-conn-retry="agents">${CONN_RETRY_SVG}${esc(tr('重试'))}</button><button class="cBtn ghost" data-conn-why="${a.app}">${esc(tr('收起'))}</button></div></div>` : ''}</div>`;
   }).join('');
   $('connSum').textContent = settled ? `${ready}/${CONN_AGENTS.length} ${tr('可用')}` : '';
@@ -2917,7 +2917,7 @@ function renderItem(it) {
     if (mh?.any) typesetMath(el);
     if (it.src === 'devin') el.insertAdjacentHTML('beforeend', `<div class="rv"><button class="foldBtn" data-fold="${esc(it.i)}" title="折叠这一轮">▾</button><span class="turnSum"></span><button class="revertBtn" data-revert="${esc(it.i)}">回到这里</button></div>`);
   }
-  // it.h comes from the whitelist sanitizer in server.mjs (pageHelpers.clean): plain tags only, text escaped.
+  // it.h comes from the whitelist sanitizer in server/page/common.js (clean): plain tags only, text escaped.
   else if (it.k === 'assistant') { el.innerHTML = it.h || ''; dressMessage(el); }
   else if (it.k === 'thinking') paintThinking(el, it);
   else if (it.k === 'tool') {
@@ -3349,7 +3349,7 @@ $('pickDir').onclick = async () => {
   if (workdir.editable) return send({ t: 'workdir' });
   if (!await ask('工作目录只能在新会话发出第一条消息之前更换。\n现在新建一个对话来更换吗？', '新建')) return;
   wantDir = true;
-  send({ t: 'newChat' });
+  send({ t: 'newProjectChat' });
 };
 function showWorkdirs(m) {
   const cur = m.info?.name;
@@ -3981,7 +3981,7 @@ $('pickRun').onclick = () => { status('读取执行位置…'); send({ t: 'codex
 $('pickChat').onclick = () => { status('读取会话操作…'); send({ t: 'codexChat' }); };
 $('pickAgents').onclick = () => openAgentList();
 $('pickHistory').onclick = () => requestMenu('history', '读取历史对话…');
-$('newChat').onclick = () => { status('正在新建对话…'); send({ t: 'newChat' }); };
+$('newChat').onclick = () => { status('正在新建对话…'); send({ t: 'newProjectChat' }); };
 
 /* ---------- file viewer ---------- */
 $('vBody').classList.toggle('wrap', store.get('wrap') !== 'off');

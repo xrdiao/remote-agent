@@ -21,9 +21,7 @@ if ! command -v "$BIN" >/dev/null 2>&1; then
   exit 1
 fi
 
-if [[ -d "${HOME}/.agent-remote" ]]; then DATA="${HOME}/.agent-remote"
-elif [[ -d "${HOME}/.cursor-remote-lite" ]]; then DATA="${HOME}/.cursor-remote-lite"
-else DATA="${HOME}/.agent-remote"; fi
+DATA="${HOME}/.agent-remote"
 LOG="${DATA}/start-codex.log"
 mkdir -p "$(dirname "$LOG")"
 nohup "$BIN" --remote-debugging-port="${PORT}" >>"$LOG" 2>&1 &

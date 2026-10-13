@@ -2,7 +2,7 @@
 // npm run devices         → list paired devices
 // npm run devices remove <id>
 import qrcode from 'qrcode-terminal';
-import { createPairing, appBase, listDevices, removeDevice, totpConfig } from './auth.mjs';
+import { createPairing, appBase, listDevices, removeDevice, totpConfig } from '../lib/auth.mjs';
 
 const [cmd = 'list', arg] = process.argv.slice(2);
 const fmt = t => t ? new Date(t).toLocaleString('zh-CN', { hour12: false }) : '-';

@@ -4,7 +4,13 @@
 set -euo pipefail
 
 PORT="${DEVIN_CDP_PORT:-9223}"
-BIN="${DEVIN_BIN:-/usr/share/devin-desktop/devin-desktop}"
+BIN="${DEVIN_BIN:-}"
+if [[ -z "$BIN" ]]; then
+  for c in /usr/share/devin-desktop/devin-desktop /usr/share/devin-desktop/bin/devin-desktop; do
+    if [[ -x "$c" ]]; then BIN="$c"; break; fi
+  done
+  BIN="${BIN:-devin-desktop}"
+fi
 
 if curl -sf --max-time 1 "http://127.0.0.1:${PORT}/json/version" >/dev/null; then
   echo "Devin 调试端口 ${PORT} 已经开着。"
@@ -21,9 +27,7 @@ if [[ ! -x "$BIN" ]]; then
   exit 1
 fi
 
-if [[ -d "${HOME}/.agent-remote" ]]; then DATA="${HOME}/.agent-remote"
-elif [[ -d "${HOME}/.cursor-remote-lite" ]]; then DATA="${HOME}/.cursor-remote-lite"
-else DATA="${HOME}/.agent-remote"; fi
+DATA="${HOME}/.agent-remote"
 LOG="${DATA}/start-devin.log"
 mkdir -p "$(dirname "$LOG")"
 nohup "$BIN" --remote-debugging-port="${PORT}" >>"$LOG" 2>&1 &
