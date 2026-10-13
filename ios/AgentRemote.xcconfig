@@ -1,0 +1,7 @@
+// Forks / contributors: put your own DEVELOPMENT_TEAM and PRODUCT_BUNDLE_IDENTIFIER in Local.xcconfig (git-ignored).
+// APP_URL optionally bakes in a default app address; write "//" as /$()/ because // starts a comment in xcconfig,
+// e.g. APP_URL = https:/$()/you.github.io/remote-agent/
+PRODUCT_BUNDLE_IDENTIFIER = com.agentremote
+DEVELOPMENT_TEAM =
+APP_URL =
+#include? "Local.xcconfig"
