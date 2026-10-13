@@ -464,6 +464,7 @@ function connect() {
       button?.closest('.btns')?.querySelectorAll('button').forEach(b => { b.disabled = false; });
     }
     else if (m.t === 'sendFailed') pendingSends.delete(m.requestId);
+    else if (m.t === 'questionDone') finishQuestion(m);
     else if (m.t === 'attachments') { if (m.sel === viewSel) renderAttachments(m.list); }
     else if (m.t === 'chat') { if (!m.sel || !viewSel || m.sel === viewSel) { if (m.chat) lruPut(chatBySel, m.sel || viewSel, m.chat, 12); renderChat(m.chat, !!m.cached); } }
     else if (m.t === 'draft') { if (!m.sel || m.sel === viewSel) { if ((text.value === '' || text.value === mirroredDraft) && m.text !== text.value) { text.value = m.text; autosize(); } mirroredDraft = m.text; } }

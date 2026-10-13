@@ -27,6 +27,7 @@ wss.on('connection', (ws, req) => {
   let session = null;
   const authTimer = setTimeout(() => ws.close(4001, 'auth timeout'), 5000);
   let queue = Promise.resolve();
+  let questionQueue = Promise.resolve();
   ws.on('message', raw => {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
@@ -48,7 +49,7 @@ wss.on('connection', (ws, req) => {
     if (msg.t === 'ack') return session.ack();
     const route = ROUTES[msg.t];
     if (route && flag(route.fast, session, msg)) { route.fastRun(session, msg); return; }
-    queue = queue.then(async () => {
+    const execute = async () => {
       const q0 = Date.now();
       try {
         const queued = await session.handle(msg);
@@ -60,7 +61,9 @@ wss.on('connection', (ws, req) => {
         route?.fail?.(session, msg);
         session.emit({ t: 'status', ok: false, msg: e.message });
       }
-    });
+    };
+    if (msg.t === 'question' || msg.t === 'codexRequest') questionQueue = questionQueue.then(execute);
+    else queue = queue.then(execute);
   });
   ws.on('close', () => {
     clearTimeout(authTimer);

@@ -75,6 +75,9 @@ function readAllPlans(session) {
   return plansRead;
 }
 
+const questionDone = (s, m) => s.emit({ t: 'questionDone', requestId: m.requestId, sel: s.selectionKey(), ok: true });
+const questionFailed = (s, m) => s.emit({ t: 'questionDone', requestId: m.requestId, sel: s.selectionKey(), ok: false });
+
 export const ROUTES = {
   saveFile: { pre: (s, m) => s.saveFile(String(m.path ?? ''), String(m.text ?? ''), m.host == null ? undefined : String(m.host)) },
   connAgents: {
@@ -193,7 +196,10 @@ export const ROUTES = {
   image: { run: (s, m) => s.attachImage(m.data, m.name, m.type) },
   attachments: { readOnly: true, fusionFree: true, run: s => s.syncAttachments() },
   removeAttachment: { run: (s, m) => s.removeAttachment(String(m.id)) },
-  question: { run: (s, m) => s.answerQuestion(m.qi, m.oi, ['option', 'submit', 'skip', 'prev', 'next'].includes(m.part) ? m.part : 'option', m.text) },
+  question: {
+    run: (s, m) => s.answerQuestion(m.qi, m.oi, ['option', 'submit', 'skip', 'prev', 'next'].includes(m.part) ? m.part : 'option', m.text),
+    after: questionDone, fail: questionFailed,
+  },
   workdir: { run: s => s.workdirList() },
   workdirPick: { run: (s, m) => s.workdirPick(String(m.name ?? '').slice(0, 200), String(m.path ?? '').slice(0, 400)) },
   envPick: { run: (s, m) => s.envPick(String(m.label ?? '')) },
@@ -232,7 +238,7 @@ export const ROUTES = {
       if (m.field != null) {
         if (!await s.cdp.evaluate(helpersCall(`codexRequestField(${JSON.stringify(String(m.id))}, ${Number(m.field)}, ${JSON.stringify(String(m.value || ''))})`))) throw new Error('请求输入框已不存在');
       } else {
-        const acted = await s.cdp.evaluate(helpersCall(`codexRequestAction(${JSON.stringify(String(m.id))}, ${Number(m.n)})`));
+        const acted = await s.cdp.evaluate(helpersCall(`codexRequestAction(${JSON.stringify(String(m.id))}, ${Number(m.n)}, ${JSON.stringify(m.fields || [])})`));
         if (!acted) {
           const pos = await s.cdp.evaluate(helpersCall(`codexRequestTarget(${JSON.stringify(String(m.id))}, ${Number(m.n)})`));
           if (!pos) throw new Error('请求已经处理或不存在');
@@ -241,6 +247,7 @@ export const ROUTES = {
       }
       setTimeout(() => s.pollChat().catch(() => {}), 300);
     },
+    after: questionDone, fail: questionFailed,
   },
   codexPick: { run: (s, m) => s.codexPick(m) },
   codexSkills: { run: s => s.codexSkillList() },
