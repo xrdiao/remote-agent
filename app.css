@@ -473,7 +473,7 @@
   .fusionTree summary { padding: 10px 4px; cursor: pointer; font-size: 14px; }
   .fusionTree > details { margin-left: 0; }
   /* gate (login / offline) */
-  #gate { position: fixed; inset: 0; z-index: 20; background: #1e1e1e; display: none; flex-direction: column; gap: 12px; padding: calc(60px + env(safe-area-inset-top)) 24px 24px; }
+  #gate { position: fixed; inset: 0; z-index: 20; background: #0b131b; color: #eaf0f6; display: none; flex-direction: column; gap: 12px; padding: calc(60px + env(safe-area-inset-top)) 24px 24px; }
   #gate { overflow-y: auto; }
   #gate.open { display: flex; }
   #gate h2 { margin: 0 0 6px; font-size: 20px; color: var(--hi); }
@@ -482,7 +482,72 @@
   #gateActions { display: none; gap: 8px; }
   #gateActions.show { display: flex; }
   #gateActions button { flex: 1; }
-  #gateLang { background: none; border: 0; color: var(--muted); font-size: 13px; padding: 6px 10px; }
+  #gateLang { display: flex; align-items: center; gap: 12px; align-self: flex-end; color: #344453; }
+  #gateLang button { background: none; border: 0; padding: 0; font-size: 15px; color: #73818e; }
+  #gateLang button.active { color: #4da3ff; font-weight: 700; }
+  #gate .pairLogo { display: none; }
+  #gateEntry[hidden], #gatePaste[hidden], #pairOr[hidden], #gateScan[hidden], #gateHelp[hidden] { display: none; }
+  .pairInput { display: flex; min-width: 0; }
+  #gateInput { flex: 1; min-width: 0; }
+  #gatePaste { flex: none; width: 48px; padding: 10px; }
+  #gatePaste svg, #gateScan svg { width: 22px; height: 22px; }
+  #gateBtn { width: 100%; margin-top: 12px; }
+  #gate.pairing { gap: 0; padding: calc(22px + env(safe-area-inset-top)) 24px max(22px, env(safe-area-inset-bottom)); background: radial-gradient(ellipse at 50% 25%, #10223455, transparent 55%), #0b131b; }
+  #gate.pairing .pairHero { text-align: center; margin: clamp(24px, 7vh, 64px) 0 28px; }
+  #gate.pairing .pairLogo { display: block; width: clamp(112px, 40vw, 176px); height: auto; margin: 0 auto 22px; filter: grayscale(1) brightness(3) contrast(50); mix-blend-mode: screen; }
+  #gate.pairing h2 { font-size: clamp(26px, 7vw, 32px); font-weight: 700; color: #f4f7fb; margin: 0 0 16px; }
+  #pairIntro { margin: 0; color: #95a2b0; font-size: 14px; line-height: 1.8; }
+  #gate.pairing #gateMsg { font-size: 13px; margin: 0 0 12px; }
+  #gate.pairing #gateMsg:empty { display: none; }
+  #gate.pairing #gateEntry { border: 1px solid #223241; border-radius: 22px; background: #111d28; padding: 16px; }
+  #gate.pairing .pairInput { border: 1px solid #2b3e4f; border-radius: 15px; overflow: hidden; background: #0b131b; }
+  #gate.pairing #gateInput { border: 0; border-radius: 0; background: none; color: #eaf0f6; padding: 16px 12px; outline-offset: -3px; }
+  #gate.pairing #gateInput::placeholder { color: #718190; }
+  #gate.pairing #gatePaste { color: #becbd8; border: 0; border-left: 1px solid #2b3e4f; border-radius: 0; background: none; }
+  #gate.pairing #gateBtn { height: 54px; margin-top: 14px; border: 1px solid #4da3ff; border-radius: 15px; color: #fff; background: #3b8eea; font-size: 18px; font-weight: 700; }
+  #pairOr { display: flex; align-items: center; gap: 12px; margin: 20px 16px; color: #657482; font-size: 12px; }
+  #pairOr span:first-child, #pairOr span:last-child { height: 1px; flex: 1; background: #263542; }
+  #gate.pairing #gateScan { display: flex; align-items: center; justify-content: center; gap: 10px; min-height: 54px; border-radius: 15px; border: 1px solid #375572; background: #101c27; color: #eaf0f6; font-size: 17px; }
+  #gateScan svg { color: #4da3ff; }
+  #gate.pairing #gateHelp { margin-top: auto; padding-top: 28px; border: 0; background: none; color: #4da3ff; font-size: 14px; }
+  #gateHelp span { margin-left: 8px; font-size: 22px; vertical-align: -1px; }
+  #gate.pairing #gateInfo { margin-top: 10px; text-align: center; }
+  #scanner { position: fixed; inset: 0; z-index: 40; background: #0b131b; color: #eef3f8; display: flex; flex-direction: column; padding: env(safe-area-inset-top) 24px max(24px, env(safe-area-inset-bottom)); overflow-y: auto; }
+  #scanner[hidden] { display: none; }
+  #scannerVideo, .scannerShade { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
+  .scannerShade { background: linear-gradient(#0b131bd9, #0b131b66 40%, #0b131bf0); }
+  .scannerNav { position: relative; display: flex; align-items: center; justify-content: center; min-height: 76px; flex: none; }
+  .scannerNav h2 { margin: 0; font-size: 20px; font-weight: 700; }
+  #scannerBack { position: absolute; left: 0; width: 42px; height: 42px; display: grid; place-items: center; background: #ffffff12; border: 1px solid #ffffff08; border-radius: 50%; padding: 10px; color: #eef3f8; }
+  #scannerBack svg { width: 22px; height: 22px; }
+  .scannerContent { position: relative; flex: 1; display: flex; flex-direction: column; justify-content: center; align-items: center; min-height: 420px; padding: 16px 0; }
+  .scannerFrame { width: min(78vw, 42vh, 320px); aspect-ratio: 1; position: relative; flex: none; }
+  .scannerFrame i { position: absolute; width: 34px; height: 34px; border: 3px solid #3b8eea; }
+  .scannerFrame i:nth-child(1) { top: 0; left: 0; border-right: 0; border-bottom: 0; border-top-left-radius: 14px; }
+  .scannerFrame i:nth-child(2) { top: 0; right: 0; border-left: 0; border-bottom: 0; border-top-right-radius: 14px; }
+  .scannerFrame i:nth-child(3) { bottom: 0; left: 0; border-right: 0; border-top: 0; border-bottom-left-radius: 14px; }
+  .scannerFrame i:nth-child(4) { bottom: 0; right: 0; border-left: 0; border-top: 0; border-bottom-right-radius: 14px; }
+  .scanLine { position: absolute; top: 50%; left: -12px; right: -12px; height: 2px; background: #4da3ff; box-shadow: 0 0 12px 3px #3b8eea55; animation: scanPulse 1.5s ease-in-out infinite alternate; }
+  @keyframes scanPulse { from { opacity: .55; } to { opacity: 1; } }
+  .scannerHint { margin: 26px 0 0; text-align: center; font-size: 13px; line-height: 1.7; color: #c8d2dc; }
+  #scannerMessage { color: #a8b7c7; font-size: 12px; text-align: center; margin: 8px 0 0; min-height: 18px; line-height: 1.6; }
+  #scannerAlbum { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-top: 28px; background: none; border: 0; padding: 0; color: #ced7df; font-size: 13px; }
+  #scannerAlbum span { display: grid; place-items: center; width: 58px; height: 58px; background: #ffffff10; border: 1px solid #ffffff25; border-radius: 50%; }
+  #scannerAlbum svg { width: 24px; height: 24px; }
+  #scannerManual { position: relative; flex: none; border: 0; border-top: 1px solid #ffffff20; border-radius: 0; background: none; color: #4da3ff; font-size: 15px; padding: 22px 0 0; }
+  #scannerManual span { font-size: 22px; margin-left: 6px; vertical-align: -1px; }
+  @media (max-height: 740px) {
+    #gate.pairing { padding: calc(18px + env(safe-area-inset-top)) 24px max(18px, env(safe-area-inset-bottom)); }
+    #gate.pairing .pairHero { margin: 2.5vh 0 16px; }
+    #gate.pairing .pairLogo { width: min(40vw, 17vh); margin-bottom: 16px; }
+    #gate.pairing h2 { font-size: 26px; margin-bottom: 12px; }
+    #gate.pairing #gateEntry { padding: 12px; }
+    #gate.pairing #gateInput { padding-top: 13px; padding-bottom: 13px; }
+    #gate.pairing #gateBtn { height: 48px; margin-top: 12px; }
+    #pairOr { margin-top: 12px; margin-bottom: 12px; }
+    #gate.pairing #gateScan { min-height: 48px; }
+    #gate.pairing #gateHelp { padding-top: 16px; }
+  }
   #gateMsg { color: var(--muted2); line-height: 1.6; white-space: pre-line; }
   .primary-link { display: block; text-align: center; padding: 11px; border-radius: 8px; background: var(--accent); color: #fff; text-decoration: none; font-weight: 600; }
   #gateInput.code { font-size: 26px; letter-spacing: 8px; text-align: center; }
