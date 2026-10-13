@@ -239,18 +239,23 @@ let activeGeneration = '';
 function withMessageTimes(chat) {
   if (!chat) return chat;
   const scope = messageScope();
+  const matches = (it, m) => it.k === 'human' && !m.before.has(it.i)
+    && ((it.t || '').trim() === m.text.trim() || (it.t || '').startsWith(m.text + '\n\n附加文件（'));
+  const applies = m => m.scope === scope && (!m.thread || m.thread === chat.thread);
+  const itemKey = it => generationKey(chat) + '|' + it.i;
+  for (let index = 0; index < submittedMessages.length;) {
+    const receipt = submittedMessages[index];
+    if (!applies(receipt)) { index++; continue; }
+    const candidates = chat.items.filter(it => matches(it, receipt) && !messageTimes.has(itemKey(it)));
+    const waiting = submittedMessages.filter(m => applies(m) && m.text === receipt.text).length;
+    const item = candidates.at(-Math.min(waiting, candidates.length));
+    if (!item) { index++; continue; }
+    messageTimes.set(itemKey(item), item.sentAt || receipt.sentAt);
+    submittedMessages.splice(index, 1);
+  }
   return { ...chat, items: chat.items.map(it => {
     if (it.k !== 'human') return it;
-    const key = generationKey(chat) + '|' + it.i;
-    if (!messageTimes.has(key)) {
-      const index = submittedMessages.findIndex(m => m.scope === scope && (!m.thread || m.thread === chat.thread) && !m.before.has(it.i)
-        && ((it.t || '').trim() === m.text.trim() || (it.t || '').startsWith(m.text + '\n\n附加文件（')));
-      if (index >= 0) {
-        const receipt = submittedMessages.splice(index, 1)[0];
-        messageTimes.set(key, it.sentAt || receipt.sentAt);
-      }
-    }
-    const sentAt = it.sentAt || messageTimes.get(key);
+    const sentAt = it.sentAt || messageTimes.get(itemKey(it));
     return sentAt ? { ...it, sentAt } : it;
   }) };
 }
