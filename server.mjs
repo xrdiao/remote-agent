@@ -122,9 +122,7 @@ async function listWindows(report = null) {
           port: ed.url,
           app: ed.app,
           kind: t.title === 'Cursor Agents' ? 'agents' : /\[SSH: /.test(t.title) ? 'ssh' : 'local',
-        }))
-        // Devin names a real window after its folder. A bare "Devin" title is an empty New Space.
-        .filter(t => !(ed.app === 'devin' && process.platform !== 'win32' && t.title === 'Devin'));
+        }));
       report?.push({ app: ed.app, windows: found.length, address: ed.url });
       return found;
     } catch (error) {
@@ -208,7 +206,7 @@ function fusionLastAssistant(chat, after = '') {
 const codexViewIds = new Map();
 const codexContextFiles = new Map();
 
-function windowsCodexContext(thread) {
+function codexContext(thread) {
   if (!thread) return null;
   const sessions = path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'sessions');
   let file = codexContextFiles.get(thread);
@@ -1887,11 +1885,19 @@ function pageHelpers() {
   };
   const contextPct = () => {
     const el = [...doc.querySelectorAll('button, [role=button], [role=img]')].find(e => vis(e) && /^Context(?:\s+usage)?:?\s*\d+%/i.test(((e.getAttribute('aria-label') || e.innerText || '').replace(/\s+/g, ' ').trim())));
-    if (!el) return null;
-    const text = ((el.getAttribute('aria-label') || el.innerText || '').replace(/\s+/g, ' ').trim());
-    const m = /(\d+)%/.exec(text);
-    if (!m) return null;
-    return { pct: Number(m[1]), basis: /left|remaining|剩余/i.test(text) ? 'remaining' : 'used' };
+    if (el) {
+      const text = ((el.getAttribute('aria-label') || el.innerText || '').replace(/\s+/g, ' ').trim());
+      return { pct: Number(/(\d+)%/.exec(text)[1]), basis: /left|remaining|剩余/i.test(text) ? 'remaining' : 'used' };
+    }
+    const thread = activeThread();
+    const usage = window.__acpStore?.getState()?.acp?.perSession?.[thread]?.contextUsage;
+    if (usage?.size > 0) return { pct: Math.round(Math.min(100, usage.used / usage.size * 100)), basis: 'used' };
+    const indicator = [...doc.querySelectorAll('.composer-context-usage-indicator')].find(e => vis(e)
+      && (!e.closest('[data-glass-agent-id]') || e.closest('[data-glass-agent-id]').getAttribute('data-glass-agent-id') === thread));
+    const ring = indicator?.querySelector('.token-ring-progress');
+    if (!ring) return null;
+    const length = Number(ring.getAttribute('stroke-dasharray'));
+    return { pct: Math.round(Math.max(0, Math.min(100, (1 - Number(ring.getAttribute('stroke-dashoffset')) / length) * 100))), basis: 'used' };
   };
   // Cursor's Agents window shows several agent cards, each with its own composer; the selected one is the
   // sidebar row with data-active.
@@ -1965,11 +1971,10 @@ function pageHelpers() {
     }
     return false;
   };
-  const readDevinUsage = () => {
+  const readDevinUsage = async (refresh = false) => {
     const input = [...doc.querySelectorAll(`${COMPOSER}, [data-slate-editor="true"]`)].filter(e => vis(e) && e.isContentEditable && !inItem(e)).at(-1);
     const api = input && codexFiberProps(input, Infinity).find(p => p.value?.api?.windsurfSettingsPage?.planInfo)?.value.api;
-    // The extension refreshes planInfo on window focus; nudge it so quota reads aren't stale.
-    try { api?.onWindowFocusChange?.(true); } catch {}
+    if (refresh && api) await api.executeCommand('devin.updatePlanInfo');
     const info = api?.windsurfSettingsPage?.planInfo?.getPlanInfo();
     if (info) return {
       missing: false, quota: [], plan: info.planName, updated: Date.now(),
@@ -3691,7 +3696,7 @@ class Session {
       }
       this.pendingThread = '';
       this.lastBusy = !!chat.busy;
-      if (process.platform === 'win32' && this.app === 'codex') chat.context = windowsCodexContext(chat.thread);
+      if (this.app === 'codex') chat.context = codexContext(chat.thread);
       if (this.app === 'codex') {
         for (const it of chat.items.filter(it => it.images?.length)) {
           const old = this.itemCache?.get(chat.thread)?.find(x => x.i === it.i);
@@ -4029,15 +4034,15 @@ class Session {
     const automatic = !request.manual;
     const cdp = this.cdp, sel = this.sel;
     let context;
-    try { context = process.platform === 'win32' && this.app === 'codex'
-      ? windowsCodexContext(await this.cdp.evaluate(helpersCall('codexThread()')))
+    try { context = this.app === 'codex'
+      ? codexContext(await this.cdp.evaluate(helpersCall('codexThread()')))
       : await this.cdp.evaluate(helpersCall('contextPct()')); }
     catch { context = undefined; }
     if (context !== undefined && cdp === this.cdp && this.liveRead(cdp, sel)) this.emit({ t: 'usage', sel: this.selectionKey(), context });
     if (!this.liveRead(cdp, sel)) return;
     try {
       const account = this.app === 'codex' ? await this.readCodexAccount(request)
-        : this.app === 'devin' ? await this.cdp.evaluate(helpersCall('readDevinUsage()'))
+        : this.app === 'devin' ? await this.cdp.evaluate(helpersCall('readDevinUsage(true)'))
         : await this.readCursorUsage(automatic);
       if (!this.liveRead(cdp, sel)) return;
       if (typeof account?.plan === 'string' && account.plan) appPlans[this.app] = account.plan;
@@ -4059,7 +4064,8 @@ class Session {
         return cursorUsage.data;
       }
       if (cursorUsage.data) return { ...cursorUsage.data, cached: true };
-      if (!cursorUsage.initial) cursorUsage.initial = this.withFocus(() => this.readCursorUsage(false));
+      if (!cursorUsage.initial) cursorUsage.initial = this.withFocus(() => this.readCursorUsage(false))
+        .finally(() => { cursorUsage.initial = null; });
       return cursorUsage.initial;
     }
     const wasOpen = await this.cdp.evaluate(helpersCall('settingsOpen()'));
@@ -6497,11 +6503,11 @@ class Session {
       const usage = await this.withFusionSideSpec(spec, async function () {
         const active = await this.cdp.evaluate(helpersCall('activeThread()'));
         const context = active === spec.agentId
-          ? process.platform === 'win32' && spec.app === 'codex' ? windowsCodexContext(active) : await this.cdp.evaluate(helpersCall('contextPct()'))
+          ? spec.app === 'codex' ? codexContext(active) : await this.cdp.evaluate(helpersCall('contextPct()'))
           : spec.usage?.context;
         try {
           const account = spec.app === 'codex' ? await this.readCodexAccount({ manual: !automatic, fusion: true })
-            : spec.app === 'devin' ? await this.cdp.evaluate(helpersCall('readDevinUsage()')) : await this.withFocus(() => this.readCursorUsage(automatic));
+            : spec.app === 'devin' ? await this.cdp.evaluate(helpersCall('readDevinUsage(true)')) : await this.withFocus(() => this.readCursorUsage(automatic));
           return { context, updated: Date.now(), ...(account || { missing: true }) };
         } catch (e) { return { ...spec.usage, context, error: e.message, cached: true }; }
       }, false).catch(e => ({ ...spec.usage, error: e.message, cached: true }));
@@ -6877,8 +6883,8 @@ class Session {
           spec.draft = false;
           this.fusionOwner.fusionEmit();
         }
-        spec.usage = { ...spec.usage, context: process.platform === 'win32' && this.app === 'codex'
-          ? windowsCodexContext(chat.thread) : chat?.context ?? await this.cdp.evaluate(helpersCall('contextPct()')) };
+        spec.usage = { ...spec.usage, context: this.app === 'codex'
+          ? codexContext(chat.thread) : chat?.context ?? await this.cdp.evaluate(helpersCall('contextPct()')) };
         this.fusionOwner.fusionUsageEmit();
         let last;
         if (this.app === 'codex') {
