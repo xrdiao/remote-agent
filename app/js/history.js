@@ -476,7 +476,7 @@ function renderChat(chat, stale) {
   syncChildren(itemsEl, els);
   itemsEl.classList.toggle('stale', chatStale);
   latestTasks = (chat.items || []).filter(it => it.k === 'tasks').pop() || null;
-  $('taskChip').hidden = !latestTasks;
+  $('taskChip').hidden = !latestTasks || (latestTasks.done >= latestTasks.total && !chat.busy);
   if (latestTasks) $('taskChip').innerHTML = `<span>${I18N.tr('任务')}</span> ${latestTasks.done}/${latestTasks.total}`;
   if (sheetKind === 'tasks') showTasks();
   const live = new Set(visibleItems.map(it => it.i));

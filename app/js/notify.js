@@ -235,7 +235,7 @@ $('sheet').addEventListener('click', async e => {
     if (b.dataset.kind !== 'codex-run' && b.dataset.kind !== 'codex-chat' && !/^fusion-(model|effort)-/.test(String(b.dataset.kind || ''))) beginSwitch(b.dataset.kind);
     return send({ t: 'pickMenu', kind: b.dataset.kind, label: b.dataset.label });
   }
-  if (b.dataset.chopen) { const diff = changeFiles.find(f => f.name === b.dataset.chopen)?.diff || ''; closeSheet(); return openFile(b.dataset.chopen, false, diff); }
+  if (b.dataset.chopen) { const diff = changeFiles.find(f => f.name === b.dataset.chopen)?.diff || ''; closeSheet(); return openFile(b.dataset.chopen, false, diff, true); }
   if (b.dataset.ch) {
     const undo = b.dataset.act2 === 'undo';
     if (undo && !await ask(`撤销「${b.dataset.name}」的改动？\n文件会恢复成 Agent 改之前的样子。`, '撤销')) return send({ t: 'changes' });

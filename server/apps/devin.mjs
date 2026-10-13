@@ -361,27 +361,48 @@ async readThought(id) {
 },
 
 
-// Devin: finished thoughts in the mounted transcript that have no body yet. Up to 2 per poll; a
-// thought is only marked tried once its body was read, or after 3 failed reads on different polls.
+// Devin: finished thoughts in the mounted transcript that have no body yet, plus finished thoughts
+// seen live earlier — their body was captured mid-stream and may be truncated, so re-read them once;
+// that read is authoritative even when shorter than what was stored. Up to 2 per poll (finalization
+// candidates first); a thought is only marked tried once its body was read, or after 3 failed reads
+// on different polls.
 async captureThoughts(chat) {
   if (this.app !== 'devin') return;
   this.thoughtPoll = (this.thoughtPoll || 0) + 1;
   this.thoughtFails = this.thoughtFails || new Map();
-  const todo = (chat?.items || []).filter(it => it.k === 'thinking' && !it.live && it.src === 'devin'
-    && !this.thinkingBody(it) && !this.thinkingTried.has(it.i) && !(this.devinHist.get(it.i) && this.thinkingBody(this.devinHist.get(it.i))))
-    .reverse().slice(0, 2);
+  this.thinkLiveSeen = this.thinkLiveSeen || new Set();
+  this.thinkFinal = this.thinkFinal || new Set();
+  const items = chat?.items || [];
+  for (const it of items) if (it.k === 'thinking' && it.live && it.src === 'devin') this.thinkLiveSeen.add(it.i);
+  while (this.thinkLiveSeen.size > 200) this.thinkLiveSeen.delete(this.thinkLiveSeen.keys().next().value);
+  const fin = items.filter(it => it.k === 'thinking' && !it.live && it.src === 'devin'
+    && this.thinkLiveSeen.has(it.i) && !this.thinkFinal.has(it.i));
+  const finIds = new Set(fin.map(it => it.i));
+  const fresh = items.filter(it => it.k === 'thinking' && !it.live && it.src === 'devin' && !finIds.has(it.i)
+    && !this.thinkingBody(it) && !this.thinkingTried.has(it.i) && !(this.devinHist.get(it.i) && this.thinkingBody(this.devinHist.get(it.i))));
+  const todo = [...fin.reverse(), ...fresh.reverse()].slice(0, 2);
   for (const it of todo) {
     const body = await this.readThought(it.i);
     if (body) {
       it.t = `${this.thinkingTitle(it)}\n${body}`;
       this.thinkingTried.set(it.i, 1);
+      if (finIds.has(it.i)) {
+        this.devinHist.set(it.i, { ...(this.devinHist.get(it.i) || it), t: it.t });
+        this.thinking.set(it.i, { body });
+        if (this.keptThink?.has(it.i)) this.keptThink.get(it.i).body = body;
+        if (this.latestThink?.id === it.i) this.latestThink.body = body;
+        this.thinkFinal.add(it.i);
+      }
       continue;
     }
     const f = this.thoughtFails.get(it.i) || { n: 0, poll: 0 };
     if (f.poll !== this.thoughtPoll) f.n++;
     f.poll = this.thoughtPoll;
     this.thoughtFails.set(it.i, f);
-    if (f.n >= 3) this.thinkingTried.set(it.i, 1);
+    if (f.n >= 3) {
+      this.thinkingTried.set(it.i, 1);
+      if (finIds.has(it.i)) this.thinkFinal.add(it.i);
+    }
   }
 },
 
@@ -396,8 +417,8 @@ syncSession(chat) {
   const key = chat.thread || sess.key;
   if (this.curSession === undefined || this.curSession === key) { this.curSession = key; return; }
   if (!this.sessStore) this.sessStore = new Map();
-  const FIELDS = ['devinHist', 'thinking', 'thinkingTried', 'keptThink', 'tasksTried', 'thoughtFails', 'latestThink'];
-  const fresh = () => ({ devinHist: new Map(), thinking: new Map(), thinkingTried: new Map(), keptThink: new Map(), tasksTried: new Map(), thoughtFails: new Map(), latestThink: null });
+  const FIELDS = ['devinHist', 'thinking', 'thinkingTried', 'keptThink', 'tasksTried', 'thoughtFails', 'latestThink', 'thinkLiveSeen', 'thinkFinal'];
+  const fresh = () => ({ devinHist: new Map(), thinking: new Map(), thinkingTried: new Map(), keptThink: new Map(), tasksTried: new Map(), thoughtFails: new Map(), latestThink: null, thinkLiveSeen: new Set(), thinkFinal: new Set() });
   const saved = {};
   for (const f of FIELDS) saved[f] = this[f];
   this.sessStore.set(this.curSession, saved);
@@ -471,7 +492,7 @@ async revertAnswer(ok, apply) {
 // the phone to drop them from its local copy too.
 afterRevert(num) {
   const n = id => Number(/^acp(\d+)/.exec(id || '')?.[1] ?? -1);
-  for (const m of [this.devinHist, this.thinking, this.keptThink, this.thinkingTried, this.tasksTried, this.thoughtFails]) {
+  for (const m of [this.devinHist, this.thinking, this.keptThink, this.thinkingTried, this.tasksTried, this.thoughtFails, this.thinkLiveSeen, this.thinkFinal]) {
     for (const k of [...(m?.keys() || [])]) if (n(k) >= num) m.delete(k);
   }
   this.lastChat = '';

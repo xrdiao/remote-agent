@@ -172,6 +172,8 @@ export class Session extends AgentContext {
     this.thoughtFails = new Map();
     this.curSession = undefined;
     this.keptThink = new Map();
+    this.thinkLiveSeen = new Set();
+    this.thinkFinal = new Set();
     const onclose = () => {
       if (this.cdp !== cdp && this.editorCdp !== editorCdp) return;
       this.detach();
