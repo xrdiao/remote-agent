@@ -112,6 +112,10 @@
   .msg { margin: 8px 0; min-width: 0; overflow-wrap: anywhere; }
   .human { display: flex; justify-content: flex-end; }
   .human .bubble { max-width: 88%; background: var(--bubble); color: #fff; padding: 8px 12px; border-radius: 15px 15px 5px 15px; border: 1px solid var(--accent-b); white-space: pre-wrap; }
+  .humanContent { max-width: 88%; min-width: 0; }
+  .humanContent .bubble { max-width: 100%; }
+  .messageMeta { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 4px; color: var(--muted); font-size: 11px; }
+  .messageMeta button { font-size: 11px; padding: 2px 6px; }
   .assistant { padding: 12px 14px; border: 1px solid var(--border); background: var(--panel); border-radius: 16px; }
   .quotaUpdated { font-size: 10px; color: #999; align-self: center; }
   .assistant a { color: #6cb6ff; overflow-wrap: anywhere; }
@@ -313,7 +317,10 @@
   .sendRow { display: flex; gap: 8px; }
   #send, #sendNow { flex: 1; min-width: 0; height: 42px; padding: 0 12px; font-weight: 600; border-radius: 12px; }
   #send { background: var(--accent); border-color: var(--accent-b); color: #fff; }
-  #msg { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #footerStatus { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  #footerStatus:not(:has(#msg:not(:empty), #elapsed:not([hidden]))) { display: none; }
+  #msg { flex: 1; min-width: 0; font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #elapsed { flex: none; margin-left: auto; font-size: 11px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
   #msg:empty { display: none; }
   #msg.err { color: var(--err); }
 
