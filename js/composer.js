@@ -3,11 +3,16 @@ const text = $('text');
 const drafts = new Map(), draftMentions = new Map();
 const pendingSends = new Map(), draftVersions = new Map();
 let inputRevision = 0;
+let draftEpoch = '';
 let activeDraft = '';
 function sendReceipt(value) {
   const requestId = [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
+  if (mode === 'chat') {
+    clearTimeout(draftPushTimer);
+    draftEpoch = requestId;
+  }
   pendingSends.set(requestId, { draft: activeDraft, text: value, computer: currentComputer()?.id || '', mode, version: draftVersions.get(activeDraft) || 0, revision: inputRevision });
-  return { requestId, draft: activeDraft };
+  return { requestId, draft: activeDraft, draftEpoch };
 }
 function confirmSent(m) {
   const sent = pendingSends.get(m.requestId);
@@ -30,7 +35,7 @@ text.addEventListener('input', () => {
   clearTimeout(draftPushTimer);
   draftPushTimer = setTimeout(() => {
     if (composing || mode !== 'chat' || currentApp === 'fusion' || MN.mentions.length) return;
-    send({ t: 'draft', text: text.value });
+    send({ t: 'draft', text: text.value, draftEpoch });
   }, 400);
 });
 // ---- "@" mentions (Devin): the relay drives Devin's own typeahead, so a mention ends up as a real chip ----
