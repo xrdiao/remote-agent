@@ -226,7 +226,7 @@ const I18N = (() => {
     '正在读取项目…': 'Loading projects…', '正在读取文件夹…': 'Loading folder…', '正在打开项目…': 'Opening project…',
     '正在读取设置…': 'Loading settings…', '正在修改…': 'Updating…', '正在读取额度…': 'Loading usage…',
     '正在提交回答…': 'Submitting answer…', '回答提交失败': 'Answer submission failed',
-    '显示改动': 'Show changes', '隐藏改动提示': 'Hide change notice',
+    '显示改动': 'Show changes', '隐藏改动提示': 'Hide change notice', '耗时': 'Elapsed',
     '配对链接或电脑码.一次性配对码': 'Pairing link or computer ID.one-time code',
     '请输入完整配对链接或电脑码.一次性配对码': 'Enter the full pairing link or computer ID.one-time code',
     '这台设备还没有配对。\n在电脑上运行 npm run pair，用手机扫码，或输入完整配对链接、手动配对码。': 'This device is not paired.\nRun npm run pair on the computer, then scan the QR code or enter the full pairing link or manual code.',
