@@ -170,15 +170,44 @@ function deviceName() {
 
 function showUnpaired(msg = '') {
   gate({
-    msg: (msg ? msg + '\n\n' : '') + '这台设备还没有配对。\n在电脑上运行 npm run pair，用手机扫码；或者把链接复制过来粘贴到下面。',
+    msg: (msg ? msg + '\n\n' : '') + '这台设备还没有配对。\n在电脑上运行 npm run pair，用手机扫码，或输入完整配对链接、手动配对码。',
     err: !!msg,
-    input: { placeholder: '粘贴配对链接', button: '配对', submit: pastePair, scan: true },
+    input: { placeholder: '配对链接或电脑码.一次性配对码', button: '配对', submit: pastePair, scan: true, inputMode: 'text' },
   });
 }
 
-function pastePair(text) {
+async function pastePair(text) {
+  const manual = /^([a-f0-9]{16})\.([\w-]{22})$/.exec(text.replace(/\s/g, ''));
+  if (manual) {
+    try {
+      const discovery = new URL('url.json', location.href).href;
+      const registry = await fetch(discovery + '?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then(r => { if (!r.ok) throw Error('地址记录读取失败'); return r.json(); });
+      if (registry.self) {
+        base = new URL(discovery).origin;
+        const me = await fetch(base + '/api/me').then(r => r.json());
+        if (me.id !== manual[1]) throw Error('配对码对应的电脑与当前入口不一致');
+        pending = { code: manual[2], discovery };
+        connGen++;
+        authed = false;
+        ws?.close();
+        return pair();
+      }
+      const entry = registry.computers?.find(c => c.id === manual[1]);
+      if (!entry?.pairing || entry.pairing.expires <= Date.now()) throw Error('配对码未发布或已过期，请在电脑上重新运行 npm run pair');
+      const rawKey = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(manual[2]));
+      const key = await crypto.subtle.importKey('raw', rawKey, 'AES-GCM', false, ['decrypt']);
+      const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64(entry.pairing.iv) }, key, b64(entry.pairing.data));
+      const decoded = JSON.parse(new TextDecoder().decode(plain));
+      if (decoded.id !== manual[1]) throw Error('配对码对应的电脑不一致');
+      pending = { key: decoded.key, code: manual[2], discovery, stay: true };
+      connGen++;
+      authed = false;
+      ws?.close();
+      return boot();
+    } catch (e) { return showUnpaired(e.name === 'OperationError' ? '配对码不正确' : e.message); }
+  }
   const p = parsePair(text);
-  if (!p) return showUnpaired('这不是配对链接（应包含 #pair=…）');
+  if (!p) return showUnpaired('请输入完整配对链接或电脑码.一次性配对码');
   let target;
   try { target = new URL(text.trim()); } catch {}
   if (target && /^https?:$/.test(target.protocol) && target.origin !== location.origin) {
@@ -270,9 +299,9 @@ function unseenPublished() {
   const saved = loadComputers();
   return publishedComputers().filter(p => !saved.some(c => c.id && c.id === p.id));
 }
-function offerComputers(msg, { err = true } = {}) {
+function offerComputers(msg, { err = true, repair = false } = {}) {
   const many = loadComputers().length > 1 || unseenPublished().length > 0;
-  gate({ msg, err, retry: true, repair: true, computers: many || loadComputers().length > 0 });
+  gate({ msg, err, retry: true, repair, computers: many || loadComputers().length > 0 });
   if (many) showComputers(msg);
   else autoRetry();
 }
@@ -284,10 +313,10 @@ async function showOffline(failure = { stage: '应用连接', error: '' }) {
   conn.open.delete('connection-details');
   conn.checks = [];
   connOffline(failure);
+  autoRetry();
   const conclusion = await diagnoseConnection(failure, gen);
   if (gen !== offlineGen) return;
   connOffline(failure, conclusion);
-  autoRetry();
 }
 
 async function pair(totp) {
@@ -300,12 +329,12 @@ async function pair(totp) {
     return showOffline();
   }
   if (r.ok) {
-    const id = body.id || await computerIdFromKey(pending.key);
-    const prev = loadComputers().find(c => c.key === pending.key);
-    const list = loadComputers().filter(c => c.key !== pending.key);
-    list.push({ id, name: body.name || prev?.name || '电脑', key: pending.key, token: body.token, win: prev?.win || '', discovery: discoveryUrl(), relay: base });
-    saveComputers(list, pending.key);
-    store.set('window', null);
+    const key = body.key || pending.key;
+    const id = body.id || await computerIdFromKey(key);
+    const prev = loadComputers().find(c => c.key === key);
+    const list = loadComputers().filter(c => c.key !== key);
+    list.push({ ...prev, id, name: body.name || prev?.name || '电脑', key, token: body.token, device: body.device || prev?.device || '', win: prev?.win || '', discovery: discoveryUrl(), relay: base });
+    saveComputers(list, key);
     pending = null;
     return connect();
   }
@@ -339,6 +368,10 @@ async function boot() {
     return;
   }
   gate({ msg: '正在查找电脑…' });
+  if (pending?.key) {
+    const saved = loadComputers().find(c => c.key === pending.key);
+    if (saved) saveComputers(loadComputers(), saved.key);
+  }
   if (!pending && currentComputer()) connShow('正在查找电脑…');
   try {
     info = await fetch(discoveryUrl() + '?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
@@ -355,7 +388,7 @@ async function boot() {
     base = await resolveBase();
   } catch (e) {
     if (!loadComputers().length) return e.unpaired ? showUnpaired(e.message) : gate({ msg: e.message, err: true, retry: true, repair: true });
-    return offerComputers(e.message);
+    return showOffline({ stage: '地址发现', error: e.message });
   }
   if (!currentComputer()) return loadComputers().length ? offerComputers('选择要连接的电脑', { err: false }) : showUnpaired();
   const chosen = currentComputer();
@@ -369,11 +402,13 @@ async function boot() {
     return showOffline({ stage: '电脑身份接口 /api/me', error: error.message });
   }
   if (!meRes.ok || !me || typeof me.paired !== 'boolean') return showOffline({ stage: '电脑身份接口 /api/me', error: 'HTTP ' + meRes.status });
-  if (!me.paired) return offerComputers('这台电脑不认当前配对。记录还在，可以换一台，或重新配对这台。');
+  const expectedId = chosen.id || await computerIdFromKey(chosen.key);
+  if (me.id && me.id !== expectedId) return showOffline({ stage: '电脑身份验证', error: '地址对应的电脑身份不一致，正在等待最新地址' });
+  if (!me.paired) return gate({ msg: '设备授权已失效或被移除，请重新授权这台设备。', err: true, repair: true, computers: loadComputers().length > 1 });
   if (me.id || me.name) {
     const cur = currentComputer();
     const same = cur && (!me.id || me.id === cur.id || me.id === await computerIdFromKey(cur.key));
-    if (cur && same) rememberComputer({ ...cur, id: me.id || cur.id, name: me.name || cur.name || '电脑' });
+    if (cur && same) rememberComputer({ ...cur, id: me.id || cur.id, name: me.name || cur.name || '电脑', device: me.device || cur.device || '' });
   }
   if (me.needTotp) return showTotp(verifyTotp);
   connect();
@@ -425,9 +460,8 @@ function connect() {
     failures++;
     status('断开，重连中…', false);
     await sleep(Math.min(8000, 800 * failures));
-    // After repeated failures the relay may have restarted on a new address; rediscover it.
-    if (failures >= 3) { failures = 0; return showOffline({ stage: '实时连接中断', error: 'WebSocket 关闭码 ' + event.code }); }
-    connect();
+    // Rediscover the address using the saved computer identity and device token.
+    boot();
   };
   ws.onmessage = ev => {
     const m = JSON.parse(ev.data);
