@@ -74,14 +74,14 @@ npm install
 
 **Cursor（端口 9222）**
 
-- macOS：`./start-cursor.sh`（会先退出 Cursor，再带端口重新打开）
+- macOS：`./scripts/start-cursor.sh`（会先退出 Cursor，再带端口重新打开）
 - Windows（PowerShell）：`& "$env:LOCALAPPDATA\Programs\cursor\Cursor.exe" --remote-debugging-port=9222`
 - Linux：`cursor --remote-debugging-port=9222`
 
 **Devin（端口 9223）**
 
-- Linux：`./start-devin.sh`
-- macOS / Windows：用 `--remote-debugging-port=9223` 启动 Devin Desktop 可执行文件。macOS 上也可以把 `DEVIN_BIN` 设为可执行文件路径，再运行 `./start-devin.sh`。
+- Linux：`./scripts/start-devin.sh`
+- macOS / Windows：用 `--remote-debugging-port=9223` 启动 Devin Desktop 可执行文件。macOS 上也可以把 `DEVIN_BIN` 设为可执行文件路径，再运行 `./scripts/start-devin.sh`。
 
 在电脑浏览器打开 `http://127.0.0.1:9222/json/version`（Cursor）或 `http://127.0.0.1:9223/json/version`（Devin）验证是否成功，看到一页 JSON 即表示端口已开。安装路径在你机器上可能不同，找不到应用时请相应调整。
 
@@ -150,11 +150,12 @@ npm run pair
 | `npm run devices remove <id>` | 移除设备（立即断开） |
 | `npm run 2fa` | 可选的 Authenticator 二次验证 |
 | `npm run reset` | 清除所有配对并关闭两步验证 |
-| `./start-cursor.sh` | macOS：以端口 9222 重启 Cursor |
-| `./start-devin.sh` | Linux：以端口 9223 启动 Devin |
-| `./service.sh install` | macOS：登录时运行中继，崩溃自动重启 |
+| `./scripts/start-cursor.sh` | macOS：以端口 9222 重启 Cursor |
+| `./scripts/start-codex.sh` | Linux/macOS：以端口 9224 启动 VS Code（Codex） |
+| `./scripts/start-devin.sh` | Linux：以端口 9223 启动 Devin |
+| `./scripts/service.sh install` | macOS：登录时运行中继，崩溃自动重启 |
 
-配对数据保存在 `~/.agent-remote/`（旧的 `~/.cursor-remote-lite/` 会在下次启动时改名过来）。
+配对数据保存在 `~/.agent-remote/`。
 
 ## 故障排查
 
@@ -163,6 +164,7 @@ npm run pair
 - **找不到 `cloudflared`**：完成第 2 步，并重开一个终端让它进入 PATH。
 - **配对链接过期**：重新运行 `npm run pair`，新链接会使旧链接失效。
 - **固定地址打不开/被拒绝**：如果 GitHub 用户站点用了自定义域名，项目页面就在该域名下。向导和中继会把它记入 `~/.agent-remote/config.json` 的 `appUrl`，需要时也可手动设置。
+- **Windows 上 Devin 的接入、更新与排查**：见 [docs/windows-devin-maintenance.md](docs/windows-devin-maintenance.md)。
 - **手机打不开地址**：公网地址可能需要稍等片刻才可访问。用 `npm run start` 时，手机必须与电脑在同一 Wi-Fi，且防火墙要放行 3939 端口。
 - **手机丢失或被盗**：`npm run devices`，然后 `npm run devices remove <id>`。要全部清空，用 `npm run reset`。
 - **3939 端口被占用**：换端口运行，例如 `PORT=4000 npm run public`（PowerShell：`$env:PORT=4000; npm run public`）。

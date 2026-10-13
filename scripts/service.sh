@@ -1,23 +1,18 @@
 #!/usr/bin/env bash
 # Run the public relay as a macOS LaunchAgent: starts at login and restarts if it crashes.
-# Usage: ./service.sh install | uninstall | status | logs
+# Usage: ./scripts/service.sh install | uninstall | status | logs
 set -euo pipefail
 
 LABEL="com.agent-remote.relay"
-OLD_LABEL="com.cursor-remote.relay"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 DIR="$(cd "$(dirname "$0")" && pwd)"
-if [[ -d "$HOME/.agent-remote" ]]; then DATA="$HOME/.agent-remote"
-elif [[ -d "$HOME/.cursor-remote-lite" ]]; then DATA="$HOME/.cursor-remote-lite"
-else DATA="$HOME/.agent-remote"; fi
+DATA="${HOME}/.agent-remote"
 LOG="$DATA/server.log"
 NODE="$(command -v node)"
 
 case "${1:-}" in
   install)
     mkdir -p "$HOME/Library/LaunchAgents" "$DATA"
-    launchctl bootout "gui/$(id -u)/$OLD_LABEL" 2>/dev/null || true
-    rm -f "$HOME/Library/LaunchAgents/$OLD_LABEL.plist"
     cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -27,10 +22,10 @@ case "${1:-}" in
   <key>ProgramArguments</key>
   <array>
     <string>$NODE</string>
-    <string>$DIR/server.mjs</string>
+    <string>$DIR/../server/index.mjs</string>
     <string>--tunnel</string>
   </array>
-  <key>WorkingDirectory</key><string>$DIR</string>
+  <key>WorkingDirectory</key><string>$DIR/..</string>
   <key>EnvironmentVariables</key>
   <dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
   <key>RunAtLoad</key><true/>
@@ -48,8 +43,7 @@ EOF
     ;;
   uninstall)
     launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-    launchctl bootout "gui/$(id -u)/$OLD_LABEL" 2>/dev/null || true
-    rm -f "$PLIST" "$HOME/Library/LaunchAgents/$OLD_LABEL.plist"
+    rm -f "$PLIST"
     echo "已停止并移除开机自启"
     ;;
   status)

@@ -74,14 +74,14 @@ The relay can only see an app that was started with a debug port. Quit the app f
 
 **Cursor (port 9222)**
 
-- macOS: `./start-cursor.sh` (quits Cursor, then reopens it with the port)
+- macOS: `./scripts/start-cursor.sh` (quits Cursor, then reopens it with the port)
 - Windows (PowerShell): `& "$env:LOCALAPPDATA\Programs\cursor\Cursor.exe" --remote-debugging-port=9222`
 - Linux: `cursor --remote-debugging-port=9222`
 
 **Devin (port 9223)**
 
-- Linux: `./start-devin.sh`
-- macOS / Windows: start the Devin Desktop executable with `--remote-debugging-port=9223`. On macOS you can also set `DEVIN_BIN` to the executable path and run `./start-devin.sh`.
+- Linux: `./scripts/start-devin.sh`
+- macOS / Windows: start the Devin Desktop executable with `--remote-debugging-port=9223`. On macOS you can also set `DEVIN_BIN` to the executable path and run `./scripts/start-devin.sh`.
 
 Check that it worked by opening `http://127.0.0.1:9222/json/version` (Cursor) or `http://127.0.0.1:9223/json/version` (Devin) in the computer's browser. A page of JSON means the port is open. The install path may differ on your machine, so adjust it if the app is not found.
 
@@ -150,11 +150,12 @@ To fully turn off public access, run `kill <tunnel pid>`. The relay prints the P
 | `npm run devices remove <id>` | Remove a device (it disconnects immediately) |
 | `npm run 2fa` | Optional Authenticator two-step verification |
 | `npm run reset` | Forget all pairings and turn 2FA off |
-| `./start-cursor.sh` | macOS: restart Cursor with port 9222 |
-| `./start-devin.sh` | Linux: start Devin with port 9223 |
-| `./service.sh install` | macOS: run the relay at login and restart if it crashes |
+| `./scripts/start-cursor.sh` | macOS: restart Cursor with port 9222 |
+| `./scripts/start-codex.sh` | Linux/macOS: start VS Code with port 9224 (Codex) |
+| `./scripts/start-devin.sh` | Linux: start Devin with port 9223 |
+| `./scripts/service.sh install` | macOS: run the relay at login and restart if it crashes |
 
-Pairing data is stored in `~/.agent-remote/` (an older `~/.cursor-remote-lite/` is renamed on the next start).
+Pairing data is stored in `~/.agent-remote/`.
 
 ## Troubleshooting
 
@@ -163,6 +164,7 @@ Pairing data is stored in `~/.agent-remote/` (an older `~/.cursor-remote-lite/` 
 - **`cloudflared` not found**: finish Step 2 and open a new terminal so it is on PATH.
 - **Pairing link expired**: run `npm run pair` again. A new link cancels the old one.
 - **Fixed address does not load / is refused**: if your GitHub user site uses a custom domain, the project page lives under that domain. The wizard and the relay record it as `appUrl` in `~/.agent-remote/config.json`; set it there yourself if needed.
+- **Devin on Windows — setup, updates and troubleshooting**: see [docs/windows-devin-maintenance.md](docs/windows-devin-maintenance.md).
 - **Phone cannot open the address**: the public address can take a short while to become reachable. With `npm run start`, the phone must be on the same Wi-Fi as the computer, and the firewall must allow port 3939.
 - **Lost or stolen phone**: `npm run devices`, then `npm run devices remove <id>`. To drop everything, `npm run reset`.
 - **Port 3939 already in use**: run with a different port, for example `PORT=4000 npm run public` (PowerShell: `$env:PORT=4000; npm run public`).

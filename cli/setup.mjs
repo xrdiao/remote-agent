@@ -4,7 +4,7 @@ import path from 'node:path';
 import readline from 'node:readline/promises';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { DATA_DIR, normalizeAppUrl } from './auth.mjs';
+import { DATA_DIR, normalizeAppUrl } from '../lib/auth.mjs';
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
@@ -55,7 +55,7 @@ if (has('gh') && await yes('  要设置吗？')) {
     if (r.status !== 0) { console.log(r.stderr); process.exit(1); }
   }
   // Pages needs at least one commit before it can be enabled; the server uploads the rest on start.
-  const index = fs.readFileSync(path.join(DIR, 'app', 'index.html'));
+  const index = fs.readFileSync(path.join(DIR, '..', 'app', 'index.html'));
   const sha = run('gh', ['api', `repos/${repo}/contents/index.html`, '--jq', '.sha']).stdout.trim();
   run('gh', ['api', '-X', 'PUT', `repos/${repo}/contents/index.html`, '--input', '-'], {
     input: JSON.stringify({ message: 'add app', content: index.toString('base64'), ...(sha ? { sha } : {}) }),
@@ -75,7 +75,7 @@ if (has('gh') && await yes('  要设置吗？')) {
 
 console.log('\n3/4 后台服务');
 if (isMac && await yes('  设为开机自启（后台常驻，崩溃自动重启）？')) {
-  run('bash', [path.join(DIR, 'service.sh'), 'install'], { stdio: 'inherit' });
+  run('bash', [path.join(DIR, '..', 'scripts', 'service.sh'), 'install'], { stdio: 'inherit' });
 } else {
   console.log('  手动启动：npm run public（外网）或 npm start（仅局域网）');
 }
@@ -88,6 +88,6 @@ if (await yes('  要再加一层 Authenticator 二次验证吗（Google / Micros
 
 console.log(`
 完成！还差两步：
-  1. 用 ./start-cursor.sh 重启 Cursor（带调试端口），手机才能控制它。
+  1. 用 ./scripts/start-cursor.sh 重启 Cursor（带调试端口），手机才能控制它。
   2. 运行 npm run pair，用手机扫码配对。以后每台新手机都这样配对一次。`);
 rl.close();

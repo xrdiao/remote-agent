@@ -3,14 +3,15 @@
   "version": "1.0.0",
   "description": "Remote Agent: use Cursor and Devin on this computer from your phone. Free and self-hosted.",
   "type": "module",
-  "main": "server.mjs",
+  "main": "server/index.mjs",
   "scripts": {
-    "setup": "node setup.mjs",
-    "start": "node server.mjs",
-    "public": "node server.mjs --tunnel",
-    "pair": "node devices.mjs pair",
-    "devices": "node devices.mjs",
-    "2fa": "node twofa.mjs",
+    "setup": "node cli/setup.mjs",
+    "start": "node server/index.mjs",
+    "public": "node server/index.mjs --tunnel",
+    "pair": "node cli/devices.mjs pair",
+    "devices": "node cli/devices.mjs",
+    "2fa": "node cli/twofa.mjs",
+    "check": "node scripts/check.mjs",
     "reset": "node -e \"const d=require('os').homedir()+'/.agent-remote/';for(const f of ['url-key','devices.json','pairing.json','totp.json','config.json','state.json'])require('fs').rmSync(d+f,{force:true});console.log('已重置：所有设备需要重新配对，二次验证已关闭')\""
   },
   "engines": {
