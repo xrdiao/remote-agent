@@ -508,22 +508,78 @@ $('taskChip').onclick = () => showTasks();
 itemsEl.addEventListener('toggle', e => { const id = e.target.dataset.task; if (id) e.target.open ? taskOpen.add(id) : taskOpen.delete(id); }, true);
 $('qnBar').addEventListener('click', e => {
   const b = e.target.closest('[data-action][data-request]');
-  if (b) send({ t: 'codexRequest', id: b.dataset.request, n: Number(b.dataset.action) });
+  if (b) {
+    const id = b.dataset.request, n = Number(b.dataset.action);
+    const request = qnState?.requests?.find(r => r.id === id);
+    const fields = !id.startsWith('async:') || n === request.buttons.length - 1
+      ? [...$('qnBar').querySelectorAll('[data-field]')].filter(el => el.dataset.request === id).map(el => ({ n: Number(el.dataset.field), value: el.value })) : [];
+    sendQuestion({ t: 'codexRequest', id, n, fields });
+  }
 });
 // The Agent's ask-question tool: a card with the questions, options, a free-text answer and submit / skip.
-let qnSig = '';
+let qnSig = '', qnState = null, qnView = '', qnPending = null;
+const qnDrafts = new Map();
+const questionFieldKey = el => `${el.dataset.request}|${el.dataset.field}`;
+function questionBusy() {
+  const bar = $('qnBar');
+  bar.setAttribute('aria-busy', String(!!qnPending));
+  if (qnPending) bar.querySelectorAll('button,input,select').forEach(el => { el.disabled = true; });
+}
+function sendQuestion(message) {
+  if (qnPending) return;
+  const requestId = [...crypto.getRandomValues(new Uint32Array(4))].join('-');
+  qnPending = { requestId, sel: viewSel, message };
+  questionBusy();
+  status('正在提交回答…');
+  send({ ...message, requestId });
+}
+function finishQuestion(m) {
+  if (!qnPending || m.requestId !== qnPending.requestId) return;
+  const pending = qnPending;
+  qnPending = null;
+  if (pending.sel !== viewSel) return;
+  if (m.ok && pending.message.id) {
+    for (const key of qnDrafts.keys()) if (key.startsWith(pending.message.id + '|')) qnDrafts.delete(key);
+  }
+  qnSig = '';
+  renderQuestions(qnState);
+  status(m.ok ? '已提交' : '回答提交失败', m.ok);
+}
 function renderQuestions(qs) {
   const bar = $('qnBar');
+  if (qnView !== viewSel) { qnView = viewSel; qnSig = ''; qnPending = null; qnDrafts.clear(); }
+  qnState = qs;
   bar.classList.toggle('codex', !!qs?.codex);
   const sig = JSON.stringify(qs);
   if (sig === qnSig) return;
   qnSig = sig;
   if (qs?.codex) {
+    const focused = bar.contains(document.activeElement) ? document.activeElement : null;
+    const focusKey = focused?.matches('[data-field]') ? questionFieldKey(focused) : null;
+    const selection = focusKey ? [focused.selectionStart, focused.selectionEnd] : null;
     bar.innerHTML = qs.requests.map(r => `<div class="qnQ">${esc(r.text)}</div>`
       + r.fields.map((f, n) => `<label class="qnFree">${esc(f.label)}${f.options ? `<select data-request="${esc(r.id)}" data-field="${n}">${f.options.map(o => `<option value="${esc(o.value)}" ${o.value === f.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>` : `<input data-request="${esc(r.id)}" data-field="${n}" type="${f.type === 'password' ? 'password' : 'text'}" value="${esc(f.value)}">`}</label>`).join('')
       + `<div class="qnAct">${r.buttons.map((b, n) => `<button data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div>`).join('');
     bar.classList.toggle('show', qs.requests.length > 0);
-    bar.querySelectorAll('[data-field]').forEach(el => el.onchange = () => send({ t: 'codexRequest', id: el.dataset.request, field: Number(el.dataset.field), value: el.value }));
+    bar.querySelectorAll('[data-field]').forEach(el => {
+      const key = questionFieldKey(el);
+      if (qnDrafts.has(key)) el.value = qnDrafts.get(key);
+      el.oninput = () => {
+        qnDrafts.set(key, el.value);
+        const r = qnState.requests.find(r => r.id === el.dataset.request);
+        if (r.id.startsWith('async:') && !r.buttons.every(b => b.disabled) && !qnPending) {
+          const submit = [...bar.querySelectorAll('[data-action]')].find(b => b.dataset.request === r.id && Number(b.dataset.action) === r.buttons.length - 1);
+          submit.disabled = !el.value.trim();
+        }
+      };
+      el.onchange = () => { if (!el.dataset.request.startsWith('async:')) send({ t: 'codexRequest', id: el.dataset.request, field: Number(el.dataset.field), value: el.value }); };
+      if (qnDrafts.has(key)) el.oninput();
+      if (key === focusKey && !qnPending) {
+        el.focus();
+        if (el.tagName === 'INPUT') el.setSelectionRange(...selection);
+      }
+    });
+    questionBusy();
     return;
   }
   if (!qs?.list?.length) { bar.innerHTML = ''; bar.classList.remove('show'); return; }
@@ -536,6 +592,7 @@ function renderQuestions(qs) {
       + `</div><div class="qnHint">想自己回答？直接在下方输入框写</div>`
       + `<div class="qnAct"><button data-qpart="skip">跳过</button>${qs.hasSubmit ? `<button class="primary" data-qpart="submit" ${qs.canSubmit ? '' : 'disabled'}>提交</button>` : ''}</div>`;
     bar.classList.add('show');
+    questionBusy();
     return;
   }
   bar.innerHTML = `<div class="qnHead">❓ Agent 在问你${qs.list.length > 1 ? `（${qs.list.length} 个问题）` : ''}</div>`
@@ -548,6 +605,7 @@ function renderQuestions(qs) {
       }).join('') + '</div>').join('')
     + `<div class="qnAct"><button data-qpart="skip">跳过</button><button class="primary" data-qpart="submit" ${qs.canSubmit ? '' : 'disabled'}>提交</button></div>`;
   bar.classList.add('show');
+  questionBusy();
 }
 
 $('qnBar').onclick = e => {
@@ -555,14 +613,13 @@ $('qnBar').onclick = e => {
   if (!b) return;
   if (b.dataset.qpart) {
     const p = b.dataset.qpart;
-    if (p === 'skip' || p === 'submit') status(p === 'skip' ? '已跳过' : '已提交');
-    return send({ t: 'question', part: p });
+    return sendQuestion({ t: 'question', part: p });
   }
   if (b.dataset.qfree) {
     const [qi, oi] = b.dataset.qfree.split(':').map(Number);
-    return send({ t: 'question', qi, oi, part: 'option', text: b.previousElementSibling.value });
+    return sendQuestion({ t: 'question', qi, oi, part: 'option', text: b.previousElementSibling.value });
   }
-  if (b.dataset.qi) send({ t: 'question', qi: Number(b.dataset.qi), oi: Number(b.dataset.oi), part: 'option' });
+  if (b.dataset.qi) sendQuestion({ t: 'question', qi: Number(b.dataset.qi), oi: Number(b.dataset.oi), part: 'option' });
 };
 $('qnBar').addEventListener('keydown', e => {
   if (e.key !== 'Enter' || !e.target.matches('input')) return;

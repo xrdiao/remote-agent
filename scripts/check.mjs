@@ -62,7 +62,7 @@ const grab = (files, re) => {
   return out;
 };
 
-const sent = grab(appFiles, /send\(\{\s*t:\s*'([A-Za-z]+)'/g);
+const sent = grab(appFiles, /(?:send|sendQuestion)\(\{\s*t:\s*'([A-Za-z]+)'/g);
 for (const t of SEND_EXTRA) sent.add(t);
 // Server-handled types come from the route table; auth/ack are handled inside ws.mjs itself.
 const { ROUTES } = await import(pathToFileURL(path.join(ROOT, 'server', 'routes.mjs')));

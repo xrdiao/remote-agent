@@ -264,7 +264,18 @@
   };
   const codexRequestData = () => codexRequests().map(r => ({ id: r.id, text: String(r.text).slice(0, 6000), buttons: r.buttons.map(({ label, disabled, selected }) => ({ label, disabled, selected })), fields: r.fields.map(({ label, value, type, options }) => ({ label, value, type, options })) }));
   const codexRequestTarget = (id, n) => { const b = codexRequests().find(r => r.id === id)?.buttons[n]; return b?.el ? codexPoint(b.el) : null; };
-  const codexRequestAction = async (id, n) => {
+  const codexRequestAction = async (id, n, fields = []) => {
+    for (const field of fields) {
+      if (!codexRequestField(id, field.n, field.value)) throw new Error('请求输入框已不存在');
+    }
+    if (fields.length) {
+      for (let i = 0; i < 20; i++) {
+        const request = codexRequests().find(r => r.id === id);
+        if (request && fields.every(f => request.fields[f.n]?.value === f.value)) break;
+        if (i === 19) throw new Error('回答尚未同步到电脑');
+        await new Promise(resolve => setTimeout(resolve, 16));
+      }
+    }
     const button = codexRequests().find(r => r.id === id)?.buttons[n];
     if (!button?.action || button.disabled) return false;
     await button.action();

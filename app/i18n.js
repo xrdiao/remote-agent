@@ -225,6 +225,7 @@ const I18N = (() => {
     '没有读到设置。': 'Could not read settings.', '这里看不到额度。': 'Usage is not shown here.', '刷新': 'Refresh',
     '正在读取项目…': 'Loading projects…', '正在读取文件夹…': 'Loading folder…', '正在打开项目…': 'Opening project…',
     '正在读取设置…': 'Loading settings…', '正在修改…': 'Updating…', '正在读取额度…': 'Loading usage…',
+    '正在提交回答…': 'Submitting answer…', '回答提交失败': 'Answer submission failed',
     '没有额度数据': 'No usage data', '剩余': 'Left', '已用': 'Used',
     '每周限制': 'Weekly limit', '每周额度': 'Weekly quota', '每日额度': 'Daily quota', '日额度': 'Daily usage', '5 小时限制': '5-hour limit', '额度': 'Credits',
     '包含额度已用完': 'Included quota is used up',
