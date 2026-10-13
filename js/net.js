@@ -170,9 +170,9 @@ function deviceName() {
 
 function showUnpaired(msg = '') {
   gate({
-    msg: (msg ? msg + '\n\n' : '') + '这台设备还没有配对。\n在电脑上运行 npm run pair，用手机扫码，或输入完整配对链接、手动配对码。',
+    msg,
     err: !!msg,
-    input: { placeholder: '配对链接或电脑码.一次性配对码', button: '配对', submit: pastePair, scan: true, inputMode: 'text' },
+    input: { placeholder: '输入配对链接或配对码', button: '连接', submit: pastePair, scan: true, inputMode: 'text' },
   });
 }
 
