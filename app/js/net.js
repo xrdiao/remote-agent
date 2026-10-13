@@ -570,6 +570,8 @@ function connect() {
       if (viewing && viewing.path === m.path && String(viewing.host || '') === String(m.host || '')) {
         viewing.marks = m.marks || null;
         viewing.markSource = m.markSource;
+        viewing.commit = m.commit;
+        viewing.subject = m.subject;
         if (m.newFile) viewing.newFile = true;
         if (m.diff) viewing.diff = m.diff;
         const body = $('vBody'), y = body.scrollTop;

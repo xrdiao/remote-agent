@@ -18,7 +18,7 @@ function leaveEdit() {
   $('vTools').hidden = true;
   $('vSearch').hidden = true;
 }
-function openFile(ref, fromEditor = false, diff = '') {
+function openFile(ref, fromEditor = false, diff = '', fromChanges = false) {
   returnToEditor = fromEditor ? { ...editorDirectory } : null;
   leaveEdit();
   viewing = null;
@@ -35,7 +35,7 @@ function openFile(ref, fromEditor = false, diff = '') {
     $('viewer').classList.add('open');
     history.pushState({ viewer: true }, '');
   }
-  send({ t: 'file', path: ref, diff });
+  send({ t: 'file', path: ref, diff, ...(fromChanges ? { changes: true } : {}) });
 }
 
 function showFile(m) {
@@ -80,7 +80,9 @@ function renderFileCode(m) {
   $('vChanges').hidden = !vMarks && !m.newFile;
   $('vOnly').classList.toggle('on', vOnly);
   $('vChangeCount').textContent = vMarkLine.length ? `–/${vMarkLine.length}` : '';
-  $('vSrc').textContent = m.newFile ? '新文件' : vMarks ? (m.markSource === 'agent' ? 'Agent 的改动' : '对比 Git') : '';
+  $('vSrc').textContent = m.newFile
+    ? (m.markSource === 'commit' ? `提交 ${m.commit} 新增的文件` : '新文件')
+    : vMarks ? (m.markSource === 'agent' ? 'Agent 的改动' : m.markSource === 'commit' ? `提交 ${m.commit} 的改动${m.subject ? ` · ${String(m.subject).slice(0, 40)}` : ''}` : '对比 Git') : '';
   const near = n => !vOnly || vMarkLine.some(k => Math.abs(k - n) <= 3);
   const src = hl ? hl.lines : m.text.replace(/\n$/, '').split('\n').map(l => [[l, -1, 0]]);
   const vars = [

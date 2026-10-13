@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { workspaces, windowRoots, workspaceLabel, fileSize, readFile, parseRef, listProject, locateWritable, writeTextFile, resolveLocal } from '../../lib/files.mjs';
 import { themeFor } from '../../lib/theme.mjs';
 import { highlightText } from '../../lib/highlight.mjs';
-import { gitMarks, agentMarks, parseGitDiff } from '../../lib/marks.mjs';
+import { gitMarks, agentMarks, parseGitDiff, lastCommitMarks } from '../../lib/marks.mjs';
 import { saveState, computerId } from '../../lib/auth.mjs';
 import { IS_WIN, IS_MAC, mod, normPath, pathKey, findBin } from '../../lib/platform.mjs';
 import { Cdp, MOD, NAMED_KEYS } from '../cdp.mjs';
@@ -207,6 +207,8 @@ export class AgentContext {
     this.thoughtFails = new Map();
     this.keptThink = new Map();
     this.itemCache = new Map();
+    this.thinkLiveSeen = new Set();
+    this.thinkFinal = new Set();
   }
 
 
@@ -352,6 +354,8 @@ export class AgentContext {
     this.thinkingTried = new Map();
     this.keptThink = new Map();
     this.itemCache = new Map();
+    this.thinkLiveSeen = new Set();
+    this.thinkFinal = new Set();
     this.pendingThread = '';
     this.polling = null;
     this.lastDraft = undefined;
@@ -1292,7 +1296,7 @@ export class AgentContext {
     return theme || (this.dark === false ? 'light-plus' : 'dark-plus');
   }
 
-  async fileMarks(f, text, reviewDiff = '') {
+  async fileMarks(f, text, reviewDiff = '', fromChanges = false) {
     if (reviewDiff) {
       const marks = /^@@ /m.test(reviewDiff) ? parseGitDiff(reviewDiff) : agentMarks(new Map([[0, {
         kind: 'edit', f: f.path,
@@ -1313,10 +1317,18 @@ export class AgentContext {
     }
     const agent = await this.adapter.fileAgentMarks.call(this, f, text, changes, diff);
     if (agent) return agent;
-    return git && !git.newFile ? null : (git?.newFile ? { marks: { add: [], mod: [], del: [] }, markSource: 'git', newFile: true } : null);
+    if (git?.newFile) return { marks: { add: [], mod: [], del: [] }, markSource: 'git', newFile: true };
+    // Devin's review panel still lists files whose changes were already committed; fall back
+    // to the last commit touching the file (only for opens from the changes sheet).
+    if (fromChanges) {
+      const last = await lastCommitMarks(f.path).catch(() => null);
+      if (last?.newFile) return { marks: { add: [], mod: [], del: [] }, markSource: 'commit', newFile: true, commit: last.commit, subject: last.subject };
+      if (last) return { marks: { add: last.add, mod: last.mod, del: last.del }, markSource: 'commit', commit: last.commit, subject: last.subject };
+    }
+    return null;
   }
 
-  async openFile(text, reviewDiff = '') {
+  async openFile(text, reviewDiff = '', fromChanges = false) {
     if (this.app === 'codex') {
       const run = (await this.cdp.evaluate(helpersCall('codexFacts()')))?.view?.run || '';
       if (run && !/local|本地/i.test(run)) {
@@ -1336,8 +1348,8 @@ export class AgentContext {
       this.emit({ t: 'file', name: path.posix.basename(f.path), path: f.path, host: f.host, size: f.size, line: f.line, editable: body.text != null && !body.truncated, ...body, ...(hl ? { hl } : {}) });
       // Gutter marks come afterwards — the git calls shouldn't hold the first paint.
       if (body.text) {
-        this.fileMarks(f, body.text, reviewDiff).then(marked => {
-          if (marked?.marks || marked?.newFile || marked?.diff) this.emit({ t: 'fileMarks', path: f.path, host: f.host, ...(marked?.marks ? { marks: marked.marks, markSource: marked.markSource } : {}), ...(marked?.newFile ? { newFile: true } : {}), ...(marked?.diff ? { diff: marked.diff } : {}) });
+        this.fileMarks(f, body.text, reviewDiff, fromChanges).then(marked => {
+          if (marked?.marks || marked?.newFile || marked?.diff) this.emit({ t: 'fileMarks', path: f.path, host: f.host, ...(marked?.marks ? { marks: marked.marks, markSource: marked.markSource } : {}), ...(marked?.newFile ? { newFile: true } : {}), ...(marked?.diff ? { diff: marked.diff } : {}), ...(marked?.commit ? { commit: marked.commit, subject: marked.subject } : {}) });
         }).catch(() => {});
       }
     } catch (e) {

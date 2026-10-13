@@ -173,7 +173,7 @@ export const ROUTES = {
   surface: { run: (s, m) => s.setSurface(String(m.to ?? '')) },
   openEditorChat: { run: s => s.openEditorChat() },
   closeTab: { run: (s, m) => s.closeTab(String(m.id ?? '')) },
-  file: { run: (s, m) => s.openFile(String(m.path ?? ''), String(m.diff ?? '')) },
+  file: { run: (s, m) => s.openFile(String(m.path ?? ''), String(m.diff ?? ''), m.changes === true) },
   click: { run: (s, m) => s.clickButton(m.item, m.n, m.actionId, m.label, m.sel) },
   queue: {
     run: (s, m) => {

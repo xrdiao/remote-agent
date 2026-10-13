@@ -6,6 +6,8 @@ import { codexWindows, codexContext } from '../windows.mjs';
 import { CODEX_CDP_URL } from '../config.mjs';
 import { helpersCall } from '../page/build.mjs';
 import { FOCUS_COMPOSER, codexUsage } from '../agent/context.mjs';
+import { computerId, saveState } from '../../lib/auth.mjs';
+import { conversationProjects, fusionProject } from '../fusion/state.mjs';
 
 export const adapter = {
   async newChat() {
@@ -171,6 +173,8 @@ mergeCodexItems(chat) {
     this.thinking = new Map();
     this.thinkingTried = new Map();
     this.keptThink = new Map();
+    this.thinkLiveSeen = new Set();
+    this.thinkFinal = new Set();
   }
   if (thread) this.threadId = thread;
   if (!this.itemCache) this.itemCache = new Map();
