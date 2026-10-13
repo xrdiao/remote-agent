@@ -2501,10 +2501,11 @@ $('sheet').addEventListener('click', async e => {
     if (!await ask(`删除终端「${b.dataset.termName || ''}」？\n里面正在跑的命令会停掉。`, '删除')) return;
     closeSheet(); status('正在删除终端…'); return send({ t: 'closeTerminal', id: b.dataset.termDel });
   }
-  if (b.dataset.fusionPick) { status('正在修改…'); return send({ t: 'fusionPick', part: b.dataset.fusionPick, value: b.dataset.label }); }
+  if (b.dataset.fusionPick) { menuSheetKind = 'model'; status('正在修改…'); return send({ t: 'fusionPick', part: b.dataset.fusionPick, value: b.dataset.label }); }
   if (b.dataset.fusion) {
     status('正在修改…');
     if (b.dataset.fusion === 'fast') return send({ t: 'fusionPick', part: 'fast' });
+    menuSheetKind = `fusion-${b.dataset.fusion}`;
     const fm = menuCache.get(menuCacheKey(`fusion-${b.dataset.fusion}`));
     if (fm) showMenu(fm.kind, fm.items, fm.max, fm.fusion, fm.fast, fm.model, true);
     return send({ t: 'fusionOptions', part: b.dataset.fusion });

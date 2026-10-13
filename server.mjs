@@ -5108,8 +5108,8 @@ class Session {
       ]);
       if (items?.length) {
         if (fusion) this.fusion = fusion;
-        const chat = await this.cdp.evaluate(helpersCall('extract()'));
-        if (this.sel === sel) this.emit({ t: 'menu', kind, items, fast, fusion, model: chat?.model, requestId, sel: this.selectionKey() });
+        const model = this.app === 'devin' && fusion ? 'Fusion' : (await this.cdp.evaluate(helpersCall('extract()')))?.model;
+        if (this.sel === sel) this.emit({ t: 'menu', kind, items, fast, fusion, model, requestId, sel: this.selectionKey() });
         return;
       }
     }
@@ -5372,8 +5372,14 @@ class Session {
   async fusionPick(part, value) {
     const picked = await this.cdp.evaluate(`(() => { const h = (${pageHelpers.toString()})(); if (!h.fusionConfig()) return false; const rows = h.devinVariants(${JSON.stringify(part)}); const row = rows.find(x => ${part === 'fast' ? '!x.checked' : `x.label === ${JSON.stringify(String(value))}`}); if (!row) return false; h.devinPickerProps().onModelSelect(row.config); return true; })()`);
     if (picked) {
-      await this.pollChat();
+      const role = part === 'lead' || part === 'sidekick';
+      if (role) await this.waitFor(`fusionConfig()?.[${JSON.stringify(part)}] === ${JSON.stringify(String(value))}`);
+      else await this.pollChat();
       await this.openMenu('model');
+      if (role) {
+        this.lastChatAt = 0;
+        this.pollChat().catch(() => {});
+      }
       return;
     }
     await this.idleFusionRead();
@@ -7745,7 +7751,7 @@ wss.on('connection', (ws, req) => {
     // Frame acks bypass the queue so a slow command never stalls the stream.
     if (msg.t === 'ack') return session.ack();
     if (msg.t === 'stop' && session.app === 'fusion') { session.fusionStop(); return; }
-    if (msg.t === 'usage' && session.app === 'codex') return session.showUsage(msg.automatic === true);
+    if (msg.t === 'usage' && (session.app === 'codex' || (session.app === 'devin' && msg.automatic === true))) return session.showUsage(msg.automatic === true);
     queue = queue.then(async () => {
       const q0 = Date.now();
       try {
