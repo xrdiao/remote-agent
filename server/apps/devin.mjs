@@ -361,11 +361,13 @@ async readThought(id) {
 },
 
 
-// Devin: finished thoughts in the mounted transcript that have no body yet, plus finished thoughts
-// seen live earlier — their body was captured mid-stream and may be truncated, so re-read them once;
-// that read is authoritative even when shorter than what was stored. Up to 2 per poll (finalization
-// candidates first); a thought is only marked tried once its body was read, or after 3 failed reads
-// on different polls.
+// Devin: finished thoughts in the mounted transcript that have no body yet, plus collapsed finished
+// thoughts we hold a body for — it was captured mid-stream and may be truncated, so re-read once and
+// treat the read as authoritative even when shorter. The live flag misses thoughts whose title shows
+// a running timer, so a stored body (or a seen-live id) is the trigger; an empty extracted body means
+// the row collapsed, i.e. finished. Expanded rows keep their extracted body — the merge handles those.
+// Up to 2 per poll (finalization candidates first); a thought is only marked tried once its body was
+// read, or after 3 failed reads on different polls.
 async captureThoughts(chat) {
   if (this.app !== 'devin') return;
   this.thoughtPoll = (this.thoughtPoll || 0) + 1;
@@ -376,7 +378,8 @@ async captureThoughts(chat) {
   for (const it of items) if (it.k === 'thinking' && it.live && it.src === 'devin') this.thinkLiveSeen.add(it.i);
   while (this.thinkLiveSeen.size > 200) this.thinkLiveSeen.delete(this.thinkLiveSeen.keys().next().value);
   const fin = items.filter(it => it.k === 'thinking' && !it.live && it.src === 'devin'
-    && this.thinkLiveSeen.has(it.i) && !this.thinkFinal.has(it.i));
+    && !this.thinkingBody(it) && !this.thinkFinal.has(it.i)
+    && (this.thinkLiveSeen.has(it.i) || this.thinkingBody(this.devinHist.get(it.i)) || this.thinking.get(it.i)?.body));
   const finIds = new Set(fin.map(it => it.i));
   const fresh = items.filter(it => it.k === 'thinking' && !it.live && it.src === 'devin' && !finIds.has(it.i)
     && !this.thinkingBody(it) && !this.thinkingTried.has(it.i) && !(this.devinHist.get(it.i) && this.thinkingBody(this.devinHist.get(it.i))));
@@ -386,6 +389,7 @@ async captureThoughts(chat) {
     if (body) {
       it.t = `${this.thinkingTitle(it)}\n${body}`;
       this.thinkingTried.set(it.i, 1);
+      this.thinkFinal.add(it.i);
       if (finIds.has(it.i)) {
         this.devinHist.set(it.i, { ...(this.devinHist.get(it.i) || it), t: it.t });
         this.thinking.set(it.i, { body });
