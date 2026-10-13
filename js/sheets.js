@@ -311,7 +311,7 @@ async function showDevices() {
   try { list = (await api('/api/devices').then(r => r.json())).devices || []; } catch {}
   const when = t => new Date(t).toLocaleDateString();
   openSheet('devices', `<h3>已配对设备</h3>` + list.map(d => `
-    <div class="opt ${d.current ? 'cur' : ''}"><span class="lbl">${esc(d.name)}<span class="sub">配对于 ${when(d.created)} · 最近使用 ${when(d.lastSeen)}</span></span>
+    <div class="opt ${d.current ? 'cur' : ''}"><span class="lbl">${esc(d.name)}<span class="sub">设备码 ${esc(d.id)} · 配对于 ${when(d.created)} · 最近使用 ${when(d.lastSeen)}</span></span>
     ${d.current ? '' : `<button data-remove="${esc(d.id)}" data-name="${esc(d.name)}">移除</button>`}</div>`).join('')
     + '<div class="hint">添加新设备：在电脑上运行 npm run pair。<br>开启 Authenticator 二次验证：npm run 2fa。</div>');
 }
