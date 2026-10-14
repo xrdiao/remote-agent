@@ -378,6 +378,9 @@
   #visualZoom { font-variant-numeric: tabular-nums; }
   #visualEmpty { position: absolute; inset: 0; display: grid; place-content: center; padding: 24px; text-align: center; color: var(--muted); font-size: 13px; white-space: pre-line; }
   .listTools .hint { margin: 0; }
+  #sheet[data-kind="devices"] { display: flex; flex-direction: column; overflow: hidden; }
+  .deviceHead { flex: none; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+  .deviceRows { min-height: 0; overflow-y: auto; padding-top: 10px; overscroll-behavior: contain; }
   #sheet label.opt { background: var(--ctrl); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
   #sheet [data-list-select] { width: 18px; height: 18px; flex: none; accent-color: var(--accent); }
   .computerGroupHead { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 14px 0 6px; }
