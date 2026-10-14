@@ -9,6 +9,7 @@ import { FUSION_OWNER } from './fusion/owner.mjs';
 import { FusionRunner } from './fusion/runner.mjs';
 import { ROUTES, SKIP, flag } from './routes.mjs';
 import './apps/index.mjs';
+import {visualCapture, visualWindows, wayland} from './visual/capture.mjs';
 
 export class Session extends AgentContext {
   constructor(client, deviceId) {
@@ -29,10 +30,18 @@ export class Session extends AgentContext {
   }
 
   async setMode(mode) {
+    if (this.mode === 'screen' && mode !== 'screen') this.stopVisual();
     this.mode = mode === 'screen' || mode === 'terminal' ? mode : 'chat';
     this.lastChatAt = this.lastTermAt = 0;
     clearInterval(this.chatTimer);
     clearInterval(this.termTimer);
+    if (this.mode === 'screen') {
+      if (this.editorCdp) await this.editorCdp.send('Page.stopScreencast').catch(() => {});
+      visualCapture.subscribe(this);
+      await this.visualList();
+      await visualCapture.restore();
+      return;
+    }
     if (!this.editorCdp) return;
     if (this.mode === 'chat') {
       await this.editorCdp.send('Page.stopScreencast').catch(() => {});
@@ -44,13 +53,24 @@ export class Session extends AgentContext {
       this.lastTermHash = undefined;
       await this.pollTerminal();
       this.termTimer = setInterval(() => this.pollTerminal().catch(() => {}), 700);
-    } else {
-      this.lastPanel = '';
-      await this.sendPanelRect();
-      await this.snapshot(true);
-      await this.startScreencast();
     }
   }
+
+  async visualList() {
+    try {
+      this.emit({t: 'visualWindows', windows: await visualWindows(), wayland});
+    } catch (error) {
+      this.emit({t: 'visual', state: 'error', message: '读取绘图或仿真窗口失败：' + error.message, wayland});
+      throw error;
+    }
+  }
+
+  async visualSelect(id) {
+    if (this.mode !== 'screen') return;
+    await visualCapture.start(wayland ? 'select' : String(id));
+  }
+
+  stopVisual() { visualCapture.unsubscribe(this); }
 
   emit(obj) {
     if (obj?.t === 'chat' && obj.sel && obj.chat) {
@@ -218,6 +238,7 @@ export class Session extends AgentContext {
   // actions that type/tap, and is switched off again shortly after they finish.
 
   detach() {
+    this.stopVisual();
     clearTimeout(this.focusTimer);
     this.focusTimer = null;
     this.focusCount = 0;
@@ -249,6 +270,10 @@ export class Session extends AgentContext {
   }
 
   onFrame({ data, metadata, sessionId }) {
+    if (this.mode === 'screen') {
+      this.editorCdp?.send('Page.screencastFrameAck', {sessionId}).catch(() => {});
+      return;
+    }
     this.lastFrameAt = Date.now();
     if (metadata?.deviceWidth) this.viewport = { w: metadata.deviceWidth, h: metadata.deviceHeight };
     this.sendFrame(data);
@@ -277,12 +302,11 @@ export class Session extends AgentContext {
 
   async pollIfIdle() {
     if (!this.editorCdp || !this.visible || this.mode !== 'screen') return;
-    await this.sendPanelRect();
-    if (Date.now() - this.lastFrameAt < 2000) return;
-    await this.snapshot(false).catch(() => {});
+    // Visualization frames are supplied by the selected native window, independently of CDP.
   }
 
   async snapshot(force) {
+    if (this.mode === 'screen') return visualCapture.publish(this);
     const { data } = await this.editorCdp.send('Page.captureScreenshot', { format: 'jpeg', quality: this.screencast.quality });
     this.sendFrame(data, force);
   }
