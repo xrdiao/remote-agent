@@ -1109,22 +1109,37 @@ export class AgentContext {
     setTimeout(() => this.pollChat().catch(() => {}), 300);
   }
 
+  async syncFast(on) {
+    const state = await this.cdp.evaluate(`(async () => {
+      const h = ${PAGE_SRC};
+      const deadline = performance.now() + 1200;
+      do {
+        const fast = h.fastInfo();
+        if (fast?.on === ${on}) return { fast, fusion: h.fusionConfig() };
+        await new Promise(resolve => setTimeout(resolve, 30));
+      } while (performance.now() < deadline);
+      return null;
+    })()`);
+    if (!state) throw new Error('Fast 模式未同步到电脑，请重试');
+    if (state.fusion) this.fusion = state.fusion;
+    this.emit({ t: 'fastState', sel: this.selectionKey(), ...state });
+  }
+
   async pickMenu(kind, label, name) {
     if (kind === 'fast') {
       const on = label === 'on';
       if (!await this.cdp.evaluate(helpersCall(`pickFast(${on})`))) {
-        await this.pressControl('model');
-        const pos = await this.waitFor('fastTarget()');
+        let pos = await this.cdp.evaluate(helpersCall('fastTarget()'));
+        if (!pos) {
+          await this.pressControl('model');
+          pos = await this.cdp.evaluate(helpersCall('fastTarget()')) || await this.waitFor('fastTarget()');
+        }
         if (!pos) { await this.closeMenus(); throw new Error('当前模型不支持 Fast'); }
         const current = await this.cdp.evaluate(helpersCall('fastInfo()'));
         if (current.on !== on) await this.cdp.evaluate(helpersCall('clickCursorFast()'));
       }
-      const confirmed = await this.waitFor(`fastInfo()?.on === ${on}`);
-      await this.closeMenus();
-      if (!confirmed) throw new Error('Fast 模式未同步到电脑，请重试');
-      await this.openMenu(name || 'model');
-      this.lastChatAt = 0;
-      this.pollChat(true).catch(() => {});
+      try { await this.syncFast(on); }
+      finally { await this.closeMenus(); }
       this.emit({ t: 'status', ok: true, msg: '设置已更新' });
       return;
     }
