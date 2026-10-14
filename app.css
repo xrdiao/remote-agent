@@ -348,6 +348,8 @@
   .optRow .archBtn { flex: none; width: 52px; padding: 0 6px; }
   .paramBtn { flex: none; padding: 0 12px; font-size: 13px; }
   .listTools { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  #visualEmpty { margin: auto; padding: 24px; text-align: center; color: var(--muted); }
+  #visualChoose { max-width: 55%; overflow: hidden; text-overflow: ellipsis; }
   .listTools .hint { margin: 0; }
   #sheet label.opt { background: var(--ctrl); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
   #sheet [data-list-select] { width: 18px; height: 18px; flex: none; accent-color: var(--accent); }
