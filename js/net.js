@@ -451,6 +451,9 @@ function connect() {
     clearTimeout(connectTimer);
     if (gen !== connGen) return;
     setWindowReady(false);
+    qnPending = null;
+    qnSig = '';
+    renderQuestions(null);
     $('dot').className = '';
     if (!authed) {
       // boot() asks /api/me whether the device was removed or needs 2FA again.
