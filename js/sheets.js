@@ -505,10 +505,8 @@ function showUsageDetails(kind) {
 }
 let usageTimer = null;
 function showMainMenu() {
-  const notifyItem = notifyOn
-    ? `<button class="opt" data-act="notifyOff"><span class="lbl">通知：已开启<span class="sub">Agent 完成或等你确认时提醒</span></span><span class="tag">关闭</span></button>
-       <button class="opt" data-act="notifyTest"><span class="lbl">发一条测试通知</span></button>`
-    : `<button class="opt" data-act="notifyOn"><span class="lbl">开启通知<span class="sub">Agent 完成或等你确认时提醒</span></span></button>`;
+  const notifyItem = `<button class="opt" data-act="${notifyOn ? 'notifyOff' : 'notifyOn'}" role="switch" aria-checked="${notifyOn}"><span class="lbl">开启通知<span class="sub">Agent 完成或等你确认时提醒</span></span><span class="switch${notifyOn ? ' on' : ''}" aria-hidden="true"></span></button>`
+    + (notifyOn ? '<button class="opt" data-act="notifyTest"><span class="lbl">发一条测试通知</span></button>' : '');
   const update = apkUpdate()
     ? `<button class="opt" data-act="appUpdate"><span class="lbl">更新安卓 App（v${esc(appVersion)} → v${esc(apkUpdate())}）</span><span class="tag">新</span></button>`
     : `<button class="opt" data-act="appUpdate"><span class="lbl">检查 App 更新（当前 v${esc(appVersion)}）</span></button>`;
@@ -521,7 +519,7 @@ function showMainMenu() {
     ${['cursor', 'devin', 'codex'].includes(currentApp) ? '<button class="opt" data-act="projects"><span class="lbl">打开项目<span class="sub">选择文件夹或新建项目</span></span></button>' : ''}
     ${currentApp === 'codex' ? '<button class="opt" data-act="codexResetHelp"><span class="lbl">Codex 额度重置</span></button>' : ''}
     <button class="opt" data-act="settings"><span class="lbl">设置</span></button>
-    <button class="opt" data-act="screen"><span class="lbl">画面<span class="sub">${esc(appMessage('直接看电脑上的 {app}'))}</span></span></button>
+    <button class="opt" data-act="screen"><span class="lbl">画面<span class="sub">查看绘图与仿真窗口</span></span></button>
     <div class="pSec">此手机 App</div>
     ${lastChat?.changed && !lastChat?.readonly ? `<button class="opt" data-act="toggleChanges"><span class="lbl">${hiddenChangeNotices.has(changeNoticeKey()) ? '显示改动' : '隐藏改动提示'}</span></button>` : ''}
     ${iosApp ? '' : notifyItem}
