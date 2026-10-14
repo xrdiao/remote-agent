@@ -496,7 +496,7 @@
   #gateBtn { width: 100%; margin-top: 12px; }
   #gate.pairing { gap: 0; padding: calc(22px + env(safe-area-inset-top)) 24px max(22px, env(safe-area-inset-bottom)); background: radial-gradient(ellipse at 50% 25%, #10223455, transparent 55%), #0b131b; }
   #gate.pairing .pairHero { text-align: center; margin: clamp(24px, 7vh, 64px) 0 28px; }
-  #gate.pairing .pairLogo { display: block; width: clamp(112px, 40vw, 176px); height: auto; margin: 0 auto 22px; filter: grayscale(1) brightness(3) contrast(50); mix-blend-mode: screen; }
+  #gate.pairing .pairLogo { display: block; width: clamp(112px, 40vw, 176px); height: auto; margin: 0 auto 22px; }
   #gate.pairing h2 { font-size: clamp(26px, 7vw, 32px); font-weight: 700; color: #f4f7fb; margin: 0 0 16px; }
   #pairIntro { margin: 0; color: #95a2b0; font-size: 14px; line-height: 1.8; }
   #gate.pairing #gateMsg { font-size: 13px; margin: 0 0 12px; }
