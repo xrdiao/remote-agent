@@ -17,7 +17,7 @@ function setMode(m) {
   $('chatTools').hidden = m !== 'chat';
   $('termTools').hidden = m !== 'terminal';
   $('screenTools').hidden = m === 'terminal';
-  $('screenKeys').hidden = m === 'terminal';
+  $('screenKeys').hidden = true;
   view.classList.toggle('gesture', m === 'screen' || m === 'terminal');
   document.body.classList.toggle('term', m === 'terminal');
   updateAppText();
@@ -28,6 +28,9 @@ function setMode(m) {
   sentWidth = 0;
   if (authed) send({ t: 'mode', mode: m });
   updateTermEmpty();
+  $('visualEmpty').hidden = m !== 'screen' || visualState.state === 'live';
+  stage.hidden = m === 'screen' && visualState.state !== 'live';
+  if (m === 'screen') { visualState = {state: 'idle'}; renderVisualState(visualState); }
   if (m === 'screen' || m === 'terminal') { layoutStage(); applyQuality(); }
 }
 $('tabChat').onclick = () => setMode('chat');
