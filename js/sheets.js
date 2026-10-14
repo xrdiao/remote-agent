@@ -14,12 +14,14 @@ function rememberAgentOpen(m) {
 }
 function openSheet(kind, html) {
   sheetKind = kind;
+  $('sheet').dataset.kind = kind;
   $('sheet').innerHTML = html;
   $('shade').classList.add('open');
   $('sheet').classList.add('open');
   if (kind === 'agents') $('sheet').scrollTop = 0;
 }
 function closeSheet() {
+  if (sheetKind === 'devices') deviceRemoval = [];
   fusionModelSide = null;
   menuRequest++;
   if (sheetKind === 'codex-settings') { codexSettingsRequest++; send({ t: 'closeCodexSettings' }); status(''); }
@@ -272,7 +274,13 @@ function showAgents(list) {
     const open = opened ? opened.has(win) : items.some(a => a.current) || (!anyCurrent && index === 0);
     return foldSection(win, body, open, items.length);
   }).join('');
-  openSheet('agents', `<h3>项目与会话</h3><button class="opt" data-act="agentsRefresh">刷新项目与会话</button><button class="opt" data-act="projects"><span class="lbl">选择文件夹／新建项目</span></button><button class="opt" data-act="projectNewChat"><span class="lbl">在当前项目新建会话</span></button>${rows || `<div class="hint">${esc(appMessage('没有找到 {app} 的 Agent。请在电脑上打开对应的会话窗口。'))}</div>`}`);
+  const html = `<h3>项目与会话</h3><button class="opt" data-act="agentsRefresh">刷新项目与会话</button><button class="opt" data-act="projects"><span class="lbl">选择文件夹／新建项目</span></button><button class="opt" data-act="projectNewChat"><span class="lbl">在当前项目新建会话</span></button>${rows || `<div class="hint">${esc(appMessage('没有找到 {app} 的 Agent。请在电脑上打开对应的会话窗口。'))}</div>`}`;
+  if (keep) {
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    const old = [...$('sheet').children];
+    syncChildren($('sheet'), [...template.content.children].map(node => old.find(el => el.outerHTML === node.outerHTML) || node));
+  } else openSheet('agents', html);
   if (keep) requestAnimationFrame(() => { $('sheet').scrollTop = scroll; });
 }
 $('title').onclick = () => { send({ t: 'windows' }); showWindows(); };
@@ -358,6 +366,7 @@ function showParams(m) {
 
 const listManagement = { kind: '', owner: '', editing: false, selected: new Set() };
 let pairedDevices = [];
+let deviceRemoval = [], removingDevices = false;
 function prepareListManagement(kind) {
   const owner = kind === 'devices' ? currentComputer()?.key || '' : '';
   if (listManagement.kind !== kind || listManagement.owner !== owner) {
@@ -405,24 +414,29 @@ async function showDevices() {
 }
 function renderDevices() {
   const when = t => new Date(t).toLocaleDateString();
-  openSheet('devices', `<h3>已配对设备</h3><div class="listTools">${listTools()}</div>` + pairedDevices.map(d => `
+  const scroll = $('sheet').querySelector('.deviceRows')?.scrollTop || 0;
+  const confirmation = deviceRemoval.length ? `<div class="hint">${esc(`移除「${pairedDevices.filter(d => deviceRemoval.includes(d.id)).map(d => d.name).join('、')}」？它们会立即断开，要重新配对才能再用。`)}</div><div class="askBtns"><button data-device-remove-cancel>取消</button><button class="danger" data-device-remove-confirm>移除</button></div>` : '';
+  openSheet('devices', `<div class="deviceHead"><h3>已配对设备</h3><div class="listTools" ${removingDevices ? 'inert' : ''}>${listTools()}</div>${removingDevices ? '<div class="hint">正在移除设备…</div>' : confirmation}</div><div class="deviceRows" ${removingDevices ? 'inert' : ''}>` + pairedDevices.map(d => `
     <${listManagement.editing && !d.current ? 'label' : 'div'} class="opt static ${d.current ? 'cur' : ''}">${listManagement.editing && !d.current ? listCheckbox(d.id) : ''}<span class="lbl">${esc(d.name)}<span class="sub">${d.current ? '当前设备 · ' : ''}设备码 ${esc(d.id)} · 配对于 ${when(d.created)} · 最近使用 ${when(d.lastSeen)}</span></span>
     ${d.current || listManagement.editing ? '' : `<button data-remove="${esc(d.id)}" data-name="${esc(d.name)}">移除</button>`}</${listManagement.editing && !d.current ? 'label' : 'div'}>`).join('')
-    + '<div class="hint">添加新设备：在电脑上运行 npm run pair。<br>开启 Authenticator 二次验证：npm run 2fa。</div>');
+    + '<div class="hint">添加新设备：在电脑上运行 npm run pair。<br>开启 Authenticator 二次验证：npm run 2fa。</div></div>');
+  $('sheet').querySelector('.deviceRows').scrollTop = scroll;
 }
-async function removePairedDevices(ids) {
+async function removePairedDevices(ids, confirmed = false) {
   const selected = pairedDevices.filter(d => !d.current && ids.includes(d.id));
   if (!selected.length) return;
-  const names = selected.map(d => d.name).join('、');
-  if (!await ask(`移除「${names}」？它们会立即断开，要重新配对才能再用。`, '移除')) return renderDevices();
-  try {
-    for (const d of selected) {
-      const r = await post('/api/devices/remove', { id: d.id });
-      if (!r.ok) throw new Error('移除设备失败');
-      listManagement.selected.delete(d.id);
-    }
-  } catch (e) { status(e.message, false); }
-  await showDevices();
+  if (!confirmed) { deviceRemoval = selected.map(d => d.id); return renderDevices(); }
+  deviceRemoval = []; removingDevices = true; renderDevices();
+  const results = await Promise.allSettled(selected.map(async d => {
+    const r = await post('/api/devices/remove', { id: d.id });
+    if (!r.ok) throw new Error('移除设备失败');
+    pairedDevices = pairedDevices.filter(item => item.id !== d.id);
+    listManagement.selected.delete(d.id);
+  }));
+  removingDevices = false;
+  const failed = results.find(r => r.status === 'rejected');
+  if (failed) status(failed.reason.message, false);
+  if (sheetKind === 'devices') renderDevices();
 }
 
 function showDocs(m) {
