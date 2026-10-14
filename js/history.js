@@ -944,6 +944,10 @@ function dressMessage(el) {
     if (/^https?:\/\/\S+$/i.test(t) && !code.closest('a')) {
       const a = document.createElement('a'); a.href = t; a.textContent = t; code.replaceChildren(a); return;
     }
+    if (!code.closest('a') && /^[^\s`<>]+\.(?:png|jpe?g|gif|webp|svg|bmp)$/i.test(t)) {
+      code.dataset.file = t;
+      return;
+    }
     if (t.length >= 8 || /\s/.test(t)) code.classList.add('copyable');
   });
   el.querySelectorAll('a[href]').forEach(a => { a.target = inApp ? '_self' : '_blank'; a.rel = 'noopener noreferrer'; });
