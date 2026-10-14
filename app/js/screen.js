@@ -1,18 +1,51 @@
 /* ---------- screen view ---------- */
 const view = $('view'), stage = $('stage'), screen = $('screen');
+let visualState = {state: 'idle'}, visualWindows = [], visualWayland = false;
+function renderVisualState(m) {
+  visualState = m;
+  if (mode !== 'screen') return;
+  $('visualEmpty').hidden = m.state === 'live';
+  $('visualEmpty').textContent = m.message || I18N.tr('请选择绘图或仿真窗口');
+  stage.hidden = m.state !== 'live';
+  $('visualChoose').textContent = m.title || I18N.tr('选择窗口');
+}
+function receiveVisualWindows(m) {
+  visualWindows = m.windows;
+  visualWayland = !!m.wayland;
+  $('visualShare').hidden = !visualWayland;
+  if (sheetKind === 'visual-windows') showVisualWindows();
+}
+function showVisualWindows() {
+  openSheet('visual-windows', '<h3>绘图与仿真窗口</h3>' + (visualWayland
+    ? '<div class="hint">需要在电脑端选择并授权绘图或仿真窗口</div><button class="opt" data-visual-share>请求共享窗口</button>'
+    : visualWindows.map(w => `<button class="opt" data-visual-id="${esc(w.id)}">${esc(w.title)}</button>`).join('') || '<div class="hint">没有发现绘图或仿真窗口，请先在电脑端打开。</div>') + '<button class="opt" data-visual-refresh>刷新窗口列表</button>');
+}
+$('visualChoose').onclick = () => { showVisualWindows(); send({t: 'visualList'}); };
+$('visualShare').onclick = () => send({t: 'visualSelect', id: 'select'});
+$('sheet').addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  if (b.hasAttribute('data-visual-refresh')) return send({t: 'visualList'});
+  if (b.hasAttribute('data-visual-share') || b.dataset.visualId) {
+    closeSheet();
+    send({t: 'visualSelect', id: b.dataset.visualId || 'select'});
+  }
+});
 
 function onFrame(m) {
+  if (m.visual && mode !== 'screen') return;
+  if (mode === 'screen' && !m.visual) return;
   const resized = m.w !== frame.w || m.h !== frame.h;
   frame = { w: m.w, h: m.h };
   screen.src = 'data:image/jpeg;base64,' + m.data;
   layoutStage();
   if (resized) applyQuality();
 }
-screen.onload = () => send({ t: 'ack' });
+screen.onload = () => { if (mode !== 'screen') send({ t: 'ack' }); };
 
 const cropRect = () => {
   if (mode === 'terminal') return panel || [0, 0, frame.w, frame.h];
-  return crop && panel ? panel : [0, 0, frame.w, frame.h];
+  return [0, 0, frame.w, frame.h];
 };
 
 function layoutStage() {
@@ -30,6 +63,7 @@ function layoutStage() {
 
 let sentWidth = 0;
 function applyQuality() {
+  if (mode === 'screen') return;
   if (mode !== 'screen' || !authed) return;
   const [, , rw] = cropRect();
   if (!rw) return;
@@ -42,31 +76,7 @@ function applyQuality() {
   send({ t: 'quality', quality: mode === 'terminal' ? 92 : 70, maxWidth: px });
 }
 
-function setCrop(on) {
-  crop = on;
-  store.set('crop', on ? 'panel' : 'full');
-  $('cropPanel').classList.toggle('on', on);
-  $('cropFull').classList.toggle('on', !on);
-  layoutStage(); applyQuality();
-}
-$('cropPanel').onclick = () => setCrop(true);
-$('cropFull').onclick = () => setCrop(false);
-
-function norm(e) {
-  const r = screen.getBoundingClientRect();
-  return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
-}
-
-function ripple(e) {
-  const r = stage.getBoundingClientRect(), el = $('ripple');
-  el.style.left = (e.clientX - r.left) + 'px';
-  el.style.top = (e.clientY - r.top) + 'px';
-  el.style.transition = 'none'; el.style.opacity = 1;
-  requestAnimationFrame(() => { el.style.transition = 'opacity .4s'; el.style.opacity = 0; });
-}
-
-// One finger scrolls the computer (or pans a zoomed picture). Two fingers zoom the picture.
-// A tap still clicks; a long press is a right click.
+// One finger pans the view; two fingers zoom. Visualization windows are read-only.
 let gesture = null;
 const fingerDist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
 const onPicture = () => mode === 'screen';
@@ -88,9 +98,7 @@ function setZoom(next, clientX, clientY) {
 }
 
 function remoteWheel(clientX, clientY, dx, dy) {
-  const scale = frame.w / (screen.getBoundingClientRect().width || frame.w);
-  const p = norm({ clientX, clientY });
-  send({ t: 'wheel', x: p.x, y: p.y, dx: dx * scale * 1.6, dy: dy * scale * 1.6 });
+  view.scrollLeft += dx; view.scrollTop += dy;
 }
 
 view.addEventListener('touchstart', e => {
@@ -127,12 +135,6 @@ view.addEventListener('touchmove', e => {
   }
 }, { passive: false });
 view.addEventListener('touchend', e => {
-  if (gesture?.type === 'drag' && !gesture.moved && e.changedTouches[0]) {
-    const t = e.changedTouches[0];
-    const p = norm(t);
-    send({ t: 'tap', x: p.x, y: p.y, button: Date.now() - gesture.t0 > 550 ? 'right' : 'left' });
-    ripple(t);
-  }
   if (e.touches.length === 0) gesture = null;
   else if (e.touches.length === 1 && gesture?.type === 'pinch') gesture = null;
 });
@@ -155,11 +157,6 @@ screen.addEventListener('pointermove', e => {
 });
 screen.addEventListener('pointerup', e => {
   if (!mouse || e.pointerType === 'touch') return;
-  if (!mouse.moved) {
-    const p = norm(e);
-    send({ t: 'tap', x: p.x, y: p.y, button: Date.now() - mouse.t0 > 550 ? 'right' : 'left' });
-    ripple(e);
-  }
   mouse = null;
 });
 screen.addEventListener('pointercancel', () => { mouse = null; });

@@ -134,6 +134,12 @@ npm run pair
 
 ## 日常使用
 
+`… → 画面` 用于查看电脑上的绘图、仿真窗口（如 Matplotlib、Isaac Sim、MuJoCo），不再显示 Agent 编辑器或整个桌面。点“选择窗口”后选择目标，支持缩放和刷新；窗口画面只读，不发送鼠标或键盘操作。
+
+- Windows：需要支持 `gdigrab hwnd=` 的新版 `ffmpeg` 在 PATH 中，按窗口句柄捕获，避免同名窗口混淆。
+- Linux X11：需要 `ffmpeg`、`xprop` 和系统 Python 3，窗口需保持打开、可见。
+- Linux Wayland：点“请求共享窗口”，在电脑端系统选择框中选择并授权一个绘图或仿真窗口。需要系统 Python 的 PyGObject、GStreamer 及 PipeWire 插件；Ubuntu/Debian 可安装 `python3-gi gir1.2-gstreamer-1.0 gstreamer1.0-pipewire gstreamer1.0-plugins-good gstreamer1.0-plugins-base`。系统允许时，恢复凭据保存在 `~/.agent-remote/visual.json`，下次优先恢复；窗口关闭、权限撤销或恢复失败时需重新授权。Cloudflare 隧道重连不改变这份授权记录。
+
 每次要用时：
 
 1. 以调试端口启动 Cursor/Devin（第 3 步）。

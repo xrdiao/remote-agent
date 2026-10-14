@@ -94,8 +94,8 @@ export const ROUTES = {
   visible: {
     pre: (s, m) => {
       s.visible = Boolean(m.v);
-      if (!s.editorCdp) return;
-      if (!s.visible && s.mode === 'screen') return s.editorCdp.send('Page.stopScreencast');
+      if (!s.editorCdp && s.mode !== 'screen') return;
+      if (!s.visible && s.mode === 'screen') return s.stopVisual();
       if (s.visible) return s.setMode(s.mode);
     },
   },
@@ -257,10 +257,13 @@ export const ROUTES = {
   codexRun: { run: s => s.codexRunMenu() },
   codexChat: { run: s => s.codexChatMenu() },
   codexArchive: { run: (s, m) => s.codexArchiveThread(String(m.id || '')) },
-  refresh: { readOnly: true, fusionFree: true, run: s => s.snapshot(true), fusion: s => s.fusionEmit() },
+  visualList: {pre: s => s.visualList()},
+  visualSelect: {pre: (s, m) => s.visualSelect(m.id)},
+  refresh: { readOnly: true, fusionFree: true, run: s => s.snapshot(true), fusion: s => s.mode === 'screen' ? s.snapshot(true) : s.fusionEmit() },
   quality: {
     fusionFree: true,
     run: async (s, m) => {
+      if (s.mode === 'screen') return;
       if (!s.editorCdp) return;
       s.screencast.quality = Math.min(s.mode === 'terminal' ? 95 : 90, Math.max(20, Number(m.quality) || 60));
       s.screencast.maxWidth = Math.min(s.mode === 'terminal' ? 4096 : 2560, Math.max(480, Number(m.maxWidth) || 1280));
