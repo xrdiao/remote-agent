@@ -126,6 +126,5 @@ $('mic').onclick = () => {
 window.addEventListener('resize', () => { layoutStage(); applyQuality(); });
 if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('sw.js').catch(() => {});
 
-setCrop(crop);
 setMode(mode);
 boot();
