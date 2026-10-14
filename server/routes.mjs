@@ -240,6 +240,7 @@ export const ROUTES = {
   send: {
     fusionFree: true,
     run: (s, m) => s.sendMessage(String(m.text ?? ''), m.submit !== false, m.when, cleanMentions(m.mentions), { requestId: m.requestId, draft: m.draft, text: m.text, draftEpoch: m.draftEpoch }),
+    after: (s, m, queued) => { if (m.submit !== false) s.emit({ t: 'status', ok: true, msg: queued ? 'Agent 正在运行，已加入排队，这一轮结束后自动发送' : '已发送' }); },
     fail: (s, m) => s.emit({ t: 'sendFailed', requestId: m.requestId }),
   },
   mentionQuery: { run: (s, m) => s.mentionQuery(String(m.q ?? '').slice(0, 80), m.cat ? String(m.cat).slice(0, 40) : '', Number(m.seq) || 0, m.trigger === '/' ? '/' : '@') },
