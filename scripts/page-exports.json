@@ -12,6 +12,8 @@
   "codexThread",
   "openCodexThread",
   "codexViewState",
+  "codexWaitThread",
+  "codexWaitTurns",
   "codexRecentPoint",
   "codexNewPoint",
   "codexAccountPoint",

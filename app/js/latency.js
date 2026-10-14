@@ -1,7 +1,8 @@
 /* Independent native-renderer round trips; no focus, typing or conversation reads. */
-const latencyValues = new Map(), latencyPending = new Map();
+const latencyValues = new Map(), latencyPending = new Map(), latencyAt = new Map();
 let latencySerial = 0, latencyTimer = 0;
-const latencyLabels = { loading: '未就绪', timeout: '超时', offline: '未运行', unconfigured: '未配置' };
+const LATENCY_MIN_AGE = 30000;
+const latencyLabels = { loading: '未就绪', timeout: '超时', offline: '未运行', unconfigured: '未配置', unknown: '—' };
 function latencyBadge(id, label = '') {
   const value = latencyValues.get(id);
   const state = value?.state || 'loading';
@@ -19,25 +20,31 @@ function paintLatency() {
 function resetLatency() {
   clearTimeout(latencyTimer);
   for (const pending of latencyPending.values()) clearTimeout(pending.timer);
-  latencyPending.clear(); latencyValues.clear(); paintLatency();
+  latencyPending.clear(); latencyValues.clear(); latencyAt.clear(); paintLatency();
 }
-function measureLatency() {
-  clearTimeout(latencyTimer);
+// One probe round for the given window ids. Ids measured within the last 30 s (or in flight)
+// keep their last known value instead of being probed again.
+function measureLatency(ids = [currentWindow]) {
   if (!authed || document.hidden || !windowReady) return;
-  const targets = sheetKind === 'windows' ? windows.map(w => w.id) : [currentWindow];
-  const ids = [...new Set(targets.flatMap(id => id === 'fusion' ? ['fusion:a', 'fusion:b'] : id ? [id] : []))].filter(id => !latencyPending.has(id));
-  if (ids.length) {
-    const requestId = ++latencySerial, start = performance.now();
-    for (const id of ids) {
-      const timer = setTimeout(() => {
-        latencyPending.delete(id); latencyValues.set(id, { state: 'timeout' }); paintLatency();
-      }, 6500);
-      latencyPending.set(id, { requestId, start, timer });
-    }
-    const computer = currentComputer();
-    send({ t: 'latency', ids, requestId, codexWindowId: currentApp === 'codex' ? computer?.windowId : computer?.selections?.codex?.windowId });
+  const fresh = [...new Set(ids.flatMap(id => id === 'fusion' ? ['fusion:a', 'fusion:b'] : id ? [id] : []))]
+    .filter(id => !latencyPending.has(id) && Date.now() - (latencyAt.get(id) || 0) >= LATENCY_MIN_AGE);
+  if (!fresh.length) return;
+  const requestId = ++latencySerial, start = performance.now();
+  for (const id of fresh) {
+    const timer = setTimeout(() => {
+      latencyPending.delete(id); latencyValues.set(id, { state: 'timeout' }); paintLatency();
+    }, 6500);
+    latencyPending.set(id, { requestId, start, timer });
+    latencyAt.set(id, Date.now());
   }
-  latencyTimer = setTimeout(measureLatency, sheetKind === 'windows' ? 10000 : 5000);
+  const computer = currentComputer();
+  send({ t: 'latency', ids: fresh, requestId, codexWindowId: currentApp === 'codex' ? computer?.windowId : computer?.selections?.codex?.windowId });
+}
+// The first probe waits for the attach to settle; cancelled if the window or socket changed meanwhile.
+function scheduleLatency() {
+  clearTimeout(latencyTimer);
+  const id = currentWindow;
+  latencyTimer = setTimeout(() => { if (currentWindow === id) measureLatency([id]); }, 3000);
 }
 function receiveLatency(message) {
   const pending = latencyPending.get(message.id);
@@ -47,6 +54,6 @@ function receiveLatency(message) {
   paintLatency();
 }
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) resetLatency();
+  if (document.hidden) clearTimeout(latencyTimer);
   else measureLatency();
 });

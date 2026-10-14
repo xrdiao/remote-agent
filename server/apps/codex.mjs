@@ -120,11 +120,34 @@ export const adapter = {
   },
 
   async submitPrompt(now, busy, when, queued) {
-    const view = (await this.cdp.evaluate(helpersCall('codexFacts()')))?.view;
+    const facts = await this.cdp.evaluate(helpersCall('codexFacts()'));
+    const view = facts?.view;
     const follow = view?.follow || 'queue';
     queued = !!busy && (when === 'queue' || (!when && follow === 'queue'));
     const opposite = !!busy && ((when === 'now' && follow !== 'steer') || (when === 'queue' && follow === 'steer'));
-    if (opposite) {
+    if (opposite && when === 'now') {
+      // While busy the composer only offers "Queue": queue the follow-up, then trigger
+      // its send-now action so Codex steers it into the running turn.
+      const before = new Set((facts?.queued || []).map(m => m.id));
+      // The send control relabels when the turn ends; retry briefly instead of failing the tap.
+      let clicked = false;
+      for (let i = 0; i < 15 && !clicked; i++) {
+        clicked = await this.cdp.evaluate(helpersCall('submitCodexMessage()'));
+        if (!clicked) await new Promise(r => setTimeout(r, 100));
+      }
+      if (!clicked) throw new Error('Codex 发送按钮当前不可用');
+      let steerId = '';
+      for (let i = 0; i < 15 && !steerId; i++) {
+        steerId = ((await this.cdp.evaluate(helpersCall('codexFacts()')))?.queued || []).find(m => !before.has(m.id))?.id || '';
+        if (!steerId) await new Promise(r => setTimeout(r, 100));
+      }
+      // No queued item means the turn ended and the message was sent directly.
+      if (steerId && !await this.cdp.evaluate(helpersCall(`codexQueueAction(${JSON.stringify(steerId)}, 'send')`))) {
+        const still = ((await this.cdp.evaluate(helpersCall('codexFacts()')))?.queued || []).some(m => m.id === steerId);
+        if (still) throw new Error('Codex 立即追加不可用');
+      }
+    }
+    else if (opposite) {
       await this.cdp.evaluate(FOCUS_COMPOSER);
       await this.key(mod((view?.enter === 'enter' ? '' : 'Shift+') + 'Enter'));
     }
@@ -187,14 +210,7 @@ mergeCodexItems(chat) {
 },
 
 async selectCodexThread(convId, cdp = this.cdp) {
-  const waitActive = async () => {
-    for (let i = 0; i < 12; i++) {
-      await new Promise(r => setTimeout(r, 150));
-      const actual = await cdp.evaluate(helpersCall('codexThread()')) || '';
-      if (actual === convId) return true;
-    }
-    return false;
-  };
+  const waitActive = () => cdp.evaluate(helpersCall(`codexWaitThread(${JSON.stringify(convId)}, 1800)`), { timeout: 4000 });
   if (await cdp.evaluate(helpersCall(`openCodexThread(${JSON.stringify(convId)})`)) && await waitActive()) return true;
   const pos = await cdp.evaluate(helpersCall('codexRecentPoint()'));
   if (!pos) return false;
@@ -263,6 +279,11 @@ async openCodexAgent(id) {
     if (!this.cdp) throw new Error('还没有连上 Codex');
     const current = await this.cdp.evaluate(helpersCall('codexThread()')) || '';
     if (current !== convId && (switchedWindow || !await this.selectCodexThread(convId))) throw new Error('没有找到这个会话');
+    // The transcript unmounts during navigation; give it a moment so the first emit carries real items.
+    if (switchedWindow || current !== convId) {
+      this.codexFreshView = true;
+      await this.cdp.evaluate(helpersCall('codexWaitTurns(1200)'), { timeout: 3000 }).catch(() => {});
+    }
     this.emit({ t: 'status', ok: true, msg: !switchedWindow && current === convId ? '已是当前会话' : '已切换会话' });
   } finally {
     this.switchingThread = false;

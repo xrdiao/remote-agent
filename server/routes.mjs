@@ -168,6 +168,7 @@ export const ROUTES = {
   usage: {
     fast: s => s.app === 'codex' || s.app === 'devin',
     fastRun: (s, m) => s.showUsage(m.automatic === true),
+    background: (s, m) => m.automatic === true,
     readOnly: (s, m) => m.automatic === true,
     fusionFree: true,
     run: (s, m) => s.showUsage(m.automatic === true),

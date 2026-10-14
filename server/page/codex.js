@@ -49,6 +49,25 @@
     return null;
   };
   const codexViewState = () => ({ thread: codexThread(), turns: [...doc.querySelectorAll('[data-turn-key]')].filter(vis).length });
+  // In-page waits: resolve as soon as the condition holds instead of round-trip polling.
+  const codexWaitThread = (id, ms = 1800) => new Promise(resolve => {
+    const t0 = Date.now();
+    const tick = () => {
+      if (codexThread() === id) return resolve(true);
+      if (Date.now() - t0 >= ms) return resolve(false);
+      setTimeout(tick, 30);
+    };
+    tick();
+  });
+  const codexWaitTurns = (ms = 1200) => new Promise(resolve => {
+    const t0 = Date.now();
+    const tick = () => {
+      if ([...doc.querySelectorAll('[data-turn-key]')].some(vis)) return resolve(true);
+      if (Date.now() - t0 >= ms) return resolve(false);
+      setTimeout(tick, 30);
+    };
+    tick();
+  });
   const codexImagePreview = () => [...doc.querySelectorAll('img[class*="ZoomableImage"]')].some(vis);
   const codexFiberProps = (el, depth = 16) => {
     while (el && !Object.keys(el).some(k => k.startsWith('__reactFiber'))) el = el.parentElement;

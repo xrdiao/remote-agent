@@ -2,6 +2,14 @@
 const text = $('text');
 const drafts = new Map(), draftMentions = new Map();
 const pendingSends = new Map(), draftVersions = new Map();
+// Optimistic echoes: the sent message/queue row is drawn immediately, then dropped when the real item arrives in a chat update.
+let pendingEchoes = [];
+function echoTextMatches(it, t) { const s = (it.t || ''); const x = t.trim(); return s.trim() === x || s.startsWith(x + '\n\n附加文件（'); }
+function pushEcho(requestId, text, kind) {
+  const before = (lastChat?.items || []).filter(it => it.k === 'human' && echoTextMatches(it, text)).length;
+  pendingEchoes.push({ requestId, text, kind, at: Date.now(), sel: viewSel, before });
+  queueChatRender();
+}
 let inputRevision = 0;
 let draftEpoch = '';
 let activeDraft = '';
@@ -16,6 +24,8 @@ function sendReceipt(value) {
   return { requestId, draft: activeDraft, draftEpoch };
 }
 function confirmSent(m) {
+  const echo = pendingEchoes.find(p => p.requestId === m.requestId);
+  if (echo && m.queued !== undefined) { echo.kind = m.queued ? 'queue' : 'chat'; queueChatRender(); }
   const sent = pendingSends.get(m.requestId);
   if (!sent) return;
   pendingSends.delete(m.requestId);
@@ -203,7 +213,7 @@ $('send').onclick = () => {
   const follow = codexFollow();
   const when = devinBusySplit() || follow === 'queue' ? 'queue' : follow === 'steer' ? 'now' : '';
   const receipt = sendReceipt(v);
-  if (mode === 'chat') status('正在发送…');
+  if (mode === 'chat') { status('正在发送…'); pushEcho(receipt.requestId, v, when === 'queue' || (!when && chatBusy) ? 'queue' : 'chat'); }
   if (mode === 'terminal') send({ t: 'termSend', text: v, ...receipt });
   else send({ t: 'send', text: v, submit: true, ...receipt, ...(when ? { when } : {}), ...mentionsFor(v) });
   if (mode === 'chat') list.scrollTop = list.scrollHeight;
@@ -216,7 +226,9 @@ $('sendNow').onclick = async () => {
   const steer = !follow || follow === 'queue';
   if (!await ask(steer ? '立即追加到当前任务？' : '改为排队，等当前任务结束后再发送？', steer ? '立即追加' : '排队')) return;
   status('正在发送…');
-  send({ t: 'send', text: v, submit: true, ...sendReceipt(v), when: steer ? 'now' : 'queue', ...mentionsFor(v) });
+  const receipt = sendReceipt(v);
+  pushEcho(receipt.requestId, v, steer ? 'chat' : 'queue');
+  send({ t: 'send', text: v, submit: true, ...receipt, when: steer ? 'now' : 'queue', ...mentionsFor(v) });
   if (currentApp !== 'codex') { text.value = ''; autosize(); }
   list.scrollTop = list.scrollHeight;
 };

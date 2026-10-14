@@ -156,7 +156,19 @@
   const agentTarget = (id, click = false) => {
     if (id && activeThread() === id) return true;
     const tab = [...doc.querySelectorAll('.tab[data-resource-name]')].find(t => t.dataset.resourceName === id && t.querySelector('.composer-tab-label'));
-    if (tab) { const r = tab.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; }
+    if (tab) {
+      tab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      // The tab center can be covered by the sidebar header or the overflow "…" button; find an uncovered spot on its mid-line.
+      const r = tab.getBoundingClientRect(), y = r.y + r.height / 2;
+      for (let i = 0; i < 8; i++) {
+        const x = r.x + r.width * (0.15 + 0.7 * i / 7);
+        const hit = doc.elementFromPoint(x, y);
+        if (hit && tab.contains(hit)) return { x, y };
+      }
+      if (!click) return null;
+      for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) tab.dispatchEvent(new MouseEvent(type, { bubbles: true }));
+      return true;
+    }
     const row = [...doc.querySelectorAll('[data-sidebar-item-key]')].find(e => e.getAttribute('data-sidebar-item-key') === `row:${id}`);
     if (row && (click || vis(row))) {
       row.scrollIntoView({ block: 'nearest' });
