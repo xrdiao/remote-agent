@@ -56,7 +56,7 @@ function applySelection(m, clearChat = true) {
   });
   if (changed) { mirroredDraft = ''; restoreDraft(); $('attachments').innerHTML = ''; send({ t: 'attachments' }); }
   const cachedAgents = agentLists.get(agentListKey());
-  if (cachedAgents && m.threadId) agentLists.set(agentListKey(), cachedAgents.map(a => ({ ...a, current: a.id === m.threadId || a.id === 'tab:' + m.threadId || a.id === 'thread:' + m.windowId + ':' + m.threadId })));
+  if (cachedAgents && m.threadId) setAgentList(agentListKey(), cachedAgents.map(a => ({ ...a, current: a.id === m.threadId || a.id === 'tab:' + m.threadId || a.id === 'thread:' + m.windowId + ':' + m.threadId })));
   if (m.project) currentProject = m.project;
   updateTitle();
   if (clearChat && changed) { const cc = chatBySel.get(m.sel || viewSel); renderChat(cc || null, !!cc); }
@@ -599,6 +599,10 @@ function connect() {
     else if (m.t === 'menu') {
       if (m.sel && viewSel && m.sel !== viewSel) return;
       lruPut(menuCache, menuCacheKey(m.kind), m, 24);
+      if (currentApp === 'fusion' && /^fusion-(model|effort)-[ab]$/.test(m.kind) && fusionModelSide === m.kind.slice(-1)) {
+        showMenu(m.kind, m.items, m.max, m.fusion, m.fast, m.model);
+        return;
+      }
       if (m.requestId != null && m.requestId !== menuRequest) return;
       if (m.requestId == null && !(sheetKind === 'menu' && menuSheetKind === m.kind)) return;
       showMenu(m.kind, m.items, m.max, m.fusion, m.fast, m.model);
