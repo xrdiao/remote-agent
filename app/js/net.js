@@ -170,9 +170,9 @@ function deviceName() {
 
 function showUnpaired(msg = '') {
   gate({
-    msg: (msg ? msg + '\n\n' : '') + '这台设备还没有配对。\n在电脑上运行 npm run pair，用手机扫码，或输入完整配对链接、手动配对码。',
+    msg,
     err: !!msg,
-    input: { placeholder: '配对链接或电脑码.一次性配对码', button: '配对', submit: pastePair, scan: true, inputMode: 'text' },
+    input: { placeholder: '输入配对链接或配对码', button: '连接', submit: pastePair, scan: true, inputMode: 'text' },
   });
 }
 
@@ -436,6 +436,7 @@ function autoRetry() {
 }
 
 function connect() {
+  draftEpoch = '';
   setWindowReady(false);
   clearTimeout(retryTimer);
   if (conn.active || $('gate').classList.contains('open')) connShow('正在建立实时连接…');
@@ -450,6 +451,9 @@ function connect() {
     clearTimeout(connectTimer);
     if (gen !== connGen) return;
     setWindowReady(false);
+    qnPending = null;
+    qnSig = '';
+    renderQuestions(null);
     $('dot').className = '';
     if (!authed) {
       // boot() asks /api/me whether the device was removed or needs 2FA again.
@@ -501,8 +505,8 @@ function connect() {
     else if (m.t === 'questionDone') finishQuestion(m);
     else if (m.t === 'attachments') { if (m.sel === viewSel) renderAttachments(m.list); }
     else if (m.t === 'chat') { if (!m.sel || !viewSel || m.sel === viewSel) { if (m.chat) lruPut(chatBySel, m.sel || viewSel, m.chat, 12); renderChat(m.chat, !!m.cached); } }
-    else if (m.t === 'draft') { if (!m.sel || m.sel === viewSel) { if ((text.value === '' || text.value === mirroredDraft) && m.text !== text.value) { text.value = m.text; autosize(); } mirroredDraft = m.text; } }
-    else if (m.t === 'draftAck') { if (m.ok && (!m.sel || m.sel === viewSel) && text.value === m.text) mirroredDraft = m.text; }
+    else if (m.t === 'draft') { if ((m.draftEpoch || '') === draftEpoch && (!m.sel || m.sel === viewSel)) { if ((text.value === '' || text.value === mirroredDraft) && m.text !== text.value) { text.value = m.text; autosize(); } mirroredDraft = m.text; } }
+    else if (m.t === 'draftAck') { if ((m.draftEpoch || '') === draftEpoch && m.ok && (!m.sel || m.sel === viewSel) && text.value === m.text) mirroredDraft = m.text; }
     else if (m.t === 'historyDone') finishHistory(m);
     else if (m.t === 'thread') applySelection(m);
     else if (m.t === 'frame') onFrame(m);
@@ -538,7 +542,7 @@ function connect() {
       currentProject = m.app === 'fusion' ? '' : (m.project || winLabel(m.title).name);
       updateAppText(); updateTitle();
       const cachedChat = m.sel ? chatBySel.get(m.sel) : null;
-      renderChat(cachedChat || null, !!cachedChat);
+      renderChat(cachedChat || null, !!cachedChat, !cachedChat);
       renderContext(null);
       $('quotaMeters').innerHTML = '';
       $('quotaMeters').title = '';

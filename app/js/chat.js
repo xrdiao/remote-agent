@@ -3,6 +3,8 @@ const list = $('list'), itemsEl = $('items');
 const cache = new Map();
 $('cachedMore').onclick = () => loadOlderMessages();
 itemsEl.addEventListener('click', async e => {
+  const copy = e.target.closest('[data-copy-message]');
+  if (copy) { await copyText(copy.closest('.msg').copyText, copy, false); return; }
   const fold = e.target.closest('[data-fold]');
   if (fold) {
     const turn = fold.dataset.fold, fromEnd = fold.classList.contains('endFold');
@@ -165,7 +167,10 @@ function renderItem(it) {
   if (it.k === 'tasks') { el.innerHTML = `<details class="tcard" data-task="${esc(it.i)}" ${taskOpen.has(it.i) ? 'open' : ''}><summary class="tprog-head">${I18N.tr('任务')} ${it.done}/${it.total}</summary>${tasksHtml(it)}</details>`; return el; }
   if (it.k === 'human') {
     const mh = it.src === 'devin' ? mathHtml(it.t || '') : null;
-    el.innerHTML = `<div class="bubble">${mh?.any ? mh.html : esc(it.t || '')}</div>`;
+    el.copyText = it.t || '';
+    const stamp = it.sentAt ? new Date(it.sentAt) : null;
+    const time = stamp ? `<time datetime="${stamp.toISOString()}" title="${esc(stamp.toLocaleString())}">${esc(stamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }))}</time>` : '';
+    el.innerHTML = `<div class="humanContent"><div class="bubble">${mh?.any ? mh.html : esc(it.t || '')}</div><div class="messageMeta">${time}<button data-copy-message>复制</button></div></div>`;
     if (mh?.any) typesetMath(el);
     if (it.src === 'devin') el.insertAdjacentHTML('beforeend', `<div class="rv"><button class="foldBtn" data-fold="${esc(it.i)}" title="折叠这一轮">▾</button><span class="turnSum"></span><button class="revertBtn" data-revert="${esc(it.i)}">回到这里</button></div>`);
   }
@@ -227,6 +232,57 @@ function noteSwitch(chat) {
 }
 
 let lastChat = null, mirroredDraft = '';
+const submittedMessages = [], messageTimes = new Map(), generationClocks = new Map();
+const messageScope = () => [currentComputer()?.id || '', currentApp, currentComputer()?.windowId || ''].join('|');
+const generationKey = chat => messageScope() + '|' + (chat?.thread || '');
+let activeGeneration = '';
+function withMessageTimes(chat) {
+  if (!chat) return chat;
+  const scope = messageScope();
+  const matches = (it, m) => it.k === 'human' && !m.before.has(it.i)
+    && ((it.t || '').trim() === m.text.trim() || (it.t || '').startsWith(m.text + '\n\n附加文件（'));
+  const applies = m => m.scope === scope && (!m.thread || m.thread === chat.thread);
+  const itemKey = it => generationKey(chat) + '|' + it.i;
+  for (let index = 0; index < submittedMessages.length;) {
+    const receipt = submittedMessages[index];
+    if (!applies(receipt)) { index++; continue; }
+    const candidates = chat.items.filter(it => matches(it, receipt) && !messageTimes.has(itemKey(it)));
+    const waiting = submittedMessages.filter(m => applies(m) && m.text === receipt.text).length;
+    const item = candidates.at(-Math.min(waiting, candidates.length));
+    if (!item) { index++; continue; }
+    messageTimes.set(itemKey(item), item.sentAt || receipt.sentAt);
+    submittedMessages.splice(index, 1);
+  }
+  return { ...chat, items: chat.items.map(it => {
+    if (it.k !== 'human') return it;
+    const sentAt = it.sentAt || messageTimes.get(itemKey(it));
+    return sentAt ? { ...it, sentAt } : it;
+  }) };
+}
+function paintGenerationTime() {
+  const clock = generationClocks.get(activeGeneration);
+  const el = $('elapsed');
+  el.hidden = mode !== 'chat' || activeGeneration !== generationKey(lastChat) || !clock?.start;
+  if (el.hidden) return;
+  const seconds = Math.max(0, Math.floor(((clock.end || Date.now()) - clock.start) / 1000));
+  const parts = [Math.floor(seconds / 60), seconds % 60];
+  if (seconds >= 3600) parts.splice(0, 1, Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60);
+  el.textContent = I18N.tr('耗时') + ' ' + parts.map(n => String(n).padStart(2, '0')).join(':');
+}
+function updateGenerationTime(chat, stale) {
+  const key = generationKey(chat);
+  if (key !== activeGeneration && generationClocks.get(activeGeneration)?.start && !generationClocks.get(activeGeneration).end) generationClocks.delete(activeGeneration);
+  activeGeneration = key;
+  if (chat && !stale) {
+    const previous = generationClocks.get(activeGeneration);
+    let clock = previous || { start: null, end: null };
+    if (chat.generation?.start && (!chat.busy || !chat.generation.end)) clock = { ...chat.generation };
+    else if (previous && chat.busy && !previous.busy) clock = { start: Date.now(), end: null };
+    else if (previous?.start && previous.busy && !chat.busy && !clock.end) clock = { ...clock, end: Date.now() };
+    generationClocks.set(activeGeneration, { ...clock, busy: !!chat.busy });
+  }
+}
+setInterval(paintGenerationTime, 1000);
 const chatBySel = new Map(), menuCache = new Map();
 const lruPut = (map, key, val, max) => { map.delete(key); map.set(key, val); while (map.size > max) map.delete(map.keys().next().value); };
 let menuSheetKind = '', chatStale = false;

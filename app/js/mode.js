@@ -23,6 +23,7 @@ function setMode(m) {
   updateAppText();
   document.body.classList.toggle('chatmode', m === 'chat');
   updateSendMode();
+  paintGenerationTime();
   if (m !== 'terminal') $('termBusy').hidden = true;
   sentWidth = 0;
   if (authed) send({ t: 'mode', mode: m });

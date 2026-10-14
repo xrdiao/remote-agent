@@ -102,10 +102,11 @@ export const ROUTES = {
   lang: { pre: (s, m) => { updateDevice(s.deviceId, { lang: m.v === 'en' ? 'en' : 'zh' }); } },
   draft: {
     pre: async (s, m) => {
+      if ((m.draftEpoch || '') !== (s.draftEpoch || '')) return;
       const text = String(m.text ?? '');
       let ok = false;
       try { ok = await s.setDraft(text); } catch {}
-      return s.emit({ t: 'draftAck', sel: s.selectionKey(), ok, text });
+      return s.emit({ t: 'draftAck', sel: s.selectionKey(), ok, text, draftEpoch: s.draftEpoch || '' });
     },
   },
 
@@ -227,7 +228,7 @@ export const ROUTES = {
   key: { run: (s, m) => s.key(String(m.key || ''), { focusTerminal: m.focus === 'terminal', cdp: s.mode === 'chat' ? s.cdp : s.editorCdp }) },
   send: {
     fusionFree: true,
-    run: (s, m) => s.sendMessage(String(m.text ?? ''), m.submit !== false, m.when, cleanMentions(m.mentions), { requestId: m.requestId, draft: m.draft, text: m.text }),
+    run: (s, m) => s.sendMessage(String(m.text ?? ''), m.submit !== false, m.when, cleanMentions(m.mentions), { requestId: m.requestId, draft: m.draft, text: m.text, draftEpoch: m.draftEpoch }),
     after: (s, m, queued) => s.emit({ t: 'status', ok: true, msg: queued ? 'Agent 正在运行，已加入排队，这一轮结束后自动发送' : '已发送' }),
     fail: (s, m) => s.emit({ t: 'sendFailed', requestId: m.requestId }),
   },

@@ -4,10 +4,13 @@ let gateRetryFn = null;
 function gate({ msg = '', err = false, input = null, retry = false, repair = false, computers = false, appLink = null, onRetry = null } = {}) {
   connHide();
   $('gate').classList.add('open');
+  $('gate').classList.toggle('pairing', !!input?.scan);
   $('gateMsg').textContent = msg;
   $('gateMsg').className = err ? 'err' : '';
   const inp = $('gateInput');
   inp.hidden = $('gateBtn').hidden = !input;
+  $('gateEntry').hidden = !input;
+  $('gatePaste').hidden = !input || !!input.code;
   gateSubmit = input?.submit || null;
   gateRetryFn = onRetry;
   if (input) {
@@ -19,7 +22,11 @@ function gate({ msg = '', err = false, input = null, retry = false, repair = fal
     $('gateBtn').textContent = input.button;
     if (input.code) setTimeout(() => inp.focus(), 50);
   }
-  $('gateScan').hidden = !(input?.scan && window.AgentRemoteApp?.scan);
+  $('gateScan').hidden = !input?.scan;
+  $('pairOr').hidden = $('gateScan').hidden;
+  $('gateHelp').hidden = !input?.scan;
+  $('pairIntro').hidden = !input?.scan;
+  $('gateLang').querySelectorAll('[data-lang]').forEach(b => { b.classList.toggle('active', b.dataset.lang === I18N.lang); b.setAttribute('aria-pressed', String(b.dataset.lang === I18N.lang)); });
   $('gateApp').hidden = !appLink;
   if (appLink) $('gateApp').href = appLink;
   $('gateRetry').hidden = !retry;
@@ -31,9 +38,14 @@ function gate({ msg = '', err = false, input = null, retry = false, repair = fal
 }
 const ungate = () => $('gate').classList.remove('open');
 $('gateBtn').onclick = () => gateSubmit?.($('gateInput').value.trim());
-$('gateScan').onclick = () => window.AgentRemoteApp?.scan?.();
+$('gateScan').onclick = () => window.AgentRemoteApp?.scan ? window.AgentRemoteApp.scan() : openScanner();
 $('gateInput').onkeydown = e => { if (e.key === 'Enter') $('gateBtn').click(); };
-$('gateLang').onclick = () => I18N.set(I18N.lang === 'en' ? 'zh' : 'en');
+$('gateLang').onclick = e => { const button = e.target.closest('[data-lang]'); if (button && button.dataset.lang !== I18N.lang) I18N.set(button.dataset.lang); };
+$('gatePaste').onclick = async () => {
+  try { $('gateInput').value = (await navigator.clipboard.readText()).trim(); $('gateInput').focus(); }
+  catch { $('gateMsg').textContent = I18N.tr('无法读取剪贴板，请长按输入框粘贴'); }
+};
+$('gateHelp').onclick = () => openSheet('pair-help', '<h3>配对遇到问题？</h3><p>在电脑端运行 npm run pair，使用新生成的二维码、链接或完整手动配对码。</p><p>配对码 10 分钟内有效，只能授权一台新设备。请使用终端显示的固定网页入口。</p>');
 $('gateRetry').onclick = () => { if (gateRetryFn) gateRetryFn(); else boot(); };
 $('gateComputers').onclick = () => showComputers();
 let connGen = 0;

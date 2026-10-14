@@ -385,6 +385,16 @@ export class AgentContext {
       }
       if (!this.liveRead(cdp, sel) || this.historyLoading) return;
       this.syncSession(chat);
+      if (chat && chat.thread === (this.threadId || '') && (this.app !== 'codex' || chat.thread) && !this.lastChat) {
+        const initial = { ...chat, items: chat.items.map(it => ({ ...it })) };
+        delete initial.draft;
+        if (this.app === 'codex') initial.context = codexContext(chat.thread);
+        this.fillThinking(initial);
+        this.retainThinking(initial);
+        this.mergeDevinHistory(initial);
+        this.lastChat = JSON.stringify(initial);
+        this.emit({ t: 'chat', sel: this.selectionKey(), chat: initial });
+      }
       const liveClosed = this.app !== 'devin' && !(this.app === 'codex' && chat?.busy) && (chat?.items || []).some(it => it.k === 'thinking' && it.live && !(it.t || '').includes('\n'));
       if (liveClosed) {
         const idxs = await cdp.evaluate(helpersCall(`closedThinkingIndexes('live')`));
@@ -457,7 +467,7 @@ export class AgentContext {
       // A draft read before or during a send is the text being sent; pushing it would refill the phone's box.
       if (draft !== undefined && draft !== this.lastDraft && !this.sending && (this.sendGen || 0) === sendGen && this.liveRead(cdp, sel)) {
         this.lastDraft = draft;
-        this.emit({ t: 'draft', sel: this.selectionKey(), text: draft });
+        this.emit({ t: 'draft', sel: this.selectionKey(), text: draft, draftEpoch: this.draftEpoch || '' });
       }
       // Devin task lists: read details for the current count and restore the original expansion state.
       const taskRow = (chat?.items || []).find(it => it.k === 'tasks' && !it.items && this.tasksTried.get(it.i) !== `${it.done}/${it.total}`);
@@ -1504,9 +1514,10 @@ export class AgentContext {
   }
 
   async sendMessage(text, submit, when, mentions, receipt) {
+    if (submit && receipt) this.draftEpoch = receipt.draftEpoch || '';
     if (this.app === 'fusion') {
       const queued = await this.fusionUserSend(text);
-      if (receipt) this.emit({ t: 'sent', ...receipt, sel: this.selectionKey() });
+      if (receipt) this.emit({ t: 'sent', ...receipt, sentAt: Date.now(), sel: this.selectionKey() });
       return queued;
     }
     const files = [...uploads.values()].filter(f => f.pending && f.sel === this.selectionKey());
@@ -1531,8 +1542,11 @@ export class AgentContext {
       this.sending = false;
       this.sendGen++;
     }
-    if (submit) files.forEach(f => { f.pending = false; });
-    if (submit && receipt) this.emit({ t: 'sent', ...receipt, sel: this.selectionKey() });
+    if (submit) {
+      files.forEach(f => { f.pending = false; });
+      this.lastDraft = text;
+    }
+    if (submit && receipt) this.emit({ t: 'sent', ...receipt, sentAt: Date.now(), sel: this.selectionKey() });
     if (this.mode === 'chat') {
       this.lastChatAt = 0;
       this.pollChat(true).catch(() => {});
