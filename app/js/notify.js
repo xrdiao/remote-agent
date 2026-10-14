@@ -47,11 +47,10 @@ async function enableNotify() {
     return status(ios && !standalone() ? 'iPhone 要先「分享 → 添加到主屏幕」，从桌面图标打开后才能开启通知' : '这个浏览器不支持通知', false);
   }
   // Must be the first await: iOS only shows the permission prompt directly inside a tap.
-  const permission = await Notification.requestPermission();
+  const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
   if (permission !== 'granted') return status('没有通知权限，请在系统设置里允许本 App 发通知', false);
   try {
-    const { key } = await api('/api/push/key').then(r => r.json());
-    const reg = await swReady();
+    const [{ key }, reg] = await Promise.all([api('/api/push/key').then(r => r.json()), swReady()]);
     const sub = await reg.pushManager.getSubscription() || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64u(key) });
     const r = await post('/api/push/subscribe', { sub: sub.toJSON() });
     if (!r.ok) throw new Error((await r.json()).error || '注册失败');
@@ -65,8 +64,12 @@ async function enableNotify() {
 async function disableNotify() {
   if (nativeNotify()) window.AgentRemoteApp.setNotify('');
   else {
-    await (await pushSub().catch(() => null))?.unsubscribe().catch(() => {});
-    await post('/api/push/unsubscribe').catch(() => {});
+    const sub = await pushSub();
+    const [removed, response] = await Promise.all([
+      sub ? sub.unsubscribe() : true,
+      post('/api/push/unsubscribe'),
+    ]);
+    if (!removed || !response.ok) throw new Error('关闭通知失败，请重试');
   }
   notifyOn = false;
   status('通知已关闭');
@@ -291,11 +294,10 @@ $('sheet').addEventListener('click', async e => {
     if (row?.getAttribute('aria-busy') === 'true') return;
     const want = !notifyOn;
     row?.setAttribute('aria-busy', 'true');
-    row?.setAttribute('aria-checked', String(want));
-    row?.querySelector('.switch')?.classList.toggle('on', want);
+    status(want ? '正在开启通知…' : '正在关闭通知…');
     // Called synchronously in the tap: iOS needs Notification.requestPermission() before any await.
     const done = want ? enableNotify() : disableNotify();
-    Promise.resolve(done).then(() => { row?.removeAttribute('aria-busy'); paintNotifySwitch(); });
+    Promise.resolve(done).catch(e => status(e.message, false)).finally(() => { row?.removeAttribute('aria-busy'); paintNotifySwitch(); });
   }
   else if (act === 'notifyTest') {
     closeSheet();

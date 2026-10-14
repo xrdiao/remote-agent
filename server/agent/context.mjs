@@ -1118,11 +1118,13 @@ export class AgentContext {
         if (!pos) { await this.closeMenus(); throw new Error('当前模型不支持 Fast'); }
         const current = await this.cdp.evaluate(helpersCall('fastInfo()'));
         if (current.on !== on) await this.cdp.evaluate(helpersCall('clickCursorFast()'));
-        await new Promise(r => setTimeout(r, 150));
-        await this.closeMenus();
       }
-      await new Promise(r => setTimeout(r, 200));
-      await this.pollChat();
+      const confirmed = await this.waitFor(`fastInfo()?.on === ${on}`);
+      await this.closeMenus();
+      if (!confirmed) throw new Error('Fast 模式未同步到电脑，请重试');
+      await this.openMenu(name || 'model');
+      this.lastChatAt = 0;
+      this.pollChat(true).catch(() => {});
       this.emit({ t: 'status', ok: true, msg: '设置已更新' });
       return;
     }
@@ -1202,14 +1204,16 @@ export class AgentContext {
         if (!this.codexHistoryTop) this.codexHistoryTop = new Map();
         const top = this.codexHistoryTop.get(thread);
         if (before && top != null) {
+          const rows = await cdp.evaluate(helpersCall('historyRows()'));
           await cdp.evaluate(helpersCall(`scrollCodexHistory(${top})`));
-          await new Promise(r => setTimeout(r, 150));
+          await cdp.evaluate(helpersCall(`waitHistoryRows(${JSON.stringify(rows)}, 150)`));
         }
         if (!this.liveRead(cdp, sel)) return;
         const point = before && await cdp.evaluate(helpersCall('scrollCodexHistory()'));
         if (point) {
+          const rows = await cdp.evaluate(helpersCall('historyRows()'));
           await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: point.x, y: point.y, deltaX: 0, deltaY: dy });
-          await new Promise(r => setTimeout(r, 400));
+          await cdp.evaluate(helpersCall(`waitHistoryRows(${JSON.stringify(rows)})`));
           const chat = await cdp.evaluate(helpersCall('extract()'));
           if (!this.liveRead(cdp, sel) || chat?.thread !== thread) return;
           const pageItems = chat.items;
@@ -1236,9 +1240,10 @@ export class AgentContext {
     const rect = await this.cdp.evaluate(helpersCall('panelRect()'));
     if (!rect) return;
     const [x, y, w, h] = rect;
+    const rows = history ? await this.cdp.evaluate(helpersCall('historyRows()')) : null;
     await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: x + w / 2, y: y + h / 2, deltaX: 0, deltaY: dy });
     if (history) {
-      await new Promise(r => setTimeout(r, 400));
+      await this.cdp.evaluate(helpersCall(`waitHistoryRows(${JSON.stringify(rows)})`));
       this.lastChatAt = 0;
       await this.pollChat(true);
       const earlier = this.lastChat ? JSON.parse(this.lastChat).earlier : undefined;

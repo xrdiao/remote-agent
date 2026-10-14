@@ -28,6 +28,19 @@
     }
     return true;
   };
+  const historyRows = () => [...doc.querySelectorAll(`${ITEM_SEL}, [data-acp-msg-index]`)]
+    .map(el => el.getAttribute('data-acp-msg-index') ?? el.getAttribute('data-turn-key') ?? el.getAttribute('data-flat-index') ?? el.getAttribute('data-message-kind') + ':' + (el.textContent || '').slice(0, 80)).join('|');
+  const waitHistoryRows = async (before, timeout = 400) => {
+    const deadline = performance.now() + timeout;
+    let previous = before, stable = 0;
+    while (performance.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 30));
+      const rows = historyRows();
+      stable = rows !== before && rows === previous ? stable + 1 : 0;
+      if (stable >= 2) return;
+      previous = rows;
+    }
+  };
 
   // Cheap per-window check for notifications: is the Agent running, and is it waiting on a button?
   // "Run in background" shows up on any command running longer than ~5 s; it is not a request for approval.
