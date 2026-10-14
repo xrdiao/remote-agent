@@ -12,6 +12,7 @@ import { appPlans } from './agent/context.mjs';
 //   fusionFree — allowed on a fusion session without a cdp; boolean or (session, msg) => bool
 //   fusion   — alternate runner used instead of run when fusionFree applies (refresh only)
 //   fast     — ws.mjs bypasses the per-client queue entirely; fastRun is the direct call
+//   background — waits for preceding commands, then reads without holding up later commands
 //   run      — the dispatch body
 //   after    — emits on success from the queued ws handler
 //   fail     — extra emits when run throws (sendFailed)
@@ -38,11 +39,11 @@ async function cursorPlanFor(cdp) {
   return (await cdp.evaluate(helpersCall('readUsage()')))?.plan || '';
 }
 
-function readAllPlans(session) {
+function readAllPlans(session, windows) {
   if (plansRead) return plansRead;
   plansRead = (async () => {
     try {
-      const wins = await listWindows();
+      const wins = windows || await listWindows();
       const codex = wins.find(w => w.app === 'codex');
       if (codex && !appPlans.codex) {
         const page = (await codexWindows(CODEX_CDP_URL)).find(p => p.chatWs);
@@ -83,13 +84,25 @@ export const ROUTES = {
   connAgents: {
     pre: async s => {
       const agents = [];
-      try { await listWindows(agents); } catch {}
-      readAllPlans(s).catch(() => {});
+      let wins;
+      try { wins = await listWindows(agents); } catch {}
+      readAllPlans(s, wins).catch(() => {});
       return s.emit({ t: 'connAgents', agents });
     },
   },
   windows: { pre: async s => s.emit({ t: 'windows', list: phoneWindows(await listWindows(), s.targetId), current: s.targetId, plans: appPlans }) },
-  attach: { pre: (s, m) => s.attach(m) },
+  attach: {
+    pre: async (s, m) => {
+      if (!m.initial) return s.attach(m);
+      const agents = [];
+      let wins;
+      try { wins = await listWindows(agents); } catch {}
+      s.emit({ t: 'connAgents', agents });
+      if (wins) s.emit({ t: 'windows', list: phoneWindows(wins, s.targetId), current: s.targetId, plans: appPlans });
+      await s.attach(m, wins);
+      readAllPlans(s, wins).catch(() => {});
+    },
+  },
   mode: { pre: (s, m) => s.setMode(m.mode) },
   visible: {
     pre: (s, m) => {
@@ -111,6 +124,7 @@ export const ROUTES = {
   },
 
   agents: {
+    background: (s, m) => m.automatic === true && m.silent === true,
     pre: (s, m) => (s.app === 'codex' ? s.listAgents(m.silent === true, m.automatic === true) : SKIP),
     readOnly: (s, m) => m.silent === true,
     run: (s, m) => s.listAgents(m.silent === true, m.automatic === true),
@@ -153,7 +167,7 @@ export const ROUTES = {
   settings: { run: (s, m) => s.showSettings(m.requestId) },
   toggleSetting: { run: (s, m) => s.toggleSetting(String(m.label ?? '')) },
   usage: {
-    fast: (s, m) => s.app === 'codex' || (s.app === 'devin' && m.automatic === true),
+    fast: s => s.app === 'codex' || s.app === 'devin',
     fastRun: (s, m) => s.showUsage(m.automatic === true),
     readOnly: (s, m) => m.automatic === true,
     fusionFree: true,

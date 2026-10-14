@@ -935,7 +935,10 @@ export class AgentContext {
   }
 
   async listAgents(silent = false, readOnly = false) {
-    const emit = data => this.emit({ t: 'agents', app: this.app, silent, ...data });
+    const cdp = this.cdp, sel = this.sel, app = this.app;
+    const emit = data => {
+      if (this.liveRead(cdp, sel)) this.emit({ t: 'agents', app, silent, ...data });
+    };
     return this.adapter.listAgents.call(this, silent, readOnly, emit);
   }
 

@@ -83,7 +83,7 @@ export class Session extends AgentContext {
 
   // Asks Cursor's own Cmd+P index where a bare file name lives, then closes the picker again.
 
-  async attach(target) {
+  async attach(target, windows) {
     const req = target && typeof target === 'object' ? target : { id: target || '' };
     let appId = String(req.id || '');
     let windowId = String(req.windowId || '');
@@ -115,12 +115,12 @@ export class Session extends AgentContext {
       this.winTitle = 'Fusion';
       if (!this.fusionRun) this.fusionRun = newFusionRun();
       this.threadId = this.fusionRun.id;
-      this.emit({ t: 'attached', id: 'fusion', title: 'Fusion', app: 'fusion', appName: 'Fusion', project: '', windowId: 'fusion', threadId: this.threadId, sel: this.selectionKey() });
+      this.emit({ t: 'attached', id: 'fusion', title: 'Fusion', app: 'fusion', appName: 'Fusion', project: '', windowId: 'fusion', threadId: this.threadId, sel: this.selectionKey(), initial: req.initial === true });
       this.fusionEmit();
       if (this.fusionRun.a || this.fusionRun.b) { await this.fusionCatalog(); this.fusionEmit(); }
       return;
     }
-    const wins = await listWindows();
+    const wins = windows || await listWindows();
     if (appId === 'codex') {
       const pages = codexPages;
       if (!pages.length) {
@@ -134,7 +134,7 @@ export class Session extends AgentContext {
       if (!picked) throw new Error('没有找到 Codex 窗口。请用 ./scripts/start-codex.sh 启动，并打开 Codex 侧边栏');
       const entry = wins.find(w => w.id === 'codex');
       if (!entry) throw new Error('没有找到 Codex 窗口。请用 ./scripts/start-codex.sh 启动，并打开 Codex 侧边栏');
-      await this.openBound({ ...entry, title: picked.rawTitle }, picked.ws, picked.chatWs, { windowId: picked.pageId, threadId });
+      await this.openBound({ ...entry, title: picked.rawTitle }, picked.ws, picked.chatWs, { windowId: picked.pageId, threadId, initial: req.initial === true });
       if (!picked.chatWs) this.emit({ t: 'status', ok: false, msg: 'Codex 侧边栏还没打开' });
       return;
     }
@@ -147,7 +147,7 @@ export class Session extends AgentContext {
     }
     const chosen = win || wins[0];
     if (!chosen) throw new Error('没有找到 Cursor、Devin 或 Codex 窗口。Cursor 用调试端口 9222，Devin 用 ./scripts/start-devin.sh，Codex 用 ./scripts/start-codex.sh');
-    await this.openBound(chosen, chosen.ws, null, { windowId: chosen.id });
+    await this.openBound(chosen, chosen.ws, null, { windowId: chosen.id, initial: req.initial === true });
     if (threadId && threadId !== this.threadId) {
       try { await this.openAgent(threadId); }
       catch { this.emit({ t: 'status', ok: false, msg: '没有找到上次的会话，已留在当前会话' }); }
@@ -208,7 +208,7 @@ export class Session extends AgentContext {
     if (this.app !== 'codex') this.threadId = await this.cdp.evaluate(helpersCall('activeThread()')) || '';
     this.emit({
       t: 'attached', id: win.id, title: this.app === 'codex' ? 'Codex' : win.title, app: win.app,
-      appName: this.appMessage('{app}'), project: this.app === 'codex' ? codexFolder(this.winTitle) : '', windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(), plans: appPlans,
+      appName: this.appMessage('{app}'), project: this.app === 'codex' ? codexFolder(this.winTitle) : '', windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(), plans: appPlans, initial: selection.initial === true,
     });
     if (staleSelect) this.emit({ t: 'status', ok: false, msg: '没有找到上次的会话，已留在当前会话' });
     const cachedChat = this.chatBySel?.get(this.selectionKey());

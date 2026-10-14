@@ -62,7 +62,8 @@ wss.on('connection', (ws, req) => {
         session.emit({ t: 'status', ok: false, msg: e.message });
       }
     };
-    if (msg.t === 'question' || msg.t === 'codexRequest') questionQueue = questionQueue.then(execute);
+    if (flag(route?.background, session, msg)) queue.then(execute);
+    else if (msg.t === 'question' || msg.t === 'codexRequest') questionQueue = questionQueue.then(execute);
     else queue = queue.then(execute);
   });
   ws.on('close', () => {

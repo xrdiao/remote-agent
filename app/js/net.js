@@ -478,12 +478,11 @@ function connect() {
       if (sheetKind === 'computers') closeSheet();
       status('正在切换窗口…');
       send({ t: 'mode', mode });
-      send({ t: 'windows' });
       const fromNotice = window.AgentRemoteApp?.takeOpenWin?.() || pendingNotice;
       pendingNotice = '';
       if (fromNotice) rememberNotice(fromNotice);
       const chosen = currentComputer();
-      send({ t: 'attach', id: chosen?.win || store.get('window') || '', windowId: chosen?.windowId || '', threadId: chosen?.threadId || '' });
+      send({ t: 'attach', id: chosen?.win || store.get('window') || '', windowId: chosen?.windowId || '', threadId: chosen?.threadId || '', initial: true });
       sentWidth = 0;
       applyQuality();
       send({ t: 'visible', v: document.visibilityState === 'visible' });
@@ -551,7 +550,7 @@ function connect() {
       renderQuota(quotaCache.get(quotaKey()) || { missing: true, quota: [], limits: [] });
       send({ t: 'usage', automatic: true });
       send({ t: 'appTheme', dark: document.documentElement.dataset.theme !== 'light' });
-      send({ t: 'windows' });
+      if (!m.initial) send({ t: 'windows' });
     }
     else if (m.t === 'attachFailed') setWindowReady(m.ready);
     else if (m.t === 'agents') receiveAgents(m);
