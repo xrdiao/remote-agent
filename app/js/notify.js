@@ -244,6 +244,7 @@ $('sheet').addEventListener('click', async e => {
     if (b.dataset.kind === 'mode' && b.dataset.label === 'Bypass Permissions' && !b.classList.contains('cur')
       && !await ask('切到「Bypass Permissions」？\nAgent 之后的所有操作（运行命令、改文件、删文件）都会自动批准，不再询问你。', '切换')) return;
     closeSheet();
+    if (/^fusion-model-[ab]$/.test(b.dataset.kind)) fusionModelSide = b.dataset.kind.slice(-1);
     if (b.dataset.kind !== 'codex-run' && b.dataset.kind !== 'codex-chat' && !/^fusion-(model|effort)-/.test(String(b.dataset.kind || ''))) beginSwitch(b.dataset.kind);
     return send({ t: 'pickMenu', kind: b.dataset.kind, label: b.dataset.label });
   }
@@ -393,7 +394,6 @@ function pairPublished(name) {
 function addComputer() {
   closeSheet();
   gate({
-    msg: '配对另一台电脑。\n在那台电脑上运行 npm run pair，扫码或把链接粘贴到下面。已有的电脑会保留。',
     input: { placeholder: '粘贴配对链接', button: '配对', submit: pastePair, scan: true },
     retry: '返回',
     onRetry: () => loadComputers().length ? showComputers() : showUnpaired(),

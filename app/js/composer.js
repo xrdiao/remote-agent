@@ -181,7 +181,8 @@ $('fusionA').onclick = () => send({ t: 'fusionSides', side: 'a' });
 $('fusionB').onclick = () => send({ t: 'fusionSides', side: 'b' });
 for (const side of ['a', 'b']) $('fusionModel' + side.toUpperCase()).onclick = () => {
   status(lastChat?.fusion?.[side] ? `读取 ${side.toUpperCase()} 的模型…` : `正在选择 ${side.toUpperCase()} Agent…`);
-  send({ t: lastChat?.fusion?.[side] ? 'fusionModel' : 'fusionSides', side });
+  if (lastChat?.fusion?.[side]) requestFusionModel(side);
+  else send({ t: 'fusionSides', side });
 };
 $('fusionBar').onclick = e => {
   const b = e.target.closest('[data-fusion-act]');
