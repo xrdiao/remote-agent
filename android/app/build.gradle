@@ -7,7 +7,7 @@ android {
     compileSdk 34
 
     defaultConfig {
-        applicationId 'com.agentremote'
+        applicationId 'uk.luojiajiang.remoteagent'
         minSdk 24
         targetSdk 34
         versionCode 2
