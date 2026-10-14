@@ -104,7 +104,11 @@ function paintFusionSetup(fx) {
 $('fusionSetup').onclick = e => {
   const b = e.target.closest('button');
   if (!b || b.disabled) return;
-  if ('fusionStep' in b.dataset) { fusionSetupStep = Number(b.dataset.fusionStep); paintFusionSetup(lastChat.fusion); }
+  if ('fusionStep' in b.dataset) {
+    fusionSetupStep = Number(b.dataset.fusionStep);
+    paintFusionSetup(lastChat.fusion);
+    $('fusionSetup').querySelector('.active').scrollIntoView({ block: 'nearest' });
+  }
   else if ('fusionSetupProject' in b.dataset) $('fusionProject').click();
   else if (b.dataset.fusionSelect) send({ t: 'fusionSides', side: b.dataset.fusionSelect });
   else if (b.dataset.fusionSetupModel) requestFusionModel(b.dataset.fusionSetupModel);
