@@ -493,6 +493,23 @@
   .fusionIllustration i { width: 0; z-index: 1; transform: translateX(-25px); color: #65aaff; text-shadow: 0 0 9px #007aff; font-size: 25px; font-style: normal; }
   #fusionWelcome h2 { font-size: 20px; color: var(--hi); margin: 0 0 10px; }
   #fusionWelcome p { font-size: 12px; color: var(--muted2); margin: 2px 0; }
+  #fusionSetup { width: 100%; max-width: 520px; margin: 16px auto 0; text-align: left; }
+  .fusionStep { margin-bottom: 8px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); overflow: hidden; }
+  .fusionStep.active { border-color: var(--accent-b); }
+  .fusionStepHead { display: flex; align-items: center; gap: 10px; width: 100%; padding: 12px; border: 0; border-radius: 0; background: transparent; text-align: left; white-space: normal; }
+  .fusionStepHead .lbl { flex: 1; min-width: 0; }
+  .fusionStepHead strong { display: block; font-size: 13px; font-weight: 600; }
+  .fusionStepHead .sub { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+  .fusionStepNumber { flex: none; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--ctrl); color: var(--blue); font-size: 12px; }
+  .fusionStep.active .fusionStepNumber { background: var(--accent); color: #fff; }
+  .fusionStepBody { padding: 0 12px 12px; }
+  .fusionStepBody button:disabled, .fusionStepHead:disabled { opacity: .45; cursor: default; }
+  .fusionNext { width: 100%; padding: 9px 12px; font-size: 13px; white-space: normal; }
+  .fusionSetupSummary { margin: 0 0 12px; font-size: 12px; overflow-wrap: anywhere; }
+  .fusionSetupSummary dt { color: var(--muted); margin-top: 8px; }
+  .fusionSetupSummary dd { margin: 2px 0 0; }
+  .fusionSetupSummary small { display: block; color: var(--blue); }
+  #fusionSetupReady { max-width: 340px; padding-top: 18px; }
   #fusionBar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
   body.fusion.kb .fusionIllustration { margin-bottom: 8px; }
   body.fusion.kb .fusionIllustration span { width: 64px; height: 64px; font-size: 24px; }
