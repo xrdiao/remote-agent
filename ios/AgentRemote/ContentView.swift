@@ -7,21 +7,27 @@ struct ContentView: View {
     @StateObject private var shell = Shell()
 
     var body: some View {
-        ShellWebView(webView: shell.webView)
-            .ignoresSafeArea()
-            .background(Color(uiColor: shell.background))
-            .preferredColorScheme(shell.light ? .light : .dark)
-            .onAppear(perform: shell.start)
-            .onOpenURL(perform: shell.openPairLink)
-            .sheet(isPresented: $shell.scanning, onDismiss: shell.finishScan) {
-                QRScanner { shell.scanned = $0; shell.scanning = false }
+        ZStack {
+            ShellWebView(webView: shell.webView)
+                .ignoresSafeArea()
+            GeometryReader { geo in
+                RefreshBubble(size: geo.size, light: shell.light, refresh: shell.restart)
             }
-            .sheet(isPresented: $shell.listening) {
-                VoiceSheet(lang: shell.voiceLang) { shell.voiceDone($0) }
-            }
-            .alert(shell.notice ?? "", isPresented: Binding(get: { shell.notice != nil }, set: { if !$0 { shell.notice = nil } })) {
-                Button(tr("好", "OK"), role: .cancel) {}
-            }
+            .ignoresSafeArea(.keyboard)
+        }
+        .background(Color(uiColor: shell.background))
+        .preferredColorScheme(shell.light ? .light : .dark)
+        .onAppear(perform: shell.start)
+        .onOpenURL(perform: shell.openPairLink)
+        .sheet(isPresented: $shell.scanning, onDismiss: shell.finishScan) {
+            QRScanner { shell.scanned = $0; shell.scanning = false }
+        }
+        .sheet(isPresented: $shell.listening) {
+            VoiceSheet(lang: shell.voiceLang) { shell.voiceDone($0) }
+        }
+        .alert(shell.notice ?? "", isPresented: Binding(get: { shell.notice != nil }, set: { if !$0 { shell.notice = nil } })) {
+            Button(tr("好", "OK"), role: .cancel) {}
+        }
     }
 }
 
@@ -32,8 +38,15 @@ func tr(_ zh: String, _ en: String) -> String {
 private struct ShellWebView: UIViewRepresentable {
     let webView: WKWebView
 
-    func makeUIView(context: Context) -> WKWebView { webView }
-    func updateUIView(_ view: WKWebView, context: Context) {}
+    func makeUIView(context: Context) -> UIView { UIView() }
+
+    func updateUIView(_ container: UIView, context: Context) {
+        guard container.subviews.first !== webView else { return }
+        container.subviews.forEach { $0.removeFromSuperview() }
+        webView.frame = container.bounds
+        webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        container.addSubview(webView)
+    }
 }
 
 // The user content controller retains its handlers, so it gets a weak proxy instead of the shell itself.
@@ -57,9 +70,10 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
     @Published private(set) var voiceLang = ""
     @Published var notice: String?
 
+    @Published private(set) var webView: WKWebView!
     private var started = false
+    private var scripts = WKUserContentController()
     private let setupPage = Bundle.main.url(forResource: "setup", withExtension: "html")!
-    private let scripts = WKUserContentController()
 
     private var appURL: String {
         UserDefaults.standard.string(forKey: "url") ?? (Bundle.main.object(forInfoDictionaryKey: "AgentRemoteAppURL") as? String ?? "")
@@ -67,7 +81,13 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
 
     var background: UIColor { light ? .white : UIColor(white: 30 / 255, alpha: 1) }
 
-    lazy var webView: WKWebView = {
+    override init() {
+        super.init()
+        webView = makeWebView()
+    }
+
+    private func makeWebView() -> WKWebView {
+        scripts = WKUserContentController()
         let config = WKWebViewConfiguration()
         config.userContentController = scripts
         config.allowsInlineMediaPlayback = true
@@ -79,7 +99,20 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
         view.allowsBackForwardNavigationGestures = true
         view.isInspectable = true
         return view
-    }()
+    }
+
+    // Replaces the web view rather than reloading it: the current URL may carry a one-time #pair fragment,
+    // and a hung or killed renderer can't be reloaded.
+    func restart() {
+        let old = webView!
+        old.stopLoading()
+        old.navigationDelegate = nil
+        old.uiDelegate = nil
+        scripts.removeScriptMessageHandler(forName: "app")
+        old.removeFromSuperview()
+        webView = makeWebView()
+        load(appURL)
+    }
 
     func start() {
         guard !started else { return }
@@ -255,6 +288,11 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         failed(error)
+    }
+
+    func webViewWebContentProcessDidTerminate(_ view: WKWebView) {
+        guard view === webView else { return }
+        restart()
     }
 
     private func failed(_ error: Error) {
