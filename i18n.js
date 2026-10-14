@@ -148,7 +148,7 @@ const I18N = (() => {
     '↓ 有新消息': '↓ New messages', '点击读取额度': 'Tap to load usage', '正在切换窗口…': 'Switching window…', '正在新建对话…': 'Starting a chat…',
     '当前应用': 'the current app', '发给 Agent…': 'Message Agent…',
     '连接中…': 'Connecting…', '对话': 'Chat', '画面': 'Screen', '↑ 加载更早的消息': '↑ Load earlier messages',
-    '没找到聊天面板。': 'No chat panel found.', '请在 {app} 里打开 Agent 对话，或切到「画面」查看。': 'Open an Agent chat in {app}, or switch to "Screen".',
+    '正在加载对话…': 'Loading conversation…', '没找到聊天面板。': 'No chat panel found.', '请在 {app} 里打开 Agent 对话，或切到「画面」查看。': 'Open an Agent chat in {app}, or switch to "Screen".',
     '↓ 最新': '↓ Latest', '聊天面板': 'Chat panel', '整个窗口': 'Whole window', '点击': 'Tap', '滚动': 'Scroll', '刷新': 'Refresh',
     '回车': 'Enter', '适应': 'Fit', '历史': 'History', '＋ 新建': '+ New',
     '切换 Agent': 'Switch Agent', '没有找到 Agent 列表。请在电脑上打开 Cursor 的 Agents 窗口。': 'No agent list found. Open Cursor\'s Agents window on the computer.',
