@@ -394,7 +394,6 @@ function pairPublished(name) {
 function addComputer() {
   closeSheet();
   gate({
-    msg: '配对另一台电脑。\n在那台电脑上运行 npm run pair，扫码或把链接粘贴到下面。已有的电脑会保留。',
     input: { placeholder: '粘贴配对链接', button: '配对', submit: pastePair, scan: true },
     retry: '返回',
     onRetry: () => loadComputers().length ? showComputers() : showUnpaired(),
