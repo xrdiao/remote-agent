@@ -61,7 +61,7 @@ function applySelection(m, clearChat = true) {
   if (cachedAgents && m.threadId) setAgentList(agentListKey(), cachedAgents.map(a => ({ ...a, current: a.id === m.threadId || a.id === 'tab:' + m.threadId || a.id === 'thread:' + m.windowId + ':' + m.threadId })));
   if (m.project) currentProject = m.project;
   updateTitle();
-  if (clearChat && changed) { const cc = chatBySel.get(chatCacheKey(m.sel || viewSel)); renderChat(cc || null, !!cc); }
+  if (clearChat && changed) renderChat(null, false, true);
 }
 async function decryptEntry(keyText, entry) {
   const key = await crypto.subtle.importKey('raw', b64u(keyText), 'AES-GCM', false, ['decrypt']);
@@ -397,17 +397,6 @@ async function boot() {
   rememberComputer({ ...chosen, relay: base });
   if (chosen?.win) store.set('window', chosen.win);
   await chatPreviewReady;
-  const app = String(chosen.win || '').split(':')[0];
-  const sel = [app, chosen.windowId || '', chosen.threadId || ''].join('|');
-  const preview = chatBySel.get(chatCacheKey(sel));
-  if (mode === 'chat' && preview) {
-    currentApp = app; currentWindow = chosen.win; viewSel = sel;
-    currentAppName = {cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion'}[app];
-    restoreDraft(); updateAppText();
-    // Draw the cached chat underneath; the connection screen stays up until the window is attached.
-    renderChat(preview, true);
-    setWindowReady(false);
-  }
   connect();
 }
 
@@ -511,7 +500,7 @@ async function connect() {
     else if (m.t === 'questionDone') finishQuestion(m);
     else if (m.t === 'latency') receiveLatency(m);
     else if (m.t === 'visual') renderVisualState(m);
-    else if (m.t === 'visualWindows') receiveVisualWindows(m);
+    else if (m.t === 'visualWindows') { receiveVisualWindows(m); if (mode === 'screen') connContentReady(); }
     else if (m.t === 'attachments') { if (m.sel === viewSel) renderAttachments(m.list); }
     else if (m.t === 'chat') {
       if (!m.sel || !viewSel || m.sel === viewSel) {
@@ -554,16 +543,14 @@ async function connect() {
       currentWindow = m.id;
       currentApp = m.app || null;
       setWindowReady(true);
-      connHide();
       scheduleLatency();
       $('dot').className = 'ok';
-      status('已连接');
+      status(mode === 'chat' ? '正在加载对话…' : '已连接');
       $('titleText').textContent = m.app === 'fusion' ? 'Fusion' : m.app === 'devin' ? 'Devin agent' : m.app === 'codex' ? 'Codex' : winLabel(m.title).name;
       currentAppName = m.appName;
       currentProject = m.app === 'fusion' ? '' : (m.project || winLabel(m.title).name);
       updateAppText(); updateTitle();
-      const cachedChat = m.sel ? chatBySel.get(chatCacheKey(m.sel)) : null;
-      renderChat(cachedChat || null, !!cachedChat, !cachedChat);
+      renderChat(null, false, true);
       renderContext(null);
       $('quotaMeters').innerHTML = '';
       $('quotaMeters').title = '';
@@ -583,7 +570,7 @@ async function connect() {
     }
     else if (m.t === 'terminals') { finishPending(['正在读取终端列表…']); showTerminals(m.list || []); }
     else if (m.t === 'agentBusy') $('termBusy').hidden = !(mode === 'terminal' && m.busy);
-    else if (m.t === 'termText') { if (!m.sel || !viewSel || m.sel === viewSel) renderTerm(m); }
+    else if (m.t === 'termText') { if (!m.sel || !viewSel || m.sel === viewSel) { renderTerm(m); connContentReady(); } }
     else if (m.t === 'termInput' && mode === 'terminal') {
       text.value = m.text || '';
       const end = text.value.length;

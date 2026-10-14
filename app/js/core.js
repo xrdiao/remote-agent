@@ -113,6 +113,7 @@ fitOrientation();
 // In-progress lines end with … and are cleared when the result arrives, or after a few seconds
 // so a finished action cannot leave "正在…" on screen. A short result then fades on its own.
 const ACTION_PENDING = new Set([
+  '正在加载对话…',
   '正在发送…',
   '正在新建对话…', '正在切换窗口…', '正在切换 Agent…', '正在读取 Agent 列表…', '正在打开子 Agent…', '返回主对话…',
   '正在切换终端…', '正在删除终端…', '正在新建终端…', '正在读取终端列表…',
@@ -148,6 +149,7 @@ function finishPending(list) {
 
 function send(obj) {
   if (obj.t === 'attach') {
+    conn.loaded = false;
     setWindowReady(false);
     status('正在切换窗口…');
     const name = {cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion'}[String(obj.id || '').split(':')[0]];
