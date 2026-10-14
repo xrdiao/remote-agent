@@ -20,6 +20,9 @@ function setMode(m) {
   $('screenKeys').hidden = true;
   view.classList.toggle('gesture', m === 'screen' || m === 'terminal');
   document.body.classList.toggle('term', m === 'terminal');
+  document.body.classList.toggle('visual', m === 'screen');
+  for (const id of ['visualHeader', 'visualCaption', 'visualHint']) $(id).hidden = m !== 'screen';
+  $('zoom').hidden = m !== 'screen' && zoom <= 1.01;
   updateAppText();
   document.body.classList.toggle('chatmode', m === 'chat');
   updateSendMode();
