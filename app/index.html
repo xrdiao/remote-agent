@@ -73,12 +73,17 @@
 
   <section id="screenView" class="view">
     <div id="termBusy" hidden>Agent 正在运行</div>
+    <div id="visualHeader" hidden>
+      <div class="visualHeading"><button id="visualBack" aria-label="返回对话">‹</button><h2>绘图与仿真</h2><span aria-hidden="true">▣</span></div>
+      <div class="visualSource"><span class="visualMonitor" aria-hidden="true">▣</span><div class="visualSourceText"><strong id="visualTitle">尚未选择窗口</strong><span id="visualComputer"></span></div><span id="visualStatus" role="status"></span></div>
+    </div>
     <div id="screenTools" class="tools">
       <button id="visualChoose">选择窗口</button>
       <button id="visualShare" hidden>请求共享窗口</button>
       <button id="zoom" hidden>适应</button>
       <button id="refresh">刷新</button>
     </div>
+    <div id="visualCaption" hidden><span>窗口预览</span><span class="visualReadOnly">只读</span></div>
     <div id="view">
       <div id="termEmpty" hidden>
         <div>没有打开的终端</div>
@@ -88,6 +93,7 @@
       <div id="visualEmpty" hidden role="status"></div>
       <div id="stage"><img id="screen" alt=""><div id="ripple"></div></div>
     </div>
+    <div id="visualHint" hidden><span>双指缩放 · 拖动查看</span><span id="visualZoom">100%</span></div>
     <div id="screenKeys" class="tools">
       <button data-key="Escape">Esc</button>
       <button data-key="Enter">回车</button>
