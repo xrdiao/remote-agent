@@ -547,26 +547,32 @@
   #gatePaste { flex: none; width: 48px; padding: 10px; }
   #gatePaste svg, #gateScan svg { width: 22px; height: 22px; }
   #gateBtn { width: 100%; margin-top: 12px; }
-  #gate.pairing { gap: 0; padding: calc(22px + env(safe-area-inset-top)) 24px max(22px, env(safe-area-inset-bottom)); background: radial-gradient(ellipse at 50% 25%, #10223455, transparent 55%), #0b131b; }
-  #gate.pairing .pairHero { text-align: center; margin: clamp(24px, 7vh, 64px) 0 28px; }
-  #gate.pairing .pairLogo { display: block; width: clamp(112px, 40vw, 176px); height: auto; margin: 0 auto 22px; }
-  #gate.pairing h2 { font-size: clamp(26px, 7vw, 32px); font-weight: 700; color: #f4f7fb; margin: 0 0 16px; }
+  #gate.pairing { --pair-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom)); height: 100dvh; bottom: auto; gap: 0; padding: calc(clamp(8px, calc(var(--pair-height) * .02), 22px) + env(safe-area-inset-top)) clamp(16px, 5vw, 24px) max(12px, env(safe-area-inset-bottom)); background: radial-gradient(ellipse at 50% 25%, #10223455, transparent 55%), #0b131b; }
+  #gate.pairing > * { flex-shrink: 0; }
+  #gate.pairing .pairHero { text-align: center; margin: clamp(8px, calc(var(--pair-height) * .025), 28px) 0 clamp(10px, calc(var(--pair-height) * .02), 20px); }
+  #gate.pairing .pairLogo { display: block; width: min(40vw, clamp(56px, calc(var(--pair-height) * .32 - 100px), 176px)); height: auto; margin: 0 auto clamp(8px, calc(var(--pair-height) * .02), 20px); }
+  #gate.pairing h2 { font-size: clamp(22px, calc(var(--pair-height) * .038), 32px); line-height: 1.2; font-weight: 700; color: #f4f7fb; margin: 0 0 clamp(6px, calc(var(--pair-height) * .012), 12px); }
   #pairIntro { margin: 0; color: #95a2b0; font-size: 14px; line-height: 1.8; }
   #gate.pairing #gateMsg { font-size: 13px; margin: 0 0 12px; }
   #gate.pairing #gateMsg:empty { display: none; }
-  #gate.pairing #gateEntry { border: 1px solid #223241; border-radius: 22px; background: #111d28; padding: 16px; }
+  #gate.pairing #pairIntro { font-size: clamp(12px, calc(var(--pair-height) * .018), 14px); line-height: 1.6; }
+  #gate.pairing #gateEntry { border: 1px solid #223241; border-radius: 22px; background: #111d28; padding: clamp(10px, calc(var(--pair-height) * .018), 16px); }
   #gate.pairing .pairInput { border: 1px solid #2b3e4f; border-radius: 15px; overflow: hidden; background: #0b131b; }
-  #gate.pairing #gateInput { border: 0; border-radius: 0; background: none; color: #eaf0f6; padding: 16px 12px; outline-offset: -3px; }
+  #gate.pairing #gateInput { border: 0; border-radius: 0; background: none; color: #eaf0f6; padding: clamp(10px, calc(var(--pair-height) * .015), 16px) 12px; outline-offset: -3px; }
   #gate.pairing #gateInput::placeholder { color: #718190; }
   #gate.pairing #gatePaste { color: #becbd8; border: 0; border-left: 1px solid #2b3e4f; border-radius: 0; background: none; }
-  #gate.pairing #gateBtn { height: 54px; margin-top: 14px; border: 1px solid #4da3ff; border-radius: 15px; color: #fff; background: #3b8eea; font-size: 18px; font-weight: 700; }
+  #gate.pairing #gateBtn { height: clamp(44px, calc(var(--pair-height) * .064), 54px); padding: 8px 12px; margin-top: clamp(8px, calc(var(--pair-height) * .016), 14px); border: 1px solid #4da3ff; border-radius: 15px; color: #fff; background: #3b8eea; font-size: 18px; font-weight: 700; }
   #pairOr { display: flex; align-items: center; gap: 12px; margin: 20px 16px; color: #657482; font-size: 12px; }
   #pairOr span:first-child, #pairOr span:last-child { height: 1px; flex: 1; background: #263542; }
-  #gate.pairing #gateScan { display: flex; align-items: center; justify-content: center; gap: 10px; min-height: 54px; border-radius: 15px; border: 1px solid #375572; background: #101c27; color: #eaf0f6; font-size: 17px; }
+  #gate.pairing #pairOr { margin: clamp(6px, calc(var(--pair-height) * .015), 16px) 16px; }
+  #gate.pairing #gateScan { display: flex; align-items: center; justify-content: center; gap: 10px; min-height: clamp(44px, calc(var(--pair-height) * .064), 54px); padding: 8px 12px; border-radius: 15px; border: 1px solid #375572; background: #101c27; color: #eaf0f6; font-size: 17px; }
   #gateScan svg { color: #4da3ff; }
-  #gate.pairing #gateHelp { margin-top: auto; padding-top: 28px; border: 0; background: none; color: #4da3ff; font-size: 14px; }
+  #gate.pairing #gateActions { margin-top: 8px; }
+  #gate.pairing #gateActions button { padding: 8px 12px; }
+  #gate.pairing #gateHelp { margin-top: auto; padding: clamp(6px, calc(var(--pair-height) * .02), 20px) 8px 0; border: 0; background: none; color: #4da3ff; font-size: 14px; }
   #gateHelp span { margin-left: 8px; font-size: 22px; vertical-align: -1px; }
   #gate.pairing #gateInfo { margin-top: 10px; text-align: center; }
+  #gate.pairing #gateInfo:empty { display: none; }
   #scanner { position: fixed; inset: 0; z-index: 40; background: #0b131b; color: #eef3f8; display: flex; flex-direction: column; padding: env(safe-area-inset-top) 24px max(24px, env(safe-area-inset-bottom)); overflow-y: auto; }
   #scanner[hidden] { display: none; }
   #scannerVideo, .scannerShade { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
@@ -591,17 +597,17 @@
   #scannerAlbum svg { width: 24px; height: 24px; }
   #scannerManual { position: relative; flex: none; border: 0; border-top: 1px solid #ffffff20; border-radius: 0; background: none; color: #4da3ff; font-size: 15px; padding: 22px 0 0; }
   #scannerManual span { font-size: 22px; margin-left: 6px; vertical-align: -1px; }
-  @media (max-height: 740px) {
-    #gate.pairing { padding: calc(18px + env(safe-area-inset-top)) 24px max(18px, env(safe-area-inset-bottom)); }
-    #gate.pairing .pairHero { margin: 2.5vh 0 16px; }
-    #gate.pairing .pairLogo { width: min(40vw, 22vh); margin-bottom: 16px; }
-    #gate.pairing h2 { font-size: 26px; margin-bottom: 12px; }
-    #gate.pairing #gateEntry { padding: 12px; }
-    #gate.pairing #gateInput { padding-top: 13px; padding-bottom: 13px; }
-    #gate.pairing #gateBtn { height: 48px; margin-top: 12px; }
-    #pairOr { margin-top: 12px; margin-bottom: 12px; }
-    #gate.pairing #gateScan { min-height: 48px; }
-    #gate.pairing #gateHelp { padding-top: 16px; }
+  @media (min-width: 560px) and (max-height: 500px) {
+    #gate.pairing.open { display: grid; grid-template-columns: 1fr 1.2fr; grid-template-rows: repeat(7, auto); gap: 2px 24px; align-content: center; }
+    #gate.pairing #gateLang { grid-column: 1; grid-row: 1; justify-self: end; }
+    #gate.pairing .pairHero { grid-column: 1; grid-row: 2 / 8; align-self: center; margin: 0; }
+    #gate.pairing #gateMsg { grid-column: 2; grid-row: 1; margin-bottom: 0; }
+    #gate.pairing #gateEntry { grid-column: 2; grid-row: 2; }
+    #gate.pairing #pairOr { grid-column: 2; grid-row: 3; margin-top: 0; margin-bottom: 0; }
+    #gate.pairing #gateScan { grid-column: 2; grid-row: 4; }
+    #gate.pairing #gateApp, #gate.pairing #gateActions { grid-column: 2; grid-row: 5; margin-top: 0; }
+    #gate.pairing #gateHelp { grid-column: 2; grid-row: 6; margin: 0; padding-top: 0; }
+    #gate.pairing #gateInfo { grid-column: 2; grid-row: 7; margin-top: 0; }
   }
   #gateMsg { color: #95a2b0; line-height: 1.6; white-space: pre-line; }
   .primary-link { display: block; text-align: center; padding: 11px; border-radius: 8px; background: var(--accent); color: #fff; text-decoration: none; font-weight: 600; }
