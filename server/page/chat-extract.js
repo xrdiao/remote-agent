@@ -37,6 +37,8 @@
       : aria === 'Devin message' ? 'assistant'
       : kindEl?.dataset.messageKind || (el.querySelector('.composer-human-message, .aislash-editor-input-readonly') ? 'human' : 'other');
     const item = { i: itemKey(el), k };
+    const sentAt = Date.parse(el.querySelector('time[datetime]')?.getAttribute('datetime') || '');
+    if (k === 'human' && Number.isFinite(sentAt)) item.sentAt = sentAt;
     if (k === 'thinking') {
       const action = (el.querySelector('.ui-collapsible-action')?.innerText || '').replace(/\s+/g, ' ').trim();
       let details = (el.querySelector('.ui-collapsible-details')?.innerText || '').replace(/\s+/g, ' ').trim();
@@ -174,7 +176,7 @@
         let t = item.message || '';
         if (imgs) t += `${t ? '\n' : ''}[图片 ${imgs}]`;
         if (atts) t += `${t ? '\n' : ''}[附件 ${atts}]`;
-        out.push({ i: id, k: 'human', t });
+        out.push({ i: id, k: 'human', t, ...(item.sentAtMs ? { sentAt: item.sentAtMs } : {}) });
       } else if (item.type === 'assistant-message' && item.content) {
         const block = markdown.get(item.responseAnnotationTargetId);
         if (item.phase === 'commentary') out.push({ i: id, k: 'thinking', t: `工作过程\n${item.content}`, live: !item.completed });
@@ -414,12 +416,15 @@
       if (main.k === 'assistant' && !main.h && !main.b) return thoughts;
       return [...thoughts, ...(main.k === 'tool' ? cursorToolItems(el) : [main])];
     });
-    const global = buttonsIn(panel, true).filter(x => !inItem(x.el) && !inQn(x.el) && !/^stop generation\b/i.test(x.label)
+    const global = buttonsIn(panel, true).filter(x => !inItem(x.el) && !inQn(x.el) && !x.el.hasAttribute('data-request-input-dismiss') && !/^stop generation\b/i.test(x.label)
       && !(panel.querySelector('[data-turn-key]') && /^(stop|stop generating|停止)$/i.test(x.label))).map(x => x.label);
     const modeEl = [...doc.querySelectorAll('.composer-unified-dropdown[data-mode]')].find(vis);
     const modelEl = modelButton();
+    const latestTurn = [...doc.querySelectorAll('[data-turn-key]')].at(-1);
+    const turnTime = latestTurn && codexTurnData(latestTurn)?.items?.find(it => it.type === 'worked-for');
     return {
       rect: [r.x, r.y, r.width, r.height].map(Math.round),
+      ...(turnTime?.startedAtMs ? { generation: { start: turnTime.startedAtMs, end: turnTime.completedAtMs || null } } : {}),
       items,
       global,
       busy: isBusy(),

@@ -3,11 +3,17 @@ const text = $('text');
 const drafts = new Map(), draftMentions = new Map();
 const pendingSends = new Map(), draftVersions = new Map();
 let inputRevision = 0;
+let draftEpoch = '';
 let activeDraft = '';
 function sendReceipt(value) {
   const requestId = [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
-  pendingSends.set(requestId, { draft: activeDraft, text: value, computer: currentComputer()?.id || '', mode, version: draftVersions.get(activeDraft) || 0, revision: inputRevision });
-  return { requestId, draft: activeDraft };
+  if (mode === 'chat') {
+    clearTimeout(draftPushTimer);
+    draftEpoch = requestId;
+  }
+  pendingSends.set(requestId, { draft: activeDraft, text: value, computer: currentComputer()?.id || '', mode, version: draftVersions.get(activeDraft) || 0, revision: inputRevision,
+    ...(mode === 'chat' ? { scope: messageScope(), thread: lastChat?.thread || '', before: new Set((lastChat?.items || []).filter(it => it.k === 'human').map(it => it.i)) } : {}) });
+  return { requestId, draft: activeDraft, draftEpoch };
 }
 function confirmSent(m) {
   const sent = pendingSends.get(m.requestId);
@@ -18,6 +24,10 @@ function confirmSent(m) {
   if (here && inputRevision === sent.revision && text.value === sent.text) {
     drafts.delete(activeDraft); draftMentions.delete(activeDraft);
     text.value = ''; MN.mentions = []; autosize(); mirroredDraft = '';
+  }
+  if (sent.mode === 'chat') {
+    submittedMessages.push({ ...sent, sentAt: m.sentAt || Date.now() });
+    if (here && lastChat) renderChat(lastChat, chatStale);
   }
 }
 function draftKey() { return [currentComputer()?.id || '', viewSel, mode].join('|'); }
@@ -30,7 +40,7 @@ text.addEventListener('input', () => {
   clearTimeout(draftPushTimer);
   draftPushTimer = setTimeout(() => {
     if (composing || mode !== 'chat' || currentApp === 'fusion' || MN.mentions.length) return;
-    send({ t: 'draft', text: text.value });
+    send({ t: 'draft', text: text.value, draftEpoch });
   }, 400);
 });
 // ---- "@" mentions (Devin): the relay drives Devin's own typeahead, so a mention ends up as a real chip ----

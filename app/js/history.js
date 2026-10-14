@@ -325,7 +325,9 @@ function showWorkdirs(m) {
   openSheet('workdir', `<h3>工作目录</h3><div class="pSec">运行位置</div><div class="pRow" style="display:flex;gap:6px;margin-bottom:8px">${envs}</div><div class="pSec">文件夹</div><button class="opt" data-act="projects">选择文件夹／新建项目</button>${rows || '<div class="hint">没有读到文件夹列表。</div>'}`);
   $('sheet')._wd = m.rows;
 }
-function renderChat(chat, stale) {
+function renderChat(chat, stale, loading = false) {
+  chat = withMessageTimes(chat);
+  updateGenerationTime(chat, stale);
   chatStale = !!stale;
   if (chat?.items?.some(it => it.k === 'human')) $('sessionNotice').hidden = true;
   const previous = lastChat;
@@ -343,6 +345,7 @@ function renderChat(chat, stale) {
   }
   if (chatScrolling && chat && previous?.thread === chat.thread) {
     lastChat = chat;
+    paintGenerationTime();
     deferredScrollRender = true;
     chatBusy = !!chat.busy;
     updateSendMode();
@@ -352,9 +355,12 @@ function renderChat(chat, stale) {
   const followBottom = !historyRequest && !historyRendering && nearBottom();
   const savedAnchor = followBottom ? null : captureChatAnchor();
   lastChat = chat; updateTitle();
+  paintGenerationTime();
   paintWorkdir(chat?.workdir);
   if (chat && 'context' in chat) renderContext(chat.context);
   $('empty').hidden = !!chat;
+  $('empty').firstChild.textContent = I18N.tr(loading ? '正在加载对话…' : '没找到聊天面板。');
+  $('emptyHint').hidden = loading;
   $('older').hidden = !chat || chat.earlier === false;
   $('pickMode').hidden = currentApp === 'devin' || !chat?.mode;
   $('pickModel').hidden = false;
@@ -527,6 +533,7 @@ function questionBusy() {
 }
 function sendQuestion(message) {
   if (qnPending) return;
+  if (!ws || ws.readyState !== 1 || !authed || !windowReady) { status('未连接', false); return; }
   const requestId = [...crypto.getRandomValues(new Uint32Array(4))].join('-');
   qnPending = { requestId, sel: viewSel, message };
   questionBusy();
@@ -559,7 +566,8 @@ function renderQuestions(qs) {
     const selection = focusKey ? [focused.selectionStart, focused.selectionEnd] : null;
     bar.innerHTML = qs.requests.map(r => `<div class="qnQ">${esc(r.text)}</div>`
       + r.fields.map((f, n) => `<label class="qnFree">${esc(f.label)}${f.options ? `<select data-request="${esc(r.id)}" data-field="${n}">${f.options.map(o => `<option value="${esc(o.value)}" ${o.value === f.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>` : `<input data-request="${esc(r.id)}" data-field="${n}" type="${f.type === 'password' ? 'password' : 'text'}" value="${esc(f.value)}">`}</label>`).join('')
-      + `<div class="qnAct">${r.buttons.map((b, n) => `<button data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div>`).join('');
+      + (r.id.startsWith('async:') ? `<div class="qnOpts">${r.buttons.slice(0, -2).map((b, n) => `<button class="qnOpt ${b.selected ? 'on' : ''}" data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div>` : '')
+      + `<div class="qnAct">${r.buttons.map((b, n) => r.id.startsWith('async:') && n < r.buttons.length - 2 ? '' : `<button data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div>`).join('');
     bar.classList.toggle('show', qs.requests.length > 0);
     bar.querySelectorAll('[data-field]').forEach(el => {
       const key = questionFieldKey(el);

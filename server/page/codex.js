@@ -215,12 +215,30 @@
     return false;
   };
   // Read pending native cards, keeping their real controls rather than reproducing approval semantics.
+  const codexAsyncRequestFiber = el => {
+    const key = Object.keys(el).find(k => k.startsWith('__reactFiber'));
+    const fiber = key ? el[key] : null;
+    let root = fiber;
+    while (root?.return) root = root.return;
+    const stack = root?.stateNode?.current ? [[root.stateNode.current, null]] : [];
+    // A reused child can retain an old return pointer. Follow the mounted tree's child links instead.
+    while (stack.length) {
+      const [node, parentRequest] = stack.pop();
+      const p = node.memoizedProps;
+      const request = Array.isArray(p?.questions) && typeof p.onDraftChange === 'function' && typeof p.onSubmit === 'function' ? node : parentRequest;
+      if (node.stateNode === el) return request;
+      if (node.sibling) stack.push([node.sibling, parentRequest]);
+      if (node.child) stack.push([node.child, request]);
+    }
+    return null;
+  };
   const codexRequests = () => {
     if (!codexThread()) return [];
     const rows = new Map();
     const query = selector => [...new Set([doc, document])].flatMap(d => [...d.querySelectorAll(selector)]);
     for (const skip of query('[data-request-input-dismiss]').filter(vis)) {
-      const props = codexFiberProps(skip, 48).find(p => Array.isArray(p.questions) && typeof p.onDraftChange === 'function' && typeof p.onSubmit === 'function');
+      const fiber = codexAsyncRequestFiber(skip);
+      const props = fiber?.memoizedProps;
       if (!props) continue;
       const index = props.questionIndex;
       const question = props.questions[index];
@@ -228,8 +246,8 @@
       const id = 'async:' + question.id;
       const buttons = question.options.map(option => ({ label: option, selected: question.draft === option, disabled: !!props.isSubmitting, action: () => props.onDraftChange(option) }));
       buttons.push({ el: skip, label: skip.innerText || 'Skip', disabled: !!props.isSubmitting });
-      buttons.push({ label: index < props.questions.length - 1 ? 'Next' : props.hasSubmitted ? 'Send update' : 'Send', disabled: !!props.isSubmitting || !question.draft.trim(), action: () => index < props.questions.length - 1 ? props.onQuestionChange(index + 1) : props.onSubmit() });
-      rows.set(id, { id, text: question.question, buttons, fields: [{ label: '回答', value: question.draft, type: 'text', onChange: props.onDraftChange }] });
+      buttons.push({ label: index < props.questions.length - 1 ? 'Next' : props.hasSubmitted ? 'Send update' : 'Send', disabled: !!props.isSubmitting || !question.draft.trim(), submit: index === props.questions.length - 1, action: () => index < props.questions.length - 1 ? props.onQuestionChange(index + 1) : props.onSubmit() });
+      rows.set(id, { id, submissionKey: fiber.key, text: question.question, buttons, fields: [{ label: '回答', value: question.draft, type: 'text', onChange: props.onDraftChange }] });
     }
     for (const el of query('button, input, textarea, select, [role=radio], [role=checkbox]')) {
       if (!vis(el) || el.closest('[contenteditable=true]')) continue;
@@ -283,9 +301,20 @@
         await new Promise(resolve => setTimeout(resolve, 16));
       }
     }
-    const button = codexRequests().find(r => r.id === id)?.buttons[n];
-    if (!button?.action || button.disabled) return false;
+    const before = codexRequests().find(r => r.id === id);
+    const button = before?.buttons[n];
+    if (id.startsWith('async:') && (!button || button.disabled)) throw new Error(before ? '问题控件尚未就绪，请等待电脑端更新' : '这条问题已不在电脑端的待回答列表中');
+    if (!button?.action) return false;
     await button.action();
+    if (button.submit) {
+      // Codex changes this key (lastSubmission), or removes the card, only after the reply is accepted.
+      for (let i = 0; i < 150; i++) {
+        const request = codexRequests().find(r => r.id === id);
+        if (!request || request.submissionKey !== before.submissionKey) return true;
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      throw new Error('电脑端尚未确认收到回答，请检查 Codex 中的请求状态');
+    }
     return true;
   };
   const codexRequestField = (id, n, value) => {
