@@ -13,6 +13,10 @@
   - 上传 TestFlight：`scripts/ios-testflight.sh`（不需要注册设备；`DESTINATION=export` 只导出 ipa）
 - `scripts/` — `check.mjs` 和 start-*.sh / service.sh
 
+## Git
+
+提交信息、tag、PR 里不得出现任何 AI 工具署名（不要 "Generated with ..."、不要 Co-Authored-By 机器人）。
+
 ## 截图 / 临时产物
 
 真机或模拟器测试的截图一律放 `_shots/`（已在 .gitignore），不要放进 `android/` 等会被提交的目录。
