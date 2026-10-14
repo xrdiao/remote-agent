@@ -5,7 +5,19 @@ const webPush = () => 'serviceWorker' in navigator && 'PushManager' in window &&
 let notifyOn = false;
 
 const swReady = () => Promise.race([navigator.serviceWorker.ready, sleep(5000).then(() => { throw new Error('通知组件没有加载，请刷新后再试'); })]);
-const pushSub = async () => webPush() ? (await swReady()).pushManager.getSubscription() : null;
+// A toggle needs the worker already controlling this page, not another wait for activation.
+const swRegistration = async () => {
+  if (!webPush()) return null;
+  try {
+    const current = await navigator.serviceWorker.getRegistration();
+    if (current?.active) return current;
+  } catch {}
+  return swReady();
+};
+const pushSub = async () => {
+  const reg = await swRegistration();
+  return reg ? reg.pushManager.getSubscription() : null;
+};
 const nativeConfig = () => JSON.stringify({ app: appAddress(), key: store.get('key') || '', token: store.get('token') || '' });
 
 // After every connect: refresh the menu state and re-register, since re-pairing gives the device a new id.
@@ -50,7 +62,7 @@ async function enableNotify() {
   const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
   if (permission !== 'granted') return status('没有通知权限，请在系统设置里允许本 App 发通知', false);
   try {
-    const [{ key }, reg] = await Promise.all([api('/api/push/key').then(r => r.json()), swReady()]);
+    const [{ key }, reg] = await Promise.all([api('/api/push/key').then(r => r.json()), swRegistration()]);
     const sub = await reg.pushManager.getSubscription() || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64u(key) });
     const r = await post('/api/push/subscribe', { sub: sub.toJSON() });
     if (!r.ok) throw new Error((await r.json()).error || '注册失败');
