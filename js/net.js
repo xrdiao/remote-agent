@@ -431,6 +431,7 @@ function autoRetry() {
 }
 
 async function connect() {
+  resetLatency();
   const computer = currentComputer();
   const expectedId = computer.id || await computerIdFromKey(computer.key);
   draftEpoch = '';
@@ -447,6 +448,7 @@ async function connect() {
   ws.onclose = async event => {
     clearTimeout(connectTimer);
     if (gen !== connGen) return;
+    resetLatency();
     setWindowReady(false);
     qnPending = null;
     qnSig = '';
@@ -505,10 +507,21 @@ async function connect() {
     }
     else if (m.t === 'sendFailed') pendingSends.delete(m.requestId);
     else if (m.t === 'questionDone') finishQuestion(m);
+    else if (m.t === 'latency') receiveLatency(m);
     else if (m.t === 'visual') renderVisualState(m);
     else if (m.t === 'visualWindows') receiveVisualWindows(m);
     else if (m.t === 'attachments') { if (m.sel === viewSel) renderAttachments(m.list); }
-    else if (m.t === 'chat') { if (!m.sel || !viewSel || m.sel === viewSel) { if (m.chat) cacheChat(m.sel || viewSel, m.chat); queueChatRender(m.chat, !!m.cached, m.sel); } }
+    else if (m.t === 'chat') {
+      if (!m.sel || !viewSel || m.sel === viewSel) {
+        const preview = chatBySel.get(chatCacheKey(m.sel || viewSel));
+        // Codex unmounts the transcript while its generated-image editor is open.
+        const obscured = currentApp === 'codex' && !!m.chat?.imagePreview;
+        const retain = obscured && m.chat.items.length === 0 && preview?.items.length > 0 && preview.thread === m.chat.thread;
+        const chat = retain ? { ...preview, ...m.chat, items: preview.items } : m.chat;
+        if (chat) cacheChat(m.sel || viewSel, chat);
+        queueChatRender(chat, !!m.cached || obscured, m.sel);
+      }
+    }
     else if (m.t === 'draft') { if ((m.draftEpoch || '') === draftEpoch && (!m.sel || m.sel === viewSel)) { if ((text.value === '' || text.value === mirroredDraft) && m.text !== text.value) { text.value = m.text; autosize(); } mirroredDraft = m.text; } }
     else if (m.t === 'draftAck') { if ((m.draftEpoch || '') === draftEpoch && m.ok && (!m.sel || m.sel === viewSel) && text.value === m.text) mirroredDraft = m.text; }
     else if (m.t === 'historyDone') finishHistory(m);
@@ -540,6 +553,7 @@ async function connect() {
       currentApp = m.app || null;
       setWindowReady(true);
       connHide();
+      measureLatency();
       $('dot').className = 'ok';
       status('已连接');
       $('titleText').textContent = m.app === 'fusion' ? 'Fusion' : m.app === 'devin' ? 'Devin agent' : m.app === 'codex' ? 'Codex' : winLabel(m.title).name;
