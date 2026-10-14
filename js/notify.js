@@ -251,6 +251,10 @@ $('sheet').addEventListener('click', async e => {
   if (b.dataset.params) { status('读取模型参数…'); return send({ t: 'params', model: b.dataset.params, label: b.dataset.plabel }); }
   if (b.dataset.section) { status('设置中…'); return send({ t: 'pickParam', model: b.dataset.model, label: b.dataset.plabel, section: b.dataset.section, value: b.dataset.value }); }
   const act = b.dataset.act;
+  if (b.dataset.listAction) return handleListAction(b.dataset.listAction);
+  if (b.dataset.groupMove != null) return moveSelectedComputers(b.dataset.groupMove);
+  if (b.dataset.groupRename != null) return editComputerGroup(b.dataset.groupRename);
+  if (b.dataset.groupDelete != null) return deleteComputerGroup(b.dataset.groupDelete);
   if (act === 'toggleChanges') { toggleChangeNotice(); return closeSheet(); }
   if (act === 'newTerm') { closeSheet(); status('正在新建终端…'); return send({ t: 'newTerminal' }); }
   else if (act === 'fusionHistory') { closeSheet(); return send({ t: 'fusionHistory' }); }
@@ -294,11 +298,7 @@ $('sheet').addEventListener('click', async e => {
   else if (act === 'computers') showComputers();
   else if (act === 'addComputer') addComputer();
   else if (act === 'devices') showDevices();
-  else if (b.dataset.remove) {
-    if (!await ask(`移除「${b.dataset.name}」？它会立即断开，要重新配对才能再用。`, '移除')) return showDevices();
-    await post('/api/devices/remove', { id: b.dataset.remove }).catch(() => {});
-    showDevices();
-  }
+  else if (b.dataset.remove) return removePairedDevices([b.dataset.remove]);
   else if (b.dataset.computerPub != null) return pairPublished(b.dataset.computerName);
   else if (b.dataset.computerI != null) { closeSheet(); return useComputer(b.dataset.computerI); }
   else if (b.dataset.computerDel != null) return removeComputer(b.dataset.computerDel);
@@ -312,17 +312,53 @@ $('sheet').addEventListener('click', async e => {
 });
 
 function showComputers(note = '') {
+  prepareListManagement('computers');
   const list = loadComputers();
   const cur = currentComputer();
-  const saved = list.map((c, i) => {
+  const row = (c, i) => {
     const pub = publishedComputers().find(p => p.id === c.id);
     const name = (pub?.name && (c.name === '电脑' || c.name === '这台电脑')) ? pub.name : (c.name || pub?.name || '电脑');
     const here = cur && c.key === cur.key;
-    return `<div class="optRow"><button class="opt ${here ? 'cur' : ''}" data-computer-i="${i}"><span class="lbl">${esc(name)}${here ? '<span class="sub">当前</span>' : ''}</span></button><button class="paramBtn" data-computer-del="${i}">删除</button></div>`;
+    const tag = listManagement.editing ? 'label' : 'button';
+    return `<div class="optRow"><${tag} class="opt ${listManagement.editing ? 'static' : ''} ${here ? 'cur' : ''}" ${listManagement.editing ? '' : `data-computer-i="${i}"`}>${listManagement.editing ? listCheckbox(c.key) : ''}<span class="lbl">${esc(name)}${here ? '<span class="sub">当前</span>' : ''}</span></${tag}>${listManagement.editing ? '' : `<button class="paramBtn" data-computer-del="${i}">删除</button>`}</div>`;
+  };
+  const groups = computerGroupNames();
+  const saved = ['', ...groups].map(group => {
+    const rows = list.map((c, i) => (c.group || '') === group ? row(c, i) : '').join('');
+    if (!group && !rows) return '';
+    const heading = groups.length ? `<div class="computerGroupHead"><strong>${group ? esc(group) : '未分组'}</strong>${group && listManagement.editing ? `<button data-group-rename="${esc(group)}">重命名</button><button data-group-delete="${esc(group)}">删除分组</button>` : ''}</div>` : '';
+    return heading + rows + (group && !rows ? '<div class="hint">暂无电脑</div>' : '');
   }).join('');
   const extra = unseenPublished().map(p => `<button class="opt" data-computer-pub="${esc(p.id)}" data-computer-name="${esc(p.name || '电脑')}"><span class="lbl">${esc(p.name || '电脑')}<span class="sub">未配对</span></span></button>`).join('');
   const hint = note ? `<div class="hint">${esc(note).replace(/\n/g, '<br>')}</div>` : '';
-  openSheet('computers', `<h3>电脑</h3>${hint}${saved}${extra || (saved ? '' : '<div class="hint">还没有配对的电脑。</div>')}<button class="opt" data-act="addComputer"><span class="lbl">＋ 配对另一台电脑</span></button><div class="hint">在那台电脑上运行 npm run pair，把链接粘贴过来。已配对的电脑会保留。</div>`);
+  openSheet('computers', `<h3>电脑</h3><div class="listTools">${listTools()}</div>${hint}${saved}${extra || (saved ? '' : '<div class="hint">还没有配对的电脑。</div>')}<button class="opt" data-act="addComputer"><span class="lbl">＋ 配对另一台电脑</span></button><div class="hint">在那台电脑上运行 npm run pair，把链接粘贴过来。已配对的电脑会保留。</div>`);
+}
+function computerGroupNames() {
+  return [...new Set([...JSON.parse(store.get('computerGroups') || '[]'), ...loadComputers().map(c => c.group).filter(Boolean)])];
+}
+function showComputerGroupPicker() {
+  openSheet('computer-group-picker', '<h3>移至分组</h3><button class="opt" data-group-move="">未分组</button>' + computerGroupNames().map(name => `<button class="opt" data-group-move="${esc(name)}">${esc(name)}</button>`).join('') + '<button class="opt" data-list-action="new-group">＋ 新建分组</button><button class="opt" data-act="computers">返回</button>');
+}
+function moveSelectedComputers(group) {
+  saveComputers(loadComputers().map(c => listManagement.selected.has(c.key) ? { ...c, group } : c), currentComputer()?.key || '');
+  listManagement.selected.clear();
+  showComputers();
+}
+function editComputerGroup(previous = null) {
+  const moving = sheetKind === 'computer-group-picker';
+  const name = window.prompt(I18N.tr(previous == null ? '新分组名称' : '重命名分组'), previous || '')?.trim();
+  if (!name || name === previous) return;
+  const names = computerGroupNames();
+  if (names.includes(name) || name === I18N.tr('未分组') || name === '未分组') return status('分组名称已存在', false);
+  store.set('computerGroups', JSON.stringify(previous == null ? [...names, name] : names.map(n => n === previous ? name : n)));
+  if (previous != null) saveComputers(loadComputers().map(c => c.group === previous ? { ...c, group: name } : c), currentComputer()?.key || '');
+  moving ? moveSelectedComputers(name) : showComputers();
+}
+async function deleteComputerGroup(name) {
+  if (!await ask(`删除分组「${name}」？电脑会移到未分组，不会删除配对。`, '删除')) return showComputers();
+  store.set('computerGroups', JSON.stringify(computerGroupNames().filter(n => n !== name)));
+  saveComputers(loadComputers().map(c => c.group === name ? { ...c, group: '' } : c), currentComputer()?.key || '');
+  showComputers();
 }
 function pairPublished(name) {
   closeSheet();
@@ -369,13 +405,19 @@ async function removeComputer(i) {
   const list = loadComputers();
   const c = list[Number(i)];
   if (!c) return showComputers();
-  if (!await ask(`删除电脑「${c.name || '电脑'}」？\n这台手机不再连接它。`, '删除')) return showComputers();
+  return removeComputers([c.key]);
+}
+async function removeComputers(keys) {
+  const selected = loadComputers().filter(c => keys.includes(c.key));
+  if (!selected.length) return;
+  if (!await ask(`删除电脑「${selected.map(c => c.name || '电脑').join('、')}」？\n这台手机不再连接它们。`, '删除')) return showComputers();
   const cur = currentComputer();
-  const removingCurrent = cur && cur.key === c.key;
+  const removingCurrent = cur && keys.includes(cur.key);
   if (removingCurrent && authed) await post('/api/logout').catch(() => {});
-  const nextList = loadComputers().filter(x => x.key !== c.key);
+  const nextList = loadComputers().filter(x => !keys.includes(x.key));
   const next = nextList[0];
   saveComputers(nextList, removingCurrent ? '' : (cur?.key || ''));
+  listManagement.selected.clear();
   if (!next) {
     connGen++;
     authed = false;
