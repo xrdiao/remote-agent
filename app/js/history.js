@@ -380,9 +380,10 @@ function renderChat(chat, stale, loading = false) {
   paintGenerationTime();
   paintWorkdir(chat?.workdir);
   if (chat && 'context' in chat) renderContext(chat.context);
-  $('empty').hidden = !!chat;
-  $('empty').firstChild.textContent = I18N.tr(loading ? '正在加载对话…' : '没找到聊天面板。');
-  $('emptyHint').hidden = loading;
+  const imageOnly = chat?.imagePreview && !chat.items.length;
+  $('empty').hidden = !!chat && !imageOnly;
+  $('empty').firstChild.textContent = I18N.tr(imageOnly ? '电脑端正在查看图片，暂无已同步的对话。关闭图片预览后会自动恢复。' : loading ? '正在加载对话…' : '没找到聊天面板。');
+  $('emptyHint').hidden = loading || imageOnly;
   $('older').hidden = !chat || chat.earlier === false;
   $('pickMode').hidden = currentApp === 'devin' || !chat?.mode;
   $('pickModel').hidden = false;

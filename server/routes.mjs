@@ -4,6 +4,7 @@ import { listWindows, phoneWindows, codexWindows } from './windows.mjs';
 import { CODEX_CDP_URL } from './config.mjs';
 import { helpersCall } from './page/build.mjs';
 import { appPlans } from './agent/context.mjs';
+import { probeLatency } from './latency.mjs';
 
 // One entry per message type the phone can send (auth/ack are handled inside ws.mjs itself).
 //   pre      — runs in handle() before the read-only/focus split, without a cdp
@@ -80,6 +81,7 @@ const questionDone = (s, m) => s.emit({ t: 'questionDone', requestId: m.requestI
 const questionFailed = (s, m) => s.emit({ t: 'questionDone', requestId: m.requestId, sel: s.selectionKey(), ok: false });
 
 export const ROUTES = {
+  latency: { fast: true, fastRun: (s, m) => { probeLatency(s, m).catch(() => {}); } },
   saveFile: { pre: (s, m) => s.saveFile(String(m.path ?? ''), String(m.text ?? ''), m.host == null ? undefined : String(m.host)) },
   connAgents: {
     pre: async s => {

@@ -49,6 +49,7 @@
     return null;
   };
   const codexViewState = () => ({ thread: codexThread(), turns: [...doc.querySelectorAll('[data-turn-key]')].filter(vis).length });
+  const codexImagePreview = () => [...doc.querySelectorAll('img[class*="ZoomableImage"]')].some(vis);
   const codexFiberProps = (el, depth = 16) => {
     while (el && !Object.keys(el).some(k => k.startsWith('__reactFiber'))) el = el.parentElement;
     const key = el && Object.keys(el).find(k => k.startsWith('__reactFiber'));
