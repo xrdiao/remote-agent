@@ -7,7 +7,11 @@ function renderVisualState(m) {
   $('visualEmpty').hidden = m.state === 'live';
   $('visualEmpty').textContent = m.message || I18N.tr('请选择绘图或仿真窗口');
   stage.hidden = m.state !== 'live';
-  $('visualChoose').textContent = m.title || I18N.tr('选择窗口');
+  $('visualTitle').textContent = m.title || I18N.tr('尚未选择窗口');
+  $('visualComputer').textContent = currentComputer()?.name || '';
+  $('visualStatus').textContent = I18N.tr(({live: '实时', permission: '等待授权', starting: '连接中…', error: '已中断', idle: '未共享'})[m.state] || '未共享');
+  $('visualStatus').dataset.state = m.state;
+  $('visualChoose').textContent = I18N.tr(m.title ? '切换窗口' : '选择窗口');
 }
 function receiveVisualWindows(m) {
   visualWindows = m.windows;
@@ -22,6 +26,7 @@ function showVisualWindows() {
 }
 $('visualChoose').onclick = () => { showVisualWindows(); send({t: 'visualList'}); };
 $('visualShare').onclick = () => send({t: 'visualSelect', id: 'select'});
+$('visualBack').onclick = () => setMode('chat');
 $('sheet').addEventListener('click', e => {
   const b = e.target.closest('button');
   if (!b) return;
@@ -52,7 +57,7 @@ function layoutStage() {
   if (mode !== 'screen' && mode !== 'terminal') return;
   if (mode === 'terminal' && !panel) return;
   const [rx, ry, rw, rh] = cropRect();
-  const stageW = view.clientWidth * zoom;
+  const stageW = (mode === 'screen' ? Math.min(view.clientWidth, view.clientHeight * rw / rh) : view.clientWidth) * zoom;
   const scale = stageW / rw;
   stage.style.width = stageW + 'px';
   stage.style.height = rh * scale + 'px';
@@ -93,7 +98,8 @@ function setZoom(next, clientX, clientY) {
   const k = zoom / prev;
   view.scrollLeft = zoom === 1 ? 0 : px * k - ax;
   view.scrollTop = zoom === 1 ? 0 : py * k - ay;
-  $('zoom').hidden = zoom <= 1.01;
+  $('zoom').hidden = mode !== 'screen' && zoom <= 1.01;
+  $('visualZoom').textContent = Math.round(zoom * 100) + '%';
   applyQuality();
 }
 
