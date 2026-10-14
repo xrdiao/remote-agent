@@ -303,9 +303,11 @@ async fusionOptions(part) {
 },
 
 async fusionPick(part, value) {
+  const previousFast = part === 'fast' ? await this.cdp.evaluate(helpersCall('fusionConfig()?.fast')) : null;
   const picked = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; if (!h.fusionConfig()) return false; const rows = h.devinVariants(${JSON.stringify(part)}); const row = rows.find(x => ${part === 'fast' ? '!x.checked' : `x.label === ${JSON.stringify(String(value))}`}); if (!row) return false; h.devinPickerProps().onModelSelect(row.config); return true; })()`);
   if (picked) {
     const role = part === 'lead' || part === 'sidekick';
+    if (part === 'fast' && !await this.waitFor(`fusionConfig()?.fast === ${!previousFast}`)) throw new Error('Fast 模式未同步到电脑，请重试');
     if (role) await this.waitFor(`fusionConfig()?.[${JSON.stringify(part)}] === ${JSON.stringify(String(value))}`);
     else await this.pollChat();
     await this.openMenu('model');
@@ -321,6 +323,7 @@ async fusionPick(part, value) {
   if (part === 'fast') {
     const ok = await this.cdp.evaluate(helpersCall('clickFusionFast()'));
     if (!ok) throw new Error('没有找到 Fast Mode');
+    if (!await this.waitFor(`fusionConfig()?.fast === ${!ready.fast}`)) throw new Error('Fast 模式未同步到电脑，请重试');
   } else {
     if (!['lead', 'effort', 'sidekick'].includes(part)) throw new Error('没有这个 Fusion 选项');
     const opened = await this.cdp.evaluate(helpersCall(`clickFusionCombo(${JSON.stringify(part)})`));

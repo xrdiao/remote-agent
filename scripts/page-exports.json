@@ -54,6 +54,8 @@
   "queueTarget",
   "stopTarget",
   "focusQueueEdit",
+  "historyRows",
+  "waitHistoryRows",
   "terminalList",
   "terminalTarget",
   "terminalCloseTarget",
