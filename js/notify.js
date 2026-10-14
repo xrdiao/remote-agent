@@ -14,12 +14,24 @@ async function syncNotify() {
     if (nativeNotify()) {
       notifyOn = window.AgentRemoteApp.notifyEnabled();
       if (notifyOn) window.AgentRemoteApp.setNotify(nativeConfig());
-      return;
+    } else {
+      const sub = await pushSub();
+      notifyOn = Boolean(sub);
+      if (sub) await post('/api/push/subscribe', { sub: sub.toJSON() });
     }
-    const sub = await pushSub();
-    notifyOn = Boolean(sub);
-    if (sub) await post('/api/push/subscribe', { sub: sub.toJSON() });
   } catch {}
+  paintNotifySwitch();
+}
+
+// Reflect notifyOn into an open main-menu sheet: flip the switch and show/hide the test row.
+function paintNotifySwitch() {
+  const row = $('notifySwitchRow');
+  if (!row) return;
+  row.setAttribute('aria-checked', String(notifyOn));
+  row.querySelector('.switch')?.classList.toggle('on', notifyOn);
+  const test = $('notifyTestRow');
+  if (notifyOn && !test) row.insertAdjacentHTML('afterend', '<button class="opt" id="notifyTestRow" data-act="notifyTest"><span class="lbl">发一条测试通知</span></button>');
+  else if (!notifyOn && test) test.remove();
 }
 
 async function enableNotify() {
@@ -232,6 +244,7 @@ $('sheet').addEventListener('click', async e => {
     if (b.dataset.kind === 'mode' && b.dataset.label === 'Bypass Permissions' && !b.classList.contains('cur')
       && !await ask('切到「Bypass Permissions」？\nAgent 之后的所有操作（运行命令、改文件、删文件）都会自动批准，不再询问你。', '切换')) return;
     closeSheet();
+    if (/^fusion-model-[ab]$/.test(b.dataset.kind)) fusionModelSide = b.dataset.kind.slice(-1);
     if (b.dataset.kind !== 'codex-run' && b.dataset.kind !== 'codex-chat' && !/^fusion-(model|effort)-/.test(String(b.dataset.kind || ''))) beginSwitch(b.dataset.kind);
     return send({ t: 'pickMenu', kind: b.dataset.kind, label: b.dataset.label });
   }
@@ -271,8 +284,17 @@ $('sheet').addEventListener('click', async e => {
   else if (act === 'settings') { status('正在读取设置…'); return send({ t: 'settings' }); }
   else if (act === 'screen') { closeSheet(); return setMode('screen'); }
   else if (act === 'changeUrl') window.AgentRemoteApp?.changeUrl();
-  else if (act === 'notifyOn') { closeSheet(); enableNotify(); }
-  else if (act === 'notifyOff') { closeSheet(); disableNotify(); }
+  else if (act === 'notifyToggle') {
+    const row = $('notifySwitchRow');
+    if (row?.getAttribute('aria-busy') === 'true') return;
+    const want = !notifyOn;
+    row?.setAttribute('aria-busy', 'true');
+    row?.setAttribute('aria-checked', String(want));
+    row?.querySelector('.switch')?.classList.toggle('on', want);
+    // Called synchronously in the tap: iOS needs Notification.requestPermission() before any await.
+    const done = want ? enableNotify() : disableNotify();
+    Promise.resolve(done).then(() => { row?.removeAttribute('aria-busy'); paintNotifySwitch(); });
+  }
   else if (act === 'notifyTest') {
     closeSheet();
     const r = await post('/api/push/test').catch(() => null);
