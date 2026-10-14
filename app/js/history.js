@@ -22,6 +22,28 @@ const scReq = (mode, fn) => scDb().then(db => new Promise((res, rej) => {
 })).catch(() => null);
 const idbGet = k => scReq('readonly', s => s.get(k));
 const idbPut = (k, v) => scReq('readwrite', s => s.put(v, k));
+const chatCacheKey = sel => `${currentComputer()?.id || ''}|${sel}`;
+const chatPreviewReady = idbGet('chat-previews').then(entries => {
+  for (const [key, chat] of entries || []) if (!chatBySel.has(key)) lruPut(chatBySel, key, chat, 12);
+});
+let chatPreviewTimer = 0;
+function cacheChat(sel, chat) {
+  lruPut(chatBySel, chatCacheKey(sel), chat, 12);
+  if (!chatPreviewTimer) chatPreviewTimer = setTimeout(() => {
+    chatPreviewTimer = 0;
+    idbPut('chat-previews', [...chatBySel].map(([key, value]) => [key, { ...value, items: value.items.slice(-400) }]));
+  }, 1000);
+}
+let chatFrame = 0, queuedChat = null;
+function queueChatRender(chat = queuedChat?.chat || lastChat, stale = queuedChat?.stale ?? chatStale, sel = queuedChat?.sel || viewSel) {
+  queuedChat = {chat, stale, sel};
+  if (!chatFrame) chatFrame = requestAnimationFrame(() => {
+    chatFrame = 0;
+    const next = queuedChat;
+    queuedChat = null;
+    if (windowReady && (!next.sel || !viewSel || next.sel === viewSel)) renderChat(next.chat, next.stale);
+  });
+}
 const idbDel = k => scReq('readwrite', s => s.delete(k));
 const idbKeys = () => scReq('readonly', s => s.getAllKeys());
 // The Android app keeps the sessions in its own SQLite database (not in WebView storage, which Android may
@@ -809,7 +831,7 @@ list.addEventListener('wheel', e => { restoringChatScroll = false; if (e.deltaY 
 list.addEventListener('pointerdown', () => { historyArmed = true; }, { passive: true });
 list.addEventListener('touchstart', e => { historyTouchY = e.touches[0].clientY; chatTouching = true; chatScrolling = true; clearTimeout(scrollIdle); }, { passive: true });
 list.addEventListener('touchmove', e => { restoringChatScroll = false; if (e.touches[0].clientY > historyTouchY) { historyArmed = true; pinnedBottom = false; } historyTouchY = e.touches[0].clientY; }, { passive: true });
-for (const event of ['touchend', 'touchcancel']) list.addEventListener(event, () => { chatTouching = false; settleChatScroll(); }, { passive: true });
+for (const event of ['touchend', 'touchcancel']) list.addEventListener(event, () => { chatTouching = false; restoringChatScroll = false; settleChatScroll(); }, { passive: true });
 $('toBottom').onclick = () => { list.scrollTop = list.scrollHeight; };
 $('older').onclick = () => loadOlderMessages();
 

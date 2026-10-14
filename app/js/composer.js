@@ -21,13 +21,16 @@ function confirmSent(m) {
   pendingSends.delete(m.requestId);
   if (drafts.get(sent.draft) === sent.text && (draftVersions.get(sent.draft) || 0) === sent.version) { drafts.delete(sent.draft); draftMentions.delete(sent.draft); }
   const here = (currentComputer()?.id || '') === sent.computer && mode === sent.mode && (draftKey() === sent.draft || m.sel === viewSel);
+  if (here && pendingStatus === '正在发送…' && ![...pendingSends.values()].some(p => p.draft === activeDraft)) {
+    status(m.queued ? 'Agent 正在运行，已加入排队，这一轮结束后自动发送' : '已发送');
+  }
   if (here && inputRevision === sent.revision && text.value === sent.text) {
     drafts.delete(activeDraft); draftMentions.delete(activeDraft);
     text.value = ''; MN.mentions = []; autosize(); mirroredDraft = '';
   }
   if (sent.mode === 'chat') {
     submittedMessages.push({ ...sent, sentAt: m.sentAt || Date.now() });
-    if (here && lastChat) renderChat(lastChat, chatStale);
+    if (here && lastChat) queueChatRender();
   }
 }
 function draftKey() { return [currentComputer()?.id || '', viewSel, mode].join('|'); }

@@ -272,7 +272,13 @@ function showAgents(list) {
     const open = opened ? opened.has(win) : items.some(a => a.current) || (!anyCurrent && index === 0);
     return foldSection(win, body, open, items.length);
   }).join('');
-  openSheet('agents', `<h3>项目与会话</h3><button class="opt" data-act="agentsRefresh">刷新项目与会话</button><button class="opt" data-act="projects"><span class="lbl">选择文件夹／新建项目</span></button><button class="opt" data-act="projectNewChat"><span class="lbl">在当前项目新建会话</span></button>${rows || `<div class="hint">${esc(appMessage('没有找到 {app} 的 Agent。请在电脑上打开对应的会话窗口。'))}</div>`}`);
+  const html = `<h3>项目与会话</h3><button class="opt" data-act="agentsRefresh">刷新项目与会话</button><button class="opt" data-act="projects"><span class="lbl">选择文件夹／新建项目</span></button><button class="opt" data-act="projectNewChat"><span class="lbl">在当前项目新建会话</span></button>${rows || `<div class="hint">${esc(appMessage('没有找到 {app} 的 Agent。请在电脑上打开对应的会话窗口。'))}</div>`}`;
+  if (keep) {
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    const old = [...$('sheet').children];
+    syncChildren($('sheet'), [...template.content.children].map(node => old.find(el => el.outerHTML === node.outerHTML) || node));
+  } else openSheet('agents', html);
   if (keep) requestAnimationFrame(() => { $('sheet').scrollTop = scroll; });
 }
 $('title').onclick = () => { send({ t: 'windows' }); showWindows(); };

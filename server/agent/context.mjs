@@ -182,6 +182,8 @@ export class AgentContext {
     this.cdp = null;
     this.editorCdp = null;
     this.lastChat = '';
+    this.lastExtractedChat = '';
+    this.pollAgain = null;
     this.resetCaches();
     this.curSession = undefined;
     this.app = null;
@@ -347,6 +349,8 @@ export class AgentContext {
   clearViewState() {
     this.sel = (this.sel || 0) + 1;
     this.lastChat = '';
+    this.lastExtractedChat = '';
+    this.pollAgain = null;
     this.lastAttachments = null;
     this.latestThink = null;
     this.thinkTries = new Map();
@@ -369,7 +373,8 @@ export class AgentContext {
     const cdp = this.cdp;
     const sel = this.sel;
     const sendGen = this.sendGen || 0;
-    if (!cdp || !this.visible || this.switchingThread || this.historyLoading || (this.fusionHold?.app === this.app && this.fusionHold?.windowId === this.windowId) || this.polling === sel || (!immediate && Date.now() - (this.lastChatAt || 0) < (this.lastBusy ? 650 : 1800))) return;
+    if (!cdp || !this.visible || this.switchingThread || this.historyLoading || (this.fusionHold?.app === this.app && this.fusionHold?.windowId === this.windowId) || (!immediate && Date.now() - (this.lastChatAt || 0) < (this.lastBusy ? 650 : 1800))) return;
+    if (this.polling === sel) { if (immediate) this.pollAgain = sel; return; }
     this.lastChatAt = Date.now();
     this.polling = sel;
     try {
@@ -385,9 +390,15 @@ export class AgentContext {
       }
       if (!this.liveRead(cdp, sel) || this.historyLoading) return;
       this.syncSession(chat);
-      if (chat && chat.thread === (this.threadId || '') && (this.app !== 'codex' || chat.thread) && !this.lastChat) {
+      const extracted = chat && JSON.stringify({ ...chat, draft: undefined });
+      if (chat && chat.thread === (this.threadId || '') && (this.app !== 'codex' || chat.thread) && (!this.lastChat || extracted !== this.lastExtractedChat)) {
+        this.lastExtractedChat = extracted;
         const initial = { ...chat, items: chat.items.map(it => ({ ...it })) };
         delete initial.draft;
+        if (this.app === 'codex') for (const it of initial.items.filter(it => it.images?.length)) {
+          const old = this.itemCache?.get(chat.thread)?.find(x => x.i === it.i);
+          it.images = it.images.map((src, n) => old?.imageSources?.[n] === src ? old.images[n] : src);
+        }
         if (this.app === 'codex') initial.context = codexContext(chat.thread);
         this.fillThinking(initial);
         this.retainThinking(initial);
@@ -523,7 +534,6 @@ export class AgentContext {
         if (this.fusion) chat.fusion = this.fusion;
         else this.queueFusionRead();
       } else this.fusion = null;
-      await this.syncAttachments();
       if (this.app === 'devin') this.devinGeneration(chat);
       const json = JSON.stringify(chat);
       if (!this.liveRead(cdp, sel) || this.historyLoading) return;
@@ -531,8 +541,15 @@ export class AgentContext {
         this.lastChat = json;
         this.emit({ t: 'chat', sel: this.selectionKey(), chat });
       }
+      this.syncAttachments().catch(() => {});
     } finally {
-      if (this.polling === sel) this.polling = null;
+      if (this.polling === sel) {
+        this.polling = null;
+        if (this.pollAgain === sel) {
+          this.pollAgain = null;
+          this.pollChat(true).catch(() => {});
+        }
+      }
     }
   }
 
@@ -1522,7 +1539,7 @@ export class AgentContext {
     if (submit && receipt) this.draftEpoch = receipt.draftEpoch || '';
     if (this.app === 'fusion') {
       const queued = await this.fusionUserSend(text);
-      if (receipt) this.emit({ t: 'sent', ...receipt, sentAt: Date.now(), sel: this.selectionKey() });
+      if (receipt) this.emit({ t: 'sent', ...receipt, queued, sentAt: Date.now(), sel: this.selectionKey() });
       return queued;
     }
     const files = [...uploads.values()].filter(f => f.pending && f.sel === this.selectionKey());
@@ -1533,13 +1550,16 @@ export class AgentContext {
     try {
       const found = await this.cdp.evaluate(FOCUS_COMPOSER);
       if (!found) throw new Error(this.appMessage('没找到 {app} 的聊天输入框：先在画面里打开 Agent 面板（或点「打开聊天」）'));
-      const draftCleared = await this.cdp.evaluate(helpersCall(`setComposerDraft('')`));
-      for (let i = 0; !draftCleared && i < 2 && await this.cdp.evaluate(helpersCall('composerFocused()')) && await this.cdp.evaluate(helpersCall('composerDraft()')); i++) {
-        await this.key(mod('A'));
-        await this.key('Backspace');
+      const sameDraft = !mentions?.length && await this.cdp.evaluate(helpersCall('composerDraft()')) === text;
+      if (!sameDraft) {
+        const draftCleared = await this.cdp.evaluate(helpersCall(`setComposerDraft('')`));
+        for (let i = 0; !draftCleared && i < 2 && await this.cdp.evaluate(helpersCall('composerFocused()')) && await this.cdp.evaluate(helpersCall('composerDraft()')); i++) {
+          await this.key(mod('A'));
+          await this.key('Backspace');
+        }
+        await this.adapter.typeDraft.call(this, text, mentions);
       }
       busy = submit && await this.cdp.evaluate(helpersCall('agentState()?.busy'));
-      await this.adapter.typeDraft.call(this, text, mentions);
       now = this.app === 'devin' && when === 'now' && !!busy;
       queued = Boolean(busy) && !now;
       if (submit) queued = await this.adapter.submitPrompt.call(this, now, busy, when, queued);
@@ -1551,12 +1571,12 @@ export class AgentContext {
       files.forEach(f => { f.pending = false; });
       this.lastDraft = text;
     }
-    if (submit && receipt) this.emit({ t: 'sent', ...receipt, sentAt: Date.now(), sel: this.selectionKey() });
+    if (submit && receipt) this.emit({ t: 'sent', ...receipt, queued, sentAt: Date.now(), sel: this.selectionKey() });
     if (this.mode === 'chat') {
       this.lastChatAt = 0;
       this.pollChat(true).catch(() => {});
     }
-    await this.syncAttachments();
+    this.syncAttachments().catch(() => {});
     if (now) this.emit({ t: 'status', ok: true, msg: '已打断当前任务并发送' });
     return queued;
   }
