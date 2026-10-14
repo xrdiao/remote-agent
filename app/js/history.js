@@ -34,14 +34,22 @@ function cacheChat(sel, chat) {
     idbPut('chat-previews', [...chatBySel].map(([key, value]) => [key, { ...value, items: value.items.slice(-400) }]));
   }, 1000);
 }
-let chatFrame = 0, queuedChat = null;
+let chatFrame = 0, queuedChat = null, chatLoadGeneration = 0;
 function queueChatRender(chat = queuedChat?.chat || lastChat, stale = queuedChat?.stale ?? chatStale, sel = queuedChat?.sel || viewSel) {
   queuedChat = {chat, stale, sel};
   if (!chatFrame) chatFrame = requestAnimationFrame(() => {
     chatFrame = 0;
     const next = queuedChat;
     queuedChat = null;
-    if (windowReady && (!next.sel || !viewSel || next.sel === viewSel)) renderChat(next.chat, next.stale);
+    if (windowReady && (!next.sel || !viewSel || next.sel === viewSel)) {
+      renderChat(next.chat, next.stale);
+      const generation = ++chatLoadGeneration;
+      if (next.chat && (!next.stale || next.chat.imagePreview) && !deferredScrollRender) {
+        Promise.all([...itemsEl.children].map(el => el.chatImagesReady)).then(() => {
+          if (generation === chatLoadGeneration && windowReady && (!next.sel || next.sel === viewSel)) connContentReady();
+        });
+      }
+    }
   });
 }
 const idbDel = k => scReq('readwrite', s => s.delete(k));
@@ -951,9 +959,26 @@ function blockText(pre) {
 function forTerminalPaste(text) {
   return text.replace(/\n/g, '\r\n');
 }
+const chatImageUrls = new Map();
+function loadChatImages(root) {
+  return Promise.all([...root.querySelectorAll('[data-chat-image]')].map(img => {
+    const id = img.dataset.chatImage;
+    const key = `${currentComputer()?.id}|${id}`;
+    if (!chatImageUrls.has(key)) chatImageUrls.set(key, api('/api/chat-image/' + id).then(async response => {
+      if (!response.ok) throw new Error('图片读取失败');
+      return URL.createObjectURL(await response.blob());
+    }));
+    return chatImageUrls.get(key).then(async url => {
+      img.src = url;
+      img.parentElement.href = url;
+      addImageCopyButtons(img.parentElement);
+      await img.decode();
+    }).catch(error => { img.alt = error.message; chatImageUrls.delete(key); });
+  }));
+}
 function addImageCopyButtons(root) {
   for (const img of root.querySelectorAll('img')) {
-    if (img.closest('.generatedImage') || !/^(https?:|data:image)/i.test(img.src)) continue;
+    if (img.closest('.generatedImage') || !/^(https?:|data:image|blob:)/i.test(img.src)) continue;
     const target = img.parentElement?.tagName === 'A' ? img.parentElement : img;
     const wrap = document.createElement('div');
     wrap.className = 'generatedImage';

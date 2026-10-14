@@ -106,6 +106,7 @@ export const ROUTES = {
     pre: (s, m) => {
       if (s.visible === Boolean(m.v)) return;
       s.visible = Boolean(m.v);
+      if (!s.visible) { s.chatUpdatesStop?.(); s.chatUpdatesStop = null; }
       if (!s.editorCdp && s.mode !== 'screen') return;
       if (!s.visible && s.mode === 'screen') return s.stopVisual();
       if (s.visible) return s.setMode(s.mode);

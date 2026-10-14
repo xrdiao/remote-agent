@@ -122,7 +122,7 @@ function connHide() {
 }
 function connShow(phase) {
   clearTimeout(conn.timer);
-  Object.assign(conn, { active: true, host: false, phase, agents: null, failure: null, conclusion: '', checks: [], diagRunning: false, readyRedirect: false, readyPending: false });
+  Object.assign(conn, { active: true, host: false, phase, agents: null, loaded: false, enterRequested: false, failure: null, conclusion: '', checks: [], diagRunning: false, readyRedirect: false, readyPending: false });
   conn.open.clear();
   $('conn').classList.add('open');
   connRender();
@@ -141,11 +141,20 @@ function connAgentResults(results) {
   conn.agents = CONN_AGENTS.map(a => ({ ...a, ...results.find(r => r.app === a.app) }));
   connRender();
   ensureReadyAgent();
-  clearTimeout(conn.timer);
+  connMaybeEnter();
+}
+function connContentReady() {
+  if (pendingStatus === '正在加载对话…') status('已连接');
+  if (!conn.active) return;
+  conn.loaded = true;
+  connRender();
+  connMaybeEnter();
+}
+function connMaybeEnter() {
+  if (!conn.active || !conn.loaded || !windowReady || !conn.agents) return;
   const ready = conn.agents.filter(a => a.windows);
   const signature = ready.map(a => a.app).join(',');
-  if (ready.length === CONN_AGENTS.length || (ready.length && store.get('conn-auto-partial') === signature))
-    conn.timer = setTimeout(connHide, 600);
+  if (ready.length === CONN_AGENTS.length || (ready.length && (conn.enterRequested || store.get('conn-auto-partial') === signature))) connHide();
 }
 
 function ensureReadyAgent() {
@@ -197,7 +206,7 @@ function connRender() {
   const names = agents.filter(a => a.windows).map(a => a.name).join(I18N.lang === 'en' ? ', ' : '、');
   const missing = agents.filter(a => !a.windows).map(a => a.name).join(I18N.lang === 'en' ? ', ' : '、');
   $('connTitle').textContent = !conn.host ? tr('正在连接电脑') : !settled ? agents.map(a => ct('{agent} 连接中', { agent: a.name })).join(' · ')
-    : ready === agents.length ? tr('全部已连接 · 正在进入…') : ready ? ct('{ready} 已可用，{missing} 可稍后重试', { ready: names, missing }) : tr('没有可用的 Agent');
+    : ready === agents.length ? tr(conn.loaded ? '全部已连接 · 正在进入…' : '正在加载当前会话…') : ready ? ct('{ready} 已可用，{missing} 可稍后重试', { ready: names, missing }) : tr('没有可用的 Agent');
   $('connLead').textContent = '';
   $('connHost').innerHTML = row(conn.host ? 'ok' : 'load', CONN_HOST_SVG, currentComputer()?.name || tr('电脑'), tr(conn.host ? '实时连接已建立' : conn.phase), conn.host ? '已连接' : '连接中…');
   $('connAgents').innerHTML = agents.map(a => {
@@ -222,7 +231,8 @@ $('connGo').onclick = () => {
   if (conn.host === 'err') return boot();
   if (!conn.agents?.some(a => a.windows)) return connRetryAgents();
   ensureReadyAgent();
-  connHide();
+  conn.enterRequested = true;
+  connMaybeEnter();
 };
 function connRetryAgents() {
   clearTimeout(conn.timer);
@@ -233,7 +243,8 @@ function connRetryAgents() {
 $('connAuto').onclick = () => {
   store.set('conn-auto-partial', conn.agents.filter(a => a.windows).map(a => a.app).join(','));
   ensureReadyAgent();
-  connHide();
+  conn.enterRequested = true;
+  connMaybeEnter();
 };
 $('connPick').onclick = () => showComputers();
 $('connRepair').onclick = () => repairPairing();

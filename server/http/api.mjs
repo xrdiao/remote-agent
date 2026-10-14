@@ -4,7 +4,8 @@ import path from 'node:path';
 import { DATA_DIR, findDevice, needsTotp, totpConfig, verifyTotp, pairingValid, consumePairing, addDevice, listDevices, removeDevice, updateDevice, computerId, computerName, urlKey } from '../../lib/auth.mjs';
 import { pushPublicKey, openEventStream, closeEventStreams, deliver } from '../../lib/notify.mjs';
 import { clientIp, lockedOut, recordFailure } from './ratelimit.mjs';
-import { json, readJson, originAllowed } from './static.mjs';
+import { json, readJson, originAllowed, corsHeaders, SECURITY_HEADERS } from './static.mjs';
+import { readChatImage } from '../chat-images.mjs';
 import { listWindows } from '../windows.mjs';
 import { Cdp } from '../cdp.mjs';
 import { helpersCall } from '../page/build.mjs';
@@ -97,6 +98,12 @@ export async function handleApi(req, res, route) {
     return json(req, res, 200, { ok: true });
   }
   if (needsTotp(device)) return json(req, res, 401, { needTotp: true, error: '需要二次验证' });
+  if (route.startsWith('/api/chat-image/') && req.method === 'GET') {
+    const image = readChatImage(route.slice('/api/chat-image/'.length));
+    if (!image) return json(req, res, 404, { error: '图片不存在' });
+    res.writeHead(200, { ...SECURITY_HEADERS, ...corsHeaders(req), 'content-type': image.type });
+    return fs.createReadStream(image.file).pipe(res);
+  }
 
   if (route === '/api/upload' && req.method === 'POST') {
     const query = new URL(req.url, 'http://localhost').searchParams;

@@ -8,6 +8,8 @@ import { fusionViewers, fusionHistory, fusionWorkers, newFusionRun } from './fus
 import { FUSION_OWNER } from './fusion/owner.mjs';
 import { FusionRunner } from './fusion/runner.mjs';
 import { ROUTES, SKIP, flag } from './routes.mjs';
+import { chatForWire } from './chat-images.mjs';
+import { watchChat } from './agent/updates.mjs';
 import './apps/index.mjs';
 import {visualCapture, visualWindows, wayland} from './visual/capture.mjs';
 
@@ -30,6 +32,9 @@ export class Session extends AgentContext {
   }
 
   async setMode(mode) {
+    const watchGeneration = this.chatWatchGeneration = (this.chatWatchGeneration || 0) + 1;
+    this.chatUpdatesStop?.();
+    this.chatUpdatesStop = null;
     if (this.mode === 'screen' && mode !== 'screen') this.stopVisual();
     this.mode = mode === 'screen' || mode === 'terminal' ? mode : 'chat';
     this.lastChatAt = this.lastTermAt = 0;
@@ -45,6 +50,12 @@ export class Session extends AgentContext {
     if (!this.editorCdp) return;
     if (this.mode === 'chat') {
       await this.editorCdp.send('Page.stopScreencast').catch(() => {});
+      const cdp = this.cdp;
+      const stop = await watchChat(cdp, () => {
+        if (this.visible && this.mode === 'chat' && this.cdp === cdp) this.pollChat(true).catch(() => {});
+      });
+      if (this.chatWatchGeneration !== watchGeneration || this.cdp !== cdp || this.mode !== 'chat') { stop(); return; }
+      this.chatUpdatesStop = stop;
       this.lastChat = '';
       this.chatTimer = setInterval(() => this.pollChat().catch(() => {}), 700);
       await this.pollChat();
@@ -77,6 +88,7 @@ export class Session extends AgentContext {
       (this.chatBySel ||= new Map()).delete(obj.sel);
       this.chatBySel.set(obj.sel, obj.chat);
       if (this.chatBySel.size > 12) this.chatBySel.delete(this.chatBySel.keys().next().value);
+      obj = { ...obj, chat: chatForWire(obj.chat) };
     }
     if (this.client.readyState === 1) this.client.send(JSON.stringify(obj), obj?.t === 'frame' ? { compress: false } : undefined);
   }
@@ -212,10 +224,9 @@ export class Session extends AgentContext {
       appName: this.appMessage('{app}'), project: this.app === 'codex' ? codexFolder(this.winTitle) : '', windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(), plans: appPlans, initial: selection.initial === true,
     });
     if (staleSelect) this.emit({ t: 'status', ok: false, msg: '没有找到上次的会话，已留在当前会话' });
-    const cachedChat = this.chatBySel?.get(this.selectionKey());
-    if (cachedChat) this.emit({ t: 'chat', sel: this.selectionKey(), chat: cachedChat, cached: true });
-    this.setMode(this.mode).catch(e => this.emit({ t: 'status', ok: false, msg: e.message }));
-    setTimeout(() => this.prefetchMenus().catch(() => {}), 0);
+    this.setMode(this.mode).then(() => {
+      if (this.cdp === cdp) this.prefetchMenus().catch(() => {});
+    }).catch(e => this.emit({ t: 'status', ok: false, msg: e.message }));
   }
 
   // Warms the phone's sheet caches with whatever can be read without opening visible UI.
@@ -239,6 +250,9 @@ export class Session extends AgentContext {
   // actions that type/tap, and is switched off again shortly after they finish.
 
   detach() {
+    this.chatWatchGeneration = (this.chatWatchGeneration || 0) + 1;
+    this.chatUpdatesStop?.();
+    this.chatUpdatesStop = null;
     this.stopVisual();
     clearTimeout(this.focusTimer);
     this.focusTimer = null;
