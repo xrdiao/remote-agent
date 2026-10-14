@@ -60,7 +60,7 @@
       <button id="cachedMore" hidden></button>
       <button id="taskChip" hidden></button>
       <div id="sessionNotice" hidden role="status"></div>
-      <div id="fusionWelcome" hidden><div class="fusionIllustration" aria-hidden="true"><span>A</span><i>+</i><span>B</span></div><h2>让两个 AI 一起完成任务</h2><p>A 负责方案与检查，B 负责执行</p><p>协同思考、编写代码、完成复杂任务</p></div>
+      <div id="fusionWelcome" hidden><h2>让两个 AI 一起完成任务</h2><p>A 负责方案与检查，B 负责执行</p><div id="fusionSetup"></div><p id="fusionSetupReady" hidden>配置已就绪，在下方输入任务即可开始。各模块仍可单独调整。</p></div>
       <div id="items"></div>
       <div id="empty" hidden>没找到聊天面板。<br><span id="emptyHint"></span></div>
     </div>
@@ -171,7 +171,9 @@
 
 <div id="gate">
   <div id="gateLang" aria-label="语言 / Language"><button data-lang="zh">中</button><span>|</span><button data-lang="en">EN</button></div>
-  <div class="pairHero"><img src="icon-512.png" alt="" class="pairLogo"><h2>Remote Agent</h2><p id="pairIntro">在电脑端运行 npm run pair，<br>然后扫描二维码或输入配对码进行连接。</p></div>
+  <div class="pairHero"><img src="icon-512.png" alt="" class="pairLogo"><h2>Remote Agent</h2></div>
+  <div class="pairControls">
+  <p id="pairIntro">在电脑端运行 npm run pair，<br>然后扫描二维码或输入配对码进行连接。</p>
   <div id="gateMsg"></div>
   <div id="gateEntry"><div class="pairInput"><input id="gateInput" autocapitalize="off" autocorrect="off" spellcheck="false"><button id="gatePaste" aria-label="粘贴" title="粘贴"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="16" rx="2"/><rect x="9" y="3" width="6" height="4" rx="1"/></svg></button></div><button id="gateBtn" class="primary"></button></div>
   <div id="pairOr" hidden><span></span><span>或</span><span></span></div>
@@ -184,6 +186,7 @@
   </div>
   <button id="gateHelp" hidden>配对遇到问题？ <span aria-hidden="true">›</span></button>
   <div id="gateInfo"></div>
+  </div>
 </div>
 
 <div id="conn" role="dialog" aria-labelledby="connTitle">
