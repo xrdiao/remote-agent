@@ -235,7 +235,8 @@
   #queueBar.show { display: flex; }
   .changesNotice { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
   #queueBar .changesNotice [data-changes] { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
-  #qnBar { flex: none; display: none; flex-direction: column; gap: 8px; padding: 10px 12px; background: var(--warnbg); border-top: 2px solid var(--warn); max-height: 48vh; overflow-y: auto; }
+  #qnBar { flex: 0 1 auto; min-height: 0; display: none; flex-direction: column; gap: 8px; padding: 10px 12px; background: var(--warnbg); border-top: 2px solid var(--warn); max-height: 48vh; overflow-y: auto; }
+  #qnBar > * { flex: none; }
   #qnBar.show { display: flex; }
   #qnBar .qnHead { font-size: 12.5px; color: var(--warn); font-weight: 600; }
   #qnBar .qnQ { font-size: 14.5px; color: var(--hi); white-space: pre-wrap; }
@@ -255,6 +256,7 @@
   #qnBar .qnAct button { padding: 7px 16px; }
   #qnBar.codex .qnQ { max-height: 28vh; overflow-y: auto; flex: none; }
   #qnBar.codex .qnAct { flex-wrap: wrap; flex: none; }
+  #qnBar.codex .qnOpt { width: 100%; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
   #qnBar .qnAct .primary { background: var(--accent); border-color: var(--accent-b); color: #fff; font-weight: 600; }
   #qnBar .qnAct .primary:disabled { opacity: .45; }
   #queueBar .run { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--blue); flex-wrap: nowrap; }
