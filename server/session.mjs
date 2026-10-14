@@ -8,6 +8,7 @@ import { fusionViewers, fusionHistory, fusionWorkers, newFusionRun } from './fus
 import { FUSION_OWNER } from './fusion/owner.mjs';
 import { FusionRunner } from './fusion/runner.mjs';
 import { ROUTES, SKIP, flag } from './routes.mjs';
+import { closeLatency } from './latency.mjs';
 import './apps/index.mjs';
 import {visualCapture, visualWindows, wayland} from './visual/capture.mjs';
 
@@ -357,6 +358,7 @@ export class Session extends AgentContext {
   }
 
   dispose() {
+    closeLatency(this);
     fusionViewers.delete(this);
     clearInterval(this.idleTimer);
     clearTimeout(this.ackTimer);

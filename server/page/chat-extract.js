@@ -411,6 +411,7 @@
   };
 
   const extract = () => {
+    const imagePreview = codexImagePreview();
     const log = devinLog();
     const panel = log || (devinSurface() ? null : findPanel());
     // A brand-new Devin session has a composer and model chip, but no message list yet.
@@ -420,6 +421,7 @@
       return {
         rect: [0, 0, 0, 0],
         items: [],
+        ...(imagePreview ? { imagePreview: true } : {}),
         ...(devinSurface() ? { empty: true } : {}),
         global: [],
         busy: isBusy(),
@@ -480,6 +482,7 @@
     if (!generation && bubbleTimes?.generation) generation = bubbleTimes.generation;
     return {
       rect: [r.x, r.y, r.width, r.height].map(Math.round),
+      ...(imagePreview ? { imagePreview: true } : {}),
       ...(generation ? { generation } : {}),
       items,
       global,
