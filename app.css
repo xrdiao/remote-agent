@@ -347,6 +347,13 @@
   .optRow .opt { margin-bottom: 0; flex: 1; min-width: 0; }
   .optRow .archBtn { flex: none; width: 52px; padding: 0 6px; }
   .paramBtn { flex: none; padding: 0 12px; font-size: 13px; }
+  .listTools { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .listTools .hint { margin: 0; }
+  #sheet label.opt { background: var(--ctrl); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
+  #sheet [data-list-select] { width: 18px; height: 18px; flex: none; accent-color: var(--accent); }
+  .computerGroupHead { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 14px 0 6px; }
+  .computerGroupHead strong { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 13px; color: var(--muted); }
+  .computerGroupHead button { font-size: 12px; padding: 3px 8px; }
   .switch { flex: none; width: 36px; height: 20px; border-radius: 10px; background: var(--line2); position: relative; transition: background .15s; }
   .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--hi); transition: left .15s; }
   .switch.on { background: var(--accent); }
