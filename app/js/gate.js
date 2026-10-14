@@ -131,7 +131,6 @@ function connHostOk() {
   if (!conn.active) return;
   conn.host = true;
   connRender();
-  send({ t: 'connAgents' });
 }
 function connWindows(list) {
   if (!conn.active || conn.host !== true) return;
