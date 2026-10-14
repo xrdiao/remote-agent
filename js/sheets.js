@@ -312,27 +312,6 @@ function requestMenu(kind, loadingMsg) {
   else status(loadingMsg);
   send({ t: 'openMenu', kind });
 }
-// Fast already changed on the desktop. Flip the open switch and keep the cached menu; don't rebuild it from a new desktop read.
-function patchFastMenu(fast, fusion) {
-  if (!(sheetKind === 'menu' && menuSheetKind)) return;
-  const cached = menuCache.get(menuCacheKey(menuSheetKind));
-  if (cached) lruPut(menuCache, menuCacheKey(menuSheetKind), {
-    ...cached,
-    ...(fast ? { fast } : {}),
-    ...(fusion ? { fusion: { ...cached.fusion, ...fusion } } : {}),
-  }, 24);
-  if (fast) {
-    const row = document.querySelector('#sheet [data-fast]');
-    if (row) {
-      row.dataset.fast = fast.on ? 'off' : 'on';
-      row.querySelector('.switch')?.classList.toggle('on', !!fast.on);
-      const sub = row.querySelector('.sub');
-      if (sub && fast.description) sub.textContent = fast.description;
-    }
-  }
-  if (fusion && 'fast' in fusion) document.querySelector('#sheet [data-fusion="fast"] .switch')?.classList.toggle('on', !!fusion.fast);
-  finishPending(['设置中…', '正在修改…']);
-}
 function showMenu(kind, items, max, fusion, fast, model, refreshing) {
   finishPending(['读取思考强度…', '读取权限…', '读取模式列表…', '读取模型列表…', '读取历史对话…', '设置中…']);
   menuSheetKind = kind;
