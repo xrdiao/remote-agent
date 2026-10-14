@@ -13,14 +13,17 @@ function rememberAgentOpen(m) {
   }
 }
 function openSheet(kind, html) {
+  const wasWindows = sheetKind === 'windows';
   sheetKind = kind;
   $('sheet').dataset.kind = kind;
   $('sheet').innerHTML = html;
   $('shade').classList.add('open');
   $('sheet').classList.add('open');
   if (kind === 'agents') $('sheet').scrollTop = 0;
+  if (wasWindows && kind !== 'windows') measureLatency();
 }
 function closeSheet() {
+  const wasWindows = sheetKind === 'windows';
   if (sheetKind === 'devices') deviceRemoval = [];
   fusionModelSide = null;
   menuRequest++;
@@ -28,6 +31,7 @@ function closeSheet() {
   sheetKind = null; menuSheetKind = '';
   $('shade').classList.remove('open');
   $('sheet').classList.remove('open');
+  if (wasWindows) measureLatency();
 }
 $('shade').onclick = () => { closeSheet(); askDone?.(false); };
 
@@ -66,9 +70,10 @@ function showWindows() {
   const rows = windows.map(w => {
     const software = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion' }[w.app] || w.app;
     const plan = appPlans[w.app] ? `<span class="winPlan">${esc(appPlans[w.app])}</span>` : '';
-    return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">${esc(software)}${plan}</span></button>`;
+    return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">${esc(software)}${plan}</span><span data-latency="${esc(w.id)}">${latencyMarkup(w.id)}</span></button>`;
   }).join('');
   openSheet('windows', `<h3>切换窗口</h3>${rows || '<div class="hint">没有找到窗口</div>'}`);
+  measureLatency();
 }
 
 const FUSION_PHASE = { idle: '待开始', planning: '正在生成方案', plan: '方案待确认', execute: '正在执行方案', review: '正在检查结果', fix: '正在小修', disagree: '方案待确认', check: '请选择下一步', stopped: '未完成，已停止', done: '完成' };
