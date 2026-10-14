@@ -1281,10 +1281,10 @@ export class AgentContext {
     if (!p) throw new Error('不是文件路径');
     const roots = await this.currentRoots();
     const ws = roots[0] || null;
-    // Devin has no quick-open; resolve purely on disk (absolute, root-relative, basename search).
-    if (this.app === 'devin') {
+    // Image references can be bare filenames; reuse the workspace lookup before editor search.
+    if (this.app === 'devin' || /\.(?:png|jpe?g|gif|webp|svg|bmp)$/i.test(p)) {
       for (const root of roots.length ? roots : [null]) {
-        try { return await resolveLocal(root, text); } catch (e) { if (root === roots.at(-1) || !root) throw e; }
+        try { return await resolveLocal(root, text); } catch (e) { if (this.app === 'devin' && (root === roots.at(-1) || !root)) throw e; }
       }
     }
     const isAbs = /^(\/|~\/|[a-zA-Z]:[\\/])/.test(p);
