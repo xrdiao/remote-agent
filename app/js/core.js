@@ -20,6 +20,21 @@ let windows = [], currentWindow = null, appPlans = {};
 let currentApp = null;
 let editorBrowsing = false, editorDirectory = null, returnToEditor = null;
 const agentLists = new Map();
+try {
+  for (const [k, v] of Object.entries(JSON.parse(store.get('agentLists') || '{}') || {})) if (Array.isArray(v)) agentLists.set(k, v);
+} catch {}
+let agentListsTimer = 0;
+const saveAgentLists = () => {
+  clearTimeout(agentListsTimer);
+  agentListsTimer = setTimeout(() => {
+    try {
+      const obj = {};
+      for (const k of [...agentLists.keys()].slice(-12)) obj[k] = (agentLists.get(k) || []).slice(0, 300);
+      store.set('agentLists', JSON.stringify(obj));
+    } catch {}
+  }, 500);
+};
+const setAgentList = (key, list) => { agentLists.delete(key); agentLists.set(key, list); saveAgentLists(); };
 const agentListKey = () => (currentComputer()?.key || '') + ':' + currentApp + (currentApp === 'cursor' ? ':' + (currentComputer()?.windowId || currentWindow || '') : '');
 function receiveAgents(m) {
   if (m.app && m.app !== currentApp) return;
@@ -32,7 +47,7 @@ function receiveAgents(m) {
     list = [...list, ...remaining.filter(a => !list.some(b => b.title === a.title))];
   }
   const changed = JSON.stringify(agentLists.get(key)) !== JSON.stringify(list);
-  agentLists.set(key, list);
+  setAgentList(key, list);
   if (!m.silent || (sheetKind === 'agents' && changed)) {
     finishPending(['正在读取 Agent 列表…', '正在归档…']);
     showAgents(list);

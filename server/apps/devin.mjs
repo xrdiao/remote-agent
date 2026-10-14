@@ -6,6 +6,9 @@ import { listWindows } from '../windows.mjs';
 import { helpersCall } from '../page/build.mjs';
 import { FOCUS_COMPOSER } from '../agent/context.mjs';
 
+// Shared across phone sessions: thread|start → end ms (null while the turn is still running).
+const devinTurnEnds = new Map();
+
 export const adapter = {
   async newChat() {
     return this.devinNewChat();
@@ -749,6 +752,27 @@ async insertMention(m) {
   });
 },
 
+
+// Devin's transcript carries no end-of-turn timestamp, so the relay stamps it: the page reports
+// devinTurnStart (the last user message's time); while busy the turn is open-ended, and the first
+// idle poll after a busy one records the end. A turn that finished before the relay ever saw it
+// busy (e.g. across a relay restart) gets no generation — the phone would otherwise tick forever.
+devinGeneration(chat) {
+  const start = chat.devinTurnStart;
+  delete chat.devinTurnStart;
+  if (!Number.isFinite(start)) return;
+  const key = `${chat.thread}|${start}`;
+  if (!devinTurnEnds.has(key) && devinTurnEnds.size >= 200) devinTurnEnds.delete(devinTurnEnds.keys().next().value);
+  if (chat.busy) {
+    if (!devinTurnEnds.has(key)) devinTurnEnds.set(key, null);
+    chat.generation = { start, end: null };
+    return;
+  }
+  const seen = devinTurnEnds.get(key);
+  if (seen === undefined) return;
+  if (seen === null) devinTurnEnds.set(key, Date.now());
+  chat.generation = { start, end: devinTurnEnds.get(key) };
+},
 
 // Text with @tokens: type the text, and at every token let Devin's typeahead insert the real chip.
 async typeWithMentions(text, mentions) {
