@@ -306,14 +306,73 @@ function showParams(m) {
     + '</div>').join('') + `<div class="hint">${esc(appMessage('改动会直接应用到电脑上 {app} 的这个模型。'))}</div>`);
 }
 
+const listManagement = { kind: '', owner: '', editing: false, selected: new Set() };
+let pairedDevices = [];
+function prepareListManagement(kind) {
+  const owner = kind === 'devices' ? currentComputer()?.key || '' : '';
+  if (listManagement.kind !== kind || listManagement.owner !== owner) {
+    Object.assign(listManagement, { kind, owner, editing: false, selected: new Set() });
+  }
+}
+function listTools() {
+  const m = listManagement;
+  if (!m.editing) return `<button data-list-action="manage">管理</button>${m.kind === 'computers' ? '<button data-list-action="new-group">新建分组</button>' : ''}`;
+  return `<button data-list-action="all">全选</button><button data-list-action="clear">取消选择</button><button data-list-action="done">完成</button><span class="hint">${I18N.tr('已选择 {n} 项').replace('{n}', m.selected.size)}</span>`
+    + (m.kind === 'computers' ? `<button data-list-action="group" ${m.selected.size ? '' : 'disabled'}>移至分组</button><button data-list-action="new-group">新建分组</button>` : '')
+    + `<button class="danger" data-list-action="delete" ${m.selected.size ? '' : 'disabled'}>${m.kind === 'devices' ? '批量移除' : '批量删除'}</button>`;
+}
+function listCheckbox(id) {
+  return `<input type="checkbox" data-list-select="${esc(id)}" aria-label="${I18N.tr('选择')}" ${listManagement.selected.has(id) ? 'checked' : ''}>`;
+}
+function renderManagedList() {
+  listManagement.kind === 'computers' ? showComputers() : renderDevices();
+}
+$('sheet').addEventListener('change', e => {
+  const input = e.target.closest('[data-list-select]');
+  if (!input) return;
+  input.checked ? listManagement.selected.add(input.dataset.listSelect) : listManagement.selected.delete(input.dataset.listSelect);
+  $('sheet').querySelector('.listTools').innerHTML = listTools();
+});
+function handleListAction(action) {
+  const m = listManagement;
+  if (action === 'manage') m.editing = true;
+  else if (action === 'done') { m.editing = false; m.selected.clear(); }
+  else if (action === 'clear') m.selected.clear();
+  else if (action === 'all') m.selected = new Set(m.kind === 'computers' ? loadComputers().map(c => c.key) : pairedDevices.filter(d => !d.current).map(d => d.id));
+  else if (action === 'delete') return m.kind === 'computers' ? removeComputers([...m.selected]) : removePairedDevices([...m.selected]);
+  else if (action === 'group') return showComputerGroupPicker();
+  else if (action === 'new-group') return editComputerGroup();
+  renderManagedList();
+}
 async function showDevices() {
+  prepareListManagement('devices');
   let list = [];
   try { list = (await api('/api/devices').then(r => r.json())).devices || []; } catch {}
+  pairedDevices = list;
+  const ids = new Set(list.filter(d => !d.current).map(d => d.id));
+  listManagement.selected = new Set([...listManagement.selected].filter(id => ids.has(id)));
+  renderDevices();
+}
+function renderDevices() {
   const when = t => new Date(t).toLocaleDateString();
-  openSheet('devices', `<h3>已配对设备</h3>` + list.map(d => `
-    <div class="opt ${d.current ? 'cur' : ''}"><span class="lbl">${esc(d.name)}<span class="sub">设备码 ${esc(d.id)} · 配对于 ${when(d.created)} · 最近使用 ${when(d.lastSeen)}</span></span>
-    ${d.current ? '' : `<button data-remove="${esc(d.id)}" data-name="${esc(d.name)}">移除</button>`}</div>`).join('')
+  openSheet('devices', `<h3>已配对设备</h3><div class="listTools">${listTools()}</div>` + pairedDevices.map(d => `
+    <${listManagement.editing && !d.current ? 'label' : 'div'} class="opt static ${d.current ? 'cur' : ''}">${listManagement.editing && !d.current ? listCheckbox(d.id) : ''}<span class="lbl">${esc(d.name)}<span class="sub">${d.current ? '当前设备 · ' : ''}设备码 ${esc(d.id)} · 配对于 ${when(d.created)} · 最近使用 ${when(d.lastSeen)}</span></span>
+    ${d.current || listManagement.editing ? '' : `<button data-remove="${esc(d.id)}" data-name="${esc(d.name)}">移除</button>`}</${listManagement.editing && !d.current ? 'label' : 'div'}>`).join('')
     + '<div class="hint">添加新设备：在电脑上运行 npm run pair。<br>开启 Authenticator 二次验证：npm run 2fa。</div>');
+}
+async function removePairedDevices(ids) {
+  const selected = pairedDevices.filter(d => !d.current && ids.includes(d.id));
+  if (!selected.length) return;
+  const names = selected.map(d => d.name).join('、');
+  if (!await ask(`移除「${names}」？它们会立即断开，要重新配对才能再用。`, '移除')) return renderDevices();
+  try {
+    for (const d of selected) {
+      const r = await post('/api/devices/remove', { id: d.id });
+      if (!r.ok) throw new Error('移除设备失败');
+      listManagement.selected.delete(d.id);
+    }
+  } catch (e) { status(e.message, false); }
+  await showDevices();
 }
 
 function showDocs(m) {
