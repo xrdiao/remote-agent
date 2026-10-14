@@ -605,7 +605,6 @@ async function connect() {
     }
     else if (m.t === 'menu') {
       if (m.sel && viewSel && m.sel !== viewSel) return;
-      if (m.fastPatch) return patchFastMenu(m.fast, m.fusion);
       lruPut(menuCache, menuCacheKey(m.kind), m, 24);
       if (currentApp === 'fusion' && /^fusion-(model|effort)-[ab]$/.test(m.kind) && fusionModelSide === m.kind.slice(-1)) {
         showMenu(m.kind, m.items, m.max, m.fusion, m.fast, m.model);
