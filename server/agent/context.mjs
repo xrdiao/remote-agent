@@ -458,6 +458,7 @@ export class AgentContext {
         this.fillThinking(chat);
         this.retainThinking(chat);
         this.mergeDevinHistory(chat);
+        if (this.app === 'devin') this.devinGeneration(chat);
         const json = JSON.stringify(chat);
         if (json !== this.lastChat && this.liveRead(cdp, sel)) {
           this.lastChat = json;
@@ -523,6 +524,7 @@ export class AgentContext {
         else this.queueFusionRead();
       } else this.fusion = null;
       await this.syncAttachments();
+      if (this.app === 'devin') this.devinGeneration(chat);
       const json = JSON.stringify(chat);
       if (!this.liveRead(cdp, sel) || this.historyLoading) return;
       if (json !== this.lastChat) {

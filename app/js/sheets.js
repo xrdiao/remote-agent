@@ -505,8 +505,8 @@ function showUsageDetails(kind) {
 }
 let usageTimer = null;
 function showMainMenu() {
-  const notifyItem = `<button class="opt" data-act="${notifyOn ? 'notifyOff' : 'notifyOn'}" role="switch" aria-checked="${notifyOn}"><span class="lbl">开启通知<span class="sub">Agent 完成或等你确认时提醒</span></span><span class="switch${notifyOn ? ' on' : ''}" aria-hidden="true"></span></button>`
-    + (notifyOn ? '<button class="opt" data-act="notifyTest"><span class="lbl">发一条测试通知</span></button>' : '');
+  const notifyItem = `<button class="opt" id="notifySwitchRow" data-act="notifyToggle" role="switch" aria-checked="${notifyOn}"><span class="lbl">开启通知<span class="sub">Agent 完成或等你确认时提醒</span></span><span class="switch${notifyOn ? ' on' : ''}" aria-hidden="true"></span></button>`
+    + (notifyOn ? '<button class="opt" id="notifyTestRow" data-act="notifyTest"><span class="lbl">发一条测试通知</span></button>' : '');
   const update = apkUpdate()
     ? `<button class="opt" data-act="appUpdate"><span class="lbl">更新安卓 App（v${esc(appVersion)} → v${esc(apkUpdate())}）</span><span class="tag">新</span></button>`
     : `<button class="opt" data-act="appUpdate"><span class="lbl">检查 App 更新（当前 v${esc(appVersion)}）</span></button>`;

@@ -214,7 +214,7 @@ export class Session extends AgentContext {
     const cachedChat = this.chatBySel?.get(this.selectionKey());
     if (cachedChat) this.emit({ t: 'chat', sel: this.selectionKey(), chat: cachedChat, cached: true });
     await this.setMode(this.mode);
-    setTimeout(() => this.prefetchMenus().catch(() => {}), 800);
+    setTimeout(() => this.prefetchMenus().catch(() => {}), 0);
   }
 
   // Warms the phone's sheet caches with whatever can be read without opening visible UI.

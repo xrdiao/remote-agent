@@ -350,6 +350,12 @@
       if (msg) {
         const it = messageItem(msg);
         if (!it.i) it.i = i;
+        if (it.k === 'human' && !it.sentAt) {
+          // The message timestamp lives a few fiber levels up, not in the DOM.
+          const ts = codexFiberProps(msg, 12).find(p => Array.isArray(p.content) && p.content[0]?._meta)?.content[0]._meta['cognition.ai/timestamp'];
+          const at = Date.parse(ts || '');
+          if (Number.isFinite(at)) it.sentAt = at;
+        }
         items.push(it);
         return;
       }
@@ -375,6 +381,33 @@
       if (edit) { items.push(edit); return; }
     });
     return items.filter(Boolean).map(it => ({ ...it, src: 'devin' }));
+  };
+
+  // Cursor keeps message times only in React props: any transcript bubble's fiber chain reaches the
+  // composerHandle, whose cached data lists headers { bubbleId, type: 1 = human / 2 = AI, createdAt, startedAtMs, completedAtMs }.
+  const cursorBubbleTimes = () => {
+    const el = doc.querySelector('[data-message-id]');
+    const cd = el && codexFiberProps(el, 40).find(p => p.source?.transcriptSource?.composerHandle)?.source?.transcriptSource?.composerHandle?._cachedData;
+    const headers = cd?.fullConversationHeadersOnly;
+    if (!Array.isArray(headers)) return null;
+    const ms = h => Number.isFinite(h.startedAtMs) ? h.startedAtMs : Date.parse(h.createdAt || '');
+    const byId = new Map();
+    for (const h of headers) if (h.bubbleId && Number.isFinite(ms(h))) byId.set(h.bubbleId, ms(h));
+    let generation = null;
+    const lastHuman = headers.map((h, i) => h.type === 1 ? i : -1).filter(i => i >= 0).at(-1);
+    const start = lastHuman != null ? byId.get(headers[lastHuman].bubbleId) : null;
+    if (Number.isFinite(start)) {
+      let end = null;
+      if (!isBusy()) {
+        for (const h of headers.slice(lastHuman + 1)) {
+          const e = Number.isFinite(h.completedAtMs) ? h.completedAtMs : (Number.isFinite(h.startedAtMs) ? h.startedAtMs : Date.parse(h.createdAt || ''));
+          if (Number.isFinite(e)) end = end == null ? e : Math.max(end, e);
+        }
+        end ??= start;
+      }
+      generation = { start, end };
+    }
+    return { byId, generation };
   };
 
   const extract = () => {
@@ -408,11 +441,17 @@
       };
     }
     const r = (log || panel).getBoundingClientRect();
+    const codexId = log ? '' : codexThread();
+    const bubbleTimes = (!log && !codexId) ? cursorBubbleTimes() : null;
     const items = log ? devinItems(log) : topItems(panel).flatMap(el => {
       if (el.hasAttribute?.('data-turn-key')) return codexTurnItems(el);
       const thoughts = thinkingInside(el).map((th, n) => thinkingItem(th, el, n));
       if (isThinking(el)) return thoughts.length ? thoughts : [thinkingItem(el, el, 0)];
       const main = messageItem(el);
+      if (main.k === 'human' && !main.sentAt && bubbleTimes) {
+        const at = bubbleTimes.byId.get(el.dataset.messageId || el.querySelector('[data-message-id]')?.dataset.messageId || '');
+        if (at) main.sentAt = at;
+      }
       if (main.k === 'assistant' && !main.h && !main.b) return thoughts;
       return [...thoughts, ...(main.k === 'tool' ? cursorToolItems(el) : [main])];
     });
@@ -421,10 +460,27 @@
     const modeEl = [...doc.querySelectorAll('.composer-unified-dropdown[data-mode]')].find(vis);
     const modelEl = modelButton();
     const latestTurn = [...doc.querySelectorAll('[data-turn-key]')].at(-1);
-    const turnTime = latestTurn && codexTurnData(latestTurn)?.items?.find(it => it.type === 'worked-for');
+    const latestData = latestTurn && codexTurnData(latestTurn);
+    const turnTime = latestData?.items?.find(it => it.type === 'worked-for');
+    let generation = turnTime?.startedAtMs ? { start: turnTime.startedAtMs, end: turnTime.completedAtMs || null } : null;
+    if (!generation && latestData) {
+      // Some turns lack the worked-for item entirely and it only appears after the turn ends.
+      const start = latestData.items?.find(it => it.type === 'user-message')?.sentAtMs;
+      if (Number.isFinite(start)) {
+        let end = null;
+        if (latestData.status === 'complete' || !isBusy()) {
+          for (const it of latestData.items || []) {
+            for (const e of [it.sentAtMs, Number.isFinite(it.startedAtMs) ? it.startedAtMs + (it.durationMs || 0) : NaN])
+              if (Number.isFinite(e)) end = end == null ? e : Math.max(end, e);
+          }
+        }
+        generation = { start, end };
+      }
+    }
+    if (!generation && bubbleTimes?.generation) generation = bubbleTimes.generation;
     return {
       rect: [r.x, r.y, r.width, r.height].map(Math.round),
-      ...(turnTime?.startedAtMs ? { generation: { start: turnTime.startedAtMs, end: turnTime.completedAtMs || null } } : {}),
+      ...(generation ? { generation } : {}),
       items,
       global,
       busy: isBusy(),
@@ -432,7 +488,8 @@
       ...(devinLog() ? { queuedCount: devinQueueCount() } : {}),
       subagents: subagents(),
       changed: changedCount(),
-      questions: devinLog() ? devinQuestions() : codexThread() ? { codex: true, requests: codexRequestData() } : questions(),
+      questions: devinLog() ? devinQuestions() : codexId ? { codex: true, requests: codexRequestData() } : questions(),
+      ...(log ? { devinTurnStart: items.filter(it => it.k === 'human' && Number.isFinite(it.sentAt)).at(-1)?.sentAt ?? null } : {}),
       ...(devinLog() ? { session: devinSession() } : {}),
       ...(devinSurface() ? { workdir: workdirInfo() } : {}),
       readonly: !hasComposer(),
