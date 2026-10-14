@@ -347,6 +347,13 @@
   .optRow .opt { margin-bottom: 0; flex: 1; min-width: 0; }
   .optRow .archBtn { flex: none; width: 52px; padding: 0 6px; }
   .paramBtn { flex: none; padding: 0 12px; font-size: 13px; }
+  .listTools { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .listTools .hint { margin: 0; }
+  #sheet label.opt { background: var(--ctrl); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
+  #sheet [data-list-select] { width: 18px; height: 18px; flex: none; accent-color: var(--accent); }
+  .computerGroupHead { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 14px 0 6px; }
+  .computerGroupHead strong { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 13px; color: var(--muted); }
+  .computerGroupHead button { font-size: 12px; padding: 3px 8px; }
   .switch { flex: none; width: 36px; height: 20px; border-radius: 10px; background: var(--line2); position: relative; transition: background .15s; }
   .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--hi); transition: left .15s; }
   .switch.on { background: var(--accent); }
@@ -496,7 +503,7 @@
   #gateBtn { width: 100%; margin-top: 12px; }
   #gate.pairing { gap: 0; padding: calc(22px + env(safe-area-inset-top)) 24px max(22px, env(safe-area-inset-bottom)); background: radial-gradient(ellipse at 50% 25%, #10223455, transparent 55%), #0b131b; }
   #gate.pairing .pairHero { text-align: center; margin: clamp(24px, 7vh, 64px) 0 28px; }
-  #gate.pairing .pairLogo { display: block; width: clamp(112px, 40vw, 176px); height: auto; margin: 0 auto 22px; filter: grayscale(1) brightness(3) contrast(50); mix-blend-mode: screen; }
+  #gate.pairing .pairLogo { display: block; width: clamp(112px, 40vw, 176px); height: auto; margin: 0 auto 22px; }
   #gate.pairing h2 { font-size: clamp(26px, 7vw, 32px); font-weight: 700; color: #f4f7fb; margin: 0 0 16px; }
   #pairIntro { margin: 0; color: #95a2b0; font-size: 14px; line-height: 1.8; }
   #gate.pairing #gateMsg { font-size: 13px; margin: 0 0 12px; }
