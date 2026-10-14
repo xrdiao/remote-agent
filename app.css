@@ -29,6 +29,7 @@
     --shade: #0006; --float: #00000022; --imgbg: #0001;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 15px/1.55 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; overflow: hidden; }
   body { position: fixed; left: 0; top: 0; width: 100%; height: 100dvh; display: flex; flex-direction: column;
          padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left); }
@@ -50,6 +51,14 @@
   #titlePlan { flex: none; font-size: 10px; line-height: 1.3; font-weight: 500; color: var(--muted2); }
   #titleProject { font-size: 10px; line-height: 1.3; color: var(--muted2); }
   .winPlan { font-size: 10px; font-weight: 500; color: var(--muted2); margin-left: 6px; }
+  #titleLatency { flex: none; }
+  .latency { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; line-height: 1.35; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .latency svg { width: 10px; height: 10px; flex: none; }
+  .latency.good { color: var(--ok); }
+  .latency.warn { color: var(--warn); }
+  .latency.bad { color: var(--err); }
+  .latency.muted { color: var(--muted); }
+  .latencyPair { display: flex; flex-direction: column; gap: 2px; align-items: flex-end; }
   #title::after { content: "⌄"; color: var(--muted); }
   body.devin #meters { flex: none; }
   body.devin #quotaMeters { flex: none; }
