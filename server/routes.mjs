@@ -86,6 +86,7 @@ export const ROUTES = {
       const agents = [];
       let wins;
       try { wins = await listWindows(agents); } catch {}
+      if (wins) s.emit({ t: 'windows', list: phoneWindows(wins, s.targetId), current: s.targetId, plans: appPlans });
       readAllPlans(s, wins).catch(() => {});
       return s.emit({ t: 'connAgents', agents });
     },
@@ -94,18 +95,14 @@ export const ROUTES = {
   attach: {
     pre: async (s, m) => {
       if (!m.initial) return s.attach(m);
-      const agents = [];
-      let wins;
-      try { wins = await listWindows(agents); } catch {}
-      s.emit({ t: 'connAgents', agents });
-      if (wins) s.emit({ t: 'windows', list: phoneWindows(wins, s.targetId), current: s.targetId, plans: appPlans });
-      await s.attach(m, wins);
-      readAllPlans(s, wins).catch(() => {});
+      await s.attach(m);
+      ROUTES.connAgents.pre(s).catch(() => {});
     },
   },
   mode: { pre: (s, m) => s.setMode(m.mode) },
   visible: {
     pre: (s, m) => {
+      if (s.visible === Boolean(m.v)) return;
       s.visible = Boolean(m.v);
       if (!s.editorCdp && s.mode !== 'screen') return;
       if (!s.visible && s.mode === 'screen') return s.stopVisual();
@@ -243,7 +240,6 @@ export const ROUTES = {
   send: {
     fusionFree: true,
     run: (s, m) => s.sendMessage(String(m.text ?? ''), m.submit !== false, m.when, cleanMentions(m.mentions), { requestId: m.requestId, draft: m.draft, text: m.text, draftEpoch: m.draftEpoch }),
-    after: (s, m, queued) => s.emit({ t: 'status', ok: true, msg: queued ? 'Agent 正在运行，已加入排队，这一轮结束后自动发送' : '已发送' }),
     fail: (s, m) => s.emit({ t: 'sendFailed', requestId: m.requestId }),
   },
   mentionQuery: { run: (s, m) => s.mentionQuery(String(m.q ?? '').slice(0, 80), m.cat ? String(m.cat).slice(0, 40) : '', Number(m.seq) || 0, m.trigger === '/' ? '/' : '@') },

@@ -40,14 +40,17 @@ function receiveAgents(m) {
   if (m.app && m.app !== currentApp) return;
   const key = agentListKey();
   const previous = agentLists.get(key) || [];
+  const titles = new Map(previous.map(a => [a.id, a.title]));
   let list = m.list || [];
-  list = list.map(a => ({ ...a, title: a.title || previous.find(b => b.id === a.id)?.title || '未命名会话' }));
+  list = list.map(a => ({ ...a, title: a.title || titles.get(a.id) || '未命名会话' }));
   if (m.partial) {
     const remaining = (agentLists.get(key) || []).filter(a => String(a.id).startsWith('pick:'));
     list = [...list, ...remaining.filter(a => !list.some(b => b.title === a.title))];
   }
   const changed = JSON.stringify(agentLists.get(key)) !== JSON.stringify(list);
-  setAgentList(key, list);
+  if (changed) setAgentList(key, list);
+  if (!m.silent) finishPending(['正在读取 Agent 列表…', '正在归档…']);
+  if (sheetKind === 'agents' && !changed) return;
   if (!m.silent || (sheetKind === 'agents' && changed)) {
     finishPending(['正在读取 Agent 列表…', '正在归档…']);
     showAgents(list);
@@ -55,7 +58,7 @@ function receiveAgents(m) {
 }
 function openAgentList(refresh = false) {
   const cached = agentLists.get(agentListKey());
-  if (cached && !refresh) showAgents(cached);
+  if (cached) showAgents(cached);
   else status('正在读取 Agent 列表…');
   send({ t: 'agents', automatic: !!cached && !refresh, silent: !!cached && !refresh });
 }
@@ -110,6 +113,7 @@ fitOrientation();
 // In-progress lines end with … and are cleared when the result arrives, or after a few seconds
 // so a finished action cannot leave "正在…" on screen. A short result then fades on its own.
 const ACTION_PENDING = new Set([
+  '正在发送…',
   '正在新建对话…', '正在切换窗口…', '正在切换 Agent…', '正在读取 Agent 列表…', '正在打开子 Agent…', '返回主对话…',
   '正在切换终端…', '正在删除终端…', '正在新建终端…', '正在读取终端列表…',
   '正在打开项目…', '正在读取项目…', '正在读取文件夹…', '正在读取文档…', '正在保存…',
@@ -143,7 +147,12 @@ function finishPending(list) {
 }
 
 function send(obj) {
-  if (obj.t === 'attach') setWindowReady(false);
+  if (obj.t === 'attach') {
+    setWindowReady(false);
+    status('正在切换窗口…');
+    const name = {cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion'}[String(obj.id || '').split(':')[0]];
+    if (name) $('titleText').textContent = name + '…';
+  }
   if (obj.t === 'openMenu') obj.requestId = ++menuRequest;
   if (currentApp === 'codex' && ['settings', 'codexSetting'].includes(obj.t)) obj.requestId = ++codexSettingsRequest;
   if (ws && ws.readyState === 1 && authed) ws.send(JSON.stringify(obj));

@@ -1,5 +1,5 @@
 import { WebSocketServer } from 'ws';
-import { findDevice, needsTotp, updateDevice } from '../lib/auth.mjs';
+import { findDevice, needsTotp, updateDevice, computerId, computerName } from '../lib/auth.mjs';
 import { addViewer, removeViewer } from '../lib/notify.mjs';
 import { clientIp } from './http/ratelimit.mjs';
 import { originAllowed } from './http/static.mjs';
@@ -28,20 +28,22 @@ wss.on('connection', (ws, req) => {
   const authTimer = setTimeout(() => ws.close(4001, 'auth timeout'), 5000);
   let queue = Promise.resolve();
   let questionQueue = Promise.resolve();
+  const agentReads = new Map();
   ws.on('message', raw => {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
     if (!session) {
       clearTimeout(authTimer);
       const device = msg.t === 'auth' ? findDevice(msg.token) : null;
+      const identity = { id: computerId(), name: computerName(), device: device?.id || '' };
       if (!device || needsTotp(device)) {
-        ws.send(JSON.stringify({ t: 'auth', ok: false, needTotp: Boolean(device) }));
+        ws.send(JSON.stringify({ t: 'auth', ok: false, ...identity, needTotp: Boolean(device) }));
         return ws.close(4001, 'unauthorized');
       }
       updateDevice(device.id, { lastSeen: Date.now() });
       session = new Session(ws, device.id);
       addViewer(session);
-      ws.send(JSON.stringify({ t: 'auth', ok: true }));
+      ws.send(JSON.stringify({ t: 'auth', ok: true, ...identity }));
       console.log(`[+] client ${clientIp(req)}`);
       return;
     }
@@ -49,7 +51,11 @@ wss.on('connection', (ws, req) => {
     if (msg.t === 'ack') return session.ack();
     const route = ROUTES[msg.t];
     if (route && flag(route.fast, session, msg)) { route.fastRun(session, msg); return; }
+    const readKind = msg.t === 'agents' ? `${!!msg.automatic}|${!!msg.silent}` : null;
+    const readSerial = readKind && (agentReads.get(readKind) || 0) + 1;
+    if (readKind) agentReads.set(readKind, readSerial);
     const execute = async () => {
+      if (readKind && agentReads.get(readKind) !== readSerial) return;
       const q0 = Date.now();
       try {
         const queued = await session.handle(msg);

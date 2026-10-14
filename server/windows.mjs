@@ -5,8 +5,8 @@ import { IS_WIN } from '../lib/platform.mjs';
 import { Cdp } from './cdp.mjs';
 import { EDITORS } from './config.mjs';
 
-export async function listWindows(report = null) {
-  const lists = await Promise.all(EDITORS.map(async ed => {
+export async function listWindows(report = null, app = null) {
+  const lists = await Promise.all(EDITORS.filter(ed => !app || ed.app === app).map(async ed => {
     try {
       if (ed.app === 'codex') {
         const pages = await codexWindows(ed.url, !!report);

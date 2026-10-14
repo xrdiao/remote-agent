@@ -120,7 +120,8 @@ export class Session extends AgentContext {
       if (this.fusionRun.a || this.fusionRun.b) { await this.fusionCatalog(); this.fusionEmit(); }
       return;
     }
-    const wins = windows || await listWindows();
+    const targetApp = ['cursor', 'devin', 'codex'].find(app => appId === app || appId.startsWith(app + ':'));
+    const wins = windows || (codexPages ? codexPages.length ? [{id: 'codex', app: 'codex', title: 'Codex', ws: codexPages[0].ws, port: CODEX_CDP_URL, kind: 'local'}] : [] : await listWindows(null, targetApp));
     if (appId === 'codex') {
       const pages = codexPages;
       if (!pages.length) {
@@ -213,7 +214,7 @@ export class Session extends AgentContext {
     if (staleSelect) this.emit({ t: 'status', ok: false, msg: '没有找到上次的会话，已留在当前会话' });
     const cachedChat = this.chatBySel?.get(this.selectionKey());
     if (cachedChat) this.emit({ t: 'chat', sel: this.selectionKey(), chat: cachedChat, cached: true });
-    await this.setMode(this.mode);
+    this.setMode(this.mode).catch(e => this.emit({ t: 'status', ok: false, msg: e.message }));
     setTimeout(() => this.prefetchMenus().catch(() => {}), 0);
   }
 
