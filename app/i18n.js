@@ -48,6 +48,11 @@ const I18N = (() => {
     "全部重试": "Retry all",
     "请在电脑上启动 Agent 的调试窗口，再点击全部重试。": "Start an agent with debugging enabled on your computer, then retry all.",
 
+    '管理': 'Manage', '完成': 'Done', '取消选择': 'Clear selection', '已选择 {n} 项': '{n} selected', '选择': 'Select',
+    '移至分组': 'Move to group', '新建分组': 'New group', '批量删除': 'Delete selected', '批量移除': 'Remove selected',
+    '未分组': 'Ungrouped', '重命名': 'Rename', '删除分组': 'Delete group', '暂无电脑': 'No computers',
+    '新分组名称': 'New group name', '重命名分组': 'Rename group', '分组名称已存在': 'Group name already exists',
+    '移除设备失败': 'Failed to remove device', '当前设备': 'Current device',
     '切换电脑': 'Switch computer',
     '连接失败': 'Failed',
     '失败阶段：{v}': 'Failed stage: {v}',
