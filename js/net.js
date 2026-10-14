@@ -539,7 +539,7 @@ function connect() {
       currentProject = m.app === 'fusion' ? '' : (m.project || winLabel(m.title).name);
       updateAppText(); updateTitle();
       const cachedChat = m.sel ? chatBySel.get(m.sel) : null;
-      renderChat(cachedChat || null, !!cachedChat);
+      renderChat(cachedChat || null, !!cachedChat, !cachedChat);
       renderContext(null);
       $('quotaMeters').innerHTML = '';
       $('quotaMeters').title = '';
