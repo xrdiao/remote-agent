@@ -603,6 +603,20 @@ async function connect() {
       renderQuota(m);
       if (!m.cached) finishPending(['正在读取额度…']);
     }
+    else if (m.t === 'fastState') {
+      if (m.sel && m.sel !== viewSel) return;
+      for (const [key, cached] of menuCache) {
+        if (!key.startsWith(`${currentApp}|${viewSel}|`)) continue;
+        cached.fast = m.fast;
+        if (m.fusion) cached.fusion = m.fusion;
+      }
+      if (m.fusion && lastChat?.fusion) lastChat.fusion = m.fusion;
+      $('sheet').querySelectorAll('[data-fast], [data-fusion="fast"]').forEach(button => {
+        if (button.dataset.fast) button.dataset.fast = m.fast.on ? 'off' : 'on';
+        button.querySelector('.switch')?.classList.toggle('on', m.fast.on);
+      });
+      finishPending(['设置中…', '正在修改…']);
+    }
     else if (m.t === 'menu') {
       if (m.sel && viewSel && m.sel !== viewSel) return;
       lruPut(menuCache, menuCacheKey(m.kind), m, 24);
