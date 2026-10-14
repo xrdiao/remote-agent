@@ -17,8 +17,10 @@ import android.os.PowerManager;
 import android.provider.Settings;
 import android.speech.RecognizerIntent;
 import android.view.View;
+import android.widget.FrameLayout;
 import android.widget.Toast;
 import android.webkit.JavascriptInterface;
+import android.webkit.RenderProcessGoneDetail;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
@@ -26,6 +28,7 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.webkit.WebViewRenderProcess;
 
 import androidx.core.content.ContextCompat;
 
@@ -45,7 +48,10 @@ public class MainActivity extends Activity {
     private static final String UPDATE_FILE = "AgentRemote-update.apk";
     private static final int VOICE = 7;
     private static final int PICK = 8;
+    private FrameLayout root;
     private WebView web;
+    private WebView dying;
+    private RefreshBubble bubble;
     private ValueCallback<Uri[]> pickFile;
     private SharedPreferences prefs;
     private HistoryDb hist;
@@ -62,17 +68,35 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         prefs = getSharedPreferences("agent-remote", MODE_PRIVATE);
-        web = new WebView(this);
-        setContentView(web);
+        root = new FrameLayout(this);
+        web = createWeb();
+        root.addView(web);
+        bubble = new RefreshBubble(this, root, this::restartWeb);
+        setContentView(root);
         applyTheme(prefs.getBoolean("light", false));
 
-        WebSettings s = web.getSettings();
+        IntentFilter done = new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
+        // The broadcast comes from the system download provider, a separate app.
+        ContextCompat.registerReceiver(this, downloaded, done, ContextCompat.RECEIVER_EXPORTED);
+
+        if (!openPairLink(getIntent())) {
+            saveOpen(getIntent());
+            if (state != null) web.restoreState(state);
+            else load();
+        }
+        NotifyService.start(this);
+    }
+
+    private WebView createWeb() {
+        WebView w = new WebView(this);
+        w.setBackgroundColor(prefs.getBoolean("light", false) ? 0xFFFFFFFF : 0xFF1E1E1E);
+        WebSettings s = w.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
         s.setUserAgentString(s.getUserAgentString() + " AgentRemoteApp/" + BuildConfigVersion.name(this));
 
-        web.addJavascriptInterface(new Bridge(), "AgentRemoteApp");
-        web.setWebChromeClient(new WebChromeClient() {
+        w.addJavascriptInterface(new Bridge(), "AgentRemoteApp");
+        w.setWebChromeClient(new WebChromeClient() {
             @Override
             public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
                 if (pickFile != null) pickFile.onReceiveValue(null);
@@ -86,7 +110,7 @@ public class MainActivity extends Activity {
                 return true;
             }
         });
-        web.setWebViewClient(new WebViewClient() {
+        w.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
                 Uri u = req.getUrl();
@@ -100,18 +124,36 @@ public class MainActivity extends Activity {
             public void onReceivedError(WebView view, WebResourceRequest req, WebResourceError err) {
                 if (req.isForMainFrame()) view.loadUrl(SETUP + "?offline=1");
             }
+
+            @Override
+            public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+                // The WebView being replaced has its renderer killed on purpose; only the current one needs a restart.
+                if (view == web && view != dying) view.post(() -> { if (view == web) restartWeb(); });
+                return true;
+            }
         });
+        return w;
+    }
 
-        IntentFilter done = new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
-        // The broadcast comes from the system download provider, a separate app.
-        ContextCompat.registerReceiver(this, downloaded, done, ContextCompat.RECEIVER_EXPORTED);
-
-        if (!openPairLink(getIntent())) {
-            saveOpen(getIntent());
-            if (state != null) web.restoreState(state);
-            else load();
+    // Replaces the WebView even if its renderer is hung. Loads the saved address rather than reloading, since the
+    // current URL may carry a one-time #pair fragment that was already used.
+    private void restartWeb() {
+        WebView old = web;
+        dying = old;
+        if (Build.VERSION.SDK_INT >= 29) {
+            WebViewRenderProcess p = old.getWebViewRenderProcess();
+            if (p != null) p.terminate();
         }
-        NotifyService.start(this);
+        root.removeView(old);
+        old.destroy();
+        if (pickFile != null) {
+            pickFile.onReceiveValue(null);
+            pickFile = null;
+        }
+        web = createWeb();
+        root.addView(web, 0);
+        applyTheme(prefs.getBoolean("light", false));
+        load();
     }
 
     // WebView's onPause/onResume flip document.visibilityState, which tells the relay whether to notify.
@@ -136,6 +178,7 @@ public class MainActivity extends Activity {
     // Keeps the WebView background and system-bar icon contrast in sync with the web app's theme.
     private void applyTheme(boolean light) {
         web.setBackgroundColor(light ? 0xFFFFFFFF : 0xFF1E1E1E);
+        bubble.setLight(light);
         if (Build.VERSION.SDK_INT >= 23) {
             View d = getWindow().getDecorView();
             int flags = d.getSystemUiVisibility();
