@@ -74,8 +74,8 @@
   <section id="screenView" class="view">
     <div id="termBusy" hidden>Agent 正在运行</div>
     <div id="screenTools" class="tools">
-      <button id="cropPanel" class="on">聊天面板</button>
-      <button id="cropFull">整个窗口</button>
+      <button id="visualChoose">选择窗口</button>
+      <button id="visualShare" hidden>请求共享窗口</button>
       <button id="zoom" hidden>适应</button>
       <button id="refresh">刷新</button>
     </div>
@@ -85,6 +85,7 @@
         <button id="termEmptyNew" type="button">新建终端</button>
       </div>
       <pre id="termText"></pre>
+      <div id="visualEmpty" hidden role="status"></div>
       <div id="stage"><img id="screen" alt=""><div id="ripple"></div></div>
     </div>
     <div id="screenKeys" class="tools">
