@@ -377,9 +377,11 @@ export class AgentContext {
     if (this.polling === sel) { if (immediate) this.pollAgain = sel; return; }
     this.lastChatAt = Date.now();
     this.polling = sel;
+    const freshView = this.codexFreshView === true;
+    this.codexFreshView = false;
     try {
       let chat = await cdp.evaluate(helpersCall('extract()'));
-      const before = this.app === 'codex' && !chat?.busy ? await cdp.evaluate(helpersCall("scrollCodexHistory('latest')")) : null;
+      const before = this.app === 'codex' && !freshView && !chat?.busy ? await cdp.evaluate(helpersCall("scrollCodexHistory('latest')")) : null;
       try {
         if (before) await new Promise(r => setTimeout(r, 150));
         if (before) chat = await cdp.evaluate(helpersCall('extract()'));
@@ -637,29 +639,29 @@ export class AgentContext {
     }
   }
 
-  async ensureSettings() {
+  async ensureSettings(editorCdp = this.editorCdp) {
     const waitOpen = async () => {
       for (let i = 0; i < 10; i++) {
         await new Promise(r => setTimeout(r, 120));
-        if (await this.editorCdp.evaluate(helpersCall('settingsOpen()'))) return true;
+        if (await editorCdp.evaluate(helpersCall('settingsOpen()'))) return true;
       }
       return false;
     };
-    if (await this.editorCdp.evaluate(helpersCall('settingsOpen()'))) return;
+    if (await editorCdp.evaluate(helpersCall('settingsOpen()'))) return;
     // Click the gear directly. A coordinate click on the 24px footer button often misses.
-    await this.editorCdp.evaluate(helpersCall('clickSettingsButton()'));
+    await editorCdp.evaluate(helpersCall('clickSettingsButton()'));
     if (await waitOpen()) return;
     // Cursor and Devin both bind Settings to Ctrl+Comma.
     const comma = { key: ',', code: 'Comma', windowsVirtualKeyCode: 188, modifiers: 2 };
-    await this.editorCdp.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...comma });
-    await this.editorCdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...comma });
+    await editorCdp.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...comma });
+    await editorCdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...comma });
     if (await waitOpen()) return;
     throw new Error('设置没有打开');
   }
 
-  async closeSettings() {
-    const how = await this.editorCdp.evaluate(helpersCall('clickCloseSettings()'));
-    if (how === 'tab') await this.key('Ctrl+w', { cdp: this.editorCdp });
+  async closeSettings(editorCdp = this.editorCdp) {
+    const how = await editorCdp.evaluate(helpersCall('clickCloseSettings()'));
+    if (how === 'tab') await this.key('Ctrl+w', { cdp: editorCdp });
   }
 
   async showSettings(requestId = 0) {
@@ -1422,7 +1424,7 @@ export class AgentContext {
       if (!this.focusCount && !this.focusTimer) {
         this.focusTimer = setTimeout(() => {
           this.focusTimer = null;
-          for (const c of connections) if (c === this.cdp || c === this.editorCdp) c.send('Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {});
+          for (const c of connections) c.send('Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {});
         }, 1500);
       }
     }
@@ -1550,6 +1552,8 @@ export class AgentContext {
     try {
       const found = await this.cdp.evaluate(FOCUS_COMPOSER);
       if (!found) throw new Error(this.appMessage('没找到 {app} 的聊天输入框：先在画面里打开 Agent 面板（或点「打开聊天」）'));
+      // Read busy before typing: once the composer has text, apps replace the stop button with a send button and isBusy() reads false.
+      busy = submit && await this.cdp.evaluate(helpersCall('agentState()?.busy'));
       const sameDraft = !mentions?.length && await this.cdp.evaluate(helpersCall('composerDraft()')) === text;
       if (!sameDraft) {
         const draftCleared = await this.cdp.evaluate(helpersCall(`setComposerDraft('')`));
@@ -1559,7 +1563,6 @@ export class AgentContext {
         }
         await this.adapter.typeDraft.call(this, text, mentions);
       }
-      busy = submit && await this.cdp.evaluate(helpersCall('agentState()?.busy'));
       now = this.app === 'devin' && when === 'now' && !!busy;
       queued = Boolean(busy) && !now;
       if (submit) queued = await this.adapter.submitPrompt.call(this, now, busy, when, queued);

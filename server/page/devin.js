@@ -260,7 +260,9 @@
     if (!action) return center(row);
     const b = row.querySelector(`[data-queue-action="${CSS.escape(action)}"]`)
       || [...row.querySelectorAll('[aria-label]')].find(e => e.getAttribute('aria-label') === { send: 'Send now', remove: 'Remove', edit: 'Edit' }[action]);
-    return b && vis(b) ? center(b) : null;
+    if (!b || !vis(b)) return null;
+    const p = center(b);
+    return b.contains(doc.elementFromPoint(p.x, p.y)) ? p : (b.click(), true);
   };
 
   // Running subagents: task cards in the transcript plus the "N subagents running" tray above the composer.

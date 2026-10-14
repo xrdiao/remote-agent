@@ -347,8 +347,29 @@ function showWorkdirs(m) {
   openSheet('workdir', `<h3>工作目录</h3><div class="pSec">运行位置</div><div class="pRow" style="display:flex;gap:6px;margin-bottom:8px">${envs}</div><div class="pSec">文件夹</div><button class="opt" data-act="projects">选择文件夹／新建项目</button>${rows || '<div class="hint">没有读到文件夹列表。</div>'}`);
   $('sheet')._wd = m.rows;
 }
+function pruneEchoes(chat) {
+  if (!pendingEchoes.length) return;
+  const humans = (chat?.items || []).filter(it => it.k === 'human');
+  const queued = (chat?.queued || []).map(q => (q.t || '').trim());
+  pendingEchoes = pendingEchoes.filter(p => {
+    if (Date.now() - p.at > 60000) return false;
+    if (p.sel !== viewSel) return true;
+    if (humans.filter(it => echoTextMatches(it, p.text)).length > p.before) return false;
+    if (p.kind === 'queue' && queued.some(t => t === p.text.trim() || t.startsWith(p.text.trim() + '\n\n附加文件（'))) return false;
+    return true;
+  });
+}
+function pendingEchoEls() {
+  return pendingEchoes.filter(p => p.kind === 'chat' && p.sel === viewSel).map(p => {
+    const el = document.createElement('div');
+    el.className = 'msg human pending';
+    el.innerHTML = `<div class="humanContent"><div class="bubble">${esc(p.text)}</div><div class="messageMeta">发送中…</div></div>`;
+    return el;
+  });
+}
 function renderChat(chat, stale, loading = false) {
   chat = withMessageTimes(chat);
+  pruneEchoes(chat);
   updateGenerationTime(chat, stale);
   chatStale = !!stale;
   if (chat?.items?.some(it => it.k === 'human')) $('sessionNotice').hidden = true;
@@ -416,7 +437,11 @@ function renderChat(chat, stale, loading = false) {
   updateSendMode();
   currentSurface = chat?.surface || null;
   paintSurface();
-  if (!chat) { itemsEl.replaceChildren(); itemsEl.classList.remove('stale'); renderQueue(false, []); renderQuestions(null); paintSessions(null); latestTasks = null; $('taskChip').hidden = true; return; }
+  if (!chat) {
+    // A new chat has no transcript yet; its first message still shows as "发送中…".
+    const echoes = pendingEchoEls();
+    if (echoes.length) $('empty').hidden = true;
+    itemsEl.replaceChildren(...echoes); itemsEl.classList.remove('stale'); renderQueue(false, []); renderQuestions(null); paintSessions(null); latestTasks = null; $('taskChip').hidden = true; return; }
   const sessionChanged = paintSessions(chat);
   const V = scMerge(chat);
   if (!sessionChanged && userSelecting()) {
@@ -502,6 +527,7 @@ function renderChat(chat, stale, loading = false) {
       b.dataset.fold = V.turnOf.get(it.i);
     });
   }
+  els.push(...pendingEchoEls());
   syncChildren(itemsEl, els);
   itemsEl.classList.toggle('stale', chatStale);
   latestTasks = (chat.items || []).filter(it => it.k === 'tasks').pop() || null;
@@ -687,9 +713,11 @@ function renderQueue(busy, queued, subs = [], readonly = false, changed = 0, qCo
     if (subsOpen) html += subs.map(n => `<div class="q"><span class="qt sa">${esc(n)}</span>`
       + ibtn('eye', '查看', `data-sub="${esc(n)}" data-part="open"`) + ibtn('stop', '停止', `data-sub="${esc(n)}" data-part="stop"`, 'del') + '</div>').join('');
   }
-  const n = Math.max(queued.length, devin ? qCount || 0 : 0);
+  const pending = pendingEchoes.filter(p => p.kind === 'queue' && p.sel === viewSel);
+  const n = Math.max(queued.length, devin ? qCount || 0 : 0) + pending.length;
   if (n) {
     html += `<div class="qh">排队中 ${n} 条${devin ? ' ' + ibtn('trash', '清空', 'data-a="clear" data-q=""', 'del') : ''}</div>`;
+    html += pending.map(p => `<div class="q pending"><span class="qt">${esc(p.text)}</span><span class="sub">发送中…</span></div>`).join('');
     html += queued.map(q => `<div class="q"><span class="qt">${esc(q.t || '(空)')}</span>`
       + ibtn('edit', devin ? '从队列取出，放回输入框' : '修改', `data-q="${esc(q.id)}" data-a="edit"`)
       + ibtn('enter', '打断当前这一轮，立刻发送', `data-q="${esc(q.id)}" data-a="send"`)

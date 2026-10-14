@@ -44,6 +44,8 @@ function applySelection(m, clearChat = true) {
   if (m.app) currentApp = m.app;
   const changed = (m.sel || '') !== viewSel;
   if (changed) { menuRequest++; saveDraft(); }
+  // A new chat gets its thread id once it materializes: keep its pending echoes attached to it.
+  if (changed && viewSel.endsWith('|') && (m.sel || '').startsWith(viewSel)) for (const p of pendingEchoes) if (p.sel === viewSel) p.sel = m.sel;
   if (changed) { viewSel = m.sel || ''; thoughtObserver.disconnect(); cache.clear(); $('sessionNotice').hidden = true; }
   const here = currentComputer();
   const id = m.id || here?.win;
@@ -402,9 +404,9 @@ async function boot() {
     currentApp = app; currentWindow = chosen.win; viewSel = sel;
     currentAppName = {cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion'}[app];
     restoreDraft(); updateAppText();
+    // Draw the cached chat underneath; the connection screen stays up until the window is attached.
     renderChat(preview, true);
     setWindowReady(false);
-    ungate(); connHide(); status('正在连接电脑…');
   }
   connect();
 }
@@ -505,7 +507,7 @@ async function connect() {
       const button = [...$('items').querySelectorAll('button[data-item]')].find(b => b.dataset.item === String(m.item) && b.dataset.actionId === (m.actionId || ''));
       button?.closest('.btns')?.querySelectorAll('button').forEach(b => { b.disabled = false; });
     }
-    else if (m.t === 'sendFailed') pendingSends.delete(m.requestId);
+    else if (m.t === 'sendFailed') { pendingSends.delete(m.requestId); if (pendingEchoes.some(p => p.requestId === m.requestId)) { pendingEchoes = pendingEchoes.filter(p => p.requestId !== m.requestId); queueChatRender(); } }
     else if (m.t === 'questionDone') finishQuestion(m);
     else if (m.t === 'latency') receiveLatency(m);
     else if (m.t === 'visual') renderVisualState(m);
@@ -553,7 +555,7 @@ async function connect() {
       currentApp = m.app || null;
       setWindowReady(true);
       connHide();
-      measureLatency();
+      scheduleLatency();
       $('dot').className = 'ok';
       status('已连接');
       $('titleText').textContent = m.app === 'fusion' ? 'Fusion' : m.app === 'devin' ? 'Devin agent' : m.app === 'codex' ? 'Codex' : winLabel(m.title).name;

@@ -69,7 +69,7 @@ export const adapter = {
       pos = await call(action);
     }
     if (!pos) throw new Error(this.appMessage('没找到排队消息的操作按钮（可能 {app} 版本不同）'));
-    await this.tapCss(pos.x, pos.y);
+    if (pos !== true) await this.tapCss(pos.x, pos.y);
     setTimeout(() => this.pollChat().catch(() => {}), 300);
   },
 
@@ -190,8 +190,9 @@ async withCursorFiles(fn) {
 },
 
 async readCursorUsage(automatic = false) {
+  const cdp = this.cdp, editorCdp = this.editorCdp;
   if (automatic) {
-    const usage = await this.cdp.evaluate(helpersCall('readUsage()'));
+    const usage = await cdp.evaluate(helpersCall('readUsage()'));
     if (usage?.limits?.length && !usage.loading && !usage.missing) {
       cursorUsage.data = { ...usage, updated: Date.now() };
       return cursorUsage.data;
@@ -201,16 +202,16 @@ async readCursorUsage(automatic = false) {
       .finally(() => { cursorUsage.initial = null; });
     return cursorUsage.initial;
   }
-  const wasOpen = await this.cdp.evaluate(helpersCall('settingsOpen()'));
-  await this.ensureSettings();
+  const wasOpen = await cdp.evaluate(helpersCall('settingsOpen()'));
+  await this.ensureSettings(editorCdp);
   try {
-    const nav = await this.cdp.evaluate(helpersCall('usageNavTarget()'));
+    const nav = await cdp.evaluate(helpersCall('usageNavTarget()'));
     if (!nav) return { missing: true, quota: [], limits: [] };
-    await this.tapCss(nav.x, nav.y);
+    await this.tapCss(nav.x, nav.y, 'left', cdp);
     let usage = null;
     for (let i = 0; i < 32; i++) {
       await new Promise(r => setTimeout(r, 250));
-      usage = await this.cdp.evaluate(helpersCall('readUsage()'));
+      usage = await cdp.evaluate(helpersCall('readUsage()'));
       if (usage?.limits?.length && !usage.loading && !usage.missing) break;
     }
     if (usage?.loading) throw new Error('额度还在加载');
@@ -219,7 +220,7 @@ async readCursorUsage(automatic = false) {
       return cursorUsage.data;
     }
     return usage || { missing: true, quota: [], limits: [] };
-  } finally { if (!wasOpen) await this.closeSettings(); }
+  } finally { if (!wasOpen) await this.closeSettings(editorCdp); }
 },
 
 async toggleMax() {
