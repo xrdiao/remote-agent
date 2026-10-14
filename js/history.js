@@ -325,7 +325,7 @@ function showWorkdirs(m) {
   openSheet('workdir', `<h3>工作目录</h3><div class="pSec">运行位置</div><div class="pRow" style="display:flex;gap:6px;margin-bottom:8px">${envs}</div><div class="pSec">文件夹</div><button class="opt" data-act="projects">选择文件夹／新建项目</button>${rows || '<div class="hint">没有读到文件夹列表。</div>'}`);
   $('sheet')._wd = m.rows;
 }
-function renderChat(chat, stale) {
+function renderChat(chat, stale, loading = false) {
   chat = withMessageTimes(chat);
   updateGenerationTime(chat, stale);
   chatStale = !!stale;
@@ -359,6 +359,8 @@ function renderChat(chat, stale) {
   paintWorkdir(chat?.workdir);
   if (chat && 'context' in chat) renderContext(chat.context);
   $('empty').hidden = !!chat;
+  $('empty').firstChild.textContent = I18N.tr(loading ? '正在加载对话…' : '没找到聊天面板。');
+  $('emptyHint').hidden = loading;
   $('older').hidden = !chat || chat.earlier === false;
   $('pickMode').hidden = currentApp === 'devin' || !chat?.mode;
   $('pickModel').hidden = false;
