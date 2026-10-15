@@ -7,11 +7,10 @@ function renderVisualState(m) {
   $('visualEmpty').hidden = m.state === 'live';
   $('visualEmpty').textContent = m.message || I18N.tr('请选择绘图或仿真窗口');
   stage.hidden = m.state !== 'live';
-  $('visualTitle').textContent = m.title || I18N.tr('尚未选择窗口');
-  $('visualComputer').textContent = currentComputer()?.name || '';
+  $('visualTitle').textContent = m.title || I18N.tr('选择窗口');
+  $('visualChoose').title = m.title || I18N.tr('选择窗口');
   $('visualStatus').textContent = I18N.tr(({live: '实时', permission: '等待授权', starting: '连接中…', error: '已中断', idle: '未共享'})[m.state] || '未共享');
   $('visualStatus').dataset.state = m.state;
-  $('visualChoose').textContent = I18N.tr(m.title ? '切换窗口' : '选择窗口');
 }
 function receiveVisualWindows(m) {
   visualWindows = m.windows;
