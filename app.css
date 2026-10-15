@@ -753,9 +753,27 @@
   #imageEditor { width: min(96vw, 900px); max-width: 96vw; height: 90dvh; max-height: 94dvh; padding: 12px; box-sizing: border-box; color: var(--hi); background: var(--bg); border: 1px solid var(--border); border-radius: 14px; }
   #imageEditor[open] { display: flex; flex-direction: column; gap: 10px; }
   #imageEditor::backdrop { background: #000b; }
-  .imageEditHeading, .imageEditTools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .imageEditHeading b { margin-right: auto; }
-  .imageEditTools button[aria-pressed=true] { color: var(--blue); border-color: var(--blue); }
-  .imageEditTools input { width: 36px; height: 32px; padding: 2px; }
-  .imageEditStage { flex: 1; min-height: 0; overflow: auto; touch-action: none; }
+  .imageEditHeading, .imageEditNav, .imageEditTools, .imageEditView, .imageEditRatios, .imageEditOptions { display: flex; align-items: center; gap: 6px; flex: none; }
+  .imageEditHeading b { flex: 1; text-align: center; font-size: 16px; }
+  #imageEditor button { padding: 7px 9px; font-size: 13px; }
+  .imageEditHeading button { border: 0; background: transparent; }
+  .imageEditNav { justify-content: space-between; }
+  .imageEditNav span { font-size: 13px; color: var(--muted2); }
+  .imageEditTools { justify-content: space-between; }
+  .imageEditTools button { flex: 1; }
+  #imageEditor button[aria-pressed=true] { color: var(--blue); border-color: var(--blue); }
+  .imageEditOptions { flex-wrap: wrap; }
+  .imageEditOptions label { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted2); }
+  .imageEditOptions input[type=color] { width: 32px; height: 28px; padding: 2px; }
+  .imageEditOptions input[type=range] { width: 105px; }
+  .imageEditOptions input[type=text] { flex: 1; min-width: 100px; width: 100%; font-size: 14px; padding: 6px; }
+  .imageEditMore { display: flex; flex-wrap: wrap; gap: 6px; max-height: 120px; overflow-y: auto; flex: none; }
+  .imageEditRatios { overflow-x: auto; }
+  .imageEditRatios button { flex: 1; white-space: nowrap; }
+  .imageEditView { justify-content: flex-end; }
+  .imageEditView .hint { margin-right: auto; font-size: 11px; }
+  .imageEditView [data-zoom] { font-size: 12px; min-width: 34px; text-align: center; }
+  .imageEditSave { width: 100%; flex: none; }
+  .imageEditStage { flex: 1; min-height: 100px; overflow: auto; touch-action: none; background: var(--pre-bg); border-radius: 8px; }
   .imageEditStage canvas { display: block; max-width: none; max-height: none; touch-action: none; }
+  #imageEditor [hidden] { display: none; }
