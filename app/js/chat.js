@@ -245,7 +245,7 @@ function withMessageTimes(chat) {
   if (!chat) return chat;
   const scope = messageScope();
   const matches = (it, m) => it.k === 'human' && !m.before.has(it.i)
-    && ((it.t || '').trim() === m.text.trim() || (it.t || '').startsWith(m.text + '\n\n附加文件（'));
+    && echoTextMatches(it, m.text);
   const applies = m => m.scope === scope && (!m.thread || m.thread === chat.thread);
   const itemKey = it => generationKey(chat) + '|' + it.i;
   for (let index = 0; index < submittedMessages.length;) {

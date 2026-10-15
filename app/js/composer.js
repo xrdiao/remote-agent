@@ -4,7 +4,11 @@ const drafts = new Map(), draftMentions = new Map();
 const pendingSends = new Map(), draftVersions = new Map();
 // Optimistic echoes: the sent message/queue row is drawn immediately, then dropped when the real item arrives in a chat update.
 let pendingEchoes = [];
-function echoTextMatches(it, t) { const s = (it.t || ''); const x = t.trim(); return s.trim() === x || s.startsWith(x + '\n\n附加文件（'); }
+function echoTextMatches(it, t) {
+  const s = (it.t || '').trim(), x = t.trim();
+  return s === x || s.startsWith(x + '\n\n附加文件（')
+    || s.replace(/(?:^|\n)\[(?:图片|附件) \d+\](?:\n\[(?:图片|附件) \d+\])*$/, '').trim() === x;
+}
 function pushEcho(requestId, text, kind) {
   const before = (lastChat?.items || []).filter(it => it.k === 'human' && echoTextMatches(it, text)).length;
   pendingEchoes.push({ requestId, text, kind, at: Date.now(), sel: viewSel, before });
