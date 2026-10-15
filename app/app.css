@@ -402,10 +402,10 @@
   .sub .add { color: #73c991; }
   .sub .del { color: #f14c4c; }
   .pSec { font-size: 12px; color: #999; margin: 10px 4px 6px; }
-  button.fold { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: transparent; border: 0; color: #ccc; font-size: 13px; font-weight: 600; padding: 8px 4px 4px; margin-top: 4px; }
+  button.fold { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: transparent; border: 0; color: var(--mid); font-size: 13px; font-weight: 600; padding: 8px 4px 4px; margin-top: 4px; }
   button.fold .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  button.fold .tag { flex: none; font-size: 11px; font-weight: 500; color: #888; background: transparent; padding: 0; }
-  button.fold .chev { flex: none; color: #888; font-size: 12px; }
+  button.fold .tag { flex: none; font-size: 11px; font-weight: 500; color: var(--muted); background: transparent; padding: 0; }
+  button.fold .chev { flex: none; color: var(--muted); font-size: 12px; }
   .foldBody { margin-left: 8px; }
   .pRow { display: flex; flex-wrap: wrap; gap: 6px; }
   .pRow button { padding: 8px 12px; font-size: 13.5px; }
