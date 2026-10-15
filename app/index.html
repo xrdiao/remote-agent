@@ -33,11 +33,11 @@
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>Remote Agent</title>
-<link rel="stylesheet" href="app.css?v=87">
+<link rel="stylesheet" href="app.css?v=88">
 </head>
 <body>
 <header>
-  <button id="title"><span id="dot"></span><span class="titleLabels"><span class="titleRow"><span id="titleText">连接中…</span><span id="titlePlan" hidden></span></span><span id="titleProject"></span></span><span id="titleLatency"></span></button>
+  <button id="title"><span id="dot"></span><span class="titleLabels"><span class="titleRow"><span id="titleText">连接中…</span><span id="titlePlan" hidden></span></span><span id="titleProject"></span></span><span id="titleLatency"></span><svg class="arrowIcon titleArrow" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
     <div id="meters">
       <button class="meter" id="meterCtx" type="button"><span class="track"><i id="meterCtxFill"></i></span><span class="meterText"><span class="meterLabel">上下文</span><b id="meterCtxPct">未获取</b></span></button>
       <div id="quotaMeters"></div><span id="quotaStatus"></span>
@@ -74,8 +74,7 @@
   <section id="screenView" class="view">
     <div id="termBusy" hidden>Agent 正在运行</div>
     <div id="visualHeader" hidden>
-      <div class="visualHeading"><button id="visualBack" aria-label="返回对话">‹</button><h2>绘图与仿真</h2><span aria-hidden="true">▣</span></div>
-      <div class="visualSource"><button id="visualChoose"><span id="visualTitle">选择窗口</span><span aria-hidden="true">⌄</span></button><span id="visualStatus" role="status"></span></div>
+      <div class="visualSource"><button id="visualBack" aria-label="返回对话"><svg class="arrowIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg></button><button id="visualChoose"><span id="visualTitle">选择窗口</span><svg class="arrowIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button><span id="visualStatus" role="status"></span></div>
     </div>
     <div id="visualCaption" hidden>
       <span>窗口预览</span><span class="visualReadOnly">只读</span>
