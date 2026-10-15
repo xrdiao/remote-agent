@@ -619,18 +619,23 @@ export class AgentContext {
   }
 
   async focusTerminal() {
-    const pos = await this.editorCdp.evaluate(helpersCall('terminalFocus()'));
-    if (!pos) throw new Error('没有打开的终端。先新建一个。');
-    await this.tapCss(pos.x, pos.y, 'left', this.editorCdp);
-    await new Promise(r => setTimeout(r, 80));
+    if (!await this.editorCdp.evaluate(helpersCall('focusTerminalInput()'))) throw new Error('没有可输入的终端，请先打开终端');
   }
 
   async sendTerminal(text) {
     await this.focusTerminal();
-    // History recall already put a command on the prompt. Replace that line so an edit is not appended.
-    if (typeof await this.editorCdp.evaluate(helpersCall('terminalCommand()')) === 'string') {
-      await this.key('Ctrl+a', { cdp: this.editorCdp });
-      await this.key('Ctrl+k', { cdp: this.editorCdp });
+    const before = await this.editorCdp.evaluate(helpersCall('terminalHistory()'));
+    const input = before.input ?? await this.editorCdp.evaluate(helpersCall('terminalCommand()'));
+    if (input) {
+      await this.editorCdp.evaluate(helpersCall('clearTerminalInput()'));
+      for (let i = 0; i < 10; i++) {
+        await new Promise(r => setTimeout(r, 20));
+        const remaining = before.input === null
+          ? await this.editorCdp.evaluate(helpersCall('terminalCommand()'))
+          : (await this.editorCdp.evaluate(helpersCall('terminalHistory()'))).input;
+        if (remaining === '') break;
+        if (i === 9) throw new Error('终端原有输入未清空，尚未发送');
+      }
     }
     const lines = String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
     for (let i = 0; i < lines.length; i++) {

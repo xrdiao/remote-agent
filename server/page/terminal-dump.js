@@ -15,7 +15,21 @@
     if (fish) return fish[1].replace(/\s+$/, '');
     return null;
   };
-  const activeTerminal = () => doc.querySelector('.terminal-wrapper.active .xterm-wrapper')?.xterm || doc.querySelector('.terminal-wrapper.active')?.xterm || doc.querySelector('.xterm-wrapper')?.xterm;
+  const activeTerminal = () => document.querySelector('.terminal-wrapper.active .xterm-wrapper')?.xterm || document.querySelector('.terminal-wrapper.active')?.xterm || document.querySelector('.xterm-wrapper')?.xterm;
+  const terminalHistory = () => {
+    const term = activeTerminal();
+    const addon = (term?._addonManager?._addons || []).map(a => a.instance || a).find(a => a.capabilities);
+    const detection = addon?.capabilities.get(2);
+    const el = term?.element;
+    if (el) el.dataset.remoteTerminal ||= crypto.randomUUID();
+    return { id: el?.dataset.remoteTerminal || '', commands: (detection?.commands || []).map(c => c.command).filter(c => typeof c === 'string' && c.trim()), input: detection?.promptInputModel?.value ?? null };
+  };
+  const focusTerminalInput = () => {
+    const term = activeTerminal();
+    if (!term) return false;
+    term.focus(); return document.activeElement === term.textarea;
+  };
+  const clearTerminalInput = () => { activeTerminal().input('\x01\x0b', true); };
   const terminalCommand = () => {
     const term = activeTerminal();
     const buf = term?.buffer?.active;
