@@ -13,9 +13,12 @@ function rememberAgentOpen(m) {
   }
 }
 function openSheet(kind, html) {
+  const navScroll = sheetKind === kind ? $('sheet').querySelector('.codexSettingsNav')?.scrollLeft : 0;
   sheetKind = kind;
   $('sheet').dataset.kind = kind;
   $('sheet').innerHTML = html;
+  const nav = $('sheet').querySelector('.codexSettingsNav');
+  if (nav) nav.scrollLeft = navScroll || 0;
   $('shade').classList.add('open');
   $('sheet').classList.add('open');
   if (kind === 'agents') $('sheet').scrollTop = 0;
