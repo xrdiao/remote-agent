@@ -34,7 +34,7 @@ function cacheChat(sel, chat) {
     idbPut('chat-previews', [...chatBySel].map(([key, value]) => [key, { ...value, items: value.items.slice(-400) }]));
   }, 1000);
 }
-let chatFrame = 0, queuedChat = null, chatLoadGeneration = 0;
+let chatFrame = 0, queuedChat = null;
 function queueChatRender(chat = queuedChat?.chat || lastChat, stale = queuedChat?.stale ?? chatStale, sel = queuedChat?.sel || viewSel) {
   queuedChat = {chat, stale, sel};
   if (!chatFrame) chatFrame = requestAnimationFrame(() => {
@@ -43,12 +43,8 @@ function queueChatRender(chat = queuedChat?.chat || lastChat, stale = queuedChat
     queuedChat = null;
     if (windowReady && (!next.sel || !viewSel || next.sel === viewSel)) {
       renderChat(next.chat, next.stale);
-      const generation = ++chatLoadGeneration;
-      if (next.chat && (!next.stale || next.chat.imagePreview) && !deferredScrollRender) {
-        Promise.all([...itemsEl.children].map(el => el.chatImagesReady)).then(() => {
-          if (generation === chatLoadGeneration && windowReady && (!next.sel || next.sel === viewSel)) connContentReady();
-        });
-      }
+      if (next.chat && (!next.stale || next.chat.imagePreview) && !deferredScrollRender
+          && windowReady && (!next.sel || next.sel === viewSel)) connContentReady();
     }
   });
 }
@@ -363,7 +359,7 @@ function pruneEchoes(chat) {
     if (Date.now() - p.at > 60000) return false;
     if (p.sel !== viewSel) return true;
     if (humans.filter(it => echoTextMatches(it, p.text)).length > p.before) return false;
-    if (p.kind === 'queue' && queued.some(t => t === p.text.trim() || t.startsWith(p.text.trim() + '\n\n附加文件（'))) return false;
+    if (p.kind === 'queue' && queued.some(t => echoTextMatches({ t }, p.text))) return false;
     return true;
   });
 }
