@@ -141,6 +141,14 @@
     return codexThread() || (devinSurface() ? devinSession()?.key : '') || (glass.length === 1 ? glass[0].getAttribute('data-glass-agent-id') : '') || cursorSel || window.__SSG_COMPOSER_PROVIDER__?.getStates?.().find(c => c.state === 'focused')?.id || agentList().find(a => a.current)?.id || '';
   };
   const codexTurnData = el => codexFiberProps(el.querySelector('[class*="agent-activity"]') || el.querySelector('button[aria-expanded]') || el, 40).find(p => p.turn)?.turn;
+  const codexLatestEntry = el => {
+    if (!el) return null;
+    const props = codexFiberProps(el, 32);
+    const thread = codexThread();
+    const mounted = props.find(p => p.entry?.isLatestTurn && p.entry.conversationId === thread)?.entry;
+    if (mounted) return mounted;
+    return props.find(p => Array.isArray(p.entries))?.entries.find(e => e.isLatestTurn && e.conversationId === thread) || null;
+  };
   const codexFusionTurn = (id = '', message = '', previous = []) => {
     const rows = [...doc.querySelectorAll('[data-turn-key]')];
     const el = id ? rows.find(e => e.getAttribute('data-turn-key') === id)
@@ -152,11 +160,11 @@
     return { id: el?.getAttribute('data-turn-key') || '', ids: rows.map(e => e.getAttribute('data-turn-key')), user: user?.message || '', text: reply?.content || '', completed: turn?.status === 'complete' && !!reply?.completed, items: el ? codexTurnItems(el) : [] };
   };
   // One Codex turn can contain several markdown blocks. Keep them in order instead of keeping only the first reply.
-  const codexTurnItems = el => {
+  const codexTurnItems = (el, entry = null) => {
     const thread = codexThread();
-    const blocks = [...el.querySelectorAll('[class*="MarkdownRoot"]')];
+    const blocks = el ? [...el.querySelectorAll('[class*="MarkdownRoot"]')] : [];
     const out = [];
-    const turn = codexTurnData(el);
+    const turn = entry?.turn || codexTurnData(el);
     const markdown = new Map(blocks.map(block => [codexFiberProps(block).find(p => p.item?.type === 'assistant-message')?.item?.responseAnnotationTargetId, block]));
     const textOf = v => typeof v === 'string' ? v.replace(/\u00a0/g, ' ').trim() : '';
     const finished = turn?.status === 'complete';
@@ -202,6 +210,7 @@
         const result = (typeof raw === 'string' ? raw : raw == null ? '' : JSON.stringify(raw)).slice(0, 4000);
         out.push({ i: id, k: 'tool', kind: 'other', src: 'codex', t: `${item.type === 'mcp-tool-call' ? 'MCP' : '工具'} ${name}${status ? ' · ' + status : ''}${result ? ' · ' + result : ''}`.slice(0, 4400), keep: true });
       } else if (item.type === 'generated-image' || item.type === 'chatgpt-delayed-image-gen' || item.type === 'chatgpt-delayed-image-gen-received') {
+        if (!el) continue;
         const images = [...el.querySelectorAll('img')].filter(vis).map(img => img.currentSrc || img.src).filter(src => /^(https?:|data:image\/|blob:)/.test(src));
         out.push({ i: id, k: 'tool', kind: 'other', src: 'codex', t: item.type === 'chatgpt-delayed-image-gen' ? '正在生成图片' : '生成的图片', images, keep: true });
       } else if (item.type === 'chatgpt-tool-approval') {
@@ -217,12 +226,12 @@
         if (body) out.push({ i: id, k: 'tool', kind: 'other', src: 'codex', t: body.slice(0, 400), done: finished && /exec|patch|command/.test(item.type) });
       }
     }
-    const turnButtons = buttonsIn(el, false).map(x => x.label).filter(l => /^(Copy message|Fork chat from here|View changed files|View changes|Undo|Open agent|View agent|View subagent|Stop agent|Apply|Revert)$/.test(l));
+    const turnButtons = el ? buttonsIn(el, false).map(x => x.label).filter(l => /^(Copy message|Fork chat from here|View changed files|View changes|Undo|Open agent|View agent|View subagent|Stop agent|Apply|Revert)$/.test(l)) : [];
     if (turnButtons.length) {
       const host = [...out].reverse().find(it => it.k === 'assistant') || out.at(-1);
       if (host) { host.b = turnButtons; host.btnItem = el.getAttribute('data-turn-key') || host.i; }
     }
-    const number = codexFiberProps(el, 24).find(p => p.entry?.turnNumber)?.entry.turnNumber;
+    const number = entry?.turnNumber || codexFiberProps(el, 24).find(p => p.entry?.turnNumber)?.entry.turnNumber;
     return out.map((item, index) => ({ ...item, ...(number ? { order: number * 10000 + index } : {}) }));
   };
   /* ---------- Devin transcript rows ---------- */
@@ -462,7 +471,11 @@
     const modeEl = [...doc.querySelectorAll('.composer-unified-dropdown[data-mode]')].find(vis);
     const modelEl = modelButton();
     const latestTurn = [...doc.querySelectorAll('[data-turn-key]')].at(-1);
-    const latestData = latestTurn && codexTurnData(latestTurn);
+    const latestEntry = codexId && codexLatestEntry(latestTurn);
+    if (latestEntry?.turn && latestEntry.turnKey !== latestTurn?.getAttribute('data-turn-key')) {
+      items.push(...codexTurnItems(null, latestEntry));
+    }
+    const latestData = latestEntry?.turn || (latestTurn && codexTurnData(latestTurn));
     const turnTime = latestData?.items?.find(it => it.type === 'worked-for');
     let generation = turnTime?.startedAtMs ? { start: turnTime.startedAtMs, end: turnTime.completedAtMs || null } : null;
     if (!generation && latestData) {
