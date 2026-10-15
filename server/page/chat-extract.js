@@ -92,7 +92,7 @@
     const active = el && codexFiberProps(el, 40).find(p => typeof p.conversationId === 'string');
     return active?.conversationId || [...doc.querySelectorAll('[data-response-annotation-conversation]')].filter(vis).at(-1)?.getAttribute('data-response-annotation-conversation') || '';
   };
-  const attachmentRows = () => {
+  const attachmentRows = (ready = false) => {
     const ed = [...doc.querySelectorAll(`${COMPOSER}, [data-slate-editor="true"][contenteditable="true"]`)].filter(vis).at(-1);
     if (!ed) return [];
     let box = ed;
@@ -100,6 +100,10 @@
     const cursor = ed.closest('.ai-input-full-input-box');
     if (cursor) box = cursor;
     const buttons = [...box.querySelectorAll('button[aria-label^="Remove "]')].filter(button => button.parentElement.querySelector('img'));
+    if (ready) {
+      const images = [...buttons.map(button => button.parentElement.querySelector('img')), ...box.querySelectorAll('.context-pill-image img')];
+      return Promise.all(images.map(img => img.decode())).then(() => attachmentRows());
+    }
     return [...buttons, ...box.querySelectorAll('.context-pill-image')].filter(vis).map(button => {
       const pill = button.matches('.context-pill-image');
       const img = pill ? button.querySelector('img') : button.parentElement.querySelector('img');

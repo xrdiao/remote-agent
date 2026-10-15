@@ -68,6 +68,7 @@
   "terminalCommand",
   "modelListTrigger",
   "codexSettingsData",
+  "codexSettingValue",
   "waitSettings",
   "codexSaveInstructions",
   "codexSettingPoint",

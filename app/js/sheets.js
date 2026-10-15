@@ -484,7 +484,10 @@ function showCodexSettings(m) {
     return `<div class="pSec">${esc(row.label)}</div>${detail}<div class="paramRow">${row.controls.map(button).join('')}</div>`;
   }).join('');
   const instructions = m.instructions ? `<div class="pSec">Codex instructions</div><textarea id="codexInstructions" rows="9" style="width:100%;box-sizing:border-box" ${m.instructions.disabled ? 'disabled' : ''}>${esc(m.instructions.value)}</textarea><button class="opt" data-save-instructions ${m.instructions.disabled ? 'disabled' : ''}>保存指令</button>` : '';
-  openSheet('codex-settings', `<h3>Codex 设置</h3>${nav}${choices}${instructions}${rows || (instructions ? '' : '<div class="hint">当前页面没有可操作的设置项。</div>')}`);
+  const fields = (m.fields || []).map(f => `<label class="pSec">${esc(f.label)}</label>${f.type === 'select' ? `<select data-codex-field="${esc(f.id)}" ${f.disabled ? 'disabled' : ''}>${f.options.map(o => `<option value="${esc(o.value)}" ${o.value === f.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>` : f.type === 'textarea' ? `<textarea data-codex-field="${esc(f.id)}" ${f.disabled ? 'disabled' : ''}>${esc(f.value)}</textarea>` : `<input data-codex-field="${esc(f.id)}" type="${esc(f.type)}" aria-label="${esc(f.label)}" value="${esc(f.value)}" ${f.disabled ? 'disabled' : ''}>`}`).join('');
+  const extras = (m.extra || []).map(button).join('');
+  const summary = m.summary ? `<div class="hint">${esc(m.summary)}</div>` : '';
+  openSheet('codex-settings', `<h3>Codex 设置</h3>${nav}${choices}${summary}${instructions}${fields}${extras}${rows || (instructions || fields || extras ? '' : '<div class="hint">电脑端此栏目当前也没有可操作的设置项。</div>')}`);
 }
 function showSettings(sections, nav = [], current = '') {
   const body = sections.map(s => `<div class="pSec">${esc(s.title)}</div>` + s.items.map(it => {

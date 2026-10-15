@@ -210,6 +210,7 @@ $('fusionBar').onclick = e => {
   send({ t: 'fusionDecide', kind: b.dataset.fusionAct });
 };
 $('send').onclick = () => {
+  if (mode === 'chat' && pendingImageUploads()) return status('图片尚未上传完成；失败图片请重试或删除', false);
   const v = text.value;
   if (currentApp === 'fusion' && lastChat?.fusion?.busy) return status('Fusion 正在进行');
   if (!v.trim() && !$('attachments').children.length) return;
@@ -223,6 +224,7 @@ $('send').onclick = () => {
   if (mode === 'chat') list.scrollTop = list.scrollHeight;
 };
 $('sendNow').onclick = async () => {
+  if (pendingImageUploads()) return status('图片尚未上传完成；失败图片请重试或删除', false);
   const v = text.value;
   if (!v.trim() && !$('attachments').children.length) return;
   saveDraft();

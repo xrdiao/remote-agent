@@ -80,14 +80,14 @@ async function openImageEditor(image) {
       button.disabled = true;
       try {
         const blob = await new Promise(resolve => work.toBlob(resolve, 'image/png'));
-        const file = await shrinkImage(new File([blob], image.name.replace(/\.[^.]+$/, '') + '.png', { type: 'image/png' }));
-        const data = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file); });
+        const file = new File([blob], image.name.replace(/\.[^.]+$/, '') + '.png', { type: 'image/png' });
         if (image.sel !== viewSel) throw new Error('会话已切换，请回到原会话编辑图片');
-        send({ t: 'image', data: data.slice(data.indexOf(',') + 1), type: file.type, name: file.name, replace: image.id, sel: image.sel });
+        const accepted = image.onSave ? await image.onSave(file) : await attachImageFile(file, { replace: image.id, sel: image.sel });
+        if (!accepted) { button.disabled = false; return; }
         status('正在保存编辑后的图片…'); dialog.close();
       } catch (error) { status(error.message, false); button.disabled = false; }
     }
   };
-  dialog.onclose = () => { dialog.remove(); work.width = work.height = canvas.width = canvas.height = 0; source.src = ''; };
+  dialog.onclose = () => { image.onClose?.(); dialog.remove(); work.width = work.height = canvas.width = canvas.height = 0; source.src = ''; };
   document.body.appendChild(dialog); reset(); dialog.showModal(); status('');
 }

@@ -393,16 +393,21 @@ async withCodexSettings(fn) {
   return fn(cdp);
 },
 
-async showCodexSettings(id = '', requestId = 0) {
+async showCodexSettings(id = '', requestId = 0, value) {
   const sel = this.sel;
   const data = await this.withCodexSettings(async cdp => {
-    const before = id ? JSON.stringify(await cdp.evaluate(helpersCall('codexSettingsData()'))) : '';
+    const previous = id ? await cdp.evaluate(helpersCall('codexSettingsData()')) : null;
+    const before = previous ? JSON.stringify(previous) : '';
+    const navigating = previous?.nav.some(n => n.id === id && !n.current);
     if (id) {
-      const pos = await cdp.evaluate(helpersCall(`codexSettingPoint(${JSON.stringify(id)})`));
-      if (!pos) throw new Error('设置选项已改变，请重新打开设置');
-      await this.tapCss(pos.x, pos.y, 'left', cdp);
+      if (value !== undefined) await cdp.evaluate(helpersCall(`codexSettingValue(${JSON.stringify(id)}, ${JSON.stringify(value)})`));
+      else {
+        const pos = await cdp.evaluate(helpersCall(`codexSettingPoint(${JSON.stringify(id)})`));
+        if (!pos) throw new Error('设置选项已改变，请重新打开设置');
+        await this.tapCss(pos.x, pos.y, 'left', cdp);
+      }
     }
-    const data = await cdp.evaluate(helpersCall(`waitSettings('codex', ${JSON.stringify(before)}, ${before ? 200 : 1200})`));
+    const data = await cdp.evaluate(helpersCall(`waitSettings('codex', ${JSON.stringify(before)}, ${navigating || !before ? 1200 : 200})`));
     if (!data.nav.length) throw new Error('Codex 设置内容尚未加载');
     return data;
   });
