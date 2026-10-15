@@ -26,16 +26,17 @@ async function shrinkImage(file, canvas) {
 }
 
 const imageUploads = new Map(), editableImages = new Map();
-let desktopAttachments = [], editBeforeUpload = false;
+let desktopAttachments = [], editBeforeUpload = false, imageBatchScope = '';
 const imageUploadScope = () => [currentComputer()?.id || '', viewSel].join('|');
-function pendingImageUploads() { return [...imageUploads.values()].some(f => f.scope === imageUploadScope()); }
+function pendingImageUploads() { return imageBatchScope === imageUploadScope() || [...imageUploads.values()].some(f => f.scope === imageUploadScope()); }
 function renderAttachments(list) {
   desktopAttachments = list;
   for (const [id, image] of editableImages) {
     if (image.scope !== imageUploadScope() || !list.some(f => f.id === id)) { URL.revokeObjectURL(image.data); editableImages.delete(id); }
   }
   const pending = [...imageUploads.entries()].filter(([, f]) => f.scope === imageUploadScope());
-  $('attachments').innerHTML = list.map(f => `<div class="attachment">${f.preview ? `<img src="${esc(f.preview)}" alt="">` : ''}${f.preview ? `<button data-edit-attachment="${esc(f.id)}">编辑</button>` : ''}<span title="${esc(f.name)}">${esc(f.name)}${f.size != null ? ` (${Math.ceil(f.size / 1024)} KB)` : ''}</span><button data-remove-attachment="${esc(f.id)}" aria-label="删除 ${esc(f.name)}">×</button></div>`).join('')
+  $('attachments').parentElement.hidden = !list.length && !pending.length;
+  $('attachments').innerHTML = list.map(f => { const preview = f.preview || editableImages.get(f.id)?.data; return `<div class="attachment">${preview ? `<img src="${esc(preview)}" alt="">` : ''}${preview ? `<button data-edit-attachment="${esc(f.id)}">编辑</button>` : ''}<span title="${esc(f.name)}">${esc(f.name)}${f.size != null ? ` (${Math.ceil(f.size / 1024)} KB)` : ''}</span><button data-remove-attachment="${esc(f.id)}" aria-label="删除 ${esc(f.name)}">×</button></div>`; }).join('')
     + pending.map(([id, f]) => `<div class="attachment"><img src="${esc(f.preview)}" alt=""><span>${esc(f.name)} · ${f.error ? '上传失败' : '上传中…'}</span>${f.error ? `<button data-retry-image="${id}">重试</button><button data-discard-image="${id}" aria-label="删除失败的图片">×</button>` : ''}</div>`).join('');
 }
 function finishImageUpload(m) {
@@ -129,16 +130,27 @@ async function attachImageFile(file, options = {}) {
   }
 }
 $('imgFile').onchange = async () => {
-  const file = $('imgFile').files[0], edit = editBeforeUpload;
+  const files = [...$('imgFile').files], edit = editBeforeUpload;
   $('imgFile').value = ''; editBeforeUpload = false;
-  if (!file) return;
-  if (!edit) return attachImageFile(file);
-  const sel = viewSel;
-  let url;
+  if (!files.length) return;
+  const sel = viewSel, scope = imageUploadScope();
+  imageBatchScope = scope;
   try {
-    url = URL.createObjectURL(file);
-    await openImageEditor({ name: file.name, data: url, sel, onSave: edited => attachImageFile(edited, { sel, prepared: true }), onClose: () => URL.revokeObjectURL(url) });
-  } catch (error) { if (url) URL.revokeObjectURL(url); status(error.message, false); }
+    for (const file of files) {
+      if (scope !== imageUploadScope()) break;
+      if (!edit) { await attachImageFile(file, { sel }); continue; }
+      const url = URL.createObjectURL(file);
+      try {
+        await new Promise((resolve, reject) => {
+          openImageEditor({ name: file.name, data: url, sel, batch: true,
+            onSave: edited => attachImageFile(edited, { sel, prepared: true }),
+            onSkip: () => attachImageFile(file, { sel }),
+            onClose: resolve }).then(opened => { if (!opened) resolve(); }).catch(reject);
+        });
+      } finally { URL.revokeObjectURL(url); }
+    }
+  } catch (error) { status(error.message, false); }
+  finally { if (imageBatchScope === scope) imageBatchScope = ''; }
 };
 text.addEventListener('paste', async e => {
   const files = [...e.clipboardData.files];
