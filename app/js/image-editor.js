@@ -80,9 +80,9 @@ async function openImageEditor(image) {
       button.disabled = true;
       try {
         const blob = await new Promise(resolve => work.toBlob(resolve, 'image/png'));
-        const file = new File([blob], image.name.replace(/\.[^.]+$/, '') + '.png', { type: 'image/png' });
+        const file = await shrinkImage(new File([blob], image.name.replace(/\.[^.]+$/, '') + '.png', { type: 'image/png' }), work);
         if (image.sel !== viewSel) throw new Error('会话已切换，请回到原会话编辑图片');
-        const accepted = image.onSave ? await image.onSave(file) : await attachImageFile(file, { replace: image.id, sel: image.sel });
+        const accepted = image.onSave ? await image.onSave(file) : await attachImageFile(file, { replace: image.id, sel: image.sel, prepared: true });
         if (!accepted) { button.disabled = false; return; }
         status('正在保存编辑后的图片…'); dialog.close();
       } catch (error) { status(error.message, false); button.disabled = false; }
