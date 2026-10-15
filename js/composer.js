@@ -1,7 +1,14 @@
 /* ---------- composer ---------- */
 const text = $('text');
 const drafts = new Map(), draftMentions = new Map();
-const inputHistory = new Map();
+const inputHistory = new Map(), chatInputCache = new Map(), terminalInputHistory = new Map();
+function chatInputKey(chat = lastChat) { return [currentComputer()?.id || '', viewSel, 'chat', chat?.thread || ''].join('|'); }
+function rememberInputHistory(chat) {
+  if (!chat) return;
+  const key = chatInputKey(chat), rows = new Map(chatInputCache.get(key) || []);
+  for (const it of chat.items || []) if (it.k === 'human' && it.t?.trim()) { rows.delete(it.i); rows.set(it.i, it.t); }
+  chatInputCache.set(key, [...rows].slice(-10));
+}
 const pendingSends = new Map(), draftVersions = new Map();
 // Optimistic echoes: the sent message/queue row is drawn immediately, then dropped when the real item arrives in a chat update.
 let pendingEchoes = [];
@@ -34,7 +41,8 @@ function confirmSent(m) {
   const sent = pendingSends.get(m.requestId);
   if (!sent) return;
   pendingSends.delete(m.requestId);
-  inputHistory.delete(sent.draft);
+  if (sent.mode === 'terminal') terminalInputHistory.clear();
+  for (const key of inputHistory.keys()) if (key.startsWith(sent.draft + '|')) inputHistory.delete(key);
   if (drafts.get(sent.draft) === sent.text && (draftVersions.get(sent.draft) || 0) === sent.version) { drafts.delete(sent.draft); draftMentions.delete(sent.draft); }
   const here = (currentComputer()?.id || '') === sent.computer && mode === sent.mode && (draftKey() === sent.draft || m.sel === viewSel);
   if (here && pendingStatus === '正在发送…' && ![...pendingSends.values()].some(p => p.draft === activeDraft)) {
@@ -55,13 +63,15 @@ function restoreDraft() { activeDraft = draftKey(); text.value = drafts.get(acti
 function autosize() { text.style.height = 'auto'; text.style.height = text.scrollHeight + 'px'; updateMathPrev(); }
 function recallInput(direction) {
   if (mode !== 'chat') return;
-  let state = inputHistory.get(activeDraft);
+  const key = chatInputKey();
+  let state = inputHistory.get(key);
   if (!state) {
     if (direction > 0) return;
-    const rows = (lastChat?.items || []).filter(it => it.k === 'human' && it.t?.trim()).map(it => it.t);
+    rememberInputHistory(lastChat);
+    const rows = (chatInputCache.get(key) || []).map(([, value]) => value);
     if (!rows.length) return status('当前会话暂无已发送内容');
     state = { rows, index: rows.length, draft: text.value, mentions: MN.mentions.slice() };
-    inputHistory.set(activeDraft, state);
+    inputHistory.set(key, state);
   }
   state.index = Math.max(0, Math.min(state.rows.length, state.index + direction));
   const atDraft = state.index === state.rows.length;
@@ -69,7 +79,7 @@ function recallInput(direction) {
   MN.mentions = atDraft ? state.mentions.slice() : [];
   text.setSelectionRange(text.value.length, text.value.length);
   mentionHide(); text.dispatchEvent(new Event('input', { bubbles: true }));
-  if (atDraft) inputHistory.delete(activeDraft);
+  if (atDraft) inputHistory.delete(key);
 }
 $('inputPrev').onclick = () => recallInput(-1);
 $('inputNext').onclick = () => recallInput(1);
@@ -284,5 +294,25 @@ $('pickTerms').onclick = () => { status('正在读取终端列表…'); send({ t
 $('newTerm').onclick = () => { status('正在新建终端…'); send({ t: 'newTerminal' }); };
 $('termEmptyNew').onclick = () => { status('正在新建终端…'); send({ t: 'newTerminal' }); };
 $('termInt').onclick = () => send({ t: 'key', key: 'Ctrl+c', focus: 'terminal' });
-document.querySelectorAll('[data-termkey]').forEach(b => b.onclick = () => send({ t: 'key', key: b.dataset.termkey, focus: 'terminal' }));
+function recallTerminal(m) {
+  if (mode !== 'terminal' || m.sel !== viewSel) return;
+  const key = [currentComputer()?.id || '', m.sel, m.id].join('|');
+  let state = terminalInputHistory.get(key);
+  if (!state) {
+    if (m.direction > 0) return;
+    if (!m.commands.length) return status('当前终端暂无可读取的命令历史');
+    state = { rows: m.commands, index: m.commands.length, draft: text.value };
+    terminalInputHistory.set(key, state);
+  }
+  state.index = Math.max(0, Math.min(state.rows.length, state.index + m.direction));
+  const atDraft = state.index === state.rows.length;
+  text.value = atDraft ? state.draft : state.rows[state.index];
+  text.setSelectionRange(text.value.length, text.value.length); autosize(); saveDraft();
+  if (atDraft) terminalInputHistory.delete(key);
+}
+document.querySelectorAll('[data-termkey]').forEach(b => b.onclick = () => {
+  const direction = b.dataset.termkey === 'ArrowUp' ? -1 : b.dataset.termkey === 'ArrowDown' ? 1 : 0;
+  if (direction) send({ t: 'termHistory', direction });
+  else send({ t: 'key', key: b.dataset.termkey, focus: 'terminal' });
+});
 

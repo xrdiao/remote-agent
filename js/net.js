@@ -573,6 +573,7 @@ async function connect() {
     else if (m.t === 'terminals') { finishPending(['正在读取终端列表…']); showTerminals(m.list || []); }
     else if (m.t === 'agentBusy') $('termBusy').hidden = !(mode === 'terminal' && m.busy);
     else if (m.t === 'termText') { if (!m.sel || !viewSel || m.sel === viewSel) { renderTerm(m); connContentReady(); } }
+    else if (m.t === 'termHistory') recallTerminal(m);
     else if (m.t === 'termInput' && mode === 'terminal') {
       text.value = m.text || '';
       const end = text.value.length;
