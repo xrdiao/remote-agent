@@ -501,6 +501,7 @@ async function connect() {
     else if (m.t === 'latency') receiveLatency(m);
     else if (m.t === 'visual') renderVisualState(m);
     else if (m.t === 'visualWindows') { receiveVisualWindows(m); if (mode === 'screen') connContentReady(); }
+    else if (m.t === 'imageEdit') { if (m.sel === viewSel) openImageEditor(m).catch(e => status('图片编辑失败：' + e.message, false)); }
     else if (m.t === 'attachments') { if (m.sel === viewSel) renderAttachments(m.list); }
     else if (m.t === 'chat') {
       if (!m.sel || !viewSel || m.sel === viewSel) {
@@ -595,7 +596,7 @@ async function connect() {
       if (editorBrowsing) startEditor();
     }
     else if (m.t === 'docs') { finishPending(['正在读取文档…', '正在读取项目文件…']); showDocs(m); }
-    else if (m.t === 'settings') { if (m.codex && m.requestId !== codexSettingsRequest) return; finishPending(['正在读取设置…', '正在修改…']); m.codex ? showCodexSettings(m) : showSettings(m.sections || []); }
+    else if (m.t === 'settings') { if (m.codex && m.requestId !== codexSettingsRequest) return; finishPending(['正在读取设置…', '正在修改…', '正在保存指令…']); m.codex ? showCodexSettings(m) : showSettings(m.sections || [], m.nav || [], m.current || ''); }
     else if (m.t === 'usage') {
       if (currentApp === 'fusion' || (m.sel && viewSel && m.sel !== viewSel)) return;
       if (m.plan) { appPlans = { ...appPlans, [currentApp]: m.plan }; updateTitle(); }

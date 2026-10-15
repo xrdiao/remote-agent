@@ -749,3 +749,13 @@
     .cSpin { animation: none; border-color: var(--c-load); border-right-color: var(--c-load-dim); }
     .cBar i.load::after { animation: none; left: 30%; }
   }
+
+  #imageEditor { width: min(96vw, 900px); max-width: 96vw; height: 90dvh; max-height: 94dvh; padding: 12px; box-sizing: border-box; color: var(--hi); background: var(--bg); border: 1px solid var(--border); border-radius: 14px; }
+  #imageEditor[open] { display: flex; flex-direction: column; gap: 10px; }
+  #imageEditor::backdrop { background: #000b; }
+  .imageEditHeading, .imageEditTools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .imageEditHeading b { margin-right: auto; }
+  .imageEditTools button[aria-pressed=true] { color: var(--blue); border-color: var(--blue); }
+  .imageEditTools input { width: 36px; height: 32px; padding: 2px; }
+  .imageEditStage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .imageEditStage canvas { max-width: 100%; max-height: 100%; width: auto; height: auto; touch-action: none; }

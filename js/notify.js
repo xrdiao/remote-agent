@@ -184,6 +184,10 @@ $('sheet').addEventListener('click', async e => {
     closeSheet(); status('正在创建会话…');
     return send({ t: 'fusionContinue', side: b.dataset.fusionSide, id: b.dataset.fusionContinue });
   }
+  if ('saveInstructions' in b.dataset) {
+    status('正在保存指令…');
+    return send({ t: 'codexInstructions', text: $('codexInstructions').value });
+  }
   if (b.dataset.codexSetting) {
     const label = b.textContent.trim();
     if (RISKY.test(label) && !await ask(label + '？')) return;
@@ -226,6 +230,7 @@ $('sheet').addEventListener('click', async e => {
     return send({ t: 'docs', editor: editorBrowsing, root: b.dataset.root, host: b.dataset.docsHost || '', path: b.dataset.docsUp });
   }
   if (b.dataset.docsRoot) { status('正在读取文档…'); return send({ t: 'docs', editor: editorBrowsing, root: b.dataset.docsRoot, host: b.dataset.docsHost || '', path: b.dataset.docsDir || b.dataset.docsRoot }); }
+  if (b.dataset.settingsNav) { status('正在读取设置…'); return send({ t: 'settings', section: b.dataset.settingsNav }); }
   if (b.dataset.setting) { status('正在修改…'); return send({ t: 'toggleSetting', label: b.dataset.setting }); }
   if (b.dataset.termDel) {
     if (!await ask(`删除终端「${b.dataset.termName || ''}」？\n里面正在跑的命令会停掉。`, '删除')) return;
