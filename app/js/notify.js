@@ -465,3 +465,8 @@ $('sheet').addEventListener('change', e => {
   const field = e.target.closest('[data-codex-field]');
   if (field) { status('正在读取设置…'); send({ t: 'codexSetting', id: field.dataset.codexField, value: field.value }); }
 });
+
+$('sheet').addEventListener('change', e => {
+  const field = e.target.closest('[data-setting-field]');
+  if (field) { status('正在修改…'); send({ t:'toggleSetting', label:field.dataset.settingField, value:field.value }); }
+});

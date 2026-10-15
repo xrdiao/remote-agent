@@ -1,6 +1,7 @@
 /* ---------- composer ---------- */
 const text = $('text');
 const drafts = new Map(), draftMentions = new Map();
+const inputHistory = new Map();
 const pendingSends = new Map(), draftVersions = new Map();
 // Optimistic echoes: the sent message/queue row is drawn immediately, then dropped when the real item arrives in a chat update.
 let pendingEchoes = [];
@@ -33,6 +34,7 @@ function confirmSent(m) {
   const sent = pendingSends.get(m.requestId);
   if (!sent) return;
   pendingSends.delete(m.requestId);
+  inputHistory.delete(sent.draft);
   if (drafts.get(sent.draft) === sent.text && (draftVersions.get(sent.draft) || 0) === sent.version) { drafts.delete(sent.draft); draftMentions.delete(sent.draft); }
   const here = (currentComputer()?.id || '') === sent.computer && mode === sent.mode && (draftKey() === sent.draft || m.sel === viewSel);
   if (here && pendingStatus === '正在发送…' && ![...pendingSends.values()].some(p => p.draft === activeDraft)) {
@@ -51,6 +53,26 @@ function draftKey() { return [currentComputer()?.id || '', viewSel, mode].join('
 function saveDraft() { if (activeDraft) { drafts.set(activeDraft, text.value); draftMentions.set(activeDraft, MN.mentions.slice()); } }
 function restoreDraft() { activeDraft = draftKey(); text.value = drafts.get(activeDraft) || ''; MN.mentions = draftMentions.get(activeDraft)?.slice() || []; mentionHide(); autosize(); }
 function autosize() { text.style.height = 'auto'; text.style.height = text.scrollHeight + 'px'; updateMathPrev(); }
+function recallInput(direction) {
+  if (mode !== 'chat') return;
+  let state = inputHistory.get(activeDraft);
+  if (!state) {
+    if (direction > 0) return;
+    const rows = (lastChat?.items || []).filter(it => it.k === 'human' && it.t?.trim()).map(it => it.t);
+    if (!rows.length) return status('当前会话暂无已发送内容');
+    state = { rows, index: rows.length, draft: text.value, mentions: MN.mentions.slice() };
+    inputHistory.set(activeDraft, state);
+  }
+  state.index = Math.max(0, Math.min(state.rows.length, state.index + direction));
+  const atDraft = state.index === state.rows.length;
+  text.value = atDraft ? state.draft : state.rows[state.index];
+  MN.mentions = atDraft ? state.mentions.slice() : [];
+  text.setSelectionRange(text.value.length, text.value.length);
+  mentionHide(); text.dispatchEvent(new Event('input', { bubbles: true }));
+  if (atDraft) inputHistory.delete(activeDraft);
+}
+$('inputPrev').onclick = () => recallInput(-1);
+$('inputNext').onclick = () => recallInput(1);
 let draftPushTimer = 0;
 text.addEventListener('input', () => {
   inputRevision++; draftVersions.set(activeDraft, (draftVersions.get(activeDraft) || 0) + 1); autosize(); saveDraft();

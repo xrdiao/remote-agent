@@ -1,8 +1,8 @@
 // Caches the app shell so the installed app opens instantly; live data (url.json, relay) always goes to the network.
-const CACHE = 'remote-agent-v97';
-const SHELL = ['./', 'index.html', 'app.css?v=96', 'i18n.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png',
-  'js/core.js?v=92', 'js/gate.js', 'js/net.js?v=93', 'js/sheets.js?v=94', 'js/notify.js?v=93', 'js/mode.js', 'js/chat.js?v=87',
-  'js/history.js?v=87', 'js/files.js', 'js/screen.js?v=87', 'js/terminal.js', 'js/composer.js?v=93', 'js/voice.js?v=96',
+const CACHE = 'remote-agent-v98';
+const SHELL = ['./', 'index.html', 'app.css?v=98', 'i18n.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png',
+  'js/core.js?v=92', 'js/gate.js', 'js/net.js?v=98', 'js/sheets.js?v=98', 'js/notify.js?v=98', 'js/mode.js', 'js/chat.js?v=87',
+  'js/history.js?v=87', 'js/files.js', 'js/screen.js?v=87', 'js/terminal.js', 'js/composer.js?v=98', 'js/voice.js?v=96',
   'js/scanner.js',
   'js/latency.js', 'js/image-editor.js?v=97',
   'logo-cursor-dark.svg', 'logo-cursor-light.svg',

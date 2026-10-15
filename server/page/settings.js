@@ -4,20 +4,19 @@
   };
   // The gear's label flips to "Close Settings". Devin opens a settings editor tab instead.
   const settingsOpen = () => {
-    if ([...doc.querySelectorAll('button, [role=button]')].some(e => onScreen(e) && e.getAttribute('aria-label') === 'Close Settings')) return true;
+    if ([...doc.querySelectorAll('button, a, [role=button]')].some(e => onScreen(e) && e.getAttribute('aria-label') === 'Close Settings')) return true;
     if ([...doc.querySelectorAll('input')].some(e => onScreen(e) && /search settings/i.test(e.getAttribute('aria-label') || ''))) return true;
-    const tab = [...doc.querySelectorAll('.tab.active')].find(onScreen);
-    return /settings/i.test(tab?.getAttribute('aria-label') || tab?.innerText || '');
+    return [...doc.querySelectorAll('.tab.active')].some(tab => onScreen(tab) && /settings/i.test(tab.getAttribute('aria-label') || tab.innerText || ''));
   };
   const clickSettingsButton = () => {
-    const b = [...doc.querySelectorAll('button, [role=button]')].find(e => onScreen(e) && /^(Settings|Open Cursor Settings)$/.test(e.getAttribute('aria-label') || ''));
+    const b = [...doc.querySelectorAll('button, a, [role=button]')].find(e => onScreen(e) && /^(Settings|Open Cursor Settings|Devin Settings)$/.test(e.getAttribute('aria-label') || ''));
     if (!b) return false;
     b.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     b.click();
     return true;
   };
   const clickCloseSettings = () => {
-    const b = [...doc.querySelectorAll('button, [role=button]')].find(e => onScreen(e) && e.getAttribute('aria-label') === 'Close Settings');
+    const b = [...doc.querySelectorAll('button, a, [role=button]')].find(e => onScreen(e) && e.getAttribute('aria-label') === 'Close Settings');
     if (b) { b.click(); return 'button'; }
     const tab = [...doc.querySelectorAll('.tab.active')].find(e => onScreen(e) && /settings/i.test(e.getAttribute('aria-label') || ''));
     const close = tab?.querySelector('[aria-label^="Close"]');
@@ -63,6 +62,8 @@
     return sections;
   };
   const settingTarget = label => {
+    const control = [...doc.querySelectorAll('[data-remote-setting]')].find(e => e.dataset.remoteSetting === label);
+    if (control) { control.scrollIntoView({block:'center'}); return center(control); }
     const root = settingsPanel();
     if (!root) return null;
     for (const entry of root.querySelectorAll('.ui-field-group__entry')) {
@@ -72,6 +73,55 @@
       return sw && vis(sw) ? center(sw) : null;
     }
     return null;
+  };
+  const desktopSettingsData = (section = '', app = '') => {
+    const cursor = app === 'devin' ? null : settingsPanel();
+    const root = cursor || [...doc.querySelectorAll('.editor-instance')].find(e => vis(e) && [...e.querySelectorAll('button')].some(b => b.textContent.trim() === 'Plan information'));
+    if (!root) return { sections: [], nav: [], current: '', choices: [] };
+    const mark = el => { el.dataset.remoteSetting ||= crypto.randomUUID(); return el.dataset.remoteSetting; };
+    const nav = cursor ? [...root.querySelectorAll('.cursor-settings-sidebar-nav-cell')].map(e => e.textContent.trim()).filter(name => name !== 'VS Code Settings') : devinSettingsNav();
+    const heading = root.querySelector('h1');
+    const current = cursor ? heading?.textContent.trim() || section || nav[0] : section || nav[0];
+    const groups = cursor ? [...root.querySelectorAll('.ui-section')] : [...root.querySelectorAll('section')].filter(e => e.querySelector('h2')?.textContent.trim() === current);
+    const selector = '[role=switch], [role=combobox], button, [role=button], input:not([type=hidden]):not([type=password]), textarea, select';
+    const sections = groups.map(group => {
+      const items = [];
+      const controls = [...group.querySelectorAll(selector)].filter(vis).filter(e => !e.closest('[aria-hidden=true]') && (!cursor || e.closest('.ui-section') === group) && (!e.closest('[role=combobox]') || e.getAttribute('role') === 'combobox'));
+      for (const el of controls) {
+        if (el.type === 'checkbox' && el.parentElement.querySelector('[role=switch]')) continue;
+        let row = el.closest('.ui-field-group__entry');
+        if (!row) {
+          row = el.parentElement;
+          while (row.parentElement && row !== group && !row.innerText.trim()) row = row.parentElement;
+          if (row !== group && row.innerText.trim() === el.innerText?.trim()) row = row.parentElement;
+        }
+        const lines = (row.innerText || '').split('\n').map(t => t.trim()).filter(Boolean);
+        const label = (el.getAttribute('aria-label') || lines[0] || el.textContent.trim() || el.placeholder || '').slice(0,140);
+        if (!label) continue;
+        const id = mark(el), disabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
+        const sw = el.getAttribute('role') === 'switch' || el.type === 'checkbox';
+        const field = !sw && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName);
+        items.push({ id, label, detail: lines.filter(t => t !== label).slice(0,2).join(' · ').slice(0,180), disabled,
+          ...(sw ? { on: el.checked ?? el.getAttribute('aria-checked') === 'true' } : field ? { type: el.tagName === 'SELECT' ? 'select' : el.tagName === 'TEXTAREA' ? 'textarea' : el.type || 'text', value: el.value, options: el.options ? [...el.options].map(o => ({label:o.text,value:o.value})) : [] } : { action: true, value: el.textContent.trim() }) });
+      }
+      const summary = group.cloneNode(true); summary.querySelectorAll(selector).forEach(e => e.remove());
+      return { title: group.querySelector('h2,h3')?.textContent.trim() || current, items, summary: items.length ? '' : summary.textContent.trim().slice(0,2000) };
+    });
+    const choices = [...doc.querySelectorAll('[role=option],[role=menuitem],[role=menuitemradio],[role=menuitemcheckbox]')].filter(el => onScreen(el) && !el.closest('[role=menubar]')).map(el => ({ id:mark(el),label:(el.textContent||el.getAttribute('aria-label')||'').trim(),on:el.getAttribute('aria-selected')==='true'||el.getAttribute('aria-checked')==='true' })).filter(c=>c.label);
+    return { sections, nav, current, choices };
+  };
+  const desktopSettingsNav = (section, app = '') => {
+    const root = app === 'devin' ? [...doc.querySelectorAll('.editor-instance')].find(e => vis(e) && [...e.querySelectorAll('button')].some(b => b.textContent.trim() === 'Plan information')) : settingsPanel();
+    const button = root && [...root.querySelectorAll(app === 'devin' ? 'button' : '.cursor-settings-sidebar-nav-cell')].find(e => e.textContent.trim() === section);
+    if (!button) return false;
+    button.scrollIntoView({block:'nearest'}); button.click(); return true;
+  };
+  const desktopSettingValue = (id, value) => {
+    const el = [...doc.querySelectorAll('[data-remote-setting]')].find(e => e.dataset.remoteSetting === id);
+    if (!el || el.disabled) throw new Error('设置项已变化，请重新读取');
+    const proto = el.tagName === 'SELECT' ? doc.defaultView.HTMLSelectElement.prototype : el.tagName === 'TEXTAREA' ? doc.defaultView.HTMLTextAreaElement.prototype : doc.defaultView.HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto,'value').set.call(el,value);
+    el.dispatchEvent(new doc.defaultView.Event('input',{bubbles:true})); el.dispatchEvent(new doc.defaultView.Event('change',{bubbles:true}));
   };
   const codexSettingsData = () => {
     const mark = el => { el.dataset.remoteSetting ||= crypto.randomUUID(); return el.dataset.remoteSetting; };
@@ -151,7 +201,7 @@
     return true;
   };
   const devinSettingsCards = () => {
-    const root = [...doc.querySelectorAll('.editor-instance')].find(onScreen);
+    const root = [...doc.querySelectorAll('.editor-instance')].find(e => onScreen(e) && [...e.querySelectorAll('button')].some(b => b.textContent.trim() === 'Plan information'));
     if (!root) return [];
     const seen = new Set();
     const items = [];

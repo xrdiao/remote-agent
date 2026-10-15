@@ -58,6 +58,20 @@
   };
   const normKey = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
   // Prop-based model list: no visible menu is opened. Returns null when only the DOM path can answer.
+  const agentModelName = () => {
+    const codex = codexModelName();
+    if (codex) return codex;
+    const cp = devinSurface() ? null : cursorPickerProps();
+    if (cp) {
+      const sel = (cp.selections || cp.initialSelections || [])[0];
+      const model = cp.models.find(m => m.name === sel?.modelId || m.id === sel?.modelId);
+      if (model) return model.clientDisplayName || model.inputboxShortModelName || model.name;
+    }
+    const dp = devinPickerProps();
+    const selected = dp && devinConfigs(dp).find(c => dp.selectedModels?.includes(c.modelUid));
+    if (selected) return fusionConfig() ? 'Fusion' : selected.familyLabel || selected.label;
+    return normLabel(modelButton()?.innerText || '').split('\n')[0].slice(0, 60) || null;
+  };
   const modelItemsFast = () => {
     if (doc.querySelector('[data-codex-intelligence-trigger]')) {
       const items = MENU_ITEMS.model();
@@ -67,15 +81,17 @@
       const p = devinPickerProps();
       if (!p) return null;
       const fusion = !!fusionConfig();
+      const selected = devinConfigs(p).find(c => p.selectedModels?.includes(c.modelUid));
       const seen = new Set(['Fusion']);
       const rows = [{ label: 'Fusion', checked: fusion }];
       // The native picker lists one default variant per family (plus the Adaptive router);
       // other effort variants are reachable through the effort list.
       for (const c of devinConfigs(p, true)) {
-        if (c.disabled || !c.label || seen.has(c.label) || !DEVIN_MODEL.test(c.label) || /^Fusion \(/.test(c.label)) continue;
+        const label = c.familyLabel || c.label;
+        if (c.disabled || !c.label || seen.has(label) || !DEVIN_MODEL.test(c.label) || /^Fusion \(/.test(c.label)) continue;
         if (!c.isDefaultModelInFamily && c.displayOption !== 'model-router') continue;
-        seen.add(c.label);
-        rows.push({ label: c.label, checked: !fusion && (p.selectedModels || []).includes(c.modelUid) });
+        seen.add(label);
+        rows.push({ label, checked: !fusion && selected?.familyUid === c.familyUid });
       }
       return rows.length > 1 ? rows : null;
     }
@@ -85,7 +101,7 @@
     const p = devinPickerProps();
     if (!p || normKey(label) === 'fusion') return false;
     const want = normKey(label);
-    const c = devinConfigs(p).find(c => !c.disabled && normKey(c.label) === want);
+    const c = devinConfigs(p).find(c => !c.disabled && (normKey(c.label) === want || (c.isDefaultModelInFamily && normKey(c.familyLabel) === want)));
     if (!c) return false;
     p.onModelSelect(c);
     return true;
@@ -176,6 +192,12 @@
     if (p) {
       const fast = p.serviceTierOptions.find(x => x.iconKind === 'fast');
       return fast ? { on: p.selectedServiceTier === fast.value, description: fast.description?.defaultMessage || '' } : null;
+    }
+    const cp = devinSurface() ? null : cursorPickerProps();
+    if (cp) {
+      const sel = (cp.selections || cp.initialSelections || [])[0];
+      const model = cp.models.find(m => m.name === sel?.modelId || m.id === sel?.modelId);
+      if (model?.parameterDefinitions?.some(d => d.id === 'fast')) return { on: sel.parameters?.find(p => p.id === 'fast')?.value === 'true' };
     }
     const rows = devinVariants('fast');
     if (rows.length > 1) return { on: rows.find(x => x.checked)?.order === 1 };
