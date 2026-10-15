@@ -4,5 +4,7 @@
 PRODUCT_BUNDLE_IDENTIFIER = com.agentremote
 DEVELOPMENT_TEAM =
 APP_URL =
+// PUSH_URL is the push service for iOS notifications (push-service/), set in Local.xcconfig like APP_URL; empty = no notifications.
+PUSH_URL =
 INFOPLIST_KEY_CFBundleDisplayName = Remote Agent
 #include? "Local.xcconfig"
