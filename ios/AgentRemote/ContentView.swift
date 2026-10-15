@@ -62,7 +62,19 @@ private final class WeakHandler: NSObject, WKScriptMessageHandler {
     }
 }
 
-final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+private final class WeakReplyHandler: NSObject, WKScriptMessageHandlerWithReply {
+    weak var target: WKScriptMessageHandlerWithReply?
+
+    init(_ target: WKScriptMessageHandlerWithReply) {
+        self.target = target
+    }
+
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage, replyHandler: @escaping (Any?, String?) -> Void) {
+        target?.userContentController(controller, didReceive: message, replyHandler: replyHandler)
+    }
+}
+
+final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, WKScriptMessageHandlerWithReply {
     @Published private(set) var light = UserDefaults.standard.bool(forKey: "light")
     @Published var scanning = false
     @Published var scanned: String?
@@ -72,6 +84,8 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
 
     @Published private(set) var webView: WKWebView!
     private var started = false
+    private var pendingOpen = ""
+    private var cancellables = Set<AnyCancellable>()
     private var scripts = WKUserContentController()
     private let setupPage = Bundle.main.url(forResource: "setup", withExtension: "html")!
 
@@ -84,6 +98,11 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
     override init() {
         super.init()
         webView = makeWebView()
+        Push.shared.$openRequest
+            .compactMap { $0 }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] payload in self?.openFromNotification(payload) }
+            .store(in: &cancellables)
     }
 
     private func makeWebView() -> WKWebView {
@@ -93,6 +112,7 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
         config.allowsInlineMediaPlayback = true
         config.applicationNameForUserAgent = "AgentRemoteApp-iOS/" + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
         scripts.add(WeakHandler(self), name: "app")
+        scripts.addScriptMessageHandler(WeakReplyHandler(self), contentWorld: .page, name: "appReply")
         let view = WKWebView(frame: .zero, configuration: config)
         view.navigationDelegate = self
         view.uiDelegate = self
@@ -109,6 +129,7 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
         old.navigationDelegate = nil
         old.uiDelegate = nil
         scripts.removeScriptMessageHandler(forName: "app")
+        scripts.removeScriptMessageHandler(forName: "appReply", contentWorld: .page)
         old.removeFromSuperview()
         webView = makeWebView()
         load(appURL)
@@ -184,23 +205,27 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
     }
 
     // Android's bridge calls are synchronous; WKWebView is not, so the values the page reads are baked in here.
-    // History, background-connection, notification and update methods are left out on purpose: the web app
-    // feature-detects them and falls back to its browser behavior.
+    // History, background-connection and update methods are left out on purpose: the web app
+    // feature-detects them and falls back to its browser behavior. pushRegister exists only when a push service is set.
     private func installBridge() {
         scripts.removeAllUserScripts()
         scripts.addUserScript(WKUserScript(source: bridge(), injectionTime: .atDocumentStart, forMainFrameOnly: true))
     }
 
     private func bridge() -> String {
-        """
+        let pushRegister = Push.shared.serviceURL == nil ? "" : """
+            pushRegister: () => window.webkit.messageHandlers.appReply.postMessage({ fn: 'pushRegister' }).catch(e => { throw new Error(String(e && e.message || e)); }),
+            """
+        return """
         (() => {
-          let url = \(json(appURL)), light = \(json(light));
+          let url = \(json(appURL)), light = \(json(light)), openWin = \(json(pendingOpen));
           const canVoice = \(json(voiceAvailable()));
           const post = (fn, ...args) => window.webkit.messageHandlers.app.postMessage({ fn, args });
           window.AgentRemoteApp = {
             getUrl: () => url,
             isLight: () => light,
-            takeOpenWin: () => '',
+            takeOpenWin: () => { const v = openWin; openWin = ''; if (v) post('tookOpenWin'); return v; },
+            _setOpenWin(v) { openWin = v; },
             canVoice: () => canVoice,
             setUrl(u) {
               if (!u.startsWith('https://')) return;
@@ -212,6 +237,7 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
             setTheme(on) { light = !!on; post('setTheme', light); },
             scan: () => post('scan'),
             voice(lang) { if (!canVoice) return false; post('voice', lang || ''); return true; },
+            \(pushRegister)
           };
         })();
         """
@@ -247,7 +273,37 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
         case "voice":
             voiceLang = text
             listening = true
+        case "tookOpenWin": pendingOpen = ""
         default: break
+        }
+    }
+
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage, replyHandler: @escaping (Any?, String?) -> Void) {
+        let unsupported = tr("不支持的操作", "Unsupported action")
+        guard message.frameInfo.isMainFrame, trusted(message.frameInfo.securityOrigin),
+              let body = message.body as? [String: Any], let fn = body["fn"] as? String else { return replyHandler(nil, unsupported) }
+        switch fn {
+        case "pushRegister":
+            Push.shared.register { result in
+                switch result {
+                case .success(let registration): replyHandler(registration, nil)
+                case .failure(let error): replyHandler(nil, error.localizedDescription)
+                }
+            }
+        default: replyHandler(nil, unsupported)
+        }
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard webView === self.webView, !pendingOpen.isEmpty else { return }
+        openFromNotification(pendingOpen)
+    }
+
+    private func openFromNotification(_ payload: String) {
+        pendingOpen = payload
+        let script = "(() => { if (window.openWin) { openWin(\(json(payload))); return true; } window.AgentRemoteApp?._setOpenWin?.(\(json(payload))); return false; })()"
+        webView.evaluateJavaScript(script) { [weak self] result, _ in
+            if result as? Bool == true { self?.pendingOpen = "" }
         }
     }
 

@@ -8,10 +8,11 @@
 - `lib/` — 认证、通知、文件、主题、高亮、git 标记、平台差异
 - `cli/` — `setup.mjs` / `devices.mjs` / `twofa.mjs`（npm run setup / pair / devices / 2fa）
 - `app/` — 手机端 PWA
-- `android/` — Android WebView 壳（不走 CI，在本机 Android Studio 用自己的 keystore 签名发布：先改 `android/app/build.gradle` 的 `versionCode`（+1）和 `versionName`，再 `git tag vX.Y.Z` 并推送，最后 `gh release create vX.Y.Z AgentRemote.apk`。资产名必须是 `AgentRemote.apk`，tag 必须等于 versionName 加 `v`，App 内更新检查靠这两点）；`ios/` — iOS WKWebView 壳（setup.html 直接引用 android 的那份；签名放 `ios/Local.xcconfig`，不提交）
+- `android/` — Android WebView 壳（不走 CI，在本机 Android Studio 用自己的 keystore 签名发布：先改 `android/app/build.gradle` 的 `versionCode`（+1）和 `versionName`，再 `git tag vX.Y.Z` 并推送，最后 `gh release create vX.Y.Z AgentRemote.apk`。资产名必须是 `AgentRemote.apk`，tag 必须等于 versionName 加 `v`，App 内更新检查靠这两点）；`ios/` — iOS WKWebView 壳（setup.html 直接引用 android 的那份；签名和 `PUSH_URL` 放 `ios/Local.xcconfig`，不提交）
   - iOS 模拟器构建：`xcodebuild -project ios/AgentRemote.xcodeproj -scheme AgentRemote -destination 'platform=iOS Simulator,name=iPhone 17' build`
   - 上传 TestFlight：`scripts/ios-testflight.sh`（不需要注册设备；`DESTINATION=export` 只导出 ipa）
 - `scripts/` — `check.mjs` 和 start-*.sh / service.sh
+- `push-service/` — iOS APNs 推送服务（部署在 push.luojiajiang.uk，见其 README）
 
 ## Git
 
