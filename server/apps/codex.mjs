@@ -361,52 +361,67 @@ async withCodexSettings(fn) {
   let key = '';
   const settingsKey = () => editor.evaluate(`(() => { if (![...document.querySelectorAll('.tab.active')].some(e => /^Codex Settings(?:,|$)/.test(e.getAttribute('aria-label') || ''))) return ''; const el = [...document.querySelectorAll('iframe[src*="extensionId=openai.chatgpt"]')].find(e => !e.src.includes('purpose=webviewView') && e.getBoundingClientRect().height > 0); return el ? new URL(el.src).searchParams.get('id') : ''; })()`);
   key = await settingsKey();
+  if (key && this.codexSettingsCdp?.ws?.readyState === 1 && this.codexSettingsEditor === editor) return fn(this.codexSettingsCdp);
+  this.codexSettingsCdp?.close();
+  this.codexSettingsCdp = null;
   if (!key) {
-    const account = await sidebar.evaluate(helpersCall('codexAccountPoint()'));
-    if (!account) throw new Error('没有找到 Codex 设置菜单');
-    await this.tapCss(account.x, account.y, 'left', sidebar);
-    let pos;
-    for (let i = 0; i < 10 && !pos; i++) {
-      await new Promise(r => setTimeout(r, 100));
-      pos = await sidebar.evaluate(helpersCall("codexMenuPoint('Codex settings')"));
+    this.codexSettingsReturn = await editor.evaluate(`(() => { const tab = document.querySelector('.editor-group-container.active .tab.active'); if (!tab || /^Codex Settings(?:,|$)/.test(tab.getAttribute('aria-label') || '')) return ''; tab.dataset.remoteSettingsReturn ||= crypto.randomUUID(); return tab.dataset.remoteSettingsReturn; })()`);
+    if (before) {
+      const pos = await editor.evaluate(`(() => { const tab = [...document.querySelectorAll('.tab')].find(e => /^Codex Settings(?:,|$)/.test(e.getAttribute('aria-label') || '')); const r = tab.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+      await this.tapCss(pos.x, pos.y, 'left', editor);
+    } else {
+      const account = await sidebar.evaluate(helpersCall('codexAccountPoint()'));
+      if (!account) throw new Error('没有找到 Codex 设置菜单');
+      await this.tapCss(account.x, account.y, 'left', sidebar);
+      const pos = await sidebar.evaluate(`(async () => { const point = ${helpersCall('codexMenuPoint')}; const started = Date.now(); let pos; do { pos = point('Codex settings'); if (pos) return pos; await new Promise(r => setTimeout(r, 30)); } while (Date.now() - started < 1000); return null; })()`);
+      if (!pos) throw new Error('Codex 菜单没有设置入口');
+      await this.tapCss(pos.x, pos.y, 'left', sidebar);
     }
-    if (!pos) throw new Error('Codex 菜单没有设置入口');
-    await this.tapCss(pos.x, pos.y, 'left', sidebar);
-    for (let i = 0; i < 30 && !key; i++) { await new Promise(r => setTimeout(r, 100)); key = await settingsKey(); }
+    for (let i = 0; i < 100 && !key; i++) { key = await settingsKey(); if (!key) await new Promise(r => setTimeout(r, 30)); }
     if (!key) throw new Error('Codex 设置页面尚未打开');
   }
   const targets = await (await fetch(`${CODEX_CDP_URL}/json/list`)).json();
   const target = targets.find(t => /extensionId=openai.chatgpt/.test(t.url || '') && new URL(t.url).searchParams.get('id') === key);
   if (!target) throw new Error('Codex 设置页面尚未连接');
-  if (!before) this.codexSettingsOwned = { editorWs: editor.wsUrl, key };
   this.codexSettingsViewWs = target.webSocketDebuggerUrl;
   const cdp = new Cdp(target.webSocketDebuggerUrl);
   await cdp.connect();
-  try { return await fn(cdp); } finally { cdp.close(); }
+  const ready = await cdp.evaluate(`new Promise(resolve => { const started = Date.now(); const read = () => { const doc = document.getElementById('active-frame')?.contentDocument; if (doc?.querySelector('[data-appearance] button.sidebar-item')) return resolve(true); if (Date.now() - started >= 5000) return resolve(false); setTimeout(read, 30); }; read(); })`);
+  if (!ready) { cdp.close(); throw new Error('Codex 设置内容尚未加载'); }
+  this.codexSettingsCdp = cdp;
+  this.codexSettingsEditor = editor;
+  return fn(cdp);
 },
 
 async showCodexSettings(id = '', requestId = 0) {
   const sel = this.sel;
   const data = await this.withCodexSettings(async cdp => {
+    const before = id ? JSON.stringify(await cdp.evaluate(helpersCall('codexSettingsData()'))) : '';
     if (id) {
       const pos = await cdp.evaluate(helpersCall(`codexSettingPoint(${JSON.stringify(id)})`));
       if (!pos) throw new Error('设置选项已改变，请重新打开设置');
       await this.tapCss(pos.x, pos.y, 'left', cdp);
-      await new Promise(r => setTimeout(r, 200));
     }
-    let data;
-    for (let i = 0; i < 20; i++) {
-      data = await cdp.evaluate(helpersCall('codexSettingsData()'));
-      if (data.nav.length) break;
-      await new Promise(r => setTimeout(r, 100));
-    }
+    const data = await cdp.evaluate(helpersCall(`waitSettings('codex', ${JSON.stringify(before)}, ${before ? 200 : 1200})`));
     if (!data.nav.length) throw new Error('Codex 设置内容尚未加载');
     return data;
   });
   if (this.sel === sel && this.app === 'codex') this.emit({ t: 'settings', codex: true, requestId, ...data });
 },
 
+async saveCodexInstructions(text, requestId = 0) {
+  const sel = this.sel;
+  const data = await this.withCodexSettings(cdp => cdp.evaluate(helpersCall(`codexSaveInstructions(${JSON.stringify(text)})`)));
+  if (this.sel === sel && this.app === 'codex') {
+    this.emit({ t: 'settings', codex: true, requestId, ...data });
+    this.emit({ t: 'status', ok: true, msg: 'Codex instructions 已保存' });
+  }
+},
+
 async closeCodexSettings() {
+  this.codexSettingsCdp?.close();
+  this.codexSettingsCdp = null;
+  this.codexSettingsEditor = null;
   const view = this.codexSettingsViewWs;
   this.codexSettingsViewWs = '';
   if (view) {
@@ -414,15 +429,12 @@ async closeCodexSettings() {
     await menu.connect();
     try { await this.key('Escape', { cdp: menu }); } finally { menu.close(); }
   }
-  const owned = this.codexSettingsOwned;
-  this.codexSettingsOwned = null;
-  if (!owned) return;
-  const cdp = new Cdp(owned.editorWs);
-  await cdp.connect();
-  try {
-    const pos = await cdp.evaluate(`(() => { const el = [...document.querySelectorAll('iframe[src*="extensionId=openai.chatgpt"]')].find(e => new URL(e.src).searchParams.get('id') === ${JSON.stringify(owned.key)}); if (!el) return null; const tab = [...document.querySelectorAll('.tab')].find(e => /^Codex Settings(?:,|$)/.test(e.getAttribute('aria-label') || '')); const b = tab?.querySelector('.codicon-close'); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
-    if (pos) await this.tapCss(pos.x, pos.y, 'left', cdp);
-  } finally { cdp.close(); }
+  const previous = this.codexSettingsReturn;
+  this.codexSettingsReturn = '';
+  if (previous && this.editorCdp) {
+    const pos = await this.editorCdp.evaluate(`(() => { const tab = document.querySelector('[data-remote-settings-return="' + ${JSON.stringify(previous)} + '"]'); if (!tab) return null; const r = tab.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    if (pos) await this.tapCss(pos.x, pos.y, 'left', this.editorCdp);
+  }
 },
 
 async readCodexAccount(request) {

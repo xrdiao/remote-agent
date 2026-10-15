@@ -148,22 +148,22 @@ export const adapter = {
     return false;
   },
 
-  async showSettings(requestId = 0) {
+  async showSettings(requestId = 0, section = '') {
     await this.ensureSettings();
-    let sections = [];
+    let sections = [], nav = [], current = '';
     try {
       sections = await this.editorCdp.evaluate(helpersCall('readSettings()')) || [];
       if (!sections.length) {
-        const nav = await this.editorCdp.evaluate(helpersCall('devinSettingsNav()')) || [];
-        for (const name of nav) {
-          await this.editorCdp.evaluate(helpersCall(`devinSettingsClick(${JSON.stringify(name)})`));
-          await new Promise(r => setTimeout(r, 180));
-          const items = await this.editorCdp.evaluate(helpersCall('devinSettingsCards()')) || [];
+        nav = await this.editorCdp.evaluate(helpersCall('devinSettingsNav()')) || [];
+        const name = section || nav[0];
+        if (name && nav.includes(name)) {
+          current = name;
+          const items = await this.editorCdp.evaluate(`(async () => { const read = ${helpersCall('devinSettingsCards')}; const click = ${helpersCall('devinSettingsClick')}; const wait = ${helpersCall('waitSettings')}; const before = JSON.stringify(read()); click(${JSON.stringify(name)}); return wait('devin', before, 180); })()`) || [];
           if (items.length) sections.push({ title: name, items });
         }
       }
     } finally { await this.closeSettings(); }
-    this.emit({ t: 'settings', sections });
+    this.emit({ t: 'settings', sections, nav, current });
   },
 };
 

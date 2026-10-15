@@ -483,16 +483,18 @@ function showCodexSettings(m) {
     if (sw) return `<button class="opt" data-codex-setting="${esc(sw.id)}" ${sw.disabled ? 'disabled' : ''}><span class="lbl">${esc(row.label)}</span><span class="switch ${sw.on ? 'on' : ''}"></span></button>`;
     return `<div class="pSec">${esc(row.label)}</div>${detail}<div class="paramRow">${row.controls.map(button).join('')}</div>`;
   }).join('');
-  openSheet('codex-settings', `<h3>Codex 设置</h3>${nav}${choices}${rows || '<div class="hint">当前页面没有可操作的设置项。</div>'}`);
+  const instructions = m.instructions ? `<div class="pSec">Codex instructions</div><textarea id="codexInstructions" rows="9" style="width:100%;box-sizing:border-box" ${m.instructions.disabled ? 'disabled' : ''}>${esc(m.instructions.value)}</textarea><button class="opt" data-save-instructions ${m.instructions.disabled ? 'disabled' : ''}>保存指令</button>` : '';
+  openSheet('codex-settings', `<h3>Codex 设置</h3>${nav}${choices}${instructions}${rows || (instructions ? '' : '<div class="hint">当前页面没有可操作的设置项。</div>')}`);
 }
-function showSettings(sections) {
+function showSettings(sections, nav = [], current = '') {
   const body = sections.map(s => `<div class="pSec">${esc(s.title)}</div>` + s.items.map(it => {
     const label = `<span class="lbl">${esc(it.label)}${it.detail ? `<span class="sub">${esc(it.detail)}</span>` : ''}</span>`;
     if (it.toggle === false) return `<div class="opt static">${label}</div>`;
     return `<button class="opt" data-setting="${esc(it.label)}">${label}<span class="switch ${it.on ? 'on' : ''}"></span></button>`;
   }).join('')).join('');
   const appName = currentAppName;
-  openSheet('settings', `<h3>${appName ? appName + ' 设置' : '设置'}</h3>${body || '<div class="hint">没有读到设置。</div>'}`);
+  const navigation = nav.length ? `<div class="codexSettingsNav">${nav.map(name => `<button class="paramBtn ${name === current ? 'cur' : ''}" data-settings-nav="${esc(name)}">${esc(name)}</button>`).join('')}</div>` : '';
+  openSheet('settings', `<h3>${appName ? appName + ' 设置' : '设置'}</h3>${navigation}${body || '<div class="hint">没有读到设置。</div>'}`);
 }
 function meterFill(pct, basis) {
   if (pct == null) return '';

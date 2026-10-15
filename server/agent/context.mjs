@@ -640,17 +640,10 @@ export class AgentContext {
   }
 
   async ensureSettings(editorCdp = this.editorCdp) {
-    const waitOpen = async () => {
-      for (let i = 0; i < 10; i++) {
-        await new Promise(r => setTimeout(r, 120));
-        if (await editorCdp.evaluate(helpersCall('settingsOpen()'))) return true;
-      }
-      return false;
-    };
+    const waitOpen = () => editorCdp.evaluate(helpersCall("waitSettings('open')"));
     if (await editorCdp.evaluate(helpersCall('settingsOpen()'))) return;
     // Click the gear directly. A coordinate click on the 24px footer button often misses.
-    await editorCdp.evaluate(helpersCall('clickSettingsButton()'));
-    if (await waitOpen()) return;
+    if (await editorCdp.evaluate(helpersCall('clickSettingsButton()')) && await waitOpen()) return;
     // Cursor and Devin both bind Settings to Ctrl+Comma.
     const comma = { key: ',', code: 'Comma', windowsVirtualKeyCode: 188, modifiers: 2 };
     await editorCdp.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...comma });
@@ -664,8 +657,8 @@ export class AgentContext {
     if (how === 'tab') await this.key('Ctrl+w', { cdp: editorCdp });
   }
 
-  async showSettings(requestId = 0) {
-    return this.adapter.showSettings.call(this, requestId);
+  async showSettings(requestId = 0, section = '') {
+    return this.adapter.showSettings.call(this, requestId, section);
   }
 
   async toggleSetting(label) {
@@ -673,9 +666,9 @@ export class AgentContext {
     try {
       const pos = await this.editorCdp.evaluate(helpersCall(`settingTarget(${JSON.stringify(String(label))})`));
       if (!pos) throw new Error('找不到这项设置');
+      const before = JSON.stringify(await this.editorCdp.evaluate(helpersCall('readSettings()')));
       await this.tapCss(pos.x, pos.y, 'left', this.editorCdp);
-      await new Promise(r => setTimeout(r, 250));
-      const sections = await this.editorCdp.evaluate(helpersCall('readSettings()')) || [];
+      const sections = await this.editorCdp.evaluate(helpersCall(`waitSettings('cursor', ${JSON.stringify(before)})`)) || [];
       this.emit({ t: 'settings', sections });
       this.emit({ t: 'status', ok: true, msg: '已更新设置' });
     } finally { await this.closeSettings(); }
@@ -1620,13 +1613,23 @@ export class AgentContext {
 
 
   // Take a picture / file off the prompt again (the little x on its thumbnail on the desktop).
-  async attachImage(data, name, type) {
+  async attachImage(data, name, type, replace = '', sel) {
+    if (sel && sel !== this.selectionKey()) throw new Error('会话已切换，请回到原会话编辑图片');
+    if (replace && !(await this.cdp.evaluate(helpersCall('attachmentRows()'))).some(f => f.id === replace)) throw new Error('原图片已不在输入框中');
     if (!/^image\/(png|jpeg|gif|webp)$/.test(type) || typeof data !== 'string' || !/^[A-Za-z0-9+/=]+$/.test(data)) throw new Error('只支持 PNG / JPEG / GIF / WebP 图片');
     const ok = await this.cdp.evaluate(pasteImage(data, String(name || 'image').replace(/[^\w.\-]/g, '_').slice(0, 60), type));
     if (ok === null) throw new Error(this.appMessage('没找到 {app} 的聊天输入框：先在画面里打开 Agent 面板（或点「打开聊天」）'));
     if (!ok) throw new Error(this.appMessage('{app} 没有接收这张图片（当前模型可能不支持图片）'));
+    if (replace) await this.removeAttachment(replace);
     await this.syncAttachments();
     this.emit({ t: 'status', ok: true, msg: this.appMessage('图片已附加到 {app} 输入框，写好文字后点发送') });
+  }
+
+  async editAttachmentImage(id, scope) {
+    if (scope !== this.selectionKey()) throw new Error('会话已切换，请重新选择图片');
+    const cdp = this.cdp, sel = this.sel;
+    const image = await cdp.evaluate(helpersCall(`attachmentImage(${JSON.stringify(id)})`));
+    if (this.liveRead(cdp, sel)) this.emit({ t: 'imageEdit', id, sel: scope, ...image });
   }
 
   async setDraft(text) {

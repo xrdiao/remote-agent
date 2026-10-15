@@ -19,8 +19,10 @@
   const clickCloseSettings = () => {
     const b = [...doc.querySelectorAll('button, [role=button]')].find(e => onScreen(e) && e.getAttribute('aria-label') === 'Close Settings');
     if (b) { b.click(); return 'button'; }
-    const tab = [...doc.querySelectorAll('.tab.active')].find(onScreen);
-    if (/settings/i.test(tab?.getAttribute('aria-label') || '')) return 'tab';
+    const tab = [...doc.querySelectorAll('.tab.active')].find(e => onScreen(e) && /settings/i.test(e.getAttribute('aria-label') || ''));
+    const close = tab?.querySelector('[aria-label^="Close"]');
+    if (close) { close.click(); return 'button'; }
+    if (tab) return 'tab';
     return '';
   };
   const settingsPanel = () => {
@@ -81,7 +83,40 @@
       controls: [...row.querySelectorAll('button')].filter(vis).map(control),
     }));
     const choices = [...doc.querySelectorAll('[role="menuitemradio"], [role="menuitem"], [role="option"]')].filter(vis).map(control);
-    return { nav, rows, choices };
+    const field = [...doc.querySelectorAll('textarea[aria-label="Codex instructions"]')].find(vis);
+    const instructions = field ? { value: field.value, disabled: field.disabled } : null;
+    return { nav, rows, choices, instructions };
+  };
+  const waitSettings = (kind, before = '', timeout = 1200) => new Promise(resolve => {
+    const started = Date.now();
+    const read = () => {
+      const data = kind === 'open' ? settingsOpen() : kind === 'cursor' ? readSettings() : kind === 'devin' ? devinSettingsCards() : codexSettingsData();
+      const ready = kind === 'open' ? data : kind === 'codex' ? data.nav.length : data?.length;
+      if ((ready && (!before || JSON.stringify(data) !== before)) || Date.now() - started >= timeout) return resolve(data);
+      setTimeout(read, 30);
+    };
+    read();
+  });
+  const codexSaveInstructions = async text => {
+    const field = [...doc.querySelectorAll('textarea[aria-label="Codex instructions"]')].find(vis);
+    if (!field || field.disabled) throw new Error('Codex instructions 当前不可编辑');
+    const saveButton = () => [...doc.querySelectorAll('button')].find(e => vis(e) && e.textContent.trim() === 'Save');
+    if (field.value === text && saveButton()?.disabled) return codexSettingsData();
+    const setValue = Object.getOwnPropertyDescriptor(field.ownerDocument.defaultView.HTMLTextAreaElement.prototype, 'value').set;
+    setValue.call(field, text);
+    field.dispatchEvent(new field.ownerDocument.defaultView.Event('input', { bubbles: true }));
+    const started = Date.now();
+    while (!saveButton() || saveButton().disabled) {
+      if (Date.now() - started > 1200) throw new Error('指令未进入待保存状态');
+      await new Promise(r => setTimeout(r, 30));
+    }
+    saveButton().click();
+    do {
+      await new Promise(r => setTimeout(r, 30));
+      if (Date.now() - started > 6000) throw new Error('指令保存尚未确认，请重新读取设置核对');
+    } while (field.disabled || !saveButton()?.disabled);
+    if (field.value !== text) throw new Error('保存后的指令与输入不一致');
+    return codexSettingsData();
   };
   const codexSettingPoint = id => {
     const el = [...doc.querySelectorAll('[data-remote-setting]')].find(e => e.dataset.remoteSetting === id);
