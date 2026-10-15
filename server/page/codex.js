@@ -144,7 +144,7 @@
     return { label: (btn.innerText || btn.getAttribute('aria-label') || '').trim(), ...codexPoint(btn) };
   };
 
-  const codexPromptEl = () => doc.querySelector('.ProseMirror[contenteditable="true"]');
+  const codexPromptEl = () => [...doc.querySelectorAll('.ProseMirror[contenteditable="true"]')].find(vis);
   const codexPromptText = () => {
     const ed = codexPromptEl();
     if (!ed) return null;
