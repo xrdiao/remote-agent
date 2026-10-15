@@ -59,7 +59,8 @@
   .latency.bad { color: var(--err); }
   .latency.muted { color: var(--muted); }
   .latencyPair { display: flex; flex-direction: column; gap: 2px; align-items: flex-end; }
-  #title::after { content: "⌄"; color: var(--muted); }
+  .arrowIcon { display: block; flex: none; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .titleArrow { color: var(--muted); }
   body.devin #meters { flex: none; }
   body.devin #quotaMeters { flex: none; }
   .seg { display: flex; flex: none; margin: 3px 8px 5px; padding: 2px; border: 1px solid var(--border); border-radius: 14px; background: var(--panel); }
@@ -359,10 +360,8 @@
   .listTools { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
   body.visual > .seg, body.visual > footer { display: none; }
   body.visual #screenView { padding: 0 12px max(12px, env(safe-area-inset-bottom)); }
-  .visualHeading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 2px; }
-  .visualHeading h2 { margin: 0; font-size: 17px; color: var(--hi); }
-  .visualHeading button, .visualHeading > span { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; padding: 0; font-size: 26px; color: var(--blue); }
-  .visualHeading > span { font-size: 22px; background: var(--panel); }
+  #visualBack { flex: none; width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; padding: 0; color: var(--blue); }
+  #visualBack .arrowIcon { width: 24px; height: 24px; }
   .visualSource { display: flex; align-items: center; gap: 12px; padding: 0 12px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 14px; background: var(--panel); }
   body.visual #visualChoose { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: 1; min-width: 0; min-height: 42px; padding: 8px 0; background: transparent; border: 0; text-align: left; }
   body.visual #visualTitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
