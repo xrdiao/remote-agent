@@ -160,7 +160,7 @@ export const ROUTES = {
   codexSetting: {
     run: (s, m) => {
       if (s.app !== 'codex') return;
-      return s.showCodexSettings(String(m.id || ''), m.requestId);
+      return s.showCodexSettings(String(m.id || ''), m.requestId, typeof m.value === 'string' ? m.value : undefined);
     },
   },
   codexInstructions: { run: (s, m) => s.app === 'codex' && s.saveCodexInstructions(String(m.text ?? ''), m.requestId) },
@@ -210,7 +210,11 @@ export const ROUTES = {
   },
   subagent: { run: (s, m) => s.subagentAction(m.name, m.part === 'stop' ? 'stop' : 'open') },
   mainChat: { run: s => s.backToMain() },
-  image: { run: (s, m) => s.attachImage(m.data, m.name, m.type, String(m.replace || ''), m.sel) },
+  image: {
+    run: (s, m) => s.attachImage(m.data, m.name, m.type, String(m.replace || ''), m.sel),
+    after: (s, m) => s.emit({ t: 'imageDone', clientImageId: m.clientImageId, ok: true }),
+    fail: (s, m) => s.emit({ t: 'imageDone', clientImageId: m.clientImageId, ok: false }),
+  },
   editImage: { readOnly: true, run: (s, m) => s.editAttachmentImage(String(m.id), String(m.sel)) },
   attachments: { readOnly: true, fusionFree: true, run: s => s.syncAttachments() },
   removeAttachment: { run: (s, m) => s.removeAttachment(String(m.id)) },

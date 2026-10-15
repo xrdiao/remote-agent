@@ -24,10 +24,32 @@ async function shrinkImage(file) {
   return new File([blob], file.name.replace(/\.\w+$/, '') + '.jpg', { type: 'image/jpeg' });
 }
 
+const imageUploads = new Map();
+let desktopAttachments = [], editBeforeUpload = false;
+const imageUploadScope = () => [currentComputer()?.id || '', viewSel].join('|');
+function pendingImageUploads() { return [...imageUploads.values()].some(f => f.scope === imageUploadScope()); }
 function renderAttachments(list) {
-  $('attachments').innerHTML = list.map(f => `<div class="attachment">${f.preview ? `<img src="${esc(f.preview)}" alt="">` : ''}${f.preview ? `<button data-edit-attachment="${esc(f.id)}">编辑</button>` : ''}<span title="${esc(f.name)}">${esc(f.name)}${f.size != null ? ` (${Math.ceil(f.size / 1024)} KB)` : ''}</span><button data-remove-attachment="${esc(f.id)}" aria-label="删除 ${esc(f.name)}">×</button></div>`).join('');
+  desktopAttachments = list;
+  const pending = [...imageUploads.entries()].filter(([, f]) => f.scope === imageUploadScope());
+  $('attachments').innerHTML = list.map(f => `<div class="attachment">${f.preview ? `<img src="${esc(f.preview)}" alt="">` : ''}${f.preview ? `<button data-edit-attachment="${esc(f.id)}">编辑</button>` : ''}<span title="${esc(f.name)}">${esc(f.name)}${f.size != null ? ` (${Math.ceil(f.size / 1024)} KB)` : ''}</span><button data-remove-attachment="${esc(f.id)}" aria-label="删除 ${esc(f.name)}">×</button></div>`).join('')
+    + pending.map(([id, f]) => `<div class="attachment"><img src="${esc(f.preview)}" alt=""><span>${esc(f.name)} · ${f.error ? '上传失败' : '上传中…'}</span>${f.error ? `<button data-retry-image="${id}">重试</button><button data-discard-image="${id}" aria-label="删除失败的图片">×</button>` : ''}</div>`).join('');
+}
+function finishImageUpload(m) {
+  const file = imageUploads.get(m.clientImageId);
+  if (!file) return;
+  if (m.ok) { URL.revokeObjectURL(file.preview); imageUploads.delete(m.clientImageId); }
+  else file.error = true;
+  renderAttachments(desktopAttachments);
 }
 $('attachments').onclick = e => {
+  const retry = e.target.closest('[data-retry-image]');
+  if (retry) {
+    const record = imageUploads.get(retry.dataset.retryImage);
+    URL.revokeObjectURL(record.preview); imageUploads.delete(retry.dataset.retryImage);
+    return attachImageFile(record.file, record.options);
+  }
+  const discard = e.target.closest('[data-discard-image]');
+  if (discard) { URL.revokeObjectURL(imageUploads.get(discard.dataset.discardImage).preview); imageUploads.delete(discard.dataset.discardImage); return renderAttachments(desktopAttachments); }
   const edit = e.target.closest('[data-edit-attachment]');
   if (edit) { status('正在读取原图…'); return send({ t: 'editImage', id: edit.dataset.editAttachment, sel: viewSel }); }
   const b = e.target.closest('[data-remove-attachment]');
@@ -35,7 +57,10 @@ $('attachments').onclick = e => {
 };
 $('uploadDoc').onclick = () => $('docFile').click();
 $('img').title = $('img').ariaLabel = '上传图片';
-$('img').onclick = () => $('imgFile').click();
+$('img').onclick = () => {
+  openSheet('image-upload', '<h3>选择图片</h3><button class="opt" data-image-choice="direct">直接上传</button><button class="opt" data-image-choice="edit">编辑后上传</button>');
+  for (const button of $('sheet').querySelectorAll('[data-image-choice]')) button.onclick = () => { editBeforeUpload = button.dataset.imageChoice === 'edit'; closeSheet(); $('imgFile').click(); };
+};
 function uploadDocument(file, sel) {
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
@@ -68,20 +93,38 @@ $('docFile').onchange = async () => {
   $('docFile').value = '';
   if (file) await attachDocumentFile(file);
 };
-async function attachImageFile(file) {
+async function attachImageFile(file, options = {}) {
+  const sel = options.sel || viewSel, scope = imageUploadScope();
+  if (sel !== viewSel) { status('会话已切换，请重新选择图片', false); return false; }
+  const id = crypto.randomUUID();
+  imageUploads.set(id, { file, name: file.name, scope, preview: URL.createObjectURL(file), options });
+  renderAttachments(desktopAttachments);
   status('正在处理图片…');
   try {
     const img = await shrinkImage(file);
     const url = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(img); });
-    send({ t: 'image', data: url.slice(url.indexOf(',') + 1), name: img.name, type: img.type });
-  } catch {
-    status('读不了这张图片，换一张试试', false);
+    if (scope !== imageUploadScope()) throw new Error('会话已切换，请回到原会话重试上传');
+    if (!authed || ws?.readyState !== 1) throw new Error('连接已断开，请重新连接后重试');
+    send({ t: 'image', data: url.slice(url.indexOf(',') + 1), name: img.name, type: img.type, sel, replace: options.replace || '', clientImageId: id });
+    return true;
+  } catch (error) {
+    finishImageUpload({ clientImageId: id, ok: false });
+    status(error.message || '读不了这张图片，换一张试试', false);
+    return false;
   }
 }
 $('imgFile').onchange = async () => {
-  const file = $('imgFile').files[0];
-  $('imgFile').value = '';
-  if (file) await attachImageFile(file);
+  const file = $('imgFile').files[0], edit = editBeforeUpload;
+  $('imgFile').value = ''; editBeforeUpload = false;
+  if (!file) return;
+  if (!edit) return attachImageFile(file);
+  const sel = viewSel;
+  let url;
+  try {
+    const image = await shrinkImage(file);
+    url = URL.createObjectURL(image);
+    await openImageEditor({ name: image.name, data: url, sel, onSave: edited => attachImageFile(edited, { sel }), onClose: () => URL.revokeObjectURL(url) });
+  } catch (error) { if (url) URL.revokeObjectURL(url); status(error.message, false); }
 };
 text.addEventListener('paste', async e => {
   const files = [...e.clipboardData.files];

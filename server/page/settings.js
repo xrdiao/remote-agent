@@ -77,7 +77,8 @@
     const mark = el => { el.dataset.remoteSetting ||= crypto.randomUUID(); return el.dataset.remoteSetting; };
     const nav = [...doc.querySelectorAll('[data-appearance] button.sidebar-item')].filter(vis).map(el => ({ id: mark(el), label: el.getAttribute('aria-label') || el.textContent.trim(), current: el.getAttribute('aria-current') === 'page' }));
     const control = el => ({ id: mark(el), label: el.getAttribute('aria-label') || (el.innerText || el.textContent).trim(), role: el.getAttribute('role') || '', on: el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-pressed') === 'true', disabled: el.disabled || el.getAttribute('aria-disabled') === 'true' });
-    const rows = [...doc.querySelectorAll('[class*="/settings-row"]')].filter(vis).map(row => ({
+    const root = [...doc.querySelectorAll('[role=dialog]')].find(vis) || doc.querySelector('h1')?.closest('[class~="group/settings"]');
+    const rows = [...(root?.querySelectorAll('[class*="/settings-row"]') || [])].filter(vis).map(row => ({
       label: row.querySelector('[class*="font-medium"]')?.textContent.trim() || row.innerText.split('\n')[0],
       detail: (row.firstElementChild?.innerText || '').split('\n').slice(1).join('\n').trim(),
       controls: [...row.querySelectorAll('button')].filter(vis).map(control),
@@ -85,13 +86,29 @@
     const choices = [...doc.querySelectorAll('[role="menuitemradio"], [role="menuitem"], [role="option"]')].filter(vis).map(control);
     const field = [...doc.querySelectorAll('textarea[aria-label="Codex instructions"]')].find(vis);
     const instructions = field ? { value: field.value, disabled: field.disabled } : null;
-    return { nav, rows, choices, instructions };
+    const fields = [...(root?.querySelectorAll('input:not([type=password]):not([type=checkbox]):not([type=radio]), select, textarea') || [])].filter(el => vis(el) && el !== field).map(el => ({ id: mark(el), label: el.getAttribute('aria-label') || el.placeholder || el.name || '输入', value: el.value, type: el.tagName === 'SELECT' ? 'select' : el.tagName === 'TEXTAREA' ? 'textarea' : el.type, disabled: el.disabled, options: el.tagName === 'SELECT' ? [...el.options].map(o => ({ value: o.value, label: o.text })) : null }));
+    const extra = [...(root?.querySelectorAll('button, a[href], input[type=checkbox], input[type=radio]') || [])].filter(el => vis(el) && !el.closest('[class*="/settings-row"]') && !(field && el.textContent.trim() === 'Save')).map(el => ({ ...control(el), role: el.type === 'checkbox' ? 'switch' : el.getAttribute('role') || '', on: el.checked || el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-pressed') === 'true' || el.getAttribute('data-state') === 'checked' })).filter(c => c.label);
+    const copy = root?.cloneNode(true);
+    copy?.querySelectorAll('[class*="/settings-row"], button, input, textarea, select, a[href]').forEach(el => el.remove());
+    const summary = (copy?.textContent || '').replace(/\s+/g, ' ').trim();
+    const title = root?.querySelector('h1, h2')?.textContent.trim() || '';
+    return { nav, rows, choices, instructions, fields, extra, summary, title, dialog: !!root?.matches('[role=dialog]') };
+  };
+  const codexSettingValue = (id, value) => {
+    const field = [...doc.querySelectorAll('[data-remote-setting]')].find(el => el.dataset.remoteSetting === id);
+    if (!field || field.disabled || !field.matches('input:not([type=password]):not([type=checkbox]):not([type=radio]), textarea, select')) throw new Error('设置输入框已改变，请重新读取');
+    const win = field.ownerDocument.defaultView;
+    const proto = field.tagName === 'SELECT' ? win.HTMLSelectElement.prototype : field.tagName === 'TEXTAREA' ? win.HTMLTextAreaElement.prototype : win.HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, 'value').set.call(field, value);
+    field.dispatchEvent(new win.Event('input', { bubbles: true }));
+    field.dispatchEvent(new win.Event('change', { bubbles: true }));
   };
   const waitSettings = (kind, before = '', timeout = 1200) => new Promise(resolve => {
     const started = Date.now();
     const read = () => {
       const data = kind === 'open' ? settingsOpen() : kind === 'cursor' ? readSettings() : kind === 'devin' ? devinSettingsCards() : codexSettingsData();
-      const ready = kind === 'open' ? data : kind === 'codex' ? data.nav.length : data?.length;
+      const current = kind === 'codex' ? data.nav.find(n => n.current) : null;
+      const ready = kind === 'open' ? data : kind === 'codex' ? data.nav.length && data.title && (data.dialog || !current || data.title === current.label) : data?.length;
       if ((ready && (!before || JSON.stringify(data) !== before)) || Date.now() - started >= timeout) return resolve(data);
       setTimeout(read, 30);
     };
