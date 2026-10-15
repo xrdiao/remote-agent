@@ -166,7 +166,8 @@ export const ROUTES = {
   codexInstructions: { run: (s, m) => s.app === 'codex' && s.saveCodexInstructions(String(m.text ?? ''), m.requestId) },
   closeCodexSettings: { run: s => s.closeCodexSettings() },
   settings: { run: (s, m) => s.showSettings(m.requestId, String(m.section || '')) },
-  toggleSetting: { run: (s, m) => s.toggleSetting(String(m.label ?? '')) },
+  closeDesktopSettings: { run: s => s.closeDesktopSettings() },
+  toggleSetting: { run: (s, m) => s.toggleSetting(String(m.label ?? ''), typeof m.value === 'string' ? m.value : undefined) },
   usage: {
     fast: s => s.app === 'codex' || s.app === 'devin',
     fastRun: (s, m) => s.showUsage(m.automatic === true),

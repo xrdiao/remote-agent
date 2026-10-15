@@ -250,6 +250,8 @@ export class Session extends AgentContext {
   // actions that type/tap, and is switched off again shortly after they finish.
 
   detach() {
+    this.desktopSettingsOwned = undefined;
+    this.desktopSettingsSection = '';
     this.codexSettingsCdp?.close();
     this.codexSettingsCdp = null;
     this.codexSettingsEditor = null;

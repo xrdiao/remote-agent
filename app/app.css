@@ -327,6 +327,9 @@
   body.voice #mic { display: block; }
   #mic.on { color: #fff; background: var(--bad); animation: pulse 1.2s ease-in-out infinite; }
   .sendRow { display: flex; gap: 8px; }
+  #inputHistory { display: flex; gap: 5px; flex: none; }
+  #inputHistory button { width: 36px; height: 42px; padding: 0; font-size: 20px; }
+  body:not(.chatmode) #inputHistory { display: none; }
   #send, #sendNow { flex: 1; min-width: 0; height: 42px; padding: 0 12px; font-weight: 600; border-radius: 12px; }
   #send { background: var(--accent); border-color: var(--accent-b); color: #fff; }
   #footerStatus { display: flex; align-items: center; gap: 8px; min-width: 0; }

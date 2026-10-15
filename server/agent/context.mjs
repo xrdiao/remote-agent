@@ -661,17 +661,26 @@ export class AgentContext {
     return this.adapter.showSettings.call(this, requestId, section);
   }
 
-  async toggleSetting(label) {
+  async closeDesktopSettings() {
+    const owned = this.desktopSettingsOwned;
+    this.desktopSettingsOwned = undefined;
+    this.desktopSettingsSection = '';
+    if (owned && this.editorCdp) await this.closeSettings();
+  }
+
+  async toggleSetting(label, value) {
     await this.ensureSettings();
-    try {
-      const pos = await this.editorCdp.evaluate(helpersCall(`settingTarget(${JSON.stringify(String(label))})`));
+    const args = `${JSON.stringify(this.desktopSettingsSection || '')}, ${JSON.stringify(this.app)}`;
+    const before = JSON.stringify(await this.editorCdp.evaluate(helpersCall(`desktopSettingsData(${args})`)));
+    if (typeof value === 'string') await this.editorCdp.evaluate(helpersCall(`desktopSettingValue(${JSON.stringify(label)}, ${JSON.stringify(value)})`));
+    else {
+      const pos = await this.editorCdp.evaluate(helpersCall(`settingTarget(${JSON.stringify(label)})`));
       if (!pos) throw new Error('找不到这项设置');
-      const before = JSON.stringify(await this.editorCdp.evaluate(helpersCall('readSettings()')));
       await this.tapCss(pos.x, pos.y, 'left', this.editorCdp);
-      const sections = await this.editorCdp.evaluate(helpersCall(`waitSettings('cursor', ${JSON.stringify(before)})`)) || [];
-      this.emit({ t: 'settings', sections });
-      this.emit({ t: 'status', ok: true, msg: '已更新设置' });
-    } finally { await this.closeSettings(); }
+    }
+    const data = await this.editorCdp.evaluate(`(async()=>{const read=()=>${helpersCall(`desktopSettingsData(${args})`)};const start=Date.now();let data;do{data=read();if(JSON.stringify(data)!==${JSON.stringify(before)})return data;await new Promise(r=>setTimeout(r,30))}while(Date.now()-start<1200);return data})()`);
+    this.emit({ t:'settings', ...data });
+    this.emit({ t:'status', ok:true, msg:'已更新设置' });
   }
 
   showUsage(automatic = false) {

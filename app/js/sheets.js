@@ -24,6 +24,7 @@ function openSheet(kind, html) {
   if (kind === 'agents') $('sheet').scrollTop = 0;
 }
 function closeSheet() {
+  if (sheetKind === 'settings') send({ t: 'closeDesktopSettings' });
   if (sheetKind === 'devices') deviceRemoval = [];
   fusionModelSide = null;
   menuRequest++;
@@ -492,16 +493,17 @@ function showCodexSettings(m) {
   const summary = m.summary ? `<div class="hint">${esc(m.summary)}</div>` : '';
   openSheet('codex-settings', `<h3>Codex 设置</h3>${nav}${choices}${summary}${instructions}${fields}${extras}${rows || (instructions || fields || extras ? '' : '<div class="hint">电脑端此栏目当前也没有可操作的设置项。</div>')}`);
 }
-function showSettings(sections, nav = [], current = '') {
-  const body = sections.map(s => `<div class="pSec">${esc(s.title)}</div>` + s.items.map(it => {
-    const label = `<span class="lbl">${esc(it.label)}${it.detail ? `<span class="sub">${esc(it.detail)}</span>` : ''}</span>`;
-    if (it.toggle === false) return `<div class="opt static">${label}</div>`;
-    return `<button class="opt" data-setting="${esc(it.label)}">${label}<span class="switch ${it.on ? 'on' : ''}"></span></button>`;
+function showSettings(sections, nav = [], current = '', choices = []) {
+  const action = it => `<button class="opt ${it.on ? 'cur' : ''}" data-setting="${esc(it.id || it.label)}" ${it.disabled ? 'disabled' : ''}><span class="lbl">${esc(it.label)}${it.detail ? `<span class="sub">${esc(it.detail)}</span>` : ''}</span>${it.on !== undefined ? `<span class="switch ${it.on ? 'on' : ''}"></span>` : it.value ? `<span class="tag">${esc(it.value)}</span>` : ''}</button>`;
+  const body = sections.map(s => `<div class="pSec">${esc(s.title)}</div>${s.summary ? `<div class="hint">${esc(s.summary)}</div>` : ''}` + s.items.map(it => {
+    if (it.type) return `<label class="pSec">${esc(it.label)}</label>${it.type === 'select' ? `<select data-setting-field="${esc(it.id)}" ${it.disabled ? 'disabled' : ''}>${it.options.map(o=>`<option value="${esc(o.value)}" ${o.value===it.value?'selected':''}>${esc(o.label)}</option>`).join('')}</select>` : it.type === 'textarea' ? `<textarea data-setting-field="${esc(it.id)}" ${it.disabled ? 'disabled' : ''}>${esc(it.value)}</textarea>` : `<input type="${esc(it.type)}" data-setting-field="${esc(it.id)}" value="${esc(it.value)}" ${it.disabled ? 'disabled' : ''}>`}`;
+    if (it.toggle === false) return `<div class="opt static"><span class="lbl">${esc(it.label)}<span class="sub">${esc(it.detail || '')}</span></span></div>`;
+    return action(it);
   }).join('')).join('');
-  const appName = currentAppName;
   const navigation = nav.length ? `<div class="codexSettingsNav">${nav.map(name => `<button class="paramBtn ${name === current ? 'cur' : ''}" data-settings-nav="${esc(name)}">${esc(name)}</button>`).join('')}</div>` : '';
-  openSheet('settings', `<h3>${appName ? appName + ' 设置' : '设置'}</h3>${navigation}${body || '<div class="hint">没有读到设置。</div>'}`);
+  openSheet('settings', `<h3>${currentAppName ? currentAppName + ' 设置' : '设置'}</h3>${navigation}${choices.length ? '<div class="pSec">选项</div>' + choices.map(action).join('') : ''}${body || '<div class="hint">没有读到设置。</div>'}`);
 }
+
 function meterFill(pct, basis) {
   if (pct == null) return '';
   const tight = basis === 'remaining' ? pct <= 10 : pct >= 90;
