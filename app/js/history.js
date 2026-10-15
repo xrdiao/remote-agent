@@ -411,6 +411,10 @@ function renderChat(chat, stale, loading = false) {
   if (chat?.items?.some(it => it.k === 'human')) $('sessionNotice').hidden = true;
   rememberInputHistory(chat);
   const previous = lastChat;
+  if (chat && previous?.thread === chat.thread && (previous.model !== chat.model || previous.effort !== chat.effort)) {
+    menuCache.delete(menuCacheKey('model'));
+    menuCache.delete(menuCacheKey('effort'));
+  }
   if (!chat || previous?.thread !== chat.thread) {
     historyRequest = null; historyRendering = false; historyExpanded = false; historyArmed = false; historyAtEnd = false; readingAnchor = null;
     $('older').disabled = false;

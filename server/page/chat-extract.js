@@ -161,11 +161,16 @@
   };
   const codexTurnData = el => codexFiberProps(el.querySelector('[class*="agent-activity"]') || el.querySelector('button[aria-expanded]') || el, 40).find(p => p.turn)?.turn;
   // Current Codex list entries keep only IDs; their live items remain in the history atoms.
-  const codexStoredTurn = entry => {
+  const codexHistoryScopes = () => new Set(codexRootProps().flatMap(p => typeof p.value?.values === 'function' ? [...p.value.values()] : []).filter(v => v?.familyBindings));
+  const codexUserText = content => {
+    const text = content.filter(c => c.type === 'text').map(c => c.text).join('\n');
+    const wrapper = /^# Context from my IDE setup:\r?\n(?=[\s\S]*^## (?:Active file|Open tabs|Active selection of the file):)[\s\S]*?^## My request:\r?\n/m.exec(text);
+    return wrapper?.index === 0 ? text.slice(wrapper[0].length).replace(/\r?\n$/, '') : text;
+  };
+  const codexStoredTurn = (entry, scopes = codexHistoryScopes(), patchesOnly = false) => {
     const first = entry.turnItemIds?.[0];
     if (!first || !entry.historyEntityKey) return null;
     const itemKey = id => JSON.stringify([entry.historyEntityKey, id]);
-    const scopes = new Set(codexRootProps().flatMap(p => typeof p.value?.values === 'function' ? [...p.value.values()] : []).filter(v => v?.familyBindings));
     let metadata, itemBindings, slots, matchedItems = 0;
     for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
       const atom = bindings.get(entry.historyEntityKey)?.value;
@@ -183,10 +188,10 @@
     const ids = slots ? [...slots.entries].sort((a, b) => a.index - b.index).map(e => e.itemId) : entry.turnItemIds;
     const items = ids.flatMap(id => {
       const item = itemBindings.get(itemKey(id))?.value?.get();
-      if (!item) return [];
+      if (!item || (patchesOnly && item.type !== 'fileChange')) return [];
       const done = complete || !!metadata.agentMessageCompletedAtMsById?.[id];
       if (item.type === 'userMessage') return { type: 'user-message', clientUserMessageId: item.clientId || item.id,
-        message: (item.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n'),
+        message: codexUserText(item.content || []),
         images: (item.content || []).filter(c => c.type === 'image' || c.type === 'localImage'), sentAtMs: metadata.turnStartedAtMs };
       if (item.type === 'agentMessage') return { type: 'assistant-message', responseAnnotationTargetId: item.id, content: item.text, phase: item.phase, completed: done };
       if (item.type === 'reasoning') return { type: 'reasoning', id: item.id, content: [...(item.summary || []), ...(item.content || [])].map(t => typeof t === 'string' ? t : t.text || '').join('\n'), completed: complete };

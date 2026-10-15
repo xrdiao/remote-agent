@@ -257,6 +257,10 @@ $('sheet').addEventListener('click', async e => {
     if (b.dataset.kind === 'mode' && b.dataset.label === 'Bypass Permissions' && !b.classList.contains('cur')
       && !await ask('切到「Bypass Permissions」？\nAgent 之后的所有操作（运行命令、改文件、删文件）都会自动批准，不再询问你。', '切换')) return;
     closeSheet();
+    if (b.dataset.kind === 'model' || b.dataset.kind === 'effort') {
+      menuCache.delete(menuCacheKey('model'));
+      menuCache.delete(menuCacheKey('effort'));
+    }
     if (/^fusion-model-[ab]$/.test(b.dataset.kind)) fusionModelSide = b.dataset.kind.slice(-1);
     if (b.dataset.kind !== 'codex-run' && b.dataset.kind !== 'codex-chat' && !/^fusion-(model|effort)-/.test(String(b.dataset.kind || ''))) beginSwitch(b.dataset.kind);
     return send({ t: 'pickMenu', kind: b.dataset.kind, label: b.dataset.label });
