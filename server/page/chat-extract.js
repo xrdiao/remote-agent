@@ -101,9 +101,13 @@
     if (cursor) box = cursor;
     const buttons = [...box.querySelectorAll('button[aria-label^="Remove "]')].filter(button => button.parentElement.querySelector('img'));
     return [...buttons, ...box.querySelectorAll('.context-pill-image')].filter(vis).map(button => {
-      if (!button.dataset.remoteAttachment) button.dataset.remoteAttachment = crypto.randomUUID();
       const pill = button.matches('.context-pill-image');
       const img = pill ? button.querySelector('img') : button.parentElement.querySelector('img');
+      const source = img?.currentSrc || img?.src || '';
+      if (!button.dataset.remoteAttachment || button.__remoteAttachmentSrc !== source) {
+        button.dataset.remoteAttachment = crypto.randomUUID();
+        button.__remoteAttachmentSrc = source;
+      }
       let preview = '';
       if (img?.complete && img.naturalWidth) {
         const canvas = doc.createElement('canvas');
@@ -115,6 +119,17 @@
       const name = img?.alt && img.alt !== 'User attachment' ? img.alt.replace(/^User uploaded image (\d+)$/, '图片 $1') : label;
       return { id: button.dataset.remoteAttachment, name, preview };
     });
+  };
+  const attachmentImage = async id => {
+    const row = attachmentRows().find(f => f.id === id);
+    if (!row) throw new Error('图片已不在当前输入框中');
+    const el = [...doc.querySelectorAll('[data-remote-attachment]')].find(e => e.dataset.remoteAttachment === id);
+    const img = el.matches('.context-pill-image') ? el.querySelector('img') : el.parentElement.querySelector('img');
+    await img.decode();
+    const canvas = doc.createElement('canvas');
+    canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+    canvas.getContext('2d').drawImage(img, 0, 0);
+    return { name: row.name, data: canvas.toDataURL('image/png') };
   };
   const removeAttachment = id => {
     if (!attachmentRows().some(f => f.id === id)) return false;

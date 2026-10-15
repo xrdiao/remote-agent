@@ -163,8 +163,9 @@ export const ROUTES = {
       return s.showCodexSettings(String(m.id || ''), m.requestId);
     },
   },
+  codexInstructions: { run: (s, m) => s.app === 'codex' && s.saveCodexInstructions(String(m.text ?? ''), m.requestId) },
   closeCodexSettings: { run: s => s.closeCodexSettings() },
-  settings: { run: (s, m) => s.showSettings(m.requestId) },
+  settings: { run: (s, m) => s.showSettings(m.requestId, String(m.section || '')) },
   toggleSetting: { run: (s, m) => s.toggleSetting(String(m.label ?? '')) },
   usage: {
     fast: s => s.app === 'codex' || s.app === 'devin',
@@ -209,7 +210,8 @@ export const ROUTES = {
   },
   subagent: { run: (s, m) => s.subagentAction(m.name, m.part === 'stop' ? 'stop' : 'open') },
   mainChat: { run: s => s.backToMain() },
-  image: { run: (s, m) => s.attachImage(m.data, m.name, m.type) },
+  image: { run: (s, m) => s.attachImage(m.data, m.name, m.type, String(m.replace || ''), m.sel) },
+  editImage: { readOnly: true, run: (s, m) => s.editAttachmentImage(String(m.id), String(m.sel)) },
   attachments: { readOnly: true, fusionFree: true, run: s => s.syncAttachments() },
   removeAttachment: { run: (s, m) => s.removeAttachment(String(m.id)) },
   question: {
