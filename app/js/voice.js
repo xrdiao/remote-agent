@@ -136,18 +136,15 @@ $('imgFile').onchange = async () => {
   const sel = viewSel, scope = imageUploadScope();
   imageBatchScope = scope;
   try {
-    for (const file of files) {
-      if (scope !== imageUploadScope()) break;
-      if (!edit) { await attachImageFile(file, { sel }); continue; }
-      const url = URL.createObjectURL(file);
+    if (!edit) {
+      for (const file of files) { if (scope !== imageUploadScope()) break; await attachImageFile(file, { sel }); }
+    } else {
+      const images = files.map(file => ({ file, name: file.name, data: URL.createObjectURL(file) }));
       try {
         await new Promise((resolve, reject) => {
-          openImageEditor({ name: file.name, data: url, sel, batch: true,
-            onSave: edited => attachImageFile(edited, { sel, prepared: true }),
-            onSkip: () => attachImageFile(file, { sel }),
-            onClose: resolve }).then(opened => { if (!opened) resolve(); }).catch(reject);
+          openImageEditor({ files: images, sel, onClose: resolve }).then(opened => { if (!opened) resolve(); }).catch(reject);
         });
-      } finally { URL.revokeObjectURL(url); }
+      } finally { for (const image of images) URL.revokeObjectURL(image.data); }
     }
   } catch (error) { status(error.message, false); }
   finally { if (imageBatchScope === scope) imageBatchScope = ''; }
