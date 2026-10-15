@@ -338,7 +338,7 @@ function showMenu(kind, items, max, fusion, fast, model, refreshing) {
   const agentRow = role ? `<button class="opt" data-fusion-select="${role}"><span class="lbl">更换 ${role.toUpperCase()} Agent / 会话<span class="sub">${esc(lastChat?.fusion?.[role]?.title || '未选择')}</span></span></button>` : '';
   const fastRow = fast && !fusion ? `<button class="opt" data-fast="${fast.on ? 'off' : 'on'}" data-fast-menu="${kind}"><span class="lbl">Fast 模式${fast.description ? `<span class="sub">${esc(fast.description)}</span>` : ''}</span><span class="switch ${fast.on ? 'on' : ''}"></span></button>` : '';
   const effortEntry = kind === 'model' ? `<button class="opt" data-effort-open><span class="lbl">思考强度<span class="sub">${esc(lastChat?.effort || '')}</span></span></button>` : '';
-  const navigation = kind === 'effort' ? `<button class="opt" data-model-back>← 返回模型列表</button><p>${esc(model || lastChat?.model || '')}</p>${!items?.length ? '<p class="hint">这个模型没有可选的思考强度。</p>' : ''}` : '';
+  const navigation = picking ? '<button class="opt" data-model-back>← 返回模型配置</button>' : kind === 'effort' ? `<button class="opt" data-model-back>← 返回模型列表</button><p>${esc(model || lastChat?.model || '')}</p>${!items?.length ? '<p class="hint">这个模型没有可选的思考强度。</p>' : ''}` : '';
   const done = /^fusion-(model|effort)-[ab]$/.test(kind) ? '<button class="opt" data-model-done>返回配置</button>' : kind === 'effort' ? '<button class="opt" data-model-done>完成</button>' : '';
   openSheet('menu', `<h3>${MENU_TITLE[kind] || ''}${refreshing ? ' <span class="hint">更新中…</span>' : ''}</h3>` + navigation + agentRow + (picking ? '' : fusionBlock(fusion)) + effortEntry + fastRow + maxRow + rows + done);
 }
