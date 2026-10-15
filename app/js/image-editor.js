@@ -54,15 +54,45 @@ async function openImageEditor(image) {
       c.width = next.width; c.height = next.height; c.getContext('2d').drawImage(next, 0, 0); release(next);
     }
   };
-  const rebuild = () => {
+  const textPositions = ops => new Map(ops.filter(op => op.kind === 'moveText').map(op => [op.target, op.a]));
+  const rebuild = moving => {
     base.width = marks.width = source.naturalWidth; base.height = marks.height = source.naturalHeight;
     base.getContext('2d').drawImage(source, 0, 0);
-    for (const op of current().ops.slice(0, current().cursor)) {
+    const ops = current().ops.slice(0, current().cursor), positions = textPositions(ops);
+    if (moving) positions.set(moving.target, moving.a);
+    for (const [index, op] of ops.entries()) {
       if (op.kind === 'reset') { base.width = marks.width = source.naturalWidth; base.height = marks.height = source.naturalHeight; base.getContext('2d').drawImage(source, 0, 0); }
       else if (op.kind === 'crop' || op.kind === 'rotate') transform(op);
-      else drawMark(op);
+      else if (op.kind !== 'moveText') drawMark(op.kind === 'text' && positions.has(index) ? { ...op, a: positions.get(index) } : op);
     }
     current().width = base.width; current().height = base.height;
+  };
+  const textAt = point => {
+    const ops = current().ops.slice(0, current().cursor), positions = textPositions(ops), heights = [];
+    let width = source.naturalWidth, height = source.naturalHeight;
+    for (const op of ops) {
+      heights.push(height);
+      if (op.kind === 'crop') { width = Math.max(1, Math.round(op.rect.w)); height = Math.max(1, Math.round(op.rect.h)); }
+      else if (op.kind === 'rotate') [width, height] = [height, width];
+      else if (op.kind === 'reset') { width = source.naturalWidth; height = source.naturalHeight; }
+    }
+    const transforms = [];
+    const convert = q => transforms.reduce((p, transform) => transform(p), q);
+    const tolerance = 6 * base.width / canvas.getBoundingClientRect().width;
+    for (let i = ops.length - 1; i >= 0; i--) {
+      const op = ops[i];
+      if (op.kind === 'reset') break;
+      if (op.kind === 'crop') transforms.push(p => ({ x: p.x + op.rect.x, y: p.y + op.rect.y }));
+      else if (op.kind === 'rotate') transforms.push(p => ({ x: p.y, y: heights[i] - p.x }));
+      else if (op.kind === 'text') {
+        const a = positions.get(i) || op.a, p = convert(point), ctx = marks.getContext('2d');
+        ctx.font = `${op.size * 4}px sans-serif`;
+        const bounds = ctx.measureText(op.text);
+        if (p.x >= a.x - bounds.actualBoundingBoxLeft - tolerance && p.x <= a.x + bounds.actualBoundingBoxRight + tolerance
+          && p.y >= a.y - bounds.actualBoundingBoxAscent - tolerance && p.y <= a.y + bounds.actualBoundingBoxDescent + tolerance) return { target: i, a, p, convert };
+      }
+    }
+    return null;
   };
   const updateView = () => {
     const d = current(), fit = Math.min(1, stage.clientWidth / base.width, stage.clientHeight / base.height);
@@ -81,10 +111,14 @@ async function openImageEditor(image) {
       const scale = base.width / (parseFloat(canvas.style.width) || base.width);
       ctx.strokeStyle = '#fff8'; ctx.lineWidth = scale;
       for (let i = 1; i < 3; i++) { ctx.beginPath(); ctx.moveTo(r.x + r.w * i / 3, r.y); ctx.lineTo(r.x + r.w * i / 3, r.y + r.h); ctx.moveTo(r.x, r.y + r.h * i / 3); ctx.lineTo(r.x + r.w, r.y + r.h * i / 3); ctx.stroke(); }
-      ctx.strokeStyle = '#fff'; ctx.strokeRect(r.x, r.y, r.w, r.h); ctx.lineWidth = scale * 4;
+      ctx.strokeStyle = '#101820'; ctx.lineWidth = scale * 3; ctx.strokeRect(r.x, r.y, r.w, r.h);
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = scale; ctx.strokeRect(r.x, r.y, r.w, r.h);
       const handle = Math.min(16 * scale, r.w / 5, r.h / 5);
-      for (const x of [r.x, r.x + r.w]) for (const y of [r.y, r.y + r.h]) { ctx.beginPath(); ctx.moveTo(x, y + (y === r.y ? handle : -handle)); ctx.lineTo(x, y); ctx.lineTo(x + (x === r.x ? handle : -handle), y); ctx.stroke(); }
-      for (const [x, y, horizontal] of [[r.x + r.w / 2, r.y, true], [r.x + r.w / 2, r.y + r.h, true], [r.x, r.y + r.h / 2, false], [r.x + r.w, r.y + r.h / 2, false]]) { ctx.beginPath(); ctx.moveTo(x - (horizontal ? handle / 2 : 0), y - (horizontal ? 0 : handle / 2)); ctx.lineTo(x + (horizontal ? handle / 2 : 0), y + (horizontal ? 0 : handle / 2)); ctx.stroke(); }
+      ctx.beginPath();
+      for (const x of [r.x, r.x + r.w]) for (const y of [r.y, r.y + r.h]) { ctx.moveTo(x, y + (y === r.y ? handle : -handle)); ctx.lineTo(x, y); ctx.lineTo(x + (x === r.x ? handle : -handle), y); }
+      for (const [x, y, horizontal] of [[r.x + r.w / 2, r.y, true], [r.x + r.w / 2, r.y + r.h, true], [r.x, r.y + r.h / 2, false], [r.x + r.w, r.y + r.h / 2, false]]) { ctx.moveTo(x - (horizontal ? handle / 2 : 0), y - (horizontal ? 0 : handle / 2)); ctx.lineTo(x + (horizontal ? handle / 2 : 0), y + (horizontal ? 0 : handle / 2)); }
+      ctx.strokeStyle = '#101820'; ctx.lineWidth = scale * 7; ctx.stroke();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = scale * 4; ctx.stroke();
     }
     dialog.querySelector('[data-edit=undo]').disabled = !current().cursor && fullCrop(current().crop);
     dialog.querySelector('[data-edit=redo]').disabled = current().cursor === current().ops.length && !current().redoCrop;
@@ -133,6 +167,10 @@ async function openImageEditor(image) {
     if (pointers.size === 2) { preview = null; gesture = null; rebuild(); const [a, b] = [...pointers.values()]; const r = stage.getBoundingClientRect(); const c = canvas.getBoundingClientRect(); pinch = { distance: Math.hypot(a.x - b.x, a.y - b.y), zoom: current().zoom, anchor: { x: ((a.x + b.x) / 2 - c.left) / c.width, y: ((a.y + b.y) / 2 - c.top) / c.height } }; paint(); return; }
     if (pointers.size !== 1) return;
     const p = point(e), r = current().crop, tolerance = 22 * base.width / canvas.getBoundingClientRect().width;
+    if (mode === 'text') {
+      const hit = textAt(p);
+      if (hit) { gesture = { text: hit }; return; }
+    }
     if (mode === 'crop') {
       current().redoCrop = null;
       const edge = { left: Math.abs(p.x - r.x) < tolerance, right: Math.abs(p.x - r.x - r.w) < tolerance, top: Math.abs(p.y - r.y) < tolerance, bottom: Math.abs(p.y - r.y - r.h) < tolerance };
@@ -153,7 +191,11 @@ async function openImageEditor(image) {
     if (!gesture) return;
     const p = point(e);
     if (mode === 'pan') { stage.scrollLeft += gesture.p.x - e.clientX; stage.scrollTop += gesture.p.y - e.clientY; current().x = stage.scrollLeft; current().y = stage.scrollTop; gesture.p = { x: e.clientX, y: e.clientY }; return; }
-    if (mode === 'crop') {
+    if (gesture.text) {
+      const hit = gesture.text, q = hit.convert(p);
+      preview = { kind: 'moveText', target: hit.target, a: { x: hit.a.x + q.x - hit.p.x, y: hit.a.y + q.y - hit.p.y } };
+      rebuild(preview);
+    } else if (mode === 'crop') {
       const r = gesture.crop, dx = p.x - gesture.p.x, dy = p.y - gesture.p.y, edge = gesture.edge;
       if (gesture.moving) current().crop = { ...r, x: Math.max(0, Math.min(base.width - r.w, r.x + dx)), y: Math.max(0, Math.min(base.height - r.h, r.y + dy)) };
       else {
@@ -166,7 +208,7 @@ async function openImageEditor(image) {
       }
     } else if (preview) {
       if (mode === 'draw' || mode === 'erase') { const a = preview.points.at(-1); preview.points.push(p); drawMark({ ...preview, points: [a, p] }); }
-      else { rebuild(); preview.b = p; drawMark(preview); }
+      else { rebuild(); preview.b = p; if (mode === 'text') preview.a = p; drawMark(preview); }
     }
     paint();
   };
