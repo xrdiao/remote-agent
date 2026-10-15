@@ -212,7 +212,7 @@ export const ROUTES = {
   mainChat: { run: s => s.backToMain() },
   image: {
     run: (s, m) => s.attachImage(m.data, m.name, m.type, String(m.replace || ''), m.sel),
-    after: (s, m) => s.emit({ t: 'imageDone', clientImageId: m.clientImageId, ok: true }),
+    after: (s, m, attachmentId) => s.emit({ t: 'imageDone', clientImageId: m.clientImageId, attachmentId, ok: true }),
     fail: (s, m) => s.emit({ t: 'imageDone', clientImageId: m.clientImageId, ok: false }),
   },
   editImage: { readOnly: true, run: (s, m) => s.editAttachmentImage(String(m.id), String(m.sel)) },
