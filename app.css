@@ -359,25 +359,29 @@
   .listTools { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
   body.visual > .seg, body.visual > footer { display: none; }
   body.visual #screenView { padding: 0 12px max(12px, env(safe-area-inset-bottom)); }
-  .visualHeading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 2px; }
-  .visualHeading h2 { margin: 0; font-size: 19px; color: var(--hi); }
+  .visualHeading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 2px; }
+  .visualHeading h2 { margin: 0; font-size: 17px; color: var(--hi); }
   .visualHeading button, .visualHeading > span { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; padding: 0; font-size: 26px; color: var(--blue); }
   .visualHeading > span { font-size: 22px; background: var(--panel); }
-  .visualSource { display: flex; align-items: center; gap: 12px; padding: 14px 12px; border: 1px solid var(--border); border-radius: 14px; background: var(--panel); }
-  .visualMonitor { display: grid; place-items: center; flex: none; width: 38px; height: 38px; border: 1px solid var(--border); border-radius: 10px; color: var(--blue); font-size: 26px; }
-  .visualSourceText { flex: 1; min-width: 0; }
-  .visualSourceText strong, .visualSourceText > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .visualSourceText strong { font-size: 14px; color: var(--hi); font-weight: 600; }
-  .visualSourceText > span { font-size: 12px; color: var(--muted); }
+  .visualSource { display: flex; align-items: center; gap: 12px; padding: 0 12px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 14px; background: var(--panel); }
+  body.visual #visualChoose { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: 1; min-width: 0; min-height: 42px; padding: 8px 0; background: transparent; border: 0; text-align: left; }
+  body.visual #visualTitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
   #visualStatus { flex: none; display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
   #visualStatus::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
   #visualStatus[data-state="live"]::before { background: var(--ok); }
   #visualStatus[data-state="permission"]::before, #visualStatus[data-state="starting"]::before { background: var(--warn); }
   #visualStatus[data-state="error"]::before { background: var(--err); }
-  body.visual #screenTools { padding: 10px 0; gap: 8px; background: transparent; border: 0; overflow: visible; flex-wrap: wrap; }
-  body.visual #screenTools button { flex: 1; min-width: 0; min-height: 38px; border-radius: 10px; font-size: 13px; }
-  body.visual #visualChoose { flex: 1.5; background: var(--ctx); color: white; border-color: var(--accent-b); }
-  body.visual #visualShare { flex-basis: 100%; }
+  body.visual > header { padding: 5px 12px 2px; }
+  body.visual #meters { display: none; }
+  body.visual #title { height: 34px; border-radius: 10px; }
+  body.visual .titleLabels { display: flex; align-items: baseline; gap: 6px; overflow: hidden; }
+  body.visual .titleRow { flex: none; }
+  body.visual #titleProject { min-width: 0; }
+  body.visual #menuBtn { height: 34px; }
+  body.visual #visualCaption { padding: 5px 10px; justify-content: flex-start; }
+  body.visual #screenTools { margin-left: auto; padding: 0; gap: 6px; background: transparent; border: 0; }
+  body.visual #screenTools button { min-height: 32px; padding: 4px 8px; border-radius: 8px; font-size: 12px; }
+  body.visual #visualHint { padding: 5px 10px; font-size: 11px; }
   #visualCaption, #visualHint { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border: 1px solid var(--border); background: var(--panel); color: var(--muted2); font-size: 12px; }
   #visualCaption { border-bottom: 0; border-radius: 14px 14px 0 0; }
   .visualReadOnly { border-radius: 6px; background: var(--ctrl); padding: 2px 8px; font-size: 11px; }
