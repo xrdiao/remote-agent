@@ -29,6 +29,8 @@ wss.on('connection', (ws, req) => {
   let queue = Promise.resolve();
   let questionQueue = Promise.resolve();
   const agentReads = new Map();
+  const imageActions = [];
+  let imageGroup = 0;
   ws.on('message', raw => {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
@@ -54,7 +56,17 @@ wss.on('connection', (ws, req) => {
     const readKind = msg.t === 'agents' ? `${!!msg.automatic}|${!!msg.silent}` : null;
     const readSerial = readKind && (agentReads.get(readKind) || 0) + 1;
     if (readKind) agentReads.set(readKind, readSerial);
+    const imageAction = msg.t === 'removeAttachment' || msg.t === 'editImage';
+    const group = msg.t === 'image' || imageAction ? imageGroup : ++imageGroup;
+    let executed = false;
     const execute = async () => {
+      if (executed) return;
+      executed = true;
+      const actionIndex = imageActions.findIndex(action => action.execute === execute);
+      if (actionIndex !== -1) imageActions.splice(actionIndex, 1);
+      if (msg.t === 'image') {
+        for (const action of imageActions.filter(action => action.group === group)) await action.execute();
+      }
       if (readKind && agentReads.get(readKind) !== readSerial) return;
       const q0 = Date.now();
       try {
@@ -68,6 +80,7 @@ wss.on('connection', (ws, req) => {
         session.emit({ t: 'status', ok: false, msg: e.message });
       }
     };
+    if (imageAction) imageActions.push({ group, execute });
     if (flag(route?.background, session, msg)) queue.then(execute);
     else if (msg.t === 'question' || msg.t === 'codexRequest') questionQueue = questionQueue.then(execute);
     else queue = queue.then(execute);
