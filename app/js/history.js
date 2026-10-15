@@ -377,6 +377,7 @@ function renderChat(chat, stale, loading = false) {
   updateGenerationTime(chat, stale);
   chatStale = !!stale;
   if (chat?.items?.some(it => it.k === 'human')) $('sessionNotice').hidden = true;
+  rememberInputHistory(chat);
   const previous = lastChat;
   if (!chat || previous?.thread !== chat.thread) {
     historyRequest = null; historyRendering = false; historyExpanded = false; historyArmed = false; historyAtEnd = false; readingAnchor = null;

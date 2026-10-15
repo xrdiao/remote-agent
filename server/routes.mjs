@@ -144,6 +144,10 @@ export const ROUTES = {
   openTerminal: { run: (s, m) => s.openTerminal(String(m.id ?? '')) },
   closeTerminal: { run: (s, m) => s.closeTerminal(String(m.id ?? '')) },
   newTerminal: { run: s => s.newTerminal() },
+  termHistory: { readOnly: true, run: async (s, m) => {
+    const data = await s.editorCdp.evaluate(helpersCall('terminalHistory()'));
+    s.emit({ t: 'termHistory', sel: s.selectionKey(), direction: m.direction < 0 ? -1 : 1, id: data.id, commands: data.commands });
+  } },
   termSend: {
     run: (s, m) => s.sendTerminal(String(m.text ?? '')),
     after: (s, m) => {
