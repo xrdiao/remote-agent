@@ -28,7 +28,7 @@ async function shrinkImage(file, canvas) {
 const imageUploads = new Map(), editableImages = new Map();
 let desktopAttachments = [], editBeforeUpload = false, imageBatchScope = '';
 const imageUploadScope = () => [currentComputer()?.id || '', viewSel].join('|');
-function pendingImageUploads() { return imageBatchScope === imageUploadScope() || [...imageUploads.values()].some(f => f.scope === imageUploadScope()); }
+function pendingImageUploads() { return imageBatchScope === imageUploadScope() || [...imageUploads.values()].some(f => f.scope === imageUploadScope() && !f.cancelled); }
 function renderAttachments(list) {
   desktopAttachments = list;
   for (const [id, image] of editableImages) {
@@ -44,7 +44,7 @@ function finishImageUpload(m) {
   if (!file) return;
   file.attachmentId = m.attachmentId;
   if (m.ok) {
-    if (file.cancelled && m.attachmentId && file.scope === imageUploadScope()) send({ t: 'removeAttachment', id: m.attachmentId });
+    if (file.cancelled && !m.cancelled && m.attachmentId && file.scope === imageUploadScope()) send({ t: 'removeAttachment', id: m.attachmentId });
     else if (file.editedFile && m.attachmentId && file.scope === imageUploadScope()) attachImageFile(file.editedFile, { sel: file.options.sel || viewSel, replace: m.attachmentId, prepared: true });
     if (m.attachmentId && file.scope === imageUploadScope() && desktopAttachments.some(f => f.id === m.attachmentId)) {
       const previous = editableImages.get(m.attachmentId);
@@ -68,6 +68,9 @@ $('attachments').onclick = e => {
   if (discard) {
     const file = imageUploads.get(discard.dataset.discardImage);
     file.cancelled = true;
+    file.reader?.abort();
+    if (file.sent) send({ t: 'cancelImage', clientImageId: discard.dataset.discardImage });
+    status('已取消这张图片上传');
     if (file.error) { URL.revokeObjectURL(file.preview); imageUploads.delete(discard.dataset.discardImage); }
     return renderAttachments(desktopAttachments);
   }
@@ -140,14 +143,18 @@ async function attachImageFile(file, options = {}) {
     const record = imageUploads.get(id);
     if (record.cancelled) { URL.revokeObjectURL(record.preview); imageUploads.delete(id); return true; }
     record.uploadFile = img;
-    const url = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(img); });
+    const url = await new Promise((res, rej) => { const r = new FileReader(); record.reader = r; r.onload = () => res(r.result); r.onerror = rej; r.onabort = () => res(null); r.readAsDataURL(img); });
     if (record.cancelled) { URL.revokeObjectURL(record.preview); imageUploads.delete(id); return true; }
     if (scope !== imageUploadScope()) throw new Error('会话已切换，请回到原会话重试上传');
     if (!authed || ws?.readyState !== 1) throw new Error('连接已断开，请重新连接后重试');
+    record.reader = null;
+    record.sent = true;
     send({ t: 'image', data: url.slice(url.indexOf(',') + 1), name: img.name, type: img.type, sel, replace: options.replace || '', clientImageId: id });
     return true;
   } catch (error) {
+    const cancelled = imageUploads.get(id)?.cancelled;
     finishImageUpload({ clientImageId: id, ok: false });
+    if (cancelled) return true;
     status(error.message || '读不了这张图片，换一张试试', false);
     return false;
   }

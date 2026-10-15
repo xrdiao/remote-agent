@@ -215,9 +215,13 @@ export const ROUTES = {
   },
   subagent: { run: (s, m) => s.subagentAction(m.name, m.part === 'stop' ? 'stop' : 'open') },
   mainChat: { run: s => s.backToMain() },
+  cancelImage: { fast: true, fastRun: (s, m) => {
+    const transfer = s.imageTransfers?.get(m.clientImageId);
+    if (transfer) transfer.cancelled = true;
+  } },
   image: {
-    run: (s, m) => s.attachImage(m.data, m.name, m.type, String(m.replace || ''), m.sel),
-    after: (s, m, attachmentId) => s.emit({ t: 'imageDone', clientImageId: m.clientImageId, attachmentId, ok: true }),
+    run: (s, m) => s.attachImage(m.data, m.name, m.type, String(m.replace || ''), m.sel, s.imageTransfers?.get(m.clientImageId)),
+    after: (s, m, attachmentId) => s.emit({ t: 'imageDone', clientImageId: m.clientImageId, attachmentId, ok: true, cancelled: s.imageTransfers?.get(m.clientImageId)?.cancelled === true }),
     fail: (s, m) => s.emit({ t: 'imageDone', clientImageId: m.clientImageId, ok: false }),
   },
   editImage: { readOnly: true, run: (s, m) => s.editAttachmentImage(String(m.id), String(m.sel)) },
