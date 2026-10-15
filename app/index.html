@@ -33,7 +33,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>Remote Agent</title>
-<link rel="stylesheet" href="app.css?v=92">
+<link rel="stylesheet" href="app.css?v=95">
 </head>
 <body>
 <header>
@@ -114,7 +114,7 @@
     <button data-termkey="ArrowDown">↓</button>
     <button data-termkey="Tab">Tab</button>
   </div>
-  <div class="attachmentRow"><div id="attachments"></div></div>
+  <div class="attachmentRow" hidden><div id="attachments"></div></div>
   <div id="mentionBox" hidden></div>
   <div id="mathPrev" hidden></div>
   <div id="fusionBar" hidden></div>
@@ -140,7 +140,7 @@
     <button id="newChat">＋ 新建</button>
   </div>
   </div>
-<input id="imgFile" type="file" accept="image/*" hidden>
+<input id="imgFile" type="file" accept="image/*" multiple hidden>
 <input id="docFile" type="file" accept=".pdf,.doc,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.py,.js,.ts,.tsx,.jsx,.sh,.yaml,.yml,.toml,.ini,.log,.xml,.html,.css,.c,.cpp,.h,.rs,.go" hidden>
   <div class="sendRow"><button id="send">发送</button><button id="sendNow" hidden>立即发送</button></div>
   <div id="footerStatus"><div id="msg"></div><span id="elapsed" hidden></span></div>
@@ -227,7 +227,7 @@
 <script src="js/terminal.js"></script>
 <script src="js/composer.js?v=93"></script>
 <script src="js/latency.js"></script>
-<script src="js/image-editor.js?v=94"></script>
-<script src="js/voice.js?v=94"></script>
+<script src="js/image-editor.js?v=95"></script>
+<script src="js/voice.js?v=95"></script>
 </body>
 </html>
