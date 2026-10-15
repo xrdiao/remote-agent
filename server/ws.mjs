@@ -52,6 +52,8 @@ wss.on('connection', (ws, req) => {
     // Frame acks bypass the queue so a slow command never stalls the stream.
     if (msg.t === 'ack') return session.ack();
     const route = ROUTES[msg.t];
+    const imageTransfer = msg.t === 'image' ? { cancelled: false } : null;
+    if (imageTransfer) (session.imageTransfers ||= new Map()).set(msg.clientImageId, imageTransfer);
     if (route && flag(route.fast, session, msg)) { route.fastRun(session, msg); return; }
     const readKind = msg.t === 'agents' ? `${!!msg.automatic}|${!!msg.silent}` : null;
     const readSerial = readKind && (agentReads.get(readKind) || 0) + 1;
@@ -70,7 +72,7 @@ wss.on('connection', (ws, req) => {
       if (readKind && agentReads.get(readKind) !== readSerial) return;
       const q0 = Date.now();
       try {
-        const queued = await session.handle(msg);
+        const queued = imageTransfer?.cancelled ? undefined : await session.handle(msg);
         const ms = Date.now() - q0;
         if (ms > 3000) console.log(`[slow] ${msg.t} ${ms}ms ${session.app || ''}`);
         route?.after?.(session, msg, queued);
@@ -78,6 +80,8 @@ wss.on('connection', (ws, req) => {
         console.log(`[err] ${msg.t}: ${e.message}`);
         route?.fail?.(session, msg);
         session.emit({ t: 'status', ok: false, msg: e.message });
+      } finally {
+        if (imageTransfer) session.imageTransfers.delete(msg.clientImageId);
       }
     };
     if (imageAction) imageActions.push({ group, execute });
