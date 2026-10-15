@@ -33,7 +33,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>Remote Agent</title>
-<link rel="stylesheet" href="app.css?v=98">
+<link rel="stylesheet" href="app.css?v=99">
 </head>
 <body>
 <header>
@@ -110,8 +110,6 @@
     <button id="pickTerms">列表</button>
     <button id="newTerm">＋ 新建</button>
     <button id="termInt">Ctrl+C</button>
-    <button data-termkey="ArrowUp">↑</button>
-    <button data-termkey="ArrowDown">↓</button>
     <button data-termkey="Tab">Tab</button>
   </div>
   <div class="attachmentRow" hidden><div id="attachments"></div></div>
@@ -142,7 +140,7 @@
   </div>
 <input id="imgFile" type="file" accept="image/*" multiple hidden>
 <input id="docFile" type="file" accept=".pdf,.doc,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.py,.js,.ts,.tsx,.jsx,.sh,.yaml,.yml,.toml,.ini,.log,.xml,.html,.css,.c,.cpp,.h,.rs,.go" hidden>
-  <div class="sendRow"><div id="inputHistory"><button id="inputPrev" aria-label="上一条已发送内容" title="上一条已发送内容">↑</button><button id="inputNext" aria-label="下一条已发送内容或恢复草稿" title="下一条已发送内容或恢复草稿">↓</button></div><button id="send">发送</button><button id="sendNow" hidden>立即发送</button></div>
+  <div class="sendRow"><div id="inputHistory"><button id="inputPrev" aria-label="上一条已发送内容" title="上一条已发送内容">↑</button><button id="inputNext" aria-label="下一条已发送内容或恢复草稿" title="下一条已发送内容或恢复草稿">↓</button></div><div id="termHistory"><button data-termkey="ArrowUp" aria-label="上一条终端命令">↑</button><button data-termkey="ArrowDown" aria-label="下一条终端命令">↓</button></div><button id="send">发送</button><button id="sendNow" hidden>立即发送</button></div>
   <div id="footerStatus"><div id="msg"></div><span id="elapsed" hidden></span></div>
 </footer>
 
@@ -228,6 +226,6 @@
 <script src="js/composer.js?v=98"></script>
 <script src="js/latency.js"></script>
 <script src="js/image-editor.js?v=97"></script>
-<script src="js/voice.js?v=96"></script>
+<script src="js/voice.js?v=99"></script>
 </body>
 </html>

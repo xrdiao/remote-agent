@@ -49,6 +49,12 @@
         const label = normLabel(e.innerText).split('\n')[0].slice(0, 60);
         return { el: e, id: label, params: false, label, checked: e.getAttribute('aria-checked') === 'true' };
       });
+      const models = cursorPickerProps()?.models || [];
+      const modelLabel = (el, label) => {
+        const id = el.getAttribute('data-testid')?.replace(/^model-item-/, '');
+        const model = models.find(m => m.name === id || m.id === id);
+        return model ? model.clientDisplayName || model.inputboxShortModelName || model.name : label;
+      };
       const currentModel = normLabel(modelButton()?.innerText || '').split('\n')[0];
       // Auto is its own row and has no .ui-model-picker__item-content-name, so the list below would skip it.
       const autoRows = [...doc.querySelectorAll('[data-testid="auto-mode-select"]')].filter(vis).map(e => {
@@ -57,19 +63,19 @@
           el: e,
           id: e.getAttribute('data-testid'),
           params: false,
-          label,
+          label: modelLabel(e, label),
           checked: label === currentModel || !!e.querySelector('[class*=check]') || e.getAttribute('aria-checked') === 'true',
         };
       });
       const classic = [...doc.querySelectorAll('.ui-menu__row')].filter(e => e.getAttribute('data-testid') !== 'auto-mode-select' && e.querySelector('.ui-model-picker__item-content-name'));
-      if (classic.length) return [...autoRows, ...classic.map(e => ({ el: e, id: e.dataset.testid, params: !!e.querySelector('[data-testid=parameter-edit-btn]'), label: normLabel(e.querySelector('.ui-model-picker__item-content-name').innerText), checked: !!e.querySelector('.codicon-check, .ui-model-picker__item-right-section [class*=check]') }))];
+      if (classic.length) return [...autoRows, ...classic.map(e => ({ el: e, id: e.dataset.testid, params: !!e.querySelector('[data-testid=parameter-edit-btn]'), label: modelLabel(e, normLabel(e.querySelector('.ui-model-picker__item-content-name').innerText)), checked: !!e.querySelector('.codicon-check, .ui-model-picker__item-right-section [class*=check]') }))];
       const cursorItems = [...doc.querySelectorAll('[data-testid^="model-item-"], [data-testid="auto-mode-select"]')].filter(vis).map(e => {
         const label = normLabel(e.innerText).split('\n')[0].slice(0, 60);
         return {
           el: e,
           id: e.getAttribute('data-testid'),
           params: false,
-          label,
+          label: modelLabel(e, label),
           checked: label === currentModel || !!e.querySelector('[class*=check]') || e.getAttribute('aria-checked') === 'true',
         };
       });
