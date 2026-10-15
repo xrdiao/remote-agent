@@ -460,3 +460,8 @@ async function removeComputers(keys) {
   showComputers();
 }
 
+
+$('sheet').addEventListener('change', e => {
+  const field = e.target.closest('[data-codex-field]');
+  if (field) { status('正在读取设置…'); send({ t: 'codexSetting', id: field.dataset.codexField, value: field.value }); }
+});
