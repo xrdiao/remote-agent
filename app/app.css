@@ -19,8 +19,9 @@
     color-scheme: light;
     --bg: #ffffff; --panel: #f3f3f3; --bar: #ececec; --queuebg: #f0f0f0; --warnbg: #fff4e0;
     --ctrl: #ffffff; --border: #c9c9c9; --line: #e0e0e0; --line2: #bfbfbf; --thline: #bfbfbf;
-    --text: #242424; --hi: #000000; --mid: #333; --muted: #666; --muted2: #555; --faint: #8a8a8a; --lnno: #9a9a9a;
+    --text: #242424; --hi: #000000; --mid: #333; --muted: #666; --muted2: #555; --faint: #686868; --lnno: #686868;
     --pre-bg: #f5f5f5; --code-bg: #e8e8e8; --think-bg: #f7f7f7;
+    --accent: #066cbe; --accent-b: #087bd8;
     --blue: #005a9e; --code-fg: #0451a5; --file: #0451a5; --hl: #0078d4; --ctx: #0078d4;
     --ok: #1a7f37; --bad: #cf222e; --bad-b: #cf222e; --err: #cf222e; --del: #cf222e; --hot: #cf222e;
     --warn: #9a6700; --warn-d: #b5830a; --warn-t: #8a5a00; --warnsel: #fbe8c4;
@@ -28,6 +29,16 @@
     --tag: #e2e2e2; --tagtx: #555; --tooltx: #57606a;
     --shade: #0006; --float: #00000022; --imgbg: #0001;
   }
+  /* Light-theme contrast fixes; terminal and desktop code palettes remain independent. */
+  :root[data-theme="light"] .assistant pre { background: #e5e9ee; border: 1px solid #b6bec8; }
+  :root[data-theme="light"] .assistant a { color: var(--blue); }
+  :root[data-theme="light"] .quotaUpdated,
+  :root[data-theme="light"] .pSec,
+  :root[data-theme="light"] #vPath { color: var(--muted); }
+  :root[data-theme="light"] #vName { color: var(--hi); }
+  :root[data-theme="light"] .sub .add { color: var(--add); }
+  :root[data-theme="light"] .sub .del { color: var(--del); }
+  :root[data-theme="light"] #text::placeholder { color: var(--muted); opacity: 1; }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 15px/1.55 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; overflow: hidden; }
