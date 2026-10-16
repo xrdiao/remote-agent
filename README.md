@@ -68,6 +68,23 @@ npm install
 
 其他系统见 [Cloudflare 下载页](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)。
 
+## Ubuntu 快捷启动
+
+安装依赖后，在仓库目录依次运行：
+
+```bash
+./ubuntu_start/start-agents.sh
+./ubuntu_start/pair.sh
+```
+
+第一个脚本并行启动已安装的 Cursor、Devin 和 VS Code（Codex），复用已开启的调试端口；已经运行但没有调试端口的应用需要先自行退出。可用 `CURSOR_BIN`、`DEVIN_BIN`、`CODE_BIN` 指定安装路径。
+
+第二个脚本先检查本机配置，再查找当前 GitHub 用户已有的 Remote Agent Pages 入口；找到就复用，没有才询问是否创建个人入口。需要 `gh`（`sudo apt install gh`）和 `cloudflared`，首次使用可能需要登录自己的 GitHub。随后在后台启动或复用中继、隧道，发布当前电脑地址，并打印配对二维码、链接和手动配对码。关闭脚本终端不会关闭服务。
+
+每个人使用自己账号下的固定入口。电脑重启后重新运行这两个脚本，手机从原入口连接，无需重新配对；请保留 `~/.agent-remote/`。换新电脑可以复用同一个入口，但需要为新电脑配对一次。如果为正在运行的中继首次设置了固定入口，请重启中继，使入口配置生效。GitHub Pages 首次发布可能需要几分钟。
+
+Windows：双击 `window_start/pair.exe` 或运行 `window_start/pair.cmd`，同样会先检查并复用个人固定入口，没有才询问创建；随后启动中继、隧道并显示配对二维码，链接自动复制到剪贴板。需要安装 GitHub CLI 并登录自己的账号。
+
 ## 第 3 步：以调试端口启动 Cursor 和/或 Devin
 
 中继只能看到以调试端口启动的应用。如果应用已经开着，先退出再启动。可以只用一个，也可以两个都用。

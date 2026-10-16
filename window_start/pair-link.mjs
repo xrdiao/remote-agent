@@ -5,7 +5,7 @@ import path from 'node:path';
 import { once } from 'node:events';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
-import { createPairing, readState, DATA_DIR } from '../lib/auth.mjs';
+import { readState, DATA_DIR } from '../lib/auth.mjs';
 import { PORT, PUBLISH_REPO } from '../server/config.mjs';
 import { findTunnelPid, rememberTunnel } from '../server/publish/tunnel.mjs';
 import { findBin } from '../lib/platform.mjs';
@@ -102,17 +102,9 @@ export async function ensureServices() {
 }
 
 export async function main() {
-  const base = await ensureServices();
-  const { link, pairingCode, minutes, replacing } = createPairing(base);
-  if (replacing) console.log('刚才那条还没过期的配对链接已经作废，只用下面这一条。\n');
-  console.log(`配对链接（${minutes} 分钟内有效，只能用一次）：\n`);
-  console.log(link);
-  console.log(`\n配对码：\n${pairingCode}\n`);
-  if (process.platform === 'win32') {
-    const ps = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Set-Clipboard -Value $input'],
-      { input: link, encoding: 'utf8', windowsHide: true });
-    if (ps.status === 0) console.log('配对链接已复制到剪贴板。');
-  }
+  const result = spawnSync(process.execPath, [path.join(repo, 'cli', 'desktop-pair.mjs')], { cwd: repo, stdio: 'inherit' });
+  if (result.error) throw result.error;
+  process.exitCode = result.status ?? 1;
 }
 
 async function waitForKey() {
