@@ -2,6 +2,7 @@
 // npm run devices         → list paired devices
 // npm run devices remove <id>
 import qrcode from 'qrcode-terminal';
+import { spawnSync } from 'node:child_process';
 import { createPairing, appBase, listDevices, removeDevice, totpConfig, readState, readConfig } from '../lib/auth.mjs';
 import { publishUrl } from '../server/publish/pages.mjs';
 
@@ -22,6 +23,11 @@ if (cmd === 'pair') {
   qrcode.generate(link, { small: true });
   console.log(`\n${link}\n`);
   console.log(`手动配对码：${pairingCode}\n固定入口：${base}\n`);
+  if (process.platform === 'win32' && process.argv.includes('--copy-link')) {
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Set-Clipboard -Value $input'],
+      { input: link, encoding: 'utf8', windowsHide: true });
+    if (result.status === 0) console.log('配对链接已复制到剪贴板。');
+  }
   if (published) console.log('在固定入口输入上面的完整配对码；地址记录约 1 分钟后生效。');
   else console.log('手动配对码可在电脑服务页面输入；固定入口的手动配对需要成功发布地址记录。');
   if (totpConfig()) console.log('已开启二次验证：配对时还要输入 Authenticator 里的 6 位验证码。\n');

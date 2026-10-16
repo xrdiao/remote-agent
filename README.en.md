@@ -68,6 +68,23 @@ Skip this step if your phone will always be on the same Wi-Fi as the computer, a
 
 Other systems: [Cloudflare downloads](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/).
 
+## Ubuntu quick start
+
+After installing dependencies, run these from the repository:
+
+```bash
+./ubuntu_start/start-agents.sh
+./ubuntu_start/pair.sh
+```
+
+The first script launches installed Cursor, Devin and VS Code (Codex) concurrently, reusing active debug ports. Quit an existing app first if it was started without a debug port. Set `CURSOR_BIN`, `DEVIN_BIN` or `CODE_BIN` for custom executable paths.
+
+The second script checks local configuration and then the signed-in GitHub user's existing Remote Agent Pages sites. It reuses an existing entry and asks about creating a personal one only when none is found. It requires `gh` (`sudo apt install gh`) and `cloudflared`; GitHub login may be needed initially. It starts or reuses background relay/tunnel processes, publishes this computer's address, and prints a pairing QR code, link and manual code. Closing the launcher terminal leaves the services running.
+
+Each person uses their own account's fixed entry. After a computer reboot, rerun both scripts and open the same phone entry without pairing again. Keep `~/.agent-remote/`. A new computer can reuse the entry but needs its own initial pairing. Restart an already-running relay after configuring its fixed entry for the first time. Initial GitHub Pages publication may take a few minutes.
+
+Windows: double-click `window_start/pair.exe` or run `window_start/pair.cmd`. It checks and reuses your personal fixed entry before asking to create one, then starts the relay/tunnel, displays a pairing QR code and copies the link to the clipboard. Install GitHub CLI and sign in to your own account first.
+
 ## Step 3. Start Cursor and/or Devin with a debug port
 
 The relay can only see an app that was started with a debug port. Quit the app first if it is already open. You can use one app or both.
