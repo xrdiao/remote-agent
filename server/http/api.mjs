@@ -10,6 +10,7 @@ import { listWindows } from '../windows.mjs';
 import { Cdp } from '../cdp.mjs';
 import { helpersCall } from '../page/build.mjs';
 import { Session } from '../session.mjs';
+import { videoGrant, serveVideo } from './video.mjs';
 import { uploads } from '../agent/context.mjs';
 
 // A device is usable once paired and, when 2FA asks for it, re-verified.
@@ -57,6 +58,11 @@ async function actOnWindow(deviceId, { win, threadId, act, index, text, question
 export async function handleApi(req, res, route) {
   const ip = clientIp(req);
   if (req.method === 'POST' && !originAllowed(req)) return json(req, res, 403, { error: 'bad origin' });
+  if (route.startsWith('/api/video/') && ['GET', 'HEAD'].includes(req.method)) {
+    const grant = videoGrant(route.slice('/api/video/'.length));
+    if (!grant) return json(req, res, 401, { error: '视频链接已过期或设备授权已失效，请重新打开视频' });
+    return serveVideo(req, res, grant);
+  }
   const device = deviceFor(req);
 
   if (route === '/api/me') {
