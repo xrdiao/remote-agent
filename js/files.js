@@ -9,6 +9,10 @@ function dirtyEdit() {
   const box = $('vEditBox');
   return editing && box && box.value !== editBase;
 }
+function stopVideo() {
+  const video = $('vBody').querySelector('video');
+  if (video) { video.onerror = null; video.pause(); video.removeAttribute('src'); video.load(); }
+}
 function leaveEdit() {
   editing = false;
   $('vBody').classList.remove('editing');
@@ -20,6 +24,7 @@ function leaveEdit() {
 }
 function openFile(ref, fromEditor = false, diff = '', fromChanges = false) {
   returnToEditor = fromEditor ? { ...editorDirectory } : null;
+  stopVideo();
   leaveEdit();
   viewing = null;
   $('vStatus').hidden = true;
@@ -40,6 +45,7 @@ function openFile(ref, fromEditor = false, diff = '', fromChanges = false) {
 
 function showFile(m) {
   if (!$('viewer').classList.contains('open') || m.loading) return;
+  stopVideo();
   leaveEdit();
   viewing = m.text != null ? m : null;
   $('vFind').hidden = m.text == null;
@@ -51,6 +57,23 @@ function showFile(m) {
   const body = $('vBody');
   if (m.error) {
     body.innerHTML = `<div class="note err">${esc(m.error)}</div><div class="note">${esc(appMessage('可以切到「画面」在 {app} 里打开'))}</div>`;
+    return;
+  }
+  if (m.video) {
+    $('vWrap').hidden = true;
+    body.innerHTML = '';
+    const video = document.createElement('video');
+    video.controls = true;
+    video.playsInline = true;
+    video.preload = 'metadata';
+    video.src = base + m.video;
+    video.onerror = () => {
+      const note = document.createElement('div');
+      note.className = 'note err';
+      note.textContent = '视频无法播放，请重新打开；若仍失败，请检查网络或视频编码。';
+      body.append(note);
+    };
+    body.append(video);
     return;
   }
   if (m.image) {
@@ -184,6 +207,7 @@ function closeViewer() {
     $('viewer').classList.add('open');
     return;
   }
+  stopVideo();
   leaveEdit();
   viewing = null;
   $('vEdit').hidden = true;
