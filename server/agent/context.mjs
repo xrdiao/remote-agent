@@ -4,6 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { workspaces, windowRoots, workspaceLabel, fileSize, readFile, parseRef, listProject, locateWritable, writeTextFile, resolveLocal } from '../../lib/files.mjs';
+import { videoUrl } from '../http/video.mjs';
 import { themeFor } from '../../lib/theme.mjs';
 import { highlightText } from '../../lib/highlight.mjs';
 import { gitMarks, agentMarks, parseGitDiff, lastCommitMarks } from '../../lib/marks.mjs';
@@ -1402,6 +1403,10 @@ export class AgentContext {
     this.emit({ t: 'file', loading: true, name: path.posix.basename(parseRef(text).p) });
     try {
       const f = await this.resolveFile(text);
+      if (/\.mp4$/i.test(f.path) && !f.host) {
+        this.emit({ t: 'file', name: path.basename(f.path), path: f.path, size: f.size, video: videoUrl(f.path, this.deviceId) });
+        return;
+      }
       const body = await readFile(f.path, f.size);
       let hl = null;
       if (body.text) {
