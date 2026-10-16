@@ -83,6 +83,8 @@ The second script checks local configuration and then the signed-in GitHub user'
 
 Each person uses their own account's fixed entry. After a computer reboot, rerun both scripts and open the same phone entry without pairing again. Keep `~/.agent-remote/`. A new computer can reuse the entry but needs its own initial pairing. Restart an already-running relay after configuring its fixed entry for the first time. Initial GitHub Pages publication may take a few minutes.
 
+The pairing launcher first shows the locally configured entry, then lets you choose a fixed entry or a temporary tunnel entry. Temporary mode needs no GitHub login, creates no repository and leaves the saved fixed-entry configuration unchanged. Its URL changes when the tunnel address changes.
+
 Windows: double-click `window_start/pair.exe` or run `window_start/pair.cmd`. It checks and reuses your personal fixed entry before asking to create one, then starts the relay/tunnel, displays a pairing QR code and copies the link to the clipboard. Install GitHub CLI and sign in to your own account first.
 
 ## Step 3. Start Cursor and/or Devin with a debug port
