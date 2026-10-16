@@ -115,6 +115,22 @@ export async function main() {
   }
 }
 
+async function waitForKey() {
+  console.log('按任意键退出...');
+  if (process.platform === 'win32') {
+    spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/c', 'pause >nul'], { stdio: 'inherit', windowsHide: false });
+    return;
+  }
+  if (process.stdin.isTTY) {
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    await once(process.stdin, 'data');
+    process.stdin.setRawMode(false);
+  }
+}
+
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
-  main().catch(error => { console.error(error.message); process.exitCode = 1; });
+  main()
+    .catch(error => { console.error(error.message); process.exitCode = 1; })
+    .finally(() => waitForKey());
 }
