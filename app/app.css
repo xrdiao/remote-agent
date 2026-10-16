@@ -455,6 +455,7 @@
   #vBody.wrap .l { white-space: pre-wrap; overflow-wrap: anywhere; }
   #vBody .l i { flex: none; width: 3.6em; padding-right: 10px; text-align: right; color: var(--ln, var(--lnno)); font-style: normal; user-select: none; -webkit-user-select: none; }
   #vBody .l.hl { background: var(--hlbg); }
+  #vBody video { display: block; width: 100%; max-height: 100%; background: #000; }
   #vBody img { display: block; max-width: 100%; margin: 12px auto; background: var(--imgbg); }
   #vBody .note { padding: 30px 20px; color: var(--muted); text-align: center; line-height: 1.7; }
   #vBody .note.err { color: var(--err); }
