@@ -358,6 +358,11 @@
   .opt .lbl { flex: 1; min-width: 0; overflow-wrap: anywhere; }
   .opt .sub { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
   .opt .tag { flex: none; font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--tag); color: var(--tagtx); }
+  .editorEntry .editorEntryIcon { flex: none; width: 20px; height: 20px; color: var(--muted); }
+  .editorFolder .editorEntryIcon { color: var(--file); }
+  .editorFolder .lbl { font-weight: 600; }
+  .editorEntryArrow { flex: none; color: var(--muted); font-size: 20px; line-height: 1; }
+  .editorEntryDivider { border-top: 1px solid var(--border); margin: 12px 0; }
   .opt.cur { border-color: var(--accent-b); }
   .opt.cur::after { content: "✓"; color: var(--hl); flex: none; }
   .askQ { white-space: pre-line; line-height: 1.5; margin: 6px 4px 16px !important; color: var(--hi) !important; }
