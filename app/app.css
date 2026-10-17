@@ -458,6 +458,11 @@
   #vBody.wrap .l { white-space: pre-wrap; overflow-wrap: anywhere; }
   #vBody .l i { flex: none; width: 3.6em; padding-right: 10px; text-align: right; color: var(--ln, var(--lnno)); font-style: normal; user-select: none; -webkit-user-select: none; }
   #vBody .l.hl { background: var(--hlbg); }
+  .videoPreview { display: flex; flex-direction: column; min-height: 0; }
+  .videoViewTools { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; color: var(--muted); font-size: 12px; }
+  .videoViewTools button { padding: 3px 9px; font-size: 12px; }
+  .videoViewStage { position: relative; overflow: hidden; touch-action: none; background: #000; }
+  .videoViewStage video:fullscreen { transform: none !important; }
   #vBody video { display: block; width: 100%; max-height: 100%; background: #000; }
   #vBody img { display: block; max-width: 100%; margin: 12px auto; background: var(--imgbg); }
   #vBody .note { padding: 30px 20px; color: var(--muted); text-align: center; line-height: 1.7; }
