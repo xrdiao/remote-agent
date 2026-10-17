@@ -223,7 +223,7 @@ function paintSurface() {
   const devin = currentApp === 'devin';
   document.body.classList.toggle('devin', devin);
   $('pickEditor').hidden = !['cursor', 'devin', 'codex'].includes(currentApp);
-  $('pickAgents').textContent = '项目 ▾';
+  $('pickAgents').textContent = '项目/会话 ▾';
 }
 function startEditor() {
   editorBrowsing = true;
