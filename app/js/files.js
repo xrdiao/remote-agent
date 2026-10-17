@@ -13,6 +13,75 @@ function stopVideo() {
   const video = $('vBody').querySelector('video');
   if (video) { video.onerror = null; video.pause(); video.removeAttribute('src'); video.load(); }
 }
+// Keep gestures local to this preview; the original media source and controls are unchanged.
+function videoGestures(video) {
+  const preview = document.createElement('div');
+  preview.className = 'videoPreview';
+  const tools = document.createElement('div');
+  tools.className = 'videoViewTools';
+  const hint = document.createElement('span');
+  hint.textContent = '双指缩放与移动';
+  const fit = document.createElement('button');
+  fit.textContent = '适应';
+  const stage = document.createElement('div');
+  stage.className = 'videoViewStage';
+  tools.append(hint, fit);
+  stage.append(video);
+  preview.append(tools, stage);
+  let zoom = 1, x = 0, y = 0, gesture = null;
+  const pointers = new Map();
+  const paint = () => {
+    const limitX = video.clientWidth * (zoom - 1) / 2;
+    const limitY = video.clientHeight * (zoom - 1) / 2;
+    x = Math.max(-limitX, Math.min(limitX, x));
+    y = Math.max(-limitY, Math.min(limitY, y));
+    video.style.transform = `translate(${x}px, ${y}px) scale(${zoom})`;
+  };
+  const begin = () => {
+    const points = [...pointers.values()];
+    if (points.length === 2) {
+      const [a, b] = points;
+      const rect = stage.getBoundingClientRect();
+      gesture = { zoom, distance: Math.hypot(a.x - b.x, a.y - b.y),
+        anchorX: ((a.x + b.x) / 2 - rect.left - rect.width / 2 - x) / zoom,
+        anchorY: ((a.y + b.y) / 2 - rect.top - rect.height / 2 - y) / zoom };
+    } else gesture = points.length === 1 ? { point: points[0], x, y } : null;
+  };
+  stage.onpointerdown = e => {
+    // Let the native playback/seek/fullscreen bar handle its own touches.
+    if (e.clientY >= stage.getBoundingClientRect().bottom - 52) return;
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (zoom > 1 || pointers.size > 1) {
+      e.preventDefault();
+      stage.setPointerCapture(e.pointerId);
+    }
+    begin();
+  };
+  stage.onpointermove = e => {
+    if (!pointers.has(e.pointerId)) return;
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointers.size === 2 && gesture?.distance) {
+      e.preventDefault();
+      const [a, b] = [...pointers.values()];
+      const rect = stage.getBoundingClientRect();
+      zoom = Math.max(1, Math.min(8, gesture.zoom * Math.hypot(a.x - b.x, a.y - b.y) / gesture.distance));
+      x = (a.x + b.x) / 2 - rect.left - rect.width / 2 - gesture.anchorX * zoom;
+      y = (a.y + b.y) / 2 - rect.top - rect.height / 2 - gesture.anchorY * zoom;
+      paint();
+    } else if (pointers.size === 1 && gesture?.point && zoom > 1) {
+      e.preventDefault();
+      x = gesture.x + e.clientX - gesture.point.x;
+      y = gesture.y + e.clientY - gesture.point.y;
+      paint();
+    }
+  };
+  const end = e => { pointers.delete(e.pointerId); begin(); };
+  stage.onpointerup = end;
+  stage.onpointercancel = end;
+  stage.onlostpointercapture = end;
+  fit.onclick = () => { pointers.clear(); gesture = null; zoom = 1; x = y = 0; paint(); };
+  return preview;
+}
 function leaveEdit() {
   editing = false;
   $('vBody').classList.remove('editing');
@@ -73,7 +142,7 @@ function showFile(m) {
       note.textContent = '视频无法播放，请重新打开；若仍失败，请检查网络或视频编码。';
       body.append(note);
     };
-    body.append(video);
+    body.append(videoGestures(video));
     return;
   }
   if (m.image) {
