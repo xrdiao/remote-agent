@@ -3,7 +3,7 @@ function termColor(n) {
   if (!n) return '';
   if (n < 0) return '#' + ((-n - 1) >>> 0).toString(16).padStart(6, '0');
   const i = n - 1;
-  if (i < 16) return ANSI16[i];
+  if (i < 16) return `var(--term-ansi-${i}, ${ANSI16[i]})`;
   if (i < 232) {
     const x = i - 16;
     const q = v => v ? 55 + v * 40 : 0;
@@ -14,7 +14,7 @@ function termColor(n) {
 }
 function termStyle(f, b, fl) {
   let fg = termColor(f), bg = termColor(b);
-  if (fl & 16) { const swap = fg || '#d4d4d4'; fg = bg || '#111'; bg = swap; }
+  if (fl & 16) { const swap = fg || 'var(--term-fg)'; fg = bg || 'var(--term-bg)'; bg = swap; }
   let css = '';
   if (fg) css += `color:${fg};`;
   if (bg) css += `background:${bg};`;
