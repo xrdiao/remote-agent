@@ -1,8 +1,8 @@
 // Caches the app shell so the installed app opens instantly; live data (url.json, relay) always goes to the network.
-const CACHE = 'remote-agent-v107';
-const SHELL = ['./', 'index.html', 'app.css?v=107', 'i18n.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png',
+const CACHE = 'remote-agent-v108';
+const SHELL = ['./', 'index.html', 'app.css?v=108', 'i18n.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png',
   'js/core.js', 'js/gate.js', 'js/net.js', 'js/sheets.js', 'js/notify.js', 'js/mode.js', 'js/chat.js?v=87',
-  'js/history.js?v=87', 'js/files.js?v=106', 'js/screen.js?v=87', 'js/terminal.js', 'js/composer.js?v=87', 'js/voice.js',
+  'js/history.js?v=87', 'js/files.js?v=106', 'js/screen.js?v=87', 'js/terminal.js?v=108', 'js/composer.js?v=87', 'js/voice.js',
   'js/scanner.js',
   'js/latency.js',
   'logo-cursor-dark.svg', 'logo-cursor-light.svg',
