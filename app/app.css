@@ -12,7 +12,7 @@
     --tag: #3a3d41; --tagtx: #bbb; --tooltx: #9da5b4;
     --danger: #a1260d; --danger-b: #c4321a;
     --shade: #0008; --float: #333d; --imgbg: #fff1;
-    /* Terminal and remote-screen views stay dark in both themes: the ANSI palette is tuned for a dark background. */
+    /* Terminal defaults; the light theme overrides its text and ANSI palette below. */
     --term-bg: #111; --term-fg: #d4d4d4; --term-mut: #aaa;
   }
   :root[data-theme="light"] {
@@ -21,6 +21,7 @@
     --ctrl: #ffffff; --border: #c9c9c9; --line: #e0e0e0; --line2: #bfbfbf; --thline: #bfbfbf;
     --text: #242424; --hi: #000000; --mid: #333; --muted: #666; --muted2: #555; --faint: #686868; --lnno: #686868;
     --pre-bg: #f5f5f5; --code-bg: #e8e8e8; --think-bg: #f7f7f7;
+    --term-bg: #faf9f6; --term-fg: #2e3436; --term-mut: #555753;
     --accent: #066cbe; --accent-b: #087bd8;
     --blue: #005a9e; --code-fg: #0451a5; --file: #0451a5; --hl: #0078d4; --ctx: #0078d4;
     --ok: #1a7f37; --bad: #cf222e; --bad-b: #cf222e; --err: #cf222e; --del: #cf222e; --hot: #cf222e;
@@ -303,6 +304,24 @@
   #termEmpty { position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--term-mut); background: var(--term-bg); text-align: center; padding: 24px; }
   #termEmpty button { padding: 10px 16px; background: var(--accent); border-color: var(--accent-b); color: #fff; }
   #termText { display: none; position: absolute; inset: 0; margin: 0; overflow: auto; padding: 8px 10px 18px; box-sizing: border-box; background: var(--term-bg); color: var(--term-fg); font: 12.5px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre; tab-size: 8; -webkit-overflow-scrolling: touch; }
+  :root[data-theme="light"] #termText {
+    --term-ansi-0: #2e3436;
+    --term-ansi-1: #a51d2d;
+    --term-ansi-2: #32620c;
+    --term-ansi-3: #805900;
+    --term-ansi-4: #204a87;
+    --term-ansi-5: #75507b;
+    --term-ansi-6: #16616b;
+    --term-ansi-7: #555753;
+    --term-ansi-8: #555753;
+    --term-ansi-9: #b52130;
+    --term-ansi-10: #3b6c12;
+    --term-ansi-11: #856000;
+    --term-ansi-12: #285d9c;
+    --term-ansi-13: #824a89;
+    --term-ansi-14: #126778;
+    --term-ansi-15: #2e3436;
+  }
   body.term #termText { display: block; }
   body.term #stage { display: none; }
   #termText .caret { box-shadow: inset 2px 0 var(--term-fg); }
