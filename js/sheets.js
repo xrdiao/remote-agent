@@ -457,13 +457,15 @@ function showDocs(m) {
   }
   const hostAttr = ` data-docs-host="${esc(m.host || '')}"`;
   const up = `<button class="opt" data-docs-up="${esc(m.parent || '')}" data-root="${esc(m.root)}"${hostAttr}><span class="lbl">返回上一级</span></button>`;
-  const folders = (m.folders || []).map(d => `<button class="opt" data-docs-root="${esc(m.root)}" data-docs-dir="${esc(d.path)}"${hostAttr}><span class="lbl">${esc(d.name)}</span><span class="sub">文件夹</span></button>`).join('');
-  const row = (f, tag) => `<button class="opt" data-docs-file="${esc(f.path)}" data-docs-editor="${!!m.editor}"><span class="lbl">${esc(f.name)}</span><span class="sub">${tag}</span></button>`;
+  const entryIcon = folder => !m.editor ? '' : `<svg class="editorEntryIcon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${folder ? '<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3Z"/>' : '<path d="M6 3h8l4 4v14H6Z"/><path d="M14 3v5h4M9 12h6M9 16h6"/>'}</svg>`;
+  const folders = (m.folders || []).map(d => `<button class="opt${m.editor ? ' editorEntry editorFolder' : ''}" data-docs-root="${esc(m.root)}" data-docs-dir="${esc(d.path)}"${hostAttr}>${entryIcon(true)}<span class="lbl">${esc(d.name)}</span><span class="sub">文件夹</span>${m.editor ? '<span class="editorEntryArrow" aria-hidden="true">›</span>' : ''}</button>`).join('');
+  const row = (f, tag) => `<button class="opt${m.editor ? ' editorEntry' : ''}" data-docs-file="${esc(f.path)}" data-docs-editor="${!!m.editor}">${entryIcon(false)}<span class="lbl">${esc(f.name)}</span><span class="sub">${tag}</span></button>`;
   const docs = (m.docs || []).map(f => row(f, '文档')).join('');
   const code = (m.code || []).map(f => row(f, '代码')).join('');
   const files = (m.files || []).map(f => row(f, '文件')).join('');
+  const divider = m.editor && folders && (docs || code || files) ? '<div class="editorEntryDivider" role="separator"></div>' : '';
   const empty = !folders && !docs && !code && !files ? '<div class="hint">这个文件夹里没有可查看的文档或代码。</div>' : '';
-  openSheet('docs', `<h3>${heading}</h3>${back}<div class="hint">${esc(m.name || '')}${m.path ? ' · ' + esc(m.path) : ''}</div>${up}${folders}${docs}${code}${files}${empty}`);
+  openSheet('docs', `<h3>${heading}</h3>${back}<div class="hint">${esc(m.name || '')}${m.path ? ' · ' + esc(m.path) : ''}</div>${up}${folders}${divider}${docs}${code}${files}${empty}`);
 }
 function showProjects(m) {
   const pathInput = '<button class="opt" data-project-path><span class="lbl">输入文件夹路径</span></button>';
