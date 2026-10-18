@@ -71,7 +71,16 @@
   const readDevinUsage = async (refresh = false) => {
     const input = [...doc.querySelectorAll(`${COMPOSER}, [data-slate-editor="true"]`)].filter(e => vis(e) && e.isContentEditable && !inItem(e)).at(-1);
     const api = input && codexFiberProps(input, Infinity).find(p => p.value?.api?.windsurfSettingsPage?.planInfo)?.value.api;
-    if (refresh && api) await api.executeCommand('devin.updatePlanInfo');
+    if (refresh && api) {
+      try { await api.executeCommand('devin.updatePlanInfo'); }
+      catch (error) {
+        const cached = await readDevinUsage(false);
+        if (cached.missing || !cached.limits.some(limit => Number.isFinite(limit.pct))) throw error;
+        // Reading the desktop's stored value is not a successful quota refresh.
+        delete cached.updated;
+        return { ...cached, cached: true, refreshError: String(error.message || error) };
+      }
+    }
     const info = api?.windsurfSettingsPage?.planInfo?.getPlanInfo();
     if (info) return {
       missing: false, quota: [], plan: info.planName, updated: Date.now(),
