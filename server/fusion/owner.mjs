@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { spawnSync, execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { workspaces, windowRoots } from '../../lib/files.mjs';
 import { saveState, computerId } from '../../lib/auth.mjs';
 import { mod, findBin } from '../../lib/platform.mjs';
@@ -13,6 +14,8 @@ import { AgentContext, FOCUS_COMPOSER, safeHomePath, projectList, openFolder } f
 import { FUSION_ACTIVE, fusionHistory, conversationProjects, fusionWorkers,
   newFusionRun, fusionCursorProjects, fusionProject, fusionModelSpec, fusionHtml, fusionMark, fusionLastAssistant } from './state.mjs';
 import '../apps/index.mjs';
+
+const execFileAsync = promisify(execFile);
 
 export const FUSION_OWNER = {
 fusionFinishJob() {
@@ -571,11 +574,14 @@ async fusionDiff(side) {
   if (!root) return '没有定位到工作区';
   try {
     const git = findBin('git');
-    let out = execFileSync(git, ['diff', 'HEAD', '--', '.'], { cwd: root, encoding: 'utf8', timeout: 8000 });
-    const untracked = execFileSync(git, ['ls-files', '--others', '--exclude-standard', '-z'], { cwd: root, encoding: 'utf8', timeout: 8000 }).split('\0').filter(Boolean);
+    let { stdout: out } = await execFileAsync(git, ['diff', 'HEAD', '--', '.'], { cwd: root, encoding: 'utf8', timeout: 8000 });
+    const { stdout } = await execFileAsync(git, ['ls-files', '--others', '--exclude-standard', '-z'], { cwd: root, encoding: 'utf8', timeout: 8000 });
+    const untracked = stdout.split('\0').filter(Boolean);
     for (const name of untracked) {
       if (out.length >= 10000) break;
-      out += spawnSync(git, ['diff', '--no-index', '--', '/dev/null', name], { cwd: root, encoding: 'utf8', timeout: 8000 }).stdout || '';
+      // git diff exits with 1 when changes exist; retain stdout just as the previous spawnSync did.
+      const diff = await execFileAsync(git, ['diff', '--no-index', '--', '/dev/null', name], { cwd: root, encoding: 'utf8', timeout: 8000 }).catch(error => error);
+      out += diff.stdout || '';
     }
     return out.length > 10000 ? `${out.slice(0, 10000)}\n[差异未完整展示，请按方案检查实际文件]` : out.trim() || '没有未提交的差异';
   } catch {
