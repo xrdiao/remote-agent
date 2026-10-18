@@ -104,5 +104,7 @@
 11. Devin Fusion 模型名在「Fusion · Lead / Sidekick」与「Fusion」间跳动：`pollChat` 即时推送分支未附带 Fusion 配置，已补齐。
 12. 用户选择：中继用 `-n` 新开的项目窗口打开后自动最小化、不抢焦点（复用已有窗口时不最小化）。Electron 的 CDP 不支持窗口管理，Linux X11 下用 `lib/x11.mjs` 发送 Iconic 请求（2 秒超时，失败不影响打开项目）；Wayland、Windows、macOS 暂不最小化。Devin 实测最小化窗口读取无降频。
 13. 已按功能分块整理 `server/agent/context.mjs`：核心留在 `context.mjs`，其余为 `chat.mjs`（对话）、`terminal.mjs`（终端）、`files.mjs`（文件）、`projects.mjs`（项目与会话）、`menus.mjs`（模型、设置、额度）、`server/fusion/agent.mjs`（Fusion），由 `server/agent/index.mjs` 组装，应用适配器仍在其后覆盖。纯搬移：159 个方法源码逐字一致；不要拆得更散。
+14. 手机重连时若上次的 Agent 未开/已关，中继改连其他已开 Agent（`9169706`）；连接页的 Agent 探测改为无论 attach 成败都执行，不再卡在“连接中”。
+15. 连接页支持从手机启动 Agent：未连接行最右侧“启动”、“一键启动全部”、可记住的“自动启动未打开的 Agent”开关；Agent 列表里有“启动未打开的 Agent”。中继调用 `ubuntu_start/start-agents.sh` / `window_start/start-agents.ps1`（新增按应用参数和 `RESULT` 行），区分已复用、已启动、未安装、已运行但无调试端口、超时；macOS 暂不支持。已用测试浏览器实测启动 Codex；PowerShell 未实机运行。
 
 本列表不是实施所有历史愿望的概括授权。每轮只做当前已授权的具体范围；实现与验证后更新相应状态。

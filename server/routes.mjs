@@ -5,6 +5,7 @@ import { CODEX_CDP_URL } from './config.mjs';
 import { helpersCall } from './page/build.mjs';
 import { appPlans } from './agent/context.mjs';
 import { probeLatency } from './latency.mjs';
+import { launchAgents } from './launch.mjs';
 
 // One entry per message type the phone can send (auth/ack are handled inside ws.mjs itself).
 //   pre      — runs in handle() before the read-only/focus split, without a cdp
@@ -97,9 +98,16 @@ export const ROUTES = {
   attach: {
     pre: async (s, m) => {
       if (!m.initial) return s.attach(m);
-      await s.attach(m);
-      ROUTES.connAgents.pre(s).catch(() => {});
+      try {
+        await s.attach(m);
+      } finally {
+        ROUTES.connAgents.pre(s).catch(() => {});
+      }
     },
+  },
+  launchAgents: {
+    fast: true,
+    fastRun: (s, m) => launchAgents(s, m.apps, () => ROUTES.connAgents.pre(s).catch(() => {})),
   },
   mode: { pre: (s, m) => s.setMode(m.mode) },
   visible: {

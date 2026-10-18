@@ -792,6 +792,10 @@
   #conn .cGo { width: 100%; height: 48px; border-radius: 12px; border: 1px solid var(--c-go-b); background: var(--c-go-bg); color: var(--c-go-fg); font-size: 16px; font-weight: 600; }
   #conn .cGo small { font-weight: 400; opacity: .62; font-size: 13px; margin-left: 4px; }
   #conn .cGo:disabled { opacity: .4; }
+  #conn .cGo.cAlt { background: var(--panel); border-color: var(--border); color: var(--hi); }
+  #conn .cPref { display: flex; align-items: center; justify-content: center; gap: 8px; background: none; border: 0; padding: 4px 0; color: var(--muted2); }
+  #connAgents .cItem.err .cSub { white-space: normal; }
+  #connAgents .cLaunch { flex: none; margin-left: 2px; }
   @media (prefers-reduced-motion: reduce) {
     .cSpin { animation: none; border-color: var(--c-load); border-right-color: var(--c-load-dim); }
     .cBar i.load::after { animation: none; left: 30%; }

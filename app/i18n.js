@@ -48,6 +48,13 @@ const I18N = (() => {
     "先进入 · 使用 {agents}": "Continue \u00b7 Use {agents}",
     "全部重试": "Retry all",
     "请在电脑上启动 Agent 的调试窗口，再点击全部重试。": "Start an agent with debugging enabled on your computer, then retry all.",
+    "启动": "Launch", "启动中…": "Launching…", "正在启动…": "Launching…", "正在启动 Agent…": "Launching agents…",
+    "一键启动全部": "Launch all", "自动启动未打开的 Agent": "Auto-launch agents that are not running",
+    "启动未打开的 Agent": "Launch agents that are not running",
+    "电脑上没有安装 {agent}": "{agent} is not installed on this computer",
+    "{agent} 已在运行但没有开启调试端口，请先退出后再启动": "{agent} is already running without the debug port; quit it before launching",
+    "启动失败，请在电脑上检查": "Launch failed; check the computer",
+    "这台电脑暂不支持远程启动": "Remote launch is not supported on this computer",
 
     '管理': 'Manage', '完成': 'Done', '取消选择': 'Clear selection', '已选择 {n} 项': '{n} selected', '选择': 'Select',
     '移至分组': 'Move to group', '新建分组': 'New group', '批量删除': 'Delete selected', '批量移除': 'Remove selected',

@@ -522,6 +522,7 @@ async function connect() {
     else if (m.t === 'frame') onFrame(m);
     else if (m.t === 'panel') { panel = m.rect; updateTermEmpty(); layoutStage(); applyQuality(); }
     else if (m.t === 'connAgents') connAgentResults(m.agents);
+    else if (m.t === 'launchResult') connLaunchResults(m.results);
     else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; connWindows(m.list); if (m.plans) { appPlans = { ...appPlans, ...m.plans }; updateTitle(); } if (conn.readyPending) { conn.readyPending = false; ensureReadyAgent(); } if (sheetKind === 'windows') showWindows(); }
     else if (m.t === 'plans') { if (m.plans) { appPlans = { ...appPlans, ...m.plans }; updateTitle(); if (sheetKind === 'windows') showWindows(); } }
     else if (m.t === 'fusionTrust') openSheet('fusion-trust', `<h3>确认项目可信</h3><div class="hint">${esc(m.path)}</div><button class="opt" data-fusion-trust="yes"><span class="lbl">信任并创建会话</span></button><button class="opt" data-fusion-trust="no"><span class="lbl">取消</span></button>`);
