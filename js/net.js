@@ -614,6 +614,8 @@ async function connect() {
         if (m.fusion) cached.fusion = m.fusion;
       }
       if (m.fusion && lastChat?.fusion) lastChat.fusion = m.fusion;
+      const cost = $('sheet').querySelector('[data-fusion-cost]');
+      if (cost && m.fusion) cost.innerHTML = modelPricingHtml(m.fusion.pricing, true);
       $('sheet').querySelectorAll('[data-fast], [data-fusion="fast"]').forEach(button => {
         if (button.dataset.fast) button.dataset.fast = m.fast.on ? 'off' : 'on';
         button.querySelector('.switch')?.classList.toggle('on', m.fast.on);
@@ -625,11 +627,11 @@ async function connect() {
       if (m.requestId != null && m.requestId !== menuRequest) return;
       lruPut(menuCache, menuCacheKey(m.kind), m, 24);
       if (currentApp === 'fusion' && /^fusion-(model|effort)-[ab]$/.test(m.kind) && fusionModelSide === m.kind.slice(-1)) {
-        showMenu(m.kind, m.items, m.max, m.fusion, m.fast, m.model);
+        showMenu(m.kind, m.items, m.max, m.fusion, m.fast, m.model, false, m.pricing);
         return;
       }
       if (m.requestId == null && !(sheetKind === 'menu' && menuSheetKind === m.kind)) return;
-      showMenu(m.kind, m.items, m.max, m.fusion, m.fast, m.model);
+      showMenu(m.kind, m.items, m.max, m.fusion, m.fast, m.model, false, m.pricing);
     }
     else if (m.t === 'params') showParams(m);
     else if (m.t === 'changes') showChanges(m);

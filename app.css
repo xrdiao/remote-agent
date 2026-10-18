@@ -379,6 +379,7 @@
   div.opt.static { background: var(--ctrl); border: 1px solid var(--border); border-radius: 8px; box-sizing: border-box; }
   .opt .lbl { flex: 1; min-width: 0; overflow-wrap: anywhere; }
   .opt .sub { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .modelPricing .sub { display: block; }
   .opt .tag { flex: none; font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--tag); color: var(--tagtx); }
   .editorEntry .editorEntryIcon { flex: none; width: 20px; height: 20px; color: var(--muted); }
   .editorFolder .editorEntryIcon { color: var(--file); }
