@@ -31,7 +31,8 @@ const chatPreviewReady = idbGet('chat-previews').then(entries => {
 let chatPreviewTimer = 0;
 function cacheChat(sel, chat) {
   lruPut(chatBySel, chatCacheKey(sel), chat, 12);
-  if (!chatPreviewTimer) chatPreviewTimer = setTimeout(() => {
+  if (!chatPreviewTimer) chatPreviewTimer = setTimeout(function savePreview() {
+    if (chatScrolling || chatTouching) { chatPreviewTimer = setTimeout(savePreview, 250); return; }
     chatPreviewTimer = 0;
     idbPut('chat-previews', [...chatBySel].map(([key, value]) => [key, { ...value, items: value.items.slice(-400) }]));
   }, 1000);
@@ -129,7 +130,14 @@ function scSnapshot(pending) {
   if (items.length > SC_MAX) items = items.slice(-SC_MAX);
   return { items, collapsed: [...pending.collapsed] };
 }
-function scDrain() {
+let scDrainTimer = 0;
+function scDrain(force = false) {
+  clearTimeout(scDrainTimer);
+  scDrainTimer = 0;
+  if (!force && (chatScrolling || chatTouching)) {
+    scDrainTimer = setTimeout(() => scDrain(), 250);
+    return Promise.resolve();
+  }
   const saves = [];
   for (const [key, pending] of scPending) {
     if (pending.saving) { saves.push(pending.saving); continue; }
@@ -156,8 +164,8 @@ function scDirty() {
   SC.dirty = true;
   if (!SC.timer) SC.timer = setTimeout(scFlush, 3000);
 }
-document.addEventListener('visibilitychange', () => { if (document.hidden) { scFlush(); scDrain(); } });
-addEventListener('pagehide', () => { scFlush(); scDrain(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) { scFlush(); scDrain(true); } });
+addEventListener('pagehide', () => { scFlush(); scDrain(true); });
 function scSwitch(sess) {
   scFlush();
   SC.key = sess ? scKeyFor(sess) : null;
@@ -276,7 +284,7 @@ function showBgSheet() {
 }
 async function showCacheSheet() {
   scFlush();
-  await scDrain();
+  await scDrain(true);
   const keys = ((await scKeys()) || []).map(String).filter(k => k.startsWith('m:')).map(k => k.slice(2));
   const rows = (await Promise.all(keys.map(async k => {
     const m = await scGet('m:' + k);
