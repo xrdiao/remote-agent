@@ -1,10 +1,10 @@
 // Caches the app shell so the installed app opens instantly; live data (url.json, relay) always goes to the network.
-const CACHE = 'remote-agent-v108';
+const CACHE = 'remote-agent-v113';
 const SHELL = ['./', 'index.html', 'app.css?v=108', 'i18n.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png',
-  'js/core.js', 'js/gate.js', 'js/net.js', 'js/sheets.js', 'js/notify.js', 'js/mode.js', 'js/chat.js?v=87',
-  'js/history.js?v=87', 'js/files.js?v=106', 'js/screen.js?v=87', 'js/terminal.js?v=108', 'js/composer.js?v=87', 'js/voice.js',
+  'js/core.js?v=92', 'js/gate.js', 'js/net.js?v=110', 'js/sheets.js?v=113', 'js/notify.js?v=113', 'js/mode.js', 'js/chat.js?v=111',
+  'js/history.js?v=111', 'js/files.js?v=106', 'js/screen.js?v=87', 'js/terminal.js?v=108', 'js/composer.js?v=100', 'js/voice.js?v=103',
   'js/scanner.js',
-  'js/latency.js',
+  'js/latency.js', 'js/image-editor.js?v=97',
   'logo-cursor-dark.svg', 'logo-cursor-light.svg',
   'logo-devin-dark.svg', 'logo-devin-light.svg',
   'logo-codex-dark.svg', 'logo-codex-light.svg'];

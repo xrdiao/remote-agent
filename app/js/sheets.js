@@ -13,14 +13,18 @@ function rememberAgentOpen(m) {
   }
 }
 function openSheet(kind, html) {
+  const navScroll = sheetKind === kind ? $('sheet').querySelector('.codexSettingsNav')?.scrollLeft : 0;
   sheetKind = kind;
   $('sheet').dataset.kind = kind;
   $('sheet').innerHTML = html;
+  const nav = $('sheet').querySelector('.codexSettingsNav');
+  if (nav) nav.scrollLeft = navScroll || 0;
   $('shade').classList.add('open');
   $('sheet').classList.add('open');
   if (kind === 'agents') $('sheet').scrollTop = 0;
 }
 function closeSheet() {
+  if (sheetKind === 'settings') send({ t: 'closeDesktopSettings' });
   if (sheetKind === 'devices') deviceRemoval = [];
   fusionModelSide = null;
   menuRequest++;
@@ -63,13 +67,14 @@ function winLabel(title) {
 }
 
 function showWindows() {
-  const rows = windows.map(w => {
+  const entries = windows.map(w => ({ ...w, id: currentComputer()?.selections?.[w.app]?.id || w.id }));
+  const rows = entries.map(w => {
     const software = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion' }[w.app] || w.app;
     const plan = appPlans[w.app] ? `<span class="winPlan">${esc(appPlans[w.app])}</span>` : '';
-    return `<button class="opt ${w.id === currentWindow ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">${esc(software)}${plan}</span><span data-latency="${esc(w.id)}">${latencyMarkup(w.id)}</span></button>`;
+    return `<button class="opt ${w.app === currentApp ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">${esc(software)}${plan}</span><span data-latency="${esc(w.id)}">${latencyMarkup(w.id)}</span></button>`;
   }).join('');
-  openSheet('windows', `<h3>切换窗口</h3>${rows || '<div class="hint">没有找到窗口</div>'}`);
-  measureLatency(windows.map(w => w.id));
+  openSheet('windows', `<h3>切换 Agent</h3>${rows || '<div class="hint">没有找到窗口</div>'}`);
+  measureLatency(entries.map(w => w.id));
 }
 
 const FUSION_PHASE = { idle: '待开始', planning: '正在生成方案', plan: '方案待确认', execute: '正在执行方案', review: '正在检查结果', fix: '正在小修', disagree: '方案待确认', check: '请选择下一步', stopped: '未完成，已停止', done: '完成' };
@@ -219,7 +224,7 @@ function paintSurface() {
   const devin = currentApp === 'devin';
   document.body.classList.toggle('devin', devin);
   $('pickEditor').hidden = !['cursor', 'devin', 'codex'].includes(currentApp);
-  $('pickAgents').textContent = '项目 ▾';
+  $('pickAgents').textContent = '项目/会话 ▾';
 }
 function startEditor() {
   editorBrowsing = true;
@@ -229,6 +234,7 @@ function startEditor() {
 }
 $('pickEditor').onclick = startEditor;
 function agentButton(a) {
+  if (a.loadWindow) return `<button class="opt" data-project-load="${esc(a.loadWindow)}">${esc(a.title)}</button>`;
   const label = a.ui ? esc(a.title) : `<span class="lbl">${esc(a.title)}</span>`;
   const tags = `${a.running && !a.current ? '<span class="tag">运行中</span>' : ''}${a.current ? '<span class="tag">当前</span>' : ''}`;
   const main = `<button class="opt ${a.current ? 'cur' : ''}" data-agent="${esc(a.id)}" data-agent-title="${esc(a.title)}">${label}${tags}</button>`;
@@ -334,7 +340,7 @@ function showMenu(kind, items, max, fusion, fast, model, refreshing) {
   const agentRow = role ? `<button class="opt" data-fusion-select="${role}"><span class="lbl">更换 ${role.toUpperCase()} Agent / 会话<span class="sub">${esc(lastChat?.fusion?.[role]?.title || '未选择')}</span></span></button>` : '';
   const fastRow = fast && !fusion ? `<button class="opt" data-fast="${fast.on ? 'off' : 'on'}" data-fast-menu="${kind}"><span class="lbl">Fast 模式${fast.description ? `<span class="sub">${esc(fast.description)}</span>` : ''}</span><span class="switch ${fast.on ? 'on' : ''}"></span></button>` : '';
   const effortEntry = kind === 'model' ? `<button class="opt" data-effort-open><span class="lbl">思考强度<span class="sub">${esc(lastChat?.effort || '')}</span></span></button>` : '';
-  const navigation = kind === 'effort' ? `<button class="opt" data-model-back>← 返回模型列表</button><p>${esc(model || lastChat?.model || '')}</p>${!items?.length ? '<p class="hint">这个模型没有可选的思考强度。</p>' : ''}` : '';
+  const navigation = picking ? '<button class="opt" data-model-back>← 返回模型配置</button>' : kind === 'effort' ? `<button class="opt" data-model-back>← 返回模型列表</button><p>${esc(model || lastChat?.model || '')}</p>${!items?.length ? '<p class="hint">这个模型没有可选的思考强度。</p>' : ''}` : '';
   const done = /^fusion-(model|effort)-[ab]$/.test(kind) ? '<button class="opt" data-model-done>返回配置</button>' : kind === 'effort' ? '<button class="opt" data-model-done>完成</button>' : '';
   openSheet('menu', `<h3>${MENU_TITLE[kind] || ''}${refreshing ? ' <span class="hint">更新中…</span>' : ''}</h3>` + navigation + agentRow + (picking ? '' : fusionBlock(fusion)) + effortEntry + fastRow + maxRow + rows + done);
 }
@@ -485,17 +491,23 @@ function showCodexSettings(m) {
     if (sw) return `<button class="opt" data-codex-setting="${esc(sw.id)}" ${sw.disabled ? 'disabled' : ''}><span class="lbl">${esc(row.label)}</span><span class="switch ${sw.on ? 'on' : ''}"></span></button>`;
     return `<div class="pSec">${esc(row.label)}</div>${detail}<div class="paramRow">${row.controls.map(button).join('')}</div>`;
   }).join('');
-  openSheet('codex-settings', `<h3>Codex 设置</h3>${nav}${choices}${rows || '<div class="hint">当前页面没有可操作的设置项。</div>'}`);
+  const instructions = m.instructions ? `<div class="pSec">Codex instructions</div><textarea id="codexInstructions" rows="9" style="width:100%;box-sizing:border-box" ${m.instructions.disabled ? 'disabled' : ''}>${esc(m.instructions.value)}</textarea><button class="opt" data-save-instructions ${m.instructions.disabled ? 'disabled' : ''}>保存指令</button>` : '';
+  const fields = (m.fields || []).map(f => `<label class="pSec">${esc(f.label)}</label>${f.type === 'select' ? `<select data-codex-field="${esc(f.id)}" ${f.disabled ? 'disabled' : ''}>${f.options.map(o => `<option value="${esc(o.value)}" ${o.value === f.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>` : f.type === 'textarea' ? `<textarea data-codex-field="${esc(f.id)}" ${f.disabled ? 'disabled' : ''}>${esc(f.value)}</textarea>` : `<input data-codex-field="${esc(f.id)}" type="${esc(f.type)}" aria-label="${esc(f.label)}" value="${esc(f.value)}" ${f.disabled ? 'disabled' : ''}>`}`).join('');
+  const extras = (m.extra || []).map(button).join('');
+  const summary = m.summary ? `<div class="hint">${esc(m.summary)}</div>` : '';
+  openSheet('codex-settings', `<h3>Codex 设置</h3>${nav}${choices}${summary}${instructions}${fields}${extras}${rows || (instructions || fields || extras ? '' : '<div class="hint">电脑端此栏目当前也没有可操作的设置项。</div>')}`);
 }
-function showSettings(sections) {
-  const body = sections.map(s => `<div class="pSec">${esc(s.title)}</div>` + s.items.map(it => {
-    const label = `<span class="lbl">${esc(it.label)}${it.detail ? `<span class="sub">${esc(it.detail)}</span>` : ''}</span>`;
-    if (it.toggle === false) return `<div class="opt static">${label}</div>`;
-    return `<button class="opt" data-setting="${esc(it.label)}">${label}<span class="switch ${it.on ? 'on' : ''}"></span></button>`;
+function showSettings(sections, nav = [], current = '', choices = []) {
+  const action = it => `<button class="opt ${it.on ? 'cur' : ''}" data-setting="${esc(it.id || it.label)}" ${it.disabled ? 'disabled' : ''}><span class="lbl">${esc(it.label)}${it.detail ? `<span class="sub">${esc(it.detail)}</span>` : ''}</span>${it.on !== undefined ? `<span class="switch ${it.on ? 'on' : ''}"></span>` : it.value ? `<span class="tag">${esc(it.value)}</span>` : ''}</button>`;
+  const body = sections.map(s => `<div class="pSec">${esc(s.title)}</div>${s.summary ? `<div class="hint">${esc(s.summary)}</div>` : ''}` + s.items.map(it => {
+    if (it.type) return `<label class="pSec">${esc(it.label)}</label>${it.type === 'select' ? `<select data-setting-field="${esc(it.id)}" ${it.disabled ? 'disabled' : ''}>${it.options.map(o=>`<option value="${esc(o.value)}" ${o.value===it.value?'selected':''}>${esc(o.label)}</option>`).join('')}</select>` : it.type === 'textarea' ? `<textarea data-setting-field="${esc(it.id)}" ${it.disabled ? 'disabled' : ''}>${esc(it.value)}</textarea>` : `<input type="${esc(it.type)}" data-setting-field="${esc(it.id)}" value="${esc(it.value)}" ${it.disabled ? 'disabled' : ''}>`}`;
+    if (it.toggle === false) return `<div class="opt static"><span class="lbl">${esc(it.label)}<span class="sub">${esc(it.detail || '')}</span></span></div>`;
+    return action(it);
   }).join('')).join('');
-  const appName = currentAppName;
-  openSheet('settings', `<h3>${appName ? appName + ' 设置' : '设置'}</h3>${body || '<div class="hint">没有读到设置。</div>'}`);
+  const navigation = nav.length ? `<div class="codexSettingsNav">${nav.map(name => `<button class="paramBtn ${name === current ? 'cur' : ''}" data-settings-nav="${esc(name)}">${esc(name)}</button>`).join('')}</div>` : '';
+  openSheet('settings', `<h3>${currentAppName ? currentAppName + ' 设置' : '设置'}</h3>${navigation}${choices.length ? '<div class="pSec">选项</div>' + choices.map(action).join('') : ''}${body || '<div class="hint">没有读到设置。</div>'}`);
 }
+
 function meterFill(pct, basis) {
   if (pct == null) return '';
   const tight = basis === 'remaining' ? pct <= 10 : pct >= 90;
@@ -523,6 +535,7 @@ function renderQuota(m) {
   if ('context' in m) renderContext(m.context);
   if (m.error) { $('quotaStatus').textContent = m.error; $('quotaStatus').title = $('quotaMeters').title = m.detail || m.error; if (!m.automatic) status('额度刷新失败：' + m.error, false); return; }
   if (!m.cached || m.updated > (quotaCache.get(quotaKey())?.updated || 0)) $('quotaStatus').textContent = '';
+  if (m.refreshError) { $('quotaStatus').textContent = '刷新失败，显示桌面缓存'; $('quotaStatus').title = m.refreshError; }
 
   if (m.loading) return;
   if (!('quota' in m) && !('limits' in m) && !('bars' in m)) {

@@ -92,7 +92,7 @@
     const active = el && codexFiberProps(el, 40).find(p => typeof p.conversationId === 'string');
     return active?.conversationId || [...doc.querySelectorAll('[data-response-annotation-conversation]')].filter(vis).at(-1)?.getAttribute('data-response-annotation-conversation') || '';
   };
-  const attachmentRows = () => {
+  const attachmentRows = (ready = false) => {
     const ed = [...doc.querySelectorAll(`${COMPOSER}, [data-slate-editor="true"][contenteditable="true"]`)].filter(vis).at(-1);
     if (!ed) return [];
     let box = ed;
@@ -100,10 +100,18 @@
     const cursor = ed.closest('.ai-input-full-input-box');
     if (cursor) box = cursor;
     const buttons = [...box.querySelectorAll('button[aria-label^="Remove "]')].filter(button => button.parentElement.querySelector('img'));
+    if (ready) {
+      const images = [...buttons.map(button => button.parentElement.querySelector('img')), ...box.querySelectorAll('.context-pill-image img')];
+      return Promise.all(images.map(img => img.decode())).then(() => attachmentRows());
+    }
     return [...buttons, ...box.querySelectorAll('.context-pill-image')].filter(vis).map(button => {
-      if (!button.dataset.remoteAttachment) button.dataset.remoteAttachment = crypto.randomUUID();
       const pill = button.matches('.context-pill-image');
       const img = pill ? button.querySelector('img') : button.parentElement.querySelector('img');
+      const source = img?.currentSrc || img?.src || '';
+      if (!button.dataset.remoteAttachment || button.__remoteAttachmentSrc !== source) {
+        button.dataset.remoteAttachment = crypto.randomUUID();
+        button.__remoteAttachmentSrc = source;
+      }
       let preview = '';
       if (img?.complete && img.naturalWidth) {
         const canvas = doc.createElement('canvas');
@@ -115,6 +123,17 @@
       const name = img?.alt && img.alt !== 'User attachment' ? img.alt.replace(/^User uploaded image (\d+)$/, '图片 $1') : label;
       return { id: button.dataset.remoteAttachment, name, preview };
     });
+  };
+  const attachmentImage = async id => {
+    const row = attachmentRows().find(f => f.id === id);
+    if (!row) throw new Error('图片已不在当前输入框中');
+    const el = [...doc.querySelectorAll('[data-remote-attachment]')].find(e => e.dataset.remoteAttachment === id);
+    const img = el.matches('.context-pill-image') ? el.querySelector('img') : el.parentElement.querySelector('img');
+    await img.decode();
+    const canvas = doc.createElement('canvas');
+    canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+    canvas.getContext('2d').drawImage(img, 0, 0);
+    return { name: row.name, data: canvas.toDataURL('image/png') };
   };
   const removeAttachment = id => {
     if (!attachmentRows().some(f => f.id === id)) return false;
@@ -141,13 +160,65 @@
     return codexThread() || (devinSurface() ? devinSession()?.key : '') || (glass.length === 1 ? glass[0].getAttribute('data-glass-agent-id') : '') || cursorSel || window.__SSG_COMPOSER_PROVIDER__?.getStates?.().find(c => c.state === 'focused')?.id || agentList().find(a => a.current)?.id || '';
   };
   const codexTurnData = el => codexFiberProps(el.querySelector('[class*="agent-activity"]') || el.querySelector('button[aria-expanded]') || el, 40).find(p => p.turn)?.turn;
+  // Current Codex list entries keep only IDs; their live items remain in the history atoms.
+  const codexHistoryScopes = () => new Set(codexRootProps().flatMap(p => typeof p.value?.values === 'function' ? [...p.value.values()] : []).filter(v => v?.familyBindings));
+  const codexUserText = content => {
+    const text = content.filter(c => c.type === 'text').map(c => c.text).join('\n');
+    const wrapper = /^# Context from my IDE setup:\r?\n(?=[\s\S]*^## (?:Active file|Open tabs|Active selection of the file):)[\s\S]*?^## My request:\r?\n/m.exec(text);
+    return wrapper?.index === 0 ? text.slice(wrapper[0].length).replace(/\r?\n$/, '') : text;
+  };
+  const codexStoredTurn = (entry, scopes = codexHistoryScopes(), patchesOnly = false) => {
+    const first = entry.turnItemIds?.[0];
+    if (!first || !entry.historyEntityKey) return null;
+    const itemKey = id => JSON.stringify([entry.historyEntityKey, id]);
+    let metadata, itemBindings, slots, matchedItems = 0;
+    for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
+      const atom = bindings.get(entry.historyEntityKey)?.value;
+      const value = typeof atom?.get === 'function' ? atom.get() : null;
+      if (value?.turnId === entry.turnId) metadata = value;
+      if (Array.isArray(value?.entries) && Number.isFinite(value.length)) slots = value;
+      const item = bindings.get(itemKey(first))?.value;
+      if (typeof item?.get === 'function' && item.get()?.id === first) {
+        const count = entry.turnItemIds.filter(id => bindings.get(itemKey(id))?.value?.get?.()?.id === id).length;
+        if (count > matchedItems) { itemBindings = bindings; matchedItems = count; }
+      }
+    }
+    if (!metadata || !itemBindings) return null;
+    const complete = metadata.status === 'complete' || metadata.status === 'completed';
+    const ids = slots ? [...slots.entries].sort((a, b) => a.index - b.index).map(e => e.itemId) : entry.turnItemIds;
+    const items = ids.flatMap(id => {
+      const item = itemBindings.get(itemKey(id))?.value?.get();
+      if (!item || (patchesOnly && item.type !== 'fileChange')) return [];
+      const done = complete || !!metadata.agentMessageCompletedAtMsById?.[id];
+      if (item.type === 'userMessage') return { type: 'user-message', clientUserMessageId: item.clientId || item.id,
+        message: codexUserText(item.content || []),
+        images: (item.content || []).filter(c => c.type === 'image' || c.type === 'localImage'), sentAtMs: metadata.turnStartedAtMs };
+      if (item.type === 'agentMessage') return { type: 'assistant-message', responseAnnotationTargetId: item.id, content: item.text, phase: item.phase, completed: done };
+      if (item.type === 'reasoning') return { type: 'reasoning', id: item.id, content: [...(item.summary || []), ...(item.content || [])].map(t => typeof t === 'string' ? t : t.text || '').join('\n'), completed: complete };
+      if (item.type === 'commandExecution') return { type: 'exec', callId: item.id, cmd: [item.command], executionStatus: item.status };
+      if (item.type === 'fileChange') return { type: 'patch', callId: item.id, changes: Object.fromEntries((item.changes || []).map(c => [c.path, c])) };
+      if (item.type === 'plan') return { type: 'todo-list', id: item.id, plan: item.plan || [] };
+      if (item.type === 'mcpToolCall') return { ...item, type: 'mcp-tool-call' };
+      if (item.type === 'dynamicToolCall') return { ...item, type: 'dynamic-tool-call' };
+      if (item.type === 'collabAgentToolCall') return item;
+      if (item.type === 'webSearch') return { type: 'web-search', id: item.id, query: item.query };
+      if (item.type === 'contextCompaction') return { type: 'context-compaction', id: item.id, source: item.source, status: complete ? 'completed' : 'inProgress' };
+      return [];
+    });
+    items.push({ type: 'worked-for', startedAtMs: metadata.turnStartedAtMs,
+      completedAtMs: complete && Number.isFinite(metadata.durationMs) ? metadata.turnStartedAtMs + metadata.durationMs : null });
+    return { status: complete ? 'complete' : metadata.status, items };
+  };
   const codexLatestEntry = el => {
     if (!el) return null;
     const props = codexFiberProps(el, 32);
     const thread = codexThread();
-    const mounted = props.find(p => p.entry?.isLatestTurn && p.entry.conversationId === thread)?.entry;
-    if (mounted) return mounted;
-    return props.find(p => Array.isArray(p.entries))?.entries.find(e => e.isLatestTurn && e.conversationId === thread) || null;
+    const entry = props.find(p => p.entry?.isLatestTurn && p.entry.conversationId === thread)?.entry
+      || props.find(p => Array.isArray(p.entries))?.entries.find(e => e.isLatestTurn && e.conversationId === thread);
+    if (!entry) return null;
+    if (entry.turn || entry.turnKey === el.getAttribute('data-turn-key')) return entry;
+    const turn = codexStoredTurn(entry);
+    return turn ? { ...entry, turn } : entry;
   };
   const codexFusionTurn = (id = '', message = '', previous = []) => {
     const rows = [...doc.querySelectorAll('[data-turn-key]')];
@@ -442,7 +513,7 @@
         readonly: !hasComposer(),
         mode: devinModeChip()?.innerText.trim() || CONTROLS.mode()?.innerText.trim() || null,
         ...(devinSurface() ? { surface: devinSurface() } : {}),
-        model: codexModelName() || (modelEl ? normLabel(modelEl.innerText).split('\n')[0].slice(0, 60) : null),
+        model: agentModelName(),
         permission: permissionLabel(), effort: effortName(),
         thread: activeThread(),
         title: agentState()?.title || '',
@@ -513,7 +584,7 @@
       permission: permissionLabel(), effort: effortName(),
       thread: activeThread(),
       title: agentState()?.title || '',
-      model: codexModelName() || (modelEl ? normLabel(modelEl.innerText).split('\n')[0].slice(0, 60) : null),
+      model: agentModelName(),
       context: contextPct(),
       draft: composerDraft(),
       ...(devinSurface() ? { surface: devinSurface() } : {}),

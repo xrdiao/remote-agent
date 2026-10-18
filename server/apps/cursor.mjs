@@ -148,22 +148,22 @@ export const adapter = {
     return false;
   },
 
-  async showSettings(requestId = 0) {
+  async showSettings(requestId = 0, section = '') {
+    if (this.desktopSettingsOwned === undefined) this.desktopSettingsOwned = !await this.editorCdp.evaluate(helpersCall('settingsOpen()'));
     await this.ensureSettings();
-    let sections = [];
-    try {
-      sections = await this.editorCdp.evaluate(helpersCall('readSettings()')) || [];
-      if (!sections.length) {
-        const nav = await this.editorCdp.evaluate(helpersCall('devinSettingsNav()')) || [];
-        for (const name of nav) {
-          await this.editorCdp.evaluate(helpersCall(`devinSettingsClick(${JSON.stringify(name)})`));
-          await new Promise(r => setTimeout(r, 180));
-          const items = await this.editorCdp.evaluate(helpersCall('devinSettingsCards()')) || [];
-          if (items.length) sections.push({ title: name, items });
-        }
-      }
-    } finally { await this.closeSettings(); }
-    this.emit({ t: 'settings', sections });
+    const data = await this.editorCdp.evaluate(`(async () => {
+      const h = ${PAGE_SRC}, app = ${JSON.stringify(this.app)}, section = ${JSON.stringify(section)};
+      if (section) h.desktopSettingsNav(section, app);
+      const start = Date.now();
+      do {
+        const data = h.desktopSettingsData(section, app);
+        if (data.sections.length && (!section || data.current === section)) return data;
+        await new Promise(r => setTimeout(r,30));
+      } while (Date.now() - start < 1200);
+      return h.desktopSettingsData(section, app);
+    })()`);
+    this.desktopSettingsSection = data.current;
+    this.emit({ t: 'settings', ...data });
   },
 };
 

@@ -29,6 +29,8 @@ wss.on('connection', (ws, req) => {
   let queue = Promise.resolve();
   let questionQueue = Promise.resolve();
   const agentReads = new Map();
+  const imageActions = [];
+  let imageGroup = 0;
   ws.on('message', raw => {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
@@ -50,15 +52,27 @@ wss.on('connection', (ws, req) => {
     // Frame acks bypass the queue so a slow command never stalls the stream.
     if (msg.t === 'ack') return session.ack();
     const route = ROUTES[msg.t];
+    const imageTransfer = msg.t === 'image' ? { cancelled: false } : null;
+    if (imageTransfer) (session.imageTransfers ||= new Map()).set(msg.clientImageId, imageTransfer);
     if (route && flag(route.fast, session, msg)) { route.fastRun(session, msg); return; }
     const readKind = msg.t === 'agents' ? `${!!msg.automatic}|${!!msg.silent}` : null;
     const readSerial = readKind && (agentReads.get(readKind) || 0) + 1;
     if (readKind) agentReads.set(readKind, readSerial);
+    const imageAction = msg.t === 'removeAttachment' || msg.t === 'editImage';
+    const group = msg.t === 'image' || imageAction ? imageGroup : ++imageGroup;
+    let executed = false;
     const execute = async () => {
+      if (executed) return;
+      executed = true;
+      const actionIndex = imageActions.findIndex(action => action.execute === execute);
+      if (actionIndex !== -1) imageActions.splice(actionIndex, 1);
+      if (msg.t === 'image') {
+        for (const action of imageActions.filter(action => action.group === group)) await action.execute();
+      }
       if (readKind && agentReads.get(readKind) !== readSerial) return;
       const q0 = Date.now();
       try {
-        const queued = await session.handle(msg);
+        const queued = imageTransfer?.cancelled ? undefined : await session.handle(msg);
         const ms = Date.now() - q0;
         if (ms > 3000) console.log(`[slow] ${msg.t} ${ms}ms ${session.app || ''}`);
         route?.after?.(session, msg, queued);
@@ -66,8 +80,11 @@ wss.on('connection', (ws, req) => {
         console.log(`[err] ${msg.t}: ${e.message}`);
         route?.fail?.(session, msg);
         session.emit({ t: 'status', ok: false, msg: e.message });
+      } finally {
+        if (imageTransfer) session.imageTransfers.delete(msg.clientImageId);
       }
     };
+    if (imageAction) imageActions.push({ group, execute });
     if (flag(route?.background, session, msg)) queue.then(execute);
     else if (msg.t === 'question' || msg.t === 'codexRequest') questionQueue = questionQueue.then(execute);
     else queue = queue.then(execute);

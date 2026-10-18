@@ -5,6 +5,8 @@ const SC = { key: null, items: new Map(), sig: new Map(), collapsed: new Set(), 
 const SC_MAX = 8000;
 const acpNum = id => { const m = /^acp(\d+)/.exec(id || ''); return m ? Number(m[1]) : -1; };
 let scDbP = null;
+const scPending = new Map(), scItemBytes = new WeakMap();
+let scSaveFrame = 0;
 function scDb() {
   if (!scDbP) scDbP = new Promise((res, rej) => {
     if (!window.indexedDB) return rej(new Error('no indexedDB'));
@@ -29,7 +31,8 @@ const chatPreviewReady = idbGet('chat-previews').then(entries => {
 let chatPreviewTimer = 0;
 function cacheChat(sel, chat) {
   lruPut(chatBySel, chatCacheKey(sel), chat, 12);
-  if (!chatPreviewTimer) chatPreviewTimer = setTimeout(() => {
+  if (!chatPreviewTimer) chatPreviewTimer = setTimeout(function savePreview() {
+    if (chatScrolling || chatTouching) { chatPreviewTimer = setTimeout(savePreview, 250); return; }
     chatPreviewTimer = 0;
     idbPut('chat-previews', [...chatBySel].map(([key, value]) => [key, { ...value, items: value.items.slice(-400) }]));
   }, 1000);
@@ -66,6 +69,8 @@ function scSetTitle(key, title) {
   store.set('scTitles', JSON.stringify(scTitles));
 }
 const scGet = k => {
+  const pending = k.startsWith('h:') && scPending.get(k.slice(2));
+  if (pending) return Promise.resolve(scSnapshot(pending));
   const n = nativeHist();
   if (!n) return idbGet(k);
   return Promise.resolve(parseJson(k.startsWith('h:') ? n.histGet(k.slice(2)) : n.histMeta(k.slice(2))));
@@ -85,12 +90,18 @@ const htmlText = h => h.replace(/<[^>]+>/g, ' ').replace(/&lt;/g, '<').replace(/
 const scIndex = items => items.flatMap(it => it.k === 'human' && it.t ? [{ id: it.i, role: 'human', body: it.t.slice(0, 4000) }]
   : it.k === 'assistant' && it.h ? [{ id: it.i, role: 'assistant', body: htmlText(it.h).slice(0, 6000) }] : []);
 function scSave(key, items, collapsed) {
-  const json = JSON.stringify({ items, collapsed });
-  const meta = { n: items.length, bytes: json.length, updated: Date.now() };
   const n = nativeHist();
-  if (n) return n.histPut(key, json, JSON.stringify(meta), JSON.stringify(scIndex(items)));
-  idbPut('h:' + key, { items, collapsed });
-  idbPut('m:' + key, meta);
+  const updated = Date.now();
+  if (n) {
+    const json = JSON.stringify({ items, collapsed });
+    return n.histPut(key, json, JSON.stringify({ n: items.length, bytes: json.length, updated }), JSON.stringify(scIndex(items)));
+  }
+  const bytes = JSON.stringify({ items: [], collapsed }).length + Math.max(0, items.length - 1) + items.reduce((sum, it) => {
+    let size = scItemBytes.get(it);
+    if (size === undefined) { size = JSON.stringify(it).length; scItemBytes.set(it, size); }
+    return sum + size;
+  }, 0);
+  return Promise.all([idbPut('h:' + key, { items, collapsed }), idbPut('m:' + key, { n: items.length, bytes, updated })]);
 }
 // Sessions saved before the native database existed (IndexedDB) are copied over once.
 async function scMigrate() {
@@ -114,21 +125,47 @@ function scKeep(prev, it) {
   if (it.k === 'tasks' && prev.k === 'tasks' && prev.items && !it.items && prev.done === it.done && prev.total === it.total) return { ...it, items: prev.items };
   return it;
 }
+function scSnapshot(pending) {
+  let items = [...pending.items.values()].sort((a, b) => (a.order ?? acpNum(a.i)) - (b.order ?? acpNum(b.i)));
+  if (items.length > SC_MAX) items = items.slice(-SC_MAX);
+  return { items, collapsed: [...pending.collapsed] };
+}
+let scDrainTimer = 0;
+function scDrain(force = false) {
+  clearTimeout(scDrainTimer);
+  scDrainTimer = 0;
+  if (!force && (chatScrolling || chatTouching)) {
+    scDrainTimer = setTimeout(() => scDrain(), 250);
+    return Promise.resolve();
+  }
+  const saves = [];
+  for (const [key, pending] of scPending) {
+    if (pending.saving) { saves.push(pending.saving); continue; }
+    const { items, collapsed } = scSnapshot(pending);
+    pending.saving = Promise.resolve(scSave(key, items, collapsed)).then(() => {
+      if (scPending.get(key) === pending) scPending.delete(key);
+    });
+    saves.push(pending.saving);
+  }
+  return Promise.all(saves);
+}
 function scFlush() {
   clearTimeout(SC.timer);
   SC.timer = 0;
   if (!SC.key || !SC.dirty) return;
   SC.dirty = false;
-  let items = [...SC.items.values()].sort((a, b) => (a.order ?? acpNum(a.i)) - (b.order ?? acpNum(b.i)));
-  if (items.length > SC_MAX) items = items.slice(-SC_MAX);
-  scSave(SC.key, items, [...SC.collapsed]);
+  scPending.set(SC.key, { items: SC.items, collapsed: new Set(SC.collapsed) });
+  if (!scSaveFrame) scSaveFrame = requestAnimationFrame(() => {
+    scSaveFrame = 0;
+    setTimeout(scDrain, 0);
+  });
 }
 function scDirty() {
   SC.dirty = true;
   if (!SC.timer) SC.timer = setTimeout(scFlush, 3000);
 }
-document.addEventListener('visibilitychange', () => { if (document.hidden) scFlush(); });
-addEventListener('pagehide', scFlush);
+document.addEventListener('visibilitychange', () => { if (document.hidden) { scFlush(); scDrain(true); } });
+addEventListener('pagehide', () => { scFlush(); scDrain(true); });
 function scSwitch(sess) {
   scFlush();
   SC.key = sess ? scKeyFor(sess) : null;
@@ -156,6 +193,7 @@ function scMerge(chat) {
   for (const it of chat.items) {
     const sig = JSON.stringify(it);
     if (SC.sig.get(it.i) === sig && SC.items.has(it.i)) continue;
+    scItemBytes.set(it, sig.length);
     SC.sig.set(it.i, sig);
     SC.items.set(it.i, scKeep(SC.items.get(it.i), it));
     changed = true;
@@ -218,6 +256,7 @@ function scSearch(q) {
   }).join('') : '<div class="hint">没有找到。</div>';
 }
 async function scClear(key) {
+  scPending.delete(key);
   await scDel('h:' + key);
   await scDel('m:' + key);
   if (key === SC.key) {
@@ -245,6 +284,7 @@ function showBgSheet() {
 }
 async function showCacheSheet() {
   scFlush();
+  await scDrain(true);
   const keys = ((await scKeys()) || []).map(String).filter(k => k.startsWith('m:')).map(k => k.slice(2));
   const rows = (await Promise.all(keys.map(async k => {
     const m = await scGet('m:' + k);
@@ -377,7 +417,12 @@ function renderChat(chat, stale, loading = false) {
   updateGenerationTime(chat, stale);
   chatStale = !!stale;
   if (chat?.items?.some(it => it.k === 'human')) $('sessionNotice').hidden = true;
+  rememberInputHistory(chat);
   const previous = lastChat;
+  if (chat && previous?.thread === chat.thread && (previous.model !== chat.model || previous.effort !== chat.effort)) {
+    menuCache.delete(menuCacheKey('model'));
+    menuCache.delete(menuCacheKey('effort'));
+  }
   if (!chat || previous?.thread !== chat.thread) {
     historyRequest = null; historyRendering = false; historyExpanded = false; historyArmed = false; historyAtEnd = false; readingAnchor = null;
     $('older').disabled = false;

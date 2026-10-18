@@ -187,9 +187,17 @@ $('sheet').addEventListener('click', async e => {
     if (chev) chev.textContent = open ? '▾' : '▸';
     const body = b.nextElementSibling;
     if (body) body.hidden = !open;
+    if (open && sheetKind === 'agents') body?.querySelectorAll('[data-project-load]').forEach(el => {
+      el.textContent = '正在加载会话…';
+      send({ t: 'agents', projectWindow: el.dataset.projectLoad, automatic: true, silent: true });
+    });
     return;
   }
-  if (b.dataset.win) { closeSheet(); status('正在切换窗口…'); return send({ t: 'attach', id: b.dataset.win, ...currentComputer()?.selections?.[b.dataset.win] }); }
+  if (b.dataset.projectLoad) {
+    b.textContent = '正在加载会话…';
+    return send({ t: 'agents', projectWindow: b.dataset.projectLoad, automatic: true, silent: true });
+  }
+  if (b.dataset.win) { closeSheet(); status('正在切换 Agent…'); return send({ t: 'attach', id: b.dataset.win, ...currentComputer()?.selections?.[b.dataset.win] }); }
   if ('fusionTrust' in b.dataset) { closeSheet(); return send({ t: 'fusionTrust', approve: b.dataset.fusionTrust === 'yes' }); }
   if ('fusionDir' in b.dataset) { status('正在读取项目…'); return send({ t: 'fusionProjects', path: b.dataset.fusionDir }); }
   if ('fusionPath' in b.dataset) {
@@ -202,6 +210,10 @@ $('sheet').addEventListener('click', async e => {
     if (!await ask('在当前项目创建新会话，并携带旧会话最近的历史摘录？原会话保留，不会发送任务。', '续接')) return;
     closeSheet(); status('正在创建会话…');
     return send({ t: 'fusionContinue', side: b.dataset.fusionSide, id: b.dataset.fusionContinue });
+  }
+  if ('saveInstructions' in b.dataset) {
+    status('正在保存指令…');
+    return send({ t: 'codexInstructions', text: $('codexInstructions').value });
   }
   if (b.dataset.codexSetting) {
     const label = b.textContent.trim();
@@ -245,6 +257,7 @@ $('sheet').addEventListener('click', async e => {
     return send({ t: 'docs', editor: editorBrowsing, root: b.dataset.root, host: b.dataset.docsHost || '', path: b.dataset.docsUp });
   }
   if (b.dataset.docsRoot) { status('正在读取文档…'); return send({ t: 'docs', editor: editorBrowsing, root: b.dataset.docsRoot, host: b.dataset.docsHost || '', path: b.dataset.docsDir || b.dataset.docsRoot }); }
+  if (b.dataset.settingsNav) { status('正在读取设置…'); return send({ t: 'settings', section: b.dataset.settingsNav }); }
   if (b.dataset.setting) { status('正在修改…'); return send({ t: 'toggleSetting', label: b.dataset.setting }); }
   if (b.dataset.termDel) {
     if (!await ask(`删除终端「${b.dataset.termName || ''}」？\n里面正在跑的命令会停掉。`, '删除')) return;
@@ -271,6 +284,10 @@ $('sheet').addEventListener('click', async e => {
     if (b.dataset.kind === 'mode' && b.dataset.label === 'Bypass Permissions' && !b.classList.contains('cur')
       && !await ask('切到「Bypass Permissions」？\nAgent 之后的所有操作（运行命令、改文件、删文件）都会自动批准，不再询问你。', '切换')) return;
     closeSheet();
+    if (b.dataset.kind === 'model' || b.dataset.kind === 'effort') {
+      menuCache.delete(menuCacheKey('model'));
+      menuCache.delete(menuCacheKey('effort'));
+    }
     if (/^fusion-model-[ab]$/.test(b.dataset.kind)) fusionModelSide = b.dataset.kind.slice(-1);
     if (b.dataset.kind !== 'codex-run' && b.dataset.kind !== 'codex-chat' && !/^fusion-(model|effort)-/.test(String(b.dataset.kind || ''))) beginSwitch(b.dataset.kind);
     return send({ t: 'pickMenu', kind: b.dataset.kind, label: b.dataset.label });
@@ -474,3 +491,13 @@ async function removeComputers(keys) {
   showComputers();
 }
 
+
+$('sheet').addEventListener('change', e => {
+  const field = e.target.closest('[data-codex-field]');
+  if (field) { status('正在读取设置…'); send({ t: 'codexSetting', id: field.dataset.codexField, value: field.value }); }
+});
+
+$('sheet').addEventListener('change', e => {
+  const field = e.target.closest('[data-setting-field]');
+  if (field) { status('正在修改…'); send({ t:'toggleSetting', label:field.dataset.settingField, value:field.value }); }
+});

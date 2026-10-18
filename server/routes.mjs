@@ -127,7 +127,7 @@ export const ROUTES = {
     background: (s, m) => m.automatic === true && m.silent === true,
     pre: (s, m) => (s.app === 'codex' ? s.listAgents(m.silent === true, m.automatic === true) : SKIP),
     readOnly: (s, m) => m.silent === true,
-    run: (s, m) => s.listAgents(m.silent === true, m.automatic === true),
+    run: (s, m) => s.listAgents(m.silent === true, m.automatic === true, String(m.projectWindow || '')),
   },
   openAgent: { run: (s, m) => s.openAgent(String(m.id ?? ''), String(m.title ?? '')) },
   openMenu: { run: (s, m) => s.openMenu(m.kind, m.requestId) },
@@ -144,6 +144,10 @@ export const ROUTES = {
   openTerminal: { run: (s, m) => s.openTerminal(String(m.id ?? '')) },
   closeTerminal: { run: (s, m) => s.closeTerminal(String(m.id ?? '')) },
   newTerminal: { run: s => s.newTerminal() },
+  termHistory: { readOnly: true, run: async (s, m) => {
+    const data = await s.editorCdp.evaluate(helpersCall('terminalHistory()'));
+    s.emit({ t: 'termHistory', sel: s.selectionKey(), direction: m.direction < 0 ? -1 : 1, id: data.id, commands: data.commands });
+  } },
   termSend: {
     run: (s, m) => s.sendTerminal(String(m.text ?? '')),
     after: (s, m) => {
@@ -160,12 +164,14 @@ export const ROUTES = {
   codexSetting: {
     run: (s, m) => {
       if (s.app !== 'codex') return;
-      return s.showCodexSettings(String(m.id || ''), m.requestId);
+      return s.showCodexSettings(String(m.id || ''), m.requestId, typeof m.value === 'string' ? m.value : undefined);
     },
   },
+  codexInstructions: { run: (s, m) => s.app === 'codex' && s.saveCodexInstructions(String(m.text ?? ''), m.requestId) },
   closeCodexSettings: { run: s => s.closeCodexSettings() },
-  settings: { run: (s, m) => s.showSettings(m.requestId) },
-  toggleSetting: { run: (s, m) => s.toggleSetting(String(m.label ?? '')) },
+  settings: { run: (s, m) => s.showSettings(m.requestId, String(m.section || '')) },
+  closeDesktopSettings: { run: s => s.closeDesktopSettings() },
+  toggleSetting: { run: (s, m) => s.toggleSetting(String(m.label ?? ''), typeof m.value === 'string' ? m.value : undefined) },
   usage: {
     fast: s => s.app === 'codex' || s.app === 'devin',
     fastRun: (s, m) => s.showUsage(m.automatic === true),
@@ -209,7 +215,16 @@ export const ROUTES = {
   },
   subagent: { run: (s, m) => s.subagentAction(m.name, m.part === 'stop' ? 'stop' : 'open') },
   mainChat: { run: s => s.backToMain() },
-  image: { run: (s, m) => s.attachImage(m.data, m.name, m.type) },
+  cancelImage: { fast: true, fastRun: (s, m) => {
+    const transfer = s.imageTransfers?.get(m.clientImageId);
+    if (transfer) transfer.cancelled = true;
+  } },
+  image: {
+    run: (s, m) => s.attachImage(m.data, m.name, m.type, String(m.replace || ''), m.sel, s.imageTransfers?.get(m.clientImageId)),
+    after: (s, m, attachmentId) => s.emit({ t: 'imageDone', clientImageId: m.clientImageId, attachmentId, ok: true, cancelled: s.imageTransfers?.get(m.clientImageId)?.cancelled === true }),
+    fail: (s, m) => s.emit({ t: 'imageDone', clientImageId: m.clientImageId, ok: false }),
+  },
+  editImage: { readOnly: true, run: (s, m) => s.editAttachmentImage(String(m.id), String(m.sel)) },
   attachments: { readOnly: true, fusionFree: true, run: s => s.syncAttachments() },
   removeAttachment: { run: (s, m) => s.removeAttachment(String(m.id)) },
   question: {

@@ -4,23 +4,24 @@
   };
   // The gear's label flips to "Close Settings". Devin opens a settings editor tab instead.
   const settingsOpen = () => {
-    if ([...doc.querySelectorAll('button, [role=button]')].some(e => onScreen(e) && e.getAttribute('aria-label') === 'Close Settings')) return true;
+    if ([...doc.querySelectorAll('button, a, [role=button]')].some(e => onScreen(e) && e.getAttribute('aria-label') === 'Close Settings')) return true;
     if ([...doc.querySelectorAll('input')].some(e => onScreen(e) && /search settings/i.test(e.getAttribute('aria-label') || ''))) return true;
-    const tab = [...doc.querySelectorAll('.tab.active')].find(onScreen);
-    return /settings/i.test(tab?.getAttribute('aria-label') || tab?.innerText || '');
+    return [...doc.querySelectorAll('.tab.active')].some(tab => onScreen(tab) && /settings/i.test(tab.getAttribute('aria-label') || tab.innerText || ''));
   };
   const clickSettingsButton = () => {
-    const b = [...doc.querySelectorAll('button, [role=button]')].find(e => onScreen(e) && /^(Settings|Open Cursor Settings)$/.test(e.getAttribute('aria-label') || ''));
+    const b = [...doc.querySelectorAll('button, a, [role=button]')].find(e => onScreen(e) && /^(Settings|Open Cursor Settings|Devin Settings)$/.test(e.getAttribute('aria-label') || ''));
     if (!b) return false;
     b.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     b.click();
     return true;
   };
   const clickCloseSettings = () => {
-    const b = [...doc.querySelectorAll('button, [role=button]')].find(e => onScreen(e) && e.getAttribute('aria-label') === 'Close Settings');
+    const b = [...doc.querySelectorAll('button, a, [role=button]')].find(e => onScreen(e) && e.getAttribute('aria-label') === 'Close Settings');
     if (b) { b.click(); return 'button'; }
-    const tab = [...doc.querySelectorAll('.tab.active')].find(onScreen);
-    if (/settings/i.test(tab?.getAttribute('aria-label') || '')) return 'tab';
+    const tab = [...doc.querySelectorAll('.tab.active')].find(e => onScreen(e) && /settings/i.test(e.getAttribute('aria-label') || ''));
+    const close = tab?.querySelector('[aria-label^="Close"]');
+    if (close) { close.click(); return 'button'; }
+    if (tab) return 'tab';
     return '';
   };
   const settingsPanel = () => {
@@ -61,6 +62,8 @@
     return sections;
   };
   const settingTarget = label => {
+    const control = [...doc.querySelectorAll('[data-remote-setting]')].find(e => e.dataset.remoteSetting === label);
+    if (control) { control.scrollIntoView({block:'center'}); return center(control); }
     const root = settingsPanel();
     if (!root) return null;
     for (const entry of root.querySelectorAll('.ui-field-group__entry')) {
@@ -71,17 +74,116 @@
     }
     return null;
   };
+  const desktopSettingsData = (section = '', app = '') => {
+    const cursor = app === 'devin' ? null : settingsPanel();
+    const root = cursor || [...doc.querySelectorAll('.editor-instance')].find(e => vis(e) && [...e.querySelectorAll('button')].some(b => b.textContent.trim() === 'Plan information'));
+    if (!root) return { sections: [], nav: [], current: '', choices: [] };
+    const mark = el => { el.dataset.remoteSetting ||= crypto.randomUUID(); return el.dataset.remoteSetting; };
+    const nav = cursor ? [...root.querySelectorAll('.cursor-settings-sidebar-nav-cell')].map(e => e.textContent.trim()).filter(name => name !== 'VS Code Settings') : devinSettingsNav();
+    const heading = root.querySelector('h1');
+    const current = cursor ? heading?.textContent.trim() || section || nav[0] : section || nav[0];
+    const groups = cursor ? [...root.querySelectorAll('.ui-section')] : [...root.querySelectorAll('section')].filter(e => e.querySelector('h2')?.textContent.trim() === current);
+    const selector = '[role=switch], [role=combobox], button, [role=button], input:not([type=hidden]):not([type=password]), textarea, select';
+    const sections = groups.map(group => {
+      const items = [];
+      const controls = [...group.querySelectorAll(selector)].filter(vis).filter(e => !e.closest('[aria-hidden=true]') && (!cursor || e.closest('.ui-section') === group) && (!e.closest('[role=combobox]') || e.getAttribute('role') === 'combobox'));
+      for (const el of controls) {
+        if (el.type === 'checkbox' && el.parentElement.querySelector('[role=switch]')) continue;
+        let row = el.closest('.ui-field-group__entry');
+        if (!row) {
+          row = el.parentElement;
+          while (row.parentElement && row !== group && !row.innerText.trim()) row = row.parentElement;
+          if (row !== group && row.innerText.trim() === el.innerText?.trim()) row = row.parentElement;
+        }
+        const lines = (row.innerText || '').split('\n').map(t => t.trim()).filter(Boolean);
+        const label = (el.getAttribute('aria-label') || lines[0] || el.textContent.trim() || el.placeholder || '').slice(0,140);
+        if (!label) continue;
+        const id = mark(el), disabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
+        const sw = el.getAttribute('role') === 'switch' || el.type === 'checkbox';
+        const field = !sw && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName);
+        items.push({ id, label, detail: lines.filter(t => t !== label).slice(0,2).join(' · ').slice(0,180), disabled,
+          ...(sw ? { on: el.checked ?? el.getAttribute('aria-checked') === 'true' } : field ? { type: el.tagName === 'SELECT' ? 'select' : el.tagName === 'TEXTAREA' ? 'textarea' : el.type || 'text', value: el.value, options: el.options ? [...el.options].map(o => ({label:o.text,value:o.value})) : [] } : { action: true, value: el.textContent.trim() }) });
+      }
+      const summary = group.cloneNode(true); summary.querySelectorAll(selector).forEach(e => e.remove());
+      return { title: group.querySelector('h2,h3')?.textContent.trim() || current, items, summary: items.length ? '' : summary.textContent.trim().slice(0,2000) };
+    });
+    const choices = [...doc.querySelectorAll('[role=option],[role=menuitem],[role=menuitemradio],[role=menuitemcheckbox]')].filter(el => onScreen(el) && !el.closest('[role=menubar]')).map(el => ({ id:mark(el),label:(el.textContent||el.getAttribute('aria-label')||'').trim(),on:el.getAttribute('aria-selected')==='true'||el.getAttribute('aria-checked')==='true' })).filter(c=>c.label);
+    return { sections, nav, current, choices };
+  };
+  const desktopSettingsNav = (section, app = '') => {
+    const root = app === 'devin' ? [...doc.querySelectorAll('.editor-instance')].find(e => vis(e) && [...e.querySelectorAll('button')].some(b => b.textContent.trim() === 'Plan information')) : settingsPanel();
+    const button = root && [...root.querySelectorAll(app === 'devin' ? 'button' : '.cursor-settings-sidebar-nav-cell')].find(e => e.textContent.trim() === section);
+    if (!button) return false;
+    button.scrollIntoView({block:'nearest'}); button.click(); return true;
+  };
+  const desktopSettingValue = (id, value) => {
+    const el = [...doc.querySelectorAll('[data-remote-setting]')].find(e => e.dataset.remoteSetting === id);
+    if (!el || el.disabled) throw new Error('设置项已变化，请重新读取');
+    const proto = el.tagName === 'SELECT' ? doc.defaultView.HTMLSelectElement.prototype : el.tagName === 'TEXTAREA' ? doc.defaultView.HTMLTextAreaElement.prototype : doc.defaultView.HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto,'value').set.call(el,value);
+    el.dispatchEvent(new doc.defaultView.Event('input',{bubbles:true})); el.dispatchEvent(new doc.defaultView.Event('change',{bubbles:true}));
+  };
   const codexSettingsData = () => {
     const mark = el => { el.dataset.remoteSetting ||= crypto.randomUUID(); return el.dataset.remoteSetting; };
     const nav = [...doc.querySelectorAll('[data-appearance] button.sidebar-item')].filter(vis).map(el => ({ id: mark(el), label: el.getAttribute('aria-label') || el.textContent.trim(), current: el.getAttribute('aria-current') === 'page' }));
     const control = el => ({ id: mark(el), label: el.getAttribute('aria-label') || (el.innerText || el.textContent).trim(), role: el.getAttribute('role') || '', on: el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-pressed') === 'true', disabled: el.disabled || el.getAttribute('aria-disabled') === 'true' });
-    const rows = [...doc.querySelectorAll('[class*="/settings-row"]')].filter(vis).map(row => ({
+    const root = [...doc.querySelectorAll('[role=dialog]')].find(vis) || doc.querySelector('h1')?.closest('[class~="group/settings"]');
+    const rows = [...(root?.querySelectorAll('[class*="/settings-row"]') || [])].filter(vis).map(row => ({
       label: row.querySelector('[class*="font-medium"]')?.textContent.trim() || row.innerText.split('\n')[0],
       detail: (row.firstElementChild?.innerText || '').split('\n').slice(1).join('\n').trim(),
       controls: [...row.querySelectorAll('button')].filter(vis).map(control),
     }));
     const choices = [...doc.querySelectorAll('[role="menuitemradio"], [role="menuitem"], [role="option"]')].filter(vis).map(control);
-    return { nav, rows, choices };
+    const field = [...doc.querySelectorAll('textarea[aria-label="Codex instructions"]')].find(vis);
+    const instructions = field ? { value: field.value, disabled: field.disabled } : null;
+    const fields = [...(root?.querySelectorAll('input:not([type=password]):not([type=checkbox]):not([type=radio]), select, textarea') || [])].filter(el => vis(el) && el !== field).map(el => ({ id: mark(el), label: el.getAttribute('aria-label') || el.placeholder || el.name || '输入', value: el.value, type: el.tagName === 'SELECT' ? 'select' : el.tagName === 'TEXTAREA' ? 'textarea' : el.type, disabled: el.disabled, options: el.tagName === 'SELECT' ? [...el.options].map(o => ({ value: o.value, label: o.text })) : null }));
+    const extra = [...(root?.querySelectorAll('button, a[href], input[type=checkbox], input[type=radio]') || [])].filter(el => vis(el) && !el.closest('[class*="/settings-row"]') && !(field && el.textContent.trim() === 'Save')).map(el => ({ ...control(el), role: el.type === 'checkbox' ? 'switch' : el.getAttribute('role') || '', on: el.checked || el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-pressed') === 'true' || el.getAttribute('data-state') === 'checked' })).filter(c => c.label);
+    const copy = root?.cloneNode(true);
+    copy?.querySelectorAll('[class*="/settings-row"], button, input, textarea, select, a[href]').forEach(el => el.remove());
+    const summary = (copy?.textContent || '').replace(/\s+/g, ' ').trim();
+    const title = root?.querySelector('h1, h2')?.textContent.trim() || '';
+    return { nav, rows, choices, instructions, fields, extra, summary, title, dialog: !!root?.matches('[role=dialog]') };
+  };
+  const codexSettingValue = (id, value) => {
+    const field = [...doc.querySelectorAll('[data-remote-setting]')].find(el => el.dataset.remoteSetting === id);
+    if (!field || field.disabled || !field.matches('input:not([type=password]):not([type=checkbox]):not([type=radio]), textarea, select')) throw new Error('设置输入框已改变，请重新读取');
+    const win = field.ownerDocument.defaultView;
+    const proto = field.tagName === 'SELECT' ? win.HTMLSelectElement.prototype : field.tagName === 'TEXTAREA' ? win.HTMLTextAreaElement.prototype : win.HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, 'value').set.call(field, value);
+    field.dispatchEvent(new win.Event('input', { bubbles: true }));
+    field.dispatchEvent(new win.Event('change', { bubbles: true }));
+  };
+  const waitSettings = (kind, before = '', timeout = 1200) => new Promise(resolve => {
+    const started = Date.now();
+    const read = () => {
+      const data = kind === 'open' ? settingsOpen() : kind === 'cursor' ? readSettings() : kind === 'devin' ? devinSettingsCards() : codexSettingsData();
+      const current = kind === 'codex' ? data.nav.find(n => n.current) : null;
+      const ready = kind === 'open' ? data : kind === 'codex' ? data.nav.length && data.title && (data.dialog || !current || data.title === current.label) : data?.length;
+      if ((ready && (!before || JSON.stringify(data) !== before)) || Date.now() - started >= timeout) return resolve(data);
+      setTimeout(read, 30);
+    };
+    read();
+  });
+  const codexSaveInstructions = async text => {
+    const field = [...doc.querySelectorAll('textarea[aria-label="Codex instructions"]')].find(vis);
+    if (!field || field.disabled) throw new Error('Codex instructions 当前不可编辑');
+    const saveButton = () => [...doc.querySelectorAll('button')].find(e => vis(e) && e.textContent.trim() === 'Save');
+    if (field.value === text && saveButton()?.disabled) return codexSettingsData();
+    const setValue = Object.getOwnPropertyDescriptor(field.ownerDocument.defaultView.HTMLTextAreaElement.prototype, 'value').set;
+    setValue.call(field, text);
+    field.dispatchEvent(new field.ownerDocument.defaultView.Event('input', { bubbles: true }));
+    const started = Date.now();
+    while (!saveButton() || saveButton().disabled) {
+      if (Date.now() - started > 1200) throw new Error('指令未进入待保存状态');
+      await new Promise(r => setTimeout(r, 30));
+    }
+    saveButton().click();
+    do {
+      await new Promise(r => setTimeout(r, 30));
+      if (Date.now() - started > 6000) throw new Error('指令保存尚未确认，请重新读取设置核对');
+    } while (field.disabled || !saveButton()?.disabled);
+    if (field.value !== text) throw new Error('保存后的指令与输入不一致');
+    return codexSettingsData();
   };
   const codexSettingPoint = id => {
     const el = [...doc.querySelectorAll('[data-remote-setting]')].find(e => e.dataset.remoteSetting === id);
@@ -99,7 +201,7 @@
     return true;
   };
   const devinSettingsCards = () => {
-    const root = [...doc.querySelectorAll('.editor-instance')].find(onScreen);
+    const root = [...doc.querySelectorAll('.editor-instance')].find(e => onScreen(e) && [...e.querySelectorAll('button')].some(b => b.textContent.trim() === 'Plan information'));
     if (!root) return [];
     const seen = new Set();
     const items = [];

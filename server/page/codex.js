@@ -370,8 +370,27 @@
   const codexChanges = () => {
     const files = new Map();
     const turns = [...doc.querySelectorAll('[data-turn-key]')];
-    const changedTurn = [...turns].reverse().find(el => codexTurnData(el)?.items?.some(item => item.type === 'patch'));
-    for (const item of codexTurnData(changedTurn || doc.body)?.items || []) {
+    const entries = turns.length ? codexFiberProps(turns[0], 50).find(p => Array.isArray(p.entries))?.entries : null;
+    let changed;
+    if (entries) {
+      const thread = codexThread(), scopes = codexHistoryScopes();
+      const patchTurns = doc.__remoteCodexPatchTurns ||= new WeakMap();
+      const mounted = new Map(turns.map(el => [el.getAttribute('data-turn-key'), el]));
+      for (const entry of [...entries].reverse()) {
+        if (entry.conversationId !== thread) continue;
+        const el = mounted.get(entry.turnKey);
+        let turn = entry.turn || (el && codexTurnData(el)) || patchTurns.get(entry);
+        if (!turn) {
+          turn = codexStoredTurn(entry, scopes, true);
+          if (turn?.status === 'complete' && !entry.isLatestTurn) patchTurns.set(entry, turn);
+        }
+        if (turn?.items?.some(item => item.type === 'patch')) { changed = turn; break; }
+      }
+    } else {
+      const changedTurn = [...turns].reverse().find(el => codexTurnData(el)?.items?.some(item => item.type === 'patch'));
+      changed = codexTurnData(changedTurn || doc.body);
+    }
+    for (const item of changed?.items || []) {
       if (item.type !== 'patch') continue;
       for (const [name, change] of Object.entries(item.changes || {})) {
         const diff = typeof change === 'string' ? change : change.unified_diff || change.diff || change.unifiedDiff || (change.type === 'add' ? String(change.content || '').replace(/\n$/, '').split('\n').map(l => '+' + l).join('\n') : '');

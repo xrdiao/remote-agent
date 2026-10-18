@@ -40,9 +40,9 @@ export async function listWindows(report = null, app = null) {
 }
 
 export function phoneWindows(wins, current) {
-  const devin = wins.find(w => w.app === 'devin' && w.id === current) || wins.find(w => w.app === 'devin');
-  return wins.filter(w => !IS_WIN || w.app !== 'devin' || w === devin)
-    .map(({ id, title, kind, app }) => ({ id, title: IS_WIN && app === 'devin' ? 'Devin' : title, kind, app }));
+  const apps = [...new Set(wins.map(w => w.app))];
+  return apps.map(app => wins.find(w => w.app === app && w.id === current) || wins.find(w => w.app === app))
+    .map(({ id, kind, app }) => ({ id, title: { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion' }[app] || app, kind, app }));
 }
 
 

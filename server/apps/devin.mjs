@@ -59,20 +59,15 @@ export const adapter = {
 
   async listAgents(silent, readOnly, emit) {
     const surface = await this.cdp.evaluate(helpersCall('devinSurface()'));
-    const windows = IS_WIN ? (await listWindows()).filter(w => w.app === 'devin') : [];
-    const windowRows = windows.length > 1 ? windows.map((w, i) => ({
-      id: `window:${w.id}`, title: `${w.title.replace(/\s+\[(?:Administrator|Administer)\]$/i, '')} · 窗口 ${i + 1}`,
-      group: 'Devin 窗口', current: w.id === this.targetId, running: false, ui: true,
-    })) : [];
     if (surface === 'editor') {
       if (readOnly) {
         const session = await this.cdp.evaluate(helpersCall('devinSession()'));
-        return emit({ list: [...windowRows, ...(session?.tabs || []).map(tab => ({ id: `tab:${tab.id}`, title: tab.title, group: '已打开的会话', current: tab.active, running: false }))], surface, partial: true });
+        return emit({ list: (session?.tabs || []).map(tab => ({ id: `tab:${tab.id}`, title: tab.title, group: '已打开的会话', current: tab.active, running: false })), surface, partial: true });
       }
-      return emit({ list: [...windowRows, ...await this.editorSessions()], surface });
+      return emit({ list: await this.editorSessions(), surface });
     }
     const list = await this.cdp.evaluate(helpersCall('agentList()'));
-    return emit({ list: [...windowRows, ...(list || [])], ...(surface ? { surface } : {}) });
+    return emit({ list: list || [], ...(surface ? { surface } : {}) });
   },
 
   async currentRoots() {

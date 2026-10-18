@@ -106,7 +106,7 @@
 </main>
 
 <footer>
-  <div class="attachmentRow"><div id="attachments"></div></div>
+  <div class="attachmentRow" hidden><div id="attachments"></div></div>
   <div id="mentionBox" hidden></div>
   <div id="mathPrev" hidden></div>
   <div id="fusionBar" hidden></div>
@@ -115,8 +115,6 @@
     <button id="pickTerms">列表</button>
     <button id="newTerm">＋ 新建</button>
     <button id="termInt">Ctrl+C</button>
-    <button data-termkey="ArrowUp">↑</button>
-    <button data-termkey="ArrowDown">↓</button>
     <button data-termkey="Tab">Tab</button>
   </div>
   <div id="chatTools">
@@ -133,16 +131,16 @@
     <button id="pickIde" title="IDE 上下文" hidden>IDE</button>
     <button id="pickRun" title="执行位置" hidden></button>
     <button id="pickChat" title="会话操作" hidden>会话 ▾</button>
-    <button id="pickAgents" title="选择项目与会话">项目 ▾</button>
+    <button id="pickAgents" title="选择项目与会话">项目/会话 ▾</button>
     <!-- 旧版输入框旁的对话历史。Agents 和 Devin 改由左侧会话列表切换，见 README。 -->
     <button id="pickHistory" hidden>历史</button>
     <button id="pickDir" hidden></button>
     <button id="newChat">＋ 新建</button>
   </div>
   </div>
-<input id="imgFile" type="file" accept="image/*" hidden>
+<input id="imgFile" type="file" accept="image/*" multiple hidden>
 <input id="docFile" type="file" accept=".pdf,.doc,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.py,.js,.ts,.tsx,.jsx,.sh,.yaml,.yml,.toml,.ini,.log,.xml,.html,.css,.c,.cpp,.h,.rs,.go" hidden>
-  <div class="sendRow"><button id="send">发送</button><button id="sendNow" hidden>立即发送</button></div>
+  <div class="sendRow"><div id="inputHistory"><button id="inputPrev" aria-label="上一条已发送内容" title="上一条已发送内容">↑</button><button id="inputNext" aria-label="下一条已发送内容或恢复草稿" title="下一条已发送内容或恢复草稿">↓</button></div><div id="termHistory"><button data-termkey="ArrowUp" aria-label="上一条终端命令">↑</button><button data-termkey="ArrowDown" aria-label="下一条终端命令">↓</button></div><button id="send">发送</button><button id="sendNow" hidden>立即发送</button></div>
   <div id="footerStatus"><div id="msg"></div><span id="elapsed" hidden></span></div>
 </footer>
 
@@ -213,20 +211,21 @@
 </div>
 
 <script src="i18n.js"></script>
-<script src="js/core.js"></script>
+<script src="js/core.js?v=92"></script>
 <script src="js/gate.js"></script>
 <script src="js/scanner.js"></script>
-<script src="js/net.js"></script>
-<script src="js/sheets.js"></script>
-<script src="js/notify.js"></script>
+<script src="js/net.js?v=110"></script>
+<script src="js/sheets.js?v=113"></script>
+<script src="js/notify.js?v=113"></script>
 <script src="js/mode.js"></script>
-<script src="js/chat.js?v=87"></script>
-<script src="js/history.js?v=87"></script>
+<script src="js/chat.js?v=111"></script>
+<script src="js/history.js?v=111"></script>
 <script src="js/files.js?v=106"></script>
 <script src="js/screen.js?v=87"></script>
 <script src="js/terminal.js?v=108"></script>
-<script src="js/composer.js?v=87"></script>
+<script src="js/composer.js?v=100"></script>
 <script src="js/latency.js"></script>
-<script src="js/voice.js"></script>
+<script src="js/image-editor.js?v=97"></script>
+<script src="js/voice.js?v=103"></script>
 </body>
 </html>

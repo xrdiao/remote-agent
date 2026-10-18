@@ -54,9 +54,9 @@ function applySelection(m, clearChat = true) {
     ...here,
     win: id,
     ...selection,
-    selections: { ...here.selections, [id]: selection },
+    selections: { ...here.selections, [id]: selection, [m.app || currentApp]: { id, ...selection } },
   });
-  if (changed) { mirroredDraft = ''; restoreDraft(); $('attachments').innerHTML = ''; send({ t: 'attachments' }); }
+  if (changed) { mirroredDraft = ''; restoreDraft(); renderAttachments([]); send({ t: 'attachments' }); }
   const cachedAgents = agentLists.get(agentListKey());
   if (cachedAgents && m.threadId) setAgentList(agentListKey(), cachedAgents.map(a => ({ ...a, current: a.id === m.threadId || a.id === 'tab:' + m.threadId || a.id === 'thread:' + m.windowId + ':' + m.threadId })));
   if (m.project) currentProject = m.project;
@@ -501,6 +501,8 @@ async function connect() {
     else if (m.t === 'latency') receiveLatency(m);
     else if (m.t === 'visual') renderVisualState(m);
     else if (m.t === 'visualWindows') { receiveVisualWindows(m); if (mode === 'screen') connContentReady(); }
+    else if (m.t === 'imageDone') { finishImageUpload(m); }
+    else if (m.t === 'imageEdit') { if (m.sel === viewSel) openImageEditor(m).catch(e => status('图片编辑失败：' + e.message, false)); }
     else if (m.t === 'attachments') { if (m.sel === viewSel) renderAttachments(m.list); }
     else if (m.t === 'chat') {
       if (!m.sel || !viewSel || m.sel === viewSel) {
@@ -571,6 +573,7 @@ async function connect() {
     else if (m.t === 'terminals') { finishPending(['正在读取终端列表…']); showTerminals(m.list || []); }
     else if (m.t === 'agentBusy') $('termBusy').hidden = !(mode === 'terminal' && m.busy);
     else if (m.t === 'termText') { if (!m.sel || !viewSel || m.sel === viewSel) { renderTerm(m); connContentReady(); } }
+    else if (m.t === 'termHistory') recallTerminal(m);
     else if (m.t === 'termInput' && mode === 'terminal') {
       text.value = m.text || '';
       const end = text.value.length;
@@ -595,7 +598,7 @@ async function connect() {
       if (editorBrowsing) startEditor();
     }
     else if (m.t === 'docs') { finishPending(['正在读取文档…', '正在读取项目文件…']); showDocs(m); }
-    else if (m.t === 'settings') { if (m.codex && m.requestId !== codexSettingsRequest) return; finishPending(['正在读取设置…', '正在修改…']); m.codex ? showCodexSettings(m) : showSettings(m.sections || []); }
+    else if (m.t === 'settings') { if (m.codex && m.requestId !== codexSettingsRequest) return; finishPending(['正在读取设置…', '正在修改…', '正在保存指令…']); m.codex ? showCodexSettings(m) : showSettings(m.sections || [], m.nav || [], m.current || '', m.choices || []); }
     else if (m.t === 'usage') {
       if (currentApp === 'fusion' || (m.sel && viewSel && m.sel !== viewSel)) return;
       if (m.plan) { appPlans = { ...appPlans, [currentApp]: m.plan }; updateTitle(); }
@@ -619,12 +622,12 @@ async function connect() {
     }
     else if (m.t === 'menu') {
       if (m.sel && viewSel && m.sel !== viewSel) return;
+      if (m.requestId != null && m.requestId !== menuRequest) return;
       lruPut(menuCache, menuCacheKey(m.kind), m, 24);
       if (currentApp === 'fusion' && /^fusion-(model|effort)-[ab]$/.test(m.kind) && fusionModelSide === m.kind.slice(-1)) {
         showMenu(m.kind, m.items, m.max, m.fusion, m.fast, m.model);
         return;
       }
-      if (m.requestId != null && m.requestId !== menuRequest) return;
       if (m.requestId == null && !(sheetKind === 'menu' && menuSheetKind === m.kind)) return;
       showMenu(m.kind, m.items, m.max, m.fusion, m.fast, m.model);
     }

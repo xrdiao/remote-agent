@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { spawnSync, execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { workspaces, windowRoots } from '../../lib/files.mjs';
 import { saveState, computerId } from '../../lib/auth.mjs';
 import { mod, findBin } from '../../lib/platform.mjs';
@@ -13,6 +14,8 @@ import { AgentContext, FOCUS_COMPOSER, safeHomePath, projectList, openFolder } f
 import { FUSION_ACTIVE, fusionHistory, conversationProjects, fusionWorkers,
   newFusionRun, fusionCursorProjects, fusionProject, fusionModelSpec, fusionHtml, fusionMark, fusionLastAssistant } from './state.mjs';
 import '../apps/index.mjs';
+
+const execFileAsync = promisify(execFile);
 
 export const FUSION_OWNER = {
 fusionFinishJob() {
@@ -316,7 +319,7 @@ async fusionNewSide(side, app, resumeContext = '') {
       if (!target) {
         if (!i) {
           if (project.host) throw new Error('远程项目尚未打开，请先在电脑上打开所选项目');
-          this.emit({ t: 'status', ok: true, msg: '正在打开项目…' }); await openFolder(project.root, app);
+          this.emit({ t: 'status', ok: true, msg: '正在打开项目…' }); await openFolder(project.root, app, true);
         }
         await new Promise(r => setTimeout(r, 250));
       }
@@ -412,12 +415,9 @@ async withFusionSideSpec(spec, fn, select = true) {
       session.codexPageId = spec.app === 'codex' ? spec.windowId : '';
       if (select && spec.app === 'cursor' && await session.cdp.evaluate(helpersCall('clickCloseSettings()'))) await new Promise(r => setTimeout(r, 100));
       if (select && spec.draft && await session.cdp.evaluate(helpersCall('activeThread()'))) {
-        if (spec.app === 'codex') {
-          const emit = session.emit;
-          session.emit = () => {};
-          try { await session.newCodexChat(); } finally { session.emit = emit; }
-        } else await session.pressControl('newChat');
-        await new Promise(r => setTimeout(r, 200));
+        const emit = session.emit;
+        session.emit = () => {};
+        try { await session.newChat(); } finally { session.emit = emit; }
         if (spec.app === 'cursor') await session.cdp.evaluate(helpersCall(`cursorSelectProject(${JSON.stringify(spec.project.root)}, ${JSON.stringify(spec.project.host || '')})`));
       }
       if (select && spec.agentId) {
@@ -486,12 +486,17 @@ async fusionAsk(side, prompt) {
     const deadline = Date.now() + 8 * 60 * 1000;
     let settled = '';
     let requestId = '';
+    let expectedThread = before?.thread || '';
     while (Date.now() < deadline) {
       if (this.fusionCancel) throw new Error('已停止');
       await new Promise(r => setTimeout(r, 1200));
       if (this.fusionCancel) throw new Error('已停止');
       const chat = await this.cdp.evaluate(helpersCall('extract()'));
-      if (this.app !== 'codex' && before?.thread && chat?.thread !== before.thread) throw new Error('等待回复时会话发生变化');
+      if (this.app !== 'codex' && expectedThread && chat?.thread !== expectedThread) {
+        const submitted = !humanIds.size && !requestId && chat?.items?.some(it => it.k === 'human' && normalize(it.t) === normalize(message));
+        if (!submitted) throw new Error('等待回复时会话发生变化');
+        expectedThread = chat.thread;
+      }
       const spec = this.fusionRun[side];
       if (spec.draft && chat?.thread && chat.items?.some(it => it.k === 'human' && !humanIds.has(it.i) && normalize(it.t) === normalize(message))) {
         spec.agentId = chat.thread;
@@ -571,11 +576,14 @@ async fusionDiff(side) {
   if (!root) return '没有定位到工作区';
   try {
     const git = findBin('git');
-    let out = execFileSync(git, ['diff', 'HEAD', '--', '.'], { cwd: root, encoding: 'utf8', timeout: 8000 });
-    const untracked = execFileSync(git, ['ls-files', '--others', '--exclude-standard', '-z'], { cwd: root, encoding: 'utf8', timeout: 8000 }).split('\0').filter(Boolean);
+    let { stdout: out } = await execFileAsync(git, ['diff', 'HEAD', '--', '.'], { cwd: root, encoding: 'utf8', timeout: 8000 });
+    const { stdout } = await execFileAsync(git, ['ls-files', '--others', '--exclude-standard', '-z'], { cwd: root, encoding: 'utf8', timeout: 8000 });
+    const untracked = stdout.split('\0').filter(Boolean);
     for (const name of untracked) {
       if (out.length >= 10000) break;
-      out += spawnSync(git, ['diff', '--no-index', '--', '/dev/null', name], { cwd: root, encoding: 'utf8', timeout: 8000 }).stdout || '';
+      // git diff exits with 1 when changes exist; retain stdout just as the previous spawnSync did.
+      const diff = await execFileAsync(git, ['diff', '--no-index', '--', '/dev/null', name], { cwd: root, encoding: 'utf8', timeout: 8000 }).catch(error => error);
+      out += diff.stdout || '';
     }
     return out.length > 10000 ? `${out.slice(0, 10000)}\n[差异未完整展示，请按方案检查实际文件]` : out.trim() || '没有未提交的差异';
   } catch {

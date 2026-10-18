@@ -150,7 +150,7 @@ function createProjectFolder(parent, name) {
 
 }
 
-export async function openFolder(folder, app) {
+export async function openFolder(folder, app, newWindow = false) {
   const { real } = safeHomePath(folder);
   const port = new URL(app === 'devin' ? DEVIN_CDP_URL : app === 'codex' ? CODEX_CDP_URL : CDP_URL).port;
   const bin = findBin(app, port);
@@ -159,17 +159,16 @@ export async function openFolder(folder, app) {
   delete env.VSCODE_IPC_HOOK_CLI;
   const launcher = path.join(path.dirname(bin), ...(app === 'cursor' ? ['resources', 'app', 'bin', 'cursor.cmd'] : ['bin', app === 'devin' ? 'devin-desktop.cmd' : 'code.cmd']));
   const command = IS_WIN ? 'powershell.exe' : bin;
+  const mode = newWindow ? '-n' : '-r';
   const args = IS_WIN
-    ? ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference = 'Stop'; & '${launcher.replace(/'/g, "''")}' -r '${real.replace(/'/g, "''")}'; exit $LASTEXITCODE`]
-    : ['-r', real];
-  const child = spawn(command, args, { env, detached: true, stdio: IS_WIN ? ['ignore', 'ignore', 'pipe'] : 'ignore', windowsHide: true });
+    ? ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference = 'Stop'; & '${launcher.replace(/'/g, "''")}' ${mode} '${real.replace(/'/g, "''")}'; exit $LASTEXITCODE`]
+    : [mode, real];
+  const child = spawn(command, args, { env, detached: true, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
   await new Promise((resolve, reject) => {
     child.once('error', reject);
-    if (IS_WIN) {
-      let error = '';
-      child.stderr.on('data', chunk => { error += chunk; });
-      child.once('exit', code => code === 0 ? resolve() : reject(new Error(error.trim() || `打开项目失败（退出码 ${code}）`)));
-    } else child.once('spawn', resolve);
+    let error = '';
+    child.stderr.on('data', chunk => { error += chunk; });
+    child.once('exit', code => code === 0 ? resolve() : reject(new Error(error.trim() || `打开项目失败（退出码 ${code}）`)));
   });
   child.unref();
   return real;
@@ -620,18 +619,23 @@ export class AgentContext {
   }
 
   async focusTerminal() {
-    const pos = await this.editorCdp.evaluate(helpersCall('terminalFocus()'));
-    if (!pos) throw new Error('没有打开的终端。先新建一个。');
-    await this.tapCss(pos.x, pos.y, 'left', this.editorCdp);
-    await new Promise(r => setTimeout(r, 80));
+    if (!await this.editorCdp.evaluate(helpersCall('focusTerminalInput()'))) throw new Error('没有可输入的终端，请先打开终端');
   }
 
   async sendTerminal(text) {
     await this.focusTerminal();
-    // History recall already put a command on the prompt. Replace that line so an edit is not appended.
-    if (typeof await this.editorCdp.evaluate(helpersCall('terminalCommand()')) === 'string') {
-      await this.key('Ctrl+a', { cdp: this.editorCdp });
-      await this.key('Ctrl+k', { cdp: this.editorCdp });
+    const before = await this.editorCdp.evaluate(helpersCall('terminalHistory()'));
+    const input = before.input ?? await this.editorCdp.evaluate(helpersCall('terminalCommand()'));
+    if (input) {
+      await this.editorCdp.evaluate(helpersCall('clearTerminalInput()'));
+      for (let i = 0; i < 10; i++) {
+        await new Promise(r => setTimeout(r, 20));
+        const remaining = before.input === null
+          ? await this.editorCdp.evaluate(helpersCall('terminalCommand()'))
+          : (await this.editorCdp.evaluate(helpersCall('terminalHistory()'))).input;
+        if (remaining === '') break;
+        if (i === 9) throw new Error('终端原有输入未清空，尚未发送');
+      }
     }
     const lines = String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
     for (let i = 0; i < lines.length; i++) {
@@ -641,17 +645,10 @@ export class AgentContext {
   }
 
   async ensureSettings(editorCdp = this.editorCdp) {
-    const waitOpen = async () => {
-      for (let i = 0; i < 10; i++) {
-        await new Promise(r => setTimeout(r, 120));
-        if (await editorCdp.evaluate(helpersCall('settingsOpen()'))) return true;
-      }
-      return false;
-    };
+    const waitOpen = () => editorCdp.evaluate(helpersCall("waitSettings('open')"));
     if (await editorCdp.evaluate(helpersCall('settingsOpen()'))) return;
     // Click the gear directly. A coordinate click on the 24px footer button often misses.
-    await editorCdp.evaluate(helpersCall('clickSettingsButton()'));
-    if (await waitOpen()) return;
+    if (await editorCdp.evaluate(helpersCall('clickSettingsButton()')) && await waitOpen()) return;
     // Cursor and Devin both bind Settings to Ctrl+Comma.
     const comma = { key: ',', code: 'Comma', windowsVirtualKeyCode: 188, modifiers: 2 };
     await editorCdp.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...comma });
@@ -665,21 +662,30 @@ export class AgentContext {
     if (how === 'tab') await this.key('Ctrl+w', { cdp: editorCdp });
   }
 
-  async showSettings(requestId = 0) {
-    return this.adapter.showSettings.call(this, requestId);
+  async showSettings(requestId = 0, section = '') {
+    return this.adapter.showSettings.call(this, requestId, section);
   }
 
-  async toggleSetting(label) {
+  async closeDesktopSettings() {
+    const owned = this.desktopSettingsOwned;
+    this.desktopSettingsOwned = undefined;
+    this.desktopSettingsSection = '';
+    if (owned && this.editorCdp) await this.closeSettings();
+  }
+
+  async toggleSetting(label, value) {
     await this.ensureSettings();
-    try {
-      const pos = await this.editorCdp.evaluate(helpersCall(`settingTarget(${JSON.stringify(String(label))})`));
+    const args = `${JSON.stringify(this.desktopSettingsSection || '')}, ${JSON.stringify(this.app)}`;
+    const before = JSON.stringify(await this.editorCdp.evaluate(helpersCall(`desktopSettingsData(${args})`)));
+    if (typeof value === 'string') await this.editorCdp.evaluate(helpersCall(`desktopSettingValue(${JSON.stringify(label)}, ${JSON.stringify(value)})`));
+    else {
+      const pos = await this.editorCdp.evaluate(helpersCall(`settingTarget(${JSON.stringify(label)})`));
       if (!pos) throw new Error('找不到这项设置');
       await this.tapCss(pos.x, pos.y, 'left', this.editorCdp);
-      await new Promise(r => setTimeout(r, 250));
-      const sections = await this.editorCdp.evaluate(helpersCall('readSettings()')) || [];
-      this.emit({ t: 'settings', sections });
-      this.emit({ t: 'status', ok: true, msg: '已更新设置' });
-    } finally { await this.closeSettings(); }
+    }
+    const data = await this.editorCdp.evaluate(`(async()=>{const read=()=>${helpersCall(`desktopSettingsData(${args})`)};const start=Date.now();let data;do{data=read();if(JSON.stringify(data)!==${JSON.stringify(before)})return data;await new Promise(r=>setTimeout(r,30))}while(Date.now()-start<1200);return data})()`);
+    this.emit({ t:'settings', ...data });
+    this.emit({ t:'status', ok:true, msg:'已更新设置' });
   }
 
   showUsage(automatic = false) {
@@ -780,18 +786,63 @@ export class AgentContext {
   }
 
   async useProject(folder, newSession = false) {
-    const real = await openFolder(folder, this.app);
+    const { real } = safeHomePath(folder);
     const app = this.app;
     const editor = EDITORS.find(e => e.app === app);
-    let target;
-    for (let i = 0; i < 40 && !target; i++) {
+    let projectPages = [];
+    const findTarget = async () => {
       const pages = await (await fetch(`${editor.url}/json/list`)).json();
-      target = pages.filter(p => p.type === 'page' && /workbench/.test(p.url)).find(p =>
+      projectPages = pages.filter(p => p.type === 'page' && /workbench/.test(p.url));
+      return projectPages.find(p =>
         windowRoots(p.title, app).some(w => !w.host && fusionProject(w.root)?.id === fusionProject(real)?.id));
-      if (!target) await new Promise(r => setTimeout(r, 250));
+    };
+    let target = await findTarget();
+    if (!target) {
+      let busy = this.cdp ? !!(await this.cdp.evaluate(helpersCall('extract()')))?.busy : false;
+      // Cursor's CLI can reuse a different window or encounter a background Agent.
+      if (app === 'cursor' && !busy) {
+        for (const page of projectPages) {
+          const cdp = new Cdp(page.webSocketDebuggerUrl);
+          await cdp.connect();
+          try { busy = !!await cdp.evaluate(helpersCall('agentState().busy || agentList().some(a => a.running)')); }
+          finally { cdp.close(); }
+          if (busy) break;
+        }
+      }
+      if (!busy && this.editorCdp) await this.editorCdp.send('Page.bringToFront');
+      await openFolder(real, app, busy);
+      for (let i = 0; i < 40 && !target; i++) {
+        target = await findTarget();
+        if (!target) await new Promise(r => setTimeout(r, 250));
+      }
     }
     if (!target) throw new Error('应用尚未打开所选项目，请检查电脑上的窗口');
+    if (app === 'codex') {
+      let pages = await codexWindows(CODEX_CDP_URL);
+      if (!pages.find(p => p.pageId === target.id)?.chatWs) {
+        const editorCdp = new Cdp(target.webSocketDebuggerUrl);
+        await editorCdp.connect();
+        try {
+          await this.key(mod('Shift+p'), { cdp: editorCdp });
+          await editorCdp.send('Input.insertText', { text: 'Codex: Open Codex Sidebar' });
+          await this.key('Enter', { cdp: editorCdp });
+        } finally { editorCdp.close(); }
+        for (let i = 0; i < 40 && !pages.find(p => p.pageId === target.id)?.chatWs; i++) {
+          await new Promise(r => setTimeout(r, 150));
+          pages = await codexWindows(CODEX_CDP_URL);
+        }
+        if (!pages.find(p => p.pageId === target.id)?.chatWs) throw new Error('项目已打开，但 Codex 侧边栏尚未就绪');
+      }
+    }
     await this.attach({ id: `${app}:${target.id}` });
+    if (app === 'codex' && newSession) {
+      let ready = false;
+      for (let i = 0; i < 120 && !ready; i++) {
+        ready = !!await this.cdp.evaluate(helpersCall('codexNewPoint()'));
+        if (!ready) await new Promise(r => setTimeout(r, 250));
+      }
+      if (!ready) throw new Error('项目已打开，但 Codex 新会话入口尚未就绪');
+    }
     this.pendingProject = { root: real, app, windowId: this.windowId, newSession };
     const trust = await this.editorCdp.evaluate(helpersCall('workspaceTrustState()'));
     if (trust.required) return this.emit({ t: 'projectTrust', path: real });
@@ -807,6 +858,7 @@ export class AgentContext {
     const roots = await this.currentRoots();
     if (!roots.length) return this.showProjects('');
     const root = roots[0];
+    if (this.app === 'codex' && this.cdp === this.editorCdp) return this.useProject(root.root, true);
     this.pendingProject = { root: root.root, app: this.app, windowId: this.windowId, newSession: true };
     if ((await this.editorCdp.evaluate(helpersCall('workspaceTrustState()'))).required) return this.emit({ t: 'projectTrust', path: root.root });
     await this.finishProject();
@@ -956,15 +1008,103 @@ export class AgentContext {
     if (statusMsg) this.emit({ t: 'status', ok: true, msg: statusMsg });
   }
 
-  async listAgents(silent = false, readOnly = false) {
+  async listAgents(silent = false, readOnly = false, projectWindow = '') {
     const cdp = this.cdp, sel = this.sel, app = this.app;
+    const grouped = app === 'cursor' || app === 'devin';
+    if (grouped) {
+      this.projectAgentWindows ||= new Map();
+      this.projectAgentCache ||= new Map();
+      if (!readOnly || !this.projectAgentWindows.has(app)) {
+        const windows = (await listWindows(null, app)).filter(w => w.app === app);
+        for (const w of windows) w.project = windowRoots(w.title, app)[0];
+        if (!this.liveRead(cdp, sel)) return;
+        this.projectAgentWindows.set(app, windows);
+        if (!readOnly) for (const w of windows) if (w.id !== this.targetId) this.projectAgentCache.delete(w.id);
+      }
+      if (projectWindow) {
+        const w = this.projectAgentWindows.get(app).find(w => w.id === projectWindow);
+        if (!w || w.id === this.targetId) return;
+        const probe = new Cdp(w.ws);
+        try {
+          await probe.connect();
+          const data = await probe.evaluate(`(() => {
+            const h = ${PAGE_SRC};
+            const surface = h.devinSurface();
+            const state = surface === 'editor' ? h.agentState() : null;
+            const list = surface === 'editor' ? (h.devinSession()?.tabs || []).map(t => ({ id: 'tab:' + t.id, title: t.title, current: t.active, running: t.active && !!state?.busy })) : h.agentList();
+            return { list, surface };
+          })()`);
+          if (!this.liveRead(cdp, sel)) return;
+          this.projectAgentCache.set(w.id, data);
+        } finally { probe.close(); }
+        return this.emit({ t: 'agents', app, silent: true, list: this.projectAgentRows() });
+      }
+    }
     const emit = data => {
-      if (this.liveRead(cdp, sel)) this.emit({ t: 'agents', app, silent, ...data });
+      if (!this.liveRead(cdp, sel)) return;
+      if (grouped) {
+        if (data.partial) {
+          const remaining = (this.projectAgentCache.get(this.targetId)?.list || []).filter(a => a.id.startsWith('pick:'));
+          data = { ...data, list: [...data.list, ...remaining.filter(a => !data.list.some(b => b.title === a.title))] };
+        }
+        this.projectAgentCache.set(this.targetId, data);
+      }
+      this.emit({ t: 'agents', app, silent, ...data, list: grouped ? this.projectAgentRows() : data.list || [] });
     };
     return this.adapter.listAgents.call(this, silent, readOnly, emit);
   }
 
+  projectAgentRows() {
+    const list = [], seen = new Set();
+    const windows = this.projectAgentWindows.get(this.app) || [];
+    const addNew = (w, label, key, root = '') => {
+      if (seen.has('new:' + key)) return;
+      seen.add('new:' + key);
+      list.push({ id: `project-new:${encodeURIComponent(w.id)}${root ? ':' + encodeURIComponent(root) : ''}`, title: '＋ 新建会话', window: label, group: '', ui: true });
+    };
+    // Prefer the attached window when several windows show the same project/session.
+    for (const w of [...windows].sort((a, b) => Number(b.id === this.targetId) - Number(a.id === this.targetId))) {
+      const current = w.id === this.targetId;
+      const data = this.projectAgentCache.get(w.id);
+      const project = w.project;
+      const label = project ? path.posix.basename(normPath(project.root)) : w.title;
+      const projectKey = project ? `${project.host || ''}|${normPath(project.root)}` : w.id;
+      if (project || !data?.list?.length || data.list.some(row => !row.workspace)) addNew(w, label, projectKey);
+      for (const row of data?.list || []) {
+        const rowProject = `${row.host || project?.host || ''}|${normPath(row.workspace || project?.root || w.id)}`;
+        const rowLabel = row.workspace ? path.posix.basename(normPath(row.workspace)) : label;
+        if (row.workspace && (row.workspace === project?.root || (!row.host && !project?.host))) addNew(w, rowLabel, rowProject, row.workspace !== project?.root && !row.host && !project?.host ? row.workspace : '');
+        const key = `${rowProject}|${this.app === 'devin' ? row.id.replace(/^tab:/, '') : row.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        list.push({ ...row, id: current ? row.id : `project:${encodeURIComponent(w.id)}:${encodeURIComponent(row.id)}`,
+          window: rowLabel, group: '', current: current && !!row.current });
+      }
+      if (!data) list.push({ id: `window:${w.id}`, title: '加载会话', window: label, group: '', ui: true, loadWindow: w.id });
+      else if (!data.list?.length || (!current && data.surface === 'editor')) list.push({ id: `window:${w.id}`, title: data.surface === 'editor' ? '进入项目查看全部会话' : '进入项目', window: label, group: '', ui: true });
+    }
+    return list;
+  }
+
   async openAgent(id, title = '') {
+    if ((this.app === 'cursor' || this.app === 'devin') && (id.startsWith('project:') || id.startsWith('project-new:'))) {
+      const [kind, encodedWindow, encodedThread] = id.split(':');
+      const window = decodeURIComponent(encodedWindow);
+      if (!window.startsWith(this.app + ':')) throw new Error('项目不属于当前 Agent');
+      if (kind === 'project-new' && encodedThread) await this.useProject(decodeURIComponent(encodedThread), true);
+      else {
+        if (window !== this.targetId) await this.attach(window);
+        if (kind === 'project-new') await this.newChat();
+        else await this.adapter.openAgent.call(this, decodeURIComponent(encodedThread), title);
+      }
+      await this.listAgents();
+      return;
+    }
+    if (id.startsWith(`window:${this.app}:`)) {
+      await this.attach(id.slice('window:'.length));
+      await this.listAgents();
+      return;
+    }
     return this.adapter.openAgent.call(this, id, title);
   }
 
@@ -1625,13 +1765,39 @@ export class AgentContext {
 
 
   // Take a picture / file off the prompt again (the little x on its thumbnail on the desktop).
-  async attachImage(data, name, type) {
+  async attachImage(data, name, type, replace = '', sel, transfer) {
+    if (transfer?.cancelled) return;
+    if (sel && sel !== this.selectionKey()) throw new Error('会话已切换，请回到原会话编辑图片');
+    const before = await this.cdp.evaluate(helpersCall('attachmentRows()'));
+    if (replace && !before.some(f => f.id === replace)) throw new Error('原图片已不在输入框中');
     if (!/^image\/(png|jpeg|gif|webp)$/.test(type) || typeof data !== 'string' || !/^[A-Za-z0-9+/=]+$/.test(data)) throw new Error('只支持 PNG / JPEG / GIF / WebP 图片');
+    if (transfer?.cancelled) return;
     const ok = await this.cdp.evaluate(pasteImage(data, String(name || 'image').replace(/[^\w.\-]/g, '_').slice(0, 60), type));
+    if (transfer?.cancelled && !ok) return;
     if (ok === null) throw new Error(this.appMessage('没找到 {app} 的聊天输入框：先在画面里打开 Agent 面板（或点「打开聊天」）'));
     if (!ok) throw new Error(this.appMessage('{app} 没有接收这张图片（当前模型可能不支持图片）'));
+    const attached = await this.cdp.evaluate(helpersCall('attachmentRows(true)'));
+    const added = attached.find(f => !before.some(old => old.id === f.id));
+    if (transfer?.cancelled) {
+      if (added) await this.removeAttachment(added.id);
+      return;
+    }
+    if (replace) await this.removeAttachment(replace);
     await this.syncAttachments();
+    if (transfer?.cancelled) {
+      if (added) await this.removeAttachment(added.id);
+      return;
+    }
     this.emit({ t: 'status', ok: true, msg: this.appMessage('图片已附加到 {app} 输入框，写好文字后点发送') });
+    const matches = JSON.parse(this.lastAttachments).filter(f => f.preview && f.preview === added?.preview);
+    return matches.length === 1 ? matches[0].id : undefined;
+  }
+
+  async editAttachmentImage(id, scope) {
+    if (scope !== this.selectionKey()) throw new Error('会话已切换，请重新选择图片');
+    const cdp = this.cdp, sel = this.sel;
+    const image = await cdp.evaluate(helpersCall(`attachmentImage(${JSON.stringify(id)})`));
+    if (this.liveRead(cdp, sel)) this.emit({ t: 'imageEdit', id, sel: scope, ...image });
   }
 
   async setDraft(text) {
