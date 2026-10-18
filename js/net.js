@@ -54,7 +54,7 @@ function applySelection(m, clearChat = true) {
     ...here,
     win: id,
     ...selection,
-    selections: { ...here.selections, [id]: selection },
+    selections: { ...here.selections, [id]: selection, [m.app || currentApp]: { id, ...selection } },
   });
   if (changed) { mirroredDraft = ''; restoreDraft(); renderAttachments([]); send({ t: 'attachments' }); }
   const cachedAgents = agentLists.get(agentListKey());

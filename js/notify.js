@@ -170,7 +170,7 @@ $('sheet').addEventListener('click', async e => {
     if (body) body.hidden = !open;
     return;
   }
-  if (b.dataset.win) { closeSheet(); status('正在切换窗口…'); return send({ t: 'attach', id: b.dataset.win, ...currentComputer()?.selections?.[b.dataset.win] }); }
+  if (b.dataset.win) { closeSheet(); status('正在切换 Agent…'); return send({ t: 'attach', id: b.dataset.win, ...currentComputer()?.selections?.[b.dataset.win] }); }
   if ('fusionTrust' in b.dataset) { closeSheet(); return send({ t: 'fusionTrust', approve: b.dataset.fusionTrust === 'yes' }); }
   if ('fusionDir' in b.dataset) { status('正在读取项目…'); return send({ t: 'fusionProjects', path: b.dataset.fusionDir }); }
   if ('fusionPath' in b.dataset) {
