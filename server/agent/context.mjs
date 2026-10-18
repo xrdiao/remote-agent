@@ -174,6 +174,21 @@ export async function openFolder(folder, app, newWindow = false) {
   return real;
 }
 
+// PID of the app's main process: the `ps` line carrying this app's CDP port
+// (renderer/helper processes always have --type= in their cmdline).
+function appMainPid(port) {
+  return new Promise(resolve => {
+    const out = spawn('ps', ['-eo', 'pid,args'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    let text = '';
+    out.stdout.on('data', d => { text += d; });
+    out.on('close', () => {
+      const line = text.split('\n').find(l => l.includes(`--remote-debugging-port=${port}`) && !l.includes('--type='));
+      resolve(line ? Number(line.trim().split(/\s+/)[0]) : null);
+    });
+    out.on('error', () => resolve(null));
+  });
+}
+
 
 export class AgentContext {
   constructor({ deviceId = '', emit } = {}) {
@@ -468,6 +483,7 @@ export class AgentContext {
       const draft = chat.draft;
       delete chat.draft;
       if (immediate) {
+        if (chat?.model === 'Fusion' && this.fusion) chat.fusion = this.fusion;
         this.fillThinking(chat);
         this.retainThinking(chat);
         this.mergeDevinHistory(chat);
@@ -809,11 +825,31 @@ export class AgentContext {
           if (busy) break;
         }
       }
-      if (!busy && this.editorCdp) await this.editorCdp.send('Page.bringToFront');
-      await openFolder(real, app, busy || ((app === 'codex' || app === 'devin') && !!threadId));
+      const newWindow = busy || ((app === 'codex' || app === 'devin') && !!threadId);
+      if (!newWindow && !busy && this.editorCdp) await this.editorCdp.send('Page.bringToFront');
+      await openFolder(real, app, newWindow);
       for (let i = 0; i < 40 && !target; i++) {
         target = await findTarget();
         if (!target) await new Promise(r => setTimeout(r, 250));
+      }
+      if (target && newWindow) {
+        try {
+          const { webSocketDebuggerUrl } = await (await fetch(`${editor.url}/json/version`)).json();
+          const browser = new Cdp(webSocketDebuggerUrl);
+          await browser.connect();
+          try {
+            const { windowId } = await browser.send('Browser.getWindowForTarget', { targetId: target.id });
+            await browser.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'minimized' } });
+          } finally { browser.close(); }
+        } catch {
+          // Electron builds expose no window-management methods over CDP; iconify via X11.
+          if (!IS_WIN && !IS_MAC && process.env.DISPLAY) {
+            try {
+              const { x11IconifyWindow } = await import('../../lib/x11.mjs');
+              await x11IconifyWindow(await appMainPid(new URL(editor.url).port), target.title);
+            } catch {}
+          }
+        }
       }
     }
     if (!target) throw new Error('应用尚未打开所选项目，请检查电脑上的窗口');
@@ -1412,6 +1448,15 @@ export class AgentContext {
     }
     const rect = await this.cdp.evaluate(helpersCall('panelRect()'));
     if (!rect) return;
+    if (history && this.app === 'devin') {
+      // A 900px wheel never crosses Devin's virtualization remount threshold; jump the scroller.
+      const r = await this.cdp.evaluate(helpersCall('devinLoadEarlier()'), { timeout: 8000 }).catch(() => null);
+      if (!r) return;
+      this.lastChatAt = 0;
+      await this.pollChat(true);
+      const earlier = this.lastChat ? JSON.parse(this.lastChat).earlier : undefined;
+      return { earlier: earlier === undefined ? !r.atStart : earlier };
+    }
     const [x, y, w, h] = rect;
     const rows = history ? await this.cdp.evaluate(helpersCall('historyRows()')) : null;
     await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: x + w / 2, y: y + h / 2, deltaX: 0, deltaY: dy });

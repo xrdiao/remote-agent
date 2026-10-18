@@ -57,6 +57,7 @@
   "focusQueueEdit",
   "historyRows",
   "waitHistoryRows",
+  "devinLoadEarlier",
   "terminalList",
   "terminalTarget",
   "terminalCloseTarget",

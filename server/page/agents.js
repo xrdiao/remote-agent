@@ -41,6 +41,30 @@
       previous = rows;
     }
   };
+  // Devin virtualizes its transcript in ~50-row batches with a wide remount threshold: a small
+  // mouse wheel near the bottom never exposes older rows. Jump the scroller instead and wait for
+  // the mounted acp window to reach a lower index.
+  const devinLoadEarlier = async (timeout = 2500) => {
+    const sc = devinScroller();
+    if (!sc) return { moved: false };
+    const mountedMin = () => Math.min(...[...doc.querySelectorAll('[data-acp-msg-index]')].map(e => Number(e.getAttribute('data-acp-msg-index'))).filter(n => Number.isFinite(n)));
+    const rowsBefore = historyRows();
+    const deadline = performance.now() + timeout;
+    const initialMin = mountedMin();
+    let min = initialMin;
+    while (performance.now() < deadline && sc.scrollTop > 1) {
+      sc.scrollTop = Math.max(0, sc.scrollTop - sc.clientHeight * 3);
+      const until = performance.now() + 250;
+      while (performance.now() < until) {
+        await new Promise(resolve => setTimeout(resolve, 30));
+        const m = mountedMin();
+        if (m < min) { min = m; break; }
+      }
+      if (min < initialMin) break;
+    }
+    await waitHistoryRows(rowsBefore, 200);
+    return { moved: min < initialMin || sc.scrollTop <= 1, atStart: sc.scrollTop <= 1, min };
+  };
 
   // Cheap per-window check for notifications: is the Agent running, and is it waiting on a button?
   // "Run in background" shows up on any command running longer than ~5 s; it is not a request for approval.
