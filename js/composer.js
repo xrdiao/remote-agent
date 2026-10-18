@@ -37,7 +37,7 @@ function sendReceipt(value) {
 }
 function confirmSent(m) {
   const echo = pendingEchoes.find(p => p.requestId === m.requestId);
-  if (echo && m.queued !== undefined) { echo.kind = m.queued ? 'queue' : 'chat'; queueChatRender(); }
+  if (echo) { echo.confirmed = true; if (m.queued !== undefined) echo.kind = m.queued ? 'queue' : 'chat'; queueChatRender(); }
   const sent = pendingSends.get(m.requestId);
   if (!sent) return;
   pendingSends.delete(m.requestId);
@@ -55,6 +55,14 @@ function confirmSent(m) {
   if (sent.mode === 'chat') {
     submittedMessages.push({ ...sent, sentAt: m.sentAt || Date.now() });
     if (here && lastChat) queueChatRender();
+  }
+}
+function reconcileSent(chat) {
+  const matched = new Set();
+  for (const [requestId, sent] of pendingSends) {
+    if (sent.mode !== 'chat' || sent.scope !== messageScope() || (sent.thread && sent.thread !== chat.thread)) continue;
+    const item = chat.items.find(it => it.k === 'human' && !matched.has(it.i) && !messageTimes.has(generationKey(chat) + '|' + it.i) && !sent.before.has(it.i) && echoTextMatches(it, sent.text));
+    if (item) { matched.add(item.i); confirmSent({ requestId, sel: viewSel, queued: false, sentAt: item.sentAt || Date.now() }); }
   }
 }
 function draftKey() { return [currentComputer()?.id || '', viewSel, mode].join('|'); }
@@ -218,7 +226,7 @@ function updateSendMode() {
   $('stop').hidden = mode !== 'chat' || !chatBusy || !!lastChat?.readonly;
   const split = devinBusySplit();
   const follow = codexFollow();
-  const label = split || follow === 'queue' ? '排队' : follow === 'steer' ? '立即追加' : '发送';
+  const label = mode === 'terminal' ? '发送到终端' : split || follow === 'queue' ? '排队' : follow === 'steer' ? '立即追加' : '发送';
   if ($('send').textContent !== label) $('send').textContent = label;
   $('sendNow').hidden = !split && !follow;
   $('sendNow').textContent = follow === 'steer' ? '改为排队' : '立即追加';
@@ -269,6 +277,12 @@ $('sendNow').onclick = async () => {
   send({ t: 'send', text: v, submit: true, ...receipt, when: steer ? 'now' : 'queue', ...mentionsFor(v) });
   if (currentApp !== 'codex') { text.value = ''; autosize(); }
   list.scrollTop = list.scrollHeight;
+};
+$('insertNewline').addEventListener('pointerdown', e => e.preventDefault());
+$('insertNewline').onclick = () => {
+  text.setRangeText('\n', text.selectionStart, text.selectionEnd, 'end');
+  text.dispatchEvent(new Event('input', { bubbles: true }));
+  text.focus();
 };
 // Enter sends. Shift+Enter keeps a newline. Ignore Enter that is confirming an IME candidate.
 // beforeinput's line-break event often has no shiftKey, so remember it from keydown.

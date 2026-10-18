@@ -5,6 +5,7 @@ const I18N = (() => {
   const lang = saved === 'zh' || saved === 'en' ? saved : /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
 
   const EN = {
+    '插入换行': 'Insert newline', '终端操作': 'Terminal controls', '发送到终端': 'Send to terminal',
     "实时连接未建立": "Live connection not established",
     "电脑连接未建立": "Computer connection not established",
     "正在检测连接…": "Checking the connection\u2026",

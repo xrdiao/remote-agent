@@ -17,6 +17,7 @@ function setMode(m) {
   $('screenView').classList.toggle('active', m === 'screen' || m === 'terminal');
   $('chatTools').hidden = m !== 'chat';
   $('termTools').hidden = m !== 'terminal';
+  $('termToolsLabel').hidden = m !== 'terminal';
   $('screenTools').hidden = m === 'terminal';
   $('screenKeys').hidden = true;
   view.classList.toggle('gesture', m === 'screen');

@@ -33,7 +33,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>Remote Agent</title>
-<link rel="stylesheet" href="app.css?v=116">
+<link rel="stylesheet" href="app.css?v=117">
 </head>
 <body>
 <header>
@@ -111,6 +111,7 @@
   <div id="mathPrev" hidden></div>
   <div id="fusionBar" hidden></div>
   <div class="composerBox"><div class="composerField"><textarea id="text" rows="1" placeholder="发给 Agent…" enterkeyhint="send"></textarea><button id="stop" title="停止生成" aria-label="停止生成" hidden>■</button></div>
+  <div id="termToolsLabel" hidden>终端操作</div>
   <div id="termTools" hidden>
     <button id="pickTerms">列表</button>
     <button id="newTerm">＋ 新建</button>
@@ -142,7 +143,7 @@
   </div>
 <input id="imgFile" type="file" accept="image/*" multiple hidden>
 <input id="docFile" type="file" accept=".pdf,.doc,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.py,.js,.ts,.tsx,.jsx,.sh,.yaml,.yml,.toml,.ini,.log,.xml,.html,.css,.c,.cpp,.h,.rs,.go" hidden>
-  <div class="sendRow"><div id="inputHistory"><button id="inputPrev" aria-label="上一条已发送内容" title="上一条已发送内容">↑</button><button id="inputNext" aria-label="下一条已发送内容或恢复草稿" title="下一条已发送内容或恢复草稿">↓</button></div><div id="termHistory"><button data-termkey="ArrowUp" aria-label="上一条终端命令">↑</button><button data-termkey="ArrowDown" aria-label="下一条终端命令">↓</button></div><button id="send">发送</button><button id="sendNow" hidden>立即发送</button></div>
+  <div class="sendRow"><div id="inputHistory"><button id="inputPrev" aria-label="上一条已发送内容" title="上一条已发送内容">↑</button><button id="inputNext" aria-label="下一条已发送内容或恢复草稿" title="下一条已发送内容或恢复草稿">↓</button></div><div id="termHistory"><button data-termkey="ArrowUp" aria-label="上一条终端命令">↑</button><button data-termkey="ArrowDown" aria-label="下一条终端命令">↓</button></div><button id="insertNewline" aria-label="插入换行" title="插入换行">↵</button><button id="send">发送</button><button id="sendNow" hidden>立即发送</button></div>
   <div id="footerStatus"><div id="msg"></div><span id="elapsed" hidden></span></div>
 </footer>
 
@@ -219,15 +220,15 @@
 <script src="js/net.js?v=115"></script>
 <script src="js/sheets.js?v=115"></script>
 <script src="js/notify.js?v=115"></script>
-<script src="js/mode.js?v=116"></script>
+<script src="js/mode.js?v=117"></script>
 <script src="js/chat.js?v=111"></script>
-<script src="js/history.js?v=111"></script>
+<script src="js/history.js?v=117"></script>
 <script src="js/files.js?v=106"></script>
 <script src="js/screen.js?v=87"></script>
 <script src="js/terminal.js?v=116"></script>
-<script src="js/composer.js?v=100"></script>
+<script src="js/composer.js?v=117"></script>
 <script src="js/latency.js"></script>
-<script src="js/image-editor.js?v=97"></script>
+<script src="js/image-editor.js?v=117"></script>
 <script src="js/voice.js?v=103"></script>
 </body>
 </html>
