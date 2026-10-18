@@ -113,6 +113,8 @@ export class Session extends AgentContext {
           if (recovered) windowId = recovered.pageId;
         }
       } catch (error) {
+        // On reconnect, a closed Codex must not leave the phone stuck: fall back to any open app.
+        if (req.initial) return this.attach({ initial: true });
         this.emit({ t: 'attachFailed', ready: this.app === 'fusion' || !!this.cdp });
         throw new Error(`读取 Codex 调试接口失败，请重试：${error.message}`);
       }
@@ -137,6 +139,7 @@ export class Session extends AgentContext {
     if (appId === 'codex') {
       const pages = codexPages;
       if (!pages.length) {
+        if (req.initial) return this.attach({ initial: true });
         this.emit({ t: 'attached', id: 'codex', title: 'Codex', app: 'codex', windowId, threadId, closed: true, ready: this.app === 'fusion' || !!this.cdp });
         this.emit({ t: 'status', ok: false, msg: '这个 Codex 窗口已经关闭，请重新选择' });
         return;
@@ -154,6 +157,7 @@ export class Session extends AgentContext {
     const win = wins.find(w => w.id === appId) || wins.find(w => appId && w.id.endsWith(':' + appId))
       || (appId ? wins.find(w => w.app === appId.split(':')[0]) : null);
     if (appId && !win) {
+      if (req.initial) return this.attach({ initial: true });
       this.emit({ t: 'attached', id: appId, closed: true, ready: this.app === 'fusion' || !!this.cdp });
       this.emit({ t: 'status', ok: false, msg: '这个窗口已经关闭，请重新选择' });
       return;
