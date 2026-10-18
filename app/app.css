@@ -343,15 +343,15 @@
   #chatTools { flex-wrap: nowrap; gap: 4px; }
   #chatTools button { padding: 5px clamp(3px, 1.2vw, 8px); }
   #chatTools #pickModel { flex: 1.4 1 80px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  #chatTools #pickMode, #chatTools #pickEditor, #chatTools #pickAgents { flex: 1 1 56px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  #chatTools #pickMode { flex: 1 1 56px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   #chatTools #pickMode, #chatTools #pickPerm { max-width: 58px; overflow: hidden; text-overflow: ellipsis; }
   #chatTools #pickPerm { display: none; }
   .msg.notice { padding: 9px 12px; color: var(--muted); border-left: 2px solid var(--border); font-size: 13px; }
   .msg.notice.live { color: var(--text); }
-  #chatTools #add, #chatTools #img, #chatTools #uploadDoc { width: 34px; padding: 0; display: flex; align-items: center; justify-content: center; }
+  #chatTools #add, #chatTools #img, #chatTools #uploadDoc, #chatTools #pickEditor { width: 34px; padding: 0; display: flex; align-items: center; justify-content: center; }
   #chatTools #add { font-size: 25px; }
   #chatTools #pickDir, #chatTools #newChat { display: none; }
-  #pickAgents { max-width: 100px; overflow: hidden; text-overflow: ellipsis; }
+  #chatTools #pickAgents { flex: none; }
   #stop { position: absolute; top: 0; right: 0; z-index: 2; width: 36px; height: 36px; padding: 0; border-radius: 11px; }
   #mic { display: none; }
   body.voice #mic { display: block; }
