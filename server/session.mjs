@@ -3,7 +3,7 @@ import { Cdp } from './cdp.mjs';
 import { listWindows, codexWindows } from './windows.mjs';
 import { CODEX_CDP_URL } from './config.mjs';
 import { helpersCall } from './page/build.mjs';
-import { AgentContext, appPlans } from './agent/context.mjs';
+import { AgentContext, appPlans } from './agent/index.mjs';
 import { fusionViewers, fusionHistory, fusionWorkers, newFusionRun } from './fusion/state.mjs';
 import { FUSION_OWNER } from './fusion/owner.mjs';
 import { FusionRunner } from './fusion/runner.mjs';

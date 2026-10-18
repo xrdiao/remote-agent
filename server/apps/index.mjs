@@ -1,4 +1,4 @@
-import { AgentContext } from '../agent/context.mjs';
+import { AgentContext } from '../agent/index.mjs';
 import { adapter as cursorAdapter, methods as cursorMethods } from './cursor.mjs';
 import { adapter as devinAdapter, methods as devinMethods } from './devin.mjs';
 import { adapter as codexAdapter, methods as codexMethods } from './codex.mjs';

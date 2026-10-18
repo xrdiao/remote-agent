@@ -102,6 +102,6 @@
 10. Devin 长会话上滑加载更早消息：原 900px 滚轮跨不过 Devin 虚拟列表的重新挂载阈值，约 12 次才出新内容。现改为页面内 `devinLoadEarlier()` 连续上移直到挂载更早一批（约 50 条）；只读实测每次请求都能加载新一批。
 11. Devin Fusion 模型名在「Fusion · Lead / Sidekick」与「Fusion」间跳动：`pollChat` 即时推送分支未附带 Fusion 配置，已补齐。
 12. 用户选择：中继用 `-n` 新开的项目窗口打开后自动最小化、不抢焦点（复用已有窗口时不最小化）。Electron 的 CDP 不支持窗口管理，Linux X11 下用 `lib/x11.mjs` 发送 Iconic 请求（2 秒超时，失败不影响打开项目）；Wayland、Windows、macOS 暂不最小化。Devin 实测最小化窗口读取无降频。
-13. 下一步（用户已授权）：按功能分块整理 `server/agent/context.mjs`（对话、文件、终端、项目与会话、模型与设置菜单、Fusion），不拆得过散。
+13. 已按功能分块整理 `server/agent/context.mjs`：核心留在 `context.mjs`，其余为 `chat.mjs`（对话）、`terminal.mjs`（终端）、`files.mjs`（文件）、`projects.mjs`（项目与会话）、`menus.mjs`（模型、设置、额度）、`server/fusion/agent.mjs`（Fusion），由 `server/agent/index.mjs` 组装，应用适配器仍在其后覆盖。纯搬移：159 个方法源码逐字一致；不要拆得更散。
 
 本列表不是实施所有历史愿望的概括授权。每轮只做当前已授权的具体范围；实现与验证后更新相应状态。
