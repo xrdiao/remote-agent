@@ -168,7 +168,15 @@ $('sheet').addEventListener('click', async e => {
     if (chev) chev.textContent = open ? '▾' : '▸';
     const body = b.nextElementSibling;
     if (body) body.hidden = !open;
+    if (open && sheetKind === 'agents') body?.querySelectorAll('[data-project-load]').forEach(el => {
+      el.textContent = '正在加载会话…';
+      send({ t: 'agents', projectWindow: el.dataset.projectLoad, automatic: true, silent: true });
+    });
     return;
+  }
+  if (b.dataset.projectLoad) {
+    b.textContent = '正在加载会话…';
+    return send({ t: 'agents', projectWindow: b.dataset.projectLoad, automatic: true, silent: true });
   }
   if (b.dataset.win) { closeSheet(); status('正在切换 Agent…'); return send({ t: 'attach', id: b.dataset.win, ...currentComputer()?.selections?.[b.dataset.win] }); }
   if ('fusionTrust' in b.dataset) { closeSheet(); return send({ t: 'fusionTrust', approve: b.dataset.fusionTrust === 'yes' }); }
