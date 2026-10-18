@@ -1,7 +1,7 @@
 import { Cdp } from '../cdp.mjs';
 import { windowRoots } from '../../lib/files.mjs';
 import { agentMarks } from '../../lib/marks.mjs';
-import { mod } from '../../lib/platform.mjs';
+import { mod, pathKey } from '../../lib/platform.mjs';
 import { codexWindows, codexContext } from '../windows.mjs';
 import { CODEX_CDP_URL } from '../config.mjs';
 import { helpersCall } from '../page/build.mjs';
@@ -270,7 +270,22 @@ async openCodexAgent(id) {
   }
   const match = /^thread:([^:]+):(.+)$/.exec(id || '');
   if (!match) throw new Error('这条会话已经不在列表里');
-  const pageId = match[1], convId = match[2];
+  let pageId = match[1];
+  const convId = match[2];
+  const { row, roots } = await this.cdp.evaluate(`(() => {
+    const h = ${PAGE_SRC};
+    return { row: h.codexChatRows(true).find(row => row.id === ${JSON.stringify(convId)}), roots: h.codexWorkspaceRoots() };
+  })()`);
+  const workspace = row ? (!row.host && row.workspace) : conversationProjects[JSON.stringify([computerId(), 'codex', '', convId])]?.project?.root;
+  if (workspace) {
+    if (roots.some(root => pathKey(root) === pathKey(workspace))) pageId = this.codexPageId;
+    else {
+      const pages = await codexWindows(CODEX_CDP_URL);
+      const owner = pages.find(p => windowRoots(p.rawTitle || p.title, 'codex').some(w => !w.host && pathKey(w.root) === pathKey(workspace)));
+      if (!owner) return this.useProject(workspace, false, convId);
+      pageId = owner.pageId;
+    }
+  }
   this.clearViewState();
   this.switchingThread = true;
   const switchedWindow = pageId !== this.codexPageId;

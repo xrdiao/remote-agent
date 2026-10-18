@@ -280,9 +280,9 @@ async readFusion(open) {
 
 async fusionOptions(part) {
   if (!['lead', 'effort', 'sidekick'].includes(part)) throw new Error('没有这个 Fusion 选项');
-  const native = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; if (!h.fusionConfig()?.lead) return null; return h.devinVariants(${JSON.stringify(part)}).map(({ label, checked }) => ({ label, checked })); })()`);
+  const native = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; if (!h.fusionConfig()?.lead) return null; return h.devinVariants(${JSON.stringify(part)}, true).map(({ label, checked, pricing }) => ({ label, checked, pricing })); })()`);
   if (native?.length) {
-    this.emit({ t: 'menu', kind: `fusion-${part}`, items: native, fusion: await this.cdp.evaluate(helpersCall('fusionConfig()')) });
+    this.emit({ t: 'menu', kind: `fusion-${part}`, items: native, fusion: await this.cdp.evaluate(helpersCall('fusionConfig(true)')) });
     return;
   }
   await this.idleFusionRead();

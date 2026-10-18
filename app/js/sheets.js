@@ -188,7 +188,11 @@ function showFusionHistory(m) {
   openSheet('fusion-history', `<h3>Fusion 历史会话</h3>${(m.list || []).map(f => `<button class="opt ${f.id === m.current ? 'cur' : ''}" data-fusion-history="${esc(f.id)}"><span class="lbl">${esc(f.title)}<span class="sub">${esc(new Date(f.updated).toLocaleString())}</span></span></button>`).join('') || '<div class="hint">暂无历史会话</div>'}`);
 }
 function fusionUsageBars(m) {
-  return [...(m.quota || []), ...(m.limits || []), ...((m.quota || m.limits) ? [] : (m.bars || []))];
+  return [...(m.quota || []), ...(m.limits || []), ...((m.quota || m.limits) ? [] : (m.bars || []))].map(b => {
+    if (b.pct == null || b.pct === '' || !Number.isFinite(Number(b.pct))) return b;
+    const n = b.basis === 'remaining' ? Number(b.pct) : 100 - Number(b.pct);
+    return { ...b, basis: 'remaining', pct: Number(Math.max(0, Math.min(100, n)).toFixed(2)) };
+  });
 }
 function fusionMetricValue(b) {
   return b?.pct == null ? String(b?.value || '未获取') : `${b.basis === 'remaining' ? '剩余' : '已用'} ${b.pct}%`;
@@ -199,7 +203,7 @@ function renderFusionMeters(fx) {
     const context = typeof usage.context === 'number' ? { pct: usage.context } : usage.context;
     const bars = fusionUsageBars(usage);
     const quota = bars.find(b => /week|每周|周额度/i.test(b.label)) || bars[0];
-    const metric = (kind, label, b) => `<button type="button" data-side="${side}" data-metric="${kind}" title="${esc(label + ' · ' + fusionMetricValue(b))}">${esc(label)} ${esc(b?.pct == null ? '未获取' : b.pct + '%')}</button>`;
+    const metric = (kind, label, b) => `<button type="button" data-side="${side}" data-metric="${kind}" title="${esc(label + ' · ' + fusionMetricValue(b))}">${esc(label)} ${esc(b?.pct == null ? '未获取' : kind === 'quota' ? fusionMetricValue(b) : b.pct + '%')}</button>`;
     $('fusionMeters' + side.toUpperCase()).innerHTML = `<span class="fusionRing" style="--pct:${context?.pct ?? 0}"></span><span class="fusionMetricText">${metric('context', '上下文', context)}${metric('quota', '额度', quota)}</span>`;
   }
 }
@@ -207,7 +211,7 @@ function showFusionUsage(side, kind) {
   const spec = lastChat?.fusion?.[side], m = spec?.usage || {};
   const context = typeof m.context === 'number' ? { pct: m.context } : m.context;
   const rows = kind === 'context' ? `<p>${esc(fusionMetricValue(context))}</p><p class="hint">上下文表示该对话的容量使用情况。</p>`
-    : `<p class="hint">额度属于账号，已用或剩余以指标说明为准。</p>${fusionUsageBars(m).map(b => `<p>${esc(b.label)} · ${esc(fusionMetricValue(b))}${b.reset ? `<br>${esc(b.reset)}` : ''}</p>`).join('') || '<p>未获取额度数据</p>'}`;
+    : `<p class="hint">额度属于账号，百分比统一显示剩余额度。</p>${fusionUsageBars(m).map(b => `<p>${esc(b.label)} · ${esc(fusionMetricValue(b))}${b.reset ? `<br>${esc(b.reset)}` : ''}</p>`).join('') || '<p>未获取额度数据</p>'}`;
   openSheet('fusion-usage', `<h3>${side.toUpperCase()} · ${kind === 'context' ? '上下文说明' : '额度说明'}</h3><p>${esc(spec?.title || '未选择')}</p>${rows}${m.updated ? `<p class="hint">${m.cached ? '缓存数据' : '最近更新'} · ${esc(new Date(m.updated).toLocaleString())}</p>` : ''}${m.error ? `<p class="hint">${esc(m.error)}</p>` : ''}${spec ? `<button class="opt" data-fusion-refresh="${side}">刷新数据</button>` : ''}`);
 }
 $('fusionHeader').addEventListener('click', e => {
@@ -301,12 +305,32 @@ const PERM_LABEL = {
 function fusionShort(name) {
   return String(name || '').replace(/^(Claude|Gemini)\s+/i, '').replace(/\s+(Low|Medium|High|Max|Thinking)$/i, '').trim();
 }
+function modelPricingHtml(pricing, details = false) {
+  if (!pricing) return '';
+  const lines = [];
+  if (pricing.tag && !Number.isFinite(pricing.creditMultiplier)) lines.push(`${/^\$+$/.test(pricing.tag) ? '相对成本' : '计费方式'}：${pricing.tag}`);
+  if (Number.isFinite(pricing.creditMultiplier)) lines.push(`积分倍率：×${pricing.creditMultiplier}`);
+  for (const c of pricing.costs || []) {
+    if (!Number.isFinite(c.value)) continue;
+    const label = ({ Input: '输入', 'Cached input': '缓存输入', Output: '输出' })[c.label] || c.label;
+    const value = c.unit ? String(parseFloat(c.value.toFixed(3))) + ' ' + c.label : '$' + parseFloat(c.value.toFixed(2));
+    lines.push(`${label}：${c.fuzzy ? '约 ' : ''}${value}${c.denominator ? ' / ' + c.denominator : ''}`);
+  }
+  if (details) lines.push(...new Set((pricing.costs || []).map(c => c.info).filter(Boolean)));
+  return lines.length ? `<span class="modelPricing">${lines.map(line => `<span class="sub">${esc(line)}</span>`).join('')}</span>` : '';
+}
+function sortedEfforts(items) {
+  const ranks = { none: 0, minimal: 1, light: 2, low: 3, medium: 4, high: 5, xhigh: 6, 'extra high': 6, max: 7, ultra: 8, persistent: 9, '无': 0, '低': 3, '中': 4, '高': 5, '很高': 6, '最大': 7, '最高': 8 };
+  const rank = it => ranks[String(it.label).trim().toLowerCase()] ?? 100;
+  return [...items].sort((a, b) => rank(a) - rank(b));
+}
 function fusionBlock(fusion) {
   if (!fusion) return '';
   const row = (part, title, value) => `<button class="opt" data-fusion="${part}"><span class="lbl">${title}<span class="sub">${esc(value || '')}</span></span></button>`;
-  return `<div class="pSec">Fusion</div>${row('lead', 'Lead', fusion.lead)}${row('effort', 'Effort', fusion.effort)}${row('sidekick', 'Sidekick', fusion.sidekick)}`
+  return `<div class="pSec">Fusion</div>${row('lead', 'Lead', fusion.lead)}${row('effort', 'Lead 思考强度', fusion.effort)}${row('sidekick', 'Sidekick', fusion.sidekick)}`
     + (fusion.fastSupported ? `<button class="opt" data-fusion="fast"><span class="lbl">Fast Mode</span><span class="switch ${fusion.fast ? 'on' : ''}"></span></button>` : '')
-    + '<div class="hint">Lead 负责规划和关键判断，Sidekick 负责具体执行。</div>';
+    + '<div class="hint">Lead 负责规划和关键判断，Sidekick 负责具体执行。</div>'
+    + (fusion.pricing ? `<div class="pSec">当前配置成本</div><div class="hint" data-fusion-cost>${modelPricingHtml(fusion.pricing, true)}</div>` : '');
 }
 // Devin's permission modes: the desktop's own description, plus a Chinese one when the app is in Chinese.
 const MODE_ZH = { Code: '写代码、改文件，正常提问', Smart: '模型判断安全的操作自动批准', Ask: '只回答问题，不改代码', Plan: '先做方案，再动手', 'Bypass Permissions': '自动批准所有工具调用（不再询问）' };
@@ -314,14 +338,15 @@ const modeDesc = it => (I18N.lang === 'zh' && MODE_ZH[it.label]) || it.desc;
 const menuCacheKey = kind => `${currentApp}|${viewSel}|${kind}`;
 function requestMenu(kind, loadingMsg) {
   const cached = menuCache.get(menuCacheKey(kind));
-  if (cached) showMenu(kind, cached.items, cached.max, cached.fusion, cached.fast, cached.model, true);
+  if (cached) showMenu(kind, cached.items, cached.max, cached.fusion, cached.fast, cached.model, true, cached.pricing);
   else status(loadingMsg);
   send({ t: 'openMenu', kind });
 }
-function showMenu(kind, items, max, fusion, fast, model, refreshing) {
+function showMenu(kind, items, max, fusion, fast, model, refreshing, pricing) {
   finishPending(['读取思考强度…', '读取权限…', '读取模式列表…', '读取模型列表…', '读取历史对话…', '设置中…']);
   menuSheetKind = kind;
   const picking = /^fusion-(lead|effort|sidekick)$/.test(String(kind || ''));
+  if (kind === 'effort' || kind === 'fusion-effort' || /^fusion-effort-[ab]$/.test(kind)) items = sortedEfforts(items || []);
   if (!items?.length && !fusion && kind !== 'effort') return status(appMessage('菜单是空的，可能 {app} 版本不同'), false);
   status('');
   const maxRow = typeof max === 'boolean'
@@ -332,17 +357,18 @@ function showMenu(kind, items, max, fusion, fast, model, refreshing) {
     const effort = kind === 'effort' ? { low: '低', medium: '中', high: '高', xhigh: '很高', ultra: '最高', max: '最大', 'extra high': '很高' }[it.label.toLowerCase()] : '';
     const shown = perm ? `${esc(perm[0])}<span class="sub">${esc(perm[1])}</span>` : effort ? `${esc(effort)} · ${esc(it.label)}` : esc(it.label);
     const pick = picking
-      ? `<button class="opt ${it.checked ? 'cur' : ''}" data-fusion-pick="${esc(part)}" data-label="${esc(it.label)}"><span class="lbl">${esc(it.label)}</span></button>`
-      : `<button class="opt ${it.checked ? 'cur' : ''}" data-kind="${kind}" data-label="${esc(it.label)}"><span class="lbl">${shown}${it.desc ? `<span class="sub">${esc(modeDesc(it))}</span>` : ''}</span>${it.label === 'Bypass Permissions' ? '<span class="tag" style="color:var(--warn)">⚠</span>' : ''}</button>`;
+      ? `<button class="opt ${it.checked ? 'cur' : ''}" data-fusion-pick="${esc(part)}" data-label="${esc(it.label)}"><span class="lbl">${esc(it.label)}${modelPricingHtml(it.pricing, it.checked)}</span></button>`
+      : `<button class="opt ${it.checked ? 'cur' : ''}" data-kind="${kind}" data-label="${esc(it.label)}"><span class="lbl">${shown}${it.desc ? `<span class="sub">${esc(modeDesc(it))}</span>` : ''}${modelPricingHtml(it.pricing, it.checked)}</span>${it.label === 'Bypass Permissions' ? '<span class="tag" style="color:var(--warn)">⚠</span>' : ''}</button>`;
     return it.params ? `<div class="optRow">${pick}<button class="paramBtn" data-params="${esc(it.id)}" data-plabel="${esc(it.label)}">参数</button></div>` : pick;
   }).join('');
   const role = /^fusion-model-([ab])$/.exec(kind || '')?.[1];
   const agentRow = role ? `<button class="opt" data-fusion-select="${role}"><span class="lbl">更换 ${role.toUpperCase()} Agent / 会话<span class="sub">${esc(lastChat?.fusion?.[role]?.title || '未选择')}</span></span></button>` : '';
   const fastRow = fast && !fusion ? `<button class="opt" data-fast="${fast.on ? 'off' : 'on'}" data-fast-menu="${kind}"><span class="lbl">Fast 模式${fast.description ? `<span class="sub">${esc(fast.description)}</span>` : ''}</span><span class="switch ${fast.on ? 'on' : ''}"></span></button>` : '';
-  const effortEntry = kind === 'model' ? `<button class="opt" data-effort-open><span class="lbl">思考强度<span class="sub">${esc(lastChat?.effort || '')}</span></span></button>` : '';
+  const effortEntry = kind === 'model' && !fusion ? `<button class="opt" data-effort-open><span class="lbl">思考强度<span class="sub">${esc(lastChat?.effort || '')}</span></span></button>` : '';
   const navigation = picking ? '<button class="opt" data-model-back>← 返回模型配置</button>' : kind === 'effort' ? `<button class="opt" data-model-back>← 返回模型列表</button><p>${esc(model || lastChat?.model || '')}</p>${!items?.length ? '<p class="hint">这个模型没有可选的思考强度。</p>' : ''}` : '';
-  const done = /^fusion-(model|effort)-[ab]$/.test(kind) ? '<button class="opt" data-model-done>返回配置</button>' : kind === 'effort' ? '<button class="opt" data-model-done>完成</button>' : '';
-  openSheet('menu', `<h3>${MENU_TITLE[kind] || ''}${refreshing ? ' <span class="hint">更新中…</span>' : ''}</h3>` + navigation + agentRow + (picking ? '' : fusionBlock(fusion)) + effortEntry + fastRow + maxRow + rows + done);
+  const done = /^fusion-(model|effort)-[ab]$/.test(kind) ? '<button class="opt" data-model-done>返回配置</button>' : kind === 'effort' && currentApp !== 'cursor' ? '<button class="opt" data-model-done>完成</button>' : '';
+  const priceSummary = kind === 'effort' && pricing && !items?.length ? `<div class="hint">${modelPricingHtml(pricing, true)}</div>` : '';
+  openSheet('menu', `<h3>${MENU_TITLE[kind] || ''}${refreshing ? ' <span class="hint">更新中…</span>' : ''}</h3>` + navigation + agentRow + (picking ? '' : fusionBlock(fusion)) + effortEntry + fastRow + maxRow + rows + priceSummary + done);
 }
 
 let changeFiles = [];
@@ -367,7 +393,7 @@ function showParams(m) {
   finishPending(['读取模型参数…', '设置中…']);
   status('');
   openSheet('params', `<h3>${esc(m.label || '模型')} 参数</h3>` + m.sections.map(s => `<div class="pSec">${esc(s.title)}</div><div class="pRow">`
-    + s.items.map(it => `<button class="${it.checked ? 'on' : ''} ${it.toggle ? 'tg' : ''}" data-model="${esc(m.model)}" data-plabel="${esc(m.label)}" data-section="${esc(s.title)}" data-value="${esc(it.label)}">${esc(it.label)}${it.toggle ? (it.checked ? '：开' : '：关') : ''}</button>`).join('')
+    + (/effort|reasoning|thinking|思考|推理/i.test(s.title) ? sortedEfforts(s.items) : s.items).map(it => `<button class="${it.checked ? 'on' : ''} ${it.toggle ? 'tg' : ''}" data-model="${esc(m.model)}" data-plabel="${esc(m.label)}" data-section="${esc(s.title)}" data-value="${esc(it.label)}">${esc(it.label)}${it.toggle ? (it.checked ? '：开' : '：关') : ''}</button>`).join('')
     + '</div>').join('') + `<div class="hint">${esc(appMessage('改动会直接应用到电脑上 {app} 的这个模型。'))}</div>`);
 }
 
@@ -543,7 +569,7 @@ function renderQuota(m) {
   }
   quotaInfo = m;
   if (!m.missing && !m.loading) quotaCache.set(quotaKey(), m);
-  const bars = [...(m.quota || []), ...(m.limits || []), ...((m.quota || m.limits) ? [] : (m.bars || []))]
+  const bars = fusionUsageBars(m)
     .filter(b => b?.label && !/^loading\b/i.test(String(b.label)));
   $('quotaMeters').classList.toggle('devinLimits', currentApp === 'devin' && bars.length > 1);
   const when = m.updated ? new Date(m.updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
@@ -574,10 +600,10 @@ function renderQuota(m) {
 function showUsageDetails(kind) {
   const context = kind === 'context';
   const m = quotaInfo || {};
-  const bars = [...(m.quota || []), ...(m.limits || []), ...((m.quota || m.limits) ? [] : (m.bars || []))];
+  const bars = fusionUsageBars(m);
   const value = b => b?.pct == null ? String(b?.value || '未获取') : `${b.basis === 'remaining' ? '剩余' : '已用'} ${b.pct}%`;
   const rows = context ? `<p>${esc(value(contextInfo))}</p><p class="hint">上下文表示当前会话的上下文容量使用情况，与账号额度分别统计。</p>`
-    : `<p class="hint">额度表示账号在对应周期内的使用限制，已用或剩余以指标说明为准。</p>` + (m.plan ? `<p>方案 · ${esc(m.plan)}</p>` : '') + (m.missing || !bars.length ? '<p>未获取额度数据</p>' : bars.map(b => `<p>${esc(b.label)} · ${esc(value(b))}${b.detail ? `<br><span class="hint">${esc(b.detail)}</span>` : ''}${b.reset ? `<br><span class="hint">${esc(b.reset)}</span>` : ''}</p>`).join(''))
+    : `<p class="hint">额度表示账号在对应周期内的使用限制，百分比统一显示剩余额度。</p>` + (m.plan ? `<p>方案 · ${esc(m.plan)}</p>` : '') + (m.missing || !bars.length ? '<p>未获取额度数据</p>' : bars.map(b => `<p>${esc(b.label)} · ${esc(value(b))}${b.detail ? `<br><span class="hint">${esc(b.detail)}</span>` : ''}${b.reset ? `<br><span class="hint">${esc(b.reset)}</span>` : ''}</p>`).join(''))
       + (m.extra ? `<p>额外用量余额 · ${esc(m.extra)}</p>` : '');
   const updated = m.updated ? new Date(m.updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
   openSheet('usage', `<h3>${context ? '上下文说明' : '额度说明'}</h3>${rows}${!context && updated ? `<p class="hint">${m.cached ? '缓存数据' : '最近更新'} · ${esc(updated)}</p>` : ''}${!context && $('quotaStatus').textContent ? `<p class="hint">${esc($('quotaStatus').textContent)}</p>` : ''}<button id="refreshUsage" class="opt">刷新数据</button>`);

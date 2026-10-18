@@ -785,7 +785,7 @@ export class AgentContext {
     }
   }
 
-  async useProject(folder, newSession = false) {
+  async useProject(folder, newSession = false, threadId = '') {
     const { real } = safeHomePath(folder);
     const app = this.app;
     const editor = EDITORS.find(e => e.app === app);
@@ -810,7 +810,7 @@ export class AgentContext {
         }
       }
       if (!busy && this.editorCdp) await this.editorCdp.send('Page.bringToFront');
-      await openFolder(real, app, busy);
+      await openFolder(real, app, busy || (app === 'codex' && !!threadId));
       for (let i = 0; i < 40 && !target; i++) {
         target = await findTarget();
         if (!target) await new Promise(r => setTimeout(r, 250));
@@ -835,15 +835,15 @@ export class AgentContext {
       }
     }
     await this.attach({ id: `${app}:${target.id}` });
-    if (app === 'codex' && newSession) {
+    if (app === 'codex' && (newSession || threadId)) {
       let ready = false;
       for (let i = 0; i < 120 && !ready; i++) {
         ready = !!await this.cdp.evaluate(helpersCall('codexNewPoint()'));
         if (!ready) await new Promise(r => setTimeout(r, 250));
       }
-      if (!ready) throw new Error('项目已打开，但 Codex 新会话入口尚未就绪');
+      if (!ready) throw new Error('项目已打开，但 Codex 会话入口尚未就绪');
     }
-    this.pendingProject = { root: real, app, windowId: this.windowId, newSession };
+    this.pendingProject = { root: real, app, windowId: this.windowId, newSession, threadId };
     const trust = await this.editorCdp.evaluate(helpersCall('workspaceTrustState()'));
     if (trust.required) return this.emit({ t: 'projectTrust', path: real });
     await this.finishProject();
@@ -903,6 +903,10 @@ export class AgentContext {
     if (!pending) return;
     if ((await this.editorCdp.evaluate(helpersCall('workspaceTrustState()'))).required) throw new Error('请先确认项目是否可信');
     let chat;
+    if (this.app === 'codex' && pending.threadId) {
+      if (!await this.selectCodexThread(pending.threadId)) throw new Error('项目已打开，但没有找到所选会话');
+      await this.adoptCodexThread(pending.threadId, '已切换项目与会话');
+    }
     if (pending.newSession) {
       await this.newChat();
       if (this.app === 'cursor' && this.winTitle === 'Cursor Agents')
@@ -1133,7 +1137,7 @@ export class AgentContext {
   async openMenu(kind, requestId) {
     const sel = this.sel;
     if (kind === 'effort') {
-      let items = await this.cdp.evaluate(helpersCall('effortItems()'));
+      let items = await this.cdp.evaluate(helpersCall('effortItems(true)'));
       let fast = await this.cdp.evaluate(helpersCall('fastInfo()'));
       if (!items.length) {
         await this.pressControl('model');
@@ -1148,7 +1152,8 @@ export class AgentContext {
         await this.closeMenus();
       }
       const chat = await this.cdp.evaluate(helpersCall('extract()'));
-      if (this.sel === sel) this.emit({ t: 'menu', kind, items, fast, model: chat?.model, requestId, sel: this.selectionKey() });
+      const pricing = this.app === 'devin' ? await this.cdp.evaluate(helpersCall('devinPricing()')) : null;
+      if (this.sel === sel) this.emit({ t: 'menu', kind, items, fast, pricing, model: chat?.model, requestId, sel: this.selectionKey() });
       return;
     }
     if (kind === 'model') {
@@ -1156,7 +1161,7 @@ export class AgentContext {
       const [items, fast, fusion] = await Promise.all([
         this.cdp.evaluate(helpersCall('modelItemsFast()')),
         this.cdp.evaluate(helpersCall('fastInfo()')),
-        this.cdp.evaluate(helpersCall('fusionConfig()')),
+        this.cdp.evaluate(helpersCall('fusionConfig(true)')),
       ]);
       if (items?.length) {
         if (fusion) this.fusion = fusion;
@@ -1183,7 +1188,7 @@ export class AgentContext {
     const max = kind === 'model' ? await this.cdp.evaluate(helpersCall('maxToggle()?.on ?? null')) : null;
     let fusion = null;
     if (kind === 'model') {
-      fusion = await this.cdp.evaluate(helpersCall('fusionConfig()'));
+      fusion = await this.cdp.evaluate(helpersCall('fusionConfig(true)'));
       if (fusion) this.fusion = fusion;
     }
     await this.closeMenus();
@@ -1251,19 +1256,24 @@ export class AgentContext {
   }
 
   async syncFast(on) {
-    const state = await this.cdp.evaluate(`(async () => {
+    const result = await this.cdp.evaluate(`(async () => {
       const h = ${PAGE_SRC};
       const deadline = performance.now() + 1200;
       do {
         const fast = h.fastInfo();
-        if (fast?.on === ${on}) return { fast, fusion: h.fusionConfig() };
+        if (fast?.on === ${on}) {
+          const fusion = h.fusionConfig(true);
+          return { fast, fusion, ...(${this.app === 'devin'} && !fusion ? { effort: { items: h.effortItems(true), pricing: h.devinPricing() } } : {}) };
+        }
         await new Promise(resolve => setTimeout(resolve, 30));
       } while (performance.now() < deadline);
       return null;
     })()`);
-    if (!state) throw new Error('Fast 模式未同步到电脑，请重试');
+    if (!result) throw new Error('Fast 模式未同步到电脑，请重试');
+    const { effort, ...state } = result;
     if (state.fusion) this.fusion = state.fusion;
     this.emit({ t: 'fastState', sel: this.selectionKey(), ...state });
+    if (effort) this.emit({ t: 'menu', kind: 'effort', ...effort, sel: this.selectionKey() });
   }
 
   async pickMenu(kind, label, name) {
