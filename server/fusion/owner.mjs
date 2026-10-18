@@ -319,7 +319,7 @@ async fusionNewSide(side, app, resumeContext = '') {
       if (!target) {
         if (!i) {
           if (project.host) throw new Error('远程项目尚未打开，请先在电脑上打开所选项目');
-          this.emit({ t: 'status', ok: true, msg: '正在打开项目…' }); await openFolder(project.root, app);
+          this.emit({ t: 'status', ok: true, msg: '正在打开项目…' }); await openFolder(project.root, app, true);
         }
         await new Promise(r => setTimeout(r, 250));
       }
@@ -415,12 +415,9 @@ async withFusionSideSpec(spec, fn, select = true) {
       session.codexPageId = spec.app === 'codex' ? spec.windowId : '';
       if (select && spec.app === 'cursor' && await session.cdp.evaluate(helpersCall('clickCloseSettings()'))) await new Promise(r => setTimeout(r, 100));
       if (select && spec.draft && await session.cdp.evaluate(helpersCall('activeThread()'))) {
-        if (spec.app === 'codex') {
-          const emit = session.emit;
-          session.emit = () => {};
-          try { await session.newCodexChat(); } finally { session.emit = emit; }
-        } else await session.pressControl('newChat');
-        await new Promise(r => setTimeout(r, 200));
+        const emit = session.emit;
+        session.emit = () => {};
+        try { await session.newChat(); } finally { session.emit = emit; }
         if (spec.app === 'cursor') await session.cdp.evaluate(helpersCall(`cursorSelectProject(${JSON.stringify(spec.project.root)}, ${JSON.stringify(spec.project.host || '')})`));
       }
       if (select && spec.agentId) {
@@ -489,12 +486,17 @@ async fusionAsk(side, prompt) {
     const deadline = Date.now() + 8 * 60 * 1000;
     let settled = '';
     let requestId = '';
+    let expectedThread = before?.thread || '';
     while (Date.now() < deadline) {
       if (this.fusionCancel) throw new Error('已停止');
       await new Promise(r => setTimeout(r, 1200));
       if (this.fusionCancel) throw new Error('已停止');
       const chat = await this.cdp.evaluate(helpersCall('extract()'));
-      if (this.app !== 'codex' && before?.thread && chat?.thread !== before.thread) throw new Error('等待回复时会话发生变化');
+      if (this.app !== 'codex' && expectedThread && chat?.thread !== expectedThread) {
+        const submitted = !humanIds.size && !requestId && chat?.items?.some(it => it.k === 'human' && normalize(it.t) === normalize(message));
+        if (!submitted) throw new Error('等待回复时会话发生变化');
+        expectedThread = chat.thread;
+      }
       const spec = this.fusionRun[side];
       if (spec.draft && chat?.thread && chat.items?.some(it => it.k === 'human' && !humanIds.has(it.i) && normalize(it.t) === normalize(message))) {
         spec.agentId = chat.thread;

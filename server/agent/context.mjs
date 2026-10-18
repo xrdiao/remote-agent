@@ -150,7 +150,7 @@ function createProjectFolder(parent, name) {
 
 }
 
-export async function openFolder(folder, app) {
+export async function openFolder(folder, app, newWindow = false) {
   const { real } = safeHomePath(folder);
   const port = new URL(app === 'devin' ? DEVIN_CDP_URL : app === 'codex' ? CODEX_CDP_URL : CDP_URL).port;
   const bin = findBin(app, port);
@@ -159,17 +159,16 @@ export async function openFolder(folder, app) {
   delete env.VSCODE_IPC_HOOK_CLI;
   const launcher = path.join(path.dirname(bin), ...(app === 'cursor' ? ['resources', 'app', 'bin', 'cursor.cmd'] : ['bin', app === 'devin' ? 'devin-desktop.cmd' : 'code.cmd']));
   const command = IS_WIN ? 'powershell.exe' : bin;
+  const mode = newWindow ? '-n' : '-r';
   const args = IS_WIN
-    ? ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference = 'Stop'; & '${launcher.replace(/'/g, "''")}' -r '${real.replace(/'/g, "''")}'; exit $LASTEXITCODE`]
-    : ['-r', real];
-  const child = spawn(command, args, { env, detached: true, stdio: IS_WIN ? ['ignore', 'ignore', 'pipe'] : 'ignore', windowsHide: true });
+    ? ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference = 'Stop'; & '${launcher.replace(/'/g, "''")}' ${mode} '${real.replace(/'/g, "''")}'; exit $LASTEXITCODE`]
+    : [mode, real];
+  const child = spawn(command, args, { env, detached: true, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
   await new Promise((resolve, reject) => {
     child.once('error', reject);
-    if (IS_WIN) {
-      let error = '';
-      child.stderr.on('data', chunk => { error += chunk; });
-      child.once('exit', code => code === 0 ? resolve() : reject(new Error(error.trim() || `打开项目失败（退出码 ${code}）`)));
-    } else child.once('spawn', resolve);
+    let error = '';
+    child.stderr.on('data', chunk => { error += chunk; });
+    child.once('exit', code => code === 0 ? resolve() : reject(new Error(error.trim() || `打开项目失败（退出码 ${code}）`)));
   });
   child.unref();
   return real;
@@ -787,18 +786,63 @@ export class AgentContext {
   }
 
   async useProject(folder, newSession = false) {
-    const real = await openFolder(folder, this.app);
+    const { real } = safeHomePath(folder);
     const app = this.app;
     const editor = EDITORS.find(e => e.app === app);
-    let target;
-    for (let i = 0; i < 40 && !target; i++) {
+    let projectPages = [];
+    const findTarget = async () => {
       const pages = await (await fetch(`${editor.url}/json/list`)).json();
-      target = pages.filter(p => p.type === 'page' && /workbench/.test(p.url)).find(p =>
+      projectPages = pages.filter(p => p.type === 'page' && /workbench/.test(p.url));
+      return projectPages.find(p =>
         windowRoots(p.title, app).some(w => !w.host && fusionProject(w.root)?.id === fusionProject(real)?.id));
-      if (!target) await new Promise(r => setTimeout(r, 250));
+    };
+    let target = await findTarget();
+    if (!target) {
+      let busy = this.cdp ? !!(await this.cdp.evaluate(helpersCall('extract()')))?.busy : false;
+      // Cursor's CLI can reuse a different window or encounter a background Agent.
+      if (app === 'cursor' && !busy) {
+        for (const page of projectPages) {
+          const cdp = new Cdp(page.webSocketDebuggerUrl);
+          await cdp.connect();
+          try { busy = !!await cdp.evaluate(helpersCall('agentState().busy || agentList().some(a => a.running)')); }
+          finally { cdp.close(); }
+          if (busy) break;
+        }
+      }
+      if (!busy && this.editorCdp) await this.editorCdp.send('Page.bringToFront');
+      await openFolder(real, app, busy);
+      for (let i = 0; i < 40 && !target; i++) {
+        target = await findTarget();
+        if (!target) await new Promise(r => setTimeout(r, 250));
+      }
     }
     if (!target) throw new Error('应用尚未打开所选项目，请检查电脑上的窗口');
+    if (app === 'codex') {
+      let pages = await codexWindows(CODEX_CDP_URL);
+      if (!pages.find(p => p.pageId === target.id)?.chatWs) {
+        const editorCdp = new Cdp(target.webSocketDebuggerUrl);
+        await editorCdp.connect();
+        try {
+          await this.key(mod('Shift+p'), { cdp: editorCdp });
+          await editorCdp.send('Input.insertText', { text: 'Codex: Open Codex Sidebar' });
+          await this.key('Enter', { cdp: editorCdp });
+        } finally { editorCdp.close(); }
+        for (let i = 0; i < 40 && !pages.find(p => p.pageId === target.id)?.chatWs; i++) {
+          await new Promise(r => setTimeout(r, 150));
+          pages = await codexWindows(CODEX_CDP_URL);
+        }
+        if (!pages.find(p => p.pageId === target.id)?.chatWs) throw new Error('项目已打开，但 Codex 侧边栏尚未就绪');
+      }
+    }
     await this.attach({ id: `${app}:${target.id}` });
+    if (app === 'codex' && newSession) {
+      let ready = false;
+      for (let i = 0; i < 120 && !ready; i++) {
+        ready = !!await this.cdp.evaluate(helpersCall('codexNewPoint()'));
+        if (!ready) await new Promise(r => setTimeout(r, 250));
+      }
+      if (!ready) throw new Error('项目已打开，但 Codex 新会话入口尚未就绪');
+    }
     this.pendingProject = { root: real, app, windowId: this.windowId, newSession };
     const trust = await this.editorCdp.evaluate(helpersCall('workspaceTrustState()'));
     if (trust.required) return this.emit({ t: 'projectTrust', path: real });
@@ -814,6 +858,7 @@ export class AgentContext {
     const roots = await this.currentRoots();
     if (!roots.length) return this.showProjects('');
     const root = roots[0];
+    if (this.app === 'codex' && this.cdp === this.editorCdp) return this.useProject(root.root, true);
     this.pendingProject = { root: root.root, app: this.app, windowId: this.windowId, newSession: true };
     if ((await this.editorCdp.evaluate(helpersCall('workspaceTrustState()'))).required) return this.emit({ t: 'projectTrust', path: root.root });
     await this.finishProject();
@@ -965,13 +1010,22 @@ export class AgentContext {
 
   async listAgents(silent = false, readOnly = false) {
     const cdp = this.cdp, sel = this.sel, app = this.app;
+    const projects = !readOnly && (app === 'cursor' || app === 'devin') ? (await listWindows(null, app)).filter(w => w.app === app && w.id !== this.targetId).map(w => {
+      const root = windowRoots(w.title, app)[0];
+      return { id: `window:${w.id}`, title: root ? path.posix.basename(root.root) : w.title, window: '其他已打开的项目', group: '', ui: true, current: false };
+    }) : [];
     const emit = data => {
-      if (this.liveRead(cdp, sel)) this.emit({ t: 'agents', app, silent, ...data });
+      if (this.liveRead(cdp, sel)) this.emit({ t: 'agents', app, silent, ...data, list: [...(data.list || []), ...projects] });
     };
     return this.adapter.listAgents.call(this, silent, readOnly, emit);
   }
 
   async openAgent(id, title = '') {
+    if (id.startsWith(`window:${this.app}:`)) {
+      await this.attach(id.slice('window:'.length));
+      await this.listAgents();
+      return;
+    }
     return this.adapter.openAgent.call(this, id, title);
   }
 
