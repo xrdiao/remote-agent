@@ -323,6 +323,7 @@
     --term-ansi-15: #2e3436;
   }
   body.term #termText { display: block; }
+  #termText { user-select: text; -webkit-user-select: text; -webkit-touch-callout: default; }
   body.term #stage { display: none; }
   #termText .caret { box-shadow: inset 2px 0 var(--term-fg); }
   #stage { position: relative; overflow: hidden; margin: 0 auto; }
