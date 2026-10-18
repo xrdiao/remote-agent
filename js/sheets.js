@@ -533,6 +533,7 @@ function renderQuota(m) {
   if ('context' in m) renderContext(m.context);
   if (m.error) { $('quotaStatus').textContent = m.error; $('quotaStatus').title = $('quotaMeters').title = m.detail || m.error; if (!m.automatic) status('额度刷新失败：' + m.error, false); return; }
   if (!m.cached || m.updated > (quotaCache.get(quotaKey())?.updated || 0)) $('quotaStatus').textContent = '';
+  if (m.refreshError) { $('quotaStatus').textContent = '刷新失败，显示桌面缓存'; $('quotaStatus').title = m.refreshError; }
 
   if (m.loading) return;
   if (!('quota' in m) && !('limits' in m) && !('bars' in m)) {
