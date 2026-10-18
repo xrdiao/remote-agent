@@ -625,7 +625,7 @@ export class AgentContext {
   async sendTerminal(text) {
     await this.focusTerminal();
     const before = await this.editorCdp.evaluate(helpersCall('terminalHistory()'));
-    const input = before.input ?? await this.editorCdp.evaluate(helpersCall('terminalCommand()'));
+    const input = before.executing ? '' : before.input ?? await this.editorCdp.evaluate(helpersCall('terminalCommand()'));
     if (input) {
       await this.editorCdp.evaluate(helpersCall('clearTerminalInput()'));
       for (let i = 0; i < 10; i++) {

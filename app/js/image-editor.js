@@ -15,6 +15,7 @@ async function openImageEditor(image) {
     <div class="imageEditTools"><button data-tool="crop" aria-pressed="true">裁剪</button><button data-tool="draw" aria-pressed="false">画笔</button><button data-edit="undo" disabled>撤销</button><button data-edit="redo" disabled>重做</button></div>
     <button class="primary imageEditSave" data-edit="save">${image.files ? '全部保存并上传' : '保存'}</button>`;
   const stage = dialog.querySelector('.imageEditStage'), canvas = stage.querySelector('canvas');
+  stage.oncontextmenu = stage.onselectstart = stage.ondragstart = e => e.preventDefault();
   const base = document.createElement('canvas'), marks = document.createElement('canvas'), merged = document.createElement('canvas');
   const color = dialog.querySelector('[type=color]'), size = dialog.querySelector('[type=range]'), caption = dialog.querySelector('[type=text]');
   const pointers = new Map();
@@ -163,6 +164,8 @@ async function openImageEditor(image) {
   };
   stage.onpointerdown = e => {
     if (loading || saving) return;
+    const selection = window.getSelection();
+    if (selection && dialog.contains(selection.anchorNode)) selection.removeAllRanges();
     e.preventDefault(); stage.setPointerCapture(e.pointerId); pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (pointers.size === 2) { preview = null; gesture = null; rebuild(); const [a, b] = [...pointers.values()]; const r = stage.getBoundingClientRect(); const c = canvas.getBoundingClientRect(); pinch = { distance: Math.hypot(a.x - b.x, a.y - b.y), zoom: current().zoom, anchor: { x: ((a.x + b.x) / 2 - c.left) / c.width, y: ((a.y + b.y) / 2 - c.top) / c.height } }; paint(); return; }
     if (pointers.size !== 1) return;

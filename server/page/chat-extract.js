@@ -541,9 +541,18 @@
       && !(panel.querySelector('[data-turn-key]') && /^(stop|stop generating|停止)$/i.test(x.label))).map(x => x.label);
     const modeEl = [...doc.querySelectorAll('.composer-unified-dropdown[data-mode]')].find(vis);
     const modelEl = modelButton();
-    const latestTurn = [...doc.querySelectorAll('[data-turn-key]')].at(-1);
+    const latestTurn = [...panel.querySelectorAll('[data-turn-key]')].filter(vis).at(-1);
     const latestEntry = codexId && codexLatestEntry(latestTurn);
-    if (latestEntry?.turn && latestEntry.turnKey !== latestTurn?.getAttribute('data-turn-key')) {
+    const entries = codexId && latestTurn && codexFiberProps(latestTurn, 32).find(p => Array.isArray(p.entries))?.entries;
+    const mountedIndex = entries?.findIndex(entry => entry.turnKey === latestTurn.getAttribute('data-turn-key')) ?? -1;
+    if (mountedIndex >= 0) {
+      const scopes = codexHistoryScopes();
+      for (const entry of entries.slice(mountedIndex + 1)) {
+        if (entry.conversationId !== codexId) continue;
+        const turn = entry.turn || (entry.turnKey === latestEntry?.turnKey ? latestEntry.turn : null) || codexStoredTurn(entry, scopes);
+        if (turn) items.push(...codexTurnItems(null, { ...entry, turn }));
+      }
+    } else if (latestEntry?.turn && latestEntry.turnKey !== latestTurn?.getAttribute('data-turn-key')) {
       items.push(...codexTurnItems(null, latestEntry));
     }
     const latestData = latestEntry?.turn || (latestTurn && codexTurnData(latestTurn));

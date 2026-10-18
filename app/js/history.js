@@ -396,7 +396,7 @@ function pruneEchoes(chat) {
   const humans = (chat?.items || []).filter(it => it.k === 'human');
   const queued = (chat?.queued || []).map(q => (q.t || '').trim());
   pendingEchoes = pendingEchoes.filter(p => {
-    if (Date.now() - p.at > 60000) return false;
+    if (p.confirmed && Date.now() - p.at > 60000) return false;
     if (p.sel !== viewSel) return true;
     if (humans.filter(it => echoTextMatches(it, p.text)).length > p.before) return false;
     if (p.kind === 'queue' && queued.some(t => echoTextMatches({ t }, p.text))) return false;
@@ -407,11 +407,12 @@ function pendingEchoEls() {
   return pendingEchoes.filter(p => p.kind === 'chat' && p.sel === viewSel).map(p => {
     const el = document.createElement('div');
     el.className = 'msg human pending';
-    el.innerHTML = `<div class="humanContent"><div class="bubble">${esc(p.text)}</div><div class="messageMeta">发送中…</div></div>`;
+    el.innerHTML = `<div class="humanContent"><div class="bubble">${esc(p.text)}</div><div class="messageMeta">${I18N.tr(p.confirmed ? '已发送' : '发送中…')}</div></div>`;
     return el;
   });
 }
 function renderChat(chat, stale, loading = false) {
+  if (chat) reconcileSent(chat);
   chat = withMessageTimes(chat);
   pruneEchoes(chat);
   updateGenerationTime(chat, stale);
