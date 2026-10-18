@@ -114,7 +114,7 @@ function paintThinking(el, it) {
   btn.dataset.more = more ? '1' : '';
   btn.querySelector('.tht').textContent = thinkingTitle(it.t);
   btn.querySelector('.tha').textContent = rest || more ? (open ? '收起' : '展开') : '';
-  const follow = box.scrollHeight - box.scrollTop - box.clientHeight < 48;
+  const follow = open && it.live && box.scrollHeight - box.scrollTop - box.clientHeight < 48;
   if (box.textContent !== rest) box.textContent = rest;
   box.hidden = !open;
   if (open && more && !thoughtFull.has(it.i)) thoughtObserver.observe(el);
