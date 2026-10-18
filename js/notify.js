@@ -178,6 +178,13 @@ $('sheet').addEventListener('click', async e => {
     b.textContent = '正在加载会话…';
     return send({ t: 'agents', projectWindow: b.dataset.projectLoad, automatic: true, silent: true });
   }
+  if (b.dataset.launchMissing) {
+    status('正在启动 Agent…');
+    b.disabled = true;
+    const sub = b.querySelector('.sub');
+    if (sub) sub.textContent = I18N.tr('正在启动…');
+    return send({ t: 'launchAgents', apps: b.dataset.launchMissing.split(',') });
+  }
   if (b.dataset.win) { closeSheet(); status('正在切换 Agent…'); return send({ t: 'attach', id: b.dataset.win, ...currentComputer()?.selections?.[b.dataset.win] }); }
   if ('fusionTrust' in b.dataset) { closeSheet(); return send({ t: 'fusionTrust', approve: b.dataset.fusionTrust === 'yes' }); }
   if ('fusionDir' in b.dataset) { status('正在读取项目…'); return send({ t: 'fusionProjects', path: b.dataset.fusionDir }); }

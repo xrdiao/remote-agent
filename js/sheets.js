@@ -73,7 +73,9 @@ function showWindows() {
     const plan = appPlans[w.app] ? `<span class="winPlan">${esc(appPlans[w.app])}</span>` : '';
     return `<button class="opt ${w.app === currentApp ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">${esc(software)}${plan}</span><span data-latency="${esc(w.id)}">${latencyMarkup(w.id)}</span></button>`;
   }).join('');
-  openSheet('windows', `<h3>切换 Agent</h3>${rows || '<div class="hint">没有找到窗口</div>'}`);
+  const missingAgents = ['cursor', 'devin', 'codex'].filter(a => !entries.some(w => w.app === a));
+  const launchRow = missingAgents.length ? `<button class="opt" data-launch-missing="${missingAgents.join(',')}"><span class="lbl">${I18N.tr('启动未打开的 Agent')}<span class="sub">${esc(missingAgents.map(a => ({ cursor: 'Cursor', devin: 'Devin', codex: 'Codex' })[a]).join(I18N.lang === 'en' ? ', ' : '、'))}</span></span><span>›</span></button>` : '';
+  openSheet('windows', `<h3>切换 Agent</h3>${rows || '<div class="hint">没有找到窗口</div>'}${launchRow}`);
   measureLatency(entries.map(w => w.id));
 }
 
