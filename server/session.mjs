@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { Cdp } from './cdp.mjs';
-import { listWindows, codexWindows, codexFolder } from './windows.mjs';
+import { listWindows, codexWindows } from './windows.mjs';
 import { CODEX_CDP_URL } from './config.mjs';
 import { helpersCall } from './page/build.mjs';
 import { AgentContext, appPlans } from './agent/context.mjs';
@@ -221,7 +221,7 @@ export class Session extends AgentContext {
     if (this.app !== 'codex') this.threadId = await this.cdp.evaluate(helpersCall('activeThread()')) || '';
     this.emit({
       t: 'attached', id: win.id, title: this.app === 'codex' ? 'Codex' : win.title, app: win.app,
-      appName: this.appMessage('{app}'), project: this.app === 'codex' ? codexFolder(this.winTitle) : '', windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(), plans: appPlans, initial: selection.initial === true,
+      appName: this.appMessage('{app}'), project: this.projectName(), windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(), plans: appPlans, initial: selection.initial === true,
     });
     if (staleSelect) this.emit({ t: 'status', ok: false, msg: '没有找到上次的会话，已留在当前会话' });
     this.setMode(this.mode).then(() => {

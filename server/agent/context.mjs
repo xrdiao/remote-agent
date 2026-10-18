@@ -810,7 +810,7 @@ export class AgentContext {
         }
       }
       if (!busy && this.editorCdp) await this.editorCdp.send('Page.bringToFront');
-      await openFolder(real, app, busy || (app === 'codex' && !!threadId));
+      await openFolder(real, app, busy || ((app === 'codex' || app === 'devin') && !!threadId));
       for (let i = 0; i < 40 && !target; i++) {
         target = await findTarget();
         if (!target) await new Promise(r => setTimeout(r, 250));
@@ -907,6 +907,7 @@ export class AgentContext {
       if (!await this.selectCodexThread(pending.threadId)) throw new Error('项目已打开，但没有找到所选会话');
       await this.adoptCodexThread(pending.threadId, '已切换项目与会话');
     }
+    if (this.app === 'devin' && pending.threadId) await this.adapter.openAgent.call(this, pending.threadId);
     if (pending.newSession) {
       await this.newChat();
       if (this.app === 'cursor' && this.winTitle === 'Cursor Agents')
@@ -1002,10 +1003,16 @@ export class AgentContext {
     this.emit({ t: 'status', ok: true, msg: '已停止 Agent' });
   }
 
+  projectName() {
+    if (this.app === 'codex') return codexFolder(this.winTitle);
+    if (this.app === 'devin') return path.posix.basename(normPath(windowRoots(this.winTitle, 'devin')[0]?.root || ''));
+    return '';
+  }
+
   publishThread(statusMsg) {
     const msg = {
       t: 'attached', id: this.targetId, title: this.app === 'codex' ? 'Codex' : this.winTitle, app: this.app, appName: this.appMessage('{app}'),
-      project: this.app === 'codex' ? codexFolder(this.winTitle) : '', windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(), keepQuota: true,
+      project: this.projectName(), windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(), keepQuota: true,
     };
     this.emit(msg);
     this.emit({ t: 'thread', windowId: msg.windowId, threadId: msg.threadId, sel: msg.sel });
@@ -1101,12 +1108,12 @@ export class AgentContext {
         if (kind === 'project-new') await this.newChat();
         else await this.adapter.openAgent.call(this, decodeURIComponent(encodedThread), title);
       }
-      await this.listAgents();
+      await this.listAgents(true);
       return;
     }
     if (id.startsWith(`window:${this.app}:`)) {
       await this.attach(id.slice('window:'.length));
-      await this.listAgents();
+      await this.listAgents(true);
       return;
     }
     return this.adapter.openAgent.call(this, id, title);

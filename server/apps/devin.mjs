@@ -1,9 +1,9 @@
 import path from 'node:path';
 import { windowRoots } from '../../lib/files.mjs';
 import { agentMarks } from '../../lib/marks.mjs';
-import { IS_WIN, mod } from '../../lib/platform.mjs';
+import { IS_WIN, mod, pathKey } from '../../lib/platform.mjs';
 import { listWindows } from '../windows.mjs';
-import { helpersCall } from '../page/build.mjs';
+import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { FOCUS_COMPOSER } from '../agent/context.mjs';
 
 // Shared across phone sessions: thread|start → end ms (null while the turn is still running).
@@ -21,7 +21,16 @@ export const adapter = {
       return;
     }
     if (id.startsWith('tab:')) return this.switchTab(id.slice(4));
-    if (await this.cdp.evaluate(helpersCall('devinSurface()')) === 'editor') {
+    const { surface, row, title: windowTitle } = await this.cdp.evaluate(`(() => {
+      const h = ${PAGE_SRC};
+      const surface = h.devinSurface();
+      return { surface, title: document.title, row: surface === 'agent' ? h.agentList().find(row => row.id === ${JSON.stringify(id)}) : null };
+    })()`);
+    this.winTitle = windowTitle;
+    if (row?.workspace && !row.host && !windowRoots(windowTitle, 'devin').some(w => !w.host && pathKey(w.root) === pathKey(row.workspace))) {
+      return this.useProject(row.workspace, false, id);
+    }
+    if (surface === 'editor') {
       const opened = await this.openSessionPicker();
       const pos = opened && await this.cdp.evaluate(helpersCall(`sessionPickerTarget(${JSON.stringify(id)}, ${JSON.stringify(title)})`));
       if (!pos) {
