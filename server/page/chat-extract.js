@@ -543,7 +543,7 @@
     const modelEl = modelButton();
     const latestTurn = [...panel.querySelectorAll('[data-turn-key]')].filter(vis).at(-1);
     const latestEntry = codexId && codexLatestEntry(latestTurn);
-    const entries = codexId && latestTurn && codexFiberProps(latestTurn, 32).find(p => Array.isArray(p.entries))?.entries;
+    const entries = codexId && latestTurn ? codexFiberProps(latestTurn, 32).find(p => Array.isArray(p.entries))?.entries : null;
     const mountedIndex = entries?.findIndex(entry => entry.turnKey === latestTurn.getAttribute('data-turn-key')) ?? -1;
     if (mountedIndex >= 0) {
       const scopes = codexHistoryScopes();
