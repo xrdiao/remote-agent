@@ -4,7 +4,7 @@ import { agentMarks } from '../../lib/marks.mjs';
 import { mod, pathKey } from '../../lib/platform.mjs';
 import { codexWindows, codexContext } from '../windows.mjs';
 import { CODEX_CDP_URL } from '../config.mjs';
-import { helpersCall } from '../page/build.mjs';
+import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { FOCUS_COMPOSER, codexUsage } from '../agent/context.mjs';
 import { computerId, saveState } from '../../lib/auth.mjs';
 import { conversationProjects, fusionProject } from '../fusion/state.mjs';
