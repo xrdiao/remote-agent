@@ -1008,19 +1008,98 @@ export class AgentContext {
     if (statusMsg) this.emit({ t: 'status', ok: true, msg: statusMsg });
   }
 
-  async listAgents(silent = false, readOnly = false) {
+  async listAgents(silent = false, readOnly = false, projectWindow = '') {
     const cdp = this.cdp, sel = this.sel, app = this.app;
-    const projects = !readOnly && (app === 'cursor' || app === 'devin') ? (await listWindows(null, app)).filter(w => w.app === app && w.id !== this.targetId).map(w => {
-      const root = windowRoots(w.title, app)[0];
-      return { id: `window:${w.id}`, title: root ? path.posix.basename(root.root) : w.title, window: '其他已打开的项目', group: '', ui: true, current: false };
-    }) : [];
+    const grouped = app === 'cursor' || app === 'devin';
+    if (grouped) {
+      this.projectAgentWindows ||= new Map();
+      this.projectAgentCache ||= new Map();
+      if (!readOnly || !this.projectAgentWindows.has(app)) {
+        const windows = (await listWindows(null, app)).filter(w => w.app === app);
+        for (const w of windows) w.project = windowRoots(w.title, app)[0];
+        if (!this.liveRead(cdp, sel)) return;
+        this.projectAgentWindows.set(app, windows);
+        if (!readOnly) for (const w of windows) if (w.id !== this.targetId) this.projectAgentCache.delete(w.id);
+      }
+      if (projectWindow) {
+        const w = this.projectAgentWindows.get(app).find(w => w.id === projectWindow);
+        if (!w || w.id === this.targetId) return;
+        const probe = new Cdp(w.ws);
+        try {
+          await probe.connect();
+          const data = await probe.evaluate(`(() => {
+            const h = ${PAGE_SRC};
+            const surface = h.devinSurface();
+            const state = surface === 'editor' ? h.agentState() : null;
+            const list = surface === 'editor' ? (h.devinSession()?.tabs || []).map(t => ({ id: 'tab:' + t.id, title: t.title, current: t.active, running: t.active && !!state?.busy })) : h.agentList();
+            return { list, surface };
+          })()`);
+          if (!this.liveRead(cdp, sel)) return;
+          this.projectAgentCache.set(w.id, data);
+        } finally { probe.close(); }
+        return this.emit({ t: 'agents', app, silent: true, list: this.projectAgentRows() });
+      }
+    }
     const emit = data => {
-      if (this.liveRead(cdp, sel)) this.emit({ t: 'agents', app, silent, ...data, list: [...(data.list || []), ...projects] });
+      if (!this.liveRead(cdp, sel)) return;
+      if (grouped) {
+        if (data.partial) {
+          const remaining = (this.projectAgentCache.get(this.targetId)?.list || []).filter(a => a.id.startsWith('pick:'));
+          data = { ...data, list: [...data.list, ...remaining.filter(a => !data.list.some(b => b.title === a.title))] };
+        }
+        this.projectAgentCache.set(this.targetId, data);
+      }
+      this.emit({ t: 'agents', app, silent, ...data, list: grouped ? this.projectAgentRows() : data.list || [] });
     };
     return this.adapter.listAgents.call(this, silent, readOnly, emit);
   }
 
+  projectAgentRows() {
+    const list = [], seen = new Set();
+    const windows = this.projectAgentWindows.get(this.app) || [];
+    const addNew = (w, label, key, root = '') => {
+      if (seen.has('new:' + key)) return;
+      seen.add('new:' + key);
+      list.push({ id: `project-new:${encodeURIComponent(w.id)}${root ? ':' + encodeURIComponent(root) : ''}`, title: '＋ 新建会话', window: label, group: '', ui: true });
+    };
+    // Prefer the attached window when several windows show the same project/session.
+    for (const w of [...windows].sort((a, b) => Number(b.id === this.targetId) - Number(a.id === this.targetId))) {
+      const current = w.id === this.targetId;
+      const data = this.projectAgentCache.get(w.id);
+      const project = w.project;
+      const label = project ? path.posix.basename(normPath(project.root)) : w.title;
+      const projectKey = project ? `${project.host || ''}|${normPath(project.root)}` : w.id;
+      if (project || !data?.list?.length || data.list.some(row => !row.workspace)) addNew(w, label, projectKey);
+      for (const row of data?.list || []) {
+        const rowProject = `${row.host || project?.host || ''}|${normPath(row.workspace || project?.root || w.id)}`;
+        const rowLabel = row.workspace ? path.posix.basename(normPath(row.workspace)) : label;
+        if (row.workspace && (row.workspace === project?.root || (!row.host && !project?.host))) addNew(w, rowLabel, rowProject, row.workspace !== project?.root && !row.host && !project?.host ? row.workspace : '');
+        const key = `${rowProject}|${this.app === 'devin' ? row.id.replace(/^tab:/, '') : row.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        list.push({ ...row, id: current ? row.id : `project:${encodeURIComponent(w.id)}:${encodeURIComponent(row.id)}`,
+          window: rowLabel, group: '', current: current && !!row.current });
+      }
+      if (!data) list.push({ id: `window:${w.id}`, title: '加载会话', window: label, group: '', ui: true, loadWindow: w.id });
+      else if (!data.list?.length || (!current && data.surface === 'editor')) list.push({ id: `window:${w.id}`, title: data.surface === 'editor' ? '进入项目查看全部会话' : '进入项目', window: label, group: '', ui: true });
+    }
+    return list;
+  }
+
   async openAgent(id, title = '') {
+    if ((this.app === 'cursor' || this.app === 'devin') && (id.startsWith('project:') || id.startsWith('project-new:'))) {
+      const [kind, encodedWindow, encodedThread] = id.split(':');
+      const window = decodeURIComponent(encodedWindow);
+      if (!window.startsWith(this.app + ':')) throw new Error('项目不属于当前 Agent');
+      if (kind === 'project-new' && encodedThread) await this.useProject(decodeURIComponent(encodedThread), true);
+      else {
+        if (window !== this.targetId) await this.attach(window);
+        if (kind === 'project-new') await this.newChat();
+        else await this.adapter.openAgent.call(this, decodeURIComponent(encodedThread), title);
+      }
+      await this.listAgents();
+      return;
+    }
     if (id.startsWith(`window:${this.app}:`)) {
       await this.attach(id.slice('window:'.length));
       await this.listAgents();

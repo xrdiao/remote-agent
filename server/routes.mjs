@@ -127,7 +127,7 @@ export const ROUTES = {
     background: (s, m) => m.automatic === true && m.silent === true,
     pre: (s, m) => (s.app === 'codex' ? s.listAgents(m.silent === true, m.automatic === true) : SKIP),
     readOnly: (s, m) => m.silent === true,
-    run: (s, m) => s.listAgents(m.silent === true, m.automatic === true),
+    run: (s, m) => s.listAgents(m.silent === true, m.automatic === true, String(m.projectWindow || '')),
   },
   openAgent: { run: (s, m) => s.openAgent(String(m.id ?? ''), String(m.title ?? '')) },
   openMenu: { run: (s, m) => s.openMenu(m.kind, m.requestId) },
