@@ -2,6 +2,10 @@
 
 把手机变成 Cursor / Devin / Codex 的遥控器：本机 relay 通过 CDP 驱动桌面应用。
 
+## 修改前必读
+
+每次修改前必须先阅读 [用户要求与续做记录](docs/development-requirements.md)，遵守其中已明确的导航规则、范围限制、验证和自动发布约定。用户补充或纠正长期要求后，及时更新该记录；不要把待实现事项当作已完成。
+
 ## 结构
 
 - `server/` — relay 本体（`index.mjs` 入口，`session.mjs` 会话，`page/` 注入脚本，`http/`、`publish/`）
