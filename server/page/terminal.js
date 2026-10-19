@@ -58,6 +58,12 @@
     const b = terminalById(id)?.close;
     return b && vis(b) ? center(b) : null;
   };
+  // With ≥2 tabs the row Kill icons are 0×0 until hover; the panel title-bar Kill
+  // button (which kills the *active* terminal) is always visible instead.
+  const terminalKillActiveTarget = () => {
+    const b = [...doc.querySelectorAll('.part.panel .title-actions [aria-label="Kill Terminal"]')].find(vis);
+    return b ? center(b) : null;
+  };
   const terminalFocus = () => {
     const el = [...doc.querySelectorAll('.terminal-wrapper.active .xterm, .terminal.xterm')].find(vis);
     return el ? center(el) : null;

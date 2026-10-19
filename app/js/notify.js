@@ -307,6 +307,7 @@ $('sheet').addEventListener('click', async e => {
   else if (act === 'fusionHistory') { closeSheet(); return send({ t: 'fusionHistory' }); }
   else if (act === 'fusionNew') { closeSheet(); return send({ t: 'fusionNew' }); }
   else if (act === 'model') return requestMenu('model', '读取模型列表…');
+  else if (act === 'mode') return requestMenu('mode', '读取模式列表…');
   else if (act === 'permission') return requestMenu(lastChat?.permission ? 'permission' : 'mode', '读取权限…');
   else if (act === 'agentsRefresh') return openAgentList(true);
   else if (act === 'projects') { status('正在读取项目…'); return send({ t: 'projects' }); }
