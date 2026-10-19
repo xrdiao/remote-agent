@@ -685,10 +685,11 @@
   #conn { --c-ok: #4FB37E; --c-ok-t: #7CCB9F; --c-load: #4C9AE6; --c-load-t: #86B9EE; --c-load-dim: rgba(76,154,230,.28); --c-err: #D9625E; --c-err-t: #EE8B87;
           --c-tint-ok: rgba(79,179,126,.12); --c-tint-err: rgba(217,98,94,.12); --c-go-bg: #e6e6e6; --c-go-fg: #0b131b; --c-go-b: #fff;
           position: fixed; inset: 0; z-index: 21; background: var(--bg); display: none; flex-direction: column; overflow-y: auto;
-          padding: calc(18px + env(safe-area-inset-top)) 20px calc(20px + env(safe-area-inset-bottom)); }
+          padding: calc(18px + env(safe-area-inset-top)) 20px calc(48px + env(safe-area-inset-bottom)); }
   :root[data-theme="light"] #conn { --c-ok: #3f9a6a; --c-ok-t: #1f7a4d; --c-load: #3d8ad6; --c-load-t: #1f66b0; --c-load-dim: rgba(61,138,214,.25); --c-err: #cc4f4b; --c-err-t: #b2302c;
           --c-tint-ok: rgba(63,154,106,.1); --c-tint-err: rgba(204,79,75,.1); --c-go-bg: #242424; --c-go-fg: #fff; --c-go-b: #242424; }
   #conn.open { display: flex; }
+  .conn-version { position: absolute; left: calc(14px + env(safe-area-inset-left)); bottom: calc(10px + env(safe-area-inset-bottom)); font-size: 11px; line-height: 1.4; color: var(--muted2); pointer-events: none; }
   #connAgents .cItem.err .cRow { padding-bottom: 13px; }
   #connAgents .cRow { gap: 8px; }
   #connAgents .cSt { font-size: 12px; gap: 4px; }
