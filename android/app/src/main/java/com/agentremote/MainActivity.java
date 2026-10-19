@@ -71,7 +71,7 @@ public class MainActivity extends Activity {
         root = new FrameLayout(this);
         web = createWeb();
         root.addView(web);
-        bubble = new RefreshBubble(this, root, this::restartWeb);
+        bubble = new RefreshBubble(this, root, () -> restartWeb(true));
         setContentView(root);
         applyTheme(prefs.getBoolean("light", false));
 
@@ -128,7 +128,7 @@ public class MainActivity extends Activity {
             @Override
             public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
                 // The WebView being replaced has its renderer killed on purpose; only the current one needs a restart.
-                if (view == web && view != dying) view.post(() -> { if (view == web) restartWeb(); });
+                if (view == web && view != dying) view.post(() -> { if (view == web) restartWeb(false); });
                 return true;
             }
         });
@@ -136,8 +136,9 @@ public class MainActivity extends Activity {
     }
 
     // Replaces the WebView even if its renderer is hung. Loads the saved address rather than reloading, since the
-    // current URL may carry a one-time #pair fragment that was already used.
-    private void restartWeb() {
+    // current URL may carry a one-time #pair fragment that was already used. The refresh bubble also clears the
+    // HTTP cache first so it picks up a new web release; crash recovery leaves the cache alone.
+    private void restartWeb(boolean clearCache) {
         WebView old = web;
         dying = old;
         if (Build.VERSION.SDK_INT >= 29) {
@@ -152,6 +153,7 @@ public class MainActivity extends Activity {
         }
         web = createWeb();
         root.addView(web, 0);
+        if (clearCache) web.clearCache(true);
         applyTheme(prefs.getBoolean("light", false));
         load();
     }

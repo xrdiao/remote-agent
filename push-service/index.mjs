@@ -126,7 +126,15 @@ async function apnsSend(reg, collapse, payload) {
     'apns-collapse-id': collapse,
     'content-type': 'application/json',
   }, body);
-  let r = await post(providerToken(false));
+  let r;
+  try {
+    r = await post(providerToken(false));
+  } catch {
+    // NAT can drop the kept-open connection after hours of quiet; the first request on it then fails. Retry once on a new one.
+    const stale = sessions.get(reg.env);
+    if (stale) { sessions.delete(reg.env); stale.destroy(); }
+    r = await post(providerToken(false));
+  }
   if (r.status === 403 && r.reason === 'ExpiredProviderToken') r = await post(providerToken(true));
   return r;
 }

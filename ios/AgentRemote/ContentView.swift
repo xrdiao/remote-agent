@@ -11,7 +11,7 @@ struct ContentView: View {
             ShellWebView(webView: shell.webView)
                 .ignoresSafeArea()
             GeometryReader { geo in
-                RefreshBubble(size: geo.size, light: shell.light, refresh: shell.restart)
+                RefreshBubble(size: geo.size, light: shell.light, refresh: shell.refresh)
             }
             .ignoresSafeArea(.keyboard)
         }
@@ -32,7 +32,8 @@ struct ContentView: View {
 }
 
 func tr(_ zh: String, _ en: String) -> String {
-    Locale.preferredLanguages.first?.hasPrefix("zh") == true ? zh : en
+    if let lang = UserDefaults.standard.string(forKey: "lang"), lang == "zh" || lang == "en" { return lang == "zh" ? zh : en }
+    return Locale.preferredLanguages.first?.hasPrefix("zh") == true ? zh : en
 }
 
 private struct ShellWebView: UIViewRepresentable {
@@ -116,6 +117,9 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
         let view = WKWebView(frame: .zero, configuration: config)
         view.navigationDelegate = self
         view.uiDelegate = self
+        // Without this the scroll view insets the safe areas, and WebKit then sizes 100dvh short of the
+        // full-screen view, leaving a blank strip at the bottom (seen on iOS 26). The page pads itself via env().
+        view.scrollView.contentInsetAdjustmentBehavior = .never
         view.allowsBackForwardNavigationGestures = true
         view.isInspectable = true
         return view
@@ -133,6 +137,14 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
         old.removeFromSuperview()
         webView = makeWebView()
         load(appURL)
+    }
+
+    // The bubble is the user's way to pick up a new web release: GitHub Pages serves max-age=600,
+    // so drop the HTTP cache first. Storage, cookies and the service worker stay.
+    func refresh() {
+        WKWebsiteDataStore.default().removeData(ofTypes: [WKWebsiteDataTypeDiskCache, WKWebsiteDataTypeMemoryCache], modifiedSince: .distantPast) { [weak self] in
+            self?.restart()
+        }
     }
 
     func start() {
@@ -219,10 +231,18 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
         return """
         (() => {
           let url = \(json(appURL)), light = \(json(light)), openWin = \(json(pendingOpen));
+          let lang = \(json(UserDefaults.standard.string(forKey: "lang") ?? ""));
+          const pendingLang = \(json(UserDefaults.standard.string(forKey: "pendingLang") ?? ""));
+          const appHost = \(json(URL(string: appURL)?.host ?? ""));
           const canVoice = \(json(voiceAvailable()));
           const post = (fn, ...args) => window.webkit.messageHandlers.app.postMessage({ fn, args });
+          if (pendingLang && location.protocol === 'https:' && location.host === appHost) {
+            try { localStorage.setItem('cr-lang', pendingLang); post('tookLang'); } catch (e) {}
+          }
           window.AgentRemoteApp = {
             getUrl: () => url,
+            getLang: () => lang,
+            setLang(v) { if (v !== 'zh' && v !== 'en') return; lang = v; post('setLang', v); },
             isLight: () => light,
             takeOpenWin: () => { const v = openWin; openWin = ''; if (v) post('tookOpenWin'); return v; },
             _setOpenWin(v) { openWin = v; },
@@ -274,6 +294,12 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
             voiceLang = text
             listening = true
         case "tookOpenWin": pendingOpen = ""
+        case "setLang":
+            if text == "zh" || text == "en" {
+                UserDefaults.standard.set(text, forKey: "lang")
+                UserDefaults.standard.set(text, forKey: "pendingLang")
+            }
+        case "tookLang": UserDefaults.standard.removeObject(forKey: "pendingLang")
         default: break
         }
     }

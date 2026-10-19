@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		AB11DA04307E71B50096F669 /* setup.html in Resources */ = {isa = PBXBuildFile; fileRef = AB11DA03307E71B50096F669 /* setup.html */; };
+		C7A2B913F0E84D21B95A6701 /* logo.png in Resources */ = {isa = PBXBuildFile; fileRef = C7A2B912F0E84D21B95A6701 /* logo.png */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -15,6 +16,7 @@
 		AB11DA01307E71B50096F669 /* AgentRemote.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = AgentRemote.xcconfig; sourceTree = "<group>"; };
 		AB11DA02307E71B50096F669 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		AB11DA03307E71B50096F669 /* setup.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; name = setup.html; path = ../android/app/src/main/assets/setup.html; sourceTree = "<group>"; };
+		C7A2B912F0E84D21B95A6701 /* logo.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; name = logo.png; path = ../android/app/src/main/assets/logo.png; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -41,6 +43,7 @@
 				AB11DA01307E71B50096F669 /* AgentRemote.xcconfig */,
 				AB11DA02307E71B50096F669 /* Info.plist */,
 				AB11DA03307E71B50096F669 /* setup.html */,
+				C7A2B912F0E84D21B95A6701 /* logo.png */,
 				AB11D9BE307E71B50096F669 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -113,6 +116,7 @@
 			isa = PBXResourcesBuildPhase;
 			files = (
 				AB11DA04307E71B50096F669 /* setup.html in Resources */,
+				C7A2B913F0E84D21B95A6701 /* logo.png in Resources */,
 			);
 		};
 /* End PBXResourcesBuildPhase section */
@@ -270,7 +274,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.2.0;
+				MARKETING_VERSION = 1.3.0;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -307,7 +311,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.2.0;
+				MARKETING_VERSION = 1.3.0;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;

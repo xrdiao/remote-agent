@@ -117,5 +117,6 @@
 24. 跨项目切会话：Codex 新窗口先处理受限模式信任，再反复唤起 Codex 侧边栏（最长 25 秒）并在 webview 就绪后选中会话；已打开但未就绪的窗口也会等待后重试选中。Devin 新窗口落在编辑器界面时切到 Agent 界面再找会话，并识别欢迎页里的 Recent sessions。长流程给手机发进度状态。
 25. 手机启动按钮启动的 agent 进入时打开该 agent 最近使用的会话（用户选择「始终最近的」，不用手机记住的会话）。Linux 启动 Cursor 默认用 `/usr/share/cursor/cursor`（3.x，本地 agent），不用 PATH 里 `~/.local/bin/cursor` 的旧 AppImage（1.2.4，只有云端 agent）；`CURSOR_BIN` 仍可覆盖。切会话保持「拿到真实内容才显示」，不恢复缓存预览。
 26. Fusion 模型按钮只显示「Fusion」，不带具体模型（悬停标题仍有详情）；对话的首个推送也带 Fusion 配置，避免推送内容来回变化导致手机反复重绘。Devin 加载更早消息后把电脑端滚动位置恢复原处，否则虚拟列表不再挂载最新消息。Cursor 3.22 设置侧栏文字只在 textContent 里，额度读取兼容并放宽加载等待。
+27. 手机壳内置首屏 `android/app/src/main/assets/setup.html`（iOS 工程直接引用同一份，新增同目录 `logo.png`）改成网页版欢迎页样式：中|EN、Logo、输入框+粘贴、「或」、扫码连接、配对遇到问题；只收配对链接、agentremote:// 链接或 App 地址，手动配对码提示改用扫码/链接。语言 iOS 经桥 `getLang/setLang` 保存，并一次性写入网页的 `cr-lang`；Android 只存在本页。网页端未改。用户已在 iOS 模拟器确认。原生刷新按钮先清 HTTP 缓存（iOS 磁盘/内存缓存，Android `clearCache(true)`）再重建 WebView，不动 localStorage、Cookie、Service Worker；崩溃自动恢复不清缓存。iOS 模拟器构建通过；Android 本机无 JDK 17 未编译。版本改为 1.3.0（Android versionCode 3），图标主体缩到约 62% 宽。iOS 26.2.1 真机页面底部空出约 96pt（上下安全区之和）：WebView 设 `contentInsetAdjustmentBehavior = .never`，TestFlight build 202610192231 待真机确认。推送服务对长时间空闲后断开的 APNs 连接重试一次（服务器日志里的 ECONNRESET），需手动部署到推送服务器。
 
 本列表不是实施所有历史愿望的概括授权。每轮只做当前已授权的具体范围；实现与验证后更新相应状态。

@@ -10,8 +10,8 @@ android {
         applicationId 'uk.luojiajiang.remoteagent'
         minSdk 24
         targetSdk 34
-        versionCode 2
-        versionName '1.2.0'
+        versionCode 3
+        versionName '1.3.0'
         // Optional: forks can bake in their own app address; otherwise the user enters it on first launch.
         resValue 'string', 'default_url', System.getenv('APP_URL') ?: ''
     }

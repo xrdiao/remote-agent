@@ -2,72 +2,174 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<script>try { if (window.AgentRemoteApp && AgentRemoteApp.isLight && AgentRemoteApp.isLight()) document.documentElement.dataset.theme = 'light'; } catch (e) {}</script>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Remote Agent</title>
 <style>
-  :root {
-    color-scheme: dark;
-    --bg: #1e1e1e; --fg: #d4d4d4; --hi: #eee; --mut: #aaa; --ctrl: #2d2d2d; --border: #3c3c3c;
-    --accent: #0e639c; --accent-b: #1177bb; --err: #f77; --hint: #888; --codebg: #333;
-  }
-  :root[data-theme="light"] {
-    color-scheme: light;
-    --bg: #ffffff; --fg: #242424; --hi: #000; --mut: #555; --ctrl: #ffffff; --border: #c9c9c9;
-    --err: #cf222e; --hint: #777; --codebg: #e8e8e8;
-  }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.6 -apple-system, "PingFang SC", "HarmonyOS Sans SC", sans-serif; padding: 56px 24px 24px; }
-  h2 { margin: 0 0 8px; color: var(--hi); font-size: 22px; }
-  p { color: var(--mut); margin: 0 0 16px; }
-  input, button { width: 100%; font: inherit; font-size: 16px; padding: 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--ctrl); color: var(--hi); }
-  button { margin-top: 12px; background: var(--accent); border-color: var(--accent-b); color: #fff; font-weight: 600; }
-  button.ghost { background: var(--ctrl); border-color: var(--border); color: var(--hi); font-weight: 400; }
-  .err { color: var(--err); }
-  .hint { font-size: 13px; color: var(--hint); margin-top: 18px; }
-  code { background: var(--codebg); padding: 1px 5px; border-radius: 4px; }
+  [hidden] { display: none !important; }
+  body {
+    margin: 0;
+    --pair-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    min-height: 100dvh;
+    display: flex; flex-direction: column;
+    background: radial-gradient(ellipse at 50% 25%, #10223455, transparent 55%), #0b131b;
+    color: #eaf0f6;
+    font: 15px/1.6 -apple-system, "PingFang SC", "HarmonyOS Sans SC", sans-serif;
+    padding: calc(clamp(8px, calc(var(--pair-height) * .02), 22px) + env(safe-area-inset-top)) clamp(16px, 5vw, 24px) max(12px, env(safe-area-inset-bottom));
+  }
+  body > * { flex-shrink: 0; }
+  #gateLang { display: flex; align-items: center; gap: 12px; align-self: flex-end; color: #344453; }
+  #gateLang button { background: none; border: 0; padding: 0; font: inherit; font-size: 15px; color: #73818e; }
+  #gateLang button.active { color: #4da3ff; font-weight: 700; }
+  .pairHero { flex: 1 0 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: clamp(6px, calc(var(--pair-height) * .1 - 48px), 32px) 0 clamp(6px, calc(var(--pair-height) * .01), 12px); }
+  .pairLogo { display: block; width: min(40vw, clamp(56px, calc(var(--pair-height) * .32 - 100px), 176px)); height: auto; margin: 0 auto clamp(8px, calc(var(--pair-height) * .02), 20px); }
+  .pairHero h2 { font-size: clamp(22px, calc(var(--pair-height) * .038), 32px); line-height: 1.2; font-weight: 700; color: #f4f7fb; margin: 0 0 clamp(6px, calc(var(--pair-height) * .012), 12px); }
+  .pairControls { display: flex; flex-direction: column; margin-top: auto; }
+  .pairControls > * { flex-shrink: 0; }
+  #pairIntro { margin: 0 0 clamp(8px, calc(var(--pair-height) * .02), 20px); text-align: center; color: #95a2b0; font-size: clamp(12px, calc(var(--pair-height) * .018), 14px); line-height: 1.6; }
+  #gateMsg { color: #95a2b0; font-size: 13px; line-height: 1.6; white-space: pre-line; margin: 0 0 12px; }
+  #gateMsg.err { color: #f77; }
+  #gateMsg:empty { display: none; }
+  #gateEntry { border: 1px solid #223241; border-radius: 22px; background: #111d28; padding: clamp(10px, calc(var(--pair-height) * .018), 16px); }
+  .pairInput { display: flex; min-width: 0; border: 1px solid #2b3e4f; border-radius: 15px; overflow: hidden; background: #0b131b; }
+  #gateInput { flex: 1; min-width: 0; border: 0; background: none; color: #eaf0f6; font: inherit; font-size: 16px; padding: clamp(10px, calc(var(--pair-height) * .015), 16px) 12px; outline-offset: -3px; }
+  #gateInput::placeholder { color: #718190; }
+  #gatePaste { flex: none; width: 48px; padding: 10px; color: #becbd8; border: 0; border-left: 1px solid #2b3e4f; background: none; }
+  #gatePaste svg, #gateScan svg { width: 22px; height: 22px; }
+  #gateBtn, #gateRetry { width: 100%; margin-top: clamp(8px, calc(var(--pair-height) * .016), 14px); height: clamp(44px, calc(var(--pair-height) * .064), 54px); padding: 8px 12px; border: 1px solid #4da3ff; border-radius: 15px; color: #fff; background: #3b8eea; font: inherit; font-size: 18px; font-weight: 700; }
+  #pairOr { display: flex; align-items: center; gap: 12px; margin: clamp(6px, calc(var(--pair-height) * .015), 16px) 16px; color: #657482; font-size: 12px; }
+  #pairOr span:first-child, #pairOr span:last-child { height: 1px; flex: 1; background: #263542; }
+  #gateScan, #gateChange { display: flex; align-items: center; justify-content: center; gap: 10px; min-height: clamp(44px, calc(var(--pair-height) * .064), 54px); padding: 8px 12px; border-radius: 15px; border: 1px solid #375572; background: #101c27; color: #eaf0f6; font: inherit; font-size: 17px; }
+  #gateChange { width: 100%; margin-top: 10px; }
+  #gateScan svg { color: #4da3ff; }
+  #gateHelp { align-self: center; margin-top: clamp(8px, calc(var(--pair-height) * .02), 20px); padding: 0 8px; border: 0; background: none; color: #4da3ff; font: inherit; font-size: 14px; }
+  #gateHelp span { margin-left: 8px; font-size: 22px; vertical-align: -1px; }
+  #offTitle { margin: 0 0 8px; font-size: 20px; font-weight: 700; color: #f4f7fb; text-align: center; }
+  #offText { margin: 0 0 16px; color: #f77; text-align: center; font-size: 14px; }
+  #shade { position: fixed; inset: 0; background: rgba(0,0,0,.5); }
+  #sheet { position: fixed; left: 0; right: 0; bottom: 0; background: #111d28; border: 1px solid #223241; border-bottom: 0; border-radius: 16px 16px 0 0; padding: 20px 20px calc(20px + env(safe-area-inset-bottom)); }
+  #sheet h3 { margin: 0 0 10px; font-size: 17px; color: #f4f7fb; }
+  #sheet p { margin: 0 0 10px; color: #95a2b0; font-size: 14px; line-height: 1.7; }
+  #sheetOk { width: 100%; padding: 11px; border: 1px solid #4da3ff; border-radius: 15px; background: #3b8eea; color: #fff; font: inherit; font-weight: 700; }
+  @media (min-width: 560px) and (max-height: 500px) {
+    body { display: grid; grid-template-columns: 1fr 1.2fr; grid-template-rows: repeat(7, auto); gap: 2px 24px; align-content: center; }
+    #gateLang { grid-column: 1; grid-row: 1; justify-self: end; }
+    .pairHero { grid-column: 1; grid-row: 2 / 5; align-self: center; margin: 0; padding: 0; }
+    .pairControls { display: contents; }
+    #pairIntro { grid-column: 1; grid-row: 5 / 8; align-self: center; margin: 0; }
+    #gateMsg { grid-column: 2; grid-row: 1; margin-bottom: 0; }
+    #gateEntry { grid-column: 2; grid-row: 2; }
+    #pairOr { grid-column: 2; grid-row: 3; margin-top: 0; margin-bottom: 0; }
+    #gateScan { grid-column: 2; grid-row: 4; }
+    #offline { grid-column: 2; grid-row: 2 / 6; }
+    #gateHelp { grid-column: 2; grid-row: 6; margin: 0; padding-top: 0; }
+  }
 </style>
 </head>
 <body>
-<div id="offline" hidden>
-  <h2>打不开</h2>
-  <p class="err">连不上 App 地址，请检查手机网络。</p>
-  <button id="retry">重试</button>
-  <button id="change" class="ghost">更换 App 地址</button>
+<div id="gateLang" aria-label="语言 / Language"><button data-lang="zh">中</button><span>|</span><button data-lang="en">EN</button></div>
+<div class="pairHero"><img src="logo.png" alt="" class="pairLogo"><h2>Remote Agent</h2></div>
+<div class="pairControls">
+  <p id="pairIntro"></p>
+  <div id="gateMsg" role="status"></div>
+  <div id="gateEntry"><div class="pairInput"><input id="gateInput" type="url" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off"><button id="gatePaste" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="16" rx="2"/><rect x="9" y="3" width="6" height="4" rx="1"/></svg></button></div><button id="gateBtn" type="button"></button></div>
+  <div id="pairOr" hidden><span></span><span id="pairOrText"></span><span></span></div>
+  <button id="gateScan" type="button" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3M7 12h10"/></svg><span></span></button>
+  <div id="offline" hidden>
+    <h3 id="offTitle"></h3>
+    <p id="offText"></p>
+    <button id="gateRetry" type="button"></button>
+    <button id="gateChange" type="button"></button>
+  </div>
+  <button id="gateHelp" type="button"></button>
 </div>
-<div id="setup" hidden>
-  <h2>Remote Agent</h2>
-  <p>在电脑上运行 <code>npm run pair</code>，点下方按钮扫显示的<b>二维码</b>，也可以粘贴配对链接（或只填 App 地址，之后再配对）。只需一次。</p>
-  <button id="scan" hidden>扫码配对</button>
-  <input id="url" type="url" inputmode="url" autocapitalize="off" autocorrect="off" placeholder="粘贴配对链接 或 App 地址">
-  <div id="msg" class="err"></div>
-  <button id="save">打开</button>
-  <div class="hint">以后要换地址：App 右上角「⋯ → 更换 App 地址」。</div>
+<div id="shade" hidden></div>
+<div id="sheet" hidden role="dialog">
+  <h3 id="sheetTitle"></h3>
+  <p id="sheetP1"></p>
+  <p id="sheetP2"></p>
+  <p id="sheetP3"></p>
+  <button id="sheetOk" type="button"></button>
 </div>
 <script>
 const $ = id => document.getElementById(id);
-const zh = /^zh\b/i.test(navigator.language || '');
-const T = zh ? s => s : s => ({
-  '地址必须是 https': 'The address must use https', '请填写地址': 'Enter an address', '地址格式不对': 'That address is not valid',
-}[s] || s);
-if (!zh) {
-  document.documentElement.lang = 'en';
-  $('offline').innerHTML = '<h2>Can\'t open</h2><p class="err">Cannot reach the app address. Check your phone\'s network.</p>'
-    + '<button id="retry">Retry</button><button id="change" class="ghost">Change app address</button>';
-  $('setup').querySelector('p').innerHTML = 'Run <code>npm run pair</code> on the computer and scan the <b>QR code</b> with the button below, or paste the pairing link (or just the app address and pair later). Only needed once.';
-  $('scan').textContent = 'Scan QR code to pair';
-  $('url').placeholder = 'Paste pairing link or app address';
-  $('save').textContent = 'Open';
-  $('setup').querySelector('.hint').textContent = 'To change the address later: "⋯ → Change app address" at the top right of the app.';
-}
-const q = new URLSearchParams(location.search);
 const app = window.AgentRemoteApp;
+const S = {
+  zh: {
+    intro: '在电脑端运行 npm run pair，<br>然后扫描二维码或粘贴配对链接进行连接。',
+    ph: '输入配对链接或 App 地址',
+    connect: '连接', or: '或', scan: '扫码连接', paste: '粘贴',
+    help: '配对遇到问题？',
+    helpP1: '在电脑端运行 npm run pair，使用新生成的二维码或配对链接。也可以只填 App 地址，进入后再配对。',
+    helpP2: '配对链接 10 分钟内有效，只能授权一台新设备。请使用终端显示的固定网页入口。',
+    helpP3: '以后要换地址：App 右上角「⋯ → 更换 App 地址」。',
+    ok: '好',
+    clip: '无法读取剪贴板，请长按输入框粘贴',
+    empty: '请填写地址', https: '地址必须是 https', invalid: '地址格式不对',
+    manual: '手动配对码需要先进入网页入口，请扫码或粘贴配对链接',
+    offTitle: '打不开', offText: '连不上 App 地址，请检查手机网络。', retry: '重试', change: '更换 App 地址'
+  },
+  en: {
+    intro: 'Run npm run pair on your computer,<br>then scan the QR code or paste the pairing link.',
+    ph: 'Enter pairing link or app address',
+    connect: 'Connect', or: 'or', scan: 'Scan to connect', paste: 'Paste',
+    help: 'Having trouble pairing?',
+    helpP1: 'Run npm run pair on your computer and use the new QR code or pairing link. You can also enter just the app address and pair later.',
+    helpP2: 'A pairing link is valid for 10 minutes and authorizes one new device. Use the fixed web address shown in the terminal.',
+    helpP3: 'To change the address later: "⋯ → Change app address" at the top right of the app.',
+    ok: 'OK',
+    clip: 'Cannot read the clipboard. Touch and hold the input to paste.',
+    empty: 'Enter an address', https: 'The address must use https', invalid: 'That address is not valid',
+    manual: 'A manual pairing code needs the web address first. Scan the QR code or paste the pairing link.',
+    offTitle: 'Can\'t open', offText: 'Cannot reach the app address. Check your phone\'s network.', retry: 'Retry', change: 'Change app address'
+  }
+};
+let lang = (() => {
+  try { const v = app && app.getLang && app.getLang(); if (v === 'zh' || v === 'en') return v; } catch (e) {}
+  try { const v = localStorage.getItem('setup-lang'); if (v === 'zh' || v === 'en') return v; } catch (e) {}
+  return /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
+})();
+let errKey = '';
+const q = new URLSearchParams(location.search);
 const current = app ? app.getUrl() : '';
-if (q.has('offline') && current) $('offline').hidden = false;
-else $('setup').hidden = false;
-$('url').value = current.replace(/^https:\/\//, '');
-if (app && app.scan) {
-  $('scan').hidden = false;
-  $('scan').onclick = () => app.scan();
+let state = (q.has('offline') && current) ? 'offline' : 'setup';
+
+function setErr(k) { errKey = k; render(); }
+function render() {
+  const s = S[lang];
+  document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
+  document.querySelectorAll('#gateLang [data-lang]').forEach(b => {
+    const on = b.dataset.lang === lang;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', String(on));
+  });
+  $('pairIntro').innerHTML = s.intro;
+  $('gateInput').placeholder = s.ph;
+  $('gateBtn').textContent = s.connect;
+  $('pairOrText').textContent = s.or;
+  $('gateScan').querySelector('span').textContent = s.scan;
+  $('gatePaste').setAttribute('aria-label', s.paste);
+  $('gatePaste').title = s.paste;
+  $('gateHelp').innerHTML = s.help + ' <span aria-hidden="true">›</span>';
+  $('sheetTitle').textContent = s.help;
+  $('sheetP1').textContent = s.helpP1;
+  $('sheetP2').textContent = s.helpP2;
+  $('sheetP3').textContent = s.helpP3;
+  $('sheetOk').textContent = s.ok;
+  $('offTitle').textContent = s.offTitle;
+  $('offText').textContent = s.offText;
+  $('gateRetry').textContent = s.retry;
+  $('gateChange').textContent = s.change;
+  $('gateMsg').textContent = errKey ? s[errKey] : '';
+  $('gateMsg').className = errKey ? 'err' : '';
+  const setup = state === 'setup';
+  $('pairIntro').hidden = !setup;
+  $('gateEntry').hidden = !setup;
+  $('gateHelp').hidden = !setup;
+  $('offline').hidden = setup;
+  $('gateScan').hidden = !setup || !(app && app.scan);
+  $('pairOr').hidden = $('gateScan').hidden;
 }
 
 function normalize(s) {
@@ -75,23 +177,55 @@ function normalize(s) {
   if (!s) return '';
   if (!/^https?:\/\//i.test(s)) s = 'https://' + s;
   const u = new URL(s);
-  if (u.protocol !== 'https:') throw new Error(T('地址必须是 https'));
+  if (u.protocol !== 'https:') throw new Error('https');
   if (!u.pathname.endsWith('/')) u.pathname += '/';
   return u.toString();
 }
 
-$('save').onclick = () => {
-  try {
-    const url = normalize($('url').value);
-    if (!url) return ($('msg').textContent = T('请填写地址'));
-    app.setUrl(url);
-  } catch (e) {
-    $('msg').textContent = e.message.includes('https') ? e.message : T('地址格式不对');
+function submit() {
+  const raw = $('gateInput').value.trim();
+  if (!raw) return setErr('empty');
+  const compact = raw.replace(/\s+/g, '');
+  if (/^[a-f0-9]{16}\.[\w-]{22}$/.test(compact)) return setErr('manual');
+  let url;
+  if (compact.startsWith('agentremote://')) {
+    try {
+      const u = new URL(compact);
+      const a = u.searchParams.get('app'), d = u.searchParams.get('d');
+      if (!a || !a.startsWith('https://') || !d || !/^[\w-]+\.[\w-]+$/.test(d)) throw 0;
+      url = a + '#pair=' + d;
+    } catch (e) { return setErr('invalid'); }
+  } else {
+    try { url = normalize(raw); }
+    catch (e) { return setErr(e && e.message === 'https' ? 'https' : 'invalid'); }
   }
+  setErr('');
+  app.setUrl(url);
+}
+
+$('gateLang').onclick = e => {
+  const b = e.target.closest('[data-lang]');
+  if (!b || b.dataset.lang === lang) return;
+  lang = b.dataset.lang;
+  try { app && app.setLang ? app.setLang(lang) : localStorage.setItem('setup-lang', lang); } catch (e2) {}
+  render();
 };
-$('url').onkeydown = e => { if (e.key === 'Enter') $('save').click(); };
-$('retry').onclick = () => app.retry();
-$('change').onclick = () => { $('offline').hidden = true; $('setup').hidden = false; };
+$('gateBtn').onclick = submit;
+$('gateInput').onkeydown = e => { if (e.key === 'Enter') submit(); };
+$('gatePaste').onclick = async () => {
+  try { $('gateInput').value = (await navigator.clipboard.readText()).trim(); $('gateInput').focus(); }
+  catch (e) { setErr('clip'); }
+};
+$('gateScan').onclick = () => app.scan();
+$('gateRetry').onclick = () => app.retry();
+$('gateChange').onclick = () => { state = 'setup'; render(); };
+const closeSheet = () => { $('shade').hidden = $('sheet').hidden = true; };
+$('gateHelp').onclick = () => { $('shade').hidden = $('sheet').hidden = false; };
+$('shade').onclick = closeSheet;
+$('sheetOk').onclick = closeSheet;
+
+$('gateInput').value = current.replace(/^https:\/\//, '');
+render();
 </script>
 </body>
 </html>
