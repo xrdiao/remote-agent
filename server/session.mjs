@@ -43,8 +43,8 @@ export class Session extends AgentContext {
     if (this.mode === 'screen') {
       if (this.editorCdp) await this.editorCdp.send('Page.stopScreencast').catch(() => {});
       visualCapture.subscribe(this);
-      await this.visualList();
-      await visualCapture.restore();
+      const windows = await this.visualList();
+      await visualCapture.restore(windows);
       return;
     }
     if (!this.editorCdp) return;
@@ -69,7 +69,9 @@ export class Session extends AgentContext {
 
   async visualList() {
     try {
-      this.emit({t: 'visualWindows', windows: await visualWindows(), wayland});
+      const windows = await visualWindows();
+      this.emit({t: 'visualWindows', windows, wayland});
+      return windows;
     } catch (error) {
       this.emit({t: 'visual', state: 'error', message: '读取绘图或仿真窗口失败：' + error.message, wayland});
       throw error;

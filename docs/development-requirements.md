@@ -112,5 +112,6 @@
 19. Devin 窗口无文件夹（Untitled (Workspace)）时，项目名改取原生会话的工作目录。
 20. 电脑浏览器偶发切换 Agent 无效：窗口列表在按下与松开之间被 `windows`/`plans` 推送重绘，点击丢失。内容不变时不再重绘列表。
 21. Cursor 打开但手机无对话：识别 Cursor 1.x Composer 的 `[data-message-index]` 消息行；停在 Cursor Agents 首页（无打开的对话）时，attach 自动打开侧栏标记的当前 Agent。已对 Cursor、Devin、Codex 的 extract 实测。
+22. 「…」里的画面：进入时自动加载上次选择的窗口（已关闭则用第一个），没有窗口时显示「当前没有窗口」；保留点击切换窗口。Wayland 仍需电脑端授权。
 
 本列表不是实施所有历史愿望的概括授权。每轮只做当前已授权的具体范围；实现与验证后更新相应状态。

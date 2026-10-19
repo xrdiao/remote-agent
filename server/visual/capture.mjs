@@ -53,11 +53,12 @@ class VisualCapture {
     for (const viewer of this.viewers) if (viewer.visible && viewer.client.bufferedAmount < 2 * 1024 * 1024) viewer.emit({t: 'frame', ...frame, visual: true});
   }
   stop() { const child = this.child; this.child = null; child?.kill(); this.frame = null; this.state = {...this.state, state: 'idle'}; }
-  async restore() {
+  async restore(windows) {
     if (this.child) return;
-    const value = saved();
-    if (wayland && value.restoreToken) return this.start('restore');
-    if (!wayland && value.id && (await visualWindows()).some(w => w.id === value.id)) return this.start(value.id);
+    if (wayland) { if (saved().restoreToken) return this.start('restore'); return; }
+    const list = windows || await visualWindows();
+    if (!list.length) return this.update({state: 'idle', title: '', message: '当前没有窗口'});
+    return this.start((list.find(w => w.id === saved().id) || list[0]).id);
   }
   async start(id) {
     let target;
