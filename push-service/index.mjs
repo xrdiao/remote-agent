@@ -114,25 +114,28 @@ function apnsPost(envName, headers, body) {
   });
 }
 
-async function apnsSend(reg, collapse, payload) {
+// One APNs request for any push type: alerts to the app topic, liveactivity updates to the
+// `<topic>.push-type.liveactivity` topic. Retries once on a thrown (connection-level) error and
+// refreshes the provider token once on ExpiredProviderToken.
+async function apnsSend(envName, token, topic, pushType, priority, payload, collapse) {
   const body = JSON.stringify(payload);
-  const post = jwt => apnsPost(reg.env, {
-    ':path': `/3/device/${reg.token}`,
-    authorization: `bearer ${jwt}`,
-    'apns-topic': config.topic,
-    'apns-push-type': 'alert',
-    'apns-priority': '10',
+  const headers = {
+    ':path': `/3/device/${token}`,
+    'apns-topic': topic,
+    'apns-push-type': pushType,
+    'apns-priority': String(priority),
     'apns-expiration': String(Math.floor(Date.now() / 1000) + 3600),
-    'apns-collapse-id': collapse,
+    ...(collapse ? { 'apns-collapse-id': collapse } : {}),
     'content-type': 'application/json',
-  }, body);
+  };
+  const post = jwt => apnsPost(envName, { ...headers, authorization: `bearer ${jwt}` }, body);
   let r;
   try {
     r = await post(providerToken(false));
   } catch {
     // NAT can drop the kept-open connection after hours of quiet; the first request on it then fails. Retry once on a new one.
-    const stale = sessions.get(reg.env);
-    if (stale) { sessions.delete(reg.env); stale.destroy(); }
+    const stale = sessions.get(envName);
+    if (stale) { sessions.delete(envName); stale.destroy(); }
     r = await post(providerToken(false));
   }
   if (r.status === 403 && r.reason === 'ExpiredProviderToken') r = await post(providerToken(true));
@@ -216,7 +219,7 @@ async function send(ip, body) {
   const collapse = crypto.createHash('sha256').update(`${data.win}|${data.windowId}|${data.threadId}`).digest('hex').slice(0, 32);
   const payload = { aps: { alert: { title, body: text }, sound: 'default', 'thread-id': collapse }, ...data };
   const tag = pushId.slice(0, 6);
-  const r = await apnsSend(reg, collapse, payload);
+  const r = await apnsSend(reg.env, reg.token, config.topic, 'alert', 10, payload, collapse);
   if (r.status === 200) {
     console.log(`[send] ${tag} ${data.kind || '-'} ok`);
     return [200, { ok: true }];
@@ -231,6 +234,127 @@ async function send(ip, body) {
   return [502, { error: r.reason || `APNs ${r.status}` }];
 }
 
+/* ---------- Live Activities ---------- */
+
+const LIVE_DEAD = [...DEAD_REASONS, 'ExpiredToken'];
+const LIVE_MAX_AGE = 8 * 3600 * 1000;
+const LIVE_TOKEN_WAIT = 10 * MIN;
+
+function liveAps(nowSec, kind, state, attributes, alert, dismissAt) {
+  return {
+    timestamp: nowSec, event: kind, 'content-state': state,
+    ...(kind === 'start' ? { 'attributes-type': 'AgentActivityAttributes', attributes, alert } : {}),
+    ...(kind === 'end' && dismissAt ? { 'dismissal-date': dismissAt } : {}),
+  };
+}
+
+// Returns 'ok' (200), 'dead' (token unusable) or 'fail' with the APNs result for a 502.
+async function livePush(reg, tag, token, kind, apsPayload, priority) {
+  const r = await apnsSend(reg.env, token, `${config.topic}.push-type.liveactivity`, 'liveactivity', priority, { aps: apsPayload });
+  if (r.status === 200) { console.log(`[live] ${tag} ${kind} ok`); return { res: 'ok', r }; }
+  if (r.status === 410 || (r.status === 400 && LIVE_DEAD.includes(r.reason))) {
+    console.log(`[live] ${tag} ${kind} 令牌已失效（${r.reason || r.status}）`);
+    return { res: 'dead', r };
+  }
+  console.log(`[live] ${tag} APNs ${r.status} ${r.reason}`);
+  return { res: 'fail', r };
+}
+
+function liveFields(body, nowSec) {
+  const a = typeof body.attributes === 'object' && body.attributes ? body.attributes : {};
+  const attributes = { win: cut(a.win, 200), windowId: cut(a.windowId, 200), threadId: cut(a.threadId, 200),
+    app: cut(a.app, 200), project: cut(a.project, 200), thread: cut(a.thread, 200), pc: cut(a.pc, 200) };
+  const s = typeof body.state === 'object' && body.state ? body.state : {};
+  const state = { phase: cut(s.phase, 40), label: cut(s.label, 200), detail: cut(s.detail, 300),
+    done: Math.max(0, Number(s.done) || 0), total: Math.max(0, Number(s.total) || 0),
+    startedAt: Number(s.startedAt) || nowSec };
+  const al = typeof body.alert === 'object' && body.alert ? body.alert : {};
+  return {
+    attributes, state,
+    alert: { title: cut(al.title, 200), body: cut(al.body, 200) },
+    priority: body.priority === 10 ? 10 : 5,
+    dismissAt: Number(body.dismissAt) || 0,
+  };
+}
+
+// The app uploads its push-to-start token and, per activity, its update token.
+async function liveToken(ip, body) {
+  if (!hit(`livetoken:${ip}`, 120, HOUR)) return [429, { error: '请求太频繁' }];
+  const { pushId, secret, kind, key, token } = body;
+  const reg = lookup(pushId);
+  if (!reg) return [410, { error: 'gone' }];
+  if (!secretOk(reg, secret)) return [401, { error: 'secret 无效' }];
+  if (typeof token !== 'string' || !/^[0-9a-f]{64,200}$/i.test(token)) return [400, { error: 'token 无效' }];
+  const now = Date.now();
+  if (kind === 'start') {
+    reg.liveStart = token;
+    save();
+    console.log(`[live] ${pushId.slice(0, 6)} start token`);
+    return [200, { ok: true }];
+  }
+  if (kind !== 'update' || typeof key !== 'string' || !key || key.length > 700) return [400, { error: 'kind/key 无效' }];
+  reg.live ??= {};
+  const entry = reg.live[key] ??= { started: now };
+  entry.token = token;
+  if (entry.pending) {
+    const p = entry.pending;
+    const s = await livePush(reg, pushId.slice(0, 6), token, p.event,
+      liveAps(Math.floor(now / 1000), p.event, p.state, p.attributes, p.alert, p.dismissAt), p.event === 'update' ? p.priority : 10);
+    if (s.res === 'fail') { save(); return [502, { error: s.r.reason || `APNs ${s.r.status}` }]; }
+    delete entry.pending;
+    if (p.event === 'end' || s.res === 'dead') delete reg.live[key];
+  }
+  save();
+  return [200, { ok: true }];
+}
+
+async function live(ip, body) {
+  const { pushId, secret, key, event } = body;
+  if (typeof pushId === 'string' && !hit(`live:${pushId}`, 120, MIN)) return [429, { error: '发送太频繁' }];
+  const reg = lookup(pushId);
+  if (!reg) return [410, { error: 'gone' }];
+  if (!secretOk(reg, secret)) return [401, { error: 'secret 无效' }];
+  if (typeof key !== 'string' || !key || key.length > 700) return [400, { error: 'key 无效' }];
+  if (event !== 'update' && event !== 'end') return [400, { error: 'event 无效' }];
+  const now = Date.now(), nowSec = Math.floor(now / 1000);
+  const tag = pushId.slice(0, 6);
+  const { attributes, state, alert, priority, dismissAt } = liveFields(body, nowSec);
+  reg.live ??= {};
+  for (const [k, e] of Object.entries(reg.live)) if (now - (e.started || 0) > LIVE_MAX_AGE) delete reg.live[k];
+  const entry = reg.live[key];
+  const pending = { event, attributes, state, alert, priority, dismissAt };
+  const done = (extra = {}) => { save(); return [200, { ok: true, ...extra }]; };
+
+  if (event === 'end') {
+    if (entry?.token) {
+      const s = await livePush(reg, tag, entry.token, 'end', liveAps(nowSec, 'end', state, attributes, alert, dismissAt), 10);
+      if (s.res === 'fail') { save(); return [502, { error: s.r.reason || `APNs ${s.r.status}` }]; }
+      delete reg.live[key];
+      return done(s.res === 'dead' ? { dropped: true } : {});
+    }
+    if (entry) { entry.pending = pending; return done({ skipped: 'pending' }); }
+    return done({ skipped: 'none' });
+  }
+
+  if (entry?.token) {
+    const s = await livePush(reg, tag, entry.token, 'update', liveAps(nowSec, 'update', state, attributes, alert, dismissAt), priority);
+    if (s.res === 'fail') { save(); return [502, { error: s.r.reason || `APNs ${s.r.status}` }]; }
+    if (s.res === 'dead') { delete reg.live[key]; return done({ dropped: true }); }
+    return done();
+  }
+  // The start went out and the app's update token has not arrived yet: keep the latest state, never start twice.
+  if (entry && now - (entry.started || 0) < LIVE_TOKEN_WAIT) { entry.pending = pending; return done({ skipped: 'pending' }); }
+  if (reg.liveStart) {
+    const s = await livePush(reg, tag, reg.liveStart, 'start', liveAps(nowSec, 'start', state, attributes, alert, dismissAt), 10);
+    if (s.res === 'dead') { delete reg.liveStart; return done({ dropped: true }); }
+    if (s.res === 'fail') return [502, { error: s.r.reason || `APNs ${s.r.status}` }];
+    // The start was sent; track the key so later updates go pending while the app's update token is on its way.
+    reg.live[key] = { started: now };
+    return done();
+  }
+  return done({ skipped: 'no-start-token' });
+}
+
 async function unregister(ip, body) {
   const { pushId, secret } = body;
   const reg = lookup(pushId);
@@ -242,7 +366,7 @@ async function unregister(ip, body) {
   return [200, { ok: true }];
 }
 
-const ROUTES = { '/v1/register': register, '/v1/send': send, '/v1/unregister': unregister };
+const ROUTES = { '/v1/register': register, '/v1/send': send, '/v1/unregister': unregister, '/v1/live/token': liveToken, '/v1/live': live };
 
 const server = http.createServer(async (req, res) => {
   try {

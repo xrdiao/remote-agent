@@ -6,6 +6,8 @@
 	<string>$(APP_URL)</string>
 	<key>AgentRemotePushURL</key>
 	<string>$(PUSH_URL)</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>CFBundleURLTypes</key>

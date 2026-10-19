@@ -8,14 +8,39 @@
 
 /* Begin PBXBuildFile section */
 		AB11DA04307E71B50096F669 /* setup.html in Resources */ = {isa = PBXBuildFile; fileRef = AB11DA03307E71B50096F669 /* setup.html */; };
+		B4E1C9D205A7F381E6400005 /* AgentRemoteWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B4E1C9D205A7F381E6400004 /* AgentRemoteWidget.appex */; };
 		C7A2B913F0E84D21B95A6701 /* logo.png in Resources */ = {isa = PBXBuildFile; fileRef = C7A2B912F0E84D21B95A6701 /* logo.png */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		B4E1C9D205A7F381E6400006 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AB11D9B5307E71B50096F669 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B4E1C9D205A7F381E6400009;
+			remoteInfo = AgentRemoteWidget;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		B4E1C9D205A7F381E6400008 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			dstPath = "";
+			dstSubfolder = PlugIns;
+			files = (
+				B4E1C9D205A7F381E6400005 /* AgentRemoteWidget.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		AB11D9BD307E71B50096F669 /* AgentRemote.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AgentRemote.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AB11DA01307E71B50096F669 /* AgentRemote.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = AgentRemote.xcconfig; sourceTree = "<group>"; };
 		AB11DA02307E71B50096F669 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		AB11DA03307E71B50096F669 /* setup.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; name = setup.html; path = ../android/app/src/main/assets/setup.html; sourceTree = "<group>"; };
+		B4E1C9D205A7F381E6400003 /* WidgetInfo.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = WidgetInfo.plist; sourceTree = "<group>"; };
+		B4E1C9D205A7F381E6400004 /* AgentRemoteWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = AgentRemoteWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		C7A2B912F0E84D21B95A6701 /* logo.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; name = logo.png; path = ../android/app/src/main/assets/logo.png; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -25,10 +50,25 @@
 			path = AgentRemote;
 			sourceTree = "<group>";
 		};
+		B4E1C9D205A7F381E6400001 /* Shared */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		B4E1C9D205A7F381E6400002 /* AgentRemoteWidget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = AgentRemoteWidget;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		AB11D9BA307E71B50096F669 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
+		B4E1C9D205A7F381E64000A2 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
 			);
@@ -44,6 +84,9 @@
 				AB11DA02307E71B50096F669 /* Info.plist */,
 				AB11DA03307E71B50096F669 /* setup.html */,
 				C7A2B912F0E84D21B95A6701 /* logo.png */,
+				B4E1C9D205A7F381E6400001 /* Shared */,
+				B4E1C9D205A7F381E6400002 /* AgentRemoteWidget */,
+				B4E1C9D205A7F381E6400003 /* WidgetInfo.plist */,
 				AB11D9BE307E71B50096F669 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -52,6 +95,7 @@
 			isa = PBXGroup;
 			children = (
 				AB11D9BD307E71B50096F669 /* AgentRemote.app */,
+				B4E1C9D205A7F381E6400004 /* AgentRemoteWidget.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -66,16 +110,40 @@
 				AB11D9B9307E71B50096F669 /* Sources */,
 				AB11D9BA307E71B50096F669 /* Frameworks */,
 				AB11D9BB307E71B50096F669 /* Resources */,
+				B4E1C9D205A7F381E6400008 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
+			dependencies = (
+				B4E1C9D205A7F381E6400007 /* PBXTargetDependency */,
+			);
 			fileSystemSynchronizedGroups = (
 				AB11D9BF307E71B50096F669 /* AgentRemote */,
+				B4E1C9D205A7F381E6400001 /* Shared */,
 			);
 			name = AgentRemote;
 			productName = AgentRemote;
 			productReference = AB11D9BD307E71B50096F669 /* AgentRemote.app */;
 			productType = "com.apple.product-type.application";
+		};
+		B4E1C9D205A7F381E6400009 /* AgentRemoteWidget */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B4E1C9D205A7F381E64000A6 /* Build configuration list for PBXNativeTarget "AgentRemoteWidget" */;
+			buildPhases = (
+				B4E1C9D205A7F381E64000A1 /* Sources */,
+				B4E1C9D205A7F381E64000A2 /* Frameworks */,
+				B4E1C9D205A7F381E64000A3 /* Resources */,
+			);
+			buildRules = (
+			);
+			fileSystemSynchronizedGroups = (
+				B4E1C9D205A7F381E6400001 /* Shared */,
+				B4E1C9D205A7F381E6400002 /* AgentRemoteWidget */,
+			);
+			name = AgentRemoteWidget;
+			productName = AgentRemoteWidget;
+			productReference = B4E1C9D205A7F381E6400004 /* AgentRemoteWidget.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -88,6 +156,9 @@
 				LastUpgradeCheck = 2700;
 				TargetAttributes = {
 					AB11D9BC307E71B50096F669 = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					B4E1C9D205A7F381E6400009 = {
 						CreatedOnToolsVersion = 27.0;
 					};
 				};
@@ -107,6 +178,7 @@
 			projectRoot = "";
 			targets = (
 				AB11D9BC307E71B50096F669 /* AgentRemote */,
+				B4E1C9D205A7F381E6400009 /* AgentRemoteWidget */,
 			);
 		};
 /* End PBXProject section */
@@ -119,6 +191,11 @@
 				C7A2B913F0E84D21B95A6701 /* logo.png in Resources */,
 			);
 		};
+		B4E1C9D205A7F381E64000A3 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -127,7 +204,20 @@
 			files = (
 			);
 		};
+		B4E1C9D205A7F381E64000A1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		B4E1C9D205A7F381E6400007 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B4E1C9D205A7F381E6400009 /* AgentRemoteWidget */;
+			targetProxy = B4E1C9D205A7F381E6400006 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		AB11D9C6307E71B70096F669 /* Debug configuration for PBXProject "AgentRemote" */ = {
@@ -253,6 +343,7 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = AB11DA01307E71B50096F669 /* AgentRemote.xcconfig */;
 			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = AgentRemote.entitlements;
@@ -290,6 +381,7 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = AB11DA01307E71B50096F669 /* AgentRemote.xcconfig */;
 			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = AgentRemote.entitlements;
@@ -323,6 +415,60 @@
 			};
 			name = Release;
 		};
+		B4E1C9D205A7F381E64000A4 /* Debug configuration for PBXNativeTarget "AgentRemoteWidget" */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = AB11DA01307E71B50096F669 /* AgentRemote.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = WidgetInfo.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Remote Agent";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.3.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(inherited).LiveActivity";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		B4E1C9D205A7F381E64000A5 /* Release configuration for PBXNativeTarget "AgentRemoteWidget" */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = AB11DA01307E71B50096F669 /* AgentRemote.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = WidgetInfo.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Remote Agent";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.3.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(inherited).LiveActivity";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -339,6 +485,14 @@
 			buildConfigurations = (
 				AB11D9C9307E71B70096F669 /* Debug configuration for PBXNativeTarget "AgentRemote" */,
 				AB11D9CA307E71B70096F669 /* Release configuration for PBXNativeTarget "AgentRemote" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		B4E1C9D205A7F381E64000A6 /* Build configuration list for PBXNativeTarget "AgentRemoteWidget" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B4E1C9D205A7F381E64000A4 /* Debug configuration for PBXNativeTarget "AgentRemoteWidget" */,
+				B4E1C9D205A7F381E64000A5 /* Release configuration for PBXNativeTarget "AgentRemoteWidget" */,
 			);
 			defaultConfigurationName = Release;
 		};

@@ -18,7 +18,7 @@ struct ContentView: View {
         .background(Color(uiColor: shell.background))
         .preferredColorScheme(shell.light ? .light : .dark)
         .onAppear(perform: shell.start)
-        .onOpenURL(perform: shell.openPairLink)
+        .onOpenURL(perform: shell.openUrl)
         .sheet(isPresented: $shell.scanning, onDismiss: shell.finishScan) {
             QRScanner { shell.scanned = $0; shell.scanning = false }
         }
@@ -150,6 +150,18 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
     func start() {
         guard !started else { return }
         load(appURL)
+    }
+
+    // agentremote://pair?app=…&d=… pairs; agentremote://open?win=…&windowId=…&threadId=… comes from a Live Activity tap.
+    func openUrl(_ url: URL) {
+        guard url.scheme == "agentremote", url.host == "open",
+              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else {
+            return openPairLink(url)
+        }
+        var target: [String: String] = [:]
+        for key in ["win", "windowId", "threadId"] { target[key] = items.first { $0.name == key }?.value ?? "" }
+        guard let data = try? JSONSerialization.data(withJSONObject: target, options: [.sortedKeys]) else { return }
+        openFromNotification(String(decoding: data, as: UTF8.self))
     }
 
     // agentremote://pair?app=<https app address>&d=<url key>.<one-time code>, from the web app in a browser or a QR code.

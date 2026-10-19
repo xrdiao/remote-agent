@@ -98,6 +98,7 @@ final class Push: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
                 self.defaults.set(pushId, forKey: "pushId")
                 self.defaults.set(secret, forKey: "pushSecret")
                 self.defaults.set(token, forKey: "pushToken")
+                LiveActivities.flush()
                 completion(.success(["url": base, "pushId": pushId, "secret": secret]))
             }
         }.resume()
@@ -120,6 +121,7 @@ final class Push: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
 final class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         Push.shared.launch()
+        LiveActivities.start()
         return true
     }
 

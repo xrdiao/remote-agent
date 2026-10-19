@@ -27,8 +27,10 @@ iOS 版 App 的 APNs 推送转发服务（部署在 push.luojiajiang.uk）。
 - `POST /v1/register`：`{ token, env?, pushId?, secret? }` → `{ pushId, secret }`。带上正确的 `pushId` + `secret` 可以更新令牌
 - `POST /v1/send`：`{ pushId, secret, title, body, data }` → `{ ok: true }`。令牌已失效时返回 410 并删除登记
 - `POST /v1/unregister`：`{ pushId, secret }`
+- `POST /v1/live/token`：`{ pushId, secret, kind, key?, token }`。App 上报 Live Activity 令牌：`kind` 为 `start`（push-to-start 令牌）或 `update`（单个活动的更新令牌，`key` 为 `win|windowId|threadId`）
+- `POST /v1/live`：`{ pushId, secret, key, event, attributes, state, alert, priority?, dismissAt? }`。relay 通知活动状态变化：`event` 为 `update` 或 `end`；首个 `update` 会向 `start` 令牌发开始推送，活动条目最多保留 8 小时。Live Activity 不需要额外配置，同一密钥和 topic 即可
 
-限流：注册每 IP 每小时 20 次；发送每个 pushId 每分钟 60 次；每 IP 每分钟 600 次。日志不记录标题、正文、令牌和 secret。
+限流：注册每 IP 每小时 20 次；发送每个 pushId 每分钟 60 次；live/token 每 IP 每小时 120 次；live 每 pushId 每分钟 120 次；每 IP 每分钟 600 次。日志不记录标题、正文、令牌和 secret。
 
 ## 部署
 
