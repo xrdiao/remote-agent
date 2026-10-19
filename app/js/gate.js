@@ -212,6 +212,7 @@ function ensureReadyAgent() {
 
 function connRender() {
   const tr = I18N.tr;
+  $('connVersion').textContent = `${tr('版本')} ${APP_VERSION}`;
   const failed = conn.host === 'err';
   $('conn').classList.toggle('failure', failed);
   $('connHostLabel').hidden = failed;
@@ -265,7 +266,6 @@ function connRender() {
   $('connMore').hidden = !settled || !!ready;
   $('connPick').hidden = true;
   $('connNote').textContent = settled && !ready ? tr('请在电脑上启动 Agent 的调试窗口，再点击全部重试。') : '';
-
 }
 $('connGo').onclick = () => {
   if (conn.host === 'err') return boot();

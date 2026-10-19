@@ -24,6 +24,7 @@ const I18N = (() => {
     "{ms} ms": "{ms} ms",
     "每 15 秒自动重试": "Retrying automatically every 15 seconds",
     "详情": "Details",
+    "版本": "Version",
     "页面": "Page",
     "隧道": "Tunnel",
     "超时": "Timed out",

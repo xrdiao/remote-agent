@@ -18,7 +18,11 @@ function echoTextMatches(it, t) {
     || s.replace(/(?:^|\n)\[(?:图片|附件) \d+\](?:\n\[(?:图片|附件) \d+\])*$/, '').trim() === x;
 }
 function pushEcho(requestId, text, kind) {
-  const before = (lastChat?.items || []).filter(it => it.k === 'human' && echoTextMatches(it, text)).length;
+  // Right after a sel switch lastChat can still be the previous conversation; counting its
+  // matching items would leave a stale `before` that the new chat can never exceed.
+  const selThread = viewSel.split('|').pop() || '';
+  const sameChat = selThread ? lastChat?.thread === selThread : !lastChat?.thread;
+  const before = sameChat ? (lastChat?.items || []).filter(it => it.k === 'human' && echoTextMatches(it, text)).length : 0;
   pendingEchoes.push({ requestId, text, kind, at: Date.now(), sel: viewSel, before });
   queueChatRender();
 }
