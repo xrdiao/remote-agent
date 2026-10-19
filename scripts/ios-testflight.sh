@@ -29,6 +29,12 @@ xcodebuild -project "$PROJECT" -scheme AgentRemote -configuration Release \
   -destination 'generic/platform=iOS' -archivePath "$ARCHIVE" archive \
   CODE_SIGNING_ALLOWED=NO CURRENT_PROJECT_VERSION="$BUILD"
 
+APP="$ARCHIVE/Products/Applications/AgentRemote.app"
+# The archive is unsigned (no registered device needed); ad-hoc sign it inside-out so the
+# export sees the entitlements (aps-environment) and carries them into the App Store signature.
+for ext in "$APP"/PlugIns/*.appex; do [[ -e "$ext" ]] && codesign --force --sign - "$ext"; done
+codesign --force --sign - --entitlements ios/AgentRemote.entitlements "$APP"
+
 cat > "$WORK/ExportOptions.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
