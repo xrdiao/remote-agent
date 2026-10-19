@@ -38,7 +38,7 @@ mkdir -p "$HOME/.agent-remote"
 want="${*:-cursor devin codex}"
 has() { case " $want " in *" $1 "*) return 0;; *) return 1;; esac; }
 jobs=()
-has cursor && { start_agent cursor Cursor "${CDP_PORT:-9222}" "${CURSOR_BIN:-}" cursor cursor /usr/share/cursor/cursor /opt/Cursor/cursor & jobs+=("$!"); }
+has cursor && { start_agent cursor Cursor "${CDP_PORT:-9222}" "${CURSOR_BIN:-$([[ -x /usr/share/cursor/cursor ]] && echo /usr/share/cursor/cursor)}" cursor cursor /usr/share/cursor/cursor /opt/Cursor/cursor & jobs+=("$!"); }
 has devin && { start_agent devin Devin "${DEVIN_CDP_PORT:-9223}" "${DEVIN_BIN:-}" devin-desktop devin-desktop /usr/share/devin-desktop/devin-desktop /usr/share/devin-desktop/bin/devin-desktop & jobs+=("$!"); }
 has codex && { start_agent codex Codex "${CODEX_CDP_PORT:-9224}" "${CODE_BIN:-}" code code /usr/share/code/code & jobs+=("$!"); }
 failed=0

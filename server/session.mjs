@@ -4,6 +4,7 @@ import { listWindows, codexWindows } from './windows.mjs';
 import { CODEX_CDP_URL } from './config.mjs';
 import { helpersCall } from './page/build.mjs';
 import { AgentContext, appPlans } from './agent/index.mjs';
+import { hasLaunched, takeLaunched } from './launch.mjs';
 import { fusionViewers, fusionHistory, fusionWorkers, newFusionRun } from './fusion/state.mjs';
 import { FUSION_OWNER } from './fusion/owner.mjs';
 import { FusionRunner } from './fusion/runner.mjs';
@@ -167,7 +168,7 @@ export class Session extends AgentContext {
     const chosen = win || wins[0];
     if (!chosen) throw new Error('没有找到 Cursor、Devin 或 Codex 窗口。Cursor 用调试端口 9222，Devin 用 ./scripts/start-devin.sh，Codex 用 ./scripts/start-codex.sh');
     await this.openBound(chosen, chosen.ws, null, { windowId: chosen.id, initial: req.initial === true });
-    if (threadId && threadId !== this.threadId) {
+    if (threadId && threadId !== this.threadId && !this.launchDefault) {
       try { await this.openAgent(threadId); }
       catch { this.emit({ t: 'status', ok: false, msg: '没有找到上次的会话，已留在当前会话' }); }
     }
@@ -176,6 +177,10 @@ export class Session extends AgentContext {
   async openBound(win, editorWs, chatWs, selection) {
     const editorCdp = new Cdp(editorWs);
     const cdp = chatWs ? new Cdp(chatWs) : editorCdp;
+    // A phone-launched app lands on its most recent session, not the remembered thread.
+    // Peek only: the marker is consumed where openDefaultSession actually runs, so a
+    // failed attach does not burn the one-shot launch flag.
+    const launchDefault = this.launchDefault = hasLaunched(win.app);
     let thread = '';
     let staleSelect = '';
     try {
@@ -183,7 +188,7 @@ export class Session extends AgentContext {
       if (cdp !== editorCdp) await cdp.connect();
       if (win.app === 'codex') {
         thread = await cdp.evaluate(helpersCall('codexThread()')) || '';
-        if (selection.threadId && selection.threadId !== thread) {
+        if (selection.threadId && selection.threadId !== thread && !launchDefault) {
           if (await this.selectCodexThread(selection.threadId, cdp)) thread = selection.threadId;
           else staleSelect = selection.threadId;
         }
@@ -225,10 +230,18 @@ export class Session extends AgentContext {
     editorCdp.on('Page.screencastFrame', p => this.onFrame(p));
     await this.refreshViewport();
     if (this.app !== 'codex') this.threadId = await this.cdp.evaluate(helpersCall('activeThread()')) || '';
-    // Cursor's Agents home keeps a last-used agent marked current in the sidebar, so
-    // activeThread() reports a thread even though no chat panel is open. Reopen it here —
-    // otherwise attach sees threadId already matching and never opens a transcript.
-    if (win.app === 'cursor' && this.threadId && !await this.cdp.evaluate(helpersCall('panelRect()')).catch(() => null)) {
+    // An app started from the phone opens on its most recently used session.
+    if (launchDefault && takeLaunched(win.app)) {
+      try { await this.adapter.openDefaultSession?.call(this); }
+      catch { this.emit({ t: 'status', ok: false, msg: '没有找到最近的会话' }); }
+      // openDefaultSession may have re-attached to another window (e.g. opened the
+      // default project); that attach already emitted, and the remembered-thread
+      // reopen in attach() must stay skipped for this launch.
+      if (this.cdp !== cdp) { this.launchDefault = true; return; }
+    } else if (win.app === 'cursor' && this.threadId && !await this.cdp.evaluate(helpersCall('panelRect()')).catch(() => null)) {
+      // Cursor's Agents home keeps a last-used agent marked current in the sidebar, so
+      // activeThread() reports a thread even though no chat panel is open. Reopen it here —
+      // otherwise attach sees threadId already matching and never opens a transcript.
       try { await this.openAgent(this.threadId); } catch {}
     }
     this.emit({

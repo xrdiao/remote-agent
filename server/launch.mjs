@@ -10,6 +10,19 @@ const AGENTS = ['cursor', 'devin', 'codex'];
 // Later callers join the in-flight launch and get its result instead of silence.
 const inFlight = new Map();
 
+// Apps whose process this relay just started: the next attach within 3 minutes
+// should load the app's most recent session instead of the remembered thread.
+const launched = new Map();
+export function hasLaunched(app) {
+  const at = launched.get(app);
+  return !!at && Date.now() - at < 180000;
+}
+export function takeLaunched(app) {
+  const at = launched.get(app);
+  launched.delete(app);
+  return !!at && Date.now() - at < 180000;
+}
+
 // Starts the platform launcher for the requested agents, emits launchResult,
 // then re-probes so the connection overlay updates. Never awaits the caller's
 // command queue — callers run this detached.
@@ -30,6 +43,7 @@ export function launchAgents(s, apps, probe) {
       // The debug port answers before the app registers its window targets; keep probing
       // for a while so the overlay flips to connected instead of staying "未连接".
       const starting = results.filter(r => r.status === 'started').map(r => r.app);
+      for (const a of starting) launched.set(a, Date.now());
       for (let i = 0; starting.length && i < 10; i++) {
         await new Promise(r => setTimeout(r, 2000));
         const found = new Set((await listWindows().catch(() => [])).map(w => w.app));

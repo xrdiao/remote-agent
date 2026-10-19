@@ -14,6 +14,41 @@ export const adapter = {
     return this.devinNewChat();
   },
 
+  // A freshly launched Devin opens on the workspace welcome or last surface;
+  // switch to the most recently used session (agentList rows carry lastUsed).
+  async openDefaultSession() {
+    const st = await this.cdp.evaluate(`(() => {
+      const h = ${PAGE_SRC};
+      return { surface: h.devinSurface(), thread: h.activeThread(), items: (h.extract() || {}).items?.length || 0 };
+    })()`);
+    if (st.thread && st.items) return;
+    if (st.surface === 'editor') {
+      const opened = await this.openSessionPicker();
+      const rows = opened ? await this.cdp.evaluate(helpersCall('sessionPickerRows()')) : null;
+      const first = rows?.[0];
+      const pos = first && await this.cdp.evaluate(helpersCall(`sessionPickerTarget(${JSON.stringify(first.id)}, ${JSON.stringify(first.title)})`));
+      if (!pos) {
+        if (opened) await this.key('Escape');
+        throw new Error('没有找到最近的会话');
+      }
+      await this.tapCss(pos.x, pos.y);
+      this.resetDevinView();
+      this.emit({ t: 'status', ok: true, msg: '已切换 Agent' });
+      setTimeout(() => this.pollChat().catch(() => {}), 500);
+      return;
+    }
+    // A cold window's session list loads asynchronously; wait for real rows.
+    let rows = [];
+    for (let i = 0; i < 48 && !rows.length; i++) {
+      const list = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return h.agentList(); })()`) || [];
+      rows = list.filter(r => r.id && !String(r.id).startsWith('new:') && !String(r.id).startsWith('project-new:'));
+      if (!rows.length) await new Promise(r => setTimeout(r, 250));
+    }
+    const best = rows.reduce((a, b) => ((b.lastUsed || 0) > (a?.lastUsed || 0) ? b : a), null);
+    if (!best) throw new Error('没有找到最近的会话');
+    await this.adapter.openAgent.call(this, best.id);
+  },
+
   async openAgent(id, title = '', retried = false) {
     if (IS_WIN && id.startsWith('window:devin:')) {
       await this.attach(id.slice('window:'.length));

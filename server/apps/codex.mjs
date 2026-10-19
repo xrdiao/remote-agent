@@ -14,6 +14,28 @@ export const adapter = {
     return this.newCodexChat();
   },
 
+  // A freshly launched Codex window opens on the new-chat view; select this
+  // workspace's most recently used conversation (rows carry lastUsed = updatedAt).
+  async openDefaultSession() {
+    const page = (await codexWindows(CODEX_CDP_URL)).find(p => p.pageId === this.codexPageId);
+    if (page && !page.chatWs) await this.ensureCodexReady({ id: page.pageId, ws: page.ws }, true);
+    const cur = await this.cdp.evaluate(helpersCall('codexThread()')) || '';
+    if (cur) return;
+    const roots = await this.editorCdp.evaluate(helpersCall('codexWorkspaceRoots()')) || [];
+    // The webview loads the conversation list asynchronously after the sidebar opens.
+    let best = null;
+    for (let i = 0; i < 48 && !best; i++) {
+      const rows = await this.cdp.evaluate(helpersCall('codexChatRows(true)')) || [];
+      best = rows.filter(r => !r.host && (!roots.length || roots.some(root => pathKey(root) === pathKey(r.workspace))))
+        .reduce((a, b) => ((b.lastUsed || 0) > (a?.lastUsed || 0) ? b : a), null);
+      if (!best) await new Promise(r => setTimeout(r, 250));
+    }
+    if (!best) throw new Error('没有找到最近的会话');
+    if (!await this.selectCodexThread(best.id)) throw new Error('没有找到最近的会话');
+    this.threadId = best.id;
+    this.publishThread();
+  },
+
   async openAgent(id, title = '') {
     await this.openCodexAgent(id);
   },

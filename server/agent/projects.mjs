@@ -158,7 +158,7 @@ export const methods = {
         for (const page of projectPages) {
           const cdp = new Cdp(page.webSocketDebuggerUrl);
           await cdp.connect();
-          try { busy = !!await cdp.evaluate(helpersCall('agentState().busy || agentList().some(a => a.running)')); }
+          try { busy = !!await cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return h.agentState()?.busy || h.agentList().some(a => a.running); })()`); }
           finally { cdp.close(); }
           if (busy) break;
         }
