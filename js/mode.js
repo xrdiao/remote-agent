@@ -35,7 +35,7 @@ function setMode(m) {
   updateTermEmpty();
   $('visualEmpty').hidden = m !== 'screen' || visualState.state === 'live';
   stage.hidden = m === 'screen' && visualState.state !== 'live';
-  if (m === 'screen') { visualState = {state: 'idle'}; renderVisualState(visualState); }
+  if (m === 'screen') { visualState = {state: 'idle', message: I18N.tr('正在查找窗口…')}; renderVisualState(visualState); }
   if (m === 'screen' || m === 'terminal') { layoutStage(); applyQuality(); }
 }
 $('tabChat').onclick = () => setMode('chat');

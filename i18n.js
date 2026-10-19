@@ -79,6 +79,7 @@ const I18N = (() => {
     '请选择绘图或仿真窗口': 'Choose a plot or simulation window', '没有发现绘图或仿真窗口，请先在电脑端打开。': 'No plot or simulation windows found. Open one on the computer first.',
     '刷新窗口列表': 'Refresh windows', '需要在电脑端选择并授权绘图或仿真窗口': 'Select and authorize a plot or simulation window on the computer.',
     '已授权窗口': 'Authorized window', '正在读取窗口画面…': 'Loading window view…',
+    '当前没有窗口': 'No window available', '正在查找窗口…': 'Looking for windows…',
     '切换电脑': 'Switch computer',
     '连接失败': 'Failed',
     '失败阶段：{v}': 'Failed stage: {v}',
