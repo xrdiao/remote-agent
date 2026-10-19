@@ -8,13 +8,19 @@ export class Cdp {
     this.onclose = null;
   }
 
-  connect() {
+  // Zombie targets can accept the TCP connection yet never answer the WebSocket handshake
+  // (an app mid-restart leaves stale entries in /json/list); without a bound the caller
+  // would wait forever and stall the session's whole command queue.
+  connect(timeoutMs = 10000) {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(this.wsUrl);
       this.ws = ws;
-      ws.onopen = () => resolve();
-      ws.onerror = () => reject(new Error(`CDP connect failed: ${this.wsUrl}`));
+      let opened = false;
+      const timer = setTimeout(() => { try { ws.close(); } catch {} reject(new Error(`CDP connect timeout: ${this.wsUrl}`)); }, timeoutMs);
+      ws.onopen = () => { opened = true; clearTimeout(timer); resolve(); };
+      ws.onerror = () => { if (!opened) { clearTimeout(timer); reject(new Error(`CDP connect failed: ${this.wsUrl}`)); } };
       ws.onclose = () => {
+        if (!opened) { clearTimeout(timer); reject(new Error(`CDP connect failed: ${this.wsUrl}`)); return; }
         for (const { reject } of this.pending.values()) reject(new Error('CDP closed'));
         this.pending.clear();
         this.onclose?.();

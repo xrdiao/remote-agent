@@ -22,7 +22,7 @@
     const detection = addon?.capabilities.get(2);
     const el = term?.element;
     if (el) el.dataset.remoteTerminal ||= crypto.randomUUID();
-    return { id: el?.dataset.remoteTerminal || '', commands: (detection?.commands || []).map(c => c.command).filter(c => typeof c === 'string' && c.trim()), input: detection?.promptInputModel?.value ?? null };
+    return { id: el?.dataset.remoteTerminal || '', commands: (detection?.commands || []).map(c => c.command).filter(c => typeof c === 'string' && c.trim()), input: detection?.promptInputModel?.value ?? null, executing: !!detection?.currentCommand?.commandExecutedMarker };
   };
   const focusTerminalInput = () => {
     const term = activeTerminal();

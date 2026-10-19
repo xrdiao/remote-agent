@@ -35,7 +35,8 @@
     const aria = el.getAttribute('aria-label');
     const k = aria === 'User message' ? 'human'
       : aria === 'Devin message' ? 'assistant'
-      : kindEl?.dataset.messageKind || (el.querySelector('.composer-human-message, .aislash-editor-input-readonly') ? 'human' : 'other');
+      : kindEl?.dataset.messageKind || (el.querySelector('.composer-human-message, .aislash-editor-input-readonly') ? 'human'
+        : el.querySelector('.anysphere-markdown-container-root') ? 'assistant' : 'other');
     const item = { i: itemKey(el), k };
     const sentAt = Date.parse(el.querySelector('time[datetime]')?.getAttribute('datetime') || '');
     if (k === 'human' && Number.isFinite(sentAt)) item.sentAt = sentAt;
@@ -54,7 +55,7 @@
     if (k === 'human') item.t = aria === 'User message' ? devinUserText(readable) : (readable.innerText || readable.textContent || '').trim();
     else if (k === 'assistant') {
       const devinRoot = aria === 'Devin message' ? el.querySelector('.prose-main') : null;
-      const md = [...el.querySelectorAll('.markdown-root, .ui-markdown, .rendered-markdown')].find(n => !n.closest(THINKING_ROOT));
+      const md = [...el.querySelectorAll('.markdown-root, .ui-markdown, .rendered-markdown, .anysphere-markdown-container-root')].find(n => !n.closest(THINKING_ROOT));
       const body = devinRoot || md || withoutThinking(el);
       item.t = (body.innerText || body.textContent || '').trim();
       item.h = devinRoot ? devinRich(devinRoot) : md ? clean(md) : esc((withoutThinking(el).innerText || '').trim()).replace(/\n/g, '<br>');
@@ -541,9 +542,18 @@
       && !(panel.querySelector('[data-turn-key]') && /^(stop|stop generating|停止)$/i.test(x.label))).map(x => x.label);
     const modeEl = [...doc.querySelectorAll('.composer-unified-dropdown[data-mode]')].find(vis);
     const modelEl = modelButton();
-    const latestTurn = [...doc.querySelectorAll('[data-turn-key]')].at(-1);
+    const latestTurn = [...panel.querySelectorAll('[data-turn-key]')].filter(vis).at(-1);
     const latestEntry = codexId && codexLatestEntry(latestTurn);
-    if (latestEntry?.turn && latestEntry.turnKey !== latestTurn?.getAttribute('data-turn-key')) {
+    const entries = codexId && latestTurn ? codexFiberProps(latestTurn, 32).find(p => Array.isArray(p.entries))?.entries : null;
+    const mountedIndex = entries?.findIndex(entry => entry.turnKey === latestTurn.getAttribute('data-turn-key')) ?? -1;
+    if (mountedIndex >= 0) {
+      const scopes = codexHistoryScopes();
+      for (const entry of entries.slice(mountedIndex + 1)) {
+        if (entry.conversationId !== codexId) continue;
+        const turn = entry.turn || (entry.turnKey === latestEntry?.turnKey ? latestEntry.turn : null) || codexStoredTurn(entry, scopes);
+        if (turn) items.push(...codexTurnItems(null, { ...entry, turn }));
+      }
+    } else if (latestEntry?.turn && latestEntry.turnKey !== latestTurn?.getAttribute('data-turn-key')) {
       items.push(...codexTurnItems(null, latestEntry));
     }
     const latestData = latestEntry?.turn || (latestTurn && codexTurnData(latestTurn));

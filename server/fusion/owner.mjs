@@ -10,7 +10,7 @@ import { Cdp } from '../cdp.mjs';
 import { listWindows, codexWindows, codexContext } from '../windows.mjs';
 import { CODEX_CDP_URL, EDITORS } from '../config.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
-import { AgentContext, FOCUS_COMPOSER, safeHomePath, projectList, openFolder } from '../agent/context.mjs';
+import { AgentContext, FOCUS_COMPOSER, safeHomePath, projectList, openFolder } from '../agent/index.mjs';
 import { FUSION_ACTIVE, fusionHistory, conversationProjects, fusionWorkers,
   newFusionRun, fusionCursorProjects, fusionProject, fusionModelSpec, fusionHtml, fusionMark, fusionLastAssistant } from './state.mjs';
 import '../apps/index.mjs';

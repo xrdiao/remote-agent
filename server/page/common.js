@@ -1,7 +1,10 @@
 // Runs inside the desktop page (injected via toString). Emits only whitelisted tags with escaped text, never raw DOM HTML.
   const workspaceTrustState = () => {
+    // An open trust editor in the granted state still matches the dialog regex
+    // ("You trust the authors of the files ..."), so treat it as trusted, not required.
+    const granted = [...document.querySelectorAll('.workspace-trust-editor.trusted')].some(vis);
     const dialogs = [...document.querySelectorAll('.monaco-dialog-box, [role="dialog"]')].filter(vis);
-    const dialog = dialogs.find(e => /trust the authors|信任.*作者/i.test(e.innerText || ''));
+    const dialog = granted ? null : dialogs.find(e => /trust the authors|信任.*作者/i.test(e.innerText || ''));
     const editor = [...document.querySelectorAll('.workspace-trust-editor')].find(vis);
     const area = dialog || editor;
     const buttons = area ? [...area.querySelectorAll('button, .monaco-button, [role="button"]')].filter(vis) : [];
@@ -9,7 +12,7 @@
     const trust = buttons.find(b => /^(Yes, I trust the authors|Trust(?: Folder| Workspace)?|是，我信任|信任(?:此)?(?:文件夹|工作区|作者)?)/i.test((b.innerText || b.getAttribute('aria-label') || '').trim()));
     const decline = buttons.find(b => /^(No, I don.t trust|Don.t Trust|不.*信任|否)/i.test((b.innerText || b.getAttribute('aria-label') || '').trim()));
     const restricted = [...document.querySelectorAll('.statusbar-item, .monaco-workbench .banner')].find(e => vis(e) && /Restricted Mode|限制模式|受限模式/i.test(e.innerText || e.getAttribute('aria-label') || ''));
-    return { required: !!dialog || !!restricted || !!trust, trust: point(trust), decline: point(decline), manage: point(restricted) };
+    return { required: !granted && (!!dialog || !!restricted || !!trust), trust: point(trust), decline: point(decline), manage: point(restricted) };
   };
   // Codex draws inside a same-origin iframe. Cursor and Devin use this page.
   const doc = document.getElementById('active-frame')?.contentDocument || document;
@@ -28,14 +31,17 @@
     return titled || el.querySelector('.ui-edit-tool-call__filename')?.innerText.trim() || null;
   };
 
-  // Older Cursor builds mark each transcript row with data-flat-index. The Agents window in
-  // current builds uses data-message-kind instead, and past bubbles contain their own editors.
-  const ITEM_SEL = '[data-flat-index], [data-message-kind], [data-turn-key], [role=group][aria-label="User message"], [role=group][aria-label="Devin message"]';
+  // Older Cursor builds mark each transcript row with data-flat-index; Cursor 1.x Composer
+  // chats use data-message-index. The Agents window in current builds uses data-message-kind
+  // instead, and past bubbles contain their own editors.
+  const ITEM_SEL = '[data-flat-index], [data-message-index], [data-message-kind], [data-turn-key], [role=group][aria-label="User message"], [role=group][aria-label="Devin message"]';
   const COMPOSER = '.aislash-editor-input, .ui-prompt-input-editor__input, .ProseMirror';
   const inItem = el => !!el.closest(ITEM_SEL);
   const itemKey = el => {
     const existing = el.dataset.flatIndex || el.dataset.turnKey || el.dataset.messageId || el.querySelector('[data-message-id]')?.dataset.messageId;
     if (existing) return existing;
+    const messageIndex = el.getAttribute('data-message-index');
+    if (messageIndex != null) return `mi${messageIndex}`;
     const acp = el.closest?.('[role="log"][aria-label="Session transcript"]')
       ? el.closest('[data-acp-msg-index]')?.getAttribute('data-acp-msg-index') : null;
     if (acp != null) return `acp${acp}`;

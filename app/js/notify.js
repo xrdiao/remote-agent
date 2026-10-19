@@ -197,6 +197,13 @@ $('sheet').addEventListener('click', async e => {
     b.textContent = '正在加载会话…';
     return send({ t: 'agents', projectWindow: b.dataset.projectLoad, automatic: true, silent: true });
   }
+  if (b.dataset.launchMissing) {
+    status('正在启动 Agent…');
+    b.disabled = true;
+    const sub = b.querySelector('.sub');
+    if (sub) sub.textContent = I18N.tr('正在启动…');
+    return send({ t: 'launchAgents', apps: b.dataset.launchMissing.split(',') });
+  }
   if (b.dataset.win) { closeSheet(); status('正在切换 Agent…'); return send({ t: 'attach', id: b.dataset.win, ...currentComputer()?.selections?.[b.dataset.win] }); }
   if ('fusionTrust' in b.dataset) { closeSheet(); return send({ t: 'fusionTrust', approve: b.dataset.fusionTrust === 'yes' }); }
   if ('fusionDir' in b.dataset) { status('正在读取项目…'); return send({ t: 'fusionProjects', path: b.dataset.fusionDir }); }
@@ -269,7 +276,7 @@ $('sheet').addEventListener('click', async e => {
     if (b.dataset.fusion === 'fast') return send({ t: 'fusionPick', part: 'fast' });
     menuSheetKind = `fusion-${b.dataset.fusion}`;
     const fm = menuCache.get(menuCacheKey(`fusion-${b.dataset.fusion}`));
-    if (fm) showMenu(fm.kind, fm.items, fm.max, fm.fusion, fm.fast, fm.model, true);
+    if (fm) showMenu(fm.kind, fm.items, fm.max, fm.fusion, fm.fast, fm.model, true, fm.pricing);
     return send({ t: 'fusionOptions', part: b.dataset.fusion });
   }
   if (b.dataset.kind) {
@@ -330,6 +337,16 @@ $('sheet').addEventListener('click', async e => {
   else if (act === 'settings') { status('正在读取设置…'); return send({ t: 'settings' }); }
   else if (act === 'screen') { closeSheet(); return setMode('screen'); }
   else if (act === 'changeUrl') window.AgentRemoteApp?.changeUrl();
+  else if (act === 'connPartialToggle' || act === 'connLaunchToggle') {
+    const partial = act === 'connPartialToggle';
+    const on = partial ? !connAutoPartialOn() : store.get('conn-auto-launch') !== '1';
+    store.set(partial ? 'conn-auto-partial' : 'conn-auto-launch', on ? '1' : '0');
+    const row = $(partial ? 'menuPartialRow' : 'menuLaunchRow');
+    row?.setAttribute('aria-checked', String(on));
+    row?.querySelector('.switch')?.classList.toggle('on', on);
+    if (conn.active) connRender();
+    if (partial && on) { conn.enterRequested = true; connMaybeEnter(); }
+  }
   else if (act === 'notifyToggle') {
     const row = $('notifySwitchRow');
     if (row?.getAttribute('aria-busy') === 'true') return;

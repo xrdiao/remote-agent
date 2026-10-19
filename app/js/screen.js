@@ -5,7 +5,7 @@ function renderVisualState(m) {
   visualState = m;
   if (mode !== 'screen') return;
   $('visualEmpty').hidden = m.state === 'live';
-  $('visualEmpty').textContent = m.message || I18N.tr('请选择绘图或仿真窗口');
+  $('visualEmpty').textContent = m.message ? I18N.tr(m.message) : I18N.tr('请选择绘图或仿真窗口');
   stage.hidden = m.state !== 'live';
   $('visualTitle').textContent = m.title || I18N.tr('选择窗口');
   $('visualChoose').title = m.title || I18N.tr('选择窗口');

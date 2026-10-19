@@ -38,6 +38,13 @@ export async function publishedTunnel() {
     } catch {}
     await new Promise(r => setTimeout(r, 400));
   }
+  // The public check can fail on a brief network hiccup; cloudflared's local /ready still knows if the tunnel is up.
+  for (let port = 20241; port <= 20245; port++) {
+    try {
+      const r = await fetch(`http://127.0.0.1:${port}/ready`, { signal: AbortSignal.timeout(1000) });
+      if (r.ok && (await r.json())?.readyConnections > 0) return url;
+    } catch {}
+  }
   return '';
 }
 
@@ -74,7 +81,8 @@ export async function startTunnel() {
   let timer;
   const missing = () => console.log('!! 找不到 cloudflared。在这台电脑上执行：\nmkdir -p ~/.local/bin\ncurl -L --fail -o ~/.local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64\nchmod +x ~/.local/bin/cloudflared\n然后重新运行 npm run public');
   try {
-    child = spawn(bin, ['tunnel', '--no-autoupdate', '--url', `http://127.0.0.1:${PORT}`], {
+    // Cloudflare names resolve to IPv6 first; machines without IPv6 routing then never reach the edge.
+    child = spawn(bin, ['tunnel', '--no-autoupdate', '--edge-ip-version', '4', '--url', `http://127.0.0.1:${PORT}`], {
       detached: true,
       stdio: ['ignore', fd, fd],
     });

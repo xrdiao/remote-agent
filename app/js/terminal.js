@@ -47,9 +47,33 @@ function renderTermLine(line, caretAt) {
   }
   return html + '\n';
 }
-let termLines = [], termCursor = [];
+let termLines = [], termCursor = [], termPending = null, termViewSel = '', termTouching = false;
+function terminalSelection() {
+  const selection = window.getSelection();
+  const box = $('termText');
+  return selection && !selection.isCollapsed && box.contains(selection.anchorNode) && box.contains(selection.focusNode) ? selection : null;
+}
+function flushTerm() {
+  if (!termPending || termTouching || terminalSelection()) return;
+  const pending = termPending;
+  termPending = null;
+  if (mode === 'terminal' && pending.sel === viewSel) renderTerm(pending.message);
+}
+function clearTermSelection() {
+  termPending = null;
+  termTouching = false;
+  terminalSelection()?.removeAllRanges();
+}
 function renderTerm(m) {
   const box = $('termText');
+  if (m.lines && termViewSel === viewSel && currentTerminal === (m.name || '') && (termTouching || terminalSelection())) {
+    termPending = { message: m, sel: viewSel };
+    return;
+  }
+  termPending = null;
+  if (termViewSel !== viewSel || currentTerminal !== (m.name || '') || !m.lines) clearTermSelection();
+  termViewSel = viewSel;
+  $('termCopy').disabled = $('termSelectAll').disabled = !m.lines?.length;
   if (!m.lines) {
     termState = 'empty';
     box.textContent = ''; termLines = []; termCursor = [];
@@ -71,6 +95,24 @@ function renderTerm(m) {
   updateTermEmpty();
   if (stick) box.scrollTop = box.scrollHeight;
 }
+document.addEventListener('selectionchange', flushTerm);
+$('termText').addEventListener('touchstart', () => { termTouching = true; }, { passive: true });
+for (const event of ['touchend', 'touchcancel']) $('termText').addEventListener(event, () => { termTouching = false; flushTerm(); }, { passive: true });
+for (const id of ['termCopy', 'termSelectAll']) $(id).addEventListener('pointerdown', e => e.preventDefault());
+$('termSelectAll').onclick = () => {
+  const range = document.createRange();
+  range.selectNodeContents($('termText'));
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+};
+$('termCopy').onclick = async () => {
+  const selected = terminalSelection();
+  const value = selected ? selected.toString() : termLines.map(line => typeof line === 'string' ? line : line.t).join('\n');
+  await copyText(value, $('termCopy'), false);
+  terminalSelection()?.removeAllRanges();
+  flushTerm();
+};
 $('zoom').onclick = () => setZoom(1);
 $('refresh').onclick = () => send({ t: 'refresh' });
 document.querySelectorAll('[data-key]').forEach(b => b.onclick = () => send({ t: 'key', key: b.dataset.key }));

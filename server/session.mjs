@@ -1,9 +1,10 @@
 import crypto from 'node:crypto';
 import { Cdp } from './cdp.mjs';
-import { listWindows, codexWindows, codexFolder } from './windows.mjs';
+import { listWindows, codexWindows } from './windows.mjs';
 import { CODEX_CDP_URL } from './config.mjs';
 import { helpersCall } from './page/build.mjs';
-import { AgentContext, appPlans } from './agent/context.mjs';
+import { AgentContext, appPlans } from './agent/index.mjs';
+import { hasLaunched, takeLaunched } from './launch.mjs';
 import { fusionViewers, fusionHistory, fusionWorkers, newFusionRun } from './fusion/state.mjs';
 import { FUSION_OWNER } from './fusion/owner.mjs';
 import { FusionRunner } from './fusion/runner.mjs';
@@ -43,8 +44,8 @@ export class Session extends AgentContext {
     if (this.mode === 'screen') {
       if (this.editorCdp) await this.editorCdp.send('Page.stopScreencast').catch(() => {});
       visualCapture.subscribe(this);
-      await this.visualList();
-      await visualCapture.restore();
+      const windows = await this.visualList();
+      await visualCapture.restore(windows);
       return;
     }
     if (!this.editorCdp) return;
@@ -69,7 +70,9 @@ export class Session extends AgentContext {
 
   async visualList() {
     try {
-      this.emit({t: 'visualWindows', windows: await visualWindows(), wayland});
+      const windows = await visualWindows();
+      this.emit({t: 'visualWindows', windows, wayland});
+      return windows;
     } catch (error) {
       this.emit({t: 'visual', state: 'error', message: '读取绘图或仿真窗口失败：' + error.message, wayland});
       throw error;
@@ -113,6 +116,8 @@ export class Session extends AgentContext {
           if (recovered) windowId = recovered.pageId;
         }
       } catch (error) {
+        // On reconnect, a closed Codex must not leave the phone stuck: fall back to any open app.
+        if (req.initial) return this.attach({ initial: true });
         this.emit({ t: 'attachFailed', ready: this.app === 'fusion' || !!this.cdp });
         throw new Error(`读取 Codex 调试接口失败，请重试：${error.message}`);
       }
@@ -137,6 +142,7 @@ export class Session extends AgentContext {
     if (appId === 'codex') {
       const pages = codexPages;
       if (!pages.length) {
+        if (req.initial) return this.attach({ initial: true });
         this.emit({ t: 'attached', id: 'codex', title: 'Codex', app: 'codex', windowId, threadId, closed: true, ready: this.app === 'fusion' || !!this.cdp });
         this.emit({ t: 'status', ok: false, msg: '这个 Codex 窗口已经关闭，请重新选择' });
         return;
@@ -154,6 +160,7 @@ export class Session extends AgentContext {
     const win = wins.find(w => w.id === appId) || wins.find(w => appId && w.id.endsWith(':' + appId))
       || (appId ? wins.find(w => w.app === appId.split(':')[0]) : null);
     if (appId && !win) {
+      if (req.initial) return this.attach({ initial: true });
       this.emit({ t: 'attached', id: appId, closed: true, ready: this.app === 'fusion' || !!this.cdp });
       this.emit({ t: 'status', ok: false, msg: '这个窗口已经关闭，请重新选择' });
       return;
@@ -161,7 +168,7 @@ export class Session extends AgentContext {
     const chosen = win || wins[0];
     if (!chosen) throw new Error('没有找到 Cursor、Devin 或 Codex 窗口。Cursor 用调试端口 9222，Devin 用 ./scripts/start-devin.sh，Codex 用 ./scripts/start-codex.sh');
     await this.openBound(chosen, chosen.ws, null, { windowId: chosen.id, initial: req.initial === true });
-    if (threadId && threadId !== this.threadId) {
+    if (threadId && threadId !== this.threadId && !this.launchDefault) {
       try { await this.openAgent(threadId); }
       catch { this.emit({ t: 'status', ok: false, msg: '没有找到上次的会话，已留在当前会话' }); }
     }
@@ -170,6 +177,10 @@ export class Session extends AgentContext {
   async openBound(win, editorWs, chatWs, selection) {
     const editorCdp = new Cdp(editorWs);
     const cdp = chatWs ? new Cdp(chatWs) : editorCdp;
+    // A phone-launched app lands on its most recent session, not the remembered thread.
+    // Peek only: the marker is consumed where openDefaultSession actually runs, so a
+    // failed attach does not burn the one-shot launch flag.
+    const launchDefault = this.launchDefault = hasLaunched(win.app);
     let thread = '';
     let staleSelect = '';
     try {
@@ -177,7 +188,7 @@ export class Session extends AgentContext {
       if (cdp !== editorCdp) await cdp.connect();
       if (win.app === 'codex') {
         thread = await cdp.evaluate(helpersCall('codexThread()')) || '';
-        if (selection.threadId && selection.threadId !== thread) {
+        if (selection.threadId && selection.threadId !== thread && !launchDefault) {
           if (await this.selectCodexThread(selection.threadId, cdp)) thread = selection.threadId;
           else staleSelect = selection.threadId;
         }
@@ -219,9 +230,23 @@ export class Session extends AgentContext {
     editorCdp.on('Page.screencastFrame', p => this.onFrame(p));
     await this.refreshViewport();
     if (this.app !== 'codex') this.threadId = await this.cdp.evaluate(helpersCall('activeThread()')) || '';
+    // An app started from the phone opens on its most recently used session.
+    if (launchDefault && takeLaunched(win.app)) {
+      try { await this.adapter.openDefaultSession?.call(this); }
+      catch { this.emit({ t: 'status', ok: false, msg: '没有找到最近的会话' }); }
+      // openDefaultSession may have re-attached to another window (e.g. opened the
+      // default project); that attach already emitted, and the remembered-thread
+      // reopen in attach() must stay skipped for this launch.
+      if (this.cdp !== cdp) { this.launchDefault = true; return; }
+    } else if (win.app === 'cursor' && this.threadId && !await this.cdp.evaluate(helpersCall('panelRect()')).catch(() => null)) {
+      // Cursor's Agents home keeps a last-used agent marked current in the sidebar, so
+      // activeThread() reports a thread even though no chat panel is open. Reopen it here —
+      // otherwise attach sees threadId already matching and never opens a transcript.
+      try { await this.openAgent(this.threadId); } catch {}
+    }
     this.emit({
       t: 'attached', id: win.id, title: this.app === 'codex' ? 'Codex' : win.title, app: win.app,
-      appName: this.appMessage('{app}'), project: this.app === 'codex' ? codexFolder(this.winTitle) : '', windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(), plans: appPlans, initial: selection.initial === true,
+      appName: this.appMessage('{app}'), project: this.projectName(), windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(), plans: appPlans, initial: selection.initial === true,
     });
     if (staleSelect) this.emit({ t: 'status', ok: false, msg: '没有找到上次的会话，已留在当前会话' });
     this.setMode(this.mode).then(() => {

@@ -323,6 +323,7 @@
     --term-ansi-15: #2e3436;
   }
   body.term #termText { display: block; }
+  #termText { user-select: text; -webkit-user-select: text; -webkit-touch-callout: default; }
   body.term #stage { display: none; }
   #termText .caret { box-shadow: inset 2px 0 var(--term-fg); }
   #stage { position: relative; overflow: hidden; margin: 0 auto; }
@@ -339,26 +340,27 @@
   #text { display: block; width: 100%; min-width: 0; min-height: 52px; max-height: min(28dvh, var(--composer-max-height, 28dvh)); overflow-y: auto; padding: 5px 2px 12px; resize: none; border: none; background: transparent; font-size: 16px; line-height: 1.4; outline: none; }
   #chatTools, #termTools { display: flex; align-items: center; gap: 7px; overflow-x: auto; scrollbar-width: none; min-width: 0; }
   #chatTools::-webkit-scrollbar, #termTools::-webkit-scrollbar { display: none; }
+  #termToolsLabel { border-top: 1px solid var(--line); padding: 6px 0 5px; color: var(--muted); font-size: 11px; }
   #chatTools button, #termTools button { flex: none; white-space: nowrap; font-size: 12px; height: 38px; padding: 5px 9px; border-radius: 10px; }
   #chatTools { flex-wrap: nowrap; gap: 4px; }
   #chatTools button { padding: 5px clamp(3px, 1.2vw, 8px); }
   #chatTools #pickModel { flex: 1.4 1 80px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  #chatTools #pickMode, #chatTools #pickEditor, #chatTools #pickAgents { flex: 1 1 56px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  #chatTools #pickMode { flex: 1 1 56px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   #chatTools #pickMode, #chatTools #pickPerm { max-width: 58px; overflow: hidden; text-overflow: ellipsis; }
   #chatTools #pickPerm { display: none; }
   .msg.notice { padding: 9px 12px; color: var(--muted); border-left: 2px solid var(--border); font-size: 13px; }
   .msg.notice.live { color: var(--text); }
-  #chatTools #add, #chatTools #img, #chatTools #uploadDoc { width: 34px; padding: 0; display: flex; align-items: center; justify-content: center; }
+  #chatTools #add, #chatTools #img, #chatTools #uploadDoc, #chatTools #pickEditor { width: 34px; padding: 0; display: flex; align-items: center; justify-content: center; }
   #chatTools #add { font-size: 25px; }
   #chatTools #pickDir, #chatTools #newChat { display: none; }
-  #pickAgents { max-width: 100px; overflow: hidden; text-overflow: ellipsis; }
+  #chatTools #pickAgents { flex: none; }
   #stop { position: absolute; top: 0; right: 0; z-index: 2; width: 36px; height: 36px; padding: 0; border-radius: 11px; }
   #mic { display: none; }
   body.voice #mic { display: block; }
   #mic.on { color: #fff; background: var(--bad); animation: pulse 1.2s ease-in-out infinite; }
   .sendRow { display: flex; gap: 8px; }
   #inputHistory, #termHistory { display: flex; gap: 5px; flex: none; }
-  #inputHistory button, #termHistory button { width: 36px; height: 42px; padding: 0; font-size: 20px; }
+  #inputHistory button, #termHistory button, #insertNewline { flex: none; width: 36px; height: 42px; padding: 0; font-size: 20px; }
   body:not(.chatmode) #inputHistory, body:not(.term) #termHistory { display: none; }
   #send, #sendNow { flex: 1; min-width: 0; height: 42px; padding: 0 12px; font-weight: 600; border-radius: 12px; }
   #send { background: var(--accent); border-color: var(--accent-b); color: #fff; }
@@ -379,6 +381,7 @@
   div.opt.static { background: var(--ctrl); border: 1px solid var(--border); border-radius: 8px; box-sizing: border-box; }
   .opt .lbl { flex: 1; min-width: 0; overflow-wrap: anywhere; }
   .opt .sub { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .modelPricing .sub { display: block; }
   .opt .tag { flex: none; font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--tag); color: var(--tagtx); }
   .editorEntry .editorEntryIcon { flex: none; width: 20px; height: 20px; color: var(--muted); }
   .editorFolder .editorEntryIcon { color: var(--file); }
@@ -787,8 +790,17 @@
   #connNote { margin: 0 0 2px; font-size: 12.5px; color: var(--muted); text-align: center; line-height: 1.5; }
   #connNote:empty { display: none; }
   #conn .cGo { width: 100%; height: 48px; border-radius: 12px; border: 1px solid var(--c-go-b); background: var(--c-go-bg); color: var(--c-go-fg); font-size: 16px; font-weight: 600; }
+  #conn .cActions { display: flex; gap: 8px; }
+  #conn .cActions .cGo { flex: 1 1 0; width: auto; min-width: 0; padding: 0 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #conn .cGo small { font-weight: 400; opacity: .62; font-size: 13px; margin-left: 4px; }
   #conn .cGo:disabled { opacity: .4; }
+  #conn .cGo.cAlt { background: var(--panel); border-color: var(--border); color: var(--hi); }
+  #conn .cOpts { display: flex; flex-wrap: wrap; gap: 2px 6px; }
+  #conn .cOpts .cPref { flex: 1 0 auto; min-width: 0; gap: 6px; }
+  #conn .cOpts .cPref > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #conn .cPref { display: flex; align-items: center; justify-content: center; gap: 8px; background: none; border: 0; padding: 4px 0; color: var(--muted2); }
+  #connAgents .cItem.err .cSub { white-space: normal; }
+  #connAgents .cLaunch { flex: none; margin-left: 2px; }
   @media (prefers-reduced-motion: reduce) {
     .cSpin { animation: none; border-color: var(--c-load); border-right-color: var(--c-load-dim); }
     .cBar i.load::after { animation: none; left: 30%; }
@@ -796,6 +808,8 @@
 
   #imageEditor { width: min(96vw, 900px); max-width: 96vw; height: 90dvh; max-height: 94dvh; padding: 12px; box-sizing: border-box; color: var(--hi); background: var(--bg); border: 1px solid var(--border); border-radius: 14px; }
   #imageEditor[open] { display: flex; flex-direction: column; gap: 10px; }
+  #imageEditor { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+  #imageEditor input[type=text] { user-select: text; -webkit-user-select: text; -webkit-touch-callout: default; }
   #imageEditor::backdrop { background: #000b; }
   .imageEditHeading, .imageEditNav, .imageEditTools, .imageEditView, .imageEditRatios, .imageEditOptions { display: flex; align-items: center; gap: 6px; flex: none; }
   .imageEditHeading b { flex: 1; text-align: center; font-size: 16px; }

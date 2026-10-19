@@ -41,6 +41,34 @@
       previous = rows;
     }
   };
+  // Devin virtualizes its transcript in ~50-row batches with a wide remount threshold: a small
+  // mouse wheel near the bottom never exposes older rows. Jump the scroller instead and wait for
+  // the mounted acp window to reach a lower index.
+  const devinLoadEarlier = async (timeout = 2500) => {
+    const sc = devinScroller();
+    if (!sc) return { moved: false };
+    const top = sc.scrollTop;
+    const mountedMin = () => Math.min(...[...doc.querySelectorAll('[data-acp-msg-index]')].map(e => Number(e.getAttribute('data-acp-msg-index'))).filter(n => Number.isFinite(n)));
+    const rowsBefore = historyRows();
+    const deadline = performance.now() + timeout;
+    const initialMin = mountedMin();
+    let min = initialMin;
+    while (performance.now() < deadline && sc.scrollTop > 1) {
+      sc.scrollTop = Math.max(0, sc.scrollTop - sc.clientHeight * 3);
+      const until = performance.now() + 250;
+      while (performance.now() < until) {
+        await new Promise(resolve => setTimeout(resolve, 30));
+        const m = mountedMin();
+        if (m < min) { min = m; break; }
+      }
+      if (min < initialMin) break;
+    }
+    await waitHistoryRows(rowsBefore, 200);
+    return { moved: min < initialMin || sc.scrollTop <= 1, atStart: sc.scrollTop <= 1, min, top };
+  };
+  // While the scroller is up, Devin's virtualization never mounts streamed tail rows, so the phone
+  // would miss new messages until re-attach. Restore the pre-jump position after the merge read.
+  const devinScrollTop = top => { const sc = devinScroller(); if (sc && Number.isFinite(top)) sc.scrollTop = top; };
 
   // Cheap per-window check for notifications: is the Agent running, and is it waiting on a button?
   // "Run in background" shows up on any command running longer than ~5 s; it is not a request for approval.
@@ -147,7 +175,7 @@
       ...tabs.map(t => [t.dataset.resourceName, { id: t.dataset.resourceName, title: t.querySelector('.label-name')?.textContent || '新会话', current: focused ? t.dataset.resourceName === focused : t.classList.contains('active'), workspace: '', host: '', group: '' }]),
     ]).values()];
     // Read the native session id; titles can repeat or change.
-    return [...doc.querySelectorAll('li[data-slot="sidebar-menu-item"]')].map(li => {
+    const lis = [...doc.querySelectorAll('li[data-slot="sidebar-menu-item"]')].map(li => {
       const btn = li.querySelector('button[aria-label]');
       const title = (btn?.getAttribute('aria-label') || '').trim();
       if (!title || DEVIN_NAV.has(title)) return null;
@@ -165,6 +193,24 @@
         last: session.agentStopMessage || '',
       };
     }).filter(Boolean);
+    // A freshly opened Devin window shows "Recent sessions" in the workspace welcome
+    // layer instead of the sidebar list; those buttons carry the same session props.
+    const welcome = [...doc.querySelectorAll('[class*="windsurf-workspace-welcome"] button')].flatMap(btn => {
+      const session = codexFiberProps(btn).find(p => p.session?.sessionId)?.session;
+      if (!session) return [];
+      return [{
+        id: session.sessionId,
+        workspace: session.cwd || '',
+        title: (btn.innerText || '').trim().split('\n')[0].slice(0, 80),
+        group: '',
+        current: false,
+        running: ['active', 'pending', 'canceling'].includes(session.status),
+        lastUsed: Date.parse(session.updatedAt) || 0,
+        last: session.agentStopMessage || '',
+      }];
+    });
+    const seen = new Set(lis.map(a => a.id));
+    return [...lis, ...welcome.filter(a => !seen.has(a.id))];
   };
   const agentTarget = (id, click = false) => {
     if (id && activeThread() === id) return true;
@@ -195,10 +241,17 @@
     }
     const li = [...doc.querySelectorAll('li[data-slot="sidebar-menu-item"]')].find(e => codexFiberProps(e).some(p => p.session?.sessionId === id));
     const btn = li && [...li.querySelectorAll('button[aria-label]')].find(vis);
-    if (!btn) return null;
-    btn.scrollIntoView({ block: 'nearest' });
-    if (click) { btn.click(); return true; }
-    return center(btn);
+    if (btn) {
+      btn.scrollIntoView({ block: 'nearest' });
+      if (click) { btn.click(); return true; }
+      return center(btn);
+    }
+    // Fresh windows list sessions as welcome-layer "Recent sessions" buttons, not sidebar items.
+    const wbtn = [...doc.querySelectorAll('[class*="windsurf-workspace-welcome"] button')].find(b => codexFiberProps(b).some(p => p.session?.sessionId === id));
+    if (!wbtn || !vis(wbtn)) return null;
+    wbtn.scrollIntoView({ block: 'nearest' });
+    if (click) { wbtn.click(); return true; }
+    return center(wbtn);
   };
   const agentStates = () => {
     const current = agentState();

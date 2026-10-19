@@ -5,6 +5,7 @@ const I18N = (() => {
   const lang = saved === 'zh' || saved === 'en' ? saved : /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
 
   const EN = {
+    '插入换行': 'Insert newline', '终端操作': 'Terminal controls', '发送到终端': 'Send to terminal',
     "实时连接未建立": "Live connection not established",
     "电脑连接未建立": "Computer connection not established",
     "正在检测连接…": "Checking the connection\u2026",
@@ -45,8 +46,19 @@ const I18N = (() => {
     "调试服务已响应，但未找到可用的项目窗口。": "Debug service responded, but no usable project windows were found.",
     "启动指引：在电脑上运行 {command}，然后重试。": "On your computer, run {command}, then retry.",
     "先进入 · 使用 {agents}": "Continue \u00b7 Use {agents}",
+    "先进入": "Continue",
     "全部重试": "Retry all",
     "请在电脑上启动 Agent 的调试窗口，再点击全部重试。": "Start an agent with debugging enabled on your computer, then retry all.",
+    "启动": "Launch", "启动中…": "Launching…", "正在启动…": "Launching…", "正在启动 Agent…": "Launching agents…",
+    "一键启动全部": "Launch all", "自动启动未打开的 Agent": "Auto-launch agents that are not running",
+    "部分失败时直接进入": "Continue automatically when some agents are unavailable",
+    "连接电脑时，只要有一个 Agent 可用就自动进入": "On connect, enter as soon as any agent is available",
+    "连接电脑时自动启动没有运行的 Agent": "On connect, launch agents that are not running",
+    "启动未打开的 Agent": "Launch agents that are not running",
+    "电脑上没有安装 {agent}": "{agent} is not installed on this computer",
+    "{agent} 已在运行但没有开启调试端口，请先退出后再启动": "{agent} is already running without the debug port; quit it before launching",
+    "启动失败，请在电脑上检查": "Launch failed; check the computer",
+    "这台电脑暂不支持远程启动": "Remote launch is not supported on this computer",
 
     '管理': 'Manage', '完成': 'Done', '取消选择': 'Clear selection', '已选择 {n} 项': '{n} selected', '选择': 'Select',
     '移至分组': 'Move to group', '新建分组': 'New group', '批量删除': 'Delete selected', '批量移除': 'Remove selected',
@@ -67,6 +79,7 @@ const I18N = (() => {
     '请选择绘图或仿真窗口': 'Choose a plot or simulation window', '没有发现绘图或仿真窗口，请先在电脑端打开。': 'No plot or simulation windows found. Open one on the computer first.',
     '刷新窗口列表': 'Refresh windows', '需要在电脑端选择并授权绘图或仿真窗口': 'Select and authorize a plot or simulation window on the computer.',
     '已授权窗口': 'Authorized window', '正在读取窗口画面…': 'Loading window view…',
+    '当前没有窗口': 'No window available', '正在查找窗口…': 'Looking for windows…',
     '切换电脑': 'Switch computer',
     '连接失败': 'Failed',
     '失败阶段：{v}': 'Failed stage: {v}',

@@ -1,4 +1,5 @@
 // npm run pair            → show a QR / link that pairs one new phone (valid 10 minutes, single use)
+// npm run pair -- --lan   → pair via the LAN address (http://<ip>:<port>/) for browsers on the same network
 // npm run devices         → list paired devices
 // npm run devices remove <id>
 import qrcode from 'qrcode-terminal';
@@ -11,7 +12,8 @@ const fmt = t => t ? new Date(t).toLocaleString('zh-CN', { hour12: false }) : '-
 
 if (cmd === 'pair') {
   const temporary = process.argv.includes('--temporary');
-  const base = temporary ? readState().relayUrl?.replace(/\/?$/, '/') : appBase();
+  const lan = process.argv.includes('--lan');
+  const base = lan ? readState().localUrl?.replace(/\/?$/, '/') : temporary ? readState().relayUrl?.replace(/\/?$/, '/') : appBase();
   if (!base) {
     console.log('还不知道手机 App 的地址：先运行 npm run setup 设置固定地址，或先启动服务（npm run public / npm start）。');
     process.exit(1);
@@ -23,7 +25,7 @@ if (cmd === 'pair') {
   console.log(`\n用手机扫码，或把下面的链接发到手机上打开（${minutes} 分钟内有效，只能配对一台设备）：\n`);
   qrcode.generate(link, { small: true });
   console.log(`\n${link}\n`);
-  console.log(`手动配对码：${pairingCode}\n${temporary ? '临时入口' : '固定入口'}：${base}\n`);
+  console.log(`手动配对码：${pairingCode}\n${lan ? '局域网入口' : temporary ? '临时入口' : '固定入口'}：${base}\n`);
   if (process.platform === 'win32' && process.argv.includes('--copy-link')) {
     const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Set-Clipboard -Value $input'],
       { input: link, encoding: 'utf8', windowsHide: true });

@@ -21,6 +21,28 @@ export const adapter = {
     throw new Error('新建对话没有生效');
   },
 
+  // A freshly launched Cursor lands on the Agents home; open the most recent session.
+  // agentList order is the sidebar's native order (Cursor lists most recent first).
+  async openDefaultSession() {
+    const st = await this.cdp.evaluate(`(() => {
+      const h = ${PAGE_SRC};
+      return { thread: h.activeThread(), panel: !!h.panelRect(), items: (h.extract() || {}).items?.length || 0 };
+    })()`);
+    if (st.panel && st.thread && st.items) return;
+    const pickNewest = async () => {
+      // A cold window can take a while to mount the agent list.
+      let rows = [];
+      for (let i = 0; i < 48 && !rows.length; i++) {
+        rows = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return h.agentList(); })()`) || [];
+        if (!rows.length) await new Promise(r => setTimeout(r, 250));
+      }
+      return rows.find(r => r.id && !String(r.id).startsWith('new:')) || null;
+    };
+    const best = await pickNewest();
+    if (!best) throw new Error('没有找到最近的会话');
+    await this.adapter.openAgent.call(this, best.id);
+  },
+
   async openAgent(id, title = '') {
     if (!id || id.length > 200) throw new Error('这条 Agent 已经不在列表里');
     this.clearViewState();
@@ -209,16 +231,16 @@ async readCursorUsage(automatic = false) {
     if (!nav) return { missing: true, quota: [], limits: [] };
     await this.tapCss(nav.x, nav.y, 'left', cdp);
     let usage = null;
-    for (let i = 0; i < 32; i++) {
+    for (let i = 0; i < 160; i++) {
       await new Promise(r => setTimeout(r, 250));
       usage = await cdp.evaluate(helpersCall('readUsage()'));
       if (usage?.limits?.length && !usage.loading && !usage.missing) break;
     }
-    if (usage?.loading) throw new Error('额度还在加载');
     if (usage?.limits?.length && !usage.missing) {
       cursorUsage.data = { ...usage, updated: Date.now() };
       return cursorUsage.data;
     }
+    if (usage?.loading) throw new Error('额度还在加载');
     return usage || { missing: true, quota: [], limits: [] };
   } finally { if (!wasOpen) await this.closeSettings(editorCdp); }
 },
@@ -280,9 +302,9 @@ async readFusion(open) {
 
 async fusionOptions(part) {
   if (!['lead', 'effort', 'sidekick'].includes(part)) throw new Error('没有这个 Fusion 选项');
-  const native = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; if (!h.fusionConfig()?.lead) return null; return h.devinVariants(${JSON.stringify(part)}).map(({ label, checked }) => ({ label, checked })); })()`);
+  const native = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; if (!h.fusionConfig()?.lead) return null; return h.devinVariants(${JSON.stringify(part)}, true).map(({ label, checked, pricing }) => ({ label, checked, pricing })); })()`);
   if (native?.length) {
-    this.emit({ t: 'menu', kind: `fusion-${part}`, items: native, fusion: await this.cdp.evaluate(helpersCall('fusionConfig()')) });
+    this.emit({ t: 'menu', kind: `fusion-${part}`, items: native, fusion: await this.cdp.evaluate(helpersCall('fusionConfig(true)')) });
     return;
   }
   await this.idleFusionRead();

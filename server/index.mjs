@@ -58,7 +58,13 @@ async function watchTargets() {
   return out;
 }
 
-server.listen(PORT, TUNNEL ? '127.0.0.1' : HOST, async () => {
+// Even in tunnel mode the relay listens on HOST so a browser on the same LAN can
+// connect directly (auth still requires a paired device). The tunnel itself only
+// needs the port reachable on loopback, which 0.0.0.0 covers.
+const lanIps = () => Object.values(os.networkInterfaces()).flat()
+  .filter(i => i && i.family === 'IPv4' && !i.internal).map(i => i.address);
+
+server.listen(PORT, HOST, async () => {
   console.log(`Remote Agent 已启动，端口 ${PORT}`);
   console.log(`数据目录：${DATA_DIR}`);
   console.log(`已配对 ${listDevices().length} 台设备。添加新设备：npm run pair`);
@@ -83,17 +89,16 @@ server.listen(PORT, TUNNEL ? '127.0.0.1' : HOST, async () => {
       themeFor(e.app, { port }).catch(() => {});
     }
   }, 2000);
+  const ips = lanIps();
+  for (const ip of ips) console.log(`  局域网地址：http://${ip}:${PORT}/`);
+  const localUrl = ips[0] ? `http://${ips[0]}:${PORT}/` : '';
   if (TUNNEL) {
+    // relayUrl stays the tunnel address for the phone; localUrl is for LAN browsers.
+    if (localUrl) saveState({ localUrl });
     console.log('正在建立 Cloudflare 公网隧道…');
     startTunnel();
-  } else {
-    const ips = Object.values(os.networkInterfaces()).flat()
-      .filter(i => i && i.family === 'IPv4' && !i.internal).map(i => i.address);
-    for (const ip of ips) console.log(`  局域网地址：http://${ip}:${PORT}/`);
-    if (ips[0]) {
-      const localUrl = `http://${ips[0]}:${PORT}/`;
-      saveState({ localUrl, ...(!PUBLISH_REPO ? { relayUrl: localUrl } : {}) });
-      offerFirstPairing();
-    }
+  } else if (localUrl) {
+    saveState({ localUrl, ...(!PUBLISH_REPO ? { relayUrl: localUrl } : {}) });
+    offerFirstPairing();
   }
 });

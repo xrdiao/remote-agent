@@ -130,13 +130,21 @@
     ? [...new Map((p?.visibleModelConfigs || []).map(c => [c.modelUid, c])).values()]
     : [...new Map([...(p?.visibleModelConfigs || []), ...(p?.modelSorts || []).flatMap(s => (s.groups || []).flatMap(g => g.options || []))].map(c => [c.modelUid, c])).values()];
   const devinSelectedModel = p => devinConfigs(p).find(c => p.selectedModels?.includes(c.modelUid));
-  const devinVariants = part => {
+  const devinPricing = (config = devinSelectedModel(devinPickerProps())) => {
+    if (!config) return null;
+    const tag = devinPickerProps()?.getCostTag?.(config);
+    const costs = (config.costs || []).map(({ label, value, denominator, info, unit, fuzzy }) => ({ label, value, denominator, info, unit, fuzzy }));
+    if (!costs.length && !tag?.label) return null;
+    return { costs, tag: tag?.label || '', tooltip: typeof tag?.tooltip === 'string' ? tag.tooltip : '',
+      ...(config.modelCost?.type === 'credit' && /^[\d.]+x\s*$/.test(tag?.label || '') ? { creditMultiplier: config.modelCost.multiplier } : {}) };
+  };
+  const devinVariants = (part, includePricing = false) => {
     const p = devinPickerProps(), current = devinSelectedModel(p);
     if (!current) return [];
     const key = part === 'lead' ? 'Lead' : part === 'sidekick' ? 'Sidekick' : part === 'fast' ? 'Fast Mode' : current.familyMetadata?.['Reasoning Effort'] ? 'Reasoning Effort' : 'Effort';
-    return devinConfigs(p).filter(c => !c.disabled && c.familyUid === current.familyUid && c.familyMetadata?.[key] && Object.entries(current.familyMetadata || {}).every(([k, v]) => k === key || (c.familyMetadata?.[k]?.name === v.name && c.familyMetadata?.[k]?.order === v.order))).map(c => ({ config: c, label: c.familyMetadata[key].name, checked: c.modelUid === current.modelUid, order: c.familyMetadata[key].order }));
+    return devinConfigs(p).filter(c => !c.disabled && c.familyUid === current.familyUid && c.familyMetadata?.[key] && Object.entries(current.familyMetadata || {}).every(([k, v]) => k === key || (c.familyMetadata?.[k]?.name === v.name && c.familyMetadata?.[k]?.order === v.order))).map(c => ({ config: c, label: c.familyMetadata[key].name, checked: c.modelUid === current.modelUid, order: c.familyMetadata[key].order, ...(includePricing ? { pricing: devinPricing(c) } : {}) }));
   };
-  const effortItems = () => {
+  const effortItems = (includePricing = false) => {
     const p = powerProps();
     if (p) return p.powerSelections.filter(x => !x.isLocked).map(x => ({ label: x.reasoningEffort, checked: x.id === p.selectedPowerSelection?.id }));
     const cp = devinSurface() ? null : cursorPickerProps();
@@ -148,7 +156,7 @@
       const vals = def?.parameterType?.enumParameter?.values;
       if (vals?.length) return vals.filter(v => v.displayName).map(v => ({ label: v.displayName, checked: v.value === cur }));
     }
-    return devinVariants('effort').sort((a, b) => a.order - b.order).map(({ label, checked }) => ({ label, checked }));
+    return devinVariants('effort', includePricing).sort((a, b) => a.order - b.order).map(({ label, checked, pricing }) => ({ label, checked, ...(pricing ? { pricing } : {}) }));
   };
   const effortName = () => effortItems().find(x => x.checked)?.label || (doc.querySelector('.vscode-model-picker__trigger') ? /\b(Low|Medium|High|Max|Extra High|Ultra)(?: Fast)?$/i.exec(normLabel(modelButton()?.innerText))?.[1] || 'Effort' : null);
   const pickEffort = label => {
@@ -228,11 +236,11 @@
     return b.width > 200 && b.width < 520 && t.includes('Lead') && t.includes('Sidekick') && t.includes('Fast Mode') && t.length < 900;
   });
   const fusionLine = el => normLabel((el?.innerText || '').split('\n')[0]).slice(0, 60);
-  const fusionConfig = () => {
+  const fusionConfig = (includePricing = false) => {
     const current = devinSelectedModel(devinPickerProps());
     if (current?.familyUid === 'fusion') {
       const m = current.familyMetadata;
-      return { lead: m.Lead.name, effort: m.Effort.name, sidekick: m.Sidekick.name, fast: m['Fast Mode']?.order === 1, fastSupported: devinVariants('fast').some(x => x.order === 1) };
+      return { lead: m.Lead.name, effort: m.Effort.name, sidekick: m.Sidekick.name, fast: m['Fast Mode']?.order === 1, fastSupported: devinVariants('fast').some(x => x.order === 1), ...(includePricing ? { pricing: devinPricing(current) } : {}) };
     }
     const panel = fusionPanel();
     if (!panel) return null;

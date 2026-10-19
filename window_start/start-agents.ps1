@@ -1,6 +1,13 @@
 ﻿# Start Cursor / Devin / Codex (VS Code) with CDP ports. No hard-coded drive letters.
 # Override paths with CURSOR_BIN / DEVIN_BIN / CODE_BIN if needed.
+# Optional -Apps selects which agents to start, e.g. -Apps cursor,codex (default: all).
+# Each handled app prints one machine-readable "RESULT <app> <status>" line with
+# status in: reused started missing running timeout failed.
+param(
+  [string[]]$Apps
+)
 $ErrorActionPreference = 'Continue'
+$want = @($Apps | ForEach-Object { "$_" -split ',' } | ForEach-Object { "$_".Trim().ToLower() } | Where-Object { $_ })
 
 function Test-Cdp([int]$Port) {
   try {
@@ -137,14 +144,18 @@ $apps = @(
 $failed = 0
 $pending = @()
 foreach ($app in $apps) {
+  $key = $app.Name.ToLower()
+  if ($want.Count -and $want -notcontains $key) { continue }
   Write-Host ""
   Write-Host "=== $($app.Name) (port $($app.Port)) ==="
   if (Test-Cdp $app.Port) {
     Write-Host "调试端口 $($app.Port) 已开着，跳过。"
+    Write-Output "RESULT $key reused"
     continue
   }
   if (Process-Running $app.ProcessNames) {
     Write-Host "$($app.Name) 已在运行，但没有调试端口 $($app.Port)。请先退出后再运行本脚本。"
+    Write-Output "RESULT $key running"
     $failed++
     continue
   }
@@ -152,6 +163,7 @@ foreach ($app in $apps) {
   if ($bin) { $bin = Resolve-DesktopExe $bin $app.Executable }
   if (-not $bin) {
     Write-Host "找不到 $($app.Name)。可设置环境变量 $($app.Env) 指向可执行文件。"
+    Write-Output "RESULT $key missing"
     $failed++
     continue
   }
@@ -162,6 +174,7 @@ foreach ($app in $apps) {
     Start-Process -FilePath $bin -ArgumentList "--remote-debugging-port=$($app.Port)" -WorkingDirectory (Split-Path -Parent $bin) -WindowStyle Normal | Out-Null
   } catch {
     Write-Host "启动失败：$($_.Exception.Message)"
+    Write-Output "RESULT $key failed"
     $failed++
     continue
   } finally {
@@ -175,9 +188,11 @@ while ($pending.Count) {
     $app = $entry.App
     if (Test-Cdp $app.Port) {
       Write-Host "$($app.Name) 已打开，调试端口 $($app.Port)。"
+      Write-Output "RESULT $($app.Name.ToLower()) started"
       $pending = @($pending | Where-Object { $_.App.Port -ne $app.Port })
     } elseif (((Get-Date) - $entry.Started).TotalSeconds -ge 30) {
       Write-Host "$($app.Name) 已启动，但端口 $($app.Port) 30 秒内未响应，请稍后再查。"
+      Write-Output "RESULT $($app.Name.ToLower()) timeout"
       $failed++
       $pending = @($pending | Where-Object { $_.App.Port -ne $app.Port })
     }

@@ -1,9 +1,9 @@
 import path from 'node:path';
 import { windowRoots } from '../../lib/files.mjs';
 import { agentMarks } from '../../lib/marks.mjs';
-import { IS_WIN, mod } from '../../lib/platform.mjs';
+import { IS_WIN, mod, pathKey } from '../../lib/platform.mjs';
 import { listWindows } from '../windows.mjs';
-import { helpersCall } from '../page/build.mjs';
+import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { FOCUS_COMPOSER } from '../agent/context.mjs';
 
 // Shared across phone sessions: thread|start → end ms (null while the turn is still running).
@@ -14,18 +14,78 @@ export const adapter = {
     return this.devinNewChat();
   },
 
-  async openAgent(id, title = '') {
+  // A freshly launched Devin opens on the workspace welcome or last surface;
+  // switch to the most recently used session (agentList rows carry lastUsed).
+  async openDefaultSession() {
+    const st = await this.cdp.evaluate(`(() => {
+      const h = ${PAGE_SRC};
+      return { surface: h.devinSurface(), thread: h.activeThread(), items: (h.extract() || {}).items?.length || 0 };
+    })()`);
+    if (st.thread && st.items) return;
+    if (st.surface === 'editor') {
+      const opened = await this.openSessionPicker();
+      const rows = opened ? await this.cdp.evaluate(helpersCall('sessionPickerRows()')) : null;
+      const first = rows?.[0];
+      const pos = first && await this.cdp.evaluate(helpersCall(`sessionPickerTarget(${JSON.stringify(first.id)}, ${JSON.stringify(first.title)})`));
+      if (!pos) {
+        if (opened) await this.key('Escape');
+        throw new Error('没有找到最近的会话');
+      }
+      await this.tapCss(pos.x, pos.y);
+      this.resetDevinView();
+      this.emit({ t: 'status', ok: true, msg: '已切换 Agent' });
+      setTimeout(() => this.pollChat().catch(() => {}), 500);
+      return;
+    }
+    // A cold window's session list loads asynchronously; wait for real rows.
+    let rows = [];
+    for (let i = 0; i < 48 && !rows.length; i++) {
+      const list = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return h.agentList(); })()`) || [];
+      rows = list.filter(r => r.id && !String(r.id).startsWith('new:') && !String(r.id).startsWith('project-new:'));
+      if (!rows.length) await new Promise(r => setTimeout(r, 250));
+    }
+    const best = rows.reduce((a, b) => ((b.lastUsed || 0) > (a?.lastUsed || 0) ? b : a), null);
+    if (!best) throw new Error('没有找到最近的会话');
+    await this.adapter.openAgent.call(this, best.id);
+  },
+
+  async openAgent(id, title = '', retried = false) {
     if (IS_WIN && id.startsWith('window:devin:')) {
       await this.attach(id.slice('window:'.length));
       await this.listAgents();
       return;
     }
     if (id.startsWith('tab:')) return this.switchTab(id.slice(4));
-    if (await this.cdp.evaluate(helpersCall('devinSurface()')) === 'editor') {
+    let { surface, row, title: windowTitle } = await this.cdp.evaluate(`(() => {
+      const h = ${PAGE_SRC};
+      const surface = h.devinSurface();
+      return { surface, title: document.title, row: surface === 'agent' ? h.agentList().find(row => row.id === ${JSON.stringify(id)}) : null };
+    })()`);
+    this.winTitle = windowTitle;
+    if (surface === 'agent' && retried && !row) {
+      // The session list on a freshly switched surface is still loading; wait for the row.
+      for (let i = 0; i < 40 && !row; i++) {
+        await new Promise(r => setTimeout(r, 250));
+        row = await this.cdp.evaluate(`(() => {
+          const h = ${PAGE_SRC};
+          return h.agentList().find(row => row.id === ${JSON.stringify(id)});
+        })()`);
+      }
+    }
+    if (row?.workspace && !row.host && !windowRoots(windowTitle, 'devin').some(w => !w.host && pathKey(w.root) === pathKey(row.workspace))) {
+      return this.useProject(row.workspace, false, id);
+    }
+    if (surface === 'editor') {
       const opened = await this.openSessionPicker();
       const pos = opened && await this.cdp.evaluate(helpersCall(`sessionPickerTarget(${JSON.stringify(id)}, ${JSON.stringify(title)})`));
       if (!pos) {
         if (opened) await this.key('Escape');
+        // A window that just opened lands on the editor surface; its picker only knows
+        // this project's sessions. Switch to the agent surface and try the row there.
+        if (!retried) {
+          await this.setSurface('agent');
+          return this.adapter.openAgent.call(this, id, title, true);
+        }
         throw new Error('这条 Agent 已经不在列表里');
       }
       await this.tapCss(pos.x, pos.y);
@@ -416,6 +476,12 @@ async captureThoughts(chat) {
 syncSession(chat) {
   const sess = chat?.session;
   if (this.app !== 'devin' || !sess) return;
+  // Keep the session's real working directory so the phone's project label is right
+  // even when the window itself has no folder ("Untitled (Workspace)").
+  if ((sess.cwd || '') !== this.sessionCwd) {
+    this.sessionCwd = sess.cwd || '';
+    this.emit({ t: 'thread', windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(), project: this.projectName() });
+  }
   const key = chat.thread || sess.key;
   if (this.curSession === undefined || this.curSession === key) { this.curSession = key; return; }
   if (!this.sessStore) this.sessStore = new Map();

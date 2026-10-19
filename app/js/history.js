@@ -396,7 +396,8 @@ function pruneEchoes(chat) {
   const humans = (chat?.items || []).filter(it => it.k === 'human');
   const queued = (chat?.queued || []).map(q => (q.t || '').trim());
   pendingEchoes = pendingEchoes.filter(p => {
-    if (Date.now() - p.at > 60000) return false;
+    // A send that vanished with a dead socket would otherwise spin "发送中…" forever.
+    if (Date.now() - p.at > (p.confirmed ? 60000 : 120000)) return false;
     if (p.sel !== viewSel) return true;
     if (humans.filter(it => echoTextMatches(it, p.text)).length > p.before) return false;
     if (p.kind === 'queue' && queued.some(t => echoTextMatches({ t }, p.text))) return false;
@@ -407,11 +408,12 @@ function pendingEchoEls() {
   return pendingEchoes.filter(p => p.kind === 'chat' && p.sel === viewSel).map(p => {
     const el = document.createElement('div');
     el.className = 'msg human pending';
-    el.innerHTML = `<div class="humanContent"><div class="bubble">${esc(p.text)}</div><div class="messageMeta">发送中…</div></div>`;
+    el.innerHTML = `<div class="humanContent"><div class="bubble">${esc(p.text)}</div><div class="messageMeta">${I18N.tr(p.confirmed ? '已发送' : '发送中…')}</div></div>`;
     return el;
   });
 }
 function renderChat(chat, stale, loading = false) {
+  if (chat) reconcileSent(chat);
   chat = withMessageTimes(chat);
   pruneEchoes(chat);
   updateGenerationTime(chat, stale);
@@ -459,10 +461,9 @@ function renderChat(chat, stale, loading = false) {
   $('pickModel').hidden = false;
   if (chat?.mode) { $('pickMode').textContent = (chat.mode === 'Bypass Permissions' ? '⚠绕过' : chat.mode) + ' ▾'; $('pickMode').title = chat.mode; }
   $('pickMode').classList.toggle('bypass', chat?.mode === 'Bypass Permissions');
-  const fusionLabel = chat?.model === 'Fusion' && chat.fusion ? `Fusion · ${fusionShort(chat.fusion.lead)} / ${fusionShort(chat.fusion.sidekick)}` : '';
-  const mdl = fusionLabel || chat?.model || '模型';
+  const mdl = chat?.model || '模型';
   const effLabel = chat?.effort && chat.effort !== 'Effort' ? String(chat.effort).replace(/^([a-z])/, c => c.toUpperCase()) : '';
-  const effSuffix = !fusionLabel && chat?.model !== 'Fusion' && effLabel && !mdl.toLowerCase().includes(effLabel.toLowerCase()) ? ` · ${effLabel}` : '';
+  const effSuffix = chat?.model !== 'Fusion' && effLabel && !mdl.toLowerCase().includes(effLabel.toLowerCase()) ? ` · ${effLabel}` : '';
   $('pickModel').textContent = mdl + effSuffix + ' ▾';
   $('pickModel').title = chat?.fusion ? `${chat.fusion.lead} · ${chat.fusion.effort} · ${chat.fusion.sidekick}${chat.fusion.fast ? ' · Fast' : ''}` : (chat?.model || '更换模型');
   const permName = PERM_LABEL[chat?.permission]?.[0];

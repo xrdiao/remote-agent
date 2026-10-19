@@ -33,7 +33,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>Remote Agent</title>
-<link rel="stylesheet" href="app.css?v=108">
+<link rel="stylesheet" href="app.css?v=120">
 </head>
 <body>
 <header>
@@ -111,11 +111,14 @@
   <div id="mathPrev" hidden></div>
   <div id="fusionBar" hidden></div>
   <div class="composerBox"><div class="composerField"><textarea id="text" rows="1" placeholder="发给 Agent…" enterkeyhint="send"></textarea><button id="stop" title="停止生成" aria-label="停止生成" hidden>■</button></div>
+  <div id="termToolsLabel" hidden>终端操作</div>
   <div id="termTools" hidden>
     <button id="pickTerms">列表</button>
     <button id="newTerm">＋ 新建</button>
     <button id="termInt">Ctrl+C</button>
     <button data-termkey="Tab">Tab</button>
+    <button id="termCopy" disabled>复制</button>
+    <button id="termSelectAll" disabled>全选</button>
   </div>
   <div id="chatTools">
     <button id="add" title="添加功能" aria-label="添加功能">＋</button>
@@ -125,7 +128,7 @@
     <button id="mic" title="语音输入" aria-label="语音输入"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
     <button id="pickMode" hidden></button>
     <button id="pickModel" title="更换模型">模型 ▾</button>
-    <button id="pickEditor" title="浏览和编辑当前项目文件" hidden>Editor</button>
+    <button id="pickEditor" title="浏览和编辑当前项目文件" aria-label="浏览和编辑当前项目文件" hidden><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 20H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2v2"/><path d="m18 13 3 3-6 6h-3v-3Z"/></svg></button>
     <button id="pickPerm" title="权限" hidden>权限 ▾</button>
     <button id="pickPlan" title="Plan 模式" hidden>Plan</button>
     <button id="pickIde" title="IDE 上下文" hidden>IDE</button>
@@ -140,7 +143,7 @@
   </div>
 <input id="imgFile" type="file" accept="image/*" multiple hidden>
 <input id="docFile" type="file" accept=".pdf,.doc,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.py,.js,.ts,.tsx,.jsx,.sh,.yaml,.yml,.toml,.ini,.log,.xml,.html,.css,.c,.cpp,.h,.rs,.go" hidden>
-  <div class="sendRow"><div id="inputHistory"><button id="inputPrev" aria-label="上一条已发送内容" title="上一条已发送内容">↑</button><button id="inputNext" aria-label="下一条已发送内容或恢复草稿" title="下一条已发送内容或恢复草稿">↓</button></div><div id="termHistory"><button data-termkey="ArrowUp" aria-label="上一条终端命令">↑</button><button data-termkey="ArrowDown" aria-label="下一条终端命令">↓</button></div><button id="send">发送</button><button id="sendNow" hidden>立即发送</button></div>
+  <div class="sendRow"><div id="inputHistory"><button id="inputPrev" aria-label="上一条已发送内容" title="上一条已发送内容">↑</button><button id="inputNext" aria-label="下一条已发送内容或恢复草稿" title="下一条已发送内容或恢复草稿">↓</button></div><div id="termHistory"><button data-termkey="ArrowUp" aria-label="上一条终端命令">↑</button><button data-termkey="ArrowDown" aria-label="下一条终端命令">↓</button></div><button id="insertNewline" aria-label="插入换行" title="插入换行">↵</button><button id="send">发送</button><button id="sendNow" hidden>立即发送</button></div>
   <div id="footerStatus"><div id="msg"></div><span id="elapsed" hidden></span></div>
 </footer>
 
@@ -196,8 +199,10 @@
   <div class="cBar" id="connBar" aria-hidden="true"></div>
   <div class="cGroup" id="connAgents" aria-live="polite"></div>
   </div>
-  <div class="cFoot"><p id="connNote"></p><button id="connGo" class="cGo" hidden>进入</button><button id="connAuto" class="cLink" hidden>下次遇到部分失败时直接进入</button>
+  <div class="cFoot"><p id="connNote"></p>
+    <div class="cActions"><button id="connLaunchAll" class="cGo cAlt" hidden>一键启动全部</button><button id="connGo" class="cGo" hidden>进入</button></div>
     <div id="connMore" hidden><button id="connPick">切换电脑</button><button id="connRepair">重新配对</button></div>
+    <div class="cOpts"><button id="connAutoPartial" class="cPref" hidden><span class="switch"></span><span>部分失败时直接进入</span></button><button id="connAutoLaunch" class="cPref" hidden><span class="switch"></span><span>自动启动未打开的 Agent</span></button></div>
   </div>
 </div>
 
@@ -212,20 +217,20 @@
 
 <script src="i18n.js"></script>
 <script src="js/core.js?v=92"></script>
-<script src="js/gate.js"></script>
+<script src="js/gate.js?v=121"></script>
 <script src="js/scanner.js"></script>
-<script src="js/net.js?v=110"></script>
-<script src="js/sheets.js?v=113"></script>
-<script src="js/notify.js?v=113"></script>
-<script src="js/mode.js"></script>
+<script src="js/net.js?v=120"></script>
+<script src="js/sheets.js?v=125"></script>
+<script src="js/notify.js?v=125"></script>
+<script src="js/mode.js?v=123"></script>
 <script src="js/chat.js?v=111"></script>
-<script src="js/history.js?v=111"></script>
+<script src="js/history.js?v=120"></script>
 <script src="js/files.js?v=106"></script>
-<script src="js/screen.js?v=87"></script>
-<script src="js/terminal.js?v=108"></script>
-<script src="js/composer.js?v=100"></script>
+<script src="js/screen.js?v=123"></script>
+<script src="js/terminal.js?v=116"></script>
+<script src="js/composer.js?v=117"></script>
 <script src="js/latency.js"></script>
-<script src="js/image-editor.js?v=97"></script>
-<script src="js/voice.js?v=103"></script>
+<script src="js/image-editor.js?v=117"></script>
+<script src="js/voice.js?v=119"></script>
 </body>
 </html>

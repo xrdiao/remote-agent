@@ -119,6 +119,8 @@ npm run setup
 
 保持这个终端开着。它会打印地址（`公网地址` 为公网 URL，`局域网地址` 为局域网 URL）以及连接到了哪些窗口。如果提示连不上，回到第 3 步。
 
+开了隧道时中继也监听局域网地址：同一 Wi-Fi 的电脑或手机浏览器直接打开 `局域网地址`（如 `http://192.168.2.130:3939/`）即可用，延迟接近零，手机仍走隧道。给局域网设备配对用 `npm run pair -- --lan`。纯 http 下没有推送通知和离线缓存，其余功能相同。
+
 ## 第 6 步：配对手机
 
 在同一文件夹再开一个终端：
@@ -176,7 +178,7 @@ npm run pair
 | `npm run setup` | 首次运行向导 |
 | `npm run public` | 启动中继并使用公网隧道 |
 | `npm run start` | 只在本机/局域网启动中继 |
-| `npm run pair` | 生成一次性配对链接和二维码 |
+| `npm run pair` | 生成一次性配对链接和二维码（`-- --lan` 生成局域网入口链接） |
 | `npm run devices` | 查看已配对设备 |
 | `npm run devices remove <id>` | 移除设备（立即断开） |
 | `npm run 2fa` | 可选的 Authenticator 二次验证 |
