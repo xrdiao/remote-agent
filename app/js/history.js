@@ -399,7 +399,11 @@ function pruneEchoes(chat) {
     // A send that vanished with a dead socket would otherwise spin "发送中…" forever.
     if (Date.now() - p.at > (p.confirmed ? 60000 : 120000)) return false;
     if (p.sel !== viewSel) return true;
-    if (humans.filter(it => echoTextMatches(it, p.text)).length > p.before) return false;
+    const matches = humans.filter(it => echoTextMatches(it, p.text)).length;
+    if (matches > p.before) return false;
+    // Once the send is acknowledged, a human item stamped after the click is enough: the extracted
+    // text can differ from the typed text (mentions, attachments), which would leave the echo forever.
+    if (p.confirmed && humans.some(it => it.sentAt && it.sentAt >= p.at - 2000)) return false;
     if (p.kind === 'queue' && queued.some(t => echoTextMatches({ t }, p.text))) return false;
     return true;
   });
