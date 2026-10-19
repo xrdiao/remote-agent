@@ -396,7 +396,8 @@ function pruneEchoes(chat) {
   const humans = (chat?.items || []).filter(it => it.k === 'human');
   const queued = (chat?.queued || []).map(q => (q.t || '').trim());
   pendingEchoes = pendingEchoes.filter(p => {
-    if (p.confirmed && Date.now() - p.at > 60000) return false;
+    // A send that vanished with a dead socket would otherwise spin "发送中…" forever.
+    if (Date.now() - p.at > (p.confirmed ? 60000 : 120000)) return false;
     if (p.sel !== viewSel) return true;
     if (humans.filter(it => echoTextMatches(it, p.text)).length > p.before) return false;
     if (p.kind === 'queue' && queued.some(t => echoTextMatches({ t }, p.text))) return false;
