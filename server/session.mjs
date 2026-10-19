@@ -64,7 +64,7 @@ export class Session extends AgentContext {
       await this.editorCdp.send('Page.stopScreencast').catch(() => {});
       this.lastTermHash = undefined;
       await this.pollTerminal();
-      this.termTimer = setInterval(() => this.pollTerminal().catch(() => {}), 700);
+      this.termTimer = setInterval(() => this.pollTerminal().catch(() => {}), 250);
     }
   }
 

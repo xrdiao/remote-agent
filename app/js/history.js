@@ -461,7 +461,7 @@ function renderChat(chat, stale, loading = false) {
   $('empty').firstChild.textContent = I18N.tr(imageOnly ? '电脑端正在查看图片，暂无已同步的对话。关闭图片预览后会自动恢复。' : loading ? '正在加载对话…' : '没找到聊天面板。');
   $('emptyHint').hidden = loading || imageOnly;
   $('older').hidden = !chat || chat.earlier === false;
-  $('pickMode').hidden = currentApp === 'devin' || !chat?.mode;
+  $('pickMode').hidden = currentApp === 'devin' || currentApp === 'cursor' || !chat?.mode;
   $('pickModel').hidden = false;
   if (chat?.mode) { $('pickMode').textContent = (chat.mode === 'Bypass Permissions' ? '⚠绕过' : chat.mode) + ' ▾'; $('pickMode').title = chat.mode; }
   $('pickMode').classList.toggle('bypass', chat?.mode === 'Bypass Permissions');
