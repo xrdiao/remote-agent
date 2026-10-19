@@ -47,6 +47,7 @@
   const devinLoadEarlier = async (timeout = 2500) => {
     const sc = devinScroller();
     if (!sc) return { moved: false };
+    const top = sc.scrollTop;
     const mountedMin = () => Math.min(...[...doc.querySelectorAll('[data-acp-msg-index]')].map(e => Number(e.getAttribute('data-acp-msg-index'))).filter(n => Number.isFinite(n)));
     const rowsBefore = historyRows();
     const deadline = performance.now() + timeout;
@@ -63,8 +64,11 @@
       if (min < initialMin) break;
     }
     await waitHistoryRows(rowsBefore, 200);
-    return { moved: min < initialMin || sc.scrollTop <= 1, atStart: sc.scrollTop <= 1, min };
+    return { moved: min < initialMin || sc.scrollTop <= 1, atStart: sc.scrollTop <= 1, min, top };
   };
+  // While the scroller is up, Devin's virtualization never mounts streamed tail rows, so the phone
+  // would miss new messages until re-attach. Restore the pre-jump position after the merge read.
+  const devinScrollTop = top => { const sc = devinScroller(); if (sc && Number.isFinite(top)) sc.scrollTop = top; };
 
   // Cheap per-window check for notifications: is the Agent running, and is it waiting on a button?
   // "Run in background" shows up on any command running longer than ~5 s; it is not a request for approval.

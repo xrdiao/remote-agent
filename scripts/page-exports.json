@@ -58,6 +58,7 @@
   "historyRows",
   "waitHistoryRows",
   "devinLoadEarlier",
+  "devinScrollTop",
   "terminalList",
   "terminalTarget",
   "terminalCloseTarget",

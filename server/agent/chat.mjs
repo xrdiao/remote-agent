@@ -186,6 +186,7 @@ export const methods = {
         this.fillThinking(initial);
         this.retainThinking(initial);
         this.mergeDevinHistory(initial);
+        if (initial?.model === 'Fusion' && this.fusion) initial.fusion = this.fusion;
         this.lastChat = JSON.stringify(initial);
         this.emit({ t: 'chat', sel: this.selectionKey(), chat: initial });
       }
@@ -429,6 +430,7 @@ export const methods = {
       if (!r) return;
       this.lastChatAt = 0;
       await this.pollChat(true);
+      if (r.moved && Number.isFinite(r.top)) await this.cdp.evaluate(helpersCall(`devinScrollTop(${r.top})`)).catch(() => {});
       const earlier = this.lastChat ? JSON.parse(this.lastChat).earlier : undefined;
       return { earlier: earlier === undefined ? !r.atStart : earlier };
     }

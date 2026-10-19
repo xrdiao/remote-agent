@@ -24,17 +24,20 @@
     if (tab) return 'tab';
     return '';
   };
+  // Cursor 3.22's compact settings rail exposes labels via textContent; innerText comes back empty.
+  const fullText = e => (e.innerText || e.textContent || '');
+  const cellText = e => (e.innerText || '').trim() || (e.textContent || '').replace(/\s+/g, ' ').trim();
   const settingsPanel = () => {
     const close = [...doc.querySelectorAll('button')].find(b => b.getAttribute('aria-label') === 'Close Settings');
     if (close && vis(close)) {
       let p = close;
       for (let i = 0; i < 16 && p; i++) {
         const box = p.getBoundingClientRect();
-        if ((p.innerText || '').includes('Plan & Usage') && box.width > 300 && box.height > 200) return p;
+        if (fullText(p).includes('Plan & Usage') && box.width > 300 && box.height > 200) return p;
         p = p.parentElement;
       }
     }
-    const nav = [...doc.querySelectorAll('button, [role=button], .cursor-settings-sidebar-nav-cell')].find(e => vis(e) && (e.innerText || '').trim() === 'Plan & Usage');
+    const nav = [...doc.querySelectorAll('button, [role=button], .cursor-settings-sidebar-nav-cell')].find(e => vis(e) && cellText(e) === 'Plan & Usage');
     let p = nav;
     for (let i = 0; i < 16 && p; i++) {
       const box = p.getBoundingClientRect();
@@ -220,16 +223,16 @@
   const usageNavTarget = () => {
     const root = settingsPanel();
     if (!root) return null;
-    const e = [...root.querySelectorAll('button, [role=button], .cursor-settings-sidebar-nav-cell')].find(el => vis(el) && (el.innerText || '').trim() === 'Plan & Usage');
+    const e = [...root.querySelectorAll('button, [role=button], .cursor-settings-sidebar-nav-cell')].find(el => vis(el) && cellText(el) === 'Plan & Usage');
     return e ? center(e) : null;
   };
   const readUsage = () => {
     const root = settingsPanel();
     if (!root) return null;
     const nav = new Set(['Back', 'General', 'Profile', 'Appearance', 'Plan & Usage', 'Agents', 'Cloud Agents', 'Models', 'Git & PRs', 'Worktrees', 'Browser & Network', 'Tab', 'Code Intelligence', 'Beta', 'Docs', 'Getting Started']);
-    const candidates = [...root.querySelectorAll('div, section')].filter(e => (e.innerText || '').includes('CURRENT PLAN'));
-    candidates.sort((a, b) => a.innerText.length - b.innerText.length);
-    const best = candidates.find(e => /Included in|On-Demand|Cursor Models/.test(e.innerText) && !(e.innerText || '').split('\n').some(l => l.trim() === 'Agents'))
+    const candidates = [...root.querySelectorAll('div, section')].filter(e => fullText(e).includes('CURRENT PLAN'));
+    candidates.sort((a, b) => fullText(a).length - fullText(b).length);
+    const best = candidates.find(e => /Included in|On-Demand|Cursor Models/.test(fullText(e)) && !fullText(e).split('\n').some(l => l.trim() === 'Agents'))
       || candidates[0];
     const rawBars = [...root.querySelectorAll('[role=progressbar]')].filter(vis);
     const loading = rawBars.some(e => /^loading\b/i.test((e.getAttribute('aria-label') || '').trim()));
@@ -243,7 +246,7 @@
       let node = e;
       let basis = 'used';
       for (let i = 0; i < 8 && node; i++) {
-        const around = (node.innerText || '').replace(/\s+/g, ' ');
+        const around = fullText(node).replace(/\s+/g, ' ');
         if (around.length < 500) {
           if (new RegExp(pct + '%\\s+(?:left|remaining)', 'i').test(around)) { basis = 'remaining'; break; }
           if (new RegExp(pct + '%\\s+used', 'i').test(around)) { basis = 'used'; break; }
@@ -252,7 +255,7 @@
       }
       return { label: label.slice(0, 40), kind: 'limit', basis, pct };
     }).filter(Boolean);
-    const lines = ((best || root).innerText || '').split('\n').map(s => s.trim()).filter(s => s && !nav.has(s)).slice(0, 32);
+    const lines = fullText(best || root).split('\n').map(s => s.trim()).filter(s => s && !nav.has(s)).slice(0, 32);
     const reset = lines.find(l => /reset/i.test(l)) || '';
     const planIdx = lines.findIndex(l => l === 'CURRENT PLAN');
     const plan = planIdx >= 0 && lines[planIdx + 1] ? lines[planIdx + 1] : '';

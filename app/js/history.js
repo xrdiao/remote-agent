@@ -461,10 +461,9 @@ function renderChat(chat, stale, loading = false) {
   $('pickModel').hidden = false;
   if (chat?.mode) { $('pickMode').textContent = (chat.mode === 'Bypass Permissions' ? '⚠绕过' : chat.mode) + ' ▾'; $('pickMode').title = chat.mode; }
   $('pickMode').classList.toggle('bypass', chat?.mode === 'Bypass Permissions');
-  const fusionLabel = chat?.model === 'Fusion' && chat.fusion ? `Fusion · ${fusionShort(chat.fusion.lead)} / ${fusionShort(chat.fusion.sidekick)}` : '';
-  const mdl = fusionLabel || chat?.model || '模型';
+  const mdl = chat?.model || '模型';
   const effLabel = chat?.effort && chat.effort !== 'Effort' ? String(chat.effort).replace(/^([a-z])/, c => c.toUpperCase()) : '';
-  const effSuffix = !fusionLabel && chat?.model !== 'Fusion' && effLabel && !mdl.toLowerCase().includes(effLabel.toLowerCase()) ? ` · ${effLabel}` : '';
+  const effSuffix = chat?.model !== 'Fusion' && effLabel && !mdl.toLowerCase().includes(effLabel.toLowerCase()) ? ` · ${effLabel}` : '';
   $('pickModel').textContent = mdl + effSuffix + ' ▾';
   $('pickModel').title = chat?.fusion ? `${chat.fusion.lead} · ${chat.fusion.effort} · ${chat.fusion.sidekick}${chat.fusion.fast ? ' · Fast' : ''}` : (chat?.model || '更换模型');
   const permName = PERM_LABEL[chat?.permission]?.[0];

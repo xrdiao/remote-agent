@@ -312,9 +312,6 @@ const PERM_LABEL = {
   'Approve for me': ['代为批准', '只在可能不安全时询问'],
   'Full access': ['完全访问', '可以访问网络和这台电脑上的文件'],
 };
-function fusionShort(name) {
-  return String(name || '').replace(/^(Claude|Gemini)\s+/i, '').replace(/\s+(Low|Medium|High|Max|Thinking)$/i, '').trim();
-}
 function modelPricingHtml(pricing, details = false) {
   if (!pricing) return '';
   const lines = [];

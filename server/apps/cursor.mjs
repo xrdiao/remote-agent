@@ -231,16 +231,16 @@ async readCursorUsage(automatic = false) {
     if (!nav) return { missing: true, quota: [], limits: [] };
     await this.tapCss(nav.x, nav.y, 'left', cdp);
     let usage = null;
-    for (let i = 0; i < 32; i++) {
+    for (let i = 0; i < 160; i++) {
       await new Promise(r => setTimeout(r, 250));
       usage = await cdp.evaluate(helpersCall('readUsage()'));
       if (usage?.limits?.length && !usage.loading && !usage.missing) break;
     }
-    if (usage?.loading) throw new Error('额度还在加载');
     if (usage?.limits?.length && !usage.missing) {
       cursorUsage.data = { ...usage, updated: Date.now() };
       return cursorUsage.data;
     }
+    if (usage?.loading) throw new Error('额度还在加载');
     return usage || { missing: true, quota: [], limits: [] };
   } finally { if (!wasOpen) await this.closeSettings(editorCdp); }
 },
