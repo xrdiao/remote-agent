@@ -35,7 +35,8 @@
     const aria = el.getAttribute('aria-label');
     const k = aria === 'User message' ? 'human'
       : aria === 'Devin message' ? 'assistant'
-      : kindEl?.dataset.messageKind || (el.querySelector('.composer-human-message, .aislash-editor-input-readonly') ? 'human' : 'other');
+      : kindEl?.dataset.messageKind || (el.querySelector('.composer-human-message, .aislash-editor-input-readonly') ? 'human'
+        : el.querySelector('.anysphere-markdown-container-root') ? 'assistant' : 'other');
     const item = { i: itemKey(el), k };
     const sentAt = Date.parse(el.querySelector('time[datetime]')?.getAttribute('datetime') || '');
     if (k === 'human' && Number.isFinite(sentAt)) item.sentAt = sentAt;
@@ -54,7 +55,7 @@
     if (k === 'human') item.t = aria === 'User message' ? devinUserText(readable) : (readable.innerText || readable.textContent || '').trim();
     else if (k === 'assistant') {
       const devinRoot = aria === 'Devin message' ? el.querySelector('.prose-main') : null;
-      const md = [...el.querySelectorAll('.markdown-root, .ui-markdown, .rendered-markdown')].find(n => !n.closest(THINKING_ROOT));
+      const md = [...el.querySelectorAll('.markdown-root, .ui-markdown, .rendered-markdown, .anysphere-markdown-container-root')].find(n => !n.closest(THINKING_ROOT));
       const body = devinRoot || md || withoutThinking(el);
       item.t = (body.innerText || body.textContent || '').trim();
       item.h = devinRoot ? devinRich(devinRoot) : md ? clean(md) : esc((withoutThinking(el).innerText || '').trim()).replace(/\n/g, '<br>');

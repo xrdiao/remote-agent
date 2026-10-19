@@ -28,14 +28,17 @@
     return titled || el.querySelector('.ui-edit-tool-call__filename')?.innerText.trim() || null;
   };
 
-  // Older Cursor builds mark each transcript row with data-flat-index. The Agents window in
-  // current builds uses data-message-kind instead, and past bubbles contain their own editors.
-  const ITEM_SEL = '[data-flat-index], [data-message-kind], [data-turn-key], [role=group][aria-label="User message"], [role=group][aria-label="Devin message"]';
+  // Older Cursor builds mark each transcript row with data-flat-index; Cursor 1.x Composer
+  // chats use data-message-index. The Agents window in current builds uses data-message-kind
+  // instead, and past bubbles contain their own editors.
+  const ITEM_SEL = '[data-flat-index], [data-message-index], [data-message-kind], [data-turn-key], [role=group][aria-label="User message"], [role=group][aria-label="Devin message"]';
   const COMPOSER = '.aislash-editor-input, .ui-prompt-input-editor__input, .ProseMirror';
   const inItem = el => !!el.closest(ITEM_SEL);
   const itemKey = el => {
     const existing = el.dataset.flatIndex || el.dataset.turnKey || el.dataset.messageId || el.querySelector('[data-message-id]')?.dataset.messageId;
     if (existing) return existing;
+    const messageIndex = el.getAttribute('data-message-index');
+    if (messageIndex != null) return `mi${messageIndex}`;
     const acp = el.closest?.('[role="log"][aria-label="Session transcript"]')
       ? el.closest('[data-acp-msg-index]')?.getAttribute('data-acp-msg-index') : null;
     if (acp != null) return `acp${acp}`;

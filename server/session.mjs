@@ -223,6 +223,12 @@ export class Session extends AgentContext {
     editorCdp.on('Page.screencastFrame', p => this.onFrame(p));
     await this.refreshViewport();
     if (this.app !== 'codex') this.threadId = await this.cdp.evaluate(helpersCall('activeThread()')) || '';
+    // Cursor's Agents home keeps a last-used agent marked current in the sidebar, so
+    // activeThread() reports a thread even though no chat panel is open. Reopen it here —
+    // otherwise attach sees threadId already matching and never opens a transcript.
+    if (win.app === 'cursor' && this.threadId && !await this.cdp.evaluate(helpersCall('panelRect()')).catch(() => null)) {
+      try { await this.openAgent(this.threadId); } catch {}
+    }
     this.emit({
       t: 'attached', id: win.id, title: this.app === 'codex' ? 'Codex' : win.title, app: win.app,
       appName: this.appMessage('{app}'), project: this.projectName(), windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(), plans: appPlans, initial: selection.initial === true,
