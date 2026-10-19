@@ -638,7 +638,7 @@ function showMainMenu() {
     <button class="opt" data-act="screen"><span class="lbl">画面<span class="sub">查看绘图与仿真窗口</span></span></button>
     <div class="pSec">此手机 App</div>
     ${lastChat?.changed && !lastChat?.readonly ? `<button class="opt" data-act="toggleChanges"><span class="lbl">${hiddenChangeNotices.has(changeNoticeKey()) ? '显示改动' : '隐藏改动提示'}</span></button>` : ''}
-    ${iosApp ? '' : notifyItem}
+    ${iosApp && !window.AgentRemoteApp?.pushRegister ? '' : notifyItem}
     ${connItems}
     ${inApp && appVersion ? update : ''}
     ${inApp ? '<button class="opt" data-act="changeUrl"><span class="lbl">更换 App 地址</span></button>' : ''}
