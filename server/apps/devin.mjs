@@ -14,19 +14,29 @@ export const adapter = {
     return this.devinNewChat();
   },
 
-  async openAgent(id, title = '') {
+  async openAgent(id, title = '', retried = false) {
     if (IS_WIN && id.startsWith('window:devin:')) {
       await this.attach(id.slice('window:'.length));
       await this.listAgents();
       return;
     }
     if (id.startsWith('tab:')) return this.switchTab(id.slice(4));
-    const { surface, row, title: windowTitle } = await this.cdp.evaluate(`(() => {
+    let { surface, row, title: windowTitle } = await this.cdp.evaluate(`(() => {
       const h = ${PAGE_SRC};
       const surface = h.devinSurface();
       return { surface, title: document.title, row: surface === 'agent' ? h.agentList().find(row => row.id === ${JSON.stringify(id)}) : null };
     })()`);
     this.winTitle = windowTitle;
+    if (surface === 'agent' && retried && !row) {
+      // The session list on a freshly switched surface is still loading; wait for the row.
+      for (let i = 0; i < 40 && !row; i++) {
+        await new Promise(r => setTimeout(r, 250));
+        row = await this.cdp.evaluate(`(() => {
+          const h = ${PAGE_SRC};
+          return h.agentList().find(row => row.id === ${JSON.stringify(id)});
+        })()`);
+      }
+    }
     if (row?.workspace && !row.host && !windowRoots(windowTitle, 'devin').some(w => !w.host && pathKey(w.root) === pathKey(row.workspace))) {
       return this.useProject(row.workspace, false, id);
     }
@@ -35,6 +45,12 @@ export const adapter = {
       const pos = opened && await this.cdp.evaluate(helpersCall(`sessionPickerTarget(${JSON.stringify(id)}, ${JSON.stringify(title)})`));
       if (!pos) {
         if (opened) await this.key('Escape');
+        // A window that just opened lands on the editor surface; its picker only knows
+        // this project's sessions. Switch to the agent surface and try the row there.
+        if (!retried) {
+          await this.setSurface('agent');
+          return this.adapter.openAgent.call(this, id, title, true);
+        }
         throw new Error('这条 Agent 已经不在列表里');
       }
       await this.tapCss(pos.x, pos.y);

@@ -290,10 +290,22 @@ async openCodexAgent(id) {
   this.switchingThread = true;
   const switchedWindow = pageId !== this.codexPageId;
   try {
-    if (switchedWindow) await this.attach({ id: 'codex', windowId: pageId, threadId: convId });
+    if (switchedWindow) {
+      await this.attach({ id: 'codex', windowId: pageId, threadId: convId });
+      if (!this.cdp) throw new Error('还没有连上 Codex');
+      // Restricted Mode keeps the Codex extension off in that window; ask first.
+      if (workspace && (await this.editorCdp.evaluate(helpersCall('workspaceTrustState()'))).required) {
+        this.pendingProject = { root: workspace, app: 'codex', windowId: pageId, newSession: false, threadId: convId };
+        return this.emit({ t: 'projectTrust', path: workspace });
+      }
+      // A window that just opened reports an empty thread until its Codex webview
+      // finishes booting; bring the sidebar up and re-attach before selecting.
+      const page = (await codexWindows(CODEX_CDP_URL)).find(p => p.pageId === pageId);
+      if (page) await this.ensureCodexReady({ id: page.pageId, ws: page.ws }, true);
+    }
     if (!this.cdp) throw new Error('还没有连上 Codex');
     const current = await this.cdp.evaluate(helpersCall('codexThread()')) || '';
-    if (current !== convId && (switchedWindow || !await this.selectCodexThread(convId))) throw new Error('没有找到这个会话');
+    if (current !== convId && !await this.selectCodexThread(convId)) throw new Error('没有找到这个会话');
     // The transcript unmounts during navigation; give it a moment so the first emit carries real items.
     if (switchedWindow || current !== convId) {
       this.codexFreshView = true;

@@ -171,7 +171,7 @@
       ...tabs.map(t => [t.dataset.resourceName, { id: t.dataset.resourceName, title: t.querySelector('.label-name')?.textContent || '新会话', current: focused ? t.dataset.resourceName === focused : t.classList.contains('active'), workspace: '', host: '', group: '' }]),
     ]).values()];
     // Read the native session id; titles can repeat or change.
-    return [...doc.querySelectorAll('li[data-slot="sidebar-menu-item"]')].map(li => {
+    const lis = [...doc.querySelectorAll('li[data-slot="sidebar-menu-item"]')].map(li => {
       const btn = li.querySelector('button[aria-label]');
       const title = (btn?.getAttribute('aria-label') || '').trim();
       if (!title || DEVIN_NAV.has(title)) return null;
@@ -189,6 +189,24 @@
         last: session.agentStopMessage || '',
       };
     }).filter(Boolean);
+    // A freshly opened Devin window shows "Recent sessions" in the workspace welcome
+    // layer instead of the sidebar list; those buttons carry the same session props.
+    const welcome = [...doc.querySelectorAll('[class*="windsurf-workspace-welcome"] button')].flatMap(btn => {
+      const session = codexFiberProps(btn).find(p => p.session?.sessionId)?.session;
+      if (!session) return [];
+      return [{
+        id: session.sessionId,
+        workspace: session.cwd || '',
+        title: (btn.innerText || '').trim().split('\n')[0].slice(0, 80),
+        group: '',
+        current: false,
+        running: ['active', 'pending', 'canceling'].includes(session.status),
+        lastUsed: Date.parse(session.updatedAt) || 0,
+        last: session.agentStopMessage || '',
+      }];
+    });
+    const seen = new Set(lis.map(a => a.id));
+    return [...lis, ...welcome.filter(a => !seen.has(a.id))];
   };
   const agentTarget = (id, click = false) => {
     if (id && activeThread() === id) return true;
@@ -219,10 +237,17 @@
     }
     const li = [...doc.querySelectorAll('li[data-slot="sidebar-menu-item"]')].find(e => codexFiberProps(e).some(p => p.session?.sessionId === id));
     const btn = li && [...li.querySelectorAll('button[aria-label]')].find(vis);
-    if (!btn) return null;
-    btn.scrollIntoView({ block: 'nearest' });
-    if (click) { btn.click(); return true; }
-    return center(btn);
+    if (btn) {
+      btn.scrollIntoView({ block: 'nearest' });
+      if (click) { btn.click(); return true; }
+      return center(btn);
+    }
+    // Fresh windows list sessions as welcome-layer "Recent sessions" buttons, not sidebar items.
+    const wbtn = [...doc.querySelectorAll('[class*="windsurf-workspace-welcome"] button')].find(b => codexFiberProps(b).some(p => p.session?.sessionId === id));
+    if (!wbtn || !vis(wbtn)) return null;
+    wbtn.scrollIntoView({ block: 'nearest' });
+    if (click) { wbtn.click(); return true; }
+    return center(wbtn);
   };
   const agentStates = () => {
     const current = agentState();

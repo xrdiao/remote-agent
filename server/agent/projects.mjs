@@ -165,6 +165,7 @@ export const methods = {
       }
       const newWindow = busy || ((app === 'codex' || app === 'devin') && !!threadId);
       if (!newWindow && !busy && this.editorCdp) await this.editorCdp.send('Page.bringToFront');
+      this.emit({ t: 'status', ok: true, msg: '正在打开项目窗口…' });
       await openFolder(real, app, newWindow);
       for (let i = 0; i < 40 && !target; i++) {
         target = await findTarget();
@@ -191,25 +192,47 @@ export const methods = {
       }
     }
     if (!target) throw new Error('应用尚未打开所选项目，请检查电脑上的窗口');
-    if (app === 'codex') {
-      let pages = await codexWindows(CODEX_CDP_URL);
-      if (!pages.find(p => p.pageId === target.id)?.chatWs) {
-        const editorCdp = new Cdp(target.webSocketDebuggerUrl);
-        await editorCdp.connect();
-        try {
-          await this.key(mod('Shift+p'), { cdp: editorCdp });
-          await editorCdp.send('Input.insertText', { text: 'Codex: Open Codex Sidebar' });
-          await this.key('Enter', { cdp: editorCdp });
-        } finally { editorCdp.close(); }
-        for (let i = 0; i < 40 && !pages.find(p => p.pageId === target.id)?.chatWs; i++) {
-          await new Promise(r => setTimeout(r, 150));
-          pages = await codexWindows(CODEX_CDP_URL);
-        }
-        if (!pages.find(p => p.pageId === target.id)?.chatWs) throw new Error('项目已打开，但 Codex 侧边栏尚未就绪');
-      }
-    }
     await this.attach({ id: `${app}:${target.id}` });
-    if (app === 'codex' && (newSession || threadId)) {
+    this.pendingProject = { root: real, app, windowId: this.windowId, newSession, threadId };
+    // Restricted Mode disables the agent extension, so prompt for trust before
+    // waiting on a Codex sidebar that can never appear while untrusted.
+    if ((await this.editorCdp.evaluate(helpersCall('workspaceTrustState()'))).required)
+      return this.emit({ t: 'projectTrust', path: real });
+    if (app === 'codex') await this.ensureCodexReady(target, newSession || !!threadId);
+    await this.finishProject();
+  },
+  // Waits for the Codex webview of a just-opened window, then binds this.cdp to it.
+  async ensureCodexReady(target, needThread) {
+    const pageOf = pages => pages.find(p => p.pageId === target.id);
+    const openSidebar = async () => {
+      const editorCdp = new Cdp(target.ws || target.webSocketDebuggerUrl);
+      await editorCdp.connect();
+      try {
+        await this.key(mod('Shift+p'), { cdp: editorCdp });
+        await editorCdp.send('Input.insertText', { text: 'Codex: Open Codex Sidebar' });
+        await this.key('Enter', { cdp: editorCdp });
+      } finally { editorCdp.close(); }
+    };
+    let pages = await codexWindows(CODEX_CDP_URL);
+    if (!pageOf(pages)?.chatWs) {
+      // A window that just opened (or just left Restricted Mode) can take a while
+      // to activate the Codex extension: re-issue the command every 5 s.
+      await openSidebar();
+      this.emit({ t: 'status', ok: true, msg: '正在等待 Codex 就绪…' });
+      const deadline = Date.now() + 25000;
+      let nextCmd = Date.now() + 5000;
+      while (!pageOf(pages)?.chatWs && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 150));
+        pages = await codexWindows(CODEX_CDP_URL);
+        if (!pageOf(pages)?.chatWs && Date.now() >= nextCmd) {
+          nextCmd = Date.now() + 5000;
+          await openSidebar().catch(() => {});
+        }
+      }
+      if (!pageOf(pages)?.chatWs) throw new Error('项目已打开，但 Codex 侧边栏尚未就绪');
+      await this.attach({ id: `codex:${target.id}` });
+    }
+    if (needThread) {
       let ready = false;
       for (let i = 0; i < 120 && !ready; i++) {
         ready = !!await this.cdp.evaluate(helpersCall('codexNewPoint()'));
@@ -217,10 +240,6 @@ export const methods = {
       }
       if (!ready) throw new Error('项目已打开，但 Codex 会话入口尚未就绪');
     }
-    this.pendingProject = { root: real, app, windowId: this.windowId, newSession, threadId };
-    const trust = await this.editorCdp.evaluate(helpersCall('workspaceTrustState()'));
-    if (trust.required) return this.emit({ t: 'projectTrust', path: real });
-    await this.finishProject();
   },
   async newProject(parent, name, newSession = false) {
     const folder = createProjectFolder(parent, name);
@@ -264,7 +283,14 @@ export const methods = {
     for (let i = 0; i < 20; i++) {
       await new Promise(r => setTimeout(r, 150));
       state = await this.editorCdp.evaluate(helpersCall('workspaceTrustState()'));
-      if (!state.required) return this.finishProject();
+      if (!state.required) {
+        // Trust just activated the Codex extension; wait for its webview before selecting the session.
+        if (this.app === 'codex') {
+          const page = (await codexWindows(CODEX_CDP_URL)).find(p => p.pageId === pending.windowId);
+          if (page) await this.ensureCodexReady({ id: page.pageId, ws: page.ws }, pending.newSession || !!pending.threadId);
+        }
+        return this.finishProject();
+      }
     }
     throw new Error('项目仍处于限制模式，尚未创建 Agent 会话');
   },
