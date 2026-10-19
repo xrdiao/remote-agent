@@ -15,6 +15,7 @@ function rememberAgentOpen(m) {
 function openSheet(kind, html) {
   const navScroll = sheetKind === kind ? $('sheet').querySelector('.codexSettingsNav')?.scrollLeft : 0;
   sheetKind = kind;
+  if (kind !== 'windows') delete $('sheet')._winSig;
   $('sheet').dataset.kind = kind;
   $('sheet').innerHTML = html;
   const nav = $('sheet').querySelector('.codexSettingsNav');
@@ -30,6 +31,7 @@ function closeSheet() {
   menuRequest++;
   if (sheetKind === 'codex-settings') { codexSettingsRequest++; send({ t: 'closeCodexSettings' }); status(''); }
   sheetKind = null; menuSheetKind = '';
+  delete $('sheet')._winSig;
   $('shade').classList.remove('open');
   $('sheet').classList.remove('open');
 }
@@ -68,12 +70,18 @@ function winLabel(title) {
 
 function showWindows() {
   const entries = windows.map(w => ({ ...w, id: currentComputer()?.selections?.[w.app]?.id || w.id }));
+  const missingAgents = ['cursor', 'devin', 'codex'].filter(a => !entries.some(w => w.app === a));
+  // A re-render replaces every row; if a windows/plans emit lands mid-press it swallows the
+  // click. Row content only depends on this signature — skip the rebuild when nothing changed
+  // (latency values paint in place via paintLatency).
+  const sig = JSON.stringify([currentApp, I18N.lang, entries.map(w => [w.id, w.app, appPlans[w.app] || '']), missingAgents]);
+  if (sheetKind === 'windows' && $('sheet')._winSig === sig) return measureLatency(entries.map(w => w.id));
+  $('sheet')._winSig = sig;
   const rows = entries.map(w => {
     const software = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion' }[w.app] || w.app;
     const plan = appPlans[w.app] ? `<span class="winPlan">${esc(appPlans[w.app])}</span>` : '';
     return `<button class="opt ${w.app === currentApp ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">${esc(software)}${plan}</span><span data-latency="${esc(w.id)}">${latencyMarkup(w.id)}</span></button>`;
   }).join('');
-  const missingAgents = ['cursor', 'devin', 'codex'].filter(a => !entries.some(w => w.app === a));
   const launchRow = missingAgents.length ? `<button class="opt" data-launch-missing="${missingAgents.join(',')}"><span class="lbl">${I18N.tr('启动未打开的 Agent')}<span class="sub">${esc(missingAgents.map(a => ({ cursor: 'Cursor', devin: 'Devin', codex: 'Codex' })[a]).join(I18N.lang === 'en' ? ', ' : '、'))}</span></span><span>›</span></button>` : '';
   openSheet('windows', `<h3>切换 Agent</h3>${rows || '<div class="hint">没有找到窗口</div>'}${launchRow}`);
   measureLatency(entries.map(w => w.id));
