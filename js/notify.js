@@ -1,6 +1,7 @@
 /* ---------- notifications ---------- */
-// Android app: its own background listener. Elsewhere: Web Push (iPhone only from the home-screen app).
+// Android app: its own background listener. iOS app: APNs through the native shell. Elsewhere: Web Push (iPhone only from the home-screen app).
 const nativeNotify = () => Boolean(window.AgentRemoteApp?.setNotify);
+const iosPush = () => Boolean(window.AgentRemoteApp?.pushRegister);
 const webPush = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
 let notifyOn = false;
 let notifySubscribed = false;
@@ -15,6 +16,12 @@ async function syncNotify() {
     if (nativeNotify()) {
       notifyOn = window.AgentRemoteApp.notifyEnabled();
       if (notifyOn) window.AgentRemoteApp.setNotify(nativeConfig());
+    } else if (iosPush()) {
+      const response = await api('/api/push/state');
+      if (!response.ok) throw new Error('读取通知状态失败');
+      const state = await response.json();
+      notifySubscribed = state.subscribed;
+      notifyOn = state.enabled;
     } else {
       const [response, sub] = await Promise.all([api('/api/push/state'), pushSub()]);
       if (!response.ok) throw new Error('读取通知状态失败');
@@ -40,6 +47,18 @@ async function enableNotify() {
     notifyOn = true;
     setTimeout(() => { if (window.AgentRemoteApp.listenStatus?.() !== 'connected') showBgSheet(); }, 4000);
     return status('通知已开启，正在连接电脑。华为等手机请在「设置 → 应用启动管理」里允许本 App 后台活动');
+  }
+  if (iosPush()) {
+    try {
+      const reg = await window.AgentRemoteApp.pushRegister();
+      const r = await post('/api/push/apns', reg);
+      if (!r.ok) throw new Error((await r.json()).error || '注册失败');
+      notifySubscribed = true;
+      notifyOn = true;
+      return status('通知已开启');
+    } catch (e) {
+      return status('开启通知失败：' + e.message, false);
+    }
   }
   if (inApp) return status('请先在菜单里更新安卓 App，新版才支持通知', false);
   if (!webPush()) {
