@@ -89,7 +89,7 @@
     const session = props.find(p => p.session?.sessionId)?.session;
     const key = session?.sessionId || props.find(p => p.sessionId)?.sessionId || (surface === 'agent' ? active?.id : '') || '';
     const title = (surface === 'editor' ? tabs.find(t => t.active)?.title : active?.title) || '';
-    return { key, title, surface, tabs };
+    return { key, title, surface, tabs, cwd: session?.cwd || active?.workspace || '' };
   };
   const devinTabTarget = id => {
     const el = devinTabEls().find(t => codexFiberProps(t, 24).some(p => p.sessionId === id));

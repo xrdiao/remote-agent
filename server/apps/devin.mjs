@@ -425,6 +425,12 @@ async captureThoughts(chat) {
 syncSession(chat) {
   const sess = chat?.session;
   if (this.app !== 'devin' || !sess) return;
+  // Keep the session's real working directory so the phone's project label is right
+  // even when the window itself has no folder ("Untitled (Workspace)").
+  if ((sess.cwd || '') !== this.sessionCwd) {
+    this.sessionCwd = sess.cwd || '';
+    this.emit({ t: 'thread', windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(), project: this.projectName() });
+  }
   const key = chat.thread || sess.key;
   if (this.curSession === undefined || this.curSession === key) { this.curSession = key; return; }
   if (!this.sessStore) this.sessStore = new Map();

@@ -303,7 +303,9 @@ export const methods = {
   },
   projectName() {
     if (this.app === 'codex') return codexFolder(this.winTitle);
-    if (this.app === 'devin') return path.posix.basename(normPath(windowRoots(this.winTitle, 'devin')[0]?.root || ''));
+    // A Devin window can have no folder ("Untitled (Workspace)") while its session still
+    // runs in a real directory; the session's own cwd names the project in that case.
+    if (this.app === 'devin') return path.posix.basename(normPath(windowRoots(this.winTitle, 'devin')[0]?.root || this.sessionCwd || ''));
     return '';
   },
   publishThread(statusMsg) {

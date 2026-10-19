@@ -160,7 +160,11 @@ function connLaunch(apps) {
 }
 function connLaunchResults(results) {
   for (const r of results || []) if (CONN_AGENTS.some(a => a.app === r.app)) connLaunchStatus.set(r.app, r.status);
-  if (conn.active) connRender();
+  if (conn.active) return connRender();
+  // Launched from the agent list while the overlay is hidden: the sheet re-renders on
+  // the next windows update, but a failed launch needs an explicit reason.
+  const fail = (results || []).find(r => ['missing', 'running', 'timeout', 'failed', 'unsupported'].includes(r.status));
+  if (fail) status(connLaunchNote({ app: fail.app, name: CONN_AGENTS.find(a => a.app === fail.app)?.name || fail.app }), false);
 }
 function connLaunchNote(a) {
   const st = connLaunchStatus.get(a.app);
@@ -175,11 +179,13 @@ function connContentReady() {
   connRender();
   connMaybeEnter();
 }
+// 'conn-auto-partial': '' / missing → off; '0' → off; anything else (incl. the old
+// per-signature values like "cursor,devin") counts as on — enter whenever ≥1 agent is up.
+const connAutoPartialOn = () => { const v = store.get('conn-auto-partial'); return v !== null && v !== '' && v !== '0'; };
 function connMaybeEnter() {
   if (!conn.active || !conn.loaded || !windowReady || !conn.agents) return;
   const ready = conn.agents.filter(a => a.windows);
-  const signature = ready.map(a => a.app).join(',');
-  if (ready.length === CONN_AGENTS.length || (ready.length && (conn.enterRequested || store.get('conn-auto-partial') === signature))) connHide();
+  if (ready.length === CONN_AGENTS.length || (ready.length && (conn.enterRequested || connAutoPartialOn()))) connHide();
 }
 
 function ensureReadyAgent() {
@@ -211,8 +217,8 @@ function connRender() {
   $('connHostLabel').hidden = failed;
   $('connAgentsWrap').hidden = failed;
   $('connMore').hidden = !failed;
-  $('connAuto').hidden = true;
   $('connLaunchAll').hidden = true;
+  $('connAutoPartial').hidden = failed;
   $('connAutoLaunch').hidden = failed;
   $('connPick').hidden = !failed && !loadComputers().length;
   if (failed) {
@@ -244,17 +250,17 @@ function connRender() {
     const launch = st === 'err' ? connLaunchStatus.get(a.app) : '';
     const launchBtn = st === 'err' && launch !== 'missing' && launch !== 'unsupported'
       ? `<button class="cBtn cLaunch" data-conn-launch="${a.app}" ${launch === 'launching' ? 'disabled' : ''}>${launch === 'launching' ? `<span class="cSpin"></span>${esc(tr('启动中…'))}` : esc(tr('启动'))}</button>` : '';
-    return `<div class="cItem ${st}"><div class="cRow"><div class="cTile cBrand"><img class="on-dark" src="logo-${a.app}-dark.svg" alt=""><img class="on-light" src="logo-${a.app}-light.svg" alt=""></div><div class="cMeta"><div class="cName">${a.name}</div><div class="cSub">${esc(sub)}</div></div><div class="cSt" aria-label="${esc(tr(CONN_TEXT[st]))}">${CONN_ICON[st]}${st === 'err' ? `<span>${esc(tr('连接失败'))}</span>` : ''}</div>${st === 'err' ? `<button class="cWhy" data-conn-why="${a.app}" aria-expanded="${open}">${esc(tr(open ? '收起' : '查看原因'))}</button>` : ''}${launchBtn}</div>${st === 'err' && open ? `<div class="cErr"><pre class="cDetail">${esc(detail)}</pre><div class="cActs"><button class="cBtn" data-conn-retry="agents">${CONN_RETRY_SVG}${esc(tr('重试'))}</button><button class="cBtn ghost" data-conn-why="${a.app}">${esc(tr('收起'))}</button></div></div>` : ''}</div>`;
+    return `<div class="cItem ${st}"><div class="cRow"><div class="cTile cBrand"><img class="on-dark" src="logo-${a.app}-dark.svg" alt=""><img class="on-light" src="logo-${a.app}-light.svg" alt=""></div><div class="cMeta"><div class="cName">${a.name}</div><div class="cSub">${esc(sub)}</div></div><div class="cSt" aria-label="${esc(tr(CONN_TEXT[st]))}">${CONN_ICON[st]}${st === 'err' && !launchBtn ? `<span>${esc(tr('连接失败'))}</span>` : ''}</div>${st === 'err' ? `<button class="cWhy" data-conn-why="${a.app}" aria-expanded="${open}">${esc(tr(open ? '收起' : '查看原因'))}</button>` : ''}${launchBtn}</div>${st === 'err' && open ? `<div class="cErr"><pre class="cDetail">${esc(detail)}</pre><div class="cActs"><button class="cBtn" data-conn-retry="agents">${CONN_RETRY_SVG}${esc(tr('重试'))}</button><button class="cBtn ghost" data-conn-why="${a.app}">${esc(tr('收起'))}</button></div></div>` : ''}</div>`;
   }).join('');
   $('connSum').textContent = settled ? `${ready}/${CONN_AGENTS.length} ${tr('可用')}` : '';
   $('connBar').style.gridTemplateColumns = `repeat(${CONN_AGENTS.length}, 1fr)`;
   $('connBar').innerHTML = agents.map(a => `<i class="${conn.host ? state(a) : ''}"></i>`).join('');
   $('connGo').hidden = !settled || ready === agents.length;
-  $('connGo').textContent = ready ? ct('先进入 · 使用 {agents}', { agents: names }) : tr('全部重试');
-  $('connAuto').hidden = !settled || !ready || ready === agents.length;
+  $('connGo').textContent = ready ? tr('先进入') : tr('全部重试');
   const launchable = settled ? agents.filter(a => !a.windows) : [];
   $('connLaunchAll').hidden = !launchable.length;
   $('connLaunchAll').disabled = launchable.length > 0 && launchable.every(a => connLaunchStatus.get(a.app) === 'launching');
+  $('connAutoPartial').querySelector('.switch').classList.toggle('on', connAutoPartialOn());
   $('connAutoLaunch').querySelector('.switch').classList.toggle('on', store.get('conn-auto-launch') === '1');
   $('connMore').hidden = !settled || !!ready;
   $('connPick').hidden = true;
@@ -274,11 +280,12 @@ function connRetryAgents() {
   connRender();
   send({ t: 'connAgents' });
 }
-$('connAuto').onclick = () => {
-  store.set('conn-auto-partial', conn.agents.filter(a => a.windows).map(a => a.app).join(','));
-  ensureReadyAgent();
-  conn.enterRequested = true;
-  connMaybeEnter();
+$('connAutoPartial').onclick = () => {
+  const on = !connAutoPartialOn();
+  store.set('conn-auto-partial', on ? '1' : '0');
+  connRender();
+  // Same as the old button: turning it on while a partial result is showing enters at once.
+  if (on) { conn.enterRequested = true; connMaybeEnter(); }
 };
 $('connPick').onclick = () => showComputers();
 $('connRepair').onclick = () => repairPairing();

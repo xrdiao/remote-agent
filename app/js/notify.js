@@ -318,6 +318,16 @@ $('sheet').addEventListener('click', async e => {
   else if (act === 'settings') { status('正在读取设置…'); return send({ t: 'settings' }); }
   else if (act === 'screen') { closeSheet(); return setMode('screen'); }
   else if (act === 'changeUrl') window.AgentRemoteApp?.changeUrl();
+  else if (act === 'connPartialToggle' || act === 'connLaunchToggle') {
+    const partial = act === 'connPartialToggle';
+    const on = partial ? !connAutoPartialOn() : store.get('conn-auto-launch') !== '1';
+    store.set(partial ? 'conn-auto-partial' : 'conn-auto-launch', on ? '1' : '0');
+    const row = $(partial ? 'menuPartialRow' : 'menuLaunchRow');
+    row?.setAttribute('aria-checked', String(on));
+    row?.querySelector('.switch')?.classList.toggle('on', on);
+    if (conn.active) connRender();
+    if (partial && on) { conn.enterRequested = true; connMaybeEnter(); }
+  }
   else if (act === 'notifyToggle') {
     const row = $('notifySwitchRow');
     if (row?.getAttribute('aria-busy') === 'true') return;

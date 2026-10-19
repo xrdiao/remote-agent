@@ -415,7 +415,26 @@ async function resolvePending() {
   return decryptEntry(pending.key, entry);
 }
 
-let retryTimer = null;
+let retryTimer = null, pingTimer = null, lastRx = 0;
+// A dead network path can leave the socket looking open while sends vanish into it.
+// Ping the relay when nothing has arrived for a while; if it stays silent, drop the
+// socket so the normal reconnect path runs instead of waiting for a manual refresh.
+function heartbeat() {
+  if (!authed || !ws || ws.readyState !== 1) return;
+  if (Date.now() - lastRx > 45000) return closeSocket(ws);
+  if (Date.now() - lastRx > 20000) ws.send(JSON.stringify({ t: 'ping' }));
+}
+// close() waits for the peer's close frame, which a dead path never sends — the
+// socket then sits in CLOSING and onclose never fires. Force the cleanup.
+function closeSocket(socket) {
+  try { socket.close(); } catch {}
+  setTimeout(() => {
+    if (ws !== socket || socket.readyState === 3 || !socket.onclose) return;
+    const onclose = socket.onclose;
+    socket.onclose = null;
+    try { onclose.call(socket, { code: 1006 }); } catch {}
+  }, 5000);
+}
 function autoRetry() {
   clearTimeout(retryTimer);
   retryTimer = setTimeout(() => { if (!authed) boot(); }, 15000);
@@ -433,7 +452,7 @@ async function connect() {
   ws = new WebSocket(base.replace(/^http/, 'ws') + '/ws');
   let opened = false;
   const socket = ws;
-  const connectTimer = setTimeout(() => { if (gen === connGen && !authed) socket.close(); }, 10000);
+  const connectTimer = setTimeout(() => { if (gen === connGen && !authed) closeSocket(socket); }, 10000);
   ws.onopen = () => { opened = true; socket.send(JSON.stringify({ t: 'auth', token: store.get('token') })); };
   let rejected = false;
   ws.onclose = async event => {
@@ -441,6 +460,7 @@ async function connect() {
     if (gen !== connGen) return;
     resetLatency();
     setWindowReady(false);
+    markUploadsDisconnected();
     qnPending = null;
     qnSig = '';
     renderQuestions(null);
@@ -450,6 +470,7 @@ async function connect() {
       return showOffline({ stage: opened ? '实时连接认证' : '实时连接建立', error: 'WebSocket 关闭码 ' + event.code });
     }
     authed = false;
+    clearInterval(pingTimer);
     failures++;
     status('断开，重连中…', false);
     await sleep(Math.min(8000, 800 * failures));
@@ -458,6 +479,8 @@ async function connect() {
   };
   ws.onmessage = ev => {
     const m = JSON.parse(ev.data);
+    lastRx = Date.now();
+    if (m.t === 'pong') return;
     if (m.t === 'auth') {
       clearTimeout(connectTimer);
       if (m.id !== expectedId || !m.ok) {
@@ -485,6 +508,8 @@ async function connect() {
       send({ t: 'lang', v: I18N.lang });
       clearInterval(usageTimer);
       usageTimer = setInterval(() => { if (authed && document.visibilityState === 'visible') send({ t: 'usage', automatic: true }); }, 60 * 1000);
+      clearInterval(pingTimer);
+      pingTimer = setInterval(heartbeat, 15000);
       syncNotify();
       setTimeout(checkAppUpdate, 3000);
     }

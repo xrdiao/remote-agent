@@ -83,6 +83,9 @@ const questionFailed = (s, m) => s.emit({ t: 'questionDone', requestId: m.reques
 
 export const ROUTES = {
   latency: { fast: true, fastRun: (s, m) => { probeLatency(s, m).catch(() => {}); } },
+  // Liveness probe for the phone's dead-socket detection: an open-but-dead connection
+  // silently swallows sends, so the phone pings and reconnects when nothing comes back.
+  ping: { fast: true, fastRun: (s, m) => s.emit({ t: 'pong' }) },
   saveFile: { pre: (s, m) => s.saveFile(String(m.path ?? ''), String(m.text ?? ''), m.host == null ? undefined : String(m.host)) },
   connAgents: {
     pre: async s => {
