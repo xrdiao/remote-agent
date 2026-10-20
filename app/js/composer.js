@@ -210,7 +210,7 @@ function takeMentions(v) {
   return list;
 }
 text.addEventListener('focus', () => {
-  stickOnKeyboard = nearBottom();
+  stickOnKeyboard = followingChat();
   fitViewport();
   setTimeout(fitViewport, 60);
   setTimeout(fitViewport, 320);
@@ -250,11 +250,11 @@ function updateSendMode() {
    (focus, typed/restored text, attachments, mentions, recording, fusion welcome);
    collapsing waits out a 1.5 s grace so the pill never slides while a finger is in
    transit, and never while the mic is held. */
-let composeCompactTimer = 0, composeExpandedAt = 0;
+let composeCompactTimer = 0, composeExpandedAt = 0, composerEngaged = false;
 function micHeld() { return $('mic')?.classList.contains('on') || (typeof voiceSession !== 'undefined' && !!voiceSession); }
 function composeCompactWanted() {
   return mode === 'chat'
-    && !text.value.trim() && document.activeElement !== text
+    && !text.value.trim() && document.activeElement !== text && !composerEngaged
     && !$('attachments').children.length
     && $('mentionBox').hidden
     && $('fusionWelcome').hidden
@@ -263,7 +263,7 @@ function composeCompactWanted() {
 }
 function setComposeCompact(on) {
   if (document.body.classList.contains('composeCompact') === on) return;
-  const stick = nearBottom();
+  const stick = followingChat();
   const foot = document.querySelector('footer');
   const h0 = foot.offsetHeight;
   document.body.classList.toggle('composeCompact', on);
@@ -302,6 +302,17 @@ document.querySelector('.composerBox').addEventListener('click', e => {
     && e.target.closest('button') && !e.target.closest('#add, #mic, #stop')) {
     e.preventDefault(); e.stopPropagation();
   }
+}, true);
+// A tap on the composer's own controls is still "using the composer": keep it engaged so the
+// 1.5 s grace can't collapse it mid-interaction (file picker, attach/model sheet open).
+// Tapping elsewhere disengages. While compact, don't re-evaluate here — expanding at
+// pointerdown would move controls under the finger; the click handler above handles it.
+document.addEventListener('pointerdown', e => {
+  if (e.target.closest('#sheet, #shade, #imageEditor')) return;
+  const inside = !!e.target.closest('footer') && !e.target.closest('#send, #sendNow');
+  if (inside === composerEngaged) return;
+  composerEngaged = inside;
+  if (!document.body.classList.contains('composeCompact')) updateComposeCompact();
 }, true);
 $('fusionProject').onclick = () => { status('正在读取项目…'); send({ t: 'fusionProjects' }); };
 $('fusionA').onclick = () => send({ t: 'fusionSides', side: 'a' });

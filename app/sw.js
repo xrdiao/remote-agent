@@ -1,8 +1,8 @@
 // Caches the app shell so the installed app opens instantly; live data (url.json, relay) always goes to the network.
-const CACHE = 'remote-agent-v146'; // keep in sync with APP_VERSION in js/core.js
-const SHELL = ['./', 'index.html', 'app.css?v=145', 'i18n.js?v=146', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png',
-  'js/core.js?v=145', 'js/gate.js?v=122', 'js/net.js?v=142', 'js/sheets.js?v=144', 'js/notify.js?v=142', 'js/mode.js?v=144', 'js/chat.js?v=142',
-  'js/history.js?v=145', 'js/files.js?v=106', 'js/screen.js?v=123', 'js/terminal.js?v=116', 'js/composer.js?v=145', 'js/voice.js?v=144', 'js/local-voice.js?v=146', 'js/voice-worklet.js?v=133',
+const CACHE = 'remote-agent-v151'; // keep in sync with APP_VERSION in js/core.js
+const SHELL = ['./', 'index.html', 'app.css?v=151', 'i18n.js?v=146', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'logo.png',
+  'js/core.js?v=151', 'js/gate.js?v=122', 'js/net.js?v=142', 'js/sheets.js?v=148', 'js/notify.js?v=142', 'js/mode.js?v=144', 'js/chat.js?v=151',
+  'js/history.js?v=151', 'js/files.js?v=106', 'js/screen.js?v=123', 'js/terminal.js?v=116', 'js/composer.js?v=150', 'js/voice.js?v=144', 'js/local-voice.js?v=146', 'js/voice-worklet.js?v=133',
   'js/transfer.js?v=137', 'js/scanner.js',
   'js/latency.js?v=142', 'js/image-editor.js?v=117',
   'logo-cursor-dark.svg', 'logo-cursor-light.svg',

@@ -97,7 +97,11 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
         UserDefaults.standard.string(forKey: "url") ?? (Bundle.main.object(forInfoDictionaryKey: "AgentRemoteAppURL") as? String ?? "")
     }
 
-    var background: UIColor { light ? .white : UIColor(white: 30 / 255, alpha: 1) }
+    var background: UIColor {
+        light
+            ? UIColor(red: 0xF6 / 255, green: 0xF6 / 255, blue: 0xF4 / 255, alpha: 1)
+            : UIColor(red: 0x0F / 255, green: 0x10 / 255, blue: 0x12 / 255, alpha: 1)
+    }
 
     override init() {
         super.init()
