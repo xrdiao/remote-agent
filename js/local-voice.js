@@ -1,7 +1,9 @@
 /* Local streaming dictation. Audio has its own socket and never enters the Agent queue. */
-let voiceSession = null, voiceLink = null, voiceAudio = null, voicePrepared = '';
+let voiceSession = null, voiceLink = null, voiceAudio = null, voicePrepared = '', voiceCatalog = null;
 function voiceEnabled() { return store.get('local-voice') === 'on'; }
-function voiceTransportKey() { return [base, store.get('token')].join('|'); }
+function voiceEngineKey() { return 'voice-engine:' + (currentComputer()?.id || base); }
+function voiceEngine() { return store.get(voiceEngineKey()) || ''; }
+function voiceTransportKey() { return [base, store.get('token'), voiceEngine()].join('|'); }
 function updateVoiceButton() {
   const visible = voiceEnabled() && mode === 'chat' && !chatBusy && !lastChat?.readonly;
   $('mic').hidden = !visible;
@@ -47,7 +49,8 @@ function voiceConnection() {
   const socket = new WebSocket(base.replace(/^http/, 'ws') + '/voice');
   const link = voiceLink = { key, socket };
   resetVoiceReady(link);
-  socket.onopen = () => socket.send(JSON.stringify({ type: 'auth', token: store.get('token') }));
+  const engine = voiceEngine();
+  socket.onopen = () => socket.send(JSON.stringify({ type: 'auth', token: store.get('token'), engine }));
   socket.onerror = () => link.reject(new Error('本机语音连接失败，请检查中继；微信内无法开麦时请用 Safari/Chrome'));
   socket.onclose = () => {
     if (voiceLink === link) voiceLink = null;
@@ -159,20 +162,51 @@ function endVoice() {
   status('录音已结束，正在完成转录…');
 }
 async function toggleLocalVoice() {
-  if (voiceEnabled()) { store.set('local-voice', null); cancelVoice(); updateVoiceButton(); return showMainMenu(); }
-  store.set('local-voice', 'on'); updateVoiceButton(); showMainMenu();
+  if (voiceEnabled()) { store.set('local-voice', null); cancelVoice(); updateVoiceButton(); return renderVoiceMenu(); }
+  store.set('local-voice', 'on'); updateVoiceButton(); renderVoiceMenu();
   try {
-    const response = await api('/api/voice');
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error);
-    if (!voiceEnabled()) return;
-    if (!result.installed) {
-      return openSheet('local-voice-setup', '<h3>安装本机语音</h3><p>在电脑上的 Remote Agent 目录运行：</p><pre>npm run voice:setup</pre><p class="hint">程序会询问是否同意安装 CPU 识别环境和下载约 615 MB 中英混说模型。安装完成后再次按住麦克风即可；语音只发送到你配对的电脑。</p><p class="hint">麦克风需要 HTTPS 和浏览器授权。微信等容器无法使用时，请用 Safari/Chrome 或键盘语音输入。</p>');
-    }
-    status(result.ready ? '正在准备语音连接…' : '正在预热本机语音模型…');
+    status('正在准备本机语音…');
     await Promise.all([voiceConnection().ready, prepareVoiceAudio().module]);
     if (voiceEnabled() && !voiceSession) status('本机语音已就绪，按住输入框右侧麦克风说话');
   } catch (error) { status(error.message, false); }
+}
+function renderVoiceMenu() {
+  const engines = voiceCatalog?.key === voiceEngineKey() ? voiceCatalog.engines : [];
+  const selected = voiceEngine() || engines[0]?.id;
+  openSheet('local-voice', '<h3>语音输入</h3>'
+    + `<button class="opt" data-act="localVoiceToggle" role="switch" aria-checked="${voiceEnabled()}"><span class="lbl">开启语音输入<span class="sub">按住说话，松开结束，不自动发送</span></span><span class="switch${voiceEnabled() ? ' on' : ''}" aria-hidden="true"></span></button>`
+    + '<div class="pSec">语音识别引擎</div>'
+    + engines.map(engine => `<button class="opt${engine.id === selected ? ' cur' : ''}" data-voice-engine="${esc(engine.id)}" role="radio" aria-checked="${engine.id === selected}" ${voiceSession ? 'disabled' : ''}><span class="lbl">${esc(engine.label)}<span class="sub">${esc(engine.detail)}</span></span>${engine.id === selected ? '<span class="tag">✓</span>' : ''}</button>`).join('')
+    + (engines.length ? '' : '<p class="hint">电脑尚未安装语音引擎。</p>')
+    + '<p class="hint">识别过程中请先松手，等转录完成后再切换引擎。语音仅发往配对电脑。</p><details><summary>安装语音引擎</summary><p class="hint">在电脑的 Remote Agent 目录运行，并按提示同意安装：</p><pre>npm run voice:setup</pre><p class="hint">Sherpa：CPU，中英混说，模型约 615 MB。</p><pre>npm run voice:setup -- --engine qwen</pre><p class="hint">Qwen3-ASR-1.7B：官方 vLLM 流式接口，需要 Linux / NVIDIA GPU；模型约 4 GB，运行依赖另计。安装后重新打开本列表即可。麦克风仍需 HTTPS 和浏览器授权。</p></details><button class="opt" data-act="voiceBack">← 返回菜单</button>');
+}
+async function showLocalVoiceMenu() {
+  const key = voiceEngineKey(), target = base;
+  openSheet('local-voice', '<h3>语音输入</h3><p class="hint">正在读取已安装引擎…</p>');
+  try {
+    const response = await api('/api/voice'), result = await response.json();
+    if (!response.ok) throw new Error(result.error);
+    if (sheetKind !== 'local-voice' || key !== voiceEngineKey() || target !== base) return;
+    voiceCatalog = { key, engines: result.engines };
+    renderVoiceMenu();
+  } catch (error) {
+    if (sheetKind === 'local-voice' && key === voiceEngineKey() && target === base) openSheet('local-voice', `<h3>语音输入</h3><p class="hint">${esc(error.message)}</p><button class="opt" data-act="localVoiceMenu">重新读取</button><button class="opt" data-act="voiceBack">← 返回菜单</button>`);
+  }
+}
+async function selectVoiceEngine(id) {
+  if (voiceSession) return status('请松手并等待本次转录完成后再切换引擎', false);
+  if (voiceCatalog?.key !== voiceEngineKey() || !voiceCatalog.engines.some(engine => engine.id === id)) return;
+  if (voiceEngine() === id) return;
+  closeVoiceConnection(); voicePrepared = '';
+  store.set(voiceEngineKey(), id);
+  updateVoiceButton(); renderVoiceMenu();
+  if (!voiceEnabled()) return;
+  const link = voiceConnection();
+  status('正在准备所选语音引擎…');
+  try {
+    await link.ready;
+    if (voiceLink === link && voiceEnabled()) status('语音引擎已就绪，按住麦克风说话');
+  } catch (error) { if (voiceLink === link) status(error.message, false); }
 }
 $('mic').addEventListener('pointerdown', startVoice);
 $('mic').addEventListener('pointerup', endVoice);

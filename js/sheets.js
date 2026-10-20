@@ -640,7 +640,7 @@ function showMainMenu() {
     <div class="pSec">此手机 App</div>
     ${lastChat?.changed && !lastChat?.readonly ? `<button class="opt" data-act="toggleChanges"><span class="lbl">${hiddenChangeNotices.has(changeNoticeKey()) ? '显示改动' : '隐藏改动提示'}</span></button>` : ''}
     ${iosApp && !window.AgentRemoteApp?.pushRegister ? '' : notifyItem}
-    <button class="opt" data-act="localVoiceToggle" role="switch" aria-checked="${voiceEnabled()}"><span class="lbl">语音输入<span class="sub">按住说话 · 本机实时中英混说转文字</span></span><span class="switch${voiceEnabled() ? ' on' : ''}" aria-hidden="true"></span></button>
+    <button class="opt" data-act="localVoiceMenu"><span class="lbl">语音输入<span class="sub">${voiceEnabled() ? '已开启' : '未开启'} · 按住说话 · 选择识别引擎</span></span><span class="tag">›</span></button>
     ${connItems}
     ${inApp && appVersion ? update : ''}
     ${inApp ? '<button class="opt" data-act="changeUrl"><span class="lbl">更换 App 地址</span></button>' : ''}
