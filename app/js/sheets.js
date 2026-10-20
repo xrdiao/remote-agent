@@ -14,16 +14,33 @@ function rememberAgentOpen(m) {
 }
 function openSheet(kind, html) {
   const leavingVoice = sheetKind === 'local-voice' && kind !== 'local-voice';
-  const navScroll = sheetKind === kind ? $('sheet').querySelector('.codexSettingsNav')?.scrollLeft : 0;
+  const sheet = $('sheet');
+  const navScroll = sheetKind === kind ? sheet.querySelector('.codexSettingsNav')?.scrollLeft : 0;
+  const swap = sheet.classList.contains('open') && sheetKind && sheetKind !== kind
+    && !matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const h0 = swap ? sheet.offsetHeight : 0;
   sheetKind = kind;
-  if (kind !== 'windows') delete $('sheet')._winSig;
-  $('sheet').dataset.kind = kind;
-  $('sheet').innerHTML = html;
-  const nav = $('sheet').querySelector('.codexSettingsNav');
+  if (kind !== 'windows') delete sheet._winSig;
+  sheet.dataset.kind = kind;
+  sheet.innerHTML = html;
+  const nav = sheet.querySelector('.codexSettingsNav');
   if (nav) nav.scrollLeft = navScroll || 0;
+  if (swap) {
+    // Kind changed while open: grow to the new height and fade the fresh content in.
+    const h1 = sheet.offsetHeight;
+    const easing = 'cubic-bezier(.2,.8,.2,1)';
+    if (h1 !== h0) {
+      sheet.style.overflow = 'hidden';
+      const grow = sheet.animate([{ height: h0 + 'px' }, { height: h1 + 'px' }], { duration: 220, easing });
+      const restore = () => { sheet.style.overflow = ''; };
+      if (grow.finished) grow.finished.then(restore, restore); else { grow.onfinish = restore; grow.oncancel = restore; }
+    }
+    for (const child of sheet.children)
+      child.animate([{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }], { duration: 180, easing });
+  }
   $('shade').classList.add('open');
-  $('sheet').classList.add('open');
-  if (kind === 'agents') $('sheet').scrollTop = 0;
+  sheet.classList.add('open');
+  if (kind === 'agents') sheet.scrollTop = 0;
   if (leavingVoice) scheduleVoiceWarmup();
 }
 function closeSheet() {
@@ -72,9 +89,23 @@ function winLabel(title) {
   return { name: host ? `${folder} · ${host}` : folder, file: parts.join(' — ') };
 }
 
-function showWindows() {
+function windowEntries() {
   const entries = windows.map(w => ({ ...w, id: currentComputer()?.selections?.[w.app]?.id || w.id }));
   const missingAgents = ['cursor', 'devin', 'codex'].filter(a => !entries.some(w => w.app === a));
+  return { entries, missingAgents };
+}
+// Same action whether a window row is tapped in the sheet or in the tablet rail.
+function switchToWindow(id) {
+  closeSheet();
+  status('正在切换 Agent…');
+  send({ t: 'attach', id, ...currentComputer()?.selections?.[id] });
+}
+function openSettings() {
+  status('正在读取设置…');
+  send({ t: 'settings' });
+}
+function showWindows() {
+  const { entries, missingAgents } = windowEntries();
   // A re-render replaces every row; if a windows/plans emit lands mid-press it swallows the
   // click. Row content only depends on this signature — skip the rebuild when nothing changed
   // (latency values paint in place via paintLatency).
@@ -84,12 +115,86 @@ function showWindows() {
   const rows = entries.map(w => {
     const software = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion' }[w.app] || w.app;
     const plan = appPlans[w.app] ? `<span class="winPlan">${esc(appPlans[w.app])}</span>` : '';
-    return `<button class="opt ${w.app === currentApp ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="lbl">${esc(software)}${plan}</span><span data-latency="${esc(w.id)}">${latencyMarkup(w.id)}</span></button>`;
+    return `<button class="opt ${w.app === currentApp ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="optLogo" data-logo="${esc(w.app)}"></span><span class="lbl">${esc(software)}${plan}</span><span data-latency="${esc(w.id)}">${latencyMarkup(w.id)}</span></button>`;
   }).join('');
   const launchRow = missingAgents.length ? `<button class="opt" data-launch-missing="${missingAgents.join(',')}"><span class="lbl">${I18N.tr('启动未打开的 Agent')}<span class="sub">${esc(missingAgents.map(a => ({ cursor: 'Cursor', devin: 'Devin', codex: 'Codex' })[a]).join(I18N.lang === 'en' ? ', ' : '、'))}</span></span><span>›</span></button>` : '';
   openSheet('windows', `<h3>切换 Agent</h3>${rows || '<div class="hint">没有找到窗口</div>'}${launchRow}`);
   measureLatency(entries.map(w => w.id));
 }
+
+/* Split-layout rail (.split = wide screen with a wide-enough viewport, not visual mode):
+   the same window list the switcher sheet builds, plus navigation rows. Collapses to an
+   icon strip via body.railCollapsed; signature-skipped like the sheet so a refresh never
+   swallows a tap. */
+const railCollapsed = () => document.body.classList.contains('railCollapsed');
+window.addEventListener('resize', () => paintRail());
+function paintRail() {
+  const rail = $('rail');
+  if (!rail) return;
+  const { entries, missingAgents } = windowEntries();
+  const collapsed = railCollapsed();
+  const sig = JSON.stringify([currentApp, mode, I18N.lang, currentComputer()?.name || '', $('dot').className, collapsed,
+    entries.map(w => [w.id, w.app, appPlans[w.app] || '']), missingAgents]);
+  // Latency probes only make sense where the badges render.
+  const railOn = document.body.matches('.split');
+  if (rail._sig === sig) { if (railOn) measureLatency(entries.map(w => w.id)); return; }
+  rail._sig = sig;
+  const names = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion' };
+  const agentRows = entries.map(w => {
+    const plan = appPlans[w.app] ? `<span class="tag">${esc(appPlans[w.app])}</span>` : '';
+    const label = names[w.app] || w.app;
+    return `<button class="railRow ${w.app === currentApp ? 'cur' : ''}" data-win="${esc(w.id)}" title="${esc(label)}"><span class="railLogo" data-logo="${esc(w.app)}"></span><span class="lbl">${esc(label)}</span>${plan}<span class="latency muted" data-latency="${esc(w.id)}">${latencyMarkup(w.id)}</span></button>`;
+  }).join('')
+    + (missingAgents.length ? `<button class="railRow" data-rail="windows" title="${esc(I18N.tr('启动未打开的 Agent'))}"><span class="railIc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></span><span class="lbl">${I18N.tr('启动未打开的 Agent')}</span></button>` : '');
+  const row = (act, label, svg, cur) => `<button class="railRow${cur ? ' cur' : ''}" data-rail="${act}" title="${esc(I18N.tr(label))}"><span class="railIc">${svg}</span><span class="lbl">${I18N.tr(label)}</span></button>`;
+  const ic = d => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+  const icChat = ic('<path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-8l-6 4v-4H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/>');
+  const icTerm = ic('<rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3 3-3 3m6 0h4"/>');
+  const icFolder = ic('<path d="M4 4h5l2 3h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/>');
+  const icEdit = ic('<path d="M10 20H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2v2"/><path d="m18 13 3 3-6 6h-3v-3Z"/>');
+  const icTransfer = ic('<path d="M7 16V4m0 0L3 8m4-4 4 4M17 8v12m0 0 4-4m-4 4-4-4"/>');
+  const icScreen = ic('<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8m-4-4v4"/>');
+  const icGear = ic('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.08a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h.08a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.08a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1Z"/>');
+  const icDots = '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/></svg>';
+  const icRail = ic('<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M15 4v16"/>');
+  const toggleLabel = collapsed ? '展开侧栏' : '收起侧栏';
+  rail.innerHTML = `
+    <div class="railComputer"><img src="icon-192.png" alt=""><span class="railComputerName">${esc(currentComputer()?.name || 'Remote Agent')}</span><span class="railDot${$('dot').classList.contains('ok') ? ' ok' : ''}"></span><button class="railToggle" data-rail="toggle" title="${I18N.tr(toggleLabel)}" aria-label="${I18N.tr(toggleLabel)}">${icRail}</button></div>
+    <div class="pSec">Agent</div>
+    ${agentRows}
+    <div class="pSec">${I18N.tr('工作区')}</div>
+    ${row('agents', '项目/会话', icFolder)}
+    ${['cursor', 'devin', 'codex'].includes(currentApp) ? row('editor', 'Editor', icEdit) : ''}
+    ${row('mode-chat', '对话', icChat, mode === 'chat')}
+    ${row('mode-terminal', '终端', icTerm, mode === 'terminal')}
+    <div class="pSec">${I18N.tr('工具')}</div>
+    ${row('transfer', '文件传输', icTransfer)}
+    ${row('screen', '画面', icScreen)}
+    ${row('settings', '设置', icGear)}
+    ${row('menu', '更多', icDots).replace('class="railRow', 'class="railRow railMore')}
+  `;
+  if (railOn) measureLatency(entries.map(w => w.id));
+}
+$('rail')?.addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  if (b.dataset.win) return switchToWindow(b.dataset.win);
+  const act = b.dataset.rail;
+  if (act === 'windows') { send({ t: 'windows' }); showWindows(); }
+  else if (act === 'agents') openAgentList();
+  else if (act === 'editor') startEditor();
+  else if (act === 'mode-chat') setMode('chat');
+  else if (act === 'mode-terminal') setMode('terminal');
+  else if (act === 'transfer') openTransfer();
+  else if (act === 'screen') setMode('screen');
+  else if (act === 'settings') openSettings();
+  else if (act === 'menu') showMainMenu();
+  else if (act === 'toggle') {
+    store.set('rail', railCollapsed() ? 'expanded' : 'collapsed');
+    fitRail();
+    paintRail();
+  }
+});
 
 const FUSION_PHASE = { idle: '待开始', planning: '正在生成方案', plan: '方案待确认', execute: '正在执行方案', review: '正在检查结果', fix: '正在小修', disagree: '方案待确认', check: '请选择下一步', stopped: '未完成，已停止', done: '完成' };
 let fusionSetupKey = '', fusionSetupStep = 0, fusionModelSide = null;
@@ -154,7 +259,7 @@ function paintFusion(fx) {
   if (!on) return;
   paintFusionSetup(fx);
   renderFusionMeters(fx);
-  $('fusionProject').textContent = '项目 ▾';
+  $('fusionProject').textContent = '项目';
   $('fusionProject').title = fx.project?.root || '';
   $('fusionProject').disabled = !!fx.busy;
   for (const side of ['a', 'b']) {
@@ -166,7 +271,7 @@ function paintFusion(fx) {
   for (const side of ['a', 'b']) {
     const label = side.toUpperCase(), spec = fx[side];
     $('fusion' + label).title = spec ? roleTitle(spec) : `选择 ${label}`;
-    $('fusionModel' + label).textContent = `${label} 模型 ▾`;
+    $('fusionModel' + label).textContent = `${label} 模型`;
     $('fusionModel' + label).title = spec?.model || `${label} 模型`;
   }
   const acts = fx.phase === 'plan' ? '<button type="button" data-fusion-act="go">执行方案</button>'
@@ -242,7 +347,7 @@ function paintSurface() {
   const devin = currentApp === 'devin';
   document.body.classList.toggle('devin', devin);
   $('pickEditor').hidden = !['cursor', 'devin', 'codex'].includes(currentApp);
-  $('pickAgents').textContent = '项目/会话 ▾';
+  $('pickAgents').textContent = '项目/会话';
 }
 function startEditor() {
   editorBrowsing = true;
@@ -308,7 +413,10 @@ function showAgents(list) {
   } else openSheet('agents', html);
   if (keep) requestAnimationFrame(() => { $('sheet').scrollTop = scroll; });
 }
-$('title').onclick = () => { send({ t: 'windows' }); showWindows(); };
+$('title').onclick = () => {
+  if (document.body.matches('.split')) return openAgentList();
+  send({ t: 'windows' }); showWindows();
+};
 
 const MENU_TITLE = { effort: '选择思考强度', mode: '选择模式', model: '选择模型', history: '历史对话', permission: '权限', 'codex-run': '执行位置', 'codex-chat': '会话操作', 'fusion-model-a': 'A 模型', 'fusion-model-b': 'B 模型', 'fusion-effort-a': 'A 推理强度', 'fusion-effort-b': 'B 推理强度', 'fusion-lead': 'Fusion Lead', 'fusion-effort': 'Fusion Effort', 'fusion-sidekick': 'Fusion Sidekick' };
 const PERM_LABEL = {

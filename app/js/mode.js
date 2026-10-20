@@ -38,6 +38,8 @@ function setMode(m) {
   stage.hidden = m === 'screen' && visualState.state !== 'live';
   if (m === 'screen') { visualState = {state: 'idle', message: I18N.tr('正在查找窗口…')}; renderVisualState(visualState); }
   if (m === 'screen' || m === 'terminal') { layoutStage(); applyQuality(); }
+  fitOrientation();
+  if (typeof updateComposeCompact === 'function') updateComposeCompact();
 }
 $('tabChat').onclick = () => setMode('chat');
 $('tabTerm').onclick = () => setMode('terminal');
