@@ -325,6 +325,7 @@ $('sheet').addEventListener('click', async e => {
   if (act === 'newTerm') { closeSheet(); status('正在新建终端…'); return send({ t: 'newTerminal' }); }
   else if (act === 'fusionHistory') { closeSheet(); return send({ t: 'fusionHistory' }); }
   else if (act === 'fusionNew') { closeSheet(); return send({ t: 'fusionNew' }); }
+  else if (act === 'localVoiceToggle') return toggleLocalVoice();
   else if (act === 'transfer') return openTransfer();
   else if (act === 'model') return requestMenu('model', '读取模型列表…');
   else if (act === 'mode') return requestMenu('mode', '读取模式列表…');
