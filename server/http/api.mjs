@@ -13,6 +13,7 @@ import { Session } from '../session.mjs';
 import { videoGrant, serveVideo } from './video.mjs';
 import { transferApi, serveTransfer } from './transfer.mjs';
 import { voiceStatus, loadWorker } from '../voice/service.mjs';
+import { voiceEngines } from '../voice/config.mjs';
 import { uploads } from '../agent/context.mjs';
 
 // A device is usable once paired and, when 2FA asks for it, re-verified.
@@ -117,7 +118,10 @@ export async function handleApi(req, res, route) {
   if (needsTotp(device)) return json(req, res, 401, { needTotp: true, error: '需要二次验证' });
   if (route === '/api/voice' && req.method === 'GET') return json(req, res, 200, voiceStatus());
   if (route === '/api/voice' && req.method === 'POST') {
-    try { await loadWorker(); return json(req, res, 200, voiceStatus()); }
+    const engine = new URL(req.url, 'http://localhost').searchParams.get('engine');
+    if (!engine || !voiceEngines().some(e => e.id === engine)) return json(req, res, 400, { error: '缺少或未知的语音引擎' });
+    // No client/device is attached: warming an engine must never stop another engine.
+    try { await loadWorker(engine); return json(req, res, 200, voiceStatus()); }
     catch (error) { return json(req, res, 503, { error: error.message }); }
   }
   if (route.startsWith('/api/transfer/')) return transferApi(req, res, route, device);

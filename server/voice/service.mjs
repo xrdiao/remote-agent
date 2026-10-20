@@ -1,24 +1,32 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { findDevice, needsTotp } from '../../lib/auth.mjs';
-import { voiceEngines } from './config.mjs';
+import { ASR_DIR, voiceEngines } from './config.mjs';
 
-const runtimes = new Map();
+// Exported for stop-rule tests; production code goes through loadWorker/stopWorker.
+export const runtimes = new Map();
+const LAST_ENGINE_FILE = path.join(ASR_DIR, 'last-engine.json');
 export function voiceStatus(engineId) {
-  const engines = voiceEngines().map(({ id, label, detail }) => ({ id, label, detail, ready: !!runtimes.get(id)?.worker && !runtimes.get(id)?.loading }));
+  const engines = voiceEngines().map(({ id, label, detail }) => ({ id, label, detail, ready: runtimes.get(id)?.state === 'ready' }));
   const selected = engines.find(engine => engine.id === engineId) || (!engineId && engines[0]);
   return { installed: !!selected, ready: !!selected?.ready, engine: selected ? selected.label + ' · ' + selected.detail : '', engineId: selected?.id || '', engines };
 }
-function stopWorker(runtime) {
+function stopWorker(runtime, reason = 'engine switched', engineId = '') {
   if (runtime.stopping) return runtime.stopping;
   const child = runtime.worker;
   if (!child) return;
+  console.error(`[voice:${engineId}] stopped (${reason})`);
+  clearTimeout(runtime.idleTimer); runtime.idleTimer = null;
   runtime.stopping = new Promise(resolve => child.once('close', resolve)).finally(() => { runtime.stopping = null; });
   runtime.cancelLoad?.();
+  runtime.activateReject?.(new Error('已切换语音引擎')); runtime.activating = null;
   runtime.worker = null; runtime.loading = null; runtime.cancelLoad = null;
+  runtime.state = 'stopped';
   runtime.sessions.clear(); child.kill();
   return runtime.stopping;
 }
@@ -26,8 +34,9 @@ export async function loadWorker(engineId = voiceStatus().engineId, client, devi
   const config = voiceEngines().find(engine => engine.id === engineId);
   if (!config) return Promise.reject(new Error('所选语音引擎未安装，请在电脑运行 npm run voice:setup（Qwen 加 -- --engine qwen）并同意安装'));
   let runtime = runtimes.get(engineId);
-  if (!runtime) { runtime = { worker: null, loading: null, sessions: new Map(), clients: new Map() }; runtimes.set(engineId, runtime); }
-  if (client) runtime.clients.set(client, deviceId);
+  if (!runtime) { runtime = { worker: null, loading: null, activating: null, sessions: new Map(), clients: new Map(), lastDevice: '', state: 'preparing', idleTimer: null }; runtimes.set(engineId, runtime); }
+  if (client) { runtime.clients.set(client, deviceId); clearTimeout(runtime.idleTimer); runtime.idleTimer = null; }
+  if (deviceId) runtime.lastDevice = deviceId;
   const stopping = [];
   for (const [id, other] of runtimes) {
     if (id === engineId) continue;
@@ -36,13 +45,36 @@ export async function loadWorker(engineId = voiceStatus().engineId, client, devi
       other.clients.delete(socket);
       if (socket.readyState < 2) socket.close(1000, 'engine switched');
     }
-    if (!other.clients.size) stopping.push(stopWorker(other));
+    // Stop an idle runtime only when the device that last used it switched away;
+    // a call without a device never stops other engines.
+    if (deviceId && !other.clients.size && other.lastDevice === deviceId) stopping.push(stopWorker(other, 'engine switched', id));
   }
   await Promise.all(stopping);
   if (runtime.stopping) await runtime.stopping;
   if (client && client.readyState !== 1) throw new Error('语音连接已关闭');
-  if (runtime.loading) return runtime.loading;
-  if (runtime.worker) return Promise.resolve(runtime);
+  // Phase 1: ensure a spawned worker is prepared (Qwen: no GPU yet; Sherpa loads fully).
+  if (!runtime.worker && !runtime.loading) spawnRuntime(engineId, runtime, config);
+  await runtime.loading;
+  // Phase 2 (Qwen only, only when a real client is attached): activate the engine.
+  if (engineId === 'qwen' && client && runtime.state !== 'ready') {
+    if (!runtime.activating) {
+      runtime.readyStartedAt = Date.now();
+      runtime.activating = (async () => {
+        if (runtime.state === 'ready') return runtime;
+        writeWorker(runtime, { type: 'load' });
+        await new Promise((resolve, reject) => { runtime.activateResolve = resolve; runtime.activateReject = reject; });
+        return runtime;
+      })().finally(() => { runtime.activating = null; });
+    }
+    await runtime.activating;
+    // The caller may have been the last client and already closed: arm idle release.
+    scheduleIdleRelease(engineId, runtime);
+  }
+  return runtime;
+}
+function spawnRuntime(engineId, runtime, config) {
+  runtime.state = 'preparing';
+  runtime.loadStartedAt = Date.now();
   runtime.loading = new Promise((resolve, reject) => {
     const child = spawn(config.python, [...(engineId === 'qwen' ? ['-I'] : []), '-u', fileURLToPath(new URL(config.script, import.meta.url)), config.model], { stdio: ['pipe', 'pipe', 'pipe'] });
     runtime.worker = child;
@@ -51,8 +83,9 @@ export async function loadWorker(engineId = voiceStatus().engineId, client, devi
     child.stderr.on('data', chunk => { details = settled ? (details + chunk).slice(-2000) : details + chunk; });
     const fail = error => {
       if (runtime.worker !== child) return;
-      runtime.worker = null; runtime.loading = null;
+      runtime.worker = null; runtime.loading = null; runtime.state = 'stopped';
       if (!settled) { settled = true; reject(error); }
+      runtime.activateReject?.(error); runtime.activating = null;
       for (const callback of runtime.sessions.values()) callback({ type: 'error', message: error.message });
       runtime.sessions.clear();
     };
@@ -66,12 +99,56 @@ export async function loadWorker(engineId = voiceStatus().engineId, client, devi
     createInterface({ input: child.stdout }).on('line', line => {
       if (runtime.worker !== child) return;
       const event = JSON.parse(line);
-      if (event.type === 'ready') { settled = true; details = ''; runtime.loading = null; resolve(runtime); }
-      else if (event.type === 'error' && !event.id) startupError = event.message;
-      else runtime.sessions.get(event.id)?.(event);
+      if (event.type === 'prepared') {
+        runtime.state = 'prepared';
+        console.log(`[voice:${engineId}] prepared in ${Date.now() - runtime.loadStartedAt}ms`);
+        settled = true; details = ''; runtime.loading = null;
+        resolve(runtime);
+      } else if (event.type === 'ready') {
+        runtime.state = 'ready';
+        const base = runtime.readyStartedAt ?? runtime.loadStartedAt;
+        console.log(`[voice:${engineId}] ready in ${Date.now() - base}ms`);
+        const activateResolve = runtime.activateResolve;
+        runtime.activateResolve = null; runtime.activateReject = null;
+        if (activateResolve) { activateResolve(runtime); }
+        else { settled = true; details = ''; runtime.loading = null; resolve(runtime); }
+      } else if (event.type === 'error' && !event.id) {
+        startupError = event.message;
+        runtime.activateReject?.(new Error(event.message)); runtime.activating = null;
+      } else runtime.sessions.get(event.id)?.(event);
     });
   });
-  return runtime.loading;
+}
+// Qwen releases all VRAM when nobody is listening: stop the worker and respawn a
+// phase-1 (prepared, 0 VRAM) one — sleep mode level 2 only freed ~1.3 GiB of
+// ~5.7 GiB on this stack, so respawn is the release strategy.
+function scheduleIdleRelease(engineId, runtime) {
+  if (engineId !== 'qwen' || runtime.idleTimer || runtime.clients.size || runtime.sessions.size || runtime.state !== 'ready') return;
+  runtime.idleTimer = setTimeout(() => {
+    runtime.idleTimer = null;
+    if (runtime.clients.size || runtime.sessions.size || runtime.state !== 'ready') return;
+    void (async () => {
+      const started = Date.now();
+      await stopWorker(runtime, 'idle release', engineId);
+      if (runtime.clients.size) return;
+      const config = voiceEngines().find(engine => engine.id === engineId);
+      if (!config) return;
+      spawnRuntime(engineId, runtime, config);
+      try { await runtime.loading; } catch { return; }
+      console.log(`[voice:${engineId}] released (respawn) in ${Date.now() - started}ms`);
+    })().catch(error => console.error(`[voice:${engineId}] release failed: ${error.message}`));
+  }, 60_000);
+}
+// Relaunch the engine the last paired device was using so the first open is warm.
+export async function preloadVoice() {
+  try {
+    if (!fs.existsSync(LAST_ENGINE_FILE)) return;
+    const last = JSON.parse(fs.readFileSync(LAST_ENGINE_FILE, 'utf8'));
+    if (!last?.engine || !voiceEngines().some(engine => engine.id === last.engine)) return;
+    await loadWorker(last.engine, null, last.device);
+  } catch (error) {
+    console.error('[voice] preload failed:', error.message);
+  }
 }
 // Adapter boundary: start / audio / end / cancel -> partial / final, independent of Agent sessions.
 function writeWorker(runtime, message) { return runtime.worker.stdin.write(JSON.stringify(message) + '\n'); }
@@ -109,6 +186,10 @@ export function voiceWss() {
           device = message.type === 'auth' ? findDevice(token) : null;
           if (!device || needsTotp(device)) return ws.close(4001, 'unauthorized');
           engineId = message.engine || voiceStatus().engineId;
+          try {
+            const prev = fs.existsSync(LAST_ENGINE_FILE) ? JSON.parse(fs.readFileSync(LAST_ENGINE_FILE, 'utf8')) : null;
+            if (prev?.engine !== engineId || prev?.device !== device.id) fs.writeFileSync(LAST_ENGINE_FILE, JSON.stringify({ engine: engineId, device: device.id }));
+          } catch {}
           await startStream();
           return;
         }
@@ -133,10 +214,13 @@ export function voiceWss() {
     });
     ws.on('close', () => {
       clearTimeout(authTimer);
-      (runtime || runtimes.get(engineId))?.clients.delete(ws);
-      if (!id) return;
-      runtime.sessions.delete(id);
-      if (runtime.worker && !runtime.loading) writeWorker(runtime, { id, type: 'cancel' });
+      const rt = runtime || runtimes.get(engineId);
+      rt?.clients.delete(ws);
+      if (id && rt) {
+        rt.sessions.delete(id);
+        if (rt.worker && !rt.loading) writeWorker(rt, { id, type: 'cancel' });
+      }
+      if (rt) scheduleIdleRelease(engineId, rt);
     });
   });
   return wss;
