@@ -106,46 +106,49 @@ struct AgentRemoteWidget: Widget {
             let s = context.state
             let (icon, tint) = phaseIcon(s.phase)
             return DynamicIsland {
+                // Top row: who (logo, app, project) on the left, state and time on the right; everything else
+                // left-aligned underneath. No center region: it sits under the camera and breaks the alignment.
                 DynamicIslandExpandedRegion(.leading) {
-                    logo(for: context.attributes.app, 28)
-                        .padding(.leading, 4)
+                    HStack(spacing: 8) {
+                        logo(for: context.attributes.app, 24)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(context.attributes.app).font(.caption2).foregroundStyle(.secondary)
+                            Text(context.attributes.project).font(.subheadline.weight(.semibold)).lineLimit(1)
+                        }
+                    }
+                    .padding(.leading, 4)
+                    .dynamicIsland(verticalPlacement: .belowIfTooWide)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    Group {
+                    VStack(alignment: .trailing, spacing: 1) {
+                        phaseBadge(s).font(.caption2)
                         if s.phase == "working" {
-                            timerText(s, width: 64)
+                            timerText(s, width: 80).font(.title3.weight(.semibold))
                         } else if s.total > 0 {
-                            Text(progressText(s))
-                        } else {
-                            Image(systemName: icon).foregroundStyle(tint)
+                            Text(progressText(s)).font(.title3.weight(.semibold)).monospacedDigit()
                         }
                     }
-                    .font(.caption).foregroundStyle(.secondary)
-                    .padding(.trailing, 6)
-                }
-                DynamicIslandExpandedRegion(.center) {
-                    Text("\(context.attributes.app) · \(context.attributes.project)")
-                        .font(.subheadline.weight(.semibold)).lineLimit(1)
+                    .padding(.trailing, 4)
+                    .dynamicIsland(verticalPlacement: .belowIfTooWide)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 6) {
                         if !context.attributes.thread.isEmpty {
-                            Text(context.attributes.thread).font(.footnote).lineLimit(2)
-                        }
-                        HStack(spacing: 4) {
-                            phaseBadge(s)
-                            Spacer()
-                            if s.total > 0 {
-                                Text(progressText(s)).font(.caption2).foregroundStyle(.secondary)
-                            }
+                            Text(context.attributes.thread).font(.subheadline).lineLimit(2)
                         }
                         if s.total > 0 {
-                            ProgressView(value: Double(s.done), total: Double(s.total)).tint(tint)
+                            HStack(spacing: 8) {
+                                ProgressView(value: Double(s.done), total: Double(s.total)).tint(tint)
+                                Text(progressText(s)).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                            }
                         }
                         if !s.detail.isEmpty {
-                            Text(s.detail).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                            Text(s.detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 4)
+                    .padding(.top, 4)
                 }
             } compactLeading: {
                 logo(for: context.attributes.app, 18)

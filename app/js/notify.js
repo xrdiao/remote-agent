@@ -486,13 +486,45 @@ async function removeComputer(i) {
   if (!c) return showComputers();
   return removeComputers([c.key]);
 }
+// A deleted computer must forget this phone even when we're not connected to it, or it keeps pushing notifications here.
+// Queued in localStorage and retried on the next start until the relay answers.
+const logoutQueue = () => { try { return JSON.parse(store.get('pending-logouts') || '[]'); } catch { return []; } };
+function queueLogouts(list) {
+  const q = logoutQueue().filter(p => !list.some(c => c.token === p.token));
+  store.set('pending-logouts', JSON.stringify([...q, ...list.map(c => ({ id: c.id || '', key: c.key, token: c.token, discovery: c.discovery || new URL('url.json', location.href).href }))]));
+}
+async function relayOf(c) {
+  const reg = await fetch(c.discovery + '?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(8000) }).then(r => r.json());
+  if (reg.self) return new URL(c.discovery).origin;
+  if (reg.v === 2 && reg.data) return decryptEntry(c.key, reg);
+  const id = c.id || await computerIdFromKey(c.key);
+  const entry = (reg.computers || []).find(e => e.id === id);
+  if (!entry) throw Error('not published');
+  return decryptEntry(c.key, entry);
+}
+async function flushLogouts() {
+  for (const p of logoutQueue()) {
+    let done = false;
+    try {
+      const r = await fetch(await relayOf(p) + '/api/logout', { method: 'POST', cache: 'no-store', signal: AbortSignal.timeout(8000),
+        headers: { 'content-type': 'application/json', authorization: 'Bearer ' + p.token }, body: '{}' });
+      const body = r.status === 401 ? await r.json().catch(() => ({})) : {};
+      // 401 without needTotp: the relay already forgot this device. 403: that relay doesn't accept this page's origin; the relay's own expiry covers it.
+      done = r.ok || r.status === 403 || (r.status === 401 && !body.needTotp);
+    } catch {}
+    if (done) store.set('pending-logouts', JSON.stringify(logoutQueue().filter(x => x.token !== p.token)));
+  }
+}
 async function removeComputers(keys) {
   const selected = loadComputers().filter(c => keys.includes(c.key));
   if (!selected.length) return;
   if (!await ask(`删除电脑「${selected.map(c => c.name || '电脑').join('、')}」？\n这台手机不再连接它们。`, '删除')) return showComputers();
   const cur = currentComputer();
   const removingCurrent = cur && keys.includes(cur.key);
-  if (removingCurrent && authed) await post('/api/logout').catch(() => {});
+  let loggedOut = '';
+  if (removingCurrent && authed) await post('/api/logout').then(r => { if (r.ok) loggedOut = cur.key; }).catch(() => {});
+  queueLogouts(selected.filter(c => c.key !== loggedOut));
+  flushLogouts();
   const nextList = loadComputers().filter(x => !keys.includes(x.key));
   const next = nextList[0];
   saveComputers(nextList, removingCurrent ? '' : (cur?.key || ''));
@@ -519,3 +551,6 @@ $('sheet').addEventListener('change', e => {
   const field = e.target.closest('[data-setting-field]');
   if (field) { status('正在修改…'); send({ t:'toggleSetting', label:field.dataset.settingField, value:field.value }); }
 });
+
+// Retry queued logouts from previous deletions (fire and forget; must not block startup).
+flushLogouts();

@@ -93,6 +93,14 @@ export async function handleApi(req, res, route) {
 
   if (!device) return json(req, res, 401, { error: '设备未配对' });
 
+  // Removing your own device needs no fresh 2FA: a phone that deletes this computer must be able to say goodbye.
+  if (route === '/api/logout' && req.method === 'POST') {
+    removeDevice(device.id);
+    closeEventStreams(device.id);
+    console.log(`[unpair] 设备「${device.name}」自己退出`);
+    return json(req, res, 200, { ok: true });
+  }
+
   if (route === '/api/totp' && req.method === 'POST') {
     if (lockedOut(ip)) return json(req, res, 429, { error: '尝试次数过多，请 15 分钟后再试' });
     const { code } = await readJson(req);
@@ -144,13 +152,6 @@ export async function handleApi(req, res, route) {
     console.log(`[unpair] 移除设备 ${id}（操作来自「${device.name}」）`);
     return json(req, res, 200, { ok: true });
   }
-  if (route === '/api/logout' && req.method === 'POST') {
-    removeDevice(device.id);
-    closeEventStreams(device.id);
-    console.log(`[unpair] 设备「${device.name}」自己退出`);
-    return json(req, res, 200, { ok: true });
-  }
-
   // The Android app holds this open with POST: quick tunnels buffer GET event streams.
   if (route === '/api/events') return openEventStream(req, res, device.id);
   // Actions from an Android notification (reply / pick an option / accept the changes), run on that window.
