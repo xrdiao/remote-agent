@@ -39,14 +39,22 @@ func tr(_ zh: String, _ en: String) -> String {
 private struct ShellWebView: UIViewRepresentable {
     let webView: WKWebView
 
-    func makeUIView(context: Context) -> UIView { UIView() }
+    func makeUIView(context: Context) -> Container { Container() }
 
-    func updateUIView(_ container: UIView, context: Context) {
+    func updateUIView(_ container: Container, context: Context) {
         guard container.subviews.first !== webView else { return }
         container.subviews.forEach { $0.removeFromSuperview() }
-        webView.frame = container.bounds
-        webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         container.addSubview(webView)
+        container.setNeedsLayout()
+    }
+
+    // Sizes the web view during layout, never to the zero size the container has right after creation:
+    // a page laid out at zero width measures the composer's placeholder as a tall column on cold launch.
+    final class Container: UIView {
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            if !bounds.isEmpty { subviews.first?.frame = bounds }
+        }
     }
 }
 
@@ -114,7 +122,8 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
         config.applicationNameForUserAgent = "AgentRemoteApp-iOS/" + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
         scripts.add(WeakHandler(self), name: "app")
         scripts.addScriptMessageHandler(WeakReplyHandler(self), contentWorld: .page, name: "appReply")
-        let view = WKWebView(frame: .zero, configuration: config)
+        // Start at screen size, not zero, so the first page layout already has the real width.
+        let view = WKWebView(frame: UIScreen.main.bounds, configuration: config)
         view.navigationDelegate = self
         view.uiDelegate = self
         // Without this the scroll view insets the safe areas, and WebKit then sizes 100dvh short of the

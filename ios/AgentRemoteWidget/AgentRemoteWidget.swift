@@ -11,14 +11,42 @@ private func phaseIcon(_ phase: String) -> (String, Color) {
     }
 }
 
+@ViewBuilder
+private func logo(for app: String, _ size: CGFloat) -> some View {
+    switch app.lowercased() {
+    case "cursor", "devin", "codex":
+        Image("logo-\(app.lowercased())")
+            .resizable().scaledToFit()
+            .frame(width: size, height: size)
+    default:
+        Image(systemName: "sparkles")
+            .resizable().scaledToFit()
+            .frame(width: size, height: size)
+    }
+}
+
 private func progressText(_ state: AgentActivityAttributes.ContentState) -> String {
     state.total > 0 ? "\(state.done)/\(state.total)" : ""
 }
 
+// timerInterval reserves room for the longest possible duration string; give it a fixed frame or it pushes everything else out.
 @ViewBuilder
-private func timerText(_ state: AgentActivityAttributes.ContentState) -> some View {
+private func timerText(_ state: AgentActivityAttributes.ContentState, width: CGFloat) -> some View {
     Text(timerInterval: Date(timeIntervalSince1970: state.startedAt)...Date.distantFuture, countsDown: false)
         .monospacedDigit()
+        .frame(width: width, alignment: .trailing)
+        .multilineTextAlignment(.trailing)
+}
+
+@ViewBuilder
+private func phaseBadge(_ state: AgentActivityAttributes.ContentState) -> some View {
+    let (icon, tint) = phaseIcon(state.phase)
+    HStack(spacing: 4) {
+        Image(systemName: icon)
+        Text(state.label)
+    }
+    .font(.caption.weight(.medium))
+    .foregroundStyle(tint)
 }
 
 private struct LockScreenView: View {
@@ -26,30 +54,37 @@ private struct LockScreenView: View {
 
     var body: some View {
         let s = context.state
-        let (icon, tint) = phaseIcon(s.phase)
+        let (_, tint) = phaseIcon(s.phase)
         VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Image(systemName: icon).foregroundStyle(tint)
+            HStack(spacing: 8) {
+                logo(for: context.attributes.app, 20)
                 Text("\(context.attributes.app) · \(context.attributes.project)")
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
-                Spacer()
-                if s.phase == "working" { timerText(s).font(.caption).foregroundStyle(.secondary) }
+                    .layoutPriority(1)
+                Spacer(minLength: 8)
+                if s.phase == "working" {
+                    timerText(s, width: 64).font(.caption).foregroundStyle(.secondary)
+                }
             }
             if !context.attributes.thread.isEmpty {
-                Text(context.attributes.thread).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(context.attributes.thread)
+                    .font(.footnote).foregroundStyle(.secondary).lineLimit(2)
             }
             HStack(spacing: 6) {
-                Text(s.label).font(.caption.weight(.medium))
+                phaseBadge(s)
                 if s.total > 0 {
                     ProgressView(value: Double(s.done), total: Double(s.total)).tint(tint)
                     Text(progressText(s)).font(.caption2).foregroundStyle(.secondary)
                 }
             }
             if !s.detail.isEmpty {
-                Text(s.detail).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                Text(s.detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
         .widgetURL(deepLink(context.attributes))
         .activityBackgroundTint(Color(white: 0.12))
     }
@@ -72,24 +107,38 @@ struct AgentRemoteWidget: Widget {
             let (icon, tint) = phaseIcon(s.phase)
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    HStack(spacing: 4) {
-                        Image(systemName: icon).foregroundStyle(tint)
-                        Text(context.attributes.app).font(.caption.weight(.semibold)).lineLimit(1)
-                    }
+                    logo(for: context.attributes.app, 28)
+                        .padding(.leading, 4)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     Group {
-                        if s.total > 0 { Text(progressText(s)) } else if s.phase == "working" { timerText(s) }
+                        if s.phase == "working" {
+                            timerText(s, width: 64)
+                        } else if s.total > 0 {
+                            Text(progressText(s))
+                        } else {
+                            Image(systemName: icon).foregroundStyle(tint)
+                        }
                     }
                     .font(.caption).foregroundStyle(.secondary)
+                    .padding(.trailing, 6)
                 }
                 DynamicIslandExpandedRegion(.center) {
-                    Text([context.attributes.project, context.attributes.thread].filter { !$0.isEmpty }.joined(separator: " · "))
-                        .font(.caption).lineLimit(1)
+                    Text("\(context.attributes.app) · \(context.attributes.project)")
+                        .font(.subheadline.weight(.semibold)).lineLimit(1)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(s.label).font(.caption.weight(.medium))
+                        if !context.attributes.thread.isEmpty {
+                            Text(context.attributes.thread).font(.footnote).lineLimit(2)
+                        }
+                        HStack(spacing: 4) {
+                            phaseBadge(s)
+                            Spacer()
+                            if s.total > 0 {
+                                Text(progressText(s)).font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
                         if s.total > 0 {
                             ProgressView(value: Double(s.done), total: Double(s.total)).tint(tint)
                         }
@@ -99,17 +148,17 @@ struct AgentRemoteWidget: Widget {
                     }
                 }
             } compactLeading: {
-                Image(systemName: icon).foregroundStyle(tint)
+                logo(for: context.attributes.app, 18)
             } compactTrailing: {
                 if s.total > 0 && (s.phase == "working" || s.phase == "waiting") {
-                    Text(progressText(s)).font(.caption2)
+                    Text(progressText(s)).font(.caption2).monospacedDigit().foregroundStyle(tint)
                 } else if s.phase == "working" {
-                    timerText(s).font(.caption2).frame(maxWidth: 44)
+                    timerText(s, width: 42).font(.caption2).foregroundStyle(.blue)
                 } else {
-                    Text(s.label).font(.caption2).lineLimit(1).frame(maxWidth: 44)
+                    Image(systemName: icon).foregroundStyle(tint)
                 }
             } minimal: {
-                Image(systemName: icon).foregroundStyle(tint)
+                logo(for: context.attributes.app, 16)
             }
         }
     }
