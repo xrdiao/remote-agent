@@ -12,6 +12,7 @@ import { helpersCall } from './page/build.mjs';
 import { handleApi } from './http/api.mjs';
 import { SECURITY_HEADERS, serveApp, json, corsHeaders, originAllowed } from './http/static.mjs';
 import { attachWss } from './ws.mjs';
+import { preloadVoice } from './voice/service.mjs';
 import { offerFirstPairing } from './util.mjs';
 import { run } from './publish/pages.mjs';
 import { startTunnel } from './publish/tunnel.mjs';
@@ -80,6 +81,7 @@ server.listen(PORT, HOST, async () => {
   } catch (e) {
     console.log(`!! ${e.message}`);
   }
+  preloadVoice();
   // Warm the file-viewer caches (theme discovery + shiki) after startup so the
   // phone's first file open doesn't pay the one-time scan/init cost.
   setTimeout(() => {
