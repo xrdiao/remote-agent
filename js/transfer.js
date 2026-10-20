@@ -13,9 +13,9 @@ transferPanel.setAttribute('aria-label', '文件传输');
 transferPanel.innerHTML = `<div class="transferHeader"><button id="transferClose" class="transferIcon" aria-label="返回">‹</button><h3>文件传输</h3>
   <details id="transferMore"><summary aria-label="更多操作">⋯</summary><div class="transferMenu"><button id="transferHome">主目录</button><button id="transferRefresh">刷新目录</button><select id="transferRoots" aria-label="磁盘"></select></div></details></div>
   <div class="transferTabs" role="tablist"><button id="transferDownloadTab" role="tab">下载到手机</button><button id="transferUploadTab" role="tab">上传到电脑</button></div>
-  <div class="transferBody"><div id="transferBrowser"><div id="transferBrowserLabel" class="transferLabel">电脑文件</div>
-    <button id="transferParent" class="transferParent">↑ 上一级</button><div class="transferPathBar"><button id="transferPathButton" title="编辑电脑路径"></button></div>
-    <form id="transferPathForm" hidden><input id="transferPath" aria-label="电脑目录" placeholder="输入电脑目录路径"><button>前往</button></form>
+  <div class="transferBody"><div id="transferBrowser"><div class="transferNavigation"><div id="transferBrowserLabel" class="transferLabel">电脑文件</div>
+    <div class="transferNavRow"><button id="transferParent" class="transferParent">↑ 上一级</button><div class="transferPathBar"><button id="transferPathButton" title="编辑电脑路径"></button></div></div>
+    <form id="transferPathForm" hidden><input id="transferPath" aria-label="电脑目录" placeholder="输入电脑目录路径"><button>前往</button></form></div>
     <div class="transferListTools"><button id="transferHidden" class="transferToggle" role="switch"><span>显示隐藏文件</span><span class="switch"></span></button><details id="transferSelectMenu"><summary>选择</summary><div class="transferMenu"><button id="transferAll">全选本页</button><button id="transferClear">清空选择</button></div></details></div>
     <div id="transferRows"></div><p class="hint" id="transferArchiveHint">文件夹将打包为 ZIP</p></div>
     <div id="transferUploadView" hidden><div class="transferLabel">电脑接收目录</div><div class="transferTargetBar"><span id="transferUploadTarget"></span><button id="transferChangeTarget" class="transferText">更改</button></div>

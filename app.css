@@ -891,3 +891,8 @@
 .transferFooter .hint { text-align: center; margin-top: 10px; }
 
 #transfer .transferParent { display: block; min-height: 44px; padding: 10px 14px; margin: 0 0 10px; background: var(--ctrl); border: 1px solid var(--border); border-radius: 10px; font-size: 15px; }
+
+.transferNavigation { position: sticky; top: 0; z-index: 1; background: var(--bg); padding: 4px 0 10px; }
+.transferNavRow { display: flex; align-items: center; gap: 8px; }
+.transferNavRow .transferPathBar { flex: 1; min-width: 0; }
+#transfer .transferNavRow .transferParent { flex-shrink: 0; margin: 0; }
