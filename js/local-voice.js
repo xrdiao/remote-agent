@@ -49,7 +49,12 @@ async function startVoice(event) {
     session.context = new AudioContext();
     const resumed = session.context.resume();
     const media = navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }, video: false });
-    media.then(stream => { if (voiceLive(session) && session.held) session.stream = stream; else stream.getTracks().forEach(track => track.stop()); }, () => {});
+    media.then(stream => {
+      if (voiceLive(session) && session.held) {
+        session.stream = stream;
+        if (session.started) status('正在准备录音…');
+      } else stream.getTracks().forEach(track => track.stop());
+    }, () => {});
     const socket = session.socket = new WebSocket(base.replace(/^http/, 'ws') + '/voice');
     const started = new Promise((resolve, reject) => {
       socket.onopen = () => socket.send(JSON.stringify({ type: 'auth', token: store.get('token') }));
@@ -59,7 +64,11 @@ async function startVoice(event) {
         if (!voiceLive(session)) return;
         const m = JSON.parse(e.data);
         if (m.type === 'loading') status('正在加载本机语音模型…');
-        if (m.type === 'started') resolve();
+        if (m.type === 'started') {
+          session.started = true;
+          status(session.stream ? '正在准备录音…' : '等待麦克风授权…');
+          resolve();
+        }
         if (m.type === 'partial' || m.type === 'final') voiceText(session, m.text);
         if (m.type === 'final') { status(m.text ? '转录完成，可编辑后发送' : '没有识别到语音，请重试'); cancelVoice(); }
         if (m.type === 'error') { reject(new Error(m.message)); status(m.message, false); cancelVoice(); }
@@ -111,10 +120,12 @@ async function toggleLocalVoice() {
     if (!result.installed) {
       return openSheet('local-voice-setup', '<h3>安装本机语音</h3><p>在电脑上的 Remote Agent 目录运行：</p><pre>npm run voice:setup</pre><p class="hint">程序会询问是否同意安装 CPU 识别环境和下载约 615 MB 中英混说模型。安装完成后再次按住麦克风即可；语音只发送到你配对的电脑。</p><p class="hint">麦克风需要 HTTPS 和浏览器授权。微信等容器无法使用时，请用 Safari/Chrome 或键盘语音输入。</p>');
     }
-    status('正在预热本机语音模型…');
-    const warm = await api('/api/voice', { method: 'POST', timeout: 60000 });
-    const ready = await warm.json();
-    if (!warm.ok) throw new Error(ready.error);
+    if (!result.ready) {
+      status('正在预热本机语音模型…');
+      const warm = await api('/api/voice', { method: 'POST', timeout: 60000 });
+      const ready = await warm.json();
+      if (!warm.ok) throw new Error(ready.error);
+    }
     if (voiceEnabled()) status('本机语音已就绪，按住输入框右侧麦克风说话');
   } catch (error) { status(error.message, false); }
 }
