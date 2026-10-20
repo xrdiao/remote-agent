@@ -7,7 +7,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Remote Agent">
-<meta name="theme-color" content="#0b131b">
+<meta name="theme-color" content="#0F1012">
 <script>
 // Apply the saved theme before first paint so there is no flash. Store key 'cr-theme': dark (default) | light | auto.
 (() => {
@@ -33,22 +33,23 @@
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>Remote Agent</title>
-<link rel="stylesheet" href="app.css?v=139">
+<link rel="stylesheet" href="app.css?v=151">
 </head>
 <body>
+<nav id="rail" aria-label="导航"></nav>
 <header>
-  <button id="title"><span id="dot"></span><span class="titleLabels"><span class="titleRow"><span id="titleText">连接中…</span><span id="titlePlan" hidden></span></span><span id="titleProject"></span></span><span id="titleLatency"></span><svg class="arrowIcon titleArrow" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
+  <button id="title"><span class="appAvatar"><span id="dot"></span></span><span class="titleLabels"><span class="titleRow"><span id="titleText">连接中…</span><span id="titlePlan" hidden></span></span><span id="titleProject"></span></span><span id="titleLatency"></span><svg class="arrowIcon titleArrow" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
     <div id="meters">
       <button class="meter" id="meterCtx" type="button"><span class="track"><i id="meterCtxFill"></i></span><span class="meterText"><span class="meterLabel">上下文</span><b id="meterCtxPct">未获取</b></span></button>
       <div id="quotaMeters"></div><span id="quotaStatus"></span>
     </div>
   <div id="fusionHeader" hidden>
-    <div class="fusionAgent"><button id="fusionA" aria-label="选择 A">A ▾</button><span id="fusionMetersA" class="fusionInlineMeters"></span></div>
-    <div class="fusionAgent"><button id="fusionB" aria-label="选择 B">B ▾</button><span id="fusionMetersB" class="fusionInlineMeters"></span></div>
+    <div class="fusionAgent"><button id="fusionA" class="dd" aria-label="选择 A">A</button><span id="fusionMetersA" class="fusionInlineMeters"></span></div>
+    <div class="fusionAgent"><button id="fusionB" class="dd" aria-label="选择 B">B</button><span id="fusionMetersB" class="fusionInlineMeters"></span></div>
   </div>
-  <button id="menuBtn" aria-label="菜单">⋯</button>
+  <div class="seg"><button id="tabChat" class="on"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-8l-6 4v-4H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/><path d="M7 9h10M7 13h6"/></svg><span class="segLabel">对话</span></button><button id="tabTerm"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3 3-3 3m6 0h4"/></svg><span class="segLabel">终端</span></button></div>
+  <button id="menuBtn" aria-label="菜单"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/></svg></button>
 </header>
-<div class="seg"><button id="tabChat" class="on"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-8l-6 4v-4H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/><path d="M7 9h10M7 13h6"/></svg> 对话</button><button id="tabTerm"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3 3-3 3m6 0h4"/></svg> 终端</button></div>
 
 <main>
   <section id="chatView" class="view active">
@@ -110,7 +111,23 @@
   <div id="mentionBox" hidden></div>
   <div id="mathPrev" hidden></div>
   <div id="fusionBar" hidden></div>
-  <div class="composerBox"><div class="composerField"><textarea id="text" rows="1" placeholder="发给 Agent…" enterkeyhint="send"></textarea><button id="mic" title="按住说话，松开结束" aria-label="按住说话" hidden><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button><button id="stop" title="停止生成" aria-label="停止生成" hidden>■</button></div>
+  <div class="composerBox">
+  <div id="chatTools">
+    <button id="pickModel" class="dd" title="更换模型">模型</button>
+    <button id="pickMode" class="dd" hidden></button>
+    <button id="pickAgents" class="dd" title="选择项目与会话">项目/会话</button>
+    <button id="pickEditor" title="浏览和编辑当前项目文件" aria-label="浏览和编辑当前项目文件" hidden><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 20H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2v2"/><path d="m18 13 3 3-6 6h-3v-3Z"/></svg></button>
+    <button id="pickPerm" class="dd" title="权限" hidden>权限</button>
+    <button id="pickPlan" title="Plan 模式" hidden>Plan</button>
+    <button id="pickIde" title="IDE 上下文" hidden>IDE</button>
+    <button id="pickRun" class="dd" title="执行位置" hidden></button>
+    <button id="pickChat" class="dd" title="会话操作" hidden>会话</button>
+    <!-- 旧版输入框旁的对话历史。Agents 和 Devin 改由左侧会话列表切换，见 README。 -->
+    <button id="pickHistory" hidden>历史</button>
+    <button id="pickDir" hidden></button>
+    <button id="newChat">＋ 新建</button>
+    <div id="fusionConfig" hidden><button id="fusionModelA" class="dd">A 模型</button><button id="fusionModelB" class="dd">B 模型</button><button id="fusionProject" class="dd">项目</button></div>
+  </div>
   <div id="termToolsLabel" hidden>终端操作</div>
   <div id="termTools" hidden>
     <button id="pickTerms">列表</button>
@@ -120,30 +137,22 @@
     <button id="termCopy" disabled>复制</button>
     <button id="termSelectAll" disabled>全选</button>
   </div>
-  <div id="chatTools">
-    <button id="add" title="添加功能" aria-label="添加功能">＋</button>
+  <div class="composerField"><textarea id="text" rows="1" placeholder="发给 Agent…" enterkeyhint="send"></textarea><button id="mic" title="按住说话，松开结束" aria-label="按住说话" hidden><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button><button id="stop" title="停止生成" aria-label="停止生成" hidden><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="3"/></svg></button></div>
+  <div class="sendRow">
+    <div class="sendTools">
+    <button id="add" title="添加功能" aria-label="添加功能"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
     <button id="img" title="附加图片" aria-label="附加图片"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/></svg></button>
     <button id="uploadDoc" title="上传文档" aria-label="上传文档"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M6 3h8l4 4v14H6zM14 3v5h4"/></svg></button>
-    <div id="fusionConfig" hidden><button id="fusionModelA">A 模型 ▾</button><button id="fusionModelB">B 模型 ▾</button><button id="fusionProject">项目 ▾</button></div>
-    <button id="pickMode" hidden></button>
-    <button id="pickModel" title="更换模型">模型 ▾</button>
-    <button id="pickEditor" title="浏览和编辑当前项目文件" aria-label="浏览和编辑当前项目文件" hidden><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 20H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2v2"/><path d="m18 13 3 3-6 6h-3v-3Z"/></svg></button>
-    <button id="pickPerm" title="权限" hidden>权限 ▾</button>
-    <button id="pickPlan" title="Plan 模式" hidden>Plan</button>
-    <button id="pickIde" title="IDE 上下文" hidden>IDE</button>
-    <button id="pickRun" title="执行位置" hidden></button>
-    <button id="pickChat" title="会话操作" hidden>会话 ▾</button>
-    <button id="pickAgents" title="选择项目与会话">项目/会话 ▾</button>
-    <!-- 旧版输入框旁的对话历史。Agents 和 Devin 改由左侧会话列表切换，见 README。 -->
-    <button id="pickHistory" hidden>历史</button>
-    <button id="pickDir" hidden></button>
-    <button id="newChat">＋ 新建</button>
+    <div id="inputHistory"><button id="inputPrev" aria-label="上一条已发送内容" title="上一条已发送内容"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 15 6-6 6 6"/></svg></button><button id="inputNext" aria-label="下一条已发送内容或恢复草稿" title="下一条已发送内容或恢复草稿"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button></div>
+    <div id="termHistory"><button data-termkey="ArrowUp" aria-label="上一条终端命令"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 15 6-6 6 6"/></svg></button><button data-termkey="ArrowDown" aria-label="下一条终端命令"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button></div>
+    <button id="insertNewline" aria-label="插入换行" title="插入换行"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 10-5 5 5 5M20 4v7a4 4 0 0 1-4 4H4"/></svg></button>
+    </div>
+    <button id="sendNow" hidden>立即发送</button><button id="send">发送</button>
   </div>
+  <div id="footerStatus"><div id="msg"></div><span id="elapsed" hidden></span></div>
   </div>
 <input id="imgFile" type="file" accept="image/*" multiple hidden>
 <input id="docFile" type="file" accept=".pdf,.doc,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.py,.js,.ts,.tsx,.jsx,.sh,.yaml,.yml,.toml,.ini,.log,.xml,.html,.css,.c,.cpp,.h,.rs,.go" hidden>
-  <div class="sendRow"><div id="inputHistory"><button id="inputPrev" aria-label="上一条已发送内容" title="上一条已发送内容">↑</button><button id="inputNext" aria-label="下一条已发送内容或恢复草稿" title="下一条已发送内容或恢复草稿">↓</button></div><div id="termHistory"><button data-termkey="ArrowUp" aria-label="上一条终端命令">↑</button><button data-termkey="ArrowDown" aria-label="下一条终端命令">↓</button></div><button id="insertNewline" aria-label="插入换行" title="插入换行">↵</button><button id="send">发送</button><button id="sendNow" hidden>立即发送</button></div>
-  <div id="footerStatus"><div id="msg"></div><span id="elapsed" hidden></span></div>
 </footer>
 
 <div id="shade"></div>
@@ -151,7 +160,7 @@
 
 <div id="viewer">
   <div class="bar">
-    <button id="vClose">←</button>
+    <button id="vClose" aria-label="返回"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg></button>
     <div class="names"><div id="vName"></div><div id="vPath"></div></div>
     <button id="vEdit" hidden>编辑</button>
     <button id="vFind">搜索</button>
@@ -165,15 +174,14 @@
     <button data-edit="undo" hidden>撤销</button><button data-edit="redo" hidden>重做</button><button data-edit="all" hidden>全选</button>
   </div>
   <div id="vChanges" hidden><button id="vChangePrev">▲</button><button id="vChangeNext">▼</button><span id="vChangeCount"></span><button id="vOnly">只看改动</button><span id="vSrc"></span></div>
-  <div id="vSearch" hidden><input id="vQuery" placeholder="搜索当前文档"><span id="vCount"></span><button id="vPrev">↑</button><button id="vNext">↓</button><button id="vSearchClose">×</button></div>
+  <div id="vSearch" hidden><input id="vQuery" placeholder="搜索当前文档"><span id="vCount"></span><button id="vPrev">↑</button><button id="vNext">↓</button><button id="vSearchClose" aria-label="关闭"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
   <div id="vBody"></div>
 </div>
 
 <div id="gate">
   <div id="gateLang" aria-label="语言 / Language"><button data-lang="zh">中</button><span>|</span><button data-lang="en">EN</button></div>
-  <div class="pairHero"><img src="icon-512.png" alt="" class="pairLogo"><h2>Remote Agent</h2></div>
+  <div class="pairHero"><img src="icon-512.png" alt="" class="pairLogo"><h2>Remote Agent</h2><p id="pairIntro">在电脑端运行 npm run pair，<br>然后扫描二维码或输入配对码进行连接。</p></div>
   <div class="pairControls">
-  <p id="pairIntro">在电脑端运行 npm run pair，<br>然后扫描二维码或输入配对码进行连接。</p>
   <div id="gateMsg"></div>
   <div id="gateEntry"><div class="pairInput"><input id="gateInput" autocapitalize="off" autocorrect="off" spellcheck="false"><button id="gatePaste" aria-label="粘贴" title="粘贴"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="16" rx="2"/><rect x="9" y="3" width="6" height="4" rx="1"/></svg></button></div><button id="gateBtn" class="primary"></button></div>
   <div id="pairOr" hidden><span></span><span>或</span><span></span></div>
@@ -215,24 +223,24 @@
   <input id="scannerFile" type="file" accept="image/*" hidden>
 </div>
 
-<script src="i18n.js"></script>
-<script src="js/core.js?v=140"></script>
+<script src="i18n.js?v=146"></script>
+<script src="js/core.js?v=151"></script>
 <script src="js/gate.js?v=122"></script>
 <script src="js/scanner.js"></script>
-<script src="js/net.js?v=140"></script>
-<script src="js/sheets.js?v=140"></script>
-<script src="js/notify.js?v=139"></script>
-<script src="js/mode.js?v=133"></script>
-<script src="js/chat.js?v=111"></script>
-<script src="js/history.js?v=139"></script>
+<script src="js/net.js?v=142"></script>
+<script src="js/sheets.js?v=148"></script>
+<script src="js/notify.js?v=142"></script>
+<script src="js/mode.js?v=144"></script>
+<script src="js/chat.js?v=151"></script>
+<script src="js/history.js?v=151"></script>
 <script src="js/files.js?v=106"></script>
 <script src="js/transfer.js?v=137"></script>
 <script src="js/screen.js?v=123"></script>
 <script src="js/terminal.js?v=116"></script>
-<script src="js/composer.js?v=137"></script>
-<script src="js/latency.js"></script>
+<script src="js/composer.js?v=150"></script>
+<script src="js/latency.js?v=142"></script>
 <script src="js/image-editor.js?v=117"></script>
-<script src="js/voice.js?v=133"></script>
-<script src="js/local-voice.js?v=142"></script>
+<script src="js/voice.js?v=144"></script>
+<script src="js/local-voice.js?v=146"></script>
 </body>
 </html>
