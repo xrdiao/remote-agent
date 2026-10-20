@@ -204,3 +204,27 @@ v139 收尾：`npm run check`（163文件、94发送/58接收类型、169页面h
 v141 补充验证：隔离后端快速切换等待中的引擎仅保留最终选择，另一配对设备的实际协议流不中断。配对浏览器用真实Sherpa CPU引擎完成刷新预热，0次麦克风申请、正常加载真实Codex对话；故意延迟语音脚本1.2秒，认证先于脚本完成时也正常启动所选引擎。原语音设置已恢复，临时配对按精确ID清理，原11台设备保留。`npm run check`（169文件）和`git diff --check`通过；已发布并重启中继，HTTP 200，56个公网资源与本地一致，未提交或推送源码。
 
 本列表不是实施所有历史愿望的概括授权。每轮只做当前已授权的具体范围；实现与验证后更新相应状态。
+
+## 2026-10-20 语音引擎保温与录音初始化超时（v142）
+
+引擎停止规则修正：`loadWorker` 现在记录每个运行时的 `lastDevice`，仅当空闲运行时的 `lastDevice` 与本次加载设备相同才停止它（同一设备的旧语音连接仍会被关闭）；不带 deviceId 的调用永不停止其他引擎。之前手机后台导致语音 socket 断开后，其他浏览器打开默认 Sherpa 会杀掉空闲 Qwen 进程，造成每次打开重新冷启动。配对设备语音 WebSocket 认证时把所选引擎与设备写入 `~/.agent-remote/asr/last-engine.json`（内容变化才写），中继启动后 `preloadVoice()` 非阻塞预热该引擎并把 `lastDevice` 还原为持久化设备；文件不存在或引擎未安装则什么都不做，无重试循环。POST `/api/voice` 现在必须带 `?engine=`，缺失或未知引擎返回 400，且以无 client/device 方式加载从而不会停止其他引擎。worker 就绪打印 `[voice:<id>] ready in <ms>ms`，停止打印 `[voice:<id>] stopped (<原因>)`。
+
+手机端隐藏页面不再立即断开语音 socket：cancelVoice 与关闭 AudioContext 仍立即执行，`closeVoiceConnection` 延后 30 秒（重新可见即取消）；`pagehide` 与关闭语音仍立即断开，`voicePrepared` 只在连接真正关闭时清除。按住时 socket 正在重连但模型已热（`!link.streamId && !link.loading`）改为保持按住并最多等待 1500ms 的 `link.ready`；超时、松手或期间收到 `loading` 均回退原提示且不录音，冷加载行为不变（就绪后不自动录音）。服务端用 `loading` 消息置 `link.loading`。
+
+录音初始化卡死修复：按住时若 `voiceAudio.context` 处于 `closed`/`interrupted` 先在手势内重建；麦克风授权与 `started` 不设人工超时，但 `context.resume()` 与 worklet 模块加载合并设 3000ms 超时，超时显示「录音初始化超时，请重新按住麦克风」并 `cancelVoice()+closeVoiceAudio()`，下一次按住会在手势内创建全新 AudioContext。`localStorage['cr-voice-debug']==='1'` 时按 `console.log` 打印相对 pointerdown 的时间戳（media、started、resume、module、首帧PCM、首个partial），默认关闭。未改 AEC、块大小、松手即关麦克风、冷加载不自动录音等行为。
+
+Qwen 冷启动实测（本机，worker 独立运行，`VLLM_LOGGING_LEVEL=INFO`）：首次冷启动 ready 17.6s，页缓存热的第二次 14.5s；日志分解为 import+引擎配置约5s、safetensors repo-id 重试约2s、权重加载约0.5-1.2s、profile/KV/warmup 约1.7-1.8s。worker 已是 `enforce_eager=True`（CompilationMode.NONE），无 torch.compile/Dynamo 阶段，因此未采用 `compilation_config` 变更，`qwen-worker.py` 无改动；主要的稳态预热收益来自上面的引擎保温与启动预热。无 GPU 驱动/CUDA/训练环境改动，训练任务未受影响。
+
+验证：`npm run check` 与 `git diff --check` 通过。临时脚本注入运行时验证停止规则（同设备切换会停旧引擎、他设备空闲引擎保留、无设备调用不停任何引擎、他设备运行时中本设备遗留 socket 仍被关闭）。配对无头浏览器（假音频源、Sherpa）实测：正常按住-松开流程；隐藏30秒内返回复用同一语音 socket（readyState 1、streamId、voicePrepared 均不变），隐藏超过30秒 socket 关闭且 voicePrepared 清除；挂起 `AudioContext.prototype.resume` 后约3秒出现超时提示且下一次按住正常录音；关闭语音 socket 后快速按住走重连等待路径并在 `started` 到达后正常进入录音；`link.loading` 冷加载状态按住仅显示提示、不建会话、就绪后不自动录音。临时配对设备按精确ID移除。未在实体手机/微信上实测；未做真实语音内容转录回归（假音频源只产出静音/提示音，走完整流程但无实际识别文本）。
+
+## 2026-10-20 Qwen 两阶段加载与显存释放、手机系统识别引擎（v143）
+
+Qwen worker 改为两阶段：spawn 只做 import+numpy/torch/vllm/qwen_asr 与后台页缓存预热（顺序读模型文件，不驻留缓冲），不触碰 CUDA，进程不出现在 nvidia-smi、占 0 VRAM，发出 `{"type":"prepared"}`；收到 `{"type":"load"}` 才构造 LLM 发出 `{"type":"ready"}`；`{"type":"sleep"}` 走 vLLM sleep level 2 发出 `{"type":"sleeping"}`；`cancel` 在未加载时安全空转。stderr 增加阶段时间标记（process start/imports done/load start/constructed/ready/sleep/wake）。构造参数新增 `dtype="bfloat16"` 与 `hf_overrides={"torch_dtype":"bfloat16"}`，消除了此前每次加载约 2 秒的 safetensors repo-id 远端重试（config.json 的 dtype 为 null，vLLM 走远端探测路径；hf_overrides 置位后解析结果同为 bfloat16）。
+
+释放策略实测决定——sleep level 2 验收失败：睡眠只释放约 1.31 GiB（5.77→4.43 GiB），远低于 ≤1 GB 门槛（权重未走 CuMemAllocator 池，属 vLLM 该路径已知限制），虽然 wake 仅 0.45s 且唤醒后转录正确，仍不满足显存释放目标。因此采用备选方案 A：Qwen 运行时零 client 零 session 满 60 秒后 `stopWorker` 并立即 respawn 一个 phase-1（prepared、0 VRAM）worker；新 client 取消计时器，状态机为 preparing→prepared→(activating)→ready→stopped→prepared，并发加载共享同一 activation promise，engine 切换停止规则不变。vLLM sleep/wake 路径与 `enable_sleep_mode`、worker 端 `sleep` 指令已整体移除，load 在已加载时仅重复 ready。idle release 计时器除 ws close 外也在 activation 完成后再次检查，修复了最后一个 client 在模型尚在加载时断开导致就绪后永久占用显存的竞态（ws close 中 `ws.readyState !== 1` 的既有保护同时避免产生孤儿 session）。日志：`prepared in`、`ready in`、`released (respawn) in`。`preloadVoice()` 对持久化 qwen 只到 phase 1（不占显存），Sherpa 照旧完整加载。`voiceStatus().ready` 仅 ready 态为真。
+
+手机端引擎列表新增 `system`（「手机系统识别」），始终列出即使电脑无任何引擎；无 `SpeechRecognition` 时置灰并说明改用 Safari/Chrome。选择按设备存储同其他引擎；选中后不走 /voice socket、不建 AudioContext、不触发服务端预热。按住即建 `continuous+interimResults` 识别，partial 经既有 voiceText 前缀/后缀逻辑替换插入、final 累积；松开 `recognition.stop()`，onend 给出转录完成/未识别提示并 `cancelVoice(false)`；编辑或断开即 abort 且保留文本；not-allowed/service-not-allowed 复用既有权限提示，network/no-speech 复用旧实现提示（git 找回 v133 前实现）。未恢复旧按钮入口、无原生桥接改动。
+
+实测（本机真 GPU）：phase-1 prepared 4.7-5.1s、0 VRAM；client 连接 phase-2 load→ready 9.0s（首次连→started 13.7s 含 spawn）；真实 zh.wav 8 个 partial + 正确 final；断开后 ~60s 内 `stopped (idle release)` + `released (respawn) in ~4.9s`，respawn 后 0 VRAM；重连→ready 8.4s，再次转录结果一致。配对无头浏览器：Sherpa 按住说话回归通过；存根 SpeechRecognition 下 system 引擎可选中、按住即插入 interim+final 到光标处并保留草稿、松开后正确完成、全程 0 个 /voice socket 与 0 个新 AudioContext、不支持时置灰显示原因、切回 Sherpa 正常建连。`npm run check`（169文件）、worker py_compile、`git diff --check` 通过。未实测：真实手机系统识别（Safari/Chrome 实机 SpeechRecognition 行为、微信内）、Android/iOS 原生壳（本轮明确不做）、WeChat 内置浏览器。
+
+v143 收尾：仅执行发布与重启步骤（无 git 操作），中继按既有脚本流程重启；详见本轮报告。
