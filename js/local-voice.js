@@ -26,10 +26,11 @@ function cancelVoice() {
 function voiceText(session, value) {
   if (!voiceLive(session)) return;
   if (text.value !== session.expected) return cancelVoice();
+  const inserted = value || session.selection || '';
   const separator = value && session.prefix && !/\s$/.test(session.prefix) && /^\w/.test(value) ? ' ' : '';
-  text.value = session.prefix + separator + value + session.suffix;
+  text.value = session.prefix + separator + inserted + session.suffix;
   session.expected = text.value;
-  text.setSelectionRange(session.prefix.length + separator.length + value.length, session.prefix.length + separator.length + value.length);
+  text.setSelectionRange(session.prefix.length + separator.length + inserted.length, session.prefix.length + separator.length + inserted.length);
   session.writing = true;
   text.dispatchEvent(new Event('input', { bubbles: true }));
   session.writing = false;
@@ -39,7 +40,7 @@ async function startVoice(event) {
   event.preventDefault();
   if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) return status('麦克风需要 HTTPS；请使用 Safari/Chrome 打开固定入口，或使用键盘语音输入', false);
   if (event.pointerId != null) $('mic').setPointerCapture(event.pointerId);
-  const session = { scope: voiceScope(), expected: text.value, prefix: text.value.slice(0, text.selectionStart), suffix: text.value.slice(text.selectionEnd), held: true };
+  const session = { scope: voiceScope(), expected: text.value, prefix: text.value.slice(0, text.selectionStart), suffix: text.value.slice(text.selectionEnd), selection: text.value.slice(text.selectionStart, text.selectionEnd), held: true };
   voiceSession = session;
   $('mic').classList.add('on'); $('mic').setAttribute('aria-label', '松开结束录音');
   status('正在连接本机语音并申请麦克风…');
@@ -69,7 +70,7 @@ async function startVoice(event) {
     session.stream = stream;
     await session.context.audioWorklet.addModule(new URL('js/voice-worklet.js?v=133', location.href));
     if (!voiceLive(session) || !session.held) return;
-    session.node = new AudioWorkletNode(session.context, 'voice-pcm');
+    session.node = new AudioWorkletNode(session.context, 'voice-pcm', { channelCount: 1, channelCountMode: 'explicit' });
     session.source = session.context.createMediaStreamSource(stream);
     session.node.port.onmessage = e => {
       if (!voiceLive(session)) return;
