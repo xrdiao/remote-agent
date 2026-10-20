@@ -118,6 +118,14 @@ const scKeyFor = sess => `${currentComputer()?.id || '-'}|${currentApp || '?'}|$
 // A newer copy of a row replaces the stored one, except where the stored one holds more (thought text, task items).
 function scKeep(prev, it) {
   if (!prev) return it;
+  // Completed Codex turns lose their DOM-only footer when read from virtualized history.
+  if (currentApp === 'codex' && it.k === 'assistant' && prev.k === 'assistant' && it.i === prev.i
+    && it.completed === true && prev.completed === true && it.t === prev.t && !it.b?.length) {
+    const buttons = (prev.b || []).map((label, index) => ({ label, action: prev.actions?.[index] }))
+      .filter(b => b.label === 'Copy message' || b.label === 'Fork chat from here');
+    if (buttons.length) return { ...it, b: buttons.map(b => b.label), btnItem: prev.btnItem || prev.i,
+      ...(prev.actions ? { actions: buttons.map(b => b.action || '') } : {}) };
+  }
   if (it.k === 'thinking' && prev.k === 'thinking') {
     const body = t => (t || '').split('\n').slice(1).join('\n');
     if (body(prev.t).length > body(it.t).length) { const m = { ...it, t: prev.t }; delete m.more; return m; }

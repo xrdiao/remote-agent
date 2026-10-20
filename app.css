@@ -889,3 +889,5 @@
 .transferSummary { display: flex; align-items: center; justify-content: space-between; min-height: 30px; margin-bottom: 8px; font-size: 14px; }
 #transfer .transferPrimary, #transferCancel { display: block; width: 100%; padding: 13px; border: 1px solid var(--accent-b); border-radius: 10px; background: var(--accent); color: #fff; font-size: 16px; }
 .transferFooter .hint { text-align: center; margin-top: 10px; }
+
+#transfer .transferParent { display: block; min-height: 44px; padding: 10px 14px; margin: 0 0 10px; background: var(--ctrl); border: 1px solid var(--border); border-radius: 10px; font-size: 15px; }

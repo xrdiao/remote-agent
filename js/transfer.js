@@ -1,7 +1,8 @@
 /* File transfer uses HTTP only; it never changes the active Agent or its editor. */
 let transferComputer = null, transferTab = 'download', transferDirectory = null, transferPicker = null;
 let transferUploadPath = '', transferSelection = new Map(), transferRequest = 0;
-let transferUploads = [], transferXhr = null, transferUploading = false, transferCancelled = false;
+const transferXhrs = new Set();
+let transferUploads = [], transferUploading = false, transferCancelled = false;
 const transferDirectories = JSON.parse(store.get('transfer-directories') || '{}');
 const transferPanel = document.createElement('section');
 transferPanel.id = 'transfer';
@@ -13,7 +14,7 @@ transferPanel.innerHTML = `<div class="transferHeader"><button id="transferClose
   <details id="transferMore"><summary aria-label="更多操作">⋯</summary><div class="transferMenu"><button id="transferHome">主目录</button><button id="transferRefresh">刷新目录</button><select id="transferRoots" aria-label="磁盘"></select></div></details></div>
   <div class="transferTabs" role="tablist"><button id="transferDownloadTab" role="tab">下载到手机</button><button id="transferUploadTab" role="tab">上传到电脑</button></div>
   <div class="transferBody"><div id="transferBrowser"><div id="transferBrowserLabel" class="transferLabel">电脑文件</div>
-    <div class="transferPathBar"><button id="transferParent" class="transferIcon" aria-label="上一级">↑</button><button id="transferPathButton" title="编辑电脑路径"></button></div>
+    <button id="transferParent" class="transferParent">↑ 上一级</button><div class="transferPathBar"><button id="transferPathButton" title="编辑电脑路径"></button></div>
     <form id="transferPathForm" hidden><input id="transferPath" aria-label="电脑目录" placeholder="输入电脑目录路径"><button>前往</button></form>
     <div class="transferListTools"><button id="transferHidden" class="transferToggle" role="switch"><span>显示隐藏文件</span><span class="switch"></span></button><details id="transferSelectMenu"><summary>选择</summary><div class="transferMenu"><button id="transferAll">全选本页</button><button id="transferClear">清空选择</button></div></details></div>
     <div id="transferRows"></div><p class="hint" id="transferArchiveHint">文件夹将打包为 ZIP</p></div>
@@ -55,6 +56,7 @@ function renderTransferPage() {
   $('transferUploadTarget').textContent = transferUploadPath || '正在读取目录…';
   const directory = transferCurrentDirectory();
   if (directory) {
+    $('transferParent').disabled = directory.path === directory.parent;
     $('transferPath').value = directory.path;
     $('transferPathButton').textContent = directory.path;
     $('transferPathButton').title = directory.path + '（点击编辑）';
@@ -201,7 +203,9 @@ function renderTransferUploads() {
 }
 function transferSendFile(item) {
   return new Promise((resolve, reject) => {
-    const xhr = transferXhr = new XMLHttpRequest();
+    const xhr = new XMLHttpRequest();
+    transferXhrs.add(xhr);
+    xhr.onloadend = () => transferXhrs.delete(xhr);
     const query = new URLSearchParams({ directory: item.directory, name: item.name, mode: item.mode });
     xhr.open('POST', item.base + '/api/transfer/upload?' + query);
     xhr.setRequestHeader('authorization', 'Bearer ' + item.token);
@@ -225,16 +229,29 @@ async function runTransferUploads(items) {
   transferUploading = true; transferCancelled = false;
   for (const item of items) { item.mode = $('transferCollision').value; item.pending = false; }
   renderTransferUploads();
-  for (const item of items) {
-    if (transferCancelled) { item.status = '已取消'; item.failed = false; continue; }
+  let next = 0;
+  const paths = new Map();
+  async function upload(item) {
+    if (transferCancelled) { item.status = '已取消'; item.failed = false; return; }
     item.failed = false; item.status = '上传中'; renderTransferUploads();
     try {
       const result = await transferSendFile(item);
       item.status = result.skipped ? '已跳过' : '已上传';
       item.row.title = result.path;
     } catch (error) { item.status = error.message; item.failed = !transferCancelled; }
-    transferXhr = null; renderTransferUploads();
+    renderTransferUploads();
   }
+  async function worker() {
+    while (next < items.length) {
+      const item = items[next++];
+      const key = item.base + '\n' + item.directory + '\n' + item.name;
+      // Preserve selection order for repeated destinations, especially when replacing files.
+      const task = (paths.get(key) || Promise.resolve()).then(() => upload(item));
+      paths.set(key, task);
+      await task;
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(2, items.length) }, () => worker()));
   transferUploading = false; renderTransferUploads();
 }
 function chooseTransferFiles(files) {
@@ -246,6 +263,6 @@ $('transferFiles').onclick = () => $('transferFileInput').click();
 $('transferFolder').onclick = () => $('transferFolderInput').click();
 for (const id of ['transferFileInput', 'transferFolderInput']) $(id).onchange = e => { chooseTransferFiles(e.target.files); e.target.value = ''; };
 $('transferStart').onclick = () => runTransferUploads(transferUploads.filter(item => item.pending));
-$('transferCancel').onclick = () => { transferCancelled = true; transferXhr?.abort(); };
+$('transferCancel').onclick = () => { transferCancelled = true; for (const xhr of transferXhrs) xhr.abort(); };
 $('transferRetry').onclick = () => runTransferUploads(transferUploads.filter(item => item.failed));
 $('transferCollision').onchange = () => { $('transferCollisionLabel').textContent = '同名文件：' + ({ rename: '另存', skip: '跳过', replace: '覆盖' })[$('transferCollision').value] + ' ›'; };
