@@ -21,6 +21,7 @@ itemsEl.addEventListener('click', async e => {
   const tr = e.target.closest('[data-ttoggle]');
   if (tr && !e.target.closest('[data-file]')) {
     const box = tr.closest('.toolrow');
+    box.classList.add('anim');
     box.classList.toggle('open');
     const chev = tr.querySelector('.chev');
     if (chev) chev.textContent = box.classList.contains('open') ? '▾' : '▸';
@@ -152,6 +153,29 @@ function renderTool(el, it) {
     + (chips ? `<div class="chips">${chips}</div>` : '');
 }
 
+// A running command's output grows line by line. Patch the existing row in place so the row's open state,
+// the output box's own scroll position and the expand animation are not reset on every new line.
+function patchToolRow(el, fresh) {
+  if (el.children.length !== fresh.children.length) return false;
+  const kids = [...el.children], next = [...fresh.children];
+  if (kids.some((k, n) => k.tagName !== next[n].tagName || k.className !== next[n].className
+    || (!k.matches('pre.tcmd, .trow') && k.outerHTML !== next[n].outerHTML))) return false;
+  const open = el.classList.contains('open');
+  kids.forEach((k, n) => {
+    const f = next[n];
+    if (k.matches('.trow')) {
+      const chev = f.querySelector('.chev');
+      if (chev) chev.textContent = open ? '▾' : '▸';
+      if (k.innerHTML !== f.innerHTML) k.innerHTML = f.innerHTML;
+    } else if (k.textContent !== f.textContent) {
+      const follow = k.scrollHeight - k.scrollTop - k.clientHeight < 24;
+      k.textContent = f.textContent;
+      if (follow) k.scrollTop = k.scrollHeight;
+    }
+  });
+  return true;
+}
+
 // Devin's todo list ("N / M tasks done"): progress bar + checklist; the same markup feeds the Tasks sheet.
 const taskOpen = new Set();
 const TASK_ICON = { done: '✓', in_progress: '◐', pending: '○' };
@@ -198,6 +222,9 @@ function renderItem(it) {
 }
 
 const nearBottom = () => list.scrollHeight - list.scrollTop - list.clientHeight < 120;
+// Following the chat means the user is at the very end (or never left it); "close to the end" is still reading.
+const atBottom = () => list.scrollHeight - list.scrollTop - list.clientHeight < 8;
+const followingChat = () => pinnedBottom || atBottom();
 
 // pickMenu has no completion message until the relay restarts, so clear "切换中…"
 // when the composer model/mode actually changes, or after a short fallback.
@@ -293,6 +320,7 @@ const lruPut = (map, key, val, max) => { map.delete(key); map.set(key, val); whi
 let menuSheetKind = '', chatStale = false;
 let currentProject = '', currentTerminal = '';
 function updateTitle() {
+  document.body.dataset.app = currentApp || '';
   const first = lastChat?.items?.find(it => it.k === 'user');
   const conversation = mode === 'terminal' ? currentTerminal : (lastChat?.title || first?.t || '');
   $('titleText').textContent = currentAppName || '连接中…';
@@ -301,6 +329,7 @@ function updateTitle() {
   $('titlePlan').hidden = !plan;
   $('titleProject').textContent = cleanWindowTitle(currentProject).replace(/\s+-\s+Devin(?:\s+-.*)?$/, '') || conversation.split('\n')[0].slice(0, 40);
   $('title').title = [cleanWindowTitle(currentProject), conversation].filter(Boolean).join(' · ');
+  paintRail();
 }
 // Devin sessions: each session has its own rows, thought bodies, tasks, questions and queue. When the desktop
 // shows another session, drop everything cached for the old one so the two never mix in one scroll.
