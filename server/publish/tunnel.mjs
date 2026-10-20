@@ -82,7 +82,7 @@ export async function startTunnel() {
   const missing = () => console.log('!! 找不到 cloudflared。在这台电脑上执行：\nmkdir -p ~/.local/bin\ncurl -L --fail -o ~/.local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64\nchmod +x ~/.local/bin/cloudflared\n然后重新运行 npm run public');
   try {
     // Cloudflare names resolve to IPv6 first; machines without IPv6 routing then never reach the edge.
-    child = spawn(bin, ['tunnel', '--no-autoupdate', '--edge-ip-version', '4', '--url', `http://127.0.0.1:${PORT}`], {
+    child = spawn(bin, ['tunnel', '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', '--url', `http://127.0.0.1:${PORT}`], {
       detached: true,
       stdio: ['ignore', fd, fd],
     });
