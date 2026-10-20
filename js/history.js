@@ -384,7 +384,7 @@ function paintWorkdir(wd) {
   const b = $('pickDir');
   b.hidden = !wd;
   if (!wd) return;
-  b.textContent = `📁 ${wd.name}${wd.extra ? ' ' + wd.extra : ''} ▾`;
+  b.textContent = `📁 ${wd.name}${wd.extra ? ' ' + wd.extra : ''}`;
   b.title = wd.editable ? '更换工作目录' : '这个会话的工作目录';
   if (wantDir && wd.editable) { wantDir = false; send({ t: 'workdir' }); }
 }
@@ -406,6 +406,7 @@ function pruneEchoes(chat) {
   if (!pendingEchoes.length) return;
   const humans = (chat?.items || []).filter(it => it.k === 'human');
   const queued = (chat?.queued || []).map(q => (q.t || '').trim());
+  const queuedCount = Math.max(queued.length, chat?.queuedCount || 0);
   pendingEchoes = pendingEchoes.filter(p => {
     // A send that vanished with a dead socket would otherwise spin "发送中…" forever.
     if (Date.now() - p.at > (p.confirmed ? 60000 : 120000)) return false;
@@ -416,6 +417,9 @@ function pruneEchoes(chat) {
     // text can differ from the typed text (mentions, attachments), which would leave the echo forever.
     if (p.confirmed && humans.some(it => it.sentAt && it.sentAt >= p.at - 2000)) return false;
     if (p.kind === 'queue' && queued.some(t => echoTextMatches({ t }, p.text))) return false;
+    // Queue row text is rendered (markdown, collapsed whitespace) and may never equal the
+    // typed text; once confirmed, any non-empty queue already contains the echo.
+    if (p.kind === 'queue' && p.confirmed && queuedCount > 0) return false;
     return true;
   });
 }
@@ -461,7 +465,7 @@ function renderChat(chat, stale, loading = false) {
     renderQuestions(chat.readonly && !chat.questions?.codex ? null : chat.questions);
     return;
   }
-  const followBottom = !historyRequest && !historyRendering && nearBottom();
+  const followBottom = !historyRequest && !historyRendering && followingChat();
   const savedAnchor = followBottom ? null : captureChatAnchor();
   lastChat = chat; updateTitle();
   paintGenerationTime();
@@ -474,16 +478,16 @@ function renderChat(chat, stale, loading = false) {
   $('older').hidden = !chat || chat.earlier === false;
   $('pickMode').hidden = currentApp === 'devin' || currentApp === 'cursor' || !chat?.mode;
   $('pickModel').hidden = false;
-  if (chat?.mode) { $('pickMode').textContent = (chat.mode === 'Bypass Permissions' ? '⚠绕过' : chat.mode) + ' ▾'; $('pickMode').title = chat.mode; }
+  if (chat?.mode) { $('pickMode').textContent = chat.mode === 'Bypass Permissions' ? '⚠绕过' : chat.mode; $('pickMode').title = chat.mode; }
   $('pickMode').classList.toggle('bypass', chat?.mode === 'Bypass Permissions');
   const mdl = chat?.model || '模型';
   const effLabel = chat?.effort && chat.effort !== 'Effort' ? String(chat.effort).replace(/^([a-z])/, c => c.toUpperCase()) : '';
   const effSuffix = chat?.model !== 'Fusion' && effLabel && !mdl.toLowerCase().includes(effLabel.toLowerCase()) ? ` · ${effLabel}` : '';
-  $('pickModel').textContent = mdl + effSuffix + ' ▾';
+  $('pickModel').textContent = mdl + effSuffix;
   $('pickModel').title = chat?.fusion ? `${chat.fusion.lead} · ${chat.fusion.effort} · ${chat.fusion.sidekick}${chat.fusion.fast ? ' · Fast' : ''}` : (chat?.model || '更换模型');
   const permName = PERM_LABEL[chat?.permission]?.[0];
   $('pickPerm').hidden = true;
-  if (chat?.permission) { $('pickPerm').textContent = ({ 'Ask for approval': '询问', 'Approve for me': '替我审核', 'Full access': '完全批准' }[chat.permission] || permName || chat.permission) + ' ▾'; $('pickPerm').title = permName || chat.permission; }
+  if (chat?.permission) { $('pickPerm').textContent = ({ 'Ask for approval': '询问', 'Approve for me': '替我审核', 'Full access': '完全批准' }[chat.permission] || permName || chat.permission); $('pickPerm').title = permName || chat.permission; }
   const codexBar = currentApp === 'codex' ? chat?.codex : null;
   $('add').hidden = false;
   $('pickPlan').hidden = true;
@@ -495,7 +499,7 @@ function renderChat(chat, stale, loading = false) {
     $('pickIde').title = file ? `${file.label}${file.range ? ' ' + file.range : ''}` : 'IDE 上下文';
   }
   $('pickRun').hidden = true;
-  if (codexBar?.run) $('pickRun').textContent = codexBar.run + ' ▾';
+  if (codexBar?.run) $('pickRun').textContent = codexBar.run;
   $('pickChat').hidden = true;
   paintFusion(currentApp === 'fusion' ? chat?.fusion : null);
   chatBusy = !!chat?.busy;
@@ -555,6 +559,10 @@ function renderChat(chat, stale, loading = false) {
       return hit.el;
     }
     const el = renderItem(it);
+    if (it.k === 'tool' && it.kind === 'command' && hit?.el.classList.contains('toolrow') && patchToolRow(hit.el, el)) {
+      cache.set(it.i, { key, el: hit.el });
+      return hit.el;
+    }
     if (it.k === 'tool' && hit?.el.classList.contains('toolrow')) {
       const open = hit.el.classList.contains('open');
       el.classList.toggle('open', open);
@@ -616,7 +624,7 @@ function renderChat(chat, stale, loading = false) {
   if (SC.jump && SC.items.has(SC.jump)) { const j = SC.jump; SC.jump = null; scJump(j); }
 }
 
-let subsOpen = false;
+let subsOpen = false, queueOpen = store.get('queue-open') !== '0';
 // Newest Devin task list (highest acp index); the chip above the chat and its sheet show it.
 let latestTasks = null;
 function showTasks() {
@@ -707,7 +715,7 @@ function renderQuestions(qs) {
   if (!qs?.list?.length) { bar.innerHTML = ''; bar.classList.remove('show'); return; }
   if (qs.devin) {
     const q = qs.list[0], pg = qs.pager;
-    bar.innerHTML = `<div class="qnHead">❓ Devin 在问你${pg ? `（${pg.cur}/${pg.total}）` : ''}`
+    bar.innerHTML = `<div class="qnHead">Devin 在问你${pg ? `（${pg.cur}/${pg.total}）` : ''}`
       + (pg && pg.total > 1 ? `<span class="qnPg"><button data-qpart="prev" ${qs.canPrev ? '' : 'disabled'}>‹</button><button data-qpart="next" ${qs.canNext ? '' : 'disabled'}>›</button></span>` : '') + '</div>'
       + `<div class="qnQ">${esc(q.text)}</div><div class="qnOpts">`
       + q.options.map((o, oi) => `<button class="qnOpt ${o.sel ? 'on' : ''}" data-qi="0" data-oi="${oi}"><b>${q.multi ? (o.sel ? '☑' : '☐') : String.fromCharCode(65 + oi)}</b><span>${esc(o.label)}${o.desc ? `<small>${esc(o.desc)}</small>` : ''}</span></button>`).join('')
@@ -717,7 +725,7 @@ function renderQuestions(qs) {
     questionBusy();
     return;
   }
-  bar.innerHTML = `<div class="qnHead">❓ Agent 在问你${qs.list.length > 1 ? `（${qs.list.length} 个问题）` : ''}</div>`
+  bar.innerHTML = `<div class="qnHead">Agent 在问你${qs.list.length > 1 ? `（${qs.list.length} 个问题）` : ''}</div>`
     + qs.list.map((q, qi) => `<div class="qnQ">${qs.list.length > 1 ? `${qi + 1}. ` : ''}${esc(q.text)}</div><div class="qnOpts">`
       + q.options.map((o, oi) => {
         const letter = String.fromCharCode(65 + oi);
@@ -781,7 +789,9 @@ function renderQueue(busy, queued, subs = [], readonly = false, changed = 0, qCo
   const pending = pendingEchoes.filter(p => p.kind === 'queue' && p.sel === viewSel);
   const n = Math.max(queued.length, devin ? qCount || 0 : 0) + pending.length;
   if (n) {
-    html += `<div class="qh">排队中 ${n} 条${devin ? ' ' + ibtn('trash', '清空', 'data-a="clear" data-q=""', 'del') : ''}</div>`;
+    html += `<div class="qhRow"><button class="qh fold" data-qfold aria-expanded="${queueOpen}">${queueOpen ? '▾' : '▸'} <span>排队中 ${n} 条</span></button>${devin ? ibtn('trash', '清空', 'data-a="clear" data-q=""', 'del') : ''}</div>`;
+  }
+  if (n && queueOpen) {
     html += pending.map(p => `<div class="q pending"><span class="qt">${esc(p.text)}</span><span class="sub">发送中…</span></div>`).join('');
     html += queued.map(q => `<div class="q"><span class="qt">${esc(q.t || '(空)')}</span>`
       + ibtn('edit', devin ? '从队列取出，放回输入框' : '修改', `data-q="${esc(q.id)}" data-a="edit"`)
@@ -819,6 +829,7 @@ $('queueBar').onclick = async e => {
     return toggleChangeNotice();
   }
   if ('changes' in b.dataset) { status('读取改动的文件…'); return send({ t: 'changes' }); }
+  if ('qfold' in b.dataset) { queueOpen = !queueOpen; store.set('queue-open', queueOpen ? null : '0'); return renderQueue(lastChat?.busy, lastChat?.queued || [], lastChat?.subagents || [], lastChat?.readonly, lastChat?.changed, lastChat?.queuedCount); }
   if ('fold' in b.dataset) { subsOpen = !subsOpen; return renderQueue(lastChat?.busy, lastChat?.queued || [], lastChat?.subagents || [], lastChat?.readonly, lastChat?.changed, lastChat?.queuedCount); }
   if ('main' in b.dataset) { send({ t: 'mainChat' }); status('返回主对话…'); return; }
   if (b.dataset.sub) {
@@ -907,13 +918,14 @@ function settleChatScroll() {
   if (top < lastScrollTop) { historyArmed = true; pinnedBottom = false; }
   lastScrollTop = top;
   if (pinnedBottom && !nearBottom()) pinnedBottom = false;
+  else if (!pinnedBottom && atBottom()) pinnedBottom = true;
   chatScrolling = true;
   clearTimeout(scrollIdle);
   scrollIdle = setTimeout(() => {
     if (chatTouching) return;
     chatScrolling = false;
     if (deferredScrollRender && lastChat) { deferredScrollRender = false; renderChat(lastChat); }
-    readingAnchor = nearBottom() ? null : captureChatAnchor();
+    readingAnchor = pinnedBottom ? null : captureChatAnchor();
     maybeLoadOlder();
   }, 150);
   updateToBottom();
