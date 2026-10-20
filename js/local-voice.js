@@ -1,13 +1,27 @@
 /* Local streaming dictation. Audio has its own socket and never enters the Agent queue. */
 let voiceSession = null, voiceLink = null, voiceAudio = null, voicePrepared = '', voiceCatalog = null;
+let voiceInputUntil = 0, voiceInputTimer = null, voiceInputScope = '';
 function voiceEnabled() { return store.get('local-voice') === 'on'; }
 function voiceEngineKey() { return 'voice-engine:' + (currentComputer()?.id || base); }
 function voiceEngine() { return store.get(voiceEngineKey()) || ''; }
 function voiceTransportKey() { return [base, store.get('token'), voiceEngine()].join('|'); }
+function voiceComposerActive() {
+  return (voiceSession && voiceLive(voiceSession))
+    || (document.activeElement === text && document.body.classList.contains('kb'))
+    || (voiceInputScope === voiceScope() && Date.now() < voiceInputUntil);
+}
+function noteVoiceInput() {
+  if (mode !== 'chat') return;
+  voiceInputScope = voiceScope(); voiceInputUntil = Date.now() + 2000;
+  clearTimeout(voiceInputTimer);
+  voiceInputTimer = setTimeout(updateVoiceButton, 2000);
+  updateVoiceButton();
+}
 function updateVoiceButton() {
-  const visible = voiceEnabled() && mode === 'chat' && !chatBusy && !lastChat?.readonly;
+  const visible = voiceEnabled() && mode === 'chat' && (!chatBusy || voiceComposerActive()) && !lastChat?.readonly;
   $('mic').hidden = !visible;
   $('mic').disabled = !windowReady;
+  $('stop').hidden = mode !== 'chat' || !chatBusy || !!lastChat?.readonly || visible;
   if (!visible) cancelVoice();
   if (!voiceEnabled() || !windowReady) {
     voicePrepared = ''; closeVoiceConnection();
@@ -90,6 +104,7 @@ function cancelVoice(notify = true) {
     if (notify && link.socket.readyState === 1) link.socket.send(JSON.stringify({ type: 'cancel', id: session.streamId }));
   }
   $('mic').classList.remove('on'); $('mic').setAttribute('aria-label', '按住说话');
+  updateVoiceButton();
 }
 function voiceText(session, value) {
   if (!voiceLive(session)) return;
@@ -217,6 +232,10 @@ $('mic').addEventListener('contextmenu', e => e.preventDefault());
 $('mic').addEventListener('keydown', e => { if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) { e.preventDefault(); startVoice({ button: 0, preventDefault() {}, pointerId: null }); } });
 $('mic').addEventListener('keyup', e => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); endVoice(); } });
 text.addEventListener('input', () => { if (voiceSession && !voiceSession.writing) { cancelVoice(); status('录音已停止，可继续编辑'); } });
+for (const event of ['focus', 'input']) text.addEventListener(event, noteVoiceInput);
+text.addEventListener('blur', () => { if (!$('mic').hidden) noteVoiceInput(); });
+window.visualViewport?.addEventListener('resize', updateVoiceButton);
+window.addEventListener('resize', updateVoiceButton);
 for (const id of ['send', 'sendNow']) $(id).addEventListener('click', cancelVoice, true);
 function suspendVoice() { cancelVoice(); closeVoiceConnection(); closeVoiceAudio(); voicePrepared = ''; }
 document.addEventListener('visibilitychange', () => { if (document.hidden) suspendVoice(); else updateVoiceButton(); });

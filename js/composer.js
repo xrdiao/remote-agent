@@ -230,7 +230,6 @@ $('stop').onclick = async () => {
 };
 function updateSendMode() {
   if (typeof updateVoiceButton === 'function') updateVoiceButton();
-  $('stop').hidden = mode !== 'chat' || !chatBusy || !!lastChat?.readonly;
   const split = devinBusySplit();
   const follow = codexFollow();
   const label = mode === 'terminal' ? '发送到终端' : split || follow === 'queue' ? '排队' : follow === 'steer' ? '立即追加' : '发送';

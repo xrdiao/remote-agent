@@ -74,7 +74,7 @@ function renderTransferRows() {
   $('transferRows').innerHTML = (directory?.entries || []).map((entry, index) => {
     if (!showHidden && entry.name.startsWith('.')) return '';
     const selectable = entry.selectable && !transferPicker;
-    return `<div class="transferRow">${transferPicker ? '' : `<input type="checkbox" aria-label="选择 ${esc(entry.name)}" data-transfer-check="${index}" ${transferSelection.has(entry.path) ? 'checked' : ''} ${selectable ? '' : 'disabled'}>`}<button data-transfer-open="${index}" ${entry.selectable && (!transferPicker || entry.directory) ? '' : 'disabled'}><span class="transferFileIcon" aria-hidden="true">${entry.directory ? '📁' : '📄'}</span><span class="transferFileInfo"><span class="transferName${entry.directory ? ' directory' : ''}">${esc(entry.name)}${entry.link ? ' ↗' : ''}</span>${entry.directory ? '' : `<span class="hint">${entry.selectable ? fmtSize(entry.size) : '不可读取'}</span>`}</span>${entry.directory ? '<span class="hint">›</span>' : ''}</button></div>`;
+    return `<div class="transferRow">${transferPicker ? '' : `<input type="checkbox" aria-label="选择 ${esc(entry.name)}" data-transfer-check="${index}" ${transferSelection.has(entry.path) ? 'checked' : ''} ${selectable ? '' : 'disabled'}>`}<button data-transfer-open="${index}" ${entry.selectable && (!transferPicker || entry.directory) ? '' : 'disabled'}><span class="transferFileIcon${entry.directory ? ' editorFolder' : ''}" aria-hidden="true">${fileEntryIcon(entry.directory)}</span><span class="transferFileInfo"><span class="transferName${entry.directory ? ' directory' : ''}">${esc(entry.name)}${entry.link ? ' ↗' : ''}</span>${entry.directory ? '' : `<span class="hint">${entry.selectable ? fmtSize(entry.size) : '不可读取'}</span>`}</span>${entry.directory ? '<span class="hint">›</span>' : ''}</button></div>`;
   }).join('') || '<div class="transferEmpty hint">此目录暂无可显示的文件</div>';
 }
 async function openTransfer() {
@@ -183,7 +183,7 @@ function renderTransferUploads() {
   for (const item of transferUploads) {
     if (!item.row) {
       item.row = document.createElement('div'); item.row.className = 'transferUploadItem';
-      item.row.innerHTML = `<span class="transferFileIcon" aria-hidden="true">📄</span><span class="transferFileInfo"><span class="transferName">${esc(item.name)}</span><span class="hint transferItemStatus"></span></span><button class="transferRemove transferIcon" aria-label="移除 ${esc(item.name)}">×</button>`;
+      item.row.innerHTML = `<span class="transferFileIcon" aria-hidden="true">${fileEntryIcon(false)}</span><span class="transferFileInfo"><span class="transferName">${esc(item.name)}</span><span class="hint transferItemStatus"></span></span><button class="transferRemove transferIcon" aria-label="移除 ${esc(item.name)}">×</button>`;
       item.row.querySelector('button').onclick = () => { if (transferUploading) return; item.row.remove(); transferUploads.splice(transferUploads.indexOf(item), 1); renderTransferUploads(); };
       $('transferProgress').append(item.row);
     }
