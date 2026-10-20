@@ -336,7 +336,7 @@
   body.kb footer { padding-bottom: 8px; }
   .composerBox { background: var(--panel); border: 1px solid var(--line2); border-radius: 18px; padding: 10px; }
   .composerField { position: relative; min-width: 0; }
-  .composerField:has(#stop:not([hidden])) #text { padding-right: 42px; }
+  .composerField:has(#stop:not([hidden]), #mic:not([hidden])) #text { padding-right: 42px; }
   #text { display: block; width: 100%; min-width: 0; min-height: 52px; max-height: min(28dvh, var(--composer-max-height, 28dvh)); overflow-y: auto; padding: 5px 2px 12px; resize: none; border: none; background: transparent; font-size: 16px; line-height: 1.4; outline: none; }
   #chatTools, #termTools { display: flex; align-items: center; gap: 7px; overflow-x: auto; scrollbar-width: none; min-width: 0; }
   #chatTools::-webkit-scrollbar, #termTools::-webkit-scrollbar { display: none; }
@@ -354,9 +354,8 @@
   #chatTools #add { font-size: 25px; }
   #chatTools #pickDir, #chatTools #newChat { display: none; }
   #chatTools #pickAgents { flex: none; }
-  #stop { position: absolute; top: 0; right: 0; z-index: 2; width: 36px; height: 36px; padding: 0; border-radius: 11px; }
-  #mic { display: none; }
-  body.voice #mic { display: block; }
+  #stop, #mic { position: absolute; top: 0; right: 0; z-index: 2; width: 36px; height: 36px; padding: 0; border-radius: 11px; }
+  #mic { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
   #mic.on { color: #fff; background: var(--bad); animation: pulse 1.2s ease-in-out infinite; }
   .sendRow { display: flex; gap: 8px; }
   #inputHistory, #termHistory { display: flex; gap: 5px; flex: none; }
