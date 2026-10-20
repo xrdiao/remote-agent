@@ -15,11 +15,11 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.PowerManager;
 import android.provider.Settings;
-import android.speech.RecognizerIntent;
 import android.view.View;
 import android.widget.FrameLayout;
 import android.widget.Toast;
 import android.webkit.JavascriptInterface;
+import android.webkit.PermissionRequest;
 import android.webkit.RenderProcessGoneDetail;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -39,15 +39,15 @@ import com.google.zxing.client.android.Intents;
 import org.json.JSONObject;
 
 import java.io.File;
-import java.util.ArrayList;
 
 // A thin WebView shell around the user's GitHub Pages app, so it installs without Google Play services or PWA support.
 public class MainActivity extends Activity {
     private static final String SETUP = "file:///android_asset/setup.html";
     private static final String APK_MIME = "application/vnd.android.package-archive";
     private static final String UPDATE_FILE = "AgentRemote-update.apk";
-    private static final int VOICE = 7;
     private static final int PICK = 8;
+    private static final int MIC = 9;
+    private PermissionRequest microphone;
     private FrameLayout root;
     private WebView web;
     private WebView dying;
@@ -87,6 +87,17 @@ public class MainActivity extends Activity {
         NotifyService.start(this);
     }
 
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode != MIC || microphone == null) return;
+        PermissionRequest request = microphone;
+        microphone = null;
+        if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED && sameOrigin(request.getOrigin(), appUrl())) {
+            request.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
+        } else request.deny();
+    }
+
     private WebView createWeb() {
         WebView w = new WebView(this);
         w.setBackgroundColor(prefs.getBoolean("light", false) ? 0xFFFFFFFF : 0xFF1E1E1E);
@@ -97,6 +108,26 @@ public class MainActivity extends Activity {
 
         w.addJavascriptInterface(new Bridge(), "AgentRemoteApp");
         w.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public void onPermissionRequest(PermissionRequest request) {
+                runOnUiThread(() -> {
+                    if (w != web || !sameOrigin(request.getOrigin(), appUrl()) || !"https".equals(request.getOrigin().getScheme())) { request.deny(); return; }
+                    boolean audio = java.util.Arrays.asList(request.getResources()).contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE);
+                    if (!audio) { request.deny(); return; }
+                    if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                        request.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
+                    } else {
+                        if (microphone != null) microphone.deny();
+                        microphone = request;
+                        requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO}, MIC);
+                    }
+                });
+            }
+            @Override
+            public void onPermissionRequestCanceled(PermissionRequest request) {
+                if (microphone == request) microphone = null;
+            }
+
             @Override
             public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
                 if (pickFile != null) pickFile.onReceiveValue(null);
@@ -299,17 +330,6 @@ public class MainActivity extends Activity {
         return u.getScheme() != null && u.getScheme().equals(b.getScheme()) && u.getHost() != null && u.getHost().equals(b.getHost());
     }
 
-    private static Intent voiceIntent(String lang) {
-        Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
-                .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-        if (lang != null && !lang.isEmpty()) i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang);
-        return i;
-    }
-
-    private void voiceResult(String text) {
-        web.evaluateJavascript("window.onVoice && onVoice(" + JSONObject.quote(text) + ")", null);
-    }
-
     @Override
     protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
@@ -327,9 +347,6 @@ public class MainActivity extends Activity {
             pickFile = null;
             return;
         }
-        if (request != VOICE) return;
-        ArrayList<String> heard = result == RESULT_OK && data != null ? data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS) : null;
-        voiceResult(heard == null || heard.isEmpty() ? "" : heard.get(0));
     }
 
     @Override
@@ -458,22 +475,6 @@ public class MainActivity extends Activity {
             String win = prefs.getString("openWin", "");
             prefs.edit().remove("openWin").apply();
             return win;
-        }
-
-        @JavascriptInterface
-        public boolean canVoice() {
-            return voiceIntent("").resolveActivity(getPackageManager()) != null;
-        }
-
-        // The result comes back through onActivityResult as window.onVoice(text).
-        @JavascriptInterface
-        public boolean voice(String lang) {
-            Intent i = voiceIntent(lang);
-            if (i.resolveActivity(getPackageManager()) == null) return false;
-            runOnUiThread(() -> {
-                try { startActivityForResult(i, VOICE); } catch (Exception e) { voiceResult(""); }
-            });
-            return true;
         }
 
         // The web app reports its effective theme so the WebView background behind it matches.

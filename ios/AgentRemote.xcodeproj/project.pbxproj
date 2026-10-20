@@ -355,7 +355,6 @@
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scan the pairing QR code shown by npm run pair";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Record your voice to turn speech into a message";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Attach images to your messages";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Turn your speech into text for the message";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -393,7 +392,6 @@
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scan the pairing QR code shown by npm run pair";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Record your voice to turn speech into a message";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Attach images to your messages";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Turn your speech into text for the message";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

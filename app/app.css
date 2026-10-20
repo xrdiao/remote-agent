@@ -160,9 +160,9 @@
   .human .bubble .math { white-space: normal; }
   #mathPrev { max-height: 22vh; overflow: auto; padding: 6px 10px; border: 1px dashed var(--line2); border-radius: 10px; background: var(--ctrl); color: var(--hi); font-size: 14px; white-space: pre-wrap; }
   #mathPrev[hidden] { display: none; }
-  #mentionBox { max-height: 38vh; overflow-y: auto; display: flex; flex-direction: column; border: 1px solid var(--line2); border-radius: 10px; background: var(--panel); }
+  #mentionBox { flex: none; min-height: 0; max-height: 38vh; overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y; display: flex; flex-direction: column; border: 1px solid var(--line2); border-radius: 10px; background: var(--panel); }
   #mentionBox[hidden] { display: none; }
-  #mentionBox .mnRow { text-align: left; display: flex; flex-direction: column; gap: 1px; padding: 7px 12px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: none; }
+  #mentionBox .mnRow { flex: none; text-align: left; display: flex; flex-direction: column; gap: 1px; padding: 7px 12px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: none; }
   #mentionBox .mnRow b { font-weight: 600; color: var(--hi); font-size: 14px; overflow-wrap: anywhere; }
   #mentionBox .mnRow small { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
   #mentionBox .mnRow.cat::after { content: '›'; position: absolute; right: 14px; }
@@ -255,6 +255,7 @@
   #actionBar button { flex: 1; padding: 9px; font-weight: 600; }
   #queueBar { flex: none; display: none; flex-direction: column; gap: 6px; padding: 7px 12px; background: var(--queuebg); border-top: 1px solid var(--line); max-height: 34vh; overflow-y: auto; }
   #queueBar.show { display: flex; }
+  body.kb #queueBar { display: none; }
   .changesNotice { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
   #queueBar .changesNotice [data-changes] { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
   #qnBar { flex: 0 1 auto; min-height: 0; display: none; flex-direction: column; gap: 8px; padding: 10px 12px; background: var(--warnbg); border-top: 2px solid var(--warn); max-height: 48vh; overflow-y: auto; }
@@ -336,7 +337,7 @@
   body.kb footer { padding-bottom: 8px; }
   .composerBox { background: var(--panel); border: 1px solid var(--line2); border-radius: 18px; padding: 10px; }
   .composerField { position: relative; min-width: 0; }
-  .composerField:has(#stop:not([hidden])) #text { padding-right: 42px; }
+  .composerField:has(#stop:not([hidden]), #mic:not([hidden])) #text { padding-right: 42px; }
   #text { display: block; width: 100%; min-width: 0; min-height: 52px; max-height: min(28dvh, var(--composer-max-height, 28dvh)); overflow-y: auto; padding: 5px 2px 12px; resize: none; border: none; background: transparent; font-size: 16px; line-height: 1.4; outline: none; }
   #chatTools, #termTools { display: flex; align-items: center; gap: 7px; overflow-x: auto; scrollbar-width: none; min-width: 0; }
   #chatTools::-webkit-scrollbar, #termTools::-webkit-scrollbar { display: none; }
@@ -354,9 +355,8 @@
   #chatTools #add { font-size: 25px; }
   #chatTools #pickDir, #chatTools #newChat { display: none; }
   #chatTools #pickAgents { flex: none; }
-  #stop { position: absolute; top: 0; right: 0; z-index: 2; width: 36px; height: 36px; padding: 0; border-radius: 11px; }
-  #mic { display: none; }
-  body.voice #mic { display: block; }
+  #stop, #mic { position: absolute; top: 0; right: 0; z-index: 2; width: 36px; height: 36px; padding: 0; border-radius: 11px; }
+  #mic { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
   #mic.on { color: #fff; background: var(--bad); animation: pulse 1.2s ease-in-out infinite; }
   .sendRow { display: flex; gap: 8px; }
   #inputHistory, #termHistory { display: flex; gap: 5px; flex: none; }
@@ -383,7 +383,7 @@
   .opt .sub { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
   .modelPricing .sub { display: block; }
   .opt .tag { flex: none; font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--tag); color: var(--tagtx); }
-  .editorEntry .editorEntryIcon { flex: none; width: 20px; height: 20px; color: var(--muted); }
+  .editorEntryIcon { flex: none; width: 20px; height: 20px; color: var(--muted); }
   .editorFolder .editorEntryIcon { color: var(--file); }
   .editorFolder .lbl { font-weight: 600; }
   .editorEntryArrow { flex: none; color: var(--muted); font-size: 20px; line-height: 1; }
@@ -838,24 +838,61 @@
   #imageEditor [hidden] { display: none; }
 
 /* Independent file transfer panel; chat, Editor and terminal layouts stay untouched. */
-#transfer { position: fixed; inset: 0; z-index: 25; overflow-y: auto; background: var(--bg); color: var(--text); padding: calc(12px + env(safe-area-inset-top)) 12px calc(24px + env(safe-area-inset-bottom)); }
-#transfer[hidden] { display: none; }
-.transferHeader, .transferTools, #transferPathForm, .transferRow, .transferRow button { display: flex; align-items: center; gap: 8px; }
-.transferHeader { justify-content: space-between; }
-.transferHeader h3 { margin: 8px 0; }
-#transferPathForm { margin: 12px 0; }
+#transfer { position: fixed; inset: 0; z-index: 25; display: flex; flex-direction: column; background: var(--bg); color: var(--text); padding: env(safe-area-inset-top) 0 0; }
+#transfer [hidden], #transfer[hidden] { display: none; }
+.transferHeader { display: grid; grid-template-columns: 36px 1fr 36px; align-items: center; padding: 10px 16px; }
+.transferHeader h3 { margin: 0; font-size: 19px; text-align: center; }
+#transfer .transferIcon { border: 0; background: transparent; padding: 4px; min-width: 32px; font-size: 27px; line-height: 32px; }
+#transfer .transferText { border: 0; background: transparent; color: var(--accent); padding: 6px 0; }
+.transferTabs { display: flex; background: var(--panel); border-radius: 10px; margin: 6px 16px 12px; padding: 3px; }
+.transferTabs button { flex: 1; border: 0; background: transparent; border-radius: 8px; padding: 11px 4px; }
+.transferTabs button[aria-selected=true] { background: var(--accent); color: #fff; }
+.transferBody { flex: 1; min-height: 0; overflow-y: auto; padding: 0 16px; }
+.transferLabel { color: var(--muted2); margin: 6px 0 10px; font-size: 14px; }
+.transferPathBar, .transferTargetBar { display: flex; align-items: center; gap: 10px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 6px 10px; min-height: 44px; }
+#transferPathButton { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 0; background: transparent; text-align: left; padding: 6px 0; font-size: 14px; }
+#transferUploadTarget { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
+#transferChangeTarget { flex-shrink: 0; }
+#transferPathForm { display: flex; gap: 8px; margin: 10px 0; }
 #transferPath { flex: 1; min-width: 0; }
-.transferTools { flex-wrap: wrap; margin: 10px 0; }
-#transfer input:not([type=checkbox]), #transfer select { background: var(--panel); color: inherit; border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
-.transferRow { border-bottom: 1px solid var(--border); min-height: 48px; }
-.transferRow input { width: 20px; height: 20px; flex-shrink: 0; }
-.transferRow button { flex: 1; min-width: 0; justify-content: space-between; border: 0; background: transparent; text-align: left; padding: 12px 4px; }
+#transfer input:not([type=checkbox]), #transfer select { background: var(--panel); color: inherit; border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-size: 16px; }
+.transferListTools { display: flex; align-items: center; justify-content: space-between; margin: 14px 0 4px; min-height: 40px; }
+#transfer .transferToggle { display: flex; align-items: center; gap: 10px; border: 0; background: transparent; padding: 4px 0; font-size: 14px; }
+#transfer details { position: relative; }
+#transfer summary { cursor: pointer; list-style: none; }
+#transfer summary::-webkit-details-marker { display: none; }
+#transferMore > summary { font-size: 27px; min-width: 32px; text-align: right; }
+#transferSelectMenu > summary { color: var(--accent); padding: 8px 0; }
+.transferMenu { position: absolute; right: 0; top: 100%; z-index: 2; min-width: 150px; border: 1px solid var(--border); background: var(--panel); border-radius: 10px; padding: 6px; box-shadow: 0 6px 18px #0002; }
+.transferMenu button, .transferMenu select { display: block; width: 100%; text-align: left; border: 0; background: transparent; padding: 12px; }
+.transferRow { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); min-height: 64px; }
+.transferRow input { width: 20px; height: 20px; flex-shrink: 0; margin: 0; }
+.transferRow button { display: flex; flex: 1; min-width: 0; align-items: center; gap: 12px; border: 0; background: transparent; text-align: left; padding: 14px 0; }
+.transferFileIcon { display: flex; align-items: center; flex-shrink: 0; }
+.transferFileInfo { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .transferName { overflow-wrap: anywhere; }
 .transferName.directory { font-weight: 600; }
-.transferRow .hint { flex-shrink: 0; }
-.transferUpload { margin: 18px 0; padding: 12px; border: 1px solid var(--border); border-radius: 12px; }
-.transferUpload h4 { margin: 0 0 10px; }
-.transferUploadItem, #transferSelected, #transferStatus { overflow-wrap: anywhere; margin: 8px 0; }
-
+#transfer .hint { font-size: 12px; }
+.transferEmpty { padding: 30px 0; text-align: center; }
+#transferArchiveHint { margin: 14px 0; }
+#transferQueueLabel { margin-top: 24px; }
+.transferUploadItem { display: flex; align-items: center; gap: 12px; padding: 16px 0; border-bottom: 1px solid var(--border); }
+.transferAdd { display: flex; align-items: center; gap: 20px; margin: 18px 0; }
+#transferFiles { flex: 1; color: var(--accent); background: transparent; padding: 12px; }
+#transferOptions { margin: 12px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+#transferOptions > summary { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 18px 0; }
+#transferOptions > label { display: block; padding-bottom: 12px; }
+#transferStatus { overflow-wrap: anywhere; margin: 12px 0; }
+#transferStatus:empty { margin: 0; }
 #transfer a { color: var(--blue); }
-#transferUploadTarget { overflow-wrap: anywhere; }
+.transferFooter { border-top: 1px solid var(--border); padding: 10px 16px calc(12px + env(safe-area-inset-bottom)); background: var(--bg); }
+.transferSummary { display: flex; align-items: center; justify-content: space-between; min-height: 30px; margin-bottom: 8px; font-size: 14px; }
+#transfer .transferPrimary, #transferCancel { display: block; width: 100%; padding: 13px; border: 1px solid var(--accent-b); border-radius: 10px; background: var(--accent); color: #fff; font-size: 16px; }
+.transferFooter .hint { text-align: center; margin-top: 10px; }
+
+#transfer .transferParent { display: block; min-height: 44px; padding: 10px 14px; margin: 0 0 10px; background: var(--ctrl); border: 1px solid var(--border); border-radius: 10px; font-size: 15px; }
+
+.transferNavigation { position: sticky; top: 0; z-index: 1; background: var(--bg); padding: 4px 0 10px; }
+.transferNavRow { display: flex; align-items: center; gap: 8px; }
+.transferNavRow .transferPathBar { flex: 1; min-width: 0; }
+#transfer .transferNavRow .transferParent { flex-shrink: 0; margin: 0; }

@@ -109,6 +109,23 @@ function appMainPid(port) {
 
 
 export const methods = {
+  async checkProjectTrust(options = {}, state) {
+    const pending = this.pendingProject;
+    if (pending?.trust && pending.app === this.app && pending.windowId === this.windowId) {
+      Object.assign(pending, options);
+      if (options.prompt) this.emit({ t: 'projectTrust', path: pending.root, sel: this.selectionKey() });
+      return true;
+    }
+    const cdp = this.editorCdp;
+    state ||= await cdp.evaluate(helpersCall('workspaceTrustState()'));
+    if (!state.required || cdp !== this.editorCdp) return false;
+    const roots = await this.currentRoots();
+    if (cdp !== this.editorCdp) return false;
+    this.pendingProject = { root: roots[0]?.root || '', app: this.app, windowId: this.windowId,
+      newSession: false, ...pending, ...options, trust: true };
+    this.emit({ t: 'projectTrust', path: this.pendingProject.root, sel: this.selectionKey() });
+    return true;
+  },
   showProjects(dir) {
     this.emit({ t: 'projects', ...projectList(dir || '') });
   },
@@ -163,7 +180,7 @@ export const methods = {
           if (busy) break;
         }
       }
-      const newWindow = busy || ((app === 'codex' || app === 'devin') && !!threadId);
+      const newWindow = busy || !!this.threadId || ((app === 'codex' || app === 'devin') && !!threadId);
       if (!newWindow && !busy && this.editorCdp) await this.editorCdp.send('Page.bringToFront');
       this.emit({ t: 'status', ok: true, msg: '正在打开项目窗口…' });
       await openFolder(real, app, newWindow);
@@ -193,12 +210,12 @@ export const methods = {
     }
     if (!target) throw new Error('应用尚未打开所选项目，请检查电脑上的窗口');
     await this.attach({ id: `${app}:${target.id}` });
-    this.pendingProject = { root: real, app, windowId: this.windowId, newSession, threadId };
+    this.pendingProject = { ...this.pendingProject, root: real, app, windowId: this.windowId, newSession, threadId };
     // Restricted Mode disables the agent extension, so prompt for trust before
     // waiting on a Codex sidebar that can never appear while untrusted.
-    if ((await this.editorCdp.evaluate(helpersCall('workspaceTrustState()'))).required)
-      return this.emit({ t: 'projectTrust', path: real });
+    if (await this.checkProjectTrust()) return;
     if (app === 'codex') await this.ensureCodexReady(target, newSession || !!threadId);
+    if (this.pendingProject?.trust) return;
     await this.finishProject();
   },
   // Waits for the Codex webview of a just-opened window, then binds this.cdp to it.
@@ -222,6 +239,7 @@ export const methods = {
       const deadline = Date.now() + 25000;
       let nextCmd = Date.now() + 5000;
       while (!pageOf(pages)?.chatWs && Date.now() < deadline) {
+        if (this.pendingProject?.trust) return;
         await new Promise(r => setTimeout(r, 150));
         pages = await codexWindows(CODEX_CDP_URL);
         if (!pageOf(pages)?.chatWs && Date.now() >= nextCmd) {
@@ -235,6 +253,7 @@ export const methods = {
     if (needThread) {
       let ready = false;
       for (let i = 0; i < 120 && !ready; i++) {
+        if (this.pendingProject?.trust) return;
         ready = !!await this.cdp.evaluate(helpersCall('codexNewPoint()'));
         if (!ready) await new Promise(r => setTimeout(r, 250));
       }
@@ -251,10 +270,10 @@ export const methods = {
     const root = roots[0];
     if (this.app === 'codex' && this.cdp === this.editorCdp) return this.useProject(root.root, true);
     this.pendingProject = { root: root.root, app: this.app, windowId: this.windowId, newSession: true };
-    if ((await this.editorCdp.evaluate(helpersCall('workspaceTrustState()'))).required) return this.emit({ t: 'projectTrust', path: root.root });
+    if (await this.checkProjectTrust()) return;
     await this.finishProject();
   },
-  async confirmProjectTrust(approve) {
+  async confirmProjectTrust(approve, returnTo) {
     const pending = this.pendingProject;
     if (!pending || this.app !== pending.app || this.windowId !== pending.windowId) throw new Error('项目窗口已改变，请重新选择项目');
     const roots = await this.currentRoots();
@@ -262,8 +281,12 @@ export const methods = {
     let state = await this.editorCdp.evaluate(helpersCall('workspaceTrustState()'));
     if (!approve) {
       if (state.decline) await this.tapCss(state.decline.x, state.decline.y, 'left', this.editorCdp);
-      this.pendingProject = null;
-      this.emit({ t: 'status', ok: true, msg: '已保持限制模式，未创建 Agent 会话' });
+      pending.trust = true;
+      if (returnTo && returnTo.windowId !== this.windowId) {
+        await this.attach(returnTo);
+        if (this.windowId === returnTo.windowId && !this.pendingProject?.trust)
+          this.emit({ t: 'status', ok: true, msg: '已保持限制模式，返回上次对话窗口' });
+      } else this.emit({ t: 'status', ok: true, msg: '已保持限制模式，没有可返回的上次对话窗口，请选择其他项目' });
       return;
     }
     if (state.required && !state.trust) {
@@ -284,6 +307,7 @@ export const methods = {
       await new Promise(r => setTimeout(r, 150));
       state = await this.editorCdp.evaluate(helpersCall('workspaceTrustState()'));
       if (!state.required) {
+        pending.trust = false;
         // Trust just activated the Codex extension; wait for its webview before selecting the session.
         if (this.app === 'codex') {
           const page = (await codexWindows(CODEX_CDP_URL)).find(p => p.pageId === pending.windowId);
@@ -343,7 +367,8 @@ export const methods = {
     this.emit({ t: 'thread', windowId: msg.windowId, threadId: msg.threadId, sel: msg.sel });
     if (statusMsg) this.emit({ t: 'status', ok: true, msg: statusMsg });
   },
-  async listAgents(silent = false, readOnly = false, projectWindow = '') {
+  async listAgents(silent = false, readOnly = false, projectWindow = '', checkTrust = false) {
+    if ((!readOnly || checkTrust) && !projectWindow && await this.checkProjectTrust({ prompt: true })) return;
     const cdp = this.cdp, sel = this.sel, app = this.app;
     const grouped = app === 'cursor' || app === 'devin';
     if (grouped) {
@@ -427,6 +452,7 @@ export const methods = {
       if (kind === 'project-new' && encodedThread) await this.useProject(decodeURIComponent(encodedThread), true);
       else {
         if (window !== this.targetId) await this.attach(window);
+        if (await this.checkProjectTrust()) return;
         if (kind === 'project-new') await this.newChat();
         else await this.adapter.openAgent.call(this, decodeURIComponent(encodedThread), title);
       }

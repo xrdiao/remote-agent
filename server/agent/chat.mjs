@@ -154,7 +154,7 @@ export const methods = {
     const cdp = this.cdp;
     const sel = this.sel;
     const sendGen = this.sendGen || 0;
-    if (!cdp || !this.visible || this.switchingThread || this.historyLoading || (this.fusionHold?.app === this.app && this.fusionHold?.windowId === this.windowId) || (!immediate && Date.now() - (this.lastChatAt || 0) < (this.lastBusy ? 650 : 1800))) return;
+    if (!cdp || !this.visible || this.pendingProject?.trust || this.switchingThread || this.historyLoading || (this.fusionHold?.app === this.app && this.fusionHold?.windowId === this.windowId) || (!immediate && Date.now() - (this.lastChatAt || 0) < (this.lastBusy ? 650 : 1800))) return;
     if (this.polling === sel) { if (immediate) this.pollAgain = sel; return; }
     this.lastChatAt = Date.now();
     this.polling = sel;
@@ -162,6 +162,7 @@ export const methods = {
     this.codexFreshView = false;
     try {
       let chat = await cdp.evaluate(helpersCall('extract()'));
+      if (!chat && this.liveRead(cdp, sel) && await this.checkProjectTrust()) return;
       const before = this.app === 'codex' && !freshView && !chat?.busy ? await cdp.evaluate(helpersCall("scrollCodexHistory('latest')")) : null;
       try {
         if (before) await new Promise(r => setTimeout(r, 150));

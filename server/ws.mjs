@@ -5,8 +5,10 @@ import { clientIp } from './http/ratelimit.mjs';
 import { originAllowed } from './http/static.mjs';
 import { Session } from './session.mjs';
 import { ROUTES, flag } from './routes.mjs';
+import { voiceWss } from './voice/service.mjs';
 
 export function attachWss(server) {
+const voice = voiceWss();
 const wss = new WebSocketServer({
   noServer: true,
   maxPayload: 4 << 20,
@@ -15,11 +17,12 @@ const wss = new WebSocketServer({
 
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, 'http://x');
-  if (url.pathname !== '/ws' || !originAllowed(req)) {
+  if (!['/ws', '/voice'].includes(url.pathname) || !originAllowed(req)) {
     socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
     return socket.destroy();
   }
-  wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req));
+  const target = url.pathname === '/voice' ? voice : wss;
+  target.handleUpgrade(req, socket, head, ws => target.emit('connection', ws, req));
 });
 
 // The token arrives as the first message rather than in the URL, so it never shows up in proxy logs.

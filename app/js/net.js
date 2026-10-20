@@ -40,10 +40,19 @@ function rememberComputer(comp) {
   else list.push(comp);
   return saveComputers(list, comp.key);
 }
+function rememberConversation() {
+  const here = currentComputer();
+  if (!here || currentApp === 'fusion') return;
+  const selection = { id: here.win, windowId: here.windowId, threadId: here.threadId };
+  const last = here.lastConversation;
+  if (last?.id === selection.id && last.windowId === selection.windowId && last.threadId === selection.threadId) return;
+  rememberComputer({ ...here, lastConversation: selection,
+    previousConversation: last && (last.id !== selection.id || last.windowId !== selection.windowId) ? last : here.previousConversation });
+}
 function applySelection(m, clearChat = true) {
   if (m.app) currentApp = m.app;
   const changed = (m.sel || '') !== viewSel;
-  if (changed) { menuRequest++; saveDraft(); }
+  if (changed) { if (typeof cancelVoice === 'function') cancelVoice(); menuRequest++; saveDraft(); }
   // A new chat gets its thread id once it materializes: keep its pending echoes attached to it.
   if (changed && viewSel.endsWith('|') && (m.sel || '').startsWith(viewSel)) for (const p of pendingEchoes) if (p.sel === viewSel) p.sel = m.sel;
   if (changed) { viewSel = m.sel || ''; thoughtObserver.disconnect(); cache.clear(); $('sessionNotice').hidden = true; }
@@ -492,6 +501,7 @@ async function connect() {
       }
       rememberComputer({...currentComputer(), id: m.id, name: m.name, device: m.device});
       authed = true; failures = 0;
+      document.dispatchEvent(new Event('voice-authenticated'));
       ungate();
       connHostOk();
       if (sheetKind === 'computers') closeSheet();
@@ -608,8 +618,10 @@ async function connect() {
     }
     else if (m.t === 'projects') { finishPending(['正在读取项目…', '正在读取文件夹…', '正在新建对话…']); showProjects(m); }
     else if (m.t === 'projectTrust') {
+      if (m.sel && m.sel !== viewSel) return;
+      connHide();
       finishPending(['正在打开项目…', '正在新建对话…']);
-      openSheet('project-trust', `<h3>信任此项目？</h3><p class="hint">信任后，Agent 和扩展可运行此项目的代码。只信任你了解来源的项目。</p><p>${esc(m.path)}</p><button class="opt" data-project-trust="yes">信任此项目</button><button class="opt" data-project-trust="no">保持限制模式</button>`);
+      openSheet('project-trust', `<h3>信任此项目？</h3><p class="hint">信任后，Agent 和扩展可运行此项目的代码。只信任你了解来源的项目。</p><p>${esc(m.path)}</p><button class="opt" data-project-trust="yes">信任此项目</button><button class="opt" data-project-trust="no">保持限制模式并返回上次对话</button>`);
     }
     else if (m.t === 'projectReady') {
       if (m.sel && m.sel !== viewSel) return;

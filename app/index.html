@@ -33,7 +33,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>Remote Agent</title>
-<link rel="stylesheet" href="app.css?v=129">
+<link rel="stylesheet" href="app.css?v=139">
 </head>
 <body>
 <header>
@@ -110,7 +110,7 @@
   <div id="mentionBox" hidden></div>
   <div id="mathPrev" hidden></div>
   <div id="fusionBar" hidden></div>
-  <div class="composerBox"><div class="composerField"><textarea id="text" rows="1" placeholder="发给 Agent…" enterkeyhint="send"></textarea><button id="stop" title="停止生成" aria-label="停止生成" hidden>■</button></div>
+  <div class="composerBox"><div class="composerField"><textarea id="text" rows="1" placeholder="发给 Agent…" enterkeyhint="send"></textarea><button id="mic" title="按住说话，松开结束" aria-label="按住说话" hidden><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button><button id="stop" title="停止生成" aria-label="停止生成" hidden>■</button></div>
   <div id="termToolsLabel" hidden>终端操作</div>
   <div id="termTools" hidden>
     <button id="pickTerms">列表</button>
@@ -125,7 +125,6 @@
     <button id="img" title="附加图片" aria-label="附加图片"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/></svg></button>
     <button id="uploadDoc" title="上传文档" aria-label="上传文档"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M6 3h8l4 4v14H6zM14 3v5h4"/></svg></button>
     <div id="fusionConfig" hidden><button id="fusionModelA">A 模型 ▾</button><button id="fusionModelB">B 模型 ▾</button><button id="fusionProject">项目 ▾</button></div>
-    <button id="mic" title="语音输入" aria-label="语音输入"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
     <button id="pickMode" hidden></button>
     <button id="pickModel" title="更换模型">模型 ▾</button>
     <button id="pickEditor" title="浏览和编辑当前项目文件" aria-label="浏览和编辑当前项目文件" hidden><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 20H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2v2"/><path d="m18 13 3 3-6 6h-3v-3Z"/></svg></button>
@@ -217,22 +216,23 @@
 </div>
 
 <script src="i18n.js"></script>
-<script src="js/core.js?v=129"></script>
+<script src="js/core.js?v=140"></script>
 <script src="js/gate.js?v=122"></script>
 <script src="js/scanner.js"></script>
-<script src="js/net.js?v=120"></script>
-<script src="js/sheets.js?v=129"></script>
-<script src="js/notify.js?v=129"></script>
-<script src="js/mode.js?v=123"></script>
+<script src="js/net.js?v=140"></script>
+<script src="js/sheets.js?v=140"></script>
+<script src="js/notify.js?v=139"></script>
+<script src="js/mode.js?v=133"></script>
 <script src="js/chat.js?v=111"></script>
-<script src="js/history.js?v=122"></script>
+<script src="js/history.js?v=139"></script>
 <script src="js/files.js?v=106"></script>
-<script src="js/transfer.js?v=129"></script>
+<script src="js/transfer.js?v=137"></script>
 <script src="js/screen.js?v=123"></script>
 <script src="js/terminal.js?v=116"></script>
-<script src="js/composer.js?v=118"></script>
+<script src="js/composer.js?v=137"></script>
 <script src="js/latency.js"></script>
 <script src="js/image-editor.js?v=117"></script>
-<script src="js/voice.js?v=119"></script>
+<script src="js/voice.js?v=133"></script>
+<script src="js/local-voice.js?v=140"></script>
 </body>
 </html>

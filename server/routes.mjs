@@ -136,9 +136,9 @@ export const ROUTES = {
 
   agents: {
     background: (s, m) => m.automatic === true && m.silent === true,
-    pre: (s, m) => (s.app === 'codex' ? s.listAgents(m.silent === true, m.automatic === true) : SKIP),
+    pre: (s, m) => (s.app === 'codex' ? s.listAgents(m.silent === true, m.automatic === true, '', m.checkTrust === true) : SKIP),
     readOnly: (s, m) => m.silent === true,
-    run: (s, m) => s.listAgents(m.silent === true, m.automatic === true, String(m.projectWindow || '')),
+    run: (s, m) => s.listAgents(m.silent === true, m.automatic === true, String(m.projectWindow || ''), m.checkTrust === true),
   },
   openAgent: { run: (s, m) => s.openAgent(String(m.id ?? ''), String(m.title ?? '')) },
   openMenu: { run: (s, m) => s.openMenu(m.kind, m.requestId) },
@@ -171,7 +171,7 @@ export const ROUTES = {
   docs: { run: (s, m) => s.showDocs(String(m.root ?? ''), String(m.path ?? ''), String(m.host ?? ''), m.editor === true) },
   openProject: { run: (s, m) => s.useProject(String(m.path ?? ''), m.newSession === true) },
   newProject: { run: (s, m) => s.newProject(String(m.parent ?? ''), String(m.name ?? '').trim(), m.newSession === true) },
-  projectTrust: { run: (s, m) => s.confirmProjectTrust(m.approve === true) },
+  projectTrust: { run: (s, m) => s.confirmProjectTrust(m.approve === true, m.returnTo) },
   codexSetting: {
     run: (s, m) => {
       if (s.app !== 'codex') return;

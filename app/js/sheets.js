@@ -13,6 +13,7 @@ function rememberAgentOpen(m) {
   }
 }
 function openSheet(kind, html) {
+  const leavingVoice = sheetKind === 'local-voice' && kind !== 'local-voice';
   const navScroll = sheetKind === kind ? $('sheet').querySelector('.codexSettingsNav')?.scrollLeft : 0;
   sheetKind = kind;
   if (kind !== 'windows') delete $('sheet')._winSig;
@@ -23,8 +24,10 @@ function openSheet(kind, html) {
   $('shade').classList.add('open');
   $('sheet').classList.add('open');
   if (kind === 'agents') $('sheet').scrollTop = 0;
+  if (leavingVoice) scheduleVoiceWarmup();
 }
 function closeSheet() {
+  const leavingVoice = sheetKind === 'local-voice';
   if (sheetKind === 'settings') send({ t: 'closeDesktopSettings' });
   if (sheetKind === 'devices') deviceRemoval = [];
   fusionModelSide = null;
@@ -34,6 +37,7 @@ function closeSheet() {
   delete $('sheet')._winSig;
   $('shade').classList.remove('open');
   $('sheet').classList.remove('open');
+  if (leavingVoice) scheduleVoiceWarmup();
 }
 $('shade').onclick = () => { closeSheet(); askDone?.(false); };
 
@@ -479,6 +483,9 @@ async function removePairedDevices(ids, confirmed = false) {
   if (sheetKind === 'devices') renderDevices();
 }
 
+function fileEntryIcon(folder) {
+  return `<svg class="editorEntryIcon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${folder ? '<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3Z"/>' : '<path d="M6 3h8l4 4v14H6Z"/><path d="M14 3v5h4M9 12h6M9 16h6"/>'}</svg>`;
+}
 function showDocs(m) {
   editorBrowsing = !!m.editor;
   const heading = m.editor ? 'Editor · 项目文件' : '查看文档';
@@ -492,7 +499,7 @@ function showDocs(m) {
   }
   const hostAttr = ` data-docs-host="${esc(m.host || '')}"`;
   const up = `<button class="opt" data-docs-up="${esc(m.parent || '')}" data-root="${esc(m.root)}"${hostAttr}><span class="lbl">返回上一级</span></button>`;
-  const entryIcon = folder => !m.editor ? '' : `<svg class="editorEntryIcon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${folder ? '<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3Z"/>' : '<path d="M6 3h8l4 4v14H6Z"/><path d="M14 3v5h4M9 12h6M9 16h6"/>'}</svg>`;
+  const entryIcon = folder => m.editor ? fileEntryIcon(folder) : '';
   const folders = (m.folders || []).map(d => `<button class="opt${m.editor ? ' editorEntry editorFolder' : ''}" data-docs-root="${esc(m.root)}" data-docs-dir="${esc(d.path)}"${hostAttr}>${entryIcon(true)}<span class="lbl">${esc(d.name)}</span><span class="sub">文件夹</span>${m.editor ? '<span class="editorEntryArrow" aria-hidden="true">›</span>' : ''}</button>`).join('');
   const row = (f, tag) => `<button class="opt${m.editor ? ' editorEntry' : ''}" data-docs-file="${esc(f.path)}" data-docs-editor="${!!m.editor}">${entryIcon(false)}<span class="lbl">${esc(f.name)}</span><span class="sub">${tag}</span></button>`;
   const docs = (m.docs || []).map(f => row(f, '文档')).join('');
@@ -640,6 +647,7 @@ function showMainMenu() {
     <div class="pSec">此手机 App</div>
     ${lastChat?.changed && !lastChat?.readonly ? `<button class="opt" data-act="toggleChanges"><span class="lbl">${hiddenChangeNotices.has(changeNoticeKey()) ? '显示改动' : '隐藏改动提示'}</span></button>` : ''}
     ${iosApp && !window.AgentRemoteApp?.pushRegister ? '' : notifyItem}
+    <button class="opt" data-act="localVoiceMenu"><span class="lbl">语音输入<span class="sub">${voiceEnabled() ? '已开启' : '未开启'} · 按住说话 · 选择识别引擎</span></span><span class="tag">›</span></button>
     ${connItems}
     ${inApp && appVersion ? update : ''}
     ${inApp ? '<button class="opt" data-act="changeUrl"><span class="lbl">更换 App 地址</span></button>' : ''}

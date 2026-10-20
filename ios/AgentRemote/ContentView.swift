@@ -22,9 +22,6 @@ struct ContentView: View {
         .sheet(isPresented: $shell.scanning, onDismiss: shell.finishScan) {
             QRScanner { shell.scanned = $0; shell.scanning = false }
         }
-        .sheet(isPresented: $shell.listening) {
-            VoiceSheet(lang: shell.voiceLang) { shell.voiceDone($0) }
-        }
         .alert(shell.notice ?? "", isPresented: Binding(get: { shell.notice != nil }, set: { if !$0 { shell.notice = nil } })) {
             Button(tr("好", "OK"), role: .cancel) {}
         }
@@ -87,8 +84,6 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
     @Published private(set) var light = UserDefaults.standard.bool(forKey: "light")
     @Published var scanning = false
     @Published var scanned: String?
-    @Published var listening = false
-    @Published private(set) var voiceLang = ""
     @Published var notice: String?
 
     @Published private(set) var webView: WKWebView!
@@ -195,11 +190,6 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
         }
     }
 
-    func voiceDone(_ text: String) {
-        listening = false
-        webView.evaluateJavaScript("window.onVoice && onVoice(\(json(text)))")
-    }
-
     private func setUrl(_ address: String) {
         guard address.hasPrefix("https://") else { return }
         UserDefaults.standard.set(address.components(separatedBy: "#")[0], forKey: "url")
@@ -255,7 +245,6 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
           let lang = \(json(UserDefaults.standard.string(forKey: "lang") ?? ""));
           const pendingLang = \(json(UserDefaults.standard.string(forKey: "pendingLang") ?? ""));
           const appHost = \(json(URL(string: appURL)?.host ?? ""));
-          const canVoice = \(json(voiceAvailable()));
           const post = (fn, ...args) => window.webkit.messageHandlers.app.postMessage({ fn, args });
           if (pendingLang && location.protocol === 'https:' && location.host === appHost) {
             try { localStorage.setItem('cr-lang', pendingLang); post('tookLang'); } catch (e) {}
@@ -267,7 +256,6 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
             isLight: () => light,
             takeOpenWin: () => { const v = openWin; openWin = ''; if (v) post('tookOpenWin'); return v; },
             _setOpenWin(v) { openWin = v; },
-            canVoice: () => canVoice,
             setUrl(u) {
               if (!u.startsWith('https://')) return;
               url = u.split('#')[0];
@@ -277,7 +265,6 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
             changeUrl: () => post('changeUrl'),
             setTheme(on) { light = !!on; post('setTheme', light); },
             scan: () => post('scan'),
-            voice(lang) { if (!canVoice) return false; post('voice', lang || ''); return true; },
             \(pushRegister)
           };
         })();
@@ -311,9 +298,6 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
         case "changeUrl": loadSetup("change=1")
         case "setTheme": setTheme(args.first as? Bool ?? false)
         case "scan": scanning = true
-        case "voice":
-            voiceLang = text
-            listening = true
         case "tookOpenWin": pendingOpen = ""
         case "setLang":
             if text == "zh" || text == "en" {

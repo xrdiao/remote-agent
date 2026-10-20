@@ -1,13 +1,4 @@
-/* ---------- voice input ---------- */
-// Android WebView has no Web Speech API, so the app uses the system recognizer through the bridge instead.
-document.body.classList.toggle('voice', store.get('voice') === 'on');
-const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-let recognizer = null;
-const addVoiceText = s => {
-  text.value += (text.value && !/\s$/.test(text.value) && /^\w/.test(s) ? ' ' : '') + s;
-  autosize();
-};
-window.onVoice = s => { $('mic').classList.remove('on'); s ? (addVoiceText(s), status('')) : status('没听清，再试一次', false); };
+/* ---------- image and document attachments ---------- */
 // Photos from phone cameras are several MB; shrink to something the model can read and the relay accepts.
 async function shrinkImage(file, canvas) {
   if (/^image\/(png|jpeg|gif|webp)$/.test(file.type) && file.size < 600e3) return file;
@@ -201,33 +192,6 @@ text.addEventListener('paste', async e => {
     else await attachDocumentFile(file);
   }
 });
-
-$('mic').onclick = () => {
-  if (window.AgentRemoteApp?.voice) {
-    if (!window.AgentRemoteApp.voice(I18N.speech)) return status('手机上没有语音识别服务，可以用输入法键盘上的麦克风', false);
-    $('mic').classList.add('on');
-    return status('请说话…');
-  }
-  if (inApp) return status('更新安卓 App 后可用语音输入，也可以用输入法键盘上的麦克风', false);
-  if (!Recognition) return status('这个浏览器不支持语音识别，可以用输入法键盘上的麦克风', false);
-  if (recognizer) return recognizer.stop();
-  const before = text.value;
-  recognizer = new Recognition();
-  recognizer.lang = I18N.speech;
-  recognizer.interimResults = true;
-  recognizer.onresult = e => {
-    text.value = before;
-    addVoiceText([...e.results].map(r => r[0].transcript).join(''));
-  };
-  recognizer.onerror = e => status(
-    e.error === 'not-allowed' || e.error === 'service-not-allowed' ? '没有麦克风权限'
-      : e.error === 'network' ? '语音识别连不上服务器（国内网络常见），可以用输入法键盘上的麦克风'
-      : e.error === 'no-speech' ? '没听清，再试一次' : e.error, false);
-  recognizer.onend = () => { recognizer = null; $('mic').classList.remove('on'); };
-  recognizer.start();
-  $('mic').classList.add('on');
-  status('请说话…（再点一下结束）');
-};
 
 window.addEventListener('resize', () => { layoutStage(); applyQuality(); });
 if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('sw.js').catch(() => {});
