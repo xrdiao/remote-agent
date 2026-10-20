@@ -254,7 +254,13 @@ $('sheet').addEventListener('click', async e => {
     return send({ t: 'newProject', parent: b.dataset.projectNew, name: name.trim(), newSession: true });
   }
   if ('projectChat' in b.dataset) { closeSheet(); status('正在打开项目…'); return send({ t: 'openProject', path: b.dataset.projectChat, newSession: true }); }
-  if ('projectTrust' in b.dataset) { closeSheet(); status('正在打开项目…'); return send({ t: 'projectTrust', approve: b.dataset.projectTrust === 'yes' }); }
+  if ('projectTrust' in b.dataset) {
+    const here = currentComputer();
+    const last = here?.lastConversation;
+    const returnTo = last?.windowId !== here?.windowId ? last : here?.previousConversation;
+    closeSheet(); status('正在打开项目…');
+    return send({ t: 'projectTrust', approve: b.dataset.projectTrust === 'yes', returnTo });
+  }
   if (b.dataset.open) { closeSheet(); status('正在打开项目…'); return send({ t: 'openProject', path: b.dataset.open }); }
   if (b.dataset.dir) { status('正在读取文件夹…'); return send({ t: 'projects', path: b.dataset.dir }); }
   if (b.dataset.docsFile) { closeSheet(); return openFile(b.dataset.docsFile, b.dataset.docsEditor === 'true'); }

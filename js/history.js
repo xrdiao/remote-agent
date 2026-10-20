@@ -47,7 +47,10 @@ function queueChatRender(chat = queuedChat?.chat || lastChat, stale = queuedChat
     if (windowReady && (!next.sel || !viewSel || next.sel === viewSel)) {
       renderChat(next.chat, next.stale);
       if (next.chat && (!next.stale || next.chat.imagePreview) && !deferredScrollRender
-          && windowReady && (!next.sel || next.sel === viewSel)) connContentReady();
+          && windowReady && (!next.sel || next.sel === viewSel)) {
+        if (!next.chat.readonly) rememberConversation();
+        connContentReady();
+      }
     }
   });
 }

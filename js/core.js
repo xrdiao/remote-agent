@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v138'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v139'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false, failures = 0;
 let windowReady = false;
@@ -61,7 +61,7 @@ function openAgentList(refresh = false) {
   const cached = agentLists.get(agentListKey());
   if (cached) showAgents(cached);
   else status('正在读取 Agent 列表…');
-  send({ t: 'agents', automatic: !!cached && !refresh, silent: !!cached && !refresh });
+  send({ t: 'agents', automatic: !!cached && !refresh, silent: !!cached && !refresh, checkTrust: true });
 }
 let currentAppName = I18N.tr('当前应用');
 let viewSel = '';
