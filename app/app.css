@@ -108,17 +108,34 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 
 /* ---------- rail (tablet landscape only) ---------- */
 #rail { display: none; }
-body.wide.land:not(.visual) #rail {
+body.split:not(.visual) #rail {
   display: flex; flex-direction: column; gap: 4px; overflow-y: auto;
   grid-column: 1; grid-row: 1 / -1; z-index: 1;
   padding: calc(12px + env(safe-area-inset-top)) 12px 16px;
   background: var(--s1); border-right: 1px solid var(--line);
 }
-:root[data-theme="light"] body.wide.land:not(.visual) #rail { background: #FBFBFA; }
+:root[data-theme="light"] body.split:not(.visual) #rail { background: #FBFBFA; }
 #rail .pSec { margin: 18px 10px 6px; }
-.railComputer { display: flex; align-items: center; gap: 10px; padding: 2px 10px 12px; min-height: 44px; }
+#rail > * { flex-shrink: 0; }
+.railComputer { position: relative; display: flex; align-items: center; gap: 10px; padding: 2px 10px 12px; min-height: 44px; }
 .railComputer img { width: 32px; height: 32px; border-radius: 10px; flex: none; }
 .railComputerName { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; color: var(--fg-hi); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.railToggle {
+  flex: none; width: 36px; height: 36px; min-height: 0; padding: 0; border-radius: 10px;
+  display: grid; place-items: center; background: transparent; color: var(--fg-3);
+}
+.railToggle svg { width: 18px; height: 18px; }
+/* Collapsed rail: icon strip. Labels stay in the DOM (title tooltips), headings become hairlines. */
+body.railCollapsed #rail { padding-left: 8px; padding-right: 8px; align-items: center; gap: 6px; }
+body.railCollapsed .railComputer { flex-direction: column; gap: 8px; padding: 0 0 8px; min-height: 0; }
+body.railCollapsed .railComputerName { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+body.railCollapsed .railDot { position: absolute; top: -1px; right: 6px; }
+body.railCollapsed #rail .pSec { width: 26px; height: 0; margin: 4px 0; padding: 0; overflow: hidden; font-size: 0; border-top: 1px solid var(--line); }
+body.railCollapsed .railRow { justify-content: center; gap: 0; width: 48px; min-height: 44px; padding: 0; }
+body.railCollapsed .railRow .lbl, body.railCollapsed .railRow .tag, body.railCollapsed .railRow .latency {
+  position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+}
+body.railCollapsed .railRow { position: relative; }
 .railDot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--err); }
 .railDot.ok { background: var(--ok); }
 .railRow {
@@ -310,31 +327,33 @@ main { flex: 1; min-height: 0; position: relative; }
 
 /* Tablet landscape: rail + main column. Chat and terminal modes only; visual stays full-width. */
 @media (min-width: 561px) {
-  body.wide.land:not(.visual) {
+  body.split:not(.visual) {
     display: grid; grid-template-columns: 272px minmax(0, 1fr);
     grid-template-rows: auto auto minmax(0, 1fr) auto auto auto auto;
+    transition: grid-template-columns .2s var(--ease);
   }
-  body.wide.land:not(.visual) header { grid-column: 2; grid-row: 1; }
-  body.wide.land.chatmode:not(.visual) main, body.wide.land.chatmode:not(.visual) #chatView { display: contents; }
-  body.wide.land.chatmode:not(.visual) #sessBar { grid-column: 2; grid-row: 2; }
-  body.wide.land.chatmode:not(.visual) #listWrap { grid-column: 2; grid-row: 3; min-height: 0; }
-  body.wide.land.chatmode:not(.visual) #qnBar { grid-column: 2; grid-row: 4; max-height: 36dvh; }
-  body.wide.land.chatmode:not(.visual) #queueBar { grid-column: 2; grid-row: 5; max-height: 26dvh; }
-  body.wide.land.chatmode:not(.visual) #actionBar { grid-column: 2; grid-row: 6; }
-  body.wide.land:not(.visual) footer { grid-column: 2; grid-row: 7; }
-  body.wide.land.term:not(.visual) main, body.wide.land.term:not(.visual) #screenView { display: contents; }
-  body.wide.land.term:not(.visual) #termBusy { grid-column: 2; grid-row: 2; }
-  body.wide.land.term:not(.visual) #view { grid-column: 2; grid-row: 3; min-height: 0; }
-  body.wide.land:not(.visual) .view { position: static; }
-  body.wide.land:not(.visual) .view.active { display: contents; }
-  body.wide.land.chatmode #list > *, body.wide.land.chatmode #qnBar > *, body.wide.land.chatmode #queueBar,
-  body.wide.land.chatmode .composerBox, body.wide.land.chatmode #footerStatus { max-width: 760px; }
-  body.wide.land #titleProject { font-size: 15px; font-weight: 600; color: var(--fg-hi); }
-  body.wide.land #titleText { font-size: 12px; font-weight: 400; color: var(--fg-3); }
-  body.wide.land .seg .segLabel { display: inline; }
-  body.wide.land .seg button { width: auto; padding: 0 12px; border-radius: 999px; }
-  body.wide.land #titleLatency { display: inline-flex; }
-  body.wide.land .meter .meterLabel { display: block; }
+  body.split.railCollapsed:not(.visual) { grid-template-columns: 64px minmax(0, 1fr); }
+  body.split:not(.visual) header { grid-column: 2; grid-row: 1; }
+  body.split.chatmode:not(.visual) main, body.split.chatmode:not(.visual) #chatView { display: contents; }
+  body.split.chatmode:not(.visual) #sessBar { grid-column: 2; grid-row: 2; }
+  body.split.chatmode:not(.visual) #listWrap { grid-column: 2; grid-row: 3; min-height: 0; }
+  body.split.chatmode:not(.visual) #qnBar { grid-column: 2; grid-row: 4; max-height: 36dvh; }
+  body.split.chatmode:not(.visual) #queueBar { grid-column: 2; grid-row: 5; max-height: 26dvh; }
+  body.split.chatmode:not(.visual) #actionBar { grid-column: 2; grid-row: 6; }
+  body.split:not(.visual) footer { grid-column: 2; grid-row: 7; }
+  body.split.term:not(.visual) main, body.split.term:not(.visual) #screenView { display: contents; }
+  body.split.term:not(.visual) #termBusy { grid-column: 2; grid-row: 2; }
+  body.split.term:not(.visual) #view { grid-column: 2; grid-row: 3; min-height: 0; }
+  body.split:not(.visual) .view { position: static; }
+  body.split:not(.visual) .view.active { display: contents; }
+  body.split.chatmode #list > *, body.split.chatmode #qnBar > *, body.split.chatmode #queueBar,
+  body.split.chatmode .composerBox { max-width: 760px; }
+  body.split #titleProject { font-size: 15px; font-weight: 600; color: var(--fg-hi); }
+  body.split #titleText { font-size: 12px; font-weight: 400; color: var(--fg-3); }
+  body.split .seg .segLabel { display: inline; }
+  body.split .seg button { width: auto; padding: 0 12px; border-radius: 999px; }
+  body.split #titleLatency { display: inline-flex; }
+  body.split .meter .meterLabel { display: block; }
 }
 
 /* Wide screens generally: center the reading column. */
@@ -609,11 +628,11 @@ body.kb footer { padding-bottom: 8px; }
 /* Slim inline status line under the composer card — never overlaps the bars. */
 #footerStatus {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  min-height: 18px; padding: 4px 14px 0; min-width: 0;
+  min-height: 18px; padding: 2px 10px 0; min-width: 0;
 }
-#footerStatus:not(:has(#msg:not(:empty), #elapsed:not([hidden]))) { display: none; }
+#footerStatus:not(:has(#msg:not(:empty):not(.quiet), #elapsed:not([hidden]))) { display: none; }
 #msg { flex: 1; min-width: 0; font-size: 11.5px; color: var(--fg-4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#msg:empty { display: none; }
+#msg:empty, #msg.quiet { display: none; }
 #msg.err { color: var(--err); }
 #elapsed { flex: none; font-size: 11.5px; color: var(--fg-4); font-variant-numeric: tabular-nums; }
 .attachmentRow { display: flex; align-items: flex-end; gap: 8px; }
@@ -639,7 +658,7 @@ body.kb footer { padding-bottom: 8px; }
   padding: 6px 8px; resize: none; border: none; background: transparent;
   font-size: 16px; line-height: 1.45; outline: none; color: var(--fg);
 }
-#text::placeholder { color: var(--fg-4); }
+#text::placeholder { color: var(--fg-4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #stop, #mic {
   position: absolute; top: 4px; right: 4px; z-index: 2; width: 34px; height: 34px;
   min-height: 0; padding: 0; border-radius: 50%; display: grid; place-items: center;
@@ -693,6 +712,40 @@ body:not(.chatmode) #inputHistory, body:not(.term) #termHistory { display: none;
   #sendNow { padding: 0 10px; }
   #send { padding: 0 12px 0 14px; }
 }
+
+/* Compact composer: the empty idle chat composer collapses to a one-line pill
+   [#add][#text][#mic|#stop] so the conversation gets the vertical room back. */
+body.composeCompact.chatmode .composerBox {
+  position: relative; display: flex; align-items: center; gap: 4px; min-height: 48px; padding: 4px 6px; border-radius: 999px;
+}
+body.composeCompact.chatmode #chatTools { display: none; }
+body.composeCompact.chatmode .sendRow { order: -1; flex: none; padding: 0; }
+body.composeCompact.chatmode .sendTools > :not(#add),
+body.composeCompact.chatmode .sendRow > :not(.sendTools),
+body.composeCompact.chatmode #sendNow, body.composeCompact.chatmode #send { display: none; }
+body.composeCompact.chatmode .composerField { flex: 1 1 auto; }
+body.composeCompact.chatmode #text { min-height: 40px; max-height: 40px; }
+body.composeCompact.chatmode #stop, body.composeCompact.chatmode #mic { top: 50%; transform: translateY(-50%); }
+/* The status line rides inside the capsule between + and the mic; never interactive. */
+body.composeCompact.chatmode #footerStatus {
+  position: absolute; top: 0; bottom: 0; left: 48px; right: 48px; max-width: none;
+  align-items: center; justify-content: flex-start; gap: 6px; padding: 0; min-height: 0; pointer-events: none;
+}
+body.composeCompact.chatmode footer:has(#footerStatus #msg:not(:empty):not(.quiet)) #text::placeholder,
+body.composeCompact.chatmode footer:has(#footerStatus #elapsed:not([hidden])) #text::placeholder { color: transparent; }
+
+/* Short screens (tablets, foldable inners, cover screens): reclaim chrome height. */
+@media (max-height: 760px) {
+  header { min-height: 52px; padding-top: 4px; padding-bottom: 2px; }
+  #sessBar { padding: 2px 12px 6px; }
+  #sessBar .sessTab { height: 28px; }
+  #sessBar .sessChip { font-size: 12.5px; }
+  #qnBar { padding: 10px 12px; gap: 6px; }
+  #queueBar { padding: 8px 12px; gap: 4px; }
+  #actionBar button { min-height: 36px; }
+}
+/* With the keyboard up the strips that aren't being typed in go away. */
+body.kb #sessBar, body.kb #taskChip { display: none; }
 #sendNow {
   flex: none; min-height: 38px; padding: 0 14px; border-radius: 999px;
   background: var(--s2); color: var(--fg-hi); font-size: 13.5px; font-weight: 600;
@@ -1354,8 +1407,8 @@ button { transition: background-color .12s var(--ease), color .12s var(--ease), 
 }
 /* Status line under the composer hides via :has(), not [hidden]. */
 #footerStatus { transition: opacity .18s var(--ease), transform .18s var(--ease), display .18s allow-discrete; }
-#footerStatus:not(:has(#msg:not(:empty), #elapsed:not([hidden]))) { opacity: 0; transform: translateY(4px); pointer-events: none; }
-@starting-style { #footerStatus:has(#msg:not(:empty), #elapsed:not([hidden])) { opacity: 0; transform: translateY(4px); } }
+#footerStatus:not(:has(#msg:not(:empty):not(.quiet), #elapsed:not([hidden]))) { opacity: 0; transform: translateY(4px); pointer-events: none; }
+@starting-style { #footerStatus:has(#msg:not(:empty):not(.quiet), #elapsed:not([hidden])) { opacity: 0; transform: translateY(4px); } }
 
 /* Large centered states: fade only. */
 #empty, #fusionWelcome, #visualEmpty, #termEmpty {

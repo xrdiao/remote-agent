@@ -145,6 +145,7 @@ const I18N = (() => {
     'A 模型 ▾': 'A model ▾', 'B 模型 ▾': 'B model ▾',
     'A 模型': 'A model', 'B 模型': 'B model', '项目/会话': 'Projects / sessions', '项目': 'Project',
     '工作区': 'Workspace', '工具': 'Tools', '导航': 'Navigation', '文件传输': 'File transfer',
+    '收起侧栏': 'Collapse sidebar', '展开侧栏': 'Expand sidebar',
     '添加附件': 'Add attachment', '图片': 'Image', '文件': 'File',
     '正在上传文件…': 'Uploading file…', '文件已上传，写好文字后点发送': 'File uploaded. Add your message and tap Send.',
     '选择 Fusion 项目': 'Choose a Fusion project', '选择项目 ▾': 'Choose project ▾', '没有已确认的项目': 'No confirmed projects',

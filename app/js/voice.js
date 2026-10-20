@@ -29,6 +29,7 @@ function renderAttachments(list) {
   $('attachments').parentElement.hidden = !list.length && !pending.length;
   $('attachments').innerHTML = list.map(f => { const preview = f.preview || editableImages.get(f.id)?.data; return `<div class="attachment">${preview ? `<img src="${esc(preview)}" alt="">` : ''}${preview ? `<button data-edit-attachment="${esc(f.id)}">编辑</button>` : ''}<span title="${esc(f.name)}">${esc(f.name)}${f.size != null ? ` (${Math.ceil(f.size / 1024)} KB)` : ''}</span><button data-remove-attachment="${esc(f.id)}" aria-label="删除 ${esc(f.name)}">×</button></div>`; }).join('')
     + pending.map(([id, f]) => `<div class="attachment"><img src="${esc(f.preview)}" alt=""><span>${esc(f.name)} · ${f.error ? '上传失败' : '上传中…'}</span><button data-edit-pending-image="${id}">编辑</button>${f.error ? `<button data-retry-image="${id}">重试</button>` : ''}<button data-discard-image="${id}" aria-label="取消上传图片">×</button></div>`).join('');
+  updateComposeCompact();
 }
 // The socket dropped after an image was sent but before the relay's imageDone could
 // arrive: mark those uploads failed with a retry button instead of spinning forever.

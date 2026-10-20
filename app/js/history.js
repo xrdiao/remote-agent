@@ -406,6 +406,7 @@ function pruneEchoes(chat) {
   if (!pendingEchoes.length) return;
   const humans = (chat?.items || []).filter(it => it.k === 'human');
   const queued = (chat?.queued || []).map(q => (q.t || '').trim());
+  const queuedCount = Math.max(queued.length, chat?.queuedCount || 0);
   pendingEchoes = pendingEchoes.filter(p => {
     // A send that vanished with a dead socket would otherwise spin "发送中…" forever.
     if (Date.now() - p.at > (p.confirmed ? 60000 : 120000)) return false;
@@ -416,6 +417,9 @@ function pruneEchoes(chat) {
     // text can differ from the typed text (mentions, attachments), which would leave the echo forever.
     if (p.confirmed && humans.some(it => it.sentAt && it.sentAt >= p.at - 2000)) return false;
     if (p.kind === 'queue' && queued.some(t => echoTextMatches({ t }, p.text))) return false;
+    // Queue row text is rendered (markdown, collapsed whitespace) and may never equal the
+    // typed text; once confirmed, any non-empty queue already contains the echo.
+    if (p.kind === 'queue' && p.confirmed && queuedCount > 0) return false;
     return true;
   });
 }

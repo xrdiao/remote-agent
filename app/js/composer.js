@@ -72,7 +72,7 @@ function reconcileSent(chat) {
 function draftKey() { return [currentComputer()?.id || '', viewSel, mode].join('|'); }
 function saveDraft() { if (activeDraft) { drafts.set(activeDraft, text.value); draftMentions.set(activeDraft, MN.mentions.slice()); } }
 function restoreDraft() { activeDraft = draftKey(); text.value = drafts.get(activeDraft) || ''; MN.mentions = draftMentions.get(activeDraft)?.slice() || []; mentionHide(); autosize(); }
-function autosize() { text.style.height = 'auto'; text.style.height = text.scrollHeight + 'px'; updateMathPrev(); }
+function autosize() { text.style.height = 'auto'; text.style.height = text.scrollHeight + 'px'; updateMathPrev(); updateComposeCompact(); }
 function recallInput(direction) {
   if (mode !== 'chat') return;
   const key = chatInputKey();
@@ -125,13 +125,14 @@ function mentionHide() {
   MN.parent = null;
   MN.seq++;
   $('mentionBox').hidden = true;
+  updateComposeCompact();
 }
 function mentionAsk(o) {
   MN.seq++;
   const token = mentionToken();
   send({ t: 'mentionQuery', seq: MN.seq, trigger: token?.trigger || '@', ...o });
   const box = $('mentionBox');
-  if (box.hidden) { box.innerHTML = '<div class="mnHint">加载中…</div>'; box.hidden = false; }
+  if (box.hidden) { box.innerHTML = '<div class="mnHint">加载中…</div>'; box.hidden = false; updateComposeCompact(); }
 }
 function mentionUpdate() {
   const t = mentionToken();
@@ -141,7 +142,7 @@ function mentionUpdate() {
   if (queryKey === MN.q) return;
   MN.q = queryKey;
   MN.timer = setTimeout(() => mentionAsk({ q: t.q }), 220);
-  if ($('mentionBox').hidden) { $('mentionBox').innerHTML = '<div class="mnHint">加载中…</div>'; $('mentionBox').hidden = false; }
+  if ($('mentionBox').hidden) { $('mentionBox').innerHTML = '<div class="mnHint">加载中…</div>'; $('mentionBox').hidden = false; updateComposeCompact(); }
 }
 text.addEventListener('input', mentionUpdate);
 $('mentionBox').addEventListener('pointerdown', e => { if (e.pointerType === 'mouse') e.preventDefault(); });
@@ -167,6 +168,7 @@ function onMentions(m) {
     : '<div class="mnHint">没有匹配的结果</div>';
   box.hidden = false;
   box._rows = m.rows;
+  updateComposeCompact();
 }
 $('mentionBox').addEventListener('click', e => {
   const b = e.target.closest('[data-mi]');
@@ -212,10 +214,12 @@ text.addEventListener('focus', () => {
   fitViewport();
   setTimeout(fitViewport, 60);
   setTimeout(fitViewport, 320);
+  updateComposeCompact();
 });
 text.addEventListener('blur', () => {
   stickOnKeyboard = false;
   setTimeout(fitViewport, 60);
+  updateComposeCompact();
 });
 // Devin while its turn runs: Queue (default, Enter) or Send now (interrupts the turn, after confirmation).
 let chatBusy = false;
@@ -237,8 +241,68 @@ function updateSendMode() {
   $('sendNow').hidden = !split && !follow;
   $('sendNow').textContent = follow === 'steer' ? '改为排队' : '立即追加';
   if (split) $('sendNow').textContent = '立即发送';
-  document.body.classList.toggle('split', split || !!follow);
+  document.body.classList.toggle('sendSplit', split || !!follow);
+  updateComposeCompact();
 }
+
+/* Compact composer: an empty, unfocused chat composer collapses to a one-line pill so
+   the chat gets the vertical room back. Expanding is immediate on any interaction
+   (focus, typed/restored text, attachments, mentions, recording, fusion welcome);
+   collapsing waits out a 1.5 s grace so the pill never slides while a finger is in
+   transit, and never while the mic is held. */
+let composeCompactTimer = 0, composeExpandedAt = 0;
+function micHeld() { return $('mic')?.classList.contains('on') || (typeof voiceSession !== 'undefined' && !!voiceSession); }
+function composeCompactWanted() {
+  return mode === 'chat'
+    && !text.value.trim() && document.activeElement !== text
+    && !$('attachments').children.length
+    && $('mentionBox').hidden
+    && $('fusionWelcome').hidden
+    && !document.getElementById('imageEditor')?.open
+    && !micHeld();
+}
+function setComposeCompact(on) {
+  if (document.body.classList.contains('composeCompact') === on) return;
+  const stick = nearBottom();
+  const foot = document.querySelector('footer');
+  const h0 = foot.offsetHeight;
+  document.body.classList.toggle('composeCompact', on);
+  if (!on) composeExpandedAt = performance.now();
+  const h1 = foot.offsetHeight;
+  if (stick) list.scrollTop = list.scrollHeight;
+  if (h0 !== h1 && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    foot.animate([{ height: h0 + 'px', overflow: 'hidden' }, { height: h1 + 'px' }], { duration: 200, easing: 'cubic-bezier(.2,.8,.2,1)' });
+  }
+}
+function updateComposeCompact() {
+  if (composeCompactWanted()) {
+    if (document.body.classList.contains('composeCompact') || composeCompactTimer) return;
+    composeCompactTimer = setTimeout(() => {
+      composeCompactTimer = 0;
+      if (composeCompactWanted()) setComposeCompact(true);
+    }, 1500);
+  } else {
+    clearTimeout(composeCompactTimer); composeCompactTimer = 0;
+    if (!micHeld()) setComposeCompact(false);
+    // Mic held: defer the flip; updateVoiceButton re-runs this when the gesture ends.
+  }
+}
+// Capture-phase so it runs before controls that re-appear under the same tap.
+// In compact: taps outside +/mic/stop just focus the field (user gesture → iOS keyboard).
+// Right after expanding, the same tap's ghost click would hit controls that were hidden
+// when the finger went down — swallow it for 400 ms.
+document.querySelector('.composerBox').addEventListener('click', e => {
+  if (document.body.classList.contains('composeCompact')) {
+    if (e.target.closest('#add, #mic, #stop')) return;
+    e.preventDefault(); e.stopPropagation();
+    text.focus();
+    return;
+  }
+  if (performance.now() - composeExpandedAt < 400
+    && e.target.closest('button') && !e.target.closest('#add, #mic, #stop')) {
+    e.preventDefault(); e.stopPropagation();
+  }
+}, true);
 $('fusionProject').onclick = () => { status('正在读取项目…'); send({ t: 'fusionProjects' }); };
 $('fusionA').onclick = () => send({ t: 'fusionSides', side: 'a' });
 $('fusionB').onclick = () => send({ t: 'fusionSides', side: 'b' });
