@@ -856,3 +856,6 @@
 .transferUpload { margin: 18px 0; padding: 12px; border: 1px solid var(--border); border-radius: 12px; }
 .transferUpload h4 { margin: 0 0 10px; }
 .transferUploadItem, #transferSelected, #transferStatus { overflow-wrap: anywhere; margin: 8px 0; }
+
+#transfer a { color: var(--blue); }
+#transferUploadTarget { overflow-wrap: anywhere; }

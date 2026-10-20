@@ -14,7 +14,7 @@ transferPanel.innerHTML = `<div class="transferHeader"><h3>文件传输</h3><but
   <div class="transferTools"><button id="transferAll">全选本页</button><button id="transferClear">清空选择</button><button id="transferDownload">下载所选</button></div>
   <div id="transferSelected" class="hint"></div><div id="transferStatus" role="status"></div>
   <div id="transferRows"></div>
-  <div class="transferUpload"><h4>上传到当前电脑目录</h4><div class="transferTools"><button id="transferFiles">选择文件（可多选）</button><button id="transferFolder">选择文件夹</button></div>
+  <div class="transferUpload"><h4>上传到当前电脑目录</h4><div id="transferUploadTarget" class="hint"></div><div class="transferTools"><button id="transferFiles">选择文件（可多选）</button><button id="transferFolder">选择文件夹</button></div>
   <label>同名文件 <select id="transferCollision"><option value="rename">另存为新文件</option><option value="skip">跳过</option><option value="replace">覆盖</option></select></label>
   <div class="hint">文件夹上传保留子目录；文件夹选择取决于手机浏览器支持。</div>
   <div class="transferTools"><button id="transferCancel" hidden>取消上传</button><button id="transferRetry" hidden>重试失败项</button></div><div id="transferProgress" role="status"></div></div>
@@ -40,8 +40,8 @@ async function transferBrowse(directory) {
     if (!response.ok) throw Error(data.error);
     transferDirectory = data;
     $('transferPath').value = data.path;
-    $('transferRoots').innerHTML = data.roots.map(root => `<option value="${esc(root)}">${esc(root)}</option>`).join('');
-    $('transferRoots').selectedIndex = -1;
+    $('transferRoots').innerHTML = '<option value="" disabled selected>磁盘</option>' + data.roots.map(root => `<option value="${esc(root)}">${esc(root)}</option>`).join('');
+    $('transferUploadTarget').textContent = data.path;
     $('transferRows').innerHTML = data.entries.map((entry, index) => `<div class="transferRow"><input type="checkbox" aria-label="选择 ${esc(entry.name)}" data-transfer-check="${index}" ${transferSelection.has(entry.path) ? 'checked' : ''} ${entry.selectable ? '' : 'disabled'}><button data-transfer-open="${index}" ${entry.selectable ? '' : 'disabled'}><span class="transferName${entry.directory ? ' directory' : ''}">${entry.directory ? '📁' : '📄'} ${esc(entry.name)}${entry.link ? ' ↗' : ''}</span><span class="hint">${entry.directory ? '›' : entry.selectable ? fmtSize(entry.size) : '不可读取'}</span></button></div>`).join('') || '<div class="hint">空文件夹</div>';
     transferCount();
     transferStatus('');
