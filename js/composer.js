@@ -227,6 +227,7 @@ $('stop').onclick = async () => {
   send({ t: 'stop' }); status('正在停止…');
 };
 function updateSendMode() {
+  if (typeof updateVoiceButton === 'function') updateVoiceButton();
   $('stop').hidden = mode !== 'chat' || !chatBusy || !!lastChat?.readonly;
   const split = devinBusySplit();
   const follow = codexFollow();
