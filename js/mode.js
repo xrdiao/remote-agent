@@ -6,6 +6,7 @@ function updateTermEmpty() {
   $('termText').hidden = !(mode === 'terminal' && termState === 'text');
 }
 function setMode(m) {
+  if (typeof cancelVoice === 'function') cancelVoice();
   saveDraft();
   mode = m;
   if (m !== 'terminal') clearTermSelection();
