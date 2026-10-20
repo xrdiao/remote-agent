@@ -384,7 +384,7 @@ function paintWorkdir(wd) {
   const b = $('pickDir');
   b.hidden = !wd;
   if (!wd) return;
-  b.textContent = `📁 ${wd.name}${wd.extra ? ' ' + wd.extra : ''} ▾`;
+  b.textContent = `📁 ${wd.name}${wd.extra ? ' ' + wd.extra : ''}`;
   b.title = wd.editable ? '更换工作目录' : '这个会话的工作目录';
   if (wantDir && wd.editable) { wantDir = false; send({ t: 'workdir' }); }
 }
@@ -474,16 +474,16 @@ function renderChat(chat, stale, loading = false) {
   $('older').hidden = !chat || chat.earlier === false;
   $('pickMode').hidden = currentApp === 'devin' || currentApp === 'cursor' || !chat?.mode;
   $('pickModel').hidden = false;
-  if (chat?.mode) { $('pickMode').textContent = (chat.mode === 'Bypass Permissions' ? '⚠绕过' : chat.mode) + ' ▾'; $('pickMode').title = chat.mode; }
+  if (chat?.mode) { $('pickMode').textContent = chat.mode === 'Bypass Permissions' ? '⚠绕过' : chat.mode; $('pickMode').title = chat.mode; }
   $('pickMode').classList.toggle('bypass', chat?.mode === 'Bypass Permissions');
   const mdl = chat?.model || '模型';
   const effLabel = chat?.effort && chat.effort !== 'Effort' ? String(chat.effort).replace(/^([a-z])/, c => c.toUpperCase()) : '';
   const effSuffix = chat?.model !== 'Fusion' && effLabel && !mdl.toLowerCase().includes(effLabel.toLowerCase()) ? ` · ${effLabel}` : '';
-  $('pickModel').textContent = mdl + effSuffix + ' ▾';
+  $('pickModel').textContent = mdl + effSuffix;
   $('pickModel').title = chat?.fusion ? `${chat.fusion.lead} · ${chat.fusion.effort} · ${chat.fusion.sidekick}${chat.fusion.fast ? ' · Fast' : ''}` : (chat?.model || '更换模型');
   const permName = PERM_LABEL[chat?.permission]?.[0];
   $('pickPerm').hidden = true;
-  if (chat?.permission) { $('pickPerm').textContent = ({ 'Ask for approval': '询问', 'Approve for me': '替我审核', 'Full access': '完全批准' }[chat.permission] || permName || chat.permission) + ' ▾'; $('pickPerm').title = permName || chat.permission; }
+  if (chat?.permission) { $('pickPerm').textContent = ({ 'Ask for approval': '询问', 'Approve for me': '替我审核', 'Full access': '完全批准' }[chat.permission] || permName || chat.permission); $('pickPerm').title = permName || chat.permission; }
   const codexBar = currentApp === 'codex' ? chat?.codex : null;
   $('add').hidden = false;
   $('pickPlan').hidden = true;
@@ -495,7 +495,7 @@ function renderChat(chat, stale, loading = false) {
     $('pickIde').title = file ? `${file.label}${file.range ? ' ' + file.range : ''}` : 'IDE 上下文';
   }
   $('pickRun').hidden = true;
-  if (codexBar?.run) $('pickRun').textContent = codexBar.run + ' ▾';
+  if (codexBar?.run) $('pickRun').textContent = codexBar.run;
   $('pickChat').hidden = true;
   paintFusion(currentApp === 'fusion' ? chat?.fusion : null);
   chatBusy = !!chat?.busy;
@@ -707,7 +707,7 @@ function renderQuestions(qs) {
   if (!qs?.list?.length) { bar.innerHTML = ''; bar.classList.remove('show'); return; }
   if (qs.devin) {
     const q = qs.list[0], pg = qs.pager;
-    bar.innerHTML = `<div class="qnHead">❓ Devin 在问你${pg ? `（${pg.cur}/${pg.total}）` : ''}`
+    bar.innerHTML = `<div class="qnHead">Devin 在问你${pg ? `（${pg.cur}/${pg.total}）` : ''}`
       + (pg && pg.total > 1 ? `<span class="qnPg"><button data-qpart="prev" ${qs.canPrev ? '' : 'disabled'}>‹</button><button data-qpart="next" ${qs.canNext ? '' : 'disabled'}>›</button></span>` : '') + '</div>'
       + `<div class="qnQ">${esc(q.text)}</div><div class="qnOpts">`
       + q.options.map((o, oi) => `<button class="qnOpt ${o.sel ? 'on' : ''}" data-qi="0" data-oi="${oi}"><b>${q.multi ? (o.sel ? '☑' : '☐') : String.fromCharCode(65 + oi)}</b><span>${esc(o.label)}${o.desc ? `<small>${esc(o.desc)}</small>` : ''}</span></button>`).join('')
@@ -717,7 +717,7 @@ function renderQuestions(qs) {
     questionBusy();
     return;
   }
-  bar.innerHTML = `<div class="qnHead">❓ Agent 在问你${qs.list.length > 1 ? `（${qs.list.length} 个问题）` : ''}</div>`
+  bar.innerHTML = `<div class="qnHead">Agent 在问你${qs.list.length > 1 ? `（${qs.list.length} 个问题）` : ''}</div>`
     + qs.list.map((q, qi) => `<div class="qnQ">${qs.list.length > 1 ? `${qi + 1}. ` : ''}${esc(q.text)}</div><div class="qnOpts">`
       + q.options.map((o, oi) => {
         const letter = String.fromCharCode(65 + oi);

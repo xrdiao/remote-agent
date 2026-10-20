@@ -293,6 +293,7 @@ const lruPut = (map, key, val, max) => { map.delete(key); map.set(key, val); whi
 let menuSheetKind = '', chatStale = false;
 let currentProject = '', currentTerminal = '';
 function updateTitle() {
+  document.body.dataset.app = currentApp || '';
   const first = lastChat?.items?.find(it => it.k === 'user');
   const conversation = mode === 'terminal' ? currentTerminal : (lastChat?.title || first?.t || '');
   $('titleText').textContent = currentAppName || '连接中…';
@@ -301,6 +302,7 @@ function updateTitle() {
   $('titlePlan').hidden = !plan;
   $('titleProject').textContent = cleanWindowTitle(currentProject).replace(/\s+-\s+Devin(?:\s+-.*)?$/, '') || conversation.split('\n')[0].slice(0, 40);
   $('title').title = [cleanWindowTitle(currentProject), conversation].filter(Boolean).join(' · ');
+  paintRail();
 }
 // Devin sessions: each session has its own rows, thought bodies, tasks, questions and queue. When the desktop
 // shows another session, drop everything cached for the old one so the two never mix in one scroll.

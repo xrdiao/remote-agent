@@ -15,7 +15,7 @@ function latencyMarkup(id) {
 }
 function paintLatency() {
   $('titleLatency').innerHTML = currentWindow ? latencyMarkup(currentWindow) : '';
-  for (const node of $('sheet').querySelectorAll('[data-latency]')) node.innerHTML = latencyMarkup(node.dataset.latency);
+  for (const node of document.querySelectorAll('#sheet [data-latency], #rail [data-latency]')) node.innerHTML = latencyMarkup(node.dataset.latency);
 }
 function resetLatency() {
   clearTimeout(latencyTimer);
