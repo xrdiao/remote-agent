@@ -93,7 +93,7 @@ function endVoice() {
   if (!session?.held) return;
   session.held = false;
   $('mic').classList.remove('on'); $('mic').setAttribute('aria-label', '按住说话');
-  if (!session.node) { cancelVoice(); return; }
+  if (!session.node) { cancelVoice(); status('录音尚未开始，请重新按住说话'); return; }
   // Stop capture immediately, then drain the worklet's last partial PCM frame before ending decoding.
   session.stream.getTracks().forEach(track => track.stop());
   session.node.port.postMessage('flush');
@@ -106,6 +106,7 @@ async function toggleLocalVoice() {
     const response = await api('/api/voice');
     const result = await response.json();
     if (!response.ok) throw new Error(result.error);
+    if (!voiceEnabled()) return;
     if (!result.installed) {
       return openSheet('local-voice-setup', '<h3>安装本机语音</h3><p>在电脑上的 Remote Agent 目录运行：</p><pre>npm run voice:setup</pre><p class="hint">程序会询问是否同意安装 CPU 识别环境和下载约 615 MB 中英混说模型。安装完成后再次按住麦克风即可；语音只发送到你配对的电脑。</p><p class="hint">麦克风需要 HTTPS 和浏览器授权。微信等容器无法使用时，请用 Safari/Chrome 或键盘语音输入。</p>');
     }
@@ -118,12 +119,13 @@ async function toggleLocalVoice() {
 }
 $('mic').addEventListener('pointerdown', startVoice);
 $('mic').addEventListener('pointerup', endVoice);
-$('mic').addEventListener('pointercancel', cancelVoice);
-$('mic').addEventListener('lostpointercapture', () => { if (voiceSession?.held) cancelVoice(); });
+function cancelVoiceGesture() { if (voiceSession) { cancelVoice(); status('录音已取消，已识别文字保留'); } }
+$('mic').addEventListener('pointercancel', cancelVoiceGesture);
+$('mic').addEventListener('lostpointercapture', () => { if (voiceSession?.held) cancelVoiceGesture(); });
 $('mic').addEventListener('contextmenu', e => e.preventDefault());
 $('mic').addEventListener('keydown', e => { if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) { e.preventDefault(); startVoice({ button: 0, preventDefault() {}, pointerId: null }); } });
 $('mic').addEventListener('keyup', e => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); endVoice(); } });
-text.addEventListener('input', () => { if (voiceSession && !voiceSession.writing) cancelVoice(); });
+text.addEventListener('input', () => { if (voiceSession && !voiceSession.writing) { cancelVoice(); status('录音已停止，可继续编辑'); } });
 for (const id of ['send', 'sendNow']) $(id).addEventListener('click', cancelVoice, true);
 document.addEventListener('visibilitychange', () => { if (document.hidden) cancelVoice(); });
 window.addEventListener('pagehide', cancelVoice);
