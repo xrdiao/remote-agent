@@ -836,3 +836,26 @@
   .imageEditStage { flex: 1; min-height: 100px; overflow: auto; touch-action: none; background: var(--pre-bg); border-radius: 8px; }
   .imageEditStage canvas { display: block; max-width: none; max-height: none; touch-action: none; }
   #imageEditor [hidden] { display: none; }
+
+/* Independent file transfer panel; chat, Editor and terminal layouts stay untouched. */
+#transfer { position: fixed; inset: 0; z-index: 25; overflow-y: auto; background: var(--bg); color: var(--text); padding: calc(12px + env(safe-area-inset-top)) 12px calc(24px + env(safe-area-inset-bottom)); }
+#transfer[hidden] { display: none; }
+.transferHeader, .transferTools, #transferPathForm, .transferRow, .transferRow button { display: flex; align-items: center; gap: 8px; }
+.transferHeader { justify-content: space-between; }
+.transferHeader h3 { margin: 8px 0; }
+#transferPathForm { margin: 12px 0; }
+#transferPath { flex: 1; min-width: 0; }
+.transferTools { flex-wrap: wrap; margin: 10px 0; }
+#transfer input:not([type=checkbox]), #transfer select { background: var(--panel); color: inherit; border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
+.transferRow { border-bottom: 1px solid var(--border); min-height: 48px; }
+.transferRow input { width: 20px; height: 20px; flex-shrink: 0; }
+.transferRow button { flex: 1; min-width: 0; justify-content: space-between; border: 0; background: transparent; text-align: left; padding: 12px 4px; }
+.transferName { overflow-wrap: anywhere; }
+.transferName.directory { font-weight: 600; }
+.transferRow .hint { flex-shrink: 0; }
+.transferUpload { margin: 18px 0; padding: 12px; border: 1px solid var(--border); border-radius: 12px; }
+.transferUpload h4 { margin: 0 0 10px; }
+.transferUploadItem, #transferSelected, #transferStatus { overflow-wrap: anywhere; margin: 8px 0; }
+
+#transfer a { color: var(--blue); }
+#transferUploadTarget { overflow-wrap: anywhere; }

@@ -11,6 +11,7 @@ import { Cdp } from '../cdp.mjs';
 import { helpersCall } from '../page/build.mjs';
 import { Session } from '../session.mjs';
 import { videoGrant, serveVideo } from './video.mjs';
+import { transferApi, serveTransfer } from './transfer.mjs';
 import { uploads } from '../agent/context.mjs';
 
 // A device is usable once paired and, when 2FA asks for it, re-verified.
@@ -63,6 +64,7 @@ export async function handleApi(req, res, route) {
     if (!grant) return json(req, res, 401, { error: '视频链接已过期或设备授权已失效，请重新打开视频' });
     return serveVideo(req, res, grant);
   }
+  if (route.startsWith('/api/transfer/get/') && req.method === 'GET') return serveTransfer(req, res, route.slice('/api/transfer/get/'.length));
   const device = deviceFor(req);
 
   if (route === '/api/me') {
@@ -112,6 +114,7 @@ export async function handleApi(req, res, route) {
     return json(req, res, 200, { ok: true });
   }
   if (needsTotp(device)) return json(req, res, 401, { needTotp: true, error: '需要二次验证' });
+  if (route.startsWith('/api/transfer/')) return transferApi(req, res, route, device);
   if (route.startsWith('/api/chat-image/') && req.method === 'GET') {
     const image = readChatImage(route.slice('/api/chat-image/'.length));
     if (!image) return json(req, res, 404, { error: '图片不存在' });
