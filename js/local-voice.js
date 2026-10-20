@@ -2,6 +2,7 @@
 let voiceSession = null, voiceLink = null, voiceAudio = null, voicePrepared = '', voiceCatalog = null;
 let voiceInputUntil = 0, voiceInputTimer = null, voiceInputScope = '';
 let voiceWarmTimer = 0, voiceWarmKey = '';
+let voiceHideTimer = 0;
 function voiceEnabled() { return store.get('local-voice') === 'on'; }
 function voiceEngineKey() { return 'voice-engine:' + (currentComputer()?.id || base); }
 function voiceEngine() { return store.get(voiceEngineKey()) || ''; }
@@ -60,6 +61,7 @@ function closeVoiceAudio() {
 }
 function resetVoiceReady(link) {
   link.streamId = '';
+  link.loading = false;
   link.ready = new Promise((resolve, reject) => { link.resolve = resolve; link.reject = reject; });
   link.ready.catch(() => {});
 }
@@ -85,14 +87,15 @@ function voiceConnection() {
   };
   socket.onmessage = e => {
     const m = JSON.parse(e.data), session = voiceSession;
-    if (m.type === 'loading' && session?.link === link) status('正在加载本机语音模型…');
-    if (m.type === 'started') { link.streamId = m.id; link.resolve(link); }
+    if (m.type === 'loading') { link.loading = true; if (session?.link === link) status('正在加载本机语音模型…'); }
+    if (m.type === 'started') { link.loading = false; link.streamId = m.id; link.resolve(link); }
     if (m.type === 'error') {
       link.reject(new Error(m.message));
       if (session?.link === link) { status(m.message, false); cancelVoice(); }
       socket.close();
     }
     if (!session || !voiceLive(session) || session.link !== link || m.id !== session.streamId) return;
+    if (m.type === 'partial' && !session.firstPartial) { session.firstPartial = true; session.dbg?.('first partial'); }
     if (m.type === 'partial' || m.type === 'final') voiceText(session, m.text);
     if (m.type === 'final' && voiceLive(session)) { status(m.text ? '转录完成，可编辑后发送' : '没有识别到语音，请重试'); cancelVoice(false); }
   };
@@ -134,25 +137,42 @@ async function startVoice(event) {
   if (event.button !== 0 || voiceSession || $('mic').hidden || !windowReady) return;
   event.preventDefault();
   if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) return status('麦克风需要 HTTPS；请使用 Safari/Chrome 打开固定入口，或使用键盘语音输入', false);
+  const t0 = performance.now();
+  const vdbg = store.get('voice-debug') === '1' ? tag => console.log(`[voice] ${tag} +${Math.round(performance.now() - t0)}ms`) : () => {};
   const link = voiceConnection();
+  let session = null;
   if (!link.streamId) {
-    status('语音模型正在准备，就绪后请重新按住麦克风…');
-    const current = () => voiceEnabled() && link.key === voiceTransportKey() && (!voiceLink || voiceLink === link);
-    try { await link.ready; if (current()) status('语音模型已就绪，请按住麦克风说话'); }
-    catch (error) { if (current()) status(error.message, false); }
-    return;
+    const prompt = () => {
+      status('语音模型正在准备，就绪后请重新按住麦克风…');
+      const current = () => voiceEnabled() && link.key === voiceTransportKey() && (!voiceLink || voiceLink === link);
+      link.ready.then(() => { if (current()) status('语音模型已就绪，请按住麦克风说话'); }, error => { if (current()) status(error.message, false); });
+    };
+    // Cold model load in progress: unchanged, just prompt and wait for a re-press.
+    if (link.loading) { prompt(); return; }
+    // Engine is warm, only the socket/auth is reconnecting: hold the press pending briefly.
+    session = { scope: voiceScope(), expected: text.value, prefix: text.value.slice(0, text.selectionStart), suffix: text.value.slice(text.selectionEnd), selection: text.value.slice(text.selectionStart, text.selectionEnd), held: true, dbg: vdbg };
+    voiceSession = session;
+    $('mic').classList.add('on'); $('mic').setAttribute('aria-label', '松开结束录音');
+    status('语音正在重连…');
+    const ok = await Promise.race([link.ready.then(() => true, () => false), sleep(1500).then(() => 'timeout')]);
+    if (ok !== true || !voiceLive(session) || !session.held || link.loading || !link.streamId) { cancelVoice(); prompt(); return; }
+    vdbg('link ready');
   }
   if (event.pointerId != null) $('mic').setPointerCapture(event.pointerId);
-  const session = { scope: voiceScope(), expected: text.value, prefix: text.value.slice(0, text.selectionStart), suffix: text.value.slice(text.selectionEnd), selection: text.value.slice(text.selectionStart, text.selectionEnd), held: true };
+  session ??= { scope: voiceScope(), expected: text.value, prefix: text.value.slice(0, text.selectionStart), suffix: text.value.slice(text.selectionEnd), selection: text.value.slice(text.selectionStart, text.selectionEnd), held: true, dbg: vdbg };
   voiceSession = session;
   $('mic').classList.add('on'); $('mic').setAttribute('aria-label', '松开结束录音');
   status('正在连接本机语音并申请麦克风…');
   try {
-    const audio = prepareVoiceAudio();
+    let audio = prepareVoiceAudio();
+    // A context left closed/interrupted outside a gesture can never resume: rebuild inside it.
+    if (audio.context.state === 'closed' || audio.context.state === 'interrupted') { closeVoiceAudio(); audio = prepareVoiceAudio(); }
     session.context = audio.context;
     const resumed = session.context.resume();
+    resumed.then(() => vdbg('resume resolved'), () => vdbg('resume rejected'));
     const media = navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }, video: false });
     media.then(stream => {
+      vdbg('media resolved');
       if (voiceLive(session) && session.held) {
         session.stream = stream;
         if (session.started) status('正在准备录音…');
@@ -162,9 +182,14 @@ async function startVoice(event) {
     const started = link.ready.then(() => {
       if (!voiceLive(session) || !session.held) return;
       session.streamId = link.streamId; session.started = true;
+      vdbg('started');
       status(session.stream ? '正在准备录音…' : '等待麦克风授权…');
     });
-    const [stream] = await Promise.all([media, started, resumed, audio.module]);
+    const [stream] = await Promise.all([media, started]);
+    if (!voiceLive(session) || !session.held) return;
+    let timedOut = false;
+    await Promise.race([Promise.all([resumed, audio.module]).then(() => vdbg('resume+module resolved')), sleep(3000).then(() => { timedOut = true; })]);
+    if (timedOut) { status('录音初始化超时，请重新按住麦克风', false); cancelVoice(); closeVoiceAudio(); return; }
     if (!voiceLive(session) || !session.held) return;
     session.stream = stream;
     session.node = new AudioWorkletNode(session.context, 'voice-pcm', { channelCount: 1, channelCountMode: 'explicit' });
@@ -176,6 +201,7 @@ async function startVoice(event) {
         link.socket.send(JSON.stringify({ type: 'end' }));
         session.timer = setTimeout(() => { if (voiceLive(session)) { status('转录尚未完成，已识别文字已保留，请重试', false); cancelVoice(); } }, 20000);
       } else if (link.socket.readyState === 1) {
+        if (!session.firstPcm) { session.firstPcm = true; session.dbg?.('first pcm frame'); }
         if (link.socket.bufferedAmount > 128000) { status('语音网络跟不上，已识别文字已保留，请重试', false); cancelVoice(); }
         else link.socket.send(e.data);
       }
@@ -246,8 +272,20 @@ text.addEventListener('blur', () => { if (!$('mic').hidden) noteVoiceInput(); })
 window.visualViewport?.addEventListener('resize', updateVoiceButton);
 window.addEventListener('resize', updateVoiceButton);
 for (const id of ['send', 'sendNow']) $(id).addEventListener('click', cancelVoice, true);
-function suspendVoice() { clearTimeout(voiceWarmTimer); voiceWarmTimer = 0; cancelVoice(); closeVoiceConnection(); closeVoiceAudio(); voicePrepared = ''; }
-document.addEventListener('visibilitychange', () => { if (document.hidden) suspendVoice(); else updateVoiceButton(); });
+function suspendVoice() { clearTimeout(voiceHideTimer); voiceHideTimer = 0; clearTimeout(voiceWarmTimer); voiceWarmTimer = 0; cancelVoice(); closeVoiceConnection(); closeVoiceAudio(); voicePrepared = ''; }
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    clearTimeout(voiceWarmTimer); voiceWarmTimer = 0;
+    cancelVoice(); closeVoiceAudio();
+    // Keep the voice socket warm for a quick return; the engine stays loaded and re-entry
+    // skips reconnect. voicePrepared is only reset when the connection actually closes.
+    clearTimeout(voiceHideTimer);
+    voiceHideTimer = setTimeout(() => { voiceHideTimer = 0; if (document.hidden) { closeVoiceConnection(); voicePrepared = ''; } }, 30000);
+  } else {
+    clearTimeout(voiceHideTimer); voiceHideTimer = 0;
+    updateVoiceButton();
+  }
+});
 window.addEventListener('pagehide', suspendVoice);
 document.addEventListener('voice-authenticated', scheduleVoiceWarmup);
 updateVoiceButton();
