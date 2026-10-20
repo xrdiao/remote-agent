@@ -204,7 +204,7 @@ $('sheet').addEventListener('click', async e => {
     if (sub) sub.textContent = I18N.tr('正在启动…');
     return send({ t: 'launchAgents', apps: b.dataset.launchMissing.split(',') });
   }
-  if (b.dataset.win) { closeSheet(); status('正在切换 Agent…'); return send({ t: 'attach', id: b.dataset.win, ...currentComputer()?.selections?.[b.dataset.win] }); }
+  if (b.dataset.win) return switchToWindow(b.dataset.win);
   if ('fusionTrust' in b.dataset) { closeSheet(); return send({ t: 'fusionTrust', approve: b.dataset.fusionTrust === 'yes' }); }
   if ('fusionDir' in b.dataset) { status('正在读取项目…'); return send({ t: 'fusionProjects', path: b.dataset.fusionDir }); }
   if ('fusionPath' in b.dataset) {
@@ -346,7 +346,7 @@ $('sheet').addEventListener('click', async e => {
     openSheet('codex-reset', `<h3>Codex 额度重置</h3><p>官方发放的重置券用于恢复指定的额度窗口，不是充值余额。</p><ol><li>登录与电脑端 Codex 相同的 ChatGPT 账号，打开官方额度页面。</li><li>找到 Usage limit resets → Available，检查可用次数、重置范围和到期时间。</li><li>点击所选券的 Use reset，按官方页面提示确认。</li><li>完成后回到这里，点击额度展示并刷新数据。</li></ol><p class="hint">Full reset 用于恢复 5 小时和每周额度；具体范围以券的说明为准。已使用记录可在 History 查看。</p><a class="opt" href="https://chatgpt.com/codex/settings/usage" target="_blank" rel="noopener noreferrer">打开官方额度页面</a>`);
   }
   else if (act === 'editor') { return startEditor(); }
-  else if (act === 'settings') { status('正在读取设置…'); return send({ t: 'settings' }); }
+  else if (act === 'settings') return openSettings();
   else if (act === 'screen') { closeSheet(); return setMode('screen'); }
   else if (act === 'changeUrl') window.AgentRemoteApp?.changeUrl();
   else if (act === 'connPartialToggle' || act === 'connLaunchToggle') {
