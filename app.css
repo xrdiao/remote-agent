@@ -160,9 +160,9 @@
   .human .bubble .math { white-space: normal; }
   #mathPrev { max-height: 22vh; overflow: auto; padding: 6px 10px; border: 1px dashed var(--line2); border-radius: 10px; background: var(--ctrl); color: var(--hi); font-size: 14px; white-space: pre-wrap; }
   #mathPrev[hidden] { display: none; }
-  #mentionBox { max-height: 38vh; overflow-y: auto; display: flex; flex-direction: column; border: 1px solid var(--line2); border-radius: 10px; background: var(--panel); }
+  #mentionBox { flex: none; min-height: 0; max-height: 38vh; overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y; display: flex; flex-direction: column; border: 1px solid var(--line2); border-radius: 10px; background: var(--panel); }
   #mentionBox[hidden] { display: none; }
-  #mentionBox .mnRow { text-align: left; display: flex; flex-direction: column; gap: 1px; padding: 7px 12px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: none; }
+  #mentionBox .mnRow { flex: none; text-align: left; display: flex; flex-direction: column; gap: 1px; padding: 7px 12px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: none; }
   #mentionBox .mnRow b { font-weight: 600; color: var(--hi); font-size: 14px; overflow-wrap: anywhere; }
   #mentionBox .mnRow small { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
   #mentionBox .mnRow.cat::after { content: '›'; position: absolute; right: 14px; }

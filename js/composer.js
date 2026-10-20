@@ -144,8 +144,10 @@ function mentionUpdate() {
   if ($('mentionBox').hidden) { $('mentionBox').innerHTML = '<div class="mnHint">加载中…</div>'; $('mentionBox').hidden = false; }
 }
 text.addEventListener('input', mentionUpdate);
-text.addEventListener('blur', () => setTimeout(mentionHide, 200));
-$('mentionBox').addEventListener('pointerdown', e => e.preventDefault());
+$('mentionBox').addEventListener('pointerdown', e => { if (e.pointerType === 'mouse') e.preventDefault(); });
+document.addEventListener('pointerdown', e => {
+  if (!$('mentionBox').hidden && !e.target.closest('#mentionBox, #text')) mentionHide();
+}, { passive: true });
 function onMentions(m) {
   if (!m.submenu && m.seq !== MN.seq) return;
   const t = mentionToken();
