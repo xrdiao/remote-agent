@@ -122,6 +122,14 @@ async function startVoice(event) {
   if (event.button !== 0 || voiceSession || $('mic').hidden || !windowReady) return;
   event.preventDefault();
   if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) return status('麦克风需要 HTTPS；请使用 Safari/Chrome 打开固定入口，或使用键盘语音输入', false);
+  const link = voiceConnection();
+  if (!link.streamId) {
+    status('语音模型正在准备，就绪后请重新按住麦克风…');
+    const current = () => voiceEnabled() && link.key === voiceTransportKey() && (!voiceLink || voiceLink === link);
+    try { await link.ready; if (current()) status('语音模型已就绪，请按住麦克风说话'); }
+    catch (error) { if (current()) status(error.message, false); }
+    return;
+  }
   if (event.pointerId != null) $('mic').setPointerCapture(event.pointerId);
   const session = { scope: voiceScope(), expected: text.value, prefix: text.value.slice(0, text.selectionStart), suffix: text.value.slice(text.selectionEnd), selection: text.value.slice(text.selectionStart, text.selectionEnd), held: true };
   voiceSession = session;
@@ -138,7 +146,7 @@ async function startVoice(event) {
         if (session.started) status('正在准备录音…');
       } else stream.getTracks().forEach(track => track.stop());
     }, () => {});
-    const link = session.link = voiceConnection();
+    session.link = link;
     const started = link.ready.then(() => {
       if (!voiceLive(session) || !session.held) return;
       session.streamId = link.streamId; session.started = true;
