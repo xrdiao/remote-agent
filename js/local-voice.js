@@ -1,6 +1,7 @@
 /* Local streaming dictation. Audio has its own socket and never enters the Agent queue. */
 let voiceSession = null, voiceLink = null, voiceAudio = null, voicePrepared = '', voiceCatalog = null;
 let voiceInputUntil = 0, voiceInputTimer = null, voiceInputScope = '';
+let voiceWarmTimer = 0, voiceWarmKey = '';
 function voiceEnabled() { return store.get('local-voice') === 'on'; }
 function voiceEngineKey() { return 'voice-engine:' + (currentComputer()?.id || base); }
 function voiceEngine() { return store.get(voiceEngineKey()) || ''; }
@@ -23,15 +24,26 @@ function updateVoiceButton() {
   $('mic').disabled = !windowReady;
   $('stop').hidden = mode !== 'chat' || !chatBusy || !!lastChat?.readonly || visible;
   if (!visible) cancelVoice();
-  if (!voiceEnabled() || !windowReady) {
+  if (!voiceEnabled() || !authed) {
+    clearTimeout(voiceWarmTimer); voiceWarmTimer = 0;
     voicePrepared = ''; closeVoiceConnection();
     if (!voiceEnabled()) closeVoiceAudio();
-  } else if (mode === 'chat' && !document.hidden && voicePrepared !== voiceTransportKey()) {
-    voicePrepared = voiceTransportKey();
+  } else scheduleVoiceWarmup();
+}
+function scheduleVoiceWarmup() {
+  if (!voiceEnabled() || !authed || document.hidden || sheetKind === 'local-voice') return;
+  const key = voiceTransportKey();
+  if (voicePrepared === key || (voiceWarmTimer && voiceWarmKey === key)) return;
+  clearTimeout(voiceWarmTimer); voiceWarmKey = key;
+  voiceWarmTimer = setTimeout(() => {
+    voiceWarmTimer = 0;
+    if (!voiceEnabled() || !authed || document.hidden || sheetKind === 'local-voice' || key !== voiceTransportKey()) return;
+    voicePrepared = key;
     prepareVoiceAudio().module.catch(() => {});
     voiceConnection().ready.catch(() => {});
-  }
+  }, 300);
 }
+
 function voiceScope() { return [currentComputer()?.id || '', viewSel, mode].join('|'); }
 function voiceLive(session) { return voiceSession === session && session.scope === voiceScope(); }
 function prepareVoiceAudio() {
@@ -184,15 +196,12 @@ function endVoice() {
   session.node.port.postMessage('flush');
   status('录音已结束，正在完成转录…');
 }
-async function toggleLocalVoice() {
-  if (voiceEnabled()) { store.set('local-voice', null); cancelVoice(); updateVoiceButton(); return renderVoiceMenu(); }
-  store.set('local-voice', 'on'); updateVoiceButton(); renderVoiceMenu();
-  try {
-    status('正在准备本机语音…');
-    await Promise.all([voiceConnection().ready, prepareVoiceAudio().module]);
-    if (voiceEnabled() && !voiceSession) status('本机语音已就绪，按住输入框右侧麦克风说话');
-  } catch (error) { status(error.message, false); }
+function toggleLocalVoice() {
+  store.set('local-voice', voiceEnabled() ? null : 'on');
+  if (!voiceEnabled()) cancelVoice();
+  updateVoiceButton(); renderVoiceMenu();
 }
+
 function renderVoiceMenu() {
   const engines = voiceCatalog?.key === voiceEngineKey() ? voiceCatalog.engines : [];
   const selected = voiceEngine() || engines[0]?.id;
@@ -201,7 +210,7 @@ function renderVoiceMenu() {
     + '<div class="pSec">语音识别引擎</div>'
     + engines.map(engine => `<button class="opt${engine.id === selected ? ' cur' : ''}" data-voice-engine="${esc(engine.id)}" role="radio" aria-checked="${engine.id === selected}" ${voiceSession ? 'disabled' : ''}><span class="lbl">${esc(engine.label)}<span class="sub">${esc(engine.detail)}</span></span>${engine.id === selected ? '<span class="tag">✓</span>' : ''}</button>`).join('')
     + (engines.length ? '' : '<p class="hint">电脑尚未安装语音引擎。</p>')
-    + '<p class="hint">识别过程中请先松手，等转录完成后再切换引擎。语音仅发往配对电脑。</p><details><summary>安装语音引擎</summary><p class="hint">在电脑的 Remote Agent 目录运行，并按提示同意安装：</p><pre>npm run voice:setup</pre><p class="hint">Sherpa：CPU，中英混说，模型约 615 MB。</p><pre>npm run voice:setup -- --engine qwen</pre><p class="hint">Qwen3-ASR-1.7B：官方 vLLM 流式接口，需要 Linux / NVIDIA GPU；模型约 4 GB，运行依赖另计。安装后重新打开本列表即可。麦克风仍需 HTTPS 和浏览器授权。</p></details><button class="opt" data-act="voiceBack">← 返回菜单</button>');
+    + '<p class="hint">选择后退出本列表才在后台准备引擎，连续切换只应用最后一次选择。识别过程中请先松手，等转录完成后再切换。语音仅发往配对电脑。</p><details><summary>安装语音引擎</summary><p class="hint">在电脑的 Remote Agent 目录运行，并按提示同意安装：</p><pre>npm run voice:setup</pre><p class="hint">Sherpa：CPU，中英混说，模型约 615 MB。</p><pre>npm run voice:setup -- --engine qwen</pre><p class="hint">Qwen3-ASR-1.7B：官方 vLLM 流式接口，需要 Linux / NVIDIA GPU；模型约 4 GB，运行依赖另计。安装后重新打开本列表即可。麦克风仍需 HTTPS 和浏览器授权。</p></details><button class="opt" data-act="voiceBack">← 返回菜单</button>');
 }
 async function showLocalVoiceMenu() {
   const key = voiceEngineKey(), target = base;
@@ -220,16 +229,8 @@ async function selectVoiceEngine(id) {
   if (voiceSession) return status('请松手并等待本次转录完成后再切换引擎', false);
   if (voiceCatalog?.key !== voiceEngineKey() || !voiceCatalog.engines.some(engine => engine.id === id)) return;
   if (voiceEngine() === id) return;
-  closeVoiceConnection(); voicePrepared = '';
   store.set(voiceEngineKey(), id);
-  updateVoiceButton(); renderVoiceMenu();
-  if (!voiceEnabled()) return;
-  const link = voiceConnection();
-  status('正在准备所选语音引擎…');
-  try {
-    await link.ready;
-    if (voiceLink === link && voiceEnabled()) status('语音引擎已就绪，按住麦克风说话');
-  } catch (error) { if (voiceLink === link) status(error.message, false); }
+  renderVoiceMenu();
 }
 $('mic').addEventListener('pointerdown', startVoice);
 $('mic').addEventListener('pointerup', endVoice);
@@ -245,7 +246,7 @@ text.addEventListener('blur', () => { if (!$('mic').hidden) noteVoiceInput(); })
 window.visualViewport?.addEventListener('resize', updateVoiceButton);
 window.addEventListener('resize', updateVoiceButton);
 for (const id of ['send', 'sendNow']) $(id).addEventListener('click', cancelVoice, true);
-function suspendVoice() { cancelVoice(); closeVoiceConnection(); closeVoiceAudio(); voicePrepared = ''; }
+function suspendVoice() { clearTimeout(voiceWarmTimer); voiceWarmTimer = 0; cancelVoice(); closeVoiceConnection(); closeVoiceAudio(); voicePrepared = ''; }
 document.addEventListener('visibilitychange', () => { if (document.hidden) suspendVoice(); else updateVoiceButton(); });
 window.addEventListener('pagehide', suspendVoice);
 updateVoiceButton();

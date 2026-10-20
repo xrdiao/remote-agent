@@ -13,6 +13,7 @@ function rememberAgentOpen(m) {
   }
 }
 function openSheet(kind, html) {
+  const leavingVoice = sheetKind === 'local-voice' && kind !== 'local-voice';
   const navScroll = sheetKind === kind ? $('sheet').querySelector('.codexSettingsNav')?.scrollLeft : 0;
   sheetKind = kind;
   if (kind !== 'windows') delete $('sheet')._winSig;
@@ -23,8 +24,10 @@ function openSheet(kind, html) {
   $('shade').classList.add('open');
   $('sheet').classList.add('open');
   if (kind === 'agents') $('sheet').scrollTop = 0;
+  if (leavingVoice) scheduleVoiceWarmup();
 }
 function closeSheet() {
+  const leavingVoice = sheetKind === 'local-voice';
   if (sheetKind === 'settings') send({ t: 'closeDesktopSettings' });
   if (sheetKind === 'devices') deviceRemoval = [];
   fusionModelSide = null;
@@ -34,6 +37,7 @@ function closeSheet() {
   delete $('sheet')._winSig;
   $('shade').classList.remove('open');
   $('sheet').classList.remove('open');
+  if (leavingVoice) scheduleVoiceWarmup();
 }
 $('shade').onclick = () => { closeSheet(); askDone?.(false); };
 
