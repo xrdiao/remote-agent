@@ -1,6 +1,6 @@
 # 用户要求与续做记录
 
-更新日期：2026-10-20。本文记录本项目已明确的用户要求，不代表所有要求都已实现或已完成真机验证。后续用户明确指令优先；范围或状态变化时同步更新本文。
+更新日期：2026-10-21。本文记录本项目已明确的用户要求，不代表所有要求都已实现或已完成真机验证。后续用户明确指令优先；范围或状态变化时同步更新本文。
 
 ## 每次修改前
 
@@ -228,3 +228,11 @@ Qwen worker 改为两阶段：spawn 只做 import+numpy/torch/vllm/qwen_asr 与�
 实测（本机真 GPU）：phase-1 prepared 4.7-5.1s、0 VRAM；client 连接 phase-2 load→ready 9.0s（首次连→started 13.7s 含 spawn）；真实 zh.wav 8 个 partial + 正确 final；断开后 ~60s 内 `stopped (idle release)` + `released (respawn) in ~4.9s`，respawn 后 0 VRAM；重连→ready 8.4s，再次转录结果一致。配对无头浏览器：Sherpa 按住说话回归通过；存根 SpeechRecognition 下 system 引擎可选中、按住即插入 interim+final 到光标处并保留草稿、松开后正确完成、全程 0 个 /voice socket 与 0 个新 AudioContext、不支持时置灰显示原因、切回 Sherpa 正常建连。`npm run check`（169文件）、worker py_compile、`git diff --check` 通过。未实测：真实手机系统识别（Safari/Chrome 实机 SpeechRecognition 行为、微信内）、Android/iOS 原生壳（本轮明确不做）、WeChat 内置浏览器。
 
 v143 收尾：仅执行发布与重启步骤（无 git 操作），中继按既有脚本流程重启；详见本轮报告。
+
+## 2026-10-21 Codex 设置连接与栏目切换最小修复
+
+仅修改 `server/apps/codex.mjs` 的设置适配：DOM 已有设置 iframe、调试 target 尚未注册时，按100ms间隔最多等待约3秒，并读取当前 iframe key；已连接相同编辑器且 iframe key 一致时继续直接复用缓存，无新增 target 查询。不同 key 重新绑定连接，关闭设置清掉 key。栏目点击后按目标栏目名称核对原生选中项及内容标题，未完成切换明确提示，不返回旧栏目冒充成功；保留原1200ms栏目等待、200ms控件等待、输入/指令保存及手机导航滚动行为。不修改共用页面 helpers、Cursor/Devin、聊天/语音/轮询与手机UI。
+
+最小验证在独立浏览器页面使用真实CDP和现有设置helpers：延迟注册、相同页面缓存命中、设置iframe替换重连、General/Voice栏目切换、开关操作与无效切换报错均通过，记录 `_shots/codex-settings-minimal/result.json`。桌面导航/目标注册使用测试夹具，未打开、切换或修改真实会话的设置；不能视为实体手机实测。
+
+本轮收尾：`npm run check`（170文件）与 `git diff --check` 通过。发布步骤确认前端内容已一致；仅重启中继加载修复，HTTP 200，57个公网资源与本地一致。未提交或推送源码。

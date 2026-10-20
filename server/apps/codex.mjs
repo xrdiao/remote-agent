@@ -409,7 +409,7 @@ async withCodexSettings(fn) {
   let key = '';
   const settingsKey = () => editor.evaluate(`(() => { if (![...document.querySelectorAll('.tab.active')].some(e => /^Codex Settings(?:,|$)/.test(e.getAttribute('aria-label') || ''))) return ''; const el = [...document.querySelectorAll('iframe[src*="extensionId=openai.chatgpt"]')].find(e => !e.src.includes('purpose=webviewView') && e.getBoundingClientRect().height > 0); return el ? new URL(el.src).searchParams.get('id') : ''; })()`);
   key = await settingsKey();
-  if (key && this.codexSettingsCdp?.ws?.readyState === 1 && this.codexSettingsEditor === editor) return fn(this.codexSettingsCdp);
+  if (key && key === this.codexSettingsKey && this.codexSettingsCdp?.ws?.readyState === 1 && this.codexSettingsEditor === editor) return fn(this.codexSettingsCdp);
   this.codexSettingsCdp?.close();
   this.codexSettingsCdp = null;
   if (!key) {
@@ -428,8 +428,12 @@ async withCodexSettings(fn) {
     for (let i = 0; i < 100 && !key; i++) { key = await settingsKey(); if (!key) await new Promise(r => setTimeout(r, 30)); }
     if (!key) throw new Error('Codex 设置页面尚未打开');
   }
-  const targets = await (await fetch(`${CODEX_CDP_URL}/json/list`)).json();
-  const target = targets.find(t => /extensionId=openai.chatgpt/.test(t.url || '') && new URL(t.url).searchParams.get('id') === key);
+  let target;
+  for (let i = 0; i < 30 && !target; i++) {
+    const targets = await (await fetch(`${CODEX_CDP_URL}/json/list`)).json();
+    target = targets.find(t => /extensionId=openai.chatgpt/.test(t.url || '') && new URL(t.url).searchParams.get('id') === key);
+    if (!target) { await new Promise(r => setTimeout(r, 100)); key = await settingsKey(); }
+  }
   if (!target) throw new Error('Codex 设置页面尚未连接');
   this.codexSettingsViewWs = target.webSocketDebuggerUrl;
   const cdp = new Cdp(target.webSocketDebuggerUrl);
@@ -437,6 +441,7 @@ async withCodexSettings(fn) {
   const ready = await cdp.evaluate(`new Promise(resolve => { const started = Date.now(); const read = () => { const doc = document.getElementById('active-frame')?.contentDocument; if (doc?.querySelector('[data-appearance] button.sidebar-item')) return resolve(true); if (Date.now() - started >= 5000) return resolve(false); setTimeout(read, 30); }; read(); })`);
   if (!ready) { cdp.close(); throw new Error('Codex 设置内容尚未加载'); }
   this.codexSettingsCdp = cdp;
+  this.codexSettingsKey = key;
   this.codexSettingsEditor = editor;
   return fn(cdp);
 },
@@ -446,7 +451,7 @@ async showCodexSettings(id = '', requestId = 0, value) {
   const data = await this.withCodexSettings(async cdp => {
     const previous = id ? await cdp.evaluate(helpersCall('codexSettingsData()')) : null;
     const before = previous ? JSON.stringify(previous) : '';
-    const navigating = previous?.nav.some(n => n.id === id && !n.current);
+    const navigating = previous?.nav.find(n => n.id === id && !n.current);
     if (id) {
       if (value !== undefined) await cdp.evaluate(helpersCall(`codexSettingValue(${JSON.stringify(id)}, ${JSON.stringify(value)})`));
       else {
@@ -457,6 +462,8 @@ async showCodexSettings(id = '', requestId = 0, value) {
     }
     const data = await cdp.evaluate(helpersCall(`waitSettings('codex', ${JSON.stringify(before)}, ${navigating || !before ? 1200 : 200})`));
     if (!data.nav.length) throw new Error('Codex 设置内容尚未加载');
+    if (navigating && (!data.nav.some(n => n.current && n.label === navigating.label) || (!data.dialog && data.title !== navigating.label)))
+      throw new Error('Codex 设置栏目尚未切换，请重试');
     return data;
   });
   if (this.sel === sel && this.app === 'codex') this.emit({ t: 'settings', codex: true, requestId, ...data });
@@ -472,6 +479,7 @@ async saveCodexInstructions(text, requestId = 0) {
 },
 
 async closeCodexSettings() {
+  this.codexSettingsKey = '';
   this.codexSettingsCdp?.close();
   this.codexSettingsCdp = null;
   this.codexSettingsEditor = null;
