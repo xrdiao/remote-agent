@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v143'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v146'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false, failures = 0;
 let windowReady = false;
@@ -106,9 +106,23 @@ fitViewport();
 function fitOrientation() {
   const t = window.screen.orientation?.type;
   document.body.classList.toggle('land', t ? t.startsWith('landscape') : window.screen.width > window.screen.height);
+  // Screen size, not viewport: an open keyboard must never flip the layout.
+  document.body.classList.toggle('wide', Math.min(window.screen.width, window.screen.height) >= 520);
+  // .split = the rail layout. Width-based (not orientation): keyboards shrink only the
+  // height, so near-square foldables and portrait tablets get the rail too.
+  document.body.classList.toggle('split',
+    document.body.classList.contains('wide') && window.innerWidth >= 768
+    && !document.body.classList.contains('visual'));
+  fitRail();
+}
+// Rail width: stored preference wins; otherwise auto-collapse under 1100px.
+function fitRail() {
+  const v = store.get('rail');
+  document.body.classList.toggle('railCollapsed', v ? v === 'collapsed' : window.innerWidth < 1100);
 }
 window.screen.orientation?.addEventListener('change', fitOrientation);
 window.addEventListener('orientationchange', fitOrientation);
+window.addEventListener('resize', fitOrientation);
 fitOrientation();
 
 // In-progress lines end with … and are cleared when the result arrives, or after a few seconds
@@ -132,7 +146,7 @@ function status(text, ok = true) {
   clearTimeout(statusTimer);
   pendingStatus = ok && ACTION_PENDING.has(text) ? text : '';
   $('msg').textContent = text || '';
-  $('msg').className = ok ? '' : 'err';
+  $('msg').className = text === '已连接' ? 'quiet' : (ok ? '' : 'err');
   const keep = text === '已连接' || (ok && /…$/.test(text || '') && !pendingStatus);
   if (!text || !ok || keep || pendingStatus) return;
   const wait = 2800;
