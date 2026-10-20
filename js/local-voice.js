@@ -249,4 +249,5 @@ for (const id of ['send', 'sendNow']) $(id).addEventListener('click', cancelVoic
 function suspendVoice() { clearTimeout(voiceWarmTimer); voiceWarmTimer = 0; cancelVoice(); closeVoiceConnection(); closeVoiceAudio(); voicePrepared = ''; }
 document.addEventListener('visibilitychange', () => { if (document.hidden) suspendVoice(); else updateVoiceButton(); });
 window.addEventListener('pagehide', suspendVoice);
+document.addEventListener('voice-authenticated', scheduleVoiceWarmup);
 updateVoiceButton();

@@ -501,7 +501,7 @@ async function connect() {
       }
       rememberComputer({...currentComputer(), id: m.id, name: m.name, device: m.device});
       authed = true; failures = 0;
-      scheduleVoiceWarmup();
+      document.dispatchEvent(new Event('voice-authenticated'));
       ungate();
       connHostOk();
       if (sheetKind === 'computers') closeSheet();
