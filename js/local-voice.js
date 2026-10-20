@@ -25,6 +25,7 @@ function updateVoiceButton() {
   $('mic').disabled = !windowReady;
   $('stop').hidden = mode !== 'chat' || !chatBusy || !!lastChat?.readonly || visible;
   if (!visible) cancelVoice();
+  if (typeof updateComposeCompact === 'function') updateComposeCompact();
   if (!voiceEnabled() || !authed) {
     clearTimeout(voiceWarmTimer); voiceWarmTimer = 0;
     voicePrepared = ''; closeVoiceConnection();
