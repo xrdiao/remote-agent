@@ -465,7 +465,7 @@ function renderChat(chat, stale, loading = false) {
     renderQuestions(chat.readonly && !chat.questions?.codex ? null : chat.questions);
     return;
   }
-  const followBottom = !historyRequest && !historyRendering && nearBottom();
+  const followBottom = !historyRequest && !historyRendering && followingChat();
   const savedAnchor = followBottom ? null : captureChatAnchor();
   lastChat = chat; updateTitle();
   paintGenerationTime();
@@ -559,6 +559,10 @@ function renderChat(chat, stale, loading = false) {
       return hit.el;
     }
     const el = renderItem(it);
+    if (it.k === 'tool' && it.kind === 'command' && hit?.el.classList.contains('toolrow') && patchToolRow(hit.el, el)) {
+      cache.set(it.i, { key, el: hit.el });
+      return hit.el;
+    }
     if (it.k === 'tool' && hit?.el.classList.contains('toolrow')) {
       const open = hit.el.classList.contains('open');
       el.classList.toggle('open', open);
@@ -620,7 +624,7 @@ function renderChat(chat, stale, loading = false) {
   if (SC.jump && SC.items.has(SC.jump)) { const j = SC.jump; SC.jump = null; scJump(j); }
 }
 
-let subsOpen = false;
+let subsOpen = false, queueOpen = store.get('queue-open') !== '0';
 // Newest Devin task list (highest acp index); the chip above the chat and its sheet show it.
 let latestTasks = null;
 function showTasks() {
@@ -785,7 +789,9 @@ function renderQueue(busy, queued, subs = [], readonly = false, changed = 0, qCo
   const pending = pendingEchoes.filter(p => p.kind === 'queue' && p.sel === viewSel);
   const n = Math.max(queued.length, devin ? qCount || 0 : 0) + pending.length;
   if (n) {
-    html += `<div class="qh">排队中 ${n} 条${devin ? ' ' + ibtn('trash', '清空', 'data-a="clear" data-q=""', 'del') : ''}</div>`;
+    html += `<div class="qhRow"><button class="qh fold" data-qfold aria-expanded="${queueOpen}">${queueOpen ? '▾' : '▸'} <span>排队中 ${n} 条</span></button>${devin ? ibtn('trash', '清空', 'data-a="clear" data-q=""', 'del') : ''}</div>`;
+  }
+  if (n && queueOpen) {
     html += pending.map(p => `<div class="q pending"><span class="qt">${esc(p.text)}</span><span class="sub">发送中…</span></div>`).join('');
     html += queued.map(q => `<div class="q"><span class="qt">${esc(q.t || '(空)')}</span>`
       + ibtn('edit', devin ? '从队列取出，放回输入框' : '修改', `data-q="${esc(q.id)}" data-a="edit"`)
@@ -823,6 +829,7 @@ $('queueBar').onclick = async e => {
     return toggleChangeNotice();
   }
   if ('changes' in b.dataset) { status('读取改动的文件…'); return send({ t: 'changes' }); }
+  if ('qfold' in b.dataset) { queueOpen = !queueOpen; store.set('queue-open', queueOpen ? null : '0'); return renderQueue(lastChat?.busy, lastChat?.queued || [], lastChat?.subagents || [], lastChat?.readonly, lastChat?.changed, lastChat?.queuedCount); }
   if ('fold' in b.dataset) { subsOpen = !subsOpen; return renderQueue(lastChat?.busy, lastChat?.queued || [], lastChat?.subagents || [], lastChat?.readonly, lastChat?.changed, lastChat?.queuedCount); }
   if ('main' in b.dataset) { send({ t: 'mainChat' }); status('返回主对话…'); return; }
   if (b.dataset.sub) {
@@ -911,13 +918,14 @@ function settleChatScroll() {
   if (top < lastScrollTop) { historyArmed = true; pinnedBottom = false; }
   lastScrollTop = top;
   if (pinnedBottom && !nearBottom()) pinnedBottom = false;
+  else if (!pinnedBottom && atBottom()) pinnedBottom = true;
   chatScrolling = true;
   clearTimeout(scrollIdle);
   scrollIdle = setTimeout(() => {
     if (chatTouching) return;
     chatScrolling = false;
     if (deferredScrollRender && lastChat) { deferredScrollRender = false; renderChat(lastChat); }
-    readingAnchor = nearBottom() ? null : captureChatAnchor();
+    readingAnchor = pinnedBottom ? null : captureChatAnchor();
     maybeLoadOlder();
   }, 150);
   updateToBottom();

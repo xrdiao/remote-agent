@@ -17,6 +17,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
+import android.service.notification.StatusBarNotification;
 import android.util.Base64;
 
 import org.json.JSONArray;
@@ -287,6 +288,14 @@ public class NotifyService extends Service {
             setStatus("connected");
             lastError = "";
             backoff = 2000;
+            // Events posted while this stream was down are lost; drop every stale "working"
+            // stopwatch — the relay replays the ones that are really still running.
+            if (Build.VERSION.SDK_INT >= 23) {
+                NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+                for (StatusBarNotification n : nm.getActiveNotifications()) {
+                    if (n.getNotification().extras.getBoolean("ra.working", false)) nm.cancel(n.getId());
+                }
+            }
             BufferedReader r = new BufferedReader(new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8));
             for (String line; running && (line = r.readLine()) != null; ) {
                 if (line.startsWith("data:")) show(new JSONObject(line.substring(5).trim()));
@@ -350,6 +359,7 @@ public class NotifyService extends Service {
                 .setWhen(e.optLong("startedAt", System.currentTimeMillis()))
                 .setShowWhen(true)
                 .setUsesChronometer(true);
+        b.getExtras().putBoolean("ra.working", true);
         if (Build.VERSION.SDK_INT >= 26) b.setOnlyAlertOnce(true).setTimeoutAfter(30 * 60 * 1000L);
         if (Build.VERSION.SDK_INT >= 36 && !e.optBoolean("quiet")) {
             b.getExtras().putBoolean("android.requestPromotedOngoing", true);

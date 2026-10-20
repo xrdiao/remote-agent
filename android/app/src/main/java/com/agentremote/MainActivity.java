@@ -100,7 +100,7 @@ public class MainActivity extends Activity {
 
     private WebView createWeb() {
         WebView w = new WebView(this);
-        w.setBackgroundColor(prefs.getBoolean("light", false) ? 0xFFFFFFFF : 0xFF1E1E1E);
+        w.setBackgroundColor(prefs.getBoolean("light", false) ? 0xFFF6F6F4 : 0xFF0F1012);
         WebSettings s = w.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
@@ -210,9 +210,12 @@ public class MainActivity extends Activity {
 
     // Keeps the WebView background and system-bar icon contrast in sync with the web app's theme.
     private void applyTheme(boolean light) {
-        web.setBackgroundColor(light ? 0xFFFFFFFF : 0xFF1E1E1E);
+        int bg = light ? 0xFFF6F6F4 : 0xFF0F1012;
+        web.setBackgroundColor(bg);
         bubble.setLight(light);
         if (Build.VERSION.SDK_INT >= 23) {
+            getWindow().setStatusBarColor(bg);
+            if (Build.VERSION.SDK_INT >= 26) getWindow().setNavigationBarColor(bg);
             View d = getWindow().getDecorView();
             int flags = d.getSystemUiVisibility();
             flags = light ? flags | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR : flags & ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;

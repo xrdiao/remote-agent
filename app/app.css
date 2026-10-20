@@ -161,6 +161,7 @@ body.railCollapsed .railRow { position: relative; }
   background-color: var(--s1); background-size: cover; background-position: center; background-repeat: no-repeat;
 }
 .railLogo[data-logo] { background-size: 20px; }
+.appAvatar, .optLogo[data-logo] { background-size: 62%; }
 body[data-app="cursor"] .appAvatar { background-image: url(logo-cursor-dark.svg); }
 body[data-app="devin"] .appAvatar { background-image: url(logo-devin-dark.svg); }
 body[data-app="codex"] .appAvatar { background-image: url(logo-codex-dark.svg); }
@@ -581,6 +582,7 @@ body.kb #queueBar { display: none; }
 @keyframes pulse { 50% { opacity: .25; } }
 #queueBar .qh { font-size: 12px; color: var(--fg-3); }
 #queueBar .qh.fold { background: none; border: none; padding: 2px 0; min-height: 0; text-align: left; color: var(--accent-text); font-size: 12.5px; }
+#queueBar .qhRow { display: flex; align-items: center; gap: 6px; }
 #queueBar .q { display: flex; align-items: center; gap: 6px; font-size: 13.5px; }
 #queueBar .q .qt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-2); }
 #queueBar .q .qt::before { content: "○ "; color: var(--fg-4); }
@@ -664,6 +666,7 @@ body.kb footer { padding-bottom: 8px; }
   min-height: 0; padding: 0; border-radius: 50%; display: grid; place-items: center;
 }
 #stop { background: var(--s3); color: var(--fg-hi); }
+#stop svg { width: 16px; height: 16px; }
 #mic { background: var(--s2); color: var(--fg-2); touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 #mic.on { color: #fff; background: var(--err); animation: pulse 1.2s ease-in-out infinite; }
 #chatTools, #termTools { display: flex; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: none; min-width: 0; padding: 2px 4px 6px; }
@@ -1420,7 +1423,7 @@ button { transition: background-color .12s var(--ease), color .12s var(--ease), 
 /* Expand/collapse: expandable bodies fade + drop from above. */
 .tcmd, .tdiff, .thb { transition: opacity .16s var(--ease), transform .16s var(--ease), display .16s allow-discrete; }
 .toolrow:not(.open) .tcmd, .toolrow:not(.open) .tdiff, .thb[hidden] { opacity: 0; transform: translateY(-4px); }
-@starting-style { .toolrow.open .tcmd, .toolrow.open .tdiff, .thb:not([hidden]) { opacity: 0; transform: translateY(-4px); } }
+@starting-style { .toolrow.anim.open .tcmd, .toolrow.anim.open .tdiff, .thb:not([hidden]) { opacity: 0; transform: translateY(-4px); } }
 
 /* ---------- reduced motion ---------- */
 @media (prefers-reduced-motion: reduce) {

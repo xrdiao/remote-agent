@@ -3,61 +3,93 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="dark">
+<meta name="color-scheme" content="light dark">
 <title>Remote Agent</title>
+<script>
+try {
+  document.documentElement.dataset.theme =
+    ((window.AgentRemoteApp && window.AgentRemoteApp.isLight && window.AgentRemoteApp.isLight())
+      ?? matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+} catch (e) { document.documentElement.dataset.theme = 'dark'; }
+</script>
 <style>
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
+  :root {
+    color-scheme: dark;
+    --bg: #0F1012; --s1: #17181C; --s2: #1F2125;
+    --line-2: rgba(255,255,255,.10);
+    --fg: #E8E9EB; --fg-hi: #FAFAFB; --fg-2: #B9BCC2; --fg-3: #8A8E96; --fg-4: #62666E;
+    --accent: #8F87FF; --accent-press: #7D74F7; --accent-fg: #0E0C24; --accent-text: #ABA5FF;
+    --accent-tint: rgba(143,135,255,.14);
+    --err: #FF6B6B;
+    --shadow-2: 0 -16px 48px rgba(0,0,0,.55);
+    --scrim: rgba(5,6,8,.62);
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #F6F6F4; --s1: #FFFFFF; --s2: #EEEEEB;
+    --line-2: rgba(17,17,20,.11);
+    --fg: #1D1E21; --fg-hi: #0B0B0D; --fg-2: #45484E; --fg-3: #6C7078; --fg-4: #9599A1;
+    --accent: #5B50E8; --accent-press: #4C41D6; --accent-fg: #FFFFFF; --accent-text: #4A3FD4;
+    --accent-tint: rgba(91,80,232,.10);
+    --err: #CC2F2F;
+    --shadow-2: 0 -12px 40px rgba(16,16,20,.12);
+    --scrim: rgba(20,20,24,.32);
+  }
   body {
     margin: 0;
     --pair-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom));
     min-height: 100dvh;
     display: flex; flex-direction: column;
-    background: radial-gradient(ellipse at 50% 25%, #10223455, transparent 55%), #0b131b;
-    color: #eaf0f6;
-    font: 15px/1.6 -apple-system, "PingFang SC", "HarmonyOS Sans SC", sans-serif;
+    background: radial-gradient(ellipse at 50% 25%, var(--accent-tint), transparent 55%), var(--bg);
+    color: var(--fg);
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI",
+          Roboto, "PingFang SC", "HarmonyOS Sans SC", "MiSans", "Noto Sans SC", "Microsoft YaHei", sans-serif;
     padding: calc(clamp(8px, calc(var(--pair-height) * .02), 22px) + env(safe-area-inset-top)) clamp(16px, 5vw, 24px) max(12px, env(safe-area-inset-bottom));
   }
   body > * { flex-shrink: 0; }
-  #gateLang { display: flex; align-items: center; gap: 12px; align-self: flex-end; color: #344453; }
-  #gateLang button { background: none; border: 0; padding: 0; font: inherit; font-size: 15px; color: #73818e; }
-  #gateLang button.active { color: #4da3ff; font-weight: 700; }
+  #gateLang { display: flex; align-items: center; gap: 12px; align-self: flex-end; color: var(--fg-4); }
+  #gateLang button { background: none; border: 0; padding: 0; font: inherit; font-size: 15px; color: var(--fg-3); }
+  #gateLang button.active { color: var(--accent-text); font-weight: 700; }
   .pairHero { flex: 1 0 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: clamp(6px, calc(var(--pair-height) * .1 - 48px), 32px) 0 clamp(6px, calc(var(--pair-height) * .01), 12px); }
-  .pairLogo { display: block; width: min(40vw, clamp(56px, calc(var(--pair-height) * .32 - 100px), 176px)); height: auto; margin: 0 auto clamp(8px, calc(var(--pair-height) * .02), 20px); }
-  .pairHero h2 { font-size: clamp(22px, calc(var(--pair-height) * .038), 32px); line-height: 1.2; font-weight: 700; color: #f4f7fb; margin: 0 0 clamp(6px, calc(var(--pair-height) * .012), 12px); }
+  .pairLogo { display: block; width: min(40vw, clamp(56px, calc(var(--pair-height) * .32 - 100px), 176px)); height: auto; margin: 0 auto clamp(8px, calc(var(--pair-height) * .02), 20px); border-radius: 24px; box-shadow: 0 0 60px var(--accent-tint); }
+  .pairHero h2 { font-size: clamp(22px, calc(var(--pair-height) * .038), 32px); line-height: 1.2; font-weight: 700; color: var(--fg-hi); margin: 0 0 clamp(6px, calc(var(--pair-height) * .012), 12px); }
   .pairControls { display: flex; flex-direction: column; margin-top: auto; }
   .pairControls > * { flex-shrink: 0; }
-  #pairIntro { margin: 0 0 clamp(8px, calc(var(--pair-height) * .02), 20px); text-align: center; color: #95a2b0; font-size: clamp(12px, calc(var(--pair-height) * .018), 14px); line-height: 1.6; }
-  #gateMsg { color: #95a2b0; font-size: 13px; line-height: 1.6; white-space: pre-line; margin: 0 0 12px; }
-  #gateMsg.err { color: #f77; }
+  #pairIntro { margin: clamp(4px, calc(var(--pair-height) * .012), 14px) 0 0; text-align: center; color: var(--fg-3); font-size: clamp(12px, calc(var(--pair-height) * .018), 14px); line-height: 1.6; }
+  #gateMsg { color: var(--fg-3); font-size: 13px; line-height: 1.6; white-space: pre-line; margin: 0 0 12px; }
+  #gateMsg.err { color: var(--err); }
   #gateMsg:empty { display: none; }
-  #gateEntry { border: 1px solid #223241; border-radius: 22px; background: #111d28; padding: clamp(10px, calc(var(--pair-height) * .018), 16px); }
-  .pairInput { display: flex; min-width: 0; border: 1px solid #2b3e4f; border-radius: 15px; overflow: hidden; background: #0b131b; }
-  #gateInput { flex: 1; min-width: 0; border: 0; background: none; color: #eaf0f6; font: inherit; font-size: 16px; padding: clamp(10px, calc(var(--pair-height) * .015), 16px) 12px; outline-offset: -3px; }
-  #gateInput::placeholder { color: #718190; }
-  #gatePaste { flex: none; width: 48px; padding: 10px; color: #becbd8; border: 0; border-left: 1px solid #2b3e4f; background: none; }
+  #gateEntry { border-radius: 22px; background: var(--s1); padding: clamp(10px, calc(var(--pair-height) * .018), 16px); }
+  .pairInput { display: flex; min-width: 0; border-radius: 16px; overflow: hidden; background: var(--s2); }
+  #gateInput { flex: 1; min-width: 0; border: 0; background: none; color: var(--fg-hi); font: inherit; font-size: 16px; padding: clamp(10px, calc(var(--pair-height) * .015), 16px) 12px; outline-offset: -3px; }
+  #gateInput::placeholder { color: var(--fg-4); }
+  #gatePaste { flex: none; width: 48px; padding: 10px; color: var(--fg-2); border: 0; border-left: 1px solid var(--line-2); background: none; }
   #gatePaste svg, #gateScan svg { width: 22px; height: 22px; }
-  #gateBtn, #gateRetry { width: 100%; margin-top: clamp(8px, calc(var(--pair-height) * .016), 14px); height: clamp(44px, calc(var(--pair-height) * .064), 54px); padding: 8px 12px; border: 1px solid #4da3ff; border-radius: 15px; color: #fff; background: #3b8eea; font: inherit; font-size: 18px; font-weight: 700; }
-  #pairOr { display: flex; align-items: center; gap: 12px; margin: clamp(6px, calc(var(--pair-height) * .015), 16px) 16px; color: #657482; font-size: 12px; }
-  #pairOr span:first-child, #pairOr span:last-child { height: 1px; flex: 1; background: #263542; }
-  #gateScan, #gateChange { display: flex; align-items: center; justify-content: center; gap: 10px; min-height: clamp(44px, calc(var(--pair-height) * .064), 54px); padding: 8px 12px; border-radius: 15px; border: 1px solid #375572; background: #101c27; color: #eaf0f6; font: inherit; font-size: 17px; }
+  #gateBtn, #gateRetry { width: 100%; margin-top: clamp(8px, calc(var(--pair-height) * .016), 14px); height: clamp(44px, calc(var(--pair-height) * .064), 54px); padding: 8px 12px; border: 0; border-radius: 999px; color: var(--accent-fg); background: var(--accent); font: inherit; font-size: 18px; font-weight: 700; }
+  #gateBtn:active, #gateRetry:active { background: var(--accent-press); }
+  #pairOr { display: flex; align-items: center; gap: 12px; margin: clamp(6px, calc(var(--pair-height) * .015), 16px) 16px; color: var(--fg-4); font-size: 12px; }
+  #pairOr span:first-child, #pairOr span:last-child { height: 1px; flex: 1; background: var(--line-2); }
+  #gateScan, #gateChange { display: flex; align-items: center; justify-content: center; gap: 10px; min-height: clamp(44px, calc(var(--pair-height) * .064), 54px); padding: 8px 12px; border-radius: 999px; border: 0; background: var(--s2); color: var(--fg-hi); font: inherit; font-size: 17px; }
   #gateChange { width: 100%; margin-top: 10px; }
-  #gateScan svg { color: #4da3ff; }
-  #gateHelp { align-self: center; margin-top: clamp(8px, calc(var(--pair-height) * .02), 20px); padding: 0 8px; border: 0; background: none; color: #4da3ff; font: inherit; font-size: 14px; }
+  #gateScan svg { color: var(--accent-text); }
+  #gateHelp { align-self: center; margin-top: clamp(8px, calc(var(--pair-height) * .02), 20px); padding: 0 8px; border: 0; background: none; color: var(--accent-text); font: inherit; font-size: 14px; }
   #gateHelp span { margin-left: 8px; font-size: 22px; vertical-align: -1px; }
-  #offTitle { margin: 0 0 8px; font-size: 20px; font-weight: 700; color: #f4f7fb; text-align: center; }
-  #offText { margin: 0 0 16px; color: #f77; text-align: center; font-size: 14px; }
-  #shade { position: fixed; inset: 0; background: rgba(0,0,0,.5); }
-  #sheet { position: fixed; left: 0; right: 0; bottom: 0; background: #111d28; border: 1px solid #223241; border-bottom: 0; border-radius: 16px 16px 0 0; padding: 20px 20px calc(20px + env(safe-area-inset-bottom)); }
-  #sheet h3 { margin: 0 0 10px; font-size: 17px; color: #f4f7fb; }
-  #sheet p { margin: 0 0 10px; color: #95a2b0; font-size: 14px; line-height: 1.7; }
-  #sheetOk { width: 100%; padding: 11px; border: 1px solid #4da3ff; border-radius: 15px; background: #3b8eea; color: #fff; font: inherit; font-weight: 700; }
+  #offTitle { margin: 0 0 8px; font-size: 20px; font-weight: 700; color: var(--fg-hi); text-align: center; }
+  #offText { margin: 0 0 16px; color: var(--err); text-align: center; font-size: 14px; }
+  #shade { position: fixed; inset: 0; background: var(--scrim); }
+  #sheet { position: fixed; left: 0; right: 0; bottom: 0; background: var(--s1); border-radius: 24px 24px 0 0; padding: 6px 20px calc(20px + env(safe-area-inset-bottom)); box-shadow: var(--shadow-2); }
+  #sheet::before { content: ""; display: block; width: 36px; height: 4px; border-radius: 2px; background: var(--line-2); margin: 6px auto 14px; }
+  #sheet h3 { margin: 0 0 10px; font-size: 17px; color: var(--fg-hi); }
+  #sheet p { margin: 0 0 10px; color: var(--fg-3); font-size: 14px; line-height: 1.7; }
+  #sheetOk { width: 100%; padding: 11px; border: 0; border-radius: 999px; background: var(--accent); color: var(--accent-fg); font: inherit; font-weight: 700; }
+  #sheetOk:active { background: var(--accent-press); }
   @media (min-width: 560px) and (max-height: 500px) {
     body { display: grid; grid-template-columns: 1fr 1.2fr; grid-template-rows: repeat(7, auto); gap: 2px 24px; align-content: center; }
     #gateLang { grid-column: 1; grid-row: 1; justify-self: end; }
-    .pairHero { grid-column: 1; grid-row: 2 / 5; align-self: center; margin: 0; padding: 0; }
+    .pairHero { grid-column: 1; grid-row: 2 / 8; align-self: center; margin: 0; padding: 0; }
     .pairControls { display: contents; }
-    #pairIntro { grid-column: 1; grid-row: 5 / 8; align-self: center; margin: 0; }
     #gateMsg { grid-column: 2; grid-row: 1; margin-bottom: 0; }
     #gateEntry { grid-column: 2; grid-row: 2; }
     #pairOr { grid-column: 2; grid-row: 3; margin-top: 0; margin-bottom: 0; }
@@ -69,9 +101,8 @@
 </head>
 <body>
 <div id="gateLang" aria-label="语言 / Language"><button data-lang="zh">中</button><span>|</span><button data-lang="en">EN</button></div>
-<div class="pairHero"><img src="logo.png" alt="" class="pairLogo"><h2>Remote Agent</h2></div>
+<div class="pairHero"><img src="logo.png" alt="" class="pairLogo"><h2>Remote Agent</h2><p id="pairIntro"></p></div>
 <div class="pairControls">
-  <p id="pairIntro"></p>
   <div id="gateMsg" role="status"></div>
   <div id="gateEntry"><div class="pairInput"><input id="gateInput" type="url" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off"><button id="gatePaste" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="16" rx="2"/><rect x="9" y="3" width="6" height="4" rx="1"/></svg></button></div><button id="gateBtn" type="button"></button></div>
   <div id="pairOr" hidden><span></span><span id="pairOrText"></span><span></span></div>
