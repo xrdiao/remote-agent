@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { workspaces, windowRoots, workspaceLabel } from '../../lib/files.mjs';
+import { workspaces, windowRoots, workspaceLabel, editorRoots } from '../../lib/files.mjs';
 import { IS_WIN, IS_MAC, mod, normPath, findBin } from '../../lib/platform.mjs';
 import { Cdp } from '../cdp.mjs';
 import { listWindows, codexWindows, codexFolder } from '../windows.mjs';
@@ -190,14 +190,25 @@ export const methods = {
     const editor = EDITORS.find(e => e.app === app);
     const pages = await (await fetch(`${editor.url}/json/list`)).json();
     const projectPages = pages.filter(p => p.type === 'page' && /workbench/.test(p.url));
-    const belongs = p => windowRoots(p.title, app).some(w => !w.host && fusionProject(w.root)?.id === fusionProject(real)?.id);
-    const candidates = projectPages.filter(belongs);
+    const belongs = roots => roots.some(w => !w.host && fusionProject(w.root)?.id === fusionProject(real)?.id);
+    const matching = async pages => {
+      const found = await Promise.allSettled(pages.map(async page => {
+        const own = page.id === this.windowId.replace(/^[^:]+:/, '');
+        const cdp = own ? this.editorCdp : new Cdp(page.webSocketDebuggerUrl);
+        try {
+          if (!own) await cdp.connect();
+          return belongs(await editorRoots(cdp, app)) ? page : null;
+        } finally { if (!own) cdp.close(); }
+      }));
+      return found.flatMap(row => row.status === 'fulfilled' && row.value ? [row.value] : []);
+    };
+    const candidates = await matching(projectPages);
     let target, idle;
     for (const page of candidates.sort((a, b) => Number(b.id === this.windowId.replace(/^[^:]+:/, '')) - Number(a.id === this.windowId.replace(/^[^:]+:/, '')))) {
+      if (!newSession && !threadId) { target = page; break; }
       const state = await this.projectWindowState(page);
       if (threadId && state.thread === threadId.replace(/^tab:/, '')) { target = page; break; }
       if (!state.busy && !idle) idle = page;
-      if (!newSession && !threadId) { target = page; break; }
     }
     target ||= idle;
     const newWindow = !target;
@@ -205,15 +216,30 @@ export const methods = {
       const previous = new Set(projectPages.map(p => p.id));
       const findTarget = async () => {
         const pages = await (await fetch(`${editor.url}/json/list`)).json();
-        return pages.find(p => p.type === 'page' && /workbench/.test(p.url) && !previous.has(p.id) && belongs(p));
+        return (await matching(pages.filter(p => p.type === 'page' && /workbench/.test(p.url) && !previous.has(p.id))))[0];
       };
       this.emit({ t: 'status', ok: true, msg: '正在打开项目窗口…' });
-      await openFolder(real, app, true);
-      for (let i = 0; i < 40 && !target; i++) {
+      let launchError;
+      openFolder(real, app, true).catch(error => { launchError = error; });
+      const deadline = Date.now() + 25000;
+      while (!target && Date.now() < deadline) {
+        if (launchError) throw launchError;
         target = await findTarget();
-        if (!target) await new Promise(r => setTimeout(r, 250));
+        if (!target) await new Promise(r => setTimeout(r, 150));
       }
-      if (target && newWindow) {
+
+    }
+    if (!target) throw new Error('应用尚未打开所选项目，请检查电脑上的窗口');
+    this.switchingThread = true;
+    try {
+      if (this.windowId !== (app === 'codex' ? target.id : `${app}:${target.id}`) || !this.cdp)
+        await this.attach({ id: `${app}:${target.id}`, threadId, projectSwitch: true });
+      this.pendingProject = { ...this.pendingProject, root: real, app, windowId: this.windowId, newSession, threadId, title };
+      if (await this.checkProjectTrust()) return;
+      if (app === 'codex' && !await this.ensureCodexReady(target, newSession)) return;
+      if (this.pendingProject?.trust) return;
+      await this.finishProject();
+      if (newWindow) {
         try {
           const { webSocketDebuggerUrl } = await (await fetch(`${editor.url}/json/version`)).json();
           const browser = new Cdp(webSocketDebuggerUrl);
@@ -232,22 +258,11 @@ export const methods = {
           }
         }
       }
-    }
-    if (!target) throw new Error('应用尚未打开所选项目，请检查电脑上的窗口');
-    this.switchingThread = true;
-    try {
-      if (this.windowId !== (app === 'codex' ? target.id : `${app}:${target.id}`) || !this.cdp)
-        await this.attach({ id: `${app}:${target.id}`, threadId, projectSwitch: true });
-      this.pendingProject = { ...this.pendingProject, root: real, app, windowId: this.windowId, newSession, threadId, title };
-      if (await this.checkProjectTrust()) return;
-      if (app === 'codex') await this.ensureCodexReady(target, newSession);
-      if (this.pendingProject?.trust) return;
-      await this.finishProject();
     } finally {
       this.switchingThread = false;
       this.lastChatAt = 0;
       await this.pollChat(true);
-      if (!this.pendingProject?.trust) this.prefetchMenus().catch(() => {});
+      if (!this.pendingProject) this.prefetchMenus().catch(() => {});
     }
   },
   // Waits for the Codex webview of a just-opened window, then binds this.cdp to it.
@@ -282,16 +297,19 @@ export const methods = {
       if (!pageOf(pages)?.chatWs) throw new Error('项目已打开，但 Codex 侧边栏尚未就绪');
       await this.attach({ id: `codex:${target.id}`, threadId: this.pendingProject?.threadId || '', projectSwitch: true });
     }
+    if (this.cdp === this.editorCdp) await this.attach({ id: `codex:${target.id}`, threadId: this.pendingProject?.threadId || '', projectSwitch: true });
+    if (await this.checkCodexLogin()) return false;
     if (needThread) {
-      if (await this.checkCodexLogin()) throw new Error('请先在电脑端登录此窗口的 Codex，再新建会话');
       let ready = false;
       for (let i = 0; i < 120 && !ready; i++) {
         if (this.pendingProject?.trust) return;
+        if (await this.checkCodexLogin()) return false;
         ready = !!await this.cdp.evaluate(helpersCall('codexNewPoint()'));
         if (!ready) await new Promise(r => setTimeout(r, 250));
       }
       if (!ready) throw new Error('项目已打开，但 Codex 会话入口尚未就绪');
     }
+    return true;
   },
   async newProject(parent, name, newSession = false) {
     const folder = createProjectFolder(parent, name);
@@ -340,7 +358,7 @@ export const methods = {
         // Trust just activated the Codex extension; wait for its webview before selecting the session.
         if (this.app === 'codex') {
           const page = (await codexWindows(CODEX_CDP_URL)).find(p => p.pageId === pending.windowId);
-          if (page) await this.ensureCodexReady({ id: page.pageId, ws: page.ws }, pending.newSession || !!pending.threadId);
+          if (page && !await this.ensureCodexReady({ id: page.pageId, ws: page.ws }, pending.newSession)) return;
         }
         return this.finishProject();
       }

@@ -1,4 +1,4 @@
-import { windowRoots } from '../../lib/files.mjs';
+import { windowRoots, editorRoots } from '../../lib/files.mjs';
 import { mod } from '../../lib/platform.mjs';
 import { helpersCall, PAGE_SRC } from '../page/build.mjs';
 import { cursorUsage } from '../agent/context.mjs';
@@ -77,7 +77,7 @@ export const adapter = {
       const workspace = await this.cdp.evaluate(helpersCall('cursorWorkspace()'));
       return workspace && !workspace.host ? [workspace] : [];
     }
-    return windowRoots(this.winTitle || '', 'cursor', '').filter(w => !w.host);
+    return (await editorRoots(this.editorCdp, 'cursor')).filter(w => !w.host);
   },
 
   async queueAction(id, action) {

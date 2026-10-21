@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { windowRoots } from '../../lib/files.mjs';
+import { windowRoots, editorRoots } from '../../lib/files.mjs';
 import { agentMarks } from '../../lib/marks.mjs';
 import { IS_WIN, mod } from '../../lib/platform.mjs';
 import { listWindows } from '../windows.mjs';
@@ -133,8 +133,7 @@ export const adapter = {
   },
 
   async currentRoots() {
-    const title = IS_WIN ? await this.editorCdp.evaluate('document.title') : this.winTitle || '';
-    return windowRoots(title, 'devin', '').filter(w => !w.host);
+    return (await editorRoots(this.editorCdp, 'devin')).filter(w => !w.host);
   },
 
   async queueAction(id, action) {
