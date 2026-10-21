@@ -46,7 +46,7 @@ async function enableNotify() {
     window.AgentRemoteApp.setNotify(nativeConfig());
     notifyOn = true;
     setTimeout(() => { if (window.AgentRemoteApp.listenStatus?.() !== 'connected') showBgSheet(); }, 4000);
-    return status('通知已开启，正在连接电脑。华为等手机请在「设置 → 应用启动管理」里允许本 App 后台活动');
+    return status('通知已开启，正在连接电脑。请在手机的电池设置里允许本 App 后台运行，否则切到后台后会收不到通知');
   }
   if (iosPush()) {
     try {
