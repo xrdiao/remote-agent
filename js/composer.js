@@ -110,7 +110,7 @@ text.addEventListener('input', () => {
 // sent, the relay types the text and, at each "@label", lets Devin's typeahead insert the chip.
 const MN = { seq: 0, timer: 0, q: null, root: false, mentions: [], used: '' };
 function mentionToken() {
-  if (questionCompose || mode !== 'chat' || (currentApp !== 'devin' && currentApp !== 'codex')) return null;
+  if (questionCompose || mode !== 'chat' || !supportsCapability('fileReferences', currentApp === 'devin' || currentApp === 'codex')) return null;
   const caret = text.selectionStart ?? text.value.length;
   const head = text.value.slice(0, caret);
   if (currentApp === 'codex') {
