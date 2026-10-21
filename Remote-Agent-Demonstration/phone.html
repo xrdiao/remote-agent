@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Remote Agent — phone</title>
+<link rel="stylesheet" href="../app/app.css">
+<link rel="stylesheet" href="phone.css">
+<script>window.PHONE_LANG = new URLSearchParams(location.search).get('lang') || 'zh';</script>
+<script src="phone.js" defer></script>
+</head>
+<body class="chatmode">
+<header>
+  <button id="title"><span class="appAvatar"><span id="dot" class="ok"></span></span><span class="titleLabels"><span class="titleRow"><span id="titleText">Cursor</span><span id="titlePlan" hidden></span></span><span id="titleProject"></span></span><span id="titleLatency"></span><svg class="arrowIcon titleArrow" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
+    <div id="meters">
+      <button class="meter" id="meterCtx" type="button"><span class="track" id="meterCtxTrack"><i id="meterCtxFill"></i></span><span class="meterText"><span class="meterLabel" id="meterCtxLabel">上下文</span><b id="meterCtxPct">42%</b></span></button>
+      <div id="quotaMeters"></div><span id="quotaStatus"></span>
+    </div>
+  <div class="seg"><button id="tabChat" class="on"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-8l-6 4v-4H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/><path d="M7 9h10M7 13h6"/></svg><span class="segLabel">对话</span></button><button id="tabTerm"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3 3-3 3m6 0h4"/></svg><span class="segLabel">终端</span></button></div>
+  <button id="menuBtn" aria-label="菜单"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/></svg></button>
+</header>
+
+<main>
+  <section id="chatView" class="view active">
+    <div id="sessBar" hidden></div>
+    <div id="listWrap">
+    <div id="list">
+      <button id="older" hidden>↑ 加载更早的消息</button>
+      <div id="historyStatus" class="hint" hidden role="status"></div>
+      <button id="cachedMore" hidden></button>
+      <button id="taskChip" hidden></button>
+      <div id="sessionNotice" hidden role="status"></div>
+      <div id="items"></div>
+      <div id="empty" hidden></div>
+    </div>
+    <button id="toBottom">↓ 最新</button>
+    </div>
+    <div id="qnBar"></div>
+    <div id="queueBar"></div>
+    <div id="actionBar"></div>
+  </section>
+
+  <section id="screenView" class="view">
+    <div id="termBusy" hidden>Agent 正在运行</div>
+    <div id="visualHeader" hidden></div>
+    <div id="visualCaption" hidden></div>
+    <div id="view">
+      <div id="termEmpty" hidden><div>没有打开的终端</div><button id="termEmptyNew" type="button">新建终端</button></div>
+      <pre id="termText"></pre>
+      <div id="visualEmpty" hidden role="status"></div>
+      <div id="stage"><img id="screen" alt=""><div id="ripple"></div></div>
+    </div>
+    <div id="visualHint" hidden></div>
+    <div id="screenKeys" class="tools" hidden>
+      <button data-key="Escape">Esc</button>
+      <button data-key="Enter">回车</button>
+      <button data-key="ArrowUp">↑</button>
+      <button data-key="ArrowDown">↓</button>
+      <button data-key="Tab">Tab</button>
+      <button data-key="Backspace">⌫</button>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="attachmentRow" hidden><div id="attachments"></div></div>
+  <div id="mentionBox" hidden></div>
+  <div id="mathPrev" hidden></div>
+  <div id="fusionBar" hidden></div>
+  <div class="composerBox">
+  <div id="chatTools">
+    <button id="pickModel" class="dd" title="更换模型">模型</button>
+    <button id="pickMode" class="dd" hidden></button>
+    <button id="pickAgents" class="dd" title="选择项目与会话">项目/会话</button>
+    <button id="pickEditor" title="浏览和编辑当前项目文件" aria-label="浏览和编辑当前项目文件"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 20H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2v2"/><path d="m18 13 3 3-6 6h-3v-3Z"/></svg></button>
+    <button id="newChat">＋ 新建</button>
+  </div>
+  <div id="termToolsLabel" hidden>终端操作</div>
+  <div id="termTools" hidden>
+    <button id="pickTerms">列表</button>
+    <button id="newTerm">＋ 新建</button>
+    <button id="termInt">Ctrl+C</button>
+    <button data-termkey="Tab">Tab</button>
+    <button id="termCopy" disabled>复制</button>
+    <button id="termSelectAll" disabled>全选</button>
+  </div>
+  <div class="composerField"><textarea id="text" rows="1" placeholder="发给 Agent…" enterkeyhint="send"></textarea><button id="mic" title="按住说话，松开结束" aria-label="按住说话" hidden><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button><button id="stop" title="停止生成" aria-label="停止生成" hidden><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="3"/></svg></button></div>
+  <div class="sendRow">
+    <div class="sendTools">
+    <button id="add" title="添加功能" aria-label="添加功能"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+    <button id="img" title="附加图片" aria-label="附加图片"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/></svg></button>
+    <button id="uploadDoc" title="上传文档" aria-label="上传文档"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M6 3h8l4 4v14H6zM14 3v5h4"/></svg></button>
+    <div id="inputHistory"><button id="inputPrev" aria-label="上一条已发送内容" title="上一条已发送内容"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></svg></button><button id="inputNext" aria-label="下一条已发送内容或恢复草稿" title="下一条已发送内容或恢复草稿"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button></div>
+    <div id="termHistory"><button data-termkey="ArrowUp" aria-label="上一条终端命令"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></svg></button><button data-termkey="ArrowDown" aria-label="下一条终端命令"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button></div>
+    <button id="insertNewline" aria-label="插入换行" title="插入换行"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m9 10-5 5 5 5M20 4v7a4 4 0 0 1-4 4H4"/></svg></button>
+    </div>
+    <button id="sendNow" hidden>立即发送</button><button id="send">发送</button>
+  </div>
+  <div id="footerStatus"><div id="msg"></div><span id="elapsed" hidden></span></div>
+  </div>
+</footer>
+
+<div id="shade"></div>
+<div id="sheet"></div>
+
+<div id="viewer">
+  <div class="bar">
+    <button id="vClose" aria-label="返回"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg></button>
+    <div class="names"><div id="vName"></div><div id="vPath"></div></div>
+    <button id="vEdit" hidden>编辑</button>
+    <button id="vFind">搜索</button>
+    <button id="vWrap">换行</button>
+  </div>
+  <div id="vStatus" hidden role="status"></div>
+  <div id="vTools" hidden></div>
+  <div id="vChanges" hidden><button id="vChangePrev">▲</button><button id="vChangeNext">▼</button><span id="vChangeCount"></span><button id="vOnly">只看改动</button><span id="vSrc"></span></div>
+  <div id="vSearch" hidden></div>
+  <div id="vBody"></div>
+</div>
+
+<div id="lock">
+  <div class="lkGlow"></div>
+  <div id="lkTime">12:41</div>
+  <div id="lkDate"></div>
+  <div id="notif">
+    <img class="nIcon" src="../app/icon-192.png" alt="">
+    <div class="nText"><div class="nTop"><span class="nTitle"></span><span class="nNow"></span></div><div class="nBody"></div></div>
+  </div>
+  <div class="lkHome"></div>
+</div>
+
+<div id="fakekb">
+  <div class="krow"><i>Q</i><i>W</i><i>E</i><i>R</i><i>T</i><i>Y</i><i>U</i><i>I</i><i>O</i><i>P</i></div>
+  <div class="krow"><i>A</i><i>S</i><i>D</i><i>F</i><i>G</i><i>H</i><i>J</i><i>K</i><i>L</i></div>
+  <div class="krow"><i class="wide">⇧</i><i>Z</i><i>X</i><i>C</i><i>V</i><i>B</i><i>N</i><i>M</i><i class="wide">⌫</i></div>
+  <div class="krow"><i class="wide">123</i><i class="space"></i><i class="wide">return</i></div>
+  <div class="kbar"><span></span><span></span></div>
+</div>
+<div id="fx"></div>
+</body>
+</html>
