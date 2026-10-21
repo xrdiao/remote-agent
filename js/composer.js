@@ -230,7 +230,7 @@ text.addEventListener('blur', () => {
 });
 // Devin while its turn runs: Queue (default, Enter) or Send now (interrupts the turn, after confirmation).
 let chatBusy = false;
-function devinBusySplit() { return mode === 'chat' && currentApp === 'devin' && chatBusy; }
+function devinBusySplit() { return mode === 'chat' && supportsCapability('queue') && supportsCapability('steer', currentApp === 'devin') && chatBusy; }
 function codexFollow() {
   const follow = lastChat?.codex?.follow;
   return mode === 'chat' && currentApp === 'codex' && chatBusy && (follow === 'queue' || follow === 'steer') ? follow : '';
