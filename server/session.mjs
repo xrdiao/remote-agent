@@ -190,7 +190,7 @@ export class Session extends AgentContext {
       trust = await editorCdp.evaluate(helpersCall('workspaceTrustState()'));
       if (win.app === 'codex') {
         thread = await cdp.evaluate(helpersCall('codexThread()')) || '';
-        if (!trust.required && selection.threadId && selection.threadId !== thread && !launchDefault) {
+        if (chatWs && !trust.required && selection.threadId && selection.threadId !== thread && !launchDefault) {
           if (await this.selectCodexThread(selection.threadId, cdp)) thread = selection.threadId;
           else staleSelect = selection.threadId;
         }
@@ -245,10 +245,16 @@ export class Session extends AgentContext {
       this.setMode(this.mode).catch(e => this.emit({ t: 'status', ok: false, msg: e.message }));
       return;
     }
-    // An app started from the phone opens on its most recently used session.
-    if (launchDefault && takeLaunched(win.app)) {
-      try { await this.adapter.openDefaultSession?.call(this); }
-      catch { this.emit({ t: 'status', ok: false, msg: '没有找到最近的会话' }); }
+    const recoverInitial = win.app === 'codex' && selection.initial === true && !thread;
+    // Initial connection must not wait for Codex to mount a transcript.
+    if (recoverInitial) attached();
+    // Also recover a desktop-restarted Codex, which has no phone launch marker.
+    if ((launchDefault && takeLaunched(win.app)) || recoverInitial) {
+      try { await this.adapter.openDefaultSession?.call(this, launchDefault ? '' : selection.threadId || ''); }
+      catch (error) {
+        if (recoverInitial) this.emit({ t: 'chat', sel: this.selectionKey(), chat: null });
+        this.emit({ t: 'status', ok: false, msg: error.message });
+      }
       // openDefaultSession may have re-attached to another window (e.g. opened the
       // default project); that attach already emitted, and the remembered-thread
       // reopen in attach() must stay skipped for this launch.
@@ -259,8 +265,8 @@ export class Session extends AgentContext {
       // otherwise attach sees threadId already matching and never opens a transcript.
       try { await this.openAgent(this.threadId); } catch {}
     }
-    attached();
-    if (staleSelect) this.emit({ t: 'status', ok: false, msg: '没有找到上次的会话，已留在当前会话' });
+    if (!recoverInitial) attached();
+    if (staleSelect && !recoverInitial) this.emit({ t: 'status', ok: false, msg: '没有找到上次的会话，已留在当前会话' });
     this.setMode(this.mode).then(() => {
       if (this.cdp === cdp) this.prefetchMenus().catch(() => {});
     }).catch(e => this.emit({ t: 'status', ok: false, msg: e.message }));

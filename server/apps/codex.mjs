@@ -16,9 +16,9 @@ export const adapter = {
 
   // A freshly launched Codex window opens on the new-chat view; select this
   // workspace's most recently used conversation (rows carry lastUsed = updatedAt).
-  async openDefaultSession() {
+  async openDefaultSession(preferred = '') {
     const page = (await codexWindows(CODEX_CDP_URL)).find(p => p.pageId === this.codexPageId);
-    if (page && !page.chatWs) await this.ensureCodexReady({ id: page.pageId, ws: page.ws }, true);
+    if (page && !page.chatWs) await this.ensureCodexReady({ id: page.pageId, ws: page.ws }, false);
     if (this.pendingProject?.trust) return;
     if (await this.checkCodexLogin()) return;
     const cur = await this.cdp.evaluate(helpersCall('codexThread()')) || '';
@@ -28,8 +28,11 @@ export const adapter = {
     let best = null;
     for (let i = 0; i < 48 && !best; i++) {
       const rows = await this.cdp.evaluate(helpersCall('codexChatRows(true)')) || [];
-      best = rows.filter(r => !r.host && (!roots.length || roots.some(root => pathKey(root) === pathKey(r.workspace))))
-        .reduce((a, b) => ((b.lastUsed || 0) > (a?.lastUsed || 0) ? b : a), null);
+      const local = rows.filter(r => !r.host);
+      best = local.find(r => r.id === preferred)
+        || local.filter(r => !roots.length || roots.some(root => pathKey(root) === pathKey(r.workspace)))
+          .reduce((a, b) => ((b.lastUsed || 0) > (a?.lastUsed || 0) ? b : a), null)
+        || local.reduce((a, b) => ((b.lastUsed || 0) > (a?.lastUsed || 0) ? b : a), null);
       if (!best) await new Promise(r => setTimeout(r, 250));
     }
     if (!best) throw new Error('没有找到最近的会话');
@@ -313,47 +316,26 @@ async openCodexAgent(id) {
   }
   const match = /^thread:([^:]+):(.+)$/.exec(id || '');
   if (!match) throw new Error('这条会话已经不在列表里');
-  let pageId = match[1];
   const convId = match[2];
-  const { row, roots } = await this.cdp.evaluate(`(() => {
-    const h = ${PAGE_SRC};
-    return { row: h.codexChatRows(true).find(row => row.id === ${JSON.stringify(convId)}), roots: h.codexWorkspaceRoots() };
-  })()`);
-  const workspace = row ? (!row.host && row.workspace) : conversationProjects[JSON.stringify([computerId(), 'codex', '', convId])]?.project?.root;
-  if (workspace) {
-    if (roots.some(root => pathKey(root) === pathKey(workspace))) pageId = this.codexPageId;
-    else {
-      const pages = await codexWindows(CODEX_CDP_URL);
-      const owner = pages.find(p => windowRoots(p.rawTitle || p.title, 'codex').some(w => !w.host && pathKey(w.root) === pathKey(workspace)));
-      if (!owner) return this.useProject(workspace, false, convId);
-      pageId = owner.pageId;
-    }
+  if (await this.checkProjectTrust({ threadId: convId })) return;
+  if (this.cdp === this.editorCdp) {
+    const page = (await codexWindows(CODEX_CDP_URL)).find(p => p.pageId === this.codexPageId);
+    if (page) await this.ensureCodexReady({ id: page.pageId, ws: page.ws }, false);
   }
   this.clearViewState();
   this.switchingThread = true;
-  const switchedWindow = pageId !== this.codexPageId;
   try {
-    if (switchedWindow) {
-      await this.attach({ id: 'codex', windowId: pageId, threadId: convId });
-      if (!this.cdp) throw new Error('还没有连上 Codex');
-  if (await this.checkCodexLogin()) throw new Error('请先在电脑端登录此窗口的 Codex，再新建会话');
-      if (await this.checkProjectTrust({ threadId: convId })) return;
-      // A window that just opened reports an empty thread until its Codex webview
-      // finishes booting; bring the sidebar up and re-attach before selecting.
-      const page = (await codexWindows(CODEX_CDP_URL)).find(p => p.pageId === pageId);
-      if (page) await this.ensureCodexReady({ id: page.pageId, ws: page.ws }, true);
-    }
     if (this.pendingProject?.trust) return;
     if (!this.cdp) throw new Error('还没有连上 Codex');
-  if (await this.checkCodexLogin()) throw new Error('请先在电脑端登录此窗口的 Codex，再新建会话');
+    if (await this.checkCodexLogin()) throw new Error('请先在电脑端登录此窗口的 Codex，再切换会话');
     const current = await this.cdp.evaluate(helpersCall('codexThread()')) || '';
     if (current !== convId && !await this.selectCodexThread(convId)) throw new Error('没有找到这个会话');
     // The transcript unmounts during navigation; give it a moment so the first emit carries real items.
-    if (switchedWindow || current !== convId) {
+    if (current !== convId) {
       this.codexFreshView = true;
       await this.cdp.evaluate(helpersCall('codexWaitTurns(1200)'), { timeout: 3000 }).catch(() => {});
     }
-    this.emit({ t: 'status', ok: true, msg: !switchedWindow && current === convId ? '已是当前会话' : '已切换会话' });
+    this.emit({ t: 'status', ok: true, msg: current === convId ? '已是当前会话' : '已切换会话' });
   } finally {
     this.switchingThread = false;
     if (this.cdp) {

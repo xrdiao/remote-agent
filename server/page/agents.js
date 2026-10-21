@@ -235,7 +235,7 @@
       if (click) { hit.click(); return true; }
       return center(hit);
     }
-    if (click && window.__SSG_COMPOSER_PROVIDER__?.getStates?.().some(c => c.id === id)) {
+    if (click && window.__SSG_COMPOSER_PROVIDER__) {
       const services = [...doc.querySelectorAll('[data-message-id]')].flatMap(el => codexFiberProps(el, 40)).find(p => p.uiContextMenuServices)?.uiContextMenuServices;
       if (services) return services.commandService.executeCommand('composer.openComposer', id).then(() => true);
     }

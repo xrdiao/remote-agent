@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { windowRoots } from '../../lib/files.mjs';
 import { agentMarks } from '../../lib/marks.mjs';
-import { IS_WIN, mod, pathKey } from '../../lib/platform.mjs';
+import { IS_WIN, mod } from '../../lib/platform.mjs';
 import { listWindows } from '../windows.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { FOCUS_COMPOSER } from '../agent/context.mjs';
@@ -55,7 +55,12 @@ export const adapter = {
       await this.listAgents();
       return;
     }
-    if (id.startsWith('tab:')) return this.switchTab(id.slice(4));
+    if (id.startsWith('tab:')) {
+      const key = id.slice(4);
+      const tabs = await this.cdp.evaluate(helpersCall('devinSession()'));
+      if (tabs?.tabs.some(tab => tab.id === key)) return this.switchTab(key);
+      id = key;
+    }
     let { surface, row, title: windowTitle } = await this.cdp.evaluate(`(() => {
       const h = ${PAGE_SRC};
       const surface = h.devinSurface();
@@ -71,9 +76,6 @@ export const adapter = {
           return h.agentList().find(row => row.id === ${JSON.stringify(id)});
         })()`);
       }
-    }
-    if (row?.workspace && !row.host && !windowRoots(windowTitle, 'devin').some(w => !w.host && pathKey(w.root) === pathKey(row.workspace))) {
-      return this.useProject(row.workspace, false, id);
     }
     if (surface === 'editor') {
       const opened = await this.openSessionPicker();

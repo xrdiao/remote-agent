@@ -452,7 +452,7 @@ export const methods = {
       if (!window.startsWith(this.app + ':')) throw new Error('项目不属于当前 Agent');
       if (kind === 'project-new' && encodedThread) await this.useProject(decodeURIComponent(encodedThread), true);
       else {
-        if (window !== this.targetId) await this.attach(window);
+        if (kind === 'project-new' && window !== this.targetId) await this.attach(window);
         if (await this.checkProjectTrust()) return;
         if (kind === 'project-new') await this.newChat();
         else await this.adapter.openAgent.call(this, decodeURIComponent(encodedThread), title);
