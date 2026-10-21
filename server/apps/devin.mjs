@@ -668,6 +668,7 @@ async switchTab(title) {
 
 // Switching surface resets what was read from the old transcript, like opening another agent.
 resetDevinView() {
+  if (this.selectedThread !== undefined) this.selectedThread = '';
   this.lastChat = '';
   this.lastChatAt = 0;
 },

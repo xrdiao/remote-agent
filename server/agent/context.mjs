@@ -130,6 +130,24 @@ export class AgentContext {
     this.lastDraft = undefined;
   }
 
+  acceptsChat(chat) {
+    if (this.selectedThread && chat?.thread && chat.thread !== this.selectedThread) {
+      if (this.offThread !== chat.thread) {
+        this.offThread = chat.thread;
+        this.emit({ t: 'status', ok: false, msg: '桌面窗口已切到其他会话，手机保留原选择；请从项目/会话重新连接' });
+      }
+      return false;
+    }
+    this.offThread = '';
+    return true;
+  }
+
+  async assertSelectedThread() {
+    if (!this.selectedThread) return;
+    const active = await this.cdp.evaluate(helpersCall('activeThread()'));
+    if (active !== this.selectedThread) throw new Error('当前窗口已不在所选会话，请从项目/会话重新连接后操作');
+  }
+
   liveRead(cdp, sel) {
     return cdp && cdp === this.cdp && sel === this.sel && !this.switchingThread;
   }
@@ -213,9 +231,11 @@ export class AgentContext {
 
   async clickButton(item, n, actionId, label, sel) {
     try {
+    await this.assertSelectedThread();
     if (sel != null && sel !== this.selectionKey()) throw new Error('会话已切换，请使用当前会话的按钮');
     const pos = await this.cdp.evaluate(helpersCall(`locate(${JSON.stringify(String(item))}, ${Number(n) || 0}, ${JSON.stringify(actionId || '')}, ${JSON.stringify(label || '')})`));
     if (!pos) { await this.pollChat(true); throw new Error('请求已更新，请查看最新选项'); }
+    if (/^(Fork chat from here|Open agent|View agent|View subagent)$/.test(label || '')) this.selectedThread = '';
     await this.tapCss(pos.x, pos.y);
     await new Promise(r => setTimeout(r, 200));
     await this.pollChat(true);

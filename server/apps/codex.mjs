@@ -23,15 +23,13 @@ export const adapter = {
     if (await this.checkCodexLogin()) return;
     const cur = await this.cdp.evaluate(helpersCall('codexThread()')) || '';
     if (cur) return;
-    const roots = await this.editorCdp.evaluate(helpersCall('codexWorkspaceRoots()')) || [];
+    const roots = await this.cdp.evaluate(helpersCall('codexWorkspaceRoots()')) || [];
     // The webview loads the conversation list asynchronously after the sidebar opens.
     let best = null;
     for (let i = 0; i < 48 && !best; i++) {
       const rows = await this.cdp.evaluate(helpersCall('codexChatRows(true)')) || [];
-      const local = rows.filter(r => !r.host);
+      const local = rows.filter(r => !r.host && roots.some(root => pathKey(root) === pathKey(r.workspace)));
       best = local.find(r => r.id === preferred)
-        || local.filter(r => !roots.length || roots.some(root => pathKey(root) === pathKey(r.workspace)))
-          .reduce((a, b) => ((b.lastUsed || 0) > (a?.lastUsed || 0) ? b : a), null)
         || local.reduce((a, b) => ((b.lastUsed || 0) > (a?.lastUsed || 0) ? b : a), null);
       if (!best) await new Promise(r => setTimeout(r, 250));
     }
@@ -48,12 +46,17 @@ export const adapter = {
   async listAgents(silent, readOnly, emit) {
     const pages = await codexWindows(CODEX_CDP_URL);
     const list = [];
-    const seen = new Set();
+    const seen = new Set(), newRoots = new Set();
+    const addNew = (p, root, label) => {
+      if (!root || newRoots.has(pathKey(root))) return;
+      newRoots.add(pathKey(root));
+      list.push({ id: `new:${p.pageId}:${encodeURIComponent(root)}`, title: '＋ 新建会话', window: label, group: '', ui: true });
+    };
     const states = await Promise.all(pages.map(p => this.probeCodex(p)));
     for (const p of pages) {
       const group = p.title;
       if (p.chatWs) {
-        list.push({ id: `new:${p.pageId}`, title: '＋ 新建会话', window: group, group: '', current: false, running: false, ui: true });
+        for (const root of states[pages.indexOf(p)]?.roots || []) addNew(p, root, group);
         const cdp = p.pageId === this.codexPageId ? this.cdp : new Cdp(p.chatWs);
         let rows = [];
         try {
@@ -68,9 +71,11 @@ export const adapter = {
         for (const row of rows) {
           if (seen.has(row.id)) continue;
           seen.add(row.id);
-          const owner = pages.find((page, i) => states[i]?.roots?.includes(row.workspace)) || p;
+          const owner = pages.find((page, i) => states[i]?.thread === row.id && states[i]?.roots?.includes(row.workspace))
+            || pages.find((page, i) => states[i]?.roots?.includes(row.workspace)) || p;
           const state = states[pages.indexOf(owner)];
           const folder = folderOf(row.workspace);
+          if (!row.host) addNew(owner, row.workspace, folder || owner.title);
           list.push({
             id: `thread:${owner.pageId}:${row.id}`,
             title: row.title,
@@ -90,10 +95,9 @@ export const adapter = {
   },
 
   async currentRoots() {
-    const prefer = this.codexRoots?.get(this.threadId) || '';
     const pages = await codexWindows(CODEX_CDP_URL);
     const page = pages.find(p => p.pageId === this.codexPageId);
-    return windowRoots(page?.rawTitle || page?.title || '', 'code', prefer).filter(w => !w.host);
+    return windowRoots(page?.rawTitle || page?.title || '', 'code').filter(w => !w.host);
   },
 
   async queueAction(id, action) {
@@ -308,43 +312,32 @@ async openCodexAgent(id) {
     return;
   }
   if (id.startsWith('new:')) {
-    const pageId = id.slice(4);
-    if (pageId && pageId !== this.codexPageId) await this.attach({ id: 'codex', windowId: pageId, threadId: '' });
-    if (await this.checkProjectTrust({ newSession: true })) return;
-    await this.newCodexChat();
-    return;
+    const [, pageId, encodedRoot] = id.split(':');
+    const page = (await codexWindows(CODEX_CDP_URL)).find(p => p.pageId === pageId);
+    const root = encodedRoot ? decodeURIComponent(encodedRoot) : windowRoots(page?.rawTitle || '', 'codex')[0]?.root;
+    if (!root) throw new Error('无法确认新会话所属项目，请刷新项目与会话列表');
+    return this.useProject(root, true);
   }
   const match = /^thread:([^:]+):(.+)$/.exec(id || '');
   if (!match) throw new Error('这条会话已经不在列表里');
   const convId = match[2];
-  if (await this.checkProjectTrust({ threadId: convId })) return;
-  if (this.cdp === this.editorCdp) {
-    const page = (await codexWindows(CODEX_CDP_URL)).find(p => p.pageId === this.codexPageId);
-    if (page) await this.ensureCodexReady({ id: page.pageId, ws: page.ws }, false);
+  const rows = await this.cdp.evaluate(helpersCall('codexChatRows(true)')) || [];
+  const row = rows.find(r => r.id === convId);
+  const workspace = row?.workspace || this.codexRoots?.get(convId)
+    || conversationProjects[JSON.stringify([computerId(), 'codex', '', convId])]?.project?.root;
+  if (workspace && !row?.host) {
+    return this.useProject(workspace, false, convId);
   }
-  this.clearViewState();
-  this.switchingThread = true;
-  try {
-    if (this.pendingProject?.trust) return;
-    if (!this.cdp) throw new Error('还没有连上 Codex');
-    if (await this.checkCodexLogin()) throw new Error('请先在电脑端登录此窗口的 Codex，再切换会话');
-    const current = await this.cdp.evaluate(helpersCall('codexThread()')) || '';
-    if (current !== convId && !await this.selectCodexThread(convId)) throw new Error('没有找到这个会话');
-    // The transcript unmounts during navigation; give it a moment so the first emit carries real items.
-    if (current !== convId) {
-      this.codexFreshView = true;
-      await this.cdp.evaluate(helpersCall('codexWaitTurns(1200)'), { timeout: 3000 }).catch(() => {});
-    }
-    this.emit({ t: 'status', ok: true, msg: current === convId ? '已是当前会话' : '已切换会话' });
-  } finally {
-    this.switchingThread = false;
-    if (this.cdp) {
-      this.threadId = await this.cdp.evaluate(helpersCall('codexThread()')) || '';
-      this.publishThread();
-      this.lastChatAt = 0;
-      await this.pollChat();
-    }
+  if (row?.host) {
+    const page = (await codexWindows(CODEX_CDP_URL)).find(p => p.pageId === match[1]);
+    if (!page) throw new Error('所选会话窗口已经关闭');
+    const state = await this.projectWindowState({ ...page, id: page.pageId });
+    if (state.busy && state.thread !== convId) throw new Error('目标远程窗口正在运行，请先在电脑上为目标会话打开独立窗口');
+    if (page.pageId !== this.codexPageId) await this.attach({ id: 'codex', windowId: page.pageId });
+    if (!await this.selectCodexThread(convId)) throw new Error('没有找到所选会话');
+    return this.adoptCodexThread(convId, '已切换会话');
   }
+  throw new Error('无法确认会话所属项目，请刷新项目与会话列表');
 },
 
 async codexPageForThread(pages, threadId) {
@@ -359,7 +352,7 @@ async codexPageForThread(pages, threadId) {
     } finally { cdp.close(); }
   }));
   const matches = settled.filter(s => s.status === 'fulfilled').map(s => s.value);
-  return matches.find(m => m.active)?.page || matches.find(m => m.inWorkspace)?.page || null;
+  return matches.find(m => m.active && m.inWorkspace)?.page || matches.find(m => m.inWorkspace)?.page || null;
 },
 
 async probeCodex(page) {
@@ -756,7 +749,7 @@ async codexChatPick(label, name) {
   }
   this.emit({ t: 'status', ok: true, msg: `已执行 ${label}` });
   const now = await this.cdp.evaluate(helpersCall('codexThread()'));
-  if (now && now !== thread) this.emit({ t: 'thread', threadId: now, windowId: this.windowId });
+  if (now && now !== thread) await this.adoptCodexThread(now);
   setTimeout(() => this.pollChat().catch(() => {}), 300);
   setTimeout(() => this.listAgents().catch(() => {}), 400);
 },
