@@ -4,11 +4,13 @@ import android.app.Activity;
 import android.app.DownloadManager;
 import android.app.NotificationManager;
 import android.content.BroadcastReceiver;
+import android.content.ClipData;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.graphics.drawable.ColorDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -16,6 +18,7 @@ import android.os.Environment;
 import android.os.PowerManager;
 import android.provider.Settings;
 import android.view.View;
+import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.Toast;
 import android.webkit.JavascriptInterface;
@@ -212,8 +215,13 @@ public class MainActivity extends Activity {
     private void applyTheme(boolean light) {
         int bg = light ? 0xFFF6F6F4 : 0xFF0F1012;
         web.setBackgroundColor(bg);
+        // The window itself shows through wherever the WebView doesn't cover: behind a status bar the
+        // system leaves transparent, and beside floating/split keyboards (e.g. Gboard on tablets).
+        getWindow().setBackgroundDrawable(new ColorDrawable(bg));
         bubble.setLight(light);
         if (Build.VERSION.SDK_INT >= 23) {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS | WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION);
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
             getWindow().setStatusBarColor(bg);
             if (Build.VERSION.SDK_INT >= 26) getWindow().setNavigationBarColor(bg);
             View d = getWindow().getDecorView();
@@ -346,7 +354,15 @@ public class MainActivity extends Activity {
             return;
         }
         if (request == PICK) {
-            if (pickFile != null) pickFile.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(result, data));
+            // With <input multiple> the picker returns ClipData (often without getData()), which
+            // parseResult ignores; read every picked item so the page receives the files.
+            ClipData clip = result == RESULT_OK && data != null ? data.getClipData() : null;
+            Uri[] picked = null;
+            if (clip != null && clip.getItemCount() > 0) {
+                picked = new Uri[clip.getItemCount()];
+                for (int i = 0; i < picked.length; i++) picked[i] = clip.getItemAt(i).getUri();
+            } else picked = WebChromeClient.FileChooserParams.parseResult(result, data);
+            if (pickFile != null) pickFile.onReceiveValue(picked);
             pickFile = null;
             return;
         }
@@ -485,6 +501,12 @@ public class MainActivity extends Activity {
         public void setTheme(boolean light) {
             prefs.edit().putBoolean("light", light).apply();
             runOnUiThread(() -> applyTheme(light));
+        }
+
+        // The page keeps <input multiple> only when this app can return several picked files.
+        @JavascriptInterface
+        public boolean multiPick() {
+            return true;
         }
 
         @JavascriptInterface

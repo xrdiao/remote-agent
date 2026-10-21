@@ -90,6 +90,8 @@ export class AgentContext {
     this.thinkingTried = new Map();
     this.tasksTried = new Map();
     this.devinHist = new Map();
+    this.devinCmds = new Map();
+    this.devinCmdTried = new Map();
     this.thoughtFails = new Map();
     this.keptThink = new Map();
     this.itemCache = new Map();

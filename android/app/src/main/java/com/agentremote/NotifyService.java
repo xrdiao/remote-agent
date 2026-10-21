@@ -19,6 +19,7 @@ import android.os.Bundle;
 import android.os.IBinder;
 import android.service.notification.StatusBarNotification;
 import android.util.Base64;
+import android.util.Log;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -48,6 +49,7 @@ public class NotifyService extends Service {
     private static final String CH_LISTEN = "listen";
     private static final String CH_WORK = "work";
     private static final int LISTEN_ID = 1;
+    private static final String TAG = "RA-notify";
     static final String ACT_NUDGE = "com.agentremote.NUDGE";
 
     // "off", "connecting", "connected" or "retry"; the web app shows it under Menu > Background connection.
@@ -57,7 +59,9 @@ public class NotifyService extends Service {
     private volatile boolean running;
     private volatile boolean skipWait;
     private volatile HttpURLConnection conn;
-    private Thread worker;
+    // Last time anything (event or the relay's 25 s ping) arrived on the open stream.
+    private volatile long lastData;
+    private Thread worker, watchdog;
     private final Object gate = new Object();
     private ConnectivityManager cm;
     private ConnectivityManager.NetworkCallback netCallback;
@@ -107,6 +111,10 @@ public class NotifyService extends Service {
             worker.start();
             watchNetwork();
         }
+        if (watchdog == null || !watchdog.isAlive()) {
+            watchdog = new Thread(this::watch, "agent-remote-watchdog");
+            watchdog.start();
+        }
         return START_STICKY;
     }
 
@@ -146,8 +154,23 @@ public class NotifyService extends Service {
         } catch (Exception ignored) {}
     }
 
+    // Some phones (seen on ColorOS when the app goes to the background) leave the stream's socket dead
+    // without the read ever failing or timing out, while the relay already dropped it. The relay pings
+    // every 25 s, so a stream silent for over a minute is gone: drop it and reconnect.
+    private void watch() {
+        while (running) {
+            try { Thread.sleep(15000); } catch (InterruptedException e) { return; }
+            long silent = android.os.SystemClock.elapsedRealtime() - lastData;
+            if (conn != null && "connected".equals(status) && silent > 65000) {
+                Log.i(TAG, "watchdog: stream silent " + silent / 1000 + " s, reconnecting");
+                wake(true);
+            }
+        }
+    }
+
     private void wake(boolean dropCurrent) {
         if (dropCurrent) {
+            Log.i(TAG, "wake: drop current connection");
             skipWait = true;
             HttpURLConnection c = conn;
             if (c != null) {
@@ -186,7 +209,9 @@ public class NotifyService extends Service {
             try {
                 setStatus("connecting");
                 JSONObject cfg = new JSONObject(prefs(this).getString(PREF, "{}"));
-                listen(resolveRelay(cfg.getString("app"), cfg.optString("key")), cfg.getString("token"));
+                String relay = resolveRelay(cfg.getString("app"), cfg.optString("key"));
+                Log.i(TAG, "connecting to " + Uri.parse(relay).getHost());
+                listen(relay, cfg.getString("token"));
             } catch (Unauthorized e) {
                 // Device was removed or needs 2FA again; the app turns this back on after re-pairing.
                 prefs(this).edit().remove(PREF).apply();
@@ -195,6 +220,7 @@ public class NotifyService extends Service {
                 return;
             } catch (Exception e) {
                 lastError = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                Log.i(TAG, "connect failed: " + e.getClass().getSimpleName() + ": " + e.getMessage());
                 if (!running) return;
             }
             if (!running) return;
@@ -206,6 +232,7 @@ public class NotifyService extends Service {
                 return;
             }
             backoff = Math.min(backoff * 2, 60000);
+            Log.i(TAG, "retrying in " + backoff + " ms");
         }
     }
 
@@ -283,23 +310,40 @@ public class NotifyService extends Service {
         c.setFixedLengthStreamingMode(0);
         try {
             c.getOutputStream().close();
-            if (c.getResponseCode() == 401) throw new Unauthorized();
-            if (c.getResponseCode() != 200) throw new Exception("HTTP " + c.getResponseCode());
+            int code = c.getResponseCode();
+            Log.i(TAG, "HTTP " + code);
+            if (code == 401) throw new Unauthorized();
+            if (code != 200) throw new Exception("HTTP " + code);
             setStatus("connected");
             lastError = "";
             backoff = 2000;
+            Log.i(TAG, "stream open");
+            lastData = android.os.SystemClock.elapsedRealtime();
             // Events posted while this stream was down are lost; drop every stale "working"
             // stopwatch — the relay replays the ones that are really still running.
             if (Build.VERSION.SDK_INT >= 23) {
                 NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+                int cleared = 0;
                 for (StatusBarNotification n : nm.getActiveNotifications()) {
-                    if (n.getNotification().extras.getBoolean("ra.working", false)) nm.cancel(n.getId());
+                    if (n.getNotification().extras.getBoolean("ra.working", false)) { nm.cancel(n.getId()); cleared++; }
                 }
+                Log.i(TAG, "cleared " + cleared + " stale working notifications");
             }
             BufferedReader r = new BufferedReader(new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8));
             for (String line; running && (line = r.readLine()) != null; ) {
-                if (line.startsWith("data:")) show(new JSONObject(line.substring(5).trim()));
+                lastData = android.os.SystemClock.elapsedRealtime();
+                if (line.startsWith("data:")) {
+                    JSONObject e = new JSONObject(line.substring(5).trim());
+                    String k = e.optString("win", "") + "|" + e.optString("windowId", "") + "|" + e.optString("threadId", "");
+                    int id = k.replace("|", "").isEmpty() ? 2 : 3 + (k.hashCode() & 0x7fffffff) % 100000;
+                    Log.i(TAG, "data kind=" + e.optString("kind") + " id=" + id + (e.has("startedAt") ? " startedAt=" + e.optLong("startedAt") : ""));
+                    show(e);
+                }
             }
+            if (running) Log.i(TAG, "stream ended by server");
+        } catch (java.net.SocketTimeoutException e) {
+            Log.i(TAG, "read timeout");
+            throw e;
         } finally {
             c.disconnect();
             conn = null;
@@ -319,8 +363,8 @@ public class NotifyService extends Service {
         String key = win + "|" + windowId + "|" + threadId;
         int id = key.replace("|", "").isEmpty() ? 2 : 3 + (key.hashCode() & 0x7fffffff) % 100000;
         String kind = e.optString("kind");
-        if ("end".equals(kind)) { ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).cancel(id); return; }
-        if ("working".equals(kind)) { showWorking(e, id, win, windowId, threadId); return; }
+        if ("end".equals(kind)) { Log.i(TAG, "cancel id=" + id); ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).cancel(id); return; }
+        if ("working".equals(kind)) { Log.i(TAG, "notify working id=" + id + " when=" + e.optLong("startedAt")); showWorking(e, id, win, windowId, threadId); return; }
         if ("tasks".equals(kind)) { showTasks(e, win, windowId, threadId); return; }
         Notification.Builder b = builder(CH_EVENTS)
                 .setContentTitle(e.optString("title", "Remote Agent"))
@@ -345,6 +389,7 @@ public class NotifyService extends Service {
             b.addAction(new Notification.Action.Builder(Icon.createWithResource(this, R.drawable.ic_notify), tr("回复", "Reply"), actionIntent(win, windowId, threadId, e.optString("question"), "reply", id, true))
                     .addRemoteInput(ri).build());
         }
+        Log.i(TAG, "notify event id=" + id);
         ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).notify(id, b.build());
     }
 

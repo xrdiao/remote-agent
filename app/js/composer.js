@@ -252,8 +252,13 @@ function updateSendMode() {
    transit, and never while the mic is held. */
 let composeCompactTimer = 0, composeExpandedAt = 0, composerEngaged = false;
 function micHeld() { return $('mic')?.classList.contains('on') || (typeof voiceSession !== 'undefined' && !!voiceSession); }
+// Only where vertical room is scarce, judged by the window's actual shape rather than the reported
+// orientation (foldables disagree on what "portrait" means): a tall phone window keeps the full composer,
+// while foldable cover screens (~1.3–1.5 tall:wide), landscape phones, tablets and unfolded inners collapse.
+const composeCompactAllowed = () => window.innerHeight / window.innerWidth < 1.6;
+window.addEventListener('resize', () => updateComposeCompact());
 function composeCompactWanted() {
-  return mode === 'chat'
+  return mode === 'chat' && composeCompactAllowed()
     && !text.value.trim() && document.activeElement !== text && !composerEngaged
     && !$('attachments').children.length
     && $('mentionBox').hidden
@@ -288,14 +293,17 @@ function updateComposeCompact() {
   }
 }
 // Capture-phase so it runs before controls that re-appear under the same tap.
-// In compact: taps outside +/mic/stop just focus the field (user gesture → iOS keyboard).
+// In compact: taps outside +/mic/stop only expand the composer (the field ignores pointer events
+// while compact, so no keyboard yet); a second tap in the field then focuses it natively.
 // Right after expanding, the same tap's ghost click would hit controls that were hidden
 // when the finger went down — swallow it for 400 ms.
 document.querySelector('.composerBox').addEventListener('click', e => {
   if (document.body.classList.contains('composeCompact')) {
     if (e.target.closest('#add, #mic, #stop')) return;
     e.preventDefault(); e.stopPropagation();
-    text.focus();
+    clearTimeout(composeCompactTimer); composeCompactTimer = 0;
+    composerEngaged = true;
+    setComposeCompact(false);
     return;
   }
   if (performance.now() - composeExpandedAt < 400

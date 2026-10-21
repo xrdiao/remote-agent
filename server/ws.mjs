@@ -25,8 +25,21 @@ server.on('upgrade', (req, socket, head) => {
   target.handleUpgrade(req, socket, head, ws => target.emit('connection', ws, req));
 });
 
+// A phone sent to the background often drops its socket without a close frame. Without a heartbeat the
+// relay keeps that session as a visible viewer ("watching") and skips its notifications until TCP gives up.
+const heartbeat = setInterval(() => {
+  for (const client of wss.clients) {
+    if (client.alive === false) { client.terminate(); continue; }
+    client.alive = false;
+    try { client.ping(); } catch {}
+  }
+}, 20000);
+wss.on('close', () => clearInterval(heartbeat));
+
 // The token arrives as the first message rather than in the URL, so it never shows up in proxy logs.
 wss.on('connection', (ws, req) => {
+  ws.alive = true;
+  ws.on('pong', () => { ws.alive = true; });
   let session = null;
   const authTimer = setTimeout(() => ws.close(4001, 'auth timeout'), 5000);
   let queue = Promise.resolve();

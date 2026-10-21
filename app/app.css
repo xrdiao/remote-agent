@@ -254,18 +254,39 @@ body.devin #quotaMeters { flex: none; }
 .meter i { display: none; }
 .meter b { display: block; font-size: 11.5px; line-height: 1.3; font-weight: 600; color: var(--fg-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
 #meterCtx .track { --ring: var(--accent); }
-/* Phones (portrait and the landscape right column): rings only — values stay in the
-   tap-through usage sheet and in the visually-hidden text. The capsule yields space
-   to the title first; its rings scroll inside when they don't all fit. */
-body:not(.wide) #meters { gap: 8px; padding: 0 8px; flex: 0 1 auto; min-width: 0; }
-body:not(.wide) #title { flex: 1 1 0; min-width: 132px; }
+/* Phones (portrait and the landscape right column): compact rings with the percentage
+   inside; labels stay in the tap-through usage sheet and the visually-hidden text.
+   Sized so three meters (Cursor) fit beside the title down to 360px wide; more than
+   that scroll inside the capsule. */
+/* The meters keep their full width (the title gives way and ellipsizes instead); only when
+   they would push the toggle/menu off screen does the capsule cap out and scroll. */
+body:not(.wide) #meters { gap: 5px; padding: 0 6px; flex: none; max-width: calc(100% - 172px); }
+body:not(.wide) #quotaMeters { gap: 5px; flex: none; }
+body:not(.wide) #title { flex: 1 1 0; min-width: 84px; }
 body:not(.wide) .titleArrow, body:not(.wide) #titlePlan { display: none; }
 body:not(.wide) .appAvatar { width: 30px; height: 30px; }
 @media (max-width: 430px) {
   header { padding: 6px 10px 4px; gap: 6px; }
 }
-body:not(.wide) .meter .track { width: 18px; height: 18px; }
-body:not(.wide) .meterText { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+body:not(.wide) .meter .track { width: 24px; height: 24px; }
+body:not(.wide) .meter .track::after { inset: 2.5px; }
+/* The percentage sits inside the ring; the usage sheet says whether it is used or remaining. */
+body:not(.wide) .meter .track::before {
+  content: attr(data-n); position: absolute; inset: 0; z-index: 1; display: grid; place-items: center;
+  font-size: 9px; font-weight: 700; letter-spacing: -.03em; color: var(--fg-hi); font-variant-numeric: tabular-nums;
+}
+/* Enough room (measured in fitMeters): the value text sits beside a smaller ring instead. */
+body.metersText:not(.wide) .meter .track { width: 16px; height: 16px; }
+body.metersText:not(.wide) .meter .track::after { inset: 2.5px; }
+body.metersText:not(.wide) .meter .track::before { content: none; }
+/* fitMeters checks the title and the menu itself, so the fixed width cap is lifted here. */
+body.metersText:not(.wide) #meters { gap: 7px; padding: 0 8px; max-width: none; }
+body.metersText:not(.wide) #quotaMeters { gap: 7px; }
+body.metersText:not(.wide) .meter { gap: 4px; }
+body.metersText:not(.wide) .meter b { font-size: 10.5px; }
+body.metersText:not(.wide) #title { min-width: 0; }
+body.metersText:not(.wide) .meter .meterLabel { display: block; }
+body:not(.wide):not(.metersText) .meterText { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
 body:not(.wide) .fusionMetricText { display: none; }
 body:not(.wide) #fusionHeader { flex: 0 1 auto; }
 
@@ -281,6 +302,18 @@ body:not(.wide) #fusionHeader { flex: 0 1 auto; }
 .seg button svg { width: 18px; height: 18px; }
 .seg button.on { background: var(--s3); color: var(--fg-hi); }
 .seg .segLabel { display: none; }
+/* Thin phones: the chat/terminal tabs stack into one toggle — the current mode in front, the other
+   peeking from behind. Any tap swaps them: both glide to the same spot, trade layers there (opaque
+   discs, so no icon shows through) and separate again. */
+body:not(.wide) .seg { position: relative; width: 46px; padding: 0; gap: 0; background: transparent; }
+body:not(.wide) .seg button {
+  position: absolute; top: 2px; left: 0; z-index: 1; translate: 14px 0; scale: .86;
+  background: var(--s1); color: var(--fg-4); box-shadow: 0 0 0 2px var(--bg);
+  transition: translate .22s var(--ease), scale .22s var(--ease), background-color .22s var(--ease), color .22s var(--ease), z-index 0s linear .11s;
+}
+/* The three-dot glyph is narrow: a slimmer button closes the dead gap after the toggle. */
+body:not(.wide) #menuBtn { width: 28px; margin-left: -4px; }
+body:not(.wide) .seg button.on { z-index: 2; translate: 0 0; scale: 1; background: var(--s3); color: var(--fg-hi); }
 #menuBtn {
   flex: none; width: 36px; height: 36px; min-height: 0; padding: 0; border-radius: 50%;
   display: grid; place-items: center; background: transparent; color: var(--fg-2);
@@ -727,7 +760,7 @@ body.composeCompact.chatmode .sendTools > :not(#add),
 body.composeCompact.chatmode .sendRow > :not(.sendTools),
 body.composeCompact.chatmode #sendNow, body.composeCompact.chatmode #send { display: none; }
 body.composeCompact.chatmode .composerField { flex: 1 1 auto; }
-body.composeCompact.chatmode #text { min-height: 40px; max-height: 40px; }
+body.composeCompact.chatmode #text { min-height: 40px; max-height: 40px; pointer-events: none; }
 body.composeCompact.chatmode #stop, body.composeCompact.chatmode #mic { top: 50%; transform: translateY(-50%); }
 /* The status line rides inside the capsule between + and the mic; never interactive. */
 body.composeCompact.chatmode #footerStatus {
