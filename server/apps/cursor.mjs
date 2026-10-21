@@ -7,7 +7,7 @@ export const adapter = {
   async newChat() {
     const before = await this.cdp.evaluate(helpersCall('activeThread()'));
     await this.pressControl('newChat');
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 40; i++) {
       await new Promise(r => setTimeout(r, 150));
       const chat = await this.cdp.evaluate(helpersCall('extract()'));
       if (!chat || (chat.thread === before && chat.items.length)) continue;

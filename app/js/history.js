@@ -431,6 +431,26 @@ function pendingEchoEls() {
     return el;
   });
 }
+const executionRecordsShown = () => store.get('show-execution-' + currentApp) === '1';
+function executionRecord(it) {
+  return it.k === 'tool' && (it.execution || ['command', 'read', 'search', 'explore'].includes(it.kind)
+    || String(it.i).includes(':exec:'));
+}
+function visibleChatItems(items, busy) {
+  const shown = executionRecordsShown();
+  const latestTurn = busy ? Math.max(0, items.findLastIndex(it => it.k === 'human')) : items.length;
+  return items.filter((it, n) => {
+    if (!executionRecord(it)) return !(it.k === 'tool' && it.done);
+    const attention = it.keep || it.b?.some(b => /^(?:run(?! in background)|allow|approve|reject|deny|retry|confirm|continue|accept)\b|^(?:运行|允许|批准|拒绝|重试|确认|继续|接受)/i.test(b))
+      || /(?:^|\n)\s*(?:error\b|failed\b|permission denied\b|(?:(?:process|command) )?exit(?:ed)?(?: with)? code[: ]+[1-9]\d*|错误|失败|拒绝)/i.test([it.t, it.output].filter(Boolean).join('\n'));
+    return shown || attention || (!it.done && n >= latestTurn);
+  });
+}
+function toggleExecutionRecords() {
+  store.set('show-execution-' + currentApp, executionRecordsShown() ? '0' : '1');
+  renderChat(lastChat, chatStale);
+  showMainMenu();
+}
 function renderChat(chat, stale, loading = false) {
   if (chat) reconcileSent(chat);
   chat = withMessageTimes(chat);
@@ -528,9 +548,10 @@ function renderChat(chat, stale, loading = false) {
   $('cachedMore').hidden = !V.older;
   $('cachedMore').textContent = `↑ 显示更早的本地记录（${V.older} 条）`;
   const stick = followBottom || sessionChanged;
+  const visibleItems = visibleChatItems(V.items, chat.busy);
   // Anchor on the first visible item so loading older messages doesn't jump.
   let anchor = savedAnchor;
-  if (anchor && !V.items.some(it => String(it.i) === anchor.id && !(it.k === 'tool' && it.done))) anchor = null;
+  if (anchor && !visibleItems.some(it => String(it.i) === anchor.id)) anchor = null;
   if (!stick && !anchor) {
     const top = list.getBoundingClientRect().top;
     let lo = 0, hi = itemsEl.children.length;
@@ -539,7 +560,7 @@ function renderChat(chat, stale, loading = false) {
       if (itemsEl.children[mid].getBoundingClientRect().bottom > top) hi = mid;
       else lo = mid + 1;
     }
-    const retained = new Set(V.items.filter(it => !(it.k === 'tool' && it.done)).map(it => String(it.i)));
+    const retained = new Set(visibleItems.map(it => String(it.i)));
     for (let n = lo; n < itemsEl.children.length; n++) {
       const el = itemsEl.children[n];
       if (retained.has(el.dataset.i)) { anchor = { id: el.dataset.i, top: el.getBoundingClientRect().top - top }; break; }
@@ -549,7 +570,6 @@ function renderChat(chat, stale, loading = false) {
       if (retained.has(el.dataset.i)) { anchor = { id: el.dataset.i, top: el.getBoundingClientRect().top - top }; break; }
     }
   }
-  const visibleItems = V.items.filter(it => !(it.k === 'tool' && it.done));
   const els = visibleItems.map(it => {
     const key = JSON.stringify(it);
     const hit = cache.get(it.i);
@@ -608,7 +628,7 @@ function renderChat(chat, stale, loading = false) {
   $('taskChip').hidden = !latestTasks || (latestTasks.done >= latestTasks.total && !chat.busy);
   if (latestTasks) $('taskChip').innerHTML = `<span>${I18N.tr('任务')}</span> ${latestTasks.done}/${latestTasks.total}`;
   if (sheetKind === 'tasks') showTasks();
-  const live = new Set(visibleItems.map(it => it.i));
+  const live = new Set(V.items.map(it => it.i));
   for (const k of cache.keys()) if (!live.has(k)) { thoughtObserver.unobserve(cache.get(k).el); cache.delete(k); }
 
   // A cached render is display-only: no action buttons, questions or queue actions until the fresh chat arrives.
@@ -688,7 +708,7 @@ function renderQuestions(qs) {
     const focusKey = focused?.matches('[data-field]') ? questionFieldKey(focused) : null;
     const selection = focusKey ? [focused.selectionStart, focused.selectionEnd] : null;
     const expanded = new Set([...bar.querySelectorAll('details[open]')].map(el => el.dataset.question));
-    bar.innerHTML = `<div class="qnHead">Codex 等待你回答<span class="qnCount">${qs.requests.length} 个请求</span></div>` + qs.requests.map(r => {
+    bar.innerHTML = `<div class="qnHead">Codex 等待你${qs.requests.some(r => r.id.startsWith('approval:')) ? '审批' : '回答'}<span class="qnCount">${qs.requests.length} 个请求</span></div>` + qs.requests.map(r => {
       const lines = r.text.trim().split('\n'), heading = lines.shift();
       const remaining = lines.join('\n').trim();
       return `<section class="qnRequest"><div class="qnQ">${esc(heading)}</div>`

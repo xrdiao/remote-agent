@@ -272,12 +272,15 @@
     }
     for (const el of query('button, input, textarea, select, [role=radio], [role=checkbox]')) {
       if (!vis(el) || el.closest('[contenteditable=true]')) continue;
-      const props = codexFiberProps(el, 32).find(p => p.request?.item?.requestId || (p.item?.requestId && (p.onReply || p.onApprove || p.onSubmit)));
+      const approvalCard = el.closest('[data-codex-approval-surface]');
+      const props = codexFiberProps(el, 32).find(p => p.request?.item?.requestId || (p.item?.requestId && (p.onReply || p.onApprove || p.onSubmit))
+        || (approvalCard && p.item?.type === 'exec' && p.item.approvalRequestId != null));
       const request = props?.request || (props?.item ? props : null);
       const item = request?.item;
       if (!item) continue;
-      const id = String(item.requestId);
-      if (!rows.has(id)) rows.set(id, { id, text: item.title || item.reason || item.command || (item.questions || []).map(q => q.question || q.title || q.header).join('\n') || request.kind || 'Codex 请求', buttons: [], fields: [] });
+      const approval = item.type === 'exec' && item.approvalRequestId != null;
+      const id = approval ? 'approval:' + item.approvalRequestId : String(item.requestId);
+      if (!rows.has(id)) rows.set(id, { id, text: approval ? ['终端命令执行审批', ...(item.cmd || []), item.approvalReason].filter(Boolean).join('\n') : item.title || item.reason || item.command || (item.questions || []).map(q => q.question || q.title || q.header).join('\n') || request.kind || 'Codex 请求', buttons: [], fields: [] });
       const row = rows.get(id);
       if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) && !/^(checkbox|radio|hidden)$/.test(el.type)) {
         row.fields.push({ el, label: el.getAttribute('aria-label') || el.placeholder || el.name || '回答', value: el.value || '', type: el.type, options: el.tagName === 'SELECT' ? [...el.options].map(o => ({ value: o.value, label: o.text })) : null });
