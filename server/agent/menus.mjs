@@ -248,7 +248,7 @@ export const methods = {
         await this.tapCss(pos.x, pos.y);
         await this.closeMenus();
       }
-      this.pollChat().catch(() => {});
+      this.pollChat(this.app === 'codex').catch(() => {});
       this.emit({ t: 'status', ok: true, msg: `已切换到 ${label}` });
       return;
     }

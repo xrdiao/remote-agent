@@ -379,6 +379,8 @@ export const methods = {
         await new Promise(r => setTimeout(r, 150));
       }
       if (!chat) throw new Error('新会话输入区尚未就绪，请检查电脑上的会话');
+      if (this.app === 'devin' && chat.session?.cwd && fusionProject(chat.session.cwd)?.id !== fusionProject(pending.root)?.id)
+        throw new Error('Devin 新会话的工作目录与所选项目不一致，尚未发送消息；请检查电脑端的工作目录');
       chat.empty = true;
       this.syncSession(chat);
       this.threadId = chat.thread || chat.session?.key || '';

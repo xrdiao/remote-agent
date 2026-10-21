@@ -205,7 +205,7 @@ export const adapter = {
     await new Promise(r => setTimeout(r, 150));
     await this.closeMenus();
     this.emit({ t: 'status', ok: true, msg: `已切换到 ${label}` });
-    this.pollChat().catch(() => {});
+    this.pollChat(true).catch(() => {});
     await this.openMenu('effort').catch(() => {});
     return true;
   },

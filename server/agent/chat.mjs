@@ -188,8 +188,9 @@ export const methods = {
       if (!this.liveRead(cdp, sel) || this.historyLoading) return;
       if (!this.acceptsChat(chat)) return;
       this.syncSession(chat);
+      const emptyCodex = this.app === 'codex' && !this.threadId && !this.selectedThread && !chat?.thread && chat?.items?.length === 0 && !chat.readonly;
       const extracted = chat && JSON.stringify({ ...chat, draft: undefined });
-      if (chat && chat.thread === (this.threadId || '') && (this.app !== 'codex' || chat.thread) && (!this.lastChat || extracted !== this.lastExtractedChat)) {
+      if (chat && chat.thread === (this.threadId || '') && (this.app !== 'codex' || chat.thread || emptyCodex) && (!this.lastChat || extracted !== this.lastExtractedChat)) {
         this.lastExtractedChat = extracted;
         const initial = { ...chat, items: chat.items.map(it => ({ ...it })) };
         delete initial.draft;
@@ -234,7 +235,7 @@ export const methods = {
       if (!this.liveRead(cdp, sel) || this.historyLoading || !chat) return;
       if (!this.acceptsChat(chat)) return;
       const prevThread = this.threadId || '';
-      if (this.app === 'codex' && !chat.thread) { this.pendingThread = ''; return; }
+      if (this.app === 'codex' && !chat.thread && !emptyCodex) { this.pendingThread = ''; return; }
       if (chat.thread !== prevThread) {
         if (this.app === 'codex' && this.pendingThread !== chat.thread) {
           this.pendingThread = chat.thread;

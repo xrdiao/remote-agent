@@ -328,6 +328,7 @@ $('sheet').addEventListener('click', async e => {
   if (b.dataset.groupRename != null) return editComputerGroup(b.dataset.groupRename);
   if (b.dataset.groupDelete != null) return deleteComputerGroup(b.dataset.groupDelete);
   if (act === 'toggleChanges') { toggleChangeNotice(); return closeSheet(); }
+  if (act === 'executionToggle') return toggleExecutionRecords();
   if (act === 'newTerm') { closeSheet(); status('正在新建终端…'); return send({ t: 'newTerminal' }); }
   else if (act === 'fusionHistory') { closeSheet(); return send({ t: 'fusionHistory' }); }
   else if (act === 'fusionNew') { closeSheet(); return send({ t: 'fusionNew' }); }

@@ -61,7 +61,14 @@
       item.h = devinRoot ? devinRich(devinRoot) : md ? clean(md) : esc((withoutThinking(el).innerText || '').trim()).replace(/\n/g, '<br>');
     }
     else item.t = summary(withoutThinking(el));
-    if (k === 'tool') { const f = toolFile(el); if (f) item.f = f; }
+    if (k === 'tool') {
+      const f = toolFile(el); if (f) item.f = f;
+      const host = el.closest('[data-message-kind="tool"]') || el;
+      const row = codexFiberProps(host, 6).find(p => p.row)?.row;
+      const entries = row?.items || (row?.entry ? [row.entry] : []);
+      if (entries.length && entries.every(e => /^(?:shell|read|listDir|glob|grep|ripgrepSearch|search|webSearch|webFetch|getMcpTools)ToolCall$/.test(e.step?.toolCallVm?.case || e.summaryToolCase || ''))) item.execution = true;
+      if (host.dataset.toolHasError === 'true' || host.dataset.toolStatus === 'error' || entries.some(e => e.step?.error)) item.keep = true;
+    }
     const b = buttonsIn(el, false).filter(x => !x.el.closest(THINKING_ROOT));
     if (b.length) {
       item.b = b.map(x => x.label);
@@ -269,7 +276,8 @@
         if (item.phase === 'commentary') out.push({ i: id, k: 'thinking', t: `工作过程\n${item.content}`, live: !item.completed });
         else out.push({ i: id, k: 'assistant', t: item.content, completed: item.completed, h: block ? clean(block) : esc(item.content).replace(/\n/g, '<br>') });
       } else if (item.type === 'exec') {
-        out.push({ i: id, k: 'tool', t: (item.cmd || []).join('\n').slice(0, 240), done: finished });
+        out.push({ i: id, k: 'tool', t: (item.cmd || []).join('\n').slice(0, 240), done: finished,
+          ...(item.approvalRequestId != null || ['failed', 'declined'].includes(item.executionStatus) || (item.output?.exitCode != null && item.output.exitCode !== 0) ? { keep: true } : {}) });
       } else if (item.type === 'patch') {
         const files = Object.keys(item.changes || {});
         out.push({ i: id, k: 'tool', t: `修改 ${files.join(', ')}`.slice(0, 240), f: files[0], done: finished });
