@@ -18,13 +18,14 @@
       id: 'classic-0', title: single.innerText.trim() || '终端', current: true, tab: single,
       close: doc.querySelector('.part.panel .title-actions [aria-label="Kill Terminal"]'),
     }];
-    return [...doc.querySelectorAll('.terminal-tabs-list .terminal-tab, .monaco-list-row:has(.terminal-tabs-entry)')].filter(vis).map((tab, i) => ({
+    const classic = [...doc.querySelectorAll('.terminal-tabs-list .terminal-tab, .monaco-list-row:has(.terminal-tabs-entry)')].filter(vis).map((tab, i) => ({
       id: tab.id || `classic-${i}`,
       title: (tab.querySelector('.label-name, a') || tab).innerText.trim().split('\n')[0].slice(0, 80) || `终端 ${i + 1}`,
       current: tab.classList.contains('active') || !!tab.querySelector('.terminal-tabs-entry.is-active') || tab.getAttribute('aria-selected') === 'true',
       tab,
       close: tab.querySelector('[aria-label="Kill Terminal"], [aria-label^="Kill"]'),
     }));
+    if (classic.length) return classic;
     // Devin / VS Code monaco list: rows labelled "Terminal 1 cloudflared".
     // Kill/Split action anchors exist in the row but get a size only on hover.
     const vt = [...document.querySelectorAll('[aria-label="Terminal tabs"] .monaco-list-row')].filter(vis);

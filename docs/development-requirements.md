@@ -393,3 +393,11 @@ Cursor工具标题实际有自定义描述，因此在既有messageItem中按原
 验证：实际只读调用3个Agent的5个窗口extract，Cursor两窗口识别19/16条、Devin识别38条、Codex识别181/128条命令或读取记录，前后thread不变。配对浏览器实际加载Codex连接，再用真实提取的工具条目和受控轮次验证4个Agent的默认关闭、生成中仅保留当前轮、结束隐藏、滑块恢复、审批/失败/思考/结果/编辑保留；Devin展开的同一命令节点隐藏再显示仍展开，SC历史条目数量不变。深浅主题下滑块高度至少44px、列表无溢出；实际网页刷新后各Agent独立选择保持。可见阅读锚点切换偏移约0.5px；首次测试错误测量了虚拟绘制后已离开可视区的指定段落，改为测量当时实际可见锚点后通过，未因此扩大生产修改。桌面原窗口与thread均保持、0条真实Agent操作；临时设备逐次按精确ID清理，原11台设备及tokenHash保留。记录_shots/execution-visibility/，非实体手机实测；尚未在真实任务结束现场逐个工具做操作验证。检查和发布重启另记，不提交推送源码。
 
 v174收尾：npm run check（207文件、170helpers）及git diff --check通过。已仅发布手机端（gh-pages ede24d0）、重启中继PID3710203、HTTP 200；Pages构建/CDN更新后六项变更公网资源与本地逐项一致。未提交推送master/debug，隧道和配对保留。
+
+## 2026-10-21 仅修复终端轮询释放与列表提前返回
+
+按用户确认仅修改两点：终端首次读取结束后复用现有chatWatchGeneration核对初始化是否仍有效，断开或被新一次模式切换替代时不再创建旧轮询；正常250ms定时器及pollTerminal原有节流保持。terminalEntries的classic列表仅在非空时返回，让原有Terminal tabs及单xterm分支可达，原顺序、ID、标题和按钮定位不变，不新增布局兼容。新建会话、执行指令显示以及适配接口均未改动。
+
+定向受控验证通过：正常初始化仍创建250ms定时器、读取中detach不重建定时器、重入初始化保留新定时器；glass/single/classic/Terminal tabs/单xterm/空列表六种既有路径均通过。记录_shots/terminal-two-fixes/results.json。npm run check（208文件、170helpers）与git diff --check通过。本轮未做实体手机或真实终端命令测试，不发送Agent任务。
+
+收尾：原发布脚本因可能写入gh-pages被自动审批拒绝，改为纯GET只读核对，确认全部前端文件与已发布树一致，无需发布；公网index.html与本地一致。确认持久化Fusion状态无活动任务后重启中继PID3726115、HTTP 200；保留原启动参数、环境、隧道及配对。未提交或推送源码。

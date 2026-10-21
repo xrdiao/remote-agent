@@ -64,6 +64,7 @@ export class Session extends AgentContext {
       await this.editorCdp.send('Page.stopScreencast').catch(() => {});
       this.lastTermHash = undefined;
       await this.pollTerminal();
+      if (this.chatWatchGeneration !== watchGeneration || this.mode !== 'terminal') return;
       this.termTimer = setInterval(() => this.pollTerminal().catch(() => {}), 250);
     }
   }
