@@ -68,6 +68,8 @@ wss.on('connection', (ws, req) => {
     // Frame acks bypass the queue so a slow command never stalls the stream.
     if (msg.t === 'ack') return session.ack();
     const route = ROUTES[msg.t];
+    const codexMention = msg.t === 'mentionQuery' && session.app === 'codex';
+    if (codexMention) session.mentionSeq = msg.seq;
     const imageTransfer = msg.t === 'image' ? { cancelled: false } : null;
     if (imageTransfer) (session.imageTransfers ||= new Map()).set(msg.clientImageId, imageTransfer);
     if (route && flag(route.fast, session, msg)) { route.fastRun(session, msg); return; }
@@ -80,6 +82,7 @@ wss.on('connection', (ws, req) => {
     const execute = async () => {
       if (executed) return;
       executed = true;
+      if (codexMention && session.mentionSeq !== msg.seq) return;
       const actionIndex = imageActions.findIndex(action => action.execute === execute);
       if (actionIndex !== -1) imageActions.splice(actionIndex, 1);
       if (msg.t === 'image') {

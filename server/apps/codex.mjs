@@ -550,11 +550,14 @@ async codexRestorePrompt(before) {
   }
 },
 
-async codexMentionSettle() {
+async codexMentionSettle(seq) {
   let last = '', rows = [];
   for (let i = 0; i < 16; i++) {
+    if (seq != null && this.mentionSeq !== seq) return null;
     await new Promise(r => setTimeout(r, 140));
+    if (seq != null && this.mentionSeq !== seq) return null;
     rows = await this.cdp.evaluate(helpersCall('codexMentionRows()')) || [];
+    if (seq != null && this.mentionSeq !== seq) return null;
     const sig = JSON.stringify(rows.map(r => [r.section, r.key, r.label]));
     if (rows.length && sig === last && i >= 2) break;
     last = sig;
@@ -574,7 +577,7 @@ async codexMentionQuery(q, trigger, seq) {
     const before = await this.codexPrompt();
     const typed = trigger + String(q || '');
     await this.cdp.send('Input.insertText', { text: typed });
-    const rows = await this.codexMentionSettle();
+    const rows = await this.codexMentionSettle(seq);
     await this.codexRestorePrompt(before);
     let after = await this.codexPrompt();
     if (after !== before && !before) {

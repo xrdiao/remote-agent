@@ -1,5 +1,6 @@
 /* ---------- composer ---------- */
 const text = $('text');
+let questionCompose = null;
 const drafts = new Map(), draftMentions = new Map();
 const inputHistory = new Map(), chatInputCache = new Map(), terminalInputHistory = new Map();
 function chatInputKey(chat = lastChat) { return [currentComputer()?.id || '', viewSel, 'chat', chat?.thread || ''].join('|'); }
@@ -69,7 +70,7 @@ function reconcileSent(chat) {
     if (item) { matched.add(item.i); confirmSent({ requestId, sel: viewSel, queued: false, sentAt: item.sentAt || Date.now() }); }
   }
 }
-function draftKey() { return [currentComputer()?.id || '', viewSel, mode].join('|'); }
+function draftKey() { return [currentComputer()?.id || '', viewSel, mode, ...(questionCompose?.sel === viewSel && mode === 'chat' ? [questionCompose.id] : [])].join('|'); }
 function saveDraft() { if (activeDraft) { drafts.set(activeDraft, text.value); draftMentions.set(activeDraft, MN.mentions.slice()); } }
 function restoreDraft() { activeDraft = draftKey(); text.value = drafts.get(activeDraft) || ''; MN.mentions = draftMentions.get(activeDraft)?.slice() || []; mentionHide(); autosize(); }
 function autosize() { text.style.height = 'auto'; text.style.height = text.scrollHeight + 'px'; updateMathPrev(); updateComposeCompact(); }
@@ -100,7 +101,7 @@ text.addEventListener('input', () => {
   inputRevision++; draftVersions.set(activeDraft, (draftVersions.get(activeDraft) || 0) + 1); autosize(); saveDraft();
   clearTimeout(draftPushTimer);
   draftPushTimer = setTimeout(() => {
-    if (composing || mode !== 'chat' || currentApp === 'fusion' || MN.mentions.length) return;
+    if (questionCompose || composing || mode !== 'chat' || currentApp === 'fusion' || MN.mentions.length) return;
     send({ t: 'draft', text: text.value, draftEpoch });
   }, 400);
 });
@@ -109,7 +110,7 @@ text.addEventListener('input', () => {
 // sent, the relay types the text and, at each "@label", lets Devin's typeahead insert the chip.
 const MN = { seq: 0, timer: 0, q: null, root: false, mentions: [], used: '' };
 function mentionToken() {
-  if (mode !== 'chat' || (currentApp !== 'devin' && currentApp !== 'codex')) return null;
+  if (questionCompose || mode !== 'chat' || (currentApp !== 'devin' && currentApp !== 'codex')) return null;
   const caret = text.selectionStart ?? text.value.length;
   const head = text.value.slice(0, caret);
   if (currentApp === 'codex') {
@@ -141,7 +142,13 @@ function mentionUpdate() {
   const queryKey = (t.trigger || '@') + t.q;
   if (queryKey === MN.q) return;
   MN.q = queryKey;
-  MN.timer = setTimeout(() => mentionAsk({ q: t.q }), 220);
+  if (currentApp === 'codex') MN.seq++;
+  MN.timer = setTimeout(() => mentionAsk({ q: t.q }), currentApp === 'codex' ? 150 : 220);
+  if (currentApp === 'codex' && !$('mentionBox').hidden) {
+    const hint = $('mentionBox').querySelector('.mnHint');
+    if (hint) hint.textContent = '搜索中…';
+    else $('mentionBox').insertAdjacentHTML('afterbegin', '<div class="mnHint">搜索中…</div>');
+  }
   if ($('mentionBox').hidden) { $('mentionBox').innerHTML = '<div class="mnHint">加载中…</div>'; $('mentionBox').hidden = false; updateComposeCompact(); }
 }
 text.addEventListener('input', mentionUpdate);
@@ -234,9 +241,10 @@ $('stop').onclick = async () => {
 };
 function updateSendMode() {
   if (typeof updateVoiceButton === 'function') updateVoiceButton();
-  const split = devinBusySplit();
-  const follow = codexFollow();
-  const label = mode === 'terminal' ? '发送到终端' : split || follow === 'queue' ? '排队' : follow === 'steer' ? '立即追加' : '发送';
+  const answering = mode === 'chat' && questionCompose?.sel === viewSel;
+  const split = !answering && devinBusySplit();
+  const follow = answering ? '' : codexFollow();
+  const label = answering ? '提交回答' : mode === 'terminal' ? '发送到终端' : split || follow === 'queue' ? '排队' : follow === 'steer' ? '立即追加' : '发送';
   if ($('send').textContent !== label) $('send').textContent = label;
   $('sendNow').hidden = !split && !follow;
   $('sendNow').textContent = follow === 'steer' ? '改为排队' : '立即追加';
@@ -339,6 +347,7 @@ $('fusionBar').onclick = e => {
   send({ t: 'fusionDecide', kind: b.dataset.fusionAct });
 };
 $('send').onclick = () => {
+  if (mode === 'chat' && questionCompose?.sel === viewSel) return submitQuestionCompose();
   if (mode === 'chat' && pendingImageUploads()) return status('图片尚未上传完成；失败图片请重试或删除', false);
   const v = text.value;
   if (currentApp === 'fusion' && lastChat?.fusion?.busy) return status('Fusion 正在进行');
