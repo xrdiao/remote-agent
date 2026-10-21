@@ -29,6 +29,8 @@ struct DuoContent: View {
     var body: some View {
         NavigationStack {
             ShellWebView(webView: shell.webView)
+                // Paint through the bottom safe area; the reported insets keep web controls clear.
+                .ignoresSafeArea(.container, edges: .bottom)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar(.hidden, for: .navigationBar)
                 .toolbar {

@@ -1,6 +1,6 @@
 # iPhone Duo 专项适配设计与实施方案（仅限 iPhone Duo）
 
-更新日期：2026-10-21。基线：手机网页 v177、现有 iOS WKWebView 壳。
+更新日期：2026-10-22。基线：手机网页 v177、现有 iOS WKWebView 壳。
 
 **最高优先级范围：本方案仅为 iPhone Duo 设备及其对应模拟器做专项适配。用户明确普通 iPhone 和 Android 当前表现正常；不得以本方案为由改变它们的现有布局、导航、控件位置、输入行为或性能。iPad、其他折叠设备及非 Duo 浏览器同样不纳入改造。**
 
@@ -483,6 +483,12 @@ Fusion 用独立测试项目完成选项目、开始 run、A/B 交替直到结�
 验证：实际 Duo 模拟器运行独立离线测试包，确认完全展开显示图标侧栏、点击展开完整菜单、半折与合拢退出、重新展开恢复完整菜单，原生终端入口与侧栏共存。截图位于 `_shots/iphone-duo/rail/`。受控执行真实布局函数的 150 种窗口宽度、铰链状态、画面模式和侧栏偏好组合通过，非 Duo 方向与侧栏函数保持原样；前轮隔离/锚点/桥接检查仍通过。`npm run check`、`git diff --check` 及 Duo iOS 构建通过。
 
 已将新版正常壳安装回 Duo，按精确 bundle ID 清理本次离线测试 App。公网网页未同步本地 v179，正常 App 仍可能显示旧网页；该规则需要新版 iOS 壳和新版网页同时生效。本轮不发布、不重启、不提交推送、不上传 TestFlight；完整业务与实体设备的未测范围继续见13.1。
+
+### 13.3 2026-10-22 底部安全区背景修复（原生壳）
+
+用户要求修复展开后的整条底部留白。仅对 Duo 的 ShellWebView 增加 `.ignoresSafeArea(.container, edges: .bottom)`，背景延伸到屏幕底边；保留真实 safeAreaInsets，并复用现有网页控件避让，不改其他设备、布局阈值或网页版本。系统工具栏仍由 NavigationStack 管理。
+
+独立离线包实测：展开 WebView 从867×635pt、bottom inset 0，变为867×669pt、bottom inset 34pt；底部背景及侧栏延伸到底边，输入框保留手势区间距。旋转到底部横向工具栏后，bounds为669×869pt、bottom inset 82pt，输入区未被工具栏覆盖；外屏横向显示正常。修复前后截图与原生报告在 `_shots/iphone-duo/bottom/`。本次没有把安全区归零或重复扣除，也未新增网络/轮询。外屏竖向同样完成视觉核对，未声称软件键盘全组合通过。Xcode Duo 构建、`npm run check`、`git diff --check` 通过；正常 App 更新安装回 Duo，独立测试包按精确 bundle ID 清理。网页仍为 v179；未发布、重启 relay、提交推送或上传 TestFlight。
 
 ## 14. 官方资料索引
 
