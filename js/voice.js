@@ -159,6 +159,8 @@ async function attachImageFile(file, options = {}) {
     return false;
   }
 }
+// Older Android app builds drop multi-select picks (ClipData) entirely; give them a single-file picker.
+if (/Android/.test(navigator.userAgent) && window.AgentRemoteApp && typeof window.AgentRemoteApp.multiPick !== 'function') $('imgFile').multiple = false;
 $('imgFile').onchange = async () => {
   const files = [...$('imgFile').files], edit = editBeforeUpload;
   $('imgFile').value = ''; editBeforeUpload = false;
