@@ -688,7 +688,7 @@ function renderQuestions(qs) {
     const focusKey = focused?.matches('[data-field]') ? questionFieldKey(focused) : null;
     const selection = focusKey ? [focused.selectionStart, focused.selectionEnd] : null;
     const expanded = new Set([...bar.querySelectorAll('details[open]')].map(el => el.dataset.question));
-    bar.innerHTML = `<div class="qnHead">Codex 等待你回答<span class="qnCount">${qs.requests.length} 个请求</span></div>` + qs.requests.map(r => {
+    bar.innerHTML = `<div class="qnHead">Codex 等待你${qs.requests.some(r => r.id.startsWith('approval:')) ? '审批' : '回答'}<span class="qnCount">${qs.requests.length} 个请求</span></div>` + qs.requests.map(r => {
       const lines = r.text.trim().split('\n'), heading = lines.shift();
       const remaining = lines.join('\n').trim();
       return `<section class="qnRequest"><div class="qnQ">${esc(heading)}</div>`
