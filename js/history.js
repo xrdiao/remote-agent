@@ -449,6 +449,7 @@ function renderChat(chat, stale, loading = false) {
     $('older').disabled = false;
     $('historyStatus').hidden = true;
   }
+  if (currentApp === 'codex' && chat?.earlier === true) historyAtEnd = false;
   if (chat && previous?.thread === chat.thread && historyExpanded && currentApp !== 'devin') {
     const rows = historyRequest ? [...chat.items, ...previous.items] : [...previous.items, ...chat.items];
     const updates = new Map(chat.items.map(it => [it.i, it]));
@@ -472,9 +473,9 @@ function renderChat(chat, stale, loading = false) {
   paintWorkdir(chat?.workdir);
   if (chat && 'context' in chat) renderContext(chat.context);
   const imageOnly = chat?.imagePreview && !chat.items.length;
-  $('empty').hidden = !!chat && !imageOnly;
-  $('empty').firstChild.textContent = I18N.tr(imageOnly ? '电脑端正在查看图片，暂无已同步的对话。关闭图片预览后会自动恢复。' : loading ? '正在加载对话…' : '没找到聊天面板。');
-  $('emptyHint').hidden = loading || imageOnly;
+  $('empty').hidden = !!chat && !imageOnly && !chat.loginRequired;
+  $('empty').firstChild.textContent = I18N.tr(chat?.loginRequired ? '请先在电脑端登录此窗口的 Codex，再新建会话' : imageOnly ? '电脑端正在查看图片，暂无已同步的对话。关闭图片预览后会自动恢复。' : loading ? '正在加载对话…' : '没找到聊天面板。');
+  $('emptyHint').hidden = loading || imageOnly || !!chat?.loginRequired;
   $('older').hidden = !chat || chat.earlier === false;
   $('pickMode').hidden = currentApp === 'devin' || currentApp === 'cursor' || !chat?.mode;
   $('pickModel').hidden = false;
