@@ -9,6 +9,7 @@
   };
   const codexRecentPoint = () => { const b = codexButton('Recent chats'); return b ? codexPoint(b) : null; };
   const codexNewPoint = () => { const b = codexButton('New chat'); return b ? codexPoint(b) : null; };
+  const codexNeedsLogin = () => [...doc.querySelectorAll('button')].some(b => vis(b) && /^(Sign in with ChatGPT|Use API Key|Use device code)$/.test(b.textContent.trim()));
   const codexAccountPoint = () => {
     const buttons = [...doc.querySelectorAll('button')].filter(e => {
       const r = e.getBoundingClientRect();
@@ -356,6 +357,11 @@
     return true;
   };
   const codexImage = async src => {
+    if (src.startsWith('codex-image:')) src = doc.defaultView.__remoteAgentChatImages.get(src);
+    if (src.startsWith('data:image/')) {
+      if (atob(src.slice(src.indexOf(',') + 1)).length > 8 * 1024 * 1024) throw new Error('图片超过预览限制');
+      return src;
+    }
     const r = await fetch(src);
     if (!r.ok) throw new Error('图片读取失败');
     const blob = await r.blob();

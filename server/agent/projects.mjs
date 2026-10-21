@@ -251,6 +251,7 @@ export const methods = {
       await this.attach({ id: `codex:${target.id}` });
     }
     if (needThread) {
+      if (await this.checkCodexLogin()) throw new Error('请先在电脑端登录此窗口的 Codex，再新建会话');
       let ready = false;
       for (let i = 0; i < 120 && !ready; i++) {
         if (this.pendingProject?.trust) return;

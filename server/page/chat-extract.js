@@ -252,11 +252,18 @@
         if (body) out.push({ i: id, k: 'thinking', t: `${item.completed ? 'Thoughts' : 'Thinking'}\n${body}`, live: !item.completed });
       } else if (item.type === 'user-message') {
         const imgs = Array.isArray(item.images) ? item.images.length : 0;
+        const images = (item.images || []).map((image, index) => {
+          const src = typeof image === 'string' ? image : image.url;
+          if (!/^data:image\//.test(src || '')) return src;
+          const key = `codex-image:${id}:${index}`;
+          (doc.defaultView.__remoteAgentChatImages ||= new Map()).set(key, src);
+          return key;
+        }).filter(src => typeof src === 'string' && /^(https?:|data:image\/|blob:|codex-image:)/.test(src));
         const atts = Array.isArray(item.uploadedFileAttachments) ? item.uploadedFileAttachments.length : (Array.isArray(item.attachments) ? item.attachments.length : 0);
         let t = item.message || '';
         if (imgs) t += `${t ? '\n' : ''}[图片 ${imgs}]`;
         if (atts) t += `${t ? '\n' : ''}[附件 ${atts}]`;
-        out.push({ i: id, k: 'human', t, ...(item.sentAtMs ? { sentAt: item.sentAtMs } : {}) });
+        out.push({ i: id, k: 'human', t, ...(images.length ? { images } : {}), ...(item.sentAtMs ? { sentAt: item.sentAtMs } : {}) });
       } else if (item.type === 'assistant-message' && item.content) {
         const block = markdown.get(item.responseAnnotationTargetId);
         if (item.phase === 'commentary') out.push({ i: id, k: 'thinking', t: `工作过程\n${item.content}`, live: !item.completed });

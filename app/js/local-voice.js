@@ -138,6 +138,20 @@ function voiceText(session, value) {
   session.writing = true;
   text.dispatchEvent(new Event('input', { bubbles: true }));
   session.writing = false;
+  if (text.scrollHeight > text.clientHeight) {
+    const style = getComputedStyle(text), mirror = document.createElement('div');
+    for (const key of ['font', 'lineHeight', 'letterSpacing', 'padding', 'boxSizing', 'wordBreak', 'overflowWrap', 'tabSize', 'textIndent']) mirror.style[key] = style[key];
+    Object.assign(mirror.style, { position: 'fixed', left: '-10000px', top: '0', visibility: 'hidden', width: text.clientWidth + 'px', whiteSpace: 'pre-wrap' });
+    mirror.textContent = text.value.slice(0, text.selectionEnd);
+    const caret = document.createElement('span');
+    caret.textContent = '\u200b';
+    mirror.append(caret); document.body.append(mirror);
+    const y = caret.getBoundingClientRect().top - mirror.getBoundingClientRect().top;
+    const line = parseFloat(style.lineHeight), padding = parseFloat(style.paddingBottom);
+    if (y < text.scrollTop) text.scrollTop = y;
+    else if (y + line > text.scrollTop + text.clientHeight - padding) text.scrollTop = y + line - text.clientHeight + padding;
+    mirror.remove();
+  }
 }
 async function startVoice(event) {
   if (event.button !== 0 || voiceSession || $('mic').hidden || !windowReady) return;

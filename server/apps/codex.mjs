@@ -20,6 +20,7 @@ export const adapter = {
     const page = (await codexWindows(CODEX_CDP_URL)).find(p => p.pageId === this.codexPageId);
     if (page && !page.chatWs) await this.ensureCodexReady({ id: page.pageId, ws: page.ws }, true);
     if (this.pendingProject?.trust) return;
+    if (await this.checkCodexLogin()) return;
     const cur = await this.cdp.evaluate(helpersCall('codexThread()')) || '';
     if (cur) return;
     const roots = await this.editorCdp.evaluate(helpersCall('codexWorkspaceRoots()')) || [];
@@ -226,7 +227,7 @@ mergeCodexItems(chat) {
   if (!this.itemCache) this.itemCache = new Map();
   const prev = this.itemCache.get(thread) || [];
   chat.items = [...new Map([...prev, ...chat.items].map(it => [it.i, it])).values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).slice(-400);
-  chat.earlier = Math.min(...chat.items.map(it => Math.floor((it.order ?? Infinity) / 10000))) > 1;
+  chat.earlier = this.codexEarlier(chat.items);
   if (!chat.busy) chat.items.filter(it => it.k === 'thinking').forEach(it => { it.live = false; });
   if (!chat.busy) chat.items.filter(it => it.k === 'tool' && !it.keep).forEach(it => { it.done = true; });
   this.itemCache.set(thread, chat.items);
@@ -260,8 +261,26 @@ async adoptCodexThread(thread, statusMsg) {
   await this.pollChat();
 },
 
+async checkCodexLogin() {
+  if (!await this.cdp.evaluate(helpersCall('codexNeedsLogin()'))) return false;
+  const chat = { items: [], global: [], thread: '', readonly: true, loginRequired: true };
+  const raw = JSON.stringify(chat);
+  if (this.lastChat !== raw) {
+    this.lastChat = raw;
+    this.emit({ t: 'chat', sel: this.selectionKey(), chat });
+    this.emit({ t: 'status', ok: false, msg: '请先在电脑端登录此窗口的 Codex，再新建会话' });
+  }
+  return true;
+},
+
+codexEarlier(items) {
+  const turns = [...new Set(items.map(it => Math.floor((it.order ?? Infinity) / 10000)))].sort((a, b) => a - b);
+  return !turns.length || turns[0] !== 1 || turns.some((n, i) => !Number.isFinite(n) || (i > 0 && n !== turns[i - 1] + 1));
+},
+
 async newCodexChat() {
   if (!this.cdp) throw new Error('还没有连上 Codex');
+  if (await this.checkCodexLogin()) throw new Error('请先在电脑端登录此窗口的 Codex，再新建会话');
   const before = await this.cdp.evaluate(helpersCall('codexThread()')) || '';
   const pos = await this.cdp.evaluate(helpersCall('codexNewPoint()'));
   if (!pos) throw new Error('这个窗口里没有新建对话');
@@ -317,6 +336,7 @@ async openCodexAgent(id) {
     if (switchedWindow) {
       await this.attach({ id: 'codex', windowId: pageId, threadId: convId });
       if (!this.cdp) throw new Error('还没有连上 Codex');
+  if (await this.checkCodexLogin()) throw new Error('请先在电脑端登录此窗口的 Codex，再新建会话');
       if (await this.checkProjectTrust({ threadId: convId })) return;
       // A window that just opened reports an empty thread until its Codex webview
       // finishes booting; bring the sidebar up and re-attach before selecting.
@@ -325,6 +345,7 @@ async openCodexAgent(id) {
     }
     if (this.pendingProject?.trust) return;
     if (!this.cdp) throw new Error('还没有连上 Codex');
+  if (await this.checkCodexLogin()) throw new Error('请先在电脑端登录此窗口的 Codex，再新建会话');
     const current = await this.cdp.evaluate(helpersCall('codexThread()')) || '';
     if (current !== convId && !await this.selectCodexThread(convId)) throw new Error('没有找到这个会话');
     // The transcript unmounts during navigation; give it a moment so the first emit carries real items.
