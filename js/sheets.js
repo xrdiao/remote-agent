@@ -771,6 +771,7 @@ function showMainMenu() {
     <button class="opt" data-act="transfer"><span class="lbl">文件传输<span class="sub">批量上传、下载文件及文件夹</span></span></button>
     <button class="opt" data-act="screen"><span class="lbl">画面<span class="sub">查看绘图与仿真窗口</span></span></button>
     <div class="pSec">此手机 App</div>
+    ${['cursor', 'devin', 'codex', 'fusion'].includes(currentApp) ? `<button class="opt" data-act="executionToggle" role="switch" aria-checked="${executionRecordsShown()}"><span class="lbl">显示执行指令<span class="sub">包含工具读取和搜索记录；关闭后在本轮结束时隐藏</span></span><span class="switch${executionRecordsShown() ? ' on' : ''}" aria-hidden="true"></span></button>` : ''}
     ${lastChat?.changed && !lastChat?.readonly ? `<button class="opt" data-act="toggleChanges"><span class="lbl">${hiddenChangeNotices.has(changeNoticeKey()) ? '显示改动' : '隐藏改动提示'}</span></button>` : ''}
     ${iosApp && !window.AgentRemoteApp?.pushRegister ? '' : notifyItem}
     <button class="opt" data-act="localVoiceMenu"><span class="lbl">语音输入<span class="sub">${voiceEnabled() ? '已开启' : '未开启'} · 按住说话 · 选择识别引擎</span></span><span class="tag">›</span></button>
