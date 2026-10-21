@@ -214,7 +214,15 @@ function renderItem(it) {
     el.insertAdjacentHTML('beforeend', it.images.filter(src => /^(https?:|data:image\/|chat-image:)/.test(src)).map(src => src.startsWith('chat-image:')
       ? `<a class="${it.k === 'human' ? 'sentImage' : ''}" target="_blank" rel="noopener"><img data-chat-image="${esc(src.slice(11))}" alt="生成的图片" style="max-width:100%;border-radius:8px"></a>`
       : `<a class="${it.k === 'human' ? 'sentImage' : ''}" href="${esc(src)}" target="_blank" rel="noopener"><img src="${esc(src)}" alt="生成的图片" style="max-width:100%;border-radius:8px"></a>`).join(''));
-    el.chatImagesReady = loadChatImages(el);
+    el.chatImagesReady = loadChatImages(el).then(() => {
+      if (it.k !== 'human') return;
+      const images = [...el.querySelectorAll('.sentImage img')];
+      if (images.length && images.every(img => img.complete && img.naturalWidth)) {
+        const bubble = el.querySelector('.bubble');
+        bubble.textContent = (it.t || '').replace(/(?:\n)?\[图片 \d+\](?=\n\[附件 \d+\]$|$)/, '');
+        bubble.hidden = !bubble.textContent.trim();
+      }
+    });
   }
   if (it.b && it.k !== 'human') el.insertAdjacentHTML('beforeend', `<div class="btns">${buttonsHtml(it.b, it.btnItem || it.i, it.actions)}</div>`);
   if (it.k !== 'human') addImageCopyButtons(el);

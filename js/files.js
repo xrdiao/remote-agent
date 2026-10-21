@@ -49,7 +49,7 @@ function videoGestures(video) {
   };
   stage.onpointerdown = e => {
     // Let the native playback/seek/fullscreen bar handle its own touches.
-    if (e.clientY >= stage.getBoundingClientRect().bottom - 52) return;
+    if (video.tagName === 'VIDEO' && e.clientY >= stage.getBoundingClientRect().bottom - 52) return;
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (zoom > 1 || pointers.size > 1) {
       e.preventDefault();
@@ -81,6 +81,23 @@ function videoGestures(video) {
   stage.onlostpointercapture = end;
   fit.onclick = () => { pointers.clear(); gesture = null; zoom = 1; x = y = 0; paint(); };
   return preview;
+}
+function openChatImage(source) {
+  returnToEditor = null;
+  stopVideo(); leaveEdit();
+  $('vStatus').hidden = true;
+  $('vChanges').hidden = true;
+  if (!$('viewer').classList.contains('open')) {
+    $('viewer').classList.add('open');
+    history.pushState({ viewer: true }, '');
+  }
+  showFile({ name: '图片', image: source });
+  $('vWrap').hidden = true;
+  const image = $('vBody').querySelector('img');
+  image.draggable = false;
+  const preview = videoGestures(image);
+  preview.classList.add('chatImagePreview');
+  $('vBody').replaceChildren(preview);
 }
 function leaveEdit() {
   editing = false;

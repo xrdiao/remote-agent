@@ -1040,8 +1040,9 @@ function forTerminalPaste(text) {
 }
 const chatImageUrls = new Map();
 function loadChatImages(root) {
-  return Promise.all([...root.querySelectorAll('[data-chat-image]')].map(img => {
+  return Promise.all([...root.querySelectorAll('[data-chat-image], .sentImage img')].map(img => {
     const id = img.dataset.chatImage;
+    if (!id) return img.decode().catch(() => {});
     const key = `${currentComputer()?.id}|${id}`;
     if (!chatImageUrls.has(key)) chatImageUrls.set(key, api('/api/chat-image/' + id).then(async response => {
       if (!response.ok) throw new Error('图片读取失败');
@@ -1116,6 +1117,13 @@ async function copyText(text, btn, terminal = true) {
 document.addEventListener('click', async e => {
   const imageCopy = e.target.closest('[data-copy-image]');
   if (imageCopy) { e.preventDefault(); await copyGeneratedImage(imageCopy.closest('.generatedImage').querySelector('img'), imageCopy); return; }
+  const sentImage = e.target.closest('#items .sentImage');
+  if (sentImage) {
+    e.preventDefault();
+    const img = sentImage.querySelector('img');
+    if (img.complete && img.naturalWidth) openChatImage(img.currentSrc || img.src);
+    return;
+  }
   const copyBtn = e.target.closest('.copy');
   const copyCode = !copyBtn && !e.target.closest('a') && e.target.closest('code.copyable');
   if (copyBtn || copyCode) {
