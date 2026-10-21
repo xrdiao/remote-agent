@@ -141,7 +141,13 @@ function mentionUpdate() {
   const queryKey = (t.trigger || '@') + t.q;
   if (queryKey === MN.q) return;
   MN.q = queryKey;
-  MN.timer = setTimeout(() => mentionAsk({ q: t.q }), 220);
+  if (currentApp === 'codex') MN.seq++;
+  MN.timer = setTimeout(() => mentionAsk({ q: t.q }), currentApp === 'codex' ? 150 : 220);
+  if (currentApp === 'codex' && !$('mentionBox').hidden) {
+    const hint = $('mentionBox').querySelector('.mnHint');
+    if (hint) hint.textContent = '搜索中…';
+    else $('mentionBox').insertAdjacentHTML('afterbegin', '<div class="mnHint">搜索中…</div>');
+  }
   if ($('mentionBox').hidden) { $('mentionBox').innerHTML = '<div class="mnHint">加载中…</div>'; $('mentionBox').hidden = false; updateComposeCompact(); }
 }
 text.addEventListener('input', mentionUpdate);
