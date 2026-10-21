@@ -50,12 +50,12 @@ function rememberConversation() {
     previousConversation: last && (last.id !== selection.id || last.windowId !== selection.windowId) ? last : here.previousConversation });
 }
 function applySelection(m, clearChat = true) {
-  if (m.app) currentApp = m.app;
+  if (m.app) { currentApp = m.app; capabilityOwner = m.app; agentCapabilities = m.capabilities || null; }
   const changed = (m.sel || '') !== viewSel;
   if (changed) { if (typeof cancelVoice === 'function') cancelVoice(); menuRequest++; saveDraft(); }
   // A new chat gets its thread id once it materializes: keep its pending echoes attached to it.
   if (changed && viewSel.endsWith('|') && (m.sel || '').startsWith(viewSel)) for (const p of pendingEchoes) if (p.sel === viewSel) p.sel = m.sel;
-  if (changed) { viewSel = m.sel || ''; thoughtObserver.disconnect(); cache.clear(); $('sessionNotice').hidden = true; }
+  if (changed) { capabilityBlock = ''; viewSel = m.sel || ''; thoughtObserver.disconnect(); cache.clear(); $('sessionNotice').hidden = true; }
   const here = currentComputer();
   const id = m.id || here?.win;
   const selection = { windowId: m.windowId ?? here?.windowId ?? '', threadId: m.threadId ?? here?.threadId ?? '' };
@@ -541,6 +541,7 @@ async function connect() {
     else if (m.t === 'attachments') { if (m.sel === viewSel) renderAttachments(m.list); }
     else if (m.t === 'chat') {
       if (!m.sel || !viewSel || m.sel === viewSel) {
+        if (m.chat && !m.cached && !m.chat.readonly) capabilityBlock = '';
         const preview = chatBySel.get(chatCacheKey(m.sel || viewSel));
         // Codex unmounts the transcript while its generated-image editor is open.
         const obscured = currentApp === 'codex' && !!m.chat?.imagePreview;
@@ -620,12 +621,14 @@ async function connect() {
     else if (m.t === 'projects') { finishPending(['正在读取项目…', '正在读取文件夹…', '正在新建对话…']); showProjects(m); }
     else if (m.t === 'projectTrust') {
       if (m.sel && m.sel !== viewSel) return;
+      capabilityBlock = '请先确认项目是否可信';
       connHide();
       finishPending(['正在打开项目…', '正在新建对话…']);
       openSheet('project-trust', `<h3>信任此项目？</h3><p class="hint">信任后，Agent 和扩展可运行此项目的代码。只信任你了解来源的项目。</p><p>${esc(m.path)}</p><button class="opt" data-project-trust="yes">信任此项目</button><button class="opt" data-project-trust="no">保持限制模式并返回上次对话</button>`);
     }
     else if (m.t === 'projectReady') {
       if (m.sel && m.sel !== viewSel) return;
+      capabilityBlock = '';
       finishPending(['正在打开项目…', '正在新建对话…']);
       closeSheet(); currentProject = m.name;
       if (m.chat) renderChat(m.chat);
