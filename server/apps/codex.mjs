@@ -1,5 +1,5 @@
 import { Cdp } from '../cdp.mjs';
-import { windowRoots } from '../../lib/files.mjs';
+import { windowRoots, editorRoots } from '../../lib/files.mjs';
 import { agentMarks } from '../../lib/marks.mjs';
 import { mod, pathKey } from '../../lib/platform.mjs';
 import { codexWindows, codexContext } from '../windows.mjs';
@@ -95,9 +95,7 @@ export const adapter = {
   },
 
   async currentRoots() {
-    const pages = await codexWindows(CODEX_CDP_URL);
-    const page = pages.find(p => p.pageId === this.codexPageId);
-    return windowRoots(page?.rawTitle || page?.title || '', 'code').filter(w => !w.host);
+    return (await editorRoots(this.editorCdp, 'codex')).filter(w => !w.host);
   },
 
   async queueAction(id, action) {
@@ -275,7 +273,7 @@ async checkCodexLogin() {
   if (this.lastChat !== raw) {
     this.lastChat = raw;
     this.emit({ t: 'chat', sel: this.selectionKey(), chat });
-    this.emit({ t: 'status', ok: false, msg: '请先在电脑端登录此窗口的 Codex，再新建会话' });
+    this.emit({ t: 'status', ok: false, msg: '项目窗口已打开，请在电脑端登录此窗口的 Codex，登录后重新选择会话' });
   }
   return true;
 },

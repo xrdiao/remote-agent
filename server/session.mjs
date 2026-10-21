@@ -155,7 +155,7 @@ export class Session extends AgentContext {
       const entry = wins.find(w => w.id === 'codex');
       if (!entry) throw new Error('没有找到 Codex 窗口。请用 ./scripts/start-codex.sh 启动，并打开 Codex 侧边栏');
       await this.openBound({ ...entry, title: picked.rawTitle }, picked.ws, picked.chatWs, { windowId: picked.pageId, threadId, deferred: req.projectSwitch === true, initial: req.initial === true });
-      if (!picked.chatWs) this.emit({ t: 'status', ok: false, msg: 'Codex 侧边栏还没打开' });
+      if (!picked.chatWs && !req.projectSwitch) this.emit({ t: 'status', ok: false, msg: 'Codex 侧边栏还没打开' });
       return;
     }
     const win = wins.find(w => w.id === appId) || wins.find(w => appId && w.id.endsWith(':' + appId))
