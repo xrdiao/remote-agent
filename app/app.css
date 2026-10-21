@@ -432,8 +432,8 @@ main { flex: 1; min-height: 0; position: relative; }
 #empty { color: var(--fg-3); text-align: center; margin-top: 30vh; padding: 0 20px; font-size: 14px; }
 .msg { margin: 14px 0; min-width: 0; overflow-wrap: anywhere; }
 .msg.toolrow, .msg.thinking { margin: 4px 0; }
-.human { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
-.human > .humanContent { flex-basis: 100%; }
+.human { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.human > .humanContent { width: 85%; }
 .human .sentImage { display: inline-flex; max-width: 140px; }
 .human .sentImage img { width: 140px; height: 104px; object-fit: cover; }
 .human .bubble {

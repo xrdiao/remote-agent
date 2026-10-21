@@ -156,34 +156,59 @@ export const methods = {
       return { name: label.name, path: w.root, host: w.host || '', detail: label.detail || '' };
     });
   },
-  async useProject(folder, newSession = false, threadId = '') {
+  async projectWindowState(page) {
+    const id = page.id || page.pageId;
+    const own = id === this.windowId || `${this.app}:${id}` === this.windowId;
+    const editor = own ? this.editorCdp : new Cdp(page.ws || page.webSocketDebuggerUrl);
+    let chat = editor;
+    try {
+      if (!own) await editor.connect();
+      if (this.app === 'codex') {
+        const view = (await codexWindows(CODEX_CDP_URL)).find(p => p.pageId === id);
+        if (own) chat = this.cdp;
+        else if (view?.chatWs) { chat = new Cdp(view.chatWs); await chat.connect(); }
+      }
+      const [state, terminalBusy] = await Promise.all([
+        chat.evaluate(helpersCall('agentState()')),
+        editor.evaluate(`(() => {
+          const terms = new Set([...document.querySelectorAll('.xterm-wrapper, .terminal-wrapper')].map(el => el.xterm).filter(Boolean));
+          return [...terms].some(term => {
+            const detector = (term._addonManager?._addons || []).map(a => a.instance || a).find(a => a.capabilities)?.capabilities.get(2);
+            return !detector || !!detector.currentCommand?.commandExecutedMarker;
+          });
+        })()`),
+      ]);
+      return { thread: state?.thread || '', busy: !!state?.busy || terminalBusy };
+    } finally {
+      if (chat !== editor && !own) chat.close();
+      if (!own) editor.close();
+    }
+  },
+  async useProject(folder, newSession = false, threadId = '', title = '') {
     const { real } = safeHomePath(folder);
     const app = this.app;
     const editor = EDITORS.find(e => e.app === app);
-    let projectPages = [];
-    const findTarget = async () => {
-      const pages = await (await fetch(`${editor.url}/json/list`)).json();
-      projectPages = pages.filter(p => p.type === 'page' && /workbench/.test(p.url));
-      return projectPages.find(p =>
-        windowRoots(p.title, app).some(w => !w.host && fusionProject(w.root)?.id === fusionProject(real)?.id));
-    };
-    let target = await findTarget();
+    const pages = await (await fetch(`${editor.url}/json/list`)).json();
+    const projectPages = pages.filter(p => p.type === 'page' && /workbench/.test(p.url));
+    const belongs = p => windowRoots(p.title, app).some(w => !w.host && fusionProject(w.root)?.id === fusionProject(real)?.id);
+    const candidates = projectPages.filter(belongs);
+    let target, idle;
+    for (const page of candidates.sort((a, b) => Number(b.id === this.windowId.replace(/^[^:]+:/, '')) - Number(a.id === this.windowId.replace(/^[^:]+:/, '')))) {
+      const state = await this.projectWindowState(page);
+      if (threadId && state.thread === threadId.replace(/^tab:/, '')) { target = page; break; }
+      if (!state.busy && !idle) idle = page;
+      if (!newSession && !threadId) { target = page; break; }
+    }
+    target ||= idle;
+    const newWindow = !target;
     if (!target) {
-      let busy = this.cdp ? !!(await this.cdp.evaluate(helpersCall('extract()')))?.busy : false;
-      // Cursor's CLI can reuse a different window or encounter a background Agent.
-      if (app === 'cursor' && !busy) {
-        for (const page of projectPages) {
-          const cdp = new Cdp(page.webSocketDebuggerUrl);
-          await cdp.connect();
-          try { busy = !!await cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return h.agentState()?.busy || h.agentList().some(a => a.running); })()`); }
-          finally { cdp.close(); }
-          if (busy) break;
-        }
-      }
-      const newWindow = busy || !!this.threadId || ((app === 'codex' || app === 'devin') && !!threadId);
-      if (!newWindow && !busy && this.editorCdp) await this.editorCdp.send('Page.bringToFront');
+      const previous = new Set(projectPages.map(p => p.id));
+      const findTarget = async () => {
+        const pages = await (await fetch(`${editor.url}/json/list`)).json();
+        return pages.find(p => p.type === 'page' && /workbench/.test(p.url) && !previous.has(p.id) && belongs(p));
+      };
       this.emit({ t: 'status', ok: true, msg: '正在打开项目窗口…' });
-      await openFolder(real, app, newWindow);
+      await openFolder(real, app, true);
       for (let i = 0; i < 40 && !target; i++) {
         target = await findTarget();
         if (!target) await new Promise(r => setTimeout(r, 250));
@@ -209,14 +234,21 @@ export const methods = {
       }
     }
     if (!target) throw new Error('应用尚未打开所选项目，请检查电脑上的窗口');
-    await this.attach({ id: `${app}:${target.id}` });
-    this.pendingProject = { ...this.pendingProject, root: real, app, windowId: this.windowId, newSession, threadId };
-    // Restricted Mode disables the agent extension, so prompt for trust before
-    // waiting on a Codex sidebar that can never appear while untrusted.
-    if (await this.checkProjectTrust()) return;
-    if (app === 'codex') await this.ensureCodexReady(target, newSession || !!threadId);
-    if (this.pendingProject?.trust) return;
-    await this.finishProject();
+    this.switchingThread = true;
+    try {
+      if (this.windowId !== (app === 'codex' ? target.id : `${app}:${target.id}`) || !this.cdp)
+        await this.attach({ id: `${app}:${target.id}`, threadId, projectSwitch: true });
+      this.pendingProject = { ...this.pendingProject, root: real, app, windowId: this.windowId, newSession, threadId, title };
+      if (await this.checkProjectTrust()) return;
+      if (app === 'codex') await this.ensureCodexReady(target, newSession);
+      if (this.pendingProject?.trust) return;
+      await this.finishProject();
+    } finally {
+      this.switchingThread = false;
+      this.lastChatAt = 0;
+      await this.pollChat(true);
+      if (!this.pendingProject?.trust) this.prefetchMenus().catch(() => {});
+    }
   },
   // Waits for the Codex webview of a just-opened window, then binds this.cdp to it.
   async ensureCodexReady(target, needThread) {
@@ -248,7 +280,7 @@ export const methods = {
         }
       }
       if (!pageOf(pages)?.chatWs) throw new Error('项目已打开，但 Codex 侧边栏尚未就绪');
-      await this.attach({ id: `codex:${target.id}` });
+      await this.attach({ id: `codex:${target.id}`, threadId: this.pendingProject?.threadId || '', projectSwitch: true });
     }
     if (needThread) {
       if (await this.checkCodexLogin()) throw new Error('请先在电脑端登录此窗口的 Codex，再新建会话');
@@ -268,11 +300,7 @@ export const methods = {
   async newProjectChat() {
     const roots = await this.currentRoots();
     if (!roots.length) return this.showProjects('');
-    const root = roots[0];
-    if (this.app === 'codex' && this.cdp === this.editorCdp) return this.useProject(root.root, true);
-    this.pendingProject = { root: root.root, app: this.app, windowId: this.windowId, newSession: true };
-    if (await this.checkProjectTrust()) return;
-    await this.finishProject();
+    return this.useProject(roots[0].root, true);
   },
   async confirmProjectTrust(approve, returnTo) {
     const pending = this.pendingProject;
@@ -325,12 +353,23 @@ export const methods = {
     if ((await this.editorCdp.evaluate(helpersCall('workspaceTrustState()'))).required) throw new Error('请先确认项目是否可信');
     let chat;
     if (this.app === 'codex' && pending.threadId) {
-      if (!await this.selectCodexThread(pending.threadId)) throw new Error('项目已打开，但没有找到所选会话');
+      const current = await this.cdp.evaluate(helpersCall('codexThread()'));
+      if (current !== pending.threadId && !await this.selectCodexThread(pending.threadId)) throw new Error('项目已打开，但没有找到所选会话');
       await this.adoptCodexThread(pending.threadId, '已切换项目与会话');
     }
-    if (this.app === 'devin' && pending.threadId) await this.adapter.openAgent.call(this, pending.threadId);
+    if (this.app !== 'codex' && pending.threadId) {
+      const current = await this.cdp.evaluate(helpersCall('activeThread()'));
+      if (current !== pending.threadId.replace(/^tab:/, '')) await this.adapter.openAgent.call(this, pending.threadId, pending.title || '');
+      else if (this.threadId !== current) {
+        this.clearViewState();
+        this.threadId = current;
+        this.publishThread();
+      }
+    }
     if (pending.newSession) {
-      await this.newChat();
+      const roots = await this.currentRoots();
+      if (!roots.some(w => !w.host && fusionProject(w.root)?.id === fusionProject(pending.root)?.id)) throw new Error('当前窗口不属于所选项目，尚未创建会话');
+      await this.adapter.newChat.call(this);
       if (this.app === 'cursor' && this.winTitle === 'Cursor Agents')
         await this.cdp.evaluate(helpersCall(`cursorSelectProject(${JSON.stringify(pending.root)})`));
       for (let i = 0; i < 20; i++) {
@@ -360,6 +399,7 @@ export const methods = {
     return '';
   },
   publishThread(statusMsg) {
+    if (this.selectedThread !== undefined) this.selectedThread = this.threadId || '';
     const msg = {
       t: 'attached', id: this.targetId, title: this.app === 'codex' ? 'Codex' : this.winTitle, app: this.app, appName: this.appMessage('{app}'),
       project: this.projectName(), windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(), keepQuota: true,
@@ -429,11 +469,11 @@ export const methods = {
       const project = w.project;
       const label = project ? path.posix.basename(normPath(project.root)) : w.title;
       const projectKey = project ? `${project.host || ''}|${normPath(project.root)}` : w.id;
-      if (project || !data?.list?.length || data.list.some(row => !row.workspace)) addNew(w, label, projectKey);
+      if (project || !data?.list?.length || data.list.some(row => !row.workspace)) addNew(w, label, projectKey, !project?.host ? project?.root : '');
       for (const row of data?.list || []) {
         const rowProject = `${row.host || project?.host || ''}|${normPath(row.workspace || project?.root || w.id)}`;
         const rowLabel = row.workspace ? path.posix.basename(normPath(row.workspace)) : label;
-        if (row.workspace && (row.workspace === project?.root || (!row.host && !project?.host))) addNew(w, rowLabel, rowProject, row.workspace !== project?.root && !row.host && !project?.host ? row.workspace : '');
+        if (row.workspace && (row.workspace === project?.root || (!row.host && !project?.host))) addNew(w, rowLabel, rowProject, !row.host && !project?.host ? row.workspace : '');
         const key = `${rowProject}|${this.app === 'devin' ? row.id.replace(/^tab:/, '') : row.id}`;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -450,12 +490,16 @@ export const methods = {
       const [kind, encodedWindow, encodedThread] = id.split(':');
       const window = decodeURIComponent(encodedWindow);
       if (!window.startsWith(this.app + ':')) throw new Error('项目不属于当前 Agent');
-      if (kind === 'project-new' && encodedThread) await this.useProject(decodeURIComponent(encodedThread), true);
+      const source = this.projectAgentWindows?.get(this.app)?.find(w => w.id === window)
+        || (await listWindows(null, this.app)).find(w => w.id === window);
+      const row = this.projectAgentCache?.get(window)?.list.find(r => r.id === decodeURIComponent(encodedThread || ''));
+      const root = kind === 'project-new' && encodedThread ? decodeURIComponent(encodedThread) : row?.workspace || source?.project?.root || windowRoots(source?.title || '', this.app)[0]?.root;
+      if (root && !row?.host && !source?.project?.host) await this.useProject(root, kind === 'project-new', kind === 'project' ? decodeURIComponent(encodedThread) : '', title);
       else {
-        if (kind === 'project-new' && window !== this.targetId) await this.attach(window);
+        if (window !== this.targetId) await this.attach(window);
         if (await this.checkProjectTrust()) return;
-        if (kind === 'project-new') await this.newChat();
-        else await this.adapter.openAgent.call(this, decodeURIComponent(encodedThread), title);
+        if (kind === 'project-new') await this.newProjectChat();
+        else await this.openAgent(decodeURIComponent(encodedThread), title);
       }
       await this.listAgents(true);
       return;
@@ -464,6 +508,13 @@ export const methods = {
       await this.attach(id.slice('window:'.length));
       await this.listAgents(true);
       return;
+    }
+    if (this.app === 'cursor' || this.app === 'devin') {
+      const row = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return h.agentList().find(r => r.id === ${JSON.stringify(id.replace(/^tab:/, ''))}) || null; })()`);
+      const root = row?.workspace || (await this.currentRoots())[0]?.root;
+      if (root && !row?.host) return this.useProject(root, false, id, title);
+      const state = await this.projectWindowState({ id: this.windowId });
+      if (state.busy && state.thread !== id.replace(/^tab:/, '')) throw new Error('当前窗口正在运行，尚无法确认目标项目路径；请刷新项目与会话列表');
     }
     return this.adapter.openAgent.call(this, id, title);
   },

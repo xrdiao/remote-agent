@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { IS_MAC, mod } from '../../lib/platform.mjs';
 import { codexContext } from '../windows.mjs';
-import { helpersCall } from '../page/build.mjs';
+import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { FOCUS_COMPOSER, uploads } from './context.mjs';
 
 // Cursor accepts images pasted into the composer; a synthetic paste event carrying a File works the same way.
@@ -173,6 +173,7 @@ export const methods = {
     this.codexFreshView = false;
     try {
       let chat = await cdp.evaluate(helpersCall('extract()'));
+      if (!this.liveRead(cdp, sel) || !this.acceptsChat(chat)) return;
       if (!chat && this.liveRead(cdp, sel) && await this.checkProjectTrust()) return;
       if (!chat && this.app === 'codex' && this.liveRead(cdp, sel) && await this.checkCodexLogin()) return;
       const before = this.app === 'codex' && !freshView && !chat?.busy ? await cdp.evaluate(helpersCall("scrollCodexHistory('latest')")) : null;
@@ -185,6 +186,7 @@ export const methods = {
         }
       }
       if (!this.liveRead(cdp, sel) || this.historyLoading) return;
+      if (!this.acceptsChat(chat)) return;
       this.syncSession(chat);
       const extracted = chat && JSON.stringify({ ...chat, draft: undefined });
       if (chat && chat.thread === (this.threadId || '') && (this.app !== 'codex' || chat.thread) && (!this.lastChat || extracted !== this.lastExtractedChat)) {
@@ -230,6 +232,7 @@ export const methods = {
         }
       }
       if (!this.liveRead(cdp, sel) || this.historyLoading || !chat) return;
+      if (!this.acceptsChat(chat)) return;
       const prevThread = this.threadId || '';
       if (this.app === 'codex' && !chat.thread) { this.pendingThread = ''; return; }
       if (chat.thread !== prevThread) {
@@ -291,6 +294,7 @@ export const methods = {
           }
         }
       }
+      if (!this.liveRead(cdp, sel) || !this.acceptsChat(chat)) return;
       this.fillDevinCommands(chat);
       for (const item of (chat?.items || []).filter(it => it.src === 'devin' && it.kind === 'command' && !it.cmd)) {
         const cached = this.devinHist.get(item.i)?.cmd;
@@ -332,7 +336,7 @@ export const methods = {
       } else this.fusion = null;
       if (this.app === 'devin') this.devinGeneration(chat);
       const json = JSON.stringify(chat);
-      if (!this.liveRead(cdp, sel) || this.historyLoading) return;
+      if (!this.liveRead(cdp, sel) || this.historyLoading || !this.acceptsChat(chat)) return;
       if (json !== this.lastChat) {
         this.lastChat = json;
         this.emit({ t: 'chat', sel: this.selectionKey(), chat });
@@ -370,10 +374,12 @@ export const methods = {
     return this.adapter.editQueued.call(this, id, text);
   },
   async queueAction(id, action) {
+    await this.assertSelectedThread();
     if (!['send', 'remove', 'edit'].includes(action)) throw new Error('不支持的排队操作');
     return this.adapter.queueAction.call(this, id, action);
   },
   async stopAgent() {
+    await this.assertSelectedThread();
     const pos = await this.cdp.evaluate(helpersCall('stopTarget()'));
     const running = !!(await this.cdp.evaluate(helpersCall('agentState()')))?.busy;
     if (!pos && !(this.app === 'devin' && running)) throw new Error('Agent 当前没有在运行');
@@ -480,6 +486,7 @@ export const methods = {
       if (receipt) this.emit({ t: 'sent', ...receipt, queued, sentAt: Date.now(), sel: this.selectionKey() });
       return queued;
     }
+    await this.assertSelectedThread();
     const files = [...uploads.values()].filter(f => f.pending && f.sel === this.selectionKey());
     if (files.length) text += '\n\n附加文件（请读取这些电脑端文件）：\n' + files.map(f => f.path).join('\n');
     this.sendGen = (this.sendGen || 0) + 1;
@@ -520,6 +527,7 @@ export const methods = {
     return queued;
   },
   async answerQuestion(qi, oi, part, text) {
+    await this.assertSelectedThread();
     const call = p => helpersCall(`questionTarget(${Number(qi) || 0}, ${Number(oi) || 0}, ${JSON.stringify(p)})`);
     const pos = await this.cdp.evaluate(call(part));
     if (!pos) throw new Error('这个问题已经不在了（可能已在电脑上回答）');
@@ -538,7 +546,7 @@ export const methods = {
   async attachImage(data, name, type, replace = '', sel, transfer) {
     if (transfer?.cancelled) return;
     if (sel && sel !== this.selectionKey()) throw new Error('会话已切换，请回到原会话编辑图片');
-    const before = await this.cdp.evaluate(helpersCall('attachmentRows()'));
+    const before = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; if (${JSON.stringify(this.selectedThread || '')} && h.activeThread() !== ${JSON.stringify(this.selectedThread || '')}) throw new Error('当前窗口已不在所选会话，请重新连接'); return h.attachmentRows(); })()`);
     if (replace && !before.some(f => f.id === replace)) throw new Error('原图片已不在输入框中');
     if (!/^image\/(png|jpeg|gif|webp)$/.test(type) || typeof data !== 'string' || !/^[A-Za-z0-9+/=]+$/.test(data)) throw new Error('只支持 PNG / JPEG / GIF / WebP 图片');
     if (transfer?.cancelled) return;
@@ -571,7 +579,7 @@ export const methods = {
   async setDraft(text) {
     if (this.app === 'fusion' || text.length > 20000) return false;
     if (text === this.lastDraft) return true;
-    if (this.cdp && await this.cdp.evaluate(helpersCall(`setComposerDraft(${JSON.stringify(text)})`))) { this.lastDraft = text; return true; }
+    if (this.cdp && await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return (!${JSON.stringify(this.selectedThread || '')} || h.activeThread() === ${JSON.stringify(this.selectedThread || '')}) && h.setComposerDraft(${JSON.stringify(text)}); })()`)) { this.lastDraft = text; return true; }
     return false;
   },
   async syncAttachments() {
