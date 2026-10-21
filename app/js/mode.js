@@ -14,6 +14,8 @@ function setMode(m) {
   store.set('mode', m);
   $('tabChat').classList.toggle('on', m === 'chat');
   $('tabTerm').classList.toggle('on', m === 'terminal');
+  $('tabChat').setAttribute('aria-pressed', String(m === 'chat'));
+  $('tabTerm').setAttribute('aria-pressed', String(m === 'terminal'));
   $('chatView').classList.toggle('active', m === 'chat');
   $('screenView').classList.toggle('active', m === 'screen' || m === 'terminal');
   $('chatTools').hidden = m !== 'chat';
@@ -41,8 +43,10 @@ function setMode(m) {
   fitOrientation();
   if (typeof updateComposeCompact === 'function') updateComposeCompact();
 }
-$('tabChat').onclick = () => setMode('chat');
-$('tabTerm').onclick = () => setMode('terminal');
+// On thin phones the two tabs are stacked into one toggle, so tapping the front (current) one switches too.
+const stackedTabs = () => !document.body.classList.contains('wide');
+$('tabChat').onclick = () => setMode(mode === 'chat' && stackedTabs() ? 'terminal' : 'chat');
+$('tabTerm').onclick = () => setMode(mode === 'terminal' && stackedTabs() ? 'chat' : 'terminal');
 
 // Swipe from the terminal back to the chat (left to right). The chat never swipes to the terminal: use the tab.
 // A mostly vertical move keeps scrolling.

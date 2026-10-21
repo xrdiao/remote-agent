@@ -264,7 +264,7 @@ export const methods = {
 mergeDevinHistory(chat) {
   if (!chat?.items) return;
   this.syncSession(chat);
-  if (chat.empty) { this.devinHist.clear(); chat.earlier = false; return; }
+  if (chat.empty) { this.devinHist.clear(); this.devinCmds?.clear(); this.devinCmdTried?.clear(); chat.earlier = false; return; }
   if (!chat.items.some(it => it.src === 'devin') && !(this.devinHist?.size && !chat.items.length)) return;
   if (!this.devinHist) this.devinHist = new Map();
   const hist = this.devinHist;
@@ -485,8 +485,8 @@ syncSession(chat) {
   const key = chat.thread || sess.key;
   if (this.curSession === undefined || this.curSession === key) { this.curSession = key; return; }
   if (!this.sessStore) this.sessStore = new Map();
-  const FIELDS = ['devinHist', 'thinking', 'thinkingTried', 'keptThink', 'tasksTried', 'thoughtFails', 'latestThink', 'thinkLiveSeen', 'thinkFinal'];
-  const fresh = () => ({ devinHist: new Map(), thinking: new Map(), thinkingTried: new Map(), keptThink: new Map(), tasksTried: new Map(), thoughtFails: new Map(), latestThink: null, thinkLiveSeen: new Set(), thinkFinal: new Set() });
+  const FIELDS = ['devinHist', 'devinCmds', 'devinCmdTried', 'thinking', 'thinkingTried', 'keptThink', 'tasksTried', 'thoughtFails', 'latestThink', 'thinkLiveSeen', 'thinkFinal'];
+  const fresh = () => ({ devinHist: new Map(), devinCmds: new Map(), devinCmdTried: new Map(), thinking: new Map(), thinkingTried: new Map(), keptThink: new Map(), tasksTried: new Map(), thoughtFails: new Map(), latestThink: null, thinkLiveSeen: new Set(), thinkFinal: new Set() });
   const saved = {};
   for (const f of FIELDS) saved[f] = this[f];
   this.sessStore.set(this.curSession, saved);

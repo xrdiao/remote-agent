@@ -186,6 +186,7 @@ export const methods = {
         if (this.app === 'codex') initial.context = codexContext(chat.thread);
         this.fillThinking(initial);
         this.retainThinking(initial);
+        this.fillDevinCommands(initial);
         this.mergeDevinHistory(initial);
         if (initial?.model === 'Fusion' && this.fusion) initial.fusion = this.fusion;
         this.lastChat = JSON.stringify(initial);
@@ -254,6 +255,7 @@ export const methods = {
         if (chat?.model === 'Fusion' && this.fusion) chat.fusion = this.fusion;
         this.fillThinking(chat);
         this.retainThinking(chat);
+        this.fillDevinCommands(chat);
         this.mergeDevinHistory(chat);
         if (this.app === 'devin') this.devinGeneration(chat);
         const json = JSON.stringify(chat);
@@ -285,16 +287,20 @@ export const methods = {
           }
         }
       }
+      this.fillDevinCommands(chat);
       for (const item of (chat?.items || []).filter(it => it.src === 'devin' && it.kind === 'command' && !it.cmd)) {
         const cached = this.devinHist.get(item.i)?.cmd;
         if (cached) { item.cmd = cached; continue; }
+        // A card whose text could not be read is retried at most every 30 s, not on every poll.
+        if (Date.now() - (this.devinCmdTried.get(item.i) || 0) < 30000) continue;
+        this.devinCmdTried.set(item.i, Date.now());
         const wasOpen = await cdp.evaluate(helpersCall(`setCommandOpen(${JSON.stringify(item.i)}, true)`));
         if (wasOpen == null) continue;
         try {
           await new Promise(r => setTimeout(r, 150));
           const full = await cdp.evaluate(helpersCall('extract()'));
           const command = full?.items?.find(it => it.i === item.i && it.cmd);
-          if (command) Object.assign(item, command);
+          if (command) { Object.assign(item, command); this.devinCmds.set(item.i, command.cmd); }
         } finally {
           if (!wasOpen) await cdp.evaluate(helpersCall(`setCommandOpen(${JSON.stringify(item.i)}, false)`));
         }
@@ -345,6 +351,14 @@ export const methods = {
       this.lastPanel = json;
       this.emit({ t: 'panel', rect });
     }
+  },
+  // Devin shows a command's text only while its card is expanded. Once read (by briefly expanding the
+  // card) it is kept here, so every emitted item carries it and later polls never toggle the card again.
+  fillDevinCommands(chat) {
+    if (this.app !== 'devin') return;
+    this.syncSession(chat);   // acp ids repeat across sessions: switch to this session's cache first
+    if (!this.devinCmds?.size) return;
+    for (const it of chat?.items || []) if (it.src === 'devin' && it.kind === 'command' && !it.cmd && this.devinCmds.has(it.i)) it.cmd = this.devinCmds.get(it.i);
   },
   async editQueued(id, text) {
     if (!text.trim()) throw new Error('内容不能为空；不想要这条就点「删除」');
