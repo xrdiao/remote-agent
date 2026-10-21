@@ -1136,6 +1136,10 @@ document.addEventListener('click', async e => {
   const f = !b && e.target.closest('#items [data-file]');
   if (f) return openFile(f.dataset.file);
   if (!b) return;
+  if (currentApp === 'codex' && b.dataset.actionLabel === 'Copy message') {
+    await copyText(b.closest('.msg').copyText, b, false);
+    return;
+  }
   if (RISKY.test(b.textContent.trim()) && !await ask(`确定要点「${b.textContent.trim()}」吗？`, b.textContent.trim())) return;
   b.closest('.btns')?.querySelectorAll('button').forEach(button => { button.disabled = true; });
   send({ t: 'click', item: b.dataset.item, n: Number(b.dataset.n), actionId: b.dataset.actionId, label: b.dataset.actionLabel, sel: viewSel });
