@@ -656,13 +656,15 @@ itemsEl.addEventListener('click', e => { const b = e.target.closest('[data-codex
 $('taskChip').onclick = () => showTasks();
 itemsEl.addEventListener('toggle', e => { const id = e.target.dataset.task; if (id) e.target.open ? taskOpen.add(id) : taskOpen.delete(id); }, true);
 $('qnBar').addEventListener('click', e => {
+  const compose = e.target.closest('[data-question-compose]');
+  if (compose) { setQuestionCompose(questionCompose?.id === compose.dataset.questionCompose ? null : compose.dataset.questionCompose); return; }
   const b = e.target.closest('[data-action][data-request]');
   if (b) {
     const id = b.dataset.request, n = Number(b.dataset.action);
     const request = qnState?.requests?.find(r => r.id === id);
     const fields = !id.startsWith('async:') || n === request.buttons.length - 1
       ? [...$('qnBar').querySelectorAll('[data-field]')].filter(el => el.dataset.request === id).map(el => ({ n: Number(el.dataset.field), value: el.value })) : [];
-    sendQuestion({ t: 'codexRequest', id, n, fields });
+    sendQuestion({ t: 'codexRequest', id, n, fields, ...(id.startsWith('async:') && n < request.buttons.length - 2 ? { advance: true } : {}) });
   }
 });
 // The Agent's ask-question tool: a card with the questions, options, a free-text answer and submit / skip.
@@ -683,12 +685,35 @@ function sendQuestion(message) {
   status('正在提交回答…');
   send({ ...message, requestId });
 }
+function setQuestionCompose(id) {
+  if (qnPending) return;
+  saveDraft();
+  questionCompose = id ? { id, sel: viewSel } : null;
+  restoreDraft();
+  updateAppText();
+  qnSig = '';
+  renderQuestions(qnState);
+  updateSendMode();
+  if (id) text.focus();
+}
+function submitQuestionCompose() {
+  const request = qnState?.requests?.find(r => r.id === questionCompose?.id);
+  if (!request || !text.value.trim()) return;
+  saveDraft();
+  sendQuestion({ t: 'codexRequest', id: request.id, n: request.buttons.length - 1, fields: [{ n: 0, value: text.value }] });
+}
 function finishQuestion(m) {
   if (!qnPending || m.requestId !== qnPending.requestId) return;
   const pending = qnPending;
   qnPending = null;
   if (pending.sel !== viewSel) return;
   if (m.ok && pending.message.id) {
+    if (questionCompose?.id === pending.message.id) setQuestionCompose(null);
+    const answerKey = [currentComputer()?.id || '', viewSel, 'chat', pending.message.id].join('|');
+    drafts.delete(answerKey); draftMentions.delete(answerKey);
+    if (pending.message.id.startsWith('async:') && (pending.message.advance || pending.message.n === (qnState?.requests?.find(r => r.id === pending.message.id)?.buttons.length || 0) - 1)) {
+      qnState = { ...qnState, requests: qnState.requests.filter(r => r.id !== pending.message.id) };
+    }
     for (const key of qnDrafts.keys()) if (key.startsWith(pending.message.id + '|')) qnDrafts.delete(key);
   }
   qnSig = '';
@@ -698,6 +723,14 @@ function finishQuestion(m) {
 function renderQuestions(qs) {
   const bar = $('qnBar');
   if (qnView !== viewSel) { qnView = viewSel; qnSig = ''; qnPending = null; qnDrafts.clear(); }
+  if (questionCompose && (questionCompose.sel !== viewSel || !qs?.codex || !qs.requests.some(r => r.id === questionCompose.id))) {
+    const prior = questionCompose;
+    if (prior.sel === viewSel) saveDraft();
+    questionCompose = null;
+    updateAppText();
+    if (prior.sel === viewSel) restoreDraft();
+    updateSendMode();
+  }
   qnState = qs;
   bar.classList.toggle('codex', !!qs?.codex);
   const sig = JSON.stringify(qs);
@@ -715,7 +748,7 @@ function renderQuestions(qs) {
       + (remaining ? `<details class="qnDetails" data-question="${esc(r.id)}" ${expanded.has(r.id) ? 'open' : ''}><summary>展开问题详情</summary>${esc(remaining)}</details>` : '')
       + (r.id.startsWith('async:') ? `<div class="qnOpts">${r.buttons.slice(0, -2).map((b, n) => `<button class="qnOpt ${b.selected ? 'on' : ''}" data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div>` : '')
       + r.fields.map((f, n) => `<label class="qnFree">${esc(f.label)}${f.options ? `<select data-request="${esc(r.id)}" data-field="${n}">${f.options.map(o => `<option value="${esc(o.value)}" ${o.value === f.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>` : `<input data-request="${esc(r.id)}" data-field="${n}" type="${f.type === 'password' ? 'password' : 'text'}" value="${esc(f.value)}">`}</label>`).join('')
-      + `<div class="qnAct">${r.buttons.map((b, n) => r.id.startsWith('async:') && n < r.buttons.length - 2 ? '' : `<button data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div></section>`; }).join('');
+      + `<div class="qnAct">${r.id.startsWith('async:') ? `<button data-question-compose="${esc(r.id)}">${questionCompose?.id === r.id ? '取消对话框回答' : '用对话框回答'}</button>` : ''}${r.buttons.map((b, n) => r.id.startsWith('async:') && n < r.buttons.length - 2 ? '' : `<button data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div></section>`; }).join('');
     bar.classList.toggle('show', qs.requests.length > 0);
     bar.querySelectorAll('[data-field]').forEach(el => {
       const key = questionFieldKey(el);

@@ -401,3 +401,29 @@ v174收尾：npm run check（207文件、170helpers）及git diff --check通过�
 定向受控验证通过：正常初始化仍创建250ms定时器、读取中detach不重建定时器、重入初始化保留新定时器；glass/single/classic/Terminal tabs/单xterm/空列表六种既有路径均通过。记录_shots/terminal-two-fixes/results.json。npm run check（208文件、170helpers）与git diff --check通过。本轮未做实体手机或真实终端命令测试，不发送Agent任务。
 
 收尾：原发布脚本因可能写入gh-pages被自动审批拒绝，改为纯GET只读核对，确认全部前端文件与已发布树一致，无需发布；公网index.html与本地一致。确认持久化Fusion状态无活动任务后重启中继PID3726115、HTTP 200；保留原启动参数、环境、隧道及配对。未提交或推送源码。
+
+## 2026-10-21 Codex引用查询排队优化（v175）与适配第一阶段方案
+
+本轮先按用户授权处理Codex @文件引用延迟。实测受控连续6次查询，旧逻辑在真正开始执行时才更新mentionSeq，6个原生查询逐个完成后才返回最后一次。现仅对Codex在WebSocket收到查询时记录最新序号，队列尚未执行的旧查询跳过；正在等待原生列表的旧查询在原140ms检查点结束等待，完成原草稿恢复后才开始下一项，不绕开原指令队列、不并发改输入框。原生列表稳定判断与空结果等待上限不变，codexPick/Skill等不传序号的原流程保持。手机Codex输入合并由220ms调整到150ms，文字变化立即使旧结果失效，保留旧列表并显示搜索中；Devin仍220ms。未引入本机全盘搜索、常驻原生菜单或新增查询缓存。
+
+受控相同6次请求：最后输入到结果从约2254ms降到约511ms，执行查询6→4，只有最后一条结果发出，前后原草稿一致；这是无真实文件索引/公网延迟的模块测量，不代表实体手机耗时。独立HTTP/WebSocket测试中继实际验证：被前序操作占用队列时6个Codex查询只执行第6个；正在处理的第7个被第8个替代后不发旧结果并恢复草稿；Devin连续3个请求保留原行为。配对浏览器验证Codex约151ms发出、连续输入合并、150ms等待期间旧结果即不可覆盖、列表独立滚动/失焦保留、选中后key/section等引用元数据及＋引用文件入口保留；Devin约221ms不变。没有发送真实聊天或修改桌面输入，测试设备逐次按精确ID清理，原11台及tokenHash保留。产物_shots/codex-mention-speed/，非实体手机原生文件索引端到端验证。
+
+按docs/agent-adapter-plan.md第一阶段，对照现有ADAPTERS、EDITORS、公共Session和AgentContext方法整理docs/agent-adapter-interface-proposal.md：基础接口与完成条件、可选能力/不可用状态、消息及空白会话生命周期、Cursor最小试点范围和验证。原计划第一阶段相关条目标记为已梳理，具体方案待确认，尚未更改注册机制或迁移Agent；不能把方案交付当成框架已重构。检查、发布和重启结果另记，不提交推送源码。
+
+v175收尾：npm run check（213文件、170helpers）及git diff --check通过。已仅发布手机端（gh-pages 5f1bcb7a9a8e5dc139294265042c9574e9b39eaf），重启中继PID3750792、HTTP 200，日志/tmp/remote-agent-local-publish-20261021-203629.log；Pages/CDN更新后index.html、js/composer.js、js/core.js、sw.js四项公网资源与本地逐字节一致。用户最终选择“先交付引用优化和方案”，本轮不实施Cursor试点、注册或能力声明迁移；未由本轮提交推送master/debug源码，原隧道及配对保留。
+
+## 2026-10-21 Codex Question 单击提交与主框回答（v176）
+
+用户确认：仅Codex原生Question预设选项点击后，在同一次请求中调用原生选项操作、等待其draft更新、再调用原生Next/Send；多题先进入下一题，最后一题才提交。沿用现有原生提交确认、Question独立队列、提交锁和即时轮询，不把终端审批改成Question自动提交，不改其他Agent。
+
+卡片继续支持手写回答后手动提交，另提供“用对话框回答/取消对话框回答”。主框明确显示“提交回答”和回答提示；回答使用独立草稿键，不作为普通聊天发送，不镜像到电脑聊天草稿，也不触发文件引用。原聊天草稿/引用元数据在取消或成功后恢复；回答失败保留内容，不自动重发。终端与对话切换仍各用原草稿，正常聊天的排队/追加/停止逻辑保持；Question成功确认后立即移除已处理卡片，其他请求保留。
+
+用户询问星号加粗显示：已定位Codex没有已渲染Markdown节点时，历史提取分支仅转义原文并替换换行，因而原文中的**标记会显示。此次只说明原因，未扩大到Markdown解析或修改历史提取。
+
+配对浏览器连接真实Codex聊天后，使用独立页面模拟原生Question挂载树及异步draft更新，通过真实codexRequest路由验证：预设单击、重复点击不重复提交、两题Next→Send、卡片手动回答、主框回答与原聊天草稿/引用恢复、主框不发送普通消息/电脑草稿、两种输入失败保留、终端模式切换及审批请求不带自动提交标记。未操作真实工作中的会话输入或审批，测试设备逐次仅按新增ID删除，原11台与tokenHash保留。前两次测试页缺少可见会话标记/挂载树，另一次断言忽略测试浏览器英文，均修正测试后通过，未据此扩大生产逻辑。记录_shots/question-direct-submit/paired.json。npm run check（218文件、170helpers）与git diff --check通过；发布、重启及真实专用问题验证结果另记。不提交推送源码。
+
+v176真实专用问题验证：发布重启后通过实际配对WebSocket和本会话新生成的测试Question，仅点击一次预设A；发包约3ms、questionDone确认约128ms，Question卡片DOM约127ms收起（不同时钟观测可能相差1ms），自动采样约167ms观察到完成；后续完整chat状态约569–571ms到达。手机现在在电脑确认后直接结束卡片反馈，不再等待整条聊天状态刷新；这是本机单次测量，不作为公网或平均性能承诺。未点击其他待答问题、未发送普通聊天或操作真实终端审批；测试设备清理后原11台及tokenHash保持。
+
+已发布手机端v176（gh-pages 1ae94c0e63058ba7b051ce3be82edc375e036af9），无活动Fusion任务后重启中继PID3782770、HTTP 200，日志/tmp/remote-agent-local-publish-20261021-210252.log；公网六项资源核对结果另记。未提交推送master/debug源码。
+
+v176公网核对完成：index.html、js/composer.js、js/core.js、js/history.js、js/net.js、sw.js六项均与本地逐字节一致；Pages/CDN更新等待期间未重复发布。所有定向测试与清理已完成。

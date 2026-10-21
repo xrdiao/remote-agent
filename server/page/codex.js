@@ -313,7 +313,7 @@
   };
   const codexRequestData = () => codexRequests().map(r => ({ id: r.id, text: String(r.text).slice(0, 6000), buttons: r.buttons.map(({ label, disabled, selected }) => ({ label, disabled, selected })), fields: r.fields.map(({ label, value, type, options }) => ({ label, value, type, options })) }));
   const codexRequestTarget = (id, n) => { const b = codexRequests().find(r => r.id === id)?.buttons[n]; return b?.el ? codexPoint(b.el) : null; };
-  const codexRequestAction = async (id, n, fields = []) => {
+  const codexRequestAction = async (id, n, fields = [], advance = false) => {
     for (const field of fields) {
       if (!codexRequestField(id, field.n, field.value)) throw new Error('请求输入框已不存在');
     }
@@ -330,6 +330,14 @@
     if (id.startsWith('async:') && (!button || button.disabled)) throw new Error(before ? '问题控件尚未就绪，请等待电脑端更新' : '这条问题已不在电脑端的待回答列表中');
     if (!button?.action) return false;
     await button.action();
+    if (advance && id.startsWith('async:') && n < before.buttons.length - 2) {
+      for (let i = 0; i < 20; i++) {
+        const request = codexRequests().find(r => r.id === id);
+        if (request?.fields[0]?.value === button.label && !request.buttons.at(-1).disabled) return codexRequestAction(id, request.buttons.length - 1);
+        await new Promise(resolve => setTimeout(resolve, 16));
+      }
+      throw new Error('选项尚未同步到电脑，请重试');
+    }
     if (button.submit) {
       // Codex changes this key (lastSubmission), or removes the card, only after the reply is accepted.
       for (let i = 0; i < 150; i++) {
