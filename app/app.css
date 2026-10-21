@@ -1483,3 +1483,132 @@ button { transition: background-color .12s var(--ease), color .12s var(--ease), 
   #queueBar .run i, #mic.on { animation: none; }
   #sheet { transition: none; }
 }
+
+/* iPhone Duo only: eligibility is supplied by the native shell, never a breakpoint. */
+body.iphoneDuo {
+  --duo-top: env(safe-area-inset-top); --duo-right: env(safe-area-inset-right);
+  --duo-bottom: env(safe-area-inset-bottom); --duo-left: env(safe-area-inset-left);
+  --duo-visible-height: 100dvh;
+  --duo-pane-left: var(--duo-left); --duo-pane-top: var(--duo-top);
+  --duo-pane-right: var(--duo-right); --duo-pane-bottom: var(--duo-bottom);
+  --duo-pane-width: calc(100vw - var(--duo-left) - var(--duo-right));
+  --duo-pane-height: calc(var(--duo-visible-height) - var(--duo-top) - var(--duo-bottom));
+  padding: var(--duo-top) var(--duo-right) 0 var(--duo-left);
+}
+body.iphoneDuo.duoNativeMode header > .seg,
+body.iphoneDuo.duoNativeMore #menuBtn { display: none; }
+body.iphoneDuo header { min-width: 0; width: var(--duo-header-width, auto); margin-left: var(--duo-header-left, 0px); }
+body.iphoneDuo #sessBar { width: var(--duo-header-width, auto); margin-left: var(--duo-header-left, 0px); }
+body.iphoneDuo #title { min-width: 0; }
+body.iphoneDuo #sessBar { min-width: 0; max-width: 100%; }
+body.iphoneDuo #sessBar .sessChip { max-width: min(320px, 70cqw); }
+body.iphoneDuo main { min-width: 0; }
+body.iphoneDuo footer {
+  min-width: 0; padding-bottom: max(8px, var(--duo-bottom), var(--duo-compose-bottom, 0px));
+  padding-left: calc(10px + var(--duo-compose-left, 0px));
+  padding-right: calc(10px + var(--duo-compose-right, 0px));
+}
+body.iphoneDuo .composerBox { container-type: inline-size; }
+body.iphoneDuo #chatTools, body.iphoneDuo #termTools { flex-shrink: 0; }
+body.iphoneDuo.duoNarrowComposer .sendRow { gap: 4px; }
+body.iphoneDuo.duoNarrowComposer .sendTools { gap: 0; }
+body.iphoneDuo.duoNarrowComposer .sendTools > button { flex-shrink: 0; }
+body.iphoneDuo #text { max-height: var(--composer-max-height, 28dvh); }
+body.iphoneDuo #qnBar { max-height: min(36dvh, var(--duo-bar-height, var(--duo-pane-height))); overflow-y: auto; }
+body.iphoneDuo #qnBar, body.iphoneDuo #queueBar, body.iphoneDuo #actionBar {
+  width: var(--duo-bar-width, 100%); max-width: var(--duo-bar-width, 100%);
+  margin-left: var(--duo-bar-left, 0px); margin-right: 0;
+}
+body.iphoneDuo.duoNativeMode #rail [data-rail^="mode-"],
+body.iphoneDuo.duoNativeMore #rail [data-rail="settings"],
+body.iphoneDuo.duoNativeMore #rail [data-rail="transfer"],
+body.iphoneDuo.duoNativeMore #rail [data-rail="menu"] { display: none; }
+body.iphoneDuo #conn {
+  inset: var(--duo-pane-top) var(--duo-pane-right) var(--duo-pane-bottom) var(--duo-pane-left);
+  padding: 16px;
+  overflow-x: hidden; overscroll-behavior: contain;
+}
+body.iphoneDuo #conn .duoConnContent {
+  width: 100%; max-width: 620px; margin: auto; flex: 0 0 auto; min-width: 0;
+  container-type: inline-size;
+}
+body.iphoneDuo #conn .cTop { gap: 12px; margin-bottom: 12px; }
+body.iphoneDuo #conn .cLink { min-height: 44px; white-space: normal; }
+body.iphoneDuo #conn h2 { font-size: 22px; overflow-wrap: anywhere; }
+body.iphoneDuo #conn .cLabel { margin-top: 16px; }
+body.iphoneDuo #conn .cRow { flex-wrap: wrap; gap: 6px; padding: 10px 12px; }
+body.iphoneDuo #conn .cMeta { min-width: 110px; }
+body.iphoneDuo #conn .cSub { white-space: normal; overflow-wrap: anywhere; }
+body.iphoneDuo #conn .cWhy, body.iphoneDuo #conn .cBtn { min-height: 44px; }
+body.iphoneDuo #conn .cFoot { margin-top: 12px; }
+body.iphoneDuo #conn .cActions, body.iphoneDuo #conn .cOpts { display: flex; flex-direction: row; flex-wrap: wrap; }
+body.iphoneDuo #conn .cActions > button { flex: 1 1 220px; white-space: normal; min-height: 44px; height: auto; }
+body.iphoneDuo #conn .cOpts > button { flex: 1 1 240px; width: auto; min-width: 0; min-height: 44px; white-space: normal; text-align: left; }
+body.iphoneDuo #conn .conn-version { position: static; margin-top: 16px; text-align: center; }
+body.iphoneDuo #gate {
+  inset: var(--duo-pane-top) var(--duo-pane-right) var(--duo-pane-bottom) var(--duo-pane-left);
+  padding: 12px 16px;
+  --pair-height: var(--duo-pane-height);
+  overflow-y: auto;
+}
+body.iphoneDuo #gate.pairing.open, body.iphoneDuo #gate.pairing .pairControls { display: flex; flex-direction: column; }
+body.iphoneDuo #scanner {
+  inset: var(--duo-pane-top) var(--duo-pane-right) var(--duo-pane-bottom) var(--duo-pane-left);
+  padding: 12px 16px 16px;
+}
+body.iphoneDuo #scannerManual { position: static; flex-shrink: 0; margin-top: 12px; }
+body.iphoneDuo .scannerContent { flex-shrink: 0; }
+body.iphoneDuo #sheet, body.iphoneDuo.wide #sheet {
+  left: calc(var(--duo-pane-left) + 8px); right: auto;
+  top: auto; bottom: calc(var(--duo-pane-bottom) + 8px);
+  width: min(560px, calc(var(--duo-pane-width) - 16px));
+  max-height: calc(var(--duo-pane-height) - 16px);
+  margin-left: max(0px, calc((var(--duo-pane-width) - 576px) / 2));
+  padding: 10px 16px 16px; border-radius: var(--r-xl); overflow-y: auto;
+  transform: translateY(calc(100% + 24px)); opacity: 0; visibility: hidden;
+}
+body.iphoneDuo #sheet.open, body.iphoneDuo.wide #sheet.open { transform: none; opacity: 1; visibility: visible; }
+body.iphoneDuo #viewer, body.iphoneDuo #transfer {
+  inset: var(--duo-pane-top) var(--duo-pane-right) var(--duo-pane-bottom) var(--duo-pane-left);
+  padding: 0; min-width: 0; min-height: 0;
+}
+body.iphoneDuo #viewer .bar { flex-wrap: wrap; }
+body.iphoneDuo #vBody { min-height: 0; }
+body.iphoneDuo .transferFooter { padding-bottom: 12px; }
+body.iphoneDuo #imageEditor {
+  position: fixed; inset: auto; left: calc(var(--duo-pane-left) + 8px); top: calc(var(--duo-pane-top) + 8px);
+  margin: 0; width: min(900px, calc(var(--duo-pane-width) - 16px)); max-width: calc(var(--duo-pane-width) - 16px);
+  height: calc(var(--duo-pane-height) - 16px); max-height: calc(var(--duo-pane-height) - 16px); overflow-y: auto;
+}
+body.iphoneDuo .imageEditHeading, body.iphoneDuo .imageEditTools, body.iphoneDuo .imageEditView { flex-wrap: wrap; }
+body.iphoneDuo .imageEditStage { min-height: 80px; }
+body.iphoneDuo.visual #screenView { padding-bottom: max(8px, var(--duo-bottom)); }
+
+/* Confirmed unfolded Duo always uses the existing rail UI, including narrow windows. */
+body.iphoneDuo.split:not(.visual) {
+  display: grid; grid-template-columns: 272px minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto auto auto;
+  transition: grid-template-columns .2s var(--ease);
+}
+body.iphoneDuo.split.railCollapsed:not(.visual) { grid-template-columns: 64px minmax(0, 1fr); }
+body.iphoneDuo.split:not(.visual) header { grid-column: 2; grid-row: 1; }
+body.iphoneDuo.split.chatmode:not(.visual) main, body.iphoneDuo.split.chatmode:not(.visual) #chatView { display: contents; }
+body.iphoneDuo.split.chatmode:not(.visual) #sessBar { grid-column: 2; grid-row: 2; }
+body.iphoneDuo.split.chatmode:not(.visual) #listWrap { grid-column: 2; grid-row: 3; min-height: 0; }
+body.iphoneDuo.split.chatmode:not(.visual) #qnBar { grid-column: 2; grid-row: 4; max-height: 36dvh; }
+body.iphoneDuo.split.chatmode:not(.visual) #queueBar { grid-column: 2; grid-row: 5; max-height: 26dvh; }
+body.iphoneDuo.split.chatmode:not(.visual) #actionBar { grid-column: 2; grid-row: 6; }
+body.iphoneDuo.split:not(.visual) footer { grid-column: 2; grid-row: 7; }
+body.iphoneDuo.split.term:not(.visual) main, body.iphoneDuo.split.term:not(.visual) #screenView { display: contents; }
+body.iphoneDuo.split.term:not(.visual) #termBusy { grid-column: 2; grid-row: 2; }
+body.iphoneDuo.split.term:not(.visual) #view { grid-column: 2; grid-row: 3; min-height: 0; }
+body.iphoneDuo.split:not(.visual) .view { position: static; }
+body.iphoneDuo.split:not(.visual) .view.active { display: contents; }
+body.iphoneDuo.split.chatmode #list > *, body.iphoneDuo.split.chatmode #qnBar > *, body.iphoneDuo.split.chatmode #queueBar,
+body.iphoneDuo.split.chatmode .composerBox { max-width: 760px; }
+body.iphoneDuo.split #titleProject { font-size: 15px; font-weight: 600; color: var(--fg-hi); }
+body.iphoneDuo.split #titleText { font-size: 12px; font-weight: 400; color: var(--fg-3); }
+body.iphoneDuo.split .seg .segLabel { display: inline; }
+body.iphoneDuo.split .seg button { width: auto; padding: 0 12px; border-radius: 999px; }
+body.iphoneDuo.split #titleLatency { display: inline-flex; }
+body.iphoneDuo.split .meter .meterLabel { display: block; }

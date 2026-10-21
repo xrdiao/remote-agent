@@ -241,6 +241,8 @@ function connRender() {
   const missing = agents.filter(a => !a.windows).map(a => a.name).join(I18N.lang === 'en' ? ', ' : '、');
   $('connTitle').textContent = !conn.host ? tr('正在连接电脑') : !settled ? agents.map(a => ct('{agent} 连接中', { agent: a.name })).join(' · ')
     : ready === agents.length ? tr(conn.loaded ? '全部已连接 · 正在进入…' : '正在加载当前会话…') : ready ? ct('{ready} 已可用，{missing} 可稍后重试', { ready: names, missing }) : tr('没有可用的 Agent');
+  if (iphoneDuo) $('connTitle').textContent = !conn.host ? tr('正在连接电脑') : !settled ? tr('正在读取窗口…')
+    : ready === agents.length ? tr('正在加载当前会话…') : ready ? `${ready}/${agents.length} ${tr('可用')}` : tr('没有可用的 Agent');
   $('connLead').textContent = '';
   $('connHost').innerHTML = row(conn.host ? 'ok' : 'load', CONN_HOST_SVG, currentComputer()?.name || tr('电脑'), tr(conn.host ? '实时连接已建立' : conn.phase), conn.host ? '已连接' : '连接中…');
   $('connAgents').innerHTML = agents.map(a => {

@@ -7,7 +7,10 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v177'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v179'; // keep in sync with the CACHE name in sw.js
+
+const iphoneDuo = window.AgentRemoteDuo?.version === 1 && window.AgentRemoteDuo.duoEligible === true;
+if (iphoneDuo) document.body.classList.add('iphoneDuo');
 
 let base = null, info = null, ws = null, authed = false, failures = 0;
 let windowReady = false;
@@ -76,6 +79,7 @@ function updateAppText() {
 let stickOnKeyboard = false;
 let vvApplied = '';
 function fitViewport() {
+  if (iphoneDuo) { if (typeof fitDuoViewport === 'function') fitDuoViewport(); return; }
   const vv = window.visualViewport;
   if (!vv) return;
   const focused = /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
@@ -104,6 +108,16 @@ fitViewport();
 
 // window.screen explicitly: a top-level const named screen (the screen view) is declared further down.
 function fitOrientation() {
+  if (iphoneDuo) {
+    const width = window.innerWidth - (parseFloat(getComputedStyle(document.body).paddingLeft) || 0) - (parseFloat(getComputedStyle(document.body).paddingRight) || 0);
+    document.body.classList.remove('land');
+    // Confirmed Duo's unfolded UI is selected by native posture, independent of breakpoints.
+    const unfolded = document.body.classList.contains('duoUnfolded');
+    document.body.classList.toggle('wide', unfolded || width >= 640);
+    document.body.classList.toggle('split', unfolded && !document.body.classList.contains('visual'));
+    fitRail();
+    return;
+  }
   const t = window.screen.orientation?.type;
   document.body.classList.toggle('land', t ? t.startsWith('landscape') : window.screen.width > window.screen.height);
   // Screen size, not viewport: an open keyboard must never flip the layout.
@@ -179,6 +193,7 @@ function setWindowReady(ready) {
   if (!ready && typeof cancelVoice === 'function') cancelVoice();
   windowReady = ready;
   if (typeof updateVoiceButton === 'function') updateVoiceButton();
+  if (iphoneDuo && typeof reportDuoState === 'function') reportDuoState();
   $('send').disabled = $('sendNow').disabled = !ready;
 }
 

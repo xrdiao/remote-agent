@@ -688,7 +688,9 @@ function fitMeters() {
   body.classList.add('metersText');
   // The title keeps 64px, or less when its own text is shorter than that (e.g. "Devin").
   const titleNeeds = Math.min(64, Math.max($('titleText').scrollWidth, $('titleProject').scrollWidth));
-  const fits = m.scrollWidth <= m.clientWidth + 1 && $('menuBtn').getBoundingClientRect().right <= window.innerWidth
+  const fits = m.scrollWidth <= m.clientWidth + 1 && (iphoneDuo
+    ? m.getBoundingClientRect().right <= document.querySelector('header').getBoundingClientRect().right - 8
+    : $('menuBtn').getBoundingClientRect().right <= window.innerWidth)
     && document.querySelector('.titleLabels').getBoundingClientRect().width >= titleNeeds;
   if (!fits) body.classList.remove('metersText');
 }

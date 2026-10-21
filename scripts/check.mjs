@@ -20,7 +20,7 @@ const SEND_EXTRA = new Set(['codexPick', 'fusionModel']);
 // Server emits that the extraction sees but the frontend does not dispatch on.
 const EMIT_OK = new Set([]);
 
-const SKIP_DIRS = new Set(['node_modules', '.git', 'android']);
+const SKIP_DIRS = new Set(['node_modules', '.git', 'android', '_shots']);
 const isFragment = p => /(^|[\\/])server[\\/]page[\\/].+\.js$/.test(p);
 
 function* walk(dir) {
