@@ -432,7 +432,10 @@ main { flex: 1; min-height: 0; position: relative; }
 #empty { color: var(--fg-3); text-align: center; margin-top: 30vh; padding: 0 20px; font-size: 14px; }
 .msg { margin: 14px 0; min-width: 0; overflow-wrap: anywhere; }
 .msg.toolrow, .msg.thinking { margin: 4px 0; }
-.human { display: flex; justify-content: flex-end; }
+.human { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.human > .humanContent { flex-basis: 100%; }
+.human .sentImage { display: inline-flex; max-width: 140px; }
+.human .sentImage img { width: 140px; height: 104px; object-fit: cover; }
 .human .bubble {
   max-width: 85%; background: var(--bubble); color: var(--bubble-fg); padding: 10px 14px;
   border-radius: 20px 20px 6px 20px; white-space: pre-wrap; font-size: 16px; line-height: 1.5;
@@ -450,10 +453,10 @@ main { flex: 1; min-height: 0; position: relative; }
 .revertBtn { font-size: 11px; padding: 2px 8px; min-height: 24px; color: var(--fg-3); background: transparent; border: 1px solid var(--line-2); border-radius: 999px; }
 
 /* Assistant: no card — quiet typographic column. */
-.assistant { font-size: 16px; line-height: 1.65; color: var(--fg); }
+.assistant { overflow-clip-margin: 4px; font-size: 16px; line-height: 1.65; color: var(--fg); }
 .assistant a { color: var(--accent-text); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--accent-tint-2); overflow-wrap: anywhere; }
 .assistant p { margin: 0 0 .75em; }
-.assistant ul, .assistant ol { margin: 0 0 .75em; padding-left: 1.25em; }
+.assistant ul, .assistant ol { margin: 0 0 .75em; padding-left: 1.75em; }
 .assistant h1, .assistant h2, .assistant h3, .assistant h4 { font-size: 17px; font-weight: 650; color: var(--fg-hi); margin: 1.1em 0 .45em; }
 .assistant code { background: var(--code-bg); color: var(--fg-hi); padding: 1px 5px; border-radius: var(--r-xs); font: .875em ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace; }
 .codebox { position: relative; margin: 0 0 .75em; }
@@ -1010,6 +1013,8 @@ body.term #stage { display: none; }
 .videoViewTools button { padding: 0 9px; min-height: 30px; font-size: 12px; }
 .videoViewStage { position: relative; overflow: hidden; touch-action: none; background: #000; }
 .videoViewStage video:fullscreen { transform: none !important; }
+.chatImagePreview .videoViewStage { height: 70dvh; display: flex; align-items: center; justify-content: center; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+#vBody .chatImagePreview img { width: auto; height: auto; max-width: 100%; max-height: 100%; margin: 0; pointer-events: none; }
 #vBody video { display: block; width: 100%; max-height: 100%; background: #000; }
 #vBody img { display: block; max-width: 100%; margin: 12px auto; background: var(--imgbg); }
 #vBody .note { padding: 30px 20px; color: var(--fg-3); text-align: center; line-height: 1.7; }

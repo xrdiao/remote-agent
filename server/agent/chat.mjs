@@ -150,6 +150,17 @@ export const methods = {
       }
     }
   },
+  async resolveCodexImages(chat, cdp = this.cdp) {
+    for (const it of chat.items.filter(it => it.images?.length)) {
+      const old = this.itemCache?.get(chat.thread)?.find(x => x.i === it.i);
+      const sources = [...it.images];
+      it.images = await Promise.all(it.images.map(async (src, n) => {
+        if (old?.imageSources?.[n] === src && old.images?.[n]) return old.images[n];
+        try { return await cdp.evaluate(helpersCall(`codexImage(${JSON.stringify(src)})`), { timeout: 60000 }); } catch { return src; }
+      }));
+      it.imageSources = sources;
+    }
+  },
   async pollChat(immediate = false) {
     const cdp = this.cdp;
     const sel = this.sel;
@@ -163,6 +174,7 @@ export const methods = {
     try {
       let chat = await cdp.evaluate(helpersCall('extract()'));
       if (!chat && this.liveRead(cdp, sel) && await this.checkProjectTrust()) return;
+      if (!chat && this.app === 'codex' && this.liveRead(cdp, sel) && await this.checkCodexLogin()) return;
       const before = this.app === 'codex' && !freshView && !chat?.busy ? await cdp.evaluate(helpersCall("scrollCodexHistory('latest')")) : null;
       try {
         if (before) await new Promise(r => setTimeout(r, 150));
@@ -237,15 +249,7 @@ export const methods = {
       this.lastBusy = !!chat.busy;
       if (this.app === 'codex') chat.context = codexContext(chat.thread);
       if (this.app === 'codex') {
-        for (const it of chat.items.filter(it => it.images?.length)) {
-          const old = this.itemCache?.get(chat.thread)?.find(x => x.i === it.i);
-          const sources = [...it.images];
-          it.images = await Promise.all(it.images.map(async (src, n) => {
-            if (old?.imageSources?.[n] === src && old.images?.[n]) return old.images[n];
-            try { return await cdp.evaluate(helpersCall(`codexImage(${JSON.stringify(src)})`), { timeout: 60000 }); } catch { return src; }
-          }));
-          it.imageSources = sources;
-        }
+        await this.resolveCodexImages(chat, cdp);
         if (!this.liveRead(cdp, sel)) return;
       }
       this.mergeCodexItems(chat);
@@ -416,11 +420,13 @@ export const methods = {
           await cdp.evaluate(helpersCall(`waitHistoryRows(${JSON.stringify(rows)})`));
           const chat = await cdp.evaluate(helpersCall('extract()'));
           if (!this.liveRead(cdp, sel) || chat?.thread !== thread) return;
+          await this.resolveCodexImages(chat, cdp);
+          if (!this.liveRead(cdp, sel)) return;
           const pageItems = chat.items;
           this.mergeCodexItems(chat);
           if (history) {
             chat.items = [...new Map([...pageItems, ...chat.items].map(it => [it.i, it])).values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-            chat.earlier = Math.min(...chat.items.map(it => Math.floor((it.order ?? Infinity) / 10000))) > 1;
+            chat.earlier = this.codexEarlier(chat.items);
           }
           const after = await cdp.evaluate(helpersCall('scrollCodexHistory(false)'));
           if (after) this.codexHistoryTop.set(thread, after.scrollTop);

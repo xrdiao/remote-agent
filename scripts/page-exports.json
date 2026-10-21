@@ -17,6 +17,7 @@
   "codexWaitTurns",
   "codexRecentPoint",
   "codexNewPoint",
+  "codexNeedsLogin",
   "codexAccountPoint",
   "codexMenuPoint",
   "codexChatRows",
