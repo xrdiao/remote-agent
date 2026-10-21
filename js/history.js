@@ -498,7 +498,7 @@ function renderChat(chat, stale, loading = false) {
   $('emptyHint').hidden = loading || imageOnly || !!chat?.loginRequired;
   $('older').hidden = !chat || chat.earlier === false;
   $('pickMode').hidden = currentApp === 'devin' || currentApp === 'cursor' || !chat?.mode;
-  $('pickModel').hidden = false;
+  $('pickModel').hidden = !supportsCapability('model');
   if (chat?.mode) { $('pickMode').textContent = chat.mode === 'Bypass Permissions' ? '⚠绕过' : chat.mode; $('pickMode').title = chat.mode; }
   $('pickMode').classList.toggle('bypass', chat?.mode === 'Bypass Permissions');
   const mdl = chat?.model || '模型';
@@ -1235,7 +1235,7 @@ $('add').onclick = () => {
     $('sheet').querySelectorAll('[data-control]').forEach(b => b.onclick = () => { closeSheet(); $(b.dataset.control).click(); });
     return;
   }
-  const rows = [['new', '新建会话'], ['plan', `Plan：${c.plan ? '开' : '关'}`], ['skills', 'Skill · 技能'], ['files', '引用文件'], ['commands', '扩展与命令']];
+  const rows = [['new', '新建会话'], ['plan', `Plan：${c.plan ? '开' : '关'}`], ['skills', 'Skill · 技能'], ...(supportsCapability('fileReferences') ? [['files', '引用文件']] : []), ['commands', '扩展与命令']];
   if (c.ide) rows.push(['ide', `IDE 上下文：${c.ide.on ? '开' : '关'}`]);
   if (c.run) rows.push(['run', `执行位置：${c.run}`]);
   if (c.actions) rows.push(['chat', '会话操作']);
