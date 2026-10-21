@@ -234,6 +234,7 @@ body.devin #quotaMeters { flex: none; }
 #quotaMeters { display: flex; align-items: center; gap: 10px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 #quotaMeters::-webkit-scrollbar { display: none; }
 #quotaMeters:empty { display: none; }
+body[data-app="cursor"] #quotaMeters:not(:empty) { border-left: 1px solid var(--line-3); padding-left: 6px; }
 #quotaMeters.devinLimits { gap: 10px; }
 #quotaStatus { display: none; }
 .meter {
