@@ -199,7 +199,7 @@ function renderItem(it) {
     if (it.src === 'devin') el.insertAdjacentHTML('beforeend', `<div class="rv"><button class="foldBtn" data-fold="${esc(it.i)}" title="折叠这一轮">▾</button><span class="turnSum"></span><button class="revertBtn" data-revert="${esc(it.i)}">回到这里</button></div>`);
   }
   // it.h comes from the whitelist sanitizer in server/page/common.js (clean): plain tags only, text escaped.
-  else if (it.k === 'assistant') { el.innerHTML = it.h || ''; dressMessage(el); }
+  else if (it.k === 'assistant') { el.copyText = it.t || ''; el.innerHTML = it.h || ''; dressMessage(el); }
   else if (it.k === 'thinking') paintThinking(el, it);
   else if (it.k === 'tool') {
     if (it.kind && (it.src === 'devin' || it.src === 'codex')) { renderTool(el, it); el.classList.add('toolrow'); if (it.kind !== 'command') el.classList.add('open'); }

@@ -589,6 +589,7 @@ async function connect() {
       currentProject = m.app === 'fusion' ? '' : (m.project || winLabel(m.title).name);
       updateAppText(); updateTitle();
       renderChat(null, false, true);
+      if (m.initial && m.app === 'codex' && !m.threadId) connContentReady();
       renderContext(null);
       $('quotaMeters').innerHTML = '';
       $('quotaMeters').title = '';
