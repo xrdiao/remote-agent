@@ -164,7 +164,7 @@ function paintRail() {
     ${agentRows}
     <div class="pSec">${I18N.tr('工作区')}</div>
     ${row('agents', '项目/会话', icFolder)}
-    ${['cursor', 'devin', 'codex'].includes(currentApp) ? row('editor', 'Editor', icEdit) : ''}
+    ${supportsCapability('editor', ['cursor', 'devin', 'codex'].includes(currentApp)) ? row('editor', 'Editor', icEdit) : ''}
     ${row('mode-chat', '对话', icChat, mode === 'chat')}
     ${row('mode-terminal', '终端', icTerm, mode === 'terminal')}
     <div class="pSec">${I18N.tr('工具')}</div>
@@ -346,10 +346,12 @@ let currentSurface = null;
 function paintSurface() {
   const devin = currentApp === 'devin';
   document.body.classList.toggle('devin', devin);
-  $('pickEditor').hidden = !['cursor', 'devin', 'codex'].includes(currentApp);
+  $('pickEditor').hidden = !supportsCapability('editor', ['cursor', 'devin', 'codex'].includes(currentApp));
   $('pickAgents').textContent = '项目/会话';
 }
 function startEditor() {
+  const state = capabilityState('editor');
+  if (!state.available) return status(state.reason, false);
   editorBrowsing = true;
   editorDirectory = null;
   status('正在读取项目文件…');
@@ -456,6 +458,10 @@ const MODE_ZH = { Code: '写代码、改文件，正常提问', Smart: '模型�
 const modeDesc = it => (I18N.lang === 'zh' && MODE_ZH[it.label]) || it.desc;
 const menuCacheKey = kind => `${currentApp}|${viewSel}|${kind}`;
 function requestMenu(kind, loadingMsg) {
+  if (kind === 'model' || kind === 'effort') {
+    const state = capabilityState(kind);
+    if (!state.available) return status(state.reason, false);
+  }
   const cached = menuCache.get(menuCacheKey(kind));
   if (cached) showMenu(kind, cached.items, cached.max, cached.fusion, cached.fast, cached.model, true, cached.pricing);
   else status(loadingMsg);
@@ -482,8 +488,9 @@ function showMenu(kind, items, max, fusion, fast, model, refreshing, pricing) {
   }).join('');
   const role = /^fusion-model-([ab])$/.exec(kind || '')?.[1];
   const agentRow = role ? `<button class="opt" data-fusion-select="${role}"><span class="lbl">更换 ${role.toUpperCase()} Agent / 会话<span class="sub">${esc(lastChat?.fusion?.[role]?.title || '未选择')}</span></span></button>` : '';
-  const fastRow = fast && !fusion ? `<button class="opt" data-fast="${fast.on ? 'off' : 'on'}" data-fast-menu="${kind}"><span class="lbl">Fast 模式${fast.description ? `<span class="sub">${esc(fast.description)}</span>` : ''}</span><span class="switch ${fast.on ? 'on' : ''}"></span></button>` : '';
-  const effortEntry = kind === 'model' && !fusion ? `<button class="opt" data-effort-open><span class="lbl">思考强度<span class="sub">${esc(lastChat?.effort || '')}</span></span></button>` : '';
+  const fastRow = supportsCapability('fast') && fast && !fusion ? `<button class="opt" data-fast="${fast.on ? 'off' : 'on'}" data-fast-menu="${kind}"><span class="lbl">Fast 模式${fast.description ? `<span class="sub">${esc(fast.description)}</span>` : ''}</span><span class="switch ${fast.on ? 'on' : ''}"></span></button>` : '';
+  const effortState = capabilityState('effort');
+  const effortEntry = kind === 'model' && !fusion && supportsCapability('effort') ? `<button class="opt" data-effort-open ${effortState.available ? '' : 'disabled'}><span class="lbl">思考强度<span class="sub">${esc(effortState.reason || lastChat?.effort || '')}</span></span></button>` : '';
   const navigation = picking ? '<button class="opt" data-model-back>← 返回模型配置</button>' : kind === 'effort' ? `<button class="opt" data-model-back>← 返回模型列表</button><p>${esc(model || lastChat?.model || '')}</p>${!items?.length ? '<p class="hint">这个模型没有可选的思考强度。</p>' : ''}` : '';
   const done = /^fusion-(model|effort)-[ab]$/.test(kind) ? '<button class="opt" data-model-done>返回配置</button>' : kind === 'effort' && currentApp !== 'cursor' ? '<button class="opt" data-model-done>完成</button>' : '';
   const priceSummary = kind === 'effort' && pricing && !items?.length ? `<div class="hint">${modelPricingHtml(pricing, true)}</div>` : '';
@@ -761,10 +768,10 @@ function showMainMenu() {
   const appName = currentAppName;
   openSheet('main', `<h3>菜单</h3>
     ${appName ? `<div class="pSec">${appName}</div>` : ''}
-    ${currentApp === 'fusion' ? `<button class="opt" data-act="fusionHistory">历史会话</button><button class="opt" data-act="fusionNew" ${lastChat?.fusion?.busy ? 'disabled' : ''}>＋ 新建</button>` : `<button class="opt" data-act="model"><span class="lbl">更换模型<span class="sub" id="menuModel">${esc(lastChat?.model || '选择当前 Agent 的模型')}</span></span></button>`}
+    ${currentApp === 'fusion' ? `<button class="opt" data-act="fusionHistory">历史会话</button><button class="opt" data-act="fusionNew" ${lastChat?.fusion?.busy ? 'disabled' : ''}>＋ 新建</button>` : supportsCapability('model') ? `<button class="opt" data-act="model"><span class="lbl">更换模型<span class="sub" id="menuModel">${esc(lastChat?.model || '选择当前 Agent 的模型')}</span></span></button>` : ''}
     ${currentApp === 'cursor' && lastChat?.mode ? `<button class="opt" data-act="mode"><span class="lbl">${I18N.tr('模式')}<span class="sub">${esc(lastChat.mode === 'Bypass Permissions' ? '⚠ 绕过权限' : lastChat.mode)}</span></span></button>` : ''}
     ${lastChat?.permission || (currentApp === 'devin' && lastChat?.mode) ? `<button class="opt" data-act="permission"><span class="lbl">权限模式<span class="sub">${esc(lastChat.permission || lastChat.mode)}</span></span></button>` : ''}
-    ${['cursor', 'devin', 'codex'].includes(currentApp) ? '<button class="opt" data-act="editor"><span class="lbl">Editor · 项目文件编辑</span></button>' : ''}
+    ${supportsCapability('editor', ['cursor', 'devin', 'codex'].includes(currentApp)) ? `<button class="opt" data-act="editor"><span class="lbl">Editor · 项目文件编辑${capabilityState('editor').reason ? `<span class="sub">${esc(capabilityState('editor').reason)}</span>` : ''}</span></button>` : ''}
     ${['cursor', 'devin', 'codex'].includes(currentApp) ? '<button class="opt" data-act="projects"><span class="lbl">打开项目<span class="sub">选择文件夹或新建项目</span></span></button>' : ''}
     ${currentApp === 'codex' ? '<button class="opt" data-act="codexResetHelp"><span class="lbl">Codex 额度重置</span></button>' : ''}
     <button class="opt" data-act="settings"><span class="lbl">设置</span></button>
