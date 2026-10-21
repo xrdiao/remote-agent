@@ -255,7 +255,7 @@ body.devin #quotaMeters { flex: none; }
 .meter b { display: block; font-size: 11.5px; line-height: 1.3; font-weight: 600; color: var(--fg-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
 #meterCtx .track { --ring: var(--accent); }
 /* Phones (portrait and the landscape right column): compact rings with the percentage
-   inside, with a vertical label on the left. Full details stay in the usage sheet.
+   inside; labels stay in the tap-through usage sheet and the visually-hidden text.
    Sized so three meters (Cursor) fit beside the title down to 360px wide; more than
    that scroll inside the capsule. */
 /* The meters keep their full width (the title gives way and ellipsizes instead); only when
@@ -275,11 +275,18 @@ body:not(.wide) .meter .track::before {
   content: attr(data-n); position: absolute; inset: 0; z-index: 1; display: grid; place-items: center;
   font-size: 9px; font-weight: 700; letter-spacing: -.03em; color: var(--fg-hi); font-variant-numeric: tabular-nums;
 }
-/* Labels sit to the left of the existing compact rings. */
-body:not(.wide) .meter { gap: 3px; }
-body:not(.wide) .meterText { order: -1; flex: none; }
-body:not(.wide) .meter .meterLabel { display: block; writing-mode: vertical-rl; text-orientation: upright; white-space: nowrap; font-size: 9px; line-height: 1; color: var(--fg-2); }
-body:not(.wide) .meter b { display: none; }
+/* Enough room (measured in fitMeters): the value text sits beside a smaller ring instead. */
+body.metersText:not(.wide) .meter .track { width: 16px; height: 16px; }
+body.metersText:not(.wide) .meter .track::after { inset: 2.5px; }
+body.metersText:not(.wide) .meter .track::before { content: none; }
+/* fitMeters checks the title and the menu itself, so the fixed width cap is lifted here. */
+body.metersText:not(.wide) #meters { gap: 7px; padding: 0 8px; max-width: none; }
+body.metersText:not(.wide) #quotaMeters { gap: 7px; }
+body.metersText:not(.wide) .meter { gap: 4px; }
+body.metersText:not(.wide) .meter b { font-size: 10.5px; }
+body.metersText:not(.wide) #title { min-width: 0; }
+body.metersText:not(.wide) .meter .meterLabel { display: block; }
+body:not(.wide):not(.metersText) .meterText { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
 body:not(.wide) .fusionMetricText { display: none; }
 body:not(.wide) #fusionHeader { flex: 0 1 auto; }
 
