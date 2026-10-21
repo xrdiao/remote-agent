@@ -287,7 +287,7 @@ export const ROUTES = {
           await s.tapCss(pos.x, pos.y);
         }
       }
-      setTimeout(() => s.pollChat().catch(() => {}), 300);
+      s.pollChat(true).catch(() => {});
     },
     after: questionDone, fail: questionFailed,
   },
