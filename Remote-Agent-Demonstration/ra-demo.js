@@ -1,6 +1,6 @@
-/* Remote Agent promo demo — pure geometry (no screenshots). One session
-   state object (AG) rendered simultaneously into the desktop agent panel
-   and the phone chat, so both sides always match.
+/* Remote Agent promo demo v2 — theme-aware, real-app phone UI in iframes.
+   One session state object (AG) renders into the desktop agent panel and is
+   posted to phone.html iframes, so both sides always match.
    Strings come from RA_STRINGS[DEMO_LANG]. */
 (function () {
   'use strict';
@@ -15,6 +15,7 @@
   var DEBUG = params.get('debug') === '1';
   var FF = false; // fast-forward (seek) mode: everything instant
 
+  document.documentElement.dataset.theme = 'light';
   document.body.dataset.lang = LANG;
   function fail(m) { document.title = 'ERR:' + m; }
   window.onerror = function (m) { fail(m); };
@@ -23,17 +24,11 @@
   var stage = document.getElementById('stage');
   var EASE = 'cubic-bezier(.22,.61,.36,1)';
   var SPRING = 'cubic-bezier(.34,1.56,.5,1)';
-  var PHONE_RECT = [1250, 44, 430, 880];
-  var MODELS = ['Model A', 'Model B', 'Model C', 'Model D'];
-  var MODEL_COL = ['#1E88E5', '#7C5CF6', '#1A9F5A', '#C98A12'];
-  var CODE_LINES = [
-    '<span class="kw">import</span> { Session } <span class="kw">from</span> <span class="str">\'./session\'</span>',
-    '<span class="kw">import</span> { legacy } <span class="kw">from</span> <span class="str">\'../api/legacy\'</span>',
-    '',
-    '<span class="kw">export function</span> <span class="fn">compat</span>(s: Session) {',
-    '  <span class="kw">return</span> legacy.wrap(s, { <span class="str">\'v1\'</span> });',
-    '}'
-  ];
+  var MON_FULL = 'translate(300px,60px) scale(1)';
+  var MON_SIDE = 'translate(40px,130px) scale(.85)';
+  var MON_SPLIT = 'translate(120px,285px) scale(.58)'; // monitor vertically centered on the phone's line
+  var PHONE_HOME = 'translate(0px,0px) scale(1)';
+  var PHONE_CENTER = 'translate(-540px,10px) scale(.85)';
 
   /* ---------------- stage scaling ---------------- */
   function fit() {
@@ -68,15 +63,24 @@
     return new Promise(function (r) { sleepers.push({ t: elapsed + sec, r: r }); });
   }
   var lastNow = 0;
-  function tick(now) {
-    if (!clockStarted) return;
-    var dt = (now - lastNow) / 1000; lastNow = now;
-    if (document.hidden) { requestAnimationFrame(tick); return; }
+  var VT = params.get('vt') === '1'; // headless captures: timer-driven clock (rAF stalls under --virtual-time-budget)
+  function step(dt) {
     elapsed += dt * SPEED;
     for (var i = sleepers.length - 1; i >= 0; i--) if (sleepers[i].t <= elapsed) { var s = sleepers.splice(i, 1)[0]; s.r(); }
     for (var j = 0; j < cues.length; j++) if (!cues[j].done && cues[j].t <= elapsed) { cues[j].done = true; cues[j].fn(); }
     if (LOOP && elapsed > END_T + 4) { location.reload(); return; }
+  }
+  function tick(now) {
+    if (!clockStarted) return;
+    var dt = (now - lastNow) / 1000; lastNow = now;
+    if (document.hidden) { requestAnimationFrame(tick); return; }
+    step(dt);
     requestAnimationFrame(tick);
+  }
+  function vtTick() {
+    if (!clockStarted) return;
+    step(0.0167);
+    setTimeout(vtTick, 16);
   }
 
   /* ---------------- animation helpers ---------------- */
@@ -87,12 +91,11 @@
       try { elm.style[k] = last[k]; } catch (e) {}
     });
   }
-  /* interpolate a keyframe list at fraction f (for mid-tween seeks) */
   function lerpStr(a, b, f) {
-    var ra = String(a).match(/-?\d+\.?\d*/g), rb = String(b).match(/-?\d+\.?\d*/g);
+    var ra = String(a).match(/-?\d*\.?\d+/g), rb = String(b).match(/-?\d*\.?\d+/g);
     if (!ra || !rb || ra.length !== rb.length) return f < .5 ? a : b;
     var i = 0;
-    return String(b).replace(/-?\d+\.?\d*/g, function () {
+    return String(b).replace(/-?\d*\.?\d+/g, function () {
       var v = parseFloat(ra[i]) + (parseFloat(rb[i]) - parseFloat(ra[i])) * f; i++;
       return String(Math.round(v * 100) / 100);
     });
@@ -110,52 +113,36 @@
       try { elm.style[k] = lerpStr(va, b[k], lf); } catch (e) {}
     });
   }
-  /* while seeking, jump to the end state (or the interpolated mid-state when
-     the seek point cuts through the tween) but still spend the duration on
-     the virtual clock, so ?t= lands where real playback would be */
   function tween(elm, kf, ms, easing) {
-    if (FF) {
-      var f = (SEEK - vNow) / (ms / 1000);
-      if (f >= 1) applyKf(elm, kf); else applyKfAt(elm, kf, Math.max(0, f));
+    if (FF || VT) {
+      /* no smooth animation while seeking or in headless vt captures */
+      var fv = FF ? Math.max(0, (SEEK - vNow) / (ms / 1000)) : 1;
+      if (fv >= 1) applyKf(elm, kf); else applyKfAt(elm, kf, fv);
       return wait(ms / 1000);
     }
     var a = elm.animate(kf, { duration: ms / SPEED, easing: easing || EASE, fill: 'forwards' });
     return a.finished.catch(function () {});
   }
-  function show(elm, ms) { elm.classList.remove('hidden'); return tween(elm, [{ opacity: 0 }, { opacity: 1 }], ms || 400); }
-  function hide(elm, ms) {
-    return tween(elm, [{ opacity: 1 }, { opacity: 0 }], ms || 400).then(function () {
-      elm.classList.add('hidden');
-    });
-  }
+  function cutAnim(elm) { elm.getAnimations().forEach(function (a) { a.cancel(); }); }
   function pop(elm, ms) {
     elm.classList.remove('hidden');
     return tween(elm, [{ opacity: 0, transform: 'scale(.5)' }, { opacity: 1, transform: 'scale(1)' }], ms || 450, SPRING);
   }
 
-  /* ---------------- caption + pain->solution kicker ---------------- */
+  /* ---------------- caption ---------------- */
   var capbar = el('div', '', stage); capbar.id = 'capbar';
-  var kicker = el('div', 'kicker', capbar);
   var capIn = el('span', 'cap-inner', capbar);
   var capVisible = false;
-  function kickerHtml(pain, sol) {
-    return (pain ? '<span class="pain">✕ ' + pain + '</span><span class="arr"> → </span>' : '') +
-      (sol ? '<span class="sol">✓ ' + sol + '</span>' : '');
-  }
-  function caption(key, pain, sol) {
+  function caption(key) {
     var txt = S[key]; if (!txt) return Promise.resolve();
-    var kh = pain === undefined && sol === undefined ? null : kickerHtml(pain, sol);
-    function apply() { capIn.textContent = txt; if (kh !== null) kicker.innerHTML = kh; }
     if (!capVisible) {
-      capVisible = true; apply();
+      capVisible = true; capIn.innerHTML = txt;
       return tween(capbar, [{ opacity: 0, transform: 'translateY(24px)' }, { opacity: 1, transform: 'translateY(0px)' }], 500);
     }
-    var parts = kh !== null && kh !== kicker.innerHTML ? [capIn, kicker] : [capIn];
-    return Promise.all(parts.map(function (p) { return tween(p, [{ opacity: 1 }, { opacity: 0 }], 150); }))
-      .then(function () {
-        apply();
-        return Promise.all(parts.map(function (p) { return tween(p, [{ opacity: 0 }, { opacity: 1 }], 220); }));
-      });
+    return tween(capIn, [{ opacity: 1 }, { opacity: 0 }], 150).then(function () {
+      capIn.innerHTML = txt;
+      return tween(capIn, [{ opacity: 0 }, { opacity: 1 }], 220);
+    });
   }
   function captionOff() {
     if (!capVisible) return Promise.resolve();
@@ -163,868 +150,883 @@
     return tween(capbar, [{ opacity: 1 }, { opacity: 0 }], 350);
   }
 
-  /* ---------------- backdrop + black fade ---------------- */
+  /* ---------------- backdrop + brandmark ---------------- */
   var backdrop = el('div', 'backdrop', stage);
-  [[90, 70, 340, 230], [1480, 40, 380, 250], [40, 690, 300, 210], [1560, 720, 320, 230], [700, 900, 260, 160], [1260, 300, 200, 130]]
-    .forEach(function (r, i) {
-      var f = el('div', 'bgframe', backdrop); place(f, r);
-      f.animate([{ transform: 'translate(0px,0px)' },
-        { transform: 'translate(' + (i % 2 ? -18 : 22) + 'px,' + (i % 3 ? 14 : -16) + 'px)' }],
-        { duration: 7000 + i * 900, direction: 'alternate', iterations: Infinity, easing: 'ease-in-out' });
-    });
-  var black = el('div', '', stage); black.style.cssText = 'position:absolute;inset:0;background:#FFFFFF;z-index:9500;';
-  at(0.05, function () {
-    tween(black, [{ opacity: 1 }, { opacity: 0 }], 350).then(function () { black.remove(); });
-  });
+  el('div', 'bgglow g1', backdrop); el('div', 'bgglow g2', backdrop);
+  el('div', 'bgdots', backdrop);
+  backdrop.querySelector('.g1').animate([{ transform: 'translate(0,0)' }, { transform: 'translate(60px,30px)' }],
+    { duration: 14000, direction: 'alternate', iterations: Infinity, easing: 'ease-in-out' });
+  backdrop.querySelector('.g2').animate([{ transform: 'translate(0,0)' }, { transform: 'translate(-70px,-40px)' }],
+    { duration: 17000, direction: 'alternate', iterations: Infinity, easing: 'ease-in-out' });
+  var brandmark = el('div', '', stage); brandmark.id = 'brandmark';
+  brandmark.innerHTML = '<img src="assets/ra-icon.svg" alt=""><span>Remote Agent</span>';
 
-  /* ---------------- world camera ---------------- */
-  var world = el('div', '', stage); world.id = 'world';
-  var wcam = { tx: 0, ty: 0, s: 1 };
-  function wcamCss(c) { return 'translate(' + c.tx + 'px,' + c.ty + 'px) scale(' + c.s + ')'; }
-  function worldTo(c, ms) {
-    var from = wcamCss(wcam), to = wcamCss(c);
-    wcam = c;
-    return tween(world, [{ transform: from }, { transform: to }], ms || 550);
+  /* ---------------- world ---------------- */
+  var world = el('div', '', stage); world.id = 'world'; world.style.opacity = '0';
+  var worldTx = 'translate(0px,0px) scale(1)';
+  function worldTo(css, ms) {
+    var from = worldTx; worldTx = css;
+    return tween(world, [{ transform: from }, { transform: css }], ms || 550);
   }
-  function worldZoom(rect, s, ms) {
-    var cx = rect[0] + rect[2] / 2, cy = rect[1] + rect[3] / 2;
-    var tx = Math.min(0, Math.max(1920 * (1 - s), 960 - cx * s));
-    var ty = Math.min(0, Math.max(1080 * (1 - s), 540 - cy * s));
-    return worldTo({ tx: tx, ty: ty, s: s }, ms);
-  }
-  function worldZoomOut(ms) { return worldTo({ tx: 0, ty: 0, s: 1 }, ms || 450); }
-  /* element rect -> world-space coords (undoes stage fit + world cam) */
+  function worldZoomIn(ms) { return worldTo('translate(0px,0px) scale(1)', ms); }
   function rectInWorld(e) {
     var r = e.getBoundingClientRect(), sr = stage.getBoundingClientRect();
     var k = sr.width / 1920;
-    var x = (r.left - sr.left) / k, y = (r.top - sr.top) / k;
-    x = (x - wcam.tx) / wcam.s; y = (y - wcam.ty) / wcam.s;
-    return [x, y, r.width / k / wcam.s, r.height / k / wcam.s];
+    return [(r.left - sr.left) / k, (r.top - sr.top) / k, r.width / k, r.height / k];
   }
-
-  /* ---------------- time chip ---------------- */
-  var timechip = el('div', '', stage); timechip.id = 'timechip';
-  timechip.innerHTML = '<span class="tick"></span><span class="tv">12:02</span>';
-  var pclock = null; // phone status-bar clock, filled at build
-  function setTime(txt, ms) {
-    timechip.querySelector('.tv').textContent = txt;
-    if (pclock) pclock.textContent = txt;
-    if (!FF) tween(timechip, [{ transform: 'scale(1)' }, { transform: 'scale(1.12)' }, { transform: 'scale(1)' }], ms || 300);
-  }
+  var dim = el('div', '', stage); dim.id = 'dim';
 
   /* ================= THE AGENT SESSION (single state, two renderers) ================= */
-  var AG = { msgs: [], byId: {}, mid: 0, status: 'run', q: null, view: null, vdata: {}, testId: null };
+  var AG = { msgs: [], mid: 0, status: 'run', q: null, draft: '', screen: 'chat',
+             focused: false, kb: false, voice: false, sheet: null, lock: null, notif: null,
+             clock: '12:02', statusMsg: '', theme: 'light' };
 
-  /* ---------- desktop: back windows, IDE, taskbar, QR overlay (monitor at world origin) ---------- */
+  /* ---------- desktop ---------- */
   var monWrap = el('div', '', world); monWrap.id = 'monwrap';
-  monWrap.style.transform = 'translate(200px,70px) scale(1)';
+  monWrap.style.transform = MON_FULL;
   el('div', 'monframe', monWrap); el('div', 'monstand', monWrap); el('div', 'monbase', monWrap);
   var scr = el('div', 'scr', monWrap);
 
   function winHtml(body) { return '<div class="wtb"></div><div class="wc">' + body + '</div>'; }
-  var bwins = [];
-  var wBrowser = el('div', 'bwin', scr); place(wBrowser, [16, 40, 296, 300]);
+  var wBrowser = el('div', 'bwin', scr); place(wBrowser, [24, 34, 300, 320]);
   wBrowser.innerHTML = winHtml('<div class="wurl"></div><div class="whero"></div>' +
-    '<div class="wl" style="left:14px;top:170px;width:250px"></div><div class="wl" style="left:14px;top:192px;width:210px"></div>' +
-    '<div class="wl" style="left:14px;top:214px;width:236px"></div><div class="wl" style="left:14px;top:236px;width:150px"></div>') +
-    '<span class="ntag">' + S.unneeded + '</span>';
-  var wFolder = el('div', 'bwin', scr); place(wFolder, [120, 300, 260, 240]);
+    '<div class="wl" style="left:14px;top:160px;width:250px"></div><div class="wl" style="left:14px;top:182px;width:210px"></div>' +
+    '<div class="wl" style="left:14px;top:204px;width:236px"></div><div class="wl" style="left:14px;top:226px;width:150px"></div>');
+  var wFolder = el('div', 'bwin', scr); place(wFolder, [60, 330, 270, 250]);
   wFolder.innerHTML = winHtml(
-    '<i class="wfi" style="left:16px;top:20px;background:#DCEBFA"></i><i class="wfi" style="left:96px;top:20px;background:#E9E2FA"></i>' +
-    '<i class="wfi" style="left:176px;top:20px;background:#DDF3E8"></i><i class="wfi" style="left:16px;top:110px;background:#FBE9CF"></i>' +
-    '<i class="wfi" style="left:96px;top:110px;background:#DCEBFA"></i><i class="wfi" style="left:176px;top:110px;background:#E9E2FA"></i>' +
-    '<div class="wl" style="left:16px;top:172px;width:200px"></div><div class="wl" style="left:16px;top:192px;width:150px"></div>') +
-    '<span class="ntag">' + S.unneeded + '</span>';
-  var wPhoto = el('div', 'bwin', scr); place(wPhoto, [16, 470, 300, 220]);
-  wPhoto.innerHTML = winHtml('<div class="wpic"></div>') + '<span class="ntag">' + S.unneeded + '</span>';
-  bwins = [wBrowser, wFolder, wPhoto];
+    '<i class="wfi f1" style="left:16px;top:20px"></i><i class="wfi f2" style="left:96px;top:20px"></i>' +
+    '<i class="wfi f3" style="left:176px;top:20px"></i><i class="wfi f4" style="left:16px;top:110px"></i>' +
+    '<i class="wfi f5" style="left:96px;top:110px"></i><i class="wfi f6" style="left:176px;top:110px"></i>' +
+    '<div class="wl" style="left:16px;top:190px;width:200px"></div><div class="wl" style="left:16px;top:210px;width:150px"></div>');
+  var bwins = [wBrowser, wFolder];
 
-  var ide = el('div', 'ide', scr); place(ide, [330, 40, 950, 656]);
-  ide.innerHTML = '<div class="itb"><i></i><i></i><i></i><span>Cursor — auth-migration</span></div>';
+  var ide = el('div', 'ide', scr); place(ide, [270, 24, 1010, 690]);
+  ide.innerHTML = '<div class="itb"><i></i><i></i><i></i><span>' + S.project + ' — Cursor</span></div>';
   var tree = el('div', 'tree', ide);
-  [[16, 20, 96], [30, 42, 110], [30, 62, 84], [16, 84, 120], [30, 104, 100], [16, 126, 112], [30, 146, 88], [16, 168, 118],
-   [30, 188, 104], [16, 210, 96], [30, 230, 120], [16, 252, 80], [30, 272, 110]].forEach(function (n, i) {
-    var t = el('div', 'tnode', tree);
-    t.style.left = n[0] + 'px'; t.style.top = n[1] + 'px'; t.style.width = n[2] + 'px';
-    if (i === 4) t.style.background = 'rgba(30,136,229,.28)';
+  [[10, 12, 'src/', 'dir'], [22, 34, 'auth/', 'dir'], [34, 56, 'session.ts', 'sel'], [34, 78, 'token.ts', ''],
+   [34, 100, 'refresh.ts', ''], [34, 122, 'compat.ts', ''], [22, 144, 'api/', 'dir'], [34, 166, 'legacy.ts', ''],
+   [22, 188, 'tests/', 'dir'], [34, 210, 'auth.test.ts', ''], [10, 232, 'package.json', ''], [10, 254, 'README.md', '']
+  ].forEach(function (n) {
+    var t = el('div', 'tnode ' + n[3], tree, n[2]);
+    t.style.left = n[0] + 'px'; t.style.top = n[1] + 'px';
   });
-  var editor = el('div', 'editor', ide);
-  var PASTEL = ['#9EC5F5', '#C8B6F0', '#A6DEC4', '#F5C99B', '#B7C4D6'];
-  var INDENT = [0, 1, 1, 2, 2, 0, 1, 2, 3, 2, 1, 1, 0, 1, 2, 2, 1, 0];
-  var clines = [];
-  INDENT.forEach(function (ind, i) {
-    var ln = el('div', 'cline', editor);
-    ln.style.marginLeft = (ind * 18) + 'px';
-    var segs = 2 + (i % 2);
-    for (var k = 0; k < segs; k++) {
-      var sg = el('i', 'cseg', ln);
-      sg.style.width = (40 + ((i * 53 + k * 71) % 130)) + 'px';
-      sg.style.background = PASTEL[(i + k) % PASTEL.length];
-    }
-    clines.push(ln);
+  var CODE = [
+    '<span class="kw">import</span> { <span class="ty">Session</span> } <span class="kw">from</span> <span class="str">\'./session\'</span>',
+    '<span class="kw">import</span> { legacy } <span class="kw">from</span> <span class="str">\'../api/legacy\'</span>',
+    '',
+    '<span class="cm">// compat layer for the 3 legacy callers</span>',
+    '<span class="kw">export function</span> <span class="fn">compat</span>(s: <span class="ty">Session</span>) {',
+    '  <span class="kw">const</span> mapped = legacy.<span class="fn">wrap</span>(s, {',
+    '    api: <span class="str">\'v1\'</span>, strict: <span class="kw">false</span>,',
+    '  });',
+    '  <span class="kw">return</span> mapped.<span class="fn">bind</span>(s.token);',
+    '}',
+    '',
+    '<span class="kw">export async function</span> <span class="fn">refreshAll</span>() {',
+    '  <span class="kw">await</span> Session.<span class="fn">refresh</span>({ window: <span class="num">300</span> });',
+    '  <span class="kw">return</span> Session.<span class="fn">current</span>();',
+    '}',
+    '',
+    '<span class="cm">// tests cover migrate + refresh + compat</span>',
+    ''
+  ];
+  var editor = el('div', 'editor', ide); place(editor, [168, 34, 690, 456]);
+  var clines = CODE.map(function (c, i) {
+    return el('div', 'cline', editor, '<span class="ln">' + (i + 1) + '</span><span class="cc">' + (c || ' ') + '</span>');
   });
-  var term = el('div', 'term', ide);
-  var tCount = 0;
-  function termLine() {
-    var ln = el('div', 'tline', term);
-    var n = 1 + (tCount % 3);
-    for (var k = 0; k < n; k++) {
-      var s = el('i', 'tseg', ln);
-      s.style.width = (40 + ((tCount * 37 + k * 61) % 150)) + 'px';
-      if ((tCount + k) % 4 === 0) s.style.background = '#3FA37A';
-    }
-    tCount++;
-    if (term.children.length > 7) term.firstElementChild.remove();
+  var term = el('div', 'term', ide); place(term, [168, 496, 690, 194]);
+  /* desktop terminal follows the AG test counter — never shows future results */
+  var termTestLn = null, termSuiteIdx = 0;
+  var TERM_SUITES = ['  ✓ auth/session.test.ts (12)', '  ✓ auth/token.test.ts (8)', '  ✓ api/legacy.test.ts (6)',
+    '  ✓ auth/refresh.test.ts (9)', '  ✓ auth/compat.test.ts (11)', '  ✓ e2e/migrate.test.ts (24)'];
+  function termPush(html) {
+    var ln = el('div', 'tline', term, html);
+    while (term.children.length > 9) term.firstElementChild.remove();
+    return ln;
   }
+  function termForTest(m) {
+    var n = m.count || 0;
+    var want = Math.min(TERM_SUITES.length, Math.floor(n / 18));
+    while (termSuiteIdx < want) termPush(TERM_SUITES[termSuiteIdx++]);
+    if (n > 0) {
+      if (!termTestLn) termTestLn = termPush('');
+      termTestLn.textContent = 'Tests: ' + n + ' of 132 passed';
+    }
+    if (m.state === 'done') {
+      if (termTestLn) { termTestLn.remove(); termTestLn = null; }
+      termPush('Test Suites: 14 passed, 14 total').classList.add('ok');
+      termPush('Tests: 132 passed, 132 total').classList.add('ok');
+    }
+  }
+
   function flashCode(i) {
     var a = clines[(i * 5) % clines.length], b = clines[(i * 5 + 9) % clines.length];
-    [a, b].forEach(function (c) { c.classList.add('lit'); });
-    wait(0.9).then(function () { [a, b].forEach(function (c) { c.classList.remove('lit'); }); });
+    [a, b].forEach(function (c) { c.classList.remove('lit'); void c.offsetWidth; c.classList.add('lit'); });
+    wait(1.0).then(function () { [a, b].forEach(function (c) { c.classList.remove('lit'); }); });
   }
 
   var dPanel = el('div', 'apanel dpanel', scr);
-  dPanel.innerHTML = '<div class="ahead"></div><div class="abody"></div>' + inputHtml();
-  place(dPanel, [840, 76, 440, 620]);
+  dPanel.innerHTML = '<div class="ahead"></div><div class="abody"></div>' +
+    '<div class="ainput"><div class="abox"><span class="ph">' + (LANG === 'en' ? 'Ask anything' : '问点什么') + '</span>' +
+    '<span class="dt"></span><span class="caret"></span></div><div class="sendbtn">↑</div></div>';
   var dHead = dPanel.querySelector('.ahead'), dBody = dPanel.querySelector('.abody');
   var dBox = dPanel.querySelector('.abox'), dPh = dBox.querySelector('.ph'), dTxt = dBox.querySelector('.dt'),
       dCaret = dBox.querySelector('.caret');
 
   var taskbar = el('div', 'taskbar', scr);
-  [['#9EC5F5', 28], ['#C8B6F0', 62], ['#A6DEC4', 96], ['#F5C99B', 130], ['#B7C4D6', 164]].forEach(function (t) {
-    var b = el('i', 'tbi', taskbar, ''); b.style.background = t[0]; b.style.left = t[1] + 'px';
-  });
+  ['tb1', 'tb2', 'tb3', 'tb4', 'tb5'].forEach(function (c) { el('i', 'tbi ' + c, taskbar, ''); });
 
-  var qrWrap = el('div', 'qrwrap', scr);
-  qrWrap.innerHTML = '<div class="qrbox"><div class="qrg">' + qrCells() + '</div></div>' +
-    '<div class="qrok"><span class="pcheck">✓</span><span>' + S.paired + '</span></div>';
-  var qrBox = qrWrap.querySelector('.qrbox'), qrOk = qrWrap.querySelector('.qrok');
-
-  function inputHtml() {
-    return '<div class="ainput"><div class="abox"><span class="ph">' + S.ph_input + '</span>' +
-      '<span class="dt"></span><span class="caret"></span></div><div class="sendbtn">↑</div></div>';
-  }
-
-  /* ---------- phone ---------- */
-  var phoneWrap = el('div', '', world); phoneWrap.id = 'phonewrap';
-  phoneWrap.innerHTML = '<div class="pframe"></div><div class="pnotch"></div><div class="pscr">' +
-    '<div class="pstatus"><span class="pc">12:02</span><span class="sic"><span class="sbar"></span>' +
-    '<span class="sbar"></span><span class="sbar"></span><span class="batt"></span></span></div>' +
-    '<div class="apanel pchat"><div class="ahead"></div><div class="abody"></div>' + inputHtml() + '</div>' +
-    '<div class="pbanner"><span class="bdot"></span><span>' + S.a4_banner + '</span></div>' +
-    '<div class="pkbd"></div>' +
-    '<div class="lockview"><div class="lkt">12:41</div><div class="lkd"></div>' +
-    '<div class="pnotif"><div class="nh">' + S.notif_t + '</div><div class="nb"><span class="ok">✓</span>' + S.notif_b + '</div></div></div>' +
-    '<div class="blackoff"></div><div class="pflash"></div>' +
-    '<div class="pinchlay"><i class="pinchd" style="left:180px"></i><i class="pinchd" style="left:220px"></i></div>' +
-    '<div class="ripplelay"></div></div>';
-  var pScr = phoneWrap.querySelector('.pscr');
-  pclock = pScr.querySelector('.pc');
-  var pChat = pScr.querySelector('.pchat');
-  var pHead = pChat.querySelector('.ahead'), pBody = pChat.querySelector('.abody');
-  var pBox = pChat.querySelector('.abox'), pPh = pBox.querySelector('.ph'), pTxt = pBox.querySelector('.dt'),
-      pCaret = pBox.querySelector('.caret');
-  var pBanner = pScr.querySelector('.pbanner'), pKbd = pScr.querySelector('.pkbd'), pLock = pScr.querySelector('.lockview'),
-      pNotif = pLock.querySelector('.pnotif'), pBlack = pScr.querySelector('.blackoff'), pFlash = pScr.querySelector('.pflash'),
-      pPinch = pScr.querySelector('.pinchlay'), pRip = pScr.querySelector('.ripplelay');
-  var pdots = pPinch.querySelectorAll('.pinchd');
-  var pView = el('div', 'aview pview hidden', pScr);
-  var dView = el('div', 'aview dview hidden', dPanel);
-  phoneWrap.style.transform = 'translate(340px,190px)';
-  (function () {
-    for (var r = 0; r < 4; r++) {
-      var row = el('div', 'krow', pKbd);
-      var n = r === 3 ? 1 : 10;
-      for (var k = 0; k < n; k++) el('i', 'pkey' + (r === 3 ? ' wide' : ''), row);
-    }
-  })();
-  var kbdKeys = pKbd.querySelectorAll('.pkey');
-  var pSend = pChat.querySelector('.sendbtn');
-
-  /* ---------- relay, chips, lens, comparison phone ---------- */
-  var relay = el('div', 'relay', world);
-  var relayLbl = el('div', 'relaylbl', world, S.relay);
-  var chipPc = el('div', 'lochip', world, '<span class="ld" style="background:#7E8FAE"></span>' + S.chip_pc);
-  chipPc.style.left = '460px'; chipPc.style.top = '676px';
-  var chipPhone = el('div', 'lochip', world, '<span class="ld" style="background:var(--accent)"></span>' + S.chip_phone);
-  chipPhone.style.left = '1360px'; chipPhone.style.top = '928px';
-  var rdPhone = el('div', 'rdphone', world);
-  (function () {
-    var mini = '';
-    for (var r = 0; r < 26; r++) {
-      var y = 14 + r * 15;
-      mini += '<i style="left:' + (10 + (r * 17) % 40) + 'px;top:' + y + 'px;width:' + (60 + (r * 29) % 140) + 'px"></i>';
-      mini += '<i style="left:' + (150 + (r * 11) % 40) + 'px;top:' + y + 'px;width:' + (40 + (r * 23) % 60) + 'px"></i>';
-    }
-    rdPhone.innerHTML = '<div class="rdlabel">' + S.rd_label + '</div><div class="rdmini">' + mini + '</div>' +
-      '<div class="rdmag"></div><div class="rdstrike"></div>';
-  })();
-  var lens = el('div', 'lens', world, '<span class="lt"></span><span class="caret"></span>');
-  var lensTxt = lens.querySelector('.lt');
-  var lensOn = false;
-
-  function positionLens() {
-    if (!lensOn) return;
+  /* ---------- voice callout (annotation over the desktop input) ---------- */
+  var vcall = el('div', 'vcall', world);
+  vcall.innerHTML = '<div class="vcap">' + S.lbl_pcinput + '</div><div class="vtxt"></div>';
+  var vTxt = vcall.querySelector('.vtxt');
+  var vlead = el('div', 'vlead', world);
+  function showCallout() {
+    if (FF) { vcall.style.opacity = '1'; vlead.style.opacity = '1'; }
     var r = rectInWorld(dBox);
-    lens.style.left = Math.round(r[0] + r[2] / 2 - lens.offsetWidth / 2) + 'px';
-    lens.style.top = Math.round(r[1] - lens.offsetHeight - 24) + 'px';
+    var cx = Math.min(760, Math.max(120, r[0] - 320));
+    place(vcall, [cx, Math.max(60, r[1] - 560), 400, 110]);
+    /* leader from callout bottom to the input box top edge */
+    var ax = cx + 200, ay = vcall.offsetTop + 110, bx = r[0] + r[2] / 2, by = r[1] + 8;
+    var dx = bx - ax, dy = by - ay, len = Math.sqrt(dx * dx + dy * dy), ang = Math.atan2(dy, dx) * 180 / Math.PI;
+    vlead.style.left = ax + 'px'; vlead.style.top = ay + 'px';
+    vlead.style.width = len + 'px'; vlead.style.transform = 'rotate(' + ang + 'deg)';
+    tween(vcall, [{ opacity: 0, transform: 'translateY(14px)' }, { opacity: 1, transform: 'translateY(0px)' }], 400);
+    tween(vlead, [{ opacity: 0 }, { opacity: 1 }], 400);
+    dBox.classList.add('glow');
+  }
+  function hideCallout() {
+    tween(vcall, [{ opacity: 1 }, { opacity: 0 }], 300);
+    tween(vlead, [{ opacity: 1 }, { opacity: 0 }], 300);
+    dBox.classList.remove('glow');
+  }
+  function setVText(t) { vTxt.textContent = t; }
+
+  /* ---------- phone (parent chrome + iframe app) ---------- */
+  var phoneWrap = el('div', '', world); phoneWrap.id = 'phonewrap';
+  phoneWrap.innerHTML = '<div class="pframe"></div><div class="pscr">' +
+    '<iframe class="papp" src="phone.html?lang=' + LANG + '&screen=chat"></iframe>' +
+    '<div class="pclone"><div class="pclonewrap"><div class="pclonein"></div></div></div>' +
+    '<div class="rdptag"><span>' + S.rdp_tag + '</span></div>' +
+    '<div class="px">✕</div><div class="pflash"></div><div class="prip"></div>' +
+    '<div class="pstatus"><span class="ptime">12:02</span><span class="sic"><span class="sbar"></span>' +
+    '<span class="sbar"></span><span class="sbar"></span><svg class="wifi" viewBox="0 0 16 12"><path d="M8 10.5 2.5 5a8 8 0 0 1 11 0Z"/><circle cx="8" cy="10" r="1.6"/></svg>' +
+    '<span class="batt"></span></span></div><div class="pisland"></div></div>';
+  var pScr = phoneWrap.querySelector('.pscr');
+  var pApp = pScr.querySelector('.papp');
+  var pClone = pScr.querySelector('.pclone'), pCloneIn = pScr.querySelector('.pclonein');
+  var pTag = pScr.querySelector('.rdptag'), pX = pScr.querySelector('.px'),
+      pFlash = pScr.querySelector('.pflash'), pRip = pScr.querySelector('.prip');
+  var pTime = pScr.querySelector('.ptime');
+  pTag.style.opacity = '0';
+  phoneWrap.style.transform = 'translate(620px,0px)';
+
+  /* side phones for the "more" scene: same renderer, other screens */
+  function sidePhone() {
+    var w = el('div', 'sphone hidden', world);
+    w.innerHTML = phoneWrap.innerHTML;
+    return w;
+  }
+  var sPhoneT = sidePhone();
+  sPhoneT.querySelector('.papp').src = 'phone.html?lang=' + LANG + '&screen=term';
+  sPhoneT.querySelector('.pclone').remove(); sPhoneT.querySelector('.rdptag').remove(); sPhoneT.querySelector('.px').remove();
+  var sPhoneF = sidePhone();
+  sPhoneF.querySelector('.papp').src = 'phone.html?lang=' + LANG + '&screen=file';
+  sPhoneF.querySelector('.pclone').remove(); sPhoneF.querySelector('.rdptag').remove(); sPhoneF.querySelector('.px').remove();
+  var sAppT = sPhoneT.querySelector('.papp'), sAppF = sPhoneF.querySelector('.papp');
+  var lblTerm = el('div', 'slbl hidden', world, S.lbl_term);
+  var lblAgents = el('div', 'slbl hidden', world, S.lbl_agents);
+  var lblFile = el('div', 'slbl hidden', world, S.lbl_file);
+
+  var relay = el('div', 'relay hidden', world);
+  var relayLbl = el('div', 'relaylbl hidden', world, S.relay);
+
+  /* ---------- iframe protocol ---------- */
+  var frames = [pApp, sAppT, sAppF], readyCount = 0, themedCount = 0, themedWaiters = [], lastTapRect = null, tapWaiters = [];
+  addEventListener('message', function (e) {
+    var d = e.data || {};
+    if (d.type === 'ready') readyCount++;
+    else if (d.type === 'themed') { themedCount++; themedWaiters.forEach(function (r) { r(); }); themedWaiters = []; }
+    else if (d.type === 'fxrect') { lastTapRect = d.rect; tapWaiters.forEach(function (r) { r(d.rect); }); tapWaiters = []; }
+  });
+  function postTo(f, m) { try { f.contentWindow.postMessage(m, '*'); } catch (e) {} }
+  function phoneMsgs() {
+    return AG.msgs.map(function (m) {
+      if (m.type === 'user') return { k: 'human', t: m.text, time: m.time };
+      if (m.type === 'ai' || m.type === 'final') return { k: 'assistant', t: m.text };
+      if (m.type === 'ans') return { k: 'ans', t: m.text };
+      if (m.type === 'read') return { k: 'tool', kind: 'read', f: m.f, state: m.state };
+      if (m.type === 'edit') return { k: 'tool', kind: 'edit', f: m.f, add: m.add, del: m.del, state: m.state };
+      if (m.type === 'test') return { k: 'tool', kind: 'command', cmd: m.cmd, state: m.state, count: m.count, total: m.total,
+        out: 'Tests: ' + m.count + ' of ' + m.total + ' passed' };
+      if (m.type === 'qcard' && AG.q && AG.q.answer != null) return { k: 'ans', t: S.q_done };
+      return null;
+    }).filter(Boolean);
+  }
+  function baseState() {
+    return {
+      app: 'cursor', title: 'Cursor', project: S.project, model: S.model,
+      status: AG.status, msgs: phoneMsgs(), q: AG.q, draft: AG.draft,
+      focused: AG.focused, kb: AG.kb, voice: AG.voice, sheet: AG.sheet,
+      lock: AG.lock, notif: AG.notif, statusMsg: AG.statusMsg, theme: AG.theme
+    };
+  }
+  function syncPhone(instant) {
+    var st = baseState(); st.screen = 'chat';
+    postTo(pApp, { type: 'state', state: st, instant: !!instant });
+    var stT = baseState(); stT.screen = 'term'; stT.sheet = null; stT.lock = null; stT.notif = null;
+    stT.term = { cmd: S.term_cmd, lines: S.term_lines };
+    postTo(sAppT, { type: 'state', state: stT, instant: !!instant });
+    var stF = baseState(); stF.screen = 'file'; stF.sheet = null; stF.lock = null; stF.notif = null;
+    stF.file = fileState();
+    postTo(sAppF, { type: 'state', state: stF, instant: !!instant });
+  }
+  function fx(frame, name, args, dur) {
+    if (FF) return Promise.resolve();
+    postTo(frame, { type: 'fx', name: name, args: args || {}, dur: dur });
+    return wait(0.25);
+  }
+  function pTap(sel, args) {
+    return fx(pApp, 'tap', Object.assign({ sel: sel }, args || {}));
+  }
+  /* tap and report the element's center (iframe coords) — used to anchor the theme circle */
+  function pTapReport(sel) {
+    if (FF) return Promise.resolve(null);
+    var pr = new Promise(function (r) { tapWaiters.push(r); setTimeout(function () { r(lastTapRect); }, 800); });
+    postTo(pApp, { type: 'fx', name: 'tap', args: { sel: sel, report: true }, dur: 0 });
+    return pr;
   }
 
-  /* ---------- person + desk (world level, sitting then standing) ---------- */
-  var desk = el('div', 'cdesk', world); desk.style.left = '110px'; desk.style.top = '870px'; desk.style.width = '1740px';
-  var sitting = el('div', '', world);
-  sitting.innerHTML =
-    '<div class="chair-back" style="position:absolute;left:1838px;top:470px;width:36px;height:330px;border-radius:14px;background:#C9D3E0"></div>' +
-    '<div class="chair-seat" style="position:absolute;left:1640px;top:760px;width:230px;height:40px;border-radius:14px;background:#C9D3E0"></div>' +
-    '<div class="chair-post" style="position:absolute;left:1740px;top:800px;width:16px;height:150px;background:#C9D3E0"></div>' +
-    '<div style="position:absolute;left:1680px;top:520px;width:130px;height:240px;border-radius:46px 46px 18px 18px;background:#7FB3E6"></div>' +
-    '<div style="position:absolute;left:1684px;top:430px;width:92px;height:96px;border-radius:50%;background:#F2C7A0"></div>' +
-    '<div style="position:absolute;left:1680px;top:418px;width:100px;height:46px;border-radius:50px 50px 10px 10px;background:#4A4F5C"></div>' +
-    '<div style="position:absolute;left:1560px;top:620px;width:190px;height:42px;border-radius:21px;background:#7FB3E6"></div>' +
-    '<div style="position:absolute;left:1600px;top:706px;width:150px;height:56px;border-radius:28px;background:#5B6B80"></div>' +
-    '<div style="position:absolute;left:1600px;top:740px;width:56px;height:150px;border-radius:28px;background:#5B6B80"></div>';
-  var deskPhone = el('div', 'desk-phone', world, '');
-  deskPhone.style.cssText = 'position:absolute;left:1500px;top:812px;width:30px;height:58px;border-radius:8px;background:#1C2230;';
-  var standing = el('div', '', world);
-  standing.style.cssText = 'position:absolute;left:0;top:0;opacity:0;';
-  standing.innerHTML =
-    '<div style="position:absolute;left:1690px;top:430px;width:92px;height:96px;border-radius:50%;background:#F2C7A0"></div>' +
-    '<div style="position:absolute;left:1690px;top:418px;width:100px;height:46px;border-radius:50px 50px 10px 10px;background:#4A4F5C"></div>' +
-    '<div style="position:absolute;left:1690px;top:520px;width:130px;height:240px;border-radius:46px 46px 18px 18px;background:#7FB3E6"></div>' +
-    '<div style="position:absolute;left:1700px;top:740px;width:56px;height:200px;border-radius:28px;background:#5B6B80"></div>' +
-    '<div style="position:absolute;left:1760px;top:740px;width:56px;height:200px;border-radius:28px;background:#5B6B80"></div>' +
-    '<div style="position:absolute;left:1812px;top:560px;width:40px;height:150px;border-radius:20px;background:#7FB3E6"></div>' +
-    '<div style="position:absolute;left:1818px;top:620px;width:30px;height:56px;border-radius:8px;background:#1C2230"></div>';
+  /* file viewer payload (compat.ts with agent changes highlighted) */
+  var FILE_LINES = null;
+  function fileState() {
+    if (!FILE_LINES) {
+      var src = [
+        ["import { Session } from './session';", ''],
+        ["import { legacy } from '../api/legacy';", ''],
+        ['', ''],
+        ['// compat layer for the 3 legacy callers', 'cm'],
+        ['export function compat(s: Session) {', 'add'],
+        ['  const mapped = legacy.wrap(s, {', 'add'],
+        ["    api: 'v1', strict: false,", 'add'],
+        ['  });', 'add'],
+        ['  return mapped.bind(s.token);', 'add'],
+        ['}', 'add'],
+        ['', ''],
+        ['export async function refreshAll() {', ''],
+        ['  await Session.refresh({ window: 300 });', 'mod'],
+        ['  return Session.current();', ''],
+        ['}', ''],
+        ['', '']
+      ];
+      /* single-pass highlighter on raw text so markup never gets re-tokenized */
+      var RX = /('[^']*'|\/\/.*$|\b(?:import|from|export|function|const|return|async|await)\b|\b(?:Session|legacy|mapped)\b|\b(?:wrap|bind|refresh|current|compat|refreshAll)\b|\b\d+\b)/g;
+      FILE_LINES = src.map(function (l, i) {
+        var raw = l[0].replace(/&/g, '&amp;').replace(/</g, '&lt;');
+        var h = raw.replace(RX, function (m) {
+          var c = /^'/.test(m) ? '#1A7F37' : /^\/\//.test(m) ? '#98A0AC'
+            : /^(import|from|export|function|const|return|async|await)$/.test(m) ? '#8957E5'
+            : /^(Session|legacy|mapped)$/.test(m) ? '#B7791F'
+            : /^(wrap|bind|refresh|current|compat|refreshAll)$/.test(m) ? '#0958D9' : '#B4690E';
+          return '<span style="color:' + c + '">' + m + '</span>';
+        });
+        return { n: i + 1, h: h || ' ', mk: l[1] === 'add' ? 'add' : l[1] === 'mod' ? 'mod' : '' };
+      });
+    }
+    return { name: 'compat.ts', path: S.file_path, lines: FILE_LINES, marks: 6 };
+  }
 
-  /* ---------- mutators (the only way session content changes) ---------- */
+  /* ---------- theme beat ---------- */
+  function setThemeInstant(th) {
+    AG.theme = th;
+    document.documentElement.dataset.theme = th;
+    frames.forEach(function (f) { postTo(f, { type: 'theme', theme: th }); });
+    syncPhone(FF);
+  }
+  function allThemed() {
+    themedCount = 0;
+    var target = frames.length;
+    return new Promise(function (r) {
+      var to = setTimeout(r, 600);
+      themedWaiters.push(function () { if (themedCount >= target) { clearTimeout(to); r(); } });
+    });
+  }
+  function switchTheme(th, px, py) {
+    /* px,py = viewport coords of the tap point (circle origin) */
+    /* keep AG.sheet in sync with the menu's current-theme label */
+    function commit() {
+      AG.theme = th;
+      if (AG.sheet && AG.sheet.kind === 'menu') { AG.sheet.theme = th; }
+    }
+    if (FF || VT || !document.startViewTransition) { commit(); setThemeInstant(th); return; }
+    var R = Math.ceil(Math.max(
+      Math.hypot(px, py), Math.hypot(innerWidth - px, py),
+      Math.hypot(px, innerHeight - py), Math.hypot(innerWidth - px, innerHeight - py)));
+    /* nothing may reach the phones before the old snapshot is captured,
+       otherwise they flip ahead of the circle */
+    var vt = document.startViewTransition(function () {
+      commit();
+      document.documentElement.dataset.theme = th;
+      frames.forEach(function (f) { postTo(f, { type: 'theme', theme: th }); });
+      syncPhone(false);
+      return allThemed();
+    });
+    vt.ready.then(function () {
+      document.documentElement.animate(
+        [{ clipPath: 'circle(0px at ' + px + 'px ' + py + 'px)' },
+         { clipPath: 'circle(' + R + 'px at ' + px + 'px ' + py + 'px)' }],
+        { duration: 450 / SPEED, easing: 'ease-in-out', pseudoElement: '::view-transition-new(root)' });
+    }).catch(function () {});
+  }
+  /* translate an iframe-space point to viewport coords */
+  function iframeToViewport(f, pt) {
+    var r = f.getBoundingClientRect();
+    return [r.left + pt[0] / 393 * r.width, r.top + pt[1] / 805 * r.height];
+  }
+
+  /* ---------- mutators ---------- */
   function headHtml() {
-    var lab = AG.status === 'wait' ? S.st_wait : AG.status === 'done' ? S.st_done : S.st_run;
-    return '<span class="adot"></span><div class="hname"><span class="aname">' + S.agent_name + '</span>' +
+    var lab = AG.status === 'wait' ? (LANG === 'en' ? 'Waiting' : '等待')
+      : AG.status === 'done' ? (LANG === 'en' ? 'Done' : '已完成') : (LANG === 'en' ? 'Running' : '运行中');
+    return '<span class="adot"></span><div class="hname"><span class="aname">Cursor Agent</span>' +
       '<span class="asub">' + S.session + '</span></div>' +
       '<span class="stpill ' + AG.status + '"><span class="sd"></span>' + lab + '</span>';
   }
-  function qHtml(m) {
-    if (m.answer !== undefined && m.answer !== null && m.collapsed)
-      return '<div class="ansrow"><span class="check">✓</span>' + S.a4_done + '</div>';
-    var h = '<div class="qcard"><div class="qq">' + m.q + '</div>';
-    m.opts.forEach(function (o, i) {
-      h += '<div class="opt' + (m.answer === i ? ' sel' : '') + '"><span class="key">' +
-        'ABC'[i] + '</span>' + o + '</div>';
+  function qCardHtml(q) {
+    if (q.answer != null) return '<div class="ansrow"><span class="check">✓</span>' + S.q_done + '</div>';
+    var h = '<div class="qcard"><div class="qq">' + q.q + '</div>';
+    q.opts.forEach(function (o, i) {
+      h += '<div class="opt' + (q.sel === i ? ' sel' : '') + '"><span class="key">' + 'ABC'[i] + '</span>' + o + '</div>';
     });
     return h + '</div>';
   }
-  function msgHtml(m) {
+  function dMsgHtml(m) {
     if (m.type === 'user') return '<div class="msg user"><div class="bub">' + m.text + '</div></div>';
     if (m.type === 'final') return '<div class="msg ai"><div class="bub final"><span class="check">✓</span> ' + m.text + '</div></div>';
-    if (m.type === 'fileref') return '<div class="msg ai"><span class="fref">' + S.fileref + '</span></div>';
-    if (m.type === 'qcard') return qHtml(m);
-    if (m.type === 'test') {
-      var pct = Math.round(100 * m.count / m.total);
-      return '<div class="trow ' + m.state + '"><span class="st">' +
-        (m.state === 'done' ? '<span class="check">✓</span>' : '<span class="spin"></span>') + '</span><b>' + m.name +
-        '</b><span class="tprog"><i style="width:' + pct + '%"></i></span><span class="tcnt">' + m.count + '/' + m.total + '</span></div>';
-    }
-    return '<div class="trow ' + m.state + '"><span class="st">' +
-      (m.state === 'done' ? '<span class="check">✓</span>' : '<span class="spin"></span>') + '</span><b>' + m.name +
-      '</b><span class="args">' + m.args + '</span></div>';
+    if (m.type === 'ans') return '<div class="ansrow"><span class="check">✓</span>' + m.text + '</div>';
+    if (m.type === 'ai') return '<div class="msg ai"><div class="bub">' + m.text + '</div></div>';
+    if (m.type === 'qcard') return qCardHtml(AG.q);
+    var st = m.state === 'done' ? '<span class="check">✓</span>' : '<span class="spin"></span>';
+    if (m.type === 'read') return '<div class="trow ' + m.state + '"><span class="st">' + st + '</span><b>Read</b><span class="args">' + m.f + '</span></div>';
+    if (m.type === 'edit') return '<div class="trow ' + m.state + '"><span class="st">' + st + '</span><b>Edited</b><span class="args">' + m.f + '</span>' +
+      '<span class="stat add">+' + (m.add || 0) + '</span><span class="stat del">-' + (m.del || 0) + '</span></div>';
+    if (m.type === 'test') return '<div class="trow ' + m.state + '"><span class="st">' + st + '</span><b>Ran</b><span class="args">' + m.cmd + '</span>' +
+      '<span class="tcnt">' + m.count + '/' + m.total + '</span></div>';
+    return '';
   }
-  function updateMsgDom(m) {
-    [m.d, m.p].forEach(function (d) { if (d) d.innerHTML = msgHtml(m); });
+  function renderDPanel() {
+    dHead.innerHTML = headHtml();
+    dBody.innerHTML = AG.msgs.map(dMsgHtml).join('');
   }
-  function renderHeads() { [dHead, pHead].forEach(function (h) { h.innerHTML = headHtml(); }); }
+  function renderDDraft() {
+    dPh.style.display = AG.draft ? 'none' : '';
+    dTxt.style.display = AG.draft ? '' : 'none';
+    dTxt.textContent = AG.draft;
+    dCaret.style.display = AG.draft ? '' : 'none';
+  }
   function agPush(msg) {
     msg.id = 'm' + (++AG.mid);
-    AG.msgs.push(msg); AG.byId[msg.id] = msg;
-    msg.d = el('div', '', dBody);
-    msg.p = el('div', '', pBody);
-    updateMsgDom(msg);
-    if (!FF) {
-      [msg.d, msg.p].forEach(function (d) {
-        d.animate([{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'translateY(0px)' }],
-          { duration: 240, easing: EASE, fill: 'forwards' });
-      });
-    }
+    msg.time = AG.clock;
+    AG.msgs.push(msg);
+    var d = el('div', '', dBody); d.innerHTML = dMsgHtml(msg); msg.d = d;
+    if (!FF && !VT) d.animate([{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'translateY(0px)' }],
+      { duration: 240, easing: EASE, fill: 'forwards' });
+    syncPhone(FF);
     return msg.id;
   }
   function agUpdate(id, patch) {
-    var m = AG.byId[id]; if (!m) return;
+    var m = AG.msgs.filter(function (x) { return x.id === id; })[0];
+    if (!m) return;
     Object.keys(patch).forEach(function (k) { m[k] = patch[k]; });
-    updateMsgDom(m);
+    if (m.d) m.d.innerHTML = dMsgHtml(m);
+    if (m.type === 'test') termForTest(m);
+    syncPhone(FF);
   }
-  function agDraft(text) {
+  function agDraft(text, opts) {
     AG.draft = text;
-    [[dPh, dTxt, dCaret], [pPh, pTxt, pCaret]].forEach(function (t) {
-      t[0].style.display = text ? 'none' : '';
-      t[1].style.display = text ? '' : 'none';
-      t[1].textContent = text;
-      t[2].style.display = text ? '' : 'none';
-    });
-    lensTxt.textContent = text;
-    positionLens();
+    if (!opts || !opts.late) renderDDraft();
+    setVText(text);
+    syncPhone(FF);
   }
-  function agQuestion(q) {
-    AG.q = q;
-    return agPush({ type: 'qcard', q: q.q, opts: q.opts, answer: null, collapsed: false });
+  function agDraftLate(text) {
+    AG.draft = text;
+    var expect = text;
+    wait(0.4).then(function () { if (AG.draft === expect || AG.draft.indexOf(expect) === 0) renderDDraft(); });
+    setVText(text);
+    syncPhone(FF);
   }
+  function agQuestion(q) { AG.q = { q: q.q, opts: q.opts, sel: null, answer: null }; agPush({ type: 'qcard' }); }
+  function agSel(i) { if (AG.q) { AG.q.sel = i; renderDPanel(); syncPhone(FF); } }
   function agAnswer(i) {
-    var m = AG.msgs[AG.msgs.length - 1];
-    if (m && m.type === 'qcard') {
-      m.answer = i; updateMsgDom(m);
-      wait(.8).then(function () { m.collapsed = true; updateMsgDom(m); });
-    }
+    if (!AG.q) return;
+    AG.q.sel = i; AG.q.answer = i;
+    renderDPanel();
+    syncPhone(FF);
   }
-  function agStatus(s) {
-    AG.status = s;
-    renderHeads();
+  function agStatus(s) { AG.status = s; renderDPanel(); syncPhone(FF); }
+  function agFocus(on) { AG.focused = on; AG.kb = on; syncPhone(FF); }
+  function agVoice(on) {
+    AG.voice = on;
+    AG.statusMsg = '';
+    syncPhone(FF);
+  }
+  function agLock(on) {
+    AG.lock = on ? { time: AG.clock, date: S.lock_date } : null;
+    if (!on) AG.notif = null;
+    syncPhone(FF);
+  }
+  function agNotif(title, body) { AG.notif = { title: title, body: body }; syncPhone(FF); }
+  function agSheet() {
+    AG.sheet = { kind: 'agents', rows: [
+      { logo: 'cursor', label: 'Cursor', cur: true, running: true },
+      { logo: 'devin', label: 'Devin' },
+      { logo: 'codex', label: 'Codex' },
+      { logo: 'fusion', label: 'Fusion' }
+    ] };
+    syncPhone(FF);
+  }
+  function agMenu() { AG.sheet = { kind: 'menu', appName: 'Cursor', theme: AG.theme }; syncPhone(FF); }
+  function agSheetOff() { AG.sheet = null; syncPhone(FF); }
+  function termState(cmd, lines) {
+    var st = baseState(); st.screen = 'term';
+    st.sheet = null; st.lock = null; st.notif = null;
+    st.term = { cmd: cmd, lines: lines || [] };
+    postTo(sAppT, { type: 'state', state: st, instant: FF });
   }
 
-  /* ---------- agent views (A7 / A8): same state, both renderers ---------- */
-  function selTop(k, i) { return k === 'p' ? 110 + i * 82 : 70 + i * 64; }
-  function rowH(k) { return k === 'p' ? 62 : 50; }
-  function fTrans(z) { return 'translate(0px,' + (-115 * (z - 1)).toFixed(1) + 'px) scale(' + z + ')'; }
-  function vTitle() {
-    var d = AG.vdata;
-    if (AG.view === 'models') return 'Cursor · ' + MODELS[d.sel || 0];
-    if (AG.view === 'term') return S.vhead_term;
-    if (AG.view === 'file') return S.fileref;
-    if (AG.view === 'cam') return S.vhead_cam;
-    return '';
-  }
-  function viewHtml(k) {
-    var v = AG.view, d = AG.vdata;
-    var head = '<div class="vhead"><span class="vback">‹</span><b class="vtitle">' + vTitle() + '</b></div>';
-    if (v === 'models') {
-      var rows = '';
-      MODELS.forEach(function (n, i) {
-        rows += '<div class="mrow" style="top:' + selTop(k, i) + 'px;height:' + rowH(k) + 'px">' +
-          '<i class="mdot" style="background:' + MODEL_COL[i] + '"></i><b>' + n + '</b><span class="mbar"></span></div>';
-      });
-      return head + '<div class="mlist"><div class="selbox" style="top:' + (selTop(k, d.sel || 0) - 6) + 'px;height:' +
-        (rowH(k) + 12) + 'px"></div>' + rows + '</div><div class="mcur">model: <b>' + MODELS[d.sel || 0] + '</b></div>';
-    }
-    if (v === 'term') {
-      var lines = (d.lines || []).map(function (l) { return '<div class="tl">' + l + '</div>'; }).join('');
-      return head + '<div class="vterm"><div class="tcmd"><span class="tp">$</span>' + (d.cmd || '') +
-        '<span class="caret"></span></div>' + lines + '</div>';
-    }
-    if (v === 'file') {
-      var code = '';
-      CODE_LINES.forEach(function (c, i) {
-        code += '<div class="cl' + (i === 3 ? ' hl' : '') + '"><span class="ln">' + (i + 1) + '</span><span>' + c + '</span></div>';
-      });
-      return head + '<div class="vfile"><div class="fbar">' + S.fileref + '</div><div class="vcode"><div class="fcode" style="transform:' +
-        fTrans(d.zoom || 1) + '">' + code + '</div></div></div>';
-    }
-    if (v === 'cam') {
-      if (k === 'd') return '';
-      var body = d.paired
-        ? '<div class="pairdone"><span class="pcheck">✓</span><span class="pt">' + S.paired + '</span></div>'
-        : '<div class="vf"><div class="qrg vf-qr">' + qrCells() + '</div><i class="scanl"></i><div class="vf-hint">' + S.scan_hint + '</div></div>';
-      return head + '<div class="camwrap">' + body + '</div>';
-    }
-    return '';
-  }
-  function renderViews() {
-    [dView, pView].forEach(function (c, i) {
-      var k = i ? 'p' : 'd';
-      var hidden = !AG.view || (AG.view === 'cam' && k === 'd');
-      c.classList.toggle('hidden', hidden);
-      if (!hidden) c.innerHTML = viewHtml(k);
+  function setTime(txt) {
+    AG.clock = txt;
+    pTime.textContent = txt;
+    if (AG.lock) { AG.lock.time = txt; syncPhone(FF); }
+    [sPhoneT, sPhoneF].forEach(function (w) {
+      var t = w.querySelector('.ptime'); if (t) t.textContent = txt;
     });
   }
-  function moveSel(from, to) {
-    [dView, pView].forEach(function (c, i) {
-      var k = i ? 'p' : 'd';
-      var sb = c.querySelector('.selbox'), tt = c.querySelector('.vtitle');
-      if (tt) tt.textContent = vTitle();
-      if (sb) tween(sb, [{ top: (selTop(k, from) - 6) + 'px' }, { top: (selTop(k, to) - 6) + 'px' }], 520);
-    });
-  }
-  function zoomFile(from, to) {
-    [dView, pView].forEach(function (c) {
-      var fc = c.querySelector('.fcode'); if (!fc) return;
-      tween(fc, [{ transform: fTrans(from) }, { transform: fTrans(to) }], 1000);
-    });
-  }
-  function agView(name, data) {
-    var prev = AG.view, old = AG.vdata;
-    AG.view = name; AG.vdata = data || {};
-    if (name && name === prev && name === 'models') return moveSel(old.sel || 0, AG.vdata.sel || 0);
-    if (name && name === prev && name === 'file') return zoomFile(old.zoom || 1, AG.vdata.zoom || 1);
-    renderViews();
+
+  function pulseBeam() {
+    if (FF || VT) return;
+    var b = el('div', 'pulsebeam', world);
+    b.style.left = '900px'; b.style.top = '508px';
+    tween(b, [{ left: '900px', opacity: 1 }, { left: '1284px', opacity: 1 }], 700, 'linear')
+      .then(function () { return tween(b, [{ opacity: 1 }, { opacity: 0 }], 150); })
+      .then(function () { b.remove(); });
   }
 
-  /* ---------- QR pattern (deterministic) ---------- */
-  function qrOn(r, c) {
-    var corner = (r < 7 && c < 7) || (r < 7 && c >= 18) || (r >= 18 && c < 7);
-    if (corner) {
-      var rr = r < 7 ? r : r - 18, cc = c < 7 ? c : c - 18;
-      return rr === 0 || rr === 6 || cc === 0 || cc === 6 || (rr >= 2 && rr <= 4 && cc >= 2 && cc <= 4);
-    }
-    return ((r * 7 + c * 13 + r * c) % 5) < 2;
-  }
-  function qrCells() {
-    var h = '';
-    for (var r = 0; r < 25; r++) for (var c = 0; c < 25; c++) h += qrOn(r, c) ? '<i class="on"></i>' : '<i></i>';
-    return h;
+  /* focus the phone: dim monitor + relay to ~45% (no camera push-ins) */
+  function focusPhone(on) {
+    var to = on ? 0.45 : 1;
+    tween(monWrap, [{ opacity: on ? 1 : 0.45 }, { opacity: to }], 450);
+    tween(relay, [{ opacity: on ? 1 : 0.45 }, { opacity: to }], 450);
+    tween(relayLbl, [{ opacity: on ? 1 : 0.45 }, { opacity: to }], 450);
   }
 
-  /* ---------- taps: finger ripple on the phone (pScr design coords) ---------- */
-  function tapFx(x, y) {
-    var rp = el('div', 'ripple', pRip);
-    rp.style.left = (x - 22) + 'px'; rp.style.top = (y - 22) + 'px';
-    return tween(rp, [{ opacity: 0.9, transform: 'scale(.3)' }, { opacity: 0, transform: 'scale(1.6)' }], 520).then(function () { rp.remove(); });
-  }
-  function pTap(elm) {
-    var pr = pScr.getBoundingClientRect(), r = elm.getBoundingClientRect(), k = pr.width / 398;
-    return tapFx((r.left + r.width / 2 - pr.left) / k, (r.top + r.height / 2 - pr.top) / k);
-  }
-  function flashConnector(id) {
-    var m = AG.byId[id];
-    if (!m || !m.d || !m.p) return;
-    var a = rectInWorld(m.d), b = rectInWorld(m.p);
-    var x0 = a[0] + a[2], x1 = b[0], y = a[1] + a[3] / 2;
-    if (x1 <= x0) return;
-    var c = el('div', 'conn', world);
-    c.style.left = x0 + 'px'; c.style.top = (y - 1) + 'px'; c.style.width = (x1 - x0) + 'px';
-    tween(c, [{ opacity: 0 }, { opacity: 1 }, { opacity: 0 }], 900).then(function () { c.remove(); });
-  }
-  renderHeads();
+  renderDPanel(); renderDDraft(); syncPhone(true);
 
-  var flight = null;
-
-  /* ================= C0 — cold open: the agent waits, the chair is empty ================= */
-  var cold = el('div', 'intro', stage); cold.style.zIndex = 150;
-  var coldCam = el('div', 'cold-cam', cold);
-  coldCam.innerHTML =
-    '<div class="cmon"><div class="cscr"><div class="cbar"><i></i><i></i><i></i></div>' +
-    '<div class="cpill"><span class="sd"></span>' + S.c0_status + '</div>' +
-    '<div class="cq"><span class="cqm">?</span><span class="cqt">' + S.c0_q + '</span></div>' +
-    '<div class="cbars"><i style="width:62%"></i><i style="width:80%"></i><i style="width:44%"></i></div>' +
-    '<div class="ctimer">' + S.c0_wait.replace('{n}', 23) + '</div></div></div>' +
-    '<div class="cmonstand"></div><div class="cdesk" style="left:220px;top:730px;width:1480px"></div>' +
-    '<div class="chair-back" style="position:absolute;left:1420px;top:420px;width:36px;height:330px;border-radius:14px;background:#C9D3E0"></div>' +
-    '<div class="chair-seat" style="position:absolute;left:1270px;top:640px;width:230px;height:40px;border-radius:14px;background:#C9D3E0"></div>' +
-    '<div class="chair-post" style="position:absolute;left:1370px;top:680px;width:16px;height:150px;background:#C9D3E0"></div>';
-  var coldTimer = coldCam.querySelector('.ctimer');
-  var coldLine = el('div', 'coldline', coldCam, S.cold_line);
-
-  scene('c0', 3.5, function (t0) {
-    at(t0, function () { tween(cold, [{ opacity: 0 }, { opacity: 1 }], 500); });
-    at(t0 + 0.3, function () { tween(coldCam, [{ transform: 'scale(1.22)' }, { transform: 'scale(1)' }], 2000); });
-    [1, 2, 3].forEach(function (n) {
-      at(t0 + 0.6 + 0.8 * n, function () { coldTimer.textContent = S.c0_wait.replace('{n}', 23 + n); });
-    });
-    at(t0 + 2.3, function () { tween(coldLine, [{ opacity: 0, transform: 'translateY(24px)' }, { opacity: 1, transform: 'translateY(0px)' }], 520); });
-    at(t0 + 3.0, function () { tween(cold, [{ opacity: 1 }, { opacity: 0 }], 400); });
-  });
-
-  /* ================= S0 — remote desktop pain ================= */
-  var hook = el('div', 'intro', stage); hook.style.zIndex = 150;
-  var hookQ = el('div', 'hook-q', hook, S.hook_q);
-  var hookAns = el('div', 'hook-ans', hook, S.hook_ans);
-  var PAIN = [S.pain1, S.pain2, S.pain3];
-  var pcards = [], xbs = [], ptags = [], rips = [], searches = [];
-  var painArt = [
-    '<div class="mphone"><div class="mdesk"><i style="width:80%"></i><i style="width:60%"></i><i style="width:90%"></i>' +
-      '<i style="width:50%"></i><i style="width:70%"></i><i style="width:85%"></i></div></div><i class="pd pd1"></i><i class="pd pd2"></i>',
-    '<div class="mwin mw1"></div><div class="mwin mw2"></div><div class="mwin mw3"></div><div class="magent"></div><div class="psearch"></div>',
-    '<div class="mbtns"><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="mkbd"></div><div class="rip"></div><span class="ptag">' + S.pt_tag + '</span>'
-  ];
-  for (var pi = 0; pi < 3; pi++) {
-    var pc = el('div', 'pain-card', hook);
-    pc.style.left = (215 + pi * 520) + 'px';
-    pc.innerHTML = '<div class="xb">✕</div><div class="pcanvas">' + painArt[pi] + '</div><div class="pain-title">' + PAIN[pi] + '</div>';
-    pcards.push(pc);
-    xbs.push(pc.querySelector('.xb'));
-  }
-  searches.push(pcards[1].querySelector('.psearch'));
-  rips.push(pcards[2].querySelector('.rip'));
-  ptags.push(pcards[2].querySelector('.ptag'));
-
-  scene('s0', 6.5, function (t0) {
+  /* ================= scene 1 — hook ================= */
+  world.style.transform = 'translate(-38px,-21px) scale(1.04)';
+  scene('hook', 4.5, function (t0) {
     at(t0, function () {
-      tween(hook, [{ opacity: 0 }, { opacity: 1 }], 400);
-      tween(hookQ, [{ opacity: 0, transform: 'translateY(24px)' }, { opacity: 1, transform: 'translateY(0px)' }], 500);
-      pcards.forEach(function (c, i) {
-        wait(0.4 + i * 0.3).then(function () {
-          return tween(c, [{ opacity: 0, transform: 'translateY(40px) scale(1)' }, { opacity: 1, transform: 'translateY(0px) scale(1)' }], 480);
-        });
-      });
-      var sp = [[40, 60], [210, 130], [70, 200], [250, 70]];
-      var sEl = searches[0];
-      sEl.style.left = sp[0][0] + 'px'; sEl.style.top = sp[0][1] + 'px';
-      var cur = sp[0];
-      sp.slice(1).forEach(function (p, k) {
-        wait(1.2 + k * 0.7).then(function () {
-          var from = cur; cur = p;
-          return tween(sEl, [{ left: from[0] + 'px', top: from[1] + 'px' }, { left: p[0] + 'px', top: p[1] + 'px' }], 450);
-        });
-      });
-      wait(2.2).then(function () {
-        return tween(rips[0], [{ opacity: 0.9, transform: 'scale(.3)' }, { opacity: 0, transform: 'scale(1.6)' }], 520);
-      });
-      wait(2.7).then(function () { return pop(ptags[0], 360); });
+      caption('cap_hook');
+      worldTo('translate(0px,0px) scale(1)', 1600);
+      tween(world, [{ opacity: 0 }, { opacity: 1 }], 700);
+      setTime('12:02');
     });
-    at(t0 + 3.2, function () {
-      xbs.forEach(function (x, i) { wait(i * 0.12).then(function () { return pop(x, 340); }); });
-    });
-    at(t0 + 4.3, function () {
-      pcards.forEach(function (c) {
-        tween(c, [{ opacity: 1, transform: 'translateY(0px) scale(1)' }, { opacity: 0, transform: 'translateY(0px) scale(.86)' }], 450);
-      });
-      tween(hookQ, [{ opacity: 1 }, { opacity: 0 }], 400);
-    });
-    at(t0 + 4.7, function () { pop(hookAns, 480); });
-    at(t0 + 6.1, function () { tween(hook, [{ opacity: 1 }, { opacity: 0 }], 380); });
-  });
-
-  /* ================= S1 — brand ================= */
-  var brand = el('div', 'intro', stage); brand.style.zIndex = 150;
-  brand.innerHTML = '<div class="brand-wrap"><img class="title-icon" src="assets/ra-icon.svg">' +
-    '<div class="title-main">Remote Agent</div><div class="title-tag">' + S.brand_sub + '</div>' +
-    '<div class="app-row"><div class="app-pill"><i class="adot" style="background:#1E88E5"></i>Cursor</div>' +
-    '<div class="app-pill"><i class="adot" style="background:#7C5CF6"></i>Devin</div>' +
-    '<div class="app-pill"><i class="adot" style="background:#1A9F5A"></i>Codex</div></div></div>';
-  var bIcon = brand.querySelector('.title-icon'), bTtl = brand.querySelector('.title-main'),
-      bTag = brand.querySelector('.title-tag'), bPills = brand.querySelectorAll('.app-pill');
-
-  scene('s1', 3.2, function (t0) {
-    at(t0, function () { tween(brand, [{ opacity: 0 }, { opacity: 1 }], 400); pop(bIcon, 520); });
-    at(t0 + 0.5, function () { tween(bTtl, [{ opacity: 0, transform: 'translateY(28px)' }, { opacity: 1, transform: 'translateY(0px)' }], 500); });
-    at(t0 + 0.8, function () { tween(bTag, [{ opacity: 0 }, { opacity: 1 }], 400); });
-    [0, 1, 2].forEach(function (i) { at(t0 + 1.05 + i * 0.18, function () { pop(bPills[i], 420); }); });
-    at(t0 + 2.55, function () {
-      tween(brand, [{ opacity: 1 }, { opacity: 0 }], 500);
-      tween(world, [{ opacity: 0 }, { opacity: 1 }], 620);
-    });
-  });
-
-  /* ================= A1 — the long task is running ================= */
-  scene('a1', 7.5, function (t0) {
-    at(t0, function () {
-      caption('cap_a1', S.k1_pain, S.k1_sol);
-      show(timechip, 400); setTime('12:02');
-    });
-    at(t0 + 0.15, function () { agPush({ type: 'user', text: S.a1_prompt }); });
-    var m1 = null, m2 = null;
-    at(t0 + 0.65, function () { m1 = agPush({ type: 'tool', name: 'read_file', args: 'src/auth/session.ts', state: 'run' }); });
+    at(t0 + 0.15, function () { agPush({ type: 'user', text: S.prompt }); });
+    var m1 = null, m2 = null, tid = null;
+    at(t0 + 0.65, function () { m1 = agPush({ type: 'read', f: S.t_read, state: 'run' }); });
     at(t0 + 1.2, function () { agUpdate(m1, { state: 'done' }); });
-    at(t0 + 1.9, function () { m2 = agPush({ type: 'tool', name: 'edit', args: '6 files', state: 'run' }); });
-    at(t0 + 2.4, function () { agUpdate(m2, { state: 'done' }); });
-    at(t0 + 3.0, function () {
-      AG.testId = agPush({ type: 'test', name: 'run npm test', state: 'run', count: 0, total: 132 });
+    at(t0 + 1.6, function () { m2 = agPush({ type: 'edit', f: S.t_edit6, add: 182, del: 96, state: 'run' }); });
+    at(t0 + 2.1, function () { agUpdate(m2, { state: 'done' }); });
+    at(t0 + 2.5, function () {
+      tid = agPush({ type: 'test', cmd: S.t_test, count: 0, total: 132, state: 'run' });
+      AG.testId = tid;
+      termPush('<span class="tp">$</span> npm test');
+      termPush('Test Suites: running…');
     });
-    for (var i = 1; i <= 19; i++) {
-      (function (n) {
-        at(t0 + 3.0 + n * 0.09, function () { agUpdate(AG.testId, { count: Math.round(38 * n / 19) }); });
-      })(i);
+    for (var i = 1; i <= 12; i++) {
+      (function (n) { at(t0 + 2.5 + n * 0.14, function () { agUpdate(AG.testId, { count: Math.round(38 * n / 12) }); }); })(i);
     }
-    for (var ti = 0; ti < 14; ti++) at(t0 + 0.3 + ti * 0.5, termLine);
-    for (var ei = 0; ei < 12; ei++) (function (n) { at(t0 + 0.6 + n * 0.5, function () { flashCode(n); }); })(ei);
-    /* ~4.5 s: the person stands, takes the phone and walks off to the right */
-    at(t0 + 4.5, function () {
-      sitting.style.display = 'none';
-      deskPhone.style.opacity = '0';
-      standing.style.opacity = '1';
-    });
-    at(t0 + 4.7, function () {
-      tween(standing, [{ transform: 'translateX(0px)' }, { transform: 'translateX(640px)' }], 1750);
-    });
-    at(t0 + 6.5, function () { standing.style.opacity = '0'; });
+    for (var ei = 0; ei < 8; ei++) (function (n) { at(t0 + 0.5 + n * 0.5, function () { flashCode(n); }); })(ei);
   });
 
-  /* ================= A2 — only the agent flies into the phone ================= */
-  scene('a2', 6.5, function (t0) {
+  /* ================= scene 2 — rdp ================= */
+  scene('rdp', 4.0, function (t0) {
     at(t0, function () {
-      caption('cap_a2', S.k2_pain, S.k2_sol);
+      caption('cap_rdp');
+      tween(monWrap, [{ transform: MON_FULL }, { transform: MON_SIDE }], 800);
+      var clone = scr.cloneNode(true);
+      clone.style.cssText = 'position:absolute;left:0;top:0;width:1296px;height:756px;transform:scale(.303) translate(0px,0px);transform-origin:0 0;';
+      pCloneIn.appendChild(clone);
+      pCloneIn.style.transform = 'translate(0px,288px)';
+    });
+    at(t0 + 0.25, function () {
+      tween(phoneWrap, [{ transform: 'translate(620px,0px)', opacity: 0 }, { transform: 'translate(0px,0px)', opacity: 1 }], 900);
+      tween(pClone, [{ opacity: 0 }, { opacity: 1 }], 500);
+      tween(pTag, [{ opacity: 0 }, { opacity: 1 }], 400);
+    });
+    var pd1 = null, pd2 = null;
+    at(t0 + 1.0, function () {
+      pd1 = el('div', 'pdot', pRip); pd1.style.left = '150px'; pd1.style.top = '430px';
+      pd2 = el('div', 'pdot', pRip); pd2.style.left = '250px'; pd2.style.top = '430px';
+      tween(pd1, [{ opacity: 0 }, { opacity: 1 }], 200); tween(pd2, [{ opacity: 0 }, { opacity: 1 }], 200);
+    });
+    at(t0 + 1.35, function () {
+      tween(pd1, [{ left: '150px', top: '430px' }, { left: '70px', top: '400px' }], 800);
+      tween(pd2, [{ left: '250px', top: '430px' }, { left: '330px', top: '410px' }], 800);
+      tween(pCloneIn, [{ transform: 'translate(0px,288px) scale(1)' }, { transform: 'translate(-390px,120px) scale(2.6)' }], 800);
+    });
+    at(t0 + 2.3, function () {
+      tween(pd1, [{ left: '70px', top: '400px' }, { left: '150px', top: '430px' }], 600);
+      tween(pd2, [{ left: '330px', top: '410px' }, { left: '250px', top: '430px' }], 600);
+      tween(pCloneIn, [{ transform: 'translate(-390px,120px) scale(2.6)' }, { transform: 'translate(0px,288px) scale(1)' }], 600);
+    });
+    at(t0 + 3.0, function () {
+      var rp = el('div', 'ripple', pRip);
+      rp.style.left = '176px'; rp.style.top = '478px';
+      tween(rp, [{ opacity: 0.9, transform: 'scale(.3)' }, { opacity: 0, transform: 'scale(1.6)' }], 520)
+        .then(function () { rp.remove(); });
+      tween(pd1, [{ opacity: 1 }, { opacity: 0 }], 250).then(function () { pd1.remove(); });
+      tween(pd2, [{ opacity: 1 }, { opacity: 0 }], 250).then(function () { pd2.remove(); });
+    });
+    at(t0 + 3.4, function () {
+      tween(phoneWrap, [
+        { transform: 'translate(0px,0px)' },
+        { offset: .25, transform: 'translate(-9px,4px)' },
+        { offset: .5, transform: 'translate(8px,14px)' },
+        { offset: .75, transform: 'translate(-4px,26px)' },
+        { transform: 'translate(0px,40px)' }
+      ], 550);
+      tween(pX, [{ opacity: 0 }, { opacity: 1 }], 300);
+      tween(phoneWrap, [{ opacity: 1 }, { opacity: 0 }], 400);
+      wait(0.45).then(function () {
+        [phoneWrap, pClone, pX, pTag].forEach(cutAnim);
+        phoneWrap.style.opacity = '0';
+        pClone.style.opacity = '0'; pX.style.opacity = '0'; pTag.style.opacity = '0';
+      });
+    });
+  });
+
+  /* ================= scene 3 — brand ================= */
+  var brand = el('div', 'intro', stage);
+  brand.innerHTML = '<div class="brand-wrap"><img class="title-icon" src="assets/ra-icon.svg">' +
+    '<div class="title-main">Remote Agent</div><div class="title-tag">' + S.brand_tag + '</div></div>';
+  var bIcon = brand.querySelector('.title-icon'), bTtl = brand.querySelector('.title-main'), bTag = brand.querySelector('.title-tag');
+  scene('brand', 2.5, function (t0) {
+    at(t0, function () {
+      captionOff();
+      tween(dim, [{ opacity: 0 }, { opacity: 1 }], 400);
+      tween(brand, [{ opacity: 0 }, { opacity: 1 }], 350);
+      pop(bIcon, 520);
+    });
+    at(t0 + 0.45, function () { tween(bTtl, [{ opacity: 0, transform: 'translateY(28px)' }, { opacity: 1, transform: 'translateY(0px)' }], 500); });
+    at(t0 + 0.75, function () { tween(bTag, [{ opacity: 0 }, { opacity: 1 }], 400); });
+    at(t0 + 1.85, function () {
+      tween(brand, [{ opacity: 1, transform: 'translate(0px,0px) scale(1)' },
+        { opacity: 0, transform: 'translate(-810px,-420px) scale(.3)' }], 550)
+        .then(function () { brand.style.display = 'none'; });
+      tween(brandmark, [{ opacity: 0 }, { opacity: 1 }], 500);
+      tween(dim, [{ opacity: 1 }, { opacity: 0 }], 600);
+    });
+  });
+
+  /* ================= scene 4 — fly (smooth bezier flight, ~1.0 s) ================= */
+  var flight = null;
+  scene('fly', 5.0, function (t0) {
+    at(t0, function () {
+      caption('cap_fly');
       bwins.forEach(function (w) {
-        tween(w, [{ filter: 'grayscale(0) opacity(1)' }, { filter: 'grayscale(1) opacity(0.45)' }], 500);
-        pop(w.querySelector('.ntag'), 320);
+        tween(w, [{ filter: 'grayscale(0) opacity(.75)' }, { filter: 'grayscale(.8) opacity(.3)' }], 500);
       });
       dPanel.classList.add('liftoff');
     });
-    at(t0 + 0.9, function () {
+    at(t0 + 0.35, function () {
+      tween(phoneWrap, [{ transform: 'translate(620px,0px)', opacity: 0 }, { transform: PHONE_HOME, opacity: 1 }], 800);
+    });
+    at(t0 + 0.7, function () {
       var r = rectInWorld(dPanel);
       dPanel.classList.remove('liftoff');
       dPanel.style.opacity = '0';
       flight = el('div', 'flight', world);
-      place(flight, r);
+      var x0 = r[0] + r[2] / 2, y0 = r[1] + r[3] / 2;           /* panel center */
+      var x1 = 1304 + 393 / 2, y1 = 133 + 805 / 2;             /* phone app-area center */
+      var cxq = (x0 + x1) / 2, cyq = Math.min(y0, y1) - 150;   /* quadratic arc apex */
+      flight.style.offsetPath = 'path("M ' + x0 + ' ' + y0 + ' Q ' + cxq + ' ' + cyq + ' ' + x1 + ' ' + y1 + '")';
+      flight.style.width = r[2] + 'px'; flight.style.height = r[3] + 'px';
       flight.style.borderRadius = '10px';
       var clone = dPanel.cloneNode(true);
       clone.classList.add('fclone'); clone.classList.remove('liftoff');
-      clone.style.cssText = 'opacity:1;left:0px;top:0px;width:100%;height:100%;';
+      clone.style.cssText = 'opacity:1;left:0px;top:0px;width:100%;height:100%;border-left:0;';
       flight.appendChild(clone);
       tween(flight, [
-        { left: r[0] + 'px', top: r[1] + 'px', width: r[2] + 'px', height: r[3] + 'px', borderRadius: '10px' },
-        { offset: 0.3, left: (r[0] - 60) + 'px', top: '20px', width: (r[2] * 1.03) + 'px', height: (r[3] * 1.03) + 'px', borderRadius: '16px' },
-        { offset: 0.65, left: '1000px', top: '40px', width: '420px', height: '760px', borderRadius: '28px' },
-        { left: '1266px', top: '94px', width: '398px', height: '814px', borderRadius: '40px' }
-      ], 2600);
+        { offsetDistance: '0%', width: r[2] + 'px', height: r[3] + 'px', borderRadius: '10px', opacity: 1 },
+        { offsetDistance: '100%', width: '393px', height: '805px', borderRadius: '40px', opacity: 1 }
+      ], 1000);
     });
-    at(t0 + 2.4, function () {
-      tween(phoneWrap, [{ transform: 'translate(340px,190px)', opacity: 0 }, { transform: 'translate(0px,0px)', opacity: 1 }], 1100);
-    });
-    at(t0 + 3.5, function () {
+    at(t0 + 1.75, function () {
       tween(flight, [{ opacity: 1 }, { opacity: 0 }], 250).then(function () { flight.remove(); });
       tween(dPanel, [{ opacity: 0 }, { opacity: 1 }], 300);
-      tween(pChat, [{ opacity: 0 }, { opacity: 1 }], 300);
+      tween(pApp, [{ opacity: 0 }, { opacity: 1 }], 300);
       tween(pFlash, [{ opacity: 0 }, { opacity: 0.85 }, { opacity: 0 }], 420);
-      tween(phoneWrap, [{ transform: 'translate(0px,0px) scale(1)' }, { transform: 'translate(0px,-8px) scale(1.02)' },
-        { transform: 'translate(0px,0px) scale(1)' }], 460);
+      tween(phoneWrap, [{ transform: PHONE_HOME }, { transform: 'translate(0px,-8px) scale(1.02)' },
+        { transform: PHONE_HOME }], 460);
     });
-    at(t0 + 3.6, function () {
-      tween(monWrap, [{ transform: 'translate(200px,70px) scale(1)' }, { transform: 'translate(217px,237px) scale(0.52)' }], 800);
+    at(t0 + 2.4, function () {
+      tween(monWrap, [{ transform: MON_SIDE }, { transform: MON_SPLIT }], 800);
     });
-    at(t0 + 3.9, function () {
-      tween(relay, [{ width: '0px' }, { width: '347px' }], 700);
+    at(t0 + 3.0, function () {
+      relay.classList.remove('hidden');
+      tween(relay, [{ width: '0px' }, { width: '388px' }], 700);
+      relayLbl.classList.remove('hidden');
       tween(relayLbl, [{ opacity: 0 }, { opacity: 1 }], 400);
-      tween(chipPc, [{ opacity: 0, transform: 'translateY(10px)' }, { opacity: 1, transform: 'translateY(0px)' }], 400);
-      tween(chipPhone, [{ opacity: 0, transform: 'translateY(10px)' }, { opacity: 1, transform: 'translateY(0px)' }], 400);
-    });
-    at(t0 + 4.6, function () {
-      tween(rdPhone, [{ opacity: 0 }, { opacity: 0.92 }], 450);
-      tween(relayLbl, [{ opacity: 1 }, { opacity: 0 }], 300);
-    });
-    at(t0 + 6.1, function () {
-      tween(rdPhone, [{ opacity: 0.92 }, { opacity: 0 }], 380);
-      tween(relayLbl, [{ opacity: 0 }, { opacity: 1 }], 300);
     });
   });
 
-  /* ================= A3 — real-time sync ================= */
-  scene('a3', 5.5, function (t0) {
-    at(t0, function () { caption('cap_a3', S.k3_pain, S.k3_sol); setTime('12:15'); });
+  /* ================= scene 5 — sync ================= */
+  scene('sync', 4.5, function (t0) {
+    at(t0, function () { caption('cap_sync'); setTime('12:15'); });
     var mA = null, mB = null;
-    at(t0 + 0.35, function () {
-      mA = agPush({ type: 'tool', name: 'edit', args: 'src/auth/token.ts', state: 'run' });
-      flashConnector(mA);
-    });
+    at(t0 + 0.35, function () { mA = agPush({ type: 'edit', f: S.t_token, add: 46, del: 12, state: 'run' }); pulseBeam(); });
     at(t0 + 0.95, function () {
       agUpdate(mA, { state: 'done' });
-      mB = agPush({ type: 'tool', name: 'edit', args: 'src/auth/refresh.ts', state: 'run' });
-      flashConnector(mB);
+      mB = agPush({ type: 'edit', f: S.t_refresh, add: 31, del: 8, state: 'run' });
+      pulseBeam();
     });
     at(t0 + 1.5, function () { agUpdate(mB, { state: 'done' }); });
-    for (var n = 1; n <= 20; n++) {
+    for (var n = 1; n <= 18; n++) {
       (function (k) {
-        at(t0 + 1.0 + k * 0.075, function () {
-          agUpdate(AG.testId, { count: 38 + Math.round(59 * k / 20) });
-          if (k % 7 === 0) flashConnector(AG.testId);
+        at(t0 + 1.0 + k * 0.08, function () {
+          agUpdate(AG.testId, { count: 38 + Math.round(59 * k / 18) });
+          if (k % 6 === 0) pulseBeam();
         });
       })(n);
     }
-    at(t0 + 3.0, function () { worldZoom(PHONE_RECT, 1.25, 650); });
-    at(t0 + 4.3, function () { worldZoomOut(600); });
   });
 
-  /* ================= A4 — the agent asks a question ================= */
-  scene('a4', 7.5, function (t0) {
-    at(t0, function () { caption('cap_a4', S.k4_pain, S.k4_sol); setTime('12:28'); });
+  /* ================= scene 6 — ask ================= */
+  scene('ask', 7.5, function (t0) {
+    at(t0, function () { caption('cap_ask'); setTime('12:28'); });
     at(t0 + 0.2, function () {
       agStatus('wait');
-      tween(pBanner, [{ top: '-110px' }, { top: '44px' }], 480, SPRING);
+      agQuestion({ q: S.q, opts: S.opts });
+      pulseBeam();
     });
-    at(t0 + 0.55, function () {
-      var id = agQuestion({ q: S.a4_q, opts: S.a4_opts });
-      flashConnector(id);
+    at(t0 + 0.8, function () { agLock(true); });
+    at(t0 + 1.3, function () {
+      agNotif(S.notif_wait_t, S.q);
+      fx(pApp, 'shake', {}, 0);
     });
-    at(t0 + 1.7, function () { worldZoom(PHONE_RECT, 1.25, 650); });
-    at(t0 + 2.6, function () {
-      var optB = AG.msgs[AG.msgs.length - 1].p.querySelectorAll('.opt')[1];
-      pTap(optB).then(function () {
+    at(t0 + 2.2, function () { fx(pApp, 'shake', {}, 0); });
+    at(t0 + 2.8, function () {
+      pTap('#notif').then(function () { agLock(false); });
+    });
+    at(t0 + 3.5, function () { focusPhone(true); });
+    at(t0 + 4.2, function () {
+      pTap('.qnOpts .qnOpt:nth-child(2)').then(function () { agSel(1); });
+    });
+    at(t0 + 4.9, function () {
+      pTap('.qnAct .primary').then(function () {
         agAnswer(1);
         agStatus('run');
-        tween(pBanner, [{ top: '44px' }, { top: '-110px' }], 420);
       });
     });
-    at(t0 + 3.0, function () { worldZoomOut(600); });
-    at(t0 + 4.4, function () {
-      var id = agPush({ type: 'tool', name: 'edit', args: 'src/auth/compat.ts', state: 'run' });
-      flashConnector(id);
-      wait(0.6).then(function () { agUpdate(id, { state: 'done' }); });
-    });
-    at(t0 + 5.4, function () {
-      var id = agPush({ type: 'tool', name: 'read_file', args: 'src/api/legacy.ts', state: 'run' });
-      flashConnector(id);
+    at(t0 + 5.6, function () { focusPhone(false); });
+    at(t0 + 6.2, function () {
+      var id = agPush({ type: 'edit', f: S.t_compat, add: 58, del: 4, state: 'run' });
+      pulseBeam();
       wait(0.6).then(function () { agUpdate(id, { state: 'done' }); });
     });
   });
 
-  /* ================= A5 — typing syncs both ways ================= */
-  var chars = Array.from(S.a5_text);
-  function flashKey(i) {
-    var kk = kbdKeys[i % kbdKeys.length];
-    kk.classList.add('lit');
-    wait(0.12).then(function () { kk.classList.remove('lit'); });
-  }
-  function typeChar(i) {
-    if (i >= chars.length) return wait(0.35).then(sendDraft);
-    agDraft(chars.slice(0, i + 1).join(''));
-    flashKey(i);
-    return wait(0.075).then(function () { return typeChar(i + 1); });
-  }
-  function sendDraft() {
-    return pTap(pSend).then(function () {
-      var id = agPush({ type: 'user', text: S.a5_text });
-      flashConnector(id);
-      agDraft('');
-      lensOn = false;
-      tween(lens, [{ opacity: 1 }, { opacity: 0 }], 300);
-      tween(pKbd, [{ transform: 'translateY(0%)' }, { transform: 'translateY(100%)' }], 420);
-      tween(pChat, [{ bottom: '272px' }, { bottom: '0px' }], 420);
+  /* ================= scene 7 — voice ================= */
+  var words = S.voice_text.split(LANG === 'en' ? ' ' : '');
+  scene('voice', 6.0, function (t0) {
+    at(t0, function () { caption('cap_voice'); });
+    at(t0 + 0.3, function () { pTap('#text'); });
+    at(t0 + 0.7, function () {
+      agFocus(true);
+      showCallout();
     });
-  }
-  scene('a5', 7.5, function (t0) {
-    at(t0, function () { caption('cap_a5', S.k5_pain, S.k5_sol); });
-    at(t0 + 0.2, function () {
-      tween(pKbd, [{ transform: 'translateY(100%)' }, { transform: 'translateY(0%)' }], 500);
-      tween(pChat, [{ bottom: '0px' }, { bottom: '272px' }], 500);
+    at(t0 + 1.2, function () {
+      fx(pApp, 'hold', { sel: '#mic' }, 2400);
+      agVoice(true);
     });
-    at(t0 + 0.9, function () {
-      lensOn = true;
-      positionLens();
-      tween(lens, [{ opacity: 0 }, { opacity: 1 }], 300);
+    for (var i = 1; i <= words.length; i++) {
+      (function (n) {
+        at(t0 + 1.5 + n * 0.17, function () {
+          agDraftLate(LANG === 'en' ? words.slice(0, n).join(' ') : words.slice(0, n).join(''));
+        });
+      })(i);
+    }
+    var typeEnd = t0 + 1.5 + words.length * 0.17;
+    at(typeEnd + 0.4, function () { agVoice(false); });
+    at(typeEnd + 0.8, function () {
+      pTap('#send').then(function () {
+        hideCallout();
+        agPush({ type: 'user', text: S.voice_text });
+        agDraft('');
+        agFocus(false);
+        renderDDraft();
+        pulseBeam();
+      });
     });
-    at(t0 + 1.0, function () { typeChar(0); });
+    at(typeEnd + 1.6, function () {
+      var id = agPush({ type: 'edit', f: S.t_readme, add: 24, del: 6, state: 'run' });
+      pulseBeam();
+      wait(0.6).then(function () { agUpdate(id, { state: 'done' }); });
+    });
   });
 
-  /* ================= A6 — completion reminder on the phone ================= */
-  scene('a6', 6.5, function (t0) {
+  /* ================= scene 7b — theme ================= */
+  scene('theme', 2.7, function (t0) {
+    at(t0, function () { caption('cap_theme'); });
+    at(t0 + 0.15, function () { pTap('#menuBtn'); });
+    at(t0 + 0.45, function () { agMenu(); });
+    at(t0 + 0.85, function () {
+      var tap = pTapReport('#menuThemeRow');
+      (tap || Promise.resolve(null)).then(function (pt) {
+        var vp = pt ? iframeToViewport(pApp, pt) : [innerWidth * 0.8, innerHeight * 0.7];
+        switchTheme('dark', vp[0], vp[1]);
+      });
+    });
+    at(t0 + 2.25, function () {
+      var tap = pTapReport('#menuThemeRow');
+      (tap || Promise.resolve(null)).then(function (pt) {
+        var vp = pt ? iframeToViewport(pApp, pt) : [innerWidth * 0.8, innerHeight * 0.7];
+        switchTheme('light', vp[0], vp[1]);
+      });
+    });
+    at(t0 + 2.55, function () { agSheetOff(); });
+  });
+
+  /* ================= scene 8 — more ================= */
+  scene('more', 6.5, function (t0) {
     at(t0, function () {
-      caption('cap_a6', S.k6_pain, S.k6_sol);
-      tween(pBlack, [{ opacity: 0 }, { opacity: 1 }], 350);
+      caption('cap_more');
+      tween(monWrap, [{ opacity: 1 }, { opacity: 0 }], 500);
+      tween(relay, [{ opacity: 1 }, { opacity: 0 }], 400);
+      tween(relayLbl, [{ opacity: 1 }, { opacity: 0 }], 300);
     });
-    at(t0 + 0.2, function () { setTime('12:41'); });
-    for (var n = 1; n <= 7; n++) {
-      (function (k) { at(t0 + 0.2 + k * 0.15, function () { agUpdate(AG.testId, { count: 97 + Math.round(35 * k / 7) }); }); })(n);
-    }
-    at(t0 + 1.5, function () {
-      agUpdate(AG.testId, { state: 'done' });
-      agPush({ type: 'final', text: S.a6_msg });
-      agStatus('done');
+    at(t0 + 0.4, function () {
+      tween(phoneWrap, [{ transform: PHONE_HOME }, { transform: PHONE_CENTER }], 700);
     });
-    at(t0 + 2.0, function () {
-      tween(pBlack, [{ opacity: 1 }, { opacity: 0 }], 300);
-      tween(pLock, [{ opacity: 0 }, { opacity: 1 }], 300);
-    });
-    at(t0 + 2.6, function () {
-      tween(pNotif, [{ top: '-150px' }, { top: '110px' }], 600, SPRING);
-    });
-    at(t0 + 3.3, function () {
-      tween(pNotif, [{ transform: 'translateX(0px)' }, { offset: 0.2, transform: 'translateX(-6px)' },
-        { offset: 0.4, transform: 'translateX(6px)' }, { offset: 0.6, transform: 'translateX(-4px)' },
-        { offset: 0.8, transform: 'translateX(4px)' }, { transform: 'translateX(0px)' }], 400);
-    });
-    at(t0 + 4.0, function () {
-      pTap(pNotif).then(function () { return tween(pLock, [{ opacity: 1 }, { opacity: 0 }], 400); });
-    });
-  });
-
-  /* ================= A7 — more capabilities, on the phone ================= */
-  scene('a7', 7.0, function (t0) {
-    at(t0, function () { caption('cap_a7', S.k7_pain, S.k7_sol); });
-    at(t0 + 0.2, function () { agView('models', { sel: 0 }); });
-    at(t0 + 1.0, function () {
-      pTap(pView.querySelectorAll('.mrow')[1]).then(function () { agView('models', { sel: 1 }); });
-    });
-    at(t0 + 2.2, function () { agView(null); });
-    function typeCmd(i) {
-      if (AG.view !== 'term') return;
-      if (i > S.term_cmd.length) return lineOut(0);
-      agView('term', { cmd: S.term_cmd.slice(0, i), lines: [] });
-      return wait(0.09).then(function () { return typeCmd(i + 1); });
-    }
-    function lineOut(j) {
-      if (AG.view !== 'term') return;
-      if (j >= S.term_lines.length) return;
-      agView('term', { cmd: S.term_cmd, lines: S.term_lines.slice(0, j + 1) });
-      return wait(0.3).then(function () { return lineOut(j + 1); });
-    }
-    at(t0 + 2.4, function () {
-      agView('term', { cmd: '', lines: [] });
-      wait(0.2).then(function () { return typeCmd(0); });
-    });
-    at(t0 + 4.4, function () { agView(null); });
-    at(t0 + 4.5, function () { agPush({ type: 'fileref' }); });
-    at(t0 + 4.9, function () {
-      var fr = AG.msgs[AG.msgs.length - 1].p.querySelector('.fref');
-      pTap(fr).then(function () { agView('file', { zoom: 1, hl: 3 }); });
-    });
-    at(t0 + 5.7, function () { tween(pPinch, [{ opacity: 0 }, { opacity: 1 }], 200); });
-    at(t0 + 5.9, function () {
-      tween(pdots[0], [{ left: '180px' }, { left: '90px' }], 900);
-      tween(pdots[1], [{ left: '220px' }, { left: '310px' }], 900);
-      agView('file', { zoom: 2.2, hl: 3 });
-    });
-    at(t0 + 6.7, function () { tween(pPinch, [{ opacity: 1 }, { opacity: 0 }], 250); });
-  });
-
-  /* ================= A8 — pairing ================= */
-  var pillWrap = el('div', 'pills', world);
-  scene('a8', 4.5, function (t0) {
-    at(t0, function () {
-      caption('cap_a8', S.k8_pain, S.k8_sol);
-      agView('cam', { paired: false });
-      tween(qrWrap, [{ opacity: 0 }, { opacity: 1 }], 400);
+    at(t0 + 0.7, function () {
+      sPhoneT.classList.remove('hidden');
+      sPhoneT.style.left = '250px'; sPhoneT.style.top = '150px';
+      tween(sPhoneT, [{ transform: 'translate(-360px,0px) rotate(-10deg) scale(.72)', opacity: 0 },
+        { transform: 'translate(0px,0px) rotate(-8deg) scale(.72)', opacity: 1 }], 700);
+      sPhoneF.classList.remove('hidden');
+      sPhoneF.style.left = '1230px'; sPhoneF.style.top = '150px';
+      tween(sPhoneF, [{ transform: 'translate(360px,0px) rotate(10deg) scale(.72)', opacity: 0 },
+        { transform: 'translate(0px,0px) rotate(8deg) scale(.72)', opacity: 1 }], 700);
     });
     at(t0 + 1.6, function () {
-      var sl = pView.querySelector('.scanl');
-      if (sl) tween(sl, [{ top: '90px' }, { top: '380px' }], 900);
-    });
-    at(t0 + 2.6, function () {
-      var sl = pView.querySelector('.scanl');
-      if (sl) tween(sl, [{ top: '380px' }, { top: '90px' }], 700);
-    });
-    at(t0 + 2.9, function () {
-      agView('cam', { paired: true });
-      tween(qrBox, [{ transform: 'scale(1)', opacity: 1 }, { transform: 'scale(.2)', opacity: 0 }], 500);
-      tween(qrOk, [{ opacity: 0 }, { opacity: 1 }], 400);
-    });
-    S.sec.forEach(function (t, i) {
-      at(t0 + 3.0 + i * 0.2, function () {
-        var p = el('div', 'pill', pillWrap, t);
-        pop(p, 400);
+      lblTerm.classList.remove('hidden'); lblAgents.classList.remove('hidden'); lblFile.classList.remove('hidden');
+      lblTerm.style.left = '250px'; lblTerm.style.top = '885px';
+      lblAgents.style.left = '750px'; lblAgents.style.top = '885px';
+      lblFile.style.left = '1230px'; lblFile.style.top = '885px';
+      [lblTerm, lblAgents, lblFile].forEach(function (l) {
+        tween(l, [{ opacity: 0, transform: 'translateY(14px)' }, { opacity: 1, transform: 'translateY(0px)' }], 400);
       });
+    });
+    at(t0 + 2.2, function () { pTap('#title'); });
+    at(t0 + 2.6, function () { agSheet(); });
+    for (var ci = 1; ci <= S.term_cmd.length; ci++) {
+      (function (n) {
+        at(t0 + 1.0 + n * 0.07, function () { termState(S.term_cmd.slice(0, n), []); });
+      })(ci);
+    }
+    for (var li = 0; li < S.term_lines.length; li++) {
+      (function (n) {
+        at(t0 + 2.4 + n * 0.22, function () { termState(S.term_cmd, S.term_lines.slice(0, n + 1)); });
+      })(li);
+    }
+    at(t0 + 5.3, function () {
+      agSheetOff();
+      tween(sPhoneT, [{ opacity: 1, transform: 'translate(0px,0px) rotate(-8deg) scale(.72)' },
+        { opacity: 0, transform: 'translate(-300px,0px) rotate(-10deg) scale(.72)' }], 500)
+        .then(function () { sPhoneT.classList.add('hidden'); });
+      tween(sPhoneF, [{ opacity: 1, transform: 'translate(0px,0px) rotate(8deg) scale(.72)' },
+        { opacity: 0, transform: 'translate(300px,0px) rotate(10deg) scale(.72)' }], 500)
+        .then(function () { sPhoneF.classList.add('hidden'); });
+      [lblTerm, lblAgents, lblFile].forEach(function (l) {
+        tween(l, [{ opacity: 1 }, { opacity: 0 }], 300).then(function () { l.classList.add('hidden'); });
+      });
+    });
+    at(t0 + 5.7, function () {
+      tween(phoneWrap, [{ transform: PHONE_CENTER }, { transform: PHONE_HOME }], 600);
+      tween(monWrap, [{ opacity: 0 }, { opacity: 1 }], 600);
+      tween(relay, [{ opacity: 0 }, { opacity: 1 }], 500);
+      tween(relayLbl, [{ opacity: 0 }, { opacity: 1 }], 500);
     });
   });
 
-  /* ================= O — outro ================= */
+  /* ================= scene 9 — done ================= */
+  scene('done', 4.5, function (t0) {
+    at(t0, function () { caption('cap_done'); setTime('12:41'); });
+    for (var n = 1; n <= 8; n++) {
+      (function (k) { at(t0 + k * 0.12, function () { agUpdate(AG.testId, { count: 97 + Math.round(35 * k / 8) }); }); })(n);
+    }
+    at(t0 + 1.2, function () {
+      agUpdate(AG.testId, { state: 'done' });
+      agPush({ type: 'final', text: S.final });
+      agStatus('done');
+      pulseBeam();
+    });
+    at(t0 + 1.9, function () { agLock(true); });
+    at(t0 + 2.3, function () {
+      agNotif(S.notif_done_t, S.final);
+      fx(pApp, 'shake', {}, 0);
+    });
+    at(t0 + 3.2, function () {
+      pTap('#notif').then(function () { agLock(false); });
+    });
+  });
+
+  /* ================= scene 10 — outro ================= */
   var outro = el('div', 'outro', stage);
   outro.innerHTML = '<img class="o-icon" src="assets/ra-icon.svg"><div class="o-title">Remote Agent</div>' +
-    '<div class="o-motto">' + S.motto.map(function (w) { return '<span class="tok">' + w + '</span>'; }).join('') + '</div>' +
+    '<div class="o-motto">' + Array.from(S.motto).map(function (w) { return '<span class="tok">' + w + '</span>'; }).join('') + '</div>' +
     '<div class="o-cards">' + [1, 2, 3].map(function (i) {
       return '<div class="ocard"><div class="ocbar" style="width:0%"></div><div class="ot">' + S['card' + i + '_t'] +
         '</div><div class="os">' + S['card' + i + '_s'] + '</div></div>';
     }).join('') + '</div>' +
     '<div class="cta">github.com/xrdiao/remote-agent</div><div class="o-meta">' + S.cta_meta + '</div>';
   var oIcon = outro.querySelector('.o-icon'), oTitle = outro.querySelector('.o-title'),
-      oToks = outro.querySelectorAll('.tok'), oCards = outro.querySelectorAll('.ocard'),
+      oCards = outro.querySelectorAll('.ocard'),
       oBars = outro.querySelectorAll('.ocbar'), oCta = outro.querySelector('.cta'), oMeta = outro.querySelector('.o-meta');
+  var mottoToks = S.motto.split(LANG === 'en' ? ' ' : '').filter(function (w) { return w.length; });
+  var oMotto = outro.querySelector('.o-motto');
+  oMotto.innerHTML = (LANG === 'en'
+    ? mottoToks.map(function (w) { return '<span class="tok">' + w + ' </span>'; })
+    : Array.from(S.motto).map(function (w) { return '<span class="tok">' + w + '</span>'; })).join('');
+  var oToks = outro.querySelectorAll('.tok');
 
-  scene('o', 8.0, function (t0) {
+  scene('outro', 7.0, function (t0) {
     at(t0, function () {
       captionOff();
-      hide(timechip, 300);
       tween(world, [{ opacity: 1 }, { opacity: 0 }], 500);
       tween(outro, [{ opacity: 0 }, { opacity: 1 }], 600);
+      tween(brandmark, [{ opacity: 1 }, { opacity: 0 }], 300);
     });
     at(t0 + 0.2, function () { pop(oIcon, 520); });
     at(t0 + 0.5, function () { tween(oTitle, [{ opacity: 0, transform: 'translateY(28px)' }, { opacity: 1, transform: 'translateY(0px)' }], 500); });
-    [0, 1, 2, 3, 4, 5, 6, 7, 8].forEach(function (i) {
-      at(t0 + 1.0 + i * 0.12, function () {
-        if (oToks[i]) tween(oToks[i], [{ opacity: 0, transform: 'translateY(30px)' }, { opacity: 1, transform: 'translateY(0px)' }], 420);
-      });
-    });
+    for (var i = 0; i < oToks.length; i++) {
+      (function (n) {
+        at(t0 + 0.9 + n * 0.05, function () {
+          tween(oToks[n], [{ opacity: 0, transform: 'translateY(30px)' }, { opacity: 1, transform: 'translateY(0px)' }], 380);
+        });
+      })(i);
+    }
     [0, 1, 2].forEach(function (i) {
-      at(t0 + 2.0 + i * 0.35, function () {
+      at(t0 + 2.2 + i * 0.35, function () {
         pop(oCards[i], 420);
         tween(oBars[i], [{ width: '0%' }, { width: '100%' }], 700);
       });
     });
-    at(t0 + 3.4, function () {
+    at(t0 + 3.6, function () {
       pop(oCta, 450).then(function () { oCta.classList.add('shine'); });
     });
-    at(t0 + 3.9, function () { tween(oMeta, [{ opacity: 0 }, { opacity: 1 }], 480); });
+    at(t0 + 4.2, function () { tween(oMeta, [{ opacity: 0 }, { opacity: 1 }], 480); });
   });
   END_T = T;
 
@@ -1032,52 +1034,61 @@
   cues.sort(function (a, b) { return a.t - b.t; });
   function start() {
     clockStarted = true; lastNow = performance.now();
-    requestAnimationFrame(tick);
+    if (VT) setTimeout(vtTick, 16); else requestAnimationFrame(tick);
   }
   function boot() {
-    if (!isNaN(SEEK)) {
-      FF = true;
-      (async function () {
-        var qi = 0;
-        while (true) {
-          var nextCue = null;
-          while (qi < cues.length && cues[qi].done) qi++;
-          if (qi < cues.length && cues[qi].t <= SEEK) nextCue = cues[qi];
-          var best = null;
-          for (var i = vsleep.length - 1; i >= 0; i--) {
-            var s = vsleep[i];
-            if (s.t <= SEEK && (!best || s.t < best.t)) best = s;
+    var waited = 0;
+    (function waitReady() {
+      if (readyCount >= frames.length || waited > 3000) return go();
+      waited += 50;
+      setTimeout(waitReady, 50);
+    })();
+    function go() {
+      syncPhone(true);
+      if (!isNaN(SEEK)) {
+        FF = true;
+        (async function () {
+          var qi = 0;
+          while (true) {
+            var nextCue = null;
+            while (qi < cues.length && cues[qi].done) qi++;
+            if (qi < cues.length && cues[qi].t <= SEEK) nextCue = cues[qi];
+            var best = null;
+            for (var i = vsleep.length - 1; i >= 0; i--) {
+              var s = vsleep[i];
+              if (s.t <= SEEK && (!best || s.t < best.t)) best = s;
+            }
+            if (!nextCue && !best) break;
+            if (nextCue && (!best || nextCue.t <= best.t)) {
+              vNow = Math.max(vNow, nextCue.t);
+              nextCue.done = true; qi++;
+              try { nextCue.fn(); } catch (e) { fail(e); }
+            } else {
+              vNow = Math.max(vNow, best.t);
+              vsleep.splice(vsleep.indexOf(best), 1);
+              best.r();
+            }
+            for (var k = 0; k < 20; k++) await Promise.resolve();
           }
-          if (!nextCue && !best) break;
-          if (nextCue && (!best || nextCue.t <= best.t)) {
-            vNow = Math.max(vNow, nextCue.t);
-            nextCue.done = true; qi++;
-            try { nextCue.fn(); } catch (e) { fail(e); }
-          } else {
-            vNow = Math.max(vNow, best.t);
-            vsleep.splice(vsleep.indexOf(best), 1);
-            best.r();
+          for (var m = 0; m < vsleep.length; m++) {
+            (function (s) { sleepers.push({ t: SEEK + Math.max(0, s.t - vNow), r: s.r }); })(vsleep[m]);
           }
-          for (var k = 0; k < 20; k++) await Promise.resolve();
-        }
-        for (var m = 0; m < vsleep.length; m++) {
-          (function (s) { sleepers.push({ t: SEEK + Math.max(0, s.t - vNow), r: s.r }); })(vsleep[m]);
-        }
-        vsleep.length = 0;
-        elapsed = SEEK; FF = false;
-        if (DEBUG) dumpDebug();
-        if (!PAUSE) start();
-      })();
-    } else { if (DEBUG) wait(1).then(dumpDebug); start(); }
+          vsleep.length = 0;
+          elapsed = SEEK; FF = false;
+          if (DEBUG) dumpDebug();
+          if (!PAUSE) start();
+        })();
+      } else { if (DEBUG) wait(1).then(dumpDebug); start(); }
+    }
   }
   function dumpDebug() {
     var out = {};
-    ['world', 'monwrap', 'phonewrap', 'capbar', 'timechip', 'lens'].forEach(function (id) {
-      var e = document.getElementById(id) || stage.querySelector('.' + id);
+    ['world', 'monwrap', 'phonewrap', 'capbar'].forEach(function (id) {
+      var e = document.getElementById(id);
       if (e) { var r = e.getBoundingClientRect(); out[id] = [r.left | 0, r.top | 0, r.width | 0, r.height | 0]; }
     });
     var d = el('pre', '', stage); d.id = 'dbg';
-    d.style.cssText = 'position:absolute;left:0;top:0;z-index:9999;color:#0a0;font-size:10px;';
+    d.style.cssText = 'position:absolute;left:0;top:0;z-index:9999;color:#0f0;font-size:10px;';
     d.textContent = JSON.stringify(out) + ' title=' + document.title;
   }
   boot();
