@@ -7,13 +7,12 @@ struct ContentView: View {
     @StateObject private var shell = Shell()
 
     var body: some View {
-        ZStack {
-            ShellWebView(webView: shell.webView)
-                .ignoresSafeArea()
-            GeometryReader { geo in
-                RefreshBubble(size: geo.size, light: shell.light, refresh: shell.refresh)
+        Group {
+            if DuoDevice.eligible {
+                DuoContent(shell: shell)
+            } else {
+                legacyContent
             }
-            .ignoresSafeArea(.keyboard)
         }
         .background(Color(uiColor: shell.background))
         .preferredColorScheme(shell.light ? .light : .dark)
@@ -26,6 +25,17 @@ struct ContentView: View {
             Button(tr("好", "OK"), role: .cancel) {}
         }
     }
+
+    private var legacyContent: some View {
+        ZStack {
+            ShellWebView(webView: shell.webView)
+                .ignoresSafeArea()
+            GeometryReader { geo in
+                RefreshBubble(size: geo.size, light: shell.light, refresh: shell.refresh)
+            }
+            .ignoresSafeArea(.keyboard)
+        }
+    }
 }
 
 func tr(_ zh: String, _ en: String) -> String {
@@ -33,7 +43,7 @@ func tr(_ zh: String, _ en: String) -> String {
     return Locale.preferredLanguages.first?.hasPrefix("zh") == true ? zh : en
 }
 
-private struct ShellWebView: UIViewRepresentable {
+struct ShellWebView: UIViewRepresentable {
     let webView: WKWebView
 
     func makeUIView(context: Context) -> Container { Container() }
@@ -87,6 +97,13 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
     @Published var notice: String?
 
     @Published private(set) var webView: WKWebView!
+    @Published private(set) var duoReady = false
+    @Published private(set) var duoBlocked = true
+    @Published private(set) var duoCanClose = false
+    @Published private(set) var duoMode = "chat"
+    private var duoDocument = ""
+    private var duoRevision = 0
+    private var navigationGeneration = 0
     private var started = false
     private var pendingOpen = ""
     private var cancellables = Set<AnyCancellable>()
@@ -121,8 +138,25 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
         config.applicationNameForUserAgent = "AgentRemoteApp-iOS/" + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
         scripts.add(WeakHandler(self), name: "app")
         scripts.addScriptMessageHandler(WeakReplyHandler(self), contentWorld: .page, name: "appReply")
-        // Start at screen size, not zero, so the first page layout already has the real width.
-        let view = WKWebView(frame: UIScreen.main.bounds, configuration: config)
+        // The legacy path keeps its original initial size; Duo is sized by its container before loading.
+        let view: WKWebView
+        if DuoDevice.eligible, #available(iOS 27.1, *) {
+            let duo = DuoWebView(frame: .zero, configuration: config)
+            duo.layoutChanged = { [weak self, weak duo] layout in
+                guard let self, let duo, duo === self.webView, !self.duoDocument.isEmpty else { return }
+                self.duoRevision += 1
+                var payload = layout
+                payload["version"] = 1
+                payload["duoEligible"] = true
+                payload["documentGeneration"] = self.duoDocument
+                payload["revision"] = self.duoRevision
+                payload["nativeActions"] = self.duoReady ? ["chat", "terminal", "more", "settings", "transfer", "close"] : []
+                duo.evaluateJavaScript("window.dispatchEvent(new CustomEvent('agentremote:duo-layout', {detail: \(self.json(payload))}));", completionHandler: nil)
+            }
+            view = duo
+        } else {
+            view = WKWebView(frame: UIScreen.main.bounds, configuration: config)
+        }
         view.navigationDelegate = self
         view.uiDelegate = self
         // Without this the scroll view insets the safe areas, and WebKit then sizes 100dvh short of the
@@ -136,6 +170,7 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
     // Replaces the web view rather than reloading it: the current URL may carry a one-time #pair fragment,
     // and a hung or killed renderer can't be reloaded.
     func restart() {
+        resetDuo()
         let old = webView!
         old.stopLoading()
         old.navigationDelegate = nil
@@ -253,6 +288,12 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
           if (pendingLang && location.protocol === 'https:' && location.host === appHost) {
             try { localStorage.setItem('cr-lang', pendingLang); post('tookLang'); } catch (e) {}
           }
+          if (\(json(DuoDevice.eligible))) {
+            window.AgentRemoteDuo = Object.freeze({
+              version: 1, duoEligible: true, documentGeneration: crypto.randomUUID(),
+              report: state => post('duoState', {...state, documentGeneration: window.AgentRemoteDuo.documentGeneration})
+            });
+          }
           window.AgentRemoteApp = {
             getUrl: () => url,
             getLang: () => lang,
@@ -297,6 +338,20 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
         let args = body["args"] as? [Any] ?? []
         let text = args.first as? String ?? ""
         switch fn {
+        case "duoState":
+            guard DuoDevice.eligible, message.webView === webView,
+                  let state = args.first as? [String: Any], let document = state["documentGeneration"] as? String else { return }
+            let generation = navigationGeneration
+            let view = webView!
+            view.evaluateJavaScript("window.AgentRemoteDuo?.documentGeneration === \(json(document))") { [weak self, weak view] result, _ in
+                guard let self, let view, view === self.webView, generation == self.navigationGeneration, result as? Bool == true else { return }
+                self.duoDocument = document
+                self.duoReady = state["ready"] as? Bool == true
+                self.duoBlocked = state["blocked"] as? Bool != false
+                self.duoCanClose = state["canClose"] as? Bool == true
+                self.duoMode = state["mode"] as? String ?? "chat"
+                if #available(iOS 27.1, *) { (view as? DuoWebView)?.scheduleLayout(force: true) }
+            }
         case "setUrl": setUrl(text)
         case "retry": load(appURL)
         case "changeUrl": loadSetup("change=1")
@@ -327,6 +382,26 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
             }
         default: replyHandler(nil, unsupported)
         }
+    }
+
+    private func resetDuo() {
+        guard DuoDevice.eligible else { return }
+        navigationGeneration += 1
+        duoReady = false
+        duoBlocked = true
+        duoCanClose = false
+        duoDocument = ""
+    }
+
+    func duoAction(_ action: String) {
+        guard DuoDevice.eligible, duoReady, ["chat", "terminal", "more", "settings", "transfer", "close"].contains(action),
+              action == "close" ? duoCanClose : !duoBlocked else { return }
+        let detail = json(["action": action, "documentGeneration": duoDocument])
+        webView.evaluateJavaScript("window.dispatchEvent(new CustomEvent('agentremote:duo-action', {detail: \(detail)}));", completionHandler: nil)
+    }
+
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        if webView === self.webView { resetDuo() }
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

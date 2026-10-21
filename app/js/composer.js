@@ -263,10 +263,13 @@ function micHeld() { return $('mic')?.classList.contains('on') || (typeof voiceS
 // Only where vertical room is scarce, judged by the window's actual shape rather than the reported
 // orientation (foldables disagree on what "portrait" means): a tall phone window keeps the full composer,
 // while foldable cover screens (~1.3–1.5 tall:wide), landscape phones, tablets and unfolded inners collapse.
-const composeCompactAllowed = () => window.innerHeight / window.innerWidth < 1.6;
+const composeCompactAllowed = () => iphoneDuo
+  ? $('listWrap').clientHeight + document.querySelector('footer').offsetHeight < 600
+  : window.innerHeight / window.innerWidth < 1.6;
 window.addEventListener('resize', () => updateComposeCompact());
 function composeCompactWanted() {
   return mode === 'chat' && composeCompactAllowed()
+    && (!iphoneDuo || (!questionCompose && !document.body.classList.contains('kb') && !$('msg').classList.contains('err')))
     && !text.value.trim() && document.activeElement !== text && !composerEngaged
     && !$('attachments').children.length
     && $('mentionBox').hidden

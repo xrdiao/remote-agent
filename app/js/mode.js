@@ -41,6 +41,7 @@ function setMode(m) {
   if (m === 'screen') { visualState = {state: 'idle', message: I18N.tr('正在查找窗口…')}; renderVisualState(visualState); }
   if (m === 'screen' || m === 'terminal') { layoutStage(); applyQuality(); }
   fitOrientation();
+  if (iphoneDuo && typeof reportDuoState === 'function') reportDuoState();
   if (typeof updateComposeCompact === 'function') updateComposeCompact();
 }
 // On thin phones the two tabs are stacked into one toggle, so tapping the front (current) one switches too.

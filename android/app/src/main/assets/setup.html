@@ -97,9 +97,19 @@ try {
     #offline { grid-column: 2; grid-row: 2 / 6; }
     #gateHelp { grid-column: 2; grid-row: 6; margin: 0; padding-top: 0; }
   }
+  /* Activated only by the confirmed Duo native bridge. */
+  html.iphoneDuo body { display: flex; min-height: 100dvh; padding: 16px; }
+  html.iphoneDuo body > * { width: 100%; max-width: 560px; margin-left: auto; margin-right: auto; }
+  html.iphoneDuo #gateLang { justify-content: flex-end; min-height: 44px; }
+  html.iphoneDuo .pairHero { padding: 12px 0; }
+  html.iphoneDuo .pairControls { display: flex; }
+  html.iphoneDuo #sheet { left: 12px; right: 12px; width: auto; max-height: calc(100dvh - 24px); overflow-y: auto; padding-bottom: 20px; }
 </style>
 </head>
 <body>
+<script>
+if (window.AgentRemoteDuo?.version === 1 && window.AgentRemoteDuo.duoEligible === true) document.documentElement.classList.add('iphoneDuo');
+</script>
 <div id="gateLang" aria-label="语言 / Language"><button data-lang="zh">中</button><span>|</span><button data-lang="en">EN</button></div>
 <div class="pairHero"><img src="logo.png" alt="" class="pairLogo"><h2>Remote Agent</h2><p id="pairIntro"></p></div>
 <div class="pairControls">
