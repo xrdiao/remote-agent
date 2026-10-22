@@ -679,6 +679,7 @@ async function connect() {
     }
     else if (m.t === 'projectReady') {
       if (m.sel && m.sel !== viewSel) return;
+      const refreshEditor = editorBrowsing && sheetKind === 'docs';
       capabilityBlock = '';
       finishPending(['正在打开项目…', '正在新建对话…']);
       closeSheet(); currentProject = m.name;
@@ -688,9 +689,9 @@ async function connect() {
       $('sessionNotice').textContent = I18N.tr('会话创建成功，尚未发送消息。') + ' ' + m.name;
       status(m.newSession ? '已在所选项目新建会话' : '已打开项目');
       send({ t: 'agents', automatic: true, silent: true });
-      if (editorBrowsing) startEditor();
+      if (refreshEditor) startEditor();
     }
-    else if (m.t === 'docs') { finishPending(['正在读取文档…', '正在读取项目文件…']); showDocs(m); }
+    else if (m.t === 'docs') showDocs(m);
     else if (m.t === 'settings') { if (m.codex && m.requestId !== codexSettingsRequest) return; finishPending(['正在读取设置…', '正在修改…', '正在保存指令…']); m.codex ? showCodexSettings(m) : showSettings(m.sections || [], m.nav || [], m.current || '', m.choices || []); }
     else if (m.t === 'usage') {
       if (currentApp === 'fusion' || (m.sel && viewSel && m.sel !== viewSel)) return;

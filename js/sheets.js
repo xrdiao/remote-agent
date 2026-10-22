@@ -14,6 +14,7 @@ function rememberAgentOpen(m) {
   }
 }
 function openSheet(kind, html) {
+  if (kind !== 'docs') cancelDocs();
   if (kind !== 'menu') clearTimeout(menuRefreshTimer);
   if (kind !== 'devices') clearTimeout(deviceListTimer);
   const leavingVoice = sheetKind === 'local-voice' && kind !== 'local-voice';
@@ -47,6 +48,7 @@ function openSheet(kind, html) {
   if (leavingVoice) scheduleVoiceWarmup();
 }
 function closeSheet() {
+  cancelDocs();
   clearTimeout(menuRefreshTimer);
   clearTimeout(deviceListTimer);
   const leavingVoice = sheetKind === 'local-voice';
@@ -365,6 +367,12 @@ function startEditor() {
   send({ t: 'docs', editor: true });
 }
 $('pickEditor').onclick = startEditor;
+function cancelDocs() {
+  docsPending = null;
+  editorBrowsing = false;
+  editorDirectory = null;
+  finishPending(['正在读取文档…', '正在读取项目文件…']);
+}
 function agentButton(a) {
   if (a.loadWindow) return `<button class="opt" data-project-load="${esc(a.loadWindow)}">${esc(a.title)}</button>`;
   const label = a.ui ? esc(a.title) : `<span class="lbl">${esc(a.title)}</span>`;
@@ -672,6 +680,9 @@ function fileEntryIcon(folder) {
   return `<svg class="editorEntryIcon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${folder ? '<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3Z"/>' : '<path d="M6 3h8l4 4v14H6Z"/><path d="M14 3v5h4M9 12h6M9 16h6"/>'}</svg>`;
 }
 function showDocs(m) {
+  if (!docsPending || m.requestId !== docsPending.id || docsPending.sel !== viewSel || docsPending.computer !== (currentComputer()?.id || '')) return;
+  docsPending = null;
+  finishPending(['正在读取文档…', '正在读取项目文件…']);
   editorBrowsing = !!m.editor;
   const heading = m.editor ? 'Editor · 项目文件' : '查看文档';
   const back = m.editor ? '<button class="opt" data-editor-return>返回对话</button>' : '';
