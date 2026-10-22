@@ -10,8 +10,8 @@ import { CDP_URL, EDITORS } from '../config.mjs';
 import { helpersCall } from '../page/build.mjs';
 
 export const methods = {
-  async showDocs(root, dir, host, editor = false) {
-    const emit = data => this.emit({ t: 'docs', editor, ...data });
+  async showDocs(root, dir, host, editor = false, requestId) {
+    const emit = data => this.emit({ t: 'docs', editor, requestId, ...data });
     try {
       if (!root) {
         const roots = await this.currentRoots();

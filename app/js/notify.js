@@ -142,7 +142,7 @@ $('sheet').addEventListener('click', async e => {
   if ('modelDone' in b.dataset) { closeSheet(); return; }
   if (b.dataset.fast) { status('设置中…'); return send({ t: 'pickMenu', kind: 'fast', label: b.dataset.fast, name: b.dataset.fastMenu }); }
   if ('editorChat' in b.dataset) { closeSheet(); status('正在打开聊天面板…'); return send({ t: 'openEditorChat' }); }
-  if ('editorReturn' in b.dataset) { editorBrowsing = false; editorDirectory = null; closeSheet(); return; }
+  if ('editorReturn' in b.dataset) { closeSheet(); return; }
   if (b.dataset.nativeSurface) { closeSheet(); status('正在切换界面…'); return send({ t: 'surface', to: b.dataset.nativeSurface }); }
   if (b.dataset.sc) {
     if (b.dataset.sc === 'fold' || b.dataset.sc === 'unfold') { scFold('*', b.dataset.sc === 'fold'); return showCacheSheet(); }
@@ -263,7 +263,7 @@ $('sheet').addEventListener('click', async e => {
   }
   if (b.dataset.open) { closeSheet(); status('正在打开项目…'); return send({ t: 'openProject', path: b.dataset.open }); }
   if (b.dataset.dir) { status('正在读取文件夹…'); return send({ t: 'projects', path: b.dataset.dir }); }
-  if (b.dataset.docsFile) { closeSheet(); return openFile(b.dataset.docsFile, b.dataset.docsEditor === 'true'); }
+  if (b.dataset.docsFile) { openFile(b.dataset.docsFile, b.dataset.docsEditor === 'true'); closeSheet(); return; }
   if ('docsUp' in b.dataset) {
     status('正在读取文档…');
     if (!b.dataset.docsUp) return send({ t: 'docs', editor: editorBrowsing });
