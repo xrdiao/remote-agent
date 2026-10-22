@@ -1010,8 +1010,8 @@ function jumpToTurn(id) {
   restoreChatPosition({ id: String(id), top: 8 });
   lastScrollTop = list.scrollTop;
   turnNavCursor = { id, sel: viewSel, thread: lastChat.thread };
-  el.classList.add('flash');
-  setTimeout(() => el.classList.remove('flash'), 1800);
+  el.classList.add('turnHighlight');
+  setTimeout(() => el.classList.remove('turnHighlight'), 1800);
   updateToBottom();
   showTurnNav();
 }
