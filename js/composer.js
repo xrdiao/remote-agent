@@ -141,10 +141,10 @@ function mentionAsk(o) {
 }
 function mentionUpdate() {
   const t = mentionToken();
-  clearTimeout(MN.timer);
   if (!t) return mentionHide();
   const queryKey = (t.trigger || '@') + t.q;
   if (queryKey === MN.q) return;
+  clearTimeout(MN.timer);
   MN.q = queryKey;
   if (currentApp === 'codex') MN.seq++;
   MN.timer = setTimeout(() => mentionAsk({ q: t.q }), currentApp === 'codex' ? 150 : 220);
@@ -188,8 +188,7 @@ $('mentionBox').addEventListener('click', e => {
   if (!r || (!t && !MN.parent)) return;
   if (MN.root) return mentionAsk({ cat: r.label });
   if (currentApp === 'codex' && (r.key === 'context-action:pick-local-files' || (r.section === 'context-actions' && r.label === 'Files and folders'))) {
-    status('继续输入文件名，从列表里选择');
-    return;
+    return openCodexFilePicker(t);
   }
   const command = currentApp === 'codex' && (MN.parent || r.section === 'commands' || r.section === 'context-actions' || r.section === 'plugins' || r.section === 'apps');
   if (command) {

@@ -1278,6 +1278,53 @@ function showCodexSkills(rows) {
   };
   paint();
 }
+let codexFileRequest = 0;
+async function openCodexFilePicker(token) {
+  const scope = chatInputKey(), selected = new Map();
+  const start = token?.start ?? text.selectionStart, end = token?.caret ?? text.selectionEnd;
+  let directory = null;
+  mentionHide();
+  const paint = (note = '') => {
+    const rows = (directory?.entries || []).map((entry, index) => entry.directory
+      ? `<button class="opt editorEntry editorFolder" data-cf-dir="${index}">${fileEntryIcon(true)}<span class="lbl">${esc(entry.name)}</span><span class="editorEntryArrow">›</span></button>`
+      : `<label class="opt editorEntry"><input type="checkbox" data-cf-file="${index}" ${selected.has(entry.path) ? 'checked' : ''} ${entry.selectable ? '' : 'disabled'}>${fileEntryIcon(false)}<span class="lbl">${esc(entry.name)}</span></label>`).join('');
+    openSheet('codex-files', `<h3>添加电脑端文件</h3><form id="codexFilePathForm" style="display:flex;gap:8px"><button type="button" id="codexFileUp" ${!directory || directory.path === directory.parent ? 'disabled' : ''}>↑ 上一级</button><input id="codexFilePath" aria-label="电脑目录" style="min-width:0;flex:1" value="${esc(directory?.path || '')}" placeholder="输入电脑目录路径"><button>前往</button></form><div class="hint">${esc(note)}</div><div id="codexFileRows" style="max-height:42vh;overflow-y:auto;overscroll-behavior:contain">${rows || '<div class="hint">暂无可显示的文件</div>'}</div><div class="askBtns"><button id="codexFileCancel">取消</button><button id="codexFileAdd" ${selected.size ? '' : 'disabled'}>添加（${selected.size}）</button></div>`);
+    $('codexFilePathForm').onsubmit = e => { e.preventDefault(); browse($('codexFilePath').value); };
+    $('codexFileUp').onclick = () => browse(directory.parent);
+    $('codexFileRows').onclick = e => {
+      const b = e.target.closest('[data-cf-dir]');
+      if (b) browse(directory.entries[Number(b.dataset.cfDir)].path);
+    };
+    $('codexFileRows').onchange = e => {
+      const entry = directory.entries[Number(e.target.dataset.cfFile)];
+      if (e.target.checked) selected.set(entry.path, entry); else selected.delete(entry.path);
+      $('codexFileAdd').disabled = !selected.size;
+      $('codexFileAdd').textContent = `添加（${selected.size}）`;
+    };
+    $('codexFileCancel').onclick = closeSheet;
+    $('codexFileAdd').onclick = () => {
+      if (scope !== chatInputKey()) { closeSheet(); return status('会话已切换，请重新选择文件', false); }
+      if (takeMentions(text.value.slice(0, start) + text.value.slice(end)).length + selected.size > 12) return status('每条消息最多添加 12 个引用项', false);
+      const mentions = [...selected.values()].map(entry => ({ token: '@' + entry.name, q: entry.name, label: entry.name, path: entry.path, section: 'local-files', trigger: '@' }));
+      text.setRangeText(mentions.map(m => m.token).join(' ') + ' ', start, end, 'end');
+      MN.mentions.push(...mentions);
+      closeSheet(); autosize(); saveDraft(); text.focus();
+    };
+  };
+  const browse = async path => {
+    const serial = ++codexFileRequest;
+    paint('正在读取电脑目录…');
+    try {
+      const response = await api('/api/transfer/list?path=' + encodeURIComponent(path));
+      const data = await response.json();
+      if (serial !== codexFileRequest || sheetKind !== 'codex-files') return;
+      if (!response.ok) throw Error(data.error);
+      directory = data;
+      paint();
+    } catch (error) { if (serial === codexFileRequest && sheetKind === 'codex-files') paint(error.message); }
+  };
+  await browse('');
+}
 $('add').onclick = () => {
   if (currentApp === 'fusion') {
     openSheet('add', '<h3>添加附件</h3><button class="opt" data-control="img">上传图片</button><button class="opt" data-control="uploadDoc">上传文档</button>');
@@ -1293,7 +1340,7 @@ $('add').onclick = () => {
     $('sheet').querySelectorAll('[data-control]').forEach(b => b.onclick = () => { closeSheet(); $(b.dataset.control).click(); });
     return;
   }
-  const rows = [['new', '新建会话'], ['plan', `Plan：${c.plan ? '开' : '关'}`], ['skills', 'Skill · 技能'], ...(supportsCapability('fileReferences') ? [['files', '引用文件']] : []), ['commands', '扩展与命令']];
+  const rows = [['new', '新建会话'], ['plan', `Plan：${c.plan ? '开' : '关'}`], ['skills', 'Skill · 技能'], ...(supportsCapability('fileReferences') ? [['local-files', '添加电脑端文件'], ['files', '引用文件']] : []), ['commands', '扩展与命令']];
   if (c.ide) rows.push(['ide', `IDE 上下文：${c.ide.on ? '开' : '关'}`]);
   if (c.run) rows.push(['run', `执行位置：${c.run}`]);
   if (c.actions) rows.push(['chat', '会话操作']);
@@ -1307,6 +1354,7 @@ $('add').onclick = () => {
     if (key === 'run') return send({ t: 'codexRun' });
     if (key === 'chat') return send({ t: 'codexChat' });
     if (key === 'skills') return send({ t: 'codexSkills' });
+    if (key === 'local-files') return openCodexFilePicker();
     text.focus();
     text.setRangeText(key === 'files' ? '@' : '/', text.selectionStart, text.selectionEnd, 'end');
     autosize(); saveDraft(); mentionUpdate();
