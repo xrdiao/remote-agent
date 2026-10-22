@@ -224,7 +224,7 @@ export const adapter = {
 
   async pickModelMenu(label) {
     if (!await this.cdp.evaluate(helpersCall(`pickCodexModel(${JSON.stringify(String(label))})`))) return false;
-    await new Promise(r => setTimeout(r, 150));
+    await this.waitModel(label);
     await this.closeMenus();
     this.emit({ t: 'status', ok: true, msg: `已切换到 ${label}` });
     this.pollChat(true).catch(() => {});

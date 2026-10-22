@@ -171,6 +171,13 @@ export const methods = {
     }
   },
 
+  async waitModel(label) {
+    const name = JSON.stringify(String(label));
+    await this.waitFor(this.app === 'codex'
+      ? `modelItemsFast()?.some(item => item.checked && item.label === ${name})`
+      : `agentModelName() === ${name}`);
+  },
+
 
   // Leaves the parameter submenu open; callers must closeMenus().
   async openParamMenu(model) {
@@ -284,10 +291,11 @@ export const methods = {
     }
     await this.tapCss(pos.x, pos.y);
     if (kind === 'model' && label !== 'Fusion') {
-      await new Promise(r => setTimeout(r, 150));
+      if (this.app === 'cursor' || this.app === 'codex') await this.waitModel(label);
+      else await new Promise(r => setTimeout(r, 150));
       await this.closeMenus();
       this.emit({ t: 'status', ok: true, msg: `已切换到 ${label}` });
-      this.pollChat().catch(() => {});
+      this.pollChat(this.app === 'cursor' || this.app === 'codex').catch(() => {});
       await this.openMenu('effort').catch(() => {});
       return;
     }
