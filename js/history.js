@@ -1293,12 +1293,14 @@ async function openCodexFilePicker(token) {
   let directory = null;
   mentionHide();
   const paint = (note = '') => {
-    const rows = (directory?.entries || []).map((entry, index) => entry.directory
+    const showHidden = store.get('codex-files-show-hidden') === '1';
+    const rows = (directory?.entries || []).map((entry, index) => !showHidden && entry.name.startsWith('.') ? '' : entry.directory
       ? `<button class="opt editorEntry editorFolder" data-cf-dir="${index}">${fileEntryIcon(true)}<span class="lbl">${esc(entry.name)}</span><span class="editorEntryArrow">›</span></button>`
       : `<label class="opt editorEntry"><input type="checkbox" data-cf-file="${index}" ${selected.has(entry.path) ? 'checked' : ''} ${entry.selectable ? '' : 'disabled'}>${fileEntryIcon(false)}<span class="lbl">${esc(entry.name)}</span></label>`).join('');
-    openSheet('codex-files', `<h3>添加电脑端文件</h3><form id="codexFilePathForm" style="display:flex;gap:8px"><button type="button" id="codexFileUp" ${!directory || directory.path === directory.parent ? 'disabled' : ''}>↑ 上一级</button><input id="codexFilePath" aria-label="电脑目录" style="min-width:0;flex:1" value="${esc(directory?.path || '')}" placeholder="输入电脑目录路径"><button>前往</button></form><div class="hint">${esc(note)}</div><div id="codexFileRows" style="max-height:42vh;overflow-y:auto;overscroll-behavior:contain">${rows || '<div class="hint">暂无可显示的文件</div>'}</div><div class="askBtns"><button id="codexFileCancel">取消</button><button id="codexFileAdd" ${selected.size ? '' : 'disabled'}>添加（${selected.size}）</button></div>`);
+    openSheet('codex-files', `<h3>添加电脑端文件</h3><form id="codexFilePathForm" style="display:flex;gap:8px"><button type="button" id="codexFileUp" ${!directory || directory.path === directory.parent ? 'disabled' : ''}>↑ 上一级</button><input id="codexFilePath" aria-label="电脑目录" style="min-width:0;flex:1" value="${esc(directory?.path || '')}" placeholder="输入电脑目录路径"><button>前往</button></form><button type="button" id="codexFileHidden" class="opt" role="switch" aria-checked="${showHidden}"><span class="lbl">显示隐藏文件</span><span class="switch${showHidden ? ' on' : ''}" aria-hidden="true"></span></button><div class="hint">${esc(note)}</div><div id="codexFileRows" style="max-height:42vh;overflow-y:auto;overscroll-behavior:contain">${rows || '<div class="hint">暂无可显示的文件</div>'}</div><div class="askBtns"><button id="codexFileCancel">取消</button><button id="codexFileAdd" ${selected.size ? '' : 'disabled'}>添加（${selected.size}）</button></div>`);
     $('codexFilePathForm').onsubmit = e => { e.preventDefault(); browse($('codexFilePath').value); };
     $('codexFileUp').onclick = () => browse(directory.parent);
+    $('codexFileHidden').onclick = () => { store.set('codex-files-show-hidden', showHidden ? '0' : '1'); paint(note); };
     $('codexFileRows').onclick = e => {
       const b = e.target.closest('[data-cf-dir]');
       if (b) browse(directory.entries[Number(b.dataset.cfDir)].path);
