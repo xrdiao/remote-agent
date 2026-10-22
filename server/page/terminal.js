@@ -39,7 +39,7 @@
         close: tab.querySelector('a.action-label[aria-label^="Kill"], [aria-label^="Kill"]'),
       };
     });
-    const solo = [...document.querySelectorAll('.terminal-wrapper.active .xterm')].filter(vis);
+    const solo = [...document.querySelectorAll('.terminal-wrapper.active .xterm')].filter(e => vis(e) && !e.querySelector('textarea')?.readOnly);
     if (solo.length === 1) return [{ id: 'term-solo', title: '终端', current: true, tab: solo[0], close: null }];
     return [];
   };

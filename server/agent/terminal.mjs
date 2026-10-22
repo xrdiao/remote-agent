@@ -1,5 +1,5 @@
 // 终端：面板轮询与交互
-import { helpersCall } from '../page/build.mjs';
+import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 
 export const methods = {
   async pollTerminal(force = false) {
@@ -91,6 +91,17 @@ export const methods = {
       await this.tapCss(direct.x, direct.y, 'left', this.editorCdp);
     } else {
       await this.adapter.newTerminal.call(this);
+    }
+    if (this.app === 'codex') {
+      const ready = await this.editorCdp.evaluate(`(async () => {
+        const h = ${PAGE_SRC};
+        for (let i = 0; i < 20; i++) {
+          if (h.focusTerminalInput()) return true;
+          await new Promise(r => setTimeout(r, 100));
+        }
+        return false;
+      })()`);
+      if (!ready) throw new Error('新建终端尚未就绪');
     }
     this.emit({ t: 'status', ok: true, msg: '已新建终端' });
     setTimeout(() => this.pollTerminal(true).catch(() => {}), 500);

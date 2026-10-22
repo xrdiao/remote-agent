@@ -1,5 +1,5 @@
 import { Cdp } from '../cdp.mjs';
-import { windowRoots, editorRoots } from '../../lib/files.mjs';
+import { windowRoots, editorRoots, workspaceLabel } from '../../lib/files.mjs';
 import { agentMarks } from '../../lib/marks.mjs';
 import { mod, pathKey } from '../../lib/platform.mjs';
 import { codexWindows, codexContext } from '../windows.mjs';
@@ -59,7 +59,7 @@ export const adapter = {
     const addNew = (p, root, label) => {
       if (!root || newRoots.has(pathKey(root))) return;
       newRoots.add(pathKey(root));
-      list.push({ id: `new:${p.pageId}:${encodeURIComponent(root)}`, title: '＋ 新建会话', window: label, group: '', ui: true });
+      list.push({ id: `new:${p.pageId}:${encodeURIComponent(root)}`, title: '＋ 新建会话', window: label, workspace: root, group: '', ui: true });
     };
     const states = await Promise.all(pages.map(p => this.probeCodex(p)));
     for (const p of pages) {
@@ -90,6 +90,7 @@ export const adapter = {
             title: row.title,
             lastUsed: row.lastUsed,
             window: folder || owner.title,
+            workspace: row.workspace, host: row.host,
             group: '',
             current: owner.pageId === this.codexPageId && row.id === this.threadId,
             running: row.id === state?.thread ? !!state?.busy || !!row.running : !!row.running,
@@ -100,7 +101,19 @@ export const adapter = {
         list.push({ id: `win:${p.pageId}`, title: '打开这个窗口', window: group, group: '', current: false, running: !!state?.busy || (state?.progress > 0), ui: true });
       }
     }
-    emit({ list });
+    const projectKey = (root, host) => `${host || ''}\0${pathKey(root, !host)}`;
+    const projects = new Map();
+    for (const row of list) if (row.workspace) {
+      projects.set(projectKey(row.workspace, row.host), { root: row.workspace, host: row.host });
+    }
+    const allProjects = [...projects.values()];
+    const labels = new Map(allProjects.map(project => {
+      const { name, detail } = workspaceLabel(project, allProjects);
+      return [projectKey(project.root, project.host), detail ? `${name} · ${detail}` : name];
+    }));
+    emit({ list: list.map(({ workspace, host, ...row }) => ({
+      ...row, window: workspace ? labels.get(projectKey(workspace, host)) : row.window,
+    })) });
   },
 
   async currentRoots() {
@@ -137,6 +150,8 @@ export const adapter = {
   },
 
   async newTerminal() {
+    // Let the workbench handle the shortcut instead of the focused Codex webview.
+    await this.editorCdp.evaluate('document.activeElement?.blur()');
     await this.key('Ctrl+Shift+`', { cdp: this.editorCdp });
   },
 

@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { Cdp } from './cdp.mjs';
 import { listWindows, codexWindows } from './windows.mjs';
 import { CODEX_CDP_URL } from './config.mjs';
-import { helpersCall } from './page/build.mjs';
+import { PAGE_SRC, helpersCall } from './page/build.mjs';
 import { AgentContext, appPlans } from './agent/index.mjs';
 import { hasLaunched, takeLaunched } from './launch.mjs';
 import { fusionViewers, fusionHistory, fusionWorkers } from './fusion/state.mjs';
@@ -29,7 +29,6 @@ export class Session extends AgentContext {
     this.lastFrameAt = 0;
     this.lastHash = '';
     this.mode = 'chat';
-    this.idleTimer = setInterval(() => this.pollIfIdle(), 2000);
   }
 
   async setMode(mode) {
@@ -263,13 +262,14 @@ export class Session extends AgentContext {
   async prefetchMenus() {
     const cdp = this.cdp;
     if (!cdp || this.app === 'fusion' || !this.visible) return;
-    const sel = this.selectionKey();
-    const [items, fast, models] = await Promise.all([
-      cdp.evaluate(helpersCall('effortItems()')).catch(() => null),
-      cdp.evaluate(helpersCall('fastInfo()')).catch(() => null),
-      cdp.evaluate(helpersCall('modelItemsFast()')).catch(() => null),
-    ]);
-    if (!this.liveRead(cdp, this.sel)) return;
+    const sel = this.selectionKey(), generation = this.sel;
+    const [items, fast, models] = await cdp.evaluate(`(() => {
+      const h = ${PAGE_SRC};
+      return ['effortItems', 'fastInfo', 'modelItemsFast'].map(name => {
+        try { return h[name](); } catch { return null; }
+      });
+    })()`).catch(() => [null, null, null]);
+    if (!this.liveRead(cdp, generation)) return;
     if (items?.length) this.emit({ t: 'menu', kind: 'effort', items, fast, cached: true, sel });
     if (models?.length) this.emit({ t: 'menu', kind: 'model', items: models, fast, cached: true, sel });
     this.listAgents(true, true).catch(() => {});
@@ -348,13 +348,6 @@ export class Session extends AgentContext {
     this.emit({ t: 'frame', data, w: this.viewport.w, h: this.viewport.h });
   }
 
-  // Electron stops painting occluded/minimized windows, so screencast goes quiet; fall back to screenshots.
-
-  async pollIfIdle() {
-    if (!this.editorCdp || !this.visible || this.mode !== 'screen') return;
-    // Visualization frames are supplied by the selected native window, independently of CDP.
-  }
-
   async snapshot(force) {
     if (this.mode === 'screen') return visualCapture.publish(this);
     const { data } = await this.editorCdp.send('Page.captureScreenshot', { format: 'jpeg', quality: this.screencast.quality });
@@ -407,7 +400,6 @@ export class Session extends AgentContext {
 
   dispose() {
     fusionViewers.delete(this);
-    clearInterval(this.idleTimer);
     clearTimeout(this.ackTimer);
     this.detach();
   }

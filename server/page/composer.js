@@ -6,7 +6,7 @@
       || eds.at(-1);
   };
   const composerDraft = () => {
-    if (doc.querySelector('#active-frame')) return codexPromptText() || '';
+    if (document.getElementById('active-frame')) return codexPromptText() || '';
     const eds = [...doc.querySelectorAll(`${COMPOSER}, [data-slate-editor="true"][contenteditable="true"]`)].filter(e => vis(e) && !inItem(e));
     const ed = pickComposer(eds);
     if (!ed || ed.querySelector('[data-slate-placeholder]')) return '';
@@ -19,19 +19,15 @@
   // Write the composer via the editor's own API (no keyboard, no focus). Returns true only when it worked.
   const setComposerDraft = text => {
     text = String(text ?? '');
-    if (doc.querySelector('#active-frame')) {
-      // Codex ProseMirror has no editor ref on the DOM node; find the EditorView in React props/state.
+    if (document.getElementById('active-frame')) {
+      // Codex keeps its current EditorView on the native composer controller.
       const ed = [...doc.querySelectorAll('.ProseMirror[contenteditable="true"]')].find(e => vis(e));
       if (!ed) return false;
-      let view = codexFiberProps(ed, Infinity).flatMap(p => Object.values(p || {}))
-        .find(v => v && typeof v === 'object' && typeof v.dispatch === 'function' && v.state?.doc && v.state?.tr);
-      if (!view) view = codexFiberProps(ed, Infinity).flatMap(p => Object.values(p || {}))
-        .map(v => v?.current).find(v => v && typeof v === 'object' && typeof v.dispatch === 'function' && v.state?.doc && v.state?.tr);
+      const view = codexFiberProps(ed, Infinity).find(p => p.composerController)?.composerController.view;
       if (!view) return false;
       const schema = view.state.schema;
-      const Frag = view.state.doc.content.constructor;
-      const children = text.split('\n').map(line => (schema.nodes.paragraph || Object.values(schema.nodes).find(n => n.isBlock && n.name !== 'doc')).create(null, line ? schema.text(line) : null));
-      view.dispatch(view.state.tr.replaceWith(0, view.state.doc.content.size, Frag.from(children)));
+      const children = text.split('\n').flatMap((line, i) => [...(i ? [schema.nodes.hard_break.create()] : []), ...(line ? [schema.text(line)] : [])]);
+      view.dispatch(view.state.tr.replaceWith(0, view.state.doc.content.size, schema.nodes.paragraph.create(null, children)));
       return composerDraft() === text.replace(/\n+$/g, '');
     }
     const eds = [...doc.querySelectorAll(`${COMPOSER}, [data-slate-editor="true"][contenteditable="true"]`)].filter(e => vis(e) && !inItem(e));
