@@ -132,6 +132,8 @@ const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(bo
 
 // Pairing links look like <app>#pair=<url key>.<one-time code>.
 function parsePair(text) {
+  const entry = /[#&]entry=([\w-]{43})\.([\w-]{43})/.exec(text || '');
+  if (entry) return { key: entry[1], invitation: entry[2] };
   const m = /[#&]pair=([\w-]{43})\.([\w-]{16,})/.exec(text || '');
   return m ? { key: m[1], code: m[2] } : null;
 }
@@ -152,7 +154,7 @@ function parsePair(text) {
     history.replaceState(null, '', location.pathname + location.search + (params.size ? '#' + params.toString() : ''));
   }
 }
-let pending = parsePair(location.hash);
+let pending = parsePair(location.hash) || JSON.parse(sessionStorage.getItem('entry-request') || 'null');
 if (pending) history.replaceState(null, '', location.pathname + location.search);
 // Opened from a notification: <app>#win=<window id or JSON with windowId and threadId>.
 let pendingNotice = '';
@@ -177,6 +179,11 @@ function deviceName() {
   const model = /Android [\d.]+; (?:[a-z]{2}-[a-z]{2}; )?([^;)]+?)(?: Build|\))/i.exec(ua)?.[1];
   const kind = inApp ? '安卓 App' : /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? '安卓浏览器' : /Mac/.test(ua) ? 'Mac 浏览器' : '浏览器';
   return model && !/^K$/.test(model) ? `${model}（${kind}）` : kind;
+}
+function entryName() {
+  const ua = navigator.userAgent;
+  const browser = inApp ? 'App' : /MicroMessenger/.test(ua) ? '微信' : /Edg/.test(ua) ? 'Edge' : /CriOS|Chrome/.test(ua) ? 'Chrome' : /FxiOS|Firefox/.test(ua) ? 'Firefox' : /Safari/.test(ua) ? 'Safari' : '网页';
+  return `${deviceName()} · ${browser}`;
 }
 
 function showUnpaired(msg = '') {
@@ -340,19 +347,63 @@ async function pair(totp) {
     return showOffline();
   }
   if (r.ok) {
-    const key = body.key || pending.key;
-    const id = body.id || await computerIdFromKey(key);
-    const prev = loadComputers().find(c => c.key === key);
-    const list = loadComputers().filter(c => c.key !== key);
-    list.push({ ...prev, id, name: body.name || prev?.name || '电脑', key, token: body.token, device: body.device || prev?.device || '', win: prev?.win || '', discovery: discoveryUrl(), relay: base });
-    saveComputers(list, key);
-    pending = null;
-    return connect();
+    return finishPair(body);
   }
   if (body.needTotp) return showTotp(code => pair(code), body.error);
   pending = null;
   if (store.get('token')) return gate({ msg: (body.error || '配对失败') + '\n\n这台设备之前已经配对过，可以继续使用。', err: true, retry: '继续使用' });
   showUnpaired(body.error || '配对失败');
+}
+
+async function finishPair(body) {
+  const key = body.key || pending.key;
+  const id = body.id || await computerIdFromKey(key);
+  const prev = loadComputers().find(c => c.key === key);
+  const list = loadComputers().filter(c => c.key !== key);
+  list.push({ ...prev, id, name: body.name || prev?.name || '电脑', key, token: body.token, device: body.device || prev?.device || '', win: prev?.win || '', discovery: discoveryUrl(), relay: base });
+  saveComputers(list, key);
+  pending = null;
+  sessionStorage.removeItem('entry-request');
+  return connect();
+}
+
+let entryJoinGeneration = 0;
+async function joinEntryRequest() {
+  const generation = ++entryJoinGeneration, request = pending;
+  let terminal = false;
+  const cancel = () => {
+    post('/api/entries/cancel', { id: request.requestId, secret: request.secret }).catch(() => {});
+    entryJoinGeneration++; pending = null; sessionStorage.removeItem('entry-request');
+    showUnpaired('已取消入口授权');
+  };
+  try {
+    if (!request.requestId) {
+      gate({ msg: '正在申请入口授权…' });
+      const r = await post('/api/entries/join', { invitation: request.invitation, name: entryName() });
+      const body = await r.json();
+      if (!r.ok) { terminal = true; throw new Error(body.error || '申请失败'); }
+      if (generation !== entryJoinGeneration || pending !== request) return;
+      Object.assign(request, { requestId: body.id, secret: body.secret, code: body.code, expires: body.expires });
+      delete request.invitation;
+      sessionStorage.setItem('entry-request', JSON.stringify(request));
+    }
+    gate({ msg: `授权验证码：${request.code}\n请在已配对入口的「已配对设备」中核对验证码并同意。`, retry: '取消申请', onRetry: cancel });
+    while (generation === entryJoinGeneration && pending === request) {
+      if (Date.now() >= request.expires) { terminal = true; throw new Error('授权请求已过期，请重新生成链接'); }
+      const r = await post('/api/entries/status', { id: request.requestId, secret: request.secret });
+      const body = await r.json();
+      if (generation !== entryJoinGeneration || pending !== request) return;
+      if (!r.ok) { terminal = true; throw new Error(body.error || '授权查询失败'); }
+      if (body.state === 'approved') return finishPair(body);
+      if (body.state === 'denied') { terminal = true; throw new Error('已配对入口拒绝了本次申请'); }
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+  } catch (error) {
+    if (generation !== entryJoinGeneration || pending !== request) return;
+    if (!terminal && request.requestId) return gate({ msg: '暂时无法查询授权，申请已保留，请重试。', err: true, retry: true, repair: true });
+    sessionStorage.removeItem('entry-request'); pending = null;
+    showUnpaired(error.message);
+  }
 }
 
 async function verifyTotp(code) {
@@ -372,7 +423,7 @@ async function boot() {
   authed = false;
   clearTimeout(retryTimer);
   // Android browser opened a pairing link: offer to hand it to the installed app instead.
-  if (pending && /Android/.test(navigator.userAgent) && !inApp && !pending.stay) {
+  if (pending?.code && !pending.requestId && /Android/.test(navigator.userAgent) && !inApp && !pending.stay) {
     const link = `agentremote://pair?app=${encodeURIComponent(location.origin + location.pathname)}&d=${pending.key}.${pending.code}`;
     gate({ msg: '已收到配对链接。\n装了安卓 App 就在 App 里打开；否则直接在浏览器里用。', appLink: link, retry: '在浏览器里继续' });
     pending.stay = true;
@@ -393,7 +444,7 @@ async function boot() {
   if (pending) {
     try { base = await resolvePending(); }
     catch (e) { return showUnpaired(e.message || '这台电脑还没有发布地址'); }
-    return pair();
+    return pending.invitation || pending.requestId ? joinEntryRequest() : pair();
   }
   try {
     base = await resolveBase();

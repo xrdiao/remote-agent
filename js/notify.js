@@ -323,6 +323,22 @@ $('sheet').addEventListener('click', async e => {
   const act = b.dataset.act;
   if ('deviceRemoveCancel' in b.dataset) { deviceRemoval = []; return renderDevices(); }
   if ('deviceRemoveConfirm' in b.dataset) return removePairedDevices(deviceRemoval, true);
+  if (b.dataset.entryInvite) return inviteDeviceEntry(b.dataset.entryInvite);
+  if ('entryCopy' in b.dataset) return copyText(deviceInvitation.link, b);
+  if (b.dataset.entryDecide) return decideDeviceEntry(b);
+  if (b.dataset.deviceGroupRemove) return removePairedDevices(pairedDevices.filter(d => d.groupId === b.dataset.deviceGroupRemove).map(d => d.id));
+  if (b.dataset.deviceGroupTarget) return moveDeviceEntries(b.dataset.deviceGroupTarget);
+  if (b.dataset.deviceGroupRename) {
+    const group = deviceGroups().find(g => g.id === b.dataset.deviceGroupRename);
+    const name = window.prompt('设备名称', group.name)?.trim();
+    if (name) return moveDeviceEntries(group.id, name, group.entries.map(d => d.id));
+    return;
+  }
+  if ('deviceGroupNew' in b.dataset) {
+    const name = window.prompt('设备名称')?.trim();
+    if (name) return moveDeviceEntries('', name);
+    return;
+  }
   if (b.dataset.listAction) return handleListAction(b.dataset.listAction);
   if (b.dataset.groupMove != null) return moveSelectedComputers(b.dataset.groupMove);
   if (b.dataset.groupRename != null) return editComputerGroup(b.dataset.groupRename);

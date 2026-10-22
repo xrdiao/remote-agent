@@ -13,6 +13,7 @@ function rememberAgentOpen(m) {
   }
 }
 function openSheet(kind, html) {
+  if (kind !== 'devices') clearTimeout(deviceListTimer);
   const leavingVoice = sheetKind === 'local-voice' && kind !== 'local-voice';
   const sheet = $('sheet');
   const navScroll = sheetKind === kind ? sheet.querySelector('.codexSettingsNav')?.scrollLeft : 0;
@@ -44,6 +45,7 @@ function openSheet(kind, html) {
   if (leavingVoice) scheduleVoiceWarmup();
 }
 function closeSheet() {
+  clearTimeout(deviceListTimer);
   const leavingVoice = sheetKind === 'local-voice';
   if (sheetKind === 'settings') send({ t: 'closeDesktopSettings' });
   if (sheetKind === 'devices') deviceRemoval = [];
@@ -525,18 +527,21 @@ function showParams(m) {
 
 const listManagement = { kind: '', owner: '', editing: false, selected: new Set() };
 let pairedDevices = [];
+let pendingEntries = [], deviceInvitation = null, deviceListTimer = 0, deviceListGeneration = 0;
 let deviceRemoval = [], removingDevices = false;
 function prepareListManagement(kind) {
   const owner = kind === 'devices' ? currentComputer()?.key || '' : '';
   if (listManagement.kind !== kind || listManagement.owner !== owner) {
     Object.assign(listManagement, { kind, owner, editing: false, selected: new Set() });
+    if (kind === 'devices') { pairedDevices = []; pendingEntries = []; deviceInvitation = null; deviceRemoval = []; }
   }
 }
 function listTools() {
   const m = listManagement;
   if (!m.editing) return `<button data-list-action="manage">管理</button>${m.kind === 'computers' ? '<button data-list-action="new-group">新建分组</button>' : ''}`;
   return `<button data-list-action="all">全选</button><button data-list-action="clear">取消选择</button><button data-list-action="done">完成</button><span class="hint">${I18N.tr('已选择 {n} 项').replace('{n}', m.selected.size)}</span>`
-    + (m.kind === 'computers' ? `<button data-list-action="group" ${m.selected.size ? '' : 'disabled'}>移至分组</button><button data-list-action="new-group">新建分组</button>` : '')
+    + `<button data-list-action="group" ${m.selected.size ? '' : 'disabled'}>${m.kind === 'devices' ? '归入设备' : '移至分组'}</button>`
+    + (m.kind === 'computers' ? '<button data-list-action="new-group">新建分组</button>' : '')
     + `<button class="danger" data-list-action="delete" ${m.selected.size ? '' : 'disabled'}>${m.kind === 'devices' ? '批量移除' : '批量删除'}</button>`;
 }
 function listCheckbox(id) {
@@ -558,28 +563,82 @@ function handleListAction(action) {
   else if (action === 'clear') m.selected.clear();
   else if (action === 'all') m.selected = new Set(m.kind === 'computers' ? loadComputers().map(c => c.key) : pairedDevices.filter(d => !d.current).map(d => d.id));
   else if (action === 'delete') return m.kind === 'computers' ? removeComputers([...m.selected]) : removePairedDevices([...m.selected]);
-  else if (action === 'group') return showComputerGroupPicker();
+  else if (action === 'group') return m.kind === 'devices' ? showDeviceGroupPicker() : showComputerGroupPicker();
   else if (action === 'new-group') return editComputerGroup();
   renderManagedList();
 }
-async function showDevices() {
+async function showDevices(refresh = false) {
+  clearTimeout(deviceListTimer);
   prepareListManagement('devices');
-  let list = [];
-  try { list = (await api('/api/devices').then(r => r.json())).devices || []; } catch {}
-  pairedDevices = list;
-  const ids = new Set(list.filter(d => !d.current).map(d => d.id));
-  listManagement.selected = new Set([...listManagement.selected].filter(id => ids.has(id)));
-  renderDevices();
+  const generation = ++deviceListGeneration, owner = currentComputer()?.key;
+  if (!refresh) renderDevices();
+  try {
+    const r = await api('/api/devices');
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.error || '读取设备失败');
+    if (generation !== deviceListGeneration || owner !== currentComputer()?.key || sheetKind !== 'devices') return;
+    const changed = JSON.stringify([pairedDevices, pendingEntries]) !== JSON.stringify([body.devices, body.requests]);
+    pairedDevices = body.devices; pendingEntries = body.requests;
+    const ids = new Set(pairedDevices.filter(d => !d.current).map(d => d.id));
+    listManagement.selected = new Set([...listManagement.selected].filter(id => ids.has(id)));
+    if (changed) renderDevices();
+  } catch (error) { if (!refresh) status(error.message, false); }
+  if (sheetKind === 'devices' && owner === currentComputer()?.key) deviceListTimer = setTimeout(() => {
+    if (sheetKind === 'devices' && !document.hidden) showDevices(true);
+  }, 2000);
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden && sheetKind === 'devices') showDevices(true); });
+function deviceGroups() {
+  const groups = new Map();
+  for (const d of pairedDevices) {
+    if (!groups.has(d.groupId)) groups.set(d.groupId, { id: d.groupId, name: d.groupName, entries: [] });
+    groups.get(d.groupId).entries.push(d);
+  }
+  return [...groups.values()].sort((a, b) => Number(b.entries.some(d => d.current)) - Number(a.entries.some(d => d.current)));
 }
 function renderDevices() {
   const when = t => new Date(t).toLocaleDateString();
   const scroll = $('sheet').querySelector('.deviceRows')?.scrollTop || 0;
   const confirmation = deviceRemoval.length ? `<div class="hint">${esc(`移除「${pairedDevices.filter(d => deviceRemoval.includes(d.id)).map(d => d.name).join('、')}」？它们会立即断开，要重新配对才能再用。`)}</div><div class="askBtns"><button data-device-remove-cancel>取消</button><button class="danger" data-device-remove-confirm>移除</button></div>` : '';
-  openSheet('devices', `<div class="deviceHead"><h3>已配对设备</h3><div class="listTools" ${removingDevices ? 'inert' : ''}>${listTools()}</div>${removingDevices ? '<div class="hint">正在移除设备…</div>' : confirmation}</div><div class="deviceRows" ${removingDevices ? 'inert' : ''}>` + pairedDevices.map(d => `
-    <${listManagement.editing && !d.current ? 'label' : 'div'} class="opt static ${d.current ? 'cur' : ''}">${listManagement.editing && !d.current ? listCheckbox(d.id) : ''}<span class="lbl">${esc(d.name)}<span class="sub">${d.current ? '当前设备 · ' : ''}设备码 ${esc(d.id)} · 配对于 ${when(d.created)} · 最近使用 ${when(d.lastSeen)}</span></span>
+  const opened = new Map([...$('sheet').querySelectorAll('[data-device-group]')].map(el => [el.dataset.deviceGroup, el.open]));
+  const invitation = deviceInvitation?.expires > Date.now() ? `<div class="entryInvite"><div class="hint">将此链接在新浏览器打开，再核对下方出现的验证码。10 分钟内有效，不要发给陌生人。</div><textarea id="entryInviteLink" readonly aria-label="入口授权链接">${esc(deviceInvitation.link)}</textarea><button data-entry-copy>复制授权链接</button></div>` : '';
+  const requests = pendingEntries.map(r => `<div class="entryRequest"><strong>新入口请求 · ${esc(r.name)}</strong><div class="sub">归入 ${esc(r.groupName)} · 验证码 <b>${esc(r.code)}</b></div><div class="hint">请与新浏览器显示的验证码核对，确认是你的入口。</div><div class="askBtns"><button data-entry-decide="${esc(r.id)}" data-code="${esc(r.code)}" data-approve="false">拒绝</button><button data-entry-decide="${esc(r.id)}" data-code="${esc(r.code)}" data-approve="true">同意</button></div></div>`).join('');
+  openSheet('devices', `<div class="deviceHead"><h3>已配对设备</h3><div class="listTools" ${removingDevices ? 'inert' : ''}>${listTools()}</div>${removingDevices ? '<div class="hint">正在移除入口…</div>' : confirmation}</div><div class="deviceRows" ${removingDevices ? 'inert' : ''}>${invitation}${requests}` + deviceGroups().map(g => `<details class="deviceGroup" data-device-group="${esc(g.id)}" ${(opened.get(g.id) ?? g.entries.some(d => d.current)) ? 'open' : ''}><summary>${esc(g.name)}<span class="sub">${g.entries.length} 个入口</span></summary><div class="listTools"><button data-entry-invite="${esc(g.id)}">添加入口</button>${listManagement.editing ? `<button data-device-group-rename="${esc(g.id)}">重命名设备</button>` : ''}${g.entries.some(d => d.current) ? '' : `<button data-device-group-remove="${esc(g.id)}">移除设备</button>`}</div>` + g.entries.map(d => `
+    <${listManagement.editing && !d.current ? 'label' : 'div'} class="opt static ${d.current ? 'cur' : ''}">${listManagement.editing && !d.current ? listCheckbox(d.id) : ''}<span class="lbl">${esc(d.entryName)}<span class="sub">${d.current ? '当前入口 · ' : ''}入口码 ${esc(d.id)} · 配对于 ${when(d.created)} · 最近使用 ${when(d.lastSeen)}</span></span>
     ${d.current || listManagement.editing ? '' : `<button data-remove="${esc(d.id)}" data-name="${esc(d.name)}">移除</button>`}</${listManagement.editing && !d.current ? 'label' : 'div'}>`).join('')
-    + '<div class="hint">添加新设备：在电脑上运行 npm run pair。<br>开启 Authenticator 二次验证：npm run 2fa。</div></div>');
+    + '</details>').join('') + '<div class="hint">设备分组由你确认，不能自动识别物理设备。已有入口可在“管理 → 归入设备”合并。<br>添加新设备：在电脑上运行 npm run pair。<br>开启 Authenticator 二次验证：npm run 2fa。</div></div>');
   $('sheet').querySelector('.deviceRows').scrollTop = scroll;
+}
+async function inviteDeviceEntry(groupId) {
+  try {
+    const r = await post('/api/entries/invite', { groupId }), body = await r.json();
+    if (!r.ok) throw new Error(body.error || '生成授权链接失败');
+    const link = new URL(location.pathname, location.origin);
+    link.hash = `entry=${currentComputer().key}.${body.invitation}`;
+    deviceInvitation = { link: link.href, expires: body.expires };
+    if (sheetKind === 'devices') renderDevices();
+  } catch (error) { status(error.message, false); }
+}
+async function decideDeviceEntry(button) {
+  button.closest('.entryRequest').querySelectorAll('button').forEach(b => { b.disabled = true; });
+  try {
+    const r = await post('/api/entries/decide', { id: button.dataset.entryDecide, code: button.dataset.code, approve: button.dataset.approve === 'true' });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.error || '授权失败');
+  } catch (error) { status(error.message, false); }
+  if (sheetKind === 'devices') showDevices(true);
+}
+function showDeviceGroupPicker() {
+  openSheet('device-group-picker', '<h3>归入设备</h3><div class="hint">只合并属于同一设备的入口；每个入口的凭据和撤销仍独立。</div>' + deviceGroups().map(g => `<button class="opt" data-device-group-target="${esc(g.id)}">${esc(g.name)}</button>`).join('') + '<button class="opt" data-device-group-new>新建设备分组</button><button class="opt" data-act="devices">返回</button>');
+}
+async function moveDeviceEntries(groupId = '', name = '', ids = [...listManagement.selected]) {
+  try {
+    const r = await post('/api/devices/group', { ids, groupId, name });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.error || '归组失败');
+    listManagement.selected.clear();
+    await showDevices();
+  } catch (error) { status(error.message, false); }
 }
 async function removePairedDevices(ids, confirmed = false) {
   const selected = pairedDevices.filter(d => !d.current && ids.includes(d.id));
