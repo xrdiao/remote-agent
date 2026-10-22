@@ -5,7 +5,7 @@ import { CODEX_CDP_URL } from './config.mjs';
 import { helpersCall } from './page/build.mjs';
 import { AgentContext, appPlans } from './agent/index.mjs';
 import { hasLaunched, takeLaunched } from './launch.mjs';
-import { fusionViewers, fusionHistory, fusionWorkers, newFusionRun } from './fusion/state.mjs';
+import { fusionViewers, fusionHistory, fusionWorkers } from './fusion/state.mjs';
 import { FUSION_OWNER } from './fusion/owner.mjs';
 import { FusionRunner } from './fusion/runner.mjs';
 import { ROUTES, SKIP, flag } from './routes.mjs';
@@ -90,6 +90,8 @@ export class Session extends AgentContext {
   emit(obj) {
     if (obj?.t === 'attached' && !obj.closed && AGENT_REGISTRY[obj.app]?.capabilities) {
       obj = { ...obj, capabilities: AGENT_REGISTRY[obj.app].capabilities };
+      if (obj.app === 'fusion') obj.sideCapabilities = Object.fromEntries(Object.entries(AGENT_REGISTRY)
+        .filter(([, entry]) => entry.kind !== 'orchestrator').map(([app, entry]) => [app, entry.capabilities]));
     }
     if (obj?.t === 'chat' && obj.sel && obj.chat) {
       (this.chatBySel ||= new Map()).delete(obj.sel);
@@ -126,22 +128,7 @@ export class Session extends AgentContext {
         throw new Error(`读取 Codex 调试接口失败，请重试：${error.message}`);
       }
     }
-    if (appId === 'fusion') {
-      this.detach();
-      this.clearViewState();
-      this.app = 'fusion';
-      this.targetId = 'fusion';
-      this.windowId = 'fusion';
-      this.threadId = '';
-      this.selectedThread = undefined;
-      this.winTitle = 'Fusion';
-      if (!this.fusionRun) this.fusionRun = newFusionRun();
-      this.threadId = this.fusionRun.id;
-      this.emit({ t: 'attached', id: 'fusion', title: 'Fusion', app: 'fusion', appName: 'Fusion', project: '', windowId: 'fusion', threadId: this.threadId, sel: this.selectionKey(), initial: req.initial === true });
-      this.fusionEmit();
-      if (this.fusionRun.a || this.fusionRun.b) { await this.fusionCatalog(); this.fusionEmit(); }
-      return;
-    }
+    if (AGENT_REGISTRY[appId]?.kind === 'orchestrator') return AGENT_REGISTRY[appId].adapter.attach.call(this, req);
     const targetApp = Object.keys(AGENT_REGISTRY).find(app => appId === app || appId.startsWith(app + ':'));
     const wins = windows || (codexPages ? codexPages.length ? [{id: 'codex', app: 'codex', title: 'Codex', ws: codexPages[0].ws, port: CODEX_CDP_URL, kind: 'local'}] : [] : targetApp ? await AGENT_REGISTRY[targetApp].discover() : await listWindows());
     if (appId === 'codex') {

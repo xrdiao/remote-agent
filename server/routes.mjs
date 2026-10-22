@@ -6,6 +6,7 @@ import { helpersCall } from './page/build.mjs';
 import { appPlans } from './agent/context.mjs';
 import { probeLatency } from './latency.mjs';
 import { launchAgents } from './launch.mjs';
+import { ADAPTERS } from './apps/index.mjs';
 
 // One entry per message type the phone can send (auth/ack are handled inside ws.mjs itself).
 //   pre      — runs in handle() before the read-only/focus split, without a cdp
@@ -194,9 +195,9 @@ export const ROUTES = {
   },
   fusionProjects: { fusionFree: true, run: (s, m) => s.fusionListProjects(m.path) },
   fusionProject: { fusionFree: true, run: (s, m) => s.fusionSetProject(String(m.id || ''), String(m.path || '')) },
-  fusionHistory: { fusionFree: true, run: s => s.fusionListHistory() },
-  fusionOpen: { fusionFree: true, run: (s, m) => s.fusionOpenHistory(String(m.id || '')) },
-  fusionNew: { fusionFree: true, run: s => s.fusionOpenHistory('') },
+  fusionHistory: { fusionFree: true, run: s => ADAPTERS.fusion.listAgents.call(s) },
+  fusionOpen: { fusionFree: true, run: (s, m) => ADAPTERS.fusion.openAgent.call(s, String(m.id || '')) },
+  fusionNew: { fusionFree: true, run: s => ADAPTERS.fusion.newChat.call(s) },
   fusionUsage: { fusionFree: true, run: (s, m) => s.fusionUsage(m.automatic === true, m.side === 'b' ? 'b' : 'a') },
   fusionSides: { fusionFree: true, run: (s, m) => s.fusionListSides(m.side) },
   fusionSide: { fusionFree: true, run: (s, m) => s.fusionSetSide(m.side, String(m.id || '')) },
@@ -222,7 +223,7 @@ export const ROUTES = {
   },
   stop: {
     fast: s => s.app === 'fusion',
-    fastRun: s => s.fusionStop(),
+    fastRun: s => s.adapter.stopAgent.call(s),
     run: s => s.stopAgent(),
   },
   subagent: { run: (s, m) => s.subagentAction(m.name, m.part === 'stop' ? 'stop' : 'open') },
@@ -301,7 +302,7 @@ export const ROUTES = {
   codexArchive: { run: (s, m) => s.codexArchiveThread(String(m.id || '')) },
   visualList: {pre: s => s.visualList()},
   visualSelect: {pre: (s, m) => s.visualSelect(m.id)},
-  refresh: { readOnly: true, fusionFree: true, run: s => s.snapshot(true), fusion: s => s.mode === 'screen' ? s.snapshot(true) : s.fusionEmit() },
+  refresh: { readOnly: true, fusionFree: true, run: s => s.snapshot(true), fusion: s => s.mode === 'screen' ? s.snapshot(true) : s.adapter.pollChat.call(s) },
   quality: {
     fusionFree: true,
     run: async (s, m) => {

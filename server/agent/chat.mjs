@@ -489,7 +489,7 @@ export const methods = {
   async sendMessage(text, submit, when, mentions, receipt) {
     if (submit && receipt) this.draftEpoch = receipt.draftEpoch || '';
     if (this.app === 'fusion') {
-      const queued = await this.fusionUserSend(text);
+      const queued = await this.adapter.sendMessage.call(this, text);
       if (receipt) this.emit({ t: 'sent', ...receipt, queued, sentAt: Date.now(), sel: this.selectionKey() });
       return queued;
     }
