@@ -44,8 +44,9 @@ function scheduleVoiceWarmup() {
   voiceWarmTimer = setTimeout(() => {
     voiceWarmTimer = 0;
     if (!voiceEnabled() || !authed || document.hidden || sheetKind === 'local-voice' || key !== voiceTransportKey() || voiceEngine() === SYSTEM_ENGINE) return;
+    const link = voiceConnection();
     voicePrepared = key;
-    voiceConnection().ready.catch(() => {});
+    link.ready.catch(() => {});
   }, 300);
 }
 
@@ -71,6 +72,7 @@ function resetVoiceReady(link) {
 function closeVoiceConnection() {
   const link = voiceLink;
   voiceLink = null;
+  voicePrepared = '';
   link?.socket.close();
 }
 function voiceConnection() {
@@ -83,16 +85,20 @@ function voiceConnection() {
   const engine = voiceEngine();
   socket.onopen = () => socket.send(JSON.stringify({ type: 'auth', token: store.get('token'), engine }));
   socket.onerror = () => link.reject(new Error('本机语音连接失败，请检查中继；微信内无法开麦时请用 Safari/Chrome'));
-  socket.onclose = () => {
-    if (voiceLink === link) voiceLink = null;
+  socket.onclose = e => {
+    const current = voiceLink === link;
+    if (current) { voiceLink = null; voicePrepared = ''; }
     link.reject(new Error('本机语音连接已关闭'));
     if (voiceSession?.link === link) { status('语音连接已断开，已识别文字保留在输入框', false); cancelVoice(); }
+    // Reconnect a previously ready transport once. A failed new connection does not loop.
+    if (current && link.streamId && !link.failed && e.code !== 4001) scheduleVoiceWarmup();
   };
   socket.onmessage = e => {
     const m = JSON.parse(e.data), session = voiceSession;
     if (m.type === 'loading') { link.loading = true; if (session?.link === link) status('正在加载本机语音模型…'); }
     if (m.type === 'started') { link.loading = false; link.streamId = m.id; link.resolve(link); }
     if (m.type === 'error') {
+      link.failed = true;
       link.reject(new Error(m.message));
       if (session?.link === link) { status(m.message, false); cancelVoice(); }
       socket.close();
@@ -223,7 +229,13 @@ async function startVoice(event) {
     session.source.connect(session.node).connect(session.context.destination);
     status('正在听…松开结束，文字不会自动发送');
   } catch (error) {
-    if (voiceLive(session)) { status(error.name === 'NotAllowedError' ? '没有麦克风权限；请在浏览器设置中允许，或使用键盘语音输入' : error.message, false); cancelVoice(); closeVoiceAudio(); }
+    if (voiceLive(session)) {
+      status(error.name === 'NotAllowedError' ? '没有麦克风权限；请在浏览器设置中允许，或使用键盘语音输入'
+        : error.name === 'NotReadableError' ? '麦克风被占用或无法启动，请结束其他录音后重新按住'
+        : error.name === 'NotFoundError' ? '没有找到可用麦克风，请检查设备'
+        : `录音初始化失败（${error.name}）：${error.message}`, false);
+      cancelVoice(); closeVoiceAudio();
+    }
   }
 }
 function startSystemVoice(event) {
@@ -233,39 +245,39 @@ function startSystemVoice(event) {
   const session = { scope: voiceScope(), expected: text.value, prefix: text.value.slice(0, text.selectionStart), suffix: text.value.slice(text.selectionEnd), selection: text.value.slice(text.selectionStart, text.selectionEnd), held: true, system: true, finalText: '', interimText: '' };
   voiceSession = session;
   $('mic').classList.add('on'); $('mic').setAttribute('aria-label', '松开结束录音');
-  const recognition = session.recognition = new Recognition();
-  recognition.lang = I18N.speech || 'zh-CN';
-  recognition.continuous = true;
-  recognition.interimResults = true;
-  recognition.onresult = e => {
-    if (!voiceLive(session)) return;
-    let interim = '';
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      const result = e.results[i];
-      if (result.isFinal) session.finalText += result[0].transcript; else interim += result[0].transcript;
-    }
-    session.interimText = interim;
-    voiceText(session, session.finalText + interim);
-  };
-  recognition.onerror = e => {
-    if (!voiceLive(session)) return;
-    status(e.error === 'not-allowed' || e.error === 'service-not-allowed' ? '没有麦克风权限；请在浏览器设置中允许，或使用键盘语音输入'
-      : e.error === 'network' ? '语音识别连不上服务器（国内网络常见），可以用输入法键盘上的麦克风'
-      : e.error === 'no-speech' ? '没听清，再试一次' : (e.error || '语音识别失败'), false);
-    cancelVoice(false);
-  };
-  recognition.onend = () => {
-    session.recognition = null;
-    if (voiceSession !== session) return;
-    status(session.finalText || session.interimText ? '转录完成，可编辑后发送' : '没有识别到语音，请重试');
-    cancelVoice(false);
-  };
   try {
+    const recognition = session.recognition = new Recognition();
+    recognition.lang = I18N.speech || 'zh-CN';
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.onresult = e => {
+      if (!voiceLive(session)) return;
+      let interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const result = e.results[i];
+        if (result.isFinal) session.finalText += result[0].transcript; else interim += result[0].transcript;
+      }
+      session.interimText = interim;
+      voiceText(session, session.finalText + interim);
+    };
+    recognition.onerror = e => {
+      if (!voiceLive(session)) return;
+      status(e.error === 'not-allowed' || e.error === 'service-not-allowed' ? '没有麦克风权限；请在浏览器设置中允许，或使用键盘语音输入'
+        : e.error === 'network' ? '语音识别连不上服务器（国内网络常见），可以用输入法键盘上的麦克风'
+        : e.error === 'no-speech' ? '没听清，再试一次' : (e.error || '语音识别失败'), false);
+      cancelVoice(false);
+    };
+    recognition.onend = () => {
+      session.recognition = null;
+      if (voiceSession !== session) return;
+      status(session.finalText || session.interimText ? '转录完成，可编辑后发送' : '没有识别到语音，请重试');
+      cancelVoice(false);
+    };
     recognition.start();
     status('正在听…松开结束，文字不会自动发送');
-  } catch {
+  } catch (error) {
     cancelVoice(false);
-    status('语音识别启动失败，请重新按住麦克风', false);
+    status(`系统语音启动失败（${error.name}）：${error.message}，请重新按住麦克风`, false);
   }
 }
 function endVoice() {
