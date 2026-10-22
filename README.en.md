@@ -134,8 +134,6 @@ This tool can operate real terminals and files accessible to the computer's curr
 - [Voice installation, engine switching and microphone requirements](docs/voice-input.en.md)
 - [Connections, device entries and security](docs/security.en.md)
 - [Windows Devin maintenance (Chinese)](docs/windows-devin-maintenance.md)
-- [Adapter plan and status (Chinese)](docs/agent-adapter-plan.md) · [Interface proposal (Chinese)](docs/agent-adapter-interface-proposal.md)
-- [Development requirements and validation records (Chinese)](docs/development-requirements.md)
 
 Directories: `server/` relay and adapters, `app/` mobile web UI, `lib/` shared capabilities, `cli/` setup tools, `android/` and `ios/` native shells, `push-service/` iOS push service.
 
