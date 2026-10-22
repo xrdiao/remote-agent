@@ -200,6 +200,7 @@ $('rail')?.addEventListener('click', e => {
 
 const FUSION_PHASE = { idle: '待开始', planning: '正在生成方案', plan: '方案待确认', execute: '正在执行方案', review: '正在检查结果', fix: '正在小修', disagree: '方案待确认', check: '请选择下一步', stopped: '未完成，已停止', done: '完成' };
 let fusionSetupKey = '', fusionSetupStep = 0, fusionModelSide = null;
+const fusionModelSupported = spec => fusionSideCapabilities[spec?.app]?.model !== false;
 function requestFusionModel(side) {
   closeSheet();
   fusionModelSide = side;
@@ -222,7 +223,7 @@ function paintFusionSetup(fx) {
   const row = (step, title, summary, body, enabled) => `<section class="fusionStep ${fusionSetupStep === step ? 'active' : ''}"><button class="fusionStepHead" data-fusion-step="${step}" ${!enabled || fx.busy ? 'disabled' : ''}><span class="fusionStepNumber">${step + 1}</span><span class="lbl"><strong>${title}</strong><span class="sub">${esc(summary)}</span></span><span aria-hidden="true">${fusionSetupStep === step ? '▾' : '›'}</span></button>${fusionSetupStep === step ? `<div class="fusionStepBody">${body}</div>` : ''}</section>`;
   const role = side => {
     const spec = fx[side], label = side.toUpperCase();
-    return `<button class="opt" data-fusion-select="${side}" ${fx.busy ? 'disabled' : ''}><span class="lbl">选择 Agent / 会话<span class="sub">${esc(name(spec))}</span></span><span>›</span></button><button class="opt" data-fusion-setup-model="${side}" ${!spec || fx.busy ? 'disabled' : ''}><span class="lbl">模型与推理强度<span class="sub">${esc(spec?.model || I18N.tr('选择会话后沿用当前模型'))}</span></span><span>›</span></button><button class="primary fusionNext" data-fusion-step="${side === 'a' ? 2 : 3}" ${!spec?.model || fx.busy ? 'disabled' : ''}>${label === 'A' ? '下一步：配置 B' : '下一步：确认配置'}</button>`;
+    return `<button class="opt" data-fusion-select="${side}" ${fx.busy ? 'disabled' : ''}><span class="lbl">选择 Agent / 会话<span class="sub">${esc(name(spec))}</span></span><span>›</span></button><button class="opt" data-fusion-setup-model="${side}" ${!spec || fx.busy || !fusionModelSupported(spec) ? 'disabled' : ''}><span class="lbl">模型与推理强度<span class="sub">${esc(spec?.model || I18N.tr('选择会话后沿用当前模型'))}</span></span><span>›</span></button><button class="primary fusionNext" data-fusion-step="${side === 'a' ? 2 : 3}" ${!spec?.model || fx.busy ? 'disabled' : ''}>${label === 'A' ? '下一步：配置 B' : '下一步：确认配置'}</button>`;
   };
   const summary = `<dl class="fusionSetupSummary"><dt>项目</dt><dd>${esc(fx.project?.name || '')}</dd><dt>A · 方案与检查</dt><dd>${esc(name(fx.a))}<small>${esc(fx.a?.model || '')}</small></dd><dt>B · 执行</dt><dd>${esc(name(fx.b))}<small>${esc(fx.b?.model || '')}</small></dd></dl><button class="primary fusionNext" data-fusion-setup-done ${!ready || fx.busy ? 'disabled' : ''}>开始对话</button><p class="hint">确认配置后输入任务，不会自动发送消息。</p>`;
   $('fusionSetup').innerHTML = row(0, '选择项目', fx.project?.name || I18N.tr('未选择'), '<button class="opt" data-fusion-setup-project>选择项目</button>' + (fx.project ? '<button class="primary fusionNext" data-fusion-step="1">下一步：配置 A</button>' : ''), true)
@@ -266,7 +267,7 @@ function paintFusion(fx) {
   $('fusionProject').disabled = !!fx.busy;
   for (const side of ['a', 'b']) {
     $('fusion' + side.toUpperCase()).disabled = !fx.project || !!fx.busy;
-    $('fusionModel' + side.toUpperCase()).disabled = !fx.project || !!fx.busy;
+    $('fusionModel' + side.toUpperCase()).disabled = !fx.project || !!fx.busy || !fusionModelSupported(fx[side]);
   }
   const short = s => String(s || '').slice(0, 28);
   const roleTitle = s => `${({ codex: 'Codex', cursor: 'Cursor', devin: 'Devin' })[s.app] || s.app} · ${cleanWindowTitle(s.conversationTitle || s.title)}`;
