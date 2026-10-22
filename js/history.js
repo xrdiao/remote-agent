@@ -338,9 +338,24 @@ function captureChatAnchor() {
     else lo = mid + 1;
   }
   const el = itemsEl.children[lo];
-  return el ? { id: el.dataset.i, top: el.getBoundingClientRect().top - top } : null;
+  return el ? { id: el.dataset.i, top: el.getBoundingClientRect().top - top, scrollTop: list.scrollTop } : null;
 }
 let pinnedBottom = false;
+function stabilizeChatReading() {
+  if (readingAnchor) {
+    const el = [...itemsEl.children].find(e => e.dataset.i === readingAnchor.id);
+    if (el) {
+      const top = list.scrollTop;
+      // Keep the user's scroll delta; compensate only for layout changes above the anchor.
+      const shift = el.getBoundingClientRect().top - list.getBoundingClientRect().top - readingAnchor.top + top - readingAnchor.scrollTop;
+      if (shift) {
+        list.scrollTop += shift;
+        lastScrollTop += list.scrollTop - top;
+      }
+    }
+  }
+  readingAnchor = captureChatAnchor();
+}
 function restoreChatPosition(anchor, stick = false) {
   restoringChatScroll = true;
   pinnedBottom = !!stick;
@@ -353,7 +368,7 @@ function restoreChatPosition(anchor, stick = false) {
   requestAnimationFrame(() => { restoringChatScroll = false; });
 }
 new ResizeObserver(() => {
-  if (chatScrolling || chatTouching) return;
+  if (chatScrolling || chatTouching) { stabilizeChatReading(); return; }
   if (pinnedBottom) {
     restoringChatScroll = true;
     list.scrollTop = list.scrollHeight;
@@ -1010,14 +1025,17 @@ function settleChatScroll() {
   updateToBottom();
   maybePrefetchOlder();
 }
-list.addEventListener('scroll', settleChatScroll, { passive: true });
+list.addEventListener('scroll', () => {
+  if (!restoringChatScroll && !pinnedBottom) stabilizeChatReading();
+  settleChatScroll();
+}, { passive: true });
 let historyTouchY = 0;
-list.addEventListener('wheel', e => { restoringChatScroll = false; if (e.deltaY < 0) { historyArmed = true; pinnedBottom = false; } settleChatScroll(); }, { passive: true });
+list.addEventListener('wheel', e => { if (!readingAnchor) readingAnchor = captureChatAnchor(); restoringChatScroll = false; if (e.deltaY < 0) { historyArmed = true; pinnedBottom = false; } settleChatScroll(); }, { passive: true });
 list.addEventListener('pointerdown', () => { historyArmed = true; }, { passive: true });
-list.addEventListener('touchstart', e => { historyTouchY = e.touches[0].clientY; chatTouching = true; chatScrolling = true; clearTimeout(scrollIdle); }, { passive: true });
+list.addEventListener('touchstart', e => { readingAnchor = captureChatAnchor(); historyTouchY = e.touches[0].clientY; chatTouching = true; chatScrolling = true; clearTimeout(scrollIdle); }, { passive: true });
 list.addEventListener('touchmove', e => { restoringChatScroll = false; if (e.touches[0].clientY > historyTouchY) { historyArmed = true; pinnedBottom = false; } historyTouchY = e.touches[0].clientY; }, { passive: true });
 for (const event of ['touchend', 'touchcancel']) list.addEventListener(event, () => { chatTouching = false; restoringChatScroll = false; settleChatScroll(); }, { passive: true });
-$('toBottom').onclick = () => { list.scrollTop = list.scrollHeight; };
+$('toBottom').onclick = () => { restoreChatPosition(null, true); };
 $('older').onclick = () => loadOlderMessages();
 
 // LaTeX in text typed by the user ($..$, $..$, \\(..\\), \\[..\\]): turned into .math placeholders for KaTeX.
