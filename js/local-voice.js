@@ -45,7 +45,6 @@ function scheduleVoiceWarmup() {
     voiceWarmTimer = 0;
     if (!voiceEnabled() || !authed || document.hidden || sheetKind === 'local-voice' || key !== voiceTransportKey() || voiceEngine() === SYSTEM_ENGINE) return;
     voicePrepared = key;
-    prepareVoiceAudio().module.catch(() => {});
     voiceConnection().ready.catch(() => {});
   }, 300);
 }
@@ -55,7 +54,6 @@ function voiceLive(session) { return voiceSession === session && session.scope =
 function prepareVoiceAudio() {
   if (!voiceAudio) {
     const context = new AudioContext();
-    context.suspend().catch(() => {});
     voiceAudio = { context, module: context.audioWorklet.addModule(new URL('js/voice-worklet.js?v=133', location.href)) };
   }
   return voiceAudio;
@@ -161,26 +159,17 @@ async function startVoice(event) {
   const t0 = performance.now();
   const vdbg = store.get('voice-debug') === '1' ? tag => console.log(`[voice] ${tag} +${Math.round(performance.now() - t0)}ms`) : () => {};
   const link = voiceConnection();
-  let session = null;
   if (!link.streamId) {
     const prompt = () => {
       status('语音模型正在准备，就绪后请重新按住麦克风…');
       const current = () => voiceEnabled() && link.key === voiceTransportKey() && (!voiceLink || voiceLink === link);
       link.ready.then(() => { if (current()) status('语音模型已就绪，请按住麦克风说话'); }, error => { if (current()) status(error.message, false); });
     };
-    // Cold model load in progress: unchanged, just prompt and wait for a re-press.
-    if (link.loading) { prompt(); return; }
-    // Engine is warm, only the socket/auth is reconnecting: hold the press pending briefly.
-    session = { scope: voiceScope(), expected: text.value, prefix: text.value.slice(0, text.selectionStart), suffix: text.value.slice(text.selectionEnd), selection: text.value.slice(text.selectionStart, text.selectionEnd), held: true, dbg: vdbg };
-    voiceSession = session;
-    $('mic').classList.add('on'); $('mic').setAttribute('aria-label', '松开结束录音');
-    status('语音正在重连…');
-    const ok = await Promise.race([link.ready.then(() => true, () => false), sleep(1500).then(() => 'timeout')]);
-    if (ok !== true || !voiceLive(session) || !session.held || link.loading || !link.streamId) { cancelVoice(); prompt(); return; }
-    vdbg('link ready');
+    // Keep microphone activation inside the user's press, never after an awaited reconnect.
+    prompt(); return;
   }
   if (event.pointerId != null) $('mic').setPointerCapture(event.pointerId);
-  session ??= { scope: voiceScope(), expected: text.value, prefix: text.value.slice(0, text.selectionStart), suffix: text.value.slice(text.selectionEnd), selection: text.value.slice(text.selectionStart, text.selectionEnd), held: true, dbg: vdbg };
+  const session = { scope: voiceScope(), expected: text.value, prefix: text.value.slice(0, text.selectionStart), suffix: text.value.slice(text.selectionEnd), selection: text.value.slice(text.selectionStart, text.selectionEnd), held: true, dbg: vdbg };
   voiceSession = session;
   $('mic').classList.add('on'); $('mic').setAttribute('aria-label', '松开结束录音');
   status('正在连接本机语音并申请麦克风…');
@@ -189,8 +178,12 @@ async function startVoice(event) {
     // A context left closed/interrupted outside a gesture can never resume: rebuild inside it.
     if (audio.context.state === 'closed' || audio.context.state === 'interrupted') { closeVoiceAudio(); audio = prepareVoiceAudio(); }
     session.context = audio.context;
+    vdbg('audio activation requested');
+    let audioResumed = false, moduleReady = false;
     const resumed = session.context.resume();
-    resumed.then(() => vdbg('resume resolved'), () => vdbg('resume rejected'));
+    resumed.then(() => { audioResumed = true; vdbg('resume resolved'); }, () => vdbg('resume rejected'));
+    audio.module.then(() => { moduleReady = true; vdbg('worklet loaded'); }, () => vdbg('worklet rejected'));
+    vdbg('microphone permission requested');
     const media = navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }, video: false });
     media.then(stream => {
       vdbg('media resolved');
@@ -210,8 +203,8 @@ async function startVoice(event) {
     if (!voiceLive(session) || !session.held) return;
     let timedOut = false;
     await Promise.race([Promise.all([resumed, audio.module]).then(() => vdbg('resume+module resolved')), sleep(3000).then(() => { timedOut = true; })]);
-    if (timedOut) { status('录音初始化超时，请重新按住麦克风', false); cancelVoice(); closeVoiceAudio(); return; }
     if (!voiceLive(session) || !session.held) return;
+    if (timedOut) { status(!audioResumed ? '录音设备启动超时，请重新按住麦克风' : !moduleReady ? '音频处理器加载超时，请重新按住麦克风' : '录音初始化超时，请重新按住麦克风', false); cancelVoice(); closeVoiceAudio(); return; }
     session.stream = stream;
     session.node = new AudioWorkletNode(session.context, 'voice-pcm', { channelCount: 1, channelCountMode: 'explicit' });
     session.source = session.context.createMediaStreamSource(stream);
@@ -230,7 +223,7 @@ async function startVoice(event) {
     session.source.connect(session.node).connect(session.context.destination);
     status('正在听…松开结束，文字不会自动发送');
   } catch (error) {
-    if (voiceLive(session)) { status(error.name === 'NotAllowedError' ? '没有麦克风权限；请在浏览器设置中允许，或使用键盘语音输入' : error.message, false); cancelVoice(); }
+    if (voiceLive(session)) { status(error.name === 'NotAllowedError' ? '没有麦克风权限；请在浏览器设置中允许，或使用键盘语音输入' : error.message, false); cancelVoice(); closeVoiceAudio(); }
   }
 }
 function startSystemVoice(event) {
