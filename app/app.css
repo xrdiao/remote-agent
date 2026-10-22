@@ -1483,7 +1483,7 @@ button { transition: background-color .12s var(--ease), color .12s var(--ease), 
 /* Expand/collapse: expandable bodies fade + drop from above. */
 .tcmd, .tdiff, .thb { transition: opacity .16s var(--ease), transform .16s var(--ease), display .16s allow-discrete; }
 .toolrow:not(.open) .tcmd, .toolrow:not(.open) .tdiff, .thb[hidden] { opacity: 0; transform: translateY(-4px); }
-@starting-style { .toolrow.anim.open .tcmd, .toolrow.anim.open .tdiff, .thb:not([hidden]) { opacity: 0; transform: translateY(-4px); } }
+@starting-style { .toolrow.anim.open .tcmd, .toolrow.anim.open .tdiff { opacity: 0; transform: translateY(-4px); } }
 
 /* ---------- reduced motion ---------- */
 @media (prefers-reduced-motion: reduce) {
