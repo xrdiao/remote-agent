@@ -110,6 +110,7 @@
   "codexPickerProps",
   "pickCodexModel",
   "modelItemsFast",
+  "agentModelName",
   "pickDevinModel",
   "attachmentPoint",
   "devinSettingsNav",
