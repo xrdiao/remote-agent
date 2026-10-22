@@ -37,7 +37,6 @@ async function actOnWindow(deviceId, { win, threadId, act, index, text, question
   const w = wins.find(x => x.id === String(win));
   if (!w || w.app !== 'devin') throw new Error('找不到这个窗口，或它不支持通知里的操作');
   const s = new Session({ readyState: 3, send() {} }, deviceId);
-  clearInterval(s.idleTimer);
   try {
     s.cdp = new Cdp(w.ws);
     await s.cdp.connect();
