@@ -19,3 +19,9 @@ ios/Local.xcconfig
 *.p12
 _shots/
 *.jks
+
+# Local maintenance records and proposals
+docs/development-requirements.md
+docs/*-plan.md
+docs/*-proposal.md
+docs/*-design.md

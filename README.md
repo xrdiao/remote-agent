@@ -134,8 +134,6 @@ Fusion 复用这些 Agent 的连接进行协作。语音在所选引擎中处理
 - [语音安装、引擎切换与麦克风要求](docs/voice-input.md)
 - [连接、设备入口与安全](docs/security.md)
 - [Windows Devin 维护](docs/windows-devin-maintenance.md)
-- [适配器方案及当前进度](docs/agent-adapter-plan.md) · [接口说明](docs/agent-adapter-interface-proposal.md)
-- [开发要求与验证记录](docs/development-requirements.md)
 
 目录：`server/` 中继与适配器，`app/` 手机网页，`lib/` 公共能力，`cli/` 配置工具，`android/` 和 `ios/` 原生壳，`push-service/` iOS 推送服务。
 
