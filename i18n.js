@@ -5,6 +5,7 @@ const I18N = (() => {
   const lang = saved === 'zh' || saved === 'en' ? saved : /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
 
   const EN = {
+    '对话轮次导航': 'Conversation turns', '上一轮': 'Previous turn', '下一轮': 'Next turn',
     '插入换行': 'Insert newline', '终端操作': 'Terminal controls', '发送到终端': 'Send to terminal',
     "实时连接未建立": "Live connection not established",
     "电脑连接未建立": "Computer connection not established",

@@ -321,6 +321,7 @@ let deferredRender = false;
 let chatScrolling = false, chatTouching = false, scrollIdle = 0, deferredScrollRender = false, lastScrollTop = 0;
 let historyRequest = null, historyRendering = false, historyExpanded = false, historyArmed = false, historySerial = 0, historyAtEnd = false;
 let pendingHistoryStatus = null;
+let turnNavTimer = 0, turnNavHeld = false, turnNavUser = false, turnNavCursor = null, turnNavPending = null;
 let restoringChatScroll = false, readingAnchor = null;
 function captureChatAnchor() {
   const top = list.getBoundingClientRect().top;
@@ -474,6 +475,7 @@ function renderChat(chat, stale, loading = false) {
     menuCache.delete(menuCacheKey('effort'));
   }
   if (!chat || previous?.thread !== chat.thread) {
+    resetTurnNav();
     historyRequest = null; historyRendering = false; historyExpanded = false; historyArmed = false; historyAtEnd = false; readingAnchor = null; pendingHistoryStatus = null;
     $('older').disabled = false;
     $('historyStatus').hidden = true;
@@ -653,6 +655,7 @@ function renderChat(chat, stale, loading = false) {
   updateToBottom();
   noteSwitch(chat);
   if (SC.jump && SC.items.has(SC.jump)) { const j = SC.jump; SC.jump = null; scJump(j); }
+  completeTurnNavigation();
 }
 
 let subsOpen = false, queueOpen = store.get('queue-open') !== '0';
@@ -945,6 +948,97 @@ function updateToBottom() {
   if (nearBottom()) $('toBottom').textContent = '↓ 最新';
   $('toBottom').style.display = nearBottom() ? 'none' : 'block';
 }
+function resetTurnNav() {
+  clearTimeout(turnNavTimer);
+  turnNavHeld = turnNavUser = false;
+  turnNavCursor = turnNavPending = null;
+  $('turnNav').classList.remove('show');
+}
+function showTurnNav() {
+  if (!itemsEl.querySelector(':scope > .human[data-i]')) return;
+  $('turnNav').classList.add('show');
+  clearTimeout(turnNavTimer);
+  if (!turnNavHeld) turnNavTimer = setTimeout(() => {
+    $('turnNav').classList.remove('show');
+    turnNavUser = false;
+  }, 1500);
+}
+function turnNavGesture() {
+  turnNavCursor = turnNavPending = null;
+  turnNavUser = true;
+  showTurnNav();
+}
+function conversationTurns() {
+  return [...(SC.key ? SC.items.values() : lastChat?.items || [])]
+    .filter(it => it.k === 'human')
+    .sort((a, b) => (a.order ?? acpNum(a.i)) - (b.order ?? acpNum(b.i)));
+}
+function jumpToTurn(id) {
+  clearTimeout(scrollIdle);
+  chatScrolling = false;
+  let el = itemsEl.querySelector(`[data-i="${CSS.escape(String(id))}"]`);
+  if (!el || deferredScrollRender) {
+    if (!el) {
+      const all = [...SC.items.values()].sort((a, b) => (a.order ?? acpNum(a.i)) - (b.order ?? acpNum(b.i)));
+      SC.show = Math.max(SC.show, all.length - all.findIndex(it => it.i === id));
+    }
+    deferredScrollRender = false;
+    historyRendering = true;
+    renderChat(lastChat, chatStale);
+    el = itemsEl.querySelector(`[data-i="${CSS.escape(String(id))}"]`);
+  }
+  if (!el) return;
+  historyArmed = false;
+  restoreChatPosition({ id: String(id), top: 8 });
+  lastScrollTop = list.scrollTop;
+  turnNavCursor = { id, sel: viewSel, thread: lastChat.thread };
+  el.classList.add('flash');
+  setTimeout(() => el.classList.remove('flash'), 1800);
+  updateToBottom();
+  showTurnNav();
+}
+function completeTurnNavigation() {
+  if (!turnNavPending) return;
+  const pending = turnNavPending;
+  if (pending.sel !== viewSel || pending.thread !== lastChat?.thread) { turnNavPending = null; return; }
+  const turns = conversationTurns(), pos = turns.findIndex(it => it.i === pending.before);
+  if (pos > 0) { turnNavPending = null; jumpToTurn(turns[pos - 1].i); }
+  else if (!historyRequest) turnNavPending = null;
+}
+function navigateTurn(direction) {
+  if (!lastChat || chatTouching) return;
+  const turns = conversationTurns();
+  let target;
+  if (turnNavCursor?.sel === viewSel && turnNavCursor.thread === lastChat.thread) {
+    target = turns[turns.findIndex(it => it.i === turnNavCursor.id) + direction];
+  } else {
+    const top = list.getBoundingClientRect().top + 8;
+    const humans = [...itemsEl.querySelectorAll(':scope > .human[data-i]')];
+    const el = direction < 0 ? humans.findLast(el => el.getBoundingClientRect().top < top - 2)
+      : humans.find(el => el.getBoundingClientRect().top > top + 2);
+    if (el) target = turns.find(it => String(it.i) === el.dataset.i);
+    else if (direction < 0 && humans.length) target = turns[turns.findIndex(it => String(it.i) === humans[0].dataset.i) - 1];
+  }
+  if (target) { turnNavPending = null; jumpToTurn(target.i); }
+  else if (direction < 0 && turns.length) {
+    turnNavPending = { sel: viewSel, thread: lastChat.thread, before: turns[0].i };
+    if (historyRequest) return;
+    clearTimeout(scrollIdle); chatScrolling = false;
+    loadOlderMessages();
+    if (!historyRequest && !deferredScrollRender) completeTurnNavigation();
+  }
+}
+$('previousTurn').onclick = () => navigateTurn(-1);
+$('nextTurn').onclick = () => navigateTurn(1);
+$('toBottom').addEventListener('click', resetTurnNav);
+$('turnNav').addEventListener('pointerdown', e => {
+  e.preventDefault();
+  e.target.setPointerCapture(e.pointerId);
+  turnNavHeld = true; showTurnNav();
+});
+for (const event of ['pointerup', 'pointercancel']) $('turnNav').addEventListener(event, () => {
+  turnNavHeld = false; showTurnNav();
+});
 function paintHistoryStatus() {
   if (pendingHistoryStatus === null) return;
   $('older').disabled = !!historyRequest;
@@ -998,6 +1092,7 @@ function finishHistory(m) {
   if (m.earlier === false) historyAtEnd = true;
   showHistoryStatus(m.error || (m.blocked ? '生成中，稍后上滑加载历史' : m.earlier === false && $('cachedMore').hidden ? '已到最早消息' : '继续上滑可加载更早的消息'));
   if (!deferredScrollRender) historyRendering = false;
+  if (!deferredScrollRender && !chatFrame) completeTurnNavigation();
   maybePrefetchOlder();
 }
 const prefetchZone = () => Math.max(600, list.clientHeight * 1.5);
@@ -1034,14 +1129,15 @@ function settleChatScroll() {
   maybePrefetchOlder();
 }
 list.addEventListener('scroll', () => {
+  if (!restoringChatScroll && turnNavUser) showTurnNav();
   if (!restoringChatScroll && !pinnedBottom) stabilizeChatReading();
   settleChatScroll();
 }, { passive: true });
 let historyTouchY = 0;
-list.addEventListener('wheel', e => { if (!readingAnchor) readingAnchor = captureChatAnchor(); restoringChatScroll = false; if (e.deltaY < 0) { historyArmed = true; pinnedBottom = false; } settleChatScroll(); }, { passive: true });
+list.addEventListener('wheel', e => { turnNavGesture(); if (!readingAnchor) readingAnchor = captureChatAnchor(); restoringChatScroll = false; if (e.deltaY < 0) { historyArmed = true; pinnedBottom = false; } settleChatScroll(); }, { passive: true });
 list.addEventListener('pointerdown', () => { historyArmed = true; }, { passive: true });
 list.addEventListener('touchstart', e => { readingAnchor = captureChatAnchor(); historyTouchY = e.touches[0].clientY; chatTouching = true; chatScrolling = true; clearTimeout(scrollIdle); }, { passive: true });
-list.addEventListener('touchmove', e => { restoringChatScroll = false; if (e.touches[0].clientY > historyTouchY) { historyArmed = true; pinnedBottom = false; } historyTouchY = e.touches[0].clientY; }, { passive: true });
+list.addEventListener('touchmove', e => { turnNavGesture(); restoringChatScroll = false; if (e.touches[0].clientY > historyTouchY) { historyArmed = true; pinnedBottom = false; } historyTouchY = e.touches[0].clientY; }, { passive: true });
 for (const event of ['touchend', 'touchcancel']) list.addEventListener(event, () => { chatTouching = false; restoringChatScroll = false; settleChatScroll(); }, { passive: true });
 $('toBottom').onclick = () => { restoreChatPosition(null, true); };
 $('older').onclick = () => loadOlderMessages();
