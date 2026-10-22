@@ -409,10 +409,8 @@ function submitOnEnter(e) {
 text.addEventListener('keydown', e => {
   if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) endInputRecall();
   if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-    if (e.isComposing || composing || e.keyCode === 229 || !$('mentionBox').hidden) return;
-    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || text.selectionStart !== text.selectionEnd) return endInputRecall();
-    const browsing = inputRecall && inputRecall.history.has(inputRecall.key);
-    if (!browsing && (e.key !== 'ArrowUp' || text.value.slice(0, text.selectionStart).includes('\n'))) return;
+    if (!e.altKey || e.isComposing || composing || e.keyCode === 229 || !$('mentionBox').hidden) return;
+    if (e.ctrlKey || e.metaKey || e.shiftKey || text.selectionStart !== text.selectionEnd) return endInputRecall();
     if (mode !== 'chat' && mode !== 'terminal') return;
     e.preventDefault();
     const direction = e.key === 'ArrowUp' ? -1 : 1;
