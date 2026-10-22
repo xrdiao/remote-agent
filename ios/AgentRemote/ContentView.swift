@@ -356,6 +356,11 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
         return nil
     }
 
+    // Without this WebKit asks per origin and forgets once the app is killed; the OS microphone permission still gates access.
+    func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType, decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+        decisionHandler(type == .microphone && frame.isMainFrame && trusted(origin) ? .grant : .prompt)
+    }
+
     func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
         dialog(webView, message) { _ in completionHandler() }
     }
