@@ -73,7 +73,10 @@ function reconcileSent(chat) {
 function draftKey() { return [currentComputer()?.id || '', viewSel, mode, ...(questionCompose?.sel === viewSel && mode === 'chat' ? [questionCompose.id] : [])].join('|'); }
 function saveDraft() { if (activeDraft) { drafts.set(activeDraft, text.value); draftMentions.set(activeDraft, MN.mentions.slice()); } }
 function restoreDraft() { activeDraft = draftKey(); text.value = drafts.get(activeDraft) || ''; MN.mentions = draftMentions.get(activeDraft)?.slice() || []; mentionHide(); autosize(); }
-function autosize() { text.style.height = 'auto'; text.style.height = text.scrollHeight + 'px'; updateMathPrev(); updateComposeCompact(); }
+function autosize() {
+  text.style.height = 'auto'; text.style.height = text.scrollHeight + 'px'; updateMathPrev(); updateComposeCompact();
+  if (questionCompose?.sel === viewSel && document.body.classList.contains('kb')) fitViewport();
+}
 function recallInput(direction) {
   if (mode !== 'chat') return;
   const key = chatInputKey();
@@ -99,6 +102,7 @@ $('inputNext').onclick = () => recallInput(1);
 let draftPushTimer = 0;
 text.addEventListener('input', () => {
   inputRevision++; draftVersions.set(activeDraft, (draftVersions.get(activeDraft) || 0) + 1); autosize(); saveDraft();
+  syncQuestionDraft(text.value);
   clearTimeout(draftPushTimer);
   draftPushTimer = setTimeout(() => {
     if (questionCompose || composing || mode !== 'chat' || currentApp === 'fusion' || MN.mentions.length) return;

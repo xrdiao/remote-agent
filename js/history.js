@@ -657,7 +657,7 @@ $('taskChip').onclick = () => showTasks();
 itemsEl.addEventListener('toggle', e => { const id = e.target.dataset.task; if (id) e.target.open ? taskOpen.add(id) : taskOpen.delete(id); }, true);
 $('qnBar').addEventListener('click', e => {
   const compose = e.target.closest('[data-question-compose]');
-  if (compose) { setQuestionCompose(questionCompose?.id === compose.dataset.questionCompose ? null : compose.dataset.questionCompose); return; }
+  if (compose) { setQuestionCompose(compose.dataset.questionCompose); text.focus(); return; }
   const b = e.target.closest('[data-action][data-request]');
   if (b) {
     const id = b.dataset.request, n = Number(b.dataset.action);
@@ -686,19 +686,36 @@ function sendQuestion(message) {
   send({ ...message, requestId });
 }
 function setQuestionCompose(id) {
-  if (qnPending) return;
+  if (questionCompose?.id === id && questionCompose.sel === viewSel || !questionCompose && !id) return;
+  if (mode !== 'chat') { questionCompose = id ? { id, sel: viewSel } : null; updateAppText(); updateSendMode(); return; }
   saveDraft();
+  const carry = !questionCompose && mode === 'chat' ? text.value : '';
   questionCompose = id ? { id, sel: viewSel } : null;
   restoreDraft();
+  if (id && !drafts.has(activeDraft)) {
+    text.value = qnDrafts.get(`${id}|0`) ?? qnState?.requests?.find(r => r.id === id)?.fields[0]?.value ?? '';
+    if (!text.value) text.value = carry;
+    syncQuestionDraft(text.value);
+    autosize(); saveDraft();
+  }
   updateAppText();
-  qnSig = '';
-  renderQuestions(qnState);
   updateSendMode();
-  if (id) text.focus();
+}
+function syncQuestionDraft(value) {
+  if (mode !== 'chat' || questionCompose?.sel !== viewSel) return;
+  qnDrafts.set(`${questionCompose.id}|0`, value);
+  const field = [...$('qnBar').querySelectorAll('[data-field="0"]')].find(el => el.dataset.request === questionCompose.id);
+  if (field) {
+    field.value = value;
+    const request = qnState?.requests?.find(r => r.id === questionCompose.id);
+    const submit = [...$('qnBar').querySelectorAll('[data-action]')].find(el => el.dataset.request === questionCompose.id && Number(el.dataset.action) === request.buttons.length - 1);
+    if (submit) submit.disabled = !!qnPending || request.buttons.every(b => b.disabled) || !value.trim();
+  }
 }
 function submitQuestionCompose() {
   const request = qnState?.requests?.find(r => r.id === questionCompose?.id);
-  if (!request || !text.value.trim()) return;
+  if (!request) return status('当前问题已结束，请确认后再发送', false);
+  if (!text.value.trim()) return;
   saveDraft();
   sendQuestion({ t: 'codexRequest', id: request.id, n: request.buttons.length - 1, fields: [{ n: 0, value: text.value }] });
 }
@@ -708,13 +725,16 @@ function finishQuestion(m) {
   qnPending = null;
   if (pending.sel !== viewSel) return;
   if (m.ok && pending.message.id) {
-    if (questionCompose?.id === pending.message.id) setQuestionCompose(null);
     const answerKey = [currentComputer()?.id || '', viewSel, 'chat', pending.message.id].join('|');
     drafts.delete(answerKey); draftMentions.delete(answerKey);
     if (pending.message.id.startsWith('async:') && (pending.message.advance || pending.message.n === (qnState?.requests?.find(r => r.id === pending.message.id)?.buttons.length || 0) - 1)) {
       qnState = { ...qnState, requests: qnState.requests.filter(r => r.id !== pending.message.id) };
     }
     for (const key of qnDrafts.keys()) if (key.startsWith(pending.message.id + '|')) qnDrafts.delete(key);
+    if (questionCompose?.id === pending.message.id) {
+      if (mode === 'chat') text.value = '';
+      setQuestionCompose(null);
+    }
   }
   qnSig = '';
   renderQuestions(qnState);
@@ -723,15 +743,9 @@ function finishQuestion(m) {
 function renderQuestions(qs) {
   const bar = $('qnBar');
   if (qnView !== viewSel) { qnView = viewSel; qnSig = ''; qnPending = null; qnDrafts.clear(); }
-  if (questionCompose && (questionCompose.sel !== viewSel || !qs?.codex || !qs.requests.some(r => r.id === questionCompose.id))) {
-    const prior = questionCompose;
-    if (prior.sel === viewSel) saveDraft();
-    questionCompose = null;
-    updateAppText();
-    if (prior.sel === viewSel) restoreDraft();
-    updateSendMode();
-  }
   qnState = qs;
+  const answers = qs?.codex ? qs.requests.filter(r => r.id.startsWith('async:')) : [];
+  setQuestionCompose(answers.find(r => r.id === questionCompose?.id && questionCompose.sel === viewSel)?.id || answers[0]?.id || null);
   bar.classList.toggle('codex', !!qs?.codex);
   const sig = JSON.stringify(qs);
   if (sig === qnSig) return;
@@ -748,7 +762,7 @@ function renderQuestions(qs) {
       + (remaining ? `<details class="qnDetails" data-question="${esc(r.id)}" ${expanded.has(r.id) ? 'open' : ''}><summary>展开问题详情</summary>${esc(remaining)}</details>` : '')
       + (r.id.startsWith('async:') ? `<div class="qnOpts">${r.buttons.slice(0, -2).map((b, n) => `<button class="qnOpt ${b.selected ? 'on' : ''}" data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div>` : '')
       + r.fields.map((f, n) => `<label class="qnFree">${esc(f.label)}${f.options ? `<select data-request="${esc(r.id)}" data-field="${n}">${f.options.map(o => `<option value="${esc(o.value)}" ${o.value === f.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>` : `<input data-request="${esc(r.id)}" data-field="${n}" type="${f.type === 'password' ? 'password' : 'text'}" value="${esc(f.value)}">`}</label>`).join('')
-      + `<div class="qnAct">${r.id.startsWith('async:') ? `<button data-question-compose="${esc(r.id)}">${questionCompose?.id === r.id ? '取消对话框回答' : '用对话框回答'}</button>` : ''}${r.buttons.map((b, n) => r.id.startsWith('async:') && n < r.buttons.length - 2 ? '' : `<button data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div></section>`; }).join('');
+      + `<div class="qnAct">${r.id.startsWith('async:') ? `<button data-question-compose="${esc(r.id)}">在对话框回答</button>` : ''}${r.buttons.map((b, n) => r.id.startsWith('async:') && n < r.buttons.length - 2 ? '' : `<button data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div></section>`; }).join('');
     bar.classList.toggle('show', qs.requests.length > 0);
     bar.querySelectorAll('[data-field]').forEach(el => {
       const key = questionFieldKey(el);
@@ -756,11 +770,16 @@ function renderQuestions(qs) {
       el.oninput = () => {
         qnDrafts.set(key, el.value);
         const r = qnState.requests.find(r => r.id === el.dataset.request);
+        if (r.id.startsWith('async:') && el.dataset.field === '0' && mode === 'chat' && document.activeElement === el) {
+          setQuestionCompose(r.id);
+          text.value = el.value; autosize(); saveDraft();
+        }
         if (r.id.startsWith('async:') && !r.buttons.every(b => b.disabled) && !qnPending) {
           const submit = [...bar.querySelectorAll('[data-action]')].find(b => b.dataset.request === r.id && Number(b.dataset.action) === r.buttons.length - 1);
           submit.disabled = !el.value.trim();
         }
       };
+      if (el.dataset.request.startsWith('async:') && el.dataset.field === '0') el.onfocus = () => setQuestionCompose(el.dataset.request);
       el.onchange = () => { if (!el.dataset.request.startsWith('async:')) send({ t: 'codexRequest', id: el.dataset.request, field: Number(el.dataset.field), value: el.value }); };
       if (qnDrafts.has(key)) el.oninput();
       if (key === focusKey && !qnPending) {
@@ -769,6 +788,7 @@ function renderQuestions(qs) {
       }
     });
     questionBusy();
+    if (document.body.classList.contains('kb')) fitViewport();
     return;
   }
   if (!qs?.list?.length) { bar.innerHTML = ''; bar.classList.remove('show'); return; }
@@ -1036,6 +1056,26 @@ function typesetMath(root) {
   });
 }
 function dressMessage(el) {
+  // Codex history may contain raw Markdown when its native rendered block is unmounted.
+  // Format emphasis in text only; retain literal backticks/escapes and all existing rich markup.
+  if (currentApp === 'codex' && el.textContent.includes('**')) {
+    const raw = document.createTreeWalker(el, NodeFilter.SHOW_TEXT), nodes = [];
+    while (raw.nextNode()) if (!raw.currentNode.parentElement.closest('a, pre, code, textarea, strong, b, .math')) nodes.push(raw.currentNode);
+    let ticks = '';
+    for (const node of nodes) {
+      const fragment = document.createDocumentFragment();
+      let last = 0;
+      for (const match of node.textContent.matchAll(/\\[\\*`]|`+|\*\*(\S(?:[^\n]*?\S)?)\*\*(?!\*)/g)) {
+        fragment.append(node.textContent.slice(last, match.index));
+        if (match[0].startsWith('`')) { ticks = ticks === match[0] ? '' : ticks || match[0]; fragment.append(match[0]); }
+        else if (match[1] && !ticks) { const strong = document.createElement('strong'); strong.textContent = match[1]; fragment.append(strong); }
+        else fragment.append(match[0]);
+        last = match.index + match[0].length;
+      }
+      fragment.append(node.textContent.slice(last));
+      node.replaceWith(fragment);
+    }
+  }
   const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
   const nodes = [];
   while (walker.nextNode()) if (!walker.currentNode.parentElement.closest('a, pre, code, textarea, .math')) nodes.push(walker.currentNode);
