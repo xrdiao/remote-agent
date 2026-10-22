@@ -314,9 +314,10 @@
       }
     }
     const turnButtons = el ? buttonsIn(el, false).map(x => x.label).filter(l => /^(Copy message|Fork chat from here|View changed files|View changes|Undo|Open agent|View agent|View subagent|Stop agent|Apply|Revert)$/.test(l)) : [];
-    if (turnButtons.length) {
-      const host = [...out].reverse().find(it => it.k === 'assistant') || out.at(-1);
-      if (host) { host.b = turnButtons; host.btnItem = el.getAttribute('data-turn-key') || host.i; }
+    const host = [...out].reverse().find(it => it.k === 'assistant') || out.at(-1);
+    if (host) {
+      host.buttonsRead = !!el;
+      if (turnButtons.length) { host.b = turnButtons; host.btnItem = el.getAttribute('data-turn-key') || host.i; }
     }
     const number = entry?.turnNumber || codexFiberProps(el, 24).find(p => p.entry?.turnNumber)?.entry.turnNumber;
     return out.map((item, index) => ({ ...item, ...(number ? { order: number * 10000 + index } : {}) }));

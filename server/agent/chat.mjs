@@ -207,31 +207,37 @@ export const methods = {
         this.lastChat = JSON.stringify(initial);
         this.emit({ t: 'chat', sel: this.selectionKey(), chat: initial });
       }
-      const liveClosed = this.app !== 'devin' && !(this.app === 'codex' && chat?.busy) && (chat?.items || []).some(it => it.k === 'thinking' && it.live && !(it.t || '').includes('\n'));
-      if (liveClosed) {
-        const idxs = await cdp.evaluate(helpersCall(`closedThinkingIndexes('live')`));
-        if (!this.liveRead(cdp, sel)) return;
-        if (idxs?.length) {
-          await cdp.evaluate(helpersCall(`clickThinking(${JSON.stringify(idxs)})`));
-          await new Promise(r => setTimeout(r, 250));
+      const readThinking = async () => {
+        const liveClosed = this.app !== 'devin' && !(this.app === 'codex' && chat?.busy) && (chat?.items || []).some(it => it.k === 'thinking' && it.live && !(it.t || '').includes('\n'));
+        if (liveClosed) {
+          const idxs = await cdp.evaluate(helpersCall(`closedThinkingIndexes('live')`));
           if (!this.liveRead(cdp, sel)) return;
-          chat = await cdp.evaluate(helpersCall('extract()'));
+          if (idxs?.length) {
+            await cdp.evaluate(helpersCall(`clickThinking(${JSON.stringify(idxs)})`));
+            await new Promise(r => setTimeout(r, 250));
+            if (!this.liveRead(cdp, sel)) return;
+            chat = await cdp.evaluate(helpersCall('extract()'));
+          }
         }
-      }
-      if (!this.liveRead(cdp, sel)) return;
-      const needFinal = this.app !== 'devin' && !(this.app === 'codex' && chat?.busy) && (chat?.items || []).some(it => it.k === 'thinking' && !it.live && !(it.t || '').includes('\n') && !this.thinkingTried.has(it.i));
-      if (needFinal) {
-        const idxs = await cdp.evaluate(helpersCall(`closedThinkingIndexes('done')`));
         if (!this.liveRead(cdp, sel)) return;
-        if (idxs?.length) {
-          await cdp.evaluate(helpersCall(`clickThinking(${JSON.stringify(idxs)})`));
-          await new Promise(r => setTimeout(r, 250));
+        const needFinal = this.app !== 'devin' && !(this.app === 'codex' && chat?.busy) && (chat?.items || []).some(it => it.k === 'thinking' && !it.live && !(it.t || '').includes('\n') && !this.thinkingTried.has(it.i));
+        if (needFinal) {
+          const idxs = await cdp.evaluate(helpersCall(`closedThinkingIndexes('done')`));
           if (!this.liveRead(cdp, sel)) return;
-          chat = await cdp.evaluate(helpersCall('extract()'));
-          if (!this.liveRead(cdp, sel)) return;
-          await cdp.evaluate(helpersCall(`closeThinkingIfOpen(${JSON.stringify(idxs)})`));
+          if (idxs?.length) {
+            await cdp.evaluate(helpersCall(`clickThinking(${JSON.stringify(idxs)})`));
+            await new Promise(r => setTimeout(r, 250));
+            if (!this.liveRead(cdp, sel)) return;
+            chat = await cdp.evaluate(helpersCall('extract()'));
+            if (!this.liveRead(cdp, sel)) return;
+            await cdp.evaluate(helpersCall(`closeThinkingIfOpen(${JSON.stringify(idxs)})`));
+          }
         }
-      }
+      };
+      // Only the native expand/read/fold transaction competes with Cursor's model menu.
+      if (this.app === 'cursor' && chat?.items?.some(it => it.k === 'thinking' && !this.thinkingBody(it) && (it.live || !this.thinkingTried.has(it.i))))
+        await this.withCursorUiRead(readThinking);
+      else await readThinking();
       if (!this.liveRead(cdp, sel) || this.historyLoading || !chat) return;
       if (!this.acceptsChat(chat)) return;
       const prevThread = this.threadId || '';

@@ -1,5 +1,5 @@
 import { WebSocketServer } from 'ws';
-import { findDevice, needsTotp, updateDevice, computerId, computerName } from '../lib/auth.mjs';
+import { findDevice, needsTotp, updateDevice, computerId, computerName, bindDeviceConnection } from '../lib/auth.mjs';
 import { addViewer, removeViewer } from '../lib/notify.mjs';
 import { clientIp } from './http/ratelimit.mjs';
 import { originAllowed } from './http/static.mjs';
@@ -41,6 +41,7 @@ wss.on('connection', (ws, req) => {
   ws.alive = true;
   ws.on('pong', () => { ws.alive = true; });
   let session = null;
+  let authorization = null;
   const authTimer = setTimeout(() => ws.close(4001, 'auth timeout'), 5000);
   let queue = Promise.resolve();
   let questionQueue = Promise.resolve();
@@ -60,11 +61,13 @@ wss.on('connection', (ws, req) => {
       }
       updateDevice(device.id, { lastSeen: Date.now() });
       session = new Session(ws, device.id);
+      authorization = bindDeviceConnection(device.id, () => ws.close(4001, 'unauthorized'));
       addViewer(session);
       ws.send(JSON.stringify({ t: 'auth', ok: true, ...identity }));
       console.log(`[+] client ${clientIp(req)}`);
       return;
     }
+    if (!authorization.valid || ws.readyState !== 1) return;
     // Frame acks bypass the queue so a slow command never stalls the stream.
     if (msg.t === 'ack') return session.ack();
     const route = ROUTES[msg.t];
@@ -80,6 +83,7 @@ wss.on('connection', (ws, req) => {
     const group = msg.t === 'image' || imageAction ? imageGroup : ++imageGroup;
     let executed = false;
     const execute = async () => {
+      if (!authorization.valid || ws.readyState !== 1) return;
       if (executed) return;
       executed = true;
       if (codexMention && session.mentionSeq !== msg.seq) return;
@@ -89,6 +93,7 @@ wss.on('connection', (ws, req) => {
         for (const action of imageActions.filter(action => action.group === group)) await action.execute();
       }
       if (readKind && agentReads.get(readKind) !== readSerial) return;
+      if (!authorization.valid || ws.readyState !== 1) return;
       const q0 = Date.now();
       try {
         const queued = imageTransfer?.cancelled ? undefined : await session.handle(msg);
@@ -110,6 +115,7 @@ wss.on('connection', (ws, req) => {
   });
   ws.on('close', () => {
     clearTimeout(authTimer);
+    authorization?.release();
     if (!session) return;
     removeViewer(session);
     session.dispose();

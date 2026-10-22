@@ -2,7 +2,7 @@
     const cp = codexPickerProps();
     if (cp) {
       const sel = (cp.modelOptions || []).find(o => o.model?.id === cp.model)?.model;
-      const eff = cp.powerSelections?.find(x => x.id === cp.selectedPowerSelection?.id)?.reasoningEffort;
+      const eff = cp.reasoningEffort;
       const pretty = eff ? eff[0].toUpperCase() + eff.slice(1) : '';
       if (sel) {
         const base = String(sel.displayName || sel.id).replace(/-/g, ' ');
@@ -118,7 +118,8 @@
       }
       return false;
     }
-    p.onSelectModel(opt.model?.id || opt.model?.model || opt.model?.displayName);
+    const effort = opt.model.supportedReasoningEfforts.find(x => x.reasoningEffort === p.reasoningEffort)?.reasoningEffort || opt.model.defaultReasoningEffort;
+    p.onSelectModel(opt.model?.id || opt.model?.model || opt.model?.displayName, effort);
     p.onSelectComplete?.();
     return true;
   };
@@ -146,7 +147,7 @@
   };
   const effortItems = (includePricing = false) => {
     const p = powerProps();
-    if (p) return p.powerSelections.filter(x => !x.isLocked).map(x => ({ label: x.reasoningEffort, checked: x.id === p.selectedPowerSelection?.id }));
+    if (p) return p.powerSelections.filter(x => !x.isLocked).map(x => ({ label: x.reasoningEffort, checked: x.reasoningEffort === p.reasoningEffort }));
     const cp = devinSurface() ? null : cursorPickerProps();
     if (cp) {
       const sel = (cp.selections || cp.initialSelections || [])[0];
@@ -164,8 +165,8 @@
     if (p) {
       const item = p.powerSelections.find(x => !x.isLocked && x.reasoningEffort === label);
       if (!item) return false;
-      const previous = p.selectedPowerSelection;
-      p.onSelectPower(item);
+      const previous = { model: p.model, reasoningEffort: p.reasoningEffort };
+      p.onSelectModel(item.model, item.reasoningEffort);
       p.onCommitPower(item, previous);
       p.onSelectComplete?.();
       return true;

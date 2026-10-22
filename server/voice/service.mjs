@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
-import { findDevice, needsTotp } from '../../lib/auth.mjs';
+import { findDevice, needsTotp, bindDeviceConnection } from '../../lib/auth.mjs';
 import { ASR_DIR, voiceEngines } from './config.mjs';
 
 // Exported for stop-rule tests; production code goes through loadWorker/stopWorker.
@@ -156,6 +156,7 @@ export function voiceWss() {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 32 << 10, perMessageDeflate: false });
   wss.on('connection', ws => {
     let device = null, token = '', id = '', ended = false, engineId = '', runtime = null;
+    let authorization = null;
     const reply = event => { if (ws.readyState === 1) ws.send(JSON.stringify(event)); };
     const authTimer = setTimeout(() => ws.close(4001, 'auth timeout'), 5000);
     ws.on('error', () => {});
@@ -185,6 +186,7 @@ export function voiceWss() {
           token = message.token || '';
           device = message.type === 'auth' ? findDevice(token) : null;
           if (!device || needsTotp(device)) return ws.close(4001, 'unauthorized');
+          authorization = bindDeviceConnection(device.id, () => ws.close(4001, 'unauthorized'));
           engineId = message.engine || voiceStatus().engineId;
           try {
             const prev = fs.existsSync(LAST_ENGINE_FILE) ? JSON.parse(fs.readFileSync(LAST_ENGINE_FILE, 'utf8')) : null;
@@ -193,7 +195,7 @@ export function voiceWss() {
           await startStream();
           return;
         }
-        if (!id) return;
+        if (!authorization.valid || ws.readyState !== 1 || !id) return;
         const live = findDevice(token);
         if (!live || needsTotp(live)) return ws.close(4001, 'unauthorized');
         if (binary) {
@@ -214,6 +216,7 @@ export function voiceWss() {
     });
     ws.on('close', () => {
       clearTimeout(authTimer);
+      authorization?.release();
       const rt = runtime || runtimes.get(engineId);
       rt?.clients.delete(ws);
       if (id && rt) {

@@ -1,7 +1,8 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { DATA_DIR, findDevice, needsTotp, totpConfig, verifyTotp, pairingValid, consumePairing, addDevice, listDevices, removeDevice, updateDevice, computerId, computerName, urlKey } from '../../lib/auth.mjs';
+import { DATA_DIR, findDevice, needsTotp, totpConfig, verifyTotp, pairingValid, consumePairing, addDevice, listDevices, removeDevice, updateDevice, computerId, computerName, urlKey, groupDevices, deviceGrouping } from '../../lib/auth.mjs';
+import { inviteEntry, joinEntry, entryRequests, decideEntry, entryStatus, cancelEntry } from './entries.mjs';
 import { pushPublicKey, openEventStream, closeEventStreams, deliver } from '../../lib/notify.mjs';
 import { clientIp, lockedOut, recordFailure } from './ratelimit.mjs';
 import { json, readJson, originAllowed, corsHeaders, SECURITY_HEADERS } from './static.mjs';
@@ -27,7 +28,8 @@ function bearer(req) {
 }
 
 function deviceView(d, current) {
-  return { id: d.id, name: d.name, created: d.created, lastSeen: d.lastSeen, current: d.id === current?.id };
+  return { id: d.id, name: d.name, groupId: d.groupId || d.id, groupName: d.groupName || d.name, entryName: d.entryName || d.name,
+    created: d.created, lastSeen: d.lastSeen, current: d.id === current?.id };
 }
 
 async function actOnWindow(deviceId, { win, threadId, act, index, text, question }) {
@@ -68,6 +70,19 @@ export async function handleApi(req, res, route) {
   }
   if (route.startsWith('/api/transfer/get/') && req.method === 'GET') return serveTransfer(req, res, route.slice('/api/transfer/get/'.length));
   const device = deviceFor(req);
+
+  if (['/api/entries/join', '/api/entries/status', '/api/entries/cancel'].includes(route) && req.method === 'POST') {
+    if (lockedOut(ip)) return json(req, res, 429, { error: '尝试次数过多，请稍后再试' });
+    const body = await readJson(req);
+    try {
+      if (route.endsWith('/cancel')) { cancelEntry(body.id, body.secret); return json(req, res, 200, { ok: true }); }
+      const result = route.endsWith('/join') ? joinEntry(body.invitation, body.name) : entryStatus(body.id, body.secret);
+      return json(req, res, 200, { ...result, id: route.endsWith('/join') ? result.id : computerId(), name: computerName() });
+    } catch (error) {
+      recordFailure(ip);
+      return json(req, res, 401, { error: error.message });
+    }
+  }
 
   if (route === '/api/me') {
     return json(req, res, 200, { paired: Boolean(device), needTotp: needsTotp(device), totp: Boolean(totpConfig()), id: computerId(), name: computerName(), device: device?.id || '' });
@@ -116,6 +131,25 @@ export async function handleApi(req, res, route) {
     return json(req, res, 200, { ok: true });
   }
   if (needsTotp(device)) return json(req, res, 401, { needTotp: true, error: '需要二次验证' });
+  if (route === '/api/entries/invite' && req.method === 'POST') {
+    const { groupId } = await readJson(req);
+    try { return json(req, res, 200, inviteEntry(device, groupId)); }
+    catch (error) { return json(req, res, 400, { error: error.message }); }
+  }
+  if (route === '/api/entries/decide' && req.method === 'POST') {
+    const { id, code, approve } = await readJson(req);
+    if (typeof approve !== 'boolean') return json(req, res, 400, { error: '请选择同意或拒绝' });
+    // readJson yields: recheck the approving credential before granting access.
+    const approver = deviceFor(req);
+    if (!approver || needsTotp(approver)) return json(req, res, 401, { error: '授权入口已失效' });
+    try { decideEntry(id, code, approve); return json(req, res, 200, { ok: true }); }
+    catch (error) { return json(req, res, 409, { error: error.message }); }
+  }
+  if (route === '/api/devices/group' && req.method === 'POST') {
+    const { ids, groupId, name } = await readJson(req);
+    if (!Array.isArray(ids) || !groupDevices(ids, groupId, name)) return json(req, res, 400, { error: '设备分组或入口无效' });
+    return json(req, res, 200, { ok: true });
+  }
   if (route === '/api/voice' && req.method === 'GET') return json(req, res, 200, voiceStatus());
   if (route === '/api/voice' && req.method === 'POST') {
     const engine = new URL(req.url, 'http://localhost').searchParams.get('engine');
@@ -157,7 +191,10 @@ export async function handleApi(req, res, route) {
     }
   }
 
-  if (route === '/api/devices') return json(req, res, 200, { devices: listDevices().map(d => deviceView(d, device)) });
+  if (route === '/api/devices') {
+    const devices = listDevices(), groups = deviceGrouping(devices);
+    return json(req, res, 200, { devices: devices.map(d => ({ ...deviceView(d, device), ...groups.get(d.id) })), requests: entryRequests() });
+  }
   if (route === '/api/devices/remove' && req.method === 'POST') {
     const { id } = await readJson(req);
     removeDevice(String(id));

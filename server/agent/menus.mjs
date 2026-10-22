@@ -94,6 +94,11 @@ export const methods = {
     await this.waitFor('menuItems("effort").length');
   },
   async openMenu(kind, requestId) {
+    const read = () => this.readMenu(kind, requestId);
+    return this.app === 'cursor' && (kind === 'model' || kind === 'effort')
+      ? this.withCursorUiRead(read) : read();
+  },
+  async readMenu(kind, requestId) {
     const sel = this.sel;
     if (kind === 'effort') {
       let items = await this.cdp.evaluate(helpersCall('effortItems(true)'));

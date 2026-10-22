@@ -9,6 +9,15 @@ import { FOCUS_COMPOSER, codexUsage } from '../agent/context.mjs';
 import { computerId, saveState } from '../../lib/auth.mjs';
 import { conversationProjects, fusionProject } from '../fusion/state.mjs';
 
+// Native support; availability still follows the selected thread, model and controls.
+export const capabilities = {
+  model: true, effort: true, fast: true,
+  queue: true, steer: true, queueEdit: true,
+  questions: true, approvals: true, attachments: true, fileReferences: true,
+  editor: true, terminal: true, settings: true, usage: true,
+  fork: true, extraActions: true,
+};
+
 export const adapter = {
   async newChat() {
     return this.newCodexChat();
@@ -231,7 +240,19 @@ mergeCodexItems(chat) {
   if (thread) this.threadId = thread;
   if (!this.itemCache) this.itemCache = new Map();
   const prev = this.itemCache.get(thread) || [];
-  chat.items = [...new Map([...prev, ...chat.items].map(it => [it.i, it])).values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).slice(-400);
+  const rows = new Map(prev.map(it => [it.i, it]));
+  for (const [index, { buttonsRead, ...it }] of chat.items.entries()) {
+    const old = rows.get(it.i);
+    // A stored turn has no footer DOM; a mounted turn is authoritative, including removal.
+    const keepButtons = buttonsRead === false && it.k === 'assistant' && old?.k === 'assistant'
+      && it.completed === true && old.completed === true && it.t === old.t && old.b?.length
+      && old.b.every(label => /^(Copy message|View changed files|Undo|View changes|Fork chat from here)$/.test(label));
+    const row = keepButtons ? { ...old, ...it, b: old.b, btnItem: old.btnItem || old.i,
+      ...(old.actions ? { actions: old.actions } : {}) } : it;
+    chat.items[index] = row;
+    rows.set(it.i, row);
+  }
+  chat.items = [...rows.values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).slice(-400);
   chat.earlier = this.codexEarlier(chat.items);
   if (!chat.busy) chat.items.filter(it => it.k === 'thinking').forEach(it => { it.live = false; });
   if (!chat.busy) chat.items.filter(it => it.k === 'tool' && !it.keep).forEach(it => { it.done = true; });
@@ -829,6 +850,7 @@ async codexArchiveThread(agentId) {
 },
 
 async insertCodexMention(m, before) {
+  if (m.section === 'local-files') return this.cdp.evaluate(helpersCall(`codexAddFiles(${JSON.stringify([m.path])})`));
   const trigger = m.trigger === '/' ? '/' : '@';
   const typed = trigger + (m.q || m.label);
   await this.cdp.send('Input.insertText', { text: typed });

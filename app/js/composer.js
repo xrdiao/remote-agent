@@ -73,7 +73,10 @@ function reconcileSent(chat) {
 function draftKey() { return [currentComputer()?.id || '', viewSel, mode, ...(questionCompose?.sel === viewSel && mode === 'chat' ? [questionCompose.id] : [])].join('|'); }
 function saveDraft() { if (activeDraft) { drafts.set(activeDraft, text.value); draftMentions.set(activeDraft, MN.mentions.slice()); } }
 function restoreDraft() { activeDraft = draftKey(); text.value = drafts.get(activeDraft) || ''; MN.mentions = draftMentions.get(activeDraft)?.slice() || []; mentionHide(); autosize(); }
-function autosize() { text.style.height = 'auto'; text.style.height = text.scrollHeight + 'px'; updateMathPrev(); updateComposeCompact(); }
+function autosize() {
+  text.style.height = 'auto'; text.style.height = text.scrollHeight + 'px'; updateMathPrev(); updateComposeCompact();
+  if (questionCompose?.sel === viewSel && document.body.classList.contains('kb')) fitViewport();
+}
 function recallInput(direction) {
   if (mode !== 'chat') return;
   const key = chatInputKey();
@@ -99,6 +102,7 @@ $('inputNext').onclick = () => recallInput(1);
 let draftPushTimer = 0;
 text.addEventListener('input', () => {
   inputRevision++; draftVersions.set(activeDraft, (draftVersions.get(activeDraft) || 0) + 1); autosize(); saveDraft();
+  syncQuestionDraft(text.value);
   clearTimeout(draftPushTimer);
   draftPushTimer = setTimeout(() => {
     if (questionCompose || composing || mode !== 'chat' || currentApp === 'fusion' || MN.mentions.length) return;
@@ -110,7 +114,7 @@ text.addEventListener('input', () => {
 // sent, the relay types the text and, at each "@label", lets Devin's typeahead insert the chip.
 const MN = { seq: 0, timer: 0, q: null, root: false, mentions: [], used: '' };
 function mentionToken() {
-  if (questionCompose || mode !== 'chat' || (currentApp !== 'devin' && currentApp !== 'codex')) return null;
+  if (questionCompose || mode !== 'chat' || !supportsCapability('fileReferences', currentApp === 'devin' || currentApp === 'codex')) return null;
   const caret = text.selectionStart ?? text.value.length;
   const head = text.value.slice(0, caret);
   if (currentApp === 'codex') {
@@ -137,10 +141,10 @@ function mentionAsk(o) {
 }
 function mentionUpdate() {
   const t = mentionToken();
-  clearTimeout(MN.timer);
   if (!t) return mentionHide();
   const queryKey = (t.trigger || '@') + t.q;
   if (queryKey === MN.q) return;
+  clearTimeout(MN.timer);
   MN.q = queryKey;
   if (currentApp === 'codex') MN.seq++;
   MN.timer = setTimeout(() => mentionAsk({ q: t.q }), currentApp === 'codex' ? 150 : 220);
@@ -184,8 +188,7 @@ $('mentionBox').addEventListener('click', e => {
   if (!r || (!t && !MN.parent)) return;
   if (MN.root) return mentionAsk({ cat: r.label });
   if (currentApp === 'codex' && (r.key === 'context-action:pick-local-files' || (r.section === 'context-actions' && r.label === 'Files and folders'))) {
-    status('继续输入文件名，从列表里选择');
-    return;
+    return openCodexFilePicker(t);
   }
   const command = currentApp === 'codex' && (MN.parent || r.section === 'commands' || r.section === 'context-actions' || r.section === 'plugins' || r.section === 'apps');
   if (command) {
@@ -230,7 +233,7 @@ text.addEventListener('blur', () => {
 });
 // Devin while its turn runs: Queue (default, Enter) or Send now (interrupts the turn, after confirmation).
 let chatBusy = false;
-function devinBusySplit() { return mode === 'chat' && currentApp === 'devin' && chatBusy; }
+function devinBusySplit() { return mode === 'chat' && currentApp === 'devin' && supportsCapability('queue') && supportsCapability('steer') && chatBusy; }
 function codexFollow() {
   const follow = lastChat?.codex?.follow;
   return mode === 'chat' && currentApp === 'codex' && chatBusy && (follow === 'queue' || follow === 'steer') ? follow : '';

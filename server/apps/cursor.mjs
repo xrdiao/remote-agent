@@ -3,6 +3,18 @@ import { mod } from '../../lib/platform.mjs';
 import { helpersCall, PAGE_SRC } from '../page/build.mjs';
 import { cursorUsage } from '../agent/context.mjs';
 
+// Phone viewers of the same window share its native menu/thought UI.
+const cursorUiReads = new Map();
+
+// Implementation support; runtime availability comes from the selected view and native menus.
+export const capabilities = {
+  model: true, effort: true, fast: true,
+  queue: true, steer: false, queueEdit: true,
+  questions: true, approvals: true, attachments: true, fileReferences: false,
+  editor: true, terminal: true, settings: true, usage: true,
+  fork: false, extraActions: true,
+};
+
 export const adapter = {
   async newChat() {
     const before = await this.cdp.evaluate(helpersCall('activeThread()'));
@@ -190,6 +202,21 @@ export const adapter = {
 };
 
 export const methods = {
+async withCursorUiRead(fn) {
+  const cdp = this.cdp, sel = this.sel, key = cdp.wsUrl;
+  const previous = cursorUiReads.get(key);
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  cursorUiReads.set(key, pending);
+  try {
+    if (previous) await previous;
+    if (this.cdp === cdp && this.sel === sel) return await fn();
+  } finally {
+    release();
+    if (cursorUiReads.get(key) === pending) cursorUiReads.delete(key);
+  }
+},
+
 async withCursorFiles(fn) {
   const state = () => this.cdp.evaluate(helpersCall('filesState()'));
   let s = await state();
