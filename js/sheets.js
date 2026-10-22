@@ -1,5 +1,6 @@
 /* ---------- bottom sheet ---------- */
 let sheetKind = null;
+let menuRefreshTimer = 0;
 let pendingAgentOpen = '';
 const agentOpened = JSON.parse(store.get('agent-opened') || '{}');
 const agentOpenedKey = thread => `${currentComputer()?.id || ''}|${currentAppName}|${thread}`;
@@ -13,6 +14,7 @@ function rememberAgentOpen(m) {
   }
 }
 function openSheet(kind, html) {
+  if (kind !== 'menu') clearTimeout(menuRefreshTimer);
   if (kind !== 'devices') clearTimeout(deviceListTimer);
   const leavingVoice = sheetKind === 'local-voice' && kind !== 'local-voice';
   const sheet = $('sheet');
@@ -45,6 +47,7 @@ function openSheet(kind, html) {
   if (leavingVoice) scheduleVoiceWarmup();
 }
 function closeSheet() {
+  clearTimeout(menuRefreshTimer);
   clearTimeout(deviceListTimer);
   const leavingVoice = sheetKind === 'local-voice';
   if (sheetKind === 'settings') send({ t: 'closeDesktopSettings' });
@@ -355,6 +358,7 @@ function paintSurface() {
 function startEditor() {
   const state = capabilityState('editor');
   if (!state.available) return status(state.reason, false);
+  clearTimeout(menuRefreshTimer);
   editorBrowsing = true;
   editorDirectory = null;
   status('正在读取项目文件…');
@@ -461,14 +465,20 @@ const MODE_ZH = { Code: '写代码、改文件，正常提问', Smart: '模型�
 const modeDesc = it => (I18N.lang === 'zh' && MODE_ZH[it.label]) || it.desc;
 const menuCacheKey = kind => `${currentApp}|${viewSel}|${kind}`;
 function requestMenu(kind, loadingMsg) {
+  clearTimeout(menuRefreshTimer);
   if (kind === 'model' || kind === 'effort') {
     const state = capabilityState(kind);
     if (!state.available) return status(state.reason, false);
   }
   const cached = menuCache.get(menuCacheKey(kind));
-  if (cached) showMenu(kind, cached.items, cached.max, cached.fusion, cached.fast, cached.model, true, cached.pricing);
-  else status(loadingMsg);
-  send({ t: 'openMenu', kind });
+  if (cached) {
+    menuRequest++;
+    showMenu(kind, cached.items, cached.max, cached.fusion, cached.fast, cached.model, true, cached.pricing);
+    menuRefreshTimer = setTimeout(() => send({ t: 'openMenu', kind }), 150);
+  } else {
+    status(loadingMsg);
+    send({ t: 'openMenu', kind });
+  }
 }
 function showMenu(kind, items, max, fusion, fast, model, refreshing, pricing) {
   finishPending(['读取思考强度…', '读取权限…', '读取模式列表…', '读取模型列表…', '读取历史对话…', '设置中…']);
