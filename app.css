@@ -1517,3 +1517,15 @@ button { transition: background-color .12s var(--ease), color .12s var(--ease), 
   #queueBar .run i, #mic.on { animation: none; }
   #sheet { transition: none; }
 }
+
+/* Main menu hierarchy and vertically stacked Agent management. */
+#sheet .mainGroup { margin: 4px 0 10px; }
+#sheet .mainGroup > summary { display: flex; align-items: center; justify-content: space-between; min-height: 48px; padding: 8px 4px; font-weight: 600; cursor: pointer; list-style: none; }
+#sheet .mainGroup > summary::-webkit-details-marker { display: none; }
+#sheet .mainGroup > summary::after { content: '›'; color: var(--fg-3); }
+#sheet .mainGroup[open] > summary::after { transform: rotate(90deg); }
+#sheet .mainGroupBody > .mainGroup { margin-left: 10px; }
+#sheet .mainGroupBody > .mainGroup > summary { font-size: 14px; color: var(--fg-3); }
+#sheet .agentManageSection { display: block; margin: 20px 0; }
+#sheet .agentManageLogo { width: 28px; height: 28px; flex: none; }
+#sheet .agentManageRow input { width: 22px; height: 22px; flex: none; accent-color: var(--accent); }

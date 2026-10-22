@@ -349,6 +349,13 @@ $('sheet').addEventListener('click', async e => {
   else if (act === 'fusionHistory') { closeSheet(); return send({ t: 'fusionHistory' }); }
   else if (act === 'fusionNew') { closeSheet(); return send({ t: 'fusionNew' }); }
   else if (act === 'localVoiceToggle') return toggleLocalVoice();
+  else if (act === 'agentManager' || act === 'agentRefresh') return showAgentManager(true);
+  else if (act === 'agentBack') return showMainMenu();
+  else if (act === 'agentStart') return connLaunch();
+  else if (act === 'agentInstall') {
+    const a = CONN_AGENTS.find(a => a.app === b.dataset.agent);
+    openSheet('agent-install', `<h3>${esc(a.name)} · ${I18N.tr('安装与启动')}</h3><p>${I18N.tr('请在电脑端安装对应应用；Codex 需先安装 VS Code，再安装 Codex 扩展并登录。')}</p><p>${I18N.tr('安装后使用仓库的启动脚本开启调试端口，再返回重新检测。')}</p><pre>Linux: ./scripts/start-${a.app}.sh<br>Windows: window_start/start-agents.ps1 -Apps ${a.app}</pre><p class="hint">${I18N.tr('macOS 请在电脑端以远程调试模式启动应用，当前不支持远程启动。')}</p><button class="opt" data-act="agentManager">返回 Agent 管理</button>`);
+  }
   else if (act === 'localVoiceMenu') return showLocalVoiceMenu();
   else if (act === 'voiceBack') return showMainMenu();
   else if (b.dataset.voiceEngine) return selectVoiceEngine(b.dataset.voiceEngine);
