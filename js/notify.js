@@ -414,7 +414,11 @@ $('sheet').addEventListener('click', async e => {
   else if (act === 'addComputer') addComputer();
   else if (act === 'devices') showDevices();
   else if (b.dataset.remove) return removePairedDevices([b.dataset.remove]);
-  else if (b.dataset.computerPub != null) return pairPublished(b.dataset.computerName);
+  else if (b.dataset.computerPub != null) {
+    const entry = unseenPublished().find(c => c.id === b.dataset.computerPub);
+    if (entry?.discovery && new URL(entry.discovery).origin !== location.origin) return openComputerEntry(new URL('./', entry.discovery).href, entry.id);
+    return pairPublished(b.dataset.computerName);
+  }
   else if (b.dataset.computerI != null) { closeSheet(); return useComputer(b.dataset.computerI); }
   else if (b.dataset.computerDel != null) return removeComputer(b.dataset.computerDel);
   else if (act === 'logout') {
@@ -444,7 +448,7 @@ function showComputers(note = '') {
     const heading = groups.length ? `<div class="computerGroupHead"><strong>${group ? esc(group) : '未分组'}</strong>${group && listManagement.editing ? `<button data-group-rename="${esc(group)}">重命名</button><button data-group-delete="${esc(group)}">删除分组</button>` : ''}</div>` : '';
     return heading + rows + (group && !rows ? '<div class="hint">暂无电脑</div>' : '');
   }).join('');
-  const extra = unseenPublished().map(p => `<button class="opt" data-computer-pub="${esc(p.id)}" data-computer-name="${esc(p.name || '电脑')}"><span class="lbl">${esc(p.name || '电脑')}<span class="sub">未配对</span></span></button>`).join('');
+  const extra = unseenPublished().map(p => `<button class="opt" data-computer-pub="${esc(p.id)}" data-computer-name="${esc(p.name || '电脑')}"><span class="lbl">${esc(p.name || '电脑')}<span class="sub">${p.discovery && new URL(p.discovery).origin !== location.origin ? '打开入口' : '未配对'}</span></span></button>`).join('');
   const hint = note ? `<div class="hint">${esc(note).replace(/\n/g, '<br>')}</div>` : '';
   openSheet('computers', `<h3>电脑</h3><div class="listTools">${listTools()}</div>${hint}${saved}${extra || (saved ? '' : '<div class="hint">还没有配对的电脑。</div>')}<button class="opt" data-act="addComputer"><span class="lbl">＋ 配对另一台电脑</span></button><div class="hint">在那台电脑上运行 npm run pair，把链接粘贴过来。已配对的电脑会保留。</div>`);
 }
@@ -492,17 +496,15 @@ function addComputer() {
     onRetry: () => loadComputers().length ? showComputers() : showUnpaired(),
   });
 }
-function useComputer(i) {
+async function useComputer(i) {
   const list = loadComputers();
   const c = list[Number(i)];
   if (!c) return showComputers();
   saveDraft();
   if (c.discovery && new URL(c.discovery).origin !== location.origin) {
-    const link = computerLink(new URL('./', c.discovery).href, c.key);
-    if (inApp) return window.AgentRemoteApp.setUrl(link);
-    location.href = link;
-    return;
+    return openComputerEntry(new URL('./', c.discovery).href, c.id || await computerIdFromKey(c.key));
   }
+  entryComputer = '';
   saveComputers(list, c.key);
   restoreDraft();
   store.set('window', c.win || null);

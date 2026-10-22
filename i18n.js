@@ -5,6 +5,9 @@ const I18N = (() => {
   const lang = saved === 'zh' || saved === 'en' ? saved : /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
 
   const EN = {
+    '打开入口': 'Open entry',
+    '当前入口尚未配对这台电脑，请使用配对链接或由已配对入口添加授权。': 'This entry is not paired with this computer. Use a pairing link or authorize it from an existing paired entry.',
+
     "通用": "General",
     "Agent 与连接": "Agents & connection",
     "文件与输入": "Files & input",

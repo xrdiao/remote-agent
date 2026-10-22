@@ -83,13 +83,36 @@ function discoveryUrl() {
   const page = new URL('url.json', location.href).href;
   return pending ? pending.discovery || page : currentComputer()?.discovery || page;
 }
+// Cross-origin navigation carries bookmarks only; authorization stays in each origin.
+function computerBookmarks(list) {
+  const bookmarks = new Map();
+  for (const c of list) {
+    try {
+      const discovery = new URL(c.discovery || new URL('url.json', location.href).href);
+      if (!/^[a-f0-9]{16}$/.test(c.id) || !/^https?:$/.test(discovery.protocol) || discovery.username || discovery.password) continue;
+      discovery.hash = ''; discovery.search = '';
+      bookmarks.set(c.id, { id: c.id, name: String(c.name || '电脑'), discovery: discovery.href });
+    } catch {}
+  }
+  return [...bookmarks.values()];
+}
+function loadComputerBookmarks() {
+  try { return computerBookmarks(JSON.parse(store.get('computer-links') || '[]')); } catch { return []; }
+}
 function computerLink(url, current = '') {
   const target = new URL(url);
   const params = new URLSearchParams(target.hash.slice(1));
-  params.set('computers', JSON.stringify(loadComputers().map(c => ({ ...c, discovery: c.discovery || new URL('url.json', location.href).href }))));
+  params.delete('computers');
+  params.delete('computer');
+  params.set('computer-links', JSON.stringify(computerBookmarks([...loadComputerBookmarks(), ...loadComputers()])));
   if (current) params.set('computer', current);
   target.hash = params.toString();
   return target.href;
+}
+function openComputerEntry(url, current = '') {
+  const link = computerLink(url, current);
+  if (inApp) return window.AgentRemoteApp.setUrl(link);
+  location.href = link;
 }
 async function resolveBase() {
   if (info.self) return new URL(discoveryUrl()).origin;
@@ -119,7 +142,8 @@ async function resolveBase() {
 
 async function api(path, opts = {}) {
   const { timeout = 10000, ...request } = opts;
-  const headers = { 'content-type': 'application/json', ...(store.get('token') ? { authorization: 'Bearer ' + store.get('token') } : {}), ...opts.headers };
+  const token = pending ? loadComputers().find(c => pending.key ? c.key === pending.key : c.id === pending.id)?.token : store.get('token');
+  const headers = { 'content-type': 'application/json', ...(token ? { authorization: 'Bearer ' + token } : {}), ...opts.headers };
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeout);
   try {
@@ -137,18 +161,17 @@ function parsePair(text) {
   const m = /[#&]pair=([\w-]{43})\.([\w-]{16,})/.exec(text || '');
   return m ? { key: m[1], code: m[2] } : null;
 }
+let entryComputer = '';
 {
   const params = new URLSearchParams(location.hash.slice(1));
-  if (params.has('computers')) {
-    const list = loadComputers();
+  if (params.has('computer-links') || params.has('computers') || params.has('computer')) {
     try {
-      for (const c of JSON.parse(params.get('computers'))) {
-        if (!c?.key || !c?.token) continue;
-        const i = list.findIndex(old => old.key === c.key);
-        if (i < 0) list.push(c); else list[i] = c;
-      }
-      saveComputers(list, params.get('computer') || currentComputer()?.key || '');
+      store.set('computer-links', JSON.stringify(computerBookmarks([...loadComputerBookmarks(), ...JSON.parse(params.get('computer-links') || '[]')])));
     } catch {}
+    entryComputer = params.get('computer') || '';
+    const selected = loadComputers().find(c => c.id === entryComputer);
+    if (selected) saveComputers(loadComputers(), selected.key);
+    params.delete('computer-links');
     params.delete('computers');
     params.delete('computer');
     history.replaceState(null, '', location.pathname + location.search + (params.size ? '#' + params.toString() : ''));
@@ -204,7 +227,7 @@ async function pastePair(text) {
         base = new URL(discovery).origin;
         const me = await fetch(base + '/api/me').then(r => r.json());
         if (me.id !== manual[1]) throw Error('配对码对应的电脑与当前入口不一致');
-        pending = { code: manual[2], discovery };
+        pending = { id: manual[1], code: manual[2], discovery };
         connGen++;
         authed = false;
         ws?.close();
@@ -229,10 +252,7 @@ async function pastePair(text) {
   let target;
   try { target = new URL(text.trim()); } catch {}
   if (target && /^https?:$/.test(target.protocol) && target.origin !== location.origin) {
-    const link = computerLink(target.href);
-    if (inApp) return window.AgentRemoteApp.setUrl(link);
-    location.href = link;
-    return;
+    return openComputerEntry(target.href);
   }
   if (target && /^https?:$/.test(target.protocol)) p.discovery = new URL('url.json', target).href;
   pending = p;
@@ -315,7 +335,8 @@ function publishedComputers() {
 }
 function unseenPublished() {
   const saved = loadComputers();
-  return publishedComputers().filter(p => !saved.some(c => c.id && c.id === p.id));
+  const entries = new Map([...publishedComputers(), ...loadComputerBookmarks()].map(p => [p.id, p]));
+  return [...entries.values()].filter(p => !saved.some(c => c.id && c.id === p.id));
 }
 function offerComputers(msg, { err = true, repair = false } = {}) {
   const many = loadComputers().length > 1 || unseenPublished().length > 0;
@@ -363,6 +384,7 @@ async function finishPair(body) {
   list.push({ ...prev, id, name: body.name || prev?.name || '电脑', key, token: body.token, device: body.device || prev?.device || '', win: prev?.win || '', discovery: discoveryUrl(), relay: base });
   saveComputers(list, key);
   pending = null;
+  entryComputer = '';
   sessionStorage.removeItem('entry-request');
   return connect();
 }
@@ -445,6 +467,9 @@ async function boot() {
     try { base = await resolvePending(); }
     catch (e) { return showUnpaired(e.message || '这台电脑还没有发布地址'); }
     return pending.invitation || pending.requestId ? joinEntryRequest() : pair();
+  }
+  if (entryComputer && !loadComputers().some(c => c.id === entryComputer)) {
+    return showComputers('当前入口尚未配对这台电脑，请使用配对链接或由已配对入口添加授权。');
   }
   try {
     base = await resolveBase();
