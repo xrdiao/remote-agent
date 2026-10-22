@@ -66,6 +66,7 @@
 - Codex instructions 应能在手机查看、修改并保存；其他设置内容不能显示空壳入口。
 - Fork 要有实际效果并可继续发送。真实会话的测试消息仅限用户明确授权的那次目标和内容，不据此取得任意发消息权限。
 - 对话输入历史上下按钮放在发送栏左侧，保留 10 条输入历史及草稿恢复。
+- 对话/终端底部输入框仅用Alt/Option＋↑↓调用各自原历史，不受光标所在行限制；单独↑↓始终交给原生光标和输入法，即使已通过组合键或屏幕按钮取回历史也不能接管单独↑↓。保留屏幕历史按钮、对话10条缓存、终端完整历史及草稿/光标恢复；输入法组合输入、@列表、选区及额外Ctrl/Meta/Shift组合仍不触发历史，不改变终端面板本身的按键发送。
 - 终端历史不使用对话的 10 条上限；读取当前 Agent 对应终端的历史，选择历史时不同时写入桌面输入，发送时不得重复拼接或执行两次。
 - 终端历史上下按钮仍在发送栏左侧；“列表、新建、Ctrl+C、Tab”位于终端输入框圆角区域内。
 - 终端输入框内工具栏提供“复制”和“全选”：有选区复制选区，否则复制当前已加载输出；选字期间仅暂缓页面重绘、保留最新待显示输出，不能改变终端读取频率或命令行为。保留长按选择、原生复制菜单与正常滚动，选字不能误触滑动返回。
@@ -643,3 +644,43 @@ Codex 提取结果为回合最后一条回复标记原生按钮是否已读取�
 只读调用当前 Cursor 两窗口、Devin 一窗口、Codex 两窗口 extract 均通过，调用前后 thread 不变；未点击、发送、切换或滚动真实会话，未新增配对设备。测试记录在 _shots/history-footer-fix/。这是独立 Chrome 验证，不能替代实体 iPhone 对大跳变的复测；此前真机大幅跳变未在本机完整复现。手机资源版本 v187，最终检查、发布和重启结果另记，不提交或推送 master/debug 源码。
 
 v187收尾：最终 `npm run check` 通过（319文件、94发送类型、59返回类型、171helpers、55导入模块），`git diff --check` 通过。手机端四项资源发布为 gh-pages 6071c4e60b95219b160f70d68d7ac4a4605210a3，公网 index.html、js/core.js、js/history.js、sw.js 与本地逐字节一致（_shots/history-footer-fix/public.json）。确认无活动 Fusion 后，最终中继 PID448687、HTTP200、页面匹配本地，日志 `/tmp/remote-agent-local-publish-20261022-111100.log`；历史回包收尾修正仅重启加载，前端已一致未重复创建发布提交。所有隔离浏览器上下文已销毁，未提交或推送 master/debug，未改变配对设备及真实会话。
+
+## 2026-10-22 编排 Fusion 接入统一适配注册（v188）
+
+用户依据 agent-adapter-plan.md 确认继续接入 Fusion。新增 server/apps/fusion.mjs，注册 kind=orchestrator，连接逻辑从 Session 原 Fusion 分支原样移入；新建、历史列表/切换、发送、停止、刷新均委托原有 Fusion 函数。原生 Cursor/Devin/Codex 适配对象、默认继承和 methods 合并顺序保持，Fusion 不再落入 Cursor adapter 默认值；不新增桌面窗口发现、CDP、定时器或轮询。FusionRunner、FUSION_OWNER、原生项目/会话归属、模型与费用、交接语义及连接释放未修改。
+
+Fusion 根能力只声明自身的 usage；模型、审批、终端等原生能力属于 A/B，通过 attached.sideCapabilities 从各 Agent 注册项一次传递，换应用后清除旧声明，不随聊天快照重复发送。Fusion 顶部模型按钮及配置模型入口共同读取对应侧声明，沿用原项目、忙碌条件；公共文件传输、语音和主题保留。资源版本 v188。
+
+独立临时授权目录中运行本机测试中继，配对独立 Chrome 手机尺寸上下文：项目选择、A/B选择、角色模型菜单、发送/方案待确认、执行→检查→完成、新建/历史往返、刷新保持选中、停止快路由、深浅色菜单及原文件传输入口均通过。实际 Fusion 状态机按 A/B/A 顺序执行，结束/停止后 worker 释放；A/B为模拟回复，未连接或发送到真实桌面Agent，不能替代真实双Agent任务或实体手机验证。注册测试确认现有路由委托、Fusion 不继承 Cursor、根/侧声明正确，聊天快照不重复携带能力。记录 _shots/fusion-adapter/。最终检查、清理及发布结果另记，不自动提交或推送源码。
+
+v188收尾：配对受控流程12项通过；额外定向验证两个模型入口共同读取侧声明、切回原生Agent清除旧侧声明均通过（capabilities-ui.json）。三个原生适配器仍引用各自原newChat入口与capabilities；FUSION_OWNER与本轮修改前逐字节一致。最终 `npm run check` 通过（324文件、94发送类型、59返回类型、171helpers、56导入模块），`git diff --check`通过。全部独立浏览器上下文已销毁，临时中继、worker及授权目录已清理，生产设备数据未写入。
+
+确认生产无活动Fusion任务后，手机端五项资源发布至 gh-pages 2b3efe40d1ae63f9714e431c6f2581ef89e7879f；公网index.html、js/core.js、js/net.js、js/sheets.js、sw.js与本地逐字节一致（_shots/fusion-adapter/public.json）。保留原参数/环境重启中继PID481592，HTTP200且页面与本地一致，日志 `/tmp/remote-agent-local-publish-20261022-113616.log`。未提交或推送master/debug源码；真实双Agent任务及实体手机仍未验证。
+
+## 2026-10-22 仅修 Codex 上下文日志读取
+
+用户确认只修Codex读取，禁止硬编码机器绝对路径，保持其他功能与优化。server/windows.mjs 的 codexContext 原先只匹配以会话ID结尾的文件并永久缓存路径，漏掉续接后附带额外标识的同会话日志；现同时匹配两类文件名，按文件更新时间选择当前会话最近日志。沿用 CODEX_HOME 或 os.homedir() 下 .codex/sessions 的定位，不新增机器路径；保留路径缓存，已定位的同一会话最多每5秒重新定位一次，不改变聊天/额度轮询或CDP次数。每次仍按原逻辑读取选中文件最后一个有效token统计，百分比口径、上限、缺失返回和消息字段保持。
+
+独立临时目录测试通过：续接文件、最近文件、其他会话排除、相对CODEX_HOME及默认用户目录、token追加、5秒内不重扫/到期发现新续接、压缩后统计降低、百分比上限、空/无记录及零容量语义。仅读取两个真实已打开Codex会话，选中文件session_meta.id与当前thread一致，采样上下文67%/43%与最新token统计一致（原中继旧值42%/40%）；采样后正常生成仍可能改变数值。不发送、切换、滚动或中断真实会话。测试记录 _shots/codex-context-read-fix/。仅修改该读取函数及定位缓存和本记录，不改Cursor/Devin、Fusion流程、手机UI或资源版本；保持v188，最终检查与重启结果另记，不提交推送源码。
+
+本项收尾：`npm run check`通过（325文件、94发送类型、59返回类型、171helpers、56导入模块），`git diff --check`通过。确认无活动Fusion任务，前端内容已一致未生成新的发布提交；沿原环境/参数重启中继PID497783，HTTP200且页面与本地一致，日志 `/tmp/remote-agent-local-publish-20261022-114928.log`。公网原v188五项资源与本地逐字节一致（_shots/codex-context-read-fix/public.json）。测试临时目录已清理，未新增配对设备，未提交或推送源码。
+
+## 2026-10-22 输入框键盘↑↓浏览已发送历史（v189）
+
+用户授权仅加入键盘历史快捷键。业务代码仅修改app/js/composer.js，复用现有对话10条缓存、原生终端完整历史与屏幕上下按钮，不新增历史来源或协议。首次在空输入或首行按↑进入；进入后不受已取回内容长度与光标行位置限制。输入、点按输入框、左右/首尾等光标导航退出浏览；↓回到原草稿时恢复原选区/光标。切换模式/会话结束当前键盘浏览状态，对话与终端的原草稿分别保存。@列表、输入法组合输入、修饰键和选区仍使用原按键行为；终端面板键盘、发送/排队/追加、Enter发送、Shift+Enter及按钮换行均未改。
+
+独立Chrome上下文390×844、844×390，分别使用Codex/Cursor/Devin界面运行7组定向断言：长多行历史从末行连续↑↓、原草稿/光标恢复、屏幕按钮与键盘连续浏览、对话10条上限、普通多行原生光标移动、键入/点按/左右键退出、@/输入法/选区/修饰键优先、终端超过10条及对话/终端草稿分离、Enter与Shift+Enter行为通过。终端使用受控原历史回包，确认只请求termHistory而不发送按键或命令；未连接/发送至真实Agent，也未做实体iPhone外接键盘验证。记录_shots/keyboard-input-history/verification.json，测试上下文均已销毁，无新增配对设备。资源版本v189；最终检查、发布及重启结果另记，不提交推送源码。
+
+v189检查与发布：`npm run check`通过（326文件、94发送类型、59返回类型、171helpers、56导入模块），`git diff --check`通过。确认无活动Fusion任务后，手机端四项资源发布为gh-pages cc902c42b8abe8e3d53dcfe3ded13b57cb1a96d7；沿原参数/环境重启中继PID514926，HTTP200且页面与本地一致，日志`/tmp/remote-agent-local-publish-20261022-120316.log`。公网资源一致性核对结果另记；未提交/推送master或debug源码，未改变配对数据、真实会话及终端命令。
+
+v189公网核对完成：index.html、js/core.js、js/composer.js、sw.js均与本地逐字节一致，记录_shots/keyboard-input-history/public.json。发布等待期间Pages显示building，完成后四项核对全部通过。
+
+## 2026-10-22 历史快捷键改为Alt/Option＋↑↓（v190，仅此项）
+
+用户确认普通↑↓干扰光标编辑，本轮仅调整composer.js现有keydown条件：仅Alt/Option＋↑↓进入原历史入口，取消首行/隐含浏览状态对单独↑↓的接管；组合键在任意行有效。屏幕上下按钮、原历史缓存/条数、草稿及光标恢复、编辑时退出历史、终端请求/回包与发送流程全部沿用；不改对话、终端、排队/追加、语音或其他功能。保留原输入法组合输入、@列表、选区以及额外Ctrl/Meta/Shift的排除条件。同步更新资源版本v190。
+
+独立Chrome手机尺寸横竖屏、Codex/Cursor/Devin共六组各8项定向验证通过：空/首行/末行/自动换行及取回历史后，普通↑↓均不拦截、不改变输入内容，实际键盘事件保持上下移动光标；Alt＋↑↓从多行草稿第二行取历史、连续翻阅并恢复草稿光标；屏幕按钮保持有效，对话仍限10条、终端可超过10条且不发送命令；输入法、@、选区和附加修饰键不触发历史；Enter和Shift+Enter保持。使用模拟终端历史回包，未操作真实Agent、未新增配对，浏览器上下文已销毁；未做实体iPhone或Mac键盘验证。记录_shots/keyboard-history-modifier/verification.json。最终检查、发布及重启另记，不提交推送源码。
+
+v190收尾检查：`npm run check`通过（327文件、94发送类型、59返回类型、171helpers、56导入模块），`git diff --check`通过。确认无活动Fusion任务后，手机端四项资源发布至gh-pages f269e0f31590db92fee02d0dea63ebf1bbbd2200，沿原参数/环境重启中继PID529018，HTTP200且页面匹配本地，日志`/tmp/remote-agent-local-publish-20261022-121417.log`；公网资源核对结果另记。不提交推送master/debug源码，不修改配对数据和真实会话。
+
+v190公网核对完成：index.html、js/core.js、js/composer.js、sw.js与本地逐字节一致（_shots/keyboard-history-modifier/public.json），Pages构建完成。

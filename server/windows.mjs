@@ -49,16 +49,22 @@ export function phoneWindows(wins, current) {
 // Each VS Code window has its own Codex sidebar. The phone shows one Codex window and lists these as agents.
 export const codexViewIds = new Map();
 export const codexContextFiles = new Map();
+const codexContextChecks = new Map();
 
 export function codexContext(thread) {
   if (!thread) return null;
   const sessions = path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'sessions');
   let file = codexContextFiles.get(thread);
-  if (!file) {
-    const relative = fs.readdirSync(sessions, { recursive: true }).find(name => name.endsWith(`-${thread}.jsonl`));
+  const now = Date.now();
+  if (!file || now - (codexContextChecks.get(thread) || 0) >= 5000) {
+    const relative = fs.readdirSync(sessions, { recursive: true })
+      .filter(name => name.endsWith(`-${thread}.jsonl`) || path.basename(name).includes(`-${thread}_`) && name.endsWith('.jsonl'))
+      .map(name => ({ name, modified: fs.statSync(path.join(sessions, name)).mtimeMs }))
+      .sort((a, b) => b.modified - a.modified)[0]?.name;
     if (!relative) return null;
     file = path.join(sessions, relative);
     codexContextFiles.set(thread, file);
+    codexContextChecks.set(thread, now);
   }
   const lines = fs.readFileSync(file, 'utf8').trimEnd().split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
