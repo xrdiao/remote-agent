@@ -184,10 +184,7 @@ async function startVoice(event) {
     // A context left closed/interrupted outside a gesture can never resume: rebuild inside it.
     if (audio.context.state === 'closed' || audio.context.state === 'interrupted') { closeVoiceAudio(); audio = prepareVoiceAudio(); }
     session.context = audio.context;
-    vdbg('audio activation requested');
     let audioResumed = false, moduleReady = false;
-    const resumed = session.context.resume();
-    resumed.then(() => { audioResumed = true; vdbg('resume resolved'); }, () => vdbg('resume rejected'));
     audio.module.then(() => { moduleReady = true; vdbg('worklet loaded'); }, () => vdbg('worklet rejected'));
     vdbg('microphone permission requested');
     const media = navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }, video: false });
@@ -207,6 +204,10 @@ async function startVoice(event) {
     });
     const [stream] = await Promise.all([media, started]);
     if (!voiceLive(session) || !session.held) return;
+    // Start audio with microphone capture active, including Safari's first permission grant.
+    vdbg('audio activation requested');
+    const resumed = session.context.resume();
+    resumed.then(() => { audioResumed = true; vdbg('resume resolved'); }, () => vdbg('resume rejected'));
     let timedOut = false;
     await Promise.race([Promise.all([resumed, audio.module]).then(() => vdbg('resume+module resolved')), sleep(3000).then(() => { timedOut = true; })]);
     if (!voiceLive(session) || !session.held) return;
