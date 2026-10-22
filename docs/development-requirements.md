@@ -818,3 +818,21 @@ v194收尾：本轮Cursor测试窗口已按精确ID关闭，两个原Cursor工�
 npm run check通过（80语法文件、94发送类型、58返回类型、172 helpers、56模块），git diff --check通过。全部测试使用隔离Chrome手机尺寸上下文，已销毁，无新增配对，无真实Agent会话操作；不能替代iPhone Safari真机闪烁/惯性手感验收。证据位于_shots/scroll-paint-fix/。前端版本v195，默认仅发布手机端、重启中继，不提交推送源码；发布结果另记。
 
 v195发布收尾：五项资源index.html、js/core.js、js/chat.js、app.css、sw.js发布为gh-pages dd44fc2e58c3d4b954498fffab2138e80fe92428；公网更新等待后均与本地逐字节一致，记录_shots/scroll-paint-fix/public.json。确认无活动Fusion后沿原参数和环境重启中继PID993786，HTTP200且首页一致，日志/tmp/remote-agent-local-publish-20261022-180224.log。未提交推送源码、未变动配对数据或真实Agent会话；iPhone Safari真机效果待用户刷新后复测。
+
+## 2026-10-22 X11首帧与语音预热触发提速（v196，仅两项）
+
+用户依据_shots/readiness-latency-20261022/report.md确认最小范围。画面仅在现有Linux/X11参数分支加入-probesize 32 -analyzeduration 0；Windows、Wayland参数不变，不改画质、8fps、进程启动/停止/缓存复用与重复窗口枚举。语音仅给scheduleVoiceWarmup增加delay参数，默认300ms；voice-authenticated和页面可见恢复传0，复用同一计时器及连接去重，立即触发可替换尚待执行的同引擎300ms计时器。引擎列表打开时仍不启动，退出仍等300ms，仅应用最终选择。系统识别分支、后台连接保持、模型/进程复用和空闲释放均保持。
+
+startVoice及Safari先取得媒体流再resume、voiceText草稿插入、endVoice/cancelVoice和流连接处理与修改前逐字节相同；未改引擎worker或GPU参数、不申请提前录音。本轮资源版本v196，不涉及Fusion/通知，不提交源码。验证及发布结果另记。
+
+验证：真实X11捕获旧/新对照首JPEG为1023.5ms→199.1ms，重开198.1ms；首帧JPEG完整且经Chrome解码640×400，持续帧间隔约125ms（8fps），三轮退出后捕获子进程均关闭、原共享选择已恢复。测试枚举过程与画质参数未变；Windows/Wayland只验证参数逐项与原版一致，未声称真机提速。
+
+独立Chrome对照原/新语音脚本，模拟语音服务固定约25ms返回：认证后建连接302.2ms→0.3ms、恢复304.7ms→0.1ms；对应模拟首次就绪332.4ms→30.6ms、334.9ms→30.9ms。已有连接再次使用0ms且未新建连接；立即认证可替换已等待50ms的300ms任务，不被重复按钮更新延后。引擎列表内qwen/sherpa/qwen连续选择不启动，退出后约304ms仅创建最终qwen连接。未就绪时按住再松手不请求麦克风、不延迟自动录音；媒体流未返回时松手会停止迟到媒体轨道、保留草稿且不调用resume；实际AudioWorklet配合合成媒体两轮均产生PCM、保留前后缀插入转录、松手完成final并准备下一流、没有自动发送聊天，resume均在媒体取得后。记录_shots/readiness-latency-fix/screen.json、voice-browser.json。
+
+语音上述为模拟连接/合成音频回归，未申请真实麦克风、未加载Qwen或改变现有GPU进程，不把约30ms模拟就绪当作真实模型加载速度；本轮未重复改动前已测且本次代码未改的模型加载。iPhone/Safari实际权限与录音设备启动仍需真机复测。`npm run check`通过（80语法文件、94发送、58返回、172helpers、56模块）；`git diff --check`通过。正式发布后的配对画面与公网核对另记。
+
+v196发布后配对验证：独立Chrome通过正式中继打开临时绘图窗口，首个绘制时机268.9ms、退出重开238.9ms；改前同链路764.2/738.8ms。首帧解码640×400、持续1.5秒收到12帧、平均间隔124.7ms；缓存复用正常（本轮两次绘制时机32.5/104.7ms，存在会话调度波动，不声称缓存路径加速）。临时窗口已关闭、浏览器上下文销毁，仅精确删除本轮新增授权ID，原设备ID/tokenHash保留，visual.json恢复；记录_shots/readiness-latency-fix/paired-screen.json。以上为本机真实配对Chrome/环回结果，非iPhone/Safari真机结果。
+
+手机前端四项资源发布为gh-pages 65f1762d6a9f54588ea4e8d3438471a48dfa2f66；沿原参数/环境重启中继PID1058453，HTTP200且页面一致，日志/tmp/remote-agent-local-publish-20261022-190750.log。未提交推送master/debug源码，未测试或修改Fusion/通知；公网核对结果另记。
+
+v196公网核对完成：index.html、js/core.js、js/local-voice.js、sw.js与本地逐字节一致（_shots/readiness-latency-fix/public.json）。修改后文字报告为_shots/readiness-latency-fix/report.md。按约定仅发布手机端及重启中继，没有提交源码。

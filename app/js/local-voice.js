@@ -34,12 +34,12 @@ function updateVoiceButton() {
 }
 const SYSTEM_ENGINE = 'system';
 const systemRecognition = () => window.SpeechRecognition || window.webkitSpeechRecognition;
-function scheduleVoiceWarmup() {
+function scheduleVoiceWarmup(delay = 300) {
   // The system engine runs fully on the phone: no socket, no AudioContext, no server load.
   if (voiceEngine() === SYSTEM_ENGINE) { closeVoiceConnection(); voicePrepared = ''; return; }
   if (!voiceEnabled() || !authed || document.hidden || sheetKind === 'local-voice') return;
   const key = voiceTransportKey();
-  if (voicePrepared === key || (voiceWarmTimer && voiceWarmKey === key)) return;
+  if (voicePrepared === key || (delay > 0 && voiceWarmTimer && voiceWarmKey === key)) return;
   clearTimeout(voiceWarmTimer); voiceWarmKey = key;
   voiceWarmTimer = setTimeout(() => {
     voiceWarmTimer = 0;
@@ -47,7 +47,7 @@ function scheduleVoiceWarmup() {
     const link = voiceConnection();
     voicePrepared = key;
     link.ready.catch(() => {});
-  }, 300);
+  }, delay);
 }
 
 function voiceScope() { return [currentComputer()?.id || '', viewSel, mode].join('|'); }
@@ -361,9 +361,10 @@ document.addEventListener('visibilitychange', () => {
     voiceHideTimer = setTimeout(() => { voiceHideTimer = 0; if (document.hidden) { closeVoiceConnection(); voicePrepared = ''; } }, 30000);
   } else {
     clearTimeout(voiceHideTimer); voiceHideTimer = 0;
+    scheduleVoiceWarmup(0);
     updateVoiceButton();
   }
 });
 window.addEventListener('pagehide', suspendVoice);
-document.addEventListener('voice-authenticated', scheduleVoiceWarmup);
+document.addEventListener('voice-authenticated', () => scheduleVoiceWarmup(0));
 updateVoiceButton();
