@@ -227,7 +227,8 @@
   const legacyStopIcon = () => [...document.querySelectorAll('.composer-button-area .codicon-debug-stop, .send-with-mode .codicon-debug-stop')].find(e => vis(e) && !e.closest('.composer-human-message, .human-message-action-slot'));
   // Devin: while a turn runs the submit button reads "Cancel" (empty input) or "Queue" (typed text).
   const devinSubmitBusy = () => !!devinLog() && [...document.querySelectorAll('button[aria-label]')].some(e => vis(e) && /^(Cancel|Queue)$/.test(e.getAttribute('aria-label')) && !!e.querySelector('svg'));
-  const isBusy = () => !!stopGenerationButton() || !!legacyStopIcon() || devinSubmitBusy() || [...doc.querySelectorAll('button')].some(e => vis(e) && /^(Stop|Stop generating)$/i.test((e.getAttribute('aria-label') || '').trim()));
+  const isBusy = () => !!stopGenerationButton() || !!legacyStopIcon() || devinSubmitBusy() || [...doc.querySelectorAll('button')].some(e => vis(e) && /^(Stop|Stop generating)$/i.test((e.getAttribute('aria-label') || '').trim()))
+    || ([...doc.querySelectorAll('button[aria-label="Queue"], button[aria-label="Steer"]')].some(vis) && !!codexThread());
   // Devin's queue (verified live): a bar "N message(s) queued" with a "Clear all" button, then an <ol>
   // of li[role=button] rows holding the message text. Hovering a row reveals "Edit message",
   // "Remove from queue" and "Send now" (hidden until hover). Rows are read from textContent.

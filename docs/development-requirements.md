@@ -2,6 +2,45 @@
 
 更新日期：2026-10-22。本文记录本项目已明确的用户要求，不代表所有要求都已实现或已完成真机验证。后续用户明确指令优先；范围或状态变化时同步更新本文。
 
+## 文档截图约定（2026-10-22 用户补充）
+
+- README 使用配对浏览器按 iPhone 17 尺寸截取当前 UI；明确区分浏览器模拟与真机结果，不生成虚构的聊天或审批截图。
+- 先清理过时图片与 GIF；新截图保留原图，在原图目录下新建 `redacted/` 保存打码版本。原图和测试备份留在被忽略的 `_shots/`；公开文档只引用 `docs/screenshots/redacted/` 的脱敏副本，不公开授权数据、私人项目/会话、电脑路径或账号用量。
+
+## 2026-10-22 Codex 添加电脑端文件隐藏项开关（v197）
+
+仅在 Codex「＋ → 添加电脑端文件」的路径栏下新增“显示隐藏文件”滑块，默认关闭，按当前浏览器独立记忆，不改文件传输页的开关。沿用现有switch样式；关闭时仅过滤名称以`.`开头的文件和文件夹，保留原始条目索引、跨目录已选项、准确完整路径与原生文件引用链路。切换只重绘已有目录，不增加HTTP目录请求；不清除已选隐藏项。取消、添加引用、目录导航、普通@及手机附件逻辑不变。
+
+独立配对Chrome在402×874尺寸下调用真实鉴权目录API，验证默认过滤、开启显示隐藏文件/目录、关闭后仍保留已选项、原条目索引对应正确目录、跨目录三项引用完整路径保留、关闭重开记住开关、取消保留草稿引用，以及无横向溢出；未发送真实聊天或终端指令，不是iPhone真机测试。临时配对入口均按精确ID清理，原有ID/tokenHash保持。测试脚本先后补齐隔离Codex菜单状态并修正DOM查询和求值变量重名，未因此扩大生产改动。记录_shots/codex-files-hidden/browser.json和picker.png。
+
+npm run check通过（80语法文件、94发送类型、58返回类型、172helpers、56导入模块），git diff --check通过。仅版本化core/history及Service Worker至v197以确保更新可达；发布、重启和公网核对结果随后补记，不提交推送master/debug源码。
+
+v197已发布至gh-pages（6008d0922b39d94e3851ddff65822a9da2737c8c），仅四项手机资源变化；确认无活动协作执行后保留原环境和启动参数重启中继，PID1117961、HTTP200，日志/tmp/remote-agent-local-publish-20261022-200312.log。等待Pages构建完成后，公网index.html、js/core.js、js/history.js、sw.js与本地四项逐字节一致，记录_shots/codex-files-hidden/public.json。原有README文档修改保留，未提交推送master/debug源码。
+
+## 2026-10-22 Codex 输入时排队状态与隐藏文件开关位置（v198）
+
+用户要求仅处理排队误报和滑块位置，保留既有功能和性能。确认Codex原生在生成中输入文字后使用Queue/Steer提交按钮，旧isBusy仅认Stop，导致手机按钮变成“发送”，发送方法也读到busy=false，原生实际排队但回执为queued=false，进而出现“已发送”的聊天占位。只在共用isBusy增加当前Codex会话可见Queue/Steer识别，先查目标按钮再查Codex会话；原Stop、Devin及Cursor分支保持，不修改发送/排队/追加动作、回执协议、轮询频率、麦克风或输入法逻辑，也不增加请求、缓存或重试。生成中输入仍保留排队/立即追加引导，回执沿既有真实busy计算恢复一致。
+
+隐藏文件开关移到“添加电脑端文件”标题右侧同一行，复用现有switch，保留“显示隐藏文件”文字、默认关闭、独立记忆、目录过滤及已选引用，路径行不再被开关占一整行。只版本化core/history与Service Worker至v198。
+
+验证：隔离Chrome原生按钮场景以同一套生产helpers及sendMessage/submitPrompt对照，旧版在Queue可见且草稿非空时busy=false、queued=false但原生队列1条；修改后busy=true、queued=true且同样仅1条。手机隔离页调用原发送处理器，确认排队参数、收到回执后仅队列展示、没有已发送聊天占位；验证Queue、Steer、Stop、空闲Send、隐藏按钮及非Codex Queue识别，排队/立即追加/改为排队及空闲发送按钮语义保持。该队列发送使用受控原生DOM/状态，不向真实会话发送。实际只读调用Cursor、Devin、Codex三者extract，当前会话ID均保持，三者读取正常。记录_shots/codex-queue-input/queue.json。
+
+独立配对浏览器通过真实目录API验证320/402 CSS像素、深浅主题下开关位于标题右侧、同一行且不溢出；重测过滤隐藏文件/目录、切换不发目录请求、正确目录索引、跨目录引用、取消及记忆保持。测试入口按精确ID撤销，原有ID/tokenHash均保持，浏览器上下文均关闭。记录_shots/codex-queue-input/picker/browser.json与picker.png；未做iPhone真机验证。隔离脚本曾修正源码替换美元符号、实际界面语言、连接门控下处理器调用以及路由回执字段，未为测试扩大生产修改。
+
+修改前后npm run check均通过（80语法文件、94发送类型、58返回类型、172helpers、56导入模块），git diff --check通过。发布、重启和公网资源核对另记，不自动提交推送源码。
+
+v198收尾：gh-pages发布79f7b18d07f20014845322cedff3332639891e59，仅四项手机资源变化；只读确认无活动协作执行后保留原参数/环境重启中继，PID1142496、HTTP200，日志/tmp/remote-agent-local-publish-20261022-202543.log。等待Pages更新完成后，公网index.html、js/core.js、js/history.js及sw.js与本地逐字节一致，记录_shots/codex-queue-input/public.json。master/debug源码未提交推送，原有README及截图修改保留。
+
+## 2026-10-22 README 功能整理与配对浏览器截图
+
+经用户确认，按“功能展示 → 快速启动 → 详细文档”重写中英文 README，补齐 Codex、Fusion、项目会话、提问审批、文件传输、图片引用、语音和只读画面等现有能力；删除旧导航说明，修正截图标签、仓库地址占位符和普通 HTTP 的能力说明。安装、启动、配对及原命令迁入 getting-started 中英文文档；另增 usage、voice-input、security 中英文指南。保留 Agent 原生能力差异、Qwen Linux/NVIDIA 要求、系统识别联网差异及原生壳发布边界，不将开发计划或本机测速写成普遍能力承诺。
+
+先将22张旧截图/GIF从公开目录移除，本地legacy目录留副本；独立配对Chrome以402×874 CSS像素、DPR3截取六张当前界面（1206×2622）：Devin浅色对话、Cursor深色对话、Codex项目会话与模型菜单、真实电脑目录文件传输、已安装语音引擎列表。原图留在_shots/readme-20261022/，其redacted子目录保存浏览器内遮挡私有信息后的截图，docs/screenshots/redacted/只存相同脱敏副本。中英文README共享该套中文界面图，说明中标明非实体iPhone/Safari测试及历史对话内容不代表当前版本安装说明；未伪造提问或其他UI数据。
+
+验证：六张图逐张查看，原图保留且均与打码版不同，公开副本与本地redacted副本逐字节一致，分辨率均1206×2622；74处本地文档/图片链接存在，中英文浏览器渲染六图完整加载、目录锚点有效，旧图引用无残留。预览器初次默认ASCII标题生成导致两个中文锚点误报，改为Unicode标题生成后复测通过，不为预览修改生产功能。npm run check通过（80语法文件、94发送类型、58返回类型、172 helpers、56导入模块），git diff --check通过。
+
+配对前备份完整devices.json，完成后仅删除本次精确临时入口ID，核对原有ID/tokenHash全部保留。独立截图及文档预览浏览器上下文、临时本机预览服务均已关闭。没有向真实Agent发消息、执行终端命令、切换真实会话或模型，也没有申请麦克风或更换语音引擎。本轮只修改文档和文档图片，不修改业务代码、不提升前端版本、不重启中继或重新发布同一份手机资源；未提交或推送源码。验证产物在_shots/readme-20261022/。
+
 ## 每次修改前
 
 - 先阅读根目录 `AGENTS.md` 和本文，再检查当前分支、工作区差异及有关实现。
