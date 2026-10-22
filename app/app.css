@@ -12,6 +12,7 @@
   --ok-tint: rgba(74,222,155,.14); --warn-tint: rgba(251,191,77,.14); --err-tint: rgba(255,107,107,.14);
   --add: #4ADE9B; --del: #FF6B6B;
   --bubble: #262449; --bubble-fg: #EEEDFF;
+  --turn-highlight: rgba(251,191,77,.10);
   --code-bg: #202227; --pre-bg: #131417;
   --term-bg: #0B0C0E; --term-fg: #D9DADD; --term-mut: #8A8E96;
   --shadow-1: 0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.35);
@@ -43,6 +44,7 @@
   --ok-tint: rgba(18,132,79,.10); --warn-tint: rgba(161,92,0,.10); --err-tint: rgba(204,47,47,.10);
   --add: #12844F; --del: #CC2F2F;
   --bubble: #ECEAFF; --bubble-fg: #1C1840;
+  --turn-highlight: #FFF4D6;
   --code-bg: #ECECEF; --pre-bg: #F1F1EE;
   --term-bg: #faf9f6; --term-fg: #2e3436; --term-mut: #555753;
   --shadow-1: 0 1px 2px rgba(16,16,20,.06), 0 10px 30px rgba(16,16,20,.08);
@@ -448,6 +450,11 @@ main { flex: 1; min-height: 0; position: relative; }
 .foldBtn { font-size: 11px; padding: 0 8px; min-height: 24px; background: transparent; border: 1px solid var(--line-2); border-radius: 999px; color: var(--fg-3); }
 .endFold { display: block; margin: 6px 0 0 auto; font-size: 11px; padding: 2px 10px; min-height: 24px; background: transparent; border: 1px solid var(--line-2); border-radius: 999px; color: var(--fg-3); }
 .flash { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }
+.msg.turnHighlight { background-color: var(--turn-highlight); animation: turnHighlightFade 1.8s ease-out; }
+@keyframes turnHighlightFade {
+  0%, 75% { background-color: var(--turn-highlight); }
+  100% { background-color: transparent; }
+}
 .turnSum { font-size: 11px; color: var(--fg-3); text-align: right; font-variant-numeric: tabular-nums; }
 .turnSum:empty { display: none; }
 .revertBtn { font-size: 11px; padding: 2px 8px; min-height: 24px; color: var(--fg-3); background: transparent; border: 1px solid var(--line-2); border-radius: 999px; }
@@ -1504,6 +1511,7 @@ button { transition: background-color .12s var(--ease), color .12s var(--ease), 
 /* ---------- reduced motion ---------- */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; }
+  .msg.turnHighlight { animation: none; }
   .thinking.live .brain, .thinking.live .tht { animation: none; }
   .thinking.live .tht { background: none; color: var(--fg-3); }
   #queueBar .run i, #mic.on { animation: none; }
