@@ -69,7 +69,7 @@ class VisualCapture {
     this.stop();
     this.update({state: wayland ? 'permission' : 'starting', title: target?.title || '', message: wayland ? '需要在电脑端选择并授权绘图或仿真窗口' : '正在读取窗口画面…'});
     const args = wayland ? [path.join(dir, 'linux.py'), 'capture', stateFile, id === 'restore' ? 'restore' : 'select']
-      : ['-hide_banner', '-loglevel', 'error', '-f', process.platform === 'win32' ? 'gdigrab' : 'x11grab', '-framerate', '8', ...(process.platform === 'linux' ? ['-window_id', target.id] : []), '-i', process.platform === 'win32' ? `hwnd=${target.id}` : process.env.DISPLAY,
+      : ['-hide_banner', '-loglevel', 'error', '-f', process.platform === 'win32' ? 'gdigrab' : 'x11grab', '-framerate', '8', ...(process.platform === 'linux' ? ['-probesize', '32', '-analyzeduration', '0', '-window_id', target.id] : []), '-i', process.platform === 'win32' ? `hwnd=${target.id}` : process.env.DISPLAY,
         '-an', '-vf', "scale='min(1280,iw)':-2", '-c:v', 'mjpeg', '-q:v', '5', '-threads', '1', '-f', 'image2pipe', 'pipe:1'];
     const child = spawn(wayland ? '/usr/bin/python3' : 'ffmpeg', args, {stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true});
     this.child = child;
