@@ -684,3 +684,11 @@ v189公网核对完成：index.html、js/core.js、js/composer.js、sw.js均与�
 v190收尾检查：`npm run check`通过（327文件、94发送类型、59返回类型、171helpers、56导入模块），`git diff --check`通过。确认无活动Fusion任务后，手机端四项资源发布至gh-pages f269e0f31590db92fee02d0dea63ebf1bbbd2200，沿原参数/环境重启中继PID529018，HTTP200且页面匹配本地，日志`/tmp/remote-agent-local-publish-20261022-121417.log`；公网资源核对结果另记。不提交推送master/debug源码，不修改配对数据和真实会话。
 
 v190公网核对完成：index.html、js/core.js、js/composer.js、sw.js与本地逐字节一致（_shots/keyboard-history-modifier/public.json），Pages构建完成。
+
+## 2026-10-22 Android “工作中”通知离开会话后补发（仅此项）
+
+排查：平板（OPD2515，Android 17）原先收不到通知，是 App 内通知开关未开启（原生配置无 notify 项，NotifyService 未运行），不是代码回归。开启后，Cursor/Devin 实时通知缺失的原因是中继在手机正停留在该会话时跳过 working/done，且离开会话后不补发；Cursor 输入框加排队消息时短暂判为结束再开始，才新发了一条 working。Devin 探测本身只读验证正常。
+
+仅修改 lib/notify.mjs：每条 SSE 通知流记录已收到的运行中 working；监视循环每次检查后，对已不在看该会话（切后台、换会话、断开 WebSocket）且未收到的运行中会话补发原 working（保留原 startedAt，同一通知 ID 替换），每轮最多一次；end 清除记录，正在看时被跳过的新 working 也清除该设备记录以便补发新版。不改“正在看则不推送”规则、done/waiting、Web Push/APNs/实时活动、Android 原生和手机前端。Cursor 排队时忙碌判断闪断未修。
+
+受控测试（临时 USERPROFILE、假设备、假窗口探测，不触发真实推送）：正在看时不发、切后台后补发一次、不重复、结束后 end、第二轮正在看跳过、离开后补发且起始时间保留，全部通过（_shots/notify-replay/test.mjs）。`npm run check`（105文件、94发送类型、58返回类型、171helpers、56导入模块）与 `git diff --check` 通过。真机效果需重启本机中继后确认；未提交推送源码。
