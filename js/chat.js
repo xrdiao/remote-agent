@@ -43,11 +43,17 @@ itemsEl.addEventListener('click', async e => {
   }
 });
 const thoughtFull = new Map();
+function setThought(id, text) {
+  thoughtFull.set(id, text);
+  const hit = cache.get(id);
+  if (hit) {
+    hit.key = null;
+    queueChatRender();
+  }
+}
 function requestThought(id) {
   if (thoughtFull.has(id)) return;
-  thoughtFull.set(id, undefined);
-  const body = itemsEl.querySelector(`[data-think="${CSS.escape(id)}"]`)?.closest('.thinking')?.querySelector('.thb');
-  if (body) { body.textContent = '加载中…'; body.classList.add('loading'); }
+  setThought(id, undefined);
   send({ t: 'thought', i: id });
 }
 const thoughtObserver = new IntersectionObserver(entries => {
@@ -59,11 +65,7 @@ const thoughtObserver = new IntersectionObserver(entries => {
   }
 }, { root: list, rootMargin: '100px' });
 function onThought(m) {
-  thoughtFull.set(m.i, m.text ?? null);
-  const box = document.querySelector(`[data-think="${CSS.escape(m.i)}"]`)?.closest('.thinking')?.querySelector('.thb');
-  if (!box) return;
-  box.classList.remove('loading');
-  box.textContent = m.text ?? '内容未保存';
+  setThought(m.i, m.text ?? null);
 }
 
 function buttonsHtml(labels, item, actions = []) {
@@ -116,7 +118,10 @@ function paintThinking(el, it) {
   btn.querySelector('.tht').textContent = thinkingTitle(it.t);
   btn.querySelector('.tha').textContent = rest || more ? (open ? '收起' : '展开') : '';
   const follow = open && it.live && box.scrollHeight - box.scrollTop - box.clientHeight < 48;
-  if (box.textContent !== rest) box.textContent = rest;
+  const loading = more && thoughtFull.has(it.i) && full === undefined;
+  const body = loading ? '加载中…' : more && full === null ? '内容未保存' : rest;
+  box.classList.toggle('loading', loading);
+  if (box.textContent !== body) box.textContent = body;
   box.hidden = !open;
   if (open && more && !thoughtFull.has(it.i)) thoughtObserver.observe(el);
   if (open && it.live && follow) box.scrollTop = box.scrollHeight;
