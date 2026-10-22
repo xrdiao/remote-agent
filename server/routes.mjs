@@ -170,7 +170,7 @@ export const ROUTES = {
     fail: (s, m) => s.emit({ t: 'sendFailed', requestId: m.requestId }),
   },
   projects: { run: (s, m) => s.showProjects(String(m.path ?? '')) },
-  docs: { run: (s, m) => s.showDocs(String(m.root ?? ''), String(m.path ?? ''), String(m.host ?? ''), m.editor === true) },
+  docs: { run: (s, m) => s.showDocs(String(m.root ?? ''), String(m.path ?? ''), String(m.host ?? ''), m.editor === true, m.requestId) },
   openProject: { run: (s, m) => s.useProject(String(m.path ?? ''), m.newSession === true) },
   newProject: { run: (s, m) => s.newProject(String(m.parent ?? ''), String(m.name ?? '').trim(), m.newSession === true) },
   projectTrust: { run: (s, m) => s.confirmProjectTrust(m.approve === true, m.returnTo) },
