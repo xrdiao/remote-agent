@@ -338,12 +338,12 @@ function captureChatAnchor() {
     else lo = mid + 1;
   }
   const el = itemsEl.children[lo];
-  return el ? { id: el.dataset.i, top: el.getBoundingClientRect().top - top, scrollTop: list.scrollTop } : null;
+  return el ? { el, id: el.dataset.i, top: el.getBoundingClientRect().top - top, scrollTop: list.scrollTop } : null;
 }
 let pinnedBottom = false;
 function stabilizeChatReading() {
   if (readingAnchor) {
-    const el = [...itemsEl.children].find(e => e.dataset.i === readingAnchor.id);
+    const el = readingAnchor.el;
     if (el) {
       const top = list.scrollTop;
       // Keep the user's scroll delta; compensate only for layout changes above the anchor.
