@@ -600,6 +600,22 @@ div.math { display: block; margin: .35em 0; text-align: center; }
   font-size: 13px; font-weight: 600; color: var(--fg-2);
 }
 
+#list { scrollbar-width: none; }
+#list::-webkit-scrollbar { display: none; }
+#turnNavTrack { position: absolute; z-index: 2; top: 8px; bottom: 60px; right: 0; width: 36px; overflow: hidden; pointer-events: none; }
+#turnNav {
+  position: absolute; top: 0; right: 4px; width: 24px; height: 56px;
+  display: flex; flex-direction: column; border-radius: 4px;
+  background: var(--fg-3); opacity: .45; transform: translateX(24px); pointer-events: auto;
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+  transition: transform .18s var(--ease), background .18s, opacity .18s, border-radius .18s;
+}
+#turnNav::before { content: ""; position: absolute; inset: 0 0 0 -8px; }
+#turnNav.show, #turnNav:focus-within { transform: none; background: var(--s1); opacity: .96; border-radius: 12px; box-shadow: 0 1px 4px var(--line-3); }
+#turnNav button { position: relative; min-height: 28px; height: 28px; width: 24px; padding: 0; border-radius: 12px; background: transparent; color: var(--fg-2); font-size: 16px; opacity: 0; pointer-events: none; }
+#turnNav.show button, #turnNav:focus-within button { opacity: 1; pointer-events: auto; }
+#turnNav button + button { border-top: 1px solid var(--line); }
+
 /* ---------- attention stack above the composer ---------- */
 #qnBar, #queueBar, #actionBar { flex: none; margin: 0 12px 8px; border-radius: var(--r-lg); }
 #actionBar { display: none; gap: 8px; flex-wrap: wrap; background: transparent; }
