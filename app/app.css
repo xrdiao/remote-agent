@@ -636,6 +636,8 @@ body.kb #queueBar { display: none; }
 }
 #qnBar > * { flex: none; }
 #qnBar.show { display: flex; }
+body.kb.chatmode #qnBar.show { max-height: var(--question-max-height); overscroll-behavior: contain; }
+body.kb.chatmode #qnBar.codex .qnQ { max-height: none; overflow: visible; }
 #qnBar .qnHead { font-size: 12px; color: var(--warn); font-weight: 600; display: flex; align-items: center; gap: 6px; }
 #qnBar .qnHead::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); }
 #qnBar .qnQ { font-size: 15px; color: var(--fg-hi); white-space: pre-wrap; }
@@ -891,6 +893,14 @@ body.wide #sheet.open { transform: translate(-50%, -50%); opacity: 1; visibility
 body.wide #sheet::before { display: none; }
 .deviceHead { flex: none; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
 .deviceRows { min-height: 0; overflow-y: auto; padding-top: 10px; overscroll-behavior: contain; }
+.deviceGroup { margin-bottom: 12px; border-bottom: 1px solid var(--line); }
+.deviceGroup summary { cursor: pointer; padding: 12px 4px; font-weight: 600; overflow-wrap: anywhere; }
+.deviceGroup summary .sub { display: inline; margin-left: 8px; font-weight: 400; }
+.deviceGroup .opt { margin-left: 8px; }
+.entryRequest, .entryInvite { padding: 12px; margin-bottom: 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--accent-tint); }
+.entryRequest strong { overflow-wrap: anywhere; }
+.entryRequest b { color: var(--accent-text); letter-spacing: .12em; }
+.entryInvite textarea { width: 100%; box-sizing: border-box; min-height: 64px; margin-bottom: 8px; font-size: 13px; overflow-wrap: anywhere; }
 #sheet [data-list-select] { width: 18px; height: 18px; flex: none; accent-color: var(--accent); }
 .computerGroupHead { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 14px 0 6px; }
 .computerGroupHead strong { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 13px; color: var(--fg-3); }

@@ -11,7 +11,7 @@ import { FusionRunner } from './fusion/runner.mjs';
 import { ROUTES, SKIP, flag } from './routes.mjs';
 import { chatForWire } from './chat-images.mjs';
 import { watchChat } from './agent/updates.mjs';
-import './apps/index.mjs';
+import { AGENT_REGISTRY } from './apps/index.mjs';
 import {visualCapture, visualWindows, wayland} from './visual/capture.mjs';
 
 export class Session extends AgentContext {
@@ -88,6 +88,9 @@ export class Session extends AgentContext {
   stopVisual() { visualCapture.unsubscribe(this); }
 
   emit(obj) {
+    if (obj?.t === 'attached' && !obj.closed && AGENT_REGISTRY[obj.app]?.capabilities) {
+      obj = { ...obj, capabilities: AGENT_REGISTRY[obj.app].capabilities };
+    }
     if (obj?.t === 'chat' && obj.sel && obj.chat) {
       (this.chatBySel ||= new Map()).delete(obj.sel);
       this.chatBySel.set(obj.sel, obj.chat);
@@ -111,7 +114,7 @@ export class Session extends AgentContext {
     let codexPages;
     if (appId === 'codex') {
       try {
-        codexPages = await codexWindows(CODEX_CDP_URL, true);
+        codexPages = await AGENT_REGISTRY.codex.discover(true);
         if (windowId && !codexPages.some(p => p.pageId === windowId) && threadId) {
           const recovered = await this.codexPageForThread(codexPages, threadId);
           if (recovered) windowId = recovered.pageId;
@@ -139,8 +142,8 @@ export class Session extends AgentContext {
       if (this.fusionRun.a || this.fusionRun.b) { await this.fusionCatalog(); this.fusionEmit(); }
       return;
     }
-    const targetApp = ['cursor', 'devin', 'codex'].find(app => appId === app || appId.startsWith(app + ':'));
-    const wins = windows || (codexPages ? codexPages.length ? [{id: 'codex', app: 'codex', title: 'Codex', ws: codexPages[0].ws, port: CODEX_CDP_URL, kind: 'local'}] : [] : await listWindows(null, targetApp));
+    const targetApp = Object.keys(AGENT_REGISTRY).find(app => appId === app || appId.startsWith(app + ':'));
+    const wins = windows || (codexPages ? codexPages.length ? [{id: 'codex', app: 'codex', title: 'Codex', ws: codexPages[0].ws, port: CODEX_CDP_URL, kind: 'local'}] : [] : targetApp ? await AGENT_REGISTRY[targetApp].discover() : await listWindows());
     if (appId === 'codex') {
       const pages = codexPages;
       if (!pages.length) {

@@ -42,13 +42,6 @@ def emit(**event):
 
 mark("process start")
 
-import numpy as np
-import vllm  # noqa: F401 — phase-1 warmup: resolves sys.modules without any CUDA init
-from qwen_asr import Qwen3ASRModel
-
-mark("imports done")
-
-
 def prefetch_model_files():
     """Stream model files through the OS page cache; nothing is retained."""
     for entry in sorted(Path(sys.argv[1]).iterdir()):
@@ -60,6 +53,16 @@ def prefetch_model_files():
                     pass
         except OSError:
             pass
+
+
+# Disk prefetch overlaps the expensive Python imports; this stage never initializes CUDA.
+threading.Thread(target=prefetch_model_files, daemon=True).start()
+
+import numpy as np
+import vllm  # noqa: F401 — phase-1 warmup: resolves sys.modules without any CUDA init
+from qwen_asr import Qwen3ASRModel
+
+mark("imports done")
 
 
 def construct_recognizer():
@@ -78,7 +81,6 @@ def construct_recognizer():
 
 
 def main():
-    threading.Thread(target=prefetch_model_files, daemon=True).start()
     recognizer = None
     sessions = {}
     emit(type="prepared")

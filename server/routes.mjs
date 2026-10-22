@@ -30,6 +30,7 @@ const cleanMentions = list => (Array.isArray(list) ? list : []).slice(0, 12)
     token: String(m?.token ?? '').slice(0, 200), q: String(m?.q ?? '').slice(0, 200),
     label: String(m?.label ?? '').slice(0, 200), sub: String(m?.sub ?? '').slice(0, 200),
     key: String(m?.key ?? '').slice(0, 240), section: String(m?.section ?? '').slice(0, 40),
+    ...(m?.section === 'local-files' ? { path: String(m.path || '') } : {}),
     trigger: m?.trigger === '/' ? '/' : '@',
   }))
   .filter(m => m.token && m.label);

@@ -149,7 +149,7 @@ async function openImageEditor(image) {
     for (const b of dialog.querySelectorAll('[data-ratio]')) b.setAttribute('aria-pressed', String(b.dataset.ratio === String(current().ratio)));
     loading = false;
   };
-  const point = e => { const r = canvas.getBoundingClientRect(); return { x: Math.max(0, Math.min(base.width, (e.clientX - r.left) * base.width / r.width)), y: Math.max(0, Math.min(base.height, (e.clientY - r.top) * base.height / r.height)) }; };
+  const point = (e, clamp = true) => { const r = canvas.getBoundingClientRect(), x = (e.clientX - r.left) * base.width / r.width, y = (e.clientY - r.top) * base.height / r.height; return clamp ? { x: Math.max(0, Math.min(base.width, x)), y: Math.max(0, Math.min(base.height, y)) } : { x, y }; };
   const setZoom = (zoom, center = { x: stage.clientWidth / 2, y: stage.clientHeight / 2 }, anchor) => {
     const r = canvas.getBoundingClientRect(), frame = stage.getBoundingClientRect();
     const x = anchor?.x ?? (frame.left + center.x - r.left) / r.width, y = anchor?.y ?? (frame.top + center.y - r.top) / r.height;
@@ -169,14 +169,16 @@ async function openImageEditor(image) {
     e.preventDefault(); stage.setPointerCapture(e.pointerId); pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (pointers.size === 2) { preview = null; gesture = null; rebuild(); const [a, b] = [...pointers.values()]; const r = stage.getBoundingClientRect(); const c = canvas.getBoundingClientRect(); pinch = { distance: Math.hypot(a.x - b.x, a.y - b.y), zoom: current().zoom, anchor: { x: ((a.x + b.x) / 2 - c.left) / c.width, y: ((a.y + b.y) / 2 - c.top) / c.height } }; paint(); return; }
     if (pointers.size !== 1) return;
-    const p = point(e), r = current().crop, tolerance = 22 * base.width / canvas.getBoundingClientRect().width;
+    const p = point(e, mode !== 'crop'), r = current().crop, tolerance = (e.pointerType === 'touch' ? 32 : 22) * base.width / canvas.getBoundingClientRect().width;
     if (mode === 'text') {
       const hit = textAt(p);
       if (hit) { gesture = { text: hit }; return; }
     }
     if (mode === 'crop') {
+      const inX = p.x >= r.x - tolerance && p.x <= r.x + r.w + tolerance, inY = p.y >= r.y - tolerance && p.y <= r.y + r.h + tolerance;
+      const edge = { left: inY && Math.abs(p.x - r.x) <= tolerance && p.x <= r.x + r.w / 2, right: inY && Math.abs(p.x - r.x - r.w) <= tolerance && p.x > r.x + r.w / 2, top: inX && Math.abs(p.y - r.y) <= tolerance && p.y <= r.y + r.h / 2, bottom: inX && Math.abs(p.y - r.y - r.h) <= tolerance && p.y > r.y + r.h / 2 };
+      if (!Object.values(edge).some(Boolean) && !(p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h)) return;
       current().redoCrop = null;
-      const edge = { left: Math.abs(p.x - r.x) < tolerance, right: Math.abs(p.x - r.x - r.w) < tolerance, top: Math.abs(p.y - r.y) < tolerance, bottom: Math.abs(p.y - r.y - r.h) < tolerance };
       gesture = { p, crop: { ...r }, edge, moving: !Object.values(edge).some(Boolean) };
     } else if (mode === 'pan') gesture = { p: { x: e.clientX, y: e.clientY } };
     else {
@@ -192,7 +194,7 @@ async function openImageEditor(image) {
       setZoom(pinch.zoom * distance / pinch.distance, center, pinch.anchor); return;
     }
     if (!gesture) return;
-    const p = point(e);
+    const p = point(e, mode !== 'crop');
     if (mode === 'pan') { stage.scrollLeft += gesture.p.x - e.clientX; stage.scrollTop += gesture.p.y - e.clientY; current().x = stage.scrollLeft; current().y = stage.scrollTop; gesture.p = { x: e.clientX, y: e.clientY }; return; }
     if (gesture.text) {
       const hit = gesture.text, q = hit.convert(p);

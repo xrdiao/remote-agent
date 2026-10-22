@@ -176,6 +176,20 @@
       : null;
     return el ? codexPoint(el) : null;
   };
+  const codexAddFiles = paths => {
+    let el = codexPromptEl();
+    while (el && !Object.keys(el).some(k => k.startsWith('__reactFiber'))) el = el.parentElement;
+    let fiber = el && el[Object.keys(el).find(k => k.startsWith('__reactFiber'))];
+    while (fiber) {
+      const actions = fiber.updateQueue?.memoCache?.data?.flat().find(v => typeof v?.addFileDescriptorsAsMentions === 'function');
+      if (actions) {
+        actions.addFileDescriptorsAsMentions(paths.map(path => ({ fsPath: path, path, label: path.split(/[\\/]/).pop() })));
+        return true;
+      }
+      fiber = fiber.return;
+    }
+    throw new Error('当前 Codex 输入框没有可用的添加文件入口');
+  };
   const codexMentionRows = () => {
     const root = doc.querySelector('[data-mention-list-scroll-area]');
     if (!root || root.getBoundingClientRect().height < 8) return [];

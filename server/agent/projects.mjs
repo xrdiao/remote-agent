@@ -173,6 +173,7 @@ export const methods = {
         editor.evaluate(`(() => {
           const terms = new Set([...document.querySelectorAll('.xterm-wrapper, .terminal-wrapper')].map(el => el.xterm).filter(Boolean));
           return [...terms].some(term => {
+            if (${this.app === 'devin'} && term.options.disableStdin) return false;
             const detector = (term._addonManager?._addons || []).map(a => a.instance || a).find(a => a.capabilities)?.capabilities.get(2);
             return !detector || !!detector.currentCommand?.commandExecutedMarker;
           });
@@ -205,7 +206,7 @@ export const methods = {
     const candidates = await matching(projectPages);
     let target, idle;
     for (const page of candidates.sort((a, b) => Number(b.id === this.windowId.replace(/^[^:]+:/, '')) - Number(a.id === this.windowId.replace(/^[^:]+:/, '')))) {
-      if (!newSession && !threadId) { target = page; break; }
+      if (app === 'codex' || (!newSession && !threadId)) { target = page; break; }
       const state = await this.projectWindowState(page);
       if (threadId && state.thread === threadId.replace(/^tab:/, '')) { target = page; break; }
       if (!state.busy && !idle) idle = page;

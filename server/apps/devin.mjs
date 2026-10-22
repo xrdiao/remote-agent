@@ -9,6 +9,15 @@ import { FOCUS_COMPOSER } from '../agent/context.mjs';
 // Shared across phone sessions: thread|start → end ms (null while the turn is still running).
 const devinTurnEnds = new Map();
 
+// Support belongs to Devin's adapter; selected-model and surface availability stay native.
+export const capabilities = {
+  model: true, effort: true, fast: true,
+  queue: true, steer: true, queueEdit: true,
+  questions: true, approvals: true, attachments: true, fileReferences: true,
+  editor: true, terminal: true, settings: true, usage: true,
+  fork: false, extraActions: true,
+};
+
 export const adapter = {
   async newChat() {
     return this.devinNewChat();

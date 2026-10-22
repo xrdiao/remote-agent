@@ -121,14 +121,6 @@ const scKeyFor = sess => `${currentComputer()?.id || '-'}|${currentApp || '?'}|$
 // A newer copy of a row replaces the stored one, except where the stored one holds more (thought text, task items).
 function scKeep(prev, it) {
   if (!prev) return it;
-  // Completed Codex turns lose their DOM-only footer when read from virtualized history.
-  if (currentApp === 'codex' && it.k === 'assistant' && prev.k === 'assistant' && it.i === prev.i
-    && it.completed === true && prev.completed === true && it.t === prev.t && !it.b?.length) {
-    const buttons = (prev.b || []).map((label, index) => ({ label, action: prev.actions?.[index] }))
-      .filter(b => b.label === 'Copy message' || b.label === 'Fork chat from here');
-    if (buttons.length) return { ...it, b: buttons.map(b => b.label), btnItem: prev.btnItem || prev.i,
-      ...(prev.actions ? { actions: buttons.map(b => b.action || '') } : {}) };
-  }
   if (it.k === 'thinking' && prev.k === 'thinking') {
     const body = t => (t || '').split('\n').slice(1).join('\n');
     if (body(prev.t).length > body(it.t).length) { const m = { ...it, t: prev.t }; delete m.more; return m; }
@@ -338,9 +330,24 @@ function captureChatAnchor() {
     else lo = mid + 1;
   }
   const el = itemsEl.children[lo];
-  return el ? { id: el.dataset.i, top: el.getBoundingClientRect().top - top } : null;
+  return el ? { el, id: el.dataset.i, top: el.getBoundingClientRect().top - top, scrollTop: list.scrollTop } : null;
 }
 let pinnedBottom = false;
+function stabilizeChatReading() {
+  if (readingAnchor) {
+    const el = readingAnchor.el;
+    if (el) {
+      const top = list.scrollTop;
+      // Keep the user's scroll delta; compensate only for layout changes above the anchor.
+      const shift = el.getBoundingClientRect().top - list.getBoundingClientRect().top - readingAnchor.top + top - readingAnchor.scrollTop;
+      if (shift) {
+        list.scrollTop += shift;
+        lastScrollTop += list.scrollTop - top;
+      }
+    }
+  }
+  readingAnchor = captureChatAnchor();
+}
 function restoreChatPosition(anchor, stick = false) {
   restoringChatScroll = true;
   pinnedBottom = !!stick;
@@ -352,14 +359,15 @@ function restoreChatPosition(anchor, stick = false) {
   readingAnchor = stick ? null : captureChatAnchor();
   requestAnimationFrame(() => { restoringChatScroll = false; });
 }
-new ResizeObserver(() => {
-  if (chatScrolling || chatTouching) return;
+const chatSizeObserver = new ResizeObserver(() => {
+  if (chatScrolling || chatTouching) { stabilizeChatReading(); return; }
   if (pinnedBottom) {
     restoringChatScroll = true;
     list.scrollTop = list.scrollHeight;
     requestAnimationFrame(() => { restoringChatScroll = false; });
   } else if (readingAnchor) restoreChatPosition(readingAnchor);
-}).observe(itemsEl);
+});
+for (const el of [itemsEl, $('older'), $('historyStatus'), $('cachedMore')]) chatSizeObserver.observe(el);
 document.addEventListener('selectionchange', () => {
   if (deferredRender && !userSelecting()) { deferredRender = false; if (lastChat) renderChat(lastChat); }
 });
@@ -498,7 +506,7 @@ function renderChat(chat, stale, loading = false) {
   $('emptyHint').hidden = loading || imageOnly || !!chat?.loginRequired;
   $('older').hidden = !chat || chat.earlier === false;
   $('pickMode').hidden = currentApp === 'devin' || currentApp === 'cursor' || !chat?.mode;
-  $('pickModel').hidden = false;
+  $('pickModel').hidden = !supportsCapability('model');
   if (chat?.mode) { $('pickMode').textContent = chat.mode === 'Bypass Permissions' ? '⚠绕过' : chat.mode; $('pickMode').title = chat.mode; }
   $('pickMode').classList.toggle('bypass', chat?.mode === 'Bypass Permissions');
   const mdl = chat?.model || '模型';
@@ -657,7 +665,7 @@ $('taskChip').onclick = () => showTasks();
 itemsEl.addEventListener('toggle', e => { const id = e.target.dataset.task; if (id) e.target.open ? taskOpen.add(id) : taskOpen.delete(id); }, true);
 $('qnBar').addEventListener('click', e => {
   const compose = e.target.closest('[data-question-compose]');
-  if (compose) { setQuestionCompose(questionCompose?.id === compose.dataset.questionCompose ? null : compose.dataset.questionCompose); return; }
+  if (compose) { setQuestionCompose(compose.dataset.questionCompose); text.focus(); return; }
   const b = e.target.closest('[data-action][data-request]');
   if (b) {
     const id = b.dataset.request, n = Number(b.dataset.action);
@@ -686,19 +694,36 @@ function sendQuestion(message) {
   send({ ...message, requestId });
 }
 function setQuestionCompose(id) {
-  if (qnPending) return;
+  if (questionCompose?.id === id && questionCompose.sel === viewSel || !questionCompose && !id) return;
+  if (mode !== 'chat') { questionCompose = id ? { id, sel: viewSel } : null; updateAppText(); updateSendMode(); return; }
   saveDraft();
+  const carry = !questionCompose && mode === 'chat' ? text.value : '';
   questionCompose = id ? { id, sel: viewSel } : null;
   restoreDraft();
+  if (id && !drafts.has(activeDraft)) {
+    text.value = qnDrafts.get(`${id}|0`) ?? qnState?.requests?.find(r => r.id === id)?.fields[0]?.value ?? '';
+    if (!text.value) text.value = carry;
+    syncQuestionDraft(text.value);
+    autosize(); saveDraft();
+  }
   updateAppText();
-  qnSig = '';
-  renderQuestions(qnState);
   updateSendMode();
-  if (id) text.focus();
+}
+function syncQuestionDraft(value) {
+  if (mode !== 'chat' || questionCompose?.sel !== viewSel) return;
+  qnDrafts.set(`${questionCompose.id}|0`, value);
+  const field = [...$('qnBar').querySelectorAll('[data-field="0"]')].find(el => el.dataset.request === questionCompose.id);
+  if (field) {
+    field.value = value;
+    const request = qnState?.requests?.find(r => r.id === questionCompose.id);
+    const submit = [...$('qnBar').querySelectorAll('[data-action]')].find(el => el.dataset.request === questionCompose.id && Number(el.dataset.action) === request.buttons.length - 1);
+    if (submit) submit.disabled = !!qnPending || request.buttons.every(b => b.disabled) || !value.trim();
+  }
 }
 function submitQuestionCompose() {
   const request = qnState?.requests?.find(r => r.id === questionCompose?.id);
-  if (!request || !text.value.trim()) return;
+  if (!request) return status('当前问题已结束，请确认后再发送', false);
+  if (!text.value.trim()) return;
   saveDraft();
   sendQuestion({ t: 'codexRequest', id: request.id, n: request.buttons.length - 1, fields: [{ n: 0, value: text.value }] });
 }
@@ -708,13 +733,16 @@ function finishQuestion(m) {
   qnPending = null;
   if (pending.sel !== viewSel) return;
   if (m.ok && pending.message.id) {
-    if (questionCompose?.id === pending.message.id) setQuestionCompose(null);
     const answerKey = [currentComputer()?.id || '', viewSel, 'chat', pending.message.id].join('|');
     drafts.delete(answerKey); draftMentions.delete(answerKey);
     if (pending.message.id.startsWith('async:') && (pending.message.advance || pending.message.n === (qnState?.requests?.find(r => r.id === pending.message.id)?.buttons.length || 0) - 1)) {
       qnState = { ...qnState, requests: qnState.requests.filter(r => r.id !== pending.message.id) };
     }
     for (const key of qnDrafts.keys()) if (key.startsWith(pending.message.id + '|')) qnDrafts.delete(key);
+    if (questionCompose?.id === pending.message.id) {
+      if (mode === 'chat') text.value = '';
+      setQuestionCompose(null);
+    }
   }
   qnSig = '';
   renderQuestions(qnState);
@@ -723,15 +751,9 @@ function finishQuestion(m) {
 function renderQuestions(qs) {
   const bar = $('qnBar');
   if (qnView !== viewSel) { qnView = viewSel; qnSig = ''; qnPending = null; qnDrafts.clear(); }
-  if (questionCompose && (questionCompose.sel !== viewSel || !qs?.codex || !qs.requests.some(r => r.id === questionCompose.id))) {
-    const prior = questionCompose;
-    if (prior.sel === viewSel) saveDraft();
-    questionCompose = null;
-    updateAppText();
-    if (prior.sel === viewSel) restoreDraft();
-    updateSendMode();
-  }
   qnState = qs;
+  const answers = qs?.codex ? qs.requests.filter(r => r.id.startsWith('async:')) : [];
+  setQuestionCompose(answers.find(r => r.id === questionCompose?.id && questionCompose.sel === viewSel)?.id || answers[0]?.id || null);
   bar.classList.toggle('codex', !!qs?.codex);
   const sig = JSON.stringify(qs);
   if (sig === qnSig) return;
@@ -748,7 +770,7 @@ function renderQuestions(qs) {
       + (remaining ? `<details class="qnDetails" data-question="${esc(r.id)}" ${expanded.has(r.id) ? 'open' : ''}><summary>展开问题详情</summary>${esc(remaining)}</details>` : '')
       + (r.id.startsWith('async:') ? `<div class="qnOpts">${r.buttons.slice(0, -2).map((b, n) => `<button class="qnOpt ${b.selected ? 'on' : ''}" data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div>` : '')
       + r.fields.map((f, n) => `<label class="qnFree">${esc(f.label)}${f.options ? `<select data-request="${esc(r.id)}" data-field="${n}">${f.options.map(o => `<option value="${esc(o.value)}" ${o.value === f.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>` : `<input data-request="${esc(r.id)}" data-field="${n}" type="${f.type === 'password' ? 'password' : 'text'}" value="${esc(f.value)}">`}</label>`).join('')
-      + `<div class="qnAct">${r.id.startsWith('async:') ? `<button data-question-compose="${esc(r.id)}">${questionCompose?.id === r.id ? '取消对话框回答' : '用对话框回答'}</button>` : ''}${r.buttons.map((b, n) => r.id.startsWith('async:') && n < r.buttons.length - 2 ? '' : `<button data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div></section>`; }).join('');
+      + `<div class="qnAct">${r.id.startsWith('async:') ? `<button data-question-compose="${esc(r.id)}">在对话框回答</button>` : ''}${r.buttons.map((b, n) => r.id.startsWith('async:') && n < r.buttons.length - 2 ? '' : `<button data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div></section>`; }).join('');
     bar.classList.toggle('show', qs.requests.length > 0);
     bar.querySelectorAll('[data-field]').forEach(el => {
       const key = questionFieldKey(el);
@@ -756,11 +778,16 @@ function renderQuestions(qs) {
       el.oninput = () => {
         qnDrafts.set(key, el.value);
         const r = qnState.requests.find(r => r.id === el.dataset.request);
+        if (r.id.startsWith('async:') && el.dataset.field === '0' && mode === 'chat' && document.activeElement === el) {
+          setQuestionCompose(r.id);
+          text.value = el.value; autosize(); saveDraft();
+        }
         if (r.id.startsWith('async:') && !r.buttons.every(b => b.disabled) && !qnPending) {
           const submit = [...bar.querySelectorAll('[data-action]')].find(b => b.dataset.request === r.id && Number(b.dataset.action) === r.buttons.length - 1);
           submit.disabled = !el.value.trim();
         }
       };
+      if (el.dataset.request.startsWith('async:') && el.dataset.field === '0') el.onfocus = () => setQuestionCompose(el.dataset.request);
       el.onchange = () => { if (!el.dataset.request.startsWith('async:')) send({ t: 'codexRequest', id: el.dataset.request, field: Number(el.dataset.field), value: el.value }); };
       if (qnDrafts.has(key)) el.oninput();
       if (key === focusKey && !qnPending) {
@@ -769,6 +796,7 @@ function renderQuestions(qs) {
       }
     });
     questionBusy();
+    if (document.body.classList.contains('kb')) fitViewport();
     return;
   }
   if (!qs?.list?.length) { bar.innerHTML = ''; bar.classList.remove('show'); return; }
@@ -853,7 +881,7 @@ function renderQueue(busy, queued, subs = [], readonly = false, changed = 0, qCo
   if (n && queueOpen) {
     html += pending.map(p => `<div class="q pending"><span class="qt">${esc(p.text)}</span><span class="sub">发送中…</span></div>`).join('');
     html += queued.map(q => `<div class="q"><span class="qt">${esc(q.t || '(空)')}</span>`
-      + ibtn('edit', devin ? '从队列取出，放回输入框' : '修改', `data-q="${esc(q.id)}" data-a="edit"`)
+      + (supportsCapability('queueEdit') ? ibtn('edit', devin ? '从队列取出，放回输入框' : '修改', `data-q="${esc(q.id)}" data-a="edit"`) : '')
       + ibtn('enter', '打断当前这一轮，立刻发送', `data-q="${esc(q.id)}" data-a="send"`)
       + ibtn('x', '删除', `data-q="${esc(q.id)}" data-a="remove"`, 'del') + '</div>').join('');
     if (devin && !queued.length) html += `<div class="q"><span class="qt">内容读不到，只显示数量</span></div>`;
@@ -990,14 +1018,17 @@ function settleChatScroll() {
   updateToBottom();
   maybePrefetchOlder();
 }
-list.addEventListener('scroll', settleChatScroll, { passive: true });
+list.addEventListener('scroll', () => {
+  if (!restoringChatScroll && !pinnedBottom) stabilizeChatReading();
+  settleChatScroll();
+}, { passive: true });
 let historyTouchY = 0;
-list.addEventListener('wheel', e => { restoringChatScroll = false; if (e.deltaY < 0) { historyArmed = true; pinnedBottom = false; } settleChatScroll(); }, { passive: true });
+list.addEventListener('wheel', e => { if (!readingAnchor) readingAnchor = captureChatAnchor(); restoringChatScroll = false; if (e.deltaY < 0) { historyArmed = true; pinnedBottom = false; } settleChatScroll(); }, { passive: true });
 list.addEventListener('pointerdown', () => { historyArmed = true; }, { passive: true });
-list.addEventListener('touchstart', e => { historyTouchY = e.touches[0].clientY; chatTouching = true; chatScrolling = true; clearTimeout(scrollIdle); }, { passive: true });
+list.addEventListener('touchstart', e => { readingAnchor = captureChatAnchor(); historyTouchY = e.touches[0].clientY; chatTouching = true; chatScrolling = true; clearTimeout(scrollIdle); }, { passive: true });
 list.addEventListener('touchmove', e => { restoringChatScroll = false; if (e.touches[0].clientY > historyTouchY) { historyArmed = true; pinnedBottom = false; } historyTouchY = e.touches[0].clientY; }, { passive: true });
 for (const event of ['touchend', 'touchcancel']) list.addEventListener(event, () => { chatTouching = false; restoringChatScroll = false; settleChatScroll(); }, { passive: true });
-$('toBottom').onclick = () => { list.scrollTop = list.scrollHeight; };
+$('toBottom').onclick = () => { restoreChatPosition(null, true); };
 $('older').onclick = () => loadOlderMessages();
 
 // LaTeX in text typed by the user ($..$, $..$, \\(..\\), \\[..\\]): turned into .math placeholders for KaTeX.
@@ -1036,6 +1067,26 @@ function typesetMath(root) {
   });
 }
 function dressMessage(el) {
+  // Codex history may contain raw Markdown when its native rendered block is unmounted.
+  // Format emphasis in text only; retain literal backticks/escapes and all existing rich markup.
+  if (currentApp === 'codex' && el.textContent.includes('**')) {
+    const raw = document.createTreeWalker(el, NodeFilter.SHOW_TEXT), nodes = [];
+    while (raw.nextNode()) if (!raw.currentNode.parentElement.closest('a, pre, code, textarea, strong, b, .math')) nodes.push(raw.currentNode);
+    let ticks = '';
+    for (const node of nodes) {
+      const fragment = document.createDocumentFragment();
+      let last = 0;
+      for (const match of node.textContent.matchAll(/\\[\\*`]|`+|\*\*(\S(?:[^\n]*?\S)?)\*\*(?!\*)/g)) {
+        fragment.append(node.textContent.slice(last, match.index));
+        if (match[0].startsWith('`')) { ticks = ticks === match[0] ? '' : ticks || match[0]; fragment.append(match[0]); }
+        else if (match[1] && !ticks) { const strong = document.createElement('strong'); strong.textContent = match[1]; fragment.append(strong); }
+        else fragment.append(match[0]);
+        last = match.index + match[0].length;
+      }
+      fragment.append(node.textContent.slice(last));
+      node.replaceWith(fragment);
+    }
+  }
   const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
   const nodes = [];
   while (walker.nextNode()) if (!walker.currentNode.parentElement.closest('a, pre, code, textarea, .math')) nodes.push(walker.currentNode);
@@ -1220,6 +1271,53 @@ function showCodexSkills(rows) {
   };
   paint();
 }
+let codexFileRequest = 0;
+async function openCodexFilePicker(token) {
+  const scope = chatInputKey(), selected = new Map();
+  const start = token?.start ?? text.selectionStart, end = token?.caret ?? text.selectionEnd;
+  let directory = null;
+  mentionHide();
+  const paint = (note = '') => {
+    const rows = (directory?.entries || []).map((entry, index) => entry.directory
+      ? `<button class="opt editorEntry editorFolder" data-cf-dir="${index}">${fileEntryIcon(true)}<span class="lbl">${esc(entry.name)}</span><span class="editorEntryArrow">›</span></button>`
+      : `<label class="opt editorEntry"><input type="checkbox" data-cf-file="${index}" ${selected.has(entry.path) ? 'checked' : ''} ${entry.selectable ? '' : 'disabled'}>${fileEntryIcon(false)}<span class="lbl">${esc(entry.name)}</span></label>`).join('');
+    openSheet('codex-files', `<h3>添加电脑端文件</h3><form id="codexFilePathForm" style="display:flex;gap:8px"><button type="button" id="codexFileUp" ${!directory || directory.path === directory.parent ? 'disabled' : ''}>↑ 上一级</button><input id="codexFilePath" aria-label="电脑目录" style="min-width:0;flex:1" value="${esc(directory?.path || '')}" placeholder="输入电脑目录路径"><button>前往</button></form><div class="hint">${esc(note)}</div><div id="codexFileRows" style="max-height:42vh;overflow-y:auto;overscroll-behavior:contain">${rows || '<div class="hint">暂无可显示的文件</div>'}</div><div class="askBtns"><button id="codexFileCancel">取消</button><button id="codexFileAdd" ${selected.size ? '' : 'disabled'}>添加（${selected.size}）</button></div>`);
+    $('codexFilePathForm').onsubmit = e => { e.preventDefault(); browse($('codexFilePath').value); };
+    $('codexFileUp').onclick = () => browse(directory.parent);
+    $('codexFileRows').onclick = e => {
+      const b = e.target.closest('[data-cf-dir]');
+      if (b) browse(directory.entries[Number(b.dataset.cfDir)].path);
+    };
+    $('codexFileRows').onchange = e => {
+      const entry = directory.entries[Number(e.target.dataset.cfFile)];
+      if (e.target.checked) selected.set(entry.path, entry); else selected.delete(entry.path);
+      $('codexFileAdd').disabled = !selected.size;
+      $('codexFileAdd').textContent = `添加（${selected.size}）`;
+    };
+    $('codexFileCancel').onclick = closeSheet;
+    $('codexFileAdd').onclick = () => {
+      if (scope !== chatInputKey()) { closeSheet(); return status('会话已切换，请重新选择文件', false); }
+      if (takeMentions(text.value.slice(0, start) + text.value.slice(end)).length + selected.size > 12) return status('每条消息最多添加 12 个引用项', false);
+      const mentions = [...selected.values()].map(entry => ({ token: '@' + entry.name, q: entry.name, label: entry.name, path: entry.path, section: 'local-files', trigger: '@' }));
+      text.setRangeText(mentions.map(m => m.token).join(' ') + ' ', start, end, 'end');
+      MN.mentions.push(...mentions);
+      closeSheet(); autosize(); saveDraft(); text.focus();
+    };
+  };
+  const browse = async path => {
+    const serial = ++codexFileRequest;
+    paint('正在读取电脑目录…');
+    try {
+      const response = await api('/api/transfer/list?path=' + encodeURIComponent(path));
+      const data = await response.json();
+      if (serial !== codexFileRequest || sheetKind !== 'codex-files') return;
+      if (!response.ok) throw Error(data.error);
+      directory = data;
+      paint();
+    } catch (error) { if (serial === codexFileRequest && sheetKind === 'codex-files') paint(error.message); }
+  };
+  await browse('');
+}
 $('add').onclick = () => {
   if (currentApp === 'fusion') {
     openSheet('add', '<h3>添加附件</h3><button class="opt" data-control="img">上传图片</button><button class="opt" data-control="uploadDoc">上传文档</button>');
@@ -1235,7 +1333,7 @@ $('add').onclick = () => {
     $('sheet').querySelectorAll('[data-control]').forEach(b => b.onclick = () => { closeSheet(); $(b.dataset.control).click(); });
     return;
   }
-  const rows = [['new', '新建会话'], ['plan', `Plan：${c.plan ? '开' : '关'}`], ['skills', 'Skill · 技能'], ['files', '引用文件'], ['commands', '扩展与命令']];
+  const rows = [['new', '新建会话'], ['plan', `Plan：${c.plan ? '开' : '关'}`], ['skills', 'Skill · 技能'], ...(supportsCapability('fileReferences') ? [['local-files', '添加电脑端文件'], ['files', '引用文件']] : []), ['commands', '扩展与命令']];
   if (c.ide) rows.push(['ide', `IDE 上下文：${c.ide.on ? '开' : '关'}`]);
   if (c.run) rows.push(['run', `执行位置：${c.run}`]);
   if (c.actions) rows.push(['chat', '会话操作']);
@@ -1249,6 +1347,7 @@ $('add').onclick = () => {
     if (key === 'run') return send({ t: 'codexRun' });
     if (key === 'chat') return send({ t: 'codexChat' });
     if (key === 'skills') return send({ t: 'codexSkills' });
+    if (key === 'local-files') return openCodexFilePicker();
     text.focus();
     text.setRangeText(key === 'files' ? '@' : '/', text.selectionStart, text.selectionEnd, 'end');
     autosize(); saveDraft(); mentionUpdate();
