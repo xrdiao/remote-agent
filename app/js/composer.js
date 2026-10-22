@@ -422,7 +422,6 @@ text.addEventListener('keydown', e => {
   shiftEnter = e.shiftKey;
   submitOnEnter(e);
 });
-text.addEventListener('pointerdown', endInputRecall, { passive: true });
 text.addEventListener('keyup', e => { if (e.key === 'Enter') shiftEnter = false; });
 text.addEventListener('beforeinput', e => {
   if (e.inputType === 'insertLineBreak' || e.inputType === 'insertParagraph') submitOnEnter(e);

@@ -320,6 +320,7 @@ function userSelecting() {
 let deferredRender = false;
 let chatScrolling = false, chatTouching = false, scrollIdle = 0, deferredScrollRender = false, lastScrollTop = 0;
 let historyRequest = null, historyRendering = false, historyExpanded = false, historyArmed = false, historySerial = 0, historyAtEnd = false;
+let pendingHistoryStatus = null;
 let restoringChatScroll = false, readingAnchor = null;
 function captureChatAnchor() {
   const top = list.getBoundingClientRect().top;
@@ -473,7 +474,7 @@ function renderChat(chat, stale, loading = false) {
     menuCache.delete(menuCacheKey('effort'));
   }
   if (!chat || previous?.thread !== chat.thread) {
-    historyRequest = null; historyRendering = false; historyExpanded = false; historyArmed = false; historyAtEnd = false; readingAnchor = null;
+    historyRequest = null; historyRendering = false; historyExpanded = false; historyArmed = false; historyAtEnd = false; readingAnchor = null; pendingHistoryStatus = null;
     $('older').disabled = false;
     $('historyStatus').hidden = true;
   }
@@ -645,6 +646,7 @@ function renderChat(chat, stale, loading = false) {
   renderQueue(chatStale ? false : chat.busy, chatStale ? [] : (chat.queued || []), chat.subagents || [], chat.readonly, chat.changed, chat.queuedCount);
   renderQuestions(chatStale || (chat.readonly && !chat.questions?.codex) ? null : chat.questions);
 
+  paintHistoryStatus();
   restoreChatPosition(anchor, stick);
   historyRendering = false;
   if (!stick && previous && JSON.stringify(previous.items) !== JSON.stringify(chat.items)) $('toBottom').textContent = '↓ 有新消息';
@@ -943,6 +945,22 @@ function updateToBottom() {
   if (nearBottom()) $('toBottom').textContent = '↓ 最新';
   $('toBottom').style.display = nearBottom() ? 'none' : 'block';
 }
+function paintHistoryStatus() {
+  if (pendingHistoryStatus === null) return;
+  $('older').disabled = !!historyRequest;
+  if (historyAtEnd) $('older').hidden = true;
+  $('historyStatus').hidden = false;
+  $('historyStatus').textContent = pendingHistoryStatus;
+  pendingHistoryStatus = null;
+}
+function showHistoryStatus(message) {
+  pendingHistoryStatus = I18N.tr(message);
+  // A pending chat frame applies the notice and older rows under the same anchor.
+  if (chatScrolling || chatTouching || chatFrame) return;
+  const anchor = captureChatAnchor();
+  paintHistoryStatus();
+  restoreChatPosition(anchor);
+}
 function loadOlderMessages() {
   if (!lastChat || historyRequest || chatScrolling || chatTouching) return;
   historyArmed = false;
@@ -961,34 +979,24 @@ function requestOlderRemote() {
   if (!lastChat || historyRequest) return;
   historyArmed = false;
   if (historyAtEnd || $('older').hidden) {
-    $('historyStatus').hidden = false;
-    $('historyStatus').textContent = I18N.tr('已到最早消息');
+    showHistoryStatus('已到最早消息');
     return;
   }
   if (currentApp === 'codex' && lastChat.busy) {
-    $('historyStatus').hidden = false;
-    $('historyStatus').textContent = I18N.tr('生成中，稍后上滑加载历史');
+    showHistoryStatus('生成中，稍后上滑加载历史');
     return;
   }
   historyRequest = { id: String(++historySerial), sel: viewSel };
   historyRendering = true;
   historyExpanded = true;
-  const anchor = captureChatAnchor();
-  $('older').disabled = true;
-  $('historyStatus').hidden = false;
-  $('historyStatus').textContent = I18N.tr('正在加载更早的消息…');
-  if (!chatScrolling && !chatTouching) restoreChatPosition(anchor);
+  showHistoryStatus('正在加载更早的消息…');
   send({ t: 'scrollChat', dy: -900, automatic: true, history: true, requestId: historyRequest.id });
 }
 function finishHistory(m) {
   if (!historyRequest || m.requestId !== historyRequest.id || m.sel !== historyRequest.sel) return;
-  const anchor = captureChatAnchor();
   historyRequest = null;
-  $('older').disabled = false;
-  $('historyStatus').hidden = false;
-  $('historyStatus').textContent = I18N.tr(m.error || (m.blocked ? '生成中，稍后上滑加载历史' : m.earlier === false && $('cachedMore').hidden ? '已到最早消息' : '继续上滑可加载更早的消息'));
-  if (m.earlier === false) { historyAtEnd = true; $('older').hidden = true; }
-  if (!chatScrolling && !chatTouching) restoreChatPosition(anchor);
+  if (m.earlier === false) historyAtEnd = true;
+  showHistoryStatus(m.error || (m.blocked ? '生成中，稍后上滑加载历史' : m.earlier === false && $('cachedMore').hidden ? '已到最早消息' : '继续上滑可加载更早的消息'));
   if (!deferredScrollRender) historyRendering = false;
   maybePrefetchOlder();
 }
@@ -1010,8 +1018,15 @@ function settleChatScroll() {
   clearTimeout(scrollIdle);
   scrollIdle = setTimeout(() => {
     if (chatTouching) return;
+    // Scroll events can lag the compositor during momentum scrolling.
+    if (list.scrollTop !== lastScrollTop) { settleChatScroll(); return; }
     chatScrolling = false;
     if (deferredScrollRender && lastChat) { deferredScrollRender = false; renderChat(lastChat); }
+    else if (pendingHistoryStatus !== null && !chatFrame) {
+      const anchor = captureChatAnchor();
+      paintHistoryStatus();
+      restoreChatPosition(anchor);
+    }
     readingAnchor = pinnedBottom ? null : captureChatAnchor();
     maybeLoadOlder();
   }, 150);
