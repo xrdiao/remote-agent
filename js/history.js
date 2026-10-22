@@ -322,6 +322,7 @@ let chatScrolling = false, chatTouching = false, scrollIdle = 0, deferredScrollR
 let historyRequest = null, historyRendering = false, historyExpanded = false, historyArmed = false, historySerial = 0, historyAtEnd = false;
 let pendingHistoryStatus = null;
 let turnNavTimer = 0, turnNavHeld = false, turnNavUser = false, turnNavCursor = null, turnNavPending = null;
+let turnNavPointer = null, turnNavSkipClick = false;
 let restoringChatScroll = false, readingAnchor = null;
 function captureChatAnchor() {
   const top = list.getBoundingClientRect().top;
@@ -947,9 +948,26 @@ $('queueBar').onclick = async e => {
 function updateToBottom() {
   if (nearBottom()) $('toBottom').textContent = '↓ 最新';
   $('toBottom').style.display = nearBottom() ? 'none' : 'block';
+  updateTurnNav();
 }
+function updateTurnNav() {
+  const track = $('turnNavTrack'), nav = $('turnNav');
+  track.hidden = !itemsEl.querySelector(':scope > .human[data-i]') || list.scrollHeight <= list.clientHeight;
+  if (!track.hidden) {
+    const travel = track.clientHeight - nav.offsetHeight;
+    track.hidden = travel < 0;
+    if (!track.hidden) {
+      const progress = turnNavPointer?.dragging ? turnNavPointer.progress : list.scrollTop / (list.scrollHeight - list.clientHeight);
+      nav.style.top = Math.max(0, Math.min(1, progress)) * travel + 'px';
+    }
+  }
+}
+const turnNavSizeObserver = new ResizeObserver(updateTurnNav);
+for (const el of [$('listWrap'), itemsEl]) turnNavSizeObserver.observe(el);
 function resetTurnNav() {
   clearTimeout(turnNavTimer);
+  if (turnNavPointer?.dragging) { chatTouching = chatScrolling = false; clearTimeout(scrollIdle); }
+  turnNavPointer = null; turnNavSkipClick = false;
   turnNavHeld = turnNavUser = false;
   turnNavCursor = turnNavPending = null;
   $('turnNav').classList.remove('show');
@@ -1032,13 +1050,48 @@ $('previousTurn').onclick = () => navigateTurn(-1);
 $('nextTurn').onclick = () => navigateTurn(1);
 $('toBottom').addEventListener('click', resetTurnNav);
 $('turnNav').addEventListener('pointerdown', e => {
+  if (e.button !== 0 || turnNavPointer) return;
   e.preventDefault();
+  const nav = $('turnNav');
+  turnNavSkipClick = false;
+  turnNavPointer = { id: e.pointerId, y: e.clientY, top: nav.offsetTop,
+    travel: $('turnNavTrack').clientHeight - nav.offsetHeight,
+    opened: nav.classList.contains('show') || nav.matches(':focus-within'), dragging: false };
   e.target.setPointerCapture(e.pointerId);
   turnNavHeld = true; showTurnNav();
 });
-for (const event of ['pointerup', 'pointercancel']) $('turnNav').addEventListener(event, () => {
-  turnNavHeld = false; showTurnNav();
+$('turnNav').addEventListener('pointermove', e => {
+  const pointer = turnNavPointer;
+  if (!pointer || pointer.id !== e.pointerId) return;
+  const dy = e.clientY - pointer.y;
+  if (!pointer.dragging && Math.abs(dy) < 6) return;
+  e.preventDefault();
+  if (!pointer.dragging) {
+    pointer.dragging = true;
+    turnNavGesture();
+    chatTouching = chatScrolling = true;
+    pinnedBottom = false;
+    clearTimeout(scrollIdle);
+  }
+  pointer.progress = Math.max(0, Math.min(1, (pointer.top + dy) / pointer.travel));
+  list.scrollTop = pointer.progress * (list.scrollHeight - list.clientHeight);
+  readingAnchor = captureChatAnchor();
+  settleChatScroll();
 });
+for (const event of ['pointerup', 'pointercancel', 'lostpointercapture']) $('turnNav').addEventListener(event, e => {
+  const pointer = turnNavPointer;
+  if (!pointer || pointer.id !== e.pointerId) return;
+  turnNavSkipClick = event === 'pointerup' && (pointer.dragging || !pointer.opened);
+  turnNavPointer = null; turnNavHeld = false;
+  if (pointer.dragging) { chatTouching = false; settleChatScroll(); }
+  updateTurnNav(); showTurnNav();
+});
+$('turnNav').addEventListener('click', e => {
+  if (turnNavSkipClick) { e.preventDefault(); e.stopImmediatePropagation(); turnNavSkipClick = false; }
+}, true);
+$('turnNav').addEventListener('touchstart', e => {
+  e.stopPropagation();
+}, { passive: true });
 function paintHistoryStatus() {
   if (pendingHistoryStatus === null) return;
   $('older').disabled = !!historyRequest;
