@@ -1183,7 +1183,8 @@ function settleChatScroll() {
 }
 list.addEventListener('scroll', () => {
   if (!restoringChatScroll && turnNavUser) showTurnNav();
-  if (!restoringChatScroll && !pinnedBottom) stabilizeChatReading();
+  // During native touch dragging, the size observer handles layout changes without measuring every scroll.
+  if (!restoringChatScroll && !pinnedBottom && (!chatTouching || turnNavPointer?.dragging)) stabilizeChatReading();
   settleChatScroll();
 }, { passive: true });
 let historyTouchY = 0;
