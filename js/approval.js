@@ -2,6 +2,9 @@ const credential = location.hash.slice(1) || sessionStorage.getItem('ra-approval
 if (credential) sessionStorage.setItem('ra-approval', credential);
 history.replaceState(null, '', location.pathname);
 const $ = id => document.getElementById(id);
+$('language').value = I18N.lang;
+$('language').onchange = () => I18N.set($('language').value);
+document.title = 'Remote Agent · ' + I18N.tr('设备配对');
 let timer, clock, expires = 0, rowsKey = '', busy = false, ended = false;
 async function request(path, body) {
   const r = await fetch('/api/approval/' + path, { method: body ? 'POST' : 'GET', headers: { authorization: 'Approval ' + credential, 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}), cache: 'no-store' });
@@ -41,7 +44,7 @@ async function refresh() {
       $('requests').replaceChildren(...data.requests.map(row => {
         const article = document.createElement('article'), name = document.createElement('strong');
         name.textContent = row.name;
-        const origin = document.createElement('p'); origin.textContent = (row.origin || '未提供来源') + ' · ' + row.groupName;
+        const origin = document.createElement('p'); origin.textContent = (row.origin || I18N.tr('未提供来源')) + ' · ' + I18N.tr(row.groupName);
         const actions = document.createElement('div'); actions.className = 'actions';
         const code = document.createElement('span'); code.className = 'code'; code.textContent = row.code;
         const buttons = document.createElement('div');
