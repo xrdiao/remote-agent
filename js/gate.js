@@ -45,7 +45,7 @@ $('gatePaste').onclick = async () => {
   try { $('gateInput').value = (await navigator.clipboard.readText()).trim(); $('gateInput').focus(); }
   catch { $('gateMsg').textContent = I18N.tr('无法读取剪贴板，请长按输入框粘贴'); }
 };
-$('gateHelp').onclick = () => openSheet('pair-help', '<h3>配对遇到问题？</h3><p>在电脑端运行 npm run pair，使用新生成的二维码、链接或完整手动配对码。</p><p>配对码 10 分钟内有效，只能授权一台新设备。请使用终端显示的固定网页入口。</p>');
+$('gateHelp').onclick = () => openSheet('pair-help', '<h3>配对遇到问题？</h3><p>在电脑端运行 npm run pair，使用新生成的二维码、链接或完整手动配对码。</p><p>配对码 3 分钟内可重复申请，每个入口都需在电脑配对窗口批准。</p>');
 $('gateRetry').onclick = () => { if (gateRetryFn) gateRetryFn(); else boot(); };
 $('gateComputers').onclick = () => showComputers();
 let connGen = 0;

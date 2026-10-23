@@ -417,15 +417,15 @@ async function joinEntryRequest() {
       delete request.invitation;
       sessionStorage.setItem('entry-request', JSON.stringify(request));
     }
-    gate({ msg: `授权验证码：${request.code}\n${request.desktop ? '请在电脑授权页面核对验证码，勾选属于同一设备的入口并批准。' : '请在已配对入口的「已配对设备」中核对验证码并同意。'}`, retry: '取消申请', onRetry: cancel });
+    gate({ msg: `授权验证码：${request.code}\n${request.desktop ? '请在电脑配对窗口核对验证码，然后点击「允许连接」。' : '请在已配对入口的「已配对设备」中核对验证码并同意。'}`, retry: '取消申请', onRetry: cancel });
     while (generation === entryJoinGeneration && pending === request) {
-      if (Date.now() >= request.expires) { terminal = true; throw new Error('授权请求已过期，请重新生成链接'); }
       const r = await post('/api/entries/status', { id: request.requestId, secret: request.secret });
       const body = await r.json();
       if (generation !== entryJoinGeneration || pending !== request) return;
       if (!r.ok) { terminal = true; throw new Error(body.error || '授权查询失败'); }
       if (body.state === 'approved') return finishPair(body);
       if (body.state === 'denied') { terminal = true; throw new Error('本次入口申请已被拒绝'); }
+      if (Date.now() >= request.expires) { terminal = true; throw new Error('授权请求已过期，请重新生成链接'); }
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
   } catch (error) {
