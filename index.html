@@ -34,7 +34,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>Remote Agent</title>
-<link rel="stylesheet" href="app.css?v=203">
+<link rel="stylesheet" href="app.css?v=210">
 </head>
 <body>
 <nav id="rail" aria-label="导航"></nav>
@@ -186,10 +186,13 @@
 </div>
 
 <div id="gate">
-  <div id="gateLang" aria-label="语言 / Language"><button data-lang="zh">中</button><span>|</span><button data-lang="en">EN</button></div>
-  <div class="pairHero"><img src="icon-512.png" alt="" class="pairLogo"><h2>Remote Agent</h2><p id="pairIntro">在电脑端运行 npm run pair，<br>然后扫描二维码或输入配对码进行连接。</p></div>
+  <div id="gateHeader"><span class="gateBrand"><img src="icon-192.png" alt="">Remote Agent</span><div id="gateLang" aria-label="语言 / Language"><button data-lang="zh">中</button><span>|</span><button data-lang="en">EN</button></div></div>
+  <div class="pairHero"><h2>连接电脑</h2><p id="gateLead" hidden>确认授权，即可安全连接</p><p id="pairIntro">在电脑端运行 npm run pair，<br>然后扫描二维码或输入配对码进行连接。</p></div>
   <div class="pairControls">
+  <div id="gateStatus" hidden><span id="gateStatusIcon" aria-hidden="true"></span><h3 id="gateStatusTitle"></h3><p id="gateStatusDetail" hidden></p><div id="gateCode" hidden></div></div>
   <div id="gateMsg"></div>
+  <p id="gateNote" hidden></p>
+  <div id="gateWaiting" hidden><span class="cSpin" aria-hidden="true"></span><span>正在等待确认…</span></div>
   <div id="gateEntry"><div class="pairInput"><input id="gateInput" autocapitalize="off" autocorrect="off" spellcheck="false"><button id="gatePaste" aria-label="粘贴" title="粘贴"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="16" rx="2"/><rect x="9" y="3" width="6" height="4" rx="1"/></svg></button></div><button id="gateBtn" class="primary"></button></div>
   <div id="pairOr" hidden><span></span><span>或</span><span></span></div>
   <button id="gateScan" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3M7 12h10"/></svg><span>扫码连接</span></button>
@@ -231,12 +234,12 @@
   <input id="scannerFile" type="file" accept="image/*" hidden>
 </div>
 
-<script src="i18n.js?v=209"></script>
-<script src="js/core.js?v=209"></script>
-<script src="js/gate.js?v=208"></script>
+<script src="i18n.js?v=210"></script>
+<script src="js/core.js?v=210"></script>
+<script src="js/gate.js?v=210"></script>
 <script src="js/scanner.js"></script>
 <script src="js/auth.js?v=207"></script>
-<script src="js/net.js?v=208"></script>
+<script src="js/net.js?v=210"></script>
 <script src="js/sheets.js?v=207"></script>
 <script src="js/notify.js?v=207"></script>
 <script src="js/mode.js?v=158"></script>

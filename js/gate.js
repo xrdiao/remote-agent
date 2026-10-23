@@ -1,10 +1,22 @@
 /* ---------- gate: pairing / 2FA / offline ---------- */
 let gateSubmit = null;
 let gateRetryFn = null;
-function gate({ msg = '', err = false, input = null, retry = false, repair = false, computers = false, appLink = null, onRetry = null } = {}) {
+function gate({ msg = '', err = false, input = null, retry = false, repair = false, computers = false, appLink = null, onRetry = null, pairStatus = null } = {}) {
   connHide();
   $('gate').classList.add('open');
   $('gate').classList.toggle('pairing', !!input?.scan);
+  $('gate').classList.toggle('pairStatus', !!pairStatus);
+  $('gate').dataset.pairState = pairStatus?.state || '';
+  $('gateStatus').hidden = $('gateLead').hidden = !pairStatus;
+  $('gateStatusTitle').textContent = pairStatus?.title || '';
+  $('gateStatusIcon').innerHTML = !pairStatus ? '' : pairStatus.state === 'loading' ? CONN_ICON.load : pairStatus.state === 'waiting' ? CONN_HOST_SVG : pairStatus.state === 'paired' ? CONN_ICON.ok : '!';
+  $('gateStatusDetail').textContent = pairStatus?.detail || '';
+  $('gateStatusDetail').hidden = !pairStatus?.detail;
+  $('gateCode').textContent = pairStatus?.code || '';
+  $('gateCode').hidden = !pairStatus?.code;
+  $('gateNote').textContent = pairStatus?.note || '';
+  $('gateNote').hidden = !pairStatus?.note;
+  $('gateWaiting').hidden = pairStatus?.state !== 'waiting';
   $('gateMsg').textContent = msg;
   $('gateMsg').className = err ? 'err' : '';
   const inp = $('gateInput');

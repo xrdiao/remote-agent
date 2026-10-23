@@ -214,6 +214,7 @@ function showUnpaired(msg = '') {
   gate({
     msg,
     err: !!msg,
+    pairStatus: msg ? { state: 'error', title: '配对申请未完成' } : null,
     input: { placeholder: '输入配对链接或配对码', button: '连接', submit: pastePair, scan: true, inputMode: 'text' },
   });
 }
@@ -360,7 +361,7 @@ async function showOffline(failure = { stage: '应用连接', error: '' }) {
 }
 
 async function pair(totp) {
-  gate({ msg: '正在配对…' });
+  gate({ pairStatus: { state: 'loading', title: '正在配对…' } });
   let r, body;
   try {
     const { publicKey } = await entryKey();
@@ -379,7 +380,7 @@ async function pair(totp) {
   }
   if (body.needTotp) return showTotp(code => pair(code), body.error);
   pending = null;
-  if (store.get('token')) return gate({ msg: (body.error || '配对失败') + '\n\n这台设备之前已经配对过，可以继续使用。', err: true, retry: '继续使用' });
+  if (store.get('token')) return gate({ msg: body.error || '配对失败', err: true, retry: '继续使用', pairStatus: { state: 'paired', title: '此入口已有配对记录', note: '这台设备之前已经配对过，可以继续使用。' } });
   showUnpaired(body.error || '配对失败');
 }
 
@@ -407,7 +408,7 @@ async function joinEntryRequest() {
   };
   try {
     if (!request.requestId) {
-      gate({ msg: '正在申请入口授权…' });
+      gate({ pairStatus: { state: 'loading', title: '正在申请入口授权…' } });
       const { publicKey } = await entryKey();
       const r = await post('/api/entries/join', { invitation: request.invitation, name: entryName(), publicKey });
       const body = await r.json();
@@ -417,7 +418,7 @@ async function joinEntryRequest() {
       delete request.invitation;
       sessionStorage.setItem('entry-request', JSON.stringify(request));
     }
-    gate({ msg: `授权验证码：${request.code}\n${request.desktop ? '请在电脑配对窗口核对验证码，然后点击「允许连接」。' : '请在已配对入口的「已配对设备」中核对验证码并同意。'}`, retry: '取消申请', onRetry: cancel });
+    gate({ msg: request.desktop ? '请在电脑配对窗口核对验证码，然后点击「允许连接」。' : '请在已配对入口的「已配对设备」中核对验证码并同意。', pairStatus: { state: 'waiting', title: request.desktop ? '等待电脑批准' : '等待入口批准', detail: '请核对两端的验证码', code: request.code }, retry: '取消申请', onRetry: cancel });
     while (generation === entryJoinGeneration && pending === request) {
       const r = await post('/api/entries/status', { id: request.requestId, secret: request.secret });
       const body = await r.json();
@@ -430,7 +431,7 @@ async function joinEntryRequest() {
     }
   } catch (error) {
     if (generation !== entryJoinGeneration || pending !== request) return;
-    if (!terminal && request.requestId) return gate({ msg: '暂时无法查询授权，申请已保留，请重试。', err: true, retry: true, repair: true });
+    if (!terminal && request.requestId) return gate({ msg: '暂时无法查询授权，申请已保留，请重试。', err: true, retry: true, repair: true, pairStatus: { state: 'error', title: '配对申请未完成' } });
     sessionStorage.removeItem('entry-request'); pending = null;
     showUnpaired(error.message);
   }
