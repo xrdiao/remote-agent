@@ -190,15 +190,19 @@ export const methods = {
       this.syncSession(chat);
       const emptyCodex = this.app === 'codex' && !this.threadId && !this.selectedThread && !chat?.thread && chat?.items?.length === 0 && !chat.readonly;
       const extracted = chat && JSON.stringify({ ...chat, draft: undefined });
+      let contextRead;
       if (chat && chat.thread === (this.threadId || '') && (this.app !== 'codex' || chat.thread || emptyCodex) && (!this.lastChat || extracted !== this.lastExtractedChat)) {
-        this.lastExtractedChat = extracted;
         const initial = { ...chat, items: chat.items.map(it => ({ ...it })) };
         delete initial.draft;
         if (this.app === 'codex') for (const it of initial.items.filter(it => it.images?.length)) {
           const old = this.itemCache?.get(chat.thread)?.find(x => x.i === it.i);
           it.images = it.images.map((src, n) => old?.imageSources?.[n] === src ? old.images[n] : src);
         }
-        if (this.app === 'codex') initial.context = codexContext(chat.thread);
+        if (this.app === 'codex') {
+          initial.context = await (contextRead = Promise.resolve(codexContext(chat.thread)));
+          if (!this.liveRead(cdp, sel) || this.historyLoading || !this.acceptsChat(initial)) return;
+        }
+        this.lastExtractedChat = extracted;
         this.fillThinking(initial);
         this.retainThinking(initial);
         this.fillDevinCommands(initial);
@@ -257,7 +261,7 @@ export const methods = {
       }
       this.pendingThread = '';
       this.lastBusy = !!chat.busy;
-      if (this.app === 'codex') chat.context = codexContext(chat.thread);
+      if (this.app === 'codex') chat.context = await (contextRead || codexContext(chat.thread));
       if (this.app === 'codex') {
         await this.resolveCodexImages(chat, cdp);
         if (!this.liveRead(cdp, sel)) return;

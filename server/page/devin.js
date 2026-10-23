@@ -232,8 +232,15 @@
   // Devin's queue (verified live): a bar "N message(s) queued" with a "Clear all" button, then an <ol>
   // of li[role=button] rows holding the message text. Hovering a row reveals "Edit message",
   // "Remove from queue" and "Send now" (hidden until hover). Rows are read from textContent.
-  const devinQueueBar = () => [...document.querySelectorAll('span.text-12')].find(s => /\d+ messages? queued/.test(s.innerText || ''));
-  const devinQueueCount = () => Number(/(\d+) messages? queued/.exec(devinQueueBar()?.innerText || '')?.[1]) || 0;
+  const devinQueueText = () => devinQueueBar()?.innerText || '';
+  const devinQueueBar = () => [...document.querySelectorAll('span.text-12')].find(s => {
+    const text = s.innerText || '';
+    return /\d+\s+messages?\s+queued/i.test(text) || /排队(?:中)?\s*\d+\s*条/.test(text);
+  });
+  const devinQueueCount = () => {
+    const text = devinQueueText();
+    return Number(/(\d+)\s+messages?\s+queued/i.exec(text)?.[1] || /排队(?:中)?\s*(\d+)\s*条/.exec(text)?.[1]) || 0;
+  };
   const devinQueueRows = () => devinQueueBar() ? [...document.querySelectorAll('ol li[role="button"]')].filter(e => /cursor-grab/.test(e.className)) : [];
   const devinQueued = () => devinQueueRows().map((row, n) => ({
     id: `dq${n}`,

@@ -128,7 +128,7 @@ async fusionUsage(automatic = false, only = '') {
     const usage = await this.withFusionSideSpec(spec, async function () {
       const active = await this.cdp.evaluate(helpersCall('activeThread()'));
       const context = active === spec.agentId
-        ? spec.app === 'codex' ? codexContext(active) : await this.cdp.evaluate(helpersCall('contextPct()'))
+        ? spec.app === 'codex' ? await codexContext(active) : await this.cdp.evaluate(helpersCall('contextPct()'))
         : spec.usage?.context;
       try {
         const account = spec.app === 'codex' ? await this.readCodexAccount({ manual: !automatic, fusion: true })
@@ -505,7 +505,7 @@ async fusionAsk(side, prompt) {
         this.fusionOwner.fusionEmit();
       }
       spec.usage = { ...spec.usage, context: this.app === 'codex'
-        ? codexContext(chat.thread) : chat?.context ?? await this.cdp.evaluate(helpersCall('contextPct()')) };
+        ? await codexContext(chat.thread) : chat?.context ?? await this.cdp.evaluate(helpersCall('contextPct()')) };
       this.fusionOwner.fusionUsageEmit();
       let last;
       if (this.app === 'codex') {

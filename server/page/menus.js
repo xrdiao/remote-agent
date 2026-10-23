@@ -46,7 +46,9 @@
     });
   };
   const devinModelMenu = () => [...doc.querySelectorAll('div')].find(e => vis(e) && /Recently Used|Recommended/.test(e.innerText || '') && (e.innerText || '').includes('See more') && (e.innerText || '').length < 2500);
-  const powerProps = () => doc.querySelector('[data-codex-intelligence-trigger]') ? codexFiberProps(modelButton(), 40).find(p => p.powerSelections && p.onCommitPower) : null;
+  const powerProps = () => doc.querySelector('[data-codex-intelligence-trigger]')
+    ? codexFiberProps(modelButton(), 96).find(p => p.powerSelections && typeof p.onSelectPower === 'function' && typeof p.onCommitPower === 'function')
+    : null;
   const codexPickerProps = () => {
     const trg = [...doc.querySelectorAll('[data-codex-intelligence-trigger]')].find(vis);
     return trg ? codexFiberProps(trg, 70).find(p => p.modelOptions && p.onSelectModelOption) : null;
@@ -147,7 +149,7 @@
   };
   const effortItems = (includePricing = false) => {
     const p = powerProps();
-    if (p) return p.powerSelections.filter(x => !x.isLocked).map(x => ({ label: x.reasoningEffort, checked: x.reasoningEffort === p.reasoningEffort }));
+    if (p) return p.powerSelections.filter(x => !x.isLocked).map(x => ({ label: x.reasoningEffort, checked: x.reasoningEffort === p.selectedPowerSelection?.reasoningEffort }));
     const cp = devinSurface() ? null : cursorPickerProps();
     if (cp) {
       const sel = (cp.selections || cp.initialSelections || [])[0];
@@ -165,8 +167,8 @@
     if (p) {
       const item = p.powerSelections.find(x => !x.isLocked && x.reasoningEffort === label);
       if (!item) return false;
-      const previous = { model: p.model, reasoningEffort: p.reasoningEffort };
-      p.onSelectModel(item.model, item.reasoningEffort);
+      const previous = p.selectedPowerSelection;
+      p.onSelectPower(item);
       p.onCommitPower(item, previous);
       p.onSelectComplete?.();
       return true;

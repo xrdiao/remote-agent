@@ -1,3 +1,4 @@
+import { authenticateDevice } from '../../lib/device-proof.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -184,7 +185,7 @@ export function voiceWss() {
           clearTimeout(authTimer);
           const message = binary ? {} : JSON.parse(raw);
           token = message.token || '';
-          device = message.type === 'auth' ? findDevice(token) : null;
+          device = message.type === 'auth' ? authenticateDevice(token, message.proof, 'WS /voice') : null;
           if (!device || needsTotp(device)) return ws.close(4001, 'unauthorized');
           authorization = bindDeviceConnection(device.id, () => ws.close(4001, 'unauthorized'));
           engineId = message.engine || voiceStatus().engineId;

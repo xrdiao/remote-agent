@@ -49,6 +49,20 @@ function rememberConversation() {
   rememberComputer({ ...here, lastConversation: selection,
     previousConversation: last && (last.id !== selection.id || last.windowId !== selection.windowId) ? last : here.previousConversation });
 }
+function forgetClosedWindow(id) {
+  const here = currentComputer();
+  if (!here || !id) return;
+  const app = String(id).split(':')[0], selections = { ...here.selections };
+  const current = here?.win === id, selected = selections[app]?.id === id;
+  if (!current && !selected) return;
+  if (selected) delete selections[app];
+  delete selections[id];
+  const next = { ...here, selections };
+  if (current) { next.win = ''; next.windowId = ''; next.threadId = ''; }
+  if (current && next.lastConversation?.id === id) next.lastConversation = null;
+  rememberComputer(next);
+  if (current) store.set('window', null);
+}
 function applySelection(m, clearChat = true) {
   if (m.app) { currentApp = m.app; capabilityOwner = m.app; agentCapabilities = m.capabilities || null; fusionSideCapabilities = m.sideCapabilities || {}; }
   const changed = (m.sel || '') !== viewSel;
@@ -83,13 +97,36 @@ function discoveryUrl() {
   const page = new URL('url.json', location.href).href;
   return pending ? pending.discovery || page : currentComputer()?.discovery || page;
 }
+// Cross-origin navigation carries bookmarks only; authorization stays in each origin.
+function computerBookmarks(list) {
+  const bookmarks = new Map();
+  for (const c of list) {
+    try {
+      const discovery = new URL(c.discovery || new URL('url.json', location.href).href);
+      if (!/^[a-f0-9]{16}$/.test(c.id) || !/^https?:$/.test(discovery.protocol) || discovery.username || discovery.password) continue;
+      discovery.hash = ''; discovery.search = '';
+      bookmarks.set(c.id, { id: c.id, name: String(c.name || '电脑'), discovery: discovery.href });
+    } catch {}
+  }
+  return [...bookmarks.values()];
+}
+function loadComputerBookmarks() {
+  try { return computerBookmarks(JSON.parse(store.get('computer-links') || '[]')); } catch { return []; }
+}
 function computerLink(url, current = '') {
   const target = new URL(url);
   const params = new URLSearchParams(target.hash.slice(1));
-  params.set('computers', JSON.stringify(loadComputers().map(c => ({ ...c, discovery: c.discovery || new URL('url.json', location.href).href }))));
+  params.delete('computers');
+  params.delete('computer');
+  params.set('computer-links', JSON.stringify(computerBookmarks([...loadComputerBookmarks(), ...loadComputers()])));
   if (current) params.set('computer', current);
   target.hash = params.toString();
   return target.href;
+}
+function openComputerEntry(url, current = '') {
+  const link = computerLink(url, current);
+  if (inApp) return window.AgentRemoteApp.setUrl(link);
+  location.href = link;
 }
 async function resolveBase() {
   if (info.self) return new URL(discoveryUrl()).origin;
@@ -119,11 +156,13 @@ async function resolveBase() {
 
 async function api(path, opts = {}) {
   const { timeout = 10000, ...request } = opts;
-  const headers = { 'content-type': 'application/json', ...(store.get('token') ? { authorization: 'Bearer ' + store.get('token') } : {}), ...opts.headers };
+  const target = base;
+  const computer = pending ? loadComputers().find(c => pending.key ? c.key === pending.key : c.id === pending.id) : currentComputer();
+  const headers = { 'content-type': 'application/json', ...await entryHeaders(computer, opts.method || 'GET', path), ...opts.headers };
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeout);
   try {
-    return await fetch(base + path, { ...request, headers, signal: ctl.signal, cache: 'no-store' });
+    return await fetch(target + path, { ...request, headers, signal: ctl.signal, cache: 'no-store' });
   } finally {
     clearTimeout(timer);
   }
@@ -137,18 +176,17 @@ function parsePair(text) {
   const m = /[#&]pair=([\w-]{43})\.([\w-]{16,})/.exec(text || '');
   return m ? { key: m[1], code: m[2] } : null;
 }
+let entryComputer = '';
 {
   const params = new URLSearchParams(location.hash.slice(1));
-  if (params.has('computers')) {
-    const list = loadComputers();
+  if (params.has('computer-links') || params.has('computers') || params.has('computer')) {
     try {
-      for (const c of JSON.parse(params.get('computers'))) {
-        if (!c?.key || !c?.token) continue;
-        const i = list.findIndex(old => old.key === c.key);
-        if (i < 0) list.push(c); else list[i] = c;
-      }
-      saveComputers(list, params.get('computer') || currentComputer()?.key || '');
+      store.set('computer-links', JSON.stringify(computerBookmarks([...loadComputerBookmarks(), ...JSON.parse(params.get('computer-links') || '[]')])));
     } catch {}
+    entryComputer = params.get('computer') || '';
+    const selected = loadComputers().find(c => c.id === entryComputer);
+    if (selected) saveComputers(loadComputers(), selected.key);
+    params.delete('computer-links');
     params.delete('computers');
     params.delete('computer');
     history.replaceState(null, '', location.pathname + location.search + (params.size ? '#' + params.toString() : ''));
@@ -190,6 +228,7 @@ function showUnpaired(msg = '') {
   gate({
     msg,
     err: !!msg,
+    pairStatus: msg ? { state: 'error', title: '配对申请未完成' } : null,
     input: { placeholder: '输入配对链接或配对码', button: '连接', submit: pastePair, scan: true, inputMode: 'text' },
   });
 }
@@ -204,7 +243,7 @@ async function pastePair(text) {
         base = new URL(discovery).origin;
         const me = await fetch(base + '/api/me').then(r => r.json());
         if (me.id !== manual[1]) throw Error('配对码对应的电脑与当前入口不一致');
-        pending = { code: manual[2], discovery };
+        pending = { id: manual[1], code: manual[2], discovery };
         connGen++;
         authed = false;
         ws?.close();
@@ -229,10 +268,7 @@ async function pastePair(text) {
   let target;
   try { target = new URL(text.trim()); } catch {}
   if (target && /^https?:$/.test(target.protocol) && target.origin !== location.origin) {
-    const link = computerLink(target.href);
-    if (inApp) return window.AgentRemoteApp.setUrl(link);
-    location.href = link;
-    return;
+    return openComputerEntry(target.href);
   }
   if (target && /^https?:$/.test(target.protocol)) p.discovery = new URL('url.json', target).href;
   pending = p;
@@ -315,7 +351,8 @@ function publishedComputers() {
 }
 function unseenPublished() {
   const saved = loadComputers();
-  return publishedComputers().filter(p => !saved.some(c => c.id && c.id === p.id));
+  const entries = new Map([...publishedComputers(), ...loadComputerBookmarks()].map(p => [p.id, p]));
+  return [...entries.values()].filter(p => !saved.some(c => c.id && c.id === p.id));
 }
 function offerComputers(msg, { err = true, repair = false } = {}) {
   const many = loadComputers().length > 1 || unseenPublished().length > 0;
@@ -338,20 +375,26 @@ async function showOffline(failure = { stage: '应用连接', error: '' }) {
 }
 
 async function pair(totp) {
-  gate({ msg: '正在配对…' });
+  gate({ pairStatus: { state: 'loading', title: '正在配对…' } });
   let r, body;
   try {
-    r = await post('/api/pair', { code: pending.code, name: deviceName(), totp });
+    const { publicKey } = await entryKey();
+    r = await post('/api/pair', { code: pending.code, name: entryName(), publicKey, totp });
     body = await r.json().catch(() => ({}));
-  } catch {
-    return showOffline();
+  } catch (error) {
+    return showUnpaired(error.message);
   }
   if (r.ok) {
+    if (body.pending) {
+      Object.assign(pending, { key: body.key, requestId: body.id, secret: body.secret, code: body.code, expires: body.expires, desktop: true });
+      sessionStorage.setItem('entry-request', JSON.stringify(pending));
+      return joinEntryRequest();
+    }
     return finishPair(body);
   }
   if (body.needTotp) return showTotp(code => pair(code), body.error);
   pending = null;
-  if (store.get('token')) return gate({ msg: (body.error || '配对失败') + '\n\n这台设备之前已经配对过，可以继续使用。', err: true, retry: '继续使用' });
+  if (store.get('token')) return gate({ msg: body.error || '配对失败', err: true, retry: '继续使用', pairStatus: { state: 'paired', title: '此入口已有配对记录', note: '这台设备之前已经配对过，可以继续使用。' } });
   showUnpaired(body.error || '配对失败');
 }
 
@@ -363,6 +406,7 @@ async function finishPair(body) {
   list.push({ ...prev, id, name: body.name || prev?.name || '电脑', key, token: body.token, device: body.device || prev?.device || '', win: prev?.win || '', discovery: discoveryUrl(), relay: base });
   saveComputers(list, key);
   pending = null;
+  entryComputer = '';
   sessionStorage.removeItem('entry-request');
   return connect();
 }
@@ -378,8 +422,9 @@ async function joinEntryRequest() {
   };
   try {
     if (!request.requestId) {
-      gate({ msg: '正在申请入口授权…' });
-      const r = await post('/api/entries/join', { invitation: request.invitation, name: entryName() });
+      gate({ pairStatus: { state: 'loading', title: '正在申请入口授权…' } });
+      const { publicKey } = await entryKey();
+      const r = await post('/api/entries/join', { invitation: request.invitation, name: entryName(), publicKey });
       const body = await r.json();
       if (!r.ok) { terminal = true; throw new Error(body.error || '申请失败'); }
       if (generation !== entryJoinGeneration || pending !== request) return;
@@ -387,20 +432,20 @@ async function joinEntryRequest() {
       delete request.invitation;
       sessionStorage.setItem('entry-request', JSON.stringify(request));
     }
-    gate({ msg: `授权验证码：${request.code}\n请在已配对入口的「已配对设备」中核对验证码并同意。`, retry: '取消申请', onRetry: cancel });
+    gate({ msg: request.desktop ? '请在电脑配对窗口核对验证码，然后点击「允许连接」。' : '请在已配对入口的「已配对设备」中核对验证码并同意。', pairStatus: { state: 'waiting', title: request.desktop ? '等待电脑批准' : '等待入口批准', detail: '请核对两端的验证码', code: request.code }, retry: '取消申请', onRetry: cancel });
     while (generation === entryJoinGeneration && pending === request) {
-      if (Date.now() >= request.expires) { terminal = true; throw new Error('授权请求已过期，请重新生成链接'); }
       const r = await post('/api/entries/status', { id: request.requestId, secret: request.secret });
       const body = await r.json();
       if (generation !== entryJoinGeneration || pending !== request) return;
       if (!r.ok) { terminal = true; throw new Error(body.error || '授权查询失败'); }
       if (body.state === 'approved') return finishPair(body);
-      if (body.state === 'denied') { terminal = true; throw new Error('已配对入口拒绝了本次申请'); }
+      if (body.state === 'denied') { terminal = true; throw new Error('本次入口申请已被拒绝'); }
+      if (Date.now() >= request.expires) { terminal = true; throw new Error('授权请求已过期，请重新生成链接'); }
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
   } catch (error) {
     if (generation !== entryJoinGeneration || pending !== request) return;
-    if (!terminal && request.requestId) return gate({ msg: '暂时无法查询授权，申请已保留，请重试。', err: true, retry: true, repair: true });
+    if (!terminal && request.requestId) return gate({ msg: '暂时无法查询授权，申请已保留，请重试。', err: true, retry: true, repair: true, pairStatus: { state: 'error', title: '配对申请未完成' } });
     sessionStorage.removeItem('entry-request'); pending = null;
     showUnpaired(error.message);
   }
@@ -445,6 +490,9 @@ async function boot() {
     try { base = await resolvePending(); }
     catch (e) { return showUnpaired(e.message || '这台电脑还没有发布地址'); }
     return pending.invitation || pending.requestId ? joinEntryRequest() : pair();
+  }
+  if (entryComputer && !loadComputers().some(c => c.id === entryComputer)) {
+    return showComputers('当前入口尚未配对这台电脑，请使用配对链接或由已配对入口添加授权。');
   }
   try {
     base = await resolveBase();
@@ -513,7 +561,13 @@ async function connect() {
   let opened = false;
   const socket = ws;
   const connectTimer = setTimeout(() => { if (gen === connGen && !authed) closeSocket(socket); }, 10000);
-  ws.onopen = () => { opened = true; socket.send(JSON.stringify({ t: 'auth', token: store.get('token') })); };
+  ws.onopen = async () => {
+    opened = true;
+    try {
+      const proof = await entryProof(computer, 'WS /ws');
+      if (gen === connGen && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ t: 'auth', token: computer.token, proof }));
+    } catch (error) { rejected = true; socket.close(); showUnpaired(error.message); }
+  };
   let rejected = false;
   ws.onclose = async event => {
     clearTimeout(connectTimer);
@@ -609,6 +663,7 @@ async function connect() {
     else if (m.t === 'frame') onFrame(m);
     else if (m.t === 'panel') { panel = m.rect; updateTermEmpty(); layoutStage(); applyQuality(); }
     else if (m.t === 'connAgents') connAgentResults(m.agents);
+    else if (m.t === 'agentCatalog') agentCatalogResults(m.agents);
     else if (m.t === 'launchResult') connLaunchResults(m.results);
     else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; connWindows(m.list); if (m.plans) { appPlans = { ...appPlans, ...m.plans }; updateTitle(); } if (conn.readyPending) { conn.readyPending = false; ensureReadyAgent(); } if (sheetKind === 'windows') showWindows(); paintRail(); }
     else if (m.t === 'plans') { if (m.plans) { appPlans = { ...appPlans, ...m.plans }; updateTitle(); if (sheetKind === 'windows') showWindows(); paintRail(); } }
@@ -623,7 +678,7 @@ async function connect() {
       finishPending(['正在读取额度…']);
     }
     else if (m.t === 'attached') {
-      if (m.closed) { setWindowReady(m.ready === true); status('这个窗口已经关闭，请重新选择', false); send({ t: 'windows' }); if (m.initial) { connHide(); showWindows(); } return; }
+      if (m.closed) { forgetClosedWindow(m.id); setWindowReady(m.ready === true); status('这个窗口已经关闭，请重新选择', false); send({ t: 'windows' }); if (m.initial) { connHide(); showWindows(); } return; }
       if (m.plans) appPlans = { ...appPlans, ...m.plans };
       rememberAgentOpen(m);
       if (m.keepQuota) { applySelection(m); setWindowReady(true); return; }

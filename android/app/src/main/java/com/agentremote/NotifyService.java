@@ -211,7 +211,7 @@ public class NotifyService extends Service {
                 JSONObject cfg = new JSONObject(prefs(this).getString(PREF, "{}"));
                 String relay = resolveRelay(cfg.getString("app"), cfg.optString("key"));
                 Log.i(TAG, "connecting to " + Uri.parse(relay).getHost());
-                listen(relay, cfg.getString("token"));
+                listen(relay, cfg);
             } catch (Unauthorized e) {
                 // Device was removed or needs 2FA again; the app turns this back on after re-pairing.
                 prefs(this).edit().remove(PREF).apply();
@@ -296,13 +296,14 @@ public class NotifyService extends Service {
         return out.toByteArray();
     }
 
-    private void listen(String relay, String token) throws Exception {
+    private void listen(String relay, JSONObject cfg) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(relay + "/api/events").openConnection();
         conn = c;
         c.setConnectTimeout(15000);
         // The relay pings every 25 s; silence longer than this means the connection is dead.
         c.setReadTimeout(70000);
-        c.setRequestProperty("Authorization", "Bearer " + token);
+        c.setRequestProperty("Authorization", "Bearer " + cfg.getString("token"));
+        c.setRequestProperty("X-RA-Proof", EntryAuth.proof(cfg, "POST", "/api/events"));
         c.setRequestProperty("Accept", "text/event-stream");
         // Quick tunnels buffer GET event streams until they close; POST is streamed.
         c.setRequestMethod("POST");
@@ -487,6 +488,7 @@ public class NotifyService extends Service {
             h.setRequestMethod("POST");
             h.setDoOutput(true);
             h.setRequestProperty("Authorization", "Bearer " + cfg.getString("token"));
+            h.setRequestProperty("X-RA-Proof", EntryAuth.proof(cfg, "POST", "/api/act"));
             h.setRequestProperty("Content-Type", "application/json");
             try (OutputStream out = h.getOutputStream()) { out.write(body.toString().getBytes(StandardCharsets.UTF_8)); }
             int code = h.getResponseCode();

@@ -221,28 +221,36 @@
     return { label, ...codexPoint(e) };
   }).filter(x => x.label);
   const codexQueued = () => {
+    const thread = codexThread();
+    if (!thread) return [];
     // Newer Codex keeps the queue in the composer's own rows (props carry messageId / fullMessageText);
     // older builds kept it in the queued-follow-ups global state read below.
-    const rows = [...doc.querySelectorAll('[aria-label^="Preview queued message"]')]
-      .map(el => codexFiberProps(el, 16).find(p => typeof p.messageId === 'string' && 'fullMessageText' in p)).filter(Boolean);
-    if (rows.length) return [...new Map(rows.map(p => [p.messageId, p])).values()].map(p => ({
+    const rows = [...doc.querySelectorAll('[aria-label^="Preview queued message"]')].filter(vis)
+      .map(el => {
+        const props = codexFiberProps(el, 96);
+        return props.some(p => p.conversationId === thread)
+          ? props.find(p => typeof p.messageId === 'string' && 'fullMessageText' in p) : null;
+      }).filter(Boolean);
+    const native = [...new Map(rows.map(p => [p.messageId, p])).values()].map(p => ({
       id: p.messageId, t: String(p.fullMessageText || p.messageText || '').slice(0, 4000), src: 'codex',
     })).filter(m => m.t);
-    const thread = codexThread();
     const value = codexQueryClient()?.getQueryData(['vscode', 'get-global-state', '{"key":"queued-follow-ups"}'])?.value;
     const raw = value && typeof value === 'object' ? value[thread] : null;
-    if (!Array.isArray(raw)) return [];
-    return raw.map((m, n) => ({
+    if (!Array.isArray(raw)) return native;
+    const stored = raw.map((m, n) => ({
       id: String(m?.id || `cq${n}`),
       t: String(m?.text || m?.message || m?.content || '').slice(0, 4000),
       src: 'codex',
     })).filter(m => m.t);
+    const merged = new Map(native.map(m => [m.id, m]));
+    for (const item of stored) if (!merged.has(item.id)) merged.set(item.id, item);
+    return [...merged.values()];
   };
   const codexQueueAction = async (id, action) => {
     if (!codexQueued().some(m => m.id === id)) return false;
     const name = { send: 'onSendNowMessage', remove: 'onDeleteMessage', edit: 'onEditMessage' }[action];
     for (const el of doc.querySelectorAll('button')) {
-      for (const p of codexFiberProps(el, 32)) {
+      for (const p of codexFiberProps(el, 96)) {
         const actions = p.messageListActions || p;
         if (typeof actions[name] === 'function') { await actions[name](id); return true; }
       }
@@ -322,6 +330,40 @@
         buttons: [...dialog.querySelectorAll('button, [role=radio], [role=checkbox]')].filter(vis).map(el => ({ el, label: el.getAttribute('aria-label') || el.innerText || el.title || '确认', selected: el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-pressed') === 'true' || el.getAttribute('data-state') === 'checked', disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true', ...codexPoint(el) })),
         fields: [...dialog.querySelectorAll('input:not([type=checkbox]):not([type=radio]), textarea, select, [contenteditable=true]')].filter(vis).map(el => ({ el, label: el.getAttribute('aria-label') || el.placeholder || el.name || '输入', value: el.value ?? el.innerText ?? '', type: el.type, options: el.tagName === 'SELECT' ? [...el.options].map(o => ({ value: o.value, label: o.text })) : null })),
       });
+    }
+    const questionAction = /^(Skip|Previous question|Next question|Submit|Send|Continue|跳过|上一题|下一题|提交|发送|继续)$/i;
+    const questionHash = value => {
+      let h = 2166136261;
+      for (const ch of value) { h ^= ch.codePointAt(0); h = Math.imul(h, 16777619); }
+      return (h >>> 0).toString(16);
+    };
+    for (const skip of query('button').filter(el => vis(el) && (el.innerText || '').trim() === 'Skip')) {
+      let card = skip.parentElement, options = [], fields = [];
+      for (let depth = 0; card && depth < 12; depth++, card = card.parentElement) {
+        options = [...card.querySelectorAll('button[role="radio"]')].filter(vis);
+        fields = [...card.querySelectorAll('input:not([type=checkbox]):not([type=radio]):not([type=hidden]), textarea, select, [contenteditable=true]')].filter(vis);
+        if (options.length || fields.length) break;
+      }
+      if (!card || (!options.length && !fields.length)) continue;
+      const buttons = [...card.querySelectorAll('button, [role=button], [role=radio]')].filter(vis).flatMap(el => {
+        const label = (el.getAttribute('aria-label') || el.innerText || el.title || '').replace(/\s+/g, ' ').trim();
+        if (!el.matches('[role="radio"]') && !questionAction.test(label)) return [];
+        return [{ el, label: label || '选项', selected: el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-pressed') === 'true' || el.getAttribute('data-state') === 'checked', disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true', ...codexPoint(el) }];
+      });
+      const clone = card.cloneNode(true);
+      clone.querySelectorAll('button, [role=button], [role=radio], input, textarea, select, [contenteditable=true]').forEach(el => el.remove());
+      const text = (clone.innerText || clone.textContent || '').replace(/\s+/g, ' ').trim();
+      const fieldRows = fields.map(el => ({
+        el,
+        label: el.getAttribute('aria-label') || el.placeholder || el.name || '回答',
+        value: el.value ?? el.innerText ?? '',
+        type: el.tagName === 'SELECT' ? 'select' : el.type || 'text',
+        options: el.tagName === 'SELECT' ? [...el.options].map(o => ({ value: o.value, label: o.text })) : null,
+      }));
+      const signature = [text, ...buttons.map(b => b.label), ...fieldRows.map(f => f.label)].join('\n');
+      const id = 'question:' + questionHash(signature);
+      if (!options.length && text === 'Codex 请求') continue;
+      if (!rows.has(id)) rows.set(id, { id, text: text || buttons.filter(b => b.el.matches('[role="radio"]')).map(b => b.label).join(' / ') || 'Codex 请求', buttons, fields: fieldRows });
     }
     return [...rows.values()];
   };

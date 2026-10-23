@@ -1,7 +1,9 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
+import os from 'node:os';
+import { access, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { IS_WIN, IS_MAC } from '../lib/platform.mjs';
+import { IS_WIN, IS_MAC, installDirs } from '../lib/platform.mjs';
 import { listWindows } from './windows.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -54,12 +56,35 @@ export function launchAgents(s, apps, probe) {
     .catch(() => {});
 }
 
-async function runLaunchers(apps) {
-  if (IS_MAC) return apps.map(app => ({ app, status: 'unsupported' }));
+let detecting = null;
+// Installation checks reuse the launcher resolvers, without starting applications.
+export function detectAgents() {
+  if (!detecting) detecting = runLaunchers(AGENTS, true).then(async results => {
+    const extensions = await readdir(process.env.VSCODE_EXTENSIONS || path.join(os.homedir(), '.vscode', 'extensions')).catch(() => []);
+    return results.map(r => ({ ...r,
+      installed: r.status === 'missing' ? false : ['installed', 'running', 'reused'].includes(r.status) ? true : null,
+      running: ['running', 'reused'].includes(r.status),
+      launchSupported: !IS_MAC,
+      ...(r.app === 'codex' && ['installed', 'running', 'reused'].includes(r.status) && !extensions.some(n => /^openai\.chatgpt-/.test(n))
+        ? { installed: null, reason: '已找到 VS Code，Codex 扩展待确认' } : {}),
+    }));
+  }).finally(() => { detecting = null; });
+  return detecting;
+}
+
+async function runLaunchers(apps, probe = false) {
+  if (IS_MAC) {
+    if (!probe) return apps.map(app => ({ app, status: 'unsupported' }));
+    return Promise.all(apps.map(async app => {
+      const dirs = installDirs(app).flatMap(dir => [dir, dir.replace('/Applications/', path.join(os.homedir(), 'Applications') + '/')]);
+      const found = await Promise.all(dirs.map(dir => access(dir).then(() => true, () => false)));
+      return { app, status: found.some(Boolean) ? 'installed' : 'missing' };
+    }));
+  }
   const cmd = IS_WIN ? 'powershell' : 'bash';
   const args = IS_WIN
-    ? ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(ROOT, 'window_start', 'start-agents.ps1'), '-Apps', apps.join(',')]
-    : [path.join(ROOT, 'ubuntu_start', 'start-agents.sh'), ...apps];
+    ? ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(ROOT, 'window_start', 'start-agents.ps1'), '-Apps', apps.join(','), ...(probe ? ['-ProbeOnly'] : [])]
+    : [path.join(ROOT, 'ubuntu_start', 'start-agents.sh'), ...(probe ? ['--probe'] : []), ...apps];
   const out = await new Promise(resolve => {
     let buf = '';
     const done = () => { clearTimeout(timer); resolve(buf); };

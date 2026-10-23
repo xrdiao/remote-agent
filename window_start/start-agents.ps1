@@ -4,7 +4,8 @@
 # Each handled app prints one machine-readable "RESULT <app> <status>" line with
 # status in: reused started missing running timeout failed.
 param(
-  [string[]]$Apps
+  [string[]]$Apps,
+  [switch]$ProbeOnly
 )
 $ErrorActionPreference = 'Continue'
 $want = @($Apps | ForEach-Object { "$_" -split ',' } | ForEach-Object { "$_".Trim().ToLower() } | Where-Object { $_ })
@@ -167,6 +168,7 @@ foreach ($app in $apps) {
     $failed++
     continue
   }
+  if ($ProbeOnly) { Write-Output "RESULT $key installed"; continue }
   Write-Host "启动：$bin --remote-debugging-port=$($app.Port)"
   $electronMode = $env:ELECTRON_RUN_AS_NODE
   try {

@@ -5,7 +5,7 @@ import { CODEX_CDP_URL } from './config.mjs';
 import { helpersCall } from './page/build.mjs';
 import { appPlans } from './agent/context.mjs';
 import { probeLatency } from './latency.mjs';
-import { launchAgents } from './launch.mjs';
+import { launchAgents, detectAgents } from './launch.mjs';
 import { ADAPTERS } from './apps/index.mjs';
 
 // One entry per message type the phone can send (auth/ack are handled inside ws.mjs itself).
@@ -91,12 +91,14 @@ export const ROUTES = {
   saveFile: { pre: (s, m) => s.saveFile(String(m.path ?? ''), String(m.text ?? ''), m.host == null ? undefined : String(m.host)) },
   connAgents: {
     pre: async s => {
+      const catalog = detectAgents();
       const agents = [];
       let wins;
       try { wins = await listWindows(agents); } catch {}
       if (wins) s.emit({ t: 'windows', list: phoneWindows(wins, s.targetId), current: s.targetId, plans: appPlans });
       readAllPlans(s, wins).catch(() => {});
-      return s.emit({ t: 'connAgents', agents });
+      s.emit({ t: 'connAgents', agents });
+      catalog.then(list => s.emit({ t: 'agentCatalog', agents: list.map(a => agents.some(r => r.app === a.app && r.windows) ? { ...a, installed: true, running: true, reason: '' } : a) })).catch(() => {});
     },
   },
   windows: { pre: async s => s.emit({ t: 'windows', list: phoneWindows(await listWindows(), s.targetId), current: s.targetId, plans: appPlans }) },

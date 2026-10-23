@@ -1,5 +1,6 @@
+import { authenticateDevice } from '../lib/device-proof.mjs';
 import { WebSocketServer } from 'ws';
-import { findDevice, needsTotp, updateDevice, computerId, computerName, bindDeviceConnection } from '../lib/auth.mjs';
+import { needsTotp, updateDevice, computerId, computerName, bindDeviceConnection } from '../lib/auth.mjs';
 import { addViewer, removeViewer } from '../lib/notify.mjs';
 import { clientIp } from './http/ratelimit.mjs';
 import { originAllowed } from './http/static.mjs';
@@ -53,7 +54,7 @@ wss.on('connection', (ws, req) => {
     try { msg = JSON.parse(raw); } catch { return; }
     if (!session) {
       clearTimeout(authTimer);
-      const device = msg.t === 'auth' ? findDevice(msg.token) : null;
+      const device = msg.t === 'auth' ? authenticateDevice(msg.token, msg.proof, 'WS /ws') : null;
       const identity = { id: computerId(), name: computerName(), device: device?.id || '' };
       if (!device || needsTotp(device)) {
         ws.send(JSON.stringify({ t: 'auth', ok: false, ...identity, needTotp: Boolean(device) }));

@@ -474,7 +474,17 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> web.loadUrl(SETUP + "?change=1"));
         }
 
-        // config: {"app","key","token"} from the paired page, or "" to turn notifications off.
+        @JavascriptInterface
+        public String authPublicKey() {
+            try { return EntryAuth.publicKey(appUrl()); } catch (Exception e) { return ""; }
+        }
+
+        @JavascriptInterface
+        public String authSign(String payload) {
+            try { return EntryAuth.sign(appUrl(), payload); } catch (Exception e) { return ""; }
+        }
+
+        // config: {"app","key","token","id"} from the paired page, or "" to turn notifications off.
         @JavascriptInterface
         public void setNotify(String config) {
             runOnUiThread(() -> {

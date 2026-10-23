@@ -43,7 +43,7 @@ export function corsHeaders(req) {
   if (!origin || !originAllowed(req)) return {};
   return {
     'access-control-allow-origin': origin,
-    'access-control-allow-headers': 'content-type, authorization',
+    'access-control-allow-headers': 'content-type, authorization, x-ra-proof',
     'access-control-allow-methods': 'GET, POST, OPTIONS',
     'access-control-max-age': '600',
     vary: 'Origin',
