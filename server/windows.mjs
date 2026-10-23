@@ -1,4 +1,4 @@
-import fs from 'node:fs';
+import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { IS_WIN } from '../lib/platform.mjs';
@@ -41,8 +41,12 @@ export async function listWindows(report = null, app = null) {
 
 export function phoneWindows(wins, current) {
   const apps = [...new Set(wins.map(w => w.app))];
-  return apps.map(app => wins.find(w => w.app === app && w.id === current) || wins.find(w => w.app === app))
-    .map(({ id, kind, app }) => ({ id, title: { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion' }[app] || app, kind, app }));
+  return apps.map(app => {
+    const rows = wins.filter(w => w.app === app);
+    const row = rows.find(w => w.id === current) || rows[0];
+    return { id: row.id, title: { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion' }[app] || app,
+      kind: row.kind, app, windowIds: rows.map(w => w.id) };
+  });
 }
 
 
@@ -50,31 +54,83 @@ export function phoneWindows(wins, current) {
 export const codexViewIds = new Map();
 export const codexContextFiles = new Map();
 const codexContextChecks = new Map();
+const codexContextReads = new Map();
+const codexContextCache = new Map();
 
 export function codexContext(thread) {
   if (!thread) return null;
+  if (!codexContextReads.has(thread)) {
+    const read = readCodexContext(thread).finally(() => codexContextReads.delete(thread));
+    codexContextReads.set(thread, read);
+  }
+  return codexContextReads.get(thread);
+}
+
+async function readCodexContext(thread) {
   const sessions = path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'sessions');
   let file = codexContextFiles.get(thread);
   const now = Date.now();
   if (!file || now - (codexContextChecks.get(thread) || 0) >= 5000) {
-    const relative = fs.readdirSync(sessions, { recursive: true })
-      .filter(name => name.endsWith(`-${thread}.jsonl`) || path.basename(name).includes(`-${thread}_`) && name.endsWith('.jsonl'))
-      .map(name => ({ name, modified: fs.statSync(path.join(sessions, name)).mtimeMs }))
-      .sort((a, b) => b.modified - a.modified)[0]?.name;
+    const names = (await fs.readdir(sessions, { recursive: true }))
+      .filter(name => name.endsWith(`-${thread}.jsonl`) || path.basename(name).includes(`-${thread}_`) && name.endsWith('.jsonl'));
+    const files = await Promise.all(names.map(async name => ({ name, modified: (await fs.stat(path.join(sessions, name))).mtimeMs })));
+    const relative = files.sort((a, b) => b.modified - a.modified)[0]?.name;
     if (!relative) return null;
     file = path.join(sessions, relative);
     codexContextFiles.set(thread, file);
     codexContextChecks.set(thread, now);
   }
-  const lines = fs.readFileSync(file, 'utf8').trimEnd().split('\n');
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const row = JSON.parse(lines[i]);
-    if (row.type !== 'event_msg' || row.payload.type !== 'token_count' || !row.payload.info) continue;
+  const handle = await fs.open(file, 'r');
+  try {
+    const stat = await handle.stat();
+    const signature = `${file}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+    const cached = codexContextCache.get(thread);
+    if (cached?.signature === signature) return cached.context;
+    const context = await readCodexContextTail(handle, stat.size);
+    codexContextCache.set(thread, { signature, context });
+    return context;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readCodexContextTail(handle, size) {
+  let position = size;
+  let fragments = [];
+  let tail = true;
+  const readLine = () => {
+    const line = (fragments.length === 1 ? fragments[0] : Buffer.concat(fragments.reverse())).toString('utf8').trim();
+    fragments = [];
+    if (!line) return undefined;
+    let row;
+    try { row = JSON.parse(line); } catch (error) {
+      // The last record can still be in the middle of an append.
+      if (tail && error instanceof SyntaxError) return undefined;
+      throw error;
+    }
+    if (row.type !== 'event_msg' || row.payload.type !== 'token_count' || !row.payload.info) return undefined;
     const info = row.payload.info;
     if (!info.model_context_window) return null;
     return { pct: Math.round(Math.min(100, info.last_token_usage.total_tokens / info.model_context_window * 100)), basis: 'used' };
+  };
+  while (position > 0) {
+    const length = Math.min(64 * 1024, position);
+    position -= length;
+    const buffer = Buffer.allocUnsafe(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, position);
+    let end = bytesRead;
+    while (end > 0) {
+      const newline = buffer.lastIndexOf(10, end - 1);
+      if (newline < 0) break;
+      fragments.push(buffer.subarray(newline + 1, end));
+      const context = readLine();
+      if (context !== undefined) return context;
+      tail = false;
+      end = newline;
+    }
+    if (end > 0) fragments.push(buffer.subarray(0, end));
   }
-  return null;
+  return fragments.length ? readLine() ?? null : null;
 }
 
 export function codexFolder(title) {

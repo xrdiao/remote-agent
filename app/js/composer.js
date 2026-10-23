@@ -244,6 +244,7 @@ text.addEventListener('blur', () => {
 // Devin while its turn runs: Queue (default, Enter) or Send now (interrupts the turn, after confirmation).
 let chatBusy = false;
 function devinBusySplit() { return mode === 'chat' && currentApp === 'devin' && supportsCapability('queue') && supportsCapability('steer') && chatBusy; }
+function cursorBusyQueue() { return mode === 'chat' && currentApp === 'cursor' && supportsCapability('queue') && chatBusy; }
 function codexFollow() {
   const follow = lastChat?.codex?.follow;
   return mode === 'chat' && currentApp === 'codex' && chatBusy && (follow === 'queue' || follow === 'steer') ? follow : '';
@@ -257,7 +258,8 @@ function updateSendMode() {
   const answering = mode === 'chat' && questionCompose?.sel === viewSel;
   const split = !answering && devinBusySplit();
   const follow = answering ? '' : codexFollow();
-  const label = answering ? '提交回答' : mode === 'terminal' ? '发送到终端' : split || follow === 'queue' ? '排队' : follow === 'steer' ? '立即追加' : '发送';
+  const queue = !answering && (cursorBusyQueue() || follow === 'queue');
+  const label = answering ? '提交回答' : mode === 'terminal' ? '发送到终端' : split || queue ? '排队' : follow === 'steer' ? '立即追加' : '发送';
   if ($('send').textContent !== label) $('send').textContent = label;
   $('sendNow').hidden = !split && !follow;
   $('sendNow').textContent = follow === 'steer' ? '改为排队' : '立即追加';
@@ -367,7 +369,7 @@ $('send').onclick = () => {
   if (!v.trim() && !$('attachments').children.length) return;
   saveDraft();
   const follow = codexFollow();
-  const when = devinBusySplit() || follow === 'queue' ? 'queue' : follow === 'steer' ? 'now' : '';
+  const when = devinBusySplit() || cursorBusyQueue() || follow === 'queue' ? 'queue' : follow === 'steer' ? 'now' : '';
   const receipt = sendReceipt(v);
   if (mode === 'chat') { status('正在发送…'); pushEcho(receipt.requestId, v, when === 'queue' || (!when && chatBusy) ? 'queue' : 'chat'); }
   if (mode === 'terminal') send({ t: 'termSend', text: v, ...receipt });

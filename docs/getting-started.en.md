@@ -109,7 +109,7 @@ It checks for `cloudflared` and `gh` and offers to publish a fixed phone-app add
 
 Leave this terminal open. It prints the address (`公网地址` for the public URL, `局域网地址` for the LAN URL) and which windows it connected to. If it says it cannot connect, go back to Step 3.
 
-For LAN pairing, use `npm run pair -- --lan`. Plain HTTP does not provide web microphone access, camera scanning, Web Push or offline caching; use HTTPS for those capabilities.
+Web key authentication requires HTTPS. Use the fixed entry or HTTPS tunnel; ordinary LAN HTTP pages cannot create web signing keys. The computer can use the localhost approval page.
 
 ## Step 6. Pair your phone
 
@@ -119,9 +119,11 @@ In a second terminal in the same folder:
 npm run pair
 ```
 
-It prints a QR code and a one-time link, valid for a few minutes and for one phone. Scan the QR code with your phone camera, or send the link to the phone and open it in its browser. After pairing, the phone is remembered.
+It automatically opens a dedicated window with a QR code, manual code and 3-minute countdown. Chrome, Edge or Chromium must be installed; the window uses a temporary profile separate from your normal browser. The code accepts multiple entry requests until expiry. Compare each six-digit code and click Allow connection, without selecting checkboxes or entering a device name. Entries are grouped under the current device. Click Pair another device before pairing another device; the deadline does not change.
 
-You can also enter the full manual code (`computer-code.one-time-pairing-code`) at your own fixed entry. Pairing codes expire in 10 minutes and authorize one new entry; Authenticator verification is still required when enabled. The web pairing page can scan with a camera over HTTPS or decode a QR image from the photo library locally without uploading it.
+Closing the window, expiry or Ctrl+C in the pairing terminal ends pairing and invalidates pending requests. Approved entries remain authorized and the relay keeps running. This refers to the `npm run pair` terminal, not the terminal running the relay.
+
+You can also enter the full manual code (`computer-code.pairing-code`) at your own fixed entry. Pairing codes expire in 3 minutes and requests require approval on the computer; Authenticator verification is still required when enabled. The web pairing page can scan with a camera over HTTPS or decode a QR image from the photo library locally without uploading it.
 
 Keep using the same fixed entry after pairing. When the tunnel address changes, the entry discovers the new address and reauthenticates with saved credentials. A device code identifies an entry; it cannot be used to sign in. An offline computer or unpublished address is retried, rather than requiring a new pairing.
 
@@ -148,7 +150,7 @@ To fully turn off public access, run `kill <tunnel pid>`. The relay prints the P
 | `npm run setup` | First-run wizard |
 | `npm run public` | Start the relay with a public tunnel |
 | `npm run start` | Start the relay for local/LAN use only |
-| `npm run pair` | Print a one-time pairing link and QR code |
+| `npm run pair` | Print pairing links, a QR code and the computer batch approval page |
 | `npm run devices` | List paired devices |
 | `npm run devices -- remove <id>` | Remove a device (it disconnects immediately) |
 | `npm run 2fa` | Optional Authenticator two-step verification |

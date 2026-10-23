@@ -201,14 +201,17 @@ function renderTransferUploads() {
   $('transferRetry').hidden = transferUploading || !transferUploads.some(item => item.failed);
   for (const id of ['transferFiles', 'transferFolder', 'transferCollision', 'transferChangeTarget']) $(id).disabled = transferUploading;
 }
-function transferSendFile(item) {
+async function transferSendFile(item) {
+  const query = new URLSearchParams({ directory: item.directory, name: item.name, mode: item.mode });
+  const path = '/api/transfer/upload?' + query;
+  const headers = await entryHeaders(item.computer, 'POST', path);
+  if (transferCancelled) throw Error('已取消');
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     transferXhrs.add(xhr);
     xhr.onloadend = () => transferXhrs.delete(xhr);
-    const query = new URLSearchParams({ directory: item.directory, name: item.name, mode: item.mode });
-    xhr.open('POST', item.base + '/api/transfer/upload?' + query);
-    xhr.setRequestHeader('authorization', 'Bearer ' + item.token);
+    xhr.open('POST', item.base + path);
+    for (const [key, value] of Object.entries(headers)) xhr.setRequestHeader(key, value);
     xhr.setRequestHeader('content-type', 'application/octet-stream');
     xhr.upload.onprogress = event => {
       item.status = event.lengthComputable ? `上传中 ${Math.round(event.loaded / event.total * 100)}%` : '上传中';
@@ -256,7 +259,7 @@ async function runTransferUploads(items) {
 }
 function chooseTransferFiles(files) {
   if (!files.length || !transferUploadPath || transferUploading) return;
-  transferUploads.push(...Array.from(files, file => ({ base, token: store.get('token'), file, name: file.webkitRelativePath || file.name, directory: transferUploadPath, mode: $('transferCollision').value, status: '待上传', pending: true, failed: false })));
+  transferUploads.push(...Array.from(files, file => ({ base, computer: { ...currentComputer() }, file, name: file.webkitRelativePath || file.name, directory: transferUploadPath, mode: $('transferCollision').value, status: '待上传', pending: true, failed: false })));
   renderTransferUploads();
 }
 $('transferFiles').onclick = () => $('transferFileInput').click();

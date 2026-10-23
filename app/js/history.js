@@ -885,7 +885,7 @@ function renderQueue(busy, queued, subs = [], readonly = false, changed = 0, qCo
     html += `<div class="qhRow"><button class="qh fold" data-qfold aria-expanded="${queueOpen}">${queueOpen ? '▾' : '▸'} <span>排队中 ${n} 条</span></button>${devin ? ibtn('trash', '清空', 'data-a="clear" data-q=""', 'del') : ''}</div>`;
   }
   if (n && queueOpen) {
-    html += pending.map(p => `<div class="q pending"><span class="qt">${esc(p.text)}</span><span class="sub">发送中…</span></div>`).join('');
+    html += pending.map(p => `<div class="q pending"><span class="qt">${esc(p.text)}</span><span class="sub">${I18N.tr(p.confirmed ? '已排队' : '发送中…')}</span></div>`).join('');
     html += queued.map(q => `<div class="q"><span class="qt">${esc(q.t || '(空)')}</span>`
       + (supportsCapability('queueEdit') ? ibtn('edit', devin ? '从队列取出，放回输入框' : '修改', `data-q="${esc(q.id)}" data-a="edit"`) : '')
       + ibtn('enter', '打断当前这一轮，立刻发送', `data-q="${esc(q.id)}" data-a="send"`)
@@ -1183,7 +1183,8 @@ function settleChatScroll() {
 }
 list.addEventListener('scroll', () => {
   if (!restoringChatScroll && turnNavUser) showTurnNav();
-  if (!restoringChatScroll && !pinnedBottom) stabilizeChatReading();
+  // During native touch dragging, the size observer handles layout changes without measuring every scroll.
+  if (!restoringChatScroll && !pinnedBottom && (!chatTouching || turnNavPointer?.dragging)) stabilizeChatReading();
   settleChatScroll();
 }, { passive: true });
 let historyTouchY = 0;

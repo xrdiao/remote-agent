@@ -63,6 +63,7 @@
     const cursorY = buf.baseY + buf.cursorY;
     const lines = [];
     let cursorX = buf.cursorX;
+    let cursorLine = cursorY;
     for (let y = 0; y < buf.length; y++) {
       const row = buf.getLine(y);
       if (!row) { lines.push(''); continue; }
@@ -85,14 +86,24 @@
         text += ch;
         col += cell.getWidth();
       }
-      text = text.replace(/\s+$/, '');
+      if (!buf.getLine(y + 1)?.isWrapped) text = text.replace(/\s+$/, '');
       if (y === cursorY && cursorX > text.length) cursorX = text.length;
       const styled = spans.some(([, f, b, fl]) => f || b || fl);
-      lines.push(styled ? { t: text, s: spans.filter(s => s[0] <= text.length) } : text);
+      const style = spans.filter(s => s[0] <= text.length);
+      // xterm marks screen-width continuations separately from actual newlines.
+      if (row.isWrapped && lines.length) {
+        const previous = lines.pop();
+        const before = typeof previous === 'string' ? previous : previous.t;
+        if (y === cursorY) cursorX += before.length;
+        lines.push(styled || typeof previous !== 'string'
+          ? { t: before + text, s: [...(previous.s || [[0, 0, 0, 0]]), ...style.map(([i, f, b, fl]) => [i + before.length, f, b, fl])] }
+          : before + text);
+      } else lines.push(styled ? { t: text, s: style } : text);
+      if (y === cursorY) cursorLine = lines.length - 1;
     }
     let end = lines.length;
-    while (end > cursorY + 1 && end > 0 && lines[end - 1] === '') end--;
-    const body = { lines: lines.slice(0, end), cursor: [cursorY, cursorX], name: terminalList().find(t => t.current)?.title || '' };
+    while (end > cursorLine + 1 && end > 0 && lines[end - 1] === '') end--;
+    const body = { lines: lines.slice(0, end), cursor: [cursorLine, cursorX], name: terminalList().find(t => t.current)?.title || '' };
     const raw = JSON.stringify(body);
     let h = 2166136261;
     for (let i = 0; i < raw.length; i++) h = Math.imul(h ^ raw.charCodeAt(i), 16777619);

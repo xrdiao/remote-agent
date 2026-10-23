@@ -1,8 +1,10 @@
 import crypto from 'node:crypto';
+import QRCode from 'qrcode-terminal/vendor/QRCode/index.js';
+import { authenticateRequest } from '../../lib/device-proof.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
-import { DATA_DIR, findDevice, needsTotp, totpConfig, verifyTotp, pairingValid, consumePairing, addDevice, listDevices, removeDevice, updateDevice, computerId, computerName, urlKey, groupDevices, deviceGrouping } from '../../lib/auth.mjs';
-import { inviteEntry, joinEntry, entryRequests, decideEntry, entryStatus, cancelEntry } from './entries.mjs';
+import { DATA_DIR, findDevice, needsTotp, totpConfig, verifyTotp, pairingSession, pairingDetails, consumePairing, listDevices, removeDevice, updateDevice, computerId, computerName, urlKey, groupDevices, deviceGrouping } from '../../lib/auth.mjs';
+import { inviteEntry, joinEntry, entryRequests, decideEntry, entryStatus, cancelEntry, requestPairing, decideEntries } from './entries.mjs';
 import { pushPublicKey, openEventStream, closeEventStreams, deliver } from '../../lib/notify.mjs';
 import { clientIp, lockedOut, recordFailure } from './ratelimit.mjs';
 import { json, readJson, originAllowed, corsHeaders, SECURITY_HEADERS } from './static.mjs';
@@ -19,7 +21,7 @@ import { uploads } from '../agent/context.mjs';
 
 // A device is usable once paired and, when 2FA asks for it, re-verified.
 function deviceFor(req) {
-  return findDevice(bearer(req));
+  return authenticateRequest(req);
 }
 
 function bearer(req) {
@@ -68,6 +70,27 @@ export async function handleApi(req, res, route) {
     return serveVideo(req, res, grant);
   }
   if (route.startsWith('/api/transfer/get/') && req.method === 'GET') return serveTransfer(req, res, route.slice('/api/transfer/get/'.length));
+  if (route.startsWith('/api/approval/')) {
+    const approval = /^Approval (.+)$/.exec(req.headers.authorization || '')?.[1];
+    const batch = pairingSession(approval, true);
+    if (!batch) return json(req, res, 401, { error: '电脑授权窗口已失效，请重新运行 npm run pair' });
+    if (route === '/api/approval/info' && req.method === 'GET') {
+      const details = pairingDetails(approval), qr = new QRCode(-1, 1);
+      qr.addData(details.link); qr.make();
+      return json(req, res, 200, { ...details, qr: qr.modules });
+    }
+    if (route === '/api/approval/requests' && req.method === 'GET') return json(req, res, 200, { requests: entryRequests(batch.id), expires: batch.expires, groupName: batch.groupName });
+    if (req.method !== 'POST') return json(req, res, 405, { error: 'method not allowed' });
+    const body = await readJson(req);
+    if (!pairingSession(approval, true)) return json(req, res, 401, { error: '电脑授权窗口已失效' });
+    if (route === '/api/approval/close') { consumePairing(approval); return json(req, res, 200, { ok: true }); }
+    if (route === '/api/approval/next') return json(req, res, 200, pairingDetails(approval, true));
+    if (route === '/api/approval/decide' && typeof body.approve === 'boolean') {
+      try { decideEntries(batch.id, body.selections, body.approve); return json(req, res, 200, { ok: true }); }
+      catch (error) { return json(req, res, 409, { error: error.message }); }
+    }
+    return json(req, res, 400, { error: '授权操作无效' });
+  }
   const device = deviceFor(req);
 
   if (['/api/entries/join', '/api/entries/status', '/api/entries/cancel'].includes(route) && req.method === 'POST') {
@@ -75,7 +98,7 @@ export async function handleApi(req, res, route) {
     const body = await readJson(req);
     try {
       if (route.endsWith('/cancel')) { cancelEntry(body.id, body.secret); return json(req, res, 200, { ok: true }); }
-      const result = route.endsWith('/join') ? joinEntry(body.invitation, body.name) : entryStatus(body.id, body.secret);
+      const result = route.endsWith('/join') ? joinEntry(body.invitation, body.name, body.publicKey, req.headers.origin) : entryStatus(body.id, body.secret);
       return json(req, res, 200, { ...result, id: route.endsWith('/join') ? result.id : computerId(), name: computerName() });
     } catch (error) {
       recordFailure(ip);
@@ -89,10 +112,11 @@ export async function handleApi(req, res, route) {
 
   if (route === '/api/pair' && req.method === 'POST') {
     if (lockedOut(ip)) return json(req, res, 429, { error: '尝试次数过多，请 15 分钟后再试' });
-    const { code, name, totp } = await readJson(req);
-    if (!device && !pairingValid(code)) {
+    const { code, name, totp, publicKey } = await readJson(req);
+    const batch = pairingSession(code);
+    if (!device && !batch) {
       recordFailure(ip);
-      return json(req, res, 401, { error: '配对链接无效或已过期（10 分钟内有效，只能用一次）。请在电脑上重新运行 npm run pair' });
+      return json(req, res, 401, { error: '配对链接无效或已过期（3 分钟内有效）。请在电脑上重新运行 npm run pair' });
     }
     const needsVerification = totpConfig() && (!device || needsTotp(device));
     if (needsVerification && !verifyTotp(totp)) {
@@ -103,10 +127,10 @@ export async function handleApi(req, res, route) {
       if (needsVerification) updateDevice(device.id, { verifiedAt: Date.now() });
       return json(req, res, 200, { token: bearer(req), id: computerId(), name: computerName(), device: device.id, key: urlKey().toString('base64url') });
     }
-    consumePairing();
-    const { device: added, token } = addDevice(name);
-    console.log(`[pair] 新设备「${added.name}」 ip=${ip}`);
-    return json(req, res, 200, { token, id: computerId(), name: computerName(), device: added.id, key: urlKey().toString('base64url') });
+    try {
+      const request = requestPairing(batch, name, publicKey, req.headers.origin);
+      return json(req, res, 202, { ...request, pending: true, key: urlKey().toString('base64url') });
+    } catch (error) { return json(req, res, 400, { error: error.message }); }
   }
 
   if (!device) return json(req, res, 401, { error: '设备未配对' });
@@ -139,7 +163,7 @@ export async function handleApi(req, res, route) {
     const { id, code, approve } = await readJson(req);
     if (typeof approve !== 'boolean') return json(req, res, 400, { error: '请选择同意或拒绝' });
     // readJson yields: recheck the approving credential before granting access.
-    const approver = deviceFor(req);
+    const approver = findDevice(bearer(req));
     if (!approver || needsTotp(approver)) return json(req, res, 401, { error: '授权入口已失效' });
     try { decideEntry(id, code, approve); return json(req, res, 200, { ok: true }); }
     catch (error) { return json(req, res, 409, { error: error.message }); }

@@ -1,5 +1,7 @@
 # Windows Devin 维护
 
+> 当前验收以 [2026-10-23 功能检查报告](functional-check-report.md) 为准。下文旧验证段落仅为当时的实现历史，不能作为当前版本全部通过的证明；本轮已复现 Codex 强度、队列、Question 及 Devin/Fusion 等问题。
+
 本文记录 Windows Devin 的接入、更新和排查方法。Linux 仍使用 README 中的启动脚本；Android 共用网页交互，但原生功能需要单独做 APK 验收。
 
 ## 2026-10-12 Editor 与 Codex 闪动修复

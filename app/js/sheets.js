@@ -97,7 +97,12 @@ function winLabel(title) {
 }
 
 function windowEntries() {
-  const entries = windows.map(w => ({ ...w, id: currentComputer()?.selections?.[w.app]?.id || w.id }));
+  const saved = currentComputer()?.selections || {};
+  const available = new Set(windows.flatMap(w => w.windowIds || [w.id]));
+  const entries = windows.map(w => {
+    const selected = saved[w.app]?.id;
+    return { ...w, id: selected && available.has(selected) ? selected : w.id };
+  });
   const missingAgents = ['cursor', 'devin', 'codex'].filter(a => !entries.some(w => w.app === a));
   return { entries, missingAgents };
 }
@@ -105,7 +110,9 @@ function windowEntries() {
 function switchToWindow(id) {
   closeSheet();
   status('正在切换 Agent…');
-  send({ t: 'attach', id, ...currentComputer()?.selections?.[id] });
+  const entry = windowEntries().entries.find(w => w.id === id);
+  const saved = entry && currentComputer()?.selections?.[entry.app];
+  send({ t: 'attach', id, ...(saved?.id === id ? saved : {}) });
 }
 function openSettings() {
   status('正在读取设置…');
@@ -621,7 +628,7 @@ function renderDevices() {
   const confirmation = deviceRemoval.length ? `<div class="hint">${esc(`移除「${pairedDevices.filter(d => deviceRemoval.includes(d.id)).map(d => d.name).join('、')}」？它们会立即断开，要重新配对才能再用。`)}</div><div class="askBtns"><button data-device-remove-cancel>取消</button><button class="danger" data-device-remove-confirm>移除</button></div>` : '';
   const opened = new Map([...$('sheet').querySelectorAll('[data-device-group]')].map(el => [el.dataset.deviceGroup, el.open]));
   const invitation = deviceInvitation?.expires > Date.now() ? `<div class="entryInvite"><div class="hint">将此链接在新浏览器打开，再核对下方出现的验证码。10 分钟内有效，不要发给陌生人。</div><textarea id="entryInviteLink" readonly aria-label="入口授权链接">${esc(deviceInvitation.link)}</textarea><button data-entry-copy>复制授权链接</button></div>` : '';
-  const requests = pendingEntries.map(r => `<div class="entryRequest"><strong>新入口请求 · ${esc(r.name)}</strong><div class="sub">归入 ${esc(r.groupName)} · 验证码 <b>${esc(r.code)}</b></div><div class="hint">请与新浏览器显示的验证码核对，确认是你的入口。</div><div class="askBtns"><button data-entry-decide="${esc(r.id)}" data-code="${esc(r.code)}" data-approve="false">拒绝</button><button data-entry-decide="${esc(r.id)}" data-code="${esc(r.code)}" data-approve="true">同意</button></div></div>`).join('');
+  const requests = pendingEntries.map(r => `<div class="entryRequest"><strong>新入口请求 · ${esc(r.name)}</strong><div class="sub">入口 ${esc(r.origin || '未提供来源')} · 归入 ${esc(r.groupName)} · 验证码 <b>${esc(r.code)}</b></div><div class="hint">请与新浏览器显示的验证码核对，确认是你的入口。</div><div class="askBtns"><button data-entry-decide="${esc(r.id)}" data-code="${esc(r.code)}" data-approve="false">拒绝</button><button data-entry-decide="${esc(r.id)}" data-code="${esc(r.code)}" data-approve="true">同意</button></div></div>`).join('');
   openSheet('devices', `<div class="deviceHead"><h3>已配对设备</h3><div class="listTools" ${removingDevices ? 'inert' : ''}>${listTools()}</div>${removingDevices ? '<div class="hint">正在移除入口…</div>' : confirmation}</div><div class="deviceRows" ${removingDevices ? 'inert' : ''}>${invitation}${requests}` + deviceGroups().map(g => `<details class="deviceGroup" data-device-group="${esc(g.id)}" ${(opened.get(g.id) ?? g.entries.some(d => d.current)) ? 'open' : ''}><summary>${esc(g.name)}<span class="sub">${g.entries.length} 个入口</span></summary><div class="listTools"><button data-entry-invite="${esc(g.id)}">添加入口</button>${listManagement.editing ? `<button data-device-group-rename="${esc(g.id)}">重命名设备</button>` : ''}${g.entries.some(d => d.current) ? '' : `<button data-device-group-remove="${esc(g.id)}">移除设备</button>`}</div>` + g.entries.map(d => `
     <${listManagement.editing && !d.current ? 'label' : 'div'} class="opt static ${d.current ? 'cur' : ''}">${listManagement.editing && !d.current ? listCheckbox(d.id) : ''}<span class="lbl">${esc(d.entryName)}<span class="sub">${d.current ? '当前入口 · ' : ''}入口码 ${esc(d.id)} · 配对于 ${when(d.created)} · 最近使用 ${when(d.lastSeen)}</span></span>
     ${d.current || listManagement.editing ? '' : `<button data-remove="${esc(d.id)}" data-name="${esc(d.name)}">移除</button>`}</${listManagement.editing && !d.current ? 'label' : 'div'}>`).join('')
@@ -837,6 +844,42 @@ function showUsageDetails(kind) {
   openSheet('usage', `<h3>${context ? '上下文说明' : '额度说明'}</h3>${rows}${!context && updated ? `<p class="hint">${m.cached ? '缓存数据' : '最近更新'} · ${esc(updated)}</p>` : ''}${!context && $('quotaStatus').textContent ? `<p class="hint">${esc($('quotaStatus').textContent)}</p>` : ''}<button id="refreshUsage" class="opt">刷新数据</button>`);
   $('refreshUsage').onclick = () => { closeSheet(); status('正在读取额度…'); send({ t: 'usage' }); };
 }
+function menuGroup(key, label, content, initial = true) {
+  const saved = store.get('menu-group:' + key);
+  const open = saved === null ? initial : saved === '1';
+  return `<details class="mainGroup" data-menu-group="${key}" ${open ? 'open' : ''}><summary>${esc(I18N.tr(label))}</summary><div class="mainGroupBody">${content}</div></details>`;
+}
+$('sheet').addEventListener('toggle', e => {
+  if (e.target.matches('details[data-menu-group]')) store.set('menu-group:' + e.target.dataset.menuGroup, e.target.open ? '1' : '0');
+}, true);
+$('sheet').addEventListener('change', e => {
+  const app = e.target.dataset.agentStart;
+  if (!app) return;
+  const selected = new Set(startupAgents());
+  e.target.checked ? selected.add(app) : selected.delete(app);
+  store.set('agent-start:' + agentComputerKey(), JSON.stringify([...selected]));
+  showAgentManager();
+});
+function showAgentManager(refresh = false) {
+  if (refresh) send({ t: 'connAgents' });
+  const catalog = agentCatalog(), selected = startupAgents();
+  const rows = (catalog || []).map(a => ({ ...CONN_AGENTS.find(r => r.app === a.app), ...a }));
+  const known = rows.filter(a => a.installed === true), unknown = rows.filter(a => a.installed === null), missing = rows.filter(a => a.installed === false);
+  const row = a => {
+    const ready = agentReports.get(agentComputerKey())?.find(r => r.app === a.app)?.windows;
+    const note = connLaunchNote(a) || (ready ? '已连接' : a.running ? '已运行，请开启调试端口' : a.reason || (a.installed === null ? '安装状态待确认' : '未启动'));
+    return `<label class="opt agentManageRow"><span class="cTile cBrand agentManageLogo"><img class="on-dark" src="logo-${a.app}-dark.svg" alt=""><img class="on-light" src="logo-${a.app}-light.svg" alt=""></span><span class="lbl">${esc(a.name)}<span class="sub">${esc(I18N.tr(note))}</span></span>${a.installed === true ? `<input type="checkbox" data-agent-start="${a.app}" aria-label="${esc(a.name)}" ${selected.includes(a.app) ? 'checked' : ''}>` : ''}</label>`;
+  };
+  openSheet('agent-manager', `<h3>Agent 管理</h3><p class="hint">${esc(currentComputer()?.name || I18N.tr('当前电脑'))} · ${I18N.tr('选择仅记录启动偏好，不会关闭正在运行的 Agent。')}</p>
+    <div class="optRow"><button class="opt" data-act="agentRefresh">重新检测</button><button class="opt" data-act="agentBack">返回菜单</button></div>
+    ${!catalog ? '<p class="hint">正在检测已安装的 Agent…</p>' : ''}
+    ${catalog ? `<section class="agentManageSection"><div class="pSec">已安装</div>${known.map(row).join('') || '<p class="hint">未检测到已安装的 Agent</p>'}
+    <button class="opt" data-act="agentStart" ${selectedLaunchAgents().length ? '' : 'disabled'}>启动所选 Agent</button></section>
+    ${unknown.length ? `<section class="agentManageSection"><div class="pSec">待确认</div>${unknown.map(row).join('')}</section>` : ''}
+    <section class="agentManageSection"><div class="pSec">未安装</div>${missing.map(a => `<button class="opt" data-act="agentInstall" data-agent="${a.app}"><span class="lbl">${a.name}<span class="sub">查看安装与启动指引</span></span><span class="tag">›</span></button>`).join('') || '<p class="hint">没有未安装的 Agent</p>'}</section>` : ''}
+    <p class="hint">${I18N.tr('Codex 需要 VS Code 和 Codex 扩展；调试端口未开启不代表没有安装。')}</p>`);
+}
+
 let usageTimer = null;
 function showMainMenu() {
   const notifyItem = `<button class="opt" id="notifySwitchRow" data-act="notifyToggle" role="switch" aria-checked="${notifyOn}"><span class="lbl">开启通知<span class="sub">Agent 完成或等你确认时提醒</span></span><span class="switch${notifyOn ? ' on' : ''}" aria-hidden="true"></span></button>`;
@@ -847,33 +890,38 @@ function showMainMenu() {
     ? `<button class="opt" data-act="appUpdate"><span class="lbl">更新安卓 App（v${esc(appVersion)} → v${esc(apkUpdate())}）</span><span class="tag">新</span></button>`
     : `<button class="opt" data-act="appUpdate"><span class="lbl">检查 App 更新（当前 v${esc(appVersion)}）</span></button>`;
   const appName = currentAppName;
-  openSheet('main', `<h3>菜单</h3>
-    ${appName ? `<div class="pSec">${appName}</div>` : ''}
+  const modelItems = `
     ${currentApp === 'fusion' ? `<button class="opt" data-act="fusionHistory">历史会话</button><button class="opt" data-act="fusionNew" ${lastChat?.fusion?.busy ? 'disabled' : ''}>＋ 新建</button>` : supportsCapability('model') ? `<button class="opt" data-act="model"><span class="lbl">更换模型<span class="sub" id="menuModel">${esc(lastChat?.model || '选择当前 Agent 的模型')}</span></span></button>` : ''}
     ${currentApp === 'cursor' && lastChat?.mode ? `<button class="opt" data-act="mode"><span class="lbl">${I18N.tr('模式')}<span class="sub">${esc(lastChat.mode === 'Bypass Permissions' ? '⚠ 绕过权限' : lastChat.mode)}</span></span></button>` : ''}
     ${lastChat?.permission || (currentApp === 'devin' && lastChat?.mode) ? `<button class="opt" data-act="permission"><span class="lbl">权限模式<span class="sub">${esc(lastChat.permission || lastChat.mode)}</span></span></button>` : ''}
     ${supportsCapability('editor', ['cursor', 'devin', 'codex'].includes(currentApp)) ? `<button class="opt" data-act="editor"><span class="lbl">Editor · 项目文件编辑${capabilityState('editor').reason ? `<span class="sub">${esc(capabilityState('editor').reason)}</span>` : ''}</span></button>` : ''}
     ${['cursor', 'devin', 'codex'].includes(currentApp) ? '<button class="opt" data-act="projects"><span class="lbl">打开项目<span class="sub">选择文件夹或新建项目</span></span></button>' : ''}
+    <button class="opt" data-act="screen"><span class="lbl">画面<span class="sub">查看绘图与仿真窗口</span></span></button>
     ${currentApp === 'codex' ? '<button class="opt" data-act="codexResetHelp"><span class="lbl">Codex 额度重置</span></button>' : ''}
     ${supportsCapability('settings') ? '<button class="opt" data-act="settings"><span class="lbl">设置</span></button>' : ''}
-    <button class="opt" data-act="transfer"><span class="lbl">文件传输<span class="sub">批量上传、下载文件及文件夹</span></span></button>
-    <button class="opt" data-act="screen"><span class="lbl">画面<span class="sub">查看绘图与仿真窗口</span></span></button>
-    <div class="pSec">此手机 App</div>
     ${['cursor', 'devin', 'codex', 'fusion'].includes(currentApp) ? `<button class="opt" data-act="executionToggle" role="switch" aria-checked="${executionRecordsShown()}"><span class="lbl">显示执行指令<span class="sub">包含工具读取和搜索记录；关闭后在本轮结束时隐藏</span></span><span class="switch${executionRecordsShown() ? ' on' : ''}" aria-hidden="true"></span></button>` : ''}
-    ${lastChat?.changed && !lastChat?.readonly ? `<button class="opt" data-act="toggleChanges"><span class="lbl">${hiddenChangeNotices.has(changeNoticeKey()) ? '显示改动' : '隐藏改动提示'}</span></button>` : ''}
-    ${iosApp && !window.AgentRemoteApp?.pushRegister ? '' : notifyItem}
-    <button class="opt" data-act="localVoiceMenu"><span class="lbl">语音输入<span class="sub">${voiceEnabled() ? '已开启' : '未开启'} · 按住说话 · 选择识别引擎</span></span><span class="tag">›</span></button>
+    ${lastChat?.changed && !lastChat?.readonly ? `<button class="opt" data-act="toggleChanges"><span class="lbl">${hiddenChangeNotices.has(changeNoticeKey()) ? '显示改动' : '隐藏改动提示'}</span></button>` : ''}`;
+  const connectionItems = `
+    <button class="opt" data-act="agentManager"><span class="lbl">Agent 管理<span class="sub">检测安装状态、选择并启动 Agent</span></span></button>
     ${connItems}
-    ${inApp && appVersion ? update : ''}
     ${inApp ? '<button class="opt" data-act="changeUrl"><span class="lbl">更换 App 地址</span></button>' : ''}
     <button class="opt" data-act="reconnect"><span class="lbl">重新连接</span></button>
+    <button class="opt" data-act="computers"><span class="lbl">电脑<span class="sub">${esc(currentComputer()?.name || '未配对')}</span></span></button>
+    <button class="opt" data-act="devices"><span class="lbl">已配对设备</span></button>
+    <button class="opt" data-act="logout"><span class="lbl">删除这台电脑</span></button>`;
+  const filesItems = `
+    <button class="opt" data-act="transfer"><span class="lbl">文件传输<span class="sub">批量上传、下载文件及文件夹</span></span></button>
+    <button class="opt" data-act="localVoiceMenu"><span class="lbl">语音输入<span class="sub">${voiceEnabled() ? '已开启' : '未开启'} · 按住说话 · 选择识别引擎</span></span><span class="tag">›</span></button>`;
+  const settingsItems = `
+    ${iosApp && !window.AgentRemoteApp?.pushRegister ? '' : notifyItem}
+    ${inApp && appVersion ? update : ''}
     <button class="opt" data-act="theme"><span class="lbl">主题<span class="sub">深色 / 浅色 / 跟随系统（当前：${themeName()}）</span></span></button>
     ${inApp && window.AgentRemoteApp?.listenStatus ? '<button class="opt" data-act="bg"><span class="lbl">后台连接<span class="sub">状态、电池优化、立即重连</span></span></button>' : ''}
     <button class="opt" data-act="cache"><span class="lbl">会话缓存<span class="sub">手机上保存的对话记录，可折叠、可清除</span></span></button>
-    <button class="opt" data-act="lang"><span class="lbl">语言 / Language<span class="sub">中文 · English（${I18N.lang === 'en' ? 'English' : '中文'}）</span></span></button>
-    <button class="opt" data-act="computers"><span class="lbl">电脑<span class="sub">${esc(currentComputer()?.name || '未配对')}</span></span></button>
-    <button class="opt" data-act="devices"><span class="lbl">已配对设备</span></button>
-    <button class="opt" data-act="logout"><span class="lbl">删除这台电脑</span></button>`);
+    <button class="opt" data-act="lang"><span class="lbl">语言 / Language<span class="sub">中文 · English（${I18N.lang === 'en' ? 'English' : '中文'}）</span></span></button>`;
+  openSheet('main', `<h3>菜单</h3>${menuGroup('model', '模型', (appName ? `<div class="pSec">${esc(appName)}</div>` : '') + modelItems)}
+    ${menuGroup('general', '通用', menuGroup('connection', 'Agent 与连接', connectionItems, false)
+      + menuGroup('files', '文件与输入', filesItems, false) + menuGroup('settings', '应用设置与帮助', settingsItems, false))}`);
 }
 $('menuBtn').onclick = showMainMenu;
 

@@ -8,7 +8,7 @@ let notifySubscribed = false;
 
 const swReady = () => Promise.race([navigator.serviceWorker.ready, sleep(5000).then(() => { throw new Error('通知组件没有加载，请刷新后再试'); })]);
 const pushSub = async () => webPush() ? (await swReady()).pushManager.getSubscription() : null;
-const nativeConfig = () => JSON.stringify({ app: appAddress(), key: store.get('key') || '', token: store.get('token') || '' });
+const nativeConfig = () => JSON.stringify({ app: appAddress(), key: store.get('key') || '', token: store.get('token') || '', id: currentComputer()?.id || '' });
 
 // After every connect, read this device's saved setting without enabling a retained subscription.
 async function syncNotify() {
@@ -63,7 +63,8 @@ async function enableNotify() {
   if (inApp) return status('请先在菜单里更新安卓 App，新版才支持通知', false);
   if (!webPush()) {
     const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
-    return status(ios && !standalone() ? 'iPhone 要先「分享 → 添加到主屏幕」，从桌面图标打开后才能开启通知' : '这个浏览器不支持通知', false);
+    const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+    return status(ios && !standalone ? 'iPhone 要先「分享 → 添加到主屏幕」，从桌面图标打开后才能开启通知' : '这个浏览器不支持通知', false);
   }
   // Must be the first await: iOS only shows the permission prompt directly inside a tap.
   const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
@@ -349,6 +350,13 @@ $('sheet').addEventListener('click', async e => {
   else if (act === 'fusionHistory') { closeSheet(); return send({ t: 'fusionHistory' }); }
   else if (act === 'fusionNew') { closeSheet(); return send({ t: 'fusionNew' }); }
   else if (act === 'localVoiceToggle') return toggleLocalVoice();
+  else if (act === 'agentManager' || act === 'agentRefresh') return showAgentManager(true);
+  else if (act === 'agentBack') return showMainMenu();
+  else if (act === 'agentStart') return connLaunch();
+  else if (act === 'agentInstall') {
+    const a = CONN_AGENTS.find(a => a.app === b.dataset.agent);
+    openSheet('agent-install', `<h3>${esc(a.name)} · ${I18N.tr('安装与启动')}</h3><p>${I18N.tr('请在电脑端安装对应应用；Codex 需先安装 VS Code，再安装 Codex 扩展并登录。')}</p><p>${I18N.tr('安装后使用仓库的启动脚本开启调试端口，再返回重新检测。')}</p><pre>Linux: ./scripts/start-${a.app}.sh<br>Windows: window_start/start-agents.ps1 -Apps ${a.app}</pre><p class="hint">${I18N.tr('macOS 请在电脑端以远程调试模式启动应用，当前不支持远程启动。')}</p><button class="opt" data-act="agentManager">返回 Agent 管理</button>`);
+  }
   else if (act === 'localVoiceMenu') return showLocalVoiceMenu();
   else if (act === 'voiceBack') return showMainMenu();
   else if (b.dataset.voiceEngine) return selectVoiceEngine(b.dataset.voiceEngine);
@@ -407,7 +415,11 @@ $('sheet').addEventListener('click', async e => {
   else if (act === 'addComputer') addComputer();
   else if (act === 'devices') showDevices();
   else if (b.dataset.remove) return removePairedDevices([b.dataset.remove]);
-  else if (b.dataset.computerPub != null) return pairPublished(b.dataset.computerName);
+  else if (b.dataset.computerPub != null) {
+    const entry = unseenPublished().find(c => c.id === b.dataset.computerPub);
+    if (entry?.discovery && new URL(entry.discovery).origin !== location.origin) return openComputerEntry(new URL('./', entry.discovery).href, entry.id);
+    return pairPublished(b.dataset.computerName);
+  }
   else if (b.dataset.computerI != null) { closeSheet(); return useComputer(b.dataset.computerI); }
   else if (b.dataset.computerDel != null) return removeComputer(b.dataset.computerDel);
   else if (act === 'logout') {
@@ -437,7 +449,7 @@ function showComputers(note = '') {
     const heading = groups.length ? `<div class="computerGroupHead"><strong>${group ? esc(group) : '未分组'}</strong>${group && listManagement.editing ? `<button data-group-rename="${esc(group)}">重命名</button><button data-group-delete="${esc(group)}">删除分组</button>` : ''}</div>` : '';
     return heading + rows + (group && !rows ? '<div class="hint">暂无电脑</div>' : '');
   }).join('');
-  const extra = unseenPublished().map(p => `<button class="opt" data-computer-pub="${esc(p.id)}" data-computer-name="${esc(p.name || '电脑')}"><span class="lbl">${esc(p.name || '电脑')}<span class="sub">未配对</span></span></button>`).join('');
+  const extra = unseenPublished().map(p => `<button class="opt" data-computer-pub="${esc(p.id)}" data-computer-name="${esc(p.name || '电脑')}"><span class="lbl">${esc(p.name || '电脑')}<span class="sub">${p.discovery && new URL(p.discovery).origin !== location.origin ? '打开入口' : '未配对'}</span></span></button>`).join('');
   const hint = note ? `<div class="hint">${esc(note).replace(/\n/g, '<br>')}</div>` : '';
   openSheet('computers', `<h3>电脑</h3><div class="listTools">${listTools()}</div>${hint}${saved}${extra || (saved ? '' : '<div class="hint">还没有配对的电脑。</div>')}<button class="opt" data-act="addComputer"><span class="lbl">＋ 配对另一台电脑</span></button><div class="hint">在那台电脑上运行 npm run pair，把链接粘贴过来。已配对的电脑会保留。</div>`);
 }
@@ -485,17 +497,15 @@ function addComputer() {
     onRetry: () => loadComputers().length ? showComputers() : showUnpaired(),
   });
 }
-function useComputer(i) {
+async function useComputer(i) {
   const list = loadComputers();
   const c = list[Number(i)];
   if (!c) return showComputers();
   saveDraft();
   if (c.discovery && new URL(c.discovery).origin !== location.origin) {
-    const link = computerLink(new URL('./', c.discovery).href, c.key);
-    if (inApp) return window.AgentRemoteApp.setUrl(link);
-    location.href = link;
-    return;
+    return openComputerEntry(new URL('./', c.discovery).href, c.id || await computerIdFromKey(c.key));
   }
+  entryComputer = '';
   saveComputers(list, c.key);
   restoreDraft();
   store.set('window', c.win || null);
@@ -535,7 +545,7 @@ async function flushLogouts() {
     let done = false;
     try {
       const r = await fetch(await relayOf(p) + '/api/logout', { method: 'POST', cache: 'no-store', signal: AbortSignal.timeout(8000),
-        headers: { 'content-type': 'application/json', authorization: 'Bearer ' + p.token }, body: '{}' });
+        headers: { 'content-type': 'application/json', ...await entryHeaders(p, 'POST', '/api/logout') }, body: '{}' });
       const body = r.status === 401 ? await r.json().catch(() => ({})) : {};
       // 401 without needTotp: the relay already forgot this device. 403: that relay doesn't accept this page's origin; the relay's own expiry covers it.
       done = r.ok || r.status === 403 || (r.status === 401 && !body.needTotp);
