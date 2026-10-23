@@ -63,7 +63,8 @@ async function enableNotify() {
   if (inApp) return status('请先在菜单里更新安卓 App，新版才支持通知', false);
   if (!webPush()) {
     const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
-    return status(ios && !standalone() ? 'iPhone 要先「分享 → 添加到主屏幕」，从桌面图标打开后才能开启通知' : '这个浏览器不支持通知', false);
+    const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+    return status(ios && !standalone ? 'iPhone 要先「分享 → 添加到主屏幕」，从桌面图标打开后才能开启通知' : '这个浏览器不支持通知', false);
   }
   // Must be the first await: iOS only shows the permission prompt directly inside a tap.
   const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
