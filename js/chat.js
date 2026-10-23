@@ -98,6 +98,14 @@ function thinkingWantOpen(it) {
   if (thinkingPref.has(key)) return thinkingPref.get(key);
   return true;
 }
+function readThinkingScroll(box) {
+  const state = box._thinkingScroll, top = box.scrollTop;
+  if (!box.hidden) {
+    if (top < state.top) state.follow = false;
+    else if (top > state.top && box.scrollHeight - box.clientHeight - top <= 1) state.follow = true;
+  }
+  state.top = top;
+}
 function paintThinking(el, it) {
   const open = thinkingWantOpen(it);
   el.classList.toggle('live', !!it.live);
@@ -112,12 +120,15 @@ function paintThinking(el, it) {
     el.innerHTML = `<button type="button" class="thbtn" data-think="">${it.src === 'devin' ? ICON.brain : ''}<span class="tht"></span><span class="tha"></span></button><div class="thb"></div>`;
     btn = el.querySelector('.thbtn');
     box = el.querySelector('.thb');
+    box._thinkingScroll = { follow: true, top: box.scrollTop };
+    box.addEventListener('scroll', () => readThinkingScroll(box), { passive: true });
   }
   btn.dataset.think = rest || more ? it.i : '';
   btn.dataset.more = more ? '1' : '';
   btn.querySelector('.tht').textContent = thinkingTitle(it.t);
   btn.querySelector('.tha').textContent = rest || more ? (open ? '收起' : '展开') : '';
-  const follow = open && it.live && box.scrollHeight - box.scrollTop - box.clientHeight < 48;
+  readThinkingScroll(box);
+  const follow = box._thinkingScroll.follow;
   const loading = more && thoughtFull.has(it.i) && full === undefined;
   const body = loading ? '加载中…' : more && full === null ? '内容未保存' : rest;
   box.classList.toggle('loading', loading);
@@ -125,6 +136,8 @@ function paintThinking(el, it) {
   box.hidden = !open;
   if (open && more && !thoughtFull.has(it.i)) thoughtObserver.observe(el);
   if (open && it.live && follow) box.scrollTop = box.scrollHeight;
+  // Scroll events arrive later; record our own positioning without changing follow state.
+  box._thinkingScroll.top = box.scrollTop;
 }
 
 // Rich tool rows (Devin transcript): icon + bold label + optional chips / duration /

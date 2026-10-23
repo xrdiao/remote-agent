@@ -529,7 +529,7 @@ const I18N = (() => {
     '不支持的操作': 'Unsupported action', '文件列表已经变了，请重新打开': 'The file list changed; open it again',
     '没找到这个按钮（可能 {app} 版本不同）': 'Button not found (your {app} version may differ)',
     // Relay messages
-    '已修改，仍在排队': 'Updated, still queued', 'Agent 正在运行，已加入排队，这一轮结束后自动发送': 'Agent is running; queued, and it sends automatically when this turn ends',
+    '已排队': 'Queued', '已修改，仍在排队': 'Updated, still queued', 'Agent 正在运行，已加入排队，这一轮结束后自动发送': 'Agent is running; queued, and it sends automatically when this turn ends',
     '按钮已经不在了，可能状态已变化': 'That button is gone; the state may have changed', '{app} 没有进入编辑状态，没改动': '{app} did not enter edit mode; nothing changed',
     '不支持的排队操作': 'Unsupported queue action', '这条排队消息已经不在了（可能刚被发出）': 'That queued message is gone (it may have just been sent)',
     '没找到排队消息的操作按钮（可能 {app} 版本不同）': 'Could not find the queue buttons (your {app} version may differ)',
