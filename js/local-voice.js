@@ -83,7 +83,13 @@ function voiceConnection() {
   const link = voiceLink = { key, socket };
   resetVoiceReady(link);
   const engine = voiceEngine();
-  socket.onopen = () => socket.send(JSON.stringify({ type: 'auth', token: store.get('token'), engine }));
+  const computer = currentComputer();
+  socket.onopen = async () => {
+    try {
+      const proof = await entryProof(computer, 'WS /voice');
+      if (voiceLink === link && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'auth', token: computer.token, proof, engine }));
+    } catch (error) { link.reject(error); socket.close(); }
+  };
   socket.onerror = () => link.reject(new Error('本机语音连接失败，请检查中继；微信内无法开麦时请用 Safari/Chrome'));
   socket.onclose = e => {
     const current = voiceLink === link;

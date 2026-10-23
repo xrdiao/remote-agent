@@ -5,6 +5,30 @@ const I18N = (() => {
   const lang = saved === 'zh' || saved === 'en' ? saved : /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
 
   const EN = {
+    "请更新安卓 App 后重新配对": "Update the Android app, then pair this entry again.",
+    "无法读取入口密钥": "Unable to read this entry’s key.",
+    "密钥认证需要 HTTPS，请使用固定入口或 HTTPS 隧道": "Key authentication requires HTTPS. Use the fixed entry or an HTTPS tunnel.",
+    "入口签名失败，请重新打开入口": "Entry signing failed. Reopen this entry.",
+    "请在电脑授权页面核对验证码，勾选属于同一设备的入口并批准。": "Check the codes on the computer approval page, select entries belonging to the same device and approve them.",
+    "本次入口申请已被拒绝": "This entry request was denied.",
+    "核对并授权入口": "Verify and authorize entries",
+    "在同一设备的各个入口打开配对链接，对照各入口显示的验证码。只勾选你已核对的申请，批准后它们归入同一设备，各自独立验证。": "Open the pairing link in each entry on the same device and compare their verification codes. Select only verified requests. Approval groups them as one device while keeping authentication independent.",
+    "正在读取申请…": "Loading requests…",
+    "设备名称": "Device name",
+    "例如：我的 iPhone": "For example: my iPhone",
+    "批准已核对的入口": "Approve verified entries",
+    "拒绝所选": "Deny selected",
+    "刷新列表": "Refresh list",
+    "结束本次授权": "Close approval window",
+    "此页面的地址仅供电脑端使用，请勿分享。结束授权后，未批准的申请失效；已批准的入口仍可正常连接。": "Keep this computer approval URL private. Closing the window invalidates pending requests; approved entries remain connected.",
+    "请逐项核对验证码后勾选。": "Check each verification code before selecting it.",
+    "等待新入口申请…": "Waiting for entry requests…",
+    "请先核对并勾选入口。": "Verify and select the entries first.",
+    "请填写设备名称。": "Enter a device name.",
+    "本次授权已结束。": "This approval window is closed.",
+    "请在电脑上运行 npm run pair，打开其中的电脑授权页面。": "Run npm run pair on the computer and open its approval page.",
+    "未提供来源": "No origin provided",
+
     '打开入口': 'Open entry',
     '当前入口尚未配对这台电脑，请使用配对链接或由已配对入口添加授权。': 'This entry is not paired with this computer. Use a pairing link or authorize it from an existing paired entry.',
 

@@ -142,12 +142,13 @@ async function resolveBase() {
 
 async function api(path, opts = {}) {
   const { timeout = 10000, ...request } = opts;
-  const token = pending ? loadComputers().find(c => pending.key ? c.key === pending.key : c.id === pending.id)?.token : store.get('token');
-  const headers = { 'content-type': 'application/json', ...(token ? { authorization: 'Bearer ' + token } : {}), ...opts.headers };
+  const target = base;
+  const computer = pending ? loadComputers().find(c => pending.key ? c.key === pending.key : c.id === pending.id) : currentComputer();
+  const headers = { 'content-type': 'application/json', ...await entryHeaders(computer, opts.method || 'GET', path), ...opts.headers };
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeout);
   try {
-    return await fetch(base + path, { ...request, headers, signal: ctl.signal, cache: 'no-store' });
+    return await fetch(target + path, { ...request, headers, signal: ctl.signal, cache: 'no-store' });
   } finally {
     clearTimeout(timer);
   }
@@ -362,12 +363,18 @@ async function pair(totp) {
   gate({ msg: '正在配对…' });
   let r, body;
   try {
-    r = await post('/api/pair', { code: pending.code, name: deviceName(), totp });
+    const { publicKey } = await entryKey();
+    r = await post('/api/pair', { code: pending.code, name: entryName(), publicKey, totp });
     body = await r.json().catch(() => ({}));
-  } catch {
-    return showOffline();
+  } catch (error) {
+    return showUnpaired(error.message);
   }
   if (r.ok) {
+    if (body.pending) {
+      Object.assign(pending, { key: body.key, requestId: body.id, secret: body.secret, code: body.code, expires: body.expires, desktop: true });
+      sessionStorage.setItem('entry-request', JSON.stringify(pending));
+      return joinEntryRequest();
+    }
     return finishPair(body);
   }
   if (body.needTotp) return showTotp(code => pair(code), body.error);
@@ -401,7 +408,8 @@ async function joinEntryRequest() {
   try {
     if (!request.requestId) {
       gate({ msg: '正在申请入口授权…' });
-      const r = await post('/api/entries/join', { invitation: request.invitation, name: entryName() });
+      const { publicKey } = await entryKey();
+      const r = await post('/api/entries/join', { invitation: request.invitation, name: entryName(), publicKey });
       const body = await r.json();
       if (!r.ok) { terminal = true; throw new Error(body.error || '申请失败'); }
       if (generation !== entryJoinGeneration || pending !== request) return;
@@ -409,7 +417,7 @@ async function joinEntryRequest() {
       delete request.invitation;
       sessionStorage.setItem('entry-request', JSON.stringify(request));
     }
-    gate({ msg: `授权验证码：${request.code}\n请在已配对入口的「已配对设备」中核对验证码并同意。`, retry: '取消申请', onRetry: cancel });
+    gate({ msg: `授权验证码：${request.code}\n${request.desktop ? '请在电脑授权页面核对验证码，勾选属于同一设备的入口并批准。' : '请在已配对入口的「已配对设备」中核对验证码并同意。'}`, retry: '取消申请', onRetry: cancel });
     while (generation === entryJoinGeneration && pending === request) {
       if (Date.now() >= request.expires) { terminal = true; throw new Error('授权请求已过期，请重新生成链接'); }
       const r = await post('/api/entries/status', { id: request.requestId, secret: request.secret });
@@ -417,7 +425,7 @@ async function joinEntryRequest() {
       if (generation !== entryJoinGeneration || pending !== request) return;
       if (!r.ok) { terminal = true; throw new Error(body.error || '授权查询失败'); }
       if (body.state === 'approved') return finishPair(body);
-      if (body.state === 'denied') { terminal = true; throw new Error('已配对入口拒绝了本次申请'); }
+      if (body.state === 'denied') { terminal = true; throw new Error('本次入口申请已被拒绝'); }
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
   } catch (error) {
@@ -538,7 +546,13 @@ async function connect() {
   let opened = false;
   const socket = ws;
   const connectTimer = setTimeout(() => { if (gen === connGen && !authed) closeSocket(socket); }, 10000);
-  ws.onopen = () => { opened = true; socket.send(JSON.stringify({ t: 'auth', token: store.get('token') })); };
+  ws.onopen = async () => {
+    opened = true;
+    try {
+      const proof = await entryProof(computer, 'WS /ws');
+      if (gen === connGen && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ t: 'auth', token: computer.token, proof }));
+    } catch (error) { rejected = true; socket.close(); showUnpaired(error.message); }
+  };
   let rejected = false;
   ws.onclose = async event => {
     clearTimeout(connectTimer);

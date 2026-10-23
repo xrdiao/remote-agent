@@ -8,7 +8,7 @@ let notifySubscribed = false;
 
 const swReady = () => Promise.race([navigator.serviceWorker.ready, sleep(5000).then(() => { throw new Error('通知组件没有加载，请刷新后再试'); })]);
 const pushSub = async () => webPush() ? (await swReady()).pushManager.getSubscription() : null;
-const nativeConfig = () => JSON.stringify({ app: appAddress(), key: store.get('key') || '', token: store.get('token') || '' });
+const nativeConfig = () => JSON.stringify({ app: appAddress(), key: store.get('key') || '', token: store.get('token') || '', id: currentComputer()?.id || '' });
 
 // After every connect, read this device's saved setting without enabling a retained subscription.
 async function syncNotify() {
@@ -544,7 +544,7 @@ async function flushLogouts() {
     let done = false;
     try {
       const r = await fetch(await relayOf(p) + '/api/logout', { method: 'POST', cache: 'no-store', signal: AbortSignal.timeout(8000),
-        headers: { 'content-type': 'application/json', authorization: 'Bearer ' + p.token }, body: '{}' });
+        headers: { 'content-type': 'application/json', ...await entryHeaders(p, 'POST', '/api/logout') }, body: '{}' });
       const body = r.status === 401 ? await r.json().catch(() => ({})) : {};
       // 401 without needTotp: the relay already forgot this device. 403: that relay doesn't accept this page's origin; the relay's own expiry covers it.
       done = r.ok || r.status === 403 || (r.status === 401 && !body.needTotp);

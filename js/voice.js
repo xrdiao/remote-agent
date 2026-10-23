@@ -99,11 +99,13 @@ $('img').onclick = () => {
   openSheet('image-upload', '<h3>选择图片</h3><button class="opt" data-image-choice="direct">直接上传</button><button class="opt" data-image-choice="edit">编辑后上传</button>');
   for (const button of $('sheet').querySelectorAll('[data-image-choice]')) button.onclick = () => { editBeforeUpload = button.dataset.imageChoice === 'edit'; closeSheet(); $('imgFile').click(); };
 };
-function uploadDocument(file, sel) {
+async function uploadDocument(file, sel) {
+  const target = base, path = '/api/upload?name=' + encodeURIComponent(file.name) + '&sel=' + encodeURIComponent(sel);
+  const headers = await entryHeaders(currentComputer(), 'POST', path);
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
-    request.open('POST', base + '/api/upload?name=' + encodeURIComponent(file.name) + '&sel=' + encodeURIComponent(sel));
-    request.setRequestHeader('authorization', 'Bearer ' + store.get('token'));
+    request.open('POST', target + path);
+    for (const [key, value] of Object.entries(headers)) request.setRequestHeader(key, value);
     request.setRequestHeader('content-type', 'application/octet-stream');
     request.timeout = 60000;
     request.upload.onprogress = e => { if (e.lengthComputable) status(`正在上传 ${file.name} ${Math.round(e.loaded / e.total * 100)}%`); };
