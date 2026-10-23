@@ -49,6 +49,20 @@ function rememberConversation() {
   rememberComputer({ ...here, lastConversation: selection,
     previousConversation: last && (last.id !== selection.id || last.windowId !== selection.windowId) ? last : here.previousConversation });
 }
+function forgetClosedWindow(id) {
+  const here = currentComputer();
+  if (!here || !id) return;
+  const app = String(id).split(':')[0], selections = { ...here.selections };
+  const current = here?.win === id, selected = selections[app]?.id === id;
+  if (!current && !selected) return;
+  if (selected) delete selections[app];
+  delete selections[id];
+  const next = { ...here, selections };
+  if (current) { next.win = ''; next.windowId = ''; next.threadId = ''; }
+  if (current && next.lastConversation?.id === id) next.lastConversation = null;
+  rememberComputer(next);
+  if (current) store.set('window', null);
+}
 function applySelection(m, clearChat = true) {
   if (m.app) { currentApp = m.app; capabilityOwner = m.app; agentCapabilities = m.capabilities || null; fusionSideCapabilities = m.sideCapabilities || {}; }
   const changed = (m.sel || '') !== viewSel;
@@ -664,7 +678,7 @@ async function connect() {
       finishPending(['正在读取额度…']);
     }
     else if (m.t === 'attached') {
-      if (m.closed) { setWindowReady(m.ready === true); status('这个窗口已经关闭，请重新选择', false); send({ t: 'windows' }); if (m.initial) { connHide(); showWindows(); } return; }
+      if (m.closed) { forgetClosedWindow(m.id); setWindowReady(m.ready === true); status('这个窗口已经关闭，请重新选择', false); send({ t: 'windows' }); if (m.initial) { connHide(); showWindows(); } return; }
       if (m.plans) appPlans = { ...appPlans, ...m.plans };
       rememberAgentOpen(m);
       if (m.keepQuota) { applySelection(m); setWindowReady(true); return; }
