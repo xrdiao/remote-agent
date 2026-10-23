@@ -97,7 +97,12 @@ function winLabel(title) {
 }
 
 function windowEntries() {
-  const entries = windows.map(w => ({ ...w, id: currentComputer()?.selections?.[w.app]?.id || w.id }));
+  const saved = currentComputer()?.selections || {};
+  const available = new Set(windows.flatMap(w => w.windowIds || [w.id]));
+  const entries = windows.map(w => {
+    const selected = saved[w.app]?.id;
+    return { ...w, id: selected && available.has(selected) ? selected : w.id };
+  });
   const missingAgents = ['cursor', 'devin', 'codex'].filter(a => !entries.some(w => w.app === a));
   return { entries, missingAgents };
 }
@@ -105,7 +110,9 @@ function windowEntries() {
 function switchToWindow(id) {
   closeSheet();
   status('正在切换 Agent…');
-  send({ t: 'attach', id, ...currentComputer()?.selections?.[id] });
+  const entry = windowEntries().entries.find(w => w.id === id);
+  const saved = entry && currentComputer()?.selections?.[entry.app];
+  send({ t: 'attach', id, ...(saved?.id === id ? saved : {}) });
 }
 function openSettings() {
   status('正在读取设置…');
