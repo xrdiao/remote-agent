@@ -37,14 +37,19 @@ function cacheChat(sel, chat) {
     idbPut('chat-previews', [...chatBySel].map(([key, value]) => [key, { ...value, items: value.items.slice(-400) }]));
   }, 1000);
 }
-let chatFrame = 0, queuedChat = null;
+let chatFrame = 0, queuedChat = null, chatRenderEpoch = 0;
+function invalidateChatRender() {
+  chatRenderEpoch++;
+  queuedChat = null;
+  if (chatFrame) { cancelAnimationFrame(chatFrame); chatFrame = 0; }
+}
 function queueChatRender(chat = queuedChat?.chat || lastChat, stale = queuedChat?.stale ?? chatStale, sel = queuedChat?.sel || viewSel) {
-  queuedChat = {chat, stale, sel};
+  queuedChat = { chat, stale, sel, epoch: chatRenderEpoch };
   if (!chatFrame) chatFrame = requestAnimationFrame(() => {
     chatFrame = 0;
     const next = queuedChat;
     queuedChat = null;
-    if (windowReady && (!next.sel || !viewSel || next.sel === viewSel)) {
+    if (next?.epoch === chatRenderEpoch && windowReady && (!next.sel || !viewSel || next.sel === viewSel)) {
       renderChat(next.chat, next.stale);
       if (next.chat && (!next.stale || next.chat.imagePreview) && !deferredScrollRender
           && windowReady && (!next.sel || next.sel === viewSel)) {
@@ -773,6 +778,7 @@ function finishQuestion(m) {
 }
 function renderQuestions(qs) {
   const bar = $('qnBar');
+  if (qs?.codex && currentApp !== 'codex') qs = null;
   if (qnView !== viewSel) { qnView = viewSel; qnSig = ''; qnPending = null; qnDrafts.clear(); }
   qnState = qs;
   const answers = qs?.codex ? qs.requests.filter(r => r.id.startsWith('async:')) : [];
@@ -1186,8 +1192,10 @@ function settleChatScroll() {
   if (restoringChatScroll) { lastScrollTop = top; updateToBottom(); return; }
   if (top < lastScrollTop) { historyArmed = true; pinnedBottom = false; }
   lastScrollTop = top;
-  if (pinnedBottom && !nearBottom()) pinnedBottom = false;
-  else if (!pinnedBottom && atBottom()) pinnedBottom = true;
+  if (!chatTouching && !chatMomentum && !deferredScrollRender) {
+    if (pinnedBottom && !nearBottom()) pinnedBottom = false;
+    else if (!pinnedBottom && atBottom()) pinnedBottom = true;
+  }
   chatScrolling = true;
   clearTimeout(scrollIdle);
   scrollIdle = setTimeout(() => {
@@ -1220,7 +1228,15 @@ list.addEventListener('pointerdown', () => { historyArmed = true; }, { passive: 
 list.addEventListener('touchstart', e => { readingAnchor = captureChatAnchor(); historyTouchY = e.touches[0].clientY; chatMomentum = false; chatTouching = true; chatScrolling = true; clearTimeout(scrollIdle); }, { passive: true });
 list.addEventListener('touchmove', e => { turnNavGesture(); restoringChatScroll = false; if (e.touches[0].clientY > historyTouchY) { historyArmed = true; pinnedBottom = false; } historyTouchY = e.touches[0].clientY; }, { passive: true });
 for (const event of ['touchend', 'touchcancel']) list.addEventListener(event, () => { chatMomentum = event === 'touchend'; chatTouching = false; restoringChatScroll = false; settleChatScroll(); }, { passive: true });
-$('toBottom').onclick = () => { restoreChatPosition(null, true); };
+$('toBottom').onclick = () => {
+  clearTimeout(scrollIdle);
+  chatTouching = false;
+  chatMomentum = false;
+  chatScrolling = false;
+  restoreChatPosition(null, true);
+  lastScrollTop = list.scrollTop;
+  updateToBottom();
+};
 $('older').onclick = () => loadOlderMessages();
 
 // LaTeX in text typed by the user ($..$, $..$, \\(..\\), \\[..\\]): turned into .math placeholders for KaTeX.
