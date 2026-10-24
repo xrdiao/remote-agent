@@ -278,9 +278,9 @@ function renderItem(it) {
 
 const nearBottom = () => list.scrollHeight - list.scrollTop - list.clientHeight < 120;
 // Following the chat means the user is at the very end (or never left it); "close to the end" is still reading.
-const BOTTOM_EPSILON = 16;
+const BOTTOM_EPSILON = 1;
 const atBottom = () => list.scrollHeight - list.scrollTop - list.clientHeight <= BOTTOM_EPSILON;
-const followingChat = () => isFollowingBottom() || atBottom();
+const followingChat = () => isFollowingBottom() || (!chatTouching && !chatMomentum && atBottom());
 
 // pickMenu has no completion message until the relay restarts, so clear "切换中…"
 // when the composer model/mode actually changes, or after a short fallback.
