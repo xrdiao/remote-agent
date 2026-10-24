@@ -318,8 +318,9 @@ function userSelecting() {
   return !!sel && !sel.isCollapsed && sel.rangeCount > 0 && itemsEl.contains(sel.getRangeAt(0).commonAncestorContainer);
 }
 let deferredRender = false;
-let chatScrolling = false, chatTouching = false, scrollIdle = 0, deferredScrollRender = false, lastScrollTop = 0;
+let chatScrolling = false, chatTouching = false, chatMomentum = false, scrollIdle = 0, deferredScrollRender = false, lastScrollTop = 0;
 let historyRequest = null, historyRendering = false, historyExpanded = false, historyArmed = false, historySerial = 0, historyAtEnd = false;
+let historyWaitingForIdle = false;
 let pendingHistoryStatus = null;
 let turnNavTimer = 0, turnNavHeld = false, turnNavUser = false, turnNavCursor = null, turnNavPending = null;
 let turnNavPointer = null, turnNavSkipClick = false;
@@ -352,22 +353,37 @@ function stabilizeChatReading() {
   readingAnchor = captureChatAnchor();
 }
 function restoreChatPosition(anchor, stick = false) {
-  restoringChatScroll = true;
   pinnedBottom = !!stick;
-  if (stick) list.scrollTop = list.scrollHeight;
+  let changed = false;
+  if (stick) {
+    const next = list.scrollHeight;
+    changed = list.scrollTop !== next;
+    if (changed) list.scrollTop = next;
+  }
   else if (anchor) {
     const el = [...itemsEl.children].find(e => e.dataset.i === anchor.id);
-    if (el) list.scrollTop += el.getBoundingClientRect().top - list.getBoundingClientRect().top - anchor.top;
+    if (el) {
+      const next = list.scrollTop + el.getBoundingClientRect().top - list.getBoundingClientRect().top - anchor.top;
+      changed = list.scrollTop !== next;
+      if (changed) list.scrollTop = next;
+    }
   }
   readingAnchor = stick ? null : captureChatAnchor();
-  requestAnimationFrame(() => { restoringChatScroll = false; });
+  if (changed) {
+    restoringChatScroll = true;
+    requestAnimationFrame(() => { restoringChatScroll = false; });
+  }
 }
 const chatSizeObserver = new ResizeObserver(() => {
+  if (chatMomentum) return;
   if (chatScrolling || chatTouching) { stabilizeChatReading(); return; }
   if (pinnedBottom) {
-    restoringChatScroll = true;
-    list.scrollTop = list.scrollHeight;
-    requestAnimationFrame(() => { restoringChatScroll = false; });
+    const next = list.scrollHeight;
+    if (list.scrollTop !== next) {
+      restoringChatScroll = true;
+      list.scrollTop = next;
+      requestAnimationFrame(() => { restoringChatScroll = false; });
+    }
   } else if (readingAnchor) restoreChatPosition(readingAnchor);
 });
 for (const el of [itemsEl, $('older'), $('historyStatus'), $('cachedMore')]) chatSizeObserver.observe(el);
@@ -477,11 +493,11 @@ function renderChat(chat, stale, loading = false) {
   }
   if (!chat || previous?.thread !== chat.thread) {
     resetTurnNav();
-    historyRequest = null; historyRendering = false; historyExpanded = false; historyArmed = false; historyAtEnd = false; readingAnchor = null; pendingHistoryStatus = null;
+    historyRequest = null; historyRendering = false; historyExpanded = false; historyArmed = false; historyAtEnd = false; historyWaitingForIdle = false; readingAnchor = null; pendingHistoryStatus = null;
     $('older').disabled = false;
     $('historyStatus').hidden = true;
   }
-  if (currentApp === 'codex' && chat?.earlier === true) historyAtEnd = false;
+  if (chat?.earlier === true) historyAtEnd = false;
   if (chat && previous?.thread === chat.thread && historyExpanded && currentApp !== 'devin') {
     const rows = historyRequest ? [...chat.items, ...previous.items] : [...previous.items, ...chat.items];
     const updates = new Map(chat.items.map(it => [it.i, it]));
@@ -657,6 +673,7 @@ function renderChat(chat, stale, loading = false) {
   noteSwitch(chat);
   if (SC.jump && SC.items.has(SC.jump)) { const j = SC.jump; SC.jump = null; scJump(j); }
   completeTurnNavigation();
+  resumeHistoryAfterIdle();
 }
 
 let subsOpen = false, queueOpen = store.get('queue-open') !== '0';
@@ -1130,9 +1147,11 @@ function requestOlderRemote() {
     return;
   }
   if (currentApp === 'codex' && lastChat.busy) {
+    historyWaitingForIdle = true;
     showHistoryStatus('生成中，稍后上滑加载历史');
     return;
   }
+  historyWaitingForIdle = false;
   historyRequest = { id: String(++historySerial), sel: viewSel };
   historyRendering = true;
   historyExpanded = true;
@@ -1143,6 +1162,7 @@ function finishHistory(m) {
   if (!historyRequest || m.requestId !== historyRequest.id || m.sel !== historyRequest.sel) return;
   historyRequest = null;
   if (m.earlier === false) historyAtEnd = true;
+  else if (m.earlier === true) historyAtEnd = false;
   showHistoryStatus(m.error || (m.blocked ? '生成中，稍后上滑加载历史' : m.earlier === false && $('cachedMore').hidden ? '已到最早消息' : '继续上滑可加载更早的消息'));
   if (!deferredScrollRender) historyRendering = false;
   if (!deferredScrollRender && !chatFrame) completeTurnNavigation();
@@ -1154,6 +1174,12 @@ function maybeLoadOlder() {
 }
 function maybePrefetchOlder() {
   if (historyArmed && list.scrollTop <= prefetchZone() && !historyRequest && !deferredScrollRender && $('cachedMore').hidden && !historyAtEnd && !$('older').hidden) requestOlderRemote();
+}
+function resumeHistoryAfterIdle() {
+  if (!historyWaitingForIdle || !lastChat || lastChat.busy || chatScrolling || chatTouching || historyRequest) return;
+  if (list.scrollTop > prefetchZone()) { historyWaitingForIdle = false; return; }
+  historyWaitingForIdle = false;
+  requestOlderRemote();
 }
 function settleChatScroll() {
   const top = list.scrollTop;
@@ -1169,6 +1195,7 @@ function settleChatScroll() {
     // Scroll events can lag the compositor during momentum scrolling.
     if (list.scrollTop !== lastScrollTop) { settleChatScroll(); return; }
     chatScrolling = false;
+    chatMomentum = false;
     if (deferredScrollRender && lastChat) { deferredScrollRender = false; renderChat(lastChat); }
     else if (pendingHistoryStatus !== null && !chatFrame) {
       const anchor = captureChatAnchor();
@@ -1177,7 +1204,7 @@ function settleChatScroll() {
     }
     readingAnchor = pinnedBottom ? null : captureChatAnchor();
     maybeLoadOlder();
-  }, 150);
+  }, chatMomentum ? 300 : 150);
   updateToBottom();
   maybePrefetchOlder();
 }
@@ -1190,9 +1217,9 @@ list.addEventListener('scroll', () => {
 let historyTouchY = 0;
 list.addEventListener('wheel', e => { turnNavGesture(); if (!readingAnchor) readingAnchor = captureChatAnchor(); restoringChatScroll = false; if (e.deltaY < 0) { historyArmed = true; pinnedBottom = false; } settleChatScroll(); }, { passive: true });
 list.addEventListener('pointerdown', () => { historyArmed = true; }, { passive: true });
-list.addEventListener('touchstart', e => { readingAnchor = captureChatAnchor(); historyTouchY = e.touches[0].clientY; chatTouching = true; chatScrolling = true; clearTimeout(scrollIdle); }, { passive: true });
+list.addEventListener('touchstart', e => { readingAnchor = captureChatAnchor(); historyTouchY = e.touches[0].clientY; chatMomentum = false; chatTouching = true; chatScrolling = true; clearTimeout(scrollIdle); }, { passive: true });
 list.addEventListener('touchmove', e => { turnNavGesture(); restoringChatScroll = false; if (e.touches[0].clientY > historyTouchY) { historyArmed = true; pinnedBottom = false; } historyTouchY = e.touches[0].clientY; }, { passive: true });
-for (const event of ['touchend', 'touchcancel']) list.addEventListener(event, () => { chatTouching = false; restoringChatScroll = false; settleChatScroll(); }, { passive: true });
+for (const event of ['touchend', 'touchcancel']) list.addEventListener(event, () => { chatMomentum = event === 'touchend'; chatTouching = false; restoringChatScroll = false; settleChatScroll(); }, { passive: true });
 $('toBottom').onclick = () => { restoreChatPosition(null, true); };
 $('older').onclick = () => loadOlderMessages();
 
@@ -1431,7 +1458,8 @@ function showCodexSkills(rows) {
     const r = rows[Number(b.dataset.skill)], token = '/' + r.label;
     closeSheet(); text.focus();
     text.setRangeText(token + ' ', text.selectionStart, text.selectionEnd, 'end');
-    MN.mentions.push({ ...r, token });
+    MN.mentions.push({ ...r, token, at: text.selectionStart - token.length - 1 });
+    MN.value = text.value;
     autosize(); saveDraft();
   };
   paint();
@@ -1439,7 +1467,7 @@ function showCodexSkills(rows) {
 let codexFileRequest = 0;
 async function openCodexFilePicker(token) {
   const scope = chatInputKey(), selected = new Map();
-  const start = token?.start ?? text.selectionStart, end = token?.caret ?? text.selectionEnd;
+  const start = token?.start ?? text.selectionStart, end = token?.end ?? token?.caret ?? text.selectionEnd;
   let directory = null;
   mentionHide();
   const paint = (note = '') => {
@@ -1465,9 +1493,16 @@ async function openCodexFilePicker(token) {
     $('codexFileAdd').onclick = () => {
       if (scope !== chatInputKey()) { closeSheet(); return status('会话已切换，请重新选择文件', false); }
       if (takeMentions(text.value.slice(0, start) + text.value.slice(end)).length + selected.size > 12) return status('每条消息最多添加 12 个引用项', false);
-      const mentions = [...selected.values()].map(entry => ({ token: '@' + entry.name, q: entry.name, label: entry.name, path: entry.path, section: 'local-files', trigger: '@' }));
-      text.setRangeText(mentions.map(m => m.token).join(' ') + ' ', start, end, 'end');
+      let at = start;
+      const mentions = [...selected.values()].map(entry => {
+        const token = '@' + entry.name;
+        const mention = { token, q: entry.name, label: entry.name, path: entry.path, section: 'local-files', trigger: '@', at };
+        at += token.length + 1;
+        return mention;
+      });
+      text.setRangeText(mentions.map(m => m.token).join(' ') + (/\s/.test(text.value[end] || '') ? '' : ' '), start, end, 'end');
       MN.mentions.push(...mentions);
+      MN.value = text.value;
       closeSheet(); autosize(); saveDraft(); text.focus();
     };
   };

@@ -198,6 +198,10 @@ function connLaunch(apps) {
   connRender();
   if (sheetKind === 'agent-manager') showAgentManager();
 }
+function connMissingApps() {
+  const available = new Set(availableConnAgents().map(a => a.app));
+  return (conn.agents || []).filter(a => available.has(a.app) && !a.windows).map(a => a.app);
+}
 function connLaunchResults(results) {
   for (const r of results || []) if (CONN_AGENTS.some(a => a.app === r.app)) connLaunchStatus.set(r.app, r.status);
   if (sheetKind === 'agent-manager') showAgentManager();
@@ -262,7 +266,6 @@ function connRender() {
   $('connLaunchAll').hidden = true;
   $('connAutoPartial').hidden = failed;
   $('connAutoLaunch').hidden = failed;
-  $('connManage').hidden = failed || !conn.host;
   $('connPick').hidden = !failed && !loadComputers().length;
   if (failed) {
     $('connTitle').textContent = tr('连不上电脑');
@@ -301,7 +304,7 @@ function connRender() {
   $('connBar').innerHTML = agents.map(a => `<i class="${conn.host ? state(a) : ''}"></i>`).join('');
   $('connGo').hidden = !settled || (ready > 0 && ready === agents.length && conn.catalogReady);
   $('connGo').textContent = ready ? tr('先进入') : tr('全部重试');
-  const launchable = settled ? selectedLaunchAgents() : [];
+  const launchable = settled ? connMissingApps() : [];
   $('connLaunchAll').hidden = !launchable.length;
   $('connLaunchAll').disabled = launchable.length > 0 && launchable.every(app => connLaunchStatus.get(app) === 'launching');
   $('connAutoPartial').querySelector('.switch').classList.toggle('on', connAutoPartialOn());
@@ -332,8 +335,7 @@ $('connAutoPartial').onclick = () => {
 };
 $('connPick').onclick = () => showComputers();
 $('connRepair').onclick = () => repairPairing();
-$('connLaunchAll').onclick = () => connLaunch();
-$('connManage').onclick = () => showAgentManager(true);
+$('connLaunchAll').onclick = () => connLaunch(connMissingApps());
 $('connAutoLaunch').onclick = () => {
   store.set('conn-auto-launch', store.get('conn-auto-launch') === '1' ? '0' : '1');
   connRender();
