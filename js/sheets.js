@@ -718,26 +718,38 @@ function deviceGroups() {
   }
   return [...groups.values()].sort((a, b) => Number(b.entries.some(d => d.current)) - Number(a.entries.some(d => d.current)));
 }
+function drawEntryQr(modules) {
+  const canvas = $('entryInviteQr');
+  if (!canvas || !Array.isArray(modules) || !modules.length) return;
+  const size = modules.length + 8, scale = 4;
+  canvas.width = canvas.height = size * scale;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#000';
+  modules.forEach((row, y) => row.forEach((dark, x) => { if (dark) ctx.fillRect((x + 4) * scale, (y + 4) * scale, scale, scale); }));
+}
 function renderDevices() {
   const when = t => new Date(t).toLocaleDateString();
   const scroll = $('sheet').querySelector('.deviceRows')?.scrollTop || 0;
   const confirmation = deviceRemoval.length ? `<div class="hint">${esc(`移除「${pairedDevices.filter(d => deviceRemoval.includes(d.id)).map(d => d.name).join('、')}」？它们会立即断开，要重新配对才能再用。`)}</div><div class="askBtns"><button data-device-remove-cancel>取消</button><button class="danger" data-device-remove-confirm>移除</button></div>` : '';
   const opened = new Map([...$('sheet').querySelectorAll('[data-device-group]')].map(el => [el.dataset.deviceGroup, el.open]));
-  const invitation = deviceInvitation?.expires > Date.now() ? `<div class="entryInvite"><div class="hint">将此链接在新浏览器打开，再核对下方出现的验证码。10 分钟内有效，不要发给陌生人。</div><textarea id="entryInviteLink" readonly aria-label="入口授权链接">${esc(deviceInvitation.link)}</textarea><button data-entry-copy>复制授权链接</button></div>` : '';
+  const invitation = deviceInvitation?.expires > Date.now() ? `<div class="entryInvite"><div class="hint">扫描二维码或打开此链接，再核对下方出现的验证码。10 分钟内有效，不要发给陌生人。</div><div class="entryInviteContent"><canvas id="entryInviteQr" class="entryInviteQr" aria-label="入口授权二维码"></canvas><div class="entryInviteText"><textarea id="entryInviteLink" readonly aria-label="入口授权链接">${esc(deviceInvitation.link)}</textarea><button data-entry-copy>复制授权链接</button></div></div></div>` : '';
   const requests = pendingEntries.map(r => `<div class="entryRequest"><strong>新入口请求 · ${esc(r.name)}</strong><div class="sub">入口 ${esc(r.origin || '未提供来源')} · 归入 ${esc(r.groupName)} · 验证码 <b>${esc(r.code)}</b></div><div class="hint">请与新浏览器显示的验证码核对，确认是你的入口。</div><div class="askBtns"><button data-entry-decide="${esc(r.id)}" data-code="${esc(r.code)}" data-approve="false">拒绝</button><button data-entry-decide="${esc(r.id)}" data-code="${esc(r.code)}" data-approve="true">同意</button></div></div>`).join('');
   openSheet('devices', `<div class="deviceHead"><h3>已配对设备</h3><div class="listTools" ${removingDevices ? 'inert' : ''}>${listTools()}</div>${removingDevices ? '<div class="hint">正在移除入口…</div>' : confirmation}</div><div class="deviceRows" ${removingDevices ? 'inert' : ''}>${invitation}${requests}` + deviceGroups().map(g => `<details class="deviceGroup" data-device-group="${esc(g.id)}" ${(opened.get(g.id) ?? g.entries.some(d => d.current)) ? 'open' : ''}><summary>${esc(g.name)}<span class="sub">${g.entries.length} 个入口</span></summary><div class="listTools"><button data-entry-invite="${esc(g.id)}">添加入口</button>${listManagement.editing ? `<button data-device-group-rename="${esc(g.id)}">重命名设备</button>` : ''}${g.entries.some(d => d.current) ? '' : `<button data-device-group-remove="${esc(g.id)}">移除设备</button>`}</div>` + g.entries.map(d => `
     <${listManagement.editing && !d.current ? 'label' : 'div'} class="opt static ${d.current ? 'cur' : ''}">${listManagement.editing && !d.current ? listCheckbox(d.id) : ''}<span class="lbl">${esc(d.entryName)}<span class="sub">${d.current ? '当前入口 · ' : ''}入口码 ${esc(d.id)} · 配对于 ${when(d.created)} · 最近使用 ${when(d.lastSeen)}</span></span>
     ${d.current || listManagement.editing ? '' : `<button data-remove="${esc(d.id)}" data-name="${esc(d.name)}">移除</button>`}</${listManagement.editing && !d.current ? 'label' : 'div'}>`).join('')
     + '</details>').join('') + '<div class="hint">有明确归属标识的入口会自动归组；同名但没有共同标识的旧入口仍分开展示。各入口授权独立。<br>添加新设备：在电脑上运行 npm run pair。<br>开启 Authenticator 二次验证：npm run 2fa。</div></div>');
   $('sheet').querySelector('.deviceRows').scrollTop = scroll;
+  drawEntryQr(deviceInvitation?.qr);
 }
 async function inviteDeviceEntry(groupId) {
   try {
-    const r = await post('/api/entries/invite', { groupId }), body = await r.json();
+    const currentLink = new URL(location.pathname, location.origin);
+    const r = await post('/api/entries/invite', { groupId, base: currentLink.href }), body = await r.json();
     if (!r.ok) throw new Error(body.error || '生成授权链接失败');
-    const link = new URL(location.pathname, location.origin);
-    link.hash = `entry=${currentComputer().key}.${body.invitation}`;
-    deviceInvitation = { link: link.href, expires: body.expires };
+    currentLink.hash = `entry=${currentComputer().key}.${body.invitation}`;
+    const link = body.link || currentLink.href;
+    deviceInvitation = { link, qr: body.qr, expires: body.expires };
     if (sheetKind === 'devices') renderDevices();
   } catch (error) { status(error.message, false); }
 }
