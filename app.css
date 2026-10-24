@@ -1061,6 +1061,7 @@ body.term #stage { display: none; }
 .chatImagePreview .videoViewStage { height: 70dvh; display: flex; align-items: center; justify-content: center; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 #vBody .chatImagePreview img { width: auto; height: auto; max-width: 100%; max-height: 100%; margin: 0; pointer-events: none; }
 #vBody video { display: block; width: 100%; max-height: 100%; background: #000; }
+#vBody .pdfPreview { display: block; width: 100%; height: 100%; min-height: 70dvh; border: 0; background: #fff; }
 #vBody img { display: block; max-width: 100%; margin: 12px auto; background: var(--imgbg); }
 #vBody .note { padding: 30px 20px; color: var(--fg-3); text-align: center; line-height: 1.7; }
 #vBody .note.err { color: var(--err); }
