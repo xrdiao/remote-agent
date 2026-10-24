@@ -229,8 +229,7 @@ async function startVoice(event) {
         session.timer = setTimeout(() => { if (voiceLive(session)) { status('转录尚未完成，已识别文字已保留，请重试', false); cancelVoice(); } }, 20000);
       } else if (link.socket.readyState === 1) {
         if (!session.firstPcm) { session.firstPcm = true; session.dbg?.('first pcm frame'); }
-        if (link.socket.bufferedAmount > 128000) { status('语音网络跟不上，已识别文字已保留，请重试', false); cancelVoice(); }
-        else link.socket.send(e.data);
+        link.socket.send(e.data);
       }
     };
     session.source.connect(session.node).connect(session.context.destination);
