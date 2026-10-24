@@ -392,10 +392,19 @@ function requestChatScroll() {
   reconcileChatScroll();
 }
 function stabilizeChatReading() {
-  if (scrollCorrection?.kind === 'delta') { reconcileChatScroll(); return; }
-  if (!readingAnchor) readingAnchor = captureChatAnchor();
-  scrollCorrection = { kind: 'anchor', anchor: readingAnchor };
-  reconcileChatScroll();
+  if (readingAnchor) {
+    const el = readingAnchor.el;
+    if (el) {
+      const top = list.scrollTop;
+      // Keep native scrolling intact; compensate only for layout changes above the anchor.
+      const shift = el.getBoundingClientRect().top - list.getBoundingClientRect().top - readingAnchor.top + top - readingAnchor.scrollTop;
+      if (shift) {
+        list.scrollTop += shift;
+        lastScrollTop += list.scrollTop - top;
+      }
+    }
+  }
+  readingAnchor = captureChatAnchor();
 }
 function restoreChatPosition(anchor, stick = false) {
   if (stick) {
