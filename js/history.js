@@ -345,8 +345,11 @@ function captureChatAnchor() {
 function isFollowingBottom() { return scrollMode === 'followBottom'; }
 function setScrollMode(next) {
   scrollMode = next;
-  if (next === 'followBottom') readingAnchor = null;
-  else if (next === 'freeScroll' && !readingAnchor) readingAnchor = captureChatAnchor();
+  if (next === 'followBottom') { readingAnchor = null; historyArmed = false; }
+  else {
+    if (scrollCorrection?.kind === 'bottom' || scrollCorrection?.kind === 'anchor') scrollCorrection = null;
+    if (next === 'freeScroll' && !readingAnchor) readingAnchor = captureChatAnchor();
+  }
 }
 function maxChatScrollTop() { return Math.max(0, list.scrollHeight - list.clientHeight); }
 function setChatScrollTop(next) {
@@ -368,6 +371,10 @@ function reconcileChatScroll() {
     scrollFrame = 0;
     const correction = scrollCorrection;
     scrollCorrection = null;
+    if (chatTouching || chatMomentum || turnNavPointer?.dragging) {
+      if (correction) scrollCorrection = correction;
+      return;
+    }
     if (scrollMode === 'followBottom' || correction?.kind === 'bottom') setChatScrollTop(maxChatScrollTop());
     else if (correction?.kind === 'delta') setChatScrollTop(correction.top + list.scrollHeight - correction.height);
     else {
@@ -385,6 +392,7 @@ function requestChatScroll() {
   reconcileChatScroll();
 }
 function stabilizeChatReading() {
+  if (scrollCorrection?.kind === 'delta') { reconcileChatScroll(); return; }
   if (!readingAnchor) readingAnchor = captureChatAnchor();
   scrollCorrection = { kind: 'anchor', anchor: readingAnchor };
   reconcileChatScroll();
@@ -403,10 +411,12 @@ function restoreChatPosition(anchor, stick = false) {
   reconcileChatScroll();
 }
 const chatSizeObserver = new ResizeObserver(() => {
+  if (chatTouching || chatMomentum || turnNavPointer?.dragging) {
+    if (!readingAnchor && !isFollowingBottom()) readingAnchor = captureChatAnchor();
+    return;
+  }
   if (isFollowingBottom()) { requestChatScroll(); return; }
   if (scrollCorrection?.kind === 'delta') { reconcileChatScroll(); return; }
-  if (chatMomentum) return;
-  if (chatTouching || turnNavPointer?.dragging) { if (!readingAnchor) readingAnchor = captureChatAnchor(); return; }
   if (chatScrolling) { stabilizeChatReading(); return; }
   if (readingAnchor) stabilizeChatReading();
 });
@@ -1248,6 +1258,7 @@ function settleChatScroll() {
       restoreChatPosition(anchor);
     }
     readingAnchor = isFollowingBottom() ? null : captureChatAnchor();
+    if (scrollCorrection) reconcileChatScroll();
     maybeLoadOlder();
   }, chatMomentum ? 300 : 150);
   updateToBottom();
@@ -1255,15 +1266,36 @@ function settleChatScroll() {
 }
 list.addEventListener('scroll', () => {
   if (!restoringChatScroll && turnNavUser) showTurnNav();
+  if ((chatTouching ? historyPullUp : historyWheelPullUp) && list.scrollTop <= 1) historyArmed = true;
   // During native touch dragging, the size observer handles layout changes without measuring every scroll.
-  if (!restoringChatScroll && !isFollowingBottom() && (!chatTouching || turnNavPointer?.dragging)) stabilizeChatReading();
+  if (!restoringChatScroll && !isFollowingBottom() && !chatTouching && !chatMomentum && !turnNavPointer?.dragging) stabilizeChatReading();
   settleChatScroll();
 }, { passive: true });
-let historyTouchY = 0;
-list.addEventListener('wheel', e => { turnNavGesture(); if (!readingAnchor && !isFollowingBottom()) readingAnchor = captureChatAnchor(); restoringChatScroll = false; if (e.deltaY < 0) { historyArmed = true; setScrollMode('freeScroll'); } settleChatScroll(); }, { passive: true });
-list.addEventListener('pointerdown', e => { if (e.pointerType !== 'touch') historyArmed = true; }, { passive: true });
-list.addEventListener('touchstart', e => { if (!isFollowingBottom()) readingAnchor = captureChatAnchor(); historyTouchY = e.touches[0].clientY; historyArmed = false; chatMomentum = false; chatTouching = true; chatScrolling = true; clearTimeout(scrollIdle); }, { passive: true });
-list.addEventListener('touchmove', e => { turnNavGesture(); restoringChatScroll = false; const y = e.touches[0].clientY; if (y > historyTouchY) setScrollMode('freeScroll'); if (y < historyTouchY && list.scrollTop <= 1) historyArmed = true; historyTouchY = y; }, { passive: true });
+let historyTouchY = 0, historyPullUp = false, historyWheelPullUp = false;
+list.addEventListener('wheel', e => {
+  turnNavGesture();
+  if (!readingAnchor && !isFollowingBottom()) readingAnchor = captureChatAnchor();
+  restoringChatScroll = false;
+  if (e.deltaY < 0) { historyWheelPullUp = true; setScrollMode('freeScroll'); }
+  else if (e.deltaY > 0) { historyWheelPullUp = false; historyArmed = false; setScrollMode('freeScroll'); }
+  settleChatScroll();
+}, { passive: true });
+list.addEventListener('touchstart', e => { if (!isFollowingBottom()) readingAnchor = captureChatAnchor(); historyTouchY = e.touches[0].clientY; historyPullUp = false; historyWheelPullUp = false; historyArmed = false; chatMomentum = false; chatTouching = true; chatScrolling = true; clearTimeout(scrollIdle); }, { passive: true });
+list.addEventListener('touchmove', e => {
+  turnNavGesture();
+  restoringChatScroll = false;
+  const y = e.touches[0].clientY, dy = y - historyTouchY;
+  if (dy < 0) {
+    historyPullUp = true;
+    setScrollMode('freeScroll');
+    if (list.scrollTop <= 1) historyArmed = true;
+  } else if (dy > 0) {
+    historyPullUp = false;
+    historyArmed = false;
+    if (!atBottom()) setScrollMode('freeScroll');
+  }
+  historyTouchY = y;
+}, { passive: true });
 for (const event of ['touchend', 'touchcancel']) list.addEventListener(event, () => { chatMomentum = event === 'touchend'; chatTouching = false; restoringChatScroll = false; settleChatScroll(); }, { passive: true });
 $('toBottom').onclick = () => {
   clearTimeout(scrollIdle);
