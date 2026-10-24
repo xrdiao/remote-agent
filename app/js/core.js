@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const PRIMARY = /^(run|allow|accept|approve|keep|continue|build|yes|运行|允许|接受|继续)/i;
+const PRIMARY = /^(run|allow|accept|approve|keep|continue|build|yes|retry|运行|允许|接受|继续|重试)/i;
 const store = {
   get: k => localStorage.getItem('cr-' + k),
   set: (k, v) => v == null ? localStorage.removeItem('cr-' + k) : localStorage.setItem('cr-' + k, v),
@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v217'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v218'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false, failures = 0;
 let windowReady = false;

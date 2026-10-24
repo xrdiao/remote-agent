@@ -63,6 +63,27 @@ function closeSheet() {
   $('sheet').classList.remove('open');
   if (leavingVoice) scheduleVoiceWarmup();
 }
+function codexAutoRetryEnabled() { return store.get('codex-auto-retry') === '1'; }
+function codexAutoRetryCount() {
+  const n = Number(store.get('codex-auto-retry-count'));
+  return Number.isInteger(n) && n >= 1 && n <= 5 ? n : 1;
+}
+function showCodexRetryMenu() {
+  const enabled = codexAutoRetryEnabled(), count = codexAutoRetryCount();
+  openSheet('codex-retry', `<h3>Codex 自动重试</h3>`
+    + `<button class="opt" data-act="codexRetryToggle" role="switch" aria-checked="${enabled}"><span class="lbl">自动点击 Retry<span class="sub">模型容量不足时自动点击电脑端 Retry</span></span><span class="switch${enabled ? ' on' : ''}" aria-hidden="true"></span></button>`
+    + `<label class="opt"><span class="lbl">每次最多点击次数<span class="sub">只限制同一条容量提示的自动点击次数</span></span><input id="codexRetryCount" type="number" min="1" max="5" step="1" value="${count}" ${enabled ? '' : 'disabled'}></label>`
+    + '<p class="hint">默认关闭；达到次数后保留 Retry 按钮，由你手动决定是否继续。</p><button class="opt" data-act="codexRetryBack">← 返回菜单</button>');
+  $('codexRetryCount').onchange = () => {
+    const n = Math.max(1, Math.min(5, Math.round(Number($('codexRetryCount').value) || 1)));
+    store.set('codex-auto-retry-count', String(n));
+    $('codexRetryCount').value = n;
+  };
+}
+function toggleCodexAutoRetry() {
+  store.set('codex-auto-retry', codexAutoRetryEnabled() ? null : '1');
+  showCodexRetryMenu();
+}
 $('shade').onclick = () => { closeSheet(); askDone?.(false); };
 
 // Confirmation for anything that interrupts the Agent or throws work away; resolves false if dismissed.
@@ -897,7 +918,7 @@ function showMainMenu() {
     ${supportsCapability('editor', ['cursor', 'devin', 'codex'].includes(currentApp)) ? `<button class="opt" data-act="editor"><span class="lbl">Editor · 项目文件编辑${capabilityState('editor').reason ? `<span class="sub">${esc(capabilityState('editor').reason)}</span>` : ''}</span></button>` : ''}
     ${['cursor', 'devin', 'codex'].includes(currentApp) ? '<button class="opt" data-act="projects"><span class="lbl">打开项目<span class="sub">选择文件夹或新建项目</span></span></button>' : ''}
     <button class="opt" data-act="screen"><span class="lbl">画面<span class="sub">查看绘图与仿真窗口</span></span></button>
-    ${currentApp === 'codex' ? '<button class="opt" data-act="codexResetHelp"><span class="lbl">Codex 额度重置</span></button>' : ''}
+    ${currentApp === 'codex' ? '<button class="opt" data-act="codexResetHelp"><span class="lbl">Codex 额度重置</span></button><button class="opt" data-act="codexRetryMenu"><span class="lbl">Codex 自动重试<span class="sub">' + (codexAutoRetryEnabled() ? `已开启 · 最多 ${codexAutoRetryCount()} 次` : '已关闭') + '</span></span><span class="tag">›</span></button>' : ''}
     ${supportsCapability('settings') ? '<button class="opt" data-act="settings"><span class="lbl">设置</span></button>' : ''}
     ${['cursor', 'devin', 'codex', 'fusion'].includes(currentApp) ? `<button class="opt" data-act="executionToggle" role="switch" aria-checked="${executionRecordsShown()}"><span class="lbl">显示执行指令<span class="sub">包含工具读取和搜索记录；关闭后在本轮结束时隐藏</span></span><span class="switch${executionRecordsShown() ? ' on' : ''}" aria-hidden="true"></span></button>` : ''}
     ${lastChat?.changed && !lastChat?.readonly ? `<button class="opt" data-act="toggleChanges"><span class="lbl">${hiddenChangeNotices.has(changeNoticeKey()) ? '显示改动' : '隐藏改动提示'}</span></button>` : ''}`;
