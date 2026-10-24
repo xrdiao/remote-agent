@@ -171,8 +171,8 @@
     const root = item === 'g' ? panel : itemByKey(panel, item);
     if (!root) return null;
     let list = item === 'g' ? buttonsIn(panel, true).filter(x => !inItem(x.el) && !inQn(x.el)) : buttonsIn(root, false);
-    if (root.hasAttribute?.('data-turn-key')) list = list.filter(x => /^(Copy message|Fork chat from here|View changed files|View changes|Undo|Open agent|View agent|View subagent|Stop agent|Apply|Revert|Retry|重试)$/.test(x.label));
-    const match = actionId ? list.find(b => b.el.dataset.remoteAction === actionId && b.label === label) : list[n];
+    if (root.hasAttribute?.('data-turn-key')) list = list.filter(x => /^(Copy message|Fork chat from here|View changed files|View changes|Undo|Open agent|View agent|View subagent|Stop agent|Apply|Revert|Retry|Try again|重试|再试一次)$/i.test(x.label));
+    const match = actionId ? list.find(b => b.el.dataset.remoteAction === actionId && b.label === label) : label ? (list.find(b => b.label === label) || list[n]) : list[n];
     const b = match?.el;
     if (!b || b.disabled || b.getAttribute('aria-disabled') === 'true') return null;
     b.scrollIntoView({ block: 'center' });

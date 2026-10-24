@@ -1,7 +1,7 @@
 // 文件：文档浏览、变更列表、打开与保存
 import path from 'node:path';
 import { workspaces, fileSize, readFile, parseRef, listProject, locateWritable, writeTextFile, resolveLocal } from '../../lib/files.mjs';
-import { videoUrl } from '../http/video.mjs';
+import { videoUrl, pdfUrl } from '../http/video.mjs';
 import { themeFor } from '../../lib/theme.mjs';
 import { highlightText } from '../../lib/highlight.mjs';
 import { gitMarks, agentMarks, parseGitDiff, lastCommitMarks } from '../../lib/marks.mjs';
@@ -179,6 +179,10 @@ export const methods = {
       const f = await this.resolveFile(text);
       if (/\.mp4$/i.test(f.path) && !f.host) {
         this.emit({ t: 'file', name: path.basename(f.path), path: f.path, size: f.size, video: videoUrl(f.path, this.deviceId) });
+        return;
+      }
+      if (/\.pdf$/i.test(f.path) && !f.host) {
+        this.emit({ t: 'file', name: path.basename(f.path), path: f.path, size: f.size, pdf: pdfUrl(f.path, this.deviceId) });
         return;
       }
       const body = await readFile(f.path, f.size);
