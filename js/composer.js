@@ -408,7 +408,7 @@ $('send').onclick = () => {
   if (mode === 'chat') { status('正在发送…'); pushEcho(receipt.requestId, v, when === 'queue' || (!when && chatBusy) ? 'queue' : 'chat'); }
   if (mode === 'terminal') send({ t: 'termSend', text: v, ...receipt });
   else send({ t: 'send', text: v, submit: true, ...receipt, ...(when ? { when } : {}), ...mentionsFor(v) });
-  if (mode === 'chat') list.scrollTop = list.scrollHeight;
+  if (mode === 'chat') restoreChatPosition(null, true);
 };
 $('sendNow').onclick = async () => {
   if (pendingImageUploads()) return status('图片尚未上传完成；失败图片请重试或删除', false);
@@ -423,7 +423,7 @@ $('sendNow').onclick = async () => {
   pushEcho(receipt.requestId, v, steer ? 'chat' : 'queue');
   send({ t: 'send', text: v, submit: true, ...receipt, when: steer ? 'now' : 'queue', ...mentionsFor(v) });
   if (currentApp !== 'codex') { text.value = ''; autosize(); }
-  list.scrollTop = list.scrollHeight;
+  restoreChatPosition(null, true);
 };
 $('insertNewline').addEventListener('pointerdown', e => e.preventDefault());
 $('insertNewline').onclick = () => {
