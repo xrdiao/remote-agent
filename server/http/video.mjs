@@ -12,6 +12,11 @@ export function videoUrl(file, deviceId) {
   return `/api/video/${data}.${sign(data)}`;
 }
 
+export function pdfUrl(file, deviceId) {
+  const data = Buffer.from(JSON.stringify({ file, deviceId, expires: Date.now() + 30 * 60 * 1000 })).toString('base64url');
+  return `/api/pdf/${data}.${sign(data)}`;
+}
+
 export function videoGrant(ticket) {
   const [data, signature] = ticket.split('.');
   if (!data || !signature || signature !== sign(data)) return null;
@@ -22,11 +27,12 @@ export function videoGrant(ticket) {
   } catch { return null; }
 }
 
-export function serveVideo(req, res, grant) {
+function serveRange(req, res, grant, type, inline = false) {
   let stat;
   try { stat = fs.statSync(grant.file); } catch { res.writeHead(404).end(); return; }
   const size = stat.size;
-  const headers = { ...SECURITY_HEADERS, ...corsHeaders(req), 'content-type': 'video/mp4', 'accept-ranges': 'bytes' };
+  const headers = { ...SECURITY_HEADERS, ...corsHeaders(req), 'content-type': type, 'accept-ranges': 'bytes' };
+  if (inline) { headers['content-disposition'] = 'inline'; headers['x-frame-options'] = 'SAMEORIGIN'; }
   let start = 0, end = size - 1;
   const range = req.headers.range;
   if (range) {
@@ -46,3 +52,6 @@ export function serveVideo(req, res, grant) {
   stream.on('error', () => res.destroy());
   stream.pipe(res);
 }
+
+export function serveVideo(req, res, grant) { return serveRange(req, res, grant, 'video/mp4'); }
+export function servePdf(req, res, grant) { return serveRange(req, res, grant, 'application/pdf', true); }

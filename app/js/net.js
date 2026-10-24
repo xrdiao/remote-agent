@@ -533,7 +533,7 @@ let retryTimer = null, pingTimer = null, lastRx = 0;
 function heartbeat() {
   if (!authed || !ws || ws.readyState !== 1) return;
   if (Date.now() - lastRx > 45000) return closeSocket(ws);
-  if (Date.now() - lastRx > 20000) ws.send(JSON.stringify({ t: 'ping' }));
+  ws.send(JSON.stringify({ t: 'ping', visible: document.visibilityState === 'visible' }));
 }
 // close() waits for the peer's close frame, which a dead path never sends — the
 // socket then sits in CLOSING and onclose never fires. Force the cleanup.
@@ -578,6 +578,7 @@ async function connect() {
     resetLatency();
     setWindowReady(false);
     markUploadsDisconnected();
+    failPendingSends('连接已断开，消息未发送，请重试');
     qnPending = null;
     qnSig = '';
     renderQuestions(null);
@@ -639,7 +640,7 @@ async function connect() {
       const button = [...$('items').querySelectorAll('button[data-item]')].find(b => b.dataset.item === String(m.item) && b.dataset.actionId === (m.actionId || ''));
       button?.closest('.btns')?.querySelectorAll('button').forEach(b => { b.disabled = false; });
     }
-    else if (m.t === 'sendFailed') { pendingSends.delete(m.requestId); if (pendingEchoes.some(p => p.requestId === m.requestId)) { pendingEchoes = pendingEchoes.filter(p => p.requestId !== m.requestId); queueChatRender(); } }
+    else if (m.t === 'sendFailed') failPendingSend(m.requestId, m.message || '发送失败，请重试');
     else if (m.t === 'questionDone') finishQuestion(m);
     else if (m.t === 'latency') receiveLatency(m);
     else if (m.t === 'visual') renderVisualState(m);

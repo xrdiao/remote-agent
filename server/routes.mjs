@@ -87,7 +87,10 @@ export const ROUTES = {
   latency: { fast: true, fastRun: (s, m) => { probeLatency(s, m).catch(() => {}); } },
   // Liveness probe for the phone's dead-socket detection: an open-but-dead connection
   // silently swallows sends, so the phone pings and reconnects when nothing comes back.
-  ping: { fast: true, fastRun: (s, m) => s.emit({ t: 'pong' }) },
+  ping: { fast: true, fastRun: (s, m) => {
+    if (typeof m.visible === 'boolean') { s.notifyVisible = m.visible; s.notifyPresenceAt = Date.now(); }
+    s.emit({ t: 'pong' });
+  } },
   saveFile: { pre: (s, m) => s.saveFile(String(m.path ?? ''), String(m.text ?? ''), m.host == null ? undefined : String(m.host)) },
   connAgents: {
     pre: async s => {
@@ -119,6 +122,8 @@ export const ROUTES = {
   mode: { pre: (s, m) => s.setMode(m.mode) },
   visible: {
     pre: (s, m) => {
+      s.notifyVisible = Boolean(m.v);
+      s.notifyPresenceAt = Date.now();
       if (s.visible === Boolean(m.v)) return;
       s.visible = Boolean(m.v);
       if (!s.visible) { s.chatUpdatesStop?.(); s.chatUpdatesStop = null; }

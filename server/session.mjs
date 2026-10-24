@@ -23,6 +23,8 @@ export class Session extends AgentContext {
     this.fusionRun = this.fusionSaved.runs.find(f => f.id === this.fusionSaved.current);
     // The phone reports when the app goes to the background; notifications skip the window it is looking at.
     this.visible = true;
+    this.notifyVisible = true;
+    this.notifyPresenceAt = Date.now();
     this.viewport = { w: 1000, h: 800 };
     this.screencast = { format: 'jpeg', quality: 60, maxWidth: 1280, maxHeight: 2400 };
     this.awaitingAck = null;

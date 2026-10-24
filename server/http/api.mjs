@@ -13,7 +13,7 @@ import { listWindows } from '../windows.mjs';
 import { Cdp } from '../cdp.mjs';
 import { helpersCall } from '../page/build.mjs';
 import { Session } from '../session.mjs';
-import { videoGrant, serveVideo } from './video.mjs';
+import { videoGrant, serveVideo, servePdf } from './video.mjs';
 import { transferApi, serveTransfer } from './transfer.mjs';
 import { voiceStatus, loadWorker } from '../voice/service.mjs';
 import { voiceEngines } from '../voice/config.mjs';
@@ -68,6 +68,11 @@ export async function handleApi(req, res, route) {
     const grant = videoGrant(route.slice('/api/video/'.length));
     if (!grant) return json(req, res, 401, { error: '视频链接已过期或设备授权已失效，请重新打开视频' });
     return serveVideo(req, res, grant);
+  }
+  if (route.startsWith('/api/pdf/') && ['GET', 'HEAD'].includes(req.method)) {
+    const grant = videoGrant(route.slice('/api/pdf/'.length));
+    if (!grant) return json(req, res, 401, { error: 'PDF 链接已过期或设备授权已失效，请重新打开 PDF' });
+    return servePdf(req, res, grant);
   }
   if (route.startsWith('/api/transfer/get/') && req.method === 'GET') return serveTransfer(req, res, route.slice('/api/transfer/get/'.length));
   if (route.startsWith('/api/approval/')) {
