@@ -10,7 +10,7 @@ import { Cdp } from '../cdp.mjs';
 import { listWindows, codexWindows, codexContext } from '../windows.mjs';
 import { CODEX_CDP_URL, EDITORS } from '../config.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
-import { AgentContext, FOCUS_COMPOSER, safeHomePath, projectList, openFolder } from '../agent/index.mjs';
+import { AgentContext, FOCUS_COMPOSER, safeHomePath, projectList, openFolder, quotaBlockedMessage, quotaErrorMessage } from '../agent/index.mjs';
 import { FUSION_ACTIVE, fusionHistory, conversationProjects, fusionWorkers,
   newFusionRun, fusionCursorProjects, fusionProject, fusionModelSpec, fusionHtml, fusionMark, fusionLastAssistant } from './state.mjs';
 import '../apps/index.mjs';
@@ -595,14 +595,23 @@ async fusionDiff(side) {
 async fusionModelMenu(side) {
   const which = side === 'b' ? 'b' : 'a';
   await this.withFusionSide(which, async function () {
-    await this.pressControl('model');
-    let items = [];
-    for (let i = 0; i < 12 && !items.length; i++) {
-      await new Promise(r => setTimeout(r, 150));
-      items = await this.cdp.evaluate(helpersCall(`menuItems('model')`)) || [];
-      if (!items.length) await this.cdp.evaluate(helpersCall('clickModelListTrigger()'));
+    let items = await this.cdp.evaluate(helpersCall('modelItemsFast()')) || [];
+    if (!items.length) {
+      await this.pressControl('model');
+      for (let i = 0; i < 12 && !items.length; i++) {
+        await new Promise(r => setTimeout(r, 150));
+        items = await this.cdp.evaluate(helpersCall(`menuItems('model')`)) || [];
+        if (!items.length) {
+          const opened = await this.cdp.evaluate(helpersCall('clickModelListTrigger()'));
+          if (!opened) {
+            const sub = await this.cdp.evaluate(helpersCall('modelListTrigger()'));
+            if (sub) await this.tapCss(sub.x, sub.y);
+          }
+        }
+      }
     }
     await this.closeMenus();
+    if (!items.length) throw new Error('模型列表未加载，请确认电脑端模型菜单可以打开');
     this.emit({ t: 'menu', kind: `fusion-model-${which}`, items: items.map(it => ({ ...it, params: false })) });
   });
 },
@@ -633,7 +642,7 @@ fusionStop() {
   this.emit({ t: 'status', ok: true, msg: 'Fusion 已停止' });
 },
 
-fusionUserSend(text) {
+async fusionUserSend(text) {
   if (!this.fusionWorkerKey) return this.fusionWorker().fusionUserSend(text);
   const f = this.fusionRun;
   if (!f?.a || !f?.b) throw new Error('先选择 A 和 B');
@@ -641,6 +650,13 @@ fusionUserSend(text) {
   if (!f.a.model || !f.b.model) throw new Error('先选择 A 和 B 的模型');
   if (this.fusionJob) throw new Error('Fusion 正在进行');
   if (!['idle', 'done', 'stopped'].includes(f.phase)) throw new Error('这一轮还在进行。方案写好后点「执行方案」，或先停止');
+  await this.fusionUsage(true);
+  const blocked = ['a', 'b'].map(side => {
+    const spec = this.fusionRun?.[side];
+    const message = spec && quotaBlockedMessage(spec.app, spec.usage);
+    return message ? `${side.toUpperCase()}：${message}` : '';
+  }).filter(Boolean);
+  if (blocked.length) throw new Error(blocked.join('；'));
   f.history = [...(f.history || []), ...this.fusionItems(f)];
   f.turn = (f.turn || 0) + 1;
   f.task = text;
@@ -654,7 +670,7 @@ fusionUserSend(text) {
   this.fusionJob = this.fusionPlan(text).catch(e => {
     if (this.fusionRun) this.fusionRun.phase = 'idle';
     this.fusionEmit();
-    this.emit({ t: 'status', ok: false, msg: e.message });
+    this.emit({ t: 'status', ok: false, msg: quotaErrorMessage('fusion', e) || e.message });
   }).finally(() => { this.fusionFinishJob(); });
 },
 
@@ -677,7 +693,7 @@ fusionGo() {
   this.fusionJob = this.fusionExecute().catch(e => {
     if (this.fusionRun) this.fusionRun.phase = 'idle';
     this.fusionEmit();
-    this.emit({ t: 'status', ok: false, msg: e.message });
+    this.emit({ t: 'status', ok: false, msg: quotaErrorMessage('fusion', e) || e.message });
   }).finally(() => { this.fusionFinishJob(); });
 },
 
@@ -736,7 +752,7 @@ fusionDecide(kind) {
   if (this.fusionJob) throw new Error('Fusion 正在进行');
   this.fusionCancel = false;
   this.fusionJob = this.fusionApply({ kind, body: f.review || f.brief }).catch(e => {
-    this.emit({ t: 'status', ok: false, msg: e.message });
+    this.emit({ t: 'status', ok: false, msg: quotaErrorMessage('fusion', e) || e.message });
   }).finally(() => { this.fusionFinishJob(); });
 }
 };

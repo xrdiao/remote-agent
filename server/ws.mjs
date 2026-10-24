@@ -5,6 +5,7 @@ import { addViewer, removeViewer } from '../lib/notify.mjs';
 import { clientIp } from './http/ratelimit.mjs';
 import { originAllowed } from './http/static.mjs';
 import { Session } from './session.mjs';
+import { quotaErrorMessage } from './agent/context.mjs';
 import { ROUTES, flag } from './routes.mjs';
 import { voiceWss } from './voice/service.mjs';
 
@@ -104,7 +105,7 @@ wss.on('connection', (ws, req) => {
       } catch (e) {
         console.log(`[err] ${msg.t}: ${e.message}`);
         route?.fail?.(session, msg);
-        session.emit({ t: 'status', ok: false, msg: e.message });
+        session.emit({ t: 'status', ok: false, msg: quotaErrorMessage(session.app, e) || e.message });
       } finally {
         if (imageTransfer) session.imageTransfers.delete(msg.clientImageId);
       }
