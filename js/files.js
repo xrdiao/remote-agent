@@ -162,6 +162,16 @@ function showFile(m) {
     body.append(videoGestures(video));
     return;
   }
+  if (m.pdf) {
+    $('vWrap').hidden = true;
+    body.innerHTML = '';
+    const frame = document.createElement('iframe');
+    frame.className = 'pdfPreview';
+    frame.title = m.name || 'PDF';
+    frame.src = base + m.pdf;
+    body.append(frame);
+    return;
+  }
   if (m.image) {
     body.innerHTML = '';
     const img = new Image();

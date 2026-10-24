@@ -221,7 +221,14 @@ function maybeAutoRetry(it) {
 function renderItem(it) {
   const el = document.createElement('div');
   el.className = 'msg ' + it.k;
-  if (it.k === 'notice') { el.textContent = it.t; el.setAttribute('role', 'status'); el.classList.toggle('live', !!it.live); return el; }
+  if (it.k === 'notice') {
+    el.textContent = it.t;
+    el.setAttribute('role', 'status');
+    el.classList.toggle('live', !!it.live);
+    if (it.b?.length) el.insertAdjacentHTML('beforeend', `<div class="btns">${buttonsHtml(it.b, it.btnItem || it.i, it.actions)}</div>`);
+    if (it.b?.length) maybeAutoRetry(it);
+    return el;
+  }
   if (it.k === 'tasks') { el.innerHTML = `<details class="tcard" data-task="${esc(it.i)}" ${taskOpen.has(it.i) ? 'open' : ''}><summary class="tprog-head">${I18N.tr('任务')} ${it.done}/${it.total}</summary>${tasksHtml(it)}</details>`; return el; }
   if (it.k === 'human') {
     const mh = it.src === 'devin' ? mathHtml(it.t || '') : null;
