@@ -486,7 +486,6 @@ function toggleExecutionRecords() {
 function renderChat(chat, stale, loading = false) {
   if (chat) reconcileSent(chat);
   chat = withMessageTimes(chat);
-  rememberChatMessageTime(chat);
   pruneEchoes(chat);
   updateGenerationTime(chat, stale);
   chatStale = !!stale;
@@ -571,7 +570,6 @@ function renderChat(chat, stale, loading = false) {
   if (!sessionChanged && userSelecting()) {
     deferredRender = true;
     $('actionBar').innerHTML = buttonsHtml(chat.global, 'g');
-    if (chat.global?.length) maybeAutoRetry({ i: 'global', btnItem: 'g', b: chat.global });
     $('actionBar').classList.toggle('show', chat.global.length > 0);
     renderQueue(chat.busy, chat.queued || [], chat.subagents || [], chat.readonly, chat.changed, chat.queuedCount);
     renderQuestions(chat.readonly && !chat.questions?.codex ? null : chat.questions);
@@ -668,7 +666,6 @@ function renderChat(chat, stale, loading = false) {
 
   // A cached render is display-only: no action buttons, questions or queue actions until the fresh chat arrives.
   $('actionBar').innerHTML = chatStale ? '' : buttonsHtml(chat.global, 'g');
-  if (!chatStale && chat.global?.length) maybeAutoRetry({ i: 'global', btnItem: 'g', b: chat.global });
   $('actionBar').classList.toggle('show', !chatStale && chat.global.length > 0);
   renderQueue(chatStale ? false : chat.busy, chatStale ? [] : (chat.queued || []), chat.subagents || [], chat.readonly, chat.changed, chat.queuedCount);
   renderQuestions(chatStale || (chat.readonly && !chat.questions?.codex) ? null : chat.questions);
@@ -1145,7 +1142,9 @@ function loadOlderMessages() {
   }
   requestOlderRemote();
 }
-// Asks the desktop for an older batch. Incoming chat renders remain anchored until scrolling settles.
+// Asks the desktop for an older batch. Unlike the cached-rows path this may fire mid-gesture
+// (maybePrefetchOlder): it must not write scrollTop then, but the request itself is safe — the
+// incoming chat render is deferred until the scroll settles.
 function requestOlderRemote() {
   if (!lastChat || historyRequest) return;
   historyArmed = false;
@@ -1175,25 +1174,23 @@ function finishHistory(m) {
   if (!deferredScrollRender && !chatFrame) completeTurnNavigation();
   maybePrefetchOlder();
 }
+const prefetchZone = () => Math.max(600, list.clientHeight * 1.5);
 function maybeLoadOlder() {
-  if ((historyArmed || historyTouchPull) && list.scrollTop <= 1) {
-    historyTouchPull = false;
-    loadOlderMessages();
-  }
+  if (historyArmed && list.scrollTop <= prefetchZone()) loadOlderMessages();
 }
 function maybePrefetchOlder() {
-  if (!chatTouching && !chatMomentum && historyArmed && list.scrollTop <= 1 && !historyRequest && !deferredScrollRender && $('cachedMore').hidden && !historyAtEnd && !$('older').hidden) requestOlderRemote();
+  if (historyArmed && list.scrollTop <= prefetchZone() && !historyRequest && !deferredScrollRender && $('cachedMore').hidden && !historyAtEnd && !$('older').hidden) requestOlderRemote();
 }
 function resumeHistoryAfterIdle() {
   if (!historyWaitingForIdle || !lastChat || lastChat.busy || chatScrolling || chatTouching || historyRequest) return;
-  if (list.scrollTop > 1) { historyWaitingForIdle = false; return; }
+  if (list.scrollTop > prefetchZone()) { historyWaitingForIdle = false; return; }
   historyWaitingForIdle = false;
   requestOlderRemote();
 }
 function settleChatScroll() {
   const top = list.scrollTop;
   if (restoringChatScroll) { lastScrollTop = top; updateToBottom(); return; }
-  if (top < lastScrollTop && !chatTouching && !chatMomentum) { historyArmed = true; pinnedBottom = false; }
+  if (top < lastScrollTop) { historyArmed = true; pinnedBottom = false; }
   lastScrollTop = top;
   if (!chatTouching && !chatMomentum && !deferredScrollRender) {
     if (pinnedBottom && !nearBottom()) pinnedBottom = false;
@@ -1225,11 +1222,11 @@ list.addEventListener('scroll', () => {
   if (!restoringChatScroll && !pinnedBottom && (!chatTouching || turnNavPointer?.dragging)) stabilizeChatReading();
   settleChatScroll();
 }, { passive: true });
-let historyTouchY = 0, historyTouchPull = false;
+let historyTouchY = 0;
 list.addEventListener('wheel', e => { turnNavGesture(); if (!readingAnchor) readingAnchor = captureChatAnchor(); restoringChatScroll = false; if (e.deltaY < 0) { historyArmed = true; pinnedBottom = false; } settleChatScroll(); }, { passive: true });
-list.addEventListener('pointerdown', e => { if (e.pointerType !== 'touch') historyArmed = true; }, { passive: true });
-list.addEventListener('touchstart', e => { readingAnchor = captureChatAnchor(); historyTouchY = e.touches[0].clientY; historyTouchPull = false; historyArmed = false; chatMomentum = false; chatTouching = true; chatScrolling = true; clearTimeout(scrollIdle); }, { passive: true });
-list.addEventListener('touchmove', e => { turnNavGesture(); restoringChatScroll = false; const y = e.touches[0].clientY; if (y > historyTouchY) pinnedBottom = false; if (y < historyTouchY && list.scrollTop <= 1) { historyTouchPull = true; historyArmed = true; } historyTouchY = y; }, { passive: true });
+list.addEventListener('pointerdown', () => { historyArmed = true; }, { passive: true });
+list.addEventListener('touchstart', e => { readingAnchor = captureChatAnchor(); historyTouchY = e.touches[0].clientY; chatMomentum = false; chatTouching = true; chatScrolling = true; clearTimeout(scrollIdle); }, { passive: true });
+list.addEventListener('touchmove', e => { turnNavGesture(); restoringChatScroll = false; if (e.touches[0].clientY > historyTouchY) { historyArmed = true; pinnedBottom = false; } historyTouchY = e.touches[0].clientY; }, { passive: true });
 for (const event of ['touchend', 'touchcancel']) list.addEventListener(event, () => { chatMomentum = event === 'touchend'; chatTouching = false; restoringChatScroll = false; settleChatScroll(); }, { passive: true });
 $('toBottom').onclick = () => {
   clearTimeout(scrollIdle);
