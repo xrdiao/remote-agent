@@ -278,35 +278,35 @@ function connRender() {
   $('connGo').textContent = tr('进入');
   const icon = st => st === 'load' ? '<span class="cSpin"></span>' : `<span class="cIc">${st === 'ok' ? '✓' : st === 'err' ? '!' : ''}</span>`;
   const row = (st, tile, name, sub, label, brand = false) => `<div class="cItem ${st}"><div class="cRow"><div class="cTile${brand ? ' cBrand' : ''}">${tile}</div><div class="cMeta"><div class="cName">${esc(name)}</div><div class="cSub">${esc(sub)}</div></div><div class="cSt">${icon(st)}<span>${esc(tr(label))}</span></div></div></div>`;
-  // Keep the three Agent rows visible while the window probe is running. The catalog
-  // remains an internal readiness/launch source and does not remove a display row.
-  const probeReady = conn.agents !== null;
+  // Wait for both the installation catalog and window probe before rendering named rows.
+  // This prevents an already connected Agent from flashing through the loading state.
+  const probeReady = conn.catalogReady && conn.agents !== null;
   const catalog = agentCatalog();
-  const agents = CONN_AGENTS.map(a => ({ ...a, ...conn.agents?.find(r => r.app === a.app) }));
-  const available = probeReady ? availableConnAgents() : [];
-  const ready = available.filter(a => a.windows).length;
-  const state = a => !conn.host ? 'wait' : !probeReady ? 'load' : a.windows ? 'ok' : 'err';
-  const names = available.filter(a => a.windows).map(a => a.name).join(I18N.lang === 'en' ? ', ' : '、');
-  const missing = available.filter(a => !a.windows).map(a => a.name).join(I18N.lang === 'en' ? ', ' : '、');
-  const allReady = ready > 0 && ((conn.catalogReady && available.length > 0 && ready === available.length) || ready === CONN_AGENTS.length);
-  $('connTitle').textContent = !conn.host ? tr('正在连接电脑') : !probeReady ? tr('正在连接 Agent…')
+  const agents = probeReady ? (conn.agents || []).filter(a => a.windows || catalog?.find(r => r.app === a.app)?.installed === true) : [];
+  const ready = agents.filter(a => a.windows).length;
+  const state = a => !conn.host ? 'wait' : a.windows ? 'ok' : 'err';
+  const names = agents.filter(a => a.windows).map(a => a.name).join(I18N.lang === 'en' ? ', ' : '、');
+  const missing = agents.filter(a => !a.windows).map(a => a.name).join(I18N.lang === 'en' ? ', ' : '、');
+  const allReady = agents.length > 0 && ready === agents.length;
+  $('connTitle').textContent = !conn.host ? tr('正在连接电脑') : !probeReady ? tr('正在检测已安装的 Agent…')
     : allReady ? tr(conn.loaded ? '全部已连接 · 正在进入…' : '正在加载当前会话…') : ready ? ct('{ready} 已可用，{missing} 可稍后重试', { ready: names, missing }) : tr('没有可用的 Agent');
   $('connLead').textContent = '';
   $('connHost').innerHTML = row(conn.host ? 'ok' : 'load', CONN_HOST_SVG, currentComputer()?.name || tr('电脑'), tr(conn.host ? '实时连接已建立' : conn.phase), conn.host ? '已连接' : '连接中…');
-  $('connAgents').innerHTML = agents.map(a => {
+  const pending = row(conn.host ? 'load' : 'wait', CONN_HOST_SVG, tr('Agent'), conn.host ? tr('正在识别已安装的 Agent…') : tr('等待电脑连接'), conn.host ? '连接中…' : '等待主机');
+  $('connAgents').innerHTML = probeReady ? agents.map(a => {
     const st = state(a), open = conn.open.has(a.app);
     const reason = a.timeout ? ct('超时，请检查 {agent} 是否卡住', { agent: a.name }) : a.error ? ct('连接失败，请检查 {agent} 是否已启动', { agent: a.name }) : tr('未找到窗口，请打开项目');
     const installed = catalog?.find(r => r.app === a.app);
-    const sub = st === 'ok' ? ct('{n} 个窗口可用', { n: a.windows }) : st === 'err' ? (connLaunchNote(a) || reason) : tr(st === 'wait' ? '等待主机' : '正在读取窗口…');
+    const sub = st === 'ok' ? ct('{n} 个窗口可用', { n: a.windows }) : st === 'err' ? (connLaunchNote(a) || (installed?.installed === true ? reason : tr('安装状态待确认'))) : tr(st === 'wait' ? '等待主机' : '正在读取窗口…');
     const detail = [ct('地址：{v}', { v: a.address || '' }), a.error || tr('调试服务已响应，但未找到可用的项目窗口。'), a.app === 'cursor' ? tr('启动指引：在电脑上以远程调试模式启动 Cursor，然后重试。') : ct('启动指引：在电脑上运行 {command}，然后重试。', { command: './scripts/start-' + a.app + '.sh' })].join('\n');
     const launch = st === 'err' ? connLaunchStatus.get(a.app) : '';
     const launchBtn = st === 'err' && installed?.installed === true && !installed.running && installed.launchSupported && launch !== 'missing' && launch !== 'unsupported'
       ? `<button class="cBtn cLaunch" data-conn-launch="${a.app}" ${launch === 'launching' ? 'disabled' : ''}>${launch === 'launching' ? `<span class="cSpin"></span>${esc(tr('启动中…'))}` : esc(tr('启动'))}</button>` : '';
     return `<div class="cItem ${st}"><div class="cRow"><div class="cTile cBrand"><img class="on-dark" src="logo-${a.app}-dark.svg" alt=""><img class="on-light" src="logo-${a.app}-light.svg" alt=""></div><div class="cMeta"><div class="cName">${a.name}</div><div class="cSub">${esc(sub)}</div></div><div class="cSt" aria-label="${esc(tr(CONN_TEXT[st]))}">${CONN_ICON[st]}${st === 'err' && !launchBtn ? `<span>${esc(tr('连接失败'))}</span>` : ''}</div>${st === 'err' ? `<button class="cWhy" data-conn-why="${a.app}" aria-expanded="${open}">${esc(tr(open ? '收起' : '查看原因'))}</button>` : ''}${launchBtn}</div>${st === 'err' && open ? `<div class="cErr"><pre class="cDetail">${esc(detail)}</pre><div class="cActs"><button class="cBtn" data-conn-retry="agents">${CONN_RETRY_SVG}${esc(tr('重试'))}</button><button class="cBtn ghost" data-conn-why="${a.app}">${esc(tr('收起'))}</button></div></div>` : ''}</div>`;
-  }).join('');
-  $('connSum').textContent = probeReady ? `${ready}/${CONN_AGENTS.length} ${tr('可用')}` : '';
-  $('connBar').style.gridTemplateColumns = `repeat(${CONN_AGENTS.length}, 1fr)`;
-  $('connBar').innerHTML = agents.map(a => `<i class="${state(a)}"></i>`).join('');
+  }).join('') : pending;
+  $('connSum').textContent = probeReady ? `${ready}/${agents.length} ${tr('可用')}` : '';
+  $('connBar').style.gridTemplateColumns = `repeat(${Math.max(1, agents.length)}, 1fr)`;
+  $('connBar').innerHTML = probeReady ? agents.map(a => `<i class="${conn.host ? state(a) : ''}"></i>`).join('') : `<i class="${conn.host ? 'load' : 'wait'}"></i>`;
   $('connGo').hidden = !probeReady || allReady;
   $('connGo').textContent = ready ? tr('先进入') : tr('全部重试');
   const launchable = probeReady ? connMissingApps() : [];
