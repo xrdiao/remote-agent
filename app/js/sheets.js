@@ -3,13 +3,61 @@ let sheetKind = null;
 let menuRefreshTimer = 0;
 let pendingAgentOpen = '';
 const agentOpened = JSON.parse(store.get('agent-opened') || '{}');
+const agentUsage = JSON.parse(store.get('agent-usage') || '{}');
+const agentFilters = JSON.parse(store.get('agent-filters') || '{}');
+let agentFilterPanelOpen = false;
 const agentOpenedKey = thread => `${currentComputer()?.id || ''}|${currentAppName}|${thread}`;
+const agentUsageKey = id => `${currentComputer()?.id || currentComputer()?.key || ''}|${currentApp || currentAppName}|${id}`;
+const agentFilterKey = () => `${currentComputer()?.id || currentComputer()?.key || ''}|${currentApp || currentAppName}`;
+const agentFilterLabels = { all: '全部', common: '常用', uncommon: '不常用' };
+function currentAgentFilters() {
+  const saved = agentFilters[agentFilterKey()] || {};
+  return { project: agentFilterLabels[saved.project] ? saved.project : 'all', session: agentFilterLabels[saved.session] ? saved.session : 'all' };
+}
+function setAgentFilter(scope, value) {
+  if (!agentFilterLabels[value] || !['project', 'session'].includes(scope)) return;
+  agentFilters[agentFilterKey()] = { ...currentAgentFilters(), [scope]: value };
+  store.set('agent-filters', JSON.stringify(agentFilters));
+}
+function agentThreadKey(a) {
+  const id = String(a.id || '');
+  if (currentAppName === 'Codex') return id.split(':').slice(2).join(':');
+  if (id.startsWith('project:')) {
+    try { return decodeURIComponent(id.split(':').slice(2).join(':')); } catch {}
+  }
+  return id;
+}
+function agentUsageInfo(a) {
+  const thread = agentThreadKey(a);
+  const saved = { ...(agentUsage[agentUsageKey(thread)] || {}), ...(agentUsage[agentUsageKey(a.id)] || {}) };
+  const opened = agentOpened[agentOpenedKey(thread)] || 0;
+  const lastUsed = Math.max(Number(a.lastUsed) || 0, Number(saved.last) || 0, opened);
+  const lastMessageAt = Number(saved.lastMessageAt) || 0;
+  const ageDays = lastMessageAt ? Math.max(0, (Date.now() - lastMessageAt) / 86400000) : Infinity;
+  return { ...a, lastUsed, common: lastMessageAt > 0 && ageDays <= 7 };
+}
+function rememberAgentMessageTime(thread, at) {
+  const timestamp = Number(at);
+  if (!thread || !Number.isFinite(timestamp) || timestamp <= 0) return;
+  const key = agentUsageKey(thread), previous = agentUsage[key] || {};
+  if (timestamp <= (Number(previous.lastMessageAt) || 0)) return;
+  agentUsage[key] = { ...previous, lastMessageAt: timestamp };
+  store.set('agent-usage', JSON.stringify(agentUsage));
+}
+function rememberChatMessageTime(chat) {
+  const latest = (chat?.items || []).reduce((at, item) => item.k === 'human' && Number.isFinite(item.sentAt) ? Math.max(at, item.sentAt) : at, 0);
+  rememberAgentMessageTime(chat?.thread, latest);
+}
 function rememberAgentOpen(m) {
   const target = /^(?:thread|win|new):([^:]+)(?::(.+))?$/.exec(pendingAgentOpen);
   const matched = m.app === 'codex' ? target && m.windowId === target[1] && (!target[2] || m.threadId === target[2]) : pendingAgentOpen === m.threadId;
   if (!m.closed && pendingAgentOpen && matched && m.threadId) {
-    agentOpened[agentOpenedKey(m.threadId)] = Date.now();
+    const now = Date.now(), openedKey = agentOpenedKey(m.threadId), usageKey = agentUsageKey(m.threadId);
+    agentOpened[openedKey] = now;
+    const previous = agentUsage[usageKey] || {};
+    agentUsage[usageKey] = { ...previous, count: (Number(previous.count) || 0) + 1, last: now };
     store.set('agent-opened', JSON.stringify(agentOpened));
+    store.set('agent-usage', JSON.stringify(agentUsage));
     pendingAgentOpen = '';
   }
 }
@@ -118,7 +166,12 @@ function winLabel(title) {
 }
 
 function windowEntries() {
-  const entries = windows.map(w => ({ ...w, id: currentComputer()?.selections?.[w.app]?.id || w.id }));
+  const saved = currentComputer()?.selections || {};
+  const available = new Set(windows.flatMap(w => w.windowIds || [w.id]));
+  const entries = windows.map(w => {
+    const selected = saved[w.app]?.id;
+    return { ...w, id: selected && available.has(selected) ? selected : w.id };
+  });
   const missingAgents = ['cursor', 'devin', 'codex'].filter(a => !entries.some(w => w.app === a));
   return { entries, missingAgents };
 }
@@ -126,7 +179,9 @@ function windowEntries() {
 function switchToWindow(id) {
   closeSheet();
   status('正在切换 Agent…');
-  send({ t: 'attach', id, ...currentComputer()?.selections?.[id] });
+  const entry = windowEntries().entries.find(w => w.id === id);
+  const saved = entry && currentComputer()?.selections?.[entry.app];
+  send({ t: 'attach', id, ...(saved?.id === id ? saved : {}) });
 }
 function openSettings() {
   status('正在读取设置…');
@@ -406,13 +461,23 @@ function foldSection(name, inner, open, count) {
   if (!name) return inner;
   return `<button type="button" class="fold" data-fold aria-expanded="${open ? 'true' : 'false'}"><span class="lbl">${esc(name)}</span><span class="tag">${count}</span><span class="chev">${open ? '▾' : '▸'}</span></button><div class="foldBody"${open ? '' : ' hidden'}>${inner}</div>`;
 }
+function agentFilterPanel(filters) {
+  const row = (scope, label) => `<div class="agentFilterRow"><span class="agentFilterLabel">${label}</span><div class="agentFilterChoices">${Object.entries(agentFilterLabels).map(([value, text]) => `<button type="button" class="${filters[scope] === value ? 'cur' : ''}" data-agent-filter-scope="${scope}" data-agent-filter-value="${value}">${text}</button>`).join('')}</div></div>`;
+  return `<div class="agentFilterPanel">${row('project', '项目')}${row('session', '会话')}</div>`;
+}
+function renderAgentList() {
+  const list = agentLists.get(agentListKey());
+  if (list) showAgents(list);
+  else openAgentList();
+}
 function showAgents(list) {
   list = list.map(a => ({ ...a, window: cleanWindowTitle(a.window), group: cleanWindowTitle(a.group), title: cleanWindowTitle(a.title) }));
   const keep = sheetKind === 'agents';
   const scroll = keep ? $('sheet').scrollTop : 0;
   const opened = keep ? new Set([...$('sheet').querySelectorAll('button.fold[aria-expanded="true"] > .lbl')].map(n => n.textContent)) : null;
   const newest = items => Math.max(0, ...items.map(a => a.lastUsed || 0));
-  list = list.map(a => ({ ...a, lastUsed: Math.max(a.lastUsed || 0, agentOpened[agentOpenedKey(currentAppName === 'Codex' ? a.id.split(':').slice(2).join(':') : a.id)] || 0) }))
+  const filters = currentAgentFilters();
+  list = list.map(agentUsageInfo)
     .sort((a, b) => (b.lastUsed || 0) - (a.lastUsed || 0));
   const order = [];
   const byWindow = new Map();
@@ -423,11 +488,16 @@ function showAgents(list) {
   }
   order.sort((a, b) => newest(byWindow.get(b)) - newest(byWindow.get(a)));
   const anyCurrent = list.some(a => a.current);
-  const rows = order.map((win, index) => {
-    const items = byWindow.get(win);
+  let firstVisible = true;
+  const rows = order.map(win => {
+    const items = byWindow.get(win), projectCommon = items.some(a => !a.ui && a.common);
+    if (filters.project !== 'all' && projectCommon !== (filters.project === 'common')) return '';
+    const visible = items.filter(a => a.ui || filters.session === 'all' || a.common === (filters.session === 'common'));
+    if (filters.session !== 'all' && !visible.some(a => !a.ui)) return '';
+    if (!visible.length) return '';
     const loose = [];
     const groups = [];
-    for (const a of items) {
+    for (const a of visible) {
       if (!a.group) { loose.push(a); continue; }
       let g = groups.find(x => x.name === a.group);
       if (!g) groups.push(g = { name: a.group, items: [] });
@@ -439,10 +509,12 @@ function showAgents(list) {
       g.name, g.items.map(agentButton).join(''), opened ? opened.has(g.name) : g.items.some(a => a.current), g.items.length,
     )).join('');
     if (!win) return body;
-    const open = opened ? opened.has(win) : items.some(a => a.current) || (!anyCurrent && index === 0);
-    return foldSection(win, body, open, items.length);
+    const open = opened ? opened.has(win) : items.some(a => a.current) || (!anyCurrent && firstVisible);
+    firstVisible = false;
+    return foldSection(win, body, open, visible.length);
   }).join('');
-  const html = `<h3>项目与会话</h3><button class="opt" data-act="agentsRefresh">刷新项目与会话</button><button class="opt" data-act="projects"><span class="lbl">选择文件夹／新建项目</span></button><button class="opt" data-act="projectNewChat"><span class="lbl">在当前项目新建会话</span></button>${rows || `<div class="hint">${esc(appMessage('没有找到 {app} 的 Agent。请在电脑上打开对应的会话窗口。'))}</div>`}`;
+  const filterText = `项目·${agentFilterLabels[filters.project]}，会话·${agentFilterLabels[filters.session]}`;
+  const html = `<div class="agentSheetTitle"><h3>项目与会话</h3><button type="button" class="agentFilterToggle" data-agent-filter-toggle aria-expanded="${agentFilterPanelOpen ? 'true' : 'false'}"><span class="sub">${filterText}</span></button></div>${agentFilterPanelOpen ? agentFilterPanel(filters) : ''}<button class="opt" data-act="agentsRefresh">刷新项目与会话</button><button class="opt" data-act="projects"><span class="lbl">选择文件夹／新建项目</span></button><button class="opt" data-act="projectNewChat"><span class="lbl">在当前项目新建会话</span></button>${rows || `<div class="hint">${esc(appMessage('没有找到 {app} 的 Agent。请在电脑上打开对应的会话窗口。'))}</div>`}`;
   if (keep) {
     const template = document.createElement('template');
     template.innerHTML = html;
@@ -451,6 +523,16 @@ function showAgents(list) {
   } else openSheet('agents', html);
   if (keep) requestAnimationFrame(() => { $('sheet').scrollTop = scroll; });
 }
+$('sheet').addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b || sheetKind !== 'agents') return;
+  if ('agentFilterToggle' in b.dataset) { agentFilterPanelOpen = !agentFilterPanelOpen; return renderAgentList(); }
+  if (b.dataset.agentFilterScope) {
+    setAgentFilter(b.dataset.agentFilterScope, b.dataset.agentFilterValue);
+    agentFilterPanelOpen = true;
+    return renderAgentList();
+  }
+});
 $('title').onclick = () => {
   if (document.body.matches('.split')) return openAgentList();
   send({ t: 'windows' }); showWindows();
@@ -642,7 +724,7 @@ function renderDevices() {
   const confirmation = deviceRemoval.length ? `<div class="hint">${esc(`移除「${pairedDevices.filter(d => deviceRemoval.includes(d.id)).map(d => d.name).join('、')}」？它们会立即断开，要重新配对才能再用。`)}</div><div class="askBtns"><button data-device-remove-cancel>取消</button><button class="danger" data-device-remove-confirm>移除</button></div>` : '';
   const opened = new Map([...$('sheet').querySelectorAll('[data-device-group]')].map(el => [el.dataset.deviceGroup, el.open]));
   const invitation = deviceInvitation?.expires > Date.now() ? `<div class="entryInvite"><div class="hint">将此链接在新浏览器打开，再核对下方出现的验证码。10 分钟内有效，不要发给陌生人。</div><textarea id="entryInviteLink" readonly aria-label="入口授权链接">${esc(deviceInvitation.link)}</textarea><button data-entry-copy>复制授权链接</button></div>` : '';
-  const requests = pendingEntries.map(r => `<div class="entryRequest"><strong>新入口请求 · ${esc(r.name)}</strong><div class="sub">归入 ${esc(r.groupName)} · 验证码 <b>${esc(r.code)}</b></div><div class="hint">请与新浏览器显示的验证码核对，确认是你的入口。</div><div class="askBtns"><button data-entry-decide="${esc(r.id)}" data-code="${esc(r.code)}" data-approve="false">拒绝</button><button data-entry-decide="${esc(r.id)}" data-code="${esc(r.code)}" data-approve="true">同意</button></div></div>`).join('');
+  const requests = pendingEntries.map(r => `<div class="entryRequest"><strong>新入口请求 · ${esc(r.name)}</strong><div class="sub">入口 ${esc(r.origin || '未提供来源')} · 归入 ${esc(r.groupName)} · 验证码 <b>${esc(r.code)}</b></div><div class="hint">请与新浏览器显示的验证码核对，确认是你的入口。</div><div class="askBtns"><button data-entry-decide="${esc(r.id)}" data-code="${esc(r.code)}" data-approve="false">拒绝</button><button data-entry-decide="${esc(r.id)}" data-code="${esc(r.code)}" data-approve="true">同意</button></div></div>`).join('');
   openSheet('devices', `<div class="deviceHead"><h3>已配对设备</h3><div class="listTools" ${removingDevices ? 'inert' : ''}>${listTools()}</div>${removingDevices ? '<div class="hint">正在移除入口…</div>' : confirmation}</div><div class="deviceRows" ${removingDevices ? 'inert' : ''}>${invitation}${requests}` + deviceGroups().map(g => `<details class="deviceGroup" data-device-group="${esc(g.id)}" ${(opened.get(g.id) ?? g.entries.some(d => d.current)) ? 'open' : ''}><summary>${esc(g.name)}<span class="sub">${g.entries.length} 个入口</span></summary><div class="listTools"><button data-entry-invite="${esc(g.id)}">添加入口</button>${listManagement.editing ? `<button data-device-group-rename="${esc(g.id)}">重命名设备</button>` : ''}${g.entries.some(d => d.current) ? '' : `<button data-device-group-remove="${esc(g.id)}">移除设备</button>`}</div>` + g.entries.map(d => `
     <${listManagement.editing && !d.current ? 'label' : 'div'} class="opt static ${d.current ? 'cur' : ''}">${listManagement.editing && !d.current ? listCheckbox(d.id) : ''}<span class="lbl">${esc(d.entryName)}<span class="sub">${d.current ? '当前入口 · ' : ''}入口码 ${esc(d.id)} · 配对于 ${when(d.created)} · 最近使用 ${when(d.lastSeen)}</span></span>
     ${d.current || listManagement.editing ? '' : `<button data-remove="${esc(d.id)}" data-name="${esc(d.name)}">移除</button>`}</${listManagement.editing && !d.current ? 'label' : 'div'}>`).join('')
@@ -858,6 +940,42 @@ function showUsageDetails(kind) {
   openSheet('usage', `<h3>${context ? '上下文说明' : '额度说明'}</h3>${rows}${!context && updated ? `<p class="hint">${m.cached ? '缓存数据' : '最近更新'} · ${esc(updated)}</p>` : ''}${!context && $('quotaStatus').textContent ? `<p class="hint">${esc($('quotaStatus').textContent)}</p>` : ''}<button id="refreshUsage" class="opt">刷新数据</button>`);
   $('refreshUsage').onclick = () => { closeSheet(); status('正在读取额度…'); send({ t: 'usage' }); };
 }
+function menuGroup(key, label, content, initial = true) {
+  const saved = store.get('menu-group:' + key);
+  const open = saved === null ? initial : saved === '1';
+  return `<details class="mainGroup" data-menu-group="${key}" ${open ? 'open' : ''}><summary>${esc(I18N.tr(label))}</summary><div class="mainGroupBody">${content}</div></details>`;
+}
+$('sheet').addEventListener('toggle', e => {
+  if (e.target.matches('details[data-menu-group]')) store.set('menu-group:' + e.target.dataset.menuGroup, e.target.open ? '1' : '0');
+}, true);
+$('sheet').addEventListener('change', e => {
+  const app = e.target.dataset.agentStart;
+  if (!app) return;
+  const selected = new Set(startupAgents());
+  e.target.checked ? selected.add(app) : selected.delete(app);
+  store.set('agent-start:' + agentComputerKey(), JSON.stringify([...selected]));
+  showAgentManager();
+});
+function showAgentManager(refresh = false) {
+  if (refresh) send({ t: 'connAgents' });
+  const catalog = agentCatalog(), selected = startupAgents();
+  const rows = (catalog || []).map(a => ({ ...CONN_AGENTS.find(r => r.app === a.app), ...a }));
+  const known = rows.filter(a => a.installed === true), unknown = rows.filter(a => a.installed === null), missing = rows.filter(a => a.installed === false);
+  const row = a => {
+    const ready = agentReports.get(agentComputerKey())?.find(r => r.app === a.app)?.windows;
+    const note = connLaunchNote(a) || (ready ? '已连接' : a.running ? '已运行，请开启调试端口' : a.reason || (a.installed === null ? '安装状态待确认' : '未启动'));
+    return `<label class="opt agentManageRow"><span class="cTile cBrand agentManageLogo"><img class="on-dark" src="logo-${a.app}-dark.svg" alt=""><img class="on-light" src="logo-${a.app}-light.svg" alt=""></span><span class="lbl">${esc(a.name)}<span class="sub">${esc(I18N.tr(note))}</span></span>${a.installed === true ? `<input type="checkbox" data-agent-start="${a.app}" aria-label="${esc(a.name)}" ${selected.includes(a.app) ? 'checked' : ''}>` : ''}</label>`;
+  };
+  openSheet('agent-manager', `<h3>Agent 管理</h3><p class="hint">${esc(currentComputer()?.name || I18N.tr('当前电脑'))} · ${I18N.tr('选择仅记录启动偏好，不会关闭正在运行的 Agent。')}</p>
+    <div class="optRow"><button class="opt" data-act="agentRefresh">重新检测</button><button class="opt" data-act="agentBack">返回菜单</button></div>
+    ${!catalog ? '<p class="hint">正在检测已安装的 Agent…</p>' : ''}
+    ${catalog ? `<section class="agentManageSection"><div class="pSec">已安装</div>${known.map(row).join('') || '<p class="hint">未检测到已安装的 Agent</p>'}
+    <button class="opt" data-act="agentStart" ${selectedLaunchAgents().length ? '' : 'disabled'}>启动所选 Agent</button></section>
+    ${unknown.length ? `<section class="agentManageSection"><div class="pSec">待确认</div>${unknown.map(row).join('')}</section>` : ''}
+    <section class="agentManageSection"><div class="pSec">未安装</div>${missing.map(a => `<button class="opt" data-act="agentInstall" data-agent="${a.app}"><span class="lbl">${a.name}<span class="sub">查看安装与启动指引</span></span><span class="tag">›</span></button>`).join('') || '<p class="hint">没有未安装的 Agent</p>'}</section>` : ''}
+    <p class="hint">${I18N.tr('Codex 需要 VS Code 和 Codex 扩展；调试端口未开启不代表没有安装。')}</p>`);
+}
+
 let usageTimer = null;
 function showMainMenu() {
   const notifyItem = `<button class="opt" id="notifySwitchRow" data-act="notifyToggle" role="switch" aria-checked="${notifyOn}"><span class="lbl">开启通知<span class="sub">Agent 完成或等你确认时提醒</span></span><span class="switch${notifyOn ? ' on' : ''}" aria-hidden="true"></span></button>`;
@@ -868,33 +986,38 @@ function showMainMenu() {
     ? `<button class="opt" data-act="appUpdate"><span class="lbl">更新安卓 App（v${esc(appVersion)} → v${esc(apkUpdate())}）</span><span class="tag">新</span></button>`
     : `<button class="opt" data-act="appUpdate"><span class="lbl">检查 App 更新（当前 v${esc(appVersion)}）</span></button>`;
   const appName = currentAppName;
-  openSheet('main', `<h3>菜单</h3>
-    ${appName ? `<div class="pSec">${appName}</div>` : ''}
+  const modelItems = `
     ${currentApp === 'fusion' ? `<button class="opt" data-act="fusionHistory">历史会话</button><button class="opt" data-act="fusionNew" ${lastChat?.fusion?.busy ? 'disabled' : ''}>＋ 新建</button>` : supportsCapability('model') ? `<button class="opt" data-act="model"><span class="lbl">更换模型<span class="sub" id="menuModel">${esc(lastChat?.model || '选择当前 Agent 的模型')}</span></span></button>` : ''}
     ${currentApp === 'cursor' && lastChat?.mode ? `<button class="opt" data-act="mode"><span class="lbl">${I18N.tr('模式')}<span class="sub">${esc(lastChat.mode === 'Bypass Permissions' ? '⚠ 绕过权限' : lastChat.mode)}</span></span></button>` : ''}
     ${lastChat?.permission || (currentApp === 'devin' && lastChat?.mode) ? `<button class="opt" data-act="permission"><span class="lbl">权限模式<span class="sub">${esc(lastChat.permission || lastChat.mode)}</span></span></button>` : ''}
     ${supportsCapability('editor', ['cursor', 'devin', 'codex'].includes(currentApp)) ? `<button class="opt" data-act="editor"><span class="lbl">Editor · 项目文件编辑${capabilityState('editor').reason ? `<span class="sub">${esc(capabilityState('editor').reason)}</span>` : ''}</span></button>` : ''}
     ${['cursor', 'devin', 'codex'].includes(currentApp) ? '<button class="opt" data-act="projects"><span class="lbl">打开项目<span class="sub">选择文件夹或新建项目</span></span></button>' : ''}
+    <button class="opt" data-act="screen"><span class="lbl">画面<span class="sub">查看绘图与仿真窗口</span></span></button>
     ${currentApp === 'codex' ? '<button class="opt" data-act="codexResetHelp"><span class="lbl">Codex 额度重置</span></button><button class="opt" data-act="codexRetryMenu"><span class="lbl">Codex 自动重试<span class="sub">' + (codexAutoRetryEnabled() ? `已开启 · 最多 ${codexAutoRetryCount()} 次` : '已关闭') + '</span></span><span class="tag">›</span></button>' : ''}
     ${supportsCapability('settings') ? '<button class="opt" data-act="settings"><span class="lbl">设置</span></button>' : ''}
-    <button class="opt" data-act="transfer"><span class="lbl">文件传输<span class="sub">批量上传、下载文件及文件夹</span></span></button>
-    <button class="opt" data-act="screen"><span class="lbl">画面<span class="sub">查看绘图与仿真窗口</span></span></button>
-    <div class="pSec">此手机 App</div>
     ${['cursor', 'devin', 'codex', 'fusion'].includes(currentApp) ? `<button class="opt" data-act="executionToggle" role="switch" aria-checked="${executionRecordsShown()}"><span class="lbl">显示执行指令<span class="sub">包含工具读取和搜索记录；关闭后在本轮结束时隐藏</span></span><span class="switch${executionRecordsShown() ? ' on' : ''}" aria-hidden="true"></span></button>` : ''}
-    ${lastChat?.changed && !lastChat?.readonly ? `<button class="opt" data-act="toggleChanges"><span class="lbl">${hiddenChangeNotices.has(changeNoticeKey()) ? '显示改动' : '隐藏改动提示'}</span></button>` : ''}
-    ${iosApp && !window.AgentRemoteApp?.pushRegister ? '' : notifyItem}
-    <button class="opt" data-act="localVoiceMenu"><span class="lbl">语音输入<span class="sub">${voiceEnabled() ? '已开启' : '未开启'} · 按住说话 · 选择识别引擎</span></span><span class="tag">›</span></button>
+    ${lastChat?.changed && !lastChat?.readonly ? `<button class="opt" data-act="toggleChanges"><span class="lbl">${hiddenChangeNotices.has(changeNoticeKey()) ? '显示改动' : '隐藏改动提示'}</span></button>` : ''}`;
+  const connectionItems = `
+    <button class="opt" data-act="agentManager"><span class="lbl">Agent 管理<span class="sub">检测安装状态、选择并启动 Agent</span></span></button>
     ${connItems}
-    ${inApp && appVersion ? update : ''}
     ${inApp ? '<button class="opt" data-act="changeUrl"><span class="lbl">更换 App 地址</span></button>' : ''}
     <button class="opt" data-act="reconnect"><span class="lbl">重新连接</span></button>
+    <button class="opt" data-act="computers"><span class="lbl">电脑<span class="sub">${esc(currentComputer()?.name || '未配对')}</span></span></button>
+    <button class="opt" data-act="devices"><span class="lbl">已配对设备</span></button>
+    <button class="opt" data-act="logout"><span class="lbl">删除这台电脑</span></button>`;
+  const filesItems = `
+    <button class="opt" data-act="transfer"><span class="lbl">文件传输<span class="sub">批量上传、下载文件及文件夹</span></span></button>
+    <button class="opt" data-act="localVoiceMenu"><span class="lbl">语音输入<span class="sub">${voiceEnabled() ? '已开启' : '未开启'} · 按住说话 · 选择识别引擎</span></span><span class="tag">›</span></button>`;
+  const settingsItems = `
+    ${iosApp && !window.AgentRemoteApp?.pushRegister ? '' : notifyItem}
+    ${inApp && appVersion ? update : ''}
     <button class="opt" data-act="theme"><span class="lbl">主题<span class="sub">深色 / 浅色 / 跟随系统（当前：${themeName()}）</span></span></button>
     ${inApp && window.AgentRemoteApp?.listenStatus ? '<button class="opt" data-act="bg"><span class="lbl">后台连接<span class="sub">状态、电池优化、立即重连</span></span></button>' : ''}
     <button class="opt" data-act="cache"><span class="lbl">会话缓存<span class="sub">手机上保存的对话记录，可折叠、可清除</span></span></button>
-    <button class="opt" data-act="lang"><span class="lbl">语言 / Language<span class="sub">中文 · English（${I18N.lang === 'en' ? 'English' : '中文'}）</span></span></button>
-    <button class="opt" data-act="computers"><span class="lbl">电脑<span class="sub">${esc(currentComputer()?.name || '未配对')}</span></span></button>
-    <button class="opt" data-act="devices"><span class="lbl">已配对设备</span></button>
-    <button class="opt" data-act="logout"><span class="lbl">删除这台电脑</span></button>`);
+    <button class="opt" data-act="lang"><span class="lbl">语言 / Language<span class="sub">中文 · English（${I18N.lang === 'en' ? 'English' : '中文'}）</span></span></button>`;
+  openSheet('main', `<h3>菜单</h3>${menuGroup('model', '模型', (appName ? `<div class="pSec">${esc(appName)}</div>` : '') + modelItems)}
+    ${menuGroup('general', '通用', menuGroup('connection', 'Agent 与连接', connectionItems, false)
+      + menuGroup('files', '文件与输入', filesItems, false) + menuGroup('settings', '应用设置与帮助', settingsItems, false))}`);
 }
 $('menuBtn').onclick = showMainMenu;
 

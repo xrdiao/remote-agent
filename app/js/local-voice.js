@@ -83,7 +83,13 @@ function voiceConnection() {
   const link = voiceLink = { key, socket };
   resetVoiceReady(link);
   const engine = voiceEngine();
-  socket.onopen = () => socket.send(JSON.stringify({ type: 'auth', token: store.get('token'), engine }));
+  const computer = currentComputer();
+  socket.onopen = async () => {
+    try {
+      const proof = await entryProof(computer, 'WS /voice');
+      if (voiceLink === link && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'auth', token: computer.token, proof, engine }));
+    } catch (error) { link.reject(error); socket.close(); }
+  };
   socket.onerror = () => link.reject(new Error('本机语音连接失败，请检查中继；微信内无法开麦时请用 Safari/Chrome'));
   socket.onclose = e => {
     const current = voiceLink === link;
@@ -223,8 +229,7 @@ async function startVoice(event) {
         session.timer = setTimeout(() => { if (voiceLive(session)) { status('转录尚未完成，已识别文字已保留，请重试', false); cancelVoice(); } }, 20000);
       } else if (link.socket.readyState === 1) {
         if (!session.firstPcm) { session.firstPcm = true; session.dbg?.('first pcm frame'); }
-        if (link.socket.bufferedAmount > 128000) { status('语音网络跟不上，已识别文字已保留，请重试', false); cancelVoice(); }
-        else link.socket.send(e.data);
+        link.socket.send(e.data);
       }
     };
     session.source.connect(session.node).connect(session.context.destination);
