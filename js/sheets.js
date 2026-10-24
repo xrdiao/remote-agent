@@ -29,12 +29,24 @@ function agentThreadKey(a) {
 }
 function agentUsageInfo(a) {
   const thread = agentThreadKey(a);
-  const saved = agentUsage[agentUsageKey(a.id)] || agentUsage[agentUsageKey(thread)] || {};
+  const saved = { ...(agentUsage[agentUsageKey(thread)] || {}), ...(agentUsage[agentUsageKey(a.id)] || {}) };
   const opened = agentOpened[agentOpenedKey(thread)] || 0;
   const lastUsed = Math.max(Number(a.lastUsed) || 0, Number(saved.last) || 0, opened);
-  const count = Math.max(Number(saved.count) || 0, opened || a.lastUsed ? 1 : 0);
-  const ageDays = lastUsed ? Math.max(0, (Date.now() - lastUsed) / 86400000) : Infinity;
-  return { ...a, lastUsed, common: count >= 2 || (count >= 1 && ageDays <= 14) };
+  const lastMessageAt = Number(saved.lastMessageAt) || 0;
+  const ageDays = lastMessageAt ? Math.max(0, (Date.now() - lastMessageAt) / 86400000) : Infinity;
+  return { ...a, lastUsed, common: lastMessageAt > 0 && ageDays <= 7 };
+}
+function rememberAgentMessageTime(thread, at) {
+  const timestamp = Number(at);
+  if (!thread || !Number.isFinite(timestamp) || timestamp <= 0) return;
+  const key = agentUsageKey(thread), previous = agentUsage[key] || {};
+  if (timestamp <= (Number(previous.lastMessageAt) || 0)) return;
+  agentUsage[key] = { ...previous, lastMessageAt: timestamp };
+  store.set('agent-usage', JSON.stringify(agentUsage));
+}
+function rememberChatMessageTime(chat) {
+  const latest = (chat?.items || []).reduce((at, item) => item.k === 'human' && Number.isFinite(item.sentAt) ? Math.max(at, item.sentAt) : at, 0);
+  rememberAgentMessageTime(chat?.thread, latest);
 }
 function rememberAgentOpen(m) {
   const target = /^(?:thread|win|new):([^:]+)(?::(.+))?$/.exec(pendingAgentOpen);
@@ -43,7 +55,7 @@ function rememberAgentOpen(m) {
     const now = Date.now(), openedKey = agentOpenedKey(m.threadId), usageKey = agentUsageKey(m.threadId);
     agentOpened[openedKey] = now;
     const previous = agentUsage[usageKey] || {};
-    agentUsage[usageKey] = { count: (Number(previous.count) || 0) + 1, last: now };
+    agentUsage[usageKey] = { ...previous, count: (Number(previous.count) || 0) + 1, last: now };
     store.set('agent-opened', JSON.stringify(agentOpened));
     store.set('agent-usage', JSON.stringify(agentUsage));
     pendingAgentOpen = '';
