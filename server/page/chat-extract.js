@@ -513,6 +513,7 @@
     const panel = log || (devinSurface() ? null : findPanel());
     // A brand-new Devin session has a composer and model chip, but no message list yet.
     if (!panel && !log) {
+      const pendingCodexRequests = !devinSurface() ? codexRequestData() : [];
       const modelEl = modelButton();
       if (!modelEl && !hasComposer() && !devinSurface() && !doc.querySelector('[data-request-input-dismiss]')) return null;
       return {
@@ -525,7 +526,7 @@
         queued: queued(),
         subagents: subagents(),
         changed: changedCount(),
-        questions: codexThread() ? { codex: true, requests: codexRequestData() } : null,
+        questions: codexThread() ? { codex: true, requests: codexRequestData() } : pendingCodexRequests.length ? { codex: true, requests: pendingCodexRequests } : null,
         ...(devinSurface() ? { session: devinSession(), workdir: workdirInfo() } : {}),
         readonly: !hasComposer(),
         mode: devinModeChip()?.innerText.trim() || CONTROLS.mode()?.innerText.trim() || null,
@@ -541,6 +542,7 @@
     }
     const r = (log || panel).getBoundingClientRect();
     const codexId = log ? '' : codexThread();
+    const pendingCodexRequests = !log && !devinSurface() && !codexId ? codexRequestData() : null;
     const bubbleTimes = (!log && !codexId) ? cursorBubbleTimes() : null;
     const items = log ? devinItems(log) : topItems(panel).flatMap(el => {
       if (el.hasAttribute?.('data-turn-key')) return codexTurnItems(el);
@@ -601,7 +603,7 @@
       ...(devinLog() ? { queuedCount: devinQueueCount() } : {}),
       subagents: subagents(),
       changed: changedCount(),
-      questions: devinLog() ? devinQuestions() : codexId ? { codex: true, requests: codexRequestData() } : questions(),
+      questions: devinLog() ? devinQuestions() : codexId ? { codex: true, requests: codexRequestData() } : pendingCodexRequests?.length ? { codex: true, requests: pendingCodexRequests } : questions(),
       ...(log ? { devinTurnStart: items.filter(it => it.k === 'human' && Number.isFinite(it.sentAt)).at(-1)?.sentAt ?? null } : {}),
       ...(devinLog() ? { session: devinSession() } : {}),
       ...(devinSurface() ? { workdir: workdirInfo() } : {}),

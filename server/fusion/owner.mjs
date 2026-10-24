@@ -427,10 +427,11 @@ async withFusionSideSpec(spec, fn, select = true) {
           const pos = await session.cdp.evaluate(helpersCall(`devinTabTarget(${JSON.stringify(spec.agentId.slice(4))})`));
           if (!pos) throw new Error('没有找到选中的会话');
           await session.tapCss(pos.x, pos.y);
+        } else if (spec.app === 'devin') {
+          if (await session.cdp.evaluate(helpersCall('activeThread()')) !== spec.agentId)
+            await session.adapter.openAgent.call(session, spec.agentId, spec.conversationTitle || '');
         } else if (await session.cdp.evaluate(helpersCall('activeThread()')) !== spec.agentId) {
-          const editorSurface = spec.app === 'devin' && await session.cdp.evaluate(helpersCall('devinSurface()')) === 'editor';
-          if (editorSurface) await session.openSessionPicker();
-          const pos = await session.cdp.evaluate(helpersCall(editorSurface ? `sessionPickerTarget(${JSON.stringify(spec.agentId)})` : `agentTarget(${JSON.stringify(spec.agentId)}, ${spec.app === 'cursor'})`));
+          const pos = await session.cdp.evaluate(helpersCall(`agentTarget(${JSON.stringify(spec.agentId)}, ${spec.app === 'cursor'})`));
           if (!pos) throw new Error('没有找到选中的会话');
           if (pos !== true) await session.tapCss(pos.x, pos.y);
         }

@@ -27,6 +27,7 @@
   "codexPromptText",
   "codexSelectPrompt",
   "codexPromptPoint",
+  "codexClearDraftAttachments",
   "codexButtonPoint",
   "composerDraft",
   "composerFocused",

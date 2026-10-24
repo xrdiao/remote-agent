@@ -172,7 +172,8 @@ export const adapter = {
     else await this.typeText(text);
   },
 
-  async submitPrompt(now, busy, when, queued) {
+  async submitPrompt(now, busy, when, queued, mentions) {
+    const hasLocalFiles = mentions?.some(m => m.section === 'local-files');
     const facts = await this.cdp.evaluate(helpersCall('codexFacts()'));
     const view = facts?.view;
     const follow = view?.follow || 'queue';
@@ -205,8 +206,15 @@ export const adapter = {
       await this.key(mod((view?.enter === 'enter' ? '' : 'Shift+') + 'Enter'));
     }
     else if (!await this.cdp.evaluate(helpersCall('submitCodexMessage()'))) throw new Error('Codex 发送按钮当前不可用');
-    for (let i = 0; i < 12 && await this.cdp.evaluate(helpersCall('codexPromptText()')); i++) await new Promise(r => setTimeout(r, 100));
-    if (await this.cdp.evaluate(helpersCall('codexPromptText()'))) throw new Error('Codex 未接受发送，草稿已保留');
+    for (let i = 0; i < 12; i++) {
+      const prompt = await this.cdp.evaluate(helpersCall('codexPromptText()'));
+      const facts = hasLocalFiles ? await this.cdp.evaluate(helpersCall('codexFacts()')) : null;
+      if (!prompt && (!hasLocalFiles || facts?.hasDraftAttachments === false)) break;
+      await new Promise(r => setTimeout(r, 100));
+    }
+    const prompt = await this.cdp.evaluate(helpersCall('codexPromptText()'));
+    const afterFacts = hasLocalFiles ? await this.cdp.evaluate(helpersCall('codexFacts()')) : null;
+    if (prompt || (hasLocalFiles && afterFacts?.hasDraftAttachments !== false)) throw new Error('Codex 未接受发送，草稿已保留');
     if (busy && !queued) this.emit({ t: 'status', ok: true, msg: '已追加到当前任务' });
     return queued;
   },
@@ -430,7 +438,9 @@ async codexThreadRows(cdp = this.cdp) {
   }
   const recent = await cdp.evaluate(helpersCall('codexChatRows(true)')) || [];
   await cdp.evaluate(helpersCall('closeCodexMenu()'));
-  return [...new Map([...rows, ...recent].map(row => [row.id, row])).values()];
+  const merged = new Map(recent.map(row => [row.id, row]));
+  for (const row of rows) merged.set(row.id, { ...merged.get(row.id), ...row });
+  return [...merged.values()];
 },
 
 async withCodexSettings(fn) {

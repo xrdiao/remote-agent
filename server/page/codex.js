@@ -168,6 +168,17 @@
     const r = ed.getBoundingClientRect();
     return codexPoint(ed);
   };
+  const codexClearDraftAttachments = () => {
+    let el = codexPromptEl();
+    while (el && !Object.keys(el).some(k => k.startsWith('__reactFiber'))) el = el.parentElement;
+    let fiber = el && el[Object.keys(el).find(k => k.startsWith('__reactFiber'))];
+    while (fiber) {
+      const clear = fiber.memoizedProps?.clearDraftAttachments;
+      if (typeof clear === 'function') { clear(); return true; }
+      fiber = fiber.return;
+    }
+    return false;
+  };
   const codexButtonPoint = which => {
     const buttons = [...doc.querySelectorAll('button')].filter(vis);
     const el = which === 'ide' ? buttons.find(b => /IDE context/i.test(b.getAttribute('aria-label') || ''))
@@ -276,7 +287,7 @@
     return null;
   };
   const codexRequests = () => {
-    if (!codexThread()) return [];
+    if (!activeThread()) return [];
     const rows = new Map();
     const query = selector => [...new Set([doc, document])].flatMap(d => [...d.querySelectorAll(selector)]);
     for (const skip of query('[data-request-input-dismiss]').filter(vis)) {
@@ -486,7 +497,7 @@
   };
   const codexFacts = () => {
     if (!doc.querySelector('button[aria-label="Add files and more"]')) return null;
-    let plan = false, ideStatus = '', autoContext;
+    let plan = false, ideStatus = '', autoContext, hasDraftAttachments;
     const add = doc.querySelector('button[aria-label="Add files and more"]');
     let fiber = add?.[Object.keys(add).find(k => k.startsWith('__reactFiber'))];
     for (let i = 0; i < 40 && fiber; i++) {
@@ -494,6 +505,7 @@
       if (!plan && props.activeCollaborationMode?.mode) plan = props.activeCollaborationMode.mode === 'plan';
       if (!ideStatus && typeof props.ideContextStatus === 'string') ideStatus = props.ideContextStatus;
       if (typeof props.isAutoContextOn === 'boolean') autoContext = props.isAutoContextOn;
+      if (typeof props.hasDraftAttachments === 'boolean') hasDraftAttachments = props.hasDraftAttachments;
       fiber = fiber.return;
     }
     const ideBtn = [...doc.querySelectorAll('button')].find(e => vis(e) && /IDE context/i.test(e.getAttribute('aria-label') || ''));
@@ -512,6 +524,7 @@
     const run = runBtn ? (runBtn.innerText || '').replace(/\s+/g, ' ').trim() : '';
     return {
       queued: codexQueued(),
+      hasDraftAttachments: hasDraftAttachments === true,
       view: {
         plan, follow, run, enter: codexQueryClient()?.getQueryData(['vscode', 'get-settings'])?.values?.composerEnterBehavior || 'enter',
         actions: !!codexButtonPoint('actions'),
