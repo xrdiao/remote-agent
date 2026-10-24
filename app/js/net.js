@@ -69,7 +69,10 @@ function applySelection(m, clearChat = true) {
   if (changed) { if (typeof cancelVoice === 'function') cancelVoice(); menuRequest++; saveDraft(); }
   // A new chat gets its thread id once it materializes: keep its pending echoes attached to it.
   if (changed && viewSel.endsWith('|') && (m.sel || '').startsWith(viewSel)) for (const p of pendingEchoes) if (p.sel === viewSel) p.sel = m.sel;
-  if (changed) { capabilityBlock = ''; viewSel = m.sel || ''; thoughtObserver.disconnect(); cache.clear(); $('sessionNotice').hidden = true; }
+  if (changed) {
+    invalidateChatRender();
+    capabilityBlock = ''; viewSel = m.sel || ''; thoughtObserver.disconnect(); cache.clear(); $('sessionNotice').hidden = true;
+  }
   const here = currentComputer();
   const id = m.id || here?.win;
   const selection = { windowId: m.windowId ?? here?.windowId ?? '', threadId: m.threadId ?? here?.threadId ?? '' };
