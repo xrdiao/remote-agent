@@ -171,7 +171,15 @@
     const root = item === 'g' ? panel : itemByKey(panel, item);
     if (!root) return null;
     let list = item === 'g' ? buttonsIn(panel, true).filter(x => !inItem(x.el) && !inQn(x.el)) : buttonsIn(root, false);
-    if (root.hasAttribute?.('data-turn-key')) list = list.filter(x => /^(Copy message|Fork chat from here|View changed files|View changes|Undo|Open agent|View agent|View subagent|Stop agent|Apply|Revert|Retry|Try again|重试|再试一次)$/i.test(x.label));
+    if (root.hasAttribute?.('data-turn-key')) {
+      list = list.filter(x => /^(Copy message|Fork chat from here|View changed files|View changes|Undo|Open agent|View agent|View subagent|Stop agent|Apply|Revert)$/i.test(x.label) || RETRY_LABEL.test(x.label));
+      if (label && RETRY_LABEL.test(label)) {
+        const extra = [...doc.querySelectorAll('[data-local-conversation-item-target-ids], aside')]
+          .filter(card => card.closest('[data-turn-key]') === root && CAPACITY_ERROR.test(card.innerText || ''))
+          .flatMap(card => buttonsIn(card, false).filter(x => RETRY_LABEL.test(x.label)));
+        list = [...list, ...extra.filter(x => !list.some(b => b.el === x.el))];
+      }
+    }
     const match = actionId ? list.find(b => b.el.dataset.remoteAction === actionId && b.label === label) : label ? (list.find(b => b.label === label) || list[n]) : list[n];
     const b = match?.el;
     if (!b || b.disabled || b.getAttribute('aria-disabled') === 'true') return null;
