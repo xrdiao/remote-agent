@@ -932,14 +932,15 @@ button.fold .chev { flex: none; color: var(--fg-4); font-size: 12px; }
 #sheet[data-kind="agents"] .agentFilterToggle .sub { display: none; }
 #sheet[data-kind="agents"] .agentFilterPanel {
   margin: -2px 0 12px; padding: 8px 0 10px; border: 0; border-bottom: 1px solid var(--line);
-  border-radius: 0; background: transparent;
+  border-radius: 0; background: transparent; display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 12px;
 }
-#sheet[data-kind="agents"] .agentFilterRow { gap: 10px; }
-#sheet[data-kind="agents"] .agentFilterRow + .agentFilterRow { margin-top: 5px; padding-top: 5px; }
-#sheet[data-kind="agents"] .agentFilterLabel { width: 32px; color: var(--fg-3); font-size: 12px; }
+#sheet[data-kind="agents"] .agentFilterRow { flex-direction: column; align-items: stretch; gap: 3px; }
+#sheet[data-kind="agents"] .agentFilterRow + .agentFilterRow { margin-top: 0; padding-top: 0; padding-left: 12px; border-top: 0; border-left: 1px solid var(--line); }
+#sheet[data-kind="agents"] .agentFilterLabel { width: auto; color: var(--fg-3); font-size: 12px; text-align: center; }
 #sheet[data-kind="agents"] .agentFilterChoices { gap: 0; }
 #sheet[data-kind="agents"] .agentFilterChoices button {
-  min-height: 34px; padding: 4px 8px; border: 0; border-radius: 0; background: transparent;
+  min-height: 34px; padding: 4px 2px; border: 0; border-radius: 0; background: transparent;
   color: var(--fg-3); font-size: 12px;
 }
 #sheet[data-kind="agents"] .agentFilterChoices button.cur {
@@ -976,6 +977,10 @@ button.fold .chev { flex: none; color: var(--fg-4); font-size: 12px; }
   color: var(--fg-3); font-size: 12px;
 }
 #sheet[data-kind="agents"] .foldBody .archBtn:hover { color: var(--accent-text); background: var(--accent-tint); }
+.entryInviteContent { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+.entryInviteQr { width: 128px; height: 128px; flex: none; image-rendering: pixelated; background: #fff; border-radius: 8px; }
+.entryInviteText { flex: 1; min-width: 0; }
+.entryInviteText textarea { margin: 0 0 8px; }
 .pRow { display: flex; flex-wrap: wrap; gap: 6px; }
 .pRow button { padding: 0 12px; min-height: 36px; font-size: 13.5px; }
 .pRow button.on { background: var(--accent); color: var(--accent-fg); }
