@@ -31,7 +31,13 @@ export const methods = {
     for (let i = 0; i < 10 && !pos; i++) {
       await new Promise(r => setTimeout(r, 150));
       pos = await this.cdp.evaluate(helpersCall(`menuItem('model', ${JSON.stringify(String(label))})`));
-      if (!pos && !effort) await this.cdp.evaluate(helpersCall('clickModelListTrigger()'));
+      if (!pos && !effort) {
+        const opened = await this.cdp.evaluate(helpersCall('clickModelListTrigger()'));
+        if (!opened) {
+          const sub = await this.cdp.evaluate(helpersCall('modelListTrigger()'));
+          if (sub) await this.tapCss(sub.x, sub.y);
+        }
+      }
     }
     if (!pos) { await this.key('Escape'); throw new Error(`没找到模型：${label}`); }
     await this.tapCss(pos.x, pos.y);

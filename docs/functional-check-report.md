@@ -72,18 +72,45 @@ N1/N2 的加载页 Agent 管理入口、会话运行标识、Codex 可见行优�
 
 本轮修复了 Devin 侧绑定：Fusion 不再直接把 ACP 会话 ID 当作 Editor 搜索框的 `pick:<index>`，而是复用 Devin adapter 已有的 `openAgent(id, title)`，保留 Editor→Agent 回退和标题匹配。配对回归已成功绑定 Devin 会话，模型为 `SWE-2`，证据见 [`fusion-devin-regression.json`](../_shots/full-audit-20261024/fusion-devin-regression.json)。完整 Devin Fusion 运行仍需等待额度恢复后复测。
 
+### Fusion 专项复查与修复（2026-10-24）
+
+本轮重新创建了隔离的 Cursor A/B 会话，并通过配对 Chrome 的手机视口重新走了一遍 Fusion 入口：
+
+- 项目选择、A/B 会话绑定和现有模型状态读取通过；本轮绑定为 A=`Auto`、B=`Grok 4.7`。
+- 历史会话列表、打开已有会话和新建会话通过；打开后项目与 A/B 绑定保持，新建后历史列表保留旧记录。
+- A/B 额度刷新和额度说明入口通过；当前 Cursor 账号显示 Cursor Models 剩余 9%、Other Models 剩余 8%，属于账号额度状态，不是 Fusion 解析错误。
+- 短任务进入 `planning` 后立即停止通过，最终回到 `phase=idle`、`busy=false`，状态为“已停止”。没有让测试任务继续修改隔离项目。
+- 修复前 A/B 模型菜单均失败：打开 `fusion-model-a` 或 `fusion-model-b` 后，配对页面返回 `items=[]`，页面只显示“Loading models…”。每侧等待 12 次（每次 150ms）仍未出现模型项；绑定状态和额度数据同时正常，因此问题位于 Fusion 模型菜单读取，而不是会话绑定或额度读取。
+
+证据：[修复前模型菜单](../_shots/full-audit-20261024/fusion-menu-results.json)、[历史会话](../_shots/full-audit-20261024/fusion-history-results.json)、[额度](../_shots/full-audit-20261024/fusion-usage-results.json)、[停止](../_shots/full-audit-20261024/fusion-stop-results.json)。
+
+定位结果：`server/fusion/owner.mjs:595-607` 的 `fusionModelMenu()` 只读取 `menuItems('model')`，失败时只调用 `clickModelListTrigger()`；Cursor 的 Model 子菜单带 `aria-haspopup="menu"`，该调用会返回 false，必须继续用 `modelListTrigger()` 的坐标点击。`server/fusion/agent.mjs:26-45` 的模型选择路径也缺少同一坐标回退。
+
+修复后只在这两条 Fusion 路径补入通用模型菜单已有的快速读取、子菜单坐标回退和空列表错误处理，没有改通用 Agent 菜单、模型数据、额度、历史或运行状态。配对浏览器复查通过：A/B 菜单均返回 10 个真实模型并标记当前项；A 从 Grok 4.7 切换到 Grok 4.6 成功；完整流程阶段为 `planning → plan → execute → review → done`，隔离文件 `FUSION_MODEL_FIX_OK` 校验通过。
+
+修复证据：[B 侧模型菜单](../_shots/full-audit-20261024/fusion-model-b-results.json)、[A 侧模型切换](../_shots/full-audit-20261024/fusion-model-pick-results.json)、[完整流程](../_shots/full-audit-20261024/fusion-full-after-fix.json)。
+
+### 额度限制处理（2026-10-24）
+
+本轮只处理账号额度影响：普通 Agent 发送流程保持不变，额度类失败统一提示“账号额度或频率限制”，并指引等待重置、升级套餐或切换账号。Fusion 开始前刷新 A/B 额度，仅在原生数据明确显示 0% 或已耗尽时阻止；99% 已用仍允许尝试，避免误拦仍可用的额度窗口。
+
+配对浏览器只读验证中，Cursor 连接和额度展示通过（当前剩余 9%/8%），Devin 连接和额度展示通过（当前每周剩余 1%）。Codex 的额度状态分类使用真实返回形状做了独立单测；隔离 Codex 窗口未打开聊天侧栏，没有把该环境状态误写成额度失败。额度状态分类、错误提示和 Fusion 0%/1% 前置行为单测通过。
+
+证据：[配对额度读取](../_shots/full-audit-20261024/quota-browser-results.json)。账号额度本身仍由各 Agent 服务端控制，Devin 的真实生成需等额度恢复后复测。
+
 ## 待处理和待复测问题
 
 | 编号 | 问题 | 当前判断 | 下一步 |
 |---|---|---|---|
-| A1 | Devin 发送返回额度 99% 和 internal server error | 环境/上游阻塞，真实生成未完成 | 额度恢复或换已授权测试账号后，重新做发送、会话切换、模型菜单和 Fusion Devin 侧闭环 |
+| A1 | Devin 发送返回额度 99% 和 internal server error | 环境/上游阻塞仍存在；本地已补额度提示和 Fusion 耗尽前置检查 | 额度恢复或换已授权测试账号后，重新做发送、会话切换、模型菜单和 Fusion Devin 侧闭环 |
 | A2 | Codex 切换会话后首个模型快照短暂为空 | 可复现的状态同步时序问题；约 1 秒后恢复 | 先定位 `projectReady/chat` 与 `lastChat` 更新顺序，确认是否会影响手机标题、菜单和发送按钮；未经确认不改轮询或缓存 |
 | A3 | Devin 作为 Fusion 侧选择时报“没有找到选中的会话” | 已修复；配对浏览器绑定成功 | 已复用 Devin adapter 的 `openAgent(id, title)`，保留既有 Editor→Agent 回退；额度恢复后补完整 Devin Fusion 运行 |
+| A7 | Fusion A/B 模型菜单返回空列表并显示“Loading models…” | 已修复；配对浏览器确认 A/B 菜单、模型切换和完整流程通过 | `fusionModelMenu()` 与 `fusionPickNativeModel()` 已补通用坐标回退；不再改动 |
 | A4 | Codex 多条真实排队、Devin 真实取出/删除、真实 Question 卡片 | 本轮没有满足真实前置条件；受控读取通过 | 在有真实队列/Question 的测试会话中做一次真实点击闭环，不用合成卡片替代 |
 | A5 | 真实 iPhone Safari 的惯性滚动、通知送达、麦克风、后台恢复 | 配对 Chrome 无法覆盖 | 用实际手机逐项验收；不因本轮 Chrome 结果擅自调整代码 |
 | A6 | 跨平台、远端 SSH 文件/终端、设备撤销/TOTP、归档/Undo/Fork/设置写入 | 未覆盖 | 需要独立测试窗口和明确副作用范围后再查 |
 
-A1 是当前环境限制；A2 是本轮仍需定位的产品链路问题；A3 已修复但完整运行受 A1 阻塞。A4–A6 属于待复测或未覆盖，不应直接当作已确认缺陷。
+A1 是当前环境限制；A2 是本轮仍需处理的产品链路问题；A3 和 A7 已修复，但完整 Devin 运行仍受 A1 阻塞。A4–A6 属于待复测或未覆盖，不应直接当作已确认缺陷。
 
 ## 检查夹具和误报说明
 
@@ -96,4 +123,4 @@ A1 是当前环境限制；A2 是本轮仍需定位的产品链路问题；A3 �
 
 `npm run check` 通过：84 个语法文件、94 个发送类型、59 个返回类型、页面 helper 编译、173 个导出 helper、58 个模块导入检查全部通过。`git diff --check` 通过。
 
-本轮只修改 `server/fusion/owner.mjs` 的 Devin Fusion 会话绑定分支，没有发布手机资源，没有提交 Git。工作区中其他产品源码修改是之前用户已授权的变更；本轮报告和配对证据已同步更新。
+本轮仅修改 `server/fusion/owner.mjs` 和 `server/fusion/agent.mjs` 的 Fusion 模型菜单回退；没有修改其他产品代码、没有发布手机资源、没有提交 Git。`npm run check` 与 `git diff --check` 通过，隔离配对窗口已清理，原有设备保留。
