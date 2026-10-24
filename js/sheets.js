@@ -3,13 +3,61 @@ let sheetKind = null;
 let menuRefreshTimer = 0;
 let pendingAgentOpen = '';
 const agentOpened = JSON.parse(store.get('agent-opened') || '{}');
+const agentUsage = JSON.parse(store.get('agent-usage') || '{}');
+const agentFilters = JSON.parse(store.get('agent-filters') || '{}');
+let agentFilterPanelOpen = false;
 const agentOpenedKey = thread => `${currentComputer()?.id || ''}|${currentAppName}|${thread}`;
+const agentUsageKey = id => `${currentComputer()?.id || currentComputer()?.key || ''}|${currentApp || currentAppName}|${id}`;
+const agentFilterKey = () => `${currentComputer()?.id || currentComputer()?.key || ''}|${currentApp || currentAppName}`;
+const agentFilterLabels = { all: '全部', common: '常用', uncommon: '不常用' };
+function currentAgentFilters() {
+  const saved = agentFilters[agentFilterKey()] || {};
+  return { project: agentFilterLabels[saved.project] ? saved.project : 'all', session: agentFilterLabels[saved.session] ? saved.session : 'all' };
+}
+function setAgentFilter(scope, value) {
+  if (!agentFilterLabels[value] || !['project', 'session'].includes(scope)) return;
+  agentFilters[agentFilterKey()] = { ...currentAgentFilters(), [scope]: value };
+  store.set('agent-filters', JSON.stringify(agentFilters));
+}
+function agentThreadKey(a) {
+  const id = String(a.id || '');
+  if (currentAppName === 'Codex') return id.split(':').slice(2).join(':');
+  if (id.startsWith('project:')) {
+    try { return decodeURIComponent(id.split(':').slice(2).join(':')); } catch {}
+  }
+  return id;
+}
+function agentUsageInfo(a) {
+  const thread = agentThreadKey(a);
+  const saved = { ...(agentUsage[agentUsageKey(thread)] || {}), ...(agentUsage[agentUsageKey(a.id)] || {}) };
+  const opened = agentOpened[agentOpenedKey(thread)] || 0;
+  const lastUsed = Math.max(Number(a.lastUsed) || 0, Number(saved.last) || 0, opened);
+  const lastMessageAt = Number(saved.lastMessageAt) || 0;
+  const ageDays = lastMessageAt ? Math.max(0, (Date.now() - lastMessageAt) / 86400000) : Infinity;
+  return { ...a, lastUsed, common: lastMessageAt > 0 && ageDays <= 7 };
+}
+function rememberAgentMessageTime(thread, at) {
+  const timestamp = Number(at);
+  if (!thread || !Number.isFinite(timestamp) || timestamp <= 0) return;
+  const key = agentUsageKey(thread), previous = agentUsage[key] || {};
+  if (timestamp <= (Number(previous.lastMessageAt) || 0)) return;
+  agentUsage[key] = { ...previous, lastMessageAt: timestamp };
+  store.set('agent-usage', JSON.stringify(agentUsage));
+}
+function rememberChatMessageTime(chat) {
+  const latest = (chat?.items || []).reduce((at, item) => item.k === 'human' && Number.isFinite(item.sentAt) ? Math.max(at, item.sentAt) : at, 0);
+  rememberAgentMessageTime(chat?.thread, latest);
+}
 function rememberAgentOpen(m) {
   const target = /^(?:thread|win|new):([^:]+)(?::(.+))?$/.exec(pendingAgentOpen);
   const matched = m.app === 'codex' ? target && m.windowId === target[1] && (!target[2] || m.threadId === target[2]) : pendingAgentOpen === m.threadId;
   if (!m.closed && pendingAgentOpen && matched && m.threadId) {
-    agentOpened[agentOpenedKey(m.threadId)] = Date.now();
+    const now = Date.now(), openedKey = agentOpenedKey(m.threadId), usageKey = agentUsageKey(m.threadId);
+    agentOpened[openedKey] = now;
+    const previous = agentUsage[usageKey] || {};
+    agentUsage[usageKey] = { ...previous, count: (Number(previous.count) || 0) + 1, last: now };
     store.set('agent-opened', JSON.stringify(agentOpened));
+    store.set('agent-usage', JSON.stringify(agentUsage));
     pendingAgentOpen = '';
   }
 }
@@ -413,13 +461,23 @@ function foldSection(name, inner, open, count) {
   if (!name) return inner;
   return `<button type="button" class="fold" data-fold aria-expanded="${open ? 'true' : 'false'}"><span class="lbl">${esc(name)}</span><span class="tag">${count}</span><span class="chev">${open ? '▾' : '▸'}</span></button><div class="foldBody"${open ? '' : ' hidden'}>${inner}</div>`;
 }
+function agentFilterPanel(filters) {
+  const row = (scope, label) => `<div class="agentFilterRow"><span class="agentFilterLabel">${label}</span><div class="agentFilterChoices">${Object.entries(agentFilterLabels).map(([value, text]) => `<button type="button" class="${filters[scope] === value ? 'cur' : ''}" data-agent-filter-scope="${scope}" data-agent-filter-value="${value}">${text}</button>`).join('')}</div></div>`;
+  return `<div class="agentFilterPanel">${row('project', '项目')}${row('session', '会话')}</div>`;
+}
+function renderAgentList() {
+  const list = agentLists.get(agentListKey());
+  if (list) showAgents(list);
+  else openAgentList();
+}
 function showAgents(list) {
   list = list.map(a => ({ ...a, window: cleanWindowTitle(a.window), group: cleanWindowTitle(a.group), title: cleanWindowTitle(a.title) }));
   const keep = sheetKind === 'agents';
   const scroll = keep ? $('sheet').scrollTop : 0;
   const opened = keep ? new Set([...$('sheet').querySelectorAll('button.fold[aria-expanded="true"] > .lbl')].map(n => n.textContent)) : null;
   const newest = items => Math.max(0, ...items.map(a => a.lastUsed || 0));
-  list = list.map(a => ({ ...a, lastUsed: Math.max(a.lastUsed || 0, agentOpened[agentOpenedKey(currentAppName === 'Codex' ? a.id.split(':').slice(2).join(':') : a.id)] || 0) }))
+  const filters = currentAgentFilters();
+  list = list.map(agentUsageInfo)
     .sort((a, b) => (b.lastUsed || 0) - (a.lastUsed || 0));
   const order = [];
   const byWindow = new Map();
@@ -430,11 +488,16 @@ function showAgents(list) {
   }
   order.sort((a, b) => newest(byWindow.get(b)) - newest(byWindow.get(a)));
   const anyCurrent = list.some(a => a.current);
-  const rows = order.map((win, index) => {
-    const items = byWindow.get(win);
+  let firstVisible = true;
+  const rows = order.map(win => {
+    const items = byWindow.get(win), projectCommon = items.some(a => !a.ui && a.common);
+    if (filters.project !== 'all' && projectCommon !== (filters.project === 'common')) return '';
+    const visible = items.filter(a => a.ui || filters.session === 'all' || a.common === (filters.session === 'common'));
+    if (filters.session !== 'all' && !visible.some(a => !a.ui)) return '';
+    if (!visible.length) return '';
     const loose = [];
     const groups = [];
-    for (const a of items) {
+    for (const a of visible) {
       if (!a.group) { loose.push(a); continue; }
       let g = groups.find(x => x.name === a.group);
       if (!g) groups.push(g = { name: a.group, items: [] });
@@ -446,10 +509,12 @@ function showAgents(list) {
       g.name, g.items.map(agentButton).join(''), opened ? opened.has(g.name) : g.items.some(a => a.current), g.items.length,
     )).join('');
     if (!win) return body;
-    const open = opened ? opened.has(win) : items.some(a => a.current) || (!anyCurrent && index === 0);
-    return foldSection(win, body, open, items.length);
+    const open = opened ? opened.has(win) : items.some(a => a.current) || (!anyCurrent && firstVisible);
+    firstVisible = false;
+    return foldSection(win, body, open, visible.length);
   }).join('');
-  const html = `<h3>项目与会话</h3><button class="opt" data-act="agentsRefresh">刷新项目与会话</button><button class="opt" data-act="projects"><span class="lbl">选择文件夹／新建项目</span></button><button class="opt" data-act="projectNewChat"><span class="lbl">在当前项目新建会话</span></button>${rows || `<div class="hint">${esc(appMessage('没有找到 {app} 的 Agent。请在电脑上打开对应的会话窗口。'))}</div>`}`;
+  const filterText = `项目·${agentFilterLabels[filters.project]}，会话·${agentFilterLabels[filters.session]}`;
+  const html = `<div class="agentSheetTitle"><h3>项目与会话</h3><button type="button" class="agentFilterToggle" data-agent-filter-toggle aria-expanded="${agentFilterPanelOpen ? 'true' : 'false'}"><span class="sub">${filterText}</span></button></div>${agentFilterPanelOpen ? agentFilterPanel(filters) : ''}<button class="opt" data-act="agentsRefresh">刷新项目与会话</button><button class="opt" data-act="projects"><span class="lbl">选择文件夹／新建项目</span></button><button class="opt" data-act="projectNewChat"><span class="lbl">在当前项目新建会话</span></button>${rows || `<div class="hint">${esc(appMessage('没有找到 {app} 的 Agent。请在电脑上打开对应的会话窗口。'))}</div>`}`;
   if (keep) {
     const template = document.createElement('template');
     template.innerHTML = html;
@@ -458,6 +523,16 @@ function showAgents(list) {
   } else openSheet('agents', html);
   if (keep) requestAnimationFrame(() => { $('sheet').scrollTop = scroll; });
 }
+$('sheet').addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b || sheetKind !== 'agents') return;
+  if ('agentFilterToggle' in b.dataset) { agentFilterPanelOpen = !agentFilterPanelOpen; return renderAgentList(); }
+  if (b.dataset.agentFilterScope) {
+    setAgentFilter(b.dataset.agentFilterScope, b.dataset.agentFilterValue);
+    agentFilterPanelOpen = true;
+    return renderAgentList();
+  }
+});
 $('title').onclick = () => {
   if (document.body.matches('.split')) return openAgentList();
   send({ t: 'windows' }); showWindows();
