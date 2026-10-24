@@ -532,7 +532,7 @@ function renderChat(chat, stale, loading = false) {
   $('emptyHint').hidden = loading || imageOnly || !!chat?.loginRequired;
   $('older').hidden = !chat || chat.earlier === false;
   $('pickMode').hidden = currentApp === 'devin' || currentApp === 'cursor' || !chat?.mode;
-  $('pickModel').hidden = !supportsCapability('model');
+  $('pickModel').hidden = !supportsCapability('model') || (currentApp === 'codex' && (chatStale || !chat?.model));
   if (chat?.mode) { $('pickMode').textContent = chat.mode === 'Bypass Permissions' ? '⚠绕过' : chat.mode; $('pickMode').title = chat.mode; }
   $('pickMode').classList.toggle('bypass', chat?.mode === 'Bypass Permissions');
   const mdl = chat?.model || '模型';
@@ -785,7 +785,7 @@ function renderQuestions(qs) {
   if (qnView !== viewSel) { qnView = viewSel; qnSig = ''; qnPending = null; qnDrafts.clear(); }
   qnState = qs;
   const answers = qs?.codex ? qs.requests.filter(r => r.id.startsWith('async:')) : [];
-  setQuestionCompose(answers.find(r => r.id === questionCompose?.id && questionCompose.sel === viewSel)?.id || answers[0]?.id || null);
+  setQuestionCompose(answers.find(r => r.id === questionCompose?.id && questionCompose.sel === viewSel)?.id || null);
   bar.classList.toggle('codex', !!qs?.codex);
   const sig = JSON.stringify(qs);
   if (sig === qnSig) return;
