@@ -237,9 +237,11 @@ function connRender() {
   $('connGo').textContent = tr('进入');
   const icon = st => st === 'load' ? '<span class="cSpin"></span>' : `<span class="cIc">${st === 'ok' ? '✓' : st === 'err' ? '!' : ''}</span>`;
   const row = (st, tile, name, sub, label, brand = false) => `<div class="cItem ${st}"><div class="cRow"><div class="cTile${brand ? ' cBrand' : ''}">${tile}</div><div class="cMeta"><div class="cName">${esc(name)}</div><div class="cSub">${esc(sub)}</div></div><div class="cSt">${icon(st)}<span>${esc(tr(label))}</span></div></div></div>`;
-  const ready = conn.agents?.filter(a => a.windows).length || 0;
+  // Keep the original three-agent loading layout until the first probe settles.
+  // Once results arrive, retain the existing installed/window filtering.
+  const agents = conn.agents === null ? CONN_AGENTS.map(a => ({ ...a, windows: 0 })) : conn.agents || CONN_AGENTS;
+  const ready = agents.filter(a => a.windows).length;
   const settled = conn.agents !== null;
-  const agents = conn.agents || CONN_AGENTS;
   const state = a => !conn.host ? 'wait' : !settled ? 'load' : a.windows ? 'ok' : 'err';
   const names = agents.filter(a => a.windows).map(a => a.name).join(I18N.lang === 'en' ? ', ' : '、');
   const missing = agents.filter(a => !a.windows).map(a => a.name).join(I18N.lang === 'en' ? ', ' : '、');
@@ -257,8 +259,8 @@ function connRender() {
       ? `<button class="cBtn cLaunch" data-conn-launch="${a.app}" ${launch === 'launching' ? 'disabled' : ''}>${launch === 'launching' ? `<span class="cSpin"></span>${esc(tr('启动中…'))}` : esc(tr('启动'))}</button>` : '';
     return `<div class="cItem ${st}"><div class="cRow"><div class="cTile cBrand"><img class="on-dark" src="logo-${a.app}-dark.svg" alt=""><img class="on-light" src="logo-${a.app}-light.svg" alt=""></div><div class="cMeta"><div class="cName">${a.name}</div><div class="cSub">${esc(sub)}</div></div><div class="cSt" aria-label="${esc(tr(CONN_TEXT[st]))}">${CONN_ICON[st]}${st === 'err' && !launchBtn ? `<span>${esc(tr('连接失败'))}</span>` : ''}</div>${st === 'err' ? `<button class="cWhy" data-conn-why="${a.app}" aria-expanded="${open}">${esc(tr(open ? '收起' : '查看原因'))}</button>` : ''}${launchBtn}</div>${st === 'err' && open ? `<div class="cErr"><pre class="cDetail">${esc(detail)}</pre><div class="cActs"><button class="cBtn" data-conn-retry="agents">${CONN_RETRY_SVG}${esc(tr('重试'))}</button><button class="cBtn ghost" data-conn-why="${a.app}">${esc(tr('收起'))}</button></div></div>` : ''}</div>`;
   }).join('');
-  $('connSum').textContent = settled ? `${ready}/${CONN_AGENTS.length} ${tr('可用')}` : '';
-  $('connBar').style.gridTemplateColumns = `repeat(${CONN_AGENTS.length}, 1fr)`;
+  $('connSum').textContent = settled ? `${ready}/${agents.length} ${tr('可用')}` : '';
+  $('connBar').style.gridTemplateColumns = `repeat(${Math.max(1, agents.length)}, 1fr)`;
   $('connBar').innerHTML = agents.map(a => `<i class="${conn.host ? state(a) : ''}"></i>`).join('');
   $('connGo').hidden = !settled || ready === agents.length;
   $('connGo').textContent = ready ? tr('先进入') : tr('全部重试');

@@ -313,7 +313,7 @@
         if (body) out.push({ i: id, k: 'tool', kind: 'other', src: 'codex', t: body.slice(0, 400), done: finished && /exec|patch|command/.test(item.type) });
       }
     }
-    const turnButtons = el ? buttonsIn(el, false).map(x => x.label).filter(l => /^(Copy message|Fork chat from here|View changed files|View changes|Undo|Open agent|View agent|View subagent|Stop agent|Apply|Revert)$/.test(l)) : [];
+    const turnButtons = el ? buttonsIn(el, false).map(x => x.label).filter(l => /^(Copy message|Fork chat from here|View changed files|View changes|Undo|Open agent|View agent|View subagent|Stop agent|Apply|Revert|Retry|重试)$/.test(l)) : [];
     const host = [...out].reverse().find(it => it.k === 'assistant') || out.at(-1);
     if (host) {
       host.buttonsRead = !!el;
