@@ -206,7 +206,7 @@ const codexAutoRetryDone = new Map();
 function codexRetryKey(it) { return `${viewSel}|${it.btnItem || it.i}`; }
 function maybeAutoRetry(it) {
   if (currentApp !== 'codex' || !codexAutoRetryEnabled()) return;
-  const n = (it.b || []).findIndex(label => /^(Retry|重试)$/i.test(label));
+  const n = (it.b || []).findIndex(label => /^(Retry|Try(?: again)?|重试|再试一次)$/i.test(label));
   if (n < 0) return;
   const key = codexRetryKey(it), count = codexAutoRetryDone.get(key) || 0, max = codexAutoRetryCount();
   if (count >= max) return;

@@ -908,6 +908,79 @@ button.fold .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellip
 button.fold .tag { flex: none; }
 button.fold .chev { flex: none; color: var(--fg-4); font-size: 12px; }
 .foldBody { margin-left: 8px; }
+
+/* Project/session sheet: keep the existing actions and data, but present the
+   list with the same compact, layered treatment as the other sheets. */
+#sheet[data-kind="agents"] .agentSheetTitle h3::after {
+  content: "管理你的项目与会话，快速切换继续工作";
+  display: block; margin-top: 4px; color: var(--fg-3); font-size: 12px; font-weight: 400;
+}
+#sheet[data-kind="agents"] .agentFilterToggle {
+  width: 46px; height: 46px; max-width: none; padding: 0; margin: 0 0 12px;
+  border-radius: 14px; display: grid; place-items: center; position: relative;
+  color: var(--fg-3); text-align: center;
+}
+#sheet[data-kind="agents"] .agentFilterToggle::before {
+  content: ""; width: 20px; height: 20px; background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 5h16l-6.5 7.2V18l-3 1v-6.8z'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 5h16l-6.5 7.2V18l-3 1v-6.8z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+#sheet[data-kind="agents"] .agentFilterToggle[aria-expanded="true"]::after {
+  content: ""; position: absolute; top: 8px; right: 8px; width: 6px; height: 6px;
+  border-radius: 50%; background: var(--accent);
+}
+#sheet[data-kind="agents"] .agentFilterToggle .sub { display: none; }
+#sheet[data-kind="agents"] .agentFilterPanel {
+  margin: -2px 0 12px; padding: 8px 0 10px; border: 0; border-bottom: 1px solid var(--line);
+  border-radius: 0; background: transparent; display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 12px;
+}
+#sheet[data-kind="agents"] .agentFilterRow { flex-direction: column; align-items: stretch; gap: 3px; }
+#sheet[data-kind="agents"] .agentFilterRow + .agentFilterRow { margin-top: 0; padding-top: 0; padding-left: 12px; border-top: 0; border-left: 1px solid var(--line); }
+#sheet[data-kind="agents"] .agentFilterLabel { width: auto; color: var(--fg-3); font-size: 12px; text-align: center; }
+#sheet[data-kind="agents"] .agentFilterChoices { gap: 0; }
+#sheet[data-kind="agents"] .agentFilterChoices button {
+  min-height: 34px; padding: 4px 2px; border: 0; border-radius: 0; background: transparent;
+  color: var(--fg-3); font-size: 12px;
+}
+#sheet[data-kind="agents"] .agentFilterChoices button.cur {
+  background: transparent; color: var(--accent-text); box-shadow: inset 0 -2px 0 var(--accent); font-weight: 600;
+}
+#sheet[data-kind="agents"] > button.opt[data-act] { min-height: 54px; }
+#sheet[data-kind="agents"] > button.opt[data-act]::after {
+  content: "›"; flex: none; color: var(--fg-3); font-size: 24px; line-height: 1;
+}
+#sheet[data-kind="agents"] .foldBody > button.fold {
+  min-height: 48px; margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line);
+  border-bottom: 0; border-radius: 16px 16px 0 0; background: var(--s2); color: var(--fg-hi);
+  font-size: 15px;
+}
+#sheet[data-kind="agents"] .foldBody > button.fold .chev { order: -2; color: var(--fg-2); font-size: 18px; }
+#sheet[data-kind="agents"] .foldBody > button.fold::before {
+  content: ""; flex: none; width: 20px; height: 20px; background: var(--fg-hi);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 6.5h6l2 2h9v9a2 2 0 0 1-2 2h-15a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 6.5h6l2 2h9v9a2 2 0 0 1-2 2h-15a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+#sheet[data-kind="agents"] .foldBody > button.fold + .foldBody {
+  margin: 0; padding: 0 10px 4px; border: 1px solid var(--line); border-top: 0;
+  border-radius: 0 0 16px 16px; background: var(--s2);
+}
+#sheet[data-kind="agents"] .foldBody .optRow { gap: 0; margin: 0; border-bottom: 1px solid var(--line); }
+#sheet[data-kind="agents"] .foldBody .optRow:last-child { border-bottom: 0; }
+#sheet[data-kind="agents"] .foldBody .opt,
+#sheet[data-kind="agents"] .foldBody > .opt {
+  min-height: 50px; margin: 0; padding: 9px 8px; border-radius: 0; background: transparent;
+}
+#sheet[data-kind="agents"] .foldBody .opt.cur { background: var(--accent-tint); }
+#sheet[data-kind="agents"] .foldBody .archBtn {
+  width: 48px; min-height: 50px; padding: 0 6px; border-radius: 0; background: transparent;
+  color: var(--fg-3); font-size: 12px;
+}
+#sheet[data-kind="agents"] .foldBody .archBtn:hover { color: var(--accent-text); background: var(--accent-tint); }
+.entryInviteContent { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+.entryInviteQr { width: 128px; height: 128px; flex: none; image-rendering: pixelated; background: #fff; border-radius: 8px; }
+.entryInviteText { flex: 1; min-width: 0; }
+.entryInviteText textarea { margin: 0 0 8px; }
 .pRow { display: flex; flex-wrap: wrap; gap: 6px; }
 .pRow button { padding: 0 12px; min-height: 36px; font-size: 13.5px; }
 .pRow button.on { background: var(--accent); color: var(--accent-fg); }

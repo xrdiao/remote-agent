@@ -310,11 +310,11 @@
         out.push({ i: id, k: 'tool', kind: 'other', src: 'codex', t: '文件改动' });
       } else if (item.type !== 'automatic-approval-review' && item.type !== 'worked-for') {
         const body = textOf(item.content || item.message || item.query || item.title);
-        if (body) out.push({ i: id, k: 'tool', kind: 'other', src: 'codex', t: body.slice(0, 400), done: finished && /exec|patch|command/.test(item.type) });
+        if (body) out.push({ i: id, k: 'tool', kind: 'other', src: 'codex', t: body.slice(0, 400), capacity: CAPACITY_ERROR.test(body), done: finished && /exec|patch|command/.test(item.type) });
       }
     }
-    const turnButtons = el ? buttonsIn(el, false).map(x => x.label).filter(l => /^(Copy message|Fork chat from here|View changed files|View changes|Undo|Open agent|View agent|View subagent|Stop agent|Apply|Revert|Retry|Try again|重试|再试一次)$/i.test(l)) : [];
-    const host = [...out].reverse().find(it => it.k === 'assistant') || out.at(-1);
+    const turnButtons = el ? buttonsIn(el, false).map(x => x.label).filter(l => /^(Copy message|Fork chat from here|View changed files|View changes|Undo|Open agent|View agent|View subagent|Stop agent|Apply|Revert)$/i.test(l) || RETRY_LABEL.test(l)) : [];
+    const host = [...out].reverse().find(it => it.capacity) || [...out].reverse().find(it => it.k === 'assistant') || out.at(-1);
     if (host) {
       host.buttonsRead = !!el;
       if (turnButtons.length) { host.b = turnButtons; host.btnItem = el.getAttribute('data-turn-key') || host.i; }
