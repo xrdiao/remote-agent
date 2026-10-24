@@ -479,8 +479,9 @@ function showAgents(list) {
   let firstVisible = true;
   const rows = order.map(win => {
     const items = byWindow.get(win), projectCommon = items.some(a => !a.ui && a.common);
-    if (filters.project !== 'all' && projectCommon !== (filters.project === 'common') && !items.some(a => a.current)) return '';
-    const visible = items.filter(a => a.ui || filters.session === 'all' || a.common === (filters.session === 'common') || a.current);
+    if (filters.project !== 'all' && projectCommon !== (filters.project === 'common')) return '';
+    const visible = items.filter(a => a.ui || filters.session === 'all' || a.common === (filters.session === 'common'));
+    if (filters.session !== 'all' && !visible.some(a => !a.ui)) return '';
     if (!visible.length) return '';
     const loose = [];
     const groups = [];
@@ -501,7 +502,7 @@ function showAgents(list) {
     return foldSection(win, body, open, visible.length);
   }).join('');
   const filterText = `项目·${agentFilterLabels[filters.project]}，会话·${agentFilterLabels[filters.session]}`;
-  const html = `<div class="agentSheetTitle"><h3>项目与会话</h3><button type="button" class="agentFilterToggle" data-agent-filter-toggle aria-expanded="${agentFilterPanelOpen ? 'true' : 'false'}">筛选<span class="sub">${filterText}</span></button></div>${agentFilterPanelOpen ? agentFilterPanel(filters) : ''}<button class="opt" data-act="agentsRefresh">刷新项目与会话</button><button class="opt" data-act="projects"><span class="lbl">选择文件夹／新建项目</span></button><button class="opt" data-act="projectNewChat"><span class="lbl">在当前项目新建会话</span></button>${rows || `<div class="hint">${esc(appMessage('没有找到 {app} 的 Agent。请在电脑上打开对应的会话窗口。'))}</div>`}`;
+  const html = `<div class="agentSheetTitle"><h3>项目与会话</h3><button type="button" class="agentFilterToggle" data-agent-filter-toggle aria-expanded="${agentFilterPanelOpen ? 'true' : 'false'}"><span class="sub">${filterText}</span></button></div>${agentFilterPanelOpen ? agentFilterPanel(filters) : ''}<button class="opt" data-act="agentsRefresh">刷新项目与会话</button><button class="opt" data-act="projects"><span class="lbl">选择文件夹／新建项目</span></button><button class="opt" data-act="projectNewChat"><span class="lbl">在当前项目新建会话</span></button>${rows || `<div class="hint">${esc(appMessage('没有找到 {app} 的 Agent。请在电脑上打开对应的会话窗口。'))}</div>`}`;
   if (keep) {
     const template = document.createElement('template');
     template.innerHTML = html;
