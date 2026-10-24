@@ -25,7 +25,7 @@ itemsEl.addEventListener('click', async e => {
     box.classList.toggle('open');
     const chev = tr.querySelector('.chev');
     if (chev) chev.textContent = box.classList.contains('open') ? '▾' : '▸';
-    if (pinnedBottom) { list.scrollTop = list.scrollHeight; requestAnimationFrame(() => { list.scrollTop = list.scrollHeight; }); }
+    if (isFollowingBottom()) requestChatScroll();
     return;
   }
   const b = e.target.closest('[data-think]');
@@ -206,7 +206,7 @@ const codexAutoRetryDone = new Map();
 function codexRetryKey(it) { return `${viewSel}|${it.btnItem || it.i}`; }
 function maybeAutoRetry(it) {
   if (currentApp !== 'codex' || !codexAutoRetryEnabled()) return;
-  const n = (it.b || []).findIndex(label => /^(Retry|重试)$/i.test(label));
+  const n = (it.b || []).findIndex(label => /^(Retry|Try(?: again)?|重试|再试一次)$/i.test(label));
   if (n < 0) return;
   const key = codexRetryKey(it), count = codexAutoRetryDone.get(key) || 0, max = codexAutoRetryCount();
   if (count >= max) return;
@@ -278,8 +278,9 @@ function renderItem(it) {
 
 const nearBottom = () => list.scrollHeight - list.scrollTop - list.clientHeight < 120;
 // Following the chat means the user is at the very end (or never left it); "close to the end" is still reading.
-const atBottom = () => list.scrollHeight - list.scrollTop - list.clientHeight < 8;
-const followingChat = () => pinnedBottom || atBottom();
+const BOTTOM_EPSILON = 16;
+const atBottom = () => list.scrollHeight - list.scrollTop - list.clientHeight <= BOTTOM_EPSILON;
+const followingChat = () => isFollowingBottom() || atBottom();
 
 // pickMenu has no completion message until the relay restarts, so clear "切换中…"
 // when the composer model/mode actually changes, or after a short fallback.
@@ -402,7 +403,7 @@ function paintSessions(chat) {
     latestTasks = null;
     scSwitch(s?.key || null);
     itemsEl.replaceChildren();
-    list.scrollTop = list.scrollHeight;
+    restoreChatPosition(null, true);
   }
   const tabs = s?.tabs || [];
   for (const t of tabs) if (t.id) scSetTitle(scKeyFor(t.id), t.title);
