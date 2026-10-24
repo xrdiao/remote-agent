@@ -1183,7 +1183,7 @@ function showHistoryStatus(message) {
   restoreChatPosition(anchor);
 }
 function loadOlderMessages() {
-  if (!lastChat || historyRequest || chatScrolling || chatTouching) return;
+  if (!lastChat || historyRequest) return;
   historyArmed = false;
   if (!$('cachedMore').hidden) {
     historyScrollSnapshot = { top: list.scrollTop, height: list.scrollHeight };
@@ -1281,7 +1281,7 @@ list.addEventListener('wheel', e => {
   turnNavGesture();
   if (!readingAnchor && !isFollowingBottom()) readingAnchor = captureChatAnchor();
   restoringChatScroll = false;
-  if (e.deltaY < 0) { historyWheelPullUp = true; setScrollMode('freeScroll'); if (list.scrollTop <= 1) historyArmed = true; }
+  if (e.deltaY < 0) { historyWheelPullUp = true; setScrollMode('freeScroll'); if (list.scrollTop <= 1) { historyArmed = true; settleChatScroll(); } }
   else if (e.deltaY > 0) { historyWheelPullUp = false; historyArmed = false; setScrollMode('freeScroll'); }
 }, { passive: true });
 list.addEventListener('touchstart', e => { if (!isFollowingBottom()) readingAnchor = captureChatAnchor(); historyTouchY = e.touches[0].clientY; historyPullUp = false; historyWheelPullUp = false; historyArmed = false; chatMomentum = false; chatTouching = true; chatScrolling = true; clearTimeout(scrollIdle); }, { passive: true });
@@ -1300,7 +1300,7 @@ list.addEventListener('touchmove', e => {
   }
   historyTouchY = y;
 }, { passive: true });
-for (const event of ['touchend', 'touchcancel']) list.addEventListener(event, () => { chatMomentum = event === 'touchend'; chatTouching = false; restoringChatScroll = false; settleChatScroll(); }, { passive: true });
+for (const event of ['touchend', 'touchcancel']) list.addEventListener(event, () => { chatMomentum = event === 'touchend'; chatTouching = false; restoringChatScroll = false; if (historyPullUp && list.scrollTop <= 1) historyArmed = true; settleChatScroll(); }, { passive: true });
 $('toBottom').onclick = () => {
   clearTimeout(scrollIdle);
   chatTouching = false;
