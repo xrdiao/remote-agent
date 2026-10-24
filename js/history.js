@@ -426,8 +426,6 @@ const chatSizeObserver = new ResizeObserver(() => {
   }
   if (isFollowingBottom()) { requestChatScroll(); return; }
   if (scrollCorrection?.kind === 'delta') { reconcileChatScroll(); return; }
-  if (chatScrolling) { stabilizeChatReading(); return; }
-  if (readingAnchor) stabilizeChatReading();
 });
 for (const el of [itemsEl, $('older'), $('historyStatus'), $('cachedMore')]) chatSizeObserver.observe(el);
 document.addEventListener('selectionchange', () => {
@@ -1276,8 +1274,6 @@ function settleChatScroll() {
 list.addEventListener('scroll', () => {
   if (!restoringChatScroll && turnNavUser) showTurnNav();
   if ((chatTouching ? historyPullUp : historyWheelPullUp) && list.scrollTop <= 1) historyArmed = true;
-  // During native touch dragging, the size observer handles layout changes without measuring every scroll.
-  if (!restoringChatScroll && !isFollowingBottom() && !chatTouching && !chatMomentum && !turnNavPointer?.dragging) stabilizeChatReading();
   settleChatScroll();
 }, { passive: true });
 let historyTouchY = 0, historyPullUp = false, historyWheelPullUp = false;
@@ -1285,9 +1281,8 @@ list.addEventListener('wheel', e => {
   turnNavGesture();
   if (!readingAnchor && !isFollowingBottom()) readingAnchor = captureChatAnchor();
   restoringChatScroll = false;
-  if (e.deltaY < 0) { historyWheelPullUp = true; setScrollMode('freeScroll'); }
+  if (e.deltaY < 0) { historyWheelPullUp = true; setScrollMode('freeScroll'); if (list.scrollTop <= 1) historyArmed = true; }
   else if (e.deltaY > 0) { historyWheelPullUp = false; historyArmed = false; setScrollMode('freeScroll'); }
-  settleChatScroll();
 }, { passive: true });
 list.addEventListener('touchstart', e => { if (!isFollowingBottom()) readingAnchor = captureChatAnchor(); historyTouchY = e.touches[0].clientY; historyPullUp = false; historyWheelPullUp = false; historyArmed = false; chatMomentum = false; chatTouching = true; chatScrolling = true; clearTimeout(scrollIdle); }, { passive: true });
 list.addEventListener('touchmove', e => {
