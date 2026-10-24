@@ -202,6 +202,22 @@ function tasksHtml(it) {
   const list = (it.items || []).map(x => `<li class="${esc(x.status)}"><span class="ti">${TASK_ICON[x.status] || '○'}</span><span class="tt">${esc(x.t)}</span></li>`).join('');
   return `<div class="tprog"><i style="width:${pct}%"></i></div>` + (list ? `<ul class="tlist">${list}</ul>` : '');
 }
+const codexAutoRetryDone = new Map();
+function codexRetryKey(it) { return `${viewSel}|${it.btnItem || it.i}`; }
+function maybeAutoRetry(it) {
+  if (currentApp !== 'codex' || !codexAutoRetryEnabled()) return;
+  const n = (it.b || []).findIndex(label => /^(Retry|重试)$/i.test(label));
+  if (n < 0) return;
+  const key = codexRetryKey(it), count = codexAutoRetryDone.get(key) || 0, max = codexAutoRetryCount();
+  if (count >= max) return;
+  codexAutoRetryDone.set(key, count + 1);
+  const sel = viewSel;
+  setTimeout(() => {
+    if (currentApp !== 'codex' || viewSel !== sel) return;
+    send({ t: 'click', item: it.btnItem || it.i, n, actionId: it.actions?.[n] || '', label: it.b[n], sel });
+    status(`正在自动重试…（${count + 1}/${max}）`);
+  }, 0);
+}
 function renderItem(it) {
   const el = document.createElement('div');
   el.className = 'msg ' + it.k;
@@ -218,8 +234,13 @@ function renderItem(it) {
   }
   // it.h comes from the whitelist sanitizer in server/page/common.js (clean): plain tags only, text escaped.
   else if (it.k === 'assistant') { el.copyText = it.t || ''; el.innerHTML = it.h || ''; dressMessage(el); }
-  else if (it.k === 'thinking') paintThinking(el, it);
+  else if (it.k === 'thinking') {
+    const lines = String(it.t || '').split('\n');
+    el.copyText = lines.length > 1 ? lines.slice(1).join('\n') : (it.t || '');
+    paintThinking(el, it);
+  }
   else if (it.k === 'tool') {
+    el.copyText = it.t || '';
     if (it.kind && (it.src === 'devin' || it.src === 'codex')) { renderTool(el, it); el.classList.add('toolrow'); if (it.kind !== 'command') el.classList.add('open'); }
     else {
       el.innerHTML = `<div class="txt">${esc(it.t || '')}</div>`;
@@ -243,6 +264,7 @@ function renderItem(it) {
     });
   }
   if (it.b && it.k !== 'human') el.insertAdjacentHTML('beforeend', `<div class="btns">${buttonsHtml(it.b, it.btnItem || it.i, it.actions)}</div>`);
+  if (it.b && it.k !== 'human') maybeAutoRetry(it);
   if (it.k !== 'human') addImageCopyButtons(el);
   return el;
 }

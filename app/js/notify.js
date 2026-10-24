@@ -386,6 +386,9 @@ $('sheet').addEventListener('click', async e => {
   }
   else if (act === 'localVoiceMenu') return showLocalVoiceMenu();
   else if (act === 'voiceBack') return showMainMenu();
+  else if (act === 'codexRetryMenu') return showCodexRetryMenu();
+  else if (act === 'codexRetryToggle') return toggleCodexAutoRetry();
+  else if (act === 'codexRetryBack') return showMainMenu();
   else if (b.dataset.voiceEngine) return selectVoiceEngine(b.dataset.voiceEngine);
   else if (act === 'transfer') return openTransfer();
   else if (act === 'model') return requestMenu('model', '读取模型列表…');

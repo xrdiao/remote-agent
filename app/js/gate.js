@@ -278,7 +278,9 @@ function connRender() {
   $('connGo').textContent = tr('进入');
   const icon = st => st === 'load' ? '<span class="cSpin"></span>' : `<span class="cIc">${st === 'ok' ? '✓' : st === 'err' ? '!' : ''}</span>`;
   const row = (st, tile, name, sub, label, brand = false) => `<div class="cItem ${st}"><div class="cRow"><div class="cTile${brand ? ' cBrand' : ''}">${tile}</div><div class="cMeta"><div class="cName">${esc(name)}</div><div class="cSub">${esc(sub)}</div></div><div class="cSt">${icon(st)}<span>${esc(tr(label))}</span></div></div></div>`;
-  const agents = availableConnAgents();
+  // Keep the original three-agent loading layout until the first probe settles.
+  // Once results arrive, retain the existing installed/window filtering.
+  const agents = conn.agents === null ? CONN_AGENTS.map(a => ({ ...a, windows: 0 })) : availableConnAgents();
   const ready = agents.filter(a => a.windows).length;
   const settled = conn.agents !== null;
   const state = a => !conn.host ? 'wait' : !settled ? 'load' : a.windows ? 'ok' : 'err';
