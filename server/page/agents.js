@@ -254,7 +254,10 @@
     return center(wbtn);
   };
   const agentStates = () => {
-    const current = agentState();
+    const state = agentState();
+    let generation = null;
+    try { generation = state && typeof cursorBubbleTimes === 'function' ? cursorBubbleTimes()?.generation : null; } catch {}
+    const current = generation ? { ...state, generation } : state;
     if (codexThread()) return current ? [current] : [];
     const agents = agentList();
     return agents.length ? agents.map(a => a.current && current ? current : {
