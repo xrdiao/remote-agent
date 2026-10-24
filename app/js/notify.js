@@ -6,7 +6,34 @@ const webPush = () => 'serviceWorker' in navigator && 'PushManager' in window &&
 let notifyOn = false;
 let notifySubscribed = false;
 
-const swReady = () => Promise.race([navigator.serviceWorker.ready, sleep(5000).then(() => { throw new Error('通知组件没有加载，请刷新后再试'); })]);
+const serviceWorkerRegistration = () => {
+  if (window.agentRemoteServiceWorker) return window.agentRemoteServiceWorker;
+  if (!('serviceWorker' in navigator) || !window.isSecureContext) return (window.agentRemoteServiceWorker = Promise.resolve(null));
+  return (window.agentRemoteServiceWorker = navigator.serviceWorker.register('sw.js').catch(error => {
+    window.agentRemoteServiceWorkerError = error;
+    return null;
+  }));
+};
+serviceWorkerRegistration();
+const swReady = async () => {
+  let registration;
+  try {
+    const registrationAttempt = serviceWorkerRegistration().then(reg => reg ? navigator.serviceWorker.ready : null);
+    registration = await Promise.race([
+      navigator.serviceWorker.ready,
+      registrationAttempt,
+      sleep(5000).then(() => { throw new Error('Service Worker 注册超时'); }),
+    ]);
+  } catch (error) {
+    const reason = window.agentRemoteServiceWorkerError || error;
+    throw new Error(reason?.message || String(reason) || 'Service Worker 注册失败');
+  }
+  if (!registration) {
+    const reason = window.agentRemoteServiceWorkerError;
+    throw new Error(reason?.message || 'Service Worker 注册失败');
+  }
+  return registration;
+};
 const pushSub = async () => webPush() ? (await swReady()).pushManager.getSubscription() : null;
 const nativeConfig = () => JSON.stringify({ app: appAddress(), key: store.get('key') || '', token: store.get('token') || '' });
 

@@ -176,7 +176,7 @@ export const methods = {
       if (!this.liveRead(cdp, sel) || !this.acceptsChat(chat)) return;
       if (!chat && this.liveRead(cdp, sel) && await this.checkProjectTrust()) return;
       if (!chat && this.app === 'codex' && this.liveRead(cdp, sel) && await this.checkCodexLogin()) return;
-      const before = this.app === 'codex' && !freshView && !chat?.busy ? await cdp.evaluate(helpersCall("scrollCodexHistory('latest')")) : null;
+      const before = this.app === 'codex' && !freshView && !this.lastChat && !chat?.busy ? await cdp.evaluate(helpersCall("scrollCodexHistory('latest')")) : null;
       try {
         if (before) await new Promise(r => setTimeout(r, 150));
         if (before) chat = await cdp.evaluate(helpersCall('extract()'));
@@ -465,8 +465,9 @@ export const methods = {
       this.lastChatAt = 0;
       await this.pollChat(true);
       if (r.moved && Number.isFinite(r.top)) await this.cdp.evaluate(helpersCall(`devinScrollTop(${r.top})`)).catch(() => {});
-      const earlier = this.lastChat ? JSON.parse(this.lastChat).earlier : undefined;
-      return { earlier: earlier === undefined ? !r.atStart : earlier };
+      const cachedEarlier = this.lastChat ? JSON.parse(this.lastChat).earlier : undefined;
+      const earlier = typeof r.atStart === 'boolean' ? !r.atStart : cachedEarlier;
+      return { ...(typeof earlier === 'boolean' ? { earlier } : {}) };
     }
     const [x, y, w, h] = rect;
     const rows = history ? await this.cdp.evaluate(helpersCall('historyRows()')) : null;
@@ -475,8 +476,10 @@ export const methods = {
       await this.cdp.evaluate(helpersCall(`waitHistoryRows(${JSON.stringify(rows)})`));
       this.lastChatAt = 0;
       await this.pollChat(true);
-      const earlier = this.lastChat ? JSON.parse(this.lastChat).earlier : undefined;
-      return { earlier: earlier === undefined ? !(await this.cdp.evaluate(helpersCall('historyAtStart()'))) : earlier };
+      const atStart = await this.cdp.evaluate(helpersCall('historyAtStart()'));
+      const cachedEarlier = this.lastChat ? JSON.parse(this.lastChat).earlier : undefined;
+      const earlier = typeof atStart === 'boolean' ? !atStart : cachedEarlier;
+      return { ...(typeof earlier === 'boolean' ? { earlier } : {}) };
     }
     setTimeout(() => this.pollChat().catch(() => {}), 400);
   },
@@ -515,7 +518,12 @@ export const methods = {
       }
       now = this.app === 'devin' && when === 'now' && !!busy;
       queued = Boolean(busy) && !now;
-      if (submit) queued = await this.adapter.submitPrompt.call(this, now, busy, when, queued);
+      if (submit) queued = await this.adapter.submitPrompt.call(this, now, busy, when, queued, mentions);
+    } catch (error) {
+      if (this.app === 'codex' && mentions?.some(m => m.section === 'local-files')) {
+        await this.cdp.evaluate(helpersCall('codexClearDraftAttachments()')).catch(() => false);
+      }
+      throw error;
     } finally {
       this.sending = false;
       this.sendGen++;

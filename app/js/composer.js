@@ -60,7 +60,7 @@ function confirmSent(m) {
   }
   if (here && inputRevision === sent.revision && text.value === sent.text) {
     drafts.delete(activeDraft); draftMentions.delete(activeDraft);
-    text.value = ''; MN.mentions = []; autosize(); mirroredDraft = '';
+    text.value = ''; MN.mentions = []; MN.value = ''; autosize(); mirroredDraft = '';
   }
   if (sent.mode === 'chat') {
     submittedMessages.push({ ...sent, sentAt: m.sentAt || Date.now() });
@@ -77,7 +77,7 @@ function reconcileSent(chat) {
 }
 function draftKey() { return [currentComputer()?.id || '', viewSel, mode, ...(questionCompose?.sel === viewSel && mode === 'chat' ? [questionCompose.id] : [])].join('|'); }
 function saveDraft() { if (activeDraft) { drafts.set(activeDraft, text.value); draftMentions.set(activeDraft, MN.mentions.slice()); } }
-function restoreDraft() { endInputRecall(); activeDraft = draftKey(); text.value = drafts.get(activeDraft) || ''; MN.mentions = draftMentions.get(activeDraft)?.slice() || []; mentionHide(); autosize(); }
+function restoreDraft() { endInputRecall(); activeDraft = draftKey(); text.value = drafts.get(activeDraft) || ''; MN.mentions = draftMentions.get(activeDraft)?.slice() || []; MN.value = text.value; mentionHide(); autosize(); }
 function autosize() {
   text.style.height = 'auto'; text.style.height = text.scrollHeight + 'px'; updateMathPrev(); updateComposeCompact();
   if (questionCompose?.sel === viewSel && document.body.classList.contains('kb')) fitViewport();
@@ -109,8 +109,9 @@ function recallInput(direction) {
 $('inputPrev').onclick = () => recallInput(-1);
 $('inputNext').onclick = () => recallInput(1);
 let draftPushTimer = 0;
-text.addEventListener('input', () => {
+text.addEventListener('input', e => {
   endInputRecall();
+  syncMentions(text.value, e);
   inputRevision++; draftVersions.set(activeDraft, (draftVersions.get(activeDraft) || 0) + 1); autosize(); saveDraft();
   syncQuestionDraft(text.value);
   clearTimeout(draftPushTimer);
@@ -122,17 +123,18 @@ text.addEventListener('input', () => {
 // ---- "@" mentions (Devin): the relay drives Devin's own typeahead, so a mention ends up as a real chip ----
 // Typing "@" (or "@file:ser") asks for the list; tapping a row puts "@label" into the text. When the message is
 // sent, the relay types the text and, at each "@label", lets Devin's typeahead insert the chip.
-const MN = { seq: 0, timer: 0, q: null, root: false, mentions: [], used: '' };
+const MN = { seq: 0, timer: 0, q: null, root: false, mentions: [], used: '', value: '' };
 function mentionToken() {
   if (questionCompose || mode !== 'chat' || !supportsCapability('fileReferences', currentApp === 'devin' || currentApp === 'codex')) return null;
   const caret = text.selectionStart ?? text.value.length;
-  const head = text.value.slice(0, caret);
+  const value = text.value, head = value.slice(0, caret);
+  const end = (() => { let i = caret; while (i < value.length && !/[\s@]/.test(value[i])) i++; return i; })();
   if (currentApp === 'codex') {
     const m = /(^|\s)([@/])([^\s@]*)$/.exec(head);
-    return m ? { start: caret - m[3].length - 1, caret, q: m[3], trigger: m[2] } : null;
+    return m ? { start: caret - m[3].length - 1, caret, end, q: m[3], trigger: m[2] } : null;
   }
   const m = /(^|\s)@([^\s@]*)$/.exec(head);
-  return m ? { start: caret - m[2].length - 1, caret, q: m[2], trigger: '@' } : null;
+  return m ? { start: caret - m[2].length - 1, caret, end, q: m[2], trigger: '@' } : null;
 }
 function mentionHide() {
   clearTimeout(MN.timer);
@@ -178,7 +180,7 @@ function onMentions(m) {
   const box = $('mentionBox');
   if (m.prefix) {
     // A category was chosen: the token becomes "@terminal:" and the list below is what that category offers.
-    text.setRangeText(m.prefix, t.start, t.caret, 'end');
+    text.setRangeText(m.prefix, t.start, t.end, 'end');
     autosize();
     MN.q = m.prefix.slice(1);
     MN.used = MN.q;
@@ -202,7 +204,7 @@ $('mentionBox').addEventListener('click', e => {
   }
   const command = currentApp === 'codex' && (MN.parent || r.section === 'commands' || r.section === 'context-actions' || r.section === 'plugins' || r.section === 'apps');
   if (command) {
-    if (t) text.setRangeText('', t.start, t.caret, 'end');
+    if (t) text.setRangeText('', t.start, t.end, 'end');
     autosize();
     const parent = MN.parent;
     mentionHide();
@@ -215,20 +217,52 @@ $('mentionBox').addEventListener('click', e => {
   if (!t) return;
   const trigger = t.trigger || '@';
   const token = `${trigger}${r.label}`;
-  text.setRangeText(token + ' ', t.start, t.caret, 'end');
+  text.setRangeText(token + (/\s/.test(text.value[t.end] || '') ? '' : ' '), t.start, t.end, 'end');
   // From a category ("@file:") the relay must type the file's name too, or Devin only lists its default entries.
   const q = MN.used.endsWith(':') && !r.label.startsWith(MN.used) ? MN.used + r.label : (MN.used || r.label.split(' ')[0]);
-  MN.mentions.push({ token, q, label: r.label, sub: r.sub || '', key: r.key || '', section: r.section || '', trigger });
+  MN.mentions.push({ token, q, label: r.label, sub: r.sub || '', key: r.key || '', section: r.section || '', trigger, at: t.start });
+  MN.value = text.value;
   autosize();
   mentionHide();
   text.focus();
 });
 // Mentions still present in the text, in the order they appear.
 const mentionsFor = v => { const ms = takeMentions(v); return ms.length ? { mentions: ms } : {}; };
-function takeMentions(v) {
-  const list = MN.mentions.map(m => ({ ...m, at: v.indexOf(m.token) })).filter(m => m.at >= 0).sort((a, b) => a.at - b.at).map(({ at, ...m }) => m);
-  return list;
+function matchedMentions(v) {
+  const used = new Set(), list = [];
+  for (const mention of MN.mentions) {
+    let at = Number.isInteger(mention.at) && v.slice(mention.at, mention.at + mention.token.length) === mention.token ? mention.at : -1;
+    if (at < 0 || used.has(at)) {
+      at = v.indexOf(mention.token);
+      while (at >= 0 && used.has(at)) at = v.indexOf(mention.token, at + 1);
+    }
+    if (at < 0 || used.has(at)) continue;
+    used.add(at); list.push({ ...mention, at });
+  }
+  return list.sort((a, b) => a.at - b.at);
 }
+function takeMentions(v) { return matchedMentions(v).map(({ at, ...mention }) => mention); }
+function syncMentions(v, event = null) {
+  const old = MN.value, delta = v.length - old.length;
+  if (old !== v && old) {
+    let from = 0, oldEnd = old.length, newEnd = v.length;
+    while (from < oldEnd && from < newEnd && old[from] === v[from]) from++;
+    while (oldEnd > from && newEnd > from && old[oldEnd - 1] === v[newEnd - 1]) { oldEnd--; newEnd--; }
+    if (event?.inputType?.startsWith('delete') && Number.isInteger(text.selectionStart)) {
+      from = Math.min(text.selectionStart, old.length);
+      oldEnd = Math.min(old.length, from + old.length - v.length);
+    }
+    MN.mentions = MN.mentions.filter(mention => {
+      const end = mention.at + mention.token.length;
+      if (end <= from) return true;
+      if (mention.at >= oldEnd) { mention.at += delta; return true; }
+      return false;
+    });
+  }
+  MN.mentions = matchedMentions(v); MN.value = v;
+}
+text.addEventListener('select', mentionUpdate);
+document.addEventListener('selectionchange', () => { if (document.activeElement === text) mentionUpdate(); });
 text.addEventListener('focus', () => {
   stickOnKeyboard = followingChat();
   fitViewport();

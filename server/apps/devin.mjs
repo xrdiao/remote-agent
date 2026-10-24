@@ -133,7 +133,8 @@ export const adapter = {
     if (surface === 'editor') {
       if (readOnly) {
         const session = await this.cdp.evaluate(helpersCall('devinSession()'));
-        return emit({ list: (session?.tabs || []).map(tab => ({ id: `tab:${tab.id}`, title: tab.title, group: '已打开的会话', current: tab.active, running: false })), surface, partial: true });
+        const state = await this.cdp.evaluate(helpersCall('agentState()'));
+        return emit({ list: (session?.tabs || []).map(tab => ({ id: `tab:${tab.id}`, title: tab.title, group: '已打开的会话', current: tab.active, running: tab.active && !!state?.busy })), surface, partial: true });
       }
       return emit({ list: await this.editorSessions(), surface });
     }

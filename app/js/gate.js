@@ -158,6 +158,10 @@ function connLaunch(apps) {
   send({ t: 'launchAgents', apps: targets });
   connRender();
 }
+function connMissingApps() {
+  const available = new Set(availableConnAgents().map(a => a.app));
+  return (conn.agents || []).filter(a => available.has(a.app) && !a.windows).map(a => a.app);
+}
 function connLaunchResults(results) {
   for (const r of results || []) if (CONN_AGENTS.some(a => a.app === r.app)) connLaunchStatus.set(r.app, r.status);
   if (conn.active) return connRender();
@@ -258,7 +262,7 @@ function connRender() {
   $('connBar').innerHTML = agents.map(a => `<i class="${conn.host ? state(a) : ''}"></i>`).join('');
   $('connGo').hidden = !settled || ready === agents.length;
   $('connGo').textContent = ready ? tr('先进入') : tr('全部重试');
-  const launchable = settled ? agents.filter(a => !a.windows) : [];
+  const launchable = settled ? connMissingApps() : [];
   $('connLaunchAll').hidden = !launchable.length;
   $('connLaunchAll').disabled = launchable.length > 0 && launchable.every(a => connLaunchStatus.get(a.app) === 'launching');
   $('connAutoPartial').querySelector('.switch').classList.toggle('on', connAutoPartialOn());
@@ -289,7 +293,7 @@ $('connAutoPartial').onclick = () => {
 };
 $('connPick').onclick = () => showComputers();
 $('connRepair').onclick = () => repairPairing();
-$('connLaunchAll').onclick = () => connLaunch();
+$('connLaunchAll').onclick = () => connLaunch(connMissingApps());
 $('connAutoLaunch').onclick = () => {
   store.set('conn-auto-launch', store.get('conn-auto-launch') === '1' ? '0' : '1');
   connRender();

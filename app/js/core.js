@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v202'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v217'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false, failures = 0;
 let windowReady = false;
@@ -42,9 +42,13 @@ function receiveAgents(m) {
   if (m.app && m.app !== currentApp) return;
   const key = agentListKey();
   const previous = agentLists.get(key) || [];
-  const titles = new Map(previous.map(a => [a.id, a.title]));
+  const previousById = new Map(previous.map(a => [a.id, a]));
   let list = m.list || [];
-  list = list.map(a => ({ ...a, title: a.title || titles.get(a.id) || '未命名会话' }));
+  list = list.map(a => {
+    const old = previousById.get(a.id);
+    const running = old && !Object.hasOwn(a, 'running') && Object.hasOwn(old, 'running') ? { running: old.running } : {};
+    return { ...a, ...running, title: a.title || old?.title || '未命名会话' };
+  });
   if (m.partial) {
     const remaining = (agentLists.get(key) || []).filter(a => String(a.id).startsWith('pick:'));
     list = [...list, ...remaining.filter(a => !list.some(b => b.title === a.title))];

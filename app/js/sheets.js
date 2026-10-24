@@ -376,7 +376,7 @@ function cancelDocs() {
 function agentButton(a) {
   if (a.loadWindow) return `<button class="opt" data-project-load="${esc(a.loadWindow)}">${esc(a.title)}</button>`;
   const label = a.ui ? esc(a.title) : `<span class="lbl">${esc(a.title)}</span>`;
-  const tags = `${a.running && !a.current ? '<span class="tag">运行中</span>' : ''}${a.current ? '<span class="tag">当前</span>' : ''}`;
+  const tags = `${a.running ? '<span class="tag">运行中</span>' : ''}${a.current ? '<span class="tag">当前</span>' : ''}`;
   const main = `<button class="opt ${a.current ? 'cur' : ''}" data-agent="${esc(a.id)}" data-agent-title="${esc(a.title)}">${label}${tags}</button>`;
   if (a.ui || !String(a.id || '').startsWith('thread:')) return main;
   return `<div class="optRow">${main}<button type="button" class="archBtn" data-codex-archive="${esc(a.id)}" data-codex-name="${esc(a.title)}" title="归档" aria-label="归档">归档</button></div>`;

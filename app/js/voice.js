@@ -197,7 +197,6 @@ text.addEventListener('paste', async e => {
 });
 
 window.addEventListener('resize', () => { layoutStage(); applyQuality(); });
-if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('sw.js').catch(() => {});
 
 setMode(mode);
 boot();
