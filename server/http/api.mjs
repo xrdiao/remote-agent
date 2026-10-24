@@ -3,7 +3,7 @@ import QRCode from 'qrcode-terminal/vendor/QRCode/index.js';
 import { authenticateRequest } from '../../lib/device-proof.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
-import { DATA_DIR, findDevice, needsTotp, totpConfig, verifyTotp, pairingSession, pairingDetails, consumePairing, listDevices, removeDevice, updateDevice, computerId, computerName, urlKey, groupDevices, deviceGrouping } from '../../lib/auth.mjs';
+import { DATA_DIR, findDevice, needsTotp, totpConfig, verifyTotp, pairingSession, pairingDetails, consumePairing, listDevices, removeDevice, updateDevice, computerId, computerName, urlKey, appBase, groupDevices, deviceGrouping } from '../../lib/auth.mjs';
 import { inviteEntry, joinEntry, entryRequests, decideEntry, entryStatus, cancelEntry, requestPairing, decideEntries } from './entries.mjs';
 import { pushPublicKey, openEventStream, closeEventStreams, deliver } from '../../lib/notify.mjs';
 import { clientIp, lockedOut, recordFailure } from './ratelimit.mjs';
@@ -160,8 +160,22 @@ export async function handleApi(req, res, route) {
   }
   if (needsTotp(device)) return json(req, res, 401, { needTotp: true, error: '需要二次验证' });
   if (route === '/api/entries/invite' && req.method === 'POST') {
-    const { groupId } = await readJson(req);
-    try { return json(req, res, 200, inviteEntry(device, groupId)); }
+    const { groupId, base } = await readJson(req);
+    try {
+      const result = inviteEntry(device, groupId);
+      let link = '';
+      try {
+        const target = new URL(String(base || ''));
+        if (target.protocol === 'http:' || target.protocol === 'https:') {
+          target.hash = `entry=${urlKey().toString('base64url')}.${result.invitation}`;
+          link = target.href;
+        }
+      } catch {}
+      if (!link) link = `${appBase()}#entry=${urlKey().toString('base64url')}.${result.invitation}`;
+      const qr = new QRCode(-1, 1);
+      qr.addData(link); qr.make();
+      return json(req, res, 200, { ...result, link, qr: qr.modules });
+    }
     catch (error) { return json(req, res, 400, { error: error.message }); }
   }
   if (route === '/api/entries/decide' && req.method === 'POST') {
