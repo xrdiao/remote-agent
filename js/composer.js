@@ -63,23 +63,10 @@ function confirmSent(m) {
     text.value = ''; MN.mentions = []; MN.value = ''; autosize(); mirroredDraft = '';
   }
   if (sent.mode === 'chat') {
-    if (!m.queued) rememberAgentMessageTime(sent.thread, m.sentAt || Date.now());
     submittedMessages.push({ ...sent, sentAt: m.sentAt || Date.now() });
     if (here && lastChat) queueChatRender();
   }
 }
-function failPendingSend(requestId, message = '发送失败，请重试') {
-  const sent = pendingSends.get(requestId);
-  pendingSends.delete(requestId);
-  const hadEcho = pendingEchoes.some(p => p.requestId === requestId);
-  pendingEchoes = pendingEchoes.filter(p => p.requestId !== requestId);
-  if (hadEcho) queueChatRender();
-  if (sent && (currentComputer()?.id || '') === sent.computer && draftKey() === sent.draft && text.value === '') {
-    text.value = sent.text; autosize();
-  }
-  if (sent) status(message, false);
-}
-function failPendingSends(message) { for (const requestId of [...pendingSends.keys()]) failPendingSend(requestId, message); }
 function reconcileSent(chat) {
   const matched = new Set();
   for (const [requestId, sent] of pendingSends) {
@@ -419,10 +406,9 @@ $('send').onclick = () => {
   const when = devinBusySplit() || cursorBusyQueue() || follow === 'queue' ? 'queue' : follow === 'steer' ? 'now' : '';
   const receipt = sendReceipt(v);
   if (mode === 'chat') { status('正在发送…'); pushEcho(receipt.requestId, v, when === 'queue' || (!when && chatBusy) ? 'queue' : 'chat'); }
-  const sent = mode === 'terminal' ? send({ t: 'termSend', text: v, ...receipt })
-    : send({ t: 'send', text: v, submit: true, ...receipt, ...(when ? { when } : {}), ...mentionsFor(v) });
-  if (sent === false) failPendingSend(receipt.requestId);
-  if (mode === 'chat') restoreChatPosition(null, true);
+  if (mode === 'terminal') send({ t: 'termSend', text: v, ...receipt });
+  else send({ t: 'send', text: v, submit: true, ...receipt, ...(when ? { when } : {}), ...mentionsFor(v) });
+  if (mode === 'chat') list.scrollTop = list.scrollHeight;
 };
 $('sendNow').onclick = async () => {
   if (pendingImageUploads()) return status('图片尚未上传完成；失败图片请重试或删除', false);
@@ -435,9 +421,9 @@ $('sendNow').onclick = async () => {
   status('正在发送…');
   const receipt = sendReceipt(v);
   pushEcho(receipt.requestId, v, steer ? 'chat' : 'queue');
-  if (send({ t: 'send', text: v, submit: true, ...receipt, when: steer ? 'now' : 'queue', ...mentionsFor(v) }) === false) failPendingSend(receipt.requestId);
+  send({ t: 'send', text: v, submit: true, ...receipt, when: steer ? 'now' : 'queue', ...mentionsFor(v) });
   if (currentApp !== 'codex') { text.value = ''; autosize(); }
-  restoreChatPosition(null, true);
+  list.scrollTop = list.scrollHeight;
 };
 $('insertNewline').addEventListener('pointerdown', e => e.preventDefault());
 $('insertNewline').onclick = () => {
