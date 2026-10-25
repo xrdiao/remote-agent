@@ -1270,6 +1270,8 @@ function showHistoryStatus(message) {
 function loadOlderMessages() {
   if (!lastChat || historyRequest) return;
   historyArmed = false;
+  historyPullUp = false;
+  historyWheelPullUp = false;
   if (!$('cachedMore').hidden) {
     historyScrollSnapshot = { top: list.scrollTop, height: list.scrollHeight };
     historyRendering = true;
@@ -1283,6 +1285,8 @@ function loadOlderMessages() {
 function requestOlderRemote() {
   if (!lastChat || historyRequest) return;
   historyArmed = false;
+  historyPullUp = false;
+  historyWheelPullUp = false;
   if (historyAtEnd || $('older').hidden) {
     showHistoryStatus('已到最早消息');
     return;
@@ -1377,7 +1381,7 @@ function settleChatScroll() {
 }
 list.addEventListener('scroll', () => {
   if (!restoringChatScroll && turnNavUser) showTurnNav();
-  if (!suppressHistoryArm && !turnNavPointer?.dragging && (chatTouching ? historyPullUp : historyWheelPullUp) && list.scrollTop <= 1) historyArmed = true;
+  if (!suppressHistoryArm && !turnNavPointer?.dragging && (historyPullUp || historyWheelPullUp) && list.scrollTop <= 1) historyArmed = true;
   settleChatScroll();
 }, { passive: true });
 list.addEventListener('scrollend', () => {
