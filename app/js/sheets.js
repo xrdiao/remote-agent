@@ -4,15 +4,16 @@ let menuRefreshTimer = 0;
 let pendingAgentOpen = '';
 const agentOpened = JSON.parse(store.get('agent-opened') || '{}');
 const agentUsage = JSON.parse(store.get('agent-usage') || '{}');
+const agentFavorites = JSON.parse(store.get('agent-favorites') || '{}');
 const agentFilters = JSON.parse(store.get('agent-filters') || '{}');
 let agentFilterPanelOpen = false;
 const agentOpenedKey = thread => `${currentComputer()?.id || ''}|${currentAppName}|${thread}`;
 const agentUsageKey = id => `${currentComputer()?.id || currentComputer()?.key || ''}|${currentApp || currentAppName}|${id}`;
 const agentFilterKey = () => `${currentComputer()?.id || currentComputer()?.key || ''}|${currentApp || currentAppName}`;
-const agentFilterLabels = { all: '全部', common: '常用', uncommon: '不常用' };
+const agentFilterLabels = { all: '全部', common: '常用' };
 function currentAgentFilters() {
   const saved = agentFilters[agentFilterKey()] || {};
-  return { project: agentFilterLabels[saved.project] ? saved.project : 'all', session: agentFilterLabels[saved.session] ? saved.session : 'all' };
+  return { project: saved.project === 'common' ? 'common' : 'all', session: saved.session === 'common' ? 'common' : 'all' };
 }
 function setAgentFilter(scope, value) {
   if (!agentFilterLabels[value] || !['project', 'session'].includes(scope)) return;
@@ -34,7 +35,19 @@ function agentUsageInfo(a) {
   const lastUsed = Math.max(Number(a.lastUsed) || 0, Number(saved.last) || 0, opened);
   const lastMessageAt = Number(saved.lastMessageAt) || 0;
   const ageDays = lastMessageAt ? Math.max(0, (Date.now() - lastMessageAt) / 86400000) : Infinity;
-  return { ...a, lastUsed, common: lastMessageAt > 0 && ageDays <= 7 };
+  const favorite = !!agentFavorites[agentUsageKey(thread)] || !!agentFavorites[agentUsageKey(a.id)];
+  return { ...a, lastUsed, favorite, common: favorite || (lastMessageAt > 0 && ageDays <= 7) };
+}
+function agentFavoriteState(id) {
+  const key = agentThreadKey({ id });
+  return !!agentFavorites[agentUsageKey(key)] || !!agentFavorites[agentUsageKey(id)];
+}
+function setAgentFavorite(id, on) {
+  const key = agentUsageKey(agentThreadKey({ id }));
+  if (on) agentFavorites[key] = true;
+  else delete agentFavorites[key];
+  store.set('agent-favorites', JSON.stringify(agentFavorites));
+  renderAgentList();
 }
 function rememberAgentMessageTime(thread, at) {
   const timestamp = Number(at);
@@ -455,7 +468,8 @@ function agentButton(a) {
   const tags = `${a.running ? '<span class="tag">运行中</span>' : ''}${a.current ? '<span class="tag">当前</span>' : ''}`;
   const main = `<button class="opt ${a.current ? 'cur' : ''}" data-agent="${esc(a.id)}" data-agent-title="${esc(a.title)}">${label}${tags}</button>`;
   if (a.ui || !String(a.id || '').startsWith('thread:')) return main;
-  return `<div class="optRow">${main}<button type="button" class="archBtn" data-codex-archive="${esc(a.id)}" data-codex-name="${esc(a.title)}" title="归档" aria-label="归档">归档</button></div>`;
+  const favorite = !!a.favorite;
+  return `<div class="optRow">${main}<button type="button" class="agentFavBtn${favorite ? ' on' : ''}" data-agent-favorite="${esc(a.id)}" data-agent-favorite-value="${favorite ? '0' : '1'}" title="${favorite ? '取消常用' : '设置为常用'}" aria-label="${favorite ? '取消常用' : '设置为常用'}">${favorite ? '★' : '☆'}</button><button type="button" class="agentMoreBtn" data-agent-menu="${esc(a.id)}" data-agent-menu-title="${esc(a.title)}" title="更多操作" aria-label="更多操作">…</button></div>`;
 }
 function foldSection(name, inner, open, count) {
   if (!name) return inner;
@@ -464,6 +478,17 @@ function foldSection(name, inner, open, count) {
 function agentFilterPanel(filters) {
   const row = (scope, label) => `<div class="agentFilterRow"><span class="agentFilterLabel">${label}</span><div class="agentFilterChoices">${Object.entries(agentFilterLabels).map(([value, text]) => `<button type="button" class="${filters[scope] === value ? 'cur' : ''}" data-agent-filter-scope="${scope}" data-agent-filter-value="${value}">${text}</button>`).join('')}</div></div>`;
   return `<div class="agentFilterPanel">${row('project', '项目')}${row('session', '会话')}</div>`;
+}
+function showAgentActions(id, title) {
+  const current = (agentLists.get(agentListKey()) || []).find(a => a.id === id);
+  const codexThread = currentAppName === 'Codex' && String(id).startsWith('thread:');
+  const favorite = agentFavoriteState(id);
+  const rows = [
+    current?.current ? '' : `<button class="opt" data-agent-action="open" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"><span class="lbl">打开会话</span></button>`,
+    `<button class="opt" data-agent-action="favorite" data-agent-action-id="${esc(id)}"><span class="lbl">${favorite ? '取消常用' : '设置为常用'}</span></button>`,
+    codexThread ? `<button class="opt" data-agent-action="rename" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"><span class="lbl">重命名</span></button><button class="opt" data-agent-action="archive" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"><span class="lbl">删除／归档</span></button>` : '',
+  ].filter(Boolean).join('');
+  openSheet('agent-actions', `<h3>${esc(title)}</h3>${rows || '<div class="hint">没有可用操作。</div>'}`);
 }
 function renderAgentList() {
   const list = agentLists.get(agentListKey());
@@ -526,6 +551,14 @@ function showAgents(list) {
 $('sheet').addEventListener('click', e => {
   const b = e.target.closest('button');
   if (!b || sheetKind !== 'agents') return;
+  if (b.dataset.agentFavorite) {
+    setAgentFavorite(b.dataset.agentFavorite, b.dataset.agentFavoriteValue === '1');
+    return;
+  }
+  if (b.dataset.agentMenu) {
+    showAgentActions(b.dataset.agentMenu, b.dataset.agentMenuTitle || '会话操作');
+    return;
+  }
   if ('agentFilterToggle' in b.dataset) { agentFilterPanelOpen = !agentFilterPanelOpen; return renderAgentList(); }
   if (b.dataset.agentFilterScope) {
     setAgentFilter(b.dataset.agentFilterScope, b.dataset.agentFilterValue);

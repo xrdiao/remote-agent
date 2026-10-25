@@ -165,6 +165,30 @@ document.addEventListener('visibilitychange', () => {
 $('sheet').addEventListener('click', async e => {
   const b = e.target.closest('button');
   if (!b) return;
+  if (sheetKind === 'agent-actions' && b.dataset.agentAction) {
+    const id = b.dataset.agentActionId || '', name = b.dataset.agentActionTitle || '';
+    if (b.dataset.agentAction === 'open') {
+      pendingAgentOpen = id;
+      closeSheet(); status('正在切换 Agent…');
+      return send({ t: 'openAgent', id, title: name });
+    }
+    if (b.dataset.agentAction === 'favorite') {
+      const on = !agentFavoriteState(id);
+      closeSheet(); setAgentFavorite(id, on);
+      return status(on ? '已设为常用' : '已取消常用');
+    }
+    if (b.dataset.agentAction === 'rename') {
+      const next = window.prompt('新的会话名称', name);
+      if (!next?.trim()) return;
+      closeSheet(); status('正在重命名…');
+      return send({ t: 'codexRename', id, name: next.trim().slice(0, 80) });
+    }
+    if (b.dataset.agentAction === 'archive') {
+      if (!await ask(`删除或归档「${name}」？\n桌面端会根据当前入口执行删除或归档。`, '继续')) return;
+      closeSheet(); status('正在删除／归档…');
+      return send({ t: 'codexArchive', id });
+    }
+  }
   if ('modelBack' in b.dataset) return requestMenu('model', '读取模型列表…');
   if ('effortOpen' in b.dataset) return requestMenu('effort', '读取思考强度…');
   if ('modelDone' in b.dataset) { closeSheet(); return; }
