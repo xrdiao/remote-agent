@@ -6,18 +6,17 @@ const agentOpened = JSON.parse(store.get('agent-opened') || '{}');
 const agentUsage = JSON.parse(store.get('agent-usage') || '{}');
 const agentFavorites = JSON.parse(store.get('agent-favorites') || '{}');
 const agentFilters = JSON.parse(store.get('agent-filters') || '{}');
-let agentFilterPanelOpen = false;
 const agentOpenedKey = thread => `${currentComputer()?.id || ''}|${currentAppName}|${thread}`;
 const agentUsageKey = id => `${currentComputer()?.id || currentComputer()?.key || ''}|${currentApp || currentAppName}|${id}`;
 const agentFilterKey = () => `${currentComputer()?.id || currentComputer()?.key || ''}|${currentApp || currentAppName}`;
 const agentFilterLabels = { all: '全部', common: '常用' };
 function currentAgentFilters() {
   const saved = agentFilters[agentFilterKey()] || {};
-  return { project: saved.project === 'common' ? 'common' : 'all', session: saved.session === 'common' ? 'common' : 'all' };
+  return { session: saved.session === 'common' ? 'common' : 'all' };
 }
-function setAgentFilter(scope, value) {
-  if (!agentFilterLabels[value] || !['project', 'session'].includes(scope)) return;
-  agentFilters[agentFilterKey()] = { ...currentAgentFilters(), [scope]: value };
+function setAgentFilter(value) {
+  if (!agentFilterLabels[value]) return;
+  agentFilters[agentFilterKey()] = { session: value };
   store.set('agent-filters', JSON.stringify(agentFilters));
 }
 function agentThreadKey(a) {
@@ -467,7 +466,7 @@ function agentButton(a) {
   const label = a.ui ? esc(a.title) : `<span class="lbl">${esc(a.title)}</span>`;
   const tags = a.running ? '<span class="tag">运行中</span>' : '';
   const main = `<button class="opt ${a.current ? 'cur' : ''}" data-agent="${esc(a.id)}" data-agent-title="${esc(a.title)}">${label}${tags}</button>`;
-  if (a.ui || !String(a.id || '').startsWith('thread:')) return main;
+  if (a.ui || (!String(a.id || '').startsWith('thread:') && !['Cursor', 'Devin'].includes(currentAppName))) return main;
   const favorite = !!a.favorite;
   return `<div class="optRow">${main}<button type="button" class="agentFavBtn${favorite ? ' on' : ''}" data-agent-favorite="${esc(a.id)}" data-agent-favorite-value="${favorite ? '0' : '1'}" title="${favorite ? '取消常用' : '设置为常用'}" aria-label="${favorite ? '取消常用' : '设置为常用'}">${favorite ? '★' : '☆'}</button><button type="button" class="agentMoreBtn" data-agent-menu="${esc(a.id)}" data-agent-menu-title="${esc(a.title)}" title="更多操作" aria-label="更多操作">…</button></div>`;
 }
@@ -475,9 +474,8 @@ function foldSection(name, inner, open, count) {
   if (!name) return inner;
   return `<button type="button" class="fold" data-fold aria-expanded="${open ? 'true' : 'false'}"><span class="lbl">${esc(name)}</span><span class="tag">${count}</span><span class="chev">${open ? '▾' : '▸'}</span></button><div class="foldBody"${open ? '' : ' hidden'}>${inner}</div>`;
 }
-function agentFilterPanel(filters) {
-  const row = (scope, label) => `<div class="agentFilterRow"><span class="agentFilterLabel">${label}</span><div class="agentFilterChoices">${Object.entries(agentFilterLabels).map(([value, text]) => `<button type="button" class="${filters[scope] === value ? 'cur' : ''}" data-agent-filter-scope="${scope}" data-agent-filter-value="${value}">${text}</button>`).join('')}</div></div>`;
-  return `<div class="agentFilterPanel">${row('project', '项目')}${row('session', '会话')}</div>`;
+function agentFilterSlider(filters) {
+  return `<div class="agentSessionFilter${filters.session === 'common' ? ' common' : ''}" role="group" aria-label="会话筛选">${Object.entries(agentFilterLabels).map(([value, text]) => `<button type="button" aria-pressed="${filters.session === value}" data-agent-filter-value="${value}">${text}</button>`).join('')}</div>`;
 }
 function showAgentActions(id, title) {
   const current = (agentLists.get(agentListKey()) || []).find(a => a.id === id);
@@ -515,8 +513,7 @@ function showAgents(list) {
   const anyCurrent = list.some(a => a.current);
   let firstVisible = true;
   const rows = order.map(win => {
-    const items = byWindow.get(win), projectCommon = items.some(a => !a.ui && a.common);
-    if (filters.project !== 'all' && projectCommon !== (filters.project === 'common')) return '';
+    const items = byWindow.get(win);
     const visible = items.filter(a => a.ui || filters.session === 'all' || a.common === (filters.session === 'common'));
     if (filters.session !== 'all' && !visible.some(a => !a.ui)) return '';
     if (!visible.length) return '';
@@ -538,8 +535,7 @@ function showAgents(list) {
     firstVisible = false;
     return foldSection(win, body, open, visible.length);
   }).join('');
-  const filterText = `项目·${agentFilterLabels[filters.project]}，会话·${agentFilterLabels[filters.session]}`;
-  const html = `<div class="agentSheetTitle"><h3>项目与会话</h3><button type="button" class="agentFilterToggle" data-agent-filter-toggle aria-expanded="${agentFilterPanelOpen ? 'true' : 'false'}"><span class="sub">${filterText}</span></button></div>${agentFilterPanelOpen ? agentFilterPanel(filters) : ''}<button class="opt" data-act="agentsRefresh">刷新项目与会话</button><button class="opt" data-act="projects"><span class="lbl">选择文件夹／新建项目</span></button><button class="opt" data-act="projectNewChat"><span class="lbl">在当前项目新建会话</span></button>${rows || `<div class="hint">${esc(appMessage('没有找到 {app} 的 Agent。请在电脑上打开对应的会话窗口。'))}</div>`}`;
+  const html = `<div class="agentSheetTitle"><h3>项目与会话</h3>${agentFilterSlider(filters)}</div><button class="opt" data-act="agentsRefresh">刷新项目与会话</button><button class="opt" data-act="projects"><span class="lbl">选择文件夹／新建项目</span></button><button class="opt" data-act="projectNewChat"><span class="lbl">在当前项目新建会话</span></button>${rows || `<div class="hint">${esc(appMessage('没有找到 {app} 的 Agent。请在电脑上打开对应的会话窗口。'))}</div>`}`;
   if (keep) {
     const template = document.createElement('template');
     template.innerHTML = html;
@@ -559,10 +555,8 @@ $('sheet').addEventListener('click', e => {
     showAgentActions(b.dataset.agentMenu, b.dataset.agentMenuTitle || '会话操作');
     return;
   }
-  if ('agentFilterToggle' in b.dataset) { agentFilterPanelOpen = !agentFilterPanelOpen; return renderAgentList(); }
-  if (b.dataset.agentFilterScope) {
-    setAgentFilter(b.dataset.agentFilterScope, b.dataset.agentFilterValue);
-    agentFilterPanelOpen = true;
+  if (b.dataset.agentFilterValue) {
+    setAgentFilter(b.dataset.agentFilterValue);
     return renderAgentList();
   }
 });
