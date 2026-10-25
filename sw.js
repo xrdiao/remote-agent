@@ -1,7 +1,7 @@
 // Caches the app shell so the installed app opens instantly; live data (url.json, relay) always goes to the network.
-const CACHE = 'remote-agent-v233'; // keep in sync with APP_VERSION in js/core.js
+const CACHE = 'remote-agent-v234'; // keep in sync with APP_VERSION in js/core.js
 const SHELL = ['./', 'index.html', 'app.css?v=232', 'i18n.js?v=212', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'logo.png',
-  'js/core.js?v=233', 'js/gate.js?v=219', 'js/auth.js?v=207', 'js/net.js?v=210', 'js/sheets.js?v=233', 'js/notify.js?v=232', 'js/mode.js?v=158', 'js/chat.js?v=222',
+  'js/core.js?v=234', 'js/gate.js?v=219', 'js/auth.js?v=207', 'js/net.js?v=210', 'js/sheets.js?v=233', 'js/notify.js?v=232', 'js/mode.js?v=158', 'js/chat.js?v=222',
   'js/history.js?v=233', 'js/files.js?v=167', 'js/screen.js?v=123', 'js/terminal.js?v=116', 'js/composer.js?v=221', 'js/voice.js?v=217', 'js/local-voice.js?v=207', 'js/voice-worklet.js?v=133',
   'js/transfer.js?v=207', 'js/scanner.js',
   'js/latency.js?v=142', 'js/image-editor.js?v=181',
@@ -37,18 +37,22 @@ self.addEventListener('fetch', e => {
     .catch(() => caches.match(e.request)));
 });
 
+const latestPushSeq = new Map();
 // iOS revokes push permission if a push arrives without a visible notification, so every push shows one.
 function showPush(text) {
   let d = {};
   try { d = JSON.parse(text); } catch {}
   const tag = [d.win, d.windowId, d.threadId].filter(Boolean).join('|') || 'remote-agent';
+  const seq = Number(d.seq) || 0;
+  if (seq && seq <= (latestPushSeq.get(tag) || 0)) return Promise.resolve();
+  if (seq) latestPushSeq.set(tag, seq);
   return self.registration.showNotification(d.title || 'Remote Agent', {
     body: d.body || '',
     tag,
     renotify: true,
     icon: 'icon-192.png',
     badge: 'icon-192.png',
-    data: { win: d.win || '', windowId: d.windowId || '', threadId: d.threadId || '' },
+    data: { win: d.win || '', windowId: d.windowId || '', threadId: d.threadId || '', seq, createdAt: Number(d.createdAt) || 0 },
   });
 }
 self.addEventListener('push', e => e.waitUntil(showPush(e.data ? e.data.text() : '')));
