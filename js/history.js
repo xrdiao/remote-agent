@@ -330,16 +330,30 @@ let historyWaitingForIdle = false;
 let pendingHistoryStatus = null;
 let turnNavTimer = 0, turnNavHeld = false, turnNavUser = false, turnNavCursor = null, turnNavPending = null;
 let turnNavPointer = null, turnNavSkipClick = false;
-let restoringChatScroll = false, readingAnchor = null;
+let restoringChatScroll = false, readingAnchor = null, readingCorrectionFrame = 0;
+function stableChatAnchor(el) {
+  return el && !el.classList.contains('thinking') && !el.classList.contains('toolrow') && !el.classList.contains('pending');
+}
 function captureChatAnchor() {
   const top = list.getBoundingClientRect().top;
+  const bottom = list.getBoundingClientRect().bottom;
   let lo = 0, hi = itemsEl.children.length;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
     if (itemsEl.children[mid].getBoundingClientRect().bottom > top) hi = mid;
     else lo = mid + 1;
   }
-  const el = itemsEl.children[lo];
+  let el = null;
+  for (let n = lo; n < itemsEl.children.length; n++) {
+    const candidate = itemsEl.children[n];
+    if (candidate.getBoundingClientRect().top >= bottom) break;
+    if (stableChatAnchor(candidate)) { el = candidate; break; }
+  }
+  if (!el) for (let n = lo - 1; n >= 0; n--) {
+    const candidate = itemsEl.children[n];
+    if (stableChatAnchor(candidate)) { el = candidate; break; }
+  }
+  el ||= itemsEl.children[lo];
   return el ? { el, id: el.dataset.i, top: el.getBoundingClientRect().top - top, scrollTop: list.scrollTop } : null;
 }
 function isFollowingBottom() { return scrollMode === 'followBottom'; }
@@ -363,7 +377,15 @@ function setChatScrollTop(next) {
 function anchorScrollTop(anchor) {
   const el = [...itemsEl.children].find(e => e.dataset.i === anchor?.id);
   if (!el) return null;
-  return list.scrollTop + el.getBoundingClientRect().top - list.getBoundingClientRect().top - anchor.top;
+  const nowTop = el.getBoundingClientRect().top - list.getBoundingClientRect().top;
+  const userDelta = list.scrollTop - (anchor.scrollTop ?? list.scrollTop);
+  return list.scrollTop + nowTop - anchor.top + userDelta;
+}
+function refreshChatAnchor(anchor = readingAnchor) {
+  const el = [...itemsEl.children].find(e => e.dataset.i === anchor?.id);
+  if (!el) return captureChatAnchor();
+  const top = list.getBoundingClientRect().top;
+  return { ...anchor, el, top: el.getBoundingClientRect().top - top, scrollTop: list.scrollTop };
 }
 function reconcileChatScroll() {
   if (scrollFrame) return;
@@ -371,7 +393,9 @@ function reconcileChatScroll() {
     scrollFrame = 0;
     const correction = scrollCorrection;
     scrollCorrection = null;
-    if (chatTouching || chatMomentum || turnNavPointer?.dragging) {
+    // An anchor correction is a layout adjustment, not gesture control. It can run
+    // during momentum so generation does not accumulate a jump until the gesture ends.
+    if (chatTouching || turnNavPointer?.dragging || (chatMomentum && correction?.kind !== 'anchor')) {
       if (correction) scrollCorrection = correction;
       return;
     }
@@ -382,7 +406,7 @@ function reconcileChatScroll() {
       const next = anchorScrollTop(anchor);
       if (next !== null) setChatScrollTop(next);
     }
-    if (scrollMode !== 'followBottom') readingAnchor = captureChatAnchor();
+    if (scrollMode !== 'followBottom') readingAnchor = refreshChatAnchor();
     updateTurnNav();
   });
 }
@@ -393,10 +417,10 @@ function requestChatScroll() {
 }
 function stabilizeChatReading() {
   if (readingAnchor) {
-    const el = readingAnchor.el;
+    const el = [...itemsEl.children].find(e => e.dataset.i === readingAnchor.id);
     if (el) {
       const top = list.scrollTop;
-      // Keep native scrolling intact; compensate only for layout changes above the anchor.
+      // Keep the user's scroll delta; compensate only for layout changes above the anchor.
       const shift = el.getBoundingClientRect().top - list.getBoundingClientRect().top - readingAnchor.top + top - readingAnchor.scrollTop;
       if (shift) {
         list.scrollTop += shift;
@@ -404,7 +428,17 @@ function stabilizeChatReading() {
       }
     }
   }
-  readingAnchor = captureChatAnchor();
+  readingAnchor = refreshChatAnchor();
+}
+function scheduleReadingCorrection() {
+  if (readingCorrectionFrame || isFollowingBottom() || turnNavPointer?.dragging) return;
+  readingCorrectionFrame = requestAnimationFrame(() => {
+    readingCorrectionFrame = 0;
+    if (isFollowingBottom() || turnNavPointer?.dragging) return;
+    if (scrollCorrection) { reconcileChatScroll(); return; }
+    if (!readingAnchor) readingAnchor = captureChatAnchor();
+    if (readingAnchor) stabilizeChatReading();
+  });
 }
 function restoreChatPosition(anchor, stick = false) {
   if (stick) {
@@ -420,12 +454,10 @@ function restoreChatPosition(anchor, stick = false) {
   reconcileChatScroll();
 }
 const chatSizeObserver = new ResizeObserver(() => {
-  if (chatTouching || chatMomentum || turnNavPointer?.dragging) {
-    if (!readingAnchor && !isFollowingBottom()) readingAnchor = captureChatAnchor();
-    return;
-  }
   if (isFollowingBottom()) { requestChatScroll(); return; }
   if (scrollCorrection?.kind === 'delta') { reconcileChatScroll(); return; }
+  if (!readingAnchor) readingAnchor = captureChatAnchor();
+  scheduleReadingCorrection();
 });
 for (const el of [itemsEl, $('older'), $('historyStatus'), $('cachedMore')]) chatSizeObserver.observe(el);
 document.addEventListener('selectionchange', () => {
@@ -535,6 +567,7 @@ function renderChat(chat, stale, loading = false) {
   }
   if (!chat || previous?.thread !== chat.thread) {
     resetTurnNav();
+    if (readingCorrectionFrame) { cancelAnimationFrame(readingCorrectionFrame); readingCorrectionFrame = 0; }
     historyRequest = null; historyRendering = false; historyExpanded = false; historyArmed = false; historyAtEnd = false; historyWaitingForIdle = false; scrollMode = 'followBottom'; readingAnchor = null; scrollCorrection = null; historyScrollSnapshot = null; pendingHistoryStatus = null;
     $('older').disabled = false;
     $('historyStatus').hidden = true;
@@ -547,7 +580,7 @@ function renderChat(chat, stale, loading = false) {
     if (merged.every(it => Number.isFinite(it.order))) merged.sort((a, b) => a.order - b.order);
     chat = { ...chat, items: merged };
   }
-  if (chatScrolling && chat && previous?.thread === chat.thread) {
+  if ((chatTouching || turnNavPointer?.dragging) && chat && previous?.thread === chat.thread) {
     lastChat = chat;
     paintGenerationTime();
     deferredScrollRender = true;
@@ -557,7 +590,7 @@ function renderChat(chat, stale, loading = false) {
     return;
   }
   const followBottom = !historyRequest && !historyRendering && followingChat();
-  const savedAnchor = followBottom ? null : captureChatAnchor();
+  const savedAnchor = followBottom ? null : (readingAnchor || captureChatAnchor());
   lastChat = chat; updateTitle();
   paintGenerationTime();
   paintWorkdir(chat?.workdir);
@@ -1300,7 +1333,16 @@ list.addEventListener('touchmove', e => {
   }
   historyTouchY = y;
 }, { passive: true });
-for (const event of ['touchend', 'touchcancel']) list.addEventListener(event, () => { chatMomentum = event === 'touchend'; chatTouching = false; restoringChatScroll = false; if (historyPullUp && list.scrollTop <= 1) historyArmed = true; settleChatScroll(); }, { passive: true });
+for (const event of ['touchend', 'touchcancel']) list.addEventListener(event, () => {
+  chatMomentum = event === 'touchend';
+  chatTouching = false;
+  restoringChatScroll = false;
+  if (historyPullUp && list.scrollTop <= 1) historyArmed = true;
+  // Apply the latest stream frame at the gesture boundary, while the stable anchor
+  // is still available, instead of batching it until momentum has fully settled.
+  if (event === 'touchend' && deferredScrollRender && lastChat) { deferredScrollRender = false; renderChat(lastChat); }
+  settleChatScroll();
+}, { passive: true });
 $('toBottom').onclick = () => {
   clearTimeout(scrollIdle);
   chatTouching = false;
