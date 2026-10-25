@@ -522,19 +522,32 @@
 
   const codexCapacityItem = () => {
     if (devinSurface() || !doc.querySelector('.ProseMirror')) return null;
-    const retry = [...doc.querySelectorAll('button, [role=button]')].find(button => vis(button)
-      && RETRY_LABEL.test((button.innerText || button.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim())
-      && !inItem(button));
-    let banner = retry;
-    for (let n = 0; retry && banner && n < 8; n++, banner = banner.parentElement) {
-      if (!CAPACITY_ERROR.test(banner.innerText || '')) continue;
-      const body = (banner.innerText || '').replace(/\s*(?:Retry|Try(?: again)?|重试|再试一次)\s*$/i, '').replace(/\s+/g, ' ').trim();
+    const text = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+    const quoted = '.ProseMirror, [class*="MarkdownRoot"], [class*="user-message"], [data-message-kind="human"], pre, code, script, style';
+    let capacity = null;
+    for (let node = text.nextNode(); node; node = text.nextNode()) {
+      if (!CAPACITY_ERROR.test(node.textContent || '')) continue;
+      let banner = node.parentElement;
+      if (!banner || !vis(banner) || banner.closest(quoted)) continue;
+      const turn = banner.closest('[data-turn-key]');
+      const latest = turn && codexLatestEntry(turn);
+      if (latest && latest.turnKey !== turn.getAttribute('data-turn-key')) continue;
+      let retry = null;
+      for (let parent = banner, n = 0; parent && n < 8; n++, parent = parent.parentElement) {
+        if (parent.querySelector(quoted)) break;
+        retry = [...parent.querySelectorAll('button, [role=button]')].find(button => vis(button)
+          && /^(?:Retry|Try(?: again)?|重试|再试一次)(?:\s+in\s+\d+s)?$/i.test((button.innerText || button.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim()));
+        if (retry || parent.matches('aside, [role="alert"], [data-local-conversation-item-target-ids]')) { banner = parent; break; }
+      }
+      const label = (retry?.innerText || retry?.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+      const ready = retry && RETRY_LABEL.test(label) && !retry.disabled && retry.getAttribute('aria-disabled') !== 'true';
+      const body = (banner.innerText || '').replace(/\s+/g, ' ').trim();
       const key = `${codexThread()}:capacity`;
-      return { i: key, k: 'notice', kind: 'capacity', t: body.slice(0, 400), capacity: true, live: true,
+      capacity = { i: key, k: 'notice', kind: 'capacity', t: body.slice(0, 400), capacity: true, live: true,
         syntheticCapacity: true, _retry: retry,
-        b: [retry.innerText.trim() || retry.getAttribute('aria-label') || 'Retry'], btnItem: key };
+        ...(ready ? { b: [label], btnItem: key } : {}) };
     }
-    return null;
+    return capacity;
   };
   const extract = () => {
     const imagePreview = codexImagePreview();
@@ -577,7 +590,7 @@
         rect: [0, 0, 0, 0], items: [initialCapacity], global: [], busy: isBusy(), queued: queued(),
         subagents: subagents(), changed: changedCount(), questions: { codex: true, requests: codexRequestData() },
         readonly: !hasComposer(), model: agentModelName(), permission: permissionLabel(), effort: effortName(),
-        capacityPresent: true,
+        capacityPresent: true, thread: activeThread(),
         ...(imagePreview ? { imagePreview: true } : {}), ...(codexFacts()?.view ? { codex: codexFacts().view } : {}),
       };
     }
@@ -616,7 +629,10 @@
     } else if (latestEntry?.turn && latestEntry.turnKey !== latestTurn?.getAttribute('data-turn-key')) {
       items.push(...codexTurnItems(null, latestEntry));
     }
-    if (capacity && !items.some(item => item.i === capacity.i)) items.push(capacity);
+    if (capacity && !items.some(item => item.i === capacity.i)) {
+      capacity.order = Math.max(0, ...items.map(item => item.order || 0)) + 1;
+      items.push(capacity);
+    }
     if (capacity) delete capacity._retry;
     const latestData = latestEntry?.turn || (latestTurn && codexTurnData(latestTurn));
     const turnTime = latestData?.items?.find(it => it.type === 'worked-for');
