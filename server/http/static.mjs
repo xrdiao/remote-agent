@@ -67,5 +67,8 @@ export function serveApp(res, name) {
 }
 
 export async function readJson(req) {
-  try { return JSON.parse(await readBody(req)); } catch { return {}; }
+  try {
+    const body = JSON.parse(await readBody(req));
+    return body && typeof body === 'object' && !Array.isArray(body) ? body : {};
+  } catch { return {}; }
 }

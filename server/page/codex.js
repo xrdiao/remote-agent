@@ -7,7 +7,10 @@
     const o = frame.getBoundingClientRect();
     return { x: c.x + o.x, y: c.y + o.y };
   };
-  const codexRecentPoint = () => { const b = codexButton('Recent chats'); return b ? codexPoint(b) : null; };
+  const codexRecentPoint = () => {
+    const b = codexButton('Recent chats');
+    return b ? { ...codexPoint(b), open: [...doc.querySelectorAll('[role=menu]')].some(e => vis(e) && /Search recent chats/.test(e.innerText || '')) } : null;
+  };
   const codexNewPoint = () => { const b = codexButton('New chat'); return b ? codexPoint(b) : null; };
   const codexNeedsLogin = () => [...doc.querySelectorAll('button')].some(b => vis(b) && /^(Sign in with ChatGPT|Use API Key|Use device code)$/.test(b.textContent.trim()));
   const codexAccountPoint = () => {

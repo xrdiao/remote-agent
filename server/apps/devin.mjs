@@ -251,6 +251,32 @@ export const adapter = {
     else await this.typeText(text);
   },
 
+  async submitPrompt(now) {
+    const read = () => this.cdp.evaluate(`(() => {
+      const h = ${PAGE_SRC}, chat = h.extract();
+      return { thread: chat?.thread || '', draft: h.composerDraft(),
+        human: (chat?.items || []).filter(it => it.k === 'human').map(it => ({ i: it.i, t: it.t, sentAt: it.sentAt })),
+        queued: h.devinQueued() };
+    })()`);
+    const norm = s => (s || '').replace(/\s+/g, ' ').trim();
+    const before = await read(), expected = norm(before.draft);
+    const human = new Set(before.human.map(it => `${it.i}:${it.sentAt || ''}`));
+    const queueText = norm(before.draft.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim().slice(0, 4000));
+    const queueMatches = rows => rows.filter(it => norm(it.t) === queueText).length;
+    const queued = queueMatches(before.queued);
+    await this.key(now ? mod('Enter') : 'Enter');
+    for (let i = 0; i < 40; i++) {
+      await new Promise(r => setTimeout(r, 125));
+      const after = await read();
+      if (before.thread && !after.thread) continue;
+      if (before.thread && after.thread !== before.thread) throw new Error('会话已切换，未确认消息发送结果，请查看电脑端');
+      if (expected && norm(after.draft) === expected) continue;
+      if (after.human.some(it => !human.has(`${it.i}:${it.sentAt || ''}`) && (!expected || norm(it.t) === expected))) return false;
+      if (queueMatches(after.queued) > queued) return true;
+    }
+    throw new Error('Devin 未确认接收消息，草稿已保留，请查看电脑端后重试');
+  },
+
   async fileAgentMarks(f, text) {
     const m = agentMarks(this.devinHist, f.path, text);
     if (m && (m.add.length || m.del.length)) return { marks: m, markSource: 'agent' };

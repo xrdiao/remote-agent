@@ -106,7 +106,15 @@
       // Devin: single-choice options can be answered from the notification (Android shows three buttons).
       if (devin && !qs.list[0].multi) actions = qs.list[0].options.slice(0, 3).map((o, i) => ({ id: `opt:${i}`, label: o.label.slice(0, 40) }));
     }
-    const recentItems = items.slice(items.findLastIndex(el => el.matches('[data-message-kind="human"], [role=group][aria-label="User message"]') || el.querySelector('.composer-human-message, [data-message-kind="human"]')) + 1);
+    const humanIndex = items.findLastIndex(el => el.matches('[data-message-kind="human"], [role=group][aria-label="User message"]') || el.querySelector('.composer-human-message, [data-message-kind="human"]'));
+    const recentItems = items.slice(humanIndex + 1);
+    let runId = '', runAt = null, runIndex = null;
+    if (devin && humanIndex >= 0) {
+      const human = items[humanIndex], index = human.closest('[data-acp-msg-index]')?.getAttribute('data-acp-msg-index');
+      runAt = devinMessageTime(human);
+      if (index != null && /^\d+$/.test(index)) runIndex = Number(index);
+      runId = runIndex != null ? `devin:acp:${runIndex}` : runAt != null ? `devin:time:${runAt}` : '';
+    }
     const lastReply = [...recentItems].reverse().find(el => el.matches('[data-message-kind="assistant"], [role=group][aria-label="Devin message"]') || el.querySelector('[data-message-kind="assistant"]'));
     let last = lastReply ? lastReply.innerText.trim().replace(/\s+/g, ' ').slice(0, 160) : '';
     if (!last) {
@@ -122,8 +130,15 @@
       last = latestEntry?.conversationId === thread
         ? (reply?.content || '').trim().replace(/\s+/g, ' ').slice(0, 160)
         : '';
+      if (latestEntry?.conversationId === thread) {
+        const key = latestEntry.turnKey || latestEntry.turnId;
+        runId = key ? `codex:turn:${key}` : '';
+        const at = turn?.items?.find(it => it.type === 'worked-for')?.startedAtMs
+          ?? turn?.items?.find(it => it.type === 'user-message')?.sentAtMs;
+        if (Number.isFinite(at)) runAt = at;
+      }
     }
-    return { busy, waiting, waitingText, last, thread, agentId: active?.id || '', title, progress, roots, ...(actions ? { actions } : {}), ...(devin ? { devin: true, changed: changedCount(), tasks: devinTaskState() } : {}) };
+    return { busy, waiting, waitingText, last, thread, agentId: active?.id || '', title, progress, roots, ...(runId ? { runId } : {}), ...(runAt != null ? { runAt } : {}), ...(runIndex != null ? { runIndex } : {}), ...(actions ? { actions } : {}), ...(devin ? { devin: true, changed: changedCount(), tasks: devinTaskState() } : {}) };
   };
 
   // Cursor Agents window: the left sidebar lists conversations as row:<agent id>.

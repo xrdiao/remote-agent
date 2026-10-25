@@ -166,23 +166,24 @@ export const methods = {
     }
     return null;
   },
-  async openFile(text, reviewDiff = '', fromChanges = false) {
+  async openFile(text, reviewDiff = '', fromChanges = false, requestId) {
+    const emit = data => this.emit({ requestId, ...data });
     if (this.app === 'codex') {
       const run = (await this.cdp.evaluate(helpersCall('codexFacts()')))?.view?.run || '';
       if (run && !/local|本地/i.test(run)) {
-        this.emit({ t: 'file', error: '当前执行位置不是本机，不能把远程路径当成电脑上的文件打开', name: path.posix.basename(parseRef(text).p) });
+        emit({ t: 'file', error: '当前执行位置不是本机，不能把远程路径当成电脑上的文件打开', name: path.posix.basename(parseRef(text).p) });
         return;
       }
     }
-    this.emit({ t: 'file', loading: true, name: path.posix.basename(parseRef(text).p) });
+    emit({ t: 'file', loading: true, name: path.posix.basename(parseRef(text).p) });
     try {
       const f = await this.resolveFile(text);
       if (/\.mp4$/i.test(f.path) && !f.host) {
-        this.emit({ t: 'file', name: path.basename(f.path), path: f.path, size: f.size, video: videoUrl(f.path, this.deviceId) });
+        emit({ t: 'file', name: path.basename(f.path), path: f.path, size: f.size, video: videoUrl(f.path, this.deviceId) });
         return;
       }
       if (/\.pdf$/i.test(f.path) && !f.host) {
-        this.emit({ t: 'file', name: path.basename(f.path), path: f.path, size: f.size, pdf: pdfUrl(f.path, this.deviceId) });
+        emit({ t: 'file', name: path.basename(f.path), path: f.path, size: f.size, pdf: pdfUrl(f.path, this.deviceId) });
         return;
       }
       const body = await readFile(f.path, f.size);
@@ -191,28 +192,26 @@ export const methods = {
         const theme = await this.fileTheme();
         hl = await highlightText(body.text, f.path, theme).catch(() => null);
       }
-      this.emit({ t: 'file', name: path.posix.basename(f.path), path: f.path, host: f.host, size: f.size, line: f.line, editable: body.text != null && !body.truncated, ...body, ...(hl ? { hl } : {}) });
+      emit({ t: 'file', name: path.posix.basename(f.path), path: f.path, host: f.host, size: f.size, line: f.line, editable: body.text != null && !body.truncated, ...body, ...(hl ? { hl } : {}) });
       // Gutter marks come afterwards — the git calls shouldn't hold the first paint.
       if (body.text) {
         this.fileMarks(f, body.text, reviewDiff, fromChanges).then(marked => {
-          if (marked?.marks || marked?.newFile || marked?.diff) this.emit({ t: 'fileMarks', path: f.path, host: f.host, ...(marked?.marks ? { marks: marked.marks, markSource: marked.markSource } : {}), ...(marked?.newFile ? { newFile: true } : {}), ...(marked?.diff ? { diff: marked.diff } : {}), ...(marked?.commit ? { commit: marked.commit, subject: marked.subject } : {}) });
+          if (marked?.marks || marked?.newFile || marked?.diff) emit({ t: 'fileMarks', path: f.path, host: f.host, ...(marked?.marks ? { marks: marked.marks, markSource: marked.markSource } : {}), ...(marked?.newFile ? { newFile: true } : {}), ...(marked?.diff ? { diff: marked.diff } : {}), ...(marked?.commit ? { commit: marked.commit, subject: marked.subject } : {}) });
         }).catch(() => {});
       }
     } catch (e) {
-      this.emit({ t: 'file', error: e.message, name: path.posix.basename(parseRef(text).p) });
+      emit({ t: 'file', error: e.message, name: path.posix.basename(parseRef(text).p) });
     }
   },
-  async saveFile(filePath, text, host) {
+  async saveFile(filePath, text, host, requestId) {
     try {
       if (host) throw new Error('只支持修改本地文件');
       const loc = locateWritable(filePath);
       if (!loc) throw new Error('只能修改已打开过的项目里的文件');
       const size = await writeTextFile(loc.path, text);
-      this.emit({ t: 'saved', ok: true, path: filePath, host: '', size });
-      this.emit({ t: 'status', ok: true, msg: '已保存' });
+      this.emit({ t: 'saved', requestId, ok: true, path: filePath, host: '', size });
     } catch (e) {
-      this.emit({ t: 'saved', ok: false, error: e.message, path: filePath, host: host || '' });
-      this.emit({ t: 'status', ok: false, msg: e.message });
+      this.emit({ t: 'saved', requestId, ok: false, error: e.message, path: filePath, host: host || '' });
     }
   }
 };
