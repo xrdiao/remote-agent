@@ -1570,6 +1570,11 @@ document.addEventListener('click', async e => {
     await copyText(b.closest('.msg').copyText, b, false);
     return;
   }
+  if (currentApp === 'codex' && /^(View changes|View changed files|View file changes)$/i.test(b.dataset.actionLabel || '')) {
+    status('读取改动的文件…');
+    send({ t: 'changes' });
+    return;
+  }
   if (RISKY.test(b.textContent.trim()) && !await ask(`确定要点「${b.textContent.trim()}」吗？`, b.textContent.trim())) return;
   b.closest('.btns')?.querySelectorAll('button').forEach(button => { button.disabled = true; });
   send({ t: 'click', item: b.dataset.item, n: Number(b.dataset.n), actionId: b.dataset.actionId, label: b.dataset.actionLabel, sel: viewSel });
