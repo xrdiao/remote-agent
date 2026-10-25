@@ -306,6 +306,7 @@ export const ROUTES = {
   codexIde: { run: s => s.codexToggleIde() },
   codexRun: { run: s => s.codexRunMenu() },
   codexChat: { run: s => s.codexChatMenu() },
+  codexRename: { run: (s, m) => s.codexRenameThread(String(m.id || ''), String(m.name || '')) },
   codexArchive: { run: (s, m) => s.codexArchiveThread(String(m.id || '')) },
   visualList: {pre: s => s.visualList()},
   visualSelect: {pre: (s, m) => s.visualSelect(m.id)},

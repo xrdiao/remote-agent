@@ -264,6 +264,9 @@ mergeCodexItems(chat) {
   if (!this.itemCache) this.itemCache = new Map();
   const prev = this.itemCache.get(thread) || [];
   const rows = new Map(prev.map(it => [it.i, it]));
+  if (chat.capacityPresent === false) {
+    for (const [id, it] of rows) if (it.syntheticCapacity) rows.delete(id);
+  }
   for (const [index, { buttonsRead, ...it }] of chat.items.entries()) {
     const old = rows.get(it.i);
     // A stored turn has no footer DOM; a mounted turn is authoritative, including removal.
@@ -274,6 +277,9 @@ mergeCodexItems(chat) {
       ...(old.actions ? { actions: old.actions } : {}) } : it;
     chat.items[index] = row;
     rows.set(it.i, row);
+  }
+  if (chat.items.some(it => it.capacity && !it.syntheticCapacity)) {
+    for (const [id, it] of rows) if (it.syntheticCapacity) rows.delete(id);
   }
   chat.items = [...rows.values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).slice(-400);
   chat.earlier = this.codexEarlier(chat.items);
@@ -799,6 +805,51 @@ async codexChatPick(label, name) {
   if (now && now !== thread) await this.adoptCodexThread(now);
   setTimeout(() => this.pollChat().catch(() => {}), 300);
   setTimeout(() => this.listAgents().catch(() => {}), 400);
+},
+
+async codexRenameThread(agentId, name) {
+  if (this.app !== 'codex') throw new Error('只有 Codex 会话可以重命名');
+  const next = String(name || '').trim().slice(0, 80);
+  if (!next) throw new Error('会话名称不能为空');
+  const match = /^thread:([^:]+):(.+)$/.exec(String(agentId || ''));
+  if (!match) throw new Error('这条会话不能重命名');
+  const pageId = match[1], convId = match[2];
+  const page = (await codexWindows(CODEX_CDP_URL)).find(p => p.pageId === pageId);
+  if (!page?.chatWs) throw new Error('这个窗口已经关闭');
+  const own = pageId === this.codexPageId && this.cdp;
+  const cdp = own ? this.cdp : new Cdp(page.chatWs);
+  let beforeThread = '';
+  try {
+    if (!own) await cdp.connect();
+    beforeThread = await cdp.evaluate(helpersCall('codexThread()')) || '';
+    if (beforeThread !== convId && !await this.selectCodexThread(convId, cdp)) throw new Error('没有找到这个会话');
+    const pos = await cdp.evaluate(helpersCall(`codexButtonPoint('actions')`));
+    if (!pos) throw new Error('当前会话没有操作菜单');
+    await this.tapCss(pos.x, pos.y, 'left', cdp);
+    let hit = null;
+    for (let i = 0; i < 10 && !hit; i++) {
+      await new Promise(r => setTimeout(r, 120));
+      hit = (await cdp.evaluate(helpersCall('codexRunItems()')) || []).find(it => it.label === 'Rename');
+    }
+    if (!hit) { await cdp.evaluate(helpersCall('closeCodexMenu()')); throw new Error('没有找到重命名入口'); }
+    await this.tapCss(hit.x, hit.y, 'left', cdp);
+    const opened = await cdp.evaluate(`(() => {
+      const doc = document.getElementById('active-frame')?.contentDocument || document;
+      const input = [...doc.querySelectorAll('input, textarea')].find(e => e.getBoundingClientRect().height > 8);
+      if (!input) return false;
+      input.focus(); input.select?.(); return true;
+    })()`);
+    if (!opened) throw new Error('重命名输入框没有出现');
+    await this.typeText(next, cdp);
+    await this.key('Enter', { cdp });
+    await new Promise(r => setTimeout(r, 400));
+    if (beforeThread && beforeThread !== convId) await this.selectCodexThread(beforeThread, cdp);
+    if (own) { this.lastChatAt = 0; await this.pollChat(); }
+    await this.listAgents();
+    this.emit({ t: 'status', ok: true, msg: '已重命名会话' });
+  } finally {
+    if (!own) { try { cdp.close(); } catch {} }
+  }
 },
 
 noteFusionRemoved(convId) {
