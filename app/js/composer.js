@@ -422,7 +422,7 @@ $('send').onclick = () => {
   const sent = mode === 'terminal' ? send({ t: 'termSend', text: v, ...receipt })
     : send({ t: 'send', text: v, submit: true, ...receipt, ...(when ? { when } : {}), ...mentionsFor(v) });
   if (sent === false) failPendingSend(receipt.requestId);
-  if (mode === 'chat') restoreChatPosition(null, true);
+  if (mode === 'chat') jumpToLatest();
 };
 $('sendNow').onclick = async () => {
   if (pendingImageUploads()) return status('图片尚未上传完成；失败图片请重试或删除', false);
@@ -437,7 +437,7 @@ $('sendNow').onclick = async () => {
   pushEcho(receipt.requestId, v, steer ? 'chat' : 'queue');
   if (send({ t: 'send', text: v, submit: true, ...receipt, when: steer ? 'now' : 'queue', ...mentionsFor(v) }) === false) failPendingSend(receipt.requestId);
   if (currentApp !== 'codex') { text.value = ''; autosize(); }
-  restoreChatPosition(null, true);
+  jumpToLatest();
 };
 $('insertNewline').addEventListener('pointerdown', e => e.preventDefault());
 $('insertNewline').onclick = () => {
