@@ -24,6 +24,7 @@
   "codexChatPoint",
   "codexArchiveTarget",
   "codexArchiveConfirm",
+  "codexArchiveDone",
   "codexPromptText",
   "codexSelectPrompt",
   "codexPromptPoint",

@@ -34,6 +34,8 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Locale;
+import java.util.HashMap;
+import java.util.Map;
 
 import javax.crypto.Cipher;
 import javax.crypto.spec.GCMParameterSpec;
@@ -63,6 +65,7 @@ public class NotifyService extends Service {
     private volatile long lastData;
     private Thread worker, watchdog;
     private final Object gate = new Object();
+    private final Map<String, Long> latestSeq = new HashMap<>();
     private ConnectivityManager cm;
     private ConnectivityManager.NetworkCallback netCallback;
     private long backoff = 2000;
@@ -362,6 +365,12 @@ public class NotifyService extends Service {
         String threadId = e.optString("threadId", "");
         // One notification per thread, so a second session does not replace the first.
         String key = win + "|" + windowId + "|" + threadId;
+        long seq = e.optLong("seq", 0);
+        if (seq > 0) {
+            long previous = latestSeq.containsKey(key) ? latestSeq.get(key) : 0;
+            if (seq <= previous) return;
+            latestSeq.put(key, seq);
+        }
         int id = key.replace("|", "").isEmpty() ? 2 : 3 + (key.hashCode() & 0x7fffffff) % 100000;
         String kind = e.optString("kind");
         if ("end".equals(kind)) { Log.i(TAG, "cancel id=" + id); ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).cancel(id); return; }
