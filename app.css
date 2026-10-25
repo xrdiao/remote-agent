@@ -940,7 +940,7 @@ button.fold .chev { flex: none; color: var(--fg-4); font-size: 12px; }
   border-radius: 0; background: transparent; display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 12px;
 }
-#sheet[data-kind="agents"] .agentFilterRow { display: grid; grid-template-columns: 32px minmax(0, 1fr); align-items: center; gap: 6px; }
+#sheet[data-kind="agents"] .agentFilterRow { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: center; gap: 6px; }
 #sheet[data-kind="agents"] .agentFilterRow + .agentFilterRow { margin-top: 0; padding-left: 12px; border-top: 0; border-left: 1px solid var(--line); }
 #sheet[data-kind="agents"] .agentFilterLabel { width: auto; color: var(--fg-3); font-size: 12px; text-align: left; }
 #sheet[data-kind="agents"] .agentFilterChoices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; }
