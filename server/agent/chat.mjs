@@ -211,30 +211,37 @@ export const methods = {
         this.lastChat = JSON.stringify(initial);
         this.emit({ t: 'chat', sel: this.selectionKey(), chat: initial });
       }
+      const thinkingAction = async action => {
+        if (this.app !== 'codex') return cdp.evaluate(helpersCall(action));
+        const acted = await cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return !h.codexCapacityItem() && h.${action}; })()`);
+        if (acted === false && this.liveRead(cdp, sel)) chat = await cdp.evaluate(helpersCall('extract()'));
+        return acted;
+      };
       const readThinking = async () => {
+        if (this.app === 'codex' && chat?.capacityPresent) return;
         const liveClosed = this.app !== 'devin' && !(this.app === 'codex' && chat?.busy) && (chat?.items || []).some(it => it.k === 'thinking' && it.live && !(it.t || '').includes('\n'));
         if (liveClosed) {
           const idxs = await cdp.evaluate(helpersCall(`closedThinkingIndexes('live')`));
           if (!this.liveRead(cdp, sel)) return;
           if (idxs?.length) {
-            await cdp.evaluate(helpersCall(`clickThinking(${JSON.stringify(idxs)})`));
+            if (!await thinkingAction(`clickThinking(${JSON.stringify(idxs)})`)) return;
             await new Promise(r => setTimeout(r, 250));
             if (!this.liveRead(cdp, sel)) return;
             chat = await cdp.evaluate(helpersCall('extract()'));
           }
         }
-        if (!this.liveRead(cdp, sel)) return;
+        if (!this.liveRead(cdp, sel) || this.app === 'codex' && chat?.capacityPresent) return;
         const needFinal = this.app !== 'devin' && !(this.app === 'codex' && chat?.busy) && (chat?.items || []).some(it => it.k === 'thinking' && !it.live && !(it.t || '').includes('\n') && !this.thinkingTried.has(it.i));
         if (needFinal) {
           const idxs = await cdp.evaluate(helpersCall(`closedThinkingIndexes('done')`));
           if (!this.liveRead(cdp, sel)) return;
           if (idxs?.length) {
-            await cdp.evaluate(helpersCall(`clickThinking(${JSON.stringify(idxs)})`));
+            if (!await thinkingAction(`clickThinking(${JSON.stringify(idxs)})`)) return;
             await new Promise(r => setTimeout(r, 250));
             if (!this.liveRead(cdp, sel)) return;
             chat = await cdp.evaluate(helpersCall('extract()'));
             if (!this.liveRead(cdp, sel)) return;
-            await cdp.evaluate(helpersCall(`closeThinkingIfOpen(${JSON.stringify(idxs)})`));
+            await thinkingAction(`closeThinkingIfOpen(${JSON.stringify(idxs)})`);
           }
         }
       };

@@ -278,8 +278,13 @@ mergeCodexItems(chat) {
     chat.items[index] = row;
     rows.set(it.i, row);
   }
-  if (chat.items.some(it => it.capacity && !it.syntheticCapacity)) {
-    for (const [id, it] of rows) if (it.syntheticCapacity) rows.delete(id);
+  const capacity = chat.capacityPresent && chat.items.find(it => it.syntheticCapacity);
+  if (capacity) for (const [id, it] of rows) {
+    if (id === capacity.i || !it.b?.length) continue;
+    const buttons = it.b.map((label, index) => ({ label, action: it.actions?.[index] || '' }))
+      .filter(button => !/^(Retry|Try(?: again)?|重试|再试一次)$/i.test(button.label));
+    if (buttons.length !== it.b.length) rows.set(id, { ...it, b: buttons.map(button => button.label),
+      ...(it.actions ? { actions: buttons.map(button => button.action) } : {}) });
   }
   chat.items = [...rows.values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).slice(-400);
   chat.earlier = this.codexEarlier(chat.items);

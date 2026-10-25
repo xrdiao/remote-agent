@@ -166,6 +166,12 @@
 
   // Returns the button's on-screen center so the click goes through real mouse events.
   const locate = (item, n, actionId, label) => {
+    if (item === `${codexThread()}:capacity` && label && RETRY_LABEL.test(label)) {
+      const retry = codexCapacityItem()?._retry;
+      if (!retry || retry.disabled || retry.getAttribute('aria-disabled') === 'true'
+        || !RETRY_LABEL.test((retry.innerText || retry.getAttribute('aria-label') || '').trim())) return null;
+      return codexPoint(retry);
+    }
     const panel = findPanel();
     if (!panel && !(label && RETRY_LABEL.test(label))) return null;
     let root = item === 'g' ? panel : panel && itemByKey(panel, item);
