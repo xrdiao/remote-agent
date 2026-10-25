@@ -280,7 +280,7 @@ const nearBottom = () => list.scrollHeight - list.scrollTop - list.clientHeight 
 // Following the chat means the user is at the very end (or never left it); "close to the end" is still reading.
 const BOTTOM_EPSILON = 1;
 const atBottom = () => list.scrollHeight - list.scrollTop - list.clientHeight <= BOTTOM_EPSILON;
-const followingChat = () => isFollowingBottom() || (!chatTouching && !chatMomentum && atBottom());
+const followingChat = () => isFollowingBottom();
 
 // pickMenu has no completion message until the relay restarts, so clear "切换中…"
 // when the composer model/mode actually changes, or after a short fallback.
@@ -395,6 +395,7 @@ function paintSessions(chat) {
   const key = s?.key ? scKeyFor(s.key) : null;
   const changed = key !== curSessKey;
   if (changed) {
+    cancelChatMotion();
     curSessKey = key;
     thoughtObserver.disconnect();
     cache.clear();
@@ -403,7 +404,6 @@ function paintSessions(chat) {
     latestTasks = null;
     scSwitch(s?.key || null);
     itemsEl.replaceChildren();
-    restoreChatPosition(null, true);
   }
   const tabs = s?.tabs || [];
   for (const t of tabs) if (t.id) scSetTitle(scKeyFor(t.id), t.title);
