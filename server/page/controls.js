@@ -167,12 +167,22 @@
   // Returns the button's on-screen center so the click goes through real mouse events.
   const locate = (item, n, actionId, label) => {
     const panel = findPanel();
-    if (!panel) return null;
-    const root = item === 'g' ? panel : itemByKey(panel, item);
+    if (!panel && !(label && RETRY_LABEL.test(label))) return null;
+    let root = item === 'g' ? panel : panel && itemByKey(panel, item);
+    if (!root && label && RETRY_LABEL.test(label)) {
+      const retry = [...doc.querySelectorAll('button, [role=button]')].find(button => vis(button)
+        && RETRY_LABEL.test((button.innerText || button.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim())
+        && !inItem(button));
+      let banner = retry;
+      for (let i = 0; retry && banner && i < 8; i++, banner = banner.parentElement) {
+        if (CAPACITY_ERROR.test(banner.innerText || '')
+          && (itemKey(banner) === item || item === `${codexThread()}:capacity`)) { root = banner; break; }
+      }
+    }
     if (!root) return null;
     let list = item === 'g' ? buttonsIn(panel, true).filter(x => !inItem(x.el) && !inQn(x.el)) : buttonsIn(root, false);
     if (root.hasAttribute?.('data-turn-key')) {
-      list = list.filter(x => /^(Copy message|Fork chat from here|View changed files|View changes|Undo|Open agent|View agent|View subagent|Stop agent|Apply|Revert)$/i.test(x.label) || RETRY_LABEL.test(x.label));
+      list = list.filter(x => /^(Copy message|Fork chat from here|View changed files|View changes|View file changes|Undo|Open agent|View agent|View subagent|Stop agent|Apply|Revert)$/i.test(x.label) || RETRY_LABEL.test(x.label));
       if (label && RETRY_LABEL.test(label)) {
         const extra = [...doc.querySelectorAll('[data-local-conversation-item-target-ids], aside')]
           .filter(card => card.closest('[data-turn-key]') === root && CAPACITY_ERROR.test(card.innerText || ''))

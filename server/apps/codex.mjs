@@ -829,7 +829,7 @@ async codexRenameThread(agentId, name) {
     let hit = null;
     for (let i = 0; i < 10 && !hit; i++) {
       await new Promise(r => setTimeout(r, 120));
-      hit = (await cdp.evaluate(helpersCall('codexRunItems()')) || []).find(it => it.label === 'Rename');
+      hit = (await cdp.evaluate(helpersCall('codexRunItems()')) || []).find(it => /^Rename(?: chat)?$/i.test(String(it.label || '').replace(/\s+/g, ' ').trim()));
     }
     if (!hit) { await cdp.evaluate(helpersCall('closeCodexMenu()')); throw new Error('没有找到重命名入口'); }
     await this.tapCss(hit.x, hit.y, 'left', cdp);
@@ -842,7 +842,13 @@ async codexRenameThread(agentId, name) {
     if (!opened) throw new Error('重命名输入框没有出现');
     await this.typeText(next, cdp);
     await this.key('Enter', { cdp });
-    await new Promise(r => setTimeout(r, 400));
+    let renamed = false;
+    for (let i = 0; i < 20 && !renamed; i++) {
+      await new Promise(r => setTimeout(r, 150));
+      const rows = await this.codexThreadRows(cdp).catch(() => []);
+      renamed = rows.some(row => row.id === convId && String(row.title || '').trim() === next);
+    }
+    if (!renamed) throw new Error('桌面端未确认会话名称已更新');
     if (beforeThread && beforeThread !== convId) await this.selectCodexThread(beforeThread, cdp);
     if (own) { this.lastChatAt = 0; await this.pollChat(); }
     await this.listAgents();
@@ -893,13 +899,15 @@ async codexArchiveThread(agentId) {
       throw new Error(target ? '这个会话没有归档或删除入口' : '没有找到这个会话');
     }
     await this.tapCss(target.x, target.y, 'left', cdp);
-    await new Promise(r => setTimeout(r, 400));
-    const confirm = await cdp.evaluate(helpersCall('codexArchiveConfirm()'));
-    if (confirm?.x) await this.tapCss(confirm.x, confirm.y, 'left', cdp);
-    await new Promise(r => setTimeout(r, 400));
+    let removed = false;
+    for (let i = 0; i < 60 && !removed; i++) {
+      await new Promise(r => setTimeout(r, 150));
+      const confirm = await cdp.evaluate(helpersCall(`codexArchiveConfirm(${JSON.stringify(convId)})`));
+      if (confirm) await this.tapCss(confirm.x, confirm.y, 'left', cdp);
+      removed = await cdp.evaluate(helpersCall(`codexArchiveDone(${JSON.stringify(convId)}, ${JSON.stringify(target.action)})`));
+    }
     await cdp.evaluate(helpersCall('closeCodexMenu()'));
-    const rows = await this.codexThreadRows(cdp);
-    if (rows.some(row => row.id === convId)) throw new Error('操作没有成功，会话还在列表里');
+    if (!removed) throw new Error('桌面端尚未确认删除或归档完成');
     const afterThread = await cdp.evaluate(helpersCall('codexThread()')) || '';
     if (!wasCurrent && afterThread && beforeThread && afterThread !== beforeThread) {
       const phoneThread = this.threadId;

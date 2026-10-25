@@ -124,7 +124,7 @@ async function apnsSend(envName, token, topic, pushType, priority, payload, coll
     'apns-topic': topic,
     'apns-push-type': pushType,
     'apns-priority': String(priority),
-    'apns-expiration': String(Math.floor(Date.now() / 1000) + 3600),
+    'apns-expiration': String(Math.floor(Date.now() / 1000) + 120),
     ...(collapse ? { 'apns-collapse-id': collapse } : {}),
     'content-type': 'application/json',
   };
@@ -214,7 +214,7 @@ async function send(ip, body) {
   if (!reg) return [410, { error: 'gone' }];
   if (!secretOk(reg, secret)) return [401, { error: 'secret 无效' }];
   const d = body.data && typeof body.data === 'object' ? body.data : {};
-  const data = { win: cut(d.win, 200), windowId: cut(d.windowId, 200), threadId: cut(d.threadId, 200), kind: cut(d.kind, 200) };
+  const data = { win: cut(d.win, 200), windowId: cut(d.windowId, 200), threadId: cut(d.threadId, 200), kind: cut(d.kind, 200), seq: Math.max(0, Number(d.seq) || 0), createdAt: Math.max(0, Number(d.createdAt) || 0) };
   const title = cut(body.title, 200), text = cut(body.body, 1000);
   const collapse = crypto.createHash('sha256').update(`${data.win}|${data.windowId}|${data.threadId}`).digest('hex').slice(0, 32);
   const payload = { aps: { alert: { title, body: text }, sound: 'default', 'thread-id': collapse }, ...data };

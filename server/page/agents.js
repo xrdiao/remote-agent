@@ -114,9 +114,14 @@
       if (tail) last = tail.innerText.trim().replace(/\s+/g, ' ').slice(0, 160);
     }
     if (codexThread()) {
+      const thread = codexThread();
       const latest = items.filter(el => el.hasAttribute('data-turn-key')).at(-1);
-      const reply = latest && codexTurnData(latest)?.items?.filter(it => it.type === 'assistant-message' && it.phase !== 'commentary' && it.completed).at(-1);
-      last = (reply?.content || '').trim().replace(/\s+/g, ' ').slice(0, 160);
+      const latestEntry = latest && codexLatestEntry(latest);
+      const turn = latestEntry?.turn || (latestEntry?.turnKey === latest?.getAttribute('data-turn-key') ? codexTurnData(latest) : null);
+      const reply = turn?.items?.filter(it => it.type === 'assistant-message' && it.phase !== 'commentary' && it.completed).at(-1);
+      last = latestEntry?.conversationId === thread
+        ? (reply?.content || '').trim().replace(/\s+/g, ' ').slice(0, 160)
+        : '';
     }
     return { busy, waiting, waitingText, last, thread, agentId: active?.id || '', title, progress, roots, ...(actions ? { actions } : {}), ...(devin ? { devin: true, changed: changedCount(), tasks: devinTaskState() } : {}) };
   };

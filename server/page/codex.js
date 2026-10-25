@@ -120,29 +120,40 @@
     return null;
   };
   // Each recent-chat row has its own Archive chat button. Delete chat is used only when that row actually shows it.
-  const codexArchiveTarget = id => {
+  const codexArchiveRow = id => {
     const menu = [...doc.querySelectorAll('[role=menu]')].find(e => vis(e) && /Search recent chats/.test(e.innerText || ''));
-    if (!menu) return null;
-    for (const el of menu.querySelectorAll('[role=button]')) {
-      const hit = codexFiberProps(el).some(p => p.conversationId === id || (typeof p.href === 'string' && p.href.endsWith('/' + id)));
-      if (!hit) continue;
-      const buttons = [...el.querySelectorAll('button')].filter(b => b.getBoundingClientRect().width > 0);
-      const labels = buttons.map(b => b.getAttribute('aria-label') || '');
-      const action = labels.includes('Delete chat') ? 'Delete chat' : labels.includes('Archive chat') ? 'Archive chat' : '';
-      const btn = buttons.find(b => (b.getAttribute('aria-label') || '') === action);
-      if (!btn) return { action: '' };
-      el.scrollIntoView({ block: 'nearest' });
-      return { action, ...codexPoint(btn) };
-    }
-    return null;
+    return menu && [...menu.querySelectorAll('[role=button]')].find(el => codexFiberProps(el).some(p => p.conversationId === id || (typeof p.href === 'string' && p.href.endsWith('/' + id))));
   };
-  const codexArchiveConfirm = () => {
+  const codexArchiveTarget = id => {
+    const el = codexArchiveRow(id);
+    if (!el) return null;
+    const buttons = [...el.querySelectorAll('button')].filter(b => b.getBoundingClientRect().width > 0);
+    const labels = buttons.map(b => b.getAttribute('aria-label') || '');
+    const action = labels.includes('Delete chat') ? 'Delete chat' : labels.includes('Archive chat') ? 'Archive chat' : '';
+    const btn = buttons.find(b => (b.getAttribute('aria-label') || '') === action);
+    if (!btn) return { action: '' };
+    el.scrollIntoView({ block: 'nearest' });
+    return { action, ...codexPoint(btn) };
+  };
+  const codexArchiveConfirm = id => {
     const dialog = [...doc.querySelectorAll('[role=dialog]')].find(e => vis(e) && e.getBoundingClientRect().height > 20);
-    if (!dialog) return null;
-    const buttons = [...dialog.querySelectorAll('button')].filter(vis);
-    const btn = buttons.find(b => /^(Archive chat|Delete chat|Archive|Delete)$/i.test(((b.innerText || b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim())));
-    if (!btn) return { label: '' };
+    const scope = dialog || codexArchiveRow(id);
+    if (!scope) return null;
+    const buttons = [...scope.querySelectorAll('button')].filter(b => vis(b) && !b.disabled);
+    const btn = buttons.find(b => dialog
+      ? b.hasAttribute('data-archive-confirm-button') || /^(Archive chat|Delete chat|Archive|Delete|Stop and archive|Archive and remove)$/i.test((b.innerText || b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim())
+      : /^Confirm$/i.test((b.innerText || b.getAttribute('aria-label') || '').trim()));
+    if (!btn) return null;
     return { label: (btn.innerText || btn.getAttribute('aria-label') || '').trim(), ...codexPoint(btn) };
+  };
+  const codexArchiveDone = (id, action) => {
+    if (codexChatRows(true).some(row => row.id === id)) return false;
+    if (action === 'Delete chat') return true;
+    for (const scope of codexHistoryScopes()) for (const bindings of scope.familyBindings.values()) for (const binding of bindings.values()) {
+      const manager = typeof binding.value?.get === 'function' ? binding.value.get() : null;
+      if (typeof manager?.isConversationArchiving === 'function' && manager.isConversationSuppressedAfterArchive(id)) return !manager.isConversationArchiving(id);
+    }
+    return false;
   };
 
   const codexPromptEl = () => [...doc.querySelectorAll('.ProseMirror[contenteditable="true"]')].find(vis);
@@ -376,7 +387,7 @@
       if (!options.length && text === 'Codex 请求') continue;
       if (!rows.has(id)) rows.set(id, { id, text: text || buttons.filter(b => b.el.matches('[role="radio"]')).map(b => b.label).join(' / ') || 'Codex 请求', buttons, fields: fieldRows });
     }
-    return [...rows.values()];
+    return [...rows.values()].filter(row => row.id.startsWith('async:') || row.id.startsWith('approval:') || row.text.trim() !== 'Codex 请求');
   };
   const codexRequestData = () => codexRequests().map(r => ({ id: r.id, text: String(r.text).slice(0, 6000), buttons: r.buttons.map(({ label, disabled, selected }) => ({ label, disabled, selected })), fields: r.fields.map(({ label, value, type, options }) => ({ label, value, type, options })) }));
   const codexRequestTarget = (id, n) => { const b = codexRequests().find(r => r.id === id)?.buttons[n]; return b?.el ? codexPoint(b.el) : null; };
@@ -485,8 +496,8 @@
         files.set(name, { name, add: diff ? '+' + (add + Number(previous?.add || 0)) : '未获取', del: diff ? '-' + (del + Math.abs(Number(previous?.del || 0))) : '', diff: [previous?.diff, diff].filter(Boolean).join('\n') });
       }
     }
-    const last = [...turns].reverse().find(el => buttonsIn(el, false).some(b => /^(Undo|Apply|Revert|View changes|View changed files)$/.test(b.label)));
-    const actions = last ? buttonsIn(last, false).filter(b => /^(Undo|Apply|Revert|View changes|View changed files)$/.test(b.label)).map(b => b.label) : [];
+    const last = [...turns].reverse().find(el => buttonsIn(el, false).some(b => /^(Undo|Apply|Revert|View changes|View changed files|View file changes)$/.test(b.label)));
+    const actions = last ? buttonsIn(last, false).filter(b => /^(Undo|Apply|Revert|View changes|View changed files|View file changes)$/.test(b.label)).map(b => b.label) : [];
     return { files: [...files.values()], actions, count: files.size, turn: last?.getAttribute('data-turn-key') || '' };
   };
   const codexChangeTarget = label => {

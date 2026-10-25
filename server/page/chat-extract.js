@@ -305,7 +305,9 @@
       } else if (item.type === 'collabAgentToolCall' || item.type === 'chatgpt-subagent-activity') {
         out.push({ i: id, k: 'tool', src: 'codex', kind: 'other', t: `${item.tool || '子 Agent'} · ${item.status || ''}\n${JSON.stringify(item.agentsStates || item.agents || item.receiverThreadIds || [])}`, agents: (item.receiverThreadIds || []).map(id => ({ id, title: item.agentsStates?.[id]?.nickname || id })), keep: true });
       } else if (item.type === 'stream-error') {
-        if (!finished) out.push({ i: id, k: 'thinking', t: `连接\n${textOf(item.content)}`.slice(0, 400), live: true });
+        const body = textOf(item.content);
+        if (CAPACITY_ERROR.test(body)) out.push({ i: id, k: 'notice', kind: 'capacity', t: body.slice(0, 400), capacity: true, live: !finished });
+        else if (!finished && body) out.push({ i: id, k: 'thinking', t: `连接\n${body}`.slice(0, 400), live: true });
       } else if (item.type === 'turn-diff') {
         out.push({ i: id, k: 'tool', kind: 'other', src: 'codex', t: '文件改动' });
       } else if (item.type !== 'automatic-approval-review' && item.type !== 'worked-for') {
@@ -313,11 +315,19 @@
         if (body) out.push({ i: id, k: 'tool', kind: 'other', src: 'codex', t: body.slice(0, 400), capacity: CAPACITY_ERROR.test(body), done: finished && /exec|patch|command/.test(item.type) });
       }
     }
-    const turnButtons = el ? buttonsIn(el, false).map(x => x.label).filter(l => /^(Copy message|Fork chat from here|View changed files|View changes|Undo|Open agent|View agent|View subagent|Stop agent|Apply|Revert)$/i.test(l) || RETRY_LABEL.test(l)) : [];
-    const host = [...out].reverse().find(it => it.capacity) || [...out].reverse().find(it => it.k === 'assistant') || out.at(-1);
+    const turnButtons = el ? [
+      ...buttonsIn(el, false),
+      ...[...doc.querySelectorAll('[data-local-conversation-item-target-ids], aside')]
+        .filter(card => card.closest('[data-turn-key]') === el && CAPACITY_ERROR.test(card.innerText || ''))
+        .flatMap(card => buttonsIn(card, false)),
+    ].map(x => x.label).filter((l, n, rows) => ( /^(Copy message|Fork chat from here|View changed files|View changes|View file changes|Undo|Open agent|View agent|View subagent|Stop agent|Apply|Revert)$/i.test(l) || RETRY_LABEL.test(l)) && rows.indexOf(l) === n) : [];
+    const finalAssistant = finished ? [...out].reverse().find(it => it.k === 'assistant' && (it.completed === true || finished)) : null;
+    const capacityHost = [...out].reverse().find(it => it.capacity);
+    const host = finalAssistant || capacityHost;
     if (host) {
       host.buttonsRead = !!el;
-      if (turnButtons.length) { host.b = turnButtons; host.btnItem = el.getAttribute('data-turn-key') || host.i; }
+      const buttons = finalAssistant ? turnButtons : turnButtons.filter(label => RETRY_LABEL.test(label));
+      if (buttons.length) { host.b = buttons; host.btnItem = el.getAttribute('data-turn-key') || host.i; }
     }
     const number = entry?.turnNumber || codexFiberProps(el, 24).find(p => p.entry?.turnNumber)?.entry.turnNumber;
     return out.map((item, index) => ({ ...item, ...(number ? { order: number * 10000 + index } : {}) }));
@@ -507,18 +517,36 @@
     return { byId, generation };
   };
 
+  const codexCapacityItem = () => {
+    if (devinSurface() || !doc.querySelector('.ProseMirror')) return null;
+    const retry = [...doc.querySelectorAll('button, [role=button]')].find(button => vis(button)
+      && RETRY_LABEL.test((button.innerText || button.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim())
+      && !inItem(button));
+    let banner = retry;
+    for (let n = 0; retry && banner && n < 8; n++, banner = banner.parentElement) {
+      if (!CAPACITY_ERROR.test(banner.innerText || '')) continue;
+      const body = (banner.innerText || '').replace(/\s*(?:Retry|Try(?: again)?|重试|再试一次)\s*$/i, '').replace(/\s+/g, ' ').trim();
+      const key = `${codexThread()}:capacity`;
+      return { i: key, k: 'notice', kind: 'capacity', t: body.slice(0, 400), capacity: true, live: true,
+        syntheticCapacity: true, _retry: retry,
+        b: [retry.innerText.trim() || retry.getAttribute('aria-label') || 'Retry'], btnItem: key };
+    }
+    return null;
+  };
   const extract = () => {
     const imagePreview = codexImagePreview();
     const log = devinLog();
     const panel = log || (devinSurface() ? null : findPanel());
+    const initialCapacity = !panel && !log ? codexCapacityItem() : null;
     // A brand-new Devin session has a composer and model chip, but no message list yet.
-    if (!panel && !log) {
+    if (!panel && !log && !initialCapacity) {
       const pendingCodexRequests = !devinSurface() ? codexRequestData() : [];
       const modelEl = modelButton();
       if (!modelEl && !hasComposer() && !devinSurface() && !doc.querySelector('[data-request-input-dismiss]')) return null;
       return {
         rect: [0, 0, 0, 0],
         items: [],
+        capacityPresent: false,
         ...(imagePreview ? { imagePreview: true } : {}),
         ...(devinSurface() ? { empty: true } : {}),
         global: [],
@@ -540,6 +568,16 @@
         ...(codexFacts()?.view ? { codex: codexFacts().view } : {}),
       };
     }
+    if (!panel && !log && initialCapacity) {
+      delete initialCapacity._retry;
+      return {
+        rect: [0, 0, 0, 0], items: [initialCapacity], global: [], busy: isBusy(), queued: queued(),
+        subagents: subagents(), changed: changedCount(), questions: { codex: true, requests: codexRequestData() },
+        readonly: !hasComposer(), model: agentModelName(), permission: permissionLabel(), effort: effortName(),
+        capacityPresent: true,
+        ...(imagePreview ? { imagePreview: true } : {}), ...(codexFacts()?.view ? { codex: codexFacts().view } : {}),
+      };
+    }
     const r = (log || panel).getBoundingClientRect();
     const codexId = log ? '' : codexThread();
     const pendingCodexRequests = !log && !devinSurface() && !codexId ? codexRequestData() : null;
@@ -556,7 +594,8 @@
       if (main.k === 'assistant' && !main.h && !main.b) return thoughts;
       return [...thoughts, ...(main.k === 'tool' ? cursorToolItems(el) : [main])];
     });
-    const global = buttonsIn(panel, true).filter(x => !inItem(x.el) && !inQn(x.el) && !x.el.hasAttribute('data-request-input-dismiss') && !/^stop generation\b/i.test(x.label)
+    const capacity = codexCapacityItem();
+    const global = buttonsIn(panel, true).filter(x => !inItem(x.el) && !inQn(x.el) && x.el !== capacity?._retry && !x.el.hasAttribute('data-request-input-dismiss') && !/^stop generation\b/i.test(x.label)
       && !(panel.querySelector('[data-turn-key]') && /^(stop|stop generating|停止)$/i.test(x.label))).map(x => x.label);
     const modeEl = [...doc.querySelectorAll('.composer-unified-dropdown[data-mode]')].find(vis);
     const modelEl = modelButton();
@@ -574,6 +613,8 @@
     } else if (latestEntry?.turn && latestEntry.turnKey !== latestTurn?.getAttribute('data-turn-key')) {
       items.push(...codexTurnItems(null, latestEntry));
     }
+    if (capacity && !items.some(item => item.i === capacity.i)) items.push(capacity);
+    if (capacity) delete capacity._retry;
     const latestData = latestEntry?.turn || (latestTurn && codexTurnData(latestTurn));
     const turnTime = latestData?.items?.find(it => it.type === 'worked-for');
     let generation = turnTime?.startedAtMs ? { start: turnTime.startedAtMs, end: turnTime.completedAtMs || null } : null;
@@ -596,6 +637,7 @@
       rect: [r.x, r.y, r.width, r.height].map(Math.round),
       ...(imagePreview ? { imagePreview: true } : {}),
       ...(generation ? { generation } : {}),
+      capacityPresent: !!capacity,
       items,
       global,
       busy: isBusy(),
