@@ -1297,6 +1297,7 @@ function settleChatScroll() {
 }
 list.addEventListener('scroll', () => {
   if (!restoringChatScroll && turnNavUser) showTurnNav();
+  if (!restoringChatScroll && scrollMode !== 'programmatic' && list.scrollTop < lastScrollTop) setScrollMode('freeScroll');
   if (!suppressHistoryArm && !turnNavPointer?.dragging && (historyPullUp || historyWheelPullUp) && list.scrollTop <= 1) historyArmed = true;
   settleChatScroll();
 }, { passive: true });
