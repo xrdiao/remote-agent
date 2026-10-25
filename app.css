@@ -425,7 +425,7 @@ main { flex: 1; min-height: 0; position: relative; }
 /* Short threads sit on the composer. The spacer shrinks away once the thread scrolls. */
 #list::before { content: ""; flex: 1 1 auto; min-height: 0; }
 #items.stale [data-action], #items.stale [data-request], #items.stale [data-btn] { pointer-events: none; opacity: .55; }
-#items > .msg { content-visibility: auto; contain-intrinsic-size: auto 72px; }
+#items > .msg { content-visibility: visible; }
 #older, #cachedMore {
   display: block; margin: 0 auto 10px; font-size: 13px; color: var(--fg-3);
   background: transparent; border: 1px solid var(--line-2); border-radius: 999px; padding: 6px 14px; min-height: 32px;

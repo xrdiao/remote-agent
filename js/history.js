@@ -1275,6 +1275,7 @@ function flushSettledChat() {
 function settleChatScroll() {
   const top = list.scrollTop;
   if (restoringChatScroll) { lastScrollTop = top; updateToBottom(); return; }
+  if (chatTouching && top < lastScrollTop) historyPullUp = true;
   if (top < lastScrollTop && !chatTouching && !chatMomentum && !suppressHistoryArm && scrollMode !== 'programmatic' && (historyPullUp || historyWheelPullUp)) {
     historyArmed = true;
     setScrollMode('freeScroll');
@@ -1316,6 +1317,7 @@ list.addEventListener('touchmove', e => {
   turnNavGesture();
   restoringChatScroll = false;
   const y = e.touches[0].clientY, dy = y - historyTouchY;
+  if (dy && list.scrollTop <= 1) historyPullUp = true;
   if (dy < 0) {
     historyPullUp = true;
     setScrollMode('freeScroll');
