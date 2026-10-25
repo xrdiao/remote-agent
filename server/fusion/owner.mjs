@@ -337,6 +337,7 @@ async fusionNewSide(side, app, resumeContext = '') {
       }
       const before = await this.cdp.evaluate(helpersCall('activeThread()'));
       if (app === 'codex') {
+        if (!await this.waitCodexNewChatReady()) throw new Error('请先在电脑端登录此窗口的 Codex，再新建会话');
         const emit = this.emit;
         this.emit = () => {};
         try { await this.newCodexChat(); } finally { this.emit = emit; }
@@ -466,9 +467,13 @@ async withFusionSide(side, fn) {
 
 async fusionAsk(side, prompt) {
   return this.withFusionSide(side, async function () {
+    const assertActive = () => { if (this.fusionCancel) throw new Error('已停止'); };
+    assertActive();
     const spec = this.fusionRun[side];
     await this.fusionCheckProject(this.fusionRun.project);
+    assertActive();
     await this.fusionEnsureModel(spec);
+    assertActive();
     const draft = await this.fusionDraft();
     if (draft) throw new Error('这一边的输入框里还有内容，Fusion 不会覆盖它');
     const before = await this.cdp.evaluate(helpersCall('extract()'));
@@ -477,9 +482,12 @@ async fusionAsk(side, prompt) {
     const message = spec.resumeContext ? `以下为旧会话的历史摘录，仅作背景；执行目录为 ${this.fusionRun.project.root}，请以本次要求为准。\n${spec.resumeContext}\n\n${prompt}` : String(prompt);
     const normalize = text => String(text || '').replace(/\s+/g, ' ').trim();
     await this.withFocus(async () => {
+      assertActive();
       const found = await this.cdp.evaluate(FOCUS_COMPOSER);
+      assertActive();
       if (!found) throw new Error('没找到这一边的输入框');
       await this.typeText(message);
+      assertActive();
       if (this.app === 'codex') {
         if (!await this.cdp.evaluate(helpersCall('submitCodexMessage()'))) throw new Error('这一边的发送按钮当前不可用');
       } else await this.key('Enter');
@@ -650,7 +658,9 @@ async fusionUserSend(text) {
   if (!f.a.model || !f.b.model) throw new Error('先选择 A 和 B 的模型');
   if (this.fusionJob) throw new Error('Fusion 正在进行');
   if (!['idle', 'done', 'stopped'].includes(f.phase)) throw new Error('这一轮还在进行。方案写好后点「执行方案」，或先停止');
+  this.fusionCancel = false;
   await this.fusionUsage(true);
+  if (this.fusionCancel) throw new Error('已停止');
   const blocked = ['a', 'b'].map(side => {
     const spec = this.fusionRun?.[side];
     const message = spec && quotaBlockedMessage(spec.app, spec.usage);
@@ -665,7 +675,6 @@ async fusionUserSend(text) {
   f.round = 1;
   f.miss = 0;
   f.phase = 'planning';
-  this.fusionCancel = false;
   this.fusionEmit();
   this.fusionJob = this.fusionPlan(text).catch(e => {
     if (this.fusionRun) this.fusionRun.phase = 'idle';

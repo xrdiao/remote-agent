@@ -300,16 +300,7 @@ export const methods = {
     }
     if (this.cdp === this.editorCdp) await this.attach({ id: `codex:${target.id}`, threadId: this.pendingProject?.threadId || '', projectSwitch: true });
     if (await this.checkCodexLogin()) return false;
-    if (needThread) {
-      let ready = false;
-      for (let i = 0; i < 120 && !ready; i++) {
-        if (this.pendingProject?.trust) return;
-        if (await this.checkCodexLogin()) return false;
-        ready = !!await this.cdp.evaluate(helpersCall('codexNewPoint()'));
-        if (!ready) await new Promise(r => setTimeout(r, 250));
-      }
-      if (!ready) throw new Error('项目已打开，但 Codex 会话入口尚未就绪');
-    }
+    if (needThread) return this.waitCodexNewChatReady();
     return true;
   },
   async newProject(parent, name, newSession = false) {

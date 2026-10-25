@@ -200,9 +200,7 @@ $('sheet').addEventListener('click', async e => {
     if (b.dataset.sc === 'fold' || b.dataset.sc === 'unfold') { scFold('*', b.dataset.sc === 'fold'); return showCacheSheet(); }
     if (b.dataset.sc === 'clearAll') {
       if (!await ask('清除手机上保存的全部会话缓存？\n电脑上的对话不受影响。', '清除')) return;
-      for (const k of ((await scKeys()) || []).map(String)) await scDel(k);
-      SC.items = new Map(); SC.sig = new Map(); SC.collapsed = new Set(); SC.dirty = false;
-      if (lastChat) renderChat(lastChat);
+      await scClear();
       return showCacheSheet();
     }
   }

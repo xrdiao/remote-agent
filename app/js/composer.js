@@ -436,7 +436,6 @@ $('sendNow').onclick = async () => {
   const receipt = sendReceipt(v);
   pushEcho(receipt.requestId, v, steer ? 'chat' : 'queue');
   if (send({ t: 'send', text: v, submit: true, ...receipt, when: steer ? 'now' : 'queue', ...mentionsFor(v) }) === false) failPendingSend(receipt.requestId);
-  if (currentApp !== 'codex') { text.value = ''; autosize(); }
   jumpToLatest();
 };
 $('insertNewline').addEventListener('pointerdown', e => e.preventDefault());

@@ -333,6 +333,16 @@ codexEarlier(items) {
   return !turns.length || turns[0] !== 1 || turns.some((n, i) => !Number.isFinite(n) || (i > 0 && n !== turns[i - 1] + 1));
 },
 
+async waitCodexNewChatReady() {
+  for (let i = 0; i < 120; i++) {
+    if (this.pendingProject?.trust) return;
+    if (await this.checkCodexLogin()) return false;
+    if (await this.cdp.evaluate(helpersCall('codexNewPoint()'))) return true;
+    await new Promise(r => setTimeout(r, 250));
+  }
+  throw new Error('项目已打开，但 Codex 会话入口尚未就绪');
+},
+
 async newCodexChat() {
   if (!this.cdp) throw new Error('还没有连上 Codex');
   if (await this.checkCodexLogin()) throw new Error('请先在电脑端登录此窗口的 Codex，再新建会话');
@@ -888,7 +898,7 @@ async codexArchiveThread(agentId) {
     const beforeThread = await cdp.evaluate(helpersCall('codexThread()')) || '';
     const pos = await cdp.evaluate(helpersCall('codexRecentPoint()'));
     if (!pos) throw new Error('没有找到会话列表');
-    await this.tapCss(pos.x, pos.y, 'left', cdp);
+    if (!pos.open) await this.tapCss(pos.x, pos.y, 'left', cdp);
     let target = null;
     for (let i = 0; i < 8 && !target; i++) {
       await new Promise(r => setTimeout(r, 120));

@@ -1,11 +1,21 @@
 // ---- local per-session history (Devin) ----
 // The relay only remembers what it has seen since it started (and caps it), so the phone keeps its own copy of
 // every row of every session: merged by item id, stored in IndexedDB, dropped only when the user clears it.
-const SC = { key: null, items: new Map(), sig: new Map(), collapsed: new Set(), show: 400, dirty: false, timer: 0 };
+const SC = { key: null, items: new Map(), sig: new Map(), collapsed: new Set(), show: 400, dirty: false, timer: 0, cleared: false };
 const SC_MAX = 8000;
 const acpNum = id => { const m = /^acp(\d+)/.exec(id || ''); return m ? Number(m[1]) : -1; };
 let scDbP = null;
 const scPending = new Map(), scItemBytes = new WeakMap();
+const scWriting = new Set(), scClears = new Set(), scVersions = new Map();
+let scGeneration = 0;
+const scVersion = key => `${scGeneration}:${scVersions.get(key) || 0}`;
+const scClearing = key => [...scClears].some(clear => clear.key == null || clear.key === key);
+function scTrackWrite(key, work) {
+  const write = { key };
+  write.promise = Promise.resolve(work).finally(() => scWriting.delete(write));
+  scWriting.add(write);
+  return write.promise;
+}
 let scSaveFrame = 0;
 function scDb() {
   if (!scDbP) scDbP = new Promise((res, rej) => {
@@ -23,16 +33,27 @@ const scReq = (mode, fn) => scDb().then(db => new Promise((res, rej) => {
   rq.onerror = () => rej(rq.error);
 })).catch(() => null);
 const idbGet = k => scReq('readonly', s => s.get(k));
-const idbPut = (k, v) => scReq('readwrite', s => s.put(v, k));
+const idbPut = (k, v) => scTrackWrite(k, scReq('readwrite', s => s.put(v, k)));
 const chatCacheKey = sel => `${currentComputer()?.id || ''}|${sel}`;
+const chatPreviewGeneration = scGeneration, chatPreviewVersions = new Map(scVersions);
 const chatPreviewReady = idbGet('chat-previews').then(entries => {
-  for (const [key, chat] of entries || []) if (!chatBySel.has(key)) lruPut(chatBySel, key, chat, 12);
+  let filtered = false;
+  for (const [key, chat] of entries || []) {
+    if (scGeneration !== chatPreviewGeneration || (scVersions.get(key) || 0) !== (chatPreviewVersions.get(key) || 0) || scClearing(key)) { filtered = true; continue; }
+    if (!chatBySel.has(key)) lruPut(chatBySel, key, chat, 12);
+  }
+  if (filtered && chatBySel.size) saveChatPreview();
 });
 let chatPreviewTimer = 0;
 function cacheChat(sel, chat) {
-  lruPut(chatBySel, chatCacheKey(sel), chat, 12);
+  const key = chatCacheKey(sel);
+  lruPut(chatBySel, key, chat, 12);
+  if (key === SC.key) SC.cleared = false;
+  saveChatPreview();
+}
+function saveChatPreview() {
   if (!chatPreviewTimer) chatPreviewTimer = setTimeout(function savePreview() {
-    if (chatScrolling || chatTouching) { chatPreviewTimer = setTimeout(savePreview, 250); return; }
+    if (scClears.size || chatScrolling || chatTouching) { chatPreviewTimer = setTimeout(savePreview, 250); return; }
     chatPreviewTimer = 0;
     idbPut('chat-previews', [...chatBySel].map(([key, value]) => [key, { ...value, items: value.items.slice(-400) }]));
   }, 1000);
@@ -76,12 +97,13 @@ function scSetTitle(key, title) {
   if (ks.length > 500) delete scTitles[ks[0]];
   store.set('scTitles', JSON.stringify(scTitles));
 }
-const scGet = k => {
+const scGet = async k => {
+  const key = k.slice(2), version = scVersion(key);
   const pending = k.startsWith('h:') && scPending.get(k.slice(2));
-  if (pending) return Promise.resolve(scSnapshot(pending));
   const n = nativeHist();
-  if (!n) return idbGet(k);
-  return Promise.resolve(parseJson(k.startsWith('h:') ? n.histGet(k.slice(2)) : n.histMeta(k.slice(2))));
+  const value = pending ? scSnapshot(pending) : scClearing(key) ? null
+    : !n ? await idbGet(k) : parseJson(k.startsWith('h:') ? n.histGet(key) : n.histMeta(key));
+  return version === scVersion(key) ? value : null;
 };
 const scDel = k => {
   const n = nativeHist();
@@ -102,7 +124,7 @@ function scSave(key, items, collapsed) {
   const updated = Date.now();
   if (n) {
     const json = JSON.stringify({ items, collapsed });
-    return n.histPut(key, json, JSON.stringify({ n: items.length, bytes: json.length, updated }), JSON.stringify(scIndex(items)));
+    return scTrackWrite('h:' + key, n.histPut(key, json, JSON.stringify({ n: items.length, bytes: json.length, updated }), JSON.stringify(scIndex(items))));
   }
   const bytes = JSON.stringify({ items: [], collapsed }).length + Math.max(0, items.length - 1) + items.reduce((sum, it) => {
     let size = scItemBytes.get(it);
@@ -116,8 +138,8 @@ async function scMigrate() {
   const n = nativeHist();
   if (!n || store.get('histMig1')) return;
   for (const mk of (await idbKeys() || []).map(String).filter(k => k.startsWith('m:'))) {
-    const key = mk.slice(2), h = await idbGet('h:' + key);
-    if (h?.items && !n.histGet(key)) scSave(key, h.items, h.collapsed || []);
+    const key = mk.slice(2), version = scVersion(key), h = await idbGet('h:' + key);
+    if (version === scVersion(key) && !scClearing(key) && h?.items && !n.histGet(key)) await scSave(key, h.items, h.collapsed || []);
   }
   store.set('histMig1', 1);
 }
@@ -148,6 +170,7 @@ function scDrain(force = false) {
   }
   const saves = [];
   for (const [key, pending] of scPending) {
+    if (scClearing(key)) continue;
     if (pending.saving) { saves.push(pending.saving); continue; }
     const { items, collapsed } = scSnapshot(pending);
     pending.saving = Promise.resolve(scSave(key, items, collapsed)).then(() => {
@@ -177,11 +200,11 @@ addEventListener('pagehide', () => { scFlush(); scDrain(true); });
 function scSwitch(sess) {
   scFlush();
   SC.key = sess ? scKeyFor(sess) : null;
-  SC.items = new Map(); SC.sig = new Map(); SC.collapsed = new Set(); SC.show = 400;
-  const k = SC.key;
+  SC.items = new Map(); SC.sig = new Map(); SC.collapsed = new Set(); SC.show = 400; SC.cleared = false;
+  const k = SC.key, version = scVersion(k);
   if (!k) return;
   scGet('h:' + k).then(v => {
-    if (SC.key !== k || !v || lastChat?.empty) return;
+    if (SC.key !== k || version !== scVersion(k) || !v || lastChat?.empty) return;
     for (const it of v.items || []) {
       const cur = SC.items.get(it.i);
       SC.items.set(it.i, cur ? scKeep(it, cur) : it);
@@ -198,7 +221,7 @@ function scMerge(chat) {
     SC.items.clear(); SC.sig.clear(); SC.collapsed.clear(); scDirty();
   }
   let changed = false;
-  for (const it of chat.items) {
+  for (const it of SC.cleared ? [] : chat.items) {
     const sig = JSON.stringify(it);
     if (SC.sig.get(it.i) === sig && SC.items.has(it.i)) continue;
     scItemBytes.set(it, sig.length);
@@ -207,7 +230,7 @@ function scMerge(chat) {
     changed = true;
   }
   if (changed) scDirty();
-  const all = [...SC.items.values()].sort((a, b) => (a.order ?? acpNum(a.i)) - (b.order ?? acpNum(b.i)));
+  const all = [...(SC.cleared ? chat.items : SC.items.values())].sort((a, b) => (a.order ?? acpNum(a.i)) - (b.order ?? acpNum(b.i)));
   const stat = new Map(), turnOf = new Map();
   let turn = null;
   for (const it of all) {
@@ -224,7 +247,7 @@ function scFold(turn, to) {
   if (!SC.key) return;
   const want = to ?? !SC.collapsed.has(turn);
   if (turn === '*') {
-    SC.collapsed = new Set(want ? [...SC.items.values()].filter(it => it.k === 'human').map(it => it.i) : []);
+    SC.collapsed = new Set(want ? [...(SC.cleared ? lastChat?.items || [] : SC.items.values())].filter(it => it.k === 'human').map(it => it.i) : []);
   } else if (want) SC.collapsed.add(turn); else SC.collapsed.delete(turn);
   scDirty();
   if (lastChat) renderChat(lastChat);
@@ -264,12 +287,34 @@ function scSearch(q) {
   }).join('') : '<div class="hint">没有找到。</div>';
 }
 async function scClear(key) {
-  scPending.delete(key);
-  await scDel('h:' + key);
-  await scDel('m:' + key);
-  if (key === SC.key) {
-    SC.items = new Map(); SC.sig = new Map(); SC.collapsed = new Set(); SC.dirty = false;
-    if (lastChat) renderChat(lastChat);
+  const clear = { key }, matches = value => key == null || value === key;
+  scClears.add(clear);
+  if (key == null) scGeneration++;
+  else scVersions.set(key, (scVersions.get(key) || 0) + 1);
+  clearTimeout(scDrainTimer); scDrainTimer = 0;
+  if (scSaveFrame) { cancelAnimationFrame(scSaveFrame); scSaveFrame = 0; }
+  clearTimeout(chatPreviewTimer); chatPreviewTimer = 0;
+  for (const pending of scPending.keys()) if (matches(pending)) scPending.delete(pending);
+  for (const cached of chatBySel.keys()) if (matches(cached)) chatBySel.delete(cached);
+  for (const title of Object.keys(scTitles)) if (matches(title)) delete scTitles[title];
+  store.set('scTitles', JSON.stringify(scTitles));
+  if (matches(SC.key)) {
+    clearTimeout(SC.timer); SC.timer = 0;
+    SC.items = new Map(); SC.sig = new Map(); SC.collapsed = new Set(); SC.dirty = false; SC.cleared = true;
+  }
+  try {
+    await Promise.all([...scWriting].filter(write => write.key === 'chat-previews' || matches(write.key.slice(2))).map(write => write.promise));
+    const keys = key == null ? [...new Set([...(await scKeys() || []), ...(await idbKeys() || [])]
+      .map(String).filter(k => k.startsWith('h:') || k.startsWith('m:')).map(k => k.slice(2)))] : [key];
+    for (const session of keys) {
+      await scDel('h:' + session); await scDel('m:' + session);
+      if (nativeHist()) { await idbDel('h:' + session); await idbDel('m:' + session); }
+    }
+    await idbDel('chat-previews');
+  } finally {
+    scClears.delete(clear);
+    if (chatBySel.size) saveChatPreview();
+    scFlush(); scDrain();
   }
 }
 function showBgSheet() {
@@ -827,10 +872,17 @@ function finishQuestion(m) {
   const pending = qnPending;
   qnPending = null;
   if (pending.sel !== viewSel) return;
-  if (m.ok && pending.message.id) {
+  const request = qnState?.requests?.find(r => r.id === pending.message.id);
+  if (pending.message.id && !request) {
+    qnSig = '';
+    renderQuestions(qnState);
+    finishPending(['正在提交回答…']);
+    return;
+  }
+  if (m.ok && request) {
     const answerKey = [currentComputer()?.id || '', viewSel, 'chat', pending.message.id].join('|');
     drafts.delete(answerKey); draftMentions.delete(answerKey);
-    if (pending.message.id.startsWith('async:') && (pending.message.advance || pending.message.n === (qnState?.requests?.find(r => r.id === pending.message.id)?.buttons.length || 0) - 1)) {
+    if (pending.message.id.startsWith('async:') && (pending.message.advance || pending.message.n === request.buttons.length - 1)) {
       qnState = { ...qnState, requests: qnState.requests.filter(r => r.id !== pending.message.id) };
     }
     for (const key of qnDrafts.keys()) if (key.startsWith(pending.message.id + '|')) qnDrafts.delete(key);
@@ -847,6 +899,11 @@ function renderQuestions(qs) {
   const bar = $('qnBar');
   if (qs?.codex && currentApp !== 'codex') qs = null;
   if (qnView !== viewSel) { qnView = viewSel; qnSig = ''; qnPending = null; qnDrafts.clear(); }
+  if (qnPending && (qnPending.message.id ? !qs?.requests?.some(r => r.id === qnPending.message.id) : !qs?.list?.length)) {
+    qnPending = null;
+    finishPending(['正在提交回答…']);
+    questionBusy();
+  }
   qnState = qs;
   const answers = qs?.codex ? qs.requests.filter(r => r.id.startsWith('async:')) : [];
   setQuestionCompose(answers.find(r => r.id === questionCompose?.id && questionCompose.sel === viewSel)?.id || null);

@@ -91,7 +91,7 @@ export const ROUTES = {
     if (typeof m.visible === 'boolean') { s.notifyVisible = m.visible; s.notifyPresenceAt = Date.now(); }
     s.emit({ t: 'pong' });
   } },
-  saveFile: { pre: (s, m) => s.saveFile(String(m.path ?? ''), String(m.text ?? ''), m.host == null ? undefined : String(m.host)) },
+  saveFile: { pre: (s, m) => s.saveFile(String(m.path ?? ''), String(m.text ?? ''), m.host == null ? undefined : String(m.host), m.requestId) },
   connAgents: {
     pre: async s => {
       const catalog = detectAgents();
@@ -218,7 +218,7 @@ export const ROUTES = {
   surface: { run: (s, m) => s.setSurface(String(m.to ?? '')) },
   openEditorChat: { run: s => s.openEditorChat() },
   closeTab: { run: (s, m) => s.closeTab(String(m.id ?? '')) },
-  file: { run: (s, m) => s.openFile(String(m.path ?? ''), String(m.diff ?? ''), m.changes === true) },
+  file: { run: (s, m) => s.openFile(String(m.path ?? ''), String(m.diff ?? ''), m.changes === true, m.requestId) },
   click: { run: (s, m) => s.clickButton(m.item, m.n, m.actionId, m.label, m.sel) },
   queue: {
     run: (s, m) => {

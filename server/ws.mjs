@@ -53,6 +53,7 @@ wss.on('connection', (ws, req) => {
   ws.on('message', raw => {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
+    if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return;
     if (!session) {
       clearTimeout(authTimer);
       const device = msg.t === 'auth' ? authenticateDevice(msg.token, msg.proof, 'WS /ws') : null;

@@ -5,11 +5,17 @@ $('vWrap').classList.toggle('on', store.get('wrap') !== 'off');
 let viewing = null;
 let editing = false;
 let editBase = '', saving = null;
+let fileRequestId = 0, saveRequestId = 0, saveTimer = 0;
+let filePdfUrl = '', filePdfLoading = null;
 function dirtyEdit() {
   const box = $('vEditBox');
   return editing && box && box.value !== editBase;
 }
 function stopVideo() {
+  filePdfLoading?.abort();
+  filePdfLoading = null;
+  if (filePdfUrl) URL.revokeObjectURL(filePdfUrl);
+  filePdfUrl = '';
   const video = $('vBody').querySelector('video');
   if (video) { video.onerror = null; video.pause(); video.removeAttribute('src'); video.load(); }
 }
@@ -83,6 +89,8 @@ function videoGestures(video) {
   return preview;
 }
 function openChatImage(source) {
+  fileRequestId++;
+  finishFileSave();
   returnToEditor = null;
   stopVideo(); leaveEdit();
   $('vStatus').hidden = true;
@@ -109,6 +117,8 @@ function leaveEdit() {
   $('vSearch').hidden = true;
 }
 function openFile(ref, fromEditor = false, diff = '', fromChanges = false) {
+  const requestId = ++fileRequestId;
+  finishFileSave();
   returnToEditor = fromEditor ? { ...editorDirectory } : null;
   stopVideo();
   leaveEdit();
@@ -126,7 +136,7 @@ function openFile(ref, fromEditor = false, diff = '', fromChanges = false) {
     $('viewer').classList.add('open');
     history.pushState({ viewer: true }, '');
   }
-  send({ t: 'file', path: ref, diff, ...(fromChanges ? { changes: true } : {}) });
+  send({ t: 'file', path: ref, diff, requestId, ...(fromChanges ? { changes: true } : {}) });
 }
 
 function showFile(m) {
@@ -164,12 +174,23 @@ function showFile(m) {
   }
   if (m.pdf) {
     $('vWrap').hidden = true;
-    body.innerHTML = '';
-    const frame = document.createElement('iframe');
-    frame.className = 'pdfPreview';
-    frame.title = m.name || 'PDF';
-    frame.src = base + m.pdf;
-    body.append(frame);
+    body.innerHTML = '<div class="note">正在从电脑读取…</div>';
+    const requestId = fileRequestId;
+    const loading = filePdfLoading = new AbortController();
+    fetch(base + m.pdf, { signal: loading.signal, cache: 'no-store' }).then(response => {
+      if (!response.ok) throw new Error('PDF 读取失败 (' + response.status + ')');
+      return response.blob();
+    }).then(blob => {
+      if (loading.signal.aborted || requestId !== fileRequestId || !$('viewer').classList.contains('open')) return;
+      const frame = document.createElement('iframe');
+      frame.className = 'pdfPreview';
+      frame.title = m.name || 'PDF';
+      frame.src = filePdfUrl = URL.createObjectURL(blob);
+      body.replaceChildren(frame);
+    }).catch(error => {
+      if (loading.signal.aborted || requestId !== fileRequestId) return;
+      body.innerHTML = `<div class="note err">${esc(error.message)}</div>`;
+    }).finally(() => { if (filePdfLoading === loading) filePdfLoading = null; });
     return;
   }
   if (m.image) {
@@ -236,7 +257,12 @@ function renderFileCode(m) {
     }
     code.insertAdjacentHTML('beforeend', html);
     if (n < total) setTimeout(renderChunk, 0);
-    else if (m.line) code.querySelector(`[data-n="${m.line}"]`)?.scrollIntoView({ block: 'center' });
+    else {
+      code.dataset.complete = '1';
+      if (!body.contains(code)) return;
+      if (m.line) code.querySelector(`[data-n="${m.line}"]`)?.scrollIntoView({ block: 'center' });
+      if (!$('vSearch').hidden && !editing && viewing === m) findInFile();
+    }
   };
   const rangeHtml = (a, b) => { let s = ''; for (let k = a; k <= b; k++) s += lineHtml(k); return s; };
   body.replaceChildren(code);
@@ -270,17 +296,29 @@ $('vBody').addEventListener('click', e => {
 const fmtSize = n => n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
 
 function onSaved(m) {
-  finishPending(['正在保存…']);
   const submitted = saving;
-  if (!submitted || m.path !== submitted.path || (m.host || '') !== submitted.host) return;
-  saving = null;
-  $('vEdit').disabled = false;
+  if (!submitted || m.requestId !== submitted.requestId || m.path !== submitted.path || (m.host || '') !== submitted.host) return;
+  finishFileSave();
   if (!m.ok) { editorStatus(m.error || '保存失败', false); return status(m.error || '保存失败', false); }
-  if (!viewing || viewing.path !== submitted.path || (viewing.host || '') !== submitted.host) return;
+  if (!viewing || fileRequestId !== submitted.viewRequestId || viewing.path !== submitted.path || (viewing.host || '') !== submitted.host) return;
   viewing.text = editBase = submitted.text;
+  viewing.hl = null;
   viewing.size = m.size;
   editorStatus('已保存');
   status('已保存');
+}
+function finishFileSave() {
+  clearTimeout(saveTimer);
+  saveTimer = 0;
+  saving = null;
+  $('vEdit').disabled = false;
+  finishPending(['正在保存…']);
+}
+function failFileSave(message) {
+  if (!saving) return;
+  finishFileSave();
+  editorStatus(message, false);
+  status(message, false);
 }
 function editorStatus(message, ok = true) {
   $('vStatus').hidden = false;
@@ -290,11 +328,14 @@ function editorStatus(message, ok = true) {
 function saveEdit() {
   if (!editing || saving) return;
   if (!authed || !ws || ws.readyState !== 1) { editorStatus('未连接', false); return; }
-  saving = { path: viewing.path, host: viewing.host || '', text: $('vEditBox').value };
+  const submitted = saving = { requestId: ++saveRequestId, viewRequestId: fileRequestId, path: viewing.path, host: viewing.host || '', text: $('vEditBox').value };
   $('vEdit').disabled = true;
   editorStatus('正在保存…');
   status('正在保存…');
-  send({ t: 'saveFile', ...saving });
+  saveTimer = setTimeout(() => {
+    if (saving === submitted) failFileSave('保存结果未确认，请检查连接后重试');
+  }, 30000);
+  if (!send({ t: 'saveFile', requestId: submitted.requestId, path: submitted.path, host: submitted.host, text: submitted.text })) failFileSave('未连接，文件未发送保存，请重试');
 }
 
 function closeViewer() {
@@ -303,6 +344,8 @@ function closeViewer() {
     $('viewer').classList.add('open');
     return;
   }
+  fileRequestId++;
+  finishFileSave();
   stopVideo();
   leaveEdit();
   viewing = null;
@@ -382,8 +425,12 @@ function findInFile(step = 0) {
       box.scrollTop = Math.max(0, (value.slice(0, at).split('\n').length - 3) * parseFloat(getComputedStyle(box).lineHeight));
     }
   } else {
-    const line = hits.length ? value.slice(0, hits[searchIndex]).split('\n').length - 1 : -1;
-    $('vBody').querySelectorAll('.l').forEach((el, i) => el.classList.toggle('searchHit', i === line));
+    const line = hits.length ? value.slice(0, hits[searchIndex]).split('\n').length : -1;
+    if (line > 0 && vOnly && !$('vBody').querySelector(`[data-n="${line}"]`) && $('vBody').querySelector('.code')?.dataset.complete) {
+      const gap = [...$('vBody').querySelectorAll('.gap')].reverse().find(el => Number(el.dataset.gap) <= line);
+      if (gap) { vExpand.add(Number(gap.dataset.gap)); renderFileCode(viewing); return; }
+    }
+    $('vBody').querySelectorAll('.l').forEach(el => el.classList.toggle('searchHit', Number(el.dataset.n) === line));
     $('vBody').querySelector('.searchHit')?.scrollIntoView({ block: 'center' });
   }
 }

@@ -445,6 +445,11 @@
     return item;
   };
 
+  const devinMessageTime = msg => {
+    const ts = codexFiberProps(msg, 12).find(p => Array.isArray(p.content) && p.content[0]?._meta)?.content[0]._meta['cognition.ai/timestamp'];
+    const at = Date.parse(ts || '');
+    return Number.isFinite(at) ? at : null;
+  };
   // Iterate the Devin transcript's direct children in order: messages, thought groups,
   // tool event rows, commands and file edits all become items. Unknown rows are skipped.
   const devinItems = log => {
@@ -458,9 +463,7 @@
         const it = messageItem(msg);
         if (!it.i) it.i = i;
         if (it.k === 'human' && !it.sentAt) {
-          // The message timestamp lives a few fiber levels up, not in the DOM.
-          const ts = codexFiberProps(msg, 12).find(p => Array.isArray(p.content) && p.content[0]?._meta)?.content[0]._meta['cognition.ai/timestamp'];
-          const at = Date.parse(ts || '');
+          const at = devinMessageTime(msg);
           if (Number.isFinite(at)) it.sentAt = at;
         }
         items.push(it);
