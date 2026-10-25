@@ -898,6 +898,11 @@ div.opt.static, #sheet label.opt, a.opt { background: var(--s2); }
 .optRow { display: flex; gap: 6px; align-items: stretch; margin-bottom: 6px; }
 .optRow .opt { margin-bottom: 0; flex: 1; min-width: 0; }
 .optRow .archBtn { flex: none; width: 52px; padding: 0 6px; border-radius: var(--r-md); }
+.optRow .agentFavBtn, .optRow .agentMoreBtn {
+  flex: none; width: 38px; padding: 0 4px; border: 0; border-radius: var(--r-md);
+  background: var(--s1); color: var(--fg-3); font-size: 19px;
+}
+.optRow .agentFavBtn.on, .optRow .agentFavBtn:hover, .optRow .agentMoreBtn:hover { color: var(--accent-text); background: var(--accent-tint); }
 .paramBtn { flex: none; padding: 0 12px; font-size: 13px; border-radius: 999px; }
 .listTools { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
 .listTools .hint { margin: 0; }
@@ -935,10 +940,10 @@ button.fold .chev { flex: none; color: var(--fg-4); font-size: 12px; }
   border-radius: 0; background: transparent; display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 12px;
 }
-#sheet[data-kind="agents"] .agentFilterRow { flex-direction: column; align-items: stretch; gap: 3px; }
-#sheet[data-kind="agents"] .agentFilterRow + .agentFilterRow { margin-top: 0; padding-top: 0; padding-left: 12px; border-top: 0; border-left: 1px solid var(--line); }
-#sheet[data-kind="agents"] .agentFilterLabel { width: auto; color: var(--fg-3); font-size: 12px; text-align: center; }
-#sheet[data-kind="agents"] .agentFilterChoices { gap: 0; }
+#sheet[data-kind="agents"] .agentFilterRow { display: grid; grid-template-columns: 32px minmax(0, 1fr); align-items: center; gap: 6px; }
+#sheet[data-kind="agents"] .agentFilterRow + .agentFilterRow { margin-top: 0; padding-left: 12px; border-top: 0; border-left: 1px solid var(--line); }
+#sheet[data-kind="agents"] .agentFilterLabel { width: auto; color: var(--fg-3); font-size: 12px; text-align: left; }
+#sheet[data-kind="agents"] .agentFilterChoices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; }
 #sheet[data-kind="agents"] .agentFilterChoices button {
   min-height: 34px; padding: 4px 2px; border: 0; border-radius: 0; background: transparent;
   color: var(--fg-3); font-size: 12px;
@@ -977,6 +982,15 @@ button.fold .chev { flex: none; color: var(--fg-4); font-size: 12px; }
   color: var(--fg-3); font-size: 12px;
 }
 #sheet[data-kind="agents"] .foldBody .archBtn:hover { color: var(--accent-text); background: var(--accent-tint); }
+#sheet[data-kind="agents"] .foldBody .agentFavBtn,
+#sheet[data-kind="agents"] .foldBody .agentMoreBtn {
+  flex: none; width: 36px; min-height: 50px; padding: 0; border: 0; border-radius: 0;
+  background: transparent; color: var(--fg-3); font-size: 19px;
+}
+#sheet[data-kind="agents"] .foldBody .agentFavBtn.on,
+#sheet[data-kind="agents"] .foldBody .agentFavBtn:hover,
+#sheet[data-kind="agents"] .foldBody .agentMoreBtn:hover { color: var(--accent-text); background: var(--accent-tint); }
+#sheet[data-kind="agent-actions"] .opt { min-height: 52px; }
 .entryInviteContent { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
 .entryInviteQr { width: 128px; height: 128px; flex: none; image-rendering: pixelated; background: #fff; border-radius: 8px; }
 .entryInviteText { flex: 1; min-width: 0; }
