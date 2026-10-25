@@ -74,6 +74,7 @@ function rememberAgentOpen(m) {
   }
 }
 function openSheet(kind, html) {
+  if (sheetKind === 'devices' && kind !== 'devices') deviceInviteGeneration++;
   if (kind !== 'docs') cancelDocs();
   if (kind !== 'menu') clearTimeout(menuRefreshTimer);
   if (kind !== 'devices') clearTimeout(deviceListTimer);
@@ -113,7 +114,7 @@ function closeSheet() {
   clearTimeout(deviceListTimer);
   const leavingVoice = sheetKind === 'local-voice';
   if (sheetKind === 'settings') send({ t: 'closeDesktopSettings' });
-  if (sheetKind === 'devices') deviceRemoval = [];
+  if (sheetKind === 'devices') { deviceRemoval = []; deviceInviteGeneration++; }
   fusionModelSide = null;
   menuRequest++;
   if (sheetKind === 'codex-settings') { codexSettingsRequest++; send({ t: 'closeCodexSettings' }); status(''); }
@@ -676,13 +677,13 @@ function showParams(m) {
 
 const listManagement = { kind: '', owner: '', editing: false, selected: new Set() };
 let pairedDevices = [];
-let pendingEntries = [], deviceInvitation = null, deviceListTimer = 0, deviceListGeneration = 0;
+let pendingEntries = [], deviceInvitation = null, deviceListTimer = 0, deviceListGeneration = 0, deviceInviteGeneration = 0;
 let deviceRemoval = [], removingDevices = false;
 function prepareListManagement(kind) {
   const owner = kind === 'devices' ? currentComputer()?.key || '' : '';
   if (listManagement.kind !== kind || listManagement.owner !== owner) {
     Object.assign(listManagement, { kind, owner, editing: false, selected: new Set() });
-    if (kind === 'devices') { pairedDevices = []; pendingEntries = []; deviceInvitation = null; deviceRemoval = []; }
+    if (kind === 'devices') { pairedDevices = []; pendingEntries = []; deviceInvitation = null; deviceRemoval = []; deviceInviteGeneration++; }
   }
 }
 function listTools() {
@@ -770,15 +771,18 @@ function renderDevices() {
   drawEntryQr(deviceInvitation?.qr);
 }
 async function inviteDeviceEntry(groupId) {
+  const owner = currentComputer()?.key, generation = ++deviceInviteGeneration;
+  const current = () => generation === deviceInviteGeneration && owner === currentComputer()?.key && sheetKind === 'devices';
   try {
     const currentLink = new URL(location.pathname, location.origin);
     const r = await post('/api/entries/invite', { groupId, base: currentLink.href }), body = await r.json();
+    if (!current()) return;
     if (!r.ok) throw new Error(body.error || '生成授权链接失败');
-    currentLink.hash = `entry=${currentComputer().key}.${body.invitation}`;
+    currentLink.hash = `entry=${owner}.${body.invitation}`;
     const link = body.link || currentLink.href;
     deviceInvitation = { link, qr: body.qr, expires: body.expires };
     if (sheetKind === 'devices') renderDevices();
-  } catch (error) { status(error.message, false); }
+  } catch (error) { if (current()) status(error.message, false); }
 }
 async function decideDeviceEntry(button) {
   button.closest('.entryRequest').querySelectorAll('button').forEach(b => { b.disabled = true; });

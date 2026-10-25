@@ -579,6 +579,7 @@ async function connect() {
     setWindowReady(false);
     markUploadsDisconnected();
     failPendingSends('连接已断开，消息未发送，请重试');
+    failFileSave('连接已断开，保存结果未确认，请重试');
     qnPending = null;
     qnSig = '';
     renderQuestions(null);
@@ -788,15 +789,16 @@ async function connect() {
     }
     else if (m.t === 'params') showParams(m);
     else if (m.t === 'changes') showChanges(m);
-    else if (m.t === 'file') showFile(m);
+    else if (m.t === 'file') { if (m.requestId === fileRequestId) showFile(m); }
     else if (m.t === 'fileMarks') {
-      if (viewing && viewing.path === m.path && String(viewing.host || '') === String(m.host || '')) {
+      if (m.requestId === fileRequestId && viewing && viewing.path === m.path && String(viewing.host || '') === String(m.host || '')) {
         viewing.marks = m.marks || null;
         viewing.markSource = m.markSource;
         viewing.commit = m.commit;
         viewing.subject = m.subject;
         if (m.newFile) viewing.newFile = true;
         if (m.diff) viewing.diff = m.diff;
+        if (editing) return;
         const body = $('vBody'), y = body.scrollTop;
         renderFileCode(viewing);
         body.scrollTop = y;

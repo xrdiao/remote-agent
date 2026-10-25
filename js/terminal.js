@@ -42,10 +42,10 @@ function renderTermLine(line, caretAt) {
     if (start >= text.length || end <= start) continue;
     const from = start;
     const to = Math.min(end, text.length);
-    const local = caretAt != null && caretAt >= from && caretAt <= to ? caretAt - from : null;
+    const local = caretAt != null && caretAt >= from && caretAt < to ? caretAt - from : null;
     html += paintTerm(text.slice(from, to), termStyle(f, b, fl), local);
   }
-  return html + '\n';
+  return html + (caretAt === text.length ? paintTerm('', '', 0) : '') + '\n';
 }
 let termLines = [], termCursor = [], termPending = null, termViewSel = '', termTouching = false;
 function terminalSelection() {

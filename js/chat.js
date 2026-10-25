@@ -213,7 +213,9 @@ function maybeAutoRetry(it) {
   codexAutoRetryDone.set(key, count + 1);
   const sel = viewSel;
   setTimeout(() => {
-    if (currentApp !== 'codex' || viewSel !== sel) return;
+    if (currentApp !== 'codex' || viewSel !== sel || !codexAutoRetryEnabled()) return;
+    const current = it.btnItem === 'g' ? { b: lastChat?.global } : lastChat?.items?.find(row => codexRetryKey(row) === key);
+    if (current?.b?.[n] !== it.b[n] || (current.actions?.[n] || '') !== (it.actions?.[n] || '')) return;
     send({ t: 'click', item: it.btnItem || it.i, n, actionId: it.actions?.[n] || '', label: it.b[n], sel });
     status(`正在自动重试…（${count + 1}/${max}）`);
   }, 0);
