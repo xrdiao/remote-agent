@@ -10,8 +10,8 @@ android {
         applicationId 'uk.luojiajiang.remoteagent'
         minSdk 24
         targetSdk 34
-        versionCode 4
-        versionName '1.4.0'
+        versionCode 5
+        versionName '1.4.1'
         // Optional: forks can bake in their own app address; otherwise the user enters it on first launch.
         resValue 'string', 'default_url', System.getenv('APP_URL') ?: ''
     }
@@ -19,6 +19,14 @@ android {
     buildTypes {
         release {
             minifyEnabled false
+        }
+    }
+
+    applicationVariants.configureEach { variant ->
+        if (variant.buildType.name == 'release') {
+            variant.outputs.configureEach {
+                outputFileName = 'AgentRemote.apk'
+            }
         }
     }
 
