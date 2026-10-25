@@ -430,6 +430,7 @@ export const methods = {
           await cdp.evaluate(helpersCall(`waitHistoryRows(${JSON.stringify(rows)}, 150)`));
         }
         if (!this.liveRead(cdp, sel)) return;
+        if (!before && history) return { error: '没有找到桌面聊天历史区域' };
         const point = before && await cdp.evaluate(helpersCall('scrollCodexHistory()'));
         if (point) {
           const rows = await cdp.evaluate(helpersCall('historyRows()'));
@@ -454,6 +455,7 @@ export const methods = {
           this.emit({ t: 'chat', sel: this.selectionKey(), chat });
           return { earlier: chat.earlier };
         }
+        if (history) return { error: '没有找到桌面聊天历史位置' };
       } finally {
         if (before && this.liveRead(cdp, sel) && await cdp.evaluate(helpersCall('codexThread()')) === thread) await cdp.evaluate(helpersCall(`scrollCodexHistory(${before.scrollTop})`));
         this.historyLoading = false;
@@ -461,11 +463,11 @@ export const methods = {
       }
     }
     const rect = await this.cdp.evaluate(helpersCall('panelRect()'));
-    if (!rect) return;
+    if (!rect) return history ? { error: '没有找到桌面聊天面板' } : undefined;
     if (history && this.app === 'devin') {
       // A 900px wheel never crosses Devin's virtualization remount threshold; jump the scroller.
       const r = await this.cdp.evaluate(helpersCall('devinLoadEarlier()'), { timeout: 8000 }).catch(() => null);
-      if (!r) return;
+      if (!r) return { error: '没有找到桌面聊天历史区域' };
       this.lastChatAt = 0;
       await this.pollChat(true);
       if (r.moved && Number.isFinite(r.top)) await this.cdp.evaluate(helpersCall(`devinScrollTop(${r.top})`)).catch(() => {});

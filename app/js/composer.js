@@ -344,7 +344,7 @@ function setComposeCompact(on) {
   document.body.classList.toggle('composeCompact', on);
   if (!on) composeExpandedAt = performance.now();
   const h1 = foot.offsetHeight;
-  if (stick) list.scrollTop = list.scrollHeight;
+  if (stick) requestChatScroll();
   if (h0 !== h1 && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
     foot.animate([{ height: h0 + 'px', overflow: 'hidden' }, { height: h1 + 'px' }], { duration: 200, easing: 'cubic-bezier(.2,.8,.2,1)' });
   }
