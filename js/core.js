@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v245'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v246'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false, failures = 0;
 let windowReady = false;
@@ -200,10 +200,10 @@ function finishPending(list) {
 
 function send(obj) {
   obj.sel ??= viewSel;
+  if (['attach', 'openAgent', 'openProject'].includes(obj.t)) beginNavigation(obj);
   if (obj.t === 'attach') {
     conn.loaded = false;
     if (conn.active) conn.readyRedirect = true;
-    setWindowReady(false);
     status('正在切换窗口…');
     const name = {cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion'}[String(obj.id || '').split(':')[0]];
     if (name) $('titleText').textContent = name + '…';

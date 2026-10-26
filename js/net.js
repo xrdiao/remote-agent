@@ -64,6 +64,45 @@ function forgetClosedWindow(id) {
   if (current) store.set('window', null);
 }
 let liveChatSelection = '';
+let navigationSerial = 0, navigationPending = null, selectionReady = false, selectionMetadata = '';
+let metadataWindow = '';
+function beginNavigation(message) {
+  message.navigationId = ++navigationSerial;
+  navigationPending = { id: message.navigationId, confirmed: '' };
+  selectionReady = false;
+  if (conn.active) conn.readyRedirect = true;
+  setWindowReady(false);
+  invalidateChatRender();
+  $('items').inert = true;
+  $('items').classList.add('stale');
+  $('actionBar').replaceChildren();
+  renderQuestions(null);
+}
+function selectionPreview() {
+  $('items').inert = true;
+  const preview = chatBySel.get(chatCacheKey(viewSel));
+  renderChat(preview ? { ...preview, readonly: true, busy: false, global: [], questions: null, queued: [], queuedCount: 0, subagents: [] } : null, !!preview, !preview);
+}
+function confirmNavigation() {
+  const previewed = navigationPending?.preview === viewSel;
+  if (navigationPending) navigationPending.confirmed = viewSel;
+  if (mode === 'chat' && liveChatSelection !== viewSel && !previewed) {
+    selectionPreview();
+    if (navigationPending) navigationPending.preview = viewSel;
+  }
+  if (mode !== 'chat') { $('items').inert = false; setWindowReady(true); }
+}
+function refreshSelectionMetadata(initial = false) {
+  const key = `${connGen}|${viewSel}|${navigationSerial}`;
+  if (selectionMetadata === key) return;
+  selectionMetadata = key;
+  send({ t: 'usage', automatic: true });
+  const window = `${connGen}|${currentApp}|${currentComputer()?.windowId || ''}`;
+  if (metadataWindow !== window) {
+    metadataWindow = window;
+    if (!initial) send({ t: 'windows' });
+  }
+}
 function applySelection(m, clearChat = true) {
   if (m.app) { currentApp = m.app; capabilityOwner = m.app; agentCapabilities = m.capabilities || null; fusionSideCapabilities = m.sideCapabilities || {}; }
   const changed = (m.sel || '') !== viewSel;
@@ -72,6 +111,9 @@ function applySelection(m, clearChat = true) {
   if (changed && viewSel.endsWith('|') && (m.sel || '').startsWith(viewSel)) for (const p of pendingEchoes) if (p.sel === viewSel) p.sel = m.sel;
   if (changed) {
     invalidateChatRender();
+    selectionReady = false;
+    setWindowReady(false);
+    $('items').inert = true;
     capabilityBlock = ''; viewSel = m.sel || ''; liveChatSelection = ''; beginChatSelection(); thoughtObserver.disconnect(); cache.clear(); $('sessionNotice').hidden = true;
   }
   const here = currentComputer();
@@ -555,6 +597,9 @@ function autoRetry() {
 async function connect() {
   resetLatency();
   liveChatSelection = '';
+  navigationPending = null;
+  selectionReady = false;
+  selectionMetadata = metadataWindow = '';
   const computer = currentComputer();
   const expectedId = computer.id || await computerIdFromKey(computer.key);
   draftEpoch = '';
@@ -601,6 +646,8 @@ async function connect() {
   ws.onmessage = ev => {
     const m = JSON.parse(ev.data);
     lastRx = Date.now();
+    if (['attached', 'thread', 'chat', 'projectReady', 'attachFailed', 'status'].includes(m.t)
+        && m.navigationId != null && m.navigationId !== navigationSerial) return;
     if (m.t === 'pong') return;
     if (m.t === 'auth') {
       clearTimeout(connectTimer);
@@ -655,8 +702,17 @@ async function connect() {
     else if (m.t === 'attachments') { if (m.sel === viewSel) renderAttachments(m.list); }
     else if (m.t === 'chat') {
       if (!m.sel || !viewSel || m.sel === viewSel) {
+        if (navigationPending && (m.navigationId !== navigationPending.id || navigationPending.confirmed !== viewSel)) return;
         if (m.cached && liveChatSelection === (m.sel || viewSel)) return;
-        if (m.chat && !m.cached) liveChatSelection = m.sel || viewSel;
+        const fresh = m.chat && !m.cached && selectionReady;
+        if (fresh) {
+          if (navigationPending?.preview === viewSel && chatStale) for (const item of m.chat.items) if (item.b?.length) cache.delete(item.i);
+          liveChatSelection = m.sel || viewSel;
+          navigationPending = null;
+          conn.readyRedirect = false;
+          $('items').inert = false;
+          setWindowReady(true);
+        }
         if (m.chat && !m.cached && !m.chat.readonly) capabilityBlock = '';
         const preview = chatBySel.get(chatCacheKey(m.sel || viewSel));
         // Codex unmounts the transcript while its generated-image editor is open.
@@ -665,6 +721,10 @@ async function connect() {
         const chat = retain ? { ...preview, ...m.chat, items: preview.items } : m.chat;
         if (chat) cacheChat(m.sel || viewSel, chat);
         queueChatRender(chat, !!m.cached || obscured, m.sel);
+        if (fresh) {
+          const selection = viewSel, navigation = navigationSerial;
+          requestAnimationFrame(() => { if (windowReady && viewSel === selection && navigationSerial === navigation) refreshSelectionMetadata(); });
+        }
       }
     }
     else if (m.t === 'draft') { if (!questionCompose && (m.draftEpoch || '') === draftEpoch && (!m.sel || m.sel === viewSel)) { if ((text.value === '' || text.value === mirroredDraft) && m.text !== text.value) { text.value = m.text; autosize(); } mirroredDraft = m.text; } }
@@ -690,17 +750,34 @@ async function connect() {
       finishPending(['正在读取额度…']);
     }
     else if (m.t === 'attached') {
-      if (m.closed) { forgetClosedWindow(m.id); conn.readyRedirect = false; setWindowReady(m.ready === true); status('这个窗口已经关闭，请重新选择', false); send({ t: 'windows' }); if (conn.active) connRender(); return; }
+      if (m.closed) {
+        forgetClosedWindow(m.id);
+        selectionReady = m.ready === true;
+        conn.readyRedirect = selectionReady && mode === 'chat';
+        setWindowReady(false);
+        status('这个窗口已经关闭，请重新选择', false);
+        if (selectionReady) { confirmNavigation(); send({ t: 'refresh' }); }
+        send({ t: 'windows' });
+        if (conn.active) connRender();
+        return;
+      }
       if (m.plans) appPlans = { ...appPlans, ...m.plans };
       rememberAgentOpen(m);
-      if (m.keepQuota) { applySelection(m); setWindowReady(m.ready !== false); return; }
+      if (m.keepQuota) {
+        applySelection(m, false);
+        selectionReady = m.ready !== false;
+        if (selectionReady) confirmNavigation();
+        else { setWindowReady(false); renderChat(null, false, true); }
+        return;
+      }
       finishPending(['正在切换窗口…', '正在切换 Agent…']);
       store.set('window', m.id);
       applySelection(m, false);
       currentWindow = m.id;
       currentApp = m.app || null;
-      conn.readyRedirect = m.ready === false;
-      setWindowReady(m.ready !== false);
+      conn.readyRedirect = m.ready === false || mode === 'chat';
+      selectionReady = m.ready !== false;
+      setWindowReady(selectionReady && mode !== 'chat');
       scheduleLatency();
       $('dot').className = 'ok';
       status(mode === 'chat' ? '正在加载对话…' : '已连接');
@@ -708,16 +785,23 @@ async function connect() {
       currentAppName = m.appName;
       currentProject = m.app === 'fusion' ? '' : (m.project || winLabel(m.title).name);
       updateAppText(); updateTitle();
-      renderChat(null, false, true);
+      if (selectionReady) confirmNavigation();
+      else renderChat(null, false, true);
       renderContext(null);
       $('quotaMeters').innerHTML = '';
       $('quotaMeters').title = '';
       renderQuota(quotaCache.get(quotaKey()) || { missing: true, quota: [], limits: [] });
-      send({ t: 'usage', automatic: true });
       send({ t: 'appTheme', dark: document.documentElement.dataset.theme !== 'light' });
-      if (!m.initial) send({ t: 'windows' });
+      if (m.initial) metadataWindow = `${connGen}|${currentApp}|${m.windowId || ''}`;
+      if (mode !== 'chat' && selectionReady) refreshSelectionMetadata(m.initial === true);
     }
-    else if (m.t === 'attachFailed') { conn.readyRedirect = false; setWindowReady(m.ready); if (conn.active) connRender(); }
+    else if (m.t === 'attachFailed') {
+      selectionReady = m.ready === true;
+      conn.readyRedirect = selectionReady && mode === 'chat';
+      setWindowReady(false);
+      if (selectionReady) { confirmNavigation(); send({ t: 'refresh' }); }
+      if (conn.active) connRender();
+    }
     else if (m.t === 'sessionLibrary') receiveSessionLibrary(m);
     else if (m.t === 'sessionChanged') receiveSessionChange(m);
     else if (m.t === 'sessionActions') receiveAgentActions(m);
@@ -751,17 +835,26 @@ async function connect() {
     }
     else if (m.t === 'projectReady') {
       if (m.sel && m.sel !== viewSel) return;
-      setWindowReady(true);
+      selectionReady = true;
+      confirmNavigation();
       const refreshEditor = editorBrowsing && sheetKind === 'docs';
       capabilityBlock = '';
       finishPending(['正在打开项目…', '正在新建对话…']);
       closeSheet(); currentProject = m.name;
-      if (m.chat) renderChat(m.chat);
+      if (m.chat) {
+        liveChatSelection = viewSel;
+        navigationPending = null;
+        conn.readyRedirect = false;
+        $('items').inert = false;
+        setWindowReady(true);
+        cacheChat(viewSel, m.chat);
+        renderChat(m.chat);
+        refreshSelectionMetadata();
+      }
       $('titleProject').textContent = m.name;
       $('sessionNotice').hidden = !m.newSession;
       $('sessionNotice').textContent = I18N.tr('会话创建成功，尚未发送消息。') + ' ' + m.name;
       status(m.newSession ? '已在所选项目新建会话' : '已打开项目');
-      send({ t: 'agents', automatic: true, silent: true });
       if (refreshEditor) startEditor();
     }
     else if (m.t === 'docs') showDocs(m);
