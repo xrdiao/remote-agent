@@ -1,6 +1,13 @@
 /* ---------- bottom sheet ---------- */
 let sheetKind = null;
 let menuRefreshTimer = 0;
+let menuPending = null, menuPickRequest = 0, modelSwitchRequest = null;
+function finishModelPick(m) {
+  if (m.sel !== viewSel || m.requestId !== modelSwitchRequest?.requestId) return;
+  modelSwitchRequest = null;
+  menuCache.delete(menuCacheKey('model')); menuCache.delete(menuCacheKey('effort'));
+  if (m.ok) status(`已切换到 ${m.label}`);
+}
 let pendingAgentOpen = '';
 const agentOpened = JSON.parse(store.get('agent-opened') || '{}');
 const agentUsage = JSON.parse(store.get('agent-usage') || '{}');
@@ -137,7 +144,7 @@ function rememberAgentOpen(m) {
 function openSheet(kind, html) {
   if (sheetKind === 'devices' && kind !== 'devices') deviceInviteGeneration++;
   if (kind !== 'docs') cancelDocs();
-  if (kind !== 'menu') clearTimeout(menuRefreshTimer);
+  if (kind !== 'menu') { clearTimeout(menuRefreshTimer); menuPending = null; }
   if (kind !== 'devices') clearTimeout(deviceListTimer);
   const leavingVoice = sheetKind === 'local-voice' && kind !== 'local-voice';
   const sheet = $('sheet');
@@ -178,6 +185,7 @@ function closeSheet() {
   if (sheetKind === 'devices') { deviceRemoval = []; deviceInviteGeneration++; }
   fusionModelSide = null;
   menuRequest++;
+  menuPending = null;
   if (sheetKind === 'codex-settings') { codexSettingsRequest++; send({ t: 'closeCodexSettings' }); status(''); }
   sheetKind = null; menuSheetKind = '';
   delete $('sheet')._winSig;
