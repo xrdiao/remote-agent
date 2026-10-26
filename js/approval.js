@@ -59,8 +59,8 @@ async function refresh() {
       }));
     }
     $('status').textContent = data.requests.length ? '核对手机验证码后，点击「允许连接」。' : '等待新入口申请…';
-    timer = setTimeout(refresh, 2000);
   } catch (error) { $('status').textContent = error.message; }
+  finally { if (!busy && !ended) timer = setTimeout(refresh, 2000); }
 }
 async function perform(path, body) {
   if (busy || ended) return;
@@ -70,7 +70,7 @@ async function perform(path, body) {
     await request(path, body);
     if (path === 'close') { end(); return; }
   } catch (error) { $('status').textContent = error.message; return; }
-  finally { busy = false; for (const button of document.querySelectorAll('button')) button.disabled = ended; }
+  finally { busy = false; for (const button of document.querySelectorAll('button')) button.disabled = ended; if (!ended) timer = setTimeout(refresh, 2000); }
   await refresh();
 }
 $('next').onclick = () => perform('next', {});
@@ -89,6 +89,6 @@ async function start() {
     $('groupName').textContent = data.groupName;
     drawQr(data.qr); clock = setInterval(tick, 1000); tick();
     await refresh();
-  } catch (error) { $('status').textContent = error.message; }
+  } catch (error) { $('status').textContent = error.message; if (!ended) timer = setTimeout(start, 2000); }
 }
 start();
