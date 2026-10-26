@@ -36,7 +36,7 @@ export class Session extends AgentContext {
     this.mode = 'chat';
   }
 
-  async setMode(mode) {
+  async setMode(mode, firstScreen = false) {
     const watchGeneration = this.chatWatchGeneration = (this.chatWatchGeneration || 0) + 1;
     cdpRead.run(null, () => this.chatUpdatesStop?.());
     this.chatUpdatesStop = null;
@@ -63,7 +63,7 @@ export class Session extends AgentContext {
       this.chatUpdatesStop = stop;
       this.lastChat = '';
       this.chatTimer = cdpRead.run(null, () => setInterval(() => this.pollChat().catch(() => {}), 700));
-      await this.pollChat();
+      await this.pollChat(firstScreen, firstScreen);
     } else if (this.mode === 'terminal') {
       await this.editorCdp.send('Page.stopScreencast').catch(() => {});
       this.lastTermHash = undefined;
@@ -93,6 +93,10 @@ export class Session extends AgentContext {
 
   emit(obj) {
     if (cdpRead.getStore()?.aborted) return;
+    if (['attached', 'thread', 'chat', 'projectReady', 'attachFailed', 'status'].includes(obj?.t)) {
+      const navigationId = cdpRead.getStore()?.navigationId ?? this.navigationId;
+      if (navigationId != null) obj = { ...obj, navigationId };
+    }
     if (obj?.t === 'agents') {
       const app = obj.app || this.app;
       obj = { ...obj, list: sessionRows(app, catalogSessions(app, obj.list || [], this.windowId)) };
@@ -241,7 +245,7 @@ export class Session extends AgentContext {
     if (trust.required) {
       attached();
       await this.checkProjectTrust({ threadId: selection.threadId || '' }, trust);
-      this.setMode(this.mode).catch(e => this.emit({ t: 'status', ok: false, msg: e.message }));
+      if (!selection.deferred) this.setMode(this.mode).catch(e => this.emit({ t: 'status', ok: false, msg: e.message }));
       return;
     }
     const restore = !selection.deferred && selection.threadId && selection.threadId !== this.threadId && !launchDefault;
@@ -252,22 +256,28 @@ export class Session extends AgentContext {
     if (restore) {
       try {
         const id = win.app === 'codex' ? `thread:${this.codexPageId}:${selection.threadId}` : selection.threadId;
-        await this.openAgent(id);
+        await this.withFocus(() => this.openAgent(id));
       } catch (error) {
         this.emit({ t: 'chat', sel: this.selectionKey(), chat: null });
-        this.emit({ t: 'status', ok: false, msg: error.message });
+        throw error;
       }
       if (this.cdp !== cdp) return;
+      if (this.bindingReady && this.chatUpdatesStop && this.lastChat) {
+        this.prefetchMenus().catch(() => {});
+        return;
+      }
     } else if (startup) {
       const pending = this.startupPending = {};
       try {
-        await this.adapter.openDefaultSession?.call(this);
-        if (!await this.waitFor(`agentStartupState(${JSON.stringify(win.app)}, true)`, 250)) throw new Error('会话输入区尚未就绪，请重试');
+        await this.withFocus(async () => {
+          await this.adapter.openDefaultSession?.call(this);
+          if (!await this.waitFor(`agentStartupState(${JSON.stringify(win.app)}, true)`, 250)) throw new Error('会话输入区尚未就绪，请重试');
+        });
         cdpRead.getStore()?.throwIfAborted();
         this.startupPending = null;
         this.bindingReady = true;
         attached();
-        await this.setMode(this.mode);
+        await this.withFocus(() => this.setMode(this.mode, true));
         for (let i = 0; this.mode === 'chat' && !this.lastChat && i < 40; i++) {
           await new Promise(resolve => setTimeout(resolve, 120));
           cdpRead.getStore()?.throwIfAborted();
@@ -286,11 +296,16 @@ export class Session extends AgentContext {
       }
       return;
     } else if (win.app === 'cursor' && this.threadId && !await this.cdp.evaluate(helpersCall('panelRect()')).catch(() => null)) {
-      try { await this.adapter.openAgent.call(this, this.threadId); } catch {}
+      await this.withFocus(() => this.adapter.openAgent.call(this, this.threadId));
     }
-    this.bindingReady = !this.startupPending;
+    this.bindingReady = !selection.deferred && !this.startupPending;
     attached();
-    if (this.startupPending) return;
+    if (this.startupPending || selection.deferred) return;
+    if (selection.initial) {
+      await this.withFocus(() => this.setMode(this.mode, true));
+      if (this.cdp === cdp) this.prefetchMenus().catch(() => {});
+      return;
+    }
     this.setMode(this.mode).then(() => {
       if (this.cdp === cdp && !selection.deferred) this.prefetchMenus().catch(() => {});
     }).catch(e => this.emit({ t: 'status', ok: false, msg: e.message }));

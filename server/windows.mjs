@@ -153,7 +153,7 @@ async function webviewKey(wsUrl) {
   }
 }
 
-export async function codexWindows(base, reportErrors = false) {
+export async function codexWindows(base, reportErrors = false, pageId = '') {
   let targets = [];
   try {
     targets = await (await fetch(`${base}/json/list`, { signal: AbortSignal.timeout(1500) })).json();
@@ -161,7 +161,7 @@ export async function codexWindows(base, reportErrors = false) {
     if (reportErrors) throw error;
     return [];
   }
-  const pages = targets.filter(t => t.type === 'page' && /workbench/.test(t.url || ''));
+  const pages = targets.filter(t => t.type === 'page' && /workbench/.test(t.url || '') && (!pageId || t.id === pageId));
   const viewByKey = new Map();
   for (const v of targets) {
     if (!v.webSocketDebuggerUrl || !/extensionId=openai\.chatgpt/.test(v.url || '') || !/purpose=webviewView/.test(v.url || '')) continue;

@@ -207,7 +207,7 @@ function tasksHtml(it) {
 const codexAutoRetryDone = new Map();
 function codexRetryKey(it) { return `${viewSel}|${it.btnItem || it.i}`; }
 function maybeAutoRetry(it) {
-  if (currentApp !== 'codex' || !codexAutoRetryEnabled()) return;
+  if (chatStale || !windowReady || currentApp !== 'codex' || !codexAutoRetryEnabled()) return;
   const n = (it.b || []).findIndex(label => /^(Retry|Try(?: again)?|重试|再试一次)$/i.test(label));
   if (n < 0) return;
   const key = codexRetryKey(it), count = codexAutoRetryDone.get(key) || 0, max = codexAutoRetryCount();
@@ -215,7 +215,7 @@ function maybeAutoRetry(it) {
   codexAutoRetryDone.set(key, count + 1);
   const sel = viewSel;
   setTimeout(() => {
-    if (currentApp !== 'codex' || viewSel !== sel || !codexAutoRetryEnabled()) return;
+    if (chatStale || !windowReady || currentApp !== 'codex' || viewSel !== sel || !codexAutoRetryEnabled()) return;
     const current = it.btnItem === 'g' ? { b: lastChat?.global } : lastChat?.items?.find(row => codexRetryKey(row) === key);
     if (current?.b?.[n] !== it.b[n] || (current.actions?.[n] || '') !== (it.actions?.[n] || '')) return;
     send({ t: 'click', item: it.btnItem || it.i, n, actionId: it.actions?.[n] || '', label: it.b[n], sel });
@@ -282,7 +282,7 @@ function renderItem(it) {
 
 const nearBottom = () => list.scrollHeight - list.scrollTop - list.clientHeight < 120;
 // Following the chat means the user is at the very end (or never left it); "close to the end" is still reading.
-const BOTTOM_EPSILON = 1;
+const BOTTOM_EPSILON = 2;
 const atBottom = () => list.scrollHeight - list.scrollTop - list.clientHeight <= BOTTOM_EPSILON;
 const followingChat = () => isFollowingBottom();
 

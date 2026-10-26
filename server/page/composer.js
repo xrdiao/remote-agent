@@ -64,6 +64,45 @@
     }
     return false;
   };
+  // Typeahead queries restore the native document and selection, including existing reference chips.
+  const composerQuery = (text, caret, restore = false) => {
+    if (restore) {
+      const undo = doc.__remoteMentionRestore;
+      delete doc.__remoteMentionRestore;
+      if (undo) undo();
+      return true;
+    }
+    const codex = !!document.getElementById('active-frame');
+    const ed = codex ? codexPromptEl() : pickComposer([...doc.querySelectorAll('[data-slate-editor="true"][contenteditable="true"]')].filter(vis));
+    if (!ed) throw new Error('没找到搜索使用的输入框');
+    if (codex) {
+      const view = codexFiberProps(ed, Infinity).find(p => p.composerController).composerController.view;
+      const before = view.state;
+      doc.__remoteMentionRestore = () => {
+        const tr = view.state.tr.replaceWith(0, view.state.doc.content.size, before.doc.content);
+        view.dispatch(tr.setSelection(before.selection.constructor.fromJSON(tr.doc, before.selection.toJSON())));
+      };
+      setComposerDraft(text);
+      ed.focus();
+      const selection = view.state.selection.constructor.near(view.state.doc.resolve(caret + 1));
+      view.dispatch(view.state.tr.setSelection(selection));
+    } else {
+      const slate = codexFiberProps(ed, Infinity).flatMap(p => Object.values(p || {}))
+        .find(v => v && typeof v.apply === 'function' && Array.isArray(v.children));
+      const children = structuredClone(slate.children), selection = structuredClone(slate.selection);
+      doc.__remoteMentionRestore = () => {
+        children.forEach((node, n) => slate.apply({ type: 'insert_node', path: [n], node }));
+        for (let n = slate.children.length - 1; n >= children.length; n--) slate.apply({ type: 'remove_node', path: [n], node: slate.children[n] });
+        slate.apply({ type: 'set_selection', properties: slate.selection, newProperties: selection });
+      };
+      setComposerDraft(text);
+      ed.focus();
+      const lines = text.slice(0, caret).split('\n');
+      const point = { path: [lines.length - 1, 0], offset: lines.at(-1).length };
+      slate.apply({ type: 'set_selection', properties: slate.selection, newProperties: { anchor: point, focus: point } });
+    }
+    return true;
+  };
   const readDevinUsage = async (refresh = false) => {
     const input = [...doc.querySelectorAll(`${COMPOSER}, [data-slate-editor="true"]`)].filter(e => vis(e) && e.isContentEditable && !inItem(e)).at(-1);
     const api = input && codexFiberProps(input, Infinity).find(p => p.value?.api?.windsurfSettingsPage?.planInfo)?.value.api;

@@ -66,67 +66,74 @@ export const adapter = {
       await this.listAgents();
       return;
     }
-    if (id.startsWith('tab:')) {
-      const key = id.slice(4);
-      const tabs = await this.cdp.evaluate(helpersCall('devinSession()'));
-      if (tabs?.tabs.some(tab => tab.id === key)) return this.switchTab(key);
-      id = key;
-    }
-    let { surface, row, title: windowTitle } = await this.cdp.evaluate(`(() => {
-      const h = ${PAGE_SRC};
-      const surface = h.devinSurface();
-      return { surface, title: document.title, row: surface === 'agent' ? h.agentList().find(row => row.id === ${JSON.stringify(id)}) : null };
-    })()`);
-    this.winTitle = windowTitle;
-    if (surface === 'agent' && retried && !row) {
-      // The session list on a freshly switched surface is still loading; wait for the row.
-      for (let i = 0; i < 40 && !row; i++) {
-        await new Promise(r => setTimeout(r, 250));
-        row = await this.cdp.evaluate(`(() => {
-          const h = ${PAGE_SRC};
-          return h.agentList().find(row => row.id === ${JSON.stringify(id)});
-        })()`);
-      }
-    }
-    if (surface === 'editor') {
-      const opened = await this.openSessionPicker();
-      const pos = opened && await this.cdp.evaluate(helpersCall(`sessionPickerTarget(${JSON.stringify(id)}, ${JSON.stringify(title)})`));
-      if (!pos) {
-        if (opened) await this.key('Escape');
-        // A window that just opened lands on the editor surface; its picker only knows
-        // this project's sessions. Switch to the agent surface and try the row there.
-        if (!retried) {
-          await this.setSurface('agent');
-          return this.adapter.openAgent.call(this, id, title, true);
-        }
-        throw new Error('这条 Agent 已经不在列表里');
-      }
-      await this.tapCss(pos.x, pos.y);
-      this.resetDevinView();
-      this.emit({ t: 'status', ok: true, msg: '已切换 Agent' });
-      setTimeout(() => this.pollChat().catch(() => {}), 500);
-      return;
-    }
-    if (!id || id.length > 200) throw new Error('这条 Agent 已经不在列表里');
-    this.sel++; this.lastChat = ''; this.lastAttachments = null;
+    const switching = this.switchingThread;
+    let confirmed = false;
     this.switchingThread = true;
     try {
+      if (id.startsWith('tab:')) {
+        const key = id.slice(4);
+        const tabs = await this.cdp.evaluate(helpersCall('devinSession()'));
+        if (tabs?.tabs.some(tab => tab.id === key)) {
+          await this.switchTab(key);
+          confirmed = true;
+          return;
+        }
+        id = key;
+      }
+      let { surface, row, thread, title: windowTitle } = await this.cdp.evaluate(`(() => {
+        const h = ${PAGE_SRC};
+        const surface = h.devinSurface();
+        return { surface, thread: h.activeThread(), title: document.title, row: surface === 'agent' ? h.agentList().find(row => row.id === ${JSON.stringify(id)}) : null };
+      })()`);
+      this.winTitle = windowTitle;
+      if (thread === id) {
+        confirmed = await this.confirmDevinThread(id);
+        if (!confirmed) throw new Error('会话切换没有生效');
+        return;
+      }
+      if (surface === 'agent' && retried && !row) {
+        // The session list on a freshly switched surface is still loading; wait for the row.
+        for (let i = 0; i < 40 && !row; i++) {
+          await new Promise(r => setTimeout(r, 250));
+          row = await this.cdp.evaluate(`(() => {
+            const h = ${PAGE_SRC};
+            return h.agentList().find(row => row.id === ${JSON.stringify(id)});
+          })()`);
+        }
+      }
+      if (surface === 'editor') {
+        const opened = await this.openSessionPicker();
+        const pos = opened && await this.cdp.evaluate(helpersCall(`sessionPickerTarget(${JSON.stringify(id)}, ${JSON.stringify(title)})`));
+        if (!pos) {
+          if (opened) await this.key('Escape');
+          // A window that just opened lands on the editor surface; its picker only knows
+          // this project's sessions. Switch to the agent surface and try the row there.
+          if (!retried) {
+            await this.setSurface('agent');
+            await this.adapter.openAgent.call(this, id, title, true);
+            confirmed = true;
+            return;
+          }
+          throw new Error('这条 Agent 已经不在列表里');
+        }
+        await this.tapCss(pos.x, pos.y);
+        confirmed = await this.confirmDevinThread(id);
+        if (!confirmed) throw new Error('会话切换没有生效');
+        return;
+      }
+      if (!id || id.length > 200) throw new Error('这条 Agent 已经不在列表里');
       const pos = await this.cdp.evaluate(helpersCall(`agentTarget(${JSON.stringify(id)}, true)`));
       if (!pos) throw new Error('这条 Agent 已经不在列表里');
       if (pos !== true) await this.tapCss(pos.x, pos.y);
-      for (let i = 0; i < 12; i++) {
-        await new Promise(r => setTimeout(r, 150));
-        const thread = await this.cdp.evaluate(helpersCall('activeThread()'));
-        if (thread !== id) continue;
-        this.threadId = thread;
-        this.publishThread('已切换 Agent');
-        return;
-      }
-      throw new Error('会话切换没有生效');
+      confirmed = await this.confirmDevinThread(id);
+      if (!confirmed) throw new Error('会话切换没有生效');
     } finally {
-      this.switchingThread = false;
+      this.switchingThread = switching;
       this.lastChatAt = 0;
-      await this.pollChat();
+      if (!switching && confirmed) {
+        this.publishThread();
+        await this.pollChat(true, true);
+      }
     }
   },
 
@@ -169,36 +176,33 @@ export const adapter = {
     this.emit({ t: 'changes', ...s, devin: true });
   },
 
-  async mentionQuery(q, cat, seq, trigger) {
-    this.mentionSeq = seq;
+  async mentionQuery(q, cat, seq, trigger, query) {
     const out = await this.withMentionLock(seq, async () => {
       if (this.mentionSeq !== seq) return null;
-      if (!await this.cdp.evaluate(FOCUS_COMPOSER)) throw new Error('没找到可见的聊天输入框');
-      const before = await this.cdp.evaluate(helpersCall('composerState()'));
-      let typed = 1, prefix = '';
-      await this.cdp.send('Input.insertText', { text: '@' });
-      await new Promise(r => setTimeout(r, 450));
-      if (cat) {
-        const root = await this.mentionSettle();
-        const idx = root.findIndex(r => r.label.toLowerCase() === cat.toLowerCase());
-        if (idx >= 0) {
-          for (let i = 0; i < idx; i++) await this.key('ArrowDown');
-          await this.key('Enter');
-          await new Promise(r => setTimeout(r, 350));
-          const now = await this.cdp.evaluate(helpersCall('composerState()'));
-          prefix = (now || '').slice((before || '').length).trim();
-          typed = prefix.length || typed;
+      return this.withComposerQuery(query, async before => {
+        let prefix = '';
+        await this.cdp.send('Input.insertText', { text: '@' });
+        await new Promise(r => setTimeout(r, 450));
+        if (cat) {
+          const root = await this.mentionSettle(seq);
+          if (this.mentionSeq !== seq) return null;
+          const idx = root.findIndex(r => r.label.toLowerCase() === cat.toLowerCase());
+          if (idx >= 0) {
+            for (let i = 0; i < idx; i++) await this.key('ArrowDown');
+            await this.key('Enter');
+            await new Promise(r => setTimeout(r, 350));
+            const now = await this.cdp.evaluate(helpersCall('composerState()'));
+            prefix = (now || '').slice((before || '').length).trim();
+          }
+        } else if (q) {
+          await this.cdp.send('Input.insertText', { text: q });
         }
-      } else if (q) {
-        await this.cdp.send('Input.insertText', { text: q });
-        typed += q.length;
-      }
-      const rows = await this.mentionSettle();
-      await this.mentionUndo(typed, before);
-      return { rows, prefix };
+        const rows = await this.mentionSettle(seq);
+        return { rows, prefix };
+      });
     }).catch(e => { this.emit({ t: 'status', ok: false, msg: e.message }); return null; });
     if (out && this.mentionSeq === seq) {
-      this.emit({ t: 'mentions', seq, q, cat, prefix: out.prefix, root: !q && !cat, rows: out.rows.slice(0, 40).map(r => ({ label: r.label, sub: r.sub })) });
+      this.emit({ t: 'mentions', sel: this.selectionKey(), seq, q, cat, prefix: out.prefix, root: !q && !cat, rows: out.rows.slice(0, 40).map(r => ({ label: r.label, sub: r.sub })) });
     }
   
   },
@@ -287,9 +291,9 @@ export const adapter = {
 
   async pickModelMenu(label) {
     if (!await this.cdp.evaluate(helpersCall(`pickDevinModel(${JSON.stringify(String(label))})`))) return false;
-    this.emit({ t: 'status', ok: true, msg: `已切换到 ${label}` });
+    await this.waitModel(label);
+    await this.closeMenus();
     this.pollChat().catch(() => {});
-    await this.openMenu('effort').catch(() => {});
     return true;
   },
 };
@@ -619,8 +623,8 @@ async setSurface(to) {
   await this.tapCss(pos.x, pos.y);
   let ready = false;
   for (let i = 0; i < 20 && !ready; i++) {
-    await new Promise(r => setTimeout(r, 100));
     ready = (await this.cdp.evaluate(helpersCall('devinSurface()'))) === want;
+    if (!ready) await new Promise(r => setTimeout(r, 100));
   }
   this.resetDevinView();
   if (!ready) this.emit({ t: 'status', ok: false, msg: '这个界面还没有加载完，请稍后再试' });
@@ -636,8 +640,8 @@ async openSessionPicker() {
   if (!pos) throw new Error('没找到会话搜索按钮（可能 Devin 版本不同）');
   await this.tapCss(pos.x, pos.y);
   for (let i = 0; i < 20; i++) {
-    await new Promise(r => setTimeout(r, 100));
     if (await this.cdp.evaluate(`(async () => { const h = ${PAGE_SRC}; return (await h.sessionPickerRows())?.length; })()`)) return true;
+    await new Promise(r => setTimeout(r, 100));
   }
   return false;
 },
@@ -690,16 +694,36 @@ async closeTab(title) {
 
 // Editor surface: the open sessions are tabs above the transcript; clicking one switches the transcript.
 async switchTab(title) {
-  const clicked = await this.cdp.evaluate(helpersCall(`clickDevinTab(${JSON.stringify(String(title))})`));
-  if (!clicked) throw new Error('这个会话标签已经关闭了');
-  let on = false;
-  for (let i = 0; i < 15 && !on; i++) {
-    await new Promise(r => setTimeout(r, 100));
-    on = (await this.cdp.evaluate(helpersCall('devinSession()')))?.key === title;
+  const switching = this.switchingThread;
+  let confirmed = false;
+  this.switchingThread = true;
+  try {
+    const current = await this.cdp.evaluate(helpersCall('devinSession()'));
+    if (current?.key !== title) {
+      const clicked = await this.cdp.evaluate(helpersCall(`clickDevinTab(${JSON.stringify(String(title))})`));
+      if (!clicked) throw new Error('这个会话标签已经关闭了');
+    }
+    confirmed = await this.confirmDevinThread(title, '已切换会话', 15, 100);
+    if (!confirmed) throw new Error('这个会话还没有切过去，请稍后再试');
+  } finally {
+    this.switchingThread = switching;
+    this.lastChatAt = 0;
+    if (!switching && confirmed) await this.pollChat(true, true);
   }
-  this.resetDevinView();
-  this.emit({ t: 'status', ok: on, msg: on ? '已切换会话' : '这个会话还没有切过去，请稍后再试' });
-  setTimeout(() => this.pollChat().catch(() => {}), 300);
+},
+
+async confirmDevinThread(id, statusMsg = '已切换 Agent', tries = 12, interval = 150) {
+  for (let i = 0; i <= tries; i++) {
+    const thread = await this.cdp.evaluate(helpersCall('activeThread()'));
+    if (thread === id) {
+      if (this.threadId !== thread) this.clearViewState();
+      this.threadId = this.selectedThread = thread;
+      this.publishThread(statusMsg);
+      return true;
+    }
+    if (i < tries) await new Promise(r => setTimeout(r, interval));
+  }
+  return false;
 },
 
 
@@ -797,10 +821,11 @@ async envPick(label) {
 
 // ---- Devin "@" mentions: drive Devin's own typeahead so the result is a real chip ----
 // Waits until the listbox stops changing (it loads asynchronously) and returns its rows.
-async mentionSettle() {
+async mentionSettle(seq) {
   let last = '', same = 0, rows = null;
   for (let i = 0; i < 18; i++) {
     await new Promise(r => setTimeout(r, 150));
+    if (seq != null && this.mentionSeq !== seq) return [];
     rows = await this.cdp.evaluate(helpersCall('mentionRows()'));
     const sig = JSON.stringify((rows || []).map(r => [r.label, r.sub]));
     same = sig === last ? same + 1 : 0;
@@ -833,7 +858,8 @@ async withMentionLock(seq, fn) {
     if (seq != null && this.mentionSeq !== seq) return null;
   }
   this.mentionBusy = true;
-  try { return await fn(); } finally { this.mentionBusy = false; }
+  this.draftGeneration++;
+  try { return await fn(); } finally { this.mentionBusy = false; this.draftGeneration++; }
 },
 
 

@@ -37,6 +37,7 @@
   "composerDraft",
   "composerFocused",
   "setComposerDraft",
+  "composerQuery",
   "codexAddFiles",
   "codexMentionRows",
   "codexRunItems",

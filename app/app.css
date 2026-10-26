@@ -1601,6 +1601,8 @@ button { transition: background-color .12s var(--ease), color .12s var(--ease), 
     opacity: 0; transform: translateY(4px);
   }
 }
+/* History controls change height immediately so a prepend needs only one position adjustment. */
+#older, #cachedMore, #historyStatus { transition: none; transform: none; }
 /* Status line under the composer hides via :has(), not [hidden]. */
 #footerStatus { transition: opacity .18s var(--ease), transform .18s var(--ease), display .18s allow-discrete; }
 #footerStatus:not(:has(#msg:not(:empty):not(.quiet), #elapsed:not([hidden]))) { opacity: 0; transform: translateY(4px); pointer-events: none; }

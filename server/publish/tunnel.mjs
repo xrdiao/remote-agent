@@ -9,113 +9,146 @@ import { offerFirstPairing } from '../util.mjs';
 
 export function findTunnelPid() {
   try {
+    const pids = [];
     if (IS_WIN) {
       const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', "ConvertTo-Json -InputObject @(Get-CimInstance Win32_Process -Filter \"Name = 'cloudflared.exe'\" | Select-Object ProcessId, CommandLine) -Compress"], { encoding: 'utf8', windowsHide: true });
       for (const item of JSON.parse(out)) {
-        if (new RegExp(`127\\.0\\.0\\.1:${PORT}\\b`).test(item.CommandLine)) return item.ProcessId;
+        if (new RegExp(`127\\.0\\.0\\.1:${PORT}\\b`).test(item.CommandLine)) pids.push(item.ProcessId);
       }
-      return 0;
+    } else {
+      const out = execFileSync('ps', ['-eo', 'pid=,args='], { encoding: 'utf8' });
+      for (const line of out.split('\n')) {
+        if (!/^\s*\d+\s+\S*cloudflared(?:\s|$)/.test(line) || !new RegExp(`127\\.0\\.0\\.1:${PORT}\\b`).test(line)) continue;
+        const pid = Number(line.trim().split(/\s+/)[0]);
+        if (pid && pid !== process.pid) pids.push(pid);
+      }
     }
-    const out = execFileSync('ps', ['-eo', 'pid=,args='], { encoding: 'utf8' });
-    for (const line of out.split('\n')) {
-      if (!/cloudflared/.test(line) || !new RegExp(`127\\.0\\.0\\.1:${PORT}\\b`).test(line)) continue;
-      const pid = Number(line.trim().split(/\s+/)[0]);
-      if (pid && pid !== process.pid) return pid;
-    }
+    const owned = savedPid();
+    return pids.includes(owned) ? owned : pids[0] || 0;
   } catch {}
   return 0;
 }
 
-// A quick tunnel URL changes only when its cloudflared process exits. Reuse a live one
-// so restarting the relay keeps the same origin, and phones keep their saved device token.
-export async function publishedTunnel() {
-  const url = String(readState().relayUrl || '').replace(/\/$/, '');
-  if (!/^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/.test(url) || !findTunnelPid()) return '';
-  for (let i = 0; i < 8; i++) {
+const logPath = path.join(DATA_DIR, 'tunnel.log');
+const pidPath = path.join(DATA_DIR, 'tunnel.pid');
+const quickUrl = url => /^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/.test(url);
+const savedUrl = () => String(readState().relayUrl || '').replace(/\/$/, '');
+const savedPid = () => { try { return Number(fs.readFileSync(pidPath, 'utf8').trim()); } catch { return 0; } };
+const logText = () => { try { return fs.readFileSync(logPath, 'utf8'); } catch { return ''; } };
+const loggedUrl = () => logText().match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/)?.[0] || '';
+const metricsUrl = () => {
+  const match = logText().match(/Starting metrics server on (127\.0\.0\.1:\d+)\/metrics/);
+  return match ? `http://${match[1]}/ready` : '';
+};
+async function tunnelReady(url, metrics = '') {
+  if (metrics) {
     try {
-      const r = await fetch(`${url}/url.json`, { signal: AbortSignal.timeout(4000) });
-      if (r.ok && (await r.json())?.self) return url;
+      const r = await fetch(metrics, { signal: AbortSignal.timeout(1500) });
+      if (r.ok && (await r.json())?.readyConnections > 0) return true;
     } catch {}
-    await new Promise(r => setTimeout(r, 400));
+    return false;
   }
-  // The public check can fail on a brief network hiccup; cloudflared's local /ready still knows if the tunnel is up.
-  for (let port = 20241; port <= 20245; port++) {
-    try {
-      const r = await fetch(`http://127.0.0.1:${port}/ready`, { signal: AbortSignal.timeout(1000) });
-      if (r.ok && (await r.json())?.readyConnections > 0) return url;
-    } catch {}
-  }
-  return '';
+  if (!url) return false;
+  try {
+    const r = await fetch(`${url}/url.json`, { signal: AbortSignal.timeout(4000) });
+    return r.ok && (await r.json())?.self === true;
+  } catch { return false; }
 }
 
-export function rememberTunnel(url) {
+// Restarting the relay keeps the existing origin while cloudflared reconnects.
+export async function publishedTunnel() {
+  const pid = findTunnelPid(), owned = pid === savedPid();
+  const url = owned ? loggedUrl() : savedUrl();
+  if (!quickUrl(url) || !pid) return '';
+  return await tunnelReady(url, owned ? metricsUrl() : '') ? url : '';
+}
+
+export function rememberTunnel(url, pid = findTunnelPid()) {
   saveState({ relayUrl: url });
-  const pid = findTunnelPid();
-  if (pid) fs.writeFileSync(path.join(DATA_DIR, 'tunnel.pid'), `${pid}\n`, { mode: 0o600 });
+  if (pid) fs.writeFileSync(pidPath, `${pid}\n`, { mode: 0o600 });
   return pid;
 }
 
-export async function startTunnel() {
-  const kept = await publishedTunnel();
-  if (kept) {
-    const pid = rememberTunnel(kept);
-    console.log(`\n公网地址：${kept}`);
-    if (PUBLISH_REPO) {
-      console.log('沿用已有隧道，正在把地址发布到 GitHub Pages。');
-      publishUrl(kept);
-    } else {
-      console.log('沿用已有隧道，已配对的手机不用重新配对。');
-      if (pid) console.log(`隧道在后台运行（pid ${pid}）。要彻底关掉公网：kill ${pid}`);
-      offerFirstPairing();
+let tunnelMonitor = null, tunnel = null, checking = false, publishing = Promise.resolve();
+function publishTunnel(state) {
+  publishing = publishing.then(async () => {
+    if (tunnel !== state) return;
+    let ok = false;
+    try { ok = await publishUrl(state.url); }
+    catch (error) { console.log('!! 隧道地址发布失败：', error.message); }
+    if (!ok && tunnel === state) {
+      state.publishTimer = setTimeout(() => publishTunnel(state), 30000);
+      state.publishTimer.unref();
     }
-    return;
+  }).catch(error => console.log('!! 隧道地址发布失败：', error.message));
+}
+function announceTunnel(state) {
+  if (state.announced) return;
+  state.announced = true;
+  rememberTunnel(state.url, state.pid);
+  console.log(`\n公网地址：${state.url}`);
+  if (PUBLISH_REPO) publishTunnel(state);
+  else {
+    console.log('隧道在后台运行，重启中继会沿用当前地址。');
+    console.log(`要彻底关掉公网：kill ${state.pid}`);
+    offerFirstPairing();
   }
-  const stale = findTunnelPid();
-  if (stale) { try { process.kill(stale, 'SIGTERM'); } catch {} }
-  const logPath = path.join(DATA_DIR, 'tunnel.log');
+}
+function launchTunnel() {
+  clearTimeout(tunnel?.publishTimer);
   fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   fs.writeFileSync(logPath, '');
   const fd = fs.openSync(logPath, 'a');
-  const bin = findBin('cloudflared');
+  const missing = () => {
+    clearInterval(tunnelMonitor);
+    tunnelMonitor = null;
+    console.log('!! 找不到或无法启动 cloudflared，请安装后重新运行 npm run public。');
+  };
   let child;
-  let timer;
-  const missing = () => console.log('!! 找不到 cloudflared。在这台电脑上执行：\nmkdir -p ~/.local/bin\ncurl -L --fail -o ~/.local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64\nchmod +x ~/.local/bin/cloudflared\n然后重新运行 npm run public');
   try {
-    // Cloudflare names resolve to IPv6 first; machines without IPv6 routing then never reach the edge.
-    child = spawn(bin, ['tunnel', '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', '--url', `http://127.0.0.1:${PORT}`], {
-      detached: true,
-      stdio: ['ignore', fd, fd],
+    child = spawn(findBin('cloudflared'), ['tunnel', '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', '--url', `http://127.0.0.1:${PORT}`], {
+      detached: true, stdio: ['ignore', fd, fd],
     });
-  } catch (e) {
-    fs.closeSync(fd);
-    missing();
-    return;
-  }
-  child.unref();
+  } catch { fs.closeSync(fd); missing(); return; }
   fs.closeSync(fd);
-  child.on('error', () => { if (timer) clearInterval(timer); missing(); });
-  const started = Date.now();
-  timer = setInterval(() => {
-    let text = '';
-    try { text = fs.readFileSync(logPath, 'utf8'); } catch { return; }
-    const m = text.match(/https:\/\/[a-z0-9]+(?:-[a-z0-9]+)+\.trycloudflare\.com/);
-    if (!m) {
-      if (Date.now() - started > 40000) {
-        clearInterval(timer);
-        console.log('!! 隧道超时没有拿到地址，查看 ~/.agent-remote/tunnel.log');
-      }
-      return;
-    }
-    clearInterval(timer);
-    const url = m[0];
-    const pid = rememberTunnel(url);
-    console.log(`\n公网地址：${url}`);
-    if (PUBLISH_REPO) publishUrl(url);
-    else {
-      console.log('这条地址会保留到隧道进程退出。之后重启服务会沿用它，已配对的手机不用重新配对。');
-      if (pid) console.log(`要彻底关掉公网：kill ${pid}`);
-      offerFirstPairing();
-    }
-  }, 400);
+  const state = tunnel = { pid: child.pid, owned: true, url: '', metrics: '', unhealthyAt: Date.now() };
+  if (child.pid) fs.writeFileSync(pidPath, `${child.pid}\n`, { mode: 0o600 });
+  child.unref();
+  child.on('error', missing);
+  child.on('exit', () => { if (tunnel === state) { state.exited = true; checkTunnel().catch(console.error); } });
 }
-
+async function checkTunnel() {
+  if (checking || !tunnel) return;
+  checking = true;
+  try {
+    const state = tunnel;
+    let alive = !state.exited && !!state.pid;
+    if (alive) { try { process.kill(state.pid, 0); } catch { alive = false; } }
+    if (!alive) { launchTunnel(); return; }
+    if (state.restarting) return;
+    if (!state.url && state.owned) state.url = loggedUrl();
+    if (state.owned) state.metrics = metricsUrl();
+    const ready = await tunnelReady(state.url, state.metrics);
+    if (tunnel !== state) return;
+    if (ready && state.url) { state.unhealthyAt = 0; announceTunnel(state); return; }
+    state.unhealthyAt ||= Date.now();
+    // Let cloudflared recover brief network interruptions before replacing its origin.
+    if (state.owned && Date.now() - state.unhealthyAt >= 60000) {
+      console.log('!! 隧道持续未就绪，正在重新建立连接。');
+      state.restarting = true;
+      clearTimeout(state.publishTimer);
+      try { process.kill(state.pid, 'SIGTERM'); } catch { state.exited = true; }
+    }
+  } finally { checking = false; }
+}
+export async function startTunnel() {
+  if (tunnelMonitor) return;
+  const pid = findTunnelPid(), url = savedUrl();
+  tunnelMonitor = setInterval(() => checkTunnel().catch(console.error), 5000);
+  tunnelMonitor.unref();
+  const owned = pid === savedPid();
+  if (pid && (owned || quickUrl(url))) {
+    tunnel = { pid, owned, url: owned ? loggedUrl() : url, metrics: '', unhealthyAt: Date.now() };
+    await checkTunnel();
+  } else launchTunnel();
+}

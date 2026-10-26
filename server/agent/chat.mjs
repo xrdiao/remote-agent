@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { IS_MAC, mod } from '../../lib/platform.mjs';
 import { codexContext } from '../windows.mjs';
+import { cdpRead } from '../cdp.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { FOCUS_COMPOSER, uploads } from './context.mjs';
 import { rememberSessionMessage, observeSessionTitle, readLibrary } from '../../lib/session-library.mjs';
@@ -162,14 +163,52 @@ export const methods = {
       it.imageSources = sources;
     }
   },
-  async pollChat(immediate = false) {
+  async pollChat(immediate = false, firstScreen = false) {
+    firstScreen &&= !this.fusionOwner;
     const cdp = this.cdp;
     const sel = this.sel;
-    const sendGen = this.sendGen || 0;
-    if (!cdp || !this.visible || this.pendingProject?.trust || this.switchingThread || this.historyLoading || (this.fusionHold?.app === this.app && this.fusionHold?.windowId === this.windowId) || (!immediate && Date.now() - (this.lastChatAt || 0) < (this.lastBusy ? 650 : 1800))) return;
-    if (this.polling === sel) { if (immediate) this.pollAgain = sel; return; }
+    if (this.polling === sel && this.chatRead?.cdp === cdp) {
+      if (firstScreen) return this.chatRead.requestFirst();
+      if (immediate) this.pollAgain = sel;
+      return;
+    }
+    if (!cdp || !this.visible || this.pendingProject?.trust || this.switchingThread || this.historyLoading || (this.fusionHold?.app === this.app && this.fusionHold?.windowId === this.windowId)) {
+      if (firstScreen) throw new Error('当前会话尚未就绪，请重试');
+      return;
+    }
+    if (!immediate && !firstScreen && Date.now() - (this.lastChatAt || 0) < (this.lastBusy ? 650 : 1800)) return;
     this.lastChatAt = Date.now();
     this.polling = sel;
+    const state = this.chatRead = { cdp, sel, requested: false, sent: false, retrying: false };
+    state.requestFirst = () => {
+      if (!state.requested || state.sent) {
+        state.sent = false;
+        state.first = new Promise((resolve, reject) => { state.resolve = resolve; state.reject = reject; });
+        state.first.catch(() => {});
+      }
+      state.requested = true;
+      return state.first;
+    };
+    const first = firstScreen && state.requestFirst();
+    const done = this.pollChatRead(immediate, state);
+    done.then(() => {
+      if (state.requested && !state.sent && !state.retrying) state.reject(new Error('当前会话内容尚未就绪，请重试'));
+    }, error => {
+      state.reject?.(error);
+      if (firstScreen && state.sent && this.liveRead(cdp, sel)) this.emit({ t: 'status', ok: false, msg: error.message });
+    });
+    return firstScreen ? first : done;
+  },
+  async pollChatRead(immediate, state) {
+    const { cdp, sel } = state;
+    const sendGen = this.sendGen || 0;
+    const draftGeneration = this.draftGeneration, draftRevision = this.draftRevision;
+    const readDraft = !this.mentionBusy && !this.draftWriting;
+    const publish = chat => {
+      cdpRead.getStore()?.throwIfAborted();
+      this.emit({ t: 'chat', sel: this.selectionKey(), chat });
+      if (state.requested) { state.sent = true; state.resolve(); }
+    };
     this.codexFreshView = false;
     let readRevision;
     const read = async () => {
@@ -202,7 +241,7 @@ export const methods = {
       const emptyCodex = this.app === 'codex' && !this.threadId && !this.selectedThread && !chat?.thread && chat?.items?.length === 0 && !chat.readonly;
       const extracted = chat && JSON.stringify({ ...chat, draft: undefined });
       let contextRead;
-      if (chat && chat.thread === (this.threadId || '') && (this.app !== 'codex' || chat.thread || emptyCodex) && (!this.lastChat || extracted !== this.lastExtractedChat)) {
+      if (chat && chat.thread === (this.threadId || '') && (this.app !== 'codex' || chat.thread || emptyCodex) && (!this.lastChat || extracted !== this.lastExtractedChat || state.requested && !state.sent)) {
         const initial = { ...chat, items: chat.items.map(it => ({ ...it })) };
         delete initial.draft;
         if (this.app === 'codex') for (const it of initial.items.filter(it => it.images?.length)) {
@@ -222,7 +261,7 @@ export const methods = {
         this.mergeDevinHistory(initial);
         if (initial?.model === 'Fusion' && this.fusion) initial.fusion = this.fusion;
         this.lastChat = JSON.stringify(initial);
-        this.emit({ t: 'chat', sel: this.selectionKey(), chat: initial });
+        publish(initial);
       }
       const thinkingAction = async action => {
         if (this.app !== 'codex') return cdp.evaluate(helpersCall(action));
@@ -230,6 +269,8 @@ export const methods = {
         if (acted === false && this.liveRead(cdp, sel)) chat = await read();
         return acted;
       };
+      const details = fn => state.requested && state.sent
+        ? this.withChatUiDetails(() => this.liveRead(cdp, sel) ? fn() : undefined) : fn();
       const readThinking = async () => {
         if (this.app === 'codex' && chat?.capacityPresent) return;
         const liveClosed = this.app !== 'devin' && !(this.app === 'codex' && chat?.busy) && (chat?.items || []).some(it => it.k === 'thinking' && it.live && !(it.t || '').includes('\n'));
@@ -259,9 +300,11 @@ export const methods = {
         }
       };
       // Only the native expand/read/fold transaction competes with Cursor's model menu.
+      await details(async () => {
       if (this.app === 'cursor' && chat?.items?.some(it => it.k === 'thinking' && !this.thinkingBody(it) && (it.live || !this.thinkingTried.has(it.i))))
         await this.withCursorUiRead(readThinking);
       else await readThinking();
+      });
       if (!this.liveRead(cdp, sel) || this.historyLoading || !chat) return;
       if (!this.acceptsChat(chat)) return;
       const prevThread = this.threadId || '';
@@ -298,17 +341,19 @@ export const methods = {
         this.mergeDevinHistory(chat);
         if (this.app === 'devin') this.devinGeneration(chat);
         const json = JSON.stringify(chat);
-        if (json !== this.lastChat && this.liveRead(cdp, sel)) {
+        if ((json !== this.lastChat || state.requested && !state.sent) && this.liveRead(cdp, sel)) {
           this.lastChat = json;
-          this.emit({ t: 'chat', sel: this.selectionKey(), chat });
+          publish(chat);
         }
       }
       // A draft read before or during a send is the text being sent; pushing it would refill the phone's box.
-      if (draft !== undefined && draft !== this.lastDraft && !this.sending && (this.sendGen || 0) === sendGen && this.liveRead(cdp, sel)) {
+      if (readDraft && !this.mentionBusy && !this.draftWriting && draftGeneration === this.draftGeneration
+        && draft !== undefined && draft !== this.lastDraft && !this.sending && (this.sendGen || 0) === sendGen && this.liveRead(cdp, sel)) {
         this.lastDraft = draft;
-        this.emit({ t: 'draft', sel: this.selectionKey(), text: draft, draftEpoch: this.draftEpoch || '' });
+        this.emit({ t: 'draft', sel: this.selectionKey(), text: draft, draftEpoch: this.draftEpoch || '', revision: draftRevision });
       }
       // Devin task lists: read details for the current count and restore the original expansion state.
+      await details(async () => {
       const taskRow = (chat?.items || []).find(it => it.k === 'tasks' && !it.items && this.tasksTried.get(it.i) !== `${it.done}/${it.total}`);
       if (taskRow) {
         const wasOpen = await cdp.evaluate(helpersCall(`setTasksOpen(${JSON.stringify(taskRow.i)}, true)`));
@@ -346,6 +391,8 @@ export const methods = {
         }
       }
       await this.captureThoughts(chat);
+      });
+      if (!this.liveRead(cdp, sel) || !this.acceptsChat(chat)) return;
       this.fillThinking(chat);
       this.rememberThinking(chat);
       this.retainThinking(chat);
@@ -370,9 +417,9 @@ export const methods = {
       if (!await current()) return;
       const json = JSON.stringify(chat);
       if (!this.liveRead(cdp, sel) || this.historyLoading || !this.acceptsChat(chat)) return;
-      if (json !== this.lastChat) {
+      if (json !== this.lastChat || state.requested && !state.sent) {
         this.lastChat = json;
-        this.emit({ t: 'chat', sel: this.selectionKey(), chat });
+        publish(chat);
       }
       this.syncAttachments().catch(() => {});
     } finally {
@@ -380,7 +427,12 @@ export const methods = {
         this.polling = null;
         if (this.pollAgain === sel) {
           this.pollAgain = null;
-          this.pollChat(true).catch(() => {});
+          state.retrying = state.requested && !state.sent;
+          this.pollChat(true, state.retrying).then(() => {
+            if (state.retrying) state.resolve();
+          }, error => {
+            if (state.retrying) state.reject(error);
+          });
         }
       }
     }
@@ -529,8 +581,18 @@ export const methods = {
 
 
   // Phone typed "@q" (or tapped a category): list what Devin offers, then put the prompt back.
-  async mentionQuery(q, cat, seq, trigger) {
-    return this.adapter.mentionQuery.call(this, q, cat, seq, trigger);
+  async mentionQuery(q, cat, seq, trigger, query) {
+    return this.adapter.mentionQuery.call(this, q, cat, seq, trigger, query);
+  },
+  async withComposerQuery(query, fn) {
+    const cdp = this.cdp;
+    const value = query.text.slice(0, query.start) + query.text.slice(query.caret);
+    try {
+      await cdp.evaluate(helpersCall(`composerQuery(${JSON.stringify(value)}, ${query.start})`));
+      return await fn(value);
+    } finally {
+      await cdpRead.run(null, () => cdp.evaluate(helpersCall('composerQuery("", 0, true)')));
+    }
   },
   async sendMessage(text, submit, when, mentions, receipt) {
     const receiptToken = submit ? (this.sendNativeReceipt = {}) : null;
@@ -639,8 +701,7 @@ export const methods = {
   },
   async setDraft(text) {
     if (this.app === 'fusion' || text.length > 20000) return false;
-    if (text === this.lastDraft) return true;
-    if (this.cdp && await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return (!${JSON.stringify(this.selectedThread || '')} || h.activeThread() === ${JSON.stringify(this.selectedThread || '')}) && h.setComposerDraft(${JSON.stringify(text)}); })()`)) { this.lastDraft = text; return true; }
+    if (this.cdp && await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return (!${JSON.stringify(this.selectedThread || '')} || h.activeThread() === ${JSON.stringify(this.selectedThread || '')}) && (h.composerDraft() === ${JSON.stringify(text)} || h.setComposerDraft(${JSON.stringify(text)})); })()`)) { this.lastDraft = text; return true; }
     return false;
   },
   async syncAttachments() {
