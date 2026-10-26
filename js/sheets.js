@@ -10,6 +10,19 @@ let sharedAgentLibrary = { computer: '', records: {} };
 let pendingAgentFavorite = null;
 let agentActionRequest = 0;
 let pendingAgentActions = null;
+let agentBatch = null;
+function batchActive() { return agentBatch?.key === agentListKey(); }
+function receiveSessionBatch(m) {
+  if (!batchActive() || m.app !== currentApp || m.requestId !== agentBatch.requestId) return;
+  agentBatch.progress = m;
+  agentBatch.running = !m.done;
+  for (const row of m.results) if (row.ok) agentBatch.selected.delete(row.id);
+  if (sheetKind === 'agents') renderAgentList();
+}
+function showProjectWindows(m) {
+  openSheet('project-windows', `<h3>项目窗口</h3><button class="opt" data-window-enabled="${m.enabled ? '0' : '1'}"><span class="lbl">自动关闭空闲窗口</span><span class="switch${m.enabled ? ' on' : ''}"></span></button><label class="pSec">空闲分钟数<input data-window-idle type="number" min="1" value="${m.idleMinutes}"></label>${m.windows.map(w => `<div class="pSec">${esc(({cursor:'Cursor',devin:'Devin',codex:'Codex'})[w.app] + ' · ' + w.title)}</div><div class="hint">${esc(w.root)}<br>${esc(w.reason || (w.owned ? '已纳入自动管理' : '未纳入自动管理'))}</div><button class="opt" data-window-key="${esc(w.key)}" data-window-owned="${w.owned ? '0' : '1'}">${w.owned ? '退出自动管理' : '纳入自动管理'}</button><button class="opt" data-window-key="${esc(w.key)}" data-window-keep="${w.keep ? '0' : '1'}">${w.keep ? '取消保留' : '始终保留此窗口'}</button>`).join('')}`);
+  $('sheet').querySelector('[data-window-idle]').onchange = e => send({ t: 'projectWindowSet', change: { idleMinutes: Number(e.target.value) } });
+}
 const agentOpenedKey = thread => `${currentComputer()?.id || ''}|${currentAppName}|${thread}`;
 const agentUsageKey = id => `${currentComputer()?.id || currentComputer()?.key || ''}|${currentApp || currentAppName}|${id}`;
 const agentFilterKey = () => `${currentComputer()?.id || currentComputer()?.key || ''}|${currentApp || currentAppName}`;
@@ -87,7 +100,7 @@ function agentUsageInfo(a) {
   const lastMessageAt = Number(shared.lastMessageAt) || 0;
   const ageDays = lastMessageAt ? Math.max(0, (Date.now() - lastMessageAt) / 86400000) : Infinity;
   const favorite = shared.favorite === true;
-  return { ...a, lastUsed, favorite, common: favorite || (lastMessageAt > 0 && ageDays <= 7) };
+  return { ...a, ...(shared.title && !a.ui ? { title: shared.title } : {}), lastUsed, favorite, common: favorite || (lastMessageAt > 0 && ageDays <= 7) };
 }
 function agentFavoriteState(id) {
   return sharedAgentRecord(id).favorite === true;
@@ -511,6 +524,11 @@ function cancelDocs() {
   finishPending(['正在读取文档…', '正在读取项目文件…']);
 }
 function agentButton(a) {
+  if (batchActive()) {
+    if (a.ui) return '';
+    const checked = agentBatch.selected.has(a.id);
+    return `<button class="opt${checked ? ' cur' : ''}" data-agent-batch-id="${esc(a.id)}" role="checkbox" aria-checked="${checked}" ${a.running || agentBatch.running ? 'disabled' : ''}><span>${checked ? '☑' : '☐'}</span><span class="lbl">${esc(a.title)}</span>${a.running ? '<span class="tag">运行中</span>' : ''}</button>`;
+  }
   if (a.loadWindow) return `<button class="opt" data-project-load="${esc(a.loadWindow)}">${esc(a.title)}</button>`;
   const label = a.ui ? esc(a.title) : `<span class="lbl">${esc(a.title)}</span>`;
   const tags = a.running ? '<span class="tag">运行中</span>' : '';
@@ -593,7 +611,10 @@ function showAgents(list) {
     firstVisible = false;
     return foldSection(win, body, open, visible.length);
   }).join('');
-  const html = `<div class="agentSheetTitle"><h3>项目与会话</h3>${agentFilterSlider(filters)}</div><button class="opt" data-act="agentsRefresh">刷新项目与会话</button><button class="opt" data-act="projects"><span class="lbl">选择文件夹／新建项目</span></button><button class="opt" data-act="projectNewChat"><span class="lbl">在当前项目新建会话</span></button>${rows || `<div class="hint">${esc(appMessage('没有找到 {app} 的 Agent。请在电脑上打开对应的会话窗口。'))}</div>`}`;
+  const batch = batchActive();
+  const progress = batch && agentBatch.progress;
+  const manage = batch ? `<button class="opt" data-agent-batch="select" ${agentBatch.running ? 'disabled' : ''}>全选当前筛选结果</button><button class="opt" data-agent-batch="remove" ${!agentBatch.selected.size || agentBatch.running ? 'disabled' : ''}>删除／归档所选会话（${agentBatch.selected.size}）</button><button class="opt" data-agent-batch="${agentBatch.running ? 'cancel' : 'exit'}">${agentBatch.running ? '取消剩余操作' : '完成管理'}</button>${progress ? `<div class="hint">已处理 ${progress.results.length}/${progress.total}${progress.cancelled ? ' · 已取消' : ''}${progress.results.filter(r => !r.ok).map(r => `<p>${esc((list.find(a => a.id === r.id)?.title || r.id) + '：' + r.error)}</p>`).join('')}</div>` : ''}` : '<button class="opt" data-agent-batch="start">批量管理会话</button>';
+  const html = `<div class="agentSheetTitle"><h3>项目与会话</h3>${agentFilterSlider(filters)}</div>${batch ? '' : '<button class="opt" data-act="agentsRefresh">刷新项目与会话</button><button class="opt" data-act="projects"><span class="lbl">选择文件夹／新建项目</span></button><button class="opt" data-act="projectNewChat"><span class="lbl">在当前项目新建会话</span></button><button class="opt" data-project-windows>项目窗口</button>'}${manage}${rows || `<div class="hint">${esc(appMessage('没有找到 {app} 的 Agent。请在电脑上打开对应的会话窗口。'))}</div>`}`;
   if (keep) {
     const template = document.createElement('template');
     template.innerHTML = html;
@@ -602,9 +623,39 @@ function showAgents(list) {
   } else openSheet('agents', html);
   if (keep) requestAnimationFrame(() => { $('sheet').scrollTop = scroll; });
 }
-$('sheet').addEventListener('click', e => {
+$('sheet').addEventListener('click', async e => {
   const b = e.target.closest('button');
-  if (!b || sheetKind !== 'agents') return;
+  if (!b) return;
+  if (sheetKind === 'project-windows') {
+    const change = { ...(b.dataset.windowKey ? { window: b.dataset.windowKey } : {}) };
+    for (const field of ['enabled', 'owned', 'keep']) if (b.hasAttribute('data-window-' + field)) change[field] = b.getAttribute('data-window-' + field) === '1';
+    return send({ t: 'projectWindowSet', change });
+  }
+  if (sheetKind !== 'agents') return;
+  if (b.hasAttribute('data-project-windows')) return send({ t: 'projectWindows' });
+  if (b.dataset.agentBatch) {
+    const act = b.dataset.agentBatch;
+    if (act === 'start') agentBatch = { key: agentListKey(), selected: new Set(), running: false };
+    if (act === 'exit') agentBatch = null;
+    if (act === 'select') {
+      agentBatch.selected.clear();
+      for (const row of (agentLists.get(agentListKey()) || []).map(agentUsageInfo))
+        if (!row.ui && !row.running && (currentAgentFilters().session === 'all' || row.common)) agentBatch.selected.add(row.id);
+    }
+    if (act === 'cancel') send({ t: 'sessionBatchCancel', requestId: agentBatch.requestId });
+    if (act === 'remove') {
+      if (!await ask(`删除或归档所选 ${agentBatch.selected.size} 个会话？\n逐条执行桌面端支持的操作，成功后无法通过取消恢复。`, '继续')) return;
+      agentBatch.requestId = String(Date.now());
+      agentBatch.running = true;
+      if (!send({ t: 'sessionBatch', ids: [...agentBatch.selected], requestId: agentBatch.requestId })) agentBatch.running = false;
+    }
+    return renderAgentList();
+  }
+  if (b.dataset.agentBatchId && batchActive() && !agentBatch.running) {
+    const id = b.dataset.agentBatchId;
+    if (agentBatch.selected.has(id)) agentBatch.selected.delete(id); else agentBatch.selected.add(id);
+    return renderAgentList();
+  }
   if (b.dataset.agentFavorite) {
     setAgentFavorite(b.dataset.agentFavorite, b.dataset.agentFavoriteValue === '1');
     return;
