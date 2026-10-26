@@ -7,6 +7,9 @@ import { appPlans } from './agent/context.mjs';
 import { probeLatency } from './latency.mjs';
 import { launchAgents, detectAgents } from './launch.mjs';
 import { ADAPTERS } from './apps/index.mjs';
+import { readLibrary, importLibrary, favoriteSession } from '../lib/session-library.mjs';
+import { computerId } from '../lib/auth.mjs';
+import { scanProjectWindows, projectWindowSettings } from './project-windows.mjs';
 
 // One entry per message type the phone can send (auth/ack are handled inside ws.mjs itself).
 //   pre      — runs in handle() before the read-only/focus split, without a cdp
@@ -84,6 +87,26 @@ const questionDone = (s, m) => s.emit({ t: 'questionDone', requestId: m.requestI
 const questionFailed = (s, m) => s.emit({ t: 'questionDone', requestId: m.requestId, sel: s.selectionKey(), ok: false });
 
 export const ROUTES = {
+  projectWindows: { pre: async s => {
+    await scanProjectWindows(false);
+    s.emit({ t: 'projectWindows', ...projectWindowSettings() });
+  } },
+  projectWindowSet: { pre: (s, m) => s.emit({ t: 'projectWindows', ...projectWindowSettings(m.change) }) },
+  sessionBatch: { run: (s, m) => s.batchSessions(Array.isArray(m.ids) ? m.ids.map(String) : [], m.requestId), fail: (s, m) => s.emit({ t: 'sessionBatchProgress', app: s.app, requestId: m.requestId, total: m.ids?.length || 0, results: (m.ids || []).map(id => ({ id, ok: false, error: '批量操作未执行，请刷新列表' })), done: true }) },
+  sessionBatchCancel: { fast: true, fastRun: (s, m) => { if (s.sessionBatch?.requestId === m.requestId) s.sessionBatch.cancelled = true; } },
+  sessionActions: {
+    run: (s, m) => s.sessionActions(String(m.id || ''), m.requestId),
+    fail: (s, m) => s.emit({ t: 'sessionActions', app: s.app, id: m.id, requestId: m.requestId, actions: [] }),
+  },
+  sessionManage: { run: (s, m) => s.manageSession(String(m.id || ''), String(m.action || ''), m.name) },
+  sessionLibrary: { fast: true, fastRun: (s, m) => {
+    importLibrary(m.entries);
+    s.emit({ t: 'sessionLibrary', computer: computerId(), records: readLibrary() });
+  } },
+  sessionFavorite: { fast: true, fastRun: (s, m) => {
+    try { favoriteSession(String(m.app || ''), m.id, m.favorite === true); }
+    catch (error) { s.emit({ t: 'status', ok: false, msg: error.message }); }
+  } },
   latency: { fast: true, fastRun: (s, m) => { probeLatency(s, m).catch(() => {}); } },
   // Liveness probe for the phone's dead-socket detection: an open-but-dead connection
   // silently swallows sends, so the phone pings and reconnects when nothing comes back.
@@ -106,6 +129,7 @@ export const ROUTES = {
   },
   windows: { pre: async s => s.emit({ t: 'windows', list: phoneWindows(await listWindows(), s.targetId), current: s.targetId, plans: appPlans }) },
   attach: {
+    fail: s => s.emit({ t: 'attachFailed', ready: s.bindingReady === true }),
     pre: async (s, m) => {
       if (!m.initial) return s.attach(m);
       try {
@@ -226,7 +250,10 @@ export const ROUTES = {
       if (m.action === 'edit' && s.app === 'devin') return s.devinTakeOut(m.id);
       return m.action === 'edit' ? s.editQueued(m.id, String(m.text ?? '')) : s.queueAction(m.id, m.action);
     },
-    after: (s, m) => { if (m.action === 'edit') s.emit({ t: 'status', ok: true, msg: '已修改，仍在排队' }); },
+    after: (s, m) => {
+      s.emit({ t: 'queueDone', sel: s.selectionKey(), id: m.id, action: m.action, text: m.text, echoes: m.echoes, ok: true });
+      if (m.action === 'edit') s.emit({ t: 'status', ok: true, msg: '已修改，仍在排队' });
+    },
   },
   stop: {
     fast: s => s.app === 'fusion',
@@ -261,12 +288,15 @@ export const ROUTES = {
   revertCancel: { run: (s, m) => s.revertAnswer(false) },
   change: { run: (s, m) => s.changeAction(m.i, m.name, m.act) },
   scrollChat: {
+    readOnly: (s, m) => s.app === 'codex' && m.history === true,
     run: async (s, m) => {
       if (!m.history) return s.scrollChat(Number(m.dy) || 0, m.automatic === true);
       const sel = s.selectionKey();
       try {
-        const result = await s.scrollChat(Number(m.dy) || 0, m.automatic === true, true);
-        s.emit({ t: 'historyDone', sel, requestId: m.requestId, ...result });
+        const result = await s.scrollChat(Number(m.dy) || 0, m.automatic === true, true, m.before, m.known, m.details);
+        if (result?.items) s.emit({ t: 'historyPage', sel, requestId: m.requestId, thread: result.thread, items: result.items, earlier: result.earlier, before: result.before });
+        const { items, thread, ...done } = result || {};
+        s.emit({ t: 'historyDone', sel, requestId: m.requestId, ...done });
       } catch (e) {
         s.emit({ t: 'historyDone', sel, requestId: m.requestId, error: e.message });
       }

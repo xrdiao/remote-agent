@@ -16,6 +16,7 @@ import { preloadVoice } from './voice/service.mjs';
 import { offerFirstPairing } from './util.mjs';
 import { run } from './publish/pages.mjs';
 import { startTunnel } from './publish/tunnel.mjs';
+import { startProjectWindowCleanup } from './project-windows.mjs';
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
@@ -70,6 +71,7 @@ server.listen(PORT, HOST, async () => {
   console.log(`数据目录：${DATA_DIR}`);
   console.log(`已配对 ${listDevices().length} 台设备。添加新设备：npm run pair`);
   detectAppUrl();
+  startProjectWindowCleanup();
   startWatcher({
     listWindows: watchTargets,
     openCdp: async ws => { const c = new Cdp(ws); await c.connect(); return c; },

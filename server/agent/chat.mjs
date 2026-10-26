@@ -5,6 +5,7 @@ import { IS_MAC, mod } from '../../lib/platform.mjs';
 import { codexContext } from '../windows.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { FOCUS_COMPOSER, uploads } from './context.mjs';
+import { rememberSessionMessage, observeSessionTitle, readLibrary } from '../../lib/session-library.mjs';
 
 // Cursor accepts images pasted into the composer; a synthetic paste event carrying a File works the same way.
 const pasteImage = (b64, name, type) => `(async () => {
@@ -169,25 +170,35 @@ export const methods = {
     if (this.polling === sel) { if (immediate) this.pollAgain = sel; return; }
     this.lastChatAt = Date.now();
     this.polling = sel;
-    const freshView = this.codexFreshView === true;
     this.codexFreshView = false;
+    let readRevision;
+    const read = async () => {
+      const chat = await cdp.evaluate(helpersCall('extract()'));
+      readRevision = chat?._revision;
+      if (chat) delete chat._revision;
+      return chat;
+    };
+    const current = async () => {
+      if (this.app !== 'codex' || readRevision === undefined) return true;
+      if (await cdp.evaluate(helpersCall('chatRevision()')) === readRevision) return true;
+      this.pollAgain = sel;
+      return false;
+    };
     try {
-      let chat = await cdp.evaluate(helpersCall('extract()'));
+      let chat = await read();
       if (!this.liveRead(cdp, sel) || !this.acceptsChat(chat)) return;
       if (!chat && this.liveRead(cdp, sel) && await this.checkProjectTrust()) return;
       if (!chat && this.app === 'codex' && this.liveRead(cdp, sel) && await this.checkCodexLogin()) return;
-      const before = this.app === 'codex' && !freshView && !this.lastChat && !chat?.busy ? await cdp.evaluate(helpersCall("scrollCodexHistory('latest')")) : null;
-      try {
-        if (before) await new Promise(r => setTimeout(r, 150));
-        if (before) chat = await cdp.evaluate(helpersCall('extract()'));
-      } finally {
-        if (before && this.liveRead(cdp, sel) && await cdp.evaluate(helpersCall('codexThread()')) === before.thread) {
-          await cdp.evaluate(helpersCall(`scrollCodexHistory(${before.scrollTop})`));
-        }
-      }
       if (!this.liveRead(cdp, sel) || this.historyLoading) return;
       if (!this.acceptsChat(chat)) return;
       this.syncSession(chat);
+      if (chat?.thread && chat.title && readLibrary()[this.app]?.[chat.thread]?.title && chat.title !== readLibrary()[this.app][chat.thread].title) {
+        const title = await cdp.evaluate(helpersCall(`nativeConfirmedTitle(${JSON.stringify(this.app)}, ${JSON.stringify(chat.thread)})`));
+        if (!this.liveRead(cdp, sel)) return;
+        observeSessionTitle(this.app, chat.thread, title);
+      }
+      if (chat?.thread && chat.thread === this.threadId) rememberSessionMessage(this.app, chat.thread,
+        Math.max(0, ...chat.items.filter(it => it.k === 'human').map(it => Number(it.sentAt) || 0)));
       const emptyCodex = this.app === 'codex' && !this.threadId && !this.selectedThread && !chat?.thread && chat?.items?.length === 0 && !chat.readonly;
       const extracted = chat && JSON.stringify({ ...chat, draft: undefined });
       let contextRead;
@@ -202,6 +213,8 @@ export const methods = {
           initial.context = await (contextRead = Promise.resolve(codexContext(chat.thread)));
           if (!this.liveRead(cdp, sel) || this.historyLoading || !this.acceptsChat(initial)) return;
         }
+        if (!await current()) return;
+        this.mergeCodexItems(initial);
         this.lastExtractedChat = extracted;
         this.fillThinking(initial);
         this.retainThinking(initial);
@@ -214,7 +227,7 @@ export const methods = {
       const thinkingAction = async action => {
         if (this.app !== 'codex') return cdp.evaluate(helpersCall(action));
         const acted = await cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return !h.codexCapacityItem() && h.${action}; })()`);
-        if (acted === false && this.liveRead(cdp, sel)) chat = await cdp.evaluate(helpersCall('extract()'));
+        if (acted === false && this.liveRead(cdp, sel)) chat = await read();
         return acted;
       };
       const readThinking = async () => {
@@ -227,7 +240,7 @@ export const methods = {
             if (!await thinkingAction(`clickThinking(${JSON.stringify(idxs)})`)) return;
             await new Promise(r => setTimeout(r, 250));
             if (!this.liveRead(cdp, sel)) return;
-            chat = await cdp.evaluate(helpersCall('extract()'));
+            chat = await read();
           }
         }
         if (!this.liveRead(cdp, sel) || this.app === 'codex' && chat?.capacityPresent) return;
@@ -239,7 +252,7 @@ export const methods = {
             if (!await thinkingAction(`clickThinking(${JSON.stringify(idxs)})`)) return;
             await new Promise(r => setTimeout(r, 250));
             if (!this.liveRead(cdp, sel)) return;
-            chat = await cdp.evaluate(helpersCall('extract()'));
+            chat = await read();
             if (!this.liveRead(cdp, sel)) return;
             await thinkingAction(`closeThinkingIfOpen(${JSON.stringify(idxs)})`);
           }
@@ -273,6 +286,7 @@ export const methods = {
         await this.resolveCodexImages(chat, cdp);
         if (!this.liveRead(cdp, sel)) return;
       }
+      if (!await current()) return;
       this.mergeCodexItems(chat);
       const draft = chat.draft;
       delete chat.draft;
@@ -301,7 +315,7 @@ export const methods = {
         if (wasOpen != null) {
           try {
             await new Promise(r => setTimeout(r, 250));
-            const opened = await cdp.evaluate(helpersCall('extract()'));
+            const opened = await read();
             const tasks = opened?.items?.find(it => it.k === 'tasks' && it.i === taskRow.i && it.items);
             if (tasks) {
               this.tasksTried.set(taskRow.i, `${tasks.done}/${tasks.total}`);
@@ -324,7 +338,7 @@ export const methods = {
         if (wasOpen == null) continue;
         try {
           await new Promise(r => setTimeout(r, 150));
-          const full = await cdp.evaluate(helpersCall('extract()'));
+          const full = await read();
           const command = full?.items?.find(it => it.i === item.i && it.cmd);
           if (command) { Object.assign(item, command); this.devinCmds.set(item.i, command.cmd); }
         } finally {
@@ -353,6 +367,7 @@ export const methods = {
         else this.queueFusionRead();
       } else this.fusion = null;
       if (this.app === 'devin') this.devinGeneration(chat);
+      if (!await current()) return;
       const json = JSON.stringify(chat);
       if (!this.liveRead(cdp, sel) || this.historyLoading || !this.acceptsChat(chat)) return;
       if (json !== this.lastChat) {
@@ -420,14 +435,22 @@ export const methods = {
     if (busy) throw new Error(pos ? '没有停下来，Agent 仍在运行，请到电脑上看一下' : '没有停下来：电脑上的输入框里还有没发出的文字，Devin 没有停止按钮。清空输入框，或在电脑上按 Ctrl+Alt+C');
     this.emit({ t: 'status', ok: true, msg: '已停止 Agent' });
   },
-  async scrollChat(dy, automatic = false, history = false) {
+  async scrollChat(dy, automatic = false, history = false, beforeOrder = null, known = [], details = false) {
     if (this.app === 'codex') {
-      if (automatic && (await this.cdp.evaluate(helpersCall('agentState()')))?.busy) return { blocked: true };
-      if (this.historyLoading) return { blocked: true };
+      if (this.historyLoading) return { pending: true };
       const cdp = this.cdp, sel = this.sel, thread = this.threadId;
       this.historyLoading = true;
       let before;
       try {
+        if (history) {
+          const page = await cdp.evaluate(helpersCall(`codexHistoryPage(${JSON.stringify(beforeOrder)}, ${JSON.stringify(known)}, ${details === true})`));
+          if (!this.liveRead(cdp, sel) || page.thread !== thread) return;
+          const live = new Map((this.itemCache?.get(thread) || []).map(it => [it.i, it]));
+          page.items = page.items.map(it => live.get(it.i) || it);
+          await this.resolveCodexImages(page, cdp);
+          if (!this.liveRead(cdp, sel)) return;
+          return page;
+        }
         before = await cdp.evaluate(helpersCall('scrollCodexHistory(false)'));
         if (!this.codexHistoryTop) this.codexHistoryTop = new Map();
         const top = this.codexHistoryTop.get(thread);
@@ -437,22 +460,19 @@ export const methods = {
           await cdp.evaluate(helpersCall(`waitHistoryRows(${JSON.stringify(rows)}, 150)`));
         }
         if (!this.liveRead(cdp, sel)) return;
-        if (!before && history) return { error: '没有找到桌面聊天历史区域' };
         const point = before && await cdp.evaluate(helpersCall('scrollCodexHistory()'));
         if (point) {
           const rows = await cdp.evaluate(helpersCall('historyRows()'));
           await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: point.x, y: point.y, deltaX: 0, deltaY: dy });
           await cdp.evaluate(helpersCall(`waitHistoryRows(${JSON.stringify(rows)})`));
-          const chat = await cdp.evaluate(helpersCall('extract()'));
+          const chat = await cdp.evaluate(helpersCall('extract(true)'));
           if (!this.liveRead(cdp, sel) || chat?.thread !== thread) return;
           await this.resolveCodexImages(chat, cdp);
           if (!this.liveRead(cdp, sel)) return;
-          const pageItems = chat.items;
-          this.mergeCodexItems(chat);
-          if (history) {
-            chat.items = [...new Map([...pageItems, ...chat.items].map(it => [it.i, it])).values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-            chat.earlier = this.codexEarlier(chat.items);
-          }
+          const live = new Map((this.itemCache?.get(thread) || []).map(it => [it.i, it]));
+          chat.items = chat.items.map(it => live.get(it.i) || it);
+          this.mergeCodexItems({ ...chat, busy: true, capacityPresent: undefined });
+          chat.items = this.itemCache.get(thread);
           const after = await cdp.evaluate(helpersCall('scrollCodexHistory(false)'));
           if (after) this.codexHistoryTop.set(thread, after.scrollTop);
           await cdp.evaluate(helpersCall(`scrollCodexHistory(${before.scrollTop})`));
@@ -462,38 +482,48 @@ export const methods = {
           this.emit({ t: 'chat', sel: this.selectionKey(), chat });
           return { earlier: chat.earlier };
         }
-        if (history) return { error: '没有找到桌面聊天历史位置' };
       } finally {
-        if (before && this.liveRead(cdp, sel) && await cdp.evaluate(helpersCall('codexThread()')) === thread) await cdp.evaluate(helpersCall(`scrollCodexHistory(${before.scrollTop})`));
-        this.historyLoading = false;
-        this.lastChatAt = 0;
+        try {
+          if (before && this.liveRead(cdp, sel) && await cdp.evaluate(helpersCall('codexThread()')) === thread) await cdp.evaluate(helpersCall(`scrollCodexHistory(${before.scrollTop})`));
+        } finally {
+          this.historyLoading = false;
+          this.lastChatAt = 0;
+        }
       }
     }
     const rect = await this.cdp.evaluate(helpersCall('panelRect()'));
     if (!rect) return history ? { error: '没有找到桌面聊天面板' } : undefined;
-    if (history && this.app === 'devin') {
-      // A 900px wheel never crosses Devin's virtualization remount threshold; jump the scroller.
-      const r = await this.cdp.evaluate(helpersCall('devinLoadEarlier()'), { timeout: 8000 }).catch(() => null);
-      if (!r) return { error: '没有找到桌面聊天历史区域' };
-      this.lastChatAt = 0;
-      await this.pollChat(true);
-      if (r.moved && Number.isFinite(r.top)) await this.cdp.evaluate(helpersCall(`devinScrollTop(${r.top})`)).catch(() => {});
-      const cachedEarlier = this.lastChat ? JSON.parse(this.lastChat).earlier : undefined;
-      const earlier = typeof r.atStart === 'boolean' ? !r.atStart : cachedEarlier;
-      return { ...(typeof earlier === 'boolean' ? { earlier } : {}) };
+    if (history) {
+      if (this.historyLoading) return { pending: true };
+      const cdp = this.cdp, sel = this.sel, thread = this.threadId;
+      this.historyLoading = true;
+      let position;
+      try {
+        position = await cdp.evaluate(helpersCall('historyPosition()'));
+        if (this.app === 'devin') await cdp.evaluate(helpersCall('devinLoadEarlier()'), { timeout: 8000 });
+        else {
+          const rows = await cdp.evaluate(helpersCall('historyRows()'));
+          const [x, y, w, h] = rect;
+          await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: x + w / 2, y: y + h / 2, deltaX: 0, deltaY: dy });
+          await cdp.evaluate(helpersCall(`waitHistoryRows(${JSON.stringify(rows)})`));
+        }
+        const chat = await cdp.evaluate(helpersCall('extract()'));
+        if (!this.liveRead(cdp, sel) || chat?.thread !== thread) return;
+        if (this.app === 'devin') this.mergeDevinHistory(chat, true);
+        const earlier = !await cdp.evaluate(helpersCall('historyAtStart()'));
+        return { thread, items: chat.items, earlier: this.app === 'devin' ? chat.earlier : earlier };
+      } finally {
+        try {
+          if (position && this.liveRead(cdp, sel) && await cdp.evaluate(helpersCall('activeThread()')) === thread)
+            await cdp.evaluate(helpersCall(`historyPosition(${JSON.stringify(position)})`));
+        } finally {
+          this.historyLoading = false;
+          this.lastChatAt = 0;
+        }
+      }
     }
     const [x, y, w, h] = rect;
-    const rows = history ? await this.cdp.evaluate(helpersCall('historyRows()')) : null;
     await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: x + w / 2, y: y + h / 2, deltaX: 0, deltaY: dy });
-    if (history) {
-      await this.cdp.evaluate(helpersCall(`waitHistoryRows(${JSON.stringify(rows)})`));
-      this.lastChatAt = 0;
-      await this.pollChat(true);
-      const atStart = await this.cdp.evaluate(helpersCall('historyAtStart()'));
-      const cachedEarlier = this.lastChat ? JSON.parse(this.lastChat).earlier : undefined;
-      const earlier = typeof atStart === 'boolean' ? !atStart : cachedEarlier;
-      return { ...(typeof earlier === 'boolean' ? { earlier } : {}) };
-    }
     setTimeout(() => this.pollChat().catch(() => {}), 400);
   },
 
@@ -503,6 +533,8 @@ export const methods = {
     return this.adapter.mentionQuery.call(this, q, cat, seq, trigger);
   },
   async sendMessage(text, submit, when, mentions, receipt) {
+    const receiptToken = submit ? (this.sendNativeReceipt = {}) : null;
+    const receiptScope = this.selectionKey(), receiptCdp = this.cdp;
     if (submit && receipt) this.draftEpoch = receipt.draftEpoch || '';
     if (this.app === 'fusion') {
       const queued = await this.adapter.sendMessage.call(this, text);
@@ -544,8 +576,9 @@ export const methods = {
     if (submit) {
       files.forEach(f => { f.pending = false; });
       this.lastDraft = text;
+      if (!queued) rememberSessionMessage(this.app, this.threadId, Date.now());
     }
-    if (submit && receipt) this.emit({ t: 'sent', ...receipt, queued, sentAt: Date.now(), sel: this.selectionKey() });
+    if (submit && receipt) this.emit({ t: 'sent', ...receipt, ...(this.sendNativeReceipt === receiptToken && this.selectionKey() === receiptScope && this.cdp === receiptCdp ? receiptToken : {}), queued, sentAt: Date.now(), sel: this.selectionKey() });
     if (this.mode === 'chat') {
       this.lastChatAt = 0;
       this.pollChat(true).catch(() => {});

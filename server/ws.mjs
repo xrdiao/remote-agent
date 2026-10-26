@@ -5,9 +5,15 @@ import { addViewer, removeViewer } from '../lib/notify.mjs';
 import { clientIp } from './http/ratelimit.mjs';
 import { originAllowed } from './http/static.mjs';
 import { Session } from './session.mjs';
+import { subscribeLibrary } from '../lib/session-library.mjs';
 import { quotaErrorMessage } from './agent/context.mjs';
 import { ROUTES, flag } from './routes.mjs';
 import { voiceWss } from './voice/service.mjs';
+import { cdpRead } from './cdp.mjs';
+
+const SWITCH_READS = new Set(['attach', 'openAgent', 'agents', 'windows', 'connAgents', 'mode', 'visible', 'projects', 'docs', 'file', 'openMenu', 'params', 'terminals', 'termHistory', 'usage', 'settings', 'changes', 'thought', 'attachments', 'refresh', 'scrollChat', 'mentionQuery', 'workdir', 'codexSkills', 'codexRun', 'codexChat', 'sessionActions']);
+const CONNECTION_MESSAGES = new Set(['mode', 'visible', 'lang', 'quality', 'windows', 'connAgents', 'visualList', 'visualSelect']);
+const sameWindow = (session, msg) => !msg.sel || msg.sel.split('|', 2).join('|') === session.selectionKey().split('|', 2).join('|');
 
 export function attachWss(server) {
 const voice = voiceWss();
@@ -47,6 +53,8 @@ wss.on('connection', (ws, req) => {
   const authTimer = setTimeout(() => ws.close(4001, 'auth timeout'), 5000);
   let queue = Promise.resolve();
   let questionQueue = Promise.resolve();
+  let binding = 0;
+  let reads = new AbortController();
   const agentReads = new Map();
   const imageActions = [];
   let imageGroup = 0;
@@ -65,6 +73,7 @@ wss.on('connection', (ws, req) => {
       updateDevice(device.id, { lastSeen: Date.now() });
       session = new Session(ws, device.id);
       authorization = bindDeviceConnection(device.id, () => ws.close(4001, 'unauthorized'));
+      subscribeLibrary(ws);
       addViewer(session);
       ws.send(JSON.stringify({ t: 'auth', ok: true, ...identity }));
       console.log(`[+] client ${clientIp(req)}`);
@@ -78,7 +87,24 @@ wss.on('connection', (ws, req) => {
     if (codexMention) session.mentionSeq = msg.seq;
     const imageTransfer = msg.t === 'image' ? { cancelled: false } : null;
     if (imageTransfer) (session.imageTransfers ||= new Map()).set(msg.clientImageId, imageTransfer);
-    if (route && flag(route.fast, session, msg)) { route.fastRun(session, msg); return; }
+    if (route && flag(route.fast, session, msg)) {
+      if (SWITCH_READS.has(msg.t)) {
+        if (!sameWindow(session, msg)) return;
+        const signal = reads.signal;
+        cdpRead.run(signal, () => route.fastRun(session, msg)).catch(error => {
+          if (!signal.aborted) session.emit({ t: 'status', ok: false, msg: error.message });
+        });
+      } else route.fastRun(session, msg);
+      return;
+    }
+    const switching = msg.t === 'attach' || msg.t === 'openAgent';
+    if (switching) {
+      if (session.sessionBatch) session.sessionBatch.cancelled = true;
+      binding++;
+      reads.abort(new Error('窗口已切换'));
+      reads = new AbortController();
+    }
+    const owner = binding;
     const readKind = msg.t === 'agents' ? `${!!msg.automatic}|${!!msg.silent}` : null;
     const readSerial = readKind && (agentReads.get(readKind) || 0) + 1;
     if (readKind) agentReads.set(readKind, readSerial);
@@ -89,21 +115,30 @@ wss.on('connection', (ws, req) => {
       if (!authorization.valid || ws.readyState !== 1) return;
       if (executed) return;
       executed = true;
-      if (codexMention && session.mentionSeq !== msg.seq) return;
       const actionIndex = imageActions.findIndex(action => action.execute === execute);
       if (actionIndex !== -1) imageActions.splice(actionIndex, 1);
+      const staleSelection = !switching && !sameWindow(session, msg);
+      if ((owner !== binding || staleSelection) && !CONNECTION_MESSAGES.has(msg.t)) {
+        if (msg.t === 'saveFile') session.emit({ t: 'saved', requestId: msg.requestId, ok: false, error: '窗口已切换，保存未执行', path: msg.path, host: msg.host || '' });
+        else route?.fail?.(session, msg);
+        if (imageTransfer) session.imageTransfers.delete(msg.clientImageId);
+        return;
+      }
+      if (codexMention && session.mentionSeq !== msg.seq) return;
       if (msg.t === 'image') {
         for (const action of imageActions.filter(action => action.group === group)) await action.execute();
       }
       if (readKind && agentReads.get(readKind) !== readSerial) return;
       if (!authorization.valid || ws.readyState !== 1) return;
       const q0 = Date.now();
+      const signal = SWITCH_READS.has(msg.t) ? reads.signal : null;
       try {
-        const queued = imageTransfer?.cancelled ? undefined : await session.handle(msg);
+        const queued = imageTransfer?.cancelled ? undefined : await cdpRead.run(signal, () => session.handle(msg));
         const ms = Date.now() - q0;
         if (ms > 3000) console.log(`[slow] ${msg.t} ${ms}ms ${session.app || ''}`);
         route?.after?.(session, msg, queued);
       } catch (e) {
+        if (signal?.aborted) return;
         console.log(`[err] ${msg.t}: ${e.message}`);
         route?.fail?.(session, msg);
         session.emit({ t: 'status', ok: false, msg: quotaErrorMessage(session.app, e) || e.message });
@@ -114,11 +149,12 @@ wss.on('connection', (ws, req) => {
     if (imageAction) imageActions.push({ group, execute });
     if (flag(route?.background, session, msg)) queue.then(execute);
     else if (msg.t === 'question' || msg.t === 'codexRequest') questionQueue = questionQueue.then(execute);
-    else queue = queue.then(execute);
+    else queue = (switching ? Promise.all([queue, questionQueue]) : queue).then(execute);
   });
   ws.on('close', () => {
     clearTimeout(authTimer);
     authorization?.release();
+    reads.abort(new Error('连接已关闭'));
     if (!session) return;
     removeViewer(session);
     session.dispose();

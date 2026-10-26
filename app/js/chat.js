@@ -20,6 +20,7 @@ itemsEl.addEventListener('click', async e => {
   }
   const tr = e.target.closest('[data-ttoggle]');
   if (tr && !e.target.closest('[data-file]')) {
+    noteChatLayoutChange();
     const box = tr.closest('.toolrow');
     box.classList.add('anim');
     box.classList.toggle('open');
@@ -33,6 +34,7 @@ itemsEl.addEventListener('click', async e => {
   const box = b.closest('.thinking');
   const body = box?.querySelector('.thb');
   const next = !box.classList.contains('open');
+  noteChatLayoutChange();
   thinkingPref.set(viewSel + '|' + b.dataset.think, next);
   box.classList.toggle('open', next);
   b.querySelector('.tha').textContent = next ? '收起' : '展开';
@@ -329,8 +331,7 @@ let activeGeneration = '';
 function withMessageTimes(chat) {
   if (!chat) return chat;
   const scope = messageScope();
-  const matches = (it, m) => it.k === 'human' && !m.before.has(it.i)
-    && echoTextMatches(it, m.text);
+  const matches = (it, m) => receiptMatchesHuman(it, m);
   const applies = m => m.scope === scope && (!m.thread || m.thread === chat.thread);
   const itemKey = it => generationKey(chat) + '|' + it.i;
   for (let index = 0; index < submittedMessages.length;) {
@@ -341,6 +342,8 @@ function withMessageTimes(chat) {
     const item = candidates.at(-Math.min(waiting, candidates.length));
     if (!item) { index++; continue; }
     messageTimes.set(itemKey(item), item.sentAt || receipt.sentAt);
+    const echo = pendingEchoes.find(row => row.requestId === receipt.requestId);
+    if (echo) echo.messageId = item.i;
     submittedMessages.splice(index, 1);
   }
   return { ...chat, items: chat.items.map(it => {

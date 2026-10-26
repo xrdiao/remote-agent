@@ -197,6 +197,8 @@ const I18N = (() => {
     '已到最早消息': 'Beginning of conversation',
     '生成中，稍后上滑加载历史': 'Generating. Scroll up later to load history.',
     '正在加载更早的消息…': 'Loading earlier messages…',
+    '历史消息正在加载，请稍后重试': 'History is loading. Please try again shortly.',
+    '上一页': 'Previous page', '下一页': 'Next page',
     '继续上滑可加载更早的消息': 'Scroll up again to load earlier messages',
     '未命名会话': 'Untitled chat',
     '刷新项目与会话': 'Refresh projects and sessions',

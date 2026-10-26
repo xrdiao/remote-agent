@@ -36,11 +36,9 @@ export const adapter = {
   // A freshly launched Cursor lands on the Agents home; open the most recent session.
   // agentList order is the sidebar's native order (Cursor lists most recent first).
   async openDefaultSession() {
-    const st = await this.cdp.evaluate(`(() => {
-      const h = ${PAGE_SRC};
-      return { thread: h.activeThread(), panel: !!h.panelRect(), items: (h.extract() || {}).items?.length || 0 };
-    })()`);
-    if (st.panel && st.thread && st.items) return;
+    const st = await this.waitFor('agentStartupState("cursor")', 250);
+    if (!st) throw new Error('Cursor 项目与会话尚未就绪，请重试');
+    if (st.thread && st.items) return;
     const pickNewest = async () => {
       // A cold window can take a while to mount the agent list.
       let rows = [];
@@ -51,7 +49,10 @@ export const adapter = {
       return rows.find(r => r.id && !String(r.id).startsWith('new:')) || null;
     };
     const best = await pickNewest();
-    if (!best) throw new Error('没有找到最近的会话');
+    if (!best) {
+      if (!await this.cdp.evaluate(helpersCall('hasComposer()'))) await this.adapter.newChat.call(this);
+      return;
+    }
     await this.adapter.openAgent.call(this, best.id);
   },
 

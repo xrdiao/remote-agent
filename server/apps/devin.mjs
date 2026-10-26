@@ -26,10 +26,8 @@ export const adapter = {
   // A freshly launched Devin opens on the workspace welcome or last surface;
   // switch to the most recently used session (agentList rows carry lastUsed).
   async openDefaultSession() {
-    const st = await this.cdp.evaluate(`(() => {
-      const h = ${PAGE_SRC};
-      return { surface: h.devinSurface(), thread: h.activeThread(), items: (h.extract() || {}).items?.length || 0 };
-    })()`);
+    const st = await this.waitFor('agentStartupState("devin")', 250);
+    if (!st) throw new Error('Devin 项目与会话尚未就绪，请重试');
     if (st.thread && st.items) return;
     if (st.surface === 'editor') {
       const opened = await this.openSessionPicker();
@@ -38,7 +36,8 @@ export const adapter = {
       const pos = first && await this.cdp.evaluate(helpersCall(`sessionPickerTarget(${JSON.stringify(first.id)}, ${JSON.stringify(first.title)})`));
       if (!pos) {
         if (opened) await this.key('Escape');
-        throw new Error('没有找到最近的会话');
+        if (!await this.cdp.evaluate(helpersCall('hasComposer()'))) await this.adapter.newChat.call(this);
+        return;
       }
       await this.tapCss(pos.x, pos.y);
       this.resetDevinView();
@@ -54,7 +53,10 @@ export const adapter = {
       if (!rows.length) await new Promise(r => setTimeout(r, 250));
     }
     const best = rows.reduce((a, b) => ((b.lastUsed || 0) > (a?.lastUsed || 0) ? b : a), null);
-    if (!best) throw new Error('没有找到最近的会话');
+    if (!best) {
+      if (!await this.cdp.evaluate(helpersCall('hasComposer()'))) await this.adapter.newChat.call(this);
+      return;
+    }
     await this.adapter.openAgent.call(this, best.id);
   },
 
@@ -298,7 +300,7 @@ export const methods = {
 // sees a sliding window of acp-indexed rows. Merge each window into per-session history
 // keyed by the stable acp ids; remembered rows keep their last seen content. Sorted by
 // acp index (a thinking item `acpN:think` travels with row N) and capped at ~1500 items.
-mergeDevinHistory(chat) {
+mergeDevinHistory(chat, prepend = false) {
   if (!chat?.items) return;
   this.syncSession(chat);
   if (chat.empty) { this.devinHist.clear(); this.devinCmds?.clear(); this.devinCmdTried?.clear(); chat.earlier = false; return; }
@@ -312,7 +314,7 @@ mergeDevinHistory(chat) {
   const mounted = chat.items.map(it => num(it.i)).filter(n => n >= 0);
   const minM = mounted.length ? Math.min(...mounted) : Infinity;
   const maxM = mounted.length ? Math.max(...mounted) : -1;
-  if (hist.size && mounted.length) {
+  if (!prepend && hist.size && mounted.length) {
     const known = [...hist.keys()].map(num).filter(n => n >= 0);
     if (known.length) {
       const minR = Math.min(...known), maxR = Math.max(...known);
@@ -324,6 +326,7 @@ mergeDevinHistory(chat) {
   }
   // Sticky thoughts: a remounted collapsed thought has no body; keep the body we already have.
   for (const it of chat.items) {
+    if (prepend && hist.has(it.i)) continue;
     const next = it.src === 'devin' ? it : { ...it, src: 'devin' };
     const prev = hist.get(it.i);
     const pb = prev?.k === 'thinking' ? this.thinkingBody(prev) : '';
@@ -634,7 +637,7 @@ async openSessionPicker() {
   await this.tapCss(pos.x, pos.y);
   for (let i = 0; i < 20; i++) {
     await new Promise(r => setTimeout(r, 100));
-    if (await this.cdp.evaluate(helpersCall('sessionPickerRows()?.length'))) return true;
+    if (await this.cdp.evaluate(`(async () => { const h = ${PAGE_SRC}; return (await h.sessionPickerRows())?.length; })()`)) return true;
   }
   return false;
 },
@@ -651,9 +654,8 @@ async editorSessions() {
   }
   if (opened) await this.key('Escape');
   if (!opened && !tabs.length) throw new Error('没有读到会话列表，请先切到 Agent 界面再试');
-  const norm = s => String(s || '').replace(/\s+/g, ' ').trim().slice(0, 60);
-  const open = tabs.map(t => ({ id: `tab:${t.id}`, title: t.title, group: '已打开的会话', current: t.active, running: !!(rows || []).find(r => norm(r.title) === t.title)?.running }));
-  const rest = (rows || []).filter(r => !tabs.some(t => t.title === norm(r.title))).map(r => ({ id: r.id, title: r.title, group: tabs.length ? '全部会话' : '', current: false, running: !!r.running }));
+  const open = tabs.map(t => ({ id: `tab:${t.id}`, title: t.title, group: '已打开的会话', current: t.active, running: !!(rows || []).find(r => r.id === t.id)?.running }));
+  const rest = (rows || []).filter(r => !tabs.some(t => t.id === r.id)).map(r => ({ id: r.id, title: r.title, picker: true, group: tabs.length ? '全部会话' : '', current: false, running: !!r.running }));
   return [...open, ...rest];
 },
 

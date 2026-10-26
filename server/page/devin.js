@@ -56,24 +56,37 @@
     const b = [...document.querySelectorAll('button[aria-label]')].find(e => vis(e) && /^Search agents\b/.test(e.getAttribute('aria-label')));
     return b ? center(b) : null;
   };
-  const sessionPickerRows = () => {
+  const devinPickerSessions = async () => {
+    const native = await import('@exa/chat-client');
+    let sessions = native.filterActiveSessions(window.__acpStore.getState().acp.sessions);
+    const connectors = native.tryGetAcpSingleton('connectorService');
+    if (connectors?.hasReceivedConnectors()) {
+      const ids = new Set(connectors.getConnectors().map(c => c.id));
+      sessions = sessions.filter(s => s.providerId === 'cascade' || ids.has(s.providerId));
+    }
+    return native.sortSessions(sessions);
+  };
+  const sessionPickerRows = async () => {
     const w = [...document.querySelectorAll('.quick-input-widget')].find(vis);
     if (!w) return null;
+    const sessions = await devinPickerSessions();
     return [...w.querySelectorAll('.monaco-list-row')].filter(vis).map(row => {
       const title = ((row.querySelector('.label-name') || row).innerText || '').trim().split('\n')[0].slice(0, 80);
-      return { id: `pick:${row.getAttribute('data-index')}`, title, running: /\bworking\b/i.test(row.innerText || '') };
-    }).filter(r => r.title);
+      const session = sessions[Number(row.getAttribute('data-index'))];
+      return { id: session?.sessionId || '', title: session?.title || title, titleNative: !!session?.title, titleAt: Date.now(), running: /\bworking\b/i.test(row.innerText || '') };
+    }).filter(r => r.title && r.id);
   };
   // Devin sessions are identified by their title. The Editor surface keeps the open sessions as tabs above
   // the transcript (the active one has the active-tab background); the Agent surface uses the sidebar.
   const sessNorm = s => String(s || '').replace(/\s+/g, ' ').trim().slice(0, 60);
   // The tabs live in the chat panel (#chat) even when the open session is empty and has no transcript.
   const devinTabEls = () => [...document.querySelectorAll('#chat [draggable="true"]')].filter(e => vis(e) && /h-\[34px\]/.test(String(e.className)));
-  const devinTabs = () => devinTabEls().map(t => ({
-    id: codexFiberProps(t, 24).find(p => p.sessionId)?.sessionId || '',
-    title: sessNorm((t.querySelector('span') || t).innerText),
-    active: /bg-ide-tab-active-background-color/.test(String(t.className)),
-  })).filter(t => t.title);
+  const devinTabs = () => devinTabEls().map(t => {
+    const id = codexFiberProps(t, 24).find(p => p.sessionId)?.sessionId || '';
+    const session = window.__acpStore?.getState().acp.sessions.find(s => s.sessionId === id);
+    return { id, title: session?.title || sessNorm((t.querySelector('span') || t).innerText),
+      titleNative: !!session?.title, titleAt: Date.now(), active: /bg-ide-tab-active-background-color/.test(String(t.className)) };
+  }).filter(t => t.title);
   const devinSession = () => {
     if (!devinLog() && !devinSurface()) return null;
     const tabs = devinTabs(), surface = devinSurface();
@@ -115,9 +128,17 @@
     const el = devinTabEls().find(t => codexFiberProps(t, 24).some(p => p.sessionId === id));
     el.querySelector('button').click();
   };
-  const sessionPickerTarget = (id, title = '') => {
-    const row = [...document.querySelectorAll('.quick-input-widget .monaco-list-row')].filter(vis)
-      .find(r => title ? ((r.querySelector('.label-name') || r).innerText || '').trim().split('\n')[0].slice(0, 80) === title : `pick:${r.getAttribute('data-index')}` === id);
+  const sessionPickerTarget = async id => {
+    const index = (await devinPickerSessions()).findIndex(s => s.sessionId === id);
+    if (index < 0) return null;
+    const widget = [...document.querySelectorAll('.quick-input-widget')].find(vis);
+    const scroller = widget?.querySelector('.monaco-list .monaco-scrollable-element');
+    const first = widget?.querySelector('.monaco-list-row');
+    if (scroller && first) {
+      scroller.scrollTop = index * first.getBoundingClientRect().height;
+      await new Promise(resolve => requestAnimationFrame(resolve));
+    }
+    const row = [...(widget?.querySelectorAll('.monaco-list-row') || [])].find(r => Number(r.getAttribute('data-index')) === index);
     if (!row) return null;
     row.scrollIntoView({ block: 'nearest' });
     return center(row);

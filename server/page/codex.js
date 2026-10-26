@@ -90,7 +90,7 @@
     const seen = new Set();
     const rows = [];
     const recent = codexQueryClient()?.getQueryData(['recent-conversations-meta', 'updated_at', '[]', 'live']) || [];
-    if (readOnly) return recent.map(thread => ({ id: thread.conversationId, title: thread.title || '', workspace: thread.cwd || '', host: thread.hostId === 'local' ? '' : thread.hostId || '', lastUsed: thread.updatedAt || 0 }));
+    if (readOnly) return recent.map(thread => ({ id: thread.conversationId, title: thread.title || '', titleNative: true, titleAt: codexQueryClient().getQueryState(['recent-conversations-meta', 'updated_at', '[]', 'live'])?.dataUpdatedAt || 0, workspace: thread.cwd || '', host: thread.hostId === 'local' ? '' : thread.hostId || '', lastUsed: thread.updatedAt || 0 }));
     if (!menu) return [];
     const usedAt = new Map(recent.map(thread => [thread.conversationId, thread.updatedAt]));
     const metadata = new Map(recent.map(thread => [thread.conversationId, thread]));
@@ -109,7 +109,7 @@
       const text = (el.innerText || '').replace(/\s+/g, ' ').trim();
       if (/in progress/i.test(text)) running = true;
       const meta = metadata.get(id);
-      rows.push({ id, title: (title || text).split('\n')[0].slice(0, 80), current, workspace: meta?.cwd || workspace, host: meta?.hostId && meta.hostId !== 'local' ? meta.hostId : '', running, lastUsed: usedAt.get(id) || 0 });
+      rows.push({ id, title: (title || text).split('\n')[0].slice(0, 80), titleNative: true, titleAt: Date.now(), current, workspace: meta?.cwd || workspace, host: meta?.hostId && meta.hostId !== 'local' ? meta.hostId : '', running, lastUsed: usedAt.get(id) || 0 });
     }
     return rows;
   };
@@ -256,9 +256,14 @@
         return props.some(p => p.conversationId === thread)
           ? props.find(p => typeof p.messageId === 'string' && 'fullMessageText' in p) : null;
       }).filter(Boolean);
+    const queuedData = new Map(codexHistoryState().queued.map(item => [item.id, item]));
     const native = [...new Map(rows.map(p => [p.messageId, p])).values()].map(p => ({
       id: p.messageId, t: String(p.fullMessageText || p.messageText || '').slice(0, 4000), src: 'codex',
+      ...(queuedData.has(p.messageId) ? { messageId: `${thread}:user-message:${queuedData.get(p.messageId).clientUserMessageId}` } : {}),
     })).filter(m => m.t);
+    for (const item of queuedData.values()) if (!native.some(row => row.id === item.id)) native.push({
+      id: item.id, t: item.text.slice(0, 4000), src: 'codex', messageId: `${thread}:user-message:${item.clientUserMessageId}`,
+    });
     const value = codexQueryClient()?.getQueryData(['vscode', 'get-global-state', '{"key":"queued-follow-ups"}'])?.value;
     const raw = value && typeof value === 'object' ? value[thread] : null;
     if (!Array.isArray(raw)) return native;
