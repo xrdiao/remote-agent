@@ -19,7 +19,7 @@ async function openImageEditor(image) {
   const base = document.createElement('canvas'), marks = document.createElement('canvas'), merged = document.createElement('canvas');
   const color = dialog.querySelector('[type=color]'), size = dialog.querySelector('[type=range]'), caption = dialog.querySelector('[type=text]');
   const pointers = new Map();
-  let index = 0, source, mode = 'crop', gesture = null, pinch = null, preview = null, loading = false, saving = false, cancelled = false;
+  let index = 0, source, mode = 'crop', gesture = null, pinch = null, preview = null, loading = false, loadError = false, saving = false, cancelled = false;
   const current = () => documents[index];
   const cropFull = () => ({ x: 0, y: 0, w: base.width, h: base.height });
   const release = c => { c.width = c.height = 0; };
@@ -140,14 +140,23 @@ async function openImageEditor(image) {
   };
   const load = async next => {
     loading = true; index = next;
-    source = new Image(); source.src = current().data; await source.decode();
-    if (cancelled) return;
-    rebuild(); current().crop ||= cropFull(); updateView(); paint();
-    dialog.querySelector('[data-count]').textContent = `${index + 1} / ${documents.length}`;
-    dialog.querySelector('[data-edit=prev]').disabled = index === 0;
-    dialog.querySelector('[data-edit=next]').disabled = index === documents.length - 1;
-    for (const b of dialog.querySelectorAll('[data-ratio]')) b.setAttribute('aria-pressed', String(b.dataset.ratio === String(current().ratio)));
-    loading = false;
+    source = new Image(); source.src = current().data;
+    try {
+      await source.decode();
+      if (cancelled) return;
+      loadError = false; canvas.hidden = false;
+      rebuild(); current().crop ||= cropFull(); updateView(); paint();
+      for (const b of dialog.querySelectorAll('[data-ratio]')) b.setAttribute('aria-pressed', String(b.dataset.ratio === String(current().ratio)));
+    } catch (error) {
+      if (cancelled) return;
+      loadError = true; canvas.hidden = true;
+      throw error;
+    } finally {
+      loading = false;
+      dialog.querySelector('[data-count]').textContent = `${index + 1} / ${documents.length}${loadError ? ' · ' + I18N.tr('无法读取图片') : ''}`;
+      dialog.querySelector('[data-edit=prev]').disabled = index === 0;
+      dialog.querySelector('[data-edit=next]').disabled = index === documents.length - 1;
+    }
   };
   const point = (e, clamp = true) => { const r = canvas.getBoundingClientRect(), x = (e.clientX - r.left) * base.width / r.width, y = (e.clientY - r.top) * base.height / r.height; return clamp ? { x: Math.max(0, Math.min(base.width, x)), y: Math.max(0, Math.min(base.height, y)) } : { x, y }; };
   const setZoom = (zoom, center = { x: stage.clientWidth / 2, y: stage.clientHeight / 2 }, anchor) => {
@@ -163,7 +172,7 @@ async function openImageEditor(image) {
     gesture = null;
   };
   stage.onpointerdown = e => {
-    if (loading || saving) return;
+    if (loading || loadError || saving) return;
     const selection = window.getSelection();
     if (selection && dialog.contains(selection.anchorNode)) selection.removeAllRanges();
     e.preventDefault(); stage.setPointerCapture(e.pointerId); pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -232,11 +241,12 @@ async function openImageEditor(image) {
     if (action === 'cancel') return close();
     if (saving || loading) return;
     finishGesture();
-    if (button.dataset.tool) return setMode(button.dataset.tool);
-    if (button.dataset.ratio) { current().ratio = button.dataset.ratio === 'original' ? 'original' : Number(button.dataset.ratio); const ratio = current().ratio === 'original' ? source.naturalWidth / source.naturalHeight : current().ratio; let w = base.width, h = base.height; if (ratio) { w = Math.min(w, h * ratio); h = w / ratio; } current().crop = { x: (base.width - w) / 2, y: (base.height - h) / 2, w, h }; for (const b of dialog.querySelectorAll('[data-ratio]')) b.setAttribute('aria-pressed', String(b === button)); paint(); return; }
     if (action === 'more') { const more = dialog.querySelector('.imageEditMore'); more.hidden = !more.hidden; button.setAttribute('aria-expanded', String(!more.hidden)); return; }
     if (action === 'prev' || action === 'next') return load(index + (action === 'next' ? 1 : -1)).catch(err => status(err.message, false));
-    if (action === 'remove') { documents.splice(index, 1); if (!documents.length) return close(); return load(Math.min(index, documents.length - 1)); }
+    if (action === 'remove') { documents.splice(index, 1); if (!documents.length) return close(); return load(Math.min(index, documents.length - 1)).catch(err => status(err.message, false)); }
+    if (loadError) return status('无法读取这张图片，请切换或移除后重试', false);
+    if (button.dataset.tool) return setMode(button.dataset.tool);
+    if (button.dataset.ratio) { current().ratio = button.dataset.ratio === 'original' ? 'original' : Number(button.dataset.ratio); const ratio = current().ratio === 'original' ? source.naturalWidth / source.naturalHeight : current().ratio; let w = base.width, h = base.height; if (ratio) { w = Math.min(w, h * ratio); h = w / ratio; } current().crop = { x: (base.width - w) / 2, y: (base.height - h) / 2, w, h }; for (const b of dialog.querySelectorAll('[data-ratio]')) b.setAttribute('aria-pressed', String(b === button)); paint(); return; }
     if (action === 'zoomIn' || action === 'zoomOut') return setZoom(current().zoom * (action === 'zoomIn' ? 1.25 : .8));
     if (action === 'fit') { current().zoom = 1; current().x = current().y = 0; updateView(); paint(); return; }
     if (action === 'undo' || action === 'redo') {
@@ -272,7 +282,7 @@ async function openImageEditor(image) {
     } catch (error) { if (!cancelled) status(error.message, false); }
     finally { saving = false; button.disabled = false; button.textContent = image.files ? '全部保存并上传' : '保存'; }
   };
-  const resize = () => { updateView(); paint(); };
+  const resize = () => { if (!loading && !loadError) { updateView(); paint(); } };
   window.addEventListener('resize', resize);
   dialog.onclose = () => { window.removeEventListener('resize', resize); image.onClose?.(); dialog.remove(); for (const c of [base, marks, merged, canvas]) release(c); source.src = ''; };
   document.body.appendChild(dialog); dialog.showModal();

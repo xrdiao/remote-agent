@@ -5,6 +5,8 @@ const I18N = (() => {
   const lang = saved === 'zh' || saved === 'en' ? saved : /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
 
   const EN = {
+    "无法读取这张图片，请切换或移除后重试": "Unable to read this image. Switch images or remove it and try again.",
+    "无法读取图片": "Unable to read image",
     "通知来源电脑未配对，请从电脑列表连接": "The notification source computer is not paired. Connect from the computer list.",
     "设置未生效，请重新读取后重试": "The setting was not applied. Reload it and try again.",
     "批量操作已中断，请刷新列表确认已完成结果": "Batch operation interrupted. Refresh the list to confirm completed results.",

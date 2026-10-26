@@ -731,8 +731,6 @@ async function connect() {
       if (fromNotice) rememberNotice(fromNotice);
       const chosen = currentComputer();
       send({ t: 'attach', id: chosen?.win || store.get('window') || '', windowId: chosen?.windowId || '', threadId: chosen?.threadId || '', initial: true });
-      sentWidth = 0;
-      applyQuality();
       send({ t: 'visible', v: document.visibilityState === 'visible' });
       send({ t: 'lang', v: I18N.lang });
       clearInterval(usageTimer);
@@ -795,7 +793,7 @@ async function connect() {
     else if (m.t === 'historyDone') finishHistory(m);
     else if (m.t === 'thread') applySelection(m);
     else if (m.t === 'frame') onFrame(m);
-    else if (m.t === 'panel') { panel = m.rect; updateTermEmpty(); layoutStage(); applyQuality(); }
+    else if (m.t === 'panel') { panel = m.rect; updateTermEmpty(); layoutStage(); }
     else if (m.t === 'connAgents') connAgentResults(m.agents, m.complete !== false);
     else if (m.t === 'agentCatalog') agentCatalogResults(m.agents);
     else if (m.t === 'launchResult') connLaunchResults(m.results);
