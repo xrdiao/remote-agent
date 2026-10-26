@@ -724,6 +724,10 @@ async function connect() {
       send({ t: 'mode', mode });
       const fromNotice = window.AgentRemoteApp?.takeOpenWin?.() || pendingNotice;
       pendingNotice = '';
+      if (fromNotice && noticeTarget(fromNotice)?.computer && noticeTarget(fromNotice).computer !== m.id) {
+        if (!openWin(fromNotice)) showComputers('通知来源电脑未配对，请从电脑列表连接');
+        return;
+      }
       if (fromNotice) rememberNotice(fromNotice);
       const chosen = currentComputer();
       send({ t: 'attach', id: chosen?.win || store.get('window') || '', windowId: chosen?.windowId || '', threadId: chosen?.threadId || '', initial: true });

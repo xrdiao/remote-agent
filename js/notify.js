@@ -129,29 +129,43 @@ async function disableNotify() {
 
 function noticeTarget(raw) {
   if (!raw) return null;
-  let win = String(raw), windowId = '', threadId = '';
+  let win = String(raw), computer = '', windowId = '', threadId = '';
   if (win.startsWith('{')) {
     try {
       const o = JSON.parse(win);
       win = o.win || '';
+      computer = o.computer || '';
       windowId = o.windowId || '';
       threadId = o.threadId || '';
     } catch { return null; }
   }
-  return win ? { win, windowId, threadId } : null;
+  return win ? { computer, win, windowId, threadId } : null;
 }
 function rememberNotice(raw) {
   const n = noticeTarget(raw);
-  if (!n) return;
-  store.set('window', n.win);
-  const here = currentComputer();
-  if (here) rememberComputer({ ...here, win: n.win, windowId: n.windowId, threadId: n.threadId });
+  if (!n) return false;
+  const list = loadComputers(), current = currentComputer();
+  const here = n.computer ? list.find(c => c.id === n.computer) : current;
+  if (!here) { status('通知来源电脑未配对，请从电脑列表连接', false); return false; }
+  const next = { ...here, win: n.win, windowId: n.windowId, threadId: n.threadId };
+  saveComputers(list.map(c => c.key === here.key ? next : c), current?.key);
+  if (here.key === current?.key) store.set('window', n.win);
+  return next;
 }
 function openWin(id) {
-  rememberNotice(id);
-  if (!authed) return;
-  const here = currentComputer();
-  send({ t: 'attach', id: here?.win || store.get('window') || '', windowId: here?.windowId || '', threadId: here?.threadId || '' });
+  const before = currentComputer()?.id;
+  const here = rememberNotice(id);
+  if (!here) return false;
+  if (before !== here.id) {
+    if (here.discovery && new URL(here.discovery).origin !== location.origin) {
+      const url = new URL('./', here.discovery);
+      url.hash = new URLSearchParams({ win: id }).toString();
+      openComputerEntry(url.href, here.id);
+    } else useComputer(loadComputers().findIndex(c => c.id === here.id));
+    return true;
+  }
+  if (!authed) { pendingNotice = id; return false; }
+  return send({ t: 'attach', id: here.win, windowId: here.windowId || '', threadId: here.threadId || '' });
 }
 window.openWin = openWin;
 navigator.serviceWorker?.addEventListener('message', e => { if (e.data?.openWin) openWin(e.data.openWin); });
