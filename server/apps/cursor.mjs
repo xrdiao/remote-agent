@@ -58,25 +58,32 @@ export const adapter = {
 
   async openAgent(id, title = '') {
     if (!id || id.length > 200) throw new Error('这条 Agent 已经不在列表里');
-    this.clearViewState();
+    const switching = this.switchingThread;
+    let confirmed = false;
     this.switchingThread = true;
     try {
       const pos = await this.cdp.evaluate(helpersCall(`agentTarget(${JSON.stringify(id)}, true)`));
       if (!pos) throw new Error('这条 Agent 已经不在列表里');
       if (pos !== true) await this.tapCss(pos.x, pos.y);
-      for (let i = 0; i < 12; i++) {
-        await new Promise(r => setTimeout(r, 150));
+      for (let i = 0; i <= 12; i++) {
         const thread = await this.cdp.evaluate(helpersCall('activeThread()'));
-        if (thread !== id) continue;
-        this.threadId = thread;
-        this.publishThread('已切换 Agent');
-        return;
+        if (thread === id) {
+          if (this.threadId !== thread) this.clearViewState();
+          this.threadId = this.selectedThread = thread;
+          this.publishThread('已切换 Agent');
+          confirmed = true;
+          return;
+        }
+        if (i < 12) await new Promise(r => setTimeout(r, 150));
       }
       throw new Error('会话切换没有生效');
     } finally {
-      this.switchingThread = false;
+      this.switchingThread = switching;
       this.lastChatAt = 0;
-      await this.pollChat();
+      if (!switching && confirmed) {
+        this.publishThread();
+        await this.pollChat(true, true);
+      }
     }
   },
 

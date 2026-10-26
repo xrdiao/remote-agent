@@ -244,6 +244,11 @@ $('sheet').addEventListener('click', async e => {
     if (chev) chev.textContent = open ? '▾' : '▸';
     const body = b.nextElementSibling;
     if (body) body.hidden = !open;
+    if (sheetKind === 'agents') {
+      projectRevealRevision++;
+      if (open) revealProjectSessions(b);
+      else pendingProjectReveal = null;
+    }
     if (open && sheetKind === 'agents') body?.querySelectorAll('[data-project-load]').forEach(el => {
       el.textContent = '正在加载会话…';
       send({ t: 'agents', projectWindow: el.dataset.projectLoad, automatic: true, silent: true });
@@ -251,6 +256,8 @@ $('sheet').addEventListener('click', async e => {
     return;
   }
   if (b.dataset.projectLoad) {
+    projectRevealRevision++;
+    revealProjectSessions(b.parentElement.previousElementSibling);
     b.textContent = '正在加载会话…';
     return send({ t: 'agents', projectWindow: b.dataset.projectLoad, automatic: true, silent: true });
   }
@@ -359,7 +366,7 @@ $('sheet').addEventListener('click', async e => {
       menuCache.delete(menuCacheKey('effort'));
     }
     if (/^fusion-model-[ab]$/.test(b.dataset.kind)) fusionModelSide = b.dataset.kind.slice(-1);
-    if (b.dataset.kind !== 'codex-run' && b.dataset.kind !== 'codex-chat' && !/^fusion-(model|effort)-/.test(String(b.dataset.kind || ''))) beginSwitch(b.dataset.kind);
+    if (!['codex-run', 'codex-chat', 'model', 'effort'].includes(b.dataset.kind) && !/^fusion-(model|effort)-/.test(String(b.dataset.kind || ''))) beginSwitch(b.dataset.kind);
     return send({ t: 'pickMenu', kind: b.dataset.kind, label: b.dataset.label });
   }
   if (b.dataset.chopen) { const diff = changeFiles.find(f => f.name === b.dataset.chopen)?.diff || ''; closeSheet(); return openFile(b.dataset.chopen, false, diff, true); }

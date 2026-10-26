@@ -96,6 +96,7 @@ export class AgentContext {
     this.editorCdp = null;
     this.lastChat = '';
     this.lastExtractedChat = '';
+    this.draftRevision = this.draftGeneration = 0;
     this.pollAgain = null;
     this.resetCaches();
     this.curSession = undefined;
@@ -196,10 +197,25 @@ export class AgentContext {
 
   // Focus emulation breaks real typing while it is on, so it only wraps phone-driven
   // actions that type/tap, and is switched off again shortly after they finish.
+  async withChatUiDetails(fn) {
+    const previous = this.chatUiDetails;
+    let release;
+    const pending = this.chatUiDetails = new Promise(resolve => { release = resolve; });
+    try {
+      if (previous) await previous;
+      while (this.focusDone) await this.focusDone;
+      return await fn();
+    } finally {
+      release();
+      if (this.chatUiDetails === pending) this.chatUiDetails = null;
+    }
+  }
   async withFocus(fn) {
+    while (!this.focusCount && this.chatUiDetails) await this.chatUiDetails;
     this.focusCount++;
     const connections = [...new Set([this.cdp, this.editorCdp].filter(Boolean))];
     if (this.focusCount === 1) {
+      this.focusDone = new Promise(resolve => { this.finishFocus = resolve; });
       clearTimeout(this.focusTimer);
       this.focusTimer = null;
       for (const c of connections) await c.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
@@ -207,6 +223,7 @@ export class AgentContext {
     try { return await fn(); }
     finally {
       this.focusCount = Math.max(0, this.focusCount - 1);
+      if (!this.focusCount) { this.finishFocus?.(); this.focusDone = this.finishFocus = null; }
       if (!this.focusCount && !this.focusTimer) {
         this.focusTimer = setTimeout(() => {
           this.focusTimer = null;

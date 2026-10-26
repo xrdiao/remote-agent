@@ -14,6 +14,8 @@ import { cdpRead } from './cdp.mjs';
 const SWITCH_READS = new Set(['attach', 'openAgent', 'agents', 'windows', 'connAgents', 'mode', 'visible', 'projects', 'docs', 'file', 'openMenu', 'params', 'terminals', 'termHistory', 'usage', 'settings', 'changes', 'thought', 'attachments', 'refresh', 'scrollChat', 'mentionQuery', 'workdir', 'codexSkills', 'codexRun', 'codexChat', 'sessionActions']);
 const CONNECTION_MESSAGES = new Set(['mode', 'visible', 'lang', 'quality', 'windows', 'connAgents', 'visualList', 'visualSelect']);
 const sameWindow = (session, msg) => !msg.sel || msg.sel.split('|', 2).join('|') === session.selectionKey().split('|', 2).join('|');
+const navigationMessage = msg => ['attach', 'openAgent', 'openProject'].includes(msg.t);
+const pureNavigation = msg => navigationMessage(msg) && msg.newSession !== true && !(msg.t === 'openAgent' && /^(?:new:|project-new:)/.test(msg.id || ''));
 
 export function attachWss(server) {
 const voice = voiceWss();
@@ -54,8 +56,12 @@ wss.on('connection', (ws, req) => {
   let queue = Promise.resolve();
   let questionQueue = Promise.resolve();
   let binding = 0;
+  let activeBinding = 0;
   let reads = new AbortController();
+  let navigationReads = new AbortController();
+  let pendingNavigation = null;
   const agentReads = new Map();
+  const pendingMetadata = new Set();
   const imageActions = [];
   let imageGroup = 0;
   ws.on('message', raw => {
@@ -83,21 +89,32 @@ wss.on('connection', (ws, req) => {
     // Frame acks bypass the queue so a slow command never stalls the stream.
     if (msg.t === 'ack') return session.ack();
     const route = ROUTES[msg.t];
-    const codexMention = msg.t === 'mentionQuery' && session.app === 'codex';
-    if (codexMention) session.mentionSeq = msg.seq;
+    const mention = msg.t === 'mentionQuery';
+    if (mention) session.mentionSeq = msg.seq;
+    if (msg.t === 'openMenu') session.menuRequest = msg.requestId;
     const imageTransfer = msg.t === 'image' ? { cancelled: false } : null;
     if (imageTransfer) (session.imageTransfers ||= new Map()).set(msg.clientImageId, imageTransfer);
+    const metadataKind = msg.t === 'agents' ? `agents|${!!msg.automatic}|${!!msg.silent}|${msg.projectWindow || ''}`
+      : msg.t === 'windows' ? 'windows' : msg.t === 'usage' && msg.automatic === true ? 'usage' : '';
+    const metadataKey = metadataKind && `${binding}|${metadataKind}`;
+    if (metadataKey && pendingMetadata.has(metadataKey)) return;
+    if (metadataKey) pendingMetadata.add(metadataKey);
     if (route && flag(route.fast, session, msg)) {
       if (SWITCH_READS.has(msg.t)) {
-        if (!sameWindow(session, msg)) return;
+        if (!sameWindow(session, msg)) { pendingMetadata.delete(metadataKey); return; }
         const signal = reads.signal;
         cdpRead.run(signal, () => route.fastRun(session, msg)).catch(error => {
           if (!signal.aborted) session.emit({ t: 'status', ok: false, msg: error.message });
-        });
+        }).finally(() => pendingMetadata.delete(metadataKey));
       } else route.fastRun(session, msg);
       return;
     }
-    const switching = msg.t === 'attach' || msg.t === 'openAgent';
+    const switching = navigationMessage(msg);
+    const navigation = pureNavigation(msg) ? { started: false, superseded: false } : null;
+    if (navigation) {
+      if (pendingNavigation && !pendingNavigation.started) pendingNavigation.superseded = true;
+      pendingNavigation = navigation;
+    } else if (!SWITCH_READS.has(msg.t) && !CONNECTION_MESSAGES.has(msg.t)) pendingNavigation = null;
     if (switching) {
       if (session.sessionBatch) session.sessionBatch.cancelled = true;
       binding++;
@@ -105,7 +122,7 @@ wss.on('connection', (ws, req) => {
       reads = new AbortController();
     }
     const owner = binding;
-    const readKind = msg.t === 'agents' ? `${!!msg.automatic}|${!!msg.silent}` : null;
+    const readKind = metadataKind;
     const readSerial = readKind && (agentReads.get(readKind) || 0) + 1;
     if (readKind) agentReads.set(readKind, readSerial);
     const imageAction = msg.t === 'removeAttachment' || msg.t === 'editImage';
@@ -115,23 +132,38 @@ wss.on('connection', (ws, req) => {
       if (!authorization.valid || ws.readyState !== 1) return;
       if (executed) return;
       executed = true;
+      try {
+      if (navigation?.superseded) return;
+      if (navigation) navigation.started = true;
       const actionIndex = imageActions.findIndex(action => action.execute === execute);
       if (actionIndex !== -1) imageActions.splice(actionIndex, 1);
       const staleSelection = !switching && !sameWindow(session, msg);
-      if ((owner !== binding || staleSelection) && !CONNECTION_MESSAGES.has(msg.t)) {
+      if (metadataKind && owner !== binding) return;
+      const readOnly = SWITCH_READS.has(msg.t) && !switching;
+      if ((!switching && owner !== (readOnly ? binding : activeBinding) || staleSelection) && !CONNECTION_MESSAGES.has(msg.t)) {
         if (msg.t === 'saveFile') session.emit({ t: 'saved', requestId: msg.requestId, ok: false, error: '窗口已切换，保存未执行', path: msg.path, host: msg.host || '' });
         else route?.fail?.(session, msg);
         if (imageTransfer) session.imageTransfers.delete(msg.clientImageId);
         return;
       }
-      if (codexMention && session.mentionSeq !== msg.seq) return;
+      if (mention && session.mentionSeq !== msg.seq) return;
+      if (msg.t === 'openMenu' && session.menuRequest !== msg.requestId) return;
       if (msg.t === 'image') {
         for (const action of imageActions.filter(action => action.group === group)) await action.execute();
       }
       if (readKind && agentReads.get(readKind) !== readSerial) return;
       if (!authorization.valid || ws.readyState !== 1) return;
+      if (switching) {
+        activeBinding = owner;
+        reads.abort(new Error('窗口已切换'));
+        reads = new AbortController();
+        navigationReads.abort(new Error('窗口已切换'));
+        navigationReads = new AbortController();
+        navigationReads.signal.navigationId = msg.navigationId;
+        session.navigationId = msg.navigationId;
+      }
       const q0 = Date.now();
-      const signal = SWITCH_READS.has(msg.t) ? reads.signal : null;
+      const signal = switching ? navigationReads.signal : SWITCH_READS.has(msg.t) ? reads.signal : null;
       try {
         const queued = imageTransfer?.cancelled ? undefined : await cdpRead.run(signal, () => session.handle(msg));
         const ms = Date.now() - q0;
@@ -141,10 +173,12 @@ wss.on('connection', (ws, req) => {
         if (signal?.aborted) return;
         console.log(`[err] ${msg.t}: ${e.message}`);
         route?.fail?.(session, msg);
+        if (switching && msg.t !== 'attach') session.emit({ t: 'attachFailed', ready: session.bindingReady === true });
         session.emit({ t: 'status', ok: false, msg: quotaErrorMessage(session.app, e) || e.message });
       } finally {
         if (imageTransfer) session.imageTransfers.delete(msg.clientImageId);
       }
+      } finally { if (metadataKey) pendingMetadata.delete(metadataKey); }
     };
     if (imageAction) imageActions.push({ group, execute });
     if (flag(route?.background, session, msg)) queue.then(execute);
@@ -155,6 +189,7 @@ wss.on('connection', (ws, req) => {
     clearTimeout(authTimer);
     authorization?.release();
     reads.abort(new Error('连接已关闭'));
+    navigationReads.abort(new Error('连接已关闭'));
     if (!session) return;
     removeViewer(session);
     session.dispose();

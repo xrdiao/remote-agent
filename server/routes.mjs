@@ -127,7 +127,7 @@ export const ROUTES = {
       catalog.then(list => s.emit({ t: 'agentCatalog', agents: list.map(a => agents.some(r => r.app === a.app && r.windows) ? { ...a, installed: true, running: true, reason: '' } : a) })).catch(() => {});
     },
   },
-  windows: { pre: async s => s.emit({ t: 'windows', list: phoneWindows(await listWindows(), s.targetId), current: s.targetId, plans: appPlans }) },
+  windows: { background: true, pre: async s => s.emit({ t: 'windows', list: phoneWindows(await listWindows(), s.targetId), current: s.targetId, plans: appPlans }) },
   attach: {
     fail: s => s.emit({ t: 'attachFailed', ready: s.bindingReady === true }),
     pre: async (s, m) => {
@@ -160,10 +160,19 @@ export const ROUTES = {
   draft: {
     pre: async (s, m) => {
       if ((m.draftEpoch || '') !== (s.draftEpoch || '')) return;
-      const text = String(m.text ?? '');
+      const read = m.text === undefined;
+      let text = read ? '' : String(m.text);
+      const sel = s.selectionKey(), epoch = s.draftEpoch || '';
+      s.draftRevision = m.revision;
+      s.draftGeneration++;
+      s.draftWriting = true;
       let ok = false;
-      try { ok = await s.setDraft(text); } catch {}
-      return s.emit({ t: 'draftAck', sel: s.selectionKey(), ok, text, draftEpoch: s.draftEpoch || '' });
+      try {
+        if (read) { text = await s.cdp.evaluate(helpersCall('composerDraft()')); ok = typeof text === 'string'; }
+        else ok = await s.setDraft(text);
+      } catch {}
+      finally { s.draftWriting = false; }
+      return s.emit({ t: 'draftAck', sel, ok, text, read, draftEpoch: epoch, revision: m.revision });
     },
   },
 
@@ -177,7 +186,12 @@ export const ROUTES = {
   openMenu: { run: (s, m) => s.openMenu(m.kind, m.requestId) },
   pickMenu: {
     fusionFree: (s, m) => /^fusion-(model|effort)-/.test(String(m.kind || '')),
-    run: (s, m) => s.pickMenu(m.kind, m.label, m.name),
+    run: async (s, m) => {
+      try { return await s.pickMenu(m.kind, m.label, m.name); }
+      catch (error) { if (m.kind === 'model' || m.kind === 'effort') await s.closeMenus(); throw error; }
+    },
+    after: (s, m) => { if (m.kind === 'model' || m.kind === 'effort') s.emit({ t: 'menuPicked', sel: s.selectionKey(), requestId: m.requestId, kind: m.kind, label: m.label, ok: true }); },
+    fail: (s, m) => { if (m.kind === 'model' || m.kind === 'effort') s.emit({ t: 'menuPicked', sel: s.selectionKey(), requestId: m.requestId, kind: m.kind, label: m.label, ok: false }); },
   },
   fusionOptions: { run: (s, m) => s.fusionOptions(String(m.part ?? '')) },
   fusionPick: { run: (s, m) => s.fusionPick(String(m.part ?? ''), m.value) },
@@ -312,7 +326,7 @@ export const ROUTES = {
     after: (s, m, queued) => { if (m.submit !== false) s.emit({ t: 'status', ok: true, msg: queued ? 'Agent 正在运行，已加入排队，这一轮结束后自动发送' : '已发送' }); },
     fail: (s, m) => s.emit({ t: 'sendFailed', requestId: m.requestId }),
   },
-  mentionQuery: { run: (s, m) => s.mentionQuery(String(m.q ?? '').slice(0, 80), m.cat ? String(m.cat).slice(0, 40) : '', Number(m.seq) || 0, m.trigger === '/' ? '/' : '@') },
+  mentionQuery: { run: (s, m) => s.mentionQuery(String(m.q ?? '').slice(0, 80), m.cat ? String(m.cat).slice(0, 40) : '', Number(m.seq) || 0, m.trigger === '/' ? '/' : '@', { text: String(m.text ?? ''), start: m.start, caret: m.caret }) },
   codexRequest: {
     run: async (s, m) => {
       if (s.app !== 'codex') return;

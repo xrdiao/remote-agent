@@ -2,6 +2,7 @@
 const text = $('text');
 let questionCompose = null;
 const drafts = new Map(), draftMentions = new Map();
+const dirtyDrafts = new Set();
 const inputHistory = new Map(), chatInputCache = new Map(), terminalInputHistory = new Map();
 let inputRecall = null;
 function endInputRecall() {
@@ -29,6 +30,7 @@ function pushEcho(requestId, text, kind) {
 }
 let inputRevision = 0;
 let draftEpoch = '';
+let draftRevision = 0, draftAckRevision = 0, pendingDesktopDraft = null;
 let activeDraft = '';
 function sendReceipt(value) {
   const requestId = [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
@@ -44,14 +46,14 @@ function sendReceipt(value) {
       beforeQueues: new Set((latest?.queued || []).map(it => it.id)), queuedSameText: (latest?.queued || []).filter(it => echoTextMatches(it, value)).length } : {}) });
   return { requestId, draft: activeDraft, draftEpoch };
 }
-function confirmSent(m) {
+function confirmSent(m, render = true) {
   const echo = pendingEchoes.find(p => p.requestId === m.requestId);
   if (echo) {
     echo.confirmed = true;
     if (m.messageId) echo.messageId = m.messageId;
     if (m.queueId) echo.queueId = m.queueId;
     if (m.queued !== undefined) echo.kind = m.queued ? 'queue' : 'chat';
-    queueChatRender();
+    if (render) queueChatRender();
   }
   const sent = pendingSends.get(m.requestId);
   if (!sent) return;
@@ -66,11 +68,12 @@ function confirmSent(m) {
   if (here && inputRevision === sent.revision && text.value === sent.text) {
     drafts.delete(activeDraft); draftMentions.delete(activeDraft);
     text.value = ''; MN.mentions = []; MN.value = ''; autosize(); mirroredDraft = '';
+    dirtyDrafts.delete(activeDraft); queueDraftSync();
   }
   if (sent.mode === 'chat') {
     if (!m.queued) rememberAgentMessageTime(sent.thread, m.sentAt || Date.now());
     submittedMessages.push({ ...sent, messageId: m.messageId, queueId: m.queueId, sentAt: m.sentAt || Date.now() });
-    if (here && lastChat) queueChatRender();
+    if (here && lastChat && render) queueChatRender();
   }
 }
 function failPendingSend(requestId, message = '发送失败，请重试') {
@@ -91,7 +94,7 @@ function reconcileSent(chat) {
     if (sent.mode !== 'chat' || sent.scope !== messageScope() || (sent.thread && sent.thread !== chat.thread)) continue;
     if (sent.queuedSameText) continue;
     const item = chat.items.find(it => receiptMatchesHuman(it, sent) && !matched.has(it.i) && !messageTimes.has(generationKey(chat) + '|' + it.i));
-    if (item) { matched.add(item.i); confirmSent({ requestId, messageId: item.i, sel: viewSel, queued: false, sentAt: item.sentAt || Date.now() }); }
+    if (item) { matched.add(item.i); confirmSent({ requestId, messageId: item.i, sel: viewSel, queued: false, sentAt: item.sentAt || Date.now() }, false); }
   }
 }
 function receiptMatchesHuman(it, receipt) {
@@ -117,7 +120,43 @@ function receiveQueueDone(m) {
 }
 function draftKey() { return [currentComputer()?.id || '', viewSel, mode, ...(questionCompose?.sel === viewSel && mode === 'chat' ? [questionCompose.id] : [])].join('|'); }
 function saveDraft() { if (activeDraft) { drafts.set(activeDraft, text.value); draftMentions.set(activeDraft, MN.mentions.slice()); } }
-function restoreDraft() { endInputRecall(); activeDraft = draftKey(); text.value = drafts.get(activeDraft) || ''; MN.mentions = draftMentions.get(activeDraft)?.slice() || []; MN.value = text.value; mentionHide(); autosize(); }
+function restoreDraft() {
+  endInputRecall(); clearTimeout(draftPushTimer); activeDraft = draftKey();
+  pendingDesktopDraft = null;
+  text.value = drafts.get(activeDraft) || ''; MN.mentions = draftMentions.get(activeDraft)?.slice() || [];
+  draftRevision++; queueDraftSync();
+  MN.value = text.value; mentionHide(); autosize();
+}
+function recordDraftEdit() {
+  inputRevision++; draftRevision++; pendingDesktopDraft = null;
+  dirtyDrafts.add(activeDraft);
+  draftVersions.set(activeDraft, (draftVersions.get(activeDraft) || 0) + 1);
+  autosize(); saveDraft();
+}
+function queueDraftSync() {
+  clearTimeout(draftPushTimer);
+  draftPushTimer = setTimeout(() => {
+    if (!windowReady || questionCompose || composing || mode !== 'chat' || currentApp === 'fusion' || MN.mentions.length) return;
+    send({ t: 'draft', ...(dirtyDrafts.has(activeDraft) ? { text: text.value } : {}), draftEpoch, revision: draftRevision });
+  }, 400);
+}
+function receiveDraft(m) {
+  if (questionCompose || m.sel !== viewSel || m.draftEpoch !== draftEpoch || m.revision !== draftRevision) return;
+  if (m.t === 'draftAck') {
+    if (m.ok && m.read) { draftAckRevision = m.revision; receiveDraft({ ...m, t: 'draft' }); }
+    else if (m.ok && text.value === m.text) { draftAckRevision = m.revision; mirroredDraft = m.text; dirtyDrafts.delete(activeDraft); }
+    return;
+  }
+  if (draftAckRevision !== draftRevision || MN.mentions.length) return;
+  if (composing || document.activeElement === text) { pendingDesktopDraft = m; return; }
+  pendingDesktopDraft = null;
+  if (text.value !== m.text) {
+    const selection = [text.selectionStart, text.selectionEnd, text.selectionDirection];
+    text.value = m.text;
+    text.setSelectionRange(...selection); MN.value = m.text; autosize(); saveDraft();
+  }
+  mirroredDraft = m.text;
+}
 function autosize() {
   const oldHeight = text.offsetHeight;
   text.style.height = 'auto'; text.style.height = text.scrollHeight + 'px'; updateMathPrev(); updateComposeCompact();
@@ -154,13 +193,9 @@ let draftPushTimer = 0;
 text.addEventListener('input', e => {
   endInputRecall();
   syncMentions(text.value, e);
-  inputRevision++; draftVersions.set(activeDraft, (draftVersions.get(activeDraft) || 0) + 1); autosize(); saveDraft();
+  recordDraftEdit();
   syncQuestionDraft(text.value);
-  clearTimeout(draftPushTimer);
-  draftPushTimer = setTimeout(() => {
-    if (questionCompose || composing || mode !== 'chat' || currentApp === 'fusion' || MN.mentions.length) return;
-    send({ t: 'draft', text: text.value, draftEpoch });
-  }, 400);
+  queueDraftSync();
 });
 // ---- "@" mentions (Devin): the relay drives Devin's own typeahead, so a mention ends up as a real chip ----
 // Typing "@" (or "@file:ser") asks for the list; tapping a row puts "@label" into the text. When the message is
@@ -189,18 +224,20 @@ function mentionHide() {
 function mentionAsk(o) {
   MN.seq++;
   const token = mentionToken();
-  send({ t: 'mentionQuery', seq: MN.seq, trigger: token?.trigger || '@', ...o });
+  MN.request = { sel: viewSel, revision: inputRevision, value: text.value, caret: text.selectionStart };
+  send({ t: 'mentionQuery', seq: MN.seq, trigger: token?.trigger || '@',
+    text: text.value, start: token?.start ?? text.selectionStart, caret: text.selectionStart, ...o });
   const box = $('mentionBox');
   if (box.hidden) { box.innerHTML = '<div class="mnHint">加载中…</div>'; box.hidden = false; updateComposeCompact(); }
 }
 function mentionUpdate() {
   const t = mentionToken();
   if (!t) return mentionHide();
-  const queryKey = (t.trigger || '@') + t.q;
+  const queryKey = `${t.trigger || '@'}${t.q}|${t.start}|${t.caret}|${inputRevision}`;
   if (queryKey === MN.q) return;
   clearTimeout(MN.timer);
   MN.q = queryKey;
-  if (currentApp === 'codex') MN.seq++;
+  MN.seq++;
   MN.timer = setTimeout(() => mentionAsk({ q: t.q }), currentApp === 'codex' ? 150 : 220);
   if (currentApp === 'codex' && !$('mentionBox').hidden) {
     const hint = $('mentionBox').querySelector('.mnHint');
@@ -215,7 +252,9 @@ document.addEventListener('pointerdown', e => {
   if (!$('mentionBox').hidden && !e.target.closest('#mentionBox, #text')) mentionHide();
 }, { passive: true });
 function onMentions(m) {
-  if (!m.submenu && m.seq !== MN.seq) return;
+  if (m.sel !== viewSel || m.seq !== MN.seq) return;
+  if (!MN.request || MN.request.sel !== viewSel || MN.request.revision !== inputRevision
+    || MN.request.value !== text.value || MN.request.caret !== text.selectionStart) return;
   const t = mentionToken();
   if (!m.submenu && !t) return mentionHide();
   MN.parent = m.parent || null;
@@ -223,7 +262,7 @@ function onMentions(m) {
   if (m.prefix) {
     // A category was chosen: the token becomes "@terminal:" and the list below is what that category offers.
     text.setRangeText(m.prefix, t.start, t.end, 'end');
-    autosize();
+    recordDraftEdit(); queueDraftSync();
     MN.q = m.prefix.slice(1);
     MN.used = MN.q;
   } else MN.used = m.q;
@@ -247,13 +286,16 @@ $('mentionBox').addEventListener('click', e => {
   const command = currentApp === 'codex' && (MN.parent || r.section === 'commands' || r.section === 'context-actions' || r.section === 'plugins' || r.section === 'apps');
   if (command) {
     if (t) text.setRangeText('', t.start, t.end, 'end');
-    autosize();
+    recordDraftEdit();
     const parent = MN.parent;
     mentionHide();
+    MN.request = { sel: viewSel, revision: inputRevision, value: text.value, caret: text.selectionStart };
     send({
       t: 'codexPick', key: r.key, label: r.label, section: r.section || '',
+      seq: MN.seq, text: text.value, start: text.selectionStart, caret: text.selectionStart,
       q: MN.used || '', parentKey: parent?.key || '', parentLabel: parent?.label || '', parentQ: parent?.q || MN.used || '',
     });
+    queueDraftSync();
     return;
   }
   if (!t) return;
@@ -264,7 +306,7 @@ $('mentionBox').addEventListener('click', e => {
   const q = MN.used.endsWith(':') && !r.label.startsWith(MN.used) ? MN.used + r.label : (MN.used || r.label.split(' ')[0]);
   MN.mentions.push({ token, q, label: r.label, sub: r.sub || '', key: r.key || '', section: r.section || '', trigger, at: t.start });
   MN.value = text.value;
-  autosize();
+  recordDraftEdit();
   mentionHide();
   text.focus();
 });
@@ -314,6 +356,7 @@ text.addEventListener('focus', () => {
 });
 text.addEventListener('blur', () => {
   stickOnKeyboard = false;
+  if (pendingDesktopDraft) receiveDraft(pendingDesktopDraft);
   setTimeout(fitViewport, 60);
   updateComposeCompact();
 });
@@ -517,7 +560,7 @@ $('insertNewline').onclick = () => {
 let composing = false;
 let shiftEnter = false;
 text.addEventListener('compositionstart', () => { endInputRecall(); composing = true; updateComposeCompact(); });
-text.addEventListener('compositionend', () => { setTimeout(() => { composing = false; updateComposeCompact(); }, 0); });
+text.addEventListener('compositionend', () => { setTimeout(() => { composing = false; updateComposeCompact(); queueDraftSync(); }, 0); });
 function submitOnEnter(e) {
   if (shiftEnter || e.shiftKey || e.isComposing || composing) return;
   e.preventDefault();

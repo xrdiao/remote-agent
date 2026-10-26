@@ -152,8 +152,8 @@ export const adapter = {
     await this.key('Ctrl+Shift+`', { cdp: this.editorCdp });
   },
 
-  async mentionQuery(q, cat, seq, trigger) {
-    return this.codexMentionQuery(q, trigger === '/' ? '/' : '@', seq);
+  async mentionQuery(q, cat, seq, trigger, query) {
+    return this.codexMentionQuery(q, trigger === '/' ? '/' : '@', seq, query);
   },
 
   async usageContext() {
@@ -245,9 +245,7 @@ export const adapter = {
     if (!await this.cdp.evaluate(helpersCall(`pickCodexModel(${JSON.stringify(String(label))})`))) return false;
     await this.waitModel(label);
     await this.closeMenus();
-    this.emit({ t: 'status', ok: true, msg: `已切换到 ${label}` });
     this.pollChat(true).catch(() => {});
-    await this.openMenu('effort').catch(() => {});
     return true;
   },
 
@@ -345,10 +343,19 @@ async selectCodexThread(convId, cdp = this.cdp) {
 },
 
 async adoptCodexThread(thread, statusMsg) {
-  this.clearViewState();
-  this.threadId = thread || '';
-  this.publishThread(statusMsg);
-  await this.pollChat();
+  const switching = this.switchingThread;
+  this.switchingThread = true;
+  try {
+    if (this.threadId !== (thread || '')) this.clearViewState();
+    this.threadId = thread || '';
+    this.publishThread(statusMsg);
+  } finally {
+    this.switchingThread = switching;
+  }
+  if (!switching) {
+    this.publishThread();
+    await this.pollChat(true, true);
+  }
 },
 
 async checkCodexLogin() {
@@ -420,16 +427,28 @@ async openCodexAgent(id) {
   const workspace = row?.workspace || this.codexRoots?.get(convId)
     || conversationProjects[JSON.stringify([computerId(), 'codex', '', convId])]?.project?.root;
   if (workspace && !row?.host) {
-    return this.useProject(workspace, false, convId);
+    return this.useProject(workspace, false, convId, '', match[1]);
   }
   if (row?.host) {
-    const page = (await codexWindows(CODEX_CDP_URL)).find(p => p.pageId === match[1]);
+    const page = (await codexWindows(CODEX_CDP_URL, false, match[1]))[0];
     if (!page) throw new Error('所选会话窗口已经关闭');
     const state = await this.projectWindowState({ ...page, id: page.pageId });
     if (state.busy && state.thread !== convId) throw new Error('目标远程窗口正在运行，请先在电脑上为目标会话打开独立窗口');
-    if (page.pageId !== this.codexPageId) await this.attach({ id: 'codex', windowId: page.pageId });
-    if (!await this.selectCodexThread(convId)) throw new Error('没有找到所选会话');
-    return this.adoptCodexThread(convId, '已切换会话');
+    const switching = this.switchingThread, previousCdp = this.cdp;
+    this.switchingThread = true;
+    this.bindingReady = false;
+    try {
+      if (page.pageId !== this.codexPageId) await this.openBound({ id: 'codex', app: 'codex', title: page.rawTitle, ws: page.ws, port: CODEX_CDP_URL },
+        page.ws, page.chatWs, { windowId: page.pageId, threadId: convId, deferred: true });
+      if (await this.checkProjectTrust({ threadId: convId })) return;
+      if (!await this.selectCodexThread(convId)) throw new Error('没有找到所选会话');
+      await this.adoptCodexThread(convId, '已切换会话');
+      this.bindingReady = true;
+    } finally {
+      if (switching) this.switchingThread = switching;
+      else await this.resumeProjectSwitch(previousCdp);
+    }
+    return;
   }
   throw new Error('无法确认会话所属项目，请刷新项目与会话列表');
 },
@@ -665,26 +684,15 @@ mentionPayload(rows) {
   return rows.slice(0, 40).map(r => ({ label: r.label, sub: r.sub || '', key: r.key || '', section: r.section || '' }));
 },
 
-async codexMentionQuery(q, trigger, seq) {
-  this.mentionSeq = seq;
+async codexMentionQuery(q, trigger, seq, query) {
   const out = await this.withMentionLock(seq, async () => {
     if (this.mentionSeq !== seq) return null;
-    await this.codexFocusPrompt();
-    const before = await this.codexPrompt();
-    const typed = trigger + String(q || '');
-    await this.cdp.send('Input.insertText', { text: typed });
-    const rows = await this.codexMentionSettle(seq);
-    await this.codexRestorePrompt(before);
-    let after = await this.codexPrompt();
-    if (after !== before && !before) {
-      await this.cdp.evaluate(helpersCall('codexSelectPrompt()'));
-      await this.key('Backspace');
-      after = await this.codexPrompt();
-    }
-    if (after !== before) throw new Error('查询菜单后没能恢复原来的输入');
-    return rows;
+    return this.withComposerQuery(query, async () => {
+      await this.cdp.send('Input.insertText', { text: trigger + String(q || '') });
+      return this.codexMentionSettle(seq);
+    });
   }).catch(e => { this.emit({ t: 'status', ok: false, msg: e.message }); return null; });
-  if (out && this.mentionSeq === seq) this.emit({ t: 'mentions', seq, q, trigger, rows: this.mentionPayload(out) });
+  if (out && this.mentionSeq === seq) this.emit({ t: 'mentions', sel: this.selectionKey(), seq, q, trigger, rows: this.mentionPayload(out) });
 },
 
 async codexOpenMention(trigger, q) {
@@ -695,14 +703,11 @@ async codexOpenMention(trigger, q) {
 
 async codexPick(msg) {
   if (this.app !== 'codex') return;
-  const before = await this.withMentionLock(null, async () => {
-    await this.codexFocusPrompt();
-    return this.codexPrompt();
-  });
   const trigger = msg.section === 'commands' || msg.section === 'Skills' ? '/' : '@';
   const parentQ = String(msg.parentQ || msg.q || '').slice(0, 60);
-  try {
-    let rows = await this.codexOpenMention(trigger, parentQ);
+  return this.withMentionLock(null, () => this.withComposerQuery(msg, async () => {
+    await this.cdp.send('Input.insertText', { text: trigger + parentQ });
+    let rows = await this.codexMentionSettle();
     if (msg.parentKey) {
       const parent = rows.find(r => r.key === msg.parentKey) || rows.find(r => r.label === msg.parentLabel) || rows.find(r => msg.parentLabel && r.label.startsWith(msg.parentLabel));
       if (!parent) throw new Error('电脑上的菜单里没有上一级');
@@ -723,23 +728,16 @@ async codexPick(msg) {
     const next = await this.cdp.evaluate(helpersCall('codexMentionRows()')) || [];
     const branched = next.length && !next.some(r => r.key === hit.key && r.label === hit.label);
     if (branched) {
-      await this.codexRestorePrompt(before);
       this.emit({
-        t: 'mentions', seq: Number(msg.seq) || 0, submenu: true, q: '',
+        t: 'mentions', sel: this.selectionKey(), seq: Number(msg.seq) || 0, submenu: true, q: '',
         parent: { key: hit.key, label: hit.label, q: parentQ, section: hit.section || msg.section || '' },
         rows: this.mentionPayload(next),
       });
       return;
     }
-    await this.codexRestorePrompt(before);
-    const after = await this.codexPrompt();
-    if (after !== before && !before) await this.codexRestorePrompt('');
     this.emit({ t: 'status', ok: true, msg: `已执行 ${hit.label.split('\n')[0]}` });
     setTimeout(() => this.pollChat().catch(() => {}), 300);
-  } catch (e) {
-    await this.codexRestorePrompt(before).catch(() => {});
-    throw e;
-  }
+  }));
 },
 
 async codexSkillList() {
