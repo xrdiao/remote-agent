@@ -15,7 +15,7 @@ const SWITCH_READS = new Set(['attach', 'openAgent', 'agents', 'windows', 'connA
 const CONNECTION_MESSAGES = new Set(['mode', 'visible', 'lang', 'quality', 'windows', 'connAgents', 'visualList', 'visualSelect']);
 const sameWindow = (session, msg) => !msg.sel || msg.sel.split('|', 2).join('|') === session.selectionKey().split('|', 2).join('|');
 const navigationMessage = msg => ['attach', 'openAgent', 'openProject'].includes(msg.t);
-const pureNavigation = msg => navigationMessage(msg) && msg.newSession !== true && !(msg.t === 'openAgent' && /^(?:new:|project-new:)/.test(msg.id || ''));
+const pureNavigation = msg => navigationMessage(msg) && msg.newSession !== true && msg.create !== true && !(msg.t === 'openAgent' && /^(?:new:|project-new:)/.test(msg.id || ''));
 
 export function attachWss(server) {
 const voice = voiceWss();
@@ -59,6 +59,7 @@ wss.on('connection', (ws, req) => {
   let activeBinding = 0;
   let reads = new AbortController();
   let navigationReads = new AbortController();
+  let activeNavigation = null;
   let pendingNavigation = null;
   const agentReads = new Map();
   const pendingMetadata = new Set();
@@ -116,6 +117,7 @@ wss.on('connection', (ws, req) => {
       pendingNavigation = navigation;
     } else if (!SWITCH_READS.has(msg.t) && !CONNECTION_MESSAGES.has(msg.t)) pendingNavigation = null;
     if (switching) {
+      if (navigation && activeNavigation) navigationReads.abort(new Error('窗口已切换'));
       if (session.sessionBatch) session.sessionBatch.cancelled = true;
       binding++;
       reads.abort(new Error('窗口已切换'));
@@ -161,21 +163,29 @@ wss.on('connection', (ws, req) => {
         navigationReads = new AbortController();
         navigationReads.signal.navigationId = msg.navigationId;
         session.navigationId = msg.navigationId;
+        activeNavigation = navigation;
       }
       const q0 = Date.now();
       const signal = switching ? navigationReads.signal : SWITCH_READS.has(msg.t) ? reads.signal : null;
+      let timedOut = false;
+      const navigationTimer = msg.t === 'attach' && msg.initial === true ? setTimeout(() => {
+        timedOut = true;
+        navigationReads.abort(new Error('当前会话读取超时，请重试或切换 Agent'));
+      }, 30000) : null;
       try {
         const queued = imageTransfer?.cancelled ? undefined : await cdpRead.run(signal, () => session.handle(msg));
         const ms = Date.now() - q0;
         if (ms > 3000) console.log(`[slow] ${msg.t} ${ms}ms ${session.app || ''}`);
         route?.after?.(session, msg, queued);
       } catch (e) {
-        if (signal?.aborted) return;
+        if (signal?.aborted && !timedOut) return;
         console.log(`[err] ${msg.t}: ${e.message}`);
-        route?.fail?.(session, msg);
+        route?.fail?.(session, msg, e);
         if (switching && msg.t !== 'attach') session.emit({ t: 'attachFailed', ready: session.bindingReady === true });
-        session.emit({ t: 'status', ok: false, msg: quotaErrorMessage(session.app, e) || e.message });
+        if (msg.t !== 'send') session.emit({ t: 'status', ok: false, msg: quotaErrorMessage(session.app, e) || e.message });
       } finally {
+        clearTimeout(navigationTimer);
+        if (switching && activeNavigation === navigation) activeNavigation = null;
         if (imageTransfer) session.imageTransfers.delete(msg.clientImageId);
       }
       } finally { if (metadataKey) pendingMetadata.delete(metadataKey); }

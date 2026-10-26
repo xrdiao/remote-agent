@@ -172,6 +172,7 @@ export const adapter = {
   async submitPrompt(now, busy, when, queued, mentions) {
     const hasLocalFiles = mentions?.some(m => m.section === 'local-files');
     const facts = await this.cdp.evaluate(helpersCall('codexFacts()'));
+    const hasAttachments = hasLocalFiles || facts?.hasDraftAttachments === true;
     const beforeReceipt = await this.cdp.evaluate(helpersCall('codexReceiptRows()'));
     const expected = (await this.cdp.evaluate(helpersCall('codexPromptText()')) || '').trim();
     const beforeMessages = new Set(beforeReceipt.map(item => item.id));
@@ -209,24 +210,26 @@ export const adapter = {
       await this.key(mod((view?.enter === 'enter' ? '' : 'Shift+') + 'Enter'));
     }
     else if (!await this.cdp.evaluate(helpersCall('submitCodexMessage()'))) throw new Error('Codex 发送按钮当前不可用');
-    for (let i = 0; i < 12; i++) {
-      const prompt = await this.cdp.evaluate(helpersCall('codexPromptText()'));
-      const facts = hasLocalFiles ? await this.cdp.evaluate(helpersCall('codexFacts()')) : null;
-      if (!prompt && (!hasLocalFiles || facts?.hasDraftAttachments === false)) break;
-      await new Promise(r => setTimeout(r, 100));
-    }
-    const prompt = await this.cdp.evaluate(helpersCall('codexPromptText()'));
-    const afterFacts = hasLocalFiles ? await this.cdp.evaluate(helpersCall('codexFacts()')) : null;
-    if (prompt || (hasLocalFiles && afterFacts?.hasDraftAttachments !== false)) throw new Error('Codex 未接受发送，草稿已保留');
-    const accepted = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return { thread: h.codexThread(), messages: h.codexReceiptRows(), queued: h.codexFacts()?.queued || [] }; })()`);
-    if (expected && this.cdp === receiptCdp && this.selectionKey() === receiptScope && (!receiptThread || accepted.thread === receiptThread)) {
+    // Native message/queue receipts, rather than composer clearing, confirm acceptance.
+    const receiptDeadline = Date.now() + 5000;
+    for (let i = 0; i < 40 && Date.now() < receiptDeadline; i++) {
+      const accepted = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return { thread: h.codexThread(), messages: h.codexReceiptRows(), queued: h.codexFacts()?.queued || [] }; })()`, { timeout: receiptDeadline - Date.now() }).catch(() => null);
+      if (!accepted) break;
+      if (this.cdp !== receiptCdp || this.selectionKey() !== receiptScope || receiptThread && accepted.thread !== receiptThread) break;
       const messages = accepted.messages.filter(item => !beforeMessages.has(item.id)
-        && !item.nativeIds?.some(id => beforeQueue.has(id)) && item.t.trim() === expected);
-      const pending = accepted.queued.filter(item => !beforeQueue.has(item.id) && item.t.trim() === expected);
-      if (nativeReceipt && messages.length + pending.length === 1) Object.assign(nativeReceipt, messages.length
-        ? { messageId: messages[0].i } : { queueId: pending[0].id, ...(pending[0].messageId ? { messageId: pending[0].messageId } : {}) });
+        && !item.nativeIds?.some(id => beforeQueue.has(id)) && (expected ? item.t.trim() === expected : hasAttachments));
+      const pending = accepted.queued.filter(item => !beforeQueue.has(item.id) && (expected ? item.t.trim() === expected.slice(0, 4000) : hasAttachments));
+      if (messages.length + pending.length === 1) {
+        queued = pending.length === 1;
+        if (nativeReceipt) Object.assign(nativeReceipt, queued
+          ? { queueId: pending[0].id, ...(pending[0].messageId ? { messageId: pending[0].messageId } : {}) }
+          : { messageId: messages[0].i });
+        if (busy && !queued) this.emit({ t: 'status', ok: true, msg: '已追加到当前任务' });
+        return queued;
+      }
+      await new Promise(r => setTimeout(r, 125));
     }
-    if (busy && !queued) this.emit({ t: 'status', ok: true, msg: '已追加到当前任务' });
+    if (nativeReceipt) nativeReceipt.pending = true;
     return queued;
   },
 

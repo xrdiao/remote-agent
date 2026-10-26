@@ -68,9 +68,11 @@ let navigationSerial = 0, navigationPending = null, selectionReady = false, sele
 let metadataWindow = '';
 function beginNavigation(message) {
   message.navigationId = ++navigationSerial;
-  navigationPending = { id: message.navigationId, confirmed: '' };
+  navigationPending = { id: message.navigationId, windowId: message.t === 'attach' ? message.id : currentWindow, confirmed: '' };
+  conn.attachFailed = false;
+  conn.failedTargets?.delete(navigationPending.windowId);
+  $('retryChat').hidden = true;
   selectionReady = false;
-  if (conn.active) conn.readyRedirect = true;
   setWindowReady(false);
   invalidateChatRender();
   $('items').inert = true;
@@ -757,7 +759,7 @@ async function connect() {
           if (navigationPending?.preview === viewSel && chatStale) for (const item of m.chat.items) if (item.b?.length) cache.delete(item.i);
           liveChatSelection = m.sel || viewSel;
           navigationPending = null;
-          conn.readyRedirect = false;
+          $('retryChat').hidden = true;
           $('items').inert = false;
           setWindowReady(true);
           if (becameReady) queueDraftSync();
@@ -783,10 +785,10 @@ async function connect() {
     else if (m.t === 'thread') applySelection(m);
     else if (m.t === 'frame') onFrame(m);
     else if (m.t === 'panel') { panel = m.rect; updateTermEmpty(); layoutStage(); applyQuality(); }
-    else if (m.t === 'connAgents') connAgentResults(m.agents);
+    else if (m.t === 'connAgents') connAgentResults(m.agents, m.complete !== false);
     else if (m.t === 'agentCatalog') agentCatalogResults(m.agents);
     else if (m.t === 'launchResult') connLaunchResults(m.results);
-    else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; connWindows(m.list); if (m.plans) { appPlans = { ...appPlans, ...m.plans }; updateTitle(); } if (conn.readyPending) { conn.readyPending = false; ensureReadyAgent(); } if (sheetKind === 'windows') showWindows(); paintRail(); }
+    else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; connWindows(m.list); if (m.plans) { appPlans = { ...appPlans, ...m.plans }; updateTitle(); } if (sheetKind === 'windows') showWindows(); paintRail(); }
     else if (m.t === 'plans') { if (m.plans) { appPlans = { ...appPlans, ...m.plans }; updateTitle(); if (sheetKind === 'windows') showWindows(); paintRail(); } }
     else if (m.t === 'fusionTrust') openSheet('fusion-trust', `<h3>确认项目可信</h3><div class="hint">${esc(m.path)}</div><button class="opt" data-fusion-trust="yes"><span class="lbl">信任并创建会话</span></button><button class="opt" data-fusion-trust="no"><span class="lbl">取消</span></button>`);
     else if (m.t === 'fusionProjects') showFusionProjects(m);
@@ -802,10 +804,7 @@ async function connect() {
       if (m.closed) {
         forgetClosedWindow(m.id);
         selectionReady = m.ready === true;
-        conn.readyRedirect = selectionReady && mode === 'chat';
-        setWindowReady(false);
-        status('这个窗口已经关闭，请重新选择', false);
-        if (selectionReady) { confirmNavigation(); send({ t: 'refresh' }); }
+        connReadFailed('这个窗口已经关闭，请重试或切换 Agent');
         send({ t: 'windows' });
         if (conn.active) connRender();
         return;
@@ -824,7 +823,6 @@ async function connect() {
       applySelection(m, false);
       currentWindow = m.id;
       currentApp = m.app || null;
-      conn.readyRedirect = m.ready === false || mode === 'chat';
       selectionReady = m.ready !== false;
       setWindowReady(selectionReady && mode !== 'chat');
       scheduleLatency();
@@ -845,12 +843,8 @@ async function connect() {
       if (mode !== 'chat' && selectionReady) refreshSelectionMetadata(m.initial === true);
     }
     else if (m.t === 'attachFailed') {
-      conn.attachFailed = true;
       selectionReady = m.ready === true;
-      conn.readyRedirect = selectionReady && mode === 'chat';
-      setWindowReady(false);
-      if (selectionReady) { confirmNavigation(); send({ t: 'refresh' }); }
-      if (conn.active) connRender();
+      connReadFailed(m.message || '当前会话读取失败，请重试或切换 Agent');
     }
     else if (m.t === 'sessionLibrary') receiveSessionLibrary(m);
     else if (m.t === 'sessionChanged') receiveSessionChange(m);
@@ -894,7 +888,6 @@ async function connect() {
       if (m.chat) {
         liveChatSelection = viewSel;
         navigationPending = null;
-        conn.readyRedirect = false;
         $('items').inert = false;
         setWindowReady(true);
         cacheChat(viewSel, m.chat);

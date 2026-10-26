@@ -1,9 +1,9 @@
 import { updateDevice } from '../lib/auth.mjs';
-import { Cdp } from './cdp.mjs';
+import { Cdp, cdpRead } from './cdp.mjs';
 import { listWindows, phoneWindows, codexWindows } from './windows.mjs';
-import { CODEX_CDP_URL } from './config.mjs';
+import { CODEX_CDP_URL, EDITORS } from './config.mjs';
 import { helpersCall } from './page/build.mjs';
-import { appPlans } from './agent/context.mjs';
+import { appPlans, quotaErrorMessage } from './agent/context.mjs';
 import { probeLatency } from './latency.mjs';
 import { launchAgents, detectAgents } from './launch.mjs';
 import { ADAPTERS } from './apps/index.mjs';
@@ -116,26 +116,38 @@ export const ROUTES = {
   } },
   saveFile: { pre: (s, m) => s.saveFile(String(m.path ?? ''), String(m.text ?? ''), m.host == null ? undefined : String(m.host), m.requestId) },
   connAgents: {
-    pre: async s => {
+    pre: async (s, options = {}) => {
+      const probe = s.agentProbe = (s.agentProbe || 0) + 1;
       const catalog = detectAgents();
-      const agents = [];
-      let wins;
-      try { wins = await listWindows(agents); } catch {}
-      if (wins) s.emit({ t: 'windows', list: phoneWindows(wins, s.targetId), current: s.targetId, plans: appPlans });
-      readAllPlans(s, wins).catch(() => {});
-      s.emit({ t: 'connAgents', agents });
-      catalog.then(list => s.emit({ t: 'agentCatalog', agents: list.map(a => agents.some(r => r.app === a.app && r.windows) ? { ...a, installed: true, running: true, reason: '' } : a) })).catch(() => {});
+      const agents = [], found = new Map();
+      let finished = 0;
+      await Promise.all(EDITORS.map(async editor => {
+        let wins = [];
+        try { wins = await listWindows(agents, editor.app); } catch {}
+        for (const win of wins) found.set(win.id, win);
+        finished++;
+        if (s.agentProbe !== probe) return;
+        s.emit({ t: 'windows', list: phoneWindows([...found.values()], s.targetId), current: s.targetId, plans: appPlans });
+        s.emit({ t: 'connAgents', agents: [...agents], complete: finished === EDITORS.length });
+      }));
+      if (s.agentProbe !== probe) return [...found.values()];
+      const wins = [...found.values()];
+      if (!options.deferPlans && wins.length) readAllPlans(s, wins).catch(() => {});
+      catalog.then(list => { if (s.agentProbe === probe) s.emit({ t: 'agentCatalog', agents: list.map(a => agents.some(r => r.app === a.app && r.windows) ? { ...a, installed: true, running: true, reason: '' } : a) }); }).catch(() => {});
+      return wins;
     },
   },
   windows: { background: true, pre: async s => s.emit({ t: 'windows', list: phoneWindows(await listWindows(), s.targetId), current: s.targetId, plans: appPlans }) },
   attach: {
-    fail: s => s.emit({ t: 'attachFailed', ready: s.bindingReady === true }),
+    fail: (s, m, error) => s.emit({ t: 'attachFailed', ready: s.bindingReady === true, message: error?.message }),
     pre: async (s, m) => {
       if (!m.initial) return s.attach(m);
+      const signal = cdpRead.getStore();
+      const probe = cdpRead.run(null, () => ROUTES.connAgents.pre(s, { deferPlans: true }));
       try {
         await s.attach(m);
       } finally {
-        ROUTES.connAgents.pre(s).catch(() => {});
+        probe.then(wins => { if (!signal?.aborted && wins.length) readAllPlans(s, wins).catch(() => {}); }).catch(() => {});
       }
     },
   },
@@ -323,8 +335,7 @@ export const ROUTES = {
   send: {
     fusionFree: true,
     run: (s, m) => s.sendMessage(String(m.text ?? ''), m.submit !== false, m.when, cleanMentions(m.mentions), { requestId: m.requestId, draft: m.draft, text: m.text, draftEpoch: m.draftEpoch }),
-    after: (s, m, queued) => { if (m.submit !== false) s.emit({ t: 'status', ok: true, msg: queued ? 'Agent 正在运行，已加入排队，这一轮结束后自动发送' : '已发送' }); },
-    fail: (s, m) => s.emit({ t: 'sendFailed', requestId: m.requestId }),
+    fail: (s, m, error) => s.emit({ t: 'sendFailed', requestId: m.requestId, message: quotaErrorMessage(s.app, error) || error?.message }),
   },
   mentionQuery: { run: (s, m) => s.mentionQuery(String(m.q ?? '').slice(0, 80), m.cat ? String(m.cat).slice(0, 40) : '', Number(m.seq) || 0, m.trigger === '/' ? '/' : '@', { text: String(m.text ?? ''), start: m.start, caret: m.caret }) },
   codexRequest: {
@@ -354,7 +365,7 @@ export const ROUTES = {
   codexArchive: { run: (s, m) => s.codexArchiveThread(String(m.id || '')) },
   visualList: {pre: s => s.visualList()},
   visualSelect: {pre: (s, m) => s.visualSelect(m.id)},
-  refresh: { readOnly: true, fusionFree: true, run: s => s.snapshot(true), fusion: s => s.mode === 'screen' ? s.snapshot(true) : s.adapter.pollChat.call(s) },
+  refresh: { readOnly: true, fusionFree: true, run: s => s.mode === 'chat' ? s.pollChat(true, true) : s.mode === 'terminal' ? s.pollTerminal() : s.snapshot(true), fusion: s => s.mode === 'screen' ? s.snapshot(true) : s.adapter.pollChat.call(s) },
   quality: {
     fusionFree: true,
     run: async (s, m) => {

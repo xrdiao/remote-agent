@@ -5,17 +5,24 @@ import { IS_WIN } from '../lib/platform.mjs';
 import { Cdp } from './cdp.mjs';
 import { EDITORS } from './config.mjs';
 
+const targetReads = new Map();
+function editorTargets(base) {
+  if (!targetReads.has(base)) targetReads.set(base,
+    fetch(`${base}/json/list`, { signal: AbortSignal.timeout(1500) }).then(r => r.json()).finally(() => targetReads.delete(base)));
+  return targetReads.get(base);
+}
+
 export async function listWindows(report = null, app = null) {
   const lists = await Promise.all(EDITORS.filter(ed => !app || ed.app === app).map(async ed => {
     try {
       if (ed.app === 'codex') {
-        const pages = await codexWindows(ed.url, !!report);
+        const pages = await codexWindows(ed.url, !!report, '', false);
         report?.push({ app: ed.app, windows: pages.length, address: ed.url });
         if (!pages.length) return [];
         // Several VS Code windows are agents inside one Codex entry, not separate phone windows.
         return [{ id: 'codex', title: 'Codex', ws: pages[0].ws, port: ed.url, app: 'codex', kind: 'local' }];
       }
-      const targets = await (await fetch(`${ed.url}/json/list`, { signal: AbortSignal.timeout(1500) })).json();
+      const targets = await editorTargets(ed.url);
       const found = targets
         .filter(t => t.type === 'page' && /workbench/.test(t.url))
         .map(t => ({
@@ -153,10 +160,10 @@ async function webviewKey(wsUrl) {
   }
 }
 
-export async function codexWindows(base, reportErrors = false, pageId = '') {
+export async function codexWindows(base, reportErrors = false, pageId = '', bindViews = true) {
   let targets = [];
   try {
-    targets = await (await fetch(`${base}/json/list`, { signal: AbortSignal.timeout(1500) })).json();
+    targets = await editorTargets(base);
   } catch (error) {
     if (reportErrors) throw error;
     return [];
@@ -171,7 +178,7 @@ export async function codexWindows(base, reportErrors = false, pageId = '') {
   const out = [];
   for (const p of pages) {
     let key = codexViewIds.get(p.id);
-    if (!key || !viewByKey.has(key)) {
+    if (bindViews && (!key || !viewByKey.has(key))) {
       key = await webviewKey(p.webSocketDebuggerUrl);
       if (key) codexViewIds.set(p.id, key);
     }
