@@ -638,7 +638,7 @@ export const methods = {
     if (submit) {
       files.forEach(f => { f.pending = false; });
       this.lastDraft = text;
-      if (!queued) rememberSessionMessage(this.app, this.threadId, Date.now());
+      if (!queued && !receiptToken?.pending) rememberSessionMessage(this.app, this.threadId, Date.now());
     }
     if (submit && receipt) this.emit({ t: 'sent', ...receipt, ...(this.sendNativeReceipt === receiptToken && this.selectionKey() === receiptScope && this.cdp === receiptCdp ? receiptToken : {}), queued, sentAt: Date.now(), sel: this.selectionKey() });
     if (this.mode === 'chat') {

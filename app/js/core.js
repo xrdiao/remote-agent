@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v249'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v250'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false, failures = 0;
 let windowReady = false;
@@ -165,7 +165,7 @@ fitOrientation();
 // so a finished action cannot leave "正在…" on screen. A short result then fades on its own.
 const ACTION_PENDING = new Set([
   '正在加载对话…',
-  '正在发送…',
+  '正在发送…', '正在确认电脑端接收…',
   '正在新建对话…', '正在切换窗口…', '正在切换 Agent…', '正在读取 Agent 列表…', '正在打开子 Agent…', '返回主对话…',
   '正在切换终端…', '正在删除终端…', '正在新建终端…', '正在读取终端列表…',
   '正在打开项目…', '正在读取项目…', '正在读取文件夹…', '正在读取文档…', '正在保存…',
@@ -203,7 +203,6 @@ function send(obj) {
   if (['attach', 'openAgent', 'openProject'].includes(obj.t)) beginNavigation(obj);
   if (obj.t === 'attach') {
     conn.loaded = false;
-    if (conn.active) conn.readyRedirect = true;
     status('正在切换窗口…');
     const name = {cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion'}[String(obj.id || '').split(':')[0]];
     if (name) $('titleText').textContent = name + '…';

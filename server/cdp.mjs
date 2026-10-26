@@ -3,6 +3,17 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 // A window switch cancels only reads running in the previous binding's scope.
 export const cdpRead = new AsyncLocalStorage();
 
+export function awaitCdpRead(pending) {
+  const signal = cdpRead.getStore();
+  signal?.throwIfAborted();
+  if (!signal) return pending;
+  return new Promise((resolve, reject) => {
+    const cancel = () => reject(signal.reason);
+    signal.addEventListener('abort', cancel, { once: true });
+    Promise.resolve(pending).then(resolve, reject).finally(() => signal.removeEventListener('abort', cancel));
+  });
+}
+
 export class Cdp {
   constructor(wsUrl) {
     this.wsUrl = wsUrl;

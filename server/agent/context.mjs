@@ -1,4 +1,4 @@
-import { MOD, NAMED_KEYS } from '../cdp.mjs';
+import { MOD, NAMED_KEYS, cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { EDITORS } from '../config.mjs';
 import { helpersCall } from '../page/build.mjs';
 
@@ -202,16 +202,19 @@ export class AgentContext {
     let release;
     const pending = this.chatUiDetails = new Promise(resolve => { release = resolve; });
     try {
-      if (previous) await previous;
-      while (this.focusDone) await this.focusDone;
+      if (previous) await awaitCdpRead(previous);
+      while (this.focusDone) await awaitCdpRead(this.focusDone);
+      cdpRead.getStore()?.throwIfAborted();
       return await fn();
     } finally {
-      release();
-      if (this.chatUiDetails === pending) this.chatUiDetails = null;
+      const done = () => { release(); if (this.chatUiDetails === pending) this.chatUiDetails = null; };
+      if (previous) previous.then(done, done);
+      else done();
     }
   }
   async withFocus(fn) {
-    while (!this.focusCount && this.chatUiDetails) await this.chatUiDetails;
+    while (!this.focusCount && this.chatUiDetails) await awaitCdpRead(this.chatUiDetails);
+    cdpRead.getStore()?.throwIfAborted();
     this.focusCount++;
     const connections = [...new Set([this.cdp, this.editorCdp].filter(Boolean))];
     if (this.focusCount === 1) {
@@ -220,14 +223,14 @@ export class AgentContext {
       this.focusTimer = null;
       for (const c of connections) await c.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
     }
-    try { return await fn(); }
+    try { cdpRead.getStore()?.throwIfAborted(); return await fn(); }
     finally {
       this.focusCount = Math.max(0, this.focusCount - 1);
       if (!this.focusCount) { this.finishFocus?.(); this.focusDone = this.finishFocus = null; }
       if (!this.focusCount && !this.focusTimer) {
         this.focusTimer = setTimeout(() => {
           this.focusTimer = null;
-          for (const c of connections) c.send('Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {});
+          cdpRead.run(null, () => { for (const c of connections) c.send('Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {}); });
         }, 1500);
       }
     }
