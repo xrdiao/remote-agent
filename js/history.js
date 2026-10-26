@@ -402,12 +402,15 @@ function beginChatSelection() {
 }
 function noteBottomScrollIntent(towardBottom) {
   initialBottomSelection = null;
+  if (isFollowingBottom() && atBottom()) return;
   setScrollMode('freeScroll');
-  bottomScrollIntent = towardBottom ? { sel: viewSel, top: list.scrollTop } : null;
+  if (towardBottom) bottomScrollIntent = { sel: viewSel, top: chatScrollTop(), max: maxChatScrollTop() };
 }
 function userReachedBottom() {
   const intent = bottomScrollIntent;
-  return chatUserScroll && !!intent && intent.sel === viewSel && list.scrollTop >= intent.top - BOTTOM_EPSILON && atBottom();
+  if (!intent) return false;
+  if (intent.sel !== viewSel || intent.max !== maxChatScrollTop()) { bottomScrollIntent = null; return false; }
+  return chatScrollTop() >= intent.top - BOTTOM_EPSILON && atBottom();
 }
 function setScrollMode(next) {
   if (next === 'followBottom' && !atBottom()) return;
@@ -423,6 +426,8 @@ function setScrollMode(next) {
   }
 }
 function maxChatScrollTop() { return Math.max(0, list.scrollHeight - list.clientHeight); }
+// Safari's bounce can report positions outside the actual scrollable range.
+function chatScrollTop() { return Math.max(0, Math.min(maxChatScrollTop(), list.scrollTop)); }
 function cancelChatMotion() {
   if (!chatMotionFrame) return;
   cancelAnimationFrame(chatMotionFrame);
@@ -460,6 +465,7 @@ function stopChatMotion(jump) {
 function setChatScrollTop(next) {
   next = Math.max(0, Math.min(maxChatScrollTop(), next));
   if (Math.abs(list.scrollTop - next) < 1) return false;
+  bottomScrollIntent = null;
   restoringChatScroll = true;
   list.scrollTop = next;
   requestAnimationFrame(() => { restoringChatScroll = false; updateToBottom(); });
@@ -1436,7 +1442,7 @@ function flushSettledChat() {
   chatScrolling = false;
   chatMomentum = false;
   if (userReachedBottom()) setScrollMode('followBottom');
-  bottomScrollIntent = null;
+  // The compositor may deliver the last user scroll after this idle callback.
   chatUserScroll = false;
   if (isFollowingBottom() && layoutDirty && !scrollCorrection) scrollCorrection = { kind: 'bottom' };
   if (deferredScrollRender && lastChat) {
@@ -1458,23 +1464,25 @@ function flushSettledChat() {
   updateComposeCompact();
 }
 function settleChatScroll() {
-  const top = list.scrollTop;
+  const top = chatScrollTop();
   if (restoringChatScroll) { lastScrollTop = top; updateToBottom(); return; }
   if (chatTouching && top < lastScrollTop) historyPullUp = true;
-  if (top < lastScrollTop && !chatTouching && !chatMomentum && !suppressHistoryArm && scrollMode !== 'programmatic' && (historyPullUp || historyWheelPullUp)) {
+  if (chatUserScroll && !atBottom() && top < lastScrollTop && !chatTouching && !chatMomentum && !suppressHistoryArm && scrollMode !== 'programmatic' && (historyPullUp || historyWheelPullUp)) {
     historyArmed = true;
     setScrollMode('freeScroll');
   }
-  lastScrollTop = top;
-  if (!chatTouching && !chatMomentum && !deferredScrollRender) {
-    if (userReachedBottom()) setScrollMode('followBottom');
+  if (bottomScrollIntent?.sel === viewSel && top > lastScrollTop && scrollMode !== 'programmatic') {
+    bottomScrollIntent.top = top;
+    bottomScrollIntent.max = maxChatScrollTop();
   }
+  lastScrollTop = top;
+  if (userReachedBottom()) setScrollMode('followBottom');
   chatScrolling = true;
   clearTimeout(scrollIdle);
   scrollIdle = setTimeout(() => {
     if (chatTouching) return;
     // Scroll events can lag the compositor during momentum scrolling.
-    if (list.scrollTop !== lastScrollTop) { settleChatScroll(); return; }
+    if (chatScrollTop() !== lastScrollTop) { settleChatScroll(); return; }
     flushSettledChat();
   }, chatMomentum ? 300 : 150);
   updateToBottom();
@@ -1482,7 +1490,10 @@ function settleChatScroll() {
 }
 list.addEventListener('scroll', () => {
   if (!restoringChatScroll && turnNavUser) showTurnNav();
-  if (!restoringChatScroll && chatUserScroll && scrollMode !== 'programmatic' && list.scrollTop < lastScrollTop) setScrollMode('freeScroll');
+  if (!restoringChatScroll && (chatUserScroll || bottomScrollIntent) && scrollMode !== 'programmatic' && !atBottom() && chatScrollTop() < lastScrollTop) {
+    setScrollMode('freeScroll');
+    bottomScrollIntent = null;
+  }
   if (!suppressHistoryArm && !turnNavPointer?.dragging && (historyPullUp || historyWheelPullUp) && list.scrollTop <= 1) historyArmed = true;
   settleChatScroll();
 }, { passive: true });
@@ -1497,8 +1508,8 @@ list.addEventListener('wheel', e => {
   turnNavGesture();
   restoringChatScroll = false;
   if (e.deltaY) { chatUserScroll = true; noteBottomScrollIntent(e.deltaY > 0); }
-  if (e.deltaY < 0) { historyWheelPullUp = true; setScrollMode('freeScroll'); if (list.scrollTop <= 1) { historyArmed = true; settleChatScroll(); } }
-  else if (e.deltaY > 0) { historyWheelPullUp = false; historyArmed = false; setScrollMode('freeScroll'); if (atBottom()) settleChatScroll(); }
+  if (e.deltaY < 0) { historyWheelPullUp = true; if (list.scrollTop <= 1) { historyArmed = true; settleChatScroll(); } }
+  else if (e.deltaY > 0) { historyWheelPullUp = false; historyArmed = false; if (atBottom()) settleChatScroll(); }
 }, { passive: true });
 list.addEventListener('touchstart', e => { cancelChatMotion(); bottomScrollIntent = null; historyTouchY = e.touches[0].clientY; historyPullUp = false; historyWheelPullUp = false; historyArmed = false; chatMomentum = false; chatUserScroll = false; chatTouching = true; chatScrolling = true; clearTimeout(scrollIdle); }, { passive: true });
 list.addEventListener('touchmove', e => {
@@ -1509,9 +1520,8 @@ list.addEventListener('touchmove', e => {
   if (dy && list.scrollTop <= 1) historyPullUp = true;
   if (dy < 0) {
     historyPullUp = true;
-    setScrollMode('freeScroll');
     if (list.scrollTop <= 1) historyArmed = true;
-  } else if (dy > 0) setScrollMode('freeScroll');
+  }
   historyTouchY = y;
 }, { passive: true });
 for (const event of ['touchend', 'touchcancel']) list.addEventListener(event, () => {
