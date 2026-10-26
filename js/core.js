@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v240'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v241'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false, failures = 0;
 let windowReady = false;
@@ -40,6 +40,7 @@ const setAgentList = (key, list) => { agentLists.delete(key); agentLists.set(key
 const agentListKey = () => (currentComputer()?.key || '') + ':' + currentApp + (currentApp === 'cursor' ? ':' + (currentComputer()?.windowId || currentWindow || '') : '');
 function receiveAgents(m) {
   if (m.app && m.app !== currentApp) return;
+  if (m.sel && m.sel !== viewSel) return;
   const key = agentListKey();
   const previous = agentLists.get(key) || [];
   const previousById = new Map(previous.map(a => [a.id, a]));
@@ -190,8 +191,10 @@ function finishPending(list) {
 }
 
 function send(obj) {
+  obj.sel ??= viewSel;
   if (obj.t === 'attach') {
     conn.loaded = false;
+    if (conn.active) conn.readyRedirect = true;
     setWindowReady(false);
     status('正在切换窗口…');
     const name = {cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion'}[String(obj.id || '').split(':')[0]];
