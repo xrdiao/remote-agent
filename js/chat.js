@@ -55,8 +55,8 @@ function setThought(id, text) {
 }
 function requestThought(id) {
   if (thoughtFull.has(id)) return;
+  if (send({ t: 'thought', i: id }) === false) return status('连接已断开，思考未加载，请重试', false);
   setThought(id, undefined);
-  send({ t: 'thought', i: id });
 }
 const thoughtObserver = new IntersectionObserver(entries => {
   for (const entry of entries) {
