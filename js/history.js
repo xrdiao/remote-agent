@@ -1295,6 +1295,7 @@ function loadOlderMessages() {
   historyPullUp = false;
   historyWheelPullUp = false;
   if (!$('cachedMore').hidden) {
+    historyScrollSnapshot = { top: list.scrollTop, height: list.scrollHeight };
     historyRendering = true;
     SC.show += 80;
     renderChat(lastChat);
@@ -1312,22 +1313,18 @@ function requestOlderRemote() {
     showHistoryStatus('已到最早消息');
     return;
   }
+  if (currentApp === 'codex' && lastChat.busy) {
+    historyWaitingForIdle = true;
+    showHistoryStatus('生成中，稍后上滑加载历史');
+    return;
+  }
+  historyScrollSnapshot = { top: list.scrollTop, height: list.scrollHeight };
   historyWaitingForIdle = false;
-  historyRequest = { id: String(++historySerial), sel: viewSel, thread: lastChat.thread };
+  historyRequest = { id: String(++historySerial), sel: viewSel };
   historyRendering = true;
   historyExpanded = true;
   showHistoryStatus('正在加载更早的消息…');
   send({ t: 'scrollChat', dy: -900, automatic: true, history: true, requestId: historyRequest.id });
-}
-function receiveHistoryPage(m) {
-  if (!historyRequest || m.requestId !== historyRequest.id || m.sel !== historyRequest.sel || m.thread !== historyRequest.thread || lastChat?.thread !== m.thread) return;
-  // The live snapshot owns status and overlapping rows; history only supplies older rows.
-  const known = new Set(lastChat.items.map(it => it.i));
-  SC.show += m.items.filter(it => !known.has(it.i)).length;
-  const rows = [...new Map([...m.items, ...lastChat.items].map(it => [it.i, it])).values()];
-  const order = it => Number.isFinite(it.order) ? it.order : Number(/^acp(\d+)/.exec(it.i)?.[1] || 0);
-  rows.sort((a, b) => order(a) - order(b));
-  renderChat({ ...lastChat, items: rows, earlier: m.earlier });
 }
 function finishHistory(m) {
   if (!historyRequest || m.requestId !== historyRequest.id || m.sel !== historyRequest.sel) return;
