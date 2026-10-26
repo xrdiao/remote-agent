@@ -175,20 +175,13 @@ $('sheet').addEventListener('click', async e => {
     if (b.dataset.agentAction === 'favorite') {
       const on = !agentFavoriteState(id);
       closeSheet(); setAgentFavorite(id, on);
-      return;
+      return status(on ? '已设为常用' : '已取消常用');
     }
     if (b.dataset.agentAction === 'rename') {
       const next = window.prompt('新的会话名称', name);
       if (!next?.trim()) return;
       closeSheet(); status('正在重命名…');
-      if (currentApp !== 'codex') return send({ t: 'sessionManage', id, action: 'rename', name: next.trim().slice(0, 80) });
       return send({ t: 'codexRename', id, name: next.trim().slice(0, 80) });
-    }
-    if (b.dataset.agentAction === 'delete' || (b.dataset.agentAction === 'archive' && currentApp !== 'codex')) {
-      const action = b.dataset.agentAction, label = action === 'delete' ? '删除' : '归档';
-      if (!await ask(`${label}「${name}」？`, label)) return;
-      closeSheet(); status(`正在${label}…`);
-      return send({ t: 'sessionManage', id, action });
     }
     if (b.dataset.agentAction === 'archive') {
       if (!await ask(`删除或归档「${name}」？\n桌面端会根据当前入口执行删除或归档。`, '继续')) return;
