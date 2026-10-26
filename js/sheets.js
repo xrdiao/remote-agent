@@ -153,6 +153,7 @@ function rememberAgentOpen(m) {
   }
 }
 function openSheet(kind, html) {
+  if (kind !== 'ask') askDone?.(false);
   if (kind !== 'agents') pendingProjectReveal = null;
   if (sheetKind === 'devices' && kind !== 'devices') deviceInviteGeneration++;
   if (kind !== 'docs') cancelDocs();
@@ -189,6 +190,7 @@ function openSheet(kind, html) {
   if (leavingVoice) scheduleVoiceWarmup();
 }
 function closeSheet() {
+  askDone?.(false);
   pendingProjectReveal = null;
   cancelDocs();
   clearTimeout(menuRefreshTimer);
@@ -229,7 +231,7 @@ function toggleCodexAutoRetry() {
   syncCodexAutoRetry(lastChat, chatStale);
   showCodexRetryMenu();
 }
-$('shade').onclick = () => { closeSheet(); askDone?.(false); };
+$('shade').onclick = () => { closeSheet(); };
 
 // Confirmation for anything that interrupts the Agent or throws work away; resolves false if dismissed.
 let askDone = null;
@@ -239,8 +241,8 @@ function ask(question, ok = '确定') {
     askDone = v => { askDone = null; resolve(v); };
     openSheet('ask', `<h3 class="askQ">${esc(question)}</h3><div class="askBtns">`
       + `<button id="askNo">取消</button><button id="askOk" class="danger">${esc(ok)}</button></div>`);
-    $('askOk').onclick = () => { closeSheet(); askDone?.(true); };
-    $('askNo').onclick = () => { closeSheet(); askDone?.(false); };
+    $('askOk').onclick = () => { askDone?.(true); closeSheet(); };
+    $('askNo').onclick = () => { closeSheet(); };
   });
 }
 // Buttons on Cursor's own cards that stop, reject or discard work.
