@@ -29,6 +29,12 @@ export const SECURITY_HEADERS = {
 export const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.wasm': 'application/wasm',
+  '.bcmap': 'application/octet-stream',
+  '.pfb': 'application/octet-stream',
+  '.ttf': 'font/ttf',
+  '.txt': 'text/plain; charset=utf-8',
   '.webmanifest': 'application/manifest+json',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
@@ -57,7 +63,7 @@ export function json(req, res, status, obj) {
 
 export function serveApp(res, name) {
   const rel = decodeURIComponent(String(name)).replace(/^\/+/, '');
-  if (!/^(?:katex\/fonts\/[A-Za-z0-9._-]+|katex\/[A-Za-z0-9._-]+|js\/[A-Za-z0-9._-]+|[A-Za-z0-9._-]+)$/.test(rel)) return false;
+  if (!/^(?:pdfjs\/(?:(?:cmaps|standard_fonts|wasm)\/)?[A-Za-z0-9._-]+|katex\/fonts\/[A-Za-z0-9._-]+|katex\/[A-Za-z0-9._-]+|js\/[A-Za-z0-9._-]+|[A-Za-z0-9._-]+)$/.test(rel)) return false;
   const file = path.join(APP_DIR, rel);
   const type = MIME[path.extname(file)];
   if (!type || !file.startsWith(APP_DIR + path.sep) || !fs.existsSync(file)) return false;

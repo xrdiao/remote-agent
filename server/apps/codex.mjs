@@ -8,6 +8,7 @@ import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { FOCUS_COMPOSER, codexUsage } from '../agent/context.mjs';
 import { computerId, saveState } from '../../lib/auth.mjs';
 import { conversationProjects, fusionProject } from '../fusion/state.mjs';
+import { removeLibrarySession, publishSessionChange } from '../../lib/session-library.mjs';
 
 // Native support; availability still follows the selected thread, model and controls.
 export const capabilities = {
@@ -30,19 +31,14 @@ export const adapter = {
     if (page && !page.chatWs) await this.ensureCodexReady({ id: page.pageId, ws: page.ws }, false);
     if (this.pendingProject?.trust) return;
     if (await this.checkCodexLogin()) return;
-    const cur = await this.cdp.evaluate(helpersCall('codexThread()')) || '';
-    if (cur) return;
-    const roots = await this.cdp.evaluate(helpersCall('codexWorkspaceRoots()')) || [];
-    // The webview loads the conversation list asynchronously after the sidebar opens.
-    let best = null;
-    for (let i = 0; i < 48 && !best; i++) {
-      const rows = await this.cdp.evaluate(helpersCall('codexChatRows(true)')) || [];
-      const local = rows.filter(r => !r.host && roots.some(root => pathKey(root) === pathKey(r.workspace)));
-      best = local.find(r => r.id === preferred)
-        || local.reduce((a, b) => ((b.lastUsed || 0) > (a?.lastUsed || 0) ? b : a), null);
-      if (!best) await new Promise(r => setTimeout(r, 250));
-    }
-    if (!best) throw new Error('没有找到最近的会话');
+    if (await this.cdp.evaluate(helpersCall('codexThread()'))) return;
+    const state = await this.waitFor('agentStartupState("codex")', 250);
+    if (!state) throw new Error('Codex 项目与会话尚未就绪，请重试');
+    if (state.login || state.thread) return;
+    const local = state.rows.filter(r => !r.host && state.roots.some(root => pathKey(root) === pathKey(r.workspace)));
+    const best = local.find(r => r.id === preferred)
+      || local.reduce((a, b) => ((b.lastUsed || 0) > (a?.lastUsed || 0) ? b : a), null);
+    if (!best) return;
     if (!await this.selectCodexThread(best.id)) throw new Error('没有找到最近的会话');
     this.threadId = best.id;
     this.publishThread();
@@ -88,6 +84,7 @@ export const adapter = {
           list.push({
             id: `thread:${owner.pageId}:${row.id}`,
             title: row.title,
+            titleNative: row.titleNative, titleAt: row.titleAt,
             lastUsed: row.lastUsed,
             window: folder || owner.title,
             workspace: row.workspace, host: row.host,
@@ -175,6 +172,12 @@ export const adapter = {
   async submitPrompt(now, busy, when, queued, mentions) {
     const hasLocalFiles = mentions?.some(m => m.section === 'local-files');
     const facts = await this.cdp.evaluate(helpersCall('codexFacts()'));
+    const beforeReceipt = await this.cdp.evaluate(helpersCall('codexReceiptRows()'));
+    const expected = (await this.cdp.evaluate(helpersCall('codexPromptText()')) || '').trim();
+    const beforeMessages = new Set(beforeReceipt.map(item => item.id));
+    const beforeQueue = new Set((facts?.queued || []).map(item => item.id));
+    const nativeReceipt = this.sendNativeReceipt;
+    const receiptThread = this.threadId, receiptCdp = this.cdp, receiptScope = this.selectionKey();
     const view = facts?.view;
     const follow = view?.follow || 'queue';
     queued = !!busy && (when === 'queue' || (!when && follow === 'queue'));
@@ -215,6 +218,14 @@ export const adapter = {
     const prompt = await this.cdp.evaluate(helpersCall('codexPromptText()'));
     const afterFacts = hasLocalFiles ? await this.cdp.evaluate(helpersCall('codexFacts()')) : null;
     if (prompt || (hasLocalFiles && afterFacts?.hasDraftAttachments !== false)) throw new Error('Codex 未接受发送，草稿已保留');
+    const accepted = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return { thread: h.codexThread(), messages: h.codexReceiptRows(), queued: h.codexFacts()?.queued || [] }; })()`);
+    if (expected && this.cdp === receiptCdp && this.selectionKey() === receiptScope && (!receiptThread || accepted.thread === receiptThread)) {
+      const messages = accepted.messages.filter(item => !beforeMessages.has(item.id)
+        && !item.nativeIds?.some(id => beforeQueue.has(id)) && item.t.trim() === expected);
+      const pending = accepted.queued.filter(item => !beforeQueue.has(item.id) && item.t.trim() === expected);
+      if (nativeReceipt && messages.length + pending.length === 1) Object.assign(nativeReceipt, messages.length
+        ? { messageId: messages[0].i } : { queueId: pending[0].id, ...(pending[0].messageId ? { messageId: pending[0].messageId } : {}) });
+    }
     if (busy && !queued) this.emit({ t: 'status', ok: true, msg: '已追加到当前任务' });
     return queued;
   },
@@ -264,11 +275,17 @@ mergeCodexItems(chat) {
   if (!this.itemCache) this.itemCache = new Map();
   const prev = this.itemCache.get(thread) || [];
   const rows = new Map(prev.map(it => [it.i, it]));
+  const partial = new Set(prev.partialTurns || []);
+  for (const turn of chat._completeTurns || []) partial.delete(turn);
+  for (const turn of chat._partialTurns || []) partial.add(turn);
+  delete chat._completeTurns; delete chat._partialTurns;
+  let tailOrder = Math.max(0, ...prev.map(it => it.order || 0), ...chat.items.map(it => it.order || 0));
   if (chat.capacityPresent === false) {
     for (const [id, it] of rows) if (it.syntheticCapacity) rows.delete(id);
   }
   for (const [index, { buttonsRead, ...it }] of chat.items.entries()) {
     const old = rows.get(it.i);
+    if (!Number.isFinite(it.order)) it.order = Number.isFinite(old?.order) ? old.order : ++tailOrder;
     // A stored turn has no footer DOM; a mounted turn is authoritative, including removal.
     const keepButtons = buttonsRead === false && it.k === 'assistant' && old?.k === 'assistant'
       && it.completed === true && old.completed === true && it.t === old.t && old.b?.length
@@ -286,7 +303,20 @@ mergeCodexItems(chat) {
     if (buttons.length !== it.b.length) rows.set(id, { ...it, b: buttons.map(button => button.label),
       ...(it.actions ? { actions: buttons.map(button => button.action) } : {}) });
   }
-  chat.items = [...rows.values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).slice(-400);
+  const ordered = [...rows.values()].sort((a, b) => a.order - b.order);
+  const turns = [...new Set(ordered.map(it => Math.floor(it.order / 10000)))].slice(-32);
+  const retained = ordered.filter(it => turns.includes(Math.floor(it.order / 10000)));
+  const anchors = new Set(retained.filter(it => it.k === 'human' || it.syntheticCapacity));
+  for (const turn of turns) {
+    const final = retained.findLast(it => Math.floor(it.order / 10000) === turn && it.k === 'assistant' && it.completed);
+    if (final) anchors.add(final);
+  }
+  const details = new Set(retained.filter(it => !anchors.has(it)).slice(-400));
+  chat.items = retained.filter(it => {
+    if (anchors.has(it) || details.has(it)) return true;
+    partial.add(Math.floor(it.order / 10000)); return false;
+  });
+  chat.items.partialTurns = [...partial].filter(turn => turns.includes(turn));
   chat.earlier = this.codexEarlier(chat.items);
   if (!chat.busy) chat.items.filter(it => it.k === 'thinking').forEach(it => { it.live = false; });
   if (!chat.busy) chat.items.filter(it => it.k === 'tool' && !it.keep).forEach(it => { it.done = true; });
@@ -333,7 +363,8 @@ async checkCodexLogin() {
   return true;
 },
 
-codexEarlier(items) {
+codexEarlier(items, partial = items.partialTurns?.length > 0) {
+  if (partial) return true;
   const turns = [...new Set(items.map(it => Math.floor((it.order ?? Infinity) / 10000)))].sort((a, b) => a - b);
   return !turns.length || turns[0] !== 1 || turns.some((n, i) => !Number.isFinite(n) || (i > 0 && n !== turns[i - 1] + 1));
 },
@@ -867,6 +898,7 @@ async codexRenameThread(agentId, name) {
     if (beforeThread && beforeThread !== convId) await this.selectCodexThread(beforeThread, cdp);
     if (own) { this.lastChatAt = 0; await this.pollChat(); }
     await this.listAgents();
+  publishSessionChange('codex', convId, { action: 'rename', title: next });
     this.emit({ t: 'status', ok: true, msg: '已重命名会话' });
   } finally {
     if (!own) { try { cdp.close(); } catch {} }
@@ -938,6 +970,8 @@ async codexArchiveThread(agentId) {
     }
     const fusion = this.noteFusionRemoved(convId);
     await this.listAgents();
+    if (target.action === 'Delete chat') removeLibrarySession('codex', convId);
+    publishSessionChange('codex', convId, { action: target.action === 'Delete chat' ? 'delete' : 'archive' });
     this.emit({ t: 'codexArchived', id: agentId, action: target.action });
     this.emit({ t: 'status', ok: true, msg: fusion ? '会话已移除，请重新选择' : (target.action === 'Delete chat' ? '已删除' : '已归档') });
   } catch (e) {

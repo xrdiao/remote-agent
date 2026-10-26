@@ -1,16 +1,20 @@
 // Watch transcript mutations instead of waiting for the next periodic read.
+import { cdpRead } from '../cdp.mjs';
+import { PAGE_SRC } from '../page/build.mjs';
+
 export async function watchChat(cdp, changed) {
   const name = '__remoteChat' + crypto.randomUUID().replaceAll('-', '');
   let stopped = false;
+  const receive = event => { if (!stopped && event.name === name) changed(); };
+  try {
   await cdp.send('Runtime.enable');
   await cdp.send('Runtime.addBinding', { name });
-  cdp.on('Runtime.bindingCalled', event => {
-    if (!stopped && event.name === name) changed();
-  });
+  cdp.on('Runtime.bindingCalled', receive);
   await cdp.evaluate(`(() => {
     const name = ${JSON.stringify(name)};
-    const doc = document.getElementById('active-frame')?.contentDocument || document;
-    const rows = '[data-turn-key], [data-flat-index], [data-message-kind], [data-acp-msg-index], [role="log"][aria-label="Session transcript"], [role="group"][aria-label$="message"]';
+    let doc, native, observer;
+    const state = { timer: 0, stop: null };
+    const rows = '[data-turn-key], [data-flat-index], [data-message-kind], [data-acp-msg-index], [role="log"][aria-label="Session transcript"], [role="group"][aria-label$="message"], [aria-label^="Preview queued message"], [data-response-annotation-conversation]';
     const capacityRetry = node => {
       const el = node.nodeType === 1 ? node : node.parentElement;
       if (!el) return false;
@@ -25,20 +29,42 @@ export async function watchChat(cdp, changed) {
       const el = node.nodeType === 1 ? node : node.parentElement;
       return !!el && (!!el.closest(rows) || (descendants && !!el.querySelector(rows)));
     };
-    const state = { timer: 0, observer: null };
-    state.observer = new MutationObserver(records => {
-      if (state.timer || !records.some(record => inTranscript(record.target) || capacityRetry(record.target)
-        || [...record.addedNodes, ...record.removedNodes].some(node => inTranscript(node, true) || capacityRetry(node)))) return;
-      state.timer = setTimeout(() => { state.timer = 0; window[name](''); }, 250);
-    });
-    state.observer.observe(doc.body, { subtree: true, childList: true, characterData: true });
+    const changed = () => {
+      doc.defaultView.__remoteAgentChatRevision = (doc.defaultView.__remoteAgentChatRevision || 0) + 1;
+      if (!state.timer) state.timer = setTimeout(() => { state.timer = 0; native?.refresh(); window[name](''); }, 250);
+    };
+    const bind = () => {
+      const next = document.getElementById('active-frame')?.contentDocument || document;
+      if (next === doc) return;
+      observer?.disconnect(); native?.stop();
+      doc = next;
+      native = (${PAGE_SRC}).watchCodexData(changed);
+      observer = new MutationObserver(records => {
+        if (records.some(record => inTranscript(record.target) || capacityRetry(record.target)
+          || [...record.addedNodes, ...record.removedNodes].some(node => inTranscript(node, true) || capacityRetry(node)))) changed();
+      });
+      observer.observe(doc.body, { subtree: true, childList: true, characterData: true, attributes: true,
+        attributeFilter: ['data-turn-key', 'data-active', 'data-response-annotation-conversation', 'aria-expanded', 'aria-disabled', 'disabled'] });
+      changed();
+    };
+    const outer = new MutationObserver(bind);
+    outer.observe(document.body, { subtree: true, childList: true });
+    document.addEventListener('load', bind, true);
+    state.stop = () => { observer?.disconnect(); native?.stop(); outer.disconnect(); document.removeEventListener('load', bind, true); clearTimeout(state.timer); };
+    bind();
     window[name + 'Watch'] = state;
   })()`);
-  return () => {
+  } catch (error) {
+    cdpRead.run(null, stop);
+    throw error;
+  }
+  return stop;
+  function stop() {
     stopped = true;
+    if (cdp.handlers.get('Runtime.bindingCalled') === receive) cdp.handlers.delete('Runtime.bindingCalled');
     return cdp.evaluate(`(() => {
       const key = ${JSON.stringify(name + 'Watch')}, state = window[key];
-      if (state) { state.observer.disconnect(); clearTimeout(state.timer); delete window[key]; }
+      if (state) { state.stop(); delete window[key]; }
     })()`).then(() => cdp.send('Runtime.removeBinding', { name })).catch(() => {});
-  };
+  }
 }

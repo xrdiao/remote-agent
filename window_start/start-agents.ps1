@@ -91,7 +91,7 @@ function Resolve-DesktopExe([string]$Path, [string]$Executable) {
   return $null
 }
 
-$apps = @(
+$agentConfigs = @(
   @{
     Name = 'Cursor'
     Executable = 'Cursor.exe'
@@ -144,7 +144,7 @@ $apps = @(
 
 $failed = 0
 $pending = @()
-foreach ($app in $apps) {
+foreach ($app in $agentConfigs) {
   $key = $app.Name.ToLower()
   if ($want.Count -and $want -notcontains $key) { continue }
   Write-Host ""

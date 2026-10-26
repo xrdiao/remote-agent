@@ -10,6 +10,8 @@ import { listWindows, codexWindows, codexFolder } from '../windows.mjs';
 import { CDP_URL, DEVIN_CDP_URL, CODEX_CDP_URL, EDITORS } from '../config.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { fusionProject } from '../fusion/state.mjs';
+import { trackProjectWindow, storedProjectSession } from '../project-windows.mjs';
+import { sessionId } from '../../lib/session-library.mjs';
 
 export function safeHomePath(input) {
   const home = fs.realpathSync(os.homedir());
@@ -231,11 +233,12 @@ export const methods = {
 
     }
     if (!target) throw new Error('应用尚未打开所选项目，请检查电脑上的窗口');
+    trackProjectWindow(app, target, real, newWindow);
     this.switchingThread = true;
     try {
       if (this.windowId !== (app === 'codex' ? target.id : `${app}:${target.id}`) || !this.cdp)
         await this.attach({ id: `${app}:${target.id}`, threadId, projectSwitch: true });
-      this.pendingProject = { ...this.pendingProject, root: real, app, windowId: this.windowId, newSession, threadId, title };
+      this.pendingProject = { ...this.pendingProject, root: real, app, windowId: this.windowId, newSession, threadId, title, reopening: newWindow && !!threadId };
       if (await this.checkProjectTrust()) return;
       if (app === 'codex' && !await this.ensureCodexReady(target, newSession)) return;
       if (this.pendingProject?.trust) return;
@@ -368,6 +371,14 @@ export const methods = {
       await this.adoptCodexThread(pending.threadId, '已切换项目与会话');
     }
     if (this.app !== 'codex' && pending.threadId) {
+      if (this.app === 'cursor' && pending.reopening) {
+        let ready = false;
+        for (let i = 0; i < 100 && !ready; i++) {
+          ready = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; const id = ${JSON.stringify(pending.threadId)}; return h.activeThread() === id || h.agentList().some(row => row.id === id); })()`);
+          if (!ready) await new Promise(resolve => setTimeout(resolve, 150));
+        }
+        if (!ready) throw new Error('项目已打开，会话列表尚未恢复，请稍后重试');
+      }
       const current = await this.cdp.evaluate(helpersCall('activeThread()'));
       if (current !== pending.threadId.replace(/^tab:/, '')) await this.adapter.openAgent.call(this, pending.threadId, pending.title || '');
       else if (this.threadId !== current) {
@@ -399,6 +410,7 @@ export const methods = {
     const roots = await this.currentRoots();
     if (!roots.some(w => !w.host && fusionProject(w.root)?.id === fusionProject(pending.root)?.id)) throw new Error('会话工作目录与所选项目不一致');
     this.pendingProject = null;
+    this.bindingReady = true;
     this.emit({ t: 'projectReady', path: pending.root, name: path.basename(pending.root), newSession: pending.newSession, sel: this.selectionKey(), chat });
     this.emit({ t: 'status', ok: true, msg: pending.newSession ? '已在所选项目新建会话' : `已打开 ${path.basename(pending.root)}` });
     if (pending.newSession) await this.listAgents(true);
@@ -414,7 +426,7 @@ export const methods = {
     if (this.selectedThread !== undefined) this.selectedThread = this.threadId || '';
     const msg = {
       t: 'attached', id: this.targetId, title: this.app === 'codex' ? 'Codex' : this.winTitle, app: this.app, appName: this.appMessage('{app}'),
-      project: this.projectName(), windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(), keepQuota: true,
+      project: this.projectName(), windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(), keepQuota: true, ready: this.bindingReady !== false,
     };
     this.emit(msg);
     this.emit({ t: 'thread', windowId: msg.windowId, threadId: msg.threadId, sel: msg.sel });
@@ -422,7 +434,7 @@ export const methods = {
   },
   async listAgents(silent = false, readOnly = false, projectWindow = '', checkTrust = false) {
     if ((!readOnly || checkTrust) && !projectWindow && await this.checkProjectTrust({ prompt: true })) return;
-    const cdp = this.cdp, sel = this.sel, app = this.app;
+    const cdp = this.cdp, sel = this.sel, app = this.app, selection = this.selectionKey();
     const grouped = app === 'cursor' || app === 'devin';
     if (grouped) {
       this.projectAgentWindows ||= new Map();
@@ -450,19 +462,19 @@ export const methods = {
           if (!this.liveRead(cdp, sel)) return;
           this.projectAgentCache.set(w.id, data);
         } finally { probe.close(); }
-        return this.emit({ t: 'agents', app, silent: true, list: this.projectAgentRows() });
+        return this.emit({ t: 'agents', app, sel: selection, silent: true, list: this.projectAgentRows() });
       }
     }
     const emit = data => {
       if (!this.liveRead(cdp, sel)) return;
       if (grouped) {
         if (data.partial) {
-          const remaining = (this.projectAgentCache.get(this.targetId)?.list || []).filter(a => a.id.startsWith('pick:'));
-          data = { ...data, list: [...data.list, ...remaining.filter(a => !data.list.some(b => b.title === a.title))] };
+          const remaining = (this.projectAgentCache.get(this.targetId)?.list || []).filter(a => a.picker);
+          data = { ...data, list: [...data.list, ...remaining.filter(a => !data.list.some(b => b.id.replace(/^tab:/, '') === a.id))] };
         }
         this.projectAgentCache.set(this.targetId, data);
       }
-      this.emit({ t: 'agents', app, silent, ...data, list: grouped ? this.projectAgentRows() : data.list || [] });
+      this.emit({ t: 'agents', app, sel: selection, silent, ...data, list: grouped ? this.projectAgentRows() : data.list || [] });
     };
     return this.adapter.listAgents.call(this, silent, readOnly, emit);
   },
@@ -498,6 +510,8 @@ export const methods = {
     return list;
   },
   async openAgent(id, title = '') {
+    const stored = storedProjectSession(this.app, id);
+    if (stored?.dormant) return this.useProject(stored.workspace, false, sessionId(this.app, id), title);
     if ((this.app === 'cursor' || this.app === 'devin') && (id.startsWith('project:') || id.startsWith('project-new:'))) {
       const [kind, encodedWindow, encodedThread] = id.split(':');
       const window = decodeURIComponent(encodedWindow);

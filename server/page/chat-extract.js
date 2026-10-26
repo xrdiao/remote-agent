@@ -170,35 +170,115 @@
   const codexTurnData = el => codexFiberProps(el.querySelector('[class*="agent-activity"]') || el.querySelector('button[aria-expanded]') || el, 40).find(p => p.turn)?.turn;
   // Current Codex list entries keep only IDs; their live items remain in the history atoms.
   const codexHistoryScopes = () => new Set(codexRootProps().flatMap(p => typeof p.value?.values === 'function' ? [...p.value.values()] : []).filter(v => v?.familyBindings));
+  const codexHistoryBinding = (scope, binding) => {
+    const ref = binding?.value;
+    if (typeof ref?.get === 'function' && typeof ref.subscribe === 'function')
+      return { key: ref, get: () => ref.get(), subscribe: changed => ref.subscribe(changed) };
+    if (!ref) return null;
+    for (let owner = scope; owner; owner = owner.parent) {
+      const atom = owner.cachedBindings?.get(ref) || owner.signalBindings?.get(ref);
+      if (!atom?.read) continue;
+      const store = owner.store;
+      return { key: atom, get: () => store.get(atom), subscribe: changed => store.sub(atom, changed) };
+    }
+    return null;
+  };
+  const codexHistoryState = () => {
+    const thread = codexThread(), scopes = codexHistoryScopes();
+    const hostId = codexChatRows(true).find(row => row.id === thread)?.host || 'local';
+    const key = JSON.stringify({ hostId, threadId: thread });
+    let index = null;
+    const atoms = new Map(), turns = new Map(), queued = new Map();
+    for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
+      const source = codexHistoryBinding(scope, bindings.get(key));
+      const value = source?.get();
+      if (Array.isArray(value) && value.some(turn => turn?.entityKey && turn.turnId)) index ||= value;
+      for (const [name, binding] of bindings) if (typeof name === 'string' && thread && name.includes(thread)) {
+        const source = codexHistoryBinding(scope, binding);
+        if (!source) continue;
+        atoms.set(source.key, source);
+        const value = source.get();
+        for (const turn of value?.conversationTurns || []) if (turn.turnId && Array.isArray(turn.items)) turns.set(turn.turnId, turn);
+        for (const entry of value?.visibleTurnEntries || []) if (entry.turnId && Array.isArray(entry.turn?.items)) turns.set(entry.turnId, entry.turn);
+        if (Array.isArray(value)) for (const item of value) if (typeof item?.id === 'string' && typeof item.text === 'string' && item.clientUserMessageId) queued.set(item.id, item);
+      }
+    }
+    const entries = (index || []).map((turn, n) => ({ conversationId: thread, historyEntityKey: turn.entityKey,
+      turnId: turn.turnId, turnKey: 'history-content:turn:' + turn.turnId, turnNumber: n + 1,
+      isLatestTurn: n === index.length - 1, turnItemIds: [], metadata: turn, nativeTurn: turns.get(turn.turnId) }));
+    for (const entry of entries.slice(-2)) for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
+      const source = codexHistoryBinding(scope, bindings.get(entry.historyEntityKey));
+      if (!source) continue;
+      const value = source.get();
+      if (value?.turnId === entry.turnId || Array.isArray(value) || Array.isArray(value?.entries) && Number.isFinite(value.length)) atoms.set(source.key, source);
+      if (Array.isArray(value?.entries) && Number.isFinite(value.length)) entry.turnItemIds = value.entries.map(item => item.itemId);
+    }
+    for (const entry of entries.slice(-2)) {
+      const ids = new Set([entry.turnItemIds[0], ...entry.turnItemIds.slice(-400)]);
+      for (const scope of scopes) for (const bindings of scope.familyBindings.values()) for (const id of ids) {
+        const source = codexHistoryBinding(scope, bindings.get(JSON.stringify([entry.historyEntityKey, id])));
+        if (source) atoms.set(source.key, source);
+      }
+    }
+    return { thread, scopes, entries, atoms, queued: [...queued.values()], indexed: index !== null };
+  };
+  const chatRevision = () => doc.defaultView.__remoteAgentChatRevision || 0;
+  const watchCodexData = changed => {
+    const subscribed = new Map();
+    let stopped = false, pending = false;
+    const update = () => {
+      changed();
+      if (!pending) { pending = true; queueMicrotask(() => { pending = false; if (!stopped) refresh(); }); }
+    };
+    const refresh = () => {
+      const state = codexHistoryState(), wanted = new Map();
+      for (const [key, source] of state.atoms) wanted.set(key, () => source.subscribe(update));
+      for (const scope of state.scopes) if (scope.contextVersionAtom && typeof scope.store?.sub === 'function')
+        wanted.set(scope, () => scope.store.sub(scope.contextVersionAtom, update));
+      const cache = codexQueryClient()?.getQueryCache();
+      if (cache) wanted.set(cache, () => cache.subscribe(event => {
+        const key = JSON.stringify(event.query?.queryKey || []);
+        if (key.includes(state.thread) || key.includes('queued-follow-ups') || key.includes('recent-conversations-meta')) update();
+      }));
+      for (const [source, stop] of subscribed) if (!wanted.has(source)) { stop(); subscribed.delete(source); }
+      for (const [source, start] of wanted) if (!subscribed.has(source)) subscribed.set(source, start());
+    };
+    refresh();
+    return { refresh, stop() { stopped = true; for (const stop of subscribed.values()) stop(); subscribed.clear(); } };
+  };
   const codexUserText = content => {
     const text = content.filter(c => c.type === 'text').map(c => c.text).join('\n');
     const wrapper = /^# Context from my IDE setup:\r?\n(?=[\s\S]*^## (?:Active file|Open tabs|Active selection of the file):)[\s\S]*?^## My request:\r?\n/m.exec(text);
     return wrapper?.index === 0 ? text.slice(wrapper[0].length).replace(/\r?\n$/, '') : text;
   };
   const codexStoredTurn = (entry, scopes = codexHistoryScopes(), patchesOnly = false) => {
-    const first = entry.turnItemIds?.[0];
-    if (!first || !entry.historyEntityKey) return null;
+    if (!entry.historyEntityKey) return null;
     const itemKey = id => JSON.stringify([entry.historyEntityKey, id]);
-    let metadata, itemBindings, slots, matchedItems = 0;
+    let metadata = entry.nativeTurn, itemBindings, slots, itemTypes = [], matchedItems = 0, availableItems = 0;
+    const nativeItems = new Map((entry.nativeTurn?.items || []).map(item => [item.id, item]));
     for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
       const atom = bindings.get(entry.historyEntityKey)?.value;
       const value = typeof atom?.get === 'function' ? atom.get() : null;
-      if (value?.turnId === entry.turnId) metadata = value;
+      if (!metadata && value?.turnId === entry.turnId) metadata = value;
+      if (Array.isArray(value) && value.some(item => item?.itemId && item.type)) itemTypes = value;
       if (Array.isArray(value?.entries) && Number.isFinite(value.length)) slots = value;
-      const item = bindings.get(itemKey(first))?.value;
-      if (typeof item?.get === 'function' && item.get()?.id === first) {
-        const count = entry.turnItemIds.filter(id => bindings.get(itemKey(id))?.value?.get?.()?.id === id).length;
-        if (count > matchedItems) { itemBindings = bindings; matchedItems = count; }
-      }
     }
-    if (!metadata || !itemBindings) return null;
+    const ids = slots ? [...slots.entries].sort((a, b) => a.index - b.index).map(e => e.itemId) : entry.turnItemIds || [];
+    for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
+      const count = ids.filter(id => bindings.get(itemKey(id))?.value?.get?.()?.id === id).length;
+      if (count > matchedItems) { itemBindings = bindings; matchedItems = count; }
+    }
+    if (!metadata) return null;
     const complete = metadata.status === 'complete' || metadata.status === 'completed';
-    const ids = slots ? [...slots.entries].sort((a, b) => a.index - b.index).map(e => e.itemId) : entry.turnItemIds;
-    const items = ids.flatMap(id => {
-      const item = itemBindings.get(itemKey(id))?.value?.get();
-      if (!item || (patchesOnly && item.type !== 'fileChange')) return [];
+    const items = ids.flatMap((id, index) => {
+      const native = nativeItems.get(id) || itemBindings?.get(itemKey(id))?.value?.get();
+      const item = native || (index === 0 && itemTypes.find(item => item.itemId === id)?.type === 'userMessage' && Array.isArray(metadata.params?.input) && metadata.params.input.length > 0
+        ? { type: 'userMessage', id, clientId: metadata.params.clientUserMessageId, content: metadata.params.input } : null);
+      if (!item) return [];
+      availableItems++;
+      if (patchesOnly && item.type !== 'fileChange') return [];
       const done = complete || !!metadata.agentMessageCompletedAtMsById?.[id];
-      if (item.type === 'userMessage') return { type: 'user-message', clientUserMessageId: item.clientId || item.id,
+      if (item.type === 'userMessage') return { type: 'user-message', clientUserMessageId: item.clientId || item.id, nativeIds: [...new Set([item.id, item.clientId].filter(Boolean))],
         message: codexUserText(item.content || []),
         images: (item.content || []).filter(c => c.type === 'image' || c.type === 'localImage'), sentAtMs: metadata.turnStartedAtMs };
       if (item.type === 'agentMessage') return { type: 'assistant-message', responseAnnotationTargetId: item.id, content: item.text, phase: item.phase, completed: done };
@@ -212,12 +292,16 @@
       if (item.type === 'webSearch') return { type: 'web-search', id: item.id, query: item.query };
       if (item.type === 'contextCompaction') return { type: 'context-compaction', id: item.id, source: item.source, status: complete ? 'completed' : 'inProgress' };
       return [];
-    });
+    }).map(item => ({ ...item, sourceIndex: slots?.entries.find(slot => slot.itemId === (item.callId || item.responseAnnotationTargetId || item.id || item.nativeIds?.[0]))?.index }));
+    const partial = slots && (slots.entries.length < slots.length || availableItems < slots.entries.length);
     items.push({ type: 'worked-for', startedAtMs: metadata.turnStartedAtMs,
       completedAtMs: complete && Number.isFinite(metadata.durationMs) ? metadata.turnStartedAtMs + metadata.durationMs : null });
-    return { status: complete ? 'complete' : metadata.status, items };
+    return { status: complete ? 'complete' : metadata.status, items, partial };
   };
   const codexLatestEntry = el => {
+    const state = codexHistoryState(), latest = state.entries.at(-1);
+    const stored = latest && codexStoredTurn(latest, state.scopes);
+    if (stored) return { ...latest, turn: stored };
     if (!el) return null;
     const props = codexFiberProps(el, 32);
     const thread = codexThread();
@@ -239,15 +323,21 @@
     return { id: el?.getAttribute('data-turn-key') || '', ids: rows.map(e => e.getAttribute('data-turn-key')), user: user?.message || '', text: reply?.content || '', completed: turn?.status === 'complete' && !!reply?.completed, items: el ? codexTurnItems(el) : [] };
   };
   // One Codex turn can contain several markdown blocks. Keep them in order instead of keeping only the first reply.
-  const codexTurnItems = (el, entry = null) => {
+  const codexTurnItems = (el, entry = null, limit = 0) => {
     const thread = codexThread();
     const blocks = el ? [...el.querySelectorAll('[class*="MarkdownRoot"]')] : [];
     const out = [];
     const turn = entry?.turn || codexTurnData(el);
-    const markdown = new Map(blocks.map(block => [codexFiberProps(block).find(p => p.item?.type === 'assistant-message')?.item?.responseAnnotationTargetId, block]));
+    const markdown = new Map(blocks.map(block => {
+      const item = codexFiberProps(block).find(p => p.item?.type === 'assistant-message')?.item;
+      return [item?.responseAnnotationTargetId, { block, content: item?.content }];
+    }));
     const textOf = v => typeof v === 'string' ? v.replace(/\u00a0/g, ' ').trim() : '';
     const finished = turn?.status === 'complete';
-    for (const item of turn?.items || []) {
+    const source = turn?.items || [], lastReply = source.findLast(item => item.type === 'assistant-message' && item.phase !== 'commentary');
+    for (const [sourceIndex, item] of source.entries()) {
+      if (limit && sourceIndex < source.length - limit && item.type !== 'user-message' && item !== lastReply) { turn.partial = true; continue; }
+      const start = out.length;
       const id = `${thread}:${item.type}:${item.sourceItemId || item.callId || item.responseAnnotationTargetId || item.clientUserMessageId || item.id || ''}`;
       if (item.type === 'context-compaction') {
         const automatic = item.source !== 'manual';
@@ -270,9 +360,12 @@
         let t = item.message || '';
         if (imgs) t += `${t ? '\n' : ''}[图片 ${imgs}]`;
         if (atts) t += `${t ? '\n' : ''}[附件 ${atts}]`;
-        out.push({ i: id, k: 'human', t, ...(images.length ? { images } : {}), ...(item.sentAtMs ? { sentAt: item.sentAtMs } : {}) });
+        if (!t.trim() && !imgs && !atts) continue;
+        const nativeIds = item.nativeIds || [item.clientUserMessageId, item.sourceItemId, item.id].filter(Boolean);
+        out.push({ i: id, k: 'human', t, ...(nativeIds.length ? { nativeIds } : {}), ...(images.length ? { images } : {}), ...(item.sentAtMs ? { sentAt: item.sentAtMs } : {}) });
       } else if (item.type === 'assistant-message' && item.content) {
-        const block = markdown.get(item.responseAnnotationTargetId);
+        const rendered = markdown.get(item.responseAnnotationTargetId);
+        const block = rendered?.content === item.content ? rendered.block : null;
         if (item.phase === 'commentary') out.push({ i: id, k: 'thinking', t: `工作过程\n${item.content}`, live: !item.completed });
         else out.push({ i: id, k: 'assistant', t: item.content, completed: item.completed, h: block ? clean(block) : esc(item.content).replace(/\n/g, '<br>') });
       } else if (item.type === 'exec') {
@@ -314,6 +407,7 @@
         const body = textOf(item.content || item.message || item.query || item.title);
         if (body) out.push({ i: id, k: 'tool', kind: 'other', src: 'codex', t: body.slice(0, 400), capacity: CAPACITY_ERROR.test(body), done: finished && /exec|patch|command/.test(item.type) });
       }
+      for (const row of out.slice(start)) row.sourceIndex = item.sourceIndex ?? sourceIndex;
     }
     const turnButtons = el ? [
       ...buttonsIn(el, false),
@@ -330,7 +424,31 @@
       if (buttons.length) { host.b = buttons; host.btnItem = el.getAttribute('data-turn-key') || host.i; }
     }
     const number = entry?.turnNumber || codexFiberProps(el, 24).find(p => p.entry?.turnNumber)?.entry.turnNumber;
-    return out.map((item, index) => ({ ...item, ...(number ? { order: number * 10000 + index } : {}) }));
+    return out.map(({ sourceIndex, ...item }, index) => ({ ...item, ...(number ? { order: number * 10000 + (sourceIndex ?? index) } : {}) }));
+  };
+  const codexHistoryPage = (before, known = [], details = false) => {
+    const state = codexHistoryState(), seen = new Set(known), items = [];
+    const end = Number.isFinite(before) ? before : Infinity;
+    const mounted = new Map([...doc.querySelectorAll('[data-turn-key]')].map(el => [el.getAttribute('data-turn-key'), el]));
+    let earlier = false, head = null, visible = 0;
+    outer: for (const entry of [...state.entries].reverse()) {
+      if (entry.turnNumber * 10000 >= end) continue;
+      const turn = codexStoredTurn(entry, state.scopes);
+      if (!turn || turn.partial) throw new Error('这段历史尚未载入完整，请稍后重试');
+      const el = mounted.get(entry.turnKey);
+      const rows = codexTurnItems(el || null, { ...entry, turn });
+      for (const item of [...rows].reverse()) {
+        if (item.order >= end || seen.has(item.i)) continue;
+        if (visible === 80) { earlier = true; break outer; }
+        items.push(item);
+        if (details || item.k !== 'tool' || !item.done || item.keep) visible++;
+        head = rows.find(row => row.k === 'human' && row.order <= item.order) || null;
+      }
+    }
+    items.reverse();
+    const cursor = items[0]?.order ?? before;
+    if (head && !seen.has(head.i) && !items.some(item => item.i === head.i)) items.unshift(head);
+    return { thread: state.thread, items, before: cursor, earlier };
   };
   /* ---------- Devin transcript rows ---------- */
 
@@ -549,18 +667,28 @@
     }
     return capacity;
   };
-  const extract = () => {
+  const codexReceiptRows = () => {
+    const state = codexHistoryState();
+    return state.entries.slice(-2).flatMap(entry => (codexStoredTurn(entry, state.scopes)?.items || [])
+      .filter(item => item.type === 'user-message').map(item => ({ id: item.nativeIds?.[0] || item.clientUserMessageId, i: `${state.thread}:user-message:${item.clientUserMessageId}`, nativeIds: item.nativeIds, t: item.message })));
+  };
+  const extract = (history = false) => {
     const imagePreview = codexImagePreview();
     const log = devinLog();
     const panel = log || (devinSurface() ? null : findPanel());
+    const state = !log && !devinSurface() ? codexHistoryState() : null;
     const initialCapacity = !panel && !log ? codexCapacityItem() : null;
+    const nativeTail = state?.entries.slice(-2).flatMap(entry => {
+      const turn = codexStoredTurn(entry, state.scopes);
+      return turn ? [{ ...entry, turn }] : [];
+    }) || [];
     // A brand-new Devin session has a composer and model chip, but no message list yet.
-    if (!panel && !log && !initialCapacity) {
+    if (!panel && !log && !initialCapacity && !nativeTail.length) {
       const pendingCodexRequests = !devinSurface() ? codexRequestData() : [];
       const modelEl = modelButton();
       if (!modelEl && !hasComposer() && !devinSurface() && !doc.querySelector('[data-request-input-dismiss]')) return null;
       return {
-        rect: [0, 0, 0, 0],
+        _revision: chatRevision(), rect: [0, 0, 0, 0],
         items: [],
         capacityPresent: false,
         ...(imagePreview ? { imagePreview: true } : {}),
@@ -584,22 +712,40 @@
         ...(codexFacts()?.view ? { codex: codexFacts().view } : {}),
       };
     }
-    if (!panel && !log && initialCapacity) {
+    if (!panel && !log && initialCapacity && !nativeTail.length) {
       delete initialCapacity._retry;
       return {
-        rect: [0, 0, 0, 0], items: [initialCapacity], global: [], busy: isBusy(), queued: queued(),
+        _revision: chatRevision(), rect: [0, 0, 0, 0], items: [initialCapacity], global: [], busy: isBusy(), queued: queued(),
         subagents: subagents(), changed: changedCount(), questions: { codex: true, requests: codexRequestData() },
         readonly: !hasComposer(), model: agentModelName(), permission: permissionLabel(), effort: effortName(),
         capacityPresent: true, thread: activeThread(),
         ...(imagePreview ? { imagePreview: true } : {}), ...(codexFacts()?.view ? { codex: codexFacts().view } : {}),
       };
     }
-    const r = (log || panel).getBoundingClientRect();
+    const r = (log || panel)?.getBoundingClientRect() || { x: 0, y: 0, width: 0, height: 0 };
+    const partialTurns = new Set(), completeTurns = new Set();
+    const collect = (el, entry) => {
+      const turn = entry?.turn;
+      const rows = codexTurnItems(el, entry, history ? 0 : 400);
+      const number = entry?.turnNumber;
+      if (number) (turn?.partial ? partialTurns : completeTurns).add(number);
+      return rows;
+    };
     const codexId = log ? '' : codexThread();
     const pendingCodexRequests = !log && !devinSurface() && !codexId ? codexRequestData() : null;
     const bubbleTimes = (!log && !codexId) ? cursorBubbleTimes() : null;
-    const items = log ? devinItems(log) : topItems(panel).flatMap(el => {
-      if (el.hasAttribute?.('data-turn-key')) return codexTurnItems(el);
+    const items = log ? devinItems(log) : (panel ? topItems(panel) : []).flatMap(el => {
+      if (el.hasAttribute?.('data-turn-key')) {
+        const key = el.getAttribute('data-turn-key');
+        const entry = state?.entries.find(entry => entry.turnKey === key);
+        const stored = entry && codexStoredTurn(entry, state.scopes);
+        const visible = codexTurnData(el);
+        const keyOf = item => `${item.type}:${item.sourceItemId || item.callId || item.responseAnnotationTargetId || item.clientUserMessageId || item.id || ''}`;
+        const combined = new Map((visible?.items || []).map(item => [keyOf(item), item]));
+        for (const item of stored?.items || []) combined.set(keyOf(item), { ...combined.get(keyOf(item)), ...item });
+        const turn = stored ? { ...visible, ...stored, items: [...combined.values()] } : visible;
+        return collect(el, entry ? { ...entry, turn } : null);
+      }
       const thoughts = thinkingInside(el).map((th, n) => thinkingItem(th, el, n));
       if (isThinking(el)) return thoughts.length ? thoughts : [thinkingItem(el, el, 0)];
       const main = messageItem(el);
@@ -611,23 +757,15 @@
       return [...thoughts, ...(main.k === 'tool' ? cursorToolItems(el) : [main])];
     });
     const capacity = codexCapacityItem();
-    const global = buttonsIn(panel, true).filter(x => !inItem(x.el) && !inQn(x.el) && x.el !== capacity?._retry && !x.el.hasAttribute('data-request-input-dismiss') && !/^stop generation\b/i.test(x.label)
-      && !(panel.querySelector('[data-turn-key]') && /^(stop|stop generating|停止)$/i.test(x.label))).map(x => x.label);
+    const global = (panel ? buttonsIn(panel, true) : []).filter(x => !inItem(x.el) && !inQn(x.el) && x.el !== capacity?._retry && !x.el.hasAttribute('data-request-input-dismiss') && !/^stop generation\b/i.test(x.label)
+      && !(panel?.querySelector('[data-turn-key]') && /^(stop|stop generating|停止)$/i.test(x.label))).map(x => x.label);
     const modeEl = [...doc.querySelectorAll('.composer-unified-dropdown[data-mode]')].find(vis);
     const modelEl = modelButton();
-    const latestTurn = [...panel.querySelectorAll('[data-turn-key]')].filter(vis).at(-1);
-    const latestEntry = codexId && codexLatestEntry(latestTurn);
-    const entries = codexId && latestTurn ? codexFiberProps(latestTurn, 32).find(p => Array.isArray(p.entries))?.entries : null;
-    const mountedIndex = entries?.findIndex(entry => entry.turnKey === latestTurn.getAttribute('data-turn-key')) ?? -1;
-    if (mountedIndex >= 0) {
-      const scopes = codexHistoryScopes();
-      for (const entry of entries.slice(mountedIndex + 1)) {
-        if (entry.conversationId !== codexId) continue;
-        const turn = entry.turn || (entry.turnKey === latestEntry?.turnKey ? latestEntry.turn : null) || codexStoredTurn(entry, scopes);
-        if (turn) items.push(...codexTurnItems(null, { ...entry, turn }));
-      }
-    } else if (latestEntry?.turn && latestEntry.turnKey !== latestTurn?.getAttribute('data-turn-key')) {
-      items.push(...codexTurnItems(null, latestEntry));
+    const latestTurn = panel && [...panel.querySelectorAll('[data-turn-key]')].filter(vis).at(-1);
+    const latestEntry = nativeTail.at(-1) || (codexId && codexLatestEntry(latestTurn));
+    for (const entry of nativeTail) {
+      const rows = collect(null, entry), ids = new Set(items.map(item => item.i));
+      items.push(...rows.filter(item => !ids.has(item.i)));
     }
     if (capacity && !items.some(item => item.i === capacity.i)) {
       capacity.order = Math.max(0, ...items.map(item => item.order || 0)) + 1;
@@ -654,6 +792,8 @@
     if (!generation && bubbleTimes?.generation) generation = bubbleTimes.generation;
     return {
       rect: [r.x, r.y, r.width, r.height].map(Math.round),
+      _revision: chatRevision(),
+      ...(codexId ? { _partialTurns: [...partialTurns], _completeTurns: [...completeTurns].filter(number => !partialTurns.has(number)) } : {}),
       ...(imagePreview ? { imagePreview: true } : {}),
       ...(generation ? { generation } : {}),
       capacityPresent: !!capacity,

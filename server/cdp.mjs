@@ -1,3 +1,7 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+// A window switch cancels only reads running in the previous binding's scope.
+export const cdpRead = new AsyncLocalStorage();
 
 export class Cdp {
   constructor(wsUrl) {
@@ -13,14 +17,19 @@ export class Cdp {
   // would wait forever and stall the session's whole command queue.
   connect(timeoutMs = 10000) {
     return new Promise((resolve, reject) => {
+      const signal = cdpRead.getStore();
+      signal?.throwIfAborted();
       const ws = new WebSocket(this.wsUrl);
       this.ws = ws;
       let opened = false;
-      const timer = setTimeout(() => { try { ws.close(); } catch {} reject(new Error(`CDP connect timeout: ${this.wsUrl}`)); }, timeoutMs);
-      ws.onopen = () => { opened = true; clearTimeout(timer); resolve(); };
-      ws.onerror = () => { if (!opened) { clearTimeout(timer); reject(new Error(`CDP connect failed: ${this.wsUrl}`)); } };
+      const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', cancel); };
+      const cancel = () => { cleanup(); reject(signal.reason); try { ws.close(); } catch {} };
+      const timer = setTimeout(() => { cleanup(); try { ws.close(); } catch {} reject(new Error(`CDP connect timeout: ${this.wsUrl}`)); }, timeoutMs);
+      signal?.addEventListener('abort', cancel, { once: true });
+      ws.onopen = () => { opened = true; cleanup(); resolve(); };
+      ws.onerror = () => { if (!opened) { cleanup(); reject(new Error(`CDP connect failed: ${this.wsUrl}`)); } };
       ws.onclose = () => {
-        if (!opened) { clearTimeout(timer); reject(new Error(`CDP connect failed: ${this.wsUrl}`)); return; }
+        if (!opened) { cleanup(); reject(new Error(`CDP connect failed: ${this.wsUrl}`)); return; }
         for (const { reject } of this.pending.values()) reject(new Error('CDP closed'));
         this.pending.clear();
         this.onclose?.();
@@ -32,7 +41,7 @@ export class Cdp {
           this.pending.delete(msg.id);
           msg.error ? reject(new Error(msg.error.message)) : resolve(msg.result);
         } else if (msg.method) {
-          this.handlers.get(msg.method)?.(msg.params);
+          cdpRead.run(null, () => this.handlers.get(msg.method)?.(msg.params));
         }
       };
     });
@@ -40,15 +49,19 @@ export class Cdp {
 
   send(method, params = {}, timeoutMs = 15000) {
     return new Promise((resolve, reject) => {
+      const signal = cdpRead.getStore();
+      signal?.throwIfAborted();
       const id = ++this.nextId;
-      const timer = setTimeout(() => {
-        if (this.pending.delete(id)) reject(new Error('CDP 调用超时: ' + method));
-      }, timeoutMs);
+      const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', cancel); };
+      const fail = error => { if (this.pending.delete(id)) { cleanup(); reject(error); } };
+      const cancel = () => fail(signal.reason);
+      const timer = setTimeout(() => fail(new Error('CDP 调用超时: ' + method)), timeoutMs);
       this.pending.set(id, {
-        resolve: v => { clearTimeout(timer); resolve(v); },
-        reject: e => { clearTimeout(timer); reject(e); },
+        resolve: v => { cleanup(); resolve(v); },
+        reject: e => { cleanup(); reject(e); },
       });
-      this.ws.send(JSON.stringify({ id, method, params }));
+      signal?.addEventListener('abort', cancel, { once: true });
+      try { this.ws.send(JSON.stringify({ id, method, params })); } catch (error) { fail(error); }
     });
   }
 

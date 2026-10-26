@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { Cdp } from './cdp.mjs';
+import { Cdp, cdpRead } from './cdp.mjs';
 import { listWindows, codexWindows } from './windows.mjs';
 import { CODEX_CDP_URL } from './config.mjs';
 import { PAGE_SRC, helpersCall } from './page/build.mjs';
@@ -12,6 +12,9 @@ import { ROUTES, SKIP, flag } from './routes.mjs';
 import { chatForWire } from './chat-images.mjs';
 import { watchChat } from './agent/updates.mjs';
 import { AGENT_REGISTRY } from './apps/index.mjs';
+import { sessionRows } from '../lib/session-library.mjs';
+import { catalogSessions, touchProjectWindow } from './project-windows.mjs';
+import { leaseWindow, windowOperationLocked } from './window-use.mjs';
 import {visualCapture, visualWindows, wayland} from './visual/capture.mjs';
 
 export class Session extends AgentContext {
@@ -35,7 +38,7 @@ export class Session extends AgentContext {
 
   async setMode(mode) {
     const watchGeneration = this.chatWatchGeneration = (this.chatWatchGeneration || 0) + 1;
-    this.chatUpdatesStop?.();
+    cdpRead.run(null, () => this.chatUpdatesStop?.());
     this.chatUpdatesStop = null;
     if (this.mode === 'screen' && mode !== 'screen') this.stopVisual();
     this.mode = mode === 'screen' || mode === 'terminal' ? mode : 'chat';
@@ -59,14 +62,14 @@ export class Session extends AgentContext {
       if (this.chatWatchGeneration !== watchGeneration || this.cdp !== cdp || this.mode !== 'chat') { stop(); return; }
       this.chatUpdatesStop = stop;
       this.lastChat = '';
-      this.chatTimer = setInterval(() => this.pollChat().catch(() => {}), 700);
+      this.chatTimer = cdpRead.run(null, () => setInterval(() => this.pollChat().catch(() => {}), 700));
       await this.pollChat();
     } else if (this.mode === 'terminal') {
       await this.editorCdp.send('Page.stopScreencast').catch(() => {});
       this.lastTermHash = undefined;
       await this.pollTerminal();
       if (this.chatWatchGeneration !== watchGeneration || this.mode !== 'terminal') return;
-      this.termTimer = setInterval(() => this.pollTerminal().catch(() => {}), 250);
+      this.termTimer = cdpRead.run(null, () => setInterval(() => this.pollTerminal().catch(() => {}), 250));
     }
   }
 
@@ -89,6 +92,12 @@ export class Session extends AgentContext {
   stopVisual() { visualCapture.unsubscribe(this); }
 
   emit(obj) {
+    if (cdpRead.getStore()?.aborted) return;
+    if (obj?.t === 'agents') {
+      const app = obj.app || this.app;
+      obj = { ...obj, list: sessionRows(app, catalogSessions(app, obj.list || [], this.windowId)) };
+      this.sessionEntries = new Map(obj.list.filter(row => !row.ui).map(row => [row.id, { ...row, app: obj.app || this.app }]));
+    }
     if (obj?.t === 'attached' && !obj.closed && AGENT_REGISTRY[obj.app]?.capabilities) {
       obj = { ...obj, capabilities: AGENT_REGISTRY[obj.app].capabilities };
       if (obj.app === 'fusion') obj.sideCapabilities = Object.fromEntries(Object.entries(AGENT_REGISTRY)
@@ -100,7 +109,12 @@ export class Session extends AgentContext {
       if (this.chatBySel.size > 12) this.chatBySel.delete(this.chatBySel.keys().next().value);
       obj = { ...obj, chat: chatForWire(obj.chat) };
     }
+    if (obj?.t === 'historyPage') obj = { ...obj, items: chatForWire({ items: obj.items }).items };
     if (this.client.readyState === 1) this.client.send(JSON.stringify(obj), obj?.t === 'frame' ? { compress: false } : undefined);
+  }
+
+  liveRead(cdp, sel) {
+    return !cdpRead.getStore()?.aborted && super.liveRead(cdp, sel);
   }
 
   // Asks Cursor's own Cmd+P index where a bare file name lives, then closes the picker again.
@@ -165,8 +179,7 @@ export class Session extends AgentContext {
     const editorCdp = new Cdp(editorWs);
     const cdp = chatWs ? new Cdp(chatWs) : editorCdp;
     // A phone-launched app lands on its most recent session, not the remembered thread.
-    // Peek only: the marker is consumed where openDefaultSession actually runs, so a
-    // failed attach does not burn the one-shot launch flag.
+    // Keep the marker until startup and the first chat read complete successfully.
     const launchDefault = this.launchDefault = selection.initial === true && hasLaunched(win.app);
     let thread = '';
     let trust;
@@ -186,6 +199,7 @@ export class Session extends AgentContext {
     this.clearViewState();
     this.editorCdp = editorCdp;
     this.cdp = cdp;
+    this.bindingReady = false;
     this.windowId = selection.windowId;
     if (win.app === 'codex') this.codexPageId = selection.windowId;
     this.threadId = thread;
@@ -222,7 +236,7 @@ export class Session extends AgentContext {
     this.selectedThread = this.threadId;
     const attached = () => this.emit({
       t: 'attached', id: win.id, title: this.app === 'codex' ? 'Codex' : win.title, app: win.app,
-      appName: this.appMessage('{app}'), project: this.projectName(), windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(), plans: appPlans, initial: selection.initial === true,
+      appName: this.appMessage('{app}'), project: this.projectName(), windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(), plans: appPlans, initial: selection.initial === true, ready: this.bindingReady === true,
     });
     if (trust.required) {
       attached();
@@ -232,8 +246,9 @@ export class Session extends AgentContext {
     }
     const restore = !selection.deferred && selection.threadId && selection.threadId !== this.threadId && !launchDefault;
     const recoverInitial = win.app === 'codex' && selection.initial === true && !thread;
+    const startup = !selection.deferred && (launchDefault || recoverInitial);
     if (restore) this.threadId = this.selectedThread = selection.threadId;
-    if (recoverInitial || (restore && selection.initial)) attached();
+    if (startup || (restore && selection.initial)) attached();
     if (restore) {
       try {
         const id = win.app === 'codex' ? `thread:${this.codexPageId}:${selection.threadId}` : selection.threadId;
@@ -243,17 +258,39 @@ export class Session extends AgentContext {
         this.emit({ t: 'status', ok: false, msg: error.message });
       }
       if (this.cdp !== cdp) return;
-    } else if ((launchDefault && takeLaunched(win.app)) || recoverInitial) {
-      try { await this.adapter.openDefaultSession?.call(this); }
-      catch (error) {
-        if (recoverInitial) this.emit({ t: 'chat', sel: this.selectionKey(), chat: null });
-        this.emit({ t: 'status', ok: false, msg: error.message });
+    } else if (startup) {
+      const pending = this.startupPending = {};
+      try {
+        await this.adapter.openDefaultSession?.call(this);
+        if (!await this.waitFor(`agentStartupState(${JSON.stringify(win.app)}, true)`, 250)) throw new Error('会话输入区尚未就绪，请重试');
+        cdpRead.getStore()?.throwIfAborted();
+        this.startupPending = null;
+        this.bindingReady = true;
+        attached();
+        await this.setMode(this.mode);
+        for (let i = 0; this.mode === 'chat' && !this.lastChat && i < 40; i++) {
+          await new Promise(resolve => setTimeout(resolve, 120));
+          cdpRead.getStore()?.throwIfAborted();
+          await this.pollChat(true);
+        }
+        if (this.mode === 'chat' && !this.lastChat) throw new Error('当前会话尚未就绪，请重试');
+        if (launchDefault) takeLaunched(win.app);
+        this.prefetchMenus().catch(() => {});
       }
-      if (this.cdp !== cdp) { this.launchDefault = true; return; }
+      catch (error) {
+        if (this.startupPending === pending || !this.startupPending) {
+          this.startupPending = null;
+          this.detach();
+        }
+        throw error;
+      }
+      return;
     } else if (win.app === 'cursor' && this.threadId && !await this.cdp.evaluate(helpersCall('panelRect()')).catch(() => null)) {
       try { await this.adapter.openAgent.call(this, this.threadId); } catch {}
     }
-    if (!recoverInitial && !(restore && selection.initial)) attached();
+    this.bindingReady = !this.startupPending;
+    attached();
+    if (this.startupPending) return;
     this.setMode(this.mode).then(() => {
       if (this.cdp === cdp && !selection.deferred) this.prefetchMenus().catch(() => {});
     }).catch(e => this.emit({ t: 'status', ok: false, msg: e.message }));
@@ -281,6 +318,7 @@ export class Session extends AgentContext {
   // actions that type/tap, and is switched off again shortly after they finish.
 
   detach() {
+    this.bindingReady = false;
     this.desktopSettingsOwned = undefined;
     this.desktopSettingsSection = '';
     this.codexSettingsCdp?.close();
@@ -288,7 +326,7 @@ export class Session extends AgentContext {
     this.codexSettingsEditor = null;
     this.codexSettingsReturn = '';
     this.chatWatchGeneration = (this.chatWatchGeneration || 0) + 1;
-    this.chatUpdatesStop?.();
+    cdpRead.run(null, () => this.chatUpdatesStop?.());
     this.chatUpdatesStop = null;
     this.stopVisual();
     clearTimeout(this.focusTimer);
@@ -300,11 +338,13 @@ export class Session extends AgentContext {
     this.awaitingAck = null;
     const connections = new Set([this.cdp, this.editorCdp]);
     this.cdp = this.editorCdp = null;
-    for (const cdp of connections) {
-      if (cdp) cdp.send('Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {})
-        .then(() => cdp.send('Page.stopScreencast').catch(() => {}))
-        .finally(() => cdp.close());
-    }
+    cdpRead.run(null, () => {
+      for (const cdp of connections) {
+        if (cdp) cdp.send('Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {})
+          .then(() => cdp.send('Page.stopScreencast').catch(() => {}))
+          .finally(() => cdp.close());
+      }
+    });
   }
 
   async refreshViewport() {
@@ -381,13 +421,19 @@ export class Session extends AgentContext {
   }
 
   async handle(msg) {
+    const target = msg.id?.startsWith('project:') ? decodeURIComponent(msg.id.split(':')[1]) : msg.id?.startsWith('thread:') ? msg.id.split(':')[1] : this.windowId;
+    if (windowOperationLocked(this.app, target, this)) throw new Error('窗口正在批量处理会话，请稍后操作');
+    const release = leaseWindow(this.app, this.windowId, this);
+    if (!['ping', 'visible', 'usage', 'agents', 'connAgents', 'windows', 'sessionLibrary', 'sessionActions'].includes(msg.t)) touchProjectWindow(this.app, this.windowId);
+    try {
     const route = ROUTES[msg.t];
     if (route?.pre) {
       const r = await route.pre(this, msg);
       if (r !== SKIP) return r;
     }
     const readOnly = flag(route?.readOnly, this, msg);
-    return readOnly ? this.dispatch(msg) : this.withFocus(() => this.dispatch(msg));
+    return await (readOnly ? this.dispatch(msg) : this.withFocus(() => this.dispatch(msg)));
+    } finally { release(); }
   }
 
   async dispatch(msg) {

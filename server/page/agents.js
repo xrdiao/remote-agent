@@ -30,6 +30,46 @@
   };
   const historyRows = () => [...doc.querySelectorAll(`${ITEM_SEL}, [data-acp-msg-index]`)]
     .map(el => el.getAttribute('data-acp-msg-index') ?? el.getAttribute('data-turn-key') ?? el.getAttribute('data-flat-index') ?? el.getAttribute('data-message-kind') + ':' + (el.textContent || '').slice(0, 80)).join('|');
+  const historyPosition = restore => {
+    let el = devinLog() ? devinScroller() : findPanel();
+    while (el && el !== doc.body) {
+      if (/auto|scroll/.test(getComputedStyle(el).overflowY) && el.scrollHeight > el.clientHeight) {
+        if (restore) el.scrollTop = restore.top;
+        return { top: el.scrollTop };
+      }
+      el = el.parentElement;
+    }
+    return null;
+  };
+  const projectWindowProbe = () => {
+    if (!window.__remoteWindowInput) {
+      window.__remoteWindowInput = { at: 0 };
+      for (const type of ['pointerdown', 'keydown', 'wheel', 'input']) document.addEventListener(type, e => { if (e.isTrusted) window.__remoteWindowInput.at = Date.now(); }, { passive: true, capture: true });
+    }
+    const terms = [...new Set([...document.querySelectorAll('.xterm-wrapper, .terminal-wrapper')].map(el => el.xterm).filter(Boolean))];
+    const terminalBusy = terms.some(term => {
+      if (devinSurface() && term.options.disableStdin) return false;
+      const detector = (term._addonManager?._addons || []).map(a => a.instance || a).find(a => a.capabilities)?.capabilities.get(2);
+      return !detector || !!detector.currentCommand?.commandExecutedMarker;
+    });
+    let states = agentStates();
+    const nativeSessions = window.__acpStore?.getState().acp.sessions;
+    if (nativeSessions) {
+      const root = window.vscode?.context?.configuration?.()?.workspace?.uri?.path;
+      const open = new Set(devinTabs().map(t => t.id));
+      open.add(activeThread());
+      states = states.filter(s => open.has(s.thread) || nativeSessions.some(record => record.sessionId === s.thread && record.cwd === root));
+    }
+    return { ready: !!window.vscode?.context?.configuration?.()?.workspace || hasComposer(),
+      focused: document.hasFocus(), dirty: !!document.querySelector('.tab.dirty, .tab[aria-label*="unsaved" i]'),
+      dialog: [...document.querySelectorAll('[role="dialog"][aria-modal="true"], [role="alertdialog"], .monaco-dialog-box, .quick-input-widget')].some(vis),
+      terminalBusy: terminalBusy || !!document.querySelector('.statusbar-item .codicon-modifier-spin'),
+      agentKnown: hasComposer() || !!states?.length,
+      agentBusy: states?.some(s => s.busy || s.waiting || s.progress > 0) || !!composerDraft() || !!(codexThread() && (codexCapacityItem() || codexRequestData().length))
+        || !!window.__SSG_COMPOSER_PROVIDER__?.getStates?.().some(s => s.state === 'generating')
+        || !!nativeSessions?.some(s => s.sessionId === activeThread() && ['active', 'pending', 'canceling'].includes(s.status)),
+      lastInput: window.__remoteWindowInput.at };
+  };
   const waitHistoryRows = async (before, timeout = 400) => {
     const deadline = performance.now() + timeout;
     let previous = before, stable = 0;
@@ -165,6 +205,7 @@
     return uri ? { root: uri.fsPath || uri.path, host: uri.scheme === 'file' ? '' : uri.authority.replace(/^ssh-remote\+/, '') } : null;
   };
   const agentList = () => {
+    const names = new Map((cursorSessionServices()?.data.allComposersData.allComposers || []).map(c => [c.composerId, c.name]));
     const active = [...doc.querySelectorAll('[data-glass-agent-id]')].find(vis)?.getAttribute('data-glass-agent-id') || '';
     const recentProjects = cursorProjectPicker()?.recentProjects || [];
     const cursor = [...doc.querySelectorAll('[data-sidebar-item-key^="row:"]')].map(row => {
@@ -177,7 +218,9 @@
       const group = row.closest('[data-sidebar-group]')?.querySelector('[data-sidebar-group-label]')?.textContent.trim() || '';
       return {
         id,
-        title: title.slice(0, 80),
+        title: (names.get(id) || title).slice(0, 80),
+        titleNative: names.has(id),
+        titleAt: Date.now(),
         group,
         repository,
         workspace: workspace?.root || '',
@@ -189,11 +232,12 @@
     if (cursor.length) return cursor;
     const tabs = [...doc.querySelectorAll('.tab[data-resource-name]')].filter(t => t.querySelector('.composer-tab-label'));
     const loaded = window.__SSG_COMPOSER_PROVIDER__?.getStates?.() || [];
+    const archived = new Set((tabs.length || loaded.length ? cursorSessionServices()?.data.allComposersData.allComposers || [] : []).filter(c => c.isArchived).map(c => c.composerId));
     const focused = loaded.find(c => c.state === 'focused')?.id;
     if (tabs.length || loaded.length) return [...new Map([
       ...loaded.map(c => [c.id, { id: c.id, title: c.title || '新会话', current: c.state === 'focused', running: c.state === 'generating', workspace: '', host: '', group: '' }]),
       ...tabs.map(t => [t.dataset.resourceName, { id: t.dataset.resourceName, title: t.querySelector('.label-name')?.textContent || '新会话', current: focused ? t.dataset.resourceName === focused : t.classList.contains('active'), workspace: '', host: '', group: '' }]),
-    ]).values()];
+    ]).values()].filter(row => !archived.has(row.id)).map(row => ({ ...row, title: names.get(row.id) || row.title, titleNative: names.has(row.id), titleAt: Date.now() }));
     // Read the native session id; titles can repeat or change.
     const lis = [...doc.querySelectorAll('li[data-slot="sidebar-menu-item"]')].map(li => {
       const btn = li.querySelector('button[aria-label]');
@@ -205,7 +249,9 @@
       return {
         id: session.sessionId,
         workspace: session.cwd || '',
-        title: title.slice(0, 80),
+        title: (session.title || title).slice(0, 80),
+        titleNative: !!session.title,
+        titleAt: Date.now(),
         group: '',
         current: slot?.getAttribute('data-active') === 'true',
         running: ['active', 'pending', 'canceling'].includes(session.status),
@@ -231,6 +277,20 @@
     });
     const seen = new Set(lis.map(a => a.id));
     return [...lis, ...welcome.filter(a => !seen.has(a.id))];
+  };
+  const agentStartupState = (app, inputReady = false) => {
+    if (app === 'codex') {
+      const client = codexQueryClient();
+      const recent = client?.getQueryData(['recent-conversations-meta', 'updated_at', '[]', 'live']);
+      const workspace = client?.getQueryData(['vscode', 'workspace-root-options', '{"hostId":"local"}']);
+      if (codexNeedsLogin()) return { login: true, rows: [], roots: [], thread: '' };
+      if (!hasComposer() || !Array.isArray(recent) || !workspace) return null;
+      return { rows: codexChatRows(true), roots: workspace.roots || [], thread: codexThread() };
+    }
+    const rows = agentList(), surface = app === 'devin' ? devinSurface() : null;
+    if (inputReady && (!hasComposer() || !modelButton())) return null;
+    if (!rows.length && !hasComposer() && !control('newChat') && !(surface === 'editor' && sessionSearchTarget())) return null;
+    return { rows, surface, thread: activeThread(), items: (extract() || {}).items?.length || 0 };
   };
   const agentTarget = (id, click = false) => {
     if (id && activeThread() === id) return true;
