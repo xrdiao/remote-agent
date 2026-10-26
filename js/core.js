@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v240'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v244'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false, failures = 0;
 let windowReady = false;
@@ -40,6 +40,7 @@ const setAgentList = (key, list) => { agentLists.delete(key); agentLists.set(key
 const agentListKey = () => (currentComputer()?.key || '') + ':' + currentApp + (currentApp === 'cursor' ? ':' + (currentComputer()?.windowId || currentWindow || '') : '');
 function receiveAgents(m) {
   if (m.app && m.app !== currentApp) return;
+  if (m.sel && m.sel !== viewSel) return;
   const key = agentListKey();
   const previous = agentLists.get(key) || [];
   const previousById = new Map(previous.map(a => [a.id, a]));
@@ -50,12 +51,13 @@ function receiveAgents(m) {
     return { ...a, ...running, title: a.title || old?.title || '未命名会话' };
   });
   if (m.partial) {
-    const remaining = (agentLists.get(key) || []).filter(a => String(a.id).startsWith('pick:'));
-    list = [...list, ...remaining.filter(a => !list.some(b => b.title === a.title))];
+    const remaining = (agentLists.get(key) || []).filter(a => a.picker);
+    list = [...list, ...remaining.filter(a => !list.some(b => agentThreadKey(b) === agentThreadKey(a)))];
   }
   const changed = JSON.stringify(agentLists.get(key)) !== JSON.stringify(list);
   if (changed) setAgentList(key, list);
   if (!m.silent) finishPending(['正在读取 Agent 列表…', '正在归档…']);
+  if (sheetKind === 'agent-actions') return;
   if (sheetKind === 'agents' && !changed) return;
   if (!m.silent || (sheetKind === 'agents' && changed)) {
     finishPending(['正在读取 Agent 列表…', '正在归档…']);
@@ -101,8 +103,10 @@ function fitViewport() {
   if (!vv) return;
   const focused = /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
   const keyboard = !!focused && (vv.offsetTop > 0 || vv.height < window.innerHeight - 80);
+  const wasKeyboard = document.body.classList.contains('kb');
   const key = `${keyboard}:${Math.round(vv.height)}:${Math.round(vv.offsetTop)}`;
   if (key !== vvApplied) {
+    if ((keyboard || wasKeyboard) && typeof noteChatLayoutChange === 'function') noteChatLayoutChange();
     vvApplied = key;
     document.body.style.height = keyboard ? Math.round(vv.height) + 'px' : '';
     document.body.style.transform = keyboard ? `translateY(${Math.max(0, Math.round(vv.offsetTop))}px)` : '';
@@ -112,7 +116,11 @@ function fitViewport() {
     const input = $('text');
     const overflow = Math.max(0, input.closest('footer').getBoundingClientRect().bottom - vv.height - Math.max(0, vv.offsetTop));
     const available = input.offsetHeight + $('listWrap').clientHeight - 72 - overflow;
-    document.body.style.setProperty('--composer-max-height', Math.max(52, Math.floor(Math.min(vv.height * .28, available))) + 'px');
+    const maxHeight = Math.max(52, Math.floor(Math.min(vv.height * .28, available))) + 'px';
+    if (document.body.style.getPropertyValue('--composer-max-height') !== maxHeight) {
+      if (typeof noteChatLayoutChange === 'function') noteChatLayoutChange();
+      document.body.style.setProperty('--composer-max-height', maxHeight);
+    }
     const room = input.closest('footer').getBoundingClientRect().top - document.querySelector('header').getBoundingClientRect().bottom
       - $('sessBar').offsetHeight - $('actionBar').offsetHeight - 16;
     document.body.style.setProperty('--question-max-height', Math.max(0, Math.floor(room)) + 'px');
@@ -120,6 +128,7 @@ function fitViewport() {
     document.body.style.removeProperty('--composer-max-height');
     document.body.style.removeProperty('--question-max-height');
   }
+  if (wasKeyboard && !keyboard && typeof endComposerEditing === 'function') endComposerEditing();
   if (stickOnKeyboard && isFollowingBottom()) requestChatScroll();
 }
 window.addEventListener('resize', fitViewport);
@@ -190,8 +199,10 @@ function finishPending(list) {
 }
 
 function send(obj) {
+  obj.sel ??= viewSel;
   if (obj.t === 'attach') {
     conn.loaded = false;
+    if (conn.active) conn.readyRedirect = true;
     setWindowReady(false);
     status('正在切换窗口…');
     const name = {cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion'}[String(obj.id || '').split(':')[0]];

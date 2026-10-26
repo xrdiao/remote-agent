@@ -789,6 +789,9 @@ body:not(.chatmode) #inputHistory, body:not(.term) #termHistory { display: none;
   #send { padding: 0 12px 0 14px; }
 }
 
+/* Idle drafts keep the tools visible while the text uses at most two lines. */
+body.composeIdle.chatmode #text { max-height: calc(2.9em + 12px); overflow-y: hidden; }
+
 /* Compact composer: the empty idle chat composer collapses to a one-line pill
    [#add][#text][#mic|#stop] so the conversation gets the vertical room back. */
 body.composeCompact.chatmode .composerBox {

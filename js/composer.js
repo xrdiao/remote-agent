@@ -24,12 +24,7 @@ function echoTextMatches(it, t) {
     || s.replace(/(?:^|\n)\[(?:图片|附件) \d+\](?:\n\[(?:图片|附件) \d+\])*$/, '').trim() === x;
 }
 function pushEcho(requestId, text, kind) {
-  // Right after a sel switch lastChat can still be the previous conversation; counting its
-  // matching items would leave a stale `before` that the new chat can never exceed.
-  const selThread = viewSel.split('|').pop() || '';
-  const sameChat = selThread ? lastChat?.thread === selThread : !lastChat?.thread;
-  const before = sameChat ? (lastChat?.items || []).filter(it => it.k === 'human' && echoTextMatches(it, text)).length : 0;
-  pendingEchoes.push({ requestId, text, kind, at: Date.now(), sel: viewSel, before });
+  pendingEchoes.push({ requestId, text, kind, at: Date.now(), sel: viewSel });
   queueChatRender();
 }
 let inputRevision = 0;
@@ -41,13 +36,23 @@ function sendReceipt(value) {
     clearTimeout(draftPushTimer);
     draftEpoch = requestId;
   }
-  pendingSends.set(requestId, { draft: activeDraft, text: value, computer: currentComputer()?.id || '', mode, version: draftVersions.get(activeDraft) || 0, revision: inputRevision,
-    ...(mode === 'chat' ? { scope: messageScope(), thread: lastChat?.thread || '', before: new Set((lastChat?.items || []).filter(it => it.k === 'human').map(it => it.i)) } : {}) });
+  const targetThread = viewSel.split('|').pop() || '';
+  const candidate = queuedChat?.sel === viewSel ? queuedChat.chat : lastChat;
+  const latest = candidate?.thread === targetThread ? candidate : null;
+  pendingSends.set(requestId, { requestId, draft: activeDraft, text: value, computer: currentComputer()?.id || '', mode, version: draftVersions.get(activeDraft) || 0, revision: inputRevision,
+    ...(mode === 'chat' ? { scope: messageScope(), thread: targetThread, before: new Set((latest?.items || []).filter(it => it.k === 'human').map(it => it.i)),
+      beforeQueues: new Set((latest?.queued || []).map(it => it.id)), queuedSameText: (latest?.queued || []).filter(it => echoTextMatches(it, value)).length } : {}) });
   return { requestId, draft: activeDraft, draftEpoch };
 }
 function confirmSent(m) {
   const echo = pendingEchoes.find(p => p.requestId === m.requestId);
-  if (echo) { echo.confirmed = true; if (m.queued !== undefined) echo.kind = m.queued ? 'queue' : 'chat'; queueChatRender(); }
+  if (echo) {
+    echo.confirmed = true;
+    if (m.messageId) echo.messageId = m.messageId;
+    if (m.queueId) echo.queueId = m.queueId;
+    if (m.queued !== undefined) echo.kind = m.queued ? 'queue' : 'chat';
+    queueChatRender();
+  }
   const sent = pendingSends.get(m.requestId);
   if (!sent) return;
   pendingSends.delete(m.requestId);
@@ -64,7 +69,7 @@ function confirmSent(m) {
   }
   if (sent.mode === 'chat') {
     if (!m.queued) rememberAgentMessageTime(sent.thread, m.sentAt || Date.now());
-    submittedMessages.push({ ...sent, sentAt: m.sentAt || Date.now() });
+    submittedMessages.push({ ...sent, messageId: m.messageId, queueId: m.queueId, sentAt: m.sentAt || Date.now() });
     if (here && lastChat) queueChatRender();
   }
 }
@@ -84,15 +89,39 @@ function reconcileSent(chat) {
   const matched = new Set();
   for (const [requestId, sent] of pendingSends) {
     if (sent.mode !== 'chat' || sent.scope !== messageScope() || (sent.thread && sent.thread !== chat.thread)) continue;
-    const item = chat.items.find(it => it.k === 'human' && !matched.has(it.i) && !messageTimes.has(generationKey(chat) + '|' + it.i) && !sent.before.has(it.i) && echoTextMatches(it, sent.text));
-    if (item) { matched.add(item.i); confirmSent({ requestId, sel: viewSel, queued: false, sentAt: item.sentAt || Date.now() }); }
+    if (sent.queuedSameText) continue;
+    const item = chat.items.find(it => receiptMatchesHuman(it, sent) && !matched.has(it.i) && !messageTimes.has(generationKey(chat) + '|' + it.i));
+    if (item) { matched.add(item.i); confirmSent({ requestId, messageId: item.i, sel: viewSel, queued: false, sentAt: item.sentAt || Date.now() }); }
   }
+}
+function receiptMatchesHuman(it, receipt) {
+  if (it.k !== 'human' || receipt.before.has(it.i) || (it.nativeIds || []).some(id => receipt.beforeQueues.has(id))) return false;
+  if (receipt.messageId) return it.i === receipt.messageId;
+  if (receipt.queueId && it.nativeIds?.length) return it.nativeIds.includes(receipt.queueId);
+  return echoTextMatches(it, receipt.text);
+}
+function receiveQueueDone(m) {
+  if (!m.ok || m.sel !== viewSel) return;
+  const removed = new Set();
+  for (const echo of pendingEchoes) {
+    if (echo.sel !== viewSel || !m.echoes.includes(echo.requestId)) continue;
+    if (m.action === 'edit' && currentApp !== 'devin') {
+      echo.text = m.text;
+      const receipt = submittedMessages.find(row => row.requestId === echo.requestId);
+      if (receipt) receipt.text = m.text;
+    } else if (m.action !== 'send') removed.add(echo.requestId);
+  }
+  pendingEchoes = pendingEchoes.filter(row => !removed.has(row.requestId));
+  for (let n = submittedMessages.length - 1; n >= 0; n--) if (removed.has(submittedMessages[n].requestId)) submittedMessages.splice(n, 1);
+  queueChatRender();
 }
 function draftKey() { return [currentComputer()?.id || '', viewSel, mode, ...(questionCompose?.sel === viewSel && mode === 'chat' ? [questionCompose.id] : [])].join('|'); }
 function saveDraft() { if (activeDraft) { drafts.set(activeDraft, text.value); draftMentions.set(activeDraft, MN.mentions.slice()); } }
 function restoreDraft() { endInputRecall(); activeDraft = draftKey(); text.value = drafts.get(activeDraft) || ''; MN.mentions = draftMentions.get(activeDraft)?.slice() || []; MN.value = text.value; mentionHide(); autosize(); }
 function autosize() {
+  const oldHeight = text.offsetHeight;
   text.style.height = 'auto'; text.style.height = text.scrollHeight + 'px'; updateMathPrev(); updateComposeCompact();
+  if (text.offsetHeight !== oldHeight) noteChatLayoutChange();
   if (questionCompose?.sel === viewSel && document.body.classList.contains('kb')) fitViewport();
 }
 function recallInput(direction) {
@@ -277,11 +306,11 @@ function syncMentions(v, event = null) {
 text.addEventListener('select', mentionUpdate);
 document.addEventListener('selectionchange', () => { if (document.activeElement === text) mentionUpdate(); });
 text.addEventListener('focus', () => {
-  stickOnKeyboard = followingChat();
+  stickOnKeyboard = isFollowingBottom();
+  updateComposeCompact();
   fitViewport();
   setTimeout(fitViewport, 60);
   setTimeout(fitViewport, 320);
-  updateComposeCompact();
 });
 text.addEventListener('blur', () => {
   stickOnKeyboard = false;
@@ -315,15 +344,29 @@ function updateSendMode() {
   updateComposeCompact();
 }
 
-/* Compact composer: an empty, unfocused chat composer collapses to a one-line pill so
-   the chat gets the vertical room back. Expanding is immediate on any interaction
-   (focus, typed/restored text, attachments, mentions, recording, fusion welcome);
-   collapsing waits out a 1.5 s grace so the pill never slides while a finger is in
-   transit, and never while the mic is held. */
+/* Idle chat text uses two lines; the existing short-screen empty capsule remains.
+   Both presentations share the same interaction state and collapse delay. */
 let composeCompactTimer = 0, composeExpandedAt = 0, composerEngaged = false;
 function micHeld() { return $('mic')?.classList.contains('on') || (typeof voiceSession !== 'undefined' && !!voiceSession); }
+function micPressing() { return $('mic')?.classList.contains('on') || (typeof voiceSession !== 'undefined' && !!voiceSession?.held); }
+function composeIdleWanted() {
+  const focused = document.activeElement;
+  return mode === 'chat' && focused !== text && !composerEngaged && !composing
+    && !focused?.matches('#qnBar input, #qnBar textarea, #qnBar select')
+    && $('mentionBox').hidden && $('fusionWelcome').hidden
+    && !document.getElementById('imageEditor')?.open && !micHeld();
+}
+function endComposerEditing() {
+  composerEngaged = false;
+  const focused = document.activeElement;
+  if (focused === text || focused?.matches('#qnBar input, #qnBar textarea, #qnBar select')) focused.blur();
+  updateComposeCompact();
+}
+function composerLayoutBusy() {
+  return chatTouching || chatMomentum || chatScrolling || turnNavPointer?.dragging || $('sheet').classList.contains('open');
+}
 // Only where vertical room is scarce, judged by the window's actual shape rather than the reported
-// orientation (foldables disagree on what "portrait" means): a tall phone window keeps the full composer,
+// orientation (foldables disagree on what "portrait" means): a tall phone window keeps its tools,
 // while foldable cover screens (~1.3–1.5 tall:wide), landscape phones, tablets and unfolded inners collapse.
 const composeCompactAllowed = () => window.innerHeight / window.innerWidth < 1.6;
 window.addEventListener('resize', () => updateComposeCompact());
@@ -336,30 +379,47 @@ function composeCompactWanted() {
     && !document.getElementById('imageEditor')?.open
     && !micHeld();
 }
-function setComposeCompact(on) {
-  if (document.body.classList.contains('composeCompact') === on) return;
-  const stick = followingChat();
+function setComposerPresentation(idle, compact) {
+  const oldCompact = document.body.classList.contains('composeCompact');
+  if (oldCompact === compact && document.body.classList.contains('composeIdle') === idle) return;
+  const stick = isFollowingBottom();
   const foot = document.querySelector('footer');
   const h0 = foot.offsetHeight;
-  document.body.classList.toggle('composeCompact', on);
-  if (!on) composeExpandedAt = performance.now();
+  if (idle && !stick && !atBottom()) {
+    const style = getComputedStyle(text);
+    const idleHeight = Math.max(parseFloat(style.minHeight), parseFloat(style.fontSize) * 2.9 + 12);
+    const reduction = compact ? h0 : Math.max(0, text.offsetHeight - idleHeight);
+    if (list.scrollHeight - list.scrollTop - list.clientHeight < reduction) return;
+  }
+  noteChatLayoutChange();
+  document.body.classList.toggle('composeIdle', idle);
+  document.body.classList.toggle('composeCompact', compact);
+  if (oldCompact && !compact) composeExpandedAt = performance.now();
+  if (!idle) autosize();
   const h1 = foot.offsetHeight;
   if (stick) requestChatScroll();
   if (h0 !== h1 && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
     foot.animate([{ height: h0 + 'px', overflow: 'hidden' }, { height: h1 + 'px' }], { duration: 200, easing: 'cubic-bezier(.2,.8,.2,1)' });
   }
 }
+function setComposeCompact(on) { setComposerPresentation(on, on); }
 function updateComposeCompact() {
-  if (composeCompactWanted()) {
-    if (document.body.classList.contains('composeCompact') || composeCompactTimer) return;
+  if (composeIdleWanted()) {
+    if (composerLayoutBusy()) return;
+    const compact = composeCompactWanted();
+    if (document.body.classList.contains('composeIdle') && (!compact || document.body.classList.contains('composeCompact'))) {
+      clearTimeout(composeCompactTimer); composeCompactTimer = 0;
+      setComposerPresentation(true, compact);
+      return;
+    }
+    if (composeCompactTimer) return;
     composeCompactTimer = setTimeout(() => {
       composeCompactTimer = 0;
-      if (composeCompactWanted()) setComposeCompact(true);
+      if (composeIdleWanted() && !composerLayoutBusy()) setComposerPresentation(true, composeCompactWanted());
     }, 1500);
   } else {
     clearTimeout(composeCompactTimer); composeCompactTimer = 0;
-    if (!micHeld()) setComposeCompact(false);
-    // Mic held: defer the flip; updateVoiceButton re-runs this when the gesture ends.
+    if (!micPressing()) setComposerPresentation(false, false);
   }
 }
 // Capture-phase so it runs before controls that re-appear under the same tap.
@@ -390,8 +450,16 @@ document.addEventListener('pointerdown', e => {
   const inside = !!e.target.closest('footer') && !e.target.closest('#send, #sendNow');
   if (inside === composerEngaged) return;
   composerEngaged = inside;
-  if (!document.body.classList.contains('composeCompact')) updateComposeCompact();
+  if (!document.body.classList.contains('composeCompact') && !e.target.closest('#mic')) updateComposeCompact();
 }, true);
+for (const event of ['pointerup', 'keyup']) $('mic').addEventListener(event, () => queueMicrotask(updateComposeCompact));
+document.addEventListener('focusin', e => {
+  if (e.target.matches('#qnBar input, #qnBar textarea, #qnBar select')) updateComposeCompact();
+});
+document.addEventListener('click', e => {
+  if (e.target.closest('footer, #sheet, #shade, #imageEditor, #qnBar input, #qnBar textarea, #qnBar select')) return;
+  endComposerEditing();
+});
 $('fusionProject').onclick = () => { status('正在读取项目…'); send({ t: 'fusionProjects' }); };
 $('fusionA').onclick = () => send({ t: 'fusionSides', side: 'a' });
 $('fusionB').onclick = () => send({ t: 'fusionSides', side: 'b' });
@@ -448,8 +516,8 @@ $('insertNewline').onclick = () => {
 // beforeinput's line-break event often has no shiftKey, so remember it from keydown.
 let composing = false;
 let shiftEnter = false;
-text.addEventListener('compositionstart', () => { endInputRecall(); composing = true; });
-text.addEventListener('compositionend', () => { setTimeout(() => { composing = false; }, 0); });
+text.addEventListener('compositionstart', () => { endInputRecall(); composing = true; updateComposeCompact(); });
+text.addEventListener('compositionend', () => { setTimeout(() => { composing = false; updateComposeCompact(); }, 0); });
 function submitOnEnter(e) {
   if (shiftEnter || e.shiftKey || e.isComposing || composing) return;
   e.preventDefault();
