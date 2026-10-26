@@ -178,28 +178,27 @@ function openComputerEntry(url, current = '') {
   if (inApp) return window.AgentRemoteApp.setUrl(link);
   location.href = link;
 }
-async function resolveBase() {
-  if (info.self) return new URL(discoveryUrl()).origin;
-  const comp = currentComputer();
+async function resolveBase(data = info, comp = currentComputer(), current = () => true) {
+  if (data.self) return new URL(comp?.discovery || discoveryUrl()).origin;
   if (!comp?.key) throw Object.assign(new Error(''), { unpaired: true });
-  if (info.v === 2 && info.data) {
-    try { return await decryptEntry(comp.key, info); }
+  if (data.v === 2 && data.data) {
+    try { return await decryptEntry(comp.key, data); }
     catch { throw offline('这台电脑的地址对不上当前发布的记录，配对还在，可以换一台或稍后重试'); }
   }
-  if (info.v !== 3 || !Array.isArray(info.computers)) throw offline('电脑端还没有发布地址（或还在用旧版本），请在电脑上重启服务');
+  if (data.v !== 3 || !Array.isArray(data.computers)) throw offline('电脑端还没有发布地址（或还在用旧版本），请在电脑上重启服务');
   const id = comp.id || await computerIdFromKey(comp.key);
-  let entry = info.computers.find(c => c.id === id);
+  let entry = data.computers.find(c => c.id === id);
   if (!entry) {
-    for (const c of info.computers) {
+    for (const c of data.computers) {
       try {
         const url = await decryptEntry(comp.key, c);
-        rememberComputer({ ...comp, id: c.id, name: c.name || comp.name || '电脑' });
+        if (current()) rememberComputer({ ...currentComputer(), id: c.id, name: c.name || comp.name || '电脑' });
         return url;
       } catch {}
     }
     throw offline('这台电脑还没有发布地址，请在那台电脑上重启服务');
   }
-  if (!comp.id || (entry.name && entry.name !== comp.name)) rememberComputer({ ...comp, id: entry.id, name: entry.name || comp.name || '电脑' });
+  if (current() && (!comp.id || (entry.name && entry.name !== comp.name))) rememberComputer({ ...currentComputer(), id: entry.id, name: entry.name || comp.name || '电脑' });
   try { return await decryptEntry(comp.key, entry); }
   catch { throw offline('这台电脑的地址对不上当前发布的记录，配对还在，可以换一台或稍后重试'); }
 }
@@ -513,8 +512,20 @@ async function verifyTotp(code) {
   }
 }
 
+let bootGeneration = 0;
 async function boot() {
+  const generation = ++bootGeneration;
+  connGen++;
   offlineGen++;
+  const old = ws;
+  if (authed) {
+    markUploadsDisconnected();
+    failPendingSends('连接已断开，消息未发送，请重试');
+    failFileSave('连接已断开，保存结果未确认，请重试');
+  }
+  ws = null;
+  try { old?.close(); } catch {}
+  clearInterval(pingTimer);
   authed = false;
   clearTimeout(retryTimer);
   // Android browser opened a pairing link: offer to hand it to the installed app instead.
@@ -530,32 +541,55 @@ async function boot() {
     if (saved) saveComputers(loadComputers(), saved.key);
   }
   if (!pending && currentComputer()) connShow('正在查找电脑…');
+  const chosen = currentComputer();
+  const current = () => generation === bootGeneration && currentComputer()?.key === chosen?.key;
+  const discovery = fetch(discoveryUrl() + '?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+  // An existing paired address can authenticate while the published directory refreshes.
+  if (!pending && chosen?.relay && (!entryComputer || entryComputer === chosen.id)) {
+    base = chosen.relay;
+    discovery.then(async data => {
+      const relay = await resolveBase(data, chosen, current);
+      if (!current()) return;
+      info = data;
+      rememberComputer({ ...currentComputer(), relay });
+      if (!authed && ws?.readyState === 3 && base !== relay) { base = relay; connect(); }
+    }).catch(() => {});
+    if (chosen.win) store.set('window', chosen.win);
+    await chatPreviewReady;
+    if (current()) connect();
+    return;
+  }
   try {
-    info = await fetch(discoveryUrl() + '?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+    const data = await discovery;
+    if (!current()) return;
+    info = data;
   } catch (error) {
+    if (!current()) return;
     base = currentComputer()?.relay || '';
     return showOffline({ stage: '页面地址读取', error: error.message });
   }
   if (pending) {
-    try { base = await resolvePending(); }
-    catch (e) { return showUnpaired(e.message || '这台电脑还没有发布地址'); }
+    try { const relay = await resolvePending(); if (!current()) return; base = relay; }
+    catch (e) { if (current()) return showUnpaired(e.message || '这台电脑还没有发布地址'); return; }
     return pending.invitation || pending.requestId ? joinEntryRequest() : pair();
   }
   if (entryComputer && !loadComputers().some(c => c.id === entryComputer)) {
     return showComputers('当前入口尚未配对这台电脑，请使用配对链接或由已配对入口添加授权。');
   }
   try {
-    base = await resolveBase();
+    const relay = await resolveBase(info, chosen, current);
+    if (!current()) return;
+    base = relay;
   } catch (e) {
+    if (!current()) return;
     if (!loadComputers().length) return e.unpaired ? showUnpaired(e.message) : gate({ msg: e.message, err: true, retry: true, repair: true });
     return showOffline({ stage: '地址发现', error: e.message });
   }
   if (!currentComputer()) return loadComputers().length ? offerComputers('选择要连接的电脑', { err: false }) : showUnpaired();
-  const chosen = currentComputer();
-  rememberComputer({ ...chosen, relay: base });
+  rememberComputer({ ...currentComputer(), relay: base });
   if (chosen?.win) store.set('window', chosen.win);
   await chatPreviewReady;
-  connect();
+  if (current()) connect();
 }
 
 async function resolvePending() {
@@ -599,6 +633,7 @@ function autoRetry() {
 }
 
 async function connect() {
+  const gen = ++connGen, attempt = bootGeneration;
   resetLatency();
   liveChatSelection = '';
   navigationPending = null;
@@ -606,13 +641,16 @@ async function connect() {
   selectionMetadata = metadataWindow = '';
   const computer = currentComputer();
   const expectedId = computer.id || await computerIdFromKey(computer.key);
+  if (gen !== connGen || attempt !== bootGeneration || computer.key !== currentComputer()?.key) return;
+  offlineGen++;
   draftEpoch = '';
   draftRevision = draftAckRevision = 0;
   if (text.value || drafts.has(activeDraft)) draftRevision++;
   setWindowReady(false);
   clearTimeout(retryTimer);
   if (conn.active || $('gate').classList.contains('open')) connShow('正在建立实时连接…');
-  const gen = ++connGen;
+  const previous = ws;
+  try { previous?.close(); } catch {}
   ws = new WebSocket(base.replace(/^http/, 'ws') + '/ws');
   let opened = false;
   const socket = ws;
@@ -622,7 +660,7 @@ async function connect() {
     try {
       const proof = await entryProof(computer, 'WS /ws');
       if (gen === connGen && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ t: 'auth', token: computer.token, proof }));
-    } catch (error) { rejected = true; socket.close(); showUnpaired(error.message); }
+    } catch (error) { if (gen !== connGen) return; rejected = true; socket.close(); showUnpaired(error.message); }
   };
   let rejected = false;
   ws.onclose = async event => {
@@ -639,6 +677,8 @@ async function connect() {
     $('dot').className = '';
     if (!authed) {
       if (rejected) return;
+      const relay = currentComputer()?.relay;
+      if (relay && relay !== base) { base = relay; return connect(); }
       return showOffline({ stage: opened ? '实时连接认证' : '实时连接建立', error: 'WebSocket 关闭码 ' + event.code });
     }
     authed = false;
@@ -647,9 +687,10 @@ async function connect() {
     status('断开，重连中…', false);
     await sleep(Math.min(8000, 800 * failures));
     // Rediscover the address using the saved computer identity and device token.
-    boot();
+    if (gen === connGen && attempt === bootGeneration) boot();
   };
   ws.onmessage = ev => {
+    if (gen !== connGen) return;
     const m = JSON.parse(ev.data);
     lastRx = Date.now();
     if (['attached', 'thread', 'chat', 'projectReady', 'attachFailed', 'status'].includes(m.t)
@@ -804,6 +845,7 @@ async function connect() {
       if (mode !== 'chat' && selectionReady) refreshSelectionMetadata(m.initial === true);
     }
     else if (m.t === 'attachFailed') {
+      conn.attachFailed = true;
       selectionReady = m.ready === true;
       conn.readyRedirect = selectionReady && mode === 'chat';
       setWindowReady(false);

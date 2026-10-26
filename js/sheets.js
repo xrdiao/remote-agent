@@ -142,6 +142,7 @@ function rememberAgentOpen(m) {
   }
 }
 function openSheet(kind, html) {
+  if (kind !== 'agents') pendingProjectReveal = null;
   if (sheetKind === 'devices' && kind !== 'devices') deviceInviteGeneration++;
   if (kind !== 'docs') cancelDocs();
   if (kind !== 'menu') { clearTimeout(menuRefreshTimer); menuPending = null; }
@@ -177,6 +178,7 @@ function openSheet(kind, html) {
   if (leavingVoice) scheduleVoiceWarmup();
 }
 function closeSheet() {
+  pendingProjectReveal = null;
   cancelDocs();
   clearTimeout(menuRefreshTimer);
   clearTimeout(deviceListTimer);
@@ -545,9 +547,22 @@ function agentButton(a) {
   const favorite = !!a.favorite;
   return `<div class="optRow">${main}<button type="button" class="agentFavBtn${favorite ? ' on' : ''}" data-agent-favorite="${esc(a.id)}" data-agent-favorite-value="${favorite ? '0' : '1'}" title="${favorite ? '取消常用' : '设置为常用'}" aria-label="${favorite ? '取消常用' : '设置为常用'}">${favorite ? '★' : '☆'}</button><button type="button" class="agentMoreBtn" data-agent-menu="${esc(a.id)}" data-agent-menu-title="${esc(a.title)}" title="更多操作" aria-label="更多操作">…</button></div>`;
 }
-function foldSection(name, inner, open, count) {
+let pendingProjectReveal = null, projectRevealRevision = 0;
+for (const event of ['touchstart', 'pointerdown', 'wheel', 'keydown']) $('sheet').addEventListener(event, () => {
+  pendingProjectReveal = null;
+  projectRevealRevision++;
+}, { passive: true });
+function revealProjectSessions(button) {
+  const key = button.dataset.projectFold;
+  if (!key) return;
+  pendingProjectReveal = { key, owner: agentListKey() };
+  const sheet = $('sheet');
+  sheet.scrollTop += button.getBoundingClientRect().top - sheet.getBoundingClientRect().top - 16;
+  if (!button.nextElementSibling?.querySelector('[data-project-load]')) pendingProjectReveal = null;
+}
+function foldSection(name, inner, open, count, key) {
   if (!name) return inner;
-  return `<button type="button" class="fold" data-fold aria-expanded="${open ? 'true' : 'false'}"><span class="lbl">${esc(name)}</span><span class="tag">${count}</span><span class="chev">${open ? '▾' : '▸'}</span></button><div class="foldBody"${open ? '' : ' hidden'}>${inner}</div>`;
+  return `<button type="button" class="fold" data-fold data-project-fold="${esc(key)}" aria-expanded="${open ? 'true' : 'false'}"><span class="lbl">${esc(name)}</span><span class="tag">${count}</span><span class="chev">${open ? '▾' : '▸'}</span></button><div class="foldBody"${open ? '' : ' hidden'}>${inner}</div>`;
 }
 function agentFilterSlider(filters) {
   return `<div class="agentSessionFilter${filters.session === 'common' ? ' common' : ''}" role="group" aria-label="会话筛选">${Object.entries(agentFilterLabels).map(([value, text]) => `<button type="button" aria-pressed="${filters.session === value}" data-agent-filter-value="${value}">${text}</button>`).join('')}</div>`;
@@ -581,7 +596,8 @@ function showAgents(list) {
   list = list.map(a => ({ ...a, window: cleanWindowTitle(a.window), group: cleanWindowTitle(a.group), title: cleanWindowTitle(a.title) }));
   const keep = sheetKind === 'agents';
   const scroll = keep ? $('sheet').scrollTop : 0;
-  const opened = keep ? new Set([...$('sheet').querySelectorAll('button.fold[aria-expanded="true"] > .lbl')].map(n => n.textContent)) : null;
+  const revision = projectRevealRevision;
+  const opened = keep ? new Set([...$('sheet').querySelectorAll('button.fold[aria-expanded="true"]')].map(n => n.dataset.projectFold)) : null;
   const newest = items => Math.max(0, ...items.map(a => a.lastUsed || 0));
   const filters = currentAgentFilters();
   list = list.map(agentUsageInfo)
@@ -612,12 +628,13 @@ function showAgents(list) {
     loose.sort((a, b) => Number(!!b.ui) - Number(!!a.ui));
     groups.sort((a, b) => newest(b.items) - newest(a.items));
     const body = loose.map(agentButton).join('') + groups.map(g => foldSection(
-      g.name, g.items.map(agentButton).join(''), opened ? opened.has(g.name) : g.items.some(a => a.current), g.items.length,
+      g.name, g.items.map(agentButton).join(''), opened ? opened.has(JSON.stringify([win, g.name])) : g.items.some(a => a.current), g.items.length, JSON.stringify([win, g.name]),
     )).join('');
     if (!win) return body;
-    const open = opened ? opened.has(win) : items.some(a => a.current) || (!anyCurrent && firstVisible);
+    const key = JSON.stringify([win]);
+    const open = opened ? opened.has(key) : items.some(a => a.current) || (!anyCurrent && firstVisible);
     firstVisible = false;
-    return foldSection(win, body, open, visible.length);
+    return foldSection(win, body, open, visible.length, key);
   }).join('');
   const batch = batchActive();
   const progress = batch && agentBatch.progress;
@@ -629,7 +646,12 @@ function showAgents(list) {
     const old = [...$('sheet').children];
     syncChildren($('sheet'), [...template.content.children].map(node => old.find(el => el.outerHTML === node.outerHTML) || node));
   } else openSheet('agents', html);
-  if (keep) requestAnimationFrame(() => { $('sheet').scrollTop = scroll; });
+  if (keep) requestAnimationFrame(() => {
+    if (sheetKind !== 'agents' || revision !== projectRevealRevision) return;
+    const target = pendingProjectReveal?.owner === agentListKey() && [...$('sheet').querySelectorAll('[data-project-fold]')].find(b => b.dataset.projectFold === pendingProjectReveal.key && b.getAttribute('aria-expanded') === 'true');
+    if (target) revealProjectSessions(target);
+    else { pendingProjectReveal = null; $('sheet').scrollTop = scroll; }
+  });
 }
 $('sheet').addEventListener('click', async e => {
   const b = e.target.closest('button');

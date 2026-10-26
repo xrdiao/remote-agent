@@ -244,6 +244,11 @@ $('sheet').addEventListener('click', async e => {
     if (chev) chev.textContent = open ? '▾' : '▸';
     const body = b.nextElementSibling;
     if (body) body.hidden = !open;
+    if (sheetKind === 'agents') {
+      projectRevealRevision++;
+      if (open) revealProjectSessions(b);
+      else pendingProjectReveal = null;
+    }
     if (open && sheetKind === 'agents') body?.querySelectorAll('[data-project-load]').forEach(el => {
       el.textContent = '正在加载会话…';
       send({ t: 'agents', projectWindow: el.dataset.projectLoad, automatic: true, silent: true });
@@ -251,6 +256,8 @@ $('sheet').addEventListener('click', async e => {
     return;
   }
   if (b.dataset.projectLoad) {
+    projectRevealRevision++;
+    revealProjectSessions(b.parentElement.previousElementSibling);
     b.textContent = '正在加载会话…';
     return send({ t: 'agents', projectWindow: b.dataset.projectLoad, automatic: true, silent: true });
   }

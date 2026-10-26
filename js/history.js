@@ -80,11 +80,6 @@ function queueChatRender(chat = queuedChat?.chat || lastChat, stale = queuedChat
     queuedChat = null;
     if (next?.epoch === chatRenderEpoch && windowReady && (!next.sel || !viewSel || next.sel === viewSel)) {
       renderChat(next.chat, next.stale);
-      if (next.chat && (!next.stale || next.chat.imagePreview) && !deferredScrollRender
-          && windowReady && (!next.sel || next.sel === viewSel)) {
-        if (!next.chat.readonly) rememberConversation();
-        connContentReady();
-      }
     }
   });
 }
@@ -398,6 +393,7 @@ function beginChatSelection() {
   resetTurnNav();
   clearTimeout(scrollIdle);
   chatTouching = chatMomentum = chatScrolling = chatUserScroll = false;
+  deferredScrollRender = deferredRender = false;
   scrollCorrection = null; historyPagePending = null;
   bottomScrollIntent = null;
   readingExecutionRows.clear();
@@ -810,6 +806,10 @@ function renderChat(chat, stale, loading = false, keepReading = true) {
   completeTurnNavigation();
   resumeHistoryAfterIdle();
   applyPendingHistory();
+  if ((!stale || chat.imagePreview) && !loading && windowReady && liveChatSelection === viewSel) {
+    if (!chat.readonly) rememberConversation();
+    connContentReady();
+  }
 }
 
 let subsOpen = false, queueOpen = store.get('queue-open') !== '0';

@@ -136,7 +136,7 @@ function connHide() {
 }
 function connShow(phase) {
   clearTimeout(conn.timer);
-  Object.assign(conn, { active: true, host: false, phase, agents: null, catalogReady: false, autoLaunched: false, loaded: false, enterRequested: false, failure: null, conclusion: '', checks: [], diagRunning: false, readyRedirect: false, readyPending: false });
+  Object.assign(conn, { active: true, host: false, phase, agents: null, catalogReady: false, autoLaunched: false, loaded: false, attachFailed: false, enterRequested: false, failure: null, conclusion: '', checks: [], diagRunning: false, readyRedirect: false, readyPending: false });
   conn.open.clear();
   $('conn').classList.add('open');
   connRender();
@@ -222,6 +222,7 @@ function connContentReady() {
   if (pendingStatus === '正在加载对话…') status('已连接');
   if (!conn.active) return;
   conn.loaded = true;
+  conn.attachFailed = false;
   connRender();
   connMaybeEnter();
 }
@@ -308,8 +309,8 @@ function connRender() {
   $('connSum').textContent = probeReady ? `${ready}/${CONN_AGENTS.length} ${tr('可用')}` : '';
   $('connBar').style.gridTemplateColumns = `repeat(${CONN_AGENTS.length}, 1fr)`;
   $('connBar').innerHTML = agents.map(a => `<i class="${state(a)}"></i>`).join('');
-  $('connGo').hidden = !probeReady || allReady;
-  $('connGo').textContent = ready ? tr('先进入') : tr('全部重试');
+  $('connGo').hidden = !probeReady || allReady && !conn.attachFailed;
+  $('connGo').textContent = conn.attachFailed ? tr('重试') : ready ? tr('先进入') : tr('全部重试');
   const launchable = probeReady ? connMissingApps() : [];
   $('connLaunchAll').hidden = !launchable.length;
   $('connLaunchAll').disabled = launchable.length > 0 && launchable.every(app => connLaunchStatus.get(app) === 'launching');
@@ -321,6 +322,7 @@ function connRender() {
 }
 $('connGo').onclick = () => {
   if (conn.host === 'err') return boot();
+  if (conn.attachFailed) return boot();
   if (!conn.agents?.some(a => a.windows)) return connRetryAgents();
   ensureReadyAgent();
   conn.enterRequested = true;
