@@ -85,6 +85,10 @@ function selectionPreview() {
 }
 function confirmNavigation() {
   const previewed = navigationPending?.preview === viewSel;
+  if (navigationPending && !navigationPending.positioning) {
+    beginChatSelection();
+    navigationPending.positioning = true;
+  }
   if (navigationPending) navigationPending.confirmed = viewSel;
   if (mode === 'chat' && liveChatSelection !== viewSel && !previewed) {
     selectionPreview();
@@ -603,6 +607,8 @@ async function connect() {
   const computer = currentComputer();
   const expectedId = computer.id || await computerIdFromKey(computer.key);
   draftEpoch = '';
+  draftRevision = draftAckRevision = 0;
+  if (text.value || drafts.has(activeDraft)) draftRevision++;
   setWindowReady(false);
   clearTimeout(retryTimer);
   if (conn.active || $('gate').classList.contains('open')) connShow('正在建立实时连接…');
@@ -706,12 +712,14 @@ async function connect() {
         if (m.cached && liveChatSelection === (m.sel || viewSel)) return;
         const fresh = m.chat && !m.cached && selectionReady;
         if (fresh) {
+          const becameReady = !windowReady;
           if (navigationPending?.preview === viewSel && chatStale) for (const item of m.chat.items) if (item.b?.length) cache.delete(item.i);
           liveChatSelection = m.sel || viewSel;
           navigationPending = null;
           conn.readyRedirect = false;
           $('items').inert = false;
           setWindowReady(true);
+          if (becameReady) queueDraftSync();
         }
         if (m.chat && !m.cached && !m.chat.readonly) capabilityBlock = '';
         const preview = chatBySel.get(chatCacheKey(m.sel || viewSel));
@@ -727,8 +735,8 @@ async function connect() {
         }
       }
     }
-    else if (m.t === 'draft') { if (!questionCompose && (m.draftEpoch || '') === draftEpoch && (!m.sel || m.sel === viewSel)) { if ((text.value === '' || text.value === mirroredDraft) && m.text !== text.value) { text.value = m.text; autosize(); } mirroredDraft = m.text; } }
-    else if (m.t === 'draftAck') { if ((m.draftEpoch || '') === draftEpoch && m.ok && (!m.sel || m.sel === viewSel) && text.value === m.text) mirroredDraft = m.text; }
+    else if (m.t === 'draft') receiveDraft(m);
+    else if (m.t === 'draftAck') receiveDraft(m);
     else if (m.t === 'historyPage') receiveHistoryPage(m);
     else if (m.t === 'historyDone') finishHistory(m);
     else if (m.t === 'thread') applySelection(m);
@@ -882,9 +890,11 @@ async function connect() {
       });
       finishPending(['设置中…', '正在修改…']);
     }
+    else if (m.t === 'menuPicked') finishModelPick(m);
     else if (m.t === 'menu') {
       if (m.sel && viewSel && m.sel !== viewSel) return;
-      if (m.requestId != null && m.requestId !== menuRequest) return;
+      if (m.requestId != null && (m.requestId !== menuRequest || m.requestId !== menuPending?.requestId
+        || m.kind !== menuPending.kind || menuPending.sel !== viewSel)) return;
       lruPut(menuCache, menuCacheKey(m.kind), m, 24);
       if (currentApp === 'fusion' && /^fusion-(model|effort)-[ab]$/.test(m.kind) && fusionModelSide === m.kind.slice(-1)) {
         showMenu(m.kind, m.items, m.max, m.fusion, m.fast, m.model, false, m.pricing);
