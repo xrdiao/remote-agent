@@ -193,7 +193,6 @@ function connAgentResults(results) {
 function connLaunch(apps) {
   const targets = apps || selectedLaunchAgents();
   if (!targets.length) return;
-  if (!windowReady) conn.readyRedirect = false;
   for (const app of targets) connLaunchStatus.set(app, 'launching');
   send({ t: 'launchAgents', apps: targets });
   connRender();
@@ -237,11 +236,11 @@ function connMaybeEnter() {
 function ensureReadyAgent() {
   if (conn.readyRedirect) return;
   const ready = (conn.agents || []).filter(a => a.windows).map(a => a.app);
-  if (!ready.length || (currentApp === 'fusion' && windowReady)) return;
+  if (!ready.length || currentApp === 'fusion') return;
   const appOf = id => String(id || '').split(':')[0];
   const want = currentApp || appOf(currentComputer()?.win);
-  if (windowReady && ready.includes(want)) return;
-  const target = ready.includes(want) ? want : CONN_AGENTS.map(a => a.app).find(a => ready.includes(a));
+  if (ready.includes(want)) return;
+  const target = CONN_AGENTS.map(a => a.app).find(a => ready.includes(a));
   if (!target) return;
   const wins = windows || [];
   if (!wins.length) {
@@ -253,7 +252,7 @@ function ensureReadyAgent() {
   if (!pick) return;
   conn.readyRedirect = true;
   status('正在切换窗口…');
-  send({ t: 'attach', ...sel[pick.id], id: pick.id, initial: true });
+  send({ t: 'attach', id: pick.id, ...sel[pick.id] });
 }
 
 function connRender() {
@@ -329,7 +328,6 @@ $('connGo').onclick = () => {
 function connRetryAgents() {
   clearTimeout(conn.timer);
   conn.agents = null;
-  if (!windowReady) conn.readyRedirect = false;
   connRender();
   send({ t: 'connAgents' });
 }
