@@ -221,10 +221,12 @@ function showCodexRetryMenu() {
     const n = Math.max(1, Math.min(5, Math.round(Number($('codexRetryCount').value) || 1)));
     store.set('codex-auto-retry-count', String(n));
     $('codexRetryCount').value = n;
+    syncCodexAutoRetry(lastChat, chatStale);
   };
 }
 function toggleCodexAutoRetry() {
   store.set('codex-auto-retry', codexAutoRetryEnabled() ? null : '1');
+  syncCodexAutoRetry(lastChat, chatStale);
   showCodexRetryMenu();
 }
 $('shade').onclick = () => { closeSheet(); askDone?.(false); };

@@ -73,6 +73,7 @@ function invalidateChatRender() {
   if (chatFrame) { cancelAnimationFrame(chatFrame); chatFrame = 0; }
 }
 function queueChatRender(chat = queuedChat?.chat || lastChat, stale = queuedChat?.stale ?? chatStale, sel = queuedChat?.sel || viewSel) {
+  syncCodexAutoRetry(chat, stale, sel);
   queuedChat = { chat, stale, sel, epoch: chatRenderEpoch };
   if (!chatFrame) chatFrame = requestAnimationFrame(() => {
     chatFrame = 0;
@@ -388,6 +389,7 @@ function noteChatLayoutChange() {
   if (isFollowingBottom()) requestChatScroll();
 }
 function beginChatSelection() {
+  cancelCodexAutoRetry();
   cancelChatMotion();
   restoringChatScroll = false;
   resetTurnNav();
@@ -709,7 +711,6 @@ function renderChat(chat, stale, loading = false, keepReading = true) {
   if (!sessionChanged && userSelecting()) {
     deferredRender = true;
     $('actionBar').innerHTML = buttonsHtml(chat.global, 'g');
-    if (chat.global?.length) maybeAutoRetry({ i: 'global', btnItem: 'g', b: chat.global });
     $('actionBar').classList.toggle('show', chat.global.length > 0);
     renderQueue(chat.busy, chat.queued || [], chat.subagents || [], chat.readonly, chat.changed, chat.queuedCount);
     renderQuestions(chat.readonly && !chat.questions?.codex ? null : chat.questions);
@@ -790,7 +791,6 @@ function renderChat(chat, stale, loading = false, keepReading = true) {
 
   // A cached render is display-only: no action buttons, questions or queue actions until the fresh chat arrives.
   $('actionBar').innerHTML = chatStale ? '' : buttonsHtml(chat.global, 'g');
-  if (!chatStale && chat.global?.length) maybeAutoRetry({ i: 'global', btnItem: 'g', b: chat.global });
   $('actionBar').classList.toggle('show', !chatStale && chat.global.length > 0);
   renderQueue(chatStale ? false : chat.busy, chatStale ? [] : (chat.queued || []), chat.subagents || [], chat.readonly, chat.changed, chat.queuedCount);
   renderQuestions(chatStale || (chat.readonly && !chat.questions?.codex) ? null : chat.questions);

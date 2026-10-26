@@ -526,6 +526,7 @@ async function boot() {
     failFileSave('连接已断开，保存结果未确认，请重试');
     cancelChatContentRequests();
     interruptSessionBatch();
+    cancelCodexAutoRetry();
   }
   ws = null;
   try { old?.close(); } catch {}
@@ -678,6 +679,7 @@ async function connect() {
     qnPending = null;
     cancelChatContentRequests();
     interruptSessionBatch();
+    cancelCodexAutoRetry();
     qnSig = '';
     renderQuestions(null);
     $('dot').className = '';
@@ -741,6 +743,7 @@ async function connect() {
     }
     else if (m.t === 'queueDone') receiveQueueDone(m);
     else if (m.t === 'clickDone') {
+      finishCodexAutoRetry(m);
       if (m.sel !== viewSel) return;
       const button = [...$('items').querySelectorAll('button[data-item]')].find(b => b.dataset.item === String(m.item) && b.dataset.actionId === (m.actionId || ''));
       button?.closest('.btns')?.querySelectorAll('button').forEach(b => { b.disabled = false; });
