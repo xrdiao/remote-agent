@@ -382,6 +382,7 @@ let scrollMode = 'freeScroll', scrollCorrection = null, scrollFrame = 0, history
 let bottomScrollIntent = null, chatLayoutVersion = 0, initialBottomSelection = null;
 const readingExecutionRows = new Set();
 let historyRequest = null, historyRendering = false, historyExpanded = false, historyArmed = false, historySerial = 0, historyAtEnd = false;
+let historyCursor = null;
 let historyWaitingForIdle = false;
 let pendingHistoryStatus = null;
 let turnNavTimer = 0, turnNavHeld = false, turnNavUser = false, turnNavCursor = null, turnNavPending = null;
@@ -655,12 +656,13 @@ function renderChat(chat, stale, loading = false, keepReading = true) {
   }
   const threadChanged = !chat || previous?.thread !== chat.thread;
   if (threadChanged) {
+    historyCursor = null;
     readingExecutionRows.clear();
     historyRequest = null; historyRendering = false; historyExpanded = false; historyArmed = false; historyAtEnd = false; historyWaitingForIdle = false; chatUserScroll = false; bottomScrollIntent = null; scrollCorrection = null; historyScrollSnapshot = null; layoutDirty = false; syncScrollFlush = false; pendingHistoryStatus = null;
     $('older').disabled = false;
     $('historyStatus').hidden = true;
   }
-  if (chat?.earlier === true) historyAtEnd = false;
+  if (chat?.earlier === true && (currentApp !== 'codex' || !historyExpanded)) historyAtEnd = false;
   if (chat && previous?.thread === chat.thread && historyExpanded && currentApp !== 'devin') {
     const rows = historyRequest ? [...chat.items, ...previous.items] : [...previous.items, ...chat.items];
     const updates = new Map(chat.items.map(it => [it.i, it]));
@@ -1388,7 +1390,13 @@ function requestOlderRemote() {
   historyRendering = true;
   historyExpanded = true;
   showHistoryStatus('正在加载更早的消息…');
-  send({ t: 'scrollChat', dy: -900, automatic: true, history: true, requestId: historyRequest.id });
+  const paging = {};
+  if (currentApp === 'codex') {
+    const orders = lastChat.items.map(it => it.order).filter(Number.isFinite);
+    Object.assign(paging, { before: historyCursor ?? (orders.length ? Math.max(...orders) + 1 : null),
+      known: lastChat.items.map(it => it.i), details: executionRecordsShown() });
+  }
+  send({ t: 'scrollChat', dy: -900, automatic: true, history: true, requestId: historyRequest.id, ...paging });
 }
 function receiveHistoryPage(m) {
   if (!historyRequest || m.requestId !== historyRequest.id || m.sel !== historyRequest.sel || m.thread !== historyRequest.thread || lastChat?.thread !== m.thread) return;
@@ -1396,6 +1404,7 @@ function receiveHistoryPage(m) {
   const latest = queuedChat?.sel === viewSel && queuedChat.chat?.thread === m.thread ? queuedChat.chat : lastChat;
   const known = new Set(latest.items.map(it => it.i));
   SC.show += m.items.filter(it => !known.has(it.i)).length;
+  if (Number.isFinite(m.before)) historyCursor = m.before;
   const rows = [...new Map([...m.items, ...latest.items].map(it => [it.i, it])).values()];
   const order = it => Number.isFinite(it.order) ? it.order : Number(/^acp(\d+)/.exec(it.i)?.[1] || 0);
   rows.sort((a, b) => order(a) - order(b));
@@ -1407,8 +1416,8 @@ function finishHistory(m) {
   historyRequest = null;
   if (m.earlier === false) historyAtEnd = true;
   else if (m.earlier === true) historyAtEnd = false;
-  if (m.error || m.blocked || m.earlier === false) historyScrollSnapshot = null;
-  showHistoryStatus(m.error || (m.blocked ? '生成中，稍后上滑加载历史' : m.earlier === false && $('cachedMore').hidden ? '已到最早消息' : '继续上滑可加载更早的消息'));
+  if (m.error || m.pending || m.earlier === false) historyScrollSnapshot = null;
+  showHistoryStatus(m.error || (m.pending ? '历史消息正在加载，请稍后重试' : m.earlier === false && $('cachedMore').hidden ? '已到最早消息' : '继续上滑可加载更早的消息'));
   if (!deferredScrollRender) historyRendering = false;
   if (!deferredScrollRender && !chatFrame) completeTurnNavigation();
   maybePrefetchOlder();
