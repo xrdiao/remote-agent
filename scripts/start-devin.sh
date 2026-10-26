@@ -22,6 +22,7 @@ if pgrep -f '/usr/share/devin-desktop/devin-desktop' >/dev/null 2>&1; then
   exit 1
 fi
 
+if [[ "$BIN" != */* ]]; then BIN="$(command -v "$BIN" || printf '%s' "$BIN")"; fi
 if [[ ! -x "$BIN" ]]; then
   echo "找不到 Devin：$BIN"
   exit 1

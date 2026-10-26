@@ -212,7 +212,8 @@ export const methods = {
     this.codexFreshView = false;
     let readRevision;
     const read = async () => {
-      const chat = await cdp.evaluate(helpersCall('extract()'));
+      const child = this.mainTab?.cdp === cdp ? this.mainTab.child || '' : '';
+      const chat = await cdp.evaluate(`(() => { const h = ${PAGE_SRC}, chat = h.extract(); if (chat) chat.subagent = !!(${JSON.stringify(child)} && h.activeChatTab() === ${JSON.stringify(child)} && chat.readonly); return chat; })()`);
       readRevision = chat?._revision;
       if (chat) delete chat._revision;
       return chat;
@@ -231,6 +232,8 @@ export const methods = {
       if (!this.liveRead(cdp, sel) || this.historyLoading) return;
       if (!this.acceptsChat(chat)) return;
       this.syncSession(chat);
+      for (const file of uploads.values()) if (file.pending && file.awaitingReceipt && file.sel === this.selectionKey()
+        && chat?.items.some(item => item.k === 'human' && item.t?.split('\n').includes(file.path))) file.pending = false;
       if (chat?.thread && chat.title && readLibrary()[this.app]?.[chat.thread]?.title && chat.title !== readLibrary()[this.app][chat.thread].title) {
         const title = await cdp.evaluate(helpersCall(`nativeConfirmedTitle(${JSON.stringify(this.app)}, ${JSON.stringify(chat.thread)})`));
         if (!this.liveRead(cdp, sel)) return;
@@ -263,17 +266,11 @@ export const methods = {
         this.lastChat = JSON.stringify(initial);
         publish(initial);
       }
-      const thinkingAction = async action => {
-        if (this.app !== 'codex') return cdp.evaluate(helpersCall(action));
-        const acted = await cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return !h.codexCapacityItem() && h.${action}; })()`);
-        if (acted === false && this.liveRead(cdp, sel)) chat = await read();
-        return acted;
-      };
+      const thinkingAction = action => cdp.evaluate(helpersCall(action));
       const details = fn => state.requested && state.sent
         ? this.withChatUiDetails(() => this.liveRead(cdp, sel) ? fn() : undefined) : fn();
       const readThinking = async () => {
-        if (this.app === 'codex' && chat?.capacityPresent) return;
-        const liveClosed = this.app !== 'devin' && !(this.app === 'codex' && chat?.busy) && (chat?.items || []).some(it => it.k === 'thinking' && it.live && !(it.t || '').includes('\n'));
+        const liveClosed = this.app !== 'devin' && (chat?.items || []).some(it => it.k === 'thinking' && it.live && !(it.t || '').includes('\n'));
         if (liveClosed) {
           const idxs = await cdp.evaluate(helpersCall(`closedThinkingIndexes('live')`));
           if (!this.liveRead(cdp, sel)) return;
@@ -284,8 +281,8 @@ export const methods = {
             chat = await read();
           }
         }
-        if (!this.liveRead(cdp, sel) || this.app === 'codex' && chat?.capacityPresent) return;
-        const needFinal = this.app !== 'devin' && !(this.app === 'codex' && chat?.busy) && (chat?.items || []).some(it => it.k === 'thinking' && !it.live && !(it.t || '').includes('\n') && !this.thinkingTried.has(it.i));
+        if (!this.liveRead(cdp, sel)) return;
+        const needFinal = this.app !== 'devin' && (chat?.items || []).some(it => it.k === 'thinking' && !it.live && !(it.t || '').includes('\n') && !this.thinkingTried.has(it.i));
         if (needFinal) {
           const idxs = await cdp.evaluate(helpersCall(`closedThinkingIndexes('done')`));
           if (!this.liveRead(cdp, sel)) return;
@@ -300,7 +297,7 @@ export const methods = {
         }
       };
       // Only the native expand/read/fold transaction competes with Cursor's model menu.
-      await details(async () => {
+      if (this.app !== 'codex') await details(async () => {
       if (this.app === 'cursor' && chat?.items?.some(it => it.k === 'thinking' && !this.thinkingBody(it) && (it.live || !this.thinkingTried.has(it.i))))
         await this.withCursorUiRead(readThinking);
       else await readThinking();
@@ -488,21 +485,22 @@ export const methods = {
     this.emit({ t: 'status', ok: true, msg: '已停止 Agent' });
   },
   async scrollChat(dy, automatic = false, history = false, beforeOrder = null, known = [], details = false) {
+    if (this.app === 'codex' && history) {
+      const cdp = this.cdp, sel = this.sel, thread = this.threadId;
+      const page = await cdp.evaluate(helpersCall(`codexHistoryPage(${JSON.stringify(beforeOrder)}, ${JSON.stringify(known)}, ${details === true})`));
+      if (!this.liveRead(cdp, sel) || page.thread !== thread) return;
+      const live = new Map((this.itemCache?.get(thread) || []).map(it => [it.i, it]));
+      page.items = page.items.map(it => live.get(it.i) || it);
+      await this.resolveCodexImages(page, cdp);
+      if (!this.liveRead(cdp, sel)) return;
+      return page;
+    }
     if (this.app === 'codex') {
       if (this.historyLoading) return { pending: true };
       const cdp = this.cdp, sel = this.sel, thread = this.threadId;
       this.historyLoading = true;
       let before;
       try {
-        if (history) {
-          const page = await cdp.evaluate(helpersCall(`codexHistoryPage(${JSON.stringify(beforeOrder)}, ${JSON.stringify(known)}, ${details === true})`));
-          if (!this.liveRead(cdp, sel) || page.thread !== thread) return;
-          const live = new Map((this.itemCache?.get(thread) || []).map(it => [it.i, it]));
-          page.items = page.items.map(it => live.get(it.i) || it);
-          await this.resolveCodexImages(page, cdp);
-          if (!this.liveRead(cdp, sel)) return;
-          return page;
-        }
         before = await cdp.evaluate(helpersCall('scrollCodexHistory(false)'));
         if (!this.codexHistoryTop) this.codexHistoryTop = new Map();
         const top = this.codexHistoryTop.get(thread);
@@ -594,6 +592,38 @@ export const methods = {
       await cdpRead.run(null, () => cdp.evaluate(helpersCall('composerQuery("", 0, true)')));
     }
   },
+  async submitPromptKey(key, queued) {
+    const cdp = this.cdp, scope = this.selectionKey(), receipt = this.sendNativeReceipt;
+    const read = timeout => cdp.evaluate(`(() => {
+      const h = ${PAGE_SRC}, chat = h.extract();
+      return { thread: chat?.thread || '', draft: h.composerDraft(),
+        human: (chat?.items || []).filter(it => it.k === 'human'), queued: chat?.queued || [] };
+    })()`, { timeout });
+    const norm = value => (value || '').replace(/\s+/g, ' ').trim();
+    const before = await read(), expected = norm(before.draft);
+    this.lastDraft = before.draft;
+    const human = new Set(before.human.map(it => `${it.i}:${it.sentAt || ''}`));
+    const queues = new Set(before.queued.map(it => it.id));
+    const queueText = norm(before.draft.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim().slice(0, 4000));
+    const queuedMatches = rows => rows.filter(it => norm(it.t) === queueText).length;
+    await this.key(key);
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      let after;
+      try { after = await read(Math.max(1, deadline - Date.now())); } catch { break; }
+      if (this.cdp !== cdp || this.selectionKey() !== scope || before.thread && after.thread && after.thread !== before.thread) break;
+      const item = after.human.find(it => !human.has(`${it.i}:${it.sentAt || ''}`)
+        && (!expected || norm((it.t || '').replace(/(?:^|\n)\[(?:图片|附件) \d+\](?:\n\[(?:图片|附件) \d+\])*$/, '')) === expected));
+      if (item) { receipt.messageId = item.i; return false; }
+      const pending = after.queued.find(it => norm(it.t) === queueText
+        && (!queues.has(it.id) || this.app === 'devin' && queuedMatches(after.queued) > queuedMatches(before.queued)));
+      if (pending) { receipt.queueId = pending.id; return true; }
+      await new Promise(resolve => setTimeout(resolve, 125));
+    }
+    receipt.pending = true;
+    return queued;
+  },
+
   async sendMessage(text, submit, when, mentions, receipt) {
     const receiptToken = submit ? (this.sendNativeReceipt = {}) : null;
     const receiptScope = this.selectionKey(), receiptCdp = this.cdp;
@@ -636,8 +666,8 @@ export const methods = {
       this.sendGen++;
     }
     if (submit) {
-      files.forEach(f => { f.pending = false; });
-      this.lastDraft = text;
+      files.forEach(f => { if (receiptToken?.pending) f.awaitingReceipt = true; else f.pending = false; });
+      if (!receiptToken?.pending) this.lastDraft = text;
       if (!queued && !receiptToken?.pending) rememberSessionMessage(this.app, this.threadId, Date.now());
     }
     if (submit && receipt) this.emit({ t: 'sent', ...receipt, ...(this.sendNativeReceipt === receiptToken && this.selectionKey() === receiptScope && this.cdp === receiptCdp ? receiptToken : {}), queued, sentAt: Date.now(), sel: this.selectionKey() });
@@ -646,7 +676,7 @@ export const methods = {
       this.pollChat(true).catch(() => {});
     }
     this.syncAttachments().catch(() => {});
-    if (now) this.emit({ t: 'status', ok: true, msg: '已打断当前任务并发送' });
+    if (now && !receiptToken?.pending) this.emit({ t: 'status', ok: true, msg: '已打断当前任务并发送' });
     return queued;
   },
   async answerQuestion(qi, oi, part, text) {
@@ -701,7 +731,9 @@ export const methods = {
   },
   async setDraft(text) {
     if (this.app === 'fusion' || text.length > 20000) return false;
-    if (this.cdp && await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return (!${JSON.stringify(this.selectedThread || '')} || h.activeThread() === ${JSON.stringify(this.selectedThread || '')}) && (h.composerDraft() === ${JSON.stringify(text)} || h.setComposerDraft(${JSON.stringify(text)})); })()`)) { this.lastDraft = text; return true; }
+    if (!this.cdp) return false;
+    const native = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return (!${JSON.stringify(this.selectedThread || '')} || h.activeThread() === ${JSON.stringify(this.selectedThread || '')}) && (h.composerDraft() === ${JSON.stringify(text)} || h.setComposerDraft(${JSON.stringify(text)})) ? { draft: h.composerDraft() } : null; })()`);
+    if (native) { this.lastDraft = native.draft; return true; }
     return false;
   },
   async syncAttachments() {

@@ -129,29 +129,43 @@ async function disableNotify() {
 
 function noticeTarget(raw) {
   if (!raw) return null;
-  let win = String(raw), windowId = '', threadId = '';
+  let win = String(raw), computer = '', windowId = '', threadId = '';
   if (win.startsWith('{')) {
     try {
       const o = JSON.parse(win);
       win = o.win || '';
+      computer = o.computer || '';
       windowId = o.windowId || '';
       threadId = o.threadId || '';
     } catch { return null; }
   }
-  return win ? { win, windowId, threadId } : null;
+  return win ? { computer, win, windowId, threadId } : null;
 }
 function rememberNotice(raw) {
   const n = noticeTarget(raw);
-  if (!n) return;
-  store.set('window', n.win);
-  const here = currentComputer();
-  if (here) rememberComputer({ ...here, win: n.win, windowId: n.windowId, threadId: n.threadId });
+  if (!n) return false;
+  const list = loadComputers(), current = currentComputer();
+  const here = n.computer ? list.find(c => c.id === n.computer) : current;
+  if (!here) { status('通知来源电脑未配对，请从电脑列表连接', false); return false; }
+  const next = { ...here, win: n.win, windowId: n.windowId, threadId: n.threadId };
+  saveComputers(list.map(c => c.key === here.key ? next : c), current?.key);
+  if (here.key === current?.key) store.set('window', n.win);
+  return next;
 }
 function openWin(id) {
-  rememberNotice(id);
-  if (!authed) return;
-  const here = currentComputer();
-  send({ t: 'attach', id: here?.win || store.get('window') || '', windowId: here?.windowId || '', threadId: here?.threadId || '' });
+  const before = currentComputer()?.id;
+  const here = rememberNotice(id);
+  if (!here) return false;
+  if (before !== here.id) {
+    if (here.discovery && new URL(here.discovery).origin !== location.origin) {
+      const url = new URL('./', here.discovery);
+      url.hash = new URLSearchParams({ win: id }).toString();
+      openComputerEntry(url.href, here.id);
+    } else useComputer(loadComputers().findIndex(c => c.id === here.id));
+    return true;
+  }
+  if (!authed) { pendingNotice = id; return false; }
+  return send({ t: 'attach', id: here.win, windowId: here.windowId || '', threadId: here.threadId || '' });
 }
 window.openWin = openWin;
 navigator.serviceWorker?.addEventListener('message', e => { if (e.data?.openWin) openWin(e.data.openWin); });
@@ -181,19 +195,22 @@ $('sheet').addEventListener('click', async e => {
       const next = window.prompt('新的会话名称', name);
       if (!next?.trim()) return;
       closeSheet(); status('正在重命名…');
-      if (currentApp !== 'codex') return send({ t: 'sessionManage', id, action: 'rename', name: next.trim().slice(0, 80) });
-      return send({ t: 'codexRename', id, name: next.trim().slice(0, 80) });
+      if (currentApp !== 'codex') send({ t: 'sessionManage', id, action: 'rename', name: next.trim().slice(0, 80) });
+      else send({ t: 'codexRename', id, name: next.trim().slice(0, 80) });
+      return renderAgentList();
     }
     if (b.dataset.agentAction === 'delete' || (b.dataset.agentAction === 'archive' && currentApp !== 'codex')) {
       const action = b.dataset.agentAction, label = action === 'delete' ? '删除' : '归档';
       if (!await ask(`${label}「${name}」？`, label)) return;
       closeSheet(); status(`正在${label}…`);
-      return send({ t: 'sessionManage', id, action });
+      send({ t: 'sessionManage', id, action });
+      return renderAgentList();
     }
     if (b.dataset.agentAction === 'archive') {
       if (!await ask(`删除或归档「${name}」？\n桌面端会根据当前入口执行删除或归档。`, '继续')) return;
       closeSheet(); status('正在删除／归档…');
-      return send({ t: 'codexArchive', id });
+      send({ t: 'codexArchive', id });
+      return renderAgentList();
     }
   }
   if ('modelBack' in b.dataset) return requestMenu('model', '读取模型列表…');
@@ -299,9 +316,10 @@ $('sheet').addEventListener('click', async e => {
   if (b.dataset.fusionId) { closeSheet(); return send({ t: 'fusionSide', side: b.dataset.fusionPick, id: b.dataset.fusionId }); }
   if (b.dataset.codexArchive) {
     const id = b.dataset.codexArchive, name = b.dataset.codexName || '';
-    if (!await ask(`归档「${name}」？\n它会从当前列表移除，历史记录仍保留。`, '归档')) { send({ t: 'agents' }); return; }
+    if (!await ask(`归档「${name}」？\n它会从当前列表移除，历史记录仍保留。`, '归档')) { if (!sheetKind) renderAgentList(); return; }
     status('正在归档…');
-    return send({ t: 'codexArchive', id });
+    send({ t: 'codexArchive', id });
+    return renderAgentList();
   }
   if (b.dataset.agent) { pendingAgentOpen = b.dataset.agent; closeSheet(); status('正在切换 Agent…'); return send({ t: 'openAgent', id: b.dataset.agent, title: b.dataset.agentTitle || '' }); }
   if (b.dataset.term) { closeSheet(); status('正在切换终端…'); return send({ t: 'openTerminal', id: b.dataset.term }); }

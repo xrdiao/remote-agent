@@ -18,6 +18,7 @@ import { scanProjectWindows, projectWindowSettings } from './project-windows.mjs
 //   fusionFree — allowed on a fusion session without a cdp; boolean or (session, msg) => bool
 //   fusion   — alternate runner used instead of run when fusionFree applies (refresh only)
 //   fast     — ws.mjs bypasses the per-client queue entirely; fastRun is the direct call
+//   switchRead / connection / navigation — cancellation and selection ownership in ws.mjs
 //   background — waits for preceding commands, then reads without holding up later commands
 //   run      — the dispatch body
 //   after    — emits on success from the queued ws handler
@@ -94,7 +95,7 @@ export const ROUTES = {
   projectWindowSet: { pre: (s, m) => s.emit({ t: 'projectWindows', ...projectWindowSettings(m.change) }) },
   sessionBatch: { run: (s, m) => s.batchSessions(Array.isArray(m.ids) ? m.ids.map(String) : [], m.requestId), fail: (s, m) => s.emit({ t: 'sessionBatchProgress', app: s.app, requestId: m.requestId, total: m.ids?.length || 0, results: (m.ids || []).map(id => ({ id, ok: false, error: '批量操作未执行，请刷新列表' })), done: true }) },
   sessionBatchCancel: { fast: true, fastRun: (s, m) => { if (s.sessionBatch?.requestId === m.requestId) s.sessionBatch.cancelled = true; } },
-  sessionActions: {
+  sessionActions: { switchRead: true,
     run: (s, m) => s.sessionActions(String(m.id || ''), m.requestId),
     fail: (s, m) => s.emit({ t: 'sessionActions', app: s.app, id: m.id, requestId: m.requestId, actions: [] }),
   },
@@ -115,7 +116,7 @@ export const ROUTES = {
     s.emit({ t: 'pong' });
   } },
   saveFile: { pre: (s, m) => s.saveFile(String(m.path ?? ''), String(m.text ?? ''), m.host == null ? undefined : String(m.host), m.requestId) },
-  connAgents: {
+  connAgents: { switchRead: true, connection: true,
     pre: async (s, options = {}) => {
       const probe = s.agentProbe = (s.agentProbe || 0) + 1;
       const catalog = detectAgents();
@@ -137,8 +138,8 @@ export const ROUTES = {
       return wins;
     },
   },
-  windows: { background: true, pre: async s => s.emit({ t: 'windows', list: phoneWindows(await listWindows(), s.targetId), current: s.targetId, plans: appPlans }) },
-  attach: {
+  windows: { switchRead: true, connection: true,  background: true, pre: async s => s.emit({ t: 'windows', list: phoneWindows(await listWindows(), s.targetId), current: s.targetId, plans: appPlans }) },
+  attach: { switchRead: true, navigation: true,
     fail: (s, m, error) => s.emit({ t: 'attachFailed', ready: s.bindingReady === true, message: error?.message }),
     pre: async (s, m) => {
       if (!m.initial) return s.attach(m);
@@ -155,8 +156,8 @@ export const ROUTES = {
     fast: true,
     fastRun: (s, m) => launchAgents(s, m.apps, () => ROUTES.connAgents.pre(s).catch(() => {})),
   },
-  mode: { pre: (s, m) => s.setMode(m.mode) },
-  visible: {
+  mode: { switchRead: true, connection: true,  pre: (s, m) => s.setMode(m.mode) },
+  visible: { switchRead: true, connection: true,
     pre: (s, m) => {
       s.notifyVisible = Boolean(m.v);
       s.notifyPresenceAt = Date.now();
@@ -168,7 +169,7 @@ export const ROUTES = {
       if (s.visible) return s.setMode(s.mode);
     },
   },
-  lang: { pre: (s, m) => { updateDevice(s.deviceId, { lang: m.v === 'en' ? 'en' : 'zh' }); } },
+  lang: { connection: true,  pre: (s, m) => { updateDevice(s.deviceId, { lang: m.v === 'en' ? 'en' : 'zh' }); } },
   draft: {
     pre: async (s, m) => {
       if ((m.draftEpoch || '') !== (s.draftEpoch || '')) return;
@@ -188,14 +189,14 @@ export const ROUTES = {
     },
   },
 
-  agents: {
+  agents: { switchRead: true,
     background: (s, m) => m.automatic === true && m.silent === true,
     pre: (s, m) => (s.app === 'codex' ? s.listAgents(m.silent === true, m.automatic === true, '', m.checkTrust === true) : SKIP),
     readOnly: (s, m) => m.silent === true,
     run: (s, m) => s.listAgents(m.silent === true, m.automatic === true, String(m.projectWindow || ''), m.checkTrust === true),
   },
-  openAgent: { run: (s, m) => s.openAgent(String(m.id ?? ''), String(m.title ?? '')) },
-  openMenu: { run: (s, m) => s.openMenu(m.kind, m.requestId) },
+  openAgent: { switchRead: true, navigation: true,  run: (s, m) => s.openAgent(String(m.id ?? ''), String(m.title ?? '')) },
+  openMenu: { switchRead: true,  run: (s, m) => s.openMenu(m.kind, m.requestId) },
   pickMenu: {
     fusionFree: (s, m) => /^fusion-(model|effort)-/.test(String(m.kind || '')),
     run: async (s, m) => {
@@ -208,13 +209,13 @@ export const ROUTES = {
   fusionOptions: { run: (s, m) => s.fusionOptions(String(m.part ?? '')) },
   fusionPick: { run: (s, m) => s.fusionPick(String(m.part ?? ''), m.value) },
   toggleMax: { run: s => s.toggleMax() },
-  params: { run: (s, m) => s.showParams(String(m.model ?? ''), String(m.label ?? '')) },
+  params: { switchRead: true,  run: (s, m) => s.showParams(String(m.model ?? ''), String(m.label ?? '')) },
   pickParam: { run: (s, m) => s.pickParam(String(m.model ?? ''), String(m.label ?? ''), m.section, m.value) },
-  terminals: { run: s => s.listTerminals() },
+  terminals: { switchRead: true,  run: s => s.listTerminals() },
   openTerminal: { run: (s, m) => s.openTerminal(String(m.id ?? '')) },
   closeTerminal: { run: (s, m) => s.closeTerminal(String(m.id ?? '')) },
   newTerminal: { run: s => s.newTerminal() },
-  termHistory: { readOnly: true, run: async (s, m) => {
+  termHistory: { switchRead: true,  readOnly: true, run: async (s, m) => {
     const data = await s.editorCdp.evaluate(helpersCall('terminalHistory()'));
     s.emit({ t: 'termHistory', sel: s.selectionKey(), direction: m.direction < 0 ? -1 : 1, id: data.id, commands: data.commands });
   } },
@@ -226,9 +227,9 @@ export const ROUTES = {
     },
     fail: (s, m) => s.emit({ t: 'sendFailed', requestId: m.requestId }),
   },
-  projects: { run: (s, m) => s.showProjects(String(m.path ?? '')) },
-  docs: { run: (s, m) => s.showDocs(String(m.root ?? ''), String(m.path ?? ''), String(m.host ?? ''), m.editor === true, m.requestId) },
-  openProject: { run: (s, m) => s.useProject(String(m.path ?? ''), m.newSession === true) },
+  projects: { switchRead: true,  run: (s, m) => s.showProjects(String(m.path ?? '')) },
+  docs: { switchRead: true,  run: (s, m) => s.showDocs(String(m.root ?? ''), String(m.path ?? ''), String(m.host ?? ''), m.editor === true, m.requestId) },
+  openProject: { navigation: true,  run: (s, m) => s.useProject(String(m.path ?? ''), m.newSession === true) },
   newProject: { run: (s, m) => s.newProject(String(m.parent ?? ''), String(m.name ?? '').trim(), m.newSession === true) },
   projectTrust: { run: (s, m) => s.confirmProjectTrust(m.approve === true, m.returnTo) },
   codexSetting: {
@@ -239,10 +240,10 @@ export const ROUTES = {
   },
   codexInstructions: { run: (s, m) => s.app === 'codex' && s.saveCodexInstructions(String(m.text ?? ''), m.requestId) },
   closeCodexSettings: { run: s => s.closeCodexSettings() },
-  settings: { run: (s, m) => s.showSettings(m.requestId, String(m.section || '')) },
+  settings: { switchRead: true,  run: (s, m) => s.showSettings(m.requestId, String(m.section || '')) },
   closeDesktopSettings: { run: s => s.closeDesktopSettings() },
   toggleSetting: { run: (s, m) => s.toggleSetting(String(m.label ?? ''), typeof m.value === 'string' ? m.value : undefined) },
-  usage: {
+  usage: { switchRead: true,
     fast: s => s.app === 'codex' || s.app === 'devin',
     fastRun: (s, m) => s.showUsage(m.automatic === true),
     background: (s, m) => m.automatic === true,
@@ -268,8 +269,8 @@ export const ROUTES = {
   surface: { run: (s, m) => s.setSurface(String(m.to ?? '')) },
   openEditorChat: { run: s => s.openEditorChat() },
   closeTab: { run: (s, m) => s.closeTab(String(m.id ?? '')) },
-  file: { run: (s, m) => s.openFile(String(m.path ?? ''), String(m.diff ?? ''), m.changes === true, m.requestId) },
-  click: { run: (s, m) => s.clickButton(m.item, m.n, m.actionId, m.label, m.sel) },
+  file: { switchRead: true,  run: (s, m) => s.openFile(String(m.path ?? ''), String(m.diff ?? ''), m.changes === true, m.requestId) },
+  click: { run: (s, m) => s.clickButton(m.item, m.n, m.actionId, m.label, m.sel, m.requestId) },
   queue: {
     run: (s, m) => {
       if (m.action === 'clear' && s.app === 'devin') return s.devinClearQueue();
@@ -298,22 +299,22 @@ export const ROUTES = {
     fail: (s, m) => s.emit({ t: 'imageDone', clientImageId: m.clientImageId, ok: false }),
   },
   editImage: { readOnly: true, run: (s, m) => s.editAttachmentImage(String(m.id), String(m.sel)) },
-  attachments: { readOnly: true, fusionFree: true, run: s => s.syncAttachments() },
+  attachments: { switchRead: true,  readOnly: true, fusionFree: true, run: s => s.syncAttachments() },
   removeAttachment: { run: (s, m) => s.removeAttachment(String(m.id)) },
   question: {
     run: (s, m) => s.answerQuestion(m.qi, m.oi, ['option', 'submit', 'skip', 'prev', 'next'].includes(m.part) ? m.part : 'option', m.text),
     after: questionDone, fail: questionFailed,
   },
-  workdir: { run: s => s.workdirList() },
+  workdir: { switchRead: true,  run: s => s.workdirList() },
   workdirPick: { run: (s, m) => s.workdirPick(String(m.name ?? '').slice(0, 200), String(m.path ?? '').slice(0, 400)) },
   envPick: { run: (s, m) => s.envPick(String(m.label ?? '')) },
-  changes: { run: s => s.listChanges() },
-  thought: { readOnly: true, run: (s, m) => s.thought(String(m.i ?? '')) },
+  changes: { switchRead: true,  run: s => s.listChanges() },
+  thought: { switchRead: true,  readOnly: true, run: (s, m) => s.thought(String(m.i ?? '')) },
   revert: { run: (s, m) => s.revert(String(m.i ?? '')) },
   revertOk: { run: (s, m) => s.revertAnswer(true, typeof m.apply === 'boolean' ? m.apply : undefined) },
   revertCancel: { run: (s, m) => s.revertAnswer(false) },
   change: { run: (s, m) => s.changeAction(m.i, m.name, m.act) },
-  scrollChat: {
+  scrollChat: { switchRead: true,
     readOnly: (s, m) => s.app === 'codex' && m.history === true,
     run: async (s, m) => {
       if (!m.history) return s.scrollChat(Number(m.dy) || 0, m.automatic === true);
@@ -337,7 +338,7 @@ export const ROUTES = {
     run: (s, m) => s.sendMessage(String(m.text ?? ''), m.submit !== false, m.when, cleanMentions(m.mentions), { requestId: m.requestId, draft: m.draft, text: m.text, draftEpoch: m.draftEpoch }),
     fail: (s, m, error) => s.emit({ t: 'sendFailed', requestId: m.requestId, message: quotaErrorMessage(s.app, error) || error?.message }),
   },
-  mentionQuery: { run: (s, m) => s.mentionQuery(String(m.q ?? '').slice(0, 80), m.cat ? String(m.cat).slice(0, 40) : '', Number(m.seq) || 0, m.trigger === '/' ? '/' : '@', { text: String(m.text ?? ''), start: m.start, caret: m.caret }) },
+  mentionQuery: { switchRead: true,  run: (s, m) => s.mentionQuery(String(m.q ?? '').slice(0, 80), m.cat ? String(m.cat).slice(0, 40) : '', Number(m.seq) || 0, m.trigger === '/' ? '/' : '@', { text: String(m.text ?? ''), start: m.start, caret: m.caret }) },
   codexRequest: {
     run: async (s, m) => {
       if (s.app !== 'codex') return;
@@ -356,28 +357,17 @@ export const ROUTES = {
     after: questionDone, fail: questionFailed,
   },
   codexPick: { run: (s, m) => s.codexPick(m) },
-  codexSkills: { run: s => s.codexSkillList() },
+  codexSkills: { switchRead: true,  run: s => s.codexSkillList() },
   codexPlan: { run: s => s.codexTogglePlan() },
   codexIde: { run: s => s.codexToggleIde() },
-  codexRun: { run: s => s.codexRunMenu() },
-  codexChat: { run: s => s.codexChatMenu() },
+  codexRun: { switchRead: true,  run: s => s.codexRunMenu() },
+  codexChat: { switchRead: true,  run: s => s.codexChatMenu() },
   codexRename: { run: (s, m) => s.codexRenameThread(String(m.id || ''), String(m.name || '')) },
   codexArchive: { run: (s, m) => s.codexArchiveThread(String(m.id || '')) },
-  visualList: {pre: s => s.visualList()},
-  visualSelect: {pre: (s, m) => s.visualSelect(m.id)},
-  refresh: { readOnly: true, fusionFree: true, run: s => s.mode === 'chat' ? s.pollChat(true, true) : s.mode === 'terminal' ? s.pollTerminal() : s.snapshot(true), fusion: s => s.mode === 'screen' ? s.snapshot(true) : s.adapter.pollChat.call(s) },
-  quality: {
-    fusionFree: true,
-    run: async (s, m) => {
-      if (s.mode === 'screen') return;
-      if (!s.editorCdp) return;
-      s.screencast.quality = Math.min(s.mode === 'terminal' ? 95 : 90, Math.max(20, Number(m.quality) || 60));
-      s.screencast.maxWidth = Math.min(s.mode === 'terminal' ? 4096 : 2560, Math.max(480, Number(m.maxWidth) || 1280));
-      if (s.mode !== 'screen') return;
-      await s.editorCdp.send('Page.stopScreencast');
-      return s.startScreencast();
-    },
-  },
+  visualList: { connection: true, pre: s => s.visualList()},
+  visualSelect: { connection: true, pre: (s, m) => s.visualSelect(m.id)},
+  refresh: { switchRead: true,  readOnly: true, fusionFree: true, run: s => s.mode === 'chat' ? s.pollChat(true, true) : s.mode === 'terminal' ? s.pollTerminal() : s.snapshot(true), fusion: s => s.mode === 'screen' ? s.snapshot(true) : s.adapter.pollChat.call(s) },
+
 };
 
 export { flag };

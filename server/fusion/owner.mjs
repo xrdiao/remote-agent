@@ -12,14 +12,31 @@ import { CODEX_CDP_URL, EDITORS } from '../config.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { AgentContext, FOCUS_COMPOSER, safeHomePath, projectList, openFolder, quotaBlockedMessage, quotaErrorMessage } from '../agent/index.mjs';
 import { FUSION_ACTIVE, fusionHistory, conversationProjects, fusionWorkers,
-  newFusionRun, fusionCursorProjects, fusionProject, fusionModelSpec, fusionHtml, fusionMark, fusionLastAssistant } from './state.mjs';
+  saveFusionHistory, newFusionRun, fusionCursorProjects, fusionProject, fusionModelSpec, fusionHtml, fusionMark, fusionLastAssistant } from './state.mjs';
 import '../apps/index.mjs';
 
 const execFileAsync = promisify(execFile);
 
 export const FUSION_OWNER = {
-fusionFinishJob() {
+fusionStartJob(task) {
+  const run = this.fusionRun;
+  this.fusionCancel = false;
+  const job = Promise.resolve().then(() => {
+    if (this.fusionCancel) throw new Error('已停止');
+    return task(job);
+  }).catch(error => {
+    if (this.fusionJob !== job || this.fusionRun !== run) return;
+    run.phase = 'idle';
+    this.fusionEmit();
+    this.emit({ t: 'status', ok: false, msg: quotaErrorMessage('fusion', error) || error.message });
+  }).finally(() => this.fusionFinishJob(job));
+  this.fusionJob = job;
+},
+
+fusionFinishJob(job) {
+  if (this.fusionJob !== job) return;
   this.fusionJob = null;
+  saveFusionHistory();
   this.fusionFlushUsage();
   if (fusionWorkers.get(this.fusionWorkerKey) === this) fusionWorkers.delete(this.fusionWorkerKey);
 },
@@ -43,7 +60,7 @@ fusionProgress(side, items, complete = false) {
   const next = [...known.values()];
   if (JSON.stringify(next) !== JSON.stringify(f.progress || [])) {
     f.progress = next;
-    this.fusionEmit();
+    this.fusionEmit(false);
   }
 },
 
@@ -61,7 +78,7 @@ fusionItems(f = this.fusionRun) {
   ].filter(Boolean);
 },
 
-fusionEmit() {
+fusionEmit(immediate = true) {
   const f = this.fusionRun;
   if (!f) return;
   f.updated = Date.now();
@@ -69,7 +86,7 @@ fusionEmit() {
   const index = this.fusionSaved.runs.findIndex(r => r.id === f.id);
   if (index < 0) this.fusionSaved.runs.push(f);
   else this.fusionSaved.runs[index] = f;
-  saveState({ fusionHistory });
+  saveFusionHistory(immediate);
   if (this.windowId !== 'fusion') return;
   const side = spec => spec ? { id: spec.id, app: spec.app, title: spec.title, conversationTitle: spec.conversationTitle, model: spec.model || '', usage: spec.usage || {} } : null;
   this.emit({ t: 'chat', sel: `fusion|fusion|${f.id}`, chat: {
@@ -94,7 +111,7 @@ async fusionOpenHistory(id) {
   this.fusionRun = f;
   this.clearViewState();
   this.threadId = f.id;
-  this.emit({ t: 'thread', windowId: 'fusion', threadId: f.id, sel: this.selectionKey() });
+  this.emit({ t: 'thread', windowId: 'fusion', threadId: f.id, sel: this.selectionKey(), ready: true });
   this.fusionEmit();
   if (f.a || f.b) { await this.fusionCatalog(); this.fusionEmit(); }
 },
@@ -110,12 +127,12 @@ fusionUsageEmit() {
   this.emit({ t: 'fusionUsage', sel: `fusion|fusion|${this.fusionRun.id}`, a: this.fusionRun.a?.usage || {}, b: this.fusionRun.b?.usage || {} });
 },
 
-async fusionUsage(automatic = false, only = '') {
+async fusionUsage(automatic = false, only = '', job = null) {
   if (!this.fusionWorkerKey && this.fusionRun) {
     const worker = fusionWorkers.get(JSON.stringify([this.deviceId, this.fusionRun.id]));
     if (worker) return worker.fusionUsage(automatic, only);
   }
-  if (this.fusionHold || this.fusionJob) {
+  if (this.fusionHold || this.fusionJob && this.fusionJob !== job) {
     this.fusionUsagePending = { automatic, only };
     return this.fusionUsageEmit();
   }
@@ -480,13 +497,18 @@ async fusionAsk(side, prompt) {
     const beforeTurn = this.app === 'codex' ? await this.cdp.evaluate(helpersCall('codexFusionTurn()')) : null;
     const humanIds = new Set((before?.items || []).filter(it => it.k === 'human').map(it => it.i));
     const message = spec.resumeContext ? `以下为旧会话的历史摘录，仅作背景；执行目录为 ${this.fusionRun.project.root}，请以本次要求为准。\n${spec.resumeContext}\n\n${prompt}` : String(prompt);
+    let submitted = message;
     const normalize = text => String(text || '').replace(/\s+/g, ' ').trim();
     await this.withFocus(async () => {
       assertActive();
       const found = await this.cdp.evaluate(FOCUS_COMPOSER);
       assertActive();
       if (!found) throw new Error('没找到这一边的输入框');
-      await this.typeText(message);
+      if (!await this.setDraft(message)) throw new Error('Fusion 输入未完整写入，请核对电脑端草稿后重试');
+    if (this.app === 'codex') {
+      submitted = await this.cdp.evaluate(helpersCall('codexPromptPayload()'));
+      if (submitted == null) throw new Error('Codex 输入尚未就绪');
+    }
       assertActive();
       if (this.app === 'codex') {
         if (!await this.cdp.evaluate(helpersCall('submitCodexMessage()'))) throw new Error('这一边的发送按钮当前不可用');
@@ -518,7 +540,7 @@ async fusionAsk(side, prompt) {
       this.fusionOwner.fusionUsageEmit();
       let last;
       if (this.app === 'codex') {
-        const turn = await this.cdp.evaluate(helpersCall(`codexFusionTurn(${JSON.stringify(requestId)}, ${JSON.stringify(message)}, ${JSON.stringify(beforeTurn?.ids || [])})`));
+        const turn = await this.cdp.evaluate(helpersCall(`codexFusionTurn(${JSON.stringify(requestId)}, ${JSON.stringify(submitted)}, ${JSON.stringify(beforeTurn?.ids || [])})`));
         if (!requestId && turn?.id) requestId = turn.id;
         last = requestId && turn?.id === requestId ? turn : { text: '' };
       } else {
@@ -658,29 +680,26 @@ async fusionUserSend(text) {
   if (!f.a.model || !f.b.model) throw new Error('先选择 A 和 B 的模型');
   if (this.fusionJob) throw new Error('Fusion 正在进行');
   if (!['idle', 'done', 'stopped'].includes(f.phase)) throw new Error('这一轮还在进行。方案写好后点「执行方案」，或先停止');
-  this.fusionCancel = false;
-  await this.fusionUsage(true);
-  if (this.fusionCancel) throw new Error('已停止');
-  const blocked = ['a', 'b'].map(side => {
-    const spec = this.fusionRun?.[side];
-    const message = spec && quotaBlockedMessage(spec.app, spec.usage);
-    return message ? `${side.toUpperCase()}：${message}` : '';
-  }).filter(Boolean);
-  if (blocked.length) throw new Error(blocked.join('；'));
-  f.history = [...(f.history || []), ...this.fusionItems(f)];
-  f.turn = (f.turn || 0) + 1;
-  f.task = text;
-  f.progress = [];
-  f.plan = f.brief = f.echo = f.result = f.diff = f.review = '';
-  f.round = 1;
-  f.miss = 0;
-  f.phase = 'planning';
-  this.fusionEmit();
-  this.fusionJob = this.fusionPlan(text).catch(e => {
-    if (this.fusionRun) this.fusionRun.phase = 'idle';
+  this.fusionStartJob(async job => {
+    f.history = [...(f.history || []), ...this.fusionItems(f)];
+    f.turn = (f.turn || 0) + 1;
+    f.task = text;
+    f.progress = [];
+    f.plan = f.brief = f.echo = f.result = f.diff = f.review = '';
+    f.round = 1;
+    f.miss = 0;
+    f.phase = 'planning';
     this.fusionEmit();
-    this.emit({ t: 'status', ok: false, msg: quotaErrorMessage('fusion', e) || e.message });
-  }).finally(() => { this.fusionFinishJob(); });
+    await this.fusionUsage(true, '', job);
+    if (this.fusionCancel) throw new Error('已停止');
+    const blocked = ['a', 'b'].map(side => {
+      const spec = f[side];
+      const message = quotaBlockedMessage(spec.app, spec.usage);
+      return message ? `${side.toUpperCase()}：${message}` : '';
+    }).filter(Boolean);
+    if (blocked.length) throw new Error(blocked.join('；'));
+    await this.fusionPlan(text);
+  });
 },
 
 async fusionPlan(text) {
@@ -698,12 +717,7 @@ fusionGo() {
   const f = this.fusionRun;
   if (!f || this.fusionJob) throw new Error('Fusion 正在进行');
   if (f.phase !== 'plan' && f.phase !== 'disagree') throw new Error('现在还不能交给 B');
-  this.fusionCancel = false;
-  this.fusionJob = this.fusionExecute().catch(e => {
-    if (this.fusionRun) this.fusionRun.phase = 'idle';
-    this.fusionEmit();
-    this.emit({ t: 'status', ok: false, msg: quotaErrorMessage('fusion', e) || e.message });
-  }).finally(() => { this.fusionFinishJob(); });
+  this.fusionStartJob(() => this.fusionExecute());
 },
 
 async fusionExecute() {
@@ -759,9 +773,6 @@ fusionDecide(kind) {
   if (!f || f.phase !== 'check') throw new Error('现在不需要选择');
   if (!['done', 'fix', 'return'].includes(kind)) throw new Error('没有这个决定');
   if (this.fusionJob) throw new Error('Fusion 正在进行');
-  this.fusionCancel = false;
-  this.fusionJob = this.fusionApply({ kind, body: f.review || f.brief }).catch(e => {
-    this.emit({ t: 'status', ok: false, msg: quotaErrorMessage('fusion', e) || e.message });
-  }).finally(() => { this.fusionFinishJob(); });
+  this.fusionStartJob(() => this.fusionApply({ kind, body: f.review || f.brief }));
 }
 };

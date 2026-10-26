@@ -165,6 +165,11 @@
     if (!ed) return null;
     return (ed.innerText || '').replace(/[\u200b\ufeff]/g, '').replace(/^\n/, '').replace(/\n+$/g, '');
   };
+  const codexPromptPayload = () => {
+    const ed = codexPromptEl();
+    const controller = ed && codexFiberProps(ed, Infinity).find(p => p.composerController)?.composerController;
+    return controller ? controller.getText() : null;
+  };
   const codexSelectPrompt = () => {
     const ed = codexPromptEl();
     if (!ed) return false;

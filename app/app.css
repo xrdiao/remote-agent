@@ -594,6 +594,8 @@ div.math { display: block; margin: .35em 0; text-align: center; }
   color: var(--fg-3); background: var(--s1); border-radius: 999px; font-size: 12px; text-align: center;
 }
 .msg.notice.live { color: var(--fg-2); }
+.msg.notice.capacity { display: flex; align-items: center; gap: 10px; max-width: 100%; text-align: left; border-radius: var(--r-md); }
+.msg.notice.capacity .btns { flex: 0 0 auto; margin: 0; }
 .btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .btns button { font-size: 13.5px; min-height: 34px; padding: 0 12px; }
 .btns button.primary { font-weight: 600; }

@@ -262,11 +262,7 @@
     return { lines: lines.map(l => l.slice(0, 180)), quota: [], plan, limits: limits.map(b => ({ ...b, reset })), loading, missing: !limits.length && !loading };
   };
 
-  const newTerminalItem = () => {
-    const rows = [...doc.querySelectorAll('[role=listbox] [role=option], [role=listbox] button, [role=menu] [role=menuitem]')];
-    const hit = rows.find(e => vis(e) && /^Terminal\b/.test((e.innerText || e.getAttribute('aria-label') || '').trim()));
-    return hit ? center(hit) : null;
-  };
+
 
   // Full xterm buffer, including scrollback still held by the terminal (not the canvas pixels).
   // Colors are packed as 0 = default, 1–256 = palette index + 1, negative = -(rgb + 1).

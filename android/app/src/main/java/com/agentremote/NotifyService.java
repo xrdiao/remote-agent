@@ -338,7 +338,7 @@ public class NotifyService extends Service {
                 lastData = android.os.SystemClock.elapsedRealtime();
                 if (line.startsWith("data:")) {
                     JSONObject e = new JSONObject(line.substring(5).trim());
-                    String k = e.optString("win", "") + "|" + e.optString("windowId", "") + "|" + e.optString("threadId", "");
+                    String k = e.optString("computer") + "|" + e.optString("win", "") + "|" + e.optString("windowId", "") + "|" + e.optString("threadId", "");
                     int id = k.replace("|", "").isEmpty() ? 2 : 3 + (k.hashCode() & 0x7fffffff) % 100000;
                     Log.i(TAG, "data kind=" + e.optString("kind") + " id=" + id + (e.has("startedAt") ? " startedAt=" + e.optLong("startedAt") : ""));
                     show(e);
@@ -364,7 +364,7 @@ public class NotifyService extends Service {
         String windowId = e.optString("windowId", "");
         String threadId = e.optString("threadId", "");
         // One notification per thread, so a second session does not replace the first.
-        String key = win + "|" + windowId + "|" + threadId;
+        String key = e.optString("computer") + "|" + win + "|" + windowId + "|" + threadId;
         long seq = e.optLong("seq", 0);
         if (seq > 0) {
             long previous = latestSeq.containsKey(key) ? latestSeq.get(key) : 0;
@@ -380,7 +380,7 @@ public class NotifyService extends Service {
                 .setContentTitle(e.optString("title", "Remote Agent"))
                 .setContentText(e.optString("body", ""))
                 .setStyle(new Notification.BigTextStyle().bigText(e.optString("body", "")))
-                .setContentIntent(openApp(win, windowId, threadId, id))
+                .setContentIntent(openApp(e.optString("computer"), win, windowId, threadId, id))
                 .setAutoCancel(true);
         // Android shows three action buttons; Reply (with its text field) always gets one of them.
         boolean reply = e.optBoolean("reply");
@@ -392,11 +392,11 @@ public class NotifyService extends Service {
             String aid = a.optString("id");
             String label = a.optString("label", "");
             if (label.isEmpty()) label = "acceptAll".equals(aid) ? tr("全部接受", "Accept all") : aid;
-            b.addAction(new Notification.Action.Builder(Icon.createWithResource(this, R.drawable.ic_notify), label, actionIntent(win, windowId, threadId, e.optString("question"), aid, id, false)).build());
+            b.addAction(new Notification.Action.Builder(Icon.createWithResource(this, R.drawable.ic_notify), label, actionIntent(e.optString("computer"), win, windowId, threadId, e.optString("question"), aid, id, false)).build());
         }
         if (reply && !win.isEmpty()) {
             RemoteInput ri = new RemoteInput.Builder("text").setLabel(tr("回复 Agent…", "Reply to the Agent…")).build();
-            b.addAction(new Notification.Action.Builder(Icon.createWithResource(this, R.drawable.ic_notify), tr("回复", "Reply"), actionIntent(win, windowId, threadId, e.optString("question"), "reply", id, true))
+            b.addAction(new Notification.Action.Builder(Icon.createWithResource(this, R.drawable.ic_notify), tr("回复", "Reply"), actionIntent(e.optString("computer"), win, windowId, threadId, e.optString("question"), "reply", id, true))
                     .addRemoteInput(ri).build());
         }
         Log.i(TAG, "notify event id=" + id);
@@ -408,7 +408,7 @@ public class NotifyService extends Service {
         Notification.Builder b = builder(CH_WORK)
                 .setContentTitle(e.optString("title", "Remote Agent"))
                 .setContentText(e.optString("body", ""))
-                .setContentIntent(openApp(win, windowId, threadId, id))
+                .setContentIntent(openApp(e.optString("computer"), win, windowId, threadId, id))
                 .setOngoing(true)
                 .setCategory(Notification.CATEGORY_PROGRESS)
                 .setWhen(e.optLong("startedAt", System.currentTimeMillis()))
@@ -433,7 +433,7 @@ public class NotifyService extends Service {
 
     // Devin's todo list as a progress chip; its own id, so the run's end and alerts leave it alone.
     private void showTasks(JSONObject e, String win, String windowId, String threadId) {
-        String key = win + "|" + windowId + "|" + threadId;
+        String key = e.optString("computer") + "|" + win + "|" + windowId + "|" + threadId;
         int tid = 3 + ((key + "|tasks").hashCode() & 0x7fffffff) % 100000;
         int done = e.optInt("done"), total = e.optInt("total");
         boolean complete = total > 0 && done >= total;
@@ -441,7 +441,7 @@ public class NotifyService extends Service {
         Notification.Builder b = builder(CH_WORK)
                 .setContentTitle(e.optString("title", "Remote Agent"))
                 .setContentText(e.optString("body", ""))
-                .setContentIntent(openApp(win, windowId, threadId, tid))
+                .setContentIntent(openApp(e.optString("computer"), win, windowId, threadId, tid))
                 .setCategory(Notification.CATEGORY_PROGRESS)
                 .setOngoing(!finished)
                 .setAutoCancel(finished);
@@ -469,9 +469,9 @@ public class NotifyService extends Service {
         ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).notify(tid, b.build());
     }
 
-    private PendingIntent actionIntent(String win, String windowId, String threadId, String question, String act, int notifId, boolean mutable) {
+    private PendingIntent actionIntent(String computer, String win, String windowId, String threadId, String question, String act, int notifId, boolean mutable) {
         Intent i = new Intent(this, ActionReceiver.class).setAction("com.agentremote.ACT." + notifId + "." + act)
-                .putExtra("win", win).putExtra("windowId", windowId).putExtra("threadId", threadId).putExtra("question", question).putExtra("act", act).putExtra("nid", notifId);
+                .putExtra("computer", computer).putExtra("win", win).putExtra("windowId", windowId).putExtra("threadId", threadId).putExtra("question", question).putExtra("act", act).putExtra("nid", notifId);
         int flags = PendingIntent.FLAG_UPDATE_CURRENT | (mutable ? (Build.VERSION.SDK_INT >= 31 ? PendingIntent.FLAG_MUTABLE : 0) : PendingIntent.FLAG_IMMUTABLE);
         return PendingIntent.getBroadcast(this, (notifId * 31 + act.hashCode()) & 0x7fffffff, i, flags);
     }
@@ -489,7 +489,9 @@ public class NotifyService extends Service {
             if (act != null && act.startsWith("opt:")) body.put("act", "opt").put("index", Integer.parseInt(act.substring(4)));
             else if ("reply".equals(act)) body.put("act", "reply").put("text", text == null ? "" : text);
             else body.put("act", act);
-            JSONObject cfg = new JSONObject(prefs(c).getString(PREF, "{}"));
+            String computer = intent.getStringExtra("computer");
+            JSONObject cfg = new JSONObject(prefs(c).getString("notify:" + computer, "{}"));
+            if (computer == null || !computer.equals(cfg.optString("id"))) throw new Exception(tr("请先连接通知来源电脑", "Connect to the notification source computer first"));
             String relay = resolveRelay(cfg.getString("app"), cfg.optString("key"));
             HttpURLConnection h = (HttpURLConnection) new URL(relay + "/api/act").openConnection();
             h.setConnectTimeout(15000);
@@ -525,12 +527,13 @@ public class NotifyService extends Service {
     }
 
     private PendingIntent openApp(String win, int requestCode) {
-        return openApp(win, "", "", requestCode);
+        return openApp("", win, "", "", requestCode);
     }
 
-    private PendingIntent openApp(String win, String windowId, String threadId, int requestCode) {
+    private PendingIntent openApp(String computer, String win, String windowId, String threadId, int requestCode) {
         Intent i = new Intent(this, MainActivity.class).setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         if (win != null && !win.isEmpty()) i.putExtra("win", win);
+        i.putExtra("computer", computer);
         if (windowId != null && !windowId.isEmpty()) i.putExtra("windowId", windowId);
         if (threadId != null && !threadId.isEmpty()) i.putExtra("threadId", threadId);
         return PendingIntent.getActivity(this, requestCode, i, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);

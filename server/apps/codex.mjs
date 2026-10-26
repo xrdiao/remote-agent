@@ -174,7 +174,11 @@ export const adapter = {
     const facts = await this.cdp.evaluate(helpersCall('codexFacts()'));
     const hasAttachments = hasLocalFiles || facts?.hasDraftAttachments === true;
     const beforeReceipt = await this.cdp.evaluate(helpersCall('codexReceiptRows()'));
-    const expected = (await this.cdp.evaluate(helpersCall('codexPromptText()')) || '').trim();
+    const draft = await this.cdp.evaluate(helpersCall('codexPromptText()')) || '';
+    const payload = await this.cdp.evaluate(helpersCall('codexPromptPayload()'));
+    if (payload == null) throw new Error('Codex 输入尚未就绪');
+    const expected = payload.trim();
+    this.lastDraft = draft;
     const beforeMessages = new Set(beforeReceipt.map(item => item.id));
     const beforeQueue = new Set((facts?.queued || []).map(item => item.id));
     const nativeReceipt = this.sendNativeReceipt;

@@ -9,6 +9,7 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 DATA="${HOME}/.agent-remote"
 LOG="$DATA/server.log"
 NODE="$(command -v node)"
+xml() { printf '%s' "$1" | sed 's/\&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
 
 case "${1:-}" in
   install)
@@ -21,18 +22,18 @@ case "${1:-}" in
   <key>Label</key><string>$LABEL</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$NODE</string>
-    <string>$DIR/../server/index.mjs</string>
+    <string>$(xml "$NODE")</string>
+    <string>$(xml "$DIR/../server/index.mjs")</string>
     <string>--tunnel</string>
   </array>
-  <key>WorkingDirectory</key><string>$DIR/..</string>
+  <key>WorkingDirectory</key><string>$(xml "$DIR/..")</string>
   <key>EnvironmentVariables</key>
   <dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>15</integer>
-  <key>StandardOutPath</key><string>$LOG</string>
-  <key>StandardErrorPath</key><string>$LOG</string>
+  <key>StandardOutPath</key><string>$(xml "$LOG")</string>
+  <key>StandardErrorPath</key><string>$(xml "$LOG")</string>
 </dict>
 </plist>
 EOF

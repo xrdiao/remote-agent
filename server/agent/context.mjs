@@ -185,10 +185,20 @@ export class AgentContext {
   }
 
   async waitFor(call, tries = 10) {
+    const deadline = Date.now() + tries * 120;
     for (let i = 0; i < tries; i++) {
-      await new Promise(r => setTimeout(r, 120));
-      const v = await this.cdp.evaluate(helpersCall(call));
-      if (v) return v;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await awaitCdpRead(new Promise(r => setTimeout(r, Math.min(120, remaining))));
+      const timeout = deadline - Date.now();
+      if (timeout <= 0) break;
+      try {
+        const value = await this.cdp.evaluate(helpersCall(call), { timeout });
+        if (value) return value;
+      } catch (error) {
+        if (!cdpRead.getStore()?.aborted && Date.now() >= deadline) return null;
+        throw error;
+      }
     }
     return null;
   }
@@ -280,7 +290,8 @@ export class AgentContext {
     }
   }
 
-  async clickButton(item, n, actionId, label, sel) {
+  async clickButton(item, n, actionId, label, sel, requestId) {
+    let clicked = false;
     try {
     await this.assertSelectedThread();
     if (sel != null && sel !== this.selectionKey()) throw new Error('会话已切换，请使用当前会话的按钮');
@@ -288,8 +299,9 @@ export class AgentContext {
     if (!pos) { await this.pollChat(true); throw new Error('请求已更新，请查看最新选项'); }
     if (/^(Fork chat from here|Open agent|View agent|View subagent)$/.test(label || '')) this.selectedThread = '';
     await this.tapCss(pos.x, pos.y);
+    clicked = true;
     await new Promise(r => setTimeout(r, 200));
     await this.pollChat(true);
-    } finally { this.emit({ t: 'clickDone', item, actionId, sel }); }
+    } finally { this.emit({ t: 'clickDone', item, actionId, sel, clicked, requestId }); }
   }
   }

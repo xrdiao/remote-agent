@@ -39,11 +39,9 @@ $('sheet').addEventListener('click', e => {
 function onFrame(m) {
   if (m.visual && mode !== 'screen') return;
   if (mode === 'screen' && !m.visual) return;
-  const resized = m.w !== frame.w || m.h !== frame.h;
   frame = { w: m.w, h: m.h };
   screen.src = 'data:image/jpeg;base64,' + m.data;
   layoutStage();
-  if (resized) applyQuality();
 }
 screen.onload = () => { if (mode !== 'screen') send({ t: 'ack' }); };
 
@@ -65,21 +63,6 @@ function layoutStage() {
   screen.style.top = -ry * scale + 'px';
 }
 
-let sentWidth = 0;
-function applyQuality() {
-  if (mode === 'screen') return;
-  if (mode !== 'screen' || !authed) return;
-  const [, , rw] = cropRect();
-  if (!rw) return;
-  // The stream is a photo of the whole window. Ask for enough pixels that the cropped
-  // terminal (or chat panel), once stretched to the phone, is about one device pixel per source pixel.
-  const cap = mode === 'terminal' ? 4096 : 2560;
-  const px = Math.min(cap, Math.round(view.clientWidth * zoom * devicePixelRatio * frame.w / rw));
-  if (Math.abs(px - sentWidth) < 40) return;
-  sentWidth = px;
-  send({ t: 'quality', quality: mode === 'terminal' ? 92 : 70, maxWidth: px });
-}
-
 // One finger pans the view; two fingers zoom. Visualization windows are read-only.
 let gesture = null;
 const fingerDist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
@@ -99,7 +82,6 @@ function setZoom(next, clientX, clientY) {
   view.scrollTop = zoom === 1 ? 0 : py * k - ay;
   $('zoom').hidden = mode !== 'screen' && zoom <= 1.01;
   $('visualZoom').textContent = Math.round(zoom * 100) + '%';
-  applyQuality();
 }
 
 function remoteWheel(clientX, clientY, dx, dy) {

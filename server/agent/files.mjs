@@ -113,16 +113,20 @@ export const methods = {
     }
     const name = path.posix.basename(p);
     const dir = path.posix.dirname(p);
+    if (isAbs || roots.length && dir !== '.') throw new Error(`找不到文件（可能已被删除或移动）：${p}`);
     const hits = await this.quickOpen(name);
     // Prefer matches inside this workspace (relative dir) whose folder ends with the path the chat showed.
     const ranked = hits
       .map(h => ({ ...h, abs: h.dir.startsWith('/') ? path.posix.join(h.dir, name) : ws ? path.posix.join(ws.root, h.dir, name) : null }))
-      .filter(h => h.abs)
+      .filter(h => h.abs && (isAbs ? h.abs === p : dir === '.' || h.abs.endsWith('/' + p)))
       .sort((a, b) => (dir !== '.' && b.abs.endsWith('/' + p)) - (dir !== '.' && a.abs.endsWith('/' + p)) || a.dir.startsWith('/') - b.dir.startsWith('/'));
+    const matches = [];
     for (const h of ranked) {
       const hit = await tryPath(h.abs);
-      if (hit) return hit;
+      if (hit) matches.push(hit);
     }
+    if (matches.length > 1) throw new Error(`找到多个同名文件，请使用完整路径：${p}`);
+    if (matches.length === 1) return matches[0];
     throw new Error(`找不到文件（可能已被删除或移动）：${p}`);
   },
 

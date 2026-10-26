@@ -167,7 +167,9 @@
   // Returns the button's on-screen center so the click goes through real mouse events.
   const locate = (item, n, actionId, label) => {
     if (item === `${codexThread()}:capacity` && label && RETRY_LABEL.test(label)) {
-      const retry = codexCapacityItem()?._retry;
+      const capacity = codexCapacityItem();
+      if (actionId && capacity?.capacityInstance !== actionId) return null;
+      const retry = capacity?._retry;
       if (!retry || retry.disabled || retry.getAttribute('aria-disabled') === 'true'
         || !RETRY_LABEL.test((retry.innerText || retry.getAttribute('aria-label') || '').trim())) return null;
       return codexPoint(retry);
@@ -196,7 +198,7 @@
         list = [...list, ...extra.filter(x => !list.some(b => b.el === x.el))];
       }
     }
-    const match = actionId ? list.find(b => b.el.dataset.remoteAction === actionId && b.label === label) : label ? (list.find(b => b.label === label) || list[n]) : list[n];
+    const match = actionId ? list.find(b => b.el.dataset.remoteAction === actionId && b.label === label) : label ? list.find(b => b.label === label) : list[n];
     const b = match?.el;
     if (!b || b.disabled || b.getAttribute('aria-disabled') === 'true') return null;
     b.scrollIntoView({ block: 'center' });

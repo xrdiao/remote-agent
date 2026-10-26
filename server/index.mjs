@@ -18,6 +18,12 @@ import { run } from './publish/pages.mjs';
 import { startTunnel } from './publish/tunnel.mjs';
 import { startProjectWindowCleanup } from './project-windows.mjs';
 
+import { saveFusionHistory } from './fusion/state.mjs';
+for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) process.once(signal, () => {
+  saveFusionHistory();
+  process.exit(code);
+});
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   if (req.method === 'OPTIONS') {

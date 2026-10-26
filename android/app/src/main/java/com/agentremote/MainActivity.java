@@ -271,7 +271,10 @@ public class MainActivity extends Activity {
         String win = intent.getStringExtra("win");
         if (win != null) {
             saveOpen(intent);
-            web.evaluateJavascript("window.openWin && openWin(" + JSONObject.quote(prefs.getString("openWin", "")) + ")", null);
+            String target = prefs.getString("openWin", "");
+            web.evaluateJavascript("Boolean(window.openWin && openWin(" + JSONObject.quote(target) + "))", result -> {
+                if ("true".equals(result) && target.equals(prefs.getString("openWin", ""))) prefs.edit().remove("openWin").apply();
+            });
         }
     }
 
@@ -280,6 +283,7 @@ public class MainActivity extends Activity {
         if (win == null || win.isEmpty()) return;
         try {
             JSONObject o = new JSONObject();
+            o.put("computer", intent.getStringExtra("computer") == null ? "" : intent.getStringExtra("computer"));
             o.put("win", win);
             o.put("windowId", intent.getStringExtra("windowId") == null ? "" : intent.getStringExtra("windowId"));
             o.put("threadId", intent.getStringExtra("threadId") == null ? "" : intent.getStringExtra("threadId"));
@@ -290,6 +294,10 @@ public class MainActivity extends Activity {
     private void enableNotify(String config) {
         String old = prefs.getString(NotifyService.PREF, null);
         prefs.edit().putString(NotifyService.PREF, config).apply();
+        try {
+            String computer = new JSONObject(config).getString("id");
+            prefs.edit().putString("notify:" + computer, config).apply();
+        } catch (Exception ignored) {}
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 1);
         }
@@ -335,10 +343,15 @@ public class MainActivity extends Activity {
         web.loadUrl(url.isEmpty() ? SETUP : url);
     }
 
+    private static int originPort(Uri u) {
+        if (u.getPort() >= 0) return u.getPort();
+        return "https".equalsIgnoreCase(u.getScheme()) ? 443 : "http".equalsIgnoreCase(u.getScheme()) ? 80 : -1;
+    }
+
     private static boolean sameOrigin(Uri u, String base) {
         if (base == null || base.isEmpty()) return false;
         Uri b = Uri.parse(base);
-        return u.getScheme() != null && u.getScheme().equals(b.getScheme()) && u.getHost() != null && u.getHost().equals(b.getHost());
+        return u.getScheme() != null && u.getScheme().equalsIgnoreCase(b.getScheme()) && u.getHost() != null && u.getHost().equalsIgnoreCase(b.getHost()) && originPort(u) == originPort(b);
     }
 
     @Override

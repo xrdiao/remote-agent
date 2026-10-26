@@ -401,7 +401,7 @@ function updateSendMode() {
 
 /* Idle chat text uses two lines; the existing short-screen empty capsule remains.
    Both presentations share the same interaction state and collapse delay. */
-let composeCompactTimer = 0, composeExpandedAt = 0, composerEngaged = false;
+let composeCompactTimer = 0, composerEngaged = false;
 function micHeld() { return $('mic')?.classList.contains('on') || (typeof voiceSession !== 'undefined' && !!voiceSession); }
 function micPressing() { return $('mic')?.classList.contains('on') || (typeof voiceSession !== 'undefined' && !!voiceSession?.held); }
 function composeIdleWanted() {
@@ -449,7 +449,6 @@ function setComposerPresentation(idle, compact) {
   noteChatLayoutChange();
   document.body.classList.toggle('composeIdle', idle);
   document.body.classList.toggle('composeCompact', compact);
-  if (oldCompact && !compact) composeExpandedAt = performance.now();
   if (!idle) autosize();
   const h1 = foot.offsetHeight;
   if (stick) requestChatScroll();
@@ -480,8 +479,6 @@ function updateComposeCompact() {
 // Capture-phase so it runs before controls that re-appear under the same tap.
 // In compact: taps outside +/mic/stop only expand the composer (the field ignores pointer events
 // while compact, so no keyboard yet); a second tap in the field then focuses it natively.
-// Right after expanding, the same tap's ghost click would hit controls that were hidden
-// when the finger went down — swallow it for 400 ms.
 document.querySelector('.composerBox').addEventListener('click', e => {
   if (document.body.classList.contains('composeCompact')) {
     if (e.target.closest('#add, #mic, #stop')) return;
@@ -490,10 +487,6 @@ document.querySelector('.composerBox').addEventListener('click', e => {
     composerEngaged = true;
     setComposeCompact(false);
     return;
-  }
-  if (performance.now() - composeExpandedAt < 400
-    && e.target.closest('button') && !e.target.closest('#add, #mic, #stop')) {
-    e.preventDefault(); e.stopPropagation();
   }
 }, true);
 // A tap on the composer's own controls is still "using the composer": keep it engaged so the
@@ -505,8 +498,11 @@ document.addEventListener('pointerdown', e => {
   const inside = !!e.target.closest('footer') && !e.target.closest('#send, #sendNow');
   if (inside === composerEngaged) return;
   composerEngaged = inside;
-  if (!document.body.classList.contains('composeCompact') && !e.target.closest('#mic')) updateComposeCompact();
+  if (!document.body.classList.contains('composeCompact') && !e.target.closest('button')) updateComposeCompact();
 }, true);
+document.querySelector('.composerBox').addEventListener('click', e => {
+  if (e.target.closest('button') && !e.target.closest('#mic')) queueMicrotask(updateComposeCompact);
+});
 for (const event of ['pointerup', 'keyup']) $('mic').addEventListener(event, () => queueMicrotask(updateComposeCompact));
 document.addEventListener('focusin', e => {
   if (e.target.matches('#qnBar input, #qnBar textarea, #qnBar select')) updateComposeCompact();

@@ -32,7 +32,9 @@ export const methods = {
     await this.ensureSettings();
     const args = `${JSON.stringify(this.desktopSettingsSection || '')}, ${JSON.stringify(this.app)}`;
     const before = JSON.stringify(await this.editorCdp.evaluate(helpersCall(`desktopSettingsData(${args})`)));
-    if (typeof value === 'string') await this.editorCdp.evaluate(helpersCall(`desktopSettingValue(${JSON.stringify(label)}, ${JSON.stringify(value)})`));
+    if (typeof value === 'string') {
+      if (!await this.editorCdp.evaluate(helpersCall(`desktopSettingValue(${JSON.stringify(label)}, ${JSON.stringify(value)})`))) throw new Error('设置未生效，请重新读取后重试');
+    }
     else {
       const pos = await this.editorCdp.evaluate(helpersCall(`settingTarget(${JSON.stringify(label)})`));
       if (!pos) throw new Error('找不到这项设置');
@@ -40,6 +42,7 @@ export const methods = {
     }
     const data = await this.editorCdp.evaluate(`(async()=>{const read=()=>${helpersCall(`desktopSettingsData(${args})`)};const start=Date.now();let data;do{data=read();if(JSON.stringify(data)!==${JSON.stringify(before)})return data;await new Promise(r=>setTimeout(r,30))}while(Date.now()-start<1200);return data})()`);
     this.emit({ t:'settings', ...data });
+    if (JSON.stringify(data) === before) throw new Error('设置未生效，请重新读取后重试');
     this.emit({ t:'status', ok:true, msg:'已更新设置' });
   },
   showUsage(automatic = false) {
@@ -134,7 +137,8 @@ export const methods = {
         return;
       }
     }
-    await this.pressControl(kind);
+    const modelOpen = kind === 'model' && this.app === 'cursor' && await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return !!h.modelListTrigger() || !!h.menuItems('model').length; })()`);
+    if (!modelOpen) await this.pressControl(kind);
     let items = [];
     let fast = null;
     for (let i = 0; i < 12 && !items.length; i++) {
@@ -155,7 +159,7 @@ export const methods = {
       fusion = await this.cdp.evaluate(helpersCall('fusionConfig(true)'));
       if (fusion) this.fusion = fusion;
     }
-    await this.closeMenus();
+    if (!modelOpen) await this.closeMenus();
     if (kind === 'model' && !items.length) throw new Error('模型列表未加载，请确认电脑端模型菜单可以打开');
     if (this.sel === sel) this.emit({ t: 'menu', kind, items, max, fusion, fast, requestId, sel: this.selectionKey() });
   },
@@ -269,7 +273,7 @@ export const methods = {
     if (kind === 'codex-run') return this.codexRunPick(String(label || ''));
     if (kind === 'codex-chat') return this.codexChatPick(String(label || ''), name ? String(name).slice(0, 80) : '');
     if (kind === 'model' && await this.adapter.pickModelMenu.call(this, label)) return;
-    await this.pressControl(kind);
+    if (!(kind === 'model' && this.app === 'cursor' && await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return !!h.modelListTrigger() || !!h.menuItems('model').length; })()`))) await this.pressControl(kind);
     if (kind === 'model' && this.app !== 'codex') {
       for (let i = 0; i < 8; i++) {
         if (await this.cdp.evaluate(helpersCall('menuItems("model").length'))) break;

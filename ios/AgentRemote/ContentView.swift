@@ -167,7 +167,7 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
             return openPairLink(url)
         }
         var target: [String: String] = [:]
-        for key in ["win", "windowId", "threadId"] { target[key] = items.first { $0.name == key }?.value ?? "" }
+        for key in ["computer", "win", "windowId", "threadId"] { target[key] = items.first { $0.name == key }?.value ?? "" }
         guard let data = try? JSONSerialization.data(withJSONObject: target, options: [.sortedKeys]) else { return }
         openFromNotification(String(decoding: data, as: UTF8.self))
     }
@@ -280,15 +280,19 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
         return String(decoding: data.dropFirst().dropLast(), as: UTF8.self)
     }
 
+    private func effectivePort(_ scheme: String?, _ port: Int?) -> Int? {
+        port ?? (scheme?.lowercased() == "https" ? 443 : scheme?.lowercased() == "http" ? 80 : nil)
+    }
+
     private func sameOrigin(_ url: URL) -> Bool {
         guard !appURL.isEmpty, let base = URL(string: appURL) else { return false }
-        return url.scheme == base.scheme && url.host == base.host
+        return url.scheme?.lowercased() == base.scheme?.lowercased() && url.host?.lowercased() == base.host?.lowercased() && effectivePort(url.scheme, url.port) == effectivePort(base.scheme, base.port)
     }
 
     private func trusted(_ origin: WKSecurityOrigin) -> Bool {
         if origin.protocol == "file" { return true }
         guard !appURL.isEmpty, let base = URL(string: appURL) else { return false }
-        return origin.protocol == base.scheme && origin.host == base.host
+        return origin.protocol.lowercased() == base.scheme?.lowercased() && origin.host.lowercased() == base.host?.lowercased() && effectivePort(origin.protocol, origin.port == 0 ? nil : origin.port) == effectivePort(base.scheme, base.port)
     }
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -336,7 +340,7 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
 
     private func openFromNotification(_ payload: String) {
         pendingOpen = payload
-        let script = "(() => { if (window.openWin) { openWin(\(json(payload))); return true; } window.AgentRemoteApp?._setOpenWin?.(\(json(payload))); return false; })()"
+        let script = "(() => { if (window.openWin && openWin(\(json(payload)))) return true; window.AgentRemoteApp?._setOpenWin?.(\(json(payload))); return false; })()"
         webView.evaluateJavaScript(script) { [weak self] result, _ in
             if result as? Bool == true { self?.pendingOpen = "" }
         }

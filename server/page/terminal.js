@@ -73,13 +73,3 @@
     const b = [...doc.querySelectorAll('[aria-label="New Terminal"], [aria-label^="New Terminal"]')].find(vis);
     return b ? center(b) : null;
   };
-  const newTerminalMenu = () => {
-    const buttons = [...doc.querySelectorAll('button')].filter(e => vis(e) && e.getAttribute('aria-label') === 'Open new tab menu');
-    if (!buttons.length) return null;
-    const active = terminalEntries().find(t => t.current)?.tab;
-    if (active) {
-      const x = active.getBoundingClientRect().x;
-      buttons.sort((a, b) => Math.abs(a.getBoundingClientRect().x - x) - Math.abs(b.getBoundingClientRect().x - x));
-    }
-    return center(buttons[0]);
-  };

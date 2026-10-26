@@ -11,7 +11,7 @@ nonisolated struct AgentActivityAttributes: ActivityAttributes {
         var total: Int
         var startedAt: Double  // unix seconds (not Date: ActivityKit decodes Date as 2001-reference seconds)
     }
-    var win: String; var windowId: String; var threadId: String
+    var computer: String; var win: String; var windowId: String; var threadId: String
     var app: String; var project: String; var thread: String; var pc: String
-    var key: String { "\(win)|\(windowId)|\(threadId)" }
+    var key: String { "\(computer)|\(win)|\(windowId)|\(threadId)" }
 }
