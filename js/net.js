@@ -525,6 +525,7 @@ async function boot() {
     failPendingSends('连接已断开，消息未发送，请重试');
     failFileSave('连接已断开，保存结果未确认，请重试');
     cancelChatContentRequests();
+    interruptSessionBatch();
   }
   ws = null;
   try { old?.close(); } catch {}
@@ -676,6 +677,7 @@ async function connect() {
     failFileSave('连接已断开，保存结果未确认，请重试');
     qnPending = null;
     cancelChatContentRequests();
+    interruptSessionBatch();
     qnSig = '';
     renderQuestions(null);
     $('dot').className = '';

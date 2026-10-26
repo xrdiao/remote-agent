@@ -5,6 +5,7 @@ const I18N = (() => {
   const lang = saved === 'zh' || saved === 'en' ? saved : /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
 
   const EN = {
+    "批量操作已中断，请刷新列表确认已完成结果": "Batch operation interrupted. Refresh the list to confirm completed results.",
     "请更新安卓 App 后重新配对": "Update the Android app, then pair this entry again.",
     "无法读取入口密钥": "Unable to read this entry’s key.",
     "密钥认证需要 HTTPS，请使用固定入口或 HTTPS 隧道": "Key authentication requires HTTPS. Use the fixed entry or an HTTPS tunnel.",
