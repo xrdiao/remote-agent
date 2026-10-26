@@ -47,6 +47,11 @@ function sendReceipt(value) {
   return { requestId, draft: activeDraft, draftEpoch };
 }
 function confirmSent(m, render = true) {
+  if (m.pending) {
+    const sent = pendingSends.get(m.requestId);
+    if (sent && sent.computer === (currentComputer()?.id || '') && sent.draft === draftKey() && ['正在发送…', '正在确认电脑端接收…'].includes(pendingStatus)) status('正在确认电脑端接收…');
+    return;
+  }
   const echo = pendingEchoes.find(p => p.requestId === m.requestId);
   if (echo) {
     echo.confirmed = true;
@@ -62,13 +67,16 @@ function confirmSent(m, render = true) {
   for (const key of inputHistory.keys()) if (key.startsWith(sent.draft + '|')) inputHistory.delete(key);
   if (drafts.get(sent.draft) === sent.text && (draftVersions.get(sent.draft) || 0) === sent.version) { drafts.delete(sent.draft); draftMentions.delete(sent.draft); }
   const here = (currentComputer()?.id || '') === sent.computer && mode === sent.mode && (draftKey() === sent.draft || m.sel === viewSel);
-  if (here && pendingStatus === '正在发送…' && ![...pendingSends.values()].some(p => p.draft === activeDraft)) {
+  if (here && ['正在发送…', '正在确认电脑端接收…'].includes(pendingStatus) && ![...pendingSends.values()].some(p => p.draft === activeDraft)) {
     status(m.queued ? 'Agent 正在运行，已加入排队，这一轮结束后自动发送' : '已发送');
   }
   if (here && inputRevision === sent.revision && text.value === sent.text) {
     drafts.delete(activeDraft); draftMentions.delete(activeDraft);
     text.value = ''; MN.mentions = []; MN.value = ''; autosize(); mirroredDraft = '';
     dirtyDrafts.delete(activeDraft); queueDraftSync();
+  } else if (here && sent.mode === 'chat' && inputRevision !== sent.revision) {
+    draftRevision++; pendingDesktopDraft = null;
+    dirtyDrafts.add(activeDraft); queueDraftSync();
   }
   if (sent.mode === 'chat') {
     if (!m.queued) rememberAgentMessageTime(sent.thread, m.sentAt || Date.now());
@@ -78,6 +86,7 @@ function confirmSent(m, render = true) {
 }
 function failPendingSend(requestId, message = '发送失败，请重试') {
   const sent = pendingSends.get(requestId);
+  if (!sent) return;
   pendingSends.delete(requestId);
   const hadEcho = pendingEchoes.some(p => p.requestId === requestId);
   pendingEchoes = pendingEchoes.filter(p => p.requestId !== requestId);
@@ -85,13 +94,15 @@ function failPendingSend(requestId, message = '发送失败，请重试') {
   if (sent && (currentComputer()?.id || '') === sent.computer && draftKey() === sent.draft && text.value === '') {
     text.value = sent.text; autosize();
   }
-  if (sent) status(message, false);
+  if ((currentComputer()?.id || '') === sent.computer && draftKey() === sent.draft) status(message, false);
 }
 function failPendingSends(message) { for (const requestId of [...pendingSends.keys()]) failPendingSend(requestId, message); }
 function reconcileSent(chat) {
   const matched = new Set();
   for (const [requestId, sent] of pendingSends) {
     if (sent.mode !== 'chat' || sent.scope !== messageScope() || (sent.thread && sent.thread !== chat.thread)) continue;
+    const queued = (chat.queued || []).find(it => !sent.beforeQueues.has(it.id) && !matched.has(it.id) && it.t?.trim() === sent.text.trim().slice(0, 4000));
+    if (queued) { matched.add(queued.id); confirmSent({ requestId, queueId: queued.id, messageId: queued.messageId, sel: viewSel, queued: true }, false); continue; }
     if (sent.queuedSameText) continue;
     const item = chat.items.find(it => receiptMatchesHuman(it, sent) && !matched.has(it.i) && !messageTimes.has(generationKey(chat) + '|' + it.i));
     if (item) { matched.add(item.i); confirmSent({ requestId, messageId: item.i, sel: viewSel, queued: false, sentAt: item.sentAt || Date.now() }, false); }
@@ -147,6 +158,7 @@ function receiveDraft(m) {
     else if (m.ok && text.value === m.text) { draftAckRevision = m.revision; mirroredDraft = m.text; dirtyDrafts.delete(activeDraft); }
     return;
   }
+  if ([...pendingSends.values()].some(sent => sent.draft === activeDraft && sent.revision !== inputRevision)) return;
   if (draftAckRevision !== draftRevision || MN.mentions.length) return;
   if (composing || document.activeElement === text) { pendingDesktopDraft = m; return; }
   pendingDesktopDraft = null;
