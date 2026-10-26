@@ -1,8 +1,8 @@
 // Caches the app shell so the installed app opens instantly; live data (url.json, relay) always goes to the network.
-const CACHE = 'remote-agent-v251'; // keep in sync with APP_VERSION in js/core.js
-const SHELL = ['./', 'index.html', 'app.css?v=247', 'i18n.js?v=245', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'logo.png',
-  'js/core.js?v=251', 'js/gate.js?v=250', 'js/auth.js?v=207', 'js/net.js?v=250', 'js/sheets.js?v=248', 'js/notify.js?v=248', 'js/mode.js?v=158', 'js/chat.js?v=247',
-  'js/history.js?v=249', 'js/files.js?v=245', 'js/screen.js?v=123', 'js/terminal.js?v=239', 'js/composer.js?v=251', 'js/voice.js?v=217', 'js/local-voice.js?v=207', 'js/voice-worklet.js?v=133',
+const CACHE = 'remote-agent-v252'; // keep in sync with APP_VERSION in js/core.js
+const SHELL = ['./', 'index.html', 'app.css?v=247', 'i18n.js?v=252', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'logo.png',
+  'js/core.js?v=252', 'js/gate.js?v=250', 'js/auth.js?v=207', 'js/net.js?v=252', 'js/sheets.js?v=248', 'js/notify.js?v=248', 'js/mode.js?v=158', 'js/chat.js?v=252',
+  'js/history.js?v=252', 'js/files.js?v=245', 'js/screen.js?v=123', 'js/terminal.js?v=239', 'js/composer.js?v=251', 'js/voice.js?v=217', 'js/local-voice.js?v=207', 'js/voice-worklet.js?v=133',
   'js/transfer.js?v=207', 'js/scanner.js',
   'js/latency.js?v=142', 'js/image-editor.js?v=181',
   'logo-cursor-dark.svg', 'logo-cursor-light.svg',
@@ -15,7 +15,7 @@ self.addEventListener('install', e => {
 
 self.addEventListener('activate', e => {
   e.waitUntil(caches.keys()
-    .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
+    .then(keys => Promise.all(keys.filter(k => /^remote-agent-v\d+$/.test(k) && k !== CACHE).map(k => caches.delete(k))))
     .then(() => self.clients.claim()));
 });
 
