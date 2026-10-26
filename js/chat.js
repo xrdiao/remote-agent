@@ -282,7 +282,7 @@ function renderItem(it) {
 
 const nearBottom = () => list.scrollHeight - list.scrollTop - list.clientHeight < 120;
 // Following the chat means the user is at the very end (or never left it); "close to the end" is still reading.
-const BOTTOM_EPSILON = 1;
+const BOTTOM_EPSILON = 2;
 const atBottom = () => list.scrollHeight - list.scrollTop - list.clientHeight <= BOTTOM_EPSILON;
 const followingChat = () => isFollowingBottom();
 
