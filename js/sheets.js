@@ -6,6 +6,10 @@ const agentOpened = JSON.parse(store.get('agent-opened') || '{}');
 const agentUsage = JSON.parse(store.get('agent-usage') || '{}');
 const agentFavorites = JSON.parse(store.get('agent-favorites') || '{}');
 const agentFilters = JSON.parse(store.get('agent-filters') || '{}');
+let sharedAgentLibrary = { computer: '', records: {} };
+let pendingAgentFavorite = null;
+let agentActionRequest = 0;
+let pendingAgentActions = null;
 const agentOpenedKey = thread => `${currentComputer()?.id || ''}|${currentAppName}|${thread}`;
 const agentUsageKey = id => `${currentComputer()?.id || currentComputer()?.key || ''}|${currentApp || currentAppName}|${id}`;
 const agentFilterKey = () => `${currentComputer()?.id || currentComputer()?.key || ''}|${currentApp || currentAppName}`;
@@ -19,34 +23,78 @@ function setAgentFilter(value) {
   agentFilters[agentFilterKey()] = { session: value };
   store.set('agent-filters', JSON.stringify(agentFilters));
 }
-function agentThreadKey(a) {
+function agentThreadKey(a, app = currentApp) {
   const id = String(a.id || '');
-  if (currentAppName === 'Codex') return id.split(':').slice(2).join(':');
+  if (a.threadId) return a.threadId;
+  if (app === 'codex' && id.startsWith('thread:')) return id.split(':').slice(2).join(':');
   if (id.startsWith('project:')) {
-    try { return decodeURIComponent(id.split(':').slice(2).join(':')); } catch {}
+    try { return decodeURIComponent(id.split(':').slice(2).join(':')).replace(/^tab:/, ''); } catch {}
   }
-  return id;
+  return app === 'devin' ? id.replace(/^tab:/, '') : id;
+}
+function legacyAgentLibrary() {
+  const entries = new Map();
+  const prefixes = [currentComputer()?.id, currentComputer()?.key].filter(Boolean).map(id => id + '|');
+  for (const key of new Set([...Object.keys(agentFavorites), ...Object.keys(agentUsage)])) {
+    const prefix = prefixes.find(prefix => key.startsWith(prefix));
+    if (!prefix) continue;
+    const [appName, ...parts] = key.slice(prefix.length).split('|');
+    const app = appName.toLowerCase();
+    let id = parts.join('|');
+    if (id.startsWith('project:')) id = decodeURIComponent(id.split(':').slice(2).join(':'));
+    if (app === 'codex' && id.startsWith('thread:')) id = id.split(':').slice(2).join(':');
+    if (app === 'devin') id = id.replace(/^tab:/, '');
+    if (!['cursor', 'devin', 'codex'].includes(app) || !id || /^(?:pick|new|win|window|project-new):/.test(id)) continue;
+    const entry = entries.get(app + '|' + id) || { app, id };
+    if (agentFavorites[key]) entry.favorite = true;
+    entry.lastMessageAt = Math.max(entry.lastMessageAt || 0, Number(agentUsage[key]?.lastMessageAt) || 0);
+    entries.set(app + '|' + id, entry);
+  }
+  return [...entries.values()];
+}
+function sharedAgentRecord(id) {
+  return sharedAgentLibrary.computer === currentComputer()?.id
+    ? sharedAgentLibrary.records[currentApp]?.[agentThreadKey({ id })] || {} : {};
+}
+function receiveSessionLibrary(message) {
+  if (message.computer !== currentComputer()?.id) return;
+  sharedAgentLibrary = message;
+  if (pendingAgentFavorite && message.records[pendingAgentFavorite.app]?.[agentThreadKey({ id: pendingAgentFavorite.id }, pendingAgentFavorite.app)]?.favorite === pendingAgentFavorite.on) {
+    status(pendingAgentFavorite.on ? '已设为常用' : '已取消常用');
+    pendingAgentFavorite = null;
+  }
+  if (sheetKind === 'agents') renderAgentList();
+}
+function receiveSessionChange(message) {
+  if (message.computer !== currentComputer()?.id) return;
+  const prefix = currentComputer().key + ':' + message.app;
+  for (const [key, list] of [...agentLists]) {
+    if (key !== prefix && !key.startsWith(prefix + ':')) continue;
+    setAgentList(key, list.flatMap(a => agentThreadKey(a, message.app) !== message.id ? [a]
+      : message.action === 'rename' ? [{ ...a, title: message.title }] : []));
+  }
+  if (sheetKind === 'agents' && currentApp === message.app) renderAgentList();
+  const here = currentComputer();
+  if (message.action !== 'rename' && currentApp === message.app && here.threadId === message.id)
+    send({ t: 'attach', id: here.win, windowId: here.windowId, threadId: '' });
 }
 function agentUsageInfo(a) {
   const thread = agentThreadKey(a);
   const saved = { ...(agentUsage[agentUsageKey(thread)] || {}), ...(agentUsage[agentUsageKey(a.id)] || {}) };
   const opened = agentOpened[agentOpenedKey(thread)] || 0;
   const lastUsed = Math.max(Number(a.lastUsed) || 0, Number(saved.last) || 0, opened);
-  const lastMessageAt = Number(saved.lastMessageAt) || 0;
+  const shared = sharedAgentRecord(a.id);
+  const lastMessageAt = Number(shared.lastMessageAt) || 0;
   const ageDays = lastMessageAt ? Math.max(0, (Date.now() - lastMessageAt) / 86400000) : Infinity;
-  const favorite = !!agentFavorites[agentUsageKey(thread)] || !!agentFavorites[agentUsageKey(a.id)];
+  const favorite = shared.favorite === true;
   return { ...a, lastUsed, favorite, common: favorite || (lastMessageAt > 0 && ageDays <= 7) };
 }
 function agentFavoriteState(id) {
-  const key = agentThreadKey({ id });
-  return !!agentFavorites[agentUsageKey(key)] || !!agentFavorites[agentUsageKey(id)];
+  return sharedAgentRecord(id).favorite === true;
 }
 function setAgentFavorite(id, on) {
-  const key = agentUsageKey(agentThreadKey({ id }));
-  if (on) agentFavorites[key] = true;
-  else delete agentFavorites[key];
-  store.set('agent-favorites', JSON.stringify(agentFavorites));
-  renderAgentList();
+  pendingAgentFavorite = { id, on, app: currentApp };
+  if (!send({ t: 'sessionFavorite', app: currentApp, id: agentThreadKey({ id }), favorite: on })) pendingAgentFavorite = null;
 }
 function rememberAgentMessageTime(thread, at) {
   const timestamp = Number(at);
@@ -478,16 +526,25 @@ function foldSection(name, inner, open, count) {
 function agentFilterSlider(filters) {
   return `<div class="agentSessionFilter${filters.session === 'common' ? ' common' : ''}" role="group" aria-label="会话筛选">${Object.entries(agentFilterLabels).map(([value, text]) => `<button type="button" aria-pressed="${filters.session === value}" data-agent-filter-value="${value}">${text}</button>`).join('')}</div>`;
 }
-function showAgentActions(id, title) {
+function showAgentActions(id, title, actions = null) {
   const current = (agentLists.get(agentListKey()) || []).find(a => a.id === id);
   const codexThread = currentAppName === 'Codex' && String(id).startsWith('thread:');
   const favorite = agentFavoriteState(id);
   const rows = [
     current?.current ? '' : `<button class="opt" data-agent-action="open" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"><span class="lbl">打开会话</span></button>`,
     `<button class="opt" data-agent-action="favorite" data-agent-action-id="${esc(id)}"><span class="lbl">${favorite ? '取消常用' : '设置为常用'}</span></button>`,
-    codexThread ? `<button class="opt" data-agent-action="rename" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"><span class="lbl">重命名</span></button><button class="opt" data-agent-action="archive" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"><span class="lbl">删除／归档</span></button>` : '',
+    ...(actions || (codexThread ? ['rename', 'archive'] : [])).map(action => `<button class="opt" data-agent-action="${action}" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"><span class="lbl">${action === 'rename' ? '重命名' : action === 'delete' ? '删除' : codexThread ? '删除／归档' : '归档'}</span></button>`),
+    actions === null && !codexThread ? '<div class="hint">正在读取会话操作…</div>' : '',
   ].filter(Boolean).join('');
   openSheet('agent-actions', `<h3>${esc(title)}</h3>${rows || '<div class="hint">没有可用操作。</div>'}`);
+  if (actions === null && !codexThread) {
+    pendingAgentActions = { id, title, requestId: ++agentActionRequest };
+    send({ t: 'sessionActions', id, requestId: agentActionRequest });
+  }
+}
+function receiveAgentActions(message) {
+  if (sheetKind !== 'agent-actions' || message.app !== currentApp || message.requestId !== agentActionRequest) return;
+  if (pendingAgentActions?.id === message.id) showAgentActions(message.id, pendingAgentActions.title, message.actions);
 }
 function renderAgentList() {
   const list = agentLists.get(agentListKey());

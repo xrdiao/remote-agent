@@ -611,6 +611,7 @@ async function connect() {
       }
       rememberComputer({...currentComputer(), id: m.id, name: m.name, device: m.device});
       authed = true; failures = 0;
+      send({ t: 'sessionLibrary', entries: legacyAgentLibrary() });
       document.dispatchEvent(new Event('voice-authenticated'));
       ungate();
       connHostOk();
@@ -711,6 +712,9 @@ async function connect() {
       if (!m.initial) send({ t: 'windows' });
     }
     else if (m.t === 'attachFailed') { conn.readyRedirect = false; setWindowReady(m.ready); if (conn.active) connRender(); }
+    else if (m.t === 'sessionLibrary') receiveSessionLibrary(m);
+    else if (m.t === 'sessionChanged') receiveSessionChange(m);
+    else if (m.t === 'sessionActions') receiveAgentActions(m);
     else if (m.t === 'agents') receiveAgents(m);
     else if (m.t === 'codexArchived') {
       const conv = String(m.id || '').split(':').slice(2).join(':');

@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v241'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v242'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false, failures = 0;
 let windowReady = false;
@@ -51,12 +51,13 @@ function receiveAgents(m) {
     return { ...a, ...running, title: a.title || old?.title || '未命名会话' };
   });
   if (m.partial) {
-    const remaining = (agentLists.get(key) || []).filter(a => String(a.id).startsWith('pick:'));
-    list = [...list, ...remaining.filter(a => !list.some(b => b.title === a.title))];
+    const remaining = (agentLists.get(key) || []).filter(a => a.picker);
+    list = [...list, ...remaining.filter(a => !list.some(b => agentThreadKey(b) === agentThreadKey(a)))];
   }
   const changed = JSON.stringify(agentLists.get(key)) !== JSON.stringify(list);
   if (changed) setAgentList(key, list);
   if (!m.silent) finishPending(['正在读取 Agent 列表…', '正在归档…']);
+  if (sheetKind === 'agent-actions') return;
   if (sheetKind === 'agents' && !changed) return;
   if (!m.silent || (sheetKind === 'agents' && changed)) {
     finishPending(['正在读取 Agent 列表…', '正在归档…']);
