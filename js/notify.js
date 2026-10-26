@@ -359,7 +359,7 @@ $('sheet').addEventListener('click', async e => {
       menuCache.delete(menuCacheKey('effort'));
     }
     if (/^fusion-model-[ab]$/.test(b.dataset.kind)) fusionModelSide = b.dataset.kind.slice(-1);
-    if (b.dataset.kind !== 'codex-run' && b.dataset.kind !== 'codex-chat' && !/^fusion-(model|effort)-/.test(String(b.dataset.kind || ''))) beginSwitch(b.dataset.kind);
+    if (!['codex-run', 'codex-chat', 'model', 'effort'].includes(b.dataset.kind) && !/^fusion-(model|effort)-/.test(String(b.dataset.kind || ''))) beginSwitch(b.dataset.kind);
     return send({ t: 'pickMenu', kind: b.dataset.kind, label: b.dataset.label });
   }
   if (b.dataset.chopen) { const diff = changeFiles.find(f => f.name === b.dataset.chopen)?.diff || ''; closeSheet(); return openFile(b.dataset.chopen, false, diff, true); }
