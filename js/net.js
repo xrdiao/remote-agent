@@ -611,7 +611,6 @@ async function connect() {
       }
       rememberComputer({...currentComputer(), id: m.id, name: m.name, device: m.device});
       authed = true; failures = 0;
-      send({ t: 'sessionLibrary', entries: legacyAgentLibrary() });
       document.dispatchEvent(new Event('voice-authenticated'));
       ungate();
       connHostOk();
@@ -664,7 +663,6 @@ async function connect() {
     }
     else if (m.t === 'draft') { if (!questionCompose && (m.draftEpoch || '') === draftEpoch && (!m.sel || m.sel === viewSel)) { if ((text.value === '' || text.value === mirroredDraft) && m.text !== text.value) { text.value = m.text; autosize(); } mirroredDraft = m.text; } }
     else if (m.t === 'draftAck') { if ((m.draftEpoch || '') === draftEpoch && m.ok && (!m.sel || m.sel === viewSel) && text.value === m.text) mirroredDraft = m.text; }
-    else if (m.t === 'historyPage') receiveHistoryPage(m);
     else if (m.t === 'historyDone') finishHistory(m);
     else if (m.t === 'thread') applySelection(m);
     else if (m.t === 'frame') onFrame(m);
@@ -685,17 +683,16 @@ async function connect() {
       finishPending(['正在读取额度…']);
     }
     else if (m.t === 'attached') {
-      if (m.closed) { forgetClosedWindow(m.id); conn.readyRedirect = false; setWindowReady(m.ready === true); status('这个窗口已经关闭，请重新选择', false); send({ t: 'windows' }); if (conn.active) connRender(); return; }
+      if (m.closed) { forgetClosedWindow(m.id); setWindowReady(m.ready === true); status('这个窗口已经关闭，请重新选择', false); send({ t: 'windows' }); if (m.initial) { connHide(); showWindows(); } return; }
       if (m.plans) appPlans = { ...appPlans, ...m.plans };
       rememberAgentOpen(m);
-      if (m.keepQuota) { applySelection(m); setWindowReady(m.ready !== false); return; }
+      if (m.keepQuota) { applySelection(m); setWindowReady(true); return; }
       finishPending(['正在切换窗口…', '正在切换 Agent…']);
       store.set('window', m.id);
       applySelection(m, false);
       currentWindow = m.id;
       currentApp = m.app || null;
-      conn.readyRedirect = m.ready === false;
-      setWindowReady(m.ready !== false);
+      setWindowReady(true);
       scheduleLatency();
       $('dot').className = 'ok';
       status(mode === 'chat' ? '正在加载对话…' : '已连接');
@@ -704,6 +701,7 @@ async function connect() {
       currentProject = m.app === 'fusion' ? '' : (m.project || winLabel(m.title).name);
       updateAppText(); updateTitle();
       renderChat(null, false, true);
+      if (m.initial && m.app === 'codex') connContentReady();
       renderContext(null);
       $('quotaMeters').innerHTML = '';
       $('quotaMeters').title = '';
@@ -712,12 +710,7 @@ async function connect() {
       send({ t: 'appTheme', dark: document.documentElement.dataset.theme !== 'light' });
       if (!m.initial) send({ t: 'windows' });
     }
-    else if (m.t === 'attachFailed') { conn.readyRedirect = false; setWindowReady(m.ready); if (conn.active) connRender(); }
-    else if (m.t === 'sessionLibrary') receiveSessionLibrary(m);
-    else if (m.t === 'sessionChanged') receiveSessionChange(m);
-    else if (m.t === 'sessionActions') receiveAgentActions(m);
-    else if (m.t === 'sessionBatchProgress') receiveSessionBatch(m);
-    else if (m.t === 'projectWindows') showProjectWindows(m);
+    else if (m.t === 'attachFailed') setWindowReady(m.ready);
     else if (m.t === 'agents') receiveAgents(m);
     else if (m.t === 'codexArchived') {
       const conv = String(m.id || '').split(':').slice(2).join(':');
@@ -746,7 +739,6 @@ async function connect() {
     }
     else if (m.t === 'projectReady') {
       if (m.sel && m.sel !== viewSel) return;
-      setWindowReady(true);
       const refreshEditor = editorBrowsing && sheetKind === 'docs';
       capabilityBlock = '';
       finishPending(['正在打开项目…', '正在新建对话…']);
