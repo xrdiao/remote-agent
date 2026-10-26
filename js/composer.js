@@ -171,7 +171,12 @@ function receiveDraft(m) {
 }
 function autosize() {
   const oldHeight = text.offsetHeight;
-  text.style.height = 'auto'; text.style.height = text.scrollHeight + 'px'; updateMathPrev(); updateComposeCompact();
+  const field = text.parentElement, fieldHeight = field.style.height;
+  // Measure without temporarily shrinking the composer and clamping the chat's scrollTop.
+  field.style.height = field.offsetHeight + 'px';
+  text.style.height = 'auto'; text.style.height = text.scrollHeight + 'px';
+  field.style.height = fieldHeight;
+  updateMathPrev(); updateComposeCompact();
   if (text.offsetHeight !== oldHeight) noteChatLayoutChange();
   if (questionCompose?.sel === viewSel && document.body.classList.contains('kb')) fitViewport();
 }

@@ -608,7 +608,9 @@ function renderAgentList() {
   else openAgentList();
 }
 function showAgents(list) {
-  list = list.map(a => ({ ...a, window: cleanWindowTitle(a.window), group: cleanWindowTitle(a.group), title: cleanWindowTitle(a.title) }));
+  const currentThread = agentThreadKey({ id: currentComputer()?.threadId });
+  list = list.map(a => ({ ...a, current: a.ui ? a.current : !!currentThread && agentThreadKey(a) === currentThread,
+    window: cleanWindowTitle(a.window), group: cleanWindowTitle(a.group), title: cleanWindowTitle(a.title) }));
   const keep = sheetKind === 'agents';
   const scroll = keep ? $('sheet').scrollTop : 0;
   const revision = projectRevealRevision;

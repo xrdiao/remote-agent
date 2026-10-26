@@ -499,10 +499,10 @@ function reconcileBottomFollow(sync = false) {
     applyBottomFollow();
   });
 }
-function requestChatScroll() {
+function requestChatScroll(sync = false) {
   if (!isFollowingBottom()) return;
   bottomFollowPending = true;
-  reconcileBottomFollow();
+  reconcileBottomFollow(sync);
 }
 function restoreChatPosition(stick = false) {
   if (scrollMode === 'programmatic') return;
@@ -513,10 +513,10 @@ const chatSizeObserver = new ResizeObserver(() => {
     layoutDirty = true;
     return;
   }
-  if (isFollowingBottom()) { requestChatScroll(); return; }
+  if (isFollowingBottom()) { requestChatScroll(true); return; }
   layoutDirty = false;
 });
-for (const el of [itemsEl, $('older'), $('historyStatus'), $('cachedMore')]) chatSizeObserver.observe(el);
+for (const el of [list, itemsEl, $('older'), $('historyStatus'), $('cachedMore')]) chatSizeObserver.observe(el);
 document.addEventListener('selectionchange', () => {
   if (deferredRender && !userSelecting()) { deferredRender = false; if (lastChat) renderChat(lastChat, chatStale); }
   applyPendingHistory();
