@@ -524,6 +524,9 @@ async function boot() {
     markUploadsDisconnected();
     failPendingSends('连接已断开，消息未发送，请重试');
     failFileSave('连接已断开，保存结果未确认，请重试');
+    cancelChatContentRequests();
+    interruptSessionBatch();
+    cancelCodexAutoRetry();
   }
   ws = null;
   try { old?.close(); } catch {}
@@ -674,6 +677,9 @@ async function connect() {
     failPendingSends('连接已断开，消息未发送，请重试');
     failFileSave('连接已断开，保存结果未确认，请重试');
     qnPending = null;
+    cancelChatContentRequests();
+    interruptSessionBatch();
+    cancelCodexAutoRetry();
     qnSig = '';
     renderQuestions(null);
     $('dot').className = '';
@@ -718,11 +724,13 @@ async function connect() {
       send({ t: 'mode', mode });
       const fromNotice = window.AgentRemoteApp?.takeOpenWin?.() || pendingNotice;
       pendingNotice = '';
+      if (fromNotice && noticeTarget(fromNotice)?.computer && noticeTarget(fromNotice).computer !== m.id) {
+        if (!openWin(fromNotice)) showComputers('通知来源电脑未配对，请从电脑列表连接');
+        return;
+      }
       if (fromNotice) rememberNotice(fromNotice);
       const chosen = currentComputer();
       send({ t: 'attach', id: chosen?.win || store.get('window') || '', windowId: chosen?.windowId || '', threadId: chosen?.threadId || '', initial: true });
-      sentWidth = 0;
-      applyQuality();
       send({ t: 'visible', v: document.visibilityState === 'visible' });
       send({ t: 'lang', v: I18N.lang });
       clearInterval(usageTimer);
@@ -737,6 +745,7 @@ async function connect() {
     }
     else if (m.t === 'queueDone') receiveQueueDone(m);
     else if (m.t === 'clickDone') {
+      finishCodexAutoRetry(m);
       if (m.sel !== viewSel) return;
       const button = [...$('items').querySelectorAll('button[data-item]')].find(b => b.dataset.item === String(m.item) && b.dataset.actionId === (m.actionId || ''));
       button?.closest('.btns')?.querySelectorAll('button').forEach(b => { b.disabled = false; });
@@ -782,9 +791,12 @@ async function connect() {
     else if (m.t === 'draftAck') receiveDraft(m);
     else if (m.t === 'historyPage') receiveHistoryPage(m);
     else if (m.t === 'historyDone') finishHistory(m);
-    else if (m.t === 'thread') applySelection(m);
+    else if (m.t === 'thread') {
+      applySelection(m);
+      if (m.ready === true) { selectionReady = true; confirmNavigation(); }
+    }
     else if (m.t === 'frame') onFrame(m);
-    else if (m.t === 'panel') { panel = m.rect; updateTermEmpty(); layoutStage(); applyQuality(); }
+    else if (m.t === 'panel') { panel = m.rect; updateTermEmpty(); layoutStage(); }
     else if (m.t === 'connAgents') connAgentResults(m.agents, m.complete !== false);
     else if (m.t === 'agentCatalog') agentCatalogResults(m.agents);
     else if (m.t === 'launchResult') connLaunchResults(m.results);

@@ -283,6 +283,7 @@ function renderFileCode(m) {
   if (D.has(0)) code.insertAdjacentHTML('beforeend', '<div class="dm"></div>');
   let n = 0;
   const renderChunk = () => {
+    if (!body.contains(code)) return;
     let html = '';
     const end = Math.min(total, n + 300);
     while (n < end) {

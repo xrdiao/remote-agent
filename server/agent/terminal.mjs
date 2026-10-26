@@ -86,23 +86,30 @@ export const methods = {
     setTimeout(() => this.pollTerminal(true).catch(() => {}), 300);
   },
   async newTerminal() {
+    if (this.app === 'devin' && await this.editorCdp.evaluate(helpersCall('devinSurface()')) === 'agent') {
+      const point = await this.editorCdp.evaluate(helpersCall("surfaceTarget('editor')"));
+      if (!point) throw new Error('找不到终端所属的 Editor 界面');
+      await this.tapCss(point.x, point.y, 'left', this.editorCdp);
+      if (!await this.waitFor("devinSurface() === 'editor'")) throw new Error('Editor 界面尚未就绪');
+    }
+    const before = await this.editorCdp.evaluate(helpersCall('terminalHistory()'));
     const direct = await this.editorCdp.evaluate(helpersCall('newTerminalDirect()'));
     if (direct) {
       await this.tapCss(direct.x, direct.y, 'left', this.editorCdp);
     } else {
       await this.adapter.newTerminal.call(this);
     }
-    if (this.app === 'codex') {
-      const ready = await this.editorCdp.evaluate(`(async () => {
+    const ready = await this.editorCdp.evaluate(`(async () => {
         const h = ${PAGE_SRC};
+        const before = ${JSON.stringify(before.id)};
         for (let i = 0; i < 20; i++) {
-          if (h.focusTerminalInput()) return true;
+          const id = h.terminalHistory().id;
+          if (id && id !== before && h.focusTerminalInput()) return true;
           await new Promise(r => setTimeout(r, 100));
         }
         return false;
       })()`);
-      if (!ready) throw new Error('新建终端尚未就绪');
-    }
+    if (!ready) throw new Error('新建终端尚未就绪');
     this.emit({ t: 'status', ok: true, msg: '已新建终端' });
     setTimeout(() => this.pollTerminal(true).catch(() => {}), 500);
   },

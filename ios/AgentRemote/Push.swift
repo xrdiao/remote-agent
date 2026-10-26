@@ -111,7 +111,7 @@ final class Push: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
         let info = response.notification.request.content.userInfo
         var target: [String: String] = [:]
-        for key in ["win", "windowId", "threadId"] { target[key] = info[key] as? String ?? "" }
+        for key in ["computer", "win", "windowId", "threadId"] { target[key] = info[key] as? String ?? "" }
         let data = try? JSONSerialization.data(withJSONObject: target, options: [.sortedKeys])
         openRequest = data.map { String(decoding: $0, as: UTF8.self) }
         completionHandler()

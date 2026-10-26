@@ -94,7 +94,7 @@ private func deepLink(_ a: AgentActivityAttributes) -> URL? {
     var c = URLComponents()
     c.scheme = "agentremote"
     c.host = "open"
-    c.queryItems = [URLQueryItem(name: "win", value: a.win), URLQueryItem(name: "windowId", value: a.windowId), URLQueryItem(name: "threadId", value: a.threadId)]
+    c.queryItems = [URLQueryItem(name: "computer", value: a.computer), URLQueryItem(name: "win", value: a.win), URLQueryItem(name: "windowId", value: a.windowId), URLQueryItem(name: "threadId", value: a.threadId)]
     return c.url
 }
 

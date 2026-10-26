@@ -3,11 +3,21 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { workspaces } from '../../lib/files.mjs';
-import { readState } from '../../lib/auth.mjs';
+import { readState, saveState } from '../../lib/auth.mjs';
 import { normPath, pathKey } from '../../lib/platform.mjs';
 
 export const FUSION_ACTIVE = ['planning', 'echo', 'echo-check', 'execute', 'review', 'fix'];
 export const fusionHistory = readState().fusionHistory || {};
+let saveTimer;
+export function saveFusionHistory(immediate = true) {
+  if (!immediate) {
+    saveTimer ||= setTimeout(() => saveFusionHistory(), 1000);
+    return;
+  }
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  saveState({ fusionHistory });
+}
 export const conversationProjects = readState().conversationProjects || {};
 export const fusionWorkers = new Map();
 export const fusionViewers = new Set();

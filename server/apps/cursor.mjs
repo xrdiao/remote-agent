@@ -162,6 +162,8 @@ export const adapter = {
   },
 
   async newTerminal() {
+    await this.editorCdp.send('Page.bringToFront');
+    await this.editorCdp.evaluate('document.activeElement?.blur()');
     await this.key('Ctrl+Shift+`', { cdp: this.editorCdp });
   },
 
@@ -178,8 +180,7 @@ export const adapter = {
   },
 
   async submitPrompt(now, busy, when, queued) {
-    await this.key(now ? mod('Enter') : 'Enter');
-    return queued;
+    return this.submitPromptKey(now ? mod('Enter') : 'Enter', queued);
   },
 
   async fileAgentMarks(f, text, changes, diff) {

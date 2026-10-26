@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v250'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v260'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false, failures = 0;
 let windowReady = false;
@@ -57,17 +57,12 @@ function receiveAgents(m) {
   const changed = JSON.stringify(agentLists.get(key)) !== JSON.stringify(list);
   if (changed) setAgentList(key, list);
   if (!m.silent) finishPending(['正在读取 Agent 列表…', '正在归档…']);
-  if (sheetKind === 'agent-actions') return;
-  if (sheetKind === 'agents' && !changed) return;
-  if (!m.silent || (sheetKind === 'agents' && changed)) {
-    finishPending(['正在读取 Agent 列表…', '正在归档…']);
-    showAgents(list);
-  }
+  if (sheetKind === 'agents' && changed) showAgents(list);
 }
 function openAgentList(refresh = false) {
   const cached = agentLists.get(agentListKey());
   if (cached) showAgents(cached);
-  else status('正在读取 Agent 列表…');
+  else { openSheet('agents', '<h3>项目与会话</h3><p class="hint">正在读取 Agent 列表…</p>'); status('正在读取 Agent 列表…'); }
   send({ t: 'agents', automatic: !!cached && !refresh, silent: !!cached && !refresh, checkTrust: true });
 }
 let currentAppName = I18N.tr('当前应用');

@@ -87,7 +87,7 @@ function held(row) {
   if ([...fusionViewers].some(s => s.app === row.app && same(s.windowId) && (s.visible && Date.now() - s.notifyPresenceAt < 45000 || s.sending || s.imageTransfers?.size || s.focusCount || s.historyLoading))) return true;
   return [...fusionWorkers.values()].some(w => FUSION_ACTIVE.includes(w.fusionRun?.phase) && ['a', 'b'].some(side => w.fusionRun[side]?.app === row.app && same(w.fusionRun[side].windowId)));
 }
-export async function probeProjectWindow(row, page) {
+export async function probeProjectWindow(row, page, scan = null) {
   if (held(row)) return { reason: '正在查看、执行操作或被保留' };
   const editor = new Cdp(page.webSocketDebuggerUrl);
   let chat;
@@ -98,13 +98,14 @@ export async function probeProjectWindow(row, page) {
     if (state.focused || state.dirty || state.dialog || state.terminalBusy) return { reason: '窗口活动、未保存内容或终端任务' };
     let agent = state;
     if (row.app === 'codex') {
-      const native = (await codexWindows(CODEX_CDP_URL)).find(p => p.pageId === page.id);
+      const native = (await (scan ? scan.codex ||= codexWindows(CODEX_CDP_URL) : codexWindows(CODEX_CDP_URL))).find(p => p.pageId === page.id);
       if (!native?.chatWs) return { reason: 'Agent 尚未就绪' };
       chat = new Cdp(native.chatWs); await chat.connect();
       agent = await chat.evaluate(helpersCall('projectWindowProbe()'));
     }
     if (!agent?.agentKnown || agent.agentBusy) return { reason: 'Agent 正在运行或状态无法确认' };
-    const processes = await projectProcesses(row.root);
+    if (scan && !scan.processes.has(row.root)) scan.processes.set(row.root, projectProcesses(row.root));
+    const processes = await (scan ? scan.processes.get(row.root) : projectProcesses(row.root));
     if (!processes || processes.length) return { reason: processes ? '项目进程或后台命令仍在运行' : '无法确认后台进程状态' };
     return { idle: true, activity: Math.max(state.lastInput || 0, agent.lastInput || 0) };
   } catch { return { reason: '状态读取失败，保留窗口' }; }
@@ -126,6 +127,7 @@ export async function nativeCloseProjectWindow(page) {
 export async function scanProjectWindows(closeIdle = true) {
   if (scanning) return;
   scanning = true;
+  const scan = { processes: new Map(), codex: null };
   try {
     for (const ed of EDITORS) {
       let pages;
@@ -155,7 +157,7 @@ export async function scanProjectWindows(closeIdle = true) {
             row.owned = false; row.reason = '项目已在电脑端变化，请重新纳入管理'; continue;
           }
         } finally { editor.close(); }
-        const state = await probeProjectWindow(row, page);
+        const state = await probeProjectWindow(row, page, scan);
         row.reason = state.reason || '空闲';
         if (!state.idle) { row.lastUsed = Date.now(); continue; }
         row.lastUsed = Math.max(row.lastUsed, state.activity);

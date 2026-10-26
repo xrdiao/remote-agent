@@ -11,10 +11,8 @@ import { ROUTES, flag } from './routes.mjs';
 import { voiceWss } from './voice/service.mjs';
 import { cdpRead } from './cdp.mjs';
 
-const SWITCH_READS = new Set(['attach', 'openAgent', 'agents', 'windows', 'connAgents', 'mode', 'visible', 'projects', 'docs', 'file', 'openMenu', 'params', 'terminals', 'termHistory', 'usage', 'settings', 'changes', 'thought', 'attachments', 'refresh', 'scrollChat', 'mentionQuery', 'workdir', 'codexSkills', 'codexRun', 'codexChat', 'sessionActions']);
-const CONNECTION_MESSAGES = new Set(['mode', 'visible', 'lang', 'quality', 'windows', 'connAgents', 'visualList', 'visualSelect']);
 const sameWindow = (session, msg) => !msg.sel || msg.sel.split('|', 2).join('|') === session.selectionKey().split('|', 2).join('|');
-const navigationMessage = msg => ['attach', 'openAgent', 'openProject'].includes(msg.t);
+const navigationMessage = msg => ROUTES[msg.t]?.navigation === true;
 const pureNavigation = msg => navigationMessage(msg) && msg.newSession !== true && msg.create !== true && !(msg.t === 'openAgent' && /^(?:new:|project-new:)/.test(msg.id || ''));
 
 export function attachWss(server) {
@@ -101,13 +99,17 @@ wss.on('connection', (ws, req) => {
     if (metadataKey && pendingMetadata.has(metadataKey)) return;
     if (metadataKey) pendingMetadata.add(metadataKey);
     if (route && flag(route.fast, session, msg)) {
-      if (SWITCH_READS.has(msg.t)) {
-        if (!sameWindow(session, msg)) { pendingMetadata.delete(metadataKey); return; }
-        const signal = reads.signal;
-        cdpRead.run(signal, () => route.fastRun(session, msg)).catch(error => {
-          if (!signal.aborted) session.emit({ t: 'status', ok: false, msg: error.message });
-        }).finally(() => pendingMetadata.delete(metadataKey));
-      } else route.fastRun(session, msg);
+      if (route.switchRead && !sameWindow(session, msg)) { pendingMetadata.delete(metadataKey); return; }
+      const signal = route.switchRead ? reads.signal : null;
+      (async () => {
+        try { await cdpRead.run(signal, () => route.fastRun(session, msg)); }
+        catch (error) {
+          if (!signal?.aborted) {
+            route.fail?.(session, msg, error);
+            session.emit({ t: 'status', ok: false, msg: error.message });
+          }
+        } finally { pendingMetadata.delete(metadataKey); }
+      })();
       return;
     }
     const switching = navigationMessage(msg);
@@ -115,7 +117,7 @@ wss.on('connection', (ws, req) => {
     if (navigation) {
       if (pendingNavigation && !pendingNavigation.started) pendingNavigation.superseded = true;
       pendingNavigation = navigation;
-    } else if (!SWITCH_READS.has(msg.t) && !CONNECTION_MESSAGES.has(msg.t)) pendingNavigation = null;
+    } else if (route?.switchRead !== true && route?.connection !== true) pendingNavigation = null;
     if (switching) {
       if (navigation && activeNavigation) navigationReads.abort(new Error('窗口已切换'));
       if (session.sessionBatch) session.sessionBatch.cancelled = true;
@@ -141,8 +143,8 @@ wss.on('connection', (ws, req) => {
       if (actionIndex !== -1) imageActions.splice(actionIndex, 1);
       const staleSelection = !switching && !sameWindow(session, msg);
       if (metadataKind && owner !== binding) return;
-      const readOnly = SWITCH_READS.has(msg.t) && !switching;
-      if ((!switching && owner !== (readOnly ? binding : activeBinding) || staleSelection) && !CONNECTION_MESSAGES.has(msg.t)) {
+      const readOnly = route?.switchRead === true && !switching;
+      if ((!switching && owner !== (readOnly ? binding : activeBinding) || staleSelection) && route?.connection !== true) {
         if (msg.t === 'saveFile') session.emit({ t: 'saved', requestId: msg.requestId, ok: false, error: '窗口已切换，保存未执行', path: msg.path, host: msg.host || '' });
         else route?.fail?.(session, msg);
         if (imageTransfer) session.imageTransfers.delete(msg.clientImageId);
@@ -166,7 +168,7 @@ wss.on('connection', (ws, req) => {
         activeNavigation = navigation;
       }
       const q0 = Date.now();
-      const signal = switching ? navigationReads.signal : SWITCH_READS.has(msg.t) ? reads.signal : null;
+      const signal = switching ? navigationReads.signal : route?.switchRead === true ? reads.signal : null;
       let timedOut = false;
       const navigationTimer = msg.t === 'attach' && msg.initial === true ? setTimeout(() => {
         timedOut = true;

@@ -1,10 +1,10 @@
 // Caches the app shell so the installed app opens instantly; live data (url.json, relay) always goes to the network.
-const CACHE = 'remote-agent-v250'; // keep in sync with APP_VERSION in js/core.js
-const SHELL = ['./', 'index.html', 'app.css?v=247', 'i18n.js?v=245', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'logo.png',
-  'js/core.js?v=250', 'js/gate.js?v=250', 'js/auth.js?v=207', 'js/net.js?v=250', 'js/sheets.js?v=248', 'js/notify.js?v=248', 'js/mode.js?v=158', 'js/chat.js?v=247',
-  'js/history.js?v=249', 'js/files.js?v=245', 'js/screen.js?v=123', 'js/terminal.js?v=239', 'js/composer.js?v=250', 'js/voice.js?v=217', 'js/local-voice.js?v=207', 'js/voice-worklet.js?v=133',
+const CACHE = 'remote-agent-v260'; // keep in sync with APP_VERSION in js/core.js
+const SHELL = ['./', 'index.html', 'app.css?v=254', 'i18n.js?v=257', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'logo.png',
+  'js/core.js?v=258', 'js/gate.js?v=250', 'js/auth.js?v=207', 'js/net.js?v=257', 'js/sheets.js?v=259', 'js/notify.js?v=260', 'js/mode.js?v=257', 'js/chat.js?v=254',
+  'js/history.js?v=254', 'js/files.js?v=257', 'js/screen.js?v=257', 'js/terminal.js?v=239', 'js/composer.js?v=251', 'js/voice.js?v=257', 'js/local-voice.js?v=257', 'js/voice-worklet.js?v=133',
   'js/transfer.js?v=207', 'js/scanner.js',
-  'js/latency.js?v=142', 'js/image-editor.js?v=181',
+  'js/latency.js?v=142', 'js/image-editor.js?v=257',
   'logo-cursor-dark.svg', 'logo-cursor-light.svg',
   'logo-devin-dark.svg', 'logo-devin-light.svg',
   'logo-codex-dark.svg', 'logo-codex-light.svg'];
@@ -15,7 +15,7 @@ self.addEventListener('install', e => {
 
 self.addEventListener('activate', e => {
   e.waitUntil(caches.keys()
-    .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
+    .then(keys => Promise.all(keys.filter(k => /^remote-agent-v\d+$/.test(k) && k !== CACHE).map(k => caches.delete(k))))
     .then(() => self.clients.claim()));
 });
 
@@ -42,7 +42,7 @@ const latestPushSeq = new Map();
 function showPush(text) {
   let d = {};
   try { d = JSON.parse(text); } catch {}
-  const tag = [d.win, d.windowId, d.threadId].filter(Boolean).join('|') || 'remote-agent';
+  const tag = [d.computer, d.win, d.windowId, d.threadId].filter(Boolean).join('|') || 'remote-agent';
   const seq = Number(d.seq) || 0;
   if (seq && seq <= (latestPushSeq.get(tag) || 0)) return Promise.resolve();
   if (seq) latestPushSeq.set(tag, seq);
@@ -52,7 +52,7 @@ function showPush(text) {
     renotify: true,
     icon: 'icon-192.png',
     badge: 'icon-192.png',
-    data: { win: d.win || '', windowId: d.windowId || '', threadId: d.threadId || '', seq, createdAt: Number(d.createdAt) || 0 },
+    data: { computer: d.computer || '', win: d.win || '', windowId: d.windowId || '', threadId: d.threadId || '', seq, createdAt: Number(d.createdAt) || 0 },
   });
 }
 self.addEventListener('push', e => e.waitUntil(showPush(e.data ? e.data.text() : '')));
@@ -61,7 +61,7 @@ self.addEventListener('push', e => e.waitUntil(showPush(e.data ? e.data.text() :
 self.addEventListener('notificationclick', e => {
   e.notification.close();
   const data = e.notification.data || {};
-  const payload = JSON.stringify({ win: data.win || '', windowId: data.windowId || '', threadId: data.threadId || '' });
+  const payload = JSON.stringify({ computer: data.computer || '', win: data.win || '', windowId: data.windowId || '', threadId: data.threadId || '' });
   e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
     const client = list[0];
     if (client) {

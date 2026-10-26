@@ -11,6 +11,9 @@ export const capabilities = {
 
 export const adapter = {
   async attach(req) {
+    const selected = req.threadId && this.fusionSaved.runs.find(run => run.id === req.threadId);
+    if (req.threadId && !selected) throw new Error('没有这个 Fusion 会话，请重新选择');
+    if (selected) this.fusionRun = selected;
     this.detach();
     this.clearViewState();
     this.app = this.targetId = this.windowId = 'fusion';

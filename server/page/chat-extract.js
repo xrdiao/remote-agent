@@ -263,24 +263,38 @@
       if (Array.isArray(value) && value.some(item => item?.itemId && item.type)) itemTypes = value;
       if (Array.isArray(value?.entries) && Number.isFinite(value.length)) slots = value;
     }
-    const ids = slots ? [...slots.entries].sort((a, b) => a.index - b.index).map(e => e.itemId) : entry.turnItemIds || [];
+    const nativeOrder = [...nativeItems.keys()];
+    const nativeComplete = nativeOrder.length > 0 && (!slots || nativeOrder.length === slots.length
+      && slots.entries.every(slot => nativeOrder[slot.index] === slot.itemId));
+    const ids = nativeComplete ? nativeOrder : slots ? [...slots.entries].sort((a, b) => a.index - b.index).map(e => e.itemId) : entry.turnItemIds || [];
+    const positions = new Map(nativeComplete || !slots ? ids.map((id, index) => [id, index]) : slots.entries.map(slot => [slot.itemId, slot.index]));
     for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
       const count = ids.filter(id => bindings.get(itemKey(id))?.value?.get?.()?.id === id).length;
       if (count > matchedItems) { itemBindings = bindings; matchedItems = count; }
     }
     if (!metadata) return null;
     const complete = metadata.status === 'complete' || metadata.status === 'completed';
-    const items = ids.flatMap((id, index) => {
+    const rawItems = ids.map(id => {
       const native = nativeItems.get(id) || itemBindings?.get(itemKey(id))?.value?.get();
-      const item = native || (index === 0 && itemTypes.find(item => item.itemId === id)?.type === 'userMessage' && Array.isArray(metadata.params?.input) && metadata.params.input.length > 0
+      return native || (itemTypes.find(item => item.itemId === id)?.type === 'userMessage' && Array.isArray(metadata.params?.input) && metadata.params.input.length > 0
         ? { type: 'userMessage', id, clientId: metadata.params.clientUserMessageId, content: metadata.params.input } : null);
+    });
+    const steering = new Map(rawItems.filter(item => item?.type === 'steeringUserMessage' && item.status === 'accepted')
+      .map(item => [item.serverUserMessageId, item]));
+    const items = rawItems.flatMap(item => {
       if (!item) return [];
       availableItems++;
       if (patchesOnly && item.type !== 'fileChange') return [];
+      const id = item.id;
       const done = complete || !!metadata.agentMessageCompletedAtMsById?.[id];
-      if (item.type === 'userMessage') return { type: 'user-message', clientUserMessageId: item.clientId || item.id, nativeIds: [...new Set([item.id, item.clientId].filter(Boolean))],
-        message: codexUserText(item.content || []),
-        images: (item.content || []).filter(c => c.type === 'image' || c.type === 'localImage'), sentAtMs: metadata.turnStartedAtMs };
+      const user = item.type === 'userMessage' ? item : item.type === 'steered' ? steering.get(id) : null;
+      if (user) {
+        const content = user.type === 'steeringUserMessage' ? user.input || [] : user.content || [];
+        return { type: 'user-message', clientUserMessageId: user.clientUserMessageId || user.clientId || user.id,
+          nativeIds: [...new Set([id, user.id, user.clientId, user.clientUserMessageId, user.serverUserMessageId, user.serverClientUserMessageId].filter(Boolean))],
+          message: codexUserText(content), images: content.filter(c => c.type === 'image' || c.type === 'localImage'),
+          attachments: user.attachments || [], sentAtMs: user.targetTurnStartedAtMs || metadata.turnStartedAtMs };
+      }
       if (item.type === 'agentMessage') return { type: 'assistant-message', responseAnnotationTargetId: item.id, content: item.text, phase: item.phase, completed: done };
       if (item.type === 'reasoning') return { type: 'reasoning', id: item.id, content: [...(item.summary || []), ...(item.content || [])].map(t => typeof t === 'string' ? t : t.text || '').join('\n'), completed: complete };
       if (item.type === 'commandExecution') return { type: 'exec', callId: item.id, cmd: [item.command], executionStatus: item.status };
@@ -292,8 +306,8 @@
       if (item.type === 'webSearch') return { type: 'web-search', id: item.id, query: item.query };
       if (item.type === 'contextCompaction') return { type: 'context-compaction', id: item.id, source: item.source, status: complete ? 'completed' : 'inProgress' };
       return [];
-    }).map(item => ({ ...item, sourceIndex: slots?.entries.find(slot => slot.itemId === (item.callId || item.responseAnnotationTargetId || item.id || item.nativeIds?.[0]))?.index }));
-    const partial = slots && (slots.entries.length < slots.length || availableItems < slots.entries.length);
+    }).map(item => ({ ...item, sourceIndex: positions.get(item.callId || item.responseAnnotationTargetId || item.id || item.nativeIds?.[0]) }));
+    const partial = !nativeComplete && slots && (slots.entries.length < slots.length || availableItems < slots.entries.length);
     items.push({ type: 'worked-for', startedAtMs: metadata.turnStartedAtMs,
       completedAtMs: complete && Number.isFinite(metadata.durationMs) ? metadata.turnStartedAtMs + metadata.durationMs : null });
     return { status: complete ? 'complete' : metadata.status, items, partial };
@@ -313,14 +327,29 @@
     return turn ? { ...entry, turn } : entry;
   };
   const codexFusionTurn = (id = '', message = '', previous = []) => {
+    const state = codexHistoryState();
     const rows = [...doc.querySelectorAll('[data-turn-key]')];
-    const el = id ? rows.find(e => e.getAttribute('data-turn-key') === id)
-      : message ? [...rows].reverse().find(e => !previous.includes(e.getAttribute('data-turn-key')) && codexTurnData(e)?.items?.some(it => it.type === 'user-message' && String(it.message || '').trim() === message.trim()))
-      : rows.filter(vis).at(-1);
-    const turn = el && codexTurnData(el);
-    const user = turn?.items?.find(it => it.type === 'user-message');
+    const entries = new Map(state.entries.map(entry => {
+      const el = rows.find(e => e.getAttribute('data-turn-key') === entry.turnKey);
+      const turn = codexStoredTurn(entry, state.scopes) || (el && codexTurnData(el));
+      return [entry.turnId, { el, entry: { ...entry, turn } }];
+    }));
+    let latest = state.entries.at(-1)?.turnId;
+    for (const el of rows) {
+      const entry = codexFiberProps(el, 40).find(p => p.entry?.conversationId === state.thread && p.entry.turnId)?.entry;
+      if (!entry) continue;
+      if (!entries.has(entry.turnId)) entries.set(entry.turnId, { el, entry: { ...entry, turn: codexTurnData(el) } });
+      if (entry.isLatestTurn) latest = entry.turnId;
+    }
+    const users = found => (found.entry.turn?.items || []).filter(it => it.type === 'user-message');
+    const matches = it => id ? it.clientUserMessageId === id || it.nativeIds?.includes(id)
+      : String(it.message || '').trim() === message.trim() && !previous.includes(it.clientUserMessageId);
+    const found = id || message ? [...entries.values()].reverse().find(found => users(found).some(matches)) : entries.get(latest);
+    const turn = found?.entry.turn;
+    const user = found && (id || message ? users(found).find(matches) : users(found).at(-1));
     const reply = turn?.items?.filter(it => it.type === 'assistant-message' && it.phase !== 'commentary').at(-1);
-    return { id: el?.getAttribute('data-turn-key') || '', ids: rows.map(e => e.getAttribute('data-turn-key')), user: user?.message || '', text: reply?.content || '', completed: turn?.status === 'complete' && !!reply?.completed, items: el ? codexTurnItems(el) : [] };
+    return { id: user?.clientUserMessageId || '', ids: [...entries.values()].flatMap(found => users(found).map(it => it.clientUserMessageId)).filter(Boolean), user: user?.message || '', text: reply?.content || '', completed: turn?.status === 'complete' && !turn.partial && !!reply?.completed, items: turn ? codexTurnItems(found.el, found.entry) : [] };
+
   };
   // One Codex turn can contain several markdown blocks. Keep them in order instead of keeping only the first reply.
   const codexTurnItems = (el, entry = null, limit = 0) => {
@@ -405,7 +434,7 @@
         out.push({ i: id, k: 'tool', kind: 'other', src: 'codex', t: '文件改动' });
       } else if (item.type !== 'automatic-approval-review' && item.type !== 'worked-for') {
         const body = textOf(item.content || item.message || item.query || item.title);
-        if (body) out.push({ i: id, k: 'tool', kind: 'other', src: 'codex', t: body.slice(0, 400), capacity: CAPACITY_ERROR.test(body), done: finished && /exec|patch|command/.test(item.type) });
+        if (body) out.push({ i: id, k: 'tool', kind: 'other', src: 'codex', t: body.slice(0, 400), done: finished && /exec|patch|command/.test(item.type) });
       }
       for (const row of out.slice(start)) row.sourceIndex = item.sourceIndex ?? sourceIndex;
     }
@@ -563,9 +592,10 @@
     return item;
   };
 
-  const devinMessageTime = msg => {
-    const ts = codexFiberProps(msg, 12).find(p => Array.isArray(p.content) && p.content[0]?._meta)?.content[0]._meta['cognition.ai/timestamp'];
-    const at = Date.parse(ts || '');
+  const devinMessageMeta = msg => codexFiberProps(msg, 12)
+    .find(p => Array.isArray(p.content) && p.content[0]?._meta)?.content[0]._meta || {};
+  const devinMessageTime = (msg, meta = devinMessageMeta(msg)) => {
+    const at = Date.parse(meta['cognition.ai/timestamp'] || '');
     return Number.isFinite(at) ? at : null;
   };
   // Iterate the Devin transcript's direct children in order: messages, thought groups,
@@ -579,9 +609,11 @@
       const msg = row.querySelector('[role=group][aria-label="User message"], [role=group][aria-label="Devin message"]');
       if (msg) {
         const it = messageItem(msg);
+        const meta = it.k === 'human' ? devinMessageMeta(msg) : {};
+        if (meta['cognition.ai/isOptimistic']) return;
         if (!it.i) it.i = i;
         if (it.k === 'human' && !it.sentAt) {
-          const at = devinMessageTime(msg);
+          const at = devinMessageTime(msg, meta);
           if (Number.isFinite(at)) it.sentAt = at;
         }
         items.push(it);
@@ -644,7 +676,7 @@
     const quoted = '.ProseMirror, [class*="MarkdownRoot"], [class*="user-message"], [data-message-kind="human"], pre, code, script, style';
     let capacity = null;
     for (let node = text.nextNode(); node; node = text.nextNode()) {
-      if (!CAPACITY_ERROR.test(node.textContent || '')) continue;
+      if (!/^\s*(?:(?:The\s+)?(?:selected\s+)?model\s+is\s+at\s+capacity\b|(?:所选|选定|当前)模型.*(?:容量不足|模型容量))/i.test(node.textContent || '')) continue;
       let banner = node.parentElement;
       if (!banner || !vis(banner) || banner.closest(quoted)) continue;
       const turn = banner.closest('[data-turn-key]');
@@ -659,12 +691,22 @@
       }
       const label = (retry?.innerText || retry?.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
       const ready = retry && RETRY_LABEL.test(label) && !retry.disabled && retry.getAttribute('aria-disabled') !== 'true';
-      const body = (banner.innerText || '').replace(/\s+/g, ' ').trim();
+      const texts = doc.createTreeWalker(banner, NodeFilter.SHOW_TEXT), parts = [];
+      for (let part = texts.nextNode(); part; part = texts.nextNode())
+        if (!retry?.contains(part) && vis(part.parentElement)) parts.push(part.textContent);
+      const body = parts.join(' ').replace(/\s+/g, ' ').trim();
+      const owner = doc.defaultView;
+      const previous = owner.__remoteAgentCapacity;
+      const thread = codexThread(), turnKey = turn?.getAttribute('data-turn-key') || '';
+      if (!previous || previous.thread !== thread || previous.turnKey !== turnKey)
+        owner.__remoteAgentCapacity = { banner, thread, turnKey, id: 'capacity-' + (owner.__remoteAgentCapacitySerial = (owner.__remoteAgentCapacitySerial || 0) + 1) };
+      const capacityInstance = owner.__remoteAgentCapacity.id;
       const key = `${codexThread()}:capacity`;
       capacity = { i: key, k: 'notice', kind: 'capacity', t: body.slice(0, 400), capacity: true, live: true,
-        syntheticCapacity: true, _retry: retry,
-        ...(ready ? { b: [label], btnItem: key } : {}) };
+        syntheticCapacity: true, capacityInstance, _retry: retry,
+        ...(ready ? { b: [label], actions: [capacityInstance], btnItem: key } : {}) };
     }
+    if (!capacity) doc.defaultView.__remoteAgentCapacity = null;
     return capacity;
   };
   const codexReceiptRows = () => {

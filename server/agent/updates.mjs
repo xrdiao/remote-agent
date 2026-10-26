@@ -18,11 +18,9 @@ export async function watchChat(cdp, changed) {
     const capacityRetry = node => {
       const el = node.nodeType === 1 ? node : node.parentElement;
       if (!el) return false;
-      let root = el;
-      for (let i = 0; root && i < 8; i++, root = root.parentElement) {
-        if (/(?:at capacity|容量不足|模型容量)/i.test(root.innerText || '')
-          && [...root.querySelectorAll('button, [role=button]')].some(button => /^(Retry|Try(?: again)?|重试|再试一次)$/i.test((button.innerText || button.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim()))) return true;
-      }
+      if (el.closest('.ProseMirror, [class*="MarkdownRoot"], [class*="user-message"], pre, code')) return false;
+      for (let root = el, i = 0; root && i < 8; i++, root = root.parentElement)
+        if (/^\s*(?:(?:The\s+)?(?:selected\s+)?model\s+is\s+at\s+capacity\b|(?:所选|选定|当前)模型.*(?:容量不足|模型容量))/i.test(root.innerText || '')) return true;
       return false;
     };
     const inTranscript = (node, descendants = false) => {

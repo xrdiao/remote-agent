@@ -233,19 +233,9 @@ export const adapter = {
   },
 
   async newTerminal() {
-    const menu = await this.editorCdp.evaluate(helpersCall('newTerminalMenu()'));
-    if (!menu) throw new Error('当前窗口里找不到新建终端的按钮');
-    await this.tapCss(menu.x, menu.y, 'left', this.editorCdp);
-    let item = null;
-    for (let i = 0; i < 10 && !item; i++) {
-      await new Promise(r => setTimeout(r, 120));
-      item = await this.editorCdp.evaluate(helpersCall('newTerminalItem()'));
-    }
-    if (!item) {
-      await this.key('Escape', { cdp: this.editorCdp });
-      throw new Error('菜单里没有终端这一项');
-    }
-    await this.tapCss(item.x, item.y, 'left', this.editorCdp);
+    await this.editorCdp.send('Page.bringToFront');
+    await this.editorCdp.evaluate('document.activeElement?.blur()');
+    await this.key('Ctrl+Shift+`', { cdp: this.editorCdp });
   },
 
   async accountUsage(request, automatic) {
@@ -257,30 +247,8 @@ export const adapter = {
     else await this.typeText(text);
   },
 
-  async submitPrompt(now) {
-    const read = () => this.cdp.evaluate(`(() => {
-      const h = ${PAGE_SRC}, chat = h.extract();
-      return { thread: chat?.thread || '', draft: h.composerDraft(),
-        human: (chat?.items || []).filter(it => it.k === 'human').map(it => ({ i: it.i, t: it.t, sentAt: it.sentAt })),
-        queued: h.devinQueued() };
-    })()`);
-    const norm = s => (s || '').replace(/\s+/g, ' ').trim();
-    const before = await read(), expected = norm(before.draft);
-    const human = new Set(before.human.map(it => `${it.i}:${it.sentAt || ''}`));
-    const queueText = norm(before.draft.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim().slice(0, 4000));
-    const queueMatches = rows => rows.filter(it => norm(it.t) === queueText).length;
-    const queued = queueMatches(before.queued);
-    await this.key(now ? mod('Enter') : 'Enter');
-    for (let i = 0; i < 40; i++) {
-      await new Promise(r => setTimeout(r, 125));
-      const after = await read();
-      if (before.thread && !after.thread) continue;
-      if (before.thread && after.thread !== before.thread) throw new Error('会话已切换，未确认消息发送结果，请查看电脑端');
-      if (expected && norm(after.draft) === expected) continue;
-      if (after.human.some(it => !human.has(`${it.i}:${it.sentAt || ''}`) && (!expected || norm(it.t) === expected))) return false;
-      if (queueMatches(after.queued) > queued) return true;
-    }
-    throw new Error('Devin 未确认接收消息，草稿已保留，请查看电脑端后重试');
+  async submitPrompt(now, busy, when, queued) {
+    return this.submitPromptKey(now ? mod('Enter') : 'Enter', queued);
   },
 
   async fileAgentMarks(f, text) {
@@ -406,6 +374,7 @@ async devinClearQueue() {
 },
 
 async subagentAction(name, part) {
+  const cdp = this.cdp;
   const call = `subTarget(${JSON.stringify(String(name))}, ${JSON.stringify(part)})`;
   let pos = await this.cdp.evaluate(helpersCall(call));
   if (pos?.expand) {
@@ -418,16 +387,24 @@ async subagentAction(name, part) {
   if (!pos || pos.expand) throw new Error(this.appMessage('这个子 Agent 已经结束了，或者 {app} 里找不到它'));
   if (part === 'open') {
     const tab = await this.cdp.evaluate(helpersCall('activeChatTab()'));
-    if (tab && await this.cdp.evaluate(helpersCall('hasComposer()'))) this.mainTab = tab;
+    if (tab && await this.cdp.evaluate(helpersCall('hasComposer()'))) this.mainTab = { label: tab, child: '', cdp };
+    this.selectedThread = '';
   }
   await this.tapCss(pos.x, pos.y);
+  if (part === 'open' && this.mainTab?.cdp === cdp) {
+    const parent = this.mainTab;
+    const child = await this.waitFor(`activeChatTab() && activeChatTab() !== ${JSON.stringify(parent.label)} && activeChatTab()`, 12);
+    if (this.cdp === cdp && this.mainTab === parent) parent.child = child || '';
+  }
   setTimeout(() => this.pollChat().catch(() => {}), 500);
 },
 
 async backToMain() {
-  const pos = this.mainTab && await this.cdp.evaluate(helpersCall(`tabTarget(${JSON.stringify(this.mainTab)})`));
+  const pos = this.mainTab?.cdp === this.cdp && await this.cdp.evaluate(helpersCall(`tabTarget(${JSON.stringify(this.mainTab.label)})`));
   if (!pos) throw new Error('找不到原来的主对话标签页，请在「画面」里手动切回');
+  this.selectedThread = '';
   await this.tapCss(pos.x, pos.y);
+  this.mainTab = null;
   setTimeout(() => this.pollChat().catch(() => {}), 400);
 },
 

@@ -26,6 +26,17 @@ function receiveSessionBatch(m) {
   for (const row of m.results) if (row.ok) agentBatch.selected.delete(row.id);
   if (sheetKind === 'agents') renderAgentList();
 }
+function interruptSessionBatch() {
+  if (!agentBatch?.running) return;
+  agentBatch.running = false;
+  agentBatch.requestId = null;
+  agentBatch.selected.clear();
+  agentBatch.progress = { ...agentBatch.progress, results: agentBatch.progress?.results || [], total: agentBatch.progress?.total || 0, done: true };
+  agentLists.delete(agentBatch.key);
+  saveAgentLists();
+  if (sheetKind === 'agents') closeSheet();
+  status('批量操作已中断，请刷新列表确认已完成结果', false);
+}
 function showProjectWindows(m) {
   openSheet('project-windows', `<h3>项目窗口</h3><button class="opt" data-window-enabled="${m.enabled ? '0' : '1'}"><span class="lbl">自动关闭空闲窗口</span><span class="switch${m.enabled ? ' on' : ''}"></span></button><label class="pSec">空闲分钟数<input data-window-idle type="number" min="1" value="${m.idleMinutes}"></label>${m.windows.map(w => `<div class="pSec">${esc(({cursor:'Cursor',devin:'Devin',codex:'Codex'})[w.app] + ' · ' + w.title)}</div><div class="hint">${esc(w.root)}<br>${esc(w.reason || (w.owned ? '已纳入自动管理' : '未纳入自动管理'))}</div><button class="opt" data-window-key="${esc(w.key)}" data-window-owned="${w.owned ? '0' : '1'}">${w.owned ? '退出自动管理' : '纳入自动管理'}</button><button class="opt" data-window-key="${esc(w.key)}" data-window-keep="${w.keep ? '0' : '1'}">${w.keep ? '取消保留' : '始终保留此窗口'}</button>`).join('')}`);
   $('sheet').querySelector('[data-window-idle]').onchange = e => send({ t: 'projectWindowSet', change: { idleMinutes: Number(e.target.value) } });
@@ -105,7 +116,7 @@ function agentUsageInfo(a) {
   const lastUsed = Math.max(Number(a.lastUsed) || 0, Number(saved.last) || 0, opened);
   const shared = sharedAgentRecord(a.id);
   const lastMessageAt = Number(shared.lastMessageAt) || 0;
-  const ageDays = lastMessageAt ? Math.max(0, (Date.now() - lastMessageAt) / 86400000) : Infinity;
+  const ageDays = lastMessageAt > 0 && lastMessageAt <= Date.now() ? (Date.now() - lastMessageAt) / 86400000 : Infinity;
   const favorite = shared.favorite === true;
   return { ...a, ...(shared.title && !a.ui ? { title: shared.title } : {}), lastUsed, favorite, common: favorite || (lastMessageAt > 0 && ageDays <= 7) };
 }
@@ -142,6 +153,7 @@ function rememberAgentOpen(m) {
   }
 }
 function openSheet(kind, html) {
+  if (kind !== 'ask') askDone?.(false);
   if (kind !== 'agents') pendingProjectReveal = null;
   if (sheetKind === 'devices' && kind !== 'devices') deviceInviteGeneration++;
   if (kind !== 'docs') cancelDocs();
@@ -178,6 +190,7 @@ function openSheet(kind, html) {
   if (leavingVoice) scheduleVoiceWarmup();
 }
 function closeSheet() {
+  askDone?.(false);
   pendingProjectReveal = null;
   cancelDocs();
   clearTimeout(menuRefreshTimer);
@@ -210,13 +223,15 @@ function showCodexRetryMenu() {
     const n = Math.max(1, Math.min(5, Math.round(Number($('codexRetryCount').value) || 1)));
     store.set('codex-auto-retry-count', String(n));
     $('codexRetryCount').value = n;
+    syncCodexAutoRetry(lastChat, chatStale);
   };
 }
 function toggleCodexAutoRetry() {
   store.set('codex-auto-retry', codexAutoRetryEnabled() ? null : '1');
+  syncCodexAutoRetry(lastChat, chatStale);
   showCodexRetryMenu();
 }
-$('shade').onclick = () => { closeSheet(); askDone?.(false); };
+$('shade').onclick = () => { closeSheet(); };
 
 // Confirmation for anything that interrupts the Agent or throws work away; resolves false if dismissed.
 let askDone = null;
@@ -226,8 +241,8 @@ function ask(question, ok = '确定') {
     askDone = v => { askDone = null; resolve(v); };
     openSheet('ask', `<h3 class="askQ">${esc(question)}</h3><div class="askBtns">`
       + `<button id="askNo">取消</button><button id="askOk" class="danger">${esc(ok)}</button></div>`);
-    $('askOk').onclick = () => { closeSheet(); askDone?.(true); };
-    $('askNo').onclick = () => { closeSheet(); askDone?.(false); };
+    $('askOk').onclick = () => { askDone?.(true); closeSheet(); };
+    $('askNo').onclick = () => { closeSheet(); };
   });
 }
 // Buttons on Cursor's own cards that stop, reject or discard work.

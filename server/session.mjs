@@ -367,10 +367,6 @@ export class Session extends AgentContext {
     if (v) this.viewport = v;
   }
 
-  async startScreencast() {
-    await this.editorCdp.send('Page.startScreencast', { ...this.screencast, everyNthFrame: 1 });
-  }
-
   async stopScreencast() {
     this.casting = false;
     await this.cdp.send('Page.stopScreencast').catch(() => {});
