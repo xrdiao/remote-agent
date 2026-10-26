@@ -195,19 +195,22 @@ $('sheet').addEventListener('click', async e => {
       const next = window.prompt('新的会话名称', name);
       if (!next?.trim()) return;
       closeSheet(); status('正在重命名…');
-      if (currentApp !== 'codex') return send({ t: 'sessionManage', id, action: 'rename', name: next.trim().slice(0, 80) });
-      return send({ t: 'codexRename', id, name: next.trim().slice(0, 80) });
+      if (currentApp !== 'codex') send({ t: 'sessionManage', id, action: 'rename', name: next.trim().slice(0, 80) });
+      else send({ t: 'codexRename', id, name: next.trim().slice(0, 80) });
+      return renderAgentList();
     }
     if (b.dataset.agentAction === 'delete' || (b.dataset.agentAction === 'archive' && currentApp !== 'codex')) {
       const action = b.dataset.agentAction, label = action === 'delete' ? '删除' : '归档';
       if (!await ask(`${label}「${name}」？`, label)) return;
       closeSheet(); status(`正在${label}…`);
-      return send({ t: 'sessionManage', id, action });
+      send({ t: 'sessionManage', id, action });
+      return renderAgentList();
     }
     if (b.dataset.agentAction === 'archive') {
       if (!await ask(`删除或归档「${name}」？\n桌面端会根据当前入口执行删除或归档。`, '继续')) return;
       closeSheet(); status('正在删除／归档…');
-      return send({ t: 'codexArchive', id });
+      send({ t: 'codexArchive', id });
+      return renderAgentList();
     }
   }
   if ('modelBack' in b.dataset) return requestMenu('model', '读取模型列表…');
@@ -313,9 +316,10 @@ $('sheet').addEventListener('click', async e => {
   if (b.dataset.fusionId) { closeSheet(); return send({ t: 'fusionSide', side: b.dataset.fusionPick, id: b.dataset.fusionId }); }
   if (b.dataset.codexArchive) {
     const id = b.dataset.codexArchive, name = b.dataset.codexName || '';
-    if (!await ask(`归档「${name}」？\n它会从当前列表移除，历史记录仍保留。`, '归档')) { send({ t: 'agents' }); return; }
+    if (!await ask(`归档「${name}」？\n它会从当前列表移除，历史记录仍保留。`, '归档')) { if (!sheetKind) renderAgentList(); return; }
     status('正在归档…');
-    return send({ t: 'codexArchive', id });
+    send({ t: 'codexArchive', id });
+    return renderAgentList();
   }
   if (b.dataset.agent) { pendingAgentOpen = b.dataset.agent; closeSheet(); status('正在切换 Agent…'); return send({ t: 'openAgent', id: b.dataset.agent, title: b.dataset.agentTitle || '' }); }
   if (b.dataset.term) { closeSheet(); status('正在切换终端…'); return send({ t: 'openTerminal', id: b.dataset.term }); }
