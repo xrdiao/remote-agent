@@ -791,7 +791,10 @@ async function connect() {
     else if (m.t === 'draftAck') receiveDraft(m);
     else if (m.t === 'historyPage') receiveHistoryPage(m);
     else if (m.t === 'historyDone') finishHistory(m);
-    else if (m.t === 'thread') applySelection(m);
+    else if (m.t === 'thread') {
+      applySelection(m);
+      if (m.ready === true) { selectionReady = true; confirmNavigation(); }
+    }
     else if (m.t === 'frame') onFrame(m);
     else if (m.t === 'panel') { panel = m.rect; updateTermEmpty(); layoutStage(); }
     else if (m.t === 'connAgents') connAgentResults(m.agents, m.complete !== false);
