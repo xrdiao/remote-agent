@@ -1375,7 +1375,7 @@ function requestOlderRemote() {
   const paging = {};
   if (currentApp === 'codex') {
     const orders = lastChat.items.map(it => it.order).filter(Number.isFinite);
-    Object.assign(paging, { before: historyCursor ?? (orders.length ? Math.max(...orders) + 1 : null),
+    Object.assign(paging, { before: historyCursor ?? (orders.length ? Math.min(...orders) : null),
       known: lastChat.items.map(it => it.i), details: executionRecordsShown() });
   }
   if (send({ t: 'scrollChat', dy: -900, automatic: true, history: true, requestId: historyRequest.id, ...paging }) === false) {
@@ -1621,26 +1621,6 @@ function typesetMath(root) {
   });
 }
 function dressMessage(el) {
-  // Codex history may contain raw Markdown when its native rendered block is unmounted.
-  // Format emphasis in text only; retain literal backticks/escapes and all existing rich markup.
-  if (currentApp === 'codex' && el.textContent.includes('**')) {
-    const raw = document.createTreeWalker(el, NodeFilter.SHOW_TEXT), nodes = [];
-    while (raw.nextNode()) if (!raw.currentNode.parentElement.closest('a, pre, code, textarea, strong, b, .math')) nodes.push(raw.currentNode);
-    let ticks = '';
-    for (const node of nodes) {
-      const fragment = document.createDocumentFragment();
-      let last = 0;
-      for (const match of node.textContent.matchAll(/\\[\\*`]|`+|\*\*(\S(?:[^\n]*?\S)?)\*\*(?!\*)/g)) {
-        fragment.append(node.textContent.slice(last, match.index));
-        if (match[0].startsWith('`')) { ticks = ticks === match[0] ? '' : ticks || match[0]; fragment.append(match[0]); }
-        else if (match[1] && !ticks) { const strong = document.createElement('strong'); strong.textContent = match[1]; fragment.append(strong); }
-        else fragment.append(match[0]);
-        last = match.index + match[0].length;
-      }
-      fragment.append(node.textContent.slice(last));
-      node.replaceWith(fragment);
-    }
-  }
   const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
   const nodes = [];
   while (walker.nextNode()) if (!walker.currentNode.parentElement.closest('a, pre, code, textarea, .math')) nodes.push(walker.currentNode);

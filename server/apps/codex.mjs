@@ -9,6 +9,7 @@ import { FOCUS_COMPOSER, codexUsage } from '../agent/context.mjs';
 import { computerId, saveState } from '../../lib/auth.mjs';
 import { conversationProjects, fusionProject } from '../fusion/state.mjs';
 import { removeLibrarySession, publishSessionChange } from '../../lib/session-library.mjs';
+import { storedProjectSession } from '../project-windows.mjs';
 
 // Native support; availability still follows the selected thread, model and controls.
 export const capabilities = {
@@ -108,8 +109,8 @@ export const adapter = {
       const { name, detail } = workspaceLabel(project, allProjects);
       return [projectKey(project.root, project.host), detail ? `${name} · ${detail}` : name];
     }));
-    emit({ list: list.map(({ workspace, host, ...row }) => ({
-      ...row, window: workspace ? labels.get(projectKey(workspace, host)) : row.window,
+    emit({ list: list.map(row => ({
+      ...row, window: row.workspace ? labels.get(projectKey(row.workspace, row.host)) : row.window,
     })) });
   },
 
@@ -300,15 +301,21 @@ mergeCodexItems(chat) {
   if (chat.capacityPresent === false) {
     for (const [id, it] of rows) if (it.syntheticCapacity) rows.delete(id);
   }
-  for (const [index, { buttonsRead, ...it }] of chat.items.entries()) {
+  for (const [index, { buttonsRead, htmlRead, ...it }] of chat.items.entries()) {
     const old = rows.get(it.i);
+    if (htmlRead === false && it.k === 'assistant' && old?.t === it.t && old.h) it.h = old.h;
     if (!Number.isFinite(it.order)) it.order = Number.isFinite(old?.order) ? old.order : ++tailOrder;
     // A stored turn has no footer DOM; a mounted turn is authoritative, including removal.
-    const keepButtons = buttonsRead === false && it.k === 'assistant' && old?.k === 'assistant'
-      && it.completed === true && old.completed === true && it.t === old.t && old.b?.length
-      && old.b.every(label => /^(Copy message|View changed files|Undo|View changes|Fork chat from here)$/.test(label));
-    const row = keepButtons ? { ...old, ...it, b: old.b, btnItem: old.btnItem || old.i,
-      ...(old.actions ? { actions: old.actions } : {}) } : it;
+    const retained = buttonsRead === false && it.k === 'assistant' && old?.k === 'assistant'
+      && it.completed === true && old.completed === true && it.t === old.t
+      ? (old.b || []).map((label, n) => ({ label, action: old.actions?.[n] || '' }))
+        .filter(button => /^(Copy message|View changed files|View file changes|Undo|View changes|Fork chat from here)$/.test(button.label)) : [];
+    const buttons = retained.length ? [
+      ...(it.b || []).map((label, n) => ({ label, action: it.actions?.[n] || '' })),
+      ...retained.filter(button => !it.b?.includes(button.label)),
+    ] : [];
+    const row = buttons.length ? { ...old, ...it, b: buttons.map(button => button.label), btnItem: it.btnItem || old.btnItem || old.i,
+      ...(old.actions || it.actions ? { actions: buttons.map(button => button.action) } : {}) } : it;
     chat.items[index] = row;
     rows.set(it.i, row);
   }
@@ -426,7 +433,7 @@ async newCodexChat() {
   await this.adoptCodexThread(thread === before ? '' : thread, '已新建会话');
 },
 
-async openCodexAgent(id) {
+async openCodexAgent(id, preferCurrentProject = false) {
   if (id.startsWith('win:')) {
     await this.attach({ id: 'codex', windowId: id.slice(4), threadId: '' });
     this.emit({ t: 'status', ok: true, msg: '已切换窗口' });
@@ -443,18 +450,27 @@ async openCodexAgent(id) {
   if (!match) throw new Error('这条会话已经不在列表里');
   const convId = match[2];
   const own = match[1] === this.codexPageId;
-  const page = own ? null : (await codexWindows(CODEX_CDP_URL, false, match[1]))[0];
-  const source = own ? this.cdp : page?.chatWs ? new Cdp(page.chatWs) : null;
-  let rows = [];
-  try {
-    if (source) {
-      if (!own) await source.connect();
-      rows = await source.evaluate(helpersCall('codexChatRows(true)')) || [];
-    }
-  } finally { if (!own) source?.close(); }
-  const row = rows.find(r => r.id === convId);
+  let row;
+  if (preferCurrentProject) row = (await this.cdp.evaluate(helpersCall('codexChatRows(true)')) || []).find(r => r.id === convId);
+  if (!row) {
+    const page = own ? null : (await codexWindows(CODEX_CDP_URL, false, match[1]))[0];
+    const source = own ? this.cdp : page?.chatWs ? new Cdp(page.chatWs) : null;
+    try {
+      if (source) {
+        if (!own) await source.connect();
+        row = (await source.evaluate(helpersCall('codexChatRows(true)')) || []).find(r => r.id === convId);
+      }
+    } finally { if (!own) source?.close(); }
+  }
   const workspace = row?.workspace || this.codexRoots?.get(convId)
-    || conversationProjects[JSON.stringify([computerId(), 'codex', '', convId])]?.project?.root;
+    || conversationProjects[JSON.stringify([computerId(), 'codex', '', convId])]?.project?.root
+    || storedProjectSession('codex', id)?.workspace;
+  if (preferCurrentProject && workspace && this.projectMatches(await editorRoots(this.editorCdp, 'codex'), workspace, row?.host || '')) {
+    if (!await this.selectCodexThread(convId)) throw new Error('没有找到所选会话');
+    await this.adoptCodexThread(convId, '已切换会话');
+    this.listAgents(true, true).catch(() => {});
+    return;
+  }
   if (workspace && !row?.host) {
     return this.useProject(workspace, false, convId, '', match[1]);
   }

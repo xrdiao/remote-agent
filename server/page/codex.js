@@ -84,13 +84,21 @@
     }
     return props;
   };
-  const codexForkProps = root => {
+  const codexForkProps = (root, entry = null) => {
     const button = root?.querySelector('button[aria-label="More actions"]');
-    return button ? codexFiberProps(button, 30).find(p => typeof p.onFork === 'function' && typeof p.forkLabel === 'string' && !p.forkDisabled && !p.isForking) : null;
+    const action = button && codexFiberProps(button, 30).find(p => typeof p.onFork === 'function' && typeof p.forkLabel === 'string');
+    if (action) return !action.forkDisabled && !action.isForking ? action : null;
+    entry ||= root && codexFiberProps(root, 40).find(p => p.entry)?.entry;
+    const thread = codexThread();
+    if (!entry?.turnId || entry.conversationId !== thread) return null;
+    const provider = [...doc.querySelectorAll('[data-turn-key]')].flatMap(el => codexFiberProps(el, 40))
+      .find(p => p.entry?.conversationId === thread && !p.entry.isReadOnly && typeof p.entry.onForkTurnMessage === 'function')?.entry;
+    return provider ? { forkLabel: 'Fork chat from here', onFork: () => provider.onForkTurnMessage(entry.turnId) } : null;
   };
   const forkCodexTurn = async item => {
     const panel = findPanel();
-    const props = panel && codexForkProps(itemByKey(panel, item));
+    const entry = codexHistoryState().entries.find(entry => entry.turnKey === item);
+    const props = codexForkProps(panel && itemByKey(panel, item), entry);
     if (!props) return false;
     await props.onFork();
     return true;

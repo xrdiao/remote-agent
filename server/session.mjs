@@ -93,6 +93,11 @@ export class Session extends AgentContext {
       const app = obj.app || this.app;
       obj = { ...obj, list: sessionRows(app, catalogSessions(app, obj.list || [], this.windowId)) };
       this.sessionEntries = new Map(obj.list.filter(row => !row.ui).map(row => [row.id, { ...row, app: obj.app || this.app }]));
+      if (app === 'codex') obj = { ...obj, list: obj.list.map(row => {
+        if (row.dormant) return row;
+        const { workspace, host, ...view } = row;
+        return view;
+      }) };
     }
     if (obj?.t === 'attached' && !obj.closed && AGENT_REGISTRY[obj.app]?.capabilities) {
       obj = { ...obj, capabilities: AGENT_REGISTRY[obj.app].capabilities };

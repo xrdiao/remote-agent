@@ -664,9 +664,13 @@ export const methods = {
 
 
   // Take a picture / file off the prompt again (the little x on its thumbnail on the desktop).
-  async attachImage(data, name, type, replace = '', sel, transfer) {
+  async attachImage(data, name, type, replace = '', sel, transfer, uploadId) {
+    const file = uploadId && uploads.get(uploadId);
+    if (uploadId && (!file?.image || file.deviceId !== this.deviceId || file.sel !== sel)) throw new Error('找不到当前会话的上传图片');
+    try {
     if (transfer?.cancelled) return;
     if (sel && sel !== this.selectionKey()) throw new Error('会话已切换，请回到原会话编辑图片');
+    if (file) { data = fs.readFileSync(file.path).toString('base64'); name = file.name; type = file.type; }
     const before = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; if (${JSON.stringify(this.selectedThread || '')} && h.activeThread() !== ${JSON.stringify(this.selectedThread || '')}) throw new Error('当前窗口已不在所选会话，请重新连接'); return h.attachmentRows(); })()`);
     if (replace && !before.some(f => f.id === replace)) throw new Error('原图片已不在输入框中');
     if (!/^image\/(png|jpeg|gif|webp)$/.test(type) || typeof data !== 'string' || !/^[A-Za-z0-9+/=]+$/.test(data)) throw new Error('只支持 PNG / JPEG / GIF / WebP 图片');
@@ -690,6 +694,9 @@ export const methods = {
     this.emit({ t: 'status', ok: true, msg: this.appMessage('图片已附加到 {app} 输入框，写好文字后点发送') });
     const matches = JSON.parse(this.lastAttachments).filter(f => f.preview && f.preview === added?.preview);
     return matches.length === 1 ? matches[0].id : undefined;
+    } finally {
+      if (file) { fs.rmSync(path.dirname(file.path), { recursive: true, force: true }); uploads.delete(uploadId); }
+    }
   },
   async editAttachmentImage(id, scope) {
     if (scope !== this.selectionKey()) throw new Error('会话已切换，请重新选择图片');
