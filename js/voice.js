@@ -31,11 +31,12 @@ function renderAttachments(list) {
     + pending.map(([id, f]) => `<div class="attachment"><img src="${esc(f.preview)}" alt=""><span>${esc(f.name)} · ${f.error ? '上传失败' : '上传中…'}</span><button data-edit-pending-image="${id}">编辑</button>${f.error ? `<button data-retry-image="${id}">重试</button>` : ''}<button data-discard-image="${id}" aria-label="取消上传图片">×</button></div>`).join('');
   updateComposeCompact();
 }
-// A disconnected upload has no reliable imageDone receipt; allow an explicit retry.
+// The socket dropped after an image was sent but before the relay's imageDone could
+// arrive: mark those uploads failed with a retry button instead of spinning forever.
 function markUploadsDisconnected() {
   imageBatchScope = '';
   let dirty = false;
-  for (const f of imageUploads.values()) if ((f.sent || f.request) && !f.error && !f.cancelled) { f.cancelUpload?.(); f.error = true; dirty = true; }
+  for (const f of imageUploads.values()) if (f.sent && !f.error && !f.cancelled) { f.error = true; dirty = true; }
   if (dirty) renderAttachments(desktopAttachments);
 }
 function finishImageUpload(m) {
@@ -53,7 +54,7 @@ function finishImageUpload(m) {
     URL.revokeObjectURL(file.preview); imageUploads.delete(m.clientImageId);
   }
   else if (file.cancelled) { URL.revokeObjectURL(file.preview); imageUploads.delete(m.clientImageId); }
-  else { file.cancelUpload?.(); file.error = true; }
+  else file.error = true;
   renderAttachments(desktopAttachments);
 }
 $('attachments').onclick = e => {
@@ -67,7 +68,7 @@ $('attachments').onclick = e => {
   if (discard) {
     const file = imageUploads.get(discard.dataset.discardImage);
     file.cancelled = true;
-    file.cancelUpload?.();
+    file.reader?.abort();
     if (file.sent) send({ t: 'cancelImage', clientImageId: discard.dataset.discardImage });
     status('已取消这张图片上传');
     if (file.error) { URL.revokeObjectURL(file.preview); imageUploads.delete(discard.dataset.discardImage); }
@@ -98,22 +99,11 @@ $('img').onclick = () => {
   openSheet('image-upload', '<h3>选择图片</h3><button class="opt" data-image-choice="direct">直接上传</button><button class="opt" data-image-choice="edit">编辑后上传</button>');
   for (const button of $('sheet').querySelectorAll('[data-image-choice]')) button.onclick = () => { editBeforeUpload = button.dataset.imageChoice === 'edit'; closeSheet(); $('imgFile').click(); };
 };
-async function uploadDocument(file, sel, image) {
-  const target = base, computer = currentComputer();
-  const path = '/api/upload?name=' + encodeURIComponent(file.name) + '&sel=' + encodeURIComponent(sel)
-    + (image ? '&image=' + encodeURIComponent(image.id) + '&type=' + encodeURIComponent(file.type) : '');
-  if (image) image.cancelUpload = () => {
-    image.request?.abort();
-    const cancelPath = '/api/upload/cancel';
-    entryHeaders(computer, 'POST', cancelPath).then(headers => fetch(target + cancelPath, {
-      method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ clientImageId: image.id }),
-    })).catch(() => {});
-  };
-  const headers = await entryHeaders(computer, 'POST', path);
-  if (image?.cancelled) throw new Error('已取消上传');
+async function uploadDocument(file, sel) {
+  const target = base, path = '/api/upload?name=' + encodeURIComponent(file.name) + '&sel=' + encodeURIComponent(sel);
+  const headers = await entryHeaders(currentComputer(), 'POST', path);
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
-    if (image) image.request = request;
     request.open('POST', target + path);
     for (const [key, value] of Object.entries(headers)) request.setRequestHeader(key, value);
     request.setRequestHeader('content-type', 'application/octet-stream');
@@ -125,7 +115,6 @@ async function uploadDocument(file, sel, image) {
     };
     request.onerror = () => reject(new Error('文件上传失败'));
     request.ontimeout = () => reject(new Error('文件上传超时'));
-    request.onabort = () => reject(new Error('已取消上传'));
     request.send(file);
   });
 }
@@ -148,7 +137,7 @@ async function attachImageFile(file, options = {}) {
   const sel = options.sel || viewSel, scope = imageUploadScope();
   if (sel !== viewSel) { status('会话已切换，请重新选择图片', false); return false; }
   const id = crypto.randomUUID();
-  imageUploads.set(id, { id, file, name: file.name, scope, preview: URL.createObjectURL(file), options });
+  imageUploads.set(id, { file, name: file.name, scope, preview: URL.createObjectURL(file), options });
   renderAttachments(desktopAttachments);
   status('正在处理图片…');
   try {
@@ -156,15 +145,13 @@ async function attachImageFile(file, options = {}) {
     const record = imageUploads.get(id);
     if (record.cancelled) { URL.revokeObjectURL(record.preview); imageUploads.delete(id); return true; }
     record.uploadFile = img;
+    const url = await new Promise((res, rej) => { const r = new FileReader(); record.reader = r; r.onload = () => res(r.result); r.onerror = rej; r.onabort = () => res(null); r.readAsDataURL(img); });
+    if (record.cancelled) { URL.revokeObjectURL(record.preview); imageUploads.delete(id); return true; }
     if (scope !== imageUploadScope()) throw new Error('会话已切换，请回到原会话重试上传');
     if (!authed || ws?.readyState !== 1) throw new Error('连接已断开，请重新连接后重试');
-    const uploaded = await uploadDocument(img, sel, record);
-    record.request = null;
-    if (record.cancelled) { record.cancelUpload(); URL.revokeObjectURL(record.preview); imageUploads.delete(id); return true; }
-    if (scope !== imageUploadScope()) throw new Error('会话已切换，请回到原会话重试上传');
-    if (!authed || ws?.readyState !== 1) throw new Error('连接已断开，请重新连接后重试');
+    record.reader = null;
     record.sent = true;
-    send({ t: 'image', uploadId: uploaded.id, sel, replace: options.replace || '', clientImageId: id });
+    send({ t: 'image', data: url.slice(url.indexOf(',') + 1), name: img.name, type: img.type, sel, replace: options.replace || '', clientImageId: id });
     return true;
   } catch (error) {
     const cancelled = imageUploads.get(id)?.cancelled;
