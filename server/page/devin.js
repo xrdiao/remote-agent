@@ -46,7 +46,6 @@
     const seg = [...document.querySelectorAll('button.switch-segment')].find(e => vis(e) && e.classList.contains('active'));
     return seg ? (seg.classList.contains('agent-segment') ? 'agent' : 'editor') : null;
   };
-  const devinRowSession = s => s && typeof s === 'object' ? s.sessionId || String(s.devin_id || '').replace(/^devin-(?=acp\/)/, '') : '';
   const surfaceTarget = to => {
     const seg = [...document.querySelectorAll(`button.switch-segment.${to}-segment`)].find(vis);
     return seg ? center(seg) : null;

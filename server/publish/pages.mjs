@@ -46,7 +46,7 @@ export function appFiles(dir = APP_DIR, prefix = '') {
 
 // Keeps the GitHub Pages copy of the app identical to app/, uploading only files that changed.
 async function syncApp(signal) {
-  const api = async (suffix, body) => JSON.parse(await run('gh', ['api', ...(body ? ['-X', 'POST'] : []), `repos/${PUBLISH_REPO}${suffix && `/${suffix}`}`, ...(body ? ['--input', '-'] : [])], body && JSON.stringify(body), { signal }));
+  const api = async (suffix, body) => JSON.parse(await run('gh', ['api', ...(body ? ['-X', 'POST'] : []), `repos/${PUBLISH_REPO}/${suffix}`, ...(body ? ['--input', '-'] : [])], body && JSON.stringify(body), { signal }));
   const branch = PAGES_BRANCH || (await api('')).default_branch;
   const files = appFiles().map(name => {
     const buf = fs.readFileSync(path.join(APP_DIR, name));
