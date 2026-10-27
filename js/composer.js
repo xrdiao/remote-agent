@@ -105,13 +105,14 @@ function disconnectPendingSends() {
   if (pendingEchoes.length) queueChatRender();
 }
 function reconcileSent(chat) {
-  const matched = new Set();
+  const matched = new Set(submittedMessages.filter(sent => sent.scope === messageScope() && (!sent.thread || sent.thread === chat.thread))
+    .flatMap(sent => [sent.messageId, sent.queueId].filter(Boolean)));
   for (const [requestId, sent] of pendingSends) {
     if (sent.mode !== 'chat' || sent.scope !== messageScope() || (sent.thread && sent.thread !== chat.thread)) continue;
     const queued = (chat.queued || []).find(it => !sent.beforeQueues.has(it.id) && !matched.has(it.id) && it.t?.trim() === sent.text.trim().slice(0, 4000));
     if (queued) { matched.add(queued.id); confirmSent({ requestId, queueId: queued.id, messageId: queued.messageId, sel: viewSel, queued: true }, false); continue; }
     if (sent.queuedSameText) continue;
-    const item = chat.items.find(it => receiptMatchesHuman(it, sent) && !matched.has(it.i) && !messageTimes.has(generationKey(chat) + '|' + it.i));
+    const item = chat.items.find(it => receiptMatchesHuman(it, sent) && !matched.has(it.i) && !it.nativeIds?.some(id => matched.has(id)) && !messageTimes.has(generationKey(chat) + '|' + it.i));
     if (item) { matched.add(item.i); confirmSent({ requestId, messageId: item.i, sel: viewSel, queued: false, sentAt: item.sentAt || Date.now() }, false); }
   }
 }
