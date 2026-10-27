@@ -594,8 +594,6 @@ div.math { display: block; margin: .35em 0; text-align: center; }
   color: var(--fg-3); background: var(--s1); border-radius: 999px; font-size: 12px; text-align: center;
 }
 .msg.notice.live { color: var(--fg-2); }
-.msg.notice.capacity { display: flex; align-items: center; gap: 10px; max-width: 100%; text-align: left; border-radius: var(--r-md); }
-.msg.notice.capacity .btns { flex: 0 0 auto; margin: 0; }
 .btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .btns button { font-size: 13.5px; min-height: 34px; padding: 0 12px; }
 .btns button.primary { font-weight: 600; }
@@ -790,9 +788,6 @@ body:not(.chatmode) #inputHistory, body:not(.term) #termHistory { display: none;
   #sendNow { padding: 0 10px; }
   #send { padding: 0 12px 0 14px; }
 }
-
-/* Idle drafts keep the tools visible while the text uses at most two lines. */
-body.composeIdle.chatmode #text { max-height: calc(2.9em + 12px); overflow-y: hidden; }
 
 /* Compact composer: the empty idle chat composer collapses to a one-line pill
    [#add][#text][#mic|#stop] so the conversation gets the vertical room back. */
@@ -1123,11 +1118,7 @@ body.term #stage { display: none; }
 .chatImagePreview .videoViewStage { height: 70dvh; display: flex; align-items: center; justify-content: center; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 #vBody .chatImagePreview img { width: auto; height: auto; max-width: 100%; max-height: 100%; margin: 0; pointer-events: none; }
 #vBody video { display: block; width: 100%; max-height: 100%; background: #000; }
-#vBody .pdfPager { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: center; gap: 16px; padding: 8px; background: var(--bg); border-bottom: 1px solid var(--line); }
-#vBody .pdfPager button { min-height: 36px; padding: 0 14px; }
-#vBody .pdfPager span { min-width: 64px; text-align: center; font-variant-numeric: tabular-nums; }
-#vBody .pdfPage { margin: 12px; }
-#vBody .pdfPage canvas { display: block; width: 100%; height: auto; background: #fff; }
+#vBody .pdfPreview { display: block; width: 100%; height: 100%; min-height: 70dvh; border: 0; background: #fff; }
 #vBody img { display: block; max-width: 100%; margin: 12px auto; background: var(--imgbg); }
 #vBody .note { padding: 30px 20px; color: var(--fg-3); text-align: center; line-height: 1.7; }
 #vBody .note.err { color: var(--err); }
@@ -1603,8 +1594,6 @@ button { transition: background-color .12s var(--ease), color .12s var(--ease), 
     opacity: 0; transform: translateY(4px);
   }
 }
-/* History controls change height immediately so a prepend needs only one position adjustment. */
-#older, #cachedMore, #historyStatus { transition: none; transform: none; }
 /* Status line under the composer hides via :has(), not [hidden]. */
 #footerStatus { transition: opacity .18s var(--ease), transform .18s var(--ease), display .18s allow-discrete; }
 #footerStatus:not(:has(#msg:not(:empty):not(.quiet), #elapsed:not([hidden]))) { opacity: 0; transform: translateY(4px); pointer-events: none; }
