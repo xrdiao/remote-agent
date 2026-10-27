@@ -287,6 +287,7 @@ function openSettings() {
 }
 function showWindows() {
   const { entries, missingAgents } = windowEntries();
+  entries.sort((a, b) => (a.app === 'fusion') - (b.app === 'fusion') || a.app.localeCompare(b.app));
   // A re-render replaces every row; if a windows/plans emit lands mid-press it swallows the
   // click. Row content only depends on this signature — skip the rebuild when nothing changed
   // (latency values paint in place via paintLatency).
