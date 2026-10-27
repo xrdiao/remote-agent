@@ -522,7 +522,7 @@ async function boot() {
   const old = ws;
   if (authed) {
     markUploadsDisconnected();
-    failPendingSends('连接已断开，消息未发送，请重试');
+    disconnectPendingSends();
     failFileSave('连接已断开，保存结果未确认，请重试');
     cancelChatContentRequests();
     interruptSessionBatch();
@@ -674,7 +674,7 @@ async function connect() {
     resetLatency();
     setWindowReady(false);
     markUploadsDisconnected();
-    failPendingSends('连接已断开，消息未发送，请重试');
+    disconnectPendingSends();
     failFileSave('连接已断开，保存结果未确认，请重试');
     qnPending = null;
     cancelChatContentRequests();

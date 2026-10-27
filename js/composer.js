@@ -49,7 +49,7 @@ function sendReceipt(value) {
 function confirmSent(m, render = true) {
   if (m.pending) {
     const sent = pendingSends.get(m.requestId);
-    if (sent && sent.computer === (currentComputer()?.id || '') && sent.draft === draftKey() && ['正在发送…', '正在确认电脑端接收…'].includes(pendingStatus)) status('正在确认电脑端接收…');
+    if (sent && sent.computer === (currentComputer()?.id || '') && sent.draft === draftKey() && ['正在发送…', '正在确认电脑端接收…', '连接已断开，发送结果待确认'].includes(pendingStatus)) status('正在确认电脑端接收…');
     return;
   }
   const echo = pendingEchoes.find(p => p.requestId === m.requestId);
@@ -67,7 +67,7 @@ function confirmSent(m, render = true) {
   for (const key of inputHistory.keys()) if (key.startsWith(sent.draft + '|')) inputHistory.delete(key);
   if (drafts.get(sent.draft) === sent.text && (draftVersions.get(sent.draft) || 0) === sent.version) { drafts.delete(sent.draft); draftMentions.delete(sent.draft); }
   const here = (currentComputer()?.id || '') === sent.computer && mode === sent.mode && (draftKey() === sent.draft || m.sel === viewSel);
-  if (here && ['正在发送…', '正在确认电脑端接收…'].includes(pendingStatus) && ![...pendingSends.values()].some(p => p.draft === activeDraft)) {
+  if (here && ['正在发送…', '正在确认电脑端接收…', '连接已断开，发送结果待确认'].includes(pendingStatus) && ![...pendingSends.values()].some(p => p.draft === activeDraft)) {
     status(m.queued ? 'Agent 正在运行，已加入排队，这一轮结束后自动发送' : '已发送');
   }
   if (here && inputRevision === sent.revision && text.value === sent.text) {
@@ -96,7 +96,14 @@ function failPendingSend(requestId, message = '发送失败，请重试') {
   }
   if ((currentComputer()?.id || '') === sent.computer && draftKey() === sent.draft) status(message, false);
 }
-function failPendingSends(message) { for (const requestId of [...pendingSends.keys()]) failPendingSend(requestId, message); }
+function disconnectPendingSends() {
+  for (const sent of pendingSends.values()) {
+    const echo = pendingEchoes.find(p => p.requestId === sent.requestId);
+    if (echo) echo.unknown = true;
+    if ((currentComputer()?.id || '') === sent.computer && draftKey() === sent.draft) status('连接已断开，发送结果待确认');
+  }
+  if (pendingEchoes.length) queueChatRender();
+}
 function reconcileSent(chat) {
   const matched = new Set();
   for (const [requestId, sent] of pendingSends) {

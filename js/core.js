@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v262'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v263'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false, failures = 0;
 let windowReady = false;
@@ -168,6 +168,7 @@ const ACTION_PENDING = new Set([
   '正在撤销…', '正在保留…', '处理中…', '正在修改排队消息…',
   '切换 MAX Mode…', '读取模型参数…', '设置中…',
   '读取模式列表…', '读取模型列表…', '读取历史对话…',
+  '连接已断开，发送结果待确认',
 ]);
 let statusGen = 0;
 let statusTimer = 0;
