@@ -17,7 +17,7 @@
   const devinSessionMenu = id => {
     for (const row of doc.querySelectorAll('li[data-slot="sidebar-menu-item"]')) {
       const props = codexFiberProps(row, 16);
-      if (!props.some(p => devinRowSession(p.session) === id)) continue;
+      if (!props.some(p => p.session?.sessionId === id)) continue;
       return { row, actions: props.find(p => p.menuSlot?.props.actionGroups)?.menuSlot.props.actionGroups.flat() || [] };
     }
     return null;
