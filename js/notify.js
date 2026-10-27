@@ -5,6 +5,11 @@ const iosPush = () => Boolean(window.AgentRemoteApp?.pushRegister);
 const webPush = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
 let notifyOn = false;
 let notifySubscribed = false;
+let notifyGeneration = 0;
+function beginNotifyOperation() {
+  const generation = ++notifyGeneration, key = currentComputer()?.key;
+  return () => generation === notifyGeneration && key === currentComputer()?.key;
+}
 
 const serviceWorkerRegistration = () => {
   if (window.agentRemoteServiceWorker) return window.agentRemoteServiceWorker;
@@ -39,6 +44,7 @@ const nativeConfig = () => JSON.stringify({ app: appAddress(), key: store.get('k
 
 // After every connect, read this device's saved setting without enabling a retained subscription.
 async function syncNotify() {
+  const current = beginNotifyOperation();
   try {
     if (nativeNotify()) {
       notifyOn = window.AgentRemoteApp.notifyEnabled();
@@ -47,17 +53,19 @@ async function syncNotify() {
       const response = await api('/api/push/state');
       if (!response.ok) throw new Error('读取通知状态失败');
       const state = await response.json();
+      if (!current()) return;
       notifySubscribed = state.subscribed;
       notifyOn = state.enabled;
     } else {
       const [response, sub] = await Promise.all([api('/api/push/state'), pushSub()]);
       if (!response.ok) throw new Error('读取通知状态失败');
       const state = await response.json();
+      if (!current()) return;
       notifySubscribed = state.subscribed && Boolean(sub);
       notifyOn = state.enabled && Boolean(sub);
     }
   } catch {}
-  paintNotifySwitch();
+  if (current()) paintNotifySwitch();
 }
 
 // Reflect the confirmed notification state into an open main-menu sheet.
@@ -69,22 +77,25 @@ function paintNotifySwitch() {
 }
 
 async function enableNotify() {
+  const current = beginNotifyOperation();
   if (nativeNotify()) {
     window.AgentRemoteApp.setNotify(nativeConfig());
     notifyOn = true;
-    setTimeout(() => { if (window.AgentRemoteApp.listenStatus?.() !== 'connected') showBgSheet(); }, 4000);
+    setTimeout(() => { if (current() && window.AgentRemoteApp.listenStatus?.() !== 'connected') showBgSheet(); }, 4000);
     return status('通知已开启，正在连接电脑。请在手机的电池设置里允许本 App 后台运行，否则切到后台后会收不到通知');
   }
   if (iosPush()) {
     try {
       const reg = await window.AgentRemoteApp.pushRegister();
+      if (!current()) return;
       const r = await post('/api/push/apns', reg);
+      if (!current()) return;
       if (!r.ok) throw new Error((await r.json()).error || '注册失败');
       notifySubscribed = true;
       notifyOn = true;
       return status('通知已开启');
     } catch (e) {
-      return status('开启通知失败：' + e.message, false);
+      if (current()) return status('开启通知失败：' + e.message, false);
     }
   }
   if (inApp) return status('请先在菜单里更新安卓 App，新版才支持通知', false);
@@ -95,32 +106,39 @@ async function enableNotify() {
   }
   // Must be the first await: iOS only shows the permission prompt directly inside a tap.
   const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
+  if (!current()) return;
   if (permission !== 'granted') return status('没有通知权限，请在系统设置里允许本 App 发通知', false);
   try {
     let r;
     if (notifySubscribed) r = await post('/api/push/state', { enabled: true });
     else {
       const reg = await swReady();
+      if (!current()) return;
       let sub = await reg.pushManager.getSubscription();
       if (!sub) {
         const { key } = await api('/api/push/key').then(r => r.json());
+        if (!current()) return;
         sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64u(key) });
       }
+      if (!current()) return;
       r = await post('/api/push/subscribe', { sub: sub.toJSON() });
     }
+    if (!current()) return;
     if (!r.ok) throw new Error((await r.json()).error || '注册失败');
     notifySubscribed = true;
     notifyOn = true;
     status('通知已开启');
   } catch (e) {
-    status('开启通知失败：' + e.message, false);
+    if (current()) status('开启通知失败：' + e.message, false);
   }
 }
 
 async function disableNotify() {
+  const current = beginNotifyOperation();
   if (nativeNotify()) window.AgentRemoteApp.setNotify('');
   else {
     const response = await post('/api/push/state', { enabled: false });
+    if (!current()) return;
     if (!response.ok) throw new Error('关闭通知失败，请重试');
   }
   notifyOn = false;
