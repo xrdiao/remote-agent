@@ -1144,7 +1144,15 @@ function menuGroup(key, label, content, initial = true) {
 }
 $('sheet').addEventListener('toggle', e => {
   if (e.target.matches('details[data-menu-group]')) store.set('menu-group:' + e.target.dataset.menuGroup, e.target.open ? '1' : '0');
+  if (e.target.dataset.compatibilityApp) {
+    const key = compatibilityKey(e.target.dataset.compatibilityApp);
+    e.target.open ? compatibilityOpen.add(key) : compatibilityOpen.delete(key);
+  }
 }, true);
+$('sheet').addEventListener('click', e => {
+  const app = e.target.closest('[data-compatibility-refresh]')?.dataset.compatibilityRefresh;
+  if (app) { requestCompatibility(app, true); showAgentManager(); }
+});
 $('sheet').addEventListener('change', e => {
   const app = e.target.dataset.agentStart;
   if (!app) return;
@@ -1154,14 +1162,17 @@ $('sheet').addEventListener('change', e => {
   showAgentManager();
 });
 function showAgentManager(refresh = false) {
-  if (refresh) send({ t: 'connAgents' });
+  if (refresh) {
+    send({ t: 'connAgents' });
+    for (const app of CONN_AGENTS) requestCompatibility(app.app, true);
+  }
   const catalog = agentCatalog(), selected = startupAgents();
   const rows = (catalog || []).map(a => ({ ...CONN_AGENTS.find(r => r.app === a.app), ...a }));
   const known = rows.filter(a => a.installed === true), unknown = rows.filter(a => a.installed === null), missing = rows.filter(a => a.installed === false);
   const row = a => {
     const ready = agentReports.get(agentComputerKey())?.find(r => r.app === a.app)?.windows;
     const note = connLaunchNote(a) || (ready ? '已连接' : a.running ? '已运行，请开启调试端口' : a.reason || (a.installed === null ? '安装状态待确认' : '未启动'));
-    return `<label class="opt agentManageRow"><span class="cTile cBrand agentManageLogo"><img class="on-dark" src="logo-${a.app}-dark.svg" alt=""><img class="on-light" src="logo-${a.app}-light.svg" alt=""></span><span class="lbl">${esc(a.name)}<span class="sub">${esc(I18N.tr(note))}</span></span>${a.installed === true ? `<input type="checkbox" data-agent-start="${a.app}" aria-label="${esc(a.name)}" ${selected.includes(a.app) ? 'checked' : ''}>` : ''}</label>`;
+    return `<label class="opt agentManageRow"><span class="cTile cBrand agentManageLogo"><img class="on-dark" src="logo-${a.app}-dark.svg" alt=""><img class="on-light" src="logo-${a.app}-light.svg" alt=""></span><span class="lbl">${esc(a.name)}<span class="sub">${esc(I18N.tr(note))}</span></span>${a.installed === true ? `<input type="checkbox" data-agent-start="${a.app}" aria-label="${esc(a.name)}" ${selected.includes(a.app) ? 'checked' : ''}>` : ''}</label><details data-compatibility-app="${a.app}" ${compatibilityOpen.has(compatibilityKey(a.app)) ? 'open' : ''}><summary>${esc(I18N.tr('版本与适配'))}</summary><pre class="hint">${esc(compatibilityText(a.app))}</pre><button class="opt" data-compatibility-refresh="${a.app}">${esc(I18N.tr('重新检查适配'))}</button></details>`;
   };
   openSheet('agent-manager', `<h3>Agent 管理</h3><p class="hint">${esc(currentComputer()?.name || I18N.tr('当前电脑'))} · ${I18N.tr('选择仅记录启动偏好，不会关闭正在运行的 Agent。')}</p>
     <div class="optRow"><button class="opt" data-act="agentRefresh">重新检测</button><button class="opt" data-act="agentBack">返回菜单</button></div>
