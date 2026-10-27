@@ -378,6 +378,10 @@ let scrollMode = 'freeScroll', bottomFollowPending = false, scrollFrame = 0, his
 let bottomScrollIntent = null, initialBottomSelection = null;
 const readingExecutionRows = new Set();
 let historyRequest = null, historyRendering = false, historyExpanded = false, historyArmed = false, historySerial = 0, historyAtEnd = false;
+function clearHistoryRequest() {
+  clearTimeout(historyRequest?.timer);
+  historyRequest = null;
+}
 let historyCursor = null;
 let pendingHistoryStatus = null;
 let turnNavTimer = 0, turnNavHeld = false, turnNavUser = false, turnNavCursor = null, turnNavPending = null;
@@ -406,13 +410,13 @@ function noteBottomScrollIntent(towardBottom) {
   initialBottomSelection = null;
   if (towardBottom && isFollowingBottom() && atBottom()) return;
   setScrollMode('freeScroll');
-  bottomScrollIntent = towardBottom ? { sel: viewSel, top: chatScrollTop(), max: maxChatScrollTop() } : null;
+  bottomScrollIntent = towardBottom ? { sel: viewSel, top: chatScrollTop(), atBottom: atBottom() } : null;
 }
 function userReachedBottom() {
   const intent = bottomScrollIntent;
   if (!intent) return false;
-  if (intent.sel !== viewSel || intent.max !== maxChatScrollTop()) { bottomScrollIntent = null; return false; }
-  return chatScrollTop() >= intent.top - BOTTOM_EPSILON && atBottom();
+  if (intent.sel !== viewSel) { bottomScrollIntent = null; return false; }
+  return atBottom() && (intent.atBottom || chatScrollTop() > intent.top + 1);
 }
 function setScrollMode(next) {
   if (next === 'followBottom' && !atBottom()) return;
@@ -499,10 +503,10 @@ function reconcileBottomFollow(sync = false) {
     applyBottomFollow();
   });
 }
-function requestChatScroll() {
+function requestChatScroll(sync = false) {
   if (!isFollowingBottom()) return;
   bottomFollowPending = true;
-  reconcileBottomFollow();
+  reconcileBottomFollow(sync);
 }
 function restoreChatPosition(stick = false) {
   if (scrollMode === 'programmatic') return;
@@ -513,10 +517,10 @@ const chatSizeObserver = new ResizeObserver(() => {
     layoutDirty = true;
     return;
   }
-  if (isFollowingBottom()) { requestChatScroll(); return; }
+  if (isFollowingBottom()) { requestChatScroll(true); return; }
   layoutDirty = false;
 });
-for (const el of [itemsEl, $('older'), $('historyStatus'), $('cachedMore')]) chatSizeObserver.observe(el);
+for (const el of [list, itemsEl, $('older'), $('historyStatus'), $('cachedMore')]) chatSizeObserver.observe(el);
 document.addEventListener('selectionchange', () => {
   if (deferredRender && !userSelecting()) { deferredRender = false; if (lastChat) renderChat(lastChat, chatStale); }
   applyPendingHistory();
@@ -596,7 +600,7 @@ function pendingEchoEls() {
   return pendingEchoes.filter(p => p.kind === 'chat' && p.sel === viewSel).map(p => {
     const el = document.createElement('div');
     el.className = 'msg human pending';
-    el.innerHTML = `<div class="humanContent"><div class="bubble">${esc(p.text)}</div><div class="messageMeta">${I18N.tr(p.syncing ? '正在同步…' : p.confirmed ? '已发送' : '发送中…')}</div></div>`;
+    el.innerHTML = `<div class="humanContent"><div class="bubble">${esc(p.text)}</div><div class="messageMeta">${I18N.tr(p.syncing ? '正在同步…' : p.confirmed ? '已发送' : p.unknown ? '发送结果待确认' : '发送中…')}</div></div>`;
     return el;
   });
 }
@@ -621,7 +625,7 @@ function toggleExecutionRecords() {
   renderChat(lastChat, chatStale, false, false);
   showMainMenu();
 }
-function renderChat(chat, stale, loading = false, keepReading = true) {
+function renderChat(chat, stale, loading = false, keepReading = true, historyInsertion = false) {
   if (chat) reconcileSent(chat);
   chat = withMessageTimes(chat);
   rememberChatMessageTime(chat);
@@ -639,7 +643,7 @@ function renderChat(chat, stale, loading = false, keepReading = true) {
   if (threadChanged) {
     historyCursor = null;
     readingExecutionRows.clear();
-    historyRequest = null; historyRendering = false; historyExpanded = false; historyArmed = false; historyAtEnd = false; chatUserScroll = false; bottomScrollIntent = null; bottomFollowPending = false; historyPagePending = null; layoutDirty = false; syncScrollFlush = false; pendingHistoryStatus = null;
+    clearHistoryRequest(); historyRendering = false; historyExpanded = false; historyArmed = false; historyAtEnd = false; chatUserScroll = false; bottomScrollIntent = null; bottomFollowPending = false; historyPagePending = null; layoutDirty = false; syncScrollFlush = false; pendingHistoryStatus = null;
     $('older').disabled = false;
     $('historyStatus').hidden = true;
   }
@@ -661,6 +665,14 @@ function renderChat(chat, stale, loading = false, keepReading = true) {
     return;
   }
   const followBottom = followingChat();
+  const existing = new Set([...itemsEl.children].map(el => el.dataset.i));
+  const previousOrder = Math.max(-1, ...[...existing].map(id => {
+    const item = SC.items.get(id) || previous?.items.find(it => String(it.i) === id);
+    return item?.order ?? acpNum(id);
+  }));
+  const restoreInsertion = !followBottom && !threadChanged && scrollMode === 'freeScroll'
+    && (historyInsertion || chat?.items.some(it => !existing.has(String(it.i)) && (it.order ?? acpNum(it.i)) < previousOrder))
+    ? historyInsertionPosition() : null;
   noteChatLayoutChange();
   lastChat = chat; updateTitle();
   paintGenerationTime();
@@ -795,7 +807,8 @@ function renderChat(chat, stale, loading = false, keepReading = true) {
   renderQueue(chatStale ? false : chat.busy, chatStale ? [] : (chat.queued || []), chat.subagents || [], chat.readonly, chat.changed, chat.queuedCount);
   renderQuestions(chatStale || (chat.readonly && !chat.questions?.codex) ? null : chat.questions);
 
-  paintHistoryStatus();
+  paintHistoryStatus(!!restoreInsertion);
+  restoreInsertion?.();
   restoreChatPosition(stick);
   historyRendering = false;
   if (!stick && previous && JSON.stringify(previous.items) !== JSON.stringify(chat.items)) $('toBottom').textContent = '↓ 有新消息';
@@ -1056,7 +1069,7 @@ function renderQueue(busy, queued, subs = [], readonly = false, changed = 0, qCo
     html += `<div class="qhRow"><button class="qh fold" data-qfold aria-expanded="${queueOpen}">${queueOpen ? '▾' : '▸'} <span>排队中 ${n} 条</span></button>${devin ? ibtn('trash', '清空', 'data-a="clear" data-q=""', 'del') : ''}</div>`;
   }
   if (n && queueOpen) {
-    html += pending.map(p => `<div class="q pending"><span class="qt">${esc(p.text)}</span><span class="sub">${I18N.tr(p.syncing ? '正在同步…' : p.confirmed ? '已排队' : '发送中…')}</span></div>`).join('');
+    html += pending.map(p => `<div class="q pending"><span class="qt">${esc(p.text)}</span><span class="sub">${I18N.tr(p.syncing ? '正在同步…' : p.confirmed ? '已排队' : p.unknown ? '发送结果待确认' : '发送中…')}</span></div>`).join('');
     html += queued.map(q => `<div class="q"><span class="qt">${esc(q.t || '(空)')}</span>`
       + (supportsCapability('queueEdit') ? ibtn('edit', devin ? '从队列取出，放回输入框' : '修改', `data-q="${esc(q.id)}" data-a="edit"`) : '')
       + ibtn('enter', '打断当前这一轮，立刻发送', `data-q="${esc(q.id)}" data-a="send"`)
@@ -1306,7 +1319,7 @@ $('turnNav').addEventListener('click', e => {
 $('turnNav').addEventListener('touchstart', e => {
   e.stopPropagation();
 }, { passive: true });
-function paintHistoryStatus() {
+function paintHistoryStatus(inserting = false) {
   if (pendingHistoryStatus === null) return;
   const top = list.scrollTop, height = list.scrollHeight;
   $('older').disabled = !!historyRequest;
@@ -1314,7 +1327,7 @@ function paintHistoryStatus() {
   $('historyStatus').hidden = false;
   $('historyStatus').textContent = pendingHistoryStatus;
   pendingHistoryStatus = null;
-  if (!isFollowingBottom() && !chatMotionFrame) setChatScrollTop(top + list.scrollHeight - height);
+  if (!inserting && !isFollowingBottom() && !chatMotionFrame) setChatScrollTop(top + list.scrollHeight - height);
 }
 function showHistoryStatus(message) {
   pendingHistoryStatus = I18N.tr(message);
@@ -1348,7 +1361,14 @@ function requestOlderRemote() {
     showHistoryStatus('已到最早消息');
     return;
   }
-  historyRequest = { id: String(++historySerial), sel: viewSel, thread: lastChat.thread, expanded: historyExpanded };
+  const request = historyRequest = { id: String(++historySerial), sel: viewSel, thread: lastChat.thread, expanded: historyExpanded };
+  request.timer = setTimeout(() => {
+    if (historyRequest !== request) return;
+    historyExpanded = request.expanded;
+    clearHistoryRequest();
+    historyRendering = false;
+    showHistoryStatus('历史读取结果尚未返回，可重试');
+  }, 30000);
   historyRendering = true;
   historyExpanded = true;
   showHistoryStatus('正在加载更早的消息…');
@@ -1360,7 +1380,7 @@ function requestOlderRemote() {
   }
   if (send({ t: 'scrollChat', dy: -900, automatic: true, history: true, requestId: historyRequest.id, ...paging }) === false) {
     historyExpanded = historyRequest.expanded;
-    historyRequest = null;
+    clearHistoryRequest();
     historyRendering = false;
     showHistoryStatus('连接已断开，历史未加载，请重试');
   }
@@ -1368,7 +1388,7 @@ function requestOlderRemote() {
 function cancelChatContentRequests() {
   if (historyRequest) {
     historyExpanded = historyRequest.expanded;
-    historyRequest = null;
+    clearHistoryRequest();
     historyRendering = false;
     showHistoryStatus('历史加载已中断，请重试');
   }
@@ -1406,37 +1426,34 @@ function applyPendingHistory() {
     rows.sort((a, b) => order(a) - order(b));
     chat = { ...chat, items: rows, earlier: page.earlier };
   }
-  if (isFollowingBottom()) {
-    renderChat(chat, chatStale);
-    requestChatScroll();
-    return;
-  }
-  setScrollMode('freeScroll');
+  renderChat(chat, chatStale, false, true, true);
+  if (isFollowingBottom()) requestChatScroll();
+}
+// Measure and commit only within the synchronous insertion; no reading position survives it.
+function historyInsertionPosition() {
   const top = list.scrollTop, edge = list.getBoundingClientRect().top;
   const before = new Map([...itemsEl.children].map(el => {
     const r = el.getBoundingClientRect();
     return [el, { top: r.top - edge + top, bottom: r.bottom - edge + top }];
   }));
-  renderChat(chat, chatStale);
-  // Cached windows can also fill gaps below the viewport. Only count added space above it.
-  const offset = list.scrollTop - list.getBoundingClientRect().top;
-  let delta = 0, previous = null;
-  for (const el of itemsEl.children) {
-    const old = before.get(el);
-    if (!old) continue;
-    const r = el.getBoundingClientRect(), now = { top: r.top + offset, bottom: r.bottom + offset };
-    if (!previous) delta = now.top - old.top;
-    else if (previous.old.bottom <= top) delta += now.top - previous.now.bottom - (old.top - previous.old.bottom);
-    if (old.bottom <= top) delta += now.bottom - now.top - (old.bottom - old.top);
-    previous = { old, now };
-  }
-  // Commit once before paint and discard the layout measurements immediately.
-  setChatScrollTop(top + delta);
-  updateToBottom();
+  return () => {
+    const offset = list.scrollTop - list.getBoundingClientRect().top;
+    let delta = 0, previous = null;
+    for (const el of itemsEl.children) {
+      const old = before.get(el);
+      if (!old) continue;
+      const r = el.getBoundingClientRect(), now = { top: r.top + offset, bottom: r.bottom + offset };
+      if (!previous) delta = now.top - old.top;
+      else if (previous.old.bottom <= top) delta += now.top - previous.now.bottom - (old.top - previous.old.bottom);
+      if (old.bottom <= top) delta += now.bottom - now.top - (old.bottom - old.top);
+      previous = { old, now };
+    }
+    setChatScrollTop(top + delta);
+  };
 }
 function finishHistory(m) {
   if (!historyRequest || m.requestId !== historyRequest.id || m.sel !== historyRequest.sel) return;
-  historyRequest = null;
+  clearHistoryRequest();
   if (m.earlier === false) historyAtEnd = true;
   else if (m.earlier === true) historyAtEnd = false;
   showHistoryStatus(m.error || (m.pending ? '历史消息正在加载，请稍后重试' : m.earlier === false && $('cachedMore').hidden ? '已到最早消息' : '继续上滑可加载更早的消息'));

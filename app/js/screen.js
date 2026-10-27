@@ -37,13 +37,11 @@ $('sheet').addEventListener('click', e => {
 });
 
 function onFrame(m) {
-  if (m.visual && mode !== 'screen') return;
-  if (mode === 'screen' && !m.visual) return;
+  if (mode !== 'screen' || !m.visual) return;
   frame = { w: m.w, h: m.h };
   screen.src = 'data:image/jpeg;base64,' + m.data;
   layoutStage();
 }
-screen.onload = () => { if (mode !== 'screen') send({ t: 'ack' }); };
 
 const cropRect = () => {
   if (mode === 'terminal') return panel || [0, 0, frame.w, frame.h];

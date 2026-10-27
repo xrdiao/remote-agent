@@ -402,12 +402,12 @@ async withFusionSideSpec(spec, fn, select = true) {
     // Everything the old Object.create(this) borrowed context inherited: reads fall through to the
     // owner until the side assigns its own value, which then shadows it like an own property did.
     for (const key of ['visible', 'mode', 'sel', 'dark', 'client', 'targetId', 'pendingThread',
-      'lastChat', 'lastChatAt', 'lastAttachments', 'lastBusy', 'lastPanel', 'lastTerm', 'lastTermAt',
+      'lastChat', 'lastChatAt', 'lastAttachments', 'lastBusy', 'lastPanel', 'lastTermAt',
       'lastTermHash', 'lastDraft', 'switchingThread', 'polling', 'historyLoading', 'termPolling',
       'pendingProject', 'mentionSeq', 'mentionBusy', 'pendingRevert', 'thinkTries', 'thoughtPoll',
-      'usageRead', 'latestThink', 'mainTab', 'sessStore', 'codexHistoryTop', 'codexSettingsOwned',
+      'usageRead', 'latestThink', 'mainTab', 'sessStore', 'codexHistoryTop',
       'codexSettingsViewWs', 'curSession', 'codexRoots', 'fusion', 'fusionMiss', 'fusionLoading',
-      'chatBySel', 'viewport', 'screencast', 'fusionRun', 'fusionCancel', 'fusionSaved', 'fusionHold',
+      'chatBySel', 'viewport', 'fusionRun', 'fusionCancel', 'fusionSaved', 'fusionHold',
       'fusionAccess', 'fusionConnection', 'fusionSideLive', 'fusionJob', 'fusionPendingTrust',
       'fusionWorkerKey', 'fusionCatalogErrors', 'fusionCreating', 'fusionSides', 'fusionUsagePending']) {
       Object.defineProperty(session, key, {
@@ -731,7 +731,7 @@ async fusionExecute() {
   f.phase = 'execute';
   this.fusionEmit();
   const baseline = await this.fusionDiff('b');
-  f.result = await this.fusionAsk('b', `执行以下方案，先完成实际修改和验证，再返回结果；不要只复述准备做什么。遇到阻塞则明确说明。\n结果分三段：改了哪些文件、实际验证结果、哪里没完成或没把握。\n\n方案：\n${f.brief}`);
+  f.result = await this.fusionAsk('b', `用户已确认以下方案并点击“执行方案”，现在按该方案完成实际修改和验证，再返回结果；不要再次请求方案确认，也不要只复述准备做什么。原生工具权限审批仍按原有规则处理。遇到阻塞则明确说明。\n结果分三段：改了哪些文件、实际验证结果、哪里没完成或没把握。\n\n方案：\n${f.brief}`);
   if (this.fusionCancel) return;
   f.diff = await this.fusionDiff('b');
   f.phase = 'review';

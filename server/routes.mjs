@@ -315,6 +315,7 @@ export const ROUTES = {
   revertCancel: { run: (s, m) => s.revertAnswer(false) },
   change: { run: (s, m) => s.changeAction(m.i, m.name, m.act) },
   scrollChat: { switchRead: true,
+    background: (s, m) => s.app === 'codex' && m.history === true,
     readOnly: (s, m) => s.app === 'codex' && m.history === true,
     run: async (s, m) => {
       if (!m.history) return s.scrollChat(Number(m.dy) || 0, m.automatic === true);

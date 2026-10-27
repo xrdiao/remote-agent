@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import { Cdp, cdpRead } from './cdp.mjs';
 import { listWindows, codexWindows } from './windows.mjs';
 import { CODEX_CDP_URL } from './config.mjs';
@@ -29,10 +28,6 @@ export class Session extends AgentContext {
     this.notifyVisible = true;
     this.notifyPresenceAt = Date.now();
     this.viewport = { w: 1000, h: 800 };
-    this.screencast = { format: 'jpeg', quality: 60, maxWidth: 1280, maxHeight: 2400 };
-    this.awaitingAck = null;
-    this.lastFrameAt = 0;
-    this.lastHash = '';
     this.mode = 'chat';
   }
 
@@ -46,7 +41,6 @@ export class Session extends AgentContext {
     clearInterval(this.chatTimer);
     clearInterval(this.termTimer);
     if (this.mode === 'screen') {
-      if (this.editorCdp) await this.editorCdp.send('Page.stopScreencast').catch(() => {});
       visualCapture.subscribe(this);
       const windows = await this.visualList();
       await visualCapture.restore(windows);
@@ -54,7 +48,6 @@ export class Session extends AgentContext {
     }
     if (!this.editorCdp) return;
     if (this.mode === 'chat') {
-      await this.editorCdp.send('Page.stopScreencast').catch(() => {});
       const cdp = this.cdp;
       const stop = await watchChat(cdp, () => {
         if (this.visible && this.mode === 'chat' && this.cdp === cdp) this.pollChat(true).catch(() => {});
@@ -65,7 +58,6 @@ export class Session extends AgentContext {
       this.chatTimer = cdpRead.run(null, () => setInterval(() => this.pollChat().catch(() => {}), 700));
       await this.pollChat(firstScreen, firstScreen);
     } else if (this.mode === 'terminal') {
-      await this.editorCdp.send('Page.stopScreencast').catch(() => {});
       this.lastTermHash = undefined;
       await this.pollTerminal();
       if (this.chatWatchGeneration !== watchGeneration || this.mode !== 'terminal') return;
@@ -111,9 +103,9 @@ export class Session extends AgentContext {
       (this.chatBySel ||= new Map()).delete(obj.sel);
       this.chatBySel.set(obj.sel, obj.chat);
       if (this.chatBySel.size > 12) this.chatBySel.delete(this.chatBySel.keys().next().value);
-      obj = { ...obj, chat: chatForWire(obj.chat) };
+      obj = { ...obj, chat: chatForWire(obj.chat, this.app === 'codex' ? this.cdp?.wsUrl : '') };
     }
-    if (obj?.t === 'historyPage') obj = { ...obj, items: chatForWire({ items: obj.items }).items };
+    if (obj?.t === 'historyPage') obj = { ...obj, items: chatForWire({ items: obj.items }, this.app === 'codex' ? this.cdp?.wsUrl : '').items };
     if (this.client.readyState === 1) this.client.send(JSON.stringify(obj), obj?.t === 'frame' ? { compress: false } : undefined);
   }
 
@@ -233,7 +225,6 @@ export class Session extends AgentContext {
       connection.onclose = onclose;
       await connection.send('Page.enable');
     }
-    editorCdp.on('Page.screencastFrame', p => this.onFrame(p));
     await this.refreshViewport();
     if (this.app !== 'codex') this.threadId = await this.cdp.evaluate(helpersCall('activeThread()')) || '';
     if (selection.deferred && selection.threadId) this.threadId = selection.threadId;
@@ -326,7 +317,6 @@ export class Session extends AgentContext {
     if (!this.liveRead(cdp, generation)) return;
     if (items?.length) this.emit({ t: 'menu', kind: 'effort', items, fast, cached: true, sel });
     if (models?.length) this.emit({ t: 'menu', kind: 'model', items: models, fast, cached: true, sel });
-    this.listAgents(true, true).catch(() => {});
   }
 
   // Focus emulation breaks real typing while it is on, so it only wraps phone-driven
@@ -349,14 +339,11 @@ export class Session extends AgentContext {
     this.focusCount = 0;
     clearInterval(this.chatTimer);
     clearInterval(this.termTimer);
-    clearTimeout(this.ackTimer);
-    this.awaitingAck = null;
     const connections = new Set([this.cdp, this.editorCdp]);
     this.cdp = this.editorCdp = null;
     cdpRead.run(null, () => {
       for (const cdp of connections) {
         if (cdp) cdp.send('Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {})
-          .then(() => cdp.send('Page.stopScreencast').catch(() => {}))
           .finally(() => cdp.close());
       }
     });
@@ -367,44 +354,8 @@ export class Session extends AgentContext {
     if (v) this.viewport = v;
   }
 
-  async stopScreencast() {
-    this.casting = false;
-    await this.cdp.send('Page.stopScreencast').catch(() => {});
-  }
-
-  onFrame({ data, metadata, sessionId }) {
-    if (this.mode === 'screen') {
-      this.editorCdp?.send('Page.screencastFrameAck', {sessionId}).catch(() => {});
-      return;
-    }
-    this.lastFrameAt = Date.now();
-    if (metadata?.deviceWidth) this.viewport = { w: metadata.deviceWidth, h: metadata.deviceHeight };
-    this.sendFrame(data);
-    this.awaitingAck = sessionId;
-    // Don't let a slow phone stall the stream forever.
-    clearTimeout(this.ackTimer);
-    this.ackTimer = setTimeout(() => this.ack(), 1500);
-  }
-
-  ack() {
-    clearTimeout(this.ackTimer);
-    if (this.awaitingAck == null || !this.editorCdp) return;
-    const sessionId = this.awaitingAck;
-    this.awaitingAck = null;
-    this.editorCdp.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
-  }
-
-  sendFrame(data, force = false) {
-    const hash = crypto.createHash('md5').update(data).digest('hex');
-    if (!force && hash === this.lastHash) return;
-    this.lastHash = hash;
-    this.emit({ t: 'frame', data, w: this.viewport.w, h: this.viewport.h });
-  }
-
-  async snapshot(force) {
-    if (this.mode === 'screen') return visualCapture.publish(this);
-    const { data } = await this.editorCdp.send('Page.captureScreenshot', { format: 'jpeg', quality: this.screencast.quality });
-    this.sendFrame(data, force);
+  async snapshot() {
+    return visualCapture.publish(this);
   }
 
   toCss(nx, ny) {
@@ -459,7 +410,6 @@ export class Session extends AgentContext {
 
   dispose() {
     fusionViewers.delete(this);
-    clearTimeout(this.ackTimer);
     this.detach();
   }
 }

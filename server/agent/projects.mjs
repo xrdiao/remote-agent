@@ -421,7 +421,7 @@ export const methods = {
     if (this.app === 'codex' && pending.threadId) {
       const current = await this.cdp.evaluate(helpersCall('codexThread()'));
       if (current !== pending.threadId && !await this.selectCodexThread(pending.threadId)) throw new Error('项目已打开，但没有找到所选会话');
-      await this.adoptCodexThread(pending.threadId, '已切换项目与会话');
+      await this.adoptCodexThread(pending.threadId);
     }
     if (this.app !== 'codex' && pending.threadId) {
       if (this.app === 'cursor' && pending.reopening) {
@@ -464,8 +464,8 @@ export const methods = {
     if (!roots.some(w => !w.host && fusionProject(w.root)?.id === fusionProject(pending.root)?.id)) throw new Error('会话工作目录与所选项目不一致');
     this.pendingProject = null;
     this.bindingReady = true;
-    this.emit({ t: 'projectReady', path: pending.root, name: path.basename(pending.root), newSession: pending.newSession, sel: this.selectionKey(), chat });
-    this.emit({ t: 'status', ok: true, msg: pending.newSession ? '已在所选项目新建会话' : `已打开 ${path.basename(pending.root)}` });
+    this.emit({ t: 'projectReady', path: pending.root, name: path.basename(pending.root), newSession: pending.newSession, sessionSwitch: !!pending.threadId, sel: this.selectionKey(), chat });
+    this.emit({ t: 'status', ok: true, msg: pending.newSession ? '已在所选项目新建会话' : pending.threadId ? '已切换会话' : `已打开 ${path.basename(pending.root)}` });
   },
   projectName() {
     if (this.app === 'codex') return codexFolder(this.winTitle);
@@ -536,7 +536,7 @@ export const methods = {
     const addNew = (w, label, key, root = '') => {
       if (seen.has('new:' + key)) return;
       seen.add('new:' + key);
-      list.push({ id: `project-new:${encodeURIComponent(w.id)}${root ? ':' + encodeURIComponent(root) : ''}`, title: '＋ 新建会话', window: label, group: '', ui: true });
+      list.push({ id: `project-new:${encodeURIComponent(w.id)}${root ? ':' + encodeURIComponent(root) : ''}`, title: '＋ 新建会话', window: label, workspace: root, host: w.project?.host || '', group: '', ui: true });
     };
     // Prefer the attached window when several windows show the same project/session.
     for (const w of [...windows].sort((a, b) => Number(b.id === this.targetId) - Number(a.id === this.targetId))) {
@@ -554,12 +554,21 @@ export const methods = {
         if (seen.has(key)) continue;
         seen.add(key);
         list.push({ ...row, id: current ? row.id : `project:${encodeURIComponent(w.id)}:${encodeURIComponent(row.id)}`,
+          workspace: row.workspace || project?.root || '', host: row.host || project?.host || '',
           window: rowLabel, group: '', current: current && !!row.current });
       }
       if (!data) list.push({ id: `window:${w.id}`, title: '加载会话', window: label, group: '', ui: true, loadWindow: w.id });
       else if (!data.list?.length || (!current && data.surface === 'editor')) list.push({ id: `window:${w.id}`, title: data.surface === 'editor' ? '进入项目查看全部会话' : '进入项目', window: label, group: '', ui: true });
     }
-    return list;
+    const projects = new Map();
+    const identity = row => JSON.stringify([row.host || '', normPath(row.workspace)]);
+    for (const row of list) if (row.workspace) projects.set(identity(row), { root: row.workspace, host: row.host });
+    const all = [...projects.values()];
+    const labels = new Map([...projects].map(([key, project]) => {
+      const { name, detail } = workspaceLabel(project, all);
+      return [key, detail ? `${name} · ${detail}` : name];
+    }));
+    return list.map(row => row.workspace ? { ...row, window: labels.get(identity(row)) } : row);
   },
   async openAgent(id, title = '') {
     const stored = storedProjectSession(this.app, id);

@@ -7,6 +7,18 @@ let editing = false;
 let editBase = '', saving = null;
 let fileRequestId = 0, saveRequestId = 0, saveTimer = 0;
 let filePdf = null;
+let readingFile = null;
+function finishFileRead() {
+  clearTimeout(readingFile?.timer);
+  readingFile = null;
+}
+function failFileRead(message) {
+  if (!readingFile) return;
+  const name = readingFile.name;
+  fileRequestId++;
+  finishFileRead();
+  showFile({ name, error: message });
+}
 function dirtyEdit() {
   const box = $('vEditBox');
   return editing && box && box.value !== editBase;
@@ -92,6 +104,7 @@ function videoGestures(video) {
 }
 function openChatImage(source) {
   fileRequestId++;
+  finishFileRead();
   finishFileSave();
   returnToEditor = null;
   stopVideo(); leaveEdit();
@@ -120,6 +133,7 @@ function leaveEdit() {
 }
 function openFile(ref, fromEditor = false, diff = '', fromChanges = false) {
   const requestId = ++fileRequestId;
+  finishFileRead();
   finishFileSave();
   returnToEditor = fromEditor ? { ...editorDirectory } : null;
   stopVideo();
@@ -138,11 +152,13 @@ function openFile(ref, fromEditor = false, diff = '', fromChanges = false) {
     $('viewer').classList.add('open');
     history.pushState({ viewer: true }, '');
   }
-  send({ t: 'file', path: ref, diff, requestId, ...(fromChanges ? { changes: true } : {}) });
+  readingFile = { name: ref.split('/').pop(), timer: setTimeout(() => failFileRead('文件读取结果尚未返回，请重试'), 30000) };
+  if (!send({ t: 'file', path: ref, diff, requestId, ...(fromChanges ? { changes: true } : {}) })) failFileRead('未连接，文件未读取，请重试');
 }
 
 function showFile(m) {
   if (!$('viewer').classList.contains('open') || m.loading) return;
+  finishFileRead();
   stopVideo();
   leaveEdit();
   viewing = m.text != null ? m : null;
@@ -202,12 +218,14 @@ function showFile(m) {
       toolbar.innerHTML = `<button data-pdf-prev>${I18N.tr('上一页')}</button><span aria-live="polite"></span><button data-pdf-next>${I18N.tr('下一页')}</button>`;
       const previous = toolbar.querySelector('[data-pdf-prev]'), next = toolbar.querySelector('[data-pdf-next]'), counter = toolbar.querySelector('span');
       const pageBox = document.createElement('div'), canvas = document.createElement('canvas');
-      pageBox.className = 'pdfPage';
-      pageBox.append(canvas);
+      pageBox.className = 'pdfPage pdfPreview';
+      const preview = videoGestures(canvas);
+      pageBox.append(preview);
       body.replaceChildren(toolbar, pageBox);
       let number = 1;
       const draw = async pageNumber => {
         previous.disabled = next.disabled = true;
+        preview.querySelector('.videoViewTools button').click();
         const page = await pdf.getPage(pageNumber);
         if (state.controller.signal.aborted) return;
         const size = page.getViewport({ scale: 1 });
@@ -385,6 +403,7 @@ function closeViewer() {
     return;
   }
   fileRequestId++;
+  finishFileRead();
   finishFileSave();
   stopVideo();
   leaveEdit();

@@ -152,17 +152,6 @@ export const methods = {
       }
     }
   },
-  async resolveCodexImages(chat, cdp = this.cdp) {
-    for (const it of chat.items.filter(it => it.images?.length)) {
-      const old = this.itemCache?.get(chat.thread)?.find(x => x.i === it.i);
-      const sources = [...it.images];
-      it.images = await Promise.all(it.images.map(async (src, n) => {
-        if (old?.imageSources?.[n] === src && old.images?.[n]) return old.images[n];
-        try { return await cdp.evaluate(helpersCall(`codexImage(${JSON.stringify(src)})`), { timeout: 60000 }); } catch { return src; }
-      }));
-      it.imageSources = sources;
-    }
-  },
   async pollChat(immediate = false, firstScreen = false) {
     firstScreen &&= !this.fusionOwner;
     const cdp = this.cdp;
@@ -210,19 +199,12 @@ export const methods = {
       if (state.requested) { state.sent = true; state.resolve(); }
     };
     this.codexFreshView = false;
-    let readRevision;
     const read = async () => {
       const child = this.mainTab?.cdp === cdp ? this.mainTab.child || '' : '';
-      const chat = await cdp.evaluate(`(() => { const h = ${PAGE_SRC}, chat = h.extract(); if (chat) chat.subagent = !!(${JSON.stringify(child)} && h.activeChatTab() === ${JSON.stringify(child)} && chat.readonly); return chat; })()`);
-      readRevision = chat?._revision;
+      const known = (this.itemCache?.get(this.threadId || '')?.completeTurns || []).map(([id]) => id);
+      const chat = await cdp.evaluate(`(() => { const h = ${PAGE_SRC}, chat = h.extract(false, ${JSON.stringify(known)}); if (chat) chat.subagent = !!(${JSON.stringify(child)} && h.activeChatTab() === ${JSON.stringify(child)} && chat.readonly); return chat; })()`);
       if (chat) delete chat._revision;
       return chat;
-    };
-    const current = async () => {
-      if (this.app !== 'codex' || readRevision === undefined) return true;
-      if (await cdp.evaluate(helpersCall('chatRevision()')) === readRevision) return true;
-      this.pollAgain = sel;
-      return false;
     };
     try {
       let chat = await read();
@@ -247,15 +229,10 @@ export const methods = {
       if (chat && chat.thread === (this.threadId || '') && (this.app !== 'codex' || chat.thread || emptyCodex) && (!this.lastChat || extracted !== this.lastExtractedChat || state.requested && !state.sent)) {
         const initial = { ...chat, items: chat.items.map(it => ({ ...it })) };
         delete initial.draft;
-        if (this.app === 'codex') for (const it of initial.items.filter(it => it.images?.length)) {
-          const old = this.itemCache?.get(chat.thread)?.find(x => x.i === it.i);
-          it.images = it.images.map((src, n) => old?.imageSources?.[n] === src ? old.images[n] : src);
-        }
         if (this.app === 'codex') {
           initial.context = await (contextRead = Promise.resolve(codexContext(chat.thread)));
           if (!this.liveRead(cdp, sel) || this.historyLoading || !this.acceptsChat(initial)) return;
         }
-        if (!await current()) return;
         this.mergeCodexItems(initial);
         this.lastExtractedChat = extracted;
         this.fillThinking(initial);
@@ -322,11 +299,7 @@ export const methods = {
       this.pendingThread = '';
       this.lastBusy = !!chat.busy;
       if (this.app === 'codex') chat.context = await (contextRead || codexContext(chat.thread));
-      if (this.app === 'codex') {
-        await this.resolveCodexImages(chat, cdp);
-        if (!this.liveRead(cdp, sel)) return;
-      }
-      if (!await current()) return;
+      if (!this.liveRead(cdp, sel)) return;
       this.mergeCodexItems(chat);
       const draft = chat.draft;
       delete chat.draft;
@@ -411,7 +384,6 @@ export const methods = {
         else this.queueFusionRead();
       } else this.fusion = null;
       if (this.app === 'devin') this.devinGeneration(chat);
-      if (!await current()) return;
       const json = JSON.stringify(chat);
       if (!this.liveRead(cdp, sel) || this.historyLoading || !this.acceptsChat(chat)) return;
       if (json !== this.lastChat || state.requested && !state.sent) {
@@ -491,8 +463,6 @@ export const methods = {
       if (!this.liveRead(cdp, sel) || page.thread !== thread) return;
       const live = new Map((this.itemCache?.get(thread) || []).map(it => [it.i, it]));
       page.items = page.items.map(it => live.get(it.i) || it);
-      await this.resolveCodexImages(page, cdp);
-      if (!this.liveRead(cdp, sel)) return;
       return page;
     }
     if (this.app === 'codex') {
@@ -517,8 +487,6 @@ export const methods = {
           await cdp.evaluate(helpersCall(`waitHistoryRows(${JSON.stringify(rows)})`));
           const chat = await cdp.evaluate(helpersCall('extract(true)'));
           if (!this.liveRead(cdp, sel) || chat?.thread !== thread) return;
-          await this.resolveCodexImages(chat, cdp);
-          if (!this.liveRead(cdp, sel)) return;
           const live = new Map((this.itemCache?.get(thread) || []).map(it => [it.i, it]));
           chat.items = chat.items.map(it => live.get(it.i) || it);
           this.mergeCodexItems({ ...chat, busy: true, capacityPresent: undefined });

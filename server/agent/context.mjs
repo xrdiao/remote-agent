@@ -298,7 +298,9 @@ export class AgentContext {
     const pos = await this.cdp.evaluate(helpersCall(`locate(${JSON.stringify(String(item))}, ${Number(n) || 0}, ${JSON.stringify(actionId || '')}, ${JSON.stringify(label || '')})`));
     if (!pos) { await this.pollChat(true); throw new Error('请求已更新，请查看最新选项'); }
     if (/^(Fork chat from here|Open agent|View agent|View subagent)$/.test(label || '')) this.selectedThread = '';
-    await this.tapCss(pos.x, pos.y);
+    if (pos.fork) {
+      if (!await this.cdp.evaluate(helpersCall(`forkCodexTurn(${JSON.stringify(String(item))})`))) throw new Error('请求已更新，请查看最新选项');
+    } else await this.tapCss(pos.x, pos.y);
     clicked = true;
     await new Promise(r => setTimeout(r, 200));
     await this.pollChat(true);
