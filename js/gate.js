@@ -236,7 +236,7 @@ function connMaybeEnter() {
 }
 
 function ensureReadyAgent() {
-  if (navigationPending || windowReady) return;
+  if (!conn.active || navigationPending || windowReady) return;
   const ready = (conn.agents || []).filter(a => a.windows).map(a => a.app);
   if (!ready.length) return;
   const appOf = id => String(id || '').split(':')[0];
@@ -259,7 +259,7 @@ function connReadFailed(message) {
   $('retryChat').hidden = false;
   status(message, false);
   if (conn.active) connRender();
-  if (conn.active) ensureReadyAgent();
+  ensureReadyAgent();
 }
 function connRetryCurrent() {
   const chosen = currentComputer();
