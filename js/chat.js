@@ -20,7 +20,6 @@ itemsEl.addEventListener('click', async e => {
   }
   const tr = e.target.closest('[data-ttoggle]');
   if (tr && !e.target.closest('[data-file]')) {
-    noteChatLayoutChange();
     const box = tr.closest('.toolrow');
     box.classList.add('anim');
     box.classList.toggle('open');
@@ -34,7 +33,6 @@ itemsEl.addEventListener('click', async e => {
   const box = b.closest('.thinking');
   const body = box?.querySelector('.thb');
   const next = !box.classList.contains('open');
-  noteChatLayoutChange();
   thinkingPref.set(viewSel + '|' + b.dataset.think, next);
   box.classList.toggle('open', next);
   b.querySelector('.tha').textContent = next ? '收起' : '展开';
@@ -55,8 +53,8 @@ function setThought(id, text) {
 }
 function requestThought(id) {
   if (thoughtFull.has(id)) return;
-  if (send({ t: 'thought', i: id }) === false) return status('连接已断开，思考未加载，请重试', false);
   setThought(id, undefined);
+  send({ t: 'thought', i: id });
 }
 const thoughtObserver = new IntersectionObserver(entries => {
   for (const entry of entries) {
@@ -205,62 +203,32 @@ function tasksHtml(it) {
   return `<div class="tprog"><i style="width:${pct}%"></i></div>` + (list ? `<ul class="tlist">${list}</ul>` : '');
 }
 const codexAutoRetryDone = new Map();
-let codexRetryPending = null, codexRetrySnapshot = null;
-const codexRetryInFlight = new Map();
-let codexRetrySerial = 0;
-function codexRetryKey(it) { return `${viewSel}|${it.capacityInstance || it.btnItem || it.i}`; }
-function cancelCodexAutoRetry() {
-  if (codexRetryPending?.timer) clearTimeout(codexRetryPending.timer);
-  if (!codexRetryPending || codexRetryPending.timer) codexRetryPending = null;
-  codexRetrySnapshot = null;
-}
-function syncCodexAutoRetry(chat, stale = false, sel = viewSel) {
-  codexRetrySnapshot = { chat, stale, sel };
-  const it = !stale && windowReady && currentApp === 'codex' && sel === viewSel && codexAutoRetryEnabled()
-    ? chat?.items?.find(row => (row.capacity || row.kind === 'capacity') && row.b?.some(label => /^(Retry|Try(?: again)?|重试|再试一次)$/i.test(label))) : null;
-  if (!it) { cancelCodexAutoRetry(); return; }
-  const key = codexRetryKey(it);
-  if ([...codexRetryInFlight.values()].some(attempt => attempt.key === key)) return;
-  if (codexRetryPending?.key === key) return;
-  if (codexRetryPending?.timer) clearTimeout(codexRetryPending.timer);
-  codexRetryPending = null;
-  if ((codexAutoRetryDone.get(key) || 0) >= codexAutoRetryCount()) return;
-  const n = it.b.findIndex(label => /^(Retry|Try(?: again)?|重试|再试一次)$/i.test(label));
-  const pending = codexRetryPending = { key, sel, requestId: 'auto-retry-' + ++codexRetrySerial, item: it.btnItem || it.i, actionId: it.actions?.[n] || '', label: it.b[n], n };
-  pending.timer = setTimeout(() => {
-    pending.timer = 0;
-    if (codexRetryPending !== pending || chatStale || !windowReady || viewSel !== sel || !codexAutoRetryEnabled()) {
-      if (codexRetryPending === pending) codexRetryPending = null;
-      return;
-    }
-    codexRetryInFlight.set(pending.requestId, pending);
-    if (!send({ t: 'click', item: pending.item, n, actionId: pending.actionId, label: pending.label, sel, requestId: pending.requestId })) {
-      codexRetryInFlight.delete(pending.requestId);
-      codexRetryPending = null;
-    }
+function codexRetryKey(it) { return `${viewSel}|${it.btnItem || it.i}`; }
+function maybeAutoRetry(it) {
+  if (currentApp !== 'codex' || !codexAutoRetryEnabled()) return;
+  const n = (it.b || []).findIndex(label => /^(Retry|Try(?: again)?|重试|再试一次)$/i.test(label));
+  if (n < 0) return;
+  const key = codexRetryKey(it), count = codexAutoRetryDone.get(key) || 0, max = codexAutoRetryCount();
+  if (count >= max) return;
+  codexAutoRetryDone.set(key, count + 1);
+  const sel = viewSel;
+  setTimeout(() => {
+    if (currentApp !== 'codex' || viewSel !== sel || !codexAutoRetryEnabled()) return;
+    const current = it.btnItem === 'g' ? { b: lastChat?.global } : lastChat?.items?.find(row => codexRetryKey(row) === key);
+    if (current?.b?.[n] !== it.b[n] || (current.actions?.[n] || '') !== (it.actions?.[n] || '')) return;
+    send({ t: 'click', item: it.btnItem || it.i, n, actionId: it.actions?.[n] || '', label: it.b[n], sel });
+    status(`正在自动重试…（${count + 1}/${max}）`);
   }, 0);
-}
-function finishCodexAutoRetry(message) {
-  const pending = codexRetryInFlight.get(message.requestId);
-  if (!pending || message.sel !== pending.sel || String(message.item) !== String(pending.item) || (message.actionId || '') !== pending.actionId) return;
-  codexRetryInFlight.delete(message.requestId);
-  if (codexRetryPending === pending) codexRetryPending = null;
-  if (!message.clicked) return;
-  const count = (codexAutoRetryDone.get(pending.key) || 0) + 1;
-  codexAutoRetryDone.set(pending.key, count);
-  if (viewSel === pending.sel && codexAutoRetryEnabled()) status(`正在自动重试…（${count}/${codexAutoRetryCount()}）`);
-  const snapshot = codexRetrySnapshot;
-  if (snapshot) syncCodexAutoRetry(snapshot.chat, snapshot.stale, snapshot.sel);
 }
 function renderItem(it) {
   const el = document.createElement('div');
   el.className = 'msg ' + it.k;
   if (it.k === 'notice') {
-    el.innerHTML = `<span>${esc(it.t || '')}</span>`;
-    el.classList.toggle('capacity', it.kind === 'capacity');
+    el.textContent = it.t;
     el.setAttribute('role', 'status');
     el.classList.toggle('live', !!it.live);
     if (it.b?.length) el.insertAdjacentHTML('beforeend', `<div class="btns">${buttonsHtml(it.b, it.btnItem || it.i, it.actions)}</div>`);
+    if (it.b?.length) maybeAutoRetry(it);
     return el;
   }
   if (it.k === 'tasks') { el.innerHTML = `<details class="tcard" data-task="${esc(it.i)}" ${taskOpen.has(it.i) ? 'open' : ''}><summary class="tprog-head">${I18N.tr('任务')} ${it.done}/${it.total}</summary>${tasksHtml(it)}</details>`; return el; }
@@ -305,13 +273,14 @@ function renderItem(it) {
     });
   }
   if (it.b && it.k !== 'human') el.insertAdjacentHTML('beforeend', `<div class="btns">${buttonsHtml(it.b, it.btnItem || it.i, it.actions)}</div>`);
+  if (it.b && it.k !== 'human') maybeAutoRetry(it);
   if (it.k !== 'human') addImageCopyButtons(el);
   return el;
 }
 
 const nearBottom = () => list.scrollHeight - list.scrollTop - list.clientHeight < 120;
 // Following the chat means the user is at the very end (or never left it); "close to the end" is still reading.
-const BOTTOM_EPSILON = 2;
+const BOTTOM_EPSILON = 1;
 const atBottom = () => list.scrollHeight - list.scrollTop - list.clientHeight <= BOTTOM_EPSILON;
 const followingChat = () => isFollowingBottom();
 
@@ -360,7 +329,8 @@ let activeGeneration = '';
 function withMessageTimes(chat) {
   if (!chat) return chat;
   const scope = messageScope();
-  const matches = (it, m) => receiptMatchesHuman(it, m);
+  const matches = (it, m) => it.k === 'human' && !m.before.has(it.i)
+    && echoTextMatches(it, m.text);
   const applies = m => m.scope === scope && (!m.thread || m.thread === chat.thread);
   const itemKey = it => generationKey(chat) + '|' + it.i;
   for (let index = 0; index < submittedMessages.length;) {
@@ -371,8 +341,6 @@ function withMessageTimes(chat) {
     const item = candidates.at(-Math.min(waiting, candidates.length));
     if (!item) { index++; continue; }
     messageTimes.set(itemKey(item), item.sentAt || receipt.sentAt);
-    const echo = pendingEchoes.find(row => row.requestId === receipt.requestId);
-    if (echo) echo.messageId = item.i;
     submittedMessages.splice(index, 1);
   }
   return { ...chat, items: chat.items.map(it => {
