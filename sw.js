@@ -1,9 +1,9 @@
 // Caches the app shell so the installed app opens instantly; live data (url.json, relay) always goes to the network.
 const CACHE_PREFIX = 'remote-agent:' + self.registration.scope + ':';
-const CACHE = CACHE_PREFIX + 'v269'; // keep in sync with APP_VERSION in js/core.js
+const CACHE = CACHE_PREFIX + 'v270'; // keep in sync with APP_VERSION in js/core.js
 const NOTICES = CACHE_PREFIX + 'notices';
 const SHELL = ['./', 'index.html', 'app.css?v=254', 'i18n.js?v=257', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'logo.png',
-  'js/core.js?v=269', 'js/gate.js?v=265', 'js/auth.js?v=207', 'js/net.js?v=267', 'js/sheets.js?v=259', 'js/notify.js?v=266', 'js/mode.js?v=257', 'js/chat.js?v=254',
+  'js/core.js?v=270', 'js/gate.js?v=265', 'js/auth.js?v=207', 'js/net.js?v=267', 'js/sheets.js?v=259', 'js/notify.js?v=266', 'js/mode.js?v=257', 'js/chat.js?v=254',
   'js/history.js?v=264', 'js/files.js?v=267', 'js/screen.js?v=267', 'js/terminal.js?v=239', 'js/composer.js?v=263', 'js/voice.js?v=257', 'js/local-voice.js?v=267', 'js/voice-worklet.js?v=133',
   'js/transfer.js?v=207', 'js/scanner.js',
   'js/latency.js?v=142', 'js/image-editor.js?v=257',
