@@ -75,7 +75,7 @@ function beginNavigation(message) {
     : message.newSession || /^(new:|project-new:)/.test(message.id || '') ? 'new'
     : message.t === 'openProject' ? 'project' : /^(win:|window:)/.test(message.id || '') ? 'window' : 'session';
   const messageText = { initial: '正在加载对话…', agent: '正在切换 Agent…', window: '正在切换窗口…', project: '正在打开项目…', session: '正在切换会话…', new: '正在新建对话…' }[kind];
-  navigationPending = { id: message.navigationId, windowId: message.t === 'attach' ? message.id : currentWindow, confirmed: '', kind, message: messageText };
+  navigationPending = { id: message.navigationId, windowId: message.t === 'attach' ? message.windowId || message.id : currentWindow, confirmed: '', kind, message: messageText };
   status(messageText);
   conn.attachFailed = false;
   conn.failedTargets?.delete(navigationPending.windowId);
@@ -837,7 +837,7 @@ async function connect() {
       if (m.closed) {
         forgetClosedWindow(m.id);
         selectionReady = m.ready === true;
-        connReadFailed('这个窗口已经关闭，请重试或切换 Agent');
+        connReadFailed(m.message || '这个窗口已经关闭，请重试或切换 Agent');
         send({ t: 'windows' });
         if (conn.active) connRender();
         return;
