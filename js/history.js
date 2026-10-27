@@ -410,13 +410,13 @@ function noteBottomScrollIntent(towardBottom) {
   initialBottomSelection = null;
   if (towardBottom && isFollowingBottom() && atBottom()) return;
   setScrollMode('freeScroll');
-  bottomScrollIntent = towardBottom ? { sel: viewSel, top: chatScrollTop(), max: maxChatScrollTop() } : null;
+  bottomScrollIntent = towardBottom ? { sel: viewSel, top: chatScrollTop(), atBottom: atBottom() } : null;
 }
 function userReachedBottom() {
   const intent = bottomScrollIntent;
   if (!intent) return false;
-  if (intent.sel !== viewSel || intent.max !== maxChatScrollTop()) { bottomScrollIntent = null; return false; }
-  return chatScrollTop() >= intent.top - BOTTOM_EPSILON && atBottom();
+  if (intent.sel !== viewSel) { bottomScrollIntent = null; return false; }
+  return atBottom() && (intent.atBottom || chatScrollTop() > intent.top + 1);
 }
 function setScrollMode(next) {
   if (next === 'followBottom' && !atBottom()) return;
