@@ -152,7 +152,7 @@ function applySelection(m, clearChat = true) {
   if (changed) { mirroredDraft = ''; restoreDraft(); renderAttachments([]); send({ t: 'attachments' }); }
   const cachedAgents = agentLists.get(agentListKey());
   if (cachedAgents && m.threadId) setAgentList(agentListKey(), cachedAgents.map(a => ({ ...a, current: a.id === m.threadId || a.id === 'tab:' + m.threadId || a.id === 'thread:' + m.windowId + ':' + m.threadId })));
-  if (m.project != null) currentProject = m.project;
+  if (m.project) currentProject = m.project;
   updateTitle();
   if (clearChat && changed) renderChat(null, false, true);
 }
