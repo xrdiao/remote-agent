@@ -164,11 +164,7 @@ function voiceText(session, value) {
   }
 }
 async function startVoice(event) {
-  if (event.button !== 0 || $('mic').hidden || !windowReady) return;
-  if (voiceSession) {
-    if (!voiceSession.held) { cancelVoice(); status('已取消等待转录，请重新按住录音'); }
-    return;
-  }
+  if (event.button !== 0 || voiceSession || $('mic').hidden || !windowReady) return;
   event.preventDefault();
   if (voiceEngine() === SYSTEM_ENGINE) return startSystemVoice(event);
   if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) return status('麦克风需要 HTTPS；请使用 Safari/Chrome 打开固定入口，或使用键盘语音输入', false);
@@ -230,7 +226,7 @@ async function startVoice(event) {
       if (e.data === 'flushed') {
         releaseVoiceMedia(session);
         link.socket.send(JSON.stringify({ type: 'end' }));
-        session.timer = setTimeout(() => { if (voiceLive(session)) status('转录仍在处理中，可继续等待或按麦克风取消'); }, 20000);
+        session.timer = setTimeout(() => { if (voiceLive(session)) { status('转录尚未完成，已识别文字已保留，请重试', false); cancelVoice(); } }, 20000);
       } else if (link.socket.readyState === 1) {
         if (!session.firstPcm) { session.firstPcm = true; session.dbg?.('first pcm frame'); }
         link.socket.send(e.data);
