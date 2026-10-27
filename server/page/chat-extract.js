@@ -400,7 +400,7 @@
         const rendered = markdown.get(item.responseAnnotationTargetId);
         const block = rendered?.content === item.content ? rendered.block : null;
         if (item.phase === 'commentary') out.push({ i: id, k: 'thinking', t: `工作过程\n${item.content}`, live: !item.completed });
-        else out.push({ i: id, k: 'assistant', t: item.content, completed: item.completed, h: block ? clean(block) : esc(item.content).replace(/\n/g, '<br>') });
+        else out.push({ i: id, k: 'assistant', t: item.content, completed: item.completed, htmlRead: !!block, h: block ? clean(block) : esc(item.content).replace(/\n/g, '<br>') });
       } else if (item.type === 'exec') {
         out.push({ i: id, k: 'tool', t: (item.cmd || []).join('\n').slice(0, 240), done: finished,
           ...(item.approvalRequestId != null || ['failed', 'declined'].includes(item.executionStatus) || (item.output?.exitCode != null && item.output.exitCode !== 0) ? { keep: true } : {}) });
@@ -445,22 +445,23 @@
       }
       for (const row of out.slice(start)) row.sourceIndex = item.sourceIndex ?? sourceIndex;
     }
-    const fork = el && codexForkProps(el);
-    const turnButtons = el ? [
-      ...buttonsIn(el, false),
+    const fork = finished && codexForkProps(el, entry);
+    const turnButtons = [
+      ...(el ? buttonsIn(el, false) : []),
       ...(fork ? [{ label: fork.forkLabel }] : []),
       ...[...doc.querySelectorAll('[data-local-conversation-item-target-ids], aside')]
-        .filter(card => card.closest('[data-turn-key]') === el && CAPACITY_ERROR.test(card.innerText || ''))
+        .filter(card => el && card.closest('[data-turn-key]') === el && CAPACITY_ERROR.test(card.innerText || ''))
         .flatMap(card => buttonsIn(card, false)),
     ].filter(x => !RETRY_LABEL.test(x.label) || !x.el.disabled && x.el.getAttribute('aria-disabled') !== 'true')
-      .map(x => x.label).filter((l, n, rows) => ( /^(Copy message|Fork chat from here|View changed files|View changes|View file changes|Undo|Open agent|View agent|View subagent|Stop agent|Apply|Revert)$/i.test(l) || RETRY_LABEL.test(l)) && rows.indexOf(l) === n) : [];
+      .map(x => x.label).filter((l, n, rows) => ( /^(Copy message|Fork chat from here|View changed files|View changes|View file changes|Undo|Open agent|View agent|View subagent|Stop agent|Apply|Revert)$/i.test(l) || RETRY_LABEL.test(l)) && rows.indexOf(l) === n);
     const finalAssistant = finished ? [...out].reverse().find(it => it.k === 'assistant' && (it.completed === true || finished)) : null;
     const capacityHost = [...out].reverse().find(it => it.capacity);
     const host = finalAssistant || capacityHost;
     if (host) {
       host.buttonsRead = !!el;
       const buttons = finalAssistant ? turnButtons.filter(label => !capacityHost || !RETRY_LABEL.test(label)) : turnButtons.filter(label => RETRY_LABEL.test(label));
-      if (buttons.length) { host.b = buttons; host.btnItem = el.getAttribute('data-turn-key') || host.i; }
+      if (finalAssistant && !buttons.includes('Copy message')) buttons.unshift('Copy message');
+      if (buttons.length) { host.b = buttons; host.btnItem = entry?.turnKey || el?.getAttribute('data-turn-key') || host.i; }
     }
     if (capacityHost && finalAssistant) {
       const retry = turnButtons.filter(label => RETRY_LABEL.test(label));

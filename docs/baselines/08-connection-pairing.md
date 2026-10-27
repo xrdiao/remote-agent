@@ -79,3 +79,5 @@
 启动脚本、隧道和原生壳读 [09](09-client-delivery.md)，项目目标读 [03](03-projects-sessions-windows.md)，聊天首屏读 [02](02-chat-display-history.md)，发送结果读 [01](01-conversation-input.md)，通知跳转读 [05](05-notifications-background.md)。共享调度变更必须读取实际接入功能的基准。
 
 本次建档未新增授权、撤销设备、开启 2FA 或重启中继；平台与配对浏览器验证另行记录。
+
+新的导航取消旧读取时，项目窗口匹配、调试页面获取及新窗口等待均使用同一取消信号；收集并行结果不能把整项取消当成“不匹配”继续等待。取消只结束该次查找，不终止已经启动的 Agent 或原任务。

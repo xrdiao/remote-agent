@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { workspaces, windowRoots, workspaceLabel, editorRoots } from '../../lib/files.mjs';
 import { IS_WIN, IS_MAC, mod, normPath, findBin } from '../../lib/platform.mjs';
-import { Cdp, cdpRead } from '../cdp.mjs';
+import { Cdp, cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { listWindows, codexWindows, codexFolder } from '../windows.mjs';
 import { CDP_URL, DEVIN_CDP_URL, CODEX_CDP_URL, EDITORS } from '../config.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
@@ -189,7 +189,14 @@ export const methods = {
       if (!own) editor.close();
     }
   },
+  projectMatches(roots, root, host = '') {
+    const identity = value => host ? path.posix.join(normPath(value), '.') : fusionProject(value)?.id;
+    const target = identity(root);
+    return !!target && roots.some(project => (project.host || '') === host && identity(project.root) === target);
+  },
   async useProject(folder, newSession = false, threadId = '', title = '', ownerWindow = '') {
+    const signal = cdpRead.getStore();
+    signal?.throwIfAborted();
     const { real } = safeHomePath(folder);
     const app = this.app;
     const editor = EDITORS.find(e => e.app === app);
@@ -212,6 +219,7 @@ export const methods = {
           return belongs(await editorRoots(cdp, app)) ? page : null;
         } finally { if (!own) cdp.close(); }
       }));
+      signal?.throwIfAborted();
       return found.flatMap(row => row.status === 'fulfilled' && row.value ? [row.value] : []);
     };
     if (this.editorCdp && (!ownerId || ownerId === ownId)) {
@@ -221,7 +229,7 @@ export const methods = {
       if ((await matching([own])).length && await available(own)) target = own;
     }
     if (!target) {
-      const pages = await (await fetch(`${editor.url}/json/list`)).json();
+      const pages = await (await fetch(`${editor.url}/json/list`, { signal })).json();
       projectPages = pages.filter(p => p.type === 'page' && /workbench/.test(p.url));
       const known = (this.projectAgentWindows?.get(app) || []).filter(w => belongs([w.project || {}])).map(w => w.id.replace(/^[^:]+:/, ''));
       for (const id of new Set([ownerId, ownId, ...known])) {
@@ -239,7 +247,7 @@ export const methods = {
     if (!target) {
       const previous = new Set(projectPages.map(p => p.id));
       const findTarget = async () => {
-        const pages = await (await fetch(`${editor.url}/json/list`)).json();
+        const pages = await (await fetch(`${editor.url}/json/list`, { signal })).json();
         return (await matching(pages.filter(p => p.type === 'page' && /workbench/.test(p.url) && !previous.has(p.id))))[0];
       };
       this.emit({ t: 'status', ok: true, msg: '正在打开项目窗口…' });
@@ -249,7 +257,7 @@ export const methods = {
       while (!target && Date.now() < deadline) {
         if (launchError) throw launchError;
         target = await findTarget();
-        if (!target) await new Promise(r => setTimeout(r, 150));
+        if (!target) await awaitCdpRead(new Promise(r => setTimeout(r, 150)));
       }
 
     }
@@ -571,8 +579,18 @@ export const methods = {
     return list.map(row => row.workspace ? { ...row, window: labels.get(identity(row)) } : row);
   },
   async openAgent(id, title = '') {
+    const openHere = async (root, host, thread) => {
+      if (!root || !this.projectMatches(await editorRoots(this.editorCdp, this.app), root, host)) return false;
+      if (this.app === 'codex') {
+        if (!await this.selectCodexThread(thread)) throw new Error('没有找到所选会话');
+        await this.adoptCodexThread(thread, '已切换会话');
+      } else await this.adapter.openAgent.call(this, thread, title);
+      this.listAgents(true, true).catch(() => {});
+      return true;
+    };
     const stored = storedProjectSession(this.app, id);
-    if (stored?.dormant) return this.useProject(stored.workspace, false, sessionId(this.app, id), title);
+    if (this.app !== 'codex' && stored?.dormant && await openHere(stored.workspace, stored.host || '', sessionId(this.app, id))) return;
+    if (this.app !== 'codex' && stored?.dormant) return this.useProject(stored.workspace, false, sessionId(this.app, id), title);
     if ((this.app === 'cursor' || this.app === 'devin') && (id.startsWith('project:') || id.startsWith('project-new:'))) {
       const [kind, encodedWindow, encodedThread] = id.split(':');
       const window = decodeURIComponent(encodedWindow);
@@ -581,6 +599,7 @@ export const methods = {
         || (await listWindows(null, this.app)).find(w => w.id === window);
       const row = this.projectAgentCache?.get(window)?.list.find(r => r.id === decodeURIComponent(encodedThread || ''));
       const root = kind === 'project-new' && encodedThread ? decodeURIComponent(encodedThread) : row?.workspace || source?.project?.root || windowRoots(source?.title || '', this.app)[0]?.root;
+      if (kind === 'project' && await openHere(root, row?.host || source?.project?.host || '', decodeURIComponent(encodedThread))) return;
       if (root && !row?.host && !source?.project?.host) await this.useProject(root, kind === 'project-new', kind === 'project' ? decodeURIComponent(encodedThread) : '', title, window);
       else {
         if (window !== this.targetId && !source) throw new Error('所选会话窗口已经关闭');
@@ -612,11 +631,12 @@ export const methods = {
     if (this.app === 'cursor' || this.app === 'devin') {
       const row = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return h.agentList().find(r => r.id === ${JSON.stringify(id.replace(/^tab:/, ''))}) || null; })()`);
       const root = row?.workspace || (await this.currentRoots())[0]?.root;
+      if (await openHere(root, row?.host || '', id)) return;
       if (root && !row?.host) return this.useProject(root, false, id, title, stored?.ownerWindow || '');
       const state = await this.projectWindowState({ id: this.windowId });
       if (state.busy && state.thread !== id.replace(/^tab:/, '')) throw new Error('当前窗口正在运行，尚无法确认目标项目路径；请刷新项目与会话列表');
     }
-    return this.adapter.openAgent.call(this, id, title);
+    return this.app === 'codex' ? this.openCodexAgent(id, true) : this.adapter.openAgent.call(this, id, title);
   },
   async newChat() {
     return this.adapter.newChat.call(this);

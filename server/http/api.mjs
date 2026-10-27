@@ -208,12 +208,25 @@ export async function handleApi(req, res, route) {
     return fs.createReadStream(image.file).pipe(res);
   }
 
+  if (route === '/api/upload/cancel' && req.method === 'POST') {
+    const { clientImageId } = await readJson(req);
+    for (const [id, file] of uploads) if (file.clientImageId === clientImageId && file.deviceId === device.id && file.image) {
+      file.request?.destroy();
+      fs.rmSync(path.dirname(file.path), { recursive: true, force: true });
+      uploads.delete(id);
+    }
+    return json(req, res, 200, { ok: true });
+  }
   if (route === '/api/upload' && req.method === 'POST') {
     const query = new URL(req.url, 'http://localhost').searchParams;
     const name = path.basename(query.get('name') || '');
-    if (!/\.(pdf|doc|docx|xlsx|pptx|txt|md|csv|json|py|js|ts|tsx|jsx|sh|yaml|yml|toml|ini|log|xml|html|css|c|cpp|h|rs|go)$/i.test(name)) return json(req, res, 400, { error: '目前支持文档、表格、文本和代码文件' });
+    const image = query.get('image'), type = query.get('type');
+    if (image ? !/^image\/(png|jpeg|gif|webp)$/.test(type) : !/\.(pdf|doc|docx|xlsx|pptx|txt|md|csv|json|py|js|ts|tsx|jsx|sh|yaml|yml|toml|ini|log|xml|html|css|c|cpp|h|rs|go)$/i.test(name)) return json(req, res, 400, { error: image ? '只支持 PNG / JPEG / GIF / WebP 图片' : '目前支持文档、表格、文本和代码文件' });
     const id = crypto.randomUUID();
     const dir = path.join(DATA_DIR, 'uploads', id);
+    const filePath = path.join(dir, name);
+    const file = { name, path: filePath, sel: query.get('sel') || '', deviceId: device.id, pending: !image };
+    if (image) { Object.assign(file, { image: true, clientImageId: image, type, request: req }); uploads.set(id, file); }
     try {
       const chunks = [];
       let size = 0;
@@ -223,12 +236,14 @@ export async function handleApi(req, res, route) {
         chunks.push(chunk);
       }
       fs.mkdirSync(dir, { recursive: true });
-      const filePath = path.join(dir, name);
       fs.writeFileSync(filePath, Buffer.concat(chunks));
-      uploads.set(id, { name, size, path: filePath, sel: query.get('sel') || '', deviceId: device.id, pending: true });
+      delete file.request;
+      file.size = size;
+      uploads.set(id, file);
       return json(req, res, 200, { id, name, size });
     } catch (error) {
       fs.rmSync(dir, { recursive: true, force: true });
+      uploads.delete(id);
       return json(req, res, 400, { error: error.message });
     }
   }

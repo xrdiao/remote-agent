@@ -70,7 +70,7 @@ export const adapter = {
         if (thread === id) {
           if (this.threadId !== thread) this.clearViewState();
           this.threadId = this.selectedThread = thread;
-          this.publishThread('已切换 Agent');
+          this.publishThread('已切换会话');
           confirmed = true;
           return;
         }
