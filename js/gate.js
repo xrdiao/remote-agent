@@ -259,7 +259,7 @@ function connReadFailed(message) {
   $('retryChat').hidden = false;
   status(message, false);
   if (conn.active) connRender();
-  ensureReadyAgent();
+  if (conn.active) ensureReadyAgent();
 }
 function connRetryCurrent() {
   const chosen = currentComputer();

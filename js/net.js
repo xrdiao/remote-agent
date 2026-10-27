@@ -110,7 +110,11 @@ function refreshSelectionMetadata(initial = false) {
   }
 }
 function applySelection(m, clearChat = true) {
-  if (m.app) { currentApp = m.app; capabilityOwner = m.app; agentCapabilities = m.capabilities || null; fusionSideCapabilities = m.sideCapabilities || {}; }
+  if (m.app) {
+    currentApp = m.app; currentAppName = m.appName; currentWindow = m.id;
+    capabilityOwner = m.app; agentCapabilities = m.capabilities || null; fusionSideCapabilities = m.sideCapabilities || {};
+    updateAppText();
+  }
   const changed = (m.sel || '') !== viewSel;
   if (changed) { if (typeof cancelVoice === 'function') cancelVoice(); menuRequest++; saveDraft(); }
   // A new chat gets its thread id once it materializes: keep its pending echoes attached to it.
@@ -833,15 +837,12 @@ async function connect() {
       finishPending(['正在切换窗口…', '正在切换 Agent…']);
       store.set('window', m.id);
       applySelection(m, false);
-      currentWindow = m.id;
-      currentApp = m.app || null;
       selectionReady = m.ready !== false;
       setWindowReady(selectionReady && mode !== 'chat');
       scheduleLatency();
       $('dot').className = 'ok';
       status(mode === 'chat' ? '正在加载对话…' : '已连接');
       $('titleText').textContent = m.app === 'fusion' ? 'Fusion' : m.app === 'devin' ? 'Devin agent' : m.app === 'codex' ? 'Codex' : winLabel(m.title).name;
-      currentAppName = m.appName;
       currentProject = m.app === 'fusion' ? '' : (m.project || winLabel(m.title).name);
       updateAppText(); updateTitle();
       if (selectionReady) confirmNavigation();
