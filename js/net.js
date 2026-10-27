@@ -67,6 +67,7 @@ let liveChatSelection = '';
 let navigationSerial = 0, navigationPending = null, selectionReady = false, selectionMetadata = '';
 let metadataWindow = '';
 function beginNavigation(message) {
+  if (!message.initial) conn.initialSelection = false;
   failFileRead('目标已切换，文件读取已中断，请重新打开');
   message.navigationId = ++navigationSerial;
   navigationPending = { id: message.navigationId, windowId: message.t === 'attach' ? message.id : currentWindow, confirmed: '' };
