@@ -84,6 +84,17 @@
     }
     return props;
   };
+  const codexForkProps = root => {
+    const button = root?.querySelector('button[aria-label="More actions"]');
+    return button ? codexFiberProps(button, 30).find(p => typeof p.onFork === 'function' && typeof p.forkLabel === 'string' && !p.forkDisabled && !p.isForking) : null;
+  };
+  const forkCodexTurn = async item => {
+    const panel = findPanel();
+    const props = panel && codexForkProps(itemByKey(panel, item));
+    if (!props) return false;
+    await props.onFork();
+    return true;
+  };
   // Recent-chat rows carry the conversation id on the React node, not on a stable attribute.
   const codexChatRows = (readOnly = false) => {
     const menu = [...doc.querySelectorAll('[role=menu]')].find(e => vis(e) && /Search recent chats/.test(e.innerText || ''));
@@ -281,7 +292,8 @@
     for (const item of stored) if (!merged.has(item.id)) merged.set(item.id, item);
     return [...merged.values()];
   };
-  const codexQueueAction = async (id, action) => {
+  const codexQueueAction = async (id, action, thread = '') => {
+    if (thread && codexThread() !== thread) return false;
     if (!codexQueued().some(m => m.id === id)) return false;
     const name = { send: 'onSendNowMessage', remove: 'onDeleteMessage', edit: 'onEditMessage' }[action];
     for (const el of doc.querySelectorAll('button')) {

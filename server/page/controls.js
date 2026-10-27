@@ -188,6 +188,7 @@
       }
     }
     if (!root) return null;
+    if (label === 'Fork chat from here' && codexForkProps(root)) return { fork: true };
     let list = item === 'g' ? buttonsIn(panel, true).filter(x => !inItem(x.el) && !inQn(x.el)) : buttonsIn(root, false);
     if (root.hasAttribute?.('data-turn-key')) {
       list = list.filter(x => /^(Copy message|Fork chat from here|View changed files|View changes|View file changes|Undo|Open agent|View agent|View subagent|Stop agent|Apply|Revert)$/i.test(x.label) || RETRY_LABEL.test(x.label));

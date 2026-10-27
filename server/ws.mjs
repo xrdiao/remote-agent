@@ -85,8 +85,6 @@ wss.on('connection', (ws, req) => {
       return;
     }
     if (!authorization.valid || ws.readyState !== 1) return;
-    // Frame acks bypass the queue so a slow command never stalls the stream.
-    if (msg.t === 'ack') return session.ack();
     const route = ROUTES[msg.t];
     const mention = msg.t === 'mentionQuery';
     if (mention) session.mentionSeq = msg.seq;

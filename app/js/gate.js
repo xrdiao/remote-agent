@@ -136,7 +136,7 @@ function connHide() {
 }
 function connShow(phase) {
   clearTimeout(conn.timer);
-  Object.assign(conn, { active: true, host: false, phase, agents: null, catalogReady: false, autoLaunched: false, loaded: false, attachFailed: false, enterRequested: false, failure: null, conclusion: '', checks: [], diagRunning: false, probeComplete: false, failedTargets: new Map() });
+  Object.assign(conn, { active: true, initialSelection: true, host: false, phase, agents: null, catalogReady: false, autoLaunched: false, loaded: false, attachFailed: false, enterRequested: false, failure: null, conclusion: '', checks: [], diagRunning: false, probeComplete: false, failedTargets: new Map() });
   conn.open.clear();
   $('conn').classList.add('open');
   connRender();
@@ -219,6 +219,7 @@ function connLaunchNote(a) {
     unsupported: I18N.tr('这台电脑暂不支持远程启动'), timeout: I18N.tr('启动失败，请在电脑上检查'), failed: I18N.tr('启动失败，请在电脑上检查') }[st] || '';
 }
 function connContentReady() {
+  conn.initialSelection = false;
   if (pendingStatus === '正在加载对话…') status('已连接');
   conn.loaded = true;
   conn.attachFailed = false;
@@ -236,7 +237,7 @@ function connMaybeEnter() {
 }
 
 function ensureReadyAgent() {
-  if (navigationPending || windowReady) return;
+  if (!conn.initialSelection || navigationPending || windowReady) return;
   const ready = (conn.agents || []).filter(a => a.windows).map(a => a.app);
   if (!ready.length) return;
   const appOf = id => String(id || '').split(':')[0];

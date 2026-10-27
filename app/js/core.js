@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v260'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v273'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false, failures = 0;
 let windowReady = false;
@@ -161,13 +161,14 @@ fitOrientation();
 const ACTION_PENDING = new Set([
   '正在加载对话…',
   '正在发送…', '正在确认电脑端接收…',
-  '正在新建对话…', '正在切换窗口…', '正在切换 Agent…', '正在读取 Agent 列表…', '正在打开子 Agent…', '返回主对话…',
+  '正在新建对话…', '正在切换窗口…', '正在切换 Agent…', '正在切换会话…', '正在读取 Agent 列表…', '正在打开子 Agent…', '返回主对话…',
   '正在切换终端…', '正在删除终端…', '正在新建终端…', '正在读取终端列表…',
   '正在打开项目…', '正在读取项目…', '正在读取文件夹…', '正在读取文档…', '正在保存…',
   '正在读取设置…', '正在修改…', '正在读取额度…', '正在停止…',
   '正在撤销…', '正在保留…', '处理中…', '正在修改排队消息…',
   '切换 MAX Mode…', '读取模型参数…', '设置中…',
   '读取模式列表…', '读取模型列表…', '读取历史对话…',
+  '连接已断开，发送结果待确认',
 ]);
 let statusGen = 0;
 let statusTimer = 0;
@@ -198,7 +199,6 @@ function send(obj) {
   if (['attach', 'openAgent', 'openProject'].includes(obj.t)) beginNavigation(obj);
   if (obj.t === 'attach') {
     conn.loaded = false;
-    status('正在切换窗口…');
     const name = {cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion'}[String(obj.id || '').split(':')[0]];
     if (name) $('titleText').textContent = name + '…';
   }

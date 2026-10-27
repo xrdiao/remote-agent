@@ -198,13 +198,17 @@ export const adapter = {
         if (!clicked) await new Promise(r => setTimeout(r, 100));
       }
       if (!clicked) throw new Error('Codex 发送按钮当前不可用');
-      let steerId = '';
+      let steerId = '', steerThread = '';
       for (let i = 0; i < 15 && !steerId; i++) {
-        steerId = ((await this.cdp.evaluate(helpersCall('codexFacts()')))?.queued || []).find(m => !before.has(m.id))?.id || '';
+        const state = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return { thread: h.codexThread(), queued: h.codexFacts()?.queued || [] }; })()`);
+        if (this.cdp !== receiptCdp || this.selectionKey() !== receiptScope || receiptThread && state.thread !== receiptThread) break;
+        const candidates = state.queued
+          .filter(m => !before.has(m.id) && expected && m.t.trim() === expected.slice(0, 4000));
+        if (candidates.length === 1) { steerId = candidates[0].id; steerThread = state.thread; }
         if (!steerId) await new Promise(r => setTimeout(r, 100));
       }
       // No queued item means the turn ended and the message was sent directly.
-      if (steerId && !await this.cdp.evaluate(helpersCall(`codexQueueAction(${JSON.stringify(steerId)}, 'send')`))) {
+      if (steerId && !await this.cdp.evaluate(helpersCall(`codexQueueAction(${JSON.stringify(steerId)}, 'send', ${JSON.stringify(steerThread)})`))) {
         const still = ((await this.cdp.evaluate(helpersCall('codexFacts()')))?.queued || []).some(m => m.id === steerId);
         if (still) throw new Error('Codex 立即追加不可用');
       }
@@ -279,7 +283,15 @@ mergeCodexItems(chat) {
   if (thread) this.threadId = thread;
   if (!this.itemCache) this.itemCache = new Map();
   const prev = this.itemCache.get(thread) || [];
-  const rows = new Map(prev.map(it => [it.i, it]));
+  const rows = new Map(prev.map(it => {
+    if (it.capacity && it.b?.length) {
+      const { b, actions, btnItem, ...notice } = it;
+      return [it.i, notice];
+    }
+    return [it.i, it];
+  }));
+  const completed = new Map([...(prev.completeTurns || []), ...(chat._completeTurnIds || [])]);
+  delete chat._completeTurnIds;
   const partial = new Set(prev.partialTurns || []);
   for (const turn of chat._completeTurns || []) partial.delete(turn);
   for (const turn of chat._partialTurns || []) partial.add(turn);
@@ -322,6 +334,7 @@ mergeCodexItems(chat) {
     partial.add(Math.floor(it.order / 10000)); return false;
   });
   chat.items.partialTurns = [...partial].filter(turn => turns.includes(turn));
+  chat.items.completeTurns = [...completed].filter(([, turn]) => turns.includes(turn));
   chat.earlier = this.codexEarlier(chat.items);
   if (!chat.busy) chat.items.filter(it => it.k === 'thinking').forEach(it => { it.live = false; });
   if (!chat.busy) chat.items.filter(it => it.k === 'tool' && !it.keep).forEach(it => { it.done = true; });
@@ -429,7 +442,16 @@ async openCodexAgent(id) {
   const match = /^thread:([^:]+):(.+)$/.exec(id || '');
   if (!match) throw new Error('这条会话已经不在列表里');
   const convId = match[2];
-  const rows = await this.cdp.evaluate(helpersCall('codexChatRows(true)')) || [];
+  const own = match[1] === this.codexPageId;
+  const page = own ? null : (await codexWindows(CODEX_CDP_URL, false, match[1]))[0];
+  const source = own ? this.cdp : page?.chatWs ? new Cdp(page.chatWs) : null;
+  let rows = [];
+  try {
+    if (source) {
+      if (!own) await source.connect();
+      rows = await source.evaluate(helpersCall('codexChatRows(true)')) || [];
+    }
+  } finally { if (!own) source?.close(); }
   const row = rows.find(r => r.id === convId);
   const workspace = row?.workspace || this.codexRoots?.get(convId)
     || conversationProjects[JSON.stringify([computerId(), 'codex', '', convId])]?.project?.root;

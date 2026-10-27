@@ -277,7 +277,6 @@ function windowEntries() {
 // Same action whether a window row is tapped in the sheet or in the tablet rail.
 function switchToWindow(id) {
   closeSheet();
-  status('正在切换 Agent…');
   const entry = windowEntries().entries.find(w => w.id === id);
   const saved = entry && currentComputer()?.selections?.[entry.app];
   send({ t: 'attach', id, ...(saved?.id === id ? saved : {}) });
@@ -608,7 +607,9 @@ function renderAgentList() {
   else openAgentList();
 }
 function showAgents(list) {
-  list = list.map(a => ({ ...a, window: cleanWindowTitle(a.window), group: cleanWindowTitle(a.group), title: cleanWindowTitle(a.title) }));
+  const currentThread = agentThreadKey({ id: currentComputer()?.threadId });
+  list = list.map(a => ({ ...a, current: a.ui ? a.current : !!currentThread && agentThreadKey(a) === currentThread,
+    window: cleanWindowTitle(a.window), group: cleanWindowTitle(a.group), title: cleanWindowTitle(a.title) }));
   const keep = sheetKind === 'agents';
   const scroll = keep ? $('sheet').scrollTop : 0;
   const revision = projectRevealRevision;
