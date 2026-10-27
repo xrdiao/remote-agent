@@ -6,16 +6,30 @@ let viewing = null;
 let editing = false;
 let editBase = '', saving = null;
 let fileRequestId = 0, saveRequestId = 0, saveTimer = 0;
-let filePdfUrl = '', filePdfLoading = null;
+let filePdf = null;
+let readingFile = null;
+function finishFileRead() {
+  clearTimeout(readingFile?.timer);
+  readingFile = null;
+}
+function failFileRead(message) {
+  if (!readingFile) return;
+  const name = readingFile.name;
+  fileRequestId++;
+  finishFileRead();
+  showFile({ name, error: message });
+}
 function dirtyEdit() {
   const box = $('vEditBox');
   return editing && box && box.value !== editBase;
 }
 function stopVideo() {
-  filePdfLoading?.abort();
-  filePdfLoading = null;
-  if (filePdfUrl) URL.revokeObjectURL(filePdfUrl);
-  filePdfUrl = '';
+  if (filePdf) {
+    filePdf.controller.abort();
+    filePdf.render?.cancel();
+    filePdf.task?.destroy();
+    filePdf = null;
+  }
   const video = $('vBody').querySelector('video');
   if (video) { video.onerror = null; video.pause(); video.removeAttribute('src'); video.load(); }
 }
@@ -90,6 +104,7 @@ function videoGestures(video) {
 }
 function openChatImage(source) {
   fileRequestId++;
+  finishFileRead();
   finishFileSave();
   returnToEditor = null;
   stopVideo(); leaveEdit();
@@ -118,6 +133,7 @@ function leaveEdit() {
 }
 function openFile(ref, fromEditor = false, diff = '', fromChanges = false) {
   const requestId = ++fileRequestId;
+  finishFileRead();
   finishFileSave();
   returnToEditor = fromEditor ? { ...editorDirectory } : null;
   stopVideo();
@@ -136,11 +152,13 @@ function openFile(ref, fromEditor = false, diff = '', fromChanges = false) {
     $('viewer').classList.add('open');
     history.pushState({ viewer: true }, '');
   }
-  send({ t: 'file', path: ref, diff, requestId, ...(fromChanges ? { changes: true } : {}) });
+  readingFile = { name: ref.split('/').pop(), timer: setTimeout(() => failFileRead('文件读取结果尚未返回，请重试'), 30000) };
+  if (!send({ t: 'file', path: ref, diff, requestId, ...(fromChanges ? { changes: true } : {}) })) failFileRead('未连接，文件未读取，请重试');
 }
 
 function showFile(m) {
   if (!$('viewer').classList.contains('open') || m.loading) return;
+  finishFileRead();
   stopVideo();
   leaveEdit();
   viewing = m.text != null ? m : null;
@@ -176,21 +194,58 @@ function showFile(m) {
     $('vWrap').hidden = true;
     body.innerHTML = '<div class="note">正在从电脑读取…</div>';
     const requestId = fileRequestId;
-    const loading = filePdfLoading = new AbortController();
-    fetch(base + m.pdf, { signal: loading.signal, cache: 'no-store' }).then(response => {
-      if (!response.ok) throw new Error('PDF 读取失败 (' + response.status + ')');
-      return response.blob();
-    }).then(blob => {
-      if (loading.signal.aborted || requestId !== fileRequestId || !$('viewer').classList.contains('open')) return;
-      const frame = document.createElement('iframe');
-      frame.className = 'pdfPreview';
-      frame.title = m.name || 'PDF';
-      frame.src = filePdfUrl = URL.createObjectURL(blob);
-      body.replaceChildren(frame);
-    }).catch(error => {
-      if (loading.signal.aborted || requestId !== fileRequestId) return;
+    const state = filePdf = { controller: new AbortController(), task: null, render: null };
+    const failed = error => {
+      if (state.controller.signal.aborted || requestId !== fileRequestId) return;
       body.innerHTML = `<div class="note err">${esc(error.message)}</div>`;
-    }).finally(() => { if (filePdfLoading === loading) filePdfLoading = null; });
+    };
+    (async () => {
+      const [pdfjs, response] = await Promise.all([
+        import('../pdfjs/pdf-6.4.299.min.mjs'),
+        fetch(base + m.pdf, { signal: state.controller.signal, cache: 'no-store' }),
+      ]);
+      if (!response.ok) throw new Error('PDF 读取失败 (' + response.status + ')');
+      const data = new Uint8Array(await response.arrayBuffer());
+      if (state.controller.signal.aborted || requestId !== fileRequestId) return;
+      const asset = name => new URL('pdfjs/' + name, document.baseURI).href;
+      pdfjs.GlobalWorkerOptions.workerSrc = asset('pdf.worker-6.4.299.min.mjs');
+      state.task = pdfjs.getDocument({ data, cMapUrl: asset('cmaps/'), cMapPacked: true,
+        standardFontDataUrl: asset('standard_fonts/'), wasmUrl: asset('wasm/'), isEvalSupported: false });
+      const pdf = await state.task.promise;
+      if (state.controller.signal.aborted || requestId !== fileRequestId) return;
+      const toolbar = document.createElement('div');
+      toolbar.className = 'pdfPager';
+      toolbar.innerHTML = `<button data-pdf-prev>${I18N.tr('上一页')}</button><span aria-live="polite"></span><button data-pdf-next>${I18N.tr('下一页')}</button>`;
+      const previous = toolbar.querySelector('[data-pdf-prev]'), next = toolbar.querySelector('[data-pdf-next]'), counter = toolbar.querySelector('span');
+      const pageBox = document.createElement('div'), canvas = document.createElement('canvas');
+      pageBox.className = 'pdfPage';
+      pageBox.append(canvas);
+      body.replaceChildren(toolbar, pageBox);
+      let number = 1;
+      const draw = async pageNumber => {
+        previous.disabled = next.disabled = true;
+        const page = await pdf.getPage(pageNumber);
+        if (state.controller.signal.aborted) return;
+        const size = page.getViewport({ scale: 1 });
+        const viewport = page.getViewport({ scale: pageBox.clientWidth / size.width });
+        const ratio = window.devicePixelRatio || 1;
+        canvas.width = Math.ceil(viewport.width * ratio);
+        canvas.height = Math.ceil(viewport.height * ratio);
+        const render = state.render = page.render({ canvasContext: canvas.getContext('2d'), viewport,
+          transform: [ratio, 0, 0, ratio, 0, 0] });
+        await render.promise;
+        if (state.controller.signal.aborted) return;
+        state.render = null;
+        number = pageNumber;
+        counter.textContent = `${number} / ${pdf.numPages}`;
+        previous.disabled = number === 1;
+        next.disabled = number === pdf.numPages;
+        body.scrollTop = 0;
+      };
+      previous.onclick = () => draw(number - 1).catch(failed);
+      next.onclick = () => draw(number + 1).catch(failed);
+      await draw(1);
+    })().catch(failed);
     return;
   }
   if (m.image) {
@@ -244,6 +299,7 @@ function renderFileCode(m) {
   if (D.has(0)) code.insertAdjacentHTML('beforeend', '<div class="dm"></div>');
   let n = 0;
   const renderChunk = () => {
+    if (!body.contains(code)) return;
     let html = '';
     const end = Math.min(total, n + 300);
     while (n < end) {
@@ -345,6 +401,7 @@ function closeViewer() {
     return;
   }
   fileRequestId++;
+  finishFileRead();
   finishFileSave();
   stopVideo();
   leaveEdit();

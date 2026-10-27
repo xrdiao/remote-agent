@@ -33,13 +33,12 @@ function setMode(m) {
   updateSendMode();
   paintGenerationTime();
   if (m !== 'terminal') $('termBusy').hidden = true;
-  sentWidth = 0;
   if (authed) send({ t: 'mode', mode: m });
   updateTermEmpty();
   $('visualEmpty').hidden = m !== 'screen' || visualState.state === 'live';
   stage.hidden = m === 'screen' && visualState.state !== 'live';
   if (m === 'screen') { visualState = {state: 'idle', message: I18N.tr('正在查找窗口…')}; renderVisualState(visualState); }
-  if (m === 'screen' || m === 'terminal') { layoutStage(); applyQuality(); }
+  if (m === 'screen' || m === 'terminal') { layoutStage(); }
   fitOrientation();
   if (typeof updateComposeCompact === 'function') updateComposeCompact();
 }
