@@ -1210,7 +1210,6 @@ function showMainMenu() {
     ${connItems}
     ${inApp ? '<button class="opt" data-act="changeUrl"><span class="lbl">更换 App 地址</span></button>' : ''}
     <button class="opt" data-act="reconnect"><span class="lbl">重新连接</span></button>
-    <button class="opt" data-act="computers"><span class="lbl">电脑<span class="sub">${esc(currentComputer()?.name || '未配对')}</span></span></button>
     <button class="opt" data-act="devices"><span class="lbl">已配对设备</span></button>
     <button class="opt" data-act="logout"><span class="lbl">删除这台电脑</span></button>`;
   const filesItems = `
@@ -1223,7 +1222,7 @@ function showMainMenu() {
     ${inApp && window.AgentRemoteApp?.listenStatus ? '<button class="opt" data-act="bg"><span class="lbl">后台连接<span class="sub">状态、电池优化、立即重连</span></span></button>' : ''}
     <button class="opt" data-act="cache"><span class="lbl">会话缓存<span class="sub">手机上保存的对话记录，可折叠、可清除</span></span></button>
     <button class="opt" data-act="lang"><span class="lbl">语言 / Language<span class="sub">中文 · English（${I18N.lang === 'en' ? 'English' : '中文'}）</span></span></button>`;
-  openSheet('main', `<h3>菜单</h3>${menuGroup('model', '模型', (appName ? `<div class="pSec">${esc(appName)}</div>` : '') + modelItems)}
+  openSheet('main', `<div class="mainMenuHeader"><h3>菜单</h3><button class="menuComputer" data-act="computers" aria-label="${esc(I18N.tr('电脑'))}" title="${esc(I18N.tr('电脑'))}">${CONN_HOST_SVG}</button></div>${menuGroup('model', '模型', (appName ? `<div class="pSec">${esc(appName)}</div>` : '') + modelItems)}
     ${menuGroup('general', '通用', menuGroup('connection', 'Agent 与连接', connectionItems, false)
       + menuGroup('files', '文件与输入', filesItems, false) + menuGroup('settings', '应用设置与帮助', settingsItems, false))}`);
 }
