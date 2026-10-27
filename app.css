@@ -446,7 +446,10 @@ main { flex: 1; min-height: 0; position: relative; }
 .humanContent .bubble { max-width: 100%; width: fit-content; margin-left: auto; }
 .messageMeta { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 4px; color: var(--fg-4); font-size: 11px; }
 .messageMeta button { min-height: 24px; font-size: 11px; padding: 0 6px; background: transparent; color: var(--fg-3); }
-.msg.human .rv { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; align-self: center; margin-left: 6px; }
+.msg.human:has(> .rv) { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 6px; }
+.msg.human:has(> .rv) > :not(.rv) { grid-column: 1; justify-self: end; }
+.msg.human:has(> .rv) > .humanContent { width: 100%; max-width: 100%; }
+.msg.human .rv { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; align-self: center; grid-column: 2; grid-row: 1; }
 .foldBtn { font-size: 11px; padding: 0 8px; min-height: 24px; background: transparent; border: 1px solid var(--line-2); border-radius: 999px; color: var(--fg-3); }
 .endFold { display: block; margin: 6px 0 0 auto; font-size: 11px; padding: 2px 10px; min-height: 24px; background: transparent; border: 1px solid var(--line-2); border-radius: 999px; color: var(--fg-3); }
 .flash { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }
@@ -615,15 +618,14 @@ div.math { display: block; margin: .35em 0; text-align: center; }
 #turnNav {
   position: absolute; top: 0; right: 4px; width: 24px; height: 56px;
   display: flex; flex-direction: column; border-radius: 4px;
-  background: var(--fg-3); opacity: .45; transform: translateX(24px); pointer-events: auto;
+  background: transparent; opacity: .45; transform: translateX(24px); pointer-events: auto;
   touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
   transition: transform .18s var(--ease), background .18s, opacity .18s, border-radius .18s;
 }
 #turnNav::before { content: ""; position: absolute; inset: 0 0 0 -8px; }
-#turnNav.show, #turnNav:focus-within { transform: none; background: var(--s1); opacity: .96; border-radius: 12px; box-shadow: 0 1px 4px var(--line-3); }
-#turnNav button { position: relative; min-height: 28px; height: 28px; width: 24px; padding: 0; border-radius: 12px; background: transparent; color: var(--fg-2); font-size: 16px; opacity: 0; pointer-events: none; }
+#turnNav.show, #turnNav:focus-within { transform: none; background: transparent; opacity: .96; box-shadow: none; }
+#turnNav button { position: relative; min-height: 28px; height: 28px; width: 24px; padding: 0; border: 0; border-radius: 0; box-shadow: none; background: transparent; color: var(--fg-2); font-size: 16px; opacity: 0; pointer-events: none; }
 #turnNav.show button, #turnNav:focus-within button { opacity: 1; pointer-events: auto; }
-#turnNav button + button { border-top: 1px solid var(--line); }
 
 /* ---------- attention stack above the composer ---------- */
 #qnBar, #queueBar, #actionBar { flex: none; margin: 0 12px 8px; border-radius: var(--r-lg); }
