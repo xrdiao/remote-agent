@@ -7,6 +7,18 @@ let editing = false;
 let editBase = '', saving = null;
 let fileRequestId = 0, saveRequestId = 0, saveTimer = 0;
 let filePdf = null;
+let readingFile = null;
+function finishFileRead() {
+  clearTimeout(readingFile?.timer);
+  readingFile = null;
+}
+function failFileRead(message) {
+  if (!readingFile) return;
+  const name = readingFile.name;
+  fileRequestId++;
+  finishFileRead();
+  showFile({ name, error: message });
+}
 function dirtyEdit() {
   const box = $('vEditBox');
   return editing && box && box.value !== editBase;
@@ -92,6 +104,7 @@ function videoGestures(video) {
 }
 function openChatImage(source) {
   fileRequestId++;
+  finishFileRead();
   finishFileSave();
   returnToEditor = null;
   stopVideo(); leaveEdit();
@@ -120,6 +133,7 @@ function leaveEdit() {
 }
 function openFile(ref, fromEditor = false, diff = '', fromChanges = false) {
   const requestId = ++fileRequestId;
+  finishFileRead();
   finishFileSave();
   returnToEditor = fromEditor ? { ...editorDirectory } : null;
   stopVideo();
@@ -138,11 +152,13 @@ function openFile(ref, fromEditor = false, diff = '', fromChanges = false) {
     $('viewer').classList.add('open');
     history.pushState({ viewer: true }, '');
   }
-  send({ t: 'file', path: ref, diff, requestId, ...(fromChanges ? { changes: true } : {}) });
+  readingFile = { name: ref.split('/').pop(), timer: setTimeout(() => failFileRead('文件读取结果尚未返回，请重试'), 30000) };
+  if (!send({ t: 'file', path: ref, diff, requestId, ...(fromChanges ? { changes: true } : {}) })) failFileRead('未连接，文件未读取，请重试');
 }
 
 function showFile(m) {
   if (!$('viewer').classList.contains('open') || m.loading) return;
+  finishFileRead();
   stopVideo();
   leaveEdit();
   viewing = m.text != null ? m : null;
@@ -385,6 +401,7 @@ function closeViewer() {
     return;
   }
   fileRequestId++;
+  finishFileRead();
   finishFileSave();
   stopVideo();
   leaveEdit();

@@ -67,6 +67,7 @@ let liveChatSelection = '';
 let navigationSerial = 0, navigationPending = null, selectionReady = false, selectionMetadata = '';
 let metadataWindow = '';
 function beginNavigation(message) {
+  failFileRead('目标已切换，文件读取已中断，请重新打开');
   message.navigationId = ++navigationSerial;
   navigationPending = { id: message.navigationId, windowId: message.t === 'attach' ? message.id : currentWindow, confirmed: '' };
   conn.attachFailed = false;
@@ -120,6 +121,7 @@ function applySelection(m, clearChat = true) {
   // A new chat gets its thread id once it materializes: keep its pending echoes attached to it.
   if (changed && viewSel.endsWith('|') && (m.sel || '').startsWith(viewSel)) for (const p of pendingEchoes) if (p.sel === viewSel) p.sel = m.sel;
   if (changed) {
+    failFileRead('目标已切换，文件读取已中断，请重新打开');
     invalidateChatRender();
     selectionReady = false;
     setWindowReady(false);
@@ -527,6 +529,7 @@ async function boot() {
   if (authed) {
     markUploadsDisconnected();
     disconnectPendingSends();
+    failFileRead('连接已断开，文件读取已中断，请重试');
     failFileSave('连接已断开，保存结果未确认，请重试');
     cancelChatContentRequests();
     interruptSessionBatch();
@@ -679,6 +682,7 @@ async function connect() {
     setWindowReady(false);
     markUploadsDisconnected();
     disconnectPendingSends();
+    failFileRead('连接已断开，文件读取已中断，请重试');
     failFileSave('连接已断开，保存结果未确认，请重试');
     qnPending = null;
     cancelChatContentRequests();
