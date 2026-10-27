@@ -1,46 +1,11 @@
 /* ---------- bottom sheet ---------- */
 let sheetKind = null;
 let menuRefreshTimer = 0;
-let menuPending = null, menuPickRequest = 0, modelSwitchRequest = null;
-function finishModelPick(m) {
-  if (m.sel !== viewSel || m.requestId !== modelSwitchRequest?.requestId) return;
-  modelSwitchRequest = null;
-  menuCache.delete(menuCacheKey('model')); menuCache.delete(menuCacheKey('effort'));
-  if (m.ok) status(`已切换到 ${m.label}`);
-}
 let pendingAgentOpen = '';
 const agentOpened = JSON.parse(store.get('agent-opened') || '{}');
 const agentUsage = JSON.parse(store.get('agent-usage') || '{}');
 const agentFavorites = JSON.parse(store.get('agent-favorites') || '{}');
 const agentFilters = JSON.parse(store.get('agent-filters') || '{}');
-let sharedAgentLibrary = { computer: '', records: {} };
-let pendingAgentFavorite = null;
-let agentActionRequest = 0;
-let pendingAgentActions = null;
-let agentBatch = null;
-function batchActive() { return agentBatch?.key === agentListKey(); }
-function receiveSessionBatch(m) {
-  if (!batchActive() || m.app !== currentApp || m.requestId !== agentBatch.requestId) return;
-  agentBatch.progress = m;
-  agentBatch.running = !m.done;
-  for (const row of m.results) if (row.ok) agentBatch.selected.delete(row.id);
-  if (sheetKind === 'agents') renderAgentList();
-}
-function interruptSessionBatch() {
-  if (!agentBatch?.running) return;
-  agentBatch.running = false;
-  agentBatch.requestId = null;
-  agentBatch.selected.clear();
-  agentBatch.progress = { ...agentBatch.progress, results: agentBatch.progress?.results || [], total: agentBatch.progress?.total || 0, done: true };
-  agentLists.delete(agentBatch.key);
-  saveAgentLists();
-  if (sheetKind === 'agents') closeSheet();
-  status('批量操作已中断，请刷新列表确认已完成结果', false);
-}
-function showProjectWindows(m) {
-  openSheet('project-windows', `<h3>项目窗口</h3><button class="opt" data-window-enabled="${m.enabled ? '0' : '1'}"><span class="lbl">自动关闭空闲窗口</span><span class="switch${m.enabled ? ' on' : ''}"></span></button><label class="pSec">空闲分钟数<input data-window-idle type="number" min="1" value="${m.idleMinutes}"></label>${m.windows.map(w => `<div class="pSec">${esc(({cursor:'Cursor',devin:'Devin',codex:'Codex'})[w.app] + ' · ' + w.title)}</div><div class="hint">${esc(w.root)}<br>${esc(w.reason || (w.owned ? '已纳入自动管理' : '未纳入自动管理'))}</div><button class="opt" data-window-key="${esc(w.key)}" data-window-owned="${w.owned ? '0' : '1'}">${w.owned ? '退出自动管理' : '纳入自动管理'}</button><button class="opt" data-window-key="${esc(w.key)}" data-window-keep="${w.keep ? '0' : '1'}">${w.keep ? '取消保留' : '始终保留此窗口'}</button>`).join('')}`);
-  $('sheet').querySelector('[data-window-idle]').onchange = e => send({ t: 'projectWindowSet', change: { idleMinutes: Number(e.target.value) } });
-}
 const agentOpenedKey = thread => `${currentComputer()?.id || ''}|${currentAppName}|${thread}`;
 const agentUsageKey = id => `${currentComputer()?.id || currentComputer()?.key || ''}|${currentApp || currentAppName}|${id}`;
 const agentFilterKey = () => `${currentComputer()?.id || currentComputer()?.key || ''}|${currentApp || currentAppName}`;
@@ -54,78 +19,34 @@ function setAgentFilter(value) {
   agentFilters[agentFilterKey()] = { session: value };
   store.set('agent-filters', JSON.stringify(agentFilters));
 }
-function agentThreadKey(a, app = currentApp) {
+function agentThreadKey(a) {
   const id = String(a.id || '');
-  if (a.threadId) return a.threadId;
-  if (app === 'codex' && id.startsWith('thread:')) return id.split(':').slice(2).join(':');
+  if (currentAppName === 'Codex') return id.split(':').slice(2).join(':');
   if (id.startsWith('project:')) {
-    try { return decodeURIComponent(id.split(':').slice(2).join(':')).replace(/^tab:/, ''); } catch {}
+    try { return decodeURIComponent(id.split(':').slice(2).join(':')); } catch {}
   }
-  return app === 'devin' ? id.replace(/^tab:/, '') : id;
-}
-function legacyAgentLibrary() {
-  const entries = new Map();
-  const prefixes = [currentComputer()?.id, currentComputer()?.key].filter(Boolean).map(id => id + '|');
-  for (const key of new Set([...Object.keys(agentFavorites), ...Object.keys(agentUsage)])) {
-    const prefix = prefixes.find(prefix => key.startsWith(prefix));
-    if (!prefix) continue;
-    const [appName, ...parts] = key.slice(prefix.length).split('|');
-    const app = appName.toLowerCase();
-    let id = parts.join('|');
-    if (id.startsWith('project:')) id = decodeURIComponent(id.split(':').slice(2).join(':'));
-    if (app === 'codex' && id.startsWith('thread:')) id = id.split(':').slice(2).join(':');
-    if (app === 'devin') id = id.replace(/^tab:/, '');
-    if (!['cursor', 'devin', 'codex'].includes(app) || !id || /^(?:pick|new|win|window|project-new):/.test(id)) continue;
-    const entry = entries.get(app + '|' + id) || { app, id };
-    if (agentFavorites[key]) entry.favorite = true;
-    entry.lastMessageAt = Math.max(entry.lastMessageAt || 0, Number(agentUsage[key]?.lastMessageAt) || 0);
-    entries.set(app + '|' + id, entry);
-  }
-  return [...entries.values()];
-}
-function sharedAgentRecord(id) {
-  return sharedAgentLibrary.computer === currentComputer()?.id
-    ? sharedAgentLibrary.records[currentApp]?.[agentThreadKey({ id })] || {} : {};
-}
-function receiveSessionLibrary(message) {
-  if (message.computer !== currentComputer()?.id) return;
-  sharedAgentLibrary = message;
-  if (pendingAgentFavorite && message.records[pendingAgentFavorite.app]?.[agentThreadKey({ id: pendingAgentFavorite.id }, pendingAgentFavorite.app)]?.favorite === pendingAgentFavorite.on) {
-    status(pendingAgentFavorite.on ? '已设为常用' : '已取消常用');
-    pendingAgentFavorite = null;
-  }
-  if (sheetKind === 'agents') renderAgentList();
-}
-function receiveSessionChange(message) {
-  if (message.computer !== currentComputer()?.id) return;
-  const prefix = currentComputer().key + ':' + message.app;
-  for (const [key, list] of [...agentLists]) {
-    if (key !== prefix && !key.startsWith(prefix + ':')) continue;
-    setAgentList(key, list.flatMap(a => agentThreadKey(a, message.app) !== message.id ? [a]
-      : message.action === 'rename' ? [{ ...a, title: message.title }] : []));
-  }
-  if (sheetKind === 'agents' && currentApp === message.app) renderAgentList();
-  const here = currentComputer();
-  if (message.action !== 'rename' && currentApp === message.app && here.threadId === message.id)
-    send({ t: 'attach', id: here.win, windowId: here.windowId, threadId: '' });
+  return id;
 }
 function agentUsageInfo(a) {
   const thread = agentThreadKey(a);
   const saved = { ...(agentUsage[agentUsageKey(thread)] || {}), ...(agentUsage[agentUsageKey(a.id)] || {}) };
   const opened = agentOpened[agentOpenedKey(thread)] || 0;
   const lastUsed = Math.max(Number(a.lastUsed) || 0, Number(saved.last) || 0, opened);
-  const shared = sharedAgentRecord(a.id);
-  const lastMessageAt = Number(shared.lastMessageAt) || 0;
-  const ageDays = lastMessageAt > 0 && lastMessageAt <= Date.now() ? (Date.now() - lastMessageAt) / 86400000 : Infinity;
-  const favorite = shared.favorite === true;
-  return { ...a, ...(shared.title && !a.ui ? { title: shared.title } : {}), lastUsed, favorite, common: favorite || (lastMessageAt > 0 && ageDays <= 7) };
+  const lastMessageAt = Number(saved.lastMessageAt) || 0;
+  const ageDays = lastMessageAt ? Math.max(0, (Date.now() - lastMessageAt) / 86400000) : Infinity;
+  const favorite = !!agentFavorites[agentUsageKey(thread)] || !!agentFavorites[agentUsageKey(a.id)];
+  return { ...a, lastUsed, favorite, common: favorite || (lastMessageAt > 0 && ageDays <= 7) };
 }
 function agentFavoriteState(id) {
-  return sharedAgentRecord(id).favorite === true;
+  const key = agentThreadKey({ id });
+  return !!agentFavorites[agentUsageKey(key)] || !!agentFavorites[agentUsageKey(id)];
 }
 function setAgentFavorite(id, on) {
-  pendingAgentFavorite = { id, on, app: currentApp };
-  if (!send({ t: 'sessionFavorite', app: currentApp, id: agentThreadKey({ id }), favorite: on })) pendingAgentFavorite = null;
+  const key = agentUsageKey(agentThreadKey({ id }));
+  if (on) agentFavorites[key] = true;
+  else delete agentFavorites[key];
+  store.set('agent-favorites', JSON.stringify(agentFavorites));
+  renderAgentList();
 }
 function rememberAgentMessageTime(thread, at) {
   const timestamp = Number(at);
@@ -153,11 +74,9 @@ function rememberAgentOpen(m) {
   }
 }
 function openSheet(kind, html) {
-  if (kind !== 'ask') askDone?.(false);
-  if (kind !== 'agents') pendingProjectReveal = null;
   if (sheetKind === 'devices' && kind !== 'devices') deviceInviteGeneration++;
   if (kind !== 'docs') cancelDocs();
-  if (kind !== 'menu') { clearTimeout(menuRefreshTimer); menuPending = null; }
+  if (kind !== 'menu') clearTimeout(menuRefreshTimer);
   if (kind !== 'devices') clearTimeout(deviceListTimer);
   const leavingVoice = sheetKind === 'local-voice' && kind !== 'local-voice';
   const sheet = $('sheet');
@@ -190,8 +109,6 @@ function openSheet(kind, html) {
   if (leavingVoice) scheduleVoiceWarmup();
 }
 function closeSheet() {
-  askDone?.(false);
-  pendingProjectReveal = null;
   cancelDocs();
   clearTimeout(menuRefreshTimer);
   clearTimeout(deviceListTimer);
@@ -200,7 +117,6 @@ function closeSheet() {
   if (sheetKind === 'devices') { deviceRemoval = []; deviceInviteGeneration++; }
   fusionModelSide = null;
   menuRequest++;
-  menuPending = null;
   if (sheetKind === 'codex-settings') { codexSettingsRequest++; send({ t: 'closeCodexSettings' }); status(''); }
   sheetKind = null; menuSheetKind = '';
   delete $('sheet')._winSig;
@@ -223,15 +139,13 @@ function showCodexRetryMenu() {
     const n = Math.max(1, Math.min(5, Math.round(Number($('codexRetryCount').value) || 1)));
     store.set('codex-auto-retry-count', String(n));
     $('codexRetryCount').value = n;
-    syncCodexAutoRetry(lastChat, chatStale);
   };
 }
 function toggleCodexAutoRetry() {
   store.set('codex-auto-retry', codexAutoRetryEnabled() ? null : '1');
-  syncCodexAutoRetry(lastChat, chatStale);
   showCodexRetryMenu();
 }
-$('shade').onclick = () => { closeSheet(); };
+$('shade').onclick = () => { closeSheet(); askDone?.(false); };
 
 // Confirmation for anything that interrupts the Agent or throws work away; resolves false if dismissed.
 let askDone = null;
@@ -241,8 +155,8 @@ function ask(question, ok = '确定') {
     askDone = v => { askDone = null; resolve(v); };
     openSheet('ask', `<h3 class="askQ">${esc(question)}</h3><div class="askBtns">`
       + `<button id="askNo">取消</button><button id="askOk" class="danger">${esc(ok)}</button></div>`);
-    $('askOk').onclick = () => { askDone?.(true); closeSheet(); };
-    $('askNo').onclick = () => { closeSheet(); };
+    $('askOk').onclick = () => { closeSheet(); askDone?.(true); };
+    $('askNo').onclick = () => { closeSheet(); askDone?.(false); };
   });
 }
 // Buttons on Cursor's own cards that stop, reject or discard work.
@@ -549,11 +463,6 @@ function cancelDocs() {
   finishPending(['正在读取文档…', '正在读取项目文件…']);
 }
 function agentButton(a) {
-  if (batchActive()) {
-    if (a.ui) return '';
-    const checked = agentBatch.selected.has(a.id);
-    return `<button class="opt${checked ? ' cur' : ''}" data-agent-batch-id="${esc(a.id)}" role="checkbox" aria-checked="${checked}" ${a.running || agentBatch.running ? 'disabled' : ''}><span>${checked ? '☑' : '☐'}</span><span class="lbl">${esc(a.title)}</span>${a.running ? '<span class="tag">运行中</span>' : ''}</button>`;
-  }
   if (a.loadWindow) return `<button class="opt" data-project-load="${esc(a.loadWindow)}">${esc(a.title)}</button>`;
   const label = a.ui ? esc(a.title) : `<span class="lbl">${esc(a.title)}</span>`;
   const tags = a.running ? '<span class="tag">运行中</span>' : '';
@@ -562,45 +471,23 @@ function agentButton(a) {
   const favorite = !!a.favorite;
   return `<div class="optRow">${main}<button type="button" class="agentFavBtn${favorite ? ' on' : ''}" data-agent-favorite="${esc(a.id)}" data-agent-favorite-value="${favorite ? '0' : '1'}" title="${favorite ? '取消常用' : '设置为常用'}" aria-label="${favorite ? '取消常用' : '设置为常用'}">${favorite ? '★' : '☆'}</button><button type="button" class="agentMoreBtn" data-agent-menu="${esc(a.id)}" data-agent-menu-title="${esc(a.title)}" title="更多操作" aria-label="更多操作">…</button></div>`;
 }
-let pendingProjectReveal = null, projectRevealRevision = 0;
-for (const event of ['touchstart', 'pointerdown', 'wheel', 'keydown']) $('sheet').addEventListener(event, () => {
-  pendingProjectReveal = null;
-  projectRevealRevision++;
-}, { passive: true });
-function revealProjectSessions(button) {
-  const key = button.dataset.projectFold;
-  if (!key) return;
-  pendingProjectReveal = { key, owner: agentListKey() };
-  const sheet = $('sheet');
-  sheet.scrollTop += button.getBoundingClientRect().top - sheet.getBoundingClientRect().top - 16;
-  if (!button.nextElementSibling?.querySelector('[data-project-load]')) pendingProjectReveal = null;
-}
-function foldSection(name, inner, open, count, key) {
+function foldSection(name, inner, open, count) {
   if (!name) return inner;
-  return `<button type="button" class="fold" data-fold data-project-fold="${esc(key)}" aria-expanded="${open ? 'true' : 'false'}"><span class="lbl">${esc(name)}</span><span class="tag">${count}</span><span class="chev">${open ? '▾' : '▸'}</span></button><div class="foldBody"${open ? '' : ' hidden'}>${inner}</div>`;
+  return `<button type="button" class="fold" data-fold aria-expanded="${open ? 'true' : 'false'}"><span class="lbl">${esc(name)}</span><span class="tag">${count}</span><span class="chev">${open ? '▾' : '▸'}</span></button><div class="foldBody"${open ? '' : ' hidden'}>${inner}</div>`;
 }
 function agentFilterSlider(filters) {
   return `<div class="agentSessionFilter${filters.session === 'common' ? ' common' : ''}" role="group" aria-label="会话筛选">${Object.entries(agentFilterLabels).map(([value, text]) => `<button type="button" aria-pressed="${filters.session === value}" data-agent-filter-value="${value}">${text}</button>`).join('')}</div>`;
 }
-function showAgentActions(id, title, actions = null) {
+function showAgentActions(id, title) {
   const current = (agentLists.get(agentListKey()) || []).find(a => a.id === id);
   const codexThread = currentAppName === 'Codex' && String(id).startsWith('thread:');
   const favorite = agentFavoriteState(id);
   const rows = [
     current?.current ? '' : `<button class="opt" data-agent-action="open" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"><span class="lbl">打开会话</span></button>`,
     `<button class="opt" data-agent-action="favorite" data-agent-action-id="${esc(id)}"><span class="lbl">${favorite ? '取消常用' : '设置为常用'}</span></button>`,
-    ...(actions || (codexThread ? ['rename', 'archive'] : [])).map(action => `<button class="opt" data-agent-action="${action}" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"><span class="lbl">${action === 'rename' ? '重命名' : action === 'delete' ? '删除' : codexThread ? '删除／归档' : '归档'}</span></button>`),
-    actions === null && !codexThread ? '<div class="hint">正在读取会话操作…</div>' : '',
+    codexThread ? `<button class="opt" data-agent-action="rename" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"><span class="lbl">重命名</span></button><button class="opt" data-agent-action="archive" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"><span class="lbl">删除／归档</span></button>` : '',
   ].filter(Boolean).join('');
   openSheet('agent-actions', `<h3>${esc(title)}</h3>${rows || '<div class="hint">没有可用操作。</div>'}`);
-  if (actions === null && !codexThread) {
-    pendingAgentActions = { id, title, requestId: ++agentActionRequest };
-    send({ t: 'sessionActions', id, requestId: agentActionRequest });
-  }
-}
-function receiveAgentActions(message) {
-  if (sheetKind !== 'agent-actions' || message.app !== currentApp || message.requestId !== agentActionRequest) return;
-  if (pendingAgentActions?.id === message.id) showAgentActions(message.id, pendingAgentActions.title, message.actions);
 }
 function renderAgentList() {
   const list = agentLists.get(agentListKey());
@@ -608,13 +495,10 @@ function renderAgentList() {
   else openAgentList();
 }
 function showAgents(list) {
-  const currentThread = agentThreadKey({ id: currentComputer()?.threadId });
-  list = list.map(a => ({ ...a, current: a.ui ? a.current : !!currentThread && agentThreadKey(a) === currentThread,
-    window: cleanWindowTitle(a.window), group: cleanWindowTitle(a.group), title: cleanWindowTitle(a.title) }));
+  list = list.map(a => ({ ...a, window: cleanWindowTitle(a.window), group: cleanWindowTitle(a.group), title: cleanWindowTitle(a.title) }));
   const keep = sheetKind === 'agents';
   const scroll = keep ? $('sheet').scrollTop : 0;
-  const revision = projectRevealRevision;
-  const opened = keep ? new Set([...$('sheet').querySelectorAll('button.fold[aria-expanded="true"]')].map(n => n.dataset.projectFold)) : null;
+  const opened = keep ? new Set([...$('sheet').querySelectorAll('button.fold[aria-expanded="true"] > .lbl')].map(n => n.textContent)) : null;
   const newest = items => Math.max(0, ...items.map(a => a.lastUsed || 0));
   const filters = currentAgentFilters();
   list = list.map(agentUsageInfo)
@@ -645,64 +529,25 @@ function showAgents(list) {
     loose.sort((a, b) => Number(!!b.ui) - Number(!!a.ui));
     groups.sort((a, b) => newest(b.items) - newest(a.items));
     const body = loose.map(agentButton).join('') + groups.map(g => foldSection(
-      g.name, g.items.map(agentButton).join(''), opened ? opened.has(JSON.stringify([win, g.name])) : g.items.some(a => a.current), g.items.length, JSON.stringify([win, g.name]),
+      g.name, g.items.map(agentButton).join(''), opened ? opened.has(g.name) : g.items.some(a => a.current), g.items.length,
     )).join('');
     if (!win) return body;
-    const key = JSON.stringify([win]);
-    const open = opened ? opened.has(key) : items.some(a => a.current) || (!anyCurrent && firstVisible);
+    const open = opened ? opened.has(win) : items.some(a => a.current) || (!anyCurrent && firstVisible);
     firstVisible = false;
-    return foldSection(win, body, open, visible.length, key);
+    return foldSection(win, body, open, visible.length);
   }).join('');
-  const batch = batchActive();
-  const progress = batch && agentBatch.progress;
-  const manage = batch ? `<button class="opt" data-agent-batch="select" ${agentBatch.running ? 'disabled' : ''}>全选当前筛选结果</button><button class="opt" data-agent-batch="remove" ${!agentBatch.selected.size || agentBatch.running ? 'disabled' : ''}>删除／归档所选会话（${agentBatch.selected.size}）</button><button class="opt" data-agent-batch="${agentBatch.running ? 'cancel' : 'exit'}">${agentBatch.running ? '取消剩余操作' : '完成管理'}</button>${progress ? `<div class="hint">已处理 ${progress.results.length}/${progress.total}${progress.cancelled ? ' · 已取消' : ''}${progress.results.filter(r => !r.ok).map(r => `<p>${esc((list.find(a => a.id === r.id)?.title || r.id) + '：' + r.error)}</p>`).join('')}</div>` : ''}` : '<button class="opt" data-agent-batch="start">批量管理会话</button>';
-  const html = `<div class="agentSheetTitle"><h3>项目与会话</h3>${agentFilterSlider(filters)}</div>${batch ? '' : '<button class="opt" data-act="agentsRefresh">刷新项目与会话</button><button class="opt" data-act="projects"><span class="lbl">选择文件夹／新建项目</span></button><button class="opt" data-act="projectNewChat"><span class="lbl">在当前项目新建会话</span></button><button class="opt" data-project-windows>项目窗口</button>'}${manage}${rows || `<div class="hint">${esc(appMessage('没有找到 {app} 的 Agent。请在电脑上打开对应的会话窗口。'))}</div>`}`;
+  const html = `<div class="agentSheetTitle"><h3>项目与会话</h3>${agentFilterSlider(filters)}</div><button class="opt" data-act="agentsRefresh">刷新项目与会话</button><button class="opt" data-act="projects"><span class="lbl">选择文件夹／新建项目</span></button><button class="opt" data-act="projectNewChat"><span class="lbl">在当前项目新建会话</span></button>${rows || `<div class="hint">${esc(appMessage('没有找到 {app} 的 Agent。请在电脑上打开对应的会话窗口。'))}</div>`}`;
   if (keep) {
     const template = document.createElement('template');
     template.innerHTML = html;
     const old = [...$('sheet').children];
     syncChildren($('sheet'), [...template.content.children].map(node => old.find(el => el.outerHTML === node.outerHTML) || node));
   } else openSheet('agents', html);
-  if (keep) requestAnimationFrame(() => {
-    if (sheetKind !== 'agents' || revision !== projectRevealRevision) return;
-    const target = pendingProjectReveal?.owner === agentListKey() && [...$('sheet').querySelectorAll('[data-project-fold]')].find(b => b.dataset.projectFold === pendingProjectReveal.key && b.getAttribute('aria-expanded') === 'true');
-    if (target) revealProjectSessions(target);
-    else { pendingProjectReveal = null; $('sheet').scrollTop = scroll; }
-  });
+  if (keep) requestAnimationFrame(() => { $('sheet').scrollTop = scroll; });
 }
-$('sheet').addEventListener('click', async e => {
+$('sheet').addEventListener('click', e => {
   const b = e.target.closest('button');
-  if (!b) return;
-  if (sheetKind === 'project-windows') {
-    const change = { ...(b.dataset.windowKey ? { window: b.dataset.windowKey } : {}) };
-    for (const field of ['enabled', 'owned', 'keep']) if (b.hasAttribute('data-window-' + field)) change[field] = b.getAttribute('data-window-' + field) === '1';
-    return send({ t: 'projectWindowSet', change });
-  }
-  if (sheetKind !== 'agents') return;
-  if (b.hasAttribute('data-project-windows')) return send({ t: 'projectWindows' });
-  if (b.dataset.agentBatch) {
-    const act = b.dataset.agentBatch;
-    if (act === 'start') agentBatch = { key: agentListKey(), selected: new Set(), running: false };
-    if (act === 'exit') agentBatch = null;
-    if (act === 'select') {
-      agentBatch.selected.clear();
-      for (const row of (agentLists.get(agentListKey()) || []).map(agentUsageInfo))
-        if (!row.ui && !row.running && (currentAgentFilters().session === 'all' || row.common)) agentBatch.selected.add(row.id);
-    }
-    if (act === 'cancel') send({ t: 'sessionBatchCancel', requestId: agentBatch.requestId });
-    if (act === 'remove') {
-      if (!await ask(`删除或归档所选 ${agentBatch.selected.size} 个会话？\n逐条执行桌面端支持的操作，成功后无法通过取消恢复。`, '继续')) return;
-      agentBatch.requestId = String(Date.now());
-      agentBatch.running = true;
-      if (!send({ t: 'sessionBatch', ids: [...agentBatch.selected], requestId: agentBatch.requestId })) agentBatch.running = false;
-    }
-    return renderAgentList();
-  }
-  if (b.dataset.agentBatchId && batchActive() && !agentBatch.running) {
-    const id = b.dataset.agentBatchId;
-    if (agentBatch.selected.has(id)) agentBatch.selected.delete(id); else agentBatch.selected.add(id);
-    return renderAgentList();
-  }
+  if (!b || sheetKind !== 'agents') return;
   if (b.dataset.agentFavorite) {
     setAgentFavorite(b.dataset.agentFavorite, b.dataset.agentFavoriteValue === '1');
     return;
