@@ -1,6 +1,6 @@
 // Caches the app shell so the installed app opens instantly; live data (url.json, relay) always goes to the network.
 const CACHE_PREFIX = 'remote-agent:' + self.registration.scope + ':';
-const CACHE = CACHE_PREFIX + 'v286'; // keep in sync with APP_VERSION in js/core.js
+const CACHE = CACHE_PREFIX + 'v287'; // keep in sync with APP_VERSION in js/core.js
 const NOTICES = CACHE_PREFIX + 'notices';
 const SHELL = ['./', 'index.html', 'app.css?v=282', 'i18n.js?v=279', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'logo.png',
   'js/core.js?v=282', 'js/gate.js?v=279', 'js/auth.js?v=207', 'js/net.js?v=279', 'js/sheets.js?v=281', 'js/notify.js?v=275', 'js/mode.js?v=257', 'js/chat.js?v=277',

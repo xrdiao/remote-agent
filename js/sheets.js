@@ -1196,11 +1196,9 @@ function showMainMenu() {
     : `<button class="opt" data-act="appUpdate"><span class="lbl">检查 App 更新（当前 v${esc(appVersion)}）</span></button>`;
   const appName = currentAppName;
   const modelItems = `
-    ${currentApp === 'fusion' ? `<button class="opt" data-act="fusionHistory">历史会话</button><button class="opt" data-act="fusionNew" ${lastChat?.fusion?.busy ? 'disabled' : ''}>＋ 新建</button>` : supportsCapability('model') ? `<button class="opt" data-act="model"><span class="lbl">更换模型<span class="sub" id="menuModel">${esc(lastChat?.model || '选择当前 Agent 的模型')}</span></span></button>` : ''}
+    ${currentApp === 'fusion' ? `<button class="opt" data-act="fusionHistory">历史会话</button><button class="opt" data-act="fusionNew" ${lastChat?.fusion?.busy ? 'disabled' : ''}>＋ 新建</button>` : ''}
     ${currentApp === 'cursor' && lastChat?.mode ? `<button class="opt" data-act="mode"><span class="lbl">${I18N.tr('模式')}<span class="sub">${esc(lastChat.mode === 'Bypass Permissions' ? '⚠ 绕过权限' : lastChat.mode)}</span></span></button>` : ''}
     ${lastChat?.permission || (currentApp === 'devin' && lastChat?.mode) ? `<button class="opt" data-act="permission"><span class="lbl">权限模式<span class="sub">${esc(lastChat.permission || lastChat.mode)}</span></span></button>` : ''}
-    ${supportsCapability('editor', ['cursor', 'devin', 'codex'].includes(currentApp)) ? `<button class="opt" data-act="editor"><span class="lbl">Editor · 项目文件编辑${capabilityState('editor').reason ? `<span class="sub">${esc(capabilityState('editor').reason)}</span>` : ''}</span></button>` : ''}
-    ${['cursor', 'devin', 'codex'].includes(currentApp) ? '<button class="opt" data-act="projects"><span class="lbl">打开项目<span class="sub">选择文件夹或新建项目</span></span></button>' : ''}
     <button class="opt" data-act="screen"><span class="lbl">画面<span class="sub">查看绘图与仿真窗口</span></span></button>
     ${currentApp === 'codex' ? '<button class="opt" data-act="codexResetHelp"><span class="lbl">Codex 额度重置</span></button><button class="opt" data-act="codexRetryMenu"><span class="lbl">Codex 自动重试<span class="sub">' + (codexAutoRetryEnabled() ? `已开启 · 最多 ${codexAutoRetryCount()} 次` : '已关闭') + '</span></span><span class="tag">›</span></button>' : ''}
     ${supportsCapability('settings') ? '<button class="opt" data-act="settings"><span class="lbl">设置</span></button>' : ''}
@@ -1213,9 +1211,6 @@ function showMainMenu() {
     <button class="opt" data-act="reconnect"><span class="lbl">重新连接</span></button>
     <button class="opt" data-act="devices"><span class="lbl">已配对设备</span></button>
     <button class="opt" data-act="logout"><span class="lbl">删除这台电脑</span></button>`;
-  const filesItems = `
-    <button class="opt" data-act="transfer"><span class="lbl">文件传输<span class="sub">批量上传、下载文件及文件夹</span></span></button>
-    <button class="opt" data-act="localVoiceMenu"><span class="lbl">语音输入<span class="sub">${voiceEnabled() ? '已开启' : '未开启'} · 按住说话 · 选择识别引擎</span></span><span class="tag">›</span></button>`;
   const settingsItems = `
     ${iosApp && !window.AgentRemoteApp?.pushRegister ? '' : notifyItem}
     ${inApp && appVersion ? update : ''}
@@ -1223,9 +1218,9 @@ function showMainMenu() {
     ${inApp && window.AgentRemoteApp?.listenStatus ? '<button class="opt" data-act="bg"><span class="lbl">后台连接<span class="sub">状态、电池优化、立即重连</span></span></button>' : ''}
     <button class="opt" data-act="cache"><span class="lbl">会话缓存<span class="sub">手机上保存的对话记录，可折叠、可清除</span></span></button>
     <button class="opt" data-act="lang"><span class="lbl">语言 / Language<span class="sub">中文 · English（${I18N.lang === 'en' ? 'English' : '中文'}）</span></span></button>`;
-  openSheet('main', `<div class="mainMenuHeader"><h3>菜单</h3><button class="menuComputer" data-act="computers" aria-label="${esc(I18N.tr('电脑'))}" title="${esc(I18N.tr('电脑'))}">${CONN_HOST_SVG}</button></div>${menuGroup('model', '模型', (appName ? `<div class="pSec">${esc(appName)}</div>` : '') + modelItems)}
+  openSheet('main', `<div class="mainMenuHeader"><h3>菜单</h3><div class="mainMenuActions"><button class="menuHeaderAction" data-act="transfer" aria-label="${esc(I18N.tr('文件传输'))}" title="${esc(I18N.tr('文件传输'))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 16V4m0 0L3 8m4-4 4 4M17 8v12m0 0 4-4m-4 4-4-4"/></svg></button><button class="menuHeaderAction" data-act="localVoiceMenu" aria-label="${esc(I18N.tr('语音输入'))}" title="${esc(I18N.tr('语音输入'))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button><button class="menuHeaderAction menuComputer" data-act="computers" aria-label="${esc(I18N.tr('电脑'))}" title="${esc(I18N.tr('电脑'))}">${CONN_HOST_SVG}</button></div></div>${menuGroup('model', '模型', (appName ? `<div class="pSec">${esc(appName)}</div>` : '') + modelItems)}
     ${menuGroup('general', '通用', menuGroup('connection', 'Agent 与连接', connectionItems, false)
-      + menuGroup('files', '文件与输入', filesItems, false) + menuGroup('settings', '应用设置与帮助', settingsItems, false))}`);
+      + menuGroup('settings', '应用设置与帮助', settingsItems, false))}`);
 }
 $('menuBtn').onclick = showMainMenu;
 

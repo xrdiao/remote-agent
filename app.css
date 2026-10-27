@@ -863,8 +863,9 @@ body.kb #sessBar, body.kb #taskChip { display: none; }
 #sheet h3 { margin: 6px 4px 14px; font-size: 17px; color: var(--fg-hi); font-weight: 600; }
 #sheet .mainMenuHeader { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 6px 4px 14px; }
 #sheet .mainMenuHeader h3 { margin: 0; }
-#sheet .menuComputer { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 36px; height: 36px; padding: 7px; background: transparent; color: var(--fg-2); }
-#sheet .menuComputer svg { display: block; width: 22px; height: 22px; stroke: currentColor; }
+#sheet .mainMenuActions { display: flex; align-items: center; gap: 4px; }
+#sheet .menuHeaderAction { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 36px; height: 36px; padding: 7px; background: transparent; color: var(--fg-2); }
+#sheet .menuHeaderAction svg { display: block; width: 22px; height: 22px; stroke: currentColor; }
 .agentSheetTitle { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .agentSheetTitle h3 { flex: 1; min-width: 0; }
 .agentSessionFilter {
