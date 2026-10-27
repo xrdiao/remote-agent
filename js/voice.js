@@ -198,7 +198,7 @@ text.addEventListener('paste', async e => {
   }
 });
 
-window.addEventListener('resize', () => { layoutStage(); });
+window.addEventListener('resize', () => { layoutStage(); applyQuality(); });
 
 setMode(mode);
 boot();
