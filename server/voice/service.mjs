@@ -77,7 +77,10 @@ function spawnRuntime(engineId, runtime, config) {
   runtime.state = 'preparing';
   runtime.loadStartedAt = Date.now();
   runtime.loading = new Promise((resolve, reject) => {
-    const child = spawn(config.python, [...(engineId === 'qwen' ? ['-I'] : []), '-u', fileURLToPath(new URL(config.script, import.meta.url)), config.model], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(config.python, [...(engineId === 'qwen' ? ['-I'] : []), '-u', fileURLToPath(new URL(config.script, import.meta.url)), config.model], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      ...(process.platform === 'win32' && engineId !== 'qwen' ? { env: { ...process.env, PYTHONIOENCODING: 'utf-8' } } : {}),
+    });
     runtime.worker = child;
     let details = '', startupError = '', settled = false;
     runtime.cancelLoad = () => { if (!settled) { settled = true; reject(new Error('已切换语音引擎')); } };

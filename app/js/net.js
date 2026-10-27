@@ -818,6 +818,7 @@ async function connect() {
     else if (m.t === 'frame') onFrame(m);
     else if (m.t === 'panel') { panel = m.rect; updateTermEmpty(); layoutStage(); }
     else if (m.t === 'connAgents') connAgentResults(m.agents, m.complete !== false);
+    else if (m.t === 'compatibility') receiveCompatibility(m);
     else if (m.t === 'agentCatalog') agentCatalogResults(m.agents);
     else if (m.t === 'launchResult') connLaunchResults(m.results);
     else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; connWindows(m.list); if (m.plans) { appPlans = { ...appPlans, ...m.plans }; updateTitle(); } if (sheetKind === 'windows') showWindows(); paintRail(); }
@@ -843,6 +844,7 @@ async function connect() {
       }
       if (m.plans) appPlans = { ...appPlans, ...m.plans };
       rememberAgentOpen(m);
+      requestCompatibility(m.app, true, m.windowId || m.id);
       if (m.keepQuota) {
         applySelection(m, false);
         selectionReady = m.ready !== false;

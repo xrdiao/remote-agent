@@ -87,8 +87,7 @@ export async function ensureServices() {
     console.log('正在后台创建 Cloudflare 隧道…');
     fs.mkdirSync(DATA_DIR, { recursive: true });
     fs.writeFileSync(tunnelLog, '');
-    const bin = [path.join(os.homedir(), '.local', 'bin', 'cloudflared.exe'), path.join(repo, '.runtime', 'cloudflared.exe')]
-      .find(file => fs.existsSync(file)) || findBin('cloudflared');
+    const bin = findBin('cloudflared');
     tunnelChild = await startDetached(bin, ['tunnel', '--no-autoupdate', '--url', local], tunnelLog);
     await waitFor(() => {
       const matches = [...fs.readFileSync(tunnelLog, 'utf8').matchAll(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/g)];

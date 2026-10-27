@@ -4,6 +4,7 @@ import path from 'node:path';
 import { DATA_DIR, readConfig, normalizeAppUrl } from '../lib/auth.mjs';
 import { appFiles, putFile, remoteShas, gitBlobSha, run } from '../server/publish/pages.mjs';
 import { APP_DIR } from '../server/config.mjs';
+import { findBin } from '../lib/platform.mjs';
 
 const api = async endpoint => JSON.parse(await run('gh', ['api', endpoint]));
 async function optionalApi(endpoint) {
@@ -51,7 +52,7 @@ export async function ensureFixedEntry({ ask, interactive }) {
   try { await run('gh', ['auth', 'status']); }
   catch {
     console.log('需要登录自己的 GitHub 账号，以检查并更新个人固定入口。');
-    if (interactive('gh', ['auth', 'login']).status !== 0) throw new Error('GitHub 登录未完成，请运行 gh auth login 后重试');
+    if (interactive(findBin('gh'), ['auth', 'login']).status !== 0) throw new Error('GitHub 登录未完成，请运行 gh auth login 后重试');
   }
   console.log('正在检查已有的个人固定入口…');
   const existing = await discoverFixedEntry();

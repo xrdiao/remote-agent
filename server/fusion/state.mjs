@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { workspaces } from '../../lib/files.mjs';
 import { readState, saveState } from '../../lib/auth.mjs';
-import { normPath, pathKey } from '../../lib/platform.mjs';
+import { normPath, pathKey, findBin } from '../../lib/platform.mjs';
 
 export const FUSION_ACTIVE = ['planning', 'echo', 'echo-check', 'execute', 'review', 'fix'];
 export const fusionHistory = readState().fusionHistory || {};
@@ -33,7 +33,7 @@ export function fusionCursorProjects() {
   const projects = new Map();
   for (const w of workspaces().filter(w => !w.host && (w.sources || [w.source]).includes('cursor'))) {
     try {
-      const remote = execFileSync('git', ['-C', w.root, 'config', '--get', 'remote.origin.url'], { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      const remote = execFileSync(findBin('git'), ['-C', w.root, 'config', '--get', 'remote.origin.url'], { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
       const repository = remote.replace(/^\w+:\/\//, '').replace(/^.*@/, '').replace(':', '/').replace(/\.git$/, '').replace(/\/$/, '');
       const project = fusionProject(w.root);
       if (!projects.has(repository)) projects.set(repository, project);
