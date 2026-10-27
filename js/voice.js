@@ -31,8 +31,7 @@ function renderAttachments(list) {
     + pending.map(([id, f]) => `<div class="attachment"><img src="${esc(f.preview)}" alt=""><span>${esc(f.name)} · ${f.error ? '上传失败' : '上传中…'}</span><button data-edit-pending-image="${id}">编辑</button>${f.error ? `<button data-retry-image="${id}">重试</button>` : ''}<button data-discard-image="${id}" aria-label="取消上传图片">×</button></div>`).join('');
   updateComposeCompact();
 }
-// The socket dropped after an image was sent but before the relay's imageDone could
-// arrive: mark those uploads failed with a retry button instead of spinning forever.
+// A disconnected upload has no reliable imageDone receipt; allow an explicit retry.
 function markUploadsDisconnected() {
   imageBatchScope = '';
   let dirty = false;
