@@ -18,6 +18,7 @@ async function shrinkImage(file, canvas) {
 
 const imageUploads = new Map(), editableImages = new Map();
 let desktopAttachments = [], editBeforeUpload = false, imageBatchScope = '';
+let imageUploadQueue = Promise.resolve();
 const imageUploadScope = () => [currentComputer()?.id || '', viewSel].join('|');
 function pendingImageUploads() { return imageBatchScope === imageUploadScope() || [...imageUploads.values()].some(f => f.scope === imageUploadScope() && !f.cancelled); }
 function renderAttachments(list) {
@@ -148,12 +149,17 @@ async function attachImageFile(file, options = {}) {
   const sel = options.sel || viewSel, scope = imageUploadScope();
   if (sel !== viewSel) { status('会话已切换，请重新选择图片', false); return false; }
   const id = crypto.randomUUID();
-  imageUploads.set(id, { id, file, name: file.name, scope, preview: URL.createObjectURL(file), options });
+  imageUploads.set(id, { id, file, name: file.name, scope, sel, preview: URL.createObjectURL(file), options });
   renderAttachments(desktopAttachments);
   status('正在处理图片…');
+  imageUploadQueue = imageUploadQueue.then(() => uploadImageFile(id));
+  return true;
+}
+// Enqueueing finishes the local save; imageDone still confirms the native attachment.
+async function uploadImageFile(id) {
   try {
+    const record = imageUploads.get(id), { file, options, scope, sel } = record;
     const img = options.prepared ? file : await shrinkImage(file);
-    const record = imageUploads.get(id);
     if (record.cancelled) { URL.revokeObjectURL(record.preview); imageUploads.delete(id); return true; }
     record.uploadFile = img;
     if (scope !== imageUploadScope()) throw new Error('会话已切换，请回到原会话重试上传');
