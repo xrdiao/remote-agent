@@ -96,6 +96,7 @@ async function enableNotify() {
       return status('通知已开启');
     } catch (e) {
       if (current()) return status('开启通知失败：' + e.message, false);
+      return;
     }
   }
   if (inApp) return status('请先在菜单里更新安卓 App，新版才支持通知', false);
