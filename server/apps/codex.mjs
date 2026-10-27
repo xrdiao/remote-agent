@@ -1,7 +1,7 @@
-import { Cdp } from '../cdp.mjs';
+import { Cdp, awaitCdpRead } from '../cdp.mjs';
 import { windowRoots, editorRoots, workspaceLabel } from '../../lib/files.mjs';
 import { agentMarks } from '../../lib/marks.mjs';
-import { mod, pathKey } from '../../lib/platform.mjs';
+import { IS_WIN, mod, normPath, pathKey } from '../../lib/platform.mjs';
 import { codexWindows, codexContext } from '../windows.mjs';
 import { CODEX_CDP_URL } from '../config.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
@@ -102,7 +102,7 @@ export const adapter = {
     const projectKey = (root, host) => `${host || ''}\0${pathKey(root, !host)}`;
     const projects = new Map();
     for (const row of list) if (row.workspace) {
-      projects.set(projectKey(row.workspace, row.host), { root: row.workspace, host: row.host });
+      projects.set(projectKey(row.workspace, row.host), { root: IS_WIN && !row.host ? normPath(row.workspace) : row.workspace, host: row.host });
     }
     const allProjects = [...projects.values()];
     const labels = new Map(allProjects.map(project => {
@@ -119,7 +119,10 @@ export const adapter = {
   },
 
   async queueAction(id, action) {
+    const target = action === 'send' ? await this.cdp.evaluate(helpersCall(`codexFacts()?.queued.find(item => item.id === ${JSON.stringify(String(id))})`)) : null;
     if (!await this.cdp.evaluate(helpersCall(`codexQueueAction(${JSON.stringify(String(id))}, ${JSON.stringify(action)})`))) throw new Error('Codex 排队消息或操作入口已不存在');
+    if (action === 'send' && !await this.waitFor(`codexReceiptRows().some(item => item.i === ${JSON.stringify(target?.messageId || '')} || item.nativeIds?.includes(${JSON.stringify(String(id))}))`, 40))
+      throw new Error('Codex 尚未确认立即追加结果，请查看会话或队列');
     setTimeout(() => this.pollChat().catch(() => {}), 300);
   },
 
@@ -187,38 +190,8 @@ export const adapter = {
     const view = facts?.view;
     const follow = view?.follow || 'queue';
     queued = !!busy && (when === 'queue' || (!when && follow === 'queue'));
-    const opposite = !!busy && ((when === 'now' && follow !== 'steer') || (when === 'queue' && follow === 'steer'));
-    if (opposite && when === 'now') {
-      // While busy the composer only offers "Queue": queue the follow-up, then trigger
-      // its send-now action so Codex steers it into the running turn.
-      const before = new Set((facts?.queued || []).map(m => m.id));
-      // The send control relabels when the turn ends; retry briefly instead of failing the tap.
-      let clicked = false;
-      for (let i = 0; i < 15 && !clicked; i++) {
-        clicked = await this.cdp.evaluate(helpersCall('submitCodexMessage()'));
-        if (!clicked) await new Promise(r => setTimeout(r, 100));
-      }
-      if (!clicked) throw new Error('Codex 发送按钮当前不可用');
-      let steerId = '', steerThread = '';
-      for (let i = 0; i < 15 && !steerId; i++) {
-        const state = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return { thread: h.codexThread(), queued: h.codexFacts()?.queued || [] }; })()`);
-        if (this.cdp !== receiptCdp || this.selectionKey() !== receiptScope || receiptThread && state.thread !== receiptThread) break;
-        const candidates = state.queued
-          .filter(m => !before.has(m.id) && expected && m.t.trim() === expected.slice(0, 4000));
-        if (candidates.length === 1) { steerId = candidates[0].id; steerThread = state.thread; }
-        if (!steerId) await new Promise(r => setTimeout(r, 100));
-      }
-      // No queued item means the turn ended and the message was sent directly.
-      if (steerId && !await this.cdp.evaluate(helpersCall(`codexQueueAction(${JSON.stringify(steerId)}, 'send', ${JSON.stringify(steerThread)})`))) {
-        const still = ((await this.cdp.evaluate(helpersCall('codexFacts()')))?.queued || []).some(m => m.id === steerId);
-        if (still) throw new Error('Codex 立即追加不可用');
-      }
-    }
-    else if (opposite) {
-      await this.cdp.evaluate(FOCUS_COMPOSER);
-      await this.key(mod((view?.enter === 'enter' ? '' : 'Shift+') + 'Enter'));
-    }
-    else if (!await this.cdp.evaluate(helpersCall('submitCodexMessage()'))) throw new Error('Codex 发送按钮当前不可用');
+    const action = when === 'now' ? 'steer' : when === 'queue' ? 'queue' : '';
+    if (!await this.cdp.evaluate(helpersCall(`submitCodexMessage(${JSON.stringify(action)})`))) throw new Error('Codex 发送按钮当前不可用');
     // Native message/queue receipts, rather than composer clearing, confirm acceptance.
     const receiptDeadline = Date.now() + 5000;
     for (let i = 0; i < 40 && Date.now() < receiptDeadline; i++) {
@@ -342,16 +315,27 @@ mergeCodexItems(chat) {
   });
   chat.items.partialTurns = [...partial].filter(turn => turns.includes(turn));
   chat.items.completeTurns = [...completed].filter(([, turn]) => turns.includes(turn));
-  chat.earlier = this.codexEarlier(chat.items);
+  chat.earlier = chat._historyEarlier || this.codexEarlier(chat.items, undefined, chat._historyStart);
+  delete chat._historyEarlier; delete chat._historyStart;
   if (!chat.busy) chat.items.filter(it => it.k === 'thinking').forEach(it => { it.live = false; });
   if (!chat.busy) chat.items.filter(it => it.k === 'tool' && !it.keep).forEach(it => { it.done = true; });
   this.itemCache.set(thread, chat.items);
 },
 
 async selectCodexThread(convId, cdp = this.cdp) {
-  const waitActive = () => cdp.evaluate(helpersCall(`codexWaitThread(${JSON.stringify(convId)}, 1800)`), { timeout: 4000 });
-  if (await cdp.evaluate(helpersCall(`openCodexThread(${JSON.stringify(convId)})`)) && await waitActive()) return true;
-  const pos = await cdp.evaluate(helpersCall('codexRecentPoint()'));
+  const deadline = Date.now() + 35000;
+  const waitActive = (ms = 1800) => cdp.evaluate(helpersCall(`codexWaitThread(${JSON.stringify(convId)}, ${ms})`), { timeout: ms + 1000 });
+  let opened = false, pos = null;
+  do {
+    opened = await cdp.evaluate(helpersCall(`openCodexThread(${JSON.stringify(convId)})`));
+    if (opened) break;
+    pos = await cdp.evaluate(helpersCall('codexRecentPoint()'));
+    if (pos) break;
+    await awaitCdpRead(new Promise(r => setTimeout(r, 120)));
+  } while (Date.now() < deadline);
+  if (!opened && !pos) throw new Error('Codex 会话导航尚未就绪，请稍后重试');
+  if (opened && await waitActive(Math.max(0, deadline - Date.now()))) return true;
+  pos ||= await cdp.evaluate(helpersCall('codexRecentPoint()'));
   if (!pos) return false;
   await this.tapCss(pos.x, pos.y, 'left', cdp);
   let point = null;
@@ -397,10 +381,10 @@ async checkCodexLogin() {
   return true;
 },
 
-codexEarlier(items, partial = items.partialTurns?.length > 0) {
+codexEarlier(items, partial = items.partialTurns?.length > 0, start = 1) {
   if (partial) return true;
   const turns = [...new Set(items.map(it => Math.floor((it.order ?? Infinity) / 10000)))].sort((a, b) => a - b);
-  return !turns.length || turns[0] !== 1 || turns.some((n, i) => !Number.isFinite(n) || (i > 0 && n !== turns[i - 1] + 1));
+  return !turns.length || turns[0] !== start || turns.some((n, i) => !Number.isFinite(n) || (i > 0 && n !== turns[i - 1] + 1));
 },
 
 async waitCodexNewChatReady() {

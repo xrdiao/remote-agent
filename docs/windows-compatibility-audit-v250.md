@@ -163,3 +163,22 @@ PowerShell／.NET 输出编码受环境影响，见 [Console.OutputEncoding](htt
 - 配对退出复用 `_shots/pair-exit-audit-v250-20261026/proofs.json`；未重复运行。
 
 本轮的初次 Node 内同步 Python 子进程受沙箱 EPERM 限制，随后直接用 Python 编译同一 emit AST 生成隔离输出，再由 Node 读取验证；没有把失败命令记为通过。临时脚本补齐依赖后相关检查通过。本次无产品改动，不重复执行同一源码基线已经通过的 `npm run check`。
+
+## 8. Windows 续修记录（2026-10-27）
+
+本次修改起点为 `0a80c53`，本机 Windows 11（10.0.26200）、Windows PowerShell 5.1、Node.js 22.23.3。范围限 W01–W06；未扩展闲置窗口回收或 Qwen Windows 支持，也未改动 Ubuntu 启动脚本、文件传输交互、模型、聊天同步及性能优化。
+
+- W01／W02：在现有平台接口转换本地文件 URI，保留 Windows 盘根、UNC 主机及子目录；本地目录拼接使用 Windows 语义。桌面提取及网页 Markdown 均保留完整 URI，由所属电脑解析。Cursor／Codex 搜索结果按真实绝对目录处理，原有同名歧义及项目范围规则保留。
+- W03：仅 Windows CPU worker 启动时明确 `PYTHONIOENCODING=utf-8`。Ubuntu CPU 与 Qwen 启动环境不变。
+- W04：Windows 中继与启动器共用明确的端口优先级（URL、端口变量、默认值）；Ubuntu 原有 URL／脚本配置规则不变。
+- W05／W06：便携 cloudflared 查找集中到现有 `findBin`，配对入口复用；Fusion Git、交互 gh 登录及 Windows setup 依赖检查使用已有解析结果。
+
+验证边界：
+
+- 使用实际源码与受控文件系统检查三种适配器文件解析、中文／空格／转义文件名、行号、UNC、盘根、项目范围、搜索回退和工具查找；不代表三个桌面应用已完成交互验收。
+- 将 Ubuntu 场景的修改前后结果逐项比较：三种适配器、原文件 URI 传递流程、目录列表（含合法反斜线文件名）、工作区记录、SSH 大小写及工具／启动环境，所列场景结果一致。当前未安装 WSL，没有 Ubuntu 实机执行结果。
+- Windows PowerShell 实际解析通过，三种 Agent 的默认值、端口变量及 URL 优先级均通过函数隔离检查；未为测试启动／退出 Agent。
+- 原工作区 `npm run check` 被未跟踪 `.runtime` 中旧诊断脚本触发的四项协议误匹配阻塞；未改检查器。在只含已跟踪仓库源码的隔离副本中，修改前后均通过 `npm run check`（95 个语法文件、101 种发送消息、67 种响应、188 个页面导出及 62 个导入模块）。
+- 浏览器工具无可用 Chrome，返回 `Browser is not available: chrome`，随后用户明确本次暂不做浏览器验收。未创建测试配对，未修改设备记录；浏览器与手机交互验收未完成。
+
+本机临时检查脚本及结果位于 `_shots/windows-path-fix-20261027/`，不随仓库分发。v278 前端已发布；公网实际版本、HTML 的 Markdown 资源版本及 Markdown 文件与本地内容一致，已核对。仅重启中继，复用隧道和配对；重启后本地健康检查通过。未提交或推送 master／debug 代码。

@@ -13,11 +13,11 @@
       background: accessor.get(ids.get('backgroundComposerService')),
     }));
   };
-  const devinSessionRecord = id => window.__acpStore?.getState().acp.sessions.find(s => s.sessionId === id);
+  const devinSessionRecord = id => window.__acpStore?.getState().acp.sessions.find(s => devinRowSession(s) === id);
   const devinSessionMenu = id => {
     for (const row of doc.querySelectorAll('li[data-slot="sidebar-menu-item"]')) {
       const props = codexFiberProps(row, 16);
-      if (!props.some(p => p.session?.sessionId === id)) continue;
+      if (!props.some(p => devinRowSession(p.session) === id)) continue;
       return { row, actions: props.find(p => p.menuSlot?.props.actionGroups)?.menuSlot.props.actionGroups.flat() || [] };
     }
     return null;

@@ -15,7 +15,7 @@
     const pretty = effort.split(/[\s-]+/).filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1)).join(' ');
     return pretty ? `${name} · ${pretty}` : name;
   };
-  const modelButton = () => {
+  const modelButton = (readOnly = false) => {
     const codex = [...doc.querySelectorAll('[data-codex-intelligence-trigger]')].find(vis);
     if (codex && vis(codex)) return codex;
     const composer = pickComposer([...doc.querySelectorAll(COMPOSER)].filter(e => vis(e) && !e.closest(ITEM_SEL)));
@@ -25,7 +25,7 @@
     // Model sits in the prompt toolbar, on the opposite side from voice / send.
     // Status chips such as "commit" live outside that toolbar and must not match.
     const bar = toolbar?.querySelector('.ui-prompt-input-toolbar') || doc.querySelector('.ui-prompt-input-toolbar');
-    if (!bar) return devinModelButton();
+    if (!bar) return devinModelButton(!readOnly);
     const right = bar.querySelector('.ui-prompt-input-toolbar__right');
     const STATUS = /^(commit|committing|generating|applying|reading|searching|running|planning|thinking|working|editing|indexing)\b/i;
     const cand = [...bar.querySelectorAll('button, [role=button]')].filter(e => {
@@ -33,11 +33,11 @@
       const text = (e.innerText || '').replace(/\s+/g, ' ').trim();
       return text && !STATUS.test(text);
     });
-    return cand.find(e => e.getAttribute('aria-haspopup') === 'menu') || cand[0] || devinModelButton();
+    return cand.find(e => e.getAttribute('aria-haspopup') === 'menu') || cand[0] || devinModelButton(!readOnly);
   };
   const DEVIN_MODEL = /^(SWE|GPT|Claude|Gemini|GLM|Kimi|Fusion)\b/;
-  const devinModelButton = () => {
-    revealDevinComposer();
+  const devinModelButton = (reveal = true) => {
+    if (reveal) revealDevinComposer();
     return [...doc.querySelectorAll('button')].find(e => {
       // textContent first: innerText forces layout for every button on the page.
       const text = (e.textContent || '').replace(/\s+/g, ' ').trim();
@@ -53,8 +53,8 @@
     const trg = [...doc.querySelectorAll('[data-codex-intelligence-trigger]')].find(vis);
     return trg ? codexFiberProps(trg, 70).find(p => p.modelOptions && p.onSelectModelOption) : null;
   };
-  const cursorPickerProps = () => {
-    const btn = modelButton();
+  const cursorPickerProps = (readOnly = false) => {
+    const btn = modelButton(readOnly);
     if (!btn) return null;
     return codexFiberProps(btn, 90).find(p => Array.isArray(p.models) && p.models.length > 5 && (p.selections || p.initialSelections) && typeof p.onSelectionChange === 'function') || null;
   };
@@ -125,8 +125,8 @@
     p.onSelectComplete?.();
     return true;
   };
-  const devinPickerProps = () => {
-    const button = devinSurface() && devinModelButton();
+  const devinPickerProps = (readOnly = false) => {
+    const button = devinSurface() && devinModelButton(!readOnly);
     return button ? codexFiberProps(button, 40).find(p => p.visibleModelConfigs && p.onModelSelect) : null;
   };
   const devinConfigs = (p, visibleOnly) => visibleOnly

@@ -47,6 +47,8 @@
     const acp = el.closest?.('[role="log"][aria-label="Session transcript"]')
       ? el.closest('[data-acp-msg-index]')?.getAttribute('data-acp-msg-index') : null;
     if (acp != null) return `acp${acp}`;
+    const transcriptIndex = devinTranscriptIndex(el);
+    if (transcriptIndex != null) return `acp${transcriptIndex}`;
     if (el.getAttribute('data-side')) {
       const i = [...doc.querySelectorAll('[role=group][data-side]')].indexOf(el);
       return i >= 0 ? `d${i}` : '';
@@ -138,7 +140,7 @@
       const filePath = n.getAttribute('data-file-reference') === 'true'
         ? n.getAttribute('data-prompt-link-href') || n.getAttribute('data-markdown-copy-text')
         : n.matches(FILE_REF) ? n.innerText.trim()
-        : localHref ? (href.startsWith('file://') ? decodeURIComponent(new URL(href).pathname) + new URL(href).hash : href) : null;
+        : localHref ? href : null;
       if (filePath) {
         out += `<code data-file="${esc(filePath)}"${colorAttr(n)}>${esc(n.getAttribute('data-prompt-link-label') || n.innerText.trim())}</code>`;
         continue;

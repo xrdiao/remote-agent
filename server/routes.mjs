@@ -6,6 +6,7 @@ import { helpersCall } from './page/build.mjs';
 import { appPlans, quotaErrorMessage } from './agent/context.mjs';
 import { probeLatency } from './latency.mjs';
 import { launchAgents, detectAgents } from './launch.mjs';
+import { inspectCompatibility } from './apps/compatibility.mjs';
 import { ADAPTERS } from './apps/index.mjs';
 import { readLibrary, importLibrary, favoriteSession } from '../lib/session-library.mjs';
 import { computerId } from '../lib/auth.mjs';
@@ -88,6 +89,11 @@ const questionDone = (s, m) => s.emit({ t: 'questionDone', requestId: m.requestI
 const questionFailed = (s, m) => s.emit({ t: 'questionDone', requestId: m.requestId, sel: s.selectionKey(), ok: false });
 
 export const ROUTES = {
+  compatibility: { fast: true, fastRun: async (s, m) => {
+    const app = String(m.app || '');
+    const data = await inspectCompatibility(app, String(m.windowId || ''));
+    s.emit({ t: 'compatibility', app, requestId: m.requestId, ...data });
+  } },
   projectWindows: { pre: async s => {
     await scanProjectWindows(false);
     s.emit({ t: 'projectWindows', ...projectWindowSettings() });

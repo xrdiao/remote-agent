@@ -5,7 +5,7 @@ import { videoUrl, pdfUrl } from '../http/video.mjs';
 import { themeFor } from '../../lib/theme.mjs';
 import { highlightText } from '../../lib/highlight.mjs';
 import { gitMarks, agentMarks, parseGitDiff, lastCommitMarks } from '../../lib/marks.mjs';
-import { mod, pathKey } from '../../lib/platform.mjs';
+import { IS_WIN, mod, pathKey, normPath, localFilePath } from '../../lib/platform.mjs';
 import { CDP_URL, EDITORS } from '../config.mjs';
 import { helpersCall } from '../page/build.mjs';
 
@@ -76,10 +76,13 @@ export const methods = {
     }
   },
   async resolveFile(text) {
-    const { p, line } = parseRef(text);
-    if (!p) throw new Error('不是文件路径');
+    const ref = parseRef(text);
+    if (!ref.p) throw new Error('不是文件路径');
     const roots = await this.currentRoots();
     const ws = roots[0] || null;
+    const p = IS_WIN && !ws?.host ? localFilePath(ref.p) : ref.p;
+    const { line } = ref;
+    const join = (root, ...parts) => IS_WIN && !root.host ? normPath(path.join(root.root, ...parts)) : path.posix.join(root.root, ...parts);
     // Image references can be bare filenames; reuse the workspace lookup before editor search.
     if (this.app === 'devin' || /\.(?:png|jpe?g|gif|webp|svg|bmp)$/i.test(p)) {
       for (const root of roots.length ? roots : [null]) {
@@ -99,14 +102,14 @@ export const methods = {
       if (hit) return hit;
     } else if (roots.length) {
       for (const root of roots) {
-        const hit = await tryPath(path.posix.join(root.root, p));
+        const hit = await tryPath(join(root, p));
         if (hit) return hit;
       }
     }
     if (this.winTitle === 'Cursor Agents') {
       // The Agents window mixes projects, so try recently opened folders.
       for (const w of workspaces().filter(w => !w.host).slice(0, 8)) {
-        const hit = await tryPath(isAbs ? p : path.posix.join(w.root, p));
+        const hit = await tryPath(isAbs ? p : join(w, p));
         if (hit) return hit;
       }
       throw new Error(`找不到文件（可能已被删除或移动）：${p}`);
@@ -117,9 +120,13 @@ export const methods = {
     const hits = await this.quickOpen(name);
     // Prefer matches inside this workspace (relative dir) whose folder ends with the path the chat showed.
     const ranked = hits
-      .map(h => ({ ...h, abs: h.dir.startsWith('/') ? path.posix.join(h.dir, name) : ws ? path.posix.join(ws.root, h.dir, name) : null }))
+      .map(h => {
+        const dir = IS_WIN && !ws?.host ? localFilePath(h.dir) : h.dir;
+        const absolute = ws?.host ? path.posix.isAbsolute(dir) : path.isAbsolute(dir);
+        return { ...h, absolute, abs: absolute ? join({ root: dir, host: ws?.host }, name) : ws ? join(ws, dir, name) : null };
+      })
       .filter(h => h.abs && (isAbs ? h.abs === p : dir === '.' || h.abs.endsWith('/' + p)))
-      .sort((a, b) => (dir !== '.' && b.abs.endsWith('/' + p)) - (dir !== '.' && a.abs.endsWith('/' + p)) || a.dir.startsWith('/') - b.dir.startsWith('/'));
+      .sort((a, b) => (dir !== '.' && b.abs.endsWith('/' + p)) - (dir !== '.' && a.abs.endsWith('/' + p)) || Number(a.absolute) - Number(b.absolute));
     const matches = [];
     for (const h of ranked) {
       const hit = await tryPath(h.abs);

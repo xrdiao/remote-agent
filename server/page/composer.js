@@ -154,7 +154,6 @@
   };
   const codexQueryClient = () => codexRootProps().find(p => typeof p.value?.getQueryData === 'function')?.value || null;
   const openCodexThread = async id => {
-    if (!codexChatRows(true).some(row => row.id === id)) return false;
     const router = codexRootProps().find(p => typeof p.value?.router?.navigate === 'function')?.value.router;
     if (!router) return false;
     await router.navigate(`/local/${id}`);

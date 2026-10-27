@@ -2,14 +2,13 @@
 const codexMarkdown = window.markdownit({ html: false, breaks: true });
 const markdownFile = href => /^(?:file:\/\/|\/|~\/|[A-Za-z]:[\\/]|\.{1,2}\/)/.test(href)
   || (!/^[A-Za-z][\w+.-]*:/.test(href) && /\.[A-Za-z0-9]{1,10}(?:#L\d+(?:-L?\d+)?)?$/.test(href));
-const markdownFilePath = href => href.startsWith('file://') ? decodeURIComponent(new URL(href).pathname) + new URL(href).hash : href;
 const markdownLinkValid = codexMarkdown.validateLink.bind(codexMarkdown);
 codexMarkdown.validateLink = href => href.startsWith('file://') || markdownLinkValid(href);
 const markdownLinkOpen = codexMarkdown.renderer.rules.link_open || ((tokens, n, options, env, self) => self.renderToken(tokens, n, options));
 codexMarkdown.renderer.rules.link_open = (tokens, n, options, env, self) => {
   const href = tokens[n].attrGet('href') || '';
   (env.fileLinks ||= []).push(markdownFile(href));
-  return env.fileLinks.at(-1) ? `<code data-file="${esc(markdownFilePath(href))}">` : markdownLinkOpen(tokens, n, options, env, self);
+  return env.fileLinks.at(-1) ? `<code data-file="${esc(href)}">` : markdownLinkOpen(tokens, n, options, env, self);
 };
 codexMarkdown.renderer.rules.link_close = (tokens, n, options, env, self) => env.fileLinks.pop() ? '</code>' : self.renderToken(tokens, n, options);
 const markdownCode = (tokens, n) => {
@@ -21,7 +20,7 @@ codexMarkdown.renderer.rules.code_block = markdownCode;
 const markdownImage = codexMarkdown.renderer.rules.image;
 codexMarkdown.renderer.rules.image = (tokens, n, options, env, self) => {
   const href = tokens[n].attrGet('src') || '';
-  return markdownFile(href) ? `<code data-file="${esc(markdownFilePath(href))}">${esc(tokens[n].content || href)}</code>` : markdownImage(tokens, n, options, env, self);
+  return markdownFile(href) ? `<code data-file="${esc(href)}">${esc(tokens[n].content || href)}</code>` : markdownImage(tokens, n, options, env, self);
 };
 codexMarkdown.inline.ruler.before('escape', 'remote_math', (state, silent) => {
   if (!['$', '\\'].includes(state.src[state.pos])) return false;

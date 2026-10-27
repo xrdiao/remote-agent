@@ -77,9 +77,9 @@ export async function openFolder(folder, app, newWindow = false) {
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.VSCODE_IPC_HOOK_CLI;
   const launcher = path.join(path.dirname(bin), ...(app === 'cursor' ? ['resources', 'app', 'bin', 'cursor.cmd'] : ['bin', app === 'devin' ? 'devin-desktop.cmd' : 'code.cmd']));
-  const command = IS_WIN ? 'powershell.exe' : bin;
+  const command = IS_WIN && app === 'cursor' ? 'powershell.exe' : bin;
   const mode = newWindow ? '-n' : '-r';
-  const args = IS_WIN
+  const args = IS_WIN && app === 'cursor'
     ? ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference = 'Stop'; & '${launcher.replace(/'/g, "''")}' ${mode} '${real.replace(/'/g, "''")}'; exit $LASTEXITCODE`]
     : [mode, real];
   const child = spawn(command, args, { env, detached: true, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
@@ -183,7 +183,7 @@ export const methods = {
           });
         })()`),
       ]);
-      return { thread: state?.thread || '', busy: !!state?.busy || terminalBusy };
+      return { thread: state?.thread || '', busy: !!state?.busy || terminalBusy, agentBusy: !!state?.busy };
     } finally {
       if (chat !== editor && !own) chat.close();
       if (!own) editor.close();
@@ -207,7 +207,7 @@ export const methods = {
     const available = async page => {
       if (!newSession && !threadId) return true;
       const state = await this.projectWindowState(page);
-      return !!threadId && state.thread === threadId.replace(/^tab:/, '') || !state.busy;
+      return !!threadId && state.thread === threadId.replace(/^tab:/, '') || !(IS_WIN && app === 'codex' ? state.agentBusy : state.busy);
     };
     let target, projectPages = [];
     const matching = async pages => {
@@ -570,7 +570,7 @@ export const methods = {
     }
     const projects = new Map();
     const identity = row => JSON.stringify([row.host || '', normPath(row.workspace)]);
-    for (const row of list) if (row.workspace) projects.set(identity(row), { root: row.workspace, host: row.host });
+    for (const row of list) if (row.workspace) projects.set(identity(row), { root: IS_WIN && (this.app === 'devin' || this.app === 'cursor') && !row.host ? normPath(row.workspace) : row.workspace, host: row.host });
     const all = [...projects.values()];
     const labels = new Map([...projects].map(([key, project]) => {
       const { name, detail } = workspaceLabel(project, all);

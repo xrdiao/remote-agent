@@ -17,6 +17,14 @@ function Test-Cdp([int]$Port) {
   } catch { return $false }
 }
 
+function Get-CdpPort([string]$UrlVariable, [string]$PortVariable, [int]$Default) {
+  $url = [Environment]::GetEnvironmentVariable($UrlVariable)
+  if ($url) { return ([Uri]$url).Port }
+  $configured = [Environment]::GetEnvironmentVariable($PortVariable)
+  if ($configured) { return [int]$configured }
+  return $Default
+}
+
 function Get-FixedDrives {
   try {
     return @(Get-PSDrive -PSProvider FileSystem | Where-Object { $_.DisplayRoot -match '^[A-Z]:\\$' -or $_.Name -match '^[A-Z]$' } | ForEach-Object {
@@ -95,7 +103,7 @@ $agentConfigs = @(
   @{
     Name = 'Cursor'
     Executable = 'Cursor.exe'
-    Port = 9222
+    Port = (Get-CdpPort 'CDP_URL' 'CDP_PORT' 9222)
     Env = 'CURSOR_BIN'
     ProcessNames = @('Cursor')
     PathNames = @('cursor', 'Cursor.exe')
@@ -109,7 +117,7 @@ $agentConfigs = @(
   @{
     Name = 'Devin'
     Executable = 'Devin.exe'
-    Port = 9223
+    Port = (Get-CdpPort 'DEVIN_CDP_URL' 'DEVIN_CDP_PORT' 9223)
     Env = 'DEVIN_BIN'
     ProcessNames = @('Devin')
     PathNames = @('devin', 'Devin.exe')
@@ -124,7 +132,7 @@ $agentConfigs = @(
   @{
     Name = 'Codex'
     Executable = 'Code.exe'
-    Port = 9224
+    Port = (Get-CdpPort 'CODEX_CDP_URL' 'CODEX_CDP_PORT' 9224)
     Env = 'CODE_BIN'
     ProcessNames = @('Code')
     PathNames = @('code', 'Code.exe')
