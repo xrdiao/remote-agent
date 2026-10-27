@@ -218,12 +218,14 @@ function showFile(m) {
       toolbar.innerHTML = `<button data-pdf-prev>${I18N.tr('上一页')}</button><span aria-live="polite"></span><button data-pdf-next>${I18N.tr('下一页')}</button>`;
       const previous = toolbar.querySelector('[data-pdf-prev]'), next = toolbar.querySelector('[data-pdf-next]'), counter = toolbar.querySelector('span');
       const pageBox = document.createElement('div'), canvas = document.createElement('canvas');
-      pageBox.className = 'pdfPage';
-      pageBox.append(canvas);
+      pageBox.className = 'pdfPage pdfPreview';
+      const preview = videoGestures(canvas);
+      pageBox.append(preview);
       body.replaceChildren(toolbar, pageBox);
       let number = 1;
       const draw = async pageNumber => {
         previous.disabled = next.disabled = true;
+        preview.querySelector('.videoViewTools button').click();
         const page = await pdf.getPage(pageNumber);
         if (state.controller.signal.aborted) return;
         const size = page.getViewport({ scale: 1 });

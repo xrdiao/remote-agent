@@ -14,7 +14,7 @@ function beginNotifyOperation() {
 const serviceWorkerRegistration = () => {
   if (window.agentRemoteServiceWorker) return window.agentRemoteServiceWorker;
   if (!('serviceWorker' in navigator) || !window.isSecureContext) return (window.agentRemoteServiceWorker = Promise.resolve(null));
-  return (window.agentRemoteServiceWorker = navigator.serviceWorker.register('sw.js').catch(error => {
+  return (window.agentRemoteServiceWorker = navigator.serviceWorker.register('sw.js?v=' + APP_VERSION, { updateViaCache: 'none' }).catch(error => {
     window.agentRemoteServiceWorkerError = error;
     return null;
   }));
@@ -202,7 +202,7 @@ $('sheet').addEventListener('click', async e => {
     const id = b.dataset.agentActionId || '', name = b.dataset.agentActionTitle || '';
     if (b.dataset.agentAction === 'open') {
       pendingAgentOpen = id;
-      closeSheet(); status('正在切换 Agent…');
+      closeSheet();
       return send({ t: 'openAgent', id, title: name });
     }
     if (b.dataset.agentAction === 'favorite') {
@@ -340,7 +340,7 @@ $('sheet').addEventListener('click', async e => {
     send({ t: 'codexArchive', id });
     return renderAgentList();
   }
-  if (b.dataset.agent) { pendingAgentOpen = b.dataset.agent; closeSheet(); status('正在切换 Agent…'); return send({ t: 'openAgent', id: b.dataset.agent, title: b.dataset.agentTitle || '' }); }
+  if (b.dataset.agent) { pendingAgentOpen = b.dataset.agent; closeSheet(); return send({ t: 'openAgent', id: b.dataset.agent, title: b.dataset.agentTitle || '' }); }
   if (b.dataset.term) { closeSheet(); status('正在切换终端…'); return send({ t: 'openTerminal', id: b.dataset.term }); }
   if ('projectPath' in b.dataset) {
     const path = window.prompt(I18N.tr('电脑上的文件夹完整路径'));

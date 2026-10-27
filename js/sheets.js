@@ -277,7 +277,6 @@ function windowEntries() {
 // Same action whether a window row is tapped in the sheet or in the tablet rail.
 function switchToWindow(id) {
   closeSheet();
-  status('正在切换 Agent…');
   const entry = windowEntries().entries.find(w => w.id === id);
   const saved = entry && currentComputer()?.selections?.[entry.app];
   send({ t: 'attach', id, ...(saved?.id === id ? saved : {}) });
