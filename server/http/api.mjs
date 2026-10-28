@@ -54,7 +54,12 @@ async function actOnWindow(deviceId, { win, threadId, act, index, text, question
     else if (act === 'reply') {
       if (!reply) throw new Error('回复内容为空');
       await s.sendMessage(reply, true);
-    } else if (act === 'acceptAll') await s.changeAction(0, 'Accept all', 'bar');
+    } else if (act === 'acceptAll') {
+      const { actions = [] } = await s.withFiles(x => x);
+      const name = ['Accept all', 'Dismiss', 'Mark as seen'].find(a => actions.includes(a));
+      if (!name) throw new Error('电脑端没有可执行的改动操作');
+      await s.changeAction(0, name, 'bar');
+    }
     else throw new Error('不支持的操作');
   } finally {
     s.dispose();

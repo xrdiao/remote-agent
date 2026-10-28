@@ -180,7 +180,7 @@
         if (Number.isFinite(at)) runAt = at;
       }
     }
-    return { busy, waiting, waitingText, last, thread, agentId: active?.id || '', title, progress, roots, ...(runId ? { runId } : {}), ...(runAt != null ? { runAt } : {}), ...(runIndex != null ? { runIndex } : {}), ...(actions ? { actions } : {}), ...(devin ? { devin: true, changed: changedCount(), tasks: devinTaskState() } : {}) };
+    return { busy, waiting, waitingText, last, thread, agentId: active?.id || '', title, progress, roots, ...(runId ? { runId } : {}), ...(runAt != null ? { runAt } : {}), ...(runIndex != null ? { runIndex } : {}), ...(actions ? { actions } : {}), ...(devin ? { devin: true, changed: changedCount(), tasks: devinTaskState(), changeAction: (l => ['Accept all', 'Dismiss', 'Mark as seen'].find(a => l.includes(a)) || '')(fileBarButtons().map(x => x.label)) } : {}) };
   };
 
   // Cursor Agents window: the left sidebar lists conversations as row:<agent id>.
@@ -279,8 +279,50 @@
         last: session.agentStopMessage || '',
       }];
     });
-    const seen = new Set(lis.map(a => a.id));
-    return [...lis, ...welcome.filter(a => !seen.has(a.id))];
+    const seen = new Set([...lis, ...welcome].map(a => a.id));
+    // Live sessions missing from the sidebar/welcome still exist in the ACP store; add the ones that
+    // belong to this window's workspace so the phone can see (and answer) them.
+    const norm = p => String(p || '').replace(/\\/g, '/').replace(/^\//, '').replace(/\/$/, '').toLowerCase();
+    const root = norm(window.vscode?.context?.configuration?.()?.workspace?.uri?.path);
+    const store = window.__acpStore?.getState()?.acp;
+    const openTabs = new Set(devinTabs().map(t => t.id));
+    const live = s => ['active', 'pending', 'canceling'].includes(s.status)
+      || ['blocked', 'working'].includes(store?.perSession?.[devinRowSession(s)]?.status?.statusEnum)
+      || openTabs.has(devinRowSession(s));
+    const extra = (store?.sessions || []).filter(s => {
+      const id = devinRowSession(s);
+      return id && !seen.has(id) && (!root || norm(s.cwd) === root) && live(s);
+    }).map(s => {
+      const id = devinRowSession(s);
+      const st = store.perSession?.[id]?.status?.statusEnum;
+      return {
+        id,
+        workspace: s.cwd || '',
+        title: (s.title || '').slice(0, 80),
+        titleNative: !!s.title,
+        titleAt: Date.now(),
+        group: '',
+        current: false,
+        running: ['active', 'pending', 'canceling'].includes(s.status) || ['working', 'blocked'].includes(st),
+        lastUsed: Date.parse(s.updatedAt || s.updated_at) || 0,
+        last: s.agentStopMessage || '',
+      };
+    });
+    return [...lis, ...welcome.filter(a => !seen.has(a.id)), ...extra];
+  };
+
+  // A Devin session blocked on a question shows it in the ACP store even when its thread isn't loaded.
+  const devinBlocked = id => {
+    const rec = window.__acpStore?.getState()?.acp?.perSession?.[id];
+    if (rec?.status?.statusEnum !== 'blocked') return null;
+    const ask = [...(rec.messages || [])].reverse().find(m => m?.content?._meta?.['cognition.ai/eventType'] === 'ask_user_question');
+    const questions = (ask?.content?._meta?.['cognition.ai/questions'] || []).map(q => q?.question).filter(Boolean);
+    if (questions.length) {
+      const text = questions.join(' / ');
+      return { waiting: 'q:' + text.slice(0, 120), waitingText: text };
+    }
+    const uar = rec.status.userActionRequired || '';
+    return { waiting: 'g:' + uar, waitingText: uar };
   };
   const agentStartupState = (app, inputReady = false) => {
     if (app === 'codex') {
@@ -345,7 +387,8 @@
     if (codexThread()) return current ? [current] : [];
     const agents = agentList();
     return agents.length ? agents.map(a => a.current && current ? current : {
-      thread: a.id, agentId: a.id, title: a.title, busy: a.running, waiting: null, last: a.last || '',
+      thread: a.id, agentId: a.id, title: a.title, busy: a.running,
+      ...(devinBlocked(a.id) || { waiting: null, waitingText: '' }), last: a.last || '',
     }) : current ? [current] : [];
   };
 

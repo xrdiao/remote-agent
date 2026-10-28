@@ -568,12 +568,14 @@
     if (cur.length) return cur;
     const box = devinChangesBox();
     if (!box) return [];
-    return [...box.querySelectorAll('span')].filter(e => vis(e) && /^(Reject all|Accept all)$/.test((e.innerText || '').trim()))
+    return [...box.querySelectorAll('span, button')].filter(e => vis(e) && (e.tagName === 'BUTTON' || !e.closest('button')) && /^(Reject all|Accept all|Dismiss|Mark as seen)$/.test((e.innerText || '').trim()))
       .map(e => ({ el: e, label: e.innerText.trim() }));
   };
   const filesState = () => ({
     files: changedFiles(),
     actions: fileBarButtons().map(x => x.label),
+    // The new Devin review model only clears the banner; there are no per-file accept/reject buttons.
+    perFile: !(devinChangesBox() && fileBarButtons().some(x => /^(Dismiss|Mark as seen)$/.test(x.label))),
     open: changedRows().length > 0 || (!!devinChangesBox() && devinOpen()),
     count: changedCount(),
   });

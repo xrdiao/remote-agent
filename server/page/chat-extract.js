@@ -669,6 +669,9 @@
     const items = [];
     rows.forEach((row, n) => {
       const i = itemKey(row) || `acpx${n}`;
+      // A turn's work is one collapsed_work row; children exist in the fiber props even while collapsed.
+      const work = codexFiberProps(row, 8).find(p => p.row)?.row?.item;
+      if (work?.event_type === 'collapsed_work') { items.push(...devinWorkItems(work, row, i)); return; }
       const msg = row.querySelector('[role=group][aria-label="User message"], [role=group][aria-label="Devin message"]');
       if (msg) {
         const it = messageItem(msg);
@@ -706,6 +709,73 @@
       if (edit) { items.push(edit); return; }
     });
     return items.filter(Boolean).map(it => ({ ...it, src: 'devin' }));
+  };
+
+  // Children of a collapsed_work transcript row (Devin's per-turn work), mapped to the same tool
+  // shapes the mounted rows produce. Children without an id are skipped.
+  const devinWorkItems = (work, row, groupId) => {
+    const base = f => String(f || '').split(/[\\/]/).pop();
+    // Children carry raw child ids, not acp indexes; look each up in the session's message store so
+    // the relay's acp-numbered merge keeps them inside their turn. Missing ones (e.g. ~agent_thought:N
+    // placeholders) inherit the previous child's index with a :wN suffix.
+    const sessionId = codexFiberProps(row, 40).find(p => typeof p.sessionId === 'string')?.sessionId;
+    const messages = window.__acpStore?.getState()?.acp?.perSession?.[sessionId]?.messages || [];
+    let prev = devinTranscriptIndex(row) ?? (Number(/^acp(\d+)/.exec(groupId || '')?.[1]) || null);
+    const used = new Set();
+    const workId = (c, n) => {
+      const idx = messages.findIndex(m => m.id === c.id);
+      let id;
+      if (idx >= 0) { prev = idx; id = `acp${idx}`; }
+      else if (prev != null) id = `acp${prev}:w${n}`;
+      else id = c.id;
+      if (used.has(id)) id = `${id}:w${n}`;
+      used.add(id);
+      return id;
+    };
+    const diff = c => {
+      const lines0 = s => { s = String(s ?? ''); return s === '' ? [] : s.split('\n'); };
+      const before = lines0(c.inline_diff?.before);
+      const after = lines0(c.inline_diff?.after);
+      let lead = 0, tail = 0;
+      while (lead < before.length && lead < after.length && before[lead] === after[lead]) lead++;
+      while (tail < before.length - lead && tail < after.length - lead && before[before.length - 1 - tail] === after[after.length - 1 - tail]) tail++;
+      const rm = before.slice(lead, before.length - tail);
+      const ad = after.slice(lead, after.length - tail);
+      const lines = [
+        ...after.slice(lead - Math.min(3, lead), lead).map(l => [' ', l]),
+        ...rm.map(l => ['-', l]),
+        ...ad.map(l => ['+', l]),
+        ...after.slice(after.length - tail, after.length - tail + 3).map(l => [' ', l]),
+      ].filter(l => l[1] !== '');
+      const over = lines.length > 200;
+      const out = over ? lines.slice(0, 200) : lines;
+      if (over) out.push(['…', `… 省略 ${lines.length - 200} 行`]);
+      return { add: ad.length, del: rm.length, diff: out };
+    };
+    const children = (work.children || []).filter(c => c && c.id);
+    return children.map((c, n) => {
+      const wid = workId(c, n);
+      const last = work.working && n === children.length - 1;
+      switch (c.event_type) {
+        case 'devin_thoughts':
+          return { i: `${wid}:think`, k: 'thinking', t: 'Thoughts\n' + String(c.message || '').trim(), ...(last ? { live: true } : {}) };
+        case 'shell_command':
+          return { i: wid, k: 'tool', kind: 'command', t: (c.state === 'completed' ? 'Ran ' : 'Running ') + (c.command || ''), d: '', cmd: c.command || '', output: String(c.output || '').trim().slice(0, 4000) };
+        case 'editor_update': {
+          if (c.readonly) {
+            const line = c.line ? ` #L${c.line}${c.end_line ? '-' + c.end_line : ''}` : '';
+            return { i: wid, k: 'tool', kind: 'read', t: `Read ${base(c.file)}${line}`, f: c.file || '', ...(c.line ? { r: line.trim() } : {}), chips: [], chipFiles: [] };
+          }
+          return { i: wid, k: 'tool', kind: 'edit', f: c.file || '', ...(c.inline_diff ? diff(c) : { add: 0, del: 0, diff: [] }) };
+        }
+        case 'search_file_result':
+          return { i: wid, k: 'tool', kind: 'search', t: `Searched ${c.query || ''}${c.path ? ' in ' + base(c.path) : ''}`, chips: [c.query].filter(Boolean), chipFiles: [''] };
+        case 'fast_context':
+          return { i: wid, k: 'tool', kind: 'search', t: `Searched ${c.search_term || ''}`, chips: [], chipFiles: [] };
+        default:
+          return { i: wid, k: 'tool', kind: 'other', t: String(c.title || c.message || c.event_type || '').slice(0, 200) };
+      }
+    });
   };
 
   // Cursor keeps message times only in React props: any transcript bubble's fiber chain reaches the

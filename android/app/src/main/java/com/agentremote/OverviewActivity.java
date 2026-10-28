@@ -689,6 +689,7 @@ public class OverviewActivity extends Activity {
         boolean wide = getResources().getConfiguration().screenWidthDp >= 600;
         int cols = wide ? 4 : 2;
         grid.setCols(cols);
+        View focused = getCurrentFocus();
         List<Item> items = new ArrayList<>();
         switch (level) {
             case LEVEL_COMPUTERS: computerItems(items, cols); break;
@@ -718,6 +719,8 @@ public class OverviewActivity extends Activity {
         }
         for (int i = grid.getChildCount() - 1; i >= items.size(); i--) grid.removeViewAt(i);
         tiles.keySet().retainAll(keysOf(items));
+        // Moving a tile re-attaches it, which clears focus inside it; give the reply field its focus back.
+        if (focused != null && focused.isAttachedToWindow() && focused.isShown() && !focused.isFocused()) focused.requestFocus();
         if (scrollKey != null) {
             final View v = tiles.get(scrollKey);
             scrollKey = null;
@@ -1235,7 +1238,8 @@ public class OverviewActivity extends Activity {
             tasksNow.setVisibility(GONE);
             lastText.setVisibility(GONE);
             accept.setVisibility(GONE);
-            replyRow.setVisibility(GONE);
+            // Set once below: hiding the row even briefly drops the reply field's focus on every poll.
+            boolean showReply = devin && (wait || !s.optBoolean("busy"));
 
             if (wait) {
                 JSONArray actions = s.optJSONArray("actions");
@@ -1255,8 +1259,7 @@ public class OverviewActivity extends Activity {
                         b.setOnClickListener(v -> act(s, c, "opt", idx, null));
                     }
                 }
-                if (devin) replyRow.setVisibility(VISIBLE);
-                else note.setVisibility(VISIBLE);
+                if (!devin) note.setVisibility(VISIBLE);
             } else {
                 JSONObject tasks = s.optJSONObject("tasks");
                 if (tasks != null) {
@@ -1273,13 +1276,16 @@ public class OverviewActivity extends Activity {
                     lastText.setVisibility(VISIBLE);
                     lastText.setText(last);
                 }
-                if (devin && !s.optBoolean("busy") && s.optInt("changed") > 0) {
+                String changeAction = s.optString("changeAction", "Accept all");
+                if (devin && !s.optBoolean("busy") && s.optInt("changed") > 0 && !changeAction.isEmpty()) {
                     accept.setVisibility(VISIBLE);
-                    accept.setText(tr("接受全部改动 (" + s.optInt("changed") + ")", "Accept all changes (" + s.optInt("changed") + ")"));
+                    accept.setText("Accept all".equals(changeAction)
+                            ? tr("接受全部改动 (" + s.optInt("changed") + ")", "Accept all changes (" + s.optInt("changed") + ")")
+                            : changeAction + " (" + s.optInt("changed") + ")");
                     accept.setOnClickListener(v -> act(s, c, "acceptAll", -1, null));
                 }
-                if (devin && !s.optBoolean("busy")) replyRow.setVisibility(VISIBLE);
             }
+            replyRow.setVisibility(showReply ? VISIBLE : GONE);
             send.setOnClickListener(v -> {
                 String text = reply.getText().toString().trim();
                 if (text.isEmpty()) return;
