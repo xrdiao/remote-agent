@@ -103,6 +103,17 @@ export const methods = {
   },
   async readMenu(kind, requestId) {
     const sel = this.sel;
+    if (this.app === 'codex' && (kind === 'model' || kind === 'effort')) {
+      const data = await this.cdp.evaluate(`(() => {
+        const h = ${PAGE_SRC};
+        if (!h.codexPickerProps()) return null;
+        return { items: ${kind === 'model' ? 'h.modelItemsFast()' : 'h.effortItems(true, true)'}, fast: h.fastInfo(), model: h.agentModelName() };
+      })()`);
+      if (data) {
+        if (this.sel === sel) this.emit({ t: 'menu', kind, ...data, requestId, sel: this.selectionKey() });
+        return;
+      }
+    }
     if (kind === 'effort') {
       let items = await this.cdp.evaluate(helpersCall(`effortItems(true, ${this.app === 'codex'})`));
       let fast = await this.cdp.evaluate(helpersCall('fastInfo()'));
@@ -257,7 +268,15 @@ export const methods = {
       return;
     }
     if (kind === 'effort') {
-      if (this.app === 'codex' && label === 'max') await this.enableCodexMax();
+      if (this.app === 'codex' && label === 'max') {
+        const max = await this.cdp.evaluate(`(() => {
+          const h = ${PAGE_SRC}, p = h.codexPickerProps();
+          if (p?.modelOptions.find(o => o.model.id === p.model)?.model.supportedReasoningEfforts.some(x => x.reasoningEffort === 'max')) return 'visible';
+          return h.effortItems(false, true).some(x => x.label === 'max') ? 'hidden' : null;
+        })()`);
+        if (!max) throw new Error('当前 Codex 模型不支持 Max');
+        if (max === 'hidden') await this.enableCodexMax();
+      }
       const picked = await this.cdp.evaluate(helpersCall(`pickEffort(${JSON.stringify(label)})`));
       if (!picked) {
         await this.openEffortMenu();

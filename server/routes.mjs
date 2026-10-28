@@ -203,15 +203,18 @@ export const ROUTES = {
     fail: (s, m, error) => s.emit({ t: 'agents', app: s.app, sel: s.selectionKey(), silent: m.silent === true, error: error?.message || '会话已切换，请重试列表' }),
   },
   openAgent: { switchRead: true, navigation: true,  run: (s, m) => s.openAgent(String(m.id ?? ''), String(m.title ?? '')) },
-  openMenu: { switchRead: true,  run: (s, m) => s.openMenu(m.kind, m.requestId) },
+  openMenu: {
+    switchRead: true, run: (s, m) => s.openMenu(m.kind, m.requestId),
+    fail: (s, m, error) => s.emit({ t: 'menu', kind: m.kind, requestId: m.requestId, sel: s.selectionKey(), error: error?.message || '菜单读取未完成' }),
+  },
   pickMenu: {
     fusionFree: (s, m) => /^fusion-(model|effort)-/.test(String(m.kind || '')),
     run: async (s, m) => {
       try { return await s.pickMenu(m.kind, m.label, m.name); }
       catch (error) { if (m.kind === 'model' || m.kind === 'effort') await s.closeMenus(); throw error; }
     },
-    after: (s, m) => { if (m.kind === 'model' || m.kind === 'effort') s.emit({ t: 'menuPicked', sel: s.selectionKey(), requestId: m.requestId, kind: m.kind, label: m.label, ok: true }); },
-    fail: (s, m) => { if (m.kind === 'model' || m.kind === 'effort') s.emit({ t: 'menuPicked', sel: s.selectionKey(), requestId: m.requestId, kind: m.kind, label: m.label, ok: false }); },
+    after: (s, m) => { if (m.kind === 'model' || m.kind === 'effort' || m.kind === 'fast') s.emit({ t: 'menuPicked', sel: s.selectionKey(), requestId: m.requestId, kind: m.kind, label: m.label, ok: true }); },
+    fail: (s, m) => { if (m.kind === 'model' || m.kind === 'effort' || m.kind === 'fast') s.emit({ t: 'menuPicked', sel: s.selectionKey(), requestId: m.requestId, kind: m.kind, label: m.label, ok: false }); },
   },
   fusionOptions: { run: (s, m) => s.fusionOptions(String(m.part ?? '')) },
   fusionPick: { run: (s, m) => s.fusionPick(String(m.part ?? ''), m.value) },

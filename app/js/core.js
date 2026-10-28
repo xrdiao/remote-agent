@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v292'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v294'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false, failures = 0;
 let windowReady = false;
@@ -217,11 +217,11 @@ function send(obj) {
     obj.requestId = ++menuRequest;
     menuPending = { requestId: obj.requestId, kind: obj.kind, sel: viewSel };
   }
-  if (obj.t === 'pickMenu' && (obj.kind === 'model' || obj.kind === 'effort')) {
+  if (obj.t === 'pickMenu' && (obj.kind === 'model' || obj.kind === 'effort' || obj.kind === 'fast')) {
     clearSwitchWatch();
     obj.requestId = ++menuPickRequest;
     modelSwitchRequest = { requestId: obj.requestId, sel: viewSel };
-    status('切换中…');
+    status(obj.kind === 'fast' ? '设置中…' : '切换中…');
   }
   if (obj.t === 'docs') {
     obj.requestId = ++docsRequest;

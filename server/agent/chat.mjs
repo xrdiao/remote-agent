@@ -153,6 +153,7 @@ export const methods = {
     }
   },
   async pollChat(immediate = false, firstScreen = false) {
+    if (this.selectionHome) return;
     firstScreen &&= !this.fusionOwner;
     const cdp = this.cdp;
     const sel = this.sel;
