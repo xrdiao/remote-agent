@@ -225,19 +225,6 @@ function scMerge(chat, retained = new Set()) {
     SC.items.clear(); SC.sig.clear(); SC.collapsed.clear(); scDirty();
   }
   let changed = false;
-  if (currentApp === 'codex' && !chatStale) {
-    const live = new Map(chat.items.map(item => [item.i, item]));
-    for (const [id, previous] of SC.items) {
-      // Completed bodies may be cached; Retry belongs only to the current native snapshot.
-      if (previous.capacity && previous.b?.length && !live.get(id)?.b?.length) {
-        const { b, actions, btnItem, ...notice } = previous;
-        SC.items.set(id, notice); SC.sig.delete(id); changed = true;
-      }
-      if (!chat.busy && previous.k === 'thinking' && previous.live) {
-        SC.items.set(id, { ...previous, live: false }); SC.sig.delete(id); changed = true;
-      }
-    }
-  }
   for (const it of SC.cleared ? [] : chat.items) {
     const sig = JSON.stringify(it);
     if (SC.sig.get(it.i) === sig && SC.items.has(it.i)) continue;
@@ -649,6 +636,7 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
   rememberChatMessageTime(chat);
   pruneEchoes(chat);
   updateGenerationTime(chat, stale);
+  const previousStale = chatStale;
   chatStale = !!stale;
   if (chat?.items?.some(it => it.k === 'human')) $('sessionNotice').hidden = true;
   rememberInputHistory(chat);
@@ -667,11 +655,24 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
   }
   if (chat && !historyExpanded && Number.isFinite(chat.historyBefore)) historyCursor = chat.historyBefore;
   if (chat?.earlier === true && (currentApp !== 'codex' || !historyExpanded)) historyAtEnd = false;
-  if (chat && previous?.thread === chat.thread && historyExpanded && currentApp !== 'devin') {
-    const rows = historyRequest ? [...chat.items, ...previous.items] : [...previous.items, ...chat.items];
+  const paged = currentApp === 'codex' && Number.isFinite(chat?.historyBefore) && !stale && !previousStale;
+  if (chat && previous?.thread === chat.thread && (historyExpanded || paged) && currentApp !== 'devin') {
     const updates = new Map(chat.items.map(it => [it.i, it]));
-    const merged = [...new Map(rows.map(it => [it.i, updates.get(it.i) || it])).values()];
+    const bodies = previous.items.flatMap(item => {
+      if (updates.has(item.i)) return [updates.get(item.i)];
+      if (paged && item.syntheticCapacity && chat.capacityPresent === false) return [];
+      if (paged && item.capacity) { const { b, actions, btnItem, ...body } = item; return [body]; }
+      if (paged && !chat.busy && item.k === 'thinking' && item.live) return [{ ...item, live: false }];
+      return [item];
+    });
+    const rows = historyRequest ? [...chat.items, ...bodies] : [...bodies, ...chat.items];
+    let merged = [...new Map(rows.map(it => [it.i, updates.get(it.i) || it])).values()];
     if (merged.every(it => Number.isFinite(it.order))) merged.sort((a, b) => a.order - b.order);
+    if (paged && !historyExpanded) {
+      const keep = new Set(chatTail(merged, 400).map(item => String(item.i)));
+      if (!followingChat()) for (const el of itemsEl.children) keep.add(el.dataset.i);
+      merged = merged.filter(item => keep.has(String(item.i)));
+    }
     chat = { ...chat, items: merged };
   }
   if ((chatTouching || chatMomentum || chatScrolling || turnNavPointer?.dragging) && chat && previous?.thread === chat.thread) {
