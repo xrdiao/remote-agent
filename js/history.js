@@ -225,6 +225,19 @@ function scMerge(chat, retained = new Set()) {
     SC.items.clear(); SC.sig.clear(); SC.collapsed.clear(); scDirty();
   }
   let changed = false;
+  if (currentApp === 'codex' && !chatStale) {
+    const live = new Map(chat.items.map(item => [item.i, item]));
+    for (const [id, previous] of SC.items) {
+      // Completed bodies may be cached; Retry belongs only to the current native snapshot.
+      if (previous.capacity && previous.b?.length && !live.get(id)?.b?.length) {
+        const { b, actions, btnItem, ...notice } = previous;
+        SC.items.set(id, notice); SC.sig.delete(id); changed = true;
+      }
+      if (!chat.busy && previous.k === 'thinking' && previous.live) {
+        SC.items.set(id, { ...previous, live: false }); SC.sig.delete(id); changed = true;
+      }
+    }
+  }
   for (const it of SC.cleared ? [] : chat.items) {
     const sig = JSON.stringify(it);
     if (SC.sig.get(it.i) === sig && SC.items.has(it.i)) continue;
@@ -652,6 +665,7 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
     $('older').disabled = false;
     $('historyStatus').hidden = true;
   }
+  if (chat && !historyExpanded && Number.isFinite(chat.historyBefore)) historyCursor = chat.historyBefore;
   if (chat?.earlier === true && (currentApp !== 'codex' || !historyExpanded)) historyAtEnd = false;
   if (chat && previous?.thread === chat.thread && historyExpanded && currentApp !== 'devin') {
     const rows = historyRequest ? [...chat.items, ...previous.items] : [...previous.items, ...chat.items];
@@ -1432,7 +1446,7 @@ function requestOlderRemote() {
   if (currentApp === 'codex') {
     const orders = lastChat.items.map(it => it.order).filter(Number.isFinite);
     Object.assign(paging, { before: historyCursor ?? (orders.length ? Math.min(...orders) : null),
-      known: lastChat.items.map(it => it.i), details: executionRecordsShown() });
+      known: SC.key ? [...SC.items.keys()] : lastChat.items.map(it => it.i), details: executionRecordsShown() });
   }
   if (send({ t: 'scrollChat', dy: -900, automatic: true, history: true, requestId: historyRequest.id, ...paging }) === false) {
     historyExpanded = historyRequest.expanded;

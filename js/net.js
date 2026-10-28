@@ -111,6 +111,58 @@ function confirmNavigation() {
   }
   if (mode !== 'chat') { $('items').inert = false; setWindowReady(true); finishNavigation(); }
 }
+function receiveChat(m) {
+  if (!m.sel || !viewSel || m.sel === viewSel) {
+    if (navigationPending && (m.navigationId !== navigationPending.id || navigationPending.confirmed !== viewSel)) return;
+    if (m.cached && liveChatSelection === (m.sel || viewSel)) return;
+    const fresh = m.chat && !m.cached && selectionReady;
+    if (fresh) {
+      const becameReady = !windowReady;
+      if (navigationPending?.preview === viewSel && chatStale) for (const item of m.chat.items) if (item.b?.length) cache.delete(item.i);
+      liveChatSelection = m.sel || viewSel;
+      finishNavigation();
+      $('retryChat').hidden = true;
+      $('items').inert = false;
+      setWindowReady(true);
+      if (becameReady) queueDraftSync();
+    }
+    if (m.chat && !m.cached && !m.chat.readonly) capabilityBlock = '';
+    const preview = chatBySel.get(chatCacheKey(m.sel || viewSel));
+    // Codex unmounts the transcript while its generated-image editor is open.
+    const obscured = currentApp === 'codex' && !!m.chat?.imagePreview;
+    const retain = obscured && m.chat.items.length === 0 && preview?.items.length > 0 && preview.thread === m.chat.thread;
+    const chat = retain ? { ...preview, ...m.chat, items: preview.items } : m.chat;
+    if (chat) cacheChat(m.sel || viewSel, chat);
+    queueChatRender(chat, !!m.cached || obscured, m.sel);
+    if (fresh) {
+      const selection = viewSel, navigation = navigationSerial;
+      requestAnimationFrame(() => { if (windowReady && viewSel === selection && navigationSerial === navigation) refreshSelectionMetadata(); });
+    }
+  }
+}
+function receiveProjectReady(m) {
+  if (m.sel && m.sel !== viewSel) return;
+  selectionReady = true;
+  confirmNavigation();
+  const refreshEditor = editorBrowsing && sheetKind === 'docs';
+  capabilityBlock = '';
+  finishPending(['正在打开项目…', '正在新建对话…']);
+  closeSheet(); currentProject = m.name;
+  if (m.chat) {
+    liveChatSelection = viewSel;
+    finishNavigation();
+    $('items').inert = false;
+    setWindowReady(true);
+    cacheChat(viewSel, m.chat);
+    renderChat(m.chat);
+    refreshSelectionMetadata();
+  }
+  $('titleProject').textContent = m.name;
+  $('sessionNotice').hidden = !m.newSession;
+  $('sessionNotice').textContent = I18N.tr('会话创建成功，尚未发送消息。') + ' ' + m.name;
+  status(m.newSession ? '已在所选项目新建会话' : m.sessionSwitch ? '已切换会话' : '已打开项目');
+  if (refreshEditor) startEditor();
+}
 function refreshSelectionMetadata(initial = false) {
   const key = `${connGen}|${viewSel}|${navigationSerial}`;
   if (selectionMetadata === key) return;
@@ -151,7 +203,7 @@ function applySelection(m, clearChat = true) {
   });
   if (changed) { mirroredDraft = ''; restoreDraft(); renderAttachments([]); if (!m.home) send({ t: 'attachments' }); }
   const cachedAgents = agentLists.get(agentListKey());
-  if (cachedAgents && m.threadId) setAgentList(agentListKey(), cachedAgents.map(a => ({ ...a, current: a.id === m.threadId || a.id === 'tab:' + m.threadId || a.id === 'thread:' + m.windowId + ':' + m.threadId })));
+  if (cachedAgents && m.threadId) setAgentList(agentListKey(), cachedAgents.map(a => ({ ...a, current: agentThreadKey(a) === agentThreadKey({ id: m.threadId }) })));
   if (m.project) currentProject = m.project;
   updateTitle();
   if (clearChat && changed) renderChat(null, false, true);
@@ -779,35 +831,7 @@ async function connect() {
     else if (m.t === 'imageDone') { finishImageUpload(m); }
     else if (m.t === 'imageEdit') { if (m.sel === viewSel) openImageEditor(m).catch(e => status('图片编辑失败：' + e.message, false)); }
     else if (m.t === 'attachments') { if (m.sel === viewSel) renderAttachments(m.list); }
-    else if (m.t === 'chat') {
-      if (!m.sel || !viewSel || m.sel === viewSel) {
-        if (navigationPending && (m.navigationId !== navigationPending.id || navigationPending.confirmed !== viewSel)) return;
-        if (m.cached && liveChatSelection === (m.sel || viewSel)) return;
-        const fresh = m.chat && !m.cached && selectionReady;
-        if (fresh) {
-          const becameReady = !windowReady;
-          if (navigationPending?.preview === viewSel && chatStale) for (const item of m.chat.items) if (item.b?.length) cache.delete(item.i);
-          liveChatSelection = m.sel || viewSel;
-          finishNavigation();
-          $('retryChat').hidden = true;
-          $('items').inert = false;
-          setWindowReady(true);
-          if (becameReady) queueDraftSync();
-        }
-        if (m.chat && !m.cached && !m.chat.readonly) capabilityBlock = '';
-        const preview = chatBySel.get(chatCacheKey(m.sel || viewSel));
-        // Codex unmounts the transcript while its generated-image editor is open.
-        const obscured = currentApp === 'codex' && !!m.chat?.imagePreview;
-        const retain = obscured && m.chat.items.length === 0 && preview?.items.length > 0 && preview.thread === m.chat.thread;
-        const chat = retain ? { ...preview, ...m.chat, items: preview.items } : m.chat;
-        if (chat) cacheChat(m.sel || viewSel, chat);
-        queueChatRender(chat, !!m.cached || obscured, m.sel);
-        if (fresh) {
-          const selection = viewSel, navigation = navigationSerial;
-          requestAnimationFrame(() => { if (windowReady && viewSel === selection && navigationSerial === navigation) refreshSelectionMetadata(); });
-        }
-      }
-    }
+    else if (m.t === 'chat') receiveChat(m);
     else if (m.t === 'draft') receiveDraft(m);
     else if (m.t === 'draftAck') receiveDraft(m);
     else if (m.t === 'historyPage') receiveHistoryPage(m);
@@ -844,13 +868,17 @@ async function connect() {
         return;
       }
       if (m.plans) appPlans = { ...appPlans, ...m.plans };
-      rememberAgentOpen(m);
-      requestCompatibility(m.app, true, m.windowId || m.id);
+      if (m.ready !== false) {
+        rememberAgentOpen(m);
+        if (!m.keepQuota) requestCompatibility(m.app, true, m.windowId || m.id);
+      }
       if (m.keepQuota) {
         applySelection(m, false);
         selectionReady = m.ready !== false;
         if (selectionReady) confirmNavigation();
         else { setWindowReady(false); renderChat(null, false, true); }
+        if (m.projectReady) receiveProjectReady(m.projectReady);
+        if (m.chat) receiveChat(m);
         return;
       }
       finishPending(['正在切换窗口…', '正在切换 Agent…']);
@@ -873,6 +901,8 @@ async function connect() {
       if (selectionReady) send({ t: 'appTheme', dark: document.documentElement.dataset.theme !== 'light' });
       if (m.initial) metadataWindow = `${connGen}|${currentApp}|${m.windowId || ''}`;
       if (mode !== 'chat' && selectionReady) refreshSelectionMetadata(m.initial === true);
+      if (m.projectReady) receiveProjectReady(m.projectReady);
+      if (m.chat) receiveChat(m);
     }
     else if (m.t === 'attachFailed') {
       if (m.home) {
@@ -937,29 +967,7 @@ async function connect() {
       finishPending(['正在打开项目…', '正在新建对话…']);
       openSheet('project-trust', `<h3>信任此项目？</h3><p class="hint">信任后，Agent 和扩展可运行此项目的代码。只信任你了解来源的项目。</p><p>${esc(m.path)}</p><button class="opt" data-project-trust="yes">信任此项目</button><button class="opt" data-project-trust="no">保持限制模式并返回上次对话</button>`);
     }
-    else if (m.t === 'projectReady') {
-      if (m.sel && m.sel !== viewSel) return;
-      selectionReady = true;
-      confirmNavigation();
-      const refreshEditor = editorBrowsing && sheetKind === 'docs';
-      capabilityBlock = '';
-      finishPending(['正在打开项目…', '正在新建对话…']);
-      closeSheet(); currentProject = m.name;
-      if (m.chat) {
-        liveChatSelection = viewSel;
-        finishNavigation();
-        $('items').inert = false;
-        setWindowReady(true);
-        cacheChat(viewSel, m.chat);
-        renderChat(m.chat);
-        refreshSelectionMetadata();
-      }
-      $('titleProject').textContent = m.name;
-      $('sessionNotice').hidden = !m.newSession;
-      $('sessionNotice').textContent = I18N.tr('会话创建成功，尚未发送消息。') + ' ' + m.name;
-      status(m.newSession ? '已在所选项目新建会话' : m.sessionSwitch ? '已切换会话' : '已打开项目');
-      if (refreshEditor) startEditor();
-    }
+    else if (m.t === 'projectReady') receiveProjectReady(m);
     else if (m.t === 'docs') showDocs(m);
     else if (m.t === 'settings') { if (m.codex && m.requestId !== codexSettingsRequest) return; finishPending(['正在读取设置…', '正在修改…', '正在保存指令…']); m.codex ? showCodexSettings(m) : showSettings(m.sections || [], m.nav || [], m.current || '', m.choices || []); }
     else if (m.t === 'usage') {
