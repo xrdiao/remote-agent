@@ -1,4 +1,4 @@
-import { Cdp, awaitCdpRead } from '../cdp.mjs';
+import { Cdp, cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { windowRoots, editorRoots, workspaceLabel } from '../../lib/files.mjs';
 import { agentMarks } from '../../lib/marks.mjs';
 import { IS_WIN, mod, normPath, pathKey } from '../../lib/platform.mjs';
@@ -191,7 +191,7 @@ export const adapter = {
     const follow = view?.follow || 'queue';
     queued = !!busy && (when === 'queue' || (!when && follow === 'queue'));
     const action = when === 'now' ? 'steer' : when === 'queue' ? 'queue' : '';
-    if (!await this.cdp.evaluate(helpersCall(`submitCodexMessage(${JSON.stringify(action)})`))) throw new Error('Codex 发送按钮当前不可用');
+    if (!await this.cdp.evaluate(helpersCall(`submitCodexMessage(${JSON.stringify(action)})`))) throw new Error('Codex 提交入口当前不可用');
     // Native message/queue receipts, rather than composer clearing, confirm acceptance.
     const receiptDeadline = Date.now() + 5000;
     for (let i = 0; i < 40 && Date.now() < receiptDeadline; i++) {
@@ -323,33 +323,37 @@ mergeCodexItems(chat) {
 },
 
 async selectCodexThread(convId, cdp = this.cdp) {
-  const deadline = Date.now() + 35000;
-  const waitActive = (ms = 1800) => cdp.evaluate(helpersCall(`codexWaitThread(${JSON.stringify(convId)}, ${ms})`), { timeout: ms + 1000 });
+  const deadline = cdpRead.getStore()?.deadline ?? Date.now() + 35000;
+  const remaining = () => {
+    const ms = deadline - Date.now();
+    if (ms <= 0) throw new Error('Codex 会话导航超时，请重试');
+    return ms;
+  };
+  const read = call => cdp.evaluate(helpersCall(call), { timeout: remaining() });
+  const waitActive = (ms = 1800) => read(`codexWaitThread(${JSON.stringify(convId)}, ${Math.min(ms, remaining())})`);
   let opened = false, pos = null;
   do {
-    opened = await cdp.evaluate(helpersCall(`openCodexThread(${JSON.stringify(convId)})`));
+    opened = await read(`openCodexThread(${JSON.stringify(convId)})`);
     if (opened) break;
-    pos = await cdp.evaluate(helpersCall('codexRecentPoint()'));
+    pos = await read('codexRecentPoint()');
     if (pos) break;
-    await awaitCdpRead(new Promise(r => setTimeout(r, 120)));
+    await awaitCdpRead(new Promise(r => setTimeout(r, Math.min(120, remaining()))));
   } while (Date.now() < deadline);
   if (!opened && !pos) throw new Error('Codex 会话导航尚未就绪，请稍后重试');
-  if (opened && await waitActive(Math.max(0, deadline - Date.now()))) return true;
-  pos ||= await cdp.evaluate(helpersCall('codexRecentPoint()'));
-  if (!pos) return false;
+  if (opened) return waitActive(remaining());
   await this.tapCss(pos.x, pos.y, 'left', cdp);
   let point = null;
   for (let i = 0; i < 8 && !point; i++) {
-    await new Promise(r => setTimeout(r, 120));
-    point = await cdp.evaluate(helpersCall(`codexChatPoint(${JSON.stringify(convId)})`));
+    await awaitCdpRead(new Promise(r => setTimeout(r, Math.min(120, remaining()))));
+    point = await read(`codexChatPoint(${JSON.stringify(convId)})`);
   }
   if (!point) {
-    await cdp.evaluate(helpersCall('closeCodexMenu()'));
+    await read('closeCodexMenu()');
     return false;
   }
   await this.tapCss(point.x, point.y, 'left', cdp);
   if (await waitActive()) return true;
-  await cdp.evaluate(helpersCall('closeCodexMenu()'));
+  await read('closeCodexMenu()');
   return false;
 },
 
@@ -541,6 +545,41 @@ async codexThreadRows(cdp = this.cdp) {
   const merged = new Map(recent.map(row => [row.id, row]));
   for (const row of rows) merged.set(row.id, { ...merged.get(row.id), ...row });
   return [...merged.values()];
+},
+
+async enableCodexMax() {
+  try {
+    await this.withCodexSettings(async cdp => {
+      let data = await cdp.evaluate(helpersCall('codexSettingsData()'));
+      const previous = data.nav.find(n => n.current);
+      const navigate = async item => {
+        const before = JSON.stringify(data);
+        const pos = await cdp.evaluate(helpersCall(`codexSettingPoint(${JSON.stringify(item.id)})`));
+        await this.tapCss(pos.x, pos.y, 'left', cdp);
+        data = await cdp.evaluate(helpersCall(`waitSettings('codex', ${JSON.stringify(before)})`));
+      };
+      try {
+        const config = data.nav.find(n => n.label === 'Configuration');
+        if (!config) throw new Error('没有找到 Codex 原生配置入口');
+        if (!config.current) await navigate(config);
+        const row = data.rows.find(r => r.label === 'Available reasoning efforts');
+        if (!row) throw new Error('没有找到 Codex 思考强度设置');
+        const pos = await cdp.evaluate(helpersCall(`codexSettingPoint(${JSON.stringify(row.controls[0].id)})`));
+        await this.tapCss(pos.x, pos.y, 'left', cdp);
+        const choice = await cdp.evaluate(`(() => { const doc = document.getElementById('active-frame').contentDocument; const option = [...doc.querySelectorAll('[role=menuitemcheckbox]')].find(el => el.textContent.trim() === 'Max'); if (!option || option.getAttribute('aria-disabled') === 'true') return null; option.dataset.remoteSetting ||= crypto.randomUUID(); return { id: option.dataset.remoteSetting, enabled: option.getAttribute('aria-checked') === 'true' }; })()`);
+        if (!choice) throw new Error('当前 Codex 无法启用 Max');
+        if (!choice.enabled) {
+          const target = await cdp.evaluate(helpersCall(`codexSettingPoint(${JSON.stringify(choice.id)})`));
+          await this.tapCss(target.x, target.y, 'left', cdp);
+          const checked = await cdp.evaluate(`new Promise(resolve => { const doc = document.getElementById('active-frame').contentDocument, started = Date.now(); const read = () => { const el = [...doc.querySelectorAll('[role=menuitemcheckbox]')].find(el => el.textContent.trim() === 'Max'); if (el?.getAttribute('aria-checked') === 'true') return resolve(true); if (Date.now() - started >= 2000) return resolve(false); setTimeout(read, 30); }; read(); })`);
+          if (!checked) throw new Error('Codex 原生 Max 设置尚未生效');
+        }
+        await this.key('Escape', { cdp });
+      } finally {
+        if (previous && !data.nav.some(n => n.id === previous.id && n.current)) await navigate(previous);
+      }
+    });
+  } finally { await this.closeCodexSettings(); }
 },
 
 async withCodexSettings(fn) {

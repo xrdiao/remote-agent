@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { IS_MAC, mod } from '../../lib/platform.mjs';
 import { codexContext } from '../windows.mjs';
-import { cdpRead } from '../cdp.mjs';
+import { cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { FOCUS_COMPOSER, uploads } from './context.mjs';
 import { rememberSessionMessage, observeSessionTitle, readLibrary } from '../../lib/session-library.mjs';
@@ -157,7 +157,7 @@ export const methods = {
     const cdp = this.cdp;
     const sel = this.sel;
     if (this.polling === sel && this.chatRead?.cdp === cdp) {
-      if (firstScreen) return this.chatRead.requestFirst();
+      if (firstScreen) return awaitCdpRead(this.chatRead.requestFirst());
       if (immediate) this.pollAgain = sel;
       return;
     }
@@ -168,7 +168,10 @@ export const methods = {
     if (!immediate && !firstScreen && Date.now() - (this.lastChatAt || 0) < (this.lastBusy ? 650 : 1800)) return;
     this.lastChatAt = Date.now();
     this.polling = sel;
-    const state = this.chatRead = { cdp, sel, requested: false, sent: false, retrying: false };
+    const controller = new AbortController(), parent = cdpRead.getStore();
+    const signal = parent ? AbortSignal.any([parent, controller.signal]) : controller.signal;
+    signal.navigationId = parent?.navigationId;
+    const state = this.chatRead = { cdp, sel, controller, requested: false, sent: false, retrying: false };
     state.requestFirst = () => {
       if (!state.requested || state.sent) {
         state.sent = false;
@@ -179,14 +182,14 @@ export const methods = {
       return state.first;
     };
     const first = firstScreen && state.requestFirst();
-    const done = this.pollChatRead(immediate, state);
+    const done = cdpRead.run(signal, () => this.pollChatRead(immediate, state));
     done.then(() => {
       if (state.requested && !state.sent && !state.retrying) state.reject(new Error('当前会话内容尚未就绪，请重试'));
     }, error => {
       state.reject?.(error);
       if (firstScreen && state.sent && this.liveRead(cdp, sel)) this.emit({ t: 'status', ok: false, msg: error.message });
     });
-    return firstScreen ? first : done;
+    return firstScreen ? awaitCdpRead(first) : done;
   },
   async pollChatRead(immediate, state) {
     const { cdp, sel } = state;
@@ -230,7 +233,7 @@ export const methods = {
         const initial = { ...chat, items: chat.items.map(it => ({ ...it })) };
         delete initial.draft;
         if (this.app === 'codex') {
-          initial.context = await (contextRead = Promise.resolve(codexContext(chat.thread)));
+          initial.context = await awaitCdpRead(contextRead = Promise.resolve(codexContext(chat.thread)));
           if (!this.liveRead(cdp, sel) || this.historyLoading || !this.acceptsChat(initial)) return;
         }
         this.mergeCodexItems(initial);
@@ -298,7 +301,7 @@ export const methods = {
       }
       this.pendingThread = '';
       this.lastBusy = !!chat.busy;
-      if (this.app === 'codex') chat.context = await (contextRead || codexContext(chat.thread));
+      if (this.app === 'codex') chat.context = await awaitCdpRead(contextRead || codexContext(chat.thread));
       if (!this.liveRead(cdp, sel)) return;
       this.mergeCodexItems(chat);
       const draft = chat.draft;
@@ -392,16 +395,19 @@ export const methods = {
       }
       this.syncAttachments().catch(() => {});
     } finally {
-      if (this.polling === sel) {
+      if (this.chatRead === state) {
+        this.chatRead = null;
         this.polling = null;
         if (this.pollAgain === sel) {
           this.pollAgain = null;
-          state.retrying = state.requested && !state.sent;
-          this.pollChat(true, state.retrying).then(() => {
-            if (state.retrying) state.resolve();
-          }, error => {
-            if (state.retrying) state.reject(error);
-          });
+          if (!cdpRead.getStore()?.aborted) {
+            state.retrying = state.requested && !state.sent;
+            this.pollChat(true, state.retrying).then(() => {
+              if (state.retrying) state.resolve();
+            }, error => {
+              if (state.retrying) state.reject(error);
+            });
+          }
         }
       }
     }
@@ -431,6 +437,14 @@ export const methods = {
     await this.assertSelectedThread();
     if (!['send', 'remove', 'edit'].includes(action)) throw new Error('不支持的排队操作');
     return this.adapter.queueAction.call(this, id, action);
+  },
+  async stopButton(message) {
+    const cdp = this.cdp, scope = this.selectionKey();
+    if (message.sel && message.sel !== scope) return;
+    await this.assertSelectedThread();
+    if (cdp !== this.cdp || scope !== this.selectionKey()) return;
+    const clicked = await cdp.evaluate(helpersCall('stopTarget(true)'));
+    if (cdp === this.cdp && scope === this.selectionKey()) this.emit({ t: 'status', msg: clicked ? '已点击停止' : '当前没有停止按钮' });
   },
   async stopAgent() {
     await this.assertSelectedThread();

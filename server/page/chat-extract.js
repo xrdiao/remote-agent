@@ -156,13 +156,10 @@
     return el ? center(el) : null;
   };
   const submitCodexMessage = async (follow = '') => {
-    const button = [...doc.querySelectorAll('button[aria-label="Send"],button[aria-label="Queue"],button[aria-label="Steer"]')].filter(vis).at(-1);
-    if (!button || button.disabled) return false;
-    if (follow) {
-      const props = codexFiberProps(button, 96).find(p => typeof p.handleSubmit === 'function' && 'isQueueingEnabled' in p);
-      if (!props) return false;
-      await props.handleSubmit({ followUpSubmitAction: follow });
-    } else button.click();
+    const editor = codexPromptEl();
+    const props = editor && codexFiberProps(editor, Infinity).find(p => typeof p.handleSubmit === 'function' && 'isQueueingEnabled' in p);
+    if (!props || props.submitDisabled || props.isInteractionBlocked || props.interactionsEnabled === false) return false;
+    await props.handleSubmit(follow ? { followUpSubmitAction: follow } : undefined);
     return true;
   };
   const activeThread = () => {
@@ -187,7 +184,7 @@
     }
     return null;
   };
-  const codexHistoryState = () => {
+  const codexHistoryState = (conversation = null) => {
     const thread = codexThread(), scopes = codexHistoryScopes();
     const hostId = codexChatRows(true).find(row => row.id === thread)?.host || 'local';
     const key = JSON.stringify({ hostId, threadId: thread });
@@ -208,6 +205,14 @@
         if (Array.isArray(value)) for (const item of value) if (typeof item?.id === 'string' && typeof item.text === 'string' && item.clientUserMessageId) queued.set(item.id, item);
       }
     }
+    if (conversation) {
+      const history = conversation.turnHistory.history;
+      index = history.islands.flatMap(island => island.entries).flatMap(({ key }) => {
+        const turn = history.entitiesByKey[key];
+        return turn?.turnId ? [{ entityKey: key, turnId: turn.turnId }] : [];
+      });
+      hasLoadedOldest = conversation.turnsPagination.hasLoadedOldest;
+    }
     // Native pages prepend turns; keep already published numbers anchored to their turn IDs.
     const histories = doc.defaultView.__remoteAgentCodexTurnNumbers ||= new Map();
     if (!histories.has(thread)) histories.set(thread, new Map());
@@ -218,7 +223,8 @@
       numbers.set(turn.turnId, turnNumber);
       return { conversationId: thread, historyEntityKey: turn.entityKey,
         turnId: turn.turnId, turnKey: 'history-content:turn:' + turn.turnId, turnNumber,
-        isLatestTurn: n === index.length - 1, turnItemIds: [], metadata: turn, nativeTurn: turns.get(turn.turnId) };
+        isLatestTurn: n === index.length - 1, turnItemIds: [], metadata: turn,
+        nativeTurn: conversation ? conversation.turnHistory.history.entitiesByKey[turn.entityKey] : turns.get(turn.turnId) };
     });
     for (const entry of entries.slice(-2)) for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
       const source = codexHistoryBinding(scope, bindings.get(entry.historyEntityKey));
@@ -485,15 +491,26 @@
     return out.map(({ sourceIndex, ...item }, index) => ({ ...item, ...(Number.isFinite(number) ? { order: number * 10000 + (sourceIndex ?? index) } : {}) }));
   };
   const codexHistoryPage = async (before, known = [], details = false) => {
-    let state = codexHistoryState();
+    let state = codexHistoryState(), manager;
+    for (const scope of state.scopes) for (const bindings of scope.familyBindings.values()) for (const binding of bindings.values()) {
+      const value = codexHistoryBinding(scope, binding)?.get();
+      if (typeof value?.loadOlderConversationTurnsPage === 'function' && value.getConversation(state.thread)) manager = value;
+    }
+    if (!manager) throw new Error('没有找到 Codex 历史加载入口');
+    const thread = state.thread, pagination = manager.pagination;
+    state = codexHistoryState(manager.getConversation(thread));
     const end = Number.isFinite(before) ? before : Infinity;
-    const readPage = () => {
+    const readPage = async () => {
       const seen = new Set(known), items = [];
       const mounted = new Map([...doc.querySelectorAll('[data-turn-key]')].map(el => [el.getAttribute('data-turn-key'), el]));
       let earlier = state.hasLoadedOldest === false, head = null, visible = 0, cursor = before;
       outer: for (const entry of [...state.entries].reverse()) {
         if (entry.turnNumber * 10000 >= end) continue;
-        const turn = codexStoredTurn(entry, state.scopes);
+        if (entry.nativeTurn.itemsPagination?.hasLoadedOldest === false) {
+          await pagination.itemPagination.loadTurnItems(thread, entry.turnId, true);
+          entry.nativeTurn = manager.getTurn(thread, entry.historyEntityKey);
+        }
+        const turn = codexStoredTurn(entry, new Set());
         if (!turn || turn.partial) throw new Error('这段历史尚未载入完整，请稍后重试');
         const el = mounted.get(entry.turnKey);
         const rows = codexTurnItems(el || null, { ...entry, turn });
@@ -510,20 +527,14 @@
       }
       items.reverse();
       if (head && !seen.has(head.i) && !items.some(item => item.i === head.i)) items.unshift(head);
-      return { thread: state.thread, items, before: cursor, earlier };
+      return { thread, items, before: cursor, earlier };
     };
-    let page = readPage();
+    let page = await readPage();
     if (!page.items.length && state.hasLoadedOldest === false) {
-      let manager;
-      for (const scope of state.scopes) for (const bindings of scope.familyBindings.values()) for (const binding of bindings.values()) {
-        const value = codexHistoryBinding(scope, binding)?.get();
-        if (typeof value?.loadOlderConversationTurnsPage === 'function' && value.getConversation(state.thread)) manager = value;
-      }
-      if (!manager) throw new Error('没有找到 Codex 历史加载入口');
-      await manager.loadOlderConversationTurnsPage(state.thread);
-      await new Promise(resolve => doc.defaultView.requestAnimationFrame(() => doc.defaultView.requestAnimationFrame(resolve)));
-      state = codexHistoryState();
-      page = readPage();
+      await pagination.conversationTurnsLoads.get(thread)?.promise;
+      await pagination.loadConversationTurns(thread, false, pagination.client.isCloudHost || manager.getConversation(thread).boundedCloudHistory === true ? 'summary' : undefined);
+      state = codexHistoryState(manager.getConversation(thread));
+      page = await readPage();
     }
     return page;
   };

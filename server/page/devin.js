@@ -262,7 +262,7 @@
   const stopGenerationButton = () => [...doc.querySelectorAll('button, [role=button]')].find(e => {
     if (!vis(e) || e.closest('.composer-human-message, .human-message-action-slot')) return false;
     const label = (e.getAttribute('aria-label') || '').trim();
-    return /^stop generation\b/i.test(label) || (doc.querySelector('[data-turn-key]') && /^(Stop|Stop generating)$/i.test(label));
+    return /^stop generation\b/i.test(label) || (doc.querySelector('[data-turn-key], [data-codex-intelligence-trigger]') && /^(Stop|Stop generating)$/i.test(label));
   });
   const legacyStopIcon = () => [...document.querySelectorAll('.composer-button-area .codicon-debug-stop, .send-with-mode .codicon-debug-stop')].find(e => vis(e) && !e.closest('.composer-human-message, .human-message-action-slot'));
   // Devin: while a turn runs the submit button reads "Cancel" (empty input) or "Queue" (typed text).
@@ -615,13 +615,19 @@
     return true;
   };
 
-  const stopTarget = () => {
+  const stopTarget = (click = false) => {
+    const target = el => {
+      if (!el || el.disabled || el.getAttribute('aria-disabled') === 'true') return null;
+      if (!click) return center(el);
+      el.click();
+      return true;
+    };
     const btn = stopGenerationButton();
-    if (btn) return center(btn);
+    if (btn) return target(btn);
     const icon = legacyStopIcon();
-    if (icon) return center(icon.closest('button, [role=button], .anysphere-icon-button') || icon);
+    if (icon) return target(icon.closest('button, [role=button], .anysphere-icon-button') || icon);
     const cancel = devinLog() && [...document.querySelectorAll('button[aria-label="Cancel"]')].find(e => vis(e) && !e.disabled && e.querySelector('svg'));
-    return cancel ? center(cancel) : null;
+    return target(cancel);
   };
 
   const permissionLabel = () => {

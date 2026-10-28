@@ -84,7 +84,7 @@ function confirmSent(m, render = true) {
     if (here && lastChat && render) queueChatRender();
   }
 }
-function failPendingSend(requestId, message = '发送失败，请重试') {
+function failPendingSend(requestId, message = '发送失败，请重试', report = true) {
   const sent = pendingSends.get(requestId);
   if (!sent) return;
   pendingSends.delete(requestId);
@@ -94,7 +94,7 @@ function failPendingSend(requestId, message = '发送失败，请重试') {
   if (sent && (currentComputer()?.id || '') === sent.computer && draftKey() === sent.draft && text.value === '') {
     text.value = sent.text; autosize();
   }
-  if ((currentComputer()?.id || '') === sent.computer && draftKey() === sent.draft) status(message, false);
+  if (report && (currentComputer()?.id || '') === sent.computer && draftKey() === sent.draft) status(message, false);
 }
 function disconnectPendingSends() {
   for (const sent of pendingSends.values()) {
@@ -394,8 +394,13 @@ function codexFollow() {
   return mode === 'chat' && currentApp === 'codex' && chatBusy && (follow === 'queue' || follow === 'steer') ? follow : '';
 }
 $('stop').onclick = async () => {
+  const sel = viewSel;
   if (!await ask('停止 Agent？\n它这一轮正在做的事会中断。', '停止')) return;
-  send({ t: 'stop' }); status('正在停止…');
+  if (sel !== viewSel || send({ t: 'stop' }) === false) return;
+  if (currentApp !== 'fusion') for (const [id, pending] of pendingSends) {
+    if (pending.mode === 'chat' && pending.scope === messageScope() && (!pending.thread || pending.thread === lastChat?.thread)) failPendingSend(id, '', false);
+  }
+  status('正在停止…');
 };
 function updateSendMode() {
   if (typeof updateVoiceButton === 'function') updateVoiceButton();
