@@ -93,6 +93,10 @@ wss.on('connection', (ws, req) => {
     if (sendRequest) sends.add(sendRequest);
     if (msg.t === 'stop' && session.app !== 'fusion') {
       const scope = msg.sel || session.selectionKey();
+      for (const [id, pending] of session.nativeSends || []) if (pending.sel === scope) {
+        pending.cancel();
+        session.nativeSends.delete(id);
+      }
       for (const pending of sends) if (pending.sel === scope && !pending.controller.signal.aborted) {
         const error = Object.assign(new Error('发送已取消，草稿已保留'), { cancelled: true });
         pending.controller.abort(error);
@@ -189,12 +193,16 @@ wss.on('connection', (ws, req) => {
         timedOut = true;
         navigationReads.abort(new Error('当前会话读取超时，请重试或切换 Agent'));
       }, Math.max(0, navigationDeadline - Date.now())) : null;
+      const result = switching && session.app !== 'fusion' && msg.id !== 'fusion' ? { id: msg.navigationId } : null;
+      if (result) session.navigationResult = result;
       try {
         const queued = imageTransfer?.cancelled ? undefined : await cdpRead.run(signal, () => session.handle(msg));
+        if (result && !signal?.aborted) session.finishNavigationResult(result);
         const ms = Date.now() - q0;
         if (ms > 3000) console.log(`[slow] ${msg.t} ${ms}ms ${session.app || ''}`);
         route?.after?.(session, msg, queued);
       } catch (e) {
+        if (session.navigationResult === result) session.navigationResult = null;
         if (signal?.aborted && !timedOut) return;
         console.log(`[err] ${msg.t}: ${e.message}`);
         if (switching && session.app !== 'fusion' && msg.id !== 'fusion') {
@@ -208,6 +216,7 @@ wss.on('connection', (ws, req) => {
         if (switching && msg.t !== 'attach') session.emit({ t: 'attachFailed', ready: session.bindingReady === true });
         if (msg.t !== 'send') session.emit({ t: 'status', ok: false, msg: quotaErrorMessage(session.app, e) || e.message });
       } finally {
+        if (session.navigationResult === result) session.navigationResult = null;
         clearTimeout(navigationTimer);
         if (switching && activeNavigation === navigation) activeNavigation = null;
         if (imageTransfer) session.imageTransfers.delete(msg.clientImageId);

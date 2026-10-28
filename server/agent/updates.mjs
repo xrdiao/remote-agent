@@ -29,13 +29,20 @@ export async function watchChat(cdp, changed) {
     };
     const changed = () => {
       doc.defaultView.__remoteAgentChatRevision = (doc.defaultView.__remoteAgentChatRevision || 0) + 1;
-      if (!state.timer) state.timer = setTimeout(() => { state.timer = 0; native?.refresh(); window[name](''); }, 250);
+      if (!state.timer) state.timer = setTimeout(() => {
+        state.timer = 0;
+        native?.refresh();
+        doc.defaultView.dispatchEvent(new doc.defaultView.Event('remote-agent-chat-update'));
+        window[name]('');
+      }, 250);
     };
     const bind = () => {
       const next = document.getElementById('active-frame')?.contentDocument || document;
       if (next === doc) return;
+      doc?.defaultView.removeEventListener('remote-agent-submit-error', changed);
       observer?.disconnect(); native?.stop();
       doc = next;
+      doc.defaultView.addEventListener('remote-agent-submit-error', changed);
       native = (${PAGE_SRC}).watchCodexData(changed);
       observer = new MutationObserver(records => {
         if (records.some(record => inTranscript(record.target) || capacityRetry(record.target)
@@ -48,7 +55,7 @@ export async function watchChat(cdp, changed) {
     const outer = new MutationObserver(bind);
     outer.observe(document.body, { subtree: true, childList: true });
     document.addEventListener('load', bind, true);
-    state.stop = () => { observer?.disconnect(); native?.stop(); outer.disconnect(); document.removeEventListener('load', bind, true); clearTimeout(state.timer); };
+    state.stop = () => { doc?.defaultView.removeEventListener('remote-agent-submit-error', changed); observer?.disconnect(); native?.stop(); outer.disconnect(); document.removeEventListener('load', bind, true); clearTimeout(state.timer); };
     bind();
     window[name + 'Watch'] = state;
   })()`);

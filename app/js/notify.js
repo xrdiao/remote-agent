@@ -622,6 +622,7 @@ async function useComputer(i) {
   if (c.discovery && new URL(c.discovery).origin !== location.origin) {
     return openComputerEntry(new URL('./', c.discovery).href, c.id || await computerIdFromKey(c.key));
   }
+  parkComputerSocket();
   entryComputer = '';
   saveComputers(list, c.key);
   restoreDraft();
@@ -629,9 +630,7 @@ async function useComputer(i) {
   connGen++;
   offlineGen++;
   authed = false;
-  const old = ws;
   ws = null;
-  try { old?.close(); } catch {}
   closeSheet();
   boot();
 }
@@ -681,6 +680,7 @@ async function removeComputers(keys) {
   queueLogouts(selected.filter(c => c.key !== loggedOut));
   flushLogouts();
   const nextList = loadComputers().filter(x => !keys.includes(x.key));
+  for (const key of keys) dropComputerSocket(key);
   const next = nextList[0];
   saveComputers(nextList, removingCurrent ? '' : (cur?.key || ''));
   listManagement.selected.clear();

@@ -296,6 +296,12 @@
     if (!rows.length && !hasComposer() && !control('newChat') && !(surface === 'editor' && sessionSearchTarget())) return null;
     return { rows, surface, thread: activeThread(), items: (extract() || {}).items?.length || 0 };
   };
+  const cursorChatReady = id => {
+    if (activeThread() !== id) return false;
+    const data = cursorSessionServices()?.data.getComposerDataIfLoaded(id);
+    const panel = findPanel();
+    return !!data?.hasLoaded && (!data.fullConversationHeadersOnly?.length || !!panel && topItems(panel).length > 0);
+  };
   const agentTarget = (id, click = false) => {
     if (id && activeThread() === id) return true;
     const tab = [...doc.querySelectorAll('.tab[data-resource-name]')].find(t => t.dataset.resourceName === id && t.querySelector('.composer-tab-label'));

@@ -253,9 +253,9 @@
   // Messages sent while the Agent is running wait in Cursor's queue tray until the current turn ends.
   const QUEUE_ROW = '[data-queue-row], .composer-toolbar-queue-item[data-queue-item-id]';
   const queueRows = () => [...doc.querySelectorAll(QUEUE_ROW)].filter(vis);
-  const queued = () => queueRows().map(e => ({
+  const queued = (full = false) => queueRows().map(e => ({
     id: e.dataset.queueItemId,
-    t: (e.dataset.queueItemQuery || e.innerText || '').trim().slice(0, 4000),
+    t: full ? (e.dataset.queueItemQuery || e.innerText || '').trim() : (e.dataset.queueItemQuery || e.innerText || '').trim().slice(0, 4000),
   }));
   // The submit button becomes "Stop generation" while a turn is running.
   // The stop icon on a human bubble (Ctrl+Shift+Backspace) reverts that message instead.

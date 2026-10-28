@@ -269,8 +269,8 @@
     const r = e.getBoundingClientRect();
     return { label, ...codexPoint(e) };
   }).filter(x => x.label);
-  const codexQueued = () => {
-    const thread = codexThread();
+  const codexQueued = (full = false, state = null) => {
+    const thread = state?.thread || codexThread();
     if (!thread) return [];
     // Newer Codex keeps the queue in the composer's own rows (props carry messageId / fullMessageText);
     // older builds kept it in the queued-follow-ups global state read below.
@@ -280,37 +280,45 @@
         return props.some(p => p.conversationId === thread)
           ? props.find(p => typeof p.messageId === 'string' && 'fullMessageText' in p) : null;
       }).filter(Boolean);
-    const queuedData = new Map(codexHistoryState().queued.map(item => [item.id, item]));
+    const queuedData = new Map((state || codexHistoryState(null, false)).queued.map(item => [item.id, item]));
     const native = [...new Map(rows.map(p => [p.messageId, p])).values()].map(p => ({
-      id: p.messageId, t: String(p.fullMessageText || p.messageText || '').slice(0, 4000), src: 'codex',
+      id: p.messageId, t: full ? String(p.fullMessageText || p.messageText || '') : String(p.fullMessageText || p.messageText || '').slice(0, 4000), src: 'codex',
       ...(queuedData.has(p.messageId) ? { messageId: `${thread}:user-message:${queuedData.get(p.messageId).clientUserMessageId}` } : {}),
     })).filter(m => m.t);
     for (const item of queuedData.values()) if (!native.some(row => row.id === item.id)) native.push({
-      id: item.id, t: item.text.slice(0, 4000), src: 'codex', messageId: `${thread}:user-message:${item.clientUserMessageId}`,
+      id: item.id, t: full ? item.text : item.text.slice(0, 4000), src: 'codex', messageId: `${thread}:user-message:${item.clientUserMessageId}`,
     });
     const value = codexQueryClient()?.getQueryData(['vscode', 'get-global-state', '{"key":"queued-follow-ups"}'])?.value;
     const raw = value && typeof value === 'object' ? value[thread] : null;
     if (!Array.isArray(raw)) return native;
     const stored = raw.map((m, n) => ({
       id: String(m?.id || `cq${n}`),
-      t: String(m?.text || m?.message || m?.content || '').slice(0, 4000),
+      t: full ? String(m?.text || m?.message || m?.content || '') : String(m?.text || m?.message || m?.content || '').slice(0, 4000),
       src: 'codex',
     })).filter(m => m.t);
     const merged = new Map(native.map(m => [m.id, m]));
     for (const item of stored) if (!merged.has(item.id)) merged.set(item.id, item);
     return [...merged.values()];
   };
+  const codexQueueController = () => {
+    let el = codexPromptEl();
+    while (el && !Object.keys(el).some(k => k.startsWith('__reactFiber'))) el = el.parentElement;
+    let fiber = el?.[Object.keys(el).find(k => k.startsWith('__reactFiber'))];
+    for (; fiber; fiber = fiber.return) for (const values of fiber.updateQueue?.memoCache?.data || []) {
+      const controller = values.find(value => value && typeof value.handleEditMessage === 'function' && value.messageListActions);
+      if (controller) return controller;
+    }
+    return null;
+  };
   const codexQueueAction = async (id, action, thread = '') => {
     if (thread && codexThread() !== thread) return false;
+    const controller = codexQueueController();
+    if (action === 'edit' && controller?.editingMessageId === id) return true;
     if (!codexQueued().some(m => m.id === id)) return false;
-    const name = { send: 'onSendNowMessage', remove: 'onDeleteMessage', edit: 'onEditMessage' }[action];
-    for (const el of doc.querySelectorAll('button')) {
-      for (const p of codexFiberProps(el, 96)) {
-        const actions = p.messageListActions || p;
-        if (typeof actions[name] === 'function') { await actions[name](id); return true; }
-      }
-    }
-    return false;
+    const name = { send: 'handleSendNowMessage', remove: 'handleDeleteMessage', edit: 'handleEditMessage' }[action];
+    if (typeof controller?.[name] !== 'function') return false;
+    await controller[name](id);
+    return true;
   };
   // Read pending native cards, keeping their real controls rather than reproducing approval semantics.
   const codexAsyncRequestFiber = el => {

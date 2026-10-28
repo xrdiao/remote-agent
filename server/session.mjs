@@ -17,6 +17,7 @@ import { leaseWindow, windowOperationLocked } from './window-use.mjs';
 import {visualCapture, visualWindows, wayland} from './visual/capture.mjs';
 import { rememberSelection, lastSelection, forgetSelection } from '../lib/auth.mjs';
 import { editorRoots } from '../lib/files.mjs';
+import { NativeCdp, nativeWindow, nativeWindowAt, nativeTargets } from './native-windows.mjs';
 
 export class Session extends AgentContext {
   constructor(client, deviceId) {
@@ -51,14 +52,30 @@ export class Session extends AgentContext {
     if (!this.editorCdp || this.selectionHome && this.mode === 'chat') return;
     if (this.mode === 'chat') {
       const cdp = this.cdp;
-      const stop = await watchChat(cdp, () => {
-        if (this.visible && this.mode === 'chat' && this.cdp === cdp) this.pollChat(true).catch(() => {});
-      });
-      if (this.chatWatchGeneration !== watchGeneration || this.cdp !== cdp || this.mode !== 'chat') { stop(); return; }
-      this.chatUpdatesStop = stop;
       this.lastChat = '';
+      const source = nativeWindow(cdp);
+      if (source) {
+        this.chatUpdatesStop = source.subscribe(() => {
+          if (this.visible && this.mode === 'chat' && this.cdp === cdp) this.pollChat(true).catch(() => {});
+        });
+        if (firstScreen) await this.pollChat(true, true);
+        else await this.pollChat(true);
+        return;
+      }
       this.chatTimer = cdpRead.run(null, () => setInterval(() => this.pollChat().catch(() => {}), 700));
-      await this.pollChat(firstScreen, firstScreen);
+      if (firstScreen) await this.pollChat(true, true);
+      const watching = (async () => {
+        const stop = await watchChat(cdp, () => {
+          if (this.visible && this.mode === 'chat' && this.cdp === cdp) this.pollChat(true).catch(() => {});
+        });
+        if (this.chatWatchGeneration !== watchGeneration || this.cdp !== cdp || this.mode !== 'chat') { stop(); return; }
+        this.chatUpdatesStop = stop;
+      })();
+      if (firstScreen) watching.catch(error => {
+        if (this.cdp === cdp && this.chatWatchGeneration === watchGeneration && !cdpRead.getStore()?.aborted)
+          this.emit({ t: 'status', ok: false, msg: error.message });
+      });
+      else { await watching; await this.pollChat(); }
     } else if (this.mode === 'terminal') {
       this.lastTermHash = undefined;
       await this.pollTerminal();
@@ -85,8 +102,35 @@ export class Session extends AgentContext {
 
   stopVisual() { visualCapture.unsubscribe(this); }
 
+  finishNavigationResult(result) {
+    if (this.navigationResult !== result) return;
+    this.navigationResult = null;
+    if (!this.bindingReady) return;
+    const binding = result.attached;
+    if (!binding) return;
+    if (this.mode === 'chat' && !result.chat) throw new Error('当前会话内容尚未就绪，请重试');
+    this.emit({ ...binding, ready: true, windowId: this.windowId || '', threadId: this.threadId || '',
+      sel: this.selectionKey(), ...(result.chat ? { chat: result.chat.chat } : {}),
+      ...(result.project ? { projectReady: result.project } : {}) });
+  }
+
   emit(obj) {
     if (cdpRead.getStore()?.aborted) return;
+    const result = this.navigationResult;
+    if (result && (cdpRead.getStore()?.navigationId ?? this.navigationId) === result.id) {
+      if (obj?.t === 'attached' && !obj.closed) {
+        result.attached = { ...result.attached, ...obj,
+          keepQuota: result.attached ? !!result.attached.keepQuota && !!obj.keepQuota : obj.keepQuota };
+        if (obj.ready !== false) return;
+      } else if (obj?.t === 'thread') return;
+      else if (obj?.t === 'chat' && obj.chat) { result.chat = obj; return; }
+      else if (obj?.t === 'projectReady') {
+        const { chat, ...project } = obj;
+        result.project = project;
+        if (chat) result.chat = { sel: obj.sel, chat };
+        return;
+      }
+    }
     if (['attached', 'thread', 'chat', 'projectReady', 'attachFailed', 'status'].includes(obj?.t)) {
       const navigationId = cdpRead.getStore()?.navigationId ?? this.navigationId;
       if (navigationId != null) obj = { ...obj, navigationId };
@@ -106,7 +150,7 @@ export class Session extends AgentContext {
       if (obj.app === 'fusion') obj.sideCapabilities = Object.fromEntries(Object.entries(AGENT_REGISTRY)
         .filter(([, entry]) => entry.kind !== 'orchestrator').map(([app, entry]) => [app, entry.capabilities]));
     }
-    if (obj?.t === 'chat' && obj.sel && obj.chat) {
+    if ((obj?.t === 'chat' || obj?.t === 'attached') && obj.sel && obj.chat) {
       if (this.bindingReady && obj.sel === this.selectionKey() && !obj.cached
           && (!obj.chat.readonly || obj.chat.empty) && !obj.chat.subagent
           && obj.chat.thread === this.threadId && ['cursor', 'devin', 'codex'].includes(this.app)
@@ -141,11 +185,25 @@ export class Session extends AgentContext {
   async attach(target, windows) {
     let req = target && typeof target === 'object' ? target : { id: target || '' };
     const app = String(req.id || '').split(':')[0];
+    if (req.resume && this.bindingReady && this.cdp?.ws?.readyState === 1 && this.app === app
+        && this.windowId === req.windowId && this.threadId === (req.threadId || '')) {
+      const actual = await this.cdp.evaluate(helpersCall(this.app === 'codex' ? 'codexThread()' : 'activeThread()'));
+      if (actual === this.threadId) {
+        this.visible = true;
+        this.publishThread();
+        return this.setMode(this.mode, true);
+      }
+    }
     if (req.restore) {
       const saved = lastSelection(this.deviceId, app);
       if (saved) req = { ...req, ...saved };
     }
     if (req.initial && hasLaunched(app)) req = { ...req, id: app, windowId: '', threadId: '', project: null };
+    if (req.project && !req.projectSwitch) {
+      const matches = nativeTargets().filter(win => win.app === app && this.projectMatches(nativeWindowAt(win.ws)?.roots || [], req.project.root, req.project.host));
+      const picked = matches.find(win => (win.pageId || win.id) === req.windowId) || matches[0];
+      if (picked) req = { ...req, id: app === 'codex' ? 'codex' : picked.id, windowId: picked.pageId || picked.id, project: null };
+    }
     if (req.project && !req.projectSwitch) {
       // Bind only the app first. The saved project, not a fallback window, owns the thread.
       await this.attach({ ...req, id: app, windowId: '', restore: false, project: null, threadId: '', projectSwitch: true }, windows);
@@ -223,8 +281,8 @@ export class Session extends AgentContext {
   }
 
   async openBound(win, editorWs, chatWs, selection) {
-    const editorCdp = new Cdp(editorWs);
-    const cdp = chatWs ? new Cdp(chatWs) : editorCdp;
+    const editorCdp = new NativeCdp(editorWs);
+    const cdp = chatWs ? new NativeCdp(chatWs) : editorCdp;
     // A phone-launched app keeps its native home/new-chat view, not a remembered thread.
     // Keep the marker until startup and the first chat read complete successfully.
     const launchDefault = this.launchDefault = selection.initial === true && hasLaunched(win.app);
@@ -246,6 +304,8 @@ export class Session extends AgentContext {
     this.clearViewState();
     this.editorCdp = editorCdp;
     this.cdp = cdp;
+    this.itemCache = nativeWindow(cdp).itemCache;
+    nativeWindow(cdp).start({ id: win.id, ws: cdp.wsUrl, editorWs, app: win.app, pageId: selection.windowId }).catch(() => {});
     this.bindingReady = false;
     this.selectionHome = false;
     this.windowId = selection.windowId;
@@ -347,7 +407,7 @@ export class Session extends AgentContext {
     }
     this.bindingReady = !selection.deferred && !this.startupPending;
     attached();
-    if (this.startupPending || selection.deferred) return;
+    if (this.startupPending || selection.deferred) return { trust };
     await this.withFocus(() => this.setMode(this.mode, true));
     if (this.cdp === cdp) this.prefetchMenus().catch(() => {});
   }
@@ -473,14 +533,20 @@ export class Session extends AgentContext {
     if (windowOperationLocked(this.app, target, this)) throw new Error('窗口正在批量处理会话，请稍后操作');
     const release = leaseWindow(this.app, this.windowId, this);
     if (!['ping', 'visible', 'usage', 'agents', 'connAgents', 'windows', 'sessionLibrary', 'sessionActions'].includes(msg.t)) touchProjectWindow(this.app, this.windowId);
-    try {
     const route = ROUTES[msg.t];
+    const execute = async () => {
     if (route?.pre) {
       const r = await route.pre(this, msg);
       if (r !== SKIP) return r;
     }
     const readOnly = flag(route?.readOnly, this, msg);
     return await (readOnly ? this.dispatch(msg) : this.withFocus(() => this.dispatch(msg)));
+    };
+    try {
+      const source = nativeWindow(this.cdp);
+      if (source && route && !route.connection && !route.navigation && !flag(route.readOnly, this, msg))
+        return await source.run(execute);
+      return await execute();
     } finally { release(); }
   }
 
@@ -496,6 +562,8 @@ export class Session extends AgentContext {
 
   dispose() {
     fusionViewers.delete(this);
+    for (const pending of this.nativeSends?.values() || []) pending.cancel();
+    this.nativeSends?.clear();
     this.detach();
   }
 }

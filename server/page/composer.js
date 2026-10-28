@@ -16,6 +16,22 @@
     const a = doc.activeElement;
     return !!a?.closest?.(`${COMPOSER}, [data-slate-editor="true"]`) && !inItem(a);
   };
+  const queueEditing = () => document.getElementById('active-frame')
+    ? codexQueueController()?.editingMessageId || ''
+    : [...doc.querySelectorAll('[data-editing-queue-item-id]')].find(vis)?.dataset.editingQueueItemId || '';
+  const queueText = (id, includeEditing = true) => {
+    if (queueEditing() === id) return includeEditing ? document.getElementById('active-frame') ? codexPromptText() : composerDraft() : undefined;
+    return (document.getElementById('active-frame') ? codexQueued(true) : queued(true)).find(item => item.id === id)?.t;
+  };
+  const saveQueueEdit = id => {
+    const data = cursorSessionServices()?.data.getComposerDataIfLoaded(activeThread());
+    const queue = data?.capabilities.find(capability => typeof capability.saveEditedItemBackToQueue === 'function');
+    const item = queue?.getQueueItems().find(item => item.id === id);
+    if (!item || queueEditing() !== id) return false;
+    const original = queue.toComposerQueueItem(item);
+    queue.saveEditedItemBackToQueue({ query: data.text, extras: { ...original.extras, richText: data.richText } });
+    return true;
+  };
   // Write the composer via the editor's own API (no keyboard, no focus). Returns true only when it worked.
   const setComposerDraft = text => {
     text = String(text ?? '');
