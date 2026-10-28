@@ -711,7 +711,8 @@ function autoRetry() {
 const computerSockets = new Map();
 function updateComputerRecord(computer) {
   const current = currentComputer()?.key;
-  const list = loadComputers().map(row => row.key === computer.key ? { ...row, ...computer } : row);
+  const metadata = Object.fromEntries(Object.entries(computer).filter(([key]) => ['id', 'name', 'device', 'relay'].includes(key)));
+  const list = loadComputers().map(row => row.key === computer.key ? { ...row, ...metadata } : row);
   saveComputers(list, current);
 }
 function parkComputerSocket(socket = ws) {
