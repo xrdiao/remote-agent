@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR, findDevice, needsTotp, totpConfig, verifyTotp, pairingSession, pairingDetails, consumePairing, listDevices, removeDevice, updateDevice, computerId, computerName, urlKey, appBase, groupDevices, deviceGrouping } from '../../lib/auth.mjs';
 import { inviteEntry, joinEntry, entryRequests, decideEntry, entryStatus, cancelEntry, requestPairing, decideEntries } from './entries.mjs';
-import { pushPublicKey, openEventStream, closeEventStreams, deliver } from '../../lib/notify.mjs';
+import { pushPublicKey, openEventStream, closeEventStreams, deliver, overviewSnapshot } from '../../lib/notify.mjs';
 import { clientIp, lockedOut, recordFailure } from './ratelimit.mjs';
 import { json, readJson, originAllowed, corsHeaders, SECURITY_HEADERS } from './static.mjs';
 import { readChatImage } from '../chat-images.mjs';
@@ -271,6 +271,8 @@ export async function handleApi(req, res, route) {
       return json(req, res, 409, { error: e.message });
     }
   }
+  // The Android overview screen: every watched thread on this computer, read-only.
+  if (route === '/api/overview' && req.method === 'GET') return json(req, res, 200, { id: computerId(), name: computerName(), ...overviewSnapshot() });
   if (route === '/api/push/key') return json(req, res, 200, { key: pushPublicKey() });
   if (route === '/api/push/state' && req.method === 'GET') {
     return json(req, res, 200, { subscribed: Boolean(device.push || device.apns), enabled: Boolean(device.push || device.apns) && device.pushEnabled !== false });

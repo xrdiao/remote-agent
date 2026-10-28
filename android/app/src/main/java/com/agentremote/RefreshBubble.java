@@ -23,7 +23,12 @@ public class RefreshBubble extends ImageView {
     private final SharedPreferences prefs;
     private final Runnable onRefresh;
     private final GradientDrawable bg = new GradientDrawable();
+    private final float density;
+    private final FrameLayout parent;
     private final int size, margin, slop;
+    private ImageView companion;
+    private java.util.function.BooleanSupplier companionEnabled;
+    private int compSize;
     private final Runnable idle = this::tuck;
     private boolean right = true;
     private boolean expanded;
@@ -35,7 +40,8 @@ public class RefreshBubble extends ImageView {
         super(c);
         this.onRefresh = onRefresh;
         prefs = c.getSharedPreferences("agent-remote", Context.MODE_PRIVATE);
-        float density = c.getResources().getDisplayMetrics().density;
+        this.parent = parent;
+        density = c.getResources().getDisplayMetrics().density;
         size = Math.round(44 * density);
         margin = Math.round(8 * density);
         slop = ViewConfiguration.get(c).getScaledTouchSlop();
@@ -68,6 +74,50 @@ public class RefreshBubble extends ImageView {
     public void setLight(boolean light) {
         bg.setColor(light ? 0xFFFFFFFF : 0xFF3C3C3C);
         setColorFilter(light ? 0xFF333333 : 0xFFFFFFFF);
+        if (companion != null) {
+            ((GradientDrawable) companion.getBackground()).setColor(light ? 0xFFFFFFFF : 0xFF3C3C3C);
+            companion.setColorFilter(light ? 0xFF333333 : 0xFFFFFFFF);
+        }
+    }
+
+    // A secondary button that appears beside the expanded bubble (e.g. back to the overview).
+    public void setCompanion(int iconRes, String description, java.util.function.BooleanSupplier enabled, Runnable action) {
+        companionEnabled = enabled;
+        compSize = Math.round(36 * density);
+        companion = new ImageView(getContext());
+        GradientDrawable g = new GradientDrawable();
+        g.setShape(GradientDrawable.OVAL);
+        g.setColor(prefs.getBoolean("light", false) ? 0xFFFFFFFF : 0xFF3C3C3C);
+        companion.setBackground(g);
+        companion.setColorFilter(prefs.getBoolean("light", false) ? 0xFF333333 : 0xFFFFFFFF);
+        companion.setElevation(getElevation());
+        int pad = Math.round(9 * density);
+        companion.setPadding(pad, pad, pad, pad);
+        companion.setScaleType(ScaleType.FIT_CENTER);
+        companion.setImageResource(iconRes);
+        companion.setContentDescription(description);
+        companion.setLayoutParams(new FrameLayout.LayoutParams(compSize, compSize, Gravity.TOP | Gravity.START));
+        companion.setOnClickListener(v -> action.run());
+        companion.setVisibility(GONE);
+        parent.addView(companion);
+    }
+
+    private void showCompanion(float targetX, float targetY) {
+        if (companion == null || !companionEnabled.getAsBoolean()) return;
+        companion.setX(right ? targetX - compSize - margin : targetX + size + margin);
+        companion.setY(targetY + size / 2f - compSize / 2f);
+        companion.setVisibility(VISIBLE);
+        companion.setAlpha(0f);
+        companion.animate().cancel();
+        companion.animate().alpha(SHOWN_ALPHA).setDuration(MOVE_MS).start();
+    }
+
+    private void hideCompanion(boolean animate) {
+        if (companion == null) return;
+        companion.animate().cancel();
+        if (animate && companion.getVisibility() == VISIBLE) {
+            companion.animate().alpha(0f).setDuration(MOVE_MS).withEndAction(() -> companion.setVisibility(GONE)).start();
+        } else companion.setVisibility(GONE);
     }
 
     private void onTouch(MotionEvent e) {
@@ -84,6 +134,7 @@ public class RefreshBubble extends ImageView {
                 float dy = e.getRawY() - downRawY;
                 if (!dragging && Math.hypot(dx, dy) > slop) {
                     dragging = true;
+                    hideCompanion(true);
                     removeCallbacks(idle);
                     animate().cancel();
                     setRotation(0);
@@ -107,7 +158,9 @@ public class RefreshBubble extends ImageView {
 
     private void expand() {
         expanded = true;
-        move(edgeX(true), clampY(getY()), SHOWN_ALPHA);
+        float x = edgeX(true), y = clampY(getY());
+        move(x, y, SHOWN_ALPHA);
+        showCompanion(x, y);
         restartIdle();
     }
 
@@ -123,13 +176,16 @@ public class RefreshBubble extends ImageView {
         prefs.edit().putBoolean("bubbleRight", right).putFloat("bubbleY", (y + size / 2f) / ph).apply();
         dragging = false;
         expanded = true;
-        move(edgeX(true), y, SHOWN_ALPHA);
+        float x = edgeX(true);
+        move(x, y, SHOWN_ALPHA);
+        showCompanion(x, y);
         restartIdle();
     }
 
     private void tuck() {
         if (!expanded) return;
         expanded = false;
+        hideCompanion(true);
         move(edgeX(false), getY(), TUCKED_ALPHA);
     }
 
@@ -139,6 +195,7 @@ public class RefreshBubble extends ImageView {
         float fraction = prefs.getFloat("bubbleY", 0.6f);
         expanded = false;
         dragging = false;
+        hideCompanion(false);
         animate().cancel();
         removeCallbacks(idle);
         setRotation(0);

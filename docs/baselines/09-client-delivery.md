@@ -40,6 +40,7 @@
 
 - Android 独立维护 `versionCode`、`versionName`，使用用户自己的签名发布。现有更新入口依赖 `v` 加版本名的 tag，以及名为 `AgentRemote.apk` 的发布资产。
 - iOS 使用对应构建号和签名，通过现有构建／TestFlight 入口交付；本地签名、`Local.xcconfig` 和私钥不提交。
+- Android 启动图标进入原生概览（见 [10](10-overview.md)），网页客户端仍在 `MainActivity`；通知点击与配对深链直接进入 `MainActivity`。
 - 原生通知、后台服务、权限、桥接、历史存储和深链属于壳功能。没有 SDK、签名、Xcode 或真机时，标明未构建／未验证，不能把网页浏览器检查写成原生验收。
 - 共享 setup 页面与两种壳入口保持既有链接、语言和扫码规则，避免单独更改一份后另一壳加载失效。
 

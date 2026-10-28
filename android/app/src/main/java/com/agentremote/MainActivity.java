@@ -55,6 +55,7 @@ public class MainActivity extends Activity {
     private WebView web;
     private WebView dying;
     private RefreshBubble bubble;
+    private volatile boolean direct;
     private ValueCallback<Uri[]> pickFile;
     private SharedPreferences prefs;
     private HistoryDb hist;
@@ -75,6 +76,7 @@ public class MainActivity extends Activity {
         web = createWeb();
         root.addView(web);
         bubble = new RefreshBubble(this, root, () -> restartWeb(true));
+        bubble.setCompanion(R.drawable.ic_overview, NotifyService.tr("概览", "Overview"), () -> OverviewStore.any(this), this::openOverview);
         setContentView(root);
         applyTheme(prefs.getBoolean("light", false));
 
@@ -84,6 +86,7 @@ public class MainActivity extends Activity {
 
         if (!openPairLink(getIntent())) {
             saveOpen(getIntent());
+            direct = state == null && hasWin(getIntent());
             if (state != null) web.restoreState(state);
             else load();
         }
@@ -270,12 +273,24 @@ public class MainActivity extends Activity {
         if (openPairLink(intent)) return;
         String win = intent.getStringExtra("win");
         if (win != null) {
+            direct = !win.isEmpty();
             saveOpen(intent);
             String target = prefs.getString("openWin", "");
             web.evaluateJavascript("Boolean(window.openWin && openWin(" + JSONObject.quote(target) + "))", result -> {
                 if ("true".equals(result) && target.equals(prefs.getString("openWin", ""))) prefs.edit().remove("openWin").apply();
             });
         }
+    }
+
+    private boolean hasWin(Intent intent) {
+        String win = intent.getStringExtra("win");
+        return win != null && !win.isEmpty();
+    }
+
+    // Back to the native overview: it sits below this activity unless a notification or pairing link started the app here.
+    private void openOverview() {
+        if (isTaskRoot()) startActivity(new Intent(this, OverviewActivity.class));
+        finish();
     }
 
     private void saveOpen(Intent intent) {
@@ -496,6 +511,17 @@ public class MainActivity extends Activity {
         public String authSign(String payload) {
             try { return EntryAuth.sign(appUrl(), payload); } catch (Exception e) { return ""; }
         }
+
+        // An overview card or notification opened an exact session: the page skips the agent check screen for this entry.
+        @JavascriptInterface
+        public boolean directOpen() { return direct; }
+
+        @JavascriptInterface
+        public void directDone() { direct = false; }
+
+        // The paired page hands over its entry credential so the native overview can read /api/overview.
+        @JavascriptInterface
+        public void setOverview(String config) { OverviewStore.save(MainActivity.this, config); }
 
         // config: {"app","key","token","id"} from the paired page, or "" to turn notifications off.
         @JavascriptInterface

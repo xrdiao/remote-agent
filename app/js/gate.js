@@ -219,6 +219,7 @@ function connLaunchNote(a) {
     unsupported: I18N.tr('这台电脑暂不支持远程启动'), timeout: I18N.tr('启动失败，请在电脑上检查'), failed: I18N.tr('启动失败，请在电脑上检查') }[st] || '';
 }
 function connContentReady() {
+  window.AgentRemoteApp?.directDone?.();
   conn.initialSelection = false;
   if (pendingStatus === '正在加载对话…') status('已连接');
   conn.loaded = true;
@@ -252,6 +253,7 @@ function ensureReadyAgent() {
   send({ t: 'attach', ...sel[pick.id], id: pick.id, initial: true });
 }
 function connReadFailed(message) {
+  window.AgentRemoteApp?.directDone?.();
   const target = navigationPending?.windowId || currentWindow;
   if (target) conn.failedTargets.set(target, message);
   navigationPending = null;
