@@ -49,10 +49,9 @@ export const adapter = {
       if (!pos) throw new Error('这条 Agent 已经不在列表里');
       if (pos !== true) await this.tapCss(pos.x, pos.y);
       for (let i = 0; i <= 12; i++) {
-        const thread = await this.cdp.evaluate(helpersCall('activeThread()'));
-        if (thread === id) {
-          if (this.threadId !== thread) this.clearViewState();
-          this.threadId = this.selectedThread = thread;
+        if (await this.cdp.evaluate(helpersCall(`cursorChatReady(${JSON.stringify(id)})`))) {
+          if (this.threadId !== id) this.clearViewState();
+          this.threadId = this.selectedThread = id;
           this.publishThread('已切换会话');
           confirmed = true;
           return;
@@ -71,7 +70,8 @@ export const adapter = {
   },
 
   async listAgents(silent, readOnly, emit) {
-    const list = await this.cdp.evaluate(helpersCall('agentList()'));
+    const list = readOnly && this.cdp.nativeWindow?.catalog ? structuredClone(this.cdp.nativeWindow.catalog)
+      : await this.cdp.evaluate(helpersCall('agentList()'));
     emit({ list: list || [] });
   },
 
@@ -108,8 +108,11 @@ export const adapter = {
     if (!ok) throw new Error(this.appMessage('{app} 没有进入编辑状态，没改动'));
     await this.key(mod('A'));
     await this.typeText(text);
-    await this.key('Enter');
-    setTimeout(() => this.pollChat().catch(() => {}), 300);
+    if (!await this.cdp.evaluate(helpersCall(`saveQueueEdit(${JSON.stringify(String(id))})`))) throw new Error('Cursor 队列保存入口已不可用');
+    if (!await this.waitFor(`queueText(${JSON.stringify(String(id))}, false)?.trim() === ${JSON.stringify(text.trim())}`, 40))
+      throw new Error('Cursor 尚未确认排队消息已保存，请核对队列后重试');
+    this.pollChat(true).catch(() => {});
+    return { queueId: id };
   },
 
   async changeAction(i, name, act) {

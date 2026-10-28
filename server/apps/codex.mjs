@@ -8,8 +8,9 @@ import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { FOCUS_COMPOSER, codexUsage } from '../agent/context.mjs';
 import { computerId, saveState } from '../../lib/auth.mjs';
 import { conversationProjects, fusionProject } from '../fusion/state.mjs';
-import { removeLibrarySession, publishSessionChange } from '../../lib/session-library.mjs';
+import { removeLibrarySession, publishSessionChange, rememberSessionMessage } from '../../lib/session-library.mjs';
 import { storedProjectSession } from '../project-windows.mjs';
+import { NativeCdp, nativeWindowAt } from '../native-windows.mjs';
 
 // Native support; availability still follows the selected thread, model and controls.
 export const capabilities = {
@@ -53,11 +54,12 @@ export const adapter = {
       const group = p.title;
       if (p.chatWs) {
         for (const root of states[pages.indexOf(p)]?.roots || []) addNew(p, root, group);
-        const cdp = p.pageId === this.codexPageId ? this.cdp : new Cdp(p.chatWs);
+        const cdp = p.pageId === this.codexPageId ? this.cdp : this.fusionOwner ? new Cdp(p.chatWs) : new NativeCdp(p.chatWs);
         let rows = [];
         try {
           if (cdp !== this.cdp) await cdp.connect();
-          rows = readOnly ? await cdp.evaluate(helpersCall('codexChatRows(true)')) : await this.codexThreadRows(cdp);
+          rows = readOnly && cdp.nativeWindow?.catalog ? structuredClone(cdp.nativeWindow.catalog)
+            : readOnly ? await cdp.evaluate(helpersCall('codexChatRows(true)')) : await this.codexThreadRows(cdp);
         } finally { if (cdp !== this.cdp) cdp.close(); }
         this.rememberCodexRoots(rows);
         const folderOf = ws => {
@@ -117,11 +119,16 @@ export const adapter = {
   },
 
   async editQueued(id, text) {
+    if (!await this.waitFor(`queueEditing() === ${JSON.stringify(String(id))}`, 40)) throw new Error('Codex 没有进入对应队列消息的编辑状态');
+    const before = await this.cdp.evaluate(helpersCall('codexFacts()?.queued || []'));
     await this.codexFocusPrompt();
     await this.cdp.evaluate(helpersCall('codexSelectPrompt()'));
     await this.cdp.send('Input.insertText', { text });
-    if (!await this.cdp.evaluate(helpersCall('submitCodexMessage()'))) throw new Error('Codex 保存排队消息的按钮不可用');
-    setTimeout(() => this.pollChat().catch(() => {}), 300);
+    if (!await this.cdp.evaluate(helpersCall('submitCodexMessage("queue")'))) throw new Error('Codex 保存排队消息的按钮不可用');
+    const result = await this.waitFor(`codexQueued(true).find(item => !${JSON.stringify(before.map(item => item.id))}.includes(item.id) && item.t.trim() === ${JSON.stringify(text.trim())})`, 40);
+    if (!result) throw new Error('Codex 尚未确认排队消息已保存，请核对队列后重试');
+    this.pollChat(true).catch(() => {});
+    return { queueId: result.id, messageId: result.messageId };
   },
 
   async changeAction(i, name, act) {
@@ -163,43 +170,56 @@ export const adapter = {
     else await this.typeText(text);
   },
 
-  async submitPrompt(now, busy, when, queued, mentions) {
+  async submitPrompt(now, busy, when, queued, mentions, receipt, files = []) {
+    const source = this.cdp?.nativeWindow;
+    if (source) {
+      const action = when === 'now' ? 'steer' : when === 'queue' ? 'queue' : '';
+      const token = this.sendNativeReceipt, sel = this.selectionKey();
+      const before = await this.cdp.evaluate(helpersCall(`submitCodexMessage(${JSON.stringify(action)}, true, ${JSON.stringify(receipt?.requestId || '')})`));
+      if (!before) throw new Error('Codex 提交入口当前不可用');
+      this.lastDraft = before.draft;
+      queued = !!busy && (when === 'queue' || (!when && before.follow === 'queue'));
+      if (token) token.pending = true;
+      if (receipt) {
+        const request = { ...receipt, thread: before.thread, expected: before.payload.trim(),
+          hasAttachments: !!before.hasDraftAttachments || !!mentions?.some(m => m.section === 'local-files'),
+          before: new Set(before.messages.map(row => row.id)), beforeQueues: new Set(before.queued.map(row => row.id)) };
+        this.nativeSends ||= new Map();
+        const cancel = source.registerSend(request, (accepted, error) => {
+          this.nativeSends.delete(receipt.requestId);
+          if (accepted) {
+            if (token) Object.assign(token, accepted, { pending: false });
+            for (const file of files) file.pending = false;
+            if (!accepted.queued) rememberSessionMessage('codex', before.thread || source.snapshot?.receipt?.thread, Date.now());
+            this.emit({ t: 'sent', ...receipt, ...accepted, sel, sentAt: Date.now() });
+          } else this.emit({ t: 'sendFailed', requestId: receipt.requestId, message: error, sel });
+        });
+        this.nativeSends.set(receipt.requestId, { sel, cancel });
+      }
+      return queued;
+    }
     const hasLocalFiles = mentions?.some(m => m.section === 'local-files');
-    const facts = await this.cdp.evaluate(helpersCall('codexFacts()'));
-    const hasAttachments = hasLocalFiles || facts?.hasDraftAttachments === true;
-    const beforeReceipt = await this.cdp.evaluate(helpersCall('codexReceiptRows()'));
-    const draft = await this.cdp.evaluate(helpersCall('codexPromptText()')) || '';
-    const payload = await this.cdp.evaluate(helpersCall('codexPromptPayload()'));
-    if (payload == null) throw new Error('Codex 输入尚未就绪');
-    const expected = payload.trim();
-    this.lastDraft = draft;
-    const beforeMessages = new Set(beforeReceipt.map(item => item.id));
-    const beforeQueue = new Set((facts?.queued || []).map(item => item.id));
+    const before = await this.cdp.evaluate(helpersCall('codexSendState(true)'));
+    const hasAttachments = hasLocalFiles || before.hasDraftAttachments;
+    if (before.payload == null) throw new Error('Codex 输入尚未就绪');
+    const expected = before.payload.trim();
+    this.lastDraft = before.draft;
     const nativeReceipt = this.sendNativeReceipt;
     const receiptThread = this.threadId, receiptCdp = this.cdp, receiptScope = this.selectionKey();
-    const view = facts?.view;
-    const follow = view?.follow || 'queue';
+    const follow = before.follow;
     queued = !!busy && (when === 'queue' || (!when && follow === 'queue'));
     const action = when === 'now' ? 'steer' : when === 'queue' ? 'queue' : '';
     if (!await this.cdp.evaluate(helpersCall(`submitCodexMessage(${JSON.stringify(action)})`))) throw new Error('Codex 提交入口当前不可用');
-    // Native message/queue receipts, rather than composer clearing, confirm acceptance.
-    const receiptDeadline = Date.now() + 5000;
-    for (let i = 0; i < 40 && Date.now() < receiptDeadline; i++) {
-      const accepted = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return { thread: h.codexThread(), messages: h.codexReceiptRows(), queued: h.codexFacts()?.queued || [] }; })()`, { timeout: receiptDeadline - Date.now() }).catch(() => null);
-      if (!accepted) break;
-      if (this.cdp !== receiptCdp || this.selectionKey() !== receiptScope || receiptThread && accepted.thread !== receiptThread) break;
-      const messages = accepted.messages.filter(item => !beforeMessages.has(item.id)
-        && !item.nativeIds?.some(id => beforeQueue.has(id)) && (expected ? item.t.trim() === expected : hasAttachments));
-      const pending = accepted.queued.filter(item => !beforeQueue.has(item.id) && (expected ? item.t.trim() === expected.slice(0, 4000) : hasAttachments));
-      if (messages.length + pending.length === 1) {
-        queued = pending.length === 1;
-        if (nativeReceipt) Object.assign(nativeReceipt, queued
-          ? { queueId: pending[0].id, ...(pending[0].messageId ? { messageId: pending[0].messageId } : {}) }
-          : { messageId: messages[0].i });
-        if (busy && !queued) this.emit({ t: 'status', ok: true, msg: '已追加到当前任务' });
-        return queued;
-      }
-      await new Promise(r => setTimeout(r, 125));
+    const baseline = { thread: before.thread, messages: before.messages.map(({ id }) => ({ id })), queued: before.queued.map(({ id }) => ({ id })) };
+    const accepted = await this.cdp.evaluate(helpersCall(`waitCodexReceipt(${JSON.stringify(baseline)}, ${JSON.stringify(expected)}, ${!!hasAttachments})`), { timeout: 6000 }).catch(error => {
+      cdpRead.getStore()?.throwIfAborted();
+      return null;
+    });
+    if (accepted && this.cdp === receiptCdp && this.selectionKey() === receiptScope && (!receiptThread || before.thread === receiptThread)) {
+      queued = accepted.queued;
+      if (nativeReceipt) Object.assign(nativeReceipt, accepted);
+      if (busy && !queued) this.emit({ t: 'status', ok: true, msg: '已追加到当前任务' });
+      return queued;
     }
     if (nativeReceipt) nativeReceipt.pending = true;
     return queued;
@@ -266,7 +286,10 @@ mergeCodexItems(chat) {
   }
   for (const [index, { buttonsRead, htmlRead, ...it }] of chat.items.entries()) {
     const old = rows.get(it.i);
-    if (htmlRead === false && it.k === 'assistant' && old?.t === it.t && old.h) it.h = old.h;
+    if (htmlRead === false && it.k === 'assistant' && old?.t === it.t && old.bodyFormat === 'html' && old.h) {
+      it.h = old.h;
+      it.bodyFormat = 'html';
+    }
     if (!Number.isFinite(it.order)) it.order = Number.isFinite(old?.order) ? old.order : ++tailOrder;
     // A stored turn has no footer DOM; a mounted turn is authoritative, including removal.
     const retained = buttonsRead === false && it.k === 'assistant' && old?.k === 'assistant'
@@ -289,6 +312,23 @@ mergeCodexItems(chat) {
       .filter(button => !/^(Retry|Try(?: again)?|重试|再试一次)$/i.test(button.label));
     if (buttons.length !== it.b.length) rows.set(id, { ...it, b: buttons.map(button => button.label),
       ...(it.actions ? { actions: buttons.map(button => button.action) } : {}) });
+  }
+  if ('historyBefore' in chat) {
+    chat.earlier = !!chat._historyEarlier;
+    delete chat._historyEarlier; delete chat._historyStart;
+    if (!chat.busy) for (const item of chat.items) {
+      if (item.k === 'thinking') item.live = false;
+      if (item.k === 'tool' && !item.keep) item.done = true;
+    }
+    // Only completed bodies survive a selection change; current controls come from this read.
+    const completedRows = [...rows.values()].filter(item => item.k === 'human'
+      || item.k === 'assistant' && item.completed || item.k === 'thinking' && !item.live
+      || item.k === 'tool' && item.done || item.k === 'notice' && !item.live)
+      .sort((a, b) => a.order - b.order).slice(-400);
+    this.itemCache.delete(thread);
+    this.itemCache.set(thread, completedRows);
+    if (this.itemCache.size > 12) this.itemCache.delete(this.itemCache.keys().next().value);
+    return;
   }
   const ordered = [...rows.values()].sort((a, b) => a.order - b.order);
   const turns = [...new Set(ordered.map(it => Math.floor(it.order / 10000)))].slice(-32);
@@ -353,12 +393,11 @@ async adoptCodexThread(thread, statusMsg) {
   try {
     if (this.threadId !== (thread || '')) this.clearViewState();
     this.threadId = thread || '';
-    this.publishThread(statusMsg);
   } finally {
     this.switchingThread = switching;
   }
+  this.publishThread(statusMsg);
   if (!switching) {
-    this.publishThread();
     await this.pollChat(true, true);
   }
 },
@@ -446,7 +485,6 @@ async openCodexAgent(id, preferCurrentProject = false) {
   if (preferCurrentProject && workspace && this.projectMatches(await editorRoots(this.editorCdp, 'codex'), workspace, row?.host || '')) {
     if (!await this.selectCodexThread(convId)) throw new Error('没有找到所选会话');
     await this.adoptCodexThread(convId, '已切换会话');
-    this.listAgents(true, true).catch(() => {});
     return;
   }
   if (workspace && !row?.host) {
@@ -493,6 +531,8 @@ async codexPageForThread(pages, threadId) {
 
 async probeCodex(page) {
   if (!page?.chatWs && page?.pageId !== this.codexPageId) return null;
+  const source = !this.fusionOwner && nativeWindowAt(page.chatWs);
+  if (source?.snapshot) return (await source.read()).states.find(state => state.thread === source.snapshot.chat?.thread) || null;
   if (page.pageId === this.codexPageId && this.cdp) {
     try { return await this.cdp.evaluate(helpersCall('agentState()')); } catch { return null; }
   }

@@ -153,7 +153,15 @@ function paintThinking(el, it) {
   const loading = more && thoughtFull.has(it.i) && full === undefined;
   const body = loading ? '加载中…' : more && full === null ? '内容未保存' : rest;
   box.classList.toggle('loading', loading);
-  if (box.textContent !== body) box.textContent = body;
+  box.classList.toggle('markdown', currentApp === 'codex');
+  if (currentApp === 'codex') {
+    const html = codexReplyHtml({ t: body });
+    if (box._thinkingHtml !== html) {
+      box.innerHTML = html;
+      box._thinkingHtml = html;
+      dressMessage(box);
+    }
+  } else if (box.textContent !== body) box.textContent = body;
   box.hidden = !open;
   if (open && more && !thoughtFull.has(it.i)) thoughtObserver.observe(el);
   if (open && it.live && follow) box.scrollTop = box.scrollHeight;

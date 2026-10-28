@@ -179,6 +179,7 @@ export const ROUTES = {
   draft: {
     pre: async (s, m) => {
       if ((m.draftEpoch || '') !== (s.draftEpoch || '')) return;
+      if (s.queueEditing) { s.queueEditing.request = m; return; }
       const read = m.text === undefined;
       let text = read ? '' : String(m.text);
       const sel = s.selectionKey(), epoch = s.draftEpoch || '';
@@ -282,15 +283,18 @@ export const ROUTES = {
   file: { switchRead: true,  run: (s, m) => s.openFile(String(m.path ?? ''), String(m.diff ?? ''), m.changes === true, m.requestId) },
   click: { run: (s, m) => s.clickButton(m.item, m.n, m.actionId, m.label, m.sel, m.requestId) },
   queue: {
+    readOnly: (s, m) => m.action === 'read',
     run: (s, m) => {
+      if (m.action === 'read') return s.queuedText(m.id);
       if (m.action === 'clear' && s.app === 'devin') return s.devinClearQueue();
       if (m.action === 'edit' && s.app === 'devin') return s.devinTakeOut(m.id);
       return m.action === 'edit' ? s.editQueued(m.id, String(m.text ?? '')) : s.queueAction(m.id, m.action);
     },
-    after: (s, m) => {
-      s.emit({ t: 'queueDone', sel: s.selectionKey(), id: m.id, action: m.action, text: m.text, echoes: m.echoes, ok: true });
+    after: (s, m, result) => {
+      s.emit({ t: 'queueDone', sel: m.sel || s.selectionKey(), requestId: m.requestId, id: m.id, action: m.action, text: m.action === 'read' ? result : m.text, echoes: m.echoes, ...(m.action === 'edit' && result), ok: true });
       if (m.action === 'edit') s.emit({ t: 'status', ok: true, msg: '已修改，仍在排队' });
     },
+    fail: (s, m, error) => s.emit({ t: 'queueDone', sel: m.sel || s.selectionKey(), requestId: m.requestId, id: m.id, action: m.action, ok: false, error: error?.message }),
   },
   stop: {
     fast: true,

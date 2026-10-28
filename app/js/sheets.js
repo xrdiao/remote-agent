@@ -145,7 +145,9 @@ function rememberChatMessageTime(chat) {
 }
 function rememberAgentOpen(m) {
   const target = /^(?:thread|win|new):([^:]+)(?::(.+))?$/.exec(pendingAgentOpen);
-  const matched = m.app === 'codex' ? target && m.windowId === target[1] && (!target[2] || m.threadId === target[2]) : pendingAgentOpen === m.threadId;
+  const matched = pendingAgentOpen.startsWith('thread:')
+    ? agentThreadKey({ id: pendingAgentOpen }, m.app) === m.threadId
+    : m.app === 'codex' ? target && m.windowId === target[1] && (!target[2] || m.threadId === target[2]) : pendingAgentOpen === m.threadId;
   if (!m.closed && pendingAgentOpen && matched && m.threadId) {
     const now = Date.now(), openedKey = agentOpenedKey(m.threadId), usageKey = agentUsageKey(m.threadId);
     agentOpened[openedKey] = now;

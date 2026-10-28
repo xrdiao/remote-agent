@@ -154,7 +154,7 @@ export class AgentContext {
     this.thinking = new Map();
     this.thinkingTried = new Map();
     this.keptThink = new Map();
-    this.itemCache = new Map();
+    if (this.fusionOwner) this.itemCache = new Map();
     this.thinkLiveSeen = new Set();
     this.thinkFinal = new Set();
     this.pendingThread = '';

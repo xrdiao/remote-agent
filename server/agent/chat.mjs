@@ -7,6 +7,7 @@ import { cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { FOCUS_COMPOSER, uploads } from './context.mjs';
 import { rememberSessionMessage, observeSessionTitle, readLibrary } from '../../lib/session-library.mjs';
+import { nativeWindow } from '../native-windows.mjs';
 
 // Cursor accepts images pasted into the composer; a synthetic paste event carrying a File works the same way.
 const pasteImage = (b64, name, type) => `(async () => {
@@ -196,7 +197,7 @@ export const methods = {
     const { cdp, sel } = state;
     const sendGen = this.sendGen || 0;
     const draftGeneration = this.draftGeneration, draftRevision = this.draftRevision;
-    const readDraft = !this.mentionBusy && !this.draftWriting;
+    const readDraft = !this.mentionBusy && !this.draftWriting && !this.queueEditing;
     const publish = chat => {
       cdpRead.getStore()?.throwIfAborted();
       this.emit({ t: 'chat', sel: this.selectionKey(), chat });
@@ -206,7 +207,10 @@ export const methods = {
     const read = async () => {
       const child = this.mainTab?.cdp === cdp ? this.mainTab.child || '' : '';
       const known = (this.itemCache?.get(this.threadId || '')?.completeTurns || []).map(([id]) => id);
-      const chat = await cdp.evaluate(`(() => { const h = ${PAGE_SRC}, chat = h.extract(false, ${JSON.stringify(known)}); if (chat) chat.subagent = !!(${JSON.stringify(child)} && h.activeChatTab() === ${JSON.stringify(child)} && chat.readonly); return chat; })()`);
+      const source = nativeWindow(cdp);
+      const chat = source?.win ? structuredClone((await source.read(state.requested && !state.sent)).chat)
+        : await cdp.evaluate(`(() => { const h = ${PAGE_SRC}, chat = h.extract(false, ${JSON.stringify(known)}, ${this.app === 'codex' && !this.fusionOwner ? 80 : 0}); if (chat) chat.subagent = !!(${JSON.stringify(child)} && h.activeChatTab() === ${JSON.stringify(child)} && chat.readonly); return chat; })()`);
+      if (chat && source?.win) chat.subagent = !!(child && source.snapshot.activeTab === child && chat.readonly);
       if (chat) delete chat._revision;
       return chat;
     };
@@ -234,8 +238,7 @@ export const methods = {
         const initial = { ...chat, items: chat.items.map(it => ({ ...it })) };
         delete initial.draft;
         if (this.app === 'codex') {
-          initial.context = await awaitCdpRead(contextRead = Promise.resolve(codexContext(chat.thread)));
-          if (!this.liveRead(cdp, sel) || this.historyLoading || !this.acceptsChat(initial)) return;
+          contextRead = Promise.resolve(codexContext(chat.thread));
         }
         this.mergeCodexItems(initial);
         this.lastExtractedChat = extracted;
@@ -247,7 +250,11 @@ export const methods = {
         this.lastChat = JSON.stringify(initial);
         publish(initial);
       }
-      const thinkingAction = action => cdp.evaluate(helpersCall(action));
+      const thinkingAction = async action => {
+        const result = await cdp.evaluate(helpersCall(action));
+        nativeWindow(cdp)?.invalidate();
+        return result;
+      };
       const details = fn => state.requested && state.sent
         ? this.withChatUiDetails(() => this.liveRead(cdp, sel) ? fn() : undefined) : fn();
       const readThinking = async () => {
@@ -321,7 +328,7 @@ export const methods = {
         }
       }
       // A draft read before or during a send is the text being sent; pushing it would refill the phone's box.
-      if (readDraft && !this.mentionBusy && !this.draftWriting && draftGeneration === this.draftGeneration
+      if (readDraft && !this.mentionBusy && !this.draftWriting && !this.queueEditing && draftGeneration === this.draftGeneration
         && draft !== undefined && draft !== this.lastDraft && !this.sending && (this.sendGen || 0) === sendGen && this.liveRead(cdp, sel)) {
         this.lastDraft = draft;
         this.emit({ t: 'draft', sel: this.selectionKey(), text: draft, draftEpoch: this.draftEpoch || '', revision: draftRevision });
@@ -431,8 +438,42 @@ export const methods = {
   },
   async editQueued(id, text) {
     if (!text.trim()) throw new Error('内容不能为空；不想要这条就点「删除」');
-    await this.queueAction(id, 'edit');
-    return this.adapter.editQueued.call(this, id, text);
+    await this.assertSelectedThread();
+    const editing = { cdp: this.cdp, sel: this.selectionKey(), draft: await this.cdp.evaluate(helpersCall('composerDraft()')) };
+    this.queueEditing = editing;
+    this.draftGeneration++;
+    let saved = false;
+    try {
+      await this.queueAction(id, 'edit');
+      const result = await this.adapter.editQueued.call(this, id, text);
+      saved = true;
+      return result;
+    } finally {
+      if (this.queueEditing === editing) {
+        this.queueEditing = null;
+        this.draftGeneration++;
+        if (saved && this.cdp === editing.cdp && this.selectionKey() === editing.sel) {
+          const request = editing.request;
+          const draft = request?.text === undefined ? editing.draft : String(request.text);
+          const restore = async () => {
+            if (!await editing.cdp.evaluate(FOCUS_COMPOSER)) return false;
+            await this.key(mod('A'), { cdp: editing.cdp });
+            await this.key('Backspace', { cdp: editing.cdp });
+            await this.typeText(draft || '', editing.cdp);
+            return await editing.cdp.evaluate(helpersCall('composerDraft()')) === (draft || '').replace(/\n+$/g, '');
+          };
+          const ok = await restore().catch(() => false);
+          if (ok) this.lastDraft = draft || '';
+          if (request) this.emit({ t: 'draftAck', sel: editing.sel, ok, text: draft, read: request.text === undefined, draftEpoch: request.draftEpoch || '', revision: request.revision });
+        }
+      }
+    }
+  },
+  async queuedText(id) {
+    await this.assertSelectedThread();
+    const text = await this.cdp.evaluate(helpersCall(`queueText(${JSON.stringify(String(id))})`));
+    if (typeof text !== 'string') throw new Error('这条排队消息已经不在了');
+    return text;
   },
   async queueAction(id, action) {
     await this.assertSelectedThread();
@@ -476,8 +517,9 @@ export const methods = {
       const cdp = this.cdp, sel = this.sel, thread = this.threadId;
       const page = await cdp.evaluate(helpersCall(`codexHistoryPage(${JSON.stringify(beforeOrder)}, ${JSON.stringify(known)}, ${details === true})`));
       if (!this.liveRead(cdp, sel) || page.thread !== thread) return;
-      const live = new Map((this.itemCache?.get(thread) || []).map(it => [it.i, it]));
-      page.items = page.items.map(it => live.get(it.i) || it);
+      const snapshot = { ...page, historyBefore: page.before, _historyEarlier: page.earlier, busy: this.lastBusy };
+      this.mergeCodexItems(snapshot);
+      page.items = snapshot.items;
       return page;
     }
     if (this.app === 'codex') {
@@ -623,11 +665,15 @@ export const methods = {
     this.sending = true;
     let busy, now, queued;
     try {
-      const found = await this.cdp.evaluate(FOCUS_COMPOSER);
+      const input = this.app === 'codex' && nativeWindow(this.cdp) ? await this.cdp.evaluate(`(() => {
+        const focused = ${FOCUS_COMPOSER}, h = ${PAGE_SRC};
+        return { focused, busy: h.agentState()?.busy, draft: h.composerDraft() };
+      })()`) : null;
+      const found = input ? input.focused : await this.cdp.evaluate(FOCUS_COMPOSER);
       if (!found) throw new Error(this.appMessage('没找到 {app} 的聊天输入框：先在画面里打开 Agent 面板（或点「打开聊天」）'));
       // Read busy before typing: once the composer has text, apps replace the stop button with a send button and isBusy() reads false.
-      busy = submit && await this.cdp.evaluate(helpersCall('agentState()?.busy'));
-      const sameDraft = !mentions?.length && await this.cdp.evaluate(helpersCall('composerDraft()')) === text;
+      busy = submit && (input ? input.busy : await this.cdp.evaluate(helpersCall('agentState()?.busy')));
+      const sameDraft = !mentions?.length && (input ? input.draft : await this.cdp.evaluate(helpersCall('composerDraft()'))) === text;
       if (!sameDraft) {
         const draftCleared = await this.cdp.evaluate(helpersCall(`setComposerDraft('')`));
         for (let i = 0; !draftCleared && i < 2 && await this.cdp.evaluate(helpersCall('composerFocused()')) && await this.cdp.evaluate(helpersCall('composerDraft()')); i++) {
@@ -638,7 +684,7 @@ export const methods = {
       }
       now = this.app === 'devin' && when === 'now' && !!busy;
       queued = Boolean(busy) && !now;
-      if (submit) queued = await this.adapter.submitPrompt.call(this, now, busy, when, queued, mentions);
+      if (submit) queued = await this.adapter.submitPrompt.call(this, now, busy, when, queued, mentions, receipt, files);
     } catch (error) {
       if (this.app === 'codex' && mentions?.some(m => m.section === 'local-files')) {
         await this.cdp.evaluate(helpersCall('codexClearDraftAttachments()')).catch(() => false);
