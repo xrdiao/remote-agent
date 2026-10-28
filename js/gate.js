@@ -233,7 +233,10 @@ function connAgentResults(results, complete = true) {
 function connLaunch(apps) {
   const targets = apps || selectedLaunchAgents();
   if (!targets.length) return;
-  for (const app of targets) connLaunchStatus.set(app, 'launching');
+  for (const app of targets) {
+    connLaunchStatus.set(app, 'launching');
+    conn.failedTargets?.delete(app);
+  }
   send({ t: 'launchAgents', apps: targets });
   connRender();
   if (sheetKind === 'agent-manager') showAgentManager();
@@ -280,21 +283,22 @@ function ensureReadyAgent() {
   const ready = (conn.agents || []).filter(a => a.windows).map(a => a.app);
   if (!ready.length) return;
   const appOf = id => String(id || '').split(':')[0];
-  const want = currentApp || appOf(currentComputer()?.win);
-  const sel = currentComputer()?.selections || {};
+  const saved = conn.lastSelection;
+  const want = saved?.app || '';
   const picks = (windows || []).filter(w => ready.includes(appOf(w.id)))
     .flatMap(w => (w.windowIds || [w.id]).map(id => ({ id, app: appOf(id) })))
     .filter(w => !conn.failedTargets?.has(w.id));
-  picks.sort((a, b) => Number(b.app === want) - Number(a.app === want) || Number(!!sel[b.id]) - Number(!!sel[a.id]));
+  picks.sort((a, b) => Number(b.app === want) - Number(a.app === want) || Number(b.id === saved?.id) - Number(a.id === saved?.id));
   const pick = picks[0];
   if (!pick) return;
-  send({ t: 'attach', ...sel[pick.id], id: pick.id, initial: true });
+  send({ t: 'attach', ...(pick.app === want ? saved : {}), id: pick.id, initial: true });
 }
 function connReadFailed(message) {
-  const target = navigationPending?.windowId || currentWindow;
+  const target = navigationPending?.targetId || currentWindow;
   if (target) conn.failedTargets.set(target, message);
   navigationPending = null;
   conn.attachFailed = true;
+  selectionReady = false;
   setWindowReady(false);
   $('retryChat').hidden = false;
   status(message, false);
