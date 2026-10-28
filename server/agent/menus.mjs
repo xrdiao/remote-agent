@@ -104,7 +104,7 @@ export const methods = {
   async readMenu(kind, requestId) {
     const sel = this.sel;
     if (kind === 'effort') {
-      let items = await this.cdp.evaluate(helpersCall('effortItems(true)'));
+      let items = await this.cdp.evaluate(helpersCall(`effortItems(true, ${this.app === 'codex'})`));
       let fast = await this.cdp.evaluate(helpersCall('fastInfo()'));
       if (!items.length) {
         await this.pressControl('model');
@@ -257,6 +257,7 @@ export const methods = {
       return;
     }
     if (kind === 'effort') {
+      if (this.app === 'codex' && label === 'max') await this.enableCodexMax();
       const picked = await this.cdp.evaluate(helpersCall(`pickEffort(${JSON.stringify(label)})`));
       if (!picked) {
         await this.openEffortMenu();
@@ -265,6 +266,7 @@ export const methods = {
         await this.tapCss(pos.x, pos.y);
         await this.closeMenus();
       }
+      if (this.app === 'codex' && !await this.waitFor(`codexPickerProps()?.reasoningEffort === ${JSON.stringify(label)}`)) throw new Error('思考强度尚未切换');
       this.pollChat(this.app === 'codex').catch(() => {});
       return;
     }

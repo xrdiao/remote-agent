@@ -75,3 +75,5 @@ Codex 完成回复的 Fork 即使收在原生“更多”菜单中或该轮未�
 输入回答读 [01](01-conversation-input.md)，显示与读取读 [02](02-chat-display-history.md)，会话归属读 [03](03-projects-sessions-windows.md)，提醒读 [05](05-notifications-background.md)，文件动作读 [06](06-desktop-tools-media.md)，Fusion 双方设置读 [07](07-fusion.md)。
 
 本次建档未执行原生菜单、审批或 Retry，不改变任何账号和原生设置。
+
+Codex 普通会话的思考强度包括当前模型原生能力中支持的 Max；不为不支持的模型伪造选项。选择 Max 时通过原生 Configuration 的 Available reasoning efforts 启用其隐藏选项，再调用原生模型／强度选择并读回实际值。该开关属于电脑端 Codex 设置，会同时影响其原生菜单；保留其他强度，包括 Ultra。

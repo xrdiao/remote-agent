@@ -224,7 +224,8 @@ export class Session extends AgentContext {
     const onclose = () => {
       if (this.cdp !== cdp && this.editorCdp !== editorCdp) return;
       this.detach();
-      this.emit({ t: 'status', ok: false, msg: this.appMessage('{app} 窗口连接已断开') });
+      this.emit({ t: 'attached', id: win.id, app: win.app, windowId: selection.windowId,
+        closed: true, ready: false, message: this.appMessage('{app} 窗口连接已断开') });
     };
     for (const connection of new Set([cdp, editorCdp])) {
       connection.onclose = onclose;
@@ -329,6 +330,12 @@ export class Session extends AgentContext {
 
   detach() {
     this.bindingReady = false;
+    const read = this.chatRead;
+    this.chatRead = null;
+    this.polling = this.pollAgain = null;
+    const reason = new Error('窗口已切换或断开');
+    read?.controller.abort(reason);
+    read?.reject?.(reason);
     this.desktopSettingsOwned = undefined;
     this.desktopSettingsSection = '';
     this.codexSettingsCdp?.close();

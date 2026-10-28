@@ -147,7 +147,18 @@
     const key = part === 'lead' ? 'Lead' : part === 'sidekick' ? 'Sidekick' : part === 'fast' ? 'Fast Mode' : current.familyMetadata?.['Reasoning Effort'] ? 'Reasoning Effort' : 'Effort';
     return devinConfigs(p).filter(c => !c.disabled && c.familyUid === current.familyUid && c.familyMetadata?.[key] && Object.entries(current.familyMetadata || {}).every(([k, v]) => k === key || (c.familyMetadata?.[k]?.name === v.name && c.familyMetadata?.[k]?.order === v.order))).map(c => ({ config: c, label: c.familyMetadata[key].name, checked: c.modelUid === current.modelUid, order: c.familyMetadata[key].order, ...(includePricing ? { pricing: devinPricing(c) } : {}) }));
   };
-  const effortItems = (includePricing = false) => {
+  const effortItems = (includePricing = false, includeHidden = false) => {
+    const codex = includeHidden && codexPickerProps();
+    if (codex) {
+      const visible = codex.modelOptions.find(o => o.model.id === codex.model)?.model.supportedReasoningEfforts || [];
+      const host = codexCurrentProject().host || 'local';
+      const models = codexQueryClient()?.getQueryCache().getAll().find(q => q.queryKey[0] === 'models' && q.queryKey[2] === host)?.state.data?.data || [];
+      const supported = models.find(m => m.id === codex.model)?.supportedReasoningEfforts || [];
+      const choices = [...visible];
+      if (supported.some(x => x.reasoningEffort === 'max') && !choices.some(x => x.reasoningEffort === 'max')) choices.push({ reasoningEffort: 'max' });
+      return choices
+        .map(x => ({ label: x.reasoningEffort, checked: x.reasoningEffort === codex.reasoningEffort }));
+    }
     const p = powerProps();
     if (p) return p.powerSelections.filter(x => !x.isLocked).map(x => ({ label: x.reasoningEffort, checked: x.reasoningEffort === p.selectedPowerSelection?.reasoningEffort }));
     const cp = devinSurface() ? null : cursorPickerProps();
@@ -163,6 +174,15 @@
   };
   const effortName = () => effortItems().find(x => x.checked)?.label || (doc.querySelector('.vscode-model-picker__trigger') ? /\b(Low|Medium|High|Max|Extra High|Ultra)(?: Fast)?$/i.exec(normLabel(modelButton()?.innerText))?.[1] || 'Effort' : null);
   const pickEffort = label => {
+    const codex = codexPickerProps();
+    if (codex) {
+      const model = codex.modelOptions.find(o => o.model.id === codex.model)?.model;
+      if (!model?.supportedReasoningEfforts.some(x => x.reasoningEffort === label)
+        && !(label === 'max' && effortItems(false, true).some(x => x.label === label))) return false;
+      codex.onSelectModel(codex.model, label);
+      codex.onSelectComplete?.();
+      return true;
+    }
     const p = powerProps();
     if (p) {
       const item = p.powerSelections.find(x => !x.isLocked && x.reasoningEffort === label);

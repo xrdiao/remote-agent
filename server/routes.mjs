@@ -289,9 +289,10 @@ export const ROUTES = {
     },
   },
   stop: {
-    fast: s => s.app === 'fusion',
-    fastRun: s => s.adapter.stopAgent.call(s),
-    run: s => s.stopAgent(),
+    fast: true,
+    fastRun: (s, m) => s.app === 'fusion' ? s.adapter.stopAgent.call(s) : s.handle(m),
+    readOnly: true,
+    run: (s, m) => s.stopButton(m),
   },
   subagent: { run: (s, m) => s.subagentAction(m.name, m.part === 'stop' ? 'stop' : 'open') },
   mainChat: { run: s => s.backToMain() },
@@ -343,7 +344,7 @@ export const ROUTES = {
   send: {
     fusionFree: true,
     run: (s, m) => s.sendMessage(String(m.text ?? ''), m.submit !== false, m.when, cleanMentions(m.mentions), { requestId: m.requestId, draft: m.draft, text: m.text, draftEpoch: m.draftEpoch }),
-    fail: (s, m, error) => s.emit({ t: 'sendFailed', requestId: m.requestId, message: quotaErrorMessage(s.app, error) || error?.message }),
+    fail: (s, m, error) => s.emit({ t: 'sendFailed', requestId: m.requestId, message: quotaErrorMessage(s.app, error) || error?.message, cancelled: error?.cancelled === true }),
   },
   mentionQuery: { switchRead: true,  run: (s, m) => s.mentionQuery(String(m.q ?? '').slice(0, 80), m.cat ? String(m.cat).slice(0, 40) : '', Number(m.seq) || 0, m.trigger === '/' ? '/' : '@', { text: String(m.text ?? ''), start: m.start, caret: m.caret }) },
   codexRequest: {

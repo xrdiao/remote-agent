@@ -400,7 +400,7 @@ function updateGenerationTime(chat, stale) {
     let clock = previous || { start: null, end: null };
     if (chat.generation?.start && (!chat.busy || !chat.generation.end)) clock = { ...chat.generation };
     else if (previous && chat.busy && !previous.busy) clock = { start: Date.now(), end: null };
-    else if (previous?.start && previous.busy && !chat.busy && !clock.end) clock = { ...clock, end: Date.now() };
+    if (!chat.busy && clock.start && !clock.end) clock = { ...clock, end: previous?.start === clock.start && previous.end || Date.now() };
     generationClocks.set(activeGeneration, { ...clock, busy: !!chat.busy });
   }
 }
