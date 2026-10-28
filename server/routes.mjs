@@ -6,6 +6,7 @@ import { helpersCall } from './page/build.mjs';
 import { appPlans, quotaErrorMessage } from './agent/context.mjs';
 import { probeLatency } from './latency.mjs';
 import { launchAgents, detectAgents } from './launch.mjs';
+import { inspectCompatibility } from './apps/compatibility.mjs';
 import { ADAPTERS } from './apps/index.mjs';
 import { readLibrary, importLibrary, favoriteSession } from '../lib/session-library.mjs';
 import { computerId } from '../lib/auth.mjs';
@@ -88,6 +89,11 @@ const questionDone = (s, m) => s.emit({ t: 'questionDone', requestId: m.requestI
 const questionFailed = (s, m) => s.emit({ t: 'questionDone', requestId: m.requestId, sel: s.selectionKey(), ok: false });
 
 export const ROUTES = {
+  compatibility: { fast: true, fastRun: async (s, m) => {
+    const app = String(m.app || '');
+    const data = await inspectCompatibility(app, String(m.windowId || ''));
+    s.emit({ t: 'compatibility', app, requestId: m.requestId, ...data });
+  } },
   projectWindows: { pre: async s => {
     await scanProjectWindows(false);
     s.emit({ t: 'projectWindows', ...projectWindowSettings() });
@@ -191,20 +197,24 @@ export const ROUTES = {
 
   agents: { switchRead: true,
     background: (s, m) => m.automatic === true && m.silent === true,
-    pre: (s, m) => (s.app === 'codex' ? s.listAgents(m.silent === true, m.automatic === true, '', m.checkTrust === true) : SKIP),
+    pre: (s, m) => (s.app === 'codex' && s.cdp ? s.listAgents(m.silent === true, m.automatic === true, '', m.checkTrust === true) : SKIP),
     readOnly: (s, m) => m.silent === true,
     run: (s, m) => s.listAgents(m.silent === true, m.automatic === true, String(m.projectWindow || ''), m.checkTrust === true),
+    fail: (s, m, error) => s.emit({ t: 'agents', app: s.app, sel: s.selectionKey(), silent: m.silent === true, error: error?.message || '会话已切换，请重试列表' }),
   },
   openAgent: { switchRead: true, navigation: true,  run: (s, m) => s.openAgent(String(m.id ?? ''), String(m.title ?? '')) },
-  openMenu: { switchRead: true,  run: (s, m) => s.openMenu(m.kind, m.requestId) },
+  openMenu: {
+    switchRead: true, run: (s, m) => s.openMenu(m.kind, m.requestId),
+    fail: (s, m, error) => s.emit({ t: 'menu', kind: m.kind, requestId: m.requestId, sel: s.selectionKey(), error: error?.message || '菜单读取未完成' }),
+  },
   pickMenu: {
     fusionFree: (s, m) => /^fusion-(model|effort)-/.test(String(m.kind || '')),
     run: async (s, m) => {
       try { return await s.pickMenu(m.kind, m.label, m.name); }
       catch (error) { if (m.kind === 'model' || m.kind === 'effort') await s.closeMenus(); throw error; }
     },
-    after: (s, m) => { if (m.kind === 'model' || m.kind === 'effort') s.emit({ t: 'menuPicked', sel: s.selectionKey(), requestId: m.requestId, kind: m.kind, label: m.label, ok: true }); },
-    fail: (s, m) => { if (m.kind === 'model' || m.kind === 'effort') s.emit({ t: 'menuPicked', sel: s.selectionKey(), requestId: m.requestId, kind: m.kind, label: m.label, ok: false }); },
+    after: (s, m) => { if (m.kind === 'model' || m.kind === 'effort' || m.kind === 'fast') s.emit({ t: 'menuPicked', sel: s.selectionKey(), requestId: m.requestId, kind: m.kind, label: m.label, ok: true }); },
+    fail: (s, m) => { if (m.kind === 'model' || m.kind === 'effort' || m.kind === 'fast') s.emit({ t: 'menuPicked', sel: s.selectionKey(), requestId: m.requestId, kind: m.kind, label: m.label, ok: false }); },
   },
   fusionOptions: { run: (s, m) => s.fusionOptions(String(m.part ?? '')) },
   fusionPick: { run: (s, m) => s.fusionPick(String(m.part ?? ''), m.value) },
@@ -283,9 +293,10 @@ export const ROUTES = {
     },
   },
   stop: {
-    fast: s => s.app === 'fusion',
-    fastRun: s => s.adapter.stopAgent.call(s),
-    run: s => s.stopAgent(),
+    fast: true,
+    fastRun: (s, m) => s.app === 'fusion' ? s.adapter.stopAgent.call(s) : s.handle(m),
+    readOnly: true,
+    run: (s, m) => s.stopButton(m),
   },
   subagent: { run: (s, m) => s.subagentAction(m.name, m.part === 'stop' ? 'stop' : 'open') },
   mainChat: { run: s => s.backToMain() },
@@ -337,7 +348,7 @@ export const ROUTES = {
   send: {
     fusionFree: true,
     run: (s, m) => s.sendMessage(String(m.text ?? ''), m.submit !== false, m.when, cleanMentions(m.mentions), { requestId: m.requestId, draft: m.draft, text: m.text, draftEpoch: m.draftEpoch }),
-    fail: (s, m, error) => s.emit({ t: 'sendFailed', requestId: m.requestId, message: quotaErrorMessage(s.app, error) || error?.message }),
+    fail: (s, m, error) => s.emit({ t: 'sendFailed', requestId: m.requestId, message: quotaErrorMessage(s.app, error) || error?.message, cancelled: error?.cancelled === true }),
   },
   mentionQuery: { switchRead: true,  run: (s, m) => s.mentionQuery(String(m.q ?? '').slice(0, 80), m.cat ? String(m.cat).slice(0, 40) : '', Number(m.seq) || 0, m.trigger === '/' ? '/' : '@', { text: String(m.text ?? ''), start: m.start, caret: m.caret }) },
   codexRequest: {

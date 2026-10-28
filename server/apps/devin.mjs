@@ -23,41 +23,10 @@ export const adapter = {
     return this.devinNewChat();
   },
 
-  // A freshly launched Devin opens on the workspace welcome or last surface;
-  // switch to the most recently used session (agentList rows carry lastUsed).
+  // A cold start keeps the native home/new-chat view.
   async openDefaultSession() {
     const st = await this.waitFor('agentStartupState("devin")', 250);
     if (!st) throw new Error('Devin 项目与会话尚未就绪，请重试');
-    if (st.thread && st.items) return;
-    if (st.surface === 'editor') {
-      const opened = await this.openSessionPicker();
-      const rows = opened ? await this.cdp.evaluate(helpersCall('sessionPickerRows()')) : null;
-      const first = rows?.[0];
-      const pos = first && await this.cdp.evaluate(helpersCall(`sessionPickerTarget(${JSON.stringify(first.id)}, ${JSON.stringify(first.title)})`));
-      if (!pos) {
-        if (opened) await this.key('Escape');
-        if (!await this.cdp.evaluate(helpersCall('hasComposer()'))) await this.adapter.newChat.call(this);
-        return;
-      }
-      await this.tapCss(pos.x, pos.y);
-      this.resetDevinView();
-      this.emit({ t: 'status', ok: true, msg: '已切换 Agent' });
-      setTimeout(() => this.pollChat().catch(() => {}), 500);
-      return;
-    }
-    // A cold window's session list loads asynchronously; wait for real rows.
-    let rows = [];
-    for (let i = 0; i < 48 && !rows.length; i++) {
-      const list = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return h.agentList(); })()`) || [];
-      rows = list.filter(r => r.id && !String(r.id).startsWith('new:') && !String(r.id).startsWith('project-new:'));
-      if (!rows.length) await new Promise(r => setTimeout(r, 250));
-    }
-    const best = rows.reduce((a, b) => ((b.lastUsed || 0) > (a?.lastUsed || 0) ? b : a), null);
-    if (!best) {
-      if (!await this.cdp.evaluate(helpersCall('hasComposer()'))) await this.adapter.newChat.call(this);
-      return;
-    }
-    await this.adapter.openAgent.call(this, best.id);
   },
 
   async openAgent(id, title = '', retried = false) {

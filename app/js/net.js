@@ -75,10 +75,10 @@ function beginNavigation(message) {
     : message.newSession || /^(new:|project-new:)/.test(message.id || '') ? 'new'
     : message.t === 'openProject' ? 'project' : /^(win:|window:)/.test(message.id || '') ? 'window' : 'session';
   const messageText = { initial: '正在加载对话…', agent: '正在切换 Agent…', window: '正在切换窗口…', project: '正在打开项目…', session: '正在切换会话…', new: '正在新建对话…' }[kind];
-  navigationPending = { id: message.navigationId, windowId: message.t === 'attach' ? message.id : currentWindow, confirmed: '', kind, message: messageText };
+  navigationPending = { id: message.navigationId, targetId: message.t === 'attach' ? message.id : currentWindow, windowId: message.t === 'attach' ? message.windowId || message.id : currentWindow, confirmed: '', kind, message: messageText };
   status(messageText);
   conn.attachFailed = false;
-  conn.failedTargets?.delete(navigationPending.windowId);
+  conn.failedTargets?.delete(navigationPending.targetId);
   $('retryChat').hidden = true;
   selectionReady = false;
   setWindowReady(false);
@@ -149,7 +149,7 @@ function applySelection(m, clearChat = true) {
     ...selection,
     selections: { ...here.selections, [id]: selection, [m.app || currentApp]: { id, ...selection } },
   });
-  if (changed) { mirroredDraft = ''; restoreDraft(); renderAttachments([]); send({ t: 'attachments' }); }
+  if (changed) { mirroredDraft = ''; restoreDraft(); renderAttachments([]); if (!m.home) send({ t: 'attachments' }); }
   const cachedAgents = agentLists.get(agentListKey());
   if (cachedAgents && m.threadId) setAgentList(agentListKey(), cachedAgents.map(a => ({ ...a, current: a.id === m.threadId || a.id === 'tab:' + m.threadId || a.id === 'thread:' + m.windowId + ':' + m.threadId })));
   if (m.project) currentProject = m.project;
@@ -736,6 +736,7 @@ async function connect() {
         return gate({msg: '设备授权已失效或被移除，请重新授权这台设备。', err: true, repair: true, computers: loadComputers().length > 1});
       }
       rememberComputer({...currentComputer(), id: m.id, name: m.name, device: m.device});
+      conn.lastSelection = m.lastSelection;
       authed = true; failures = 0;
       send({ t: 'sessionLibrary', entries: legacyAgentLibrary() });
       document.dispatchEvent(new Event('voice-authenticated'));
@@ -751,8 +752,8 @@ async function connect() {
         return;
       }
       if (fromNotice) rememberNotice(fromNotice);
-      const chosen = currentComputer();
-      send({ t: 'attach', id: chosen?.win || store.get('window') || '', windowId: chosen?.windowId || '', threadId: chosen?.threadId || '', initial: true });
+      const chosen = fromNotice ? { ...currentComputer(), id: currentComputer()?.win } : conn.lastSelection;
+      send({ t: 'attach', id: chosen?.id || '', windowId: chosen?.windowId || '', threadId: chosen?.threadId || '', project: chosen?.project || null, initial: true });
       send({ t: 'visible', v: document.visibilityState === 'visible' });
       send({ t: 'lang', v: I18N.lang });
       clearInterval(usageTimer);
@@ -774,7 +775,7 @@ async function connect() {
       const button = [...$('items').querySelectorAll('button[data-item]')].find(b => b.dataset.item === String(m.item) && b.dataset.actionId === (m.actionId || ''));
       button?.closest('.btns')?.querySelectorAll('button').forEach(b => { b.disabled = false; });
     }
-    else if (m.t === 'sendFailed') failPendingSend(m.requestId, m.message || '发送失败，请重试');
+    else if (m.t === 'sendFailed') failPendingSend(m.requestId, m.message || '发送失败，请重试', !m.cancelled);
     else if (m.t === 'questionDone') finishQuestion(m);
     else if (m.t === 'latency') receiveLatency(m);
     else if (m.t === 'visual') renderVisualState(m);
@@ -822,6 +823,7 @@ async function connect() {
     else if (m.t === 'frame') onFrame(m);
     else if (m.t === 'panel') { panel = m.rect; updateTermEmpty(); layoutStage(); }
     else if (m.t === 'connAgents') connAgentResults(m.agents, m.complete !== false);
+    else if (m.t === 'compatibility') receiveCompatibility(m);
     else if (m.t === 'agentCatalog') agentCatalogResults(m.agents);
     else if (m.t === 'launchResult') connLaunchResults(m.results);
     else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; connWindows(m.list); if (m.plans) { appPlans = { ...appPlans, ...m.plans }; updateTitle(); } if (sheetKind === 'windows') showWindows(); paintRail(); }
@@ -840,13 +842,14 @@ async function connect() {
       if (m.closed) {
         forgetClosedWindow(m.id);
         selectionReady = m.ready === true;
-        connReadFailed('这个窗口已经关闭，请重试或切换 Agent');
+        connReadFailed(m.message || '这个窗口已经关闭，请重试或切换 Agent');
         send({ t: 'windows' });
         if (conn.active) connRender();
         return;
       }
       if (m.plans) appPlans = { ...appPlans, ...m.plans };
       rememberAgentOpen(m);
+      requestCompatibility(m.app, true, m.windowId || m.id);
       if (m.keepQuota) {
         applySelection(m, false);
         selectionReady = m.ready !== false;
@@ -871,11 +874,39 @@ async function connect() {
       $('quotaMeters').innerHTML = '';
       $('quotaMeters').title = '';
       renderQuota(quotaCache.get(quotaKey()) || { missing: true, quota: [], limits: [] });
-      send({ t: 'appTheme', dark: document.documentElement.dataset.theme !== 'light' });
+      if (selectionReady) send({ t: 'appTheme', dark: document.documentElement.dataset.theme !== 'light' });
       if (m.initial) metadataWindow = `${connGen}|${currentApp}|${m.windowId || ''}`;
       if (mode !== 'chat' && selectionReady) refreshSelectionMetadata(m.initial === true);
     }
     else if (m.t === 'attachFailed') {
+      if (m.home) {
+        conn.initialSelection = false;
+        conn.lastSelection = null;
+        navigationPending = null;
+        applySelection(m, false);
+        selectionReady = false;
+        setWindowReady(false);
+        currentProject = '';
+        liveChatSelection = '';
+        renderChat(null, false);
+        $('items').inert = false;
+        $('items').classList.remove('stale');
+        $('empty').firstChild.textContent = I18N.tr('请从项目/会话选择要打开的内容');
+        renderContext(null);
+        $('quotaMeters').innerHTML = '';
+        updateTitle();
+        conn.loaded = false;
+        conn.attachFailed = !m.connected;
+        if (m.connected) connHide();
+        else {
+          conn.active = true;
+          conn.host = true;
+          $('conn').classList.add('open');
+          connRender();
+        }
+        status(m.message, false);
+        return;
+      }
       selectionReady = m.ready === true;
       connReadFailed(m.message || '当前会话读取失败，请重试或切换 Agent');
     }
@@ -963,6 +994,7 @@ async function connect() {
       if (m.sel && viewSel && m.sel !== viewSel) return;
       if (m.requestId != null && (m.requestId !== menuRequest || m.requestId !== menuPending?.requestId
         || m.kind !== menuPending.kind || menuPending.sel !== viewSel)) return;
+      if (m.error) return showMenuError(m.kind, m.error);
       lruPut(menuCache, menuCacheKey(m.kind), m, 24);
       if (currentApp === 'fusion' && /^fusion-(model|effort)-[ab]$/.test(m.kind) && fusionModelSide === m.kind.slice(-1)) {
         showMenu(m.kind, m.items, m.max, m.fusion, m.fast, m.model, false, m.pricing);

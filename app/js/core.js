@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v279'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v294'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false, failures = 0;
 let windowReady = false;
@@ -41,6 +41,17 @@ const agentListKey = () => (currentComputer()?.key || '') + ':' + currentApp + (
 function receiveAgents(m) {
   if (m.app && m.app !== currentApp) return;
   if (m.sel && m.sel !== viewSel) return;
+  if (m.error) {
+    finishPending(['正在读取 Agent 列表…']);
+    if (sheetKind === 'agents') {
+      openSheet('agents', `<h3>项目与会话</h3><p class="hint err">${esc(m.error)}</p><button class="opt" id="retryAgentList"><span class="lbl">${I18N.tr(selectionReady ? '重试' : '重试当前会话')}</span></button>`);
+      $('retryAgentList').onclick = () => {
+        if (selectionReady) openAgentList(true);
+        else { closeSheet(); connRetryCurrent(); }
+      };
+    }
+    return;
+  }
   const key = agentListKey();
   const previous = agentLists.get(key) || [];
   const previousById = new Map(previous.map(a => [a.id, a]));
@@ -206,11 +217,11 @@ function send(obj) {
     obj.requestId = ++menuRequest;
     menuPending = { requestId: obj.requestId, kind: obj.kind, sel: viewSel };
   }
-  if (obj.t === 'pickMenu' && (obj.kind === 'model' || obj.kind === 'effort')) {
+  if (obj.t === 'pickMenu' && (obj.kind === 'model' || obj.kind === 'effort' || obj.kind === 'fast')) {
     clearSwitchWatch();
     obj.requestId = ++menuPickRequest;
     modelSwitchRequest = { requestId: obj.requestId, sel: viewSel };
-    status('切换中…');
+    status(obj.kind === 'fast' ? '设置中…' : '切换中…');
   }
   if (obj.t === 'docs') {
     obj.requestId = ++docsRequest;

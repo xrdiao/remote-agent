@@ -26,6 +26,8 @@ itemsEl.addEventListener('click', async e => {
     box.classList.toggle('open');
     const chev = tr.querySelector('.chev');
     if (chev) chev.textContent = box.classList.contains('open') ? '▾' : '▸';
+    const hit = cache.get(box.dataset.i);
+    if (hit && box.classList.contains('open')) { hit.refresh = true; hit.key = null; queueChatRender(); }
     if (isFollowingBottom()) requestChatScroll();
     return;
   }
@@ -39,6 +41,8 @@ itemsEl.addEventListener('click', async e => {
   box.classList.toggle('open', next);
   b.querySelector('.tha').textContent = next ? '收起' : '展开';
   if (body) body.hidden = !next;
+  const hit = cache.get(box.dataset.i);
+  if (hit && next) { hit.refresh = true; hit.key = null; queueChatRender(); }
   // Devin thoughts beyond the payload budget arrive title-only; fetch the body on first open.
   if (next && b.dataset.more && !thoughtFull.has(b.dataset.think)) {
     requestThought(b.dataset.think);
@@ -50,6 +54,7 @@ function setThought(id, text) {
   const hit = cache.get(id);
   if (hit) {
     hit.key = null;
+    if (thinkingPref.get(viewSel + '|' + id) === true) hit.refresh = true;
     queueChatRender();
   }
 }
@@ -73,6 +78,20 @@ function onThought(m) {
 function buttonsHtml(labels, item, actions = []) {
   return labels.map((l, n) =>
     `<button class="${PRIMARY.test(l) ? 'primary' : ''}" data-item="${esc(item)}" data-n="${n}" data-action-id="${esc(actions[n] || '')}" data-action-label="${esc(l)}">${esc(l)}</button>`).join('');
+}
+
+function paintItemActions(el, it) {
+  for (const [name, html] of [
+    ['agentActions', (it.agents || []).map(a => `<button data-codex-agent="${esc(a.id)}">查看 ${esc(a.title)}</button>`).join('')],
+    ['itemActions', it.k !== 'human' && it.b?.length ? buttonsHtml(it.b, it.btnItem || it.i, it.actions) : ''],
+  ]) {
+    let buttons = el.querySelector(':scope > .' + name);
+    if (html) {
+      if (!buttons) { buttons = document.createElement('div'); buttons.className = 'btns ' + name; el.append(buttons); }
+      if (buttons.innerHTML !== html) buttons.innerHTML = html;
+    } else buttons?.remove();
+  }
+  if (it.k === 'thinking' || it.k === 'notice') el.classList.toggle('live', !!it.live);
 }
 
 function thinkingTitle(raw) {
@@ -260,7 +279,7 @@ function renderItem(it) {
     el.classList.toggle('capacity', it.kind === 'capacity');
     el.setAttribute('role', 'status');
     el.classList.toggle('live', !!it.live);
-    if (it.b?.length) el.insertAdjacentHTML('beforeend', `<div class="btns">${buttonsHtml(it.b, it.btnItem || it.i, it.actions)}</div>`);
+    paintItemActions(el, it);
     return el;
   }
   if (it.k === 'tasks') { el.innerHTML = `<details class="tcard" data-task="${esc(it.i)}" ${taskOpen.has(it.i) ? 'open' : ''}><summary class="tprog-head">${I18N.tr('任务')} ${it.done}/${it.total}</summary>${tasksHtml(it)}</details>`; return el; }
@@ -289,7 +308,7 @@ function renderItem(it) {
     }
   }
   else el.textContent = it.t || '';
-  if (it.agents?.length) el.insertAdjacentHTML('beforeend', `<div class="btns">${it.agents.map(a => `<button data-codex-agent="${esc(a.id)}">查看 ${esc(a.title)}</button>`).join('')}</div>`);
+  if (it.agents?.length) el.insertAdjacentHTML('beforeend', '<div class="btns agentActions"></div>');
   if (it.images?.length) {
     el.insertAdjacentHTML('beforeend', it.images.filter(src => /^(https?:|data:image\/|chat-image:)/.test(src)).map(src => src.startsWith('chat-image:')
       ? `<a class="${it.k === 'human' ? 'sentImage' : ''}" target="_blank" rel="noopener"><img data-chat-image="${esc(src.slice(11))}" alt="生成的图片" style="max-width:100%;border-radius:8px"></a>`
@@ -304,7 +323,7 @@ function renderItem(it) {
       }
     });
   }
-  if (it.b && it.k !== 'human') el.insertAdjacentHTML('beforeend', `<div class="btns">${buttonsHtml(it.b, it.btnItem || it.i, it.actions)}</div>`);
+  paintItemActions(el, it);
   if (it.k !== 'human') addImageCopyButtons(el);
   return el;
 }
@@ -400,7 +419,7 @@ function updateGenerationTime(chat, stale) {
     let clock = previous || { start: null, end: null };
     if (chat.generation?.start && (!chat.busy || !chat.generation.end)) clock = { ...chat.generation };
     else if (previous && chat.busy && !previous.busy) clock = { start: Date.now(), end: null };
-    else if (previous?.start && previous.busy && !chat.busy && !clock.end) clock = { ...clock, end: Date.now() };
+    if (!chat.busy && clock.start && !clock.end) clock = { ...clock, end: previous?.start === clock.start && previous.end || Date.now() };
     generationClocks.set(activeGeneration, { ...clock, busy: !!chat.busy });
   }
 }

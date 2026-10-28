@@ -6,9 +6,9 @@ import { DATA_DIR, normalizeAppUrl } from '../lib/auth.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const PORT = Number(process.env.PORT || 3939);
 export const HOST = process.env.HOST || '0.0.0.0';
-export const CDP_URL = (process.env.CDP_URL || 'http://127.0.0.1:9222').replace(/\/$/, '');
-export const DEVIN_CDP_URL = (process.env.DEVIN_CDP_URL || 'http://127.0.0.1:9223').replace(/\/$/, '');
-export const CODEX_CDP_URL = (process.env.CODEX_CDP_URL || 'http://127.0.0.1:9224').replace(/\/$/, '');
+export const CDP_URL = (process.env.CDP_URL || `http://127.0.0.1:${process.platform === 'win32' && process.env.CDP_PORT || 9222}`).replace(/\/$/, '');
+export const DEVIN_CDP_URL = (process.env.DEVIN_CDP_URL || `http://127.0.0.1:${process.platform === 'win32' && process.env.DEVIN_CDP_PORT || 9223}`).replace(/\/$/, '');
+export const CODEX_CDP_URL = (process.env.CODEX_CDP_URL || `http://127.0.0.1:${process.platform === 'win32' && process.env.CODEX_CDP_PORT || 9224}`).replace(/\/$/, '');
 export const EDITORS = [
   { app: 'cursor', name: 'Cursor', url: CDP_URL },
   { app: 'devin', name: 'Devin', url: DEVIN_CDP_URL },

@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { DATA_DIR } from '../lib/auth.mjs';
 import { ensureFixedEntry } from './fixed-entry.mjs';
+import { findBin } from '../lib/platform.mjs';
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const isMac = process.platform === 'darwin';
@@ -13,7 +14,7 @@ const isMac = process.platform === 'darwin';
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 const ask = async (q, def = '') => (await rl.question(def ? `${q} [${def}] ` : `${q} `)).trim() || def;
 const yes = async (q, def = 'y') => /^y/i.test(await ask(`${q} (y/n)`, def));
-const has = cmd => (process.platform === 'win32' ? spawnSync('where', [cmd]) : spawnSync('sh', ['-c', `command -v ${cmd}`])).status === 0;
+const has = cmd => (process.platform === 'win32' ? spawnSync(findBin(cmd), ['--version'], { windowsHide: true }) : spawnSync('sh', ['-c', `command -v ${cmd}`])).status === 0;
 const run = (cmd, args, opts = {}) => spawnSync(cmd, args, { encoding: 'utf8', ...opts });
 // readline keeps the TTY in raw mode even when paused; child prompts need cooked mode to see Enter.
 const interactive = (cmd, args) => {

@@ -1,7 +1,7 @@
-import { Cdp } from '../cdp.mjs';
+import { Cdp, cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { windowRoots, editorRoots, workspaceLabel } from '../../lib/files.mjs';
 import { agentMarks } from '../../lib/marks.mjs';
-import { mod, pathKey } from '../../lib/platform.mjs';
+import { IS_WIN, mod, normPath, pathKey } from '../../lib/platform.mjs';
 import { codexWindows, codexContext } from '../windows.mjs';
 import { CODEX_CDP_URL } from '../config.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
@@ -25,24 +25,14 @@ export const adapter = {
     return this.newCodexChat();
   },
 
-  // A freshly launched Codex window opens on the new-chat view; select this
-  // workspace's most recently used conversation (rows carry lastUsed = updatedAt).
-  async openDefaultSession(preferred = '') {
+  // A cold start keeps the native home/new-chat view; only bind its webview.
+  async openDefaultSession() {
     const page = (await codexWindows(CODEX_CDP_URL)).find(p => p.pageId === this.codexPageId);
-    if (page && !page.chatWs) await this.ensureCodexReady({ id: page.pageId, ws: page.ws }, false);
+    if (page && this.cdp === this.editorCdp) await this.ensureCodexReady({ id: page.pageId, ws: page.ws }, false);
     if (this.pendingProject?.trust) return;
     if (await this.checkCodexLogin()) return;
-    if (await this.cdp.evaluate(helpersCall('codexThread()'))) return;
     const state = await this.waitFor('agentStartupState("codex")', 250);
     if (!state) throw new Error('Codex 项目与会话尚未就绪，请重试');
-    if (state.login || state.thread) return;
-    const local = state.rows.filter(r => !r.host && state.roots.some(root => pathKey(root) === pathKey(r.workspace)));
-    const best = local.find(r => r.id === preferred)
-      || local.reduce((a, b) => ((b.lastUsed || 0) > (a?.lastUsed || 0) ? b : a), null);
-    if (!best) return;
-    if (!await this.selectCodexThread(best.id)) throw new Error('没有找到最近的会话');
-    this.threadId = best.id;
-    this.publishThread();
   },
 
   async openAgent(id, title = '') {
@@ -102,7 +92,7 @@ export const adapter = {
     const projectKey = (root, host) => `${host || ''}\0${pathKey(root, !host)}`;
     const projects = new Map();
     for (const row of list) if (row.workspace) {
-      projects.set(projectKey(row.workspace, row.host), { root: row.workspace, host: row.host });
+      projects.set(projectKey(row.workspace, row.host), { root: IS_WIN && !row.host ? normPath(row.workspace) : row.workspace, host: row.host });
     }
     const allProjects = [...projects.values()];
     const labels = new Map(allProjects.map(project => {
@@ -119,7 +109,10 @@ export const adapter = {
   },
 
   async queueAction(id, action) {
+    const target = action === 'send' ? await this.cdp.evaluate(helpersCall(`codexFacts()?.queued.find(item => item.id === ${JSON.stringify(String(id))})`)) : null;
     if (!await this.cdp.evaluate(helpersCall(`codexQueueAction(${JSON.stringify(String(id))}, ${JSON.stringify(action)})`))) throw new Error('Codex 排队消息或操作入口已不存在');
+    if (action === 'send' && !await this.waitFor(`codexReceiptRows().some(item => item.i === ${JSON.stringify(target?.messageId || '')} || item.nativeIds?.includes(${JSON.stringify(String(id))}))`, 40))
+      throw new Error('Codex 尚未确认立即追加结果，请查看会话或队列');
     setTimeout(() => this.pollChat().catch(() => {}), 300);
   },
 
@@ -187,38 +180,8 @@ export const adapter = {
     const view = facts?.view;
     const follow = view?.follow || 'queue';
     queued = !!busy && (when === 'queue' || (!when && follow === 'queue'));
-    const opposite = !!busy && ((when === 'now' && follow !== 'steer') || (when === 'queue' && follow === 'steer'));
-    if (opposite && when === 'now') {
-      // While busy the composer only offers "Queue": queue the follow-up, then trigger
-      // its send-now action so Codex steers it into the running turn.
-      const before = new Set((facts?.queued || []).map(m => m.id));
-      // The send control relabels when the turn ends; retry briefly instead of failing the tap.
-      let clicked = false;
-      for (let i = 0; i < 15 && !clicked; i++) {
-        clicked = await this.cdp.evaluate(helpersCall('submitCodexMessage()'));
-        if (!clicked) await new Promise(r => setTimeout(r, 100));
-      }
-      if (!clicked) throw new Error('Codex 发送按钮当前不可用');
-      let steerId = '', steerThread = '';
-      for (let i = 0; i < 15 && !steerId; i++) {
-        const state = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return { thread: h.codexThread(), queued: h.codexFacts()?.queued || [] }; })()`);
-        if (this.cdp !== receiptCdp || this.selectionKey() !== receiptScope || receiptThread && state.thread !== receiptThread) break;
-        const candidates = state.queued
-          .filter(m => !before.has(m.id) && expected && m.t.trim() === expected.slice(0, 4000));
-        if (candidates.length === 1) { steerId = candidates[0].id; steerThread = state.thread; }
-        if (!steerId) await new Promise(r => setTimeout(r, 100));
-      }
-      // No queued item means the turn ended and the message was sent directly.
-      if (steerId && !await this.cdp.evaluate(helpersCall(`codexQueueAction(${JSON.stringify(steerId)}, 'send', ${JSON.stringify(steerThread)})`))) {
-        const still = ((await this.cdp.evaluate(helpersCall('codexFacts()')))?.queued || []).some(m => m.id === steerId);
-        if (still) throw new Error('Codex 立即追加不可用');
-      }
-    }
-    else if (opposite) {
-      await this.cdp.evaluate(FOCUS_COMPOSER);
-      await this.key(mod((view?.enter === 'enter' ? '' : 'Shift+') + 'Enter'));
-    }
-    else if (!await this.cdp.evaluate(helpersCall('submitCodexMessage()'))) throw new Error('Codex 发送按钮当前不可用');
+    const action = when === 'now' ? 'steer' : when === 'queue' ? 'queue' : '';
+    if (!await this.cdp.evaluate(helpersCall(`submitCodexMessage(${JSON.stringify(action)})`))) throw new Error('Codex 提交入口当前不可用');
     // Native message/queue receipts, rather than composer clearing, confirm acceptance.
     const receiptDeadline = Date.now() + 5000;
     for (let i = 0; i < 40 && Date.now() < receiptDeadline; i++) {
@@ -342,30 +305,45 @@ mergeCodexItems(chat) {
   });
   chat.items.partialTurns = [...partial].filter(turn => turns.includes(turn));
   chat.items.completeTurns = [...completed].filter(([, turn]) => turns.includes(turn));
-  chat.earlier = this.codexEarlier(chat.items);
+  chat.earlier = chat._historyEarlier || this.codexEarlier(chat.items, undefined, chat._historyStart);
+  delete chat._historyEarlier; delete chat._historyStart;
   if (!chat.busy) chat.items.filter(it => it.k === 'thinking').forEach(it => { it.live = false; });
   if (!chat.busy) chat.items.filter(it => it.k === 'tool' && !it.keep).forEach(it => { it.done = true; });
   this.itemCache.set(thread, chat.items);
 },
 
 async selectCodexThread(convId, cdp = this.cdp) {
-  const waitActive = () => cdp.evaluate(helpersCall(`codexWaitThread(${JSON.stringify(convId)}, 1800)`), { timeout: 4000 });
-  if (await cdp.evaluate(helpersCall(`openCodexThread(${JSON.stringify(convId)})`)) && await waitActive()) return true;
-  const pos = await cdp.evaluate(helpersCall('codexRecentPoint()'));
-  if (!pos) return false;
+  const deadline = cdpRead.getStore()?.deadline ?? Date.now() + 35000;
+  const remaining = () => {
+    const ms = deadline - Date.now();
+    if (ms <= 0) throw new Error('Codex 会话导航超时，请重试');
+    return ms;
+  };
+  const read = call => cdp.evaluate(helpersCall(call), { timeout: remaining() });
+  const waitActive = (ms = 1800) => read(`codexWaitThread(${JSON.stringify(convId)}, ${Math.min(ms, remaining())})`);
+  let opened = false, pos = null;
+  do {
+    opened = await read(`openCodexThread(${JSON.stringify(convId)})`);
+    if (opened) break;
+    pos = await read('codexRecentPoint()');
+    if (pos) break;
+    await awaitCdpRead(new Promise(r => setTimeout(r, Math.min(120, remaining()))));
+  } while (Date.now() < deadline);
+  if (!opened && !pos) throw new Error('Codex 会话导航尚未就绪，请稍后重试');
+  if (opened) return waitActive(remaining());
   await this.tapCss(pos.x, pos.y, 'left', cdp);
   let point = null;
   for (let i = 0; i < 8 && !point; i++) {
-    await new Promise(r => setTimeout(r, 120));
-    point = await cdp.evaluate(helpersCall(`codexChatPoint(${JSON.stringify(convId)})`));
+    await awaitCdpRead(new Promise(r => setTimeout(r, Math.min(120, remaining()))));
+    point = await read(`codexChatPoint(${JSON.stringify(convId)})`);
   }
   if (!point) {
-    await cdp.evaluate(helpersCall('closeCodexMenu()'));
+    await read('closeCodexMenu()');
     return false;
   }
   await this.tapCss(point.x, point.y, 'left', cdp);
   if (await waitActive()) return true;
-  await cdp.evaluate(helpersCall('closeCodexMenu()'));
+  await read('closeCodexMenu()');
   return false;
 },
 
@@ -397,10 +375,10 @@ async checkCodexLogin() {
   return true;
 },
 
-codexEarlier(items, partial = items.partialTurns?.length > 0) {
+codexEarlier(items, partial = items.partialTurns?.length > 0, start = 1) {
   if (partial) return true;
   const turns = [...new Set(items.map(it => Math.floor((it.order ?? Infinity) / 10000)))].sort((a, b) => a - b);
-  return !turns.length || turns[0] !== 1 || turns.some((n, i) => !Number.isFinite(n) || (i > 0 && n !== turns[i - 1] + 1));
+  return !turns.length || turns[0] !== start || turns.some((n, i) => !Number.isFinite(n) || (i > 0 && n !== turns[i - 1] + 1));
 },
 
 async waitCodexNewChatReady() {
@@ -559,47 +537,90 @@ async codexThreadRows(cdp = this.cdp) {
   return [...merged.values()];
 },
 
+async enableCodexMax() {
+  try {
+    await this.withCodexSettings(async cdp => {
+      let data = await cdp.evaluate(helpersCall('codexSettingsData()'));
+      const previous = data.nav.find(n => n.current);
+      const navigate = async item => {
+        const before = JSON.stringify(data);
+        const pos = await cdp.evaluate(helpersCall(`codexSettingPoint(${JSON.stringify(item.id)})`));
+        await this.tapCss(pos.x, pos.y, 'left', cdp);
+        data = await cdp.evaluate(helpersCall(`waitSettings('codex', ${JSON.stringify(before)})`));
+      };
+      try {
+        const config = data.nav.find(n => n.label === 'Configuration');
+        if (!config) throw new Error('没有找到 Codex 原生配置入口');
+        if (!config.current) await navigate(config);
+        const row = data.rows.find(r => r.label === 'Available reasoning efforts');
+        if (!row) throw new Error('没有找到 Codex 思考强度设置');
+        const pos = await cdp.evaluate(helpersCall(`codexSettingPoint(${JSON.stringify(row.controls[0].id)})`));
+        await this.tapCss(pos.x, pos.y, 'left', cdp);
+        const choice = await cdp.evaluate(`(() => { const doc = document.getElementById('active-frame').contentDocument; const option = [...doc.querySelectorAll('[role=menuitemcheckbox]')].find(el => el.textContent.trim() === 'Max'); if (!option || option.getAttribute('aria-disabled') === 'true') return null; option.dataset.remoteSetting ||= crypto.randomUUID(); return { id: option.dataset.remoteSetting, enabled: option.getAttribute('aria-checked') === 'true' }; })()`);
+        if (!choice) throw new Error('当前 Codex 无法启用 Max');
+        if (!choice.enabled) {
+          const target = await cdp.evaluate(helpersCall(`codexSettingPoint(${JSON.stringify(choice.id)})`));
+          await this.tapCss(target.x, target.y, 'left', cdp);
+          const checked = await cdp.evaluate(`new Promise(resolve => { const doc = document.getElementById('active-frame').contentDocument, started = Date.now(); const read = () => { const el = [...doc.querySelectorAll('[role=menuitemcheckbox]')].find(el => el.textContent.trim() === 'Max'); if (el?.getAttribute('aria-checked') === 'true') return resolve(true); if (Date.now() - started >= 2000) return resolve(false); setTimeout(read, 30); }; read(); })`);
+          if (!checked) throw new Error('Codex 原生 Max 设置尚未生效');
+        }
+        await this.key('Escape', { cdp });
+      } finally {
+        if (previous && !data.nav.some(n => n.id === previous.id && n.current)) await navigate(previous);
+      }
+    });
+  } finally { await cdpRead.run(null, () => this.closeCodexSettings()); }
+},
+
 async withCodexSettings(fn) {
   const editor = this.editorCdp, sidebar = this.cdp;
-  const before = await editor.evaluate(`(() => { const t = [...document.querySelectorAll('.tab')].find(e => /^Codex Settings(?:,|$)/.test(e.getAttribute('aria-label') || '')); return !!t; })()`);
-  let key = '';
-  const settingsKey = () => editor.evaluate(`(() => { if (![...document.querySelectorAll('.tab.active')].some(e => /^Codex Settings(?:,|$)/.test(e.getAttribute('aria-label') || ''))) return ''; const el = [...document.querySelectorAll('iframe[src*="extensionId=openai.chatgpt"]')].find(e => !e.src.includes('purpose=webviewView') && e.getBoundingClientRect().height > 0); return el ? new URL(el.src).searchParams.get('id') : ''; })()`);
-  key = await settingsKey();
-  if (key && key === this.codexSettingsKey && this.codexSettingsCdp?.ws?.readyState === 1 && this.codexSettingsEditor === editor) return fn(this.codexSettingsCdp);
-  this.codexSettingsCdp?.close();
-  this.codexSettingsCdp = null;
-  if (!key) {
-    this.codexSettingsReturn = await editor.evaluate(`(() => { const tab = document.querySelector('.editor-group-container.active .tab.active'); if (!tab || /^Codex Settings(?:,|$)/.test(tab.getAttribute('aria-label') || '')) return ''; tab.dataset.remoteSettingsReturn ||= crypto.randomUUID(); return tab.dataset.remoteSettingsReturn; })()`);
-    if (before) {
-      const pos = await editor.evaluate(`(() => { const tab = [...document.querySelectorAll('.tab')].find(e => /^Codex Settings(?:,|$)/.test(e.getAttribute('aria-label') || '')); const r = tab.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
-      await this.tapCss(pos.x, pos.y, 'left', editor);
-    } else {
-      const account = await sidebar.evaluate(helpersCall('codexAccountPoint()'));
-      if (!account) throw new Error('没有找到 Codex 设置菜单');
-      await this.tapCss(account.x, account.y, 'left', sidebar);
-      const pos = await sidebar.evaluate(`(async () => { const point = ${helpersCall('codexMenuPoint')}; const started = Date.now(); let pos; do { pos = point('Codex settings'); if (pos) return pos; await new Promise(r => setTimeout(r, 30)); } while (Date.now() - started < 1000); return null; })()`);
-      if (!pos) throw new Error('Codex 菜单没有设置入口');
-      await this.tapCss(pos.x, pos.y, 'left', sidebar);
+  const deadline = cdpRead.getStore()?.deadline || Date.now() + 30000;
+  const read = (cdp, source) => cdp.evaluate(source, { timeout: Math.max(1, deadline - Date.now()) });
+  const until = async (read, message) => {
+    while (Date.now() < deadline) {
+      const value = await read();
+      if (value) return value;
+      await awaitCdpRead(new Promise(resolve => setTimeout(resolve, Math.min(30, Math.max(0, deadline - Date.now())))));
     }
-    for (let i = 0; i < 100 && !key; i++) { key = await settingsKey(); if (!key) await new Promise(r => setTimeout(r, 30)); }
-    if (!key) throw new Error('Codex 设置页面尚未打开');
+    throw new Error(message);
+  };
+  const settingsKey = () => read(editor, `(() => { if (![...document.querySelectorAll('.tab.active')].some(e => /^Codex Settings(?:,|$)/.test(e.getAttribute('aria-label') || ''))) return ''; const el = [...document.querySelectorAll('iframe[src*="extensionId=openai.chatgpt"]')].find(e => !e.src.includes('purpose=webviewView') && e.getBoundingClientRect().height > 0); return el ? new URL(el.src).searchParams.get('id') : ''; })()`);
+  try {
+    const before = await read(editor, `(() => { const t = [...document.querySelectorAll('.tab')].find(e => /^Codex Settings(?:,|$)/.test(e.getAttribute('aria-label') || '')); return !!t; })()`);
+    let key = await settingsKey();
+    let cdp = key && key === this.codexSettingsKey && this.codexSettingsEditor === editor && this.codexSettingsCdp?.ws?.readyState === 1 ? this.codexSettingsCdp : null;
+    if (!cdp) {
+      this.codexSettingsCdp?.close();
+      this.codexSettingsCdp = null;
+      this.codexSettingsEditor = editor;
+      if (!key) {
+        this.codexSettingsReturn = await read(editor, `(() => { const tab = document.querySelector('.editor-group-container.active .tab.active'); if (!tab || /^Codex Settings(?:,|$)/.test(tab.getAttribute('aria-label') || '')) return ''; tab.dataset.remoteSettingsReturn ||= crypto.randomUUID(); return tab.dataset.remoteSettingsReturn; })()`);
+        if (before) {
+          const pos = await read(editor, `(() => { const tab = [...document.querySelectorAll('.tab')].find(e => /^Codex Settings(?:,|$)/.test(e.getAttribute('aria-label') || '')); const r = tab.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+          await this.tapCss(pos.x, pos.y, 'left', editor);
+        } else {
+          const account = await until(() => read(sidebar, helpersCall('codexAccountPoint()')), '没有找到 Codex 设置菜单');
+          await this.tapCss(account.x, account.y, 'left', sidebar);
+          const pos = await until(() => read(sidebar, helpersCall("codexMenuPoint('Codex settings')")), 'Codex 菜单没有设置入口');
+          await this.tapCss(pos.x, pos.y, 'left', sidebar);
+        }
+        key = await until(settingsKey, 'Codex 设置页面尚未打开');
+      }
+      const target = await until(async () => {
+        const targets = await awaitCdpRead(fetch(`${CODEX_CDP_URL}/json/list`, { signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())) }).then(response => response.json()));
+        return targets.find(t => /extensionId=openai.chatgpt/.test(t.url || '') && new URL(t.url).searchParams.get('id') === key);
+      }, 'Codex 设置页面尚未连接');
+      this.codexSettingsViewWs = target.webSocketDebuggerUrl;
+      cdp = this.codexSettingsCdp = new Cdp(target.webSocketDebuggerUrl);
+      await cdp.connect(Math.max(1, deadline - Date.now()));
+      this.codexSettingsKey = key;
+    }
+    await until(() => read(cdp, `!!document.getElementById('active-frame')?.contentDocument?.querySelector('[data-appearance] button.sidebar-item')`), 'Codex 设置内容尚未加载');
+    return await fn(cdp);
+  } catch (error) {
+    try { await cdpRead.run(null, () => this.closeCodexSettings()); }
+    finally { throw error; }
   }
-  let target;
-  for (let i = 0; i < 30 && !target; i++) {
-    const targets = await (await fetch(`${CODEX_CDP_URL}/json/list`)).json();
-    target = targets.find(t => /extensionId=openai.chatgpt/.test(t.url || '') && new URL(t.url).searchParams.get('id') === key);
-    if (!target) { await new Promise(r => setTimeout(r, 100)); key = await settingsKey(); }
-  }
-  if (!target) throw new Error('Codex 设置页面尚未连接');
-  this.codexSettingsViewWs = target.webSocketDebuggerUrl;
-  const cdp = new Cdp(target.webSocketDebuggerUrl);
-  await cdp.connect();
-  const ready = await cdp.evaluate(`new Promise(resolve => { const started = Date.now(); const read = () => { const doc = document.getElementById('active-frame')?.contentDocument; if (doc?.querySelector('[data-appearance] button.sidebar-item')) return resolve(true); if (Date.now() - started >= 5000) return resolve(false); setTimeout(read, 30); }; read(); })`);
-  if (!ready) { cdp.close(); throw new Error('Codex 设置内容尚未加载'); }
-  this.codexSettingsCdp = cdp;
-  this.codexSettingsKey = key;
-  this.codexSettingsEditor = editor;
-  return fn(cdp);
 },
 
 async showCodexSettings(id = '', requestId = 0, value) {
@@ -635,6 +656,7 @@ async saveCodexInstructions(text, requestId = 0) {
 },
 
 async closeCodexSettings() {
+  const editor = this.codexSettingsEditor || this.editorCdp;
   this.codexSettingsKey = '';
   this.codexSettingsCdp?.close();
   this.codexSettingsCdp = null;
@@ -648,9 +670,9 @@ async closeCodexSettings() {
   }
   const previous = this.codexSettingsReturn;
   this.codexSettingsReturn = '';
-  if (previous && this.editorCdp) {
-    const pos = await this.editorCdp.evaluate(`(() => { const tab = document.querySelector('[data-remote-settings-return="' + ${JSON.stringify(previous)} + '"]'); if (!tab) return null; const r = tab.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
-    if (pos) await this.tapCss(pos.x, pos.y, 'left', this.editorCdp);
+  if (previous && editor) {
+    const pos = await editor.evaluate(`(() => { const tab = document.querySelector('[data-remote-settings-return="' + ${JSON.stringify(previous)} + '"]'); if (!tab) return null; const r = tab.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    if (pos) await this.tapCss(pos.x, pos.y, 'left', editor);
   }
 },
 

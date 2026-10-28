@@ -43,8 +43,27 @@
   };
   // Devin's two surfaces are titlebar segments (Agent: sidebar sessions; Editor: chat in the right panel).
   const devinSurface = () => {
-    const seg = [...document.querySelectorAll('button.switch-segment')].find(e => vis(e) && e.classList.contains('active'));
-    return seg ? (seg.classList.contains('agent-segment') ? 'agent' : 'editor') : null;
+    const segments = [...document.querySelectorAll('button.switch-segment')];
+    const seg = segments.find(e => vis(e) && e.classList.contains('active'));
+    if (seg) return seg.classList.contains('agent-segment') ? 'agent' : 'editor';
+    if (segments.length) return null;
+    const product = window.vscode?.context?.configuration?.()?.product;
+    return product?.applicationName === 'devin-desktop' && document.querySelector('[class*="windsurf-workspace-welcome"], li[data-slot="sidebar-menu-item"]') ? 'agent' : null;
+  };
+  const devinRowSession = s => typeof s?.sessionId === 'string' && s.sessionId
+    ? s.sessionId : typeof s?.devin_id === 'string' ? s.devin_id.replace(/^devin-(?=acp\/)/, '') : '';
+  const devinTranscriptRows = log => !log ? [] : log.matches('[data-chat-history-variant]')
+    ? [...log.querySelectorAll('[data-transcript-row-key]')].filter(row => row.closest('[data-chat-history-variant]') === log)
+    : [...log.children];
+  const devinTranscriptIndex = el => {
+    const row = el.closest('[data-transcript-row-key]');
+    if (!row?.closest('[data-chat-history-variant]')) return null;
+    const props = codexFiberProps(row, 40);
+    const data = props.find(p => p.row)?.row;
+    const sessionId = props.find(p => typeof p.sessionId === 'string')?.sessionId;
+    const messages = window.__acpStore?.getState()?.acp?.perSession?.[sessionId]?.messages;
+    const index = messages?.findIndex(message => message.id === data?.item?.id || data?.memberIds?.includes(message.id));
+    return index >= 0 ? index : null;
   };
   const surfaceTarget = to => {
     const seg = [...document.querySelectorAll(`button.switch-segment.${to}-segment`)].find(vis);
@@ -73,7 +92,7 @@
     return [...w.querySelectorAll('.monaco-list-row')].filter(vis).map(row => {
       const title = ((row.querySelector('.label-name') || row).innerText || '').trim().split('\n')[0].slice(0, 80);
       const session = sessions[Number(row.getAttribute('data-index'))];
-      return { id: session?.sessionId || '', title: session?.title || title, titleNative: !!session?.title, titleAt: Date.now(), running: /\bworking\b/i.test(row.innerText || '') };
+      return { id: devinRowSession(session), title: session?.title || title, titleNative: !!session?.title, titleAt: Date.now(), running: /\bworking\b/i.test(row.innerText || '') };
     }).filter(r => r.title && r.id);
   };
   // Devin sessions are identified by their title. The Editor surface keeps the open sessions as tabs above
@@ -83,7 +102,7 @@
   const devinTabEls = () => [...document.querySelectorAll('#chat [draggable="true"]')].filter(e => vis(e) && /h-\[34px\]/.test(String(e.className)));
   const devinTabs = () => devinTabEls().map(t => {
     const id = codexFiberProps(t, 24).find(p => p.sessionId)?.sessionId || '';
-    const session = window.__acpStore?.getState().acp.sessions.find(s => s.sessionId === id);
+    const session = window.__acpStore?.getState().acp.sessions.find(s => devinRowSession(s) === id);
     return { id, title: session?.title || sessNorm((t.querySelector('span') || t).innerText),
       titleNative: !!session?.title, titleAt: Date.now(), active: /bg-ide-tab-active-background-color/.test(String(t.className)) };
   }).filter(t => t.title);
@@ -97,12 +116,12 @@
     let props = [];
     for (let el = node; el; el = el.parentElement) {
       props = codexFiberProps(el, 32);
-      if (props.some(p => p.session?.sessionId || p.sessionId)) break;
+      if (props.some(p => devinRowSession(p.session) || p.sessionId)) break;
     }
-    const session = props.find(p => p.session?.sessionId)?.session;
-    const key = session?.sessionId || props.find(p => p.sessionId)?.sessionId || (surface === 'agent' ? active?.id : '') || '';
+    const session = props.find(p => devinRowSession(p.session))?.session;
+    const key = (surface === 'agent' ? active?.id : '') || devinRowSession(session) || props.find(p => p.sessionId)?.sessionId || '';
     const title = (surface === 'editor' ? tabs.find(t => t.active)?.title : active?.title) || '';
-    return { key, title, surface, tabs, cwd: session?.cwd || active?.workspace || '' };
+    return { key, title, surface, tabs, cwd: (surface === 'agent' ? active?.workspace : '') || session?.cwd || active?.workspace || '' };
   };
   const devinTabTarget = id => {
     const el = devinTabEls().find(t => codexFiberProps(t, 24).some(p => p.sessionId === id));
@@ -129,7 +148,7 @@
     el.querySelector('button').click();
   };
   const sessionPickerTarget = async id => {
-    const index = (await devinPickerSessions()).findIndex(s => s.sessionId === id);
+    const index = (await devinPickerSessions()).findIndex(s => devinRowSession(s) === id);
     if (index < 0) return null;
     const widget = [...document.querySelectorAll('.quick-input-widget')].find(vis);
     const scroller = widget?.querySelector('.monaco-list .monaco-scrollable-element');
@@ -243,7 +262,7 @@
   const stopGenerationButton = () => [...doc.querySelectorAll('button, [role=button]')].find(e => {
     if (!vis(e) || e.closest('.composer-human-message, .human-message-action-slot')) return false;
     const label = (e.getAttribute('aria-label') || '').trim();
-    return /^stop generation\b/i.test(label) || (doc.querySelector('[data-turn-key]') && /^(Stop|Stop generating)$/i.test(label));
+    return /^stop generation\b/i.test(label) || (doc.querySelector('[data-turn-key], [data-codex-intelligence-trigger]') && /^(Stop|Stop generating)$/i.test(label));
   });
   const legacyStopIcon = () => [...document.querySelectorAll('.composer-button-area .codicon-debug-stop, .send-with-mode .codicon-debug-stop')].find(e => vis(e) && !e.closest('.composer-human-message, .human-message-action-slot'));
   // Devin: while a turn runs the submit button reads "Cancel" (empty input) or "Queue" (typed text).
@@ -596,13 +615,19 @@
     return true;
   };
 
-  const stopTarget = () => {
+  const stopTarget = (click = false) => {
+    const target = el => {
+      if (!el || el.disabled || el.getAttribute('aria-disabled') === 'true') return null;
+      if (!click) return center(el);
+      el.click();
+      return true;
+    };
     const btn = stopGenerationButton();
-    if (btn) return center(btn);
+    if (btn) return target(btn);
     const icon = legacyStopIcon();
-    if (icon) return center(icon.closest('button, [role=button], .anysphere-icon-button') || icon);
+    if (icon) return target(icon.closest('button, [role=button], .anysphere-icon-button') || icon);
     const cancel = devinLog() && [...document.querySelectorAll('button[aria-label="Cancel"]')].find(e => vis(e) && !e.disabled && e.querySelector('svg'));
-    return cancel ? center(cancel) : null;
+    return target(cancel);
   };
 
   const permissionLabel = () => {

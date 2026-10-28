@@ -15,6 +15,8 @@ import { sessionRows } from '../lib/session-library.mjs';
 import { catalogSessions, touchProjectWindow } from './project-windows.mjs';
 import { leaseWindow, windowOperationLocked } from './window-use.mjs';
 import {visualCapture, visualWindows, wayland} from './visual/capture.mjs';
+import { rememberSelection, lastSelection, forgetSelection } from '../lib/auth.mjs';
+import { editorRoots } from '../lib/files.mjs';
 
 export class Session extends AgentContext {
   constructor(client, deviceId) {
@@ -46,7 +48,7 @@ export class Session extends AgentContext {
       await visualCapture.restore(windows);
       return;
     }
-    if (!this.editorCdp) return;
+    if (!this.editorCdp || this.selectionHome && this.mode === 'chat') return;
     if (this.mode === 'chat') {
       const cdp = this.cdp;
       const stop = await watchChat(cdp, () => {
@@ -89,7 +91,7 @@ export class Session extends AgentContext {
       const navigationId = cdpRead.getStore()?.navigationId ?? this.navigationId;
       if (navigationId != null) obj = { ...obj, navigationId };
     }
-    if (obj?.t === 'agents') {
+    if (obj?.t === 'agents' && !obj.error) {
       const app = obj.app || this.app;
       obj = { ...obj, list: sessionRows(app, catalogSessions(app, obj.list || [], this.windowId)) };
       this.sessionEntries = new Map(obj.list.filter(row => !row.ui).map(row => [row.id, { ...row, app: obj.app || this.app }]));
@@ -105,6 +107,22 @@ export class Session extends AgentContext {
         .filter(([, entry]) => entry.kind !== 'orchestrator').map(([app, entry]) => [app, entry.capabilities]));
     }
     if (obj?.t === 'chat' && obj.sel && obj.chat) {
+      if (this.bindingReady && obj.sel === this.selectionKey() && !obj.cached
+          && (!obj.chat.readonly || obj.chat.empty) && !obj.chat.subagent
+          && obj.chat.thread === this.threadId && ['cursor', 'devin', 'codex'].includes(this.app)
+          && this.rememberedSelection !== obj.sel && this.rememberingSelection?.key !== obj.sel) {
+        const cdp = this.cdp, sel = this.sel;
+        const selection = { id: this.targetId, app: this.app, windowId: this.windowId, threadId: this.threadId };
+        const pending = this.rememberingSelection = { key: obj.sel };
+        this.currentRoots().then(roots => {
+          if (this.bindingReady && this.liveRead(cdp, sel) && obj.sel === this.selectionKey()) {
+            rememberSelection(this.deviceId, { ...selection, project: roots[0] || null });
+            this.rememberedSelection = obj.sel;
+          }
+        }).catch(() => {}).finally(() => {
+          if (this.rememberingSelection === pending) this.rememberingSelection = null;
+        });
+      }
       (this.chatBySel ||= new Map()).delete(obj.sel);
       this.chatBySel.set(obj.sel, obj.chat);
       if (this.chatBySel.size > 12) this.chatBySel.delete(this.chatBySel.keys().next().value);
@@ -121,7 +139,40 @@ export class Session extends AgentContext {
   // Asks Cursor's own Cmd+P index where a bare file name lives, then closes the picker again.
 
   async attach(target, windows) {
-    const req = target && typeof target === 'object' ? target : { id: target || '' };
+    let req = target && typeof target === 'object' ? target : { id: target || '' };
+    const app = String(req.id || '').split(':')[0];
+    if (req.restore) {
+      const saved = lastSelection(this.deviceId, app);
+      if (saved) req = { ...req, ...saved };
+    }
+    if (req.initial && hasLaunched(app)) req = { ...req, id: app, windowId: '', threadId: '', project: null };
+    if (req.project && !req.projectSwitch) {
+      // Bind only the app first. The saved project, not a fallback window, owns the thread.
+      await this.attach({ ...req, id: app, windowId: '', restore: false, project: null, threadId: '', projectSwitch: true }, windows);
+      if (!this.cdp || this.app !== app) throw new Error('所选 Agent 尚未连接，请重试');
+      if (!req.project.host) return this.useProject(req.project.root, false, req.threadId || '', '', req.windowId || '');
+      if (!this.projectMatches(await this.currentRoots(), req.project.root, req.project.host)) {
+        const pages = app === 'codex' ? await AGENT_REGISTRY.codex.discover(true) : await AGENT_REGISTRY[app].discover();
+        let match;
+        for (const page of pages) {
+          const cdp = new Cdp(page.ws);
+          try {
+            await cdp.connect();
+            if (this.projectMatches(await editorRoots(cdp, app), req.project.root, req.project.host)) { match = page; break; }
+          } finally { cdp.close(); }
+        }
+        if (!match) throw new Error('远程项目窗口未打开，请在电脑端打开后重新选择');
+        await this.attach({ id: match.id || app, windowId: match.pageId || match.id, projectSwitch: true });
+      }
+      if (app === 'codex') {
+        await this.ensureCodexReady({ id: this.windowId, ws: this.editorCdp.wsUrl }, false);
+        if (req.threadId && !await this.selectCodexThread(req.threadId)) throw new Error('没有找到所选会话');
+        await this.adoptCodexThread(req.threadId || await this.cdp.evaluate(helpersCall('codexThread()')) || '');
+      } else if (req.threadId) await this.withFocus(() => this.adapter.openAgent.call(this, req.threadId));
+      this.bindingReady = true;
+      this.publishThread();
+      return this.setMode(this.mode, true);
+    }
     let appId = String(req.id || '');
     let windowId = String(req.windowId || '');
     const threadId = String(req.threadId || '');
@@ -138,22 +189,19 @@ export class Session extends AgentContext {
           if (recovered) windowId = recovered.pageId;
         }
       } catch (error) {
-        // On reconnect, a closed Codex must not leave the phone stuck: fall back to any open app.
-        if (req.initial) this.emit({ t: 'attached', id: 'codex', app: 'codex', windowId, threadId, closed: true, initial: true, ready: !!this.cdp });
-        this.emit({ t: 'attachFailed', ready: this.app === 'fusion' || !!this.cdp });
         throw new Error(`读取 Codex 调试接口失败，请重试：${error.message}`);
       }
     }
     if (AGENT_REGISTRY[appId]?.kind === 'orchestrator') return AGENT_REGISTRY[appId].adapter.attach.call(this, req);
     const targetApp = Object.keys(AGENT_REGISTRY).find(app => appId === app || appId.startsWith(app + ':'));
     const wins = windows || (codexPages ? codexPages.length ? [{id: 'codex', app: 'codex', title: 'Codex', ws: codexPages[0].ws, port: CODEX_CDP_URL, kind: 'local'}] : [] : targetApp ? await AGENT_REGISTRY[targetApp].discover() : await listWindows());
+    if (!appId && wins[0]?.app === 'codex') return this.attach({ ...req, id: 'codex' }, wins);
     if (appId === 'codex') {
       const pages = codexPages;
       if (!pages.length) {
-        this.emit({ t: 'attached', id: 'codex', title: 'Codex', app: 'codex', windowId, threadId, initial: req.initial === true, closed: true, ready: this.app === 'fusion' || !!this.cdp });
-        this.emit({ t: 'status', ok: false, msg: '这个 Codex 窗口已经关闭，请重新选择' });
-        return;
+        throw new Error('这个 Codex 窗口已经关闭，请重新选择');
       }
+      if (windowId && !pages.some(p => p.pageId === windowId)) throw new Error('这个 Codex 窗口已经关闭，请重新选择');
       const picked = windowId && pages.some(p => p.pageId === windowId)
         ? pages.find(p => p.pageId === windowId)
         : (pages.find(p => !/^Welcome\b/.test(p.rawTitle || '') && p.chatWs) || pages.find(p => p.chatWs) || pages[0]);
@@ -161,15 +209,13 @@ export class Session extends AgentContext {
       const entry = wins.find(w => w.id === 'codex');
       if (!entry) throw new Error('没有找到 Codex 窗口。请用 ./scripts/start-codex.sh 启动，并打开 Codex 侧边栏');
       await this.openBound({ ...entry, title: picked.rawTitle }, picked.ws, picked.chatWs, { windowId: picked.pageId, threadId, deferred: req.projectSwitch === true, initial: req.initial === true });
-      if (!picked.chatWs && !req.projectSwitch) this.emit({ t: 'status', ok: false, msg: 'Codex 侧边栏还没打开' });
+      if (this.cdp === this.editorCdp && !req.projectSwitch) this.emit({ t: 'status', ok: false, msg: 'Codex 侧边栏还没打开' });
       return;
     }
     const win = wins.find(w => w.id === appId) || wins.find(w => appId && w.id.endsWith(':' + appId))
       || (appId && !appId.includes(':') ? wins.find(w => w.app === appId) : null);
     if (appId && !win) {
-      this.emit({ t: 'attached', id: appId, initial: req.initial === true, closed: true, ready: this.app === 'fusion' || !!this.cdp });
-      this.emit({ t: 'status', ok: false, msg: '这个窗口已经关闭，请重新选择' });
-      return;
+      throw new Error('这个窗口已经关闭，请重新选择');
     }
     const chosen = win || wins[0];
     if (!chosen) throw new Error('没有找到 Cursor、Devin 或 Codex 窗口。Cursor 用调试端口 9222，Devin 用 ./scripts/start-devin.sh，Codex 用 ./scripts/start-codex.sh');
@@ -179,7 +225,7 @@ export class Session extends AgentContext {
   async openBound(win, editorWs, chatWs, selection) {
     const editorCdp = new Cdp(editorWs);
     const cdp = chatWs ? new Cdp(chatWs) : editorCdp;
-    // A phone-launched app lands on its most recent session, not the remembered thread.
+    // A phone-launched app keeps its native home/new-chat view, not a remembered thread.
     // Keep the marker until startup and the first chat read complete successfully.
     const launchDefault = this.launchDefault = selection.initial === true && hasLaunched(win.app);
     let thread = '';
@@ -201,6 +247,7 @@ export class Session extends AgentContext {
     this.editorCdp = editorCdp;
     this.cdp = cdp;
     this.bindingReady = false;
+    this.selectionHome = false;
     this.windowId = selection.windowId;
     if (win.app === 'codex') this.codexPageId = selection.windowId;
     this.threadId = thread;
@@ -224,7 +271,8 @@ export class Session extends AgentContext {
     const onclose = () => {
       if (this.cdp !== cdp && this.editorCdp !== editorCdp) return;
       this.detach();
-      this.emit({ t: 'status', ok: false, msg: this.appMessage('{app} 窗口连接已断开') });
+      this.emit({ t: 'attached', id: win.id, app: win.app, windowId: selection.windowId,
+        closed: true, ready: false, message: this.appMessage('{app} 窗口连接已断开') });
     };
     for (const connection of new Set([cdp, editorCdp])) {
       connection.onclose = onclose;
@@ -250,13 +298,8 @@ export class Session extends AgentContext {
     if (restore) this.threadId = this.selectedThread = selection.threadId;
     if (startup || (restore && selection.initial)) attached();
     if (restore) {
-      try {
-        const id = win.app === 'codex' ? `thread:${this.codexPageId}:${selection.threadId}` : selection.threadId;
-        await this.withFocus(() => this.openAgent(id));
-      } catch (error) {
-        this.emit({ t: 'chat', sel: this.selectionKey(), chat: null });
-        throw error;
-      }
+      const id = win.app === 'codex' ? `thread:${this.codexPageId}:${selection.threadId}` : selection.threadId;
+      await this.withFocus(() => this.openAgent(id));
       if (this.cdp !== cdp) return;
       if (this.bindingReady && this.chatUpdatesStop && this.lastChat) {
         this.prefetchMenus().catch(() => {});
@@ -265,12 +308,21 @@ export class Session extends AgentContext {
     } else if (startup) {
       const pending = this.startupPending = {};
       try {
-        await this.withFocus(async () => {
+        const state = await this.withFocus(async () => {
           await this.adapter.openDefaultSession?.call(this);
-          if (!await this.waitFor(`agentStartupState(${JSON.stringify(win.app)}, true)`, 250)) throw new Error('会话输入区尚未就绪，请重试');
+          if (this.pendingProject?.trust) return null;
+          const state = await this.waitFor(`agentStartupState(${JSON.stringify(win.app)}, true)`, 250);
+          if (!state) throw new Error('会话输入区尚未就绪，请重试');
+          this.threadId = this.selectedThread = state.thread || '';
+          return state;
         });
         cdpRead.getStore()?.throwIfAborted();
         this.startupPending = null;
+        if (this.pendingProject?.trust) return;
+        if (state.login) {
+          this.emit({ t: 'attachFailed', ready: false, message: '请先在电脑端登录 Codex，再重试当前会话' });
+          return;
+        }
         this.bindingReady = true;
         attached();
         await this.withFocus(() => this.setMode(this.mode, true));
@@ -286,7 +338,6 @@ export class Session extends AgentContext {
       catch (error) {
         if (this.startupPending === pending || !this.startupPending) {
           this.startupPending = null;
-          this.detach();
         }
         throw error;
       }
@@ -297,14 +348,37 @@ export class Session extends AgentContext {
     this.bindingReady = !selection.deferred && !this.startupPending;
     attached();
     if (this.startupPending || selection.deferred) return;
-    if (selection.initial) {
-      await this.withFocus(() => this.setMode(this.mode, true));
-      if (this.cdp === cdp) this.prefetchMenus().catch(() => {});
-      return;
-    }
-    this.setMode(this.mode).then(() => {
-      if (this.cdp === cdp && !selection.deferred) this.prefetchMenus().catch(() => {});
-    }).catch(e => this.emit({ t: 'status', ok: false, msg: e.message }));
+    await this.withFocus(() => this.setMode(this.mode, true));
+    if (this.cdp === cdp) this.prefetchMenus().catch(() => {});
+  }
+
+  navigationFailed(message, error) {
+    const app = message.t === 'attach' ? String(message.id || '').split(':')[0] || this.app : this.app;
+    let failure = error.message;
+    try { forgetSelection(this.deviceId, app); }
+    catch (saveError) { failure += `；恢复记录清理失败：${saveError.message}`; }
+    if (this.app !== app) this.detach();
+    this.bindingReady = false;
+    this.selectionHome = true;
+    this.rememberedSelection = '';
+    this.rememberingSelection = null;
+    this.chatRead?.controller.abort(error);
+    this.chatRead?.reject?.(error);
+    this.chatRead = null;
+    this.chatWatchGeneration = (this.chatWatchGeneration || 0) + 1;
+    this.chatUpdatesStop?.();
+    this.chatUpdatesStop = null;
+    clearInterval(this.chatTimer);
+    clearInterval(this.termTimer);
+    this.startupPending = this.pendingProject = null;
+    this.switchingThread = false;
+    this.clearViewState();
+    this.threadId = this.selectedThread = '';
+    this.app = app;
+    if (!this.cdp) this.windowId = this.targetId = '';
+    this.emit({ t: 'attachFailed', home: true, ready: false, app, id: this.targetId || app,
+      windowId: this.windowId || '', threadId: '', sel: this.selectionKey(), connected: !!this.cdp,
+      navigationId: message.navigationId, message: failure });
   }
 
   // Warms the phone's sheet caches with whatever can be read without opening visible UI.
@@ -329,6 +403,13 @@ export class Session extends AgentContext {
 
   detach() {
     this.bindingReady = false;
+    this.rememberedSelection = '';
+    const read = this.chatRead;
+    this.chatRead = null;
+    this.polling = this.pollAgain = null;
+    const reason = new Error('窗口已切换或断开');
+    read?.controller.abort(reason);
+    read?.reject?.(reason);
     this.desktopSettingsOwned = undefined;
     this.desktopSettingsSection = '';
     this.codexSettingsCdp?.close();

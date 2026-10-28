@@ -136,6 +136,8 @@ function connHide() {
 }
 function connShow(phase) {
   clearTimeout(conn.timer);
+  compatibilityRequests.clear();
+  compatibilityReports.clear();
   Object.assign(conn, { active: true, initialSelection: true, host: false, phase, agents: null, catalogReady: false, autoLaunched: false, loaded: false, attachFailed: false, enterRequested: false, failure: null, conclusion: '', checks: [], diagRunning: false, probeComplete: false, failedTargets: new Map() });
   conn.open.clear();
   $('conn').classList.add('open');
@@ -154,6 +156,42 @@ const agentCatalogs = new Map();
 const agentReports = new Map();
 const agentComputerKey = () => currentComputer()?.id || currentComputer()?.key || base;
 const agentCatalog = () => agentCatalogs.get(agentComputerKey());
+const compatibilityReports = new Map(), compatibilityRequests = new Map(), compatibilityOpen = new Set();
+let compatibilitySerial = 0;
+const compatibilityKey = app => `${agentComputerKey()}|${app}`;
+function requestCompatibility(app, force = false, windowId = '') {
+  if (!authed || !CONN_AGENTS.some(a => a.app === app)) return;
+  const key = compatibilityKey(app), previous = compatibilityRequests.get(key);
+  if (!force && previous && (!windowId || previous.windowId === windowId)) return;
+  const request = { requestId: ++compatibilitySerial, windowId: windowId || previous?.windowId || '' };
+  compatibilityRequests.set(key, request);
+  compatibilityReports.set(key, { state: 'loading' });
+  send({ t: 'compatibility', app, ...request });
+}
+function receiveCompatibility(m) {
+  const key = compatibilityKey(m.app), request = compatibilityRequests.get(key);
+  if (!request || request.requestId !== m.requestId) return;
+  if (request.windowId && m.windowId && request.windowId !== m.windowId) return;
+  if (m.windowId) request.windowId = m.windowId;
+  compatibilityReports.set(key, m);
+  if (conn.active) connRender();
+  if (sheetKind === 'agent-manager') showAgentManager();
+}
+function compatibilityText(app) {
+  const tr = I18N.tr, report = compatibilityReports.get(compatibilityKey(app));
+  if (!report) return tr('尚未检查版本与适配');
+  if (report.state === 'loading') return tr('正在只读检查版本与适配…');
+  if (report.reason) return tr(report.reason === 'window-unavailable' ? '窗口尚未就绪，未检查适配' : '适配信息读取失败，请重新检查');
+  const versions = report.versions || {};
+  const lines = [`${tr(app === 'codex' ? 'VS Code 版本' : '应用版本')}：${versions.application || tr('未知')}`];
+  if (versions.base) lines.push(`${tr('基础版本')}：${versions.base}`);
+  if (app === 'codex') lines.push(`${tr('Codex 扩展版本')}：${versions.extension || tr('未知')}`);
+  const labels = { input: '输入入口', models: '模型数据', sessions: '会话标识' };
+  const states = { identified: '已识别', pending: '尚未就绪', unknown: '尚未确认' };
+  for (const [key, feature] of Object.entries(report.features || {})) lines.push(`${tr(labels[key] || key)}：${tr(states[feature.state] || '尚未确认')}`);
+  lines.push(tr('只读检查仅确认入口和数据，未执行原生操作。'));
+  return lines.join('\n');
+}
 function startupAgents() {
   const saved = store.get('agent-start:' + agentComputerKey());
   return saved === null ? CONN_AGENTS.map(a => a.app) : JSON.parse(saved);
@@ -184,6 +222,7 @@ function connAgentResults(results, complete = true) {
   agentReports.set(agentComputerKey(), results);
   for (const r of results) if (r.windows) connLaunchStatus.delete(r.app);
   conn.agents = CONN_AGENTS.map(a => ({ ...a, pending: !results.some(r => r.app === a.app), ...results.find(r => r.app === a.app) }));
+  for (const r of results) if (r.windows) requestCompatibility(r.app);
   autoLaunchAgents();
   if (sheetKind === 'agent-manager') showAgentManager();
   if (conn.host !== true) return;
@@ -194,7 +233,10 @@ function connAgentResults(results, complete = true) {
 function connLaunch(apps) {
   const targets = apps || selectedLaunchAgents();
   if (!targets.length) return;
-  for (const app of targets) connLaunchStatus.set(app, 'launching');
+  for (const app of targets) {
+    connLaunchStatus.set(app, 'launching');
+    conn.failedTargets?.delete(app);
+  }
   send({ t: 'launchAgents', apps: targets });
   connRender();
   if (sheetKind === 'agent-manager') showAgentManager();
@@ -242,27 +284,28 @@ function ensureReadyAgent() {
   const ready = (conn.agents || []).filter(a => a.windows).map(a => a.app);
   if (!ready.length) return;
   const appOf = id => String(id || '').split(':')[0];
-  const want = currentApp || appOf(currentComputer()?.win);
-  const sel = currentComputer()?.selections || {};
+  const saved = conn.lastSelection;
+  const want = saved?.app || '';
   const picks = (windows || []).filter(w => ready.includes(appOf(w.id)))
     .flatMap(w => (w.windowIds || [w.id]).map(id => ({ id, app: appOf(id) })))
+    .filter(w => !want || w.app === want)
     .filter(w => !conn.failedTargets?.has(w.id));
-  picks.sort((a, b) => Number(b.app === want) - Number(a.app === want) || Number(!!sel[b.id]) - Number(!!sel[a.id]));
+  picks.sort((a, b) => Number(b.app === want) - Number(a.app === want) || Number(b.id === saved?.id) - Number(a.id === saved?.id));
   const pick = picks[0];
   if (!pick) return;
-  send({ t: 'attach', ...sel[pick.id], id: pick.id, initial: true });
+  send({ t: 'attach', ...(saved || { id: pick.id }), initial: true });
 }
 function connReadFailed(message) {
   window.AgentRemoteApp?.directDone?.();
-  const target = navigationPending?.windowId || currentWindow;
+  const target = navigationPending?.targetId || currentWindow;
   if (target) conn.failedTargets.set(target, message);
   navigationPending = null;
   conn.attachFailed = true;
+  selectionReady = false;
   setWindowReady(false);
   $('retryChat').hidden = false;
   status(message, false);
   if (conn.active) connRender();
-  ensureReadyAgent();
 }
 function connRetryCurrent() {
   const chosen = currentComputer();
@@ -313,11 +356,11 @@ function connRender() {
     const reason = a.timeout ? ct('超时，请检查 {agent} 是否卡住', { agent: a.name }) : a.error ? ct('连接失败，请检查 {agent} 是否已启动', { agent: a.name }) : tr('未找到窗口，请打开项目');
     const installed = catalog?.find(r => r.app === a.app);
     const sub = st === 'ok' ? ct('发现 {n} 个窗口', { n: a.windows }) : st === 'err' ? (connLaunchNote(a) || reason) : tr(st === 'wait' ? '等待主机' : '正在读取窗口…');
-    const detail = [ct('地址：{v}', { v: a.address || '' }), a.error || tr('调试服务已响应，但未找到可用的项目窗口。'), a.app === 'cursor' ? tr('启动指引：在电脑上以远程调试模式启动 Cursor，然后重试。') : ct('启动指引：在电脑上运行 {command}，然后重试。', { command: './scripts/start-' + a.app + '.sh' })].join('\n');
+    const detail = st === 'ok' ? compatibilityText(a.app) : [ct('地址：{v}', { v: a.address || '' }), a.error || tr('调试服务已响应，但未找到可用的项目窗口。'), a.app === 'cursor' ? tr('启动指引：在电脑上以远程调试模式启动 Cursor，然后重试。') : ct('启动指引：在电脑上运行 {command}，然后重试。', { command: './scripts/start-' + a.app + '.sh' })].join('\n');
     const launch = st === 'err' ? connLaunchStatus.get(a.app) : '';
     const launchBtn = st === 'err' && installed?.installed === true && !installed.running && installed.launchSupported && launch !== 'missing' && launch !== 'unsupported'
       ? `<button class="cBtn cLaunch" data-conn-launch="${a.app}" ${launch === 'launching' ? 'disabled' : ''}>${launch === 'launching' ? `<span class="cSpin"></span>${esc(tr('启动中…'))}` : esc(tr('启动'))}</button>` : '';
-    return `<div class="cItem ${st}"><div class="cRow"><div class="cTile cBrand"><img class="on-dark" src="logo-${a.app}-dark.svg" alt=""><img class="on-light" src="logo-${a.app}-light.svg" alt=""></div><div class="cMeta"><div class="cName">${a.name}</div><div class="cSub">${esc(sub)}</div></div><div class="cSt" aria-label="${esc(tr(CONN_TEXT[st]))}">${CONN_ICON[st]}${st === 'err' && !launchBtn ? `<span>${esc(tr('连接失败'))}</span>` : ''}</div>${st === 'err' ? `<button class="cWhy" data-conn-why="${a.app}" aria-expanded="${open}">${esc(tr(open ? '收起' : '查看原因'))}</button>` : ''}${launchBtn}</div>${st === 'err' && open ? `<div class="cErr"><pre class="cDetail">${esc(detail)}</pre><div class="cActs"><button class="cBtn" data-conn-retry="agents">${CONN_RETRY_SVG}${esc(tr('重试'))}</button><button class="cBtn ghost" data-conn-why="${a.app}">${esc(tr('收起'))}</button></div></div>` : ''}</div>`;
+    return `<div class="cItem ${st}"><div class="cRow"><div class="cTile cBrand"><img class="on-dark" src="logo-${a.app}-dark.svg" alt=""><img class="on-light" src="logo-${a.app}-light.svg" alt=""></div><div class="cMeta"><div class="cName">${a.name}</div><div class="cSub">${esc(sub)}</div></div><div class="cSt" aria-label="${esc(tr(CONN_TEXT[st]))}">${CONN_ICON[st]}${st === 'err' && !launchBtn ? `<span>${esc(tr('连接失败'))}</span>` : ''}</div>${st === 'err' || st === 'ok' ? `<button class="cWhy" data-conn-why="${a.app}" aria-expanded="${open}">${esc(tr(open ? '收起' : st === 'ok' ? '版本与适配' : '查看原因'))}</button>` : ''}${launchBtn}</div>${(st === 'err' || st === 'ok') && open ? `<div class="cErr"><pre class="cDetail">${esc(detail)}</pre><div class="cActs">${st === 'ok' ? `<button class="cBtn" data-conn-compatibility="${a.app}">${esc(tr('重新检查适配'))}</button>` : `<button class="cBtn" data-conn-retry="agents">${CONN_RETRY_SVG}${esc(tr('重试'))}</button>`}<button class="cBtn ghost" data-conn-why="${a.app}">${esc(tr('收起'))}</button></div></div>` : ''}</div>`;
   }).join('');
   $('connSum').textContent = probeReady ? `${ready}/${CONN_AGENTS.length} ${tr('已发现')}` : '';
   $('connBar').style.gridTemplateColumns = `repeat(${CONN_AGENTS.length}, 1fr)`;
@@ -365,6 +408,7 @@ $('connAutoLaunch').onclick = () => {
 $('conn').addEventListener('click', e => {
   const b = e.target.closest('button');
   if (!b) return;
+  if (b.dataset.connCompatibility) { requestCompatibility(b.dataset.connCompatibility, true); connRender(); return; }
   if (b.dataset.connLaunch) return connLaunch([b.dataset.connLaunch]);
   if (b.dataset.connRetry === 'agents') return connRetryAgents();
   if (b.dataset.connRetry === 'diag') return showOffline(lastFailure);

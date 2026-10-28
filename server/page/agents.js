@@ -88,7 +88,9 @@
     const sc = devinScroller();
     if (!sc) return { moved: false };
     const top = sc.scrollTop;
-    const mountedMin = () => Math.min(...[...doc.querySelectorAll('[data-acp-msg-index]')].map(e => Number(e.getAttribute('data-acp-msg-index'))).filter(n => Number.isFinite(n)));
+    const mountedMin = () => devinLog()?.matches('[data-chat-history-variant]')
+      ? Math.min(...devinTranscriptRows(devinLog()).map(devinTranscriptIndex).filter(n => Number.isFinite(n)))
+      : Math.min(...[...doc.querySelectorAll('[data-acp-msg-index]')].map(e => Number(e.getAttribute('data-acp-msg-index'))).filter(n => Number.isFinite(n)));
     const rowsBefore = historyRows();
     const deadline = performance.now() + timeout;
     const initialMin = mountedMin();
@@ -243,35 +245,37 @@
       const btn = li.querySelector('button[aria-label]');
       const title = (btn?.getAttribute('aria-label') || '').trim();
       if (!title || DEVIN_NAV.has(title)) return null;
-      const session = codexFiberProps(li).find(p => p.session)?.session;
+      const session = codexFiberProps(li).find(p => devinRowSession(p.session))?.session;
       if (!session) return null;
+      const id = devinRowSession(session);
       const slot = li.querySelector('[data-slot="sidebar-menu-button"]');
       return {
-        id: session.sessionId,
+        id,
         workspace: session.cwd || '',
         title: (session.title || title).slice(0, 80),
         titleNative: !!session.title,
         titleAt: Date.now(),
         group: '',
-        current: slot?.getAttribute('data-active') === 'true',
-        running: ['active', 'pending', 'canceling'].includes(session.status),
-        lastUsed: Date.parse(session.updatedAt) || 0,
+        current: slot?.getAttribute('data-active') === 'true' || !!slot?.querySelector('[data-active="true"]'),
+        running: ['active', 'pending', 'canceling'].includes(devinSessionRecord(id)?.status ?? session.status),
+        lastUsed: Date.parse(session.updatedAt || session.updated_at) || 0,
         last: session.agentStopMessage || '',
       };
     }).filter(Boolean);
     // A freshly opened Devin window shows "Recent sessions" in the workspace welcome
     // layer instead of the sidebar list; those buttons carry the same session props.
     const welcome = [...doc.querySelectorAll('[class*="windsurf-workspace-welcome"] button')].flatMap(btn => {
-      const session = codexFiberProps(btn).find(p => p.session?.sessionId)?.session;
+      const session = codexFiberProps(btn).find(p => devinRowSession(p.session))?.session;
       if (!session) return [];
+      const id = devinRowSession(session);
       return [{
-        id: session.sessionId,
+        id,
         workspace: session.cwd || '',
         title: (btn.innerText || '').trim().split('\n')[0].slice(0, 80),
         group: '',
         current: false,
-        running: ['active', 'pending', 'canceling'].includes(session.status),
-        lastUsed: Date.parse(session.updatedAt) || 0,
+        running: ['active', 'pending', 'canceling'].includes(devinSessionRecord(id)?.status ?? session.status),
+        lastUsed: Date.parse(session.updatedAt || session.updated_at) || 0,
         last: session.agentStopMessage || '',
       }];
     });
@@ -284,11 +288,11 @@
       const recent = client?.getQueryData(['recent-conversations-meta', 'updated_at', '[]', 'live']);
       const workspace = client?.getQueryData(['vscode', 'workspace-root-options', '{"hostId":"local"}']);
       if (codexNeedsLogin()) return { login: true, rows: [], roots: [], thread: '' };
-      if (!hasComposer() || !Array.isArray(recent) || !workspace) return null;
+      if (!Array.isArray(recent) || !workspace) return null;
       return { rows: codexChatRows(true), roots: workspace.roots || [], thread: codexThread() };
     }
     const rows = agentList(), surface = app === 'devin' ? devinSurface() : null;
-    if (inputReady && (!hasComposer() || !modelButton())) return null;
+    if (inputReady && activeThread() && (!hasComposer() || !modelButton())) return null;
     if (!rows.length && !hasComposer() && !control('newChat') && !(surface === 'editor' && sessionSearchTarget())) return null;
     return { rows, surface, thread: activeThread(), items: (extract() || {}).items?.length || 0 };
   };
@@ -319,15 +323,15 @@
       const services = [...doc.querySelectorAll('[data-message-id]')].flatMap(el => codexFiberProps(el, 40)).find(p => p.uiContextMenuServices)?.uiContextMenuServices;
       if (services) return services.commandService.executeCommand('composer.openComposer', id).then(() => true);
     }
-    const li = [...doc.querySelectorAll('li[data-slot="sidebar-menu-item"]')].find(e => codexFiberProps(e).some(p => p.session?.sessionId === id));
-    const btn = li && [...li.querySelectorAll('button[aria-label]')].find(vis);
+    const li = [...doc.querySelectorAll('li[data-slot="sidebar-menu-item"]')].find(e => codexFiberProps(e).some(p => devinRowSession(p.session) === id));
+    const btn = li && [...li.querySelectorAll('[data-slot="sidebar-menu-button"] a[href], button[aria-label]')].find(vis);
     if (btn) {
       btn.scrollIntoView({ block: 'nearest' });
       if (click) { btn.click(); return true; }
       return center(btn);
     }
     // Fresh windows list sessions as welcome-layer "Recent sessions" buttons, not sidebar items.
-    const wbtn = [...doc.querySelectorAll('[class*="windsurf-workspace-welcome"] button')].find(b => codexFiberProps(b).some(p => p.session?.sessionId === id));
+    const wbtn = [...doc.querySelectorAll('[class*="windsurf-workspace-welcome"] button')].find(b => codexFiberProps(b).some(p => devinRowSession(p.session) === id));
     if (!wbtn || !vis(wbtn)) return null;
     wbtn.scrollIntoView({ block: 'nearest' });
     if (click) { wbtn.click(); return true; }

@@ -9,6 +9,7 @@ import { subscribeLibrary } from '../lib/session-library.mjs';
 import { quotaErrorMessage } from './agent/context.mjs';
 import { ROUTES, flag } from './routes.mjs';
 import { voiceWss } from './voice/service.mjs';
+import { lastSelection } from '../lib/auth.mjs';
 import { cdpRead } from './cdp.mjs';
 
 const sameWindow = (session, msg) => !msg.sel || msg.sel.split('|', 2).join('|') === session.selectionKey().split('|', 2).join('|');
@@ -52,6 +53,7 @@ wss.on('connection', (ws, req) => {
   let authorization = null;
   const authTimer = setTimeout(() => ws.close(4001, 'auth timeout'), 5000);
   let queue = Promise.resolve();
+  const sends = new Set();
   let questionQueue = Promise.resolve();
   let binding = 0;
   let activeBinding = 0;
@@ -80,12 +82,23 @@ wss.on('connection', (ws, req) => {
       authorization = bindDeviceConnection(device.id, () => ws.close(4001, 'unauthorized'));
       subscribeLibrary(ws);
       addViewer(session);
-      ws.send(JSON.stringify({ t: 'auth', ok: true, ...identity }));
+      ws.send(JSON.stringify({ t: 'auth', ok: true, ...identity, lastSelection: lastSelection(device.id) }));
       console.log(`[+] client ${clientIp(req)}`);
       return;
     }
     if (!authorization.valid || ws.readyState !== 1) return;
     const route = ROUTES[msg.t];
+    const sendRequest = msg.t === 'send' && msg.submit !== false && session.app !== 'fusion'
+      ? { controller: new AbortController(), sel: msg.sel || session.selectionKey(), msg } : null;
+    if (sendRequest) sends.add(sendRequest);
+    if (msg.t === 'stop' && session.app !== 'fusion') {
+      const scope = msg.sel || session.selectionKey();
+      for (const pending of sends) if (pending.sel === scope && !pending.controller.signal.aborted) {
+        const error = Object.assign(new Error('发送已取消，草稿已保留'), { cancelled: true });
+        pending.controller.abort(error);
+        ROUTES.send.fail(session, pending.msg, error);
+      }
+    }
     const mention = msg.t === 'mentionQuery';
     if (mention) session.mentionSeq = msg.seq;
     if (msg.t === 'openMenu') session.menuRequest = msg.requestId;
@@ -118,6 +131,7 @@ wss.on('connection', (ws, req) => {
     } else if (route?.switchRead !== true && route?.connection !== true) pendingNavigation = null;
     if (switching) {
       if (navigation && activeNavigation) navigationReads.abort(new Error('窗口已切换'));
+      session.chatRead?.controller.abort(new Error('窗口已切换'));
       if (session.sessionBatch) session.sessionBatch.cancelled = true;
       binding++;
       reads.abort(new Error('窗口已切换'));
@@ -135,6 +149,7 @@ wss.on('connection', (ws, req) => {
       if (executed) return;
       executed = true;
       try {
+      if (sendRequest?.controller.signal.aborted) return;
       if (navigation?.superseded) return;
       if (navigation) navigation.started = true;
       const actionIndex = imageActions.findIndex(action => action.execute === execute);
@@ -166,12 +181,14 @@ wss.on('connection', (ws, req) => {
         activeNavigation = navigation;
       }
       const q0 = Date.now();
-      const signal = switching ? navigationReads.signal : route?.switchRead === true ? reads.signal : null;
+      const signal = sendRequest?.controller.signal || (switching ? navigationReads.signal : route?.switchRead === true ? reads.signal : null);
+      const navigationDeadline = msg.t === 'attach' && msg.initial === true ? q0 + 30000 : null;
+      if (navigationDeadline) signal.deadline = navigationDeadline;
       let timedOut = false;
-      const navigationTimer = msg.t === 'attach' && msg.initial === true ? setTimeout(() => {
+      const navigationTimer = navigationDeadline ? setTimeout(() => {
         timedOut = true;
         navigationReads.abort(new Error('当前会话读取超时，请重试或切换 Agent'));
-      }, 30000) : null;
+      }, Math.max(0, navigationDeadline - Date.now())) : null;
       try {
         const queued = imageTransfer?.cancelled ? undefined : await cdpRead.run(signal, () => session.handle(msg));
         const ms = Date.now() - q0;
@@ -180,6 +197,13 @@ wss.on('connection', (ws, req) => {
       } catch (e) {
         if (signal?.aborted && !timedOut) return;
         console.log(`[err] ${msg.t}: ${e.message}`);
+        if (switching && session.app !== 'fusion' && msg.id !== 'fusion') {
+          navigationReads.abort(e);
+          reads.abort(e);
+          reads = new AbortController();
+          await cdpRead.run(null, () => session.navigationFailed(msg, e));
+          return;
+        }
         route?.fail?.(session, msg, e);
         if (switching && msg.t !== 'attach') session.emit({ t: 'attachFailed', ready: session.bindingReady === true });
         if (msg.t !== 'send') session.emit({ t: 'status', ok: false, msg: quotaErrorMessage(session.app, e) || e.message });
@@ -188,7 +212,10 @@ wss.on('connection', (ws, req) => {
         if (switching && activeNavigation === navigation) activeNavigation = null;
         if (imageTransfer) session.imageTransfers.delete(msg.clientImageId);
       }
-      } finally { if (metadataKey) pendingMetadata.delete(metadataKey); }
+      } finally {
+        if (metadataKey) pendingMetadata.delete(metadataKey);
+        if (sendRequest) sends.delete(sendRequest);
+      }
     };
     if (imageAction) imageActions.push({ group, execute });
     if (flag(route?.background, session, msg)) queue.then(execute);

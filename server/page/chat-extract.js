@@ -155,10 +155,11 @@
     const el = [...doc.querySelectorAll('[data-remote-attachment]')].find(e => e.dataset.remoteAttachment === id);
     return el ? center(el) : null;
   };
-  const submitCodexMessage = () => {
-    const button = [...doc.querySelectorAll('button[aria-label="Send"],button[aria-label="Queue"],button[aria-label="Steer"]')].filter(vis).at(-1);
-    if (!button || button.disabled) return false;
-    button.click();
+  const submitCodexMessage = async (follow = '') => {
+    const editor = codexPromptEl();
+    const props = editor && codexFiberProps(editor, Infinity).find(p => typeof p.handleSubmit === 'function' && 'isQueueingEnabled' in p);
+    if (!props || props.submitDisabled || props.isInteractionBlocked || props.interactionsEnabled === false) return false;
+    await props.handleSubmit(follow ? { followUpSubmitAction: follow } : undefined);
     return true;
   };
   const activeThread = () => {
@@ -183,11 +184,11 @@
     }
     return null;
   };
-  const codexHistoryState = () => {
+  const codexHistoryState = (conversation = null) => {
     const thread = codexThread(), scopes = codexHistoryScopes();
     const hostId = codexChatRows(true).find(row => row.id === thread)?.host || 'local';
     const key = JSON.stringify({ hostId, threadId: thread });
-    let index = null;
+    let index = null, hasLoadedOldest;
     const atoms = new Map(), turns = new Map(), queued = new Map();
     for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
       const source = codexHistoryBinding(scope, bindings.get(key));
@@ -198,14 +199,33 @@
         if (!source) continue;
         atoms.set(source.key, source);
         const value = source.get();
+        if (typeof value?.turnsPagination?.hasLoadedOldest === 'boolean') hasLoadedOldest = value.turnsPagination.hasLoadedOldest;
         for (const turn of value?.conversationTurns || []) if (turn.turnId && Array.isArray(turn.items)) turns.set(turn.turnId, turn);
         for (const entry of value?.visibleTurnEntries || []) if (entry.turnId && Array.isArray(entry.turn?.items)) turns.set(entry.turnId, entry.turn);
         if (Array.isArray(value)) for (const item of value) if (typeof item?.id === 'string' && typeof item.text === 'string' && item.clientUserMessageId) queued.set(item.id, item);
       }
     }
-    const entries = (index || []).map((turn, n) => ({ conversationId: thread, historyEntityKey: turn.entityKey,
-      turnId: turn.turnId, turnKey: 'history-content:turn:' + turn.turnId, turnNumber: n + 1,
-      isLatestTurn: n === index.length - 1, turnItemIds: [], metadata: turn, nativeTurn: turns.get(turn.turnId) }));
+    if (conversation) {
+      const history = conversation.turnHistory.history;
+      index = history.islands.flatMap(island => island.entries).flatMap(({ key }) => {
+        const turn = history.entitiesByKey[key];
+        return turn?.turnId ? [{ entityKey: key, turnId: turn.turnId }] : [];
+      });
+      hasLoadedOldest = conversation.turnsPagination.hasLoadedOldest;
+    }
+    // Native pages prepend turns; keep already published numbers anchored to their turn IDs.
+    const histories = doc.defaultView.__remoteAgentCodexTurnNumbers ||= new Map();
+    if (!histories.has(thread)) histories.set(thread, new Map());
+    const numbers = histories.get(thread), anchor = (index || []).findIndex(turn => numbers.has(turn.turnId));
+    const first = anchor < 0 ? 1 : numbers.get(index[anchor].turnId) - anchor;
+    const entries = (index || []).map((turn, n) => {
+      const turnNumber = first + n;
+      numbers.set(turn.turnId, turnNumber);
+      return { conversationId: thread, historyEntityKey: turn.entityKey,
+        turnId: turn.turnId, turnKey: 'history-content:turn:' + turn.turnId, turnNumber,
+        isLatestTurn: n === index.length - 1, turnItemIds: [], metadata: turn,
+        nativeTurn: conversation ? conversation.turnHistory.history.entitiesByKey[turn.entityKey] : turns.get(turn.turnId) };
+    });
     for (const entry of entries.slice(-2)) for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
       const source = codexHistoryBinding(scope, bindings.get(entry.historyEntityKey));
       if (!source) continue;
@@ -220,7 +240,7 @@
         if (source) atoms.set(source.key, source);
       }
     }
-    return { thread, scopes, entries, atoms, queued: [...queued.values()], indexed: index !== null };
+    return { thread, scopes, entries, atoms, queued: [...queued.values()], indexed: index !== null, hasLoadedOldest };
   };
   const chatRevision = () => doc.defaultView.__remoteAgentChatRevision || 0;
   const watchCodexData = changed => {
@@ -467,38 +487,66 @@
       const retry = turnButtons.filter(label => RETRY_LABEL.test(label));
       if (retry.length) { capacityHost.b = retry; capacityHost.btnItem = el.getAttribute('data-turn-key'); }
     }
-    const number = entry?.turnNumber || codexFiberProps(el, 24).find(p => p.entry?.turnNumber)?.entry.turnNumber;
-    return out.map(({ sourceIndex, ...item }, index) => ({ ...item, ...(number ? { order: number * 10000 + (sourceIndex ?? index) } : {}) }));
+    const number = entry?.turnNumber ?? codexFiberProps(el, 24).find(p => p.entry?.turnNumber)?.entry.turnNumber;
+    return out.map(({ sourceIndex, ...item }, index) => ({ ...item, ...(Number.isFinite(number) ? { order: number * 10000 + (sourceIndex ?? index) } : {}) }));
   };
-  const codexHistoryPage = (before, known = [], details = false) => {
-    const state = codexHistoryState(), seen = new Set(known), items = [];
-    const end = Number.isFinite(before) ? before : Infinity;
-    const mounted = new Map([...doc.querySelectorAll('[data-turn-key]')].map(el => [el.getAttribute('data-turn-key'), el]));
-    let earlier = false, head = null, visible = 0;
-    outer: for (const entry of [...state.entries].reverse()) {
-      if (entry.turnNumber * 10000 >= end) continue;
-      const turn = codexStoredTurn(entry, state.scopes);
-      if (!turn || turn.partial) throw new Error('这段历史尚未载入完整，请稍后重试');
-      const el = mounted.get(entry.turnKey);
-      const rows = codexTurnItems(el || null, { ...entry, turn });
-      for (const item of [...rows].reverse()) {
-        if (item.order >= end || seen.has(item.i)) continue;
-        if (visible === 80) { earlier = true; break outer; }
-        items.push(item);
-        if (details || item.k !== 'tool' || !item.done || item.keep) visible++;
-        head = rows.find(row => row.k === 'human' && row.order <= item.order) || null;
-      }
+  const codexHistoryPage = async (before, known = [], details = false) => {
+    let state = codexHistoryState(), manager;
+    for (const scope of state.scopes) for (const bindings of scope.familyBindings.values()) for (const binding of bindings.values()) {
+      const value = codexHistoryBinding(scope, binding)?.get();
+      if (typeof value?.loadOlderConversationTurnsPage === 'function' && value.getConversation(state.thread)) manager = value;
     }
-    items.reverse();
-    const cursor = items[0]?.order ?? before;
-    if (head && !seen.has(head.i) && !items.some(item => item.i === head.i)) items.unshift(head);
-    return { thread: state.thread, items, before: cursor, earlier };
+    if (!manager) throw new Error('没有找到 Codex 历史加载入口');
+    const thread = state.thread, pagination = manager.pagination;
+    state = codexHistoryState(manager.getConversation(thread));
+    const end = Number.isFinite(before) ? before : Infinity;
+    const readPage = async () => {
+      const seen = new Set(known), items = [];
+      const mounted = new Map([...doc.querySelectorAll('[data-turn-key]')].map(el => [el.getAttribute('data-turn-key'), el]));
+      let earlier = state.hasLoadedOldest === false, head = null, visible = 0, cursor = before;
+      outer: for (const entry of [...state.entries].reverse()) {
+        if (entry.turnNumber * 10000 >= end) continue;
+        if (entry.nativeTurn.itemsPagination?.hasLoadedOldest === false) {
+          await pagination.itemPagination.loadTurnItems(thread, entry.turnId, true);
+          entry.nativeTurn = manager.getTurn(thread, entry.historyEntityKey);
+        }
+        const turn = codexStoredTurn(entry, new Set());
+        if (!turn || turn.partial) throw new Error('这段历史尚未载入完整，请稍后重试');
+        const el = mounted.get(entry.turnKey);
+        const rows = codexTurnItems(el || null, { ...entry, turn });
+        for (const item of [...rows].reverse()) {
+          if (item.order >= end) continue;
+          if (seen.has(item.i)) { cursor = item.order; continue; }
+          if (visible === 80) { earlier = true; break outer; }
+          items.push(item);
+          cursor = item.order;
+          if (details || item.k !== 'tool' || !item.done || item.keep) visible++;
+          head = rows.find(row => row.k === 'human' && row.order <= item.order) || null;
+        }
+        cursor = entry.turnNumber * 10000;
+      }
+      items.reverse();
+      if (head && !seen.has(head.i) && !items.some(item => item.i === head.i)) items.unshift(head);
+      return { thread, items, before: cursor, earlier };
+    };
+    let page = await readPage();
+    if (!page.items.length && state.hasLoadedOldest === false) {
+      await pagination.conversationTurnsLoads.get(thread)?.promise;
+      await pagination.loadConversationTurns(thread, false, pagination.client.isCloudHost || manager.getConversation(thread).boundedCloudHistory === true ? 'summary' : undefined);
+      state = codexHistoryState(manager.getConversation(thread));
+      page = await readPage();
+    }
+    return page;
   };
   /* ---------- Devin transcript rows ---------- */
 
   const devinLog = () => {
     const selected = devinSurface() === 'agent' ? agentList().find(a => a.current)?.id : devinTabs().find(t => t.active)?.id;
-    return [...doc.querySelectorAll('[role="log"][aria-label="Session transcript"]')].find(e => vis(e) && (!selected || codexFiberProps(e, 24).some(p => p.sessionId === selected || p.session?.sessionId === selected)));
+    const log = [...doc.querySelectorAll('[role="log"][aria-label="Session transcript"]')].find(e => vis(e) && (!selected || codexFiberProps(e, 24).some(p => p.sessionId === selected || devinRowSession(p.session) === selected)));
+    if (log) return log;
+    const current = selected || window.__acpStore?.getState()?.acp?.focusedSessionId;
+    return [...doc.querySelectorAll('[data-chat-history-variant]')].find(e => vis(e) && current
+      && codexFiberProps(e.querySelector('[data-transcript-row-key]') || e, 40).find(p => typeof p.sessionId === 'string')?.sessionId === current);
   };
 
   // Event-group tool rows: "Searched<query>", "Explored<file> and searched <q>", "Read<file> #L…".
@@ -610,13 +658,13 @@
   const devinMessageMeta = msg => codexFiberProps(msg, 12)
     .find(p => Array.isArray(p.content) && p.content[0]?._meta)?.content[0]._meta || {};
   const devinMessageTime = (msg, meta = devinMessageMeta(msg)) => {
-    const at = Date.parse(meta['cognition.ai/timestamp'] || '');
+    const at = Date.parse(meta['cognition.ai/timestamp'] || codexFiberProps(msg, 12).find(p => p.item?.timestamp)?.item.timestamp || '');
     return Number.isFinite(at) ? at : null;
   };
   // Iterate the Devin transcript's direct children in order: messages, thought groups,
   // tool event rows, commands and file edits all become items. Unknown rows are skipped.
   const devinItems = log => {
-    const rows = [...log.children].filter(vis);
+    const rows = devinTranscriptRows(log).filter(vis);
     const last = [...rows].reverse().find(r => (r.innerText || '').trim());
     const items = [];
     rows.forEach((row, n) => {
@@ -624,6 +672,8 @@
       const msg = row.querySelector('[role=group][aria-label="User message"], [role=group][aria-label="Devin message"]');
       if (msg) {
         const it = messageItem(msg);
+        const native = row.hasAttribute('data-transcript-row-key') ? codexFiberProps(row, 8).find(p => p.row)?.row?.item : null;
+        if (it.k === 'human' && native?.event_type === 'user_message' && typeof native.message === 'string') it.t = native.message;
         const meta = it.k === 'human' ? devinMessageMeta(msg) : {};
         if (meta['cognition.ai/isOptimistic']) return;
         if (!it.i) it.i = i;
@@ -737,7 +787,7 @@
     const initialCapacity = !panel && !log ? codexCapacityItem() : null;
     const known = new Set(knownTurns);
     const nativeTail = state?.entries.slice(-32).filter(entry => entry.isLatestTurn
-      || entry.turnNumber >= state.entries.length - 1 || !known.has(entry.turnId)).flatMap(entry => {
+      || entry.turnNumber >= state.entries.at(-1).turnNumber - 1 || !known.has(entry.turnId)).flatMap(entry => {
       const turn = codexStoredTurn(entry, state.scopes);
       return turn ? [{ ...entry, turn }] : [];
     }) || [];
@@ -745,13 +795,14 @@
     if (!panel && !log && !initialCapacity && !nativeTail.length) {
       const pendingCodexRequests = !devinSurface() ? codexRequestData() : [];
       const modelEl = modelButton();
-      if (!modelEl && !hasComposer() && !devinSurface() && !doc.querySelector('[data-request-input-dismiss]')) return null;
+      const home = !hasComposer() && !activeThread() && (codexQueryClient() ? !!agentStartupState('codex') : agentList().length > 0);
+      if (!modelEl && !hasComposer() && !home && !devinSurface() && !doc.querySelector('[data-request-input-dismiss]')) return null;
       return {
         _revision: chatRevision(), rect: [0, 0, 0, 0],
         items: [],
         capacityPresent: false,
         ...(imagePreview ? { imagePreview: true } : {}),
-        ...(devinSurface() ? { empty: true } : {}),
+        ...(devinSurface() || home ? { empty: true } : {}),
         global: [],
         busy: isBusy(),
         queued: queued(),
@@ -789,7 +840,7 @@
       const incomplete = turn?.partial;
       const rows = codexTurnItems(el, entry, history ? 0 : 400);
       const number = entry?.turnNumber;
-      if (number) (turn?.partial ? partialTurns : completeTurns).add(number);
+      if (Number.isFinite(number)) (turn?.partial ? partialTurns : completeTurns).add(number);
       if (entry?.turnId && turn?.status === 'complete' && !incomplete) completedIds.set(entry.turnId, number);
       return rows;
     };
@@ -856,7 +907,8 @@
     return {
       rect: [r.x, r.y, r.width, r.height].map(Math.round),
       _revision: chatRevision(),
-      ...(codexId ? { _partialTurns: [...partialTurns], _completeTurns: [...completeTurns].filter(number => !partialTurns.has(number)), _completeTurnIds: [...completedIds] } : {}),
+      ...(codexId ? { _partialTurns: [...partialTurns], _completeTurns: [...completeTurns].filter(number => !partialTurns.has(number)), _completeTurnIds: [...completedIds],
+        _historyEarlier: state?.hasLoadedOldest === false, _historyStart: state?.entries[0]?.turnNumber } : {}),
       ...(imagePreview ? { imagePreview: true } : {}),
       ...(generation ? { generation } : {}),
       capacityPresent: !!capacity,
