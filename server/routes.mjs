@@ -197,9 +197,10 @@ export const ROUTES = {
 
   agents: { switchRead: true,
     background: (s, m) => m.automatic === true && m.silent === true,
-    pre: (s, m) => (s.app === 'codex' ? s.listAgents(m.silent === true, m.automatic === true, '', m.checkTrust === true) : SKIP),
+    pre: (s, m) => (s.app === 'codex' && s.cdp ? s.listAgents(m.silent === true, m.automatic === true, '', m.checkTrust === true) : SKIP),
     readOnly: (s, m) => m.silent === true,
     run: (s, m) => s.listAgents(m.silent === true, m.automatic === true, String(m.projectWindow || ''), m.checkTrust === true),
+    fail: (s, m, error) => s.emit({ t: 'agents', app: s.app, sel: s.selectionKey(), silent: m.silent === true, error: error?.message || '会话已切换，请重试列表' }),
   },
   openAgent: { switchRead: true, navigation: true,  run: (s, m) => s.openAgent(String(m.id ?? ''), String(m.title ?? '')) },
   openMenu: { switchRead: true,  run: (s, m) => s.openMenu(m.kind, m.requestId) },

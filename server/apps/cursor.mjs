@@ -33,27 +33,10 @@ export const adapter = {
     throw new Error('新建对话没有生效');
   },
 
-  // A freshly launched Cursor lands on the Agents home; open the most recent session.
-  // agentList order is the sidebar's native order (Cursor lists most recent first).
+  // A cold start keeps the native home/new-chat view.
   async openDefaultSession() {
     const st = await this.waitFor('agentStartupState("cursor")', 250);
     if (!st) throw new Error('Cursor 项目与会话尚未就绪，请重试');
-    if (st.thread && st.items) return;
-    const pickNewest = async () => {
-      // A cold window can take a while to mount the agent list.
-      let rows = [];
-      for (let i = 0; i < 48 && !rows.length; i++) {
-        rows = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return h.agentList(); })()`) || [];
-        if (!rows.length) await new Promise(r => setTimeout(r, 250));
-      }
-      return rows.find(r => r.id && !String(r.id).startsWith('new:')) || null;
-    };
-    const best = await pickNewest();
-    if (!best) {
-      if (!await this.cdp.evaluate(helpersCall('hasComposer()'))) await this.adapter.newChat.call(this);
-      return;
-    }
-    await this.adapter.openAgent.call(this, best.id);
   },
 
   async openAgent(id, title = '') {

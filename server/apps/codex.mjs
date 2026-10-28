@@ -25,24 +25,14 @@ export const adapter = {
     return this.newCodexChat();
   },
 
-  // A freshly launched Codex window opens on the new-chat view; select this
-  // workspace's most recently used conversation (rows carry lastUsed = updatedAt).
-  async openDefaultSession(preferred = '') {
+  // A cold start keeps the native home/new-chat view; only bind its webview.
+  async openDefaultSession() {
     const page = (await codexWindows(CODEX_CDP_URL)).find(p => p.pageId === this.codexPageId);
-    if (page && !page.chatWs) await this.ensureCodexReady({ id: page.pageId, ws: page.ws }, false);
+    if (page && this.cdp === this.editorCdp) await this.ensureCodexReady({ id: page.pageId, ws: page.ws }, false);
     if (this.pendingProject?.trust) return;
     if (await this.checkCodexLogin()) return;
-    if (await this.cdp.evaluate(helpersCall('codexThread()'))) return;
     const state = await this.waitFor('agentStartupState("codex")', 250);
     if (!state) throw new Error('Codex 项目与会话尚未就绪，请重试');
-    if (state.login || state.thread) return;
-    const local = state.rows.filter(r => !r.host && state.roots.some(root => pathKey(root) === pathKey(r.workspace)));
-    const best = local.find(r => r.id === preferred)
-      || local.reduce((a, b) => ((b.lastUsed || 0) > (a?.lastUsed || 0) ? b : a), null);
-    if (!best) return;
-    if (!await this.selectCodexThread(best.id)) throw new Error('没有找到最近的会话');
-    this.threadId = best.id;
-    this.publishThread();
   },
 
   async openAgent(id, title = '') {

@@ -9,6 +9,7 @@ import { subscribeLibrary } from '../lib/session-library.mjs';
 import { quotaErrorMessage } from './agent/context.mjs';
 import { ROUTES, flag } from './routes.mjs';
 import { voiceWss } from './voice/service.mjs';
+import { lastSelection } from '../lib/auth.mjs';
 import { cdpRead } from './cdp.mjs';
 
 const sameWindow = (session, msg) => !msg.sel || msg.sel.split('|', 2).join('|') === session.selectionKey().split('|', 2).join('|');
@@ -81,7 +82,7 @@ wss.on('connection', (ws, req) => {
       authorization = bindDeviceConnection(device.id, () => ws.close(4001, 'unauthorized'));
       subscribeLibrary(ws);
       addViewer(session);
-      ws.send(JSON.stringify({ t: 'auth', ok: true, ...identity }));
+      ws.send(JSON.stringify({ t: 'auth', ok: true, ...identity, lastSelection: lastSelection() }));
       console.log(`[+] client ${clientIp(req)}`);
       return;
     }

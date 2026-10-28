@@ -795,13 +795,14 @@
     if (!panel && !log && !initialCapacity && !nativeTail.length) {
       const pendingCodexRequests = !devinSurface() ? codexRequestData() : [];
       const modelEl = modelButton();
-      if (!modelEl && !hasComposer() && !devinSurface() && !doc.querySelector('[data-request-input-dismiss]')) return null;
+      const home = !hasComposer() && !activeThread() && (codexQueryClient() ? !!agentStartupState('codex') : agentList().length > 0);
+      if (!modelEl && !hasComposer() && !home && !devinSurface() && !doc.querySelector('[data-request-input-dismiss]')) return null;
       return {
         _revision: chatRevision(), rect: [0, 0, 0, 0],
         items: [],
         capacityPresent: false,
         ...(imagePreview ? { imagePreview: true } : {}),
-        ...(devinSurface() ? { empty: true } : {}),
+        ...(devinSurface() || home ? { empty: true } : {}),
         global: [],
         busy: isBusy(),
         queued: queued(),
