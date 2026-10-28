@@ -620,6 +620,7 @@ async function boot() {
   const chosen = currentComputer();
   const current = () => generation === bootGeneration && currentComputer()?.key === chosen?.key;
   const discovery = fetch(discoveryUrl() + '?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+  warmComputerSockets().catch(() => {});
   // An existing paired address can authenticate while the published directory refreshes.
   if (!pending && chosen?.relay && (!entryComputer || entryComputer === chosen.id)) {
     base = chosen.relay;
@@ -877,7 +878,6 @@ async function connect() {
       rememberComputer({...currentComputer(), id: m.id, name: m.name, device: m.device});
       conn.lastSelection = m.lastSelection;
       authed = true; failures = 0;
-      warmComputerSockets().catch(() => {});
       send({ t: 'sessionLibrary', entries: legacyAgentLibrary() });
       document.dispatchEvent(new Event('voice-authenticated'));
       ungate();
