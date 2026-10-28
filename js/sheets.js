@@ -33,7 +33,6 @@ function receiveSessionBatch(m) {
 function interruptSessionBatch() {
   if (!agentBatch?.running) return;
   agentBatch.running = false;
-  agentBatch.requestId = null;
   agentBatch.selected.clear();
   agentBatch.progress = { ...agentBatch.progress, results: agentBatch.progress?.results || [], total: agentBatch.progress?.total || 0, done: true };
   agentLists.delete(agentBatch.key);
