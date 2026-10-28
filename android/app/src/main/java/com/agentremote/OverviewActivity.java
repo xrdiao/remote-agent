@@ -88,6 +88,7 @@ public class OverviewActivity extends Activity {
     private ImageView back;
     private HorizontalScrollView lane;
     private ScrollView scroller;
+    private androidx.swiperefreshlayout.widget.SwipeRefreshLayout refresh;
     private OverviewGrid grid;
     private final TextView[] tabs = new TextView[3];
     private View sessionDot;
@@ -209,7 +210,15 @@ public class OverviewActivity extends Activity {
         grid = new OverviewGrid(this);
         grid.setPadding(dp(16), dp(4), dp(16), dp(24));
         scroller.addView(grid, new ScrollView.LayoutParams(-1, -2));
-        root.addView(scroller, new LinearLayout.LayoutParams(-1, 0, 1));
+        refresh = new androidx.swiperefreshlayout.widget.SwipeRefreshLayout(this);
+        refresh.setColorSchemeColors(ACC);
+        refresh.setProgressBackgroundColorSchemeColor(S1);
+        refresh.addView(scroller);
+        refresh.setOnRefreshListener(() -> {
+            if (comps.isEmpty()) { refresh.setRefreshing(false); return; }
+            pollAll();
+        });
+        root.addView(refresh, new LinearLayout.LayoutParams(-1, 0, 1));
 
         // Bottom level bar, Material 3 style tabs.
         LinearLayout bar = new LinearLayout(this);
@@ -252,13 +261,13 @@ public class OverviewActivity extends Activity {
 
     private void showEmpty(boolean show) {
         if (show && empty.getParent() == null) {
-            int i = root.indexOfChild(scroller);
-            root.removeView(scroller);
+            int i = root.indexOfChild(refresh);
+            root.removeView(refresh);
             root.addView(empty, i < 0 ? root.getChildCount() - 1 : i, new LinearLayout.LayoutParams(-1, 0, 1));
         } else if (!show && empty.getParent() != null) {
             int i = root.indexOfChild(empty);
             root.removeView(empty);
-            root.addView(scroller, i < 0 ? root.getChildCount() - 1 : i, new LinearLayout.LayoutParams(-1, 0, 1));
+            root.addView(refresh, i < 0 ? root.getChildCount() - 1 : i, new LinearLayout.LayoutParams(-1, 0, 1));
         }
     }
 
@@ -538,6 +547,7 @@ public class OverviewActivity extends Activity {
     // ---- rendering ----
 
     private void render() {
+        if (refresh.isRefreshing() && comps.values().stream().noneMatch(c -> c.inFlight)) refresh.setRefreshing(false);
         if (!OverviewStore.any(this)) { showEmpty(true); return; }
         showEmpty(false);
         back.setVisibility(projFilter != null || compFilter != null ? View.VISIBLE : View.GONE);

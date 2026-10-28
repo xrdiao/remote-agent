@@ -241,6 +241,8 @@
       ...tabs.map(t => [t.dataset.resourceName, { id: t.dataset.resourceName, title: t.querySelector('.label-name')?.textContent || '新会话', current: focused ? t.dataset.resourceName === focused : t.classList.contains('active'), workspace: '', host: '', group: '' }]),
     ]).values()].filter(row => !archived.has(row.id)).map(row => ({ ...row, title: names.get(row.id) || row.title, titleNative: names.has(row.id), titleAt: Date.now() }));
     // Read the native session id; titles can repeat or change.
+    // Switching chat tabs moves the ACP focus but leaves the sidebar highlight on the old row.
+    const acpFocus = window.__acpStore?.getState()?.acp?.focusedSessionId;
     const lis = [...doc.querySelectorAll('li[data-slot="sidebar-menu-item"]')].map(li => {
       const btn = li.querySelector('button[aria-label]');
       const title = (btn?.getAttribute('aria-label') || '').trim();
@@ -256,7 +258,7 @@
         titleNative: !!session.title,
         titleAt: Date.now(),
         group: '',
-        current: slot?.getAttribute('data-active') === 'true' || !!slot?.querySelector('[data-active="true"]'),
+        current: acpFocus ? id === acpFocus : slot?.getAttribute('data-active') === 'true' || !!slot?.querySelector('[data-active="true"]'),
         running: ['active', 'pending', 'canceling'].includes(devinSessionRecord(id)?.status ?? session.status),
         lastUsed: Date.parse(session.updatedAt || session.updated_at) || 0,
         last: session.agentStopMessage || '',
@@ -302,7 +304,7 @@
         titleNative: !!s.title,
         titleAt: Date.now(),
         group: '',
-        current: false,
+        current: id === acpFocus,
         running: ['active', 'pending', 'canceling'].includes(s.status) || ['working', 'blocked'].includes(st),
         lastUsed: Date.parse(s.updatedAt || s.updated_at) || 0,
         last: s.agentStopMessage || '',
@@ -374,7 +376,8 @@
     }
     // Fresh windows list sessions as welcome-layer "Recent sessions" buttons, not sidebar items.
     const wbtn = [...doc.querySelectorAll('[class*="windsurf-workspace-welcome"] button')].find(b => codexFiberProps(b).some(p => devinRowSession(p.session) === id));
-    if (!wbtn || !vis(wbtn)) return null;
+    // Devin sessions opened as chat tabs but absent from the sidebar list: tap the tab.
+    if (!wbtn || !vis(wbtn)) return devinTabTarget(id);
     wbtn.scrollIntoView({ block: 'nearest' });
     if (click) { wbtn.click(); return true; }
     return center(wbtn);
