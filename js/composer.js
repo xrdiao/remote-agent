@@ -79,7 +79,6 @@ function confirmSent(m, render = true) {
     dirtyDrafts.add(activeDraft); queueDraftSync();
   }
   if (sent.mode === 'chat') {
-    if (!m.queued) rememberAgentMessageTime(sent.thread, m.sentAt || Date.now());
     submittedMessages.push({ ...sent, messageId: m.messageId, queueId: m.queueId, sentAt: m.sentAt || Date.now() });
     if (here && lastChat && render) queueChatRender();
   }
