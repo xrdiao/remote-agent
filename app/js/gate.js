@@ -287,11 +287,12 @@ function ensureReadyAgent() {
   const want = saved?.app || '';
   const picks = (windows || []).filter(w => ready.includes(appOf(w.id)))
     .flatMap(w => (w.windowIds || [w.id]).map(id => ({ id, app: appOf(id) })))
+    .filter(w => !want || w.app === want)
     .filter(w => !conn.failedTargets?.has(w.id));
   picks.sort((a, b) => Number(b.app === want) - Number(a.app === want) || Number(b.id === saved?.id) - Number(a.id === saved?.id));
   const pick = picks[0];
   if (!pick) return;
-  send({ t: 'attach', ...(pick.app === want ? saved : {}), id: pick.id, initial: true });
+  send({ t: 'attach', ...(saved || { id: pick.id }), initial: true });
 }
 function connReadFailed(message) {
   const target = navigationPending?.targetId || currentWindow;
@@ -303,7 +304,6 @@ function connReadFailed(message) {
   $('retryChat').hidden = false;
   status(message, false);
   if (conn.active) connRender();
-  ensureReadyAgent();
 }
 function connRetryCurrent() {
   const chosen = currentComputer();

@@ -217,9 +217,9 @@ function scSwitch(sess) {
     if (lastChat) renderChat(lastChat, chatStale);
   });
 }
-// Merge what the relay sent into the stored session and return what to draw: all rows (older ones windowed
-// to SC.show), minus the replies of folded turns. A turn is a user message plus everything up to the next one.
-function scMerge(chat) {
+// SC.show limits the initial tail. While reading, keep displayed rows as the tail grows;
+// returning to the bottom can reclaim them. Folded turns stay in the data cache.
+function scMerge(chat, retained = new Set()) {
   if (!SC.key) return { items: chat.items, all: chat.items, older: 0, stat: null };
   if (chat.empty && SC.items.size) {
     SC.items.clear(); SC.sig.clear(); SC.collapsed.clear(); scDirty();
@@ -244,7 +244,12 @@ function scMerge(chat) {
   }
   let items = all.filter(it => it.k === 'human' || !SC.collapsed.has(turnOf.get(it.i)));
   let older = 0;
-  if (items.length > SC.show) { const tail = chatTail(items, SC.show); older = items.length - tail.length; items = tail; }
+  if (items.length > SC.show) {
+    const shown = new Set(chatTail(items, SC.show).map(it => String(it.i)));
+    older = items.length;
+    items = items.filter(it => shown.has(String(it.i)) || retained.has(String(it.i)));
+    older -= items.length;
+  }
   return { items, all, older, stat, turnOf };
 }
 function scFold(turn, to) {
@@ -666,12 +671,8 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
   }
   const followBottom = followingChat();
   const existing = new Set([...itemsEl.children].map(el => el.dataset.i));
-  const previousOrder = Math.max(-1, ...[...existing].map(id => {
-    const item = SC.items.get(id) || previous?.items.find(it => String(it.i) === id);
-    return item?.order ?? acpNum(id);
-  }));
   const restoreInsertion = !followBottom && !threadChanged && scrollMode === 'freeScroll'
-    && (historyInsertion || chat?.items.some(it => !existing.has(String(it.i)) && (it.order ?? acpNum(it.i)) < previousOrder))
+    && historyInsertion
     ? historyInsertionPosition() : null;
   noteChatLayoutChange();
   lastChat = chat; updateTitle();
@@ -719,7 +720,9 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
     if (echoes.length) $('empty').hidden = true;
     itemsEl.replaceChildren(...echoes); itemsEl.classList.remove('stale'); renderQueue(false, []); renderQuestions(null); paintSessions(null); latestTasks = null; $('taskChip').hidden = true; return; }
   const sessionChanged = paintSessions(chat);
-  const V = scMerge(chat);
+  const keepViewport = keepReading && !followBottom && !threadChanged && !sessionChanged && !historyInsertion && scrollMode === 'freeScroll';
+  const V = scMerge(chat, keepViewport ? existing : new Set());
+  if (keepViewport && V.items.length > SC.show + 1) deferredScrollRender = true;
   if (!sessionChanged && userSelecting()) {
     deferredRender = true;
     $('actionBar').innerHTML = buttonsHtml(chat.global, 'g');
@@ -737,21 +740,44 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
   if (keepReading && !threadChanged && !sessionChanged && scrollMode === 'freeScroll') {
     for (const el of itemsEl.children) if (el.classList.contains('tool')) readingExecutionRows.add(el.dataset.i);
   } else readingExecutionRows.clear();
-  const visibleItems = visibleChatItems(V.items, chat.busy, readingExecutionRows);
+  const edge = list.getBoundingClientRect().bottom;
+  const readingEnd = keepViewport ? V.items.findLastIndex(it => {
+    const el = cache.get(it.i)?.el;
+    return el?.isConnected && el.getBoundingClientRect().top < edge;
+  }) : -1;
+  const readingRows = new Set(V.items.slice(0, readingEnd + 1).map(it => String(it.i)));
+  const visibleItems = visibleChatItems(V.items, chat.busy, readingExecutionRows).filter(it => {
+    if (!readingRows.has(String(it.i)) || existing.has(String(it.i))) return true;
+    deferredScrollRender = true;
+    return false;
+  });
   const visibleIds = new Set(visibleItems.map(it => String(it.i)));
   for (const id of readingExecutionRows) if (!visibleIds.has(id)) readingExecutionRows.delete(id);
   const els = visibleItems.map(it => {
     const key = JSON.stringify(it);
     const hit = cache.get(it.i);
     if (hit && hit.key === key) return hit.el;
+    const { b, actions, btnItem, live, agents, ...body } = it;
+    const bodyKey = JSON.stringify([body, thoughtFull.get(it.i)]);
+    if (hit?.bodyKey === bodyKey && hit.key !== null) {
+      paintItemActions(hit.el, it);
+      hit.key = key;
+      return hit.el;
+    }
+    if (keepViewport && hit?.el.isConnected && !hit.refresh && hit.el.getBoundingClientRect().top < edge) {
+      paintItemActions(hit.el, it);
+      deferredScrollRender = true;
+      return hit.el;
+    }
     if (it.k === 'thinking' && hit?.el) {
       paintThinking(hit.el, it);
-      cache.set(it.i, { key, el: hit.el });
+      paintItemActions(hit.el, it);
+      cache.set(it.i, { key, bodyKey, el: hit.el });
       return hit.el;
     }
     const el = renderItem(it);
     if (it.k === 'tool' && it.kind === 'command' && hit?.el.classList.contains('toolrow') && patchToolRow(hit.el, el)) {
-      cache.set(it.i, { key, el: hit.el });
+      cache.set(it.i, { key, bodyKey, el: hit.el });
       return hit.el;
     }
     if (it.k === 'tool' && hit?.el.classList.contains('toolrow')) {
@@ -761,7 +787,7 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
       if (chev) chev.textContent = open ? '▾' : '▸';
     }
     el.dataset.i = it.i;
-    cache.set(it.i, { key, el });
+    cache.set(it.i, { key, bodyKey, el });
     return el;
   });
   visibleItems.forEach((it, n) => {
@@ -777,10 +803,15 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
   if (V.turnOf) {
     const last = new Map();
     visibleItems.forEach((it, n) => { if (it.k === 'assistant' && V.turnOf.get(it.i)) last.set(V.turnOf.get(it.i), n); });
+    if (keepViewport) visibleItems.forEach((it, n) => {
+      if (existing.has(String(it.i)) && els[n].querySelector(':scope > .endFold') && els[n].getBoundingClientRect().top < edge)
+        last.set(V.turnOf.get(it.i), n);
+    });
     const keep = new Set(last.values());
     visibleItems.forEach((it, n) => {
       const el = els[n];
       let b = el.querySelector(':scope > .endFold');
+      if (keepViewport && existing.has(String(it.i)) && el.getBoundingClientRect().top < edge) return;
       if (!keep.has(n)) return b?.remove();
       if (!b) {
         b = document.createElement('button');

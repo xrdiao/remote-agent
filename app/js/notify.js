@@ -243,7 +243,13 @@ $('sheet').addEventListener('click', async e => {
   if ('modelBack' in b.dataset) return requestMenu('model', '读取模型列表…');
   if ('effortOpen' in b.dataset) return requestMenu('effort', '读取思考强度…');
   if ('modelDone' in b.dataset) { closeSheet(); return; }
-  if (b.dataset.fast) { status('设置中…'); return send({ t: 'pickMenu', kind: 'fast', label: b.dataset.fast, name: b.dataset.fastMenu }); }
+  if (b.dataset.fast) {
+    if (send({ t: 'pickMenu', kind: 'fast', label: b.dataset.fast, name: b.dataset.fastMenu })) {
+      b.disabled = true; b.setAttribute('aria-busy', 'true');
+      b.querySelector('.lbl').insertAdjacentHTML('beforeend', `<span class="sub" data-fast-pending>${esc(I18N.tr('设置中…'))}</span>`);
+    }
+    return;
+  }
   if ('editorChat' in b.dataset) { closeSheet(); status('正在打开聊天面板…'); return send({ t: 'openEditorChat' }); }
   if ('editorReturn' in b.dataset) { closeSheet(); return; }
   if (b.dataset.nativeSurface) { closeSheet(); status('正在切换界面…'); return send({ t: 'surface', to: b.dataset.nativeSurface }); }

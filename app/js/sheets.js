@@ -5,6 +5,10 @@ let menuPending = null, menuPickRequest = 0, modelSwitchRequest = null;
 function finishModelPick(m) {
   if (m.sel !== viewSel || m.requestId !== modelSwitchRequest?.requestId) return;
   modelSwitchRequest = null;
+  if (m.kind === 'fast') {
+    $('sheet').querySelectorAll('[data-fast]').forEach(button => { button.disabled = false; button.removeAttribute('aria-busy'); button.querySelector('[data-fast-pending]')?.remove(); });
+    return;
+  }
   menuCache.delete(menuCacheKey('model')); menuCache.delete(menuCacheKey('effort'));
   if (m.ok) status(`已切换到 ${m.label}`);
 }
@@ -278,8 +282,7 @@ function windowEntries() {
 function switchToWindow(id) {
   closeSheet();
   const entry = windowEntries().entries.find(w => w.id === id);
-  const saved = entry && currentComputer()?.selections?.[entry.app];
-  send({ t: 'attach', id, ...(saved?.id === id ? saved : {}) });
+  send({ t: 'attach', id, restore: entry?.app !== 'fusion' });
 }
 function openSettings() {
   status('正在读取设置…');
@@ -771,15 +774,22 @@ function requestMenu(kind, loadingMsg) {
     menuRefreshTimer = setTimeout(() => send({ t: 'openMenu', kind }), 150);
   } else {
     status(loadingMsg);
-    send({ t: 'openMenu', kind });
+    menuSheetKind = kind;
+    openSheet('menu', `<h3>${MENU_TITLE[kind] || ''}</h3><p class="hint" role="status">${esc(I18N.tr(loadingMsg))}</p>`);
+    if (!send({ t: 'openMenu', kind })) closeSheet();
   }
+}
+function showMenuError(kind, message) {
+  menuSheetKind = kind;
+  openSheet('menu', `<h3>${MENU_TITLE[kind] || ''}</h3><p class="hint" role="alert">${esc(I18N.tr(message))}</p>`);
+  status(message, false);
 }
 function showMenu(kind, items, max, fusion, fast, model, refreshing, pricing) {
   finishPending(['读取思考强度…', '读取权限…', '读取模式列表…', '读取模型列表…', '读取历史对话…', '设置中…']);
   menuSheetKind = kind;
   const picking = /^fusion-(lead|effort|sidekick)$/.test(String(kind || ''));
   if (kind === 'effort' || kind === 'fusion-effort' || /^fusion-effort-[ab]$/.test(kind)) items = sortedEfforts(items || []);
-  if (!items?.length && !fusion && kind !== 'effort') return status(appMessage('菜单是空的，可能 {app} 版本不同'), false);
+  if (!items?.length && !fusion && kind !== 'effort') return showMenuError(kind, appMessage('菜单是空的，可能 {app} 版本不同'));
   status('');
   const maxRow = typeof max === 'boolean'
     ? `<button class="opt" data-max><span class="lbl">MAX Mode<span class="sub">更大上下文、更贵</span></span><span class="switch ${max ? 'on' : ''}"></span></button>` : '';

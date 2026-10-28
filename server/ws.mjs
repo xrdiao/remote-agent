@@ -82,7 +82,7 @@ wss.on('connection', (ws, req) => {
       authorization = bindDeviceConnection(device.id, () => ws.close(4001, 'unauthorized'));
       subscribeLibrary(ws);
       addViewer(session);
-      ws.send(JSON.stringify({ t: 'auth', ok: true, ...identity, lastSelection: lastSelection() }));
+      ws.send(JSON.stringify({ t: 'auth', ok: true, ...identity, lastSelection: lastSelection(device.id) }));
       console.log(`[+] client ${clientIp(req)}`);
       return;
     }
@@ -197,6 +197,13 @@ wss.on('connection', (ws, req) => {
       } catch (e) {
         if (signal?.aborted && !timedOut) return;
         console.log(`[err] ${msg.t}: ${e.message}`);
+        if (switching && session.app !== 'fusion' && msg.id !== 'fusion') {
+          navigationReads.abort(e);
+          reads.abort(e);
+          reads = new AbortController();
+          await cdpRead.run(null, () => session.navigationFailed(msg, e));
+          return;
+        }
         route?.fail?.(session, msg, e);
         if (switching && msg.t !== 'attach') session.emit({ t: 'attachFailed', ready: session.bindingReady === true });
         if (msg.t !== 'send') session.emit({ t: 'status', ok: false, msg: quotaErrorMessage(session.app, e) || e.message });
