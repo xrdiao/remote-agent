@@ -3,8 +3,9 @@ let sheetKind = null;
 let menuRefreshTimer = 0;
 let menuPending = null, menuPickRequest = 0, modelSwitchRequest = null;
 function finishModelPick(m) {
-  if (m.sel !== viewSel || m.requestId !== modelSwitchRequest?.requestId) return;
+  if (!modelSwitchRequest || m.requestId !== modelSwitchRequest.requestId) return;
   modelSwitchRequest = null;
+  if (m.sel !== viewSel) return;
   if (m.kind === 'fast') {
     $('sheet').querySelectorAll('[data-fast]').forEach(button => { button.disabled = false; button.removeAttribute('aria-busy'); button.querySelector('[data-fast-pending]')?.remove(); });
     return;
@@ -24,11 +25,11 @@ let pendingAgentActions = null;
 let agentBatch = null;
 function batchActive() { return agentBatch?.key === agentListKey(); }
 function receiveSessionBatch(m) {
-  if (!batchActive() || m.app !== currentApp || m.requestId !== agentBatch.requestId) return;
+  if (!agentBatch || m.requestId !== agentBatch.requestId) return;
   agentBatch.progress = m;
   agentBatch.running = !m.done;
   for (const row of m.results) if (row.ok) agentBatch.selected.delete(row.id);
-  if (sheetKind === 'agents') renderAgentList();
+  if (sheetKind === 'agents' && batchActive()) renderAgentList();
 }
 function interruptSessionBatch() {
   if (!agentBatch?.running) return;

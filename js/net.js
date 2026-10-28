@@ -791,13 +791,13 @@ function receiveDesktopOperation(link, result) {
   const pending = desktopRequests.get(result.id);
   if (!pending) { link.operations.delete(result.id); return; }
   if (pending.computer !== link.expectedId) return;
-  if (result.kind !== 'send' && (!link.receive || currentComputer()?.id !== pending.computer || result.sel !== viewSel)) return;
+  if (result.kind !== 'send' && (!link.receive || currentComputer()?.id !== pending.computer)) return;
   for (const event of result.events.slice().sort((a, b) => a.revision - b.revision)) {
     if (event.revision <= pending.revision) continue;
     const m = event.message;
     if (m.t === 'sent') confirmSent(m);
     else if (m.t === 'sendFailed') failPendingSend(m.requestId, m.message || '发送失败，请重试', !m.cancelled);
-    else if (link.receive && currentComputer()?.id === pending.computer && result.sel === viewSel) link.receive({ data: JSON.stringify(m) });
+    else if (link.receive && currentComputer()?.id === pending.computer && (m.t !== 'status' || result.sel === viewSel)) link.receive({ data: JSON.stringify(m) });
     pending.revision = event.revision;
   }
   if (result.done) { desktopRequests.delete(result.id); link.operations.delete(result.id); }
