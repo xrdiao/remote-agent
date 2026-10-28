@@ -5,23 +5,6 @@ const I18N = (() => {
   const lang = saved === 'zh' || saved === 'en' ? saved : /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
 
   const EN = {
-    "版本与适配": "Version and compatibility",
-    "重新检查适配": "Check compatibility again",
-    "尚未检查版本与适配": "Version and compatibility have not been checked.",
-    "正在只读检查版本与适配…": "Reading version and compatibility…",
-    "窗口尚未就绪，未检查适配": "The window is not ready; compatibility was not checked.",
-    "适配信息读取失败，请重新检查": "Could not read compatibility information. Check again.",
-    "应用版本": "Application version",
-    "基础版本": "Base version",
-    "VS Code 版本": "VS Code version",
-    "Codex 扩展版本": "Codex extension version",
-    "输入入口": "Input control",
-    "模型数据": "Model data",
-    "会话标识": "Session identities",
-    "已识别": "Identified",
-    "尚未就绪": "Not ready",
-    "尚未确认": "Not confirmed",
-    "只读检查仅确认入口和数据，未执行原生操作。": "Read-only checks identify controls and data; native actions were not executed.",
     "无法读取这张图片，请切换或移除后重试": "Unable to read this image. Switch images or remove it and try again.",
     "无法读取图片": "Unable to read image",
     "通知来源电脑未配对，请从电脑列表连接": "The notification source computer is not paired. Connect from the computer list.",

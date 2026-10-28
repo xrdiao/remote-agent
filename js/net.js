@@ -75,7 +75,7 @@ function beginNavigation(message) {
     : message.newSession || /^(new:|project-new:)/.test(message.id || '') ? 'new'
     : message.t === 'openProject' ? 'project' : /^(win:|window:)/.test(message.id || '') ? 'window' : 'session';
   const messageText = { initial: '正在加载对话…', agent: '正在切换 Agent…', window: '正在切换窗口…', project: '正在打开项目…', session: '正在切换会话…', new: '正在新建对话…' }[kind];
-  navigationPending = { id: message.navigationId, windowId: message.t === 'attach' ? message.windowId || message.id : currentWindow, confirmed: '', kind, message: messageText };
+  navigationPending = { id: message.navigationId, windowId: message.t === 'attach' ? message.id : currentWindow, confirmed: '', kind, message: messageText };
   status(messageText);
   conn.attachFailed = false;
   conn.failedTargets?.delete(navigationPending.windowId);
@@ -818,7 +818,6 @@ async function connect() {
     else if (m.t === 'frame') onFrame(m);
     else if (m.t === 'panel') { panel = m.rect; updateTermEmpty(); layoutStage(); }
     else if (m.t === 'connAgents') connAgentResults(m.agents, m.complete !== false);
-    else if (m.t === 'compatibility') receiveCompatibility(m);
     else if (m.t === 'agentCatalog') agentCatalogResults(m.agents);
     else if (m.t === 'launchResult') connLaunchResults(m.results);
     else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; connWindows(m.list); if (m.plans) { appPlans = { ...appPlans, ...m.plans }; updateTitle(); } if (sheetKind === 'windows') showWindows(); paintRail(); }
@@ -837,14 +836,13 @@ async function connect() {
       if (m.closed) {
         forgetClosedWindow(m.id);
         selectionReady = m.ready === true;
-        connReadFailed(m.message || '这个窗口已经关闭，请重试或切换 Agent');
+        connReadFailed('这个窗口已经关闭，请重试或切换 Agent');
         send({ t: 'windows' });
         if (conn.active) connRender();
         return;
       }
       if (m.plans) appPlans = { ...appPlans, ...m.plans };
       rememberAgentOpen(m);
-      requestCompatibility(m.app, true, m.windowId || m.id);
       if (m.keepQuota) {
         applySelection(m, false);
         selectionReady = m.ready !== false;

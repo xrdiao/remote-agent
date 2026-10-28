@@ -187,15 +187,7 @@ function openWin(id) {
   return send({ t: 'attach', id: here.win, windowId: here.windowId || '', threadId: here.threadId || '' });
 }
 window.openWin = openWin;
-let updateUntouched = true;
-for (const event of ['pointerdown', 'keydown']) document.addEventListener(event, () => { updateUntouched = false; }, { once: true, capture: true });
-navigator.serviceWorker?.addEventListener('message', e => {
-  if (e.data?.openWin) openWin(e.data.openWin);
-  if (updateUntouched && Number(e.data?.appVersion?.slice(1)) > Number(APP_VERSION.slice(1))) {
-    updateUntouched = false;
-    location.reload();
-  }
-});
+navigator.serviceWorker?.addEventListener('message', e => { if (e.data?.openWin) openWin(e.data.openWin); });
 document.addEventListener('visibilitychange', () => {
   if (authed) {
     send({ t: 'visible', v: document.visibilityState === 'visible' });
