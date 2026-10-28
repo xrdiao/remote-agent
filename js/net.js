@@ -149,7 +149,7 @@ function applySelection(m, clearChat = true) {
     ...selection,
     selections: { ...here.selections, [id]: selection, [m.app || currentApp]: { id, ...selection } },
   });
-  if (changed) { mirroredDraft = ''; restoreDraft(); renderAttachments([]); send({ t: 'attachments' }); }
+  if (changed) { mirroredDraft = ''; restoreDraft(); renderAttachments([]); if (!m.home) send({ t: 'attachments' }); }
   const cachedAgents = agentLists.get(agentListKey());
   if (cachedAgents && m.threadId) setAgentList(agentListKey(), cachedAgents.map(a => ({ ...a, current: a.id === m.threadId || a.id === 'tab:' + m.threadId || a.id === 'thread:' + m.windowId + ':' + m.threadId })));
   if (m.project) currentProject = m.project;
@@ -751,7 +751,7 @@ async function connect() {
       }
       if (fromNotice) rememberNotice(fromNotice);
       const chosen = fromNotice ? { ...currentComputer(), id: currentComputer()?.win } : conn.lastSelection;
-      send({ t: 'attach', id: chosen?.id || '', windowId: chosen?.windowId || '', threadId: chosen?.threadId || '', initial: true });
+      send({ t: 'attach', id: chosen?.id || '', windowId: chosen?.windowId || '', threadId: chosen?.threadId || '', project: chosen?.project || null, initial: true });
       send({ t: 'visible', v: document.visibilityState === 'visible' });
       send({ t: 'lang', v: I18N.lang });
       clearInterval(usageTimer);
@@ -875,6 +875,34 @@ async function connect() {
       if (mode !== 'chat' && selectionReady) refreshSelectionMetadata(m.initial === true);
     }
     else if (m.t === 'attachFailed') {
+      if (m.home) {
+        conn.initialSelection = false;
+        conn.lastSelection = null;
+        navigationPending = null;
+        applySelection(m, false);
+        selectionReady = false;
+        setWindowReady(false);
+        currentProject = '';
+        liveChatSelection = '';
+        renderChat(null, false);
+        $('items').inert = false;
+        $('items').classList.remove('stale');
+        $('empty').firstChild.textContent = I18N.tr('请从项目/会话选择要打开的内容');
+        renderContext(null);
+        $('quotaMeters').innerHTML = '';
+        updateTitle();
+        conn.loaded = false;
+        conn.attachFailed = !m.connected;
+        if (m.connected) connHide();
+        else {
+          conn.active = true;
+          conn.host = true;
+          $('conn').classList.add('open');
+          connRender();
+        }
+        status(m.message, false);
+        return;
+      }
       selectionReady = m.ready === true;
       connReadFailed(m.message || '当前会话读取失败，请重试或切换 Agent');
     }

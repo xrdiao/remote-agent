@@ -278,8 +278,7 @@ function windowEntries() {
 function switchToWindow(id) {
   closeSheet();
   const entry = windowEntries().entries.find(w => w.id === id);
-  const saved = entry && currentComputer()?.selections?.[entry.app];
-  send({ t: 'attach', id, ...(saved?.id === id ? saved : {}) });
+  send({ t: 'attach', id, restore: entry?.app !== 'fusion' });
 }
 function openSettings() {
   status('正在读取设置…');
