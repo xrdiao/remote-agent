@@ -106,6 +106,7 @@ function disconnectPendingSends() {
   if (pendingEchoes.length) queueChatRender();
 }
 function reconcileSent(chat) {
+  if (currentApp === 'codex') return; // Codex receipts come from the relay's native message source.
   const matched = new Set(submittedMessages.filter(sent => sent.scope === messageScope() && (!sent.thread || sent.thread === chat.thread))
     .flatMap(sent => [sent.messageId, sent.queueId].filter(Boolean)));
   for (const [requestId, sent] of pendingSends) {
