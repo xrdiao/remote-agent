@@ -226,7 +226,7 @@ export const methods = {
       }
       if (chat?.thread && chat.thread === this.threadId) rememberSessionMessage(this.app, chat.thread,
         Math.max(0, ...chat.items.filter(it => it.k === 'human').map(it => Number(it.sentAt) || 0)));
-      const emptyCodex = this.app === 'codex' && !this.threadId && !this.selectedThread && !chat?.thread && chat?.items?.length === 0 && !chat.readonly;
+      const emptyCodex = this.app === 'codex' && !this.threadId && !this.selectedThread && !chat?.thread && chat?.items?.length === 0 && (!chat.readonly || chat.empty === true);
       const extracted = chat && JSON.stringify({ ...chat, draft: undefined });
       let contextRead;
       if (chat && chat.thread === (this.threadId || '') && (this.app !== 'codex' || chat.thread || emptyCodex) && (!this.lastChat || extracted !== this.lastExtractedChat || state.requested && !state.sent)) {

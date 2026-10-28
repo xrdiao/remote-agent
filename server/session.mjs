@@ -15,6 +15,7 @@ import { sessionRows } from '../lib/session-library.mjs';
 import { catalogSessions, touchProjectWindow } from './project-windows.mjs';
 import { leaseWindow, windowOperationLocked } from './window-use.mjs';
 import {visualCapture, visualWindows, wayland} from './visual/capture.mjs';
+import { rememberSelection } from '../lib/auth.mjs';
 
 export class Session extends AgentContext {
   constructor(client, deviceId) {
@@ -89,7 +90,7 @@ export class Session extends AgentContext {
       const navigationId = cdpRead.getStore()?.navigationId ?? this.navigationId;
       if (navigationId != null) obj = { ...obj, navigationId };
     }
-    if (obj?.t === 'agents') {
+    if (obj?.t === 'agents' && !obj.error) {
       const app = obj.app || this.app;
       obj = { ...obj, list: sessionRows(app, catalogSessions(app, obj.list || [], this.windowId)) };
       this.sessionEntries = new Map(obj.list.filter(row => !row.ui).map(row => [row.id, { ...row, app: obj.app || this.app }]));
@@ -105,6 +106,19 @@ export class Session extends AgentContext {
         .filter(([, entry]) => entry.kind !== 'orchestrator').map(([app, entry]) => [app, entry.capabilities]));
     }
     if (obj?.t === 'chat' && obj.sel && obj.chat) {
+      if (this.bindingReady && obj.sel === this.selectionKey() && !obj.cached
+          && (!obj.chat.readonly || obj.chat.empty) && !obj.chat.subagent
+          && obj.chat.thread === this.threadId && ['cursor', 'devin', 'codex'].includes(this.app)
+          && this.rememberedSelection !== obj.sel) {
+        this.rememberedSelection = obj.sel;
+        const cdp = this.cdp, sel = this.sel;
+        const selection = { id: this.targetId, app: this.app, windowId: this.windowId, threadId: this.threadId };
+        this.currentRoots().then(roots => {
+          if (this.bindingReady && this.liveRead(cdp, sel) && obj.sel === this.selectionKey()) {
+            rememberSelection({ ...selection, project: roots[0] || null });
+          }
+        }).catch(() => {});
+      }
       (this.chatBySel ||= new Map()).delete(obj.sel);
       this.chatBySel.set(obj.sel, obj.chat);
       if (this.chatBySel.size > 12) this.chatBySel.delete(this.chatBySel.keys().next().value);
@@ -147,6 +161,7 @@ export class Session extends AgentContext {
     if (AGENT_REGISTRY[appId]?.kind === 'orchestrator') return AGENT_REGISTRY[appId].adapter.attach.call(this, req);
     const targetApp = Object.keys(AGENT_REGISTRY).find(app => appId === app || appId.startsWith(app + ':'));
     const wins = windows || (codexPages ? codexPages.length ? [{id: 'codex', app: 'codex', title: 'Codex', ws: codexPages[0].ws, port: CODEX_CDP_URL, kind: 'local'}] : [] : targetApp ? await AGENT_REGISTRY[targetApp].discover() : await listWindows());
+    if (!appId && wins[0]?.app === 'codex') return this.attach({ ...req, id: 'codex' }, wins);
     if (appId === 'codex') {
       const pages = codexPages;
       if (!pages.length) {
@@ -161,7 +176,7 @@ export class Session extends AgentContext {
       const entry = wins.find(w => w.id === 'codex');
       if (!entry) throw new Error('没有找到 Codex 窗口。请用 ./scripts/start-codex.sh 启动，并打开 Codex 侧边栏');
       await this.openBound({ ...entry, title: picked.rawTitle }, picked.ws, picked.chatWs, { windowId: picked.pageId, threadId, deferred: req.projectSwitch === true, initial: req.initial === true });
-      if (!picked.chatWs && !req.projectSwitch) this.emit({ t: 'status', ok: false, msg: 'Codex 侧边栏还没打开' });
+      if (this.cdp === this.editorCdp && !req.projectSwitch) this.emit({ t: 'status', ok: false, msg: 'Codex 侧边栏还没打开' });
       return;
     }
     const win = wins.find(w => w.id === appId) || wins.find(w => appId && w.id.endsWith(':' + appId))
@@ -179,7 +194,7 @@ export class Session extends AgentContext {
   async openBound(win, editorWs, chatWs, selection) {
     const editorCdp = new Cdp(editorWs);
     const cdp = chatWs ? new Cdp(chatWs) : editorCdp;
-    // A phone-launched app lands on its most recent session, not the remembered thread.
+    // A phone-launched app keeps its native home/new-chat view, not a remembered thread.
     // Keep the marker until startup and the first chat read complete successfully.
     const launchDefault = this.launchDefault = selection.initial === true && hasLaunched(win.app);
     let thread = '';
@@ -266,12 +281,21 @@ export class Session extends AgentContext {
     } else if (startup) {
       const pending = this.startupPending = {};
       try {
-        await this.withFocus(async () => {
+        const state = await this.withFocus(async () => {
           await this.adapter.openDefaultSession?.call(this);
-          if (!await this.waitFor(`agentStartupState(${JSON.stringify(win.app)}, true)`, 250)) throw new Error('会话输入区尚未就绪，请重试');
+          if (this.pendingProject?.trust) return null;
+          const state = await this.waitFor(`agentStartupState(${JSON.stringify(win.app)}, true)`, 250);
+          if (!state) throw new Error('会话输入区尚未就绪，请重试');
+          this.threadId = this.selectedThread = state.thread || '';
+          return state;
         });
         cdpRead.getStore()?.throwIfAborted();
         this.startupPending = null;
+        if (this.pendingProject?.trust) return;
+        if (state.login) {
+          this.emit({ t: 'attachFailed', ready: false, message: '请先在电脑端登录 Codex，再重试当前会话' });
+          return;
+        }
         this.bindingReady = true;
         attached();
         await this.withFocus(() => this.setMode(this.mode, true));
@@ -330,6 +354,7 @@ export class Session extends AgentContext {
 
   detach() {
     this.bindingReady = false;
+    this.rememberedSelection = '';
     const read = this.chatRead;
     this.chatRead = null;
     this.polling = this.pollAgain = null;

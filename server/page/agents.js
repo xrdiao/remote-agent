@@ -288,11 +288,11 @@
       const recent = client?.getQueryData(['recent-conversations-meta', 'updated_at', '[]', 'live']);
       const workspace = client?.getQueryData(['vscode', 'workspace-root-options', '{"hostId":"local"}']);
       if (codexNeedsLogin()) return { login: true, rows: [], roots: [], thread: '' };
-      if (!hasComposer() || !Array.isArray(recent) || !workspace) return null;
+      if (!Array.isArray(recent) || !workspace) return null;
       return { rows: codexChatRows(true), roots: workspace.roots || [], thread: codexThread() };
     }
     const rows = agentList(), surface = app === 'devin' ? devinSurface() : null;
-    if (inputReady && (!hasComposer() || !modelButton())) return null;
+    if (inputReady && activeThread() && (!hasComposer() || !modelButton())) return null;
     if (!rows.length && !hasComposer() && !control('newChat') && !(surface === 'editor' && sessionSearchTarget())) return null;
     return { rows, surface, thread: activeThread(), items: (extract() || {}).items?.length || 0 };
   };

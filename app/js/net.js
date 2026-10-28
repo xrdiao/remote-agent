@@ -75,10 +75,10 @@ function beginNavigation(message) {
     : message.newSession || /^(new:|project-new:)/.test(message.id || '') ? 'new'
     : message.t === 'openProject' ? 'project' : /^(win:|window:)/.test(message.id || '') ? 'window' : 'session';
   const messageText = { initial: '正在加载对话…', agent: '正在切换 Agent…', window: '正在切换窗口…', project: '正在打开项目…', session: '正在切换会话…', new: '正在新建对话…' }[kind];
-  navigationPending = { id: message.navigationId, windowId: message.t === 'attach' ? message.windowId || message.id : currentWindow, confirmed: '', kind, message: messageText };
+  navigationPending = { id: message.navigationId, targetId: message.t === 'attach' ? message.id : currentWindow, windowId: message.t === 'attach' ? message.windowId || message.id : currentWindow, confirmed: '', kind, message: messageText };
   status(messageText);
   conn.attachFailed = false;
-  conn.failedTargets?.delete(navigationPending.windowId);
+  conn.failedTargets?.delete(navigationPending.targetId);
   $('retryChat').hidden = true;
   selectionReady = false;
   setWindowReady(false);
@@ -734,6 +734,7 @@ async function connect() {
         return gate({msg: '设备授权已失效或被移除，请重新授权这台设备。', err: true, repair: true, computers: loadComputers().length > 1});
       }
       rememberComputer({...currentComputer(), id: m.id, name: m.name, device: m.device});
+      conn.lastSelection = m.lastSelection;
       authed = true; failures = 0;
       send({ t: 'sessionLibrary', entries: legacyAgentLibrary() });
       document.dispatchEvent(new Event('voice-authenticated'));
@@ -749,8 +750,8 @@ async function connect() {
         return;
       }
       if (fromNotice) rememberNotice(fromNotice);
-      const chosen = currentComputer();
-      send({ t: 'attach', id: chosen?.win || store.get('window') || '', windowId: chosen?.windowId || '', threadId: chosen?.threadId || '', initial: true });
+      const chosen = fromNotice ? { ...currentComputer(), id: currentComputer()?.win } : conn.lastSelection;
+      send({ t: 'attach', id: chosen?.id || '', windowId: chosen?.windowId || '', threadId: chosen?.threadId || '', initial: true });
       send({ t: 'visible', v: document.visibilityState === 'visible' });
       send({ t: 'lang', v: I18N.lang });
       clearInterval(usageTimer);
@@ -869,7 +870,7 @@ async function connect() {
       $('quotaMeters').innerHTML = '';
       $('quotaMeters').title = '';
       renderQuota(quotaCache.get(quotaKey()) || { missing: true, quota: [], limits: [] });
-      send({ t: 'appTheme', dark: document.documentElement.dataset.theme !== 'light' });
+      if (selectionReady) send({ t: 'appTheme', dark: document.documentElement.dataset.theme !== 'light' });
       if (m.initial) metadataWindow = `${connGen}|${currentApp}|${m.windowId || ''}`;
       if (mode !== 'chat' && selectionReady) refreshSelectionMetadata(m.initial === true);
     }
