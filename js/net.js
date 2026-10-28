@@ -990,6 +990,7 @@ async function connect() {
       if (m.sel && viewSel && m.sel !== viewSel) return;
       if (m.requestId != null && (m.requestId !== menuRequest || m.requestId !== menuPending?.requestId
         || m.kind !== menuPending.kind || menuPending.sel !== viewSel)) return;
+      if (m.error) return showMenuError(m.kind, m.error);
       lruPut(menuCache, menuCacheKey(m.kind), m, 24);
       if (currentApp === 'fusion' && /^fusion-(model|effort)-[ab]$/.test(m.kind) && fusionModelSide === m.kind.slice(-1)) {
         showMenu(m.kind, m.items, m.max, m.fusion, m.fast, m.model, false, m.pricing);
