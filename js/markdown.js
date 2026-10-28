@@ -41,6 +41,5 @@ codexMarkdown.renderer.rules.remote_math = (tokens, n) => {
   return `<${tag} class="math" data-tex="${esc(token.content)}">${esc(token.content)}</${tag}>`;
 };
 function codexReplyHtml(item) {
-  const plain = esc(item.t || '').replace(/\n/g, '<br>');
-  return item.h && item.h !== plain ? item.h : codexMarkdown.render(item.t || '');
+  return item.bodyFormat === 'html' && item.h ? item.h : codexMarkdown.render(item.t || '');
 }

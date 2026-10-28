@@ -1113,26 +1113,51 @@ function renderQueue(busy, queued, subs = [], readonly = false, changed = 0, qCo
   if (document.body.classList.contains('kb')) fitViewport();
 }
 
-function sendQueueAction(id, action, text) {
+let queueEditRequest = null;
+function sendQueueAction(id, action, text, requestId) {
   const echoes = pendingEchoes.filter(p => p.sel === viewSel && (action === 'clear'
     ? p.kind === 'queue' || p.represented : p.represented && p.queueId === id)).map(p => p.requestId);
-  return send({ t: 'queue', id, action, text, echoes });
+  return send({ t: 'queue', id, action, text, requestId, echoes });
 }
 function editQueued(id) {
   const q = (lastChat?.queued || []).find(x => x.id === id);
   if (!q) return status('这条排队消息已经不在了', false);
   if (currentApp === 'devin') { status('正在取出…'); return sendQueueAction(id, 'edit'); }
+  const edit = queueEditRequest = { id, sel: viewSel, requestId: crypto.randomUUID(), action: 'read' };
   openSheet('queueEdit', `<h3>修改排队消息</h3>
-    <textarea id="qEdit" style="width:100%;box-sizing:border-box;min-height:120px;max-height:50dvh;margin-bottom:10px"></textarea>
-    <button class="opt" id="qSave" style="justify-content:center;background:var(--accent);border-color:var(--accent-b);color:#fff;font-weight:600">保存（仍在排队）</button>`);
-  $('qEdit').value = q.t;
+    <textarea id="qEdit" disabled style="width:100%;box-sizing:border-box;min-height:120px;max-height:50dvh;margin-bottom:10px"></textarea>
+    <div id="qError" role="status">正在读取完整内容…</div>
+    <button class="opt" id="qSave" disabled style="justify-content:center;background:var(--accent);border-color:var(--accent-b);color:#fff;font-weight:600">保存（仍在排队）</button>`);
   $('qSave').onclick = () => {
+    if (edit.action === 'read') {
+      edit.requestId = crypto.randomUUID(); $('qSave').disabled = true;
+      $('qError').textContent = '正在读取完整内容…';
+      if (!sendQueueAction(id, 'read', undefined, edit.requestId)) receiveQueueEdit({ ...edit, ok: false, error: '连接已断开，请重试' });
+      return;
+    }
     const v = $('qEdit').value;
     if (!v.trim()) return status('内容不能为空；不想要这条就点「删除」', false);
-    sendQueueAction(id, 'edit', v);
-    closeSheet();
+    edit.requestId = crypto.randomUUID(); edit.action = 'edit';
+    $('qSave').disabled = true; $('qEdit').disabled = true; $('qError').textContent = '正在保存…';
+    if (!sendQueueAction(id, 'edit', v, edit.requestId)) receiveQueueEdit({ ...edit, ok: false, error: '连接已断开，内容已保留' });
     status('正在修改排队消息…');
   };
+  if (!sendQueueAction(id, 'read', undefined, edit.requestId)) receiveQueueEdit({ ...edit, ok: false, error: '连接已断开，请重试' });
+}
+function receiveQueueEdit(m) {
+  const edit = queueEditRequest;
+  if (!edit || sheetKind !== 'queueEdit' || edit.sel !== viewSel || m.sel !== edit.sel || m.requestId !== edit.requestId) return;
+  if (!m.ok) {
+    $('qError').textContent = m.error || '操作未完成，内容已保留';
+    $('qSave').disabled = false;
+    $('qEdit').disabled = edit.action === 'read';
+    if (edit.action === 'read') $('qSave').textContent = '重新读取';
+    return;
+  }
+  if (m.action === 'read') {
+    $('qEdit').value = m.text; $('qEdit').disabled = false; $('qSave').disabled = false;
+    $('qSave').textContent = '保存（仍在排队）'; $('qError').textContent = ''; edit.action = 'edit';
+  } else { queueEditRequest = null; closeSheet(); queueDraftSync(); }
 }
 
 $('queueBar').onclick = async e => {

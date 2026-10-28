@@ -464,39 +464,39 @@ main { flex: 1; min-height: 0; position: relative; }
 
 /* Assistant: no card — quiet typographic column. */
 .assistant { overflow-clip-margin: 4px; font-size: 16px; line-height: 1.65; color: var(--fg); }
-.assistant a { color: var(--accent-text); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--accent-tint-2); overflow-wrap: anywhere; }
-.assistant p { margin: 0 0 .75em; }
-.assistant ul, .assistant ol { margin: 0 0 .75em; padding-left: 1.75em; }
-.assistant h1, .assistant h2, .assistant h3, .assistant h4 { font-size: 17px; font-weight: 650; color: var(--fg-hi); margin: 1.1em 0 .45em; }
-.assistant code { background: var(--code-bg); color: var(--fg-hi); padding: 1px 5px; border-radius: var(--r-xs); font: .875em ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace; }
+:is(.assistant, .thb.markdown) a { color: var(--accent-text); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--accent-tint-2); overflow-wrap: anywhere; }
+:is(.assistant, .thb.markdown) p { margin: 0 0 .75em; }
+:is(.assistant, .thb.markdown) ul, :is(.assistant, .thb.markdown) ol { margin: 0 0 .75em; padding-left: 1.75em; }
+:is(.assistant, .thb.markdown) h1, :is(.assistant, .thb.markdown) h2, :is(.assistant, .thb.markdown) h3, :is(.assistant, .thb.markdown) h4 { font-size: 17px; font-weight: 650; color: var(--fg-hi); margin: 1.1em 0 .45em; }
+:is(.assistant, .thb.markdown) code { background: var(--code-bg); color: var(--fg-hi); padding: 1px 5px; border-radius: var(--r-xs); font: .875em ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace; }
 .codebox { position: relative; margin: 0 0 .75em; }
 .codebox .src { display: none; }
 .codebox .openLink { display: inline-block; margin: 0 0 8px 8px; }
-.codebox pre, .assistant pre {
+.codebox pre, :is(.assistant, .thb.markdown) pre {
   background: var(--pre-bg); border: 1px solid var(--line-2); padding: 12px 64px 12px 14px;
   border-radius: var(--r-md); overflow-x: auto;
   font: 13px/1.55 ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
   white-space: pre; margin: 0 0 .75em; color: var(--fg);
 }
 .codebox pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.assistant pre code { background: none; color: inherit; padding: 0; }
+:is(.assistant, .thb.markdown) pre code { background: none; color: inherit; padding: 0; }
 .codebox .copy {
   position: absolute; top: 8px; right: 8px; z-index: 1; font-size: 12px; min-height: 28px;
   padding: 0 10px; background: var(--s2); border-radius: 999px; color: var(--fg-2);
 }
-.assistant code.copyable { cursor: pointer; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 2px; }
-.assistant code[data-file], .tool[data-file] { cursor: pointer; }
-.assistant code[data-file] { color: var(--accent-text); text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }
+:is(.assistant, .thb.markdown) code.copyable { cursor: pointer; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 2px; }
+:is(.assistant, .thb.markdown) code[data-file], .tool[data-file] { cursor: pointer; }
+:is(.assistant, .thb.markdown) code[data-file] { color: var(--accent-text); text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }
 .tool[data-file] .txt::before {
   content: ""; display: inline-block; width: 13px; height: 13px; margin-right: 5px; vertical-align: -2px;
   background: currentColor;
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 3h8l4 4v14H6zM14 3v5h4'/%3E%3C/svg%3E") center / contain no-repeat;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 3h8l4 4v14H6zM14 3v5h4'/%3E%3C/svg%3E") center / contain no-repeat;
 }
-.assistant table { border-collapse: separate; border-spacing: 0; display: block; overflow-x: auto; font-size: 13px; margin: 0 0 .75em; border-radius: 12px; }
-.assistant td, .assistant th { border: 1px solid var(--line-2); padding: 6px 10px; }
-.assistant th { background: var(--s1); font-weight: 600; }
-.assistant blockquote { margin: 0 0 .75em; padding-left: 12px; border-left: 3px solid var(--accent-tint-2); color: var(--fg-2); }
+:is(.assistant, .thb.markdown) table { border-collapse: separate; border-spacing: 0; display: block; overflow-x: auto; font-size: 13px; margin: 0 0 .75em; border-radius: 12px; }
+:is(.assistant, .thb.markdown) td, :is(.assistant, .thb.markdown) th { border: 1px solid var(--line-2); padding: 6px 10px; }
+:is(.assistant, .thb.markdown) th { background: var(--s1); font-weight: 600; }
+:is(.assistant, .thb.markdown) blockquote { margin: 0 0 .75em; padding-left: 12px; border-left: 3px solid var(--accent-tint-2); color: var(--fg-2); }
 .math { max-width: 100%; overflow-x: auto; }
 div.math { display: block; margin: .35em 0; text-align: center; }
 .katex, .katex-display { color: var(--fg-hi); }
@@ -563,6 +563,7 @@ div.math { display: block; margin: .35em 0; text-align: center; }
 @keyframes thshimmer { to { background-position: -200% 0; } }
 .thinking .tha { flex: none; color: var(--accent-text); font-size: 12px; }
 .thinking .thb { white-space: pre-wrap; max-height: 42vh; overflow: auto; margin-top: 6px; padding-left: 12px; border-left: 2px solid var(--line-2); }
+.thinking .thb.markdown { white-space: normal; }
 .thinking .thb.loading { font-style: italic; color: var(--fg-3); }
 .other { font-size: 12px; color: var(--fg-4); padding-left: 2px; }
 

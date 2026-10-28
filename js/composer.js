@@ -97,6 +97,7 @@ function failPendingSend(requestId, message = '发送失败，请重试', report
   if (report && (currentComputer()?.id || '') === sent.computer && draftKey() === sent.draft) status(message, false);
 }
 function disconnectPendingSends() {
+  if (queueEditRequest) receiveQueueEdit({ ...queueEditRequest, ok: false, error: '连接已断开，操作结果待确认，编辑内容已保留' });
   for (const sent of pendingSends.values()) {
     const echo = pendingEchoes.find(p => p.requestId === sent.requestId);
     if (echo) echo.unknown = true;
@@ -123,14 +124,17 @@ function receiptMatchesHuman(it, receipt) {
   return echoTextMatches(it, receipt.text);
 }
 function receiveQueueDone(m) {
-  if (!m.ok || m.sel !== viewSel) return;
+  receiveQueueEdit(m);
+  if (!m.ok || m.sel !== viewSel || m.action === 'read') return;
   const removed = new Set();
   for (const echo of pendingEchoes) {
-    if (echo.sel !== viewSel || !m.echoes.includes(echo.requestId)) continue;
+    if (echo.sel !== viewSel || !(m.echoes || []).includes(echo.requestId)) continue;
     if (m.action === 'edit' && currentApp !== 'devin') {
       echo.text = m.text;
+      if (m.queueId) echo.queueId = m.queueId;
+      if (m.messageId) echo.messageId = m.messageId;
       const receipt = submittedMessages.find(row => row.requestId === echo.requestId);
-      if (receipt) receipt.text = m.text;
+      if (receipt) Object.assign(receipt, { text: m.text, ...(m.queueId && { queueId: m.queueId }), ...(m.messageId && { messageId: m.messageId }) });
     } else if (m.action !== 'send') removed.add(echo.requestId);
   }
   pendingEchoes = pendingEchoes.filter(row => !removed.has(row.requestId));
