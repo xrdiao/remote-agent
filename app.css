@@ -121,7 +121,7 @@ body.split:not(.visual) #rail {
 #rail > * { flex-shrink: 0; }
 .railComputer { position: relative; display: flex; align-items: center; gap: 10px; padding: 2px 10px 12px; min-height: 44px; }
 .railComputer img { width: 32px; height: 32px; border-radius: 10px; flex: none; }
-.railComputerName { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; color: var(--fg-hi); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.railComputerName { flex: 1; min-width: 0; min-height: 0; padding: 0; background: transparent; text-align: left; font-size: 14px; font-weight: 600; color: var(--fg-hi); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .railToggle {
   flex: none; width: 36px; height: 36px; min-height: 0; padding: 0; border-radius: 10px;
   display: grid; place-items: center; background: transparent; color: var(--fg-3);
@@ -862,7 +862,7 @@ body.kb #sessBar, body.kb #taskChip { display: none; }
 #sheet.open { transform: none; }
 #sheet::before { content: ""; display: block; width: 36px; height: 5px; border-radius: 999px; background: var(--line-3); margin: 4px auto 10px; }
 #sheet h3 { margin: 6px 4px 14px; font-size: 17px; color: var(--fg-hi); font-weight: 600; }
-#sheet .mainMenuHeader { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 6px 4px 14px; }
+#sheet .mainMenuHeader { position: sticky; top: -6px; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 6px -16px 14px; padding: 6px 20px; background: var(--s1); }
 #sheet .mainMenuHeader h3 { margin: 0; }
 #sheet .mainMenuActions { display: flex; align-items: center; gap: 4px; }
 #sheet .menuHeaderAction { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 36px; height: 36px; padding: 7px; background: transparent; color: var(--fg-2); }
@@ -996,6 +996,7 @@ body.wide #sheet {
 }
 body.wide #sheet.open { transform: translate(-50%, -50%); opacity: 1; visibility: visible; }
 body.wide #sheet::before { display: none; }
+body.wide #sheet .mainMenuHeader { top: -10px; }
 .deviceHead { flex: none; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
 .deviceRows { min-height: 0; overflow-y: auto; padding-top: 10px; overscroll-behavior: contain; }
 .deviceGroup { margin-bottom: 12px; border-bottom: 1px solid var(--line); }
