@@ -22,7 +22,7 @@
   const ACTION = /^(run|skip|allow|accept|reject|deny|approve|keep|undo|continue|stop|cancel|build|retry|try again|yes|no\b|运行|跳过|允许|接受|拒绝|继续|停止|取消|再试一次)/i;
   const RETRY_LABEL = /^(Retry|Try(?: again)?|重试|再试一次)$/i;
   const CAPACITY_ERROR = /(?:at capacity|容量不足|模型容量)/i;
-  const BLOCK = new Set(['P', 'UL', 'OL', 'LI', 'H1', 'H2', 'H3', 'H4', 'H5', 'BLOCKQUOTE', 'TABLE', 'THEAD', 'TBODY', 'TR', 'TD', 'TH', 'DIV']);
+  const BLOCK = new Set(['P', 'UL', 'OL', 'LI', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE', 'TABLE', 'THEAD', 'TBODY', 'TR', 'TD', 'TH', 'DIV']);
   const INLINE = new Set(['STRONG', 'B', 'EM', 'I', 'CODE', 'DEL']);
   const CODE_BLOCK = '.composer-code-block-container, .composer-message-codeblock, .ui-code-block, pre, [data-markdown-copy="code-block"]';
   const FILE_REF = 'code.md-inline-path-filename-like';
@@ -164,7 +164,7 @@
       const inner = clean(n, devin);
       const t = tag.toLowerCase();
       const paint = colorAttr(n);
-      const block = BLOCK.has(tag) || (devin && tag === 'H6');
+      const block = BLOCK.has(tag);
       out += block || INLINE.has(tag) ? `<${t}${paint}>${inner}</${t}>` : (paint && inner ? `<span${paint}>${inner}</span>` : inner);
     }
     return out;

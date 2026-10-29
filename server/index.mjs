@@ -6,9 +6,7 @@ import { DATA_DIR, listDevices, saveState, normalizeAppUrl } from '../lib/auth.m
 import { startWatcher } from '../lib/notify.mjs';
 import { themeFor } from '../lib/theme.mjs';
 import { warmHighlighter } from '../lib/highlight.mjs';
-import { Cdp } from './cdp.mjs';
 import { listWindows, codexWindows } from './windows.mjs';
-import { helpersCall } from './page/build.mjs';
 import { handleApi } from './http/api.mjs';
 import { SECURITY_HEADERS, serveApp, json, corsHeaders, originAllowed } from './http/static.mjs';
 import { attachWss } from './ws.mjs';
@@ -17,6 +15,7 @@ import { offerFirstPairing } from './util.mjs';
 import { run } from './publish/pages.mjs';
 import { startTunnel } from './publish/tunnel.mjs';
 import { startProjectWindowCleanup } from './project-windows.mjs';
+import { NativeCdp, nativeWindow, nativeTargets, startNativeWindows } from './native-windows.mjs';
 
 import { saveFusionHistory } from './fusion/state.mjs';
 for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) process.once(signal, () => {
@@ -61,7 +60,7 @@ async function watchTargets() {
   const out = wins.filter(w => w.app !== 'codex');
   for (const p of await codexWindows(CODEX_CDP_URL)) {
     if (!p.chatWs) continue;
-    out.push({ id: `codex:${p.pageId}`, title: p.title, ws: p.chatWs, app: 'codex', pageId: p.pageId, kind: 'local' });
+    out.push({ id: `codex:${p.pageId}`, title: p.title, ws: p.chatWs, editorWs: p.ws, app: 'codex', pageId: p.pageId, kind: 'local' });
   }
   return out;
 }
@@ -78,10 +77,11 @@ server.listen(PORT, HOST, async () => {
   console.log(`已配对 ${listDevices().length} 台设备。添加新设备：npm run pair`);
   detectAppUrl();
   startProjectWindowCleanup();
+  startNativeWindows(watchTargets);
   startWatcher({
-    listWindows: watchTargets,
-    openCdp: async ws => { const c = new Cdp(ws); await c.connect(); return c; },
-    probe: helpersCall('agentStates()'),
+    listWindows: nativeTargets,
+    openCdp: async ws => { const c = new NativeCdp(ws); await c.connect(); return c; },
+    readStates: async cdp => (await nativeWindow(cdp).read()).states,
   });
   try {
     const wins = await listWindows();

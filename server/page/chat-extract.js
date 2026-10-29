@@ -155,10 +155,23 @@
     const el = [...doc.querySelectorAll('[data-remote-attachment]')].find(e => e.dataset.remoteAttachment === id);
     return el ? center(el) : null;
   };
-  const submitCodexMessage = async (follow = '') => {
+  const submitCodexMessage = async (follow = '', dispatch = false, requestId = '') => {
     const editor = codexPromptEl();
     const props = editor && codexFiberProps(editor, Infinity).find(p => typeof p.handleSubmit === 'function' && 'isQueueingEnabled' in p);
     if (!props || props.submitDisabled || props.isInteractionBlocked || props.interactionsEnabled === false) return false;
+    if (dispatch) {
+      if (codexPromptPayload() == null) return false;
+      const labels = follow === 'queue' ? ['Queue'] : follow === 'steer' ? ['Steer'] : ['Send', 'Queue', 'Steer'];
+      const root = editor.closest('[data-composer-body]');
+      const button = [...root.querySelectorAll('button')].find(button => vis(button)
+        && labels.includes(button.getAttribute('aria-label')) && !button.disabled && button.getAttribute('aria-disabled') !== 'true');
+      if (button) button.click();
+      else Promise.resolve(props.handleSubmit(follow ? { followUpSubmitAction: follow } : undefined)).catch(error => {
+        (window.__remoteAgentSubmitErrors ||= []).push({ requestId, message: String(error?.message || error) });
+        doc.defaultView.dispatchEvent(new doc.defaultView.Event('remote-agent-submit-error'));
+      });
+      return true;
+    }
     await props.handleSubmit(follow ? { followUpSubmitAction: follow } : undefined);
     return true;
   };
@@ -184,8 +197,24 @@
     }
     return null;
   };
-  const codexHistoryState = (conversation = null) => {
-    const thread = codexThread(), scopes = codexHistoryScopes();
+  const codexConversationManager = (thread, scopes) => {
+    const managers = doc.defaultView.__remoteAgentCodexManagers ||= new WeakMap();
+    for (const scope of scopes) {
+      const manager = managers.get(scope);
+      if (manager && !manager.disposed && manager.getConversation(thread)) return manager;
+    }
+    let manager = null, owner;
+    for (const scope of scopes) for (const bindings of scope.familyBindings.values()) for (const binding of bindings.values()) {
+      const value = codexHistoryBinding(scope, binding)?.get();
+      if (typeof value?.loadOlderConversationTurnsPage === 'function' && !value.disposed && value.getConversation(thread)) {
+        manager = value;
+        owner = scope;
+      }
+    }
+    if (manager) managers.set(owner, manager);
+    return manager;
+  };
+  const codexHistoryState = (conversation = null, watchItems = true, scopes = codexHistoryScopes(), thread = codexThread()) => {
     const hostId = codexChatRows(true).find(row => row.id === thread)?.host || 'local';
     const key = JSON.stringify({ hostId, threadId: thread });
     let index = null, hasLoadedOldest;
@@ -211,7 +240,7 @@
         const turn = history.entitiesByKey[key];
         return turn?.turnId ? [{ entityKey: key, turnId: turn.turnId }] : [];
       });
-      hasLoadedOldest = conversation.turnsPagination.hasLoadedOldest;
+      hasLoadedOldest = history.isComplete;
     }
     // Native pages prepend turns; keep already published numbers anchored to their turn IDs.
     const histories = doc.defaultView.__remoteAgentCodexTurnNumbers ||= new Map();
@@ -233,7 +262,7 @@
       if (value?.turnId === entry.turnId || Array.isArray(value) || Array.isArray(value?.entries) && Number.isFinite(value.length)) atoms.set(source.key, source);
       if (Array.isArray(value?.entries) && Number.isFinite(value.length)) entry.turnItemIds = value.entries.map(item => item.itemId);
     }
-    for (const entry of entries.slice(-2)) {
+    if (watchItems) for (const entry of entries.slice(-2)) {
       const ids = new Set([entry.turnItemIds[0], ...entry.turnItemIds.slice(-400)]);
       for (const scope of scopes) for (const bindings of scope.familyBindings.values()) for (const id of ids) {
         const source = codexHistoryBinding(scope, bindings.get(JSON.stringify([entry.historyEntityKey, id])));
@@ -245,11 +274,7 @@
   const chatRevision = () => doc.defaultView.__remoteAgentChatRevision || 0;
   const watchCodexData = changed => {
     const subscribed = new Map();
-    let stopped = false, pending = false;
-    const update = () => {
-      changed();
-      if (!pending) { pending = true; queueMicrotask(() => { pending = false; if (!stopped) refresh(); }); }
-    };
+    const update = () => changed();
     const refresh = () => {
       const state = codexHistoryState(), wanted = new Map();
       for (const [key, source] of state.atoms) wanted.set(key, () => source.subscribe(update));
@@ -264,17 +289,17 @@
       for (const [source, start] of wanted) if (!subscribed.has(source)) subscribed.set(source, start());
     };
     refresh();
-    return { refresh, stop() { stopped = true; for (const stop of subscribed.values()) stop(); subscribed.clear(); } };
+    return { refresh, stop() { for (const stop of subscribed.values()) stop(); subscribed.clear(); } };
   };
   const codexUserText = content => {
     const text = content.filter(c => c.type === 'text').map(c => c.text).join('\n');
     const wrapper = /^# Context from my IDE setup:\r?\n(?=[\s\S]*^## (?:Active file|Open tabs|Active selection of the file):)[\s\S]*?^## My request:\r?\n/m.exec(text);
     return wrapper?.index === 0 ? text.slice(wrapper[0].length).replace(/\r?\n$/, '') : text;
   };
-  const codexStoredTurn = (entry, scopes = codexHistoryScopes(), patchesOnly = false) => {
+  const codexTurnSource = (entry, scopes, usersOnly = false, range = null) => {
     if (!entry.historyEntityKey) return null;
     const itemKey = id => JSON.stringify([entry.historyEntityKey, id]);
-    let metadata = entry.nativeTurn, itemBindings, slots, itemTypes = [], matchedItems = 0, availableItems = 0;
+    let metadata = entry.nativeTurn, itemBindings, slots, itemTypes = [], matchedItems = 0;
     const nativeItems = new Map((entry.nativeTurn?.items || []).map(item => [item.id, item]));
     for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
       const atom = bindings.get(entry.historyEntityKey)?.value;
@@ -283,23 +308,46 @@
       if (Array.isArray(value) && value.some(item => item?.itemId && item.type)) itemTypes = value;
       if (Array.isArray(value?.entries) && Number.isFinite(value.length)) slots = value;
     }
+    const types = new Map(itemTypes.map(item => [item.itemId, item.type]));
     const nativeOrder = [...nativeItems.keys()];
     const nativeComplete = nativeOrder.length > 0 && (!slots || nativeOrder.length === slots.length
       && slots.entries.every(slot => nativeOrder[slot.index] === slot.itemId));
     const ids = nativeComplete ? nativeOrder : slots ? [...slots.entries].sort((a, b) => a.index - b.index).map(e => e.itemId) : entry.turnItemIds || [];
     const positions = new Map(nativeComplete || !slots ? ids.map((id, index) => [id, index]) : slots.entries.map(slot => [slot.itemId, slot.index]));
+    const selected = usersOnly ? ids.filter(id => {
+      const type = nativeItems.get(id)?.type || types.get(id);
+      return !type || ['userMessage', 'steeringUserMessage', 'steered'].includes(type);
+    }) : range ? ids.filter(id => positions.get(id) < range.before).slice(-range.limit) : ids;
     for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
-      const count = ids.filter(id => bindings.get(itemKey(id))?.value?.get?.()?.id === id).length;
+      const count = selected.filter(id => bindings.get(itemKey(id))?.value?.get?.()?.id === id).length;
       if (count > matchedItems) { itemBindings = bindings; matchedItems = count; }
     }
     if (!metadata) return null;
-    const complete = metadata.status === 'complete' || metadata.status === 'completed';
-    const rawItems = ids.map(id => {
+    const readItem = id => {
       const native = nativeItems.get(id) || itemBindings?.get(itemKey(id))?.value?.get();
-      return native || (itemTypes.find(item => item.itemId === id)?.type === 'userMessage' && Array.isArray(metadata.params?.input) && metadata.params.input.length > 0
+      return native || (types.get(id) === 'userMessage' && Array.isArray(metadata.params?.input) && metadata.params.input.length > 0
         ? { type: 'userMessage', id, clientId: metadata.params.clientUserMessageId, content: metadata.params.input } : null);
-    });
-    const steering = new Map(rawItems.filter(item => item?.type === 'steeringUserMessage' && item.status === 'accepted')
+    };
+    const rawItems = selected.map(readItem);
+    const userItems = range ? ids.filter(id => ['userMessage', 'steeringUserMessage', 'steered'].includes(nativeItems.get(id)?.type || types.get(id))).map(readItem).filter(Boolean) : [];
+    return { metadata, rawItems, userItems, positions, nativeComplete, slots, ids, selected };
+  };
+  const codexUserItem = (item, metadata, steering) => {
+    if (!item) return null;
+    const user = item.type === 'userMessage' ? item : item.type === 'steered' ? steering.get(item.id) : null;
+    if (!user) return null;
+    const content = user.type === 'steeringUserMessage' ? user.input || [] : user.content || [];
+    return { type: 'user-message', clientUserMessageId: user.clientUserMessageId || user.clientId || user.id,
+      nativeIds: [...new Set([item.id, user.id, user.clientId, user.clientUserMessageId, user.serverUserMessageId, user.serverClientUserMessageId].filter(Boolean))],
+      message: codexUserText(content), images: content.filter(c => c.type === 'image' || c.type === 'localImage'),
+      attachments: user.attachments || [], sentAtMs: user.targetTurnStartedAtMs || metadata.turnStartedAtMs };
+  };
+  const codexStoredTurn = (entry, scopes = codexHistoryScopes(), patchesOnly = false, source = codexTurnSource(entry, scopes)) => {
+    if (!source) return null;
+    const { metadata, rawItems, positions, nativeComplete, slots, ids } = source;
+    const complete = metadata.status === 'complete' || metadata.status === 'completed';
+    let availableItems = 0;
+    const steering = new Map([...(source.userItems || []), ...rawItems].filter(item => item?.type === 'steeringUserMessage' && item.status === 'accepted')
       .map(item => [item.serverUserMessageId, item]));
     const items = rawItems.flatMap(item => {
       if (!item) return [];
@@ -307,14 +355,8 @@
       if (patchesOnly && item.type !== 'fileChange') return [];
       const id = item.id;
       const done = complete || !!metadata.agentMessageCompletedAtMsById?.[id];
-      const user = item.type === 'userMessage' ? item : item.type === 'steered' ? steering.get(id) : null;
-      if (user) {
-        const content = user.type === 'steeringUserMessage' ? user.input || [] : user.content || [];
-        return { type: 'user-message', clientUserMessageId: user.clientUserMessageId || user.clientId || user.id,
-          nativeIds: [...new Set([id, user.id, user.clientId, user.clientUserMessageId, user.serverUserMessageId, user.serverClientUserMessageId].filter(Boolean))],
-          message: codexUserText(content), images: content.filter(c => c.type === 'image' || c.type === 'localImage'),
-          attachments: user.attachments || [], sentAtMs: user.targetTurnStartedAtMs || metadata.turnStartedAtMs };
-      }
+      const user = codexUserItem(item, metadata, steering);
+      if (user) return user;
       if (item.type === 'agentMessage') return { type: 'assistant-message', responseAnnotationTargetId: item.id, content: item.text, phase: item.phase, completed: done };
       if (item.type === 'reasoning') return { type: 'reasoning', id: item.id, content: [...(item.summary || []), ...(item.content || [])].map(t => typeof t === 'string' ? t : t.text || '').join('\n'), completed: complete };
       if (item.type === 'commandExecution') return { type: 'exec', callId: item.id, cmd: [item.command], executionStatus: item.status };
@@ -420,7 +462,7 @@
         const rendered = markdown.get(item.responseAnnotationTargetId);
         const block = rendered?.content === item.content ? rendered.block : null;
         if (item.phase === 'commentary') out.push({ i: id, k: 'thinking', t: `工作过程\n${item.content}`, live: !item.completed });
-        else out.push({ i: id, k: 'assistant', t: item.content, completed: item.completed, htmlRead: !!block, h: block ? clean(block) : esc(item.content).replace(/\n/g, '<br>') });
+        else out.push({ i: id, k: 'assistant', t: item.content, completed: item.completed, htmlRead: !!block, bodyFormat: block ? 'html' : 'markdown', h: block ? clean(block) : esc(item.content).replace(/\n/g, '<br>') });
       } else if (item.type === 'exec') {
         out.push({ i: id, k: 'tool', t: (item.cmd || []).join('\n').slice(0, 240), done: finished,
           ...(item.approvalRequestId != null || ['failed', 'declined'].includes(item.executionStatus) || (item.output?.exitCode != null && item.output.exitCode !== 0) ? { keep: true } : {}) });
@@ -490,51 +532,72 @@
     const number = entry?.turnNumber ?? codexFiberProps(el, 24).find(p => p.entry?.turnNumber)?.entry.turnNumber;
     return out.map(({ sourceIndex, ...item }, index) => ({ ...item, ...(Number.isFinite(number) ? { order: number * 10000 + (sourceIndex ?? index) } : {}) }));
   };
-  const codexHistoryPage = async (before, known = [], details = false) => {
-    let state = codexHistoryState(), manager;
-    for (const scope of state.scopes) for (const bindings of scope.familyBindings.values()) for (const binding of bindings.values()) {
-      const value = codexHistoryBinding(scope, binding)?.get();
-      if (typeof value?.loadOlderConversationTurnsPage === 'function' && value.getConversation(state.thread)) manager = value;
-    }
-    if (!manager) throw new Error('没有找到 Codex 历史加载入口');
-    const thread = state.thread, pagination = manager.pagination;
-    state = codexHistoryState(manager.getConversation(thread));
+  // Initial, live and older reads share the same native order and coverage cursor.
+  // Select raw item IDs before normalizing bodies; mounted DOM only enriches this page.
+  const codexReadPage = (state, before = Infinity, known = [], details = false, limit = 80) => {
+    const seen = new Set(known), items = [];
+    const mounted = new Map([...doc.querySelectorAll('[data-turn-key]')].map(el => [el.getAttribute('data-turn-key'), el]));
     const end = Number.isFinite(before) ? before : Infinity;
-    const readPage = async () => {
-      const seen = new Set(known), items = [];
-      const mounted = new Map([...doc.querySelectorAll('[data-turn-key]')].map(el => [el.getAttribute('data-turn-key'), el]));
-      let earlier = state.hasLoadedOldest === false, head = null, visible = 0, cursor = before;
-      outer: for (const entry of [...state.entries].reverse()) {
-        if (entry.turnNumber * 10000 >= end) continue;
-        if (entry.nativeTurn.itemsPagination?.hasLoadedOldest === false) {
-          await pagination.itemPagination.loadTurnItems(thread, entry.turnId, true);
-          entry.nativeTurn = manager.getTurn(thread, entry.historyEntityKey);
+    let cursor = end, visible = 0, headEntry = null, missingTurn = null, earlier = state.hasLoadedOldest === false;
+    outer: for (const entry of [...state.entries].reverse()) {
+      const base = entry.turnNumber * 10000;
+      if (base >= end) continue;
+      let upper = end - base;
+      for (;;) {
+        const source = codexTurnSource(entry, state.scopes, false, { before: upper, limit });
+        if (!source || source.rawItems.some(item => !item)) { missingTurn = entry; earlier = true; break outer; }
+        if (!source.selected.length) {
+          if (upper > 0 && entry.nativeTurn?.itemsPagination?.hasLoadedOldest === false) { missingTurn = entry; earlier = true; break outer; }
         }
-        const turn = codexStoredTurn(entry, new Set());
-        if (!turn || turn.partial) throw new Error('这段历史尚未载入完整，请稍后重试');
-        const el = mounted.get(entry.turnKey);
-        const rows = codexTurnItems(el || null, { ...entry, turn });
+        const turn = codexStoredTurn(entry, state.scopes, false, source);
+        const rows = codexTurnItems(mounted.get(entry.turnKey) || null, { ...entry, turn });
         for (const item of [...rows].reverse()) {
           if (item.order >= end) continue;
           if (seen.has(item.i)) { cursor = item.order; continue; }
-          if (visible === 80) { earlier = true; break outer; }
-          items.push(item);
-          cursor = item.order;
+          if (visible === limit) { earlier = true; break outer; }
+          items.push(item); seen.add(item.i); cursor = item.order; headEntry = entry;
           if (details || item.k !== 'tool' || !item.done || item.keep) visible++;
-          head = rows.find(row => row.k === 'human' && row.order <= item.order) || null;
         }
-        cursor = entry.turnNumber * 10000;
+        const lower = source.selected.length ? Math.min(...source.selected.map(id => source.positions.get(id))) : 0;
+        cursor = base + lower;
+        if (lower === 0) break;
+        if (visible === limit) { earlier = true; break outer; }
+        upper = lower;
       }
-      items.reverse();
-      if (head && !seen.has(head.i) && !items.some(item => item.i === head.i)) items.unshift(head);
-      return { thread, items, before: cursor, earlier };
+    }
+    items.reverse();
+    if (headEntry && items[0]?.k !== 'human') {
+      const source = codexTurnSource(headEntry, state.scopes, true);
+      const turn = codexStoredTurn(headEntry, state.scopes, false, source);
+      const head = codexTurnItems(null, { ...headEntry, turn }).findLast(item => item.k === 'human' && item.order <= items[0].order);
+      if (head && !seen.has(head.i)) items.unshift(head);
+    }
+    // A history page carries bodies, never replayable capacity operations.
+    for (const item of items) if (item.capacity) { delete item.b; delete item.actions; delete item.btnItem; }
+    return { thread: state.thread, items, before: Number.isFinite(cursor) ? cursor : null, earlier, ...(missingTurn ? { missingTurn } : {}) };
+  };
+  const codexHistoryPage = async (before, known = [], details = false) => {
+    const scopes = codexHistoryScopes(), thread = codexThread();
+    const manager = codexConversationManager(thread, scopes);
+    if (!manager) throw new Error('没有找到 Codex 历史加载入口');
+    let state;
+    const pagination = manager.pagination, loaded = new Set();
+    const read = async () => {
+      for (;;) {
+        state = codexHistoryState(manager.getConversation(thread), false, scopes);
+        const page = codexReadPage(state, before, known, details);
+        if (!page.missingTurn) return page;
+        const entry = page.missingTurn;
+        if (loaded.has(entry.turnId)) throw new Error('这段历史尚未载入完整，请稍后重试');
+        loaded.add(entry.turnId);
+        await pagination.itemPagination.loadTurnItems(thread, entry.turnId, true);
+      }
     };
-    let page = await readPage();
+    let page = await read();
     if (!page.items.length && state.hasLoadedOldest === false) {
       await pagination.conversationTurnsLoads.get(thread)?.promise;
       await pagination.loadConversationTurns(thread, false, pagination.client.isCloudHost || manager.getConversation(thread).boundedCloudHistory === true ? 'summary' : undefined);
-      state = codexHistoryState(manager.getConversation(thread));
-      page = await readPage();
+      page = await read();
     }
     return page;
   };
@@ -542,11 +605,11 @@
 
   const devinLog = () => {
     const selected = devinSurface() === 'agent' ? agentList().find(a => a.current)?.id : devinTabs().find(t => t.active)?.id;
-    const log = [...doc.querySelectorAll('[role="log"][aria-label="Session transcript"]')].find(e => vis(e) && (!selected || codexFiberProps(e, 24).some(p => p.sessionId === selected || devinRowSession(p.session) === selected)));
+    const log = [...doc.querySelectorAll('[role="log"][aria-label="Session transcript"]')].find(e => vis(e) && (!selected || devinNodeSessionId(e) === selected));
     if (log) return log;
     const current = selected || window.__acpStore?.getState()?.acp?.focusedSessionId;
-    return [...doc.querySelectorAll('[data-chat-history-variant]')].find(e => vis(e) && current
-      && codexFiberProps(e.querySelector('[data-transcript-row-key]') || e, 40).find(p => typeof p.sessionId === 'string')?.sessionId === current);
+    return [...doc.querySelectorAll('[data-chat-history-variant]')].find(e => vis(e)
+      && (!current || devinNodeSessionId(e.querySelector('[data-transcript-row-key]') || e) === current));
   };
 
   // Event-group tool rows: "Searched<query>", "Explored<file> and searched <q>", "Read<file> #L…".
@@ -661,6 +724,17 @@
     const at = Date.parse(meta['cognition.ai/timestamp'] || codexFiberProps(msg, 12).find(p => p.item?.timestamp)?.item.timestamp || '');
     return Number.isFinite(at) ? at : null;
   };
+  const devinNativeItems = (item, i) => {
+    if (item.event_type === 'devin_thoughts') return [{ i: `${i}:think`, k: 'thinking', t: `Thoughts\n${item.message || ''}` }];
+    if (item.event_type === 'shell_command') return [{ i, k: 'tool', kind: 'command', t: item.command,
+      cmd: item.command, output: (item.output || '').slice(0, 4000), execution: true,
+      ...(item.state === 'running' ? { live: true } : {}), ...(item.state === 'error' ? { keep: true } : {}) }];
+    if (item.event_type === 'acp_generic_tool_call') return [{ i, k: 'tool', kind: 'other',
+      t: item.state === 'running' ? item.running_title || item.title : item.title || item.tool_name,
+      cmd: item.hide_arguments ? '' : item.arguments_json || '', execution: true,
+      ...(item.state === 'running' ? { live: true } : {}), ...(item.state === 'error' ? { keep: true } : {}) }];
+    return null;
+  };
   // Iterate the Devin transcript's direct children in order: messages, thought groups,
   // tool event rows, commands and file edits all become items. Unknown rows are skipped.
   const devinItems = log => {
@@ -669,13 +743,14 @@
     const items = [];
     rows.forEach((row, n) => {
       const i = itemKey(row) || `acpx${n}`;
+      const native = row.hasAttribute('data-transcript-row-key') ? codexFiberProps(row, 8).find(p => p.row)?.row?.item : null;
       // A turn's work is one collapsed_work row; children exist in the fiber props even while collapsed.
-      const work = codexFiberProps(row, 8).find(p => p.row)?.row?.item;
-      if (work?.event_type === 'collapsed_work') { items.push(...devinWorkItems(work, row, i)); return; }
+      if (native?.event_type === 'collapsed_work') { items.push(...devinWorkItems(native, row, i)); return; }
+      const nativeItems = native && devinNativeItems(native, i);
+      if (nativeItems) { items.push(...nativeItems); return; }
       const msg = row.querySelector('[role=group][aria-label="User message"], [role=group][aria-label="Devin message"]');
       if (msg) {
         const it = messageItem(msg);
-        const native = row.hasAttribute('data-transcript-row-key') ? codexFiberProps(row, 8).find(p => p.row)?.row?.item : null;
         if (it.k === 'human' && native?.event_type === 'user_message' && typeof native.message === 'string') it.t = native.message;
         const meta = it.k === 'human' ? devinMessageMeta(msg) : {};
         if (meta['cognition.ai/isOptimistic']) return;
@@ -708,6 +783,13 @@
       const edit = devinEdit(row, i);
       if (edit) { items.push(edit); return; }
     });
+    const thread = devinNodeSessionId(log);
+    if (devinSessionRecord(thread)?.status === 'unknown_error') {
+      const banner = [...doc.querySelectorAll('[data-slot="banner-icon"]')].map(icon => icon.parentElement)
+        .find(el => vis(el) && devinNodeSessionId(el) === thread);
+      const error = banner && codexFiberProps(banner, 12).find(p => p.variant === 'warning' && typeof p.children === 'string');
+      if (error) items.push({ i: `acp${rows.length ? devinTranscriptIndex(rows.at(-1)) ?? 0 : 0}:error`, k: 'tool', kind: 'error', t: error.children, keep: true });
+    }
     return items.filter(Boolean).map(it => ({ ...it, src: 'devin' }));
   };
 
@@ -844,25 +926,85 @@
     if (!capacity) doc.defaultView.__remoteAgentCapacity = null;
     return capacity;
   };
-  const codexReceiptRows = () => {
-    const state = codexHistoryState();
-    return state.entries.slice(-2).flatMap(entry => (codexStoredTurn(entry, state.scopes)?.items || [])
-      .filter(item => item.type === 'user-message').map(item => ({ id: item.nativeIds?.[0] || item.clientUserMessageId, i: `${state.thread}:user-message:${item.clientUserMessageId}`, nativeIds: item.nativeIds, t: item.message })));
+  const codexReceiptState = (thread = codexThread()) => {
+    const scopes = codexHistoryScopes();
+    const conversation = codexConversationManager(thread, scopes)?.getConversation(thread);
+    const state = codexHistoryState(conversation, false, scopes, thread);
+    if (!conversation) state.entries = [];
+    return state;
   };
-  const extract = (history = false, knownTurns = []) => {
+  const codexReceiptRows = (state = codexReceiptState(), from = -2) => {
+    return state.entries.slice(from).flatMap(entry => {
+      const source = codexTurnSource(entry, state.scopes, true);
+      if (!source || source.metadata.pendingUserMessageAdmission) return [];
+      const steering = new Map(source.rawItems.filter(item => item?.type === 'steeringUserMessage' && item.status === 'accepted').map(item => [item.serverUserMessageId, item]));
+      return source.rawItems.map(item => codexUserItem(item, source.metadata, steering)).filter(Boolean)
+        .map(item => ({ id: item.nativeIds[0] || item.clientUserMessageId, i: `${state.thread}:user-message:${item.clientUserMessageId}`, nativeIds: item.nativeIds, t: item.message }));
+    });
+  };
+  const codexSendState = (draft = false, thread, afterTurn = null) => {
+    const state = codexReceiptState(thread);
+    const from = afterTurn === null ? Math.max(0, state.entries.length - 2) : state.entries.findIndex(entry => entry.turnId === afterTurn);
+    state.entries = state.entries.slice(Math.max(0, from));
+    const runs = state.entries.flatMap(entry => {
+      const turn = entry.nativeTurn;
+      if (!turn?.turnId || turn.pendingUserMessageAdmission || !Number.isFinite(turn.turnStartedAtMs) || !turn.params?.clientUserMessageId) return [];
+      return [{ id: turn.turnId, i: `${state.thread}:user-message:${turn.params.clientUserMessageId}`,
+        nativeIds: [turn.turnId, turn.params.clientUserMessageId], startedAt: turn.turnStartedAtMs,
+        t: codexUserText(turn.params.input || []) }];
+    });
+    const result = { thread: state.thread, lastTurn: state.entries.at(-1)?.turnId || '', runs, messages: codexReceiptRows(state, 0), queued: codexQueued(true, state) };
+    if (draft) {
+      const editor = codexPromptEl();
+      result.draft = codexPromptText() || '';
+      result.payload = codexPromptPayload();
+      result.hasDraftAttachments = !!editor && codexFiberProps(editor, Infinity).some(p => p.hasDraftAttachments === true);
+      result.follow = codexQueryClient()?.getQueryData(['vscode', 'get-settings'])?.values?.followUpQueueMode || 'queue';
+    }
+    return result;
+  };
+  const waitCodexReceipt = (before, expected, hasAttachments, timeout = 5000) => new Promise(resolve => {
+    const messages = new Set(before.messages.map(item => item.id)), queues = new Set(before.queued.map(item => item.id));
+    const win = doc.defaultView;
+    let finished = false, pending = false;
+    const finish = result => {
+      if (finished) return;
+      finished = true; clearTimeout(timer); win.removeEventListener('remote-agent-chat-update', changed); resolve(result);
+    };
+    const check = () => {
+      if (finished) return;
+      const after = codexSendState();
+      if (before.thread && after.thread !== before.thread) return finish(null);
+      const accepted = after.messages.filter(item => !messages.has(item.id) && !item.nativeIds?.some(id => queues.has(id)) && (expected ? item.t.trim() === expected : hasAttachments));
+      const queued = after.queued.filter(item => !queues.has(item.id) && (expected ? item.t.trim() === expected : hasAttachments));
+      if (accepted.length + queued.length === 1) finish(queued.length
+        ? { queued: true, queueId: queued[0].id, ...(queued[0].messageId ? { messageId: queued[0].messageId } : {}) }
+        : { queued: false, messageId: accepted[0].i });
+    };
+    const changed = () => { if (!pending) { pending = true; queueMicrotask(() => { pending = false; check(); }); } };
+    const timer = setTimeout(() => { check(); finish(null); }, timeout);
+    win.addEventListener('remote-agent-chat-update', changed);
+    check();
+  });
+  const extract = (history = false, knownTurns = [], pageSize = 0) => {
     const imagePreview = codexImagePreview();
     const log = devinLog();
     const panel = log || (devinSurface() ? null : findPanel());
-    const state = !log && !devinSurface() ? codexHistoryState() : null;
+    const scopes = pageSize && !log && !devinSurface() ? codexHistoryScopes() : null;
+    const manager = scopes ? codexConversationManager(codexThread(), scopes) : null;
+    const state = scopes ? codexHistoryState(manager?.getConversation(codexThread()) || null, false, scopes)
+      : !log && !devinSurface() ? codexHistoryState() : null;
+    const page = pageSize && state?.indexed ? codexReadPage(state, Infinity, [], false, pageSize) : null;
+    if (page?.missingTurn && !page.items.length && state.entries.length) return null;
     const initialCapacity = !panel && !log ? codexCapacityItem() : null;
     const known = new Set(knownTurns);
-    const nativeTail = state?.entries.slice(-32).filter(entry => entry.isLatestTurn
+    const nativeTail = (page ? [] : state?.entries.slice(-32) || []).filter(entry => entry.isLatestTurn
       || entry.turnNumber >= state.entries.at(-1).turnNumber - 1 || !known.has(entry.turnId)).flatMap(entry => {
       const turn = codexStoredTurn(entry, state.scopes);
       return turn ? [{ ...entry, turn }] : [];
     }) || [];
     // A brand-new Devin session has a composer and model chip, but no message list yet.
-    if (!panel && !log && !initialCapacity && !nativeTail.length) {
+    if (!panel && !log && !initialCapacity && !nativeTail.length && !page?.items.length) {
       const pendingCodexRequests = !devinSurface() ? codexRequestData() : [];
       const modelEl = modelButton();
       const home = !hasComposer() && !activeThread() && (codexQueryClient() ? !!agentStartupState('codex') : agentList().length > 0);
@@ -892,7 +1034,7 @@
         ...(codexFacts()?.view ? { codex: codexFacts().view } : {}),
       };
     }
-    if (!panel && !log && initialCapacity && !nativeTail.length) {
+    if (!panel && !log && initialCapacity && !nativeTail.length && !page?.items.length) {
       delete initialCapacity._retry;
       delete initialCapacity._turnKey;
       return {
@@ -917,7 +1059,7 @@
     const codexId = log ? '' : codexThread();
     const pendingCodexRequests = !log && !devinSurface() && !codexId ? codexRequestData() : null;
     const bubbleTimes = (!log && !codexId) ? cursorBubbleTimes() : null;
-    const items = log ? devinItems(log) : (panel ? topItems(panel) : []).flatMap(el => {
+    const items = page ? page.items : log ? devinItems(log) : (panel ? topItems(panel) : []).flatMap(el => {
       if (el.hasAttribute?.('data-turn-key')) {
         const key = el.getAttribute('data-turn-key');
         const entry = state?.entries.find(entry => entry.turnKey === key);
@@ -945,17 +1087,25 @@
     const modeEl = [...doc.querySelectorAll('.composer-unified-dropdown[data-mode]')].find(vis);
     const modelEl = modelButton();
     const latestTurn = panel && [...panel.querySelectorAll('[data-turn-key]')].filter(vis).at(-1);
-    const latestEntry = nativeTail.at(-1) || (codexId && codexLatestEntry(latestTurn));
+    const latest = page && state.entries.at(-1);
+    const latestEntry = latest ? { ...latest, turn: codexStoredTurn(latest, state.scopes, false, codexTurnSource(latest, state.scopes, true)) }
+      : nativeTail.at(-1) || (codexId && codexLatestEntry(latestTurn));
     for (const entry of nativeTail) {
       const rows = collect(null, entry), ids = new Set(items.map(item => item.i));
       items.push(...rows.filter(item => !ids.has(item.i)));
     }
     const capacityTurn = capacity?._turnKey && state?.entries.find(entry => entry.turnKey === capacity._turnKey);
-    if (capacity && !items.some(item => item.capacity && capacityTurn && Math.floor(item.order / 10000) === capacityTurn.turnNumber)) {
-      capacity.order = Math.max(0, ...items.map(item => item.order || 0)) + 1;
-      items.push(capacity);
+    const capacityHost = capacityTurn && items.find(item => item.capacity && Math.floor(item.order / 10000) === capacityTurn.turnNumber);
+    if (capacity) {
+      delete capacity._retry; delete capacity._turnKey;
+      if (page && capacityHost) {
+        const { i, order } = capacityHost;
+        Object.assign(capacityHost, capacity, { i, order });
+      } else if (!capacityHost) {
+        capacity.order = Math.max(0, ...items.map(item => item.order || 0)) + 1;
+        items.push(capacity);
+      }
     }
-    if (capacity) { delete capacity._retry; delete capacity._turnKey; }
     const latestData = latestEntry?.turn || (latestTurn && codexTurnData(latestTurn));
     const turnTime = latestData?.items?.find(it => it.type === 'worked-for');
     let generation = turnTime?.startedAtMs ? { start: turnTime.startedAtMs, end: turnTime.completedAtMs || null } : null;
@@ -978,7 +1128,8 @@
       rect: [r.x, r.y, r.width, r.height].map(Math.round),
       _revision: chatRevision(),
       ...(codexId ? { _partialTurns: [...partialTurns], _completeTurns: [...completeTurns].filter(number => !partialTurns.has(number)), _completeTurnIds: [...completedIds],
-        _historyEarlier: state?.hasLoadedOldest === false, _historyStart: state?.entries[0]?.turnNumber } : {}),
+        _historyEarlier: page ? page.earlier || !!page.missingTurn : state?.hasLoadedOldest === false,
+        ...(page ? { historyBefore: page.before } : {}), _historyStart: state?.entries[0]?.turnNumber } : {}),
       ...(imagePreview ? { imagePreview: true } : {}),
       ...(generation ? { generation } : {}),
       capacityPresent: !!capacity,

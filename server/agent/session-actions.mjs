@@ -22,7 +22,7 @@ export const methods = {
     try {
       for (const window of new Set(rows.map(row => row.id.startsWith('project:') ? decodeURIComponent(row.id.split(':')[1]) : row.id.startsWith('thread:') ? row.id.split(':')[1] : this.targetId))) releases.push(leaseWindow(app, window, this, true));
       for (const row of rows) {
-        if (batch.cancelled || this.client?.readyState !== 1 || this.app !== app) break;
+        if (batch.cancelled || this.app !== app) break;
         try {
           const id = sessionId(app, row.id);
           const fusion = [...fusionWorkers.values()].some(worker => FUSION_ACTIVE.includes(worker.fusionRun?.phase) && ['a', 'b'].some(side => {
@@ -59,7 +59,7 @@ export const methods = {
     const page = !own && (await listWindows(null, app)).find(w => w.id === windowId);
     if (!own && !page) throw new Error('会话所属窗口已经关闭，请刷新列表');
     const cdp = own ? this.cdp : new Cdp(page.ws);
-    let surface, openedSidebar = false;
+    let surface, openedSidebar = false, openedDevinPicker = false;
     try {
       if (!own) {
         await cdp.connect();
@@ -68,12 +68,15 @@ export const methods = {
       if (app === 'devin') {
         surface = await cdp.evaluate(helpersCall('devinSurface()'));
         if (surface === 'editor') {
-          const point = await cdp.evaluate(helpersCall("surfaceTarget('agent')"));
+          const point = await cdp.evaluate(helpersCall('sessionSearchTarget()'));
           if (!point) throw new Error('没有找到会话管理界面');
-          await this.tapCss(point.x, point.y, 'left', cdp);
-          for (let i = 0; i < 30 && await cdp.evaluate(helpersCall('devinSurface()')) !== 'agent'; i++) await pause(100);
+          if (!point.open) {
+            await this.tapCss(point.x, point.y, 'left', cdp);
+            openedDevinPicker = true;
+          }
+          for (let i = 0; i < 30 && !(await cdp.evaluate(helpersCall('sessionPickerRows()')))?.length; i++) await pause(100);
         }
-        if (!await cdp.evaluate(`!!document.querySelector('li[data-slot="sidebar-menu-item"]')`)) {
+        if (surface !== 'editor' && !await cdp.evaluate(`!!document.querySelector('li[data-slot="sidebar-menu-item"]')`)) {
           await this.key(mod('b'), { cdp });
           openedSidebar = true;
           for (let i = 0; i < 30 && !await cdp.evaluate(`!!document.querySelector('li[data-slot="sidebar-menu-item"]')`); i++) await pause(100);
@@ -89,10 +92,7 @@ export const methods = {
       await cdpRead.run(null, async () => {
         try {
           if (openedSidebar) await this.key(mod('b'), { cdp });
-          if (surface === 'editor') {
-            const point = await cdp.evaluate(helpersCall("surfaceTarget('editor')"));
-            if (point) await this.tapCss(point.x, point.y, 'left', cdp);
-          }
+          if (openedDevinPicker) await this.key('Escape', { cdp });
         } finally {
           if (!own) {
             await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {});
@@ -125,7 +125,7 @@ export const methods = {
         if (result.confirmed) return;
         throw new Error('桌面端尚未确认会话操作完成，请刷新列表查看');
       }
-      if (app === 'devin' && action === 'rename') {
+      if (app === 'devin' && action === 'rename' && !result?.direct) {
         let input;
         for (let i = 0; i < 30 && !input; i++) {
           input = await cdp.evaluate(helpersCall(`nativeSessionRenameInput(${JSON.stringify(id)})`));

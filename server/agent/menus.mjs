@@ -270,8 +270,8 @@ export const methods = {
     if (kind === 'effort') {
       if (this.app === 'codex' && label === 'max') {
         const max = await this.cdp.evaluate(`(() => {
-          const h = ${PAGE_SRC}, p = h.codexPickerProps();
-          if (p?.modelOptions.find(o => o.model.id === p.model)?.model.supportedReasoningEfforts.some(x => x.reasoningEffort === 'max')) return 'visible';
+          const h = ${PAGE_SRC};
+          if (h.effortItems().some(x => x.label === 'max')) return 'visible';
           return h.effortItems(false, true).some(x => x.label === 'max') ? 'hidden' : null;
         })()`);
         if (!max) throw new Error('当前 Codex 模型不支持 Max');
@@ -285,7 +285,7 @@ export const methods = {
         await this.tapCss(pos.x, pos.y);
         await this.closeMenus();
       }
-      if (this.app === 'codex' && !await this.waitFor(`codexPickerProps()?.reasoningEffort === ${JSON.stringify(label)}`)) throw new Error('思考强度尚未切换');
+      if (this.app === 'codex' && !await this.waitFor(`effortItems().some(item => item.checked && item.label === ${JSON.stringify(label)})`)) throw new Error('尚未确认电脑端思考强度，请重新读取强度列表');
       this.pollChat(this.app === 'codex').catch(() => {});
       return;
     }

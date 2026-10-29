@@ -2,7 +2,7 @@
 import { cdpRead } from '../cdp.mjs';
 import { PAGE_SRC } from '../page/build.mjs';
 
-export async function watchChat(cdp, changed) {
+export async function watchChat(cdp, changed, shared = false) {
   const name = '__remoteChat' + crypto.randomUUID().replaceAll('-', '');
   let stopped = false;
   const receive = event => { if (!stopped && event.name === name) changed(); };
@@ -10,8 +10,15 @@ export async function watchChat(cdp, changed) {
   await cdp.send('Runtime.enable');
   await cdp.send('Runtime.addBinding', { name });
   cdp.on('Runtime.bindingCalled', receive);
-  await cdp.evaluate(`(() => {
+  const removed = await cdp.evaluate(`(() => {
     const name = ${JSON.stringify(name)};
+    const removed = [];
+    if (${shared}) {
+      for (const key of Object.keys(window)) {
+        if (/^__remoteChat[0-9a-f]+Watch$/.test(key)) { window[key].stop(); delete window[key]; }
+        else if (/^__remoteChat[0-9a-f]+$/.test(key) && key !== name) { removed.push(key); delete window[key]; }
+      }
+    }
     let doc, native, observer;
     const state = { timer: 0, stop: null };
     const rows = '[data-turn-key], [data-flat-index], [data-message-kind], [data-acp-msg-index], [role="log"][aria-label="Session transcript"], [role="group"][aria-label$="message"], [aria-label^="Preview queued message"], [data-response-annotation-conversation]';
@@ -29,14 +36,23 @@ export async function watchChat(cdp, changed) {
     };
     const changed = () => {
       doc.defaultView.__remoteAgentChatRevision = (doc.defaultView.__remoteAgentChatRevision || 0) + 1;
-      if (!state.timer) state.timer = setTimeout(() => { state.timer = 0; native?.refresh(); window[name](''); }, 250);
+      if (!state.timer) state.timer = setTimeout(() => {
+        state.timer = 0;
+        native?.refresh();
+        doc.defaultView.dispatchEvent(new doc.defaultView.Event('remote-agent-chat-update'));
+        window[name]('');
+      }, 250);
     };
     const bind = () => {
       const next = document.getElementById('active-frame')?.contentDocument || document;
       if (next === doc) return;
+      doc?.defaultView.removeEventListener('remote-agent-submit-error', changed);
       observer?.disconnect(); native?.stop();
       doc = next;
-      native = (${PAGE_SRC}).watchCodexData(changed);
+      doc.defaultView.addEventListener('remote-agent-submit-error', changed);
+      if (window.vscode?.context?.configuration?.().product?.applicationName === 'devin-desktop') {
+        native = { stop: window.__acpStore.subscribe(changed), refresh() {} };
+      } else native = (${PAGE_SRC}).watchCodexData(changed);
       observer = new MutationObserver(records => {
         if (records.some(record => inTranscript(record.target) || capacityRetry(record.target)
           || [...record.addedNodes, ...record.removedNodes].some(node => inTranscript(node, true) || capacityRetry(node)))) changed();
@@ -48,10 +64,12 @@ export async function watchChat(cdp, changed) {
     const outer = new MutationObserver(bind);
     outer.observe(document.body, { subtree: true, childList: true });
     document.addEventListener('load', bind, true);
-    state.stop = () => { observer?.disconnect(); native?.stop(); outer.disconnect(); document.removeEventListener('load', bind, true); clearTimeout(state.timer); };
+    state.stop = () => { doc?.defaultView.removeEventListener('remote-agent-submit-error', changed); observer?.disconnect(); native?.stop(); outer.disconnect(); document.removeEventListener('load', bind, true); clearTimeout(state.timer); };
     bind();
     window[name + 'Watch'] = state;
+    return removed;
   })()`);
+  await Promise.all(removed.map(name => cdp.send('Runtime.removeBinding', { name })));
   } catch (error) {
     cdpRead.run(null, stop);
     throw error;

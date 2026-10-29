@@ -80,6 +80,18 @@ def construct_recognizer():
     )
 
 
+def final_transcription(recognizer, state):
+    audio = np.concatenate([state.audio_accum, state.buffer])
+    if not audio.size:
+        return ""
+    preview_params = recognizer.sampling_params
+    recognizer.sampling_params = vllm.SamplingParams(temperature=0.0, max_tokens=4096)
+    try:
+        return recognizer.transcribe((audio, 16000))[0].text
+    finally:
+        recognizer.sampling_params = preview_params
+
+
 def main():
     recognizer = None
     sessions = {}
@@ -112,11 +124,9 @@ def main():
                 samples = np.frombuffer(base64.b64decode(message["audio"]), dtype="<i2").astype(np.float32) / 32768.0
                 recognizer.streaming_transcribe(samples, state)
             elif kind == "end":
-                recognizer.finish_streaming_transcribe(state)
-            if kind == "end":
-                emit(id=key, type="final", text=state.text)
+                emit(id=key, type="final", text=final_transcription(recognizer, state))
                 del sessions[key]
-            elif state.text != session["last"]:
+            if kind == "audio" and state.text != session["last"]:
                 session["last"] = state.text
                 emit(id=key, type="partial", text=state.text)
         except Exception as error:

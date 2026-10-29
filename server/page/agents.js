@@ -163,6 +163,12 @@
       const tail = recentItems.flatMap(el => [...el.querySelectorAll('[class*="MarkdownRoot"]')]).filter(e => vis(e) && !e.closest('[class*="group/user-message"]')).at(-1);
       if (tail) last = tail.innerText.trim().replace(/\s+/g, ' ').slice(0, 160);
     }
+    if (devin) {
+      const body = lastReply?.querySelector('.prose-main');
+      if (body) last = body.innerText.trim().replace(/\s+/g, ' ').slice(0, 160);
+      const cwd = devinSession()?.cwd;
+      if (cwd) roots.push({ root: cwd, host: '' });
+    }
     if (codexThread()) {
       const thread = codexThread();
       const latest = items.filter(el => el.hasAttribute('data-turn-key')).at(-1);
@@ -240,6 +246,11 @@
       ...loaded.map(c => [c.id, { id: c.id, title: c.title || '新会话', current: c.state === 'focused', running: c.state === 'generating', workspace: '', host: '', group: '' }]),
       ...tabs.map(t => [t.dataset.resourceName, { id: t.dataset.resourceName, title: t.querySelector('.label-name')?.textContent || '新会话', current: focused ? t.dataset.resourceName === focused : t.classList.contains('active'), workspace: '', host: '', group: '' }]),
     ]).values()].filter(row => !archived.has(row.id)).map(row => ({ ...row, title: names.get(row.id) || row.title, titleNative: names.has(row.id), titleAt: Date.now() }));
+    if (devinSurface() === 'editor') {
+      const selected = devinTabs().find(tab => tab.active)?.id;
+      return (window.__acpStore?.getState().acp.sessions || []).filter(session => !session._meta?.['cognition.ai/isArchived'])
+        .map(session => ({ ...devinCatalogRow(session), current: session.sessionId === selected }));
+    }
     // Read the native session id; titles can repeat or change.
     // Switching chat tabs moves the ACP focus but leaves the sidebar highlight on the old row.
     const acpFocus = window.__acpStore?.getState()?.acp?.focusedSessionId;
@@ -260,7 +271,7 @@
         group: '',
         current: acpFocus ? id === acpFocus : slot?.getAttribute('data-active') === 'true' || !!slot?.querySelector('[data-active="true"]'),
         running: ['active', 'pending', 'canceling'].includes(devinSessionRecord(id)?.status ?? session.status),
-        lastUsed: Date.parse(session.updatedAt || session.updated_at) || 0,
+        lastUsed: Date.parse(session.latest_message_event_at || '') || 0,
         last: session.agentStopMessage || '',
       };
     }).filter(Boolean);
@@ -340,6 +351,12 @@
     if (!rows.length && !hasComposer() && !control('newChat') && !(surface === 'editor' && sessionSearchTarget())) return null;
     return { rows, surface, thread: activeThread(), items: (extract() || {}).items?.length || 0 };
   };
+  const cursorChatReady = id => {
+    if (activeThread() !== id) return false;
+    const data = cursorSessionServices()?.data.getComposerDataIfLoaded(id);
+    const panel = findPanel();
+    return !!data?.hasLoaded && (!data.fullConversationHeadersOnly?.length || !!panel && topItems(panel).length > 0);
+  };
   const agentTarget = (id, click = false) => {
     if (id && activeThread() === id) return true;
     const tab = [...doc.querySelectorAll('.tab[data-resource-name]')].find(t => t.dataset.resourceName === id && t.querySelector('.composer-tab-label'));
@@ -368,7 +385,8 @@
       if (services) return services.commandService.executeCommand('composer.openComposer', id).then(() => true);
     }
     const li = [...doc.querySelectorAll('li[data-slot="sidebar-menu-item"]')].find(e => codexFiberProps(e).some(p => devinRowSession(p.session) === id));
-    const btn = li && [...li.querySelectorAll('[data-slot="sidebar-menu-button"] a[href], button[aria-label]')].find(vis);
+    const btn = li && ([...li.querySelectorAll('a[href]')].find(el => el.closest('li[data-slot="sidebar-menu-item"]') === li)
+      || [...li.querySelectorAll('button[aria-label]')].find(vis));
     if (btn) {
       btn.scrollIntoView({ block: 'nearest' });
       if (click) { btn.click(); return true; }

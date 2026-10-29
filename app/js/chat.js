@@ -153,7 +153,15 @@ function paintThinking(el, it) {
   const loading = more && thoughtFull.has(it.i) && full === undefined;
   const body = loading ? '加载中…' : more && full === null ? '内容未保存' : rest;
   box.classList.toggle('loading', loading);
-  if (box.textContent !== body) box.textContent = body;
+  box.classList.toggle('markdown', currentApp === 'codex');
+  if (currentApp === 'codex') {
+    const html = codexReplyHtml({ t: body });
+    if (box._thinkingHtml !== html) {
+      box.innerHTML = html;
+      box._thinkingHtml = html;
+      dressMessage(box);
+    }
+  } else if (box.textContent !== body) box.textContent = body;
   box.hidden = !open;
   if (open && more && !thoughtFull.has(it.i)) thoughtObserver.observe(el);
   if (open && it.live && follow) box.scrollTop = box.scrollHeight;
@@ -223,53 +231,13 @@ function tasksHtml(it) {
   const list = (it.items || []).map(x => `<li class="${esc(x.status)}"><span class="ti">${TASK_ICON[x.status] || '○'}</span><span class="tt">${esc(x.t)}</span></li>`).join('');
   return `<div class="tprog"><i style="width:${pct}%"></i></div>` + (list ? `<ul class="tlist">${list}</ul>` : '');
 }
-const codexAutoRetryDone = new Map();
-let codexRetryPending = null, codexRetrySnapshot = null;
-const codexRetryInFlight = new Map();
-let codexRetrySerial = 0;
-function codexRetryKey(it) { return `${viewSel}|${it.capacityInstance || it.btnItem || it.i}`; }
-function cancelCodexAutoRetry() {
-  if (codexRetryPending?.timer) clearTimeout(codexRetryPending.timer);
-  if (!codexRetryPending || codexRetryPending.timer) codexRetryPending = null;
-  codexRetrySnapshot = null;
-}
+let codexRetryConfig = '';
+function cancelCodexAutoRetry() { codexRetryConfig = ''; }
 function syncCodexAutoRetry(chat, stale = false, sel = viewSel) {
-  codexRetrySnapshot = { chat, stale, sel };
-  const it = !stale && windowReady && currentApp === 'codex' && sel === viewSel && codexAutoRetryEnabled()
-    ? chat?.items?.find(row => (row.capacity || row.kind === 'capacity') && row.b?.some(label => /^(Retry|Try(?: again)?|重试|再试一次)$/i.test(label))) : null;
-  if (!it) { cancelCodexAutoRetry(); return; }
-  const key = codexRetryKey(it);
-  if ([...codexRetryInFlight.values()].some(attempt => attempt.key === key)) return;
-  if (codexRetryPending?.key === key) return;
-  if (codexRetryPending?.timer) clearTimeout(codexRetryPending.timer);
-  codexRetryPending = null;
-  if ((codexAutoRetryDone.get(key) || 0) >= codexAutoRetryCount()) return;
-  const n = it.b.findIndex(label => /^(Retry|Try(?: again)?|重试|再试一次)$/i.test(label));
-  const pending = codexRetryPending = { key, sel, requestId: 'auto-retry-' + ++codexRetrySerial, item: it.btnItem || it.i, actionId: it.actions?.[n] || '', label: it.b[n], n };
-  pending.timer = setTimeout(() => {
-    pending.timer = 0;
-    if (codexRetryPending !== pending || chatStale || !windowReady || viewSel !== sel || !codexAutoRetryEnabled()) {
-      if (codexRetryPending === pending) codexRetryPending = null;
-      return;
-    }
-    codexRetryInFlight.set(pending.requestId, pending);
-    if (!send({ t: 'click', item: pending.item, n, actionId: pending.actionId, label: pending.label, sel, requestId: pending.requestId })) {
-      codexRetryInFlight.delete(pending.requestId);
-      codexRetryPending = null;
-    }
-  }, 0);
-}
-function finishCodexAutoRetry(message) {
-  const pending = codexRetryInFlight.get(message.requestId);
-  if (!pending || message.sel !== pending.sel || String(message.item) !== String(pending.item) || (message.actionId || '') !== pending.actionId) return;
-  codexRetryInFlight.delete(message.requestId);
-  if (codexRetryPending === pending) codexRetryPending = null;
-  if (!message.clicked) return;
-  const count = (codexAutoRetryDone.get(pending.key) || 0) + 1;
-  codexAutoRetryDone.set(pending.key, count);
-  if (viewSel === pending.sel && codexAutoRetryEnabled()) status(`正在自动重试…（${count}/${codexAutoRetryCount()}）`);
-  const snapshot = codexRetrySnapshot;
-  if (snapshot) syncCodexAutoRetry(snapshot.chat, snapshot.stale, snapshot.sel);
+  if (stale || !windowReady || currentApp !== 'codex' || sel !== viewSel) return;
+  const settings = { t: 'codexRetry', sel, enabled: codexAutoRetryEnabled(), count: codexAutoRetryCount() };
+  const signature = JSON.stringify(settings);
+  if (signature !== codexRetryConfig && send(settings)) codexRetryConfig = signature;
 }
 function renderItem(it) {
   const el = document.createElement('div');

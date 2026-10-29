@@ -49,7 +49,16 @@ function sendReceipt(value) {
 function confirmSent(m, render = true) {
   if (m.pending) {
     const sent = pendingSends.get(m.requestId);
-    if (sent && sent.computer === (currentComputer()?.id || '') && sent.draft === draftKey() && ['正在发送…', '正在确认电脑端接收…', '连接已断开，发送结果待确认'].includes(pendingStatus)) status('正在确认电脑端接收…');
+    if (sent && m.message) {
+      sent.confirmationError = m.message;
+      const echo = pendingEchoes.find(p => p.requestId === m.requestId);
+      if (echo) echo.unknown = true;
+      if (render) queueChatRender();
+    }
+    if (sent && sent.computer === (currentComputer()?.id || '') && sent.draft === draftKey()) {
+      if (m.message) status('发送结果未确认：' + m.message, false);
+      else if (!sent.confirmationError && ['正在发送…', '正在确认电脑端接收…', '连接已断开，发送结果待确认'].includes(pendingStatus)) status('正在确认电脑端接收…');
+    }
     return;
   }
   const echo = pendingEchoes.find(p => p.requestId === m.requestId);
@@ -67,7 +76,7 @@ function confirmSent(m, render = true) {
   for (const key of inputHistory.keys()) if (key.startsWith(sent.draft + '|')) inputHistory.delete(key);
   if (drafts.get(sent.draft) === sent.text && (draftVersions.get(sent.draft) || 0) === sent.version) { drafts.delete(sent.draft); draftMentions.delete(sent.draft); }
   const here = (currentComputer()?.id || '') === sent.computer && mode === sent.mode && (draftKey() === sent.draft || m.sel === viewSel);
-  if (here && ['正在发送…', '正在确认电脑端接收…', '连接已断开，发送结果待确认'].includes(pendingStatus) && ![...pendingSends.values()].some(p => p.draft === activeDraft)) {
+  if (here && (['正在发送…', '正在确认电脑端接收…', '连接已断开，发送结果待确认'].includes(pendingStatus) || $('msg').textContent === '发送结果未确认：' + sent.confirmationError) && ![...pendingSends.values()].some(p => p.draft === activeDraft)) {
     status(m.queued ? 'Agent 正在运行，已加入排队，这一轮结束后自动发送' : '已发送');
   }
   if (here && inputRevision === sent.revision && text.value === sent.text) {
@@ -79,7 +88,6 @@ function confirmSent(m, render = true) {
     dirtyDrafts.add(activeDraft); queueDraftSync();
   }
   if (sent.mode === 'chat') {
-    if (!m.queued) rememberAgentMessageTime(sent.thread, m.sentAt || Date.now());
     submittedMessages.push({ ...sent, messageId: m.messageId, queueId: m.queueId, sentAt: m.sentAt || Date.now() });
     if (here && lastChat && render) queueChatRender();
   }
@@ -97,6 +105,7 @@ function failPendingSend(requestId, message = '发送失败，请重试', report
   if (report && (currentComputer()?.id || '') === sent.computer && draftKey() === sent.draft) status(message, false);
 }
 function disconnectPendingSends() {
+  if (queueEditRequest) receiveQueueEdit({ ...queueEditRequest, ok: false, error: '连接已断开，操作结果待确认，编辑内容已保留' });
   for (const sent of pendingSends.values()) {
     const echo = pendingEchoes.find(p => p.requestId === sent.requestId);
     if (echo) echo.unknown = true;
@@ -105,6 +114,7 @@ function disconnectPendingSends() {
   if (pendingEchoes.length) queueChatRender();
 }
 function reconcileSent(chat) {
+  if (currentApp === 'codex') return; // Codex receipts come from the relay's native message source.
   const matched = new Set(submittedMessages.filter(sent => sent.scope === messageScope() && (!sent.thread || sent.thread === chat.thread))
     .flatMap(sent => [sent.messageId, sent.queueId].filter(Boolean)));
   for (const [requestId, sent] of pendingSends) {
@@ -123,14 +133,17 @@ function receiptMatchesHuman(it, receipt) {
   return echoTextMatches(it, receipt.text);
 }
 function receiveQueueDone(m) {
-  if (!m.ok || m.sel !== viewSel) return;
+  receiveQueueEdit(m);
+  if (!m.ok || m.sel !== viewSel || m.action === 'read') return;
   const removed = new Set();
   for (const echo of pendingEchoes) {
-    if (echo.sel !== viewSel || !m.echoes.includes(echo.requestId)) continue;
+    if (echo.sel !== viewSel || !(m.echoes || []).includes(echo.requestId)) continue;
     if (m.action === 'edit' && currentApp !== 'devin') {
       echo.text = m.text;
+      if (m.queueId) echo.queueId = m.queueId;
+      if (m.messageId) echo.messageId = m.messageId;
       const receipt = submittedMessages.find(row => row.requestId === echo.requestId);
-      if (receipt) receipt.text = m.text;
+      if (receipt) Object.assign(receipt, { text: m.text, ...(m.queueId && { queueId: m.queueId }), ...(m.messageId && { messageId: m.messageId }) });
     } else if (m.action !== 'send') removed.add(echo.requestId);
   }
   pendingEchoes = pendingEchoes.filter(row => !removed.has(row.requestId));

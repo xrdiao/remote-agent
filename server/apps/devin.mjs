@@ -3,6 +3,7 @@ import { windowRoots, editorRoots } from '../../lib/files.mjs';
 import { agentMarks } from '../../lib/marks.mjs';
 import { IS_WIN, mod } from '../../lib/platform.mjs';
 import { listWindows } from '../windows.mjs';
+import { Cdp, cdpRead } from '../cdp.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { FOCUS_COMPOSER } from '../agent/context.mjs';
 
@@ -25,11 +26,13 @@ export const adapter = {
 
   // A cold start keeps the native home/new-chat view.
   async openDefaultSession() {
+    if (await this.cdp.evaluate(helpersCall('devinSurface()')) === 'editor'
+        && !await this.cdp.evaluate(helpersCall('hasComposer()'))) await this.openEditorChat();
     const st = await this.waitFor('agentStartupState("devin")', 250);
     if (!st) throw new Error('Devin 项目与会话尚未就绪，请重试');
   },
 
-  async openAgent(id, title = '', retried = false) {
+  async openAgent(id, title = '') {
     if (IS_WIN && id.startsWith('window:devin:')) {
       await this.attach(id.slice('window:'.length));
       await this.listAgents();
@@ -37,6 +40,7 @@ export const adapter = {
     }
     const switching = this.switchingThread;
     let confirmed = false;
+    let focusedCdp;
     this.switchingThread = true;
     try {
       if (id.startsWith('tab:')) {
@@ -49,10 +53,10 @@ export const adapter = {
         }
         id = key;
       }
-      let { surface, row, thread, title: windowTitle } = await this.cdp.evaluate(`(() => {
+      const { surface, thread, title: windowTitle } = await this.cdp.evaluate(`(() => {
         const h = ${PAGE_SRC};
         const surface = h.devinSurface();
-        return { surface, thread: h.activeThread(), title: document.title, row: surface === 'agent' ? h.agentList().find(row => row.id === ${JSON.stringify(id)}) : null };
+        return { surface, thread: h.activeThread(), title: document.title };
       })()`);
       this.winTitle = windowTitle;
       if (thread === id) {
@@ -60,29 +64,16 @@ export const adapter = {
         if (!confirmed) throw new Error('会话切换没有生效');
         return;
       }
-      if (surface === 'agent' && retried && !row) {
-        // The session list on a freshly switched surface is still loading; wait for the row.
-        for (let i = 0; i < 40 && !row; i++) {
-          await new Promise(r => setTimeout(r, 250));
-          row = await this.cdp.evaluate(`(() => {
-            const h = ${PAGE_SRC};
-            return h.agentList().find(row => row.id === ${JSON.stringify(id)});
-          })()`);
-        }
-      }
       if (surface === 'editor') {
+        if (this.cdp.nativeWindow && !this.cdp.nativeWindow.focus.has(this.cdp)) {
+          focusedCdp = this.cdp;
+          await focusedCdp.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+        }
+        if (!await this.cdp.evaluate(helpersCall('hasComposer()'))) await this.openEditorChat();
         const opened = await this.openSessionPicker();
         const pos = opened && await this.cdp.evaluate(helpersCall(`sessionPickerTarget(${JSON.stringify(id)}, ${JSON.stringify(title)})`));
         if (!pos) {
           if (opened) await this.key('Escape');
-          // A window that just opened lands on the editor surface; its picker only knows
-          // this project's sessions. Switch to the agent surface and try the row there.
-          if (!retried) {
-            await this.setSurface('agent');
-            await this.adapter.openAgent.call(this, id, title, true);
-            confirmed = true;
-            return;
-          }
           throw new Error('这条 Agent 已经不在列表里');
         }
         await this.tapCss(pos.x, pos.y);
@@ -99,6 +90,7 @@ export const adapter = {
     } finally {
       this.switchingThread = switching;
       this.lastChatAt = 0;
+      if (focusedCdp) await cdpRead.run(null, () => focusedCdp.send('Emulation.setFocusEmulationEnabled', { enabled: false }));
       if (!switching && confirmed) {
         this.publishThread();
         await this.pollChat(true, true);
@@ -107,20 +99,12 @@ export const adapter = {
   },
 
   async listAgents(silent, readOnly, emit) {
-    const surface = await this.cdp.evaluate(helpersCall('devinSurface()'));
-    if (surface === 'editor') {
-      if (readOnly) {
-        const session = await this.cdp.evaluate(helpersCall('devinSession()'));
-        const state = await this.cdp.evaluate(helpersCall('agentState()'));
-        return emit({ list: (session?.tabs || []).map(tab => ({ id: `tab:${tab.id}`, title: tab.title, group: '已打开的会话', current: tab.active, running: tab.active && !!state?.busy })), surface, partial: true });
-      }
-      return emit({ list: await this.editorSessions(), surface });
-    }
-    const list = await this.cdp.evaluate(helpersCall('agentList()'));
-    return emit({ list: list || [], ...(surface ? { surface } : {}) });
+    return emit({ list: await this.editorSessions(), surface: 'editor' });
   },
 
   async currentRoots() {
+    const session = await this.cdp.evaluate(helpersCall('devinSession()'));
+    if (session?.surface === 'agent') return session.cwd ? [{ root: session.cwd, host: null, source: 'devin', workspaceFile: '' }] : [];
     return (await editorRoots(this.editorCdp, 'devin')).filter(w => !w.host);
   },
 
@@ -559,32 +543,77 @@ afterRevert(num) {
   setTimeout(() => this.pollChat().catch(() => {}), 300);
 },
 
-async setSurface(to) {
+async ensureDevinIde(threadId = '', project = '') {
+  const session = await this.cdp.evaluate(helpersCall('devinSession()'));
+  if (session?.surface === 'editor') {
+    if (!await this.cdp.evaluate(helpersCall('hasComposer()'))) await this.openEditorChat();
+    return false;
+  }
+  const id = threadId || (!project && session?.key) || '';
+  const rows = await this.cdp.evaluate(helpersCall('sessionPickerRows(true)'));
+  const row = rows.find(row => row.id === id);
+  const cwd = project || row?.workspace || (id === session?.key ? session.cwd : '')
+    || (!id && (await editorRoots(this.editorCdp, 'devin'))[0]?.root);
+  if (!cwd) throw new Error('尚未确定 Devin 目标项目，请选择项目后进入 IDE');
+  await this.setSurface('editor', { key: id, cwd });
+  return true;
+},
+
+async devinProjectWindows(windows) {
+  const result = await Promise.all(windows.map(async window => {
+    const cdp = new Cdp(window.ws);
+    try {
+      await cdp.connect();
+      if (await cdp.evaluate(helpersCall('devinSurface()')) !== 'editor') return null;
+      return { ...window, project: (await editorRoots(cdp, 'devin'))[0] };
+    } finally { cdp.close(); }
+  }));
+  return result.filter(Boolean);
+},
+
+async setSurface(to, target) {
   if (this.app !== 'devin') throw new Error('不支持的操作');
   const want = to === 'editor' ? 'editor' : 'agent';
-  const cur = await this.cdp.evaluate(helpersCall('devinSurface()'));
-  if (cur === want) return this.emit({ t: 'status', ok: true, msg: want === 'editor' ? '已在 Editor 界面' : '已在 Agent 界面' });
-  const pos = await this.cdp.evaluate(helpersCall(`surfaceTarget(${JSON.stringify(want)})`));
-  if (!pos) throw new Error('找不到 Agent / Editor 切换按钮');
-  await this.tapCss(pos.x, pos.y);
-  let ready = false;
-  for (let i = 0; i < 20 && !ready; i++) {
-    ready = (await this.cdp.evaluate(helpersCall('devinSurface()'))) === want;
-    if (!ready) await new Promise(r => setTimeout(r, 100));
+  const session = target || await this.cdp.evaluate(helpersCall('devinSession()'));
+  if (session?.surface === want) return this.emit({ t: 'status', ok: true, msg: want === 'editor' ? '已在 Editor 界面' : '已在 Agent 界面' });
+  const control = await this.cdp.evaluate(helpersCall(`surfaceTarget(${JSON.stringify(want)}, true)`));
+  if (control) {
+    if (!await this.waitFor(`devinSurface() === ${JSON.stringify(want)}`)) throw new Error('Devin 视图切换没有生效');
+    this.cdp.nativeWindow?.invalidate();
   }
-  this.resetDevinView();
-  if (!ready) this.emit({ t: 'status', ok: false, msg: '这个界面还没有加载完，请稍后再试' });
-  else this.emit({ t: 'status', ok: true, msg: want === 'editor' ? '已切到 Editor 界面' : '已切到 Agent 界面' });
-  setTimeout(() => this.pollChat().catch(() => {}), 300);
+  for (const window of (await listWindows(null, 'devin')).filter(w => w.app === 'devin')
+    .sort((a, b) => Number(b.id === this.windowId) - Number(a.id === this.windowId))) {
+    const cdp = new Cdp(window.ws);
+    try {
+      await cdp.connect();
+      if (await cdp.evaluate(helpersCall('devinSurface()')) !== want) continue;
+      if (want === 'editor' && session.cwd && !this.projectMatches(await editorRoots(cdp, 'devin'), session.cwd)) continue;
+      const previousCdp = this.cdp, switching = this.switchingThread;
+      this.switchingThread = true;
+      try {
+        const binding = await this.openBound(window, window.ws, null, { windowId: window.id, threadId: session?.key || '', deferred: true });
+        if (await this.checkProjectTrust({ threadId: session?.key || '' }, binding?.trust)) return;
+        if (session?.key) await this.adapter.openAgent.call(this, session.key);
+        this.bindingReady = true;
+        this.emit({ t: 'status', ok: true, msg: want === 'editor' ? '已切到 Editor 界面' : '已切到 Agent 界面' });
+      } finally {
+        if (switching) this.switchingThread = switching;
+        else await this.resumeProjectSwitch(previousCdp);
+      }
+      return;
+    } finally { cdp.close(); }
+  }
+  if (want === 'editor' && session?.cwd) return this.useProject(session.cwd, false, session.key);
+  throw new Error('没有找到对应的 Devin 窗口');
 },
 
 
 // Devin's Editor surface has no session list in the panel; the titlebar "Search agents" quick pick
 // lists every session by name. It is opened, read, and closed again with Escape.
 async openSessionPicker() {
-  const pos = await this.cdp.evaluate(helpersCall('sessionSearchTarget()'));
+  const pos = await this.waitFor('sessionSearchTarget()');
   if (!pos) throw new Error('没找到会话搜索按钮（可能 Devin 版本不同）');
-  await this.tapCss(pos.x, pos.y);
+  if (!pos.open) await this.tapCss(pos.x, pos.y);
   for (let i = 0; i < 20; i++) {
     if (await this.cdp.evaluate(`(async () => { const h = ${PAGE_SRC}; return (await h.sessionPickerRows())?.length; })()`)) return true;
     await new Promise(r => setTimeout(r, 100));
@@ -595,17 +624,9 @@ async openSessionPicker() {
 async editorSessions() {
   const sess = await this.cdp.evaluate(helpersCall('devinSession()'));
   const tabs = sess?.tabs || [];
-  let rows = null, opened = false;
-  try {
-    opened = await this.openSessionPicker();
-    rows = opened ? await this.cdp.evaluate(helpersCall('sessionPickerRows()')) : null;
-  } catch (e) {
-    if (!tabs.length) throw e;
-  }
-  if (opened) await this.key('Escape');
-  if (!opened && !tabs.length) throw new Error('没有读到会话列表，请先切到 Agent 界面再试');
-  const open = tabs.map(t => ({ id: `tab:${t.id}`, title: t.title, group: '已打开的会话', current: t.active, running: !!(rows || []).find(r => r.id === t.id)?.running }));
-  const rest = (rows || []).filter(r => !tabs.some(t => t.id === r.id)).map(r => ({ id: r.id, title: r.title, picker: true, group: tabs.length ? '全部会话' : '', current: false, running: !!r.running }));
+  const rows = await this.cdp.evaluate(helpersCall('sessionPickerRows(true)'));
+  const open = tabs.filter(t => rows.some(r => r.id === t.id)).map(t => ({ ...rows.find(r => r.id === t.id), id: `tab:${t.id}`, title: t.title, group: '已打开的会话', current: t.active }));
+  const rest = rows.filter(r => !tabs.some(t => t.id === r.id)).map(r => ({ ...r, picker: true, group: tabs.length ? '全部会话' : '', current: false }));
   return [...open, ...rest];
 },
 
@@ -682,8 +703,15 @@ resetDevinView() {
 
 async openEditorChat() {
   if (this.app !== 'devin' || await this.cdp.evaluate(helpersCall('devinSurface()')) !== 'editor') throw new Error('请先切换到 Devin Editor');
-  await this.key(mod('l'), { cdp: this.editorCdp });
-  if (!await this.waitFor('transcriptVisible()')) throw new Error('聊天面板没有打开');
+  if (!await this.cdp.evaluate(helpersCall('hasComposer()'))) {
+    if (!await this.waitFor('devinSurface() === "editor" && !!document.querySelector(\'[role="button"][aria-label^="Agents ("]\')', 250)) throw new Error('Devin IDE 聊天面板入口尚未就绪');
+    await this.editorCdp.evaluate(`(() => {
+    const button = document.querySelector('[role="button"][aria-label^="Agents ("]');
+    if (!button) throw new Error('Devin IDE 聊天面板入口尚未就绪');
+    button.click();
+    })()`);
+  }
+  if (!await this.waitFor('transcriptVisible()', 250)) throw new Error('聊天面板没有打开');
   this.resetDevinView();
   await this.pollChat();
   this.emit({ t: 'status', ok: true, msg: '聊天面板已打开' });
@@ -693,14 +721,25 @@ async openEditorChat() {
 // Devin "New": the Agent surface has the New session control. The Editor surface has none
 // visible, so it switches to Agent first and stays there (the new session lives in Agent).
 async devinNewChat() {
-  const surface = await this.cdp.evaluate(helpersCall('devinSurface()'));
-  const switched = surface === 'editor';
-  if (switched) await this.setSurface('agent');
-  await this.pressControl('newChat');
+  const session = await this.cdp.evaluate(helpersCall('devinSession()'));
+  const surface = session?.surface;
+  if (surface === 'agent' && session.cwd && session.key.startsWith('acp/devin-cli/')) {
+    await this.setSurface('editor');
+    return this.devinNewChat();
+  }
+  if (surface === 'editor') {
+    if (!await this.cdp.evaluate(helpersCall('hasComposer()'))) await this.openEditorChat();
+    const pos = await this.cdp.evaluate(`(() => { const el = document.querySelector('button[aria-label="Start a New Conversation"]'); if (!el) return null; const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    if (!pos) throw new Error('没有找到 Devin 新建会话入口');
+    await this.tapCss(pos.x, pos.y);
+  } else {
+    const opened = await this.cdp.evaluate(`(() => { const link = document.querySelector('a[aria-label="New session"]'); if (!link) return false; link.click(); return true; })()`);
+    if (!opened) throw new Error('没有找到 Devin 新建会话入口');
+  }
   this.resetDevinView();
   this.lastChatAt = 0;
   await this.pollChat();
-  this.emit({ t: 'status', ok: true, msg: switched ? '已切到 Agent 界面并新建对话' : '已新建对话' });
+  this.emit({ t: 'status', ok: true, msg: '已新建对话' });
 },
 
 

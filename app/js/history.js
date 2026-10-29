@@ -636,6 +636,7 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
   rememberChatMessageTime(chat);
   pruneEchoes(chat);
   updateGenerationTime(chat, stale);
+  const previousStale = chatStale;
   chatStale = !!stale;
   if (chat?.items?.some(it => it.k === 'human')) $('sessionNotice').hidden = true;
   rememberInputHistory(chat);
@@ -652,12 +653,26 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
     $('older').disabled = false;
     $('historyStatus').hidden = true;
   }
+  if (chat && !historyExpanded && Number.isFinite(chat.historyBefore)) historyCursor = chat.historyBefore;
   if (chat?.earlier === true && (currentApp !== 'codex' || !historyExpanded)) historyAtEnd = false;
-  if (chat && previous?.thread === chat.thread && historyExpanded && currentApp !== 'devin') {
-    const rows = historyRequest ? [...chat.items, ...previous.items] : [...previous.items, ...chat.items];
+  const paged = currentApp === 'codex' && Number.isFinite(chat?.historyBefore) && !stale && !previousStale;
+  if (chat && previous?.thread === chat.thread && (historyExpanded || paged) && currentApp !== 'devin') {
     const updates = new Map(chat.items.map(it => [it.i, it]));
-    const merged = [...new Map(rows.map(it => [it.i, updates.get(it.i) || it])).values()];
+    const bodies = previous.items.flatMap(item => {
+      if (updates.has(item.i)) return [updates.get(item.i)];
+      if (paged && item.syntheticCapacity && chat.capacityPresent === false) return [];
+      if (paged && item.capacity) { const { b, actions, btnItem, ...body } = item; return [body]; }
+      if (paged && !chat.busy && item.k === 'thinking' && item.live) return [{ ...item, live: false }];
+      return [item];
+    });
+    const rows = historyRequest ? [...chat.items, ...bodies] : [...bodies, ...chat.items];
+    let merged = [...new Map(rows.map(it => [it.i, updates.get(it.i) || it])).values()];
     if (merged.every(it => Number.isFinite(it.order))) merged.sort((a, b) => a.order - b.order);
+    if (paged && !historyExpanded) {
+      const keep = new Set(chatTail(merged, 400).map(item => String(item.i)));
+      if (!followingChat()) for (const el of itemsEl.children) keep.add(el.dataset.i);
+      merged = merged.filter(item => keep.has(String(item.i)));
+    }
     chat = { ...chat, items: merged };
   }
   if ((chatTouching || chatMomentum || chatScrolling || turnNavPointer?.dragging) && chat && previous?.thread === chat.thread) {
@@ -1113,26 +1128,51 @@ function renderQueue(busy, queued, subs = [], readonly = false, changed = 0, qCo
   if (document.body.classList.contains('kb')) fitViewport();
 }
 
-function sendQueueAction(id, action, text) {
+let queueEditRequest = null;
+function sendQueueAction(id, action, text, requestId) {
   const echoes = pendingEchoes.filter(p => p.sel === viewSel && (action === 'clear'
     ? p.kind === 'queue' || p.represented : p.represented && p.queueId === id)).map(p => p.requestId);
-  return send({ t: 'queue', id, action, text, echoes });
+  return send({ t: 'queue', id, action, text, requestId, echoes });
 }
 function editQueued(id) {
   const q = (lastChat?.queued || []).find(x => x.id === id);
   if (!q) return status('这条排队消息已经不在了', false);
   if (currentApp === 'devin') { status('正在取出…'); return sendQueueAction(id, 'edit'); }
+  const edit = queueEditRequest = { id, sel: viewSel, requestId: crypto.randomUUID(), action: 'read' };
   openSheet('queueEdit', `<h3>修改排队消息</h3>
-    <textarea id="qEdit" style="width:100%;box-sizing:border-box;min-height:120px;max-height:50dvh;margin-bottom:10px"></textarea>
-    <button class="opt" id="qSave" style="justify-content:center;background:var(--accent);border-color:var(--accent-b);color:#fff;font-weight:600">保存（仍在排队）</button>`);
-  $('qEdit').value = q.t;
+    <textarea id="qEdit" disabled style="width:100%;box-sizing:border-box;min-height:120px;max-height:50dvh;margin-bottom:10px"></textarea>
+    <div id="qError" role="status">正在读取完整内容…</div>
+    <button class="opt" id="qSave" disabled style="justify-content:center;background:var(--accent);border-color:var(--accent-b);color:#fff;font-weight:600">保存（仍在排队）</button>`);
   $('qSave').onclick = () => {
+    if (edit.action === 'read') {
+      edit.requestId = crypto.randomUUID(); $('qSave').disabled = true;
+      $('qError').textContent = '正在读取完整内容…';
+      if (!sendQueueAction(id, 'read', undefined, edit.requestId)) receiveQueueEdit({ ...edit, ok: false, error: '连接已断开，请重试' });
+      return;
+    }
     const v = $('qEdit').value;
     if (!v.trim()) return status('内容不能为空；不想要这条就点「删除」', false);
-    sendQueueAction(id, 'edit', v);
-    closeSheet();
+    edit.requestId = crypto.randomUUID(); edit.action = 'edit';
+    $('qSave').disabled = true; $('qEdit').disabled = true; $('qError').textContent = '正在保存…';
+    if (!sendQueueAction(id, 'edit', v, edit.requestId)) receiveQueueEdit({ ...edit, ok: false, error: '连接已断开，内容已保留' });
     status('正在修改排队消息…');
   };
+  if (!sendQueueAction(id, 'read', undefined, edit.requestId)) receiveQueueEdit({ ...edit, ok: false, error: '连接已断开，请重试' });
+}
+function receiveQueueEdit(m) {
+  const edit = queueEditRequest;
+  if (!edit || sheetKind !== 'queueEdit' || edit.sel !== viewSel || m.sel !== edit.sel || m.requestId !== edit.requestId) return;
+  if (!m.ok) {
+    $('qError').textContent = m.error || '操作未完成，内容已保留';
+    $('qSave').disabled = false;
+    $('qEdit').disabled = edit.action === 'read';
+    if (edit.action === 'read') $('qSave').textContent = '重新读取';
+    return;
+  }
+  if (m.action === 'read') {
+    $('qEdit').value = m.text; $('qEdit').disabled = false; $('qSave').disabled = false;
+    $('qSave').textContent = '保存（仍在排队）'; $('qError').textContent = ''; edit.action = 'edit';
+  } else { queueEditRequest = null; closeSheet(); queueDraftSync(); }
 }
 
 $('queueBar').onclick = async e => {
@@ -1148,7 +1188,7 @@ $('queueBar').onclick = async e => {
   if (b.dataset.sub) {
     if (b.dataset.part === 'stop' && !await ask(`停止子 Agent「${b.dataset.sub}」？\n它做到一半的工作会中断。`, '停止')) return;
     send({ t: 'subagent', name: b.dataset.sub, part: b.dataset.part });
-    status(b.dataset.part === 'stop' ? '已停止子 Agent' : '正在打开子 Agent…');
+    status(b.dataset.part === 'stop' ? '正在停止子 Agent…' : '正在打开子 Agent…');
     return;
   }
   if (b.dataset.a === 'edit') return editQueued(b.dataset.q);
@@ -1407,7 +1447,7 @@ function requestOlderRemote() {
   if (currentApp === 'codex') {
     const orders = lastChat.items.map(it => it.order).filter(Number.isFinite);
     Object.assign(paging, { before: historyCursor ?? (orders.length ? Math.min(...orders) : null),
-      known: lastChat.items.map(it => it.i), details: executionRecordsShown() });
+      known: SC.key ? [...SC.items.keys()] : lastChat.items.map(it => it.i), details: executionRecordsShown() });
   }
   if (send({ t: 'scrollChat', dy: -900, automatic: true, history: true, requestId: historyRequest.id, ...paging }) === false) {
     historyExpanded = historyRequest.expanded;

@@ -11,6 +11,7 @@ import { ADAPTERS } from './apps/index.mjs';
 import { readLibrary, importLibrary, favoriteSession } from '../lib/session-library.mjs';
 import { computerId } from '../lib/auth.mjs';
 import { scanProjectWindows, projectWindowSettings } from './project-windows.mjs';
+import { nativeWindow, configureNativeRetry } from './native-windows.mjs';
 
 // One entry per message type the phone can send (auth/ack are handled inside ws.mjs itself).
 //   pre      — runs in handle() before the read-only/focus split, without a cdp
@@ -121,7 +122,10 @@ export const ROUTES = {
     if (typeof m.visible === 'boolean') { s.notifyVisible = m.visible; s.notifyPresenceAt = Date.now(); }
     s.emit({ t: 'pong' });
   } },
-  saveFile: { pre: (s, m) => s.saveFile(String(m.path ?? ''), String(m.text ?? ''), m.host == null ? undefined : String(m.host), m.requestId) },
+  saveFile: {
+    pre: (s, m) => s.saveFile(String(m.path ?? ''), String(m.text ?? ''), m.host == null ? undefined : String(m.host), m.requestId),
+    fail: (s, m, error) => s.emit({ t: 'saved', requestId: m.requestId, path: m.path, host: m.host || '', ok: false, error: error?.message || '保存未执行' }),
+  },
   connAgents: { switchRead: true, connection: true,
     pre: async (s, options = {}) => {
       const probe = s.agentProbe = (s.agentProbe || 0) + 1;
@@ -179,6 +183,7 @@ export const ROUTES = {
   draft: {
     pre: async (s, m) => {
       if ((m.draftEpoch || '') !== (s.draftEpoch || '')) return;
+      if (s.queueEditing) { s.queueEditing.request = m; return; }
       const read = m.text === undefined;
       let text = read ? '' : String(m.text);
       const sel = s.selectionKey(), epoch = s.draftEpoch || '';
@@ -281,16 +286,24 @@ export const ROUTES = {
   closeTab: { run: (s, m) => s.closeTab(String(m.id ?? '')) },
   file: { switchRead: true,  run: (s, m) => s.openFile(String(m.path ?? ''), String(m.diff ?? ''), m.changes === true, m.requestId) },
   click: { run: (s, m) => s.clickButton(m.item, m.n, m.actionId, m.label, m.sel, m.requestId) },
+  codexRetry: { fast: true, fastRun: (s, m) => {
+    if (s.app !== 'codex' || m.sel !== s.selectionKey()) return;
+    configureNativeRetry(s.deviceId, nativeWindow(s.cdp), { enabled: m.enabled === true,
+      count: Math.max(1, Math.min(5, Math.round(Number(m.count) || 1))), thread: s.threadId || '', sel: m.sel });
+  } },
   queue: {
+    readOnly: (s, m) => m.action === 'read',
     run: (s, m) => {
+      if (m.action === 'read') return s.queuedText(m.id);
       if (m.action === 'clear' && s.app === 'devin') return s.devinClearQueue();
       if (m.action === 'edit' && s.app === 'devin') return s.devinTakeOut(m.id);
       return m.action === 'edit' ? s.editQueued(m.id, String(m.text ?? '')) : s.queueAction(m.id, m.action);
     },
-    after: (s, m) => {
-      s.emit({ t: 'queueDone', sel: s.selectionKey(), id: m.id, action: m.action, text: m.text, echoes: m.echoes, ok: true });
+    after: (s, m, result) => {
+      s.emit({ t: 'queueDone', sel: m.sel || s.selectionKey(), requestId: m.requestId, id: m.id, action: m.action, text: m.action === 'read' ? result : m.text, echoes: m.echoes, ...(m.action === 'edit' && result), ok: true });
       if (m.action === 'edit') s.emit({ t: 'status', ok: true, msg: '已修改，仍在排队' });
     },
+    fail: (s, m, error) => s.emit({ t: 'queueDone', sel: m.sel || s.selectionKey(), requestId: m.requestId, id: m.id, action: m.action, ok: false, error: error?.message }),
   },
   stop: {
     fast: true,
@@ -298,7 +311,10 @@ export const ROUTES = {
     readOnly: true,
     run: (s, m) => s.stopButton(m),
   },
-  subagent: { run: (s, m) => s.subagentAction(m.name, m.part === 'stop' ? 'stop' : 'open') },
+  subagent: {
+    run: (s, m) => s.subagentAction(m.name, m.part === 'stop' ? 'stop' : 'open'),
+    after: (s, m) => { if (m.part === 'stop') s.emit({ t: 'status', msg: '已点击子 Agent 停止' }); },
+  },
   mainChat: { run: s => s.backToMain() },
   cancelImage: { fast: true, fastRun: (s, m) => {
     const transfer = s.imageTransfers?.get(m.clientImageId);
