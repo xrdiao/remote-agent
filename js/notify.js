@@ -625,13 +625,18 @@ async function useComputer(i) {
   parkComputerSocket();
   entryComputer = '';
   saveComputers(list, c.key);
-  restoreDraft();
   store.set('window', c.win || null);
+  closeSheet();
+  const ready = readyComputerSocket(c);
+  if (ready) {
+    bootGeneration++;
+    return connect(ready);
+  }
+  restoreDraft();
   connGen++;
   offlineGen++;
   authed = false;
   ws = null;
-  closeSheet();
   boot();
 }
 async function removeComputer(i) {
