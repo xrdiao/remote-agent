@@ -32,6 +32,7 @@ export class Cdp {
       signal?.throwIfAborted();
       const ws = new WebSocket(this.wsUrl);
       this.ws = ws;
+      this.closeReason = null;
       let opened = false;
       const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', cancel); };
       const cancel = () => { cleanup(); reject(signal.reason); try { ws.close(); } catch {} };
@@ -41,12 +42,18 @@ export class Cdp {
       ws.onerror = () => { if (!opened) { cleanup(); reject(new Error(`CDP connect failed: ${this.wsUrl}`)); } };
       ws.onclose = () => {
         if (!opened) { cleanup(); reject(new Error(`CDP connect failed: ${this.wsUrl}`)); return; }
-        for (const { reject } of this.pending.values()) reject(new Error('CDP closed'));
+        const error = this.closeReason || new Error('CDP closed');
+        for (const { reject } of this.pending.values()) reject(error);
         this.pending.clear();
-        this.onclose?.();
+        this.onclose?.(error);
       };
       ws.onmessage = ev => {
         const msg = JSON.parse(ev.data);
+        if (msg.method === 'Inspector.detached') {
+          this.closeReason = new Error('CDP 目标连接已解除: ' + msg.params.reason);
+          ws.close();
+          return;
+        }
         if (msg.id && this.pending.has(msg.id)) {
           const { resolve, reject } = this.pending.get(msg.id);
           this.pending.delete(msg.id);
@@ -62,6 +69,7 @@ export class Cdp {
     return new Promise((resolve, reject) => {
       const signal = cdpRead.getStore();
       signal?.throwIfAborted();
+      if (this.ws?.readyState !== WebSocket.OPEN) return reject(this.closeReason || new Error('CDP 连接未打开'));
       const id = ++this.nextId;
       const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', cancel); };
       const fail = error => { if (this.pending.delete(id)) { cleanup(); reject(error); } };

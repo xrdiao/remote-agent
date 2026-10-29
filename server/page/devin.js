@@ -41,17 +41,39 @@
     for (const i of indexes || []) nodes[i] && thinkingToggleEl(nodes[i])?.click();
     return true;
   };
-  // Devin's two surfaces are titlebar segments (Agent: sidebar sessions; Editor: chat in the right panel).
+  // The current layout can change inside an IDE window without changing its window configuration.
   const devinSurface = () => {
+    const modes = [...document.querySelectorAll('button[id*="devin-editor-mode-menu"]')];
+    if (modes.length) {
+      const picker = modes.find(vis);
+      return picker && codexFiberProps(picker, 24).find(p => p.mode === 'agent' || p.mode === 'editor')?.mode || null;
+    }
     const segments = [...document.querySelectorAll('button.switch-segment')];
     const seg = segments.find(e => vis(e) && e.classList.contains('active'));
     if (seg) return seg.classList.contains('agent-segment') ? 'agent' : 'editor';
     if (segments.length) return null;
-    const product = window.vscode?.context?.configuration?.()?.product;
-    return product?.applicationName === 'devin-desktop' && document.querySelector('[class*="windsurf-workspace-welcome"], li[data-slot="sidebar-menu-item"]') ? 'agent' : null;
+    const configuration = window.vscode?.context?.configuration?.();
+    if (configuration?.product?.applicationName !== 'devin-desktop' || typeof configuration.desktopShellOwnsWindow !== 'boolean') return null;
+    return configuration.desktopShellOwnsWindow ? 'agent' : 'editor';
   };
-  const devinRowSession = s => typeof s?.sessionId === 'string' && s.sessionId
-    ? s.sessionId : typeof s?.devin_id === 'string' ? s.devin_id.replace(/^devin-(?=acp\/)/, '') : '';
+  const devinRowSession = s => {
+    const id = s?.sessionId || s?.devin_id || '';
+    if (!id) return '';
+    const nativeId = id.replace(/^devin-/, '');
+    if (nativeId.startsWith('acp/')) return nativeId;
+    return window.__acpStore?.getState().acp.sessions.find(session => session.providerId === 'devin-cloud'
+      && session.sessionId === `acp/devin-cloud/${nativeId}`)?.sessionId || '';
+  };
+  const devinNodeSessionId = el => {
+    const props = codexFiberProps(el, Infinity);
+    const id = props.find(p => typeof p.sessionId === 'string' && p.sessionId)?.sessionId
+      || props.map(p => devinRowSession(p.session) || devinRowSession({ devin_id: p.value?.devinId })).find(Boolean) || '';
+    return devinRowSession({ sessionId: id });
+  };
+  const devinCatalogRow = session => ({
+    id: devinRowSession(session), title: session.title || '', titleNative: !!session.title, titleAt: Date.now(),
+    workspace: session.cwd || '', running: ['active', 'pending', 'canceling'].includes(session.status), lastUsed: 0,
+  });
   const devinTranscriptRows = log => !log ? [] : log.matches('[data-chat-history-variant]')
     ? [...log.querySelectorAll('[data-transcript-row-key]')].filter(row => row.closest('[data-chat-history-variant]') === log)
     : [...log.children];
@@ -60,20 +82,28 @@
     if (!row?.closest('[data-chat-history-variant]')) return null;
     const props = codexFiberProps(row, 40);
     const data = props.find(p => p.row)?.row;
-    const sessionId = props.find(p => typeof p.sessionId === 'string')?.sessionId;
+    const sessionId = devinNodeSessionId(row);
     const messages = window.__acpStore?.getState()?.acp?.perSession?.[sessionId]?.messages;
     const index = messages?.findIndex(message => message.id === data?.item?.id || data?.memberIds?.includes(message.id));
     return index >= 0 ? index : null;
   };
-  const surfaceTarget = to => {
+  const surfaceTarget = (to, select = false) => {
     const seg = [...document.querySelectorAll(`button.switch-segment.${to}-segment`)].find(vis);
-    return seg ? center(seg) : null;
+    if (seg) { if (select) { seg.click(); return true; } return center(seg); }
+    const picker = [...document.querySelectorAll('button[id*="devin-editor-mode-menu"]')].find(vis);
+    if (!picker) return null;
+    if (!select) return center(picker);
+    const props = codexFiberProps(picker, 24).find(p => (p.mode === 'agent' || p.mode === 'editor') && typeof p.onSelect === 'function');
+    if (!props) throw new Error('Devin 原生视图切换入口尚未就绪');
+    props.onSelect(to);
+    return true;
   };
   const transcriptVisible = () => { const l = devinLog(); return (!!l && vis(l)) || [...document.querySelectorAll('[role="textbox"][aria-label="Prompt"]')].some(vis); };
-  // Editor surface: the titlebar "Search agents" button opens a quick pick listing every session by name.
+  // IDE history is a native conversation picker, separate from the Agents sidebar.
   const sessionSearchTarget = () => {
-    const b = [...document.querySelectorAll('button[aria-label]')].find(e => vis(e) && /^Search agents\b/.test(e.getAttribute('aria-label')));
-    return b ? center(b) : null;
+    const b = [...document.querySelectorAll('button[aria-label]')].find(e => vis(e) && /^(?:Past Conversations|Search agents\b)/.test(e.getAttribute('aria-label')));
+    const input = doc.querySelector('input[placeholder="Search"][data-kb-navigate]');
+    return b ? { ...center(b), open: !!input && vis(input) } : null;
   };
   const devinPickerSessions = async () => {
     const native = await import('@exa/chat-client');
@@ -85,7 +115,17 @@
     }
     return native.sortSessions(sessions);
   };
-  const sessionPickerRows = async () => {
+  const sessionPickerRows = async (catalog = false) => {
+    if (catalog) {
+      const selected = devinTabs().find(tab => tab.active)?.id;
+      return (await devinPickerSessions()).map(session => ({ ...devinCatalogRow(session), current: session.sessionId === selected }));
+    }
+    const rows = [...doc.querySelectorAll('div[data-kb-navigate="true"][tabindex="0"]')].flatMap(row => {
+      const session = codexFiberProps(row, 12).find(p => devinRowSession(p.session))?.session;
+      return session ? [{ id: devinRowSession(session), title: session.title || '', titleNative: !!session.title,
+        titleAt: Date.now(), workspace: session.cwd || '', running: ['active', 'pending', 'canceling'].includes(session.status) }] : [];
+    });
+    if (rows.length) return rows;
     const w = [...document.querySelectorAll('.quick-input-widget')].find(vis);
     if (!w) return null;
     const sessions = await devinPickerSessions();
@@ -95,7 +135,7 @@
       return { id: devinRowSession(session), title: session?.title || title, titleNative: !!session?.title, titleAt: Date.now(), running: /\bworking\b/i.test(row.innerText || '') };
     }).filter(r => r.title && r.id);
   };
-  // Devin sessions are identified by their title. The Editor surface keeps the open sessions as tabs above
+  // Devin sessions use native ids. The Editor surface keeps the open sessions as tabs above
   // the transcript (the active one has the active-tab background); the Agent surface uses the sidebar.
   const sessNorm = s => String(s || '').replace(/\s+/g, ' ').trim().slice(0, 60);
   // The tabs live in the chat panel (#chat) even when the open session is empty and has no transcript.
@@ -113,13 +153,8 @@
     const tab = surface === 'editor' ? devinTabEls()[tabs.findIndex(t => t.active)] : null;
     const node = devinLog() || tab || [...doc.querySelectorAll('[role="textbox"][aria-label="Prompt"]')].find(vis)
       || (surface === 'editor' ? doc.querySelector('.editor-group-container.has-pending-new-session-welcome [role="textbox"][aria-label="Prompt"]') : null);
-    let props = [];
-    for (let el = node; el; el = el.parentElement) {
-      props = codexFiberProps(el, 32);
-      if (props.some(p => devinRowSession(p.session) || p.sessionId)) break;
-    }
-    const session = props.find(p => devinRowSession(p.session))?.session;
-    const key = (surface === 'agent' ? active?.id : '') || devinRowSession(session) || props.find(p => p.sessionId)?.sessionId || '';
+    const key = (surface === 'agent' ? active?.id : '') || devinNodeSessionId(node);
+    const session = window.__acpStore?.getState().acp.sessions.find(s => devinRowSession(s) === key);
     const title = (surface === 'editor' ? tabs.find(t => t.active)?.title : active?.title) || '';
     return { key, title, surface, tabs, cwd: (surface === 'agent' ? active?.workspace : '') || session?.cwd || active?.workspace || '' };
   };
@@ -148,6 +183,9 @@
     el.querySelector('button').click();
   };
   const sessionPickerTarget = async id => {
+    const nativeRow = [...doc.querySelectorAll('div[data-kb-navigate="true"][tabindex="0"]')]
+      .find(row => codexFiberProps(row, 12).some(p => devinRowSession(p.session) === id));
+    if (nativeRow) { nativeRow.scrollIntoView({ block: 'nearest' }); return center(nativeRow); }
     const index = (await devinPickerSessions()).findIndex(s => devinRowSession(s) === id);
     if (index < 0) return null;
     const widget = [...document.querySelectorAll('.quick-input-widget')].find(vis);
@@ -266,7 +304,12 @@
   });
   const legacyStopIcon = () => [...document.querySelectorAll('.composer-button-area .codicon-debug-stop, .send-with-mode .codicon-debug-stop')].find(e => vis(e) && !e.closest('.composer-human-message, .human-message-action-slot'));
   // Devin: while a turn runs the submit button reads "Cancel" (empty input) or "Queue" (typed text).
-  const devinSubmitBusy = () => !!devinLog() && [...document.querySelectorAll('button[aria-label]')].some(e => vis(e) && /^(Cancel|Queue)$/.test(e.getAttribute('aria-label')) && !!e.querySelector('svg'));
+  const devinSubmitBusy = () => {
+    if (!devinSurface()) return false;
+    const id = devinSession()?.key;
+    const session = window.__acpStore?.getState().acp.sessions.find(s => devinRowSession(s) === id);
+    return ['active', 'pending', 'canceling'].includes(session?.status);
+  };
   const isBusy = () => !!stopGenerationButton() || !!legacyStopIcon() || devinSubmitBusy() || [...doc.querySelectorAll('button')].some(e => vis(e) && /^(Stop|Stop generating)$/i.test((e.getAttribute('aria-label') || '').trim()))
     || ([...doc.querySelectorAll('button[aria-label="Queue"], button[aria-label="Steer"]')].some(vis) && !!codexThread());
   // Devin's queue (verified live): a bar "N message(s) queued" with a "Clear all" button, then an <ol>

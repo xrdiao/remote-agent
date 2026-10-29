@@ -18,6 +18,7 @@ import {visualCapture, visualWindows, wayland} from './visual/capture.mjs';
 import { rememberSelection, lastSelection, forgetSelection } from '../lib/auth.mjs';
 import { editorRoots } from '../lib/files.mjs';
 import { NativeCdp, nativeWindow, nativeWindowAt, nativeTargets } from './native-windows.mjs';
+import { captureOperation } from './operations.mjs';
 
 export class Session extends AgentContext {
   constructor(client, deviceId) {
@@ -55,8 +56,10 @@ export class Session extends AgentContext {
       this.lastChat = '';
       const source = nativeWindow(cdp);
       if (source) {
-        this.chatUpdatesStop = source.subscribe(() => {
-          if (this.visible && this.mode === 'chat' && this.cdp === cdp) this.pollChat(true).catch(() => {});
+        this.chatUpdatesStop = source.subscribe(error => {
+          if (!this.visible || this.mode !== 'chat' || this.cdp !== cdp) return;
+          if (error) this.emit({ t: 'status', ok: false, msg: error.message });
+          else this.pollChat(true).catch(() => {});
         });
         if (firstScreen) await this.pollChat(true, true);
         else await this.pollChat(true);
@@ -115,6 +118,7 @@ export class Session extends AgentContext {
   }
 
   emit(obj) {
+    if (captureOperation(this, obj)) return;
     if (cdpRead.getStore()?.aborted) return;
     const result = this.navigationResult;
     if (result && (cdpRead.getStore()?.navigationId ?? this.navigationId) === result.id) {
@@ -328,19 +332,19 @@ export class Session extends AgentContext {
     this.keptThink = new Map();
     this.thinkLiveSeen = new Set();
     this.thinkFinal = new Set();
-    const onclose = () => {
+    const onclose = error => {
       if (this.cdp !== cdp && this.editorCdp !== editorCdp) return;
       this.detach();
       this.emit({ t: 'attached', id: win.id, app: win.app, windowId: selection.windowId,
-        closed: true, ready: false, message: this.appMessage('{app} 窗口连接已断开') });
+        closed: true, ready: false, message: error?.message || this.appMessage('{app} 窗口连接已断开') });
     };
     for (const connection of new Set([cdp, editorCdp])) {
       connection.onclose = onclose;
-      await connection.send('Page.enable');
     }
     await this.refreshViewport();
     if (this.app !== 'codex') this.threadId = await this.cdp.evaluate(helpersCall('activeThread()')) || '';
     if (selection.deferred && selection.threadId) this.threadId = selection.threadId;
+    nativeWindow(cdp).setThread(this.threadId);
     this.selectedThread = this.threadId;
     const attached = () => this.emit({
       t: 'attached', id: win.id, title: this.app === 'codex' ? 'Codex' : win.title, app: win.app,
@@ -352,9 +356,14 @@ export class Session extends AgentContext {
       if (!selection.deferred) this.setMode(this.mode).catch(e => this.emit({ t: 'status', ok: false, msg: e.message }));
       return;
     }
+    if (win.app === 'devin' && !selection.deferred
+        && await this.withFocus(() => this.ensureDevinIde(selection.threadId?.replace(/^tab:/, '') || this.threadId))) {
+      if (launchDefault) takeLaunched('devin');
+      return;
+    }
     const restore = !selection.deferred && selection.threadId && selection.threadId !== this.threadId && !launchDefault;
     const recoverInitial = win.app === 'codex' && selection.initial === true && !thread;
-    const startup = !selection.deferred && (launchDefault || recoverInitial);
+    const startup = !selection.deferred && (launchDefault || recoverInitial || win.app === 'devin' && !this.threadId);
     if (restore) this.threadId = this.selectedThread = selection.threadId;
     if (startup || (restore && selection.initial)) attached();
     if (restore) {
@@ -561,9 +570,12 @@ export class Session extends AgentContext {
   }
 
   dispose() {
+    this.disposed = true;
     fusionViewers.delete(this);
-    for (const pending of this.nativeSends?.values() || []) pending.cancel();
-    this.nativeSends?.clear();
+    this.chatUpdatesStop?.();
+    clearInterval(this.chatTimer);
+    clearInterval(this.termTimer);
+    if (this.activeOperations) return;
     this.detach();
   }
 }

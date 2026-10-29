@@ -594,7 +594,7 @@ async function boot() {
     markUploadsDisconnected();
     disconnectPendingSends();
     failFileRead('连接已断开，文件读取已中断，请重试');
-    failFileSave('连接已断开，保存结果未确认，请重试');
+    waitFileSave();
     cancelChatContentRequests();
     interruptSessionBatch();
     cancelCodexAutoRetry();
@@ -751,6 +751,11 @@ async function openComputerSocket(computer, relay) {
   };
   socket.onmessage = event => {
     const m = JSON.parse(event.data);
+    if (m.t === 'operation') {
+      (link.operations ||= new Map()).set(m.id, m);
+      receiveDesktopOperation(link, m);
+      return;
+    }
     if (m.t === 'auth') {
       clearTimeout(timer);
       link.auth = m;
@@ -770,6 +775,7 @@ async function openComputerSocket(computer, relay) {
     if (link.receive) link.receive(event);
     else if (m.t === 'sent') confirmSent(m);
     else if (m.t === 'sendFailed') failPendingSend(m.requestId, m.message, false);
+    if (m.t === 'attached' || m.t === 'chat') for (const result of link.operations?.values() || []) receiveDesktopOperation(link, result);
     if (link.rejected) socket.close();
   };
   socket.onclose = event => {
@@ -780,6 +786,21 @@ async function openComputerSocket(computer, relay) {
     link.retry = setTimeout(() => warmComputerSocket(computer).catch(() => {}), 8000);
   };
   return link;
+}
+function receiveDesktopOperation(link, result) {
+  const pending = desktopRequests.get(result.id);
+  if (!pending) { link.operations.delete(result.id); return; }
+  if (pending.computer !== link.expectedId) return;
+  if (result.kind !== 'send' && (!link.receive || currentComputer()?.id !== pending.computer)) return;
+  for (const event of result.events.slice().sort((a, b) => a.revision - b.revision)) {
+    if (event.revision <= pending.revision) continue;
+    const m = event.message;
+    if (m.t === 'sent') confirmSent(m);
+    else if (m.t === 'sendFailed') failPendingSend(m.requestId, m.message || '发送失败，请重试', !m.cancelled);
+    else if (link.receive && currentComputer()?.id === pending.computer && (m.t !== 'status' || result.sel === viewSel)) link.receive({ data: JSON.stringify(m) });
+    pending.revision = event.revision;
+  }
+  if (result.done) { desktopRequests.delete(result.id); link.operations.delete(result.id); }
 }
 async function warmComputerSocket(computer) {
   if (computer.discovery && new URL(computer.discovery).origin !== location.origin) return;
@@ -838,13 +859,12 @@ async function connect() {
     markUploadsDisconnected();
     disconnectPendingSends();
     failFileRead('连接已断开，文件读取已中断，请重试');
-    failFileSave('连接已断开，保存结果未确认，请重试');
-    qnPending = null;
+    waitFileSave();
     cancelChatContentRequests();
     interruptSessionBatch();
     cancelCodexAutoRetry();
     qnSig = '';
-    renderQuestions(null);
+    $('qnBar').classList.remove('show');
     $('dot').className = '';
     if (!authed) {
       if (rejected) return;
@@ -913,10 +933,12 @@ async function connect() {
     }
     else if (m.t === 'queueDone') receiveQueueDone(m);
     else if (m.t === 'clickDone') {
-      finishCodexAutoRetry(m);
       if (m.sel !== viewSel) return;
       const button = [...$('items').querySelectorAll('button[data-item]')].find(b => b.dataset.item === String(m.item) && b.dataset.actionId === (m.actionId || ''));
       button?.closest('.btns')?.querySelectorAll('button').forEach(b => { b.disabled = false; });
+    }
+    else if (m.t === 'codexRetryState') {
+      if (m.sel === viewSel) status(m.error ? '自动重试结果未确认：' + m.error : `正在自动重试…（${m.count}/${m.limit}）`, !m.error);
     }
     else if (m.t === 'sendFailed') failPendingSend(m.requestId, m.message || '发送失败，请重试', !m.cancelled);
     else if (m.t === 'questionDone') finishQuestion(m);

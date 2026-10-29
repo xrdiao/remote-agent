@@ -283,6 +283,7 @@ export const methods = {
       }
       this.pendingProject = { ...this.pendingProject, root: real, app, windowId: this.windowId, newSession, threadId, title, reopening: newWindow && !!threadId };
       if (await this.checkProjectTrust({}, binding?.trust)) return;
+      if (app === 'devin') await this.ensureDevinIde(threadId.replace(/^tab:/, ''), real);
       if (app === 'codex' && !await this.ensureCodexReady(target, newSession)) return;
       if (this.pendingProject?.trust) return;
       await this.finishProject();
@@ -431,6 +432,7 @@ export const methods = {
     const pending = this.pendingProject;
     if (!pending) return;
     if ((await this.editorCdp.evaluate(helpersCall('workspaceTrustState()'))).required) throw new Error('请先确认项目是否可信');
+    if (this.app === 'devin' && !pending.threadId && !pending.newSession) await this.adapter.openDefaultSession.call(this);
     if (this.app === 'codex' && !pending.threadId && !pending.newSession) {
       const thread = await this.cdp.evaluate(helpersCall('codexThread()')) || '';
       if (this.threadId !== thread) this.clearViewState();
@@ -446,10 +448,10 @@ export const methods = {
       if (this.app === 'cursor' && pending.reopening) {
         let ready = false;
         for (let i = 0; i < 100 && !ready; i++) {
-          ready = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; const id = ${JSON.stringify(pending.threadId)}; return h.activeThread() === id || h.agentList().some(row => row.id === id); })()`);
+          ready = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; h.nativeSessionInfo('cursor', ${JSON.stringify(pending.threadId)}); return !!window.__remoteAgentCursorServices; })()`);
           if (!ready) await new Promise(resolve => setTimeout(resolve, 150));
         }
-        if (!ready) throw new Error('项目已打开，会话列表尚未恢复，请稍后重试');
+        if (!ready) throw new Error('项目已打开，Cursor 原生会话目录尚未就绪');
       }
       const current = await this.cdp.evaluate(helpersCall('activeThread()'));
       if (current !== pending.threadId.replace(/^tab:/, '')) await this.adapter.openAgent.call(this, pending.threadId, pending.title || '');
@@ -495,7 +497,7 @@ export const methods = {
   },
   publishThread(statusMsg) {
     const source = this.cdp?.nativeWindow;
-    if (!this.switchingThread && source && source.snapshot?.chat?.thread !== (this.threadId || '')) source.invalidate();
+    if (!this.switchingThread && source) source.setThread(this.threadId || '');
     if (this.bindingReady && !this.switchingThread) this.selectionHome = false;
     if (this.selectedThread !== undefined) this.selectedThread = this.threadId || '';
     const msg = {
@@ -507,6 +509,7 @@ export const methods = {
     if (statusMsg) this.emit({ t: 'status', ok: true, msg: statusMsg });
   },
   async listAgents(silent = false, readOnly = false, projectWindow = '', checkTrust = false) {
+    if (this.app === 'devin' && !readOnly && !projectWindow) await this.ensureDevinIde();
     if ((!readOnly || checkTrust) && !projectWindow && await this.checkProjectTrust({ prompt: true })) return;
     const cdp = this.cdp, sel = this.sel, app = this.app, selection = this.selectionKey();
     const grouped = app === 'cursor' || app === 'devin';
@@ -514,8 +517,9 @@ export const methods = {
       this.projectAgentWindows ||= new Map();
       this.projectAgentCache ||= new Map();
       if (!readOnly || !this.projectAgentWindows.has(app)) {
-        const windows = (await listWindows(null, app)).filter(w => w.app === app);
-        for (const w of windows) w.project = windowRoots(w.title, app)[0];
+        let windows = (await listWindows(null, app)).filter(w => w.app === app);
+        if (app === 'devin') windows = await this.devinProjectWindows(windows);
+        else for (const w of windows) w.project = windowRoots(w.title, app)[0];
         if (!this.liveRead(cdp, sel)) return;
         this.projectAgentWindows.set(app, windows);
         if (!readOnly) for (const w of windows) if (w.id !== this.targetId) this.projectAgentCache.delete(w.id);
@@ -530,7 +534,10 @@ export const methods = {
         const probe = new Cdp(w.ws);
         try {
           await probe.connect();
-          const data = await probe.evaluate(`(() => {
+          const data = app === 'devin' ? await probe.evaluate(`(async () => {
+            const h = ${PAGE_SRC};
+            return { list: await h.sessionPickerRows(true), surface: h.devinSurface() };
+          })()`) : await probe.evaluate(`(() => {
             const h = ${PAGE_SRC};
             const surface = h.devinSurface();
             const state = surface === 'editor' ? h.agentState() : null;
@@ -604,6 +611,7 @@ export const methods = {
       if (!this.pendingProject?.trust && !this.chatUpdatesStop) await this.setMode(this.mode, true);
       return;
     }
+    if (this.app === 'devin') await this.ensureDevinIde(sessionId('devin', id));
     const openHere = async (root, host, thread) => {
       if (!root || !this.projectMatches(await editorRoots(this.editorCdp, this.app), root, host)) return false;
       if (this.app === 'codex') {
@@ -621,7 +629,9 @@ export const methods = {
       if (!window.startsWith(this.app + ':')) throw new Error('项目不属于当前 Agent');
       const source = this.projectAgentWindows?.get(this.app)?.find(w => w.id === window)
         || (await listWindows(null, this.app)).find(w => w.id === window);
-      const row = this.projectAgentCache?.get(window)?.list.find(r => r.id === decodeURIComponent(encodedThread || ''));
+      const row = this.app === 'devin' && kind === 'project'
+        ? await this.cdp.evaluate(`(async () => { const h = ${PAGE_SRC}; return (await h.sessionPickerRows(true)).find(r => r.id === ${JSON.stringify(sessionId('devin', id))}) || null; })()`)
+        : this.projectAgentCache?.get(window)?.list.find(r => r.id === decodeURIComponent(encodedThread || ''));
       const root = kind === 'project-new' && encodedThread ? decodeURIComponent(encodedThread) : row?.workspace || source?.project?.root || windowRoots(source?.title || '', this.app)[0]?.root;
       if (kind === 'project' && await openHere(root, row?.host || source?.project?.host || '', decodeURIComponent(encodedThread))) return;
       if (root && !row?.host && !source?.project?.host) await this.useProject(root, kind === 'project-new', kind === 'project' ? decodeURIComponent(encodedThread) : '', title, window);
@@ -652,7 +662,8 @@ export const methods = {
       return;
     }
     if (this.app === 'cursor' || this.app === 'devin') {
-      const row = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return h.agentList().find(r => r.id === ${JSON.stringify(id.replace(/^tab:/, ''))}) || null; })()`);
+      const row = this.app === 'devin' ? await this.cdp.evaluate(`(async () => { const h = ${PAGE_SRC}; return (await h.sessionPickerRows(true)).find(r => r.id === ${JSON.stringify(id.replace(/^tab:/, ''))}) || null; })()`)
+        : await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return h.agentList().find(r => r.id === ${JSON.stringify(id.replace(/^tab:/, ''))}) || null; })()`);
       const root = row?.workspace || (await this.currentRoots())[0]?.root;
       if (await openHere(root, row?.host || '', id)) return;
       if (root && !row?.host) return this.useProject(root, false, id, title, stored?.ownerWindow || '');
