@@ -134,12 +134,14 @@ function connHide() {
   conn.active = false;
   $('conn').classList.remove('open');
 }
-function connShow(phase) {
+function newComputerConnection(phase) {
+  return { active: true, initialSelection: true, host: false, phase, agents: null, catalogReady: false, autoLaunched: false, loaded: false, attachFailed: false, enterRequested: false, failure: null, conclusion: '', checks: [], diagRunning: false, probeComplete: false, failedTargets: new Map(), open: new Set(), timer: 0 };
+}
+function connShow(phase, connection = newComputerConnection(phase)) {
   clearTimeout(conn.timer);
   compatibilityRequests.clear();
   compatibilityReports.clear();
-  Object.assign(conn, { active: true, initialSelection: true, host: false, phase, agents: null, catalogReady: false, autoLaunched: false, loaded: false, attachFailed: false, enterRequested: false, failure: null, conclusion: '', checks: [], diagRunning: false, probeComplete: false, failedTargets: new Map() });
-  conn.open.clear();
+  Object.assign(conn, connection);
   $('conn').classList.add('open');
   connRender();
 }
