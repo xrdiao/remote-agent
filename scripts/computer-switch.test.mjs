@@ -116,6 +116,7 @@ function harness({ sameSelection = false, count = 2 } = {}) {
     'mentionHide', 'autosize', 'rememberAgentOpen', 'requestCompatibility', 'scheduleLatency',
     'renderContext', 'renderQuota', 'renderQuestions', 'connWindows', 'paintRail', 'checkAppUpdate',
   ]) context[name] = () => {};
+  context.conversationVisible = () => true;
   run(gate.slice(gate.indexOf('function newComputerConnection('), gate.indexOf('function connHostOk(')));
   run(gate.slice(gate.indexOf('function connReadFailed('), gate.indexOf('function connRetryCurrent(')));
   run(net);

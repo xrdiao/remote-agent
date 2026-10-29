@@ -115,6 +115,25 @@
   // Cheap per-window check for notifications: is the Agent running, and is it waiting on a button?
   // "Run in background" shows up on any command running longer than ~5 s; it is not a request for approval.
   const WAIT = /^(?!.*(background|后台))(run|allow|accept|approve|continue|yes\b|运行|允许|接受|批准|继续)/i;
+  // Per-file totals of the current session's changes (null when none or unreadable). Codex walks turn data, so it is read only when idle.
+  const agentChanges = (busy, buttons) => {
+    const num = v => { const m = /^[+\u2212-]\s?(\d+)$/.exec(String(v || '').trim()); return m ? Number(m[1]) : null; };
+    const total = values => values.some(v => v != null) ? values.reduce((sum, v) => sum + (v || 0), 0) : null;
+    const pack = (count, add, del) => count || add != null || del != null ? { count, add, del } : null;
+    if (codexThread()) {
+      if (busy) return null;
+      const files = codexChanges().files;
+      return pack(files.length, total(files.map(f => num(f.add))), total(files.map(f => num(f.del))));
+    }
+    if (devinLog()) {
+      const rows = changedFiles();
+      if (rows.length) return pack(rows.length, total(rows.map(r => num(r.add))), total(rows.map(r => num(r.del))));
+      const m = /\+\s?(\d+)\s*[-\u2212]\s?(\d+)/.exec(stripBidi(devinBarLeft()?.parentElement?.innerText || ''));
+      return pack(changedCount(), m ? Number(m[1]) : null, m ? Number(m[2]) : null);
+    }
+    const bar = buttons.map(b => (b.innerText || '').split('\n').map(x => x.trim()).filter(Boolean)).find(l => l.length === 3 && l[0] === 'Changes' && num(l[1]) != null && num(l[2]) != null);
+    return bar ? pack(null, num(bar[1]), num(bar[2])) : null;
+  };
   const agentState = () => {
     const buttons = [...doc.querySelectorAll('button')].filter(vis);
     const back = buttons.findIndex(b => (b.getAttribute('aria-label') || '') === 'Back');
@@ -148,6 +167,7 @@
       // Devin: single-choice options can be answered from the notification (Android shows three buttons).
       if (devin && !qs.list[0].multi) actions = qs.list[0].options.slice(0, 3).map((o, i) => ({ id: `opt:${i}`, label: o.label.slice(0, 40) }));
     }
+    const changes = agentChanges(busy, buttons);
     const humanIndex = items.findLastIndex(el => el.matches('[data-message-kind="human"], [role=group][aria-label="User message"]') || el.querySelector('.composer-human-message, [data-message-kind="human"]'));
     const recentItems = items.slice(humanIndex + 1);
     let runId = '', runAt = null, runIndex = null;
@@ -186,7 +206,7 @@
         if (Number.isFinite(at)) runAt = at;
       }
     }
-    return { busy, waiting, waitingText, last, thread, agentId: active?.id || '', title, progress, roots, ...(runId ? { runId } : {}), ...(runAt != null ? { runAt } : {}), ...(runIndex != null ? { runIndex } : {}), ...(actions ? { actions } : {}), ...(devin ? { devin: true, changed: changedCount(), tasks: devinTaskState() } : {}) };
+    return { busy, waiting, waitingText, last, thread, agentId: active?.id || '', title, progress, roots, ...(runId ? { runId } : {}), ...(runAt != null ? { runAt } : {}), ...(runIndex != null ? { runIndex } : {}), ...(actions ? { actions } : {}), ...(devin ? { devin: true, changed: changedCount(), tasks: devinTaskState(), ...(fileBarButtons().some(x => x.label === 'Accept all') ? { acceptAll: true } : {}) } : {}), ...(changes ? { changes } : {}) };
   };
 
   // Cursor Agents window: the left sidebar lists conversations as row:<agent id>.
@@ -214,6 +234,7 @@
   };
   const agentList = () => {
     const names = new Map((cursorSessionServices()?.data.allComposersData.allComposers || []).map(c => [c.composerId, c.name]));
+    const lastUsed = new Map((cursorSessionServices()?.data.allComposersData.allComposers || []).map(c => [c.composerId, c.lastUpdatedAt || c.createdAt || 0]));
     const active = [...doc.querySelectorAll('[data-glass-agent-id]')].find(vis)?.getAttribute('data-glass-agent-id') || '';
     const recentProjects = cursorProjectPicker()?.recentProjects || [];
     const cursor = [...doc.querySelectorAll('[data-sidebar-item-key^="row:"]')].map(row => {
@@ -235,6 +256,7 @@
         host: workspace?.host || '',
         current: id === active || !!row.querySelector('[data-active="true"]'),
         running: !!row.querySelector('.ui-dot-grid-loader'),
+        lastUsed: lastUsed.get(id) || 0,
       };
     }).filter(a => a.id && a.title);
     if (cursor.length) return cursor;
@@ -245,11 +267,11 @@
     if (tabs.length || loaded.length) return [...new Map([
       ...loaded.map(c => [c.id, { id: c.id, title: c.title || '新会话', current: c.state === 'focused', running: c.state === 'generating', workspace: '', host: '', group: '' }]),
       ...tabs.map(t => [t.dataset.resourceName, { id: t.dataset.resourceName, title: t.querySelector('.label-name')?.textContent || '新会话', current: focused ? t.dataset.resourceName === focused : t.classList.contains('active'), workspace: '', host: '', group: '' }]),
-    ]).values()].filter(row => !archived.has(row.id)).map(row => ({ ...row, title: names.get(row.id) || row.title, titleNative: names.has(row.id), titleAt: Date.now() }));
+    ]).values()].filter(row => !archived.has(row.id)).map(row => ({ ...row, lastUsed: lastUsed.get(row.id) || 0, title: names.get(row.id) || row.title, titleNative: names.has(row.id), titleAt: Date.now() }));
     if (devinSurface() === 'editor') {
       const selected = devinTabs().find(tab => tab.active)?.id;
       return (window.__acpStore?.getState().acp.sessions || []).filter(session => !session._meta?.['cognition.ai/isArchived'])
-        .map(session => ({ ...devinCatalogRow(session), current: session.sessionId === selected }));
+        .map(session => ({ ...devinCatalogRow(session), current: session.sessionId === selected, lastUsed: Date.parse(session.updatedAt || '') || 0 }));
     }
     // Read the native session id; titles can repeat or change.
     const lis = [...doc.querySelectorAll('li[data-slot="sidebar-menu-item"]')].map(li => {
@@ -360,10 +382,13 @@
     let generation = null;
     try { generation = state && typeof cursorBubbleTimes === 'function' ? cursorBubbleTimes()?.generation : null; } catch {}
     const current = generation ? { ...state, generation } : state;
-    if (codexThread()) return current ? [current] : [];
+    if (codexThread()) {
+      const meta = codexQueryClient()?.getQueryData(['recent-conversations-meta', 'updated_at', '[]', 'live'])?.find(t => t.conversationId === codexThread());
+      return current ? [{ ...current, lastUsed: meta?.updatedAt || 0 }] : [];
+    }
     const agents = agentList();
-    return agents.length ? agents.map(a => a.current && current ? current : {
-      thread: a.id, agentId: a.id, title: a.title, busy: a.running, waiting: null, last: a.last || '',
+    return agents.length ? agents.map(a => a.current && current ? { ...current, lastUsed: a.lastUsed || 0 } : {
+      thread: a.id, agentId: a.id, title: a.title, busy: a.running, waiting: null, last: a.last || '', lastUsed: a.lastUsed || 0,
     }) : current ? [current] : [];
   };
 
