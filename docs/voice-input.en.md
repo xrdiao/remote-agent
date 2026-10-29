@@ -2,7 +2,7 @@
 
 [README](../README.en.md) · [中文](voice-input.md)
 
-Use an HTTPS entry. Open **… → Voice input**, enable it and select an engine. Hold the microphone to speak and release to finish. Partial text appears while speaking; final text is inserted at the caret without sending the message. Chinese and English can be mixed when using the local models.
+Use an HTTPS entry. Click the voice input icon at the top right of the **…** menu, enable it and select an engine. Hold the microphone to speak and release to finish. Partial text appears while speaking; final text is inserted at the caret without sending the message. Chinese and English can be mixed when using the local models.
 
 | Engine | Runs on | Requirements |
 |---|---|---|

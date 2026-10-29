@@ -6,7 +6,7 @@
 
 Switch Cursor, Devin, Codex or Fusion from the header. **Projects / sessions** in the composer groups conversations by project and provides folder selection, project creation and new sessions. Switching projects preserves existing windows and native conversation working directories. Codex reuses an already-open window for that project, or opens one when needed. New windows may require desktop sign-in or workspace trust confirmation.
 
-Models, reasoning effort and other parameters come from each Agent's native menus. Usage shows remaining quota; context shows the used proportion. Native pricing is shown only where available, without estimating a task's total cost. Queue, append and parameter support vary by Agent.
+Models, reasoning effort and other parameters come from each Agent's native menus. Usage shows remaining quota; context shows whichever proportion the Agent reports (remaining or used). Native pricing is shown only where available, without estimating a task's total cost. Queue, append and parameter support vary by Agent.
 
 Enter sends; Shift+Enter or the on-screen ↵ inserts a newline. On-screen ↑↓ recalls input history. Physical keyboards use Alt/Option＋↑↓; plain arrows remain available for caret movement and IME. Queued messages can be edited.
 
@@ -28,7 +28,7 @@ Open the terminal from the header to view output. Its toolbar selects or creates
 
 ## File transfer
 
-Open **… → File transfer** to browse directories accessible to the computer's OS user, beyond the current project.
+Click the file transfer icon at the top right of the **…** menu to browse directories accessible to the computer's OS user, beyond the current project.
 
 - **Download to phone**: select across directories, select the current page or clear selection. A single file downloads directly; multiple files and folders use streaming ZIP archives, preserving subdirectories and empty directories without following internal symlinks. The browser controls destination, download progress and cancellation.
 - **Upload to computer**: choose a computer destination, add phone files or folders, then upload the batch. Includes progress, cancellation, failed-item retry and rename/skip/overwrite choices. Subdirectories are created automatically. Folder selection depends on the phone browser; empty directories omitted by the browser cannot be preserved.

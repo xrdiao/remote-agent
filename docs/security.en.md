@@ -35,4 +35,4 @@ The tool can operate real terminals, projects and files accessible to the curren
 
 ## Public screenshots
 
-README uses only redacted images under `docs/screenshots/redacted/`. Originals and test backups remain in the Git-ignored `_shots/readme-20261022/`; do not commit them or publish that directory.
+README uses only redacted images under `docs/screenshots/redacted/`. Originals and test backups remain in the Git-ignored `_shots/` directory; do not commit them or publish that directory.
