@@ -35,11 +35,12 @@
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>Remote Agent</title>
-<link rel="stylesheet" href="app.css?v=312">
+<link rel="stylesheet" href="app.css?v=314">
 </head>
 <body>
 <nav id="rail" aria-label="导航"></nav>
 <header>
+  <button id="ovBack"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
   <button id="title"><span class="appAvatar"><span id="dot"></span></span><span class="titleLabels"><span class="titleRow"><span id="titleText">连接中…</span><span id="titlePlan" hidden></span></span><span id="titleProject"></span></span><span id="titleLatency"></span><svg class="arrowIcon titleArrow" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
     <div id="meters">
       <button class="meter" id="meterCtx" type="button"><span class="track"><i id="meterCtxFill"></i></span><span class="meterText"><span class="meterLabel">上下文</span><b id="meterCtxPct">未获取</b></span></button>
@@ -163,6 +164,22 @@
 <input id="docFile" type="file" accept=".pdf,.doc,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.py,.js,.ts,.tsx,.jsx,.sh,.yaml,.yml,.toml,.ini,.log,.xml,.html,.css,.c,.cpp,.h,.rs,.go" hidden>
 </footer>
 
+<div id="overview">
+  <div class="ov-top">
+    <button class="ov-ibtn ov-hide" id="ovUp" data-ov="up"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
+    <div class="ov-crumbs" id="ovCrumbs"></div>
+    <button class="ov-ibtn" id="ovMenu" data-ov="menu"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/></svg></button>
+  </div>
+  <div class="ov-body">
+    <div class="ov-levels" id="ovLevels"></div>
+    <div class="ov-main">
+      <div class="ov-sum" id="ovSummary"></div>
+      <div class="ov-lane" id="ovLane" hidden></div>
+      <div class="ov-board" id="ovBoard"></div>
+    </div>
+  </div>
+  <div class="ov-toasts" id="ovToasts"></div>
+</div>
 <div id="shade"></div>
 <div id="sheet"></div>
 
@@ -234,14 +251,15 @@
   <input id="scannerFile" type="file" accept="image/*" hidden>
 </div>
 
-<script src="i18n.js?v=279"></script>
-<script src="js/core.js?v=312"></script>
+<script src="i18n.js?v=313"></script>
+<script src="js/core.js?v=316"></script>
 <script src="js/gate.js?v=309"></script>
 <script src="js/scanner.js"></script>
 <script src="js/auth.js?v=207"></script>
-<script src="js/net.js?v=309"></script>
-<script src="js/sheets.js?v=311"></script>
-<script src="js/notify.js?v=309"></script>
+<script src="js/net.js?v=313"></script>
+<script src="js/sheets.js?v=313"></script>
+<script src="js/notify.js?v=313"></script>
+<script src="js/overview.js?v=316"></script>
 <script src="js/mode.js?v=257"></script>
 <script src="markdown-it/markdown-it-15.0.3.min.js"></script>
 <script src="js/markdown.js?v=295"></script>

@@ -33,6 +33,9 @@
 
 适度检查，不要过度。只查修改及受影响的功能；已通过且未受后续改动影响的检查不重复执行。修改完成后必须跑 `npm run check`（语法、消息协议、注入脚本导出快照）；改协议或 page helpers 时，修改前也必须先跑。
 
+- 电脑切换回归：`node --test scripts/computer-switch.test.mjs`（vm 载入 net.js 等片段，新增跨文件全局函数时需在其 harness 里补桩）。
+- 隔离验证中继：`USERPROFILE=<临时目录> PORT=3940 node server/index.mjs`（数据目录随 `os.homedir()` 隔离，不动真实配对）；会只读连接本机 Agent，打开会话只选桌面当前激活的会话，避免切换桌面界面。
+
 ## 验证
 
 大改后，由用户按实际受影响范围在手机上逐项验收：

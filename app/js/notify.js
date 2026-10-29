@@ -169,6 +169,7 @@ function rememberNotice(raw) {
   const next = { ...here, win: n.win, windowId: n.windowId, threadId: n.threadId };
   saveComputers(list.map(c => c.key === here.key ? next : c), current?.key);
   if (here.key === current?.key) store.set('window', n.win);
+  ovConversationOpened();
   return next;
 }
 function openWin(id) {
@@ -198,7 +199,7 @@ navigator.serviceWorker?.addEventListener('message', e => {
 });
 document.addEventListener('visibilitychange', () => {
   if (authed) {
-    send({ t: 'visible', v: document.visibilityState === 'visible' });
+    send({ t: 'visible', v: conversationVisible() });
     if (document.visibilityState === 'visible') send({ t: 'usage', automatic: true });
   }
 });
