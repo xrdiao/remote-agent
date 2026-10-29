@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="script-src 'self' 'wasm-unsafe-eval' 'sha256-Ehrnjp6xyijpp3vwkeAMBv4EmxnaflNJe1U4oZYrFxg='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; frame-src blob:">
+<meta http-equiv="Content-Security-Policy" content="script-src 'self' 'wasm-unsafe-eval' 'sha256-uDXlgGuHcVRVXHUxmrLs17yN1pNO/yqlP9Nszl5BYdw='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; frame-src blob:">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -12,6 +12,7 @@
 <script>
 // Apply the saved theme before first paint so there is no flash. Store key 'cr-theme': dark (default) | light | auto.
 (() => {
+  if (navigator.standalone === true) document.documentElement.dataset.standalone = '';
   let t = localStorage.getItem('cr-theme') || 'dark';
   const mq = matchMedia('(prefers-color-scheme: light)');
   const meta = document.querySelector('meta[name="theme-color"]');
@@ -34,7 +35,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>Remote Agent</title>
-<link rel="stylesheet" href="app.css?v=311">
+<link rel="stylesheet" href="app.css?v=312">
 </head>
 <body>
 <nav id="rail" aria-label="导航"></nav>
@@ -234,7 +235,7 @@
 </div>
 
 <script src="i18n.js?v=279"></script>
-<script src="js/core.js?v=311"></script>
+<script src="js/core.js?v=312"></script>
 <script src="js/gate.js?v=309"></script>
 <script src="js/scanner.js"></script>
 <script src="js/auth.js?v=207"></script>
