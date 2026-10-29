@@ -43,6 +43,7 @@ export const adapter = {
     let focusedCdp;
     this.switchingThread = true;
     try {
+      await this.ensureDevinIde(id.replace(/^tab:/, ''));
       if (id.startsWith('tab:')) {
         const key = id.slice(4);
         const tabs = await this.cdp.evaluate(helpersCall('devinSession()'));
@@ -70,13 +71,9 @@ export const adapter = {
           await focusedCdp.send('Emulation.setFocusEmulationEnabled', { enabled: true });
         }
         if (!await this.cdp.evaluate(helpersCall('hasComposer()'))) await this.openEditorChat();
-        const opened = await this.openSessionPicker();
-        const pos = opened && await this.cdp.evaluate(helpersCall(`sessionPickerTarget(${JSON.stringify(id)}, ${JSON.stringify(title)})`));
-        if (!pos) {
-          if (opened) await this.key('Escape');
-          throw new Error('这条 Agent 已经不在列表里');
-        }
-        await this.tapCss(pos.x, pos.y);
+        await this.openSessionPicker(id);
+        if (!await this.cdp.evaluate(helpersCall(`sessionPickerTarget(${JSON.stringify(id)}, true)`)))
+          throw new Error('Devin 会话打开入口已变化，请重新选择');
         confirmed = await this.confirmDevinThread(id);
         if (!confirmed) throw new Error('会话切换没有生效');
         return;
@@ -608,17 +605,20 @@ async setSurface(to, target) {
 },
 
 
-// Devin's Editor surface has no session list in the panel; the titlebar "Search agents" quick pick
-// lists every session by name. It is opened, read, and closed again with Escape.
-async openSessionPicker() {
-  const pos = await this.waitFor('sessionSearchTarget()');
-  if (!pos) throw new Error('没找到会话搜索按钮（可能 Devin 版本不同）');
+// The IDE history is filtered by its native workspace/search state. Wait for the requested entry.
+async openSessionPicker(id) {
+  const pos = await this.waitFor('sessionSearchTarget()', 250);
+  if (!pos) throw new Error('Devin 会话历史入口尚未就绪');
   if (!pos.open) await this.tapCss(pos.x, pos.y);
   for (let i = 0; i < 20; i++) {
-    if (await this.cdp.evaluate(`(async () => { const h = ${PAGE_SRC}; return (await h.sessionPickerRows())?.length; })()`)) return true;
+    if (await this.cdp.evaluate(helpersCall(`sessionPickerTarget(${JSON.stringify(id)})`))) return true;
     await new Promise(r => setTimeout(r, 100));
   }
-  return false;
+  if (!pos.open) await this.key('Escape');
+  const rows = await this.cdp.evaluate(helpersCall('sessionPickerRows(true)'));
+  throw new Error(rows.some(row => row.id === id)
+    ? 'Devin 当前项目的会话历史尚未就绪，请重试'
+    : '原生目录中没有所选 Devin 会话，请刷新项目/会话列表');
 },
 
 async editorSessions() {
@@ -708,7 +708,7 @@ async openEditorChat() {
     await this.editorCdp.evaluate(`(() => {
     const button = document.querySelector('[role="button"][aria-label^="Agents ("]');
     if (!button) throw new Error('Devin IDE 聊天面板入口尚未就绪');
-    button.click();
+    if (button.getAttribute('aria-pressed') === 'false') button.click();
     })()`);
   }
   if (!await this.waitFor('transcriptVisible()', 250)) throw new Error('聊天面板没有打开');
