@@ -45,9 +45,14 @@ export const adapter = {
     let confirmed = false;
     this.switchingThread = true;
     try {
-      const pos = await this.cdp.evaluate(helpersCall(`agentTarget(${JSON.stringify(id)}, true)`));
-      if (!pos) throw new Error('这条 Agent 已经不在列表里');
-      if (pos !== true) await this.tapCss(pos.x, pos.y);
+      await this.cdp.evaluate(`(async () => {
+        const h = ${PAGE_SRC}, id = ${JSON.stringify(id)};
+        const info = h.nativeSessionInfo('cursor', id);
+        if (!window.__remoteAgentCursorServices) throw new Error('Cursor 原生会话目录尚未就绪');
+        if (!info) throw new Error('Cursor 原生目录中没有这个会话');
+        if (info.archived) throw new Error('这个 Cursor 会话已归档');
+        if (h.activeThread() !== id) await window.__remoteAgentCursorServices.composer.openComposer(id);
+      })()`);
       for (let i = 0; i <= 12; i++) {
         if (await this.cdp.evaluate(helpersCall(`cursorChatReady(${JSON.stringify(id)})`))) {
           if (this.threadId !== id) this.clearViewState();

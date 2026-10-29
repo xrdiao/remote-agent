@@ -163,7 +163,7 @@ export const methods = {
       if (immediate) this.pollAgain = sel;
       return;
     }
-    if (!cdp || !this.visible || this.pendingProject?.trust || this.switchingThread || this.historyLoading || (this.fusionHold?.app === this.app && this.fusionHold?.windowId === this.windowId)) {
+    if (!cdp || !this.visible && !firstScreen || this.pendingProject?.trust || this.switchingThread || this.historyLoading || (this.fusionHold?.app === this.app && this.fusionHold?.windowId === this.windowId)) {
       if (firstScreen) throw new Error('当前会话尚未就绪，请重试');
       return;
     }
@@ -483,6 +483,7 @@ export const methods = {
   async stopButton(message) {
     const cdp = this.cdp, scope = this.selectionKey();
     if (message.sel && message.sel !== scope) return;
+    await nativeWindow(cdp)?.stopRetry();
     await this.assertSelectedThread();
     if (cdp !== this.cdp || scope !== this.selectionKey()) return;
     const clicked = await cdp.evaluate(helpersCall('stopTarget(true)'));

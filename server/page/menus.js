@@ -35,7 +35,12 @@
     });
     return cand.find(e => e.getAttribute('aria-haspopup') === 'menu') || cand[0] || devinModelButton(!readOnly);
   };
-  const DEVIN_MODEL = /^(SWE|GPT|Claude|Gemini|GLM|Kimi|Fusion)\b/;
+  const DEVIN_MODEL = /^(SWE|GPT|Claude|Gemini|GLM|Kimi|Fusion|Ultra|Normal|Lite|Fast)\b/;
+  const devinCloudPickerProps = () => devinSurface() && codexFiberProps(devinModelButton(false), 40)
+    .find(p => p.menu?.enabledModes && typeof p.onCapabilityChange === 'function');
+  const devinCloudModels = p => [...p.menu.enabledModes].filter(id => id !== 'fast' && !p.menu.planLockedModes.has(id))
+    .map(id => ({ id, label: id.startsWith('swe-2-') ? id.replace('swe-2-', 'SWE-2 ').split('-').join(' ').replace(/\b(medium|high|max|lightning)\b/g, word => word[0].toUpperCase() + word.slice(1)) : id[0].toUpperCase() + id.slice(1),
+      checked: p.menu.selection.kind === 'mode' && p.menu.selection.mode === id }));
   const devinModelButton = (reveal = true) => {
     if (reveal) revealDevinComposer();
     return [...doc.querySelectorAll('button')].find(e => {
@@ -61,6 +66,8 @@
   const normKey = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
   // Prop-based model list: no visible menu is opened. Returns null when only the DOM path can answer.
   const agentModelName = () => {
+    const cloud = devinCloudPickerProps();
+    if (cloud) return devinCloudModels(cloud).find(row => row.checked)?.label || null;
     const codex = codexModelName();
     if (codex) return codex;
     const cp = devinSurface() ? null : cursorPickerProps();
@@ -80,6 +87,8 @@
       return items.length ? items : null;
     }
     if (devinSurface()) {
+      const cloud = devinCloudPickerProps();
+      if (cloud) return devinCloudModels(cloud);
       const p = devinPickerProps();
       if (!p) return null;
       const fusion = !!fusionConfig();
@@ -100,6 +109,13 @@
     return null;
   };
   const pickDevinModel = label => {
+    const cloud = devinCloudPickerProps();
+    if (cloud) {
+      const row = devinCloudModels(cloud).find(row => row.label === label);
+      if (!row) return false;
+      cloud.onCapabilityChange(row.id);
+      return true;
+    }
     const p = devinPickerProps();
     if (!p || normKey(label) === 'fusion') return false;
     const want = normKey(label);
@@ -148,11 +164,11 @@
     return devinConfigs(p).filter(c => !c.disabled && c.familyUid === current.familyUid && c.familyMetadata?.[key] && Object.entries(current.familyMetadata || {}).every(([k, v]) => k === key || (c.familyMetadata?.[k]?.name === v.name && c.familyMetadata?.[k]?.order === v.order))).map(c => ({ config: c, label: c.familyMetadata[key].name, checked: c.modelUid === current.modelUid, order: c.familyMetadata[key].order, ...(includePricing ? { pricing: devinPricing(c) } : {}) }));
   };
   const effortItems = (includePricing = false, includeHidden = false) => {
-    const codex = includeHidden && codexPickerProps();
+    const codex = codexPickerProps();
     if (codex) {
       const visible = codex.modelOptions.find(o => o.model.id === codex.model)?.model.supportedReasoningEfforts || [];
       const host = codexCurrentProject().host || 'local';
-      const models = codexQueryClient()?.getQueryCache().getAll().find(q => q.queryKey[0] === 'models' && q.queryKey[2] === host)?.state.data?.data || [];
+      const models = includeHidden ? codexQueryClient()?.getQueryCache().getAll().find(q => q.queryKey[0] === 'models' && q.queryKey[2] === host)?.state.data?.data || [] : [];
       const supported = models.find(m => m.id === codex.model)?.supportedReasoningEfforts || [];
       const choices = [...visible];
       if (supported.some(x => x.reasoningEffort === 'max') && !choices.some(x => x.reasoningEffort === 'max')) choices.push({ reasoningEffort: 'max' });

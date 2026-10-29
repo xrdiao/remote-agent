@@ -160,20 +160,17 @@
     const props = editor && codexFiberProps(editor, Infinity).find(p => typeof p.handleSubmit === 'function' && 'isQueueingEnabled' in p);
     if (!props || props.submitDisabled || props.isInteractionBlocked || props.interactionsEnabled === false) return false;
     if (dispatch) {
-      const before = codexSendState(true);
-      if (before.payload == null) return false;
+      if (codexPromptPayload() == null) return false;
       const labels = follow === 'queue' ? ['Queue'] : follow === 'steer' ? ['Steer'] : ['Send', 'Queue', 'Steer'];
-      let root = editor;
-      const find = () => [...root.querySelectorAll('button')].find(button => vis(button)
+      const root = editor.closest('[data-composer-body]');
+      const button = [...root.querySelectorAll('button')].find(button => vis(button)
         && labels.includes(button.getAttribute('aria-label')) && !button.disabled && button.getAttribute('aria-disabled') !== 'true');
-      let button;
-      while (root && !(button = find())) root = root.parentElement;
       if (button) button.click();
       else Promise.resolve(props.handleSubmit(follow ? { followUpSubmitAction: follow } : undefined)).catch(error => {
         (window.__remoteAgentSubmitErrors ||= []).push({ requestId, message: String(error?.message || error) });
         doc.defaultView.dispatchEvent(new doc.defaultView.Event('remote-agent-submit-error'));
       });
-      return before;
+      return true;
     }
     await props.handleSubmit(follow ? { followUpSubmitAction: follow } : undefined);
     return true;
@@ -201,11 +198,20 @@
     return null;
   };
   const codexConversationManager = (thread, scopes) => {
-    let manager = null;
+    const managers = doc.defaultView.__remoteAgentCodexManagers ||= new WeakMap();
+    for (const scope of scopes) {
+      const manager = managers.get(scope);
+      if (manager && !manager.disposed && manager.getConversation(thread)) return manager;
+    }
+    let manager = null, owner;
     for (const scope of scopes) for (const bindings of scope.familyBindings.values()) for (const binding of bindings.values()) {
       const value = codexHistoryBinding(scope, binding)?.get();
-      if (typeof value?.loadOlderConversationTurnsPage === 'function' && value.getConversation(thread)) manager = value;
+      if (typeof value?.loadOlderConversationTurnsPage === 'function' && !value.disposed && value.getConversation(thread)) {
+        manager = value;
+        owner = scope;
+      }
     }
+    if (manager) managers.set(owner, manager);
     return manager;
   };
   const codexHistoryState = (conversation = null, watchItems = true, scopes = codexHistoryScopes(), thread = codexThread()) => {
@@ -268,11 +274,7 @@
   const chatRevision = () => doc.defaultView.__remoteAgentChatRevision || 0;
   const watchCodexData = changed => {
     const subscribed = new Map();
-    let stopped = false, pending = false;
-    const update = () => {
-      changed();
-      if (!pending) { pending = true; queueMicrotask(() => { pending = false; if (!stopped) refresh(); }); }
-    };
+    const update = () => changed();
     const refresh = () => {
       const state = codexHistoryState(), wanted = new Map();
       for (const [key, source] of state.atoms) wanted.set(key, () => source.subscribe(update));
@@ -287,7 +289,7 @@
       for (const [source, start] of wanted) if (!subscribed.has(source)) subscribed.set(source, start());
     };
     refresh();
-    return { refresh, stop() { stopped = true; for (const stop of subscribed.values()) stop(); subscribed.clear(); } };
+    return { refresh, stop() { for (const stop of subscribed.values()) stop(); subscribed.clear(); } };
   };
   const codexUserText = content => {
     const text = content.filter(c => c.type === 'text').map(c => c.text).join('\n');
@@ -603,11 +605,11 @@
 
   const devinLog = () => {
     const selected = devinSurface() === 'agent' ? agentList().find(a => a.current)?.id : devinTabs().find(t => t.active)?.id;
-    const log = [...doc.querySelectorAll('[role="log"][aria-label="Session transcript"]')].find(e => vis(e) && (!selected || codexFiberProps(e, 24).some(p => p.sessionId === selected || devinRowSession(p.session) === selected)));
+    const log = [...doc.querySelectorAll('[role="log"][aria-label="Session transcript"]')].find(e => vis(e) && (!selected || devinNodeSessionId(e) === selected));
     if (log) return log;
     const current = selected || window.__acpStore?.getState()?.acp?.focusedSessionId;
-    return [...doc.querySelectorAll('[data-chat-history-variant]')].find(e => vis(e) && current
-      && codexFiberProps(e.querySelector('[data-transcript-row-key]') || e, 40).find(p => typeof p.sessionId === 'string')?.sessionId === current);
+    return [...doc.querySelectorAll('[data-chat-history-variant]')].find(e => vis(e)
+      && (!current || devinNodeSessionId(e.querySelector('[data-transcript-row-key]') || e) === current));
   };
 
   // Event-group tool rows: "Searched<query>", "Explored<file> and searched <q>", "Read<file> #L…".
@@ -722,6 +724,18 @@
     const at = Date.parse(meta['cognition.ai/timestamp'] || codexFiberProps(msg, 12).find(p => p.item?.timestamp)?.item.timestamp || '');
     return Number.isFinite(at) ? at : null;
   };
+  const devinNativeItems = (item, i) => {
+    if (item.event_type === 'collapsed_work') return item.children.flatMap(child => devinNativeItems(child, `${i}:${child.id}`) || []);
+    if (item.event_type === 'devin_thoughts') return [{ i: `${i}:think`, k: 'thinking', t: `Thoughts\n${item.message || ''}` }];
+    if (item.event_type === 'shell_command') return [{ i, k: 'tool', kind: 'command', t: item.command,
+      cmd: item.command, output: (item.output || '').slice(0, 4000), execution: true,
+      ...(item.state === 'running' ? { live: true } : {}), ...(item.state === 'error' ? { keep: true } : {}) }];
+    if (item.event_type === 'acp_generic_tool_call') return [{ i, k: 'tool', kind: 'other',
+      t: item.state === 'running' ? item.running_title || item.title : item.title || item.tool_name,
+      cmd: item.hide_arguments ? '' : item.arguments_json || '', execution: true,
+      ...(item.state === 'running' ? { live: true } : {}), ...(item.state === 'error' ? { keep: true } : {}) }];
+    return null;
+  };
   // Iterate the Devin transcript's direct children in order: messages, thought groups,
   // tool event rows, commands and file edits all become items. Unknown rows are skipped.
   const devinItems = log => {
@@ -730,10 +744,12 @@
     const items = [];
     rows.forEach((row, n) => {
       const i = itemKey(row) || `acpx${n}`;
+      const native = row.hasAttribute('data-transcript-row-key') ? codexFiberProps(row, 8).find(p => p.row)?.row?.item : null;
+      const nativeItems = native && devinNativeItems(native, i);
+      if (nativeItems) { items.push(...nativeItems); return; }
       const msg = row.querySelector('[role=group][aria-label="User message"], [role=group][aria-label="Devin message"]');
       if (msg) {
         const it = messageItem(msg);
-        const native = row.hasAttribute('data-transcript-row-key') ? codexFiberProps(row, 8).find(p => p.row)?.row?.item : null;
         if (it.k === 'human' && native?.event_type === 'user_message' && typeof native.message === 'string') it.t = native.message;
         const meta = it.k === 'human' ? devinMessageMeta(msg) : {};
         if (meta['cognition.ai/isOptimistic']) return;
@@ -766,6 +782,13 @@
       const edit = devinEdit(row, i);
       if (edit) { items.push(edit); return; }
     });
+    const thread = devinNodeSessionId(log);
+    if (devinSessionRecord(thread)?.status === 'unknown_error') {
+      const banner = [...doc.querySelectorAll('[data-slot="banner-icon"]')].map(icon => icon.parentElement)
+        .find(el => vis(el) && devinNodeSessionId(el) === thread);
+      const error = banner && codexFiberProps(banner, 12).find(p => p.variant === 'warning' && typeof p.children === 'string');
+      if (error) items.push({ i: `acp${rows.length ? devinTranscriptIndex(rows.at(-1)) ?? 0 : 0}:error`, k: 'tool', kind: 'error', t: error.children, keep: true });
+    }
     return items.filter(Boolean).map(it => ({ ...it, src: 'devin' }));
   };
 
@@ -842,18 +865,27 @@
     if (!conversation) state.entries = [];
     return state;
   };
-  const codexReceiptRows = (state = codexReceiptState()) => {
-    return state.entries.slice(-2).flatMap(entry => {
+  const codexReceiptRows = (state = codexReceiptState(), from = -2) => {
+    return state.entries.slice(from).flatMap(entry => {
       const source = codexTurnSource(entry, state.scopes, true);
-      if (!source) return [];
+      if (!source || source.metadata.pendingUserMessageAdmission) return [];
       const steering = new Map(source.rawItems.filter(item => item?.type === 'steeringUserMessage' && item.status === 'accepted').map(item => [item.serverUserMessageId, item]));
       return source.rawItems.map(item => codexUserItem(item, source.metadata, steering)).filter(Boolean)
         .map(item => ({ id: item.nativeIds[0] || item.clientUserMessageId, i: `${state.thread}:user-message:${item.clientUserMessageId}`, nativeIds: item.nativeIds, t: item.message }));
     });
   };
-  const codexSendState = (draft = false, thread) => {
+  const codexSendState = (draft = false, thread, afterTurn = null) => {
     const state = codexReceiptState(thread);
-    const result = { thread: state.thread, messages: codexReceiptRows(state), queued: codexQueued(true, state) };
+    const from = afterTurn === null ? Math.max(0, state.entries.length - 2) : state.entries.findIndex(entry => entry.turnId === afterTurn);
+    state.entries = state.entries.slice(Math.max(0, from));
+    const runs = state.entries.flatMap(entry => {
+      const turn = entry.nativeTurn;
+      if (!turn?.turnId || turn.pendingUserMessageAdmission || !Number.isFinite(turn.turnStartedAtMs) || !turn.params?.clientUserMessageId) return [];
+      return [{ id: turn.turnId, i: `${state.thread}:user-message:${turn.params.clientUserMessageId}`,
+        nativeIds: [turn.turnId, turn.params.clientUserMessageId], startedAt: turn.turnStartedAtMs,
+        t: codexUserText(turn.params.input || []) }];
+    });
+    const result = { thread: state.thread, lastTurn: state.entries.at(-1)?.turnId || '', runs, messages: codexReceiptRows(state, 0), queued: codexQueued(true, state) };
     if (draft) {
       const editor = codexPromptEl();
       result.draft = codexPromptText() || '';

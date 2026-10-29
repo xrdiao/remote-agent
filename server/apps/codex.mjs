@@ -11,6 +11,7 @@ import { conversationProjects, fusionProject } from '../fusion/state.mjs';
 import { removeLibrarySession, publishSessionChange, rememberSessionMessage } from '../../lib/session-library.mjs';
 import { storedProjectSession } from '../project-windows.mjs';
 import { NativeCdp, nativeWindowAt } from '../native-windows.mjs';
+import { currentOperation } from '../operations.mjs';
 
 // Native support; availability still follows the selected thread, model and controls.
 export const capabilities = {
@@ -175,26 +176,46 @@ export const adapter = {
     if (source) {
       const action = when === 'now' ? 'steer' : when === 'queue' ? 'queue' : '';
       const token = this.sendNativeReceipt, sel = this.selectionKey();
-      const before = await this.cdp.evaluate(helpersCall(`submitCodexMessage(${JSON.stringify(action)}, true, ${JSON.stringify(receipt?.requestId || '')})`));
-      if (!before) throw new Error('Codex 提交入口当前不可用');
+      cdpRead.getStore()?.throwIfAborted();
+      const operation = currentOperation();
+      const before = await this.cdp.evaluate(helpersCall('codexSendState(true)'));
+      if (before.payload == null) throw new Error('Codex 输入尚未就绪');
       this.lastDraft = before.draft;
       queued = !!busy && (when === 'queue' || (!when && before.follow === 'queue'));
       if (token) token.pending = true;
+      let unregister;
       if (receipt) {
+        if (operation) operation.pending = true;
         const request = { ...receipt, thread: before.thread, expected: before.payload.trim(),
+          action: queued ? 'queue' : busy ? 'steer' : 'send', afterTurn: before.lastTurn,
+          beforeTurns: new Set(before.runs.map(row => row.id)),
           hasAttachments: !!before.hasDraftAttachments || !!mentions?.some(m => m.section === 'local-files'),
           before: new Set(before.messages.map(row => row.id)), beforeQueues: new Set(before.queued.map(row => row.id)) };
-        this.nativeSends ||= new Map();
-        const cancel = source.registerSend(request, (accepted, error) => {
-          this.nativeSends.delete(receipt.requestId);
+        unregister = source.registerSend(request, (accepted, error, unknown = false) => {
           if (accepted) {
             if (token) Object.assign(token, accepted, { pending: false });
             for (const file of files) file.pending = false;
-            if (!accepted.queued) rememberSessionMessage('codex', before.thread || source.snapshot?.receipt?.thread, Date.now());
+            if (!accepted.queued) rememberSessionMessage('codex', accepted.thread, Date.now());
             this.emit({ t: 'sent', ...receipt, ...accepted, sel, sentAt: Date.now() });
-          } else this.emit({ t: 'sendFailed', requestId: receipt.requestId, message: error, sel });
+          } else if (unknown) this.emit({ t: 'sent', ...receipt, pending: true, message: error, sel });
+          else this.emit({ t: 'sendFailed', requestId: receipt.requestId, message: error, sel });
         });
-        this.nativeSends.set(receipt.requestId, { sel, cancel });
+      }
+      cdpRead.getStore()?.throwIfAborted();
+      if (operation) operation.submitted = true;
+      let submitted;
+      try {
+        submitted = await cdpRead.run(null, () => this.cdp.evaluate(helpersCall(`submitCodexMessage(${JSON.stringify(action)}, true, ${JSON.stringify(receipt?.requestId || '')})`)));
+      } catch (error) {
+        if (!receipt) throw error;
+        if (token?.pending) this.emit({ t: 'sent', ...receipt, pending: true, message: error.message, sel });
+        return queued;
+      }
+      if (!submitted) {
+        unregister?.();
+        if (operation) operation.pending = false;
+        if (token) token.pending = false;
+        throw new Error('Codex 提交入口当前不可用');
       }
       return queued;
     }

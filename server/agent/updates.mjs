@@ -2,7 +2,7 @@
 import { cdpRead } from '../cdp.mjs';
 import { PAGE_SRC } from '../page/build.mjs';
 
-export async function watchChat(cdp, changed) {
+export async function watchChat(cdp, changed, shared = false) {
   const name = '__remoteChat' + crypto.randomUUID().replaceAll('-', '');
   let stopped = false;
   const receive = event => { if (!stopped && event.name === name) changed(); };
@@ -10,8 +10,15 @@ export async function watchChat(cdp, changed) {
   await cdp.send('Runtime.enable');
   await cdp.send('Runtime.addBinding', { name });
   cdp.on('Runtime.bindingCalled', receive);
-  await cdp.evaluate(`(() => {
+  const removed = await cdp.evaluate(`(() => {
     const name = ${JSON.stringify(name)};
+    const removed = [];
+    if (${shared}) {
+      for (const key of Object.keys(window)) {
+        if (/^__remoteChat[0-9a-f]+Watch$/.test(key)) { window[key].stop(); delete window[key]; }
+        else if (/^__remoteChat[0-9a-f]+$/.test(key) && key !== name) { removed.push(key); delete window[key]; }
+      }
+    }
     let doc, native, observer;
     const state = { timer: 0, stop: null };
     const rows = '[data-turn-key], [data-flat-index], [data-message-kind], [data-acp-msg-index], [role="log"][aria-label="Session transcript"], [role="group"][aria-label$="message"], [aria-label^="Preview queued message"], [data-response-annotation-conversation]';
@@ -43,7 +50,9 @@ export async function watchChat(cdp, changed) {
       observer?.disconnect(); native?.stop();
       doc = next;
       doc.defaultView.addEventListener('remote-agent-submit-error', changed);
-      native = (${PAGE_SRC}).watchCodexData(changed);
+      if (window.vscode?.context?.configuration?.().product?.applicationName === 'devin-desktop') {
+        native = { stop: window.__acpStore.subscribe(changed), refresh() {} };
+      } else native = (${PAGE_SRC}).watchCodexData(changed);
       observer = new MutationObserver(records => {
         if (records.some(record => inTranscript(record.target) || capacityRetry(record.target)
           || [...record.addedNodes, ...record.removedNodes].some(node => inTranscript(node, true) || capacityRetry(node)))) changed();
@@ -58,7 +67,9 @@ export async function watchChat(cdp, changed) {
     state.stop = () => { doc?.defaultView.removeEventListener('remote-agent-submit-error', changed); observer?.disconnect(); native?.stop(); outer.disconnect(); document.removeEventListener('load', bind, true); clearTimeout(state.timer); };
     bind();
     window[name + 'Watch'] = state;
+    return removed;
   })()`);
+  await Promise.all(removed.map(name => cdp.send('Runtime.removeBinding', { name })));
   } catch (error) {
     cdpRead.run(null, stop);
     throw error;

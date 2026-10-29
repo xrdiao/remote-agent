@@ -18,7 +18,16 @@
     for (const row of doc.querySelectorAll('li[data-slot="sidebar-menu-item"]')) {
       const props = codexFiberProps(row, 16);
       if (!props.some(p => devinRowSession(p.session) === id)) continue;
-      return { row, actions: props.find(p => p.menuSlot?.props.actionGroups)?.menuSlot.props.actionGroups.flat() || [] };
+      return { row, actions: props.find(p => p.menuActions)?.menuActions || [] };
+    }
+    for (const row of doc.querySelectorAll('div[data-kb-navigate="true"][tabindex="0"]')) {
+      const props = codexFiberProps(row, 12);
+      if (!props.some(p => devinRowSession(p.session) === id)) continue;
+      const actions = props.find(p => p.onRename && p.onArchiveToggle);
+      return { row, actions: actions ? [
+        { label: 'Rename', onClick: actions.onRename, direct: true },
+        { label: 'Archive', onClick: actions.onArchiveToggle },
+      ] : [] };
     }
     return null;
   };
@@ -52,8 +61,8 @@
     }
     const item = devinSessionMenu(id)?.actions.find(a => a.label.toLowerCase() === action && !a.disabled);
     if (!item) throw new Error('此会话没有对应的原生操作入口');
-    item.onClick();
-    return true;
+    await item.onClick(item.direct ? name : undefined);
+    return { direct: !!item.direct };
   };
   const nativeSessionRenameInput = id => {
     const input = devinSessionMenu(id)?.row.querySelector('input');

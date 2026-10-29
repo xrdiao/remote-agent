@@ -87,10 +87,7 @@ export const methods = {
   },
   async newTerminal() {
     if (this.app === 'devin' && await this.editorCdp.evaluate(helpersCall('devinSurface()')) === 'agent') {
-      const point = await this.editorCdp.evaluate(helpersCall("surfaceTarget('editor')"));
-      if (!point) throw new Error('找不到终端所属的 Editor 界面');
-      await this.tapCss(point.x, point.y, 'left', this.editorCdp);
-      if (!await this.waitFor("devinSurface() === 'editor'")) throw new Error('Editor 界面尚未就绪');
+      await this.setSurface('editor');
     }
     const before = await this.editorCdp.evaluate(helpersCall('terminalHistory()'));
     const direct = await this.editorCdp.evaluate(helpersCall('newTerminalDirect()'));

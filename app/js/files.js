@@ -5,7 +5,7 @@ $('vWrap').classList.toggle('on', store.get('wrap') !== 'off');
 let viewing = null;
 let editing = false;
 let editBase = '', saving = null;
-let fileRequestId = 0, saveRequestId = 0, saveTimer = 0;
+let fileRequestId = 0, saveRequestId = 0;
 let filePdf = null;
 let readingFile = null;
 function finishFileRead() {
@@ -366,8 +366,6 @@ function onSaved(m) {
   status('已保存');
 }
 function finishFileSave() {
-  clearTimeout(saveTimer);
-  saveTimer = 0;
   saving = null;
   $('vEdit').disabled = false;
   finishPending(['正在保存…']);
@@ -377,6 +375,11 @@ function failFileSave(message) {
   finishFileSave();
   editorStatus(message, false);
   status(message, false);
+}
+function waitFileSave() {
+  if (!saving) return;
+  editorStatus('连接已断开，等待电脑端保存结果');
+  status('连接已断开，等待电脑端保存结果');
 }
 function editorStatus(message, ok = true) {
   $('vStatus').hidden = false;
@@ -390,9 +393,6 @@ function saveEdit() {
   $('vEdit').disabled = true;
   editorStatus('正在保存…');
   status('正在保存…');
-  saveTimer = setTimeout(() => {
-    if (saving === submitted) failFileSave('保存结果未确认，请检查连接后重试');
-  }, 30000);
   if (!send({ t: 'saveFile', requestId: submitted.requestId, path: submitted.path, host: submitted.host, text: submitted.text })) failFileSave('未连接，文件未发送保存，请重试');
 }
 

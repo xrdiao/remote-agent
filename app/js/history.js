@@ -1188,7 +1188,7 @@ $('queueBar').onclick = async e => {
   if (b.dataset.sub) {
     if (b.dataset.part === 'stop' && !await ask(`停止子 Agent「${b.dataset.sub}」？\n它做到一半的工作会中断。`, '停止')) return;
     send({ t: 'subagent', name: b.dataset.sub, part: b.dataset.part });
-    status(b.dataset.part === 'stop' ? '已停止子 Agent' : '正在打开子 Agent…');
+    status(b.dataset.part === 'stop' ? '正在停止子 Agent…' : '正在打开子 Agent…');
     return;
   }
   if (b.dataset.a === 'edit') return editQueued(b.dataset.q);

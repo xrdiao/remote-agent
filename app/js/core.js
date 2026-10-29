@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v300'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v306'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false, failures = 0;
 let windowReady = false;
@@ -205,6 +205,13 @@ function finishPending(list) {
   if (list.includes(pendingStatus)) status('');
 }
 
+const desktopRequests = new Map();
+function desktopAction(obj) {
+  if (currentApp === 'fusion') return false;
+  return obj.t === 'send' ? obj.submit !== false && mode !== 'terminal'
+    : obj.t === 'queue' ? obj.action !== 'read'
+    : ['stop', 'pickMenu', 'question', 'codexRequest', 'click', 'subagent', 'saveFile', 'sessionManage', 'sessionBatch', 'codexRename', 'codexArchive'].includes(obj.t);
+}
 function send(obj) {
   obj.sel ??= viewSel;
   if (['attach', 'openAgent', 'openProject'].includes(obj.t)) beginNavigation(obj);
@@ -229,7 +236,13 @@ function send(obj) {
     editorBrowsing = obj.editor === true;
   }
   if (currentApp === 'codex' && ['settings', 'codexSetting', 'codexInstructions'].includes(obj.t)) obj.requestId = ++codexSettingsRequest;
-  if (ws && ws.readyState === 1 && authed) { ws.send(JSON.stringify(obj)); return true; }
+  if (ws && ws.readyState === 1 && authed) {
+    if (desktopAction(obj)) {
+      obj.operationId ||= crypto.randomUUID();
+      desktopRequests.set(obj.operationId, { computer: currentComputer()?.id || '', revision: 0 });
+    }
+    ws.send(JSON.stringify(obj)); return true;
+  }
   status('未连接', false);
   return false;
 }
