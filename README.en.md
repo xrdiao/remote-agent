@@ -133,7 +133,7 @@ This tool can operate real terminals and files accessible to the computer's curr
 - [Projects, terminal, attachments, file transfer, screen and Fusion](docs/usage.en.md)
 - [Voice installation, engine switching and microphone requirements](docs/voice-input.en.md)
 - [Connections, device entries and security](docs/security.en.md)
-- [Windows Devin maintenance (Chinese)](docs/windows-devin-maintenance.md)
+- [Feature baselines and checking/modification guide (Chinese)](docs/baselines/README.md)
 
 Directories: `server/` relay and adapters, `app/` mobile web UI, `lib/` shared capabilities, `cli/` setup tools, `android/` and `ios/` native shells, `push-service/` iOS push service.
 

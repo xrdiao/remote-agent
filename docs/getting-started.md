@@ -171,7 +171,6 @@ npm run pair
 - **找不到 `cloudflared`**：完成第 2 步，并重开一个终端让它进入 PATH。
 - **配对链接过期**：重新运行 `npm run pair`，新链接会使旧链接失效。
 - **固定地址打不开/被拒绝**：如果 GitHub 用户站点用了自定义域名，项目页面就在该域名下。向导和中继会把它记入 `~/.agent-remote/config.json` 的 `appUrl`，需要时也可手动设置。
-- **Windows 上 Devin 的接入、更新与排查**：见 [Windows Devin 维护说明](windows-devin-maintenance.md)。
 - **手机打不开地址**：公网地址可能需要稍等片刻才可访问。用 `npm run start` 时，手机必须与电脑在同一 Wi-Fi，且防火墙要放行 3939 端口。
 - **手机丢失或被盗**：`npm run devices`，然后 `npm run devices -- remove <id>`。要全部清空，用 `npm run reset`。
 - **3939 端口被占用**：换端口运行，例如 `PORT=4000 npm run public`（PowerShell：`$env:PORT=4000; npm run public`）。

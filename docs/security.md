@@ -35,4 +35,4 @@ npm run devices -- remove <id>
 
 ## 截图与公开文档
 
-README 只引用 `docs/screenshots/redacted/` 的脱敏图片。原始截图及测试备份保留在被 Git 忽略的 `_shots/readme-20261022/`，不应提交或发布；不要将原图目录直接用作公开站点。
+README 只引用 `docs/screenshots/redacted/` 的脱敏图片。原始截图及测试备份保留在被 Git 忽略的 `_shots/` 下，不应提交或发布；不要将原图目录直接用作公开站点。
