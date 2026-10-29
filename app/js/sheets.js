@@ -347,7 +347,7 @@ function paintRail() {
   const icRail = ic('<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M15 4v16"/>');
   const toggleLabel = collapsed ? '展开侧栏' : '收起侧栏';
   rail.innerHTML = `
-    <div class="railComputer"><img src="logo.png" alt=""><span class="railComputerName">${esc(currentComputer()?.name || 'Remote Agent')}</span><span class="railDot${$('dot').classList.contains('ok') ? ' ok' : ''}"></span><button class="railToggle" data-rail="toggle" title="${I18N.tr(toggleLabel)}" aria-label="${I18N.tr(toggleLabel)}">${icRail}</button></div>
+    <div class="railComputer"><img src="logo.png" alt=""><button class="railComputerName" data-rail="computers" title="${esc(I18N.tr('切换电脑'))}">${esc(currentComputer()?.name || 'Remote Agent')}</button><span class="railDot${$('dot').classList.contains('ok') ? ' ok' : ''}"></span><button class="railToggle" data-rail="toggle" title="${I18N.tr(toggleLabel)}" aria-label="${I18N.tr(toggleLabel)}">${icRail}</button></div>
     <div class="pSec">Agent</div>
     ${agentRows}
     <div class="pSec">${I18N.tr('工作区')}</div>
@@ -369,6 +369,7 @@ $('rail')?.addEventListener('click', e => {
   if (b.dataset.win) return switchToWindow(b.dataset.win);
   const act = b.dataset.rail;
   if (act === 'windows') { send({ t: 'windows' }); showWindows(); }
+  else if (act === 'computers') showComputers();
   else if (act === 'agents') openAgentList();
   else if (act === 'editor') startEditor();
   else if (act === 'mode-chat') setMode('chat');
