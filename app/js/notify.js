@@ -627,10 +627,10 @@ async function useComputer(i) {
   saveComputers(list, c.key);
   store.set('window', c.win || null);
   closeSheet();
-  const ready = readyComputerSocket(c);
-  if (ready) {
+  const resume = resumableComputerSocket(c);
+  if (resume) {
     bootGeneration++;
-    return connect(ready);
+    return connect(resume);
   }
   restoreDraft();
   connGen++;

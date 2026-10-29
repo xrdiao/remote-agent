@@ -319,6 +319,7 @@ function paintRail() {
   const rail = $('rail');
   if (!rail) return;
   const { entries, missingAgents } = windowEntries();
+  entries.sort((a, b) => (a.app === 'fusion') - (b.app === 'fusion') || a.app.localeCompare(b.app));
   const collapsed = railCollapsed();
   const sig = JSON.stringify([currentApp, mode, I18N.lang, currentComputer()?.name || '', $('dot').className, collapsed,
     entries.map(w => [w.id, w.app, appPlans[w.app] || '']), missingAgents]);
