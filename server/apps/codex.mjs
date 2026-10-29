@@ -6,6 +6,7 @@ import { codexWindows, codexContext } from '../windows.mjs';
 import { CODEX_CDP_URL } from '../config.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { FOCUS_COMPOSER, codexUsage } from '../agent/context.mjs';
+import { resetThinkingCaches } from '../agent/thinking-cache.mjs';
 import { computerId, saveState } from '../../lib/auth.mjs';
 import { conversationProjects, fusionProject } from '../fusion/state.mjs';
 import { removeLibrarySession, publishSessionChange, rememberSessionMessage } from '../../lib/session-library.mjs';
@@ -120,13 +121,27 @@ export const adapter = {
   },
 
   async editQueued(id, text) {
-    if (!await this.waitFor(`queueEditing() === ${JSON.stringify(String(id))}`, 40)) throw new Error('Codex 没有进入对应队列消息的编辑状态');
-    const before = await this.cdp.evaluate(helpersCall('codexFacts()?.queued || []'));
+    const wait = async call => {
+      const deadline = Date.now() + 4800;
+      while (Date.now() < deadline) {
+        let value;
+        try { value = await this.cdp.evaluate(helpersCall(call), { timeout: deadline - Date.now() }); }
+        catch (error) {
+          if (!cdpRead.getStore()?.aborted && Date.now() >= deadline) return null;
+          throw error;
+        }
+        if (value) return value;
+        await awaitCdpRead(new Promise(resolve => setTimeout(resolve, Math.min(120, Math.max(0, deadline - Date.now())))));
+      }
+      return null;
+    };
+    if (!await wait(`queueEditing() === ${JSON.stringify(String(id))}`)) throw new Error('Codex 没有进入对应队列消息的编辑状态');
+    const before = await this.cdp.evaluate(helpersCall('codexQueued(false, null, []).map(item => item.id)'));
     await this.codexFocusPrompt();
     await this.cdp.evaluate(helpersCall('codexSelectPrompt()'));
     await this.cdp.send('Input.insertText', { text });
     if (!await this.cdp.evaluate(helpersCall('submitCodexMessage("queue")'))) throw new Error('Codex 保存排队消息的按钮不可用');
-    const result = await this.waitFor(`codexQueued(true).find(item => !${JSON.stringify(before.map(item => item.id))}.includes(item.id) && item.t.trim() === ${JSON.stringify(text.trim())})`, 40);
+    const result = await wait(`codexQueued(true, null, ${JSON.stringify(before)}).find(item => item.t.trim() === ${JSON.stringify(text.trim())})`);
     if (!result) throw new Error('Codex 尚未确认排队消息已保存，请核对队列后重试');
     this.pollChat(true).catch(() => {});
     return { queueId: result.id, messageId: result.messageId };
@@ -173,23 +188,30 @@ export const adapter = {
 
   async submitPrompt(now, busy, when, queued, mentions, receipt, files = []) {
     const source = this.cdp?.nativeWindow;
+    let token, sel, operation;
     if (source) {
-      const action = when === 'now' ? 'steer' : when === 'queue' ? 'queue' : '';
-      const token = this.sendNativeReceipt, sel = this.selectionKey();
+      token = this.sendNativeReceipt;
+      sel = this.selectionKey();
       cdpRead.getStore()?.throwIfAborted();
-      const operation = currentOperation();
-      const before = await this.cdp.evaluate(helpersCall('codexSendState(true)'));
-      if (before.payload == null) throw new Error('Codex 输入尚未就绪');
-      this.lastDraft = before.draft;
-      queued = !!busy && (when === 'queue' || (!when && before.follow === 'queue'));
+      operation = currentOperation();
+    }
+    const hasLocalFiles = mentions?.some(m => m.section === 'local-files');
+    const before = await this.cdp.evaluate(helpersCall('codexSendState(true)'));
+    const hasAttachments = hasLocalFiles || before.hasDraftAttachments;
+    if (before.payload == null) throw new Error('Codex 输入尚未就绪');
+    const expected = before.payload.trim();
+    this.lastDraft = before.draft;
+    queued = !!busy && (when === 'queue' || (!when && before.follow === 'queue'));
+    const action = when === 'now' ? 'steer' : when === 'queue' ? 'queue' : '';
+    if (source) {
       if (token) token.pending = true;
       let unregister;
       if (receipt) {
         if (operation) operation.pending = true;
-        const request = { ...receipt, thread: before.thread, expected: before.payload.trim(),
+        const request = { ...receipt, thread: before.thread, expected,
           action: queued ? 'queue' : busy ? 'steer' : 'send', afterTurn: before.lastTurn,
           beforeTurns: new Set(before.runs.map(row => row.id)),
-          hasAttachments: !!before.hasDraftAttachments || !!mentions?.some(m => m.section === 'local-files'),
+          hasAttachments: !!hasAttachments,
           before: new Set(before.messages.map(row => row.id)), beforeQueues: new Set(before.queued.map(row => row.id)) };
         unregister = source.registerSend(request, (accepted, error, unknown = false) => {
           if (accepted) {
@@ -219,17 +241,8 @@ export const adapter = {
       }
       return queued;
     }
-    const hasLocalFiles = mentions?.some(m => m.section === 'local-files');
-    const before = await this.cdp.evaluate(helpersCall('codexSendState(true)'));
-    const hasAttachments = hasLocalFiles || before.hasDraftAttachments;
-    if (before.payload == null) throw new Error('Codex 输入尚未就绪');
-    const expected = before.payload.trim();
-    this.lastDraft = before.draft;
     const nativeReceipt = this.sendNativeReceipt;
     const receiptThread = this.threadId, receiptCdp = this.cdp, receiptScope = this.selectionKey();
-    const follow = before.follow;
-    queued = !!busy && (when === 'queue' || (!when && follow === 'queue'));
-    const action = when === 'now' ? 'steer' : when === 'queue' ? 'queue' : '';
     if (!await this.cdp.evaluate(helpersCall(`submitCodexMessage(${JSON.stringify(action)})`))) throw new Error('Codex 提交入口当前不可用');
     const baseline = { thread: before.thread, messages: before.messages.map(({ id }) => ({ id })), queued: before.queued.map(({ id }) => ({ id })) };
     const accepted = await this.cdp.evaluate(helpersCall(`waitCodexReceipt(${JSON.stringify(baseline)}, ${JSON.stringify(expected)}, ${!!hasAttachments})`), { timeout: 6000 }).catch(error => {
@@ -279,11 +292,7 @@ mergeCodexItems(chat) {
   if (thread && this.threadId && thread !== this.threadId) {
     this.latestThink = null;
     this.thinkTries = new Map();
-    this.thinking = new Map();
-    this.thinkingTried = new Map();
-    this.keptThink = new Map();
-    this.thinkLiveSeen = new Set();
-    this.thinkFinal = new Set();
+    resetThinkingCaches(this);
   }
   if (thread) this.threadId = thread;
   if (!this.itemCache) this.itemCache = new Map();

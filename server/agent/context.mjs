@@ -1,6 +1,7 @@
 import { MOD, NAMED_KEYS, cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { EDITORS } from '../config.mjs';
 import { helpersCall } from '../page/build.mjs';
+import { resetThinkingCaches } from './thinking-cache.mjs';
 
 // Cursor's chat composer is a ProseMirror contenteditable; selectors ordered from most to least specific.
 export const FOCUS_COMPOSER = `(() => {
@@ -118,17 +119,13 @@ export class AgentContext {
   emit() {}
 
   resetCaches() {
-    this.thinking = new Map();
-    this.thinkingTried = new Map();
+    resetThinkingCaches(this);
     this.tasksTried = new Map();
     this.devinHist = new Map();
     this.devinCmds = new Map();
     this.devinCmdTried = new Map();
     this.thoughtFails = new Map();
-    this.keptThink = new Map();
     this.itemCache = new Map();
-    this.thinkLiveSeen = new Set();
-    this.thinkFinal = new Set();
   }
 
 
@@ -151,12 +148,8 @@ export class AgentContext {
     this.lastAttachments = null;
     this.latestThink = null;
     this.thinkTries = new Map();
-    this.thinking = new Map();
-    this.thinkingTried = new Map();
-    this.keptThink = new Map();
+    resetThinkingCaches(this);
     if (this.fusionOwner) this.itemCache = new Map();
-    this.thinkLiveSeen = new Set();
-    this.thinkFinal = new Set();
     this.pendingThread = '';
     this.polling = null;
     this.lastDraft = undefined;

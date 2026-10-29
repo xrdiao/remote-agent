@@ -3,6 +3,7 @@ import { listWindows, codexWindows } from './windows.mjs';
 import { CODEX_CDP_URL } from './config.mjs';
 import { PAGE_SRC, helpersCall } from './page/build.mjs';
 import { AgentContext, appPlans } from './agent/index.mjs';
+import { resetThinkingCaches } from './agent/thinking-cache.mjs';
 import { hasLaunched, takeLaunched } from './launch.mjs';
 import { fusionViewers, fusionHistory, fusionWorkers } from './fusion/state.mjs';
 import { FUSION_OWNER } from './fusion/owner.mjs';
@@ -321,17 +322,13 @@ export class Session extends AgentContext {
     this.app = win.app || 'cursor';
     if (this.pendingProject && (this.pendingProject.app !== this.app || this.pendingProject.windowId !== this.windowId)) this.pendingProject = null;
     this.lastChat = '';
-    this.thinking = new Map();
-    this.thinkingTried = new Map();
+    resetThinkingCaches(this);
     this.tasksTried = new Map();
     this.devinHist = new Map();
     this.devinCmds = new Map();
     this.devinCmdTried = new Map();
     this.thoughtFails = new Map();
     this.curSession = undefined;
-    this.keptThink = new Map();
-    this.thinkLiveSeen = new Set();
-    this.thinkFinal = new Set();
     const onclose = error => {
       if (this.cdp !== cdp && this.editorCdp !== editorCdp) return;
       this.detach();
