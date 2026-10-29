@@ -70,6 +70,8 @@ function beginNavigation(message) {
   if (!message.initial) conn.initialSelection = false;
   failFileRead('目标已切换，文件读取已中断，请重新打开');
   message.navigationId = ++navigationSerial;
+  const link = computerSockets.get(currentComputer()?.key);
+  if (link) { link.navigationId = message.navigationId; link.binding = null; }
   const kind = message.initial ? 'initial' : message.t === 'attach'
     ? (String(message.id || '').split(':')[0] === currentApp ? 'window' : 'agent')
     : message.newSession || /^(new:|project-new:)/.test(message.id || '') ? 'new'
@@ -719,8 +721,21 @@ function updateComputerRecord(computer) {
 function parkComputerSocket(socket = ws) {
   const link = [...computerSockets.values()].find(link => link.socket === socket);
   if (!link) { socket?.close(); return; }
+  if (link.receive) {
+    link.mode = mode;
+    link.navigationId = navigationSerial;
+    link.composer = { epoch: draftEpoch, revision: draftRevision, ackRevision: draftAckRevision };
+    link.connection = { ...conn, open: new Set(conn.open), timer: 0 };
+  }
   link.send({ t: 'visible', v: false });
   link.receive = link.closed = null;
+}
+function readyComputerSocket(computer) {
+  const link = computerSockets.get(computer.key), binding = link?.binding;
+  if (mode !== 'chat' || link?.mode !== mode || !link.authed || link.socket.readyState !== 1 || link.computer.token !== computer.token) return null;
+  if (!binding?.ready || binding.cached || !binding.chat || binding.chat.thread !== (binding.threadId || '')) return null;
+  if (binding.id !== computer.win || binding.windowId !== (computer.windowId || '') || (binding.threadId || '') !== (computer.threadId || '')) return null;
+  return link;
 }
 function dropComputerSocket(key) {
   const link = computerSockets.get(key);
@@ -766,11 +781,16 @@ async function openComputerSocket(computer, relay) {
         if (!link.receive) { link.send({ t: 'visible', v: false }); link.send({ t: 'connAgents', deferPlans: true }); }
       }
     }
-    if (m.t === 'attached') {
+    const currentNavigation = m.navigationId == null || m.navigationId === link.navigationId;
+    if (currentNavigation && m.t === 'attached') {
       if (m.closed || m.ready === false) link.binding = null;
-      else link.binding = { ...(link.binding?.sel === m.sel ? link.binding : {}), ...m };
+      else {
+        link.binding = { ...(link.binding?.sel === m.sel ? link.binding : {}), ...m };
+        if (m.chat) link.binding.cached = !!m.cached;
+      }
     }
-    if (m.t === 'chat' && link.binding?.sel === m.sel) link.binding = { ...link.binding, chat: m.chat };
+    if (currentNavigation && m.t === 'chat' && link.binding?.sel === m.sel) link.binding = { ...link.binding, chat: m.chat, cached: !!m.cached };
+    if (currentNavigation && (m.t === 'attachFailed' || m.t === 'thread' && link.binding?.sel !== m.sel)) link.binding = null;
     if (['windows', 'connAgents', 'agentCatalog', 'plans'].includes(m.t)) link.metadata.set(m.t, m);
     if (link.receive) link.receive(event);
     else if (m.t === 'sent') confirmSent(m);
@@ -781,6 +801,7 @@ async function openComputerSocket(computer, relay) {
   socket.onclose = event => {
     clearTimeout(timer);
     link.authed = false;
+    link.binding = null;
     if (link.closed) { link.closed(event); return; }
     if (link.rejected || !loadComputers().some(row => row.key === computer.key && row.token === computer.token)) return;
     link.retry = setTimeout(() => warmComputerSocket(computer).catch(() => {}), 8000);
@@ -829,7 +850,17 @@ async function warmComputerSockets() {
   }));
 }
 
-async function connect() {
+function startComputerUpdates() {
+  send({ t: 'visible', v: document.visibilityState === 'visible' });
+  send({ t: 'lang', v: I18N.lang });
+  clearInterval(usageTimer);
+  usageTimer = setInterval(() => { if (authed && document.visibilityState === 'visible') send({ t: 'usage', automatic: true }); }, 60 * 1000);
+  clearInterval(pingTimer);
+  pingTimer = setInterval(heartbeat, 15000);
+  syncNotify();
+  setTimeout(checkAppUpdate, 3000);
+}
+async function connect(readyLink = null) {
   const gen = ++connGen, attempt = bootGeneration;
   resetLatency();
   liveChatSelection = '';
@@ -840,14 +871,16 @@ async function connect() {
   const expectedId = computer.id || await computerIdFromKey(computer.key);
   if (gen !== connGen || attempt !== bootGeneration || computer.key !== currentComputer()?.key) return;
   offlineGen++;
-  draftEpoch = '';
-  draftRevision = draftAckRevision = 0;
-  if (text.value || drafts.has(activeDraft)) draftRevision++;
-  setWindowReady(false);
+  draftEpoch = readyLink ? readyLink.composer.epoch : '';
+  draftRevision = readyLink ? readyLink.composer.revision : 0;
+  draftAckRevision = readyLink ? readyLink.composer.ackRevision : 0;
+  if (!readyLink && (text.value || drafts.has(activeDraft))) draftRevision++;
+  pendingDesktopDraft = null;
+  if (!readyLink) setWindowReady(false);
   clearTimeout(retryTimer);
-  if (conn.active || $('gate').classList.contains('open')) connShow('正在建立实时连接…');
-  parkComputerSocket(ws);
-  const link = await openComputerSocket(computer, base);
+  if (!readyLink && (conn.active || $('gate').classList.contains('open'))) connShow('正在建立实时连接…');
+  if (!readyLink) parkComputerSocket(ws);
+  const link = readyLink || await openComputerSocket(computer, base);
   if (gen !== connGen || attempt !== bootGeneration || computer.key !== currentComputer()?.key) return;
   const socket = ws = link.socket;
   base = link.relay;
@@ -880,7 +913,7 @@ async function connect() {
     // Rediscover the address using the saved computer identity and device token.
     if (gen === connGen && attempt === bootGeneration) boot();
   };
-  link.receive = ev => {
+  link.receive = (ev, resumed = false) => {
     if (gen !== connGen) return;
     const m = JSON.parse(ev.data);
     lastRx = Date.now();
@@ -919,14 +952,7 @@ async function connect() {
       }
       send({ t: 'attach', id: chosen?.id || '', windowId: chosen?.windowId || '', threadId: chosen?.threadId || '',
         project: typeof chosen?.project === 'object' ? chosen.project : null, initial: true, resume: !!link.binding && !fromNotice });
-      send({ t: 'visible', v: document.visibilityState === 'visible' });
-      send({ t: 'lang', v: I18N.lang });
-      clearInterval(usageTimer);
-      usageTimer = setInterval(() => { if (authed && document.visibilityState === 'visible') send({ t: 'usage', automatic: true }); }, 60 * 1000);
-      clearInterval(pingTimer);
-      pingTimer = setInterval(heartbeat, 15000);
-      syncNotify();
-      setTimeout(checkAppUpdate, 3000);
+      startComputerUpdates();
     }
     else if (m.t === 'sent') {
       confirmSent(m);
@@ -1001,6 +1027,7 @@ async function connect() {
       finishPending(['正在切换窗口…', '正在切换 Agent…']);
       store.set('window', m.id);
       applySelection(m, false);
+      if (resumed) liveChatSelection = viewSel;
       selectionReady = m.ready !== false;
       setWindowReady(selectionReady && mode !== 'chat');
       scheduleLatency();
@@ -1163,6 +1190,17 @@ async function connect() {
     else if (m.t === 'saved') onSaved(m);
     else if (m.t === 'status') { if (!m.ok) pendingAgentOpen = ''; if (!m.ok && String(m.msg).startsWith('连不上 Cursor、Devin 或 Codex。')) connWindows([]); clearSwitchWatch(); status(m.msg, m.ok); }
   };
-  if (link.auth && socket.readyState === 1) link.receive({ data: JSON.stringify(link.auth) });
+  if (readyLink) {
+    clearTimeout(conn.timer);
+    Object.assign(conn, link.connection, { active: false, host: true, initialSelection: false, loaded: true, attachFailed: false });
+    authed = true; failures = 0;
+    navigationSerial = link.navigationId;
+    lastChat = null; viewSel = '';
+    ungate(); connHide();
+    link.receive({ data: JSON.stringify({ ...link.binding, keepQuota: false, initial: false }) }, true);
+    for (const message of link.metadata.values()) link.receive({ data: JSON.stringify(message) });
+    document.dispatchEvent(new Event('voice-authenticated'));
+    startComputerUpdates();
+  } else if (link.auth && socket.readyState === 1) link.receive({ data: JSON.stringify(link.auth) });
 }
 
