@@ -101,7 +101,7 @@
   const transcriptVisible = () => { const l = devinLog(); return (!!l && vis(l)) || [...document.querySelectorAll('[role="textbox"][aria-label="Prompt"]')].some(vis); };
   // IDE history is a native conversation picker, separate from the Agents sidebar.
   const sessionSearchTarget = () => {
-    const b = [...document.querySelectorAll('button[aria-label]')].find(e => vis(e) && /^(?:Past Conversations|Search agents\b)/.test(e.getAttribute('aria-label')));
+    const b = [...document.querySelectorAll('button[aria-label]')].find(e => vis(e) && !e.disabled && /^(?:Past Conversations|Search agents\b)/.test(e.getAttribute('aria-label')));
     const input = doc.querySelector('input[placeholder="Search"][data-kb-navigate]');
     return b ? { ...center(b), open: !!input && vis(input) } : null;
   };
@@ -182,10 +182,19 @@
     const el = devinTabEls().find(t => codexFiberProps(t, 24).some(p => p.sessionId === id));
     el.querySelector('button').click();
   };
-  const sessionPickerTarget = async id => {
+  const sessionPickerTarget = async (id, select = false) => {
     const nativeRow = [...doc.querySelectorAll('div[data-kb-navigate="true"][tabindex="0"]')]
       .find(row => codexFiberProps(row, 12).some(p => devinRowSession(p.session) === id));
-    if (nativeRow) { nativeRow.scrollIntoView({ block: 'nearest' }); return center(nativeRow); }
+    if (nativeRow) {
+      if (select) {
+        const props = codexFiberProps(nativeRow, 12).find(p => devinRowSession(p.session) === id && typeof p.onOpen === 'function');
+        if (!props) return null;
+        props.onOpen();
+        return true;
+      }
+      nativeRow.scrollIntoView({ block: 'nearest' });
+      return center(nativeRow);
+    }
     const index = (await devinPickerSessions()).findIndex(s => devinRowSession(s) === id);
     if (index < 0) return null;
     const widget = [...document.querySelectorAll('.quick-input-widget')].find(vis);
@@ -197,6 +206,7 @@
     }
     const row = [...(widget?.querySelectorAll('.monaco-list-row') || [])].find(r => Number(r.getAttribute('data-index')) === index);
     if (!row) return null;
+    if (select) { row.click(); return true; }
     row.scrollIntoView({ block: 'nearest' });
     return center(row);
   };

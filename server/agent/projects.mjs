@@ -611,7 +611,6 @@ export const methods = {
       if (!this.pendingProject?.trust && !this.chatUpdatesStop) await this.setMode(this.mode, true);
       return;
     }
-    if (this.app === 'devin') await this.ensureDevinIde(sessionId('devin', id));
     const openHere = async (root, host, thread) => {
       if (!root || !this.projectMatches(await editorRoots(this.editorCdp, this.app), root, host)) return false;
       if (this.app === 'codex') {
