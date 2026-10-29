@@ -49,7 +49,16 @@ function sendReceipt(value) {
 function confirmSent(m, render = true) {
   if (m.pending) {
     const sent = pendingSends.get(m.requestId);
-    if (sent && sent.computer === (currentComputer()?.id || '') && sent.draft === draftKey() && ['正在发送…', '正在确认电脑端接收…', '连接已断开，发送结果待确认'].includes(pendingStatus)) status('正在确认电脑端接收…');
+    if (sent && m.message) {
+      sent.confirmationError = m.message;
+      const echo = pendingEchoes.find(p => p.requestId === m.requestId);
+      if (echo) echo.unknown = true;
+      if (render) queueChatRender();
+    }
+    if (sent && sent.computer === (currentComputer()?.id || '') && sent.draft === draftKey()) {
+      if (m.message) status('发送结果未确认：' + m.message, false);
+      else if (!sent.confirmationError && ['正在发送…', '正在确认电脑端接收…', '连接已断开，发送结果待确认'].includes(pendingStatus)) status('正在确认电脑端接收…');
+    }
     return;
   }
   const echo = pendingEchoes.find(p => p.requestId === m.requestId);
@@ -67,7 +76,7 @@ function confirmSent(m, render = true) {
   for (const key of inputHistory.keys()) if (key.startsWith(sent.draft + '|')) inputHistory.delete(key);
   if (drafts.get(sent.draft) === sent.text && (draftVersions.get(sent.draft) || 0) === sent.version) { drafts.delete(sent.draft); draftMentions.delete(sent.draft); }
   const here = (currentComputer()?.id || '') === sent.computer && mode === sent.mode && (draftKey() === sent.draft || m.sel === viewSel);
-  if (here && ['正在发送…', '正在确认电脑端接收…', '连接已断开，发送结果待确认'].includes(pendingStatus) && ![...pendingSends.values()].some(p => p.draft === activeDraft)) {
+  if (here && (['正在发送…', '正在确认电脑端接收…', '连接已断开，发送结果待确认'].includes(pendingStatus) || $('msg').textContent === '发送结果未确认：' + sent.confirmationError) && ![...pendingSends.values()].some(p => p.draft === activeDraft)) {
     status(m.queued ? 'Agent 正在运行，已加入排队，这一轮结束后自动发送' : '已发送');
   }
   if (here && inputRevision === sent.revision && text.value === sent.text) {
