@@ -231,15 +231,18 @@ export const methods = {
       }
       if (chat?.thread && chat.thread === this.threadId) rememberSessionMessage(this.app, chat.thread,
         Math.max(0, ...chat.items.filter(it => it.k === 'human').map(it => Number(it.sentAt) || 0)));
+      if (this.app === 'codex' && chat) {
+        if (chat.context) this.codexPageContext = { cdp, thread: chat.thread,
+          value: { pct: chat.context.basis === 'remaining' ? 100 - chat.context.pct : chat.context.pct, basis: 'used' } };
+        const page = this.codexPageContext;
+        chat.context = page?.cdp === cdp && page.thread === chat.thread ? page.value : await awaitCdpRead(codexContext(chat.thread));
+        if (!this.liveRead(cdp, sel) || !this.acceptsChat(chat)) return;
+      }
       const emptyCodex = this.app === 'codex' && !this.threadId && !this.selectedThread && !chat?.thread && chat?.items?.length === 0 && (!chat.readonly || chat.empty === true);
       const extracted = chat && JSON.stringify({ ...chat, draft: undefined });
-      let contextRead;
-      if (chat && chat.thread === (this.threadId || '') && (this.app !== 'codex' || chat.thread || emptyCodex) && (!this.lastChat || extracted !== this.lastExtractedChat || state.requested && !state.sent)) {
+      if (this.app !== 'codex' && chat && chat.thread === (this.threadId || '') && (!this.lastChat || extracted !== this.lastExtractedChat || state.requested && !state.sent)) {
         const initial = { ...chat, items: chat.items.map(it => ({ ...it })) };
         delete initial.draft;
-        if (this.app === 'codex') {
-          contextRead = Promise.resolve(codexContext(chat.thread));
-        }
         this.mergeCodexItems(initial);
         this.lastExtractedChat = extracted;
         this.fillThinking(initial);
@@ -309,12 +312,11 @@ export const methods = {
       }
       this.pendingThread = '';
       this.lastBusy = !!chat.busy;
-      if (this.app === 'codex') chat.context = await awaitCdpRead(contextRead || codexContext(chat.thread));
       if (!this.liveRead(cdp, sel)) return;
       this.mergeCodexItems(chat);
       const draft = chat.draft;
       delete chat.draft;
-      if (immediate) {
+      if (immediate && this.app !== 'codex') {
         if (chat?.model === 'Fusion' && this.fusion) chat.fusion = this.fusion;
         this.fillThinking(chat);
         this.retainThinking(chat);
@@ -462,7 +464,7 @@ export const methods = {
             await this.typeText(draft || '', editing.cdp);
             return await editing.cdp.evaluate(helpersCall('composerDraft()')) === (draft || '').replace(/\n+$/g, '');
           };
-          const ok = await restore().catch(() => false);
+          const ok = this.app === 'codex' && !draft ? true : await restore().catch(() => false);
           if (ok) this.lastDraft = draft || '';
           if (request) this.emit({ t: 'draftAck', sel: editing.sel, ok, text: draft, read: request.text === undefined, draftEpoch: request.draftEpoch || '', revision: request.revision });
         }

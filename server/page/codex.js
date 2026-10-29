@@ -269,9 +269,16 @@
     const r = e.getBoundingClientRect();
     return { label, ...codexPoint(e) };
   }).filter(x => x.label);
-  const codexQueued = (full = false, state = null) => {
+  const codexQueued = (full = false, state = null, previousIds = null) => {
     const thread = state?.thread || codexThread();
     if (!thread) return [];
+    if (previousIds) {
+      const previous = new Set(previousIds);
+      return (state || codexHistoryState(null, false)).queued.filter(item => !previous.has(item.id)).map(item => ({
+        id: item.id, t: full ? item.text : item.text.slice(0, 4000), src: 'codex',
+        messageId: `${thread}:user-message:${item.clientUserMessageId}`,
+      }));
+    }
     // Newer Codex keeps the queue in the composer's own rows (props carry messageId / fullMessageText);
     // older builds kept it in the queued-follow-ups global state read below.
     const rows = [...doc.querySelectorAll('[aria-label^="Preview queued message"]')].filter(vis)
