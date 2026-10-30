@@ -661,7 +661,7 @@ async function relayOf(c) {
   if (reg.self) return new URL(c.discovery).origin;
   if (reg.v === 2 && reg.data) return decryptEntry(c.key, reg);
   const id = c.id || await computerIdFromKey(c.key);
-  const entry = (reg.computers || []).find(e => e.id === id);
+  const entry = findPublishedEntry(reg, id);
   if (!entry) throw Error('not published');
   return decryptEntry(c.key, entry);
 }
