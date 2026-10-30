@@ -260,39 +260,21 @@ body[data-app="cursor"] #quotaMeters:not(:empty) { border-left: 1px solid var(--
 .meter i { display: none; }
 .meter b { display: block; font-size: 11.5px; line-height: 1.3; font-weight: 600; color: var(--fg-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
 #meterCtx .track { --ring: var(--accent); }
-/* Phones (portrait and the landscape right column): compact rings with the percentage
-   inside; labels stay in the tap-through usage sheet and the visually-hidden text.
-   Sized so three meters (Cursor) fit beside the title down to 360px wide; more than
-   that scroll inside the capsule. */
-/* The meters keep their full width (the title gives way and ellipsizes instead); only when
-   they would push the toggle/menu off screen does the capsule cap out and scroll. */
-body:not(.wide) #meters { gap: 5px; padding: 0 6px; flex: none; max-width: calc(100% - 172px); }
-body:not(.wide) #quotaMeters { gap: 5px; flex: none; }
+/* Keep the label and used/remaining value beside each ring; extra meters scroll inside the capsule. */
+body:not(.wide) #meters { gap: 7px; padding: 0 8px; flex: 0 1 auto; min-width: 0; max-width: calc(100% - 172px); }
+body:not(.wide) #quotaMeters { gap: 7px; flex: none; }
 body:not(.wide) #title { flex: 1 1 0; min-width: 84px; }
 body:not(.wide) .titleArrow, body:not(.wide) #titlePlan { display: none; }
 body:not(.wide) .appAvatar { width: 30px; height: 30px; }
 @media (max-width: 430px) {
   header { padding: 6px 10px 4px; gap: 6px; }
 }
-body:not(.wide) .meter .track { width: 24px; height: 24px; }
+body:not(.wide) .meter .track { width: 16px; height: 16px; }
 body:not(.wide) .meter .track::after { inset: 2.5px; }
-/* The percentage sits inside the ring; the usage sheet says whether it is used or remaining. */
-body:not(.wide) .meter .track::before {
-  content: attr(data-n); position: absolute; inset: 0; z-index: 1; display: grid; place-items: center;
-  font-size: 9px; font-weight: 700; letter-spacing: -.03em; color: var(--fg-hi); font-variant-numeric: tabular-nums;
-}
-/* Enough room (measured in fitMeters): the value text sits beside a smaller ring instead. */
-body.metersText:not(.wide) .meter .track { width: 16px; height: 16px; }
-body.metersText:not(.wide) .meter .track::after { inset: 2.5px; }
-body.metersText:not(.wide) .meter .track::before { content: none; }
-/* fitMeters checks the title and the menu itself, so the fixed width cap is lifted here. */
-body.metersText:not(.wide) #meters { gap: 7px; padding: 0 8px; max-width: none; }
-body.metersText:not(.wide) #quotaMeters { gap: 7px; }
-body.metersText:not(.wide) .meter { gap: 4px; }
-body.metersText:not(.wide) .meter b { font-size: 10.5px; }
+body:not(.wide) .meter { gap: 4px; }
+body:not(.wide) .meter b { font-size: 10.5px; }
+body:not(.wide) .meter .meterLabel { display: block; }
 body.metersText:not(.wide) #title { min-width: 0; }
-body.metersText:not(.wide) .meter .meterLabel { display: block; }
-body:not(.wide):not(.metersText) .meterText { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
 body:not(.wide) .fusionMetricText { display: none; }
 body:not(.wide) #fusionHeader { flex: 0 1 auto; }
 
