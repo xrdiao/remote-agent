@@ -578,6 +578,14 @@ export const methods = {
       let position;
       try {
         position = await cdp.evaluate(helpersCall('historyPosition()'));
+        if (this.app === 'cursor') {
+          const cursor = this.cursorHistory;
+          if (cursor?.cdp === cdp && cursor.thread === thread && (cursor.before === beforeOrder || cursor.nextBefore === beforeOrder)) {
+            const rows = await cdp.evaluate(helpersCall('historyRows()'));
+            await cdp.evaluate(helpersCall(`historyPosition(${JSON.stringify({ top: cursor.top })})`));
+            await cdp.evaluate(helpersCall(`waitHistoryRows(${JSON.stringify(rows)}, 150)`));
+          }
+        }
         if (this.app === 'devin') await cdp.evaluate(helpersCall('devinLoadEarlier()'), { timeout: 8000 });
         else {
           const rows = await cdp.evaluate(helpersCall('historyRows()'));
@@ -589,6 +597,10 @@ export const methods = {
         if (!this.liveRead(cdp, sel) || chat?.thread !== thread) return;
         if (this.app === 'devin') this.mergeDevinHistory(chat, true);
         const earlier = !await cdp.evaluate(helpersCall('historyAtStart()'));
+        if (this.app === 'cursor') {
+          const after = await cdp.evaluate(helpersCall('historyPosition()'));
+          this.cursorHistory = after && { cdp, thread, before: beforeOrder, nextBefore: chat.items[0]?.i, top: after.top };
+        }
         return { thread, items: chat.items, earlier: this.app === 'devin' ? chat.earlier : earlier };
       } finally {
         try {

@@ -17,8 +17,13 @@
     const r = p.getBoundingClientRect();
     return [r.x, r.y, r.width, r.height].map(Math.round);
   };
+  const historyScroller = () => {
+    if (devinLog()) return devinScroller();
+    const panel = findPanel();
+    return panel?.querySelector('.virtualized-composer-messages-scroll-container') || panel;
+  };
   const historyAtStart = () => {
-    let el = devinLog() ? devinScroller() : findPanel();
+    let el = historyScroller();
     while (el && el !== doc.body) {
       const style = getComputedStyle(el);
       if (/auto|scroll/.test(style.overflowY) && el.scrollHeight > el.clientHeight) {
@@ -31,7 +36,7 @@
   const historyRows = () => [...doc.querySelectorAll(`${ITEM_SEL}, [data-acp-msg-index]`)]
     .map(el => el.getAttribute('data-acp-msg-index') ?? el.getAttribute('data-turn-key') ?? el.getAttribute('data-flat-index') ?? el.getAttribute('data-message-kind') + ':' + (el.textContent || '').slice(0, 80)).join('|');
   const historyPosition = restore => {
-    let el = devinLog() ? devinScroller() : findPanel();
+    let el = historyScroller();
     while (el && el !== doc.body) {
       if (/auto|scroll/.test(getComputedStyle(el).overflowY) && el.scrollHeight > el.clientHeight) {
         if (restore) el.scrollTop = restore.top;
