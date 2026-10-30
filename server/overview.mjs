@@ -61,5 +61,5 @@ export async function overviewPreview(deviceId, { win, windowId, threadId }) {
   if (!session) throw new Error('会话已从目录移除，请刷新概览');
   const target = nativeTargets().find(row => row.app === session.app && (row.pageId || row.id) === windowId);
   const value = await nativeWindowAt(target.ws).preview(threadId, session);
-  return { win, windowId, threadId, available: value.available, last: value.last || '' };
+  return { win, windowId, threadId, available: value.available, last: value.last || '', text: value.text || '' };
 }

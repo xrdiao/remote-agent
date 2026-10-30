@@ -105,7 +105,10 @@
     return { ready: true, complete: false, rows, removed, unknown };
   };
   const nativeSessionPreview = async (app, id, previous) => {
-    const summary = text => ({ available: true, last: String(text || '').replace(/\s+/g, ' ').trim().slice(-600) });
+    const summary = value => {
+      const text = String(value || '').replace(/\s+/g, ' ').trim();
+      return { available: true, last: text.slice(-600), text };
+    };
     if (app === 'cursor') {
       const service = cursorSessionServices()?.data;
       const peek = await service.composerDataHandleManager.peekComposerData(id);

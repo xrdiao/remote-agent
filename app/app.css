@@ -1669,7 +1669,7 @@ body.conv #overview { display: none; }
 :root[data-theme="light"] #overview .on-light { display: block; }
 #overview .ov-badge { grid-area: badge; justify-self: end; align-self: start; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 650; color: var(--sc); background: color-mix(in srgb, var(--sc) 12%, transparent); padding: 4px 10px 4px 8px; border-radius: 999px; white-space: nowrap; }
 #overview .ov-badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
-#overview .ov-state { grid-area: badge; justify-self: end; display: flex; flex-direction: column; align-items: flex-end; gap: 5px; font-size: 12px; color: var(--fg-3); font-variant-numeric: tabular-nums; }
+#overview .ov-state { grid-area: badge; justify-self: end; display: flex; flex-direction: row; align-items: center; gap: 5px; font-size: 12px; color: var(--fg-3); font-variant-numeric: tabular-nums; }
 #overview .ov-state .ov-time:empty { display: none; }
 #overview .ov-st-run .ov-badge::before { animation: ovPulse 1.6s infinite; }
 #overview .ov-st-wait > .ov-badge { color: var(--ov-amber-fg); background: var(--ov-amber-badge); }
@@ -1691,7 +1691,7 @@ body.conv #overview { display: none; }
 #overview .ov-session:not(.ov-open) { aspect-ratio: auto; grid-template-rows: auto min-content min-content auto 1fr auto; grid-template-areas: "logo badge" "title title" "context context" "now now" "foot foot" "actions actions"; }
 #overview .ov-context { grid-area: context; margin-top: 6px; font-size: 12px; color: var(--fg-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #overview .ov-session.ov-compact:not(.ov-open) { grid-template-rows: auto auto auto auto; grid-template-areas: "logo title" "logo badge" "context context" "actions actions"; row-gap: 6px; }
-#overview .ov-session.ov-compact:not(.ov-open) > .ov-state { justify-self: start; align-items: flex-start; }
+#overview .ov-session.ov-compact:not(.ov-open) > .ov-state { justify-self: start; }
 #overview .ov-session.ov-compact:not(.ov-open) > .ov-state .ov-badge { padding: 2px 7px; font-size: 11px; }
 
 #overview .ov-tile.ov-open { grid-column: 1 / -1; aspect-ratio: auto; border-radius: 30px; cursor: default; grid-template-columns: auto 1fr auto; grid-template-rows: auto auto; grid-template-areas: "logo title close" "card card card"; align-items: center; justify-items: stretch; text-align: left; column-gap: 12px; padding: 14px; min-height: 0; transform: none; animation: none; box-shadow: 0 10px 40px rgba(0,0,0,.2); }
@@ -1706,7 +1706,9 @@ body.conv #overview { display: none; }
 #overview .ov-close:active { background: var(--s2); }
 #overview .ov-close svg { width: 22px; height: 22px; }
 
-#overview .ov-status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--fg-3); flex-wrap: wrap; }
+#overview .ov-status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--fg-3); flex-wrap: nowrap; }
+#overview .ov-status > .ov-state { flex: none; }
+#overview .ov-status > .ovRaw { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
 #overview .ov-sp { flex: 1; }
 #overview .ov-status .ov-badge { justify-self: auto; align-self: auto; }
 #overview .ov-q { font-size: 17px; font-weight: 600; line-height: 1.38; margin: 14px 2px 12px; color: var(--fg-hi); }
@@ -1719,7 +1721,7 @@ body.conv #overview { display: none; }
 #overview .ov-pmeta { display: flex; justify-content: space-between; font-size: 13px; color: var(--fg-3); }
 #overview .ov-pmeta b { color: var(--fg-hi); }
 #overview .ov-cur { font-size: 14px; color: var(--fg-hi); font-weight: 600; margin-top: 10px; }
-#overview .ov-last { font-size: 14px; color: var(--fg-2); margin-top: 10px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+#overview .ov-last { font-size: 14px; color: var(--fg-2); margin-top: 10px; line-height: 1.5; max-height: 6em; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; }
 #overview .ov-meta { display: flex; gap: 14px; font-size: 13px; color: var(--fg-3); flex-wrap: wrap; margin-top: 12px; }
 #overview .ov-add { color: var(--ok); font-weight: 600; }
 #overview .ov-del { color: var(--err); font-weight: 600; }

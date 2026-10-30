@@ -1,7 +1,7 @@
 import { authenticateDevice } from '../lib/device-proof.mjs';
 import crypto from 'node:crypto';
 import { WebSocketServer } from 'ws';
-import { needsTotp, updateDevice, computerId, computerName, bindDeviceConnection } from '../lib/auth.mjs';
+import { needsTotp, findDevice, updateDevice, computerId, computerName, bindDeviceConnection } from '../lib/auth.mjs';
 import { addViewer, removeViewer } from '../lib/notify.mjs';
 import { clientIp } from './http/ratelimit.mjs';
 import { originAllowed } from './http/static.mjs';
@@ -47,11 +47,17 @@ const heartbeat = setInterval(() => {
     try { client.ping(); } catch {}
   }
 }, 20000);
-const suspended = new Map();
+const contexts = new Map();
+const disposeContext = context => {
+  clearTimeout(context.timer);
+  if (contexts.get(context.session.resumeId) === context) contexts.delete(context.session.resumeId);
+  context.expire?.();
+  context.session.dispose();
+};
 wss.on('close', () => {
   clearInterval(heartbeat);
-  for (const { session, timer } of suspended.values()) { clearTimeout(timer); session.dispose(); }
-  suspended.clear();
+  for (const context of contexts.values()) disposeContext(context);
+  contexts.clear();
 });
 
 // The token arrives as the first message rather than in the URL, so it never shows up in proxy logs.
@@ -59,6 +65,9 @@ wss.on('connection', (ws, req) => {
   ws.alive = true;
   ws.on('pong', () => { ws.alive = true; });
   let session = null;
+  let context = null;
+  let authenticating = false;
+  let retired = false;
   let authorization = null;
   let unsubscribeOperations = null;
   const authTimer = setTimeout(() => ws.close(4001, 'auth timeout'), 5000);
@@ -75,11 +84,39 @@ wss.on('connection', (ws, req) => {
   const pendingMetadata = new Set();
   const imageActions = [];
   let imageGroup = 0;
-  ws.on('message', raw => {
+  const tasks = new Set();
+  const track = task => {
+    tasks.add(task);
+    task.then(() => tasks.delete(task), () => tasks.delete(task));
+    return task;
+  };
+  const retain = () => {
+    context.owner = null;
+    context.expires = Date.now() + RESUME_MS;
+    context.expiry = new Promise(resolve => { context.expire = resolve; });
+    context.timer = setTimeout(() => disposeContext(context), RESUME_MS);
+    context.timer.unref();
+    context.draining = Promise.allSettled([...tasks]).then(() => {
+      if (!session.disposed && !context.owner) session.suspend();
+    });
+  };
+  const connection = { ws, retire() {
+    retired = true;
+    authorization.valid = false;
+    authorization.release();
+    unsubscribeOperations?.();
+    removeViewer(session);
+    reads.abort(new Error('连接已移交'));
+    retain();
+    ws.close(4002, 'connection replaced');
+  } };
+  ws.on('message', async raw => {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
     if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return;
     if (!session) {
+      if (authenticating) return;
+      authenticating = true;
       clearTimeout(authTimer);
       const device = msg.t === 'auth' ? authenticateDevice(msg.token, msg.proof, 'WS /ws') : null;
       const identity = { id: computerId(), name: computerName(), device: device?.id || '' };
@@ -87,20 +124,44 @@ wss.on('connection', (ws, req) => {
         ws.send(JSON.stringify({ t: 'auth', ok: false, ...identity, needTotp: Boolean(device) }));
         return ws.close(4001, 'unauthorized');
       }
+      authorization = bindDeviceConnection(device.id, () => ws.close(4001, 'unauthorized'));
+      if (!authorization.valid || ws.readyState !== 1) return;
       updateDevice(device.id, { lastSeen: Date.now() });
-      const previous = suspended.get(msg.resume);
-      const resumed = previous?.session.deviceId === device.id && previous.expires > Date.now()
-        && previous.session.bindingReady && previous.session.cdp?.ws?.readyState === 1;
+      const previous = contexts.get(msg.resume);
+      const candidate = previous?.session.deviceId === device.id && previous.expires > Date.now()
+        && !previous.session.disposed && previous.session.cdp?.ws?.readyState === 1
+        && ['cursor', 'devin', 'codex'].includes(previous.session.app);
+      if (candidate) {
+        previous.claim?.close(4002, 'connection replaced');
+        previous.claim = ws;
+        ws.send(JSON.stringify({ t: 'auth', ok: true, ...identity, restoring: true }));
+        previous.owner?.retire();
+        await Promise.race([previous.draining, previous.expiry]);
+        if (!authorization.valid || ws.readyState !== 1 || previous.claim !== ws) return;
+        const currentDevice = findDevice(msg.token);
+        if (!currentDevice || currentDevice.id !== device.id || needsTotp(currentDevice)) {
+          authorization.valid = false;
+          ws.send(JSON.stringify({ t: 'auth', ok: false, ...identity, needTotp: Boolean(currentDevice) }));
+          return ws.close(4001, 'unauthorized');
+        }
+        previous.claim = null;
+      }
+      const resumed = candidate && contexts.get(msg.resume) === previous && previous.expires > Date.now()
+        && previous.session.bindingReady && !previous.session.disposed && previous.session.cdp?.ws?.readyState === 1;
       if (resumed) {
         clearTimeout(previous.timer);
-        suspended.delete(msg.resume);
+        context = previous;
         session = previous.session;
         session.client = ws;
       } else {
+        if (candidate && contexts.get(msg.resume) === previous) disposeContext(previous);
         session = new Session(ws, device.id);
         session.resumeId = crypto.randomUUID();
+        context = { session };
+        contexts.set(session.resumeId, context);
       }
-      authorization = bindDeviceConnection(device.id, () => ws.close(4001, 'unauthorized'));
+      context.owner = connection;
+      context.expires = Infinity;
       subscribeLibrary(ws);
       addViewer(session);
       ws.send(JSON.stringify({ t: 'auth', ok: true, ...identity, lastSelection: lastSelection(device.id),
@@ -116,14 +177,14 @@ wss.on('connection', (ws, req) => {
     const request = beginOperation(session, msg);
     if (request?.duplicate) return;
     const operation = request?.operation;
-    const run = action => withOperation(operation, async () => {
+    const run = action => track(withOperation(operation, async () => {
       if (operation) session.activeOperations = (session.activeOperations || 0) + 1;
       try { return await action(); }
       finally {
         operation?.finish();
         if (operation && !--session.activeOperations && session.disposed) session.dispose();
       }
-    });
+    }));
     const sendRequest = msg.t === 'send' && msg.submit !== false && session.app !== 'fusion'
       ? { controller: new AbortController(), sel: msg.sel || session.selectionKey(), msg, operation } : null;
     if (sendRequest) sends.add(sendRequest);
@@ -270,31 +331,27 @@ wss.on('connection', (ws, req) => {
     };
     const executeRequest = () => run(execute);
     if (imageAction) imageActions.push({ group, execute: executeRequest });
-    if (flag(route?.background, session, msg)) queue.then(executeRequest);
-    else if (msg.t === 'question' || msg.t === 'codexRequest') questionQueue = questionQueue.then(executeRequest);
-    else queue = (switching ? Promise.all([queue, questionQueue]) : queue).then(executeRequest);
+    if (flag(route?.background, session, msg)) track(queue.then(executeRequest));
+    else if (msg.t === 'question' || msg.t === 'codexRequest') track(questionQueue = questionQueue.then(executeRequest));
+    else track(queue = (switching ? Promise.all([queue, questionQueue]) : queue).then(executeRequest));
   });
   ws.on('close', () => {
     clearTimeout(authTimer);
     const authorized = authorization?.valid;
     authorization?.release();
     unsubscribeOperations?.();
+    if (retired) return;
     reads.abort(new Error('连接已关闭'));
-    navigationReads.abort(new Error('连接已关闭'));
-    if (!session) return;
+    if (!session || context.owner !== connection) return;
     if (session.sessionBatch) session.sessionBatch.cancelled = true;
     removeViewer(session);
-    if (authorized && session.bindingReady && !activeNavigation && !session.activeOperations && !session.focusCount
+    if (authorized && !session.disposed && session.cdp?.ws?.readyState === 1
         && ['cursor', 'devin', 'codex'].includes(session.app)) {
-      session.suspend();
-      const expires = Date.now() + RESUME_MS;
-      const timer = setTimeout(() => {
-        suspended.delete(session.resumeId);
-        session.dispose();
-      }, RESUME_MS);
-      timer.unref();
-      suspended.set(session.resumeId, { session, expires, timer });
-    } else session.dispose();
+      retain();
+    } else {
+      navigationReads.abort(new Error('连接已关闭'));
+      disposeContext(context);
+    }
     console.log(`[-] client ${clientIp(req)}`);
   });
 });

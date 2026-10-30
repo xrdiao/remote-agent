@@ -13,6 +13,7 @@ const OV_EN = {
   '概览': 'Overview', '全部电脑': 'All computers', '电脑范围': 'Computer scope', '不常用': 'Infrequent', '打开对话': 'Open conversation', '进行中': 'In progress',
   '已加入排队': 'Queued', '发送结果待确认，请打开对话查看；草稿已保留': 'Send not confirmed; open the conversation to check. Draft kept.',
   '查找地址…': 'Finding address…', '连接电脑…': 'Connecting…', '正在读取项目与会话…': 'Loading projects and sessions…',
+  '正在验证设备…': 'Verifying device…', '正在恢复连接…': 'Restoring connection…',
   '重新连接': 'Reconnect', '重新授权': 'Authorize again', '连接详情': 'Connection details', '等待连接…': 'Waiting to connect…',
   '正在读取最新消息…': 'Loading the latest message…', '暂无可读取的摘要': 'No readable preview available', '暂无文本消息': 'No text messages yet', '摘要读取失败': 'Could not load the preview',
   '需要你': 'Needs you', '运行中': 'Running', '正在工作': 'Working', '已停止': 'Stopped', '已完成': 'Done', '空闲': 'Idle', '不活跃': 'Inactive', '全部会话': 'All sessions', '离线': 'Offline', '问题': 'Question',
@@ -50,7 +51,23 @@ const ovRank = r => OV_RANK[r.state];
 const ovRecency = r => Math.max(r.start || 0, r.ended || 0, r.used || 0);
 const ovCount = recs => recs.reduce((k, r) => (k[r.state]++, k), { wait: 0, run: 0, err: 0, done: 0, idle: 0 });
 const ovCompName = id => ovList.find(e => e.id === id)?.name || '';
-const ovOn = e => ovSt.get(e.id)?.status === 'online';
+const ovOn = e => ovComputerStatus(e) === 'online';
+
+function ovComputerStatus(e, st = ovSt.get(e.id)) {
+  const link = e.c && computerSockets.get(e.c.key), status = st?.status || 'loading';
+  if (e.foreign) return status;
+  if (link?.rejected) return link.auth?.id === e.id ? 'auth' : 'offline';
+  if (status === 'identity') return 'offline';
+  if (status === 'auth' || status === 'old') return status;
+  if (link?.socket.readyState < 2) {
+    const foreground = e.c.key === currentComputer()?.key && link.socket === ws;
+    const pending = foreground ? conn.initialSelection && !windowReady && !conn.attachFailed
+      : link.preload && !computerBindingReady(link) && !link.preload.outcome;
+    return link.authed && st?.data?.ready && !pending ? 'online' : 'loading';
+  }
+  if (link?.socket.readyState >= 2) return 'offline';
+  return status === 'online' ? 'loading' : status;
+}
 
 function ovStOf(id) {
   let st = ovSt.get(id);
@@ -123,11 +140,11 @@ function ovPreviewHtml(r) {
     : !preview?.value ? ovT('正在读取最新消息…')
     : !preview.value.available ? ovT('暂无可读取的摘要')
     : !preview.value.last ? ovT('暂无文本消息') : '';
-  return hint ? `<div class="ov-hint">${esc(hint)}</div>` : `<div class="ov-last">${ovText(preview.value.last)}</div>`;
+  return hint ? `<div class="ov-hint">${esc(hint)}</div>` : `<div class="ov-last" data-ov-preview="${esc(r.key)}">${ovText(preview.value.text)}</div>`;
 }
 function ovFetch(e) {
   const st = ovStOf(e.id);
-  return st.flight ||= ovLoad(e, st).catch(() => { if (st.status !== 'auth') st.status = 'offline'; }).finally(() => { st.flight = null; ovRender(); });
+  return st.flight ||= ovLoad(e, st).catch(() => { if (!['auth', 'identity'].includes(st.status)) st.status = 'offline'; }).finally(() => { st.flight = null; ovRender(); });
 }
 async function ovRead(c, relay) {
   const res = await fetch(relay + '/api/overview', { cache: 'no-store', signal: AbortSignal.timeout(8000), headers: await entryHeaders(c, 'GET', '/api/overview') }).catch(() => null);
@@ -141,6 +158,8 @@ async function ovLoad(e, st) {
   const c = e.c;
   st.stage = c.relay ? 1 : 0;
   let r = c.relay ? await ovRead(c, c.relay) : { down: true };
+  if (r.auth) st.status = 'auth';
+  if (r.data && r.data.id !== e.id) st.status = 'identity';
   if (r.down || r.auth || (r.data && r.data.id !== e.id)) {
     st.stage = 0; ovRender();
     const relay = await relayOf({ ...c, discovery: c.discovery || new URL('url.json', location.href).href });
@@ -150,7 +169,7 @@ async function ovLoad(e, st) {
   if (r.down) throw new Error('down');
   if (r.auth) { st.status = 'auth'; return; }
   if (r.old) { st.status = 'old'; return; }
-  if (r.data.id !== e.id) throw new Error('id');
+  if (r.data.id !== e.id) { st.status = 'identity'; throw new Error('id'); }
   st.offset = r.data.now - Date.now(); st.seen = Date.now(); st.status = 'online';
   ovApply(e, st, r.data);
 }
@@ -183,7 +202,7 @@ function ovNotify(r, kind) {
   ovToast(`${ovRecLogo(r)}<span class="ovRaw">${esc(r.title)}</span><small>${label}</small>`, r.key);
 }
 function ovRecsOf(e, st) {
-  const off = st.status !== 'online', out = [];
+  const off = ovComputerStatus(e, st) !== 'online', out = [];
   for (const s of st.data.sessions) {
     const key = ovNativeKey(e.id, s), done = ovDone[key], since = s.startedAt || st.first.get(key);
     out.push({ key, comp: e.id, off, state: s.waiting ? 'wait' : s.busy ? 'run' : done ? 'done' : 'idle', busy: !!s.busy, wait: s.waiting || '',
@@ -206,7 +225,7 @@ function ovProjects(all) {
     const st = ovSt.get(e.id);
     if (!st?.data) continue;
     for (const w of st.data.windows) map.set(`${e.id}|${w.windowId}`, { key: `${e.id}|${w.windowId}`, comp: e.id, win: w.win, windowId: w.windowId, app: w.app, name: w.project });
-    if (st.status === 'online') map.set(`${e.id}|fusion`, { key: `${e.id}|fusion`, comp: e.id, win: 'fusion', windowId: 'fusion', app: 'fusion', name: 'Fusion' });
+    if (ovOn(e)) map.set(`${e.id}|fusion`, { key: `${e.id}|fusion`, comp: e.id, win: 'fusion', windowId: 'fusion', app: 'fusion', name: 'Fusion' });
   }
   for (const r of all) if (!map.has(r.project)) map.set(r.project, { key: r.project, comp: r.comp, win: r.win, windowId: r.windowId, app: r.app, name: r.projName });
   return [...map.values()];
@@ -250,13 +269,7 @@ function ovAgg({ attrs, logo, title, sub, recs, badge, off, vt }) {
 }
 function ovComputerGroup(e, all, projs) {
   const st = ovSt.get(e.id), link = e.c && computerSockets.get(e.c.key);
-  const foreground = e.c?.key === currentComputer()?.key && link?.socket === ws;
-  const firstScreenPending = foreground ? conn.initialSelection && !windowReady && !conn.attachFailed
-    : link?.preload && !computerBindingReady(link) && !link.preload.outcome;
-  let status = st?.status || 'loading';
-  if (link?.rejected) status = link.auth?.id === e.id ? 'auth' : 'offline';
-  else if (link?.socket.readyState >= 2 && !link.authed) status = 'offline';
-  else if (status === 'online' && (!st.data.ready || !link?.authed || firstScreenPending)) status = 'loading';
+  const status = ovComputerStatus(e, st);
   if (status === 'online' && !st.loaded) {
     st.loaded = true;
     if (!st.folded) ovCollapsed.delete(e.id);
@@ -274,8 +287,8 @@ function ovComputerGroup(e, all, projs) {
     detail = st?.seen ? `离线 · 最后在线 ${ovFmt(Date.now() - st.seen)} 前` : ovT('尚未连接');
   } else if (!loading) detail = ovS.level === 'projects' ? `${projects.length} 个项目` : `${recs.length} 个会话`;
   if (status === 'online' && e.c?.key === currentComputer()?.key && conn.attachFailed) detail = I18N.tr('当前会话尚未就绪');
-  const stage = link?.authed ? 2 : st?.stage || 0;
-  if (loading) detail = ovT(link?.authed ? '正在读取项目与会话…' : !link && st?.data ? '等待连接…' : stage ? '连接电脑…' : '查找地址…');
+  const stage = link?.authed || link?.restoring ? 2 : link?.opened ? 1 : st?.stage || 0;
+  if (loading) detail = ovT(link?.restoring ? '正在恢复连接…' : link?.authed ? '正在读取项目与会话…' : link?.opened ? '正在验证设备…' : !link && st?.data ? '等待连接…' : stage ? '连接电脑…' : '查找地址…');
   const progress = loading && !e.foreign ? `<span class="ov-computer-progress" aria-hidden="true">${[0, 1, 2].map(i => `<i class="${i < stage ? 'done' : i === stage ? 'current' : ''}"></i>`).join('')}</span>` : '';
   ovSig.push(`c:${e.id}:${status}:${loading ? stage : ''}:${collapsed}`);
   const body = !collapsed && st?.data ? ovS.level === 'projects' ? ovProjectTiles(projects, all, false) : ovSessions(recs, e.id) : '';
@@ -388,6 +401,8 @@ function ovPlan() {
   return { focus, up: !!(ovS.open || ovS.comp || ovS.proj), crumbs: crumbs.join(''), levels, summary, lane, board, layout, paint };
 }
 function ovCommit(p) {
+  const preview = $('ovBoard').querySelector('[data-ov-preview]');
+  const previewScroll = preview && { key: preview.dataset.ovPreview, top: preview.scrollTop };
   ovPaint = p.paint;
   ovLaid = p.layout;
   $('overview').classList.toggle('ov-project', !!ovS.proj);
@@ -401,6 +416,8 @@ function ovCommit(p) {
   $('ovLane').innerHTML = p.lane;
   $('ovLane').hidden = !p.lane;
   $('ovBoard').innerHTML = p.board;
+  const nextPreview = $('ovBoard').querySelector('[data-ov-preview]');
+  if (nextPreview && nextPreview.dataset.ovPreview === previewScroll?.key) nextPreview.scrollTop = previewScroll.top;
   const input = p.focus && document.querySelector(`[data-ov-input="${CSS.escape(p.focus)}"]`);
   if (input) { input.focus({ preventScroll: true }); input.setSelectionRange(input.value.length, input.value.length); }
 }
