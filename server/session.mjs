@@ -18,7 +18,7 @@ import { leaseWindow, windowOperationLocked } from './window-use.mjs';
 import {visualCapture, visualWindows, wayland} from './visual/capture.mjs';
 import { rememberSelection, lastSelection, forgetSelection } from '../lib/auth.mjs';
 import { editorRoots } from '../lib/files.mjs';
-import { NativeCdp, nativeWindow, nativeWindowAt, nativeTargets } from './native-windows.mjs';
+import { NativeCdp, nativeWindow, nativeWindowAt, nativeTargets, subscribeCatalog } from './native-windows.mjs';
 import { captureOperation } from './operations.mjs';
 
 export class Session extends AgentContext {
@@ -40,8 +40,28 @@ export class Session extends AgentContext {
     const watchGeneration = this.chatWatchGeneration = (this.chatWatchGeneration || 0) + 1;
     cdpRead.run(null, () => this.chatUpdatesStop?.());
     this.chatUpdatesStop = null;
+    this.catalogUpdatesStop?.();
+    this.catalogUpdatesStop = null;
     if (this.mode === 'screen' && mode !== 'screen') this.stopVisual();
     this.mode = mode === 'screen' || mode === 'terminal' ? mode : 'chat';
+    if (this.visible && !this.fusionOwner && ['cursor', 'devin', 'codex'].includes(this.app)) {
+      const cdp = this.cdp, app = this.app;
+      this.catalogUpdatesStop = subscribeCatalog(app, error => {
+        if (!this.visible || this.cdp !== cdp || this.app !== app || this.switchingThread || !this.bindingReady) return;
+        if (error) return this.emit({ t: 'status', ok: false, msg: '会话目录同步失败：' + error.message });
+        if (this.catalogRefresh?.cdp === cdp) { this.catalogRefresh.again = true; return; }
+        const refresh = this.catalogRefresh = { cdp, again: false };
+        cdpRead.run(null, async () => {
+          do {
+            refresh.again = false;
+            if (!this.visible || this.cdp !== cdp || this.app !== app || !this.bindingReady) break;
+            await this.listAgents(true, true);
+          } while (refresh.again);
+        }).catch(error => {
+          if (this.cdp === cdp && this.app === app) this.emit({ t: 'status', ok: false, msg: '会话目录同步失败：' + error.message });
+        }).finally(() => { if (this.catalogRefresh === refresh) this.catalogRefresh = null; });
+      });
+    }
     this.lastChatAt = this.lastTermAt = 0;
     clearInterval(this.chatTimer);
     clearInterval(this.termTimer);
@@ -419,6 +439,8 @@ export class Session extends AgentContext {
   }
 
   navigationFailed(message, error) {
+    this.catalogUpdatesStop?.();
+    this.catalogUpdatesStop = null;
     const app = message.t === 'attach' ? String(message.id || '').split(':')[0] || this.app : this.app;
     let failure = error.message;
     try { forgetSelection(this.deviceId, app); }
@@ -468,6 +490,8 @@ export class Session extends AgentContext {
   // actions that type/tap, and is switched off again shortly after they finish.
 
   detach() {
+    this.catalogUpdatesStop?.();
+    this.catalogUpdatesStop = null;
     this.bindingReady = false;
     this.rememberedSelection = '';
     const read = this.chatRead;

@@ -516,12 +516,13 @@ export const methods = {
     if (grouped) {
       this.projectAgentWindows ||= new Map();
       this.projectAgentCache ||= new Map();
-      if (!readOnly || !this.projectAgentWindows.has(app)) {
+      {
         let windows = (await listWindows(null, app)).filter(w => w.app === app);
         if (app === 'devin') windows = await this.devinProjectWindows(windows);
         else for (const w of windows) w.project = windowRoots(w.title, app)[0];
         if (!this.liveRead(cdp, sel)) return;
         this.projectAgentWindows.set(app, windows);
+        for (const id of this.projectAgentCache.keys()) if (!windows.some(w => w.id === id)) this.projectAgentCache.delete(id);
         if (!readOnly) for (const w of windows) if (w.id !== this.targetId) this.projectAgentCache.delete(w.id);
         if (readOnly && !this.fusionOwner) for (const w of windows) {
           const source = nativeWindowAt(w.ws);

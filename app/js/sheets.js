@@ -87,18 +87,33 @@ function legacyAgentLibrary() {
   }
   return [...entries.values()];
 }
-function sharedAgentRecord(id) {
+function sharedAgentRecord(id, app = currentApp) {
   return sharedAgentLibrary.computer === currentComputer()?.id
-    ? sharedAgentLibrary.records[currentApp]?.[agentThreadKey({ id })] || {} : {};
+    ? sharedAgentLibrary.records[app]?.[agentThreadKey({ id }, app)] || {} : {};
+}
+function agentSessionAvailable(row, app = currentApp) {
+  const state = sharedAgentRecord(row.id, app);
+  return row.ui || !state.archived && !state.deleted;
 }
 function receiveSessionLibrary(message) {
   if (message.computer !== currentComputer()?.id) return;
   sharedAgentLibrary = message;
+  for (const app of ['cursor', 'devin', 'codex']) {
+    const prefix = currentComputer().key + ':' + app;
+    for (const [key, list] of [...agentLists]) {
+      if (key !== prefix && !key.startsWith(prefix + ':')) continue;
+      const available = list.filter(row => agentSessionAvailable(row, app));
+      if (available.length !== list.length) setAgentList(key, available);
+    }
+  }
   if (pendingAgentFavorite && message.records[pendingAgentFavorite.app]?.[agentThreadKey({ id: pendingAgentFavorite.id }, pendingAgentFavorite.app)]?.favorite === pendingAgentFavorite.on) {
     status(pendingAgentFavorite.on ? '已设为常用' : '已取消常用');
     pendingAgentFavorite = null;
   }
   if (sheetKind === 'agents') renderAgentList();
+  const here = currentComputer();
+  if (windowReady && !navigationPending && !agentSessionAvailable({ id: here.threadId }))
+    send({ t: 'attach', id: here.win, windowId: here.windowId, threadId: '' });
 }
 function receiveSessionChange(message) {
   if (message.computer !== currentComputer()?.id) return;

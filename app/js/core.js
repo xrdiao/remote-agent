@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v312'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v313'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false, failures = 0;
 let windowReady = false;
@@ -55,14 +55,14 @@ function receiveAgents(m) {
   const key = agentListKey();
   const previous = agentLists.get(key) || [];
   const previousById = new Map(previous.map(a => [a.id, a]));
-  let list = m.list || [];
+  let list = (m.list || []).filter(a => agentSessionAvailable(a));
   list = list.map(a => {
     const old = previousById.get(a.id);
     const running = old && !Object.hasOwn(a, 'running') && Object.hasOwn(old, 'running') ? { running: old.running } : {};
     return { ...a, ...running, title: a.title || old?.title || '未命名会话' };
   });
   if (m.partial) {
-    const remaining = (agentLists.get(key) || []).filter(a => a.picker);
+    const remaining = (agentLists.get(key) || []).filter(a => a.picker && agentSessionAvailable(a));
     list = [...list, ...remaining.filter(a => !list.some(b => agentThreadKey(b) === agentThreadKey(a)))];
   }
   const changed = JSON.stringify(agentLists.get(key)) !== JSON.stringify(list);
@@ -70,11 +70,16 @@ function receiveAgents(m) {
   if (!m.silent) finishPending(['正在读取 Agent 列表…', '正在归档…']);
   if (sheetKind === 'agents' && changed) showAgents(list);
 }
+function requestAgentCatalog() {
+  if (authed && windowReady && !navigationPending && ['cursor', 'devin', 'codex'].includes(currentApp))
+    return send({ t: 'agents', automatic: true, silent: true });
+}
 function openAgentList(refresh = false) {
   const cached = agentLists.get(agentListKey());
   if (cached) showAgents(cached);
   else { openSheet('agents', '<h3>项目与会话</h3><p class="hint">正在读取 Agent 列表…</p>'); status('正在读取 Agent 列表…'); }
-  send({ t: 'agents', automatic: !!cached && !refresh, silent: !!cached && !refresh, checkTrust: true });
+  if (cached && !refresh) requestAgentCatalog();
+  else send({ t: 'agents', checkTrust: true });
 }
 let currentAppName = I18N.tr('当前应用');
 let viewSel = '';

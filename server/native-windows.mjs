@@ -4,9 +4,72 @@ import { PAGE_SRC, helpersCall } from './page/build.mjs';
 import { editorRoots } from '../lib/files.mjs';
 import { bindOperation, publishDesktopState, withOperation } from './operations.mjs';
 import { AgentContext } from './agent/context.mjs';
+import { projectSessionIds, reconcileSessionCatalog, updateProjectWindowTargets } from './project-windows.mjs';
+import { codexSessionStates } from './windows.mjs';
 
 // Native connections and read state belong to windows, not to a phone's current view.
 const windows = new Map();
+const catalogListeners = new Map(), catalogReads = new Map();
+export function subscribeCatalog(app, changed) {
+  if (!catalogListeners.has(app)) catalogListeners.set(app, new Set());
+  const listeners = catalogListeners.get(app);
+  listeners.add(changed);
+  return () => listeners.delete(changed);
+}
+const publishCatalog = (app, error) => withOperation(null, () => {
+  for (const changed of catalogListeners.get(app) || []) changed(error);
+});
+function mergeDevinCatalogs(catalogs) {
+  const ready = catalogs.filter(catalog => catalog.ready), rows = new Map(), removedAt = {};
+  for (const catalog of ready) {
+    for (const row of catalog.rows) {
+      const previous = rows.get(row.id);
+      if (!previous || row.at > previous.at || row.at === previous.at && row.archived) rows.set(row.id, row);
+    }
+    for (const [id, at] of Object.entries(catalog.removedAt || {})) removedAt[id] = Math.max(removedAt[id] || 0, at);
+  }
+  if (catalogs.length === ready.length && ready.every(catalog => catalog.cliReady)) {
+    const at = Math.min(...ready.map(catalog => catalog.at));
+    for (const id of ready[0].missing) if (ready.every(catalog => catalog.missing.includes(id))) removedAt[id] = Math.max(removedAt[id] || 0, at);
+  }
+  return { ready: ready.length > 0, complete: false, rows: [...rows.values()], removed: Object.keys(removedAt), removedAt };
+}
+async function refreshSessionCatalog(source, changed) {
+  const app = source.win?.app;
+  if (!['cursor', 'devin', 'codex'].includes(app)) return;
+  if (!catalogReads.has(app)) catalogReads.set(app, { at: 0 });
+  const read = catalogReads.get(app);
+  if (read.promise) {
+    if (changed) read.pending = source;
+    return read.promise;
+  }
+  if (!changed && Date.now() - read.at < 15000) return;
+  read.at = Date.now();
+  read.promise = (async () => {
+    const sources = app === 'devin' ? [...new Set([source, ...[...windows.values()].filter(window => window.win?.app === app)])] : [source];
+    const catalogs = await Promise.all(sources.map(async window => {
+      await window.connect();
+      return window.cdp.evaluate(helpersCall(`nativeSessionInfo(${JSON.stringify(app)}, ${JSON.stringify(projectSessionIds(app))}, true)`), { timeout: 30000 });
+    }));
+    const catalog = app === 'devin' ? mergeDevinCatalogs(catalogs) : catalogs[0];
+    if (!catalog.ready) return;
+    if (app === 'codex' && catalog.unknown?.length) {
+      const states = await codexSessionStates(catalog.unknown, catalog.rows.map(row => row.path).filter(Boolean));
+      for (const [id, state] of states) {
+        if (state === 'deleted') catalog.removed.push(id);
+        else catalog.rows.push({ id, archived: state === 'archived' });
+      }
+    }
+    const reconciled = reconcileSessionCatalog(app, catalog);
+    if (changed || reconciled) publishCatalog(app);
+  })().catch(error => publishCatalog(app, error)).finally(() => {
+    read.promise = null;
+    const pending = read.pending;
+    read.pending = null;
+    if (pending) refreshSessionCatalog(pending, true).catch(error => publishCatalog(app, error));
+  });
+  await read.promise;
+}
 let discover = null, discovering = null, discoveryAt = 0;
 let targets = [];
 export const nativeTargets = () => targets;
@@ -135,6 +198,10 @@ export class NativeWindow {
       controller.signal.throwIfAborted();
       this.catalog = result.catalog || [];
       this.catalogAt = Date.now();
+      const catalogKey = JSON.stringify(this.catalog.map(row => [row.id, row.title, row.workspace, row.host, row.current, row.running]));
+      const catalogChanged = catalogKey !== this.catalogKey;
+      this.catalogKey = catalogKey;
+      refreshSessionCatalog(this, catalogChanged).catch(error => publishCatalog(app, error));
       const key = JSON.stringify(result);
       const changed = key !== this.snapshotKey;
       this.snapshotKey = key;
@@ -307,11 +374,17 @@ export function startNativeWindows(listWindows) {
   const scan = async () => {
     if (discovering) return;
     discovering = (async () => {
+      const previous = targets;
       targets = (await discover()).filter(win => win.ws && win.app !== 'fusion');
+      updateProjectWindowTargets(targets);
       for (const win of targets) {
         let source = windows.get(win.ws);
         if (!source) windows.set(win.ws, source = new NativeWindow(win.ws));
         source.start(win).catch(() => {});
+      }
+      for (const app of ['cursor', 'devin', 'codex']) {
+        const signature = rows => JSON.stringify(rows.filter(window => window.app === app).map(window => window.ws).sort());
+        if (signature(previous) !== signature(targets)) publishCatalog(app);
       }
     })().catch(() => {}).finally(() => { discovering = null; discoveryAt = Date.now(); });
     return discovering;

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from '../lib/auth.mjs';
 import { normPath } from '../lib/platform.mjs';
-import { readLibrary, sessionId } from '../lib/session-library.mjs';
+import { readLibrary, sessionId, syncLibrarySessions } from '../lib/session-library.mjs';
 import { EDITORS, CODEX_CDP_URL } from './config.mjs';
 import { Cdp } from './cdp.mjs';
 import { codexWindows } from './windows.mjs';
@@ -31,10 +31,50 @@ export function touchProjectWindow(app, id) {
   }
 }
 export function storedProjectSession(app, value) {
-  const row = saved.sessions[app + ':' + sessionId(app, value)];
+  const id = sessionId(app, value), state = readLibrary()[app]?.[id];
+  if (state?.archived || state?.deleted) return null;
+  const row = saved.sessions[app + ':' + id];
   return row && { ...row, dormant: !!saved.windows[key(app, row.ownerWindow)]?.closed };
 }
+export function projectSessionIds(app) {
+  return Object.entries(saved.sessions).filter(([k, row]) => k.startsWith(app + ':') && !row.host).map(([k]) => k.slice(app.length + 1));
+}
+export function updateProjectWindowTargets(targets) {
+  const present = new Set(targets.map(window => key(window.app, window.pageId || window.id)));
+  let changed = false;
+  for (const [id, window] of Object.entries(saved.windows)) {
+    if (!['cursor', 'devin', 'codex'].includes(window.app)) continue;
+    const closed = !present.has(id);
+    if (!!window.closed === closed) continue;
+    window.closed = closed;
+    changed = true;
+  }
+  if (changed) persist();
+}
+export function reconcileSessionCatalog(app, catalog) {
+  const states = new Map(catalog.rows.map(row => [sessionId(app, row.id), row.archived ? 'archived' : 'active']));
+  const times = new Map(catalog.rows.filter(row => row.at != null).map(row => [sessionId(app, row.id), row.at]));
+  for (const value of catalog.removed || []) {
+    const id = sessionId(app, value), at = catalog.removedAt?.[value];
+    if (at != null && at < (times.get(id) || 0)) continue;
+    states.set(id, 'deleted');
+    if (at != null) times.set(id, at);
+  }
+  if (catalog.complete) for (const id of projectSessionIds(app)) if (!states.has(id)) states.set(id, 'deleted');
+  const synchronized = syncLibrarySessions(app, states, times);
+  let changed = false;
+  for (const [id, state] of states) if (state === 'deleted' && readLibrary()[app]?.[id]?.deleted && saved.sessions[app + ':' + id]) {
+    delete saved.sessions[app + ':' + id];
+    changed = true;
+  }
+  if (changed) persist();
+  return synchronized || changed;
+}
 export function catalogSessions(app, rows, currentWindow) {
+  rows = rows.filter(row => {
+    const state = readLibrary()[app]?.[sessionId(app, row.id)];
+    return row.ui || !state?.archived && !state?.deleted;
+  });
   let changed = false;
   for (const row of rows) {
     if (row.ui || row.dormant) continue;
