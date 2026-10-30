@@ -1473,7 +1473,7 @@ function requestOlderRemote() {
     const orders = lastChat.items.map(it => it.order).filter(Number.isFinite);
     Object.assign(paging, { before: historyCursor ?? (orders.length ? Math.min(...orders) : null),
       known: SC.key ? [...SC.items.keys()] : lastChat.items.map(it => it.i), details: executionRecordsShown() });
-  }
+  } else if (currentApp === 'cursor') paging.before = lastChat.items[0]?.i || null;
   if (send({ t: 'scrollChat', dy: -900, automatic: true, history: true, requestId: historyRequest.id, ...paging }) === false) {
     historyExpanded = historyRequest.expanded;
     clearHistoryRequest();
