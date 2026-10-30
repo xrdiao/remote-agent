@@ -128,16 +128,19 @@ function receiveSessionChange(message) {
   if (message.action !== 'rename' && currentApp === message.app && here.threadId === message.id)
     send({ t: 'attach', id: here.win, windowId: here.windowId, threadId: '' });
 }
+function agentSessionCommon(record) {
+  const lastMessageAt = Number(record.lastMessageAt) || 0;
+  const ageDays = lastMessageAt > 0 && lastMessageAt <= Date.now() ? (Date.now() - lastMessageAt) / 86400000 : Infinity;
+  return record.favorite === true || (lastMessageAt > 0 && ageDays <= 7);
+}
 function agentUsageInfo(a) {
   const thread = agentThreadKey(a);
   const saved = { ...(agentUsage[agentUsageKey(thread)] || {}), ...(agentUsage[agentUsageKey(a.id)] || {}) };
   const opened = agentOpened[agentOpenedKey(thread)] || 0;
   const lastUsed = Math.max(Number(a.lastUsed) || 0, Number(saved.last) || 0, opened);
   const shared = sharedAgentRecord(a.id);
-  const lastMessageAt = Number(shared.lastMessageAt) || 0;
-  const ageDays = lastMessageAt > 0 && lastMessageAt <= Date.now() ? (Date.now() - lastMessageAt) / 86400000 : Infinity;
   const favorite = shared.favorite === true;
-  return { ...a, ...(shared.title && !a.ui ? { title: shared.title } : {}), lastUsed, favorite, common: favorite || (lastMessageAt > 0 && ageDays <= 7) };
+  return { ...a, ...(shared.title && !a.ui ? { title: shared.title } : {}), lastUsed, favorite, common: agentSessionCommon(shared) };
 }
 function agentFavoriteState(id) {
   return sharedAgentRecord(id).favorite === true;
@@ -695,6 +698,13 @@ function showAgents(list) {
 $('sheet').addEventListener('click', async e => {
   const b = e.target.closest('button');
   if (!b) return;
+  if (sheetKind === 'main' && b.dataset.startView) {
+    store.set('start-view', b.dataset.startView);
+    const slider = b.closest('.agentSessionFilter');
+    slider.classList.toggle('common', b.dataset.startView === 'conversation');
+    slider.querySelectorAll('[data-start-view]').forEach(option => option.setAttribute('aria-pressed', String(option === b)));
+    return;
+  }
   if (sheetKind === 'project-windows') {
     const change = { ...(b.dataset.windowKey ? { window: b.dataset.windowKey } : {}) };
     for (const field of ['enabled', 'owned', 'keep']) if (b.hasAttribute('data-window-' + field)) change[field] = b.getAttribute('data-window-' + field) === '1';
@@ -1216,6 +1226,8 @@ function showAgentManager(refresh = false) {
 
 let usageTimer = null;
 function showMainMenu() {
+  const startConversation = store.get('start-view') === 'conversation';
+  const entryItem = `<div class="opt"><span class="lbl">默认进入<span class="sub">下次打开或刷新生效</span></span><div class="agentSessionFilter${startConversation ? ' common' : ''}" style="width:176px;max-width:70%;margin:0" role="group" aria-label="${esc(I18N.tr('默认进入'))}"><button type="button" data-start-view="overview" aria-pressed="${!startConversation}" style="padding:4px 2px">${I18N.tr('缩略图')}</button><button type="button" data-start-view="conversation" aria-pressed="${startConversation}" style="padding:4px 2px">${I18N.tr('会话内容')}</button></div></div>`;
   const notifyItem = `<button class="opt" id="notifySwitchRow" data-act="notifyToggle" role="switch" aria-checked="${notifyOn}"><span class="lbl">开启通知<span class="sub">Agent 完成或等你确认时提醒</span></span><span class="switch${notifyOn ? ' on' : ''}" aria-hidden="true"></span></button>`;
   const partialOn = connAutoPartialOn(), autoLaunchOn = store.get('conn-auto-launch') === '1';
   const connItems = `<button class="opt" id="menuPartialRow" data-act="connPartialToggle" role="switch" aria-checked="${partialOn}"><span class="lbl">部分失败时直接进入<span class="sub">连接电脑时，只要有一个 Agent 可用就自动进入</span></span><span class="switch${partialOn ? ' on' : ''}" aria-hidden="true"></span></button>`
@@ -1247,7 +1259,7 @@ function showMainMenu() {
     ${inApp && window.AgentRemoteApp?.listenStatus ? '<button class="opt" data-act="bg"><span class="lbl">后台连接<span class="sub">状态、电池优化、立即重连</span></span></button>' : ''}
     <button class="opt" data-act="cache"><span class="lbl">会话缓存<span class="sub">手机上保存的对话记录，可折叠、可清除</span></span></button>
     <button class="opt" data-act="lang"><span class="lbl">语言 / Language<span class="sub">中文 · English（${I18N.lang === 'en' ? 'English' : '中文'}）</span></span></button>`;
-  openSheet('main', `<div class="mainMenuHeader"><h3>菜单</h3><div class="mainMenuActions"><button class="menuHeaderAction" data-act="transfer" aria-label="${esc(I18N.tr('文件传输'))}" title="${esc(I18N.tr('文件传输'))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 16V4m0 0L3 8m4-4 4 4M17 8v12m0 0 4-4m-4 4-4-4"/></svg></button><button class="menuHeaderAction" data-act="localVoiceMenu" aria-label="${esc(I18N.tr('语音输入'))}" title="${esc(I18N.tr('语音输入'))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button><button class="menuHeaderAction menuComputer" data-act="computers" aria-label="${esc(I18N.tr('电脑'))}" title="${esc(I18N.tr('电脑'))}">${CONN_HOST_SVG}</button></div></div>${menuGroup('model', '模型', (appName ? `<div class="pSec">${esc(appName)}</div>` : '') + modelItems)}
+  openSheet('main', `<div class="mainMenuHeader"><h3>菜单</h3><div class="mainMenuActions"><button class="menuHeaderAction" data-act="transfer" aria-label="${esc(I18N.tr('文件传输'))}" title="${esc(I18N.tr('文件传输'))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 16V4m0 0L3 8m4-4 4 4M17 8v12m0 0 4-4m-4 4-4-4"/></svg></button><button class="menuHeaderAction" data-act="localVoiceMenu" aria-label="${esc(I18N.tr('语音输入'))}" title="${esc(I18N.tr('语音输入'))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button><button class="menuHeaderAction menuComputer" data-act="computers" aria-label="${esc(I18N.tr('电脑'))}" title="${esc(I18N.tr('电脑'))}">${CONN_HOST_SVG}</button></div></div>${entryItem}${document.body.classList.contains('conv') ? menuGroup('model', '模型', (appName ? `<div class="pSec">${esc(appName)}</div>` : '') + modelItems) : ''}
     ${menuGroup('general', '通用', menuGroup('connection', 'Agent 与连接', connectionItems, false)
       + menuGroup('settings', '应用设置与帮助', settingsItems, false))}`);
 }
