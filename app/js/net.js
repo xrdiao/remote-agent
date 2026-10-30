@@ -697,7 +697,7 @@ let retryTimer = null, pingTimer = null, lastRx = 0;
 function heartbeat() {
   if (!authed || !ws || ws.readyState !== 1) return;
   if (Date.now() - lastRx > 45000) return closeSocket(ws);
-  ws.send(JSON.stringify({ t: 'ping', visible: document.visibilityState === 'visible' }));
+  ws.send(JSON.stringify({ t: 'ping', visible: conversationVisible() }));
 }
 // close() waits for the peer's close frame, which a dead path never sends — the
 // socket then sits in CLOSING and onclose never fires. Force the cleanup.
@@ -896,7 +896,7 @@ async function warmComputerSockets() {
 
 function startComputerUpdates() {
   requestAgentCatalog();
-  send({ t: 'visible', v: document.visibilityState === 'visible' });
+  send({ t: 'visible', v: conversationVisible() });
   send({ t: 'lang', v: I18N.lang });
   clearInterval(usageTimer);
   usageTimer = setInterval(() => { if (authed && document.visibilityState === 'visible') send({ t: 'usage', automatic: true }); }, 60 * 1000);

@@ -5,6 +5,35 @@ const I18N = (() => {
   const lang = saved === 'zh' || saved === 'en' ? saved : /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
 
   const EN = {
+    "默认进入": "Start view",
+    "缩略图": "Overview",
+    "会话内容": "Conversation",
+    "下次打开或刷新生效": "On next open or reload",
+    "正在工作": "Working",
+    "不活跃": "Inactive",
+    "全部会话": "All sessions",
+    "需要更新电脑端": "Update the computer app",
+    "今日完成": "Done today",
+    "写方案": "Planning",
+    "复述": "Echo",
+    "核对复述": "Checking echo",
+    "评审": "Reviewing",
+    "正在工作…": "Working…",
+    "这里还没有会话": "No sessions here yet",
+    "需要重新连接": "Reconnect needed",
+    "在其入口中打开": "Open in its entry",
+    "活跃": "active",
+    "方案已写好，等你确认执行": "Plan is ready; waiting for your go-ahead",
+    "双方意见不一致，等你决定": "The two agents disagree; your call",
+    "需要你选择：完成、小修或退回": "Your choice: finish, small fix, or send back",
+    "请在对话中处理": "Handle this in the conversation",
+    "或者输入你的回答…": "Or type your answer…",
+    "告诉 Devin 下一步…": "Tell Devin what to do next…",
+    "电脑离线": "Computer offline",
+    "接受改动": "Accept changes",
+    "打开对话 →": "Open conversation →",
+    "已接受改动": "Changes accepted",
+    "连接电脑失败，请重试": "Could not reach the computer; try again",
     "版本与适配": "Version and compatibility",
     "重新检查适配": "Check compatibility again",
     "尚未检查版本与适配": "Version and compatibility have not been checked.",
@@ -627,6 +656,17 @@ const I18N = (() => {
     [/^未知按键: (.*)$/, 'Unknown key: $1'],
     [/^未知指令: (.*)$/, 'Unknown command: $1'],
     [/^(.*)（(安卓 App|安卓浏览器|Mac 浏览器|浏览器)）$/, (m, a, b) => `${a} (${{ '安卓 App': 'Android app', '安卓浏览器': 'Android browser', 'Mac 浏览器': 'Mac browser', '浏览器': 'browser' }[b]})`],
+    [/^显示其余 (\d+) 个空闲会话$/, 'Show $1 more idle sessions'],
+    [/^(\d+) 个项目$/, '$1 projects'],
+    [/^(\d+) 个会话$/, '$1 sessions'],
+    [/^(\d+) 个等你$/, '$1 need you'],
+    [/^(\d+) 个已停止$/, '$1 stopped'],
+    [/^(\d+) 个运行中$/, '$1 running'],
+    [/^最后在线 (\d+m|\d+h \d+m) 前$/, 'Last seen $1 ago'],
+    [/^(\d+m|\d+h \d+m) 前$/, '$1 ago'],
+    [/^第 (\d+) 轮$/, 'Round $1'],
+    [/^(.+) · 第 (\d+) 轮$/, '$1 · Round $2'],
+    [/^\/(\d+) 项任务$/, '/$1 tasks'],
   ];
 
   for (const [template, translation] of Object.entries(EN)) {
@@ -646,7 +686,7 @@ const I18N = (() => {
   const tr = s => lang === 'zh' || s == null ? s : String(s).split('\n').map(line).join('\n');
 
   // Content mirrored from Cursor or the computer's files is never translated.
-  const SKIP = '#items, #vBody, #vName, #vPath, #titleText, .qt, [data-label] .lbl, [data-win] .lbl, [data-agent] .lbl, [data-fold] .lbl, [data-term] .lbl, [data-docs-file] .lbl, [data-docs-dir] .lbl, [data-docs-root] .lbl, .qnQ, .qnOpt span';
+  const SKIP = '#items, #vBody, #vName, #vPath, #titleText, .qt, [data-label] .lbl, [data-win] .lbl, [data-agent] .lbl, [data-fold] .lbl, [data-term] .lbl, [data-docs-file] .lbl, [data-docs-dir] .lbl, [data-docs-root] .lbl, .qnQ, .qnOpt span, .ovRaw';
   const ATTRS = ['placeholder', 'title', 'aria-label'];
   const fix = node => {
     if (node.nodeType === 3) {

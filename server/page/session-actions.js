@@ -37,7 +37,14 @@
       if (!service) return { ready: false };
       await service.whenInitialComposerDataLoaded();
       const rows = (await service._storageService.collectionQuery('composerHeaders')).map(row => JSON.parse(row));
-      return { ready: true, complete: true, rows: rows.map(row => ({ id: row.composerId, archived: !!row.isArchived })) };
+      const loaded = new Map(service.allComposersData.allComposers.map(row => [row.composerId, row]));
+      const running = new Set((window.__SSG_COMPOSER_PROVIDER__?.getStates?.() || []).filter(row => row.state === 'generating').map(row => row.id));
+      return { ready: true, complete: true, rows: rows.map(row => {
+        const current = loaded.get(row.composerId) || row, uri = current.workspaceIdentifier?.uri;
+        return { id: row.composerId, archived: !!row.isArchived, title: current.name || row.name || '',
+          workspace: uri?.fsPath || uri?.path || '', host: uri && uri.scheme !== 'file' ? uri.authority.replace(/^ssh-remote\+/, '') : '',
+          workspaceId: row.workspaceIdentifier?.id || '', lastUsed: current.lastUpdatedAt || row.createdAt || 0, running: running.has(row.composerId) };
+      }) };
     }
     if (app === 'devin') {
       const native = await import('@exa/chat-client');
@@ -67,24 +74,28 @@
         rows: sessions.map(row => {
           const current = displayed.get(row.sessionId) || row;
           return { id: row.sessionId, archived: current._meta?.['cognition.ai/isArchived'] === true,
-            at: Math.max(Date.parse(current.updatedAt) || 0, times.get(row.sessionId) || 0) };
+            at: Math.max(Date.parse(current.updatedAt) || 0, times.get(row.sessionId) || 0),
+            title: current.title || row.title || '', workspace: row.cwd || current.cwd || '', host: '',
+            lastUsed: Date.parse(current.updatedAt || row.updatedAt) || 0, running: ['active', 'pending', 'canceling'].includes(current.status) };
         }),
         removed, removedAt: Object.fromEntries(removed.map(id => [id, times.get(id)])), missing, cliReady, at };
     }
     const manager = codexConversationManager(codexThread(), codexHistoryScopes());
     if (!manager || manager.hostId !== 'local') return { ready: false };
     const client = manager.requestClient, rows = [], active = new Set();
+    const catalogRow = (row, archived) => ({ id: row.id, archived, path: row.path, title: row.name || '',
+      workspace: row.cwd || '', host: '', running: row.status?.type === 'active', lastUsed: (row.updatedAt || 0) * 1000 });
     let cursor = null;
     do {
       const page = await client.sendRequest('thread/list', { archived: false, cursor, limit: 100, modelProviders: null, sourceKinds: null, sortKey: 'updated_at', useStateDbOnly: true }, { priority: 'background', source: 'thread_list' });
-      for (const row of page.data) { active.add(row.id); rows.push({ id: row.id, archived: false, path: row.path }); }
+      for (const row of page.data) { active.add(row.id); rows.push(catalogRow(row, false)); }
       cursor = page.nextCursor;
     } while (cursor);
     const removed = [], unknown = [];
     for (let i = 0; i < ids.length; i += 6) await Promise.all(ids.slice(i, i + 6).filter(id => !active.has(id)).map(async id => {
       try {
         const { thread } = await client.sendRequest('thread/read', { threadId: id, includeTurns: false }, { priority: 'background', source: 'thread_list' });
-        rows.push({ id, archived: /[\\/]archived_sessions[\\/]/.test(thread.path || ''), path: thread.path });
+        rows.push({ ...catalogRow(thread, /[\\/]archived_sessions[\\/]/.test(thread.path || '')), id });
       } catch (error) {
         if (/thread.*not found|no rollout found|thread.*does not exist/i.test(String(error))) removed.push(id);
         else if (/AppServerRequestError\(-32600\): thread not loaded:/i.test(String(error))) unknown.push(id);
