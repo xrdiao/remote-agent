@@ -18,7 +18,7 @@ import { transferApi, serveTransfer } from './transfer.mjs';
 import { voiceStatus, loadWorker } from '../voice/service.mjs';
 import { voiceEngines } from '../voice/config.mjs';
 import { uploads } from '../agent/context.mjs';
-import { overviewSnapshot } from '../overview.mjs';
+import { overviewSnapshot, overviewPreview } from '../overview.mjs';
 
 // A device is usable once paired and, when 2FA asks for it, re-verified.
 function deviceFor(req) {
@@ -306,6 +306,12 @@ export async function handleApi(req, res, route) {
     }
   }
   if (route === '/api/overview' && req.method === 'GET') return json(req, res, 200, { id: computerId(), name: computerName(), ...overviewSnapshot(device.id) });
+  if (route === '/api/overview/preview' && req.method === 'GET') {
+    try {
+      const target = Object.fromEntries(new URL(req.url, 'http://relay').searchParams);
+      return json(req, res, 200, { computer: computerId(), ...await overviewPreview(device.id, target) });
+    } catch (error) { return json(req, res, 409, { error: error.message }); }
+  }
   if (route === '/api/overview/send' && req.method === 'POST') {
     const body = await readJson(req);
     try {

@@ -104,7 +104,45 @@
     }));
     return { ready: true, complete: false, rows, removed, unknown };
   };
-  const nativeSessionInfo = (app, id, catalog = false) => {
+  const nativeSessionPreview = async (app, id, previous) => {
+    const summary = text => ({ available: true, last: String(text || '').replace(/\s+/g, ' ').trim().slice(-600) });
+    if (app === 'cursor') {
+      const service = cursorSessionServices()?.data;
+      const peek = await service.composerDataHandleManager.peekComposerData(id);
+      const data = peek?.source === 'memory' ? peek.handle.data : peek?.data;
+      if (!data) return { available: false };
+      const headers = (data.fullConversationHeadersOnly || []).slice(-12);
+      const missing = headers.filter(h => !data.conversationMap[h.bubbleId] || data.conversationMap[h.bubbleId].isPlaceholder);
+      const stored = missing.length ? await service._composerMessageStorageService.retrieveMessagesBatch(id, missing.map(h => h.bubbleId)) : new Map();
+      const messages = headers.map(h => stored.get(h.bubbleId) || data.conversationMap[h.bubbleId]);
+      return summary(messages.findLast(m => m?.text?.trim())?.text);
+    }
+    if (app === 'devin') {
+      const messages = window.__acpStore?.getState().acp.perSession[id]?.messages;
+      if (!messages) return { available: false };
+      const message = messages.findLast(m => ['agent_message', 'user_message'].includes(m.kind)
+        && m.content?.some(block => block.content?.type === 'text' && block.content.text?.trim()));
+      return summary(message?.content.filter(block => block.content?.type === 'text').map(block => block.content.text).join('\n'));
+    }
+    const scopes = codexHistoryScopes(), manager = codexConversationManager(codexThread(), scopes);
+    const conversation = manager?.getConversation(id), history = conversation?.turnHistory?.history;
+    let items = (history ? history.islands.flatMap(island => island.entries).slice(-2).flatMap(({ key }) => {
+      const turn = history.entitiesByKey[key];
+      return codexTurnSource({ historyEntityKey: key, turnId: turn.turnId, nativeTurn: turn }, scopes)?.rawItems || [];
+    }) : (conversation?.turns || []).slice(-2).flatMap(turn => turn.items || [])).filter(Boolean);
+    let historical = false;
+    if (!items.some(item => ['agentMessage', 'userMessage'].includes(item.type))) {
+      if (previous?.historical) return previous;
+      if (!manager || manager.hostId !== 'local') return { available: false };
+      const { thread } = await manager.requestClient.sendRequest('thread/read', { threadId: id, includeTurns: true }, { priority: 'background', source: 'thread_list' });
+      items = (thread.turns || []).flatMap(turn => turn.items || []);
+      historical = true;
+    }
+    const text = item => item.type === 'agentMessage' ? item.text : item.type === 'userMessage' ? codexUserText(item.content || []) : '';
+    return { ...summary(text(items.findLast(item => text(item)?.trim()) || {})), historical };
+  };
+  const nativeSessionInfo = (app, id, catalog = false, previous = null) => {
+    if (catalog === 'preview') return nativeSessionPreview(app, id, previous);
     if (catalog) return nativeSessionCatalog(app, id);
     if (app === 'cursor') {
       const services = cursorSessionServices();

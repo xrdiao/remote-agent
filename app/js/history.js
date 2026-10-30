@@ -34,6 +34,31 @@ const scReq = (mode, fn) => scDb().then(db => new Promise((res, rej) => {
 })).catch(() => null);
 const idbGet = k => scReq('readonly', s => s.get(k));
 const idbPut = (k, v) => scTrackWrite(k, scReq('readwrite', s => s.put(v, k)));
+const computerResumes = new Map();
+const computerResumeReady = idbGet('computer-resumes').then(saved => {
+  for (const [id, value] of saved?.entries || []) {
+    if (loadComputers().some(c => c.id === id)) computerResumes.set(id, value);
+  }
+  if (saved && Date.now() - saved.at < 5 * 60 * 1000) ovRestoreComputers(saved);
+});
+function saveComputerResume(link) {
+  if (computerSockets.get(link.computer.key) !== link || !link.auth?.resumeId || !computerBindingReady(link)) return;
+  const foreground = link.socket === ws && !!link.receive;
+  const { chat, ...binding } = link.binding;
+  computerResumes.set(link.expectedId, {
+    resumeId: link.auth.resumeId, binding,
+    overview: ovSt.get(link.expectedId)?.data,
+    offset: ovSt.get(link.expectedId)?.offset || 0,
+  });
+  if (!foreground) cacheChat(binding.sel, chat, link.expectedId);
+  return saveComputerResumes();
+}
+function saveComputerResumes() {
+  const ids = new Set(loadComputers().map(c => c.id));
+  for (const id of computerResumes.keys()) if (!ids.has(id)) computerResumes.delete(id);
+  for (const [id, value] of computerResumes) value.folded = !!ovSt.get(id)?.folded && ovCollapsed.has(id);
+  return idbPut('computer-resumes', { at: Date.now(), entries: [...computerResumes], view: ovHistory() });
+}
 const chatCacheKey = sel => `${currentComputer()?.id || ''}|${sel}`;
 const chatPreviewGeneration = scGeneration, chatPreviewVersions = new Map(scVersions);
 const chatPreviewReady = idbGet('chat-previews').then(entries => {
@@ -50,8 +75,8 @@ function chatTail(items, limit) {
   const head = items.slice(0, start).findLast(it => it.k === 'human');
   return [...(head ? [head] : []), ...items.slice(start)];
 }
-function cacheChat(sel, chat) {
-  const key = chatCacheKey(sel);
+function cacheChat(sel, chat, computer = currentComputer()?.id || '') {
+  const key = `${computer}|${sel}`;
   lruPut(chatBySel, key, chat, 12);
   if (key === SC.key) SC.cleared = false;
   saveChatPreview();

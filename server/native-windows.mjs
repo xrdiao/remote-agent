@@ -132,6 +132,7 @@ export class NativeWindow {
     this.catalogAt = 0;
     this.queue = Promise.resolve();
     this.itemCache = new Map();
+    this.previews = new Map();
     this.cdp.onclose = error => this.close(error);
     this.cdp.on('Runtime.executionContextsCleared', () => {
       if (!this.win) return;
@@ -169,6 +170,25 @@ export class NativeWindow {
   subscribe(changed) {
     this.listeners.add(changed);
     return () => this.listeners.delete(changed);
+  }
+  async preview(threadId, state = {}) {
+    let entry = this.previews.get(threadId);
+    if (entry?.flight) return entry.flight;
+    if (entry?.at && Date.now() - entry.at < 3500) return entry.value;
+    if (!entry) {
+      this.previews.set(threadId, entry = {});
+      if (this.previews.size > 12) this.previews.delete(this.previews.keys().next().value);
+    }
+    entry.flight = (async () => {
+      await this.connect();
+      const previous = !state.busy && state.lastUsed > 0 && entry.lastUsed === state.lastUsed ? entry.value : null;
+      const value = await this.cdp.evaluate(helpersCall(`nativeSessionInfo(${JSON.stringify(this.win.app)}, ${JSON.stringify(threadId)}, 'preview', ${JSON.stringify(previous || null)})`), { timeout: 15000 });
+      entry.value = value;
+      entry.lastUsed = state.lastUsed;
+      entry.at = Date.now();
+      return value;
+    })().finally(() => { entry.flight = null; });
+    return entry.flight;
   }
   invalidate() {
     this.revision++;

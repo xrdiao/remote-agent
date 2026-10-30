@@ -725,7 +725,7 @@ function heartbeat() {
 function closeSocket(socket) {
   try { socket.close(); } catch {}
   setTimeout(() => {
-    if (ws !== socket || socket.readyState === 3 || !socket.onclose) return;
+    if (![...computerSockets.values()].some(link => link.socket === socket) || socket.readyState === 3 || !socket.onclose) return;
     const onclose = socket.onclose;
     socket.onclose = null;
     try { onclose.call(socket, { code: 1006 }); } catch {}
@@ -768,15 +768,16 @@ function resumableComputerSocket(computer) {
   return link.preload || computerBindingReady(link) ? link : null;
 }
 function preloadComputerSocket(link) {
-  const chosen = link.auth.lastSelection;
+  const chosen = link.auth.resumed ? link.auth.selection : link.auth.lastSelection;
   const message = { t: 'attach', id: chosen?.id || '', windowId: chosen?.windowId || '', threadId: chosen?.threadId || '',
-    project: typeof chosen?.project === 'object' ? chosen.project : null, initial: true, navigationId: 1 };
+    project: typeof chosen?.project === 'object' ? chosen.project : null, initial: true, resume: link.auth.resumed, navigationId: 1 };
   link.mode = 'chat';
   link.navigationId = message.navigationId;
-  link.composer = { epoch: '', revision: 0, ackRevision: 0 };
+  link.composer = { epoch: link.auth.draftEpoch || '', revision: 0, ackRevision: 0 };
   link.connection = { ...newComputerConnection(), host: true, lastSelection: chosen };
   link.preload = { target: loadComputers().find(row => row.key === link.computer.key), navigation: navigationState(message) };
   link.send({ t: 'visible', v: false });
+  if (link.auth.resumed && link.auth.mode !== 'chat') link.send({ t: 'mode', mode: 'chat' });
   link.send(message);
 }
 function dropComputerSocket(key) {
@@ -787,11 +788,13 @@ function dropComputerSocket(key) {
   link.socket.close();
 }
 async function openComputerSocket(computer, relay) {
+  await Promise.all([computerResumeReady, chatPreviewReady]);
   let link = computerSockets.get(computer.key);
   if (link?.authed && link.computer.token === computer.token && link.socket.readyState === 1) return link;
   if (link && link.computer.token === computer.token && link.relay === relay && link.socket.readyState < 2) return link;
   if (link) { clearTimeout(link.retry); link.socket.close(); }
   const expectedId = computer.id || await computerIdFromKey(computer.key);
+  const saved = computerResumes.get(expectedId);
   link = computerSockets.get(computer.key);
   if (link && link.computer.token === computer.token && link.relay === relay && link.socket.readyState < 2) return link;
   const socket = new WebSocket(relay.replace(/^http/, 'ws') + '/ws');
@@ -804,11 +807,12 @@ async function openComputerSocket(computer, relay) {
     link.opened = true;
     try {
       const proof = await entryProof(computer, 'WS /ws');
-      if (socket.readyState === 1) socket.send(JSON.stringify({ t: 'auth', token: computer.token, proof }));
+      if (socket.readyState === 1) socket.send(JSON.stringify({ t: 'auth', token: computer.token, proof, resume: saved?.resumeId }));
     } catch (error) { link.error = error.message; socket.close(); }
   };
   socket.onmessage = event => {
     const m = JSON.parse(event.data);
+    link.lastRx = Date.now();
     const wasReady = computerBindingReady(link);
     if (m.t === 'operation') {
       (link.operations ||= new Map()).set(m.id, m);
@@ -822,6 +826,11 @@ async function openComputerSocket(computer, relay) {
       link.rejected = !link.authed;
       if (link.authed) {
         updateComputerRecord({ ...computer, id: m.id, name: m.name, device: m.device, relay });
+        if (m.resumed) {
+          for (const message of m.metadata) link.metadata.set(message.t, message);
+          if (saved?.binding.id === m.selection.id && saved.binding.windowId === m.selection.windowId && saved.binding.threadId === m.selection.threadId)
+            link.binding = { ...saved.binding, chat: chatBySel.get(`${expectedId}|${saved.binding.sel}`), ready: false, cached: true };
+        } else computerResumes.delete(expectedId);
         if (!link.receive) preloadComputerSocket(link);
       }
       else link.finishFirstScreen();
@@ -853,12 +862,14 @@ async function openComputerSocket(computer, relay) {
     if (link.receive) link.receive(event);
     else if (m.t === 'sent') confirmSent(m);
     else if (m.t === 'sendFailed') failPendingSend(m.requestId, m.message, false);
+    if (m.t === 'attached' || !wasReady && computerBindingReady(link) || link.metadata.has(m.t)) saveComputerResume(link);
     if (m.t === 'attached' || m.t === 'chat') for (const result of link.operations?.values() || []) receiveDesktopOperation(link, result);
     if (['auth', 'attached', 'attachFailed'].includes(m.t) || wasReady !== computerBindingReady(link)) ovRender();
     if (link.rejected) socket.close();
   };
   socket.onclose = event => {
     clearTimeout(timer);
+    saveComputerResume(link);
     link.authed = false;
     link.binding = null;
     link.preload = null;
@@ -917,6 +928,18 @@ async function warmComputerSockets() {
     }
   })).finally(() => { computerWarmup = null; });
   return computerWarmup;
+}
+
+function resumeComputerConnections() {
+  if (!authed && (!ws || ws.readyState >= 2)) return boot();
+  for (const link of computerSockets.values()) if (link.authed && link.socket.readyState === 1) {
+    const before = link.lastRx;
+    link.send({ t: 'ping', visible: link.socket === ws && conversationVisible() });
+    setTimeout(() => {
+      if (link.authed && link.socket.readyState === 1 && link.lastRx === before) closeSocket(link.socket);
+    }, 5000);
+  }
+  warmComputerSockets().catch(() => {});
 }
 
 function startComputerUpdates() {
@@ -1001,7 +1024,8 @@ async function connect(resumeLink = null) {
         return gate({msg: '设备授权已失效或被移除，请重新授权这台设备。', err: true, repair: true, computers: loadComputers().length > 1});
       }
       rememberComputer({...currentComputer(), id: m.id, name: m.name, device: m.device});
-      conn.lastSelection = m.lastSelection;
+      conn.lastSelection = m.resumed ? m.selection : m.lastSelection;
+      draftEpoch = m.draftEpoch || '';
       authed = true; failures = 0;
       if (requestedComputerAuth === computer.key) requestedComputerAuth = '';
       send({ t: 'sessionLibrary', entries: legacyAgentLibrary() });
@@ -1010,7 +1034,8 @@ async function connect(resumeLink = null) {
       connHostOk();
       if (sheetKind === 'computers') closeSheet();
       status('正在切换窗口…');
-      send({ t: 'mode', mode });
+      if (!m.resumed || m.mode !== mode) send({ t: 'mode', mode });
+      if (m.resumed) for (const message of link.metadata.values()) link.receive({ data: JSON.stringify(message) });
       const fromNotice = window.AgentRemoteApp?.takeOpenWin?.() || pendingNotice;
       pendingNotice = '';
       if (fromNotice && noticeTarget(fromNotice)?.computer && noticeTarget(fromNotice).computer !== m.id) {
@@ -1024,7 +1049,7 @@ async function connect(resumeLink = null) {
         selectionPreview();
       }
       send({ t: 'attach', id: chosen?.id || '', windowId: chosen?.windowId || '', threadId: chosen?.threadId || '',
-        project: typeof chosen?.project === 'object' ? chosen.project : null, initial: true, resume: !!link.binding && !fromNotice });
+        project: typeof chosen?.project === 'object' ? chosen.project : null, initial: true, resume: (m.resumed || !!link.binding) && !fromNotice });
       startComputerUpdates();
     }
     else if (m.t === 'sent') {

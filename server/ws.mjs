@@ -1,4 +1,5 @@
 import { authenticateDevice } from '../lib/device-proof.mjs';
+import crypto from 'node:crypto';
 import { WebSocketServer } from 'ws';
 import { needsTotp, updateDevice, computerId, computerName, bindDeviceConnection } from '../lib/auth.mjs';
 import { addViewer, removeViewer } from '../lib/notify.mjs';
@@ -17,6 +18,7 @@ import { configureNativeRetry } from './native-windows.mjs';
 const sameWindow = (session, msg) => !msg.sel || msg.sel.split('|', 2).join('|') === session.selectionKey().split('|', 2).join('|');
 const navigationMessage = msg => ROUTES[msg.t]?.navigation === true;
 const pureNavigation = msg => navigationMessage(msg) && msg.newSession !== true && msg.create !== true && !(msg.t === 'openAgent' && /^(?:new:|project-new:)/.test(msg.id || ''));
+const RESUME_MS = 5 * 60 * 1000;
 
 export function attachWss(server) {
 const voice = voiceWss();
@@ -45,7 +47,12 @@ const heartbeat = setInterval(() => {
     try { client.ping(); } catch {}
   }
 }, 20000);
-wss.on('close', () => clearInterval(heartbeat));
+const suspended = new Map();
+wss.on('close', () => {
+  clearInterval(heartbeat);
+  for (const { session, timer } of suspended.values()) { clearTimeout(timer); session.dispose(); }
+  suspended.clear();
+});
 
 // The token arrives as the first message rather than in the URL, so it never shows up in proxy logs.
 wss.on('connection', (ws, req) => {
@@ -81,11 +88,25 @@ wss.on('connection', (ws, req) => {
         return ws.close(4001, 'unauthorized');
       }
       updateDevice(device.id, { lastSeen: Date.now() });
-      session = new Session(ws, device.id);
+      const previous = suspended.get(msg.resume);
+      const resumed = previous?.session.deviceId === device.id && previous.expires > Date.now()
+        && previous.session.bindingReady && previous.session.cdp?.ws?.readyState === 1;
+      if (resumed) {
+        clearTimeout(previous.timer);
+        suspended.delete(msg.resume);
+        session = previous.session;
+        session.client = ws;
+      } else {
+        session = new Session(ws, device.id);
+        session.resumeId = crypto.randomUUID();
+      }
       authorization = bindDeviceConnection(device.id, () => ws.close(4001, 'unauthorized'));
       subscribeLibrary(ws);
       addViewer(session);
-      ws.send(JSON.stringify({ t: 'auth', ok: true, ...identity, lastSelection: lastSelection(device.id) }));
+      ws.send(JSON.stringify({ t: 'auth', ok: true, ...identity, lastSelection: lastSelection(device.id),
+        resumeId: session.resumeId, resumed: !!resumed, mode: session.mode, draftEpoch: session.draftEpoch || '',
+        ...(resumed ? { selection: { id: session.targetId, app: session.app, windowId: session.windowId, threadId: session.threadId },
+          metadata: [...session.connectionMessages.values()].filter(message => message.t !== 'attached') } : {}) }));
       unsubscribeOperations = subscribeOperations(device.id, ws);
       console.log(`[+] client ${clientIp(req)}`);
       return;
@@ -255,6 +276,7 @@ wss.on('connection', (ws, req) => {
   });
   ws.on('close', () => {
     clearTimeout(authTimer);
+    const authorized = authorization?.valid;
     authorization?.release();
     unsubscribeOperations?.();
     reads.abort(new Error('连接已关闭'));
@@ -262,7 +284,17 @@ wss.on('connection', (ws, req) => {
     if (!session) return;
     if (session.sessionBatch) session.sessionBatch.cancelled = true;
     removeViewer(session);
-    session.dispose();
+    if (authorized && session.bindingReady && !activeNavigation && !session.activeOperations && !session.focusCount
+        && ['cursor', 'devin', 'codex'].includes(session.app)) {
+      session.suspend();
+      const expires = Date.now() + RESUME_MS;
+      const timer = setTimeout(() => {
+        suspended.delete(session.resumeId);
+        session.dispose();
+      }, RESUME_MS);
+      timer.unref();
+      suspended.set(session.resumeId, { session, expires, timer });
+    } else session.dispose();
     console.log(`[-] client ${clientIp(req)}`);
   });
 });

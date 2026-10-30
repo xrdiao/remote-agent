@@ -36,9 +36,11 @@ export function overviewSnapshot(deviceId) {
       const record = readLibrary()[win.app]?.[key];
       if (!key || row.archived || record?.archived || record?.deleted) continue;
       const s = { ...row, busy: row.busy ?? row.running ?? false };
+      const cachedPreview = source.previews.get(key);
+      const preview = key !== sessionId(win.app, snap.chat?.thread) || cachedPreview?.at >= source.updatedAt ? cachedPreview?.value : null;
       sessions.push({
         win: id, windowId, threadId: key, app: win.app, project, title: s.title || '未命名会话',
-        busy: !!s.busy, waiting: s.waiting || '', waitingText: s.waitingText || '', last: s.last || '',
+        busy: !!s.busy, waiting: s.waiting || '', waitingText: s.waitingText || '', last: preview?.available ? preview.last : s.last || '',
         startedAt: s.busy ? (Number.isFinite(s.runAt) ? s.runAt : Number.isFinite(s.generation?.start) ? s.generation.start : 0) : 0,
         tasks: s.tasks?.total > 0 ? { done: s.tasks.done, total: s.tasks.total, current: s.tasks.current || '' } : null,
         actions: s.actions || [], devin: !!s.devin, changed: s.changed || 0, acceptAll: !!s.acceptAll, changes: s.changes || null, lastUsed: Number.isFinite(s.lastUsed) ? s.lastUsed : 0,
@@ -52,4 +54,12 @@ export function overviewSnapshot(deviceId) {
     .map(f => ({ id: f.id, phase: f.phase || 'idle', round: f.round || 0, project: f.project?.name || '', a: f.a?.app || '', b: f.b?.app || '', updated: f.updated || f.created || 0,
       title: (f.history?.find(i => i.k === 'human')?.t || f.task || '新 Fusion 会话').split('\n')[0].slice(0, 60) }));
   return { os: process.platform, now, ready, windows, sessions, fusion };
+}
+
+export async function overviewPreview(deviceId, { win, windowId, threadId }) {
+  const session = overviewSnapshot(deviceId).sessions.find(row => row.win === win && row.windowId === windowId && row.threadId === threadId);
+  if (!session) throw new Error('会话已从目录移除，请刷新概览');
+  const target = nativeTargets().find(row => row.app === session.app && (row.pageId || row.id) === windowId);
+  const value = await nativeWindowAt(target.ws).preview(threadId, session);
+  return { win, windowId, threadId, available: value.available, last: value.last || '' };
 }
