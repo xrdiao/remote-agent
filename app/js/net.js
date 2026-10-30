@@ -97,6 +97,7 @@ function finishNavigation() {
   const kind = navigationPending?.kind;
   navigationPending = null;
   if (kind) status({ initial: '已连接', agent: '已切换 Agent', window: '已切换窗口', project: '已打开项目', session: '已切换会话', new: '已新建会话' }[kind]);
+  ovEnterReady();
 }
 function selectionPreview() {
   $('items').inert = true;
@@ -429,24 +430,23 @@ async function testEndpoint(url, relay = false, timeout = 8000) {
     return { ok: false, timedOut: ctl.signal.aborted, timeout: timeout / 1000, code: ctl.signal.aborted ? 'timeout' : error instanceof SyntaxError ? 'json' : 'network', detail: ctl.signal.aborted ? `请求超时（${timeout / 1000} 秒）` : error instanceof SyntaxError ? '返回内容不是 JSON' : '请求失败（网络、DNS、证书或跨域原因未确定）' };
   } finally { clearTimeout(timer); }
 }
-let offlineGen = 0;
-let lastFailure = { stage: '应用连接', error: '' };
-async function diagnoseConnection(failure, gen) {
-  const page = discoveryUrl();
-  const relay = base ? base.replace(/\/$/, '') + '/url.json' : '';
+async function diagnoseConnection(computer, state) {
+  const page = computer.discovery || discoveryUrl();
+  const relay = computer.relay ? computer.relay.replace(/\/$/, '') + '/url.json' : '';
   const online = navigator.onLine !== false;
-  conn.checks = [
+  state.checks = [
     { key: 'net', label: '手机网络', st: online ? 'ok' : 'err', code: online ? '' : 'offline' },
     { key: 'page', label: '页面地址发布', url: page, st: 'load' },
     { key: 'relay', label: '隧道和电脑服务', url: relay, st: relay ? 'load' : 'err', code: relay ? '' : 'nourl', detail: relay ? '' : '尚未获取隧道地址' },
   ];
-  conn.diagRunning = true;
-  const draw = () => { if (gen === offlineGen && conn.active) connRender(); };
+  state.diagRunning = true;
+  const draw = () => {
+    if (sheetKind === 'connection-details' && connectionDetailsComputer === computer.id) showConnectionDetails(computer.id);
+  };
   draw();
   const run = async (check, relayCheck) => {
     if (!check.url) return { ok: false, code: 'nourl', detail: '尚未获取隧道地址' };
     let result = await testEndpoint(check.url, relayCheck);
-    if (gen !== offlineGen) return result;
     if (relayCheck && result.timedOut) {
       Object.assign(check, { retest: true });
       draw();
@@ -458,9 +458,8 @@ async function diagnoseConnection(failure, gen) {
     draw();
     return result;
   };
-  const results = await Promise.all([run(conn.checks[1], false), run(conn.checks[2], true)]);
-  if (gen !== offlineGen) return '';
-  conn.diagRunning = false;
+  const results = await Promise.all([run(state.checks[1], false), run(state.checks[2], true)]);
+  state.diagRunning = false;
   const conclusion = !online ? '手机处于离线状态，请检查 Wi-Fi 或移动数据'
     : results[1].slow ? '隧道复测可达；可能是慢连接或短暂波动，首次 8 秒检测超时。'
     : results[0].ok && results[1].timedOut ? '页面地址发布正常，隧道 30 秒复测仍超时；请切换 Wi-Fi 对比，尚不能确定具体网络原因。'
@@ -481,24 +480,46 @@ function unseenPublished() {
   const entries = new Map([...publishedComputers(), ...loadComputerBookmarks()].map(p => [p.id, p]));
   return [...entries.values()].filter(p => !saved.some(c => c.id && c.id === p.id));
 }
-function offerComputers(msg, { err = true, repair = false } = {}) {
-  const many = loadComputers().length > 1 || unseenPublished().length > 0;
-  gate({ msg, err, retry: true, repair, computers: many || loadComputers().length > 0 });
-  if (many) showComputers(msg);
-  else autoRetry();
+async function checkComputerConnection(id) {
+  const e = ovList.find(e => e.id === id), computer = e?.c;
+  if (!computer) return;
+  const state = ovStOf(id);
+  return state.diagnostic ||= diagnoseConnection({ ...computer, id }, state).then(conclusion => { state.conclusion = conclusion; }).finally(() => {
+    state.diagnostic = null;
+    if (sheetKind === 'connection-details' && connectionDetailsComputer === id) showConnectionDetails(id);
+  });
 }
 async function showOffline(failure = { stage: '应用连接', error: '' }) {
-  const gen = ++offlineGen;
-  lastFailure = failure;
   clearTimeout(retryTimer);
   ungate();
-  conn.open.delete('connection-details');
-  conn.checks = [];
-  connOffline(failure);
+  conn.host = 'err';
+  const computer = currentComputer();
+  if (!computer) return;
+  const id = computer.id || await computerIdFromKey(computer.key), state = ovStOf(id);
+  state.status = 'offline'; state.failure = failure;
+  ovRender();
   autoRetry();
-  const conclusion = await diagnoseConnection(failure, gen);
-  if (gen !== offlineGen) return;
-  connOffline(failure, conclusion);
+  return checkComputerConnection(id);
+}
+function authorizeComputer(id) {
+  const index = loadComputers().findIndex(c => c.id === id);
+  if (index < 0) return;
+  requestedComputerAuth = loadComputers()[index].key;
+  return useComputer(index);
+}
+function reconnectComputer(id) {
+  const entry = ovList.find(e => e.id === id);
+  if (!entry?.c) return;
+  const state = ovStOf(id);
+  if (state.reconnecting) return state.reconnecting;
+  state.status = 'loading'; state.stage = 0; state.failure = null;
+  const computer = loadComputers().find(c => c.key === entry.c.key);
+  const loading = computer.key === currentComputer()?.key ? boot() : warmComputerSocket(computer);
+  state.reconnecting = Promise.all([loading, ovFetch(entry)]).catch(error => {
+    state.status = 'offline'; state.failure = { stage: '电脑连接', error: error.message };
+  }).finally(() => { state.reconnecting = null; ovRender(); });
+  ovRender();
+  return state.reconnecting;
 }
 
 async function pair(totp) {
@@ -591,10 +612,10 @@ async function verifyTotp(code) {
 }
 
 let bootGeneration = 0;
+let requestedComputerAuth = '';
 async function boot() {
   const generation = ++bootGeneration;
   connGen++;
-  offlineGen++;
   const old = ws;
   if (authed) {
     markUploadsDisconnected();
@@ -617,12 +638,12 @@ async function boot() {
     pending.stay = true;
     return;
   }
-  gate({ msg: '正在查找电脑…' });
+  if (pending || !loadComputers().length) gate({ msg: '正在查找电脑…' });
+  else { ungate(); resetComputerConnection(); ovRender(); }
   if (pending?.key) {
     const saved = loadComputers().find(c => c.key === pending.key);
     if (saved) saveComputers(loadComputers(), saved.key);
   }
-  if (!pending && currentComputer()) connShow('正在查找电脑…');
   const chosen = currentComputer();
   const current = () => generation === bootGeneration && currentComputer()?.key === chosen?.key;
   const discovery = fetch(discoveryUrl() + '?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
@@ -668,7 +689,7 @@ async function boot() {
     if (!loadComputers().length) return e.unpaired ? showUnpaired(e.message) : gate({ msg: e.message, err: true, retry: true, repair: true });
     return showOffline({ stage: '地址发现', error: e.message });
   }
-  if (!currentComputer()) return loadComputers().length ? offerComputers('选择要连接的电脑', { err: false }) : showUnpaired();
+  if (!currentComputer()) return loadComputers().length ? ovRender() : showUnpaired();
   rememberComputer({ ...currentComputer(), relay: base });
   if (chosen?.win) store.set('window', chosen.win);
   await chatPreviewReady;
@@ -729,7 +750,7 @@ function parkComputerSocket(socket = ws) {
     link.mode = mode;
     link.navigationId = navigationSerial;
     link.composer = { epoch: draftEpoch, revision: draftRevision, ackRevision: draftAckRevision };
-    link.connection = { ...conn, open: new Set(conn.open), timer: 0 };
+    link.connection = { ...conn };
     if (navigationPending?.kind === 'initial') link.preload = { target: currentComputer(), navigation: { ...navigationPending } };
   }
   link.send({ t: 'visible', v: false });
@@ -753,7 +774,7 @@ function preloadComputerSocket(link) {
   link.mode = 'chat';
   link.navigationId = message.navigationId;
   link.composer = { epoch: '', revision: 0, ackRevision: 0 };
-  link.connection = { ...newComputerConnection('正在加载对话…'), host: true, lastSelection: chosen };
+  link.connection = { ...newComputerConnection(), host: true, lastSelection: chosen };
   link.preload = { target: loadComputers().find(row => row.key === link.computer.key), navigation: navigationState(message) };
   link.send({ t: 'visible', v: false });
   link.send(message);
@@ -788,6 +809,7 @@ async function openComputerSocket(computer, relay) {
   };
   socket.onmessage = event => {
     const m = JSON.parse(event.data);
+    const wasReady = computerBindingReady(link);
     if (m.t === 'operation') {
       (link.operations ||= new Map()).set(m.id, m);
       receiveDesktopOperation(link, m);
@@ -832,6 +854,7 @@ async function openComputerSocket(computer, relay) {
     else if (m.t === 'sent') confirmSent(m);
     else if (m.t === 'sendFailed') failPendingSend(m.requestId, m.message, false);
     if (m.t === 'attached' || m.t === 'chat') for (const result of link.operations?.values() || []) receiveDesktopOperation(link, result);
+    if (['auth', 'attached', 'attachFailed'].includes(m.t) || wasReady !== computerBindingReady(link)) ovRender();
     if (link.rejected) socket.close();
   };
   socket.onclose = event => {
@@ -840,6 +863,8 @@ async function openComputerSocket(computer, relay) {
     link.binding = null;
     link.preload = null;
     link.finishFirstScreen();
+    ovStOf(expectedId).failure = { stage: link.opened ? '实时连接中断' : '实时连接建立', error: link.error || 'WebSocket 关闭码 ' + event.code };
+    ovRender();
     if (link.closed) { link.closed(event); return; }
     if (link.rejected || !loadComputers().some(row => row.key === computer.key && row.token === computer.token)) return;
     link.retry = setTimeout(() => warmComputerSocket(computer).catch(() => {}), 8000);
@@ -915,7 +940,6 @@ async function connect(resumeLink = null) {
   const computer = currentComputer();
   const expectedId = computer.id || await computerIdFromKey(computer.key);
   if (gen !== connGen || attempt !== bootGeneration || computer.key !== currentComputer()?.key) return;
-  offlineGen++;
   draftEpoch = resumeLink ? resumeLink.composer.epoch : '';
   draftRevision = resumeLink ? resumeLink.composer.revision : 0;
   draftAckRevision = resumeLink ? resumeLink.composer.ackRevision : 0;
@@ -923,7 +947,7 @@ async function connect(resumeLink = null) {
   pendingDesktopDraft = null;
   if (!resumeLink) setWindowReady(false);
   clearTimeout(retryTimer);
-  if (!resumeLink && (conn.active || $('gate').classList.contains('open'))) connShow('正在建立实时连接…');
+  if (!resumeLink) resetComputerConnection();
   if (!resumeLink) parkComputerSocket(ws);
   const link = resumeLink || await openComputerSocket(computer, base);
   if (gen !== connGen || attempt !== bootGeneration || computer.key !== currentComputer()?.key) return;
@@ -970,12 +994,16 @@ async function connect(resumeLink = null) {
         rejected = true;
         socket.close();
         if (m.id !== expectedId) return showOffline({stage: '电脑身份验证', error: '地址对应的电脑身份不一致，正在等待最新地址'});
+        ovStOf(expectedId).status = 'auth';
+        ovRender();
+        if (requestedComputerAuth !== computer.key) return;
         if (m.needTotp) return showTotp(verifyTotp);
         return gate({msg: '设备授权已失效或被移除，请重新授权这台设备。', err: true, repair: true, computers: loadComputers().length > 1});
       }
       rememberComputer({...currentComputer(), id: m.id, name: m.name, device: m.device});
       conn.lastSelection = m.lastSelection;
       authed = true; failures = 0;
+      if (requestedComputerAuth === computer.key) requestedComputerAuth = '';
       send({ t: 'sessionLibrary', entries: legacyAgentLibrary() });
       document.dispatchEvent(new Event('voice-authenticated'));
       ungate();
@@ -1034,7 +1062,7 @@ async function connect(resumeLink = null) {
     else if (m.t === 'compatibility') receiveCompatibility(m);
     else if (m.t === 'agentCatalog') agentCatalogResults(m.agents);
     else if (m.t === 'launchResult') connLaunchResults(m.results);
-    else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; connWindows(m.list); if (m.plans) { appPlans = { ...appPlans, ...m.plans }; updateTitle(); } if (sheetKind === 'windows') showWindows(); paintRail(); }
+    else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; if (m.plans) { appPlans = { ...appPlans, ...m.plans }; updateTitle(); } if (sheetKind === 'windows') showWindows(); paintRail(); }
     else if (m.t === 'plans') { if (m.plans) { appPlans = { ...appPlans, ...m.plans }; updateTitle(); if (sheetKind === 'windows') showWindows(); paintRail(); } }
     else if (m.t === 'fusionTrust') openSheet('fusion-trust', `<h3>确认项目可信</h3><div class="hint">${esc(m.path)}</div><button class="opt" data-fusion-trust="yes"><span class="lbl">信任并创建会话</span></button><button class="opt" data-fusion-trust="no"><span class="lbl">取消</span></button>`);
     else if (m.t === 'fusionProjects') showFusionProjects(m);
@@ -1052,7 +1080,6 @@ async function connect(resumeLink = null) {
         selectionReady = m.ready === true;
         connReadFailed(m.message || '这个窗口已经关闭，请重试或切换 Agent');
         send({ t: 'windows' });
-        if (conn.active) connRender();
         return;
       }
       if (m.plans) appPlans = { ...appPlans, ...m.plans };
@@ -1110,15 +1137,8 @@ async function connect(resumeLink = null) {
         renderContext(null);
         $('quotaMeters').innerHTML = '';
         updateTitle();
-        conn.loaded = false;
         conn.attachFailed = !m.connected;
-        if (m.connected) connHide();
-        else {
-          conn.active = true;
-          conn.host = true;
-          $('conn').classList.add('open');
-          connRender();
-        }
+        ovRender();
         status(m.message, false);
         return;
       }
@@ -1152,7 +1172,6 @@ async function connect(resumeLink = null) {
     else if (m.t === 'projectTrust') {
       if (m.sel && m.sel !== viewSel) return;
       capabilityBlock = '请先确认项目是否可信';
-      connHide();
       finishPending(['正在打开项目…', '正在新建对话…']);
       openSheet('project-trust', `<h3>信任此项目？</h3><p class="hint">信任后，Agent 和扩展可运行此项目的代码。只信任你了解来源的项目。</p><p>${esc(m.path)}</p><button class="opt" data-project-trust="yes">信任此项目</button><button class="opt" data-project-trust="no">保持限制模式并返回上次对话</button>`);
     }
@@ -1233,12 +1252,11 @@ async function connect(resumeLink = null) {
       status('已取出，放回输入框');
     }
     else if (m.t === 'saved') onSaved(m);
-    else if (m.t === 'status') { if (!m.ok) pendingAgentOpen = ''; if (!m.ok && String(m.msg).startsWith('连不上 Cursor、Devin 或 Codex。')) connWindows([]); clearSwitchWatch(); status(m.msg, m.ok); }
+    else if (m.t === 'status') { if (!m.ok) pendingAgentOpen = ''; clearSwitchWatch(); status(m.msg, m.ok); }
   };
   if (resumeLink) {
     const ready = computerBindingReady(link), preload = link.preload;
     link.preload = null;
-    clearTimeout(conn.timer);
     Object.assign(conn, link.connection);
     authed = true; failures = 0;
     navigationSerial = link.navigationId;
@@ -1246,14 +1264,13 @@ async function connect(resumeLink = null) {
     lastChat = null; viewSel = '';
     ungate();
     if (ready) {
-      Object.assign(conn, { initialSelection: false, loaded: true, attachFailed: false });
-      connHide();
+      Object.assign(conn, { initialSelection: false, attachFailed: false });
     } else {
       setWindowReady(false);
       currentProject = '';
       restoreDraft();
       renderChat(null, false, true);
-      connShow(conn.phase, { ...conn, active: true });
+      ovRender();
     }
     if (link.binding) link.receive({ data: JSON.stringify({ ...link.binding, keepQuota: false, initial: !ready }) }, ready);
     for (const message of link.metadata.values()) link.receive({ data: JSON.stringify(message) });
