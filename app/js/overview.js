@@ -11,6 +11,7 @@ const OV_AGENT = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex' };
 const OV_EN = {
   '返回概览': 'Back to overview', '上一级': 'Up one level', '菜单': 'Menu', '全部': 'All', '在线': 'Online', '项目': 'Projects', '会话': 'Sessions',
   '概览': 'Overview', '全部电脑': 'All computers', '电脑范围': 'Computer scope', '不常用': 'Infrequent', '打开对话': 'Open conversation', '进行中': 'In progress',
+  '已加入排队': 'Queued', '发送结果待确认，请打开对话查看；草稿已保留': 'Send not confirmed; open the conversation to check. Draft kept.',
   '需要你': 'Needs you', '运行中': 'Running', '正在工作': 'Working', '已停止': 'Stopped', '已完成': 'Done', '空闲': 'Idle', '不活跃': 'Inactive', '全部会话': 'All sessions', '离线': 'Offline', '问题': 'Question',
   '等你确认': 'Waiting for you', '执行': 'Executing', '小修': 'Fixing', '已结束': 'Finished', '还没有配对的电脑': 'No paired computers yet',
   '打开项目': 'Open project', '个文件': 'files', '连接中…': 'Connecting…', '尚未连接': 'Not connected yet', '已发送': 'Sent', '操作失败': 'Action failed',
@@ -244,12 +245,12 @@ function ovChangesRow(r) {
 function ovCard(r) {
   const online = !r.off, dis = ovBusy.has(r.key) ? ' disabled' : '', key = esc(r.key);
   const status = `<div class="ov-status"><span class="ov-badge">${esc(ovBadge(r))}</span><span class="ovRaw">${esc(r.projName)} · ${esc(ovAgName(r))}</span><span class="ov-sp"></span><span class="ov-time">${esc(ovTime(r))}</span></div>`;
-  const composer = r.devin && online ? `<div class="ov-composer"><input data-ov-input="${key}" placeholder="${r.state === 'wait' ? '或者输入你的回答…' : `告诉 ${OV_AGENT[r.app]} 下一步…`}" value="${esc(ovDraft.get(r.key) || '')}"${dis}><button class="ov-send" data-ov="send" data-id="${key}" aria-label="发送"${dis}>${OV_ICON.arrow}</button></div>` : '';
+  const composer = !r.fusion && online ? `<div class="ov-composer"><input data-ov-input="${key}" placeholder="${r.state === 'wait' ? '输入回复…' : `告诉 ${OV_AGENT[r.app]} 下一步…`}" value="${esc(ovDraft.get(r.key) || '')}"${dis}><button class="ov-send" data-ov="send" data-id="${key}" aria-label="发送"${dis}>${OV_ICON.arrow}</button></div>` : '';
   let body;
   if (r.state === 'wait') {
     body = `<div class="ov-q">${ovNowHtml(r)}</div>` + (r.devin
-      ? (r.actions.length ? `<div class="ov-opts">${r.actions.map(a => `<button class="ov-opt" data-ov="opt" data-id="${key}" data-v="${esc(a.id)}"${dis}>${ovText(a.label)}</button>`).join('')}</div>` : '') + composer
-      : '<div class="ov-hint">请在对话中处理</div>');
+      ? (r.actions.length ? `<div class="ov-opts">${r.actions.map(a => `<button class="ov-opt" data-ov="opt" data-id="${key}" data-v="${esc(a.id)}"${dis}>${ovText(a.label)}</button>`).join('')}</div>` : '')
+      : '<div class="ov-hint">请在对话中处理</div>') + composer;
   } else {
     const p = r.tasks && ovProgress(r);
     body = (p ? `<div class="ov-progress"><i style="width:${Math.round(p.done / p.total * 100)}%"></i></div><div class="ov-pmeta"><span><b>${p.done}</b><em>/${p.total} 项任务</em></span></div>${r.tasks.current ? `<div class="ov-cur">${ovText(r.tasks.current)}</div>` : ''}` : '')
@@ -394,18 +395,22 @@ async function ovSend(key, act, extra, ok) {
   const r = ovRecs().find(x => x.key === key);
   if (!r) return;
   const e = ovList.find(x => x.id === r.comp);
+  const reply = act === 'reply', route = reply ? '/api/overview/send' : '/api/act';
   ovBusy.add(key); ovErr.delete(key); ovRender();
   try {
-    const res = await fetch(e.c.relay + '/api/act', { method: 'POST', cache: 'no-store', signal: AbortSignal.timeout(8000),
-      headers: { 'content-type': 'application/json', ...await entryHeaders(e.c, 'POST', '/api/act') },
-      body: JSON.stringify({ win: r.win, threadId: r.threadId, act, ...(act === 'acceptAll' ? {} : { question: r.wait }), ...extra }) });
-    if (!res.ok) ovErr.set(key, I18N.tr((await res.json().catch(() => ({}))).error || ovT('操作失败')));
-    else { if (extra.text !== undefined) ovDraft.delete(key); ovToast(`<span>${ovT(ok)}</span>`); ovFetch(e); }
-  } catch { ovErr.set(key, I18N.tr('连接电脑失败，请重试')); }
+    const res = await fetch(e.c.relay + route, { method: 'POST', cache: 'no-store', signal: AbortSignal.timeout(reply ? 60000 : 8000),
+      headers: { 'content-type': 'application/json', ...await entryHeaders(e.c, 'POST', route) },
+      body: JSON.stringify(reply ? { ...ovTarget(r), ...extra } : { win: r.win, threadId: r.threadId, act, ...(act === 'acceptAll' ? {} : { question: r.wait }), ...extra }) });
+    const result = await res.json();
+    if (!res.ok) ovErr.set(key, I18N.tr(result.error || ovT('操作失败')));
+    else if (reply && result.pending) ovErr.set(key, ovT('发送结果待确认，请打开对话查看；草稿已保留'));
+    else { if (extra.text !== undefined) ovDraft.delete(key); ovToast(`<span>${ovT(reply && result.queued ? '已加入排队' : ok)}</span>`); ovFetch(e); }
+  } catch { ovErr.set(key, reply ? ovT('发送结果待确认，请打开对话查看；草稿已保留') : I18N.tr('连接电脑失败，请重试')); }
   ovBusy.delete(key);
   ovRender();
 }
 function ovSubmit(key) {
+  if (ovBusy.has(key)) return;
   const text = (ovDraft.get(key) || '').trim();
   if (!text) return document.querySelector(`[data-ov-input="${CSS.escape(key)}"]`)?.focus();
   ovSend(key, 'reply', { text }, '已发送');
