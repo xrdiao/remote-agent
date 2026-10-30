@@ -802,12 +802,17 @@ async function openComputerSocket(computer, relay) {
   link.firstScreen = new Promise(resolve => { link.finishFirstScreen = resolve; });
   link.send = message => { if (link.authed && socket.readyState === 1) socket.send(JSON.stringify(message)); };
   computerSockets.set(computer.key, link);
-  const timer = setTimeout(() => { if (!link.authed) socket.close(); }, 10000);
+  let timer = setTimeout(() => { link.error = '实时连接建立超时（30 秒）'; closeSocket(socket); }, 30000);
   socket.onopen = async () => {
+    clearTimeout(timer);
     link.opened = true;
+    ovRender();
     try {
       const proof = await entryProof(computer, 'WS /ws');
-      if (socket.readyState === 1) socket.send(JSON.stringify({ t: 'auth', token: computer.token, proof, resume: saved?.resumeId }));
+      if (socket.readyState === 1) {
+        socket.send(JSON.stringify({ t: 'auth', token: computer.token, proof, resume: saved?.resumeId }));
+        timer = setTimeout(() => { link.error = '设备验证超时'; closeSocket(socket); }, 5000);
+      }
     } catch (error) { link.error = error.message; socket.close(); }
   };
   socket.onmessage = event => {
@@ -821,6 +826,12 @@ async function openComputerSocket(computer, relay) {
     }
     if (m.t === 'auth') {
       clearTimeout(timer);
+      if (m.ok && m.id === expectedId && m.restoring) {
+        link.restoring = true;
+        ovRender();
+        return;
+      }
+      link.restoring = false;
       link.auth = m;
       link.authed = m.ok && m.id === expectedId;
       link.rejected = !link.authed;
@@ -869,15 +880,18 @@ async function openComputerSocket(computer, relay) {
   };
   socket.onclose = event => {
     clearTimeout(timer);
+    if (computerSockets.get(computer.key) !== link) return;
     saveComputerResume(link);
     link.authed = false;
+    link.restoring = false;
+    link.replaced = event.code === 4002;
     link.binding = null;
     link.preload = null;
     link.finishFirstScreen();
     ovStOf(expectedId).failure = { stage: link.opened ? '实时连接中断' : '实时连接建立', error: link.error || 'WebSocket 关闭码 ' + event.code };
     ovRender();
     if (link.closed) { link.closed(event); return; }
-    if (link.rejected || !loadComputers().some(row => row.key === computer.key && row.token === computer.token)) return;
+    if (link.replaced || link.rejected || !loadComputers().some(row => row.key === computer.key && row.token === computer.token)) return;
     link.retry = setTimeout(() => warmComputerSocket(computer).catch(() => {}), 8000);
   };
   return link;
@@ -917,7 +931,7 @@ async function warmComputerSockets() {
     clearTimeout(link.retry); link.socket.close(); computerSockets.delete(key);
   }
   if (computerWarmup) return computerWarmup;
-  const pending = loadComputers().filter(row => row.key !== currentComputer()?.key);
+  const pending = loadComputers().filter(row => row.key !== currentComputer()?.key && !computerSockets.get(row.key)?.replaced);
   // Two complete first-screen loads at a time; the current computer never waits for them.
   computerWarmup = Promise.all([0, 1].map(async () => {
     while (pending.length) {
@@ -931,7 +945,7 @@ async function warmComputerSockets() {
 }
 
 function resumeComputerConnections() {
-  if (!authed && (!ws || ws.readyState >= 2)) return boot();
+  if (!authed && (!ws || ws.readyState >= 2) && !computerSockets.get(currentComputer()?.key)?.replaced) return boot();
   for (const link of computerSockets.values()) if (link.authed && link.socket.readyState === 1) {
     const before = link.lastRx;
     link.send({ t: 'ping', visible: link.socket === ws && conversationVisible() });
@@ -991,6 +1005,13 @@ async function connect(resumeLink = null) {
     qnSig = '';
     $('qnBar').classList.remove('show');
     $('dot').className = '';
+    if (link.replaced) {
+      authed = false;
+      clearInterval(pingTimer);
+      clearTimeout(retryTimer);
+      status('连接已在其他页面恢复', false);
+      return;
+    }
     if (!authed) {
       if (rejected) return;
       const relay = currentComputer()?.relay;
