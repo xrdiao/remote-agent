@@ -611,21 +611,23 @@ async function verifyTotp(code) {
   }
 }
 
+function cancelConnectionWork() {
+  markUploadsDisconnected();
+  disconnectPendingSends();
+  failFileRead('连接已断开，文件读取已中断，请重试');
+  waitFileSave();
+  cancelChatContentRequests();
+  interruptSessionBatch();
+  cancelCodexAutoRetry();
+}
+
 let bootGeneration = 0;
 let requestedComputerAuth = '';
 async function boot() {
   const generation = ++bootGeneration;
   connGen++;
   const old = ws;
-  if (authed) {
-    markUploadsDisconnected();
-    disconnectPendingSends();
-    failFileRead('连接已断开，文件读取已中断，请重试');
-    waitFileSave();
-    cancelChatContentRequests();
-    interruptSessionBatch();
-    cancelCodexAutoRetry();
-  }
+  if (authed) cancelConnectionWork();
   ws = null;
   parkComputerSocket(old);
   clearInterval(pingTimer);
@@ -995,13 +997,7 @@ async function connect(resumeLink = null) {
     if (gen !== connGen) return;
     resetLatency();
     setWindowReady(false);
-    markUploadsDisconnected();
-    disconnectPendingSends();
-    failFileRead('连接已断开，文件读取已中断，请重试');
-    waitFileSave();
-    cancelChatContentRequests();
-    interruptSessionBatch();
-    cancelCodexAutoRetry();
+    cancelConnectionWork();
     qnSig = '';
     $('qnBar').classList.remove('show');
     $('dot').className = '';
@@ -1044,7 +1040,6 @@ async function connect(resumeLink = null) {
         if (m.needTotp) return showTotp(verifyTotp);
         return gate({msg: '设备授权已失效或被移除，请重新授权这台设备。', err: true, repair: true, computers: loadComputers().length > 1});
       }
-      rememberComputer({...currentComputer(), id: m.id, name: m.name, device: m.device});
       conn.lastSelection = m.resumed ? m.selection : m.lastSelection;
       draftEpoch = m.draftEpoch || '';
       authed = true; failures = 0;
