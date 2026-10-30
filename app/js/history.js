@@ -926,6 +926,7 @@ $('qnBar').addEventListener('click', e => {
 let qnSig = '', qnState = null, qnView = '', qnPending = null;
 const qnDrafts = new Map();
 const questionFieldKey = el => `${el.dataset.request}|${el.dataset.field}`;
+const questionCard = (head, body, open) => `<details class="qnCard" ${open ? 'open' : ''}><summary class="qnHead"><span class="qnHeading">${head}</span><svg class="arrowIcon qnFold" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><div class="qnBody">${body}</div></details>`;
 function questionBusy() {
   const bar = $('qnBar');
   bar.setAttribute('aria-busy', String(!!qnPending));
@@ -1005,6 +1006,10 @@ function finishQuestion(m) {
 function renderQuestions(qs) {
   const bar = $('qnBar');
   if (qs?.codex && currentApp !== 'codex') qs = null;
+  const keys = value => value?.codex ? value.requests.map(r => r.id)
+    : (value?.list || []).map(q => JSON.stringify([!!value.devin, value.pager?.cur, q.text]));
+  const known = new Set(keys(qnState));
+  const open = qnView !== viewSel || keys(qs).some(key => !known.has(key)) || bar.querySelector('.qnCard')?.open !== false;
   if (qnView !== viewSel) { qnView = viewSel; qnSig = ''; qnPending = null; qnDrafts.clear(); }
   if (qnPending && (qnPending.message.id ? !qs?.requests?.some(r => r.id === qnPending.message.id) : !qs?.list?.length)) {
     qnPending = null;
@@ -1022,15 +1027,15 @@ function renderQuestions(qs) {
     const focused = bar.contains(document.activeElement) ? document.activeElement : null;
     const focusKey = focused?.matches('[data-field]') ? questionFieldKey(focused) : null;
     const selection = focusKey ? [focused.selectionStart, focused.selectionEnd] : null;
-    const expanded = new Set([...bar.querySelectorAll('details[open]')].map(el => el.dataset.question));
-    bar.innerHTML = `<div class="qnHead">Codex 等待你${qs.requests.some(r => r.id.startsWith('approval:')) ? '审批' : '回答'}<span class="qnCount">${qs.requests.length} 个请求</span></div>` + qs.requests.map(r => {
+    const expanded = new Set([...bar.querySelectorAll('.qnDetails[open]')].map(el => el.dataset.question));
+    bar.innerHTML = questionCard(`Codex 等待你${qs.requests.some(r => r.id.startsWith('approval:')) ? '审批' : '回答'}<span class="qnCount">${qs.requests.length} 个请求</span>`, qs.requests.map(r => {
       const lines = r.text.trim().split('\n'), heading = lines.shift();
       const remaining = lines.join('\n').trim();
       return `<section class="qnRequest"><div class="qnQ">${esc(heading)}</div>`
       + (remaining ? `<details class="qnDetails" data-question="${esc(r.id)}" ${expanded.has(r.id) ? 'open' : ''}><summary>展开问题详情</summary>${esc(remaining)}</details>` : '')
       + (r.id.startsWith('async:') ? `<div class="qnOpts">${r.buttons.slice(0, -2).map((b, n) => `<button class="qnOpt ${b.selected ? 'on' : ''}" data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div>` : '')
       + r.fields.map((f, n) => `<label class="qnFree">${esc(f.label)}${f.options ? `<select data-request="${esc(r.id)}" data-field="${n}">${f.options.map(o => `<option value="${esc(o.value)}" ${o.value === f.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>` : `<input data-request="${esc(r.id)}" data-field="${n}" type="${f.type === 'password' ? 'password' : 'text'}" value="${esc(f.value)}">`}</label>`).join('')
-      + `<div class="qnAct">${r.id.startsWith('async:') ? `<button data-question-compose="${esc(r.id)}">在对话框回答</button>` : ''}${r.buttons.map((b, n) => r.id.startsWith('async:') && n < r.buttons.length - 2 ? '' : `<button data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div></section>`; }).join('');
+      + `<div class="qnAct">${r.id.startsWith('async:') ? `<button data-question-compose="${esc(r.id)}">在对话框回答</button>` : ''}${r.buttons.map((b, n) => r.id.startsWith('async:') && n < r.buttons.length - 2 ? '' : `<button data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div></section>`; }).join(''), open);
     bar.classList.toggle('show', qs.requests.length > 0);
     bar.querySelectorAll('[data-field]').forEach(el => {
       const key = questionFieldKey(el);
@@ -1062,25 +1067,25 @@ function renderQuestions(qs) {
   if (!qs?.list?.length) { bar.innerHTML = ''; bar.classList.remove('show'); return; }
   if (qs.devin) {
     const q = qs.list[0], pg = qs.pager;
-    bar.innerHTML = `<div class="qnHead">Devin 在问你${pg ? `（${pg.cur}/${pg.total}）` : ''}`
-      + (pg && pg.total > 1 ? `<span class="qnPg"><button data-qpart="prev" ${qs.canPrev ? '' : 'disabled'}>‹</button><button data-qpart="next" ${qs.canNext ? '' : 'disabled'}>›</button></span>` : '') + '</div>'
+    bar.innerHTML = questionCard(`Devin 在问你<span class="qnCount">${pg ? `${pg.cur}/${pg.total}` : '1 个问题'}</span>`,
+      (pg && pg.total > 1 ? `<div class="qnPg"><button data-qpart="prev" ${qs.canPrev ? '' : 'disabled'}>‹</button><button data-qpart="next" ${qs.canNext ? '' : 'disabled'}>›</button></div>` : '')
       + `<div class="qnQ">${esc(q.text)}</div><div class="qnOpts">`
       + q.options.map((o, oi) => `<button class="qnOpt ${o.sel ? 'on' : ''}" data-qi="0" data-oi="${oi}"><b>${q.multi ? (o.sel ? '☑' : '☐') : String.fromCharCode(65 + oi)}</b><span>${esc(o.label)}${o.desc ? `<small>${esc(o.desc)}</small>` : ''}</span></button>`).join('')
       + `</div><div class="qnHint">想自己回答？直接在下方输入框写</div>`
-      + `<div class="qnAct"><button data-qpart="skip">跳过</button>${qs.hasSubmit ? `<button class="primary" data-qpart="submit" ${qs.canSubmit ? '' : 'disabled'}>提交</button>` : ''}</div>`;
+      + `<div class="qnAct"><button data-qpart="skip">跳过</button>${qs.hasSubmit ? `<button class="primary" data-qpart="submit" ${qs.canSubmit ? '' : 'disabled'}>提交</button>` : ''}</div>`, open);
     bar.classList.add('show');
     questionBusy();
     return;
   }
-  bar.innerHTML = `<div class="qnHead">Agent 在问你${qs.list.length > 1 ? `（${qs.list.length} 个问题）` : ''}</div>`
-    + qs.list.map((q, qi) => `<div class="qnQ">${qs.list.length > 1 ? `${qi + 1}. ` : ''}${esc(q.text)}</div><div class="qnOpts">`
+  bar.innerHTML = questionCard(`Agent 在问你<span class="qnCount">${qs.list.length} 个问题</span>`,
+    qs.list.map((q, qi) => `<div class="qnQ">${qs.list.length > 1 ? `${qi + 1}. ` : ''}${esc(q.text)}</div><div class="qnOpts">`
       + q.options.map((o, oi) => {
         const letter = String.fromCharCode(65 + oi);
         return o.free
           ? `<div class="qnFree ${o.sel ? 'on' : ''}"><input data-qi="${qi}" data-oi="${oi}" placeholder="其他…" value="${esc(o.value)}" enterkeyhint="done"><button data-qfree="${qi}:${oi}">填入</button></div>`
           : `<button class="qnOpt ${o.sel ? 'on' : ''}" data-qi="${qi}" data-oi="${oi}"><b>${letter}</b><span>${esc(o.label)}</span></button>`;
       }).join('') + '</div>').join('')
-    + `<div class="qnAct"><button data-qpart="skip">跳过</button><button class="primary" data-qpart="submit" ${qs.canSubmit ? '' : 'disabled'}>提交</button></div>`;
+    + `<div class="qnAct"><button data-qpart="skip">跳过</button><button class="primary" data-qpart="submit" ${qs.canSubmit ? '' : 'disabled'}>提交</button></div>`, open);
   bar.classList.add('show');
   questionBusy();
 }
@@ -1658,12 +1663,13 @@ list.addEventListener('touchmove', e => {
 }, { passive: true });
 for (const event of ['touchend', 'touchcancel']) list.addEventListener(event, () => {
   if (!chatTouching) return;
-  chatMomentum = event === 'touchend';
+  chatMomentum = event === 'touchend' && chatUserScroll;
   if (event === 'touchcancel') bottomScrollIntent = null;
   chatTouching = false;
   restoringChatScroll = false;
   if (historyPullUp && list.scrollTop <= 1) historyArmed = true;
-  settleChatScroll();
+  if (!chatUserScroll) flushSettledChat();
+  else settleChatScroll();
 }, { passive: true });
 function jumpToLatest() {
   stopChatMotion(() => {

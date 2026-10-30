@@ -277,7 +277,7 @@ function ovComputerGroup(e, all, projs) {
   const stage = link?.authed ? 2 : st?.stage || 0;
   if (loading) detail = ovT(link?.authed ? '正在读取项目与会话…' : !link && st?.data ? '等待连接…' : stage ? '连接电脑…' : '查找地址…');
   const progress = loading && !e.foreign ? `<span class="ov-computer-progress" aria-hidden="true">${[0, 1, 2].map(i => `<i class="${i < stage ? 'done' : i === stage ? 'current' : ''}"></i>`).join('')}</span>` : '';
-  ovSig.push(`c:${e.id}:${status}:${stage}:${collapsed}`);
+  ovSig.push(`c:${e.id}:${status}:${loading ? stage : ''}:${collapsed}`);
   const body = !collapsed && st?.data ? ovS.level === 'projects' ? ovProjectTiles(projects, all, false) : ovSessions(recs, e.id) : '';
   const empty = status === 'online' && st?.data?.ready ? ovEmpty('这里还没有会话') : '';
   return `<section class="ov-computer" style="view-transition-name:${ovTname('c:' + e.id)}"><div class="ov-computer-row ${status}"><button type="button" class="ov-computer-toggle" data-ov="fold" data-id="${esc(e.id)}" aria-expanded="${!collapsed}"><span class="ov-computer-dot" aria-hidden="true"></span><span class="ov-computer-label"><span class="ov-computer-name ovRaw">${esc(e.name)}</span>${detail ? `<span class="ov-computer-detail">${esc(detail)}</span>` : ''}${progress}</span><svg class="ov-computer-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button>${action ? `<button type="button" class="ov-computer-action" ${action}>${badge}</button>` : ''}${!e.foreign && status === 'offline' ? `<button type="button" class="ov-computer-info" data-ov="details" data-id="${esc(e.id)}" aria-label="${ovT('连接详情')}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="8"/><path d="M12 10v7m0-11v1"/></svg></button>` : ''}</div>${body || empty && !collapsed ? `<div class="ov-board">${body || empty}</div>` : ''}</section>`;
@@ -300,7 +300,7 @@ function ovSessTile(r) {
   const open = ovS.open === r.key, p = ovProgress(r), fill = p ? Math.round(p.done / p.total * 100) : 0;
   const now = r.state === 'wait' ? ovNowHtml(r) : ovText(r.tasks?.current || r.last);
   const work = r.state === 'run' ? ovT(r.fusion ? OV_LABEL[r.phase] : '正在工作…') : ovBadge(r);
-  const cls = ['ov-tile', 'ov-session', `ov-st-${r.state}`, r.state === 'wait' && 'ov-wide', r.state === 'idle' && 'ov-compact', open && 'ov-open', r.off && 'ov-off'].filter(Boolean).join(' ');
+  const cls = ['ov-tile', 'ov-session', 'ov-compact', `ov-st-${r.state}`, open && 'ov-open', r.off && 'ov-off'].filter(Boolean).join(' ');
   ovSig.push(`${r.key}:${cls}`);
   return `<div class="${cls}" style="--p:${fill}%;view-transition-name:${ovTname(r.key)}"${open ? '' : ` data-ov="sess" data-id="${esc(r.key)}"`}>
     ${ovRecLogo(r)}<div class="ov-state"><span class="ov-badge">${esc(ovBadge(r))}</span><span class="ov-time">${esc(ovTime(r))}</span></div>
