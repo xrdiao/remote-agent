@@ -495,16 +495,15 @@ $('sheet').addEventListener('click', async e => {
   else if (act === 'settings') return openSettings();
   else if (act === 'screen') { closeSheet(); return setMode('screen'); }
   else if (act === 'changeUrl') window.AgentRemoteApp?.changeUrl();
-  else if (act === 'connPartialToggle' || act === 'connLaunchToggle') {
-    const partial = act === 'connPartialToggle';
-    const on = partial ? !connAutoPartialOn() : store.get('conn-auto-launch') !== '1';
-    store.set(partial ? 'conn-auto-partial' : 'conn-auto-launch', on ? '1' : '0');
-    const row = $(partial ? 'menuPartialRow' : 'menuLaunchRow');
+  else if (act === 'connLaunchToggle') {
+    const on = store.get('conn-auto-launch') !== '1';
+    store.set('conn-auto-launch', on ? '1' : '0');
+    const row = $('menuLaunchRow');
     row?.setAttribute('aria-checked', String(on));
     row?.querySelector('.switch')?.classList.toggle('on', on);
-    if (conn.active) connRender();
-    if (partial && on) { conn.enterRequested = true; connMaybeEnter(); }
   }
+  else if (act === 'connectionRetry') { closeSheet(); return reconnectComputer(b.dataset.computer); }
+  else if (act === 'connectionDiagnose') return checkComputerConnection(b.dataset.computer);
   else if (act === 'notifyToggle') {
     const row = $('notifySwitchRow');
     if (row?.getAttribute('aria-busy') === 'true') return;
@@ -638,7 +637,6 @@ async function useComputer(i) {
   }
   restoreDraft();
   connGen++;
-  offlineGen++;
   authed = false;
   ws = null;
   boot();
