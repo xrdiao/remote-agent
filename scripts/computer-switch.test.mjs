@@ -47,7 +47,7 @@ function harness({ sameSelection = false, count = 2 } = {}) {
     close() { this.readyState = 3; return this.onclose?.({ code: 1000 }); }
   }
   const context = vm.createContext({
-    URL, URLSearchParams, AbortSignal, Event, crypto, structuredClone,
+    URL, URLSearchParams, AbortController, AbortSignal, Event, crypto, performance, structuredClone,
     WebSocket: FakeWebSocket,
     location: { href: 'https://phone.invalid/', origin: 'https://phone.invalid', pathname: '/', hash: '', search: '' },
     history: { replaceState() {} }, navigator: { userAgent: 'test' },
@@ -78,15 +78,11 @@ function harness({ sameSelection = false, count = 2 } = {}) {
     var pendingSends = new Map(), pendingEchoes = [], desktopRequests = new Map(), MN = { mentions: [], value: '' };
     var agentLists = new Map(), cache = new Map(), chatBySel = new Map(), quotaCache = new Map();
     var lastChat = null, chatStale = false, text = $('text');
-    var conn = { active: false, host: false, open: new Set(), loaded: false, timer: 0 };
     var thoughtObserver = { disconnect() {} }, chatPreviewReady = Promise.resolve(), I18N = { lang: 'zh', tr: value => value };
     function status(value) { pendingStatus = value; trace.push(['status', value]); }
     var compatibilityRequests = new Map(), compatibilityReports = new Map();
-    function connRender() { if (conn.active) trace.push(['loading', conn.phase]); }
-    function connHide() { conn.active = false; $('conn').classList.remove('open'); }
     function gate() { $('gate').classList.add('open'); }
     function ungate() { $('gate').classList.remove('open'); }
-    function connHostOk() { conn.host = true; }
     function closeSheet() { sheetKind = ''; }
     function showComputers() { trace.push(['computer-list']); }
     function queueChatRender(chat, stale) {
@@ -107,18 +103,26 @@ function harness({ sameSelection = false, count = 2 } = {}) {
     function openComputerEntry(url, id) { trace.push(['entry', url, id]); }
     function openSheet(kind) { trace.push(['sheet', kind]); }
     function esc(value) { return value; }
-    var bootCalls = 0;
+    var bootCalls = 0, overviewRefreshes = 0, overviewFetches = [];
+    var ovList = JSON.parse(store.get('computers')).map((c,index)=>({id:c.id,c,index})), ovSt = new Map();
+    function ovStOf(id) { if(!ovSt.has(id))ovSt.set(id,{status:'loading'});return ovSt.get(id); }
+    function ovRender() { overviewRefreshes++; }
+    function ovEnterReady() {}
+    function ovFetch(e) { overviewFetches.push(e.id);return Promise.resolve(); }
+    var connectionDetailsComputer = '';
+    function showConnectionDetails() {}
+
   `);
   for (const name of [
     'resetLatency', 'finishPending', 'failFileRead', 'waitFileSave', 'cancelChatContentRequests',
     'interruptSessionBatch', 'cancelCodexAutoRetry', 'markUploadsDisconnected', 'disconnectPendingSends',
     'updateAppText', 'updateTitle', 'invalidateChatRender', 'beginChatSelection', 'endInputRecall',
     'mentionHide', 'autosize', 'rememberAgentOpen', 'requestCompatibility', 'scheduleLatency',
-    'renderContext', 'renderQuota', 'renderQuestions', 'connWindows', 'paintRail', 'checkAppUpdate',
+    'renderContext', 'renderQuota', 'renderQuestions', 'paintRail', 'checkAppUpdate',
   ]) context[name] = () => {};
   context.conversationVisible = () => true;
   run(core.slice(core.indexOf('function requestAgentCatalog()'), core.indexOf('function openAgentList(')));
-  run(gate.slice(gate.indexOf('function newComputerConnection('), gate.indexOf('function connHostOk(')));
+  run(gate.slice(gate.indexOf('function newComputerConnection('), gate.indexOf('const connLaunchStatus')));
   run(gate.slice(gate.indexOf('function connReadFailed('), gate.indexOf('function connRetryCurrent(')));
   run(net);
   run(core.slice(core.indexOf('function desktopAction(obj)'), core.indexOf('\n\n', core.indexOf('function setWindowReady(ready)'))));
@@ -127,14 +131,14 @@ function harness({ sameSelection = false, count = 2 } = {}) {
   run('var realBoot = boot; boot = function() { bootCalls++; return realBoot(); };');
   const state = () => JSON.parse(run(`JSON.stringify({ computer:currentComputer().id, authed, windowReady, selectionReady,
     thread:lastChat?.thread, body:lastChat?.items?.[0]?.t, chatStale, viewSel, draft:text.value, epoch:draftEpoch,
-    revision:draftRevision, activeDraft, bootCalls, loading:conn.active, generation:bootGeneration,
-    navigation:navigationPending?.id, failed:conn.attachFailed, phase:conn.phase, status:pendingStatus })`));
+    revision:draftRevision, activeDraft, bootCalls, gateOpen:$('gate').classList.contains('open'), generation:bootGeneration,
+    navigation:navigationPending?.id, failed:conn.attachFailed, status:pendingStatus })`));
   const settle = () => new Promise(resolve => setImmediate(resolve));
   const link = i => run(`computerSockets.get(loadComputers()[${i}].key)`);
   async function open(i, { foreground = false, lastSelection } = {}) {
     const result = await run(`openComputerSocket(loadComputers()[${i}], loadComputers()[${i}].relay)`);
     if (result.authed) return result;
-    if (foreground) await run(`base=currentComputer().relay;connShow('正在建立实时连接…');connect()`);
+    if (foreground) await run(`base=currentComputer().relay;resetComputerConnection();connect()`);
     await result.socket.open();
     result.socket.receive({ t: 'auth', ok: true, id: records[i].id, name: 'computer-' + i, lastSelection: lastSelection ?? {
       id: records[i].win, windowId: records[i].windowId, threadId: records[i].threadId,
@@ -175,8 +179,7 @@ test('ready computer switches onto its existing session and can send immediately
   const state = h.state();
   assert.equal(state.computer, computers[1].id); assert.equal(state.thread, 'thread-b');
   assert(state.authed && state.windowReady && state.selectionReady && !state.chatStale);
-  assert.equal(state.bootCalls, boots); assert.equal(state.loading, false);
-  assert.equal(h.trace.some(row => row[0] === 'loading'), false);
+  assert.equal(state.bootCalls, boots); assert.equal(state.gateOpen, false);
   assert.equal(h.trace.some(row => row[0] === 'preview'), false);
   assert.equal(socket.sent.some(row => ['auth', 'attach', 'mode'].includes(row.t)), false);
   h.run(`send({t:'send',text:'to computer B',submit:true})`);
@@ -244,7 +247,7 @@ test('identical window/thread identifiers on different computers still select se
   assert.equal(h.state().body, 'computer-0'); assert.equal(h.state().draft, 'local A');
 });
 
-test('the first visit adopts the already running background load without booting or attaching again', async () => {
+test('the first visit stays usable while adopting the existing background load without another attach', async () => {
   const h = harness(); await h.start(); h.attached(0); await h.open(1);
   h.run(`text.value='stay on A';saveDraft();`);
   const boots = h.state().bootCalls;
@@ -253,7 +256,7 @@ test('the first visit adopts the already running background load without booting
   assert.equal(h.state().bootCalls, boots);
   assert.equal(h.state().windowReady, false);
   assert.equal(h.state().draft, ''); assert.equal(h.state().thread, undefined);
-  assert.equal(h.state().loading, true);
+  assert.equal(h.state().gateOpen, false);
   assert.equal(h.link(1).socket.sent.filter(row => row.t === 'attach').length, attaches);
   h.attached(1);
   assert.equal(h.state().windowReady, true);
@@ -279,8 +282,7 @@ test('a never visited computer loads its first screen without changing the curre
   socket.sent.length = 0; h.trace.length = 0;
   await h.switchTo(1);
   assert.equal(h.state().thread, 'thread-b'); assert.equal(h.state().draft, '');
-  assert.equal(h.state().bootCalls, boots); assert.equal(h.state().loading, false);
-  assert.equal(h.trace.some(row => row[0] === 'loading'), false);
+  assert.equal(h.state().bootCalls, boots); assert.equal(h.state().gateOpen, false);
   assert.equal(socket.sent.some(row => ['auth', 'attach', 'mode'].includes(row.t)), false);
   h.run(`send({t:'send',text:'first visit B',submit:true})`);
   assert.equal(socket.sent.at(-1).sel, 'codex|window-b|thread-b');
@@ -433,4 +435,57 @@ test('changing the requested display mode does not reuse a chat first screen as 
   const boots = h.state().bootCalls;
   await h.switchTo(1);
   assert.equal(h.state().bootCalls, boots+1);
+});
+
+test('a paired cold start and connection failure never open a full-page gate', async () => {
+  const h = harness();
+  h.run(`fetch=async()=>{throw new Error('fixture offline')}`);
+  await h.run('boot()'); await h.settle();
+  assert.equal(h.state().gateOpen, false);
+  h.link(0).socket.close(); await h.settle();
+  assert.equal(h.state().gateOpen, false);
+  assert.equal(h.run('ovStOf(loadComputers()[0].id).status'), 'offline');
+});
+
+test('reconnecting B reuses one targeted load without changing A or its draft', async () => {
+  const h = harness(); await h.bothReady();
+  h.run(`text.value='keep A';saveDraft();`);
+  h.link(1).socket.close();
+  const before = h.state();
+  const first = h.run(`reconnectComputer(loadComputers()[1].id)`);
+  const second = h.run(`reconnectComputer(loadComputers()[1].id)`);
+  assert.equal(first, second);
+  await h.settle();
+  assert.deepEqual(h.state(), before);
+  assert.deepEqual(JSON.parse(h.run('JSON.stringify(overviewFetches)')), [computers[1].id]);
+  await h.open(1); h.attached(1); await first;
+  assert.deepEqual(h.state(), before);
+  assert.equal(h.link(0).socket.sent.some(m => m.t === 'attach' || m.t === 'send'), false);
+  assert.equal(h.run('ovStOf(loadComputers()[1].id).reconnecting'), null);
+});
+
+test('authorization failure stays in the computer row until authorization is explicitly requested', async () => {
+  const h = harness(); await h.run('boot()'); await h.settle();
+  await h.link(0).socket.open();
+  h.link(0).socket.receive({ t: 'auth', ok: false, id: computers[0].id, needTotp: true });
+  await h.settle();
+  assert.equal(h.state().gateOpen, false);
+  assert.equal(h.run('ovStOf(loadComputers()[0].id).status'), 'auth');
+  await h.run('authorizeComputer(loadComputers()[0].id)'); await h.settle();
+  await h.link(0).socket.open();
+  h.link(0).socket.receive({ t: 'auth', ok: false, id: computers[0].id, needTotp: true });
+  await h.settle();
+  assert.equal(h.state().gateOpen, true);
+});
+
+test('connection diagnostics use B address and retain A selection and content', async () => {
+  const h = harness(); await h.bothReady();
+  const before = h.state();
+  h.run(`var diagnosticUrls=[];fetch=async url=>{diagnosticUrls.push(url);return{ok:true,json:async()=>({self:true})}}`);
+  await h.run('checkComputerConnection(loadComputers()[1].id)');
+  const urls = JSON.parse(h.run('JSON.stringify(diagnosticUrls)'));
+  assert(urls.some(url => url.startsWith(computers[1].relay + '/url.json')));
+  assert(!urls.some(url => url.startsWith(computers[0].relay)));
+  assert.equal(h.run('ovStOf(loadComputers()[1].id).diagRunning'), false);
+  assert.deepEqual(h.state(), before);
 });

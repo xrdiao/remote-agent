@@ -1201,6 +1201,20 @@ $('sheet').addEventListener('change', e => {
   store.set('agent-start:' + agentComputerKey(), JSON.stringify([...selected]));
   showAgentManager();
 });
+let connectionDetailsComputer = '';
+function showConnectionDetails(id) {
+  const e = ovList.find(e => e.id === id);
+  if (!e?.c) return;
+  connectionDetailsComputer = id;
+  const state = ovStOf(id), tr = I18N.tr, failure = state.failure;
+  const checks = (state.checks || []).map(c => `<div class="connection-check"><span>${esc(tr(c.label))}</span><span class="${c.st}">${esc(tr(DIAG_TEXT[c.st]))}</span></div>`).join('');
+  const technical = [failure?.stage, failure?.error, ...(state.checks || []).filter(c => c.st === 'err').map(c => tr(c.label) + '：' + diagReason(c))].filter(Boolean).join('\n');
+  openSheet('connection-details', `<h3>连接详情</h3><p class="hint ovRaw">${esc(e.name)}</p>
+    <p class="hint">${esc(tr(state.diagRunning ? '正在检测连接…' : state.conclusion || '连接未建立，请重试。'))}</p>
+    ${checks}${technical ? `<pre class="connection-technical">${esc(technical)}</pre>` : ''}
+    <div class="optRow"><button class="opt" data-act="connectionRetry" data-computer="${esc(id)}">重新连接</button><button class="opt" data-act="connectionDiagnose" data-computer="${esc(id)}" ${state.diagRunning ? 'disabled' : ''}>重新检测</button></div>`);
+}
+
 function showAgentManager(refresh = false) {
   if (refresh) {
     send({ t: 'connAgents' });
@@ -1229,9 +1243,8 @@ function showMainMenu() {
   const startConversation = store.get('start-view') === 'conversation';
   const entryItem = `<div class="opt"><span class="lbl">默认进入<span class="sub">下次打开或刷新生效</span></span><div class="agentSessionFilter${startConversation ? ' common' : ''}" style="width:176px;max-width:70%;margin:0" role="group" aria-label="${esc(I18N.tr('默认进入'))}"><button type="button" data-start-view="overview" aria-pressed="${!startConversation}" style="padding:4px 2px">${I18N.tr('缩略图')}</button><button type="button" data-start-view="conversation" aria-pressed="${startConversation}" style="padding:4px 2px">${I18N.tr('会话内容')}</button></div></div>`;
   const notifyItem = `<button class="opt" id="notifySwitchRow" data-act="notifyToggle" role="switch" aria-checked="${notifyOn}"><span class="lbl">开启通知<span class="sub">Agent 完成或等你确认时提醒</span></span><span class="switch${notifyOn ? ' on' : ''}" aria-hidden="true"></span></button>`;
-  const partialOn = connAutoPartialOn(), autoLaunchOn = store.get('conn-auto-launch') === '1';
-  const connItems = `<button class="opt" id="menuPartialRow" data-act="connPartialToggle" role="switch" aria-checked="${partialOn}"><span class="lbl">部分失败时直接进入<span class="sub">连接电脑时，只要有一个 Agent 可用就自动进入</span></span><span class="switch${partialOn ? ' on' : ''}" aria-hidden="true"></span></button>`
-    + `<button class="opt" id="menuLaunchRow" data-act="connLaunchToggle" role="switch" aria-checked="${autoLaunchOn}"><span class="lbl">自动启动未打开的 Agent<span class="sub">连接电脑时自动启动没有运行的 Agent</span></span><span class="switch${autoLaunchOn ? ' on' : ''}" aria-hidden="true"></span></button>`;
+  const autoLaunchOn = store.get('conn-auto-launch') === '1';
+  const connItems = `<button class="opt" id="menuLaunchRow" data-act="connLaunchToggle" role="switch" aria-checked="${autoLaunchOn}"><span class="lbl">自动启动未打开的 Agent<span class="sub">连接电脑时自动启动没有运行的 Agent</span></span><span class="switch${autoLaunchOn ? ' on' : ''}" aria-hidden="true"></span></button>`;
   const update = apkUpdate()
     ? `<button class="opt" data-act="appUpdate"><span class="lbl">更新安卓 App（v${esc(appVersion)} → v${esc(apkUpdate())}）</span><span class="tag">新</span></button>`
     : `<button class="opt" data-act="appUpdate"><span class="lbl">检查 App 更新（当前 v${esc(appVersion)}）</span></button>`;
