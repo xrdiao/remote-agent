@@ -18,6 +18,7 @@ import { transferApi, serveTransfer } from './transfer.mjs';
 import { voiceStatus, loadWorker } from '../voice/service.mjs';
 import { voiceEngines } from '../voice/config.mjs';
 import { uploads } from '../agent/context.mjs';
+import { overviewSnapshot } from '../overview.mjs';
 
 // A device is usable once paired and, when 2FA asks for it, re-verified.
 function deviceFor(req) {
@@ -271,6 +272,7 @@ export async function handleApi(req, res, route) {
       return json(req, res, 409, { error: e.message });
     }
   }
+  if (route === '/api/overview' && req.method === 'GET') return json(req, res, 200, { id: computerId(), name: computerName(), ...overviewSnapshot(device.id) });
   if (route === '/api/push/key') return json(req, res, 200, { key: pushPublicKey() });
   if (route === '/api/push/state' && req.method === 'GET') {
     return json(req, res, 200, { subscribed: Boolean(device.push || device.apns), enabled: Boolean(device.push || device.apns) && device.pushEnabled !== false });

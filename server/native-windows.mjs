@@ -10,6 +10,7 @@ import { codexSessionStates } from './windows.mjs';
 // Native connections and read state belong to windows, not to a phone's current view.
 const windows = new Map();
 const catalogListeners = new Map(), catalogReads = new Map();
+export const nativeSessionCatalog = app => catalogReads.get(app)?.catalog;
 export function subscribeCatalog(app, changed) {
   if (!catalogListeners.has(app)) catalogListeners.set(app, new Set());
   const listeners = catalogListeners.get(app);
@@ -61,6 +62,7 @@ async function refreshSessionCatalog(source, changed) {
       }
     }
     const reconciled = reconcileSessionCatalog(app, catalog);
+    read.catalog = catalog;
     if (changed || reconciled) publishCatalog(app);
   })().catch(error => publishCatalog(app, error)).finally(() => {
     read.promise = null;
