@@ -172,6 +172,7 @@ function refreshSelectionMetadata(initial = false) {
   const key = `${connGen}|${viewSel}|${navigationSerial}`;
   if (selectionMetadata === key) return;
   selectionMetadata = key;
+  requestAgentCatalog();
   send({ t: 'usage', automatic: true });
   const window = `${connGen}|${currentApp}|${currentComputer()?.windowId || ''}`;
   if (metadataWindow !== window) {
@@ -826,7 +827,7 @@ async function openComputerSocket(computer, relay) {
       else if (computerBindingReady(link)) link.preload.outcome = null;
     }
     if (currentNavigation && (computerBindingReady(link) || ['attachFailed', 'projectTrust'].includes(m.t) || m.t === 'attached' && m.closed)) link.finishFirstScreen();
-    if (['windows', 'connAgents', 'agentCatalog', 'plans'].includes(m.t)) link.metadata.set(m.t, m);
+    if (['windows', 'connAgents', 'agentCatalog', 'plans', 'sessionLibrary'].includes(m.t)) link.metadata.set(m.t, m);
     if (link.receive) link.receive(event);
     else if (m.t === 'sent') confirmSent(m);
     else if (m.t === 'sendFailed') failPendingSend(m.requestId, m.message, false);
@@ -894,6 +895,7 @@ async function warmComputerSockets() {
 }
 
 function startComputerUpdates() {
+  requestAgentCatalog();
   send({ t: 'visible', v: document.visibilityState === 'visible' });
   send({ t: 'lang', v: I18N.lang });
   clearInterval(usageTimer);
