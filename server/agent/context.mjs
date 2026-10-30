@@ -1,33 +1,14 @@
 import { MOD, NAMED_KEYS, cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { EDITORS } from '../config.mjs';
-import { helpersCall } from '../page/build.mjs';
+import { helpersCall, DEVIN_COMPOSER_SRC } from '../page/build.mjs';
 import { resetThinkingCaches } from './thinking-cache.mjs';
 
 // Cursor's chat composer is a ProseMirror contenteditable; selectors ordered from most to least specific.
 export const FOCUS_COMPOSER = `(() => {
   // Codex draws its prompt inside a same-origin iframe. Cursor and Devin use this page.
   const doc = document.getElementById('active-frame')?.contentDocument || document;
-  // Same reveal as pageHelpers.revealDevinComposer: a new Devin session's prompt
-  // stays in a hidden welcome layer while a file tab is open.
-  for (const group of doc.querySelectorAll('.editor-group-container')) {
-    if (group.classList.contains('has-pending-new-session-welcome')) continue;
-    for (const el of group.querySelectorAll('[data-crl-devin-reveal]')) {
-      el.style.removeProperty('display');
-      el.removeAttribute('data-crl-devin-reveal');
-    }
-  }
-  for (const group of doc.querySelectorAll('.editor-group-container.has-pending-new-session-welcome')) {
-    const welcome = group.querySelector(':scope > .windsurf-welcome-container');
-    const editor = group.querySelector(':scope > .editor-container');
-    if (welcome && getComputedStyle(welcome).display === 'none') {
-      welcome.style.setProperty('display', 'flex', 'important');
-      welcome.setAttribute('data-crl-devin-reveal', '1');
-    }
-    if (editor && getComputedStyle(editor).display !== 'none') {
-      editor.style.setProperty('display', 'none', 'important');
-      editor.setAttribute('data-crl-devin-reveal', '1');
-    }
-  }
+  ${DEVIN_COMPOSER_SRC}
+  revealDevinComposer();
   const visible = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(e).visibility === 'visible'; };
   const selectors = ['.aislash-editor-input[contenteditable="true"]', '.ui-prompt-input-editor__input[contenteditable="true"]', '.ProseMirror[contenteditable="true"]', '.composer-bar [contenteditable="true"]', '.auxiliarybar [contenteditable="true"]'];
   let eds = [];

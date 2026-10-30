@@ -37,10 +37,15 @@ export class Session extends AgentContext {
     this.connectionMessages = new Map();
   }
 
+  stopChatUpdates() {
+    const stop = this.chatUpdatesStop;
+    this.chatUpdatesStop = null;
+    return stop?.();
+  }
+
   async setMode(mode, firstScreen = false) {
     const watchGeneration = this.chatWatchGeneration = (this.chatWatchGeneration || 0) + 1;
-    cdpRead.run(null, () => this.chatUpdatesStop?.());
-    this.chatUpdatesStop = null;
+    cdpRead.run(null, () => this.stopChatUpdates());
     this.catalogUpdatesStop?.();
     this.catalogUpdatesStop = null;
     if (this.mode === 'screen' && mode !== 'screen') this.stopVisual();
@@ -458,8 +463,7 @@ export class Session extends AgentContext {
     this.chatRead?.reject?.(error);
     this.chatRead = null;
     this.chatWatchGeneration = (this.chatWatchGeneration || 0) + 1;
-    this.chatUpdatesStop?.();
-    this.chatUpdatesStop = null;
+    this.stopChatUpdates();
     clearInterval(this.chatTimer);
     clearInterval(this.termTimer);
     this.startupPending = this.pendingProject = null;
@@ -511,8 +515,7 @@ export class Session extends AgentContext {
     this.codexSettingsEditor = null;
     this.codexSettingsReturn = '';
     this.chatWatchGeneration = (this.chatWatchGeneration || 0) + 1;
-    cdpRead.run(null, () => this.chatUpdatesStop?.());
-    this.chatUpdatesStop = null;
+    cdpRead.run(null, () => this.stopChatUpdates());
     this.stopVisual();
     clearTimeout(this.focusTimer);
     this.focusTimer = null;
@@ -597,8 +600,7 @@ export class Session extends AgentContext {
   suspend() {
     this.visible = this.notifyVisible = false;
     this.chatWatchGeneration = (this.chatWatchGeneration || 0) + 1;
-    this.chatUpdatesStop?.();
-    this.chatUpdatesStop = null;
+    this.stopChatUpdates();
     this.catalogUpdatesStop?.();
     this.catalogUpdatesStop = null;
     this.chatRead?.controller.abort(new Error('手机连接已挂起'));
@@ -616,7 +618,7 @@ export class Session extends AgentContext {
   dispose() {
     this.disposed = true;
     fusionViewers.delete(this);
-    this.chatUpdatesStop?.();
+    this.stopChatUpdates();
     clearInterval(this.chatTimer);
     clearInterval(this.termTimer);
     if (this.activeOperations) return;

@@ -257,6 +257,15 @@ function openComputerEntry(url, current = '') {
   if (inApp) return window.AgentRemoteApp.setUrl(link);
   location.href = link;
 }
+function findPublishedEntry(reg, id) {
+  return (reg.computers || []).find(entry => entry.id === id);
+}
+async function readPublishedEntry(entries, read) {
+  for (const entry of entries) {
+    try { return { entry, value: await read(entry) }; } catch {}
+  }
+  return null;
+}
 async function resolveBase(data = info, comp = currentComputer(), current = () => true) {
   if (data.self) return new URL(comp?.discovery || discoveryUrl()).origin;
   if (!comp?.key) throw Object.assign(new Error(''), { unpaired: true });
@@ -266,15 +275,14 @@ async function resolveBase(data = info, comp = currentComputer(), current = () =
   }
   if (data.v !== 3 || !Array.isArray(data.computers)) throw offline('电脑端还没有发布地址（或还在用旧版本），请在电脑上重启服务');
   const id = comp.id || await computerIdFromKey(comp.key);
-  let entry = data.computers.find(c => c.id === id);
+  const entry = findPublishedEntry(data, id);
   if (!entry) {
-    for (const c of data.computers) {
-      try {
-        const url = await decryptEntry(comp.key, c);
-        if (current()) updateComputerRecord({ ...comp, id: c.id, name: c.name || comp.name || '电脑' });
-        return url;
-      } catch {}
-    }
+    const found = await readPublishedEntry(data.computers, async c => {
+      const url = await decryptEntry(comp.key, c);
+      if (current()) updateComputerRecord({ ...comp, id: c.id, name: c.name || comp.name || '电脑' });
+      return url;
+    });
+    if (found) return found.value;
     throw offline('这台电脑还没有发布地址，请在那台电脑上重启服务');
   }
   if (current() && (!comp.id || (entry.name && entry.name !== comp.name))) updateComputerRecord({ ...comp, id: entry.id, name: entry.name || comp.name || '电脑' });
@@ -703,11 +711,9 @@ async function resolvePending() {
   if (info.v === 2 && info.data) return decryptEntry(pending.key, info);
   if (info.v !== 3 || !Array.isArray(info.computers)) throw new Error('电脑端还没有发布地址，请在那台电脑上重启服务');
   const id = await computerIdFromKey(pending.key);
-  let entry = info.computers.find(c => c.id === id);
+  let entry = findPublishedEntry(info, id);
   if (!entry) {
-    for (const c of info.computers) {
-      try { await decryptEntry(pending.key, c); entry = c; break; } catch {}
-    }
+    entry = (await readPublishedEntry(info.computers, c => decryptEntry(pending.key, c)))?.entry;
   }
   if (!entry) throw new Error('这台电脑还没有发布地址，请在那台电脑上重启服务');
   return decryptEntry(pending.key, entry);

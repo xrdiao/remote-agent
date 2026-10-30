@@ -23,6 +23,18 @@ export const capabilities = {
   fork: true, extraActions: true,
 };
 
+async function readCodexMenu(context, button, select = items => items.length ? items : null) {
+  const pos = await context.cdp.evaluate(helpersCall(`codexButtonPoint(${JSON.stringify(button)})`));
+  if (!pos) throw new Error(button === 'run' ? '当前没有执行位置菜单' : '当前会话没有 Chat actions');
+  await context.tapCss(pos.x, pos.y);
+  let value;
+  for (let i = 0; i < 10 && !value; i++) {
+    await new Promise(r => setTimeout(r, 120));
+    value = select(await context.cdp.evaluate(helpersCall('codexRunItems()')) || []);
+  }
+  return value;
+}
+
 export const adapter = {
   async newChat() {
     return this.newCodexChat();
@@ -911,28 +923,13 @@ async codexToggleIde() {
 },
 
 async codexRunMenu() {
-  const pos = await this.cdp.evaluate(helpersCall(`codexButtonPoint('run')`));
-  if (!pos) throw new Error('当前没有执行位置菜单');
-  await this.tapCss(pos.x, pos.y);
-  let items = [];
-  for (let i = 0; i < 10 && !items.length; i++) {
-    await new Promise(r => setTimeout(r, 120));
-    items = await this.cdp.evaluate(helpersCall('codexRunItems()')) || [];
-  }
+  const items = await readCodexMenu(this, 'run') || [];
   await this.closeMenus();
   this.emit({ t: 'menu', kind: 'codex-run', items: items.filter(it => /^(Local|Cloud|Worktree|Connect Codex web)\b/.test(it.label)).map(it => ({ label: it.label, checked: false })) });
 },
 
 async codexRunPick(label) {
-  const pos = await this.cdp.evaluate(helpersCall(`codexButtonPoint('run')`));
-  if (!pos) throw new Error('当前没有执行位置菜单');
-  await this.tapCss(pos.x, pos.y);
-  let hit = null;
-  for (let i = 0; i < 10 && !hit; i++) {
-    await new Promise(r => setTimeout(r, 120));
-    const items = await this.cdp.evaluate(helpersCall('codexRunItems()')) || [];
-    hit = items.find(it => it.label === label);
-  }
+  const hit = await readCodexMenu(this, 'run', items => items.find(it => it.label === label));
   if (!hit) { await this.closeMenus(); throw new Error(`没找到执行位置：${label}`); }
   await this.tapCss(hit.x, hit.y);
   await new Promise(r => setTimeout(r, 300));
@@ -942,28 +939,13 @@ async codexRunPick(label) {
 },
 
 async codexChatMenu() {
-  const pos = await this.cdp.evaluate(helpersCall(`codexButtonPoint('actions')`));
-  if (!pos) throw new Error('当前会话没有 Chat actions');
-  await this.tapCss(pos.x, pos.y);
-  let items = [];
-  for (let i = 0; i < 10 && !items.length; i++) {
-    await new Promise(r => setTimeout(r, 120));
-    items = await this.cdp.evaluate(helpersCall('codexRunItems()')) || [];
-  }
+  const items = await readCodexMenu(this, 'actions') || [];
   await this.closeMenus();
   this.emit({ t: 'menu', kind: 'codex-chat', items: items.map(it => ({ label: it.label, checked: false })) });
 },
 
 async codexChatPick(label, name) {
-  const pos = await this.cdp.evaluate(helpersCall(`codexButtonPoint('actions')`));
-  if (!pos) throw new Error('当前会话没有 Chat actions');
-  await this.tapCss(pos.x, pos.y);
-  let hit = null;
-  for (let i = 0; i < 10 && !hit; i++) {
-    await new Promise(r => setTimeout(r, 120));
-    const items = await this.cdp.evaluate(helpersCall('codexRunItems()')) || [];
-    hit = items.find(it => it.label === label);
-  }
+  const hit = await readCodexMenu(this, 'actions', items => items.find(it => it.label === label));
   if (!hit) { await this.key('Escape'); throw new Error(`没找到会话操作：${label}`); }
   const thread = await this.cdp.evaluate(helpersCall('codexThread()'));
   await this.tapCss(hit.x, hit.y);
