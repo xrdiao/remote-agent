@@ -14,6 +14,7 @@ const OV_EN = {
   '已加入排队': 'Queued', '发送结果待确认，请打开对话查看；草稿已保留': 'Send not confirmed; open the conversation to check. Draft kept.',
   '查找地址…': 'Finding address…', '连接电脑…': 'Connecting…', '正在读取项目与会话…': 'Loading projects and sessions…',
   '重新连接': 'Reconnect', '重新授权': 'Authorize again', '连接详情': 'Connection details', '等待连接…': 'Waiting to connect…',
+  '正在读取最新消息…': 'Loading the latest message…', '暂无可读取的摘要': 'No readable preview available', '暂无文本消息': 'No text messages yet', '摘要读取失败': 'Could not load the preview',
   '需要你': 'Needs you', '运行中': 'Running', '正在工作': 'Working', '已停止': 'Stopped', '已完成': 'Done', '空闲': 'Idle', '不活跃': 'Inactive', '全部会话': 'All sessions', '离线': 'Offline', '问题': 'Question',
   '等你确认': 'Waiting for you', '执行': 'Executing', '小修': 'Fixing', '已结束': 'Finished', '还没有配对的电脑': 'No paired computers yet',
   '打开项目': 'Open project', '个文件': 'files', '连接中…': 'Connecting…', '尚未连接': 'Not connected yet', '已发送': 'Sent', '操作失败': 'Action failed',
@@ -28,6 +29,8 @@ const OV_ICON = {
 const ovSt = new Map(), ovBusy = new Set(), ovErr = new Map(), ovDraft = new Map();
 const ovCollapsed = new Set();
 const ovExpanded = new Set();
+const ovPreviews = new Map();
+let ovPreviewOwner = null;
 const ovMain = $('overview').querySelector('.ov-main');
 const ovDone = (() => { try { return JSON.parse(store.get('ov-done') || '{}'); } catch { return {}; } })();
 let ovEnterRequested = false;
@@ -73,8 +76,54 @@ function ovPoll() {
   if (document.visibilityState !== 'visible') return;
   ovSync().then(() => {
     for (const e of ovList) if (e.c && !e.foreign) ovFetch(e);
+    ovRefreshPreview();
     ovRender();
   });
+}
+function ovRefreshPreview() {
+  const r = !document.body.classList.contains('conv') && ovRecs().find(r => r.key === ovS.open && !r.fusion && !r.off);
+  if (ovPreviewOwner && ovPreviewOwner.key !== r?.key) {
+    ovPreviewOwner.controller.abort();
+    ovPreviewOwner = null;
+  }
+  if (!r || document.visibilityState !== 'visible') return;
+  let preview = ovPreviews.get(r.key);
+  if (preview?.flight || preview?.at && Date.now() - preview.at < 3500) return;
+  if (!preview) {
+    ovPreviews.set(r.key, preview = {});
+    if (ovPreviews.size > 12) ovPreviews.delete(ovPreviews.keys().next().value);
+  }
+  const entry = ovList.find(e => e.id === r.comp), controller = new AbortController();
+  const owner = ovPreviewOwner = { key: r.key, controller };
+  const route = '/api/overview/preview?' + new URLSearchParams({ win: r.win, windowId: r.windowId, threadId: r.threadId });
+  preview.flight = (async () => {
+    try {
+      const headers = await entryHeaders(entry.c, 'GET', route);
+      const res = await fetch(entry.c.relay + route, { cache: 'no-store', headers, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]) });
+      const value = await res.json();
+      if (ovPreviewOwner !== owner || ovS.open !== r.key || controller.signal.aborted) return;
+      if (!res.ok) throw new Error(value.error || ovT('摘要读取失败'));
+      if (value.computer !== r.comp || value.win !== r.win || value.windowId !== r.windowId || value.threadId !== r.threadId) throw new Error(ovT('摘要读取失败'));
+      preview.value = value;
+      preview.error = '';
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      preview.error = error.message;
+    } finally {
+      preview.at = Date.now();
+      preview.flight = null;
+      if (ovPreviewOwner === owner) { ovPreviewOwner = null; ovRender(); }
+    }
+  })();
+}
+function ovPreviewHtml(r) {
+  if (r.fusion || r.off) return r.last ? `<div class="ov-last">${ovText(r.last)}</div>` : '';
+  const preview = ovPreviews.get(r.key);
+  const hint = preview?.error ? ovT('摘要读取失败') + '：' + preview.error
+    : !preview?.value ? ovT('正在读取最新消息…')
+    : !preview.value.available ? ovT('暂无可读取的摘要')
+    : !preview.value.last ? ovT('暂无文本消息') : '';
+  return hint ? `<div class="ov-hint">${esc(hint)}</div>` : `<div class="ov-last">${ovText(preview.value.last)}</div>`;
 }
 function ovFetch(e) {
   const st = ovStOf(e.id);
@@ -108,6 +157,8 @@ async function ovLoad(e, st) {
 function ovApply(e, st, data) {
   const first = !st.fetched, prev = st.prev, next = new Map();
   st.fetched = true; st.data = data;
+  const link = computerSockets.get(e.c.key);
+  if (link?.authed) saveComputerResume(link);
   for (const s of data.sessions) {
     const key = ovNativeKey(e.id, s);
     if (s.busy && !st.first.has(key)) st.first.set(key, data.now);
@@ -206,6 +257,10 @@ function ovComputerGroup(e, all, projs) {
   if (link?.rejected) status = link.auth?.id === e.id ? 'auth' : 'offline';
   else if (link?.socket.readyState >= 2 && !link.authed) status = 'offline';
   else if (status === 'online' && (!st.data.ready || !link?.authed || firstScreenPending)) status = 'loading';
+  if (status === 'online' && !st.loaded) {
+    st.loaded = true;
+    if (!st.folded) ovCollapsed.delete(e.id);
+  }
   const projects = projs.filter(p => p.comp === e.id), recs = all.filter(r => r.comp === e.id);
   const collapsed = ovCollapsed.has(e.id), loading = status === 'loading';
   let badge = ovT('在线'), action = '', detail = '';
@@ -243,15 +298,17 @@ function ovProjectTiles(projects, all, showComputer = !ovS.comp) {
 }
 function ovSessTile(r) {
   const open = ovS.open === r.key, p = ovProgress(r), fill = p ? Math.round(p.done / p.total * 100) : 0;
+  const now = r.state === 'wait' ? ovNowHtml(r) : ovText(r.tasks?.current || r.last);
+  const work = r.state === 'run' ? ovT(r.fusion ? OV_LABEL[r.phase] : '正在工作…') : ovBadge(r);
   const cls = ['ov-tile', 'ov-session', `ov-st-${r.state}`, r.state === 'wait' && 'ov-wide', r.state === 'idle' && 'ov-compact', open && 'ov-open', r.off && 'ov-off'].filter(Boolean).join(' ');
   ovSig.push(`${r.key}:${cls}`);
   return `<div class="${cls}" style="--p:${fill}%;view-transition-name:${ovTname(r.key)}"${open ? '' : ` data-ov="sess" data-id="${esc(r.key)}"`}>
-    ${ovRecLogo(r)}<span class="ov-badge">${esc(ovBadge(r))}</span>
+    ${ovRecLogo(r)}<div class="ov-state"><span class="ov-badge">${esc(ovBadge(r))}</span><span class="ov-time">${esc(ovTime(r))}</span></div>
     <div class="ov-title ovRaw">${esc(r.title)}</div>
     <div class="ov-context ovRaw">${esc(r.projName)} · ${esc(ovAgName(r))}</div>
-    <div class="ov-now">${ovNowHtml(r)}</div>
-    <div class="ov-foot"><span class="ov-num">${p ? `${p.done}<small>/${p.total}</small>` : ''}</span><span class="ov-time">${esc(ovTime(r))}</span></div>
-    ${open ? `<button class="ov-close" data-ov="close" aria-label="关闭">${OV_ICON.x}</button><div class="ov-card">${ovCard(r)}</div>` : ovOpenLink(r, ' ov-direct')}
+    <div class="ov-now">${now}</div>
+    <div class="ov-foot"><span class="ov-num">${p ? `${p.done}<small>/${p.total}</small>` : ''}</span></div>
+    ${open ? `<button class="ov-close" data-ov="close" aria-label="关闭">${OV_ICON.x}</button><div class="ov-card">${ovCard(r)}</div>` : `<div class="ov-actions"><span class="ov-work">${esc(work)}</span>${ovOpenLink(r, ' ov-direct')}</div>`}
   </div>`;
 }
 function ovOpenLink(r, cls = '') {
@@ -267,17 +324,17 @@ function ovChangesRow(r) {
 }
 function ovCard(r) {
   const online = !r.off, dis = ovBusy.has(r.key) ? ' disabled' : '', key = esc(r.key);
-  const status = `<div class="ov-status"><span class="ov-badge">${esc(ovBadge(r))}</span><span class="ovRaw">${esc(r.projName)} · ${esc(ovAgName(r))}</span><span class="ov-sp"></span><span class="ov-time">${esc(ovTime(r))}</span></div>`;
+  const status = `<div class="ov-status"><div class="ov-state"><span class="ov-badge">${esc(ovBadge(r))}</span><span class="ov-time">${esc(ovTime(r))}</span></div><span class="ovRaw">${esc(r.projName)} · ${esc(ovAgName(r))}</span></div>`;
   const composer = !r.fusion && online ? `<div class="ov-composer"><input data-ov-input="${key}" placeholder="${r.state === 'wait' ? '输入回复…' : `告诉 ${OV_AGENT[r.app]} 下一步…`}" value="${esc(ovDraft.get(r.key) || '')}"${dis}><button class="ov-send" data-ov="send" data-id="${key}" aria-label="发送"${dis}>${OV_ICON.arrow}</button></div>` : '';
   let body;
   if (r.state === 'wait') {
     body = `<div class="ov-q">${ovNowHtml(r)}</div>` + (r.devin
       ? (r.actions.length ? `<div class="ov-opts">${r.actions.map(a => `<button class="ov-opt" data-ov="opt" data-id="${key}" data-v="${esc(a.id)}"${dis}>${ovText(a.label)}</button>`).join('')}</div>` : '')
-      : '<div class="ov-hint">请在对话中处理</div>') + composer;
+      : '<div class="ov-hint">请在对话中处理</div>') + ovPreviewHtml(r) + composer;
   } else {
     const p = r.tasks && ovProgress(r);
     body = (p ? `<div class="ov-progress"><i style="width:${Math.round(p.done / p.total * 100)}%"></i></div><div class="ov-pmeta"><span><b>${p.done}</b><em>/${p.total} 项任务</em></span></div>${r.tasks.current ? `<div class="ov-cur">${ovText(r.tasks.current)}</div>` : ''}` : '')
-      + (r.last ? `<div class="ov-last">${ovText(r.last)}</div>` : '')
+      + ovPreviewHtml(r)
       + ovChangesRow(r)
       + (r.fusion ? `<div class="ov-meta"><span>第 ${r.round} 轮</span><span>A · ${esc(OV_AGENT[r.a] || r.a)}</span><span>B · ${esc(OV_AGENT[r.b] || r.b)}</span></div>` : '')
       + composer
@@ -348,6 +405,7 @@ function ovCommit(p) {
   if (input) { input.focus({ preventScroll: true }); input.setSelectionRange(input.value.length, input.value.length); }
 }
 function ovRender(vt, scroll) {
+  ovRefreshPreview();
   if (document.body.classList.contains('conv')) return;
   const p = ovPlan();
   if (scroll != null) ovScroll = scroll;
@@ -374,6 +432,24 @@ function ovHistory(scroll = ovMain.scrollTop) {
 }
 function ovSaveHistory() {
   history.replaceState({ ...history.state, ...ovHistory() }, '');
+  saveComputerResumes();
+}
+function ovRestoreComputers(saved) {
+  for (const [id, value] of saved.entries) {
+    const st = ovStOf(id);
+    st.folded = value.folded;
+    if (st.data || !value.overview) continue;
+    st.data = value.overview;
+    st.offset = value.offset;
+  }
+  if (!pendingNotice && store.get('start-view') !== 'conversation') {
+    Object.assign(ovS, saved.view.ov);
+    ovCollapsed.clear();
+    for (const id of saved.view.ovCollapsed) ovCollapsed.add(id);
+    ovExpanded.clear();
+    for (const id of saved.view.ovExpanded) ovExpanded.add(id);
+    ovRender(false, saved.view.ovScroll);
+  }
 }
 function ovRestore(st) {
   Object.assign(ovS, OV_ROOT, st?.ov);
@@ -483,6 +559,7 @@ $('overview').addEventListener('click', e => {
     case 'lane': case 'jump': return ovFocusSession(id);
     case 'fold':
       if (ovCollapsed.has(id)) ovCollapsed.delete(id); else ovCollapsed.add(id);
+      ovStOf(id).folded = ovCollapsed.has(id);
       ovSaveHistory();
       return ovRender(true);
     case 'group':

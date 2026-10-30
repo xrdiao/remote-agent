@@ -34,6 +34,7 @@ export class Session extends AgentContext {
     this.notifyPresenceAt = Date.now();
     this.viewport = { w: 1000, h: 800 };
     this.mode = 'chat';
+    this.connectionMessages = new Map();
   }
 
   async setMode(mode, firstScreen = false) {
@@ -198,6 +199,10 @@ export class Session extends AgentContext {
       obj = { ...obj, chat: chatForWire(obj.chat, this.app === 'codex' ? this.cdp?.wsUrl : '') };
     }
     if (obj?.t === 'historyPage') obj = { ...obj, items: chatForWire({ items: obj.items }, this.app === 'codex' ? this.cdp?.wsUrl : '').items };
+    if (['attached', 'windows', 'plans', 'connAgents', 'agentCatalog'].includes(obj?.t)) {
+      const { chat, ...metadata } = obj;
+      this.connectionMessages.set(obj.t, metadata);
+    }
     if (this.client.readyState === 1) this.client.send(JSON.stringify(obj), obj?.t === 'frame' ? { compress: false } : undefined);
   }
 
@@ -214,8 +219,7 @@ export class Session extends AgentContext {
         && this.windowId === req.windowId && this.threadId === (req.threadId || '')) {
       const actual = await this.cdp.evaluate(helpersCall(this.app === 'codex' ? 'codexThread()' : 'activeThread()'));
       if (actual === this.threadId) {
-        this.visible = true;
-        this.publishThread();
+        this.emit({ ...this.connectionMessages.get('attached'), keepQuota: false, initial: req.initial === true, ready: true });
         return this.setMode(this.mode, true);
       }
     }
@@ -588,6 +592,25 @@ export class Session extends AgentContext {
     } else if (!this.cdp) throw new Error(this.appMessage('尚未连接到 {app} 窗口'));
     if (!route) throw new Error(`未知指令: ${msg.t}`);
     return route.run(this, msg);
+  }
+
+  suspend() {
+    this.visible = this.notifyVisible = false;
+    this.chatWatchGeneration = (this.chatWatchGeneration || 0) + 1;
+    this.chatUpdatesStop?.();
+    this.chatUpdatesStop = null;
+    this.catalogUpdatesStop?.();
+    this.catalogUpdatesStop = null;
+    this.chatRead?.controller.abort(new Error('手机连接已挂起'));
+    this.chatRead = null;
+    this.polling = this.pollAgain = null;
+    clearInterval(this.chatTimer);
+    clearInterval(this.termTimer);
+    this.stopVisual();
+    clearTimeout(this.focusTimer);
+    this.focusTimer = null;
+    for (const connection of new Set([this.cdp, this.editorCdp]))
+      connection?.send('Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {});
   }
 
   dispose() {

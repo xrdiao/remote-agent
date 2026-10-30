@@ -152,7 +152,7 @@ export const ROUTES = {
   attach: { switchRead: true, navigation: true,
     fail: (s, m, error) => s.emit({ t: 'attachFailed', ready: s.bindingReady === true, message: error?.message }),
     pre: async (s, m) => {
-      if (!m.initial) return s.attach(m);
+      if (!m.initial || m.resume && s.bindingReady) return s.attach(m);
       const signal = cdpRead.getStore();
       const probe = cdpRead.run(null, () => ROUTES.connAgents.pre(s, { deferPlans: true }));
       try {

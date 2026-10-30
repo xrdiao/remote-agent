@@ -79,6 +79,8 @@ function harness({ sameSelection = false, count = 2 } = {}) {
     var agentLists = new Map(), cache = new Map(), chatBySel = new Map(), quotaCache = new Map();
     var lastChat = null, chatStale = false, text = $('text');
     var thoughtObserver = { disconnect() {} }, chatPreviewReady = Promise.resolve(), I18N = { lang: 'zh', tr: value => value };
+    var computerResumes = new Map(), computerResumeReady = Promise.resolve();
+    function saveComputerResume() {}
     function status(value) { pendingStatus = value; trace.push(['status', value]); }
     var compatibilityRequests = new Map(), compatibilityReports = new Map();
     function gate() { $('gate').classList.add('open'); }
