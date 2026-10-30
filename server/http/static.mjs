@@ -64,7 +64,7 @@ export function json(req, res, status, obj) {
 export function serveApp(res, name) {
   let rel;
   try { rel = decodeURIComponent(String(name)).replace(/^\/+/, ''); } catch { return false; }
-  if (!/^(?:vendor\/jsQR\.js|pdfjs\/(?:(?:cmaps|standard_fonts|wasm)\/)?[A-Za-z0-9._-]+|katex\/fonts\/[A-Za-z0-9._-]+|katex\/[A-Za-z0-9._-]+|js\/[A-Za-z0-9._-]+|[A-Za-z0-9._-]+)$/.test(rel)) return false;
+  if (!/^(?:vendor\/jsQR\.js|pdfjs\/(?:(?:cmaps|standard_fonts|wasm)\/)?[A-Za-z0-9._-]+|katex\/fonts\/[A-Za-z0-9._-]+|katex\/[A-Za-z0-9._-]+|(?:js|markdown-it)\/[A-Za-z0-9._-]+|[A-Za-z0-9._-]+)$/.test(rel)) return false;
   const file = path.join(APP_DIR, rel);
   const type = MIME[path.extname(file)];
   if (!type || !file.startsWith(APP_DIR + path.sep) || !fs.existsSync(file)) return false;

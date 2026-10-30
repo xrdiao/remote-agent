@@ -31,7 +31,70 @@
     }
     return null;
   };
-  const nativeSessionInfo = (app, id) => {
+  const nativeSessionCatalog = async (app, ids) => {
+    if (app === 'cursor') {
+      const service = cursorSessionServices()?.data;
+      if (!service) return { ready: false };
+      await service.whenInitialComposerDataLoaded();
+      const rows = (await service._storageService.collectionQuery('composerHeaders')).map(row => JSON.parse(row));
+      return { ready: true, complete: true, rows: rows.map(row => ({ id: row.composerId, archived: !!row.isArchived })) };
+    }
+    if (app === 'devin') {
+      const native = await import('@exa/chat-client');
+      const connectors = native.tryGetAcpSingleton('connectorService');
+      if (!connectors?.hasReceivedConnectors()) return { ready: false };
+      const state = window.__acpStore.getState().acp;
+      const at = Date.now(), cli = [], cliPrefix = native.prefixSessionId('devin-cli', '');
+      const cliReady = connectors.getConnectors().some(connector => connector.id === 'devin-cli' && connector.status === 'connected');
+      let cursor;
+      if (cliReady) do {
+        const page = await native.tryGetAcpSingleton('sendAgentRequest')('devin-cli', { method: 'session/list', params: cursor ? { cursor } : {} });
+        cli.push(...page.sessions.map(row => ({ ...row, sessionId: native.prefixSessionId('devin-cli', row.sessionId) })));
+        cursor = page.nextCursor;
+      } while (cursor);
+      const cliIds = new Set(cli.map(row => row.sessionId));
+      const sessions = [...state.sessions.filter(row => !cliReady || row.providerId !== 'devin-cli'
+        || row._meta?.['cognition.ai/isArchived'] === true && !cliIds.has(row.sessionId)), ...cli];
+      const displayed = new Map(state.sessions.map(row => [row.sessionId, row]));
+      const known = new Set(sessions.map(row => row.sessionId));
+      const requests = Object.values(state.agentRequests.byId).filter(request => request.status === 'completed'
+        && ['session/archive', 'session/delete', 'session/load', 'session/resume'].includes(request.method));
+      const times = new Map();
+      for (const request of requests) times.set(request.params.sessionId, Math.max(times.get(request.params.sessionId) || 0, request.completedAt));
+      const removed = requests.filter(request => request.method === 'session/delete' && !known.has(request.params.sessionId)).map(request => request.params.sessionId);
+      const missing = ids.filter(id => cliReady && id.startsWith(cliPrefix) && !known.has(id));
+      return { ready: true, complete: false,
+        rows: sessions.map(row => {
+          const current = displayed.get(row.sessionId) || row;
+          return { id: row.sessionId, archived: current._meta?.['cognition.ai/isArchived'] === true,
+            at: Math.max(Date.parse(current.updatedAt) || 0, times.get(row.sessionId) || 0) };
+        }),
+        removed, removedAt: Object.fromEntries(removed.map(id => [id, times.get(id)])), missing, cliReady, at };
+    }
+    const manager = codexConversationManager(codexThread(), codexHistoryScopes());
+    if (!manager || manager.hostId !== 'local') return { ready: false };
+    const client = manager.requestClient, rows = [], active = new Set();
+    let cursor = null;
+    do {
+      const page = await client.sendRequest('thread/list', { archived: false, cursor, limit: 100, modelProviders: null, sourceKinds: null, sortKey: 'updated_at', useStateDbOnly: true }, { priority: 'background', source: 'thread_list' });
+      for (const row of page.data) { active.add(row.id); rows.push({ id: row.id, archived: false, path: row.path }); }
+      cursor = page.nextCursor;
+    } while (cursor);
+    const removed = [], unknown = [];
+    for (let i = 0; i < ids.length; i += 6) await Promise.all(ids.slice(i, i + 6).filter(id => !active.has(id)).map(async id => {
+      try {
+        const { thread } = await client.sendRequest('thread/read', { threadId: id, includeTurns: false }, { priority: 'background', source: 'thread_list' });
+        rows.push({ id, archived: /[\\/]archived_sessions[\\/]/.test(thread.path || ''), path: thread.path });
+      } catch (error) {
+        if (/thread.*not found|no rollout found|thread.*does not exist/i.test(String(error))) removed.push(id);
+        else if (/AppServerRequestError\(-32600\): thread not loaded:/i.test(String(error))) unknown.push(id);
+        else throw error;
+      }
+    }));
+    return { ready: true, complete: false, rows, removed, unknown };
+  };
+  const nativeSessionInfo = (app, id, catalog = false) => {
+    if (catalog) return nativeSessionCatalog(app, id);
     if (app === 'cursor') {
       const services = cursorSessionServices();
       const session = services?.data.allComposersData.allComposers.find(c => c.composerId === id);

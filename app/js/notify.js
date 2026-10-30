@@ -199,7 +199,10 @@ navigator.serviceWorker?.addEventListener('message', e => {
 document.addEventListener('visibilitychange', () => {
   if (authed) {
     send({ t: 'visible', v: document.visibilityState === 'visible' });
-    if (document.visibilityState === 'visible') send({ t: 'usage', automatic: true });
+    if (document.visibilityState === 'visible') {
+      send({ t: 'usage', automatic: true });
+      requestAgentCatalog();
+    }
   }
 });
 

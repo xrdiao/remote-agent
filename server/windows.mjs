@@ -63,6 +63,27 @@ export const codexContextFiles = new Map();
 const codexContextChecks = new Map();
 const codexContextReads = new Map();
 const codexContextCache = new Map();
+const codexHome = () => process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+const codexSessionNames = directory => fs.readdir(directory, { recursive: true });
+const codexSessionFile = (name, thread) => name.endsWith(`-${thread}.jsonl`) || path.basename(name).includes(`-${thread}_`) && name.endsWith('.jsonl');
+
+export async function codexSessionStates(ids, nativePaths) {
+  const directories = ['sessions', 'archived_sessions'].map(name => path.join(codexHome(), name));
+  if (!nativePaths.length || nativePaths.some(file => !directories.some(directory => {
+    const relative = path.relative(directory, file);
+    return relative && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+  }))) throw new Error('Codex 原生会话路径与本机会话目录不一致，无法核对缺失记录');
+  const names = [];
+  for (const directory of directories) {
+    try { names.push(await codexSessionNames(directory)); }
+    catch (error) {
+      if (error.code !== 'ENOENT' || error.path !== directory) throw error;
+      names.push([]);
+    }
+  }
+  return new Map(ids.map(id => [id, names[0].some(name => codexSessionFile(name, id)) ? 'active'
+    : names[1].some(name => codexSessionFile(name, id)) ? 'archived' : 'deleted']));
+}
 
 export function codexContext(thread) {
   if (!thread) return null;
@@ -74,12 +95,11 @@ export function codexContext(thread) {
 }
 
 async function readCodexContext(thread) {
-  const sessions = path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'sessions');
+  const sessions = path.join(codexHome(), 'sessions');
   let file = codexContextFiles.get(thread);
   const now = Date.now();
   if (!file || now - (codexContextChecks.get(thread) || 0) >= 5000) {
-    const names = (await fs.readdir(sessions, { recursive: true }))
-      .filter(name => name.endsWith(`-${thread}.jsonl`) || path.basename(name).includes(`-${thread}_`) && name.endsWith('.jsonl'));
+    const names = (await codexSessionNames(sessions)).filter(name => codexSessionFile(name, thread));
     const files = await Promise.all(names.map(async name => ({ name, modified: (await fs.stat(path.join(sessions, name))).mtimeMs })));
     const relative = files.sort((a, b) => b.modified - a.modified)[0]?.name;
     if (!relative) return null;

@@ -213,7 +213,9 @@
     return uri ? { root: uri.fsPath || uri.path, host: uri.scheme === 'file' ? '' : uri.authority.replace(/^ssh-remote\+/, '') } : null;
   };
   const agentList = () => {
-    const names = new Map((cursorSessionServices()?.data.allComposersData.allComposers || []).map(c => [c.composerId, c.name]));
+    const composers = cursorSessionServices()?.data.allComposersData.allComposers || [];
+    const names = new Map(composers.map(c => [c.composerId, c.name]));
+    const available = new Set(composers.filter(c => !c.isArchived).map(c => c.composerId));
     const active = [...doc.querySelectorAll('[data-glass-agent-id]')].find(vis)?.getAttribute('data-glass-agent-id') || '';
     const recentProjects = cursorProjectPicker()?.recentProjects || [];
     const cursor = [...doc.querySelectorAll('[data-sidebar-item-key^="row:"]')].map(row => {
@@ -236,16 +238,15 @@
         current: id === active || !!row.querySelector('[data-active="true"]'),
         running: !!row.querySelector('.ui-dot-grid-loader'),
       };
-    }).filter(a => a.id && a.title);
+    }).filter(a => a.id && a.title && available.has(a.id));
     if (cursor.length) return cursor;
     const tabs = [...doc.querySelectorAll('.tab[data-resource-name]')].filter(t => t.querySelector('.composer-tab-label'));
     const loaded = window.__SSG_COMPOSER_PROVIDER__?.getStates?.() || [];
-    const archived = new Set((tabs.length || loaded.length ? cursorSessionServices()?.data.allComposersData.allComposers || [] : []).filter(c => c.isArchived).map(c => c.composerId));
     const focused = loaded.find(c => c.state === 'focused')?.id;
     if (tabs.length || loaded.length) return [...new Map([
       ...loaded.map(c => [c.id, { id: c.id, title: c.title || '新会话', current: c.state === 'focused', running: c.state === 'generating', workspace: '', host: '', group: '' }]),
       ...tabs.map(t => [t.dataset.resourceName, { id: t.dataset.resourceName, title: t.querySelector('.label-name')?.textContent || '新会话', current: focused ? t.dataset.resourceName === focused : t.classList.contains('active'), workspace: '', host: '', group: '' }]),
-    ]).values()].filter(row => !archived.has(row.id)).map(row => ({ ...row, title: names.get(row.id) || row.title, titleNative: names.has(row.id), titleAt: Date.now() }));
+    ]).values()].filter(row => available.has(row.id)).map(row => ({ ...row, title: names.get(row.id) || row.title, titleNative: names.has(row.id), titleAt: Date.now() }));
     if (devinSurface() === 'editor') {
       const selected = devinTabs().find(tab => tab.active)?.id;
       return (window.__acpStore?.getState().acp.sessions || []).filter(session => !session._meta?.['cognition.ai/isArchived'])
