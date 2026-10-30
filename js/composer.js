@@ -455,13 +455,8 @@ function composerLayoutBusy() {
 const composeCompactAllowed = () => window.innerHeight / window.innerWidth < 1.6;
 window.addEventListener('resize', () => updateComposeCompact());
 function composeCompactWanted() {
-  return mode === 'chat' && composeCompactAllowed()
-    && !text.value.trim() && document.activeElement !== text && !composerEngaged
-    && !$('attachments').children.length
-    && $('mentionBox').hidden
-    && $('fusionWelcome').hidden
-    && !document.getElementById('imageEditor')?.open
-    && !micHeld();
+  // Both callers have already checked composeIdleWanted().
+  return composeCompactAllowed() && !text.value.trim() && !$('attachments').children.length;
 }
 function setComposerPresentation(idle, compact) {
   const oldCompact = document.body.classList.contains('composeCompact');
