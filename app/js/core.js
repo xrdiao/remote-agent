@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v330'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v333'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false, failures = 0;
 let windowReady = false;
@@ -107,7 +107,6 @@ function updateAppText() {
 
 // iOS scrolls the page to reveal the focused field, which throws the chat off screen.
 // Pin the shell to the visible area above the keyboard instead.
-let stickOnKeyboard = false;
 let vvApplied = '';
 function fitViewport() {
   const vv = window.visualViewport;
@@ -117,7 +116,6 @@ function fitViewport() {
   const wasKeyboard = document.body.classList.contains('kb');
   const key = `${keyboard}:${Math.round(vv.height)}:${Math.round(vv.offsetTop)}`;
   if (key !== vvApplied) {
-    if ((keyboard || wasKeyboard) && typeof noteChatLayoutChange === 'function') noteChatLayoutChange();
     vvApplied = key;
     document.body.style.height = keyboard ? Math.round(vv.height) + 'px' : '';
     document.body.style.transform = keyboard ? `translateY(${Math.max(0, Math.round(vv.offsetTop))}px)` : '';
@@ -129,7 +127,6 @@ function fitViewport() {
     const available = input.offsetHeight + $('listWrap').clientHeight - 72 - overflow;
     const maxHeight = Math.max(52, Math.floor(Math.min(vv.height * .28, available))) + 'px';
     if (document.body.style.getPropertyValue('--composer-max-height') !== maxHeight) {
-      if (typeof noteChatLayoutChange === 'function') noteChatLayoutChange();
       document.body.style.setProperty('--composer-max-height', maxHeight);
     }
     const room = input.closest('footer').getBoundingClientRect().top - document.querySelector('header').getBoundingClientRect().bottom
@@ -140,7 +137,7 @@ function fitViewport() {
     document.body.style.removeProperty('--question-max-height');
   }
   if (wasKeyboard && !keyboard && typeof endComposerEditing === 'function') endComposerEditing();
-  if (stickOnKeyboard && isFollowingBottom()) requestChatScroll();
+  if (typeof noteChatLayoutChange === 'function') noteChatLayoutChange();
 }
 window.addEventListener('resize', fitViewport);
 window.addEventListener('pageshow', fitViewport);

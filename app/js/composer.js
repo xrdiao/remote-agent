@@ -386,14 +386,12 @@ function syncMentions(v, event = null) {
 text.addEventListener('select', mentionUpdate);
 document.addEventListener('selectionchange', () => { if (document.activeElement === text) mentionUpdate(); });
 text.addEventListener('focus', () => {
-  stickOnKeyboard = isFollowingBottom();
   updateComposeCompact();
   fitViewport();
   setTimeout(fitViewport, 60);
   setTimeout(fitViewport, 320);
 });
 text.addEventListener('blur', () => {
-  stickOnKeyboard = false;
   if (pendingDesktopDraft) receiveDraft(pendingDesktopDraft);
   setTimeout(fitViewport, 60);
   updateComposeCompact();
