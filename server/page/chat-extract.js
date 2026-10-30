@@ -217,7 +217,7 @@
   const codexHistoryState = (conversation = null, watchItems = true, scopes = codexHistoryScopes(), thread = codexThread()) => {
     const hostId = codexChatRows(true).find(row => row.id === thread)?.host || 'local';
     const key = JSON.stringify({ hostId, threadId: thread });
-    let index = null, hasLoadedOldest;
+    let index = null, hasLoadedOldest, nativeReader;
     const atoms = new Map(), turns = new Map(), queued = new Map();
     for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
       const source = codexHistoryBinding(scope, bindings.get(key));
@@ -235,12 +235,19 @@
       }
     }
     if (conversation) {
-      const history = conversation.turnHistory.history;
-      index = history.islands.flatMap(island => island.entries).flatMap(({ key }) => {
-        const turn = history.entitiesByKey[key];
-        return turn?.turnId ? [{ entityKey: key, turnId: turn.turnId }] : [];
-      });
-      hasLoadedOldest = history.isComplete;
+      nativeReader = codexConversationManager(thread, scopes).threadStore.stateReaders;
+      if (conversation.turnHistory?.kind === 'canonical') {
+        const history = conversation.turnHistory.history;
+        index = history.islands.flatMap(island => island.entries).flatMap(({ key }) => {
+          const turn = history.entitiesByKey[key];
+          return turn?.turnId ? [{ entityKey: key, turnId: turn.turnId }] : [];
+        });
+        hasLoadedOldest = history.isComplete;
+      } else {
+        const { entityKeys } = nativeReader.getLegacyTurnIdentity(conversation);
+        index = conversation.turns.flatMap((turn, n) => turn.turnId ? [{ entityKey: entityKeys[n], turnId: turn.turnId }] : []);
+        hasLoadedOldest = conversation.turnsPagination.hasLoadedOldest;
+      }
     }
     // Native pages prepend turns; keep already published numbers anchored to their turn IDs.
     const histories = doc.defaultView.__remoteAgentCodexTurnNumbers ||= new Map();
@@ -253,7 +260,7 @@
       return { conversationId: thread, historyEntityKey: turn.entityKey,
         turnId: turn.turnId, turnKey: 'history-content:turn:' + turn.turnId, turnNumber,
         isLatestTurn: n === index.length - 1, turnItemIds: [], metadata: turn,
-        nativeTurn: conversation ? conversation.turnHistory.history.entitiesByKey[turn.entityKey] : turns.get(turn.turnId) };
+        nativeTurn: conversation ? nativeReader.getSubscribedTurn(conversation, turn.entityKey) : turns.get(turn.turnId) };
     });
     for (const entry of entries.slice(-2)) for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
       const source = codexHistoryBinding(scope, bindings.get(entry.historyEntityKey));
@@ -584,7 +591,7 @@
     const pagination = manager.pagination, loaded = new Set();
     const read = async () => {
       for (;;) {
-        state = codexHistoryState(manager.getConversation(thread), false, scopes);
+        state = codexHistoryState(manager.getConversation(thread), false, scopes, thread);
         const page = codexReadPage(state, before, known, details);
         if (!page.missingTurn) return page;
         const entry = page.missingTurn;

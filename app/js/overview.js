@@ -312,7 +312,7 @@ function ovSessTile(r) {
   </div>`;
 }
 function ovOpenLink(r, cls = '') {
-  return `<button class="ov-link${cls}" data-ov="full" data-t="${esc(JSON.stringify(ovTarget(r)))}">${ovT('打开对话')} →</button>`;
+  return `<button class="ov-link${cls}" data-ov="full" data-id="${esc(r.key)}" data-t="${esc(JSON.stringify(ovTarget(r)))}">${ovT('打开对话')}</button>`;
 }
 function ovChangesRow(r) {
   const c = r.changes;
@@ -578,7 +578,14 @@ $('overview').addEventListener('click', e => {
     case 'use': return useComputer(Number(v));
     case 'old': if (loadComputers()[Number(v)]?.key !== currentComputer()?.key) useComputer(Number(v)); return ovShowConversation();
     case 'ext': { const b = loadComputerBookmarks().find(x => x.id === id); return openComputerEntry(new URL('./', b.discovery).href, b.id); }
-    case 'open': case 'full': return ovOpen(JSON.parse(el.dataset.t));
+    case 'full':
+      if (ovDone[id]) {
+        delete ovDone[id];
+        store.set('ov-done', JSON.stringify(ovDone));
+        ovRender();
+      }
+      return ovOpen(JSON.parse(el.dataset.t));
+    case 'open': return ovOpen(JSON.parse(el.dataset.t));
     case 'opt': return ovSend(id, 'opt', { index: Number(v.split(':')[1]) }, '已发送');
     case 'send': return ovSubmit(id);
     case 'accept': return ovSend(id, 'acceptAll', {}, '已接受改动');
