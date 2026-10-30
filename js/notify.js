@@ -198,6 +198,8 @@ navigator.serviceWorker?.addEventListener('message', e => {
   }
 });
 document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') resumeComputerConnections();
+  else for (const link of computerSockets.values()) saveComputerResume(link);
   if (authed) {
     send({ t: 'visible', v: conversationVisible() });
     if (document.visibilityState === 'visible') {
