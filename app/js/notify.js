@@ -194,7 +194,7 @@ let winBinding = null;
 function winTargetReady(target) {
   const current = currentComputer();
   return authed && windowReady && !navigationPending && current?.id === target.computer
-    && current.windowId === target.windowId && current.threadId === target.threadId && currentApp === target.win.split(':')[0];
+    && current.windowId === target.windowId && (target.threadId === undefined || current.threadId === target.threadId) && currentApp === target.win.split(':')[0];
 }
 function finishWinBinding(error) {
   const binding = winBinding;
@@ -217,6 +217,21 @@ function bindWin(target) {
   });
 }
 document.addEventListener('window-ready', () => finishWinBinding());
+async function runComputerAction(target, action) {
+  closeSheet();
+  if (ovS.open) { ovS.open = null; ovSaveHistory(); ovRender(); }
+  try {
+    await bindWin(target);
+    if (action === 'editor') return startEditor();
+    if (action === 'projects') {
+      computerProjects = true;
+      status('正在读取项目…');
+      return send({ t: 'projects' });
+    }
+    ovShowConversation();
+    if (action === 'new') { status('正在新建对话…'); send({ t: 'newProjectChat' }); }
+  } catch (error) { status(error.message, false); }
+}
 let updateUntouched = true;
 for (const event of ['pointerdown', 'keydown']) document.addEventListener(event, () => { updateUntouched = false; }, { once: true, capture: true });
 navigator.serviceWorker?.addEventListener('message', e => {
@@ -256,9 +271,17 @@ async function runAgentMenuAction(id, action, extra, target) {
 $('sheet').addEventListener('click', async e => {
   const b = e.target.closest('button');
   if (!b) return;
+  if (b.dataset.computerApp) return showComputerActions(b.dataset.computerId, b.dataset.computerTool, b.dataset.computerApp);
+  if (b.dataset.computerAction) return runComputerAction(JSON.parse(b.dataset.computerTarget), b.dataset.computerAction);
+  if (b.dataset.computerLaunch) {
+    const entry = ovList.find(e => e.id === b.dataset.computerId);
+    closeSheet(); status('正在启动 Agent…');
+    return computerSockets.get(entry.c.key).send({ t: 'launchAgents', apps: [b.dataset.computerLaunch] });
+  }
   if (sheetKind === 'agent-actions' && b.dataset.agentAction) {
     const id = b.dataset.agentActionId || '', name = b.dataset.agentActionTitle || '';
     const target = agentActionTarget, app = target?.app || currentApp;
+    if (b.dataset.agentAction === 'copyLink') return copyText(b.dataset.copyLink, b.querySelector('.lbl'), false);
     if (b.dataset.agentAction === 'open') {
       closeSheet();
       if (target) return ovOpen(ovTarget(target));
@@ -413,10 +436,11 @@ $('sheet').addEventListener('click', async e => {
   if ('projectNew' in b.dataset) {
     const name = window.prompt(I18N.tr('新项目的文件夹名称'));
     if (!name?.trim()) return;
+    if (computerProjects) ovShowConversation();
     closeSheet(); status('正在打开项目…');
     return send({ t: 'newProject', parent: b.dataset.projectNew, name: name.trim(), newSession: true });
   }
-  if ('projectChat' in b.dataset) { closeSheet(); status('正在打开项目…'); return send({ t: 'openProject', path: b.dataset.projectChat, newSession: true }); }
+  if ('projectChat' in b.dataset) { if (computerProjects) ovShowConversation(); closeSheet(); status('正在打开项目…'); return send({ t: 'openProject', path: b.dataset.projectChat, newSession: true }); }
   if ('projectTrust' in b.dataset) {
     const here = currentComputer();
     const last = here?.lastConversation;
@@ -424,7 +448,7 @@ $('sheet').addEventListener('click', async e => {
     closeSheet(); status('正在打开项目…');
     return send({ t: 'projectTrust', approve: b.dataset.projectTrust === 'yes', returnTo });
   }
-  if (b.dataset.open) { closeSheet(); status('正在打开项目…'); return send({ t: 'openProject', path: b.dataset.open }); }
+  if (b.dataset.open) { if (computerProjects) ovShowConversation(); closeSheet(); status('正在打开项目…'); return send({ t: 'openProject', path: b.dataset.open }); }
   if (b.dataset.dir) { status('正在读取文件夹…'); return send({ t: 'projects', path: b.dataset.dir }); }
   if (b.dataset.docsFile) { openFile(b.dataset.docsFile, b.dataset.docsEditor === 'true'); closeSheet(); return; }
   if ('docsUp' in b.dataset) {

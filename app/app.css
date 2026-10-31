@@ -1582,12 +1582,12 @@ button { transition: background-color .12s var(--ease), color .12s var(--ease), 
 #sheet .agentManageRow input { width: 22px; height: 22px; flex: none; accent-color: var(--accent); }
 /* ---------- overview board: top level; the chat / terminal UI is the conversation layer ---------- */
 #overview {
-  --ov-amber: #D98200; --ov-amber-fg: #8A4E00; --ov-amber-tint: rgba(240,160,30,.18); --ov-amber-badge: rgba(240,160,30,.22); --ov-toast: #0B0B0D;
+  --ov-idle: #3973A3; --ov-amber: #D98200; --ov-amber-fg: #8A4E00; --ov-amber-tint: rgba(240,160,30,.18); --ov-amber-badge: rgba(240,160,30,.22); --ov-toast: #0B0B0D;
   position: absolute; inset: 0; z-index: 10; display: flex; flex-direction: column; overflow: hidden; text-align: left;
   background: var(--bg); color: var(--fg);
   padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
 }
-:root:not([data-theme="light"]) #overview { --ov-amber: #FBBF4D; --ov-amber-fg: #FBBF4D; --ov-amber-tint: rgba(251,191,77,.16); --ov-amber-badge: rgba(251,191,77,.20); --ov-toast: #2A2C31; }
+:root:not([data-theme="light"]) #overview { --ov-idle: #8DBBE3; --ov-amber: #FBBF4D; --ov-amber-fg: #FBBF4D; --ov-amber-tint: rgba(251,191,77,.16); --ov-amber-badge: rgba(251,191,77,.20); --ov-toast: #2A2C31; }
 body.conv #overview { display: none; }
 #overview button { min-height: 0; padding: 0; border: 0; border-radius: 0; background: none; color: inherit; font: inherit; white-space: normal; cursor: pointer; text-align: inherit; }
 #overview button:active { background: none; transform: none; }
@@ -1663,7 +1663,14 @@ body.conv #overview { display: none; }
 #overview .ov-computer-row:active { background: var(--s2); }
 #overview .ov-computer-toggle { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; min-height: 50px; padding: 12px 16px; border-radius: inherit; }
 #overview .ov-computer-arrow { width: 16px; height: 16px; flex: none; color: var(--fg-3); }
-#overview .ov-computer-toggle[aria-expanded="true"] .ov-computer-arrow { transform: rotate(90deg); }
+#overview .ov-computer-fold[aria-expanded="true"] .ov-computer-arrow { transform: rotate(90deg); }
+#overview .ov-computer-fold { display: grid; place-items: center; flex: none; width: 34px; height: 44px; margin-right: 6px; }
+#overview .ov-computer-tool { display: grid; place-items: center; flex: none; width: 34px; height: 44px; color: var(--fg-3); }
+#overview .ov-computer-tool svg { width: 20px; height: 20px; }
+.computerAgentTabs { display: flex; gap: 6px; }
+.computerAgentTabs .paramBtn { flex: 1; min-width: 0; }
+.computerAgentTabs .paramBtn.cur { background: var(--accent-tint); color: var(--accent-text); }
+.optRow .computerProjectNew { flex: none; width: auto; }
 #overview .ov-computer-action { flex: none; max-width: 45%; margin-right: 12px; padding: 8px 12px; border-radius: 999px; background: var(--accent-tint); font-size: 12px; color: var(--accent-text); }
 #overview .ov-computer-info { flex: none; width: 28px; min-height: 40px; margin-right: 6px; padding: 4px; color: var(--fg-3); background: none; }
 #overview .ov-computer-info svg { width: 20px; height: 20px; }
@@ -1703,8 +1710,8 @@ body.conv #overview { display: none; }
 #overview .ov-st-wait.ov-wide { border: 2px solid var(--ov-amber); animation: ovBreathe 2.6s ease-in-out infinite; }
 #overview .ov-st-done { --sc: var(--ok); --tint: var(--ok-tint); }
 #overview .ov-st-err { --sc: var(--err); --tint: var(--err-tint); border-color: color-mix(in srgb, var(--err) 35%, transparent); }
-#overview .ov-st-idle { --sc: var(--fg-4); --tint: var(--line); }
-#overview .ov-tile.ov-off { opacity: .62; }
+#overview .ov-st-idle { --sc: var(--ov-idle); --tint: var(--line); }
+#overview .ov-tile.ov-off { --sc: var(--fg-4); --tint: var(--line); opacity: .62; }
 #overview .ov-st-run::after { content: ""; position: absolute; left: 0; right: 0; bottom: var(--p, 0%); height: 2px; background: var(--sc); opacity: .5; z-index: 0; animation: ovShimmer 2s ease-in-out infinite; }
 
 #overview .ov-logo { grid-area: logo; width: 38px; height: 38px; border-radius: 50%; background: var(--s2); display: flex; align-items: center; justify-content: center; flex: none; color: var(--fg-2); }
@@ -1776,9 +1783,10 @@ body.conv #overview { display: none; }
 #overview .ov-run-model { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #overview .ov-run-count { flex: none; font-variant-numeric: tabular-nums; }
 #overview .ov-run-meta + .ov-progress { height: 5px; margin: 7px 0 0; }
-#overview .ov-run-tools { display: grid; gap: 3px; margin-top: 9px; }
+#overview .ov-run-tools { display: grid; grid-template-columns: max-content; gap: 3px; margin-top: 9px; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
+#overview .ov-run-tools::-webkit-scrollbar { display: none; }
 #overview .ov-run-tool { display: flex; align-items: center; gap: 7px; min-width: 0; height: 20px; font-size: 12px; color: var(--fg-3); }
-#overview .ov-run-tool > .ovRaw { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#overview .ov-run-tool > .ovRaw { white-space: nowrap; }
 #overview .ov-run-mark { width: 16px; flex: none; text-align: center; }
 #overview .ov-run-tool.done .ov-run-mark { color: var(--ok); }
 #overview .ov-run-tool.error { color: var(--err); }

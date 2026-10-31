@@ -80,6 +80,10 @@ async function manageOverviewSession(deviceId, body) {
     favoriteSession(app, threadId, body.favorite === true);
     return { ok: true };
   }
+  if (action === 'copyLink') {
+    if (app !== 'codex' || session.host) throw new Error('此会话没有本地 deeplink');
+    return { text: `codex://threads/${threadId}` };
+  }
   if (session.dormant) {
     if (action === 'actions') return { actions: [] };
     throw new Error('项目窗口已关闭，请先打开对话');

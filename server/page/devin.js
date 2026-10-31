@@ -654,8 +654,9 @@
     return target(cancel);
   };
 
+  const permissionButton = () => [...doc.querySelectorAll('[data-composer-navigation-target="permissions"], button[aria-label="Change permissions"]')].find(vis);
   const permissionLabel = () => {
-    const b = doc.querySelector('[data-composer-navigation-target="permissions"], button[aria-label="Change permissions"]');
-    if (!b || !vis(b)) return null;
+    const b = permissionButton();
+    if (!b) return null;
     return (b.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 40) || null;
   };

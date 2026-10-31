@@ -157,7 +157,7 @@ function ovPreviewHtml(r) {
     : !preview?.value ? ovT('正在读取最新消息…')
     : !preview.value.available ? ovT('暂无可读取的摘要')
     : !preview.value.last ? ovT('暂无文本消息') : '';
-  return hint ? `<div class="ov-hint">${esc(hint)}</div>` : `<div class="ov-last" data-ov-preview="${esc(r.key)}">${ovText(preview.value.text)}</div>`;
+  return hint ? `<div class="ov-hint">${esc(hint)}</div>` : `<div class="ov-last" data-ov-scroll="preview:${esc(r.key)}">${ovText(preview.value.text)}</div>`;
 }
 function ovFetch(e) {
   const st = ovStOf(e.id);
@@ -318,7 +318,8 @@ function ovComputerGroup(e, all, projs) {
   ovSig.push(`c:${e.id}:${status}:${loading ? stage : ''}:${collapsed}`);
   const body = !collapsed && st?.data ? ovS.level === 'projects' ? ovProjectTiles(projects, all, false) : ovSessions(recs, e.id) : '';
   const empty = status === 'online' && st?.data?.ready ? ovEmpty('这里还没有会话') : '';
-  return `<section class="ov-computer" data-ov-node="computer:${esc(e.id)}" style="view-transition-name:${ovTname('c:' + e.id)}"><div class="ov-computer-row ${status}"><button type="button" class="ov-computer-toggle" data-ov="fold" data-id="${esc(e.id)}" aria-expanded="${!collapsed}"><span class="ov-computer-dot" aria-hidden="true"></span><span class="ov-computer-label"><span class="ov-computer-name ovRaw">${esc(e.name)}</span>${detail ? `<span class="ov-computer-detail">${esc(detail)}</span>` : ''}${progress}</span><svg class="ov-computer-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button>${action ? `<button type="button" class="ov-computer-action" ${action}>${badge}</button>` : ''}${!e.foreign && (status === 'offline' || loading && st?.failure) ? `<button type="button" class="ov-computer-info" data-ov="details" data-id="${esc(e.id)}" aria-label="${ovT('连接详情')}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="8"/><path d="M12 10v7m0-11v1"/></svg></button>` : ''}</div>${body || empty && !collapsed ? `<div class="ov-board">${body || empty}</div>` : ''}</section>`;
+  const tools = status === 'online' && !e.foreign ? `<button type="button" class="ov-computer-tool" data-ov="computer-projects" data-id="${esc(e.id)}" title="${I18N.tr('打开项目／新建会话')}" aria-label="${I18N.tr('打开项目／新建会话')}">${$('add').innerHTML}</button><button type="button" class="ov-computer-tool" data-ov="computer-editor" data-id="${esc(e.id)}" title="${I18N.tr('打开文件')}" aria-label="${I18N.tr('打开文件')}">${$('pickEditor').innerHTML}</button>` : '';
+  return `<section class="ov-computer" data-ov-node="computer:${esc(e.id)}" style="view-transition-name:${ovTname('c:' + e.id)}"><div class="ov-computer-row ${status}"><button type="button" class="ov-computer-toggle" data-ov="fold" data-id="${esc(e.id)}" aria-expanded="${!collapsed}"><span class="ov-computer-dot" aria-hidden="true"></span><span class="ov-computer-label"><span class="ov-computer-name ovRaw">${esc(e.name)}</span>${detail ? `<span class="ov-computer-detail">${esc(detail)}</span>` : ''}${progress}</span></button>${tools}${action ? `<button type="button" class="ov-computer-action" ${action}>${badge}</button>` : ''}${!e.foreign && (status === 'offline' || loading && st?.failure) ? `<button type="button" class="ov-computer-info" data-ov="details" data-id="${esc(e.id)}" aria-label="${ovT('连接详情')}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="8"/><path d="M12 10v7m0-11v1"/></svg></button>` : ''}<button type="button" class="ov-computer-fold" data-ov="fold" data-id="${esc(e.id)}" aria-expanded="${!collapsed}" aria-label="${I18N.tr(collapsed ? '展开电脑' : '折叠电脑')}"><svg class="ov-computer-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button></div>${body || empty && !collapsed ? `<div class="ov-board">${body || empty}</div>` : ''}</section>`;
 }
 function ovProjTile(p, all, showComputer = !ovS.comp) {
   const recs = all.filter(r => r.project === p.key), fusion = p.app === 'fusion';
@@ -370,7 +371,7 @@ function ovRunHtml(r) {
   const tools = value?.tools || [];
   return `<div class="ov-run-meta"><span class="ov-run-model ovRaw" title="${esc(model)}">${esc(model || ovT('模型未提供'))}</span><span class="ov-run-count">${esc(count)}</span></div>`
     + (progress ? `<div class="ov-progress" role="progressbar" aria-label="${ovT('任务进度')}" aria-valuemin="0" aria-valuemax="${progress.total}" aria-valuenow="${progress.done}" title="${esc(progress.current || '')}"><i style="width:${Math.round(progress.done / progress.total * 100)}%"></i></div>` : '')
-    + (tools.length ? `<div class="ov-run-tools">${tools.map(tool => `<div class="ov-run-tool ${tool.state}" title="${esc(tool.label)}"><span class="ov-run-mark" aria-hidden="true">${tool.state === 'done' ? '✓' : tool.state === 'error' ? '!' : tool.state === 'run' ? '◌' : '·'}</span><span class="ovRaw">${esc(tool.label)}</span></div>`).join('')}</div>` : '');
+    + (tools.length ? `<div class="ov-run-tools" data-ov-scroll="tools:${esc(r.key)}" tabindex="0" aria-label="${I18N.tr('工具调用')}">${tools.map(tool => `<div class="ov-run-tool ${tool.state}" title="${esc(tool.label)}"><span class="ov-run-mark" aria-hidden="true">${tool.state === 'done' ? '✓' : tool.state === 'error' ? '!' : tool.state === 'run' ? '◌' : '·'}</span><span class="ovRaw">${esc(tool.label)}</span></div>`).join('')}</div>` : '');
 }
 function ovCard(r) {
   const online = !r.off, dis = ovBusy.has(r.key) ? ' disabled' : '', key = esc(r.key);
@@ -457,7 +458,7 @@ function ovPatch(container, html) {
   template.innerHTML = html;
   const active = document.activeElement;
   const key = node => node.nodeType === 1 ? [node.nodeName, node.getAttribute('data-ov') || '',
-    node.getAttribute('data-ov-session') || node.getAttribute('data-ov-node') || node.getAttribute('data-ov-input') || node.getAttribute('data-ov-preview')
+    node.getAttribute('data-ov-session') || node.getAttribute('data-ov-node') || node.getAttribute('data-ov-input') || node.getAttribute('data-ov-scroll')
       || node.getAttribute('data-id') || node.getAttribute('data-v') || node.getAttribute('class')?.split(' ')[0] || ''].join('|') : node.nodeName;
   const patch = (parent, next) => {
     const previous = [...parent.childNodes], pool = new Map();
@@ -492,8 +493,7 @@ function ovPatch(container, html) {
 }
 function ovCommit(p) {
   if (ovToolState && ovToolState.key !== ovS.open) ovReleaseComposer();
-  const preview = $('ovBoard').querySelector('[data-ov-preview]');
-  const previewScroll = preview && { key: preview.dataset.ovPreview, top: preview.scrollTop };
+  const scrolls = new Map([...$('ovBoard').querySelectorAll('[data-ov-scroll]')].map(el => [el.dataset.ovScroll, { top: el.scrollTop, left: el.scrollLeft }]));
   ovPaint = p.paint;
   $('overview').classList.toggle('ov-project', !!ovS.proj);
   $('ovUp').classList.toggle('ov-hide', !p.up);
@@ -510,8 +510,10 @@ function ovCommit(p) {
   ovPatch($('ovBoard'), p.board);
   ovPatch($('ovBatch'), p.batch);
   $('ovBatch').hidden = !p.batch;
-  const nextPreview = $('ovBoard').querySelector('[data-ov-preview]');
-  if (nextPreview && nextPreview.dataset.ovPreview === previewScroll?.key) nextPreview.scrollTop = previewScroll.top;
+  for (const el of $('ovBoard').querySelectorAll('[data-ov-scroll]')) {
+    const pos = scrolls.get(el.dataset.ovScroll);
+    if (pos) { el.scrollTop = pos.top; el.scrollLeft = pos.left; }
+  }
   ovPrepareVisibleComposer();
   ovMountComposerControls();
 }
@@ -886,6 +888,8 @@ $('overview').addEventListener('click', e => {
       return ovMove({ open: null });
     case 'up': return ovUp();
     case 'menu': return showMainMenu();
+    case 'computer-projects': return showComputerActions(id, 'projects');
+    case 'computer-editor': return showComputerActions(id, 'editor');
     case 'retry': return reconnectComputer(id);
     case 'auth': return authorizeComputer(id);
     case 'details': showConnectionDetails(id); return checkComputerConnection(id);

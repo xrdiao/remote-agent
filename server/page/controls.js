@@ -3,7 +3,7 @@
     model: () => modelButton(),
     history: () => [...doc.querySelectorAll('[aria-label^="Show Chat History"], [aria-label^="Show Agent History"]')].find(vis),
     newChat: () => [...doc.querySelectorAll('[aria-label^="New Agent ("], [data-action-id="new-agent"]')].find(vis) || [...doc.querySelectorAll('[aria-label="New Agent"], [aria-label="New chat"], [aria-label^="New Chat"], [aria-label="New session"]')].find(vis) || (devinSurface() ? [...doc.querySelectorAll('button')].find(e => vis(e) && /^New session(?:\s|Ctrl|$)/.test((e.textContent || '').trim())) : null),
-    permission: () => doc.querySelector('[data-composer-navigation-target="permissions"], button[aria-label="Change permissions"]'),
+    permission: permissionButton,
   };
 
   const center = el => {
@@ -90,7 +90,7 @@
       }).filter(x => DEVIN_MODEL.test(x.label));
     },
     permission: () => {
-      const btn = doc.querySelector('[data-composer-navigation-target="permissions"], button[aria-label="Change permissions"]');
+      const btn = permissionButton();
       if (!btn) return [];
       const current = (btn.innerText || '').replace(/\s+/g, ' ').trim();
       return [...doc.querySelectorAll('[role=menuitem]')].filter(vis).map(e => {
