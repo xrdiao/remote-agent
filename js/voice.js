@@ -226,20 +226,22 @@ $('imgFile').onchange = async () => {
   } catch (error) { status(error.message, false); }
   finally { if (imageBatchScope === scope) imageBatchScope = ''; }
 };
-text.addEventListener('paste', async e => {
+async function pasteComposerFiles(e) {
+  const input = e.target;
   const files = [...e.clipboardData.files];
   if (!files.length) return;
   e.preventDefault();
   const value = e.clipboardData.getData('text/plain');
   if (value) {
-    text.setRangeText(value, text.selectionStart, text.selectionEnd, 'end');
-    text.dispatchEvent(new Event('input', { bubbles: true }));
+    input.setRangeText(value, input.selectionStart, input.selectionEnd, 'end');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
   }
   for (const file of files) {
     if (file.type.startsWith('image/')) await attachImageFile(file);
     else await attachDocumentFile(file);
   }
-});
+}
+text.addEventListener('paste', pasteComposerFiles);
 
 window.addEventListener('resize', () => { layoutStage(); });
 

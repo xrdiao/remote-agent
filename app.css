@@ -1825,6 +1825,11 @@ body.conv #overview { display: none; }
 #overview .ov-compose-more-label { padding: 8px; font-size: 11px; color: var(--fg-3); }
 #overview .ov-compose-more-menu > button { display: flex; align-items: center; gap: 8px; width: 100%; max-width: none; height: auto; min-height: 36px; padding: 8px; border-radius: 10px; font-size: 13px; text-align: left; }
 #overview .ov-compose-more-menu > button svg { width: 18px; height: 18px; flex: none; }
+#overview .ov-compose-inline { display: contents; }
+body.land #overview .ov-tools { flex-wrap: wrap; align-items: center; gap: 4px; }
+body.land #overview .ov-compose-inline > button { flex: 0 0 34px; }
+body.land #overview .ov-compose-inline > button[data-v="send"], body.land #overview .ov-compose-inline > button[data-v="sendNow"] { display: flex; flex-basis: auto; gap: 4px; max-width: none; padding: 0 10px; border-radius: 999px; background: var(--s2); font-size: 12px; }
+body.land #overview .ov-compose-inline > button svg { width: 18px; height: 18px; flex: none; }
 #overview .ov-cfoot > .ov-link { flex: none; }
 #overview .ov-tool-status { margin-top: 8px; font-size: 12px; color: var(--fg-3); overflow-wrap: anywhere; }
 #overview .ov-tool-status.err { color: var(--err); }

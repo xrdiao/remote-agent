@@ -395,7 +395,12 @@ function ovCard(r) {
   const err = ovErr.has(r.key) ? `<div class="ov-errbox">${esc(ovErr.get(r.key))}</div>` : '';
   const off = r.off ? '<div class="ov-hint">电脑离线</div>' : '';
   const tool = (id, disabled = dis, label = '') => `<button data-ov="tool" data-id="${key}" data-v="${id}" title="${esc(label || $(id).title)}" aria-label="${esc(label || $(id).ariaLabel)}"${disabled}>${label && ['send', 'sendNow'].includes(id) ? OV_ICON.arrow : $(id).innerHTML}${label ? `<span>${esc(label)}</span>` : ''}</button>`;
-  const tools = canReply ? `<div class="ov-tools">${['add', 'img', 'uploadDoc'].map(id => tool(id)).join('')}<span data-ov-node="mic:${key}" data-ov-control="mic" data-ov-preserve></span><span data-ov-node="stop:${key}" data-ov-control="stop" data-ov-preserve></span><details class="ov-compose-more" data-ov-node="more:${key}"><summary data-ov="more" title="${ovT('更多操作')}" aria-label="${ovT('更多操作')}"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></summary><div class="ov-compose-more-menu"><div class="ov-compose-more-label">${ovT('本次发送')}</div>${tool('send', replyDis, $('send').textContent)}${$('sendNow').hidden ? '' : tool('sendNow', !ready || $('sendNow').disabled ? ' disabled' : '', $('sendNow').textContent)}<div class="ov-compose-more-label">${ovT('输入工具')}</div>${['inputPrev', 'inputNext', 'insertNewline'].map(id => tool(id, dis, $(id).ariaLabel)).join('')}</div></details></div>` : '';
+  const landscape = document.body.classList.contains('land');
+  const sends = tool('send', replyDis, $('send').textContent) + ($('sendNow').hidden ? '' : tool('sendNow', !ready || $('sendNow').disabled ? ' disabled' : '', $('sendNow').textContent));
+  const inputs = ['inputPrev', 'inputNext', 'insertNewline'].map(id => tool(id, dis, landscape ? '' : $(id).ariaLabel)).join('');
+  const more = landscape ? `<div class="ov-compose-inline">${inputs}${sends}</div>`
+    : `<details class="ov-compose-more" data-ov-node="more:${key}"><summary data-ov="more" title="${ovT('更多操作')}" aria-label="${ovT('更多操作')}"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></summary><div class="ov-compose-more-menu"><div class="ov-compose-more-label">${ovT('本次发送')}</div>${sends}<div class="ov-compose-more-label">${ovT('输入工具')}</div>${inputs}</div></details>`;
+  const tools = canReply ? `<div class="ov-tools">${['add', 'img', 'uploadDoc'].map(id => tool(id)).join('')}<span data-ov-node="mic:${key}" data-ov-control="mic" data-ov-preserve></span><span data-ov-node="stop:${key}" data-ov-control="stop" data-ov-preserve></span>${more}</div>` : '';
   const message = ready && $('msg').className !== 'quiet' ? $('msg').textContent : '';
   const toolStatus = tools && message ? `<div class="ov-tool-status ${$('msg').className}" role="status">${esc(message)}</div>` : '';
   return status + body + off + err + toolStatus + `<div class="ov-cfoot">${tools}${ovOpenLink(r)}</div>`;
@@ -938,6 +943,7 @@ $('overview').addEventListener('keydown', e => {
 for (const event of ['input', 'select', 'focusin', 'focusout', 'keydown', 'keyup', 'beforeinput', 'compositionstart', 'compositionend']) {
   $('overview').addEventListener(event, e => { if (e.target.dataset.ovInput) composerInputEvent(e); });
 }
+$('overview').addEventListener('paste', e => { if (e.target === ovToolInput()) pasteComposerFiles(e); });
 $('ovBack').addEventListener('click', ovBackToBoard);
 addEventListener('popstate', () => {
   const st = history.state;
@@ -953,7 +959,7 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 for (const [id, t] of [['ovBack', '返回概览'], ['ovUp', '上一级'], ['ovMenu', '菜单']]) $(id).setAttribute('aria-label', ovT(t));
 const ovLayout = () => $('overview').classList.toggle('ov-landscape', innerWidth > innerHeight);
 ovLayout();
-addEventListener('resize', ovLayout);
+addEventListener('resize', () => { ovLayout(); ovRender(); });
 addEventListener('resize', ovLocateReply);
 window.visualViewport?.addEventListener('resize', ovLocateReply);
 window.visualViewport?.addEventListener('scroll', ovLocateReply);
