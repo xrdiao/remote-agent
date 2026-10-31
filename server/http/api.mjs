@@ -65,42 +65,6 @@ async function actOnWindow(deviceId, { win, threadId, act, index, text, question
   }
 }
 
-async function sendOverviewReply(deviceId, { computer, win, windowId, threadId, text, mentions }) {
-  const app = String(win || '').split(':')[0], reply = String(text ?? '').trim();
-  if (computer !== computerId()) throw new Error('所选电脑已变化，请刷新概览后重试');
-  if (!['cursor', 'devin', 'codex'].includes(app) || !windowId || !threadId) throw new Error('会话信息不完整，请刷新概览后重试');
-  const requestId = crypto.randomUUID();
-  let latest = { pending: true }, confirm, timer;
-  const received = new Promise(resolve => { confirm = resolve; });
-  const client = { readyState: 1, send(raw) {
-    const message = JSON.parse(raw);
-    if (message.requestId !== requestId || !['sent', 'sendFailed'].includes(message.t)) return;
-    latest = message;
-    if (message.t === 'sendFailed' || !message.pending || message.message) confirm(message);
-  } };
-  const s = new Session(client, deviceId);
-  s.visible = s.notifyVisible = false;
-  // An overview action waits for the native send receipt, not a conversation screen.
-  s.pollChat = async () => {};
-  try {
-    await s.handle({ t: 'attach', id: win, windowId, threadId });
-    if (!s.bindingReady || s.app !== app || s.windowId !== windowId || s.threadId !== threadId)
-      throw new Error('目标会话尚未就绪，请打开对话确认后重试');
-    if (!reply) {
-      await s.handle({ t: 'attachments' });
-      if (!s.lastAttachments || s.lastAttachments === '[]') throw new Error('回复内容为空');
-    }
-    await s.handle({ t: 'send', text: reply, submit: true, when: 'queue', requestId, ...(mentions ? { mentions } : {}) });
-    const result = await Promise.race([received, new Promise(resolve => { timer = setTimeout(() => resolve(latest), 5000); })]);
-    if (result.t === 'sendFailed') throw new Error(result.message);
-    return { ok: true, requestId, pending: !!result.pending, queued: !!result.queued, ...(result.message ? { message: result.message } : {}) };
-  } finally {
-    clearTimeout(timer);
-    client.readyState = 3;
-    s.dispose();
-  }
-}
-
 async function manageOverviewSession(deviceId, body) {
   if (body.computer !== computerId()) throw new Error('所选电脑已变化，请刷新概览后重试');
   const { session, target } = overviewSession(deviceId, body);
@@ -370,15 +334,6 @@ export async function handleApi(req, res, route) {
       const target = Object.fromEntries(new URL(req.url, 'http://relay').searchParams);
       return json(req, res, 200, { computer: computerId(), ...await overviewPreview(device.id, target) });
     } catch (error) { return json(req, res, 409, { error: error.message }); }
-  }
-  if (route === '/api/overview/send' && req.method === 'POST') {
-    const body = await readJson(req);
-    try {
-      const result = await sendOverviewReply(device.id, body);
-      return json(req, res, result.pending ? 202 : 200, result);
-    } catch (e) {
-      return json(req, res, 409, { error: e.message });
-    }
   }
   if (route === '/api/overview/session' && req.method === 'POST') {
     const body = await readJson(req);

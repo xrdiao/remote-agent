@@ -26,12 +26,17 @@ function renderAttachments(list) {
   for (const [id, image] of editableImages) {
     if (image.scope !== imageUploadScope() || !list.some(f => f.id === id)) { URL.revokeObjectURL(image.data); editableImages.delete(id); }
   }
-  const pending = [...imageUploads.entries()].filter(([, f]) => f.scope === imageUploadScope() && !f.cancelled);
-  $('attachments').parentElement.hidden = !list.length && !pending.length;
-  $('attachments').innerHTML = list.map(f => { const preview = f.preview || editableImages.get(f.id)?.data; return `<div class="attachment">${preview ? `<img src="${esc(preview)}" alt="">` : ''}${preview ? `<button data-edit-attachment="${esc(f.id)}">编辑</button>` : ''}<span title="${esc(f.name)}">${esc(f.name)}${f.size != null ? ` (${Math.ceil(f.size / 1024)} KB)` : ''}</span><button data-remove-attachment="${esc(f.id)}" aria-label="删除 ${esc(f.name)}">×</button></div>`; }).join('')
-    + pending.map(([id, f]) => `<div class="attachment"><img src="${esc(f.preview)}" alt=""><span>${esc(f.name)} · ${f.error ? '上传失败' : '上传中…'}</span><button data-edit-pending-image="${id}">编辑</button>${f.error ? `<button data-retry-image="${id}">重试</button>` : ''}<button data-discard-image="${id}" aria-label="取消上传图片">×</button></div>`).join('');
-  ovUpdateAttachments();
+  const html = attachmentHtml();
+  $('attachments').parentElement.hidden = !html;
+  $('attachments').innerHTML = html;
+  document.dispatchEvent(new Event('composer-state'));
   updateComposeCompact();
+}
+function attachmentHtml() {
+  const list = desktopAttachments;
+  const pending = [...imageUploads.entries()].filter(([, f]) => f.scope === imageUploadScope() && !f.cancelled);
+  return list.map(f => { const preview = f.preview || editableImages.get(f.id)?.data; return `<div class="attachment">${preview ? `<img src="${esc(preview)}" alt="">` : ''}${preview ? `<button data-edit-attachment="${esc(f.id)}">编辑</button>` : ''}<span title="${esc(f.name)}">${esc(f.name)}${f.size != null ? ` (${Math.ceil(f.size / 1024)} KB)` : ''}</span><button data-remove-attachment="${esc(f.id)}" aria-label="删除 ${esc(f.name)}">×</button></div>`; }).join('')
+    + pending.map(([id, f]) => `<div class="attachment"><img src="${esc(f.preview)}" alt=""><span>${esc(f.name)} · ${f.error ? '上传失败' : '上传中…'}</span><button data-edit-pending-image="${id}">编辑</button>${f.error ? `<button data-retry-image="${id}">重试</button>` : ''}<button data-discard-image="${id}" aria-label="取消上传图片">×</button></div>`).join('');
 }
 // A disconnected upload has no reliable imageDone receipt; allow an explicit retry.
 function markUploadsDisconnected() {
