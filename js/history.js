@@ -1878,7 +1878,6 @@ $('pickMode').onclick = () => requestMenu('mode', '读取模式列表…');
 $('pickModel').onclick = () => requestMenu('model', '读取模型列表…');
 $('pickPerm').onclick = () => requestMenu('permission', '读取权限…');
 function showCodexSkills(rows, input = composerInput()) {
-  const mn = composerMentionState(input);
   openSheet('skills', '<h3>Skill · 技能</h3><input id="skillSearch" placeholder="搜索技能" style="width:100%;box-sizing:border-box;margin-bottom:8px"><div id="skillRows"></div>');
   const paint = () => {
     const q = $('skillSearch').value.toLowerCase();
@@ -1891,15 +1890,14 @@ function showCodexSkills(rows, input = composerInput()) {
     const r = rows[Number(b.dataset.skill)], token = '/' + r.label;
     closeSheet(); input.focus();
     input.setRangeText(token + ' ', input.selectionStart, input.selectionEnd, 'end');
-    mn.mentions.push({ ...r, token, at: input.selectionStart - token.length - 1 });
-    mn.value = input.value;
+    MN.mentions.push({ ...r, token, at: input.selectionStart - token.length - 1 });
+    MN.value = input.value;
     input.dispatchEvent(new Event('input', { bubbles: true }));
   };
   paint();
 }
 let codexFileRequest = 0;
 async function openCodexFilePicker(token, input = composerInput()) {
-  const mn = composerMentionState(input);
   const scope = chatCacheKey(viewSel), selected = new Map();
   const start = token?.start ?? input.selectionStart, end = token?.end ?? token?.caret ?? input.selectionEnd;
   let directory = null;
@@ -1926,7 +1924,7 @@ async function openCodexFilePicker(token, input = composerInput()) {
     $('codexFileCancel').onclick = closeSheet;
     $('codexFileAdd').onclick = () => {
       if (scope !== chatCacheKey(viewSel) || input !== composerInput()) { closeSheet(); return status('会话已切换，请重新选择文件', false); }
-      if (takeMentions(input.value.slice(0, start) + input.value.slice(end), input).length + selected.size > 12) return status('每条消息最多添加 12 个引用项', false);
+      if (takeMentions(input.value.slice(0, start) + input.value.slice(end)).length + selected.size > 12) return status('每条消息最多添加 12 个引用项', false);
       let at = start;
       const mentions = [...selected.values()].map(entry => {
         const token = '@' + entry.name;
@@ -1935,8 +1933,8 @@ async function openCodexFilePicker(token, input = composerInput()) {
         return mention;
       });
       input.setRangeText(mentions.map(m => m.token).join(' ') + (/\s/.test(input.value[end] || '') ? '' : ' '), start, end, 'end');
-      mn.mentions.push(...mentions);
-      mn.value = input.value;
+      MN.mentions.push(...mentions);
+      MN.value = input.value;
       closeSheet(); input.dispatchEvent(new Event('input', { bubbles: true })); input.focus();
     };
   };

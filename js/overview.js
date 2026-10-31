@@ -11,7 +11,6 @@ const OV_AGENT = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex' };
 const OV_EN = {
   '返回概览': 'Back to overview', '上一级': 'Up one level', '菜单': 'Menu', '全部': 'All', '在线': 'Online', '项目': 'Projects', '会话': 'Sessions',
   '概览': 'Overview', '全部电脑': 'All computers', '电脑范围': 'Computer scope', '不常用': 'Infrequent', '打开对话': 'Open conversation', '进行中': 'In progress',
-  '已加入排队': 'Queued', '发送结果待确认，请打开对话查看；草稿已保留': 'Send not confirmed; open the conversation to check. Draft kept.',
   '查找地址…': 'Finding address…', '连接电脑…': 'Connecting…', '正在读取项目与会话…': 'Loading projects and sessions…',
   '正在验证设备…': 'Verifying device…', '正在恢复连接…': 'Restoring connection…',
   '暂时无法连接，已暂停自动重试': 'Unavailable; automatic retries paused',
@@ -34,7 +33,7 @@ const OV_ICON = {
   star: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="m12 3 2.8 5.7 6.3.9-4.5 4.4 1.1 6.2-5.7-3-5.7 3 1.1-6.2L3 9.6l6.2-.9z"/></svg>',
   arrow: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
 };
-const ovSt = new Map(), ovBusy = new Set(), ovErr = new Map(), ovDraft = new Map();
+const ovSt = new Map(), ovBusy = new Set(), ovErr = new Map();
 const ovCollapsed = new Set();
 const ovExpanded = new Set();
 const ovPreviews = new Map();
@@ -376,8 +375,9 @@ function ovCard(r) {
   const online = !r.off, dis = ovBusy.has(r.key) ? ' disabled' : '', key = esc(r.key);
   const status = `<div class="ov-status"><div class="ov-state"><span class="ov-badge">${esc(ovBadge(r))}</span><span class="ov-time">${esc(ovTime(r))}</span></div><span class="ovRaw" title="${esc(ovContext(r))}">${esc(ovContext(r))}</span></div>`;
   const canReply = !r.fusion && !r.dormant && online;
-  const attachments = ovToolState?.key === r.key && winTargetReady(ovTarget(r)) ? ovToolState.attachments || '' : '';
-  const composer = canReply ? `<div class="ov-attachments" data-ov-attachments="${key}"${attachments ? '' : ' hidden'}>${attachments}</div><div class="ov-mentions" data-ov-preserve hidden></div><div class="ov-composer" data-ov-node="reply:${key}"><textarea data-ov-input="${key}" rows="1" enterkeyhint="send" placeholder="${r.state === 'wait' ? '输入回复…' : `告诉 ${OV_AGENT[r.app]} 下一步…`}"${dis}></textarea><button class="ov-send" data-ov="send" data-id="${key}" aria-label="发送"${dis}>${OV_ICON.arrow}</button></div>` : '';
+  const ready = ovComposerReady(r.key), replyDis = !ready || $('send').disabled ? ' disabled' : '';
+  const attachments = ready ? attachmentHtml() : '';
+  const composer = canReply ? `<div class="ov-attachments" data-ov-attachments="${key}"${attachments ? '' : ' hidden'}>${attachments}</div><div class="ov-mentions" data-ov-preserve hidden></div><div class="ov-composer" data-ov-node="reply:${key}"><textarea data-ov-input="${key}" rows="1" enterkeyhint="send" placeholder="${r.state === 'wait' ? '输入回复…' : `告诉 ${OV_AGENT[r.app]} 下一步…`}"${replyDis}></textarea><button class="ov-send" data-ov="send" data-id="${key}" aria-label="${esc($('send').textContent)}" title="${esc($('send').textContent)}"${replyDis}>${OV_ICON.arrow}</button></div>` : '';
   let body;
   if (r.state === 'wait') {
     body = `<div class="ov-q">${ovNowHtml(r)}</div>` + (r.devin
@@ -395,7 +395,7 @@ function ovCard(r) {
   const err = ovErr.has(r.key) ? `<div class="ov-errbox">${esc(ovErr.get(r.key))}</div>` : '';
   const off = r.off ? '<div class="ov-hint">电脑离线</div>' : '';
   const tools = canReply ? `<div class="ov-tools">${['add', 'img', 'uploadDoc', 'inputPrev', 'inputNext', 'insertNewline'].map(id => `<button data-ov="tool" data-id="${key}" data-v="${id}" title="${esc($(id).title)}" aria-label="${esc($(id).ariaLabel)}"${dis}>${$(id).innerHTML}</button>`).join('')}</div>` : '';
-  const message = ovToolState?.key === r.key && ovToolState.statusGen === statusGen && $('msg').className !== 'quiet' ? $('msg').textContent : '';
+  const message = ready && $('msg').className !== 'quiet' ? $('msg').textContent : '';
   const toolStatus = tools && message ? `<div class="ov-tool-status ${$('msg').className}" role="status">${esc(message)}</div>` : '';
   return status + body + off + err + toolStatus + `<div class="ov-cfoot">${tools}${ovOpenLink(r)}</div>`;
 }
@@ -486,19 +486,10 @@ function ovPatch(container, html) {
     for (const node of previous) if (!kept.has(node)) node.remove();
   };
   patch(container, template.content);
-  for (const input of container.querySelectorAll('[data-ov-input]')) {
-    const value = ovDraft.get(input.dataset.ovInput) || '';
-    if (input !== document.activeElement && input.value !== value) input.value = value;
-  }
+  for (const input of container.querySelectorAll('[data-ov-input]')) ovPaintComposerInput(input);
 }
 function ovCommit(p) {
-  if (ovToolState && ovToolState.key !== ovS.open) {
-    const input = document.querySelector('[data-ov-input="' + CSS.escape(ovToolState.key) + '"]');
-    if (input) mentionHide(input);
-    mentionInput = text;
-    ovToolState = null;
-    finishWinBinding(new Error('目标会话已切换'));
-  }
+  if (ovToolState && ovToolState.key !== ovS.open) ovReleaseComposer();
   const preview = $('ovBoard').querySelector('[data-ov-preview]');
   const previewScroll = preview && { key: preview.dataset.ovPreview, top: preview.scrollTop };
   ovPaint = p.paint;
@@ -519,6 +510,7 @@ function ovCommit(p) {
   $('ovBatch').hidden = !p.batch;
   const nextPreview = $('ovBoard').querySelector('[data-ov-preview]');
   if (nextPreview && nextPreview.dataset.ovPreview === previewScroll?.key) nextPreview.scrollTop = previewScroll.top;
+  ovPrepareVisibleComposer();
 }
 function ovRender(vt, scroll, locate = false) {
   if (winBinding && ovToolState) {
@@ -539,6 +531,7 @@ function ovRender(vt, scroll, locate = false) {
       ovMain.scrollTop = ovScroll;
       ovScroll = undefined;
     }
+    ovPrepareVisibleComposer();
     return;
   }
   const commit = (next = p) => {
@@ -622,23 +615,16 @@ async function ovSend(key, act, extra, ok) {
   const r = ovRecs().find(x => x.key === key);
   if (!r) return;
   const e = ovList.find(x => x.id === r.comp);
-  const reply = act === 'reply', route = reply ? '/api/overview/send' : '/api/act';
+  const route = '/api/act';
   ovBusy.add(key); ovErr.delete(key); ovRender();
   try {
-    const res = await fetch(e.c.relay + route, { method: 'POST', cache: 'no-store', signal: AbortSignal.timeout(reply ? 60000 : 8000),
+    const res = await fetch(e.c.relay + route, { method: 'POST', cache: 'no-store', signal: AbortSignal.timeout(8000),
       headers: { 'content-type': 'application/json', ...await entryHeaders(e.c, 'POST', route) },
-      body: JSON.stringify(reply ? { ...ovTarget(r), ...extra } : { win: r.win, threadId: r.threadId, act, ...(act === 'acceptAll' ? {} : { question: r.wait }), ...extra }) });
+      body: JSON.stringify({ win: r.win, threadId: r.threadId, act, ...(act === 'acceptAll' ? {} : { question: r.wait }), ...extra }) });
     const result = await res.json();
     if (!res.ok) ovErr.set(key, I18N.tr(result.error || ovT('操作失败')));
-    else if (reply && result.pending) ovErr.set(key, ovT('发送结果待确认，请打开对话查看；草稿已保留'));
-    else {
-      if (extra.text !== undefined && ovDraft.get(key)?.trim() === extra.text) {
-        ovDraft.delete(key); composerMentionStates.delete(key);
-      }
-      if (reply && ovToolInput()?.dataset.ovInput === key) send({ t: 'attachments' });
-      ovToast(`<span>${ovT(reply && result.queued ? '已加入排队' : ok)}</span>`); ovFetch(e);
-    }
-  } catch { ovErr.set(key, reply ? ovT('发送结果待确认，请打开对话查看；草稿已保留') : I18N.tr('连接电脑失败，请重试')); }
+    else { ovToast(`<span>${ovT(ok)}</span>`); ovFetch(e); }
+  } catch { ovErr.set(key, I18N.tr('连接电脑失败，请重试')); }
   ovBusy.delete(key);
   ovRender();
 }
@@ -710,56 +696,68 @@ async function ovRunBatch(action) {
     }
   } finally { batch.running = false; ovRender(); }
 }
+function ovComposerReady(key = ovS.open) {
+  return ovToolState?.key === key && ovToolState.phase === 'ready' && mode === 'chat'
+    && winTargetReady(ovToolState.target) && ovToolState.sel === viewSel;
+}
 function ovToolInput() {
-  if (!ovToolState?.bound || ovToolState.key !== ovS.open || document.body.classList.contains('conv')
-      || !winTargetReady(ovToolState.target) || ovToolState.sel !== viewSel) return null;
+  if (!ovComposerReady() || document.body.classList.contains('conv')) return null;
   return document.querySelector('[data-ov-input="' + CSS.escape(ovToolState.key) + '"]');
 }
-function ovUpdateAttachments() {
-  if (!ovToolInput()) return;
-  ovToolState.attachments = $('attachments').innerHTML;
+function ovPaintComposerInput(input) {
+  const value = ovComposerReady(input.dataset.ovInput) ? text.value : '';
+  if (input.value !== value) {
+    input.value = value;
+    input.setSelectionRange(text.selectionStart, text.selectionEnd, text.selectionDirection);
+  }
+}
+function ovReflectComposer() {
+  if (!ovToolState || document.body.classList.contains('conv')) return;
+  const input = ovToolInput();
+  if (input) ovPaintComposerInput(input);
   ovRender();
 }
-document.addEventListener('composer-status', () => {
-  if (!ovToolInput()) return;
-  ovToolState.statusGen = statusGen;
-  ovRender();
-});
+document.addEventListener('composer-state', ovReflectComposer);
+function ovReleaseComposer() {
+  if (!ovToolState) return;
+  const input = document.querySelector('[data-ov-input="' + CSS.escape(ovToolState.key) + '"]');
+  if (input) mentionHide(input);
+  mentionInput = text;
+  ovToolState = null;
+  finishWinBinding(new Error('目标会话已切换'));
+}
+function ovPrepareVisibleComposer() {
+  const input = $('ovBoard').querySelector('[data-ov-input]');
+  if (input && ovToolState?.key !== input.dataset.ovInput) ovPrepareTools(input.dataset.ovInput);
+}
 function ovPrepareTools(key) {
-  if (ovToolInput()?.dataset.ovInput === key) return ovToolState;
+  if (ovToolState?.key === key && (ovToolState.phase === 'binding' || ovComposerReady(key))) return ovToolState;
   const r = ovRecs().find(r => r.key === key);
-  const state = ovToolState = { key, target: ovTarget(r), bound: false, attachments: '' };
+  const state = ovToolState = { key, target: ovTarget(r), phase: 'binding' };
+  const refresh = winTargetReady(state.target);
   ovErr.delete(key);
+  mentionHide();
   state.ready = bindWin(state.target).then(() => {
     if (ovToolState !== state || ovS.open !== key || document.body.classList.contains('conv')) return false;
-    state.bound = true; state.sel = viewSel;
-    ovUpdateAttachments();
+    state.phase = 'ready'; state.sel = viewSel;
+    if (refresh) send({ t: 'attachments' });
+    ovReflectComposer();
     return true;
   }, error => {
-    if (ovToolState === state) { ovErr.set(key, error.message); ovRender(); }
+    if (ovToolState === state) { state.phase = 'error'; ovErr.set(key, error.message); ovRender(); }
     return false;
   });
   return state;
 }
 async function ovUseTool(key, tool) {
-  const input = document.querySelector('[data-ov-input="' + CSS.escape(key) + '"]');
-  if (tool === 'insertNewline') { endInputRecall(); return insertComposerText('\n', input); }
   const state = ovPrepareTools(key);
   if (tool === 'uploadDoc') return openDocumentPicker(state);
   if (!await state.ready || ovToolState !== state) return;
-  const targetInput = ovToolInput();
-  if (tool === 'img') openImagePicker(state);
-  else if (tool === 'add') openComposerAdd(targetInput);
-  else recallInput(tool === 'inputPrev' ? -1 : 1, targetInput);
-}
-function ovSubmit(key) {
-  if (ovBusy.has(key)) return;
-  const input = document.querySelector(`[data-ov-input="${CSS.escape(key)}"]`), value = (ovDraft.get(key) || '').trim();
-  const bound = ovToolInput()?.dataset.ovInput === key;
-  if (bound && pendingImageUploads()) { ovErr.set(key, '图片尚未上传完成；失败图片请重试或删除'); return ovRender(); }
-  const attachments = bound && desktopAttachments.length > 0;
-  if (!value && !attachments) return input?.focus();
-  ovSend(key, 'reply', { text: value, ...mentionsFor(value, input) }, '已发送');
+  const input = ovToolInput();
+  if (tool === 'insertNewline') { endInputRecall(); insertComposerText('\n', input); }
+  else if (tool === 'img') openImagePicker(state);
+  else if (tool === 'add') openComposerAdd(input);
+  else recallInput(tool === 'inputPrev' ? -1 : 1, input);
 }
 function ovLocateCard(reply = null) {
   const card = $('ovBoard').querySelector('.ov-open');
@@ -788,8 +786,9 @@ function ovShowConversation() {
   ovClearBatch();
   ovSaveHistory();
   history.pushState({ ...ovHistory(), ovConv: true, ovDepth: (history.state?.ovDepth || 0) + 1 }, '');
+  ovReleaseComposer();
   document.body.classList.add('conv');
-  ovVisible();
+  autosize(); ovVisible();
 }
 function ovConversationOpened(enter = true) { ovEnterRequested = enter; }
 function ovEnterReady() {
@@ -886,22 +885,13 @@ $('overview').addEventListener('click', e => {
       return ovOpen(JSON.parse(el.dataset.t));
     case 'open': return ovOpen(JSON.parse(el.dataset.t));
     case 'opt': return ovSend(id, 'opt', { index: Number(v.split(':')[1]) }, '已发送');
-    case 'send': return ovSubmit(id);
+    case 'send': if (ovToolInput()?.dataset.ovInput === id) $('send').click(); return;
     case 'tool': return ovUseTool(id, v);
     case 'accept': return ovSend(id, 'acceptAll', {}, '已接受改动');
   }
 });
 $('overview').addEventListener('change', e => {
   if (e.target.matches('[data-ov-computer]')) ovMove({ comp: e.target.value || null, proj: null, open: null });
-});
-$('overview').addEventListener('input', e => {
-  const input = e.target;
-  if (!input.dataset.ovInput) return;
-  endInputRecall();
-  syncMentions(input.value, e, input);
-  composerMentionState(input).revision++;
-  ovDraft.set(input.dataset.ovInput, input.value);
-  if (input === ovToolInput()) mentionUpdate(input);
 });
 $('overview').addEventListener('focusin', e => {
   const r = e.target.dataset.ovInput && ovRecs().find(r => r.key === e.target.dataset.ovInput);
@@ -916,26 +906,13 @@ $('overview').addEventListener('focusout', e => {
   });
 });
 $('overview').addEventListener('keydown', e => {
-  if (e.key === 'Enter' && e.target.dataset.ovInput) {
-    composerMentionState(e.target).shiftEnter = e.shiftKey;
-    submitOnEnter(e, e.target);
-  }
-  else if (ovBatch && ['Enter', ' '].includes(e.key) && e.target.dataset.ovSession) {
+  if (ovBatch && ['Enter', ' '].includes(e.key) && e.target.dataset.ovSession) {
     e.preventDefault(); ovSelectSession(ovRecs().find(r => r.key === e.target.dataset.ovSession));
   }
 });
-$('overview').addEventListener('keyup', e => {
-  if (e.key === 'Enter' && e.target.dataset.ovInput) composerMentionState(e.target).shiftEnter = false;
-});
-for (const event of ['compositionstart', 'compositionend']) $('overview').addEventListener(event, e => {
-  if (!e.target.dataset.ovInput) return;
-  const state = composerMentionState(e.target);
-  if (event === 'compositionstart') { endInputRecall(); state.composing = true; }
-  else setTimeout(() => { state.composing = false; }, 0);
-});
-$('overview').addEventListener('beforeinput', e => {
-  if (e.target.dataset.ovInput && ['insertLineBreak', 'insertParagraph'].includes(e.inputType)) submitOnEnter(e, e.target);
-});
+for (const event of ['input', 'select', 'focusin', 'focusout', 'keydown', 'keyup', 'beforeinput', 'compositionstart', 'compositionend']) {
+  $('overview').addEventListener(event, e => { if (e.target.dataset.ovInput) composerInputEvent(e); });
+}
 $('ovBack').addEventListener('click', ovBackToBoard);
 addEventListener('popstate', () => {
   const st = history.state;
