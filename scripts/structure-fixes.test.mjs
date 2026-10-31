@@ -14,9 +14,9 @@ const part = (source, start, end) => {
 };
 
 function confirmation() {
-  const nodes = Object.fromEntries(['sendNow', 'stop', 'queueBar', 'attachments', 'askOk', 'askNo'].map(id => [id, {}]));
+  const nodes = Object.fromEntries(['send', 'sendNow', 'stop', 'queueBar', 'attachments', 'askOk', 'askNo'].map(id => [id, {}]));
   nodes.attachments.children = [];
-  const packets = [], computer = { id: 'computer-A' }, listeners = new Set();
+  const packets = [], calls = [], computer = { id: 'computer-A' }, listeners = new Set();
   const document = new EventTarget();
   const add = document.addEventListener.bind(document), remove = document.removeEventListener.bind(document);
   document.addEventListener = (type, fn) => { listeners.add(fn); add(type, fn); };
@@ -25,6 +25,8 @@ function confirmation() {
     document, $: id => nodes[id], currentComputer: () => computer,
     mode: 'chat', currentApp: 'codex', viewSel: 'codex|window|A', sheetKind: null,
     text: { value: 'draft from A' }, pendingImageUploads: () => false,
+    questionCompose: null, chatBusy: true, devinBusySplit: () => false, cursorBusyQueue: () => false,
+    cancelVoice: () => calls.push('cancelVoice'),
     status() {}, saveDraft() {}, codexFollow: () => 'queue', pushEcho() {},
     mentionsFor: () => ({}), jumpToLatest() {}, failPendingSend() {}, esc: value => value,
     authed: true, ws: { readyState: 1, send: raw => packets.push(JSON.parse(raw)) },
@@ -41,11 +43,11 @@ function confirmation() {
       + part(read('app/js/core.js'), 'const desktopRequests = new Map();', 'function setWindowReady(')
       + part(composer, 'function sendReceipt(', 'function confirmSent(')
       + part(composer, "$('stop').onclick =", 'function updateSendMode(')
-      + part(composer, "$('sendNow').onclick =", "$('insertNewline').addEventListener")
+      + part(composer, 'function sendComposer(', "$('insertNewline').addEventListener")
       + part(history, 'function sendQueueAction(', 'function editQueued(')
       + part(history, "$('queueBar').onclick =", 'function updateToBottom('), context);
   return {
-    context, nodes, packets, listeners,
+    context, nodes, packets, listeners, calls,
     change(kind) {
       if (kind === 'computer') computer.id = 'computer-B';
       else if (kind === 'mode') context.mode = 'terminal';
@@ -506,4 +508,325 @@ test('overview requests are not replayed or completed under a different paired i
   h.finish(); assert.equal(h.pending(), 1);
   h.links[1].auth.device = 'device-B'; h.finish();
   assert.equal((await work).ok, true); assert.equal(h.pending(), 0);
+});
+
+function cardSubscription() {
+  const packets = [], classes = new Set();
+  const nodes = new Map();
+  const node = id => {
+    if (!nodes.has(id)) nodes.set(id, { classList: { toggle() {} }, querySelectorAll: () => [], querySelector: () => null });
+    return nodes.get(id);
+  };
+  const context = vm.createContext({
+    document: { visibilityState: 'visible', body: { classList: { contains: value => classes.has(value) } } },
+    authed: true, mode: 'chat', viewSel: 'codex|window|thread', targetReady: true,
+    ovS: { open: 'card' }, ovToolState: { key: 'card', phase: 'ready', sel: 'codex|window|thread', target: {} },
+    winTargetReady: () => context.targetReady, send: message => packets.push(message),
+    $: node, ovRender() {}, ovToolInput: () => null, ovPatch() {},
+    ovPrepareVisibleComposer() {}, ovMountComposerControls() {}, ovCrumbsPaint: '',
+    ovReleaseComposer: () => { context.ovToolState = null; },
+  });
+  const overview = read('app/js/overview.js');
+  vm.runInContext(part(overview, 'function ovComposerReady(', 'function ovToolInput(')
+    + part(overview, 'function conversationVisible(', 'function ovShowConversation(')
+    + part(read('app/js/net.js'), 'function ovVisible(', 'function startComputerUpdates(')
+    + part(overview, 'function ovReflectComposer(', "document.addEventListener('composer-state'")
+    + part(overview, 'function ovCommit(', 'function ovRender('), context);
+  return { context, packets, classes, update: () => context.ovReflectComposer(),
+    close() {
+      context.ovS.open = null;
+      context.ovCommit({ paint: '', crumbs: '', levels: '', summary: '', lane: '', board: '', batch: '' });
+    },
+  };
+}
+
+test('an expanded bound card subscribes to chat updates while keeping overview notification presence', () => {
+  const h = cardSubscription(); h.update();
+  assert.deepEqual(JSON.parse(JSON.stringify(h.packets)), [{ t: 'visible', v: true, watching: false }]);
+});
+
+test('binding and a changed native target do not subscribe an unrelated card', () => {
+  const h = cardSubscription(); h.context.ovToolState.phase = 'binding'; h.update();
+  assert.equal(h.packets.at(-1).v, false);
+  h.context.ovToolState.phase = 'ready'; h.update(); assert.equal(h.packets.at(-1).v, true);
+  h.context.targetReady = false; h.update(); assert.equal(h.packets.at(-1).v, false);
+});
+
+test('ordinary card composer updates do not repeatedly send the same subscription state', () => {
+  const h = cardSubscription(); h.update(); h.update(); h.update();
+  assert.equal(h.packets.length, 1);
+});
+
+test('a full conversation retains both live reads and its original notification watching state', () => {
+  const h = cardSubscription(); h.classes.add('conv'); h.context.ovToolState = null;
+  h.context.ovVisible();
+  assert.equal(h.packets.at(-1).v, true); assert.equal(h.packets.at(-1).watching, true);
+});
+
+test('backgrounding and returning restore only the active card subscription', () => {
+  const h = cardSubscription(); h.update();
+  h.context.document.visibilityState = 'hidden'; h.context.ovVisible();
+  assert.equal(h.packets.at(-1).v, false); assert.equal(h.packets.at(-1).watching, false);
+  h.context.document.visibilityState = 'visible'; h.context.ovVisible();
+  assert.equal(h.packets.at(-1).v, true); assert.equal(h.packets.at(-1).watching, false);
+});
+
+test('closing a card releases its subscription before a different card can bind', () => {
+  const h = cardSubscription(); h.update(); h.close();
+  assert.equal(h.packets.at(-1).v, false);
+  h.context.ovS.open = 'other';
+  h.context.ovToolState = { key: 'other', phase: 'binding', target: {}, sel: h.context.viewSel };
+  h.update(); assert.equal(h.packets.at(-1).v, false);
+  h.context.ovToolState.phase = 'ready'; h.update(); assert.equal(h.packets.at(-1).v, true);
+});
+
+for (const app of ['cursor', 'devin', 'codex']) {
+  test(`${app}: the existing visible route and chat watcher update and clear a card queue`, async () => {
+    const listeners = new Set(), snapshots = [];
+    let queued = [], subscriptions = 0;
+    const source = { subscribe(listener) { subscriptions++; listeners.add(listener); return () => listeners.delete(listener); } };
+    const context = vm.createContext({
+      AgentContext: class {}, FUSION_OWNER: {}, cdpRead: new AsyncLocalStorage(),
+      nativeWindow: () => source, subscribeCatalog: () => () => {}, clearInterval() {},
+    });
+    vm.runInContext(read('server/session.mjs').replace(/^import .*;\n/gm, '').replace(/\bexport /g, '') + '\nthis.Session=Session;', context);
+    const route = vm.runInContext('({' + part(read('server/routes.mjs'), '  visible:', '  lang:') + '}).visible', context);
+    const cdp = {}, session = Object.assign(Object.create(context.Session.prototype), {
+      app, cdp, editorCdp: cdp, mode: 'chat', visible: false,
+      pollChat: async () => { snapshots.push(queued.slice()); },
+    });
+    await route.pre(session, { v: true, watching: false });
+    assert.equal(session.notifyVisible, false); assert.equal(listeners.size, 1);
+    queued = ['first']; for (const listener of listeners) listener();
+    assert.deepEqual(snapshots.at(-1), ['first']);
+    queued = []; for (const listener of listeners) listener();
+    assert.deepEqual(snapshots.at(-1), []);
+    await route.pre(session, { v: true, watching: true });
+    assert.equal(session.notifyVisible, true); assert.equal(subscriptions, 1);
+    await route.pre(session, { v: false, watching: false });
+    assert.equal(listeners.size, 0); assert.equal(session.notifyVisible, false);
+  });
+}
+
+function shellWorker() {
+  const handlers = new Map(), cached = new Map(), requests = [], writes = [];
+  const scope = 'https://fixture.invalid/remote-agent/';
+  const context = vm.createContext({
+    URL, Request, Response, Promise,
+    self: { registration: { scope }, addEventListener: (type, handler) => handlers.set(type, handler) },
+    location: { origin: new URL(scope).origin },
+    caches: { open: async () => ({
+      match: async request => cached.get(request.url)?.clone(),
+      put: async (request, response) => { writes.push(request.url); cached.set(request.url, response); },
+    }) },
+    fetch: async (request, options) => { requests.push({ url: request.url, options }); return context.network(request); },
+    network: async () => new Response('network-source'),
+  });
+  vm.runInContext(read('app/sw.js'), context);
+  return { context, cached, requests, writes, scope,
+    core: vm.runInContext('SHELL.find(path => path.startsWith("js/core.js?"))', context),
+    resource(prefix) { return vm.runInContext(`SHELL.find(path => path.startsWith(${JSON.stringify(prefix)}))`, context); },
+    fetch(path, options = {}) {
+      const request = { url: new URL(path, scope).href, method: 'GET', mode: 'cors', ...options };
+      let response; handlers.get('fetch')({ request, respondWith: value => { response = value; } }); return response;
+    },
+    cache(path, value = 'cached-source') { cached.set(new URL(path, scope).href, new Response(value)); },
+  };
+}
+
+test('a cached current shell script returns immediately without waiting for the network', async () => {
+  const h = shellWorker(); h.cache(h.core); h.context.network = () => new Promise(() => {});
+  assert.equal(await (await h.fetch(h.core)).text(), 'cached-source');
+  assert.equal(h.requests.length, 0);
+});
+
+test('CSS, Markdown and voice worklet assets share the exact current shell cache path', async () => {
+  const h = shellWorker();
+  for (const prefix of ['app.css?', 'markdown-it/', 'js/voice-worklet.js?']) {
+    const asset = h.resource(prefix); h.cache(asset, prefix);
+    assert.equal(await (await h.fetch(asset)).text(), prefix);
+  }
+  assert.equal(h.requests.length, 0);
+});
+
+test('a missing current shell asset downloads and fills its original cache entry', async () => {
+  const h = shellWorker();
+  assert.equal(await (await h.fetch(h.core)).text(), 'network-source');
+  assert.equal(h.requests.length, 1); assert.equal(h.writes.length, 1);
+  assert.equal(await (await h.fetch(h.core)).text(), 'network-source');
+  assert.equal(h.requests.length, 1);
+});
+
+test('HTML and navigation retain network updates and the existing offline fallback', async () => {
+  const h = shellWorker(); h.cache('index.html'); h.cache('./');
+  assert.equal(await (await h.fetch('index.html')).text(), 'network-source');
+  assert.equal(h.requests[0].options.cache, 'no-cache');
+  assert.equal(await (await h.fetch('./', { mode: 'navigate' })).text(), 'network-source');
+  h.context.network = async () => { throw Error('fixture offline'); };
+  assert.equal(await (await h.fetch('index.html')).text(), 'network-source');
+  assert.equal(h.requests.length, 3);
+});
+
+test('a different resource version never matches the current shell asset by pathname alone', async () => {
+  const h = shellWorker(), old = h.core.replace(/\?v=.*/, '?v=old'); h.cache(old);
+  assert.equal(await (await h.fetch(old)).text(), 'network-source');
+  assert.equal(h.requests.length, 1);
+});
+
+test('published discovery, other origins and non-GET requests retain their original bypass', () => {
+  const h = shellWorker();
+  assert.equal(h.fetch('url.json?t=1'), undefined);
+  assert.equal(h.fetch('https://relay.invalid/api/overview'), undefined);
+  assert.equal(h.fetch('api/overview', { method: 'POST' }), undefined);
+  assert.equal(h.requests.length, 0);
+});
+
+test('same-origin API data and resources outside the shell keep their original network-first path', async () => {
+  const h = shellWorker();
+  for (const path of ['api/overview', '../other-app/js/core.js?v=359']) {
+    h.cache(path); assert.equal(await (await h.fetch(path)).text(), 'network-source');
+  }
+  assert.equal(h.requests.length, 2);
+});
+
+function preedit() {
+  const timers = [], edits = [], selections = [];
+  const input = { value: 'pinyin', dataset: { ovInput: 'card' }, selectionStart: 6, selectionEnd: 6,
+    setSelectionRange: (...selection) => selections.push(selection) };
+  const text = { value: 'old draft', selectionStart: 1, selectionEnd: 1, selectionDirection: 'none', setSelectionRange() {} };
+  const context = vm.createContext({
+    document: { activeElement: input }, input, text, composing: true,
+    ovComposerReady: () => true, composerInput: () => context.owner, owner: input,
+    setTimeout: callback => timers.push(callback), updateComposeCompact() {}, queueDraftSync() {},
+    endInputRecall() {}, syncMentions() {}, mentionUpdate() {},
+    recordDraftEdit: () => edits.push(text.value),
+  });
+  vm.runInContext(part(read('app/js/overview.js'), 'function ovPaintComposerInput(', 'function ovReflectComposer(')
+    + part(read('app/js/composer.js'), 'function editComposerInput(', '// ---- "@" mentions')
+    + part(read('app/js/composer.js'), 'const composerInputHandlers =', 'function composerInputEvent(')
+    + '\nthis.finishComposition=()=>composerInputHandlers.compositionend({target:input});', context);
+  return { context, input, text, selections, edits,
+    paint: () => context.ovPaintComposerInput(input), flush: () => { for (const callback of timers.splice(0)) callback(); } };
+}
+
+test('a focused IME preedit owns its value and selection when the shared draft differs', () => {
+  const h = preedit(); h.paint();
+  assert.equal(h.input.value, 'pinyin'); assert.equal(h.text.value, 'old draft');
+  assert.equal(h.selections.length, 0);
+});
+
+test('an ordinary card input still reflects the shared draft after composition', () => {
+  const h = preedit(); h.context.composing = false; h.paint();
+  assert.equal(h.input.value, 'old draft'); assert.deepEqual(h.selections, [[1, 1, 'none']]);
+});
+
+test('composition end commits the current editor final value through the original draft edit path', () => {
+  const h = preedit(); h.input.value = '拼音'; h.context.finishComposition();
+  assert.equal(h.text.value, 'old draft'); h.flush();
+  assert.equal(h.context.composing, false); assert.equal(h.text.value, '拼音');
+  assert.deepEqual(h.edits, ['拼音']);
+});
+
+test('composition end after switching editors does not copy old text into the new owner', () => {
+  const h = preedit(); h.context.finishComposition(); h.context.owner = h.text; h.flush();
+  assert.equal(h.context.composing, false); assert.equal(h.text.value, 'old draft'); assert.equal(h.edits.length, 0);
+});
+
+test('composition end does not duplicate a final input event already saved to the shared draft', () => {
+  const h = preedit(); h.text.value = h.input.value; h.context.finishComposition(); h.flush();
+  assert.equal(h.edits.length, 0);
+});
+
+test('landscape card actions remove duplicate queue buttons without changing portrait choices', () => {
+  const button = (textContent = '') => ({ textContent, innerHTML: '<svg/>', title: '', ariaLabel: '', disabled: false });
+  for (const row of [
+    { app: 'codex', follow: 'queue', landscape: true, immediate: true },
+    { app: 'codex', follow: 'steer', landscape: true, immediate: false },
+    { app: 'devin', follow: '', landscape: true, immediate: true },
+    { app: 'cursor', follow: '', landscape: true, immediate: false },
+    { app: 'codex', follow: 'queue', landscape: false, immediate: true },
+  ]) {
+    const nodes = new Map([['send', button('排队')], ['sendNow', { ...button('立即追加'), hidden: row.app === 'cursor' }], ['msg', { className: 'quiet' }]]);
+    const context = vm.createContext({
+      $: id => nodes.get(id) || button(), esc: String, OV_ICON: { arrow: '<svg/>' }, OV_AGENT: { [row.app]: row.app },
+      I18N: { tr: value => value }, ovT: value => value, ovBusy: new Set(), ovErr: new Map(),
+      ovBadge: () => '运行中', ovTime: () => '1m', ovContext: () => 'project', ovComposerReady: () => true,
+      ovRunHtml: () => '', ovPreviewHtml: () => '', ovChangesRow: () => '', ovOpenLink: () => '',
+      queuedMessages: () => ({ count: 0 }), questionCompose: null, viewSel: 'selection',
+      devinBusySplit: () => row.app === 'devin', cursorBusyQueue: () => row.app === 'cursor', codexFollow: () => row.follow,
+      document: { body: { classList: { contains: () => row.landscape } } },
+    });
+    vm.runInContext(part(read('app/js/overview.js'), 'function ovCard(', 'function ovSessionGroup('), context);
+    const html = context.ovCard({ key: 'card', state: 'run', app: row.app, actions: [] });
+    assert.equal(html.includes('data-v="send"'), !row.landscape);
+    assert.equal(html.includes('data-v="sendNow"'), row.immediate);
+    assert.equal(html.includes('data-ov="send"'), true);
+  }
+});
+
+test('the shared primary send keeps native queue policies and receipt ownership', () => {
+  for (const row of [
+    { app: 'codex', follow: 'queue', when: 'queue' },
+    { app: 'codex', follow: 'steer', when: 'now' },
+    { app: 'devin', follow: '', when: 'queue' },
+    { app: 'cursor', follow: '', when: 'queue' },
+  ]) {
+    const h = confirmation();
+    Object.assign(h.context, { currentApp: row.app, codexFollow: () => row.follow,
+      devinBusySplit: () => row.app === 'devin', cursorBusyQueue: () => row.app === 'cursor' });
+    assert.equal(h.nodes.send.onclick, h.context.sendComposer);
+    h.context.sendComposer();
+    assert.equal(h.packets.length, 1);
+    assert.equal(h.packets[0].when, row.when);
+    assert.equal(h.packets[0].sel, 'codex|window|A');
+    assert.equal(h.context.pendingSends.get(h.packets[0].requestId).text, 'draft from A');
+    assert.deepEqual(h.calls, ['cancelVoice']);
+  }
+});
+
+test('the shared immediate action stops voice and keeps the original scoped confirmation', async () => {
+  const h = confirmation();
+  assert.equal(h.nodes.sendNow.onclick, h.context.sendComposerNow);
+  const work = h.context.sendComposerNow();
+  assert.deepEqual(h.calls, ['cancelVoice']);
+  assert.equal(h.packets.length, 0); assert.equal(h.context.sheetKind, 'ask');
+  h.accept(); await work;
+  assert.equal(h.packets[0].when, 'now'); assert.equal(h.packets[0].text, 'draft from A');
+});
+
+test('direct send actions keep the existing disabled-button behavior', async () => {
+  const h = confirmation(); h.nodes.send.disabled = h.nodes.sendNow.disabled = true;
+  h.context.sendComposer(); await h.context.sendComposerNow();
+  Object.assign(h.context, { composing: false, shiftEnter: false });
+  vm.runInContext(part(read('app/js/composer.js'), 'function submitOnEnter(', 'const composerInputHandlers ='), h.context);
+  h.context.submitOnEnter({ preventDefault() {} });
+  assert.equal(h.packets.length, 0); assert.equal(h.context.sheetKind, null);
+  assert.deepEqual(h.calls, []);
+});
+
+test('Enter uses the shared send action and still leaves IME and Shift+Enter untouched', () => {
+  const h = confirmation();
+  Object.assign(h.context, { composing: false, shiftEnter: false });
+  vm.runInContext(part(read('app/js/composer.js'), 'function submitOnEnter(', 'const composerInputHandlers ='), h.context);
+  let prevented = 0;
+  for (const overrides of [{ shiftKey: true }, { isComposing: true }])
+    h.context.submitOnEnter({ preventDefault: () => prevented++, ...overrides });
+  h.context.composing = true; h.context.submitOnEnter({ preventDefault: () => prevented++ });
+  assert.equal(prevented, 0); assert.equal(h.packets.length, 0);
+  h.context.composing = false; h.context.submitOnEnter({ preventDefault: () => prevented++ });
+  assert.equal(prevented, 1); assert.equal(h.packets.length, 1); assert.equal(h.packets[0].when, 'queue');
+  assert.deepEqual(h.calls, ['cancelVoice']);
+});
+
+test('card send tools invoke the shared action after binding without forwarding DOM clicks', async () => {
+  const calls = [], state = { ready: Promise.resolve(true) };
+  const context = vm.createContext({
+    ovToolState: state, ovPrepareTools: () => state, ovToolInput: () => ({}),
+    sendComposer: () => calls.push('send'), sendComposerNow: () => calls.push('sendNow'),
+  });
+  vm.runInContext(part(read('app/js/overview.js'), 'async function ovUseTool(', 'function ovLocateCard('), context);
+  await context.ovUseTool('card', 'send'); await context.ovUseTool('card', 'sendNow');
+  assert.deepEqual(calls, ['send', 'sendNow']);
+  context.ovToolState = {}; await context.ovUseTool('card', 'sendNow');
+  assert.deepEqual(calls, ['send', 'sendNow']);
 });

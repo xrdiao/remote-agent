@@ -178,7 +178,7 @@ export const ROUTES = {
   mode: { switchRead: true, connection: true,  pre: (s, m) => s.setMode(m.mode) },
   visible: { switchRead: true, connection: true,
     pre: (s, m) => {
-      s.notifyVisible = Boolean(m.v);
+      s.notifyVisible = Boolean(m.watching);
       s.notifyPresenceAt = Date.now();
       if (s.visible === Boolean(m.v)) return;
       s.visible = Boolean(m.v);

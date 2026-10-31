@@ -359,7 +359,6 @@ for (const event of ['focus', 'input']) text.addEventListener(event, noteVoiceIn
 text.addEventListener('blur', () => { if (!$('mic').hidden) noteVoiceInput(); });
 window.visualViewport?.addEventListener('resize', updateVoiceButton);
 window.addEventListener('resize', updateVoiceButton);
-for (const id of ['send', 'sendNow']) $(id).addEventListener('click', cancelVoice, true);
 function suspendVoice() { clearTimeout(voiceHideTimer); voiceHideTimer = 0; clearTimeout(voiceWarmTimer); voiceWarmTimer = 0; cancelVoice(); closeVoiceConnection(); closeVoiceAudio(); voicePrepared = ''; }
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {

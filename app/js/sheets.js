@@ -594,7 +594,7 @@ function showComputerActions(id, app = '') {
   const selected = projects.find(w => w.windowId === entry.c.windowId) || projects[0];
   const agent = catalog.find(a => a.app === app);
   const missing = `<p class="hint">${esc(I18N.tr(agent?.reason || '请先打开此 Agent'))}</p>${agent?.installed === true && !agent.running && agent.launchSupported ? `<button class="opt" data-computer-launch="${app}" ${attr}>${I18N.tr('启动')} ${names[app]}</button>` : ''}`;
-  openSheet('computer-actions', `<h3>${I18N.tr('打开项目／新建会话')}</h3><p class="hint">${esc(entry.name)}</p><div class="pSec">${I18N.tr('选择 Agent')}</div><div class="computerAgentTabs">${tabs}</div>${selected ? `<button class="opt" data-computer-action ${targetAttr(selected)}>${I18N.tr('选择其他文件夹')}</button>` : missing}`);
+  openSheet('computer-actions', `<h3>${I18N.tr('打开项目／新建会话')}</h3><p class="hint">${esc(entry.name)}</p><div class="pSec">${I18N.tr('选择 Agent')}</div><div class="computerAgentTabs">${tabs}</div>${selected ? `<button class="opt" data-computer-action ${targetAttr(selected)}>${I18N.tr('选择文件夹')}</button>` : missing}`);
 }
 function showComputerFiles() {
   const state = computerFiles, dir = state.directory;

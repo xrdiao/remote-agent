@@ -1,16 +1,17 @@
 // Caches the app shell so the installed app opens instantly; live data (url.json, relay) always goes to the network.
 const CACHE_PREFIX = 'remote-agent:' + self.registration.scope + ':';
-const CACHE = CACHE_PREFIX + 'v358'; // keep in sync with APP_VERSION in js/core.js
+const CACHE = CACHE_PREFIX + 'v360'; // keep in sync with APP_VERSION in js/core.js
 const NOTICES = CACHE_PREFIX + 'notices';
-const SHELL = ['./', 'index.html', 'app.css?v=357', 'i18n.js?v=354', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'logo.png',
-  'js/core.js?v=358', 'js/gate.js?v=355', 'js/auth.js?v=207', 'js/net.js?v=358', 'js/sheets.js?v=358', 'js/notify.js?v=355', 'js/mode.js?v=257', 'js/chat.js?v=295',
-  'js/history.js?v=358', 'js/files.js?v=354', 'js/screen.js?v=267', 'js/terminal.js?v=239', 'js/composer.js?v=358', 'js/voice.js?v=356', 'js/local-voice.js?v=351', 'js/voice-worklet.js?v=133',
+const SHELL = ['./', 'index.html', 'app.css?v=360', 'i18n.js?v=359', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'logo.png',
+  'js/core.js?v=360', 'js/gate.js?v=355', 'js/auth.js?v=207', 'js/net.js?v=359', 'js/sheets.js?v=359', 'js/notify.js?v=359', 'js/mode.js?v=257', 'js/chat.js?v=295',
+  'js/history.js?v=358', 'js/files.js?v=354', 'js/screen.js?v=267', 'js/terminal.js?v=239', 'js/composer.js?v=360', 'js/voice.js?v=356', 'js/local-voice.js?v=360', 'js/voice-worklet.js?v=133',
   'js/transfer.js?v=207', 'js/scanner.js',
-  'js/latency.js?v=142', 'js/image-editor.js?v=257', 'js/overview.js?v=358',
+  'js/latency.js?v=142', 'js/image-editor.js?v=257', 'js/overview.js?v=360',
   'markdown-it/markdown-it-15.0.3.min.js', 'js/markdown.js?v=295',
   'logo-cursor-dark.svg', 'logo-cursor-light.svg',
   'logo-devin-dark.svg', 'logo-devin-light.svg',
   'logo-codex-dark.svg', 'logo-codex-light.svg'];
+const SHELL_ASSETS = new Set(SHELL.filter(path => path !== './' && path !== 'index.html').map(path => new URL(path, self.registration.scope).href));
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL.map(path => new Request(path, { cache: 'reload' })))).then(() => self.skipWaiting()));
@@ -27,20 +28,21 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname.endsWith('url.json')) return;
-  // The versioned capture processor is already precached; do not wait on the network at mic press.
-  if (url.pathname.endsWith('/js/voice-worklet.js') && url.searchParams.has('v')) {
-    e.respondWith(caches.open(CACHE).then(async cache => await cache.match(e.request) || fetch(e.request)));
-    return;
-  }
-  // Network first so app updates show up immediately; cache only as an offline fallback.
   const entry = e.request.mode === 'navigate' || url.pathname.endsWith('/index.html');
-  e.respondWith(fetch(e.request, entry ? { cache: 'no-cache' } : undefined)
+  e.respondWith((async () => {
+    // The current shell is installed as one version; a slow network must not delay its cached assets.
+    if (!entry && SHELL_ASSETS.has(url.href)) {
+      const cached = await (await caches.open(CACHE)).match(e.request);
+      if (cached) return cached;
+    }
+    return fetch(e.request, entry ? { cache: 'no-cache' } : undefined)
     .then(res => {
       const copy = res.clone();
       caches.open(CACHE).then(c => c.put(e.request, copy));
       return res;
     })
-    .catch(() => caches.open(CACHE).then(cache => cache.match(e.request))));
+    .catch(() => caches.open(CACHE).then(cache => cache.match(e.request)));
+  })());
 });
 
 let pushTask = Promise.resolve();
