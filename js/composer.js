@@ -419,9 +419,8 @@ function codexFollow() {
   return mode === 'chat' && currentApp === 'codex' && chatBusy && (follow === 'queue' || follow === 'steer') ? follow : '';
 }
 $('stop').onclick = async () => {
-  const sel = viewSel;
-  if (!await ask('停止 Agent？\n它这一轮正在做的事会中断。', '停止')) return;
-  if (sel !== viewSel || send({ t: 'stop' }) === false) return;
+  if (!await ask('停止 Agent？\n它这一轮正在做的事会中断。', '停止', true)) return;
+  if (send({ t: 'stop' }) === false) return;
   if (currentApp !== 'fusion') for (const [id, pending] of pendingSends) {
     if (pending.mode === 'chat' && pending.scope === messageScope() && (!pending.thread || pending.thread === lastChat?.thread)) failPendingSend(id, '', false);
   }
@@ -632,7 +631,7 @@ $('sendNow').onclick = async () => {
   saveDraft();
   const follow = codexFollow();
   const steer = !follow || follow === 'queue';
-  if (!await ask(steer ? '立即追加到当前任务？' : '改为排队，等当前任务结束后再发送？', steer ? '立即追加' : '排队')) return;
+  if (!await ask(steer ? '立即追加到当前任务？' : '改为排队，等当前任务结束后再发送？', steer ? '立即追加' : '排队', true)) return;
   status('正在发送…');
   const receipt = sendReceipt(v);
   pushEcho(receipt.requestId, v, steer ? 'chat' : 'queue');

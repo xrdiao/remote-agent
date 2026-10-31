@@ -641,6 +641,19 @@ async function ovSend(key, act, extra, ok) {
 }
 async function ovSessionRequest(r, action, extra = {}) {
   const entry = ovList.find(e => e.id === r.comp), route = '/api/overview/session';
+  if (['rename', 'archive', 'delete', 'remove'].includes(action)) {
+    const link = computerSockets.get(entry.c.key), device = link?.auth?.device;
+    const target = { ...ovTarget(r), action, ...extra }, identity = JSON.stringify([device, target]);
+    const existing = [...desktopRequests.values()].find(request => request.overview === identity);
+    if (existing) return existing.promise;
+    if (!link?.authed || link.socket.readyState !== 1) throw new Error(ovT('电脑尚未连接，请先重新连接'));
+    const request = { overview: identity, device, message: { t: 'overviewManage', ...target, sel: [r.app, r.windowId, r.threadId].join('|') } };
+    request.promise = new Promise((resolve, reject) => {
+      request.complete = result => result.ok ? resolve(result.value) : reject(new Error(result.error));
+    });
+    sendDesktopOperation(request.message, r.comp, link.socket, request);
+    return request.promise;
+  }
   const res = await fetch(entry.c.relay + route, { method: 'POST', cache: 'no-store', signal: AbortSignal.timeout(60000),
     headers: { 'content-type': 'application/json', ...await entryHeaders(entry.c, 'POST', route) },
     body: JSON.stringify({ ...ovTarget(r), action, ...extra }) });
