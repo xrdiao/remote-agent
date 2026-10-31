@@ -9,6 +9,7 @@ const notify = read('app/js/notify.js');
 const core = read('app/js/core.js');
 const composer = read('app/js/composer.js');
 const gate = read('app/js/gate.js');
+const overview = read('app/js/overview.js');
 const computers = ['a', 'b'].map(name => ({
   id: name.repeat(16), key: 'key-' + name, token: 'token-' + name,
   relay: 'https://relay-' + name + '.invalid', win: 'codex',
@@ -27,7 +28,7 @@ function harness({ sameSelection = false, count = 2 } = {}) {
     ['key', records[0].key], ['token', records[0].token],
   ]);
   const elements = new Map(), sockets = [], timers = new Map(), trace = [];
-  let timerId = 0;
+  let timerId = 0, now = 100000;
   function element(id) {
     if (!elements.has(id)) {
       const classes = new Set();
@@ -44,10 +45,11 @@ function harness({ sameSelection = false, count = 2 } = {}) {
     send(data) { assert.equal(this.readyState, 1); this.sent.push(JSON.parse(data)); }
     open() { this.readyState = 1; return this.onopen(); }
     receive(message) { this.onmessage({ data: JSON.stringify(message) }); }
-    close() { this.readyState = 3; return this.onclose?.({ code: 1000 }); }
+    close(code = 1000) { this.readyState = 3; return this.onclose?.({ code }); }
   }
   const context = vm.createContext({
     URL, URLSearchParams, AbortController, AbortSignal, Event, crypto, performance, structuredClone,
+    Date: class extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } },
     WebSocket: FakeWebSocket,
     location: { href: 'https://phone.invalid/', origin: 'https://phone.invalid', pathname: '/', hash: '', search: '' },
     history: { replaceState() {} }, navigator: { userAgent: 'test' },
@@ -55,9 +57,11 @@ function harness({ sameSelection = false, count = 2 } = {}) {
     store: { get: key => stored.get(key) ?? null, set: (key, value) => value == null ? stored.delete(key) : stored.set(key, value) },
     document: { visibilityState: 'visible', activeElement: null, documentElement: { dataset: { theme: 'dark' } }, dispatchEvent() {} },
     $: element,
-    setTimeout: (fn, ms) => { const id = ++timerId; timers.set(id, { fn, ms }); return id; },
-    clearTimeout: id => timers.delete(id), setInterval: () => ++timerId, clearInterval() {},
-    requestAnimationFrame: fn => { const id = ++timerId; timers.set(id, { fn, ms: 0 }); return id; },
+    setTimeout: (fn, ms) => { const id = ++timerId; timers.set(id, { fn, ms, at: now + ms }); return id; },
+    clearTimeout: id => timers.delete(id),
+    setInterval: (fn, ms) => { const id = ++timerId; timers.set(id, { fn, ms, at: now + ms, repeat: true }); return id; },
+    clearInterval: id => timers.delete(id),
+    requestAnimationFrame: fn => { const id = ++timerId; timers.set(id, { fn, ms: 0, at: now }); return id; },
     fetch: async () => ({ ok: true, json: async () => ({ v: 3, computers: [] }) }),
     entryProof: async () => 'test-proof', legacyAgentLibrary: () => [], trace,
   });
@@ -65,7 +69,7 @@ function harness({ sameSelection = false, count = 2 } = {}) {
   context.addEventListener = () => {};
   const run = source => vm.runInContext(source, context);
   run(`
-    var base = null, info = null, ws = null, authed = false, failures = 0;
+    var base = null, info = null, ws = null, authed = false;
     var mode = 'chat', windowReady = false, connGen = 0, usageTimer = 0;
     var currentApp = 'codex', currentAppName = 'Codex', currentWindow = 'codex', viewSel = '', currentProject = '';
     var windows = [], appPlans = {}, sheetKind = '', pendingStatus = '', qnSig = '', inApp = false;
@@ -107,7 +111,7 @@ function harness({ sameSelection = false, count = 2 } = {}) {
     function esc(value) { return value; }
     var bootCalls = 0, overviewRefreshes = 0, overviewFetches = [];
     var ovList = JSON.parse(store.get('computers')).map((c,index)=>({id:c.id,c,index})), ovSt = new Map();
-    function ovStOf(id) { if(!ovSt.has(id))ovSt.set(id,{status:'loading'});return ovSt.get(id); }
+    function ovStOf(id) { if(!ovSt.has(id))ovSt.set(id,{dataStatus:'loading'});return ovSt.get(id); }
     function ovRender() { overviewRefreshes++; }
     function ovEnterReady() {}
     function ovFetch(e) { overviewFetches.push(e.id);return Promise.resolve(); }
@@ -171,7 +175,22 @@ function harness({ sameSelection = false, count = 2 } = {}) {
     const pending = [...timers].filter(([, timer]) => timer.ms === 400);
     for (const [id, timer] of pending) { timers.delete(id); timer.fn(); }
   }
-  return { run, state, settle, link, open, start, attached, deliver, switchTo, bothReady, records, trace, sockets, flushDraft };
+  async function advance(ms) {
+    const until = now + ms;
+    while (true) {
+      const next = [...timers].filter(([, t]) => t.at <= until).sort((a, b) => a[1].at - b[1].at)[0];
+      if (!next) break;
+      const [id, timer] = next;
+      now = timer.at;
+      if (timer.repeat) timer.at += timer.ms;
+      else timers.delete(id);
+      timer.fn(); await settle();
+    }
+    now = until;
+    await settle();
+  }
+  return { run, state, settle, link, open, start, attached, deliver, switchTo, bothReady, records, trace, sockets, flushDraft,
+    timers, advance, jump: ms => { now += ms; } };
 }
 
 test('ready computer switches onto its existing session and can send immediately without boot/auth/attach', async () => {
@@ -279,7 +298,7 @@ test('a never visited computer loads its first screen without changing the curre
   h.attached(1);
   assert.deepEqual(h.state(), before);
   assert.equal(h.run('loadComputers()[1].name'), 'computer-1');
-  assert.equal(h.link(1).receive, undefined);
+  assert(!h.link(1).receive);
   const boots = h.state().bootCalls;
   socket.sent.length = 0; h.trace.length = 0;
   await h.switchTo(1);
@@ -446,7 +465,7 @@ test('a paired cold start and connection failure never open a full-page gate', a
   assert.equal(h.state().gateOpen, false);
   h.link(0).socket.close(); await h.settle();
   assert.equal(h.state().gateOpen, false);
-  assert.equal(h.run('ovStOf(loadComputers()[0].id).status'), 'offline');
+  assert.equal(h.link(0).phase, 'offline');
 });
 
 test('reconnecting B reuses one targeted load without changing A or its draft', async () => {
@@ -463,7 +482,7 @@ test('reconnecting B reuses one targeted load without changing A or its draft', 
   await h.open(1); h.attached(1); await first;
   assert.deepEqual(h.state(), before);
   assert.equal(h.link(0).socket.sent.some(m => m.t === 'attach' || m.t === 'send'), false);
-  assert.equal(h.run('ovStOf(loadComputers()[1].id).reconnecting'), null);
+  assert.equal(h.link(1).attempt, null);
 });
 
 test('authorization failure stays in the computer row until authorization is explicitly requested', async () => {
@@ -472,7 +491,7 @@ test('authorization failure stays in the computer row until authorization is exp
   h.link(0).socket.receive({ t: 'auth', ok: false, id: computers[0].id, needTotp: true });
   await h.settle();
   assert.equal(h.state().gateOpen, false);
-  assert.equal(h.run('ovStOf(loadComputers()[0].id).status'), 'auth');
+  assert.equal(h.link(0).phase, 'auth');
   await h.run('authorizeComputer(loadComputers()[0].id)'); await h.settle();
   await h.link(0).socket.open();
   h.link(0).socket.receive({ t: 'auth', ok: false, id: computers[0].id, needTotp: true });
@@ -490,4 +509,240 @@ test('connection diagnostics use B address and retain A selection and content', 
   assert(!urls.some(url => url.startsWith(computers[0].relay)));
   assert.equal(h.run('ovStOf(loadComputers()[1].id).diagRunning'), false);
   assert.deepEqual(h.state(), before);
+});
+
+test('a delayed heartbeat probes every connected computer instead of closing on an old receive timestamp', async () => {
+  const h = harness(); await h.bothReady();
+  const sockets = h.sockets.slice();
+  h.jump(60000); h.run('heartbeat()');
+  for (const socket of sockets) {
+    assert.equal(socket.readyState, 1);
+    assert.deepEqual(socket.sent.map(m => m.t), ['ping']);
+  }
+});
+
+test('foreground restoration and periodic checks share one outstanding probe and accept any new reply', async () => {
+  const h = harness(); await h.bothReady();
+  h.jump(60000);
+  h.run('resumeComputerConnections();resumeComputerConnections();heartbeat()');
+  h.jump(5000); h.run('heartbeat()');
+  for (let i = 0; i < 2; i++) {
+    assert.equal(h.link(i).socket.readyState, 1);
+    assert.equal(h.link(i).socket.sent.filter(m => m.t === 'ping').length, 1);
+    h.deliver(i, { t: 'pong' });
+  }
+  h.run('heartbeat()');
+  for (let i = 0; i < 2; i++) assert.equal(h.link(i).socket.sent.filter(m => m.t === 'ping').length, 2);
+});
+
+test('background suspension cancels old probes and does not consume their foreground response budget', async () => {
+  const h = harness(); await h.bothReady(); h.run('heartbeat()');
+  h.run('document.visibilityState="hidden";suspendComputerConnections()');
+  h.jump(120000); h.run('heartbeat()');
+  for (const socket of h.sockets) assert.equal(socket.sent.filter(m => m.t === 'ping').length, 1);
+  h.run('document.visibilityState="visible";resumeComputerConnections();heartbeat()');
+  for (let i = 0; i < 2; i++) {
+    assert.equal(h.link(i).socket.readyState, 1);
+    assert.equal(h.link(i).socket.sent.filter(m => m.t === 'ping').length, 2);
+  }
+});
+
+test('a silent B connection is replaced after unanswered checks without disturbing responsive A or its draft', async () => {
+  const h = harness(); await h.bothReady();
+  h.run(`text.value='keep current draft';saveDraft()`);
+  const before = h.state(), a = h.link(0).socket, b = h.link(1).socket;
+  for (let n = 0; n < 4; n++) { await h.advance(15000); h.deliver(0, { t: 'pong' }); }
+  assert.equal(a.readyState, 1); assert.equal(b.readyState, 3);
+  assert.equal(h.link(1).socket.readyState, 0);
+  assert.equal(h.link(1).retryFailures, 0);
+  assert.deepEqual(h.state(), before);
+  assert.equal(a.sent.some(m => m.t === 'send'), false);
+});
+
+test('an authenticated transport loss gets one immediate attempt and three failed attempts pause further retries', async () => {
+  const h = harness({ count: 1 }); await h.start(); h.attached(0);
+  const original = h.link(0).socket;
+  original.close(1006); await h.advance(0);
+  assert.notEqual(h.link(0).socket, original);
+  assert.equal(h.link(0).socket.readyState, 0);
+  for (let failed = 1; failed <= 3; failed++) {
+    h.link(0).socket.close(1006); await h.settle();
+    assert.equal(h.link(0).retryFailures, failed);
+    if (failed < 3) await h.advance(8000);
+  }
+  assert.equal(h.link(0).phase, 'paused');
+  const count = h.sockets.length;
+  await h.advance(120000);
+  assert.equal(h.sockets.length, count);
+});
+
+test('old socket messages and close callbacks cannot reject or disconnect a newer connection', async () => {
+  const h = harness(); await h.bothReady();
+  const old = h.link(1).socket;
+  old.close(1006); await h.advance(0);
+  await h.open(1); h.attached(1);
+  const current = h.link(1).socket;
+  old.receive({ t: 'auth', ok: false, id: h.records[1].id });
+  old.close(4002); await h.settle();
+  assert.equal(h.link(1).socket, current); assert(h.link(1).authed);
+  assert.equal(h.link(1).retry, null);
+});
+
+test('authorization rejection, mismatched identity and ownership transfer stop automatic reconnects', async () => {
+  for (const kind of ['auth', 'identity', 'replaced']) {
+    const h = harness(); await h.bothReady();
+    if (kind === 'replaced') h.link(1).socket.close(4002);
+    else h.deliver(1, { t: 'auth', ok: kind === 'identity', id: kind === 'identity' ? 'wrong-computer' : h.records[1].id });
+    await h.settle();
+    const count = h.sockets.length;
+    h.run('resumeComputerConnections();heartbeat()');
+    await h.advance(60000);
+    assert.equal(h.sockets.filter(s => s.url.includes('relay-b')).length, 1);
+    assert.equal(h.link(1).phase, kind);
+    assert(count <= h.sockets.length);
+  }
+});
+
+test('HTTP snapshot failures do not override a healthy realtime connection or its retry count', async () => {
+  const h = harness(); await h.bothReady();
+  h.run(overview.slice(overview.indexOf('function ovComputerStatus('), overview.indexOf('function ovStOf(')));
+  h.run(`const st=ovStOf(loadComputers()[0].id);st.dataStatus='offline';st.data={ready:true}`);
+  assert.equal(h.run('ovComputerStatus(ovList[0])'), 'online');
+  assert.equal(h.link(0).retryFailures, 0);
+});
+
+test('foreground reconnection preserves its initialization generation and skips address discovery when the saved endpoint works', async () => {
+  const h = harness(); await h.bothReady();
+  h.run(`text.value='recovery draft';saveDraft();var discoveries=[];fetch=async url=>{discoveries.push(url);return{ok:true,json:async()=>({v:3,computers:[]})}}`);
+  const before = h.state();
+  h.link(0).socket.close(1006); await h.advance(0);
+  assert.equal(h.state().bootCalls, before.bootCalls);
+  assert.equal(h.state().generation, before.generation);
+  assert.equal(h.state().draft, before.draft);
+  assert.equal(h.run('discoveries.length'), 0);
+  assert(!h.state().windowReady);
+  await h.open(0); h.attached(0); await h.settle();
+  assert(h.state().windowReady);
+  assert.equal(h.run('discoveries.length'), 0);
+  assert.equal(h.link(0).attempt, null);
+});
+
+test('a connection attempt remains shared through authentication and binding without waiting for an HTTP snapshot', async () => {
+  const h = harness(); await h.bothReady();
+  h.run('ovFetch=()=>new Promise(()=>{})');
+  h.link(1).socket.close(1006); await h.advance(0);
+  const first = h.run(`reconnectComputer(loadComputers()[1].id,'auto')`);
+  assert.equal(h.run(`reconnectComputer(loadComputers()[1].id,'resume')`), first);
+  const count = h.sockets.length;
+  await h.open(1);
+  assert.equal(h.run(`reconnectComputer(loadComputers()[1].id,'auto')`), first);
+  assert.equal(h.sockets.length, count);
+  h.attached(1); await first;
+  assert.equal(h.link(1).attempt, null);
+  assert(h.link(1).authed);
+});
+
+test('a failed saved endpoint refreshes only that computer address and authenticates its replacement once', async () => {
+  const h = harness(); await h.bothReady();
+  const a = h.link(0).socket;
+  h.run(`var discoveries=[];fetch=async url=>{discoveries.push(url);return{ok:true,json:async()=>({v:3,computers:[]})}};resolveBase=async()=> 'https://relay-b-new.invalid'`);
+  h.link(1).socket.close(1006); await h.advance(0);
+  h.link(1).socket.close(1006); await h.settle(); await h.settle();
+  assert.equal(h.link(1).socket.url, 'wss://relay-b-new.invalid/ws');
+  assert.equal(h.run('discoveries.length'), 1);
+  assert.equal(h.link(1).retryFailures, 0);
+  assert.equal(h.link(0).socket, a); assert.equal(a.readyState, 1);
+  await h.open(1); h.attached(1); await h.settle();
+  const auth = h.link(1).socket.sent.filter(m => m.t === 'auth');
+  assert.equal(auth.length, 1); assert.equal(auth[0].token, h.records[1].token);
+  assert(h.link(1).authed);
+  assert.equal(h.link(1).attempt, null);
+});
+
+test('an offline phone does not reconnect or add failures until a lifecycle event reports it online', async () => {
+  const h = harness(); await h.bothReady();
+  h.run('navigator.onLine=false'); h.link(0).socket.close(1006);
+  const count = h.sockets.length;
+  await h.advance(60000); h.run('resumeComputerConnections()');
+  assert.equal(h.sockets.length, count); assert.equal(h.link(0).retryFailures, 0);
+  const restoring = h.run('navigator.onLine=true;resumeComputerConnections()'); await h.settle();
+  assert.equal(h.sockets.length, count + 1);
+  await h.open(0); h.attached(0); await restoring;
+  assert(h.state().authed);
+});
+
+test('an authorization close blocks sending and automatic recovery until explicit authorization', async () => {
+  const h = harness(); await h.bothReady();
+  h.link(0).socket.close(4001); await h.advance(0);
+  assert.equal(h.link(0).phase, 'auth'); assert(!h.state().authed); assert(!h.state().windowReady);
+  const count = h.sockets.length;
+  h.run('resumeComputerConnections()'); await h.advance(8000);
+  assert.equal(h.sockets.length, count);
+});
+
+function useOverviewReads(h) {
+  h.run(overview.slice(overview.indexOf('function ovFetch('), overview.indexOf('function ovApply(')));
+  h.run('ovApply=(e,st,data)=>{st.data=data}');
+}
+
+test('a failed overview HTTP request records only a data error and does not start discovery or reconnect', async () => {
+  const h = harness(); await h.bothReady(); useOverviewReads(h);
+  h.run(`ovRead=async()=>({down:true});ovStOf(loadComputers()[0].id).data={ready:true}`);
+  const socket = h.link(0).socket, count = h.sockets.length;
+  await h.run('ovFetch(ovList[0])');
+  assert.equal(h.link(0).socket, socket); assert(h.link(0).authed);
+  assert.equal(h.link(0).retryFailures, 0); assert.equal(h.sockets.length, count);
+  assert.equal(h.run('ovStOf(loadComputers()[0].id).dataStatus'), 'offline');
+});
+
+test('HTTP rejection from an old socket cannot revoke a newer authenticated connection', async () => {
+  const h = harness(); await h.bothReady(); useOverviewReads(h);
+  h.run('var pendingReads=[];ovRead=()=>new Promise(resolve=>{pendingReads.push(resolve)})');
+  const reading = h.run('ovLoad(ovList[0],ovStOf(ovList[0].id))');
+  h.link(0).socket.close(1006); await h.advance(0);
+  await h.open(0); h.attached(0); await h.settle();
+  h.run('pendingReads[0]({auth:true})'); await reading;
+  assert(h.link(0).authed); assert(h.state().authed);
+});
+
+test('a current HTTP authorization rejection or identity mismatch ends only that computer connection', async () => {
+  for (const response of [{ auth: true }, { data: { id: 'wrong-computer' } }]) {
+    const h = harness(); await h.bothReady(); useOverviewReads(h);
+    const a = h.link(0).socket;
+    h.run(`ovRead=async()=>(${JSON.stringify(response)})`);
+    await h.run('ovFetch(ovList[1])');
+    assert.equal(h.link(1).phase, response.auth ? 'auth' : 'identity');
+    assert.equal(h.link(1).socket.readyState, 3); assert.equal(h.link(1).retry, null);
+    assert.equal(h.link(0).socket, a); assert(h.state().authed);
+  }
+});
+
+test('a paused computer gets one lifecycle probe, while an explicit manual retry starts a fresh attempt round', async () => {
+  const h = harness(); await h.bothReady();
+  h.run(`const link=computerSockets.get(loadComputers()[1].key);link.phase='paused';link.retryFailures=3;link.socket.readyState=3`);
+  const first = h.run('resumeComputerConnections()');
+  h.run('resumeComputerConnections()'); await h.settle();
+  const count = h.sockets.length;
+  assert(h.link(1).retryProbe);
+  h.link(1).socket.close(1006); await h.settle(); await h.settle(); await first;
+  assert.equal(h.link(1).phase, 'paused'); assert.equal(h.link(1).retry, null);
+  await h.advance(16000); assert.equal(h.sockets.length, count);
+  const manual = h.run('reconnectComputer(loadComputers()[1].id)'); await h.settle();
+  assert.equal(h.link(1).retryFailures, 0); assert.equal(h.link(1).retryProbe, false);
+  await h.open(1); h.attached(1); await manual;
+  assert(h.link(1).authed); assert(h.link(0).authed);
+});
+
+test('a proof failure belonging to an old socket cannot overwrite a replacement connection', async () => {
+  const h = harness({ count: 1 });
+  h.run('var failOldProof;entryProof=()=>new Promise((resolve,reject)=>{failOldProof=reject})');
+  const link = await h.run('openComputerSocket(currentComputer(),currentComputer().relay)');
+  const old = link.socket, opening = old.open();
+  old.close(1006);
+  h.run('entryProof=async()=>"test-proof"'); await h.advance(8000);
+  await h.open(0); h.attached(0); await h.settle();
+  const replacement = h.link(0).socket;
+  h.run('failOldProof(new Error("old proof failure"))'); await opening;
+  assert.equal(h.link(0).socket, replacement); assert(h.link(0).authed);
+  assert.equal(h.link(0).error, ''); assert.equal(replacement.readyState, 1);
 });

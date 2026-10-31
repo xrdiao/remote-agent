@@ -42,7 +42,7 @@ server.on('upgrade', (req, socket, head) => {
 // relay keeps that session as a visible viewer ("watching") and skips its notifications until TCP gives up.
 const heartbeat = setInterval(() => {
   for (const client of wss.clients) {
-    if (client.alive === false) { client.terminate(); continue; }
+    if (client.alive === false) { client.closeSource = 'heartbeat'; client.terminate(); continue; }
     client.alive = false;
     try { client.ping(); } catch {}
   }
@@ -335,11 +335,12 @@ wss.on('connection', (ws, req) => {
     else if (msg.t === 'question' || msg.t === 'codexRequest') track(questionQueue = questionQueue.then(executeRequest));
     else track(queue = (switching ? Promise.all([queue, questionQueue]) : queue).then(executeRequest));
   });
-  ws.on('close', () => {
+  ws.on('close', code => {
     clearTimeout(authTimer);
     const authorized = authorization?.valid;
     authorization?.release();
     unsubscribeOperations?.();
+    console.log(`[ws-close] ${new Date().toISOString()} code=${code} source=${ws.closeSource || 'peer'} authorized=${!!authorized}`);
     if (retired) return;
     reads.abort(new Error('连接已关闭'));
     if (!session || context.owner !== connection) return;
