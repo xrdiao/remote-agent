@@ -3,6 +3,8 @@ import { windowName } from '../lib/notify.mjs';
 import { fusionHistory, FUSION_ACTIVE } from './fusion/state.mjs';
 import { readLibrary, sessionId } from '../lib/session-library.mjs';
 import { samePath } from '../lib/platform.mjs';
+import path from 'node:path';
+import { storedProjectSession } from './project-windows.mjs';
 
 const APP = { cursor: 'Cursor', codex: 'Codex', devin: 'Devin' };
 const FUSION_WAIT = ['plan', 'disagree', 'check'];
@@ -39,13 +41,28 @@ export function overviewSnapshot(deviceId) {
       const cachedPreview = source.previews.get(key);
       const preview = key !== sessionId(win.app, snap.chat?.thread) || cachedPreview?.at >= source.updatedAt ? cachedPreview?.value : null;
       sessions.push({
-        win: id, windowId, threadId: key, app: win.app, project, title: s.title || '未命名会话',
+        win: id, windowId, threadId: key, app: win.app, project, title: record?.title || s.title || '未命名会话',
         busy: !!s.busy, waiting: s.waiting || '', waitingText: s.waitingText || '', last: preview?.available ? preview.last : s.last || '',
         startedAt: s.busy ? (Number.isFinite(s.runAt) ? s.runAt : Number.isFinite(s.generation?.start) ? s.generation.start : 0) : 0,
         tasks: s.tasks?.total > 0 ? { done: s.tasks.done, total: s.tasks.total, current: s.tasks.current || '' } : null,
         actions: s.actions || [], devin: !!s.devin, changed: s.changed || 0, acceptAll: !!s.acceptAll, changes: s.changes || null, lastUsed: Number.isFinite(s.lastUsed) ? s.lastUsed : 0,
         favorite: record?.favorite === true, lastMessageAt: Number(record?.lastMessageAt) || 0,
+        workspace: row.workspace || '', host: row.host || '',
       });
+    }
+  }
+  const present = new Set(sessions.map(s => s.app + ':' + s.threadId));
+  for (const app of Object.keys(APP)) {
+    const rows = new Map((nativeSessionCatalog(app)?.rows || []).map(row => [sessionId(app, row.id), row]));
+    for (const [id, record] of Object.entries(readLibrary()[app] || {})) {
+      if (!record.favorite || record.archived || record.deleted || present.has(app + ':' + id) || rows.get(id)?.archived) continue;
+      const saved = storedProjectSession(app, id);
+      const row = { ...saved, ...rows.get(id) };
+      sessions.push({ win: app, windowId: saved?.ownerWindow || app, threadId: id, app,
+        project: row.workspace ? path.basename(row.workspace) : '项目', title: record.title || row.title || '未命名会话',
+        workspace: row.workspace || '', host: row.host || '', dormant: true, busy: false, waiting: '', waitingText: '', last: row.last || '',
+        startedAt: 0, tasks: null, actions: [], devin: app === 'devin', changed: 0, acceptAll: false, changes: null,
+        lastUsed: Number(row.lastUsed) || 0, favorite: true, lastMessageAt: Number(record.lastMessageAt) || 0 });
     }
   }
   const fusion = (fusionHistory[deviceId]?.runs || [])
@@ -56,10 +73,16 @@ export function overviewSnapshot(deviceId) {
   return { os: process.platform, now, ready, windows, sessions, fusion };
 }
 
-export async function overviewPreview(deviceId, { win, windowId, threadId }) {
+export function overviewSession(deviceId, { win, windowId, threadId }) {
   const session = overviewSnapshot(deviceId).sessions.find(row => row.win === win && row.windowId === windowId && row.threadId === threadId);
   if (!session) throw new Error('会话已从目录移除，请刷新概览');
   const target = nativeTargets().find(row => row.app === session.app && (row.pageId || row.id) === windowId);
+  return { session, target };
+}
+
+export async function overviewPreview(deviceId, { win, windowId, threadId }) {
+  const { session, target } = overviewSession(deviceId, { win, windowId, threadId });
+  if (session.dormant) return { win, windowId, threadId, available: false, last: '', text: '' };
   const value = await nativeWindowAt(target.ws).preview(threadId, session);
   return { win, windowId, threadId, available: value.available, last: value.last || '', text: value.text || '' };
 }

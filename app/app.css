@@ -817,6 +817,36 @@ body.composeCompact.chatmode #footerStatus {
 body.composeCompact.chatmode footer:has(#footerStatus #msg:not(:empty):not(.quiet)) #text::placeholder,
 body.composeCompact.chatmode footer:has(#footerStatus #elapsed:not([hidden])) #text::placeholder { color: transparent; }
 
+/* Portrait uses the same compact state for the manual toggle and question focus. */
+#composerFold { display: none; }
+body:not(.land).chatmode .composerBox { position: relative; }
+body:not(.land).chatmode #chatTools { padding-right: 36px; }
+body:not(.land).chatmode #composerFold {
+  position: absolute; top: 8px; right: 8px; z-index: 2; display: grid; place-items: center;
+  width: 28px; height: 28px; min-height: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--fg-3);
+}
+body:not(.land).chatmode #composerFold:active { background: var(--s2); transform: none; }
+body:not(.land).composeCompact.chatmode #composerFold svg { transform: rotate(180deg); }
+body:not(.land).composeCompact.chatmode .composerBox { display: block; min-height: 48px; padding: 8px; border-radius: var(--r-xl); }
+body:not(.land).composeCompact.chatmode #chatTools { display: flex; padding: 0 34px 0 0; overflow: hidden; -webkit-mask-image: none; mask-image: none; }
+body:not(.land).composeCompact.chatmode #chatTools > :not(#pickModel):not(#pickAgents):not(#pickEditor):not(#fusionConfig) { display: none; }
+body:not(.land).composeCompact.chatmode #pickModel { flex: 1 1 auto; min-width: 0; max-width: none; padding: 0 6px; }
+body:not(.land).composeCompact.chatmode #pickAgents { flex: 0 1 auto; min-width: 0; padding: 0 6px; }
+body:not(.land).composeCompact.chatmode #pickEditor { flex: 0 0 30px; }
+body:not(.land).composeCompact.chatmode #fusionConfig { flex: 1; }
+body:not(.land).composeCompact.chatmode .composerField,
+body:not(.land).composeCompact.chatmode .sendRow,
+body:not(.land).composeCompact.chatmode .attachmentRow,
+body:not(.land).composeCompact.chatmode #mentionBox,
+body:not(.land).composeCompact.chatmode #mathPrev,
+body:not(.land).composeCompact.chatmode #retryChat { display: none; }
+body:not(.land).composeCompact.chatmode #footerStatus {
+  top: auto; bottom: calc(100% - 2px); left: 14px; right: auto; width: auto; max-width: calc(100% - 28px);
+  padding: 2px 7px 0; border-radius: 8px 8px 0 0; background: var(--s1); pointer-events: auto;
+}
+body:not(.land).composeCompact.chatmode #elapsed { order: -1; font-size: 10px; }
+body:not(.land).composeCompact.chatmode #msg { font-size: 10px; }
+
 /* Short screens (tablets, foldable inners, cover screens): reclaim chrome height. */
 @media (max-height: 760px) {
   header { min-height: 52px; padding-top: 4px; padding-bottom: 2px; }
@@ -1578,11 +1608,11 @@ body.conv #overview { display: none; }
 #overview .ov-scope select { grid-area: 1 / 1; width: 100%; min-width: 0; margin: 0; padding: 4px 22px 4px 2px; border: 0; border-radius: 0; appearance: none; background: transparent; color: var(--fg-hi); font: inherit; font-weight: 650; text-overflow: ellipsis; }
 #overview .ov-scope svg { grid-area: 1 / 1; justify-self: end; width: 14px; height: 14px; color: var(--fg-3); pointer-events: none; }
 
-#overview .ov-body { flex: 1; min-height: 0; display: grid; grid-template-rows: 1fr auto; grid-template-areas: "main" "levels"; }
+#overview .ov-body { flex: 1; min-height: 0; display: grid; grid-template-rows: 1fr auto auto; grid-template-areas: "main" "tools" "levels"; }
 #overview .ov-main { grid-area: main; min-height: 0; overflow: auto; padding: 2px 16px 24px; scrollbar-width: none; }
 #overview .ov-main::-webkit-scrollbar { display: none; }
 #overview .ov-levels { grid-area: levels; display: flex; justify-content: space-around; padding: 8px 18px max(26px, env(safe-area-inset-bottom)); background: var(--s1); border-top: 1px solid var(--line-2); }
-#overview.ov-landscape .ov-body { grid-template-columns: 84px 1fr; grid-template-rows: none; grid-template-areas: "levels main"; }
+#overview.ov-landscape .ov-body { grid-template-columns: 84px 1fr; grid-template-rows: 1fr auto; grid-template-areas: "levels main" "levels tools"; }
 #overview.ov-landscape .ov-main { padding: 4px 18px 14px 6px; }
 #overview.ov-landscape .ov-levels { flex-direction: column; justify-content: center; gap: 14px; padding: 8px 0; border-top: 0; background: transparent; }
 
@@ -1591,6 +1621,25 @@ body.conv #overview { display: none; }
 #overview .ov-lv svg { width: 22px; height: 22px; }
 #overview .ov-lv.on { color: var(--accent); }
 #overview .ov-lv.on i { background: var(--accent-tint-2); }
+#overview .ov-favorites-title { color: var(--fg-hi); font-weight: 650; }
+#overview .ov-session { -webkit-touch-callout: none; }
+#overview .ov-session > .ov-title, #overview .ov-session > .ov-context, #overview .ov-session > .ov-state, #overview .ov-session > .ov-logo { -webkit-user-select: none; user-select: none; }
+#overview .ov-selected { outline: 2px solid var(--accent); outline-offset: -2px; }
+#overview .ov-selecting > .ov-title { padding-right: 18px; }
+#overview .ov-selecting[aria-disabled="true"] { opacity: .55; }
+#overview .ov-session > .ov-check { position: absolute; top: 10px; right: 10px; width: 20px; height: 20px; border: 1.5px solid var(--fg-4); border-radius: 50%; display: grid; place-items: center; font-size: 13px; line-height: 1; color: var(--accent-fg); }
+#overview .ov-selected .ov-check { background: var(--accent); border-color: var(--accent); }
+#overview .ov-batch { grid-area: tools; margin: 0 12px 8px; padding: 12px; border: 1px solid var(--line-2); border-radius: 20px; background: var(--s1); box-shadow: var(--shadow-1); max-height: 40vh; overflow: auto; }
+#overview .ov-batch[hidden] { display: none; }
+#overview .ov-batch-head { display: flex; justify-content: space-between; gap: 10px; align-items: center; font-size: 12px; color: var(--fg-3); }
+#overview .ov-batch-head button { color: var(--accent-text); }
+#overview .ov-batch-actions { display: flex; gap: 8px; margin-top: 10px; }
+#overview .ov-batch-actions button { flex: 1; padding: 9px 6px; border-radius: 999px; background: var(--accent-tint); color: var(--accent-text); font-size: 12px; font-weight: 600; text-align: center; }
+#overview .ov-batch-actions .ov-danger { color: var(--err); background: var(--err-tint); }
+#overview .ov-batch button:disabled { opacity: .45; cursor: default; }
+#overview .ov-batch-report { margin-top: 10px; color: var(--fg-3); font-size: 12px; }
+#overview .ov-batch-report p { margin: 6px 0 0; overflow-wrap: anywhere; }
+#overview .ov-empty small { display: block; margin-top: 8px; font-size: 12px; }
 #overview .ov-dot { position: absolute; top: 2px; right: 8px; width: 9px; height: 9px; border-radius: 50%; background: var(--ov-amber); border: 2px solid var(--s1); }
 
 #overview .ov-sum { display: flex; gap: 14px; font-size: 13px; color: var(--fg-3); padding: 0 2px 12px; flex-wrap: wrap; }

@@ -769,6 +769,8 @@ function computerBindingReady(link) {
   return binding?.ready && !binding.cached && !!binding.chat && binding.chat.thread === (binding.threadId || '');
 }
 function resumableComputerSocket(computer) {
+  const notice = pendingNotice && noticeTarget(pendingNotice);
+  if (notice?.project && notice.computer === computer.id) return null;
   const link = computerSockets.get(computer.key), binding = link?.binding;
   if (mode !== 'chat' || link?.mode !== mode || !link.authed || link.socket.readyState !== 1 || link.computer.token !== computer.token) return null;
   const target = link.preload?.target || { win: binding?.id, windowId: binding?.windowId, threadId: binding?.threadId };
@@ -1064,14 +1066,14 @@ async function connect(resumeLink = null) {
         if (!openWin(fromNotice)) showComputers('通知来源电脑未配对，请从电脑列表连接');
         return;
       }
-      if (fromNotice) rememberNotice(fromNotice);
-      const chosen = fromNotice ? { ...currentComputer(), id: currentComputer()?.win } : link.binding || conn.lastSelection;
+      const notice = fromNotice ? rememberNotice(fromNotice) : null;
+      const chosen = fromNotice ? { ...currentComputer(), ...notice, id: currentComputer()?.win } : link.binding || conn.lastSelection;
       if (link.binding?.chat && !fromNotice) {
         applySelection(link.binding, false);
         selectionPreview();
       }
       send({ t: 'attach', id: chosen?.id || '', windowId: chosen?.windowId || '', threadId: chosen?.threadId || '',
-        project: typeof chosen?.project === 'object' ? chosen.project : null, initial: true, resume: (m.resumed || !!link.binding) && !fromNotice });
+        project: typeof chosen?.project === 'object' ? chosen.project : null, initial: !notice?.project, resume: (m.resumed || !!link.binding) && !fromNotice });
       startComputerUpdates();
     }
     else if (m.t === 'sent') {

@@ -912,7 +912,12 @@ $('taskChip').onclick = () => showTasks();
 itemsEl.addEventListener('toggle', e => { const id = e.target.dataset.task; if (id) e.target.open ? taskOpen.add(id) : taskOpen.delete(id); }, true);
 $('qnBar').addEventListener('click', e => {
   const compose = e.target.closest('[data-question-compose]');
-  if (compose) { setQuestionCompose(compose.dataset.questionCompose); text.focus(); return; }
+  if (compose) {
+    setQuestionCompose(compose.dataset.questionCompose);
+    if (portraitComposer()) setComposerFold(false);
+    text.focus();
+    return;
+  }
   const b = e.target.closest('[data-action][data-request]');
   if (b) {
     const id = b.dataset.request, n = Number(b.dataset.action);
@@ -931,6 +936,7 @@ function questionBusy() {
   const bar = $('qnBar');
   bar.setAttribute('aria-busy', String(!!qnPending));
   if (qnPending) bar.querySelectorAll('button,input,select').forEach(el => { el.disabled = true; });
+  updateComposeCompact();
 }
 function sendQuestion(message) {
   if (qnPending) return;
@@ -945,28 +951,10 @@ function setQuestionCompose(id) {
   if (questionCompose?.id === id && questionCompose.sel === viewSel || !questionCompose && !id) return;
   if (mode !== 'chat') { questionCompose = id ? { id, sel: viewSel } : null; updateAppText(); updateSendMode(); return; }
   saveDraft();
-  const carry = !questionCompose && mode === 'chat' ? text.value : '';
   questionCompose = id ? { id, sel: viewSel } : null;
   restoreDraft();
-  if (id && !drafts.has(activeDraft)) {
-    text.value = qnDrafts.get(`${id}|0`) ?? qnState?.requests?.find(r => r.id === id)?.fields[0]?.value ?? '';
-    if (!text.value) text.value = carry;
-    syncQuestionDraft(text.value);
-    autosize(); saveDraft();
-  }
   updateAppText();
   updateSendMode();
-}
-function syncQuestionDraft(value) {
-  if (mode !== 'chat' || questionCompose?.sel !== viewSel) return;
-  qnDrafts.set(`${questionCompose.id}|0`, value);
-  const field = [...$('qnBar').querySelectorAll('[data-field="0"]')].find(el => el.dataset.request === questionCompose.id);
-  if (field) {
-    field.value = value;
-    const request = qnState?.requests?.find(r => r.id === questionCompose.id);
-    const submit = [...$('qnBar').querySelectorAll('[data-action]')].find(el => el.dataset.request === questionCompose.id && Number(el.dataset.action) === request.buttons.length - 1);
-    if (submit) submit.disabled = !!qnPending || request.buttons.every(b => b.disabled) || !value.trim();
-  }
 }
 function submitQuestionCompose() {
   const request = qnState?.requests?.find(r => r.id === questionCompose?.id);
@@ -1043,16 +1031,11 @@ function renderQuestions(qs) {
       el.oninput = () => {
         qnDrafts.set(key, el.value);
         const r = qnState.requests.find(r => r.id === el.dataset.request);
-        if (r.id.startsWith('async:') && el.dataset.field === '0' && mode === 'chat' && document.activeElement === el) {
-          setQuestionCompose(r.id);
-          text.value = el.value; autosize(); saveDraft();
-        }
         if (r.id.startsWith('async:') && !r.buttons.every(b => b.disabled) && !qnPending) {
           const submit = [...bar.querySelectorAll('[data-action]')].find(b => b.dataset.request === r.id && Number(b.dataset.action) === r.buttons.length - 1);
           submit.disabled = !el.value.trim();
         }
       };
-      if (el.dataset.request.startsWith('async:') && el.dataset.field === '0') el.onfocus = () => setQuestionCompose(el.dataset.request);
       el.onchange = () => { if (!el.dataset.request.startsWith('async:')) send({ t: 'codexRequest', id: el.dataset.request, field: Number(el.dataset.field), value: el.value }); };
       if (qnDrafts.has(key)) el.oninput();
       if (key === focusKey && !qnPending) {
@@ -1064,7 +1047,7 @@ function renderQuestions(qs) {
     if (document.body.classList.contains('kb')) fitViewport();
     return;
   }
-  if (!qs?.list?.length) { bar.innerHTML = ''; bar.classList.remove('show'); return; }
+  if (!qs?.list?.length) { bar.innerHTML = ''; bar.classList.remove('show'); updateComposeCompact(); return; }
   if (qs.devin) {
     const q = qs.list[0], pg = qs.pager;
     bar.innerHTML = questionCard(`Devin 在问你<span class="qnCount">${pg ? `${pg.cur}/${pg.total}` : '1 个问题'}</span>`,
