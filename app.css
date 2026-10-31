@@ -637,17 +637,20 @@ body.kb #queueBar { display: none; }
 #queueBar .run span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #queueBar .run i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .25; } }
-#queueBar .qh { font-size: 12px; color: var(--fg-3); }
+:is(#queueBar, #queueList) .qh { font-size: 12px; color: var(--fg-3); }
 #queueBar .qh.fold { background: none; border: none; padding: 2px 0; min-height: 0; text-align: left; color: var(--accent-text); font-size: 12.5px; }
-#queueBar .qhRow { display: flex; align-items: center; gap: 6px; }
-#queueBar .q { display: flex; align-items: center; gap: 6px; font-size: 13.5px; }
-#queueBar .q .qt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-2); }
-#queueBar .q .qt::before { content: "○ "; color: var(--fg-4); }
-#queueBar .q .qt.sa::before { content: "⇢ "; color: var(--accent-text); }
+:is(#queueBar, #queueList) .qhRow { display: flex; align-items: center; gap: 6px; }
+:is(#queueBar, #queueList) .q { display: flex; align-items: center; gap: 6px; font-size: 13.5px; }
+:is(#queueBar, #queueList) .q .qt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-2); }
+:is(#queueBar, #queueList) .q .qt::before { content: "○ "; color: var(--fg-4); }
+:is(#queueBar, #queueList) .q .qt.sa::before { content: "⇢ "; color: var(--accent-text); }
 #queueBar .run.sub { color: var(--warn); }
-#queueBar button { font-size: 12px; padding: 0 9px; min-height: 30px; flex: none; border-radius: 999px; }
-#queueBar button.ib { display: inline-flex; align-items: center; justify-content: center; padding: 0 8px; min-height: 30px; width: 30px; border-radius: 50%; background: transparent; line-height: 0; }
-#queueBar button.ib.del:active, #queueBar button.ib.del:hover { color: var(--err); }
+:is(#queueBar, #queueList) button { font-size: 12px; padding: 0 9px; min-height: 30px; flex: none; border-radius: 999px; }
+:is(#queueBar, #queueList) button.ib { display: inline-flex; align-items: center; justify-content: center; padding: 0 8px; min-height: 30px; width: 30px; border-radius: 50%; background: transparent; line-height: 0; }
+:is(#queueBar, #queueList) button.ib.del:active, :is(#queueBar, #queueList) button.ib.del:hover { color: var(--err); }
+#queueList { display: flex; flex-direction: column; gap: 8px; max-height: 50dvh; overflow-y: auto; overscroll-behavior: contain; }
+#queueList .qhRow { justify-content: space-between; }
+#queueList .q .qt { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 #qnBar {
   flex: 0 1 auto; min-height: 0; display: none; flex-direction: column; gap: 8px; padding: 14px;
@@ -1814,6 +1817,7 @@ body.conv #overview { display: none; }
 #overview .ov-tools button { display: grid; place-items: center; flex: 1; max-width: 34px; min-width: 24px; height: 34px; padding: 0; color: var(--fg-3); border-radius: 50%; }
 #overview .ov-tools button:active { background: var(--s2); }
 #overview .ov-tools button:disabled { opacity: .45; }
+#overview .ov-tools .ov-queue { flex: none; max-width: none; padding: 0 6px; font-size: 12px; color: var(--accent-text); border-radius: 999px; white-space: nowrap; }
 #overview .ov-tools [data-ov-control] { display: contents; }
 #overview .ov-tools #mic, #overview .ov-tools #stop { position: static; transform: none; flex: 1; background: transparent; }
 #overview .ov-tools #mic.on { background: var(--err); color: #fff; }
@@ -1833,8 +1837,9 @@ body.land #overview .ov-compose-inline > button svg { width: 18px; height: 18px;
 #overview .ov-cfoot > .ov-link { flex: none; }
 #overview .ov-tool-status { margin-top: 8px; font-size: 12px; color: var(--fg-3); overflow-wrap: anywhere; }
 #overview .ov-tool-status.err { color: var(--err); }
-#overview .ov-attachments { display: flex; gap: 8px; overflow-x: auto; min-width: 0; margin-top: 12px; }
-#overview .ov-attachments[hidden], #overview .ov-mentions[hidden] { display: none; }
+#overview .ov-attachments { display: contents; }
+#overview .ov-attachments .attachmentRow:not([hidden]) { display: flex; min-width: 0; margin-top: 12px; }
+#overview .ov-mentions[hidden] { display: none; }
 #overview .ov-mentions { margin-top: 10px; max-height: 25vh; overflow-y: auto; overscroll-behavior: contain; border-radius: 12px; background: var(--s2); }
 #overview .ov-mentions .mnRow { display: flex; flex-direction: column; width: 100%; padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--line); }
 #overview .ov-mentions .mnRow small, #overview .ov-mentions .mnHint { color: var(--fg-3); font-size: 12px; }

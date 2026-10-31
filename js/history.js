@@ -1111,9 +1111,31 @@ function toggleChangeNotice() {
   if (hiddenChangeNotices.has(key)) hiddenChangeNotices.delete(key); else hiddenChangeNotices.add(key);
   renderQueue(lastChat?.busy, lastChat?.queued || [], lastChat?.subagents || [], lastChat?.readonly, lastChat?.changed, lastChat?.queuedCount);
 }
-function renderQueue(busy, queued, subs = [], readonly = false, changed = 0, qCount = 0) {
-  const bar = $('queueBar');
+function queuedMessages(queued = chatStale ? [] : lastChat?.queued || [], qCount = chatStale ? 0 : lastChat?.queuedCount) {
   const devin = currentApp === 'devin';
+  const pending = pendingEchoes.filter(p => p.kind === 'queue' && p.sel === viewSel && !p.represented);
+  const nativeCount = Math.max(queued.length, devin ? qCount || 0 : 0);
+  const count = queued.length ? nativeCount + pending.length : Math.max(nativeCount, pending.length);
+  const html = pending.map(p => `<div class="q pending"><span class="qt">${esc(p.text)}</span><span class="sub">${I18N.tr(p.syncing ? '正在同步…' : p.confirmed ? '已排队' : p.unknown ? '发送结果待确认' : '发送中…')}</span></div>`).join('')
+    + queued.map(q => `<div class="q"><span class="qt">${esc(q.t || '(空)')}</span>`
+      + (supportsCapability('queueEdit') ? ibtn('edit', devin ? '从队列取出，放回输入框' : '修改', `data-q="${esc(q.id)}" data-a="edit"`) : '')
+      + ibtn('enter', '打断当前这一轮，立刻发送', `data-q="${esc(q.id)}" data-a="send"`)
+      + ibtn('x', '删除', `data-q="${esc(q.id)}" data-a="remove"`, 'del') + '</div>').join('')
+    + (count && devin && !queued.length ? `<div class="q"><span class="qt">内容读不到，只显示数量</span></div>` : '');
+  return { count, html, clear: devin ? ibtn('trash', '清空', 'data-a="clear" data-q=""', 'del') : '' };
+}
+function renderQueuedList(queue) {
+  const html = `<div class="qhRow"><span class="qh">排队中 ${queue.count} 条</span>${queue.count ? queue.clear : ''}</div>`
+    + (queue.count ? queue.html : `<div class="hint">${I18N.tr('(空)')}</div>`);
+  if ($('queueList').innerHTML !== html) $('queueList').innerHTML = html;
+}
+function showQueuedMessages() {
+  openSheet('queued', '<h3>排队</h3><div id="queueList"></div>');
+  $('queueList').onclick = $('queueBar').onclick;
+  renderQueuedList(queuedMessages());
+}
+function renderQueue(busy, queued, subs = [], readonly = false, changed = 0, qCount = 0) {
+  const bar = $('queueBar'), queue = queuedMessages(queued, qCount);
   let html = '';
   if (readonly && !chatStale && lastChat?.subagent) html += `<div class="run sub"><span>正在查看子 Agent 的对话（只读）</span>${ibtn('back', '返回主对话', 'data-main')}</div>`;
   if (subs.length && !readonly) {
@@ -1121,24 +1143,16 @@ function renderQueue(busy, queued, subs = [], readonly = false, changed = 0, qCo
     if (subsOpen) html += subs.map(n => `<div class="q"><span class="qt sa">${esc(n)}</span>`
       + ibtn('eye', '查看', `data-sub="${esc(n)}" data-part="open"`) + ibtn('stop', '停止', `data-sub="${esc(n)}" data-part="stop"`, 'del') + '</div>').join('');
   }
-  const pending = pendingEchoes.filter(p => p.kind === 'queue' && p.sel === viewSel && !p.represented);
-  const nativeCount = Math.max(queued.length, devin ? qCount || 0 : 0);
-  const n = queued.length ? nativeCount + pending.length : Math.max(nativeCount, pending.length);
-  if (n) {
-    html += `<div class="qhRow"><button class="qh fold" data-qfold aria-expanded="${queueOpen}">${queueOpen ? '▾' : '▸'} <span>排队中 ${n} 条</span></button>${devin ? ibtn('trash', '清空', 'data-a="clear" data-q=""', 'del') : ''}</div>`;
-  }
-  if (n && queueOpen) {
-    html += pending.map(p => `<div class="q pending"><span class="qt">${esc(p.text)}</span><span class="sub">${I18N.tr(p.syncing ? '正在同步…' : p.confirmed ? '已排队' : p.unknown ? '发送结果待确认' : '发送中…')}</span></div>`).join('');
-    html += queued.map(q => `<div class="q"><span class="qt">${esc(q.t || '(空)')}</span>`
-      + (supportsCapability('queueEdit') ? ibtn('edit', devin ? '从队列取出，放回输入框' : '修改', `data-q="${esc(q.id)}" data-a="edit"`) : '')
-      + ibtn('enter', '打断当前这一轮，立刻发送', `data-q="${esc(q.id)}" data-a="send"`)
-      + ibtn('x', '删除', `data-q="${esc(q.id)}" data-a="remove"`, 'del') + '</div>').join('');
-    if (devin && !queued.length) html += `<div class="q"><span class="qt">内容读不到，只显示数量</span></div>`;
+  if (queue.count) {
+    html += `<div class="qhRow"><button class="qh fold" data-qfold aria-expanded="${queueOpen}">${queueOpen ? '▾' : '▸'} <span>排队中 ${queue.count} 条</span></button>${queue.clear}</div>`;
+    if (queueOpen) html += queue.html;
   }
   if (changed && !readonly && !hiddenChangeNotices.has(changeNoticeKey())) html += `<div class="changesNotice"><button class="qh fold" data-changes>改动了 ${changed} 个文件 ›</button>${ibtn('x', '隐藏改动提示', 'data-toggle-changes')}</div>`;
   bar.innerHTML = html;
   bar.classList.toggle('show', Boolean(html));
+  if (sheetKind === 'queued') renderQueuedList(queue);
   if (document.body.classList.contains('kb')) fitViewport();
+  document.dispatchEvent(new Event('composer-state'));
 }
 
 let queueEditRequest = null;
