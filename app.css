@@ -1770,6 +1770,19 @@ body.conv #overview { display: none; }
 #overview .ov-pmeta { display: flex; justify-content: space-between; font-size: 13px; color: var(--fg-3); }
 #overview .ov-pmeta b { color: var(--fg-hi); }
 #overview .ov-cur { font-size: 14px; color: var(--fg-hi); font-weight: 600; margin-top: 10px; }
+#overview .ov-run-meta { display: flex; align-items: center; gap: 12px; margin-top: 10px; font-size: 12px; color: var(--fg-3); }
+#overview .ov-run-model { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#overview .ov-run-count { flex: none; font-variant-numeric: tabular-nums; }
+#overview .ov-run-meta + .ov-progress { height: 5px; margin: 7px 0 0; }
+#overview .ov-run-tools { display: grid; gap: 3px; margin-top: 9px; }
+#overview .ov-run-tool { display: flex; align-items: center; gap: 7px; min-width: 0; height: 20px; font-size: 12px; color: var(--fg-3); }
+#overview .ov-run-tool > .ovRaw { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#overview .ov-run-mark { width: 16px; flex: none; text-align: center; }
+#overview .ov-run-tool.done .ov-run-mark { color: var(--ok); }
+#overview .ov-run-tool.error { color: var(--err); }
+#overview .ov-run-tool.run { color: var(--fg-hi); }
+#overview .ov-run-tool.run .ov-run-mark { color: var(--accent-text); }
+#overview .ov-run-meta ~ .ov-last { max-height: 4.5em; }
 #overview .ov-last { font-size: 14px; color: var(--fg-2); margin-top: 10px; line-height: 1.5; max-height: 6em; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; }
 #overview .ov-meta { display: flex; gap: 14px; font-size: 13px; color: var(--fg-3); flex-wrap: wrap; margin-top: 12px; }
 #overview .ov-add { color: var(--ok); font-weight: 600; }

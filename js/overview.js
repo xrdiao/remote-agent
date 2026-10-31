@@ -23,6 +23,7 @@ const OV_EN = {
   '项目未打开': 'Project closed', '项目窗口已关闭，点击打开对话后加载': 'Project closed. Open the conversation to load it.',
   '尚未读取到项目路径，请在电脑上打开项目后重试': 'Project path unavailable. Open the project on the computer and try again.',
   '全选当前范围': 'Select this scope', '批量收藏': 'Add favorites', '删除／归档': 'Delete / archive', '退出管理': 'Done', '停止剩余操作': 'Stop remaining',
+  '模型未提供': 'Model unavailable', '未提供任务进度': 'No task progress provided', '正在读取运行状态…': 'Loading run status…', '任务进度': 'Task progress',
 };
 const ovT = s => I18N.lang === 'en' && OV_EN[s] || s;
 const OV_ICON = {
@@ -354,6 +355,16 @@ function ovChangesRow(r) {
   const d = c.del != null ? `<span class="ov-del">−${c.del}</span>` : '';
   return n || a || d ? `<div class="ov-meta">${n}${a}${d}</div>` : '';
 }
+function ovRunHtml(r) {
+  const value = ovPreviews.get(r.key)?.value, tasks = value?.tasks || r.tasks;
+  const model = [value?.model, value?.effort].filter(Boolean).join(' · ');
+  const progress = tasks?.total > 0 ? tasks : null;
+  const count = progress ? `${ovT('已完成')} ${progress.done}/${progress.total}` : ovT(value ? '未提供任务进度' : '正在读取运行状态…');
+  const tools = value?.tools || [];
+  return `<div class="ov-run-meta"><span class="ov-run-model ovRaw" title="${esc(model)}">${esc(model || ovT('模型未提供'))}</span><span class="ov-run-count">${esc(count)}</span></div>`
+    + (progress ? `<div class="ov-progress" role="progressbar" aria-label="${ovT('任务进度')}" aria-valuemin="0" aria-valuemax="${progress.total}" aria-valuenow="${progress.done}" title="${esc(progress.current || '')}"><i style="width:${Math.round(progress.done / progress.total * 100)}%"></i></div>` : '')
+    + (tools.length ? `<div class="ov-run-tools">${tools.map(tool => `<div class="ov-run-tool ${tool.state}" title="${esc(tool.label)}"><span class="ov-run-mark" aria-hidden="true">${tool.state === 'done' ? '✓' : tool.state === 'error' ? '!' : tool.state === 'run' ? '◌' : '·'}</span><span class="ovRaw">${esc(tool.label)}</span></div>`).join('')}</div>` : '');
+}
 function ovCard(r) {
   const online = !r.off, dis = ovBusy.has(r.key) ? ' disabled' : '', key = esc(r.key);
   const status = `<div class="ov-status"><div class="ov-state"><span class="ov-badge">${esc(ovBadge(r))}</span><span class="ov-time">${esc(ovTime(r))}</span></div><span class="ovRaw" title="${esc(ovContext(r))}">${esc(ovContext(r))}</span></div>`;
@@ -365,7 +376,7 @@ function ovCard(r) {
       : '<div class="ov-hint">请在对话中处理</div>') + ovPreviewHtml(r) + composer;
   } else {
     const p = r.tasks && ovProgress(r);
-    body = (p ? `<div class="ov-progress"><i style="width:${Math.round(p.done / p.total * 100)}%"></i></div><div class="ov-pmeta"><span><b>${p.done}</b><em>/${p.total} 项任务</em></span></div>${r.tasks.current ? `<div class="ov-cur">${ovText(r.tasks.current)}</div>` : ''}` : '')
+    body = (r.state === 'run' && !r.fusion ? ovRunHtml(r) : p ? `<div class="ov-progress"><i style="width:${Math.round(p.done / p.total * 100)}%"></i></div><div class="ov-pmeta"><span><b>${p.done}</b><em>/${p.total} 项任务</em></span></div>${r.tasks.current ? `<div class="ov-cur">${ovText(r.tasks.current)}</div>` : ''}` : '')
       + ovPreviewHtml(r)
       + ovChangesRow(r)
       + (r.fusion ? `<div class="ov-meta"><span>第 ${r.round} 轮</span><span>A · ${esc(OV_AGENT[r.a] || r.a)}</span><span>B · ${esc(OV_AGENT[r.b] || r.b)}</span></div>` : '')
