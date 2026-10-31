@@ -2,6 +2,7 @@
 let sheetKind = null;
 let menuRefreshTimer = 0;
 let menuPending = null, menuPickRequest = 0, modelSwitchRequest = null;
+let computerProjects = false;
 function finishModelPick(m) {
   if (!modelSwitchRequest || m.requestId !== modelSwitchRequest.requestId) return;
   modelSwitchRequest = null;
@@ -178,6 +179,7 @@ function rememberAgentOpen(m) {
   }
 }
 function openSheet(kind, html) {
+  if (kind !== 'projects') computerProjects = false;
   if (kind !== 'ask') askDone?.(false);
   if (kind !== 'agents') pendingProjectReveal = null;
   if (sheetKind === 'devices' && kind !== 'devices') deviceInviteGeneration++;
@@ -215,6 +217,7 @@ function openSheet(kind, html) {
   if (leavingVoice) scheduleVoiceWarmup();
 }
 function closeSheet() {
+  computerProjects = false;
   askDone?.(false);
   agentActionTarget = null;
   pendingProjectReveal = null;
@@ -569,6 +572,24 @@ function startEditor() {
   send({ t: 'docs', editor: true });
 }
 $('pickEditor').onclick = startEditor;
+function showComputerActions(id, tool, app = '') {
+  const entry = ovList.find(e => e.id === id);
+  const list = ovSt.get(id)?.data?.windows || [];
+  const link = computerSockets.get(entry.c.key);
+  const catalog = link.metadata.get('agentCatalog')?.agents || [];
+  app ||= list.find(w => w.windowId === entry.c.windowId)?.app || list[0]?.app || 'cursor';
+  const names = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex' };
+  const attr = `data-computer-id="${esc(id)}" data-computer-tool="${esc(tool)}"`;
+  const tabs = Object.entries(names).map(([key, name]) => `<button type="button" class="paramBtn${key === app ? ' cur' : ''}" data-computer-app="${key}" ${attr} aria-pressed="${key === app}">${name}</button>`).join('');
+  const projects = list.filter(w => w.app === app);
+  const targetAttr = w => `data-computer-target="${esc(JSON.stringify({ computer: id, win: w.win, windowId: w.windowId }))}"`;
+  const action = (w, act, label) => `<button class="opt" data-computer-action="${act}" ${targetAttr(w)}>${I18N.tr(label)}</button>`;
+  const rows = projects.map(w => `<div class="pSec">${esc(w.project)}</div><div class="optRow">${tool === 'editor' ? action(w, 'editor', '打开文件') : action(w, 'open', '打开项目') + action(w, 'new', '新建会话')}</div>`).join('');
+  const selected = projects.find(w => w.windowId === entry.c.windowId) || projects[0];
+  const agent = catalog.find(a => a.app === app);
+  const missing = `<p class="hint">${esc(I18N.tr(agent?.reason || '请先打开此 Agent'))}</p>${agent?.installed === true && !agent.running && agent.launchSupported ? `<button class="opt" data-computer-launch="${app}" ${attr}>${I18N.tr('启动')} ${names[app]}</button>` : ''}`;
+  openSheet('computer-actions', `<h3>${I18N.tr(tool === 'editor' ? '打开文件' : '打开项目／新建会话')}</h3><p class="hint">${esc(entry.name)}</p><div class="pSec">${I18N.tr('选择 Agent')}</div><div class="computerAgentTabs">${tabs}</div>${rows || missing}${selected && tool !== 'editor' ? action(selected, 'projects', '选择其他文件夹') : ''}`);
+}
 function cancelDocs() {
   docsPending = null;
   editorBrowsing = false;
@@ -619,11 +640,28 @@ function showAgentActions(id, title, actions = null, target = null) {
   const rows = [
     current?.current ? '' : `<button class="opt" data-agent-action="open" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"${target?.dormant && !target.workspace ? ' disabled' : ''}><span class="lbl">打开会话</span></button>`,
     `<button class="opt" data-agent-action="favorite" data-agent-action-id="${esc(id)}"${disabled}><span class="lbl">${target ? favorite ? '取消收藏' : '收藏' : favorite ? '取消常用' : '设置为常用'}</span></button>`,
+    codexThread ? `<button class="opt" data-agent-action="copyLink" disabled aria-busy="${!target?.off}"><span class="lbl">复制会话链接</span></button>` : '',
     ...(actions || (codexThread ? ['rename', 'archive'] : [])).map(action => `<button class="opt" data-agent-action="${action}" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"${nativeDisabled}><span class="lbl">${action === 'rename' ? '重命名' : action === 'delete' ? '删除' : codexThread ? '删除／归档' : '归档'}</span></button>`),
     target?.off ? '<div class="hint">电脑离线，连接后可管理会话</div>' : target?.dormant ? '<div class="hint">项目窗口已关闭，打开对话后可重命名或归档／删除</div>' : actions === null && !codexThread ? '<div class="hint">正在读取会话操作…</div>' : '',
   ].filter(Boolean).join('');
   const owner = target ? `<div class="hint">${esc(ovCompName(target.comp))} · ${esc(target.projName)} · ${esc(ovAgName(target))}</div>` : '';
   openSheet('agent-actions', `<h3>${esc(title)}</h3>${owner}${rows || '<div class="hint">没有可用操作。</div>'}`);
+  if (codexThread && !target?.off) {
+    const requestId = ++agentActionRequest;
+    const copyTarget = target || { comp: currentComputer().id, win: 'codex', windowId: id.split(':')[1], threadId: agentThreadKey({ id }, 'codex') };
+    const active = () => sheetKind === 'agent-actions' && agentActionTarget === target && agentActionRequest === requestId;
+    ovSessionRequest(copyTarget, 'copyLink').then(value => {
+      if (!active()) return;
+      const button = $('sheet').querySelector('[data-agent-action="copyLink"]');
+      button.dataset.copyLink = value.text;
+      button.disabled = false;
+      button.removeAttribute('aria-busy');
+    }).catch(error => {
+      if (!active()) return;
+      $('sheet').querySelector('[data-agent-action="copyLink"]').removeAttribute('aria-busy');
+      $('sheet').insertAdjacentHTML('beforeend', `<div class="hint">${esc(error.message)}</div>`);
+    });
+  }
   if (actions === null && !codexThread && !target?.off && !target?.dormant) {
     if (target) {
       const requestId = ++agentActionRequest;
@@ -1064,16 +1102,20 @@ function showDocs(m) {
   openSheet('docs', `<h3>${heading}</h3>${back}<div class="hint">${esc(m.name || '')}${m.path ? ' · ' + esc(m.path) : ''}</div>${up}${folders}${divider}${docs}${code}${files}${empty}`);
 }
 function showProjects(m) {
+  const context = computerProjects ? `<p class="hint">${esc(currentComputer().name)} · ${esc(currentAppName)}</p>` : '';
   const pathInput = '<button class="opt" data-project-path><span class="lbl">输入文件夹路径</span></button>';
   const drives = (m.drives || []).map(p => `<button class="opt" data-dir="${esc(p)}"><span class="lbl">${esc(p)}</span></button>`).join('');
   if (!m.browsing) {
-    const rows = (m.recent || []).map(p => `<button class="opt" data-open="${esc(p.path)}"><span class="lbl">${esc(p.name)}<span class="sub">${esc(p.path)}</span></span></button>`).join('');
-    openSheet('projects', `<h3>打开项目</h3>${rows || '<div class="hint">还没有最近打开的本地项目。</div>'}<button class="opt" data-dir="${esc(m.path)}"><span class="lbl">浏览文件夹</span></button>${pathInput}${drives}`);
+    const rows = (m.recent || []).map(p => {
+      const open = `<button class="opt" data-open="${esc(p.path)}"><span class="lbl">${esc(p.name)}<span class="sub">${esc(p.path)}</span></span></button>`;
+      return computerProjects ? `<div class="optRow">${open}<button class="opt computerProjectNew" data-project-chat="${esc(p.path)}">${I18N.tr('新建会话')}</button></div>` : open;
+    }).join('');
+    openSheet('projects', `<h3>打开项目</h3>${context}${rows || '<div class="hint">还没有最近打开的本地项目。</div>'}<button class="opt" data-dir="${esc(m.path)}"><span class="lbl">浏览文件夹</span></button>${pathInput}${drives}`);
     return;
   }
   const up = m.parent ? `<button class="opt" data-dir="${esc(m.parent)}"><span class="lbl">上级目录</span></button>` : '';
   const dirs = (m.dirs || []).map(d => `<button class="opt" data-dir="${esc(d.path)}"><span class="lbl">${esc(d.name)}</span></button>`).join('');
-  openSheet('projects', `<h3>浏览文件夹</h3><div class="hint">${esc(m.path)}</div><button class="opt" data-open="${esc(m.path)}"><span class="lbl">打开此文件夹</span></button><button class="opt" data-project-chat="${esc(m.path)}"><span class="lbl">在此项目新建会话</span></button><button class="opt" data-project-new="${esc(m.path)}"><span class="lbl">新建项目并创建会话</span></button>${pathInput}${up}${drives}${dirs || '<div class="hint">没有子文件夹。</div>'}`);
+  openSheet('projects', `<h3>浏览文件夹</h3>${context}<div class="hint">${esc(m.path)}</div><button class="opt" data-open="${esc(m.path)}"><span class="lbl">打开此文件夹</span></button><button class="opt" data-project-chat="${esc(m.path)}"><span class="lbl">在此项目新建会话</span></button><button class="opt" data-project-new="${esc(m.path)}"><span class="lbl">新建项目并创建会话</span></button>${pathInput}${up}${drives}${dirs || '<div class="hint">没有子文件夹。</div>'}`);
 }
 function showCodexSettings(m) {
   const button = c => `<button class="paramBtn ${c.on || c.current ? 'cur' : ''}" data-codex-setting="${esc(c.id)}" ${c.disabled ? 'disabled' : ''}>${esc(c.label)}</button>`;
