@@ -67,28 +67,28 @@ const ovContext = r => `${ovS.level === 'favorites' ? ovCompName(r.comp) + ' · 
 const ovOn = e => ovComputerStatus(e) === 'online';
 
 function ovComputerStatus(e, st = ovSt.get(e.id)) {
-  const link = e.c && computerSockets.get(e.c.key), status = st?.status || 'loading';
+  const link = e.c && computerSockets.get(e.c.key), status = st?.dataStatus || 'loading';
   if (e.foreign) return status;
-  if (link?.rejected) return link.auth?.id === e.id ? 'auth' : 'offline';
-  if (status === 'identity') return 'offline';
-  if (status === 'auth' || status === 'old') return status;
-  if (navigator.onLine === false || st?.retryPaused) return 'offline';
-  if (st?.retry || st?.reconnecting) return 'loading';
-  if (link?.socket.readyState < 2) {
+  if (link?.phase === 'identity') return 'offline';
+  if (link?.rejected) return 'auth';
+  if (status === 'old') return status;
+  if (navigator.onLine === false || link?.phase === 'paused') return 'offline';
+  if (link?.socket?.readyState < 2) {
     const foreground = e.c.key === currentComputer()?.key && link.socket === ws;
     const pending = foreground ? conn.initialSelection && !windowReady && !conn.attachFailed
       : link.preload && !computerBindingReady(link) && !link.preload.outcome;
     return link.authed && st?.data?.ready && !pending ? 'online' : 'loading';
   }
-  if (link?.socket.readyState >= 2) return 'offline';
+  if (link?.retry != null || link?.attempt) return 'loading';
+  if (link?.socket?.readyState >= 2) return 'offline';
   return status === 'online' ? 'loading' : status;
 }
 
 function ovStOf(id) {
   let st = ovSt.get(id);
   if (!st) {
-    ovSt.set(id, st = { status: 'loading', stage: 0, data: null, offset: 0, seen: 0, fetched: false, prev: new Map(), first: new Map(), flight: null,
-      retryFailures: 0, retryPaused: false, retryProbe: false });
+    ovSt.set(id, st = { dataStatus: 'loading', stage: 0, data: null, offset: 0, seen: 0, fetched: false, prev: new Map(), first: new Map(), flight: null,
+      get failure() { return this.link?.failure; } });
     ovCollapsed.add(id);
   }
   return st;
@@ -162,7 +162,7 @@ function ovPreviewHtml(r) {
 function ovFetch(e) {
   const st = ovStOf(e.id);
   if (!computerRetryAllowed(e.c)) return Promise.resolve();
-  return st.flight ||= ovLoad(e, st).catch(() => { if (!['auth', 'identity'].includes(st.status)) st.status = 'offline'; }).finally(() => { st.flight = null; ovRender(); });
+  return st.flight ||= ovLoad(e, st).catch(error => { st.dataStatus = 'offline'; st.dataError = error.message; }).finally(() => { st.flight = null; ovRender(); });
 }
 async function ovRead(c, relay) {
   const res = await fetch(relay + '/api/overview', { cache: 'no-store', signal: AbortSignal.timeout(8000), headers: await entryHeaders(c, 'GET', '/api/overview') }).catch(() => null);
@@ -174,22 +174,20 @@ async function ovRead(c, relay) {
 }
 async function ovLoad(e, st) {
   const c = e.c;
+  const link = computerSockets.get(c.key), socket = link?.socket, authorization = link?.auth;
   st.stage = c.relay ? 1 : 0;
-  let r = c.relay ? await ovRead(c, c.relay) : { down: true };
+  if (!c.relay) return;
+  const r = await ovRead(c, c.relay);
+  if (computerSockets.get(c.key)?.socket !== socket) return;
   if (!computerRetryAllowed(c)) return;
-  if (r.auth) st.status = 'auth';
-  if (r.data && r.data.id !== e.id) st.status = 'identity';
-  if (r.down || r.auth || (r.data && r.data.id !== e.id)) {
-    st.stage = 0; ovRender();
-    const relay = await relayOf({ ...c, discovery: c.discovery || new URL('url.json', location.href).href });
-    st.stage = 1;
-    if (relay !== c.relay) { updateComputerRecord({ ...c, relay }); r = await ovRead(c, relay); }
-  }
   if (r.down) throw new Error('down');
-  if (r.auth) { st.status = 'auth'; return; }
-  if (r.old) { st.status = 'old'; return; }
-  if (r.data.id !== e.id) { st.status = 'identity'; throw new Error('id'); }
-  st.offset = r.data.now - Date.now(); st.seen = Date.now(); st.status = 'online';
+  if (r.auth) {
+    if (link?.auth === authorization) rejectComputerConnection(c, 'auth');
+    return;
+  }
+  if (r.old) { st.dataStatus = 'old'; return; }
+  if (r.data.id !== e.id) { rejectComputerConnection(c, 'identity'); return; }
+  st.offset = r.data.now - Date.now(); st.seen = Date.now(); st.dataStatus = 'online'; st.dataError = '';
   ovApply(e, st, r.data);
 }
 function ovApply(e, st, data) {
@@ -309,11 +307,11 @@ function ovComputerGroup(e, all, projs) {
   else if (status === 'old') { badge = '需要更新电脑端'; action = `data-ov="old" data-v="${e.index}"`; }
   else if (status === 'offline') {
     badge = ovT('重新连接'); action = `data-ov="retry" data-id="${esc(e.id)}"`;
-    detail = st?.retryPaused ? ovT('暂时无法连接，已暂停自动重试') : st?.seen ? `离线 · 最后在线 ${ovFmt(Date.now() - st.seen)} 前` : ovT('尚未连接');
+    detail = link?.phase === 'paused' ? ovT('暂时无法连接，已暂停自动重试') : st?.seen ? `离线 · 最后在线 ${ovFmt(Date.now() - st.seen)} 前` : ovT('尚未连接');
   } else if (!loading) detail = ovS.level === 'projects' ? `${projects.length} 个项目` : `${recs.length} 个会话`;
   if (status === 'online' && e.c?.key === currentComputer()?.key && conn.attachFailed) detail = I18N.tr('当前会话尚未就绪');
   const stage = link?.authed || link?.restoring ? 2 : link?.opened ? 1 : st?.stage || 0;
-  if (loading) detail = ovT(st?.retry || st?.reconnecting && link?.socket.readyState >= 2 || link?.restoring ? '正在恢复连接…' : link?.authed ? '正在读取项目与会话…' : link?.opened ? '正在验证设备…' : !link && st?.data ? '等待连接…' : stage ? '连接电脑…' : '查找地址…');
+  if (loading) detail = ovT(link?.retry != null || link?.attempt && link?.socket?.readyState >= 2 || link?.restoring ? '正在恢复连接…' : link?.authed ? '正在读取项目与会话…' : link?.opened ? '正在验证设备…' : !link?.socket && st?.data ? '等待连接…' : stage ? '连接电脑…' : '查找地址…');
   const progress = loading && !e.foreign ? `<span class="ov-computer-progress" aria-hidden="true">${[0, 1, 2].map(i => `<i class="${i < stage ? 'done' : i === stage ? 'current' : ''}"></i>`).join('')}</span>` : '';
   ovSig.push(`c:${e.id}:${status}:${loading ? stage : ''}:${collapsed}`);
   const body = !collapsed && st?.data ? ovS.level === 'projects' ? ovProjectTiles(projects, all, false) : ovSessions(recs, e.id) : '';

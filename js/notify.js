@@ -238,7 +238,7 @@ navigator.serviceWorker?.addEventListener('message', e => {
 });
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') resumeComputerConnections();
-  else for (const link of computerSockets.values()) saveComputerResume(link);
+  else suspendComputerConnections();
   if (authed) {
     send({ t: 'visible', v: conversationVisible() });
     if (document.visibilityState === 'visible') {
@@ -248,6 +248,7 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 for (const event of ['pageshow', 'online']) window.addEventListener(event, resumeComputerConnections);
+window.addEventListener('pagehide', suspendComputerConnections);
 
 async function runAgentMenuAction(id, action, extra, target) {
   if (target) {
