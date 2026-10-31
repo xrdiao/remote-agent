@@ -3,6 +3,13 @@ import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { appPlans } from './context.mjs';
 
 export const methods = {
+  async openModelList() {
+    if (await this.cdp.evaluate(helpersCall('clickModelListTrigger()'))) return true;
+    const target = await this.cdp.evaluate(helpersCall('modelListTrigger()'));
+    if (!target) return false;
+    await this.tapCss(target.x, target.y);
+    return true;
+  },
   async ensureSettings(editorCdp = this.editorCdp) {
     const waitOpen = () => editorCdp.evaluate(helpersCall("waitSettings('open')"));
     if (await editorCdp.evaluate(helpersCall('settingsOpen()'))) return;
@@ -157,11 +164,7 @@ export const methods = {
       if (kind === 'model') fast ||= await this.cdp.evaluate(helpersCall('fastInfo()'));
       items = await this.cdp.evaluate(helpersCall(`menuItems(${JSON.stringify(kind)})`));
       if (kind === 'model' && !items.length) {
-        const opened = await this.cdp.evaluate(helpersCall('clickModelListTrigger()'));
-        if (!opened) {
-          const sub = await this.cdp.evaluate(helpersCall('modelListTrigger()'));
-          if (sub) await this.tapCss(sub.x, sub.y);
-        }
+        await this.openModelList();
       }
     }
     const max = kind === 'model' ? await this.cdp.evaluate(helpersCall('maxToggle()?.on ?? null')) : null;
@@ -298,10 +301,7 @@ export const methods = {
     if (kind === 'model' && this.app !== 'codex') {
       for (let i = 0; i < 8; i++) {
         if (await this.cdp.evaluate(helpersCall('menuItems("model").length'))) break;
-        const opened = await this.cdp.evaluate(helpersCall('clickModelListTrigger()'));
-        if (opened) break;
-        const sub = await this.cdp.evaluate(helpersCall('modelListTrigger()'));
-        if (sub) { await this.tapCss(sub.x, sub.y); break; }
+        if (await this.openModelList()) break;
         await new Promise(r => setTimeout(r, 120));
       }
     }

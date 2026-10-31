@@ -958,6 +958,7 @@ async function openComputerSocket(computer, relay) {
             link.binding = { ...saved.binding, chat: chatBySel.get(`${expectedId}|${saved.binding.sel}`), ready: false, cached: true };
         } else computerResumes.delete(expectedId);
         if (!link.receive) preloadComputerSocket(link);
+        replayDesktopOperations(link);
       }
       else link.finishFirstScreen();
     }
@@ -1017,16 +1018,22 @@ function receiveDesktopOperation(link, result) {
   const pending = desktopRequests.get(result.id);
   if (!pending) { link.operations.delete(result.id); return; }
   if (pending.computer !== link.expectedId) return;
-  if (result.kind !== 'send' && (!link.receive || currentComputer()?.id !== pending.computer)) return;
+  if (pending.complete && pending.device !== link.auth.device) return;
+  if (result.kind !== 'send' && !pending.complete && (!link.receive || currentComputer()?.id !== pending.computer)) return;
   for (const event of result.events.slice().sort((a, b) => a.revision - b.revision)) {
     if (event.revision <= pending.revision) continue;
     const m = event.message;
-    if (m.t === 'sent') confirmSent(m);
+    if (pending.complete) { if (m.t === 'overviewManaged') pending.complete(m); }
+    else if (m.t === 'sent') confirmSent(m);
     else if (m.t === 'sendFailed') failPendingSend(m.requestId, m.message || '发送失败，请重试', !m.cancelled);
     else if (link.receive && currentComputer()?.id === pending.computer && (m.t !== 'status' || result.sel === viewSel)) link.receive({ data: JSON.stringify(m) });
     pending.revision = event.revision;
   }
   if (result.done) { desktopRequests.delete(result.id); link.operations.delete(result.id); }
+}
+function replayDesktopOperations(link) {
+  for (const request of desktopRequests.values()) if (request.computer === link.expectedId && request.message?.t === 'overviewManage' && request.device === link.auth.device)
+    link.socket.send(JSON.stringify(request.message));
 }
 async function warmComputerSocket(computer) {
   if (navigator.onLine === false || computerSockets.get(computer.key)?.phase === 'paused'

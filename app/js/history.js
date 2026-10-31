@@ -34,6 +34,7 @@ const scReq = (mode, fn) => scDb().then(db => new Promise((res, rej) => {
 })).catch(() => null);
 const idbGet = k => scReq('readonly', s => s.get(k));
 const idbPut = (k, v) => scTrackWrite(k, scReq('readwrite', s => s.put(v, k)));
+let chatPreviewTimer = 0, chatPreviewDirty = false, computerResumeDirty = false, computerResumeAt = 0;
 const computerResumes = new Map();
 const computerResumeReady = idbGet('computer-resumes').then(saved => {
   for (const [id, value] of saved?.entries || []) {
@@ -54,10 +55,9 @@ function saveComputerResume(link) {
   return saveComputerResumes();
 }
 function saveComputerResumes() {
-  const ids = new Set(loadComputers().map(c => c.id));
-  for (const id of computerResumes.keys()) if (!ids.has(id)) computerResumes.delete(id);
-  for (const [id, value] of computerResumes) value.folded = !!ovSt.get(id)?.folded && ovCollapsed.has(id);
-  return idbPut('computer-resumes', { at: Date.now(), entries: [...computerResumes], view: ovHistory() });
+  computerResumeDirty = true;
+  computerResumeAt = Date.now();
+  schedulePreviewSave();
 }
 const chatCacheKey = sel => `${currentComputer()?.id || ''}|${sel}`;
 const chatPreviewGeneration = scGeneration, chatPreviewVersions = new Map(scVersions);
@@ -69,7 +69,6 @@ const chatPreviewReady = idbGet('chat-previews').then(entries => {
   }
   if (filtered && chatBySel.size) saveChatPreview();
 });
-let chatPreviewTimer = 0;
 function chatTail(items, limit) {
   const start = Math.max(0, items.length - limit);
   const head = items.slice(0, start).findLast(it => it.k === 'human');
@@ -77,19 +76,37 @@ function chatTail(items, limit) {
 }
 function cacheChat(sel, chat, computer = currentComputer()?.id || '') {
   const key = `${computer}|${sel}`;
+  const changed = chatBySel.get(key) !== chat;
   lruPut(chatBySel, key, chat, 12);
   if (key === SC.key) SC.cleared = false;
-  saveChatPreview();
+  if (changed) saveChatPreview();
 }
 function saveChatPreview() {
+  chatPreviewDirty = true;
+  schedulePreviewSave();
+}
+function schedulePreviewSave() {
   if (!chatPreviewTimer) chatPreviewTimer = setTimeout(function savePreview() {
     if (scClears.size || chatScrolling || chatTouching) { chatPreviewTimer = setTimeout(savePreview, 250); return; }
-    chatPreviewTimer = 0;
+    flushPreviewSaves();
+  }, 1000);
+}
+function flushPreviewSaves() {
+  clearTimeout(chatPreviewTimer); chatPreviewTimer = 0;
+  if (computerResumeDirty) {
+    computerResumeDirty = false;
+    const ids = new Set(loadComputers().map(c => c.id));
+    for (const id of computerResumes.keys()) if (!ids.has(id)) computerResumes.delete(id);
+    for (const [id, value] of computerResumes) value.folded = !!ovSt.get(id)?.folded && ovCollapsed.has(id);
+    idbPut('computer-resumes', { at: computerResumeAt, entries: [...computerResumes], view: ovHistory() });
+  }
+  if (chatPreviewDirty && !scClears.size) {
+    chatPreviewDirty = false;
     idbPut('chat-previews', [...chatBySel].map(([key, value]) => {
       const items = chatTail(value.items, 400);
       return [key, { ...value, items, earlier: items.length < value.items.length || value.earlier }];
     }));
-  }, 1000);
+  }
 }
 let chatFrame = 0, queuedChat = null, chatRenderEpoch = 0;
 function invalidateChatRender() {
@@ -224,8 +241,8 @@ function scDirty() {
   SC.dirty = true;
   if (!SC.timer) SC.timer = setTimeout(scFlush, 3000);
 }
-document.addEventListener('visibilitychange', () => { if (document.hidden) { scFlush(); scDrain(true); } });
-addEventListener('pagehide', () => { scFlush(); scDrain(true); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) { scFlush(); scDrain(true); flushPreviewSaves(); } });
+addEventListener('pagehide', () => { scFlush(); scDrain(true); flushPreviewSaves(); });
 function scSwitch(sess) {
   scFlush();
   SC.key = sess ? scKeyFor(sess) : null;
@@ -328,6 +345,7 @@ async function scClear(key) {
   clearTimeout(scDrainTimer); scDrainTimer = 0;
   if (scSaveFrame) { cancelAnimationFrame(scSaveFrame); scSaveFrame = 0; }
   clearTimeout(chatPreviewTimer); chatPreviewTimer = 0;
+  chatPreviewDirty = false;
   for (const pending of scPending.keys()) if (matches(pending)) scPending.delete(pending);
   for (const cached of chatBySel.keys()) if (matches(cached)) chatBySel.delete(cached);
   for (const title of Object.keys(scTitles)) if (matches(title)) delete scTitles[title];
@@ -348,6 +366,7 @@ async function scClear(key) {
   } finally {
     scClears.delete(clear);
     if (chatBySel.size) saveChatPreview();
+    else if (computerResumeDirty) schedulePreviewSave();
     scFlush(); scDrain();
   }
 }
@@ -1116,17 +1135,20 @@ function queuedMessages(queued = chatStale ? [] : lastChat?.queued || [], qCount
   const pending = pendingEchoes.filter(p => p.kind === 'queue' && p.sel === viewSel && !p.represented);
   const nativeCount = Math.max(queued.length, devin ? qCount || 0 : 0);
   const count = queued.length ? nativeCount + pending.length : Math.max(nativeCount, pending.length);
-  const html = pending.map(p => `<div class="q pending"><span class="qt">${esc(p.text)}</span><span class="sub">${I18N.tr(p.syncing ? '正在同步…' : p.confirmed ? '已排队' : p.unknown ? '发送结果待确认' : '发送中…')}</span></div>`).join('')
+  return { count, pending, queued, devin };
+}
+function queuedMessagesHtml({ count, pending, queued, devin }) {
+  return pending.map(p => `<div class="q pending"><span class="qt">${esc(p.text)}</span><span class="sub">${I18N.tr(p.syncing ? '正在同步…' : p.confirmed ? '已排队' : p.unknown ? '发送结果待确认' : '发送中…')}</span></div>`).join('')
     + queued.map(q => `<div class="q"><span class="qt">${esc(q.t || '(空)')}</span>`
       + (supportsCapability('queueEdit') ? ibtn('edit', devin ? '从队列取出，放回输入框' : '修改', `data-q="${esc(q.id)}" data-a="edit"`) : '')
       + ibtn('enter', '打断当前这一轮，立刻发送', `data-q="${esc(q.id)}" data-a="send"`)
       + ibtn('x', '删除', `data-q="${esc(q.id)}" data-a="remove"`, 'del') + '</div>').join('')
     + (count && devin && !queued.length ? `<div class="q"><span class="qt">内容读不到，只显示数量</span></div>` : '');
-  return { count, html, clear: devin ? ibtn('trash', '清空', 'data-a="clear" data-q=""', 'del') : '' };
 }
+const queueClearButton = queue => queue.devin ? ibtn('trash', '清空', 'data-a="clear" data-q=""', 'del') : '';
 function renderQueuedList(queue) {
-  const html = `<div class="qhRow"><span class="qh">排队中 ${queue.count} 条</span>${queue.count ? queue.clear : ''}</div>`
-    + (queue.count ? queue.html : `<div class="hint">${I18N.tr('(空)')}</div>`);
+  const html = `<div class="qhRow"><span class="qh">排队中 ${queue.count} 条</span>${queue.count ? queueClearButton(queue) : ''}</div>`
+    + (queue.count ? queuedMessagesHtml(queue) : `<div class="hint">${I18N.tr('(空)')}</div>`);
   if ($('queueList').innerHTML !== html) $('queueList').innerHTML = html;
 }
 function showQueuedMessages() {
@@ -1144,8 +1166,8 @@ function renderQueue(busy, queued, subs = [], readonly = false, changed = 0, qCo
       + ibtn('eye', '查看', `data-sub="${esc(n)}" data-part="open"`) + ibtn('stop', '停止', `data-sub="${esc(n)}" data-part="stop"`, 'del') + '</div>').join('');
   }
   if (queue.count) {
-    html += `<div class="qhRow"><button class="qh fold" data-qfold aria-expanded="${queueOpen}">${queueOpen ? '▾' : '▸'} <span>排队中 ${queue.count} 条</span></button>${queue.clear}</div>`;
-    if (queueOpen) html += queue.html;
+    html += `<div class="qhRow"><button class="qh fold" data-qfold aria-expanded="${queueOpen}">${queueOpen ? '▾' : '▸'} <span>排队中 ${queue.count} 条</span></button>${queueClearButton(queue)}</div>`;
+    if (queueOpen) html += queuedMessagesHtml(queue);
   }
   if (changed && !readonly && !hiddenChangeNotices.has(changeNoticeKey())) html += `<div class="changesNotice"><button class="qh fold" data-changes>改动了 ${changed} 个文件 ›</button>${ibtn('x', '隐藏改动提示', 'data-toggle-changes')}</div>`;
   bar.innerHTML = html;
@@ -1213,20 +1235,20 @@ $('queueBar').onclick = async e => {
   if ('fold' in b.dataset) { subsOpen = !subsOpen; return renderQueue(lastChat?.busy, lastChat?.queued || [], lastChat?.subagents || [], lastChat?.readonly, lastChat?.changed, lastChat?.queuedCount); }
   if ('main' in b.dataset) { send({ t: 'mainChat' }); status('返回主对话…'); return; }
   if (b.dataset.sub) {
-    if (b.dataset.part === 'stop' && !await ask(`停止子 Agent「${b.dataset.sub}」？\n它做到一半的工作会中断。`, '停止')) return;
+    if (b.dataset.part === 'stop' && !await ask(`停止子 Agent「${b.dataset.sub}」？\n它做到一半的工作会中断。`, '停止', true)) return;
     send({ t: 'subagent', name: b.dataset.sub, part: b.dataset.part });
     status(b.dataset.part === 'stop' ? '正在停止子 Agent…' : '正在打开子 Agent…');
     return;
   }
   if (b.dataset.a === 'edit') return editQueued(b.dataset.q);
   if (b.dataset.a === 'clear') {
-    if (!await ask('清空 Devin 的排队消息？', '清空')) return;
+    if (!await ask('清空 Devin 的排队消息？', '清空', true)) return;
     sendQueueAction('', 'clear');
     status('正在清空排队消息…');
     return;
   }
-  if (b.dataset.a === 'send' && !await ask('立即发送这条消息？\nAgent 当前这一轮会被打断。', '立即发送')) return;
-  if (b.dataset.a === 'remove' && !await ask('删除这条排队消息？', '删除')) return;
+  if (b.dataset.a === 'send' && !await ask('立即发送这条消息？\nAgent 当前这一轮会被打断。', '立即发送', true)) return;
+  if (b.dataset.a === 'remove' && !await ask('删除这条排队消息？', '删除', true)) return;
   sendQueueAction(b.dataset.q, b.dataset.a);
   status(b.dataset.a === 'send' ? '已立即发送这条排队消息' : '已删除这条排队消息');
 };

@@ -981,7 +981,7 @@ async codexRenameThread(agentId, name) {
   if (!page?.chatWs) throw new Error('这个窗口已经关闭');
   const own = pageId === this.codexPageId && this.cdp;
   const cdp = own ? this.cdp : new Cdp(page.chatWs);
-  let beforeThread = '';
+  let beforeThread = '', failure;
   try {
     if (!own) await cdp.connect();
     beforeThread = await cdp.evaluate(helpersCall('codexThread()')) || '';
@@ -1012,14 +1012,25 @@ async codexRenameThread(agentId, name) {
       renamed = rows.some(row => row.id === convId && String(row.title || '').trim() === next);
     }
     if (!renamed) throw new Error('桌面端未确认会话名称已更新');
-    if (beforeThread && beforeThread !== convId) await this.selectCodexThread(beforeThread, cdp);
-    if (own) { this.lastChatAt = 0; await this.pollChat(); }
-    await this.listAgents();
-  publishSessionChange('codex', convId, { action: 'rename', title: next });
-    this.emit({ t: 'status', ok: true, msg: '已重命名会话' });
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
-    if (!own) { try { cdp.close(); } catch {} }
+    try {
+      await cdpRead.run(null, async () => {
+        if (beforeThread && beforeThread !== convId && !await this.selectCodexThread(beforeThread, cdp)) throw new Error('未能恢复原会话');
+        if (own) { this.lastChatAt = 0; await this.pollChat(); }
+      });
+    } catch (error) {
+      if (failure) throw new AggregateError([failure, error], failure.message);
+      throw error;
+    } finally {
+      if (!own) { try { cdp.close(); } catch {} }
+    }
   }
+  await this.listAgents();
+  publishSessionChange('codex', convId, { action: 'rename', title: next });
+  this.emit({ t: 'status', ok: true, msg: '已重命名会话' });
 },
 
 noteFusionRemoved(convId) {

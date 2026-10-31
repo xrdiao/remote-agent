@@ -12,6 +12,8 @@ import { readLibrary, importLibrary, favoriteSession } from '../lib/session-libr
 import { computerId } from '../lib/auth.mjs';
 import { scanProjectWindows, projectWindowSettings } from './project-windows.mjs';
 import { nativeWindow, configureNativeRetry } from './native-windows.mjs';
+import { manageOverviewSession } from './overview-actions.mjs';
+import { withOperation } from './operations.mjs';
 
 // One entry per message type the phone can send (auth/ack are handled inside ws.mjs itself).
 //   pre      — runs in handle() before the read-only/focus split, without a cdp
@@ -90,6 +92,13 @@ const questionDone = (s, m) => s.emit({ t: 'questionDone', requestId: m.requestI
 const questionFailed = (s, m) => s.emit({ t: 'questionDone', requestId: m.requestId, sel: s.selectionKey(), ok: false });
 
 export const ROUTES = {
+  overviewManage: { fast: true, connection: true,
+    fastRun: async (s, m) => {
+      const value = await withOperation(null, () => manageOverviewSession(s.deviceId, m));
+      s.emit({ t: 'overviewManaged', ok: true, value });
+    },
+    fail: (s, m, error) => s.emit({ t: 'overviewManaged', ok: false, error: error.message }),
+  },
   compatibility: { fast: true, fastRun: async (s, m) => {
     const app = String(m.app || '');
     const data = await inspectCompatibility(app, String(m.windowId || ''));

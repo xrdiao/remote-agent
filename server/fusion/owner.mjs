@@ -632,11 +632,7 @@ async fusionModelMenu(side) {
         await new Promise(r => setTimeout(r, 150));
         items = await this.cdp.evaluate(helpersCall(`menuItems('model')`)) || [];
         if (!items.length) {
-          const opened = await this.cdp.evaluate(helpersCall('clickModelListTrigger()'));
-          if (!opened) {
-            const sub = await this.cdp.evaluate(helpersCall('modelListTrigger()'));
-            if (sub) await this.tapCss(sub.x, sub.y);
-          }
+          await this.openModelList();
         }
       }
     }

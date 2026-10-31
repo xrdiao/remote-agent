@@ -264,10 +264,18 @@ $('shade').onclick = () => { closeSheet(); };
 
 // Confirmation for anything that interrupts the Agent or throws work away; resolves false if dismissed.
 let askDone = null;
-function ask(question, ok = '确定') {
+const confirmationScope = () => [currentComputer()?.id || '', viewSel, mode].join('|');
+function ask(question, ok = '确定', scoped = false) {
   askDone?.(false);
+  const owner = scoped ? confirmationScope() : '';
   return new Promise(resolve => {
-    askDone = v => { askDone = null; resolve(v); };
+    const changed = () => { if (owner !== confirmationScope()) closeSheet(); };
+    askDone = v => {
+      if (scoped) document.removeEventListener('composer-state', changed);
+      askDone = null;
+      resolve(v && (!scoped || owner === confirmationScope()));
+    };
+    if (scoped) document.addEventListener('composer-state', changed);
     openSheet('ask', `<h3 class="askQ">${esc(question)}</h3><div class="askBtns">`
       + `<button id="askNo">取消</button><button id="askOk" class="danger">${esc(ok)}</button></div>`);
     $('askOk').onclick = () => { askDone?.(true); closeSheet(); };

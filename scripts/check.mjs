@@ -16,7 +16,7 @@ let failures = 0;
 const fail = msg => { failures++; console.error(`FAIL ${msg}`); };
 
 // Frontend sends types built dynamically (ternaries / string concat).
-const SEND_EXTRA = new Set(['codexPick', 'fusionModel']);
+const SEND_EXTRA = new Set(['codexPick', 'fusionModel', 'overviewManage']);
 // Server emits that the extraction sees but the frontend does not dispatch on.
 const EMIT_OK = new Set([]);
 
