@@ -30,6 +30,7 @@ function renderAttachments(list) {
   $('attachments').parentElement.hidden = !list.length && !pending.length;
   $('attachments').innerHTML = list.map(f => { const preview = f.preview || editableImages.get(f.id)?.data; return `<div class="attachment">${preview ? `<img src="${esc(preview)}" alt="">` : ''}${preview ? `<button data-edit-attachment="${esc(f.id)}">编辑</button>` : ''}<span title="${esc(f.name)}">${esc(f.name)}${f.size != null ? ` (${Math.ceil(f.size / 1024)} KB)` : ''}</span><button data-remove-attachment="${esc(f.id)}" aria-label="删除 ${esc(f.name)}">×</button></div>`; }).join('')
     + pending.map(([id, f]) => `<div class="attachment"><img src="${esc(f.preview)}" alt=""><span>${esc(f.name)} · ${f.error ? '上传失败' : '上传中…'}</span><button data-edit-pending-image="${id}">编辑</button>${f.error ? `<button data-retry-image="${id}">重试</button>` : ''}<button data-discard-image="${id}" aria-label="取消上传图片">×</button></div>`).join('');
+  ovUpdateAttachments();
   updateComposeCompact();
 }
 // A disconnected upload has no reliable imageDone receipt; allow an explicit retry.
@@ -57,7 +58,7 @@ function finishImageUpload(m) {
   else { file.cancelUpload?.(); file.error = true; }
   renderAttachments(desktopAttachments);
 }
-$('attachments').onclick = e => {
+function attachmentClick(e) {
   const retry = e.target.closest('[data-retry-image]');
   if (retry) {
     const record = imageUploads.get(retry.dataset.retryImage);
@@ -92,13 +93,24 @@ $('attachments').onclick = e => {
   if (edit) { status('正在读取原图…'); return send({ t: 'editImage', id: edit.dataset.editAttachment, sel: viewSel }); }
   const b = e.target.closest('[data-remove-attachment]');
   if (b) send({ t: 'removeAttachment', id: b.dataset.removeAttachment });
-};
-$('uploadDoc').onclick = () => $('docFile').click();
+}
+$('attachments').onclick = attachmentClick;
+let documentPickerTarget = null, imagePickerTarget = null;
+function openDocumentPicker(target = null) {
+  documentPickerTarget = target;
+  $('docFile').click();
+}
+$('uploadDoc').onclick = () => openDocumentPicker();
 $('img').title = $('img').ariaLabel = '上传图片';
-$('img').onclick = () => {
+function openImagePicker(target = null) {
   openSheet('image-upload', '<h3>选择图片</h3><button class="opt" data-image-choice="direct">直接上传</button><button class="opt" data-image-choice="edit">编辑后上传</button>');
-  for (const button of $('sheet').querySelectorAll('[data-image-choice]')) button.onclick = () => { editBeforeUpload = button.dataset.imageChoice === 'edit'; closeSheet(); $('imgFile').click(); };
-};
+  for (const button of $('sheet').querySelectorAll('[data-image-choice]')) button.onclick = () => { imagePickerTarget = target; editBeforeUpload = button.dataset.imageChoice === 'edit'; closeSheet(); $('imgFile').click(); };
+}
+$('img').onclick = () => openImagePicker();
+async function pickerTargetReady(target) {
+  if (!target) return;
+  if (!await target.ready || ovToolState !== target || !ovToolInput()) throw new Error('会话已切换，请重新选择文件');
+}
 async function uploadDocument(file, sel, image) {
   const target = base, computer = currentComputer();
   const path = '/api/upload?name=' + encodeURIComponent(file.name) + '&sel=' + encodeURIComponent(sel)
@@ -141,9 +153,12 @@ async function attachDocumentFile(file) {
   } catch (error) { status(error.name === 'AbortError' ? '文件上传超时' : error.message, false); }
 }
 $('docFile').onchange = async () => {
-  const file = $('docFile').files[0];
+  const file = $('docFile').files[0], target = documentPickerTarget;
+  documentPickerTarget = null;
   $('docFile').value = '';
-  if (file) await attachDocumentFile(file);
+  if (!file) return;
+  try { await pickerTargetReady(target); await attachDocumentFile(file); }
+  catch (error) { status(error.message, false); }
 };
 async function attachImageFile(file, options = {}) {
   const sel = options.sel || viewSel, scope = imageUploadScope();
@@ -183,12 +198,16 @@ async function uploadImageFile(id) {
 // Older Android app builds drop multi-select picks (ClipData) entirely; give them a single-file picker.
 if (/Android/.test(navigator.userAgent) && window.AgentRemoteApp && typeof window.AgentRemoteApp.multiPick !== 'function') $('imgFile').multiple = false;
 $('imgFile').onchange = async () => {
-  const files = [...$('imgFile').files], edit = editBeforeUpload;
+  const files = [...$('imgFile').files], edit = editBeforeUpload, target = imagePickerTarget;
+  imagePickerTarget = null;
   $('imgFile').value = ''; editBeforeUpload = false;
   if (!files.length) return;
-  const sel = viewSel, scope = imageUploadScope();
-  imageBatchScope = scope;
+  let scope;
   try {
+    await pickerTargetReady(target);
+    const sel = viewSel;
+    scope = imageUploadScope();
+    imageBatchScope = scope;
     if (!edit) {
       for (const file of files) { if (scope !== imageUploadScope()) break; await attachImageFile(file, { sel }); }
     } else {

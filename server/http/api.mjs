@@ -65,11 +65,10 @@ async function actOnWindow(deviceId, { win, threadId, act, index, text, question
   }
 }
 
-async function sendOverviewReply(deviceId, { computer, win, windowId, threadId, text }) {
+async function sendOverviewReply(deviceId, { computer, win, windowId, threadId, text, mentions }) {
   const app = String(win || '').split(':')[0], reply = String(text ?? '').trim();
   if (computer !== computerId()) throw new Error('所选电脑已变化，请刷新概览后重试');
   if (!['cursor', 'devin', 'codex'].includes(app) || !windowId || !threadId) throw new Error('会话信息不完整，请刷新概览后重试');
-  if (!reply) throw new Error('回复内容为空');
   const requestId = crypto.randomUUID();
   let latest = { pending: true }, confirm, timer;
   const received = new Promise(resolve => { confirm = resolve; });
@@ -87,7 +86,11 @@ async function sendOverviewReply(deviceId, { computer, win, windowId, threadId, 
     await s.handle({ t: 'attach', id: win, windowId, threadId });
     if (!s.bindingReady || s.app !== app || s.windowId !== windowId || s.threadId !== threadId)
       throw new Error('目标会话尚未就绪，请打开对话确认后重试');
-    await s.handle({ t: 'send', text: reply, submit: true, when: 'queue', requestId });
+    if (!reply) {
+      await s.handle({ t: 'attachments' });
+      if (!s.lastAttachments || s.lastAttachments === '[]') throw new Error('回复内容为空');
+    }
+    await s.handle({ t: 'send', text: reply, submit: true, when: 'queue', requestId, ...(mentions ? { mentions } : {}) });
     const result = await Promise.race([received, new Promise(resolve => { timer = setTimeout(() => resolve(latest), 5000); })]);
     if (result.t === 'sendFailed') throw new Error(result.message);
     return { ok: true, requestId, pending: !!result.pending, queued: !!result.queued, ...(result.message ? { message: result.message } : {}) };
