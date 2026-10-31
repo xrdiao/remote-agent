@@ -227,7 +227,7 @@ export const methods = {
       await this.closeMenus();
     }
     await this.showParams(model, label);
-    setTimeout(() => this.pollChat().catch(() => {}), 300);
+    this.refreshSoon(300);
   },
   async syncFast(on) {
     const result = await this.cdp.evaluate(`(async () => {
@@ -335,6 +335,6 @@ export const methods = {
       await this.pollChat(true);
       return;
     }
-    setTimeout(() => this.pollChat().catch(() => {}), 500);
+    this.refreshSoon(500);
   }
 };

@@ -251,6 +251,29 @@ modFiles.forEach((f, n) => {
 });
 console.log(`ok   imports: ${modFiles.length} modules`);
 
+/* 5. app-shell versions and core precache entries */
+const indexHtml = fs.readFileSync(path.join(ROOT, 'app', 'index.html'), 'utf8');
+const coreJs = fs.readFileSync(path.join(ROOT, 'app', 'js', 'core.js'), 'utf8');
+const workerJs = fs.readFileSync(path.join(ROOT, 'app', 'sw.js'), 'utf8');
+const appVersion = /const APP_VERSION = '(v\d+)'/.exec(coreJs)?.[1];
+const cacheVersion = /const CACHE = CACHE_PREFIX \+ '(v\d+)'/.exec(workerJs)?.[1];
+if (!appVersion || cacheVersion !== appVersion) fail(`app shell version: APP_VERSION=${appVersion}, CACHE=${cacheVersion}`);
+const shellSource = /const SHELL = \[([\s\S]*?)\];/.exec(workerJs)?.[1];
+if (!shellSource) fail('app shell: cannot read the SHELL precache list');
+const shell = [...(shellSource || '').matchAll(/'([^']+)'/g)].map(m => m[1]);
+const coreRefs = [...indexHtml.matchAll(/<(?:script|link)\b[^>]*\b(?:src|href)="([^\"]+)"/g)]
+  .map(m => m[1]).filter(ref => /^(?:js\/|(?:app\.css|i18n\.js)(?:\?|$))/.test(ref));
+const coreRef = coreRefs.find(ref => ref.split('?')[0] === 'js/core.js');
+if (coreRef !== `js/core.js?v=${appVersion?.slice(1)}`) fail(`app shell version: ${coreRef} does not match APP_VERSION=${appVersion}`);
+for (const ref of coreRefs) {
+  const cached = shell.find(item => item.split('?')[0] === ref.split('?')[0]);
+  if (cached !== ref) fail(`app shell: index ${ref}; SHELL ${cached || 'missing'}`);
+}
+for (const ref of shell) {
+  if (!fs.existsSync(path.join(ROOT, 'app', ref.split('?')[0]))) fail(`app shell: precache path missing: ${ref}`);
+}
+console.log(`ok   app shell: ${coreRefs.length} core references checked (KaTeX offline assets are outside the precache scope)`);
+
 if (failures) {
   console.error(`\n${failures} check(s) failed`);
   process.exit(1);

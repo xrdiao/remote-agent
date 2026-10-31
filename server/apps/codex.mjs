@@ -129,7 +129,7 @@ export const adapter = {
     if (!await this.cdp.evaluate(helpersCall(`codexQueueAction(${JSON.stringify(String(id))}, ${JSON.stringify(action)})`))) throw new Error('Codex 排队消息或操作入口已不存在');
     if (action === 'send' && !await this.waitFor(`codexReceiptRows().some(item => item.i === ${JSON.stringify(target?.messageId || '')} || item.nativeIds?.includes(${JSON.stringify(String(id))}))`, 40))
       throw new Error('Codex 尚未确认立即追加结果，请查看会话或队列');
-    setTimeout(() => this.pollChat().catch(() => {}), 300);
+    this.refreshSoon(300);
   },
 
   async editQueued(id, text) {
@@ -871,7 +871,7 @@ async codexPick(msg) {
     const dialog = await this.cdp.evaluate(`(() => { const doc = document.getElementById('active-frame')?.contentDocument || document; return [...doc.querySelectorAll('[role=dialog]')].some(e => e.getBoundingClientRect().height > 40); })()`);
     if (dialog) {
       this.emit({ t: 'status', ok: true, msg: '请在请求卡片中确认' });
-      setTimeout(() => this.pollChat().catch(() => {}), 300);
+      this.refreshSoon(300);
       return;
     }
     const next = await this.cdp.evaluate(helpersCall('codexMentionRows()')) || [];
@@ -885,7 +885,7 @@ async codexPick(msg) {
       return;
     }
     this.emit({ t: 'status', ok: true, msg: `已执行 ${hit.label.split('\n')[0]}` });
-    setTimeout(() => this.pollChat().catch(() => {}), 300);
+    this.refreshSoon(300);
   }));
 },
 
@@ -935,7 +935,7 @@ async codexRunPick(label) {
   await new Promise(r => setTimeout(r, 300));
   const run = (await this.cdp.evaluate(helpersCall('codexFacts()')))?.view?.run || '';
   this.emit({ t: 'status', ok: true, msg: run ? `执行位置：${run}` : `已选择 ${label}` });
-  setTimeout(() => this.pollChat().catch(() => {}), 300);
+  this.refreshSoon(300);
 },
 
 async codexChatMenu() {
@@ -966,7 +966,7 @@ async codexChatPick(label, name) {
   this.emit({ t: 'status', ok: true, msg: `已执行 ${label}` });
   const now = await this.cdp.evaluate(helpersCall('codexThread()'));
   if (now && now !== thread) await this.adoptCodexThread(now);
-  setTimeout(() => this.pollChat().catch(() => {}), 300);
+  this.refreshSoon(300);
   setTimeout(() => this.listAgents().catch(() => {}), 400);
 },
 

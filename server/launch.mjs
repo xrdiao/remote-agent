@@ -5,9 +5,10 @@ import { access, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { IS_WIN, IS_MAC, installDirs } from '../lib/platform.mjs';
 import { listWindows } from './windows.mjs';
+import { EDITORS } from './config.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const AGENTS = ['cursor', 'devin', 'codex'];
+const AGENTS = EDITORS.map(editor => editor.app);
 // An app already being launched never spawns a second process, across sessions too.
 // Later callers join the in-flight launch and get its result instead of silence.
 const inFlight = new Map();

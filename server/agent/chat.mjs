@@ -35,6 +35,10 @@ const pasteImage = (b64, name, type) => `(async () => {
 
 
 export const methods = {
+  refreshSoon(ms) {
+    return setTimeout(() => this.pollChat().catch(() => {}), ms);
+  },
+
   thinkingBody(it) {
     return (it?.t || '').split('\n').slice(1).join('\n');
   },
@@ -614,7 +618,7 @@ export const methods = {
     }
     const [x, y, w, h] = rect;
     await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: x + w / 2, y: y + h / 2, deltaX: 0, deltaY: dy });
-    setTimeout(() => this.pollChat().catch(() => {}), 400);
+    this.refreshSoon(400);
   },
 
 
@@ -735,7 +739,7 @@ export const methods = {
       if (text) await this.typeText(text);
       else await this.key('Backspace');
     }
-    setTimeout(() => this.pollChat().catch(() => {}), 300);
+    this.refreshSoon(300);
   },
 
 

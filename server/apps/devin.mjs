@@ -182,12 +182,6 @@ export const adapter = {
   
   },
 
-  async newTerminal() {
-    await this.editorCdp.send('Page.bringToFront');
-    await this.editorCdp.evaluate('document.activeElement?.blur()');
-    await this.key('Ctrl+Shift+`', { cdp: this.editorCdp });
-  },
-
   async accountUsage(request, automatic) {
     return this.cdp.evaluate(helpersCall('readDevinUsage(true)'));
   },
@@ -303,7 +297,7 @@ async devinQueueAction(id, action) {
   }
   if (!pos) throw new Error('没找到排队消息的操作按钮（可能 Devin 版本不同）');
   await this.tapCss(pos.x, pos.y);
-  setTimeout(() => this.pollChat().catch(() => {}), 300);
+  this.refreshSoon(300);
 },
 
 
@@ -320,7 +314,7 @@ async devinClearQueue() {
   if (!pos) throw new Error('没找到清空排队消息的按钮（可能 Devin 版本不同）');
   await this.tapCss(pos.x, pos.y);
   this.emit({ t: 'status', ok: true, msg: '已清空排队消息' });
-  setTimeout(() => this.pollChat().catch(() => {}), 300);
+  this.refreshSoon(300);
 },
 
 async subagentAction(name, part) {
@@ -346,7 +340,7 @@ async subagentAction(name, part) {
     const child = await this.waitFor(`activeChatTab() && activeChatTab() !== ${JSON.stringify(parent.label)} && activeChatTab()`, 12);
     if (this.cdp === cdp && this.mainTab === parent) parent.child = child || '';
   }
-  setTimeout(() => this.pollChat().catch(() => {}), 500);
+  this.refreshSoon(500);
 },
 
 async backToMain() {
@@ -355,7 +349,7 @@ async backToMain() {
   this.selectedThread = '';
   await this.tapCss(pos.x, pos.y);
   this.mainTab = null;
-  setTimeout(() => this.pollChat().catch(() => {}), 400);
+  this.refreshSoon(400);
 },
 
 
@@ -517,7 +511,7 @@ async revertAnswer(ok, apply) {
   if (pos) await this.tapCss(pos.x, pos.y);
   else if (!ok) await this.key('Escape');
   else throw new Error('没找到回退确认按钮（可能 Devin 版本不同）');
-  if (!ok) return void setTimeout(() => this.pollChat().catch(() => {}), 500);
+  if (!ok) return void this.refreshSoon(500);
   for (let k = 0; k < 40; k++) {
     await new Promise(r => setTimeout(r, 250));
     const s = await this.cdp.evaluate(helpersCall(`revertState(${JSON.stringify(pr.i)})`));
@@ -537,7 +531,7 @@ afterRevert(num) {
   this.lastChat = '';
   this.emit({ t: 'trunc', from: num });
   this.emit({ t: 'status', ok: true, msg: '已回退到这条消息之前' });
-  setTimeout(() => this.pollChat().catch(() => {}), 300);
+  this.refreshSoon(300);
 },
 
 async ensureDevinIde(threadId = '', project = '') {
@@ -655,7 +649,7 @@ async closeTab(title) {
   }
   this.resetDevinView();
   this.emit({ t: 'status', ok: gone, msg: gone ? '已关闭会话标签' : '没有关掉，Devin 可能在等你确认，请到电脑上看一下' });
-  setTimeout(() => this.pollChat().catch(() => {}), 300);
+  this.refreshSoon(300);
 },
 
 
@@ -788,7 +782,7 @@ async workdirPick(name, dirPath, waitMs = 20000) {
   }
   this.lastChat = '';
   this.emit({ t: 'status', ok: info?.name === name, msg: info?.name === name ? `工作目录：${name}` : '没有切换成功，请到电脑上看一下' });
-  setTimeout(() => this.pollChat().catch(() => {}), 300);
+  this.refreshSoon(300);
 },
 
 async envPick(label) {
@@ -800,7 +794,7 @@ async envPick(label) {
   await this.tapCss(hit.x, hit.y);
   await new Promise(r => setTimeout(r, 500));
   this.emit({ t: 'status', ok: true, msg: `运行位置：${label}` });
-  setTimeout(() => this.pollChat().catch(() => {}), 300);
+  this.refreshSoon(300);
 },
 
 

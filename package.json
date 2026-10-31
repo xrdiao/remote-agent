@@ -11,7 +11,8 @@
     "pair": "node cli/devices.mjs pair",
     "devices": "node cli/devices.mjs",
     "2fa": "node cli/twofa.mjs",
-    "check": "node scripts/check.mjs",
+    "check": "node scripts/check.mjs && npm test",
+    "test": "node --test scripts/codex-submit.test.mjs scripts/thinking-cache.test.mjs scripts/computer-switch.test.mjs scripts/ratelimit.test.mjs scripts/codex-context-cache.test.mjs",
     "reset": "node -e \"const d=require('os').homedir()+'/.agent-remote/';for(const f of ['url-key','devices.json','pairing.json','totp.json','config.json','state.json'])require('fs').rmSync(d+f,{force:true});console.log('已重置：所有设备需要重新配对，二次验证已关闭')\"",
     "voice:setup": "node cli/voice-setup.mjs"
   },

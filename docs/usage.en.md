@@ -2,6 +2,19 @@
 
 [README](../README.en.md) · [中文](usage.md)
 
+## Home, overview and favorites
+
+Home has **Overview**, **Projects** and **Favorites**, and remembers the last selected column. The **…** menu also lets you choose whether to enter the overview or conversation content by default.
+
+- **Overview** groups sessions by computer and shows running, pending, completed and idle states. Idle and infrequent groups can be expanded. Click a computer row to collapse its projects or sessions. Opening a session card scrolls to it and shows the latest preview, which can scroll vertically. Operable Cursor, Devin and Codex sessions accept direct text replies; use **Open conversation** for full history, attachments and other actions. Replying to a historical session may switch the desktop to that session. Fusion keeps its own controls.
+- **Projects** groups projects by computer and lists sessions within each project. Favorite sessions are classified as common, as are sessions with messages from the past seven days; other sessions are infrequent.
+- **Favorites** collects favorite sessions from all computers, including records whose project windows are closed. Displaying a favorite does not open its project; **Open conversation** loads the target project or session when selected.
+- Hold a session card to access favorite/unfavorite, rename and native delete/archive actions. Batch management in **…** supports selection, adding favorites and delete/archive. Actions run individually and report failures. Delete/archive support depends on the Agent's actual menu.
+
+Computers load within Home and expand after loading. After three consecutive failed connection attempts, an unreachable computer pauses automatic retries and data reads while keeping **Reconnect** available. Returning to the foreground or restoring the phone network allows one probe. This does not confirm that the computer is powered off. A short return still restores the tunnel and verifies the device; retained sessions can be reused within the server retention period, and are initialized again after expiration.
+
+The PWA caches its core shell. KaTeX scripts, styles and fonts are outside the install-time precache list, so complete formula rendering is not guaranteed on a first offline open.
+
 ## Chat, projects and sessions
 
 Switch Cursor, Devin, Codex or Fusion from the header. **Projects / sessions** in the composer groups conversations by project and provides folder selection, project creation and new sessions. Switching projects preserves existing windows and native conversation working directories. Codex reuses an already-open window for that project, or opens one when needed. New windows may require desktop sign-in or workspace trust confirmation.
@@ -12,7 +25,7 @@ Enter sends; Shift+Enter or the on-screen ↵ inserts a newline. On-screen ↑�
 
 ## Questions, approvals and execution records
 
-Codex Question presets can be clicked to submit directly. Custom answers can be sent from the card or the main composer; with a Question pending, composer text answers that question. Terminal command approval keeps its own approve/reject actions.
+Codex Questions let you choose presets or enter custom answers in the card and submit as indicated. The Question and main composer keep separate drafts without copying text automatically. To answer from the main composer, first select **在对话框回答** (answer in composer) on the card. In portrait, focusing a Question input temporarily collapses the main composer; its top-right button also toggles collapse/expand. Terminal command approval keeps its own approve/reject actions.
 
 **… → Show execution commands** is saved per Agent. When off, completed execution and tool read/search records are hidden after the turn ends. Thinking, work explanations, results, failures and pending approvals remain visible. History is not deleted.
 
