@@ -840,12 +840,13 @@ body:not(.land).composeCompact.chatmode .attachmentRow,
 body:not(.land).composeCompact.chatmode #mentionBox,
 body:not(.land).composeCompact.chatmode #mathPrev,
 body:not(.land).composeCompact.chatmode #retryChat { display: none; }
-body:not(.land).composeCompact.chatmode #footerStatus {
+body:not(.land).chatmode #footerStatus {
+  position: absolute; align-items: center; justify-content: flex-start; gap: 6px; min-height: 0;
   top: auto; bottom: calc(100% - 2px); left: 14px; right: auto; width: auto; max-width: calc(100% - 28px);
   padding: 2px 7px 0; border-radius: 8px 8px 0 0; background: var(--s1); pointer-events: auto;
 }
-body:not(.land).composeCompact.chatmode #elapsed { order: -1; font-size: 10px; }
-body:not(.land).composeCompact.chatmode #msg { font-size: 10px; }
+body:not(.land).chatmode #elapsed { order: -1; font-size: 10px; }
+body:not(.land).chatmode #msg { font-size: 10px; }
 
 /* Short screens (tablets, foldable inners, cover screens): reclaim chrome height. */
 @media (max-height: 760px) {
@@ -1744,7 +1745,7 @@ body.conv #overview { display: none; }
 #overview .ov-session.ov-compact:not(.ov-open) > .ov-state { justify-self: start; }
 #overview .ov-session.ov-compact:not(.ov-open) > .ov-state .ov-badge { padding: 2px 7px; font-size: 11px; }
 
-#overview .ov-tile.ov-open { grid-column: 1 / -1; aspect-ratio: auto; border-radius: 30px; cursor: default; grid-template-columns: auto 1fr auto; grid-template-rows: auto auto; grid-template-areas: "logo title close" "card card card"; align-items: center; justify-items: stretch; text-align: left; column-gap: 12px; padding: 14px; min-height: 0; transform: none; animation: none; box-shadow: 0 10px 40px rgba(0,0,0,.2); }
+#overview .ov-tile.ov-open { grid-column: 1 / -1; aspect-ratio: auto; border-radius: 30px; cursor: default; grid-template-columns: auto 1fr auto; grid-template-rows: auto auto; grid-template-areas: "logo title close" "card card card"; align-items: center; justify-items: stretch; text-align: left; column-gap: 12px; padding: 14px; min-height: 0; overflow: visible; transform: none; animation: none; box-shadow: 0 10px 40px rgba(0,0,0,.2); }
 #overview .ov-st-wait.ov-wide.ov-open { animation: none; }
 #overview .ov-tile.ov-open::before, #overview .ov-tile.ov-open::after { display: none; }
 #overview .ov-tile.ov-open > .ov-state, #overview .ov-tile.ov-open > .ov-context, #overview .ov-tile.ov-open > .ov-now, #overview .ov-tile.ov-open > .ov-foot { display: none; }
@@ -1794,11 +1795,22 @@ body.conv #overview { display: none; }
 #overview .ov-send svg { width: 19px; height: 19px; }
 #overview .ov-btn { height: 48px; padding: 0 22px; border-radius: 999px; font-weight: 650; font-size: 15px; background: var(--s2); color: var(--fg-hi); margin-top: 12px; }
 #overview .ov-btn.ov-pri { background: var(--accent); color: var(--accent-fg); }
-#overview .ov-cfoot { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 14px; }
+#overview .ov-cfoot { position: relative; display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 14px; }
 #overview .ov-tools { display: flex; flex: 1; min-width: 0; }
 #overview .ov-tools button { display: grid; place-items: center; flex: 1; max-width: 34px; min-width: 24px; height: 34px; padding: 0; color: var(--fg-3); border-radius: 50%; }
 #overview .ov-tools button:active { background: var(--s2); }
 #overview .ov-tools button:disabled { opacity: .45; }
+#overview .ov-tools [data-ov-control] { display: contents; }
+#overview .ov-tools #mic, #overview .ov-tools #stop { position: static; transform: none; flex: 1; background: transparent; }
+#overview .ov-tools #mic.on { background: var(--err); color: #fff; }
+#overview .ov-tools .ov-compose-more { flex: 1; max-width: 34px; min-width: 24px; }
+#overview .ov-compose-more summary { display: grid; place-items: center; list-style: none; height: 34px; border-radius: 50%; color: var(--fg-3); cursor: pointer; }
+#overview .ov-compose-more summary svg { width: 20px; height: 20px; }
+#overview .ov-compose-more[open] summary { background: var(--s2); }
+#overview .ov-compose-more-menu { position: absolute; bottom: calc(100% + 8px); right: 0; z-index: 3; width: min(240px, calc(100vw - 56px)); max-height: 50dvh; overflow-y: auto; overscroll-behavior: contain; padding: 6px; border: 1px solid var(--line-2); border-radius: 16px; background: var(--s1); box-shadow: 0 8px 30px rgba(0,0,0,.18); }
+#overview .ov-compose-more-label { padding: 8px; font-size: 11px; color: var(--fg-3); }
+#overview .ov-compose-more-menu > button { display: flex; align-items: center; gap: 8px; width: 100%; max-width: none; height: auto; min-height: 36px; padding: 8px; border-radius: 10px; font-size: 13px; text-align: left; }
+#overview .ov-compose-more-menu > button svg { width: 18px; height: 18px; flex: none; }
 #overview .ov-cfoot > .ov-link { flex: none; }
 #overview .ov-tool-status { margin-top: 8px; font-size: 12px; color: var(--fg-3); overflow-wrap: anywhere; }
 #overview .ov-tool-status.err { color: var(--err); }
