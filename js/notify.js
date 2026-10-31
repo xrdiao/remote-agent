@@ -240,7 +240,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') resumeComputerConnections();
   else suspendComputerConnections();
   if (authed) {
-    send({ t: 'visible', v: conversationVisible() });
+    ovVisible();
     if (document.visibilityState === 'visible') {
       send({ t: 'usage', automatic: true });
       requestAgentCatalog();

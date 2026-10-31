@@ -1118,9 +1118,14 @@ function resumeComputerConnections() {
   return foreground;
 }
 
+function ovVisible() {
+  if (!authed) return;
+  const watching = conversationVisible();
+  send({ t: 'visible', v: watching || document.visibilityState === 'visible' && ovComposerReady(), watching });
+}
 function startComputerUpdates() {
   requestAgentCatalog();
-  send({ t: 'visible', v: conversationVisible() });
+  ovVisible();
   send({ t: 'lang', v: I18N.lang });
   clearInterval(usageTimer);
   usageTimer = setInterval(() => { if (authed && document.visibilityState === 'visible') send({ t: 'usage', automatic: true }); }, 60 * 1000);

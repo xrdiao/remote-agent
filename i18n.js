@@ -349,7 +349,7 @@ const I18N = (() => {
     '模型列表未加载，请确认电脑端模型菜单可以打开': 'The model list did not load. Check that the desktop model menu opens.',
     '在当前项目新建会话': 'New session in current project', '在此项目新建会话': 'New session in this project',
     '打开项目／新建会话': 'Open project / new session', '打开文件': 'Open file', '选择 Agent': 'Choose Agent',
-    '选择其他文件夹': 'Choose another folder', '请先打开此 Agent': 'Open this Agent first', '工具调用': 'Tool calls',
+    '选择文件夹': 'Choose folder', '请先打开此 Agent': 'Open this Agent first', '工具调用': 'Tool calls',
     '展开电脑': 'Expand computer', '折叠电脑': 'Collapse computer',
     '根目录': 'Root', '文件路径': 'File path', '输入路径': 'Enter a path', '补全': 'Complete', '前往': 'Go', '没有匹配项': 'No matches',
     '新建项目并创建会话': 'Create project and session', '已在所选项目新建会话': 'Session created in the selected project',

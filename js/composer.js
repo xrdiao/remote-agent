@@ -608,7 +608,9 @@ $('fusionBar').onclick = e => {
   if (b.dataset.fusionAct === 'go') return send({ t: 'fusionGo' });
   send({ t: 'fusionDecide', kind: b.dataset.fusionAct });
 };
-$('send').onclick = () => {
+function sendComposer() {
+  if ($('send').disabled) return;
+  cancelVoice();
   if (mode === 'chat' && questionCompose?.sel === viewSel) return submitQuestionCompose();
   if (mode === 'chat' && pendingImageUploads()) return status('图片尚未上传完成；失败图片请重试或删除', false);
   const v = text.value;
@@ -623,8 +625,10 @@ $('send').onclick = () => {
     : send({ t: 'send', text: v, submit: true, ...receipt, ...(when ? { when } : {}), ...mentionsFor(v) });
   if (sent === false) failPendingSend(receipt.requestId);
   if (mode === 'chat') jumpToLatest();
-};
-$('sendNow').onclick = async () => {
+}
+async function sendComposerNow() {
+  if ($('sendNow').disabled) return;
+  cancelVoice();
   if (pendingImageUploads()) return status('图片尚未上传完成；失败图片请重试或删除', false);
   const v = text.value;
   if (!v.trim() && !$('attachments').children.length) return;
@@ -637,7 +641,9 @@ $('sendNow').onclick = async () => {
   pushEcho(receipt.requestId, v, steer ? 'chat' : 'queue');
   if (send({ t: 'send', text: v, submit: true, ...receipt, when: steer ? 'now' : 'queue', ...mentionsFor(v) }) === false) failPendingSend(receipt.requestId);
   jumpToLatest();
-};
+}
+$('send').onclick = sendComposer;
+$('sendNow').onclick = sendComposerNow;
 $('insertNewline').addEventListener('pointerdown', e => e.preventDefault());
 $('insertNewline').onclick = () => {
   insertComposerText('\n', text);
@@ -649,7 +655,7 @@ let shiftEnter = false;
 function submitOnEnter(e) {
   if (shiftEnter || e.shiftKey || e.isComposing || composing) return;
   e.preventDefault();
-  $('send').click();
+  sendComposer();
 }
 const composerInputHandlers = {
   input: e => editComposerInput(e.target, e),
@@ -664,7 +670,14 @@ const composerInputHandlers = {
     setTimeout(fitViewport, 60); updateComposeCompact();
   },
   compositionstart: () => { endInputRecall(); composing = true; updateComposeCompact(); },
-  compositionend: () => { setTimeout(() => { composing = false; updateComposeCompact(); queueDraftSync(); }, 0); },
+  compositionend: e => {
+    const input = e.target;
+    setTimeout(() => {
+      composing = false;
+      if (input === composerInput() && input.value !== text.value) editComposerInput(input);
+      updateComposeCompact(); queueDraftSync();
+    }, 0);
+  },
   keydown: e => {
     const input = e.target;
     if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) endInputRecall();
