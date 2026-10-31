@@ -1,5 +1,7 @@
 # 问题核查与分批修复方案
 
+> 2026-10-31 复查：见第 9 节（重复/简化、生命周期、静默失败、测试与文档一致性）。本轮只读核查，未改代码。
+
 > 2026-10-31 更新：重复实现核查见第 7 节，N1—N7 均已处理；N3、N4、N7 的实施记录见第 7.1 节，N1、N2、N5、N6 的本轮实施与验证见第 8 节。自动检查及隔离浏览器检查通过，手机真机仍待用户验收。第 1—6 节及此前基准、授权和验证记录保留为历史，不代表本轮重新实施或重新验收。
 
 > 核查日期：2026-10-29。
@@ -396,3 +398,91 @@ P1—P3 的发送复测记录在 `_shots/codex-send-retest-20261029/`；本轮 P
 主要结果文件：`n5.tap`、`n1.tap`、`n2.tap`、`n6.tap`、`existing-backend.tap`、`browser-results.json`、`original-preserved.json`、`scope.json`、`summary.json`。电脑切换的 28 项结果记录在 `n6-and-computer-switch.tap`；该首次合并日志还含一个后续已修正并在 `n6.tap` 复验通过的 N6 错误文案对比，不把旧日志写成全部通过。最终浏览器检查前曾修正测试脚本自身的正则转义，未因此增加产品兜底逻辑。
 
 本轮未提交、未推送、未发布网页、未重启正式中继。v338 为本地完成版本，正式环境仍运行原版本；用户真机验收前需要另行加载网页与中继修改。
+
+## 9. 2026-10-31 复查：重复/简化、生命周期与检查一致性
+
+本轮为只读复查，未改代码。基准：本地 HEAD `6aa4277`（网页 v347）；本文件按用户要求从 `origin/b89927a` 单独拉取，记录截至 v338，代码已领先若干个版本。方法：全仓模式扫描、同口径计数、定点评读，不逐行阅读。以下除注明外均为代码事实或测量值，没有复现用户可见故障。
+
+### 9.0 当前问题总表
+
+本节合并 2026-10-31 的两轮复查，共 18 项未处理：重复/简化 8 项、生命周期 2 项、静默失败与一致性 3 项、检查与文档 5 项。第 7、8 节已处理的 N1—N7 不重复列出。
+
+| 类别 | 编号 | 事项 | 状态与建议 |
+|---|---|---|---|
+| 重复 | N8 | 21 处延时刷新 | 未处理；低风险，建议抽 `refreshSoon` |
+| 重复 | N9 | 切换守卫 34 处、7 份模板 | 未处理；中风险 |
+| 重复 | N10 | `withFiles` 3 套 | 未处理；中风险 |
+| 重复 | N11 | `newTerminal` 3 份 | 未处理；低风险 |
+| 重复 | N12 | `codex.mjs` 约 57.8KB 单体 | 未处理；低风险，纯搬迁 |
+| 重复 | N13 | 页面端应用嗅探 33 处 | 未处理；高风险 |
+| 重复 | N14 | 主链路 app 分支（projects 45、chat 33 等） | 未处理；高风险，不建议现在动 |
+| 重复 | N15 | 三元素数组 19 处、11 个文件 | 未处理；低风险，建议从 `EDITORS` 派生 |
+| 生命周期 | L1 | 按 thread 建的上下文缓存无淘汰 | 未处理；低风险，建议加条数上限 |
+| 生命周期 | L2 | 限流按 IP 的记录只增不删 | 未处理；低风险，建议清理过期键 |
+| 静默失败 | S1 | 空 `catch` 105 处 | 未处理；建议统一记录 |
+| 静默失败 | S2 | 静默 app 守卫 30 处 | 未处理；记录，不急于改 |
+| 一致性 | G1 | 切换守卫无超时告警 | 未处理；记录 |
+| 检查 | T5 | 行为测试未接入 `npm run check` | 未处理；低风险，建议加 `npm test` 或并入检查 |
+| 文档 | T6 | 本文件记录止于 v338，代码已到 v347 | 本节已注明；后续随版本维护 |
+| 检查 | T7 | 版本号需手工同步 5 处 | 未处理；低风险，建议加一致性检查 |
+| 检查 | T8 | `sw.js` 的 SHELL 为手工列表 | 未处理；低风险，建议与 index 比对 |
+| 文档 | T9 | 概览功能未写入使用指南 | 未处理；低风险，补文档 |
+
+### 9.1 与第 3 节冻结基准的同口径对比
+
+| 指标 | 第 3 节基准 | 本次实测 | 说明 |
+|---|---|---|---|
+| 名为 `app` 的字面量相等／不等判断 | 283 处、37 个文件 | 303 处、40 个文件 | 同口径 `\bapp\s*(?:===\|!==)\s*['"]` |
+| `switchingThread` | 33 处、8 个文件 | 34 处、8 个文件 | 字符串出现次数 |
+| 固定写法的定时等待 | 109 处 | 106 处 | `new Promise(r => setTimeout(r,` |
+| `this.waitFor()` 调用 | 27 处 | 27 处 | 未变化 |
+| `pollChat` 延时刷新 | 21 处 | 21 处 | 未变化 |
+| `server/page/chat-extract.js` | 1108 行 | 1115 行 | 当前文件行数 |
+| 行为测试 | 未发现 | 3 个 `scripts/*.test.mjs` | 未接入 `npm run check`，见 T5 |
+
+说明：v306 至 v347 之间约 82 个提交，新增 `overview.js` 等模块；计数上升不等于重复恶化。跨文件 3 行重复块按同一扫描脚本，本轮为 5 处（此前同脚本为 28 处），精确复制已明显减少；该指标第 3 节未冻结，只作趋势参考。
+
+### 9.2 仍存在的重复或可简化位置（N8—N15）
+
+| 编号 | 位置 | 现状 | 可简化方式 | 风险与验证 |
+|---|---|---|---|---|
+| N8 延时刷新重复 | 21 处 `setTimeout(() => this.pollChat()…)`：`devin.mjs` 9、`codex.mjs` 5、`cursor.mjs` 3、`menus.mjs` 2、`chat.mjs` 2 | 每处各自写延时与 `catch` | 抽 `refreshSoon(ms)`，调用点变一行 | 低；代码已确认，未修改 |
+| N9 切换守卫模板 | 34 处引用、8 个文件；7 份 `const switching = this.switchingThread` 模板 | 保存旧值、`try/finally` 手工恢复 | 抽 `withSwitching(previousCdp, fn)` | 中；需保持 finally 顺序，未修改 |
+| N10 文件面板包装 | [cursor.mjs:151](../server/apps/cursor.mjs#L151)、[devin.mjs:160](../server/apps/devin.mjs#L160)、[codex.mjs:174](../server/apps/codex.mjs#L174)；[files.mjs:45](../server/agent/files.mjs#L45) 仅转发 | 打开／关闭面板和 settle 各写一遍 | 抽 `withFilePanel(open/close/state)`，差异做成钩子 | 中；用户可见动作，未修改 |
+| N11 新建终端 | [cursor.mjs:155](../server/apps/cursor.mjs#L155)、[devin.mjs:185](../server/apps/devin.mjs#L185)、[codex.mjs:178](../server/apps/codex.mjs#L178) | cursor 与 devin 逐字相同，codex 少一步 `bringToFront` | 统一 `openTerminal({ focus })` | 低；未修改 |
+| N12 Codex 适配器单体 | [codex.mjs](../server/apps/codex.mjs) 约 57.8KB | 队列、请求卡、容量重试、历史合并都在一个文件 | 按 `devin-composer.js` 先例拆模块，纯搬迁 | 低；改动面大，未修改 |
+| N13 页面端应用嗅探 | [chat-extract.js](../server/page/chat-extract.js) 中 33 处 `codexThread()`／`devinSurface()` 判定 | 每次提取重新判断当前 app | 入口判定一次，分派到 per-app 模块 | 高；页面无行为测试，未修改 |
+| N14 主链路 app 分支 | 宽口径（含 `'codex' ?` 等三元）：`projects.mjs` 45、`chat.mjs` 33、`session.mjs` 21、`menus.mjs` 18、`routes.mjs` 16 | 会话／项目与发送两条主链路分支集中 | 抽 per-app hook | 高；与第 3 节窄口径不可直接相加，仅用于定位 |
+| N15 三元素数组硬编码 | `['cursor', 'devin', 'codex']` 共 19 处、11 个文件：`owner.mjs`、`api.mjs`、`latency.mjs`、`launch.mjs`、`native-windows.mjs`、`project-windows.mjs`、`session.mjs`、`ws.mjs` 等 | [config.mjs](../server/config.mjs) 已有 `EDITORS`，各模块仍自行写死 | 从 `EDITORS` 派生；用户文案可继续单独维护 | 低；代码已确认，未修改 |
+
+### 9.3 生命周期、静默失败与检查（L1／L2／S1／S2／G1／T5—T9）
+
+| 编号 | 事实与位置 | 影响 | 验证 |
+|---|---|---|---|
+| L1 上下文缓存无淘汰 | [windows.mjs:62](../server/windows.mjs#L62) 的 `codexContextFiles`、`codexContextChecks`、`codexContextCache` 以 thread 为键写入（107／108／117 行），只有 `codexContextReads` 在读完后删除（91 行） | 中继长期运行、会话增多时内存和旧文件路径只增不减 | 代码已确认；内存增长未测量 |
+| L2 限流记录只增不删 | [ratelimit.mjs:8-23](../server/http/ratelimit.mjs#L8-L23)：`failures` 以 IP 为键，`lockedOut()` 只过滤该 IP 的时间戳，不删除过期 IP 的键；`recordFailure()` 继续添加新键 | 公网入口被扫描时，Map 键随来源 IP 数量增长，长期不收敛 | 代码已确认；实际增长未测量 |
+| S1 空异常处理 | 全仓 `catch(() => {})` 共 105 处 | 失败路径无日志、无计数，表现为“没反应” | 计数已确认；具体掩盖过的失败未统计 |
+| S2 静默 app 守卫 | `app !== 'codex'` 一类守卫共 30 处：`chat.mjs` 6、`devin.mjs` 6、`codex.mjs` 4、`routes.mjs` 4、`projects.mjs` 3、`native-windows.mjs` 2，其余 5 个文件各 1 | 调错 app 时静默返回，掩盖真实调用错误 | 代码事实已确认；实际误用未验证 |
+| G1 切换守卫无超时 | 7 份手工恢复模板；[chat.mjs:166](../server/agent/chat.mjs#L166) 在 `switchingThread` 为真时直接跳过轮询 | 某条路径漏恢复时聊天同步和草稿同步持续停摆，且无告警 | 机制已确认；漏恢复未复现 |
+| T5 测试未接入检查 | `scripts/codex-submit.test.mjs`、`thinking-cache.test.mjs`、`computer-switch.test.mjs` 存在；`package.json` 无 `test` 脚本，`check.mjs` 不执行它们 | 新测试不会自动运行，改坏后无人发现 | 配置已确认；本机 `node --test` 因沙箱拒绝 `spawn` 失败（EPERM） |
+| T6 文档与代码不同步 | 本文件第 7／8 节记录到 v338；当前 HEAD 为 v347；第 3 节是冻结的“修改前”基准，不是现状；`overview.js` 等新模块未纳入 | 把本文件当作当前问题清单会漏掉新代码与已处理项 | 版本、计数已核对 |
+| T7 版本号手工同步 | 需要人工保持一致的有 5 处：`index.html` 的 `app.css?v=`、`core.js?v=`；`core.js` 的 `APP_VERSION`；`sw.js` 的 `CACHE`；`sw.js` 的 `SHELL`。当前一致（`APP_VERSION`／`CACHE` v347，`app.css?v=342` 在 index 与 SHELL 一致） | 发版漏改一处会出现外壳与缓存资源不同步，或预缓存 404 | 现状已核对；`check.mjs` 不校验，漂移未被拦截 |
+| T8 SHELL 手工列表 | [sw.js:5-9](../app/sw.js#L5-L9) 的预缓存列表需手工加入新脚本；`overview.js?v=347` 本轮已加入 | 新增或改名脚本漏加时，离线首屏缺资源 | index 引用与 SHELL 已逐项比对，当前无缺失；无自动检查 |
+| T9 概览功能未写入文档 | `#overview`、[overview.js](../app/js/overview.js)（约 56.7KB）提供“电脑 → 项目 → 会话”分组与批量管理；`docs/usage.md`、`docs/usage.en.md` 中检索“概览／overview／批量管理”为 0 处 | 用户可见入口缺少使用说明 | 代码与文档检索已确认 |
+
+### 9.4 不作为应合并项
+
+- `listAgents` 有 4 份实现（`cursor.mjs`、`devin.mjs`、`codex.mjs`、`projects.mjs`），规则和返回结构不同，合并会变成更大的条件分支。
+- Codex 的 `submitPrompt` 主路径已使用 `NativeWindow.registerSend`，无原生窗口时使用页面内 `waitCodexReceipt()`；两条路径数据源不同，再合并收益有限、发送风险高。
+- 手机端 `sheets.js`（约 108.7KB）、`history.js`（约 106.5KB）、`overview.js`（约 56.7KB）：3 行重复扫描未发现精确复制，结构重合需单独评估，不顺手改。
+- `check.mjs` 的语法步骤在本机沙箱因 `spawn` EPERM 失败，属于环境限制（与 T4 一致），不为通过检查而改项目代码。
+- [session-actions.mjs:53](../server/agent/session-actions.mjs#L53) 只允许 Cursor／Devin 的“按会话管理”，属于功能限制，不是三元素列表漏写。
+- 手机端 `row`、`current`、`paint` 等同名局部函数分布在不同文件，作用域独立，不构成跨模块重复。
+
+### 9.5 本轮验证与边界
+
+- 只更新本文件；代码未改、未提交、未发布，本地仍为 `6aa4277`，工作区仅有本文件的未提交修改。
+- `npm run check`：104 个语法文件被扫描，但语法步骤在本机沙箱全部 EPERM；协议 101 类发送、69 类服务端消息、196 个 page 导出、70 个模块导入通过。
+- `node --test scripts/*.test.mjs` 在本机因沙箱拒绝 `spawn` 未执行，不记为通过。
+- 本轮未做手机真机验收；重复、生命周期和静默失败项不代表已经发生故障，也不宣称修复。
+- 本节已把两轮复查合并为一份清单：18 项未处理（重复 8、生命周期 2、静默与一致性 3、检查与文档 5），另有 6 条明确不作为合并项。后续实施时按编号分批，不一次性改动。
