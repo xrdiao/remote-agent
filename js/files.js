@@ -8,16 +8,89 @@ let editBase = '', saving = null;
 let fileRequestId = 0, saveRequestId = 0;
 let filePdf = null;
 let readingFile = null;
+let computerFiles = null;
+async function computerFileRequest(computer, route, opts = {}) {
+  const response = await api(route, { ...opts, computer });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error);
+  return data;
+}
+function openComputerFiles(id) {
+  computerFiles = { computer: loadComputers().find(c => c.id === id), directory: null, path: '', message: '', error: false, scroll: 0, request: 0, completion: 0 };
+  return browseComputerFiles('', true);
+}
+async function browseComputerFiles(path, roots = false) {
+  const state = computerFiles, request = ++state.request;
+  state.completion++;
+  state.path = path; state.message = '正在读取目录…'; state.error = false; state.scroll = 0;
+  showComputerFiles();
+  const query = new URLSearchParams(roots ? { roots: '1' } : { browse: '1', path, base: state.directory?.path || '' });
+  try {
+    const data = await computerFileRequest(state.computer, '/api/transfer/list?' + query);
+    if (computerFiles !== state || state.request !== request || sheetKind !== 'computer-files') return;
+    if (data.file) {
+      state.path = state.directory?.path || ''; state.message = '';
+      openFile(data.file, false, '', false, state.computer);
+      return closeSheet();
+    }
+    state.directory = data;
+    if (state.path === path) state.path = data.path;
+    state.message = '';
+  } catch (error) {
+    if (computerFiles !== state || state.request !== request || sheetKind !== 'computer-files') return;
+    state.message = error.message; state.error = true;
+  }
+  showComputerFiles();
+}
+async function completeComputerPath() {
+  const state = computerFiles, field = $('computerFilePath'), value = field.value;
+  const request = ++state.completion, win = state.directory?.os === 'win32', sep = win ? '\\' : '/';
+  const slash = win ? Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\')) : value.lastIndexOf('/');
+  const parent = value.slice(0, slash + 1), prefix = value.slice(slash + 1);
+  const fold = text => win ? text.toLowerCase() : text;
+  try {
+    const data = !parent && state.directory?.path === '' ? state.directory
+      : await computerFileRequest(state.computer, '/api/transfer/list?' + new URLSearchParams({ browse: '1', path: parent || '.', base: state.directory?.path || '' }));
+    if (computerFiles !== state || state.completion !== request || sheetKind !== 'computer-files') return;
+    const rows = data.entries.filter(e => e.selectable && fold(e.name).startsWith(fold(prefix)));
+    const suffix = e => e.directory && !/[\\/]$/.test(e.name) ? sep : '';
+    let common = rows[0]?.name || prefix;
+    for (const row of rows) while (!fold(row.name).startsWith(fold(common))) common = common.slice(0, -1);
+    field.value = parent + common + (rows.length === 1 ? suffix(rows[0]) : '');
+    state.path = field.value;
+    $('computerFileCompletions').innerHTML = rows.length === 1 ? '' : rows.length
+      ? rows.map(e => `<button type="button" class="opt" data-computer-completion="${esc(parent + e.name + suffix(e))}"><span class="lbl ovRaw">${esc(e.name)}</span></button>`).join('')
+      : `<p class="hint">${I18N.tr('没有匹配项')}</p>`;
+    field.focus(); field.setSelectionRange(field.value.length, field.value.length);
+  } catch (error) {
+    if (computerFiles === state && state.completion === request && sheetKind === 'computer-files') $('computerFileStatus').textContent = error.message;
+  }
+}
+$('sheet').addEventListener('submit', e => {
+  if (e.target.id !== 'computerFilePathForm') return;
+  e.preventDefault();
+  const path = $('computerFilePath').value;
+  browseComputerFiles(path, path === '');
+});
+$('sheet').addEventListener('keydown', e => {
+  if (e.target.id !== 'computerFilePath' || e.key !== 'Tab' || e.shiftKey) return;
+  e.preventDefault(); completeComputerPath();
+});
+$('sheet').addEventListener('input', e => {
+  if (e.target.id !== 'computerFilePath') return;
+  computerFiles.path = e.target.value; computerFiles.completion++;
+  $('computerFileCompletions').replaceChildren();
+});
 function finishFileRead() {
   clearTimeout(readingFile?.timer);
   readingFile = null;
 }
-function failFileRead(message) {
-  if (!readingFile) return;
-  const name = readingFile.name;
+function failFileRead(message, computer = '') {
+  if (!readingFile || readingFile.computer !== computer) return;
+  const { name, source } = readingFile;
   fileRequestId++;
   finishFileRead();
-  showFile({ name, error: message });
+  showFile({ name, error: message, computer: source });
 }
 function dirtyEdit() {
   const box = $('vEditBox');
@@ -131,11 +204,11 @@ function leaveEdit() {
   $('vTools').hidden = true;
   $('vSearch').hidden = true;
 }
-function openFile(ref, fromEditor = false, diff = '', fromChanges = false) {
+async function openFile(ref, fromEditor = false, diff = '', fromChanges = false, computer = null) {
   const requestId = ++fileRequestId;
   finishFileRead();
   finishFileSave();
-  returnToEditor = fromEditor ? { ...editorDirectory } : null;
+  returnToEditor = computer ? { browser: computerFiles, scroll: $('sheet').scrollTop } : fromEditor ? { ...editorDirectory } : null;
   stopVideo();
   leaveEdit();
   viewing = null;
@@ -145,14 +218,21 @@ function openFile(ref, fromEditor = false, diff = '', fromChanges = false) {
   $('vTools').hidden = true;
   $('vChanges').hidden = true;
   $('vEdit').hidden = true;
-  $('vName').textContent = ref.split('/').pop();
+  $('vName').textContent = ref.split(/[\\/]/).pop();
   $('vPath').textContent = '';
   $('vBody').innerHTML = '<div class="note">正在从电脑读取…</div>';
   if (!$('viewer').classList.contains('open')) {
     $('viewer').classList.add('open');
     history.pushState({ viewer: true }, '');
   }
-  readingFile = { name: ref.split('/').pop(), timer: setTimeout(() => failFileRead('文件读取结果尚未返回，请重试'), 30000) };
+  readingFile = { computer: computer?.id || '', source: computer, name: ref.split(/[\\/]/).pop(), timer: setTimeout(() => failFileRead('文件读取结果尚未返回，请重试', computer?.id || ''), 30000) };
+  if (computer) {
+    try {
+      const data = await computerFileRequest(computer, '/api/transfer/preview?' + new URLSearchParams({ path: ref, theme: document.documentElement.dataset.theme }));
+      if (requestId === fileRequestId) showFile({ ...data, computer });
+    } catch (error) { if (requestId === fileRequestId) failFileRead(error.message, computer.id); }
+    return;
+  }
   if (!send({ t: 'file', path: ref, diff, requestId, ...(fromChanges ? { changes: true } : {}) })) failFileRead('未连接，文件未读取，请重试');
 }
 
@@ -167,10 +247,10 @@ function showFile(m) {
   $('vEdit').disabled = Boolean(saving);
   $('vName').textContent = m.name || '';
   // Leading LRM keeps the rtl ellipsis from reordering the path's slashes.
-  $('vPath').textContent = m.path ? '\u200e' + (m.host ? m.host + ':' : '') + m.path + (m.size != null ? ` · ${fmtSize(m.size)}` : '') : '';
+  $('vPath').textContent = m.path ? '\u200e' + (m.computer ? m.computer.name + ' · ' : m.host ? m.host + ':' : '') + m.path + (m.size != null ? ` · ${fmtSize(m.size)}` : '') : '';
   const body = $('vBody');
   if (m.error) {
-    body.innerHTML = `<div class="note err">${esc(m.error)}</div><div class="note">${esc(appMessage('可以切到「画面」在 {app} 里打开'))}</div>`;
+    body.innerHTML = `<div class="note err">${esc(m.error)}</div>${m.computer ? '' : `<div class="note">${esc(appMessage('可以切到「画面」在 {app} 里打开'))}</div>`}`;
     return;
   }
   if (m.video) {
@@ -180,7 +260,7 @@ function showFile(m) {
     video.controls = true;
     video.playsInline = true;
     video.preload = 'metadata';
-    video.src = base + m.video;
+    video.src = (m.computer ? m.computer.relay : base) + m.video;
     video.onerror = () => {
       const note = document.createElement('div');
       note.className = 'note err';
@@ -202,7 +282,7 @@ function showFile(m) {
     (async () => {
       const [pdfjs, response] = await Promise.all([
         import('../pdfjs/pdf-6.4.299.min.mjs'),
-        fetch(base + m.pdf, { signal: state.controller.signal, cache: 'no-store' }),
+        fetch((m.computer ? m.computer.relay : base) + m.pdf, { signal: state.controller.signal, cache: 'no-store' }),
       ]);
       if (!response.ok) throw new Error('PDF 读取失败 (' + response.status + ')');
       const data = new Uint8Array(await response.arrayBuffer());
@@ -377,7 +457,7 @@ function failFileSave(message) {
   status(message, false);
 }
 function waitFileSave() {
-  if (!saving) return;
+  if (!saving || saving.computer) return;
   editorStatus('连接已断开，等待电脑端保存结果');
   status('连接已断开，等待电脑端保存结果');
 }
@@ -386,13 +466,20 @@ function editorStatus(message, ok = true) {
   $('vStatus').textContent = I18N.tr(message);
   $('vStatus').className = ok ? '' : 'err';
 }
-function saveEdit() {
+async function saveEdit() {
   if (!editing || saving) return;
-  if (!authed || !ws || ws.readyState !== 1) { editorStatus('未连接', false); return; }
-  const submitted = saving = { requestId: ++saveRequestId, viewRequestId: fileRequestId, path: viewing.path, host: viewing.host || '', text: $('vEditBox').value };
+  if (!viewing.computer && (!authed || !ws || ws.readyState !== 1)) { editorStatus('未连接', false); return; }
+  const submitted = saving = { requestId: ++saveRequestId, viewRequestId: fileRequestId, path: viewing.path, host: viewing.host || '', text: $('vEditBox').value, computer: viewing.computer };
   $('vEdit').disabled = true;
   editorStatus('正在保存…');
   status('正在保存…');
+  if (submitted.computer) {
+    try {
+      const data = await computerFileRequest(submitted.computer, '/api/transfer/save', { method: 'POST', body: JSON.stringify({ path: submitted.path, text: submitted.text }) });
+      onSaved({ ...data, requestId: submitted.requestId, path: submitted.path, host: '' });
+    } catch (error) { if (saving === submitted) failFileSave(error.message); }
+    return;
+  }
   if (!send({ t: 'saveFile', requestId: submitted.requestId, path: submitted.path, host: submitted.host, text: submitted.text })) failFileSave('未连接，文件未发送保存，请重试');
 }
 
@@ -414,7 +501,10 @@ function closeViewer() {
   if (returnToEditor) {
     const directory = returnToEditor;
     returnToEditor = null;
-    send({ t: 'docs', ...directory, editor: true });
+    if (directory.browser) {
+      computerFiles = directory.browser; computerFiles.scroll = directory.scroll;
+      showComputerFiles();
+    } else send({ t: 'docs', ...directory, editor: true });
   }
 }
 $('vClose').onclick = () => history.state?.viewer ? history.back() : closeViewer();

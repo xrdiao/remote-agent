@@ -1670,6 +1670,12 @@ body.conv #overview { display: none; }
 .computerAgentTabs { display: flex; gap: 6px; }
 .computerAgentTabs .paramBtn { flex: 1; min-width: 0; }
 .computerAgentTabs .paramBtn.cur { background: var(--accent-tint); color: var(--accent-text); }
+.computerFilePath { display: flex; gap: 6px; margin: 12px 0; }
+.computerFilePath input { flex: 1; min-width: 0; width: 0; min-height: 40px; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: 12px; background: var(--s2); font-size: 14px; color: var(--fg); }
+.computerFilePath button, .computerFileNav button { flex: none; padding: 8px 10px; border-radius: 12px; background: var(--s2); color: var(--fg-2); font-size: 13px; }
+.computerFileNav { display: flex; gap: 8px; }
+#computerFileCompletions { max-height: 180px; overflow-y: auto; }
+#computerFileCompletions .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .optRow .computerProjectNew { flex: none; width: auto; }
 #overview .ov-computer-action { flex: none; max-width: 45%; margin-right: 12px; padding: 8px 12px; border-radius: 999px; background: var(--accent-tint); font-size: 12px; color: var(--accent-text); }
 #overview .ov-computer-info { flex: none; width: 28px; min-height: 40px; margin-right: 6px; padding: 4px; color: var(--fg-3); background: none; }

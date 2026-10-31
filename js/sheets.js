@@ -572,23 +572,30 @@ function startEditor() {
   send({ t: 'docs', editor: true });
 }
 $('pickEditor').onclick = startEditor;
-function showComputerActions(id, tool, app = '') {
+function showComputerActions(id, app = '') {
   const entry = ovList.find(e => e.id === id);
   const list = ovSt.get(id)?.data?.windows || [];
   const link = computerSockets.get(entry.c.key);
   const catalog = link.metadata.get('agentCatalog')?.agents || [];
   app ||= list.find(w => w.windowId === entry.c.windowId)?.app || list[0]?.app || 'cursor';
   const names = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex' };
-  const attr = `data-computer-id="${esc(id)}" data-computer-tool="${esc(tool)}"`;
+  const attr = `data-computer-id="${esc(id)}"`;
   const tabs = Object.entries(names).map(([key, name]) => `<button type="button" class="paramBtn${key === app ? ' cur' : ''}" data-computer-app="${key}" ${attr} aria-pressed="${key === app}">${name}</button>`).join('');
   const projects = list.filter(w => w.app === app);
   const targetAttr = w => `data-computer-target="${esc(JSON.stringify({ computer: id, win: w.win, windowId: w.windowId }))}"`;
-  const action = (w, act, label) => `<button class="opt" data-computer-action="${act}" ${targetAttr(w)}>${I18N.tr(label)}</button>`;
-  const rows = projects.map(w => `<div class="pSec">${esc(w.project)}</div><div class="optRow">${tool === 'editor' ? action(w, 'editor', '打开文件') : action(w, 'open', '打开项目') + action(w, 'new', '新建会话')}</div>`).join('');
   const selected = projects.find(w => w.windowId === entry.c.windowId) || projects[0];
   const agent = catalog.find(a => a.app === app);
   const missing = `<p class="hint">${esc(I18N.tr(agent?.reason || '请先打开此 Agent'))}</p>${agent?.installed === true && !agent.running && agent.launchSupported ? `<button class="opt" data-computer-launch="${app}" ${attr}>${I18N.tr('启动')} ${names[app]}</button>` : ''}`;
-  openSheet('computer-actions', `<h3>${I18N.tr(tool === 'editor' ? '打开文件' : '打开项目／新建会话')}</h3><p class="hint">${esc(entry.name)}</p><div class="pSec">${I18N.tr('选择 Agent')}</div><div class="computerAgentTabs">${tabs}</div>${rows || missing}${selected && tool !== 'editor' ? action(selected, 'projects', '选择其他文件夹') : ''}`);
+  openSheet('computer-actions', `<h3>${I18N.tr('打开项目／新建会话')}</h3><p class="hint">${esc(entry.name)}</p><div class="pSec">${I18N.tr('选择 Agent')}</div><div class="computerAgentTabs">${tabs}</div>${selected ? `<button class="opt" data-computer-action ${targetAttr(selected)}>${I18N.tr('选择其他文件夹')}</button>` : missing}`);
+}
+function showComputerFiles() {
+  const state = computerFiles, dir = state.directory;
+  const field = document.activeElement?.id === 'computerFilePath' ? document.activeElement : null;
+  const selection = field && [field.selectionStart, field.selectionEnd];
+  const rows = (dir?.entries || []).map(e => `<button class="opt editorEntry${e.directory ? ' editorFolder' : ''}" data-computer-path="${esc(e.path)}" data-computer-directory="${!!e.directory}" ${e.selectable ? '' : 'disabled'}>${fileEntryIcon(e.directory)}<span class="lbl ovRaw">${esc(e.name)}</span>${e.directory ? '<span class="editorEntryArrow" aria-hidden="true">›</span>' : `<span class="sub">${e.selectable ? fmtSize(e.size) : I18N.tr('不可读取')}</span>`}</button>`).join('');
+  openSheet('computer-files', `<h3>${I18N.tr('打开文件')}</h3><p class="hint ovRaw">${esc(state.computer.name)}</p><form id="computerFilePathForm" class="computerFilePath"><input id="computerFilePath" class="ovRaw" aria-label="${I18N.tr('文件路径')}" placeholder="${I18N.tr('输入路径')}" value="${esc(state.path)}" autocomplete="off" autocapitalize="off" spellcheck="false"><button type="button" data-computer-complete title="Tab">${I18N.tr('补全')} ⇥</button><button type="submit">${I18N.tr('前往')}</button></form><div id="computerFileCompletions"></div><div class="computerFileNav"><button type="button" data-computer-path="${esc(dir?.parent ?? '')}" data-computer-directory="true" ${dir?.parent == null ? 'disabled' : ''}>${I18N.tr('返回上一级')}</button><button type="button" data-computer-root>${I18N.tr('根目录')}</button></div><p id="computerFileStatus" class="hint${state.error ? ' err' : ''}" role="status">${esc(I18N.tr(state.message))}</p>${rows || (!state.message ? `<div class="hint">${I18N.tr('此目录暂无可显示的文件')}</div>` : '')}`);
+  $('sheet').scrollTop = state.scroll;
+  if (selection) { $('computerFilePath').focus(); $('computerFilePath').setSelectionRange(...selection); }
 }
 function cancelDocs() {
   docsPending = null;

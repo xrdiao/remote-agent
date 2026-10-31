@@ -318,7 +318,7 @@ function ovComputerGroup(e, all, projs) {
   ovSig.push(`c:${e.id}:${status}:${loading ? stage : ''}:${collapsed}`);
   const body = !collapsed && st?.data ? ovS.level === 'projects' ? ovProjectTiles(projects, all, false) : ovSessions(recs, e.id) : '';
   const empty = status === 'online' && st?.data?.ready ? ovEmpty('这里还没有会话') : '';
-  const tools = status === 'online' && !e.foreign ? `<button type="button" class="ov-computer-tool" data-ov="computer-projects" data-id="${esc(e.id)}" title="${I18N.tr('打开项目／新建会话')}" aria-label="${I18N.tr('打开项目／新建会话')}">${$('add').innerHTML}</button><button type="button" class="ov-computer-tool" data-ov="computer-editor" data-id="${esc(e.id)}" title="${I18N.tr('打开文件')}" aria-label="${I18N.tr('打开文件')}">${$('pickEditor').innerHTML}</button>` : '';
+  const tools = status === 'online' && !e.foreign ? `<button type="button" class="ov-computer-tool" data-ov="computer-projects" data-id="${esc(e.id)}" title="${I18N.tr('打开项目／新建会话')}" aria-label="${I18N.tr('打开项目／新建会话')}">${$('pickEditor').innerHTML}</button><button type="button" class="ov-computer-tool" data-ov="computer-editor" data-id="${esc(e.id)}" title="${I18N.tr('打开文件')}" aria-label="${I18N.tr('打开文件')}">${fileEntryIcon(false)}</button>` : '';
   return `<section class="ov-computer" data-ov-node="computer:${esc(e.id)}" style="view-transition-name:${ovTname('c:' + e.id)}"><div class="ov-computer-row ${status}"><button type="button" class="ov-computer-toggle" data-ov="fold" data-id="${esc(e.id)}" aria-expanded="${!collapsed}"><span class="ov-computer-dot" aria-hidden="true"></span><span class="ov-computer-label"><span class="ov-computer-name ovRaw">${esc(e.name)}</span>${detail ? `<span class="ov-computer-detail">${esc(detail)}</span>` : ''}${progress}</span></button>${tools}${action ? `<button type="button" class="ov-computer-action" ${action}>${badge}</button>` : ''}${!e.foreign && (status === 'offline' || loading && st?.failure) ? `<button type="button" class="ov-computer-info" data-ov="details" data-id="${esc(e.id)}" aria-label="${ovT('连接详情')}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="8"/><path d="M12 10v7m0-11v1"/></svg></button>` : ''}<button type="button" class="ov-computer-fold" data-ov="fold" data-id="${esc(e.id)}" aria-expanded="${!collapsed}" aria-label="${I18N.tr(collapsed ? '展开电脑' : '折叠电脑')}"><svg class="ov-computer-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button></div>${body || empty && !collapsed ? `<div class="ov-board">${body || empty}</div>` : ''}</section>`;
 }
 function ovProjTile(p, all, showComputer = !ovS.comp) {
@@ -888,8 +888,8 @@ $('overview').addEventListener('click', e => {
       return ovMove({ open: null });
     case 'up': return ovUp();
     case 'menu': return showMainMenu();
-    case 'computer-projects': return showComputerActions(id, 'projects');
-    case 'computer-editor': return showComputerActions(id, 'editor');
+    case 'computer-projects': return showComputerActions(id);
+    case 'computer-editor': return openComputerFiles(id);
     case 'retry': return reconnectComputer(id);
     case 'auth': return authorizeComputer(id);
     case 'details': showConnectionDetails(id); return checkComputerConnection(id);
