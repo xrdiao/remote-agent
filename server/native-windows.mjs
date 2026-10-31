@@ -183,6 +183,13 @@ export class NativeWindow {
       await this.connect();
       const previous = !state.busy && state.lastUsed > 0 && entry.lastUsed === state.lastUsed ? entry.value : null;
       const value = await this.cdp.evaluate(helpersCall(`nativeSessionInfo(${JSON.stringify(this.win.app)}, ${JSON.stringify(threadId)}, 'preview', ${JSON.stringify(previous || null)})`), { timeout: 15000 });
+      const chat = this.snapshot?.chat;
+      if (chat?.thread === threadId) {
+        value.model = chat.model || value.model;
+        value.effort = chat.effort || value.effort;
+      }
+      const tasks = this.snapshot?.states?.find(row => row.thread === threadId)?.tasks;
+      if (!value.tasks && tasks?.total > 0) value.tasks = tasks;
       entry.value = value;
       entry.lastUsed = state.lastUsed;
       entry.at = Date.now();

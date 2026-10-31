@@ -84,5 +84,6 @@ export async function overviewPreview(deviceId, { win, windowId, threadId }) {
   const { session, target } = overviewSession(deviceId, { win, windowId, threadId });
   if (session.dormant) return { win, windowId, threadId, available: false, last: '', text: '' };
   const value = await nativeWindowAt(target.ws).preview(threadId, session);
-  return { win, windowId, threadId, available: value.available, last: value.last || '', text: value.text || '' };
+  return { win, windowId, threadId, available: value.available, last: value.last || '', text: value.text || '',
+    model: value.model || '', effort: value.effort || '', tasks: value.tasks || null, tools: value.tools || [] };
 }

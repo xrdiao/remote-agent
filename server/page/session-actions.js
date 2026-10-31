@@ -104,6 +104,12 @@
     }));
     return { ready: true, complete: false, rows, removed, unknown };
   };
+  const nativePreviewActivity = (tools, model, effort = '', tasks = null) => {
+    const states = { completed: 'done', complete: 'done', in_progress: 'run', inProgress: 'run', running: 'run', failed: 'error', error: 'error', declined: 'error' };
+    return { model: model || '', effort: effort || '', tasks, tools: [...new Map(tools.map(tool => [tool.id, tool])).values()].slice(-3).map(tool => ({
+      id: tool.id, label: String(tool.label || '').replace(/\s+/g, ' ').trim().slice(0, 240), state: states[tool.status] || '',
+    })).filter(tool => tool.label) };
+  };
   const nativeSessionPreview = async (app, id, previous) => {
     const summary = value => {
       const text = String(value || '').replace(/\s+/g, ' ').trim();
@@ -118,31 +124,54 @@
       const missing = headers.filter(h => !data.conversationMap[h.bubbleId] || data.conversationMap[h.bubbleId].isPlaceholder);
       const stored = missing.length ? await service._composerMessageStorageService.retrieveMessagesBatch(id, missing.map(h => h.bubbleId)) : new Map();
       const messages = headers.map(h => stored.get(h.bubbleId) || data.conversationMap[h.bubbleId]);
-      return summary(messages.findLast(m => m?.text?.trim())?.text);
+      const selected = data.modelConfig?.selectedModels?.[0], model = cursorPickerProps(true)?.models.find(m => m.name === selected?.modelId || m.id === selected?.modelId);
+      const todos = data.todos || [], tasks = todos.length ? { done: todos.filter(t => t.status === 'completed').length, total: todos.length, current: todos.find(t => t.status === 'in_progress')?.content || '' } : null;
+      const tools = messages.slice(messages.findLastIndex(m => m?.type === 1) + 1).filter(m => m?.toolFormerData).map(m => {
+        const tool = m.toolFormerData;
+        return { id: tool.toolCallId || m.bubbleId, label: tool.toolCall?.tool?.value?.description || tool.params?.commandDescription || tool.name, status: tool.error ? 'error' : tool.status };
+      });
+      return { ...summary(messages.findLast(m => m?.text?.trim())?.text), ...nativePreviewActivity(tools, model?.clientDisplayName || model?.inputboxShortModelName || selected?.modelId || data.modelConfig?.modelName, '', tasks) };
     }
     if (app === 'devin') {
       const messages = window.__acpStore?.getState().acp.perSession[id]?.messages;
       if (!messages) return { available: false };
       const message = messages.findLast(m => ['agent_message', 'user_message'].includes(m.kind)
         && m.content?.some(block => block.content?.type === 'text' && block.content.text?.trim()));
-      return summary(message?.content.filter(block => block.content?.type === 'text').map(block => block.content.text).join('\n'));
+      const config = devinSessionRecord(id)?.configOptions?.find(c => c.category === 'model');
+      const model = config?.options.flatMap(o => o.options || [o]).find(o => o.value === config.currentValue)?.name;
+      const tools = messages.slice(messages.findLastIndex(m => m.kind === 'user_message') + 1).filter(m => m.kind === 'tool_call').map(m => ({
+        id: m.content.toolCallId || m.id, label: m.content.title, status: m.content.status,
+      }));
+      return { ...summary(message?.content.filter(block => block.content?.type === 'text').map(block => block.content.text).join('\n')), ...nativePreviewActivity(tools, model) };
     }
     const scopes = codexHistoryScopes(), manager = codexConversationManager(codexThread(), scopes);
     const conversation = manager?.getConversation(id), history = conversation?.turnHistory?.history;
-    let items = (history ? history.islands.flatMap(island => island.entries).slice(-2).flatMap(({ key }) => {
+    const sourceOfTurn = turn => ({ metadata: turn, rawItems: turn.items || [], nativeComplete: true, ids: (turn.items || []).map(i => i.id), positions: new Map((turn.items || []).map((item, n) => [item.id, n])) });
+    let sources = history ? history.islands.flatMap(island => island.entries).slice(-2).map(({ key }) => {
       const turn = history.entitiesByKey[key];
-      return codexTurnSource({ historyEntityKey: key, turnId: turn.turnId, nativeTurn: turn }, scopes)?.rawItems || [];
-    }) : (conversation?.turns || []).slice(-2).flatMap(turn => turn.items || [])).filter(Boolean);
+      return codexTurnSource({ historyEntityKey: key, turnId: turn.turnId, nativeTurn: turn }, scopes);
+    }).filter(Boolean) : (conversation?.turns || []).slice(-2).map(sourceOfTurn);
+    let items = sources.flatMap(source => source.rawItems).filter(Boolean);
     let historical = false;
     if (!items.some(item => ['agentMessage', 'userMessage'].includes(item.type))) {
       if (previous?.historical) return previous;
       if (!manager || manager.hostId !== 'local') return { available: false };
       const { thread } = await manager.requestClient.sendRequest('thread/read', { threadId: id, includeTurns: true }, { priority: 'background', source: 'thread_list' });
       items = (thread.turns || []).flatMap(turn => turn.items || []);
+      sources = (thread.turns || []).slice(-1).map(sourceOfTurn);
       historical = true;
     }
     const text = item => item.type === 'agentMessage' ? item.text : item.type === 'userMessage' ? codexUserText(item.content || []) : '';
-    return { ...summary(text(items.findLast(item => text(item)?.trim()) || {})), historical };
+    const source = sources.at(-1), turn = source && codexStoredTurn({ turnId: source.metadata.turnId || '' }, scopes, false, source);
+    const rows = turn ? codexTurnItems(null, { conversationId: id, turn }) : [];
+    const task = rows.findLast(row => row.k === 'tasks');
+    const tasks = task ? { done: task.done, total: task.total, current: task.items?.find(t => t.status === 'in_progress')?.t || '' } : null;
+    const tools = rows.filter(row => row.k === 'tool').slice(-3).map(row => {
+      const item = source.rawItems.find(item => item && row.i.endsWith(':' + item.id));
+      return { id: item?.id || row.i, label: row.t, status: item?.status };
+    });
+    return { ...summary(text(items.findLast(item => text(item)?.trim()) || {})), historical,
+      ...nativePreviewActivity(tools, conversation?.latestModel, conversation?.latestThreadSettings?.effort, tasks) };
   };
   const nativeSessionInfo = (app, id, catalog = false, previous = null) => {
     if (catalog === 'preview') return nativeSessionPreview(app, id, previous);
