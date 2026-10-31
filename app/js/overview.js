@@ -43,6 +43,7 @@ const ovMain = $('overview').querySelector('.ov-main');
 const ovDone = (() => { try { return JSON.parse(store.get('ov-done') || '{}'); } catch { return {}; } })();
 let ovEnterRequested = false;
 let ovToolState = null;
+const ovComposerControls = { mic: $('mic'), stop: $('stop'), attachments: $('attachments').parentElement };
 let ovBatch = null;
 let ovList = [], ovPaint = '', ovCrumbsPaint = '', ovSig = [], ovScroll, ovEditing = null;
 const ovTn = new Map();
@@ -376,8 +377,7 @@ function ovCard(r) {
   const status = `<div class="ov-status"><div class="ov-state"><span class="ov-badge">${esc(ovBadge(r))}</span><span class="ov-time">${esc(ovTime(r))}</span></div><span class="ovRaw" title="${esc(ovContext(r))}">${esc(ovContext(r))}</span></div>`;
   const canReply = !r.fusion && !r.dormant && online;
   const ready = ovComposerReady(r.key), replyDis = !ready || $('send').disabled ? ' disabled' : '';
-  const attachments = ready ? attachmentHtml() : '';
-  const composer = canReply ? `<div class="ov-attachments" data-ov-attachments="${key}"${attachments ? '' : ' hidden'}>${attachments}</div><div class="ov-mentions" data-ov-preserve hidden></div><div class="ov-composer" data-ov-node="reply:${key}"><textarea data-ov-input="${key}" rows="1" enterkeyhint="send" placeholder="${r.state === 'wait' ? '输入回复…' : `告诉 ${OV_AGENT[r.app]} 下一步…`}"${replyDis}></textarea><button class="ov-send" data-ov="send" data-id="${key}" aria-label="${esc($('send').textContent)}" title="${esc($('send').textContent)}"${replyDis}>${OV_ICON.arrow}</button></div>` : '';
+  const composer = canReply ? `<div class="ov-attachments" data-ov-node="attachments:${key}" data-ov-control="attachments" data-ov-preserve></div><div class="ov-mentions" data-ov-preserve hidden></div><div class="ov-composer" data-ov-node="reply:${key}"><textarea data-ov-input="${key}" rows="1" enterkeyhint="send" placeholder="${r.state === 'wait' ? '输入回复…' : `告诉 ${OV_AGENT[r.app]} 下一步…`}"${replyDis}></textarea><button class="ov-send" data-ov="send" data-id="${key}" aria-label="${esc($('send').textContent)}" title="${esc($('send').textContent)}"${replyDis}>${OV_ICON.arrow}</button></div>` : '';
   let body;
   if (r.state === 'wait') {
     body = `<div class="ov-q">${ovNowHtml(r)}</div>` + (r.devin
@@ -396,11 +396,14 @@ function ovCard(r) {
   const off = r.off ? '<div class="ov-hint">电脑离线</div>' : '';
   const tool = (id, disabled = dis, label = '') => `<button data-ov="tool" data-id="${key}" data-v="${id}" title="${esc(label || $(id).title)}" aria-label="${esc(label || $(id).ariaLabel)}"${disabled}>${label && ['send', 'sendNow'].includes(id) ? OV_ICON.arrow : $(id).innerHTML}${label ? `<span>${esc(label)}</span>` : ''}</button>`;
   const landscape = document.body.classList.contains('land');
-  const sends = tool('send', replyDis, $('send').textContent) + ($('sendNow').hidden ? '' : tool('sendNow', !ready || $('sendNow').disabled ? ' disabled' : '', $('sendNow').textContent));
+  const sendChoices = ready && questionCompose?.sel !== viewSel && (devinBusySplit() || cursorBusyQueue() || codexFollow());
+  const sends = !landscape || sendChoices ? tool('send', replyDis, $('send').textContent) + ($('sendNow').hidden ? '' : tool('sendNow', !ready || $('sendNow').disabled ? ' disabled' : '', $('sendNow').textContent)) : '';
+  const queueCount = ready ? queuedMessages().count : 0;
+  const queue = queueCount ? `<button class="ov-queue" data-ov="queue" data-id="${key}" aria-haspopup="dialog">${I18N.tr('排队')} ${queueCount} ▾</button>` : '';
   const inputs = ['inputPrev', 'inputNext', 'insertNewline'].map(id => tool(id, dis, landscape ? '' : $(id).ariaLabel)).join('');
   const more = landscape ? `<div class="ov-compose-inline">${inputs}${sends}</div>`
     : `<details class="ov-compose-more" data-ov-node="more:${key}"><summary data-ov="more" title="${ovT('更多操作')}" aria-label="${ovT('更多操作')}"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></summary><div class="ov-compose-more-menu"><div class="ov-compose-more-label">${ovT('本次发送')}</div>${sends}<div class="ov-compose-more-label">${ovT('输入工具')}</div>${inputs}</div></details>`;
-  const tools = canReply ? `<div class="ov-tools">${['add', 'img', 'uploadDoc'].map(id => tool(id)).join('')}<span data-ov-node="mic:${key}" data-ov-control="mic" data-ov-preserve></span><span data-ov-node="stop:${key}" data-ov-control="stop" data-ov-preserve></span>${more}</div>` : '';
+  const tools = canReply ? `<div class="ov-tools">${['add', 'img', 'uploadDoc'].map(id => tool(id)).join('')}<span data-ov-node="mic:${key}" data-ov-control="mic" data-ov-preserve></span><span data-ov-node="stop:${key}" data-ov-control="stop" data-ov-preserve></span>${more}${queue}</div>` : '';
   const message = ready && $('msg').className !== 'quiet' ? $('msg').textContent : '';
   const toolStatus = tools && message ? `<div class="ov-tool-status ${$('msg').className}" role="status">${esc(message)}</div>` : '';
   return status + body + off + err + toolStatus + `<div class="ov-cfoot">${tools}${ovOpenLink(r)}</div>`;
@@ -737,9 +740,14 @@ function ovReleaseComposer() {
 }
 function ovMountComposerControls() {
   let moved = false;
-  for (const id of ['mic', 'stop']) {
-    const parent = ovToolInput() ? $('ovBoard').querySelector(`[data-ov-control="${id}"]`) : text.closest('.composerField');
-    if ($(id).parentElement !== parent) { parent.append($(id)); moved = true; }
+  const input = ovToolInput();
+  for (const [id, node] of Object.entries(ovComposerControls)) {
+    const parent = input ? $('ovBoard').querySelector(`[data-ov-control="${id}"]`)
+      : id === 'attachments' ? document.querySelector('footer') : text.closest('.composerField');
+    if (node.parentElement !== parent) {
+      if (id === 'attachments' && !input) parent.prepend(node); else parent.append(node);
+      if (id !== 'attachments') moved = true;
+    }
   }
   if (moved) updateVoiceButton();
 }
@@ -848,12 +856,6 @@ $('overview').addEventListener('click', e => {
   if (more && !more.contains(e.target)) more.open = false;
   if (e.target.closest('[data-ov-control]')) return;
   if (e.target.closest('.ov-mentions')) return pickMention(e);
-  const attachments = e.target.closest('[data-ov-attachments]');
-  if (attachments) {
-    const state = ovPrepareTools(attachments.dataset.ovAttachments);
-    state.ready.then(ready => { if (ready && ovToolState === state) attachmentClick(e); });
-    return;
-  }
   if (e.target.dataset.ovInput) return ovLocateReply();
   if (ovHeld && e.target.closest('[data-ov-session]')?.dataset.ovSession === ovHeld) { ovHeld = ''; e.preventDefault(); return; }
   const el = e.target.closest('[data-ov]');
@@ -909,6 +911,7 @@ $('overview').addEventListener('click', e => {
     case 'open': return ovOpen(JSON.parse(el.dataset.t));
     case 'opt': return ovSend(id, 'opt', { index: Number(v.split(':')[1]) }, '已发送');
     case 'send': if (ovToolInput()?.dataset.ovInput === id) $('send').click(); return;
+    case 'queue': return showQueuedMessages();
     case 'more': return;
     case 'tool':
       if (more) more.open = false;
