@@ -291,9 +291,9 @@ async function resolveBase(data = info, comp = currentComputer(), current = () =
 }
 
 async function api(path, opts = {}) {
-  const { timeout = 10000, ...request } = opts;
-  const target = base;
-  const computer = pending ? loadComputers().find(c => pending.key ? c.key === pending.key : c.id === pending.id) : currentComputer();
+  const { timeout = 10000, computer: owner, ...request } = opts;
+  const target = owner ? owner.relay : base;
+  const computer = owner || (pending ? loadComputers().find(c => pending.key ? c.key === pending.key : c.id === pending.id) : currentComputer());
   const headers = { 'content-type': 'application/json', ...await entryHeaders(computer, opts.method || 'GET', path), ...opts.headers };
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeout);

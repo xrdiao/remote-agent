@@ -217,19 +217,14 @@ function bindWin(target) {
   });
 }
 document.addEventListener('window-ready', () => finishWinBinding());
-async function runComputerAction(target, action) {
+async function runComputerAction(target) {
   closeSheet();
   if (ovS.open) { ovS.open = null; ovSaveHistory(); ovRender(); }
   try {
     await bindWin(target);
-    if (action === 'editor') return startEditor();
-    if (action === 'projects') {
-      computerProjects = true;
-      status('正在读取项目…');
-      return send({ t: 'projects' });
-    }
-    ovShowConversation();
-    if (action === 'new') { status('正在新建对话…'); send({ t: 'newProjectChat' }); }
+    computerProjects = true;
+    status('正在读取项目…');
+    return send({ t: 'projects' });
   } catch (error) { status(error.message, false); }
 }
 let updateUntouched = true;
@@ -271,8 +266,21 @@ async function runAgentMenuAction(id, action, extra, target) {
 $('sheet').addEventListener('click', async e => {
   const b = e.target.closest('button');
   if (!b) return;
-  if (b.dataset.computerApp) return showComputerActions(b.dataset.computerId, b.dataset.computerTool, b.dataset.computerApp);
-  if (b.dataset.computerAction) return runComputerAction(JSON.parse(b.dataset.computerTarget), b.dataset.computerAction);
+  if (b.dataset.computerApp) return showComputerActions(b.dataset.computerId, b.dataset.computerApp);
+  if ('computerAction' in b.dataset) return runComputerAction(JSON.parse(b.dataset.computerTarget));
+  if ('computerRoot' in b.dataset) return browseComputerFiles('', true);
+  if ('computerComplete' in b.dataset) return completeComputerPath();
+  if ('computerCompletion' in b.dataset) {
+    $('computerFilePath').value = b.dataset.computerCompletion;
+    computerFiles.path = b.dataset.computerCompletion; computerFiles.completion++;
+    $('computerFileCompletions').replaceChildren();
+    return $('computerFilePath').focus();
+  }
+  if ('computerPath' in b.dataset) {
+    if (b.dataset.computerDirectory === 'true') return browseComputerFiles(b.dataset.computerPath, b.dataset.computerPath === '');
+    openFile(b.dataset.computerPath, false, '', false, computerFiles.computer);
+    return closeSheet();
+  }
   if (b.dataset.computerLaunch) {
     const entry = ovList.find(e => e.id === b.dataset.computerId);
     closeSheet(); status('正在启动 Agent…');

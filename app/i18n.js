@@ -351,6 +351,7 @@ const I18N = (() => {
     '打开项目／新建会话': 'Open project / new session', '打开文件': 'Open file', '选择 Agent': 'Choose Agent',
     '选择其他文件夹': 'Choose another folder', '请先打开此 Agent': 'Open this Agent first', '工具调用': 'Tool calls',
     '展开电脑': 'Expand computer', '折叠电脑': 'Collapse computer',
+    '根目录': 'Root', '文件路径': 'File path', '输入路径': 'Enter a path', '补全': 'Complete', '前往': 'Go', '没有匹配项': 'No matches',
     '新建项目并创建会话': 'Create project and session', '已在所选项目新建会话': 'Session created in the selected project',
     '已打开项目': 'Project opened', '电脑上的文件夹完整路径': 'Full folder path on the computer',
     '新项目的文件夹名称': 'Folder name for the new project',
