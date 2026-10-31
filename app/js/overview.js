@@ -1,6 +1,6 @@
 /* ---------- overview: projects grouped by computer → sessions ---------- */
 const OV_ROOT = { level: 'sessions', comp: null, proj: null, open: null };
-const ovS = { ...OV_ROOT };
+const ovS = { ...OV_ROOT, level: store.get('ov-level') || OV_ROOT.level };
 const OV_RUN = ['planning', 'echo', 'echo-check', 'execute', 'review', 'fix'];
 const OV_WAIT = ['plan', 'disagree', 'check'];
 const OV_LABEL = { planning: '写方案', echo: '复述', 'echo-check': '核对复述', execute: '执行', review: '评审', fix: '小修' };
@@ -14,6 +14,7 @@ const OV_EN = {
   '已加入排队': 'Queued', '发送结果待确认，请打开对话查看；草稿已保留': 'Send not confirmed; open the conversation to check. Draft kept.',
   '查找地址…': 'Finding address…', '连接电脑…': 'Connecting…', '正在读取项目与会话…': 'Loading projects and sessions…',
   '正在验证设备…': 'Verifying device…', '正在恢复连接…': 'Restoring connection…',
+  '暂时无法连接，已暂停自动重试': 'Unavailable; automatic retries paused',
   '重新连接': 'Reconnect', '重新授权': 'Authorize again', '连接详情': 'Connection details', '等待连接…': 'Waiting to connect…',
   '正在读取最新消息…': 'Loading the latest message…', '暂无可读取的摘要': 'No readable preview available', '暂无文本消息': 'No text messages yet', '摘要读取失败': 'Could not load the preview',
   '需要你': 'Needs you', '运行中': 'Running', '正在工作': 'Working', '已停止': 'Stopped', '已完成': 'Done', '空闲': 'Idle', '不活跃': 'Inactive', '全部会话': 'All sessions', '离线': 'Offline', '问题': 'Question',
@@ -70,6 +71,7 @@ function ovComputerStatus(e, st = ovSt.get(e.id)) {
   if (link?.rejected) return link.auth?.id === e.id ? 'auth' : 'offline';
   if (status === 'identity') return 'offline';
   if (status === 'auth' || status === 'old') return status;
+  if (navigator.onLine === false || st?.retryPaused) return 'offline';
   if (st?.retry || st?.reconnecting) return 'loading';
   if (link?.socket.readyState < 2) {
     const foreground = e.c.key === currentComputer()?.key && link.socket === ws;
@@ -84,7 +86,8 @@ function ovComputerStatus(e, st = ovSt.get(e.id)) {
 function ovStOf(id) {
   let st = ovSt.get(id);
   if (!st) {
-    ovSt.set(id, st = { status: 'loading', stage: 0, data: null, offset: 0, seen: 0, fetched: false, prev: new Map(), first: new Map(), flight: null });
+    ovSt.set(id, st = { status: 'loading', stage: 0, data: null, offset: 0, seen: 0, fetched: false, prev: new Map(), first: new Map(), flight: null,
+      retryFailures: 0, retryPaused: false, retryProbe: false });
     ovCollapsed.add(id);
   }
   return st;
@@ -157,6 +160,7 @@ function ovPreviewHtml(r) {
 }
 function ovFetch(e) {
   const st = ovStOf(e.id);
+  if (!computerRetryAllowed(e.c)) return Promise.resolve();
   return st.flight ||= ovLoad(e, st).catch(() => { if (!['auth', 'identity'].includes(st.status)) st.status = 'offline'; }).finally(() => { st.flight = null; ovRender(); });
 }
 async function ovRead(c, relay) {
@@ -171,6 +175,7 @@ async function ovLoad(e, st) {
   const c = e.c;
   st.stage = c.relay ? 1 : 0;
   let r = c.relay ? await ovRead(c, c.relay) : { down: true };
+  if (!computerRetryAllowed(c)) return;
   if (r.auth) st.status = 'auth';
   if (r.data && r.data.id !== e.id) st.status = 'identity';
   if (r.down || r.auth || (r.data && r.data.id !== e.id)) {
@@ -303,7 +308,7 @@ function ovComputerGroup(e, all, projs) {
   else if (status === 'old') { badge = '需要更新电脑端'; action = `data-ov="old" data-v="${e.index}"`; }
   else if (status === 'offline') {
     badge = ovT('重新连接'); action = `data-ov="retry" data-id="${esc(e.id)}"`;
-    detail = st?.seen ? `离线 · 最后在线 ${ovFmt(Date.now() - st.seen)} 前` : ovT('尚未连接');
+    detail = st?.retryPaused ? ovT('暂时无法连接，已暂停自动重试') : st?.seen ? `离线 · 最后在线 ${ovFmt(Date.now() - st.seen)} 前` : ovT('尚未连接');
   } else if (!loading) detail = ovS.level === 'projects' ? `${projects.length} 个项目` : `${recs.length} 个会话`;
   if (status === 'online' && e.c?.key === currentComputer()?.key && conn.attachFailed) detail = I18N.tr('当前会话尚未就绪');
   const stage = link?.authed || link?.restoring ? 2 : link?.opened ? 1 : st?.stage || 0;
@@ -358,7 +363,7 @@ function ovChangesRow(r) {
 }
 function ovRunHtml(r) {
   const value = ovPreviews.get(r.key)?.value, tasks = value?.tasks || r.tasks;
-  const model = [value?.model, value?.effort].filter(Boolean).join(' · ');
+  const model = value?.model || '';
   const progress = tasks?.total > 0 ? tasks : null;
   const count = progress ? `${ovT('已完成')} ${progress.done}/${progress.total}` : ovT(value ? '未提供任务进度' : '正在读取运行状态…');
   const tools = value?.tools || [];
@@ -498,7 +503,7 @@ function ovCommit(p) {
   const nextPreview = $('ovBoard').querySelector('[data-ov-preview]');
   if (nextPreview && nextPreview.dataset.ovPreview === previewScroll?.key) nextPreview.scrollTop = previewScroll.top;
 }
-function ovRender(vt, scroll) {
+function ovRender(vt, scroll, locate = false) {
   ovRefreshPreview();
   if (document.body.classList.contains('conv')) return;
   const p = ovPlan();
@@ -517,6 +522,7 @@ function ovRender(vt, scroll) {
     ovScroll = undefined;
     ovCommit(next);
     ovMain.scrollTop = top;
+    if (locate) ovLocateCard();
   };
   const motion = document.startViewTransition && !matchMedia('(prefers-reduced-motion:reduce)').matches;
   if (motion && vt) document.startViewTransition(() => commit(ovPlan())).ready.catch(() => {});
@@ -538,12 +544,13 @@ function ovRestoreComputers(saved) {
     st.offset = value.offset;
   }
   if (!pendingNotice && store.get('start-view') !== 'conversation') {
-    Object.assign(ovS, saved.view.ov);
+    const sameLevel = saved.view.ov.level === ovS.level;
+    if (sameLevel) Object.assign(ovS, saved.view.ov);
     ovCollapsed.clear();
     for (const id of saved.view.ovCollapsed) ovCollapsed.add(id);
     ovExpanded.clear();
     for (const id of saved.view.ovExpanded) ovExpanded.add(id);
-    ovRender(false, saved.view.ovScroll);
+    ovRender(false, sameLevel ? saved.view.ovScroll : 0);
   }
 }
 function ovRestore(st) {
@@ -679,6 +686,17 @@ function ovSubmit(key) {
   if (!text) return document.querySelector(`[data-ov-input="${CSS.escape(key)}"]`)?.focus();
   ovSend(key, 'reply', { text }, '已发送');
 }
+function ovLocateCard(reply = null) {
+  const card = $('ovBoard').querySelector('.ov-open');
+  if (!card) return;
+  const origin = ovMain.getBoundingClientRect().top - ovMain.scrollTop;
+  ovMain.scrollTop = Math.max(card.getBoundingClientRect().top - origin,
+    reply ? reply.getBoundingClientRect().bottom - origin - ovMain.clientHeight : 0);
+}
+function ovLocateReply() {
+  const input = document.activeElement;
+  if (input?.dataset?.ovInput) ovLocateCard(input.closest('.ov-composer'));
+}
 function ovOpen(target) {
   if (target.project && !target.project.root) return status(ovT('尚未读取到项目路径，请在电脑上打开项目后重试'), false);
   const json = JSON.stringify(target), e = ovList.find(x => x.id === target.computer);
@@ -733,6 +751,7 @@ $('overview').addEventListener('pointermove', e => {
 for (const event of ['pointerup', 'pointercancel']) addEventListener(event, ovCancelHold);
 ovMain.addEventListener('scroll', ovCancelHold, { passive: true });
 $('overview').addEventListener('click', e => {
+  if (e.target.dataset.ovInput) return ovLocateReply();
   if (ovHeld && e.target.closest('[data-ov-session]')?.dataset.ovSession === ovHeld) { ovHeld = ''; e.preventDefault(); return; }
   const el = e.target.closest('[data-ov]');
   if (!el) return;
@@ -740,7 +759,7 @@ $('overview').addEventListener('click', e => {
   switch (a) {
     case 'sess':
       if (ovBatch) return ovSelectSession(ovRecs().find(r => r.key === id));
-      ovS.open = ovS.open === id ? null : id; ovSaveHistory(); return ovRender(true);
+      ovS.open = ovS.open === id ? null : id; ovSaveHistory(); return ovRender(true, undefined, !!ovS.open);
     case 'close': ovS.open = null; ovSaveHistory(); return ovRender(true);
     case 'lane': case 'jump': return ovFocusSession(id);
     case 'fold':
@@ -753,7 +772,9 @@ $('overview').addEventListener('click', e => {
       ovSaveHistory();
       return ovRender(true);
     case 'proj': return ovMove({ comp: id.split('|')[0], proj: id, level: 'projects', open: null }, true);
-    case 'level': return ovMove({ level: v, comp: v === 'favorites' ? null : ovS.comp, proj: null, open: null });
+    case 'level':
+      store.set('ov-level', v);
+      return ovMove({ level: v, comp: v === 'favorites' ? null : ovS.comp, proj: null, open: null });
     case 'batch-all':
       ovBatch.selected.clear();
       for (const r of ovScopedRecs().filter(ovCanManage)) ovBatch.selected.set(ovSessionIdentity(r), r);
@@ -792,7 +813,7 @@ $('overview').addEventListener('change', e => {
 $('overview').addEventListener('input', e => { if (e.target.dataset.ovInput) ovDraft.set(e.target.dataset.ovInput, e.target.value); });
 $('overview').addEventListener('focusin', e => {
   const r = e.target.dataset.ovInput && ovRecs().find(r => r.key === e.target.dataset.ovInput);
-  if (r) ovEditing = { key: r.key, bucket: ovBucket(r) };
+  if (r) { ovEditing = { key: r.key, bucket: ovBucket(r) }; ovLocateReply(); }
 });
 $('overview').addEventListener('focusout', e => {
   const key = e.target.dataset.ovInput;
@@ -824,6 +845,9 @@ for (const [id, t] of [['ovBack', '返回概览'], ['ovUp', '上一级'], ['ovMe
 const ovLayout = () => $('overview').classList.toggle('ov-landscape', innerWidth > innerHeight);
 ovLayout();
 addEventListener('resize', ovLayout);
+addEventListener('resize', ovLocateReply);
+window.visualViewport?.addEventListener('resize', ovLocateReply);
+window.visualViewport?.addEventListener('scroll', ovLocateReply);
 ovPrune();
 history.replaceState({ ...ovHistory(0), ovDepth: 0 }, '');
 if (pendingNotice) ovConversationOpened();
