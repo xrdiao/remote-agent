@@ -35,7 +35,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>Remote Agent</title>
-<link rel="stylesheet" href="app.css?v=335">
+<link rel="stylesheet" href="app.css?v=341">
 </head>
 <body>
 <nav id="rail" aria-label="导航"></nav>
@@ -137,6 +137,7 @@
     <button id="newChat">＋ 新建</button>
     <div id="fusionConfig" hidden><button id="fusionModelA" class="dd">A 模型</button><button id="fusionModelB" class="dd">B 模型</button><button id="fusionProject" class="dd">项目</button></div>
   </div>
+  <button id="composerFold" type="button" title="收起输入框" aria-label="收起输入框" aria-expanded="true" aria-controls="text"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
   <div id="termToolsLabel" hidden>终端操作</div>
   <div id="termTools" hidden>
     <button id="pickTerms">列表</button>
@@ -177,6 +178,7 @@
       <div class="ov-lane" id="ovLane" hidden></div>
       <div class="ov-board" id="ovBoard"></div>
     </div>
+    <div class="ov-batch" id="ovBatch" hidden></div>
   </div>
   <div class="ov-toasts" id="ovToasts"></div>
 </div>
@@ -234,25 +236,25 @@
   <input id="scannerFile" type="file" accept="image/*" hidden>
 </div>
 
-<script src="i18n.js?v=326"></script>
-<script src="js/core.js?v=338"></script>
+<script src="i18n.js?v=341"></script>
+<script src="js/core.js?v=341"></script>
 <script src="js/gate.js?v=326"></script>
 <script src="js/scanner.js"></script>
 <script src="js/auth.js?v=207"></script>
-<script src="js/net.js?v=338"></script>
-<script src="js/sheets.js?v=330"></script>
-<script src="js/notify.js?v=338"></script>
-<script src="js/overview.js?v=336"></script>
+<script src="js/net.js?v=340"></script>
+<script src="js/sheets.js?v=340"></script>
+<script src="js/notify.js?v=340"></script>
+<script src="js/overview.js?v=340"></script>
 <script src="js/mode.js?v=257"></script>
 <script src="markdown-it/markdown-it-15.0.3.min.js"></script>
 <script src="js/markdown.js?v=295"></script>
 <script src="js/chat.js?v=295"></script>
-<script src="js/history.js?v=333"></script>
+<script src="js/history.js?v=341"></script>
 <script src="js/files.js?v=273"></script>
 <script src="js/transfer.js?v=207"></script>
 <script src="js/screen.js?v=267"></script>
 <script src="js/terminal.js?v=239"></script>
-<script src="js/composer.js?v=337"></script>
+<script src="js/composer.js?v=341"></script>
 <script src="js/latency.js?v=142"></script>
 <script src="js/image-editor.js?v=257"></script>
 <script src="js/voice.js?v=277"></script>

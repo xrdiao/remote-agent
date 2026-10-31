@@ -232,7 +232,6 @@ text.addEventListener('input', e => {
   endInputRecall();
   syncMentions(text.value, e);
   recordDraftEdit();
-  syncQuestionDraft(text.value);
   queueDraftSync();
 });
 // ---- "@" mentions (Devin): the relay drives Devin's own typeahead, so a mention ends up as a real chip ----
@@ -428,9 +427,14 @@ function updateSendMode() {
   updateComposeCompact();
 }
 
-/* Idle chat text uses two lines; the existing short-screen empty capsule remains.
-   Both presentations share the same interaction state and collapse delay. */
-let composeCompactTimer = 0, composerEngaged = false;
+/* One presentation controller owns the idle text and compact composer.
+   Portrait folds on explicit choice or question focus; landscape keeps its idle capsule. */
+let composeCompactTimer = 0, composerEngaged = false, composerPortraitCollapsed = false, composerPointerPending = false;
+const portraitComposer = () => mode === 'chat' && !document.body.classList.contains('land');
+function questionComposerFocused() {
+  const focused = document.activeElement;
+  return focused?.matches('#qnBar input, #qnBar textarea, #qnBar select') && !focused.disabled;
+}
 function micHeld() { return $('mic')?.classList.contains('on') || (typeof voiceSession !== 'undefined' && !!voiceSession); }
 function micPressing() { return $('mic')?.classList.contains('on') || (typeof voiceSession !== 'undefined' && !!voiceSession?.held); }
 function composeIdleWanted() {
@@ -473,6 +477,11 @@ function setComposerPresentation(idle, compact) {
   noteChatLayoutChange();
   document.body.classList.toggle('composeIdle', idle);
   document.body.classList.toggle('composeCompact', compact);
+  const fold = $('composerFold');
+  const label = I18N.tr(compact ? '展开输入框' : '收起输入框');
+  fold.setAttribute('aria-expanded', String(!compact));
+  fold.setAttribute('aria-label', label);
+  fold.title = label;
   if (!idle) autosize();
   const h1 = foot.offsetHeight;
   if (stick) requestChatScroll();
@@ -481,10 +490,29 @@ function setComposerPresentation(idle, compact) {
   }
 }
 function setComposeCompact(on) { setComposerPresentation(on, on); }
+function setComposerFold(on) {
+  composerPointerPending = false;
+  composerPortraitCollapsed = on;
+  endComposerEditing();
+  composerEngaged = true;
+  updateComposeCompact();
+}
+$('composerFold').onclick = () => setComposerFold(!document.body.classList.contains('composeCompact'));
 function updateComposeCompact() {
+  if (portraitComposer() && (composerPortraitCollapsed || questionComposerFocused())) {
+    clearTimeout(composeCompactTimer); composeCompactTimer = 0;
+    setComposerPresentation(false, true);
+    return;
+  }
+  // Explicit/question folding is immediate and does not use the idle delay.
+  if (document.body.classList.contains('composeCompact') && !document.body.classList.contains('composeIdle')) {
+    if (portraitComposer() && composerPointerPending) return;
+    clearTimeout(composeCompactTimer); composeCompactTimer = 0;
+    setComposerPresentation(false, false);
+  }
   if (composeIdleWanted()) {
     if (composerLayoutBusy()) return;
-    const compact = composeCompactWanted();
+    const compact = !portraitComposer() && composeCompactWanted();
     if (document.body.classList.contains('composeIdle') && (!compact || document.body.classList.contains('composeCompact'))) {
       clearTimeout(composeCompactTimer); composeCompactTimer = 0;
       setComposerPresentation(true, compact);
@@ -493,7 +521,7 @@ function updateComposeCompact() {
     if (composeCompactTimer) return;
     composeCompactTimer = setTimeout(() => {
       composeCompactTimer = 0;
-      if (composeIdleWanted() && !composerLayoutBusy()) setComposerPresentation(true, composeCompactWanted());
+      if (composeIdleWanted() && !composerLayoutBusy()) setComposerPresentation(true, !portraitComposer() && composeCompactWanted());
     }, 1500);
   } else {
     clearTimeout(composeCompactTimer); composeCompactTimer = 0;
@@ -504,9 +532,11 @@ function updateComposeCompact() {
 // In compact: taps outside +/mic/stop only expand the composer (the field ignores pointer events
 // while compact, so no keyboard yet); a second tap in the field then focuses it natively.
 document.querySelector('.composerBox').addEventListener('click', e => {
+  if (portraitComposer()) return;
   if (document.body.classList.contains('composeCompact')) {
     if (e.target.closest('#add, #mic, #stop')) return;
     e.preventDefault(); e.stopPropagation();
+    composerPointerPending = false;
     clearTimeout(composeCompactTimer); composeCompactTimer = 0;
     composerEngaged = true;
     setComposeCompact(false);
@@ -518,21 +548,33 @@ document.querySelector('.composerBox').addEventListener('click', e => {
 // Tapping elsewhere disengages. While compact, don't re-evaluate here — expanding at
 // pointerdown would move controls under the finger; the click handler above handles it.
 document.addEventListener('pointerdown', e => {
+  composerPointerPending = !!e.target.closest('footer, #qnBar');
   if (e.target.closest('#sheet, #shade, #imageEditor')) return;
   const inside = !!e.target.closest('footer') && !e.target.closest('#send, #sendNow');
   if (inside === composerEngaged) return;
   composerEngaged = inside;
   if (!document.body.classList.contains('composeCompact') && !e.target.closest('button')) updateComposeCompact();
 }, true);
-document.querySelector('.composerBox').addEventListener('click', e => {
-  if (e.target.closest('button') && !e.target.closest('#mic')) queueMicrotask(updateComposeCompact);
+document.addEventListener('pointercancel', () => {
+  if (!composerPointerPending) return;
+  composerPointerPending = false;
+  updateComposeCompact();
 });
 for (const event of ['pointerup', 'keyup']) $('mic').addEventListener(event, () => queueMicrotask(updateComposeCompact));
 document.addEventListener('focusin', e => {
   if (e.target.matches('#qnBar input, #qnBar textarea, #qnBar select')) updateComposeCompact();
 });
+document.addEventListener('focusout', e => {
+  if (e.target.matches('#qnBar input, #qnBar textarea, #qnBar select')) queueMicrotask(updateComposeCompact);
+});
 document.addEventListener('click', e => {
-  if (e.target.closest('footer, #sheet, #shade, #imageEditor, #qnBar input, #qnBar textarea, #qnBar select')) return;
+  composerPointerPending = false;
+  if (e.target.closest('footer')) {
+    if (!e.target.closest('#mic')) queueMicrotask(updateComposeCompact);
+    return;
+  }
+  if (e.target.closest('#sheet, #shade, #imageEditor, #qnBar input, #qnBar textarea, #qnBar select')) return;
+  if (portraitComposer() && e.target.closest('[data-question-compose]')) return;
   endComposerEditing();
 });
 $('fusionProject').onclick = () => { status('正在读取项目…'); send({ t: 'fusionProjects' }); };

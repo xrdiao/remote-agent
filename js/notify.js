@@ -148,7 +148,7 @@ async function disableNotify() {
 
 function noticeTarget(raw) {
   if (!raw) return null;
-  let win = String(raw), computer = '', windowId = '', threadId = '';
+  let win = String(raw), computer = '', windowId = '', threadId = '', project;
   if (win.startsWith('{')) {
     try {
       const o = JSON.parse(win);
@@ -156,9 +156,10 @@ function noticeTarget(raw) {
       computer = o.computer || '';
       windowId = o.windowId || '';
       threadId = o.threadId || '';
+      project = o.project;
     } catch { return null; }
   }
-  return win ? { computer, win, windowId, threadId } : null;
+  return win ? { computer, win, windowId, threadId, ...(project ? { project } : {}) } : null;
 }
 function rememberNotice(raw) {
   const n = noticeTarget(raw);
@@ -170,7 +171,7 @@ function rememberNotice(raw) {
   saveComputers(list.map(c => c.key === here.key ? next : c), current?.key);
   if (here.key === current?.key) store.set('window', n.win);
   ovConversationOpened();
-  return next;
+  return n.project ? { ...next, project: n.project } : next;
 }
 function openWin(id) {
   const before = currentComputer()?.id;
@@ -185,7 +186,7 @@ function openWin(id) {
     return true;
   }
   if (!authed) { pendingNotice = id; return false; }
-  return send({ t: 'attach', id: here.win, windowId: here.windowId || '', threadId: here.threadId || '' });
+  return send({ t: 'attach', id: here.win, windowId: here.windowId || '', threadId: here.threadId || '', ...(here.project ? { project: here.project } : {}) });
 }
 window.openWin = openWin;
 let updateUntouched = true;
@@ -209,41 +210,53 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
+async function runAgentMenuAction(id, action, extra, target) {
+  if (target) {
+    try {
+      await ovManageSession(target, action, extra);
+      status(action === 'favorite' ? extra.favorite ? '已收藏' : '已取消收藏' : action === 'rename' ? '已重命名会话' : '已删除／归档会话');
+    } catch (error) { status(error.message, false); }
+    return;
+  }
+  if (action === 'favorite') return setAgentFavorite(id, extra.favorite);
+  send(currentApp === 'codex' ? { t: action === 'rename' ? 'codexRename' : 'codexArchive', id, ...extra }
+    : { t: 'sessionManage', id, action, ...extra });
+  return renderAgentList();
+}
+
 $('sheet').addEventListener('click', async e => {
   const b = e.target.closest('button');
   if (!b) return;
   if (sheetKind === 'agent-actions' && b.dataset.agentAction) {
     const id = b.dataset.agentActionId || '', name = b.dataset.agentActionTitle || '';
+    const target = agentActionTarget, app = target?.app || currentApp;
     if (b.dataset.agentAction === 'open') {
-      pendingAgentOpen = id;
       closeSheet();
+      if (target) return ovOpen(ovTarget(target));
+      pendingAgentOpen = id;
       return send({ t: 'openAgent', id, title: name });
     }
     if (b.dataset.agentAction === 'favorite') {
-      const on = !agentFavoriteState(id);
-      closeSheet(); setAgentFavorite(id, on);
-      return;
+      const on = !(target ? target.favorite : agentFavoriteState(id));
+      closeSheet();
+      return runAgentMenuAction(id, 'favorite', { favorite: on }, target);
     }
     if (b.dataset.agentAction === 'rename') {
       const next = window.prompt('新的会话名称', name);
       if (!next?.trim()) return;
       closeSheet(); status('正在重命名…');
-      if (currentApp !== 'codex') send({ t: 'sessionManage', id, action: 'rename', name: next.trim().slice(0, 80) });
-      else send({ t: 'codexRename', id, name: next.trim().slice(0, 80) });
-      return renderAgentList();
+      return runAgentMenuAction(id, 'rename', { name: next.trim().slice(0, 80) }, target);
     }
-    if (b.dataset.agentAction === 'delete' || (b.dataset.agentAction === 'archive' && currentApp !== 'codex')) {
+    if (b.dataset.agentAction === 'delete' || (b.dataset.agentAction === 'archive' && app !== 'codex')) {
       const action = b.dataset.agentAction, label = action === 'delete' ? '删除' : '归档';
       if (!await ask(`${label}「${name}」？`, label)) return;
       closeSheet(); status(`正在${label}…`);
-      send({ t: 'sessionManage', id, action });
-      return renderAgentList();
+      return runAgentMenuAction(id, action, {}, target);
     }
     if (b.dataset.agentAction === 'archive') {
       if (!await ask(`删除或归档「${name}」？\n桌面端会根据当前入口执行删除或归档。`, '继续')) return;
       closeSheet(); status('正在删除／归档…');
-      send({ t: 'codexArchive', id });
-      return renderAgentList();
+      return runAgentMenuAction(id, 'archive', {}, target);
     }
   }
   if ('modelBack' in b.dataset) return requestMenu('model', '读取模型列表…');
@@ -442,6 +455,7 @@ $('sheet').addEventListener('click', async e => {
   if (b.dataset.params) { status('读取模型参数…'); return send({ t: 'params', model: b.dataset.params, label: b.dataset.plabel }); }
   if (b.dataset.section) { status('设置中…'); return send({ t: 'pickParam', model: b.dataset.model, label: b.dataset.plabel, section: b.dataset.section, value: b.dataset.value }); }
   const act = b.dataset.act;
+  if (act === 'overviewBatch') { closeSheet(); return ovStartBatch(); }
   if ('deviceRemoveCancel' in b.dataset) { deviceRemoval = []; return renderDevices(); }
   if ('deviceRemoveConfirm' in b.dataset) return removePairedDevices(deviceRemoval, true);
   if (b.dataset.entryInvite) return inviteDeviceEntry(b.dataset.entryInvite);
