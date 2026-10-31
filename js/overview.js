@@ -42,6 +42,7 @@ let ovPreviewOwner = null;
 const ovMain = $('overview').querySelector('.ov-main');
 const ovDone = (() => { try { return JSON.parse(store.get('ov-done') || '{}'); } catch { return {}; } })();
 let ovEnterRequested = false;
+let ovToolState = null;
 let ovBatch = null;
 let ovList = [], ovPaint = '', ovCrumbsPaint = '', ovSig = [], ovScroll, ovEditing = null;
 const ovTn = new Map();
@@ -374,7 +375,9 @@ function ovRunHtml(r) {
 function ovCard(r) {
   const online = !r.off, dis = ovBusy.has(r.key) ? ' disabled' : '', key = esc(r.key);
   const status = `<div class="ov-status"><div class="ov-state"><span class="ov-badge">${esc(ovBadge(r))}</span><span class="ov-time">${esc(ovTime(r))}</span></div><span class="ovRaw" title="${esc(ovContext(r))}">${esc(ovContext(r))}</span></div>`;
-  const composer = !r.fusion && !r.dormant && online ? `<div class="ov-composer" data-ov-node="reply:${key}"><input data-ov-input="${key}" placeholder="${r.state === 'wait' ? '输入回复…' : `告诉 ${OV_AGENT[r.app]} 下一步…`}"${dis}><button class="ov-send" data-ov="send" data-id="${key}" aria-label="发送"${dis}>${OV_ICON.arrow}</button></div>` : '';
+  const canReply = !r.fusion && !r.dormant && online;
+  const attachments = ovToolState?.key === r.key && winTargetReady(ovTarget(r)) ? ovToolState.attachments || '' : '';
+  const composer = canReply ? `<div class="ov-attachments" data-ov-attachments="${key}"${attachments ? '' : ' hidden'}>${attachments}</div><div class="ov-mentions" data-ov-preserve hidden></div><div class="ov-composer" data-ov-node="reply:${key}"><textarea data-ov-input="${key}" rows="1" enterkeyhint="send" placeholder="${r.state === 'wait' ? '输入回复…' : `告诉 ${OV_AGENT[r.app]} 下一步…`}"${dis}></textarea><button class="ov-send" data-ov="send" data-id="${key}" aria-label="发送"${dis}>${OV_ICON.arrow}</button></div>` : '';
   let body;
   if (r.state === 'wait') {
     body = `<div class="ov-q">${ovNowHtml(r)}</div>` + (r.devin
@@ -391,7 +394,10 @@ function ovCard(r) {
   }
   const err = ovErr.has(r.key) ? `<div class="ov-errbox">${esc(ovErr.get(r.key))}</div>` : '';
   const off = r.off ? '<div class="ov-hint">电脑离线</div>' : '';
-  return status + body + off + err + `<div class="ov-cfoot">${ovOpenLink(r)}</div>`;
+  const tools = canReply ? `<div class="ov-tools">${['add', 'img', 'uploadDoc', 'inputPrev', 'inputNext', 'insertNewline'].map(id => `<button data-ov="tool" data-id="${key}" data-v="${id}" title="${esc($(id).title)}" aria-label="${esc($(id).ariaLabel)}"${dis}>${$(id).innerHTML}</button>`).join('')}</div>` : '';
+  const message = ovToolState?.key === r.key && ovToolState.statusGen === statusGen && $('msg').className !== 'quiet' ? $('msg').textContent : '';
+  const toolStatus = tools && message ? `<div class="ov-tool-status ${$('msg').className}" role="status">${esc(message)}</div>` : '';
+  return status + body + off + err + toolStatus + `<div class="ov-cfoot">${tools}${ovOpenLink(r)}</div>`;
 }
 function ovSessionGroup(label, recs, id) {
   if (!recs.length) return '';
@@ -457,6 +463,7 @@ function ovPatch(container, html) {
     const children = [...next.childNodes].map(wanted => {
       const node = pool.get(key(wanted))?.shift();
       if (!node) return wanted;
+      if (node.nodeType === 1 && node.hasAttribute('data-ov-preserve')) return node;
       if (node.isEqualNode(wanted)) return node;
       if (node.nodeType !== 1) node.nodeValue = wanted.nodeValue;
       else {
@@ -473,6 +480,9 @@ function ovPatch(container, html) {
     before = pinned >= 0 ? children[pinned].nextSibling : parent.firstChild;
     for (let i = pinned + 1; i < children.length; i++) { if (children[i] !== before) parent.insertBefore(children[i], before); before = children[i].nextSibling; }
     const kept = new Set(children);
+    if (ovToolState && previous.some(node => !kept.has(node) && node.contains(mentionInput))) {
+      mentionHide(mentionInput); mentionInput = text;
+    }
     for (const node of previous) if (!kept.has(node)) node.remove();
   };
   patch(container, template.content);
@@ -482,6 +492,13 @@ function ovPatch(container, html) {
   }
 }
 function ovCommit(p) {
+  if (ovToolState && ovToolState.key !== ovS.open) {
+    const input = document.querySelector('[data-ov-input="' + CSS.escape(ovToolState.key) + '"]');
+    if (input) mentionHide(input);
+    mentionInput = text;
+    ovToolState = null;
+    finishWinBinding(new Error('目标会话已切换'));
+  }
   const preview = $('ovBoard').querySelector('[data-ov-preview]');
   const previewScroll = preview && { key: preview.dataset.ovPreview, top: preview.scrollTop };
   ovPaint = p.paint;
@@ -504,6 +521,13 @@ function ovCommit(p) {
   if (nextPreview && nextPreview.dataset.ovPreview === previewScroll?.key) nextPreview.scrollTop = previewScroll.top;
 }
 function ovRender(vt, scroll, locate = false) {
+  if (winBinding && ovToolState) {
+    const entry = ovList.find(e => e.id === winBinding.target.computer), state = entry && ovComputerStatus(entry);
+    const failed = currentComputer()?.id === winBinding.target.computer && conn.attachFailed;
+    if (failed || ['offline', 'auth', 'old'].includes(state)) {
+      finishWinBinding(new Error(failed ? conn.failedTargets.get(winBinding.target.win) || '目标会话读取失败' : state === 'auth' ? '设备授权已失效，请重新授权' : '电脑尚未连接，请先重新连接'));
+    }
+  }
   ovRefreshPreview();
   if (document.body.classList.contains('conv')) return;
   const p = ovPlan();
@@ -607,7 +631,13 @@ async function ovSend(key, act, extra, ok) {
     const result = await res.json();
     if (!res.ok) ovErr.set(key, I18N.tr(result.error || ovT('操作失败')));
     else if (reply && result.pending) ovErr.set(key, ovT('发送结果待确认，请打开对话查看；草稿已保留'));
-    else { if (extra.text !== undefined) ovDraft.delete(key); ovToast(`<span>${ovT(reply && result.queued ? '已加入排队' : ok)}</span>`); ovFetch(e); }
+    else {
+      if (extra.text !== undefined && ovDraft.get(key)?.trim() === extra.text) {
+        ovDraft.delete(key); composerMentionStates.delete(key);
+      }
+      if (reply && ovToolInput()?.dataset.ovInput === key) send({ t: 'attachments' });
+      ovToast(`<span>${ovT(reply && result.queued ? '已加入排队' : ok)}</span>`); ovFetch(e);
+    }
   } catch { ovErr.set(key, reply ? ovT('发送结果待确认，请打开对话查看；草稿已保留') : I18N.tr('连接电脑失败，请重试')); }
   ovBusy.delete(key);
   ovRender();
@@ -680,11 +710,56 @@ async function ovRunBatch(action) {
     }
   } finally { batch.running = false; ovRender(); }
 }
+function ovToolInput() {
+  if (!ovToolState?.bound || ovToolState.key !== ovS.open || document.body.classList.contains('conv')
+      || !winTargetReady(ovToolState.target) || ovToolState.sel !== viewSel) return null;
+  return document.querySelector('[data-ov-input="' + CSS.escape(ovToolState.key) + '"]');
+}
+function ovUpdateAttachments() {
+  if (!ovToolInput()) return;
+  ovToolState.attachments = $('attachments').innerHTML;
+  ovRender();
+}
+document.addEventListener('composer-status', () => {
+  if (!ovToolInput()) return;
+  ovToolState.statusGen = statusGen;
+  ovRender();
+});
+function ovPrepareTools(key) {
+  if (ovToolInput()?.dataset.ovInput === key) return ovToolState;
+  const r = ovRecs().find(r => r.key === key);
+  const state = ovToolState = { key, target: ovTarget(r), bound: false, attachments: '' };
+  ovErr.delete(key);
+  state.ready = bindWin(state.target).then(() => {
+    if (ovToolState !== state || ovS.open !== key || document.body.classList.contains('conv')) return false;
+    state.bound = true; state.sel = viewSel;
+    ovUpdateAttachments();
+    return true;
+  }, error => {
+    if (ovToolState === state) { ovErr.set(key, error.message); ovRender(); }
+    return false;
+  });
+  return state;
+}
+async function ovUseTool(key, tool) {
+  const input = document.querySelector('[data-ov-input="' + CSS.escape(key) + '"]');
+  if (tool === 'insertNewline') { endInputRecall(); return insertComposerText('\n', input); }
+  const state = ovPrepareTools(key);
+  if (tool === 'uploadDoc') return openDocumentPicker(state);
+  if (!await state.ready || ovToolState !== state) return;
+  const targetInput = ovToolInput();
+  if (tool === 'img') openImagePicker(state);
+  else if (tool === 'add') openComposerAdd(targetInput);
+  else recallInput(tool === 'inputPrev' ? -1 : 1, targetInput);
+}
 function ovSubmit(key) {
   if (ovBusy.has(key)) return;
-  const text = (ovDraft.get(key) || '').trim();
-  if (!text) return document.querySelector(`[data-ov-input="${CSS.escape(key)}"]`)?.focus();
-  ovSend(key, 'reply', { text }, '已发送');
+  const input = document.querySelector(`[data-ov-input="${CSS.escape(key)}"]`), value = (ovDraft.get(key) || '').trim();
+  const bound = ovToolInput()?.dataset.ovInput === key;
+  if (bound && pendingImageUploads()) { ovErr.set(key, '图片尚未上传完成；失败图片请重试或删除'); return ovRender(); }
+  const attachments = bound && desktopAttachments.length > 0;
+  if (!value && !attachments) return input?.focus();
+  ovSend(key, 'reply', { text: value, ...mentionsFor(value, input) }, '已发送');
 }
 function ovLocateCard(reply = null) {
   const card = $('ovBoard').querySelector('.ov-open');
@@ -716,7 +791,7 @@ function ovShowConversation() {
   document.body.classList.add('conv');
   ovVisible();
 }
-function ovConversationOpened() { ovEnterRequested = true; }
+function ovConversationOpened(enter = true) { ovEnterRequested = enter; }
 function ovEnterReady() {
   if (!ovEnterRequested || !authed || !windowReady || navigationPending) return;
   ovEnterRequested = false;
@@ -737,6 +812,7 @@ function ovBackToBoard() {
 let ovHold = null, ovHeld = '';
 function ovCancelHold() { clearTimeout(ovHold?.timer); ovHold = null; }
 $('overview').addEventListener('pointerdown', e => {
+  if (e.target.closest('[data-ov="tool"][data-v="insertNewline"], .ov-mentions') && e.pointerType === 'mouse') e.preventDefault();
   ovCancelHold(); ovHeld = '';
   const card = e.target.closest('[data-ov-session]');
   if (!card || ovBatch || e.button !== 0 || e.target.closest('button, input, textarea, a, [contenteditable], .ov-last')) return;
@@ -751,6 +827,13 @@ $('overview').addEventListener('pointermove', e => {
 for (const event of ['pointerup', 'pointercancel']) addEventListener(event, ovCancelHold);
 ovMain.addEventListener('scroll', ovCancelHold, { passive: true });
 $('overview').addEventListener('click', e => {
+  if (e.target.closest('.ov-mentions')) return pickMention(e);
+  const attachments = e.target.closest('[data-ov-attachments]');
+  if (attachments) {
+    const state = ovPrepareTools(attachments.dataset.ovAttachments);
+    state.ready.then(ready => { if (ready && ovToolState === state) attachmentClick(e); });
+    return;
+  }
   if (e.target.dataset.ovInput) return ovLocateReply();
   if (ovHeld && e.target.closest('[data-ov-session]')?.dataset.ovSession === ovHeld) { ovHeld = ''; e.preventDefault(); return; }
   const el = e.target.closest('[data-ov]');
@@ -804,13 +887,22 @@ $('overview').addEventListener('click', e => {
     case 'open': return ovOpen(JSON.parse(el.dataset.t));
     case 'opt': return ovSend(id, 'opt', { index: Number(v.split(':')[1]) }, '已发送');
     case 'send': return ovSubmit(id);
+    case 'tool': return ovUseTool(id, v);
     case 'accept': return ovSend(id, 'acceptAll', {}, '已接受改动');
   }
 });
 $('overview').addEventListener('change', e => {
   if (e.target.matches('[data-ov-computer]')) ovMove({ comp: e.target.value || null, proj: null, open: null });
 });
-$('overview').addEventListener('input', e => { if (e.target.dataset.ovInput) ovDraft.set(e.target.dataset.ovInput, e.target.value); });
+$('overview').addEventListener('input', e => {
+  const input = e.target;
+  if (!input.dataset.ovInput) return;
+  endInputRecall();
+  syncMentions(input.value, e, input);
+  composerMentionState(input).revision++;
+  ovDraft.set(input.dataset.ovInput, input.value);
+  if (input === ovToolInput()) mentionUpdate(input);
+});
 $('overview').addEventListener('focusin', e => {
   const r = e.target.dataset.ovInput && ovRecs().find(r => r.key === e.target.dataset.ovInput);
   if (r) { ovEditing = { key: r.key, bucket: ovBucket(r) }; ovLocateReply(); }
@@ -824,10 +916,25 @@ $('overview').addEventListener('focusout', e => {
   });
 });
 $('overview').addEventListener('keydown', e => {
-  if (e.key === 'Enter' && !e.isComposing && e.target.dataset.ovInput) ovSubmit(e.target.dataset.ovInput);
+  if (e.key === 'Enter' && e.target.dataset.ovInput) {
+    composerMentionState(e.target).shiftEnter = e.shiftKey;
+    submitOnEnter(e, e.target);
+  }
   else if (ovBatch && ['Enter', ' '].includes(e.key) && e.target.dataset.ovSession) {
     e.preventDefault(); ovSelectSession(ovRecs().find(r => r.key === e.target.dataset.ovSession));
   }
+});
+$('overview').addEventListener('keyup', e => {
+  if (e.key === 'Enter' && e.target.dataset.ovInput) composerMentionState(e.target).shiftEnter = false;
+});
+for (const event of ['compositionstart', 'compositionend']) $('overview').addEventListener(event, e => {
+  if (!e.target.dataset.ovInput) return;
+  const state = composerMentionState(e.target);
+  if (event === 'compositionstart') { endInputRecall(); state.composing = true; }
+  else setTimeout(() => { state.composing = false; }, 0);
+});
+$('overview').addEventListener('beforeinput', e => {
+  if (e.target.dataset.ovInput && ['insertLineBreak', 'insertParagraph'].includes(e.inputType)) submitOnEnter(e, e.target);
 });
 $('ovBack').addEventListener('click', ovBackToBoard);
 addEventListener('popstate', () => {

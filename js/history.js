@@ -1877,7 +1877,8 @@ document.addEventListener('click', async e => {
 $('pickMode').onclick = () => requestMenu('mode', '读取模式列表…');
 $('pickModel').onclick = () => requestMenu('model', '读取模型列表…');
 $('pickPerm').onclick = () => requestMenu('permission', '读取权限…');
-function showCodexSkills(rows) {
+function showCodexSkills(rows, input = composerInput()) {
+  const mn = composerMentionState(input);
   openSheet('skills', '<h3>Skill · 技能</h3><input id="skillSearch" placeholder="搜索技能" style="width:100%;box-sizing:border-box;margin-bottom:8px"><div id="skillRows"></div>');
   const paint = () => {
     const q = $('skillSearch').value.toLowerCase();
@@ -1888,20 +1889,21 @@ function showCodexSkills(rows) {
     const b = e.target.closest('[data-skill]');
     if (!b) return;
     const r = rows[Number(b.dataset.skill)], token = '/' + r.label;
-    closeSheet(); text.focus();
-    text.setRangeText(token + ' ', text.selectionStart, text.selectionEnd, 'end');
-    MN.mentions.push({ ...r, token, at: text.selectionStart - token.length - 1 });
-    MN.value = text.value;
-    autosize(); saveDraft();
+    closeSheet(); input.focus();
+    input.setRangeText(token + ' ', input.selectionStart, input.selectionEnd, 'end');
+    mn.mentions.push({ ...r, token, at: input.selectionStart - token.length - 1 });
+    mn.value = input.value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
   };
   paint();
 }
 let codexFileRequest = 0;
-async function openCodexFilePicker(token) {
-  const scope = chatInputKey(), selected = new Map();
-  const start = token?.start ?? text.selectionStart, end = token?.end ?? token?.caret ?? text.selectionEnd;
+async function openCodexFilePicker(token, input = composerInput()) {
+  const mn = composerMentionState(input);
+  const scope = chatCacheKey(viewSel), selected = new Map();
+  const start = token?.start ?? input.selectionStart, end = token?.end ?? token?.caret ?? input.selectionEnd;
   let directory = null;
-  mentionHide();
+  mentionHide(input);
   const paint = (note = '') => {
     const showHidden = store.get('codex-files-show-hidden') === '1';
     const rows = (directory?.entries || []).map((entry, index) => !showHidden && entry.name.startsWith('.') ? '' : entry.directory
@@ -1923,8 +1925,8 @@ async function openCodexFilePicker(token) {
     };
     $('codexFileCancel').onclick = closeSheet;
     $('codexFileAdd').onclick = () => {
-      if (scope !== chatInputKey()) { closeSheet(); return status('会话已切换，请重新选择文件', false); }
-      if (takeMentions(text.value.slice(0, start) + text.value.slice(end)).length + selected.size > 12) return status('每条消息最多添加 12 个引用项', false);
+      if (scope !== chatCacheKey(viewSel) || input !== composerInput()) { closeSheet(); return status('会话已切换，请重新选择文件', false); }
+      if (takeMentions(input.value.slice(0, start) + input.value.slice(end), input).length + selected.size > 12) return status('每条消息最多添加 12 个引用项', false);
       let at = start;
       const mentions = [...selected.values()].map(entry => {
         const token = '@' + entry.name;
@@ -1932,10 +1934,10 @@ async function openCodexFilePicker(token) {
         at += token.length + 1;
         return mention;
       });
-      text.setRangeText(mentions.map(m => m.token).join(' ') + (/\s/.test(text.value[end] || '') ? '' : ' '), start, end, 'end');
-      MN.mentions.push(...mentions);
-      MN.value = text.value;
-      closeSheet(); autosize(); saveDraft(); text.focus();
+      input.setRangeText(mentions.map(m => m.token).join(' ') + (/\s/.test(input.value[end] || '') ? '' : ' '), start, end, 'end');
+      mn.mentions.push(...mentions);
+      mn.value = input.value;
+      closeSheet(); input.dispatchEvent(new Event('input', { bubbles: true })); input.focus();
     };
   };
   const browse = async path => {
@@ -1952,13 +1954,13 @@ async function openCodexFilePicker(token) {
   };
   await browse('');
 }
-$('add').onclick = () => {
+function openComposerAdd(input = text) {
   if (currentApp === 'fusion') {
     openSheet('add', '<h3>添加附件</h3><button class="opt" data-control="img">上传图片</button><button class="opt" data-control="uploadDoc">上传文档</button>');
     $('sheet').querySelectorAll('[data-control]').forEach(b => b.onclick = () => { closeSheet(); $(b.dataset.control).click(); });
     return;
   }
-  const c = lastChat?.codex;
+  const c = (input === text ? lastChat : chatBySel.get(chatCacheKey(viewSel)))?.codex;
   if (!c) {
     const controls = ['newChat', 'pickMode', 'pickDir'].filter(id => !$(id).hidden);
     const editorRow = currentApp === 'devin'
@@ -1981,12 +1983,13 @@ $('add').onclick = () => {
     if (key === 'run') return send({ t: 'codexRun' });
     if (key === 'chat') return send({ t: 'codexChat' });
     if (key === 'skills') return send({ t: 'codexSkills' });
-    if (key === 'local-files') return openCodexFilePicker();
-    text.focus();
-    text.setRangeText(key === 'files' ? '@' : '/', text.selectionStart, text.selectionEnd, 'end');
-    autosize(); saveDraft(); mentionUpdate();
+    if (key === 'local-files') return openCodexFilePicker(undefined, input);
+    input.focus();
+    input.setRangeText(key === 'files' ? '@' : '/', input.selectionStart, input.selectionEnd, 'end');
+    input.dispatchEvent(new Event('input', { bubbles: true })); mentionUpdate(input);
   });
-};
+}
+$('add').onclick = () => openComposerAdd(text);
 $('pickPlan').onclick = () => { status('正在切换 Plan…'); send({ t: 'codexPlan' }); };
 $('pickIde').onclick = () => send({ t: 'codexIde' });
 $('pickRun').onclick = () => { status('读取执行位置…'); send({ t: 'codexRun' }); };

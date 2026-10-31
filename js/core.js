@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v347'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v348'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false, failures = 0;
 let windowReady = false;
@@ -186,12 +186,16 @@ const ACTION_PENDING = new Set([
 let statusGen = 0;
 let statusTimer = 0;
 let pendingStatus = '';
+function paintComposeStatus(text, ok = true) {
+  $('msg').textContent = text || '';
+  $('msg').className = text === '已连接' ? 'quiet' : (ok ? '' : 'err');
+  document.dispatchEvent(new Event('composer-status'));
+}
 function status(text, ok = true) {
   const gen = ++statusGen;
   clearTimeout(statusTimer);
   pendingStatus = ok && ACTION_PENDING.has(text) ? text : '';
-  $('msg').textContent = text || '';
-  $('msg').className = text === '已连接' ? 'quiet' : (ok ? '' : 'err');
+  paintComposeStatus(text, ok);
   const keep = text === '已连接' || (ok && /…$/.test(text || '') && !pendingStatus);
   if (!text || !ok || keep || pendingStatus) return;
   const wait = 2800;
@@ -199,8 +203,7 @@ function status(text, ok = true) {
     if (gen !== statusGen) return;
     statusGen++;
     pendingStatus = '';
-    $('msg').textContent = '';
-    $('msg').className = '';
+    paintComposeStatus('');
   }, wait);
 }
 function finishPending(list) {
@@ -252,6 +255,6 @@ function setWindowReady(ready) {
   windowReady = ready;
   if (typeof updateVoiceButton === 'function') updateVoiceButton();
   $('send').disabled = $('sendNow').disabled = !ready;
-  if (ready) ovEnterReady();
+  if (ready) { ovEnterReady(); document.dispatchEvent(new Event('window-ready')); }
 }
 

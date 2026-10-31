@@ -1590,8 +1590,9 @@ button { transition: background-color .12s var(--ease), color .12s var(--ease), 
 body.conv #overview { display: none; }
 #overview button { min-height: 0; padding: 0; border: 0; border-radius: 0; background: none; color: inherit; font: inherit; white-space: normal; cursor: pointer; text-align: inherit; }
 #overview button:active { background: none; transform: none; }
-#overview input { flex: 1; min-width: 0; height: 36px; padding: 0; border: 0; border-radius: 0; background: none; font-size: 15px; color: var(--fg); outline: none; }
-#overview input:focus-visible { outline: none; border: 0; box-shadow: none; }
+#overview input, #overview textarea { flex: 1; min-width: 0; height: 36px; padding: 0; border: 0; border-radius: 0; background: none; font-size: 15px; color: var(--fg); outline: none; }
+#overview input:focus-visible, #overview textarea:focus-visible { outline: none; border: 0; box-shadow: none; }
+#overview textarea { resize: none; line-height: 22px; padding: 7px 0; box-sizing: border-box; }
 #overview em { font-style: normal; }
 
 #overview .ov-top { flex: none; display: flex; align-items: center; gap: 6px; height: 52px; padding: 0 12px 0 10px; }
@@ -1793,7 +1794,20 @@ body.conv #overview { display: none; }
 #overview .ov-send svg { width: 19px; height: 19px; }
 #overview .ov-btn { height: 48px; padding: 0 22px; border-radius: 999px; font-weight: 650; font-size: 15px; background: var(--s2); color: var(--fg-hi); margin-top: 12px; }
 #overview .ov-btn.ov-pri { background: var(--accent); color: var(--accent-fg); }
-#overview .ov-cfoot { display: flex; justify-content: flex-end; margin-top: 14px; }
+#overview .ov-cfoot { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 14px; }
+#overview .ov-tools { display: flex; flex: 1; min-width: 0; }
+#overview .ov-tools button { display: grid; place-items: center; flex: 1; max-width: 34px; min-width: 24px; height: 34px; padding: 0; color: var(--fg-3); border-radius: 50%; }
+#overview .ov-tools button:active { background: var(--s2); }
+#overview .ov-tools button:disabled { opacity: .45; }
+#overview .ov-cfoot > .ov-link { flex: none; }
+#overview .ov-tool-status { margin-top: 8px; font-size: 12px; color: var(--fg-3); overflow-wrap: anywhere; }
+#overview .ov-tool-status.err { color: var(--err); }
+#overview .ov-attachments { display: flex; gap: 8px; overflow-x: auto; min-width: 0; margin-top: 12px; }
+#overview .ov-attachments[hidden], #overview .ov-mentions[hidden] { display: none; }
+#overview .ov-mentions { margin-top: 10px; max-height: 25vh; overflow-y: auto; overscroll-behavior: contain; border-radius: 12px; background: var(--s2); }
+#overview .ov-mentions .mnRow { display: flex; flex-direction: column; width: 100%; padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--line); }
+#overview .ov-mentions .mnRow small, #overview .ov-mentions .mnHint { color: var(--fg-3); font-size: 12px; }
+#overview .ov-mentions .mnHint { padding: 10px 12px; }
 #overview .ov-link { font-size: 14px; font-weight: 650; color: var(--accent-text); padding: 6px 4px; display: flex; align-items: center; gap: 6px; }
 #overview .ov-actions { grid-area: actions; display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
 #overview .ov-work { color: var(--fg-3); font-size: 12px; }

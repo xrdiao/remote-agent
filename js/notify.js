@@ -148,7 +148,7 @@ async function disableNotify() {
 
 function noticeTarget(raw) {
   if (!raw) return null;
-  let win = String(raw), computer = '', windowId = '', threadId = '', project;
+  let win = String(raw), computer = '', windowId = '', threadId = '', project, background = false;
   if (win.startsWith('{')) {
     try {
       const o = JSON.parse(win);
@@ -157,9 +157,10 @@ function noticeTarget(raw) {
       windowId = o.windowId || '';
       threadId = o.threadId || '';
       project = o.project;
+      background = o.background === true;
     } catch { return null; }
   }
-  return win ? { computer, win, windowId, threadId, ...(project ? { project } : {}) } : null;
+  return win ? { computer, win, windowId, threadId, ...(project ? { project } : {}), ...(background ? { background } : {}) } : null;
 }
 function rememberNotice(raw) {
   const n = noticeTarget(raw);
@@ -170,7 +171,7 @@ function rememberNotice(raw) {
   const next = { ...here, win: n.win, windowId: n.windowId, threadId: n.threadId };
   saveComputers(list.map(c => c.key === here.key ? next : c), current?.key);
   if (here.key === current?.key) store.set('window', n.win);
-  ovConversationOpened();
+  ovConversationOpened(!n.background);
   return n.project ? { ...next, project: n.project } : next;
 }
 function openWin(id) {
@@ -189,6 +190,33 @@ function openWin(id) {
   return send({ t: 'attach', id: here.win, windowId: here.windowId || '', threadId: here.threadId || '', ...(here.project ? { project: here.project } : {}) });
 }
 window.openWin = openWin;
+let winBinding = null;
+function winTargetReady(target) {
+  const current = currentComputer();
+  return authed && windowReady && !navigationPending && current?.id === target.computer
+    && current.windowId === target.windowId && current.threadId === target.threadId && currentApp === target.win.split(':')[0];
+}
+function finishWinBinding(error) {
+  const binding = winBinding;
+  if (!binding) return;
+  if (error) { winBinding = null; binding.reject(error); return; }
+  if (!authed || !windowReady || navigationPending || currentComputer()?.id !== binding.target.computer) return;
+  if (!winTargetReady(binding.target)) {
+    return openWin(JSON.stringify({ ...binding.target, background: true }));
+  }
+  winBinding = null;
+  binding.resolve();
+}
+function bindWin(target) {
+  finishWinBinding(new Error('目标会话已切换'));
+  if (mode !== 'chat') setMode('chat');
+  if (winTargetReady(target)) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    winBinding = { target, resolve, reject };
+    openWin(JSON.stringify({ ...target, background: true }));
+  });
+}
+document.addEventListener('window-ready', () => finishWinBinding());
 let updateUntouched = true;
 for (const event of ['pointerdown', 'keydown']) document.addEventListener(event, () => { updateUntouched = false; }, { once: true, capture: true });
 navigator.serviceWorker?.addEventListener('message', e => {

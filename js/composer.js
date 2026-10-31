@@ -201,27 +201,30 @@ function autosize() {
   if (text.offsetHeight !== oldHeight) noteChatLayoutChange();
   if (questionCompose?.sel === viewSel && document.body.classList.contains('kb')) fitViewport();
 }
-function recallInput(direction) {
+function recallInput(direction, input = text) {
   if (mode !== 'chat') return;
-  const key = chatInputKey();
+  const chat = input === text ? lastChat : chatBySel.get(chatCacheKey(viewSel));
+  const cacheKey = chatInputKey(chat ?? null), key = cacheKey + (input === text ? '' : '|overview');
+  const mn = composerMentionState(input);
   let state = inputHistory.get(key);
   if (!state) {
     if (direction > 0) return;
-    rememberInputHistory(lastChat);
-    const rows = (chatInputCache.get(key) || []).map(([, value]) => value);
+    rememberInputHistory(chat);
+    const rows = (chatInputCache.get(cacheKey) || []).map(([, value]) => value);
     if (!rows.length) return status('当前会话暂无已发送内容');
-    state = { rows, index: rows.length, draft: text.value, mentions: MN.mentions.slice(), selection: [text.selectionStart, text.selectionEnd, text.selectionDirection] };
+    state = { rows, index: rows.length, draft: input.value, mentions: mn.mentions.slice(), selection: [input.selectionStart, input.selectionEnd, input.selectionDirection] };
     inputHistory.set(key, state);
   }
   state.index = Math.max(0, Math.min(state.rows.length, state.index + direction));
   const atDraft = state.index === state.rows.length;
-  text.value = atDraft ? state.draft : state.rows[state.index];
-  MN.mentions = atDraft ? state.mentions.slice() : [];
-  if (atDraft) text.setSelectionRange(...state.selection);
-  else text.setSelectionRange(text.value.length, text.value.length);
+  input.value = atDraft ? state.draft : state.rows[state.index];
+  mn.mentions = atDraft ? state.mentions.slice() : [];
+  mn.value = input.value;
+  if (atDraft) input.setSelectionRange(...state.selection);
+  else input.setSelectionRange(input.value.length, input.value.length);
   // The synthetic input saves the recalled text without ending history browsing.
   inputRecall = null;
-  mentionHide(); text.dispatchEvent(new Event('input', { bubbles: true }));
+  mentionHide(input); input.dispatchEvent(new Event('input', { bubbles: true }));
   if (atDraft) inputHistory.delete(key);
   else inputRecall = { history: inputHistory, key };
 }
@@ -238,10 +241,26 @@ text.addEventListener('input', e => {
 // Typing "@" (or "@file:ser") asks for the list; tapping a row puts "@label" into the text. When the message is
 // sent, the relay types the text and, at each "@label", lets Devin's typeahead insert the chip.
 const MN = { seq: 0, timer: 0, q: null, root: false, mentions: [], used: '', value: '' };
-function mentionToken() {
-  if (questionCompose || mode !== 'chat' || !supportsCapability('fileReferences', currentApp === 'devin' || currentApp === 'codex')) return null;
-  const caret = text.selectionStart ?? text.value.length;
-  const value = text.value, head = value.slice(0, caret);
+const composerMentionStates = new Map();
+let mentionInput = text, mentionSerial = 0;
+function composerInput() { return ovToolInput() || text; }
+function composerMentionState(input = text) {
+  if (input === text) return MN;
+  const key = input.dataset.ovInput;
+  if (!composerMentionStates.has(key)) composerMentionStates.set(key, { seq: 0, timer: 0, q: null, root: false, mentions: [], used: '', value: '', revision: 0 });
+  return composerMentionStates.get(key);
+}
+function composerMentionBox(input) { return input === text ? $('mentionBox') : input.closest('.ov-card').querySelector('.ov-mentions'); }
+function composerRevision(input) { return input === text ? inputRevision : composerMentionState(input).revision; }
+function insertComposerText(value, input = composerInput(), start = input.selectionStart, end = input.selectionEnd) {
+  input.setRangeText(value, start, end, 'end');
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.focus();
+}
+function mentionToken(input = composerInput()) {
+  if (input === text && questionCompose || mode !== 'chat' || !supportsCapability('fileReferences', currentApp === 'devin' || currentApp === 'codex')) return null;
+  const caret = input.selectionStart ?? input.value.length;
+  const value = input.value, head = value.slice(0, caret);
   const end = (() => { let i = caret; while (i < value.length && !/[\s@]/.test(value[i])) i++; return i; })();
   if (currentApp === 'codex') {
     const m = /(^|\s)([@/])([^\s@]*)$/.exec(head);
@@ -250,60 +269,68 @@ function mentionToken() {
   const m = /(^|\s)@([^\s@]*)$/.exec(head);
   return m ? { start: caret - m[2].length - 1, caret, end, q: m[2], trigger: '@' } : null;
 }
-function mentionHide() {
-  clearTimeout(MN.timer);
-  MN.q = null;
-  MN.parent = null;
-  MN.seq++;
-  $('mentionBox').hidden = true;
+function mentionHide(input = text) {
+  const mn = composerMentionState(input);
+  clearTimeout(mn.timer);
+  mn.q = null;
+  mn.parent = null;
+  mn.seq = ++mentionSerial;
+  composerMentionBox(input).hidden = true;
   updateComposeCompact();
 }
-function mentionAsk(o) {
-  MN.seq++;
-  const token = mentionToken();
-  MN.request = { sel: viewSel, revision: inputRevision, value: text.value, caret: text.selectionStart };
-  send({ t: 'mentionQuery', seq: MN.seq, trigger: token?.trigger || '@',
-    text: text.value, start: token?.start ?? text.selectionStart, caret: text.selectionStart, ...o });
-  const box = $('mentionBox');
+function mentionAsk(o, input = composerInput()) {
+  if (input !== composerInput()) return;
+  const mn = composerMentionState(input);
+  mentionInput = input;
+  mn.seq = ++mentionSerial;
+  const token = mentionToken(input);
+  mn.request = { sel: viewSel, revision: composerRevision(input), value: input.value, caret: input.selectionStart };
+  send({ t: 'mentionQuery', seq: mn.seq, trigger: token?.trigger || '@',
+    text: input.value, start: token?.start ?? input.selectionStart, caret: input.selectionStart, ...o });
+  const box = composerMentionBox(input);
   if (box.hidden) { box.innerHTML = '<div class="mnHint">加载中…</div>'; box.hidden = false; updateComposeCompact(); }
 }
-function mentionUpdate() {
-  const t = mentionToken();
-  if (!t) return mentionHide();
-  const queryKey = `${t.trigger || '@'}${t.q}|${t.start}|${t.caret}|${inputRevision}`;
-  if (queryKey === MN.q) return;
-  clearTimeout(MN.timer);
-  MN.q = queryKey;
-  MN.seq++;
-  MN.timer = setTimeout(() => mentionAsk({ q: t.q }), currentApp === 'codex' ? 150 : 220);
-  if (currentApp === 'codex' && !$('mentionBox').hidden) {
-    const hint = $('mentionBox').querySelector('.mnHint');
+function mentionUpdate(input = composerInput()) {
+  const mn = composerMentionState(input);
+  mentionInput = input;
+  const t = mentionToken(input);
+  if (!t) return mentionHide(input);
+  const queryKey = `${t.trigger || '@'}${t.q}|${t.start}|${t.caret}|${composerRevision(input)}`;
+  if (queryKey === mn.q) return;
+  clearTimeout(mn.timer);
+  mn.q = queryKey;
+  mn.seq = ++mentionSerial;
+  mn.timer = setTimeout(() => mentionAsk({ q: t.q }, input), currentApp === 'codex' ? 150 : 220);
+  if (currentApp === 'codex' && !composerMentionBox(input).hidden) {
+    const hint = composerMentionBox(input).querySelector('.mnHint');
     if (hint) hint.textContent = '搜索中…';
-    else $('mentionBox').insertAdjacentHTML('afterbegin', '<div class="mnHint">搜索中…</div>');
+    else composerMentionBox(input).insertAdjacentHTML('afterbegin', '<div class="mnHint">搜索中…</div>');
   }
-  if ($('mentionBox').hidden) { $('mentionBox').innerHTML = '<div class="mnHint">加载中…</div>'; $('mentionBox').hidden = false; updateComposeCompact(); }
+  if (composerMentionBox(input).hidden) { composerMentionBox(input).innerHTML = '<div class="mnHint">加载中…</div>'; composerMentionBox(input).hidden = false; updateComposeCompact(); }
 }
-text.addEventListener('input', mentionUpdate);
+text.addEventListener('input', () => mentionUpdate(text));
 $('mentionBox').addEventListener('pointerdown', e => { if (e.pointerType === 'mouse') e.preventDefault(); });
 document.addEventListener('pointerdown', e => {
-  if (!$('mentionBox').hidden && !e.target.closest('#mentionBox, #text')) mentionHide();
+  if (!composerMentionBox(mentionInput)?.hidden && !e.target.closest('#mentionBox, #text, .ov-mentions, [data-ov-input]')) mentionHide(mentionInput);
 }, { passive: true });
 function onMentions(m) {
-  if (m.sel !== viewSel || m.seq !== MN.seq) return;
-  if (!MN.request || MN.request.sel !== viewSel || MN.request.revision !== inputRevision
-    || MN.request.value !== text.value || MN.request.caret !== text.selectionStart) return;
-  const t = mentionToken();
-  if (!m.submenu && !t) return mentionHide();
-  MN.parent = m.parent || null;
-  const box = $('mentionBox');
+  const input = mentionInput, mn = composerMentionState(input);
+  if (input !== composerInput()) return;
+  if (m.sel !== viewSel || m.seq !== mn.seq) return;
+  if (!mn.request || mn.request.sel !== viewSel || mn.request.revision !== composerRevision(input)
+    || mn.request.value !== input.value || mn.request.caret !== input.selectionStart) return;
+  const t = mentionToken(input);
+  if (!m.submenu && !t) return mentionHide(input);
+  mn.parent = m.parent || null;
+  const box = composerMentionBox(input);
   if (m.prefix) {
     // A category was chosen: the token becomes "@terminal:" and the list below is what that category offers.
-    text.setRangeText(m.prefix, t.start, t.end, 'end');
-    recordDraftEdit(); queueDraftSync();
-    MN.q = m.prefix.slice(1);
-    MN.used = MN.q;
-  } else MN.used = m.q;
-  MN.root = !!m.root;
+    input.setRangeText(m.prefix, t.start, t.end, 'end');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    mn.q = m.prefix.slice(1);
+    mn.used = mn.q;
+  } else mn.used = m.q;
+  mn.root = !!m.root;
   box.innerHTML = m.rows.length
     ? m.rows.map((r, i) => `<button class="mnRow${m.root ? ' cat' : ''}" data-mi="${i}"><b>${esc(r.label)}</b>${r.sub ? `<small>${esc(r.sub)}</small>` : ''}</button>`).join('')
     : '<div class="mnHint">没有匹配的结果</div>';
@@ -311,47 +338,50 @@ function onMentions(m) {
   box._rows = m.rows;
   updateComposeCompact();
 }
-$('mentionBox').addEventListener('click', e => {
+function pickMention(e, input = composerInput()) {
+  const mn = composerMentionState(input);
   const b = e.target.closest('[data-mi]');
-  const r = b && $('mentionBox')._rows?.[Number(b.dataset.mi)];
-  const t = mentionToken();
-  if (!r || (!t && !MN.parent)) return;
-  if (MN.root) return mentionAsk({ cat: r.label });
+  const r = b && composerMentionBox(input)._rows?.[Number(b.dataset.mi)];
+  const t = mentionToken(input);
+  if (!r || (!t && !mn.parent)) return;
+  if (mn.root) return mentionAsk({ cat: r.label }, input);
   if (currentApp === 'codex' && (r.key === 'context-action:pick-local-files' || (r.section === 'context-actions' && r.label === 'Files and folders'))) {
-    return openCodexFilePicker(t);
+    return openCodexFilePicker(t, input);
   }
-  const command = currentApp === 'codex' && (MN.parent || r.section === 'commands' || r.section === 'context-actions' || r.section === 'plugins' || r.section === 'apps');
+  const command = currentApp === 'codex' && (mn.parent || r.section === 'commands' || r.section === 'context-actions' || r.section === 'plugins' || r.section === 'apps');
   if (command) {
-    if (t) text.setRangeText('', t.start, t.end, 'end');
-    recordDraftEdit();
-    const parent = MN.parent;
-    mentionHide();
-    MN.request = { sel: viewSel, revision: inputRevision, value: text.value, caret: text.selectionStart };
+    if (t) input.setRangeText('', t.start, t.end, 'end');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const parent = mn.parent;
+    mentionHide(input);
+    mn.request = { sel: viewSel, revision: composerRevision(input), value: input.value, caret: input.selectionStart };
     send({
       t: 'codexPick', key: r.key, label: r.label, section: r.section || '',
-      seq: MN.seq, text: text.value, start: text.selectionStart, caret: text.selectionStart,
-      q: MN.used || '', parentKey: parent?.key || '', parentLabel: parent?.label || '', parentQ: parent?.q || MN.used || '',
+      seq: mn.seq, text: input.value, start: input.selectionStart, caret: input.selectionStart,
+      q: mn.used || '', parentKey: parent?.key || '', parentLabel: parent?.label || '', parentQ: parent?.q || mn.used || '',
     });
-    queueDraftSync();
+
     return;
   }
   if (!t) return;
   const trigger = t.trigger || '@';
   const token = `${trigger}${r.label}`;
-  text.setRangeText(token + (/\s/.test(text.value[t.end] || '') ? '' : ' '), t.start, t.end, 'end');
+  input.setRangeText(token + (/\s/.test(input.value[t.end] || '') ? '' : ' '), t.start, t.end, 'end');
   // From a category ("@file:") the relay must type the file's name too, or Devin only lists its default entries.
-  const q = MN.used.endsWith(':') && !r.label.startsWith(MN.used) ? MN.used + r.label : (MN.used || r.label.split(' ')[0]);
-  MN.mentions.push({ token, q, label: r.label, sub: r.sub || '', key: r.key || '', section: r.section || '', trigger, at: t.start });
-  MN.value = text.value;
-  recordDraftEdit();
-  mentionHide();
-  text.focus();
-});
+  const q = mn.used.endsWith(':') && !r.label.startsWith(mn.used) ? mn.used + r.label : (mn.used || r.label.split(' ')[0]);
+  mn.mentions.push({ token, q, label: r.label, sub: r.sub || '', key: r.key || '', section: r.section || '', trigger, at: t.start });
+  mn.value = input.value;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  mentionHide(input);
+  input.focus();
+}
+$('mentionBox').addEventListener('click', e => pickMention(e, text));
 // Mentions still present in the text, in the order they appear.
-const mentionsFor = v => { const ms = takeMentions(v); return ms.length ? { mentions: ms } : {}; };
-function matchedMentions(v) {
+const mentionsFor = (v, input = text) => { const ms = takeMentions(v, input); return ms.length ? { mentions: ms } : {}; };
+function matchedMentions(v, input = text) {
+  const mn = composerMentionState(input);
   const used = new Set(), list = [];
-  for (const mention of MN.mentions) {
+  for (const mention of mn.mentions) {
     let at = Number.isInteger(mention.at) && v.slice(mention.at, mention.at + mention.token.length) === mention.token ? mention.at : -1;
     if (at < 0 || used.has(at)) {
       at = v.indexOf(mention.token);
@@ -362,28 +392,29 @@ function matchedMentions(v) {
   }
   return list.sort((a, b) => a.at - b.at);
 }
-function takeMentions(v) { return matchedMentions(v).map(({ at, ...mention }) => mention); }
-function syncMentions(v, event = null) {
-  const old = MN.value, delta = v.length - old.length;
+function takeMentions(v, input = text) { return matchedMentions(v, input).map(({ at, ...mention }) => mention); }
+function syncMentions(v, event = null, input = text) {
+  const mn = composerMentionState(input);
+  const old = mn.value, delta = v.length - old.length;
   if (old !== v && old) {
     let from = 0, oldEnd = old.length, newEnd = v.length;
     while (from < oldEnd && from < newEnd && old[from] === v[from]) from++;
     while (oldEnd > from && newEnd > from && old[oldEnd - 1] === v[newEnd - 1]) { oldEnd--; newEnd--; }
-    if (event?.inputType?.startsWith('delete') && Number.isInteger(text.selectionStart)) {
-      from = Math.min(text.selectionStart, old.length);
+    if (event?.inputType?.startsWith('delete') && Number.isInteger(input.selectionStart)) {
+      from = Math.min(input.selectionStart, old.length);
       oldEnd = Math.min(old.length, from + old.length - v.length);
     }
-    MN.mentions = MN.mentions.filter(mention => {
+    mn.mentions = mn.mentions.filter(mention => {
       const end = mention.at + mention.token.length;
       if (end <= from) return true;
       if (mention.at >= oldEnd) { mention.at += delta; return true; }
       return false;
     });
   }
-  MN.mentions = matchedMentions(v); MN.value = v;
+  mn.mentions = matchedMentions(v, input); mn.value = v;
 }
-text.addEventListener('select', mentionUpdate);
-document.addEventListener('selectionchange', () => { if (document.activeElement === text) mentionUpdate(); });
+text.addEventListener('select', () => mentionUpdate(text));
+document.addEventListener('selectionchange', () => { if (document.activeElement === composerInput()) mentionUpdate(composerInput()); });
 text.addEventListener('focus', () => {
   updateComposeCompact();
   fitViewport();
@@ -625,9 +656,7 @@ $('sendNow').onclick = async () => {
 };
 $('insertNewline').addEventListener('pointerdown', e => e.preventDefault());
 $('insertNewline').onclick = () => {
-  text.setRangeText('\n', text.selectionStart, text.selectionEnd, 'end');
-  text.dispatchEvent(new Event('input', { bubbles: true }));
-  text.focus();
+  insertComposerText('\n', text);
 };
 // Enter sends. Shift+Enter keeps a newline. Ignore Enter that is confirming an IME candidate.
 // beforeinput's line-break event often has no shiftKey, so remember it from keydown.
@@ -635,10 +664,12 @@ let composing = false;
 let shiftEnter = false;
 text.addEventListener('compositionstart', () => { endInputRecall(); composing = true; updateComposeCompact(); });
 text.addEventListener('compositionend', () => { setTimeout(() => { composing = false; updateComposeCompact(); queueDraftSync(); }, 0); });
-function submitOnEnter(e) {
-  if (shiftEnter || e.shiftKey || e.isComposing || composing) return;
+function submitOnEnter(e, input = text) {
+  const state = input === text ? { shiftEnter, composing } : composerMentionState(input);
+  if (state.shiftEnter || e.shiftKey || e.isComposing || state.composing) return;
   e.preventDefault();
-  $('send').click();
+  if (input === text) $('send').click();
+  else ovSubmit(input.dataset.ovInput);
 }
 text.addEventListener('keydown', e => {
   if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) endInputRecall();
