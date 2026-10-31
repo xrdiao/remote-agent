@@ -42,7 +42,7 @@ const ovMain = $('overview').querySelector('.ov-main');
 const ovDone = (() => { try { return JSON.parse(store.get('ov-done') || '{}'); } catch { return {}; } })();
 let ovEnterRequested = false;
 let ovBatch = null;
-let ovList = [], ovPaint = '', ovLaid = '', ovCrumbsPaint = '', ovSig = [], ovScroll;
+let ovList = [], ovPaint = '', ovCrumbsPaint = '', ovSig = [], ovScroll, ovEditing = null;
 const ovTn = new Map();
 const ovTname = k => { let n = ovTn.get(k); if (!n) ovTn.set(k, n = 'ov-t' + (ovTn.size + 1)); return n; };
 
@@ -70,6 +70,7 @@ function ovComputerStatus(e, st = ovSt.get(e.id)) {
   if (link?.rejected) return link.auth?.id === e.id ? 'auth' : 'offline';
   if (status === 'identity') return 'offline';
   if (status === 'auth' || status === 'old') return status;
+  if (st?.retry || st?.reconnecting) return 'loading';
   if (link?.socket.readyState < 2) {
     const foreground = e.c.key === currentComputer()?.key && link.socket === ws;
     const pending = foreground ? conn.initialSelection && !windowReady && !conn.attachFailed
@@ -306,12 +307,12 @@ function ovComputerGroup(e, all, projs) {
   } else if (!loading) detail = ovS.level === 'projects' ? `${projects.length} 个项目` : `${recs.length} 个会话`;
   if (status === 'online' && e.c?.key === currentComputer()?.key && conn.attachFailed) detail = I18N.tr('当前会话尚未就绪');
   const stage = link?.authed || link?.restoring ? 2 : link?.opened ? 1 : st?.stage || 0;
-  if (loading) detail = ovT(link?.restoring ? '正在恢复连接…' : link?.authed ? '正在读取项目与会话…' : link?.opened ? '正在验证设备…' : !link && st?.data ? '等待连接…' : stage ? '连接电脑…' : '查找地址…');
+  if (loading) detail = ovT(st?.retry || st?.reconnecting && link?.socket.readyState >= 2 || link?.restoring ? '正在恢复连接…' : link?.authed ? '正在读取项目与会话…' : link?.opened ? '正在验证设备…' : !link && st?.data ? '等待连接…' : stage ? '连接电脑…' : '查找地址…');
   const progress = loading && !e.foreign ? `<span class="ov-computer-progress" aria-hidden="true">${[0, 1, 2].map(i => `<i class="${i < stage ? 'done' : i === stage ? 'current' : ''}"></i>`).join('')}</span>` : '';
   ovSig.push(`c:${e.id}:${status}:${loading ? stage : ''}:${collapsed}`);
   const body = !collapsed && st?.data ? ovS.level === 'projects' ? ovProjectTiles(projects, all, false) : ovSessions(recs, e.id) : '';
   const empty = status === 'online' && st?.data?.ready ? ovEmpty('这里还没有会话') : '';
-  return `<section class="ov-computer" style="view-transition-name:${ovTname('c:' + e.id)}"><div class="ov-computer-row ${status}"><button type="button" class="ov-computer-toggle" data-ov="fold" data-id="${esc(e.id)}" aria-expanded="${!collapsed}"><span class="ov-computer-dot" aria-hidden="true"></span><span class="ov-computer-label"><span class="ov-computer-name ovRaw">${esc(e.name)}</span>${detail ? `<span class="ov-computer-detail">${esc(detail)}</span>` : ''}${progress}</span><svg class="ov-computer-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button>${action ? `<button type="button" class="ov-computer-action" ${action}>${badge}</button>` : ''}${!e.foreign && status === 'offline' ? `<button type="button" class="ov-computer-info" data-ov="details" data-id="${esc(e.id)}" aria-label="${ovT('连接详情')}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="8"/><path d="M12 10v7m0-11v1"/></svg></button>` : ''}</div>${body || empty && !collapsed ? `<div class="ov-board">${body || empty}</div>` : ''}</section>`;
+  return `<section class="ov-computer" data-ov-node="computer:${esc(e.id)}" style="view-transition-name:${ovTname('c:' + e.id)}"><div class="ov-computer-row ${status}"><button type="button" class="ov-computer-toggle" data-ov="fold" data-id="${esc(e.id)}" aria-expanded="${!collapsed}"><span class="ov-computer-dot" aria-hidden="true"></span><span class="ov-computer-label"><span class="ov-computer-name ovRaw">${esc(e.name)}</span>${detail ? `<span class="ov-computer-detail">${esc(detail)}</span>` : ''}${progress}</span><svg class="ov-computer-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button>${action ? `<button type="button" class="ov-computer-action" ${action}>${badge}</button>` : ''}${!e.foreign && (status === 'offline' || loading && st?.failure) ? `<button type="button" class="ov-computer-info" data-ov="details" data-id="${esc(e.id)}" aria-label="${ovT('连接详情')}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="8"/><path d="M12 10v7m0-11v1"/></svg></button>` : ''}</div>${body || empty && !collapsed ? `<div class="ov-board">${body || empty}</div>` : ''}</section>`;
 }
 function ovProjTile(p, all, showComputer = !ovS.comp) {
   const recs = all.filter(r => r.project === p.key), fusion = p.app === 'fusion';
@@ -368,7 +369,7 @@ function ovRunHtml(r) {
 function ovCard(r) {
   const online = !r.off, dis = ovBusy.has(r.key) ? ' disabled' : '', key = esc(r.key);
   const status = `<div class="ov-status"><div class="ov-state"><span class="ov-badge">${esc(ovBadge(r))}</span><span class="ov-time">${esc(ovTime(r))}</span></div><span class="ovRaw" title="${esc(ovContext(r))}">${esc(ovContext(r))}</span></div>`;
-  const composer = !r.fusion && !r.dormant && online ? `<div class="ov-composer"><input data-ov-input="${key}" placeholder="${r.state === 'wait' ? '输入回复…' : `告诉 ${OV_AGENT[r.app]} 下一步…`}" value="${esc(ovDraft.get(r.key) || '')}"${dis}><button class="ov-send" data-ov="send" data-id="${key}" aria-label="发送"${dis}>${OV_ICON.arrow}</button></div>` : '';
+  const composer = !r.fusion && !r.dormant && online ? `<div class="ov-composer" data-ov-node="reply:${key}"><input data-ov-input="${key}" placeholder="${r.state === 'wait' ? '输入回复…' : `告诉 ${OV_AGENT[r.app]} 下一步…`}"${dis}><button class="ov-send" data-ov="send" data-id="${key}" aria-label="发送"${dis}>${OV_ICON.arrow}</button></div>` : '';
   let body;
   if (r.state === 'wait') {
     body = `<div class="ov-q">${ovNowHtml(r)}</div>` + (r.devin
@@ -391,12 +392,16 @@ function ovSessionGroup(label, recs, id) {
   if (!recs.length) return '';
   const expanded = ovExpanded.has(id);
   ovSig.push(`${id}:${expanded}`);
-  return `<section class="ov-inactive"><button class="ov-inactive-toggle" data-ov="group" data-id="${esc(id)}" aria-expanded="${expanded}"><span>${ovT(label)} · ${recs.length}</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 5 7 7-7 7"/></svg></button>${expanded ? `<div class="ov-inactive-grid">${recs.map(ovSessTile).join('')}</div>` : ''}</section>`;
+  return `<section class="ov-inactive" data-ov-node="group:${esc(id)}"><button class="ov-inactive-toggle" data-ov="group" data-id="${esc(id)}" aria-expanded="${expanded}"><span>${ovT(label)} · ${recs.length}</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 5 7 7-7 7"/></svg></button>${expanded ? `<div class="ov-inactive-grid">${recs.map(ovSessTile).join('')}</div>` : ''}</section>`;
 }
+const ovBucket = r => r.state === 'idle' ? r.common ? 'idle' : 'inactive' : r.state === 'run' || r.state === 'done' ? r.state : 'wait';
 function ovSessions(recs, scope) {
   const list = recs.slice().sort((a, b) => Math.min(ovRank(a), 3) - Math.min(ovRank(b), 3) || ovRecency(b) - ovRecency(a));
-  const active = list.filter(r => ovRank(r) < 3), done = list.filter(r => r.state === 'done'), idle = list.filter(r => r.state === 'idle' && r.common), inactive = list.filter(r => r.state === 'idle' && !r.common);
-  const sections = [['已完成', done], ['需要你', active.filter(r => r.state !== 'run')], ['进行中', active.filter(r => r.state === 'run')]];
+  const groups = { done: [], wait: [], run: [], idle: [], inactive: [] };
+  // Keep the editing card in its current group while its live badge and content continue updating.
+  for (const r of list) groups[ovEditing?.key === r.key ? ovEditing.bucket : ovBucket(r)].push(r);
+  const { done, wait, run, idle, inactive } = groups;
+  const sections = [['已完成', done], ['需要你', wait], ['进行中', run]];
   return sections.map(([label, rows]) => rows.length ? `<div class="ov-div">${ovT(label)} · ${rows.length}</div>${rows.map(ovSessTile).join('')}` : '').join('')
     + (ovS.proj ? idle.map(ovSessTile).join('') : ovSessionGroup('空闲', idle, scope + '|idle'))
     + ovSessionGroup('不常用', inactive, scope + '|inactive');
@@ -415,7 +420,7 @@ function ovBoard(all, projs, scoped) {
     : ovEmpty('这里还没有会话'));
 }
 function ovPlan() {
-  const focus = document.activeElement?.dataset?.ovInput, all = ovRecs().filter(r => ovS.level === 'favorites' || !r.dormant), projs = ovProjects(all);
+  const all = ovRecs().filter(r => ovS.level === 'favorites' || !r.dormant), projs = ovProjects(all);
   ovSig = [];
   const scoped = ovScopedRecs(all);
   const k = { ...ovCount(scoped), total: scoped.length, inactive: scoped.filter(r => r.state === 'idle' && !r.common).length }, anyWait = scoped.some(r => r.state === 'wait');
@@ -432,30 +437,66 @@ function ovPlan() {
   const batch = ovBatchHtml();
   const layout = [ovS.level, ovS.comp, ovS.proj, ovS.open, ovSig.join('|')].join('\u0001');
   const paint = [layout, crumbs.join(''), levels, summary, lane, board, batch].join('\u0001');
-  return { focus, up: !!(ovS.open || ovS.comp || ovS.proj), crumbs: crumbs.join(''), levels, summary, lane, board, batch, layout, paint };
+  return { up: !!(ovS.open || ovS.comp || ovS.proj), crumbs: crumbs.join(''), levels, summary, lane, board, batch, layout, paint };
+}
+function ovPatch(container, html) {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const active = document.activeElement;
+  const key = node => node.nodeType === 1 ? [node.nodeName, node.getAttribute('data-ov') || '',
+    node.getAttribute('data-ov-session') || node.getAttribute('data-ov-node') || node.getAttribute('data-ov-input') || node.getAttribute('data-ov-preview')
+      || node.getAttribute('data-id') || node.getAttribute('data-v') || node.getAttribute('class')?.split(' ')[0] || ''].join('|') : node.nodeName;
+  const patch = (parent, next) => {
+    const previous = [...parent.childNodes], pool = new Map();
+    for (const node of previous) { const k = key(node); if (!pool.has(k)) pool.set(k, []); pool.get(k).push(node); }
+    const children = [...next.childNodes].map(wanted => {
+      const node = pool.get(key(wanted))?.shift();
+      if (!node) return wanted;
+      if (node.isEqualNode(wanted)) return node;
+      if (node.nodeType !== 1) node.nodeValue = wanted.nodeValue;
+      else {
+        for (const attribute of [...node.attributes]) if (!wanted.hasAttribute(attribute.name)) node.removeAttribute(attribute.name);
+        for (const attribute of wanted.attributes) if (node.getAttribute(attribute.name) !== attribute.value) node.setAttribute(attribute.name, attribute.value);
+        patch(node, wanted);
+      }
+      return node;
+    });
+    // Move siblings around the focused subtree; moving that subtree would cancel native IME input.
+    const pinned = children.findIndex(node => node.contains(active));
+    let before = pinned >= 0 ? children[pinned] : parent.firstChild;
+    for (let i = pinned - 1; i >= 0; i--) { if (children[i].nextSibling !== before) parent.insertBefore(children[i], before); before = children[i]; }
+    before = pinned >= 0 ? children[pinned].nextSibling : parent.firstChild;
+    for (let i = pinned + 1; i < children.length; i++) { if (children[i] !== before) parent.insertBefore(children[i], before); before = children[i].nextSibling; }
+    const kept = new Set(children);
+    for (const node of previous) if (!kept.has(node)) node.remove();
+  };
+  patch(container, template.content);
+  for (const input of container.querySelectorAll('[data-ov-input]')) {
+    const value = ovDraft.get(input.dataset.ovInput) || '';
+    if (input !== document.activeElement && input.value !== value) input.value = value;
+  }
 }
 function ovCommit(p) {
   const preview = $('ovBoard').querySelector('[data-ov-preview]');
   const previewScroll = preview && { key: preview.dataset.ovPreview, top: preview.scrollTop };
   ovPaint = p.paint;
-  ovLaid = p.layout;
   $('overview').classList.toggle('ov-project', !!ovS.proj);
   $('ovUp').classList.toggle('ov-hide', !p.up);
   if (ovCrumbsPaint !== p.crumbs) {
-    $('ovCrumbs').innerHTML = p.crumbs;
+    ovPatch($('ovCrumbs'), p.crumbs);
+    const scope = $('ovCrumbs').querySelector('[data-ov-computer]');
+    if (scope) scope.value = ovS.comp || '';
     ovCrumbsPaint = p.crumbs;
   }
-  $('ovLevels').innerHTML = p.levels;
-  $('ovSummary').innerHTML = p.summary;
-  $('ovLane').innerHTML = p.lane;
+  ovPatch($('ovLevels'), p.levels);
+  ovPatch($('ovSummary'), p.summary);
+  ovPatch($('ovLane'), p.lane);
   $('ovLane').hidden = !p.lane;
-  $('ovBoard').innerHTML = p.board;
-  $('ovBatch').innerHTML = p.batch;
+  ovPatch($('ovBoard'), p.board);
+  ovPatch($('ovBatch'), p.batch);
   $('ovBatch').hidden = !p.batch;
   const nextPreview = $('ovBoard').querySelector('[data-ov-preview]');
   if (nextPreview && nextPreview.dataset.ovPreview === previewScroll?.key) nextPreview.scrollTop = previewScroll.top;
-  const input = p.focus && document.querySelector(`[data-ov-input="${CSS.escape(p.focus)}"]`);
-  if (input) { input.focus({ preventScroll: true }); input.setSelectionRange(input.value.length, input.value.length); }
 }
 function ovRender(vt, scroll) {
   ovRefreshPreview();
@@ -478,7 +519,7 @@ function ovRender(vt, scroll) {
     ovMain.scrollTop = top;
   };
   const motion = document.startViewTransition && !matchMedia('(prefers-reduced-motion:reduce)').matches;
-  if (motion && (vt || (ovPaint && p.layout !== ovLaid))) document.startViewTransition(() => commit(ovPlan())).ready.catch(() => {});
+  if (motion && vt) document.startViewTransition(() => commit(ovPlan())).ready.catch(() => {});
   else commit();
 }
 function ovHistory(scroll = ovMain.scrollTop) {
@@ -749,6 +790,18 @@ $('overview').addEventListener('change', e => {
   if (e.target.matches('[data-ov-computer]')) ovMove({ comp: e.target.value || null, proj: null, open: null });
 });
 $('overview').addEventListener('input', e => { if (e.target.dataset.ovInput) ovDraft.set(e.target.dataset.ovInput, e.target.value); });
+$('overview').addEventListener('focusin', e => {
+  const r = e.target.dataset.ovInput && ovRecs().find(r => r.key === e.target.dataset.ovInput);
+  if (r) ovEditing = { key: r.key, bucket: ovBucket(r) };
+});
+$('overview').addEventListener('focusout', e => {
+  const key = e.target.dataset.ovInput;
+  if (!key) return;
+  queueMicrotask(() => {
+    if (ovEditing?.key !== key || document.activeElement?.dataset?.ovInput === key) return;
+    ovEditing = null; ovPaint = ''; ovRender();
+  });
+});
 $('overview').addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.isComposing && e.target.dataset.ovInput) ovSubmit(e.target.dataset.ovInput);
   else if (ovBatch && ['Enter', ' '].includes(e.key) && e.target.dataset.ovSession) {

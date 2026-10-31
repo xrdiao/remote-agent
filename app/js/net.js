@@ -498,7 +498,7 @@ async function checkComputerConnection(id) {
   });
 }
 async function showOffline(failure = { stage: '应用连接', error: '' }) {
-  clearTimeout(retryTimer);
+  clearComputerRetry(currentComputer());
   ungate();
   conn.host = 'err';
   const computer = currentComputer();
@@ -506,7 +506,7 @@ async function showOffline(failure = { stage: '应用连接', error: '' }) {
   const id = computer.id || await computerIdFromKey(computer.key), state = ovStOf(id);
   state.status = 'offline'; state.failure = failure;
   ovRender();
-  autoRetry();
+  autoRetry({ ...computer, id });
   return checkComputerConnection(id);
 }
 function authorizeComputer(id) {
@@ -522,9 +522,12 @@ function reconnectComputer(id) {
   if (state.reconnecting) return state.reconnecting;
   state.status = 'loading'; state.stage = 0; state.failure = null;
   const computer = loadComputers().find(c => c.key === entry.c.key);
-  const loading = computer.key === currentComputer()?.key ? boot() : warmComputerSocket(computer);
-  state.reconnecting = Promise.all([loading, ovFetch(entry)]).catch(error => {
+  clearComputerRetry(computer);
+  state.reconnecting = Promise.resolve().then(() => Promise.all([
+    computer.key === currentComputer()?.key ? boot() : warmComputerSocket(computer), ovFetch(entry),
+  ])).catch(error => {
     state.status = 'offline'; state.failure = { stage: '电脑连接', error: error.message };
+    autoRetry(computer);
   }).finally(() => { state.reconnecting = null; ovRender(); });
   ovRender();
   return state.reconnecting;
@@ -640,7 +643,7 @@ async function boot() {
   parkComputerSocket(old);
   clearInterval(pingTimer);
   authed = false;
-  clearTimeout(retryTimer);
+  clearComputerRetry(currentComputer());
   // Android browser opened a pairing link: offer to hand it to the installed app instead.
   if (pending?.code && !pending.requestId && /Android/.test(navigator.userAgent) && !inApp && !pending.stay) {
     const link = `agentremote://pair?app=${encodeURIComponent(location.origin + location.pathname)}&d=${pending.key}.${pending.code}`;
@@ -739,9 +742,27 @@ function closeSocket(socket) {
     try { onclose.call(socket, { code: 1006 }); } catch {}
   }, 5000);
 }
-function autoRetry() {
-  clearTimeout(retryTimer);
-  retryTimer = setTimeout(() => { if (!authed) boot(); }, 15000);
+function clearComputerRetry(computer) {
+  if (!computer) return;
+  const state = ovSt.get(computer.id);
+  clearTimeout(state?.retry);
+  if (state) state.retry = null;
+  if (computer.key === currentComputer()?.key) { clearTimeout(retryTimer); retryTimer = null; }
+}
+function autoRetry(computer = currentComputer()) {
+  if (!computer) return;
+  const link = computerSockets.get(computer.key);
+  if (link?.replaced || link?.rejected) return;
+  clearComputerRetry(computer);
+  const state = ovStOf(computer.id);
+  state.retry = setTimeout(() => {
+    state.retry = null;
+    const saved = loadComputers().find(row => row.key === computer.key && row.token === computer.token);
+    if (!saved) return;
+    reconnectComputer(saved.id);
+  }, 8000);
+  if (computer.key === currentComputer()?.key) retryTimer = state.retry;
+  ovRender();
 }
 
 const computerSockets = new Map();
@@ -793,16 +814,21 @@ function preloadComputerSocket(link) {
 function dropComputerSocket(key) {
   const link = computerSockets.get(key);
   if (!link) return;
-  clearTimeout(link.retry);
+  clearComputerRetry({ key, id: link.expectedId });
   computerSockets.delete(key);
   link.socket.close();
 }
 async function openComputerSocket(computer, relay) {
   await Promise.all([computerResumeReady, chatPreviewReady]);
+  clearComputerRetry(computer);
   let link = computerSockets.get(computer.key);
   if (link?.authed && link.computer.token === computer.token && link.socket.readyState === 1) return link;
   if (link && link.computer.token === computer.token && link.relay === relay && link.socket.readyState < 2) return link;
-  if (link) { clearTimeout(link.retry); link.socket.close(); }
+  if (link) {
+    computerSockets.delete(computer.key);
+    link.finishFirstScreen();
+    link.socket.close();
+  }
   const expectedId = computer.id || await computerIdFromKey(computer.key);
   const saved = computerResumes.get(expectedId);
   link = computerSockets.get(computer.key);
@@ -846,6 +872,7 @@ async function openComputerSocket(computer, relay) {
       link.authed = m.ok && m.id === expectedId;
       link.rejected = !link.authed;
       if (link.authed) {
+        ovStOf(expectedId).failure = null;
         updateComputerRecord({ ...computer, id: m.id, name: m.name, device: m.device, relay });
         if (m.resumed) {
           for (const message of m.metadata) link.metadata.set(message.t, message);
@@ -902,7 +929,7 @@ async function openComputerSocket(computer, relay) {
     ovRender();
     if (link.closed) { link.closed(event); return; }
     if (link.replaced || link.rejected || !loadComputers().some(row => row.key === computer.key && row.token === computer.token)) return;
-    link.retry = setTimeout(() => warmComputerSocket(computer).catch(() => {}), 8000);
+    autoRetry({ ...computer, id: expectedId });
   };
   return link;
 }
@@ -938,7 +965,7 @@ async function warmComputerSocket(computer) {
 let computerWarmup = null;
 async function warmComputerSockets() {
   for (const [key, link] of computerSockets) if (!loadComputers().some(row => row.key === key && row.token === link.computer.token)) {
-    clearTimeout(link.retry); link.socket.close(); computerSockets.delete(key);
+    clearComputerRetry({ key, id: link.expectedId }); link.socket.close(); computerSockets.delete(key);
   }
   if (computerWarmup) return computerWarmup;
   const pending = loadComputers().filter(row => row.key !== currentComputer()?.key && !computerSockets.get(row.key)?.replaced);
@@ -955,7 +982,7 @@ async function warmComputerSockets() {
 }
 
 function resumeComputerConnections() {
-  if (!authed && (!ws || ws.readyState >= 2) && !computerSockets.get(currentComputer()?.key)?.replaced) return boot();
+  if (!authed && (!ws || ws.readyState >= 2) && !computerSockets.get(currentComputer()?.key)?.replaced) return reconnectComputer(currentComputer()?.id);
   for (const link of computerSockets.values()) if (link.authed && link.socket.readyState === 1) {
     const before = link.lastRx;
     link.send({ t: 'ping', visible: link.socket === ws && conversationVisible() });
@@ -993,7 +1020,7 @@ async function connect(resumeLink = null) {
   if (!resumeLink && (text.value || drafts.has(activeDraft))) draftRevision++;
   pendingDesktopDraft = null;
   if (!resumeLink) setWindowReady(false);
-  clearTimeout(retryTimer);
+  clearComputerRetry(computer);
   if (!resumeLink) resetComputerConnection();
   if (!resumeLink) parkComputerSocket(ws);
   const link = resumeLink || await openComputerSocket(computer, base);
@@ -1012,7 +1039,7 @@ async function connect(resumeLink = null) {
     if (link.replaced) {
       authed = false;
       clearInterval(pingTimer);
-      clearTimeout(retryTimer);
+      clearComputerRetry(computer);
       status('连接已在其他页面恢复', false);
       return;
     }
@@ -1026,9 +1053,7 @@ async function connect(resumeLink = null) {
     clearInterval(pingTimer);
     failures++;
     status('断开，重连中…', false);
-    await sleep(Math.min(8000, 800 * failures));
-    // Rediscover the address using the saved computer identity and device token.
-    if (gen === connGen && attempt === bootGeneration) boot();
+    autoRetry({ ...computer, id: expectedId });
   };
   link.receive = (ev, resumed = false) => {
     if (gen !== connGen) return;

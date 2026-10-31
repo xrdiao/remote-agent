@@ -209,6 +209,7 @@ document.addEventListener('visibilitychange', () => {
     }
   }
 });
+for (const event of ['pageshow', 'online']) window.addEventListener(event, resumeComputerConnections);
 
 async function runAgentMenuAction(id, action, extra, target) {
   if (target) {
