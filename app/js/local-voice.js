@@ -20,10 +20,11 @@ function noteVoiceInput() {
   updateVoiceButton();
 }
 function updateVoiceButton() {
-  const visible = voiceEnabled() && mode === 'chat' && (!chatBusy || voiceComposerActive()) && !lastChat?.readonly;
+  const card = ovToolInput();
+  const visible = voiceEnabled() && mode === 'chat' && (!chatBusy || voiceComposerActive() || card) && !lastChat?.readonly;
   $('mic').hidden = !visible;
   $('mic').disabled = !windowReady;
-  $('stop').hidden = mode !== 'chat' || !chatBusy || !!lastChat?.readonly || visible;
+  $('stop').hidden = mode !== 'chat' || !chatBusy || !!lastChat?.readonly || (visible && !card);
   if (!visible) cancelVoice();
   if (typeof updateComposeCompact === 'function') updateComposeCompact();
   if (!voiceEnabled() || !authed) {
