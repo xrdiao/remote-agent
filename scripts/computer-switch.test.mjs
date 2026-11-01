@@ -805,3 +805,81 @@ test('a proof failure belonging to an old socket cannot overwrite a replacement 
   assert.equal(h.link(0).socket, replacement); assert(h.link(0).authed);
   assert.equal(h.link(0).error, ''); assert.equal(replacement.readyState, 1);
 });
+
+test('a hidden current-computer close retains its foreground, reconnect, auth and binding milestones after recovery', async () => {
+  const h = harness({ count: 1 }); await h.start(); h.attached(0);
+  h.run(`text.value='private diagnostic draft';saveDraft();document.visibilityState='hidden';suspendComputerConnections()`);
+  h.jump(1000); h.link(0).socket.close(1006); await h.settle();
+  const record = h.link(0).lastClose;
+  assert.equal(record.closed.visibility, 'hidden'); assert.equal(record.closed.backgroundAt, 100000);
+  assert.equal(record.closed.current, true); assert.equal(record.closed.authed, true); assert.equal(record.closed.activeAuthed, true);
+  assert.equal(record.closed.code, 1006); assert.equal(record.closed.source, 'transport'); assert.equal(record.closed.socketState, 3);
+  assert.equal(h.state().authed, false);
+  await h.advance(4000); assert.equal(h.sockets.length, 1); assert.equal(record.reconnect, undefined);
+  const restoring = h.run(`document.visibilityState='visible';resumeComputerConnections()`); await h.settle();
+  assert.equal(record.foreground.at, 105000); assert.equal(record.foreground.activeAuthed, false);
+  assert.equal(record.reconnect.source, 'resume'); assert.equal(record.socket.socketState, 0);
+  await h.open(0); assert.equal(h.link(0).failure, null); assert(record.authenticated); assert.equal(record.ready, undefined);
+  h.attached(0); await restoring;
+  assert(record.ready); assert.equal(h.link(0).lastClose, record); assert(h.state().windowReady);
+  assert.equal(h.state().draft, 'private diagnostic draft');
+  const json = JSON.stringify(record);
+  for (const privateValue of [h.records[0].key, h.records[0].token, 'private diagnostic draft', h.records[0].relay]) assert(!json.includes(privateValue));
+});
+
+test('foreground close records the existing immediate automatic retry without inventing a foreground event', async () => {
+  const h = harness({ count: 1 }); await h.start(); h.attached(0);
+  h.run(`document.visibilityState='hidden';suspendComputerConnections();document.visibilityState='visible';resumeComputerConnections()`);
+  h.link(0).socket.close(1006); const record = h.link(0).lastClose;
+  assert.equal(record.closed.visibility, 'visible'); assert.equal(record.closed.backgroundAt, null);
+  assert.equal(record.foreground, undefined);
+  await h.advance(0); assert.equal(record.reconnect.source, 'auto'); assert(record.socket);
+  await h.open(0); h.attached(0); await h.settle(); assert(record.ready);
+});
+
+test('five-minute foreground expiry records the original background deadline without changing reconnection', async () => {
+  const h = harness({ count: 1 }); await h.start(); h.attached(0);
+  h.run(`document.visibilityState='hidden';suspendComputerConnections()`); h.jump(300001);
+  const restoring = h.run(`document.visibilityState='visible';resumeComputerConnections()`); await h.settle();
+  const record = h.link(0).lastClose;
+  assert.equal(record.closed.source, 'background'); assert.equal(record.closed.backgroundAt, 100000);
+  assert.equal(record.closed.at - record.closed.backgroundAt, 300001); assert.equal(record.reconnect.source, 'resume');
+  await h.open(0); h.attached(0); await restoring;
+  assert.equal(h.link(0).lastClose, record); assert.equal(record.authenticated.resumed, false); assert(record.ready);
+});
+
+test('completed diagnostics remain stable and only the newest current socket close replaces the record', async () => {
+  const h = harness({ count: 1 }); await h.start(); h.attached(0);
+  const old = h.link(0).socket; old.close(1006); await h.advance(0); await h.open(0); h.attached(0); await h.settle();
+  const record = h.link(0).lastClose, before = JSON.stringify(record);
+  h.run('resumeComputerConnections();resumeComputerConnections()'); h.deliver(0, { t: 'pong' }); old.close(4002);
+  assert.equal(JSON.stringify(record), before);
+  h.link(0).socket.close(1006);
+  assert.notEqual(h.link(0).lastClose, record); assert.deepEqual(Object.keys(h.link(0).lastClose), ['closed']);
+});
+
+test('retaining diagnostics never starts recovery for a rejected or replaced computer', async () => {
+  for (const code of [4001, 4002]) {
+    const h = harness({ count: 1 }); await h.start(); h.attached(0); h.link(0).socket.close(code);
+    h.run('resumeComputerConnections()'); await h.advance(8000);
+    const record = h.link(0).lastClose;
+    assert.equal(record.closed.code, code); assert(record.foreground); assert.equal(record.reconnect, undefined);
+    assert.equal(record.authenticated, undefined); assert.equal(h.sockets.length, 1);
+  }
+});
+
+test('connection details show only the requested computer history after auth clears the current failure', async () => {
+  const h = harness(); await h.bothReady(); h.link(1).socket.close(1006); await h.advance(0);
+  await h.open(1); h.attached(1); await h.settle(); assert.equal(h.link(1).failure, null);
+  const sheets = read('app/js/sheets.js'), esc = core.slice(core.indexOf('const esc ='), core.indexOf('\n', core.indexOf('const esc ='))).replace('const esc =', 'esc =');
+  h.run(esc + `\nvar sheetHtml='';openSheet=(kind,html)=>{sheetKind=kind;sheetHtml=html};`);
+  h.run(sheets.slice(sheets.indexOf('function connectionHistoryText('), sheets.indexOf('function showAgentManager(')));
+  h.run(`showConnectionDetails(loadComputers()[0].id)`); assert(!h.run('sheetHtml').includes('data-connection-history'));
+  h.link(1).lastClose.closed.source = '<test-source>';
+  h.run(`showConnectionDetails(loadComputers()[1].id)`);
+  const html = h.run('sheetHtml');
+  assert(html.includes('最近一次关闭与恢复')); assert(html.includes('1006')); assert(html.includes('认证成功')); assert(html.includes('会话可用'));
+  assert(html.includes('&lt;test-source&gt;')); assert(!html.includes('<test-source>'));
+  assert(!html.includes(h.records[1].key)); assert(!html.includes(h.records[1].token));
+  assert(h.state().authed); assert.equal(h.state().computer, h.records[0].id); assert.equal(h.link(0).lastClose, undefined);
+});
