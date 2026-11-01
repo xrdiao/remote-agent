@@ -523,6 +523,7 @@ function reconnectComputer(id, source = 'manual') {
   const link = computerConnection(computer);
   if (link.attempt) return link.attempt;
   if (source !== 'manual' && !computerRetryAllowed(computer, source === 'resume')) return;
+  recordComputerConnection(link, 'reconnect', { source });
   if (source === 'manual') {
     link.retryFailures = 0; link.retryProbe = false;
   } else if (link.phase === 'paused') {
@@ -755,6 +756,15 @@ function computerConnection(computer) {
   if (computer.id) { link.expectedId = computer.id; ovStOf(computer.id).link = link; }
   return link;
 }
+function recordComputerConnection(link, event, detail = {}) {
+  if (event === 'closed') link.lastClose = {};
+  const record = link.lastClose;
+  if (!record || record.ready || record[event]) return;
+  record[event] = { at: Date.now(), visibility: document.visibilityState, backgroundAt: computerBackgroundAt,
+    online: navigator.onLine !== false, phase: link.phase, socketState: link.socket?.readyState ?? null,
+    current: !!link.socket && link.socket === ws, authed: link.authed, activeAuthed: authed, ...detail };
+  if (sheetKind === 'connection-details' && connectionDetailsComputer === link.expectedId) showConnectionDetails(link.expectedId);
+}
 function stopComputerProbe(link) { link.probe = null; }
 function probeComputerSocket(link) {
   if (!link.authed || link.socket?.readyState !== 1 || link.probe) return;
@@ -907,6 +917,7 @@ async function openComputerSocket(computer, relay) {
   const socket = new WebSocket(relay.replace(/^http/, 'ws') + '/ws');
   Object.assign(link, { relay, socket, expectedId, phase: 'connecting', opened: false, auth: null, error: '', closeSource: '', lastRx: 0,
     binding: undefined, preload: null, receive: null, closed: null, metadata: new Map(), operations: new Map() });
+  recordComputerConnection(link, 'socket');
   link.firstScreen = new Promise(resolve => { link.finishFirstScreen = resolve; });
   link.send = message => { if (link.authed && socket.readyState === 1) socket.send(JSON.stringify(message)); };
   const current = () => computerSockets.get(computer.key) === link && link.socket === socket;
@@ -954,6 +965,7 @@ async function openComputerSocket(computer, relay) {
       }
       link.phase = m.id !== expectedId ? 'identity' : m.ok ? 'ready' : 'auth';
       if (link.authed) {
+        recordComputerConnection(link, 'authenticated', { resumed: !!m.resumed });
         link.failure = null;
         pingTimer ||= setInterval(heartbeat, COMPUTER_PING_MS);
         updateComputerRecord({ ...computer, id: m.id, name: m.name, device: m.device, relay });
@@ -999,10 +1011,12 @@ async function openComputerSocket(computer, relay) {
     if (m.t === 'attached' || m.t === 'chat') for (const result of link.operations?.values() || []) receiveDesktopOperation(link, result);
     if (['auth', 'attached', 'attachFailed'].includes(m.t) || wasReady !== computerBindingReady(link)) ovRender();
     if (link.rejected) socket.close();
+    if (currentNavigation && !wasReady && computerBindingReady(link)) recordComputerConnection(link, 'ready');
   };
   socket.onclose = event => {
     clearTimeout(timer);
     if (!current()) return;
+    recordComputerConnection(link, 'closed', { code: event.code, source: link.closeSource || 'transport' });
     clearTimeout(link.closeTimer);
     stopComputerProbe(link);
     saveComputerResume(link);
@@ -1120,6 +1134,7 @@ function resumeComputerConnections() {
   if (document.visibilityState !== 'visible') return;
   if (computerBackgroundAt !== null && Date.now() - computerBackgroundAt >= COMPUTER_BACKGROUND_MS)
     for (const link of computerSockets.values()) if (link.socket?.readyState < 2) closeSocket(link.socket, 'background');
+  for (const link of computerSockets.values()) recordComputerConnection(link, 'foreground');
   computerBackgroundAt = null;
   if (navigator.onLine === false) return;
   const foreground = !authed && (!ws || ws.readyState >= 2) ? reconnectComputer(currentComputer()?.id, 'resume') : null;

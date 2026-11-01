@@ -1291,6 +1291,24 @@ $('sheet').addEventListener('change', e => {
   showAgentManager();
 });
 let connectionDetailsComputer = '';
+function connectionHistoryText(record) {
+  if (!record) return '';
+  const tr = I18N.tr, closed = record.closed, foreground = record.foreground;
+  const time = event => event ? new Date(event.at).toISOString() : tr('未记录');
+  const environment = event => `${tr(event.visibility === 'visible' ? '前台' : '后台')} · ${tr(event.online ? '网络在线' : '网络离线')} · ${event.phase} · Socket ${event.socketState}`;
+  return [
+    `${tr('关闭时间')}：${time(closed)}`,
+    `${tr('关闭码')}：${closed.code} · ${tr('客户端来源')}：${closed.source}`,
+    `${tr('关闭时')}：${environment(closed)} · ${tr(closed.current ? '当前电脑' : '其他电脑')}`,
+    `${tr('后台计时')}：${closed.backgroundAt == null ? tr('未启动') : `${closed.at - closed.backgroundAt} ms`}`,
+    `${tr('关闭前连接认证')}：${tr(closed.authed ? '已验证' : '未验证')} · ${tr('当前页面认证')}：${tr(closed.activeAuthed ? '已验证' : '未验证')}`,
+    `${tr('回到前台')}：${time(foreground)}${foreground ? `\n${environment(foreground)} · ${tr('当前页面认证')}：${tr(foreground.activeAuthed ? '已验证' : '未验证')}` : ''}`,
+    `${tr('重连请求')}：${time(record.reconnect)}${record.reconnect ? ` · ${record.reconnect.source}` : ''}`,
+    `${tr('新建连接')}：${time(record.socket)}`,
+    `${tr('认证成功')}：${time(record.authenticated)}${record.authenticated ? ` · ${tr(record.authenticated.resumed ? '复用中继会话' : '新建中继会话')}` : ''}`,
+    `${tr('会话可用')}：${time(record.ready)}`,
+  ].join('\n');
+}
 function showConnectionDetails(id) {
   const e = ovList.find(e => e.id === id);
   if (!e?.c) return;
@@ -1298,9 +1316,11 @@ function showConnectionDetails(id) {
   const state = ovStOf(id), tr = I18N.tr, failure = state.failure;
   const checks = (state.checks || []).map(c => `<div class="connection-check"><span>${esc(tr(c.label))}</span><span class="${c.st}">${esc(tr(DIAG_TEXT[c.st]))}</span></div>`).join('');
   const technical = [failure?.stage, failure?.error, ...(state.checks || []).filter(c => c.st === 'err').map(c => tr(c.label) + '：' + diagReason(c))].filter(Boolean).join('\n');
+  const history = connectionHistoryText(state.link?.lastClose);
   openSheet('connection-details', `<h3>连接详情</h3><p class="hint ovRaw">${esc(e.name)}</p>
     <p class="hint">${esc(tr(state.diagRunning ? '正在检测连接…' : state.conclusion || '连接未建立，请重试。'))}</p>
     ${checks}${technical ? `<pre class="connection-technical">${esc(technical)}</pre>` : ''}
+    ${history ? `<div class="pSec">${tr('最近一次关闭与恢复')}</div><pre class="connection-technical" data-connection-history>${esc(history)}</pre><p class="hint">${tr('transport 表示未记录到客户端主动关闭来源，需结合中继日志判断。记录仅保留到本页关闭或刷新。')}</p>` : ''}
     <div class="optRow"><button class="opt" data-act="connectionRetry" data-computer="${esc(id)}">重新连接</button><button class="opt" data-act="connectionDiagnose" data-computer="${esc(id)}" ${state.diagRunning ? 'disabled' : ''}>重新检测</button></div>`);
 }
 
