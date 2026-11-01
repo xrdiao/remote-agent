@@ -137,6 +137,9 @@ Fusion 复用这些 Agent 的连接进行协作。语音在所选引擎中处理
 - [语音安装、引擎切换与麦克风要求](docs/voice-input.md)
 - [连接、设备入口与安全](docs/security.md)
 - [功能基准与检查／修改导航](docs/baselines/README.md)
+- [Fusion 多子 Agent 改造方案与进度（未实施）](docs/fusion-multi-agent-plan-20261101.md)
+- [新版 Fusion 跨电脑改造 prompt（主页底部入口）](docs/fusion-rewrite-prompt-20261101.md)
+- [已知问题与修复记录](docs/problem.md)
 
 目录：`server/` 中继与适配器，`app/` 手机网页，`lib/` 公共能力，`cli/` 配置工具，`android/` 和 `ios/` 原生壳，`push-service/` iOS 推送服务。
 
