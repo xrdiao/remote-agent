@@ -357,15 +357,19 @@ function ovOpenLink(r, cls = '') {
 function ovUsageHtml(key) {
   const data = ovComposerReady(key) ? currentUsageMeters() : { context: null, quota: [] };
   const context = data.context, used = context?.pct == null ? null : context.basis === 'remaining' ? 100 - context.pct : context.pct;
-  const label = [`上下文 ${used == null ? '未获取' : `已用 ${used}%`}`];
-  const circle = (radius, cls, length, offset = 0) => `<circle class="${cls}" cx="20" cy="20" r="${radius}" pathLength="100" stroke-dasharray="${length} ${100 - length}" stroke-dashoffset="${offset}" transform="rotate(-90 20 20)"></circle>`;
-  let rings = circle(14.5, 'ov-meter-track', 100) + circle(14.5, `ov-meter-context ${meterFill(used, 'used')}`, used ?? 0);
-  const quota = data.quota.length ? data.quota : [{ label: '额度', pct: null }], part = 100 / quota.length, span = quota.length > 1 ? part - 3 : part;
-  for (const [i, item] of quota.entries()) {
-    const remaining = item.pct == null ? null : item.basis === 'used' ? 100 - item.pct : item.pct;
-    label.push(`${item.label} ${remaining == null ? '未获取' : `剩余 ${remaining}%`}`);
-    rings += circle(18.5, 'ov-meter-track', span, -i * part)
-      + circle(18.5, `ov-meter-quota ${meterFill(remaining, 'remaining')}`, span * (remaining ?? 0) / 100, -i * part);
+  const quota = data.quota.length ? data.quota : [{ label: '额度', pct: null }];
+  const meters = [{ label: '上下文', pct: used, basis: 'used', kind: 'context' }, ...quota.map(item => ({
+    label: item.label, pct: item.pct == null ? null : item.basis === 'used' ? 100 - item.pct : item.pct, basis: 'remaining', kind: 'quota',
+  }))];
+  const part = 100 / meters.length, gap = 3, span = part - gap;
+  const circle = (cls, length, offset) => `<circle class="${cls}" cx="20" cy="20" r="18.5" pathLength="100" stroke-dasharray="${length} ${100 - length}" stroke-dashoffset="${offset}" transform="rotate(-90 20 20)"></circle>`;
+  const label = [];
+  let rings = '';
+  for (const [i, item] of meters.entries()) {
+    label.push(`${item.label} ${item.pct == null ? '未获取' : `${item.basis === 'used' ? '已用' : '剩余'} ${item.pct}%`}`);
+    const offset = -i * part - gap / 2;
+    rings += circle('ov-meter-track', span, offset)
+      + circle(`ov-meter-${item.kind} ${meterFill(item.pct, item.basis)}`, span * (item.pct ?? 0) / 100, offset);
   }
   return `<svg viewBox="0 0 40 40" role="img" aria-label="${esc(label.join('；'))}"><title>${esc(label.join('；'))}</title>${rings}</svg>`;
 }

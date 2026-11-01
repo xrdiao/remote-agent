@@ -925,6 +925,11 @@ test('card rings share the existing context and quota percentage conversion with
   assert(h.node('quotaMeters').innerHTML.includes('剩余75%'));
   assert(h.html().includes('上下文 已用 40%')); assert(h.html().includes('weekly 剩余 75%'));
   assert.equal(h.data().quota[0].pct, 75);
+  const html = h.html(), tracks = [...html.matchAll(/class="ov-meter-track"[^>]*stroke-dasharray="([^"]+)" stroke-dashoffset="([^"]+)"/g)];
+  assert.deepEqual([...new Set([...html.matchAll(/\br="([^"]+)"/g)].map(m => m[1]))], ['18.5']);
+  assert.equal(tracks.length, 2);
+  assert.deepEqual(tracks.map(m => Number(m[1].split(' ')[0])), [47, 47]);
+  assert.deepEqual(tracks.map(m => Number(m[2])), [-1.5, -51.5]);
 });
 
 test('context stays scoped to a conversation while quota stays scoped to its computer and window', () => {
@@ -943,14 +948,20 @@ test('unbound and missing card metrics remain unknown rather than becoming zero'
   assert.equal(h.html().includes('已用 0%'), false);
 });
 
-test('multiple quota periods have independent segments and retain their original values', () => {
+test('two quota periods and context share one three-part ring with separated boundaries', () => {
   const h = usageMeters(); h.context.renderQuota({ context: { pct: 20, basis: 'remaining' }, limits: [
     { label: 'weekly', pct: 40, basis: 'used' }, { label: 'daily', pct: 70, basis: 'used' },
   ] });
   const html = h.html();
   assert(html.includes('上下文 已用 80%')); assert(html.includes('weekly 剩余 60%')); assert(html.includes('daily 剩余 30%'));
   assert.equal((html.match(/class="ov-meter-quota /g) || []).length, 2);
-  assert(html.includes('stroke-dashoffset="-50"'));
+  const tracks = [...html.matchAll(/class="ov-meter-track"[^>]*stroke-dasharray="([^"]+)" stroke-dashoffset="([^"]+)"/g)];
+  assert.deepEqual([...new Set([...html.matchAll(/\br="([^"]+)"/g)].map(m => m[1]))], ['18.5']);
+  assert.equal(tracks.length, 3);
+  for (const [i, track] of tracks.entries()) {
+    assert(Math.abs(Number(track[1].split(' ')[0]) - (100 / 3 - 3)) < 1e-9);
+    assert(Math.abs(Number(track[2]) - (-i * 100 / 3 - 1.5)) < 1e-9);
+  }
 });
 
 test('unchanged usage updates leave the ring DOM intact and never repaint the card body', () => {
