@@ -1,5 +1,14 @@
-  const codexButton = label => [...doc.querySelectorAll('button')].find(e => vis(e) && (e.getAttribute('aria-label') || '') === label)
-    || [...doc.querySelectorAll('button')].find(e => vis(e) && (e.getAttribute('aria-label') || '').startsWith(label));
+  const codexButton = label => [...doc.querySelectorAll('button')].find(e => vis(e) && nativeLabel(e.getAttribute('aria-label'), label))
+    || [...doc.querySelectorAll('button')].find(e => vis(e) && nativeLabel(e.getAttribute('aria-label'), label, true));
+  const codexRecentState = () => {
+    const button = codexButton('Recent chats');
+    return button ? { button, menu: codexFiberProps(button, 30).find(p => p.triggerRef?.current?.contains(button) && typeof p.onOpenChange === 'function') } : null;
+  };
+  const codexRecentMenu = () => {
+    const state = codexRecentState();
+    const menu = state && doc.getElementById(state.menu.contentId);
+    return menu && vis(menu) ? menu : null;
+  };
   const codexPoint = el => {
     const c = center(el);
     const frame = document.getElementById('active-frame');
@@ -8,12 +17,12 @@
     return { x: c.x + o.x, y: c.y + o.y };
   };
   const codexRecentPoint = (open = null) => {
-    const b = codexButton('Recent chats');
-    if (!b) return null;
-    const expanded = [...doc.querySelectorAll('[role=menu]')].some(e => vis(e) && /Search recent chats/.test(e.innerText || ''));
+    const state = codexRecentState();
+    if (!state) return null;
+    const { button: b, menu } = state;
+    const expanded = menu.open;
     // Recent chats uses its own popover state; archive toasts can cover its trigger.
     if (open !== null && open !== expanded) {
-      const menu = codexFiberProps(b, 30).find(p => p.triggerRef?.current?.contains(b) && typeof p.onOpenChange === 'function');
       menu.onOpenChange(open);
     }
     return { ...codexPoint(b), open: expanded };
@@ -34,7 +43,7 @@
       const r = e.getBoundingClientRect();
       if (r.width < 2 || r.height < 2 || r.bottom < 0) return false;
       const text = ((e.getAttribute('aria-label') || e.innerText || '').replace(/\s+/g, ' ').trim());
-      return text === label || text.startsWith(label);
+      return nativeLabel(text, label, true);
     });
     return el ? codexPoint(el) : null;
   };
@@ -112,7 +121,7 @@
   };
   // Recent-chat rows carry the conversation id on the React node, not on a stable attribute.
   const codexChatRows = (readOnly = false) => {
-    const menu = [...doc.querySelectorAll('[role=menu]')].find(e => vis(e) && /Search recent chats/.test(e.innerText || ''));
+    const menu = codexRecentMenu();
     const seen = new Set();
     const rows = [];
     const recent = codexQueryClient()?.getQueryData(['recent-conversations-meta', 'updated_at', '[]', 'live']) || [];
@@ -140,7 +149,7 @@
     return rows;
   };
   const codexChatPoint = id => {
-    const menu = [...doc.querySelectorAll('[role=menu]')].find(e => vis(e) && /Search recent chats/.test(e.innerText || ''));
+    const menu = codexRecentMenu();
     if (!menu) return null;
     for (const el of menu.querySelectorAll('[role=button]')) {
       const hit = codexFiberProps(el).some(p => p.conversationId === id || (typeof p.href === 'string' && p.href.endsWith('/' + id)));
@@ -150,7 +159,7 @@
   };
   // Each recent-chat row has its own Archive chat button. Delete chat is used only when that row actually shows it.
   const codexArchiveRow = id => {
-    const menu = [...doc.querySelectorAll('[role=menu]')].find(e => vis(e) && /Search recent chats/.test(e.innerText || ''));
+    const menu = codexRecentMenu();
     return menu && [...menu.querySelectorAll('[role=button]')].find(el => codexFiberProps(el).some(p => p.conversationId === id || (typeof p.href === 'string' && p.href.endsWith('/' + id))));
   };
   const codexArchiveTarget = id => {
@@ -224,11 +233,12 @@
     }
     return false;
   };
+  const codexIdeButton = () => [...doc.querySelectorAll('button')].find(e => vis(e) && codexFiberProps(e, 8).some(p => 'ideContext' in p));
   const codexButtonPoint = which => {
     const buttons = [...doc.querySelectorAll('button')].filter(vis);
-    const el = which === 'ide' ? buttons.find(b => /IDE context/i.test(b.getAttribute('aria-label') || ''))
-      : which === 'run' ? buttons.find(b => (b.getAttribute('aria-label') || '') === 'Select where to run the chat')
-      : which === 'actions' ? buttons.find(b => (b.getAttribute('aria-label') || '') === 'Chat actions')
+    const el = which === 'ide' ? codexIdeButton()
+      : which === 'run' ? [...doc.querySelectorAll('[data-composer-navigation-target="run-location"]')].find(vis)
+      : which === 'actions' ? buttons.find(b => nativeLabel(b.getAttribute('aria-label'), 'Chat actions'))
       : null;
     return el ? codexPoint(el) : null;
   };
@@ -562,9 +572,9 @@
     return b ? codexPoint(b.el) : null;
   };
   const codexFacts = () => {
-    if (!doc.querySelector('button[aria-label="Add files and more"]')) return null;
+    const add = [...doc.querySelectorAll('[data-composer-navigation-target="add-context"]')].find(vis);
+    if (!add) return null;
     let plan = false, ideStatus = '', autoContext, hasDraftAttachments;
-    const add = doc.querySelector('button[aria-label="Add files and more"]');
     let fiber = add?.[Object.keys(add).find(k => k.startsWith('__reactFiber'))];
     for (let i = 0; i < 40 && fiber; i++) {
       const props = fiber.memoizedProps || {};
@@ -574,9 +584,9 @@
       if (typeof props.hasDraftAttachments === 'boolean') hasDraftAttachments = props.hasDraftAttachments;
       fiber = fiber.return;
     }
-    const ideBtn = [...doc.querySelectorAll('button')].find(e => vis(e) && /IDE context/i.test(e.getAttribute('aria-label') || ''));
-    const runBtn = [...doc.querySelectorAll('button')].find(e => vis(e) && (e.getAttribute('aria-label') || '') === 'Select where to run the chat');
-    const ideOn = autoContext ?? (ideBtn ? /^turn off/i.test(ideBtn.getAttribute('aria-label') || '') : false);
+    const ideBtn = codexIdeButton();
+    const runBtn = [...doc.querySelectorAll('[data-composer-navigation-target="run-location"]')].find(vis);
+    const ideOn = autoContext ?? (ideBtn ? nativeLabel(ideBtn.getAttribute('aria-label'), 'Turn off IDE context') : false);
     let file = null;
     if (ideOn) {
       const active = codexQueryClient()?.getQueryData(['ide-context', null])?.activeFile;

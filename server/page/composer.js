@@ -165,7 +165,7 @@
     return { missing: false, quota: [], limits };
   };
   const codexRootProps = () => {
-    const el = doc.querySelector('button[aria-label^="Recent chats"]');
+    const el = [...doc.querySelectorAll('[data-composer-body]')].find(vis);
     return el ? codexFiberProps(el, Infinity) : [];
   };
   const codexQueryClient = () => codexRootProps().find(p => typeof p.value?.getQueryData === 'function')?.value || null;
@@ -200,10 +200,10 @@
   // Devin's permission mode: a chip in the prompt toolbar (Code / Smart / Ask / Plan / Bypass Permissions). Its menu
   // only opens for real mouse events (a JS click does nothing), rows are role=menuitem with a description and a
   // second trailing svg on the current one.
-  const DEVIN_MODES = /^(Code|Smart|Ask|Plan|Bypass Permissions)$/;
+  const DEVIN_MODES = ['Code', 'Smart', 'Ask', 'Plan', 'Bypass Permissions'];
   const devinModeChip = () => !devinSurface() ? null : [...document.querySelectorAll('button[aria-haspopup="menu"]')]
-    .find(b => vis(b) && b.getBoundingClientRect().y > 120 && DEVIN_MODES.test((b.innerText || '').trim()));
-  const devinModeRows = () => [...document.querySelectorAll('[role="menuitem"]')].filter(e => vis(e) && /^(Code|Smart|Ask|Plan|Bypass Permissions)\b/.test((e.innerText || '').trim()))
+    .find(b => vis(b) && b.getBoundingClientRect().y > 120 && DEVIN_MODES.some(label => nativeLabel((b.innerText || '').trim(), label)));
+  const devinModeRows = () => [...document.querySelectorAll('[role="menuitem"]')].filter(e => vis(e) && DEVIN_MODES.some(label => nativeLabel((e.innerText || '').trim().split('\n')[0], label)))
     .map(e => {
       const lines = (e.innerText || '').split('\n').map(x => x.trim()).filter(Boolean);
       return { el: e, label: lines[0], desc: lines[1] || '', checked: e.querySelectorAll(':scope > svg').length > 1 };

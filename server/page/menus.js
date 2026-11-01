@@ -50,7 +50,11 @@
       return vis(e) && !e.closest('.space-y-2');
     });
   };
-  const devinModelMenu = () => [...doc.querySelectorAll('div')].find(e => vis(e) && /Recently Used|Recommended/.test(e.innerText || '') && (e.innerText || '').includes('See more') && (e.innerText || '').length < 2500);
+  const devinModelMenu = () => [...doc.querySelectorAll('div')].find(e => {
+    if (!vis(e) || (e.innerText || '').length >= 2500) return false;
+    const lines = (e.innerText || '').split('\n').map(line => line.trim());
+    return lines.some(line => nativeLabel(line, 'Recently Used') || line === 'Recommended') && lines.some(line => nativeLabel(line, 'See more'));
+  });
   const powerProps = () => doc.querySelector('[data-codex-intelligence-trigger]')
     ? codexFiberProps(modelButton(), 96).find(p => p.powerSelections && typeof p.onSelectPower === 'function' && typeof p.onCommitPower === 'function')
     : null;

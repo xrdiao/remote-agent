@@ -17,6 +17,41 @@
   // Codex draws inside a same-origin iframe. Cursor and Devin use this page.
   const doc = document.getElementById('active-frame')?.contentDocument || document;
   const vis = e => { const b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0; };
+  const NATIVE_LABELS = {
+    'Recent chats': ['最近聊天'], 'New chat': ['新聊天'],
+    'Send': ['发送'], 'Queue': ['排队'], 'Steer': ['引导'], 'Stop': ['停止'], 'Stop generating': ['停止生成'],
+    'Stop generation': ['停止生成'], 'Change permissions': ['更改权限'],
+    'Turn off IDE context': ['关闭 IDE 上下文'], 'Chat actions': ['聊天操作'], 'Codex settings': ['Codex 设置'],
+    'Ask for approval': ['请求批准'], 'Approve for me': ['帮我批准'], 'Full access': ['完全访问', '完全访问权限'],
+    'Skip': ['跳过'], 'Previous question': ['上一题'], 'Next question': ['下一题'], 'Submit': ['提交'], 'Continue': ['继续'],
+    'Close': ['关闭'], 'Kill': ['终止'], 'Kill Terminal': ['终止终端'], 'New Terminal': ['新建终端'], 'Terminal tabs': ['终端选项卡'],
+  };
+  const DEVIN_MESSAGES = {
+    'New session': 'sidebar.newSession', 'Search agents': 'sidebar.searchAgents',
+    'Send now': 'inputBox.queuedMessagesSendNow', 'Remove from queue': 'inputBox.queuedMessagesRemove',
+    'Clear all': 'inputBox.queuedMessagesClearAll', 'Cancel': 'inputBox.queuedMessagesEditingCancel',
+    'Local': 'agents.local', 'Worktree': 'agents.worktree', 'Cloud': 'agents.cloud',
+    'Recently Used': 'modelSelect.groupRecentlyUsed', 'See more': 'modelSelect.seeMore',
+    'Code': 'devinModeHeader.code', 'Ask': 'devinModeHeader.ask',
+    'General': 'localSettings.sections.general', 'Plan information': 'localSettings.sections.planInformation',
+    'Extensions': 'localSettings.sections.extensions', 'Agents': 'localSettings.sections.agents',
+    'Configuration': 'localSettings.sections.configuration',
+    'User interface': 'localSettings.sections.userInterface', 'Devin Tab': 'localSettings.sections.devinTab',
+    'Shortcuts': 'localSettings.sections.shortcuts', 'Advanced': 'localSettings.sections.advanced',
+  };
+  let devinLocale;
+  const devinText = (key, values = {}) => {
+    if (devinLocale === undefined) {
+      const anchor = [...doc.querySelectorAll('[data-slate-editor], button[id*="devin-editor-mode-menu"]')].find(vis);
+      devinLocale = codexFiberProps(anchor, Infinity).find(p => typeof p.value?.i18n?.t === 'function')?.value.i18n || null;
+    }
+    return devinLocale?.t(key, { ns: 'translation', ...values });
+  };
+  const nativeLabel = (value, label, prefix = false) => {
+    const translated = DEVIN_MESSAGES[label] ? devinText(DEVIN_MESSAGES[label]) : null;
+    return [label, ...(NATIVE_LABELS[label] || []), ...(translated ? [translated] : [])]
+      .some(name => prefix ? String(value || '').startsWith(name) : String(value || '').trim() === name);
+  };
   const esc = s => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
   const SKIP = /ui-collapsible-header|md-clickable-code|output-preview|codicon-find|widget-close|model-picker/;
   const ACTION = /^(run|skip|allow|accept|reject|deny|approve|keep|undo|continue|stop|cancel|build|retry|try again|yes|no\b|运行|跳过|允许|接受|拒绝|继续|停止|取消|再试一次)/i;
@@ -36,7 +71,7 @@
   // Older Cursor builds mark each transcript row with data-flat-index; Cursor 1.x Composer
   // chats use data-message-index. The Agents window in current builds uses data-message-kind
   // instead, and past bubbles contain their own editors.
-  const ITEM_SEL = '[data-flat-index], [data-message-index], [data-message-kind], [data-turn-key], [role=group][aria-label="User message"], [role=group][aria-label="Devin message"]';
+  const ITEM_SEL = '[data-flat-index], [data-message-index], [data-message-kind], [data-turn-key], [data-transcript-row-key], [role=group][data-side], [role=group][aria-label="User message"], [role=group][aria-label="Devin message"]';
   const COMPOSER = '.aislash-editor-input, .ui-prompt-input-editor__input, .ProseMirror';
   const inItem = el => !!el.closest(ITEM_SEL);
   const itemKey = el => {
@@ -78,7 +113,7 @@
     return p;
   };
 
-  const isPermissionButton = b => b.getAttribute('data-composer-navigation-target') === 'permissions' || b.getAttribute('aria-label') === 'Change permissions';
+  const isPermissionButton = b => b.getAttribute('data-composer-navigation-target') === 'permissions' || nativeLabel(b.getAttribute('aria-label'), 'Change permissions');
   const buttonsIn = (root, strict) => [...root.querySelectorAll('button, [role=button], .anysphere-button, .anysphere-secondary-button, .composer-run-button, .composer-skip-button')]
     .filter(b => vis(b) && !isPermissionButton(b) && !b.closest('.human-message-action-slot') && !SKIP.test(b.className) && !b.parentElement.closest('button, [role=button]'))
     .map(b => ({ el: b, label: ((b.innerText || '').trim() || b.getAttribute('aria-label') || b.title || '').split('\n')[0].slice(0, 30) }))

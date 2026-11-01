@@ -6,6 +6,8 @@ import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { beginOperation, captureOperation, withOperation, subscribeOperations, currentOperation } from '../server/operations.mjs';
+import { PAGE_SRC } from '../server/page/build.mjs';
+import { FOCUS_COMPOSER } from '../server/agent/context.mjs';
 
 const read = file => fs.readFileSync(new URL('../' + file, import.meta.url), 'utf8');
 const part = (source, start, end) => {
@@ -13,6 +15,253 @@ const part = (source, start, end) => {
   assert(a >= 0 && b > a, start);
   return source.slice(a, b);
 };
+
+function nativePage(document, extra = {}, expose = '') {
+  const source = PAGE_SRC.replace('  return { historyAtStart,', `  return { ${expose ? expose + ',' : ''} historyAtStart,`);
+  return vm.runInNewContext(source, { document, window: {}, crypto: crypto.webcrypto, CSS: { escape: value => value }, ...extra });
+}
+
+function nativeNode(attributes = {}, properties = {}, visible = true) {
+  return {
+    getAttribute: key => attributes[key] ?? null,
+    hasAttribute: key => key in attributes,
+    getBoundingClientRect: () => ({ x: 0, y: 0, top: 0, left: 0, bottom: visible ? 20 : 0, right: visible ? 40 : 0, width: visible ? 40 : 0, height: visible ? 20 : 0 }),
+    querySelectorAll: () => [], querySelector: () => null, closest: () => null, matches: () => false,
+    contains(other) { return this === other; },
+    ...properties,
+  };
+}
+
+function fiber(element, props) {
+  element.__reactFiberFixture = props.reduceRight((parent, memoizedProps) => ({ memoizedProps, return: parent }), null);
+  return element;
+}
+
+for (const label of ['Recent chats', '最近聊天', '最近のチャット', 'واجهة محلية']) {
+  test(`Codex native providers retain query, route and history ownership with label ${label}`, async () => {
+    const routes = [], scope = { familyBindings: new Map() }, staleScope = { familyBindings: new Map() };
+    const query = { getQueryData: () => [] }, router = { navigate: path => routes.push(path) };
+    const root = fiber(nativeNode(), [{ value: query }, { value: { router } }, { value: new Map([['scope', scope]]) }]);
+    const hidden = fiber(nativeNode({}, {}, false), [{ value: { getQueryData() {} } }, { value: new Map([['scope', staleScope]]) }]);
+    const button = nativeNode({ 'aria-label': label });
+    const doc = {
+      getElementById: () => null,
+      querySelectorAll: selector => selector === '[data-composer-body]' ? [hidden, root] : selector === 'button' ? [button] : [],
+    };
+    const page = nativePage(doc, {}, 'codexRootProps,codexQueryClient,codexHistoryScopes');
+    assert.equal(page.codexQueryClient(), query);
+    assert.deepEqual([...page.codexHistoryScopes()], [scope]);
+    assert.equal(await page.openCodexThread('fixture-thread'), true);
+    assert.deepEqual(routes, ['/local/fixture-thread']);
+  });
+}
+
+for (const label of ['Recent chats. 1 in progress', '最近聊天。1 个处理中']) {
+  test(`Codex recent popover uses the native trigger state and content ID: ${label}`, () => {
+    const button = nativeNode({ 'aria-label': label }), hidden = nativeNode({ 'aria-label': label }, {}, false);
+    const content = nativeNode({}, { querySelectorAll: () => [] });
+    const menu = { triggerRef: { current: button }, contentId: 'native-menu', open: false,
+      onOpenChange(value) { this.open = value; } };
+    fiber(button, [menu]);
+    const doc = { getElementById: id => id === 'native-menu' && menu.open ? content : null,
+      querySelectorAll: selector => selector === 'button' ? [hidden, button] : [] };
+    const page = nativePage(doc, {}, 'codexRecentMenu');
+    assert.equal(page.codexRecentPoint().open, false);
+    page.codexRecentPoint(true);
+    assert.equal(page.codexRecentPoint().open, true);
+    assert.equal(page.codexRecentMenu(), content);
+    assert.equal(page.closeCodexMenu(), true);
+    assert.equal(menu.open, false);
+  });
+}
+
+for (const busy of [false, true]) {
+  test(`Codex busy state uses the native response flag, independently of labels and queue capability: ${busy}`, () => {
+    const root = nativeNode(), editor = fiber(nativeNode({}, { closest: selector => selector === '[data-composer-body]' ? root : null }),
+      [{ isResponseInProgress: busy, isQueueingEnabled: true }]);
+    const doc = { getElementById: () => null, querySelector: () => null,
+      querySelectorAll: selector => selector === '.ProseMirror[contenteditable="true"]' ? [editor] : [] };
+    const page = nativePage(doc, {}, 'isBusy');
+    assert.equal(page.isBusy(), busy);
+  });
+}
+
+test('a stop button in message content cannot mark an idle Codex composer as running', () => {
+  const root = nativeNode(), editor = fiber(nativeNode({}, { closest: () => root }), [{ isResponseInProgress: false }]);
+  const message = nativeNode(), stop = nativeNode({ 'aria-label': '停止生成' }, { closest: () => message });
+  const doc = { getElementById: () => null,
+    querySelectorAll: selector => selector === '.ProseMirror[contenteditable="true"]' ? [editor] : selector === 'button, [role=button]' ? [stop] : [] };
+  assert.equal(nativePage(doc, {}, 'isBusy').isBusy(), false);
+});
+
+test('Codex follow-up preferences and draft facts come from the visible native add-context control', () => {
+  const add = fiber(nativeNode(), [{ activeCollaborationMode: { mode: 'plan' }, hasDraftAttachments: true, isAutoContextOn: false }]);
+  const root = fiber(nativeNode(), [{ value: { getQueryData: () => ({ values: { followUpQueueMode: 'queue', composerEnterBehavior: 'newline' } }) } }]);
+  const doc = { getElementById: () => null, querySelector: () => null,
+    querySelectorAll: selector => selector === '[data-composer-navigation-target="add-context"]' ? [nativeNode({}, {}, false), add]
+      : selector === '[data-composer-body]' ? [root] : [] };
+  const data = nativePage(doc).codexFacts();
+  assert.equal(data.view.follow, 'queue'); assert.equal(data.view.enter, 'newline');
+  assert.equal(data.view.plan, true); assert.equal(data.hasDraftAttachments, true);
+});
+
+for (const chinese of [false, true]) {
+  test(`permissions use native selected icons rather than trigger text, ${chinese ? 'Chinese' : 'English'}`, () => {
+    const labels = chinese ? ['请求批准', '帮我批准', '完全访问权限', '自定义 (config.toml)']
+      : ['Ask for approval', 'Approve for me', 'Full access', 'Custom (config.toml)'];
+    const button = nativeNode({}, { innerText: chinese ? '完全访问' : 'Full access' });
+    const rows = labels.map((innerText, i) => fiber(nativeNode({}, { innerText }), [{ RightIcon: i === 2 ? () => {} : undefined }]));
+    const doc = { getElementById: () => null,
+      querySelectorAll: selector => selector === '[role=menuitem]' ? rows : selector.includes('permissions') ? [nativeNode({}, {}, false), button] : [] };
+    const page = nativePage(doc), choices = page.menuItems('permission');
+    assert.equal(page.control('permission').x, 20);
+    assert.deepEqual(Array.from(choices, row => row.label), labels.slice(0, 3));
+    assert.deepEqual(Array.from(choices, row => row.checked), [false, false, true]);
+  });
+}
+
+for (const [text, basis] of [['20% remaining', 'remaining'], ['剩余 20%', 'remaining'], ['20% 已用', 'used'],
+  ['已使用 20%', 'used'], ['80% used · 20% remaining', 'remaining']]) {
+  test(`Cursor quota keeps its percentage direction: ${text}`, () => {
+    const bar = nativeNode({ 'aria-valuenow': '20', 'aria-valuemax': '100', 'aria-label': 'usage', 'aria-valuetext': text });
+    const root = nativeNode({}, { innerText: '当前套餐\nPro\n' + text,
+      querySelectorAll: selector => selector === '[role=progressbar]' ? [bar] : [] });
+    const context = vm.createContext({ settingsPanel: () => root, vis: () => true, fullText: el => el.innerText || '' });
+    vm.runInContext(part(read('server/page/settings.js'), '  const readUsage =', '\n\n\n\n  // Full xterm') + '\nthis.result=readUsage();', context);
+    assert.equal(context.result.plan, 'Pro');
+    assert.equal(context.result.limits[0].pct, 20);
+    assert.equal(context.result.limits[0].basis, basis);
+  });
+}
+
+test('Cursor settings root is located through its native container independently of navigation labels', () => {
+  const root = nativeNode(), doc = { getElementById: () => null, querySelectorAll: selector => selector === '.cursor-settings-pane-outer-wrapper' ? [root] : [] };
+  const page = nativePage(doc, {}, 'settingsPanel');
+  assert.equal(page.settingsPanel(), root);
+  assert.equal(page.settingsOpen(), true);
+});
+
+test('Cursor quota reads the plan container rather than its heading-only child', () => {
+  const heading = { innerText: '当前套餐' }, card = { innerText: '当前套餐\nPro\n剩余20%' };
+  const bar = nativeNode({ 'aria-valuenow': '20', 'aria-label': 'usage', 'aria-valuetext': '剩余20%' });
+  const root = { innerText: card.innerText, querySelectorAll: selector => selector === 'div, section' ? [heading, card] : selector === '[role=progressbar]' ? [bar] : [] };
+  const context = vm.createContext({ settingsPanel: () => root, vis: () => true, fullText: el => el.innerText || '' });
+  vm.runInContext(part(read('server/page/settings.js'), '  const readUsage =', '\n\n\n\n  // Full xterm') + '\nthis.result=readUsage();', context);
+  assert.equal(context.result.plan, 'Pro'); assert.equal(context.result.limits[0].basis, 'remaining');
+});
+
+test('native effort IDs match their displayed casing without losing non-Latin labels', () => {
+  const rows = ['Low', 'High', '深度', 'unrelated'].map(innerText => nativeNode({}, { innerText }));
+  const context = vm.createContext({ effortItems: () => [{ label: 'low' }, { label: 'high' }, { label: '深度' }],
+    doc: { querySelectorAll: () => rows }, vis: () => true, normLabel: value => value });
+  vm.runInContext('this.menu={' + part(read('server/page/controls.js'), '    effort: () => {', '    mode: () => {') + '};this.result=menu.effort();', context);
+  assert.deepEqual(Array.from(context.result, row => row.label), ['Low', 'High', '深度']);
+});
+
+for (const supported of [false, true]) {
+  test(`Codex includes hidden Max only when its native model capability supports it: ${supported}`, () => {
+    const efforts = ['low', 'medium', 'high'].map(reasoningEffort => ({ reasoningEffort }));
+    const picker = { model: 'model-id', reasoningEffort: 'high', modelOptions: [{ model: { id: 'model-id', supportedReasoningEfforts: efforts } }], onSelectModelOption() {} };
+    const button = fiber(nativeNode(), [picker]);
+    const model = { id: 'model-id', supportedReasoningEfforts: [...efforts, ...(supported ? [{ reasoningEffort: 'max' }] : [])] };
+    const client = { getQueryData: () => [], getQueryCache: () => ({ getAll: () => [{ queryKey: ['models', '', 'local'], state: { data: { data: [model] } } }] }) };
+    const root = fiber(nativeNode(), [{ value: client }]);
+    const doc = { getElementById: () => null, querySelector: () => null,
+      querySelectorAll: selector => selector === '[data-codex-intelligence-trigger]' ? [button] : selector === '[data-composer-body]' ? [root] : [] };
+    const page = nativePage(doc);
+    assert.deepEqual(Array.from(page.effortItems(false, true), row => row.label), [...efforts.map(row => row.reasoningEffort), ...(supported ? ['max'] : [])]);
+  });
+}
+
+for (const generating of [false, true]) {
+  test(`Cursor running state follows the selected native composer, generating=${generating}`, () => {
+    const states = [{ id: 'current', state: generating ? 'generating' : 'focused' }, { id: 'other', state: 'generating' }];
+    const source = part(read('server/page/devin.js'), '  const isBusy =', "  // Devin's queue");
+    const context = vm.createContext({ window: { __SSG_COMPOSER_PROVIDER__: { getStates: () => states } },
+      codexPromptEl: () => null, activeThread: () => 'current', stopGenerationButton: () => null, legacyStopIcon: () => null, devinSubmitBusy: () => false });
+    vm.runInContext(source + '\nthis.busy=isBusy();', context);
+    assert.equal(context.busy, generating);
+  });
+}
+
+test('Cursor stop control is identified by its native state independently of the accessible label', () => {
+  const button = nativeNode({ 'aria-label': 'opaque native label' }, { matches: selector => selector === '.ui-prompt-input-submit-button[data-state="stop"]' });
+  const doc = { getElementById: () => null, querySelectorAll: selector => selector === 'button, [role=button]' ? [button] : [] };
+  assert.equal(nativePage(doc, {}, 'stopGenerationButton').stopGenerationButton(), button);
+});
+
+for (const label of ['Context: 35%', 'Context usage: 35%', '上下文用量：35%']) {
+  test(`Codex context percentage reads its verified native label: ${label}`, () => {
+    const button = nativeNode({ 'aria-label': label });
+    const doc = { getElementById: () => null, querySelectorAll: () => [button] };
+    const result = nativePage(doc).contextPct();
+    assert.equal(result.pct, 35); assert.equal(result.basis, 'used');
+  });
+}
+
+test('Devin translated controls share the native translation keys for new session, queue and workdir', () => {
+  const strings = {
+    'sidebar.newSession': 'translated session', 'inputBox.queuedMessagesSendNow': 'translated send now',
+    'inputBox.queuedMessagesRemove': 'translated remove', 'inputBox.queuedMessagesClearAll': 'translated clear',
+    'agents.local': 'translated local', 'inputBox.queuedMessagesCount': '2 translated queued',
+  };
+  const locale = { t(key, options) { assert.equal(options.ns, 'translation'); return strings[key] || key; } };
+  const editor = fiber(nativeNode(), [{ value: { i18n: locale } }]);
+  const clicked = [], fresh = nativeNode({ 'aria-label': strings['sidebar.newSession'] }, { click: () => clicked.push('new') });
+  const send = nativeNode({ 'aria-label': strings['inputBox.queuedMessagesSendNow'] }), remove = nativeNode({ 'aria-label': strings['inputBox.queuedMessagesRemove'] });
+  const row = nativeNode({}, { className: 'cursor-grab', querySelectorAll: () => [send, remove] });
+  const count = nativeNode({}, { innerText: '2 translated queued' }), clear = nativeNode({ 'aria-label': strings['inputBox.queuedMessagesClearAll'] });
+  const doc = { getElementById: () => null,
+    querySelectorAll: selector => selector.includes('data-slate-editor') ? [editor] : selector === 'button, a, [role=button]' ? [fresh]
+      : selector === 'span.text-12' ? [count] : selector === 'ol li[role="button"]' ? [row] : selector === 'button[aria-label]' ? [clear] : [] };
+  const page = nativePage(doc, {}, 'nativeLabel');
+  assert.equal(page.nativeLabel('translated local', 'Local'), true);
+  assert.equal(page.nativeLabel('unrelated', 'Local'), false);
+  assert.equal(page.clickControl('newChat'), true); assert.deepEqual(clicked, ['new']);
+  assert.equal(page.devinQueueCount(), 2);
+  assert(page.devinQueueTarget(0, 'send')); assert(page.devinQueueTarget(0, 'remove')); assert(page.devinQueueClearTarget());
+});
+
+test('Devin settings navigation reads the native translated section names', () => {
+  const editor = fiber(nativeNode(), [{ value: { i18n: { t: key => ({ 'localSettings.sections.general': 'translated general', 'localSettings.sections.planInformation': 'translated plan' })[key] || key } } }]);
+  const buttons = ['translated general', 'translated plan', 'unrelated'].map(innerText => nativeNode({}, { innerText }));
+  const doc = { getElementById: () => null,
+    querySelectorAll: selector => selector.includes('data-slate-editor') ? [editor] : selector === 'button' ? buttons : [] };
+  const page = nativePage(doc, { innerHeight: 1000, innerWidth: 1000 });
+  assert.deepEqual(Array.from(page.devinSettingsNav()), ['translated general', 'translated plan']);
+});
+
+for (const chinese of [false, true]) {
+  test(`terminal reading and operation targets preserve IDs with ${chinese ? 'Chinese' : 'English'} labels`, () => {
+    const kill = nativeNode({ 'aria-label': chinese ? '终止终端' : 'Kill Terminal' });
+    const terminal = nativeNode({ 'aria-label': chinese ? '终端1 bash' : 'Terminal 1 bash', 'aria-selected': 'true' },
+      { querySelectorAll: () => [kill], scrollIntoView() {} });
+    const tabs = nativeNode({ 'aria-label': chinese ? '终端选项卡' : 'Terminal tabs' }, { querySelectorAll: () => [terminal] });
+    const fresh = nativeNode({ 'aria-label': chinese ? '新建终端 (Ctrl+Shift+`)' : 'New Terminal (Ctrl+Shift+`)' });
+    const doc = { getElementById: () => null, querySelector: () => null,
+      querySelectorAll: selector => selector === '[aria-label]' ? [tabs, fresh]
+        : selector === '.part.panel .title-actions [aria-label]' ? [nativeNode({ 'aria-label': 'Kill Terminal' }, {}, false), kill] : [] };
+    const page = nativePage(doc);
+    assert.deepEqual(JSON.parse(JSON.stringify(page.terminalList())), [{ id: 'term-vt1', title: 'bash', current: true }]);
+    assert(page.terminalTarget('term-vt1')); assert(page.terminalCloseTarget('term-vt1'));
+    assert(page.terminalKillActiveTarget()); assert(page.newTerminalDirect());
+  });
+}
+
+for (const primary of [false, true]) {
+  test(`focusing the composer excludes localized transcript editors, primary selector=${primary}`, () => {
+    const focused = [], body = nativeNode();
+    const make = (name, message) => nativeNode({}, { closest: selector => message && selector.includes('[data-transcript-row-key]') ? body : null,
+      focus: () => focused.push(name) });
+    const message = make('message', true), composer = make('composer', false);
+    const document = { getElementById: () => null, querySelector: () => null,
+      querySelectorAll: selector => selector === (primary ? '.ProseMirror[contenteditable="true"]' : '[contenteditable="true"]') ? [composer, message] : [],
+      createRange: () => ({ selectNodeContents() {}, collapse() {} }),
+      defaultView: { getSelection: () => ({ removeAllRanges() {}, addRange() {} }) } };
+    vm.runInNewContext(FOCUS_COMPOSER, { document, getComputedStyle: () => ({ visibility: 'visible' }) });
+    assert.deepEqual(focused, ['composer']);
+  });
+}
 
 function confirmation() {
   const nodes = Object.fromEntries(['send', 'sendNow', 'stop', 'queueBar', 'attachments', 'askOk', 'askNo'].map(id => [id, {}]));

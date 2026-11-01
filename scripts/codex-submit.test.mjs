@@ -1,9 +1,62 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import vm from 'node:vm';
+import { PAGE_SRC } from '../server/page/build.mjs';
 import '../server/routes.mjs';
-import { adapter } from '../server/apps/codex.mjs';
+import { adapter, methods as codexMethods } from '../server/apps/codex.mjs';
 import { cdpRead } from '../server/cdp.mjs';
 import { withOperation } from '../server/operations.mjs';
+
+for (const chinese of [false, true]) for (const follow of ['', 'queue', 'steer']) for (const dispatch of [false, true]) {
+  test(`native submit keeps the original ${follow || 'default'} action with ${chinese ? 'Chinese' : 'English'} controls, dispatch=${dispatch}`, async () => {
+    const nativeCalls = [], clicked = [];
+    const names = chinese ? ['发送', '排队', '引导'] : ['Send', 'Queue', 'Steer'];
+    const buttons = names.map(label => ({ getBoundingClientRect: () => ({ width: 20, height: 20 }),
+      getAttribute: key => key === 'aria-label' ? label : null, click: () => clicked.push(label) }));
+    const root = { querySelectorAll: () => buttons };
+    const editor = { getBoundingClientRect: () => ({ width: 40, height: 20 }), closest: () => root,
+      __reactFiberFixture: { memoizedProps: { handleSubmit: value => { nativeCalls.push(value); }, isQueueingEnabled: true,
+        composerController: { getText: () => 'test draft' } } } };
+    const document = { getElementById: () => null,
+      querySelectorAll: selector => selector === '.ProseMirror[contenteditable="true"]' ? [editor] : [] };
+    const page = vm.runInNewContext(PAGE_SRC, { document, window: {} });
+    assert.equal(await page.submitCodexMessage(follow, dispatch, 'request-fixture'), true);
+    if (dispatch) {
+      assert.deepEqual(clicked, [names[follow === 'queue' ? 1 : follow === 'steer' ? 2 : 0]]);
+      assert.equal(nativeCalls.length, 0);
+    } else {
+      assert.equal(clicked.length, 0);
+      assert.equal(nativeCalls.length, 1);
+      assert.equal(nativeCalls[0]?.followUpSubmitAction, follow || undefined);
+    }
+  });
+}
+
+for (const chinese of [false, true]) for (const available of [false, true]) {
+  test(`native Max setting preserves selection and cleanup, Chinese=${chinese}, available=${available}`, async () => {
+    const points = [], keys = [], calls = [];
+    let current = 'general', enabled = false;
+    const data = () => ({ nav: [{ id: 'general', label: 'General', current: current === 'general' },
+      { id: 'config', label: chinese ? '配置' : 'Configuration', current: current === 'config' }],
+      rows: [{ label: chinese ? '可用推理强度' : 'Available reasoning efforts', controls: [{ id: 'efforts' }] }] });
+    const cdp = { async evaluate(source) {
+      if (source.endsWith('.codexSettingsData()') || source.includes('.waitSettings(')) return data();
+      if (source.includes('.codexSettingPoint(')) return { x: /"(general|config|efforts|max)"/.exec(source)[1], y: 1 };
+      if (source.startsWith('new Promise')) return enabled;
+      if (source.includes('[role=menuitemcheckbox]')) return available ? { id: 'max', enabled } : null;
+      throw Error('unexpected Max test read');
+    } };
+    const context = {
+      withCodexSettings: fn => fn(cdp), closeCodexSettings: async () => calls.push('close'),
+      tapCss: async x => { points.push(x); if (x === 'config' || x === 'general') current = x; if (x === 'max') enabled = true; },
+      key: async value => keys.push(value),
+    };
+    const work = codexMethods.enableCodexMax.call(context);
+    if (available) { await work; assert.equal(enabled, true); assert.deepEqual(points, ['config', 'efforts', 'max', 'general']); assert.deepEqual(keys, ['Escape']); }
+    else { await assert.rejects(work, /当前 Codex 无法启用 Max/); assert.equal(enabled, false); assert.deepEqual(points, ['config', 'efforts', 'general']); }
+    assert.deepEqual(calls, ['close']); assert.equal(current, 'general');
+  });
+}
 
 function submission({ native = true, busy = false, when, follow = 'queue', payload = '  hello\n world  ',
   attachments = false, mentions, receipt = true, submitted = true, submitError, waitError, afterRead, afterWait } = {}) {

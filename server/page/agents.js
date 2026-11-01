@@ -138,16 +138,16 @@
       const m = /\+\s?(\d+)\s*[-\u2212]\s?(\d+)/.exec(stripBidi(devinBarLeft()?.parentElement?.innerText || ''));
       return pack(changedCount(), m ? Number(m[1]) : null, m ? Number(m[2]) : null);
     }
-    const bar = buttons.map(b => (b.innerText || '').split('\n').map(x => x.trim()).filter(Boolean)).find(l => l.length === 3 && l[0] === 'Changes' && num(l[1]) != null && num(l[2]) != null);
+    const bar = buttons.map(b => (b.innerText || '').split('\n').map(x => x.trim()).filter(Boolean)).find(l => l.length === 3 && /^(Changes|更改)$/.test(l[0]) && num(l[1]) != null && num(l[2]) != null);
     return bar ? pack(null, num(bar[1]), num(bar[2])) : null;
   };
   const agentState = () => {
     const buttons = [...doc.querySelectorAll('button')].filter(vis);
-    const back = buttons.findIndex(b => (b.getAttribute('aria-label') || '') === 'Back');
+    const back = buttons.findIndex(b => /^(Back|返回)$/.test(b.getAttribute('aria-label') || ''));
     const active = agentList().find(a => a.current);
     const title = active?.title || (back >= 0 ? ((buttons[back + 1]?.innerText || '').split('\n')[0] || '').trim().slice(0, 80) : '');
-    const recent = buttons.find(b => (b.getAttribute('aria-label') || '').startsWith('Recent chats'));
-    const progress = Number((/(\d+) in progress/.exec(recent?.getAttribute('aria-label') || '') || [])[1] || 0);
+    const recent = codexButton('Recent chats');
+    const progress = Number(/(\d+)\s*(?:in progress|个处理中)/.exec(recent?.getAttribute('aria-label') || '')?.[1] || 0);
     const thread = activeThread();
     const roots = codexWorkspaceRoots();
     const panel = findPanel();
@@ -217,7 +217,6 @@
   };
 
   // Cursor Agents window: the left sidebar lists conversations as row:<agent id>.
-  const DEVIN_NAV = new Set(['New session', 'Sessions', 'Review', 'Automations', 'Security', 'Wiki', 'Cloud settings']);
   const cursorProjectPicker = () => {
     let el = [...doc.querySelectorAll('.aislash-editor-input[contenteditable="true"], .ui-prompt-input-editor__input[contenteditable="true"]')].find(vis);
     while (el && !Object.keys(el).some(k => k.startsWith('__reactFiber'))) el = el.parentElement;
@@ -285,7 +284,7 @@
     const lis = [...doc.querySelectorAll('li[data-slot="sidebar-menu-item"]')].map(li => {
       const btn = li.querySelector('button[aria-label]');
       const title = (btn?.getAttribute('aria-label') || '').trim();
-      if (!title || DEVIN_NAV.has(title)) return null;
+      if (!title) return null;
       const session = codexFiberProps(li).find(p => devinRowSession(p.session))?.session;
       if (!session) return null;
       const id = devinRowSession(session);

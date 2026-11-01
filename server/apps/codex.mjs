@@ -630,10 +630,10 @@ async enableCodexMax() {
         data = await cdp.evaluate(helpersCall(`waitSettings('codex', ${JSON.stringify(before)})`));
       };
       try {
-        const config = data.nav.find(n => n.label === 'Configuration');
+        const config = data.nav.find(n => /^(Configuration|配置)$/.test(n.label));
         if (!config) throw new Error('没有找到 Codex 原生配置入口');
         if (!config.current) await navigate(config);
-        const row = data.rows.find(r => r.label === 'Available reasoning efforts');
+        const row = data.rows.find(r => /^(Available reasoning efforts|可用推理强度)$/.test(r.label));
         if (!row) throw new Error('没有找到 Codex 思考强度设置');
         const pos = await cdp.evaluate(helpersCall(`codexSettingPoint(${JSON.stringify(row.controls[0].id)})`));
         await this.tapCss(pos.x, pos.y, 'left', cdp);

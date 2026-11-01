@@ -164,7 +164,7 @@
       const labels = follow === 'queue' ? ['Queue'] : follow === 'steer' ? ['Steer'] : ['Send', 'Queue', 'Steer'];
       const root = editor.closest('[data-composer-body]');
       const button = [...root.querySelectorAll('button')].find(button => vis(button)
-        && labels.includes(button.getAttribute('aria-label')) && !button.disabled && button.getAttribute('aria-disabled') !== 'true');
+        && labels.some(label => nativeLabel(button.getAttribute('aria-label'), label)) && !button.disabled && button.getAttribute('aria-disabled') !== 'true');
       if (button) button.click();
       else Promise.resolve(props.handleSubmit(follow ? { followUpSubmitAction: follow } : undefined)).catch(error => {
         (window.__remoteAgentSubmitErrors ||= []).push({ requestId, message: String(error?.message || error) });
@@ -1097,7 +1097,7 @@
     };
   };
   const contextPct = () => {
-    const el = [...doc.querySelectorAll('button, [role=button], [role=img]')].find(e => vis(e) && /^Context(?:\s+usage)?:?\s*\d+%/i.test(((e.getAttribute('aria-label') || e.innerText || '').replace(/\s+/g, ' ').trim())));
+    const el = [...doc.querySelectorAll('button, [role=button], [role=img]')].find(e => vis(e) && /^(?:Context(?:\s+usage)?|上下文用量)[:：]?\s*\d+%/i.test(((e.getAttribute('aria-label') || e.innerText || '').replace(/\s+/g, ' ').trim())));
     if (el) {
       const text = ((el.getAttribute('aria-label') || el.innerText || '').replace(/\s+/g, ' ').trim());
       return { pct: Number(/(\d+)%/.exec(text)[1]), basis: /left|remaining|剩余/i.test(text) ? 'remaining' : 'used' };

@@ -10,10 +10,11 @@ export const FOCUS_COMPOSER = `(() => {
   ${DEVIN_COMPOSER_SRC}
   revealDevinComposer();
   const visible = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(e).visibility === 'visible'; };
+  const composer = e => visible(e) && !e.closest('[data-flat-index], [data-message-index], [data-message-kind], [data-turn-key], [data-transcript-row-key], [role=group][data-side], [aria-label="User message"], [aria-label="Devin message"]');
   const selectors = ['.aislash-editor-input[contenteditable="true"]', '.ui-prompt-input-editor__input[contenteditable="true"]', '.ProseMirror[contenteditable="true"]', '.composer-bar [contenteditable="true"]', '.auxiliarybar [contenteditable="true"]'];
   let eds = [];
-  for (const s of selectors) { eds = [...doc.querySelectorAll(s)].filter(visible); if (eds.length) break; }
-  if (!eds.length) eds = [...doc.querySelectorAll('[contenteditable="true"]')].filter(e => visible(e) && !e.closest('.monaco-editor, [aria-label="User message"], [aria-label="Devin message"]'));
+  for (const s of selectors) { eds = [...doc.querySelectorAll(s)].filter(composer); if (eds.length) break; }
+  if (!eds.length) eds = [...doc.querySelectorAll('[contenteditable="true"]')].filter(e => composer(e) && !e.closest('.monaco-editor'));
   if (!eds.length) return null;
   const selId = doc.querySelector('[data-sidebar-item-key] [data-active="true"]')?.closest('[data-sidebar-item-key]')?.getAttribute('data-sidebar-item-key')?.slice(4);
   const el = eds.find(e => e.contains(doc.activeElement)) || (selId && eds.find(e => e.closest('[data-glass-agent-id]')?.getAttribute('data-glass-agent-id') === selId)) || eds[eds.length - 1];

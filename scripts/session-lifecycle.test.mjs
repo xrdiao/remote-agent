@@ -82,9 +82,11 @@ test('Codex opens the identified recent-chat button once despite the archive toa
   let open = false, clicks = 0;
   const button = {};
   const context = vm.createContext({ codexButton: () => button, codexPoint: () => ({ x: 1, y: 2 }), vis: () => true,
-    codexFiberProps: () => [{ triggerRef: { current: { contains: el => el === button } }, onOpenChange(value) { clicks++; open = value; } }],
+    codexFiberProps: () => [{ triggerRef: { current: { contains: el => el === button } }, contentId: 'recent-menu', get open() { return open; }, onOpenChange(value) { clicks++; open = value; } }],
     doc: { querySelectorAll: () => open ? [{ innerText: 'Search recent chats' }] : [] } });
-  vm.runInContext(fragment(read('server/page/codex.js'), '  const codexRecentPoint', '  const codexNewPoint') + '\nthis.recent = codexRecentPoint;', context);
+  const source = read('server/page/codex.js');
+  vm.runInContext(fragment(source, '  const codexRecentState', '  const codexRecentMenu')
+    + fragment(source, '  const codexRecentPoint', '  const codexNewPoint') + '\nthis.recent = codexRecentPoint;', context);
   context.recent(); assert.equal(clicks, 0);
   context.recent(true); context.recent(true); assert.equal(clicks, 1);
   context.recent(false); assert.equal(open, false);

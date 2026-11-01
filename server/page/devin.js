@@ -98,11 +98,12 @@
     props.onSelect(to);
     return true;
   };
-  const transcriptVisible = () => { const l = devinLog(); return (!!l && vis(l)) || [...document.querySelectorAll('[role="textbox"][aria-label="Prompt"]')].some(vis); };
+  const transcriptVisible = () => { const l = devinLog(); return (!!l && vis(l)) || [...doc.querySelectorAll('[data-slate-editor="true"][role="textbox"]')].some(vis); };
   // IDE history is a native conversation picker, separate from the Agents sidebar.
   const sessionSearchTarget = () => {
-    const b = [...document.querySelectorAll('button[aria-label]')].find(e => vis(e) && !e.disabled && /^(?:Past Conversations|Search agents\b)/.test(e.getAttribute('aria-label')));
-    const input = doc.querySelector('input[placeholder="Search"][data-kb-navigate]');
+    const b = [...document.querySelectorAll('button[aria-label]')].find(e => vis(e) && !e.disabled
+      && ['Past Conversations', 'Search agents'].some(label => nativeLabel(e.getAttribute('aria-label'), label, true)));
+    const input = doc.querySelector('input[data-kb-navigate]');
     return b ? { ...center(b), open: !!input && vis(input) } : null;
   };
   const devinPickerSessions = async () => {
@@ -132,7 +133,7 @@
     return [...w.querySelectorAll('.monaco-list-row')].filter(vis).map(row => {
       const title = ((row.querySelector('.label-name') || row).innerText || '').trim().split('\n')[0].slice(0, 80);
       const session = sessions[Number(row.getAttribute('data-index'))];
-      return { id: devinRowSession(session), title: session?.title || title, titleNative: !!session?.title, titleAt: Date.now(), running: /\bworking\b/i.test(row.innerText || '') };
+      return { id: devinRowSession(session), title: session?.title || title, titleNative: !!session?.title, titleAt: Date.now(), running: ['active', 'pending', 'canceling'].includes(session?.status) };
     }).filter(r => r.title && r.id);
   };
   // Devin sessions use native ids. The Editor surface keeps the open sessions as tabs above
@@ -151,8 +152,8 @@
     const tabs = devinTabs(), surface = devinSurface();
     const active = agentList().find(a => a.current);
     const tab = surface === 'editor' ? devinTabEls()[tabs.findIndex(t => t.active)] : null;
-    const node = devinLog() || tab || [...doc.querySelectorAll('[role="textbox"][aria-label="Prompt"]')].find(vis)
-      || (surface === 'editor' ? doc.querySelector('.editor-group-container.has-pending-new-session-welcome [role="textbox"][aria-label="Prompt"]') : null);
+    const node = devinLog() || tab || [...doc.querySelectorAll('[data-slate-editor="true"][role="textbox"]')].find(vis)
+      || (surface === 'editor' ? doc.querySelector('.editor-group-container.has-pending-new-session-welcome [data-slate-editor="true"][role="textbox"]') : null);
     const key = (surface === 'agent' ? active?.id : '') || devinNodeSessionId(node);
     const session = window.__acpStore?.getState().acp.sessions.find(s => devinRowSession(s) === key);
     const title = (surface === 'editor' ? tabs.find(t => t.active)?.title : active?.title) || '';
@@ -308,9 +309,11 @@
   // The submit button becomes "Stop generation" while a turn is running.
   // The stop icon on a human bubble (Ctrl+Shift+Backspace) reverts that message instead.
   const stopGenerationButton = () => [...doc.querySelectorAll('button, [role=button]')].find(e => {
-    if (!vis(e) || e.closest('.composer-human-message, .human-message-action-slot')) return false;
+    if (!vis(e) || inItem(e) || e.closest('.composer-human-message, .human-message-action-slot')) return false;
+    if (e.matches('.ui-prompt-input-submit-button[data-state="stop"]')) return true;
     const label = (e.getAttribute('aria-label') || '').trim();
-    return /^stop generation\b/i.test(label) || (doc.querySelector('[data-turn-key], [data-codex-intelligence-trigger]') && /^(Stop|Stop generating)$/i.test(label));
+    if (nativeLabel(label, 'Stop generation', true)) return true;
+    return !!e.closest('[data-composer-body]') && (nativeLabel(label, 'Stop') || nativeLabel(label, 'Stop generating'));
   });
   const legacyStopIcon = () => [...document.querySelectorAll('.composer-button-area .codicon-debug-stop, .send-with-mode .codicon-debug-stop')].find(e => vis(e) && !e.closest('.composer-human-message, .human-message-action-slot'));
   // Devin: while a turn runs the submit button reads "Cancel" (empty input) or "Queue" (typed text).
@@ -320,19 +323,28 @@
     const session = window.__acpStore?.getState().acp.sessions.find(s => devinRowSession(s) === id);
     return ['active', 'pending', 'canceling'].includes(session?.status);
   };
-  const isBusy = () => !!stopGenerationButton() || !!legacyStopIcon() || devinSubmitBusy() || [...doc.querySelectorAll('button')].some(e => vis(e) && /^(Stop|Stop generating)$/i.test((e.getAttribute('aria-label') || '').trim()))
-    || ([...doc.querySelectorAll('button[aria-label="Queue"], button[aria-label="Steer"]')].some(vis) && !!codexThread());
+  const isBusy = () => {
+    const codex = codexPromptEl();
+    if (codex?.closest('[data-composer-body]')) {
+      const state = codexFiberProps(codex, Infinity).find(p => typeof p.isResponseInProgress === 'boolean');
+      return state?.isResponseInProgress === true || !!stopGenerationButton();
+    }
+    const cursor = window.__SSG_COMPOSER_PROVIDER__?.getStates?.().find(s => s.id === activeThread());
+    return cursor?.state === 'generating' || !!stopGenerationButton() || !!legacyStopIcon() || devinSubmitBusy();
+  };
   // Devin's queue (verified live): a bar "N message(s) queued" with a "Clear all" button, then an <ol>
   // of li[role=button] rows holding the message text. Hovering a row reveals "Edit message",
   // "Remove from queue" and "Send now" (hidden until hover). Rows are read from textContent.
   const devinQueueText = () => devinQueueBar()?.innerText || '';
   const devinQueueBar = () => [...document.querySelectorAll('span.text-12')].find(s => {
     const text = s.innerText || '';
-    return /\d+\s+messages?\s+queued/i.test(text) || /排队(?:中)?\s*\d+\s*条/.test(text);
+    const count = Number(/\d+/.exec(text)?.[0]);
+    return count > 0 && text.trim() === devinText('inputBox.queuedMessagesCount', { count })
+      || /\d+\s+messages?\s+queued/i.test(text) || /排队(?:中)?\s*\d+\s*条/.test(text);
   });
   const devinQueueCount = () => {
     const text = devinQueueText();
-    return Number(/(\d+)\s+messages?\s+queued/i.exec(text)?.[1] || /排队(?:中)?\s*(\d+)\s*条/.exec(text)?.[1]) || 0;
+    return Number(/\d+/.exec(text)?.[0]) || 0;
   };
   const devinQueueRows = () => devinQueueBar() ? [...document.querySelectorAll('ol li[role="button"]')].filter(e => /cursor-grab/.test(e.className)) : [];
   const devinQueued = () => devinQueueRows().map((row, n) => ({
@@ -345,11 +357,11 @@
     if (!row || !vis(row)) return null;
     if (!action) return center(row);
     const label = { send: 'Send now', remove: 'Remove from queue' }[action];
-    const b = label && [...row.querySelectorAll('button[aria-label]')].find(e => vis(e) && e.getAttribute('aria-label') === label);
+    const b = label && [...row.querySelectorAll('button[aria-label]')].find(e => vis(e) && nativeLabel(e.getAttribute('aria-label'), label));
     return b ? center(b) : null;
   };
   const devinQueueClearTarget = () => {
-    const b = [...document.querySelectorAll('button[aria-label="Clear all"]')].find(vis);
+    const b = [...document.querySelectorAll('button[aria-label]')].find(e => vis(e) && nativeLabel(e.getAttribute('aria-label'), 'Clear all'));
     return b && devinQueueBar() ? center(b) : null;
   };
 
@@ -431,7 +443,7 @@
   const workdirChips = () => {
     if (!devinSurface()) return null;
     const btns = [...document.querySelectorAll('button')].filter(b => vis(b) && b.getBoundingClientRect().y > 120);
-    const env = btns.find(b => /^(Local|Worktree|Cloud)$/.test((b.innerText || '').trim()) && b.getAttribute('aria-haspopup') === 'menu');
+    const env = btns.find(b => ['Local', 'Worktree', 'Cloud'].some(label => nativeLabel((b.innerText || '').trim(), label)) && b.getAttribute('aria-haspopup') === 'menu');
     if (!env) return null;
     const folder = env.nextElementSibling;
     return folder ? { env, folder } : null;
@@ -456,13 +468,13 @@
       return { name: at < 0 ? label : label.slice(0, at), path: at < 0 ? '' : label.slice(at + 2), browse: /Browse\.\.\./i.test(label), x: r.x + r.width / 2, y: r.y + r.height / 2 };
     });
   };
-  const envRows = () => [...document.querySelectorAll('[role="menuitem"]')].filter(e => vis(e) && /^(Local|Worktree|Cloud)$/.test((e.innerText || '').trim()))
+  const envRows = () => [...document.querySelectorAll('[role="menuitem"]')].filter(e => vis(e) && ['Local', 'Worktree', 'Cloud'].some(label => nativeLabel((e.innerText || '').trim(), label)))
     .map(e => { const r = e.getBoundingClientRect(); return { label: (e.innerText || '').trim(), x: r.x + r.width / 2, y: r.y + r.height / 2 }; });
   // Devin "@" mentions: typing "@" in the prompt opens a listbox (root: Files, Directories, Git, Rules, Skills,
   // Conversations, Terminal, Codemaps; "@file:ser" lists files, "@terminal:" lists terminals). Clicking an option
   // swaps the typed text for a chip. composerState() is the prompt's text without placeholder / zero-width marks.
   const composerState = () => {
-    const ed = [...document.querySelectorAll('[role="textbox"][aria-label="Prompt"]')].find(vis);
+    const ed = [...doc.querySelectorAll('[data-slate-editor="true"][role="textbox"]')].find(vis);
     if (!ed) return null;
     const ph = ed.querySelector('[data-slate-placeholder]')?.innerText || '';
     let t = ed.innerText || '';
@@ -483,9 +495,9 @@
   // card has a Submit button). A single choice answers as soon as its row is clicked. Free text goes
   // through the normal composer ("Other answer" placeholder).
   const devinQnBand = () => !devinLog() ? null : [...document.querySelectorAll('[data-band-item]')]
-    .find(e => vis(e) && e.querySelector('button[aria-label="Skip"]'));
+    .find(e => vis(e) && [...e.querySelectorAll('button')].some(b => nativeLabel(b.getAttribute('aria-label'), 'Skip')));
   const devinQnRows = band => [...band.querySelectorAll('[data-slot="scroll-area-viewport"] > [role="button"]')];
-  const devinQnButton = (band, name) => [...band.querySelectorAll('button')].find(b => vis(b) && (b.getAttribute('aria-label') === name || (b.innerText || '').trim() === name));
+  const devinQnButton = (band, name) => [...band.querySelectorAll('button')].find(b => vis(b) && (nativeLabel(b.getAttribute('aria-label'), name) || nativeLabel((b.innerText || '').trim(), name)));
   const devinQuestions = () => {
     const band = devinQnBand();
     if (!band) return null;
@@ -650,7 +662,7 @@
     if (btn) return target(btn);
     const icon = legacyStopIcon();
     if (icon) return target(icon.closest('button, [role=button], .anysphere-icon-button') || icon);
-    const cancel = devinLog() && [...document.querySelectorAll('button[aria-label="Cancel"]')].find(e => vis(e) && !e.disabled && e.querySelector('svg'));
+    const cancel = devinLog() && [...document.querySelectorAll('button[aria-label]')].find(e => vis(e) && !e.disabled && nativeLabel(e.getAttribute('aria-label'), 'Cancel') && e.querySelector('svg'));
     return target(cancel);
   };
 

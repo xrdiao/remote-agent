@@ -4,6 +4,7 @@
   };
   // The gear's label flips to "Close Settings". Devin opens a settings editor tab instead.
   const settingsOpen = () => {
+    if ([...doc.querySelectorAll('.cursor-settings-pane-outer-wrapper')].some(vis)) return true;
     if ([...doc.querySelectorAll('button, a, [role=button]')].some(e => onScreen(e) && e.getAttribute('aria-label') === 'Close Settings')) return true;
     if ([...doc.querySelectorAll('input')].some(e => onScreen(e) && /search settings/i.test(e.getAttribute('aria-label') || ''))) return true;
     return [...doc.querySelectorAll('.tab.active')].some(tab => onScreen(tab) && /settings/i.test(tab.getAttribute('aria-label') || tab.innerText || ''));
@@ -28,6 +29,8 @@
   const fullText = e => (e.innerText || e.textContent || '');
   const cellText = e => (e.innerText || '').trim() || (e.textContent || '').replace(/\s+/g, ' ').trim();
   const settingsPanel = () => {
+    const native = [...doc.querySelectorAll('.cursor-settings-pane-outer-wrapper')].find(vis);
+    if (native) return native;
     const close = [...doc.querySelectorAll('button')].find(b => b.getAttribute('aria-label') === 'Close Settings');
     if (close && vis(close)) {
       let p = close;
@@ -79,7 +82,7 @@
   };
   const desktopSettingsData = (section = '', app = '') => {
     const cursor = app === 'devin' ? null : settingsPanel();
-    const root = cursor || [...doc.querySelectorAll('.editor-instance')].find(e => vis(e) && [...e.querySelectorAll('button')].some(b => b.textContent.trim() === 'Plan information'));
+    const root = cursor || [...doc.querySelectorAll('.editor-instance')].find(e => vis(e) && [...e.querySelectorAll('button')].some(b => nativeLabel(b.textContent.trim(), 'Plan information')));
     if (!root) return { sections: [], nav: [], current: '', choices: [] };
     const mark = el => { el.dataset.remoteSetting ||= crypto.randomUUID(); return el.dataset.remoteSetting; };
     const nav = cursor ? [...root.querySelectorAll('.cursor-settings-sidebar-nav-cell')].map(e => e.textContent.trim()).filter(name => name !== 'VS Code Settings') : devinSettingsNav();
@@ -114,7 +117,7 @@
     return { sections, nav, current, choices };
   };
   const desktopSettingsNav = (section, app = '') => {
-    const root = app === 'devin' ? [...doc.querySelectorAll('.editor-instance')].find(e => vis(e) && [...e.querySelectorAll('button')].some(b => b.textContent.trim() === 'Plan information')) : settingsPanel();
+    const root = app === 'devin' ? [...doc.querySelectorAll('.editor-instance')].find(e => vis(e) && [...e.querySelectorAll('button')].some(b => nativeLabel(b.textContent.trim(), 'Plan information'))) : settingsPanel();
     const button = root && [...root.querySelectorAll(app === 'devin' ? 'button' : '.cursor-settings-sidebar-nav-cell')].find(e => e.textContent.trim() === section);
     if (!button) return false;
     button.scrollIntoView({block:'nearest'}); button.click(); return true;
@@ -195,8 +198,8 @@
     return codexPoint(el);
   };
 
-  const DEVIN_SETTINGS_NAV = /^(General|Plan information|Extensions|Agents|Configuration|Customizations|User interface|Devin Tab|Shortcuts|Advanced)$/;
-  const devinSettingsNav = () => [...doc.querySelectorAll('button')].filter(e => onScreen(e) && DEVIN_SETTINGS_NAV.test((e.innerText || '').trim())).map(e => (e.innerText || '').trim());
+  const DEVIN_SETTINGS_NAV = ['General', 'Plan information', 'Extensions', 'Agents', 'Configuration', 'Customizations', 'User interface', 'Devin Tab', 'Shortcuts', 'Advanced'];
+  const devinSettingsNav = () => [...doc.querySelectorAll('button')].filter(e => onScreen(e) && DEVIN_SETTINGS_NAV.some(label => nativeLabel((e.innerText || '').trim(), label))).map(e => (e.innerText || '').trim());
   const devinSettingsClick = name => {
     const b = [...doc.querySelectorAll('button')].find(e => onScreen(e) && (e.innerText || '').trim() === name);
     if (!b) return false;
@@ -204,7 +207,7 @@
     return true;
   };
   const devinSettingsCards = () => {
-    const root = [...doc.querySelectorAll('.editor-instance')].find(e => onScreen(e) && [...e.querySelectorAll('button')].some(b => b.textContent.trim() === 'Plan information'));
+    const root = [...doc.querySelectorAll('.editor-instance')].find(e => onScreen(e) && [...e.querySelectorAll('button')].some(b => nativeLabel(b.textContent.trim(), 'Plan information')));
     if (!root) return [];
     const seen = new Set();
     const items = [];
@@ -230,34 +233,37 @@
     const root = settingsPanel();
     if (!root) return null;
     const nav = new Set(['Back', 'General', 'Profile', 'Appearance', 'Plan & Usage', 'Agents', 'Cloud Agents', 'Models', 'Git & PRs', 'Worktrees', 'Browser & Network', 'Tab', 'Code Intelligence', 'Beta', 'Docs', 'Getting Started']);
-    const candidates = [...root.querySelectorAll('div, section')].filter(e => fullText(e).includes('CURRENT PLAN'));
+    const candidates = [...root.querySelectorAll('div, section')].filter(e => /CURRENT PLAN|当前套餐|当前计划/.test(fullText(e)));
     candidates.sort((a, b) => fullText(a).length - fullText(b).length);
-    const best = candidates.find(e => /Included in|On-Demand|Cursor Models/.test(fullText(e)) && !fullText(e).split('\n').some(l => l.trim() === 'Agents'))
-      || candidates[0];
+    const best = candidates.find(e => {
+      const lines = fullText(e).split('\n').map(line => line.trim()).filter(Boolean);
+      const heading = lines.findIndex(line => /^(CURRENT PLAN|当前套餐|当前计划)$/.test(line));
+      return heading >= 0 && heading + 1 < lines.length;
+    });
     const rawBars = [...root.querySelectorAll('[role=progressbar]')].filter(vis);
-    const loading = rawBars.some(e => /^loading\b/i.test((e.getAttribute('aria-label') || '').trim()));
+    const loading = rawBars.some(e => /^(loading\b|加载中|正在加载)/i.test((e.getAttribute('aria-label') || '').trim()));
     const limits = rawBars.map(e => {
       if (!e.hasAttribute('aria-valuenow')) return null;
       const now = Number(e.getAttribute('aria-valuenow'));
       const max = Number(e.getAttribute('aria-valuemax')) || 100;
       const label = (e.getAttribute('aria-label') || '').trim();
-      if (!label || /^loading\b/i.test(label) || !Number.isFinite(now) || !max) return null;
+      if (!label || /^(loading\b|加载中|正在加载)/i.test(label) || !Number.isFinite(now) || !max) return null;
       const pct = Math.max(0, Math.min(100, Math.round(now / max * 100)));
       let node = e;
       let basis = 'used';
       for (let i = 0; i < 8 && node; i++) {
-        const around = fullText(node).replace(/\s+/g, ' ');
+        const around = (node.getAttribute('aria-valuetext') || fullText(node)).replace(/\s+/g, ' ');
         if (around.length < 500) {
-          if (new RegExp(pct + '%\\s+(?:left|remaining)', 'i').test(around)) { basis = 'remaining'; break; }
-          if (new RegExp(pct + '%\\s+used', 'i').test(around)) { basis = 'used'; break; }
+          if (new RegExp(`(?:${pct}\\s*%\\s*(?:left|remaining|剩余)|(?:剩余|剩下)\\s*${pct}\\s*%)`, 'i').test(around)) { basis = 'remaining'; break; }
+          if (new RegExp(`(?:${pct}\\s*%\\s*(?:used|已用|已使用)|(?:已用|已使用|已消耗)\\s*${pct}\\s*%)`, 'i').test(around)) { basis = 'used'; break; }
         }
         node = node.parentElement;
       }
       return { label: label.slice(0, 40), kind: 'limit', basis, pct };
     }).filter(Boolean);
     const lines = fullText(best || root).split('\n').map(s => s.trim()).filter(s => s && !nav.has(s)).slice(0, 32);
-    const reset = lines.find(l => /reset/i.test(l)) || '';
-    const planIdx = lines.findIndex(l => l === 'CURRENT PLAN');
+    const reset = lines.find(l => /reset|重置/i.test(l)) || '';
+    const planIdx = lines.findIndex(l => /^(CURRENT PLAN|当前套餐|当前计划)$/.test(l));
     const plan = planIdx >= 0 && lines[planIdx + 1] ? lines[planIdx + 1] : '';
     return { lines: lines.map(l => l.slice(0, 180)), quota: [], plan, limits: limits.map(b => ({ ...b, reset })), loading, missing: !limits.length && !loading };
   };

@@ -2,7 +2,9 @@
     mode: () => [...document.querySelectorAll('.composer-unified-dropdown[data-mode]')].find(vis) || devinModeChip(),
     model: () => modelButton(),
     history: () => [...doc.querySelectorAll('[aria-label^="Show Chat History"], [aria-label^="Show Agent History"]')].find(vis),
-    newChat: () => [...doc.querySelectorAll('[aria-label^="New Agent ("], [data-action-id="new-agent"]')].find(vis) || [...doc.querySelectorAll('[aria-label="New Agent"], [aria-label="New chat"], [aria-label^="New Chat"], [aria-label="New session"]')].find(vis) || (devinSurface() ? [...doc.querySelectorAll('button')].find(e => vis(e) && /^New session(?:\s|Ctrl|$)/.test((e.textContent || '').trim())) : null),
+    newChat: () => [...doc.querySelectorAll('[data-action-id="new-agent"]')].find(vis)
+      || [...doc.querySelectorAll('button, a, [role=button]')].find(e => vis(e)
+        && ['New Agent', 'New chat', 'New Chat', 'New session', 'Start a New Conversation'].some(label => nativeLabel(e.getAttribute('aria-label') || (e.textContent || '').trim(), label, true))),
     permission: permissionButton,
   };
 
@@ -25,7 +27,12 @@
   };
 
   const MENU_ITEMS = {
-    effort: () => [...doc.querySelectorAll('[role=menuitem], .ui-menu__row')].filter(e => vis(e) && /^(Low|Medium|High|Max|Extra High|Ultra)$/i.test(normLabel(e.innerText))).map(el => ({ el, label: normLabel(el.innerText), checked: !!el.querySelector('[class*=check]') || el.getAttribute('aria-checked') === 'true' })),
+    effort: () => {
+      const native = effortItems();
+      return [...doc.querySelectorAll('[role=menuitem], .ui-menu__row')].filter(e => vis(e)
+        && (native.length ? native.some(row => String(row.label).toLowerCase() === normLabel(e.innerText).toLowerCase()) : /^(Low|Medium|High|Max|Extra High|Ultra)$/i.test(normLabel(e.innerText))))
+        .map(el => ({ el, label: normLabel(el.innerText), checked: !!el.querySelector('[class*=check]') || el.getAttribute('aria-checked') === 'true' }));
+    },
     mode: () => {
       const cursor = [...document.querySelectorAll('.composer-unified-context-menu-item')].map(e => ({ el: e, label: e.innerText.trim().split('\n')[0], checked: !!e.querySelector('.codicon-check') }));
       return cursor.length ? cursor : devinModeRows();
@@ -92,11 +99,11 @@
     permission: () => {
       const btn = permissionButton();
       if (!btn) return [];
-      const current = (btn.innerText || '').replace(/\s+/g, ' ').trim();
       return [...doc.querySelectorAll('[role=menuitem]')].filter(vis).map(e => {
         const label = (e.innerText || '').trim().split('\n')[0].trim().slice(0, 40);
-        return { el: e, label, checked: label === current };
-      }).filter(x => /^(Ask for approval|Approve for me|Full access)$/.test(x.label));
+        const native = codexFiberProps(e, 16).find(p => 'RightIcon' in p || 'rightIconAsset' in p);
+        return { el: e, label, checked: !!(native?.RightIcon || native?.rightIconAsset) || e.getAttribute('aria-checked') === 'true' };
+      }).filter(x => ['Ask for approval', 'Approve for me', 'Full access'].some(label => nativeLabel(x.label, label)));
     },
     history: () => {
       const rows = [...doc.querySelectorAll('.composer-history-hover-menu .ui-menu__row')];

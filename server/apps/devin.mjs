@@ -698,9 +698,9 @@ resetDevinView() {
 async openEditorChat() {
   if (this.app !== 'devin' || await this.cdp.evaluate(helpersCall('devinSurface()')) !== 'editor') throw new Error('请先切换到 Devin Editor');
   if (!await this.cdp.evaluate(helpersCall('hasComposer()'))) {
-    if (!await this.waitFor('devinSurface() === "editor" && !!document.querySelector(\'[role="button"][aria-label^="Agents ("]\')', 250)) throw new Error('Devin IDE 聊天面板入口尚未就绪');
+    if (!await this.waitFor('devinSurface() === "editor" && !!document.querySelector(\'.codicon-devin-logo[role="button"]\')', 250)) throw new Error('Devin IDE 聊天面板入口尚未就绪');
     await this.editorCdp.evaluate(`(() => {
-    const button = document.querySelector('[role="button"][aria-label^="Agents ("]');
+    const button = document.querySelector('.codicon-devin-logo[role="button"]');
     if (!button) throw new Error('Devin IDE 聊天面板入口尚未就绪');
     if (button.getAttribute('aria-pressed') === 'false') button.click();
     })()`);
@@ -723,11 +723,11 @@ async devinNewChat() {
   }
   if (surface === 'editor') {
     if (!await this.cdp.evaluate(helpersCall('hasComposer()'))) await this.openEditorChat();
-    const pos = await this.cdp.evaluate(`(() => { const el = document.querySelector('button[aria-label="Start a New Conversation"]'); if (!el) return null; const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    const pos = await this.cdp.evaluate(helpersCall("control('newChat')"));
     if (!pos) throw new Error('没有找到 Devin 新建会话入口');
     await this.tapCss(pos.x, pos.y);
   } else {
-    const opened = await this.cdp.evaluate(`(() => { const link = document.querySelector('a[aria-label="New session"]'); if (!link) return false; link.click(); return true; })()`);
+    const opened = await this.cdp.evaluate(helpersCall("clickControl('newChat')"));
     if (!opened) throw new Error('没有找到 Devin 新建会话入口');
   }
   this.resetDevinView();
