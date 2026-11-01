@@ -63,7 +63,7 @@ function harness({ sameSelection = false, count = 2 } = {}) {
     clearInterval: id => timers.delete(id),
     requestAnimationFrame: fn => { const id = ++timerId; timers.set(id, { fn, ms: 0, at: now }); return id; },
     fetch: async () => ({ ok: true, json: async () => ({ v: 3, computers: [] }) }),
-    entryProof: async () => 'test-proof', legacyAgentLibrary: () => [], trace,
+    receiveFusion: () => false, entryProof: async () => 'test-proof', legacyAgentLibrary: () => [], trace,
   });
   context.window = context;
   context.addEventListener = () => {};
@@ -73,7 +73,7 @@ function harness({ sameSelection = false, count = 2 } = {}) {
     var mode = 'chat', windowReady = false, connGen = 0, usageTimer = 0;
     var currentApp = 'codex', currentAppName = 'Codex', currentWindow = 'codex', viewSel = '', currentProject = '';
     var windows = [], appPlans = {}, sheetKind = '', pendingStatus = '', qnSig = '', inApp = false;
-    var capabilityOwner = '', agentCapabilities = null, fusionSideCapabilities = {}, capabilityBlock = '';
+    var capabilityOwner = '', agentCapabilities = null, capabilityBlock = '';
     var menuRequest = 0, menuPending = null, menuPickRequest = 0, modelSwitchRequest = null;
     var docsRequest = 0, docsPending = null, editorBrowsing = false, codexSettingsRequest = 0;
     var draftEpoch = '', draftRevision = 0, draftAckRevision = 0, pendingDesktopDraft = null, mirroredDraft = '';
@@ -470,7 +470,7 @@ test('a paired cold start and connection failure never open a full-page gate', a
 
 test('reconnecting B reuses one targeted load without changing A or its draft', async () => {
   const h = harness(); await h.bothReady();
-  h.run(`text.value='keep A';saveDraft();`);
+  h.run(`text.value='keep A';saveDraft();overviewFetches=[];`);
   h.link(1).socket.close();
   const before = h.state();
   const first = h.run(`reconnectComputer(loadComputers()[1].id)`);
@@ -882,4 +882,35 @@ test('connection details show only the requested computer history after auth cle
   assert(html.includes('&lt;test-source&gt;')); assert(!html.includes('<test-source>'));
   assert(!html.includes(h.records[1].key)); assert(!html.includes(h.records[1].token));
   assert(h.state().authed); assert.equal(h.state().computer, h.records[0].id); assert.equal(h.link(0).lastClose, undefined);
+});
+
+test('a ready or partially ready directory is usable while its conversation is still restoring', async () => {
+  const h = harness(); await h.bothReady();
+  h.run(overview.slice(overview.indexOf('function ovComputerStatus('), overview.indexOf('function ovStOf(')));
+  h.run(`conn.initialSelection=true;windowReady=false;var directory=ovStOf(ovList[0].id);directory.data={ready:true}`);
+  assert.equal(h.run('ovComputerStatus(ovList[0])'), 'online'); assert.equal(h.state().windowReady, false);
+  h.run('directory.data={ready:false,partial:true}');
+  assert.equal(h.run('ovComputerStatus(ovList[0])'), 'online');
+  h.run('directory.data={ready:false,partial:false}');
+  assert.equal(h.run('ovComputerStatus(ovList[0])'), 'loading');
+});
+
+test('a valid directory response survives socket replacement for the same computer credentials', async () => {
+  const h = harness(); await h.bothReady(); useOverviewReads(h);
+  h.run('var directoryReads=[];ovRead=()=>new Promise(resolve=>directoryReads.push(resolve))');
+  const reading = h.run('ovFetch(ovList[0])');
+  h.link(0).socket.close(1006); await h.advance(0); await h.open(0); h.attached(0); await h.settle();
+  assert.equal(h.run('directoryReads.length'), 1);
+  h.run(`directoryReads[0]({data:{id:ovList[0].id,now:Date.now(),ready:true}})`); await reading;
+  assert.equal(h.run('ovStOf(ovList[0].id).data.ready'), true); assert(h.link(0).authed);
+});
+
+test('directory results from revoked credentials cannot update the replacement pairing', async () => {
+  const h = harness(); await h.bothReady(); useOverviewReads(h);
+  const before = h.run('ovStOf(ovList[0].id).data');
+  h.run('var resolveDirectory;ovRead=()=>new Promise(resolve=>resolveDirectory=resolve)');
+  const reading = h.run('ovFetch(ovList[0])');
+  h.run(`const rows=loadComputers();rows[0]={...rows[0],token:'replacement'};saveComputers(rows,rows[0].key);resolveDirectory({data:{id:ovList[0].id,now:Date.now(),ready:true}})`);
+  await reading;
+  assert.equal(h.run('ovStOf(ovList[0].id).data'), before);
 });

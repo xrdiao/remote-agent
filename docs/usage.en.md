@@ -4,7 +4,7 @@
 
 ## Home, overview and favorites
 
-Home has **Overview**, **Projects** and **Favorites**, and remembers the last selected column. The **…** menu also lets you choose whether to enter the overview or conversation content by default.
+Home has **Overview**, **Projects**, **Favorites** and **Fusion**, and remembers the last selected column. The **…** menu also lets you choose whether to enter the overview or conversation content by default.
 
 - **Overview** groups sessions by computer and shows running, pending, completed and idle states. Idle and infrequent groups can be expanded. Click a computer row to collapse its projects or sessions. Opening a session card scrolls to it and shows the latest preview, which can scroll vertically. Operable Cursor, Devin and Codex sessions accept direct text replies; use **Open conversation** for full history, attachments and other actions. Replying to a historical session may switch the desktop to that session. Fusion keeps its own controls.
 - **Projects** groups projects by computer and lists sessions within each project. Favorite sessions are classified as common, as are sessions with messages from the past seven days; other sessions are infrequent.
@@ -25,7 +25,7 @@ Enter sends; Shift+Enter or the on-screen ↵ inserts a newline. On-screen ↑�
 
 ## Questions, approvals and execution records
 
-Codex Questions let you choose presets or enter custom answers in the card and submit as indicated. The Question and main composer keep separate drafts without copying text automatically. To answer from the main composer, first select **在对话框回答** (answer in composer) on the card. In portrait, focusing a Question input temporarily collapses the main composer; its top-right button also toggles collapse/expand. Terminal command approval keeps its own approve/reject actions.
+Codex Questions let you choose presets or enter custom answers in the card. The action row contains only Skip and Send, following the native Next / Send sequence for multiple questions. Enter in the card input triggers that card's send button; Enter used to confirm an IME candidate does not submit. The Question and main composer keep separate drafts without copying text automatically. Focusing a Question input temporarily collapses the main composer; its top-right button also toggles collapse/expand. Terminal command approval keeps its own approve/reject actions.
 
 **… → Show execution commands** is saved per Agent. When off, completed execution and tool read/search records are hidden after the turn ends. Thinking, work explanations, results, failures and pending approvals remain visible. History is not deleted.
 
@@ -68,7 +68,15 @@ Where supported, restore credentials are saved in `~/.agent-remote/visual.json`.
 
 ## Fusion collaboration
 
-Fusion is a separate orchestrator, distinct from Devin's native Fusion model mode. Choose a project and the Agent, session and model for sides A and B. A plans and reviews; B executes. Confirm the plan before execution, review and any corrections. Each Agent keeps its native permission and operation semantics.
+Open **Fusion** from the bottom navigation. It shares the home computer scope: runs are grouped by computer in the all-computers view, and creating a run requires an explicit execution computer. Opening navigation only reads state.
+
+Choose a project, main app, main model and reasoning effort, and Economy / Balanced / Performance preference. Balanced is the default; preferences do not restrict models or replace the chosen main model. Read native models explicitly, then enter the main conversation.
+
+The main Agent executes or delegates tasks using independent native sessions, reviews evidence, requests further work or delivers. There is no fixed child count or review-round limit. Project approval rules and native permission meanings remain in effect. **Tasks and evidence** shows execution attempts, dependencies, cost reasons, results and native questions or approvals.
+
+Follow-up messages are queued as run events. Leaving a page or losing the phone connection does not stop the relay Runner. Stopping remains pending until the native targets are confirmed stopped. Restart recovery reconciles native sessions and turns; unknown results are blocked instead of resubmitted. Native drafts and manual ownership changes are preserved and explained.
+
+RA Fusion orchestration is separate from Devin's native Fusion model mode. Cutover clears only the legacy RA Fusion metadata; native history, favorites and other relay state remain. Validation status is tracked in the [implementation record](fusion-multi-agent-plan-20261101.md).
 
 ## Notifications, appearance and mobile apps
 

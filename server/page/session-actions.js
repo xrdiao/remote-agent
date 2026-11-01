@@ -11,6 +11,7 @@
       composer: accessor.get(ids.get('composerService')),
       data: accessor.get(ids.get('composerDataService')),
       background: accessor.get(ids.get('backgroundComposerService')),
+      nativeHost: accessor.get(ids.get('nativeHostService')),
     }));
   };
   const devinSessionRecord = id => window.__acpStore?.getState().acp.sessions.find(s => devinRowSession(s) === id);

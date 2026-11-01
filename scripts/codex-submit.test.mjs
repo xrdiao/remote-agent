@@ -21,16 +21,65 @@ for (const chinese of [false, true]) for (const follow of ['', 'queue', 'steer']
       querySelectorAll: selector => selector === '.ProseMirror[contenteditable="true"]' ? [editor] : [] };
     const page = vm.runInNewContext(PAGE_SRC, { document, window: {} });
     assert.equal(await page.submitCodexMessage(follow, dispatch, 'request-fixture'), true);
-    if (dispatch) {
-      assert.deepEqual(clicked, [names[follow === 'queue' ? 1 : follow === 'steer' ? 2 : 0]]);
-      assert.equal(nativeCalls.length, 0);
-    } else {
-      assert.equal(clicked.length, 0);
-      assert.equal(nativeCalls.length, 1);
-      assert.equal(nativeCalls[0]?.followUpSubmitAction, follow || undefined);
-    }
+    assert.equal(clicked.length, 0);
+    assert.equal(nativeCalls.length, 1);
+    assert.equal(nativeCalls[0]?.followUpSubmitAction, follow || undefined);
   });
 }
+
+function submitLifecycle(handleSubmit) {
+  const events = [], nativeWindow = {};
+  const draft = { value: 'draft', writes: 0 };
+  const editor = { getBoundingClientRect: () => ({ width: 40, height: 20 }),
+    __reactFiberFixture: { memoizedProps: { handleSubmit, isQueueingEnabled: true, composerController: {
+      getText: () => draft.value, setText: value => { draft.value = value; draft.writes++; },
+    } } } };
+  const document = { getElementById: () => null,
+    defaultView: { Event: class { constructor(type) { this.type = type; } }, dispatchEvent: event => events.push(event.type) },
+    querySelectorAll: selector => selector === '.ProseMirror[contenteditable="true"]' ? [editor] : [] };
+  return { page: vm.runInNewContext(PAGE_SRC, { document, window: nativeWindow }), nativeWindow, events, draft };
+}
+
+test('native submit confirmation stays pending until its handler settles, without clearing a newer draft', async () => {
+  let confirm, calls = 0;
+  const h = submitLifecycle(() => { calls++; return new Promise(resolve => { confirm = resolve; }); });
+  await h.page.submitCodexMessage('', true, 'request');
+  h.draft.value = '新的未发草稿';
+  let settled = false;
+  const wait = h.page.codexViewState(true).then(() => { settled = true; });
+  await Promise.resolve(); assert.equal(settled, false); assert.equal(calls, 1);
+  assert.equal(h.nativeWindow.__remoteAgentCodexSubmissions.size, 1);
+  confirm(); await wait;
+  assert.equal(settled, true); assert.equal(h.nativeWindow.__remoteAgentCodexSubmissions.size, 0);
+  assert.equal(h.draft.value, '新的未发草稿'); assert.equal(h.draft.writes, 0); assert.equal(calls, 1);
+});
+
+test('native submit rejection preserves the existing error receipt and releases only the submission wait', async () => {
+  const h = submitLifecycle(() => Promise.reject(new Error('native submit rejected')));
+  await h.page.submitCodexMessage('queue', true, 'request-failed');
+  await h.page.codexViewState(true);
+  assert.deepEqual(h.events, ['remote-agent-submit-error']);
+  assert.equal(h.nativeWindow.__remoteAgentSubmitErrors[0].requestId, 'request-failed');
+  assert.equal(h.nativeWindow.__remoteAgentSubmitErrors[0].message, 'native submit rejected');
+  assert.equal(h.nativeWindow.__remoteAgentCodexSubmissions.size, 0);
+});
+
+test('RA new chat waits for send confirmation and can proceed while the previous reply is generating', async () => {
+  let confirm, clicked = false;
+  const generating = true;
+  const confirmation = new Promise(resolve => { confirm = resolve; });
+  const context = { cdp: { evaluate: async expression => {
+    if (expression.endsWith('.codexViewState(true)')) return confirmation;
+    if (expression.endsWith('.codexThread()')) return 'previous';
+    if (expression.endsWith('.codexNewPoint()')) return { x: 1, y: 1 };
+    if (expression.endsWith('.codexViewState()')) return { thread: '', turns: 0 };
+    assert.fail('unexpected native read');
+  } }, checkCodexLogin: async () => false, tapCss: async () => { clicked = true; }, adoptCodexThread: async () => {} };
+  const opening = codexMethods.newCodexChat.call(context);
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(clicked, false);
+  confirm(); await opening;
+  assert.equal(clicked, true); assert.equal(generating, true);
+});
 
 for (const chinese of [false, true]) for (const available of [false, true]) {
   test(`native Max setting preserves selection and cleanup, Chinese=${chinese}, available=${available}`, async () => {

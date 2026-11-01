@@ -68,7 +68,9 @@
     }
     return null;
   };
-  const codexViewState = () => ({ thread: codexThread(), turns: [...doc.querySelectorAll('[data-turn-key]')].filter(vis).length });
+  const codexViewState = (waitSubmission = false) => waitSubmission
+    ? Promise.all([...(window.__remoteAgentCodexSubmissions || [])]).then(() => codexViewState())
+    : { thread: codexThread(), turns: [...doc.querySelectorAll('[data-turn-key]')].filter(vis).length };
   // In-page waits: resolve as soon as the condition holds instead of round-trip polling.
   const codexWaitThread = (id, ms = 1800) => new Promise(resolve => {
     const t0 = Date.now();
@@ -162,12 +164,12 @@
     const menu = codexRecentMenu();
     return menu && [...menu.querySelectorAll('[role=button]')].find(el => codexFiberProps(el).some(p => p.conversationId === id || (typeof p.href === 'string' && p.href.endsWith('/' + id))));
   };
-  const codexArchiveTarget = id => {
+  const codexArchiveTarget = (id, requiredAction = '') => {
     const el = codexArchiveRow(id);
     if (!el) return null;
     const buttons = [...el.querySelectorAll('button')].filter(b => b.getBoundingClientRect().width > 0);
     const labels = buttons.map(b => b.getAttribute('aria-label') || '');
-    const action = labels.includes('Delete chat') ? 'Delete chat' : labels.includes('Archive chat') ? 'Archive chat' : '';
+    const action = requiredAction || (labels.includes('Delete chat') ? 'Delete chat' : labels.includes('Archive chat') ? 'Archive chat' : '');
     const btn = buttons.find(b => (b.getAttribute('aria-label') || '') === action);
     if (!btn) return { action: '' };
     el.scrollIntoView({ block: 'nearest' });

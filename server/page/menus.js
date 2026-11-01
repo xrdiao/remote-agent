@@ -85,7 +85,26 @@
     if (selected) return fusionConfig() ? 'Fusion' : selected.familyLabel || selected.label;
     return normLabel(modelButton()?.innerText || '').split('\n')[0].slice(0, 60) || null;
   };
-  const modelItemsFast = () => {
+  const modelItemsFast = (capabilities = false) => {
+    if (capabilities) {
+      const codex = codexPickerProps();
+      if (codex) return (codex.modelOptions || []).filter(option => !option.disabled && !option.model?.hidden).map(option => ({
+        label: (option.model.displayName || option.model.id).replace(/-/g, ' '),
+        efforts: (option.model.supportedReasoningEfforts || []).map(effort => ({ label: effort.reasoningEffort, description: effort.description || '' })),
+      }));
+      const cursor = !devinSurface() && cursorPickerProps(true);
+      if (cursor) return MENU_ITEMS.model().map(item => {
+        const model = cursor.models.find(value => [value.clientDisplayName, value.inputboxShortModelName, value.name, value.id].includes(item.label));
+        const values = model?.parameterDefinitions?.find(value => value.id === 'reasoning_effort')?.parameterType?.enumParameter?.values || [];
+        return { label: item.label, checked: item.checked, pricing: item.pricing,
+          efforts: values.filter(value => value.displayName).map(value => ({ label: value.displayName })) };
+      });
+      const devin = devinSurface() && devinPickerProps(true);
+      if (devin) return devinConfigs(devin, true).filter(config => !config.disabled && (config.isDefaultModelInFamily || config.displayOption === 'model-router'))
+        .map(config => ({ label: config.familyLabel || config.label, pricing: devinPricing(config),
+          efforts: devinConfigs(devin).filter(value => !value.disabled && value.familyUid === config.familyUid)
+            .flatMap(value => { const effort = value.familyMetadata?.['Reasoning Effort'] || value.familyMetadata?.Effort; return effort ? [{ label: effort.name, pricing: devinPricing(value) }] : []; }) }));
+    }
     if (doc.querySelector('[data-codex-intelligence-trigger]')) {
       const items = MENU_ITEMS.model();
       return items.length ? items : null;

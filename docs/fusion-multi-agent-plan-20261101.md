@@ -1,8 +1,9 @@
 # Fusion 主 Agent 与多子 Agent 全量重写方案
 
-> 日期：2026-11-01。状态：按用户最新要求修订，允许完整移除旧 RA Fusion，仅设计新版实现；产品代码尚未实施。
-> 本轮执行范围：更新主页底部 Fusion 入口设计及跨电脑续做 prompt。本轮不修改产品代码、真实历史数据或窗口。实施前按 [AGENTS.md](../AGENTS.md) 确认具体代码批次；工作方法见 [排查、修改与验证流程](../skill/remote-agent-workflow/SKILL.md)，续做指令见 [Fusion 改造 prompt](fusion-rewrite-prompt-20261101.md)。
-> 已有基准记录：上一轮只读核对时，本地与实际 GitHub 远端 `master` 同为 `20e9e8f31440553396b20cf2f7f87b825f7a9294`，标准检查 222 项通过。当前工作区还有其他原生适配改动，实施时须重新以当时工作区建立基准，不把上一轮检查当作最新结果。
+> 日期：2026-11-01。当前状态：新版已接通，最终标准检查 317 项通过，已按授权重启一次正式 relay；本机原生结果与待验边界见第 15 节，手机验收未执行。后续窗口回收改动见第 16 节，该改动本轮未加载到正式 relay。下文设计条款不代表每项真实原生路径均已通过。
+> 本次实施基准：修改前工作区干净，本地 HEAD 与实际 GitHub `master` 均为 `2b03ab1fad80d98e40771167f6dcf7c85574c912`；修改前本机 `npm run check` 272 项通过。证据放 `_shots/fusion-rewrite-20261101/`，不沿用下文历史轮次的检查结论。
+> 已有授权：按确认方案连续实施；额外在 `server/page/session-actions.js` 增加原生窗口服务引用；用户后续批准普通 Codex 的发送确认／新建会话时序修正（不等生成结束）；测试 Chrome 只完成一次配对、不输出无关消息；完整检查通过后允许重启一次正式 relay。用户随后允许复用普通窗口，前提是普通会话保持原样；本次实现仍使用明确登记的 Fusion 窗口。
+> 工作方法见 [工作流](../skill/remote-agent-workflow/SKILL.md)，功能契约见 [新版 Fusion 基准](baselines/07-fusion.md)。Devin 本机原生检查按用户指示暂缓；手机验收仍待用户执行。
 
 本次修订取代原方案中的“兼顾旧 A/B 流程、整理旧历史、续接旧 run”要求。新版只有一个执行引擎、一套状态和一套手机协议，不增加版本兼容、旧协议别名、双引擎开关或旧历史转换器。
 
@@ -251,22 +252,22 @@ relay 重启后，未完成的新版 run 进入 recovering：先按项目／软�
 
 | 入口 | 新版含义 |
 |---|---|
-| `fusionProjects/fusionProject` | 浏览和选定真实项目 |
-| `fusionCatalog/fusionConfigure` | 读取可用软件／模型／强度；配置主 Agent、档位及用户可选的预算／时间要求 |
-| 现有 `send` 的 Fusion 分支 | 追加用户消息到 run 事件，不直接占用子任务输入框 |
-| `fusionConfirm` | 确认主 Agent 展示的具体计划和授权范围 |
-| `fusionTask` | 读取所属 run 的任务、Attempt、差异、用量及验收详情 |
-| `fusionAction` | 按 run／Task／Binding／原生动作身份转发原有信任、提问或权限处理，不改变软件原生语义 |
-| 现有 `stop` 的 Fusion 分支 | 直接进入 Runner 停止流程，越过等待主 Agent 的队列 |
-| `fusionHistory/fusionOpen/fusionNew/fusionUsage` | 读取新版历史、选择／新建 run，读取主会话及任务对应的用量 |
+| `fusionWorkspace` | 读取当前电脑的 run、项目和软件；导航不创建原生会话 |
+| `fusionCreate` | 明确执行电脑后新建 RA run；尚不执行模型 |
+| `fusionRead/fusionConfigure/fusionPrepare` | 读取事实、配置主 Agent／档位／显式预算、按明确操作读取当前原生候选 |
+| `fusionMessage` | 将用户补充去重后写入 run 待处理事件 |
+| `fusionConfirm` | 确认主 Agent 展示的计划 ID、范围与完成标准 |
+| `fusionNative` | 按 run／Attempt／Binding 转发原生提问及权限动作 |
+| `fusionStop/fusionResume` | relay 直接停止，或按明确操作核对并继续 |
+| 内部虚拟目标 `fusion` + run ID | 历史与当前 run attach，不依赖普通软件列表项 |
 
-聊天状态输出为 `chat.fusion`，包含主 Agent、档位、run 状态、当前待办和任务摘要；主聊天记录只包含用户与主 Agent 的消息。任务详情和原生权限事项带明确的 run／task／attempt／binding 身份，不依赖前端“当前 A 或 B”。只调整 Fusion 专用模型菜单转发，保留 Devin 原生 Fusion 参数菜单。
+状态输出为 `fusionWorkspace/fusionState/fusionUpdate` 与主对话的 `chat.fusionRun`，包含新版事实及任务证据。主聊天只显示用户与主 Agent，任务面板查看子任务、原生权限和用量。错误使用 `fusionError` 返回具体原因。保留 Devin 原生 Fusion 参数菜单。
 
 旧配置步骤、A/B 双栏额度、轮数条、手工“完成／小修／退回 B”按钮及相关事件处理全部删除。完成由主 Agent 提出并经新版完成条件核对，不能继续提供旧按钮绕过该判断。
 
 ### 10.3 一次性切换，不保留旧引擎
 
-以下属于代码实施完成后的切换操作，本轮仅记录方案：
+切换由新版 relay 首次启动执行：
 
 1. 切换前确认旧 Fusion 没有未结束的原生执行；存在时先按其实际状态处理，不把可能仍在执行的请求直接重发到新版。
 2. 全量替换 RA Fusion 的实现、协议和界面。移除旧 `fusionHistory` 读取／写入，切换时一次性清理该旧键，初始化新版 `fusionRuns`；不转换、导入或续跑旧记录，不在每次启动中增加清理／迁移分支。
@@ -292,9 +293,9 @@ relay 重启后，未完成的新版 run 进入 recovering：先按项目／软�
 | F2 原生执行与资源 | 重写 `server/fusion/agent.mjs`，接入 `runner.mjs/owner.mjs`；新增 `server/fusion/scheduler.mjs`；修改 `server/project-windows.mjs`、`server/agent/session-actions.mjs` 及 `server/apps/codex.mjs` 的 Fusion 引用 | 明确专用窗口用途和创建归属，每软件一个槽位、主子会话切换、项目写任务串行；以 Binding／Attempt 关联原生接受和结束；复用现有 `window-use.mjs` 租约、收藏、归档和回收，删除写死 A/B 的占用／移除判断 |
 | F3 能力与成本 | `server/fusion/agent.mjs`、`owner.mjs`、`state.mjs`；新增 `server/fusion/cost.mjs` | 复用实际模型／强度／用量读取，给主 Agent 提供候选与来源，保存每次选择和估算；不写死模型价目表 |
 | F4 主页入口、手机交互与协议 | `server/apps/fusion.mjs`、`server/routes.mjs`、`server/session.mjs`、`server/agent/menus.mjs` 的 RA Fusion 分支；`server/overview.mjs` 的 Fusion 摘要、`server/windows.mjs` 的手机软件列表；`app/js/{core,net,overview,sheets,composer,history,notify}.js`、`app/index.html`、`app/app.css`、`app/i18n.js`、`app/sw.js` | 底部增加第四项 Fusion、接入所属电脑的工作区与 run，处理进入主对话及返回；移除顶部／横屏软件选择区的旧入口；主页快照改读新版状态；接入主 Agent、档位、任务详情、追问／停止／历史及权限事项，同步文案和资源版本，保留原生 Devin Fusion 菜单 |
-| F5 验证与交付记录 | 新增 `scripts/fusion-orchestration.test.mjs`、`scripts/fusion-resources.test.mjs`、`scripts/fusion-navigation.test.mjs`，扩展 `scripts/project-windows.test.mjs`；`package.json`、`scripts/check.mjs` 的消息清单；`README.md`、`docs/baselines/07-fusion.md`、`docs/baselines/README.md`、`docs/usage.md`、`docs/usage.en.md` 及本方案 | 按 V01—V15 验证新实现；清除文档中的旧产品行为，统一配对浏览器检查，记录实际能力和未验边界；功能文档在实际实现后更新 |
+| F5 验证与交付记录 | 新增 `scripts/fusion-{control,runner,scheduler,agent,cost,navigation}.test.mjs`，扩展 `scripts/project-windows.test.mjs`；`package.json`、`scripts/check.mjs` 的消息清单；`README.md`、`docs/baselines/07-fusion.md`、`docs/baselines/README.md`、`docs/usage.md`、`docs/usage.en.md` 及本方案 | 按 V01—V15 验证新实现；清除文档中的旧产品行为，统一配对浏览器检查，记录实际能力和未验边界；功能文档在实际实现后更新 |
 
-F1—F4 在同一完整改造中完成再统一进行真实浏览器检查，不发布半套新旧协议混用状态。测试随相应实现编写，F5 汇总真实验证和交付。每批代码修改前给出实际文件子集和确认后的改法；未列出的公共模块不因重写而自动进入范围，需要时说明真实缺口并确认。
+F1—F4 在同一完整改造中完成再统一进行真实浏览器检查，不发布半套新旧协议混用状态。测试随相应实现编写，F5 汇总真实验证和交付。用户已确认本次实际 F1–F5 文件方案，确认范围内连续实施；唯一新增公共文件范围 `server/page/session-actions.js` 的原生窗口服务引用也已单独确认。未确认范围仍须先说明。
 
 不修改 `scripts/page-exports.json`，不顺带重构三个 Agent 的普通发送／队列／模型实现，不改认证、配对、终端、附件、文件传输、语音、发布流程或原生壳。新增控制解析、成本资料整理与调度模块只负责各自的新职责，原有同类能力直接复用，不复制实现。
 
@@ -324,20 +325,20 @@ F1—F4 在同一完整改造中完成再统一进行真实浏览器检查，不
 
 真实测试复用既有配对身份，在隔离项目／专用窗口中进行；每个软件只开一个测试窗口、同软件串行。使用用户已允许的 Devin 免费 High、Cursor Auto 和 Codex 便宜模型，执行当日以实际可见选项及价格为准；不为收集模型答案批量运行。测试截图／日志放 `_shots/`，临时授权用完恢复，不重建配对。
 
-最终由用户在手机上按实际受影响范围验收。受控测试、配对浏览器真实操作、手机验收分别记录；平台受限、原生错误或未运行项一律不记通过。Fusion 重写尚未实施，本表目前全部待验，不要求继续验收已决定移除的旧 A/B 功能。
+最终由用户在手机上按实际受影响范围验收。受控测试、配对浏览器真实操作、手机验收分别记录；平台受限、原生错误或未运行项一律不记通过。新版实现和受控检查已接通；下面的验收清单需按当前证据分别记录原生与手机结果，不要求验收旧 A/B 功能。
 
 ## 14. 跟踪表与下一步
 
 | 编号 | 工作项 | 状态 | 退出条件 |
 |---|---|---|---|
-| F0 | 历史方法提炼、删除旧实现边界及新版方案建档 | 文档已修订；产品未实施 | 本文、工作流程与原生问题记录可追溯 |
-| F1 | 全新状态／主 Agent 决策协议／事件及恢复 | 待代码方案确认 | 新版状态及决策测试通过，无旧引擎或历史迁移 |
-| F2 | 专用窗口／槽位／任务与会话回收 | 待代码方案确认 | V05—V08 的受控及可执行原生场景通过 |
-| F3 | 动态候选／成本评估／三档偏好 | 待代码方案确认 | V03—V04 通过，无硬编码模型门槛 |
-| F4 | 主页底部 Fusion 入口／主对话／任务列表／控制协议 | 待代码方案确认 | 底部入口、电脑归属、返回导航及受影响 UI、追问、停止、历史检查通过 |
-| F5 | 旧实现清理、完整实配、正常窗口对照、手机验收 | 待实现 | V01—V15 逐项记结果与证据，不以测试替身补齐受阻项 |
-| D1 | DEVIN-20261101-01 原生 error 13 | 已复现，未修复 | 原生对照先能正常生成，再补 RA／Fusion 闭环 |
-| C1 | CODEX-20261101-01 新会话草稿残留 | 已复现，未修复 | 原生与 RA 连续新建均不恢复已发送草稿，真实未发草稿仍保留 |
+| F0 | 历史方法提炼、删除旧实现边界及新版方案建档 | 已确认并进入实施 | 本文、工作流程与原生问题记录可追溯 |
+| F1 | 全新状态／主 Agent 决策协议／事件及恢复 | 已实现，受控检查及可执行本机场景通过 | 新版状态及决策测试通过，无旧引擎或历史迁移 |
+| F2 | 专用窗口／槽位／任务与会话回收 | 已实现；真实多会话／归档完成，停止修正真机待验 | V05—V08 的受控及可执行原生场景通过 |
+| F3 | 动态候选／成本评估／三档偏好 | 已实现，受控与本机候选读取通过 | V03—V04 通过，无硬编码模型门槛 |
+| F4 | 主页底部 Fusion 入口／主对话／任务列表／控制协议 | 已实现，配对浏览器横竖屏／导航通过 | 底部入口、电脑归属、返回导航及受影响 UI、追问、停止、历史检查通过 |
+| F5 | 旧实现清理、完整实配、正常窗口对照、手机验收 | 标准检查／本机可执行项完成，Devin 和手机待验 | V01—V15 逐项记结果与证据，不以测试替身补齐受阻项 |
+| D1 | DEVIN-20261101-01 原生 error 13 | 历史线索；本机无 Devin CDP，按用户指示暂缓 | 原生对照先能正常生成，再补 RA／Fusion 闭环 |
+| C1 | CODEX-20261101-01 新会话草稿残留 | 本机已复现；获准补齐发送确认时序，真实 B1／B2 闭环完成，唯一根因及手机连续使用仍待验 | 原生与 RA 连续新建均不恢复已发送草稿，真实未发草稿仍保留 |
 
 历史建档证据：原方案本地链接、`git diff --check` 和 `npm run check` 通过，222 项行为测试通过，日志见 [check.log](../_shots/fusion-plan-20261101/check.log)。这是此前记录，不代表新版已实现或本轮原生验收通过。README 中原方案链接继续指向本文。
 
@@ -345,4 +346,78 @@ F1—F4 在同一完整改造中完成再统一进行真实浏览器检查，不
 
 本次入口文档检查：README、方案及续做 prompt 的本地链接与空白检查通过，控制回执示例 JSON 可解析；`npm run check` 272 项通过，日志见 [check.log](../_shots/fusion-bottom-entry-docs-20261101/check.log)。未执行新版底部入口或原生编排验证，V01—V15 仍全部待验。
 
-本轮更新主页底部入口方案、新增跨电脑续做 prompt 并补充 README 文档入口，检查结果以本次实际输出为准。下一步按全量重写范围确认 F1—F5 代码实施，再开始修改；不执行旧历史迁移。此次文档工作不启动模型测试、不重启 relay、不发布、不提交或推送。两项原生问题独立跟踪，不因新版方案或其他适配改动而未经复验关闭。
+以下为本次代码实施和本机验证的续做记录。旧记录只作历史来源；本次不做旧历史迁移，不提交、推送或发布。正式 relay 仅在完整检查通过后使用用户明确允许的一次重启。
+
+
+## 15. 本次实现与验收记录
+
+### 15.1 已实施的职责
+
+F1 使用 `state/control/runner/owner` 保存 Run、Task、Attempt、Binding、事件、实际原生轮次和证据。控制回执一次性原子应用，旧回复、子任务文字、重复回执及格式错误均不能派工。主 Agent 按到达事件决策，没有新事件不调用模型；补做保留新 Attempt，停止、失联、额度不足不记为完成。
+
+F2 使用 `scheduler/agent` 与既有 AgentContext、CDP、原生回执、租约和空闲扫描器。窗口按电脑／软件／host／真实项目明确登记，创建请求合并；每软件串行、不同软件可并行，项目写任务串行。专用 `.code-workspace` 指向用户所选真实目录，不创建 worktree。普通窗口不被切项目、会话或模型。Cursor 经用户确认的原生窗口服务引用创建专用窗口；Codex 复用现有侧边栏与会话能力。
+
+Fusion 的 Codex 归档明确请求原生 Archive，并读取原生归档状态后记事实；只有 Delete 时保留会话。Cursor 当前可读接口没有归档能力则如实保留。用户切到无关会话或存在草稿时记录归属变化，不清空或强行切回。原生停止先核对本轮身份；Cursor 还记录原生 generation ID，因为实际停止可能撤回用户气泡并恢复输入草稿，不能仅凭缺少气泡或中断文字确认结束。
+
+F3 提供实际原生候选、强度、价格／套餐原单位、来源与读取时间。三档均不筛模型，不替换主模型；派工保存自行执行和委派的全流程成本比较。金额未知如实保留，只有用户填写的预算参与边界校验。
+
+F4 新增 `app/js/fusion.js`，底部四项同级；软件列表只含原生软件，内部虚拟 Fusion attach 仍保留。进入工作区只读，全部电脑新建须明确电脑；主对话、配置和任务详情分别保留草稿。新增协议、原生权限关联、概览摘要与历史读取已接通，网页资源版本 v367。
+
+除第 12 节外，实际共享接入涉及 `server/agent/{chat,context,index,projects}.mjs` 的旧 Fusion 标记、`server/{index,latency}.mjs` 的启动／探测、`app/js/latency.js` 的旧探测、`server/page/{agents,chat-extract,menus,codex}.js` 的原生读取与动作，以及对应已有测试夹具。额外获准的 Codex 时序修正见 [problem.md 13.4](problem.md#134-本次-fusion-重写中的-codex-复验与获准修正)。没有修改 page 导出快照、Devin 原生 Fusion 模式或增加新执行通道。
+
+### 15.2 分层结果
+
+| 范围 | 本次实际结果与证据 | 未覆盖的边界 |
+|---|---|---|
+| V01 零子任务 | Cursor Auto 真实一次决策，正确回答、零子任务、证据交付；`native-zero-result.json` | 用户手机待验 |
+| V02／V05 多子任务与补做 | Codex Luna／low：B1、B2 独立会话，软件串行、主 Agent 释放槽位、验收／归档／finish；`native-multiple-final-result.json`；失败 Attempt 未覆盖 | 原生写任务补做、跨软件并行和依赖为受控测试，未调用多模型批量验收 |
+| V03／V04 档位与成本 | 三档均允许实际高低配置、主模型保持不变、Auto／Free／倍率保留、缺价与显式预算核对，受控测试通过；真实读取 Cursor／Codex 菜单及套餐 | 未为三个档位分别消耗原生额度，不宣称已证明实际账单节省 |
+| V06／V14 隔离与决策 | 项目写占用、独立读取、依赖、过期／重复／错误控制、未知原生执行不重发，受控测试通过 | 本机没有可用 Devin CDP；远程 host 没有专用窗口创建通道时明确阻塞，未实配 |
+| V07 普通窗口 | 四个原窗口 target 均在，Cursor 会话／模型／草稿摘要与本次基准一致；`ordinary-before-cleanup.json` | 最早 Codex 基准未连接聊天 webview，不能声称相对最早基准完全未变；后续正确基准用于清理／重启核对 |
+| V08 收藏与回收 | 同软件／项目收藏、归档收藏、归属变化保留、关闭失败、活动／进程／租约阻塞由既有扫描器的受控测试覆盖；B1／B2 原生归档 | 未改动用户真实收藏来做破坏性对照；停止后 Cursor 测试草稿保留，不能强行回收 |
+| V09 停止、追问、权限 | 用户追问经真实主 Agent 再决策；Cursor 真实停止点击后不再生成；`native-stop-once-result.json`。发现的中断／结束间隔及撤回气泡已按 generation ID 修正，受控测试通过 | 修后在生成中的完整停止待手机复验；原生权限卡不同软件真机待验 |
+| V10 断线与恢复 | 已接受 Cursor 原生轮次在隔离 relay 重启后收集并完成，未重发；受控测试覆盖仍运行、未提交和未知；停止测试记录断开时原生仍在生成 | 早期脚本的重连时间记录不可靠；后续 `disconnect-history-result.json` 已记录实际 WebSocket 关闭／新建、同 run／Attempt 不变；不以它宣称长时离线通过 |
+| V11／V12 错误与历史 | 无效控制回执原子拒绝、草稿／导航失败、旧 Attempt、新版历史及主对话可追溯；错误没有写成完成 | Devin error 13 仅历史线索，本机未复验 |
+| V13 一次性清理 | 独立进程切换测试验证仅移除旧 fusionHistory 和本电脑明确旧 Fusion 虚拟选择，原生选择、其他电脑、项目映射与其他状态保留；有一次私密备份、重复启动不再清理 | 正式首次加载的实际差异须在重启后记录 |
+| V15 主页入口 | 已配对 Chrome 横竖屏四项同排、无溢出／JS 异常，电脑范围、进入／返回、草稿、历史、前三项原行为及点击不执行均通过；`navigation-layout-result.json`、两张 `fusion-*.png` | 只有一台实际电脑，多电脑分组为受控测试；不代表 iPhone／Android 真机验收 |
+
+停止验收的首次脚本读取写入中的测试 JSON 失败，导致该次请求自然结束，没有执行停止；该脚本错误未改产品逻辑，也不记为停止通过。随后一次只读请求完成原生停止，现有草稿不清空。任何测试替身或旧记录都不替代本机真实结果。
+
+### 15.3 最终检查、切换与资源
+
+- 最终 `npm run check` 通过：317 项行为测试，语法、消息协议、196 个 page 导出及网页资源检查均通过，日志 `check-final.log`。`git diff --check` 通过；page 导出快照 SHA-256 仍为修改前的 `857e88072636fdcd8c5bc926cc9c89992ce906748e6d91c43bf9d4d5139e43a1`。
+- 已使用用户授权的唯一一次正式 relay 重启，进程从 3777555 换为 302684；3939 本地资源和后端加载新版 v367，未发布线上网页。首次加载只改变 `fusionHistory/fusionRuns` 两个状态键，两个旧 idle run 备份一次，权限 0600，不迁移旧历史。
+- `formal-restart-result.json` 核对其他 relay 状态、项目映射、原生选择、配对设备、四个收藏和原窗口登记均保留。`final-ordinary-verification.json` 核对四个普通窗口的会话／模型／强度／草稿摘要无变化，每窗一个新原生监听；初始 Codex 基准不完整的限制仍保留，未倒填通过。
+- 隔离 relay 和自建 Chrome 已结束，临时浏览器权限已恢复；测试浏览器实际只完成一次配对，未新配正式 relay。配对资料不输出、不复制到普通浏览器。
+- 原生确认归档 7 个本次 Codex 测试会话（含 B1／B2）；另外两个首次原生回复自行创建的内部 Agent 会话没有原生 Archive 入口，记录保留，未删除或隐藏充作归档。该首条回复的 RA 决策整体被拒绝，未创建 RA 子任务；后续主提示明确只输出 RA dispatch，不调用原生多 Agent 工具。
+- Cursor 无原生归档入口，停止后草稿含本次 Attempt；Codex 归档主会话返回首页后又恢复 1178 字、含本次 B2 Attempt 的草稿。两窗及草稿保留，不强清、关闭或强行切回；因此 Codex 窗口尚未恢复用户手选的普通会话。草稿元数据见 `cursor-stopped-draft-metadata.json`、`codex-after-archive-draft.json`，原文仅私密保存在本地 `_shots/`。
+- Cursor 中断／结束间隔和撤回气泡后的 generation ID 关联已通过受控检查；因保留草稿和避免追加原生额度，修后的“生成中停止”没有再发新请求，保持手机待验。Codex 草稿 C1 尚未关闭；两次暂未重现的新建导航失败亦保留原始事实。
+
+日志、截图和测试状态均在 `_shots/fusion-rewrite-20261101/`；用户手机、Devin、远程 host、真实跨软件写依赖及长时断线仍按相应条目待验。没有提交、推送或发布。
+
+
+## 16. 子任务退出后的窗口回收（2026-11-01）
+
+本轮以修改前已有全部 Fusion 重写的工作区为基准，不用 Git HEAD 代替；快照和检查结果在 `_shots/fusion-window-recycle-20261101/`。用户确认仅修改 Fusion 回收和续接，并另行同意在 `server/agent/projects.mjs` 增加一个仅 Fusion 冷启动使用的可选参数，普通会话默认命令不变。
+
+### 16.1 根因和修改
+
+此前子任务退出仅释放监听、连接和租约，未通知回收器立即检查；专用窗口仍受普通 30 分钟空闲和“最后一个可用窗口”规则影响。占用只看当前 thread 的未结束 Attempt，也不足以反映同窗主 Agent、排队任务、待评审结果、归档及其他 run。
+
+- `state.mjs` 按电脑／项目／软件查询整个窗口的占用，保留主 Agent、排队／未确认执行和仍需评审的结果；停止或交付后的已知结果不继续占窗。
+- `runner.mjs` 在决策、执行、归档退场及确认停止后触发回收；归档操作单独登记占用，先释放原生执行资源再检查窗口。
+- `project-windows.mjs` 复用原扫描器与关闭入口，合并正在扫描时到达的 Fusion 请求；事件及定时触发均经过现有软件槽位。Fusion 专用窗口不等待普通空闲时长／最后窗口保留，普通回收分支及默认设置保留。只针对明确登记的 Fusion target 读取和关闭，Codex 不为此绑定其他窗口的 webview。
+- Fusion 的进程检查区分已核实的原生宿主、Electron 辅助进程、扩展 app-server 与实际项目命令；普通进程检查不增加排除项。草稿、前台使用、收藏、租约和用户接管仍保留窗口并记录原因。
+- 最后一个窗口可能导致 CDP 一同退出：核对关闭请求后的 target 或原生 PID 退出，不把端口断开当作关闭成功，也不重复发送关闭请求。
+- `agent.mjs` 在窗口重开时关联原会话、创建新 Binding 并保留旧 Binding；已知结果的后续归档可重开专用窗口。冷启动复用 `openFolder` 并携带 CDP 端口，未知执行恢复不重建／重发。真实检查发现重开时窗口已出现但模型按钮未就绪，已改为等待原生控件条件，未添加固定延时或模型重试。
+
+### 16.2 验证与边界
+
+- 修改前当前工作区的 30 项窗口／Fusion 定向检查通过；新增检查覆盖即时回收、最后窗口、共用与多 run、排队／未知结果、停止后待评审结果、归档顺序、扫描期间新任务／会话变化、定时回收槽位、前台／草稿／收藏保留，以及关闭后的原生会话续接和旧事实保留。
+- 现有项目打开器的普通启动参数在 Linux 与 Windows 受控场景逐项不变；Fusion 才带调试端口。没有关闭普通软件的最后一个窗口来做真实冷启动，这一场景由受控检查覆盖。
+- 已复用原来唯一一次配对的 Chrome 身份，无新增配对。实际 Cursor 测试通过现有 `fusionPrepare/fusionStop`，零模型消息、零 Attempt；最终两次“准备→关闭→重新打开→准备→关闭”中的 target 均消失，run 为 stopped，页面无异常。证据 `native-recycle-final-result.json`。
+- 早期验收脚本的最小化入口、项目尾斜杠和跨进程登记问题，以及新窗口控件时序／等待表达式错误，均保留原始记录，不计为通过。后续修正采用仓库已有 X11 操作，仅对自己测试窗解除前台占用，最终仍以 target 消失确认回收，不把最小化当回收。
+- 三个普通窗口检查前后的会话、模型、草稿摘要和监听数量相同：`ordinary-comparison.json`。测试 Cursor 窗口已关闭，隔离 relay 与自建 Chrome 已结束，临时权限已恢复。
+- 未发送真实子任务模型请求来重跑完整派工／验收，真实 Codex／Devin 回收、最后窗口退出后的实际冷启动、其他系统和用户手机仍待验；不将受控检查或桌面 Chrome 当手机真机结果。本轮不处理 C1 原生草稿残留。
+
+最终 `npm run check` 332 项通过，语法／协议／196 个 page 导出／资源引用检查通过；`git diff --check` 通过，page 导出快照 SHA-256 与本轮基准一致。证据为 `check-final.log` 和 `verification.json`。本轮未提交、推送、发布或重启正式 relay，源码修改需要加载后生效；前端资源与消息协议没有变更。

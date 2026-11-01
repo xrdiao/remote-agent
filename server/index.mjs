@@ -17,9 +17,10 @@ import { startTunnel } from './publish/tunnel.mjs';
 import { startProjectWindowCleanup } from './project-windows.mjs';
 import { NativeCdp, nativeWindow, nativeTargets, startNativeWindows } from './native-windows.mjs';
 
-import { saveFusionHistory } from './fusion/state.mjs';
+import { saveFusionRuns, initializeFusionState } from './fusion/state.mjs';
+import { recoverFusionRuns } from './fusion/runner.mjs';
 for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) process.once(signal, () => {
-  saveFusionHistory();
+  saveFusionRuns();
   process.exit(code);
 });
 
@@ -78,6 +79,8 @@ server.listen(PORT, HOST, async () => {
   detectAppUrl();
   startProjectWindowCleanup();
   startNativeWindows(watchTargets);
+  initializeFusionState();
+  recoverFusionRuns();
   startWatcher({
     listWindows: nativeTargets,
     openCdp: async ws => { const c = new NativeCdp(ws); await c.connect(); return c; },

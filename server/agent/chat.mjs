@@ -159,7 +159,7 @@ export const methods = {
   },
   async pollChat(immediate = false, firstScreen = false) {
     if (this.selectionHome) return;
-    firstScreen &&= !this.fusionOwner;
+    firstScreen &&= !this.fusionBinding;
     const cdp = this.cdp;
     const sel = this.sel;
     if (this.polling === sel && this.chatRead?.cdp === cdp) {
@@ -167,7 +167,7 @@ export const methods = {
       if (immediate) this.pollAgain = sel;
       return;
     }
-    if (!cdp || !this.visible && !firstScreen || this.pendingProject?.trust || this.switchingThread || this.historyLoading || (this.fusionHold?.app === this.app && this.fusionHold?.windowId === this.windowId)) {
+    if (!cdp || !this.visible && !firstScreen || this.pendingProject?.trust || this.switchingThread || this.historyLoading) {
       if (firstScreen) throw new Error('当前会话尚未就绪，请重试');
       return;
     }
@@ -213,7 +213,7 @@ export const methods = {
       const known = (this.itemCache?.get(this.threadId || '')?.completeTurns || []).map(([id]) => id);
       const source = nativeWindow(cdp);
       const chat = source?.win ? structuredClone((await source.read(state.requested && !state.sent)).chat)
-        : await cdp.evaluate(`(() => { const h = ${PAGE_SRC}, chat = h.extract(false, ${JSON.stringify(known)}, ${this.app === 'codex' && !this.fusionOwner ? 80 : 0}); if (chat) chat.subagent = !!(${JSON.stringify(child)} && h.activeChatTab() === ${JSON.stringify(child)} && chat.readonly); return chat; })()`);
+        : await cdp.evaluate(`(() => { const h = ${PAGE_SRC}, chat = h.extract(false, ${JSON.stringify(known)}, ${this.app === 'codex' && !this.fusionBinding ? 80 : 0}); if (chat) chat.subagent = !!(${JSON.stringify(child)} && h.activeChatTab() === ${JSON.stringify(child)} && chat.readonly); return chat; })()`);
       if (chat && source?.win) chat.subagent = !!(child && source.snapshot.activeTab === child && chat.readonly);
       if (chat) delete chat._revision;
       return chat;
@@ -673,7 +673,7 @@ export const methods = {
     const receiptScope = this.selectionKey(), receiptCdp = this.cdp;
     if (submit && receipt) this.draftEpoch = receipt.draftEpoch || '';
     if (this.app === 'fusion') {
-      const queued = await this.adapter.sendMessage.call(this, text);
+      const queued = await this.adapter.sendMessage.call(this, text, receipt?.requestId);
       if (receipt) this.emit({ t: 'sent', ...receipt, queued, sentAt: Date.now(), sel: this.selectionKey() });
       return queued;
     }

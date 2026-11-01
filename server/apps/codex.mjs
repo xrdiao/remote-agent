@@ -68,7 +68,7 @@ export const adapter = {
       const group = p.title;
       if (p.chatWs) {
         for (const root of states[pages.indexOf(p)]?.roots || []) addNew(p, root, group);
-        const cdp = p.pageId === this.codexPageId ? this.cdp : this.fusionOwner ? new Cdp(p.chatWs) : new NativeCdp(p.chatWs);
+        const cdp = p.pageId === this.codexPageId ? this.cdp : this.fusionBinding ? new Cdp(p.chatWs) : new NativeCdp(p.chatWs);
         let rows = [];
         try {
           if (cdp !== this.cdp) await cdp.connect();
@@ -475,6 +475,7 @@ async waitCodexNewChatReady() {
 async newCodexChat() {
   if (!this.cdp) throw new Error('还没有连上 Codex');
   if (await this.checkCodexLogin()) throw new Error('请先在电脑端登录此窗口的 Codex，再新建会话');
+  await this.cdp.evaluate(helpersCall('codexViewState(true)'));
   const before = await this.cdp.evaluate(helpersCall('codexThread()')) || '';
   const pos = await this.cdp.evaluate(helpersCall('codexNewPoint()'));
   if (!pos) throw new Error('这个窗口里没有新建对话');
@@ -573,7 +574,7 @@ async codexPageForThread(pages, threadId) {
 
 async probeCodex(page) {
   if (!page?.chatWs && page?.pageId !== this.codexPageId) return null;
-  const source = !this.fusionOwner && nativeWindowAt(page.chatWs);
+  const source = !this.fusionBinding && nativeWindowAt(page.chatWs);
   if (source?.snapshot) return (await source.read()).states.find(state => state.thread === source.snapshot.chat?.thread) || null;
   if (page.pageId === this.codexPageId && this.cdp) {
     try { return await this.cdp.evaluate(helpersCall('agentState()')); } catch { return null; }
@@ -1032,21 +1033,7 @@ async codexRenameThread(agentId, name) {
   this.emit({ t: 'status', ok: true, msg: '已重命名会话' });
 },
 
-noteFusionRemoved(convId) {
-  if (!this.fusionRun) return false;
-  let hit = false;
-  for (const which of ['a', 'b']) {
-    const side = this.fusionRun[which];
-    if (side && (side.agentId === convId || String(side.id || '').endsWith(':' + convId))) {
-      this.fusionRun[which] = null;
-      hit = true;
-    }
-  }
-  if (hit) (this.fusionOwner || this).fusionEmit();
-  return hit;
-},
-
-async codexArchiveThread(agentId) {
+async codexArchiveThread(agentId, requiredAction = '') {
   if (this.app !== 'codex') throw new Error('只有 Codex 会话可以这样移除');
   const match = /^thread:([^:]+):(.+)$/.exec(String(agentId || ''));
   if (!match) throw new Error('这条会话不能移除');
@@ -1065,10 +1052,11 @@ async codexArchiveThread(agentId) {
     let target = null;
     for (let i = 0; i < 8 && !target; i++) {
       await new Promise(r => setTimeout(r, 120));
-      target = await cdp.evaluate(helpersCall(`codexArchiveTarget(${JSON.stringify(convId)})`));
+      target = await cdp.evaluate(helpersCall(`codexArchiveTarget(${JSON.stringify(convId)}, ${JSON.stringify(requiredAction)})`));
     }
     if (!target?.action) {
       await cdp.evaluate(helpersCall('closeCodexMenu()'));
+      if (requiredAction) return false;
       throw new Error(target ? '这个会话没有归档或删除入口' : '没有找到这个会话');
     }
     await this.tapCss(target.x, target.y, 'left', cdp);
@@ -1094,12 +1082,12 @@ async codexArchiveThread(agentId) {
       this.lastChatAt = 0;
       await this.pollChat();
     }
-    const fusion = this.noteFusionRemoved(convId);
     await this.listAgents();
     if (target.action === 'Delete chat') removeLibrarySession('codex', convId);
     publishSessionChange('codex', convId, { action: target.action === 'Delete chat' ? 'delete' : 'archive' });
     this.emit({ t: 'codexArchived', id: agentId, action: target.action });
-    this.emit({ t: 'status', ok: true, msg: fusion ? '会话已移除，请重新选择' : (target.action === 'Delete chat' ? '已删除' : '已归档') });
+    this.emit({ t: 'status', ok: true, msg: target.action === 'Delete chat' ? '已删除' : '已归档' });
+    if (requiredAction) return true;
   } catch (e) {
     await this.listAgents().catch(() => {});
     throw e;

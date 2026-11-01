@@ -2,7 +2,7 @@
 
 **Turn your phone into a remote control for Cursor, Devin and Codex.**
 
-Read streaming conversations, switch projects and sessions, answer questions, approve execution, use terminals and transfer files. Fusion lets two Agents collaborate. The relay runs on your own computer; connect from a browser, PWA or the Android / iOS shells.
+Read streaming conversations, switch projects and sessions, answer questions, approve execution, use terminals and transfer files. Fusion lets a main Agent execute or delegate tasks and review their results. The relay runs on your own computer; connect from a browser, PWA or the Android / iOS shells.
 
 [Quick start](#quick-start) · [Features](#features) · [Feature guide](docs/usage.en.md) · [Voice input](docs/voice-input.en.md) · [Security](docs/security.en.md) · [中文](README.md)
 
@@ -26,7 +26,7 @@ Read streaming conversations, switch projects and sessions, answer questions, ap
 | File transfer | Select across directories, download folders as ZIP and upload batches to a separate computer destination; progress, cancellation and retry |
 | Mixed-language speech | Hold to speak and release to finalize into the draft; choose Sherpa CPU, Qwen GPU or supported phone system recognition |
 | Plot and simulation viewing | Read-only viewing of Matplotlib, Isaac Sim, MuJoCo and similar windows, with window selection, zoom and refresh |
-| Fusion collaboration | A plans and reviews, B executes using existing Agents; separate from Devin's native Fusion model mode |
+| Fusion collaboration | A dedicated bottom workspace with computer scope, project, main app/model/effort and cost preference; the main Agent executes or delegates and reviews tasks using native sessions; separate from Devin's native Fusion model mode |
 | Connection and appearance | Fixed entry, device/entry management, optional two-step verification, notifications, light/dark themes, Chinese/English and home-screen installation |
 
 Availability follows each Agent, desktop version and current window. File transfer is separate from chat attachments; screen viewing is read-only. See the [feature guide](docs/usage.en.md).

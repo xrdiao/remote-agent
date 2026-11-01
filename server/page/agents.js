@@ -222,7 +222,10 @@
     while (el && !Object.keys(el).some(k => k.startsWith('__reactFiber'))) el = el.parentElement;
     return el ? codexFiberProps(el, 40).find(p => p.projectSelectorProps)?.projectSelectorProps : null;
   };
-  const cursorSelectProject = (root, host = '') => {
+  const cursorSelectProject = (root, host = '', newWorkspace = false) => {
+    if (newWorkspace) return cursorSessionServices().nativeHost.openWindow([
+      { workspaceUri: { $mid: 1, scheme: 'file', authority: '', path: root, query: '', fragment: '' } },
+    ], { forceNewWindow: true, cursorForceNewWindow: true });
     const picker = cursorProjectPicker();
     const row = picker?.recentProjects?.find(p => {
       const uri = p.workspaceIdentifier?.uri;
@@ -384,19 +387,68 @@
     if (click) { wbtn.click(); return true; }
     return center(wbtn);
   };
-  const agentStates = () => {
+  // Read the native turn, including loaded background conversations, without changing selection.
+  const agentRun = (app, thread, scopes, manager) => {
+    if (!thread) return null;
+    if (app === 'codex') {
+      const conversation = manager?.getConversation(thread);
+      if (!conversation) return null;
+      const state = codexHistoryState(conversation, false, scopes, thread), entry = state.entries.at(-1);
+      if (!entry) return null;
+      const source = codexTurnSource(entry, scopes, false, { before: Infinity, limit: 1 });
+      const turn = source?.metadata;
+      if (!turn) return null;
+      const completed = ['complete', 'completed'].includes(turn.status);
+      const status = turn.error || ['failed', 'error'].includes(turn.status) ? 'error'
+        : ['interrupted', 'aborted'].includes(turn.status) ? 'stopped'
+        : completed ? 'completed' : turn.status === 'inProgress' ? 'running' : 'unknown';
+      return { id: entry.turnId, status, startedAt: Number(turn.turnStartedAtMs) || 0,
+        completedAt: completed && Number.isFinite(turn.durationMs) ? turn.turnStartedAtMs + turn.durationMs : 0 };
+    }
+    if (app === 'devin') {
+      const state = window.__acpStore?.getState().acp, session = devinSessionRecord(thread);
+      const request = Object.values(state?.agentRequests.byId || {}).findLast(row => row.method === 'session/prompt' && row.params?.sessionId === thread);
+      if (!request) return null;
+      const status = session?.status === 'unknown_error' || request.error ? 'error'
+        : ['active', 'pending', 'canceling'].includes(session?.status) ? 'running'
+        : request.status === 'completed' ? 'completed' : 'unknown';
+      return { id: request.id, status, startedAt: Number(request.startedAt || request.createdAt) || 0,
+        completedAt: status === 'completed' ? Number(request.completedAt) || 0 : 0 };
+    }
+    const data = cursorSessionServices()?.data.getComposerDataIfLoaded(thread);
+    const headers = data?.fullConversationHeadersOnly || [], human = headers.findLastIndex(row => row.type === 1);
+    if (human < 0) return null;
+    const start = headers[human], running = window.__SSG_COMPOSER_PROVIDER__?.getStates?.().some(row => row.id === thread && row.state === 'generating');
+    const status = running ? 'running' : data.status === 'aborted' ? 'stopped' : data.status === 'completed' ? 'completed' : 'unknown';
+    return { id: data.latestChatGenerationUUID || start.bubbleId, status,
+      startedAt: Number(start.startedAtMs) || Date.parse(start.createdAt || '') || 0,
+      completedAt: status === 'completed' ? Math.max(0, ...headers.slice(human + 1).map(row => Number(row.completedAtMs) || 0)) : 0 };
+  };
+  const agentStates = (app = '') => {
     const state = agentState();
+    app ||= codexPromptEl() ? 'codex' : devinSurface() ? 'devin' : 'cursor';
+    const scopes = app === 'codex' ? codexHistoryScopes() : [];
+    const managers = new Map();
+    const withRun = row => {
+      const host = row.host || 'local';
+      if (app === 'codex' && !managers.has(host)) managers.set(host, codexConversationManager(null, scopes, host));
+      const run = agentRun(app, row.thread, scopes, managers.get(host));
+      return { ...row, ...(run ? { run, busy: run.status === 'running' || !!row.busy,
+        ...(run.status !== 'unknown' ? { runId: app + ':' + run.id, runAt: run.startedAt } : {}) } : {}) };
+    };
     let generation = null;
     try { generation = state && typeof cursorBubbleTimes === 'function' ? cursorBubbleTimes()?.generation : null; } catch {}
     const current = generation ? { ...state, generation } : state;
     if (codexThread()) {
       const meta = codexQueryClient()?.getQueryData(['recent-conversations-meta', 'updated_at', '[]', 'live'])?.find(t => t.conversationId === codexThread());
-      return current ? [{ ...current, lastUsed: meta?.updatedAt || 0 }] : [];
+      const agents = new Map(codexChatRows(true).map(row => [row.id, { thread: row.id, host: row.host, title: row.title, lastUsed: row.lastUsed || 0 }]));
+      if (current) agents.set(current.thread, { ...current, host: meta?.hostId === 'local' ? '' : meta?.hostId || '', lastUsed: meta?.updatedAt || 0 });
+      return [...agents.values()].map(withRun);
     }
     const agents = agentList();
-    return agents.length ? agents.map(a => a.current && current ? { ...current, lastUsed: a.lastUsed || 0 } : {
-      thread: a.id, agentId: a.id, title: a.title, busy: a.running, waiting: null, last: a.last || '', lastUsed: a.lastUsed || 0,
-    }) : current ? [current] : [];
+    return agents.length ? agents.map(a => withRun(a.current && current ? { ...current, host: a.host || '', lastUsed: a.lastUsed || 0 } : {
+      thread: a.id, agentId: a.id, host: a.host || '', title: a.title, busy: a.running, waiting: null, last: a.last || '', lastUsed: a.lastUsed || 0,
+    })) : current ? [withRun(current)] : [];
   };
 
   // Integrated terminals: the Agents window puts them in editor tabs (aria-controls contains terminal-).

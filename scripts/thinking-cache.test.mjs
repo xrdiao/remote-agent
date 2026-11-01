@@ -78,7 +78,7 @@ test('view reset invalidates its read while preserving window history and the ot
 test('Fusion side view reset replaces only its private history', () => {
   const nativeCache = history(), native = populated(nativeCache), fusion = populated();
   const previous = fusion.itemCache;
-  fusion.fusionOwner = {};
+  fusion.fusionBinding = {};
   fusion.clearViewState();
   assert.notEqual(fusion.itemCache, previous);
   assert.equal(fusion.itemCache.size, 0);

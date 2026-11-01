@@ -3,6 +3,7 @@ import test from 'node:test';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import crypto from 'node:crypto';
+import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { beginOperation, captureOperation, withOperation, subscribeOperations, currentOperation } from '../server/operations.mjs';
@@ -383,7 +384,7 @@ function rename({ fail = false, restore = true, own = true, abort = false } = {}
     helpersCall: value => value, Cdp: class { constructor() { return cdp; } },
     setTimeout: fn => { fn(); return 1; }, cdpRead: readScope, publishSessionChange() {},
   });
-  const method = part(read('server/apps/codex.mjs'), 'async codexRenameThread(', '\nnoteFusionRemoved(').replace(/,\s*$/, '');
+  const method = part(read('server/apps/codex.mjs'), 'async codexRenameThread(', '\nasync codexArchiveThread(').replace(/,\s*$/, '');
   const execute = vm.runInContext('({' + method + '}).codexRenameThread', context);
   const target = {
     app: 'codex', codexPageId: own ? 'window' : 'other-window', cdp,
@@ -1073,6 +1074,100 @@ test('Enter uses the shared send action and still leaves IME and Shift+Enter unt
   assert.deepEqual(h.calls, ['cancelVoice']);
 });
 
+function questionCards(requests) {
+  const handlers = new Map(), fields = [], buttons = [], packets = [];
+  const bar = {
+    innerHTML: '', classList: { toggle() {}, add() {}, remove() {} },
+    addEventListener(type, handler) { handlers.set(type, handler); },
+    setAttribute() {}, contains: () => false, querySelector: () => null,
+    querySelectorAll: selector => selector === '[data-field]' ? fields : selector === '[data-action]' ? buttons
+      : selector === 'button,input,select' ? [...buttons, ...fields] : [],
+  };
+  for (const request of requests) {
+    const actions = request.buttons.map((button, n) => {
+      const node = { ...button, dataset: { request: request.id, action: String(n) },
+        closest: selector => selector === '[data-question-compose]' ? null : node,
+        click() {
+          if (node.disabled) return;
+          const event = { target: node };
+          handlers.get('click')(event); bar.onclick(event);
+        },
+      };
+      buttons.push(node); return node;
+    });
+    for (const [n, field] of request.fields.entries()) {
+      const node = { value: field.value, dataset: { request: request.id, field: String(n) }, tagName: 'INPUT', disabled: false,
+        matches: selector => selector === 'input' || selector === '[data-field]',
+        closest: () => ({ querySelector: () => actions.at(-1) }),
+        blur() { node.blurred = true; }, focus() {}, setSelectionRange() {},
+      };
+      fields.push(node);
+    }
+  }
+  const text = { value: '普通聊天草稿' };
+  const context = vm.createContext({
+    $: () => bar, document: { activeElement: null, body: { classList: { contains: () => false } } },
+    currentApp: 'codex', viewSel: 'codex|window|thread', mode: 'chat', questionCompose: null, text,
+    ws: { readyState: 1 }, authed: true, windowReady: true, crypto: crypto.webcrypto,
+    esc: value => String(value), updateComposeCompact() {}, status() {}, send: packet => packets.push(packet),
+  });
+  const source = read('app/js/history.js');
+  vm.runInContext(part(source, "$('qnBar').addEventListener('click'", '// Small stroke icons'), context);
+  context.renderQuestions({ codex: true, requests });
+  return { bar, text, fields, buttons, packets,
+    enter(target, extra = {}) {
+      let prevented = false;
+      handlers.get('keydown')({ key: 'Enter', target, isComposing: false, preventDefault() { prevented = true; }, ...extra });
+      return prevented;
+    },
+  };
+}
+
+const questionRequest = (id, submit = 'Send', value = '') => ({
+  id, text: '测试问题', fields: [{ label: '回答', value, type: 'text' }],
+  buttons: [{ label: '预设选项', disabled: false }, { label: 'Skip', disabled: false }, { label: submit, disabled: !value }],
+});
+
+test('Codex Question cards expose only skip and native next or send actions', () => {
+  const h = questionCards([questionRequest('async:first', 'Next'), questionRequest('async:second')]);
+  const actions = [...h.bar.innerHTML.matchAll(/<div class="qnAct">([\s\S]*?)<\/div>/g)]
+    .map(row => [...row[1].matchAll(/<button\b[^>]*>(.*?)<\/button>/g)].map(button => button[1]));
+  assert.deepEqual(actions, [['Skip', 'Next'], ['Skip', 'Send']]);
+  assert.equal((h.bar.innerHTML.match(/class="qnOpt /g) || []).length, 2);
+});
+
+test('Question Enter sends the edited answer once to its own request and preserves the chat draft', () => {
+  const h = questionCards([questionRequest('async:first', 'Next'), questionRequest('async:second')]);
+  const field = h.fields[1]; field.value = '卡片中的回答'; field.oninput();
+  assert.equal(h.enter(field), true); h.enter(field);
+  assert.equal(h.packets.length, 1);
+  const packet = JSON.parse(JSON.stringify(h.packets[0]));
+  assert.equal(packet.t, 'codexRequest'); assert.equal(packet.id, 'async:second'); assert.equal(packet.n, 2);
+  assert.deepEqual(packet.fields, [{ n: 0, value: '卡片中的回答' }]);
+  assert.equal(typeof packet.requestId, 'string');
+  assert.equal(h.text.value, '普通聊天草稿'); assert.equal(field.blurred, undefined);
+});
+
+test('Question Enter respects disabled submit and IME, then uses the native next action', () => {
+  const h = questionCards([questionRequest('async:first', 'Next')]), field = h.fields[0];
+  h.enter(field); assert.equal(h.packets.length, 0);
+  field.value = '下一题答案'; field.oninput();
+  assert.equal(h.enter(field, { isComposing: true }), false);
+  assert.equal(h.packets.length, 0); assert.equal(field.blurred, undefined);
+  h.enter(field);
+  assert.equal(h.packets.length, 1); assert.equal(h.packets[0].id, 'async:first'); assert.equal(h.packets[0].n, 2);
+  assert.equal(h.packets[0].fields[0].value, '下一题答案');
+});
+
+test('Question Enter retains approval field blur and the existing free-answer fill action', () => {
+  const h = questionCards([questionRequest('approval:exec', 'Approve', '执行理由')]);
+  h.enter(h.fields[0]);
+  assert.equal(h.fields[0].blurred, true); assert.equal(h.packets.length, 0);
+  let filled = 0;
+  h.enter({ dataset: {}, matches: () => true, nextElementSibling: { click: () => filled++ } });
+  assert.equal(filled, 1); assert.equal(h.packets.length, 0);
+});
+
 test('card input tools retain the bound editor for history and newline actions', async () => {
   const calls = [], state = { ready: Promise.resolve(true) }, input = {};
   const context = vm.createContext({
@@ -1160,7 +1255,7 @@ function usageMeters() {
     currentApp: 'codex', viewSel: 'codex|window-A|thread-A', esc: String, ready: true, status() {} });
   context.ovComposerReady = key => context.ready && key === 'card';
   const source = read('app/js/sheets.js');
-  vm.runInContext(part(source, 'function fusionUsageBars(', 'function fusionMetricValue(')
+  vm.runInContext(part(source, 'function fusionUsageBars(', 'function showTerminals(')
     + part(source, 'function meterFill(', '// Phones show the value text')
     + part(source, 'const quotaCache = new Map();', 'function showUsageDetails(')
     + part(read('app/js/overview.js'), 'function ovUsageHtml(', 'function ovUpdateUsage('), context);
@@ -1371,4 +1466,238 @@ test('peer loss during background still requires fresh proof to recover the reta
   const recovered = await h.socket({ resume }), auth = recovered.sent.findLast(m => m.t === 'auth');
   assert.equal(auth.resumed, true); assert.equal(session.client, recovered); assert.equal(h.sessions.length, 1);
   assert.equal(recovered.backgroundTimer, null);
+});
+
+function overviewDirectory() {
+  const targets = [], sources = new Map(), catalogs = new Map(), library = {}, saved = { windows: {} }, fusionRuns = {};
+  const context = vm.createContext({ path, Date, process: { platform: 'linux' }, saved, fusionRuns,
+    key: (app, id) => app + ':' + id.replace(/^(cursor|devin|codex):/, ''),
+    nativeTargets: () => targets, nativeWindowAt: id => sources.get(id), nativeSessionCatalog: app => catalogs.get(app),
+    sessionId: (_app, id) => id || '', readLibrary: () => library, storedProjectSession: () => null,
+    normPath: value => String(value || '').replaceAll('\\', '/'), pathKey: value => value,
+    samePath: (a, b) => a === b, windowName: title => title, workspaces: () => { throw Error('Do not rescan workspace storage'); },
+    FUSION_ACTIVE: [], fusionSummary: value => value,
+  });
+  vm.runInContext(part(read('lib/files.mjs'), 'export function workspaceLabel(', '// Returns the size').replace('export ', '')
+    + part(read('server/project-windows.mjs'), 'export function fusionTargets(', 'export function trackFusionWindow(').replace('export ', '')
+    + read('server/overview.mjs').replace(/^import .*;\n/gm, '').replace(/^export /gm, ''), context);
+  return { targets, sources, catalogs, library, saved, fusionRuns,
+    add(app, id, root = '/project/remote-agent', host = '') {
+      targets.push({ app, id: app + ':' + id, pageId: id, title: 'workspace alias', ws: id });
+      const source = { roots: [{ root, host }], catalog: [], previews: new Map(), updatedAt: 100, snapshot: { chat: {}, states: [] },
+        overviewStates() { return this.snapshot?.states || []; } };
+      sources.set(id, source); return source;
+    }, snapshot: () => JSON.parse(JSON.stringify(context.overviewSnapshot('device'))) };
+}
+
+test('ordinary windows for one actual project produce one session and keep its live source', () => {
+  const h = overviewDirectory();
+  h.add('codex', 'ordinary');
+  const live = h.add('codex', 'other-title');
+  live.snapshot = { chat: { thread: 'same-thread' }, states: [{ thread: 'same-thread', busy: true, run: { id: 'turn', status: 'running', startedAt: 10 } }] };
+  h.catalogs.set('codex', { rows: [{ id: 'same-thread', workspace: '/project/remote-agent', running: false }] });
+  const result = h.snapshot();
+  assert.equal(result.windows.length, 1); assert.equal(result.windows[0].project, 'remote-agent');
+  assert.equal(result.sessions.length, 1); assert.equal(result.sessions[0].windowId, 'other-title');
+  assert.equal(result.sessions[0].busy, true); assert.equal(result.sessions[0].run.id, 'turn');
+});
+
+test('a temporarily unreadable selected window cannot replace confirmed native facts from another source', () => {
+  const h = overviewDirectory(), selected = h.add('codex', 'selected'), confirmed = h.add('codex', 'confirmed');
+  selected.snapshot = { chat: { thread: 'thread' }, states: [{ thread: 'thread', run: { id: 'turn', status: 'unknown', startedAt: 100 } }] };
+  confirmed.snapshot = { chat: {}, states: [{ thread: 'thread', run: { id: 'turn', status: 'completed', startedAt: 100, completedAt: 200 } }] };
+  h.catalogs.set('codex', { rows: [{ id: 'thread', workspace: '/project/remote-agent', running: false }] });
+  const result = h.snapshot();
+  assert.equal(result.sessions.length, 1); assert.equal(result.sessions[0].windowId, 'confirmed');
+  assert.equal(result.sessions[0].run.status, 'completed');
+});
+
+test('Fusion windows and native bindings stay outside ordinary cards including favorites', () => {
+  const h = overviewDirectory(); h.add('codex', 'ordinary'); h.add('codex', 'fusion');
+  h.saved.windows['codex:fusion'] = { app: 'codex', id: 'fusion', purpose: 'fusion' };
+  h.fusionRuns.device = { runs: [{ updated: Date.now(), bindings: [{ app: 'codex', threadId: 'fusion-thread' }] }] };
+  h.catalogs.set('codex', { rows: ['ordinary-thread', 'fusion-thread'].map(id => ({ id, workspace: '/project/remote-agent', running: false })) });
+  h.library.codex = { 'fusion-thread': { favorite: true } };
+  const result = h.snapshot();
+  assert.deepEqual(result.windows.map(row => row.windowId), ['ordinary']);
+  assert.deepEqual(result.sessions.map(row => row.threadId), ['ordinary-thread']);
+  assert.equal(result.fusion.length, 1);
+});
+
+test('project identity separates software, directories and hosts even with equal titles', () => {
+  const h = overviewDirectory();
+  h.add('codex', 'one', '/one/same'); h.add('codex', 'two', '/two/same'); h.add('cursor', 'three', '/one/same');
+  h.add('codex', 'remote', '/one/same', 'ssh-host');
+  h.catalogs.set('codex', { rows: [
+    { id: 'a', workspace: '/one/same', running: false }, { id: 'b', workspace: '/two/same', running: false },
+    { id: 'a', workspace: '/one/same', host: 'ssh-host', running: false },
+  ] });
+  h.catalogs.set('cursor', { rows: [{ id: 'c', workspace: '/one/same', running: false }] });
+  const result = h.snapshot();
+  assert.equal(new Set(result.windows.map(row => row.projectId)).size, 4);
+  assert.equal(new Set(result.windows.map(row => row.project)).size, 3);
+});
+
+test('available directories do not wait for chat extraction or another window readiness', () => {
+  const h = overviewDirectory(); const source = h.add('codex', 'ready'); source.snapshot = null;
+  h.catalogs.set('codex', { rows: [{ id: 'thread', workspace: '/project/remote-agent', running: false }] });
+  assert.equal(h.snapshot().ready, true); assert.equal(h.snapshot().sessions.length, 1);
+  h.add('cursor', 'not-ready').roots = undefined;
+  const result = h.snapshot();
+  assert.equal(result.ready, false); assert.equal(result.partial, true); assert.equal(result.pendingWindows, 1);
+  assert.equal(result.sessions.length, 1);
+});
+
+function overviewCards() {
+  const source = read('app/js/overview.js'), notifications = [], done = {};
+  const entry = { id: 'computer', c: { key: 'paired' } }, state = { fetched: false, prev: new Map(), first: new Map(), offset: 0 };
+  const context = vm.createContext({ Date, ovDone: done, computerSockets: new Map(), saveComputerResume() {},
+    ovComputerStatus: () => 'online', agentSessionCommon: () => true, ovNotify: (record, kind) => notifications.push({ thread: record.threadId, kind }),
+    ovPrune() {}, store: { set() {} }, ovS: { level: 'favorites' }, ovSessTile: row => row.key, ovEmpty: value => value, ovT: value => value,
+    ovProjTile: project => project.key,
+  });
+  vm.runInContext(part(source, 'const OV_RANK =', 'const OV_AGENT =') + part(source, 'const ovNativeKey =', 'const ovCompName =')
+    + part(source, 'function ovRecsOf(', 'const ovRecs =') + part(source, 'function ovApply(', 'function ovNotify(')
+    + part(source, 'function ovBoard(', 'function ovPlan(') + part(source, 'function ovProjectTiles(', 'function ovSessTile(')
+    + '\nthis.aggregate = ovAggregate;', context);
+  return { context, done, notifications,
+    apply(change = {}) { context.ovApply(entry, state, { now: Date.now(), sessions: [{ app: 'codex', projectId: 'project', windowId: 'window',
+      threadId: 'thread', statusKnown: true, ...change }], fusion: [{ id: 'fusion-run' }] }); },
+    rows: () => context.ovRecsOf(entry, state),
+  };
+}
+
+test('switching away or losing a live reading cannot turn a running session into completed', () => {
+  const h = overviewCards(); h.apply({ busy: true, run: { id: 'turn', status: 'running' } });
+  h.apply({ busy: false, statusKnown: false, run: null });
+  assert.equal(h.notifications.length, 0); assert.equal(Object.keys(h.done).length, 0);
+  assert.equal(h.rows()[0].state, 'unknown'); assert.equal(h.rows().length, 1);
+});
+
+test('a temporary unknown reading retains the observed native run until its real completion', () => {
+  const h = overviewCards(); h.apply({ busy: true, run: { id: 'turn', status: 'running' } });
+  h.apply({ statusKnown: false, run: { id: 'turn', status: 'unknown' } });
+  assert.equal(h.notifications.length, 0); assert.equal(h.rows()[0].state, 'unknown');
+  h.apply({ run: { id: 'turn', status: 'completed' } });
+  assert.equal(h.notifications.length, 1); assert.equal(h.rows()[0].state, 'done');
+  h.apply({ statusKnown: false, run: null }); h.apply({ run: { id: 'turn', status: 'completed' } });
+  assert.equal(h.notifications.length, 1);
+});
+
+test('a confirmed completion belongs to its native turn and is notified only once', () => {
+  const h = overviewCards(); h.apply({ busy: true, run: { id: 'turn', status: 'running' } });
+  h.apply({ run: { id: 'turn', status: 'completed' } }); h.apply({ run: { id: 'turn', status: 'completed' } });
+  assert.equal(h.notifications.length, 1); assert.equal(h.rows()[0].state, 'done');
+  h.apply({ busy: true, run: { id: 'new-turn', status: 'running' }, windowId: 'replacement' });
+  assert.equal(h.rows()[0].state, 'run'); assert.equal(Object.keys(h.done).length, 0);
+  h.apply({ run: { id: 'turn', status: 'completed' } });
+  assert.equal(h.notifications.length, 1); assert.notEqual(h.rows()[0].state, 'done');
+});
+
+test('stopped and failed native turns are not completion notifications', () => {
+  for (const status of ['stopped', 'error']) {
+    const h = overviewCards(); h.apply({ busy: true, run: { id: 'turn', status: 'running' } }); h.apply({ run: { id: 'turn', status } });
+    assert.equal(h.notifications.length, 0); assert.equal(h.rows()[0].state, 'err');
+  }
+});
+
+test('favorites and project cards share completed-running-idle ordering and aggregate mixed projects', () => {
+  const h = overviewCards(), rows = ['done', 'run', 'idle'].map((state, n) => ({ key: state, project: state, state, used: (n + 1) * 100 }));
+  assert.equal(h.context.ovBoard(rows, [], rows.slice()), 'donerunidle');
+  assert.equal(h.context.ovProjectTiles(rows.map(row => ({ key: row.key })), rows), 'donerunidle');
+  assert.equal(h.context.aggregate([{ state: 'done' }, { state: 'idle' }]).state, 'done');
+  assert.equal(h.context.aggregate([{ state: 'done' }, { state: 'run' }]).state, 'run');
+  assert.equal(h.context.aggregate([{ state: 'done' }, { state: 'unknown' }]).state, 'unknown');
+});
+
+function foldingComposer(land) {
+  const source = read('app/js/composer.js'), classes = new Set(land ? ['land'] : []), timers = [], handlers = {};
+  const input = { value: '' }, attachments = { children: [] }, nodes = { attachments }, focus = { question: false };
+  const context = vm.createContext({ mode: 'chat', text: input, composing: false,
+    document: { activeElement: { matches: () => focus.question, disabled: false }, body: { classList: { contains: key => classes.has(key) } },
+      querySelector: () => ({ addEventListener: (name, callback) => { handlers[name] = callback; } }) },
+    $: id => nodes[id] ||= {}, composeCompactAllowed: () => true, composerLayoutBusy: () => false, micPressing: () => false,
+    setTimeout: callback => { timers.push(callback); return timers.length; }, clearTimeout() {},
+    setComposerPresentation: (idle, compact) => { for (const [key, on] of [['composeIdle', idle], ['composeCompact', compact]]) on ? classes.add(key) : classes.delete(key); },
+  });
+  vm.runInContext(part(source, 'let composeCompactTimer =', 'function questionComposerFocused(')
+    + part(source, 'function questionComposerFocused(', 'function micHeld(')
+    + part(source, 'function composeCompactWanted(', 'function setComposerPresentation(')
+    + 'function composeIdleWanted(){return !composerEngaged && !text.value && !composing && !questionComposerFocused();}\n'
+    + 'function endComposerEditing(){composerEngaged=false;}\n'
+    + part(source, 'function setComposeCompact(', '// A tap on the composer'), context);
+  return { context, classes, input, focus, handlers, flush: () => { for (const timer of timers.splice(0)) timer(); } };
+}
+
+test('question entry folds the main composer in both orientations and releases it on blur', () => {
+  for (const land of [false, true]) {
+    const h = foldingComposer(land); h.focus.question = true; h.context.updateComposeCompact();
+    assert(h.classes.has('composeCompact')); assert(!h.classes.has('composeIdle'));
+    h.focus.question = false; h.input.value = 'keep draft'; h.context.updateComposeCompact();
+    assert(!h.classes.has('composeCompact')); assert.equal(h.input.value, 'keep draft');
+  }
+});
+
+test('landscape retains idle automatic folding and click-to-open while preserving editing', () => {
+  const h = foldingComposer(true); h.context.updateComposeCompact(); h.flush(); assert(h.classes.has('composeCompact'));
+  let prevented = 0; h.handlers.click({ target: { closest: () => false }, preventDefault: () => prevented++, stopPropagation() {} });
+  assert.equal(prevented, 1); assert(!h.classes.has('composeCompact'));
+  h.input.value = 'typing draft'; h.context.updateComposeCompact(); h.flush();
+  assert(!h.classes.has('composeCompact')); assert.equal(h.input.value, 'typing draft');
+  h.context.setComposerFold(true); assert(h.classes.has('composeCompact')); h.context.setComposerFold(false);
+  assert(!h.classes.has('composeCompact')); assert.equal(h.input.value, 'typing draft');
+});
+
+function nativeCompletionNotifications() {
+  const source = read('lib/notify.mjs'), events = [], activeWorking = new Map(), state = {};
+  const idle = Number(/const IDLE_POLLS = (\d+)/.exec(source)[1]);
+  const context = vm.createContext({ Date, os: { hostname: () => 'fixture' }, notifySeq: 0,
+    windowName: title => title, activeWorking, keyOf: event => event.win + '|' + event.threadId,
+    deliver: event => events.push(event),
+  });
+  vm.runInContext(source.match(/^const (?:IDLE_POLLS|WAIT_POLLS) =[^;]+;/gm).join('\n')
+    + '\n' + part(source, 'const extras =', '// Read the relay'), context);
+  const win = { app: 'codex', id: 'codex', pageId: 'window', title: 'project' };
+  const readState = (status, extra = {}) => context.check(win, state, { thread: 'thread', busy: status === 'running',
+    runId: 'codex:turn', runAt: 100, run: { id: 'turn', status }, ...extra });
+  readState('running');
+  return { events, state, activeWorking, idle, read: readState,
+    settle(status, extra = {}) { for (let i = 0; i < idle + 1; i++) readState(status, extra); } };
+}
+
+test('native notification completion is emitted once for a confirmed completed turn', () => {
+  const h = nativeCompletionNotifications(); h.settle('completed'); h.settle('completed');
+  assert.equal(h.events.filter(event => event.kind === 'done').length, 1);
+  assert.equal(h.events.filter(event => event.kind === 'end').length, 1);
+  assert.equal(h.state.busy, false); assert.equal(h.activeWorking.size, 0);
+});
+
+test('native stopped and failed turns end working without sending completion notifications', () => {
+  for (const status of ['stopped', 'error']) {
+    const h = nativeCompletionNotifications(); h.settle(status); h.settle(status);
+    assert.equal(h.events.filter(event => event.kind === 'done').length, 0);
+    assert.equal(h.events.filter(event => event.kind === 'end').length, 1);
+    assert.equal(h.state.busy, false); assert.equal(h.activeWorking.size, 0);
+  }
+});
+
+test('unknown native readings keep the running notification until its real completion is observed', () => {
+  const h = nativeCompletionNotifications(); h.settle('unknown');
+  assert.equal(h.events.filter(event => event.kind === 'done' || event.kind === 'end').length, 0);
+  assert.equal(h.state.busy, true); assert.equal(h.activeWorking.size, 1);
+  h.settle('completed'); h.settle('completed');
+  assert.equal(h.events.filter(event => event.kind === 'done').length, 1);
+  assert.equal(h.events.filter(event => event.kind === 'end').length, 1);
+});
+
+test('waiting for confirmation cannot send a native completion notification', () => {
+  const h = nativeCompletionNotifications();
+  for (let i = 0; i < 5; i++) h.read('completed', { waiting: 'q:approval', waitingText: 'Approve?' });
+  assert.equal(h.events.filter(event => event.kind === 'done').length, 0);
+  assert.equal(h.events.filter(event => event.kind === 'waiting').length, 1);
+});
+
+test('idle native controls without an explicit turn result are not proof of completion', () => {
+  const h = nativeCompletionNotifications(); h.settle('completed', { run: null });
+  assert.equal(h.events.filter(event => event.kind === 'done').length, 0);
 });

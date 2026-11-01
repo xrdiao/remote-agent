@@ -131,7 +131,7 @@ export class AgentContext {
     this.latestThink = null;
     this.thinkTries = new Map();
     resetThinkingCaches(this);
-    if (this.fusionOwner) this.itemCache = new Map();
+    if (this.fusionBinding) this.itemCache = new Map();
     this.pendingThread = '';
     this.polling = null;
     this.lastDraft = undefined;

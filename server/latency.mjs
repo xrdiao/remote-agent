@@ -7,16 +7,13 @@ export async function probeLatency(session, message) {
   await Promise.all([...new Set(message.ids || [])].slice(0, 8).map(async id => {
     let owned;
     try {
-      const side = /^fusion:([ab])$/.exec(id)?.[1];
-      const spec = side ? session.fusionRun?.[side] : null;
-      if (side && !spec) return session.emit({ t: 'latency', id, requestId: message.requestId, state: 'unconfigured' });
-      const app = spec?.app || String(id).split(':')[0];
+      const app = String(id).split(':')[0];
       if (!['cursor', 'devin', 'codex'].includes(app)) return;
-      const windowId = spec?.windowId || (app === 'codex' ? message.codexWindowId : id);
+      const windowId = app === 'codex' ? message.codexWindowId : id;
       let cdp = session.app === app && (!windowId || session.windowId === windowId) ? session.cdp : null;
       try {
         if (!cdp) {
-          let ws = app === 'codex' ? spec?.chatWs : spec?.ws;
+          let ws = '';
           if (!ws && app === 'codex') {
             // Only probe Codex pages whose webview key is already known; discovering it
             // would open a CDP connection per page just for a latency badge.

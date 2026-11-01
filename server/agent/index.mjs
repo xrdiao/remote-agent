@@ -5,9 +5,8 @@ import { methods as files } from './files.mjs';
 import { methods as projects } from './projects.mjs';
 import { methods as menus } from './menus.mjs';
 import { methods as sessionActions } from './session-actions.mjs';
-import { methods as fusion } from '../fusion/agent.mjs';
 
-Object.assign(AgentContext.prototype, chat, terminal, files, projects, menus, sessionActions, fusion);
+Object.assign(AgentContext.prototype, chat, terminal, files, projects, menus, sessionActions);
 
 export * from './context.mjs';
 export { safeHomePath, projectList, openFolder } from './projects.mjs';

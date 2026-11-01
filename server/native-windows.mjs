@@ -44,7 +44,7 @@ async function refreshSessionCatalog(source, changed) {
     if (changed) read.pending = source;
     return read.promise;
   }
-  if (!changed && Date.now() - read.at < 15000) return;
+  if (!changed && read.catalog && Date.now() - read.at < 15000) return;
   read.at = Date.now();
   read.promise = (async () => {
     const sources = app === 'devin' ? [...new Set([source, ...[...windows.values()].filter(window => window.win?.app === app)])] : [source];
@@ -61,9 +61,9 @@ async function refreshSessionCatalog(source, changed) {
         else catalog.rows.push({ id, archived: state === 'archived' });
       }
     }
-    const reconciled = reconcileSessionCatalog(app, catalog);
+    const first = !read.catalog, reconciled = reconcileSessionCatalog(app, catalog);
     read.catalog = catalog;
-    if (changed || reconciled) publishCatalog(app);
+    if (first || changed || reconciled) publishCatalog(app);
   })().catch(error => publishCatalog(app, error)).finally(() => {
     read.promise = null;
     const pending = read.pending;
@@ -133,6 +133,7 @@ export class NativeWindow {
     this.queue = Promise.resolve();
     this.itemCache = new Map();
     this.previews = new Map();
+    this.runStates = new Map();
     this.cdp.onclose = error => this.close(error);
     this.cdp.on('Runtime.executionContextsCleared', () => {
       if (!this.win) return;
@@ -157,6 +158,7 @@ export class NativeWindow {
       const editor = new NativeCdp(win.editorWs || win.ws);
       this.rootsRead = editor.connect().then(() => editorRoots(editor, win.app)).then(roots => { this.roots = roots; })
         .catch(() => {}).finally(() => editor.close());
+      refreshSessionCatalog(this, false).catch(error => publishCatalog(win.app, error));
       const observer = this.observer = new NativeCdp(this.cdp.wsUrl);
       this.stopWatch = await watchChat(observer, () => {
         this.revision++;
@@ -208,6 +210,15 @@ export class NativeWindow {
     this.thread = thread;
     this.invalidate();
   }
+  overviewStates() {
+    const states = new Map((this.snapshot?.states || []).map(row => [row.thread, row]));
+    for (const [thread, run] of this.runStates) if (!states.get(thread)?.run) {
+      const observed = states.get(thread), known = run.status !== 'running';
+      states.set(thread, { ...observed, thread, busy: !!observed?.busy,
+        run: known ? run : { ...run, status: 'unknown' }, statusKnown: known });
+    }
+    return [...states.values()];
+  }
   async read(fresh = false) {
     if (this.reading) return awaitCdpRead(this.reading.promise);
     if (!fresh && this.snapshot && this.readRevision === this.revision && Date.now() - this.updatedAt < this.interval()) return this.snapshot;
@@ -219,16 +230,17 @@ export class NativeWindow {
       const result = await this.cdp.evaluate(`(() => {
         const h = ${PAGE_SRC};
         const chat = h.extract(false, [], ${app === 'codex' ? 80 : 0});
-        return { chat, activeTab: h.activeChatTab(), states: h.agentStates(),
+        return { chat, activeTab: h.activeChatTab(), states: h.agentStates(${JSON.stringify(app)}),
           surface: h.devinSurface(), catalog: ${app === 'codex' ? 'h.codexChatRows(true)' : app === 'devin' ? 'null' : 'h.agentList()'},
         };
       })()`);
       if (app === 'devin') result.catalog = await this.cdp.evaluate(helpersCall('sessionPickerRows(true)'));
       controller.signal.throwIfAborted();
+      for (const state of result.states || []) if (state.run && state.run.status !== 'unknown') this.runStates.set(state.thread, state.run);
       this.catalog = result.catalog || [];
       this.catalogAt = Date.now();
       const catalogKey = JSON.stringify(this.catalog.map(row => [row.id, row.title, row.workspace, row.host, row.current, row.running]));
-      const catalogChanged = catalogKey !== this.catalogKey;
+      const catalogChanged = this.catalogKey != null && catalogKey !== this.catalogKey;
       this.catalogKey = catalogKey;
       refreshSessionCatalog(this, catalogChanged).catch(error => publishCatalog(app, error));
       const key = JSON.stringify(result);
@@ -394,6 +406,7 @@ export class NativeWindow {
     for (const request of this.sends.values()) request.finish(null, error.message, true);
     this.sends.clear();
     this.retrySettings.clear();
+    this.runStates.clear();
     this.cdp.close();
   }
 }

@@ -32,6 +32,10 @@ const flag = (v, s, m) => (typeof v === 'function' ? v(s, m) : !!v);
 // A pre handler returns SKIP when its condition does not match, letting the
 // message continue to the normal dispatch path (used by codex `agents`).
 export const SKIP = Symbol('route-skip');
+const fusionRoute = method => ({ fast: true, fastRun: async (session, message) => {
+  try { return await session[method](message); }
+  catch (error) { session.emit({ t: 'fusionError', computer: computerId(), runId: message.runId || '', requestId: message.requestId, message: error.message }); }
+} });
 
 // Mention tokens from the phone: short strings only, at most a dozen.
 const cleanMentions = list => (Array.isArray(list) ? list : []).slice(0, 12)
@@ -222,7 +226,6 @@ export const ROUTES = {
     fail: (s, m, error) => s.emit({ t: 'menu', kind: m.kind, requestId: m.requestId, sel: s.selectionKey(), error: error?.message || '菜单读取未完成' }),
   },
   pickMenu: {
-    fusionFree: (s, m) => /^fusion-(model|effort)-/.test(String(m.kind || '')),
     run: async (s, m) => {
       try { return await s.pickMenu(m.kind, m.label, m.name); }
       catch (error) { if (m.kind === 'model' || m.kind === 'effort') await s.closeMenus(); throw error; }
@@ -275,20 +278,16 @@ export const ROUTES = {
     fusionFree: true,
     run: (s, m) => s.showUsage(m.automatic === true),
   },
-  fusionProjects: { fusionFree: true, run: (s, m) => s.fusionListProjects(m.path) },
-  fusionProject: { fusionFree: true, run: (s, m) => s.fusionSetProject(String(m.id || ''), String(m.path || '')) },
-  fusionHistory: { fusionFree: true, run: s => ADAPTERS.fusion.listAgents.call(s) },
-  fusionOpen: { fusionFree: true, run: (s, m) => ADAPTERS.fusion.openAgent.call(s, String(m.id || '')) },
-  fusionNew: { fusionFree: true, run: s => ADAPTERS.fusion.newChat.call(s) },
-  fusionUsage: { fusionFree: true, run: (s, m) => s.fusionUsage(m.automatic === true, m.side === 'b' ? 'b' : 'a') },
-  fusionSides: { fusionFree: true, run: (s, m) => s.fusionListSides(m.side) },
-  fusionSide: { fusionFree: true, run: (s, m) => s.fusionSetSide(m.side, String(m.id || '')) },
-  fusionTrust: { fusionFree: true, run: (s, m) => s.fusionConfirmTrust(m.approve === true) },
-  fusionContinue: { fusionFree: true, run: (s, m) => s.fusionContinue(m.side, String(m.id || '')) },
-  fusionNewSide: { fusionFree: true, run: (s, m) => s.fusionNewSide(m.side, String(m.app || '')) },
-  fusionModel: { fusionFree: true, run: (s, m) => s.fusionModelMenu(m.side) },
-  fusionGo: { fusionFree: true, run: s => s.fusionGo() },
-  fusionDecide: { fusionFree: true, run: (s, m) => s.fusionDecide(m.kind) },
+  fusionWorkspace: fusionRoute('fusionWorkspace'),
+  fusionCreate: fusionRoute('fusionCreate'),
+  fusionRead: fusionRoute('fusionRead'),
+  fusionConfigure: fusionRoute('fusionConfigure'),
+  fusionPrepare: fusionRoute('fusionPrepare'),
+  fusionMessage: fusionRoute('fusionSend'),
+  fusionConfirm: fusionRoute('fusionConfirm'),
+  fusionStop: fusionRoute('fusionStop'),
+  fusionResume: fusionRoute('fusionResume'),
+  fusionNative: fusionRoute('fusionNative'),
   newProjectChat: { run: s => s.newProjectChat() },
   surface: { run: (s, m) => s.setSurface(String(m.to ?? '')) },
   openEditorChat: { run: s => s.openEditorChat() },

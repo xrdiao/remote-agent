@@ -5,9 +5,9 @@ import { PAGE_SRC, helpersCall } from './page/build.mjs';
 import { AgentContext, appPlans } from './agent/index.mjs';
 import { resetThinkingCaches } from './agent/thinking-cache.mjs';
 import { hasLaunched, takeLaunched } from './launch.mjs';
-import { fusionViewers, fusionHistory, fusionWorkers } from './fusion/state.mjs';
+import { fusionViewers, savedFusion } from './fusion/state.mjs';
 import { FUSION_OWNER } from './fusion/owner.mjs';
-import { FusionRunner } from './fusion/runner.mjs';
+import { fusionRunner } from './fusion/runner.mjs';
 import { ROUTES, SKIP, flag } from './routes.mjs';
 import { chatForWire } from './chat-images.mjs';
 import { watchChat } from './agent/updates.mjs';
@@ -26,7 +26,7 @@ export class Session extends AgentContext {
     super({ deviceId });
     this.client = client;
     fusionViewers.add(this);
-    this.fusionSaved = fusionHistory[deviceId] ||= { current: '', runs: [] };
+    this.fusionSaved = savedFusion(deviceId);
     this.fusionRun = this.fusionSaved.runs.find(f => f.id === this.fusionSaved.current);
     // The phone reports when the app goes to the background; notifications skip the window it is looking at.
     this.visible = true;
@@ -50,7 +50,7 @@ export class Session extends AgentContext {
     this.catalogUpdatesStop = null;
     if (this.mode === 'screen' && mode !== 'screen') this.stopVisual();
     this.mode = mode === 'screen' || mode === 'terminal' ? mode : 'chat';
-    if (this.visible && !this.fusionOwner && ['cursor', 'devin', 'codex'].includes(this.app)) {
+    if (this.visible && !this.fusionBinding && ['cursor', 'devin', 'codex'].includes(this.app)) {
       const cdp = this.cdp, app = this.app;
       this.catalogUpdatesStop = subscribeCatalog(app, error => {
         if (!this.visible || this.cdp !== cdp || this.app !== app || this.switchingThread || !this.bindingReady) return;
@@ -178,8 +178,6 @@ export class Session extends AgentContext {
     }
     if (obj?.t === 'attached' && !obj.closed && AGENT_REGISTRY[obj.app]?.capabilities) {
       obj = { ...obj, capabilities: AGENT_REGISTRY[obj.app].capabilities };
-      if (obj.app === 'fusion') obj.sideCapabilities = Object.fromEntries(Object.entries(AGENT_REGISTRY)
-        .filter(([, entry]) => entry.kind !== 'orchestrator').map(([app, entry]) => [app, entry.capabilities]));
     }
     if ((obj?.t === 'chat' || obj?.t === 'attached') && obj.sel && obj.chat) {
       if (this.bindingReady && obj.sel === this.selectionKey() && !obj.cached
@@ -556,13 +554,7 @@ export class Session extends AgentContext {
   }
 
   fusionWorker() {
-    const key = JSON.stringify([this.deviceId, this.fusionRun.id]);
-    let worker = fusionWorkers.get(key);
-    if (!worker) {
-      worker = new FusionRunner(this.deviceId, this.fusionRun, key);
-      fusionWorkers.set(key, worker);
-    }
-    return worker;
+    return fusionRunner(this.fusionRun);
   }
 
   async handle(msg) {

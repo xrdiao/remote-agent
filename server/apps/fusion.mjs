@@ -1,35 +1,35 @@
-import { newFusionRun } from '../fusion/state.mjs';
+import { savedFusion, findFusionRun } from '../fusion/state.mjs';
+import { rememberSelection } from '../../lib/auth.mjs';
 
-// Fusion orchestrates native agents; their model/approval capabilities belong to each side.
 export const capabilities = {
-  model: false, effort: false, fast: false,
-  queue: false, steer: false, queueEdit: false,
+  model: false, effort: false, fast: false, queue: false, steer: false, queueEdit: false,
   questions: false, approvals: false, attachments: false, fileReferences: false,
-  editor: false, terminal: false, settings: false, usage: true,
-  fork: false, extraActions: false,
+  editor: false, terminal: false, settings: false, usage: true, fork: false, extraActions: false,
 };
 
 export const adapter = {
-  async attach(req) {
-    const selected = req.threadId && this.fusionSaved.runs.find(run => run.id === req.threadId);
-    if (req.threadId && !selected) throw new Error('没有这个 Fusion 会话，请重新选择');
-    if (selected) this.fusionRun = selected;
+  attach(req) {
+    const saved = savedFusion(this.deviceId);
+    const selected = req.threadId ? findFusionRun(this.deviceId, req.threadId) : null;
     this.detach();
     this.clearViewState();
     this.app = this.targetId = this.windowId = 'fusion';
-    this.threadId = '';
+    this.fusionRun = selected;
+    this.threadId = selected?.id || '';
     this.selectedThread = undefined;
     this.winTitle = 'Fusion';
-    if (!this.fusionRun) this.fusionRun = newFusionRun();
-    this.threadId = this.fusionRun.id;
-    this.emit({ t: 'attached', id: 'fusion', title: 'Fusion', app: 'fusion', appName: 'Fusion', project: '', windowId: 'fusion', threadId: this.threadId, sel: this.selectionKey(), initial: req.initial === true });
+    this.bindingReady = true;
+    if (selected) {
+      saved.current = selected.id;
+      rememberSelection(this.deviceId, { id: 'fusion', app: 'fusion', windowId: 'fusion', threadId: selected.id, project: null });
+    }
+    this.emit({ t: 'attached', id: 'fusion', title: 'Fusion', app: 'fusion', appName: 'Fusion', project: selected?.project?.name || '',
+      windowId: 'fusion', threadId: this.threadId, sel: this.selectionKey(), initial: req.initial === true, ready: true });
     this.fusionEmit();
-    if (this.fusionRun.a || this.fusionRun.b) { await this.fusionCatalog(); this.fusionEmit(); }
   },
-  newChat() { return this.fusionOpenHistory(''); },
-  listAgents() { return this.fusionListHistory(); },
-  openAgent(id) { return this.fusionOpenHistory(id); },
-  sendMessage(text) { return this.fusionUserSend(text); },
+  listAgents() { return this.fusionWorkspace(); },
+  openAgent(id) { return adapter.attach.call(this, { threadId: id }); },
+  sendMessage(text, requestId) { return this.fusionUserSend(text, requestId); },
   stopAgent() { return this.fusionStop(); },
   pollChat() { return this.fusionEmit(); },
 };

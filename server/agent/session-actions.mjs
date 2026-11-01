@@ -4,7 +4,7 @@ import { helpersCall } from '../page/build.mjs';
 import { mod } from '../../lib/platform.mjs';
 import { sessionId, removeLibrarySession, publishSessionChange } from '../../lib/session-library.mjs';
 import { leaseWindow } from '../window-use.mjs';
-import { fusionWorkers, FUSION_ACTIVE } from '../fusion/state.mjs';
+import { fusionBindingInUse } from '../fusion/state.mjs';
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -25,10 +25,7 @@ export const methods = {
         if (batch.cancelled || this.app !== app) break;
         try {
           const id = sessionId(app, row.id);
-          const fusion = [...fusionWorkers.values()].some(worker => FUSION_ACTIVE.includes(worker.fusionRun?.phase) && ['a', 'b'].some(side => {
-            const spec = worker.fusionRun[side];
-            return spec?.app === app && sessionId(app, spec.agentId || spec.conversationId || spec.threadId) === id;
-          }));
+          const fusion = fusionBindingInUse(app, id);
           if (row.running || fusion) throw new Error('会话正在运行，已跳过');
           if (app === 'codex') {
             const fresh = (await this.codexThreadRows(this.cdp)).find(r => r.id === id);

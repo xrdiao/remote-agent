@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
+import { NativeWindow } from '../server/native-windows.mjs';
 
 const read = file => fs.readFileSync(new URL('../' + file, import.meta.url), 'utf8');
 const fragment = (text, start, end) => text.slice(text.indexOf(start), text.indexOf(end, text.indexOf(start)));
@@ -115,4 +116,98 @@ test('Codex preview and catalog use the host connection without selecting a conv
   const catalog = await context.info('codex', [], true);
   assert.equal(catalog.ready, true); assert.equal(catalog.rows[0].id, 'background');
   assert.deepEqual(requests.map(r => r.method), ['thread/read', 'thread/list']);
+});
+
+function nativeRunContext(extra) {
+  const context = vm.createContext(extra), source = read('server/page/agents.js');
+  vm.runInContext(fragment(source, '  const agentRun =', '  const agentStates =')
+    + '\nthis.run = (app, thread, scopes=[]) => agentRun(app, thread, scopes, app === "codex" ? codexConversationManager(thread, scopes) : null);', context);
+  return context;
+}
+
+test('Codex run status follows a loaded background native turn rather than current DOM controls', () => {
+  const turn = { status: 'inProgress', turnStartedAtMs: 100 }, conversation = {};
+  const context = nativeRunContext({ codexConversationManager: thread => ({ getConversation: id => id === 'background' ? conversation : null }),
+    codexHistoryState: (_value, _watch, _scopes, thread) => { assert.equal(thread, 'background'); return { entries: [{ turnId: 'native-turn' }] }; },
+    codexTurnSource: () => ({ metadata: turn }),
+  });
+  assert.equal(context.run('codex', 'background').status, 'running');
+  turn.status = 'completed'; turn.durationMs = 50;
+  const done = context.run('codex', 'background');
+  assert.equal(done.id, 'native-turn'); assert.equal(done.status, 'completed'); assert.equal(done.completedAt, 150);
+  assert.equal(context.run('codex', 'not-loaded'), null);
+});
+
+test('Codex stopped, failed and unreadable turn states cannot report a completed result', () => {
+  const turn = { status: 'interrupted' };
+  const context = nativeRunContext({ codexConversationManager: () => ({ getConversation: () => ({}) }),
+    codexHistoryState: () => ({ entries: [{ turnId: 'turn' }] }), codexTurnSource: () => ({ metadata: turn }) });
+  assert.equal(context.run('codex', 'thread').status, 'stopped');
+  turn.status = 'completed'; turn.error = { message: 'native failure' };
+  assert.equal(context.run('codex', 'thread').status, 'error');
+  delete turn.error; turn.status = undefined;
+  assert.equal(context.run('codex', 'thread').status, 'unknown');
+});
+
+test('Cursor completion requires native completed status and retains its generation identity', () => {
+  const data = { status: 'running', latestChatGenerationUUID: 'generation', fullConversationHeadersOnly: [
+    { type: 1, bubbleId: 'user', startedAtMs: 100 }, { type: 2, bubbleId: 'reply', completedAtMs: 200 },
+  ] }, provider = { state: 'generating' };
+  const context = nativeRunContext({ cursorSessionServices: () => ({ data: { getComposerDataIfLoaded: () => data } }),
+    window: { __SSG_COMPOSER_PROVIDER__: { getStates: () => [{ id: 'thread', ...provider }] } } });
+  assert.equal(context.run('cursor', 'thread').status, 'running');
+  provider.state = 'focused'; assert.equal(context.run('cursor', 'thread').status, 'unknown');
+  data.status = 'completed'; const done = context.run('cursor', 'thread');
+  assert.equal(done.status, 'completed'); assert.equal(done.id, 'generation'); assert.equal(done.completedAt, 200);
+  data.status = 'aborted'; assert.equal(context.run('cursor', 'thread').status, 'stopped');
+});
+
+test('Devin native prompt results remain tied to their session and waiting execution', () => {
+  const request = { id: 'request', method: 'session/prompt', params: { sessionId: 'thread' }, status: 'completed', completedAt: 200 }, session = { status: 'active' };
+  const state = { agentRequests: { byId: { request } } };
+  const context = nativeRunContext({ window: { __acpStore: { getState: () => ({ acp: state }) } }, devinSessionRecord: () => session });
+  assert.equal(context.run('devin', 'thread').status, 'running');
+  assert.equal(context.run('devin', 'another-thread'), null);
+  session.status = 'idle'; assert.equal(context.run('devin', 'thread').status, 'completed');
+  session.status = 'unknown_error'; assert.equal(context.run('devin', 'thread').status, 'error');
+});
+
+test('window-owned turn facts survive selection changes without assuming an unfinished turn ended', () => {
+  const source = new NativeWindow('ws://fixture.invalid');
+  source.runStates.set('background', { id: 'turn', status: 'running', startedAt: 100 });
+  source.snapshot = { states: [{ thread: 'selected', busy: false }] };
+  let background = source.overviewStates().find(row => row.thread === 'background');
+  assert.equal(background.statusKnown, false); assert.equal(background.run.status, 'unknown');
+  assert.equal(source.runStates.get('background').status, 'running');
+  source.runStates.set('background', { id: 'turn', status: 'completed', startedAt: 100, completedAt: 200 });
+  background = source.overviewStates().find(row => row.thread === 'background');
+  assert.equal(background.statusKnown, true); assert.equal(background.run.status, 'completed');
+  assert.equal(background.run.id, 'turn');
+});
+
+test('a new Codex conversation remains observable before it enters the recent catalog', () => {
+  const context = vm.createContext({ agentState: () => ({ thread: 'new-thread', busy: true }),
+    codexHistoryScopes: () => [], codexThread: () => 'new-thread', codexChatRows: () => [],
+    codexConversationManager: () => ({}),
+    codexQueryClient: () => ({ getQueryData: () => [] }),
+    agentRun: () => ({ id: 'new-turn', status: 'running', startedAt: 100 }) });
+  const source = read('server/page/agents.js');
+  vm.runInContext(fragment(source, '  const agentStates =', '  // Integrated terminals:') + '\nthis.states = agentStates;', context);
+  const states = context.states('codex');
+  assert.equal(states.length, 1); assert.equal(states[0].thread, 'new-thread');
+  assert.equal(states[0].runId, 'codex:new-turn'); assert.equal(states[0].busy, true);
+});
+
+test('one native read resolves each Codex host manager once for all background rows', () => {
+  const calls = [], local = {}, remote = {};
+  const context = vm.createContext({ agentState: () => ({ thread: 'selected', busy: false }),
+    codexHistoryScopes: () => [], codexThread: () => 'selected',
+    codexChatRows: () => Array.from({ length: 50 }, (_, n) => ({ id: 'thread-' + n, host: n % 2 ? 'remote' : '' })),
+    codexQueryClient: () => ({ getQueryData: () => [] }),
+    codexConversationManager: (_thread, _scopes, host) => { calls.push(host); return host === 'remote' ? remote : local; },
+    agentRun: (_app, thread, _scopes, manager) => { assert.equal(manager, thread.startsWith('thread-') && Number(thread.slice(7)) % 2 ? remote : local); return null; } });
+  const source = read('server/page/agents.js');
+  vm.runInContext(fragment(source, '  const agentStates =', '  // Integrated terminals:') + '\nthis.states = agentStates;', context);
+  assert.equal(context.states('codex').length, 51);
+  assert.deepEqual(calls, ['local', 'remote']);
 });

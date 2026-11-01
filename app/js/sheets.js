@@ -227,7 +227,6 @@ function closeSheet() {
   const leavingVoice = sheetKind === 'local-voice';
   if (sheetKind === 'settings') send({ t: 'closeDesktopSettings' });
   if (sheetKind === 'devices') { deviceRemoval = []; deviceInviteGeneration++; }
-  fusionModelSide = null;
   menuRequest++;
   menuPending = null;
   if (sheetKind === 'codex-settings') { codexSettingsRequest++; send({ t: 'closeCodexSettings' }); status(''); }
@@ -304,7 +303,7 @@ function winLabel(title) {
 function windowEntries() {
   const saved = currentComputer()?.selections || {};
   const available = new Set(windows.flatMap(w => w.windowIds || [w.id]));
-  const entries = windows.map(w => {
+  const entries = windows.filter(w => ['cursor', 'devin', 'codex'].includes(w.app)).map(w => {
     const selected = saved[w.app]?.id;
     return { ...w, id: selected && available.has(selected) ? selected : w.id };
   });
@@ -323,7 +322,7 @@ function openSettings() {
 }
 function showWindows() {
   const { entries, missingAgents } = windowEntries();
-  entries.sort((a, b) => (a.app === 'fusion') - (b.app === 'fusion') || a.app.localeCompare(b.app));
+  entries.sort((a, b) => a.app.localeCompare(b.app));
   // A re-render replaces every row; if a windows/plans emit lands mid-press it swallows the
   // click. Row content only depends on this signature — skip the rebuild when nothing changed
   // (latency values paint in place via paintLatency).
@@ -350,7 +349,7 @@ function paintRail() {
   const rail = $('rail');
   if (!rail) return;
   const { entries, missingAgents } = windowEntries();
-  entries.sort((a, b) => (a.app === 'fusion') - (b.app === 'fusion') || a.app.localeCompare(b.app));
+  entries.sort((a, b) => a.app.localeCompare(b.app));
   const collapsed = railCollapsed();
   const sig = JSON.stringify([currentApp, mode, I18N.lang, currentComputer()?.name || '', $('dot').className, collapsed,
     entries.map(w => [w.id, w.app, appPlans[w.app] || '']), missingAgents]);
@@ -416,117 +415,6 @@ $('rail')?.addEventListener('click', e => {
   }
 });
 
-const FUSION_PHASE = { idle: '待开始', planning: '正在生成方案', plan: '方案待确认', execute: '正在执行方案', review: '正在检查结果', fix: '正在小修', disagree: '方案待确认', check: '请选择下一步', stopped: '未完成，已停止', done: '完成' };
-let fusionSetupKey = '', fusionSetupStep = 0, fusionModelSide = null;
-const fusionModelSupported = spec => fusionSideCapabilities[spec?.app]?.model !== false;
-function requestFusionModel(side) {
-  closeSheet();
-  fusionModelSide = side;
-  menuSheetKind = `fusion-model-${side}`;
-  openSheet('menu', `<h3>${side.toUpperCase()} 模型</h3><p class="hint">正在读取模型…</p>`);
-  send({ t: 'fusionModel', side });
-}
-function paintFusionSetup(fx) {
-  const key = `${currentComputer()?.id || ''}|${lastChat.thread}|${fx.project?.id || ''}`;
-  if (key !== fusionSetupKey) {
-    fusionSetupKey = key;
-    fusionSetupStep = !fx.project ? 0 : !fx.a ? 1 : !fx.b ? 2 : 3;
-  }
-  const ready = !!(fx.project && fx.a?.model && fx.b?.model);
-  const confirmed = ready && store.get('fusion-setup-done') === key;
-  $('fusionSetup').hidden = confirmed;
-  $('fusionSetupReady').hidden = !confirmed;
-  if (confirmed) return;
-  const name = spec => spec ? `${({codex: 'Codex', cursor: 'Cursor', devin: 'Devin'})[spec.app] || spec.app} · ${cleanWindowTitle(spec.conversationTitle || spec.title)}` : I18N.tr('未选择');
-  const row = (step, title, summary, body, enabled) => `<section class="fusionStep ${fusionSetupStep === step ? 'active' : ''}"><button class="fusionStepHead" data-fusion-step="${step}" ${!enabled || fx.busy ? 'disabled' : ''}><span class="fusionStepNumber">${step + 1}</span><span class="lbl"><strong>${title}</strong><span class="sub">${esc(summary)}</span></span><span aria-hidden="true">${fusionSetupStep === step ? '▾' : '›'}</span></button>${fusionSetupStep === step ? `<div class="fusionStepBody">${body}</div>` : ''}</section>`;
-  const role = side => {
-    const spec = fx[side], label = side.toUpperCase();
-    return `<button class="opt" data-fusion-select="${side}" ${fx.busy ? 'disabled' : ''}><span class="lbl">选择 Agent / 会话<span class="sub">${esc(name(spec))}</span></span><span>›</span></button><button class="opt" data-fusion-setup-model="${side}" ${!spec || fx.busy || !fusionModelSupported(spec) ? 'disabled' : ''}><span class="lbl">模型与推理强度<span class="sub">${esc(spec?.model || I18N.tr('选择会话后沿用当前模型'))}</span></span><span>›</span></button><button class="primary fusionNext" data-fusion-step="${side === 'a' ? 2 : 3}" ${!spec?.model || fx.busy ? 'disabled' : ''}>${label === 'A' ? '下一步：配置 B' : '下一步：确认配置'}</button>`;
-  };
-  const summary = `<dl class="fusionSetupSummary"><dt>项目</dt><dd>${esc(fx.project?.name || '')}</dd><dt>A · 方案与检查</dt><dd>${esc(name(fx.a))}<small>${esc(fx.a?.model || '')}</small></dd><dt>B · 执行</dt><dd>${esc(name(fx.b))}<small>${esc(fx.b?.model || '')}</small></dd></dl><button class="primary fusionNext" data-fusion-setup-done ${!ready || fx.busy ? 'disabled' : ''}>开始对话</button><p class="hint">确认配置后输入任务，不会自动发送消息。</p>`;
-  $('fusionSetup').innerHTML = row(0, '选择项目', fx.project?.name || I18N.tr('未选择'), '<button class="opt" data-fusion-setup-project>选择项目</button>' + (fx.project ? '<button class="primary fusionNext" data-fusion-step="1">下一步：配置 A</button>' : ''), true)
-    + row(1, 'A · 方案与检查', fx.a ? name(fx.a) + ' · ' + fx.a.model : I18N.tr('未选择'), role('a'), !!fx.project)
-    + row(2, 'B · 执行', fx.b ? name(fx.b) + ' · ' + fx.b.model : I18N.tr('未选择'), role('b'), !!fx.a?.model)
-    + row(3, '确认配置', ready ? I18N.tr('检查项目与 A/B 配置') : I18N.tr('完成前面的配置后确认'), summary, ready);
-}
-$('fusionSetup').onclick = e => {
-  const b = e.target.closest('button');
-  if (!b || b.disabled) return;
-  if ('fusionStep' in b.dataset) {
-    fusionSetupStep = Number(b.dataset.fusionStep);
-    paintFusionSetup(lastChat.fusion);
-    $('fusionSetup').querySelector('.active').scrollIntoView({ block: 'nearest' });
-  }
-  else if ('fusionSetupProject' in b.dataset) $('fusionProject').click();
-  else if (b.dataset.fusionSelect) send({ t: 'fusionSides', side: b.dataset.fusionSelect });
-  else if (b.dataset.fusionSetupModel) requestFusionModel(b.dataset.fusionSetupModel);
-  else if ('fusionSetupDone' in b.dataset) {
-    store.set('fusion-setup-done', fusionSetupKey);
-    paintFusionSetup(lastChat.fusion);
-    text.focus();
-  }
-};
-function paintFusion(fx) {
-  const on = !!fx;
-  $('fusionConfig').hidden = !on;
-  $('fusionBar').hidden = !on;
-  document.body.classList.toggle('fusion', currentApp === 'fusion');
-  $('fusionHeader').hidden = currentApp !== 'fusion';
-  $('fusionWelcome').hidden = !on || !!lastChat?.items?.length;
-  $('newChat').hidden = on;
-  $('meters').hidden = currentApp === 'fusion';
-  if (on) { $('pickModel').hidden = true; $('pickAgents').hidden = true; $('pickMode').hidden = true; }
-  else $('pickAgents').hidden = false;
-  if (!on) return;
-  paintFusionSetup(fx);
-  renderFusionMeters(fx);
-  $('fusionProject').textContent = '项目';
-  $('fusionProject').title = fx.project?.root || '';
-  $('fusionProject').disabled = !!fx.busy;
-  for (const side of ['a', 'b']) {
-    $('fusion' + side.toUpperCase()).disabled = !fx.project || !!fx.busy;
-    $('fusionModel' + side.toUpperCase()).disabled = !fx.project || !!fx.busy || !fusionModelSupported(fx[side]);
-  }
-  const short = s => String(s || '').slice(0, 28);
-  const roleTitle = s => `${({ codex: 'Codex', cursor: 'Cursor', devin: 'Devin' })[s.app] || s.app} · ${cleanWindowTitle(s.conversationTitle || s.title)}`;
-  for (const side of ['a', 'b']) {
-    const label = side.toUpperCase(), spec = fx[side];
-    $('fusion' + label).title = spec ? roleTitle(spec) : `选择 ${label}`;
-    $('fusionModel' + label).textContent = `${label} 模型`;
-    $('fusionModel' + label).title = spec?.model || `${label} 模型`;
-  }
-  const acts = fx.phase === 'plan' ? '<button type="button" data-fusion-act="go">执行方案</button>'
-    : fx.phase === 'disagree' ? '<button type="button" data-fusion-act="go">按 A 的说明继续</button>'
-    : fx.phase === 'check' ? '<button type="button" data-fusion-act="done">完成</button><button type="button" data-fusion-act="fix">小修</button><button type="button" data-fusion-act="return">退回 B</button>'
-    : '';
-  $('fusionBar').hidden = fx.phase === 'idle';
-  $('fusionBar').innerHTML = `<span class="hint">第 ${fx.round || 0} 轮 · ${FUSION_PHASE[fx.phase] || fx.phase}</span>${acts}`;
-}
-function showFusionProjects(m) {
-  finishPending(['正在读取项目…']);
-  if (m.browse) {
-    const b = m.browse;
-    const dirs = (b.dirs || []).map(d => `<button class="opt" data-fusion-dir="${esc(d.path)}"><span class="lbl">${esc(d.name)}</span></button>`).join('');
-    return openSheet('fusion-project', `<h3>选择项目目录</h3><div class="hint">${esc(b.path)}</div><button class="opt" data-fusion-folder="${esc(b.path)}"><span class="lbl">选择此目录</span></button>${b.parent ? `<button class="opt" data-fusion-dir="${esc(b.parent)}"><span class="lbl">上级目录</span></button>` : ''}<button class="opt" data-fusion-path><span class="lbl">输入文件夹路径</span></button>${(b.drives || []).map(d => `<button class="opt" data-fusion-dir="${esc(d)}"><span class="lbl">${esc(d)}</span></button>`).join('')}${dirs}`);
-  }
-  openSheet('fusion-project', `<h3>选择 Fusion 项目</h3><button class="opt" data-fusion-dir=""><span class="lbl">＋ 选择本地目录</span></button>${(m.list || []).map(p => `<button class="opt ${p.id === lastChat?.fusion?.project?.id ? 'cur' : ''}" data-fusion-project="${esc(p.id)}"><span class="lbl">${esc(p.name)}<span class="sub">${esc(p.host ? p.host + ':' + p.root : p.root)}</span></span></button>`).join('') || '<div class="hint">没有已确认的项目</div>'}${m.unknown ? `<div class="hint">${m.unknown} 个对话的项目未确认，未加入候选。</div>` : ''}`);
-}
-function showFusionSides(m) {
-  const selected = lastChat?.fusion?.[m.side]?.id;
-  const apps = new Map((m.apps || []).map(a => [a.app, new Map()]));
-  for (const s of m.list || []) {
-    if (!apps.has(s.app)) apps.set(s.app, new Map());
-    const wins = apps.get(s.app);
-    if (!wins.has(s.windowId)) wins.set(s.windowId, { title: cleanWindowTitle(s.windowTitle), rows: [] });
-    wins.get(s.windowId).rows.push({ ...s, conversationTitle: cleanWindowTitle(s.conversationTitle) });
-  }
-  const rows = [...apps].map(([app, wins]) => `<details ${[...wins.values()].some(w => w.rows.some(s => s.id === selected)) ? 'open' : ''}><summary>${esc(({ codex: 'Codex', cursor: 'Cursor', devin: 'Devin' })[app] || app)}</summary>${wins.size ? [...wins.values()].map(w => `<details ${w.rows.some(s => s.id === selected) ? 'open' : ''}><summary>${esc(w.title)}</summary>${w.rows.map(s => `<button class="opt ${s.id === selected ? 'cur' : ''}" data-fusion-pick="${esc(m.side)}" data-fusion-id="${esc(s.id)}" ${s.unavailable ? 'disabled' : ''}><span class="lbl">${esc(s.conversationTitle)}${s.unavailable ? `<span class="sub">${esc(s.unavailable)}</span>` : ''}</span></button>`).join('')}</details>`).join('') : `<div class="hint">${esc(m.apps?.find(a => a.app === app)?.unavailable || '当前项目没有已打开的会话')}</div>`}${['cursor', 'devin', 'codex'].includes(app) ? `<button class="opt" data-fusion-new="${esc(app)}" data-fusion-side="${esc(m.side)}"><span class="lbl">＋ 新增会话</span></button>` : ''}</details>`).join('');
-  const other = (m.other || []).map(s => `<button class="opt" data-fusion-continue="${esc(s.id)}" data-fusion-side="${esc(m.side)}"><span class="lbl">${esc(s.conversationTitle)}<span class="sub">${esc(s.app)} · ${esc(s.project?.root || '目录未确认')} · 在当前项目续接</span></span></button>`).join('');
-  openSheet('fusion-side', `<h3>选择 ${m.side === 'b' ? 'B 执行' : 'A 方案'}</h3><div class="hint">仅显示所选项目。按软件、窗口、对话依次展开，再选择模型。A/B 可以使用同一软件或同一会话。</div><div class="fusionTree">${rows || '<div class="hint">没有可选的对话</div>'}${other ? `<details><summary>其它项目的会话</summary><div class="hint">续接会创建新会话并携带最近历史摘录，原会话保留。</div>${other}</details>` : ''}</div>`);
-}
-function showFusionHistory(m) {
-  openSheet('fusion-history', `<h3>Fusion 历史会话</h3>${(m.list || []).map(f => `<button class="opt ${f.id === m.current ? 'cur' : ''}" data-fusion-history="${esc(f.id)}"><span class="lbl">${esc(f.title)}<span class="sub">${esc(new Date(f.updated).toLocaleString())}</span></span></button>`).join('') || '<div class="hint">暂无历史会话</div>'}`);
-}
 function fusionUsageBars(m) {
   return [...(m.quota || []), ...(m.limits || []), ...((m.quota || m.limits) ? [] : (m.bars || []))].map(b => {
     if (b.pct == null || b.pct === '' || !Number.isFinite(Number(b.pct))) return b;
@@ -534,30 +422,6 @@ function fusionUsageBars(m) {
     return { ...b, basis: 'remaining', pct: Number(Math.max(0, Math.min(100, n)).toFixed(2)) };
   });
 }
-function fusionMetricValue(b) {
-  return b?.pct == null ? String(b?.value || '未获取') : `${b.basis === 'remaining' ? '剩余' : '已用'} ${b.pct}%`;
-}
-function renderFusionMeters(fx) {
-  for (const side of ['a', 'b']) {
-    const spec = fx?.[side], usage = spec?.usage || {};
-    const context = typeof usage.context === 'number' ? { pct: usage.context } : usage.context;
-    const bars = fusionUsageBars(usage);
-    const quota = bars.find(b => /week|每周|周额度/i.test(b.label)) || bars[0];
-    const metric = (kind, label, b) => `<button type="button" data-side="${side}" data-metric="${kind}" title="${esc(label + ' · ' + fusionMetricValue(b))}">${esc(label)} ${esc(b?.pct == null ? '未获取' : kind === 'quota' ? fusionMetricValue(b) : b.pct + '%')}</button>`;
-    $('fusionMeters' + side.toUpperCase()).innerHTML = `<span class="fusionRing" style="--pct:${context?.pct ?? 0}"></span><span class="fusionMetricText">${metric('context', '上下文', context)}${metric('quota', '额度', quota)}</span>`;
-  }
-}
-function showFusionUsage(side, kind) {
-  const spec = lastChat?.fusion?.[side], m = spec?.usage || {};
-  const context = typeof m.context === 'number' ? { pct: m.context } : m.context;
-  const rows = kind === 'context' ? `<p>${esc(fusionMetricValue(context))}</p><p class="hint">上下文表示该对话的容量使用情况。</p>`
-    : `<p class="hint">额度属于账号，百分比统一显示剩余额度。</p>${fusionUsageBars(m).map(b => `<p>${esc(b.label)} · ${esc(fusionMetricValue(b))}${b.reset ? `<br>${esc(b.reset)}` : ''}</p>`).join('') || '<p>未获取额度数据</p>'}`;
-  openSheet('fusion-usage', `<h3>${side.toUpperCase()} · ${kind === 'context' ? '上下文说明' : '额度说明'}</h3><p>${esc(spec?.title || '未选择')}</p>${rows}${m.updated ? `<p class="hint">${m.cached ? '缓存数据' : '最近更新'} · ${esc(new Date(m.updated).toLocaleString())}</p>` : ''}${m.error ? `<p class="hint">${esc(m.error)}</p>` : ''}${spec ? `<button class="opt" data-fusion-refresh="${side}">刷新数据</button>` : ''}`);
-}
-$('fusionHeader').addEventListener('click', e => {
-  const b = e.target.closest('[data-metric]');
-  if (b) showFusionUsage(b.dataset.side, b.dataset.metric);
-});
 function showTerminals(list) {
   const rows = list.map(t => `<div class="optRow"><button class="opt ${t.current ? 'cur' : ''}" data-term="${esc(t.id)}"><span class="lbl">${esc(t.title)}</span>${t.current ? '<span class="tag">当前</span>' : ''}</button><button data-term-del="${esc(t.id)}" data-term-name="${esc(t.title)}">删除</button></div>`).join('');
   openSheet('terminals', `<h3>终端</h3>${rows || '<div class="hint">还没有终端。</div>'}<button class="opt" data-act="newTerm"><span class="lbl">＋ 新建终端</span></button>`);
@@ -824,7 +688,7 @@ $('title').onclick = () => {
   send({ t: 'windows' }); showWindows();
 };
 
-const MENU_TITLE = { effort: '选择思考强度', mode: '选择模式', model: '选择模型', history: '历史对话', permission: '权限', 'codex-run': '执行位置', 'codex-chat': '会话操作', 'fusion-model-a': 'A 模型', 'fusion-model-b': 'B 模型', 'fusion-effort-a': 'A 推理强度', 'fusion-effort-b': 'B 推理强度', 'fusion-lead': 'Fusion Lead', 'fusion-effort': 'Fusion Effort', 'fusion-sidekick': 'Fusion Sidekick' };
+const MENU_TITLE = { effort: '选择思考强度', mode: '选择模式', model: '选择模型', history: '历史对话', permission: '权限', 'codex-run': '执行位置', 'codex-chat': '会话操作', 'fusion-lead': 'Fusion Lead', 'fusion-effort': 'Fusion Effort', 'fusion-sidekick': 'Fusion Sidekick' };
 const PERM_LABEL = {
   'Ask for approval': ['每次询问', '改外部文件和上网前都会询问'],
   'Approve for me': ['代为批准', '只在可能不安全时询问'],
@@ -888,7 +752,7 @@ function showMenu(kind, items, max, fusion, fast, model, refreshing, pricing) {
   finishPending(['读取思考强度…', '读取权限…', '读取模式列表…', '读取模型列表…', '读取历史对话…', '设置中…']);
   menuSheetKind = kind;
   const picking = /^fusion-(lead|effort|sidekick)$/.test(String(kind || ''));
-  if (kind === 'effort' || kind === 'fusion-effort' || /^fusion-effort-[ab]$/.test(kind)) items = sortedEfforts(items || []);
+  if (kind === 'effort' || kind === 'fusion-effort') items = sortedEfforts(items || []);
   if (!items?.length && !fusion && kind !== 'effort') return showMenuError(kind, appMessage('菜单是空的，可能 {app} 版本不同'));
   status('');
   const maxRow = typeof max === 'boolean'
@@ -903,13 +767,12 @@ function showMenu(kind, items, max, fusion, fast, model, refreshing, pricing) {
       : `<button class="opt ${it.checked ? 'cur' : ''}" data-kind="${kind}" data-label="${esc(it.label)}"><span class="lbl">${shown}${it.desc ? `<span class="sub">${esc(modeDesc(it))}</span>` : ''}${modelPricingHtml(it.pricing, it.checked)}</span>${it.label === 'Bypass Permissions' ? '<span class="tag" style="color:var(--warn)">⚠</span>' : ''}</button>`;
     return it.params ? `<div class="optRow">${pick}<button class="paramBtn" data-params="${esc(it.id)}" data-plabel="${esc(it.label)}">参数</button></div>` : pick;
   }).join('');
-  const role = /^fusion-model-([ab])$/.exec(kind || '')?.[1];
-  const agentRow = role ? `<button class="opt" data-fusion-select="${role}"><span class="lbl">更换 ${role.toUpperCase()} Agent / 会话<span class="sub">${esc(lastChat?.fusion?.[role]?.title || '未选择')}</span></span></button>` : '';
+  const agentRow = '';
   const fastRow = supportsCapability('fast') && fast && !fusion ? `<button class="opt" data-fast="${fast.on ? 'off' : 'on'}" data-fast-menu="${kind}"><span class="lbl">Fast 模式${fast.description ? `<span class="sub">${esc(fast.description)}</span>` : ''}</span><span class="switch ${fast.on ? 'on' : ''}"></span></button>` : '';
   const effortState = capabilityState('effort');
   const effortEntry = kind === 'model' && !fusion && supportsCapability('effort') ? `<button class="opt" data-effort-open ${effortState.available ? '' : 'disabled'}><span class="lbl">思考强度<span class="sub">${esc(effortState.reason || lastChat?.effort || '')}</span></span></button>` : '';
   const navigation = picking ? '<button class="opt" data-model-back>← 返回模型配置</button>' : kind === 'effort' ? `<button class="opt" data-model-back>← 返回模型列表</button><p>${esc(model || lastChat?.model || '')}</p>${!items?.length ? '<p class="hint">这个模型没有可选的思考强度。</p>' : ''}` : '';
-  const done = /^fusion-(model|effort)-[ab]$/.test(kind) ? '<button class="opt" data-model-done>返回配置</button>' : kind === 'effort' && currentApp !== 'cursor' ? '<button class="opt" data-model-done>完成</button>' : '';
+  const done = kind === 'effort' && currentApp !== 'cursor' ? '<button class="opt" data-model-done>完成</button>' : '';
   const priceSummary = kind === 'effort' && pricing && !items?.length ? `<div class="hint">${modelPricingHtml(pricing, true)}</div>` : '';
   openSheet('menu', `<h3>${MENU_TITLE[kind] || ''}${refreshing ? ' <span class="hint">更新中…</span>' : ''}</h3>` + navigation + agentRow + (picking ? '' : fusionBlock(fusion)) + effortEntry + fastRow + maxRow + rows + priceSummary + done);
 }
@@ -1361,7 +1224,6 @@ function showMainMenu() {
     : `<button class="opt" data-act="appUpdate"><span class="lbl">检查 App 更新（当前 v${esc(appVersion)}）</span></button>`;
   const appName = currentAppName;
   const modelItems = `
-    ${currentApp === 'fusion' ? `<button class="opt" data-act="fusionHistory">历史会话</button><button class="opt" data-act="fusionNew" ${lastChat?.fusion?.busy ? 'disabled' : ''}>＋ 新建</button>` : ''}
     ${currentApp === 'cursor' && lastChat?.mode ? `<button class="opt" data-act="mode"><span class="lbl">${I18N.tr('模式')}<span class="sub">${esc(lastChat.mode === 'Bypass Permissions' ? '⚠ 绕过权限' : lastChat.mode)}</span></span></button>` : ''}
     ${lastChat?.permission || (currentApp === 'devin' && lastChat?.mode) ? `<button class="opt" data-act="permission"><span class="lbl">权限模式<span class="sub">${esc(lastChat.permission || lastChat.mode)}</span></span></button>` : ''}
     <button class="opt" data-act="screen"><span class="lbl">画面<span class="sub">查看绘图与仿真窗口</span></span></button>

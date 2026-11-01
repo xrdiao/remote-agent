@@ -161,15 +161,12 @@
     if (!props || props.submitDisabled || props.isInteractionBlocked || props.interactionsEnabled === false) return false;
     if (dispatch) {
       if (codexPromptPayload() == null) return false;
-      const labels = follow === 'queue' ? ['Queue'] : follow === 'steer' ? ['Steer'] : ['Send', 'Queue', 'Steer'];
-      const root = editor.closest('[data-composer-body]');
-      const button = [...root.querySelectorAll('button')].find(button => vis(button)
-        && labels.some(label => nativeLabel(button.getAttribute('aria-label'), label)) && !button.disabled && button.getAttribute('aria-disabled') !== 'true');
-      if (button) button.click();
-      else Promise.resolve(props.handleSubmit(follow ? { followUpSubmitAction: follow } : undefined)).catch(error => {
+      const submissions = window.__remoteAgentCodexSubmissions ||= new Set();
+      const pending = Promise.resolve().then(() => props.handleSubmit(follow ? { followUpSubmitAction: follow } : undefined)).catch(error => {
         (window.__remoteAgentSubmitErrors ||= []).push({ requestId, message: String(error?.message || error) });
         doc.defaultView.dispatchEvent(new doc.defaultView.Event('remote-agent-submit-error'));
-      });
+      }).finally(() => submissions.delete(pending));
+      submissions.add(pending);
       return true;
     }
     await props.handleSubmit(follow ? { followUpSubmitAction: follow } : undefined);
@@ -400,7 +397,53 @@
     const turn = codexStoredTurn(entry);
     return turn ? { ...entry, turn } : entry;
   };
-  const codexFusionTurn = (id = '', message = '', previous = []) => {
+  const codexFusionTurn = async (id = '', attemptId = '', previous = [], generationId = '') => {
+    if (!codexThread()) {
+      const threadId = activeThread();
+      if (devinSurface()) {
+        const state = window.__acpStore?.getState().acp;
+        const messages = state?.perSession[threadId]?.messages || [];
+        const body = item => (item.content || []).filter(block => block.content?.type === 'text').map(block => block.content.text).join('\n');
+        const users = messages.filter(item => item.kind === 'user_message' && !item.content?.some(block => block._meta?.['cognition.ai/isOptimistic']));
+        const user = id ? users.find(item => item.id === id) : attemptId ? users.findLast(item => !previous.includes(item.id) && body(item).includes(attemptId)) : users.at(-1);
+        const start = messages.indexOf(user), tail = start >= 0 ? messages.slice(start + 1) : [];
+        const next = tail.findIndex(item => item.kind === 'user_message');
+        const reply = (next < 0 ? tail : tail.slice(0, next)).findLast(item => item.kind === 'agent_message');
+        const requests = Object.values(state?.agentRequests.byId || {}).filter(request => request.method === 'session/prompt' && request.params?.sessionId === threadId);
+        const request = requests.findLast(request => request.params?.prompt?.some?.(block => attemptId && block.text?.includes(attemptId)));
+        const session = devinSessionRecord(threadId);
+        return { id: user?.id || '', ids: users.map(item => item.id), turnId: request?.id || user?.id || '', threadId, current: !!user && user === users.at(-1),
+          text: reply ? body(reply) : '', completed: !!reply && request?.status === 'completed' && !['active', 'pending', 'canceling', 'unknown_error'].includes(session?.status),
+          ended: request?.status === 'completed' && !['active', 'pending', 'canceling', 'unknown_error'].includes(session?.status),
+          error: session?.status === 'unknown_error' ? devinItems(devinLog()).find(item => item.kind === 'error')?.t || 'Devin 原生 unknown_error' : '', items: [] };
+      }
+      const service = cursorSessionServices()?.data;
+      if (!service || !threadId) return { id: '', ids: [], threadId, text: '', completed: false };
+      const peek = await service.composerDataHandleManager.peekComposerData(threadId);
+      const data = peek?.source === 'memory' ? peek.handle.data : peek?.data;
+      const headers = data?.fullConversationHeadersOnly || [];
+      const users = headers.filter(header => header.type === 1);
+      const load = async header => {
+        const cached = data.conversationMap[header.bubbleId];
+        if (cached && !cached.isPlaceholder) return cached;
+        return (await service._composerMessageStorageService.retrieveMessagesBatch(threadId, [header.bubbleId])).get(header.bubbleId);
+      };
+      let user = id ? users.find(header => header.bubbleId === id) : attemptId ? null : users.at(-1);
+      if (!id && attemptId) for (const header of users.filter(header => !previous.includes(header.bubbleId)).reverse()) {
+        if ((await load(header))?.text?.includes(attemptId)) { user = header; break; }
+      }
+      const start = headers.indexOf(user), tail = start >= 0 ? headers.slice(start + 1) : [];
+      const next = tail.findIndex(header => header.type === 1);
+      const replies = (next < 0 ? tail : tail.slice(0, next)).filter(header => header.type === 2);
+      const messages = await Promise.all(replies.map(load));
+      const final = messages.findLast(item => item?.text?.trim() && !item.toolFormerData && !item.thinking);
+      const nativeAbort = !user && !!id && !!generationId && data.latestChatGenerationUUID === generationId && data.status === 'aborted';
+      return { id: user?.bubbleId || (nativeAbort ? id : ''), ids: users.map(header => header.bubbleId), turnId: user?.bubbleId || (nativeAbort ? id : ''), threadId,
+        generationId: data.latestChatGenerationUUID || '', current: !!user && user === users.at(-1) || nativeAbort,
+        text: final?.text || '', completed: !!final && user === users.at(-1) && data.status === 'completed' && !isBusy(),
+        ended: (nativeAbort || !!user && user === users.at(-1) && ['completed', 'aborted'].includes(data.status)) && !isBusy(),
+        error: data.status === 'aborted' ? `Cursor 原生执行已中断：${data.abortReason || '原因未知'}` : '', items: [] };
+    }
     const state = codexHistoryState();
     const rows = [...doc.querySelectorAll('[data-turn-key]')];
     const entries = new Map(state.entries.map(entry => {
@@ -416,13 +459,18 @@
       if (entry.isLatestTurn) latest = entry.turnId;
     }
     const users = found => (found.entry.turn?.items || []).filter(it => it.type === 'user-message');
-    const matches = it => id ? it.clientUserMessageId === id || it.nativeIds?.includes(id)
-      : String(it.message || '').trim() === message.trim() && !previous.includes(it.clientUserMessageId);
-    const found = id || message ? [...entries.values()].reverse().find(found => users(found).some(matches)) : entries.get(latest);
+    const matches = it => id ? it.clientUserMessageId === id || it.nativeIds?.includes(id) || id === `${state.thread}:user-message:${it.clientUserMessageId}`
+      : !!attemptId && String(it.message || '').includes(attemptId) && !previous.includes(it.clientUserMessageId);
+    const found = id || attemptId ? [...entries.values()].reverse().find(found => users(found).some(matches)) : entries.get(latest);
     const turn = found?.entry.turn;
-    const user = found && (id || message ? users(found).find(matches) : users(found).at(-1));
+    const user = found && (id || attemptId ? users(found).find(matches) : users(found).at(-1));
     const reply = turn?.items?.filter(it => it.type === 'assistant-message' && it.phase !== 'commentary').at(-1);
-    return { id: user?.clientUserMessageId || '', ids: [...entries.values()].flatMap(found => users(found).map(it => it.clientUserMessageId)).filter(Boolean), user: user?.message || '', text: reply?.content || '', completed: turn?.status === 'complete' && !turn.partial && !!reply?.completed, items: turn ? codexTurnItems(found.el, found.entry) : [] };
+    return { id: user?.clientUserMessageId || '', ids: [...entries.values()].flatMap(found => users(found).map(it => it.clientUserMessageId)).filter(Boolean),
+      turnId: found?.entry.turnId || '', threadId: state.thread, current: !!found && found.entry.turnId === latest, user: user?.message || '', text: reply?.content || '',
+      accepted: !!user && codexSendState(false, state.thread).runs.some(value => value.id === found?.entry.turnId),
+      ended: turn?.status === 'complete' && !turn.partial,
+      completed: turn?.status === 'complete' && !turn.partial && !!reply?.completed, error: turn?.items?.find(item => item.type === 'system-error')?.content || '',
+      items: turn ? codexTurnItems(found.el, found.entry) : [] };
 
   };
   // One Codex turn can contain several markdown blocks. Keep them in order instead of keeping only the first reply.

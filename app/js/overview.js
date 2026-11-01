@@ -1,12 +1,7 @@
 /* ---------- overview: projects grouped by computer → sessions ---------- */
 const OV_ROOT = { level: 'sessions', comp: null, proj: null, open: null };
 const ovS = { ...OV_ROOT, level: store.get('ov-level') || OV_ROOT.level };
-const OV_RUN = ['planning', 'echo', 'echo-check', 'execute', 'review', 'fix'];
-const OV_WAIT = ['plan', 'disagree', 'check'];
-const OV_LABEL = { planning: '写方案', echo: '复述', 'echo-check': '核对复述', execute: '执行', review: '评审', fix: '小修' };
-const OV_NOW = { plan: '方案已写好，等你确认执行', disagree: '双方意见不一致，等你决定', check: '需要你选择：完成、小修或退回' };
-const OV_STEP = { planning: 1, echo: 1, 'echo-check': 1, plan: 2, disagree: 2, execute: 3, review: 4, fix: 4, check: 4, done: 5 };
-const OV_RANK = { wait: 0, err: 1, run: 2, idle: 3, done: 4 };
+const OV_RANK = { done: 0, wait: 1, err: 1, run: 2, idle: 3, unknown: 4 };
 const OV_AGENT = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex' };
 const OV_EN = {
   '返回概览': 'Back to overview', '上一级': 'Up one level', '菜单': 'Menu', '全部': 'All', '在线': 'Online', '项目': 'Projects', '会话': 'Sessions',
@@ -25,6 +20,7 @@ const OV_EN = {
   '全选当前范围': 'Select this scope', '批量收藏': 'Add favorites', '删除／归档': 'Delete / archive', '退出管理': 'Done', '停止剩余操作': 'Stop remaining',
   '模型未提供': 'Model unavailable', '未提供任务进度': 'No task progress provided', '正在读取运行状态…': 'Loading run status…', '任务进度': 'Task progress',
   '更多操作': 'More actions', '本次发送': 'Send this message', '输入工具': 'Input tools',
+  '状态待确认': 'Status unavailable', '执行失败': 'Failed', '其余项目仍在读取…': 'Loading remaining projects…',
 };
 const ovT = s => I18N.lang === 'en' && OV_EN[s] || s;
 const OV_ICON = {
@@ -53,16 +49,22 @@ const ovFmt = ms => { const m = Math.max(1, Math.round(ms / 60000)); return m < 
 const ovAg = app => `<span class="ov-ag"><img class="on-dark" src="logo-${app}-dark.svg" alt=""><img class="on-light" src="logo-${app}-light.svg" alt=""></span>`;
 const ovLogo = (inner, cls = '') => `<span class="ov-logo${cls}">${inner}</span>`;
 const ovText = (raw, ui) => raw ? `<span class="ovRaw">${esc(raw)}</span>` : ui ? `<span>${ovT(ui)}</span>` : '';
-const ovRecLogo = (r, extra = '') => r.fusion ? ovLogo([r.a, r.b].filter(Boolean).map(ovAg).join('') + extra, ' ov-duo') : ovLogo(ovAg(r.app) + extra);
-const ovAgName = r => r.fusion ? `Fusion · ${[r.a, r.b].filter(Boolean).map(a => OV_AGENT[a] || a).join(' + ')}` : OV_AGENT[r.app] || r.app;
+const ovRecLogo = (r, extra = '') => r.fusion ? ovLogo(ovAg(r.main.app) + extra) : ovLogo(ovAg(r.app) + extra);
+const ovAgName = r => r.fusion ? `Fusion · ${OV_AGENT[r.main.app]}` : OV_AGENT[r.app] || r.app;
 const ovTarget = x => ({ computer: x.comp, win: x.win, windowId: x.windowId, threadId: x.threadId || '',
   ...(x.dormant ? { project: { root: x.workspace, host: x.host } } : {}) });
-const ovNativeKey = (comp, s) => `${comp}|${s.windowId}|${s.threadId || s.win}`;
+const ovNativeKey = (comp, s) => `${comp}|${s.projectId}|${s.threadId || s.win}`;
 const ovRank = r => OV_RANK[r.state];
 const ovRecency = r => Math.max(r.start || 0, r.ended || 0, r.used || 0);
-const ovCount = recs => recs.reduce((k, r) => (k[r.state]++, k), { wait: 0, run: 0, err: 0, done: 0, idle: 0 });
+const ovCount = recs => recs.reduce((k, r) => (k[r.state]++, k), { wait: 0, run: 0, err: 0, done: 0, idle: 0, unknown: 0 });
+const ovCompare = (a, b) => ovRank(a) - ovRank(b) || ovRecency(b) - ovRecency(a);
+const ovAggregate = (recs, loading = false) => {
+  const counts = ovCount(recs), state = loading ? 'unknown' : counts.wait ? 'wait' : counts.err ? 'err' : counts.run ? 'run'
+    : counts.unknown ? 'unknown' : counts.done ? 'done' : 'idle';
+  return { counts, state, used: Math.max(0, ...recs.map(ovRecency)) };
+};
 const ovCompName = id => ovList.find(e => e.id === id)?.name || '';
-const ovSessionIdentity = r => `${r.comp}|${r.app}|${r.threadId}`;
+const ovSessionIdentity = r => r.key;
 const ovCanManage = r => !r.fusion && !r.off && !!r.threadId;
 const ovContext = r => `${ovS.level === 'favorites' ? ovCompName(r.comp) + ' · ' : ''}${r.projName} · ${ovAgName(r)}`;
 const ovOn = e => ovComputerStatus(e) === 'online';
@@ -75,10 +77,7 @@ function ovComputerStatus(e, st = ovSt.get(e.id)) {
   if (status === 'old') return status;
   if (navigator.onLine === false || link?.phase === 'paused') return 'offline';
   if (link?.socket?.readyState < 2) {
-    const foreground = e.c.key === currentComputer()?.key && link.socket === ws;
-    const pending = foreground ? conn.initialSelection && !windowReady && !conn.attachFailed
-      : link.preload && !computerBindingReady(link) && !link.preload.outcome;
-    return link.authed && st?.data?.ready && !pending ? 'online' : 'loading';
+    return link.authed && (st?.data?.ready || st?.data?.partial) ? 'online' : 'loading';
   }
   if (link?.retry != null || link?.attempt) return 'loading';
   if (link?.socket?.readyState >= 2) return 'offline';
@@ -96,7 +95,7 @@ function ovStOf(id) {
 }
 function ovPrune() {
   const midnight = new Date().setHours(0, 0, 0, 0);
-  for (const k in ovDone) if (ovDone[k] < midnight) delete ovDone[k];
+  for (const k in ovDone) if (!(ovDone[k].at >= midnight)) delete ovDone[k];
 }
 async function ovSync() {
   const list = [];
@@ -179,11 +178,12 @@ async function ovLoad(e, st) {
   st.stage = c.relay ? 1 : 0;
   if (!c.relay) return;
   const r = await ovRead(c, c.relay);
-  if (computerSockets.get(c.key)?.socket !== socket) return;
+  if (!loadComputers().some(row => row.key === c.key && row.token === c.token)) return;
   if (!computerRetryAllowed(c)) return;
   if (r.down) throw new Error('down');
   if (r.auth) {
-    if (link?.auth === authorization) rejectComputerConnection(c, 'auth');
+    const current = computerSockets.get(c.key);
+    if (current?.socket === socket && current?.auth === authorization) rejectComputerConnection(c, 'auth');
     return;
   }
   if (r.old) { st.dataStatus = 'old'; return; }
@@ -204,11 +204,16 @@ function ovApply(e, st, data) {
   let dirty = false;
   for (const r of ovRecsOf(e, st)) {
     const p = prev.get(r.key);
-    next.set(r.key, { busy: r.busy, wait: !!r.wait, state: r.state });
+    let run = r.run;
+    if (!run || run.status === 'unknown' && run.id === p?.run?.id) run = p?.run;
+    next.set(r.key, { busy: r.busy, wait: !!r.wait, state: r.state, run });
     if ((r.busy || r.wait) && ovDone[r.key]) { delete ovDone[r.key]; dirty = true; }
     if (!p || first) continue;
     if (r.wait && !p.wait) ovNotify(r, 'wait');
-    if (!r.fusion && p.busy && !r.busy && !r.wait) { ovDone[r.key] = Date.now(); dirty = true; ovNotify(r, 'done'); }
+    if (!r.busy && !r.wait && r.run?.status === 'completed' && p.run?.id === r.run.id && p.run.status === 'running') {
+      ovDone[r.key] = { runId: r.run.id, at: r.run.completedAt ? r.run.completedAt - st.offset : Date.now() };
+      dirty = true; ovNotify(r, 'done');
+    }
     if (r.fusion && p.state !== r.state && (r.state === 'done' || r.state === 'err')) ovNotify(r, r.state);
   }
   st.prev = next;
@@ -222,18 +227,15 @@ function ovNotify(r, kind) {
 function ovRecsOf(e, st) {
   const off = ovComputerStatus(e, st) !== 'online', out = [];
   for (const s of st.data.sessions) {
-    const key = ovNativeKey(e.id, s), done = ovDone[key], since = s.startedAt || st.first.get(key);
-    out.push({ key, comp: e.id, off, state: s.dormant ? 'idle' : s.waiting ? 'wait' : s.busy ? 'run' : done ? 'done' : 'idle', busy: !!s.busy, wait: s.waiting || '',
+    const key = ovNativeKey(e.id, s), done = s.run?.status === 'completed' && ovDone[key]?.runId === s.run.id ? ovDone[key].at : 0;
+    const since = s.startedAt || st.first.get(key);
+    const state = s.dormant ? 'idle' : s.waiting ? 'wait' : s.busy ? 'run' : ['error', 'stopped'].includes(s.run?.status) ? 'err'
+      : s.statusKnown === false || s.run?.status === 'unknown' ? 'unknown' : done ? 'done' : 'idle';
+    out.push({ key, comp: e.id, off, state, run: s.run, busy: !!s.busy, wait: s.waiting || '',
       waitText: s.waitingText || '', last: s.last || '', tasks: s.tasks, actions: s.actions || [], devin: !!s.devin, changed: s.changed || 0, acceptAll: !!s.acceptAll,
-      win: s.win, windowId: s.windowId, threadId: s.threadId || '', app: s.app, title: s.title || '', project: `${e.id}|${s.windowId}`, projName: s.project,
+      win: s.win, windowId: s.windowId, threadId: s.threadId || '', app: s.app, title: s.title || '', project: `${e.id}|${s.projectId}`, projName: s.project,
       start: since ? since - st.offset : 0, ended: done || 0, used: s.lastUsed ? s.lastUsed - st.offset : 0, changes: s.changes || null, favorite: s.favorite === true, common: agentSessionCommon(s),
       dormant: !!s.dormant, workspace: s.workspace || '', host: s.host || '' });
-  }
-  for (const f of st.data.fusion) {
-    const phase = f.phase || 'idle', state = OV_RUN.includes(phase) ? 'run' : OV_WAIT.includes(phase) ? 'wait' : phase === 'done' ? 'done' : phase === 'stopped' ? 'err' : 'idle';
-    out.push({ key: `${e.id}|fusion|${f.id}`, comp: e.id, off, state, busy: state === 'run', wait: state === 'wait' ? phase : '', fusion: true, phase, round: f.round || 0,
-      a: f.a, b: f.b, app: 'fusion', title: f.title || '', project: `${e.id}|fusion`, projName: 'Fusion', waitText: '', last: '', tasks: null, actions: [],
-      devin: false, changed: 0, win: 'fusion', windowId: 'fusion', threadId: f.id, start: f.updated ? f.updated - st.offset : 0, ended: 0, used: f.updated ? f.updated - st.offset : 0, changes: null });
   }
   return out;
 }
@@ -247,29 +249,27 @@ function ovProjects(all) {
   for (const e of ovList) {
     const st = ovSt.get(e.id);
     if (!st?.data) continue;
-    for (const w of st.data.windows) map.set(`${e.id}|${w.windowId}`, { key: `${e.id}|${w.windowId}`, comp: e.id, win: w.win, windowId: w.windowId, app: w.app, name: w.project });
-    if (ovOn(e)) map.set(`${e.id}|fusion`, { key: `${e.id}|fusion`, comp: e.id, win: 'fusion', windowId: 'fusion', app: 'fusion', name: 'Fusion' });
+    for (const w of st.data.windows) map.set(`${e.id}|${w.projectId}`, { key: `${e.id}|${w.projectId}`, comp: e.id, win: w.win, windowId: w.windowId, app: w.app, name: w.project, loading: w.loading });
   }
-  for (const r of all) if (!map.has(r.project)) map.set(r.project, { key: r.project, comp: r.comp, win: r.win, windowId: r.windowId, app: r.app, name: r.projName });
+  for (const r of all) if (!r.fusion && !map.has(r.project)) map.set(r.project, { key: r.project, comp: r.comp, win: r.win, windowId: r.windowId, app: r.app, name: r.projName });
   return [...map.values()];
 }
 function ovBadge(r) {
   if (r.off) return ovT('离线');
   if (r.dormant) return ovT('项目未打开');
   if (r.state === 'wait') return r.fusion ? ovT('等你确认') : r.wait.startsWith('q:') ? ovT('问题') : ovT('待确认');
-  if (r.state === 'run') return r.fusion ? ovT(OV_LABEL[r.phase]) + (r.round > 1 ? ` · 第 ${r.round} 轮` : '') : ovT(ovS.proj ? '正在工作' : '运行中');
-  return { done: ovT('已完成'), err: ovT('已停止'), idle: ovT(!r.common ? '不常用' : '空闲') }[r.state];
+  if (r.state === 'run') return r.fusion ? fusionStatus(r.status) : ovT(ovS.proj ? '正在工作' : '运行中');
+  return { done: ovT('已完成'), err: ovT(r.run?.status === 'error' ? '执行失败' : '已停止'), idle: ovT(!r.common ? '不常用' : '空闲'), unknown: ovT('状态待确认') }[r.state];
 }
 function ovNowHtml(r) {
-  if (r.state === 'wait') return r.fusion ? ovText('', OV_NOW[r.phase]) : ovText(r.waitText, '等你确认');
+  if (r.state === 'wait') return r.fusion ? ovText(r.waitText, '等你确认') : ovText(r.waitText, '等你确认');
   if (r.state === 'run') return ovText(r.tasks?.current || r.last, '正在工作…');
   if (r.state === 'done') return r.last ? ovText(r.last) : r.changes?.count != null ? `<span>${r.changes.count} ${ovT('个文件')}</span>` : ovText('', '已完成');
   if (r.state === 'err') return ovText('', '已停止');
   return ovText(r.last);
 }
 function ovProgress(r) {
-  if (r.tasks) return { done: r.tasks.done, total: r.tasks.total };
-  if (r.fusion) return { done: OV_STEP[r.phase] || 0, total: 5 };
+  if (r.tasks?.total) return { done: r.tasks.done, total: r.tasks.total };
   return null;
 }
 function ovTime(r) {
@@ -283,9 +283,10 @@ function ovSeg(k) {
   const parts = [['wait', 'var(--ov-amber)'], ['err', 'var(--err)'], ['run', 'var(--accent)'], ['done', 'var(--ok)'], ['idle', 'var(--fg-4)']].filter(([n]) => k[n]);
   return `<span class="ov-seg">${parts.map(([n, c]) => `<i style="flex:${k[n]};background:${c}"></i>`).join('')}</span>`;
 }
-function ovAgg({ attrs, logo, title, sub, recs, badge, off, vt }) {
-  const k = ovCount(recs), st = off ? 'idle' : k.wait ? 'wait' : k.err ? 'err' : k.run ? 'run' : k.done ? 'done' : 'idle';
-  const label = badge || (k.wait ? `${k.wait} 个等你` : k.err ? `${k.err} 个已停止` : k.run ? `${k.run} 个运行中` : k.done ? ovT('已完成') : ovT('空闲'));
+function ovAgg({ attrs, logo, title, sub, recs, badge, off, vt, loading }) {
+  const aggregate = ovAggregate(recs, loading), k = aggregate.counts, st = off ? 'idle' : aggregate.state;
+  const label = badge || (k.wait ? `${k.wait} 个等你` : k.err ? `${k.err} 个已停止` : k.run ? `${k.run} 个运行中`
+    : k.unknown ? ovT('状态待确认') : k.done ? ovT('已完成') : ovT('空闲'));
   ovSig.push(`${vt}:${st}:${off}`);
   return `<div class="ov-tile ov-agg ov-st-${st}${off ? ' ov-off' : ''}" style="view-transition-name:${ovTname(vt)}" ${attrs}>${logo}<span class="ov-badge">${label}</span>
     <div class="ov-title ovRaw">${esc(title)}</div><div class="ov-now">${sub}</div>
@@ -310,6 +311,7 @@ function ovComputerGroup(e, all, projs) {
     badge = ovT('重新连接'); action = `data-ov="retry" data-id="${esc(e.id)}"`;
     detail = link?.phase === 'paused' ? ovT('暂时无法连接，已暂停自动重试') : st?.seen ? `离线 · 最后在线 ${ovFmt(Date.now() - st.seen)} 前` : ovT('尚未连接');
   } else if (!loading) detail = ovS.level === 'projects' ? `${projects.length} 个项目` : `${recs.length} 个会话`;
+  if (status === 'online' && st.data.partial) detail += ' · ' + ovT('其余项目仍在读取…');
   if (status === 'online' && e.c?.key === currentComputer()?.key && conn.attachFailed) detail = I18N.tr('当前会话尚未就绪');
   const stage = link?.authed || link?.restoring ? 2 : link?.opened ? 1 : st?.stage || 0;
   if (loading) detail = ovT(link?.retry != null || link?.attempt && link?.socket?.readyState >= 2 || link?.restoring ? '正在恢复连接…' : link?.authed ? '正在读取项目与会话…' : link?.opened ? '正在验证设备…' : !link?.socket && st?.data ? '等待连接…' : stage ? '连接电脑…' : '查找地址…');
@@ -322,22 +324,22 @@ function ovComputerGroup(e, all, projs) {
 }
 function ovProjTile(p, all, showComputer = !ovS.comp) {
   const recs = all.filter(r => r.project === p.key), fusion = p.app === 'fusion';
-  const apps = fusion ? [...new Set(recs.flatMap(r => [r.a, r.b]))].filter(Boolean) : [p.app];
+  const apps = fusion ? [...new Set(recs.map(r => r.main.app))].filter(Boolean) : [p.app];
   const attrs = fusion && !recs.length ? `data-ov="open" data-t="${esc(JSON.stringify(ovTarget(p)))}"` : `data-ov="proj" data-id="${esc(p.key)}"`;
   const sub = `${showComputer ? `<span class="ovRaw">${esc(ovCompName(p.comp))} · </span>` : ''}<span>${recs.length} 个会话</span>`;
-  return ovAgg({ attrs, logo: ovLogo(apps.map(ovAg).join(''), ' ov-stack'), title: p.name, sub, recs, vt: 'p:' + p.key });
+  return ovAgg({ attrs, logo: ovLogo(apps.map(ovAg).join(''), ' ov-stack'), title: p.name, sub, recs,
+    badge: p.loading ? ovT('正在读取项目与会话…') : '', loading: p.loading, vt: 'p:' + p.key });
 }
 function ovProjectTiles(projects, all, showComputer = !ovS.comp) {
-  return projects.sort((a, b) => {
-    const rk = p => Math.min(5, ...all.filter(r => r.project === p.key).map(ovRank));
-    const pr = p => Math.max(0, ...all.filter(r => r.project === p.key).map(ovRecency));
-    return rk(a) - rk(b) || pr(b) - pr(a);
-  }).map(p => ovProjTile(p, all, showComputer)).join('');
+  const grouped = new Map(projects.map(p => [p.key, []]));
+  for (const r of all) grouped.get(r.project)?.push(r);
+  return projects.map(p => ({ ...p, ...ovAggregate(grouped.get(p.key), p.loading) }))
+    .sort(ovCompare).map(p => ovProjTile(p, grouped.get(p.key), showComputer)).join('');
 }
 function ovSessTile(r) {
   const open = !ovBatch && ovS.open === r.key, p = ovProgress(r), fill = p ? Math.round(p.done / p.total * 100) : 0;
   const now = r.state === 'wait' ? ovNowHtml(r) : ovText(r.tasks?.current || r.last);
-  const work = r.state === 'run' ? ovT(r.fusion ? OV_LABEL[r.phase] : '正在工作…') : ovBadge(r);
+  const work = r.state === 'run' ? r.fusion ? fusionStatus(r.status) : ovT('正在工作…') : ovBadge(r);
   const selected = !!ovBatch?.selected.has(ovSessionIdentity(r));
   const cls = ['ov-tile', 'ov-session', 'ov-compact', `ov-st-${r.state}`, open && 'ov-open', r.off && 'ov-off', ovBatch && 'ov-selecting', selected && 'ov-selected'].filter(Boolean).join(' ');
   ovSig.push(`${r.key}:${cls}`);
@@ -416,7 +418,7 @@ function ovCard(r) {
     body = (r.state === 'run' && !r.fusion ? ovRunHtml(r) : p ? `<div class="ov-progress"><i style="width:${Math.round(p.done / p.total * 100)}%"></i></div><div class="ov-pmeta"><span><b>${p.done}</b><em>/${p.total} 项任务</em></span></div>${r.tasks.current ? `<div class="ov-cur">${ovText(r.tasks.current)}</div>` : ''}` : '')
       + ovPreviewHtml(r)
       + ovChangesRow(r)
-      + (r.fusion ? `<div class="ov-meta"><span>第 ${r.round} 轮</span><span>A · ${esc(OV_AGENT[r.a] || r.a)}</span><span>B · ${esc(OV_AGENT[r.b] || r.b)}</span></div>` : '')
+      + (r.fusion ? `<div class="ov-meta"><span>主 Agent · ${esc(OV_AGENT[r.main.app])}</span><span>${esc(r.main.model || '')}</span></div>` : '')
       + composer
       + (r.devin && r.state === 'done' && r.acceptAll ? `<button class="ov-btn ov-pri" data-ov="accept" data-id="${key}"${dis}>接受改动</button>` : '');
   }
@@ -435,21 +437,22 @@ function ovSessionGroup(label, recs, id) {
   ovSig.push(`${id}:${expanded}`);
   return `<section class="ov-inactive" data-ov-node="group:${esc(id)}"><button class="ov-inactive-toggle" data-ov="group" data-id="${esc(id)}" aria-expanded="${expanded}"><span>${ovT(label)} · ${recs.length}</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 5 7 7-7 7"/></svg></button>${expanded ? `<div class="ov-inactive-grid">${recs.map(ovSessTile).join('')}</div>` : ''}</section>`;
 }
-const ovBucket = r => r.state === 'idle' ? r.common ? 'idle' : 'inactive' : r.state === 'run' || r.state === 'done' ? r.state : 'wait';
+const ovBucket = r => r.state === 'idle' ? r.common ? 'idle' : 'inactive' : ['run', 'done', 'unknown'].includes(r.state) ? r.state : 'wait';
 function ovSessions(recs, scope) {
-  const list = recs.slice().sort((a, b) => Math.min(ovRank(a), 3) - Math.min(ovRank(b), 3) || ovRecency(b) - ovRecency(a));
-  const groups = { done: [], wait: [], run: [], idle: [], inactive: [] };
+  const list = recs.slice().sort(ovCompare);
+  const groups = { done: [], wait: [], run: [], idle: [], inactive: [], unknown: [] };
   // Keep the editing card in its current group while its live badge and content continue updating.
   for (const r of list) groups[ovEditing?.key === r.key ? ovEditing.bucket : ovBucket(r)].push(r);
-  const { done, wait, run, idle, inactive } = groups;
-  const sections = [['已完成', done], ['需要你', wait], ['进行中', run]];
+  const { done, wait, run, idle, inactive, unknown } = groups;
+  const sections = [['已完成', done], ['需要你', wait], ['进行中', run], ['状态待确认', unknown]];
   return sections.map(([label, rows]) => rows.length ? `<div class="ov-div">${ovT(label)} · ${rows.length}</div>${rows.map(ovSessTile).join('')}` : '').join('')
     + (ovS.proj ? idle.map(ovSessTile).join('') : ovSessionGroup('空闲', idle, scope + '|idle'))
     + ovSessionGroup('不常用', inactive, scope + '|inactive');
 }
 function ovEmpty(text) { return `<div class="ov-empty">${text}</div>`; }
 function ovBoard(all, projs, scoped) {
-  if (ovS.level === 'favorites') return scoped.sort((a, b) => ovRecency(b) - ovRecency(a)).map(ovSessTile).join('')
+  if (ovS.level === 'fusion') return fusionBoard();
+  if (ovS.level === 'favorites') return scoped.sort(ovCompare).map(ovSessTile).join('')
     || ovEmpty(`${ovT('还没有收藏会话')}<small>${ovT('长按会话卡片可收藏')}</small>`);
   if (!ovS.proj) {
     const list = ovList.filter(e => !ovS.comp || e.id === ovS.comp).sort((a, b) => ovOn(b) - ovOn(a));
@@ -468,9 +471,9 @@ function ovPlan() {
   const crumbs = [`<label class="ov-scope"><select class="ovRaw" data-ov-computer aria-label="${ovT('电脑范围')}"><option value=""${!ovS.comp ? ' selected' : ''}>${ovT('全部电脑')}</option>${ovList.map(e => `<option value="${esc(e.id)}"${ovS.comp === e.id ? ' selected' : ''}>${esc(e.name)}</option>`).join('')}</select><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></label>`];
   if (ovS.proj) crumbs.push(`<i>›</i><button data-ov="crumb" data-v="proj"><span class="ovRaw">${esc(projs.find(p => p.key === ovS.proj)?.name || '')}</span></button>`);
   if (ovS.level === 'favorites') crumbs.splice(0, crumbs.length, `<span class="ov-favorites-title">${ovT('收藏')}</span>`);
-  const levels = [['sessions', ovT('概览'), OV_ICON.grid], ['projects', ovT('项目'), OV_ICON.folder], ['favorites', ovT('收藏'), OV_ICON.star]]
+  const levels = [['sessions', ovT('概览'), OV_ICON.grid], ['projects', ovT('项目'), OV_ICON.folder], ['favorites', ovT('收藏'), OV_ICON.star], ['fusion', 'Fusion', OV_ICON.grid]]
     .map(([v, l, ic]) => `<button class="ov-lv${ovS.level === v ? ' on' : ''}" data-ov="level" data-v="${v}"><i>${ic}${v === 'sessions' && anyWait && ovS.level !== 'sessions' ? '<span class="ov-dot"></span>' : ''}</i><span>${l}</span></button>`).join('');
-  const summary = [['total', ovT(ovS.level === 'favorites' ? '收藏会话' : '全部会话'), 'var(--fg-3)'], ['wait', ovT('需要你'), 'var(--ov-amber)'], ['run', ovT('运行中'), 'var(--accent)'], ['err', ovT('已停止'), 'var(--err)'], ['done', '今日完成', 'var(--ok)'], ['inactive', ovT('不常用'), 'var(--fg-4)']]
+  const summary = (ovS.level === 'fusion' ? [] : [['total', ovT(ovS.level === 'favorites' ? '收藏会话' : '全部会话'), 'var(--fg-3)'], ['wait', ovT('需要你'), 'var(--ov-amber)'], ['run', ovT('运行中'), 'var(--accent)'], ['err', ovT('已停止'), 'var(--err)'], ['done', '今日完成', 'var(--ok)'], ['inactive', ovT('不常用'), 'var(--fg-4)']])
     .filter(([n]) => k[n]).map(([n, l, c]) => `<span><i class="ov-d" style="background:${c}"></i><b>${k[n]}</b><em>${l}</em></span>`).join('');
   const lane = ovS.level !== 'projects' || ovS.proj ? '' : scoped.filter(r => r.state === 'wait').sort((a, b) => ovRecency(b) - ovRecency(a))
     .map(r => `<div class="ov-lane-item" data-ov="lane" data-id="${esc(r.key)}">${ovRecLogo(r)}<span class="ovRaw">${esc(r.title)}</span><small>${esc(ovBadge(r))}</small></div>`).join('');
@@ -613,6 +616,7 @@ function ovRestore(st) {
   for (const id of st?.ovCollapsed || []) ovCollapsed.add(id);
   ovExpanded.clear();
   for (const id of st?.ovExpanded || []) ovExpanded.add(id);
+  if (ovS.level === 'fusion') refreshFusionWorkspace();
   ovRender(true, st?.ovScroll || 0);
 }
 function ovMove(change, push = false) {
@@ -620,6 +624,7 @@ function ovMove(change, push = false) {
   ovSaveHistory();
   const depth = history.state?.ovDepth || 0;
   Object.assign(ovS, change);
+  if (ovS.level === 'fusion') refreshFusionWorkspace();
   history[push ? 'pushState' : 'replaceState']({ ...ovHistory(0), ovDepth: depth + Number(push) }, '');
   ovRender(true, 0);
 }
@@ -842,6 +847,7 @@ function ovLocateReply() {
 }
 function ovOpen(target) {
   if (target.project && !target.project.root) return status(ovT('尚未读取到项目路径，请在电脑上打开项目后重试'), false);
+  if (target.win === 'fusion') { ovS.level = 'fusion'; ovS.proj = null; ovSaveHistory(); }
   const json = JSON.stringify(target), e = ovList.find(x => x.id === target.computer);
   if (e.c.key === currentComputer()?.key) return openWin(json);
   const here = rememberNotice(json);

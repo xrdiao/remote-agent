@@ -292,8 +292,6 @@ export const methods = {
       this.pollChat(this.app === 'codex').catch(() => {});
       return;
     }
-    if (String(kind || '').startsWith('fusion-effort-')) return this.fusionModelPick(kind.slice('fusion-effort-'.length), label, true);
-    if (String(kind || '').startsWith('fusion-model-')) return this.fusionModelPick(kind.slice('fusion-model-'.length), label);
     if (kind === 'codex-run') return this.codexRunPick(String(label || ''));
     if (kind === 'codex-chat') return this.codexChatPick(String(label || ''), name ? String(name).slice(0, 80) : '');
     if (kind === 'model' && await this.adapter.pickModelMenu.call(this, label)) return;

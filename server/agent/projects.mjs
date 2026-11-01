@@ -70,7 +70,7 @@ function createProjectFolder(parent, name) {
 }
 
 
-export async function openFolder(folder, app, newWindow = false) {
+export async function openFolder(folder, app, newWindow = false, withDebugPort = false) {
   const { real } = safeHomePath(folder);
   const port = new URL(app === 'devin' ? DEVIN_CDP_URL : app === 'codex' ? CODEX_CDP_URL : CDP_URL).port;
   const bin = findBin(app, port);
@@ -81,8 +81,8 @@ export async function openFolder(folder, app, newWindow = false) {
   const command = IS_WIN && app === 'cursor' ? 'powershell.exe' : bin;
   const mode = newWindow ? '-n' : '-r';
   const args = IS_WIN && app === 'cursor'
-    ? ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference = 'Stop'; & '${launcher.replace(/'/g, "''")}' ${mode} '${real.replace(/'/g, "''")}'; exit $LASTEXITCODE`]
-    : [mode, real];
+    ? ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference = 'Stop'; & '${launcher.replace(/'/g, "''")}' ${mode}${withDebugPort ? ' --remote-debugging-port=' + port : ''} '${real.replace(/'/g, "''")}'; exit $LASTEXITCODE`]
+    : [mode, ...(withDebugPort ? ['--remote-debugging-port=' + port] : []), real];
   const child = spawn(command, args, { env, detached: true, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
   await new Promise((resolve, reject) => {
     child.once('error', reject);
@@ -524,7 +524,7 @@ export const methods = {
         this.projectAgentWindows.set(app, windows);
         for (const id of this.projectAgentCache.keys()) if (!windows.some(w => w.id === id)) this.projectAgentCache.delete(id);
         if (!readOnly) for (const w of windows) if (w.id !== this.targetId) this.projectAgentCache.delete(w.id);
-        if (readOnly && !this.fusionOwner) for (const w of windows) {
+        if (readOnly && !this.fusionBinding) for (const w of windows) {
           const source = nativeWindowAt(w.ws);
           if (source?.catalog) this.projectAgentCache.set(w.id, { list: structuredClone(source.catalog), surface: source.snapshot?.surface });
         }
