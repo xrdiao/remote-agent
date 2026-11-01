@@ -149,18 +149,21 @@ function voiceText(session, value) {
   session.writing = true;
   text.dispatchEvent(new Event('input', { bubbles: true }));
   session.writing = false;
-  if (text.scrollHeight > text.clientHeight) {
-    const style = getComputedStyle(text), mirror = document.createElement('div');
+  scrollVoiceInput(session.input);
+}
+function scrollVoiceInput(input) {
+  if (input.scrollHeight > input.clientHeight) {
+    const style = getComputedStyle(input), mirror = document.createElement('div');
     for (const key of ['font', 'lineHeight', 'letterSpacing', 'padding', 'boxSizing', 'wordBreak', 'overflowWrap', 'tabSize', 'textIndent']) mirror.style[key] = style[key];
-    Object.assign(mirror.style, { position: 'fixed', left: '-10000px', top: '0', visibility: 'hidden', width: text.clientWidth + 'px', whiteSpace: 'pre-wrap' });
-    mirror.textContent = text.value.slice(0, text.selectionEnd);
+    Object.assign(mirror.style, { position: 'fixed', left: '-10000px', top: '0', visibility: 'hidden', width: input.clientWidth + 'px', whiteSpace: 'pre-wrap' });
+    mirror.textContent = input.value.slice(0, input.selectionEnd);
     const caret = document.createElement('span');
     caret.textContent = '\u200b';
     mirror.append(caret); document.body.append(mirror);
     const y = caret.getBoundingClientRect().top - mirror.getBoundingClientRect().top;
     const line = parseFloat(style.lineHeight), padding = parseFloat(style.paddingBottom);
-    if (y < text.scrollTop) text.scrollTop = y;
-    else if (y + line > text.scrollTop + text.clientHeight - padding) text.scrollTop = y + line - text.clientHeight + padding;
+    if (y < input.scrollTop) input.scrollTop = y;
+    else if (y + line > input.scrollTop + input.clientHeight - padding) input.scrollTop = y + line - input.clientHeight + padding;
     mirror.remove();
   }
 }
@@ -186,7 +189,7 @@ async function startVoice(event) {
     prompt(); return;
   }
   if (event.pointerId != null) $('mic').setPointerCapture(event.pointerId);
-  const session = { scope: voiceScope(), expected: text.value, prefix: text.value.slice(0, text.selectionStart), suffix: text.value.slice(text.selectionEnd), selection: text.value.slice(text.selectionStart, text.selectionEnd), held: true, dbg: vdbg };
+  const session = { input: composerInput(), scope: voiceScope(), expected: text.value, prefix: text.value.slice(0, text.selectionStart), suffix: text.value.slice(text.selectionEnd), selection: text.value.slice(text.selectionStart, text.selectionEnd), held: true, dbg: vdbg };
   voiceSession = session;
   $('mic').classList.add('on'); $('mic').setAttribute('aria-label', '松开结束录音');
   status('正在连接本机语音并申请麦克风…');
@@ -253,7 +256,7 @@ function startSystemVoice(event) {
   const Recognition = systemRecognition();
   if (!Recognition) return status('这个浏览器/应用不支持系统语音识别，请改用 Safari/Chrome 或键盘语音输入', false);
   if (event.pointerId != null) $('mic').setPointerCapture(event.pointerId);
-  const session = { scope: voiceScope(), expected: text.value, prefix: text.value.slice(0, text.selectionStart), suffix: text.value.slice(text.selectionEnd), selection: text.value.slice(text.selectionStart, text.selectionEnd), held: true, system: true, finalText: '', interimText: '' };
+  const session = { input: composerInput(), scope: voiceScope(), expected: text.value, prefix: text.value.slice(0, text.selectionStart), suffix: text.value.slice(text.selectionEnd), selection: text.value.slice(text.selectionStart, text.selectionEnd), held: true, system: true, finalText: '', interimText: '' };
   voiceSession = session;
   $('mic').classList.add('on'); $('mic').setAttribute('aria-label', '松开结束录音');
   try {

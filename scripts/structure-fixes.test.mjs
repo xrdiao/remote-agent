@@ -524,6 +524,7 @@ function cardSubscription() {
     winTargetReady: () => context.targetReady, send: message => packets.push(message),
     $: node, ovRender() {}, ovToolInput: () => null, ovPatch() {},
     ovPrepareVisibleComposer() {}, ovMountComposerControls() {}, ovCrumbsPaint: '',
+    ovUpdateUsage() {},
     ovReleaseComposer: () => { context.ovToolState = null; },
   });
   const overview = read('app/js/overview.js');
@@ -836,4 +837,130 @@ test('card input tools retain the bound editor for history and newline actions',
   assert.deepEqual(calls, [-1, 1, 'end', '\n']);
   context.ovToolState = {}; await context.ovUseTool('card', 'inputPrev');
   assert.deepEqual(calls, [-1, 1, 'end', '\n']);
+});
+
+function voiceComposer() {
+  const calls = [], input = { value: 'saved', selectionStart: 5, selectionEnd: 5 };
+  const text = { value: 'saved', selectionStart: 5, selectionEnd: 5,
+    setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; },
+    dispatchEvent() { input.value = text.value; input.selectionStart = text.selectionStart; input.selectionEnd = text.selectionEnd; } };
+  const context = vm.createContext({
+    input, text, Event, CSS: { escape: value => value }, ovToolState: { key: 'card' },
+    document: { querySelector: () => input }, $: () => ({ classList: { remove() {} }, setAttribute() {} }),
+    voiceSession: { input, expected: 'saved', prefix: '', suffix: '', selection: '',
+      recognition: { abort: () => calls.push('abort') }, stream: { getTracks: () => [{ stop: () => calls.push('stop') }] } },
+    clearTimeout() {}, updateVoiceButton() {}, mentionHide() {}, mentionInput: input,
+    finishWinBinding() {}, ovMountComposerControls: () => calls.push('mount'),
+    scrollVoiceInput: editor => { assert.equal(editor, input); calls.push('scroll'); },
+  });
+  context.voiceLive = session => context.voiceSession === session;
+  const source = read('app/js/local-voice.js');
+  vm.runInContext(part(source, 'function releaseVoiceMedia(', 'function voiceText(')
+    + part(source, 'function voiceText(', 'function scrollVoiceInput(')
+    + part(read('app/js/overview.js'), 'function ovReleaseComposer(', 'function ovMountComposerControls('), context);
+  return { context, input, text, calls };
+}
+
+test('closing a voice-owned card releases microphone and recognition before returning its controls', () => {
+  const h = voiceComposer(); h.context.ovReleaseComposer();
+  assert.deepEqual(h.calls, ['abort', 'stop', 'mount']);
+  assert.equal(h.context.voiceSession, null); assert.equal(h.context.ovToolState, null);
+  assert.equal(h.input.value, 'saved'); assert.equal(h.text.value, 'saved');
+});
+
+test('a delayed transcript cannot write after its card recording is cancelled', () => {
+  const h = voiceComposer(), session = h.context.voiceSession; h.context.ovReleaseComposer();
+  h.context.voiceText(session, 'late transcript');
+  assert.equal(h.text.value, 'saved'); assert.equal(h.calls.includes('scroll'), false);
+});
+
+test('releasing a card does not cancel a recording owned by the full composer', () => {
+  const h = voiceComposer(); h.context.voiceSession.input = h.text;
+  h.context.ovReleaseComposer();
+  assert.deepEqual(h.calls, ['mount']); assert(h.context.voiceSession);
+});
+
+test('dictation keeps the shared draft and scrolls the recording owner after mirroring', () => {
+  const h = voiceComposer(); h.context.voiceText(h.context.voiceSession, 'recognized words');
+  assert.equal(h.text.value, 'recognized words'); assert.equal(h.input.value, 'recognized words');
+  assert.deepEqual(h.calls, ['scroll']);
+});
+
+test('the shared voice caret calculation scrolls its supplied editor without changing another textarea', () => {
+  const hidden = { scrollTop: 7 }, editor = { value: 'words', selectionEnd: 5, clientWidth: 180, clientHeight: 36, scrollHeight: 150, scrollTop: 0 };
+  let caretTop = 100;
+  const context = vm.createContext({ text: hidden,
+    getComputedStyle: input => { assert.equal(input, editor); return { lineHeight: '22px', paddingBottom: '0px' }; },
+    document: { body: { append() {} }, createElement: tag => ({ style: {}, append() {}, remove() {}, getBoundingClientRect: () => ({ top: tag === 'span' ? caretTop : 0 }) }) },
+  });
+  vm.runInContext(part(read('app/js/local-voice.js'), 'function scrollVoiceInput(', 'async function startVoice('), context);
+  context.scrollVoiceInput(editor); assert.equal(editor.scrollTop, 86); assert.equal(hidden.scrollTop, 7);
+  caretTop = 10; context.scrollVoiceInput(editor); assert.equal(editor.scrollTop, 10);
+});
+
+function usageMeters() {
+  const nodes = new Map(), computer = { id: 'computer-A' }, document = new EventTarget();
+  const node = id => {
+    if (!nodes.has(id)) nodes.set(id, { innerHTML: '', textContent: '', title: '', style: { setProperty() {} },
+      parentElement: { style: { setProperty() {} }, dataset: {} }, classList: { toggle() {} }, setAttribute() {},
+      querySelector: () => ({}), querySelectorAll: () => [], insertAdjacentHTML(_where, html) { this.innerHTML += html; } });
+    return nodes.get(id);
+  };
+  const context = vm.createContext({ document, Event, $: node, currentComputer: () => computer,
+    currentApp: 'codex', viewSel: 'codex|window-A|thread-A', esc: String, ready: true, status() {} });
+  context.ovComposerReady = key => context.ready && key === 'card';
+  const source = read('app/js/sheets.js');
+  vm.runInContext(part(source, 'function fusionUsageBars(', 'function fusionMetricValue(')
+    + part(source, 'function meterFill(', '// Phones show the value text')
+    + part(source, 'const quotaCache = new Map();', 'function showUsageDetails(')
+    + part(read('app/js/overview.js'), 'function ovUsageHtml(', 'function ovUpdateUsage('), context);
+  return { context, computer, nodes, node,
+    data: () => JSON.parse(JSON.stringify(context.currentUsageMeters())), html: () => context.ovUsageHtml('card') };
+}
+
+test('card rings share the existing context and quota percentage conversion with the header', () => {
+  const h = usageMeters();
+  h.context.renderQuota({ context: { pct: 40, basis: 'used' }, limits: [{ label: 'weekly', pct: 25, basis: 'used' }] });
+  assert.equal(h.node('meterCtxPct').textContent, '已用40%');
+  assert(h.node('quotaMeters').innerHTML.includes('剩余75%'));
+  assert(h.html().includes('上下文 已用 40%')); assert(h.html().includes('weekly 剩余 75%'));
+  assert.equal(h.data().quota[0].pct, 75);
+});
+
+test('context stays scoped to a conversation while quota stays scoped to its computer and window', () => {
+  const h = usageMeters(); h.context.renderQuota({ context: 30, quota: [{ label: 'weekly', pct: 60, basis: 'remaining' }] });
+  h.context.viewSel = 'codex|window-A|thread-B';
+  assert.equal(h.data().context, null); assert.equal(h.data().quota[0].pct, 60);
+  h.context.viewSel = 'codex|window-B|thread-B'; assert.deepEqual(h.data(), { context: null, quota: [] });
+  h.context.viewSel = 'codex|window-A|thread-A'; h.computer.id = 'computer-B';
+  assert.deepEqual(h.data(), { context: null, quota: [] });
+});
+
+test('unbound and missing card metrics remain unknown rather than becoming zero', () => {
+  const h = usageMeters(); h.context.renderQuota({ context: 0, missing: true, quota: [] });
+  assert(h.html().includes('上下文 已用 0%')); assert(h.html().includes('额度 未获取'));
+  h.context.ready = false; assert(h.html().includes('上下文 未获取'));
+  assert.equal(h.html().includes('已用 0%'), false);
+});
+
+test('multiple quota periods have independent segments and retain their original values', () => {
+  const h = usageMeters(); h.context.renderQuota({ context: { pct: 20, basis: 'remaining' }, limits: [
+    { label: 'weekly', pct: 40, basis: 'used' }, { label: 'daily', pct: 70, basis: 'used' },
+  ] });
+  const html = h.html();
+  assert(html.includes('上下文 已用 80%')); assert(html.includes('weekly 剩余 60%')); assert(html.includes('daily 剩余 30%'));
+  assert.equal((html.match(/class="ov-meter-quota /g) || []).length, 2);
+  assert(html.includes('stroke-dashoffset="-50"'));
+});
+
+test('unchanged usage updates leave the ring DOM intact and never repaint the card body', () => {
+  const h = usageMeters(); let value = '', writes = 0;
+  const holder = { closest: () => ({ dataset: { ovSession: 'card' } }) };
+  Object.defineProperty(holder, 'innerHTML', { get: () => value, set: html => { value = html; writes++; } });
+  h.context.document.body = { classList: { contains: () => false } };
+  h.context.$ = () => ({ querySelector: () => holder });
+  vm.runInContext(part(read('app/js/overview.js'), 'function ovUpdateUsage(', "document.addEventListener('usage-state'"), h.context);
+  h.context.ovUpdateUsage(); h.context.ovUpdateUsage(); assert.equal(writes, 1);
+  h.context.$ = h.node; h.context.renderContext(50); h.context.$ = () => ({ querySelector: () => holder });
+  h.context.ovUpdateUsage(); assert.equal(writes, 2);
 });
