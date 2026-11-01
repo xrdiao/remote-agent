@@ -1165,12 +1165,24 @@ function meterFill(pct, basis) {
   const warm = basis === 'remaining' ? pct <= 25 : pct >= 75;
   return tight ? 'hot' : warm ? 'warm' : '';
 }
+const meterPercent = pct => pct == null ? null : Math.max(0, Math.min(100, Number(pct)));
+const contextMeterScope = () => [currentComputer()?.id || '', viewSel].join('|');
 let contextInfo = null, quotaInfo = null;
+let contextMeterOwner = '', quotaMeterOwner = '';
+function quotaMeterData(m) {
+  return fusionUsageBars(m).filter(b => b?.label && !/^loading\b/i.test(String(b.label)))
+    .map(b => ({ ...b, pct: meterPercent(b.pct), basis: b.basis || 'used' }));
+}
+function currentUsageMeters() {
+  return { context: contextMeterOwner === contextMeterScope() ? contextInfo : null,
+    quota: quotaMeterOwner === quotaKey() && !quotaInfo.missing ? quotaMeterData(quotaInfo) : [] };
+}
 function renderContext(info) {
   const basis = info && typeof info === 'object' ? (info.basis || 'used') : 'used';
   const pct = info == null ? null : typeof info === 'object' ? info.pct : info;
-  const n = pct == null || pct === '' ? null : Math.max(0, Math.min(100, Number(pct)));
+  const n = meterPercent(pct === '' ? null : pct);
   contextInfo = { pct: n, basis };
+  contextMeterOwner = contextMeterScope();
   $('meterCtxPct').textContent = n == null ? '未获取' : (basis === 'remaining' ? '剩余' : '已用') + n + '%';
   const fill = $('meterCtxFill');
   fill.style.width = (n ?? 0) + '%';
@@ -1180,6 +1192,7 @@ function renderContext(info) {
   $('meterCtx').title = '上下文 · ' + (basis === 'remaining' ? '剩余' : '已用') + ' ' + (n ?? '–') + '%';
   $('meterCtx').setAttribute('aria-label', $('meterCtx').title);
   $('meterCtx').onclick = () => showUsageDetails('context');
+  document.dispatchEvent(new Event('usage-state'));
 }
 // Phones show the value text ("已用 56%") beside each ring whenever every meter fits that way next to
 // a readable title; otherwise the number moves inside the ring. Measured, so fonts/languages don't matter.
@@ -1211,9 +1224,10 @@ function renderQuota(m) {
     return;
   }
   quotaInfo = m;
+  quotaMeterOwner = quotaKey();
   if (!m.missing && !m.loading) quotaCache.set(quotaKey(), m);
-  const bars = fusionUsageBars(m)
-    .filter(b => b?.label && !/^loading\b/i.test(String(b.label)));
+  const bars = quotaMeterData(m);
+  document.dispatchEvent(new Event('usage-state'));
   $('quotaMeters').classList.toggle('devinLimits', currentApp === 'devin' && bars.length > 1);
   const when = m.updated ? new Date(m.updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
   if (m.missing) {
@@ -1231,8 +1245,8 @@ function renderQuota(m) {
   const reset = [...new Set(bars.map(b => b.reset).filter(Boolean))].join(' · ') || (m.lines || []).find(l => /reset/i.test(l)) || '';
   $('quotaMeters').title = [reset, when ? `更新于 ${when}` : ''].filter(Boolean).join(' · ');
   $('quotaMeters').innerHTML = bars.map(b => {
-    const basis = b.basis || 'used';
-    const n = b.pct == null ? null : Math.max(0, Math.min(100, Number(b.pct)));
+    const basis = b.basis;
+    const n = b.pct;
     const num = n == null ? (b.value ?? '未获取') : (basis === 'remaining' ? '剩余' : '已用') + `${n}%`;
     const label = /week|每周|周额度/i.test(b.label) ? '周额度' : /daily|每日|日额度/i.test(b.label) ? '日额度' : b.label;
     return `<button class="meter" type="button" title="${esc(b.label + ' · ' + basis + ' · ' + (b.reset || ''))}" aria-label="${esc(b.label + ' ' + num)}"><span class="track" style="--pct:${n ?? 0}" data-n="${n == null ? '' : Math.round(n)}"><i class="${meterFill(n, basis)}" style="width:${n ?? 0}%"></i></span><span class="meterText"><span class="meterLabel">${esc(label)}</span><b>${esc(String(num))}</b></span></button>`;

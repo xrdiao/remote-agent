@@ -53,7 +53,7 @@ const ovFmt = ms => { const m = Math.max(1, Math.round(ms / 60000)); return m < 
 const ovAg = app => `<span class="ov-ag"><img class="on-dark" src="logo-${app}-dark.svg" alt=""><img class="on-light" src="logo-${app}-light.svg" alt=""></span>`;
 const ovLogo = (inner, cls = '') => `<span class="ov-logo${cls}">${inner}</span>`;
 const ovText = (raw, ui) => raw ? `<span class="ovRaw">${esc(raw)}</span>` : ui ? `<span>${ovT(ui)}</span>` : '';
-const ovRecLogo = r => r.fusion ? ovLogo([r.a, r.b].filter(Boolean).map(ovAg).join(''), ' ov-duo') : ovLogo(ovAg(r.app));
+const ovRecLogo = (r, extra = '') => r.fusion ? ovLogo([r.a, r.b].filter(Boolean).map(ovAg).join('') + extra, ' ov-duo') : ovLogo(ovAg(r.app) + extra);
 const ovAgName = r => r.fusion ? `Fusion · ${[r.a, r.b].filter(Boolean).map(a => OV_AGENT[a] || a).join(' + ')}` : OV_AGENT[r.app] || r.app;
 const ovTarget = x => ({ computer: x.comp, win: x.win, windowId: x.windowId, threadId: x.threadId || '',
   ...(x.dormant ? { project: { root: x.workspace, host: x.host } } : {}) });
@@ -343,7 +343,7 @@ function ovSessTile(r) {
   ovSig.push(`${r.key}:${cls}`);
   return `<div class="${cls}" data-ov-session="${esc(r.key)}" style="--p:${fill}%;view-transition-name:${ovTname(r.key)}"${open ? '' : ` data-ov="sess" data-id="${esc(r.key)}"`}${ovBatch ? ` role="checkbox" aria-checked="${selected}" aria-disabled="${!ovCanManage(r) || ovBatch.running}" tabindex="0"` : ''}>
     ${ovBatch && ovCanManage(r) ? `<span class="ov-check" aria-hidden="true">${selected ? '✓' : ''}</span>` : ''}
-    ${ovRecLogo(r)}<div class="ov-state"><span class="ov-badge">${esc(ovBadge(r))}</span><span class="ov-time">${esc(ovTime(r))}</span></div>
+    ${ovRecLogo(r, open ? '<span class="ov-usage" data-ov-preserve></span>' : '')}<div class="ov-state"><span class="ov-badge">${esc(ovBadge(r))}</span><span class="ov-time">${esc(ovTime(r))}</span></div>
     <div class="ov-title ovRaw">${esc(r.title)}</div>
     <div class="ov-context ovRaw" title="${esc(ovContext(r))}">${esc(ovContext(r))}</div>
     <div class="ov-now">${now}</div>
@@ -354,6 +354,29 @@ function ovSessTile(r) {
 function ovOpenLink(r, cls = '') {
   return `<button class="ov-link${cls}" data-ov="full" data-id="${esc(r.key)}" data-t="${esc(JSON.stringify(ovTarget(r)))}"${r.dormant && !r.workspace ? ' disabled' : ''}>${ovT('打开对话')}</button>`;
 }
+function ovUsageHtml(key) {
+  const data = ovComposerReady(key) ? currentUsageMeters() : { context: null, quota: [] };
+  const context = data.context, used = context?.pct == null ? null : context.basis === 'remaining' ? 100 - context.pct : context.pct;
+  const label = [`上下文 ${used == null ? '未获取' : `已用 ${used}%`}`];
+  const circle = (radius, cls, length, offset = 0) => `<circle class="${cls}" cx="20" cy="20" r="${radius}" pathLength="100" stroke-dasharray="${length} ${100 - length}" stroke-dashoffset="${offset}" transform="rotate(-90 20 20)"></circle>`;
+  let rings = circle(14.5, 'ov-meter-track', 100) + circle(14.5, `ov-meter-context ${meterFill(used, 'used')}`, used ?? 0);
+  const quota = data.quota.length ? data.quota : [{ label: '额度', pct: null }], part = 100 / quota.length, span = quota.length > 1 ? part - 3 : part;
+  for (const [i, item] of quota.entries()) {
+    const remaining = item.pct == null ? null : item.basis === 'used' ? 100 - item.pct : item.pct;
+    label.push(`${item.label} ${remaining == null ? '未获取' : `剩余 ${remaining}%`}`);
+    rings += circle(18.5, 'ov-meter-track', span, -i * part)
+      + circle(18.5, `ov-meter-quota ${meterFill(remaining, 'remaining')}`, span * (remaining ?? 0) / 100, -i * part);
+  }
+  return `<svg viewBox="0 0 40 40" role="img" aria-label="${esc(label.join('；'))}"><title>${esc(label.join('；'))}</title>${rings}</svg>`;
+}
+function ovUpdateUsage() {
+  if (document.body.classList.contains('conv')) return;
+  const holder = $('ovBoard').querySelector('.ov-open > .ov-logo > .ov-usage');
+  if (!holder) return;
+  const html = ovUsageHtml(holder.closest('[data-ov-session]').dataset.ovSession);
+  if (holder.innerHTML !== html) holder.innerHTML = html;
+}
+document.addEventListener('usage-state', ovUpdateUsage);
 function ovChangesRow(r) {
   const c = r.changes;
   if (!c) return '';
@@ -399,8 +422,8 @@ function ovCard(r) {
   const queue = queueCount ? `<button class="ov-queue" data-ov="queue" data-id="${key}" aria-haspopup="dialog">${I18N.tr('排队')} ${queueCount} ▾</button>` : '';
   const tools = canReply ? `<div class="ov-tools">${['add', 'img', 'uploadDoc'].map(id => tool(id)).join('')}<span data-ov-node="mic:${key}" data-ov-control="mic" data-ov-preserve></span><span data-ov-node="stop:${key}" data-ov-control="stop" data-ov-preserve></span>${tool('insertNewline')}${queue}</div>` : '';
   const message = ready && $('msg').className !== 'quiet' ? $('msg').textContent : '';
-  const toolStatus = tools && message ? `<div class="ov-tool-status ${$('msg').className}" role="status">${esc(message)}</div>` : '';
-  return status + body + off + err + toolStatus + `<div class="ov-cfoot">${tools}${ovOpenLink(r)}</div>`;
+  const toolStatus = tools ? `<div class="ov-tool-status ${$('msg').className}" role="status">${esc(message)}</div>` : '';
+  return status + body + off + err + `<div class="ov-cfoot">${tools}${ovOpenLink(r)}</div>` + toolStatus;
 }
 function ovSessionGroup(label, recs, id) {
   if (!recs.length) return '';
@@ -457,6 +480,7 @@ function ovPatch(container, html) {
   const template = document.createElement('template');
   template.innerHTML = html;
   const active = document.activeElement;
+  const anchor = $('mic').classList.contains('on') ? $('mic') : active;
   const key = node => node.nodeType === 1 ? [node.nodeName, node.getAttribute('data-ov') || '',
     node.getAttribute('data-ov-session') || node.getAttribute('data-ov-node') || node.getAttribute('data-ov-input') || node.getAttribute('data-ov-scroll')
       || node.getAttribute('data-id') || node.getAttribute('data-v') || node.getAttribute('class')?.split(' ')[0] || ''].join('|') : node.nodeName;
@@ -477,8 +501,8 @@ function ovPatch(container, html) {
       }
       return node;
     });
-    // Move siblings around the focused subtree; moving that subtree would cancel native IME input.
-    const pinned = children.findIndex(node => node.contains(active));
+    // Moving a focused editor or held microphone would cancel IME input or pointer capture.
+    const pinned = children.findIndex(node => node.contains(anchor));
     let before = pinned >= 0 ? children[pinned] : parent.firstChild;
     for (let i = pinned - 1; i >= 0; i--) { if (children[i].nextSibling !== before) parent.insertBefore(children[i], before); before = children[i]; }
     before = pinned >= 0 ? children[pinned].nextSibling : parent.firstChild;
@@ -517,6 +541,7 @@ function ovCommit(p) {
   }
   ovPrepareVisibleComposer();
   ovMountComposerControls();
+  ovUpdateUsage();
 }
 function ovRender(vt, scroll, locate = false) {
   if (winBinding && ovToolState) {
@@ -538,6 +563,7 @@ function ovRender(vt, scroll, locate = false) {
       ovScroll = undefined;
     }
     ovPrepareVisibleComposer();
+    ovUpdateUsage();
     return;
   }
   const commit = (next = p) => {
@@ -746,9 +772,10 @@ document.addEventListener('composer-state', ovReflectComposer);
 function ovReleaseComposer() {
   if (!ovToolState) return;
   const input = document.querySelector('[data-ov-input="' + CSS.escape(ovToolState.key) + '"]');
+  ovToolState = null;
+  if (voiceSession?.input === input) cancelVoice();
   if (input) mentionHide(input);
   mentionInput = text;
-  ovToolState = null;
   ovMountComposerControls();
   finishWinBinding(new Error('目标会话已切换'));
 }
