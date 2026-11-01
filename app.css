@@ -274,9 +274,7 @@ body:not(.wide) .meter .track::after { inset: 2.5px; }
 body:not(.wide) .meter { gap: 4px; }
 body:not(.wide) .meter b { font-size: 10.5px; }
 body:not(.wide) .meter .meterLabel { display: block; }
-body.metersText:not(.wide) #title { min-width: 0; }
-body:not(.wide) .fusionMetricText { display: none; }
-body:not(.wide) #fusionHeader { flex: 0 1 auto; }
+body.metersText:not(.wide) #title { min-width: 0; }body:not(.wide) #fusionHeader { flex: 0 1 auto; }
 body[data-app="cursor"]:not(.wide):not(.land) .meterText { display: none; }
 body[data-app="cursor"]:not(.wide):not(.land) .meter .track { width: 24px; height: 24px; }
 body[data-app="cursor"]:not(.wide):not(.land) .meter .track::after { inset: 3.5px; }
@@ -320,17 +318,6 @@ body:not(.wide) .seg button.on { z-index: 2; translate: 0 0; scale: 1; backgroun
   flex: 1; min-width: 0; display: flex; align-items: center; height: 36px;
   border-radius: 999px; background: var(--s1); overflow: hidden;
 }
-.fusionAgent { display: flex; flex: 1; min-width: 0; align-items: center; gap: 3px; padding: 2px 6px; }
-.fusionAgent + .fusionAgent { border-left: 1px solid var(--line); }
-.fusionAgent > button { align-self: center; min-width: 27px; min-height: 0; padding: 2px 4px; background: transparent; border: 0; font-size: 13px; font-weight: 600; color: var(--fg-hi); }
-.fusionRing { flex: none; width: 16px; height: 16px; border-radius: 50%; background: conic-gradient(var(--agent-color) calc(var(--pct, 0) * 1%), var(--line-3) 0); position: relative; }
-.fusionRing::after { content: ''; position: absolute; inset: 3px; border-radius: 50%; background: var(--s1); }
-.fusionAgent:first-child { --agent-color: var(--accent); }
-.fusionAgent:last-child { --agent-color: var(--ok); }
-.fusionInlineMeters { display: flex; align-items: center; gap: 4px; min-width: 0; flex: 1; overflow: hidden; }
-.fusionMetricText { min-width: 0; flex: 1; display: flex; align-items: center; gap: 6px; overflow: hidden; }
-.fusionMetricText button { padding: 0; border: 0; background: transparent; font-size: 10.5px; line-height: 1.2; text-align: left; white-space: nowrap; color: var(--fg-3); font-variant-numeric: tabular-nums; min-height: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; }
-
 /* ---------- layout shells ---------- */
 main { flex: 1; min-height: 0; position: relative; }
 .view { position: absolute; inset: 0; display: none; flex-direction: column; min-width: 0; }
@@ -799,57 +786,36 @@ body:not(.chatmode) #inputHistory, body:not(.term) #termHistory { display: none;
 /* Idle drafts keep the tools visible while the text uses at most two lines. */
 body.composeIdle.chatmode #text { max-height: calc(2.9em + 12px); overflow-y: hidden; }
 
-/* Compact composer: the empty idle chat composer collapses to a one-line pill
-   [#add][#text][#mic|#stop] so the conversation gets the vertical room back. */
-body.composeCompact.chatmode .composerBox {
-  position: relative; display: flex; align-items: center; gap: 4px; min-height: 48px; padding: 4px 6px; border-radius: 999px;
-}
-body.composeCompact.chatmode #chatTools { display: none; }
-body.composeCompact.chatmode .sendRow { order: -1; flex: none; padding: 0; }
-body.composeCompact.chatmode .sendTools > :not(#add),
-body.composeCompact.chatmode .sendRow > :not(.sendTools),
-body.composeCompact.chatmode #sendNow, body.composeCompact.chatmode #send { display: none; }
-body.composeCompact.chatmode .composerField { flex: 1 1 auto; }
-body.composeCompact.chatmode #text { min-height: 40px; max-height: 40px; pointer-events: none; }
-body.composeCompact.chatmode #stop, body.composeCompact.chatmode #mic { top: 50%; transform: translateY(-50%); }
-/* The status line rides inside the capsule between + and the mic; never interactive. */
-body.composeCompact.chatmode #footerStatus {
-  position: absolute; top: 0; bottom: 0; left: 48px; right: 48px; max-width: none;
-  align-items: center; justify-content: flex-start; gap: 6px; padding: 0; min-height: 0; pointer-events: none;
-}
-body.composeCompact.chatmode footer:has(#footerStatus #msg:not(:empty):not(.quiet)) #text::placeholder,
-body.composeCompact.chatmode footer:has(#footerStatus #elapsed:not([hidden])) #text::placeholder { color: transparent; }
-
-/* Portrait uses the same compact state for the manual toggle and question focus. */
+/* Both orientations share the folded model/project row. */
 #composerFold { display: none; }
-body:not(.land).chatmode .composerBox { position: relative; }
-body:not(.land).chatmode #chatTools { padding-right: 36px; }
-body:not(.land).chatmode #composerFold {
+body.chatmode .composerBox { position: relative; }
+body.chatmode #chatTools { padding-right: 36px; }
+body.chatmode #composerFold {
   position: absolute; top: 8px; right: 8px; z-index: 2; display: grid; place-items: center;
   width: 28px; height: 28px; min-height: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--fg-3);
 }
-body:not(.land).chatmode #composerFold:active { background: var(--s2); transform: none; }
-body:not(.land).composeCompact.chatmode #composerFold svg { transform: rotate(180deg); }
-body:not(.land).composeCompact.chatmode .composerBox { display: block; min-height: 48px; padding: 8px; border-radius: var(--r-xl); }
-body:not(.land).composeCompact.chatmode #chatTools { display: flex; padding: 0 34px 0 0; overflow: hidden; -webkit-mask-image: none; mask-image: none; }
-body:not(.land).composeCompact.chatmode #chatTools > :not(#pickModel):not(#pickAgents):not(#pickEditor):not(#fusionConfig) { display: none; }
-body:not(.land).composeCompact.chatmode #pickModel { flex: 1 1 auto; min-width: 0; max-width: none; padding: 0 6px; }
-body:not(.land).composeCompact.chatmode #pickAgents { flex: 0 1 auto; min-width: 0; padding: 0 6px; }
-body:not(.land).composeCompact.chatmode #pickEditor { flex: 0 0 30px; }
-body:not(.land).composeCompact.chatmode #fusionConfig { flex: 1; }
-body:not(.land).composeCompact.chatmode .composerField,
-body:not(.land).composeCompact.chatmode .sendRow,
-body:not(.land).composeCompact.chatmode .attachmentRow,
-body:not(.land).composeCompact.chatmode #mentionBox,
-body:not(.land).composeCompact.chatmode #mathPrev,
-body:not(.land).composeCompact.chatmode #retryChat { display: none; }
-body:not(.land).chatmode #footerStatus {
+body.chatmode #composerFold:active { background: var(--s2); transform: none; }
+body.composeCompact.chatmode #composerFold svg { transform: rotate(180deg); }
+body.composeCompact.chatmode .composerBox { display: block; min-height: 48px; padding: 8px; border-radius: var(--r-xl); }
+body.composeCompact.chatmode #chatTools { display: flex; padding: 0 34px 0 0; overflow: hidden; -webkit-mask-image: none; mask-image: none; }
+body.composeCompact.chatmode #chatTools > :not(#pickModel):not(#pickAgents):not(#pickEditor):not(#fusionConfig) { display: none; }
+body.composeCompact.chatmode #pickModel { flex: 1 1 auto; min-width: 0; max-width: none; padding: 0 6px; }
+body.composeCompact.chatmode #pickAgents { flex: 0 1 auto; min-width: 0; padding: 0 6px; }
+body.composeCompact.chatmode #pickEditor { flex: 0 0 30px; }
+body.composeCompact.chatmode #fusionConfig { flex: 1; }
+body.composeCompact.chatmode .composerField,
+body.composeCompact.chatmode .sendRow,
+body.composeCompact.chatmode .attachmentRow,
+body.composeCompact.chatmode #mentionBox,
+body.composeCompact.chatmode #mathPrev,
+body.composeCompact.chatmode #retryChat { display: none; }
+body.chatmode:is(:not(.land), .composeCompact) #footerStatus {
   position: absolute; align-items: center; justify-content: flex-start; gap: 6px; min-height: 0;
   top: auto; bottom: calc(100% - 2px); left: 14px; right: auto; width: auto; max-width: calc(100% - 28px);
   padding: 2px 7px 0; border-radius: 8px 8px 0 0; background: var(--s1); pointer-events: auto;
 }
-body:not(.land).chatmode #elapsed { order: -1; font-size: 10px; }
-body:not(.land).chatmode #msg { font-size: 10px; }
+body.chatmode:is(:not(.land), .composeCompact) #elapsed { order: -1; font-size: 10px; }
+body.chatmode:is(:not(.land), .composeCompact) #msg { font-size: 10px; }
 
 /* Short screens (tablets, foldable inners, cover screens): reclaim chrome height. */
 @media (max-height: 760px) {
@@ -1193,53 +1159,27 @@ body.term #stage { display: none; }
   background: var(--bg); color: var(--fg-hi); font: 13px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace; padding: 10px 12px 24px; border-radius: 0;
 }
 
-/* ---------- Fusion ---------- */
-body.fusion header { padding: 8px 12px 4px; gap: 7px; }
-body.fusion #title { flex: 0 0 94px; gap: 5px; }
-body.fusion .appAvatar { width: 28px; height: 28px; }
-body.fusion #titleProject { display: none; }
-#fusionWelcome { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 20px 0; }
-body.fusion #list:has(#fusionWelcome:not([hidden]))::before { display: none; }
-.fusionIllustration { display: flex; align-items: center; justify-content: center; margin-bottom: 24px; }
-.fusionIllustration span { display: grid; place-items: center; width: 114px; height: 114px; border-radius: 50%; background: var(--accent-tint); color: var(--accent-text); font-size: 32px; font-weight: 600; }
-.fusionIllustration span:last-child { margin-left: -38px; background: var(--ok-tint); color: var(--ok); }
-.fusionIllustration i { width: 0; z-index: 1; transform: translateX(-25px); color: var(--accent-text); font-size: 25px; font-style: normal; }
-#fusionWelcome h2 { font-size: 24px; font-weight: 650; letter-spacing: -.01em; color: var(--fg-hi); margin: 0 0 10px; }
-#fusionWelcome p { font-size: 13px; color: var(--fg-3); margin: 2px 0; }
-#fusionSetup { width: 100%; max-width: 520px; margin: 16px auto 0; text-align: left; }
-.fusionStep { margin-bottom: 8px; border-radius: var(--r-md); background: var(--s1); overflow: hidden; }
-.fusionStep.active { box-shadow: inset 0 0 0 1.5px var(--accent-tint-2); }
-.fusionStepHead { display: flex; align-items: center; gap: 10px; width: 100%; padding: 12px; border: 0; border-radius: 0; background: transparent; text-align: left; white-space: normal; min-height: 0; }
-.fusionStepHead .lbl { flex: 1; min-width: 0; }
-.fusionStepHead strong { display: block; font-size: 13px; font-weight: 600; }
-.fusionStepHead .sub { display: block; margin-top: 3px; color: var(--fg-3); font-size: 11px; overflow-wrap: anywhere; }
-.fusionStepHead > span[aria-hidden] { color: var(--fg-4); }
-.fusionStepNumber { flex: none; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--s2); color: var(--accent-text); font-size: 12px; }
-.fusionStep.active .fusionStepNumber { background: var(--accent); color: var(--accent-fg); }
-.fusionStepBody { padding: 0 12px 12px; }
-.fusionStepBody button:disabled, .fusionStepHead:disabled { opacity: .45; cursor: default; }
-.fusionNext { width: 100%; min-height: 40px; padding: 9px 12px; font-size: 13px; white-space: normal; }
-.fusionSetupSummary { margin: 0 0 12px; font-size: 12px; overflow-wrap: anywhere; }
-.fusionSetupSummary dt { color: var(--fg-3); margin-top: 8px; }
-.fusionSetupSummary dd { margin: 2px 0 0; }
-.fusionSetupSummary small { display: block; color: var(--accent-text); }
-#fusionSetupReady { max-width: 340px; padding-top: 18px; }
-#fusionBar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-body.fusion #text { min-height: 74px; }
-body.fusion.kb .fusionIllustration { margin-bottom: 8px; }
-body.fusion.kb .fusionIllustration span { width: 64px; height: 64px; font-size: 24px; }
-body.fusion.kb #fusionWelcome { padding: 4px 0; }
-body.fusion.kb #fusionWelcome h2 { font-size: 16px; margin-bottom: 4px; }
-@media (max-width: 350px) {
-  body.fusion #title { flex-basis: 88px; gap: 3px; padding: 4px 5px; }
-  body.fusion #titleText { font-size: 12px; }
-  .fusionRing { width: 14px; height: 14px; }
-  .fusionMetricText button { font-size: 8px; }
-  .fusionAgent { padding: 2px 3px; gap: 2px; }
-}
-.fusionTree details { margin: 4px 0 4px 10px; }
-.fusionTree summary { padding: 10px 4px; cursor: pointer; font-size: 14px; }
-.fusionTree > details { margin-left: 0; }
+/* ---------- Fusion workspace ---------- */
+#fusionHeader { display: flex; gap: 6px; min-width: 0; }
+#fusionBar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+#fusionWelcome { padding: 18px 0; text-align: center; }
+.fusion-board { grid-column: 1 / -1; width: 100%; max-width: 960px; margin: 0 auto; }
+.fusion-board section { margin: 14px 0; padding: 14px; background: var(--s1); border: 1px solid var(--line); border-radius: 14px; }
+.fusion-board h2, .fusion-board h3 { margin: 0 0 12px; }
+.fusion-run-row { display: flex; width: 100%; padding: 14px 2px; border-top: 1px solid var(--line); gap: 10px; align-items: center; text-align: left; }
+.fusion-run-row .lbl { flex: 1; min-width: 0; }
+.fusion-run-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.fusion-run-row small { display: block; color: var(--fg-3); margin-top: 4px; overflow-wrap: anywhere; }
+.fusion-form { display: grid; gap: 12px; }
+.fusion-form label { display: grid; gap: 6px; color: var(--fg-3); }
+.fusion-form select, .fusion-form input { width: 100%; min-height: 42px; padding: 8px; background: var(--s2); border: 1px solid var(--line); border-radius: 8px; color: var(--fg-hi); }
+.fusion-form .primary { min-height: 44px; }
+.fusion-task { border-top: 1px solid var(--line); padding: 12px 0; }
+.fusion-task summary { cursor: pointer; overflow-wrap: anywhere; }
+.fusion-task pre, .fusion-evidence { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.6; }
+.fusion-task button { margin: 4px 6px 4px 0; }
+.fusion-error { color: var(--err); white-space: pre-wrap; overflow-wrap: anywhere; }
+.fusion-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
 
 /* ---------- gate (pairing / offline) ---------- */
 #gate {
@@ -1617,9 +1557,9 @@ body.conv #overview { display: none; }
 #overview .ov-main { grid-area: main; min-height: 0; overflow: auto; padding: 2px 16px 24px; scrollbar-width: none; }
 #overview .ov-main::-webkit-scrollbar { display: none; }
 #overview .ov-levels { grid-area: levels; display: flex; justify-content: space-around; padding: 8px 18px max(26px, env(safe-area-inset-bottom)); background: var(--s1); border-top: 1px solid var(--line-2); }
-#overview.ov-landscape .ov-body { grid-template-columns: 84px 1fr; grid-template-rows: 1fr auto; grid-template-areas: "levels main" "levels tools"; }
+#overview.ov-landscape .ov-body { grid-template-columns: 1fr; grid-template-rows: 1fr auto auto; grid-template-areas: "main" "tools" "levels"; }
 #overview.ov-landscape .ov-main { padding: 4px 18px 14px 6px; }
-#overview.ov-landscape .ov-levels { flex-direction: column; justify-content: center; gap: 14px; padding: 8px 0; border-top: 0; background: transparent; }
+#overview.ov-landscape .ov-levels { flex-direction: row; padding-bottom: max(8px, env(safe-area-inset-bottom)); }
 
 #overview .ov-lv { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; color: var(--fg-3); }
 #overview .ov-lv i { position: relative; width: 58px; height: 32px; border-radius: 999px; display: grid; place-items: center; transition: background .2s; }

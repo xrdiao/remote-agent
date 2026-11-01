@@ -396,19 +396,6 @@ $('sheet').addEventListener('click', async e => {
     return send({ t: 'launchAgents', apps: b.dataset.launchMissing.split(',') });
   }
   if (b.dataset.win) return switchToWindow(b.dataset.win);
-  if ('fusionTrust' in b.dataset) { closeSheet(); return send({ t: 'fusionTrust', approve: b.dataset.fusionTrust === 'yes' }); }
-  if ('fusionDir' in b.dataset) { status('正在读取项目…'); return send({ t: 'fusionProjects', path: b.dataset.fusionDir }); }
-  if ('fusionPath' in b.dataset) {
-    const path = window.prompt(I18N.tr('电脑上的文件夹完整路径'));
-    if (path?.trim()) { status('正在读取项目…'); send({ t: 'fusionProjects', path: path.trim() }); }
-    return;
-  }
-  if (b.dataset.fusionFolder) { closeSheet(); return send({ t: 'fusionProject', path: b.dataset.fusionFolder }); }
-  if (b.dataset.fusionContinue) {
-    if (!await ask('在当前项目创建新会话，并携带旧会话最近的历史摘录？原会话保留，不会发送任务。', '续接')) return;
-    closeSheet(); status('正在创建会话…');
-    return send({ t: 'fusionContinue', side: b.dataset.fusionSide, id: b.dataset.fusionContinue });
-  }
   if ('saveInstructions' in b.dataset) {
     status('正在保存指令…');
     return send({ t: 'codexInstructions', text: $('codexInstructions').value });
@@ -418,12 +405,6 @@ $('sheet').addEventListener('click', async e => {
     if (RISKY.test(label) && !await ask(label + '？')) return;
     status('正在读取设置…'); return send({ t: 'codexSetting', id: b.dataset.codexSetting });
   }
-  if (b.dataset.fusionProject) { closeSheet(); return send({ t: 'fusionProject', id: b.dataset.fusionProject }); }
-  if (b.dataset.fusionHistory) { closeSheet(); return send({ t: 'fusionOpen', id: b.dataset.fusionHistory }); }
-  if (b.dataset.fusionRefresh) { closeSheet(); status('正在读取额度…'); return send({ t: 'fusionUsage', side: b.dataset.fusionRefresh }); }
-  if (b.dataset.fusionSelect) { closeSheet(); return send({ t: 'fusionSides', side: b.dataset.fusionSelect }); }
-  if (b.dataset.fusionNew) { closeSheet(); status('正在创建会话…'); return send({ t: 'fusionNewSide', side: b.dataset.fusionSide, app: b.dataset.fusionNew }); }
-  if (b.dataset.fusionId) { closeSheet(); return send({ t: 'fusionSide', side: b.dataset.fusionPick, id: b.dataset.fusionId }); }
   if (b.dataset.codexArchive) {
     const id = b.dataset.codexArchive, name = b.dataset.codexName || '';
     if (!await ask(`归档「${name}」？\n它会从当前列表移除，历史记录仍保留。`, '归档')) { if (!sheetKind) renderAgentList(); return; }
@@ -494,8 +475,7 @@ $('sheet').addEventListener('click', async e => {
       menuCache.delete(menuCacheKey('model'));
       menuCache.delete(menuCacheKey('effort'));
     }
-    if (/^fusion-model-[ab]$/.test(b.dataset.kind)) fusionModelSide = b.dataset.kind.slice(-1);
-    if (!['codex-run', 'codex-chat', 'model', 'effort'].includes(b.dataset.kind) && !/^fusion-(model|effort)-/.test(String(b.dataset.kind || ''))) beginSwitch(b.dataset.kind);
+    if (!['codex-run', 'codex-chat', 'model', 'effort'].includes(b.dataset.kind)) beginSwitch(b.dataset.kind);
     return send({ t: 'pickMenu', kind: b.dataset.kind, label: b.dataset.label });
   }
   if (b.dataset.chopen) { const diff = changeFiles.find(f => f.name === b.dataset.chopen)?.diff || ''; closeSheet(); return openFile(b.dataset.chopen, false, diff, true); }
@@ -540,8 +520,6 @@ $('sheet').addEventListener('click', async e => {
   if (act === 'toggleChanges') { toggleChangeNotice(); return closeSheet(); }
   if (act === 'executionToggle') return toggleExecutionRecords();
   if (act === 'newTerm') { closeSheet(); status('正在新建终端…'); return send({ t: 'newTerminal' }); }
-  else if (act === 'fusionHistory') { closeSheet(); return send({ t: 'fusionHistory' }); }
-  else if (act === 'fusionNew') { closeSheet(); return send({ t: 'fusionNew' }); }
   else if (act === 'localVoiceToggle') return toggleLocalVoice();
   else if (act === 'agentManager' || act === 'agentRefresh') return showAgentManager(true);
   else if (act === 'agentBack') return showMainMenu();

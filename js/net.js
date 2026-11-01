@@ -184,7 +184,7 @@ function refreshSelectionMetadata(initial = false) {
 function applySelection(m, clearChat = true) {
   if (m.app) {
     currentApp = m.app; currentAppName = m.appName; currentWindow = m.id;
-    capabilityOwner = m.app; agentCapabilities = m.capabilities || null; fusionSideCapabilities = m.sideCapabilities || {};
+    capabilityOwner = m.app; agentCapabilities = m.capabilities || null;
     updateAppText();
   }
   const changed = (m.sel || '') !== viewSel;
@@ -980,6 +980,7 @@ async function openComputerSocket(computer, relay) {
       }
       else link.finishFirstScreen();
     }
+    if (receiveFusion(m, link)) return;
     const currentNavigation = m.navigationId == null || m.navigationId === link.navigationId;
     if (currentNavigation && m.t === 'attached') {
       if (m.closed || m.ready === false && !link.preload) link.binding = null;
@@ -1009,6 +1010,10 @@ async function openComputerSocket(computer, relay) {
     else if (m.t === 'sendFailed') failPendingSend(m.requestId, m.message, false);
     if (m.t === 'attached' || !wasReady && computerBindingReady(link) || link.metadata.has(m.t)) saveComputerResume(link);
     if (m.t === 'attached' || m.t === 'chat') for (const result of link.operations?.values() || []) receiveDesktopOperation(link, result);
+    if (link.authed && ['auth', 'agentCatalog', 'agents', 'sessionLibrary'].includes(m.t)) {
+      const entry = ovList.find(row => row.id === expectedId);
+      if (entry) ovFetch(entry);
+    }
     if (['auth', 'attached', 'attachFailed'].includes(m.t) || wasReady !== computerBindingReady(link)) ovRender();
     if (link.rejected) socket.close();
     if (currentNavigation && !wasReady && computerBindingReady(link)) recordComputerConnection(link, 'ready');
@@ -1282,16 +1287,6 @@ async function connect(resumeLink = null) {
     else if (m.t === 'launchResult') connLaunchResults(m.results);
     else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; if (m.plans) { appPlans = { ...appPlans, ...m.plans }; updateTitle(); } if (sheetKind === 'windows') showWindows(); paintRail(); }
     else if (m.t === 'plans') { if (m.plans) { appPlans = { ...appPlans, ...m.plans }; updateTitle(); if (sheetKind === 'windows') showWindows(); paintRail(); } }
-    else if (m.t === 'fusionTrust') openSheet('fusion-trust', `<h3>确认项目可信</h3><div class="hint">${esc(m.path)}</div><button class="opt" data-fusion-trust="yes"><span class="lbl">信任并创建会话</span></button><button class="opt" data-fusion-trust="no"><span class="lbl">取消</span></button>`);
-    else if (m.t === 'fusionProjects') showFusionProjects(m);
-    else if (m.t === 'fusionSides') showFusionSides(m);
-    else if (m.t === 'fusionHistory') showFusionHistory(m);
-    else if (m.t === 'fusionUsage') {
-      if (currentApp !== 'fusion' || (m.sel && m.sel !== viewSel) || !lastChat?.fusion) return;
-      for (const side of ['a', 'b']) if (lastChat.fusion[side]) lastChat.fusion[side].usage = m[side];
-      renderFusionMeters(lastChat.fusion);
-      finishPending(['正在读取额度…']);
-    }
     else if (m.t === 'attached') {
       if (m.closed) {
         forgetClosedWindow(m.id);
@@ -1426,10 +1421,6 @@ async function connect(resumeLink = null) {
         || m.kind !== menuPending.kind || menuPending.sel !== viewSel)) return;
       if (m.error) return showMenuError(m.kind, m.error);
       lruPut(menuCache, menuCacheKey(m.kind), m, 24);
-      if (currentApp === 'fusion' && /^fusion-(model|effort)-[ab]$/.test(m.kind) && fusionModelSide === m.kind.slice(-1)) {
-        showMenu(m.kind, m.items, m.max, m.fusion, m.fast, m.model, false, m.pricing);
-        return;
-      }
       if (m.requestId == null && !(sheetKind === 'menu' && menuSheetKind === m.kind)) return;
       showMenu(m.kind, m.items, m.max, m.fusion, m.fast, m.model, false, m.pricing);
     }

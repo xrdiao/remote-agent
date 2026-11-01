@@ -442,9 +442,8 @@ function updateSendMode() {
   document.dispatchEvent(new Event('composer-state'));
 }
 
-/* One presentation controller owns the idle text and compact composer.
-   Portrait folds on explicit choice or question focus; landscape keeps its idle capsule. */
-let composeCompactTimer = 0, composerEngaged = false, composerPortraitCollapsed = false, composerPointerPending = false;
+/* One presentation controller owns explicit/question folding and landscape idle folding. */
+let composeCompactTimer = 0, composerEngaged = false, composerCollapsed = false, composerPointerPending = false;
 const portraitComposer = () => mode === 'chat' && !document.body.classList.contains('land');
 function questionComposerFocused() {
   const focused = document.activeElement;
@@ -507,21 +506,21 @@ function setComposerPresentation(idle, compact) {
 function setComposeCompact(on) { setComposerPresentation(on, on); }
 function setComposerFold(on) {
   composerPointerPending = false;
-  composerPortraitCollapsed = on;
+  composerCollapsed = on;
   endComposerEditing();
   composerEngaged = true;
   updateComposeCompact();
 }
 $('composerFold').onclick = () => setComposerFold(!document.body.classList.contains('composeCompact'));
 function updateComposeCompact() {
-  if (portraitComposer() && (composerPortraitCollapsed || questionComposerFocused())) {
+  if (mode === 'chat' && (composerCollapsed || questionComposerFocused())) {
     clearTimeout(composeCompactTimer); composeCompactTimer = 0;
     setComposerPresentation(false, true);
     return;
   }
   // Explicit/question folding is immediate and does not use the idle delay.
   if (document.body.classList.contains('composeCompact') && !document.body.classList.contains('composeIdle')) {
-    if (portraitComposer() && composerPointerPending) return;
+    if (mode === 'chat' && composerPointerPending) return;
     clearTimeout(composeCompactTimer); composeCompactTimer = 0;
     setComposerPresentation(false, false);
   }
@@ -544,14 +543,14 @@ function updateComposeCompact() {
   }
 }
 // Capture-phase so it runs before controls that re-appear under the same tap.
-// In compact: taps outside +/mic/stop only expand the composer (the field ignores pointer events
-// while compact, so no keyboard yet); a second tap in the field then focuses it natively.
+// Landscape keeps click-to-open folding; the next tap can focus the revealed field.
 document.querySelector('.composerBox').addEventListener('click', e => {
   if (portraitComposer()) return;
   if (document.body.classList.contains('composeCompact')) {
     if (e.target.closest('#add, #mic, #stop')) return;
     e.preventDefault(); e.stopPropagation();
     composerPointerPending = false;
+    composerCollapsed = false;
     clearTimeout(composeCompactTimer); composeCompactTimer = 0;
     composerEngaged = true;
     setComposeCompact(false);
@@ -589,32 +588,15 @@ document.addEventListener('click', e => {
     return;
   }
   if (e.target.closest('#sheet, #shade, #imageEditor, #qnBar input, #qnBar textarea, #qnBar select')) return;
-  if (portraitComposer() && e.target.closest('[data-question-compose]')) return;
+  if (mode === 'chat' && e.target.closest('[data-question-compose]')) return;
   endComposerEditing();
 });
-$('fusionProject').onclick = () => { status('正在读取项目…'); send({ t: 'fusionProjects' }); };
-$('fusionA').onclick = () => send({ t: 'fusionSides', side: 'a' });
-$('fusionB').onclick = () => send({ t: 'fusionSides', side: 'b' });
-for (const side of ['a', 'b']) $('fusionModel' + side.toUpperCase()).onclick = () => {
-  status(lastChat?.fusion?.[side] ? `读取 ${side.toUpperCase()} 的模型…` : `正在选择 ${side.toUpperCase()} Agent…`);
-  if (lastChat?.fusion?.[side]) requestFusionModel(side);
-  else send({ t: 'fusionSides', side });
-};
-$('fusionBar').onclick = e => {
-  const b = e.target.closest('[data-fusion-act]');
-  if (!b) return;
-  if (b.dataset.fusionAct === 'history') return send({ t: 'fusionHistory' });
-  if (b.dataset.fusionAct === 'new') return send({ t: 'fusionNew' });
-  if (b.dataset.fusionAct === 'go') return send({ t: 'fusionGo' });
-  send({ t: 'fusionDecide', kind: b.dataset.fusionAct });
-};
 function sendComposer() {
   if ($('send').disabled) return;
   cancelVoice();
   if (mode === 'chat' && questionCompose?.sel === viewSel) return submitQuestionCompose();
   if (mode === 'chat' && pendingImageUploads()) return status('图片尚未上传完成；失败图片请重试或删除', false);
   const v = text.value;
-  if (currentApp === 'fusion' && lastChat?.fusion?.busy) return status('Fusion 正在进行');
   if (!v.trim() && !$('attachments').children.length) return;
   saveDraft();
   const follow = codexFollow();
@@ -622,6 +604,7 @@ function sendComposer() {
   const receipt = sendReceipt(v);
   if (mode === 'chat') { status('正在发送…'); pushEcho(receipt.requestId, v, when === 'queue' || (!when && chatBusy) ? 'queue' : 'chat'); }
   const sent = mode === 'terminal' ? send({ t: 'termSend', text: v, ...receipt })
+    : currentApp === 'fusion' ? send({ t: 'fusionMessage', computer: currentComputer().id, runId: lastChat.fusionRun.id, text: v, ...receipt })
     : send({ t: 'send', text: v, submit: true, ...receipt, ...(when ? { when } : {}), ...mentionsFor(v) });
   if (sent === false) failPendingSend(receipt.requestId);
   if (mode === 'chat') jumpToLatest();

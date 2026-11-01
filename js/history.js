@@ -768,7 +768,7 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
   $('pickRun').hidden = true;
   if (codexBar?.run) $('pickRun').textContent = codexBar.run;
   $('pickChat').hidden = true;
-  paintFusion(currentApp === 'fusion' ? chat?.fusion : null);
+  paintFusionRun(currentApp === 'fusion' ? chat?.fusionRun : null);
   chatBusy = !!chat?.busy;
   updateSendMode();
   currentSurface = chat?.surface || null;
@@ -930,13 +930,6 @@ itemsEl.addEventListener('click', e => { const b = e.target.closest('[data-codex
 $('taskChip').onclick = () => showTasks();
 itemsEl.addEventListener('toggle', e => { const id = e.target.dataset.task; if (id) e.target.open ? taskOpen.add(id) : taskOpen.delete(id); }, true);
 $('qnBar').addEventListener('click', e => {
-  const compose = e.target.closest('[data-question-compose]');
-  if (compose) {
-    setQuestionCompose(compose.dataset.questionCompose);
-    if (portraitComposer()) setComposerFold(false);
-    text.focus();
-    return;
-  }
   const b = e.target.closest('[data-action][data-request]');
   if (b) {
     const id = b.dataset.request, n = Number(b.dataset.action);
@@ -1041,8 +1034,8 @@ function renderQuestions(qs) {
       return `<section class="qnRequest"><div class="qnQ">${esc(heading)}</div>`
       + (remaining ? `<details class="qnDetails" data-question="${esc(r.id)}" ${expanded.has(r.id) ? 'open' : ''}><summary>展开问题详情</summary>${esc(remaining)}</details>` : '')
       + (r.id.startsWith('async:') ? `<div class="qnOpts">${r.buttons.slice(0, -2).map((b, n) => `<button class="qnOpt ${b.selected ? 'on' : ''}" data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div>` : '')
-      + r.fields.map((f, n) => `<label class="qnFree">${esc(f.label)}${f.options ? `<select data-request="${esc(r.id)}" data-field="${n}">${f.options.map(o => `<option value="${esc(o.value)}" ${o.value === f.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>` : `<input data-request="${esc(r.id)}" data-field="${n}" type="${f.type === 'password' ? 'password' : 'text'}" value="${esc(f.value)}">`}</label>`).join('')
-      + `<div class="qnAct">${r.id.startsWith('async:') ? `<button data-question-compose="${esc(r.id)}">在对话框回答</button>` : ''}${r.buttons.map((b, n) => r.id.startsWith('async:') && n < r.buttons.length - 2 ? '' : `<button data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div></section>`; }).join(''), open);
+      + r.fields.map((f, n) => `<label class="qnFree">${esc(f.label)}${f.options ? `<select data-request="${esc(r.id)}" data-field="${n}">${f.options.map(o => `<option value="${esc(o.value)}" ${o.value === f.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>` : `<input data-request="${esc(r.id)}" data-field="${n}" type="${f.type === 'password' ? 'password' : 'text'}" value="${esc(f.value)}"${r.id.startsWith('async:') ? ' enterkeyhint="send"' : ''}>`}</label>`).join('')
+      + `<div class="qnAct">${r.buttons.map((b, n) => r.id.startsWith('async:') && n < r.buttons.length - 2 ? '' : `<button data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div></section>`; }).join(''), open);
     bar.classList.toggle('show', qs.requests.length > 0);
     bar.querySelectorAll('[data-field]').forEach(el => {
       const key = questionFieldKey(el);
@@ -1107,7 +1100,10 @@ $('qnBar').onclick = e => {
 };
 $('qnBar').addEventListener('keydown', e => {
   if (e.key !== 'Enter' || !e.target.matches('input')) return;
+  const answering = e.target.dataset.request?.startsWith('async:');
+  if (answering && e.isComposing) return;
   e.preventDefault();
+  if (answering) return e.target.closest('.qnRequest').querySelector('.qnAct button:last-child').click();
   if ('field' in e.target.dataset) { e.target.blur(); return; }
   e.target.nextElementSibling.click();
 });
@@ -1989,11 +1985,7 @@ async function openCodexFilePicker(token, input = composerInput()) {
   await browse('');
 }
 function openComposerAdd(input = text) {
-  if (currentApp === 'fusion') {
-    openSheet('add', '<h3>添加附件</h3><button class="opt" data-control="img">上传图片</button><button class="opt" data-control="uploadDoc">上传文档</button>');
-    $('sheet').querySelectorAll('[data-control]').forEach(b => b.onclick = () => { closeSheet(); $(b.dataset.control).click(); });
-    return;
-  }
+  if (currentApp === 'fusion') return showFusionTasks(lastChat?.fusionRun);
   const c = (input === text ? lastChat : chatBySel.get(chatCacheKey(viewSel)))?.codex;
   if (!c) {
     const controls = ['newChat', 'pickMode', 'pickDir'].filter(id => !$(id).hidden);
