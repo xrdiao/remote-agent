@@ -3,6 +3,7 @@ import test from 'node:test';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import crypto from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { beginOperation, captureOperation, withOperation, subscribeOperations, currentOperation } from '../server/operations.mjs';
 
@@ -930,6 +931,7 @@ test('card rings share the existing context and quota percentage conversion with
   assert.equal(tracks.length, 2);
   assert.deepEqual(tracks.map(m => Number(m[1].split(' ')[0])), [47, 47]);
   assert.deepEqual(tracks.map(m => Number(m[2])), [-1.5, -51.5]);
+  assert.equal((html.match(/transform="rotate\(90 20 20\)"/g) || []).length, 4);
 });
 
 test('context stays scoped to a conversation while quota stays scoped to its computer and window', () => {
@@ -958,9 +960,21 @@ test('two quota periods and context share one three-part ring with separated bou
   const tracks = [...html.matchAll(/class="ov-meter-track"[^>]*stroke-dasharray="([^"]+)" stroke-dashoffset="([^"]+)"/g)];
   assert.deepEqual([...new Set([...html.matchAll(/\br="([^"]+)"/g)].map(m => m[1]))], ['18.5']);
   assert.equal(tracks.length, 3);
+  assert.equal((html.match(/transform="rotate\(120 20 20\)"/g) || []).length, 6);
   for (const [i, track] of tracks.entries()) {
     assert(Math.abs(Number(track[1].split(' ')[0]) - (100 / 3 - 3)) < 1e-9);
     assert(Math.abs(Number(track[2]) - (-i * 100 / 3 - 1.5)) < 1e-9);
+  }
+});
+
+test('card context keeps its header color while quota reuses remaining-usage warning colors', () => {
+  const h = usageMeters();
+  for (const [remaining, fill] of [[60, ''], [25, 'warm'], [10, 'hot']]) {
+    h.context.renderQuota({ context: 95, limits: [{ label: 'weekly', pct: 100 - remaining, basis: 'used' }] });
+    const html = h.html();
+    assert(html.includes('class="ov-meter-context "'));
+    assert(html.includes(`class="ov-meter-quota ${fill}"`));
+    assert(h.node('quotaMeters').innerHTML.includes(`<i class="${fill}"`));
   }
 });
 
@@ -974,4 +988,138 @@ test('unchanged usage updates leave the ring DOM intact and never repaint the ca
   h.context.ovUpdateUsage(); h.context.ovUpdateUsage(); assert.equal(writes, 1);
   h.context.$ = h.node; h.context.renderContext(50); h.context.$ = () => ({ querySelector: () => holder });
   h.context.ovUpdateUsage(); assert.equal(writes, 2);
+});
+
+function relayHeartbeat() {
+  let now = 1000000, wss;
+  const timers = new Map(), sessions = [], bindings = [], logs = [];
+  const pair = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const device = { id: crypto.randomUUID(), publicKey: pair.publicKey.export({ type: 'spki', format: 'der' }).toString('base64url') };
+  const schedule = (fn, ms, repeat = false) => {
+    const id = { unref() {} }; timers.set(id, { fn, at: now + ms, ms, repeat }); return id;
+  };
+  class Server extends EventEmitter {
+    constructor() { super(); this.clients = new Set(); wss = this; }
+  }
+  class Socket extends EventEmitter {
+    constructor() { super(); this.readyState = 1; this.sent = []; this.pings = 0; }
+    send(raw) { this.sent.push(JSON.parse(raw)); }
+    ping() { this.pings++; }
+    receive(message) { this.emit('message', JSON.stringify(message)); }
+    close(code, reason) {
+      if (this.readyState !== 1) return;
+      this.code = code; this.reason = reason; this.readyState = 3;
+      wss.clients.delete(this); this.emit('close', code);
+    }
+    terminate() { this.close(1006); }
+  }
+  class Session {
+    constructor(client, deviceId) { Object.assign(this, { client, deviceId, mode: 'chat', connectionMessages: new Map() }); sessions.push(this); }
+    selectionKey() { return `${this.app}|${this.windowId}|${this.threadId}`; }
+    async handle() {}
+    suspend() { this.suspended = true; }
+    dispose() { this.disposed = true; }
+  }
+  const context = vm.createContext({
+    crypto, Buffer, URL, AbortController, Session, WebSocketServer: Server,
+    Date: class extends Date { static now() { return now; } },
+    setTimeout: schedule, clearTimeout: id => timers.delete(id),
+    setInterval: (fn, ms) => schedule(fn, ms, true), clearInterval: id => timers.delete(id),
+    console: { log: message => logs.push(message) }, voiceWss: () => new EventEmitter(),
+    findDevice: token => token === 'fixture-token' ? device : null, needsTotp: () => false,
+    computerId: () => 'fixture-computer', computerName: () => 'Fixture', updateDevice() {},
+    bindDeviceConnection(_id, close) { const binding = { valid: true, close, release() {} }; bindings.push(binding); return binding; },
+    subscribeLibrary() {}, subscribeOperations: () => () => {}, lastSelection: () => null,
+    addViewer() {}, removeViewer() {}, clientIp: () => 'fixture', originAllowed: () => true,
+    ROUTES: { visible: { connection: true } }, flag: value => !!value,
+    beginOperation, withOperation, cdpRead: new AsyncLocalStorage(),
+  });
+  const strip = source => source.replace(/^import .*;\n/gm, '').replace(/\bexport /g, '');
+  vm.runInContext(strip(read('lib/device-proof.mjs')) + strip(read('server/ws.mjs')), context);
+  context.attachWss(new EventEmitter());
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  return {
+    logs, sessions, settle,
+    async socket({ valid = true, resume, authenticate = true } = {}) {
+      const socket = new Socket(); wss.clients.add(socket); wss.emit('connection', socket, { headers: {} });
+      if (authenticate) {
+        const proof = { ts: now, nonce: crypto.randomBytes(16).toString('base64url') };
+        const payload = ['ra-entry-v1', 'fixture-computer', 'fixture-token', 'WS /ws', proof.ts, proof.nonce].join('\n');
+        proof.signature = valid ? crypto.sign('sha256', Buffer.from(payload), { key: pair.privateKey, dsaEncoding: 'ieee-p1363' }).toString('base64url') : 'A'.repeat(86);
+        socket.receive({ t: 'auth', token: 'fixture-token', proof, resume }); await settle();
+      }
+      return socket;
+    },
+    bind(socket) {
+      const session = sessions.find(s => s.client === socket);
+      Object.assign(session, { app: 'codex', targetId: 'codex', windowId: 'window-A', threadId: 'thread-A', bindingReady: true, cdp: { ws: { readyState: 1 } } });
+      return session;
+    },
+    revoke() { for (const binding of bindings) if (binding.valid) { binding.valid = false; binding.close(); } },
+    advance(ms) {
+      const end = now + ms;
+      for (;;) {
+        const next = [...timers].filter(([, timer]) => timer.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
+        if (!next) break;
+        const [id, timer] = next; now = timer.at;
+        if (timer.repeat) timer.at += timer.ms; else timers.delete(id);
+        timer.fn();
+      }
+      now = end;
+    },
+  };
+}
+
+test('background deadline owns unanswered relay heartbeats for five minutes without extending on repeated visibility', async () => {
+  const h = relayHeartbeat(), socket = await h.socket(); h.bind(socket);
+  socket.receive({ t: 'visible', v: false, background: true });
+  const timer = socket.backgroundTimer;
+  for (const ms of [5000, 15000, 20000, 259000]) {
+    h.advance(ms); assert.equal(socket.readyState, 1);
+    socket.receive({ t: 'visible', v: false, background: true }); assert.equal(socket.backgroundTimer, timer);
+  }
+  assert.equal(socket.pings, 14);
+  h.advance(1000);
+  assert.equal(socket.code, 4000); assert.equal(socket.closeSource, 'background'); assert.equal(socket.reason, 'background timeout');
+  assert(h.logs.some(line => /source=background authorized=true background=true$/.test(line)));
+});
+
+test('returning to foreground starts a fresh probe budget but repeated foreground notices do not renew it', async () => {
+  const h = relayHeartbeat(), socket = await h.socket(); h.bind(socket);
+  socket.receive({ t: 'visible', v: false, background: true }); h.advance(59000);
+  socket.receive({ t: 'visible', v: true, background: false });
+  assert.equal(socket.backgroundTimer, null); assert.equal(socket.alive, true);
+  h.advance(1000); assert.equal(socket.readyState, 1); assert.equal(socket.alive, false);
+  socket.receive({ t: 'visible', v: true, background: false });
+  assert.equal(socket.alive, false);
+  h.advance(20000); assert.equal(socket.code, 1006); assert.equal(socket.closeSource, 'heartbeat');
+  assert(h.logs.some(line => /source=heartbeat authorized=true background=false$/.test(line)));
+});
+
+test('foreground relay pongs still renew liveness and missing pongs still close the socket', async () => {
+  const h = relayHeartbeat(), socket = await h.socket(); h.bind(socket);
+  h.advance(20000); assert.equal(socket.readyState, 1); socket.emit('pong');
+  h.advance(20000); assert.equal(socket.readyState, 1);
+  h.advance(20000); assert.equal(socket.code, 1006); assert.equal(socket.closeSource, 'heartbeat');
+});
+
+test('background state cannot skip device proof or prevent authorization revocation', async () => {
+  const h = relayHeartbeat(), unauthenticated = await h.socket({ authenticate: false });
+  unauthenticated.receive({ t: 'visible', v: false, background: true });
+  assert.equal(unauthenticated.code, 4001); assert.equal(unauthenticated.backgroundTimer, null);
+  const invalid = await h.socket({ valid: false }); assert.equal(invalid.code, 4001);
+  const valid = await h.socket(); const session = h.bind(valid);
+  valid.receive({ t: 'visible', v: false, background: true }); h.advance(40000); h.revoke();
+  assert.equal(valid.code, 4001); assert.equal(session.disposed, true);
+});
+
+test('peer loss during background still requires fresh proof to recover the retained session', async () => {
+  const h = relayHeartbeat(), first = await h.socket(), session = h.bind(first), resume = session.resumeId;
+  first.receive({ t: 'visible', v: false, background: true }); h.advance(5000); first.close(1006); await h.settle();
+  assert.equal(session.suspended, true);
+  const invalid = await h.socket({ valid: false, resume }); assert.equal(invalid.code, 4001);
+  h.advance(1000);
+  const recovered = await h.socket({ resume }), auth = recovered.sent.findLast(m => m.t === 'auth');
+  assert.equal(auth.resumed, true); assert.equal(session.client, recovered); assert.equal(h.sessions.length, 1);
+  assert.equal(recovered.backgroundTimer, null);
 });

@@ -43,7 +43,7 @@ server.on('upgrade', (req, socket, head) => {
 // relay keeps that session as a visible viewer ("watching") and skips its notifications until TCP gives up.
 const heartbeat = setInterval(() => {
   for (const client of wss.clients) {
-    if (client.alive === false) { client.closeSource = 'heartbeat'; client.terminate(); continue; }
+    if (client.alive === false && !client.backgroundTimer) { client.closeSource = 'heartbeat'; client.terminate(); continue; }
     client.alive = false;
     try { client.ping(); } catch {}
   }
@@ -72,7 +72,7 @@ wss.on('connection', (ws, req) => {
   let authorization = null;
   let unsubscribeOperations = null;
   const authTimer = setTimeout(() => ws.close(4000, 'auth timeout'), 5000);
-  let backgroundTimer = null;
+  ws.backgroundTimer = null;
   let queue = Promise.resolve();
   const sends = new Set();
   let questionQueue = Promise.resolve();
@@ -176,8 +176,11 @@ wss.on('connection', (ws, req) => {
     }
     if (!authorization.valid || ws.readyState !== 1) return;
     if (msg.t === 'visible' && typeof msg.background === 'boolean') {
-      if (!msg.background) { clearTimeout(backgroundTimer); backgroundTimer = null; }
-      else backgroundTimer ||= setTimeout(() => {
+      if (!msg.background) {
+        if (ws.backgroundTimer) ws.alive = true;
+        clearTimeout(ws.backgroundTimer);
+        ws.backgroundTimer = null;
+      } else ws.backgroundTimer ||= setTimeout(() => {
         ws.closeSource = 'background';
         ws.close(4000, 'background timeout');
       }, BACKGROUND_MS);
@@ -346,11 +349,11 @@ wss.on('connection', (ws, req) => {
   });
   ws.on('close', code => {
     clearTimeout(authTimer);
-    clearTimeout(backgroundTimer);
+    clearTimeout(ws.backgroundTimer);
     const authorized = authorization?.valid;
     authorization?.release();
     unsubscribeOperations?.();
-    console.log(`[ws-close] ${new Date().toISOString()} code=${code} source=${ws.closeSource || 'peer'} authorized=${!!authorized}`);
+    console.log(`[ws-close] ${new Date().toISOString()} code=${code} source=${ws.closeSource || 'peer'} authorized=${!!authorized} background=${!!ws.backgroundTimer}`);
     if (retired) return;
     reads.abort(new Error('连接已关闭'));
     if (!session || context.owner !== connection) return;
