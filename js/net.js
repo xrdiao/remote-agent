@@ -736,7 +736,9 @@ async function resolvePending() {
 
 const computerSockets = new Map();
 const COMPUTER_PING_MS = 15000;
+const COMPUTER_BACKGROUND_MS = 5 * 60 * 1000;
 let pingTimer = null;
+let computerBackgroundAt = null;
 function computerConnection(computer) {
   let link = computerSockets.get(computer.key);
   if (link && link.computer.token !== computer.token) { dropComputerSocket(computer.key); link = null; }
@@ -776,9 +778,12 @@ function heartbeat() {
   }
 }
 function suspendComputerConnections() {
+  computerBackgroundAt ??= Date.now();
   for (const link of computerSockets.values()) {
+    clearComputerRetry(link.computer);
     stopComputerProbe(link);
     saveComputerResume(link);
+    link.send?.({ t: 'visible', v: false, watching: false, background: true });
   }
 }
 // close() waits for the peer's close frame, which a dead path never sends — the
@@ -804,7 +809,7 @@ function clearComputerRetry(computer) {
   if (link) link.retry = null;
 }
 function computerRetryAllowed(computer, probe = false) {
-  if (!computer || navigator.onLine === false) return false;
+  if (!computer || navigator.onLine === false || computerBackgroundAt !== null) return false;
   const link = computerSockets.get(computer.key);
   if (link?.computer.token !== computer.token) return true;
   return (link?.phase !== 'paused' || probe) && !link?.replaced && !link?.rejected;
@@ -958,6 +963,7 @@ async function openComputerSocket(computer, relay) {
             link.binding = { ...saved.binding, chat: chatBySel.get(`${expectedId}|${saved.binding.sel}`), ready: false, cached: true };
         } else computerResumes.delete(expectedId);
         if (!link.receive) preloadComputerSocket(link);
+        if (computerBackgroundAt !== null) link.send({ t: 'visible', v: false, watching: false, background: true });
         replayDesktopOperations(link);
       }
       else link.finishFirstScreen();
@@ -1111,9 +1117,17 @@ async function warmComputerSockets(probe = false) {
 }
 
 function resumeComputerConnections() {
-  if (document.visibilityState !== 'visible' || navigator.onLine === false) return;
+  if (document.visibilityState !== 'visible') return;
+  if (computerBackgroundAt !== null && Date.now() - computerBackgroundAt >= COMPUTER_BACKGROUND_MS)
+    for (const link of computerSockets.values()) if (link.socket?.readyState < 2) closeSocket(link.socket, 'background');
+  computerBackgroundAt = null;
+  if (navigator.onLine === false) return;
   const foreground = !authed && (!ws || ws.readyState >= 2) ? reconnectComputer(currentComputer()?.id, 'resume') : null;
-  for (const link of computerSockets.values()) probeComputerSocket(link);
+  for (const link of computerSockets.values()) {
+    if (link.socket === ws) ovVisible();
+    else link.send?.({ t: 'visible', v: false, watching: false, background: false });
+    probeComputerSocket(link);
+  }
   warmComputerSockets(true).catch(() => {});
   return foreground;
 }
@@ -1121,7 +1135,7 @@ function resumeComputerConnections() {
 function ovVisible() {
   if (!authed) return;
   const watching = conversationVisible();
-  send({ t: 'visible', v: watching || document.visibilityState === 'visible' && ovComposerReady(), watching });
+  send({ t: 'visible', v: watching || document.visibilityState === 'visible' && ovComposerReady(), watching, background: document.visibilityState !== 'visible' });
 }
 function startComputerUpdates() {
   requestAgentCatalog();

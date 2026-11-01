@@ -1807,7 +1807,10 @@ body.conv #overview { display: none; }
 #overview .ov-add { color: var(--ok); font-weight: 600; }
 #overview .ov-del { color: var(--err); font-weight: 600; }
 #overview .ov-errbox { margin-top: 12px; padding: 10px 14px; border-radius: 14px; background: var(--err-tint); color: var(--err); font-size: 14px; font-weight: 550; }
-#overview .ov-composer { display: flex; gap: 6px; margin-top: 14px; align-items: center; background: var(--s2); border-radius: 999px; padding: 5px 5px 5px 16px; border: 1px solid var(--line-2); }
+#overview .ov-composer { display: flex; gap: 6px; margin-top: 14px; align-items: center; background: var(--s2); border-radius: 999px; padding: 5px; border: 1px solid var(--line-2); }
+#overview .ov-input-history { display: grid; grid-template-rows: repeat(2, 19px); flex: none; width: 28px; }
+#overview .ov-input-history button { display: grid; place-items: center; padding: 0; border-radius: 10px; color: var(--fg-3); }
+#overview .ov-input-history svg { width: 16px; height: 16px; }
 #overview .ov-send { width: 38px; height: 38px; border-radius: 50%; background: var(--accent); color: var(--accent-fg); display: grid; place-items: center; flex: none; }
 #overview .ov-send svg { width: 19px; height: 19px; }
 #overview .ov-btn { height: 48px; padding: 0 22px; border-radius: 999px; font-weight: 650; font-size: 15px; background: var(--s2); color: var(--fg-hi); margin-top: 12px; }
@@ -1815,25 +1818,13 @@ body.conv #overview { display: none; }
 #overview .ov-cfoot { position: relative; display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 14px; }
 #overview .ov-tools { display: flex; flex: 1; min-width: 0; }
 #overview .ov-tools button { display: grid; place-items: center; flex: 1; max-width: 34px; min-width: 24px; height: 34px; padding: 0; color: var(--fg-3); border-radius: 50%; }
-#overview .ov-tools button:active { background: var(--s2); }
-#overview .ov-tools button:disabled { opacity: .45; }
+#overview .ov-tools button:active, #overview .ov-input-history button:active { background: var(--s2); }
+#overview .ov-tools button:disabled, #overview .ov-input-history button:disabled { opacity: .45; }
 #overview .ov-tools .ov-queue { flex: none; max-width: none; padding: 0 6px; font-size: 12px; color: var(--accent-text); border-radius: 999px; white-space: nowrap; }
 #overview .ov-tools [data-ov-control] { display: contents; }
 #overview .ov-tools #mic, #overview .ov-tools #stop { position: static; transform: none; flex: 1; background: transparent; }
 #overview .ov-tools #mic.on { background: var(--err); color: #fff; }
-#overview .ov-tools .ov-compose-more { flex: 1; max-width: 34px; min-width: 24px; }
-#overview .ov-compose-more summary { display: grid; place-items: center; list-style: none; height: 34px; border-radius: 50%; color: var(--fg-3); cursor: pointer; }
-#overview .ov-compose-more summary svg { width: 20px; height: 20px; }
-#overview .ov-compose-more[open] summary { background: var(--s2); }
-#overview .ov-compose-more-menu { position: absolute; bottom: calc(100% + 8px); right: 0; z-index: 3; width: min(240px, calc(100vw - 56px)); max-height: 50dvh; overflow-y: auto; overscroll-behavior: contain; padding: 6px; border: 1px solid var(--line-2); border-radius: 16px; background: var(--s1); box-shadow: 0 8px 30px rgba(0,0,0,.18); }
-#overview .ov-compose-more-label { padding: 8px; font-size: 11px; color: var(--fg-3); }
-#overview .ov-compose-more-menu > button { display: flex; align-items: center; gap: 8px; width: 100%; max-width: none; height: auto; min-height: 36px; padding: 8px; border-radius: 10px; font-size: 13px; text-align: left; }
-#overview .ov-compose-more-menu > button svg { width: 18px; height: 18px; flex: none; }
-#overview .ov-compose-inline { display: contents; }
 body.land #overview .ov-tools { flex-wrap: wrap; align-items: center; gap: 4px; }
-body.land #overview .ov-compose-inline > button { flex: 0 0 34px; }
-body.land #overview .ov-compose-inline > button[data-v="sendNow"] { display: flex; flex-basis: auto; gap: 4px; max-width: none; padding: 0 10px; border-radius: 999px; background: var(--s2); font-size: 12px; }
-body.land #overview .ov-compose-inline > button svg { width: 18px; height: 18px; flex: none; }
 #overview .ov-cfoot > .ov-link { flex: none; }
 #overview .ov-tool-status { margin-top: 8px; font-size: 12px; color: var(--fg-3); overflow-wrap: anywhere; }
 #overview .ov-tool-status.err { color: var(--err); }
