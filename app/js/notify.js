@@ -239,12 +239,9 @@ navigator.serviceWorker?.addEventListener('message', e => {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') resumeComputerConnections();
   else suspendComputerConnections();
-  if (authed) {
-    ovVisible();
-    if (document.visibilityState === 'visible') {
-      send({ t: 'usage', automatic: true });
-      requestAgentCatalog();
-    }
+  if (authed && document.visibilityState === 'visible') {
+    send({ t: 'usage', automatic: true });
+    requestAgentCatalog();
   }
 });
 for (const event of ['pageshow', 'online']) window.addEventListener(event, resumeComputerConnections);

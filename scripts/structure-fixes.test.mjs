@@ -542,7 +542,7 @@ function cardSubscription() {
 
 test('an expanded bound card subscribes to chat updates while keeping overview notification presence', () => {
   const h = cardSubscription(); h.update();
-  assert.deepEqual(JSON.parse(JSON.stringify(h.packets)), [{ t: 'visible', v: true, watching: false }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(h.packets)), [{ t: 'visible', v: true, watching: false, background: false }]);
 });
 
 test('binding and a changed native target do not subscribe an unrelated card', () => {
@@ -737,7 +737,7 @@ test('composition end does not duplicate a final input event already saved to th
   assert.equal(h.edits.length, 0);
 });
 
-test('landscape card actions remove duplicate queue buttons without changing portrait choices', () => {
+test('cards put input history before text and expose newline without secondary send menus', () => {
   const button = (textContent = '') => ({ textContent, innerHTML: '<svg/>', title: '', ariaLabel: '', disabled: false });
   for (const row of [
     { app: 'codex', follow: 'queue', landscape: true, immediate: true },
@@ -758,9 +758,13 @@ test('landscape card actions remove duplicate queue buttons without changing por
     });
     vm.runInContext(part(read('app/js/overview.js'), 'function ovCard(', 'function ovSessionGroup('), context);
     const html = context.ovCard({ key: 'card', state: 'run', app: row.app, actions: [] });
-    assert.equal(html.includes('data-v="send"'), !row.landscape);
-    assert.equal(html.includes('data-v="sendNow"'), row.immediate);
+    assert.equal(html.includes('data-v="send"'), false);
+    assert.equal(html.includes('data-v="sendNow"'), false);
     assert.equal(html.includes('data-ov="send"'), true);
+    assert(html.indexOf('class="ov-input-history"') < html.indexOf('<textarea'));
+    for (const id of ['inputPrev', 'inputNext']) assert(html.indexOf(`data-v="${id}"`) < html.indexOf('<textarea'));
+    assert(html.indexOf('data-v="insertNewline"') > html.indexOf('class="ov-tools"'));
+    assert.equal(html.includes('ov-compose-more'), false);
   }
 });
 
@@ -818,15 +822,18 @@ test('Enter uses the shared send action and still leaves IME and Shift+Enter unt
   assert.deepEqual(h.calls, ['cancelVoice']);
 });
 
-test('card send tools invoke the shared action after binding without forwarding DOM clicks', async () => {
-  const calls = [], state = { ready: Promise.resolve(true) };
+test('card input tools retain the bound editor for history and newline actions', async () => {
+  const calls = [], state = { ready: Promise.resolve(true) }, input = {};
   const context = vm.createContext({
-    ovToolState: state, ovPrepareTools: () => state, ovToolInput: () => ({}),
-    sendComposer: () => calls.push('send'), sendComposerNow: () => calls.push('sendNow'),
+    ovToolState: state, ovPrepareTools: () => state, ovToolInput: () => input,
+    recallInput: (direction, editor) => { assert.equal(editor, input); calls.push(direction); },
+    endInputRecall: () => calls.push('end'),
+    insertComposerText: (text, editor) => { assert.equal(editor, input); calls.push(text); },
   });
   vm.runInContext(part(read('app/js/overview.js'), 'async function ovUseTool(', 'function ovLocateCard('), context);
-  await context.ovUseTool('card', 'send'); await context.ovUseTool('card', 'sendNow');
-  assert.deepEqual(calls, ['send', 'sendNow']);
-  context.ovToolState = {}; await context.ovUseTool('card', 'sendNow');
-  assert.deepEqual(calls, ['send', 'sendNow']);
+  await context.ovUseTool('card', 'inputPrev'); await context.ovUseTool('card', 'inputNext');
+  await context.ovUseTool('card', 'insertNewline');
+  assert.deepEqual(calls, [-1, 1, 'end', '\n']);
+  context.ovToolState = {}; await context.ovUseTool('card', 'inputPrev');
+  assert.deepEqual(calls, [-1, 1, 'end', '\n']);
 });

@@ -547,6 +547,65 @@ test('background suspension cancels old probes and does not consume their foregr
   }
 });
 
+test('hidden events keep the original background start and a relay expiration never reconnects while hidden', async () => {
+  const h = harness(); await h.bothReady();
+  const sockets = [...h.sockets];
+  h.run('document.visibilityState="hidden";suspendComputerConnections()');
+  const started = h.run('computerBackgroundAt');
+  await h.advance(150000); h.run('suspendComputerConnections()');
+  assert.equal(h.run('computerBackgroundAt'), started);
+  await h.advance(149999);
+  for (const socket of sockets) assert.equal(socket.readyState, 1);
+  await h.advance(1);
+  for (const socket of sockets) socket.close(4000);
+  for (const socket of sockets) assert.equal(socket.readyState, 3);
+  const count = h.sockets.length;
+  await h.advance(60000); assert.equal(h.sockets.length, count);
+});
+
+test('returning within five minutes keeps the existing connections and cancels the background deadline', async () => {
+  const h = harness(); await h.bothReady(); const sockets = [...h.sockets];
+  h.run('document.visibilityState="hidden";suspendComputerConnections()'); await h.advance(299999);
+  h.run('document.visibilityState="visible";resumeComputerConnections()'); await h.settle();
+  assert.equal(h.run('computerBackgroundAt'), null);
+  for (const [i, socket] of sockets.entries()) {
+    assert.equal(h.link(i).socket, socket); assert.equal(socket.readyState, 1);
+    assert.equal(socket.sent.findLast(m => m.t === 'visible').background, false);
+    assert.equal(socket.sent.filter(m => m.t === 'auth' || m.t === 'attach').length, 0);
+  }
+});
+
+test('returning after a frozen five-minute background closes old sockets before reconnecting and verifying', async () => {
+  const h = harness(); await h.bothReady(); const old = [...h.sockets];
+  h.run('document.visibilityState="hidden";suspendComputerConnections()'); h.jump(300001);
+  h.run('document.visibilityState="visible";resumeComputerConnections()'); await h.settle();
+  for (const [i, socket] of old.entries()) {
+    assert.equal(socket.readyState, 3); assert.notEqual(h.link(i).socket, socket); assert.equal(h.link(i).authed, false);
+  }
+  assert.equal(h.state().windowReady, false);
+  await h.open(0); assert.equal(h.link(0).socket.sent.find(m => m.t === 'auth').proof, 'test-proof');
+});
+
+test('a transport loss while hidden waits until foreground before reconnecting', async () => {
+  const h = harness(); await h.bothReady();
+  h.run('document.visibilityState="hidden";suspendComputerConnections()');
+  const count = h.sockets.length; h.link(1).socket.close(1006); await h.advance(5000);
+  assert.equal(h.sockets.length, count);
+  h.run('document.visibilityState="visible";resumeComputerConnections()'); await h.settle();
+  assert.equal(h.sockets.length, count + 1); assert.equal(h.link(1).phase, 'connecting');
+});
+
+test('an authentication wait timeout remains retryable and an actual authorization rejection remains stopped', async () => {
+  for (const code of [4000, 4001]) {
+    const h = harness({ count: 1 });
+    await h.run('openComputerSocket(currentComputer(),currentComputer().relay)'); await h.link(0).socket.open();
+    h.link(0).socket.close(code); await h.settle();
+    h.run('resumeComputerConnections()'); await h.settle();
+    assert.equal(h.sockets.length, code === 4000 ? 2 : 1);
+    assert.equal(h.link(0).phase, code === 4000 ? 'connecting' : 'auth');
+  }
+});
+
 test('a silent B connection is replaced after unanswered checks without disturbing responsive A or its draft', async () => {
   const h = harness(); await h.bothReady();
   h.run(`text.value='keep current draft';saveDraft()`);

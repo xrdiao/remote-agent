@@ -19,6 +19,7 @@ const sameWindow = (session, msg) => !msg.sel || msg.sel.split('|', 2).join('|')
 const navigationMessage = msg => ROUTES[msg.t]?.navigation === true;
 const pureNavigation = msg => navigationMessage(msg) && msg.newSession !== true && msg.create !== true && !(msg.t === 'openAgent' && /^(?:new:|project-new:)/.test(msg.id || ''));
 const RESUME_MS = 5 * 60 * 1000;
+const BACKGROUND_MS = 5 * 60 * 1000;
 
 export function attachWss(server) {
 const voice = voiceWss();
@@ -70,7 +71,8 @@ wss.on('connection', (ws, req) => {
   let retired = false;
   let authorization = null;
   let unsubscribeOperations = null;
-  const authTimer = setTimeout(() => ws.close(4001, 'auth timeout'), 5000);
+  const authTimer = setTimeout(() => ws.close(4000, 'auth timeout'), 5000);
+  let backgroundTimer = null;
   let queue = Promise.resolve();
   const sends = new Set();
   let questionQueue = Promise.resolve();
@@ -173,6 +175,13 @@ wss.on('connection', (ws, req) => {
       return;
     }
     if (!authorization.valid || ws.readyState !== 1) return;
+    if (msg.t === 'visible' && typeof msg.background === 'boolean') {
+      if (!msg.background) { clearTimeout(backgroundTimer); backgroundTimer = null; }
+      else backgroundTimer ||= setTimeout(() => {
+        ws.closeSource = 'background';
+        ws.close(4000, 'background timeout');
+      }, BACKGROUND_MS);
+    }
     const route = ROUTES[msg.t];
     const request = beginOperation(session, msg);
     if (request?.duplicate) return;
@@ -337,6 +346,7 @@ wss.on('connection', (ws, req) => {
   });
   ws.on('close', code => {
     clearTimeout(authTimer);
+    clearTimeout(backgroundTimer);
     const authorized = authorization?.valid;
     authorization?.release();
     unsubscribeOperations?.();
