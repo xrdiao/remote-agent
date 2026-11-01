@@ -437,7 +437,7 @@ export class Session extends AgentContext {
         throw error;
       }
       return;
-    } else if (win.app === 'cursor' && this.threadId && !await this.cdp.evaluate(helpersCall('panelRect()')).catch(() => null)) {
+    } else if (win.app === 'cursor' && this.threadId && !await this.cdp.evaluate(helpersCall('hasComposer()'))) {
       await this.withFocus(() => this.adapter.openAgent.call(this, this.threadId));
     }
     this.bindingReady = !selection.deferred && !this.startupPending;

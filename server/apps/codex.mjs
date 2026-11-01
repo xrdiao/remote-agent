@@ -604,9 +604,8 @@ rememberCodexRoots(rows) {
 },
 
 async codexThreadRows(cdp = this.cdp) {
-  const pos = await cdp.evaluate(helpersCall('codexRecentPoint()'));
+  const pos = await cdp.evaluate(helpersCall('codexRecentPoint(true)'));
   if (!pos) return [];
-  await this.tapCss(pos.x, pos.y, 'left', cdp);
   let rows = [];
   for (let i = 0; i < 8 && !rows.length; i++) {
     await new Promise(r => setTimeout(r, 120));
@@ -1061,9 +1060,8 @@ async codexArchiveThread(agentId) {
   try {
     if (!own) await cdp.connect();
     const beforeThread = await cdp.evaluate(helpersCall('codexThread()')) || '';
-    const pos = await cdp.evaluate(helpersCall('codexRecentPoint()'));
+    const pos = await cdp.evaluate(helpersCall('codexRecentPoint(true)'));
     if (!pos) throw new Error('没有找到会话列表');
-    if (!pos.open) await this.tapCss(pos.x, pos.y, 'left', cdp);
     let target = null;
     for (let i = 0; i < 8 && !target; i++) {
       await new Promise(r => setTimeout(r, 120));

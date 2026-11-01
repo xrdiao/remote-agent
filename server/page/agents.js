@@ -65,7 +65,9 @@
       open.add(activeThread());
       states = states.filter(s => open.has(s.thread) || nativeSessions.some(record => record.sessionId === s.thread && record.cwd === root));
     }
-    return { ready: !!window.vscode?.context?.configuration?.()?.workspace || hasComposer(),
+    const configuration = window.vscode?.context?.configuration?.();
+    return { ready: !!configuration?.workspace || hasComposer(),
+      windowHandle: configuration?.handle ? Array.from(configuration.handle.buffer) : null,
       focused: document.hasFocus(), dirty: !!document.querySelector('.tab.dirty, .tab[aria-label*="unsaved" i]'),
       dialog: [...document.querySelectorAll('[role="dialog"][aria-modal="true"], [role="alertdialog"], .monaco-dialog-box, .quick-input-widget')].some(vis),
       terminalBusy: terminalBusy || !!document.querySelector('.statusbar-item .codicon-modifier-spin'),

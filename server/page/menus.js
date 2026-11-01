@@ -44,8 +44,8 @@
   const devinModelButton = (reveal = true) => {
     if (reveal) revealDevinComposer();
     return [...doc.querySelectorAll('button')].find(e => {
-      // textContent first: innerText forces layout for every button on the page.
-      const text = (e.textContent || '').replace(/\s+/g, ' ').trim();
+      // The compact picker exposes its model through aria-label instead of text.
+      const text = (e.getAttribute('aria-label') || e.textContent || '').replace(/\s+/g, ' ').trim();
       if (!DEVIN_MODEL.test(text) || text.length >= 50) return false;
       return vis(e) && !e.closest('.space-y-2');
     });
@@ -219,6 +219,7 @@
     return el ? center(el) : null;
   };
   const closeCodexMenu = () => {
+    if (codexRecentPoint()?.open) { codexRecentPoint(false); return true; }
     const el = [...doc.querySelectorAll('button[aria-expanded=true][aria-haspopup=menu]')].find(vis);
     if (el) {
       el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse', ctrlKey: false }));

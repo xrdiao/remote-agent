@@ -80,7 +80,7 @@
         }),
         removed, removedAt: Object.fromEntries(removed.map(id => [id, times.get(id)])), missing, cliReady, at };
     }
-    const manager = codexConversationManager(codexThread(), codexHistoryScopes());
+    const manager = codexConversationManager(null, codexHistoryScopes(), 'local');
     if (!manager || manager.hostId !== 'local') return { ready: false };
     const client = manager.requestClient, rows = [], active = new Set();
     const catalogRow = (row, archived) => ({ id: row.id, archived, path: row.path, title: row.name || '',
@@ -144,7 +144,9 @@
       }));
       return { ...summary(message?.content.filter(block => block.content?.type === 'text').map(block => block.content.text).join('\n')), ...nativePreviewActivity(tools, model) };
     }
-    const scopes = codexHistoryScopes(), manager = codexConversationManager(codexThread(), scopes);
+    const scopes = codexHistoryScopes();
+    const host = codexChatRows(true).find(row => row.id === id)?.host || 'local';
+    const manager = codexConversationManager(id, scopes, host);
     const conversation = manager?.getConversation(id), history = conversation?.turnHistory?.history;
     const sourceOfTurn = turn => ({ metadata: turn, rawItems: turn.items || [], nativeComplete: true, ids: (turn.items || []).map(i => i.id), positions: new Map((turn.items || []).map((item, n) => [item.id, n])) });
     let sources = history ? history.islands.flatMap(island => island.entries).slice(-2).map(({ key }) => {
@@ -199,9 +201,10 @@
         if (services.data.allComposersData.allComposers.length > 1) await services.composer.deleteComposer(id);
         else await services.composer.resetComposer(id);
       } else throw new Error('此会话不支持这个操作');
-      const after = services.data.allComposersData.allComposers.find(c => c.composerId === id);
+      const after = (await nativeSessionCatalog('cursor')).rows.find(c => c.id === id);
       const empty = services.data.getComposerDataIfLoaded(id)?.fullConversationHeadersOnly?.length === 0;
-      return { confirmed: action === 'rename' ? after?.name === name : !after || !!after.isArchived || empty };
+      const outcome = action === 'rename' ? 'rename' : after?.archived ? 'archive' : !after ? 'delete' : empty ? 'clear' : null;
+      return { confirmed: action === 'rename' ? after?.title === name : !!outcome, action: outcome };
     }
     const item = devinSessionMenu(id)?.actions.find(a => a.label.toLowerCase() === action && !a.disabled);
     if (!item) throw new Error('此会话没有对应的原生操作入口');

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from '../lib/auth.mjs';
 import { normPath } from '../lib/platform.mjs';
+import { x11ActiveWindow } from '../lib/x11.mjs';
 import { readLibrary, sessionId, syncLibrarySessions } from '../lib/session-library.mjs';
 import { EDITORS, CODEX_CDP_URL } from './config.mjs';
 import { Cdp } from './cdp.mjs';
@@ -63,6 +64,14 @@ export function reconcileSessionCatalog(app, catalog) {
   if (catalog.complete) for (const id of projectSessionIds(app)) if (!states.has(id)) states.set(id, 'deleted');
   const synchronized = syncLibrarySessions(app, states, times);
   let changed = false;
+  for (const row of catalog.rows) {
+    const id = sessionId(app, row.id), k = app + ':' + id;
+    if (!readLibrary()[app]?.[id]?.favorite || !row.workspace || row.host) continue;
+    const previous = saved.sessions[k];
+    if (previous?.workspace === row.workspace && !previous.host) continue;
+    saved.sessions[k] = { ...previous, id: previous?.id || row.id, workspace: row.workspace, host: '' };
+    changed = true;
+  }
   for (const [id, state] of states) if (state === 'deleted' && readLibrary()[app]?.[id]?.deleted && saved.sessions[app + ':' + id]) {
     delete saved.sessions[app + ':' + id];
     changed = true;
@@ -102,11 +111,16 @@ export async function projectProcesses(root) {
   for (const id of await fs.promises.readdir('/proc')) {
     if (!/^\d+$/.test(id)) continue;
     try {
+      const args = (await fs.promises.readFile('/proc/' + id + '/cmdline', 'utf8')).split('\0').filter(Boolean);
+      // Protocol servers stay alive while idle. Only the server itself is excluded;
+      // commands it starts are still inspected separately, including detached jobs.
+      if (args[0] === '/usr/bin/ssh-agent'
+          || args.some(arg => /^--type=(?:renderer|zygote|gpu-process|utility)$|^--remote-debugging-port=/.test(arg))
+          || args.includes('--node-ipc') && args.some(arg => arg.includes('/resources/app/extensions/'))
+          || args[1] === 'acp' && args[0].includes('/resources/app/extensions/')
+          || args.includes('--mcp') && args.includes('serve')) continue;
       const cwd = await fs.promises.readlink('/proc/' + id + '/cwd');
       if (!under(cwd)) continue;
-      const command = (await fs.promises.readFile('/proc/' + id + '/cmdline', 'utf8')).replaceAll('\0', ' ');
-      // Editor processes themselves are the windows being assessed; their child commands are kept.
-      if (/--type=(?:renderer|zygote|gpu-process|utility)|--remote-debugging-port=/.test(command)) continue;
       busy.push(Number(id));
     } catch (error) {
       if (['EACCES', 'EPERM'].includes(error.code)) {
@@ -122,20 +136,30 @@ export async function projectProcesses(root) {
   return busy.length || !unknown ? busy : null;
 }
 function held(row) {
-  if (row.keep || windowLeased(row.app, row.id) || windowLeased(row.app, row.app + ':' + row.id)) return true;
+  if (row.keep) return '已设置保留';
+  if (Object.entries(readLibrary()[row.app] || {}).some(([id, state]) => {
+    const session = saved.sessions[row.app + ':' + id];
+    return state.favorite && !state.deleted && session && !session.host && normPath(session.workspace) === normPath(row.root);
+  })) return '项目包含收藏会话';
+  if (windowLeased(row.app, row.id) || windowLeased(row.app, row.app + ':' + row.id)) return '正在执行窗口操作';
   const same = id => key(row.app, id) === key(row.app, row.id);
-  if ([...fusionViewers].some(s => s.app === row.app && same(s.windowId) && (s.visible && Date.now() - s.notifyPresenceAt < 45000 || s.sending || s.imageTransfers?.size || s.focusCount || s.historyLoading))) return true;
-  return [...fusionWorkers.values()].some(w => FUSION_ACTIVE.includes(w.fusionRun?.phase) && ['a', 'b'].some(side => w.fusionRun[side]?.app === row.app && same(w.fusionRun[side].windowId)));
+  if ([...fusionViewers].some(s => s.app === row.app && same(s.windowId) && (s.visible && Date.now() - s.notifyPresenceAt < 45000 || s.sending || s.imageTransfers?.size || s.focusCount || s.historyLoading))) return '正在查看或执行会话操作';
+  return [...fusionWorkers.values()].some(w => FUSION_ACTIVE.includes(w.fusionRun?.phase) && ['a', 'b'].some(side => w.fusionRun[side]?.app === row.app && same(w.fusionRun[side].windowId))) ? 'Fusion 正在使用窗口' : '';
 }
 export async function probeProjectWindow(row, page, scan = null) {
-  if (held(row)) return { reason: '正在查看、执行操作或被保留' };
+  const reason = held(row);
+  if (reason) return { reason };
   const editor = new Cdp(page.webSocketDebuggerUrl);
   let chat;
   try {
     await editor.connect();
     const state = await editor.evaluate(helpersCall('projectWindowProbe()'));
     if (!state?.ready) return { reason: '窗口尚未就绪或状态无法确认' };
-    if (state.focused || state.dirty || state.dialog || state.terminalBusy) return { reason: '窗口活动、未保存内容或终端任务' };
+    let focused = state.focused;
+    if (process.platform === 'linux' && process.env.DISPLAY) {
+      focused = await x11ActiveWindow() === Buffer.from(state.windowHandle).readUInt32LE(0);
+    }
+    if (focused || state.dirty || state.dialog || state.terminalBusy) return { reason: '窗口活动、未保存内容或终端任务' };
     let agent = state;
     if (row.app === 'codex') {
       const native = (await (scan ? scan.codex ||= codexWindows(CODEX_CDP_URL) : codexWindows(CODEX_CDP_URL))).find(p => p.pageId === page.id);
@@ -156,9 +180,7 @@ export async function nativeCloseProjectWindow(page) {
   try {
     await cdp.connect();
     if (process.platform === 'linux' && process.env.DISPLAY) {
-      const { x11CloseWindow } = await import('../lib/x11.mjs');
-      const info = await cdp.evaluate(`({ pid: window.vscode?.context?.configuration?.()?.mainPid, title: document.title })`);
-      if (!info.pid || !await x11CloseWindow(info.pid, info.title)) throw new Error('无法确认原生窗口，已保留');
+      await cdp.send('Page.close');
       return;
     }
     throw new Error('无法确认系统关闭窗口入口，已保留');
@@ -217,12 +239,12 @@ export async function scanProjectWindows(closeIdle = true) {
         if (!check.idle || held(row) || check.activity > row.lastUsed) continue;
         const release = leaseWindow(row.app, row.id, row, true);
         try { await nativeCloseProjectWindow(page); }
-        catch (error) { row.keep = true; row.reason = error.message; continue; }
+        catch (error) { row.reason = error.message; continue; }
         finally { release(); }
         await new Promise(resolve => setTimeout(resolve, 200));
         const current = await (await fetch(ed.url + '/json/list')).json();
         row.closed = !current.some(p => p.id === page.id);
-        if (!row.closed) { row.keep = true; row.reason = '原生关闭未完成，已保留'; }
+        if (!row.closed) row.reason = '原生关闭未完成';
       }
     }
     persist();

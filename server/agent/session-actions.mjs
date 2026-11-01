@@ -122,7 +122,7 @@ export const methods = {
       if (!before?.actions.includes(action)) throw new Error('此会话没有对应的原生操作入口');
       const result = await cdp.evaluate(helpersCall(`nativeSessionAction(${args}, ${JSON.stringify(action)}, ${JSON.stringify(title)})`));
       if (app === 'cursor') {
-        if (result.confirmed) return;
+        if (result.confirmed) { action = result.action; return; }
         throw new Error('桌面端尚未确认会话操作完成，请刷新列表查看');
       }
       if (app === 'devin' && action === 'rename' && !result?.direct) {
@@ -149,6 +149,6 @@ export const methods = {
     if (action === 'delete') removeLibrarySession(app, id);
     publishSessionChange(app, id, { action, ...(action === 'rename' ? { title } : {}) });
     this.projectAgentCache?.clear();
-    this.emit({ t: 'status', ok: true, msg: action === 'rename' ? '已重命名会话' : action === 'delete' ? '已删除会话' : '已归档会话' });
+    this.emit({ t: 'status', ok: true, msg: action === 'rename' ? '已重命名会话' : action === 'delete' ? '已删除会话' : action === 'clear' ? '已清空会话' : '已归档会话' });
   },
 };

@@ -7,9 +7,16 @@
     const o = frame.getBoundingClientRect();
     return { x: c.x + o.x, y: c.y + o.y };
   };
-  const codexRecentPoint = () => {
+  const codexRecentPoint = (open = null) => {
     const b = codexButton('Recent chats');
-    return b ? { ...codexPoint(b), open: [...doc.querySelectorAll('[role=menu]')].some(e => vis(e) && /Search recent chats/.test(e.innerText || '')) } : null;
+    if (!b) return null;
+    const expanded = [...doc.querySelectorAll('[role=menu]')].some(e => vis(e) && /Search recent chats/.test(e.innerText || ''));
+    // Recent chats uses its own popover state; archive toasts can cover its trigger.
+    if (open !== null && open !== expanded) {
+      const menu = codexFiberProps(b, 30).find(p => p.triggerRef?.current?.contains(b) && typeof p.onOpenChange === 'function');
+      menu.onOpenChange(open);
+    }
+    return { ...codexPoint(b), open: expanded };
   };
   const codexNewPoint = () => { const b = codexButton('New chat'); return b ? codexPoint(b) : null; };
   const codexNeedsLogin = () => [...doc.querySelectorAll('button')].some(b => vis(b) && /^(Sign in with ChatGPT|Use API Key|Use device code)$/.test(b.textContent.trim()));

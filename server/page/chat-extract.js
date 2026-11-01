@@ -197,16 +197,17 @@
     }
     return null;
   };
-  const codexConversationManager = (thread, scopes) => {
+  const codexConversationManager = (thread, scopes, host = null) => {
     const managers = doc.defaultView.__remoteAgentCodexManagers ||= new WeakMap();
+    const matches = manager => manager && !manager.disposed && (host == null ? manager.getConversation(thread) : manager.hostId === host);
     for (const scope of scopes) {
       const manager = managers.get(scope);
-      if (manager && !manager.disposed && manager.getConversation(thread)) return manager;
+      if (matches(manager)) return manager;
     }
     let manager = null, owner;
     for (const scope of scopes) for (const bindings of scope.familyBindings.values()) for (const binding of bindings.values()) {
       const value = codexHistoryBinding(scope, binding)?.get();
-      if (typeof value?.loadOlderConversationTurnsPage === 'function' && !value.disposed && value.getConversation(thread)) {
+      if (typeof value?.loadOlderConversationTurnsPage === 'function' && matches(value)) {
         manager = value;
         owner = scope;
       }
