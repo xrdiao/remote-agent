@@ -1091,3 +1091,34 @@ N2 的外层 @token 分段循环继续保留各 Agent 语义，不为十余行�
 原生现场只读收尾确认两个原 Codex target 仍在、草稿摘要不变；其中一个原窗口的 thread 与开始记录不同，本轮没有对其执行切换调用，未擅自回退，也不把“两原会话均未变化”记为通过。首次离线截图的临时面板使用白底，与实际深色公式不匹配；只将测试面板改用实际主题变量后复验可见性与网络关闭，未改产品 CSS、重复 Editor 保存或追加模型调用。
 
 证据目录为 gitignore 的 `_shots/remaining-fixes-20261102/`：`baseline.json`、`baseline/`、`check-before.log`、`target-cleanup-final.log`、`static-after.log`、`check-final.log`、`browser-results.json`、`katex-offline.png`、`offline-visual.json`、`qa-runtime.json`、`codex-native-case-results.json`、`codex-root-evidence.json`、`paired-main-before.json`、`paired-main-after.json`、`native-final.json`、`paired-final.json`、`scope.json`、`cleanup.json` 与 `verification.json`。
+
+## 21. Codex 指令直发、改动文件提示与语音重复选中（2026-11-02）
+
+修改前工作区干净，HEAD 与实际 GitHub HEAD／master 均为 `db4fca0616082ecfe222a68c040f223a4aa2ee60`，网页 v375。保存 487 个跟踪文件指纹及确认范围的文件副本，以该当前工作区为回归基准。用户确认指令和语音方案，并要求以最长状态检验文件提示；外沿方案失败后，用户另行确认采用框内紧凑行。
+
+### 21.1 根因证据与实施范围
+
+| 项目 | 修改前证据 | 实际修改与影响 |
+|---|---|---|
+| Codex `/compact` 直发 | 主输入发送路径将 `/compact` 作为普通 send 提交并生成聊天回显；建议按钮走已有 codexPick。当前原生 compact 定义要求空输入，普通消息路径不能代替选择指令。普通消息确认清空输入时也没有关闭所属建议 | `app/js/composer.js` 将发送／回车复用同一建议选择函数与原生查询。复用在途查询，按当前选择、修订、正文及光标接收结果；唯一指令走 codexPick，多项保留选择，无匹配仍走原发送。指令不登记普通消息回执／回显；普通消息确认只关闭所属已清空草稿的建议。影响 Codex 主输入无参数指令及共用建议收尾，不修改后端、协议、page helpers 或其他 Agent 专用逻辑 |
+| 改动文件占独立栏 | `history.js` 把 changesNotice 写入 queueBar。最长固定状态通知为 49 字；原外沿左右布局在窄屏错误＋重试时把状态压至 0px，并与排队栏相交。工具行备用布局也在窄屏越界 | `app/index.html`、`app/js/history.js`、`app/app.css` 将文件图标＋数量移至输入框内部顶部约 24px 行，与状态／耗时并列。查看、隐藏处理移至新容器，删除旧队列提示模板与样式；原隐藏集合与电脑／会话键继续复用。重试缩为“重试”，完整辅助名称保留；箭头位于下方工具行。无文件提示时原状态布局保留，排队／子 Agent 不迁移 |
+| 语音两个对号 | 引擎／系统识别的模板显式生成灰色 tag 对号，同时 opt.cur::after 已生成紫色对号 | `app/js/local-voice.js` 删除两处额外灰色标记，复用现有紫色标记；不改录音、模型准备、偏好记录或选择规则 |
+| 版本、测试与记录 | 当前交付为 v375 | `core.js`、`index.html`、`sw.js` 同步 v376，只更新实际变化的 core／composer／history／local-voice／CSS 资源参数；既有 structure-fixes 测试增加行为用例，基准 01／06／09 与本文同步。page 导出快照、Fusion 编排、Windows 和本机 Codex 扩展未修改 |
+
+没有增加自动重发、超时兜底、兼容分支或新消息协议。第 13.5 节本机 Codex 扩展草稿问题仍按用户决定只记录，不将这次指令路由修复算作该问题已解决。
+
+### 21.2 分层验证
+
+| 层次 | 实际结果与边界 |
+|---|---|
+| 定向受控回归 | structure-fixes **188／188 通过**。新增 8 项覆盖直发与按钮共用选择、Enter 复用在途查询、去抖前发送及首尾空白、编辑／切会话后的迟到结果、多项／无匹配、Cursor／终端／普通 Codex 原发送，以及接受后建议归属和文件提示的电脑／会话隔离 |
+| 既有配对浏览器／真实 Codex | 复用原 9335 Chrome 与原 3949 身份，无新配对或资料复制。独立项目先发送一条仅回复 compact-ready 的准备消息，再从实际 v376 手机页面点击发送 `/compact`，只产生 1 次 codexPick、0 次普通 send，输入和建议清空，待发送与回显均为 0。同一原生 thread 的新记录含 compacted、context_compacted 和 task_complete，确认真实压缩完成；没有重放该命令 |
+| 实际页面布局 | 使用实际 HTML／CSS／renderQueue，4 种尺寸（320／402 竖屏、740／874 横屏）×折叠／展开×键盘尺寸／普通尺寸×3 类状态，共 **48 场景无重叠**。覆盖最长固定通知、录音提示、长错误＋重试＋排队、耗时 99:59:59 及文件数 12345，状态最窄仍约 69px，文件行、排队栏、折叠箭头不相交。查看只派发一次原 changes，隐藏后原队列保留，空状态行消失；这是桌面浏览器控制状态与尺寸检查，不是手机验收 |
+| 语音菜单 | 隔离 relay 数据目录没有已安装引擎，仅返回系统项；使用明确标记的 Sherpa／Qwen 目录夹具检查实际菜单渲染，再分别选中三项。每项均 1 个选中行、0 个额外 tag、现有紫色伪元素标记可见，页面错误 0；不加载真实模型、不开麦、不修改真实偏好 |
+| 最终标准检查 | `npm run check` **452／452 通过**；123 个语法文件、87 类前端消息、70 类服务端消息、196 个 page 导出、88 个模块导入、26 项核心引用与 20 个 KaTeX 字体引用通过。受影响的 12 个确认文件之外无跟踪文件变化 |
+| 环境收尾 | 独立测试会话已归档，原富文本草稿按保存的文档结构恢复并核对摘要，再关闭本轮独立窗口；原用户窗口仍在，草稿摘要一致。其中一个原窗口的 thread／模型／推理强度与开始时不同，本轮没有对其执行这些切换，不擅自回退，也不记为原生现场完全不变。QA entrySelections 恢复，Fusion 值不变；原配对主标签仍为 v375，选择、草稿、视口及 cr 存储与开始完全相等，三个临时历史库已删除。原 Chrome／QA relay 保持运行，正式 relay 未重启，未提交、推送或发布 |
+| 手机真机 | 未执行。待手机验收 Codex `/compact` 点击发送／回车与建议收尾，横竖屏／键盘／折叠时最长状态和文件提示的查看／隐藏／重试，以及语音菜单单一紫色选中标记。未重复无关 Agent 生成、完整 Fusion 或真实语音转录 |
+
+布局首轮夹具被既有异步聊天帧覆盖，随后仅隔离临时页接收并使用稳定受控状态；隐藏后的立即样式读取又命中既有离散过渡，按过渡结束点复查通过。未为测试夹具调整产品读取、延时或事件逻辑。
+
+本轮证据在 gitignore 的 `_shots/slash-status-voice-20261102/`：`baseline.json`、`baseline/`、`diagnosis.json`、`status-messages.json`、`layout-prototype.json`、`toolbar-alternative.json`、`inline-alternative.json`、`layout-controlled-final.log`、`browser-results.json`、`native-rollout.json`、`layout-browser.json`、`layout-final-320-error.png`、`layout-final-874-error.png`、`voice-browser.json`、`voice-menu-402.png`、`check-final.log`、`cleanup.json`、`native-preservation.json` 与 `scope.json`。原始身份与草稿快照仅保存在本机证据目录，不写入文档。

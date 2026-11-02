@@ -281,7 +281,7 @@ function confirmation() {
     questionCompose: null, chatBusy: true, devinBusySplit: () => false, cursorBusyQueue: () => false,
     cancelVoice: () => calls.push('cancelVoice'),
     status() {}, saveDraft() {}, codexFollow: () => 'queue', pushEcho() {},
-    mentionsFor: () => ({}), jumpToLatest() {}, failPendingSend() {}, esc: value => value,
+    mentionsFor: () => ({}), submitComposerCommand: () => false, jumpToLatest() {}, failPendingSend() {}, esc: value => value,
     authed: true, ws: { readyState: 1, send: raw => packets.push(JSON.parse(raw)) },
     crypto: crypto.webcrypto, clearTimeout() {}, draftPushTimer: 0, draftEpoch: '',
     queuedChat: null, lastChat: { thread: 'A', items: [], queued: [] },
@@ -310,6 +310,125 @@ function confirmation() {
     accept() { nodes.askOk.onclick(); },
   };
 }
+
+function composerCommands() {
+  const packets = [], echoes = [], timers = new Map(), listeners = new Map();
+  let timerId = 0, receipts = 0;
+  const box = { hidden: true, innerHTML: '', addEventListener: (type, callback) => listeners.set('box:' + type, callback), querySelector: () => null, insertAdjacentHTML() {} };
+  const input = { value: '', selectionStart: 0, selectionEnd: 0,
+    setRangeText(value, start, end) { this.value = this.value.slice(0, start) + value + this.value.slice(end); this.selectionStart = this.selectionEnd = start + value.length; },
+    focus() {}, dispatchEvent() { context.inputRevision++; context.mentionUpdate(input); } };
+  const nodes = { mentionBox: box, send: { disabled: false }, sendNow: { disabled: false }, attachments: { children: [] }, msg: { textContent: '' } };
+  const context = vm.createContext({
+    text: input, $: id => nodes[id], document: { addEventListener: (type, callback) => listeners.set(type, callback) },
+    Event: class { constructor(type) { this.type = type; } },
+    currentApp: 'codex', mode: 'chat', viewSel: 'codex|fixture|thread', questionCompose: null, inputRevision: 0,
+    ovToolInput: () => null, supportsCapability: () => true, updateComposeCompact() {}, esc: value => value,
+    setTimeout: callback => { const id = ++timerId; timers.set(id, callback); return id; }, clearTimeout: id => timers.delete(id),
+    cancelVoice() {}, pendingImageUploads: () => false, saveDraft() {}, codexFollow: () => '', devinBusySplit: () => false,
+    cursorBusyQueue: () => false, chatBusy: false, status() {}, sendReceipt: () => { receipts++; return { requestId: 'receipt-' + receipts }; },
+    pushEcho: (...args) => echoes.push(args), mentionsFor: () => ({}), jumpToLatest() {}, failPendingSend() {},
+    send: packet => { packets.push(packet); return true; },
+  });
+  const composer = read('app/js/composer.js');
+  vm.runInContext(part(composer, 'const MN =', '// Mentions still present in the text')
+    + part(composer, 'function sendComposer(', "$('insertNewline').addEventListener")
+    + part(composer, 'let composing = false;', 'const composerInputHandlers ='), context);
+  return { context, input, box, packets, echoes, nodes, timers,
+    mn: () => vm.runInContext('MN', context),
+    type(value) { input.value = value; input.selectionStart = input.selectionEnd = value.length; context.inputRevision++; context.mentionUpdate(input); },
+    flush() { const callbacks = [...timers.values()]; timers.clear(); callbacks.forEach(callback => callback()); },
+    reply(rows, query = packets.findLast(packet => packet.t === 'mentionQuery')) {
+      context.onMentions({ sel: query.sel || context.viewSel, seq: query.seq, q: query.q, rows });
+    },
+    send: () => context.sendComposer(),
+    enter() { let prevented = false; context.submitOnEnter({ preventDefault() { prevented = true; } }); assert(prevented); },
+    click(index = 0) { listeners.get('box:click')({ target: { closest: () => ({ dataset: { mi: String(index) } }) } }); },
+    receipts: () => receipts,
+  };
+}
+
+const compactSuggestion = { section: 'commands', key: 'commands:Compact conversation', label: 'Compact conversation' };
+
+test('Codex slash Send uses the same native command choice as its suggestion button', () => {
+  for (const action of ['send', 'click']) {
+    const h = composerCommands(); h.type('/compact'); h.flush(); h.reply([compactSuggestion]); h[action]();
+    const picks = h.packets.filter(packet => packet.t === 'codexPick');
+    assert.equal(picks.length, 1); assert.equal(picks[0].key, compactSuggestion.key); assert.equal(picks[0].q, 'compact');
+    assert.equal(picks[0].text, ''); assert.equal(h.receipts(), 0); assert.equal(h.echoes.length, 0);
+    assert.equal(h.input.value, ''); assert.equal(h.box.hidden, true);
+    assert.equal(h.packets.some(packet => packet.t === 'send'), false);
+  }
+});
+
+test('Codex Enter reuses its in-flight slash query and repeated Enter executes once', () => {
+  const h = composerCommands(); h.type('/compact'); h.flush();
+  h.enter(); h.enter();
+  assert.equal(h.packets.filter(packet => packet.t === 'mentionQuery').length, 1);
+  h.reply([compactSuggestion]); h.enter();
+  assert.equal(h.packets.filter(packet => packet.t === 'codexPick').length, 1);
+  assert.equal(h.receipts(), 0); assert.equal(h.box.hidden, true);
+});
+
+test('sending a slash command before debounce queries immediately, including surrounding whitespace', () => {
+  for (const value of ['/compact', ' /compact ']) {
+    const h = composerCommands(); h.type(value); h.send(); h.flush();
+    const queries = h.packets.filter(packet => packet.t === 'mentionQuery'); assert.equal(queries.length, 1);
+    assert.equal(queries[0].trigger, '/'); assert.equal(queries[0].q, 'compact');
+    h.reply([compactSuggestion]); assert.equal(h.packets.filter(packet => packet.t === 'codexPick').length, 1);
+    assert.equal(h.input.value, ''); assert.equal(h.echoes.length, 0);
+  }
+});
+
+test('a late command query cannot execute after an edit or a session change', () => {
+  for (const change of ['edit', 'session']) {
+    const h = composerCommands(); h.type('/compact'); h.send(); const query = h.packets.at(-1);
+    if (change === 'edit') h.type('new unsent draft');
+    else { h.context.mentionHide(); h.context.viewSel = 'codex|fixture|another'; h.type('new session draft'); }
+    const value = h.input.value; h.reply([compactSuggestion], query);
+    assert.equal(h.packets.some(packet => packet.t === 'codexPick' || packet.t === 'send'), false);
+    assert.equal(h.input.value, value);
+  }
+});
+
+test('ambiguous slash results remain choices, and an unknown slash retains ordinary message semantics', () => {
+  const ambiguous = composerCommands(); ambiguous.type('/c'); ambiguous.send();
+  ambiguous.reply([compactSuggestion, { section: 'commands', key: 'context', label: 'Context' }]);
+  assert.equal(ambiguous.packets.some(packet => packet.t === 'codexPick' || packet.t === 'send'), false);
+  assert.equal(ambiguous.box.hidden, false); assert.equal(ambiguous.input.value, '/c');
+  const unknown = composerCommands(); unknown.type('/not-a-command'); unknown.send(); unknown.reply([]);
+  const messages = unknown.packets.filter(packet => packet.t === 'send'); assert.equal(messages.length, 1);
+  assert.equal(messages[0].text, '/not-a-command'); assert.equal(unknown.receipts(), 1);
+});
+
+test('Cursor, terminal input and ordinary Codex messages keep their send path', () => {
+  for (const setting of [{ app: 'cursor', mode: 'chat', value: '/compact' }, { app: 'codex', mode: 'terminal', value: '/compact' },
+    { app: 'codex', mode: 'chat', value: 'ordinary text' }]) {
+    const h = composerCommands(); h.context.currentApp = setting.app; h.context.mode = setting.mode; h.type(setting.value); h.send();
+    assert.equal(h.packets.length, 1); assert.equal(h.packets[0].t, setting.mode === 'terminal' ? 'termSend' : 'send');
+    assert.equal(h.receipts(), 1);
+  }
+});
+
+test('an accepted message closes only its own suggestions and preserves a newer draft', () => {
+  for (const newer of [false, true]) {
+    const h = composerCommands(); h.type('original text');
+    const request = { requestId: 'accepted', computer: 'fixture', draft: 'draft-A', text: h.input.value,
+      revision: h.context.inputRevision, mode: 'chat', version: 0 };
+    Object.assign(h.context, { pendingSends: new Map([['accepted', request]]), pendingEchoes: [], inputHistory: new Map(),
+      drafts: new Map([['draft-A', request.text]]), draftMentions: new Map(), draftVersions: new Map(),
+      currentComputer: () => ({ id: 'fixture' }), draftKey: () => 'draft-A', activeDraft: 'draft-A', pendingStatus: '',
+      dirtyDrafts: new Set(), submittedMessages: [], lastChat: null, draftRevision: 0,
+      queueDraftSync() {}, queueChatRender() {}, autosize() {} });
+    if (newer) h.type('/new');
+    h.box.hidden = false;
+    const seq = h.mn().seq;
+    vm.runInContext(part(read('app/js/composer.js'), 'function confirmSent(', 'function failPendingSend('), h.context);
+    h.context.confirmSent({ requestId: 'accepted', sel: h.context.viewSel });
+    assert.equal(h.input.value, newer ? '/new' : '');
+    assert.equal(h.box.hidden, !newer); assert.equal(h.mn().seq > seq, !newer);
+  }
+});
 
 for (const kind of ['thread', 'computer', 'mode']) {
   test(`append confirmation is cancelled when its ${kind} changes`, async () => {
@@ -599,6 +718,35 @@ test('reading queue counts does not build buttons for any Agent', () => {
     vm.runInContext('queuedMessagesHtml(queuedMessages())', context);
     assert.equal(buttons, 9);
   }
+});
+
+test('changed-file controls retain session and computer ownership outside the queue bar', () => {
+  const packets = [], nodes = { changeNotice: { hidden: true }, queueBar: { innerHTML: '', classList: { toggle(_, visible) { this.visible = visible; } } } };
+  const context = vm.createContext({
+    $: id => nodes[id], computer: 'A', viewSel: 'codex|window|one', sheetKind: null, chatStale: false,
+    currentComputer() { return { id: context.computer }; }, lastChat: { changed: 12345, queued: [] }, subsOpen: false, queueOpen: false,
+    queuedMessages: () => ({ count: 0 }), I18N: { tr: value => value }, esc: value => value,
+    fileEntryIcon: () => '<svg></svg>', ibtn: (_, label, attrs) => `<button ${attrs}>${label}</button>`,
+    document: { body: { classList: { contains: () => false } }, dispatchEvent() {} }, Event,
+    status() {}, send: message => packets.push(message),
+  });
+  const history = read('app/js/history.js');
+  vm.runInContext(part(history, 'const hiddenChangeNotices = new Set();', 'function queuedMessages(')
+    + part(history, 'function renderQueue(', 'let queueEditRequest = null;')
+    + part(history, "$('changeNotice').onclick =", "$('queueBar').onclick ="), context);
+  const render = () => context.renderQueue(false, [], [], false, context.lastChat.changed);
+  const click = dataset => nodes.changeNotice.onclick({ target: { closest: () => ({ dataset }) } });
+  render();
+  assert.equal(nodes.changeNotice.hidden, false);
+  assert.match(nodes.changeNotice.innerHTML, /aria-label="改动了 12345 个文件 ›"/);
+  assert.equal(nodes.queueBar.innerHTML, ''); assert.equal(nodes.queueBar.classList.visible, false);
+  click({ changes: '' }); assert.deepEqual(JSON.parse(JSON.stringify(packets)), [{ t: 'changes' }]);
+  click({ toggleChanges: '' }); assert.equal(nodes.changeNotice.hidden, true);
+  context.viewSel = 'codex|window|two'; render(); assert.equal(nodes.changeNotice.hidden, false);
+  context.viewSel = 'codex|window|one'; render(); assert.equal(nodes.changeNotice.hidden, true);
+  context.computer = 'B'; render(); assert.equal(nodes.changeNotice.hidden, false);
+  context.renderQueue(false, [], [], true, 12345); assert.equal(nodes.changeNotice.hidden, true);
+  context.lastChat.changed = 0; render(); assert.equal(nodes.changeNotice.hidden, true);
 });
 
 function overviewClient() {
