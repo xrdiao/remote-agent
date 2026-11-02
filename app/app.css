@@ -810,6 +810,11 @@ body.composeCompact.chatmode #pickModel { flex: 1 1 auto; min-width: 0; max-widt
 body.composeCompact.chatmode #pickAgents { flex: 0 1 auto; min-width: 0; padding: 0 6px; }
 body.composeCompact.chatmode #pickEditor { flex: 0 0 30px; }
 body.composeCompact.chatmode #fusionConfig { flex: 1; }
+body.land.composeCompact.chatmode #chatTools { padding: 2px 36px 0 4px; overflow: auto; }
+body.land.composeCompact.chatmode #pickModel,
+body.land.composeCompact.chatmode #pickAgents { flex: none; min-width: auto; max-width: 60vw; padding: 0 10px; }
+body.land.composeCompact.chatmode #pickEditor { flex: none; }
+body.land.composeCompact.chatmode #fusionConfig { flex: 0 1 auto; }
 body.composeCompact.chatmode .composerField,
 body.composeCompact.chatmode .sendRow,
 body.composeCompact.chatmode .attachmentRow,
@@ -1623,7 +1628,7 @@ body.conv #overview { display: none; }
 .computerFilePath button, .computerFileNav button { flex: none; padding: 8px 10px; border-radius: 12px; background: var(--s2); color: var(--fg-2); font-size: 13px; }
 .computerFileNav { display: flex; gap: 8px; }
 .projectBrowserTools { display: flex; gap: 8px; margin-bottom: 12px; }
-.projectBrowserTools .opt { flex: 1; }
+.projectBrowserTools .opt { flex: 1; margin-bottom: 0; border-radius: var(--r-md); box-shadow: none; }
 .computerFileActions { margin-top: 12px; }
 #computerFileCompletions { max-height: 180px; overflow-y: auto; }
 #computerFileCompletions .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -808,3 +808,30 @@ N9、N10、N12、N13、N14、S1、S2、G1 暂不排入代码批次。若后续�
 | 最终检查与生效 | 最终 `npm run check` **397／397 通过**，包含新增 16 项回归；120 个语法文件、86 类前端消息、70 类服务端消息、196 个 page 导出、85 个模块导入和 24 项核心资源引用通过。差异空白检查通过；仅确认范围内 21 个文件变化，page 导出快照指纹不变。源码 v372，尚未发布或由正式中继配套加载，未重启正式中继、提交或推送 |
 
 证据位于 gitignore 的 `_shots/shared-navigation-20261102/`：`baseline/`、`check-before.log`、`check-final.log`、`target-after.log`、`target-followup.log`、`browser-results.json`、`browser-requests.json`、`project-tools-top.png`、`fusion-navigation-icon.png`、`paired-browser-check.json` 和 `verification.json`。浏览器夹具初次点击发生在动画中，Enter 模拟也曾缺少字符事件；按真实动画结束及完整键盘事件修正后通过，产品未为夹具加入固定等待或重试。隔离 Chrome、临时 HTTP 服务及浏览器资料目录已清理。
+
+## 18. 横屏工具位置、项目按钮圆角及配对验收恢复（2026-11-02）
+
+用户确认整组模型／项目会话／Editor 按钮在横屏折叠后与展开时位置一致，明确要求不影响竖屏；确认 Fusion 打开项目的两个按钮采用圆角长方形，并要求恢复自动验收、以后配对浏览器不可用时自动恢复。修改前基准为干净工作区 HEAD `d558a42`／网页 v372，实际 GitHub HEAD／master 同为 `d558a42`。本轮只修改确认的 9 个文件，保留原有功能，不重写 Fusion 编排。
+
+### 18.1 根因与修改
+
+| 项目 | 根因证据与实际处理 |
+|---|---|
+| 横屏工具位置 | 原折叠公共样式把模型改为伸缩占满、压缩按钮内边距，并更改工具栏内边距，导致项目／会话和 Editor 向右移动。`app/app.css` 只为 `body.land.composeCompact.chatmode` 恢复展开栏的排列、宽度、内边距与横向滚动；竖屏既有选择器与输入控制器不改。自动折叠、工具按钮和空白展开沿用原实现 |
+| 项目按钮圆角 | `.opt` 的纵向相邻按钮规则作用到横排的 `.projectBrowserTools`，使第一项下角、第二项上角变直，且高度、下边距和分隔阴影不同。共享容器内统一四角圆角、下边距和阴影，保留原两个动作；Fusion 和普通项目入口使用相同样式 |
+| 配对验收不可用 | 历史 `_shots/fusion-main-project-20261102/report.md` 与清理记录显示验收 Chrome、隔离 relay 在收尾时被停止，但原资料和配对保留；端口拒绝连接不等于认证失效。恢复原 `_shots/fusion-rewrite-20261101/chrome-profile` 与原隔离服务数据后，3949 页面使用原身份认证成功，没有新配对 |
+| 自动恢复 | 新增 `scripts/paired-browser.mjs`，读取本机登记 `_shots/paired-browser.json`，复用已运行的服务、浏览器和页面；缺失时只启动登记的隔离 relay／原资料 Chrome，再核对认证。原资料缺失或认证失败直接记录，不复制资料、不新配对、不重启正式 relay。工作流第 7 节记录用户持续授权，后续验收前执行恢复，并保留登记环境，只清理本轮临时资源 |
+| 资源版本 | `app/js/core.js`、`app/index.html`、`app/sw.js` 同步源码 v373，只更新实际变更的 CSS／core 引用；`scripts/structure-fixes.test.mjs` 新增 5 项恢复行为测试，基准 01 同步横屏约定 |
+
+### 18.2 验证与交付边界
+
+| 层次 | 本轮实际结果 |
+|---|---|
+| 受控布局 | 原配对 Chrome 的独立空白标签装入实际 HTML／CSS 与按钮渲染函数，核对 874×402 横屏、402×874 竖屏及横屏长模型名称的展开／折叠，共 6 个状态。横屏四个工具按钮的栏内位置、尺寸与内边距逐项一致；竖屏两种状态与修改前基准完全一致。两项项目按钮均高 52px、四角 14px、无分隔阴影，截图已查看；布局标签无原生 Agent 操作 |
+| 受控恢复测试 | 新增 5／5 通过：环境已运行时复用、两项进程均缺失、只缺浏览器、原资料缺失、原认证失败。没有用源码文字匹配代替行为检查。最初沙箱运行只返回外层文件结果，未计为场景通过；宿主运行后确认 5 项实际执行 |
+| 既有配对浏览器恢复 | 温启动未新启进程，原页面的选择、草稿摘要、视口及本地存储摘要保持一致。关闭登记的 9335 验收 Chrome 后，脚本仅恢复浏览器，原资料认证成功并加载本地 v373；再执行直接复用。原设备仍为 1 个、身份摘要不变，Fusion run 数据摘要与 Cursor／Codex 原生 target 集合不变；3949 隔离 relay 未重启，3939 正式 relay 未操作 |
+| 真实配对页面 | 原资料中的临时标签通过真实 3949 隔离 relay 读取 Fusion 项目，两个按钮四角及高度符合要求；实际点击“浏览文件夹”进入共享目录，所属电脑和 Codex owner 保留、路径栏可见。认证、项目和目录没有测试替身；未发送模型消息、创建项目或新建 Fusion run。临时标签已关闭，登记的配对验收环境保留 |
+| 用户手机 | 待验：横屏折叠／展开整组工具位置、按钮自身动作、空白展开和自动折叠；竖屏折叠与输入不变；Fusion 项目两项按钮圆角和点击动作。桌面模拟尺寸不代表手机／Safari 验收 |
+| 标准检查与交付 | `npm run check` **402／402 通过**，121 个语法文件、86 类前端消息、70 类服务端消息、196 个 page 导出、86 个模块导入及 24 项核心资源引用通过。差异空白检查通过，page 导出快照未修改。源码 v373 已由本地隔离验收页加载，未发布、重启正式 relay、提交或推送 |
+
+证据位于 gitignore 的 `_shots/landscape-recovery-20261102/`：`baseline/`、`layout-before.json`、`layout-after.json`、三张布局截图、`recovery-unit.log`、`recovery-results.json`、`paired-ui-results.json`、`paired-fusion-project.png`、`check-final.log` 和 `verification.json`。自动恢复的登记及运行日志保留在 `_shots/paired-browser.json` 和 `_shots/paired-browser/`，没有写入凭据。

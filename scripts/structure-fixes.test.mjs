@@ -9,6 +9,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { beginOperation, captureOperation, withOperation, subscribeOperations, currentOperation } from '../server/operations.mjs';
 import { PAGE_SRC } from '../server/page/build.mjs';
 import { FOCUS_COMPOSER } from '../server/agent/context.mjs';
+import { ensurePairedBrowser } from './paired-browser.mjs';
 
 const read = file => fs.readFileSync(new URL('../' + file, import.meta.url), 'utf8');
 const part = (source, start, end) => {
@@ -1955,4 +1956,67 @@ test('returning from an ordinary session action preserves the project pickers en
   vm.runInContext(part(read('app/js/notify.js'), 'async function runAgentMenuAction(', 'function openPickedSession('), h.context);
   await h.context.runAgentMenuAction('session', 'rename', { name: 'renamed' }, null, entry);
   h.context.openProjectPicker(); assert.equal(h.packets.at(-1).t, 'projects');
+});
+
+function pairedBrowserFixture(ready = { relay: true, browser: true }) {
+  const config = { appUrl: 'http://127.0.0.1:13949/',
+    browser: { executable: '/registered/chrome', profile: '_shots/paired-browser-fixture/profile', port: 19335 },
+    relay: { dataDir: '_shots/paired-browser-fixture/relay-data', args: ['--import', './registered-isolate.mjs', 'server/index.mjs'],
+      env: { PORT: '13949', HOST: '127.0.0.1' } },
+  };
+  const launches = [], probes = [], identities = [], pages = [];
+  const runtime = {
+    checkIdentity: async value => { identities.push(value); },
+    probe: async url => {
+      probes.push(url);
+      return url.endsWith('/url.json') ? ready.relay && { ready: true }
+        : ready.browser && { webSocketDebuggerUrl: 'ws://registered-browser' };
+    },
+    launch: async (executable, args, env, name) => {
+      launches.push({ executable, args, env, name }); ready[name === 'chrome' ? 'browser' : 'relay'] = true;
+      return 9000 + launches.length;
+    },
+    verifyPage: async (value, version) => {
+      pages.push({ config: value, version });
+      return { authenticated: true, version: 'v373', targetId: 'existing-paired-page' };
+    },
+  };
+  return { config, runtime, launches, probes, identities, pages };
+}
+
+test('paired browser recovery reuses a ready relay, browser and authenticated page without launching processes', async () => {
+  const h = pairedBrowserFixture(), result = await ensurePairedBrowser(h.config, h.runtime);
+  assert.deepEqual(result.started, { relay: false, browser: false }); assert.equal(h.launches.length, 0);
+  assert.equal(h.identities[0], h.config); assert.equal(h.pages[0].config, h.config);
+  assert.equal(result.targetId, 'existing-paired-page'); assert.equal(result.authenticated, true); assert.equal(result.newPairing, false);
+});
+
+test('paired browser recovery starts only the registered relay and original browser profile when both are absent', async () => {
+  const h = pairedBrowserFixture({ relay: false, browser: false }), result = await ensurePairedBrowser(h.config, h.runtime);
+  assert.deepEqual(result.started, { relay: true, browser: true }); assert.equal(h.launches.length, 2);
+  assert.deepEqual(h.launches[0], { executable: process.execPath, args: h.config.relay.args, env: h.config.relay.env, name: 'relay' });
+  assert.equal(h.launches[1].executable, h.config.browser.executable);
+  assert(h.launches[1].args.includes('--remote-debugging-port=19335'));
+  assert(h.launches[1].args.includes('--user-data-dir=' + path.resolve(h.config.browser.profile)));
+  assert.deepEqual(result.pids, { relay: 9001, browser: 9002 }); assert.equal(result.newPairing, false);
+});
+
+test('paired browser recovery restores a missing browser without restarting the ready relay', async () => {
+  const h = pairedBrowserFixture({ relay: true, browser: false }), result = await ensurePairedBrowser(h.config, h.runtime);
+  assert.deepEqual(result.started, { relay: false, browser: true });
+  assert.deepEqual(h.launches.map(item => item.name), ['chrome']); assert.equal(h.pages.length, 1);
+});
+
+test('paired browser recovery reports missing original identity before starting any process', async () => {
+  const h = pairedBrowserFixture({ relay: false, browser: false });
+  h.runtime.checkIdentity = async () => { throw new Error('original profile missing'); };
+  await assert.rejects(ensurePairedBrowser(h.config, h.runtime), /original profile missing/);
+  assert.equal(h.probes.length, 0); assert.equal(h.launches.length, 0); assert.equal(h.pages.length, 0);
+});
+
+test('paired browser recovery reports failed original authentication without creating another pairing', async () => {
+  const h = pairedBrowserFixture(); let attempts = 0;
+  h.runtime.verifyPage = async () => { attempts++; return { authenticated: false }; };
+  await assert.rejects(ensurePairedBrowser(h.config, h.runtime), /原配对认证未恢复；未创建新配对/);
+  assert.equal(attempts, 1); assert.equal(h.launches.length, 0);
 });

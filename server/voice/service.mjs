@@ -2,7 +2,7 @@ import { authenticateDevice } from '../../lib/device-proof.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
@@ -74,12 +74,22 @@ export async function loadWorker(engineId = voiceStatus().engineId, client, devi
   return runtime;
 }
 function spawnRuntime(engineId, runtime, config) {
+  let env;
+  if (engineId === 'qwen' && config.gpuUuid) {
+    const gpus = execFileSync('nvidia-smi', ['--query-gpu=pci.bus_id,uuid', '--format=csv,noheader'], { encoding: 'utf8' })
+      .trim().split('\n').map(line => line.split(',').map(value => value.trim())).sort(([a], [b]) => a.localeCompare(b));
+    const device = gpus.findIndex(([, uuid]) => uuid === config.gpuUuid);
+    if (device < 0) throw new Error(`未找到指定的 GPU：${config.gpuUuid}`);
+    env = { ...process.env, ...config.env, CUDA_DEVICE_ORDER: 'PCI_BUS_ID', CUDA_VISIBLE_DEVICES: String(device) };
+  } else if (process.platform === 'win32' && engineId !== 'qwen') {
+    env = { ...process.env, PYTHONIOENCODING: 'utf-8' };
+  }
   runtime.state = 'preparing';
   runtime.loadStartedAt = Date.now();
   runtime.loading = new Promise((resolve, reject) => {
     const child = spawn(config.python, [...(engineId === 'qwen' ? ['-I'] : []), '-u', fileURLToPath(new URL(config.script, import.meta.url)), config.model], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      ...(process.platform === 'win32' && engineId !== 'qwen' ? { env: { ...process.env, PYTHONIOENCODING: 'utf-8' } } : {}),
+      ...(env ? { env } : {}),
     });
     runtime.worker = child;
     let details = '', startupError = '', settled = false;
