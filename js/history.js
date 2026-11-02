@@ -1165,7 +1165,12 @@ function renderQueue(busy, queued, subs = [], readonly = false, changed = 0, qCo
     html += `<div class="qhRow"><button class="qh fold" data-qfold aria-expanded="${queueOpen}">${queueOpen ? '▾' : '▸'} <span>排队中 ${queue.count} 条</span></button>${queueClearButton(queue)}</div>`;
     if (queueOpen) html += queuedMessagesHtml(queue);
   }
-  if (changed && !readonly && !hiddenChangeNotices.has(changeNoticeKey())) html += `<div class="changesNotice"><button class="qh fold" data-changes>改动了 ${changed} 个文件 ›</button>${ibtn('x', '隐藏改动提示', 'data-toggle-changes')}</div>`;
+  const notice = $('changeNotice');
+  notice.hidden = !changed || readonly || hiddenChangeNotices.has(changeNoticeKey());
+  if (!notice.hidden) {
+    const label = esc(I18N.tr(`改动了 ${changed} 个文件 ›`));
+    notice.innerHTML = `<button data-changes title="${label}" aria-label="${label}">${fileEntryIcon(false)}<span>${changed}</span></button>${ibtn('x', '隐藏改动提示', 'data-toggle-changes')}`;
+  }
   bar.innerHTML = html;
   bar.classList.toggle('show', Boolean(html));
   if (sheetKind === 'queued') renderQueuedList(queue);
@@ -1220,13 +1225,15 @@ function receiveQueueEdit(m) {
   } else { queueEditRequest = null; closeSheet(); queueDraftSync(); }
 }
 
+$('changeNotice').onclick = e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  if ('toggleChanges' in b.dataset) return toggleChangeNotice();
+  if ('changes' in b.dataset) { status('读取改动的文件…'); return send({ t: 'changes' }); }
+};
 $('queueBar').onclick = async e => {
   const b = e.target.closest('button');
   if (!b) return;
-  if ('toggleChanges' in b.dataset) {
-    return toggleChangeNotice();
-  }
-  if ('changes' in b.dataset) { status('读取改动的文件…'); return send({ t: 'changes' }); }
   if ('qfold' in b.dataset) { queueOpen = !queueOpen; store.set('queue-open', queueOpen ? null : '0'); return renderQueue(lastChat?.busy, lastChat?.queued || [], lastChat?.subagents || [], lastChat?.readonly, lastChat?.changed, lastChat?.queuedCount); }
   if ('fold' in b.dataset) { subsOpen = !subsOpen; return renderQueue(lastChat?.busy, lastChat?.queued || [], lastChat?.subagents || [], lastChat?.readonly, lastChat?.changed, lastChat?.queuedCount); }
   if ('main' in b.dataset) { send({ t: 'mainChat' }); status('返回主对话…'); return; }
