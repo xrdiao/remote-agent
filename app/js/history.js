@@ -1169,7 +1169,7 @@ function renderQueue(busy, queued, subs = [], readonly = false, changed = 0, qCo
   notice.hidden = !changed || readonly || hiddenChangeNotices.has(changeNoticeKey());
   if (!notice.hidden) {
     const label = esc(I18N.tr(`改动了 ${changed} 个文件 ›`));
-    notice.innerHTML = `<button data-changes title="${label}" aria-label="${label}">${fileEntryIcon(false)}<span>${changed}</span></button>${ibtn('x', '隐藏改动提示', 'data-toggle-changes')}`;
+    notice.innerHTML = `<button data-changes title="${label}" aria-label="${label}">${fileEntryIcon(false)}<span>${changed}</span></button>`;
   }
   bar.innerHTML = html;
   bar.classList.toggle('show', Boolean(html));
@@ -1228,7 +1228,6 @@ function receiveQueueEdit(m) {
 $('changeNotice').onclick = e => {
   const b = e.target.closest('button');
   if (!b) return;
-  if ('toggleChanges' in b.dataset) return toggleChangeNotice();
   if ('changes' in b.dataset) { status('读取改动的文件…'); return send({ t: 'changes' }); }
 };
 $('queueBar').onclick = async e => {

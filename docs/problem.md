@@ -1122,3 +1122,31 @@ N2 的外层 @token 分段循环继续保留各 Agent 语义，不为十余行�
 布局首轮夹具被既有异步聊天帧覆盖，随后仅隔离临时页接收并使用稳定受控状态；隐藏后的立即样式读取又命中既有离散过渡，按过渡结束点复查通过。未为测试夹具调整产品读取、延时或事件逻辑。
 
 本轮证据在 gitignore 的 `_shots/slash-status-voice-20261102/`：`baseline.json`、`baseline/`、`diagnosis.json`、`status-messages.json`、`layout-prototype.json`、`toolbar-alternative.json`、`inline-alternative.json`、`layout-controlled-final.log`、`browser-results.json`、`native-rollout.json`、`layout-browser.json`、`layout-final-320-error.png`、`layout-final-874-error.png`、`voice-browser.json`、`voice-menu-402.png`、`check-final.log`、`cleanup.json`、`native-preservation.json` 与 `scope.json`。原始身份与草稿快照仅保存在本机证据目录，不写入文档。
+
+## 22. 改动文件提示移至输入框右上沿（2026-11-02）
+
+用户要求去掉文件提示的叉号，将图标＋数量移至输入框右上沿，与左侧耗时／状态采用相同上沿外观，点击仍打开原改动列表；随后明确隐藏与恢复通过“…”菜单操作。方案确认前只在临时标签预检样式，确认后实施。修改前工作区干净，HEAD 与实际 GitHub HEAD／master 均为 `ee06b6dd41d47b9d5aacea813eed8d5608ecf9c2`，源码 v376；保存受影响文件副本与指纹，以此当前工作区为回归基准。
+
+上一轮框内行来自 `app.css` 的 position:static／flex 排序及箭头偏移，叉号来自 `history.js` 的独立按钮模板。隐藏集合与函数同时被“…”菜单使用，并非无用代码，继续保留。
+
+| 修改文件 | 实际改法与影响 |
+|---|---|
+| `app/app.css` | 取消框内行与专用箭头偏移，将状态组和文件按钮放在左右上沿；右侧保持自身宽度，长状态在剩余宽度中省略，上方预留 24px，不遮挡排队栏。没有左侧状态／耗时时不显示空标签；没有文件提示时沿用原状态布局 |
+| `app/js/history.js` | 只删除叉号模板及其 data-toggle-changes 专用点击分支；图标＋数量继续发送原 changes 请求。“…”菜单、按电脑／会话保存的隐藏状态、只读和零改动判定保留 |
+| `app/js/core.js`、`app/index.html`、`app/sw.js` | 同步本地源码／缓存 v377，只更新实际变化的 core、history 和 CSS 资源参数 |
+| `scripts/structure-fixes.test.mjs`、基准 09、本文 | 既有行为测试改为检查菜单复用的隐藏函数，并补恢复断言；同步上沿位置与菜单操作约定 |
+
+影响为共享对话输入区的提示位置和提示入口；不改文件枚举、预览、差异、后端请求、Agent 适配器、Fusion 编排或 page 导出快照，不增加兼容、自动重试或保护分支。
+
+| 验证层次 | 实际结果与边界 |
+|---|---|
+| 定向受控回归 | 既有 structure-fixes **188／188 通过**，覆盖单次 changes 请求、菜单复用的隐藏／恢复、电脑／会话隔离、只读和零改动状态 |
+| 既有配对浏览器 | 原 9335 Chrome 与原 3949 身份直接复用，未重配对、未复制资料。临时标签加载实际 v377 资源，无候选 CSS 注入；48 个场景覆盖 320／402 竖屏、740／874 横屏，折叠／展开、键盘尺寸、最长固定通知、录音提示、长错误＋重试＋排队，统一显示耗时 99:59:59 和文件数 12345。左右提示、排队栏及折叠箭头无重叠，状态最窄约 55px |
+| 提示和菜单操作 | 图标只派发一次 changes，受控返回可打开既有文件列表；叉号数量为 0。实际点击“…”菜单的“隐藏改动提示”后提示消失，重新打开菜单显示“显示改动”，点击后恢复，排队内容保留。无状态／无耗时时左侧空标签不显示，右侧文件提示保留；页面错误 0。文件列表使用受控响应，不计为真实原生文件读取或模型生成 |
+| 最终标准检查 | `npm run check` **452／452 通过**；123 个语法文件、87 类前端消息、70 类服务端消息、196 个 page 导出、88 个模块导入、26 项核心引用与 20 个 KaTeX 字体引用通过；差异空白检查通过 |
+| 环境收尾 | 临时标签和本轮历史库已清理，原配对主标签仍为 v375，选择、草稿、视口和 cr 存储与检查前完全一致。原配对浏览器和隔离 relay 保持运行；未创建或操作真实 Agent 测试窗口，未重启正式 relay，未提交、推送或发布 |
+| 手机真机 | 未执行。待使用既有入口验收右上沿图标点击、最长状态、横竖屏／键盘／折叠，以及“…”菜单隐藏和恢复 |
+
+布局夹具按真实 generation 归属设置受控时钟；初版被既有计时器隐藏的耗时不计为通过。空状态检查发现左侧样式优先级问题，在本次 CSS 范围内修正后复验；48 个已有可见状态场景未重复执行。临时脚本一次证据文件名错误仅修正夹具，未改产品逻辑。
+
+证据目录为 gitignore 的 `_shots/changes-edge-20261102/`：`baseline.json`、`baseline/`、`edge-prototype.log`、`controlled-final.log`、`final-browser.json`、`final-actions.log`、`edge-final-320-error.png`、`edge-final-874-error.png`、`edge-final-402-light.png`、`check-final.log`、`paired-before.json`、`paired-after.json` 与 `scope.json`。身份相关快照仅保存在本机，不写入文档。

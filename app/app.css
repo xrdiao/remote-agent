@@ -827,26 +827,30 @@ body.chatmode:is(:not(.land), .composeCompact) #footerStatus {
 }
 body.chatmode:is(:not(.land), .composeCompact) #elapsed { order: -1; font-size: 10px; }
 body.chatmode:is(:not(.land), .composeCompact) #msg { font-size: 10px; }
-body.chatmode .composerBox:has(#changeNotice:not([hidden])) { display: flex; flex-direction: column; }
-body.chatmode .composerBox:has(#changeNotice:not([hidden])) #composerFold { top: 32px; }
+body.chatmode .composerBox:has(#changeNotice:not([hidden])) { margin-top: 24px; }
 body.chatmode #footerStatus:has(#changeNotice:not([hidden])) {
-  position: static; order: -1; min-height: 24px; max-width: none; width: auto; padding: 0 3px;
-  border-radius: 0; gap: 6px; background: transparent;
+  position: absolute; top: auto; bottom: calc(100% - 2px); left: 14px; right: 14px;
+  min-height: 0; max-width: none; width: auto; padding: 0; border-radius: 0; gap: 8px; background: transparent;
 }
 #footerStatus:has(#changeNotice:not([hidden])) #composeStatus {
-  display: flex; align-items: center; flex: 1; min-width: 0; gap: 4px; overflow: hidden;
+  display: flex; align-items: center; flex: 0 1 auto; min-width: 0; gap: 4px; overflow: hidden;
+  padding: 2px 7px 0; border-radius: 8px 8px 0 0; background: var(--s1);
 }
-#footerStatus:has(#changeNotice:not([hidden])) #msg { min-width: 40px; font-size: 10px; }
+#footerStatus:has(#changeNotice:not([hidden])) #msg { font-size: 10px; }
 #footerStatus:has(#changeNotice:not([hidden])) #elapsed {
   order: -1; flex: 0 1 auto; min-width: 24px; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 body.chatmode #footerStatus:has(#changeNotice:not([hidden])) #retryChat { display: block; height: 24px; padding: 0 6px; font-size: 11px; }
-#changeNotice { display: flex; flex: none; align-items: center; gap: 2px; }
+#changeNotice {
+  display: flex; flex: none; align-items: center; margin-left: auto;
+  padding: 2px 7px 0; border-radius: 8px 8px 0 0; background: var(--s1);
+}
 #changeNotice button {
   display: flex; align-items: center; gap: 3px; min-height: 20px; padding: 0 3px;
   font-size: 11px; background: transparent; color: var(--fg-3);
 }
 #changeNotice svg { width: 14px; height: 14px; }
+#footerStatus #composeStatus:not(:has(#msg:not(:empty):not(.quiet), #retryChat:not([hidden]), #elapsed:not([hidden]))) { display: none; }
 
 /* Short screens (tablets, foldable inners, cover screens): reclaim chrome height. */
 @media (max-height: 760px) {

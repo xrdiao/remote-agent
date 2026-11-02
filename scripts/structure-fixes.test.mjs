@@ -741,9 +741,10 @@ test('changed-file controls retain session and computer ownership outside the qu
   assert.match(nodes.changeNotice.innerHTML, /aria-label="改动了 12345 个文件 ›"/);
   assert.equal(nodes.queueBar.innerHTML, ''); assert.equal(nodes.queueBar.classList.visible, false);
   click({ changes: '' }); assert.deepEqual(JSON.parse(JSON.stringify(packets)), [{ t: 'changes' }]);
-  click({ toggleChanges: '' }); assert.equal(nodes.changeNotice.hidden, true);
+  context.toggleChangeNotice(); assert.equal(nodes.changeNotice.hidden, true);
   context.viewSel = 'codex|window|two'; render(); assert.equal(nodes.changeNotice.hidden, false);
   context.viewSel = 'codex|window|one'; render(); assert.equal(nodes.changeNotice.hidden, true);
+  context.toggleChangeNotice(); assert.equal(nodes.changeNotice.hidden, false);
   context.computer = 'B'; render(); assert.equal(nodes.changeNotice.hidden, false);
   context.renderQueue(false, [], [], true, 12345); assert.equal(nodes.changeNotice.hidden, true);
   context.lastChat.changed = 0; render(); assert.equal(nodes.changeNotice.hidden, true);
