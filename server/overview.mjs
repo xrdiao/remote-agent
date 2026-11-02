@@ -12,15 +12,19 @@ const FUSION_RECENT_MS = 24 * 3600 * 1000;
 const projectId = (app, root, host, windowId) => JSON.stringify([app, host || '', root ? pathKey(root, !host) : windowId]);
 
 export function overviewSnapshot(deviceId) {
-  const now = Date.now(), projects = new Map(), collected = new Map(), excluded = fusionTargets();
+  const now = Date.now(), projects = new Map(), collected = new Map(), excluded = fusionTargets(), errors = [];
   let pendingWindows = 0;
   for (const win of nativeTargets()) {
     const windowId = win.pageId || win.id;
     if (excluded.windows.has(win.app + ':' + windowId.replace(/^(cursor|devin|codex):/, ''))) continue;
     const source = nativeWindowAt(win.ws), snap = source?.snapshot, roots = source?.roots;
     const catalog = nativeSessionCatalog(win.app);
-    if (!roots || !catalog) pendingWindows++;
-    if (!roots) continue;
+    if (!roots) {
+      if (source?.rootsError) errors.push({ app: win.app, windowId, error: source.rootsError });
+      else pendingWindows++;
+      continue;
+    }
+    if (!catalog) pendingWindows++;
     const id = win.app === 'codex' ? 'codex' : win.id;
     for (const root of roots.length ? roots : [{ root: '', host: '' }]) {
       const workspace = normPath(root.root), host = root.host || '', key = projectId(win.app, workspace, host, windowId);
@@ -95,8 +99,9 @@ export function overviewSnapshot(deviceId) {
   const fusion = (fusionRuns[deviceId]?.runs || [])
     .filter(run => FUSION_ACTIVE.includes(run.status) || ['awaiting_user', 'blocked'].includes(run.status) || now - run.updated < FUSION_RECENT_MS)
     .sort((a, b) => b.updated - a.updated).slice(0, 8).map(fusionSummary);
-  return { os: process.platform, now, ready: pendingWindows === 0, partial: pendingWindows > 0 && windows.length > 0,
-    pendingWindows, windows, sessions, fusion };
+  return { os: process.platform, now, ready: pendingWindows === 0 && errors.length === 0,
+    partial: (pendingWindows > 0 || errors.length > 0) && windows.length > 0,
+    pendingWindows, errors, windows, sessions, fusion };
 }
 
 export function overviewSession(deviceId, { win, windowId, threadId }) {

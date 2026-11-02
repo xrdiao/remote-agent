@@ -260,3 +260,46 @@ test('periodic Fusion cleanup also waits for the software slot before probing or
   for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual([...h.closed], ['one']);
 });
+
+for (const stage of ['fetch', 'body']) {
+  test(`the existing close budget ends a stalled ${stage} and releases the same-app Fusion slot`, async () => {
+    const h = fixture({ singleWindow: true }); fusion(h);
+    let now = Date.now(), closeSignal;
+    const budgets = [], controllers = [];
+    h.context.Date = class extends Date { static now() { return now; } };
+    h.context.AbortSignal = { timeout(ms) { budgets.push(ms); const controller = new AbortController(); controllers.push(controller); return controller.signal; } };
+    h.context.fetch = async (_url, { signal }) => {
+      if (!h.closed.has('one')) return { json: async () => [{ id: 'one', type: 'page', url: 'workbench', webSocketDebuggerUrl: 'one' }] };
+      closeSignal = signal;
+      const wait = () => new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+      return stage === 'body' ? { json: wait } : wait();
+    };
+    const recycling = h.recycle(); await new Promise(resolve => setImmediate(resolve));
+    assert(closeSignal); assert.equal(budgets.at(-1), 5000);
+    let nextRan = false;
+    const next = h.context.fusionScheduler.submit({ app: 'cursor', runId: 'next', projectKey: 'next', access: 'read', ready: () => true,
+      execute: async () => { nextRan = true; } });
+    await new Promise(resolve => setImmediate(resolve)); assert.equal(nextRan, false);
+    now += 5000; controllers.at(-1).abort(new Error('existing close budget expired')); await recycling; await next;
+    assert.equal(nextRan, true); assert.equal(vm.runInContext('scanning', h.context), false);
+    assert.equal(h.state().windows['cursor:one'].closed, false);
+    assert.match(h.state().windows['cursor:one'].reason, /无法确认窗口关闭/);
+    assert.equal(h.calls.length, 1);
+  });
+}
+
+test('each close confirmation request receives only the remaining original budget', async () => {
+  const h = fixture({ singleWindow: true, nativePid: 42, processes: [{ id: 42, args: ['/editor/code'] }] }); fusion(h);
+  let now = Date.now(), confirmations = 0;
+  const budgets = [];
+  h.context.Date = class extends Date { static now() { return now; } };
+  h.context.process.kill = () => {};
+  h.context.AbortSignal = { timeout(ms) { if (h.closed.has('one')) budgets.push(ms); return new AbortController().signal; } };
+  h.context.fetch = async () => {
+    if (!h.closed.has('one')) return { json: async () => [{ id: 'one', type: 'page', url: 'workbench', webSocketDebuggerUrl: 'one' }] };
+    if (++confirmations === 1) { now += 1800; throw new Error('temporarily disconnected'); }
+    return { json: async () => [] };
+  };
+  await h.recycle(); assert.deepEqual(budgets, [5000, 3200]);
+  assert.equal(h.state().windows['cursor:one'].closed, true); assert.equal(h.calls.length, 1);
+});

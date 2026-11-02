@@ -30,6 +30,7 @@ export const adapter = {
         && !await this.cdp.evaluate(helpersCall('hasComposer()'))) await this.openEditorChat();
     const st = await this.waitFor('agentStartupState("devin")', 250);
     if (!st) throw new Error('Devin 项目与会话尚未就绪，请重试');
+    return st;
   },
 
   async openAgent(id, title = '') {

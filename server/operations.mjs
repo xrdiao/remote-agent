@@ -19,7 +19,7 @@ export function publishDesktopState(deviceId, message) {
 }
 
 export function desktopAction(session, message) {
-  if (message.t === 'overviewManage') return true;
+  if (message.t === 'overviewManage' || message.t === 'saveComputerFile') return true;
   if (session.app === 'fusion') return false;
   return message.t === 'send' ? message.submit !== false && session.mode !== 'terminal'
     : message.t === 'queue' ? message.action !== 'read'
@@ -32,8 +32,8 @@ export function beginOperation(session, message) {
   if (previous) { previous.publish(); return { operation: previous, duplicate: true }; }
   const operation = {
     id: message.operationId, deviceId: session.deviceId, kind: message.t,
-    app: message.t === 'overviewManage' ? String(message.win).split(':')[0] : session.app,
-    sel: message.sel || session.selectionKey(), requestId: message.requestId,
+    app: message.t === 'saveComputerFile' ? '' : message.t === 'overviewManage' ? String(message.win).split(':')[0] : session.app,
+    sel: message.t === 'saveComputerFile' ? '' : message.sel || session.selectionKey(), requestId: message.requestId,
     events: new Map(), revision: 0, done: false, started: false, submitted: false,
     publish(client) {
       const packet = JSON.stringify({ t: 'operation', id: this.id, kind: this.kind, app: this.app,

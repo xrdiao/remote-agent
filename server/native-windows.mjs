@@ -152,12 +152,21 @@ export class NativeWindow {
   }
   async start(win) {
     this.win = win;
+    if (this.roots === undefined && !this.rootsRead) {
+      const editor = new NativeCdp(win.editorWs || win.ws);
+      this.rootsRead = cdpRead.run(null, async () => {
+        await editor.connect();
+        this.roots = await editorRoots(editor, win.app);
+        this.rootsError = null;
+      }).catch(error => { this.rootsError = error.message; }).finally(() => {
+        editor.close();
+        this.rootsRead = null;
+        publishCatalog(win.app);
+      });
+    }
     if (this.watching) return this.watching;
     this.watching = cdpRead.run(null, async () => {
       await this.connect();
-      const editor = new NativeCdp(win.editorWs || win.ws);
-      this.rootsRead = editor.connect().then(() => editorRoots(editor, win.app)).then(roots => { this.roots = roots; })
-        .catch(() => {}).finally(() => editor.close());
       refreshSessionCatalog(this, false).catch(error => publishCatalog(win.app, error));
       const observer = this.observer = new NativeCdp(this.cdp.wsUrl);
       this.stopWatch = await watchChat(observer, () => {

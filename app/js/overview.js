@@ -21,6 +21,7 @@ const OV_EN = {
   '模型未提供': 'Model unavailable', '未提供任务进度': 'No task progress provided', '正在读取运行状态…': 'Loading run status…', '任务进度': 'Task progress',
   '更多操作': 'More actions', '本次发送': 'Send this message', '输入工具': 'Input tools',
   '状态待确认': 'Status unavailable', '执行失败': 'Failed', '其余项目仍在读取…': 'Loading remaining projects…',
+  '项目读取失败': 'Could not load projects',
 };
 const ovT = s => I18N.lang === 'en' && OV_EN[s] || s;
 const OV_ICON = {
@@ -79,7 +80,7 @@ function ovComputerStatus(e, st = ovSt.get(e.id)) {
   if (status === 'old') return status;
   if (navigator.onLine === false || link?.phase === 'paused') return 'offline';
   if (link?.socket?.readyState < 2) {
-    return link.authed && (st?.data?.ready || st?.data?.partial) ? 'online' : 'loading';
+    return link.authed && (st?.data?.ready || st?.data?.partial || st?.data?.errors?.length) ? 'online' : 'loading';
   }
   if (link?.retry != null || link?.attempt) return 'loading';
   if (link?.socket?.readyState >= 2) return 'offline';
@@ -314,8 +315,10 @@ function ovComputerGroup(e, all, projs) {
     badge = ovT('重新连接'); action = `data-ov="retry" data-id="${esc(e.id)}"`;
     detail = link?.phase === 'paused' ? ovT('暂时无法连接，已暂停自动重试') : st?.seen ? `离线 · 最后在线 ${ovFmt(Date.now() - st.seen)} 前` : ovT('尚未连接');
   } else if (!loading) detail = ovS.level === 'projects' ? `${projects.length} 个项目` : `${recs.length} 个会话`;
-  if (status === 'online' && st.data.partial) detail += ' · ' + ovT('其余项目仍在读取…');
+  if (status === 'online' && st.data.pendingWindows > 0) detail += ' · ' + ovT('其余项目仍在读取…');
   if (status === 'online' && e.c?.key === currentComputer()?.key && conn.attachFailed) detail = I18N.tr('当前会话尚未就绪');
+  if (status === 'online' && st.data.errors?.length) detail += ' · ' + ovT('项目读取失败') + ': '
+    + st.data.errors.map(value => `${OV_AGENT[value.app]} · ${value.error}`).join('; ');
   const stage = link?.authed || link?.restoring ? 2 : link?.opened ? 1 : st?.stage || 0;
   if (loading) detail = ovT(link?.retry != null || link?.attempt && link?.socket?.readyState >= 2 || link?.restoring ? '正在恢复连接…' : link?.authed ? '正在读取项目与会话…' : link?.opened ? '正在验证设备…' : !link?.socket && st?.data ? '等待连接…' : stage ? '连接电脑…' : '查找地址…');
   const progress = loading && !e.foreign ? `<span class="ov-computer-progress" aria-hidden="true">${[0, 1, 2].map(i => `<i class="${i < stage ? 'done' : i === stage ? 'current' : ''}"></i>`).join('')}</span>` : '';
@@ -683,7 +686,7 @@ async function ovSessionRequest(r, action, extra = {}) {
     const existing = [...desktopRequests.values()].find(request => request.overview === identity);
     if (existing) return existing.promise;
     if (!link?.authed || link.socket.readyState !== 1) throw new Error(ovT('电脑尚未连接，请先重新连接'));
-    const request = { overview: identity, device, message: { t: 'overviewManage', ...target, sel: [r.app, r.windowId, r.threadId].join('|') } };
+    const request = { overview: identity, device, resultType: 'overviewManaged', message: { t: 'overviewManage', ...target, sel: [r.app, r.windowId, r.threadId].join('|') } };
     request.promise = new Promise((resolve, reject) => {
       request.complete = result => result.ok ? resolve(result.value) : reject(new Error(result.error));
     });

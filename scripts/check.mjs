@@ -16,7 +16,7 @@ let failures = 0;
 const fail = msg => { failures++; console.error(`FAIL ${msg}`); };
 
 // Frontend sends types built dynamically (ternaries / string concat).
-const SEND_EXTRA = new Set(['codexPick', 'overviewManage']);
+const SEND_EXTRA = new Set(['codexPick', 'overviewManage', 'saveComputerFile']);
 // Server emits that the extraction sees but the frontend does not dispatch on.
 const EMIT_OK = new Set([]);
 
@@ -78,6 +78,7 @@ const emitted = new Set([
 const frontendHandled = new Set([
   ...grab(appFiles, /\.t === '([A-Za-z]+)'/g),
   ...grab(appFiles, /case '([A-Za-z]+)'/g),
+  ...grab(appFiles, /\bresultType:\s*'([A-Za-z]+)'/g),
 ]);
 const unhandled = [...emitted].filter(t => !frontendHandled.has(t) && !EMIT_OK.has(t));
 if (unhandled.length) fail(`server emits but frontend never handles: ${unhandled.join(', ')}`);

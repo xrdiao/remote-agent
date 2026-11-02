@@ -7,7 +7,7 @@ import { pipeline } from 'node:stream/promises';
 import yazl from 'yazl';
 import { listDevices, needsTotp } from '../../lib/auth.mjs';
 import { json, readBody, SECURITY_HEADERS, corsHeaders } from './static.mjs';
-import { readFile, writeTextFile } from '../../lib/files.mjs';
+import { readFile } from '../../lib/files.mjs';
 import { highlightText } from '../../lib/highlight.mjs';
 import { pdfUrl, videoUrl } from './video.mjs';
 
@@ -47,12 +47,6 @@ export async function transferApi(req, res, route, device) {
       const body = await readFile(file, stat.size);
       const hl = body.text ? await highlightText(body.text, file, query.get('theme') === 'light' ? 'light-plus' : 'dark-plus').catch(() => null) : null;
       return json(req, res, 200, { ...info, ...body, editable: body.text != null && !body.truncated, ...(hl ? { hl } : {}) });
-    }
-    if (route === '/api/transfer/save' && req.method === 'POST') {
-      const body = JSON.parse(await readBody(req, 4 * 1024 * 1024));
-      const file = await fsp.realpath(localPath(body.path));
-      const size = await writeTextFile(file, body.text);
-      return json(req, res, 200, { ok: true, path: body.path, size });
     }
     if (route === '/api/transfer/download' && req.method === 'POST') {
       const { paths } = JSON.parse(await readBody(req, 1024 * 1024));

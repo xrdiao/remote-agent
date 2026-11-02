@@ -10,6 +10,7 @@ import { beginOperation, captureOperation, withOperation, subscribeOperations, c
 import { PAGE_SRC } from '../server/page/build.mjs';
 import { FOCUS_COMPOSER } from '../server/agent/context.mjs';
 import { ensurePairedBrowser } from './paired-browser.mjs';
+import { writeTextFile } from '../lib/files.mjs';
 
 const read = file => fs.readFileSync(new URL('../' + file, import.meta.url), 'utf8');
 const part = (source, start, end) => {
@@ -1335,7 +1336,7 @@ test('unchanged usage updates leave the ring DOM intact and never repaint the ca
   h.context.ovUpdateUsage(); assert.equal(writes, 2);
 });
 
-function relayHeartbeat() {
+function relayHeartbeat({ needsTwoFactor = false } = {}) {
   let now = 1000000, wss;
   const timers = new Map(), sessions = [], bindings = [], logs = [];
   const pair = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
@@ -1371,7 +1372,7 @@ function relayHeartbeat() {
     setTimeout: schedule, clearTimeout: id => timers.delete(id),
     setInterval: (fn, ms) => schedule(fn, ms, true), clearInterval: id => timers.delete(id),
     console: { log: message => logs.push(message) }, voiceWss: () => new EventEmitter(),
-    findDevice: token => token === 'fixture-token' ? device : null, needsTotp: () => false,
+    findDevice: token => token === 'fixture-token' ? device : null, needsTotp: () => needsTwoFactor,
     computerId: () => 'fixture-computer', computerName: () => 'Fixture', updateDevice() {},
     bindDeviceConnection(_id, close) { const binding = { valid: true, close, release() {} }; bindings.push(binding); return binding; },
     subscribeLibrary() {}, subscribeOperations: () => () => {}, lastSelection: () => null,
@@ -1384,7 +1385,7 @@ function relayHeartbeat() {
   context.attachWss(new EventEmitter());
   const settle = () => new Promise(resolve => setImmediate(resolve));
   return {
-    logs, sessions, settle,
+    logs, sessions, settle, routes: context.ROUTES,
     async socket({ valid = true, resume, authenticate = true } = {}) {
       const socket = new Socket(); wss.clients.add(socket); wss.emit('connection', socket, { headers: {} });
       if (authenticate) {
@@ -1937,15 +1938,12 @@ test('closing a shared Editor preview returns to the same directory and scroll w
 });
 
 test('shared Editor saving uses its owning computer and updates text only from the confirmed result', async () => {
-  const h = sharedFileBrowser(() => ({ ok: true, size: 3 }));
-  Object.assign(h.context, { editing: true, saving: null, saveRequestId: 0, fileRequestId: 3, editBase: 'old',
-    viewing: { path: '/project/a.txt', text: 'old', computer: h.computers[1] },
-  });
-  h.node('vEditBox').value = 'new';
-  vm.runInContext(part(read('app/js/files.js'), 'function onSaved(', 'function closeViewer('), h.context);
+  const h = editorSave();
   await h.context.saveEdit();
-  assert.equal(h.requests[0].computer, 'computer-two'); assert.equal(h.requests[0].route, '/api/transfer/save');
-  assert.deepEqual(JSON.parse(h.requests[0].body), { path: '/project/a.txt', text: 'new' });
+  assert.equal(h.requests.length, 0); assert.equal(h.packets[0].computer, 'B');
+  assert.equal(h.packets[0].message.t, 'saveComputerFile');
+  assert.equal(h.context.viewing.text, 'old'); assert(h.context.saving);
+  h.finish();
   assert.equal(h.context.viewing.text, 'new'); assert.equal(h.context.saving, null);
   assert.equal(h.node('vStatus').textContent, '已保存');
 });
@@ -2020,3 +2018,215 @@ test('paired browser recovery reports failed original authentication without cre
   await assert.rejects(ensurePairedBrowser(h.config, h.runtime), /原配对认证未恢复；未创建新配对/);
   assert.equal(attempts, 1); assert.equal(h.launches.length, 0);
 });
+
+function nativeRoots() {
+  let reads = 0, watches = 0, notices = 0, result = async () => [{ root: '/project' }];
+  class Cdp {
+    constructor(url) { this.wsUrl = url; this.handlers = new Map(); }
+    on() {} close() {} async connect() {} async send() {}
+    async evaluate(expression) { return expression.includes('nativeSessionInfo')
+      ? { ready: true, rows: [], removed: [] } : { chat: { items: [], thread: 'thread' }, states: [], catalog: [] }; }
+  }
+  const context = vm.createContext({ Cdp, cdpRead: { run: (_signal, action) => action(), getStore: () => null }, awaitCdpRead: value => value,
+    watchChat: async () => { watches++; return () => {}; }, editorRoots: async () => { reads++; return result(); },
+    PAGE_SRC: '({})', helpersCall: value => value, projectSessionIds: () => [], reconcileSessionCatalog: () => false,
+    updateProjectWindowTargets() {}, bindOperation: action => action, publishDesktopState() {}, withOperation: (_op, action) => action(),
+    AgentContext: class {}, codexSessionStates: async () => [], AbortController, setTimeout, clearTimeout,
+  });
+  vm.runInContext(read('server/native-windows.mjs').replace(/^import .*;\n/gm, '').replace(/^export /gm, '')
+    + '\nthis.Source = NativeWindow;', context);
+  const source = new context.Source('ws://fixture/chat'), win = { app: 'cursor', ws: 'ws://fixture/chat', editorWs: 'ws://fixture/editor' };
+  context.subscribeCatalog('cursor', () => notices++);
+  return { source, win, context, start: () => source.start(win), reads: () => reads, watches: () => watches, notices: () => notices,
+    result: action => { result = action; } };
+}
+
+test('failed project roots finish with their cause and recover through the next existing discovery call', async () => {
+  const h = nativeRoots(); h.result(async () => { throw new Error('directory unavailable'); });
+  await h.start(); await h.source.rootsRead;
+  assert.equal(h.source.rootsError, 'directory unavailable'); assert.equal(h.source.rootsRead, null);
+  assert.equal(h.reads(), 1); assert.equal(h.watches(), 1); assert(h.notices() > 0);
+  h.result(async () => [{ root: '/project' }]);
+  await h.start(); await h.source.rootsRead;
+  assert.equal(h.source.roots[0].root, '/project'); assert.equal(h.source.rootsError, null);
+  assert.equal(h.reads(), 2); assert.equal(h.watches(), 1);
+  await h.start(); assert.equal(h.reads(), 2);
+});
+
+test('concurrent metadata initialization shares one read and an empty root list stays valid', async () => {
+  const h = nativeRoots(); let release;
+  h.result(() => new Promise(resolve => { release = resolve; }));
+  await Promise.all([h.start(), h.start()]);
+  assert.equal(h.reads(), 1); assert.equal(h.watches(), 1);
+  const pending = h.source.rootsRead; release([]); await pending;
+  assert.equal(h.source.roots.length, 0); await h.start(); assert.equal(h.reads(), 1);
+});
+
+test('directory errors end pending state while successful windows stay available and isolated', () => {
+  const h = overviewDirectory(), failed = h.add('cursor', 'failed'); failed.roots = undefined; failed.rootsError = 'permission denied';
+  let result = h.snapshot();
+  assert.equal(result.ready, false); assert.equal(result.partial, false); assert.equal(result.pendingWindows, 0);
+  assert.deepEqual(result.errors, [{ app: 'cursor', windowId: 'failed', error: 'permission denied' }]);
+  h.add('codex', 'ready'); h.catalogs.set('codex', { rows: [] }); result = h.snapshot();
+  assert.equal(result.partial, true); assert.equal(result.windows.length, 1); assert.equal(result.pendingWindows, 0);
+  failed.roots = []; failed.rootsError = null; h.catalogs.set('cursor', { rows: [] }); result = h.snapshot();
+  assert.equal(result.ready, true); assert.deepEqual(result.errors, []);
+});
+
+test('an authenticated computer with a directory error leaves the loading state', () => {
+  const link = { authed: true, socket: { readyState: 1 } };
+  const context = vm.createContext({ computerSockets: new Map([['key', link]]), navigator: { onLine: true } });
+  vm.runInContext(part(read('app/js/overview.js'), 'function ovComputerStatus(', 'function ovStOf('), context);
+  assert.equal(context.ovComputerStatus({ c: { key: 'key' } }, { data: { errors: [{ error: 'denied' }] } }), 'online');
+  assert.equal(context.ovComputerStatus({ c: { key: 'key' } }, { data: { pendingWindows: 1 } }), 'loading');
+});
+
+function devinProject(thread = 'acp/devin-cli/new-session') {
+  const emitted = [], calls = [], state = { thread, surface: 'editor', items: 0 };
+  let active = thread;
+  const context = vm.createContext({ path, helpersCall: value => value, fusionProject: root => ({ id: root }),
+    cdpRead: { getStore: () => null }, setTimeout: action => action() });
+  const adapter = vm.runInContext('({' + part(read('server/apps/devin.mjs'), '  async openDefaultSession() {', '  async openAgent(') + '})', context);
+  const methods = vm.runInContext('({' + part(read('server/agent/projects.mjs'), '  async finishProject() {', '  projectName() {')
+    + part(read('server/agent/projects.mjs'), '  async resumeProjectSwitch(', '  // Waits for the Codex')
+    + part(read('server/apps/devin.mjs'), 'async confirmDevinThread(', '// Switching surface') + '})', context);
+  const session = { ...methods, app: 'devin', mode: 'chat', chatUpdatesStop: () => {},
+    pendingProject: { root: '/project', threadId: '', newSession: false }, threadId: 'old', selectedThread: 'old', adapter,
+    editorCdp: { evaluate: async () => ({ required: false }) },
+    cdp: { evaluate: async expression => expression === 'devinSurface()' ? 'editor' : expression === 'hasComposer()' ? true : active },
+    waitFor: async () => { calls.push('startup'); return state; }, currentRoots: async () => [{ root: '/project' }],
+    clearViewState() { calls.push('clear'); }, publishThread() { emitted.push({ t: 'thread', thread: this.threadId }); },
+    selectionKey() { return 'devin|window|' + this.threadId; }, emit: value => emitted.push(value),
+    async pollChat() { assert.equal(this.threadId, active); emitted.push({ t: 'chat', chat: { thread: active, items: [] } }); },
+    prefetchMenus: async () => {},
+  };
+  return { session, emitted, calls, state, active: value => { active = value; } };
+}
+
+for (const thread of ['acp/devin-cli/new-session', '']) {
+  test(`Devin project completion adopts the confirmed default identity before its first chat: ${thread || 'valid empty home'}`, async () => {
+    const h = devinProject(thread); await h.session.finishProject();
+    assert.equal(h.session.threadId, thread); assert.equal(h.session.selectedThread, thread);
+    assert.equal(h.session.bindingReady, true); assert.equal(h.session.pendingProject, null);
+    assert.equal(h.emitted.find(message => message.t === 'projectReady').sel, 'devin|window|' + thread);
+    await h.session.resumeProjectSwitch(h.session.cdp);
+    assert.equal(h.emitted.at(-1).chat.thread, thread);
+  });
+}
+
+test('a default Devin identity which changed before confirmation does not finish project binding', async () => {
+  const h = devinProject(); h.active('different');
+  await assert.rejects(h.session.finishProject(), /Devin 项目会话尚未就绪/);
+  assert.notEqual(h.session.bindingReady, true); assert(h.session.pendingProject);
+  assert.equal(h.emitted.some(message => message.t === 'projectReady'), false);
+});
+
+test('explicit Devin history selection does not initialize or replace the requested session', async () => {
+  const h = devinProject('requested'); h.session.pendingProject.threadId = 'requested';
+  await h.session.finishProject(); assert.equal(h.calls.includes('startup'), false);
+  assert.equal(h.session.threadId, 'requested');
+});
+
+function editorSave() {
+  const h = overviewClient(), nodes = new Map(), feedback = [];
+  h.node = id => { if (!nodes.has(id)) nodes.set(id, {}); return nodes.get(id); };
+  Object.assign(h.context, { $: h.node, editing: true, saving: null, saveRequestId: 0, fileRequestId: 3, editBase: 'old',
+    viewing: { path: '/project/a.txt', host: '', text: 'old', computer: h.context.ovList[1].c },
+    status: (message, ok) => feedback.push({ message, ok }), finishPending() {},
+  });
+  h.node('vEditBox').value = 'new';
+  vm.runInContext(part(read('app/js/files.js'), 'function onSaved(', 'function closeViewer('), h.context);
+  h.finish = (change = {}, link = h.links[1]) => {
+    const message = h.packets.at(-1).message;
+    h.context.receiveDesktopOperation(link, { id: message.operationId, kind: 'saveComputerFile', done: true,
+      events: [{ revision: 1, message: { t: 'saved', ok: true, size: 3, path: message.path, requestId: message.requestId, ...change } }] });
+  };
+  return { ...h, feedback };
+}
+
+test('computer save waits through disconnection and replays its original identity only on its owning authenticated entry', async () => {
+  const h = editorSave(); await h.context.saveEdit(); const id = h.packets[0].message.operationId;
+  h.links[1].socket.readyState = 3; h.context.waitFileSave('B');
+  assert(h.context.saving); assert.equal(h.node('vEdit').disabled, true);
+  assert.match(h.node('vStatus').textContent, /等待电脑端保存结果/);
+  h.context.replayDesktopOperations(h.links[0]); assert.equal(h.packets.length, 1);
+  h.links[1].auth.device = 'other-entry'; h.context.replayDesktopOperations(h.links[1]); assert.equal(h.packets.length, 1);
+  h.links[1].auth.device = 'device-B'; h.links[1].socket.readyState = 1;
+  h.context.replayDesktopOperations(h.links[1]); assert.equal(h.packets.length, 2);
+  assert.equal(h.packets[1].message.operationId, id); h.finish();
+  assert.equal(h.context.viewing.text, 'new'); assert.equal(h.pending(), 0);
+});
+
+test('a disconnected different computer cannot change a pending editor save status', async () => {
+  const h = editorSave(); await h.context.saveEdit(); h.context.waitFileSave('A');
+  assert.equal(h.node('vStatus').textContent, '正在保存…');
+  h.finish({}, h.links[0]); assert(h.context.saving);
+  h.links[1].auth.device = 'other-entry'; h.finish(); assert(h.context.saving);
+  h.links[1].auth.device = 'device-B'; h.finish(); assert.equal(h.context.saving, null);
+});
+
+test('saving without its owning control connection reports not sent and preserves edits', async () => {
+  const h = editorSave(); h.links[1].socket.readyState = 3; await h.context.saveEdit();
+  assert.equal(h.packets.length, 0); assert.equal(h.context.saving, null); assert.equal(h.node('vEditBox').value, 'new');
+  assert.match(h.node('vStatus').textContent, /未发送保存/);
+});
+
+test('explicit save failure preserves edits and a late result cannot update another file or its feedback', async () => {
+  const h = editorSave(); await h.context.saveEdit(); h.finish({ ok: false, error: 'permission denied' });
+  assert.equal(h.context.viewing.text, 'old'); assert.equal(h.node('vEditBox').value, 'new');
+  assert.equal(h.node('vStatus').textContent, 'permission denied');
+  await h.context.saveEdit(); h.context.fileRequestId++; h.context.viewing = { path: '/different', text: 'other' };
+  const feedback = h.feedback.length; h.finish({ ok: false, error: 'late error' });
+  assert.equal(h.context.viewing.text, 'other'); assert.equal(h.feedback.length, feedback);
+});
+
+test('a computer save writes once outside known projects, preserves permissions and replays the recorded result', async () => {
+  const parent = new URL('../_shots/', import.meta.url); fs.mkdirSync(parent, { recursive: true });
+  const directory = fs.mkdtempSync(new URL('computer-save-', parent)), file = path.join(directory, 'fixture.txt');
+  try {
+    fs.writeFileSync(file, 'before', { mode: 0o751 });
+    const h = operationFixture(); h.message = { t: 'saveComputerFile', operationId: crypto.randomUUID(), requestId: 1, path: file, text: 'after' };
+    let writes = 0;
+    const route = vm.runInNewContext('({' + part(read('server/routes.mjs'), '  saveComputerFile:', '  overviewManage:') + '}).saveComputerFile', {
+      realpath: async value => fs.realpathSync(value), writeTextFile: async (...args) => { writes++; return writeTextFile(...args); },
+    });
+    assert.equal(route.connection, true); assert.equal(route.fast, true);
+    h.session.emit = message => captureOperation(h.session, message);
+    const first = beginOperation(h.session, h.message);
+    await withOperation(first.operation, () => route.fastRun(h.session, h.message)); first.operation.finish();
+    assert.equal(fs.readFileSync(file, 'utf8'), 'after'); assert.equal(fs.statSync(file).mode & 0o777, 0o751);
+    assert.equal(first.operation.app, ''); assert.equal(first.operation.sel, '');
+    const packets = [], stop = subscribeOperations(h.session.deviceId, { readyState: 1, send: raw => packets.push(JSON.parse(raw)) });
+    const duplicate = beginOperation(h.session, h.message);
+    assert.equal(duplicate.duplicate, true); assert.equal(writes, 1);
+    assert.equal(packets[0].events[0].message.t, 'saved'); assert.equal(packets[0].done, true);
+    assert.equal(beginOperation({ ...h.session, deviceId: crypto.randomUUID() }, h.message).duplicate, false);
+    stop();
+  } finally { fs.rmSync(directory, { recursive: true }); }
+});
+
+test('computer save failures are recorded as saved results instead of repeating the write', async () => {
+  const h = operationFixture(); h.message = { t: 'saveComputerFile', operationId: crypto.randomUUID(), path: '/missing', requestId: 7 };
+  const route = vm.runInNewContext('({' + part(read('server/routes.mjs'), '  saveComputerFile:', '  overviewManage:') + '}).saveComputerFile', {
+    realpath: async () => { throw new Error('permission denied'); }, writeTextFile: () => assert.fail('must not write'),
+  });
+  h.session.emit = message => captureOperation(h.session, message);
+  const first = beginOperation(h.session, h.message);
+  await withOperation(first.operation, async () => {
+    await assert.rejects(route.fastRun(h.session, h.message), /permission denied/);
+    route.fail(h.session, h.message, new Error('permission denied')); first.operation.finish();
+  });
+  assert.equal(first.operation.events.get('saved').message.ok, false); assert.equal(first.operation.done, true);
+  assert.equal(beginOperation(h.session, h.message).duplicate, true);
+});
+
+for (const needsTwoFactor of [false, true]) {
+  test(`computer saving cannot bypass ${needsTwoFactor ? 'required two-factor verification' : 'entry authentication'}`, async () => {
+    const h = relayHeartbeat({ needsTwoFactor }); let writes = 0;
+    h.routes.saveComputerFile = { fast: true, connection: true, fastRun: () => { writes++; } };
+    const socket = await h.socket({ authenticate: needsTwoFactor });
+    socket.receive({ t: 'saveComputerFile', operationId: crypto.randomUUID(), path: '/fixture', text: 'must not write' }); await h.settle();
+    assert.equal(socket.code, 4001); assert.equal(writes, 0); assert.equal(h.sessions.length, 0);
+    assert.equal(socket.sent.find(message => message.t === 'auth').needTotp, needsTwoFactor);
+  });
+}

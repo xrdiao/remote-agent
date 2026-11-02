@@ -1,5 +1,9 @@
 # 问题核查与分批修复方案
 
+> 2026-11-02 项目排查修复：A1／A2／B／C／D／E 及用户随后单独确认的 F 批均已实施，文件、验证及边界见第 19.6—19.7 节。源码网页 v374，最终标准检查 443 项通过；原配对身份的 Devin 项目信任／首屏、Editor 保存与回执丢失后恢复、项目元数据及返回目录通过；受控语音 worker 经真实 /voice 连接在约 5 秒后返回退出未完成。清理候选仍待单独确认；Devin error 13 和手机验收保持未解决／待验，不重写 Fusion 编排。
+
+> 2026-11-02 项目排查补记：七类问题、三类清理候选及原分批方案见第 19 节。排查基准为 `75bec10`／网页 v373；八项受控故障条件已复现，Devin 首次信任交接另有真实复现。Devin error 13 的代理复测补入第 13.1 节，仍未解决。首次补记时仅登记文档，后续实施状态以第 19.6 节为准。
+
 > 2026-11-02：本轮概览身份、Fusion 卡片归属、排序、加载与横屏折叠修复见第 14 节。源码网页 v368，标准检查 359 项通过；隔离布局和 Cursor／Codex 原生只读检查通过。系统通知接收方也已按追加确认修复，见第 14.3 节。既有配对浏览器、Devin 原生及用户手机仍待验收；未发布或重启正式中继。
 
 > 2026-11-01：新增 Devin 原生 error 13、Codex 新会话已发送草稿残留，见第 13 节。两项均有配对路径与原生桌面对照复现，尚未修复；它们与此前已通过的窗口回收／会话管理修复分开记录。用户已告知重启正常 relay，不等于手机验收通过。Fusion 新方案与实施进度见 [多子 Agent 改造方案](fusion-multi-agent-plan-20261101.md)。
@@ -651,6 +655,15 @@ N9、N10、N12、N13、N14、S1、S2、G1 暂不排入代码批次。若后续�
 - [配对浏览器操作记录](../_shots/session-window-repair-20261101/ui-live-results.jsonl) 与 [总检查记录](../_shots/session-window-repair-20261101/verification.json)：模型选择、原生同错与未通过边界。
 - 关闭条件：原生桌面和 RA 在所选模型／强度下均生成预期结果；如用于 Fusion，还须完成真实子任务结果回传和主 Agent 评审。仅菜单可用或归档成功不关闭此项。
 
+**2026-11-02 代理复测补充（本项仍未关闭）**
+
+- 本轮在独立 Devin 本地项目中，通过 RA 发送一次短提示，再通过原生桌面键盘发送一次同类提示；同为 `SWE-2 / High`，两条都被原生接受并返回 error 13。
+- 用户明确要求使用代理重启后，以本机 `127.0.0.1:7897` 重启 Devin，同时设置 Chromium 代理参数及子进程代理环境。已确认 ACP 子进程继承代理变量，并观测到这些 PID 实际连接 7897。恢复原项目、原会话及同模型后，RA 的一次新提示仍返回 error 13，没有自动重试。
+- 到 API 主机的 TLS CONNECT 成功只证明该段代理传输可用，不能证明模型生成可用；本次不能将根因确定为“未走代理”，也没有证据判断账号权限、限额或上游内部错误。旧 Electron 的 `/proc` 环境区被覆盖，读到零项不能证明旧进程没有代理。
+- 模型菜单／切换、Editor、高亮／保存／返回、终端实际命令输出，以及代理重启后的新建空会话与切回历史已分别验证。首次项目信任后的交接失败另登记为第 19 节 F7；这些通过项不代替正常生成、生成中操作、Question／审批或完整 Devin Fusion 验收。手机真机仍未执行。
+- 后续先检查同次失败对应的原生日志和代理请求结果，定位失败阶段；原生恢复正常后，再补同项目、同模型／强度的 RA 最小对照。现阶段不为 error 13 改写 RA 发送流程，不自动换模型或增加重试。
+- 本机证据：`_shots/project-audit-20261102/` 下的 `devin-feature-results.json`、`devin-native-compare.json`、`devin-proxy-restart.json`、`devin-proxy-processes.json`、`devin-proxy-evidence.json` 与 `verification.json`。这些为 gitignore 产物，不随普通 Git 提交提供。
+
 ### 13.2 CODEX-20261101-01：新会话恢复已发送草稿
 
 **复现条件与步骤**
@@ -835,3 +848,183 @@ N9、N10、N12、N13、N14、S1、S2、G1 暂不排入代码批次。若后续�
 | 标准检查与交付 | `npm run check` **402／402 通过**，121 个语法文件、86 类前端消息、70 类服务端消息、196 个 page 导出、86 个模块导入及 24 项核心资源引用通过。差异空白检查通过，page 导出快照未修改。源码 v373 已由本地隔离验收页加载，未发布、重启正式 relay、提交或推送 |
 
 证据位于 gitignore 的 `_shots/landscape-recovery-20261102/`：`baseline/`、`layout-before.json`、`layout-after.json`、三张布局截图、`recovery-unit.log`、`recovery-results.json`、`paired-ui-results.json`、`paired-fusion-project.png`、`check-final.log` 和 `verification.json`。自动恢复的登记及运行日志保留在 `_shots/paired-browser.json` 和 `_shots/paired-browser/`，没有写入凭据。
+
+## 19. 项目排查登记与待确认修复方案（2026-11-02）
+
+本节对应“按 problem.md 的思路排查重复实现、复杂逻辑、过多 try/catch 和可能阻塞的进程”。用户追加允许测试已安装的 Devin，并明确要求通过代理重启复测。第 19.1—19.5 节保留排查及方案形成时的证据；**A1／A2／B／C／D／E 的实施见 19.6，用户随后单独确认的 F6 实施见 19.7**。清理候选仍待确认。本节 F1—F7、N1—N3 仅指本次排查，与前文同字母历史编号分开。
+
+### 19.1 基准、证据与判定边界
+
+- 排查开始时工作区干净，当前 HEAD 与实际 GitHub HEAD／master 均为 `75bec1015758e263646b9d23a6cbc13fecb065e7`，网页 v373；记录了 485 个跟踪文件指纹，排查结束时全部不变。正式 relay 未重启，没有提交、推送或发布。本次追加问题文档不计为产品修复。
+- 按功能入口、数据归属、请求时序和状态变化核对核心调用链。词法定位覆盖 144 个自有运行时／启动文件；470 个 catch、155 个空 catch 是文本命中，可能包含注释和字符串，不是缺陷数量，也不是全平台逐行审计。
+- 实际函数配合受控 I/O、时钟、进程／请求替身共复现八项故障条件；F5 的状态覆盖与身份替换分别为一项。F7 另有既有配对浏览器与真实 Devin 复现。没有把夹具错误或沙箱限制列为产品缺陷。
+- 初始现场的 relay、配对 Chrome、Cursor 和 Codex 均可响应，没有确认现场已经死锁。同步占住事件循环、异步链占住资源，以及没有调用的函数分别判定。
+- 功能边界依据 [03 项目／会话／窗口](baselines/03-projects-sessions-windows.md)、[06 文件／语音工具](baselines/06-desktop-tools-media.md)、[08 连接／请求归属](baselines/08-connection-pairing.md)。不得用新增重试循环、备用读取链或清空状态绕过问题。
+
+### 19.2 七类问题及根因证据
+
+| 编号／状态 | 根因及复现证据 | 直接影响 |
+|---|---|---|
+| F1 项目目录初始化失败后持续加载；受控复现 | `server/native-windows.mjs:153-169` 的 roots 读取错误被空 catch 吞掉；监听成功后 `watching` 保持已完成 Promise，后续 `start()` 提前返回。让第一次 roots 读取失败、依赖随后恢复，再调用三次 start，读取次数仍为 1；roots 缺失，`overview.ready=false`、`pendingWindows=1` | 三 Agent 共用的项目／会话概览、首次加载与部分就绪。未证明当前所有慢加载都由本项造成 |
+| F2 共享 Editor 保存结果未知却报告失败；受控复现 | `app/js/files.js:486-510` 的 computer 保存走 `/api/transfer/save`，没有 operationId；`server/http/transfer.mjs:51-55` 写完直接回包，未进入既有操作结果记录。真实写入测试文件后丢弃响应：磁盘已更新，手机确认文本仍旧，saving 被清空、按钮重新可用并报失败 | 电脑入口与对话入口共享 Editor 的文件保存、断线恢复；另一条 `saveFile` 仍有操作记录。两条路径的权限／目录范围也不同，不能直接互换 |
+| F3 同步 GPU 探测阻塞 relay 主线程；条件性风险已受控复现 | `server/voice/service.mjs:79` 同步执行 nvidia-smi，没有显式预算。对实际 spawnRuntime 注入 90ms 慢命令，隔离事件循环的心跳被推迟约 91ms；没有让真实 GPU 驱动卡死 | 指定 GPU 的 Qwen 准备阶段；探测等待期间，该 relay 的 HTTP、WebSocket 和导航一起等待。Windows 的同步查询仅静态定位，见 19.4 |
+| F4 关闭确认预算未约束请求；条件性风险已受控复现 | `server/project-windows.mjs:332-351` 已设 5 秒截止时间，但最后一次 `/json/list` fetch 没有取消信号，截止检查在 fetch 之后。受控请求不返回、时钟推进 10 秒后，scanning、回收 Promise 与同软件 Fusion 槽位仍被占用；结束该请求才释放 | 普通窗口扫描／回收、Fusion 子窗口回收及同软件后续排队；属于资源链等待，不是整个 Node 事件循环死锁 |
+| F5 读错误被当作文件不存在并覆盖状态／身份；两项受控复现 | `lib/auth.mjs:11-16` 的 readJson 对所有错误返回初值，`saveState` 因此可用新字段覆盖原状态；模拟一次 EIO 后 fusionRuns／entrySelections 丢失。`:24-32` 的 urlKey 在 EACCES 后生成并写入另一把测试密钥。均只使用内存文件系统，没有修改真实密钥或状态 | 电脑身份、地址发现、配对、二次验证、配置和状态持久化；未发现本机真实数据因此损坏 |
+| F6 语音停止状态提前结束，切换仍无限等 close；条件性风险已受控复现 | `server/voice/service.mjs:20-54` 发 kill 后立即清 worker 并标 stopped，但切换只等待 close。模拟旧 worker 不退出，新引擎一直未启动；补发 close 才继续 | 语音引擎切换／释放和请求结束；不阻塞 Node 事件循环。不能删掉等待后并行加载另一个 GPU 模型 |
+| F7 Devin 首次信任后新会话身份没有交接；真实与受控复现 | `server/apps/devin.mjs:28-33` 读取默认启动状态却没有交给 `server/agent/projects.mjs:438` 的完成流程。原生已创建 thread，而上下文 threadId／selectedThread 仍空，bindingReady 已 true；首次首屏在采用身份后提前返回。真实测试中原生已可输入，RA 报“当前会话内容尚未就绪”，重新绑定同一原生会话后才进入 | Devin 新项目首次信任／默认会话的绑定与首屏；不等于第 13.1 节的原生 error 13，不能相互代替根因 |
+
+### 19.3 分批修复方案、文件与验证
+
+用户已确认按 A1 → A2 → B → C → D → E 实施，结果见 19.6；随后明确追加确认 F 批 5 秒退出预算，结果见 19.7。下表保留原逐文件方案；各批以实施前当前工作区为基准，保留此前修改。清理候选仍不纳入本轮实施范围。
+
+**A1／F1：分开监听与目录元数据的生命周期**
+
+| 文件 | 计划改法 |
+|---|---|
+| `server/native-windows.mjs` | 将 roots 初始化从 watching 的一次性安装中分离；复用同窗口在途读取。失败保留真实错误并结束该次读取，后续现有发现周期可再次完成缺失的初始化；成功结果继续复用，空数组仍是有效结果，不重复安装监听 |
+| `server/overview.mjs` | 区分正在读取、读取失败和有效空目录，输出实际错误及部分就绪，不把失败当成空项目或永久 pending |
+| `app/js/overview.js` | 使用上述目录状态结束失败展示，保留已就绪项目和现有刷新入口；不新增轮询或新的自动重试机制 |
+| `scripts/structure-fixes.test.mjs` | 补充实际初始化与概览状态的受控用例 |
+
+影响：三 Agent 的共用项目概览与目录加载；不改聊天生成、收藏身份、卡片排序或原生项目选择。验证首次失败后依赖恢复、持续错误、空 roots、多窗口归属、在途复用和监听只安装一次；不能用清空缓存代替恢复。
+
+**A2／F7：完成 Devin 默认会话的身份交接**
+
+| 文件 | 计划改法 |
+|---|---|
+| `server/apps/devin.mjs` | 将已经确认的默认启动状态交回项目完成流程，复用已有 Devin 会话确认能力 |
+| `server/agent/projects.mjs` | 仅在 Devin 默认初始化分支采用该原生 thread，再读取并交付首屏；身份、bindingReady 和最终导航结果按同一次初始化结束 |
+| `scripts/structure-fixes.test.mjs` | 补首次信任、已信任、已有会话及合法空新会话的交接用例 |
+
+影响：Devin 打开／信任新项目后的默认会话；共享文件中的 Cursor／Codex 分支保持原语义。验证首次首屏一次成功、显式恢复旧 thread 不被替换，以及无 thread 的合法空白页仍可进入。无需发送模型消息即可检查交接；生成验收另受 error 13 限制。
+
+**B／F2：共享 Editor 保存复用既有电脑操作回执**
+
+| 文件 | 计划改法 |
+|---|---|
+| `app/js/files.js` | 共享 Editor 保存改走所属电脑的已认证控制连接与现有请求登记，保留原 requestId、文件／视图身份和编辑内容；断线进入等待结果，不宣布保存失败。明确未发送和电脑明确失败分别结束；迟到结果不写入其他文件 |
+| `app/js/core.js` | 在现有 sendDesktopOperation／desktopRequests 中登记电脑级保存，不再建立 HTTP 保存专用队列 |
+| `app/js/net.js` | 在现有操作接收与认证恢复中支持该保存请求，按电脑、配对入口及原 operationId 回收结果；复用已有回调分派及去重，不另建恢复机制 |
+| `server/routes.mjs` | 增加电脑级保存消息 `saveComputerFile`，独立于当前 Agent／聊天绑定；沿用认证与二次验证，按原完整本地路径调用既有 writeTextFile，使用原 saved 回执 |
+| `server/operations.mjs` | 将电脑级保存纳入既有按入口持有的操作记录；同 ID 到达时只订阅／重放原结果，不再次写文件 |
+| `server/http/transfer.mjs` | 在前后端统一切换后删除不再使用的 `/api/transfer/save` 写入分支；目录、预览和传输接口保留 |
+| `scripts/check.mjs`、`scripts/structure-fixes.test.mjs` | 同步实际消息清单，补保存结果、设备隔离和断线时序的行为回归；不修改 page 导出快照 |
+
+影响：电脑列表与对话页共享 Editor 的本地文件保存、所属电脑后台连接和操作回执。聊天引用已有 `saveFile` 的项目／远程主机路径规则保留；共享 Editor 仍可保存该电脑用户可访问的本地文件，不收窄成仅项目目录，不改变文件权限。验证正常写入、到达前丢失、写入后回包丢失、同 ID 恢复只写一次、不同电脑／入口、切文件后迟到结果、未认证／二次验证拒绝；既有概览管理的操作恢复需做定向回归。
+
+**C／F4：把已有关闭确认预算传入请求**
+
+| 文件 | 计划改法 |
+|---|---|
+| `server/project-windows.mjs` | 每次关闭确认的请求及响应读取使用现有 5 秒预算的剩余时间；预算结束保留“无法确认关闭”的结果，让本次扫描／回收结束，不把未知标为已关闭 |
+| `scripts/project-windows.test.mjs` | 补无响应、连接失败、目标仍在／已消失、原生进程确实退出，以及同软件下一任务可继续的用例 |
+
+影响：普通窗口扫描和 Fusion 子窗口回收／同软件排队。只落实已有预算，不加全局强制解锁，不改变窗口使用判定、关闭授权、最少保留窗口数或 Fusion 编排。验证无关窗口不被关闭、未确认的原生窗口仍保留，并释放本次回收等待。
+
+**D／F3：GPU 探测异步化**
+
+| 文件 | 计划改法 |
+|---|---|
+| `server/voice/service.mjs` | 以异步子进程执行同一 GPU 查询；在任何 await 前同步登记并复用准备 Promise，再启动 worker。保持 GPU UUID、PCI_BUS_ID 排序、CUDA 索引及环境变量传递，查询失败直接反馈原原因 |
+| `scripts/voice-runtime.test.mjs`（新增）、`package.json` | 将本轮受控探测与并发准备场景整理为独立语音生命周期测试，接入 npm test |
+
+影响：指定 GPU 的 Qwen 准备及共用准备状态；不改转录、CPU 识别算法或 GPU 选择策略。验证慢查询时 relay 心跳仍可执行、并发只准备一份、查询失败有结果，以及既有停止／切换不遗留迟到启动。此批不增加探测看门狗、换卡或自动重试；F6 的退出问题另列。
+
+**E／F5：按真实读取结果决定初始化**
+
+| 文件 | 计划改法 |
+|---|---|
+| `lib/auth.mjs` | readJson／urlKey 仅在 ENOENT 时走现有首次初始化；权限、I/O、JSON 解析错误直接传播，已有无效密钥显式失败。saveState 必须先成功读取原值再合并，不覆盖未读出的旧状态 |
+| `scripts/auth-storage.test.mjs`（新增）、`package.json` | 用隔离文件系统验证读取语义和写入次数，接入 npm test；不触碰真实身份资料 |
+
+影响：共用数据读取的启动、电脑身份／发现、配对、设备列表、二次验证、配置及状态。已有资料不可读时将明确失败，不再默默以初值继续；不添加修复文件、备份、自动重配对或新身份。验证首次初始化、正常保存、EIO／EACCES／坏 JSON 不写入，以及正常配对／配置读取；不执行真实注销或重配对。
+
+**F／F6：退出状态与等待策略需单独确认**
+
+范围建议为 `server/voice/service.mjs` 与 D 批的 `scripts/voice-runtime.test.mjs`；不改 Python 模型算法。先将“已请求停止”与“close 已确认退出”分开，保留尚未退出的进程归属，不能提前宣称 stopped 或释放 GPU。
+
+完整结束等待还需要明确退出策略：建议仅为本次切换设 **5 秒退出等待预算**；到期返回“旧语音进程尚未退出，切换未完成”，保留该进程及停止状态，等真实 close 再释放，不自动 SIGKILL、不并行加载新模型、不自动重试。**这项预算是新增行为，须单独确认，默认不随 A—E 实施**。只修状态文字不能记为解决无限等待。验证正常退出、忽略终止、迟到 close、加载中停止、多设备仍在使用及后续明确重试。
+
+后续授权：用户已回答“追加实施 F 批的 5 秒退出预算”，按上述策略处理切换及共用退出等待，实施与验证见 19.7。
+
+**各批共同文件与边界**
+
+- 含前端改动的 A1／B 批同步 `app/js/core.js` 的 APP_VERSION、`app/index.html` 的实际变更资源引用和 `app/sw.js` 的缓存版本；不为纯后端批次机械升网页版本。这些是同一修复范围的版本文件，不代表发布授权。
+- `docs/problem.md` 随实际实施更新状态与验证记录。A2 不顺手修改 `server/agent/chat.mjs` 或 `server/session.mjs`；它们目前是根因调用链证据，默认修复在身份交接处完成。若实施证明必须扩大文件范围，先说明缺口再确认。
+- 不修改 `scripts/page-exports.json`，不重写 Fusion 编排；未经明确要求不重启正式 relay、不提交、不推送或发布。
+
+### 19.4 重复实现与复杂逻辑的清理候选
+
+| 编号 | 当前事实 | 建议与影响范围 |
+|---|---|---|
+| N1 旧普通 docs 浏览链 | 当前网页初始入口在 `app/js/files.js:25` 均发 editor:true；`app/js/sheets.js:956-974`、`app/js/notify.js:443-446`、`server/agent/files.mjs:13-39`、`lib/files.mjs:277` 仍保留普通 docs 模板、后续按钮与扫描。当前未找到独立初始 UI 入口；第 17 节曾有意保留普通文档行为 | 属于清理候选，先确认是否继续保留独立“查看文档”能力，再决定是否成链删除。共享 Editor 的 docs 项目元数据、文件引用、差异与预览仍有用途，不能按名称批量删除。默认不随修复批次实施 |
+| N2 @token 文本分段重复 | `server/apps/devin.mjs:884` 与 `server/apps/codex.mjs:1112` 的外层分段循环约十余行一致，Codex 另有插入前草稿快照；没有重复发送证据 | 维护性候选，优先保留。若单独确认提取，只共享纯文本分段，保留各 Agent 的原生插入、空格、字面回退和快照；需同时回归 Devin／Codex 文件引用。不为这十余行启动跨 Agent 重构 |
+| N3 无调用的 waitReachable | `server/util.mjs:21` 仅有定义，当前仓库无调用 | 可在单独确认清理后删除；只影响未使用工具导出。无可达路径，不把它列为生产进程阻塞证据；删除后检查引用与标准检查即可，不额外堆测试 |
+
+Windows 的 `lib/platform.mjs:143` 同步 PowerShell 查询、`server/publish/tunnel.mjs:14` 同步进程查询仅作静态候选登记，本轮没有 Windows 实机阻塞证据。需另按调用方确定异步化范围，不随 Ubuntu Qwen 修复一起替换。
+
+继续保留有不同职责的机制：Cursor／Codex 已共用的文件面板与 Devin 专用读取策略、窗口来源缓存与视图缓存、设备操作记录与导航取消／窗口租约／Fusion 调度，以及实时思考展开与最终折回。复杂度和重复文本用于定位，不能单独作为缺陷结论；不统一删 catch 或统一补日志。
+
+### 19.5 实际验证、遗留项与后续验收
+
+| 层次 | 排查阶段实际结果／后续要求 |
+|---|---|
+| 标准检查 | 排查阶段 `npm run check` **402／402 通过**；121 个语法文件、86 类前端消息、70 类服务端消息、196 个 page 导出、86 个模块导入和 24 项核心资源引用通过。另对三份 Python 源码作语法解析；不将检查通过当作上述故障已修复 |
+| 受控诊断 | 八项条件已复现，见 `diagnostics.json`；磁盘写入只使用本轮夹具，身份／状态错误只使用内存文件系统。修复后按各批场景验证行为反转，并统一跑 npm run check |
+| 既有配对浏览器／真实 Devin | 原 9335 Chrome 资料、原 3949 配对身份，没有新配对或复制资料。模型切换、Editor、终端命令实际输出、代理重启后的新建空会话与切回历史通过；首次信任失败见 F7。error 13 仍未解决，生成中操作、Question／审批和完整 Devin Fusion 没有记为通过。重启前一次新建超时而重启后通过，原因未定位，不称为已修复 |
+| 环境收尾 | 正式 relay 3939 未操作；代理 Devin 留在原 Cloud 首页，模型／草稿等语义状态与测试前一致。隔离服务恢复原登记启动配置和导航记录，Fusion 值保持一致；原配对 Chrome／隔离 relay 保留运行。测试项目窗口和临时配对标签已关闭，可归档测试会话已归档；空测试会话的原生列表无归档动作，未强行删除 |
+| 手机真机 | 本轮未执行。修复后按实际影响验收：三 Agent 概览／加载；Devin 新项目首次信任与首屏；两处 Editor 保存、断线恢复和返回；普通／Fusion 窗口回收；语音准备与引擎切换。桌面模拟尺寸或受控状态不能替代 iPhone／Android 验收 |
+
+修复后的既有配对检查统一进行；开始前按已授权的 `scripts/paired-browser.mjs` 恢复原环境。涉及原生模型生成的检查先确认第 13.1 节 error 13 是否解除，不能为了补验收自动换模型、批量调用或添加重试。
+
+本机证据目录为 `_shots/project-audit-20261102/`（gitignore，不随普通 Git 提交提供）：`baseline.json`、`scan.json`、`clone-candidates.json`、`diagnostics.json`、`check.log`、`responsiveness.json`、`report.txt`、`devin-trust-diagnostic.log`、`devin-feature-results.json`、`devin-native-compare.json`、`devin-proxy-evidence.json`、`devin-cleanup.json`、`devin-home-preserved.json`、`qa-fusion-comparison.json`、`restored-runtime.json`、`final-runtime.json` 与 `verification.json`。该目录反映排查当时状态，不作为后续修改后的验收结果。
+
+### 19.6 A—E 实施与验证（2026-11-02）
+
+实施前 HEAD 与实际 GitHub HEAD／master 仍为 `75bec1015758e263646b9d23a6cbc13fecb065e7`，网页 v373；当前工作区已有第 19 节问题文档改动，已保存并保留。回归依据本次当前工作区的 485 个跟踪文件指纹及确认文件快照，不回退到 Git HEAD。用户确认后只实施 A1、A2、B、C、D、E；本节的通过结果不关闭 F6、清理候选或第 13.1 节 error 13。
+
+| 批次 | 实际实现与直接影响 |
+|---|---|
+| A1／F1 | `server/native-windows.mjs` 将 roots 读取放到监听安装之外，复用在途任务，失败保存 rootsError 并通知已有目录消费者；下一次既有发现调用可完成缺失初始化。`server/overview.mjs` 区分 pending、errors 和有效空 roots；`app/js/overview.js` 展示真实错误，保留已就绪项目，不把读取失败继续画成进度或空列表。影响三 Agent 的共用概览元数据；没有新增轮询、清缓存或重装监听 |
+| A2／F7 | `server/apps/devin.mjs` 返回默认启动状态，`server/agent/projects.mjs` 的 Devin 默认初始化分支复用 confirmDevinThread，在结束项目初始化前采用确认后的原生身份，使随后首屏读取不再因临时采用新身份而返回。合法空 thread、显式历史及新会话分支保留；没有修改 chat.mjs／session.mjs 或其他 Agent 适配器 |
+| B／F2 | `app/js/files.js` 通过所属电脑已认证连接提交 saveComputerFile，在现有 desktopRequests 中保留电脑、入口、文件和原 operationId；`core.js`／`net.js` 复用既有登记、重连恢复及回执处理。两种完成回调声明 resultType，概览管理请求同步增加该字段，没有另造回执队列。`server/routes.mjs` 用原 writeTextFile 写所属电脑的本地文件，`server/operations.mjs` 按入口记录结果，保存不依赖当前 Agent／选择；`server/http/transfer.mjs` 删除旧 HTTP 保存分支。保留普通引用的 saveFile 路径规则、任意可访问本地文件范围及文件权限；旧文件的迟到失败不改变新文件反馈 |
+| C／F4 | `server/project-windows.mjs` 将已有 5 秒关闭确认预算的剩余时间交给 fetch 及响应体读取；耗尽时保留无法确认关闭的结果，结束本次扫描／回收。原有窗口使用判定、最少保留数、Fusion 软件槽位与编排保持原逻辑，没有增加全局解锁或伪造已关闭 |
+| D／F3 | `server/voice/service.mjs` 通过异步 execFile 查询 GPU，在 await 前同步登记 loading Promise；保持原 UUID、PCI_BUS_ID 排序、CUDA 索引／环境及 CPU Windows 编码。既有引擎切换可以取消尚未生成 worker 的探测，迟到结果不启动旧引擎。没有新增 GPU 探测超时、自动换卡或退出预算；已启动 worker 的 F6 退出等待未改 |
+| E／F5 | `lib/auth.mjs` 只把 ENOENT 当作首次初始化，权限、I/O 和 JSON 错误向调用者传播；已有无效密钥明确失败，saveState 读取失败不写入。影响启动、配对／二次验证、配置及状态读取；没有自动修复、备份或替换身份 |
+| 测试与资源 | `scripts/structure-fixes.test.mjs`、`scripts/project-windows.test.mjs` 补相应行为；新增 `scripts/voice-runtime.test.mjs`、`scripts/auth-storage.test.mjs` 并接入 `package.json`。`scripts/check.mjs` 纳入新发送类型与 resultType 回调声明，未放宽忽略清单；page 导出快照未改。`core.js`、`index.html`、`sw.js` 同步网页 v374，只更新实际变化的 core／net／overview／files 引用 |
+
+| 验证层次 | 实际结果与边界 |
+|---|---|
+| 修改前检查 | npm run check 402／402 通过；已有问题文档改动保留 |
+| 定向受控行为 | 四个受影响测试文件 218 项通过，随后补充的未认证／二次验证拒绝 2 项通过。覆盖失败后现有发现恢复、空目录、并发单读、错误与部分就绪、Devin 身份确认／合法空白／显式历史、保存请求归属／迟到结果／同 ID 不重复写、GPU 慢查询／错误／取消／映射，以及 EIO／EACCES／坏 JSON 不覆盖状态或身份 |
+| 关闭预算 | 请求无响应和响应体无响应两种场景都在既有预算结束后释放扫描和同软件 Fusion 槽位，未知窗口不记为已关闭；重查预算由 5000ms 随实际已用时间减为 3200ms，不重新开始计时。外部端点、时钟和原生窗口为替身，没有关闭用户真实工作窗口 |
+| 真实配对／Devin 信任 | 原 9335 Chrome 资料、原 3949 身份和独立 Devin 项目，无新配对或复制身份。临时页面实际加载 v374，原生信任提示经 RA 确认后首屏就绪，thread 与原生当前会话一致；当时原生为 Normal／Cloud provider 的 IDE 会话，没有为验收换模型或发送模型消息。绑定请求包括启动时自动选择及显式选中测试目标各一次，信任只确认一次，不把两次来源不同的 attach 称为重复提交 |
+| 真实配对／Editor | 从对话入口打开正确项目目录，高亮、普通保存、原文件 0751 权限及返回同目录通过；一次普通保存仅一次电脑写入。对另一次保存，在真实写入后只在临时标签扣留回执，再断开该连接；手机保持等待／禁用保存按钮，重连用同一 operationId 发出两份请求帧，最终恢复确认结果，实际仅一次写入。元数据和文件 I/O 为真实路径，回执丢失是受控网络场景；旧 HTTP 写入入口已移除 |
+| 真实元数据及受控展示 | 原生项目目录实际返回 ready=true、pending=0、errors=[]；真实浏览器中的概览渲染函数另用受控目录错误验证显示原因、结束进度且不展示假空列表。后一项是受控展示，不冒充真实权限故障；本轮真实普通窗口验收以 Devin 为主，其他 Agent 的受影响共享状态由受控用例及待验清单覆盖 |
+| 语音／身份边界 | GPU worker、设备及错误文件系统使用替身，没有实际加载 GPU 模型、转录或修改真实认证资料；正常原配对认证在加载新 lib/auth 后通过。真实引擎切换、手机录音和损坏资料现场未执行 |
+| A—E 阶段检查 | 该阶段 npm run check **433／433 通过**，含新增 31 项行为用例；随后补充的 2 项认证拒绝用例单独通过。123 个语法文件、87 类前端消息、70 类服务端消息、196 个 page 导出、88 个模块导入和 24 项核心资源引用通过。追加 F 后的最终检查见 19.7；page 导出快照未动 |
+| 手机及完整生成 | iPhone／Android 真机未执行；三 Agent 概览／加载、Devin 首次信任与首屏、两处 Editor 保存／断线／返回、窗口回收及 Qwen 准备仍按影响范围待用户验收。第 13.1 节 error 13 未复测为正常生成；未执行真实 Question／审批或完整 Devin Fusion，不记为通过 |
+
+收尾时已恢复原登记隔离 relay 配置、原导航记录，Fusion 值保持一致；原配对 Chrome 与隔离服务继续运行，正式 relay 3939 未重启。原配对主标签因既有 Service Worker 的 appVersion 消息自动从 v373 加载 v374，原 Fusion 选择、草稿摘要与视口保持一致；原 Devin 首页的会话、模型和草稿摘要也与基准一致。测试窗口、临时标签和本轮独立缓存已清理。空测试会话已按原生动作检查，归档结果未在收尾断言前落盘，因此不单独记作归档通过，未强制删除。
+
+夹具失败分别记录：首次定向检查缺少模拟 cdpRead 和 nativePid 对应进程，补齐后通过；回调分派变更最初未被静态协议扫描识别，已按实际声明同步扫描；Editor 脚本的换行转义已修正；收尾夹具最初把预期网页版本更新也要求完全相等，确认仅版本变化后完成清理。没有为这些夹具问题改业务条件、删检查或修改快照。
+
+本轮证据位于 gitignore 的 `_shots/audit-fixes-20261102/`：`baseline.json`、`baseline/`、`existing-problem.diff`、`check-before.log`、`target-final.log`、`auth-gate.log`、`check-final.log`、`browser-results.json`、`write-calls.jsonl`、`native-before.json`、`native-own.json`、`paired-main-before.json`、`paired-main-after.json`、`cleanup.json`、`paired-final.json` 与 `verification.json`。源码及隔离验收环境已加载本轮版本；正式 relay 未加载本轮后端代码，未提交、推送或发布。
+
+### 19.7 F 批追加确认、实施与验证（2026-11-02）
+
+用户单独确认“追加实施 F 批的 5 秒退出预算”后，在 `server/voice/service.mjs` 与 `scripts/voice-runtime.test.mjs` 中完成；A—E 已通过且未受影响的配对检查未重复执行。后端修改不另升网页版本，保持 v374。
+
+- 停止时保留 worker 和真实退出 Promise，状态先置 stopping；只有实际 close 才清除进程归属并置 stopped。终止请求只发一次；期间的迟到准备／就绪／管道错误不将尚未退出的进程冒充为可复用或已释放。
+- 共用 waitWorkerExit 为本次等待提供 5 秒预算；切换中的多项退出共用一次预算，同引擎重入也有结束结果。到期明确报错，保留仍未退出的旧进程，不强杀、不并行启动替代模型、不自动重试。
+- 闲置释放复用同一退出等待；正常 close 后沿既有路径准备一个零 VRAM 的 Qwen worker，退出等待超时后结束本次释放任务，迟到 close 不再触发该次替代准备。其他设备仍在使用的引擎按原规则保留，不纳入这次停止。
+
+| 验证层次 | 实际结果与边界 |
+|---|---|
+| 语音受控回归 | `scripts/voice-runtime.test.mjs` **13／13 通过**，包括 D 批原 5 项和 F 批新增 8 项。覆盖正常退出、4999／5000ms 边界、忽略终止、多次明确尝试只发一次终止、同引擎重入、准备中停止、迟到 close、多设备仍在使用、非预期真实错误，以及闲置释放的正常准备／超时不再启动 |
+| 既有配对浏览器与真实传输 | 在原 3949 身份和原 Chrome 页面中，使用真实 entryProof 与 `/voice` WebSocket；独立 Python 夹具仅发送固定测试事件，不请求麦克风，不加载 ASR 模型。旧夹具忽略 SIGTERM 后，约 **5002ms** 收到“旧语音进程尚未退出，切换未完成”；旧 PID 仍存活、状态 stopping、终止请求 1 次，替代引擎未启动。随后只让本轮夹具自行退出，确认迟到 close 释放归属且未自动重启；用户式明确重试才启动一个替代夹具 |
+| 原现场与清理 | 语音 LAST_ENGINE_FILE 和 worker 控制文件隔离到 `_shots`；本轮两个 Python 夹具已自行退出，未强杀。临时语音连接和浏览器测试属性已释放；原隔离 relay 配置恢复并加载实际 F 批代码，原配对身份继续可用。正式 relay、真实语音模型及用户原生窗口未停止 |
+| 最终标准检查 | npm run check **443／443 通过**，本轮累计新增 41 项行为用例；123 个语法文件、87 类前端消息、70 类服务端消息、196 个 page 导出、88 个模块导入及 24 项核心资源引用通过；差异空白检查与确认范围核对通过 |
+| 手机与真实模型 | 手机麦克风、实际 CPU／Qwen 模型的正常识别和引擎切换仍待验收；受控 worker 的真实 WebSocket 闭环不能替代真实模型或手机验收。Devin error 13、清理候选和未执行的完整 Fusion 生成保持原状态 |
+
+追加证据仍在 `_shots/audit-fixes-20261102/`：`voice-exit-final.log`、`voice-browser-result.json`、`voice-browser.log`、`voice-runtime-snapshot.json`、`voice-fixture/`、`voice-restored.json`、`check-complete.log`、`paired-final.json` 与 `verification.json`。语音夹具进程定位首次匹配到命令文本，尚未停止任何服务即结束；限定独立启动参数后运行，未为夹具问题调整产品逻辑。

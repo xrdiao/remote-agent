@@ -14,6 +14,8 @@ import { scanProjectWindows, projectWindowSettings } from './project-windows.mjs
 import { nativeWindow, configureNativeRetry } from './native-windows.mjs';
 import { manageOverviewSession } from './overview-actions.mjs';
 import { withOperation } from './operations.mjs';
+import { realpath } from 'node:fs/promises';
+import { writeTextFile } from '../lib/files.mjs';
 
 // One entry per message type the phone can send (auth/ack are handled inside ws.mjs itself).
 //   pre      — runs in handle() before the read-only/focus split, without a cdp
@@ -96,6 +98,14 @@ const questionDone = (s, m) => s.emit({ t: 'questionDone', requestId: m.requestI
 const questionFailed = (s, m) => s.emit({ t: 'questionDone', requestId: m.requestId, sel: s.selectionKey(), ok: false });
 
 export const ROUTES = {
+  saveComputerFile: { fast: true, connection: true,
+    fastRun: async (s, m) => {
+      const file = await realpath(String(m.path ?? ''));
+      const size = await writeTextFile(file, String(m.text ?? ''));
+      s.emit({ t: 'saved', requestId: m.requestId, path: m.path, host: '', ok: true, size });
+    },
+    fail: (s, m, error) => s.emit({ t: 'saved', requestId: m.requestId, path: m.path, host: '', ok: false, error: error.message }),
+  },
   overviewManage: { fast: true, connection: true,
     fastRun: async (s, m) => {
       const value = await withOperation(null, () => manageOverviewSession(s.deviceId, m));

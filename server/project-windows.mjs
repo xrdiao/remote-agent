@@ -331,8 +331,10 @@ export async function scanProjectWindows(closeIdle = true, fusionOnly = false) {
         await new Promise(resolve => setTimeout(resolve, 200));
         const confirmationDeadline = Date.now() + 5000;
         for (;;) {
+          const remaining = confirmationDeadline - Date.now();
+          if (remaining <= 0) { row.reason = '调试连接已断开，无法确认窗口关闭'; break; }
           try {
-            const current = await (await fetch(ed.url + '/json/list')).json();
+            const current = await (await fetch(ed.url + '/json/list', { signal: AbortSignal.timeout(remaining) })).json();
             row.closed = !current.some(p => p.id === page.id);
             if (!row.closed) row.reason = closeError?.message || '原生关闭未完成';
             break;

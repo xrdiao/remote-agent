@@ -436,7 +436,10 @@ export const methods = {
     if ((await this.editorCdp.evaluate(helpersCall('workspaceTrustState()'))).required) throw new Error('请先确认项目是否可信');
     if (this.fusionBinding && this.app === 'cursor' && !await this.waitFor('control("model")', 250))
       throw new Error('主会话的原生模型控件尚未就绪');
-    if (this.app === 'devin' && !pending.threadId && !pending.newSession) await this.adapter.openDefaultSession.call(this);
+    if (this.app === 'devin' && !pending.threadId && !pending.newSession) {
+      const state = await this.adapter.openDefaultSession.call(this);
+      if (!await this.confirmDevinThread(state.thread || '', '已打开项目')) throw new Error('Devin 项目会话尚未就绪，请重试');
+    }
     if (this.app === 'codex' && !pending.threadId && !pending.newSession) {
       const thread = await this.cdp.evaluate(helpersCall('codexThread()')) || '';
       if (this.threadId !== thread) this.clearViewState();
