@@ -13,7 +13,7 @@ async function openImageEditor(image) {
     <div class="imageEditOptions" hidden><label>颜色 <input type="color" value="#ff3333" aria-label="标注颜色"></label><label><span data-size-label>粗细</span> <input type="range" min="1" max="40" value="6" aria-label="画笔粗细"><output>6</output></label><label data-fill hidden><input type="checkbox" aria-label="填充图形">填充</label><input type="text" placeholder="输入标注文字" aria-label="标注文字" hidden></div>
     <div class="imageEditMore" hidden><button data-tool="erase">橡皮擦</button><button data-tool="line">直线</button><button data-tool="arrow">箭头</button><button data-tool="rect">矩形</button><button data-tool="ellipse">圆形</button><button data-tool="text">文字</button><button data-tool="pan">移动</button><button data-edit="rotate">旋转</button><button data-edit="reset">重置原图</button><button data-edit="remove" ${image.files ? '' : 'hidden'}>不上传此张</button></div>
     <div class="imageEditTools"><button data-tool="crop" aria-pressed="true">裁剪</button><button data-tool="draw" aria-pressed="false">画笔</button><button data-edit="undo" disabled>撤销</button><button data-edit="redo" disabled>重做</button></div>
-    <button class="primary imageEditSave" data-edit="save">${image.files ? '全部保存并上传' : '保存'}</button>`;
+    <div class="imageEditSubmit"><button data-edit="original">${image.files ? '取消编辑，上传原图' : '取消编辑'}</button><button class="primary imageEditSave" data-edit="save">${image.files ? '全部保存并上传' : '保存'}</button></div>`;
   const stage = dialog.querySelector('.imageEditStage'), canvas = stage.querySelector('canvas');
   stage.oncontextmenu = stage.onselectstart = stage.ondragstart = e => e.preventDefault();
   const base = document.createElement('canvas'), marks = document.createElement('canvas'), merged = document.createElement('canvas');
@@ -257,8 +257,11 @@ async function openImageEditor(image) {
       paint(); return;
     }
     if (action === 'rotate' || action === 'reset') { if (action === 'rotate') applyCrop(); commit({ kind: action }); rebuild(); current().crop = cropFull(); paint(); return; }
-    if (action !== 'save') return;
+    if (action !== 'save' && action !== 'original') return;
+    const original = action === 'original';
+    if (original && !image.files) { dialog.close(); return; }
     if (scope !== imageUploadScope() || image.sel !== viewSel) return status('会话已切换，请回到原会话编辑图片', false);
+    const buttonLabel = button.textContent;
     saving = true; button.disabled = true;
     try {
       for (let n = 0; n < documents.length; n++) {
@@ -266,21 +269,21 @@ async function openImageEditor(image) {
         if (documents[n].uploaded) continue;
         await load(n); if (cancelled) break;
         button.textContent = `正在处理 ${n + 1} / ${documents.length}`;
-        applyCrop();
+        if (!original) applyCrop();
         let file = current().file;
-        if (current().cursor || !file) {
+        if (!original && (current().cursor || !file)) {
           merged.width = base.width; merged.height = base.height; const ctx = merged.getContext('2d'); ctx.drawImage(base, 0, 0); ctx.drawImage(marks, 0, 0);
           const blob = await new Promise(resolve => merged.toBlob(resolve, 'image/png'));
           file = await shrinkImage(new File([blob], current().name.replace(/\.[^.]+$/, '') + '.png', { type: 'image/png' }), merged);
         }
         if (cancelled || scope !== imageUploadScope() || image.sel !== viewSel) break;
-        const ok = image.files ? await attachImageFile(file, { sel: image.sel, prepared: !!current().cursor }) : image.onSave ? await image.onSave(file) : await attachImageFile(file, { replace: image.id, sel: image.sel, prepared: true });
+        const ok = image.files ? await attachImageFile(file, { sel: image.sel, prepared: !original && !!current().cursor }) : image.onSave ? await image.onSave(file) : await attachImageFile(file, { replace: image.id, sel: image.sel, prepared: true });
         if (!ok) throw new Error('图片未加入上传，请重试'); current().uploaded = true;
       }
       if (!cancelled && documents.every(d => d.uploaded)) { status('图片已加入上传，完成后即可发送'); dialog.close(); }
       else if (!cancelled) status('会话已切换，尚未上传的图片保留在编辑器中', false);
     } catch (error) { if (!cancelled) status(error.message, false); }
-    finally { saving = false; button.disabled = false; button.textContent = image.files ? '全部保存并上传' : '保存'; }
+    finally { saving = false; button.disabled = false; button.textContent = buttonLabel; }
   };
   const resize = () => { if (!loading && !loadError) { updateView(); paint(); } };
   window.addEventListener('resize', resize);

@@ -66,16 +66,23 @@ function clearTermSelection() {
 }
 function renderTerm(m) {
   const box = $('termText');
-  if (m.lines && termViewSel === viewSel && currentTerminal === (m.name || '') && (termTouching || terminalSelection())) {
+  if (m.lines && termViewSel === viewSel && currentTerminalId === m.id && (termTouching || terminalSelection())) {
     termPending = { message: m, sel: viewSel };
     return;
   }
   termPending = null;
+  if (currentTerminalId !== (m.id || '') || termViewSel.split('|').slice(0, 2).join('|') !== viewSel.split('|').slice(0, 2).join('|')) {
+    saveDraft();
+    currentTerminalId = m.id || '';
+    if (mode === 'terminal') restoreDraft();
+    closeTerminalPassword();
+  }
   if (termViewSel !== viewSel || currentTerminal !== (m.name || '') || !m.lines) clearTermSelection();
   termViewSel = viewSel;
   $('termCopy').disabled = $('termSelectAll').disabled = !m.lines?.length;
   if (!m.lines) {
     termState = 'empty';
+    currentTerminal = ''; updateTitle();
     box.textContent = ''; termLines = []; termCursor = [];
     updateTermEmpty();
     return;
@@ -116,4 +123,38 @@ $('termCopy').onclick = async () => {
 $('zoom').onclick = () => setZoom(1);
 $('refresh').onclick = () => send({ t: 'refresh' });
 document.querySelectorAll('[data-key]').forEach(b => b.onclick = () => send({ t: 'key', key: b.dataset.key }));
+
+let terminalPasswordTarget = null, terminalPasswordRequest = null;
+function closeTerminalPassword() {
+  $('termPassword').value = '';
+  $('termPasswordBox').hidden = true;
+  $('termPasswordSend').disabled = false;
+  terminalPasswordTarget = terminalPasswordRequest = null;
+}
+$('termPasswordToggle').onclick = () => {
+  terminalPasswordTarget = { sel: viewSel, id: currentTerminalId };
+  $('termPasswordBox').hidden = false;
+  $('termPassword').focus();
+};
+$('termPasswordCancel').onclick = closeTerminalPassword;
+$('termPasswordBox').onsubmit = e => {
+  e.preventDefault();
+  if (!terminalPasswordTarget || terminalPasswordRequest || terminalPasswordTarget.sel !== viewSel || terminalPasswordTarget.id !== currentTerminalId) return;
+  const requestId = crypto.randomUUID();
+  if (!send({ t: 'termSend', text: $('termPassword').value, secret: true, id: currentTerminalId, requestId })) return;
+  terminalPasswordRequest = requestId;
+  $('termPassword').value = '';
+  $('termPasswordSend').disabled = true;
+  status('正在提交密码…');
+};
+function finishTerminalPassword(m) {
+  if (m.requestId !== terminalPasswordRequest) return;
+  closeTerminalPassword();
+  status(m.ok ? '密码输入已提交' : '密码输入未提交，请检查当前终端', m.ok);
+}
+document.addEventListener('composer-state', () => {
+  const available = mode === 'terminal' && authed && windowReady && !!currentTerminalId;
+  $('termPasswordToggle').disabled = !available;
+  if (!available || terminalPasswordTarget && (terminalPasswordTarget.sel !== viewSel || terminalPasswordTarget.id !== currentTerminalId)) closeTerminalPassword();
+});
 

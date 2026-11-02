@@ -1388,7 +1388,12 @@ body.term #stage { display: none; }
 .imageEditView { justify-content: flex-end; }
 .imageEditView .hint { margin-right: auto; font-size: 11px; }
 .imageEditView [data-zoom] { font-size: 12px; min-width: 34px; text-align: center; }
-.imageEditSave { width: 100%; flex: none; }
+.imageEditSubmit { display: flex; flex-wrap: wrap; gap: 8px; flex: none; }
+.imageEditSubmit button { flex: 1 1 160px; }
+.imageEditSave { flex: none; }
+#termPasswordBox { display: flex; flex: 1 1 100%; min-width: 0; gap: 6px; align-items: center; }
+#termTools:has(#termPasswordBox:not([hidden])) { flex-wrap: wrap; }
+#termPassword { flex: 1; min-width: 0; }
 .imageEditStage { flex: 1; min-height: 100px; overflow: auto; touch-action: none; background: var(--pre-bg); border-radius: 12px; }
 .imageEditStage canvas { display: block; max-width: none; max-height: none; touch-action: none; }
 #imageEditor [hidden] { display: none; }

@@ -1,12 +1,12 @@
 // Caches the app shell so the installed app opens instantly; live data (url.json, relay) always goes to the network.
 const CACHE_PREFIX = 'remote-agent:' + self.registration.scope + ':';
-const CACHE = CACHE_PREFIX + 'v378'; // keep in sync with APP_VERSION in js/core.js
+const CACHE = CACHE_PREFIX + 'v379'; // keep in sync with APP_VERSION in js/core.js
 const NOTICES = CACHE_PREFIX + 'notices';
-const SHELL = ['./', 'index.html', 'app.css?v=377', 'i18n.js?v=367', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'logo.png',
-  'js/core.js?v=378', 'js/fusion.js?v=371', 'js/gate.js?v=355', 'js/auth.js?v=207', 'js/net.js?v=374', 'js/sheets.js?v=375', 'js/notify.js?v=375', 'js/mode.js?v=257', 'js/chat.js?v=371',
-  'js/history.js?v=377', 'js/files.js?v=375', 'js/screen.js?v=267', 'js/terminal.js?v=239', 'js/composer.js?v=376', 'js/voice.js?v=356', 'js/local-voice.js?v=376', 'js/voice-worklet.js?v=133',
-  'js/transfer.js?v=207', 'js/scanner.js',
-  'js/latency.js?v=367', 'js/image-editor.js?v=257', 'js/overview.js?v=378',
+const SHELL = ['./', 'index.html', 'app.css?v=379', 'i18n.js?v=367', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'logo.png',
+  'js/core.js?v=379', 'js/fusion.js?v=371', 'js/gate.js?v=355', 'js/auth.js?v=207', 'js/net.js?v=379', 'js/sheets.js?v=375', 'js/notify.js?v=375', 'js/mode.js?v=257', 'js/chat.js?v=379',
+  'js/history.js?v=377', 'js/files.js?v=375', 'js/screen.js?v=267', 'js/terminal.js?v=379', 'js/composer.js?v=379', 'js/voice.js?v=356', 'js/local-voice.js?v=376', 'js/voice-worklet.js?v=133',
+  'js/transfer.js?v=379', 'js/scanner.js',
+  'js/latency.js?v=367', 'js/image-editor.js?v=379', 'js/overview.js?v=378',
   'markdown-it/markdown-it-15.0.3.min.js', 'js/markdown.js?v=295',
   'katex/katex.min.js', 'katex/katex.min.css',
   'katex/fonts/KaTeX_AMS-Regular.woff2', 'katex/fonts/KaTeX_Caligraphic-Bold.woff2',

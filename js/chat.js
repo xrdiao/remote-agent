@@ -395,7 +395,7 @@ setInterval(paintGenerationTime, 1000);
 const chatBySel = new Map(), menuCache = new Map();
 const lruPut = (map, key, val, max) => { map.delete(key); map.set(key, val); while (map.size > max) map.delete(map.keys().next().value); };
 let menuSheetKind = '', chatStale = false;
-let currentProject = '', currentTerminal = '';
+let currentProject = '', currentTerminal = '', currentTerminalId = '';
 function updateTitle() {
   document.body.dataset.app = currentApp || '';
   const first = lastChat?.items?.find(it => it.k === 'user');
@@ -405,6 +405,7 @@ function updateTitle() {
   $('titlePlan').textContent = plan;
   $('titlePlan').hidden = !plan;
   $('titleProject').textContent = cleanWindowTitle(currentProject).replace(/\s+-\s+Devin(?:\s+-.*)?$/, '') || conversation.split('\n')[0].slice(0, 40);
+  if (mode === 'terminal' && currentTerminal) $('titleProject').textContent += ' · ' + currentTerminal;
   $('title').title = [cleanWindowTitle(currentProject), conversation].filter(Boolean).join(' · ');
   if (currentApp === 'fusion') {
     const run = lastChat?.fusionRun;
