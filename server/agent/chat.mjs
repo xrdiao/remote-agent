@@ -677,6 +677,10 @@ export const methods = {
       if (receipt) this.emit({ t: 'sent', ...receipt, queued, sentAt: Date.now(), sel: this.selectionKey() });
       return queued;
     }
+    if (this.app === 'codex' && submit) {
+      await receiptCdp.evaluate(helpersCall('codexViewState(true)'));
+      if (this.cdp !== receiptCdp || this.selectionKey() !== receiptScope) throw new Error('会话已切换，消息未发送');
+    }
     await this.assertSelectedThread();
     const files = [...uploads.values()].filter(f => f.pending && f.sel === this.selectionKey());
     if (files.length) text += '\n\n附加文件（请读取这些电脑端文件）：\n' + files.map(f => f.path).join('\n');

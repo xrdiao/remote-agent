@@ -1759,6 +1759,58 @@ test('a confirmed completion belongs to its native turn and is notified only onc
   assert.equal(h.notifications.length, 1); assert.notEqual(h.rows()[0].state, 'done');
 });
 
+test('a newer native completion marks a short turn even when its running snapshot was missed', () => {
+  const h = overviewCards();
+  h.apply({ run: { id: 'old', status: 'completed', startedAt: 100 } });
+  assert.equal(h.notifications.length, 0); assert.equal(h.rows()[0].state, 'idle');
+  const run = { id: 'short', status: 'completed', startedAt: 200 };
+  h.apply({ run }); h.apply({ run });
+  assert.equal(h.rows()[0].state, 'done'); assert.equal(h.context.aggregate(h.rows()).state, 'done');
+  assert.equal(h.notifications.length, 1);
+  h.click(); h.apply({ run });
+  assert.equal(h.rows()[0].state, 'idle'); assert.equal(h.notifications.length, 1);
+  const reload = overviewCards(h.saved); reload.apply({ run }); reload.apply({ run });
+  assert.equal(reload.rows()[0].state, 'idle'); assert.equal(reload.notifications.length, 0);
+  reload.apply({ run: { id: 'next-short', status: 'completed', startedAt: 300 } });
+  assert.equal(reload.rows()[0].state, 'done'); assert.equal(reload.notifications.length, 1);
+});
+
+test('an unknown new turn keeps the confirmed baseline until its native completion arrives', () => {
+  const h = overviewCards(); h.apply({ run: { id: 'old', status: 'completed', startedAt: 100 } });
+  h.apply({ statusKnown: false, run: { id: 'new', status: 'unknown', startedAt: 200 } });
+  assert.equal(h.rows()[0].state, 'unknown'); assert.equal(h.notifications.length, 0);
+  h.apply({ run: { id: 'new', status: 'completed', startedAt: 200 } });
+  assert.equal(h.rows()[0].state, 'done'); assert.equal(h.notifications.length, 1);
+});
+
+test('late older turns cannot clear or relight the latest completed turn', () => {
+  const h = overviewCards(), latest = { id: 'latest', status: 'completed', startedAt: 200 };
+  h.apply({ run: { id: 'old', status: 'completed', startedAt: 100 } }); h.apply({ run: latest });
+  h.apply({ busy: true, run: { id: 'old', status: 'running', startedAt: 100 } });
+  assert.equal(Object.values(h.done)[0]?.runId, latest.id);
+  h.apply({ run: latest }); assert.equal(h.rows()[0].state, 'done');
+  h.click();
+  h.apply({ run: { id: 'old', status: 'completed', startedAt: 100 } }); h.apply({ run: latest });
+  assert.equal(h.rows()[0].state, 'idle'); assert.equal(h.notifications.length, 1);
+});
+
+test('a different completed turn needs native chronological evidence before it can notify', () => {
+  for (const times of [[0, 200], [100, 0], [100, 100], [200, 100]]) {
+    const h = overviewCards(); h.apply({ run: { id: 'baseline', status: 'completed', startedAt: times[0] } });
+    h.apply({ run: { id: 'unproven', status: 'completed', startedAt: times[1] } });
+    assert.equal(h.rows()[0].state, 'idle'); assert.equal(h.notifications.length, 0);
+  }
+});
+
+test('newer unknown stopped and failed turns do not become completion notifications', () => {
+  for (const status of ['unknown', 'stopped', 'error']) {
+    const h = overviewCards(); h.apply({ run: { id: 'old', status: 'completed', startedAt: 100 } });
+    h.apply({ run: { id: 'new', status, startedAt: 200 } });
+    assert.equal(h.notifications.length, 0); assert.equal(Object.keys(h.done).length, 0);
+    assert.notEqual(h.rows()[0].state, 'done');
+  }
+});
+
 test('stopped and failed native turns are not completion notifications', () => {
   for (const status of ['stopped', 'error']) {
     const h = overviewCards(); h.apply({ busy: true, run: { id: 'turn', status: 'running' } }); h.apply({ run: { id: 'turn', status } });

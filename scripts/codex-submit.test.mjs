@@ -4,7 +4,9 @@ import vm from 'node:vm';
 import { PAGE_SRC } from '../server/page/build.mjs';
 import '../server/routes.mjs';
 import { adapter, methods as codexMethods } from '../server/apps/codex.mjs';
-import { cdpRead } from '../server/cdp.mjs';
+import { methods as chatMethods } from '../server/agent/chat.mjs';
+import { FOCUS_COMPOSER } from '../server/agent/context.mjs';
+import { cdpRead, awaitCdpRead } from '../server/cdp.mjs';
 import { withOperation } from '../server/operations.mjs';
 
 for (const chinese of [false, true]) for (const follow of ['', 'queue', 'steer']) for (const dispatch of [false, true]) {
@@ -80,6 +82,83 @@ test('RA new chat waits for send confirmation and can proceed while the previous
   confirm(); await opening;
   assert.equal(clicked, true); assert.equal(generating, true);
 });
+
+function sendAfterSubmission(app = 'codex') {
+  let settle;
+  const pending = new Promise(resolve => { settle = resolve; });
+  const writes = [], events = [], controller = new AbortController();
+  let waits = 0, draft = 'later draft';
+  const context = { app, scope: 'selection-1', sending: false,
+    selectionKey() { return this.scope; }, assertSelectedThread: async () => {},
+    emit: event => events.push(event), syncAttachments: async () => {},
+    adapter: {
+      async typeDraft(text) { writes.push(['draft', text]); draft = text; },
+      async submitPrompt(now, busy, when) { writes.push(['submit', draft, busy, when]); return !!busy; },
+    },
+  };
+  context.cdp = { nativeWindow: {}, async evaluate(expression) {
+    if (expression.endsWith('.codexViewState(true)')) { waits++; return awaitCdpRead(pending); }
+    if (expression.includes('return { focused, busy: h.agentState()?.busy, draft: h.composerDraft() };')) { writes.push(['focus']); return { focused: true, busy: true, draft }; }
+    if (expression.endsWith('.composerDraft()')) return draft;
+    if (expression.endsWith('.agentState()?.busy')) return true;
+    if (expression.endsWith(".setComposerDraft('')")) { writes.push(['clear']); draft = ''; return true; }
+    if (expression === FOCUS_COMPOSER) { writes.push(['focus']); return true; }
+    if (expression.includes('h.setComposerDraft(')) { draft = 'newer mobile draft'; writes.push(['mirror', draft]); return { draft }; }
+    assert.fail('unexpected send read');
+  } };
+  return { context, writes, events, controller, settle,
+    get waits() { return waits; }, get draft() { return draft; },
+    run(when) { return cdpRead.run(controller.signal, () => chatMethods.sendMessage.call(context,
+      'next message', true, when, [], { requestId: 'next-request' })); },
+  };
+}
+
+for (const when of [undefined, 'queue', 'now']) {
+  test(`Codex ${when || 'default'} waits before writing the next send, then submits once while generation continues`, async () => {
+    const h = sendAfterSubmission(), sending = h.run(when);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.waits, 1); assert.deepEqual(h.writes, []); assert.deepEqual(h.events, []);
+    assert.equal(h.draft, 'later draft');
+    h.settle(); await sending;
+    assert.deepEqual(h.writes, [['focus'], ['clear'], ['draft', 'next message'], ['submit', 'next message', true, when]]);
+    assert.equal(h.events.length, 1); assert.equal(h.events[0].requestId, 'next-request');
+  });
+}
+
+test('Codex stop cancels a send waiting for the previous submission without writes or a second submit', async () => {
+  const h = sendAfterSubmission(), sending = h.run('queue');
+  await new Promise(resolve => setImmediate(resolve));
+  h.controller.abort(); await assert.rejects(sending, { name: 'AbortError' });
+  h.settle(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(h.writes, []); assert.deepEqual(h.events, []); assert.equal(h.draft, 'later draft');
+});
+
+for (const change of ['selection', 'connection']) {
+  test(`Codex waiting send cannot write to a changed ${change}`, async () => {
+    const h = sendAfterSubmission(), sending = h.run('queue');
+    await new Promise(resolve => setImmediate(resolve));
+    if (change === 'selection') h.context.scope = 'selection-2';
+    else h.context.cdp = { evaluate: () => assert.fail('must not write to the new connection') };
+    h.settle(); await assert.rejects(sending, /会话已切换，消息未发送/);
+    assert.deepEqual(h.writes, []); assert.deepEqual(h.events, []); assert.equal(h.draft, 'later draft');
+  });
+}
+
+test('Codex draft editing remains available during native submission preparation', async () => {
+  const h = sendAfterSubmission();
+  assert.equal(await chatMethods.setDraft.call(h.context, 'newer mobile draft'), true);
+  assert.equal(h.waits, 0); assert.equal(h.draft, 'newer mobile draft');
+  assert.equal(h.context.lastDraft, 'newer mobile draft');
+  assert.deepEqual(h.writes, [['mirror', 'newer mobile draft']]);
+});
+
+for (const app of ['cursor', 'devin']) {
+  test(`${app} sends keep their existing path without the Codex submission wait`, async () => {
+    const h = sendAfterSubmission(app);
+    await h.run();
+    assert.equal(h.waits, 0); assert.equal(h.writes.filter(row => row[0] === 'submit').length, 1);
+  });
+}
 
 for (const chinese of [false, true]) for (const available of [false, true]) {
   test(`native Max setting preserves selection and cleanup, Chinese=${chinese}, available=${available}`, async () => {
