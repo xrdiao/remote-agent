@@ -222,9 +222,7 @@ async function runComputerAction(target) {
   if (ovS.open) { ovS.open = null; ovSaveHistory(); ovRender(); }
   try {
     await bindWin(target);
-    computerProjects = true;
-    status('正在读取项目…');
-    return send({ t: 'projects' });
+    return openAgentList(false, { computer: target.computer, source: 'computer' });
   } catch (error) { status(error.message, false); }
 }
 let updateUntouched = true;
@@ -247,7 +245,7 @@ document.addEventListener('visibilitychange', () => {
 for (const event of ['pageshow', 'online']) window.addEventListener(event, resumeComputerConnections);
 window.addEventListener('pagehide', suspendComputerConnections);
 
-async function runAgentMenuAction(id, action, extra, target) {
+async function runAgentMenuAction(id, action, extra, target, entry) {
   if (target) {
     try {
       await ovManageSession(target, action, extra);
@@ -255,10 +253,17 @@ async function runAgentMenuAction(id, action, extra, target) {
     } catch (error) { status(error.message, false); }
     return;
   }
+  projectEntry = entry;
   if (action === 'favorite') return setAgentFavorite(id, extra.favorite);
   send(currentApp === 'codex' ? { t: action === 'rename' ? 'codexRename' : 'codexArchive', id, ...extra }
     : { t: 'sessionManage', id, action, ...extra });
   return renderAgentList();
+}
+function openPickedSession(id, title = '') {
+  if (projectEntry?.source === 'computer') ovShowConversation();
+  pendingAgentOpen = id;
+  closeSheet();
+  return send({ t: 'openAgent', id, title });
 }
 
 $('sheet').addEventListener('click', async e => {
@@ -276,8 +281,17 @@ $('sheet').addEventListener('click', async e => {
   }
   if ('computerPath' in b.dataset) {
     if (b.dataset.computerDirectory === 'true') return browseComputerFiles(b.dataset.computerPath, b.dataset.computerPath === '');
-    openFile(b.dataset.computerPath, false, '', false, computerFiles.computer);
+    openFile(b.dataset.computerPath, '', false, computerFiles.computer);
     return closeSheet();
+  }
+  if (b.dataset.computerProject) {
+    const { directory, project } = computerFiles;
+    if (b.dataset.computerProject === 'new') {
+      const name = window.prompt(I18N.tr('新项目的文件夹名称'));
+      if (!name?.trim()) return;
+      return openPickedProject({ t: 'newProject', parent: directory.path, name: name.trim(), newSession: true }, project.owner);
+    }
+    return openPickedProject({ t: 'openProject', path: directory.path, ...(b.dataset.computerProject === 'chat' ? { newSession: true } : {}) }, project.owner);
   }
   if (b.dataset.computerLaunch) {
     const entry = ovList.find(e => e.id === b.dataset.computerId);
@@ -286,35 +300,33 @@ $('sheet').addEventListener('click', async e => {
   }
   if (sheetKind === 'agent-actions' && b.dataset.agentAction) {
     const id = b.dataset.agentActionId || '', name = b.dataset.agentActionTitle || '';
-    const target = agentActionTarget, app = target?.app || currentApp;
+    const target = agentActionTarget, app = target?.app || currentApp, entry = projectEntry;
     if (b.dataset.agentAction === 'copyLink') return copyText(b.dataset.copyLink, b.querySelector('.lbl'), false);
     if (b.dataset.agentAction === 'open') {
-      closeSheet();
-      if (target) return ovOpen(ovTarget(target));
-      pendingAgentOpen = id;
-      return send({ t: 'openAgent', id, title: name });
+      if (target) { closeSheet(); return ovOpen(ovTarget(target)); }
+      return openPickedSession(id, name);
     }
     if (b.dataset.agentAction === 'favorite') {
       const on = !(target ? target.favorite : agentFavoriteState(id));
       closeSheet();
-      return runAgentMenuAction(id, 'favorite', { favorite: on }, target);
+      return runAgentMenuAction(id, 'favorite', { favorite: on }, target, entry);
     }
     if (b.dataset.agentAction === 'rename') {
       const next = window.prompt('新的会话名称', name);
       if (!next?.trim()) return;
       closeSheet(); status('正在重命名…');
-      return runAgentMenuAction(id, 'rename', { name: next.trim().slice(0, 80) }, target);
+      return runAgentMenuAction(id, 'rename', { name: next.trim().slice(0, 80) }, target, entry);
     }
     if (b.dataset.agentAction === 'delete' || (b.dataset.agentAction === 'archive' && app !== 'codex')) {
       const action = b.dataset.agentAction, label = action === 'delete' ? '删除' : '归档';
       if (!await ask(`${label}「${name}」？`, label)) return;
       closeSheet(); status(`正在${label}…`);
-      return runAgentMenuAction(id, action, {}, target);
+      return runAgentMenuAction(id, action, {}, target, entry);
     }
     if (b.dataset.agentAction === 'archive') {
       if (!await ask(`删除或归档「${name}」？\n桌面端会根据当前入口执行删除或归档。`, '继续')) return;
       closeSheet(); status('正在删除／归档…');
-      return runAgentMenuAction(id, 'archive', {}, target);
+      return runAgentMenuAction(id, 'archive', {}, target, entry);
     }
   }
   if ('modelBack' in b.dataset) return requestMenu('model', '读取模型列表…');
@@ -328,7 +340,6 @@ $('sheet').addEventListener('click', async e => {
     return;
   }
   if ('editorChat' in b.dataset) { closeSheet(); status('正在打开聊天面板…'); return send({ t: 'openEditorChat' }); }
-  if ('editorReturn' in b.dataset) { closeSheet(); return; }
   if (b.dataset.nativeSurface) { closeSheet(); status('正在切换界面…'); return send({ t: 'surface', to: b.dataset.nativeSurface }); }
   if (b.dataset.sc) {
     if (b.dataset.sc === 'fold' || b.dataset.sc === 'unfold') { scFold('*', b.dataset.sc === 'fold'); return showCacheSheet(); }
@@ -412,24 +423,11 @@ $('sheet').addEventListener('click', async e => {
     send({ t: 'codexArchive', id });
     return renderAgentList();
   }
-  if (b.dataset.agent) { pendingAgentOpen = b.dataset.agent; closeSheet(); return send({ t: 'openAgent', id: b.dataset.agent, title: b.dataset.agentTitle || '' }); }
+  if (b.dataset.agent) return openPickedSession(b.dataset.agent, b.dataset.agentTitle || '');
   if (b.dataset.term) { closeSheet(); status('正在切换终端…'); return send({ t: 'openTerminal', id: b.dataset.term }); }
-  if ('projectPath' in b.dataset) {
-    const owner = projectSheetOwner(b);
-    const path = window.prompt(I18N.tr('电脑上的文件夹完整路径'));
-    if (!path?.trim()) return;
-    status('正在读取文件夹…');
-    return sendProjectAction({ t: 'projects', path: path.trim() }, owner);
-  }
-  if ('projectNew' in b.dataset) {
-    const owner = projectSheetOwner(b);
-    const name = window.prompt(I18N.tr('新项目的文件夹名称'));
-    if (!name?.trim()) return;
-    if (computerProjects) ovShowConversation();
-    closeSheet(); status('正在打开项目…');
-    return sendProjectAction({ t: 'newProject', parent: b.dataset.projectNew, name: name.trim(), newSession: true }, owner);
-  }
-  if ('projectChat' in b.dataset) { const owner = projectSheetOwner(b); if (computerProjects) ovShowConversation(); closeSheet(); status('正在打开项目…'); return sendProjectAction({ t: 'openProject', path: b.dataset.projectChat, newSession: true }, owner); }
+  if ('projectPath' in b.dataset) return openProjectFolders(b.dataset.projectPath, projectSheetOwner(b), true);
+  if ('projectBrowse' in b.dataset) return openProjectFolders(b.dataset.projectBrowse, projectSheetOwner(b));
+  if ('projectChat' in b.dataset) return openPickedProject({ t: 'openProject', path: b.dataset.projectChat, newSession: true }, projectSheetOwner(b));
   if ('projectTrust' in b.dataset) {
     const owner = projectSheetOwner(b);
     const here = currentComputer();
@@ -438,15 +436,14 @@ $('sheet').addEventListener('click', async e => {
     closeSheet(); status('正在打开项目…');
     return sendProjectAction({ t: 'projectTrust', approve: b.dataset.projectTrust === 'yes', returnTo }, owner);
   }
-  if (b.dataset.open) { const owner = projectSheetOwner(b); if (computerProjects) ovShowConversation(); closeSheet(); status('正在打开项目…'); return sendProjectAction({ t: 'openProject', path: b.dataset.open }, owner); }
-  if (b.dataset.dir) { status('正在读取文件夹…'); return sendProjectAction({ t: 'projects', path: b.dataset.dir }, projectSheetOwner(b)); }
-  if (b.dataset.docsFile) { openFile(b.dataset.docsFile, b.dataset.docsEditor === 'true'); closeSheet(); return; }
+  if (b.dataset.open) return openPickedProject({ t: 'openProject', path: b.dataset.open }, projectSheetOwner(b));
+  if (b.dataset.docsFile) { openFile(b.dataset.docsFile); closeSheet(); return; }
   if ('docsUp' in b.dataset) {
     status('正在读取文档…');
-    if (!b.dataset.docsUp) return send({ t: 'docs', editor: editorBrowsing });
-    return send({ t: 'docs', editor: editorBrowsing, root: b.dataset.root, host: b.dataset.docsHost || '', path: b.dataset.docsUp });
+    if (!b.dataset.docsUp) return send({ t: 'docs' });
+    return send({ t: 'docs', root: b.dataset.root, host: b.dataset.docsHost || '', path: b.dataset.docsUp });
   }
-  if (b.dataset.docsRoot) { status('正在读取文档…'); return send({ t: 'docs', editor: editorBrowsing, root: b.dataset.docsRoot, host: b.dataset.docsHost || '', path: b.dataset.docsDir || b.dataset.docsRoot }); }
+  if (b.dataset.docsRoot) { status('正在读取文档…'); return send({ t: 'docs', root: b.dataset.docsRoot, host: b.dataset.docsHost || '', path: b.dataset.docsDir || b.dataset.docsRoot }); }
   if (b.dataset.settingsNav) { status('正在读取设置…'); return send({ t: 'settings', section: b.dataset.settingsNav }); }
   if (b.dataset.setting) { status('正在修改…'); return send({ t: 'toggleSetting', label: b.dataset.setting }); }
   if (b.dataset.termDel) {
@@ -481,7 +478,7 @@ $('sheet').addEventListener('click', async e => {
     if (!['codex-run', 'codex-chat', 'model', 'effort'].includes(b.dataset.kind)) beginSwitch(b.dataset.kind);
     return send({ t: 'pickMenu', kind: b.dataset.kind, label: b.dataset.label });
   }
-  if (b.dataset.chopen) { const diff = changeFiles.find(f => f.name === b.dataset.chopen)?.diff || ''; closeSheet(); return openFile(b.dataset.chopen, false, diff, true); }
+  if (b.dataset.chopen) { const diff = changeFiles.find(f => f.name === b.dataset.chopen)?.diff || ''; closeSheet(); return openFile(b.dataset.chopen, diff, true); }
   if (b.dataset.ch) {
     const undo = b.dataset.act2 === 'undo';
     if (undo && !await ask(`撤销「${b.dataset.name}」的改动？\n文件会恢复成 Agent 改之前的样子。`, '撤销')) return send({ t: 'changes' });
@@ -542,8 +539,8 @@ $('sheet').addEventListener('click', async e => {
   else if (act === 'mode') return requestMenu('mode', '读取模式列表…');
   else if (act === 'permission') return requestMenu(lastChat?.permission ? 'permission' : 'mode', '读取权限…');
   else if (act === 'agentsRefresh') return openAgentList(true);
-  else if (act === 'projects') { status('正在读取项目…'); return send({ t: 'projects' }); }
-  else if (act === 'projectNewChat') { closeSheet(); status('正在新建对话…'); return send({ t: 'newProjectChat' }); }
+  else if (act === 'projects') return openProjectPicker();
+  else if (act === 'projectNewChat') { if (projectEntry?.source === 'computer') ovShowConversation(); closeSheet(); status('正在新建对话…'); return send({ t: 'newProjectChat' }); }
   else if (act === 'editor') { return startEditor(); }
   else if (act === 'settings') return openSettings();
   else if (act === 'screen') { closeSheet(); return setMode('screen'); }

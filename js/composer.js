@@ -547,7 +547,10 @@ function updateComposeCompact() {
 document.querySelector('.composerBox').addEventListener('click', e => {
   if (portraitComposer()) return;
   if (document.body.classList.contains('composeCompact')) {
-    if (e.target.closest('#add, #mic, #stop')) return;
+    if (e.target.closest('button')) {
+      composerCollapsed = true;
+      return;
+    }
     e.preventDefault(); e.stopPropagation();
     composerPointerPending = false;
     composerCollapsed = false;
