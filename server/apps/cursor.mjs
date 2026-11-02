@@ -157,6 +157,10 @@ export const adapter = {
     await this.editorCdp.evaluate('document.activeElement?.blur()');
     await this.key('Ctrl+Shift+`', { cdp: this.editorCdp });
   },
+  async terminalProject() {
+    const roots = await this.currentRoots();
+    return roots.length === 1 ? roots[0] : null;
+  },
 
   async usageContext() {
     return this.cdp.evaluate(helpersCall('contextPct()'));

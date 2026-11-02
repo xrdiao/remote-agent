@@ -150,7 +150,7 @@ function receiveQueueDone(m) {
   for (let n = submittedMessages.length - 1; n >= 0; n--) if (removed.has(submittedMessages[n].requestId)) submittedMessages.splice(n, 1);
   queueChatRender();
 }
-function draftKey() { return [currentComputer()?.id || '', viewSel, mode, ...(questionCompose?.sel === viewSel && mode === 'chat' ? [questionCompose.id] : [])].join('|'); }
+function draftKey() { return [currentComputer()?.id || '', mode === 'terminal' ? viewSel.split('|').slice(0, 2).join('|') + '|' + currentTerminalId : viewSel, mode, ...(questionCompose?.sel === viewSel && mode === 'chat' ? [questionCompose.id] : [])].join('|'); }
 function saveDraft() { if (activeDraft) { drafts.set(activeDraft, text.value); draftMentions.set(activeDraft, MN.mentions.slice()); } }
 function restoreDraft() {
   endInputRecall(); clearTimeout(draftPushTimer); activeDraft = draftKey();
@@ -639,7 +639,7 @@ function sendComposer() {
   const when = devinBusySplit() || cursorBusyQueue() || follow === 'queue' ? 'queue' : follow === 'steer' ? 'now' : '';
   const receipt = sendReceipt(v);
   if (mode === 'chat') { status('正在发送…'); pushEcho(receipt.requestId, v, when === 'queue' || (!when && chatBusy) ? 'queue' : 'chat'); }
-  const sent = mode === 'terminal' ? send({ t: 'termSend', text: v, ...receipt })
+  const sent = mode === 'terminal' ? send({ t: 'termSend', text: v, id: currentTerminalId, ...receipt })
     : currentApp === 'fusion' ? send({ t: 'fusionMessage', computer: currentComputer().id, runId: lastChat.fusionRun.id, text: v, ...receipt })
     : send({ t: 'send', text: v, submit: true, ...receipt, ...(when ? { when } : {}), ...mentionsFor(v) });
   if (sent === false) failPendingSend(receipt.requestId);
@@ -699,6 +699,7 @@ const composerInputHandlers = {
   },
   keydown: e => {
     const input = e.target;
+    if (mode === 'terminal' && e.key === 'Tab' && !e.isComposing && !composing) { e.preventDefault(); completeTerminalInput(); return; }
     if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) endInputRecall();
     if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
       if (!e.altKey || e.isComposing || composing || e.keyCode === 229 || !composerMentionBox(input).hidden) return;
@@ -744,9 +745,29 @@ function recallTerminal(m) {
   if (atDraft) terminalInputHistory.delete(key);
   inputRecall = atDraft ? null : { history: terminalInputHistory, key };
 }
+let terminalCompletion = null;
+function completeTerminalInput() {
+  if (!windowReady || !currentTerminalId || mode !== 'terminal') return;
+  if (terminalCompletion?.sel === viewSel && terminalCompletion.id === currentTerminalId && terminalCompletion.revision === inputRevision) { terminalCompletion.tabs++; return; }
+  terminalCompletion = { requestId: crypto.randomUUID(), sel: viewSel, id: currentTerminalId, revision: inputRevision, tabs: 0 };
+  if (!send({ t: 'termComplete', text: text.value, caret: text.selectionStart, ...terminalCompletion })) terminalCompletion = null;
+}
+function receiveTerminalInput(m) {
+  if (mode !== 'terminal' || m.sel && m.sel !== viewSel || m.id && m.id !== currentTerminalId) return;
+  const completion = m.requestId ? terminalCompletion : null;
+  if (m.requestId && completion?.requestId !== m.requestId) return;
+  if (completion) terminalCompletion = null;
+  if (m.revision !== undefined && m.revision !== inputRevision) return;
+  if (m.error) return status(m.error, false);
+  text.value = m.text || '';
+  text.setSelectionRange(text.value.length, text.value.length);
+  recordDraftEdit();
+  if (completion?.tabs) { completeTerminalInput(); if (terminalCompletion) terminalCompletion.tabs = completion.tabs - 1; }
+}
 document.querySelectorAll('[data-termkey]').forEach(b => b.onclick = () => {
   const direction = b.dataset.termkey === 'ArrowUp' ? -1 : b.dataset.termkey === 'ArrowDown' ? 1 : 0;
   if (direction) send({ t: 'termHistory', direction });
+  else if (b.dataset.termkey === 'Tab') completeTerminalInput();
   else send({ t: 'key', key: b.dataset.termkey, focus: 'terminal' });
 });
 

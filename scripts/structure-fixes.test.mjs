@@ -8,9 +8,12 @@ import { EventEmitter } from 'node:events';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { beginOperation, captureOperation, withOperation, subscribeOperations, currentOperation } from '../server/operations.mjs';
 import { PAGE_SRC } from '../server/page/build.mjs';
-import { FOCUS_COMPOSER } from '../server/agent/context.mjs';
+import { AgentContext, FOCUS_COMPOSER } from '../server/agent/context.mjs';
 import { ensurePairedBrowser } from './paired-browser.mjs';
 import { writeTextFile } from '../lib/files.mjs';
+import { methods as menuMethods } from '../server/agent/menus.mjs';
+import { methods as terminalMethods } from '../server/agent/terminal.mjs';
+import { ROUTES } from '../server/routes.mjs';
 
 const read = file => fs.readFileSync(new URL('../' + file, import.meta.url), 'utf8');
 const part = (source, start, end) => {
@@ -39,6 +42,137 @@ function fiber(element, props) {
   element.__reactFiberFixture = props.reduceRight((parent, memoizedProps) => ({ memoizedProps, return: parent }), null);
   return element;
 }
+
+for (const label of ['Ask for approval', 'Approve for me', 'Full access']) {
+  test(`permissions retain ${label} when the current control is collapsed and an old control stays mounted`, () => {
+    let current = nativeNode({}, { innerText: '', textContent: label });
+    const old = nativeNode({}, { innerText: 'Old permission', textContent: 'Old permission' }, false);
+    const doc = { getElementById: () => null, querySelectorAll: () => [old, current] };
+    const page = nativePage(doc, {}, 'permissionLabel');
+    assert.equal(page.permissionLabel(), label);
+    current.innerText = label;
+    assert.equal(page.permissionLabel(), label);
+    current = nativeNode({}, { innerText: '', textContent: ' Full access\n' });
+    assert.equal(page.permissionLabel(), 'Full access');
+    current = nativeNode({}, { textContent: label }, false);
+    assert.equal(page.permissionLabel(), null);
+  });
+}
+
+test('confirmed model refresh discards the window snapshot before reading chat once', async () => {
+  const calls = [], context = { cdp: { nativeWindow: { invalidate() { calls.push('invalidate'); } } },
+    async pollChat(immediate) { calls.push(['read', immediate]); } };
+  await menuMethods.refreshModelChat.call(context);
+  assert.deepEqual(calls, ['invalidate', ['read', true]]);
+});
+
+test('native reply images retain supported sources independently of cleaned HTML', () => {
+  const images = [nativeNode({}, { currentSrc: 'data:image/png;base64,fixture' }),
+    nativeNode({}, { src: 'blob:native-image' }), nativeNode({}, { src: 'https://fixture/image.png' }),
+    nativeNode({}, { src: 'javascript:invalid' }), nativeNode({}, { src: 'https://fixture/hidden.png' }, false)];
+  const page = nativePage({ getElementById: () => null }, {}, 'messageImages');
+  assert.deepEqual(Array.from(page.messageImages({ querySelectorAll: () => images })),
+    ['data:image/png;base64,fixture', 'blob:native-image', 'https://fixture/image.png']);
+});
+
+test('Codex imageView survives stored history without a mounted native turn', () => {
+  const input = { id: 'native-image-id', type: 'imageView', path: '/project/generated.png' };
+  const context = vm.createContext({ codexUserItem: () => null, CAPACITY_ERROR: /capacity/,
+    codexThread: () => 'thread', codexForkProps: () => null, codexFiberProps: () => [],
+    doc: { querySelectorAll: () => [] }, source: { metadata: { status: 'completed' }, rawItems: [input], positions: new Map([[input.id, 0]]), nativeComplete: true, ids: [input.id] } });
+  const source = read('server/page/chat-extract.js');
+  vm.runInContext(part(source, '  const codexStoredTurn =', '  const codexLatestEntry =')
+    + part(source, '  const codexTurnItems =', '  const codexReadPage =')
+    + '\nthis.turn=codexStoredTurn({},null,false,source);this.items=codexTurnItems(null,{turn});', context);
+  const image = context.items.find(item => item.images?.length);
+  assert.equal(image.i, 'thread:generated-image:native-image-id');
+  assert.equal(image.images[0], input.path); assert.equal(image.keep, true);
+});
+
+test('new terminal chooses the conversation project before using the editor creation control', async () => {
+  const calls = [];
+  const editor = root => ({ async evaluate(expression) {
+    if (expression === 'window.vscode?.context?.configuration?.()?.workspace || null') return { uri: { scheme: 'file', path: root, authority: '' } };
+    if (expression.endsWith('.terminalHistory()')) return { id: 'previous-terminal' };
+    if (expression.endsWith('.newTerminalDirect()')) { calls.push(['create', root]); return { x: 1, y: 1 }; }
+    return true;
+  } });
+  const context = { app: 'codex', threadId: 'conversation-A', editorCdp: editor('/B'),
+    adapter: { terminalProject: async () => ({ root: '/A', host: '' }) },
+    projectMatches: (roots, root) => roots.some(item => item.root === root),
+    async useProject(root, newSession, thread) { calls.push(['project', root, newSession, thread]); this.editorCdp = editor(root); },
+    async tapCss() {}, emit() {}, pollTerminal: async () => {},
+  };
+  await terminalMethods.newTerminal.call(context);
+  assert.deepEqual(calls, [['project', '/A', false, 'conversation-A'], ['create', '/A']]);
+});
+
+test('terminal input rejects an obsolete terminal identity before clearing or typing', async () => {
+  const context = { focusTerminal: async () => {}, editorCdp: { evaluate: async () => ({ id: 'new-terminal' }) } };
+  await assert.rejects(terminalMethods.prepareTerminalInput.call(context, 'old-terminal'), /终端已切换/);
+});
+
+test('terminal input reads the live prompt rather than candidate output retained by shell integration', () => {
+  let value = 'user@host:~$ cat folder ';
+  const terminal = { element: { dataset: { remoteTerminal: 'terminal' } },
+    _addonManager: { _addons: [{ instance: { capabilities: new Map([[2, { commands: [], promptInputModel: { value: 'old command\ncandidates\nuser@host:~$ cat folder ' } }]]) } }] },
+    buffer: { active: { baseY: 0, cursorY: 0, get cursorX() { return value.length; }, length: 1,
+      getLine: () => ({ isWrapped: false, translateToString: (trim, start = 0, end) => trim ? value.trimEnd() : value.slice(start, end) }) } } };
+  const page = nativePage({ getElementById: () => null, querySelector: () => ({ xterm: terminal }) });
+  assert.equal(page.terminalHistory().input, 'cat folder ');
+  assert.equal(page.terminalCommand(), 'cat folder');
+  value = 'user@host:~$ ';
+  assert.equal(page.terminalHistory().input, '');
+});
+
+for (const shellIntegration of [true, false]) test(`terminal completion waits in its editor and returns the native result with shell integration ${shellIntegration}`, async () => {
+  let input = '', hash = 'before';
+  const messages = [], h = { terminalHistory: () => ({ id: 'terminal', input: shellIntegration ? input : null }),
+    terminalCommand: () => input, terminalDump: () => ({ hash }) };
+  const editor = { evaluate: async expression => vm.runInNewContext(expression.replaceAll(PAGE_SRC, 'nativeHelpers'), { nativeHelpers: h }),
+    send: async (_method, value) => { input = value.text; } };
+  const chat = { evaluate() { throw new Error('terminal read in chat webview'); } };
+  const context = { cdp: chat, editorCdp: editor, sel: 'selection',
+    prepareTerminalInput: async () => ({ input: shellIntegration ? '' : null, executing: false, sameDraft: false }),
+    waitFor: AgentContext.prototype.waitFor, key: async key => { assert.equal(key, 'Tab'); input = 'cat folder/'; hash = 'after'; },
+    liveRead: (cdp, sel) => cdp === chat && sel === 'selection', selectionKey: () => 'selection',
+    emit: message => messages.push(message), pollTerminal: async () => {} };
+  await terminalMethods.completeTerminal.call(context, 'cat fol', 7, 'terminal', 2, 'request');
+  assert.deepEqual(messages, [{ t: 'termInput', sel: 'selection', id: 'terminal', revision: 2, requestId: 'request', text: 'cat folder/' }]);
+});
+
+test('password submission leaves native command state alone and its receipt omits the password', async () => {
+  const calls = [], events = [], context = { focusTerminal: async () => {},
+    editorCdp: { evaluate: async () => ({ id: 'terminal' }), send: async (_method, value) => calls.push(value.text) },
+    key: async key => calls.push(key), pollTerminal: async () => {}, emit: message => events.push(message) };
+  await terminalMethods.sendTerminal.call(context, 'fake-secret', 'terminal', true);
+  ROUTES.termSend.after(context, { secret: true, text: 'fake-secret', requestId: 'secret-request' });
+  assert.deepEqual(calls, ['fake-secret', 'Enter']);
+  assert.deepEqual(events, [{ t: 'termSecretDone', requestId: 'secret-request', ok: true }]);
+});
+
+test('terminal draft identity follows its window and terminal rather than the selected chat', () => {
+  const context = vm.createContext({ currentComputer: () => ({ id: 'computer' }), mode: 'terminal',
+    viewSel: 'codex|window|chat-A', currentTerminalId: 'terminal-one', questionCompose: null });
+  vm.runInContext(part(read('app/js/composer.js'), 'function draftKey()', 'function saveDraft()') + 'this.key=draftKey;', context);
+  const first = context.key(); context.viewSel = 'codex|window|chat-B'; assert.equal(context.key(), first);
+  context.currentTerminalId = 'terminal-two'; assert.notEqual(context.key(), first);
+  context.viewSel = 'codex|another-window|chat-A'; assert.notEqual(context.key(), first);
+});
+
+test('consecutive terminal Tabs use the first real completion and discard an edited draft response', () => {
+  const packets = [], input = { value: 'cd fol', selectionStart: 6, setSelectionRange() {} };
+  const context = vm.createContext({ windowReady: true, currentTerminalId: 'terminal', mode: 'terminal', viewSel: 'codex|window|thread', inputRevision: 1,
+    crypto: crypto.webcrypto, text: input, send: message => { packets.push(message); return true; },
+    recordDraftEdit() { context.inputRevision++; }, status() {} });
+  vm.runInContext(part(read('app/js/composer.js'), 'let terminalCompletion =', "document.querySelectorAll('[data-termkey]')")
+    + 'this.tab=completeTerminalInput;this.receive=receiveTerminalInput;', context);
+  context.tab(); context.tab(); assert.equal(packets.length, 1);
+  context.receive({ ...packets[0], text: 'cd folder/' });
+  assert.equal(packets.length, 2); assert.equal(packets[1].text, 'cd folder/');
+  input.value = 'edited later'; context.inputRevision++;
+  context.receive({ ...packets[1], text: 'stale' }); assert.equal(input.value, 'edited later');
+});
 
 for (const label of ['Recent chats', '最近聊天', '最近のチャット', 'واجهة محلية']) {
   test(`Codex native providers retain query, route and history ownership with label ${label}`, async () => {
@@ -322,7 +456,7 @@ function composerCommands() {
   const context = vm.createContext({
     text: input, $: id => nodes[id], document: { addEventListener: (type, callback) => listeners.set(type, callback) },
     Event: class { constructor(type) { this.type = type; } },
-    currentApp: 'codex', mode: 'chat', viewSel: 'codex|fixture|thread', questionCompose: null, inputRevision: 0,
+    currentApp: 'codex', mode: 'chat', viewSel: 'codex|fixture|thread', currentTerminalId: 'native-terminal', questionCompose: null, inputRevision: 0,
     ovToolInput: () => null, supportsCapability: () => true, updateComposeCompact() {}, esc: value => value,
     setTimeout: callback => { const id = ++timerId; timers.set(id, callback); return id; }, clearTimeout: id => timers.delete(id),
     cancelVoice() {}, pendingImageUploads: () => false, saveDraft() {}, codexFollow: () => '', devinBusySplit: () => false,

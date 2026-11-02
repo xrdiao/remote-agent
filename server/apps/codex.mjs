@@ -180,6 +180,9 @@ export const adapter = {
     await this.editorCdp.evaluate('document.activeElement?.blur()');
     await this.key('Ctrl+Shift+`', { cdp: this.editorCdp });
   },
+  async terminalProject() {
+    return this.cdp.evaluate(helpersCall('codexCurrentProject()'));
+  },
 
   async mentionQuery(q, cat, seq, trigger, query) {
     return this.codexMentionQuery(q, trigger === '/' ? '/' : '@', seq, query);
@@ -286,7 +289,7 @@ export const adapter = {
     if (!await this.cdp.evaluate(helpersCall(`pickCodexModel(${JSON.stringify(String(label))})`))) return false;
     await this.waitModel(label);
     await this.closeMenus();
-    this.pollChat(true).catch(() => {});
+    this.refreshModelChat().catch(() => {});
     return true;
   },
 

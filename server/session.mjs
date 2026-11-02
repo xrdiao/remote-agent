@@ -201,9 +201,9 @@ export class Session extends AgentContext {
       (this.chatBySel ||= new Map()).delete(obj.sel);
       this.chatBySel.set(obj.sel, obj.chat);
       if (this.chatBySel.size > 12) this.chatBySel.delete(this.chatBySel.keys().next().value);
-      obj = { ...obj, chat: chatForWire(obj.chat, this.app === 'codex' ? this.cdp?.wsUrl : '') };
+      obj = { ...obj, chat: chatForWire(obj.chat, this.cdp?.wsUrl || '') };
     }
-    if (obj?.t === 'historyPage') obj = { ...obj, items: chatForWire({ items: obj.items }, this.app === 'codex' ? this.cdp?.wsUrl : '').items };
+    if (obj?.t === 'historyPage') obj = { ...obj, items: chatForWire({ items: obj.items }, this.cdp?.wsUrl || '').items };
     if (['attached', 'windows', 'plans', 'connAgents', 'agentCatalog'].includes(obj?.t)) {
       const { chat, ...metadata } = obj;
       this.connectionMessages.set(obj.t, metadata);

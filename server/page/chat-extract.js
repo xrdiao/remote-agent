@@ -59,6 +59,8 @@
       const body = devinRoot || md || withoutThinking(el);
       item.t = (body.innerText || body.textContent || '').trim();
       item.h = devinRoot ? devinRich(devinRoot) : md ? clean(md) : esc((withoutThinking(el).innerText || '').trim()).replace(/\n/g, '<br>');
+      const images = messageImages(body);
+      if (images.length) item.images = images;
     }
     else item.t = summary(withoutThinking(el));
     if (k === 'tool') {
@@ -371,6 +373,7 @@
       if (item.type === 'dynamicToolCall') return { ...item, type: 'dynamic-tool-call' };
       if (item.type === 'collabAgentToolCall') return item;
       if (item.type === 'webSearch') return { type: 'web-search', id: item.id, query: item.query };
+      if (item.type === 'imageView') return { type: 'generated-image', id: item.id, path: item.path };
       if (item.type === 'contextCompaction') return { type: 'context-compaction', id: item.id, source: item.source, status: complete ? 'completed' : 'inProgress' };
       return [];
     }).map(item => ({ ...item, sourceIndex: positions.get(item.callId || item.responseAnnotationTargetId || item.id || item.nativeIds?.[0]) }));
@@ -518,7 +521,7 @@
         const rendered = markdown.get(item.responseAnnotationTargetId);
         const block = rendered?.content === item.content ? rendered.block : null;
         if (item.phase === 'commentary') out.push({ i: id, k: 'thinking', t: `工作过程\n${item.content}`, live: !item.completed });
-        else out.push({ i: id, k: 'assistant', t: item.content, completed: item.completed, htmlRead: !!block, bodyFormat: block ? 'html' : 'markdown', h: block ? clean(block) : esc(item.content).replace(/\n/g, '<br>') });
+        else out.push({ i: id, k: 'assistant', t: item.content, completed: item.completed, htmlRead: !!block, bodyFormat: block ? 'html' : 'markdown', h: block ? clean(block) : esc(item.content).replace(/\n/g, '<br>'), ...(block ? { images: messageImages(block) } : {}) });
       } else if (item.type === 'exec') {
         out.push({ i: id, k: 'tool', t: (item.cmd || []).join('\n').slice(0, 240), done: finished,
           ...(item.approvalRequestId != null || ['failed', 'declined'].includes(item.executionStatus) || (item.output?.exitCode != null && item.output.exitCode !== 0) ? { keep: true } : {}) });
@@ -541,8 +544,8 @@
         const result = (typeof raw === 'string' ? raw : raw == null ? '' : JSON.stringify(raw)).slice(0, 4000);
         out.push({ i: id, k: 'tool', kind: 'other', src: 'codex', t: `${item.type === 'mcp-tool-call' ? 'MCP' : '工具'} ${name}${status ? ' · ' + status : ''}${result ? ' · ' + result : ''}`.slice(0, 4400), keep: true });
       } else if (item.type === 'generated-image' || item.type === 'chatgpt-delayed-image-gen' || item.type === 'chatgpt-delayed-image-gen-received') {
-        if (!el) continue;
-        const images = [...el.querySelectorAll('img')].filter(vis).map(img => img.currentSrc || img.src).filter(src => /^(https?:|data:image\/|blob:)/.test(src));
+        if (!el && !item.path) continue;
+        const images = item.path ? [item.path] : messageImages(el);
         out.push({ i: id, k: 'tool', kind: 'other', src: 'codex', t: item.type === 'chatgpt-delayed-image-gen' ? '正在生成图片' : '生成的图片', images, keep: true });
       } else if (item.type === 'chatgpt-tool-approval') {
         out.push({ i: id, k: 'tool', kind: 'other', src: 'codex', t: `等待批准 ${textOf(item.title)}`.trim().slice(0, 240) });

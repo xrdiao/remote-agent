@@ -71,7 +71,7 @@ function harness({ sameSelection = false, count = 2 } = {}) {
   run(`
     var base = null, info = null, ws = null, authed = false;
     var mode = 'chat', windowReady = false, connGen = 0, usageTimer = 0;
-    var currentApp = 'codex', currentAppName = 'Codex', currentWindow = 'codex', viewSel = '', currentProject = '';
+    var currentApp = 'codex', currentAppName = 'Codex', currentWindow = 'codex', viewSel = '', currentProject = '', currentTerminalId = '';
     var windows = [], appPlans = {}, sheetKind = '', pendingStatus = '', qnSig = '', inApp = false;
     var capabilityOwner = '', agentCapabilities = null, capabilityBlock = '';
     var menuRequest = 0, menuPending = null, menuPickRequest = 0, modelSwitchRequest = null;

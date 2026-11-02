@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v378'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v379'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false;
 let windowReady = false;
@@ -211,7 +211,7 @@ function finishPending(list) {
 
 const desktopRequests = new Map();
 function desktopAction(obj) {
-  if (obj.t === 'overviewManage' || obj.t === 'saveComputerFile') return true;
+  if (['overviewManage', 'saveComputerFile', 'computerFileAction'].includes(obj.t)) return true;
   if (currentApp === 'fusion') return false;
   return obj.t === 'send' ? obj.submit !== false && mode !== 'terminal'
     : obj.t === 'queue' ? obj.action !== 'read'

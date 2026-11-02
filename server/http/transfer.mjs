@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
-import yazl from 'yazl';
+import { zipFiles } from '../../lib/archive.mjs';
 import { listDevices, needsTotp } from '../../lib/auth.mjs';
 import { json, readBody, SECURITY_HEADERS, corsHeaders } from './static.mjs';
 import { readFile } from '../../lib/files.mjs';
@@ -113,37 +113,8 @@ export async function serveTransfer(req, res, ticket) {
       await pipeline(fs.createReadStream(grant.files[0]), res);
       return;
     }
-    const zip = new yazl.ZipFile();
-    let active = null;
-    res.on('close', () => { zip.outputStream.destroy(); active?.destroy(); });
-    zip.on('error', () => res.destroy());
-    zip.outputStream.on('error', () => res.destroy());
     res.writeHead(200, headers);
-    zip.outputStream.pipe(res);
-    async function add(file, name) {
-      if (res.destroyed) return;
-      const stat = await fsp.lstat(file);
-      // Links are not followed when walking folders, so archives cannot recurse through link cycles.
-      if (stat.isSymbolicLink()) return;
-      if (stat.isDirectory()) {
-        zip.addEmptyDirectory(name, { mtime: stat.mtime });
-        for (const entry of await fsp.readdir(file)) await add(path.join(file, entry), name + '/' + entry);
-      } else if (stat.isFile()) {
-        zip.addReadStreamLazy(name, { size: stat.size, mtime: stat.mtime, compress: false }, callback => {
-          if (res.destroyed) return callback(Error('下载已取消'));
-          active = fs.createReadStream(file);
-          callback(null, active);
-        });
-      }
-    }
-    const names = new Set();
-    for (const file of grant.files) {
-      let name = path.basename(file) || 'root', suffix = 1;
-      while (names.has(name)) name = `${path.basename(file) || 'root'} (${suffix++})`;
-      names.add(name);
-      await add(await fsp.realpath(file), name);
-    }
-    zip.end();
+    await pipeline(zipFiles(grant.files), res);
   } catch (error) {
     if (res.headersSent) res.destroy(error);
     else json(req, res, 400, { error: error.message });

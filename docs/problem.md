@@ -1150,3 +1150,33 @@ N2 的外层 @token 分段循环继续保留各 Agent 语义，不为十余行�
 布局夹具按真实 generation 归属设置受控时钟；初版被既有计时器隐藏的耗时不计为通过。空状态检查发现左侧样式优先级问题，在本次 CSS 范围内修正后复验；48 个已有可见状态场景未重复执行。临时脚本一次证据文件名错误仅修正夹具，未改产品逻辑。
 
 证据目录为 gitignore 的 `_shots/changes-edge-20261102/`：`baseline.json`、`baseline/`、`edge-prototype.log`、`controlled-final.log`、`final-browser.json`、`final-actions.log`、`edge-final-320-error.png`、`edge-final-874-error.png`、`edge-final-402-light.png`、`check-final.log`、`paired-before.json`、`paired-after.json` 与 `scope.json`。身份相关快照仅保存在本机，不写入文档。
+
+## 23. 文件管理、原图上传、权限再次丢失、模型刷新、终端和生成图片（2026-11-02）
+
+用户确认六项方案后实施。修改前工作区干净，HEAD 与实际远端 master 为 `10a6fa95be472c3e406c0e7d7a3da648c3f3dbb8`，源码 v378；489 个跟踪文件指纹及相关文件副本保存在 `_shots/six-functions-fix-20261102/`。以该工作区为回归基准，修改前 `npm run check` **466/466 通过**。本轮不重写 Fusion，不处理 Devin err13，不修改已安装 Codex 扩展。
+
+### 23.1 根因、修改与直接影响
+
+| 项目 | 证据与根因 | 实施与影响 |
+|---|---|---|
+| 文件管理及上传记录 | 文件传输只有浏览、上传、下载；成功项继续持有 File 和列表行，没有新建／复制／移动／解压动作 | `transfer.js` 增加新建文件／文件夹、同电脑跨目录复制／剪切／粘贴及 ZIP 压缩／解压，复用另存／跳过／覆盖和现有电脑操作回执。`routes.mjs`／`operations.mjs`／`core.js` 登记 computerFileAction，与当前 Agent／会话独立；成功移动项才移出剪贴板。新增 `lib/file-actions.mjs`；新增 `lib/archive.mjs`，与 HTTP ZIP 下载共用异步归档，解压使用 Python 标准库子进程，无新增依赖。上传成功或跳过后释放对应 File 和行，失败保留重试 |
+| 取消图片编辑 | 原 cancel 是取消上传，reset 是画布重置；两者均不表示放弃改图后继续上传 | `image-editor.js` 共用原保存／上传循环，增加“取消编辑，上传原图”，原图不应用本次裁剪／标注；编辑已有附件时取消不替换。保留取消上传、逐图排除、原生附加回执与会话归属，已入队项不重复提交；CSS 只调整新增控件布局 |
+| 权限模式第二次消失 | 上次提交 `c6714e9` 已将原生控件读取改成选择可见项，解决隐藏旧控件抢占。该修复仍在；本次可见按钮的 innerText 为空、textContent 为 Approve for me，折叠文字导致 permission=null，手机据此不显示入口 | `server/page/devin.js` 的共用 permissionLabel 改读当前可见控件的 textContent；不添加假权限、静态选项或权限切换。回归同时覆盖隐藏旧控件、折叠／展开文字、换会话后的新值以及无可见控件，保留上次修复 |
+| 新会话模型／强度显示慢 | 原生选择约 402ms 生效、524ms 回执，手机标签约 2301ms 更新。动作开始时的失效早于原生异步选择，期间旧快照可能重新入缓存，确认后的读取继续复用它；Devin 空会话也观察到同类旧标签 | `agent/menus.mjs` 共用确认后刷新入口：使所属 NativeWindow 快照失效，再刷新一次；Codex／Devin 模型分支复用。保持原生确认、菜单、原轮询周期和失败语义，不用目标标签伪造成功。影响三应用共用刷新链，不处理另记的 Cursor 新空会话前置失败 |
+| Tab、密码及终端归属 | 原 Tab 只给原生发送按键，没有传手机未发命令；普通草稿不能承担无回显密码。新建终端使用 editorCdp，Codex 会话目录与编辑器工作区可以不同。真实补全还确认原生 promptInputModel 会把候选及重新打印的提示串入输入 | `agent/terminal.mjs` 复用输入准备和现有等待，先提交当前命令／光标，再发送原生 Tab，按窗口／终端 ID／修订回传；等待在 editorCdp，读取终端缓冲区当前提示行，保留后缀及真实空格。按钮／键盘 Tab 共用顺序，草稿按电脑／窗口／终端 ID 分开。新增独立掩码密码控件，直接提交无回显交互，不写普通历史、草稿或重放队列，回执不含正文。新建先读各 Agent 的真实项目来源，复用 useProject 选中匹配编辑器后创建，不改已有终端目录和进程；标题附原生终端名 |
+| 生成图片不可见 | 授权的一次 Codex 请求实际生成 64×64 PNG，原生有 imageView/path 及 IMG；手机 images 为空。存储轮次没有 imageView 映射，HTML 清理跳过 IMG，回复没有单独收集来源 | `page/common.js`／`chat-extract.js` 保留各原生回复所属图片，补 Codex imageView 的 ID／路径及未挂载历史。`chat-images.mjs` 用所属 relay 读取本地图片，私有 URL 保留所属原生窗口读取，成功后进入原有缓存；`session.mjs` 给三应用传实际来源窗口。手机继续用已有图片加载、查看和复制入口，文件引用不变 |
+
+实际资源及缓存同步为 **v379**。新增文件行为测试登记到 `package.json`；基准 01／02／03／04／06 与功能测试结果同步。未修改 page 导出快照、正式 relay、Fusion 编排或本机 Codex 扩展。
+
+### 23.2 分层验证与交付边界
+
+- 受控检查覆盖权限的两次原因、真实原生模型确认后的快照顺序、Codex 未挂载 imageView、图片缓存离开源文件／窗口、文件实际 I/O／碰撞／部分失败／操作去重、终端页面归属、候选输入、迟到补全及密码回执。共享图片提取对三应用受控覆盖，不把它算作 Cursor／Devin 真实生成图片。
+- 同一配对身份的 v379 浏览器，真实文件新建、复制／剪切／粘贴、三种重名处理、ZIP 保存／解压／下载、成功上传释放及失败保留后重试通过。16MiB ZIP 处理同时请求真实模型菜单，控制连接能响应；时间分开记录，不凭归档耗时判断网络故障。
+- Codex 空／已有会话权限入口及原生选项一致，未改变实际权限。Cursor 保留实际 Agent 模式，当前 Devin 原生没有权限控件，没有生成假选项；原生宽控件和隐藏旧控件组合由受控测试覆盖。对子 iframe 直接调整原生视口被 CDP 拒绝，该夹具失败不计为宽布局通过。
+- Codex 空会话模型／强度往返，Cursor／Devin 已有会话及 Devin 新空会话往返通过；无新增模型消息。Codex 本轮观测手机标签约 449–914ms 更新，和原生确认相邻，没有此前额外约 1.8 秒缓存等待；不是承诺所有网络和原生选择都在该耗时内完成。Cursor 新空会话前置失败继续只记录，未扩大修复。
+- 三应用真实终端的命令／文件名补全、连续 Tab 候选、中间光标、独立密码、多终端草稿与 Ctrl+C 通过。密码使用虚构 shell 无回显读入，没有执行真实 sudo 或使用账户密码。Codex 的 A 会话／B 编辑器用例已读到新终端实际 pwd=A；B 终端 ID 不变且程序继续运行。测试自身用原生动态终端标题作恒定值、或在新终端 ID 同步前发送的失败已更正，不为它们添加产品延时或兼容分支。
+- 取消编辑上传原图与原 PNG 字节一致；正常裁剪为 64×36、取消上传、已有附件取消编辑通过。多图部分接受后不重复提交的失败场景为受控浏览器检查，单张原生附加为真实路径。生成图片复用诊断时那一次 PNG／会话，未再次调用模型生成。
+- 文件写入后暂扣回执并断开测试连接，原身份恢复后同一操作仅有一份复制结果。320px 密码控件与中文文件名中间光标补全通过；新控件的 min-content 溢出已在本轮 CSS 范围内修正。最终 `npm run check` **486/486 通过**；首轮唯一失败为电脑切换测试环境缺少终端 ID 初值，用户追加确认后仅补 `scripts/computer-switch.test.mjs` 的一处变量声明，未改断言。差异空白检查通过。
+- 最终标准检查、断线回执恢复、现场恢复及手机待验见[本轮功能测试结果](testing/full-functional-audit-20261102-results.md)。桌面 Chrome 和模拟尺寸不算 Safari／手机硬件通过；Windows、远程主机和真实账户 sudo 本轮未验。
+
+证据位于 gitignore 的 `_shots/six-functions-fix-20261102/`：`baseline.json`、`before/`、`check-before.log`、`browser-cases.json`、`model-timeline-after.json`、`cross-project-after.json`、各 `check-*.log`、截图和最终检查／恢复记录。原始本机草稿及配对身份不写入公开文档；未重新配对、提交、推送或发布。

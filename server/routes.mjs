@@ -16,6 +16,7 @@ import { manageOverviewSession } from './overview-actions.mjs';
 import { withOperation } from './operations.mjs';
 import { realpath } from 'node:fs/promises';
 import { writeTextFile } from '../lib/files.mjs';
+import { fileAction } from '../lib/file-actions.mjs';
 
 // One entry per message type the phone can send (auth/ack are handled inside ws.mjs itself).
 //   pre      — runs in handle() before the read-only/focus split, without a cdp
@@ -98,6 +99,11 @@ const questionDone = (s, m) => s.emit({ t: 'questionDone', requestId: m.requestI
 const questionFailed = (s, m) => s.emit({ t: 'questionDone', requestId: m.requestId, sel: s.selectionKey(), ok: false });
 
 export const ROUTES = {
+  computerFileAction: { fast: true, connection: true,
+    fastRun: async (s, m) => s.emit({ t: 'computerFileDone', requestId: m.requestId, ok: true,
+      ...await fileAction({ action: m.action, directory: m.directory, paths: m.paths, name: m.name, mode: m.collision }) }),
+    fail: (s, m, error) => s.emit({ t: 'computerFileDone', requestId: m.requestId, ok: false, error: error.message }),
+  },
   saveComputerFile: { fast: true, connection: true,
     fastRun: async (s, m) => {
       const file = await realpath(String(m.path ?? ''));
@@ -257,12 +263,17 @@ export const ROUTES = {
     s.emit({ t: 'termHistory', sel: s.selectionKey(), direction: m.direction < 0 ? -1 : 1, id: data.id, commands: data.commands });
   } },
   termSend: {
-    run: (s, m) => s.sendTerminal(String(m.text ?? '')),
+    run: (s, m) => s.sendTerminal(String(m.text ?? ''), String(m.id ?? ''), m.secret === true),
     after: (s, m) => {
+      if (m.secret) return s.emit({ t: 'termSecretDone', requestId: m.requestId, ok: true });
       s.emit({ t: 'sent', requestId: m.requestId, draft: m.draft, text: m.text, sel: s.selectionKey() });
       s.emit({ t: 'status', ok: true, msg: '已发送' });
     },
-    fail: (s, m) => s.emit({ t: 'sendFailed', requestId: m.requestId }),
+    fail: (s, m) => s.emit(m.secret ? { t: 'termSecretDone', requestId: m.requestId, ok: false } : { t: 'sendFailed', requestId: m.requestId }),
+  },
+  termComplete: {
+    run: (s, m) => s.completeTerminal(String(m.text ?? ''), Number(m.caret), String(m.id ?? ''), m.revision, m.requestId),
+    fail: (s, m, error) => s.emit({ t: 'termInput', sel: s.selectionKey(), id: m.id, revision: m.revision, requestId: m.requestId, error: error.message }),
   },
   projects: { switchRead: true,  run: (s, m) => s.showProjects(String(m.path ?? '')) },
   docs: { switchRead: true, run: (s, m) => s.showDocs(m.requestId) },

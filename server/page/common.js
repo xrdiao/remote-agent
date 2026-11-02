@@ -146,6 +146,9 @@
     return col && parent && col !== parent ? ` style="color:${col}"` : '';
   };
 
+  const messageImages = node => [...(node?.querySelectorAll('img') || [])].filter(vis)
+    .map(img => img.currentSrc || img.src).filter(src => /^(https?:|data:image\/|blob:|file:)/.test(src));
+
   // devin: also keep links (http/https only) and h6 for Devin's markdown renderer; Cursor never sets it.
   const clean = (node, devin = false) => {
     let out = '';

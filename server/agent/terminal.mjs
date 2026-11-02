@@ -1,5 +1,6 @@
 // 终端：面板轮询与交互
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
+import { editorRoots } from '../../lib/files.mjs';
 
 export const methods = {
   async pollTerminal(force = false) {
@@ -24,7 +25,7 @@ export const methods = {
       } else if (dump.hash !== this.lastTermHash) {
         this.lastTermHash = dump.hash;
         this.lastTermChangeAt = Date.now();
-        if (dump.lines) this.emit({ t: 'termText', sel: this.selectionKey(), lines: dump.lines, cursor: dump.cursor, name: dump.name });
+        if (dump.lines) this.emit({ t: 'termText', sel: this.selectionKey(), id: dump.id, lines: dump.lines, cursor: dump.cursor, name: dump.name });
       }
       if (Date.now() - (this.lastTermStateAt || 0) >= 650) {
         this.lastTermStateAt = Date.now();
@@ -86,6 +87,11 @@ export const methods = {
     setTimeout(() => this.pollTerminal(true).catch(() => {}), 300);
   },
   async newTerminal() {
+    const project = await this.adapter.terminalProject.call(this);
+    if (project?.root && !this.projectMatches(await editorRoots(this.editorCdp, this.app), project.root, project.host || '')) {
+      if (project.host) throw new Error('请先打开此会话对应的远程项目窗口，再新建终端');
+      await this.useProject(project.root, false, this.threadId || '');
+    }
     if (this.app === 'devin' && await this.editorCdp.evaluate(helpersCall('devinSurface()')) === 'agent') {
       await this.setSurface('editor');
     }
@@ -113,11 +119,13 @@ export const methods = {
   async focusTerminal() {
     if (!await this.editorCdp.evaluate(helpersCall('focusTerminalInput()'))) throw new Error('没有可输入的终端，请先打开终端');
   },
-  async sendTerminal(text) {
+  async prepareTerminalInput(id, text) {
     await this.focusTerminal();
     const before = await this.editorCdp.evaluate(helpersCall('terminalHistory()'));
+    if (!id || before.id !== id) throw new Error('终端已切换，请在当前终端重新输入');
     const input = before.executing ? '' : before.input ?? await this.editorCdp.evaluate(helpersCall('terminalCommand()'));
-    if (input) {
+    const sameDraft = !before.executing && input === text;
+    if (input && !sameDraft) {
       await this.editorCdp.evaluate(helpersCall('clearTerminalInput()'));
       for (let i = 0; i < 10; i++) {
         await new Promise(r => setTimeout(r, 20));
@@ -128,10 +136,35 @@ export const methods = {
         if (i === 9) throw new Error('终端原有输入未清空，尚未发送');
       }
     }
-    const lines = String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+    return { ...before, sameDraft };
+  },
+  async completeTerminal(text, caret, id, revision, requestId) {
+    const cdp = this.cdp, editor = this.editorCdp, sel = this.sel;
+    const before = await this.prepareTerminalInput(id, text);
+    if (before.executing) throw new Error('当前终端正在执行程序，不能补全命令');
+    if (text && !before.sameDraft) await editor.send('Input.insertText', { text });
+    const expected = JSON.stringify(String(text).trimEnd());
+    const wait = call => this.waitFor.call({ cdp: editor }, call);
+    if (!await wait(`${before.input === null ? 'terminalCommand()' : 'terminalHistory().input'}?.trimEnd() === ${expected}`)) throw new Error('终端尚未确认当前输入，请检查终端输出');
+    const left = Array.from(String(text).slice(caret)).length;
+    if (left) await editor.evaluate(helpersCall(`focusTerminalInput(${left})`));
+    const hash = (await editor.evaluate(helpersCall('terminalDump()')))?.hash;
+    await this.key('Tab', { cdp: editor });
+    await wait(`terminalDump()?.hash !== ${JSON.stringify(hash)}`);
+    const input = await editor.evaluate(`(() => { const h = ${PAGE_SRC}, state = h.terminalHistory(); return { id: state.id, text: state.input ?? h.terminalCommand() }; })()`);
+    if (this.liveRead(cdp, sel) && editor === this.editorCdp && input.id === id && typeof input.text === 'string')
+      this.emit({ t: 'termInput', sel: this.selectionKey(), id, revision, requestId, text: input.text });
+    await this.pollTerminal(true);
+  },
+  async sendTerminal(text, id, secret = false) {
+    if (secret) {
+      await this.focusTerminal();
+      if ((await this.editorCdp.evaluate(helpersCall('terminalHistory()'))).id !== id) throw new Error('终端已切换，请在当前终端重新输入');
+    } else await this.prepareTerminalInput(id);
+    const lines = secret ? [String(text)] : String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
     for (let i = 0; i < lines.length; i++) {
       if (lines[i]) await this.editorCdp.send('Input.insertText', { text: lines[i] });
-      if (i < lines.length - 1 || lines[i]) await this.key('Enter', { cdp: this.editorCdp });
+      if (secret || i < lines.length - 1 || lines[i]) await this.key('Enter', { cdp: this.editorCdp });
     }
     setTimeout(() => this.pollTerminal(true).catch(() => {}), 100);
   }

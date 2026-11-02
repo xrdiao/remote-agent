@@ -670,5 +670,5 @@
   const permissionLabel = () => {
     const b = permissionButton();
     if (!b) return null;
-    return (b.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 40) || null;
+    return (b.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40) || null;
   };

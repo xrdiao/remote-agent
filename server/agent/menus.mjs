@@ -1,8 +1,13 @@
 // 菜单：模型/参数/设置/额度
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { appPlans } from './context.mjs';
+import { nativeWindow } from '../native-windows.mjs';
 
 export const methods = {
+  refreshModelChat() {
+    nativeWindow(this.cdp)?.invalidate();
+    return this.pollChat(true);
+  },
   async openModelList() {
     if (await this.cdp.evaluate(helpersCall('clickModelListTrigger()'))) return true;
     const target = await this.cdp.evaluate(helpersCall('modelListTrigger()'));
@@ -289,7 +294,7 @@ export const methods = {
         await this.closeMenus();
       }
       if (this.app === 'codex' && !await this.waitFor(`effortItems().some(item => item.checked && item.label === ${JSON.stringify(label)})`)) throw new Error('尚未确认电脑端思考强度，请重新读取强度列表');
-      this.pollChat(this.app === 'codex').catch(() => {});
+      this.refreshModelChat().catch(() => {});
       return;
     }
     if (kind === 'codex-run') return this.codexRunPick(String(label || ''));
@@ -316,7 +321,7 @@ export const methods = {
     if (kind === 'model' && label !== 'Fusion') {
       await this.waitModel(label);
       await this.closeMenus();
-      this.pollChat(this.app === 'cursor' || this.app === 'codex').catch(() => {});
+      this.refreshModelChat().catch(() => {});
       return;
     }
     let pending = false;

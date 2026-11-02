@@ -206,7 +206,7 @@ export const adapter = {
     if (!await this.cdp.evaluate(helpersCall(`pickDevinModel(${JSON.stringify(String(label))})`))) return false;
     await this.waitModel(label);
     await this.closeMenus();
-    this.pollChat().catch(() => {});
+    this.refreshModelChat().catch(() => {});
     return true;
   },
 };

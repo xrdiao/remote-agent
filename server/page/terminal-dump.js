@@ -8,11 +8,11 @@
   };
   const cellFlags = cell => (cell.isBold() ? 1 : 0) | (cell.isItalic() ? 2 : 0) | (cell.isUnderline() ? 4 : 0) | (cell.isDim() ? 8 : 0) | (cell.isInverse() ? 16 : 0);
   // The shell prompt stays on the cursor line; history recall only replaces the command after it.
-  const commandFromPrompt = line => {
+  const commandFromPrompt = (line, preserveSpace = false) => {
     const m = /^(?:.*?(?:[$%#]|[❯➜]))\s(.*)$/.exec(line);
-    if (m) return m[1].replace(/\s+$/, '');
+    if (m) return preserveSpace ? m[1] : m[1].replace(/\s+$/, '');
     const fish = /^>\s(.*)$/.exec(line);
-    if (fish) return fish[1].replace(/\s+$/, '');
+    if (fish) return preserveSpace ? fish[1] : fish[1].replace(/\s+$/, '');
     return null;
   };
   const activeTerminal = () => document.querySelector('.terminal-wrapper.active .xterm-wrapper')?.xterm || document.querySelector('.terminal-wrapper.active')?.xterm || document.querySelector('.xterm-wrapper')?.xterm;
@@ -22,15 +22,18 @@
     const detection = addon?.capabilities.get(2);
     const el = term?.element;
     if (el) el.dataset.remoteTerminal ||= crypto.randomUUID();
-    return { id: el?.dataset.remoteTerminal || '', commands: (detection?.commands || []).map(c => c.command).filter(c => typeof c === 'string' && c.trim()), input: detection?.promptInputModel?.value ?? null, executing: !!detection?.currentCommand?.commandExecutedMarker };
+    // Shell integration retains Tab candidate output; input comes from the live prompt.
+    return { id: el?.dataset.remoteTerminal || '', commands: (detection?.commands || []).map(c => c.command).filter(c => typeof c === 'string' && c.trim()), input: terminalCommand(true), executing: !!detection?.currentCommand?.commandExecutedMarker };
   };
-  const focusTerminalInput = () => {
+  const focusTerminalInput = (left = 0) => {
     const term = activeTerminal();
     if (!term) return false;
-    term.focus(); return document.activeElement === term.textarea;
+    term.focus();
+    if (left) term.input('\x1b[D'.repeat(left), true);
+    return document.activeElement === term.textarea;
   };
   const clearTerminalInput = () => { activeTerminal().input('\x01\x0b', true); };
-  const terminalCommand = () => {
+  const terminalCommand = (preserveSpace = false) => {
     const term = activeTerminal();
     const buf = term?.buffer?.active;
     if (!buf) return null;
@@ -40,14 +43,15 @@
         const row = buf.getLine(i);
         if (!row) break;
         if (i > start && !row.isWrapped) break;
-        text += row.translateToString(true);
+        const value = row.translateToString(true);
+        text += preserveSpace && i === buf.baseY + buf.cursorY ? value.padEnd(row.translateToString(false, 0, buf.cursorX).length) : value;
         if (!buf.getLine(i + 1)?.isWrapped) break;
       }
-      return text.replace(/\s+$/, '');
+      return preserveSpace ? text : text.replace(/\s+$/, '');
     };
     let y = buf.baseY + buf.cursorY;
     while (y > 0 && buf.getLine(y)?.isWrapped) y--;
-    const here = commandFromPrompt(logical(y));
+    const here = commandFromPrompt(logical(y), preserveSpace);
     if (here != null) return here;
     if (y > 0) {
       let py = y - 1;
@@ -103,7 +107,7 @@
     }
     let end = lines.length;
     while (end > cursorLine + 1 && end > 0 && lines[end - 1] === '') end--;
-    const body = { lines: lines.slice(0, end), cursor: [cursorLine, cursorX], name: terminalList().find(t => t.current)?.title || '' };
+    const body = { id: terminalHistory().id, lines: lines.slice(0, end), cursor: [cursorLine, cursorX], name: terminalList().find(t => t.current)?.title || '' };
     const raw = JSON.stringify(body);
     let h = 2166136261;
     for (let i = 0; i < raw.length; i++) h = Math.imul(h ^ raw.charCodeAt(i), 16777619);
