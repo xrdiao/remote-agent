@@ -274,7 +274,7 @@ body:not(.wide) .meter .track::after { inset: 2.5px; }
 body:not(.wide) .meter { gap: 4px; }
 body:not(.wide) .meter b { font-size: 10.5px; }
 body:not(.wide) .meter .meterLabel { display: block; }
-body.metersText:not(.wide) #title { min-width: 0; }body:not(.wide) #fusionHeader { flex: 0 1 auto; }
+body.metersText:not(.wide) #title { min-width: 0; }
 body[data-app="cursor"]:not(.wide):not(.land) .meterText { display: none; }
 body[data-app="cursor"]:not(.wide):not(.land) .meter .track { width: 24px; height: 24px; }
 body[data-app="cursor"]:not(.wide):not(.land) .meter .track::after { inset: 3.5px; }
@@ -313,11 +313,18 @@ body:not(.wide) .seg button.on { z-index: 2; translate: 0 0; scale: 1; backgroun
 }
 #menuBtn:active { background: var(--s2); }
 
-/* Fusion header: same capsule language, two halves. */
+/* Fusion keeps its identity and navigation above its run controls. */
+body.fusion > header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 4px 6px; }
+body.fusion #ovBack { grid-column: 1; grid-row: 1; }
+body.fusion #title { grid-column: 2; grid-row: 1; min-width: 0; }
+body.fusion > header > .seg { grid-column: 3; grid-row: 1; }
+body.fusion #menuBtn { grid-column: 4; grid-row: 1; }
 #fusionHeader {
-  flex: 1; min-width: 0; display: flex; align-items: center; height: 36px;
-  border-radius: 999px; background: var(--s1); overflow: hidden;
+  grid-column: 1 / -1; grid-row: 2; min-width: 0; display: flex; align-items: center; gap: 8px; padding-bottom: 4px;
 }
+#fusionHeader button { min-height: 36px; border-radius: 999px; background: var(--s1); padding: 6px 12px; font-size: 13px; }
+#fusionRunConfig { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+#fusionTasks { flex: none; }
 /* ---------- layout shells ---------- */
 main { flex: 1; min-height: 0; position: relative; }
 .view { position: absolute; inset: 0; display: none; flex-direction: column; min-width: 0; }
@@ -1160,7 +1167,6 @@ body.term #stage { display: none; }
 }
 
 /* ---------- Fusion workspace ---------- */
-#fusionHeader { display: flex; gap: 6px; min-width: 0; }
 #fusionBar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 #fusionWelcome { padding: 18px 0; text-align: center; }
 .fusion-board { grid-column: 1 / -1; width: 100%; max-width: 960px; margin: 0 auto; }

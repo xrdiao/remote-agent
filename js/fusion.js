@@ -8,11 +8,11 @@ const fusionStatus = value => I18N.tr(({ ready: '待开始', running: '运行中
   accepted: '已验收', needs_work: '需要补做', failed: '执行失败', cancelled: '已取消' })[value] || value || '');
 store.set('fusion-setup-done', null);
 
-function sendFusion(computer, message) {
+function sendFusion(computer, message, projectOwner) {
   const entry = ovList.find(value => value.id === computer), link = entry?.c && computerSockets.get(entry.c.key);
   if (!link?.authed || link.socket.readyState !== 1) { status('这台电脑尚未连接', false); return false; }
   message.requestId ||= crypto.randomUUID();
-  fusionPending.set(message.requestId, { computer, type: message.t, runId: message.runId });
+  fusionPending.set(message.requestId, { computer, type: message.t, runId: message.runId, projectOwner });
   link.socket.send(JSON.stringify({ ...message, computer }));
   return true;
 }
@@ -39,32 +39,33 @@ function fusionRunFor(computer, id) {
   return fusionStates.get(fusionStateKey(computer, id));
 }
 function showFusionNew(computer = ovS.comp || '') {
-  fusionNewDraft = { computer, projectId: '', root: '', app: '', tier: 'balanced', requestId: crypto.randomUUID() };
+  fusionNewDraft = { computer, app: '', tier: 'balanced', requestId: crypto.randomUUID() };
   paintFusionNew();
 }
 function paintFusionNew() {
-  const draft = fusionNewDraft, workspace = fusionWorkspaces.get(draft.computer);
+  const draft = fusionNewDraft;
   const computers = ovList.filter(value => !ovS.comp || value.id === ovS.comp);
   openSheet('fusion-create', `<h3>${I18N.tr('新建 Fusion run')}</h3><form class="fusion-form" id="fusionNewForm">`
     + `<label>${I18N.tr('执行电脑')}<select name="computer" required><option value="">${I18N.tr('请选择执行电脑')}</option>${computers.map(entry => `<option value="${esc(entry.id)}" ${entry.id === draft.computer ? 'selected' : ''}>${esc(entry.name)}</option>`).join('')}</select></label>`
-    + `<label>${I18N.tr('项目')}<select name="projectId"><option value="">${I18N.tr('选择项目或填写目录')}</option>${(workspace?.projects || []).map(project => `<option value="${esc(project.id)}" ${project.id === draft.projectId ? 'selected' : ''}>${esc(project.root)}${project.host ? ' · ' + esc(project.host) : ''}</option>`).join('')}</select></label>`
-    + `<label>${I18N.tr('项目目录')}<input name="root" value="${esc(draft.root)}" placeholder="${I18N.tr('电脑上的真实项目目录')}"></label>`
     + `<label>${I18N.tr('主 Agent 所属软件')}<select name="app" required><option value="">${I18N.tr('请选择软件')}</option>${['cursor', 'devin', 'codex'].map(app => `<option value="${app}" ${app === draft.app ? 'selected' : ''}>${OV_AGENT[app]}</option>`).join('')}</select></label>`
-    + fusionTierSelect(draft.tier) + `<p class="hint">${I18N.tr('新建后选择主模型与思考强度，再进入主对话。')}</p><button class="primary" type="submit">${I18N.tr('新建并配置')}</button></form>`);
+    + fusionTierSelect(draft.tier) + `<p class="hint">${I18N.tr('打开项目后，可使用已有普通会话或新建主会话，再配置主模型。')}</p><button class="primary" type="submit">${I18N.tr('打开／新建项目')}</button></form>`);
   const form = $('fusionNewForm');
   form.onchange = event => {
     draft[event.target.name] = event.target.value;
-    if (event.target.name === 'computer') { draft.projectId = ''; draft.root = ''; sendFusion(draft.computer, { t: 'fusionWorkspace' }); paintFusionNew(); }
-    if (event.target.name === 'projectId') { draft.root = workspace?.projects.find(value => value.id === draft.projectId)?.root || ''; form.elements.root.value = draft.root; }
   };
   form.oninput = event => { draft[event.target.name] = event.target.value; };
   form.onsubmit = event => {
     event.preventDefault();
-    const project = workspace?.projects.find(value => value.id === draft.projectId) || { root: draft.root, host: '' };
-    if (!draft.computer || !project.root || !draft.app) return status('请选择电脑、项目和主 Agent 软件', false);
-    if (sendFusion(draft.computer, { t: 'fusionCreate', requestId: draft.requestId, project,
-      main: { app: draft.app, model: '', effort: '' }, tier: draft.tier })) form.querySelector('[type=submit]').disabled = true;
+    if (!draft.computer || !draft.app) return status('请选择电脑和主 Agent 软件', false);
+    fusionProjectAction({ t: 'projects', path: '' }, { ...draft });
   };
+}
+function fusionProjectAction(message, owner) {
+  const { t, ...action } = message;
+  projectSheet('projects', `<h3>${I18N.tr(t === 'projects' ? '正在读取项目…' : '正在打开项目…')}</h3>`, owner);
+  if (t === 'projects') return sendFusion(owner.computer, { t: 'fusionWorkspace', path: message.path || '' }, owner);
+  return sendFusion(owner.computer, { ...action, t: 'fusionProject', action: t, runId: owner.runId,
+    requestId: owner.requestId, main: { app: owner.app, model: '', effort: '' }, tier: owner.tier }, owner);
 }
 function fusionTierSelect(tier) {
   return `<label>${I18N.tr('成本偏好')}<select name="tier">${[['economy', '省钱'], ['balanced', '均衡'], ['performance', '性能']].map(([id, label]) => `<option value="${id}" ${tier === id ? 'selected' : ''}>${I18N.tr(label)}</option>`).join('')}</select></label>`;
@@ -73,14 +74,20 @@ function showFusionConfig(run) {
   if (!run) return;
   fusionSheetRun = fusionStateKey(run.computer, run.id);
   let draft = fusionConfigDrafts.get(fusionSheetRun);
+  const binding = run.bindings.find(value => value.id === run.main.bindingId);
   if (!draft) fusionConfigDrafts.set(fusionSheetRun, draft = { ...run.main, tier: run.tier,
-    budgetLimit: run.budget?.limit || '', budgetUnit: run.budget?.unit || '' });
+    threadId: binding?.threadId || '', budgetLimit: run.budget?.limit || '', budgetUnit: run.budget?.unit || '' });
   const candidate = run.capabilities.find(value => value.app === draft.app);
   const model = candidate?.models.find(value => value.model === draft.model);
   openSheet('fusion-config', `<h3>${I18N.tr('主 Agent 配置')}</h3><p>${esc(ovCompName(run.computer))} · ${esc(run.project.name)}</p><form class="fusion-form" id="fusionConfigForm">`
     + `<label>${I18N.tr('主 Agent 所属软件')}<select name="app">${['cursor', 'devin', 'codex'].map(app => `<option value="${app}" ${draft.app === app ? 'selected' : ''}>${OV_AGENT[app]}</option>`).join('')}</select></label>`
-    + `<button type="button" data-fusion-prepare="${esc(run.id)}" data-computer="${esc(run.computer)}">${I18N.tr('读取当前原生模型')}</button>`
-    + (candidate?.error ? `<p class="fusion-error">${esc(candidate.error)}</p>` : '')
+    + `<label>${I18N.tr('主会话')}<select name="threadId"><option value="">${I18N.tr('当前项目的原生会话')}</option>${binding?.app === draft.app && binding.threadId && !(run.mainSessions || []).some(value => value.id === binding.threadId)
+      ? `<option value="${esc(binding.threadId)}" ${draft.threadId === binding.threadId ? 'selected' : ''}>${I18N.tr('当前主会话')}</option>` : ''}${(run.mainSessions || []).map(value => `<option value="${esc(value.id)}" ${draft.threadId === value.id ? 'selected' : ''}>${esc(value.title || value.id)}</option>`).join('')}</select></label>`
+    + `<div class="fusion-actions"><button type="button" data-fusion-session>${I18N.tr('打开所选主会话')}</button><button type="button" data-fusion-session="new">${I18N.tr('新建主会话')}</button></div>`
+    + `<p class="hint">${I18N.tr('主 Agent 使用普通原生会话；子 Agent 使用独立的专用窗口。')}</p>`
+    + (run.main.projectTrust ? `<button type="button" data-fusion-trust>${I18N.tr('确认项目信任')}</button>` : '')
+    + `<button type="button" data-fusion-prepare="${esc(run.id)}" data-computer="${esc(run.computer)}" ${run.main.preparing ? 'disabled' : ''}>${I18N.tr(run.main.preparing ? '正在打开主会话…' : '读取当前主会话模型')}</button>`
+    + (run.main.error || candidate?.error ? `<p class="fusion-error">${esc(run.main.error || candidate.error)}</p>` : '')
     + `<label>${I18N.tr('主模型')}<select name="model" required><option value="">${I18N.tr('请选择主模型')}</option>${(candidate?.models || []).map(value => `<option value="${esc(value.model)}" ${draft.model === value.model ? 'selected' : ''}>${esc(value.model)}</option>`).join('')}</select></label>`
     + (model?.efforts.length ? `<label>${I18N.tr('思考强度')}<select name="effort" required><option value="">${I18N.tr('请选择思考强度')}</option>${model.efforts.map(value => `<option value="${esc(value.label || value)}" ${(value.label || value) === draft.effort ? 'selected' : ''}>${esc(value.label || value)}</option>`).join('')}</select></label>` : '')
     + fusionTierSelect(draft.tier) + (candidate ? `<p class="hint">${esc(candidate.source)} · ${esc(new Date(candidate.at).toLocaleString())}<br>${I18N.tr('金额未知时仅作相对估计；档位不限制模型或思考强度。')}</p>` : '')
@@ -91,7 +98,7 @@ function showFusionConfig(run) {
   form.onchange = event => {
     draft[event.target.name] = event.target.value;
     if (event.target.name === 'app') {
-      draft.model = ''; draft.effort = '';
+      draft.model = ''; draft.effort = ''; draft.threadId = '';
       sendFusion(run.computer, { t: 'fusionConfigure', runId: run.id, main: { app: draft.app, model: '', effort: '' } });
     }
     if (event.target.name === 'model') draft.effort = '';
@@ -113,6 +120,7 @@ function paintFusionRun(run) {
   $('pickAgents').hidden = true;
   $('add').hidden = true;
   $('fusionRunConfig').textContent = run ? `${OV_AGENT[run.main.app]} · ${run.main.model || I18N.tr('待配置')}` : I18N.tr('主 Agent 配置');
+  $('fusionRunConfig').title = run ? `${I18N.tr('主 Agent 配置')} · ${OV_AGENT[run.main.app]} · ${run.main.model || I18N.tr('待配置')}${run.main.effort ? ' · ' + run.main.effort : ''}` : I18N.tr('主 Agent 配置');
   $('fusionBar').innerHTML = run ? `<span>${esc(fusionStatus(run.status))}</span>`
     + (run.authorization?.required && !run.authorization.confirmed ? `<button data-fusion-confirm="${esc(run.authorization.planId)}">${I18N.tr('确认当前方案')}</button>` : '')
     + (['blocked', 'stopped', 'stopping'].includes(run.status) ? `<button data-fusion-resume>${I18N.tr('核对并继续')}</button>` : '')
@@ -179,11 +187,13 @@ function receiveFusion(message, link) {
   const computer = link.computer.id;
   if (!link.authed || message.computer !== computer) return true;
   const pending = fusionPending.get(message.requestId);
-  fusionPending.delete(message.requestId);
+  if (message.t !== 'fusionCreated' || pending?.type !== 'fusionProject' || !message.run.main.preparing) fusionPending.delete(message.requestId);
+  const projectActive = pending?.projectOwner && sheetKind === 'projects'
+    && projectSheetOwner()?.requestId === pending.projectOwner.requestId;
   if (message.t === 'fusionError') {
     status(message.message, false);
     if (pending?.type === 'fusionMessage') failPendingSend(message.requestId, message.message, false);
-    if (sheetKind?.startsWith('fusion-')) {
+    if (sheetKind?.startsWith('fusion-') || projectActive) {
       let error = $('sheet').querySelector('.fusion-response-error');
       if (!error) { error = document.createElement('p'); error.className = 'fusion-error fusion-response-error'; $('sheet').append(error); }
       error.textContent = message.message;
@@ -193,6 +203,7 @@ function receiveFusion(message, link) {
   }
   if (message.t === 'fusionWorkspace') {
     fusionWorkspaces.set(computer, message);
+    if (projectActive && message.browse) showProjects(message.browse, pending.projectOwner);
     if (sheetKind === 'fusion-create' && fusionNewDraft?.computer === computer) paintFusionNew();
   } else if (message.t === 'fusionUpdate') {
     const workspace = fusionWorkspaces.get(computer);
@@ -200,16 +211,23 @@ function receiveFusion(message, link) {
   } else {
     const run = message.run;
     fusionStates.set(fusionStateKey(computer, run.id), run);
-    if (message.t === 'fusionCreated' && pending?.type === 'fusionCreate' && sheetKind === 'fusion-create') showFusionConfig(run);
+    if (message.t === 'fusionCreated' && (pending?.type === 'fusionCreate' && sheetKind === 'fusion-create' || projectActive)) showFusionConfig(run);
+    if (message.t === 'fusionState' && pending?.type === 'fusionProject') {
+      const draft = fusionConfigDrafts.get(fusionStateKey(computer, run.id));
+      if (draft) draft.threadId = run.bindings.find(binding => binding.id === run.main.bindingId)?.threadId || '';
+      if (projectActive) showFusionConfig(run);
+    }
     if (message.t === 'fusionState' && pending?.type === 'fusionRead') showFusionConfig(run);
     else if (message.t === 'fusionState' && sheetKind === 'fusion-config' && fusionSheetRun === fusionStateKey(computer, run.id)) showFusionConfig(run);
+    if (message.projectTrust && sheetKind === 'fusion-config' && fusionSheetRun === fusionStateKey(computer, run.id))
+      showProjectTrust(message.projectTrust, { computer, app: run.main.app, runId: run.id, requestId: crypto.randomUUID() });
   }
   if (ovS.level === 'fusion') ovRender();
   return true;
 }
 
 document.addEventListener('click', event => {
-  const button = event.target.closest('[data-fusion-new], [data-fusion-open], [data-fusion-config], [data-fusion-tasks], [data-fusion-prepare], [data-fusion-confirm], [data-fusion-stop], [data-fusion-resume], [data-fusion-native]');
+  const button = event.target.closest('[data-fusion-new], [data-fusion-open], [data-fusion-config], [data-fusion-tasks], [data-fusion-prepare], [data-fusion-session], [data-fusion-trust], [data-fusion-confirm], [data-fusion-stop], [data-fusion-resume], [data-fusion-native]');
   if (!button || button.disabled) return;
   const sheet = button.closest('#sheet') ? fusionSheetRun.split('|') : [];
   const computer = button.dataset.computer || sheet[0] || currentComputer()?.id;
@@ -219,6 +237,14 @@ document.addEventListener('click', event => {
   if ('fusionOpen' in button.dataset) { closeSheet(); return ovOpen({ computer, win: 'fusion', windowId: 'fusion', threadId: button.dataset.fusionOpen }); }
   if ('fusionConfig' in button.dataset) return showFusionConfig(run);
   if ('fusionTasks' in button.dataset) return showFusionTasks(run);
+  if ('fusionTrust' in button.dataset) return showProjectTrust(run.main.projectTrust, { computer, app: run.main.app, runId,
+    requestId: crypto.randomUUID() });
+  if ('fusionSession' in button.dataset) {
+    const draft = fusionConfigDrafts.get(fusionStateKey(computer, runId));
+    return fusionProjectAction({ t: 'openProject', path: run.project.root, newSession: button.dataset.fusionSession === 'new',
+      threadId: button.dataset.fusionSession === 'new' ? '' : draft.threadId },
+    { computer, app: draft.app, runId, requestId: crypto.randomUUID() });
+  }
   if ('fusionPrepare' in button.dataset) { button.disabled = true; return sendFusion(computer, { t: 'fusionPrepare', runId }); }
   if ('fusionConfirm' in button.dataset) return sendFusion(computer, { t: 'fusionConfirm', runId, planId: button.dataset.fusionConfirm });
   if ('fusionStop' in button.dataset) return sendFusion(run.computer, { t: 'fusionStop', runId });

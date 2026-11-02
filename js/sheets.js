@@ -979,21 +979,36 @@ function showDocs(m) {
   const empty = !folders && !docs && !code && !files ? '<div class="hint">这个文件夹里没有可查看的文档或代码。</div>' : '';
   openSheet('docs', `<h3>${heading}</h3>${back}<div class="hint">${esc(m.name || '')}${m.path ? ' · ' + esc(m.path) : ''}</div>${up}${folders}${divider}${docs}${code}${files}${empty}`);
 }
-function showProjects(m) {
-  const context = computerProjects ? `<p class="hint">${esc(currentComputer().name)} · ${esc(currentAppName)}</p>` : '';
+function projectSheet(kind, html, owner) {
+  if (owner) computerProjects = false;
+  openSheet(kind, owner ? `<div data-project-context="${esc(JSON.stringify(owner))}">${html}</div>` : html);
+}
+function projectSheetOwner(element = $('sheet')) {
+  const owner = element.closest('[data-project-context]') || element.querySelector('[data-project-context]');
+  return owner ? JSON.parse(owner.dataset.projectContext) : null;
+}
+function sendProjectAction(message, owner) {
+  return owner ? fusionProjectAction(message, owner) : send(message);
+}
+function showProjectTrust(m, owner = null) {
+  projectSheet('project-trust', `<h3>信任此项目？</h3><p class="hint">信任后，Agent 和扩展可运行此项目的代码。只信任你了解来源的项目。</p><p>${esc(m.path)}</p><button class="opt" data-project-trust="yes">信任此项目</button><button class="opt" data-project-trust="no">保持限制模式并返回上次对话</button>`, owner);
+}
+function showProjects(m, owner = null) {
+  const context = owner ? `<p class="hint">${esc(ovCompName(owner.computer))} · Fusion · ${esc(OV_AGENT[owner.app])}</p>`
+    : computerProjects ? `<p class="hint">${esc(currentComputer().name)} · ${esc(currentAppName)}</p>` : '';
   const pathInput = '<button class="opt" data-project-path><span class="lbl">输入文件夹路径</span></button>';
   const drives = (m.drives || []).map(p => `<button class="opt" data-dir="${esc(p)}"><span class="lbl">${esc(p)}</span></button>`).join('');
   if (!m.browsing) {
     const rows = (m.recent || []).map(p => {
       const open = `<button class="opt" data-open="${esc(p.path)}"><span class="lbl">${esc(p.name)}<span class="sub">${esc(p.path)}</span></span></button>`;
-      return computerProjects ? `<div class="optRow">${open}<button class="opt computerProjectNew" data-project-chat="${esc(p.path)}">${I18N.tr('新建会话')}</button></div>` : open;
+      return computerProjects || owner ? `<div class="optRow">${open}<button class="opt computerProjectNew" data-project-chat="${esc(p.path)}">${I18N.tr('新建会话')}</button></div>` : open;
     }).join('');
-    openSheet('projects', `<h3>打开项目</h3>${context}${rows || '<div class="hint">还没有最近打开的本地项目。</div>'}<button class="opt" data-dir="${esc(m.path)}"><span class="lbl">浏览文件夹</span></button>${pathInput}${drives}`);
+    projectSheet('projects', `<h3>打开项目</h3>${context}${rows || '<div class="hint">还没有最近打开的本地项目。</div>'}<button class="opt" data-dir="${esc(m.path)}"><span class="lbl">浏览文件夹</span></button>${pathInput}${drives}`, owner);
     return;
   }
   const up = m.parent ? `<button class="opt" data-dir="${esc(m.parent)}"><span class="lbl">上级目录</span></button>` : '';
   const dirs = (m.dirs || []).map(d => `<button class="opt" data-dir="${esc(d.path)}"><span class="lbl">${esc(d.name)}</span></button>`).join('');
-  openSheet('projects', `<h3>浏览文件夹</h3>${context}<div class="hint">${esc(m.path)}</div><button class="opt" data-open="${esc(m.path)}"><span class="lbl">打开此文件夹</span></button><button class="opt" data-project-chat="${esc(m.path)}"><span class="lbl">在此项目新建会话</span></button><button class="opt" data-project-new="${esc(m.path)}"><span class="lbl">新建项目并创建会话</span></button>${pathInput}${up}${drives}${dirs || '<div class="hint">没有子文件夹。</div>'}`);
+  projectSheet('projects', `<h3>浏览文件夹</h3>${context}<div class="hint">${esc(m.path)}</div><button class="opt" data-open="${esc(m.path)}"><span class="lbl">打开此文件夹</span></button><button class="opt" data-project-chat="${esc(m.path)}"><span class="lbl">在此项目新建会话</span></button><button class="opt" data-project-new="${esc(m.path)}"><span class="lbl">新建项目并创建会话</span></button>${pathInput}${up}${drives}${dirs || '<div class="hint">没有子文件夹。</div>'}`, owner);
 }
 function showCodexSettings(m) {
   const button = c => `<button class="paramBtn ${c.on || c.current ? 'cur' : ''}" data-codex-setting="${esc(c.id)}" ${c.disabled ? 'disabled' : ''}>${esc(c.label)}</button>`;

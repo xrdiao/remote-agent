@@ -1386,7 +1386,7 @@ async function connect(resumeLink = null) {
       if (m.sel && m.sel !== viewSel) return;
       capabilityBlock = '请先确认项目是否可信';
       finishPending(['正在打开项目…', '正在新建对话…']);
-      openSheet('project-trust', `<h3>信任此项目？</h3><p class="hint">信任后，Agent 和扩展可运行此项目的代码。只信任你了解来源的项目。</p><p>${esc(m.path)}</p><button class="opt" data-project-trust="yes">信任此项目</button><button class="opt" data-project-trust="no">保持限制模式并返回上次对话</button>`);
+      showProjectTrust(m);
     }
     else if (m.t === 'projectReady') receiveProjectReady(m);
     else if (m.t === 'docs') showDocs(m);
