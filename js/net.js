@@ -1032,6 +1032,7 @@ async function openComputerSocket(computer, relay) {
         `lastRx ${link.lastRx ? Date.now() - link.lastRx : 0}ms`].filter(Boolean).join(' · ') };
     ovRender();
     link.closed?.(event);
+    waitFileSave(expectedId);
     if (link.replaced || link.rejected || !loadComputers().some(row => row.key === computer.key && row.token === computer.token)) return;
     autoRetry({ ...computer, id: expectedId }, !link.auth?.ok, !!link.auth?.ok);
   };
@@ -1046,7 +1047,7 @@ function receiveDesktopOperation(link, result) {
   for (const event of result.events.slice().sort((a, b) => a.revision - b.revision)) {
     if (event.revision <= pending.revision) continue;
     const m = event.message;
-    if (pending.complete) { if (m.t === 'overviewManaged') pending.complete(m); }
+    if (pending.complete) { if (m.t === pending.resultType) pending.complete(m); }
     else if (m.t === 'sent') confirmSent(m);
     else if (m.t === 'sendFailed') failPendingSend(m.requestId, m.message || '发送失败，请重试', !m.cancelled);
     else if (link.receive && currentComputer()?.id === pending.computer && (m.t !== 'status' || result.sel === viewSel)) link.receive({ data: JSON.stringify(m) });
@@ -1055,7 +1056,7 @@ function receiveDesktopOperation(link, result) {
   if (result.done) { desktopRequests.delete(result.id); link.operations.delete(result.id); }
 }
 function replayDesktopOperations(link) {
-  for (const request of desktopRequests.values()) if (request.computer === link.expectedId && request.message?.t === 'overviewManage' && request.device === link.auth.device)
+  for (const request of desktopRequests.values()) if (request.computer === link.expectedId && request.message && request.device === link.auth.device)
     link.socket.send(JSON.stringify(request.message));
 }
 async function warmComputerSocket(computer) {

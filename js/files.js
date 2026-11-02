@@ -464,8 +464,8 @@ function onSaved(m) {
   const submitted = saving;
   if (!submitted || m.requestId !== submitted.requestId || m.path !== submitted.path || (m.host || '') !== submitted.host) return;
   finishFileSave();
-  if (!m.ok) { editorStatus(m.error || '保存失败', false); return status(m.error || '保存失败', false); }
   if (!viewing || fileRequestId !== submitted.viewRequestId || viewing.path !== submitted.path || (viewing.host || '') !== submitted.host) return;
+  if (!m.ok) { editorStatus(m.error || '保存失败', false); return status(m.error || '保存失败', false); }
   viewing.text = editBase = submitted.text;
   viewing.hl = null;
   viewing.size = m.size;
@@ -483,8 +483,8 @@ function failFileSave(message) {
   editorStatus(message, false);
   status(message, false);
 }
-function waitFileSave() {
-  if (!saving || saving.computer) return;
+function waitFileSave(computer = currentComputer()?.id || '') {
+  if (!saving || saving.computer && saving.computer.id !== computer) return;
   editorStatus('连接已断开，等待电脑端保存结果');
   status('连接已断开，等待电脑端保存结果');
 }
@@ -501,10 +501,13 @@ async function saveEdit() {
   editorStatus('正在保存…');
   status('正在保存…');
   if (submitted.computer) {
-    try {
-      const data = await computerFileRequest(submitted.computer, '/api/transfer/save', { method: 'POST', body: JSON.stringify({ path: submitted.path, text: submitted.text }) });
-      onSaved({ ...data, requestId: submitted.requestId, path: submitted.path, host: '' });
-    } catch (error) { if (saving === submitted) failFileSave(error.message); }
+    const link = computerSockets.get(submitted.computer.key);
+    if (!link?.authed || link.socket.readyState !== 1) { failFileSave('未连接，文件未发送保存，请重试'); return; }
+    const message = { t: 'saveComputerFile', requestId: submitted.requestId, path: submitted.path, text: submitted.text };
+    sendDesktopOperation(message, submitted.computer.id, link.socket, {
+      message, device: link.auth.device, resultType: 'saved',
+      complete: result => { if (saving === submitted) onSaved(result); },
+    });
     return;
   }
   if (!send({ t: 'saveFile', requestId: submitted.requestId, path: submitted.path, host: submitted.host, text: submitted.text })) failFileSave('未连接，文件未发送保存，请重试');
