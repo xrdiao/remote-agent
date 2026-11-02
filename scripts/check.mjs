@@ -263,7 +263,7 @@ const shellSource = /const SHELL = \[([\s\S]*?)\];/.exec(workerJs)?.[1];
 if (!shellSource) fail('app shell: cannot read the SHELL precache list');
 const shell = [...(shellSource || '').matchAll(/'([^']+)'/g)].map(m => m[1]);
 const coreRefs = [...indexHtml.matchAll(/<(?:script|link)\b[^>]*\b(?:src|href)="([^\"]+)"/g)]
-  .map(m => m[1]).filter(ref => /^(?:js\/|(?:app\.css|i18n\.js)(?:\?|$))/.test(ref));
+  .map(m => m[1]).filter(ref => /^(?:js\/|katex\/|(?:app\.css|i18n\.js)(?:\?|$))/.test(ref));
 const coreRef = coreRefs.find(ref => ref.split('?')[0] === 'js/core.js');
 if (coreRef !== `js/core.js?v=${appVersion?.slice(1)}`) fail(`app shell version: ${coreRef} does not match APP_VERSION=${appVersion}`);
 for (const ref of coreRefs) {
@@ -273,7 +273,12 @@ for (const ref of coreRefs) {
 for (const ref of shell) {
   if (!fs.existsSync(path.join(ROOT, 'app', ref.split('?')[0]))) fail(`app shell: precache path missing: ${ref}`);
 }
-console.log(`ok   app shell: ${coreRefs.length} core references checked (KaTeX offline assets are outside the precache scope)`);
+const katexCss = fs.readFileSync(path.join(ROOT, 'app/katex/katex.min.css'), 'utf8');
+const katexFonts = [...katexCss.matchAll(/url\(([^)]+\.woff2)\)/g)].map(m => 'katex/' + m[1]);
+for (const ref of katexFonts) {
+  if (!shell.includes(ref)) fail(`app shell: KaTeX font missing from precache: ${ref}`);
+}
+console.log(`ok   app shell: ${coreRefs.length} core references and ${katexFonts.length} KaTeX fonts checked`);
 
 if (failures) {
   console.error(`\n${failures} check(s) failed`);

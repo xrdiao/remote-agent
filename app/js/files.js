@@ -22,7 +22,7 @@ function openComputerFiles(id, { path = '', project = null, current = false, foc
   if (current) {
     computerFiles.message = '正在读取项目文件…';
     showComputerFiles();
-    return send({ t: 'docs', editor: true });
+    return send({ t: 'docs' });
   }
   return browseComputerFiles(path, !path);
 }

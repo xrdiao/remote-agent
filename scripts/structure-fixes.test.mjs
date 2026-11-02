@@ -894,9 +894,9 @@ test('a cached current shell script returns immediately without waiting for the 
   assert.equal(h.requests.length, 0);
 });
 
-test('CSS, Markdown and voice worklet assets share the exact current shell cache path', async () => {
+test('CSS, Markdown, voice worklet and KaTeX assets use the current shell without a network wait', async () => {
   const h = shellWorker();
-  for (const prefix of ['app.css?', 'markdown-it/', 'js/voice-worklet.js?']) {
+  for (const prefix of ['app.css?', 'markdown-it/', 'js/voice-worklet.js?', 'katex/katex.min.js', 'katex/katex.min.css', 'katex/fonts/']) {
     const asset = h.resource(prefix); h.cache(asset, prefix);
     assert.equal(await (await h.fetch(asset)).text(), prefix);
   }
@@ -1812,20 +1812,24 @@ function sharedFileBrowser(readDirectory = () => ({ path: '/project', parent: '/
 test('Editor initialization reads only native project metadata without enumerating its files', async () => {
   const { methods } = await import('../server/agent/files.mjs');
   const emitted = [], root = '/fixture-that-does-not-exist/current-project';
-  await methods.showDocs.call({ currentRoots: async () => [{ root }], emit: data => emitted.push(data) }, '', '', '', true, 7);
-  assert.deepEqual(emitted, [{ t: 'docs', editor: true, requestId: 7, os: process.platform, root, path: root, host: '' }]);
+  await methods.showDocs.call({ currentRoots: async () => [{ root }], emit: data => emitted.push(data) }, 7);
+  assert.deepEqual(emitted, [{ t: 'docs', requestId: 7, os: process.platform, root, path: root, host: '' }]);
 });
 
-test('ordinary document browsing still lists project documents after Editor initialization is shared', async () => {
+test('Editor initialization offers multiple native roots without reading their directories', async () => {
   const { methods } = await import('../server/agent/files.mjs');
-  const directory = fs.mkdtempSync(path.resolve('_shots/shared-navigation-20261102/docs-'));
-  try {
-    fs.writeFileSync(path.join(directory, 'README.md'), 'document fixture');
-    const emitted = [];
-    await methods.showDocs.call({ currentRoots: async () => [{ root: directory }], emit: data => emitted.push(data) }, '', '', '', false, 8);
-    assert.equal(emitted[0].editor, false); assert.equal(emitted[0].docs[0].name, 'README.md');
-    assert.equal(emitted[0].root, directory);
-  } finally { fs.rmSync(directory, { recursive: true }); }
+  const emitted = [], roots = [{ root: '/missing/project-one' }, { root: '/missing/project-two' }];
+  const projects = roots.map(row => ({ path: row.root }));
+  await methods.showDocs.call({ currentRoots: async () => roots,
+    projectRows: rows => { assert.equal(rows, roots); return projects; }, emit: data => emitted.push(data) }, 8);
+  assert.deepEqual(emitted, [{ t: 'docs', requestId: 8, os: process.platform, projects }]);
+});
+
+test('Editor initialization returns a native metadata failure to the owning request', async () => {
+  const { methods } = await import('../server/agent/files.mjs');
+  const emitted = [];
+  await methods.showDocs.call({ currentRoots: async () => { throw new Error('native roots failed'); }, emit: data => emitted.push(data) }, 9);
+  assert.deepEqual(emitted, [{ t: 'docs', requestId: 9, os: process.platform, error: 'native roots failed' }]);
 });
 
 test('the two Editor entries share one browser with different initial paths and one directory read', async () => {
@@ -1833,7 +1837,7 @@ test('the two Editor entries share one browser with different initial paths and 
   assert.equal(new URL(home.requests[0].route, 'http://fixture').searchParams.get('roots'), '1');
   assert.equal(home.requests[0].computer, 'computer-two');
   const current = sharedFileBrowser(); current.context.startEditor();
-  assert.equal(current.requests.length, 0); assert.equal(current.packets[0].t, 'docs'); assert.equal(current.packets[0].editor, true);
+  assert.equal(current.requests.length, 0); assert.equal(current.packets[0].t, 'docs');
   await current.context.receiveCurrentFiles({ root: '/project' });
   assert.equal(current.requests.length, 1);
   assert.equal(new URL(current.requests[0].route, 'http://fixture').searchParams.get('path'), '/project');
@@ -1892,11 +1896,11 @@ test('shared browsing opens a file on its owning computer and rejects a file as 
 test('late Editor initialization stays with its request selection and computer', async () => {
   const h = sharedFileBrowser(); await h.open('computer-two', { current: true });
   h.context.docsPending = { id: 9, sel: 'selected-thread', computer: 'computer-two' };
-  h.context.showDocs({ requestId: 9, editor: true, root: '/old-computer' });
+  h.context.showDocs({ requestId: 9, root: '/old-computer' });
   assert.equal(h.requests.length, 0);
   h.select('computer-two');
-  h.context.showDocs({ requestId: 8, editor: true, root: '/old-request' }); assert.equal(h.requests.length, 0);
-  await h.context.showDocs({ requestId: 9, editor: true, root: '/project' });
+  h.context.showDocs({ requestId: 8, root: '/old-request' }); assert.equal(h.requests.length, 0);
+  await h.context.showDocs({ requestId: 9, root: '/project' });
   assert.equal(h.requests.length, 1); assert.equal(h.requests[0].computer, 'computer-two');
 });
 
@@ -1913,7 +1917,7 @@ test('computer and conversation project entries share the session opener and kee
   h.context.openProjectPicker(); assert.equal(h.packets.at(-1).t, 'projects'); assert.equal(h.requests.length, 0);
   h.context.sheetKind = ''; h.context.openAgentList();
   assert.equal(rendered.length, 2); assert.equal(h.context.projectEntry.source, 'conversation');
-  h.context.openProjectPicker(); assert.equal(h.packets.at(-1).t, 'docs'); assert.equal(h.packets.at(-1).editor, true);
+  h.context.openProjectPicker(); assert.equal(h.packets.at(-1).t, 'docs');
   assert.equal(h.state().project.owner, null); assert.equal(h.state().computer.id, 'computer-two');
 });
 

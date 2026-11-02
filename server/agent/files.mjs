@@ -1,6 +1,6 @@
-// 文件：文档浏览、变更列表、打开与保存
+// 文件：项目元数据、变更列表、打开与保存
 import path from 'node:path';
-import { workspaces, fileSize, readFile, parseRef, listProject, locateWritable, writeTextFile, resolveLocal } from '../../lib/files.mjs';
+import { workspaces, fileSize, readFile, parseRef, locateWritable, writeTextFile, resolveLocal } from '../../lib/files.mjs';
 import { videoUrl, pdfUrl } from '../http/video.mjs';
 import { themeFor } from '../../lib/theme.mjs';
 import { highlightText } from '../../lib/highlight.mjs';
@@ -10,31 +10,22 @@ import { CDP_URL, EDITORS } from '../config.mjs';
 import { helpersCall } from '../page/build.mjs';
 
 export const methods = {
-  async showDocs(root, dir, host, editor = false, requestId) {
-    const emit = data => this.emit({ t: 'docs', editor, requestId, os: process.platform, ...data });
-    const show = async (ws, at) => emit(editor ? { root: ws.root, path: at, host: '' }
-      : { ...(await listProject(ws.root, at)), host: '' });
+  async showDocs(requestId) {
+    const emit = data => this.emit({ t: 'docs', requestId, os: process.platform, ...data });
     try {
-      if (!root) {
-        const roots = await this.currentRoots();
-        if (roots.length === 1) {
-          const ws = roots[0];
-          await show(ws, ws.root);
-          return;
-        }
-        if (roots.length > 1) {
-          emit({ projects: this.projectRows(roots) });
-          return;
-        }
-        const app = this.app === 'codex' ? 'code' : this.app === 'devin' ? 'devin' : 'cursor';
-        const mine = workspaces().filter(w => !w.host && (w.sources || [w.source]).includes(app));
-        emit({ projects: this.projectRows(mine).slice(0, 20) });
+      const roots = await this.currentRoots();
+      if (roots.length === 1) {
+        const root = roots[0].root;
+        emit({ root, path: root, host: '' });
         return;
       }
-      if (host) throw new Error('只支持查看本地文件');
-      const ws = this.workspaceByRoot(root, '');
-      if (!ws) throw new Error('只能查看已打开过的项目');
-      await show(ws, dir || ws.root);
+      if (roots.length > 1) {
+        emit({ projects: this.projectRows(roots) });
+        return;
+      }
+      const app = this.app === 'codex' ? 'code' : this.app === 'devin' ? 'devin' : 'cursor';
+      const mine = workspaces().filter(w => !w.host && (w.sources || [w.source]).includes(app));
+      emit({ projects: this.projectRows(mine).slice(0, 20) });
     } catch (e) {
       emit({ error: e.message });
     }

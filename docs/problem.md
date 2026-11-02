@@ -1,5 +1,7 @@
 # 问题核查与分批修复方案
 
+> 2026-11-02 后续处理：按用户确认删除旧“查看文档”链及无调用的 waitReachable，补齐 KaTeX 离线资源，源码网页 v375；最终 npm run check 444／444 通过，配对 Editor 与离线公式检查通过，实施及分层验证见第 20 节。Codex C1 已用两条真实请求确认原生草稿序列化与比较的根因，见第 13.5 节；用户选择只记录、不修改本机扩展，故仍未修复。Windows 按用户要求暂缓，N2 按原方案保留，Devin error 13 和手机验收保持原状态。
+
 > 2026-11-02 项目排查修复：A1／A2／B／C／D／E 及用户随后单独确认的 F 批均已实施，文件、验证及边界见第 19.6—19.7 节。源码网页 v374，最终标准检查 443 项通过；原配对身份的 Devin 项目信任／首屏、Editor 保存与回执丢失后恢复、项目元数据及返回目录通过；受控语音 worker 经真实 /voice 连接在约 5 秒后返回退出未完成。清理候选仍待单独确认；Devin error 13 和手机验收保持未解决／待验，不重写 Fusion 编排。
 
 > 2026-11-02 项目排查补记：七类问题、三类清理候选及原分批方案见第 19 节。排查基准为 `75bec10`／网页 v373；八项受控故障条件已复现，Devin 首次信任交接另有真实复现。Devin error 13 的代理复测补入第 13.1 节，仍未解决。首次补记时仅登记文档，后续实施状态以第 19.6 节为准。
@@ -707,6 +709,27 @@ N9、N10、N12、N13、N14、S1、S2、G1 暂不排入代码批次。若后续�
 
 后续清理又提供了新的残留证据：Codex 主测试会话原生归档后返回空首页，恢复出 1178 字、含真实 B2 Attempt ID 的测试草稿（`codex-after-archive-draft.json`）。这发生在发送确认修正之后，说明不能据 B1／B2 成功就关闭 C1；当前仍缺这条原生首页草稿恢复的完整来源轨迹。草稿和窗口均保留，未强清、自动重发或强行切回用户会话。该事实不否定发送处理器与生成结束分离的测量，也不证明发送确认时序已解决全部草稿问题。
 
+### 13.5 C1 本机原生根因确认，用户决定暂不修改扩展（2026-11-02）
+
+本轮基准为 `b7ee20c`／网页 v374，原生扩展仍为 `openai.chatgpt-26.1021.22027-linux-x64`。用户允许继续排查，实际只在 `_shots/remaining-fixes-20261102/codex-project` 新开的单个窗口操作；原有两个 Codex 工作窗口不切会话、不刷新、不停止。没有重跑 Fusion 编排或重发旧任务。
+
+**身份、来源与时序证据**
+
+- 独立窗口打开原生侧栏后、尚未连接 RA，就恢复了第 13.4 节相同的 1178 字草稿，SHA-256 为 `7cbed5d3d7d5075b9f322e95f913a34ae4a1ae9dac5dc0a5faa7a31fd21dde82`。通过原生 controller 读取的真实 payload 为 1174 字，与 B2 原生归档消息去掉最终换行后完全一致；DOM 的额外段落换行解释了显示长度差异。不是仅凭含 Attempt ID 推断它已发送。
+- 在同一窗口、当前 `GPT 5.6 Luna / low` 下各做一次 RA 提交入口和桌面 Send 的多行短回复对照。前者通过 CDP 受控驱动实际输入／提交 helper，两条请求均由真实原生接受并返回 `draft-ok`，不冒充完整手机发送链路。完成后新建分别恢复 110 字和 114 字的本次已发送内容，唯一标记与原请求对应，没有自动重发。
+- 临时 CDP 条件断点记录原生 `Er()` 保留草稿和接受后结算，未改扩展文件。结算时 `accepted=true`、`sameRetained=true`，但 `rawMatchesRetained=false`，因此原生跳过了清除保存草稿的分支；两份草稿的 JSON 序列化内容却相同。
+- 对象差异均是富文本 JSON 中 `attrs.start`／`attrs.end` 的自有属性：发送时保留对象含 `undefined` 字段，持久化回读对象没有这些字段。本次四行样本记录了文档、段落及换行节点的 10 处此类差异，正文没有变化。
+
+**本次已定位的根因及处理边界**
+
+本机扩展的 `composer-view-state-f91d9aaded9a.js` 中，`jr()` 将 ProseMirror `toJSON()` 结果写入原生草稿；其中的 `undefined` 属性经过原生 JSON 持久化后被省略。后续 `ai()` 按对象深比较判定草稿是否仍为发送时保留的同一内容，字段存在性差异导致比较失败；`Er()` 因而保留了实际上已发送的 `new-conversation` 草稿。新建／归档回到首页后，原生恢复该保存值。这解释了本轮两条可复现路径；不据此追溯认定所有旧导航失败都有同一原因。
+
+提出的根修为在原生 `jr()` 草稿写入边界统一 JSON 表示，而非在 RA 中强清、重复发送、延时或等待生成结束。该文件在仓库外，用户明确回答 **“只记录根因，暂不改扩展”**。本轮未修改已安装扩展或 RA 的 Codex 提交逻辑，C1 仍为已定位、未修复；第 13.4 节已有的发送确认修正继续保留。
+
+第一份诊断夹具使用 Fusion 专用的 Attempt 查找方式读取普通测试标记，等待未命中；随后直接核对原生用户消息、完成回复及 thread，确认请求已经完成，没有重试该请求。另有一次保存编辑器快照时未沿 React 祖先查找的夹具错误，发生在输入／提交之前，修正夹具后继续。它们不记为模型失败或产品回归。
+
+本轮两条测试会话已按真实 Archive 动作确认归档；关闭独立窗口前，原 1178 字草稿的 controller payload 和 DOM 指纹已核对恢复。未测试真实未发草稿在原生修复后的保留行为、修后连续新建或手机使用；这些保持待验，不关闭 C1。证据位于 `_shots/remaining-fixes-20261102/`：`codex-own-state.json`、`draft-native-comparison.json`、`draft-native-diff.json`、`codex-native-lifecycle-trace.json`、`codex-native-case-results.json`、`codex-root-evidence.json` 与 `cleanup.json`。
+
 ## 14. 概览身份、状态、加载与输入框修复（2026-11-01—02）
 
 用户确认统一方案，并明确选择“Fusion 创建的卡片只出现在 Fusion 栏目”。基准为实施前当前工作区 HEAD `2b03ab1`／网页 v367，包含已有 Fusion 及共享模块改动；实际 GitHub master 同为 `2b03ab1`。本轮只追加确认范围内的修复，不回退已有内容，不重写 Fusion 编排，也不处理第 13 节原生草稿与 Devin error 13。
@@ -963,6 +986,8 @@ N9、N10、N12、N13、N14、S1、S2、G1 暂不排入代码批次。若后续�
 
 Windows 的 `lib/platform.mjs:143` 同步 PowerShell 查询、`server/publish/tunnel.mjs:14` 同步进程查询仅作静态候选登记，本轮没有 Windows 实机阻塞证据。需另按调用方确定异步化范围，不随 Ubuntu Qwen 修复一起替换。
 
+后续处置：用户确认删除 N1 旧链，N1／N3 已按第 20 节清理；N2 仍按原建议保留。用户明确“window先不处理，现在是ubuntu系统”，Windows 候选未实施。
+
 继续保留有不同职责的机制：Cursor／Codex 已共用的文件面板与 Devin 专用读取策略、窗口来源缓存与视图缓存、设备操作记录与导航取消／窗口租约／Fusion 调度，以及实时思考展开与最终折回。复杂度和重复文本用于定位，不能单独作为缺陷结论；不统一删 catch 或统一补日志。
 
 ### 19.5 实际验证、遗留项与后续验收
@@ -1028,3 +1053,41 @@ Windows 的 `lib/platform.mjs:143` 同步 PowerShell 查询、`server/publish/tu
 | 手机与真实模型 | 手机麦克风、实际 CPU／Qwen 模型的正常识别和引擎切换仍待验收；受控 worker 的真实 WebSocket 闭环不能替代真实模型或手机验收。Devin error 13、清理候选和未执行的完整 Fusion 生成保持原状态 |
 
 追加证据仍在 `_shots/audit-fixes-20261102/`：`voice-exit-final.log`、`voice-browser-result.json`、`voice-browser.log`、`voice-runtime-snapshot.json`、`voice-fixture/`、`voice-restored.json`、`check-complete.log`、`paired-final.json` 与 `verification.json`。语音夹具进程定位首次匹配到命令文本，尚未停止任何服务即结束；限定独立启动参数后运行，未为夹具问题调整产品逻辑。
+
+## 20. 后续清理、离线公式与 C1 根因排查（2026-11-02）
+
+用户“按方案修复”后，先核对 AGENTS.md、项目 workflow、README、功能基准与第 13／19 节。当前工作区干净，HEAD 与实际 GitHub HEAD／master 均为 `b7ee20c6357678e2aecd87c422316700cd6ab383`；此前 A—F 已在该提交中，本轮不重复计作成果。保存了修改前 487 个跟踪文件指纹、受影响文件副本及检查结果，以当前工作区作回归基准。
+
+用户随后明确删除旧“查看文档”链、统一使用 Editor；Windows 暂不处理。补充授权允许继续方案中的其他处理，N2 仍按原建议保留。Codex 本机扩展新增范围经确认后，用户选择只记录根因、不修改，见 13.5。
+
+### 20.1 实施文件、行为与影响
+
+| 处理项 | 实际修改 | 直接影响与边界 |
+|---|---|---|
+| N1 旧文档链 | `app/js/sheets.js` 删除旧项目／文件夹／文档列表，仅处理当前项目元数据；`app/js/notify.js` 删除旧 data-docs 按钮动作；`app/js/files.js` 不再发送 editor 模式标志。`server/routes.mjs` 与 `server/agent/files.mjs` 只接收项目元数据请求 ID，保留当前单根、多根、无当前根时的已有项目来源及错误回执；`lib/files.mjs` 删除仅供旧链使用的 listProject、分类与目录枚举，保留文件搜索仍使用的 SKIP_DIRS | 电脑、对话和项目选择继续使用原共享 Editor。对话入口只取原生目录，不重复扫描项目文件；电脑入口仍从根目录开始。文件引用、差异、预览、保存、传输、搜索及各 Agent 适配器未重写 |
+| N3 未使用工具 | `server/util.mjs` 删除全仓无调用的 waitReachable | 仅移除不可达导出和其中的等待循环；不宣称修复了生产路径阻塞，不修改现有隧道探测或重试 |
+| KaTeX 离线 | `app/sw.js` 加入已有 KaTeX JS／CSS 与 20 个 WOFF2 字体，共 22 项。`scripts/check.mjs` 将 HTML 中 KaTeX 引用和 CSS 中 WOFF2 引用纳入预缓存一致性检查 | 成功安装应用壳后，首次离线展示公式也有完整现有资源；不修改公式渲染器、字体文件或新增兼容字体 |
+| 资源、回归与文档 | `core.js`、`index.html`、`sw.js` 同步 v375，只更新实际变化的 core／sheets／notify／files 引用。`scripts/structure-fixes.test.mjs` 更新原协议场景并增加一项元数据失败回执检查；基准 06／09 与本文记录同步 | 不修改 page helpers、page 导出快照、Fusion 编排、Cursor／Devin／Codex 专用适配器、语音逻辑或认证逻辑 |
+
+N2 的外层 @token 分段循环继续保留各 Agent 语义，不为十余行维护性重复启动跨 Agent 重构。Windows 同步查询继续登记，未在 Ubuntu 上冒充 Windows 阻塞复现或验收。Devin error 13 未追加生成复测，保持未解决；本轮没有为它换模型或增加自动重试。
+
+### 20.2 分层验证与现场
+
+| 层次 | 实际结果／边界 |
+|---|---|
+| 修改前检查 | npm run check 443／443 通过。一次工作区指纹夹具的嵌套 spawnSync git 遇到沙箱 EPERM，改为工具直接读取文件清单后保存基准；不为沙箱改产品实现 |
+| 定向受控检查 | structure-fixes 180／180 通过，覆盖单根元数据不扫描目录、多根选择、读取错误与请求 ID、两入口的初始目录、旧电脑／旧请求结果、路径补全、预览返回，以及缓存资产无需等待网络。首次运行有一条旧 editor 标志断言未更新，修正为新协议约定后通过，没有添加旧协议兼容分支 |
+| 静态资源检查 | 123 个语法文件、87 类前端消息、70 类服务端消息、196 个 page 导出、88 个模块导入、26 项 HTML 核心引用及 20 个 KaTeX 字体引用通过；最终标准检查另列下方 |
+| 既有配对浏览器 | 原 9335 Chrome 资料、原 3949 隔离服务数据，恢复原身份认证，无新配对、无资料复制。临时标签实际加载 v375；电脑 Editor 从 `/` 开始，对话 Editor 从独立项目开始，仅一份元数据请求、无旧文件枚举字段。真实目录、Tab 补全、高亮、一次保存与 0751 权限、返回同目录以及当前项目选择只列文件夹通过，页面错误 0 |
+| 真实离线资源 | 安装后缓存确含 22 项 KaTeX 资源；在临时页与对应 Worker 禁用网络后重新加载，v375 壳正常打开，实际 Markdown／typesetMath 链生成公式，20 个字体均 loaded，网络探针失败且 navigator.onLine=false。截图 katex-offline.png；随后恢复网络。桌面 Chrome 离线检查不能替代手机验收 |
+| Codex 原生对照 | 两条小样本真实接受、回复、新建均复现 C1，草稿比较与字段差异已定位，详见 13.5；扩展按用户决定未改。受控驱动 helper、真实原生生成和配对 Editor 检查分别记录，不将它们合成“完整 Codex／Fusion 已验收” |
+| 最终标准检查 | npm run check **444／444 通过**；静态项同上，差异空白检查通过。相对本轮基准共 15 个已确认文件变化，page 导出快照、Agent 专用适配器、Windows 模块及本机 Codex 扩展均未修改；HEAD 未变 |
+| 手机与真实语音 | 未执行。手机需按本轮影响验收两处 Editor 的初始目录／补全／预览保存／返回、当前项目目录选择，以及成功更新后断网重开公式。上一轮真实 CPU／Qwen 和手机麦克风待验状态保留；未改语音，不重复受控语音检查 |
+
+原配对主标签因既有 updateUntouched／Service Worker 更新机制自动从 v374 切到 v375，并在刷新期间读到同身份测试导航；收尾首次比较因此失败，未写成“原页完全未动”。核对后确认该选择和 114 字草稿均为本轮测试，用原导航接口恢复原 Fusion 选择及空草稿；再从原资料日志中只读找到测试前 cr-computers 记录，凭据、初始选择一致，仅恢复本轮改变的导航字段。最终电脑记录与该原记录完全相等，隔离 entrySelections 与 Fusion 值也与基准一致，没有复制浏览器资料或覆写未知用户内容。
+
+两条测试会话真实归档，独立 Codex 窗口、临时 Chrome 标签和本轮独立历史缓存已释放；原测试前草稿在关闭窗口前按真实 payload 与 DOM 指纹恢复。原配对 Chrome 和按原登记参数加载本轮后端的隔离 relay 保留。正式 relay 未由本轮重启；源码、隔离后端与用户正式服务的加载状态分别记录，未提交、推送或发布。
+
+原生现场只读收尾确认两个原 Codex target 仍在、草稿摘要不变；其中一个原窗口的 thread 与开始记录不同，本轮没有对其执行切换调用，未擅自回退，也不把“两原会话均未变化”记为通过。首次离线截图的临时面板使用白底，与实际深色公式不匹配；只将测试面板改用实际主题变量后复验可见性与网络关闭，未改产品 CSS、重复 Editor 保存或追加模型调用。
+
+证据目录为 gitignore 的 `_shots/remaining-fixes-20261102/`：`baseline.json`、`baseline/`、`check-before.log`、`target-cleanup-final.log`、`static-after.log`、`check-final.log`、`browser-results.json`、`katex-offline.png`、`offline-visual.json`、`qa-runtime.json`、`codex-native-case-results.json`、`codex-root-evidence.json`、`paired-main-before.json`、`paired-main-after.json`、`native-final.json`、`paired-final.json`、`scope.json`、`cleanup.json` 与 `verification.json`。
