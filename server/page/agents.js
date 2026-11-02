@@ -407,12 +407,12 @@
     }
     if (app === 'devin') {
       const state = window.__acpStore?.getState().acp, session = devinSessionRecord(thread);
-      const request = Object.values(state?.agentRequests.byId || {}).findLast(row => row.method === 'session/prompt' && row.params?.sessionId === thread);
+      const [id, request] = Object.entries(state?.agentRequests.byId || {}).findLast(([, row]) => row.method === 'session/prompt' && row.params?.sessionId === thread) || [];
       if (!request) return null;
       const status = session?.status === 'unknown_error' || request.error ? 'error'
         : ['active', 'pending', 'canceling'].includes(session?.status) ? 'running'
         : request.status === 'completed' ? 'completed' : 'unknown';
-      return { id: request.id, status, startedAt: Number(request.startedAt || request.createdAt) || 0,
+      return { id, status, startedAt: Number(request.startedAt || request.createdAt) || 0,
         completedAt: status === 'completed' ? Number(request.completedAt) || 0 : 0 };
     }
     const data = cursorSessionServices()?.data.getComposerDataIfLoaded(thread);

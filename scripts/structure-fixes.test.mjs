@@ -1708,7 +1708,7 @@ function overviewCards(saved = new Map()) {
   const context = vm.createContext({ Date, computerSockets: new Map(), saveComputerResume() {},
     ovComputerStatus: () => 'online', agentSessionCommon: () => true, ovNotify: (record, kind) => notifications.push({ thread: record.threadId, kind }),
     ovPrune() {}, store: { get: key => saved.get(key), set: (key, value) => saved.set(key, value) },
-    ovS: { level: 'favorites' }, ovSessTile: row => row.key, ovEmpty: value => value, ovT: value => value, ovProjTile: project => project.key,
+    ovS: { level: 'favorites' }, ovSessTile: row => row.key, ovEmpty: value => value, ovT: value => value, ovFlow: project => project.key,
     $: () => ({ addEventListener: (type, handler) => handlers.set(type, handler) }),
     ovHeld: '', ovBatch: null, ovSaveHistory() {}, ovRender() {}, ovOpen: target => opened.push(target),
     ovRecs: () => context.ovRecsOf(entry, state),
@@ -1716,7 +1716,7 @@ function overviewCards(saved = new Map()) {
   vm.runInContext(part(source, 'const ovDone =', 'let ovEnterRequested =')
     + part(source, 'const OV_RANK =', 'const OV_AGENT =') + part(source, 'const ovNativeKey =', 'const ovCompName =')
     + part(source, 'function ovRecsOf(', 'const ovRecs =') + part(source, 'function ovApply(', 'function ovNotify(')
-    + part(source, 'function ovBoard(', 'function ovPlan(') + part(source, 'function ovProjectTiles(', 'function ovSessTile(')
+    + part(source, 'function ovBoard(', 'function ovPlan(') + part(source, 'function ovFlows(', 'function ovSessTile(')
     + part(source, "$('overview').addEventListener('click'", "$('overview').addEventListener('change'")
     + '\nthis.aggregate = ovAggregate; this.done = ovDone;', context);
   return { context, done: context.done, notifications, opened, saved, entry,
@@ -1861,7 +1861,7 @@ test('opening a conversation still clears completion and preserves actual failur
 test('favorites and project cards share completed-running-idle ordering and aggregate mixed projects', () => {
   const h = overviewCards(), rows = ['done', 'run', 'idle'].map((state, n) => ({ key: state, project: state, state, used: (n + 1) * 100 }));
   assert.equal(h.context.ovBoard(rows, [], rows.slice()), 'donerunidle');
-  assert.equal(h.context.ovProjectTiles(rows.map(row => ({ key: row.key })), rows), 'donerunidle');
+  assert.equal(h.context.ovFlows(rows.map(row => ({ key: row.key })), rows), 'donerunidle');
   assert.equal(h.context.aggregate([{ state: 'done' }, { state: 'idle' }]).state, 'done');
   assert.equal(h.context.aggregate([{ state: 'done' }, { state: 'run' }]).state, 'run');
   assert.equal(h.context.aggregate([{ state: 'done' }, { state: 'unknown' }]).state, 'unknown');
