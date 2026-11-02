@@ -280,6 +280,7 @@ export const ROUTES = {
   },
   fusionWorkspace: fusionRoute('fusionWorkspace'),
   fusionCreate: fusionRoute('fusionCreate'),
+  fusionProject: fusionRoute('fusionProject'),
   fusionRead: fusionRoute('fusionRead'),
   fusionConfigure: fusionRoute('fusionConfigure'),
   fusionPrepare: fusionRoute('fusionPrepare'),

@@ -37,6 +37,7 @@ const ovPreviews = new Map();
 let ovPreviewOwner = null;
 const ovMain = $('overview').querySelector('.ov-main');
 const ovDone = (() => { try { return JSON.parse(store.get('ov-done') || '{}'); } catch { return {}; } })();
+const ovStoppedSeen = JSON.parse(store.get('ov-stopped-seen') || '{}');
 let ovEnterRequested = false;
 let ovToolState = null;
 const ovComposerControls = { mic: $('mic'), stop: $('stop'), attachments: $('attachments').parentElement };
@@ -229,7 +230,8 @@ function ovRecsOf(e, st) {
   for (const s of st.data.sessions) {
     const key = ovNativeKey(e.id, s), done = s.run?.status === 'completed' && ovDone[key]?.runId === s.run.id ? ovDone[key].at : 0;
     const since = s.startedAt || st.first.get(key);
-    const state = s.dormant ? 'idle' : s.waiting ? 'wait' : s.busy ? 'run' : ['error', 'stopped'].includes(s.run?.status) ? 'err'
+    const stopped = s.run?.status === 'stopped' && ovStoppedSeen[key] !== s.run.id;
+    const state = s.dormant ? 'idle' : s.waiting ? 'wait' : s.busy ? 'run' : s.run?.status === 'error' || stopped ? 'err'
       : s.statusKnown === false || s.run?.status === 'unknown' ? 'unknown' : done ? 'done' : 'idle';
     out.push({ key, comp: e.id, off, state, run: s.run, busy: !!s.busy, wait: s.waiting || '',
       waitText: s.waitingText || '', last: s.last || '', tasks: s.tasks, actions: s.actions || [], devin: !!s.devin, changed: s.changed || 0, acceptAll: !!s.acceptAll,
@@ -951,13 +953,20 @@ $('overview').addEventListener('click', e => {
     case 'use': return useComputer(Number(v));
     case 'old': if (loadComputers()[Number(v)]?.key !== currentComputer()?.key) useComputer(Number(v)); return ovShowConversation();
     case 'ext': { const b = loadComputerBookmarks().find(x => x.id === id); return openComputerEntry(new URL('./', b.discovery).href, b.id); }
-    case 'full':
-      if (ovDone[id]) {
+    case 'full': {
+      const r = ovRecs().find(r => r.key === id);
+      const stopped = r?.state === 'err' && r.run?.status === 'stopped', done = !!ovDone[id];
+      if (stopped) {
+        ovStoppedSeen[id] = r.run.id;
+        store.set('ov-stopped-seen', JSON.stringify(ovStoppedSeen));
+      }
+      if (done) {
         delete ovDone[id];
         store.set('ov-done', JSON.stringify(ovDone));
-        ovRender();
       }
+      if (stopped || done) ovRender();
       return ovOpen(JSON.parse(el.dataset.t));
+    }
     case 'open': return ovOpen(JSON.parse(el.dataset.t));
     case 'opt': return ovSend(id, 'opt', { index: Number(v.split(':')[1]) }, '已发送');
     case 'send': if (ovToolInput()?.dataset.ovInput === id) sendComposer(); return;

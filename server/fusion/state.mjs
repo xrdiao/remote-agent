@@ -17,7 +17,8 @@ const subscribers = new Set();
 
 export function saveFusionRuns() {
   const facts = Object.fromEntries(Object.entries(fusionRuns).map(([deviceId, saved]) => [deviceId, { ...saved,
-    runs: saved.runs.map(run => ({ ...run, attempts: run.attempts.map(({ live, ...attempt }) => attempt) })) }]));
+    runs: saved.runs.map(({ main: { preparing, ...main }, ...run }) => ({ ...run, main,
+      attempts: run.attempts.map(({ live, ...attempt }) => attempt) })) }]));
   saveState({ fusionRuns: facts });
 }
 
@@ -87,17 +88,33 @@ export function fusionBindingInUse(app, thread) {
   return [...fusionWorkers.values()].some(worker => worker.run.bindings.some(binding => binding.app === app && binding.threadId === thread
     && worker.run.attempts.some(attempt => attempt.bindingId === binding.id && NATIVE_UNSETTLED.includes(attempt.status))));
 }
-export function fusionWindowInUse(window) {
+export function fusionAttemptRole(run, attempt) {
+  const task = run.tasks.find(value => value.id === attempt.taskId);
+  return task?.executor === 'child' ? task.id : 'main';
+}
+function allFusionRuns() {
   const runs = new Map(Object.values(fusionRuns).flatMap(saved => saved.runs).map(run => [run.id, run]));
   for (const worker of fusionWorkers.values()) runs.set(worker.run.id, worker.run);
-  for (const run of runs.values()) {
+  return runs.values();
+}
+export function fusionMainWindow(app, id) {
+  const target = String(id).replace(/^(cursor|devin|codex):/, '');
+  return [...allFusionRuns()].some(run => run.bindings.some(binding => binding.role === 'main' && binding.app === app
+    && binding.windowId.replace(/^(cursor|devin|codex):/, '') === target));
+}
+export function fusionWindowInUse(window) {
+  for (const run of allFusionRuns()) {
+    const main = run.bindings.find(binding => binding.id === run.main.bindingId);
+    if ((!window.computer || run.computer === window.computer) && main?.app === window.app
+      && main.windowId.replace(/^(cursor|devin|codex):/, '') === String(window.id).replace(/^(cursor|devin|codex):/, '')
+      && run.messages.length && !['ready', 'completed', 'stopped'].includes(run.status)) return true;
     if (run.computer !== window.computer || run.project.id !== window.projectId) continue;
-    if (run.main.app === window.app && run.messages.length && !['ready', 'completed', 'stopped'].includes(run.status)) return true;
-    if (run.attempts.some(attempt => attempt.app === window.app && (attempt.status === 'queued' || NATIVE_UNSETTLED.includes(attempt.status)))) return true;
-    if (!run.stopRequested && !['completed', 'stopped'].includes(run.status) && run.tasks.some(task => ['awaiting_review', 'needs_work'].includes(task.status)
+    if (run.attempts.some(attempt => fusionAttemptRole(run, attempt) !== 'main' && attempt.app === window.app
+      && (attempt.status === 'queued' || NATIVE_UNSETTLED.includes(attempt.status)))) return true;
+    if (!run.stopRequested && !['completed', 'stopped'].includes(run.status) && run.tasks.some(task => task.executor === 'child' && ['awaiting_review', 'needs_work'].includes(task.status)
       && run.attempts.findLast(attempt => attempt.taskId === task.id)?.app === window.app)) return true;
     const worker = [...fusionWorkers.values()].find(value => value.run === run);
-    if (run.bindings.some(binding => binding.app === window.app && worker?.archiving.has(binding.id))) return true;
+    if (run.bindings.some(binding => binding.role !== 'main' && binding.app === window.app && worker?.archiving.has(binding.id))) return true;
   }
   return false;
 }

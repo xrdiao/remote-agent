@@ -20,7 +20,7 @@ function scenario(decide) {
     const request = currentRun.decisions.find(value => value.attemptId === id);
     const actions = await decide(currentRun, ++decisions, request);
     return { text: `回复\n\`\`\`fusion-control\n${JSON.stringify({ runId: currentRun.id, decisionId: request.id, actions })}\n\`\`\``, completed: true, native };
-  }, reclaimRequests: new Map(), async stop(id) { stops.push(id); }, async archive() {}, async recycle() {} };
+  }, reclaimRequests: new Map(), releaseMainProject() {}, async stop(id) { stops.push(id); }, async archive() {}, async recycle() {} };
   const runner = new FusionRunner(run, { agent, scheduler, publish() {} });
   runner.prepareCapabilities = async () => {};
   runner.projectInstructions = async () => '受控项目指令';
@@ -140,9 +140,11 @@ test('a decision queued behind native work batches all events present when its s
 
 test('window use includes pending attempts, review, main ownership, and archive work across runs', () => {
   const run = newFusionRun('window-test', { id: 'recycle-project', root: '/project' }, { app: 'cursor', model: 'Auto' });
-  const row = { computer: run.computer, projectId: run.project.id, app: 'codex' };
+  const row = { computer: run.computer, projectId: run.project.id, app: 'codex', id: 'child-window' };
   const attempt = { id: 'child-attempt', app: 'codex', taskId: 'B1', status: 'queued' };
-  run.attempts.push(attempt); run.tasks.push({ id: 'B1', status: 'queued' }); run.bindings.push({ id: 'child', app: 'codex' });
+  run.attempts.push(attempt); run.tasks.push({ id: 'B1', executor: 'child', status: 'queued' });
+  run.bindings.push({ id: 'child', role: 'B1', app: 'codex', windowId: row.id }, { id: 'main', role: 'main', app: 'cursor', windowId: 'ordinary-main' });
+  run.main.bindingId = 'main';
   const worker = { run, archiving: new Set() };
   fusionRuns['window-test'] = { runs: [run] }; fusionWorkers.set('window-test', worker);
   try {
@@ -154,13 +156,15 @@ test('window use includes pending attempts, review, main ownership, and archive 
     run.stopRequested = false; run.status = 'running'; attempt.status = 'awaiting_review';
     run.tasks[0].status = 'accepted'; assert.equal(fusionWindowInUse(row), false);
     const other = newFusionRun('other-run', run.project, { app: 'cursor', model: 'Auto' });
-    other.attempts.push({ id: 'another-attempt', app: 'codex', status: 'queued' });
+    other.tasks.push({ id: 'B1', executor: 'child' });
+    other.attempts.push({ id: 'another-attempt', taskId: 'B1', app: 'codex', status: 'queued' });
     fusionRuns['window-test'].runs.push(other); assert.equal(fusionWindowInUse(row), true);
     other.attempts[0].status = 'completed'; assert.equal(fusionWindowInUse(row), false);
     worker.archiving.add('child'); assert.equal(fusionWindowInUse(row), true); worker.archiving.clear();
     run.messages.push({ role: 'human', text: '任务' }); run.status = 'waiting';
-    assert.equal(fusionWindowInUse({ ...row, app: 'cursor' }), true);
-    run.status = 'completed'; assert.equal(fusionWindowInUse({ ...row, app: 'cursor' }), false);
+    assert.equal(fusionWindowInUse({ ...row, app: 'cursor', id: 'ordinary-main' }), true);
+    assert.equal(fusionWindowInUse({ ...row, app: 'cursor' }), false);
+    run.status = 'completed'; assert.equal(fusionWindowInUse({ ...row, app: 'cursor', id: 'ordinary-main' }), false);
     attempt.status = 'queued';
     assert.equal(fusionWindowInUse({ ...row, computer: 'another-computer' }), false);
     assert.equal(fusionWindowInUse({ ...row, projectId: 'another-project' }), false);

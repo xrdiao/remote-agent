@@ -88,7 +88,7 @@ export class FusionRunner {
         const targets = await (await fetch(editor.url + '/json/list', { signal: AbortSignal.timeout(1500) })).json();
         if (!targets.some(value => value.type === 'page' && /workbench/.test(value.url))) throw new Error('当前没有可用的原生窗口');
         const snapshot = await this.scheduler.submit({ runId: run.id, app: editor.app, projectKey: run.project.id, access: 'read',
-          ready: () => !run.stopRequested, execute: () => this.agent.capabilities(run, editor.app) });
+          ready: () => !run.stopRequested, execute: () => this.agent.capabilities(run, editor.app, editor.app === run.main.app ? 'main' : 'child') });
         run.capabilities = [...run.capabilities.filter(value => value.app !== editor.app), snapshot];
       } catch (error) {
         if (error.cancelled) return;
@@ -176,7 +176,7 @@ export class FusionRunner {
   }
   archive(bindingId) {
     const binding = this.run.bindings.find(value => value.id === bindingId);
-    if (!binding) return;
+    if (!binding || binding.role === 'main') return;
     this.archiving.add(bindingId);
     this.scheduler.submit({ runId: this.run.id, app: binding.app, projectKey: this.run.project.id, access: 'read',
       ready: () => !this.run.stopRequested, execute: () => this.agent.archive(this.run, bindingId) })
@@ -202,6 +202,7 @@ export class FusionRunner {
     return documents.join('\n\n') || '祖先目录未找到 AGENTS.md；请核对本次范围内其他项目指令。';
   }
   async stop() {
+    this.agent.releaseMainProject(this.run);
     const run = this.run;
     run.stopRequested = true;
     run.status = 'stopping';

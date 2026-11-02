@@ -48,3 +48,36 @@ test('a reconnected Fusion workspace reads only the authenticated computer withi
   assert.equal(h.sent.length, 1); assert.equal(h.sent[0].t, 'fusionWorkspace');
   assert.equal(h.sent[0].computer, 'computer-one');
 });
+test('Fusion folder browsing uses the chosen computer and sends no native navigation or creation request', () => {
+  const h = fixture(), sheets = [];
+  h.context.projectSheet = (...args) => sheets.push(args);
+  h.run("fusionProjectAction({t:'projects',path:'/project'},{computer:'computer-two',app:'cursor',tier:'balanced',requestId:'create'})");
+  assert.equal(h.sent.length, 1); assert.equal(h.sent[0].t, 'fusionWorkspace');
+  assert.equal(h.sent[0].computer, 'computer-two'); assert.equal(h.sent[0].path, '/project');
+  h.run("fusionProjectAction({t:'openProject',path:'/project',newSession:false},{computer:'computer-two',app:'cursor',tier:'balanced',requestId:'create'})");
+  assert.equal(h.sent[1].t, 'fusionProject'); assert.equal(h.sent[1].action, 'openProject');
+  assert.equal(h.sent[1].main.app, 'cursor'); assert.equal(h.sent[1].computer, 'computer-two');
+  assert.equal(h.sent[1].newSession, false); assert.equal(h.sent[1].requestId, 'create');
+});
+test('the shared project sheet retains ordinary project actions and routes them to the native destination', () => {
+  const current = fs.readFileSync(new URL('../app/js/sheets.js', import.meta.url), 'utf8');
+  const capture = (source, start, computerProjects) => {
+    const packets = [], html = [], context = vm.createContext({ computerProjects, esc: value => String(value || ''), I18N: { tr: value => value },
+      currentComputer: () => ({ name: 'ordinary computer' }), currentAppName: 'Cursor', openSheet: (_kind, text) => html.push(text),
+      send: message => packets.push(message), fusionProjectAction: () => assert.fail('ordinary action routed to Fusion') });
+    vm.runInContext(source.slice(source.indexOf(start), source.indexOf('function showCodexSettings')), context);
+    return { context, packets, html };
+  };
+  for (const computerProjects of [true, false]) for (const browsing of [true, false]) {
+    const after = capture(current, 'function projectSheet(', computerProjects);
+    const message = { browsing, path: '/project', recent: [{ name: 'project', path: '/project' }], dirs: [], drives: [] };
+    after.context.showProjects(message);
+    assert.match(after.html[0], /data-open="\/project"/); assert.match(after.html[0], /data-project-path/);
+    assert.doesNotMatch(after.html[0], /data-project-context|Fusion/);
+    assert.equal(after.html[0].includes('ordinary computer'), computerProjects);
+    if (browsing) { assert.match(after.html[0], /data-project-new="\/project"/); assert.match(after.html[0], /data-project-chat="\/project"/); }
+    const action = { t: 'openProject', path: '/project', newSession: true };
+    after.context.sendProjectAction(action, null);
+    assert.equal(after.packets[0], action);
+  }
+});

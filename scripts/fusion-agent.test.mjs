@@ -5,12 +5,13 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import test from 'node:test';
 import { FusionScheduler } from '../server/fusion/scheduler.mjs';
+import { fusionAttemptRole } from '../server/fusion/state.mjs';
 const source = fs.readFileSync(new URL('../server/fusion/agent.mjs', import.meta.url), 'utf8');
 
 function fixture(overrides = {}) {
   const changes = [], scheduler = new FusionScheduler();
   const context = vm.createContext({ crypto, Date, Map, Set, Promise, Error, Object,
-    fusionScheduler: scheduler, publishFusion() {}, helpersCall: call => call, turnCall: (...args) => JSON.stringify(args),
+    fusionScheduler: scheduler, fusionAttemptRole, publishFusion() {}, helpersCall: call => call, turnCall: (...args) => JSON.stringify(args),
     updateFusionWindow: (...args) => changes.push(args), fusionWorkspaceSnapshot: async () => ({ at: 1, available: true }),
     leaseWindow: () => () => {}, quotaBlockedMessage: () => '', rememberFusionSession() {},
     nativeWindow: () => ({ run: action => action() }), ...overrides,
@@ -28,9 +29,95 @@ test('ownership changes and native drafts block before switching, typing or clea
   await assert.rejects(h.agent.assertOwnership(context, { id: 'dedicated', bindingId: 'binding', expectedThread: 'owned' }), /草稿已保留/);
   assert.equal(draft, 'unsent user draft');
 });
+test('main preparation uses the ordinary project flow, preserves main configuration, and keeps each native binding fact', async () => {
+  const h = fixture(), calls = [];
+  let thread = 'ordinary-thread';
+  h.agent.projectContext = async () => ({ app: 'cursor', windowId: 'cursor:ordinary-window', bindingReady: true,
+    get threadId() { return thread; }, withFocus: action => action(),
+    waitFor: async () => true, cdp: { evaluate: async () => thread },
+    useProject: async (...args) => { calls.push(args); if (args[1]) thread = 'new-main-thread'; }, dispose: () => calls.push('dispose') });
+  const run = { id: 'run', deviceId: 'device', project: { id: 'project', root: '/project' },
+    main: { app: 'cursor', model: 'Auto', effort: '', bindingId: '' }, bindings: [] };
+  await h.agent.prepareMain(run);
+  const first = run.bindings[0], original = JSON.stringify(first);
+  assert.deepEqual(Array.from(calls[0]), ['/project', false, '', '', '']);
+  assert.equal(first.threadId, 'ordinary-thread'); assert.equal(first.windowId, 'ordinary-window');
+  assert.equal(first.role, 'main'); assert.equal(first.ownership, 'ordinary');
+  assert.equal(run.main.model, 'Auto'); assert.equal(h.changes.length, 0);
+  await h.agent.prepareMain(run, { newSession: true });
+  assert.equal(run.bindings.length, 2); assert.equal(JSON.stringify(first), original);
+  assert.equal(run.bindings[1].threadId, 'new-main-thread'); assert.equal(calls.filter(value => value === 'dispose').length, 2);
+});
+test('main workspace trust continues the same ordinary project operation and releases its context', async () => {
+  const h = fixture(), calls = [];
+  const run = { id: 'r', project: { id: 'p', root: '/p' }, main: { app: 'cursor', bindingId: '' }, bindings: [] };
+  const context = { app: 'cursor', windowId: 'cursor:ordinary', threadId: 'thread', bindingReady: false,
+    waitFor: async () => true, cdp: { evaluate: async () => 'thread' },
+    withFocus: action => action(), async useProject() { this.pendingProject = { root: '/p', trust: true }; },
+    async confirmProjectTrust(approve) { calls.push(approve); this.pendingProject = null; this.bindingReady = approve; },
+    dispose() { calls.push('dispose'); } };
+  h.agent.projectContext = async () => context;
+  assert.equal((await h.agent.prepareMain(run)).trust.path, '/p');
+  assert.equal(run.bindings.length, 0); assert.equal(calls.length, 0);
+  assert.equal(h.agent.mainProjects.get('r'), context);
+  await h.agent.prepareMain(run, { action: 'projectTrust', approve: true });
+  assert.deepEqual(calls, [true, 'dispose']); assert.equal(run.bindings[0].threadId, 'thread');
+  assert.equal(h.agent.mainProjects.size, 0);
+});
+test('a main native thread accepted before recovery is adopted from its confirmed receipt without resending', async () => {
+  const h = fixture(), binding = { id: 'binding', role: 'main', app: 'cursor', windowId: 'ordinary', threadId: '' };
+  const attempt = { id: 'attempt', bindingId: binding.id, receipt: { messageId: 'accepted-message' }, beforeIds: [] };
+  const context = { app: 'cursor', cdp: { evaluate: async call => call === 'activeThread()' ? 'native-main'
+    : call === 'composerDraft()' ? '' : { id: 'accepted-message', threadId: 'native-main', accepted: true } } };
+  const run = { bindings: [binding] }, window = { id: 'ordinary', role: 'main', binding, bindingId: binding.id };
+  await h.agent.recoverBinding(run, attempt, context, window, binding);
+  assert.equal(binding.threadId, 'native-main'); assert.equal(context.selectedThread, 'native-main');
+  assert.equal(binding.ownership, 'ordinary'); assert.equal(h.changes.length, 0);
+});
+test('stopping project setup releases only its pending context and leaves the native trust view intact', () => {
+  const h = fixture(); let disposed = 0;
+  h.agent.mainProjects.set('run', { dispose: () => disposed++ });
+  h.agent.releaseMainProject({ id: 'run' });
+  assert.equal(disposed, 1); assert.equal(h.agent.mainProjects.size, 0); assert.equal(h.changes.length, 0);
+});
+test('the main binds the selected ordinary thread without navigating, and leaves unrelated threads and drafts intact', async () => {
+  const h = fixture(), binding = { id: 'main-binding', role: 'main', app: 'cursor', windowId: 'ordinary', threadId: 'chosen' };
+  const run = { tasks: [], bindings: [binding], main: { bindingId: binding.id } }, attempt = { id: 'attempt' };
+  let thread = 'chosen', draft = '', busy = false;
+  const context = { app: 'cursor', cdp: { evaluate: async call => call === 'activeThread()' ? thread : call === 'composerDraft()' ? draft : { busy } } };
+  const window = { id: 'ordinary', role: 'main', binding, bindingId: binding.id, expectedThread: binding.threadId };
+  await h.agent.bind(run, attempt, context, window, false);
+  assert.equal(attempt.bindingId, binding.id); assert.equal(h.changes.length, 0);
+  thread = 'unrelated'; await assert.rejects(h.agent.bind(run, attempt, context, window, false), /切到其他会话/);
+  assert.equal(thread, 'unrelated'); assert.equal(binding.observedThread, 'unrelated');
+  thread = 'chosen'; draft = 'ordinary unsent draft';
+  await assert.rejects(h.agent.bind(run, attempt, context, window, false), /草稿已保留/);
+  assert.equal(draft, 'ordinary unsent draft'); assert.equal(h.changes.length, 0);
+  draft = ''; busy = true; await assert.rejects(h.agent.bind(run, attempt, context, window, false), /仍在原生执行/);
+});
+test('main recovery observes the original ordinary binding and neither opens a child window nor reconfigures or resends', async () => {
+  const h = fixture(), calls = [], binding = { id: 'original', role: 'main', app: 'cursor', windowId: 'ordinary', threadId: 'native-main' };
+  const attempt = { id: 'attempt', kind: 'decision', app: 'cursor', bindingId: binding.id, submission: 'accepted' };
+  const run = { tasks: [], bindings: [binding], main: { bindingId: 'new-config' }, attempts: [attempt] };
+  h.agent.mainWindowFor = async (_run, value) => { assert.equal(value, attempt); return { id: 'ordinary', role: 'main', binding, bindingId: binding.id }; };
+  h.agent.windowFor = async () => assert.fail('main recovery opened a child window');
+  h.agent.context = async () => ({ app: 'cursor', cdp: { evaluate: async call => call === 'activeThread()' ? 'native-main' : '' } });
+  h.agent.closeContext = () => calls.push('release'); h.agent.configure = async () => assert.fail('recovery configured a model');
+  h.agent.observe = async () => { calls.push('observe'); return { completed: true }; };
+  await h.agent.execute(run, attempt.id, 'original prompt', true);
+  assert.deepEqual(calls, ['observe', 'release']); assert.equal(h.changes.length, 0);
+});
+test('native archive never opens or archives a main ordinary session', async () => {
+  const h = fixture();
+  h.agent.windowFor = async () => assert.fail('main archive opened a window');
+  const binding = { id: 'ordinary-main', role: 'main', threadId: 'ordinary' };
+  await h.agent.archive({ bindings: [binding] }, binding.id);
+  assert.equal(binding.archived, undefined);
+});
 test('recovery uses the original binding and observes without configuring or submitting again', async () => {
   const h = fixture(), calls = [];
-  const run = { stopRequested: false, project: { id: 'p' }, tasks: [], capabilities: [], attempts: [{ id: 'a', app: 'cursor', submission: 'accepted', status: 'unknown' }] };
+  const run = { stopRequested: false, project: { id: 'p' }, tasks: [{ id: 'B1', executor: 'child' }], capabilities: [],
+    attempts: [{ id: 'a', app: 'cursor', taskId: 'B1', kind: 'task', submission: 'accepted', status: 'unknown' }] };
   h.agent.windowFor = async (_run, _app, create) => { calls.push(['window', create]); return { id: 'owned' }; };
   h.agent.context = async () => ({ cdp: {}, editorCdp: {}, focusTimer: null });
   h.agent.closeContext = () => calls.push(['release']);
@@ -174,6 +261,25 @@ test('after the last native window exits, Fusion starts its own workspace once w
   assert.equal(one.id, 'new-window'); assert.equal(one, two); assert.equal(launches.length, 1);
   assert.equal(launches[0][1], 'cursor'); assert.equal(launches[0][2], true); assert.equal(launches[0][3], true);
 });
+test('Cursor child creation selects an available native window service before issuing a single open request', async () => {
+  const probes = [], creates = [];
+  let created = false;
+  const page = id => ({ id, type: 'page', url: 'workbench', webSocketDebuggerUrl: id });
+  const h = fixture({ path, AbortSignal, PAGE_SRC: '({})', DATA_DIR: '/memory', EDITORS: [{ app: 'cursor', url: 'memory://cursor' }],
+    fs: { mkdir: async () => {}, writeFile: async () => {} }, fusionProjectWindows: () => [],
+    fetch: async () => ({ json: async () => [page('empty-main'), page('native-service'), ...(created ? [page('child')] : [])] }),
+    Cdp: class { constructor(id) { this.id=id; } async connect() {} close() {} async evaluate(call) {
+      if (call.includes('nativeSessionInfo')) { probes.push(this.id); return this.id==='native-service'; }
+      assert.match(call, /^cursorSelectProject/); creates.push(this.id); created=true;
+    } },
+    openFolder: async () => assert.fail('a missing service must not launch a second channel'),
+    editorRoots: async () => [{ root: '/project' }], fusionProject: () => ({ id: 'project' }),
+    trackFusionWindow: (_computer, app, target) => ({ app, id: target.id }), pause: async () => {},
+  });
+  const window = await h.agent.windowFor({ computer: 'computer', project: { id: 'project', root: '/project' } }, 'cursor');
+  assert.deepEqual(probes, ['empty-main','native-service']); assert.deepEqual(creates, ['native-service']);
+  assert.equal(window.id,'child');
+});
 
 test('the shared project opener preserves ordinary launch commands and adds CDP only on explicit Fusion requests', async () => {
   const text = fs.readFileSync(new URL('../server/agent/projects.mjs', import.meta.url), 'utf8');
@@ -196,6 +302,73 @@ test('the shared project opener preserves ordinary launch commands and adds CDP 
     assert.equal(ordinary.options.env.ELECTRON_RUN_AS_NODE, undefined);
     assert.equal(ordinary.options.env.VSCODE_IPC_HOOK_CLI, undefined);
   }
+});
+test('main project opening reuses the ordinary resolver, while new main sessions leave ordinary drafts and child windows alone', async () => {
+  const text = fs.readFileSync(new URL('../server/agent/projects.mjs', import.meta.url), 'utf8');
+  for (const [fusion, newSession, child] of [[false, true, false], [true, false, false], [true, true, false], [true, false, true]]) {
+    const calls = [], draft = 'ordinary draft', page = id => ({ id, title: id, type: 'page', url: 'workbench', webSocketDebuggerUrl: id });
+    const pages = [page('ordinary')];
+    const scope = vm.createContext({ Promise, Map, Set, Date, IS_WIN: false, AbortSignal,
+      safeHomePath: root => ({ real: root }), fusionProject: root => ({ id: root }),
+      fusionTargets: () => ({ windows: new Set(child ? ['cursor:ordinary'] : []) }),
+      cdpRead: { getStore: () => null, run: () => Promise.resolve() }, EDITORS: [{ app: 'cursor', url: 'memory://cursor' }],
+      editorRoots: async () => [{ root: '/project' }],
+      Cdp: class { constructor(url) { this.wsUrl = url; } async connect() {} close() {} },
+      fetch: async () => ({ json: async () => pages }), trackProjectWindow: (...args) => calls.push(['track', ...args]),
+      openFolder: async (...args) => { calls.push(['open', ...args]); pages.push(page('new-window')); },
+      awaitCdpRead: value => value, setTimeout: fn => fn(),
+    });
+    const methods = vm.runInContext(text.slice(text.indexOf('export const methods')).replace('export const methods', 'const methods') + '\nmethods;', scope);
+    const current = { wsUrl: 'ordinary' };
+    const session = { ...methods, app: 'cursor', fusionBinding: fusion, windowId: 'cursor:ordinary', editorCdp: current, cdp: current,
+      projectWindowState: async (page, _thread, withDraft) => ({ thread: 'ordinary-thread', busy: false, draft: withDraft && page.id === 'ordinary' && !!draft }),
+      emit() {}, async openBound(_win, _ws, _chat, selection) { this.windowId = selection.windowId; this.cdp = this.editorCdp = {}; },
+      checkProjectTrust: async () => false, async finishProject() { calls.push(['ready', this.windowId]); },
+      resumeProjectSwitch: async () => {}, listAgents: async () => {},
+    };
+    await session.useProject('/project', newSession);
+    const opened = calls.find(call => call[0] === 'open');
+    assert.equal(!!opened, fusion && (newSession || child));
+    assert.deepEqual(calls.find(call => call[0] === 'ready'), ['ready', fusion && (newSession || child) ? 'cursor:new-window' : 'cursor:ordinary']);
+    assert.equal(draft, 'ordinary draft');
+    if (opened) assert.deepEqual(Array.from(opened), ['open', '/project', 'cursor', true]);
+  }
+});
+test('Fusion project completion waits for the native model control before creating or binding, while ordinary completion keeps its existing timing', async () => {
+  const text = fs.readFileSync(new URL('../server/agent/projects.mjs', import.meta.url), 'utf8');
+  const scope = vm.createContext({ helpersCall: value => value, fusionProject: root => ({ id: root }), path,
+    setTimeout: fn => fn() });
+  const methods = vm.runInContext(text.slice(text.indexOf('export const methods')).replace('export const methods', 'const methods') + '\nmethods;', scope);
+  for (const fusionBinding of [true,false]) {
+    let ready, accepted = false, newChats = 0;
+    const gate = new Promise(resolve => { ready = () => { accepted=true; resolve(true); }; });
+    const context = { app: 'cursor', fusionBinding, pendingProject: { root: '/project', newSession: true },
+      editorCdp: { evaluate: async () => ({ required: false }) },
+      cdp: { evaluate: async call => call === 'hasComposer()' ? true : { thread: 'new-native', items: [] } },
+      waitFor: async call => { assert.equal(call,'control("model")'); assert.equal(fusionBinding,true); return gate; },
+      currentRoots: async () => [{ root: '/project' }], syncSession() {}, publishThread() {}, emit() {}, selectionKey: () => 'cursor|window|new-native',
+      adapter: { newChat: async () => { if(fusionBinding)assert.equal(accepted,true);newChats++; } },
+    };
+    const work = methods.finishProject.call(context);
+    await new Promise(resolve => setImmediate(resolve));
+    if(fusionBinding) { assert.equal(newChats,0);assert.equal(context.bindingReady,undefined);ready(); }
+    await work;assert.equal(newChats,1);assert.equal(context.bindingReady,true);assert.equal(context.threadId,'new-native');
+  }
+});
+test('reading a stopped run main configuration stays read-only and does not resume or enqueue model execution', async () => {
+  const calls = [], run = { id: 'run', computer: 'computer', stopRequested: true, status: 'stopped',
+    project: { id: 'project', root: '/project' }, main: { app: 'cursor', model: 'Auto', bindingId: 'ordinary-main' }, attempts: [], capabilities: [] };
+  const scheduler = new FusionScheduler();
+  const agent = { capabilities: async (_run, app, role) => { calls.push([app,role]); return { app,models:[],available:true }; } };
+  const scope = vm.createContext({ computerId: () => 'computer', findFusionRun: () => run,
+    fusionRunner: () => ({ scheduler, agent }), publishFusion() {}, subscribeFusion() {},
+    fusionTargets: () => ({ sessions: new Set() }), nativeSessionCatalog: () => null,
+  });
+  const ownerText = fs.readFileSync(new URL('../server/fusion/owner.mjs', import.meta.url), 'utf8').replace(/^import [\s\S]*?;\n/gm,'').replace('export const FUSION_OWNER','const FUSION_OWNER');
+  const owner = vm.runInContext(ownerText+'\nFUSION_OWNER;',scope), emitted=[];
+  await owner.fusionPrepare.call({deviceId:'device',emit:message=>emitted.push(message)},{computer:'computer',runId:'run',requestId:'read'});
+  assert.deepEqual(calls,[['cursor','main']]);assert.equal(run.status,'stopped');assert.equal(run.stopRequested,true);
+  assert.equal(run.attempts.length,0);assert.equal(emitted[0].t,'fusionState');assert.equal(scheduler.slots.size,0);
 });
 
 test('a newly opened Fusion Cursor window waits for its native model control before becoming initialized', async () => {

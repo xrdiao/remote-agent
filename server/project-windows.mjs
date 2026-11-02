@@ -9,7 +9,7 @@ import { Cdp } from './cdp.mjs';
 import { codexWindows } from './windows.mjs';
 import { editorRoots } from '../lib/files.mjs';
 import { helpersCall, PAGE_SRC } from './page/build.mjs';
-import { fusionViewers, fusionWindowInUse, fusionRuns } from './fusion/state.mjs';
+import { fusionViewers, fusionWindowInUse, fusionMainWindow, fusionRuns } from './fusion/state.mjs';
 import { fusionScheduler } from './fusion/scheduler.mjs';
 import { windowLeased, leaseWindow } from './window-use.mjs';
 
@@ -28,13 +28,13 @@ export function trackProjectWindow(app, page, root, created = false) {
 }
 export function fusionProjectWindows(computer, app, project) {
   return Object.values(saved.windows).filter(row => row.purpose === 'fusion' && row.computer === computer && row.app === app
-    && row.projectId === project.id && !row.closed);
+    && row.projectId === project.id && !row.closed && !fusionMainWindow(app, row.id));
 }
 export function fusionTargets() {
   return {
-    windows: new Set(Object.values(saved.windows).filter(row => row.purpose === 'fusion').map(row => key(row.app, row.id))),
+    windows: new Set(Object.values(saved.windows).filter(row => row.purpose === 'fusion' && !fusionMainWindow(row.app, row.id)).map(row => key(row.app, row.id))),
     sessions: new Set(Object.values(fusionRuns).flatMap(entry => entry.runs).flatMap(run => run.bindings)
-      .filter(binding => binding.threadId).map(binding => binding.app + ':' + sessionId(binding.app, binding.threadId))),
+      .filter(binding => binding.role !== 'main' && binding.threadId).map(binding => binding.app + ':' + sessionId(binding.app, binding.threadId))),
   };
 }
 export function trackFusionWindow(computer, app, page, project) {
@@ -192,6 +192,7 @@ export async function projectProcesses(root, fusion = false) {
 }
 function held(row) {
   if (row.keep) return '已设置保留';
+  if (row.purpose === 'fusion' && fusionMainWindow(row.app, row.id)) return '主 Agent 会话窗口不属于子窗口回收范围';
   if (row.purpose === 'fusion' && row.ownership !== 'fusion') return 'Fusion 窗口归属已变化，等待用户处理';
   if (Object.entries(readLibrary()[row.app] || {}).some(([id, state]) => {
     const session = saved.sessions[row.app + ':' + id];
@@ -200,7 +201,7 @@ function held(row) {
   if (windowLeased(row.app, row.id) || windowLeased(row.app, row.app + ':' + row.id)) return '正在执行窗口操作';
   const same = id => key(row.app, id) === key(row.app, row.id);
   if ([...fusionViewers].some(s => s.app === row.app && same(s.windowId) && (s.visible && Date.now() - s.notifyPresenceAt < 45000 || s.sending || s.imageTransfers?.size || s.focusCount || s.historyLoading))) return '正在查看或执行会话操作';
-  return row.purpose === 'fusion' && fusionWindowInUse(row) ? 'Fusion 正在使用窗口' : '';
+  return fusionWindowInUse(row) ? 'Fusion 正在使用窗口' : '';
 }
 export async function probeProjectWindow(row, page, scan = null) {
   const reason = held(row);

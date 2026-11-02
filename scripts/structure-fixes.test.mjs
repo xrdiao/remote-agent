@@ -1477,6 +1477,7 @@ function overviewDirectory() {
     normPath: value => String(value || '').replaceAll('\\', '/'), pathKey: value => value,
     samePath: (a, b) => a === b, windowName: title => title, workspaces: () => { throw Error('Do not rescan workspace storage'); },
     FUSION_ACTIVE: [], fusionSummary: value => value,
+    fusionMainWindow: (app, id) => Object.values(fusionRuns).flatMap(value => value.runs).some(run => run.bindings.some(binding => binding.role === 'main' && binding.app === app && binding.windowId === id)),
   });
   vm.runInContext(part(read('lib/files.mjs'), 'export function workspaceLabel(', '// Returns the size').replace('export ', '')
     + part(read('server/project-windows.mjs'), 'export function fusionTargets(', 'export function trackFusionWindow(').replace('export ', '')
@@ -1512,15 +1513,17 @@ test('a temporarily unreadable selected window cannot replace confirmed native f
   assert.equal(result.sessions[0].run.status, 'completed');
 });
 
-test('Fusion windows and native bindings stay outside ordinary cards including favorites', () => {
+test('Fusion child windows stay outside ordinary cards while main sessions remain ordinary, including favorites', () => {
   const h = overviewDirectory(); h.add('codex', 'ordinary'); h.add('codex', 'fusion');
   h.saved.windows['codex:fusion'] = { app: 'codex', id: 'fusion', purpose: 'fusion' };
-  h.fusionRuns.device = { runs: [{ updated: Date.now(), bindings: [{ app: 'codex', threadId: 'fusion-thread' }] }] };
+  h.fusionRuns.device = { runs: [{ updated: Date.now(), bindings: [{ role: 'B1', app: 'codex', threadId: 'fusion-thread' },
+    { role: 'main', app: 'codex', threadId: 'ordinary-thread', windowId: 'ordinary' }] }] };
   h.catalogs.set('codex', { rows: ['ordinary-thread', 'fusion-thread'].map(id => ({ id, workspace: '/project/remote-agent', running: false })) });
-  h.library.codex = { 'fusion-thread': { favorite: true } };
+  h.library.codex = { 'fusion-thread': { favorite: true }, 'ordinary-thread': { favorite: true } };
   const result = h.snapshot();
   assert.deepEqual(result.windows.map(row => row.windowId), ['ordinary']);
   assert.deepEqual(result.sessions.map(row => row.threadId), ['ordinary-thread']);
+  assert.equal(result.sessions[0].favorite, true);
   assert.equal(result.fusion.length, 1);
 });
 
@@ -1548,22 +1551,33 @@ test('available directories do not wait for chat extraction or another window re
   assert.equal(result.sessions.length, 1);
 });
 
-function overviewCards() {
-  const source = read('app/js/overview.js'), notifications = [], done = {};
+function overviewCards(saved = new Map()) {
+  const source = read('app/js/overview.js'), notifications = [], opened = [], handlers = new Map();
   const entry = { id: 'computer', c: { key: 'paired' } }, state = { fetched: false, prev: new Map(), first: new Map(), offset: 0 };
-  const context = vm.createContext({ Date, ovDone: done, computerSockets: new Map(), saveComputerResume() {},
+  const context = vm.createContext({ Date, computerSockets: new Map(), saveComputerResume() {},
     ovComputerStatus: () => 'online', agentSessionCommon: () => true, ovNotify: (record, kind) => notifications.push({ thread: record.threadId, kind }),
-    ovPrune() {}, store: { set() {} }, ovS: { level: 'favorites' }, ovSessTile: row => row.key, ovEmpty: value => value, ovT: value => value,
-    ovProjTile: project => project.key,
+    ovPrune() {}, store: { get: key => saved.get(key), set: (key, value) => saved.set(key, value) },
+    ovS: { level: 'favorites' }, ovSessTile: row => row.key, ovEmpty: value => value, ovT: value => value, ovProjTile: project => project.key,
+    $: () => ({ addEventListener: (type, handler) => handlers.set(type, handler) }),
+    ovHeld: '', ovBatch: null, ovSaveHistory() {}, ovRender() {}, ovOpen: target => opened.push(target),
+    ovRecs: () => context.ovRecsOf(entry, state),
   });
-  vm.runInContext(part(source, 'const OV_RANK =', 'const OV_AGENT =') + part(source, 'const ovNativeKey =', 'const ovCompName =')
+  vm.runInContext(part(source, 'const ovDone =', 'let ovEnterRequested =')
+    + part(source, 'const OV_RANK =', 'const OV_AGENT =') + part(source, 'const ovNativeKey =', 'const ovCompName =')
     + part(source, 'function ovRecsOf(', 'const ovRecs =') + part(source, 'function ovApply(', 'function ovNotify(')
     + part(source, 'function ovBoard(', 'function ovPlan(') + part(source, 'function ovProjectTiles(', 'function ovSessTile(')
-    + '\nthis.aggregate = ovAggregate;', context);
-  return { context, done, notifications,
+    + part(source, "$('overview').addEventListener('click'", "$('overview').addEventListener('change'")
+    + '\nthis.aggregate = ovAggregate; this.done = ovDone;', context);
+  return { context, done: context.done, notifications, opened, saved, entry,
     apply(change = {}) { context.ovApply(entry, state, { now: Date.now(), sessions: [{ app: 'codex', projectId: 'project', windowId: 'window',
       threadId: 'thread', statusKnown: true, ...change }], fusion: [{ id: 'fusion-run' }] }); },
     rows: () => context.ovRecsOf(entry, state),
+    click(action = 'full') {
+      const row = context.ovRecsOf(entry, state)[0];
+      const el = { dataset: { ov: action, id: row.key, t: JSON.stringify({ computer: row.comp, windowId: row.windowId, threadId: row.threadId }) },
+        closest: selector => selector === '[data-ov]' ? el : null };
+      handlers.get('click')({ target: el });
+    },
   };
 }
 
@@ -1599,6 +1613,46 @@ test('stopped and failed native turns are not completion notifications', () => {
     const h = overviewCards(); h.apply({ busy: true, run: { id: 'turn', status: 'running' } }); h.apply({ run: { id: 'turn', status } });
     assert.equal(h.notifications.length, 0); assert.equal(h.rows()[0].state, 'err');
   }
+});
+
+test('opening a stopped conversation keeps the same turn acknowledged after reload but not a new turn', () => {
+  const h = overviewCards(); h.apply({ run: { id: 'turn', status: 'stopped' } });
+  assert.equal(h.rows()[0].state, 'err'); h.click();
+  assert.equal(h.rows()[0].state, 'idle');
+  h.apply({ run: { id: 'turn', status: 'stopped' } }); assert.equal(h.rows()[0].state, 'idle');
+  const reload = overviewCards(h.saved); reload.apply({ run: { id: 'turn', status: 'stopped' } });
+  assert.equal(reload.rows()[0].state, 'idle');
+  reload.apply({ busy: true, run: { id: 'new-turn', status: 'running' } }); assert.equal(reload.rows()[0].state, 'run');
+  reload.apply({ run: { id: 'new-turn', status: 'stopped' } }); assert.equal(reload.rows()[0].state, 'err');
+  assert.equal(reload.notifications.length, 0);
+});
+
+test('only opening the stopped conversation clears its card and project aggregate', () => {
+  const h = overviewCards(); h.apply({ run: { id: 'turn', status: 'stopped' } }); h.click('sess');
+  assert.equal(h.rows()[0].state, 'err'); assert.equal(h.context.aggregate(h.rows()).state, 'err');
+  h.click();
+  assert.equal(h.rows()[0].state, 'idle'); assert.equal(h.context.aggregate(h.rows()).state, 'idle');
+  assert.equal(h.context.aggregate(h.rows()).counts.err, 0);
+  assert.deepEqual(JSON.parse(JSON.stringify(h.opened)), [{ computer: 'computer', windowId: 'window', threadId: 'thread' }]);
+});
+
+test('stopped acknowledgements belong to the native computer project and session', () => {
+  const h = overviewCards(), run = { id: 'turn', status: 'stopped' };
+  h.apply({ run }); h.click();
+  for (const change of [{ projectId: 'other-project' }, { threadId: 'other-thread' }]) {
+    h.apply({ run, ...change }); assert.equal(h.rows()[0].state, 'err');
+    h.apply({ run }); assert.equal(h.rows()[0].state, 'idle');
+  }
+  h.entry.id = 'other-computer'; h.apply({ run }); assert.equal(h.rows()[0].state, 'err');
+});
+
+test('opening a conversation still clears completion and preserves actual failure', () => {
+  const h = overviewCards(); h.apply({ busy: true, run: { id: 'turn', status: 'running' } });
+  h.apply({ run: { id: 'turn', status: 'completed' } }); assert.equal(h.rows()[0].state, 'done');
+  h.click(); h.apply({ run: { id: 'turn', status: 'completed' } });
+  assert.equal(h.rows()[0].state, 'idle'); assert.equal(h.notifications.length, 1);
+  h.apply({ run: { id: 'failed-turn', status: 'error' } }); h.click();
+  assert.equal(h.rows()[0].state, 'err'); assert.equal(h.rows()[0].run.status, 'error');
 });
 
 test('favorites and project cards share completed-running-idle ordering and aggregate mixed projects', () => {

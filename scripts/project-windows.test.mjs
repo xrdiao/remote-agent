@@ -47,7 +47,7 @@ function fixture({ favorite = false, keep = false, owned = true, failClose = fal
       close() {}
     },
     editorRoots: async cdp => [{ root: cdp.id === 'one' ? '/project' : '/other' }],
-    fusionViewers: new Set(), fusionWindowInUse: () => false, fusionScheduler: new FusionScheduler(),
+    fusionViewers: new Set(), fusionRuns: {}, fusionMainWindow: () => false, fusionWindowInUse: () => false, fusionScheduler: new FusionScheduler(),
     windowLeased: () => false, leaseWindow: () => () => {},
     fetch: async () => {
       if (endpointCloses && closed.has('one')) throw new Error('native browser exited');
@@ -165,6 +165,19 @@ test('a Fusion cleanup request never probes or closes an ordinary window', async
   await h.recycle(); assert.deepEqual([...h.closed], ['one']);
   assert.ok(h.probes.every(id => id === 'one'));
   assert.equal(h.state().windows['cursor:two'].closed, undefined);
+});
+test('main ordinary sessions remain in normal lists and their windows are excluded from child recycling', async () => {
+  const h = fixture();
+  vm.runInContext(`saved.windows['cursor:one'].purpose='fusion'; saved.windows['cursor:one'].computer='computer';
+    saved.windows['cursor:one'].projectId='project';
+    fusionRuns.entry={runs:[{bindings:[{role:'main',app:'cursor',threadId:'main',windowId:'one'},
+      {role:'B1',app:'cursor',threadId:'child',windowId:'two'}]}]};`, h.context);
+  h.context.fusionMainWindow = (app, id) => app === 'cursor' && id === 'one';
+  const excluded = vm.runInContext('fusionTargets()', h.context);
+  assert.equal(excluded.sessions.has('cursor:main'), false); assert.equal(excluded.sessions.has('cursor:child'), true);
+  assert.equal(excluded.windows.has('cursor:one'), false);
+  await h.recycle(); assert.equal(h.probes.length, 0); assert.equal(h.calls.length, 0);
+  await h.scan(); assert.equal(h.closed.has('one'), false);
 });
 
 test('shared Fusion use, native drafts, favorites, manual keep and foreground focus retain the window', async () => {

@@ -406,6 +406,11 @@ function updateTitle() {
   $('titlePlan').hidden = !plan;
   $('titleProject').textContent = cleanWindowTitle(currentProject).replace(/\s+-\s+Devin(?:\s+-.*)?$/, '') || conversation.split('\n')[0].slice(0, 40);
   $('title').title = [cleanWindowTitle(currentProject), conversation].filter(Boolean).join(' · ');
+  if (currentApp === 'fusion') {
+    const run = lastChat?.fusionRun;
+    $('titleProject').textContent = run ? `${run.project.name} · ${ovCompName(run.computer)}` : '';
+    $('title').title = run ? `${run.project.root} · ${ovCompName(run.computer)} · ${run.title}` : 'Fusion';
+  }
   paintRail();
 }
 // Devin sessions: each session has its own rows, thought bodies, tasks, questions and queue. When the desktop

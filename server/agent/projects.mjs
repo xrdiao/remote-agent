@@ -11,7 +11,7 @@ import { listWindows, codexWindows, codexFolder } from '../windows.mjs';
 import { CDP_URL, DEVIN_CDP_URL, CODEX_CDP_URL, EDITORS } from '../config.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { fusionProject } from '../fusion/state.mjs';
-import { trackProjectWindow, storedProjectSession } from '../project-windows.mjs';
+import { trackProjectWindow, storedProjectSession, fusionTargets } from '../project-windows.mjs';
 import { sessionId } from '../../lib/session-library.mjs';
 
 export function safeHomePath(input) {
@@ -60,7 +60,7 @@ export function projectList(dir) {
 }
 
 
-function createProjectFolder(parent, name) {
+export function createProjectFolder(parent, name) {
   const { real } = safeHomePath(parent);
   if (!name || name === '.' || name === '..' || path.basename(name) !== name) throw new Error('请输入一个文件夹名称，不要包含路径');
   const folder = path.join(real, name);
@@ -159,7 +159,7 @@ export const methods = {
       return { name: label.name, path: w.root, host: w.host || '', detail: label.detail || '' };
     });
   },
-  async projectWindowState(page, threadId = '') {
+  async projectWindowState(page, threadId = '', withDraft = false) {
     const id = page.id || page.pageId;
     const own = id === this.windowId || `${this.app}:${id}` === this.windowId;
     const editor = own ? this.editorCdp : new Cdp(page.ws || page.webSocketDebuggerUrl);
@@ -174,7 +174,7 @@ export const methods = {
         }
       }
       if (threadId && await chat.evaluate(helpersCall('activeThread()')) === threadId.replace(/^tab:/, '')) return { thread: threadId.replace(/^tab:/, '') };
-      const [state, terminalBusy] = await Promise.all([
+      const [state, terminalBusy, draft] = await Promise.all([
         chat.evaluate(helpersCall('agentState()')),
         editor.evaluate(`(() => {
           const terms = new Set([...document.querySelectorAll('.xterm-wrapper, .terminal-wrapper')].map(el => el.xterm).filter(Boolean));
@@ -184,8 +184,9 @@ export const methods = {
             return !detector || !!detector.currentCommand?.commandExecutedMarker;
           });
         })()`),
+        withDraft ? chat.evaluate(helpersCall('composerDraft()')) : null,
       ]);
-      return { thread: state?.thread || '', busy: !!state?.busy || terminalBusy, agentBusy: !!state?.busy };
+      return { thread: state?.thread || '', busy: !!state?.busy || terminalBusy, agentBusy: !!state?.busy, ...(withDraft ? { draft: !!draft } : {}) };
     } finally {
       if (chat !== editor && !own) chat.close();
       if (!own) editor.close();
@@ -207,9 +208,10 @@ export const methods = {
     const ownerId = ownerWindow.replace(/^[^:]+:/, '');
     const tried = new Set();
     const available = async page => {
+      if (this.fusionBinding && fusionTargets().windows.has(app + ':' + page.id)) return false;
       if (!newSession && !threadId) return true;
-      const state = await this.projectWindowState(page, threadId);
-      return !!threadId && state.thread === threadId.replace(/^tab:/, '') || !(IS_WIN && app === 'codex' ? state.agentBusy : state.busy);
+      const state = await this.projectWindowState(page, threadId, this.fusionBinding);
+      return !!threadId && state.thread === threadId.replace(/^tab:/, '') || !(IS_WIN && app === 'codex' ? state.agentBusy : state.busy) && !state.draft;
     };
     let target, projectPages = [];
     const matching = async pages => {
@@ -432,6 +434,8 @@ export const methods = {
     const pending = this.pendingProject;
     if (!pending) return;
     if ((await this.editorCdp.evaluate(helpersCall('workspaceTrustState()'))).required) throw new Error('请先确认项目是否可信');
+    if (this.fusionBinding && this.app === 'cursor' && !await this.waitFor('control("model")', 250))
+      throw new Error('主会话的原生模型控件尚未就绪');
     if (this.app === 'devin' && !pending.threadId && !pending.newSession) await this.adapter.openDefaultSession.call(this);
     if (this.app === 'codex' && !pending.threadId && !pending.newSession) {
       const thread = await this.cdp.evaluate(helpersCall('codexThread()')) || '';

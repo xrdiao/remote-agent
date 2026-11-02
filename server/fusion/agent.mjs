@@ -12,10 +12,10 @@ import { codexWindows } from '../windows.mjs';
 import { editorRoots } from '../../lib/files.mjs';
 import { findBin } from '../../lib/platform.mjs';
 import { DATA_DIR } from '../../lib/auth.mjs';
-import { helpersCall } from '../page/build.mjs';
+import { helpersCall, PAGE_SRC } from '../page/build.mjs';
 import { leaseWindow } from '../window-use.mjs';
 import { fusionProjectWindows, trackFusionWindow, updateFusionWindow, rememberFusionSession, recycleFusionWindows } from '../project-windows.mjs';
-import { fusionProject, fusionModelSpec, publishFusion } from './state.mjs';
+import { fusionProject, fusionModelSpec, fusionAttemptRole, publishFusion } from './state.mjs';
 import { nativeCostSnapshot } from './cost.mjs';
 import { fusionScheduler } from './scheduler.mjs';
 
@@ -53,9 +53,86 @@ export class FusionAgent {
     this.publish = publish;
     this.active = new Map();
     this.reclaimRequests = new Map();
+    this.mainProjects = new Map();
   }
   recycle(run, app) {
     return recycleFusionWindows(run.computer, app, run.project, true);
+  }
+  releaseMainProject(run) {
+    const context = this.mainProjects.get(run.id);
+    this.mainProjects.delete(run.id);
+    if (context) this.closeContext(context);
+  }
+  async projectContext(run, main) {
+    const { Session } = await import('../session.mjs');
+    const context = new Session({ readyState: 1, send: raw => {
+      const message = JSON.parse(raw);
+      if (message.t === 'status' && message.ok === false) context.projectError = message.msg;
+    } }, run.deviceId, { fusionBinding: true });
+    context.app = main.app;
+    return context;
+  }
+  async prepareMain(run, selection = {}, main = run.main) {
+    let context = this.mainProjects.get(run.id);
+    try {
+      if (selection.action === 'projectTrust') {
+        if (!context) throw new Error('项目选择已结束，请重新打开项目');
+        if (context.app !== main.app) throw new Error('主 Agent 所属软件已改变，请重新打开项目');
+        await context.confirmProjectTrust(selection.approve === true);
+        if (!selection.approve) return { declined: true };
+      } else {
+        if (context) this.closeContext(context);
+        this.mainProjects.delete(run.id);
+        context = null;
+        context = await this.projectContext(run, main);
+        const current = run.bindings.find(binding => binding.id === main.bindingId);
+        const threadId = String(selection.threadId || '');
+        const windowId = String(selection.windowId || (current?.app === main.app ? current.windowId : ''));
+        if (run.project.host) {
+          if (selection.newSession) throw new Error('请先在原生远程项目中创建主会话，再选择该会话');
+          await context.attach({ id: main.app, project: run.project, windowId, threadId });
+        } else await context.withFocus(() => context.useProject(run.project.root, selection.newSession === true, threadId, '', windowId));
+      }
+      if (context.pendingProject?.trust) {
+        this.mainProjects.set(run.id, context);
+        return { trust: { path: context.pendingProject.root } };
+      }
+      if (!context.bindingReady) throw new Error(context.projectError || '主 Agent 原生会话尚未就绪');
+      const windowId = context.windowId.replace(/^(cursor|devin|codex):/, '');
+      const threadId = await context.cdp.evaluate(helpersCall('activeThread()')) || '';
+      if (context.selectedThread && context.selectedThread !== threadId) throw new Error('打开项目期间主会话已变化，请重新选择主会话');
+      let binding = run.bindings.findLast(value => value.role === 'main' && value.app === main.app
+        && value.windowId === windowId && value.threadId === threadId && !value.archived);
+      if (!binding) {
+        binding = { id: crypto.randomUUID(), app: main.app, host: run.project.host || '', projectId: run.project.id,
+          windowId, threadId, role: 'main', created: Date.now(), archived: false, ownership: 'ordinary' };
+        run.bindings.push(binding);
+      }
+      main.bindingId = binding.id;
+      main.error = '';
+      this.publish(run);
+      return { binding };
+    } finally {
+      if (main !== run.main || !context?.pendingProject?.trust || selection.action === 'projectTrust' && !selection.approve) {
+        this.mainProjects.delete(run.id);
+        if (context) this.closeContext(context);
+      }
+    }
+  }
+  async mainWindowFor(run, attempt) {
+    const binding = run.bindings.find(value => value.id === (attempt?.bindingId || run.main.bindingId));
+    if (!binding || binding.role !== 'main') throw new Error('请先打开项目并选择主 Agent 会话');
+    const editor = EDITORS.find(value => value.app === binding.app);
+    const pages = await (await fetch(editor.url + '/json/list', { signal: AbortSignal.timeout(2500) })).json();
+    const page = pages.find(value => value.type === 'page' && value.id === binding.windowId && /workbench/.test(value.url));
+    if (!page) throw new Error('主 Agent 窗口已关闭，请重新打开主会话；原生结果未知时不会自动重发');
+    await this.checkWindow(page, binding.app, run.project, binding);
+    return { id: binding.windowId, page, role: 'main', binding, bindingId: binding.id,
+      expectedThread: binding.threadId, initialized: true };
+  }
+  updateWindow(app, window, change) {
+    if (window.role === 'main') Object.assign(window.binding, change);
+    else updateFusionWindow(app, window.id, change);
   }
   async windowFor(run, app, create = true) {
     const editor = EDITORS.find(value => value.app === app);
@@ -85,9 +162,17 @@ export class FusionAgent {
       await fs.mkdir(directory, { recursive: true });
       await fs.writeFile(workspace, JSON.stringify({ folders: [{ path: run.project.root }] }), { mode: 0o600 });
       if (app === 'cursor' && targets.length) {
-        const creator = new Cdp(targets[0].webSocketDebuggerUrl);
+        let creator;
+        for (const target of targets) {
+          const candidate = new Cdp(target.webSocketDebuggerUrl);
+          try {
+            await candidate.connect();
+            const available = await candidate.evaluate(`(() => { const h = ${PAGE_SRC}; h.nativeSessionInfo('cursor', ''); return typeof window.__remoteAgentCursorServices?.nativeHost?.openWindow === 'function'; })()`);
+            if (available) { creator = candidate; break; }
+          } finally { if (creator !== candidate) candidate.close(); }
+        }
+        if (!creator) throw new Error('当前 Cursor 窗口没有可用的原生窗口创建服务');
         try {
-          await creator.connect();
           await creator.evaluate(helpersCall(`cursorSelectProject(${JSON.stringify(workspace)}, '', true)`));
         } finally { creator.close(); }
       } else await openFolder(workspace, app, true, !targets.length);
@@ -112,13 +197,15 @@ export class FusionAgent {
       throw new Error('没有确认新建的 Fusion 项目窗口');
     });
   }
-  async checkWindow(page, app, project) {
+  async checkWindow(page, app, project, main = false) {
     const cdp = new Cdp(page.webSocketDebuggerUrl);
     try {
       await cdp.connect();
       if (!(await editorRoots(cdp, app)).some(root => fusionProject(root.root, root.host || '')?.id === project.id)) {
-        updateFusionWindow(app, page.id, { ownership: 'changed', ownershipReason: '实际项目已变化', ownershipChangedAt: Date.now() });
-        throw new Error('Fusion 专用窗口已切换项目，已记录归属变化');
+        const change = { ownership: 'changed', ownershipReason: '实际项目已变化', ownershipChangedAt: Date.now() };
+        if (main) Object.assign(main, change);
+        else updateFusionWindow(app, page.id, change);
+        throw new Error(main ? '主 Agent 窗口已切换项目，请重新选择主会话' : 'Fusion 专用窗口已切换项目，已记录归属变化');
       }
     } finally { cdp.close(); }
   }
@@ -132,11 +219,12 @@ export class FusionAgent {
     const trust = await context.editorCdp.evaluate(helpersCall('workspaceTrustState()'));
     if (trust.required) { context.editorCdp.close(); throw new Error(`项目需要原生信任确认：${run.project.root}`); }
     try {
-      if (app === 'cursor' && !window.initialized && !await context.waitFor('control("model")', 250))
+      if (app === 'cursor' && (!window.initialized || window.role === 'main') && !await context.waitFor('control("model")', 250))
         throw new Error('Fusion 窗口的 Cursor 模型菜单尚未就绪');
       if (app === 'codex') {
         let page = (await codexWindows(CODEX_CDP_URL, false, window.id)).find(value => value.pageId === window.id);
         if (!page?.chatWs) {
+          if (window.role === 'main') throw new Error('主 Agent 窗口的 Codex 侧边栏未打开，请重新选择主会话');
           await context.withFocus(async () => {
             await context.key((process.platform === 'darwin' ? 'Meta' : 'Ctrl') + '+Shift+p', { cdp: context.editorCdp });
             await context.editorCdp.send('Input.insertText', { text: 'Codex: Open Codex Sidebar' });
@@ -157,6 +245,7 @@ export class FusionAgent {
       }
       if (app === 'devin') {
         if (await context.cdp.evaluate(helpersCall('devinSurface()')) !== 'editor') {
+          if (window.role === 'main') throw new Error('主 Agent 窗口已离开 Devin IDE，请重新选择主会话');
           if (!await context.cdp.evaluate(helpersCall("surfaceTarget('editor', true)")) || !await context.waitFor("devinSurface() === 'editor'", 100))
             throw new Error('Fusion 专用窗口尚未进入 Devin IDE');
         }
@@ -172,30 +261,31 @@ export class FusionAgent {
     } catch (error) { this.closeContext(context); throw error; }
   }
   closeContext(context) {
+    if (context.dispose) { context.dispose(); return; }
     clearTimeout(context.focusTimer);
     for (const cdp of new Set([context.cdp, context.editorCdp])) cdp?.close();
   }
   async assertOwnership(context, window, expected = window.expectedThread) {
     const current = await context.cdp.evaluate(helpersCall('activeThread()'));
     if (window.bindingId && current !== (expected || '')) {
-      updateFusionWindow(context.app, window.id, { ownership: 'changed', observedThread: current, ownershipReason: '电脑端会话已变化', ownershipChangedAt: Date.now() });
-      throw new Error('Fusion 专用窗口已切到其他会话，已记录归属变化；请在电脑核对后继续');
+      this.updateWindow(context.app, window, { ownership: 'changed', observedThread: current, ownershipReason: '电脑端会话已变化', ownershipChangedAt: Date.now() });
+      throw new Error(`${window.role === 'main' ? '主 Agent 窗口' : 'Fusion 专用窗口'}已切到其他会话，已记录归属变化；请重新选择会话后继续`);
     }
     const draft = await context.cdp.evaluate(helpersCall('composerDraft()'));
     if (draft) {
-      updateFusionWindow(context.app, window.id, { ownership: 'changed', observedThread: current, ownershipReason: '原生草稿未处理', ownershipChangedAt: Date.now() });
-      throw new Error('Fusion 专用窗口存在原生草稿，请在电脑处理后继续；草稿已保留');
+      this.updateWindow(context.app, window, { ownership: 'changed', observedThread: current, ownershipReason: '原生草稿未处理', ownershipChangedAt: Date.now() });
+      throw new Error(`${window.role === 'main' ? '主 Agent 窗口' : 'Fusion 专用窗口'}存在原生草稿，请处理后继续；草稿已保留`);
     }
     return current;
   }
-  async capabilities(run, app) {
-    const window = await this.windowFor(run, app);
+  async capabilities(run, app, role = 'child') {
+    const window = role === 'main' ? await this.mainWindowFor(run) : await this.windowFor(run, app);
     const release = leaseWindow(app, window.id, this, true);
     let context;
     try {
       context = await this.context(run, app, window);
       await this.assertOwnership(context, window);
-      updateFusionWindow(app, window.id, { ownership: 'fusion' });
+      this.updateWindow(app, window, { ownership: role === 'main' ? 'ordinary' : 'fusion' });
       this.reclaimRequests.get(run.id)?.delete(app);
       let models = await context.cdp.evaluate(helpersCall('modelItemsFast(true)'));
       if (!models?.length) {
@@ -216,25 +306,24 @@ export class FusionAgent {
   }
   async bind(run, attempt, context, window, recovering) {
     const task = run.tasks.find(value => value.id === attempt.taskId);
+    if (window.role === 'main') {
+      const binding = window.binding;
+      if (recovering) {
+        if (attempt.bindingId !== binding.id) throw new Error('缺少可核对的主 Agent Binding，不能自动重发');
+        return this.recoverBinding(run, attempt, context, window, binding);
+      }
+      await this.assertOwnership(context, window, binding.threadId);
+      if (!recovering && (await context.cdp.evaluate(helpersCall('agentState()')))?.busy) throw new Error('主 Agent 会话仍在原生执行，请等待结束');
+      context.threadId = context.selectedThread = binding.threadId;
+      attempt.bindingId = binding.id;
+      this.publish(run);
+      return binding;
+    }
     const owner = attempt.kind === 'decision' || task?.executor === 'main' ? run.main : task;
     let binding = attempt.bindingId
       ? run.bindings.find(value => value.id === attempt.bindingId && !value.archived)
       : run.bindings.findLast(value => value.app === attempt.app && value.role === (task?.executor === 'child' ? task.id : 'main') && !value.archived);
-    if (recovering) {
-      if (!binding || binding.windowId !== window.id) throw new Error('缺少可核对的原生 Binding，不能自动重发');
-      if (!binding.threadId) {
-        const turn = await context.cdp.evaluate(turnCall(attempt.receipt?.messageId || '', attempt.id, attempt.beforeIds || []));
-        if (!turn.id || !turn.threadId || turn.accepted === false) throw new Error('新会话尚无可确认的原生轮次，不能自动重发');
-        binding.threadId = turn.threadId;
-        updateFusionWindow(context.app, window.id, { expectedThread: turn.threadId, bindingId: binding.id });
-        this.publish(run);
-      }
-      context.threadId = context.selectedThread = binding.threadId;
-      await this.assertOwnership(context, window, binding.threadId);
-      updateFusionWindow(context.app, window.id, { ownership: 'fusion' });
-      this.reclaimRequests.get(run.id)?.delete(context.app);
-      return binding;
-    }
+    if (recovering) return this.recoverBinding(run, attempt, context, window, binding);
     await this.assertOwnership(context, window);
     const state = await context.cdp.evaluate(helpersCall('agentState()'));
     if (window.bindingId && state?.busy) throw new Error('Fusion 专用窗口仍有原生执行，等待其结束');
@@ -267,6 +356,21 @@ export class FusionAgent {
     this.publish(run);
     return binding;
   }
+  async recoverBinding(run, attempt, context, window, binding) {
+    if (!binding || binding.windowId !== window.id) throw new Error('缺少可核对的原生 Binding，不能自动重发');
+    if (!binding.threadId) {
+      const turn = await context.cdp.evaluate(turnCall(attempt.receipt?.messageId || '', attempt.id, attempt.beforeIds || []));
+      if (!turn.id || !turn.threadId || turn.accepted === false) throw new Error('新会话尚无可确认的原生轮次，不能自动重发');
+      binding.threadId = turn.threadId;
+      this.updateWindow(context.app, window, { expectedThread: turn.threadId, bindingId: binding.id });
+      this.publish(run);
+    }
+    context.threadId = context.selectedThread = binding.threadId;
+    await this.assertOwnership(context, window, binding.threadId);
+    this.updateWindow(context.app, window, { ownership: window.role === 'main' ? 'ordinary' : 'fusion' });
+    this.reclaimRequests.get(run.id)?.delete(context.app);
+    return binding;
+  }
   async configure(context, attempt) {
     const currentModel = fusionModelSpec(await context.cdp.evaluate(helpersCall('agentModelName()'))).modelLabel;
     await context.withFocus(async () => {
@@ -282,42 +386,45 @@ export class FusionAgent {
   }
   async execute(run, attemptId, prompt, recovering = false) {
     const current = () => run.attempts.find(value => value.id === attemptId);
-    const window = await this.windowFor(run, current().app, !recovering);
+    const window = fusionAttemptRole(run, current()) === 'main' ? await this.mainWindowFor(run, current())
+      : await this.windowFor(run, current().app, !recovering);
     const release = leaseWindow(current().app, window.id, this, true);
     let context, runtime;
     try {
       context = await this.context(run, current().app, window);
-      const binding = await this.bind(run, current(), context, window, recovering);
-      runtime = { run, attemptId, context, binding, window, stopping: run.stopRequested || current().status === 'stopping' };
-      this.active.set(attemptId, runtime);
-      if (!recovering) {
-        if (run.stopRequested || current().status === 'cancelled') throw Object.assign(new Error('尚未提交的 Fusion 执行已取消'), { cancelled: true });
-        await this.configure(context, current());
-        if (!binding.threadId) {
-          binding.threadId = await context.cdp.evaluate(helpersCall('activeThread()')) || '';
-          context.threadId = context.selectedThread = binding.threadId;
-          updateFusionWindow(context.app, window.id, { expectedThread: binding.threadId });
-        }
-        const blocked = quotaBlockedMessage(current().app, run.capabilities.find(value => value.app === current().app)?.usage);
-        if (blocked) throw new Error(blocked);
-        const before = await context.cdp.evaluate(turnCall());
-        Object.assign(current(), { baseline: current().kind === 'task' ? await fusionWorkspaceSnapshot(run.project, run.tasks.find(task => task.id === current().taskId).scope) : null, beforeIds: before.ids,
-          prompt, status: 'preparing', submission: 'not_submitted' });
-        this.publish(run);
-        await this.assertOwnership(context, window, binding.threadId);
-        if (run.stopRequested) throw Object.assign(new Error('Fusion 已停止提交'), { cancelled: true });
-        Object.assign(current(), { status: 'submitting', submission: 'submitting', submittedAt: Date.now() });
-        this.publish(run);
-        context.emit = message => {
-          if (message.t === 'sendFailed') { current().nativeError = message.message || '原生明确拒绝提交'; runtime.rejected = true; }
-          if (message.t === 'sent' && !message.pending && message.messageId) {
-            current().receipt = { messageId: message.messageId, threadId: message.thread || '' };
-            this.publish(run);
+      await nativeWindow(context.cdp).run(async () => {
+        const binding = await this.bind(run, current(), context, window, recovering);
+        runtime = { run, attemptId, context, binding, window, stopping: run.stopRequested || current().status === 'stopping' };
+        this.active.set(attemptId, runtime);
+        if (!recovering) {
+          if (run.stopRequested || current().status === 'cancelled') throw Object.assign(new Error('尚未提交的 Fusion 执行已取消'), { cancelled: true });
+          await this.configure(context, current());
+          if (!binding.threadId) {
+            binding.threadId = await context.cdp.evaluate(helpersCall('activeThread()')) || '';
+            context.threadId = context.selectedThread = binding.threadId;
+            this.updateWindow(context.app, window, { expectedThread: binding.threadId });
           }
-          runtime.check?.();
-        };
-        await nativeWindow(context.cdp).run(() => context.withFocus(() => context.sendMessage(prompt, true, '', [], { requestId: attemptId })));
-      }
+          const blocked = quotaBlockedMessage(current().app, run.capabilities.find(value => value.app === current().app)?.usage);
+          if (blocked) throw new Error(blocked);
+          const before = await context.cdp.evaluate(turnCall());
+          Object.assign(current(), { baseline: current().kind === 'task' ? await fusionWorkspaceSnapshot(run.project, run.tasks.find(task => task.id === current().taskId).scope) : null, beforeIds: before.ids,
+            prompt, status: 'preparing', submission: 'not_submitted' });
+          this.publish(run);
+          await this.assertOwnership(context, window, binding.threadId);
+          if (run.stopRequested) throw Object.assign(new Error('Fusion 已停止提交'), { cancelled: true });
+          Object.assign(current(), { status: 'submitting', submission: 'submitting', submittedAt: Date.now() });
+          this.publish(run);
+          context.emit = message => {
+            if (message.t === 'sendFailed') { current().nativeError = message.message || '原生明确拒绝提交'; runtime.rejected = true; }
+            if (message.t === 'sent' && !message.pending && message.messageId) {
+              current().receipt = { messageId: message.messageId, threadId: message.thread || '' };
+              this.publish(run);
+            }
+            runtime.check?.();
+          };
+          await context.withFocus(() => context.sendMessage(prompt, true, '', [], { requestId: attemptId }));
+        }
+      });
       return await this.observe(runtime);
     } catch (error) {
       if (current().submission === 'submitting' || current().submission === 'accepted') {
@@ -348,7 +455,7 @@ export class FusionAgent {
           const chat = (await nativeWindow(context.cdp).read(true)).chat;
           const turn = await context.cdp.evaluate(turnCall(current().native?.messageId || current().receipt?.messageId || '', runtime.attemptId, current().beforeIds || [], current().native?.generationId || ''));
           if (binding.threadId && turn.threadId !== binding.threadId) {
-            updateFusionWindow(context.app, window.id, { ownership: 'changed', observedThread: turn.threadId,
+            this.updateWindow(context.app, window, { ownership: 'changed', observedThread: turn.threadId,
               ownershipReason: '原生执行期间会话已变化', ownershipChangedAt: Date.now() });
             throw new Error('原生执行期间会话归属变化，结果待核对');
           }
@@ -357,7 +464,7 @@ export class FusionAgent {
             if (!binding.threadId) {
               binding.threadId = turn.threadId;
               context.threadId = context.selectedThread = turn.threadId;
-              updateFusionWindow(context.app, window.id, { expectedThread: turn.threadId, bindingId: binding.id });
+              this.updateWindow(context.app, window, { expectedThread: turn.threadId, bindingId: binding.id });
             }
             Object.assign(current(), { native: { threadId: turn.threadId, turnId: turn.turnId, messageId: turn.id, ...(turn.generationId ? { generationId: turn.generationId } : {}) },
               submission: 'accepted', acceptedAt: current().acceptedAt || Date.now(), status: runtime.stopping ? 'stopping' : 'running' });
@@ -430,7 +537,7 @@ export class FusionAgent {
   }
   async archive(run, bindingId) {
     const binding = run.bindings.find(value => value.id === bindingId);
-    if (!binding || binding.archived) return;
+    if (!binding || binding.role === 'main' || binding.archived) return;
     const window = await this.windowFor(run, binding.app);
     const release = leaseWindow(binding.app, window.id, this, true);
     let context;

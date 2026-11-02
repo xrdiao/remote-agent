@@ -415,28 +415,31 @@ $('sheet').addEventListener('click', async e => {
   if (b.dataset.agent) { pendingAgentOpen = b.dataset.agent; closeSheet(); return send({ t: 'openAgent', id: b.dataset.agent, title: b.dataset.agentTitle || '' }); }
   if (b.dataset.term) { closeSheet(); status('正在切换终端…'); return send({ t: 'openTerminal', id: b.dataset.term }); }
   if ('projectPath' in b.dataset) {
+    const owner = projectSheetOwner(b);
     const path = window.prompt(I18N.tr('电脑上的文件夹完整路径'));
     if (!path?.trim()) return;
     status('正在读取文件夹…');
-    return send({ t: 'projects', path: path.trim() });
+    return sendProjectAction({ t: 'projects', path: path.trim() }, owner);
   }
   if ('projectNew' in b.dataset) {
+    const owner = projectSheetOwner(b);
     const name = window.prompt(I18N.tr('新项目的文件夹名称'));
     if (!name?.trim()) return;
     if (computerProjects) ovShowConversation();
     closeSheet(); status('正在打开项目…');
-    return send({ t: 'newProject', parent: b.dataset.projectNew, name: name.trim(), newSession: true });
+    return sendProjectAction({ t: 'newProject', parent: b.dataset.projectNew, name: name.trim(), newSession: true }, owner);
   }
-  if ('projectChat' in b.dataset) { if (computerProjects) ovShowConversation(); closeSheet(); status('正在打开项目…'); return send({ t: 'openProject', path: b.dataset.projectChat, newSession: true }); }
+  if ('projectChat' in b.dataset) { const owner = projectSheetOwner(b); if (computerProjects) ovShowConversation(); closeSheet(); status('正在打开项目…'); return sendProjectAction({ t: 'openProject', path: b.dataset.projectChat, newSession: true }, owner); }
   if ('projectTrust' in b.dataset) {
+    const owner = projectSheetOwner(b);
     const here = currentComputer();
     const last = here?.lastConversation;
     const returnTo = last?.windowId !== here?.windowId ? last : here?.previousConversation;
     closeSheet(); status('正在打开项目…');
-    return send({ t: 'projectTrust', approve: b.dataset.projectTrust === 'yes', returnTo });
+    return sendProjectAction({ t: 'projectTrust', approve: b.dataset.projectTrust === 'yes', returnTo }, owner);
   }
-  if (b.dataset.open) { if (computerProjects) ovShowConversation(); closeSheet(); status('正在打开项目…'); return send({ t: 'openProject', path: b.dataset.open }); }
-  if (b.dataset.dir) { status('正在读取文件夹…'); return send({ t: 'projects', path: b.dataset.dir }); }
+  if (b.dataset.open) { const owner = projectSheetOwner(b); if (computerProjects) ovShowConversation(); closeSheet(); status('正在打开项目…'); return sendProjectAction({ t: 'openProject', path: b.dataset.open }, owner); }
+  if (b.dataset.dir) { status('正在读取文件夹…'); return sendProjectAction({ t: 'projects', path: b.dataset.dir }, projectSheetOwner(b)); }
   if (b.dataset.docsFile) { openFile(b.dataset.docsFile, b.dataset.docsEditor === 'true'); closeSheet(); return; }
   if ('docsUp' in b.dataset) {
     status('正在读取文档…');

@@ -22,15 +22,16 @@ import { NativeCdp, nativeWindow, nativeWindowAt, nativeTargets, subscribeCatalo
 import { captureOperation } from './operations.mjs';
 
 export class Session extends AgentContext {
-  constructor(client, deviceId) {
+  constructor(client, deviceId, { fusionBinding = false } = {}) {
     super({ deviceId });
     this.client = client;
-    fusionViewers.add(this);
+    this.fusionBinding = fusionBinding;
+    if (!fusionBinding) fusionViewers.add(this);
     this.fusionSaved = savedFusion(deviceId);
     this.fusionRun = this.fusionSaved.runs.find(f => f.id === this.fusionSaved.current);
     // The phone reports when the app goes to the background; notifications skip the window it is looking at.
-    this.visible = true;
-    this.notifyVisible = true;
+    this.visible = !fusionBinding;
+    this.notifyVisible = !fusionBinding;
     this.notifyPresenceAt = Date.now();
     this.viewport = { w: 1000, h: 800 };
     this.mode = 'chat';
@@ -71,6 +72,7 @@ export class Session extends AgentContext {
     this.lastChatAt = this.lastTermAt = 0;
     clearInterval(this.chatTimer);
     clearInterval(this.termTimer);
+    if (this.fusionBinding) return;
     if (this.mode === 'screen') {
       visualCapture.subscribe(this);
       const windows = await this.visualList();
@@ -180,7 +182,7 @@ export class Session extends AgentContext {
       obj = { ...obj, capabilities: AGENT_REGISTRY[obj.app].capabilities };
     }
     if ((obj?.t === 'chat' || obj?.t === 'attached') && obj.sel && obj.chat) {
-      if (this.bindingReady && obj.sel === this.selectionKey() && !obj.cached
+      if (!this.fusionBinding && this.bindingReady && obj.sel === this.selectionKey() && !obj.cached
           && (!obj.chat.readonly || obj.chat.empty) && !obj.chat.subagent
           && obj.chat.thread === this.threadId && ['cursor', 'devin', 'codex'].includes(this.app)
           && this.rememberedSelection !== obj.sel && this.rememberingSelection?.key !== obj.sel) {
