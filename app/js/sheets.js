@@ -2,7 +2,7 @@
 let sheetKind = null;
 let menuRefreshTimer = 0;
 let menuPending = null, menuPickRequest = 0, modelSwitchRequest = null;
-let computerProjects = false;
+let projectEntry = null;
 function finishModelPick(m) {
   if (!modelSwitchRequest || m.requestId !== modelSwitchRequest.requestId) return;
   modelSwitchRequest = null;
@@ -179,7 +179,7 @@ function rememberAgentOpen(m) {
   }
 }
 function openSheet(kind, html) {
-  if (kind !== 'projects') computerProjects = false;
+  if (!['agents', 'agent-actions', 'projects', 'project-trust', 'computer-files'].includes(kind)) projectEntry = null;
   if (kind !== 'ask') askDone?.(false);
   if (kind !== 'agents') pendingProjectReveal = null;
   if (sheetKind === 'devices' && kind !== 'devices') deviceInviteGeneration++;
@@ -217,7 +217,7 @@ function openSheet(kind, html) {
   if (leavingVoice) scheduleVoiceWarmup();
 }
 function closeSheet() {
-  computerProjects = false;
+  projectEntry = null;
   askDone?.(false);
   agentActionTarget = null;
   pendingProjectReveal = null;
@@ -438,10 +438,7 @@ function startEditor() {
   const state = capabilityState('editor');
   if (!state.available) return status(state.reason, false);
   clearTimeout(menuRefreshTimer);
-  editorBrowsing = true;
-  editorDirectory = null;
-  status('正在读取项目文件…');
-  send({ t: 'docs', editor: true });
+  return openComputerFiles(currentComputer().id, { current: true });
 }
 $('pickEditor').onclick = startEditor;
 function showComputerActions(id, app = '') {
@@ -458,21 +455,24 @@ function showComputerActions(id, app = '') {
   const selected = projects.find(w => w.windowId === entry.c.windowId) || projects[0];
   const agent = catalog.find(a => a.app === app);
   const missing = `<p class="hint">${esc(I18N.tr(agent?.reason || '请先打开此 Agent'))}</p>${agent?.installed === true && !agent.running && agent.launchSupported ? `<button class="opt" data-computer-launch="${app}" ${attr}>${I18N.tr('启动')} ${names[app]}</button>` : ''}`;
-  openSheet('computer-actions', `<h3>${I18N.tr('打开项目／新建会话')}</h3><p class="hint">${esc(entry.name)}</p><div class="pSec">${I18N.tr('选择 Agent')}</div><div class="computerAgentTabs">${tabs}</div>${selected ? `<button class="opt" data-computer-action ${targetAttr(selected)}>${I18N.tr('选择文件夹')}</button>` : missing}`);
+  openSheet('computer-actions', `<h3>${I18N.tr('项目与会话')}</h3><p class="hint">${esc(entry.name)}</p><div class="pSec">${I18N.tr('选择 Agent')}</div><div class="computerAgentTabs">${tabs}</div>${selected ? `<button class="opt" data-computer-action ${targetAttr(selected)}>${I18N.tr('项目与会话')}</button>` : missing}`);
 }
 function showComputerFiles() {
   const state = computerFiles, dir = state.directory;
   const field = document.activeElement?.id === 'computerFilePath' ? document.activeElement : null;
   const selection = field && [field.selectionStart, field.selectionEnd];
-  const rows = (dir?.entries || []).map(e => `<button class="opt editorEntry${e.directory ? ' editorFolder' : ''}" data-computer-path="${esc(e.path)}" data-computer-directory="${!!e.directory}" ${e.selectable ? '' : 'disabled'}>${fileEntryIcon(e.directory)}<span class="lbl ovRaw">${esc(e.name)}</span>${e.directory ? '<span class="editorEntryArrow" aria-hidden="true">›</span>' : `<span class="sub">${e.selectable ? fmtSize(e.size) : I18N.tr('不可读取')}</span>`}</button>`).join('');
-  openSheet('computer-files', `<h3>${I18N.tr('打开文件')}</h3><p class="hint ovRaw">${esc(state.computer.name)}</p><form id="computerFilePathForm" class="computerFilePath"><input id="computerFilePath" class="ovRaw" aria-label="${I18N.tr('文件路径')}" placeholder="${I18N.tr('输入路径')}" value="${esc(state.path)}" autocomplete="off" autocapitalize="off" spellcheck="false"><button type="button" data-computer-complete title="Tab">${I18N.tr('补全')} ⇥</button><button type="submit">${I18N.tr('前往')}</button></form><div id="computerFileCompletions"></div><div class="computerFileNav"><button type="button" data-computer-path="${esc(dir?.parent ?? '')}" data-computer-directory="true" ${dir?.parent == null ? 'disabled' : ''}>${I18N.tr('返回上一级')}</button><button type="button" data-computer-root>${I18N.tr('根目录')}</button></div><p id="computerFileStatus" class="hint${state.error ? ' err' : ''}" role="status">${esc(I18N.tr(state.message))}</p>${rows || (!state.message ? `<div class="hint">${I18N.tr('此目录暂无可显示的文件')}</div>` : '')}`);
+  const entries = state.roots ? state.roots.map(p => ({ name: p.name, path: p.path, directory: true, selectable: true })) : dir?.entries || [];
+  const rows = entries.filter(e => !state.project || e.directory).map(e => `<button class="opt editorEntry${e.directory ? ' editorFolder' : ''}" data-computer-path="${esc(e.path)}" data-computer-directory="${!!e.directory}" ${e.selectable ? '' : 'disabled'}>${fileEntryIcon(e.directory)}<span class="lbl ovRaw">${esc(e.name)}</span>${e.directory ? '<span class="editorEntryArrow" aria-hidden="true">›</span>' : `<span class="sub">${e.selectable ? fmtSize(e.size) : I18N.tr('不可读取')}</span>`}</button>`).join('');
+  const owner = state.project?.owner;
+  const context = owner ? ` · Fusion · ${OV_AGENT[owner.app]}` : '';
+  const actions = state.project && dir ? '<div class="computerFileActions"><button class="opt" data-computer-project="open">打开此文件夹</button><button class="opt" data-computer-project="chat">在此项目新建会话</button><button class="opt" data-computer-project="new">新建项目并创建会话</button></div>' : '';
+  openSheet('computer-files', `<h3>${I18N.tr(state.project ? '选择文件夹' : '打开文件')}</h3><p class="hint ovRaw">${esc(state.computer.name + context)}</p><form id="computerFilePathForm" class="computerFilePath"><input id="computerFilePath" class="ovRaw" aria-label="${I18N.tr('文件路径')}" placeholder="${I18N.tr('输入路径')}" value="${esc(state.path)}" autocomplete="off" autocapitalize="off" spellcheck="false"><button type="button" data-computer-complete title="Tab">${I18N.tr('补全')} ⇥</button><button type="submit">${I18N.tr('前往')}</button></form><div id="computerFileCompletions"></div><div class="computerFileNav"><button type="button" data-computer-path="${esc(dir?.parent ?? '')}" data-computer-directory="true" ${dir?.parent == null ? 'disabled' : ''}>${I18N.tr('返回上一级')}</button><button type="button" data-computer-root>${I18N.tr('根目录')}</button></div>${actions}<p id="computerFileStatus" class="hint${state.error ? ' err' : ''}" role="status">${esc(I18N.tr(state.message))}</p>${rows || (!state.message ? `<div class="hint">${I18N.tr('此目录暂无可显示的文件')}</div>` : '')}`);
   $('sheet').scrollTop = state.scroll;
   if (selection) { $('computerFilePath').focus(); $('computerFilePath').setSelectionRange(...selection); }
+  else if (state.focusPath) { $('computerFilePath').focus(); state.focusPath = false; }
 }
 function cancelDocs() {
   docsPending = null;
-  editorBrowsing = false;
-  editorDirectory = null;
   finishPending(['正在读取文档…', '正在读取项目文件…']);
 }
 function agentButton(a) {
@@ -957,30 +957,24 @@ function showDocs(m) {
   if (!docsPending || m.requestId !== docsPending.id || docsPending.sel !== viewSel || docsPending.computer !== (currentComputer()?.id || '')) return;
   docsPending = null;
   finishPending(['正在读取文档…', '正在读取项目文件…']);
-  editorBrowsing = !!m.editor;
-  const heading = m.editor ? 'Editor · 项目文件' : '查看文档';
-  const back = m.editor ? '<button class="opt" data-editor-return>返回对话</button>' : '';
-  if (m.editor && m.root) editorDirectory = { root: m.root, path: m.path, host: m.host || '' };
+  if (m.editor) return receiveCurrentFiles(m);
   if (m.error) { closeSheet(); return status(m.error, false); }
   if (m.projects) {
     const rows = m.projects.map(p => `<button class="opt" data-docs-root="${esc(p.path)}" data-docs-host="${esc(p.host || '')}"><span class="lbl">${esc(p.name)}${p.detail ? `<span class="sub">${esc(p.detail)}</span>` : ''}</span></button>`).join('');
-    openSheet('docs', `<h3>${heading}</h3>${back}<div class="hint">选择要查看的项目</div>${rows || '<div class="hint">没有可查看的项目。</div><button class="opt" data-act="projects">选择文件夹／新建项目</button>'}`);
+    openSheet('docs', `<h3>查看文档</h3><div class="hint">选择要查看的项目</div>${rows || '<div class="hint">没有可查看的项目。</div><button class="opt" data-act="projects">选择文件夹／新建项目</button>'}`);
     return;
   }
   const hostAttr = ` data-docs-host="${esc(m.host || '')}"`;
   const up = `<button class="opt" data-docs-up="${esc(m.parent || '')}" data-root="${esc(m.root)}"${hostAttr}><span class="lbl">返回上一级</span></button>`;
-  const entryIcon = folder => m.editor ? fileEntryIcon(folder) : '';
-  const folders = (m.folders || []).map(d => `<button class="opt${m.editor ? ' editorEntry editorFolder' : ''}" data-docs-root="${esc(m.root)}" data-docs-dir="${esc(d.path)}"${hostAttr}>${entryIcon(true)}<span class="lbl">${esc(d.name)}</span><span class="sub">文件夹</span>${m.editor ? '<span class="editorEntryArrow" aria-hidden="true">›</span>' : ''}</button>`).join('');
-  const row = (f, tag) => `<button class="opt${m.editor ? ' editorEntry' : ''}" data-docs-file="${esc(f.path)}" data-docs-editor="${!!m.editor}">${entryIcon(false)}<span class="lbl">${esc(f.name)}</span><span class="sub">${tag}</span></button>`;
+  const folders = (m.folders || []).map(d => `<button class="opt" data-docs-root="${esc(m.root)}" data-docs-dir="${esc(d.path)}"${hostAttr}><span class="lbl">${esc(d.name)}</span><span class="sub">文件夹</span></button>`).join('');
+  const row = (f, tag) => `<button class="opt" data-docs-file="${esc(f.path)}"><span class="lbl">${esc(f.name)}</span><span class="sub">${tag}</span></button>`;
   const docs = (m.docs || []).map(f => row(f, '文档')).join('');
   const code = (m.code || []).map(f => row(f, '代码')).join('');
-  const files = (m.files || []).map(f => row(f, '文件')).join('');
-  const divider = m.editor && folders && (docs || code || files) ? '<div class="editorEntryDivider" role="separator"></div>' : '';
-  const empty = !folders && !docs && !code && !files ? '<div class="hint">这个文件夹里没有可查看的文档或代码。</div>' : '';
-  openSheet('docs', `<h3>${heading}</h3>${back}<div class="hint">${esc(m.name || '')}${m.path ? ' · ' + esc(m.path) : ''}</div>${up}${folders}${divider}${docs}${code}${files}${empty}`);
+  const empty = !folders && !docs && !code ? '<div class="hint">这个文件夹里没有可查看的文档或代码。</div>' : '';
+  openSheet('docs', `<h3>查看文档</h3><div class="hint">${esc(m.name || '')}${m.path ? ' · ' + esc(m.path) : ''}</div>${up}${folders}${docs}${code}${empty}`);
 }
 function projectSheet(kind, html, owner) {
-  if (owner) computerProjects = false;
+  if (owner) projectEntry = null;
   openSheet(kind, owner ? `<div data-project-context="${esc(JSON.stringify(owner))}">${html}</div>` : html);
 }
 function projectSheetOwner(element = $('sheet')) {
@@ -990,25 +984,27 @@ function projectSheetOwner(element = $('sheet')) {
 function sendProjectAction(message, owner) {
   return owner ? fusionProjectAction(message, owner) : send(message);
 }
+function openProjectPicker() {
+  if (projectEntry?.source === 'computer') {
+    status('正在读取项目…');
+    return send({ t: 'projects' });
+  }
+  return openComputerFiles(currentComputer().id, { current: true, project: { owner: null } });
+}
+function openPickedProject(message, owner) {
+  if (projectEntry?.source === 'computer') ovShowConversation();
+  closeSheet(); status('正在打开项目…');
+  return sendProjectAction(message, owner);
+}
 function showProjectTrust(m, owner = null) {
   projectSheet('project-trust', `<h3>信任此项目？</h3><p class="hint">信任后，Agent 和扩展可运行此项目的代码。只信任你了解来源的项目。</p><p>${esc(m.path)}</p><button class="opt" data-project-trust="yes">信任此项目</button><button class="opt" data-project-trust="no">保持限制模式并返回上次对话</button>`, owner);
 }
 function showProjects(m, owner = null) {
+  if (m.browsing) return openProjectFolders(m.path, owner);
   const context = owner ? `<p class="hint">${esc(ovCompName(owner.computer))} · Fusion · ${esc(OV_AGENT[owner.app])}</p>`
-    : computerProjects ? `<p class="hint">${esc(currentComputer().name)} · ${esc(currentAppName)}</p>` : '';
-  const pathInput = '<button class="opt" data-project-path><span class="lbl">输入文件夹路径</span></button>';
-  const drives = (m.drives || []).map(p => `<button class="opt" data-dir="${esc(p)}"><span class="lbl">${esc(p)}</span></button>`).join('');
-  if (!m.browsing) {
-    const rows = (m.recent || []).map(p => {
-      const open = `<button class="opt" data-open="${esc(p.path)}"><span class="lbl">${esc(p.name)}<span class="sub">${esc(p.path)}</span></span></button>`;
-      return computerProjects || owner ? `<div class="optRow">${open}<button class="opt computerProjectNew" data-project-chat="${esc(p.path)}">${I18N.tr('新建会话')}</button></div>` : open;
-    }).join('');
-    projectSheet('projects', `<h3>打开项目</h3>${context}${rows || '<div class="hint">还没有最近打开的本地项目。</div>'}<button class="opt" data-dir="${esc(m.path)}"><span class="lbl">浏览文件夹</span></button>${pathInput}${drives}`, owner);
-    return;
-  }
-  const up = m.parent ? `<button class="opt" data-dir="${esc(m.parent)}"><span class="lbl">上级目录</span></button>` : '';
-  const dirs = (m.dirs || []).map(d => `<button class="opt" data-dir="${esc(d.path)}"><span class="lbl">${esc(d.name)}</span></button>`).join('');
-  projectSheet('projects', `<h3>浏览文件夹</h3>${context}<div class="hint">${esc(m.path)}</div><button class="opt" data-open="${esc(m.path)}"><span class="lbl">打开此文件夹</span></button><button class="opt" data-project-chat="${esc(m.path)}"><span class="lbl">在此项目新建会话</span></button><button class="opt" data-project-new="${esc(m.path)}"><span class="lbl">新建项目并创建会话</span></button>${pathInput}${up}${drives}${dirs || '<div class="hint">没有子文件夹。</div>'}`, owner);
+    : projectEntry ? `<p class="hint">${esc(currentComputer().name)} · ${esc(currentAppName)}</p>` : '';
+  const rows = (m.recent || []).map(p => `<div class="optRow"><button class="opt" data-open="${esc(p.path)}"><span class="lbl">${esc(p.name)}<span class="sub">${esc(p.path)}</span></span></button><button class="opt computerProjectNew" data-project-chat="${esc(p.path)}">${I18N.tr('新建会话')}</button></div>`).join('');
+  projectSheet('projects', `<h3>打开项目</h3>${context}<div class="projectBrowserTools"><button class="opt" data-project-browse="${esc(m.path)}"><span class="lbl">浏览文件夹</span></button><button class="opt" data-project-path="${esc(m.path)}"><span class="lbl">输入文件夹路径</span></button></div>${rows || '<div class="hint">还没有最近打开的本地项目。</div>'}`, owner);
 }
 function showCodexSettings(m) {
   const button = c => `<button class="paramBtn ${c.on || c.current ? 'cur' : ''}" data-codex-setting="${esc(c.id)}" ${c.disabled ? 'disabled' : ''}>${esc(c.label)}</button>`;

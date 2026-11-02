@@ -9,15 +9,39 @@ let fileRequestId = 0, saveRequestId = 0;
 let filePdf = null;
 let readingFile = null;
 let computerFiles = null;
+let returnToBrowser = null;
 async function computerFileRequest(computer, route, opts = {}) {
   const response = await api(route, { ...opts, computer });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error);
   return data;
 }
-function openComputerFiles(id) {
-  computerFiles = { computer: loadComputers().find(c => c.id === id), directory: null, path: '', message: '', error: false, scroll: 0, request: 0, completion: 0 };
-  return browseComputerFiles('', true);
+function openComputerFiles(id, { path = '', project = null, current = false, focusPath = false } = {}) {
+  computerFiles = { computer: loadComputers().find(c => c.id === id), directory: null, roots: null, path, project, focusPath, os: '',
+    message: '', error: false, scroll: 0, request: 0, completion: 0 };
+  if (current) {
+    computerFiles.message = '正在读取项目文件…';
+    showComputerFiles();
+    return send({ t: 'docs', editor: true });
+  }
+  return browseComputerFiles(path, !path);
+}
+function openProjectFolders(path, owner = null, focusPath = false) {
+  return openComputerFiles(owner?.computer || currentComputer().id, { path, project: { owner }, focusPath });
+}
+function receiveCurrentFiles(m) {
+  computerFiles.os = m.os;
+  if (m.error) {
+    computerFiles.message = m.error; computerFiles.error = true;
+  } else if (m.root) {
+    computerFiles.directory = { path: m.root };
+    return browseComputerFiles(computerFiles.path || m.root);
+  }
+  else {
+    computerFiles.roots = m.projects;
+    computerFiles.message = '';
+  }
+  showComputerFiles();
 }
 async function browseComputerFiles(path, roots = false) {
   const state = computerFiles, request = ++state.request;
@@ -29,10 +53,13 @@ async function browseComputerFiles(path, roots = false) {
     const data = await computerFileRequest(state.computer, '/api/transfer/list?' + query);
     if (computerFiles !== state || state.request !== request || sheetKind !== 'computer-files') return;
     if (data.file) {
+      if (state.project) throw new Error('请选择文件夹');
       state.path = state.directory?.path || ''; state.message = '';
-      openFile(data.file, false, '', false, state.computer);
+      openFile(data.file, '', false, state.computer);
       return closeSheet();
     }
+    state.roots = null;
+    state.os = data.os;
     state.directory = data;
     if (state.path === path) state.path = data.path;
     state.message = '';
@@ -44,7 +71,7 @@ async function browseComputerFiles(path, roots = false) {
 }
 async function completeComputerPath() {
   const state = computerFiles, field = $('computerFilePath'), value = field.value;
-  const request = ++state.completion, win = state.directory?.os === 'win32', sep = win ? '\\' : '/';
+  const request = ++state.completion, win = state.os === 'win32', sep = win ? '\\' : '/';
   const slash = win ? Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\')) : value.lastIndexOf('/');
   const parent = value.slice(0, slash + 1), prefix = value.slice(slash + 1);
   const fold = text => win ? text.toLowerCase() : text;
@@ -52,7 +79,7 @@ async function completeComputerPath() {
     const data = !parent && state.directory?.path === '' ? state.directory
       : await computerFileRequest(state.computer, '/api/transfer/list?' + new URLSearchParams({ browse: '1', path: parent || '.', base: state.directory?.path || '' }));
     if (computerFiles !== state || state.completion !== request || sheetKind !== 'computer-files') return;
-    const rows = data.entries.filter(e => e.selectable && fold(e.name).startsWith(fold(prefix)));
+    const rows = data.entries.filter(e => e.selectable && (!state.project || e.directory) && fold(e.name).startsWith(fold(prefix)));
     const suffix = e => e.directory && !/[\\/]$/.test(e.name) ? sep : '';
     let common = rows[0]?.name || prefix;
     for (const row of rows) while (!fold(row.name).startsWith(fold(common))) common = common.slice(0, -1);
@@ -179,7 +206,7 @@ function openChatImage(source) {
   fileRequestId++;
   finishFileRead();
   finishFileSave();
-  returnToEditor = null;
+  returnToBrowser = null;
   stopVideo(); leaveEdit();
   $('vStatus').hidden = true;
   $('vChanges').hidden = true;
@@ -204,11 +231,11 @@ function leaveEdit() {
   $('vTools').hidden = true;
   $('vSearch').hidden = true;
 }
-async function openFile(ref, fromEditor = false, diff = '', fromChanges = false, computer = null) {
+async function openFile(ref, diff = '', fromChanges = false, computer = null) {
   const requestId = ++fileRequestId;
   finishFileRead();
   finishFileSave();
-  returnToEditor = computer ? { browser: computerFiles, scroll: $('sheet').scrollTop } : fromEditor ? { ...editorDirectory } : null;
+  returnToBrowser = computer ? { browser: computerFiles, scroll: $('sheet').scrollTop } : null;
   stopVideo();
   leaveEdit();
   viewing = null;
@@ -498,13 +525,10 @@ function closeViewer() {
   $('vEdit').hidden = true;
   $('viewer').classList.remove('open');
   $('vBody').innerHTML = '';
-  if (returnToEditor) {
-    const directory = returnToEditor;
-    returnToEditor = null;
-    if (directory.browser) {
-      computerFiles = directory.browser; computerFiles.scroll = directory.scroll;
-      showComputerFiles();
-    } else send({ t: 'docs', ...directory, editor: true });
+  if (returnToBrowser) {
+    computerFiles = returnToBrowser.browser; computerFiles.scroll = returnToBrowser.scroll;
+    returnToBrowser = null;
+    showComputerFiles();
   }
 }
 $('vClose').onclick = () => history.state?.viewer ? history.back() : closeViewer();

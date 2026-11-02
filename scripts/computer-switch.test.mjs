@@ -75,7 +75,7 @@ function harness({ sameSelection = false, count = 2 } = {}) {
     var windows = [], appPlans = {}, sheetKind = '', pendingStatus = '', qnSig = '', inApp = false;
     var capabilityOwner = '', agentCapabilities = null, capabilityBlock = '';
     var menuRequest = 0, menuPending = null, menuPickRequest = 0, modelSwitchRequest = null;
-    var docsRequest = 0, docsPending = null, editorBrowsing = false, codexSettingsRequest = 0;
+    var docsRequest = 0, docsPending = null, projectEntry = null, codexSettingsRequest = 0;
     var draftEpoch = '', draftRevision = 0, draftAckRevision = 0, pendingDesktopDraft = null, mirroredDraft = '';
     var activeDraft = '', draftPushTimer = 0, questionCompose = null, composing = false, inputRevision = 0;
     var drafts = new Map(), draftMentions = new Map(), dirtyDrafts = new Set(), draftVersions = new Map();

@@ -1683,6 +1683,16 @@ function foldingComposer(land) {
   return { context, classes, input, focus, handlers, flush: () => { for (const timer of timers.splice(0)) timer(); } };
 }
 
+test('collapsed landscape tools retain their action and only a blank-area click expands the composer', () => {
+  const h = foldingComposer(true); h.context.setComposeCompact(true);
+  let intercepted = 0;
+  h.handlers.click({ target: { closest: () => ({ tagName: 'BUTTON' }) }, preventDefault: () => intercepted++, stopPropagation: () => intercepted++ });
+  h.context.updateComposeCompact();
+  assert.equal(intercepted, 0); assert.equal(h.classes.has('composeCompact'), true);
+  h.handlers.click({ target: { closest: () => null }, preventDefault: () => intercepted++, stopPropagation: () => intercepted++ });
+  assert.equal(intercepted, 2); assert.equal(h.classes.has('composeCompact'), false);
+});
+
 test('question entry folds the main composer in both orientations and releases it on blur', () => {
   for (const land of [false, true]) {
     const h = foldingComposer(land); h.focus.question = true; h.context.updateComposeCompact();
@@ -1754,4 +1764,195 @@ test('waiting for confirmation cannot send a native completion notification', ()
 test('idle native controls without an explicit turn result are not proof of completion', () => {
   const h = nativeCompletionNotifications(); h.settle('completed', { run: null });
   assert.equal(h.events.filter(event => event.kind === 'done').length, 0);
+});
+
+function sharedFileBrowser(readDirectory = () => ({ path: '/project', parent: '/', os: 'linux', entries: [
+  { name: 'reports', path: '/project/reports', directory: true, selectable: true },
+  { name: 'readme.txt', path: '/project/readme.txt', directory: false, selectable: true, size: 12 },
+] })) {
+  const handlers = new Map(), requests = [], packets = [], opened = [], nodes = new Map();
+  const computers = ['computer-one', 'computer-two'].map(id => ({ id, name: id }));
+  let selected = computers[0];
+  const node = id => {
+    if (!nodes.has(id)) nodes.set(id, { innerHTML: '', value: '', scrollTop: 0,
+      addEventListener: (event, handler) => handlers.set(event, handler), replaceChildren() { this.innerHTML = ''; },
+      focus() { context.document.activeElement = this; }, setSelectionRange() {},
+    });
+    return nodes.get(id);
+  };
+  const context = vm.createContext({ URLSearchParams, $: node, loadComputers: () => computers, currentComputer: () => selected,
+    sheetKind: '', projectEntry: null, docsPending: null, viewSel: 'selected-thread', menuRefreshTimer: 0, clearTimeout,
+    document: { activeElement: null }, I18N: { tr: value => value }, esc: String, fmtSize: String,
+    OV_AGENT: { cursor: 'Cursor' }, status() {}, finishPending() {}, capabilityState: () => ({ available: true }),
+    openSheet(kind, html) { context.sheetKind = kind; node('sheet').innerHTML = html; },
+    closeSheet() { context.sheetKind = ''; context.projectEntry = null; },
+    send: packet => { packets.push(packet); return true; }, openFile: (...args) => opened.push(args),
+    api: async (route, options) => {
+      requests.push({ route, computer: options.computer.id, method: options.method || 'GET', body: options.body });
+      const data = await readDirectory(new URL(route, 'http://fixture'), options.computer);
+      return { ok: true, json: async () => data };
+    },
+  });
+  const files = read('app/js/files.js'), sheets = read('app/js/sheets.js');
+  vm.runInContext(part(files, 'let computerFiles = null;', 'function finishFileRead(')
+    + part(sheets, 'function showComputerFiles(', 'function cancelDocs(')
+    + part(sheets, 'function fileEntryIcon(', 'function projectSheet(')
+    + part(sheets, 'function startEditor(', "$('pickEditor').onclick")
+    + part(sheets, 'function openProjectPicker(', 'function showProjectTrust('), context);
+  return { context, handlers, requests, packets, opened, node, computers,
+    open: (...args) => context.openComputerFiles(...args),
+    state: () => vm.runInContext('computerFiles', context),
+    select: id => { selected = computers.find(computer => computer.id === id); },
+    type(value) { node('computerFilePath').value = value; handlers.get('input')({ target: { id: 'computerFilePath', value } }); },
+  };
+}
+
+test('Editor initialization reads only native project metadata without enumerating its files', async () => {
+  const { methods } = await import('../server/agent/files.mjs');
+  const emitted = [], root = '/fixture-that-does-not-exist/current-project';
+  await methods.showDocs.call({ currentRoots: async () => [{ root }], emit: data => emitted.push(data) }, '', '', '', true, 7);
+  assert.deepEqual(emitted, [{ t: 'docs', editor: true, requestId: 7, os: process.platform, root, path: root, host: '' }]);
+});
+
+test('ordinary document browsing still lists project documents after Editor initialization is shared', async () => {
+  const { methods } = await import('../server/agent/files.mjs');
+  const directory = fs.mkdtempSync(path.resolve('_shots/shared-navigation-20261102/docs-'));
+  try {
+    fs.writeFileSync(path.join(directory, 'README.md'), 'document fixture');
+    const emitted = [];
+    await methods.showDocs.call({ currentRoots: async () => [{ root: directory }], emit: data => emitted.push(data) }, '', '', '', false, 8);
+    assert.equal(emitted[0].editor, false); assert.equal(emitted[0].docs[0].name, 'README.md');
+    assert.equal(emitted[0].root, directory);
+  } finally { fs.rmSync(directory, { recursive: true }); }
+});
+
+test('the two Editor entries share one browser with different initial paths and one directory read', async () => {
+  const home = sharedFileBrowser(); await home.open('computer-two');
+  assert.equal(new URL(home.requests[0].route, 'http://fixture').searchParams.get('roots'), '1');
+  assert.equal(home.requests[0].computer, 'computer-two');
+  const current = sharedFileBrowser(); current.context.startEditor();
+  assert.equal(current.requests.length, 0); assert.equal(current.packets[0].t, 'docs'); assert.equal(current.packets[0].editor, true);
+  await current.context.receiveCurrentFiles({ root: '/project' });
+  assert.equal(current.requests.length, 1);
+  assert.equal(new URL(current.requests[0].route, 'http://fixture').searchParams.get('path'), '/project');
+  assert.equal(current.state().directory.path, '/project');
+  assert(current.node('sheet').innerHTML.indexOf('computerFilePathForm') < current.node('sheet').innerHTML.indexOf('data-computer-path'));
+});
+
+test('file and project browsing share completion while project choices include directories only', async () => {
+  for (const project of [null, { owner: { computer: 'computer-two', app: 'cursor' } }]) {
+    const h = sharedFileBrowser(); await h.open('computer-two', { path: '/project', project });
+    h.type('/project/re'); await h.context.completeComputerPath();
+    assert.equal(h.node('computerFilePath').value, project ? '/project/reports/' : '/project/re');
+    assert.equal(h.requests.every(request => request.computer === 'computer-two'), true);
+    assert.equal(h.node('sheet').innerHTML.includes('readme.txt'), !project);
+    if (project) assert(h.node('sheet').innerHTML.includes('data-computer-project="open"'));
+  }
+});
+
+test('shared Windows folder completion follows the computer OS and ignores file candidates', async () => {
+  const h = sharedFileBrowser(() => ({ path: 'C:\\', parent: '', os: 'win32', entries: [
+    { name: 'Users', path: 'C:\\Users', directory: true, selectable: true },
+    { name: 'Usage.txt', path: 'C:\\Usage.txt', directory: false, selectable: true },
+  ] }));
+  await h.open('computer-two', { path: 'C:\\', project: { owner: null } });
+  h.type('C:\\us'); await h.context.completeComputerPath();
+  assert.equal(h.node('computerFilePath').value, 'C:\\Users\\');
+});
+
+test('multiple native project roots retain their owning Windows OS before the first directory read', async () => {
+  const h = sharedFileBrowser(() => ({ path: 'C:\\', os: 'win32', entries: [
+    { name: 'Users', path: 'C:\\Users', directory: true, selectable: true },
+  ] }));
+  await h.open('computer-two', { current: true, project: { owner: null } });
+  h.context.receiveCurrentFiles({ projects: [{ name: 'one', path: 'C:\\one' }, { name: 'two', path: 'C:\\two' }], os: 'win32' });
+  h.type('C:\\us'); await h.context.completeComputerPath();
+  assert.equal(h.node('computerFilePath').value, 'C:\\Users\\');
+});
+
+test('an older computer browser read cannot overwrite a newly opened browser', async () => {
+  const pending = [];
+  const h = sharedFileBrowser(() => new Promise(resolve => pending.push(resolve)));
+  const first = h.open('computer-one', { path: '/first' }), second = h.open('computer-two', { path: '/second' });
+  pending[1]({ path: '/second', os: 'linux', entries: [] }); await second;
+  pending[0]({ path: '/first', os: 'linux', entries: [] }); await first;
+  assert.equal(h.state().computer.id, 'computer-two'); assert.equal(h.state().directory.path, '/second');
+});
+
+test('shared browsing opens a file on its owning computer and rejects a file as a project folder', async () => {
+  const file = '/project/readme.txt', h = sharedFileBrowser(() => ({ file }));
+  await h.open('computer-two', { path: file });
+  assert.equal(h.opened.length, 1); assert.equal(h.opened[0][0], file); assert.equal(h.opened[0][3].id, 'computer-two');
+  await h.open('computer-two', { path: file, project: { owner: null } });
+  assert.equal(h.opened.length, 1); assert.equal(h.state().error, true); assert.equal(h.state().message, '请选择文件夹');
+});
+
+test('late Editor initialization stays with its request selection and computer', async () => {
+  const h = sharedFileBrowser(); await h.open('computer-two', { current: true });
+  h.context.docsPending = { id: 9, sel: 'selected-thread', computer: 'computer-two' };
+  h.context.showDocs({ requestId: 9, editor: true, root: '/old-computer' });
+  assert.equal(h.requests.length, 0);
+  h.select('computer-two');
+  h.context.showDocs({ requestId: 8, editor: true, root: '/old-request' }); assert.equal(h.requests.length, 0);
+  await h.context.showDocs({ requestId: 9, editor: true, root: '/project' });
+  assert.equal(h.requests.length, 1); assert.equal(h.requests[0].computer, 'computer-two');
+});
+
+test('computer and conversation project entries share the session opener and keep their folder starting points', async () => {
+  const h = sharedFileBrowser(), rendered = [];
+  Object.assign(h.context, { ovS: {}, bindWin: async target => h.select(target.computer),
+    agentLists: new Map([['selected', []]]), agentListKey: () => 'selected',
+    showAgents: list => { rendered.push(list); h.context.sheetKind = 'agents'; }, requestAgentCatalog() {},
+  });
+  vm.runInContext(part(read('app/js/core.js'), 'function openAgentList(', 'let currentAppName =')
+    + part(read('app/js/notify.js'), 'async function runComputerAction(', 'let updateUntouched ='), h.context);
+  await h.context.runComputerAction({ computer: 'computer-two', windowId: 'window-two', win: 'cursor:two' });
+  assert.equal(rendered.length, 1); assert.equal(h.context.projectEntry.source, 'computer');
+  h.context.openProjectPicker(); assert.equal(h.packets.at(-1).t, 'projects'); assert.equal(h.requests.length, 0);
+  h.context.sheetKind = ''; h.context.openAgentList();
+  assert.equal(rendered.length, 2); assert.equal(h.context.projectEntry.source, 'conversation');
+  h.context.openProjectPicker(); assert.equal(h.packets.at(-1).t, 'docs'); assert.equal(h.packets.at(-1).editor, true);
+  assert.equal(h.state().project.owner, null); assert.equal(h.state().computer.id, 'computer-two');
+});
+
+test('typing a relative path during Editor initialization uses the native project as its base', async () => {
+  const h = sharedFileBrowser(); h.context.startEditor(); h.type('reports');
+  await h.context.receiveCurrentFiles({ root: '/project' });
+  const query = new URL(h.requests[0].route, 'http://fixture').searchParams;
+  assert.equal(query.get('base'), '/project'); assert.equal(query.get('path'), 'reports');
+});
+
+test('closing a shared Editor preview returns to the same directory and scroll without rereading it', async () => {
+  const h = sharedFileBrowser(); await h.open('computer-two', { path: '/project' });
+  h.node('viewer').classList = { remove() {} };
+  Object.assign(h.context, { fileRequestId: 1, viewing: {}, dirtyEdit: () => false,
+    finishFileRead() {}, finishFileSave() {}, stopVideo() {}, leaveEdit() {},
+  });
+  vm.runInContext(part(read('app/js/files.js'), 'function closeViewer(', "$('vClose').onclick")
+    + '\nreturnToBrowser = { browser: computerFiles, scroll: 128 };', h.context);
+  h.context.closeViewer();
+  assert.equal(h.state().computer.id, 'computer-two'); assert.equal(h.state().directory.path, '/project');
+  assert.equal(h.node('sheet').scrollTop, 128); assert.equal(h.requests.length, 1); assert.equal(h.packets.length, 0);
+});
+
+test('shared Editor saving uses its owning computer and updates text only from the confirmed result', async () => {
+  const h = sharedFileBrowser(() => ({ ok: true, size: 3 }));
+  Object.assign(h.context, { editing: true, saving: null, saveRequestId: 0, fileRequestId: 3, editBase: 'old',
+    viewing: { path: '/project/a.txt', text: 'old', computer: h.computers[1] },
+  });
+  h.node('vEditBox').value = 'new';
+  vm.runInContext(part(read('app/js/files.js'), 'function onSaved(', 'function closeViewer('), h.context);
+  await h.context.saveEdit();
+  assert.equal(h.requests[0].computer, 'computer-two'); assert.equal(h.requests[0].route, '/api/transfer/save');
+  assert.deepEqual(JSON.parse(h.requests[0].body), { path: '/project/a.txt', text: 'new' });
+  assert.equal(h.context.viewing.text, 'new'); assert.equal(h.context.saving, null);
+  assert.equal(h.node('vStatus').textContent, '已保存');
+});
+
+test('returning from an ordinary session action preserves the project pickers entry context', async () => {
+  const h = sharedFileBrowser(), entry = { computer: 'computer-two', source: 'computer' };
+  Object.assign(h.context, { currentApp: 'cursor', renderAgentList() { assert.equal(h.context.projectEntry, entry); } });
+  vm.runInContext(part(read('app/js/notify.js'), 'async function runAgentMenuAction(', 'function openPickedSession('), h.context);
+  await h.context.runAgentMenuAction('session', 'rename', { name: 'renamed' }, null, entry);
+  h.context.openProjectPicker(); assert.equal(h.packets.at(-1).t, 'projects');
 });

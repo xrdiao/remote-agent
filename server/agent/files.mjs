@@ -11,13 +11,15 @@ import { helpersCall } from '../page/build.mjs';
 
 export const methods = {
   async showDocs(root, dir, host, editor = false, requestId) {
-    const emit = data => this.emit({ t: 'docs', editor, requestId, ...data });
+    const emit = data => this.emit({ t: 'docs', editor, requestId, os: process.platform, ...data });
+    const show = async (ws, at) => emit(editor ? { root: ws.root, path: at, host: '' }
+      : { ...(await listProject(ws.root, at)), host: '' });
     try {
       if (!root) {
         const roots = await this.currentRoots();
         if (roots.length === 1) {
           const ws = roots[0];
-          emit({ ...(await listProject(ws.root, ws.root, editor)), host: '' });
+          await show(ws, ws.root);
           return;
         }
         if (roots.length > 1) {
@@ -32,7 +34,7 @@ export const methods = {
       if (host) throw new Error('只支持查看本地文件');
       const ws = this.workspaceByRoot(root, '');
       if (!ws) throw new Error('只能查看已打开过的项目');
-      emit({ ...(await listProject(ws.root, dir || ws.root, editor)), host: '' });
+      await show(ws, dir || ws.root);
     } catch (e) {
       emit({ error: e.message });
     }

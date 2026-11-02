@@ -21,6 +21,10 @@ Switch Cursor, Devin, Codex or Fusion from the header. **Projects / sessions** i
 
 Models, reasoning effort and other parameters come from each Agent's native menus. Usage shows remaining quota; context shows whichever proportion the Agent reports (remaining or used). Native pricing is shown only where available, without estimating a task's total cost. Queue, append and parameter support vary by Agent.
 
+The computer list's project/session action first selects the application, then opens the same list used in a conversation. Folder selection starts at the default directory and recent projects from the computer entry, or at the current project from a conversation. Browse and path-entry actions appear at the top; use Tab or Complete to complete a path. Fusion uses the same folder browser while retaining its selected computer and application.
+
+In landscape, tools in the collapsed composer perform their own actions. Click a blank area of that bar to expand it; automatic idle folding remains available.
+
 Enter sends; Shift+Enter or the on-screen ↵ inserts a newline. On-screen ↑↓ recalls input history. Physical keyboards use Alt/Option＋↑↓; plain arrows remain available for caret movement and IME. Queued messages can be edited.
 
 ## Questions, approvals and execution records
@@ -33,7 +37,7 @@ Codex Questions let you choose presets or enter custom answers in the card. The 
 
 Attach phone images and documents. Images can be edited, cropped and annotated before upload; sent images appear as thumbnails below message text and open at full size when tapped. Historical image availability depends on retained local records and accessible source files.
 
-Codex `@` searches its native file index. **＋ → Add computer files** browses computer directories and adds selected file references; it is separate from phone uploads. Reference lists scroll independently and stay open when the keyboard is dismissed. Editor browses and edits project files. File previews include syntax highlighting; change summaries link to file lists and diffs. MP4 previews use range requests.
+Codex `@` searches its native file index. **＋ → Add computer files** browses computer directories and adds selected file references; it is separate from phone uploads. Reference lists scroll independently and stay open when the keyboard is dismissed. Editor uses the same file browser from both entries: the computer list starts at filesystem roots or drives, while a conversation starts at its current project. Both support path entry, Tab or Complete, folder navigation, previews and editing. Closing a preview restores the directory and scroll position. File previews include syntax highlighting; change summaries link to file lists and diffs. MP4 previews use range requests.
 
 ## Terminal
 

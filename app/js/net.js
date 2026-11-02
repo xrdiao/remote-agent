@@ -150,7 +150,6 @@ function receiveProjectReady(m) {
   if (m.sel && m.sel !== viewSel) return;
   selectionReady = true;
   confirmNavigation();
-  const refreshEditor = editorBrowsing && sheetKind === 'docs';
   capabilityBlock = '';
   finishPending(['正在打开项目…', '正在新建对话…']);
   closeSheet(); currentProject = m.name;
@@ -167,7 +166,6 @@ function receiveProjectReady(m) {
   $('sessionNotice').hidden = !m.newSession;
   $('sessionNotice').textContent = I18N.tr('会话创建成功，尚未发送消息。') + ' ' + m.name;
   status(m.newSession ? '已在所选项目新建会话' : m.sessionSwitch ? '已切换会话' : '已打开项目');
-  if (refreshEditor) startEditor();
 }
 function refreshSelectionMetadata(initial = false) {
   const key = `${connGen}|${viewSel}|${navigationSerial}`;
