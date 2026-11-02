@@ -437,13 +437,6 @@ $('sheet').addEventListener('click', async e => {
     return sendProjectAction({ t: 'projectTrust', approve: b.dataset.projectTrust === 'yes', returnTo }, owner);
   }
   if (b.dataset.open) return openPickedProject({ t: 'openProject', path: b.dataset.open }, projectSheetOwner(b));
-  if (b.dataset.docsFile) { openFile(b.dataset.docsFile); closeSheet(); return; }
-  if ('docsUp' in b.dataset) {
-    status('正在读取文档…');
-    if (!b.dataset.docsUp) return send({ t: 'docs' });
-    return send({ t: 'docs', root: b.dataset.root, host: b.dataset.docsHost || '', path: b.dataset.docsUp });
-  }
-  if (b.dataset.docsRoot) { status('正在读取文档…'); return send({ t: 'docs', root: b.dataset.docsRoot, host: b.dataset.docsHost || '', path: b.dataset.docsDir || b.dataset.docsRoot }); }
   if (b.dataset.settingsNav) { status('正在读取设置…'); return send({ t: 'settings', section: b.dataset.settingsNav }); }
   if (b.dataset.setting) { status('正在修改…'); return send({ t: 'toggleSetting', label: b.dataset.setting }); }
   if (b.dataset.termDel) {

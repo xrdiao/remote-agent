@@ -183,7 +183,7 @@ function openSheet(kind, html) {
   if (kind !== 'ask') askDone?.(false);
   if (kind !== 'agents') pendingProjectReveal = null;
   if (sheetKind === 'devices' && kind !== 'devices') deviceInviteGeneration++;
-  if (kind !== 'docs') cancelDocs();
+  cancelDocs();
   if (kind !== 'menu') { clearTimeout(menuRefreshTimer); menuPending = null; }
   if (kind !== 'devices') clearTimeout(deviceListTimer);
   const leavingVoice = sheetKind === 'local-voice' && kind !== 'local-voice';
@@ -473,7 +473,7 @@ function showComputerFiles() {
 }
 function cancelDocs() {
   docsPending = null;
-  finishPending(['正在读取文档…', '正在读取项目文件…']);
+  finishPending(['正在读取项目文件…']);
 }
 function agentButton(a) {
   if (batchActive()) {
@@ -956,22 +956,8 @@ function fileEntryIcon(folder) {
 function showDocs(m) {
   if (!docsPending || m.requestId !== docsPending.id || docsPending.sel !== viewSel || docsPending.computer !== (currentComputer()?.id || '')) return;
   docsPending = null;
-  finishPending(['正在读取文档…', '正在读取项目文件…']);
-  if (m.editor) return receiveCurrentFiles(m);
-  if (m.error) { closeSheet(); return status(m.error, false); }
-  if (m.projects) {
-    const rows = m.projects.map(p => `<button class="opt" data-docs-root="${esc(p.path)}" data-docs-host="${esc(p.host || '')}"><span class="lbl">${esc(p.name)}${p.detail ? `<span class="sub">${esc(p.detail)}</span>` : ''}</span></button>`).join('');
-    openSheet('docs', `<h3>查看文档</h3><div class="hint">选择要查看的项目</div>${rows || '<div class="hint">没有可查看的项目。</div><button class="opt" data-act="projects">选择文件夹／新建项目</button>'}`);
-    return;
-  }
-  const hostAttr = ` data-docs-host="${esc(m.host || '')}"`;
-  const up = `<button class="opt" data-docs-up="${esc(m.parent || '')}" data-root="${esc(m.root)}"${hostAttr}><span class="lbl">返回上一级</span></button>`;
-  const folders = (m.folders || []).map(d => `<button class="opt" data-docs-root="${esc(m.root)}" data-docs-dir="${esc(d.path)}"${hostAttr}><span class="lbl">${esc(d.name)}</span><span class="sub">文件夹</span></button>`).join('');
-  const row = (f, tag) => `<button class="opt" data-docs-file="${esc(f.path)}"><span class="lbl">${esc(f.name)}</span><span class="sub">${tag}</span></button>`;
-  const docs = (m.docs || []).map(f => row(f, '文档')).join('');
-  const code = (m.code || []).map(f => row(f, '代码')).join('');
-  const empty = !folders && !docs && !code ? '<div class="hint">这个文件夹里没有可查看的文档或代码。</div>' : '';
-  openSheet('docs', `<h3>查看文档</h3><div class="hint">${esc(m.name || '')}${m.path ? ' · ' + esc(m.path) : ''}</div>${up}${folders}${docs}${code}${empty}`);
+  finishPending(['正在读取项目文件…']);
+  return receiveCurrentFiles(m);
 }
 function projectSheet(kind, html, owner) {
   if (owner) projectEntry = null;

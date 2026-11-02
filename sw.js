@@ -1,13 +1,24 @@
 // Caches the app shell so the installed app opens instantly; live data (url.json, relay) always goes to the network.
 const CACHE_PREFIX = 'remote-agent:' + self.registration.scope + ':';
-const CACHE = CACHE_PREFIX + 'v374'; // keep in sync with APP_VERSION in js/core.js
+const CACHE = CACHE_PREFIX + 'v375'; // keep in sync with APP_VERSION in js/core.js
 const NOTICES = CACHE_PREFIX + 'notices';
 const SHELL = ['./', 'index.html', 'app.css?v=373', 'i18n.js?v=367', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'logo.png',
-  'js/core.js?v=374', 'js/fusion.js?v=371', 'js/gate.js?v=355', 'js/auth.js?v=207', 'js/net.js?v=374', 'js/sheets.js?v=372', 'js/notify.js?v=372', 'js/mode.js?v=257', 'js/chat.js?v=371',
-  'js/history.js?v=369', 'js/files.js?v=374', 'js/screen.js?v=267', 'js/terminal.js?v=239', 'js/composer.js?v=372', 'js/voice.js?v=356', 'js/local-voice.js?v=362', 'js/voice-worklet.js?v=133',
+  'js/core.js?v=375', 'js/fusion.js?v=371', 'js/gate.js?v=355', 'js/auth.js?v=207', 'js/net.js?v=374', 'js/sheets.js?v=375', 'js/notify.js?v=375', 'js/mode.js?v=257', 'js/chat.js?v=371',
+  'js/history.js?v=369', 'js/files.js?v=375', 'js/screen.js?v=267', 'js/terminal.js?v=239', 'js/composer.js?v=372', 'js/voice.js?v=356', 'js/local-voice.js?v=362', 'js/voice-worklet.js?v=133',
   'js/transfer.js?v=207', 'js/scanner.js',
   'js/latency.js?v=367', 'js/image-editor.js?v=257', 'js/overview.js?v=374',
   'markdown-it/markdown-it-15.0.3.min.js', 'js/markdown.js?v=295',
+  'katex/katex.min.js', 'katex/katex.min.css',
+  'katex/fonts/KaTeX_AMS-Regular.woff2', 'katex/fonts/KaTeX_Caligraphic-Bold.woff2',
+  'katex/fonts/KaTeX_Caligraphic-Regular.woff2', 'katex/fonts/KaTeX_Fraktur-Bold.woff2',
+  'katex/fonts/KaTeX_Fraktur-Regular.woff2', 'katex/fonts/KaTeX_Main-Bold.woff2',
+  'katex/fonts/KaTeX_Main-BoldItalic.woff2', 'katex/fonts/KaTeX_Main-Italic.woff2',
+  'katex/fonts/KaTeX_Main-Regular.woff2', 'katex/fonts/KaTeX_Math-BoldItalic.woff2',
+  'katex/fonts/KaTeX_Math-Italic.woff2', 'katex/fonts/KaTeX_SansSerif-Bold.woff2',
+  'katex/fonts/KaTeX_SansSerif-Italic.woff2', 'katex/fonts/KaTeX_SansSerif-Regular.woff2',
+  'katex/fonts/KaTeX_Script-Regular.woff2', 'katex/fonts/KaTeX_Size1-Regular.woff2',
+  'katex/fonts/KaTeX_Size2-Regular.woff2', 'katex/fonts/KaTeX_Size3-Regular.woff2',
+  'katex/fonts/KaTeX_Size4-Regular.woff2', 'katex/fonts/KaTeX_Typewriter-Regular.woff2',
   'logo-cursor-dark.svg', 'logo-cursor-light.svg',
   'logo-devin-dark.svg', 'logo-devin-light.svg',
   'logo-codex-dark.svg', 'logo-codex-light.svg'];
