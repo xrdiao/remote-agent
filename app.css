@@ -762,9 +762,9 @@ body.kb footer { padding-bottom: 8px; }
 #chatTools #pickDir, #chatTools #newChat { display: none; }
 #fusionConfig { display: flex; gap: 4px; min-width: 0; }
 #fusionConfig button { flex: 1; min-width: 0; }
-#termToolsLabel { padding: 2px 4px 4px; color: var(--fg-4); font-size: 11px; font-weight: 600; }
-#termTools { padding-top: 0; }
-#termTools button { background: var(--s2); }
+#termTools { padding: 0 0 6px; gap: 8px; overflow: visible; }
+#termTools button { min-height: 40px; max-width: none; background: var(--s2); }
+#termTools #pickTerms { flex: 1; min-width: 0; }
 .sendRow { display: flex; align-items: center; gap: 2px; padding-top: 4px; }
 .sendTools { display: flex; align-items: center; gap: 2px; flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .sendTools::-webkit-scrollbar { display: none; }
@@ -780,6 +780,9 @@ body.term #attachments, body.term #mentionBox, body.term #mathPrev, body.term #a
 }
 #insertNewline { width: 36px; }
 body:not(.chatmode) #inputHistory, body:not(.term) #termHistory { display: none; }
+body.term .sendTools { overflow: visible; }
+body.term #termHistory button, body.term #insertNewline { width: 40px; height: 40px; }
+body.term #send { min-height: 44px; }
 /* Narrow phones: tighter left cluster; it scrolls before #sendNow/#send are squeezed. */
 @media (max-width: 430px) {
   .sendTools { gap: 0; }
@@ -1398,7 +1401,6 @@ body.term .appAvatar::after { display: none; }
 .imageEditSubmit button { flex: 1 1 160px; }
 .imageEditSave { flex: none; }
 #termPasswordBox { display: flex; flex: 1 1 100%; min-width: 0; gap: 6px; align-items: center; }
-#termTools:has(#termPasswordBox:not([hidden])) { flex-wrap: wrap; }
 #termPassword { flex: 1; min-width: 0; }
 .imageEditStage { flex: 1; min-height: 100px; overflow: auto; touch-action: none; background: var(--pre-bg); border-radius: 12px; }
 .imageEditStage canvas { display: block; max-width: none; max-height: none; touch-action: none; }
@@ -1508,20 +1510,20 @@ button { transition: background-color .12s var(--ease), color .12s var(--ease), 
 
 /* Persistent [hidden] bars and panels: fade + 4px slide. */
 #mentionBox, .attachmentRow, #mathPrev, #vSearch, #vTools, #vChanges,
-#sessBar, #fusionBar, #termStatus, #chatTools, #termTools, #termToolsLabel, #fusionConfig,
+#sessBar, #fusionBar, #termStatus, #chatTools, #termTools, #fusionConfig,
 #screenKeys, #screenTools, #visualHeader, #visualCaption, #visualHint,
 #older, #cachedMore, #sessionNotice, #historyStatus {
   transition: opacity .18s var(--ease), transform .18s var(--ease), display .18s allow-discrete;
 }
 :is(#mentionBox, .attachmentRow, #mathPrev, #vSearch, #vTools, #vChanges,
-#sessBar, #fusionBar, #termStatus, #chatTools, #termTools, #termToolsLabel, #fusionConfig,
+#sessBar, #fusionBar, #termStatus, #chatTools, #termTools, #fusionConfig,
 #screenKeys, #screenTools, #visualHeader, #visualCaption, #visualHint,
 #older, #cachedMore, #sessionNotice, #historyStatus)[hidden] {
   opacity: 0; transform: translateY(4px); pointer-events: none;
 }
 @starting-style {
   :is(#mentionBox, .attachmentRow, #mathPrev, #vSearch, #vTools, #vChanges,
-  #sessBar, #fusionBar, #termStatus, #chatTools, #termTools, #termToolsLabel, #fusionConfig,
+  #sessBar, #fusionBar, #termStatus, #chatTools, #termTools, #fusionConfig,
   #screenKeys, #screenTools, #visualHeader, #visualCaption, #visualHint,
   #older, #cachedMore, #sessionNotice, #historyStatus):not([hidden]) {
     opacity: 0; transform: translateY(4px);

@@ -290,11 +290,6 @@ $('sheet').addEventListener('click', async e => {
   }
   if (b.dataset.computerProject) {
     const { directory, project } = computerFiles;
-    if (b.dataset.computerProject === 'terminal') {
-      if (project.owner.computer !== currentComputer()?.id) return terminalMessage('电脑已切换，请从当前电脑新建终端', true);
-      closeSheet();
-      return createRaTerminal(directory.path);
-    }
     if (b.dataset.computerProject === 'new') {
       const name = window.prompt(I18N.tr('新项目的文件夹名称'));
       if (!name?.trim()) return;
@@ -527,6 +522,14 @@ $('sheet').addEventListener('click', async e => {
   if (act === 'toggleChanges') { toggleChangeNotice(); return closeSheet(); }
   if (act === 'executionToggle') return toggleExecutionRecords();
   if (act === 'newTerm') { closeSheet(); return createRaTerminal(); }
+  if (b.dataset.terminalAction === 'password') return openTerminalPassword();
+  if (b.dataset.terminalAction === 'copy') return copyTerminal(b);
+  if (b.dataset.terminalAction === 'selectAll') { closeSheet(); return raTerminal?.selectAll(); }
+  if (b.dataset.terminalAction === 'size') return showTerminalSize();
+  if (b.dataset.terminalAction === 'refresh') {
+    closeSheet();
+    return currentTerminalId ? openRaTerminal(currentTerminalId) : requestTerminals(true);
+  }
   else if (act === 'localVoiceToggle') return toggleLocalVoice();
   else if (act === 'agentManager' || act === 'agentRefresh') return showAgentManager(true);
   else if (act === 'agentBack') return showMainMenu();

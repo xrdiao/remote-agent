@@ -80,10 +80,9 @@ function updateTerminalControls() {
   const available = terminalAvailable();
   if (mode === 'terminal') $('dot').className = authed && terminalReady ? 'ok' : '';
   if (mode === 'terminal') $('send').disabled = !available;
-  for (const id of ['termInt', 'termSize', 'termPasswordToggle']) $(id).disabled = !available;
+  $('termInt').disabled = !available;
   for (const button of document.querySelectorAll('[data-termkey]')) button.disabled = !available || !terminalPrompt;
-  $('termCopy').disabled = $('termSelectAll').disabled = !raTerminal;
-  $('newTerm').disabled = $('termEmptyNew').disabled = $('termFolder').disabled = !authed;
+  $('termEmptyNew').disabled = !authed;
   if (!available) closeTerminalPassword();
 }
 function terminalDisconnected() {
@@ -198,16 +197,16 @@ async function openComputerTerminal(id) {
   } else setMode('terminal');
   ovShowConversation();
 }
-function createRaTerminal(cwd = '') {
+function createRaTerminal() {
   const computer = currentComputer()?.id;
   if (!authed || terminalOrigin?.computer && terminalOrigin.computer !== computer)
     return terminalMessage('电脑已切换，请从当前电脑新建终端', true);
-  const origin = cwd ? { source: 'computer' } : terminalOrigin || { source: 'computer' };
+  const origin = terminalOrigin || { source: 'computer' };
   terminalListRequest = null;
   terminalCreateRequest = { requestId: crypto.randomUUID(), computer };
   terminalMessage('正在新建终端…');
   send({ t: 'newTerminal', requestId: terminalCreateRequest.requestId, source: origin.source,
-    ...(origin.source === 'conversation' ? { sel: origin.sel } : {}), ...(cwd ? { cwd } : {}) });
+    ...(origin.source === 'conversation' ? { sel: origin.sel } : {}) });
 }
 function removeRaTerminal(id) {
   send({ t: 'closeTerminal', id, requestId: crypto.randomUUID() });
@@ -311,27 +310,23 @@ function receiveTerminal(m) {
 }
 
 $('pickTerms').onclick = () => requestTerminals();
-$('newTerm').onclick = $('termEmptyNew').onclick = () => createRaTerminal();
-$('termFolder').onclick = () => openProjectFolders(terminalCwd, { computer: currentComputer().id, source: 'terminal' });
+$('termEmptyNew').onclick = () => createRaTerminal();
 $('termInt').onclick = () => terminalWrite('\x03');
-$('termRefresh').onclick = () => { if (currentTerminalId) openRaTerminal(currentTerminalId); else requestTerminals(true); };
-$('termSize').onclick = showTerminalSize;
+$('termMore').onclick = showTerminalMore;
 for (const button of document.querySelectorAll('[data-termkey]')) {
   button.addEventListener('pointerdown', e => e.preventDefault());
   button.onclick = () => terminalKey(button.dataset.termkey);
 }
-for (const id of ['termCopy', 'termSelectAll']) $(id).addEventListener('pointerdown', e => e.preventDefault());
-$('termSelectAll').onclick = () => raTerminal?.selectAll();
-$('termCopy').onclick = async () => {
+async function copyTerminal(button) {
   if (!raTerminal) return;
   let value = terminalSelection();
   if (!value) {
     raTerminal.selectAll();
     value = raTerminal.getSelection().trimEnd();
   }
-  await copyText(value, $('termCopy'), false);
+  await copyText(value, button, false);
   clearTermSelection();
-};
+}
 view.addEventListener('touchstart', () => { if (mode === 'terminal') terminalFollow = false; }, { passive: true });
 view.addEventListener('wheel', () => { if (mode === 'terminal') terminalFollow = false; }, { passive: true });
 $('termText').addEventListener('focusin', () => { fitViewport(); });
@@ -346,11 +341,12 @@ function closeTerminalPassword() {
   $('termPasswordSend').disabled = false;
   terminalPasswordTarget = terminalPasswordRequest = null;
 }
-$('termPasswordToggle').onclick = () => {
+function openTerminalPassword() {
+  closeSheet();
   terminalPasswordTarget = { computer: terminalComputer, id: currentTerminalId, subscription: terminalSubscription };
   $('termPasswordBox').hidden = false;
   $('termPassword').focus();
-};
+}
 $('termPasswordCancel').onclick = closeTerminalPassword;
 $('termPasswordBox').onsubmit = e => {
   e.preventDefault();

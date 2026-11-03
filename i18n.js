@@ -6,8 +6,16 @@ const I18N = (() => {
 
   const EN = {
     "RA 终端": "RA terminal",
-    "选择目录新建": "New in folder",
-    "在此文件夹新建终端": "New terminal in this folder",
+    "终端列表 ▾": "Terminals ▾",
+    "中断 Ctrl+C": "Interrupt Ctrl+C",
+    "刷新输出": "Refresh output",
+    "终端补全": "Shell completion",
+    "密码输入": "Password input",
+    "终端密码": "Terminal password",
+    "输入终端密码": "Enter terminal password",
+    "发送密码": "Send password",
+    "当前会话项目尚未确认，暂时无法新建终端": "The conversation project is not confirmed. A terminal cannot be created yet.",
+    "未读取到唯一项目目录，暂时无法新建终端": "No unique project directory was found. A terminal cannot be created yet.",
     "键盘": "Keyboard",
     "尺寸": "Size",
     "终端尺寸": "Terminal size",
@@ -143,7 +151,7 @@ const I18N = (() => {
     "已找到 VS Code，Codex 扩展待确认": "VS Code found; Codex extension unconfirmed",
 
     '对话轮次导航': 'Conversation turns', '上一轮': 'Previous turn', '下一轮': 'Next turn',
-    '插入换行': 'Insert newline', '终端操作': 'Terminal controls', '发送到终端': 'Send to terminal',
+    '插入换行': 'Insert newline', '发送到终端': 'Send to terminal',
 
     "正在检测连接…": "Checking the connection\u2026",
 

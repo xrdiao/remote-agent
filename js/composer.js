@@ -79,6 +79,7 @@ function confirmSent(m, render = true) {
     status(m.queued ? 'Agent 正在运行，已加入排队，这一轮结束后自动发送' : '已发送');
   }
   if (here && inputRevision === sent.revision && text.value === sent.text) {
+    if (sent.mode === 'chat') { draftRevision++; pendingDesktopDraft = null; }
     drafts.delete(activeDraft); draftMentions.delete(activeDraft);
     text.value = ''; MN.mentions = []; MN.value = ''; mentionHide(text); autosize(); mirroredDraft = '';
     dirtyDrafts.delete(activeDraft); queueDraftSync();
@@ -463,8 +464,9 @@ function updateSendMode() {
   const split = !answering && devinBusySplit();
   const follow = answering ? '' : codexFollow();
   const queue = !answering && (cursorBusyQueue() || follow === 'queue');
-  const label = answering ? '提交回答' : mode === 'terminal' ? '发送到终端' : split || queue ? '排队' : follow === 'steer' ? '立即追加' : '发送';
+  const label = answering ? '提交回答' : mode === 'terminal' ? '发送' : split || queue ? '排队' : follow === 'steer' ? '立即追加' : '发送';
   if ($('send').textContent !== label) $('send').textContent = label;
+  $('send').setAttribute('aria-label', I18N.tr(mode === 'terminal' ? '发送到终端' : label));
   $('sendNow').hidden = !split && !follow;
   $('sendNow').textContent = follow === 'steer' ? '改为排队' : '立即追加';
   if (split) $('sendNow').textContent = '立即发送';

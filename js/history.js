@@ -201,6 +201,20 @@ function scKeep(prev, it) {
   if (it.k === 'tasks' && prev.k === 'tasks' && prev.items && !it.items && prev.done === it.done && prev.total === it.total) return { ...it, items: prev.items };
   return it;
 }
+// Native Codex order numbers can restart; align the cached transcript with the live tail by message ID.
+function codexRows(previous, updates) {
+  const stored = new Map(previous.map(it => [it.i, it]));
+  const fresh = new Map(updates.map(it => [it.i, scKeep(stored.get(it.i), it)]));
+  const before = new Map();
+  let pending = [];
+  for (const it of stored.values()) {
+    if (fresh.has(it.i)) { before.set(it.i, pending); pending = []; }
+    else pending.push(it);
+  }
+  const rows = pending;
+  for (const it of fresh.values()) rows.push(...(before.get(it.i) || []), it);
+  return rows;
+}
 function scSnapshot(pending) {
   let items = [...pending.items.values()].sort((a, b) => (a.order ?? acpNum(a.i)) - (b.order ?? acpNum(b.i)));
   if (items.length > SC_MAX) items = items.slice(-SC_MAX);
@@ -703,15 +717,17 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
   if (chat && previous?.thread === chat.thread && (historyExpanded || paged) && currentApp !== 'devin') {
     const updates = new Map(chat.items.map(it => [it.i, it]));
     const bodies = previous.items.flatMap(item => {
-      if (updates.has(item.i)) return [updates.get(item.i)];
+      if (updates.has(item.i)) return [currentApp === 'codex' ? scKeep(item, updates.get(item.i)) : updates.get(item.i)];
       if (paged && item.syntheticCapacity && chat.capacityPresent === false) return [];
       if (paged && item.capacity) { const { b, actions, btnItem, ...body } = item; return [body]; }
       if (paged && !chat.busy && item.k === 'thinking' && item.live) return [{ ...item, live: false }];
       return [item];
     });
     const rows = historyRequest ? [...chat.items, ...bodies] : [...bodies, ...chat.items];
-    let merged = [...new Map(rows.map(it => [it.i, updates.get(it.i) || it])).values()];
-    if (merged.every(it => Number.isFinite(it.order))) merged.sort((a, b) => a.order - b.order);
+    let merged = currentApp === 'codex'
+      ? codexRows(historyRequest ? chat.items : bodies, historyRequest ? bodies : chat.items)
+      : [...new Map(rows.map(it => [it.i, updates.get(it.i) || it])).values()];
+    if (currentApp !== 'codex' && merged.every(it => Number.isFinite(it.order))) merged.sort((a, b) => a.order - b.order);
     if (paged && !historyExpanded) {
       const keep = new Set(chatTail(merged, 400).map(item => String(item.i)));
       if (!followingChat()) for (const el of itemsEl.children) keep.add(el.dataset.i);
@@ -1307,9 +1323,8 @@ function turnNavGesture() {
   showTurnNav();
 }
 function conversationTurns() {
-  return [...(SC.key ? SC.items.values() : lastChat?.items || [])]
-    .filter(it => it.k === 'human')
-    .sort((a, b) => (a.order ?? acpNum(a.i)) - (b.order ?? acpNum(b.i)));
+  const rows = [...(SC.key ? SC.items.values() : lastChat?.items || [])].filter(it => it.k === 'human');
+  return currentApp === 'codex' ? rows : rows.sort((a, b) => (a.order ?? acpNum(a.i)) - (b.order ?? acpNum(b.i)));
 }
 function jumpToTurn(id) {
   stopChatMotion(() => {
