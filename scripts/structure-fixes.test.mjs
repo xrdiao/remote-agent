@@ -921,7 +921,7 @@ function cardSubscription() {
   };
   const context = vm.createContext({
     document: { visibilityState: 'visible', body: { classList: { contains: value => classes.has(value) } } },
-    authed: true, mode: 'chat', viewSel: 'codex|window|thread', targetReady: true,
+    authed: true, mode: 'chat', viewSel: 'codex|window|thread', targetReady: true, innerHeight: 800,
     ovS: { open: 'card' }, ovToolState: { key: 'card', phase: 'ready', sel: 'codex|window|thread', target: {} },
     winTargetReady: () => context.targetReady, send: message => packets.push(message),
     $: node, ovRender() {}, ovToolInput: () => null, ovPatch() {},
@@ -1709,7 +1709,7 @@ function overviewCards(saved = new Map()) {
     ovComputerStatus: () => 'online', agentSessionCommon: () => true, ovNotify: (record, kind) => notifications.push({ thread: record.threadId, kind }),
     ovPrune() {}, store: { get: key => saved.get(key), set: (key, value) => saved.set(key, value) },
     ovS: { level: 'favorites' }, ovSessTile: row => row.key, ovEmpty: value => value, ovT: value => value, ovFlow: project => project.key,
-    $: () => ({ addEventListener: (type, handler) => handlers.set(type, handler) }),
+    $: () => ({ addEventListener: (type, handler) => handlers.set(type, handler), classList: { contains: () => false } }),
     ovHeld: '', ovBatch: null, ovSaveHistory() {}, ovRender() {}, ovOpen: target => opened.push(target),
     ovRecs: () => context.ovRecsOf(entry, state),
   });
