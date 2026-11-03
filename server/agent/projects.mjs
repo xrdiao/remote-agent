@@ -363,7 +363,8 @@ export const methods = {
     }
     if (await this.checkCodexLogin()) return false;
     if (needThread) return this.waitCodexNewChatReady();
-    const state = await this.waitFor('agentStartupState("codex", true)', Math.max(0, Math.ceil((deadline - Date.now()) / 120)));
+    const state = await this.cdp.evaluate(helpersCall('agentStartupState("codex", true)'), { timeout: Math.max(1, deadline - Date.now()) })
+      || await this.waitFor('agentStartupState("codex", true)', Math.max(0, Math.ceil((deadline - Date.now()) / 120)));
     if (!state) throw new Error('项目已打开，但 Codex 会话数据尚未就绪');
     if (state.login) { await this.checkCodexLogin(); return false; }
     return true;

@@ -13,6 +13,8 @@ import { ensurePairedBrowser } from './paired-browser.mjs';
 import { writeTextFile } from '../lib/files.mjs';
 import { methods as menuMethods } from '../server/agent/menus.mjs';
 import { methods as terminalMethods } from '../server/agent/terminal.mjs';
+import { methods as projectMethods } from '../server/agent/projects.mjs';
+import { methods as codexMethods } from '../server/apps/codex.mjs';
 import { ROUTES } from '../server/routes.mjs';
 
 const read = file => fs.readFileSync(new URL('../' + file, import.meta.url), 'utf8');
@@ -1850,6 +1852,7 @@ function overviewCards(saved = new Map()) {
   vm.runInContext(part(source, 'const ovDone =', 'let ovEnterRequested =')
     + part(source, 'const OV_RANK =', 'const OV_AGENT =') + part(source, 'const ovNativeKey =', 'const ovCompName =')
     + part(source, 'function ovRecsOf(', 'const ovRecs =') + part(source, 'function ovApply(', 'function ovNotify(')
+    + part(source, 'function ovMarkRead(', 'function ovStartBatch(')
     + part(source, 'function ovBoard(', 'function ovPlan(') + part(source, 'function ovProjectTiles(', 'function ovSessTile(')
     + part(source, "$('overview').addEventListener('click'", "$('overview').addEventListener('change'")
     + '\nthis.aggregate = ovAggregate; this.done = ovDone;', context);
@@ -1865,6 +1868,87 @@ function overviewCards(saved = new Map()) {
     },
   };
 }
+
+test('marking a completed card read persists locally, updates its project and allows a new completed turn', () => {
+  const h = overviewCards();
+  h.apply({ busy: true, run: { id: 'turn', status: 'running', startedAt: 100 } });
+  h.apply({ run: { id: 'turn', status: 'completed', startedAt: 100 } });
+  const key = h.rows()[0].key;
+  h.done['other-computer|project|thread'] = { runId: 'other-turn', at: Date.now() };
+  assert.equal(h.context.ovMarkRead(key), true);
+  assert.equal(h.rows()[0].state, 'idle'); assert.equal(h.context.aggregate(h.rows()).state, 'idle');
+  assert.equal(h.context.ovMarkRead(key), false); assert.equal(h.opened.length, 0);
+  assert.equal(JSON.parse(h.saved.get('ov-done'))['other-computer|project|thread'].runId, 'other-turn');
+  h.apply({ run: { id: 'turn', status: 'completed', startedAt: 100 } });
+  assert.equal(h.rows()[0].state, 'idle'); assert.equal(h.notifications.length, 1);
+  const reload = overviewCards(h.saved);
+  reload.apply({ run: { id: 'turn', status: 'completed', startedAt: 100 } });
+  assert.equal(reload.rows()[0].state, 'idle');
+  reload.apply({ run: { id: 'next-turn', status: 'completed', startedAt: 200 } });
+  assert.equal(reload.rows()[0].state, 'done'); assert.equal(reload.notifications.length, 1);
+});
+
+test('only completed overview cards offer a local read action without binding or managing the native session', async () => {
+  const source = read('app/js/sheets.js'); let html = '', reads = 0, renders = 0, closes = 0;
+  const context = vm.createContext({ agentActionTarget: null, esc: value => value, ovCompName: () => 'computer', ovAgName: () => 'Cursor',
+    openSheet(_kind, body) { html = body; }, sheetKind: 'agent-actions', currentApp: 'cursor', projectEntry: null,
+    closeSheet() { closes++; }, ovMarkRead(key) { assert.equal(key, 'card'); reads++; return true; }, ovRender() { renders++; },
+    send: () => assert.fail('read must not send'), ovSessionRequest: () => assert.fail('read must not manage a native session'),
+  });
+  vm.runInContext(part(source, 'function showAgentActions(', 'function receiveAgentActions('), context);
+  for (const state of ['done', 'idle', 'run', 'wait', 'err', 'unknown']) {
+    context.showAgentActions('thread', 'title', [], { key: 'card', state, app: 'cursor', comp: 'computer', off: true });
+    assert.equal(html.includes('data-agent-action="read"'), state === 'done');
+  }
+  context.showAgentActions('thread', 'title', [], { key: 'card', state: 'done', app: 'cursor', comp: 'computer', off: true });
+  const notify = read('app/js/notify.js');
+  const action = vm.runInContext('(async function(b) {' + part(notify, "  if (sheetKind === 'agent-actions'", "  if ('modelBack' in b.dataset)") + '})', context);
+  await action({ dataset: { agentAction: 'read' } });
+  assert.equal(reads, 1); assert.equal(renders, 1); assert.equal(closes, 1);
+});
+
+test('an already-ready Codex project checks native startup immediately without entering its wait loop', async () => {
+  let reads = 0;
+  const session = { windowId: 'window', editorCdp: {}, cdp: { wsUrl: 'chat', async evaluate(expression, options) {
+    assert(expression.endsWith('.agentStartupState("codex", true)')); assert(options.timeout > 0 && options.timeout <= 25000);
+    reads++; return { thread: 'thread' };
+  } }, checkCodexLogin: async () => false, waitFor: () => assert.fail('ready project must not wait') };
+  assert.equal(await projectMethods.ensureCodexReady.call(session, { id: 'window' }, false), true);
+  assert.equal(reads, 1);
+});
+
+test('a genuinely unready Codex project retains its native wait, failure and new-chat readiness paths', async () => {
+  for (const ready of [true, false]) {
+    let waits = 0;
+    const session = { windowId: 'window', editorCdp: {}, cdp: { wsUrl: 'chat', evaluate: async () => null },
+      checkCodexLogin: async () => false, async waitFor(expression, tries) {
+        assert.equal(expression, 'agentStartupState("codex", true)'); assert(tries > 0 && tries <= 209);
+        waits++; return ready ? { thread: 'thread' } : null;
+      } };
+    if (ready) assert.equal(await projectMethods.ensureCodexReady.call(session, { id: 'window' }, false), true);
+    else await assert.rejects(projectMethods.ensureCodexReady.call(session, { id: 'window' }, false), /Codex 会话数据尚未就绪/);
+    assert.equal(waits, 1);
+  }
+  let logins = 0, newChats = 0;
+  const session = { windowId: 'window', editorCdp: {}, cdp: { wsUrl: 'chat', evaluate: async () => ({ login: true }) },
+    checkCodexLogin: async () => ++logins > 1, waitFor: () => assert.fail('login is a native result'),
+    waitCodexNewChatReady: async () => { newChats++; return true; } };
+  assert.equal(await projectMethods.ensureCodexReady.call(session, { id: 'window' }, false), false);
+  assert.equal(logins, 2); logins = 0;
+  assert.equal(await projectMethods.ensureCodexReady.call(session, { id: 'window' }, true), true);
+  assert.equal(newChats, 1);
+});
+
+test('Codex thread adoption reads directly only for an established binding and preserves project-switch ownership', async () => {
+  for (const bindingReady of [false, true]) for (const switchingThread of [false, true]) {
+    const calls = [], session = { bindingReady, switchingThread, threadId: 'old',
+      clearViewState: () => calls.push('clear'), publishThread: () => calls.push('publish'),
+      pollChat: async (...args) => { assert.deepEqual(args, [true, true]); calls.push('read'); } };
+    await codexMethods.adoptCodexThread.call(session, 'new');
+    assert.equal(session.threadId, 'new'); assert.equal(session.switchingThread, switchingThread);
+    assert.deepEqual(calls, bindingReady && !switchingThread ? ['clear', 'publish', 'read'] : ['clear', 'publish']);
+  }
+});
 
 test('switching away or losing a live reading cannot turn a running session into completed', () => {
   const h = overviewCards(); h.apply({ busy: true, run: { id: 'turn', status: 'running' } });

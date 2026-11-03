@@ -175,6 +175,9 @@ function rememberNotice(raw) {
   return n.project ? { ...next, project: n.project } : next;
 }
 function openWin(id) {
+  const target = noticeTarget(id);
+  const reuse = mode === 'chat' && currentApp === 'codex' && target && !target.project
+    && winTargetReady({ ...target, threadId: undefined });
   const before = currentComputer()?.id;
   const here = rememberNotice(id);
   if (!here) return false;
@@ -187,6 +190,7 @@ function openWin(id) {
     return true;
   }
   if (!authed) { pendingNotice = id; return false; }
+  if (reuse && here.threadId) return openPickedSession(`thread:${here.windowId}:${here.threadId}`, '', false);
   return send({ t: 'attach', id: here.win, windowId: here.windowId || '', threadId: here.threadId || '', ...(here.project ? { project: here.project } : {}) });
 }
 window.openWin = openWin;
@@ -259,8 +263,8 @@ async function runAgentMenuAction(id, action, extra, target, entry) {
     : { t: 'sessionManage', id, action, ...extra });
   return renderAgentList();
 }
-function openPickedSession(id, title = '') {
-  if (projectEntry?.source === 'computer') ovShowConversation();
+function openPickedSession(id, title = '', enter = projectEntry?.source === 'computer') {
+  if (enter) ovShowConversation();
   pendingAgentOpen = id;
   closeSheet();
   return send({ t: 'openAgent', id, title });
@@ -301,6 +305,11 @@ $('sheet').addEventListener('click', async e => {
   if (sheetKind === 'agent-actions' && b.dataset.agentAction) {
     const id = b.dataset.agentActionId || '', name = b.dataset.agentActionTitle || '';
     const target = agentActionTarget, app = target?.app || currentApp, entry = projectEntry;
+    if (b.dataset.agentAction === 'read') {
+      closeSheet();
+      if (ovMarkRead(target.key)) ovRender();
+      return;
+    }
     if (b.dataset.agentAction === 'copyLink') return copyText(b.dataset.copyLink, b.querySelector('.lbl'), false);
     if (b.dataset.agentAction === 'open') {
       if (target) { closeSheet(); return ovOpen(ovTarget(target)); }

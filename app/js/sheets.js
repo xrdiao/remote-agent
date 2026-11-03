@@ -518,6 +518,7 @@ function showAgentActions(id, title, actions = null, target = null) {
   const nativeDisabled = target?.off || target?.dormant ? ' disabled' : '';
   const rows = [
     current?.current ? '' : `<button class="opt" data-agent-action="open" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"${target?.dormant && !target.workspace ? ' disabled' : ''}><span class="lbl">打开会话</span></button>`,
+    target?.state === 'done' ? '<button class="opt" data-agent-action="read"><span class="lbl">已读</span></button>' : '',
     `<button class="opt" data-agent-action="favorite" data-agent-action-id="${esc(id)}"${disabled}><span class="lbl">${target ? favorite ? '取消收藏' : '收藏' : favorite ? '取消常用' : '设置为常用'}</span></button>`,
     codexThread ? `<button class="opt" data-agent-action="copyLink" disabled aria-busy="${!target?.off}"><span class="lbl">复制会话链接</span></button>` : '',
     ...(actions || (codexThread ? ['rename', 'archive'] : [])).map(action => `<button class="opt" data-agent-action="${action}" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"${nativeDisabled}><span class="lbl">${action === 'rename' ? '重命名' : action === 'delete' ? '删除' : codexThread ? '删除／归档' : '归档'}</span></button>`),

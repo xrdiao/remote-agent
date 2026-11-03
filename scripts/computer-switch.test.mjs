@@ -937,3 +937,80 @@ test('directory results from revoked credentials cannot update the replacement p
   await reading;
   assert.equal(h.run('ovStOf(ovList[0].id).data'), before);
 });
+
+function installOverviewOpening(h) {
+  h.run(`var ovOpenRequest=0, ovEnterRequested=false, ovS={}, pendingAgentOpen='';
+    function ovSaveHistory() {} function ovT(value) { return value; }
+    function ovShowConversation() { trace.push(['enter',currentComputer().id,lastChat?.thread]); }`);
+  h.run(notify.slice(notify.indexOf('function noticeTarget('), notify.indexOf('function finishWinBinding(')));
+  h.run(notify.slice(notify.indexOf('function openPickedSession('), notify.indexOf("$('sheet').addEventListener('click'")));
+  h.run(overview.slice(overview.indexOf('async function ovOpen('), overview.indexOf('function conversationVisible(')));
+  h.run(overview.slice(overview.indexOf('function ovConversationOpened('), overview.indexOf('function ovLeave(')));
+}
+
+test('Codex cards confirm even the last ready target through one existing session request', async () => {
+  for (const same of [true, false]) {
+    const h = harness(); await h.bothReady(); installOverviewOpening(h);
+    const thread = same ? 'thread-a' : 'thread-a-other';
+    await h.run(`ovOpen({computer:loadComputers()[0].id,win:'codex',windowId:'window-a',threadId:${JSON.stringify(thread)}})`);
+    const requests = h.link(0).socket.sent.filter(m => ['attach', 'openAgent'].includes(m.t));
+    assert.equal(requests.length, 1); assert.equal(requests[0].t, 'openAgent');
+    assert.equal(requests[0].id, `thread:window-a:${thread}`);
+    assert.equal(h.state().windowReady, false); assert.equal(h.trace.some(row => row[0] === 'enter'), false);
+    h.attached(0, { threadId: thread, sel: `codex|window-a|${thread}`, chat: { thread, items: [] } });
+    assert.equal(h.state().thread, thread); assert.equal(h.trace.some(row => row[0] === 'enter'), true);
+  }
+});
+
+test('unready, other-window, project restoration and other-Agent cards retain their normal binding path', async () => {
+  for (const kind of ['unready', 'window', 'project', 'cursor']) {
+    const h = harness(); await h.bothReady(); installOverviewOpening(h);
+    if (kind === 'unready') h.run('windowReady=false');
+    await h.run(`ovOpen({computer:loadComputers()[0].id,win:${JSON.stringify(kind === 'cursor' ? 'cursor:window-a' : 'codex')},
+      windowId:${JSON.stringify(kind === 'window' ? 'other-window' : 'window-a')},threadId:'thread-a'
+      ${kind === 'project' ? ",project:{root:'/project',host:''}" : ''}})`);
+    const requests = h.link(0).socket.sent.filter(m => ['attach', 'openAgent'].includes(m.t));
+    assert.equal(requests.length, 1); assert.equal(requests[0].t, 'attach');
+    assert.equal(h.trace.some(row => row[0] === 'enter'), false);
+  }
+});
+
+test('a Codex card adopts the destination computer before choosing its same or different conversation', async () => {
+  for (const same of [true, false]) {
+    const h = harness(); await h.bothReady(); installOverviewOpening(h);
+    h.run(`text.value='keep source draft';saveDraft();ovEnterRequested=true`);
+    const boots = h.state().bootCalls, sockets = h.sockets.length, thread = same ? 'thread-b' : 'thread-b-other';
+    await h.run(`ovOpen({computer:loadComputers()[1].id,win:'codex',windowId:'window-b',threadId:${JSON.stringify(thread)}})`);
+    assert.equal(h.state().bootCalls, boots); assert.equal(h.sockets.length, sockets);
+    const requests = h.link(1).socket.sent.filter(m => ['auth', 'attach', 'openAgent'].includes(m.t));
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].t, 'openAgent'); assert.equal(requests[0].id, `thread:window-b:${thread}`);
+    assert.equal(h.state().windowReady, false);
+    h.attached(1, { threadId: thread, sel: `codex|window-b|${thread}`, chat: { thread, items: [] } });
+    assert.equal(h.state().computer, computers[1].id); assert.equal(h.state().thread, thread);
+    assert.equal(h.trace.filter(row => row[0] === 'enter').length, 1);
+    await h.switchTo(0); assert.equal(h.state().draft, 'keep source draft');
+    assert.equal(h.link(0).socket.sent.some(m => ['attach', 'openAgent'].includes(m.t)), false);
+  }
+});
+
+test('rapid cross-computer card choices cannot navigate the abandoned destination', async () => {
+  const h = harness(); await h.bothReady(); installOverviewOpening(h);
+  const boots = h.state().bootCalls;
+  const first = h.run(`ovOpen({computer:loadComputers()[1].id,win:'codex',windowId:'window-b',threadId:'abandoned'})`);
+  const second = h.run(`ovOpen({computer:loadComputers()[0].id,win:'codex',windowId:'window-a',threadId:'latest'})`);
+  await Promise.all([first, second]);
+  assert.equal(h.state().computer, computers[0].id); assert.equal(h.state().bootCalls, boots);
+  assert.equal(h.link(1).socket.sent.some(m => ['attach', 'openAgent'].includes(m.t)), false);
+  const requests = h.link(0).socket.sent.filter(m => ['attach', 'openAgent'].includes(m.t));
+  assert.equal(requests.length, 1); assert.equal(requests[0].id, 'thread:window-a:latest');
+});
+
+test('an unfinished destination preload is not treated as a ready Codex conversation', async () => {
+  const h = harness(); await h.start(); h.attached(0); await h.open(1); installOverviewOpening(h);
+  await h.run(`ovOpen({computer:loadComputers()[1].id,win:'codex',windowId:'window-b',threadId:'thread-b-other'})`);
+  await h.settle();
+  assert.equal(h.state().windowReady, false); assert.equal(h.trace.some(row => row[0] === 'enter'), false);
+  assert.equal(h.link(1).socket.sent.some(m => m.t === 'openAgent'), false);
+  assert.equal(h.link(1).socket.sent.filter(m => m.t === 'attach').at(-1).threadId, 'thread-b-other');
+});

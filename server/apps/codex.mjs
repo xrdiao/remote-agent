@@ -442,7 +442,7 @@ async adoptCodexThread(thread, statusMsg) {
     this.switchingThread = switching;
   }
   this.publishThread(statusMsg);
-  if (!switching) {
+  if (!switching && this.bindingReady) {
     await this.pollChat(true, true);
   }
 },

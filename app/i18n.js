@@ -33,6 +33,7 @@ const I18N = (() => {
     "接受改动": "Accept changes",
     "打开对话 →": "Open conversation →",
     "已接受改动": "Changes accepted",
+    "已读": "Mark as read",
     "连接电脑失败，请重试": "Could not reach the computer; try again",
     "版本与适配": "Version and compatibility",
     "重新检查适配": "Check compatibility again",
