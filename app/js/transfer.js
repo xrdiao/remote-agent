@@ -4,6 +4,7 @@ let transferUploadPath = '', transferSelection = new Map(), transferRequest = 0;
 const transferXhrs = new Set();
 let transferUploads = [], transferUploading = false, transferCancelled = false;
 const transferDirectories = JSON.parse(store.get('transfer-directories') || '{}');
+let transferClipboard = null, transferFileOperation = null;
 const transferPanel = document.createElement('section');
 transferPanel.id = 'transfer';
 transferPanel.hidden = true;
@@ -11,7 +12,7 @@ transferPanel.setAttribute('role', 'dialog');
 transferPanel.setAttribute('aria-modal', 'true');
 transferPanel.setAttribute('aria-label', '文件传输');
 transferPanel.innerHTML = `<div class="transferHeader"><button id="transferClose" class="transferIcon" aria-label="返回">‹</button><h3>文件传输</h3>
-  <details id="transferMore"><summary aria-label="更多操作">⋯</summary><div class="transferMenu"><button id="transferHome">主目录</button><button id="transferRefresh">刷新目录</button><select id="transferRoots" aria-label="磁盘"></select></div></details></div>
+  <details id="transferMore"><summary aria-label="更多操作">⋯</summary><div class="transferMenu"><button id="transferNewFile">新建文件</button><button id="transferNewFolder">新建文件夹</button><button id="transferCopy">复制</button><button id="transferCut">剪切</button><button id="transferPaste">粘贴</button><button id="transferZip">压缩为 ZIP</button><button id="transferExtract">解压 ZIP</button><button id="transferHome">主目录</button><button id="transferRefresh">刷新目录</button><select id="transferRoots" aria-label="磁盘"></select></div></details></div>
   <div class="transferTabs" role="tablist"><button id="transferDownloadTab" role="tab">下载到手机</button><button id="transferUploadTab" role="tab">上传到电脑</button></div>
   <div class="transferBody"><div id="transferBrowser"><div class="transferNavigation"><div id="transferBrowserLabel" class="transferLabel">电脑文件</div>
     <div class="transferNavRow"><button id="transferParent" class="transferParent">↑ 上一级</button><div class="transferPathBar"><button id="transferPathButton" title="编辑电脑路径"></button></div></div>
@@ -21,8 +22,7 @@ transferPanel.innerHTML = `<div class="transferHeader"><button id="transferClose
     <div id="transferUploadView" hidden><div class="transferLabel">电脑接收目录</div><div class="transferTargetBar"><span id="transferUploadTarget"></span><button id="transferChangeTarget" class="transferText">更改</button></div>
       <div id="transferQueueLabel" class="transferLabel">待上传</div><div id="transferProgress" role="status"></div>
       <div class="transferAdd"><button id="transferFiles">＋ 添加文件</button><button id="transferFolder" class="transferText">选择文件夹</button></div>
-      <details id="transferOptions"><summary><span>上传选项</span><span id="transferCollisionLabel" class="hint">同名文件：另存 ›</span></summary><label>同名文件 <select id="transferCollision"><option value="rename">另存为新文件</option><option value="skip">跳过</option><option value="replace">覆盖</option></select></label><p class="hint">文件夹上传保留子目录；选择文件夹取决于手机浏览器支持。</p></details>
-    </div><div id="transferStatus" role="status"></div></div>
+    </div><details id="transferOptions"><summary><span>同名处理</span><span id="transferCollisionLabel" class="hint">同名文件：另存 ›</span></summary><label>同名文件 <select id="transferCollision"><option value="rename">另存为新文件</option><option value="skip">跳过</option><option value="replace">覆盖</option></select></label><p id="transferUploadHint" class="hint">文件夹上传保留子目录；选择文件夹取决于手机浏览器支持。</p></details><div id="transferStatus" role="status"></div></div>
   <div class="transferFooter"><div id="transferDownloadFooter"><div class="transferSummary"><span id="transferSelected"></span><button id="transferClearFooter" class="transferText">清空</button></div><button id="transferDownload" class="transferPrimary">下载到手机</button><div class="hint">保存位置由浏览器决定</div></div>
     <div id="transferUploadFooter" hidden><div class="transferSummary"><span id="transferUploadSummary"></span><button id="transferRetry" class="transferText" hidden>重试失败项</button></div><button id="transferStart" class="transferPrimary">上传到电脑</button><button id="transferCancel" hidden>取消上传</button><div class="hint">上传目标独立保存，不随下载目录变化</div></div>
     <div id="transferPickerFooter" hidden><button id="transferUseDirectory" class="transferPrimary">使用此文件夹</button><div class="hint">仅更改电脑接收目录</div></div></div>
@@ -53,6 +53,8 @@ function renderTransferPage() {
   $('transferArchiveHint').hidden = picking;
   $('transferBrowserLabel').textContent = picking ? '选择电脑接收目录' : '电脑文件';
   $('transferMore').hidden = !downloading && !picking;
+  $('transferOptions').hidden = picking;
+  $('transferUploadHint').hidden = downloading;
   $('transferUploadTarget').textContent = transferUploadPath || '正在读取目录…';
   const directory = transferCurrentDirectory();
   if (directory) {
@@ -64,6 +66,10 @@ function renderTransferPage() {
     renderTransferRows();
   }
   transferCount();
+  const selected = transferSelection.size > 0;
+  for (const id of ['transferCopy', 'transferCut', 'transferZip', 'transferExtract']) $(id).disabled = !selected || !!transferFileOperation || !!transferPicker;
+  for (const id of ['transferNewFile', 'transferNewFolder']) $(id).disabled = !directory || !!transferFileOperation;
+  $('transferPaste').disabled = !directory || !!transferFileOperation || !transferClipboard || transferClipboard.computer !== transferComputer;
   renderTransferUploads();
 }
 function renderTransferRows() {
@@ -149,6 +155,7 @@ $('transferRows').onchange = e => {
   if (!entry || transferPicker) return;
   if (e.target.checked) transferSelection.set(entry.path, entry); else transferSelection.delete(entry.path);
   transferCount();
+  renderTransferPage();
 };
 $('transferRows').onclick = e => {
   const button = e.target.closest('[data-transfer-open]');
@@ -161,9 +168,9 @@ $('transferAll').onclick = () => {
   $('transferRows').querySelectorAll('input:not(:disabled)').forEach(box => {
     box.checked = true; const entry = transferDirectory.entries[box.dataset.transferCheck]; transferSelection.set(entry.path, entry);
   });
-  $('transferSelectMenu').open = false; transferCount();
+  $('transferSelectMenu').open = false; renderTransferPage();
 };
-function clearTransferSelection() { transferSelection.clear(); renderTransferRows(); transferCount(); $('transferSelectMenu').open = false; }
+function clearTransferSelection() { transferSelection.clear(); renderTransferPage(); $('transferSelectMenu').open = false; }
 $('transferClear').onclick = clearTransferSelection;
 $('transferClearFooter').onclick = clearTransferSelection;
 $('transferDownload').onclick = async () => {
@@ -193,7 +200,7 @@ function renderTransferUploads() {
     item.row.querySelector('button').disabled = transferUploading;
   }
   const pending = transferUploads.filter(item => item.pending);
-  $('transferQueueLabel').textContent = transferUploading ? `上传进度 · ${transferUploads.length} 个文件` : pending.length ? `待上传 · ${pending.length} 个文件` : transferUploads.length ? '传输记录' : '待上传';
+  $('transferQueueLabel').textContent = transferUploading ? `上传进度 · ${transferUploads.length} 个文件` : pending.length ? `待上传 · ${pending.length} 个文件` : '待上传';
   $('transferUploadSummary').textContent = transferUploading ? '正在上传到电脑…' : `${pending.length} 个待上传 · ${fmtSize(pending.reduce((size, item) => size + item.file.size, 0))}`;
   $('transferCancel').hidden = !transferUploading;
   $('transferStart').hidden = transferUploading;
@@ -240,7 +247,8 @@ async function runTransferUploads(items) {
     try {
       const result = await transferSendFile(item);
       item.status = result.skipped ? '已跳过' : '已上传';
-      item.row.title = result.path;
+      item.row.remove();
+      transferUploads.splice(transferUploads.indexOf(item), 1);
     } catch (error) { item.status = error.message; item.failed = !transferCancelled; }
     renderTransferUploads();
   }
@@ -269,3 +277,44 @@ $('transferStart').onclick = () => runTransferUploads(transferUploads.filter(ite
 $('transferCancel').onclick = () => { transferCancelled = true; for (const xhr of transferXhrs) xhr.abort(); };
 $('transferRetry').onclick = () => runTransferUploads(transferUploads.filter(item => item.failed));
 $('transferCollision').onchange = () => { $('transferCollisionLabel').textContent = '同名文件：' + ({ rename: '另存', skip: '跳过', replace: '覆盖' })[$('transferCollision').value] + ' ›'; };
+
+async function transferFileAction(action, extra = {}) {
+  if (transferFileOperation) return;
+  const computer = { ...currentComputer() }, link = computerSockets.get(computer.key);
+  if (computer.id !== transferComputer || !link?.authed || link.socket.readyState !== 1) return transferStatus('未连接，文件操作未发送', true);
+  const directory = transferCurrentDirectory().path;
+  const message = { t: 'computerFileAction', requestId: crypto.randomUUID(), action, directory,
+    paths: [...transferSelection.keys()], collision: $('transferCollision').value, ...extra };
+  const operation = transferFileOperation = { computer: computer.id, message, request: transferRequest };
+  $('transferMore').open = false; renderTransferPage(); transferStatus('正在处理文件…');
+  sendDesktopOperation(message, computer.id, link.socket, { message, device: link.auth.device, resultType: 'computerFileDone', complete(result) {
+    if (transferFileOperation !== operation) return;
+    transferFileOperation = null;
+    if (action === 'move' && result.ok && transferClipboard?.computer === computer.id) {
+      const moved = new Set(result.results.filter(row => row.ok && !row.skipped).map(row => row.source));
+      transferClipboard.paths = transferClipboard.paths.filter(file => !moved.has(file));
+      if (!transferClipboard.paths.length) transferClipboard = null;
+    }
+    renderTransferPage();
+    if (transferComputer !== computer.id) return;
+    const errors = result.ok ? result.results.filter(row => !row.ok).map(row => row.error) : [result.error];
+    if (transferRequest === operation.request && ['copy', 'move', 'zip', 'extract'].includes(action))
+      for (const file of message.paths) transferSelection.delete(file);
+    transferBrowse(transferCurrentDirectory().path).then(() => transferStatus(errors.length ? errors.join('；') : '文件操作已完成', !!errors.length));
+    renderTransferPage();
+  } });
+}
+for (const [id, action] of [['transferNewFile', 'create-file'], ['transferNewFolder', 'create-folder']]) $(id).onclick = () => {
+  const name = window.prompt(action === 'create-file' ? '新建文件名称' : '新建文件夹名称');
+  if (name) transferFileAction(action, { name });
+};
+for (const [id, action] of [['transferCopy', 'copy'], ['transferCut', 'move']]) $(id).onclick = () => {
+  transferClipboard = { computer: transferComputer, action, paths: [...transferSelection.keys()] };
+  $('transferMore').open = false; renderTransferPage(); transferStatus(`已${action === 'copy' ? '复制' : '剪切'} ${transferClipboard.paths.length} 项，选择目标文件夹后粘贴`);
+};
+$('transferPaste').onclick = () => transferFileAction(transferClipboard.action, { paths: transferClipboard.paths.slice() });
+$('transferZip').onclick = () => {
+  const name = window.prompt('ZIP 文件名称', (transferSelection.size === 1 ? [...transferSelection.values()][0].name : '压缩文件') + '.zip');
+  if (name) transferFileAction('zip', { name: /\.zip$/i.test(name) ? name : name + '.zip' });
+};
+$('transferExtract').onclick = () => transferFileAction('extract');

@@ -3,7 +3,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 // Native results belong to the paired entry, not to its current WebSocket.
 const entries = new Map();
 const context = new AsyncLocalStorage();
-const results = new Set(['status', 'sent', 'sendFailed', 'queueDone', 'questionDone', 'menuPicked', 'saved', 'sessionBatchProgress', 'codexArchived', 'clickDone']);
+const results = new Set(['status', 'sent', 'sendFailed', 'queueDone', 'questionDone', 'menuPicked', 'saved', 'computerFileDone', 'sessionBatchProgress', 'codexArchived', 'clickDone', 'overviewManaged', 'termCreated', 'termRemoved', 'termError']);
 const entry = id => {
   if (!entries.has(id)) entries.set(id, { clients: new Set(), requests: new Map() });
   return entries.get(id);
@@ -19,6 +19,7 @@ export function publishDesktopState(deviceId, message) {
 }
 
 export function desktopAction(session, message) {
+  if (['overviewManage', 'saveComputerFile', 'computerFileAction', 'newTerminal', 'closeTerminal'].includes(message.t)) return true;
   if (session.app === 'fusion') return false;
   return message.t === 'send' ? message.submit !== false && session.mode !== 'terminal'
     : message.t === 'queue' ? message.action !== 'read'
@@ -29,9 +30,11 @@ export function beginOperation(session, message) {
   if (!message.operationId || !desktopAction(session, message)) return null;
   const owner = entry(session.deviceId), previous = owner.requests.get(message.operationId);
   if (previous) { previous.publish(); return { operation: previous, duplicate: true }; }
+  const computerAction = ['saveComputerFile', 'computerFileAction', 'newTerminal', 'closeTerminal'].includes(message.t);
   const operation = {
     id: message.operationId, deviceId: session.deviceId, kind: message.t,
-    app: session.app, sel: message.sel || session.selectionKey(), requestId: message.requestId,
+    app: computerAction ? '' : message.t === 'overviewManage' ? String(message.win).split(':')[0] : session.app,
+    sel: computerAction ? '' : message.sel || session.selectionKey(), requestId: message.requestId,
     events: new Map(), revision: 0, done: false, started: false, submitted: false,
     publish(client) {
       const packet = JSON.stringify({ t: 'operation', id: this.id, kind: this.kind, app: this.app,
@@ -45,7 +48,7 @@ export function beginOperation(session, message) {
     emit(message) {
       if (this.done) return;
       this.events.set(message.t, { revision: ++this.revision, message: { ...message, sel: this.sel, app: this.app } });
-      if (message.t === 'sendFailed' || message.t === 'sent' && !message.pending) this.done = true;
+      if (['overviewManaged', 'computerFileDone', 'sendFailed', 'termCreated', 'termRemoved', 'termError'].includes(message.t) || message.t === 'sent' && !message.pending) this.done = true;
       this.publish();
     },
     finish() {

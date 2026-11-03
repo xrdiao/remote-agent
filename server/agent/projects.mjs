@@ -11,7 +11,7 @@ import { listWindows, codexWindows, codexFolder } from '../windows.mjs';
 import { CDP_URL, DEVIN_CDP_URL, CODEX_CDP_URL, EDITORS } from '../config.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { fusionProject } from '../fusion/state.mjs';
-import { trackProjectWindow, storedProjectSession } from '../project-windows.mjs';
+import { trackProjectWindow, storedProjectSession, fusionTargets } from '../project-windows.mjs';
 import { sessionId } from '../../lib/session-library.mjs';
 
 export function safeHomePath(input) {
@@ -60,7 +60,7 @@ export function projectList(dir) {
 }
 
 
-function createProjectFolder(parent, name) {
+export function createProjectFolder(parent, name) {
   const { real } = safeHomePath(parent);
   if (!name || name === '.' || name === '..' || path.basename(name) !== name) throw new Error('请输入一个文件夹名称，不要包含路径');
   const folder = path.join(real, name);
@@ -70,7 +70,7 @@ function createProjectFolder(parent, name) {
 }
 
 
-export async function openFolder(folder, app, newWindow = false) {
+export async function openFolder(folder, app, newWindow = false, withDebugPort = false) {
   const { real } = safeHomePath(folder);
   const port = new URL(app === 'devin' ? DEVIN_CDP_URL : app === 'codex' ? CODEX_CDP_URL : CDP_URL).port;
   const bin = findBin(app, port);
@@ -81,8 +81,8 @@ export async function openFolder(folder, app, newWindow = false) {
   const command = IS_WIN && app === 'cursor' ? 'powershell.exe' : bin;
   const mode = newWindow ? '-n' : '-r';
   const args = IS_WIN && app === 'cursor'
-    ? ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference = 'Stop'; & '${launcher.replace(/'/g, "''")}' ${mode} '${real.replace(/'/g, "''")}'; exit $LASTEXITCODE`]
-    : [mode, real];
+    ? ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference = 'Stop'; & '${launcher.replace(/'/g, "''")}' ${mode}${withDebugPort ? ' --remote-debugging-port=' + port : ''} '${real.replace(/'/g, "''")}'; exit $LASTEXITCODE`]
+    : [mode, ...(withDebugPort ? ['--remote-debugging-port=' + port] : []), real];
   const child = spawn(command, args, { env, detached: true, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
   await new Promise((resolve, reject) => {
     child.once('error', reject);
@@ -150,7 +150,13 @@ export const methods = {
 
   // Only local workspaces: remote (SSH / Cursor cloud agent) files are not read from the phone.
   async currentRoots() {
+    const context = this.nativeContext();
+    if (context) return context.roots.filter(root => !root.host);
     return this.adapter.currentRoots.call(this);
+  },
+  async terminalProject() {
+    const roots = await this.currentRoots();
+    return roots.length === 1 ? roots[0] : null;
   },
   projectRows(list) {
     const all = workspaces();
@@ -159,7 +165,7 @@ export const methods = {
       return { name: label.name, path: w.root, host: w.host || '', detail: label.detail || '' };
     });
   },
-  async projectWindowState(page, threadId = '') {
+  async projectWindowState(page, threadId = '', withDraft = false) {
     const id = page.id || page.pageId;
     const own = id === this.windowId || `${this.app}:${id}` === this.windowId;
     const editor = own ? this.editorCdp : new Cdp(page.ws || page.webSocketDebuggerUrl);
@@ -174,7 +180,7 @@ export const methods = {
         }
       }
       if (threadId && await chat.evaluate(helpersCall('activeThread()')) === threadId.replace(/^tab:/, '')) return { thread: threadId.replace(/^tab:/, '') };
-      const [state, terminalBusy] = await Promise.all([
+      const [state, terminalBusy, draft] = await Promise.all([
         chat.evaluate(helpersCall('agentState()')),
         editor.evaluate(`(() => {
           const terms = new Set([...document.querySelectorAll('.xterm-wrapper, .terminal-wrapper')].map(el => el.xterm).filter(Boolean));
@@ -184,8 +190,9 @@ export const methods = {
             return !detector || !!detector.currentCommand?.commandExecutedMarker;
           });
         })()`),
+        withDraft ? chat.evaluate(helpersCall('composerDraft()')) : null,
       ]);
-      return { thread: state?.thread || '', busy: !!state?.busy || terminalBusy, agentBusy: !!state?.busy };
+      return { thread: state?.thread || '', busy: !!state?.busy || terminalBusy, agentBusy: !!state?.busy, ...(withDraft ? { draft: !!draft } : {}) };
     } finally {
       if (chat !== editor && !own) chat.close();
       if (!own) editor.close();
@@ -207,9 +214,11 @@ export const methods = {
     const ownerId = ownerWindow.replace(/^[^:]+:/, '');
     const tried = new Set();
     const available = async page => {
+      if (this.fusionBinding && fusionTargets().windows.has(app + ':' + page.id)) return false;
+      if (threadId && !this.fusionBinding) return true;
       if (!newSession && !threadId) return true;
-      const state = await this.projectWindowState(page, threadId);
-      return !!threadId && state.thread === threadId.replace(/^tab:/, '') || !(IS_WIN && app === 'codex' ? state.agentBusy : state.busy);
+      const state = await this.projectWindowState(page, threadId, this.fusionBinding);
+      return !!threadId && state.thread === threadId.replace(/^tab:/, '') || !(IS_WIN && app === 'codex' ? state.agentBusy : state.busy) && !state.draft;
     };
     let target, projectPages = [];
     const matching = async pages => {
@@ -361,7 +370,8 @@ export const methods = {
     }
     if (await this.checkCodexLogin()) return false;
     if (needThread) return this.waitCodexNewChatReady();
-    const state = await this.waitFor('agentStartupState("codex", true)', Math.max(0, Math.ceil((deadline - Date.now()) / 120)));
+    const state = await this.cdp.evaluate(helpersCall('agentStartupState("codex", true)'), { timeout: Math.max(1, deadline - Date.now()) })
+      || await this.waitFor('agentStartupState("codex", true)', Math.max(0, Math.ceil((deadline - Date.now()) / 120)));
     if (!state) throw new Error('项目已打开，但 Codex 会话数据尚未就绪');
     if (state.login) { await this.checkCodexLogin(); return false; }
     return true;
@@ -432,7 +442,12 @@ export const methods = {
     const pending = this.pendingProject;
     if (!pending) return;
     if ((await this.editorCdp.evaluate(helpersCall('workspaceTrustState()'))).required) throw new Error('请先确认项目是否可信');
-    if (this.app === 'devin' && !pending.threadId && !pending.newSession) await this.adapter.openDefaultSession.call(this);
+    if (this.fusionBinding && this.app === 'cursor' && !await this.waitFor('control("model")', 250))
+      throw new Error('主会话的原生模型控件尚未就绪');
+    if (this.app === 'devin' && !pending.threadId && !pending.newSession) {
+      const state = await this.adapter.openDefaultSession.call(this);
+      if (!await this.confirmDevinThread(state.thread || '', '已打开项目')) throw new Error('Devin 项目会话尚未就绪，请重试');
+    }
     if (this.app === 'codex' && !pending.threadId && !pending.newSession) {
       const thread = await this.cdp.evaluate(helpersCall('codexThread()')) || '';
       if (this.threadId !== thread) this.clearViewState();
@@ -489,6 +504,8 @@ export const methods = {
     this.emit({ t: 'status', ok: true, msg: pending.newSession ? '已在所选项目新建会话' : pending.threadId ? '已切换会话' : `已打开 ${path.basename(pending.root)}` });
   },
   projectName() {
+    const context = this.nativeContext();
+    if (context?.cwd) return path.posix.basename(normPath(context.cwd));
     if (this.app === 'codex') return codexFolder(this.winTitle);
     // A Devin window can have no folder ("Untitled (Workspace)") while its session still
     // runs in a real directory; the session's own cwd names the project in that case.
@@ -497,7 +514,7 @@ export const methods = {
   },
   publishThread(statusMsg) {
     const source = this.cdp?.nativeWindow;
-    if (!this.switchingThread && source) source.setThread(this.threadId || '');
+    if (this.fusionBinding && !this.switchingThread && source) source.setThread(this.threadId || '');
     if (this.bindingReady && !this.switchingThread) this.selectionHome = false;
     if (this.selectedThread !== undefined) this.selectedThread = this.threadId || '';
     const msg = {
@@ -524,7 +541,7 @@ export const methods = {
         this.projectAgentWindows.set(app, windows);
         for (const id of this.projectAgentCache.keys()) if (!windows.some(w => w.id === id)) this.projectAgentCache.delete(id);
         if (!readOnly) for (const w of windows) if (w.id !== this.targetId) this.projectAgentCache.delete(w.id);
-        if (readOnly && !this.fusionOwner) for (const w of windows) {
+        if (readOnly && !this.fusionBinding) for (const w of windows) {
           const source = nativeWindowAt(w.ws);
           if (source?.catalog) this.projectAgentCache.set(w.id, { list: structuredClone(source.catalog), surface: source.snapshot?.surface });
         }
@@ -614,6 +631,7 @@ export const methods = {
     }
     const openHere = async (root, host, thread) => {
       if (!root || !this.projectMatches(await editorRoots(this.editorCdp, this.app), root, host)) return false;
+      if (!this.fusionBinding) { await this.bindNativeConversation(thread.replace(/^tab:/, '')); return true; }
       if (this.app === 'codex') {
         if (!await this.selectCodexThread(thread)) throw new Error('没有找到所选会话');
         await this.adoptCodexThread(thread, '已切换会话');
@@ -633,6 +651,11 @@ export const methods = {
         ? await this.cdp.evaluate(`(async () => { const h = ${PAGE_SRC}; return (await h.sessionPickerRows(true)).find(r => r.id === ${JSON.stringify(sessionId('devin', id))}) || null; })()`)
         : this.projectAgentCache?.get(window)?.list.find(r => r.id === decodeURIComponent(encodedThread || ''));
       const root = kind === 'project-new' && encodedThread ? decodeURIComponent(encodedThread) : row?.workspace || source?.project?.root || windowRoots(source?.title || '', this.app)[0]?.root;
+      if (kind === 'project' && source && !this.fusionBinding) {
+        if (window !== this.targetId) await this.openBound(source, source.ws, null, { windowId: window, threadId: decodeURIComponent(encodedThread), deferred: true });
+        await this.bindNativeConversation(decodeURIComponent(encodedThread));
+        return;
+      }
       if (kind === 'project' && await openHere(root, row?.host || source?.project?.host || '', decodeURIComponent(encodedThread))) return;
       if (root && !row?.host && !source?.project?.host) await this.useProject(root, kind === 'project-new', kind === 'project' ? decodeURIComponent(encodedThread) : '', title, window);
       else {

@@ -1,8 +1,8 @@
 // Watch transcript mutations instead of waiting for the next periodic read.
 import { cdpRead } from '../cdp.mjs';
-import { PAGE_SRC } from '../page/build.mjs';
+import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 
-export async function watchChat(cdp, changed, shared = false) {
+export async function watchChat(cdp, changed, shared = false, context = null) {
   const name = '__remoteChat' + crypto.randomUUID().replaceAll('-', '');
   let stopped = false;
   const receive = event => { if (!stopped && event.name === name) changed(); };
@@ -12,6 +12,7 @@ export async function watchChat(cdp, changed, shared = false) {
   cdp.on('Runtime.bindingCalled', receive);
   const removed = await cdp.evaluate(`(() => {
     const name = ${JSON.stringify(name)};
+    const context = ${JSON.stringify(context)};
     const removed = [];
     if (${shared}) {
       for (const key of Object.keys(window)) {
@@ -50,9 +51,12 @@ export async function watchChat(cdp, changed, shared = false) {
       observer?.disconnect(); native?.stop();
       doc = next;
       doc.defaultView.addEventListener('remote-agent-submit-error', changed);
-      if (window.vscode?.context?.configuration?.().product?.applicationName === 'devin-desktop') {
+      if (context?.app === 'codex' || context?.app === 'cursor') {
+        native = ${helpersCall('watchCodexData(changed)', context)};
+      } else if (window.vscode?.context?.configuration?.().product?.applicationName === 'devin-desktop') {
         native = { stop: window.__acpStore.subscribe(changed), refresh() {} };
       } else native = (${PAGE_SRC}).watchCodexData(changed);
+      if (context) { changed(); return; }
       observer = new MutationObserver(records => {
         if (records.some(record => inTranscript(record.target) || capacityRetry(record.target)
           || [...record.addedNodes, ...record.removedNodes].some(node => inTranscript(node, true) || capacityRetry(node)))) changed();

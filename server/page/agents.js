@@ -57,7 +57,7 @@
       const detector = (term._addonManager?._addons || []).map(a => a.instance || a).find(a => a.capabilities)?.capabilities.get(2);
       return !detector || !!detector.currentCommand?.commandExecutedMarker;
     });
-    let states = agentStates();
+    let states = agentStates().filter(state => state.nativeOwner !== false);
     const nativeSessions = window.__acpStore?.getState().acp.sessions;
     if (nativeSessions) {
       const root = window.vscode?.context?.configuration?.()?.workspace?.uri?.path;
@@ -65,7 +65,9 @@
       open.add(activeThread());
       states = states.filter(s => open.has(s.thread) || nativeSessions.some(record => record.sessionId === s.thread && record.cwd === root));
     }
-    return { ready: !!window.vscode?.context?.configuration?.()?.workspace || hasComposer(),
+    const configuration = window.vscode?.context?.configuration?.();
+    return { ready: !!configuration?.workspace || hasComposer(),
+      windowHandle: configuration?.handle ? Array.from(configuration.handle.buffer) : null,
       focused: document.hasFocus(), dirty: !!document.querySelector('.tab.dirty, .tab[aria-label*="unsaved" i]'),
       dialog: [...document.querySelectorAll('[role="dialog"][aria-modal="true"], [role="alertdialog"], .monaco-dialog-box, .quick-input-widget')].some(vis),
       terminalBusy: terminalBusy || !!document.querySelector('.statusbar-item .codicon-modifier-spin'),
@@ -136,41 +138,46 @@
       const m = /\+\s?(\d+)\s*[-\u2212]\s?(\d+)/.exec(stripBidi(devinBarLeft()?.parentElement?.innerText || ''));
       return pack(changedCount(), m ? Number(m[1]) : null, m ? Number(m[2]) : null);
     }
-    const bar = buttons.map(b => (b.innerText || '').split('\n').map(x => x.trim()).filter(Boolean)).find(l => l.length === 3 && l[0] === 'Changes' && num(l[1]) != null && num(l[2]) != null);
+    const bar = buttons.map(b => (b.innerText || '').split('\n').map(x => x.trim()).filter(Boolean)).find(l => l.length === 3 && /^(Changes|更改)$/.test(l[0]) && num(l[1]) != null && num(l[2]) != null);
     return bar ? pack(null, num(bar[1]), num(bar[2])) : null;
   };
   const agentState = () => {
     const buttons = [...doc.querySelectorAll('button')].filter(vis);
-    const back = buttons.findIndex(b => (b.getAttribute('aria-label') || '') === 'Back');
+    const back = buttons.findIndex(b => /^(Back|返回)$/.test(b.getAttribute('aria-label') || ''));
     const active = agentList().find(a => a.current);
     const title = active?.title || (back >= 0 ? ((buttons[back + 1]?.innerText || '').split('\n')[0] || '').trim().slice(0, 80) : '');
-    const recent = buttons.find(b => (b.getAttribute('aria-label') || '').startsWith('Recent chats'));
-    const progress = Number((/(\d+) in progress/.exec(recent?.getAttribute('aria-label') || '') || [])[1] || 0);
+    const recent = codexButton('Recent chats');
+    const progress = Number(/(\d+)\s*(?:in progress|个处理中)/.exec(recent?.getAttribute('aria-label') || '')?.[1] || 0);
     const thread = activeThread();
     const roots = codexWorkspaceRoots();
+    const codex = !!codexThread();
+    const requests = codex ? codexRequestData() : [];
+    let waiting = requests.length ? 'codex:' + JSON.stringify([thread, ...requests.map(request => request.id)]) : null;
+    let waitingText = requests.map(request => request.text).join(' / ');
     const panel = findPanel();
     if (!panel) {
       if (!thread && !hasComposer()) return null;
-      return { busy: isBusy(), waiting: null, waitingText: '', last: '', thread, agentId: active?.id || '', title, progress, roots };
+      return { busy: isBusy(), waiting, waitingText, last: '', thread, agentId: active?.id || '', title, progress, roots };
     }
     const busy = isBusy();
     const items = topItems(panel);
-    let waiting = null, waitingText = '';
-    for (const el of items.slice(-3)) {
-      const labels = buttonsIn(el, false).map(x => x.label).filter(l => WAIT.test(l));
-      if (labels.length) { waiting = `${itemKey(el)}:${labels.join('/')}`; waitingText = summary(el); }
-    }
-    const global = buttonsIn(panel, true).filter(x => !inItem(x.el) && !inQn(x.el) && WAIT.test(x.label)).map(x => x.label);
-    if (!waiting && global.length) { waiting = `g:${global.join('/')}`; waitingText = global.join(' / '); }
     const devin = !!devinLog();
-    const qs = devin ? devinQuestions() : questions();
     let actions;
-    if (qs?.list.length) {
-      const text = qs.list.map(q => q.text).join(' / ');
-      waiting = `q:${text.slice(0, 120)}${qs.pager ? `:${qs.pager.cur}` : ''}`;
-      waitingText = text;
-      // Devin: single-choice options can be answered from the notification (Android shows three buttons).
-      if (devin && !qs.list[0].multi) actions = qs.list[0].options.slice(0, 3).map((o, i) => ({ id: `opt:${i}`, label: o.label.slice(0, 40) }));
+    if (!codex) {
+      for (const el of items.slice(-3)) {
+        const labels = buttonsIn(el, false).map(x => x.label).filter(l => WAIT.test(l));
+        if (labels.length) { waiting = `${itemKey(el)}:${labels.join('/')}`; waitingText = summary(el); }
+      }
+      const global = buttonsIn(panel, true).filter(x => !inItem(x.el) && !inQn(x.el) && WAIT.test(x.label)).map(x => x.label);
+      if (!waiting && global.length) { waiting = `g:${global.join('/')}`; waitingText = global.join(' / '); }
+      const qs = devin ? devinQuestions() : questions();
+      if (qs?.list.length) {
+        const text = qs.list.map(q => q.text).join(' / ');
+        waiting = `q:${text.slice(0, 120)}${qs.pager ? `:${qs.pager.cur}` : ''}`;
+        waitingText = text;
+        // Devin: single-choice options can be answered from the notification (Android shows three buttons).
+        if (devin && !qs.list[0].multi) actions = qs.list[0].options.slice(0, 3).map((o, i) => ({ id: `opt:${i}`, label: o.label.slice(0, 40) }));
+      }
     }
     const changes = agentChanges(busy, buttons);
     const humanIndex = items.findLastIndex(el => el.matches('[data-message-kind="human"], [role=group][aria-label="User message"]') || el.querySelector('.composer-human-message, [data-message-kind="human"]'));
@@ -215,13 +222,15 @@
   };
 
   // Cursor Agents window: the left sidebar lists conversations as row:<agent id>.
-  const DEVIN_NAV = new Set(['New session', 'Sessions', 'Review', 'Automations', 'Security', 'Wiki', 'Cloud settings']);
   const cursorProjectPicker = () => {
     let el = [...doc.querySelectorAll('.aislash-editor-input[contenteditable="true"], .ui-prompt-input-editor__input[contenteditable="true"]')].find(vis);
     while (el && !Object.keys(el).some(k => k.startsWith('__reactFiber'))) el = el.parentElement;
     return el ? codexFiberProps(el, 40).find(p => p.projectSelectorProps)?.projectSelectorProps : null;
   };
-  const cursorSelectProject = (root, host = '') => {
+  const cursorSelectProject = (root, host = '', newWorkspace = false) => {
+    if (newWorkspace) return cursorSessionServices().nativeHost.openWindow([
+      { workspaceUri: { $mid: 1, scheme: 'file', authority: '', path: root, query: '', fragment: '' } },
+    ], { forceNewWindow: true, cursorForceNewWindow: true });
     const picker = cursorProjectPicker();
     const row = picker?.recentProjects?.find(p => {
       const uri = p.workspaceIdentifier?.uri;
@@ -283,7 +292,7 @@
     const lis = [...doc.querySelectorAll('li[data-slot="sidebar-menu-item"]')].map(li => {
       const btn = li.querySelector('button[aria-label]');
       const title = (btn?.getAttribute('aria-label') || '').trim();
-      if (!title || DEVIN_NAV.has(title)) return null;
+      if (!title) return null;
       const session = codexFiberProps(li).find(p => devinRowSession(p.session))?.session;
       if (!session) return null;
       const id = devinRowSession(session);
@@ -383,19 +392,98 @@
     if (click) { wbtn.click(); return true; }
     return center(wbtn);
   };
-  const agentStates = () => {
+  // Read the native turn, including loaded background conversations, without changing selection.
+  const agentRun = (app, thread, scopes, manager) => {
+    if (!thread) return null;
+    if (app === 'codex') {
+      const conversation = manager?.getConversation(thread);
+      if (!conversation) return null;
+      const state = codexHistoryState(conversation, false, scopes, thread), entry = state.entries.at(-1);
+      if (!entry) return null;
+      const source = codexTurnSource(entry, scopes, false, { before: Infinity, limit: 1 });
+      const turn = source?.metadata;
+      if (!turn) return null;
+      const completed = ['complete', 'completed'].includes(turn.status);
+      const status = turn.error || ['failed', 'error'].includes(turn.status) ? 'error'
+        : ['interrupted', 'aborted'].includes(turn.status) ? 'stopped'
+        : completed ? 'completed' : turn.status === 'inProgress' ? 'running' : 'unknown';
+      return { id: entry.turnId, status, startedAt: Number(turn.turnStartedAtMs) || 0,
+        completedAt: completed && Number.isFinite(turn.durationMs) ? turn.turnStartedAtMs + turn.durationMs : 0 };
+    }
+    if (app === 'devin') {
+      const state = window.__acpStore?.getState().acp, session = devinSessionRecord(thread);
+      const [id, request] = Object.entries(state?.agentRequests.byId || {}).findLast(([, row]) => row.method === 'session/prompt' && row.params?.sessionId === thread) || [];
+      if (!request) return null;
+      const status = session?.status === 'unknown_error' || request.status === 'failed' ? 'error'
+        : ['active', 'pending', 'canceling'].includes(session?.status) ? 'running'
+        : request.status === 'completed' ? 'completed' : 'unknown';
+      return { id, status, startedAt: Number(request.startedAt || request.createdAt) || 0,
+        completedAt: status === 'completed' ? Number(request.completedAt) || 0 : 0 };
+    }
+    const data = cursorSessionServices()?.data.getComposerDataIfLoaded(thread);
+    const headers = data?.fullConversationHeadersOnly || [], human = headers.findLastIndex(row => row.type === 1);
+    if (human < 0) return null;
+    const start = headers[human], running = window.__SSG_COMPOSER_PROVIDER__?.getStates?.().some(row => row.id === thread && row.state === 'generating');
+    const status = running ? 'running' : data.status === 'aborted' ? 'stopped' : data.status === 'completed' ? 'completed' : 'unknown';
+    return { id: data.latestChatGenerationUUID || start.bubbleId, status,
+      startedAt: Number(start.startedAtMs) || Date.parse(start.createdAt || '') || 0,
+      completedAt: status === 'completed' ? Math.max(0, ...headers.slice(human + 1).map(row => Number(row.completedAtMs) || 0)) : 0 };
+  };
+  const nativeWaiting = (app, thread, manager = null) => {
+    if (app === 'codex') {
+      const conversation = manager?.getConversation(thread);
+      if (!conversation) return null;
+      const requests = (conversation.requests || []).filter(request => request.params?.threadId === thread);
+      const questions = codexAsyncQuestionState(thread, manager.hostId).questions;
+      return { waiting: requests.length || questions.length ? JSON.stringify([thread, ...requests.map(request => [request.method, request.params.turnId, request.id]), ...questions.map(state => state.question.id)]) : null,
+        waitingText: [...requests.map(request => (request.params.questions || []).map(question => question.question).join('\n') || request.params.command || request.params.reason || ''), ...questions.map(state => state.question.title)].join('\n'),
+        workspace: conversation.cwd || '', nativeOwner: manager.getStreamRole(thread)?.role === 'owner' };
+    }
+    if (app === 'cursor') {
+      const data = cursorSessionServices()?.data.getComposerDataIfLoaded(thread);
+      if (!data) return null;
+      const capability = data.capabilities.find(capability => typeof capability.getPendingUserDecisionGroup === 'function');
+      const decisions = capability?.getPendingUserDecisionGroup()() || [];
+      const uri = data.workspaceIdentifier?.uri;
+      return { waiting: decisions.length ? JSON.stringify([thread, ...decisions.map(decision => decision.toolCallId)]) : null,
+        waitingText: decisions.map(decision => {
+          const tool = capability.getBubbleDataByToolCallId(decision.toolCallId);
+          return tool?.params?.questions?.map(question => question.prompt).join('\n') || tool?.params?.command || tool?.name || '';
+        }).join('\n'), nativeOwner: !!data.conversationActionManager && !data.conversationActionManager.signal.aborted,
+        ...(uri ? { workspace: uri.fsPath || uri.path } : {}) };
+    }
+    const state = window.__acpStore?.getState().acp, session = devinSessionRecord(thread);
+    if (!session) return null;
+    const requests = Object.values(state.clientRequests).filter(request => request.status === 'pending'
+      && `acp/${request.providerId}/${request.request.params?.sessionId}` === thread);
+    return { waiting: requests.length ? JSON.stringify([thread, ...requests.map(request => request.request.id)]) : null,
+      waitingText: requests.map(request => request.request.params?.toolCall?.title || '').join('\n'), workspace: session.cwd || '' };
+  };
+  const agentStates = (app = '') => {
     const state = agentState();
+    app ||= codexPromptEl() ? 'codex' : devinSurface() ? 'devin' : 'cursor';
+    const scopes = app === 'codex' ? codexHistoryScopes() : [];
+    const managers = new Map();
+    const withRun = row => {
+      const host = row.host || 'local';
+      if (app === 'codex' && !managers.has(host)) managers.set(host, codexConversationManager(null, scopes, host));
+      const run = agentRun(app, row.thread, scopes, managers.get(host));
+      return { ...row, ...nativeWaiting(app, row.thread, managers.get(host)), ...(run ? { run, busy: run.status === 'running' || !!row.busy,
+        ...(run.status !== 'unknown' ? { runId: app + ':' + run.id, runAt: run.startedAt } : {}) } : {}) };
+    };
     let generation = null;
     try { generation = state && typeof cursorBubbleTimes === 'function' ? cursorBubbleTimes()?.generation : null; } catch {}
     const current = generation ? { ...state, generation } : state;
     if (codexThread()) {
       const meta = codexQueryClient()?.getQueryData(['recent-conversations-meta', 'updated_at', '[]', 'live'])?.find(t => t.conversationId === codexThread());
-      return current ? [{ ...current, lastUsed: meta?.updatedAt || 0 }] : [];
+      const agents = new Map(codexChatRows(true).map(row => [row.id, { thread: row.id, host: row.host, title: row.title, lastUsed: row.lastUsed || 0 }]));
+      if (current) agents.set(current.thread, { ...current, host: meta?.hostId === 'local' ? '' : meta?.hostId || '', lastUsed: meta?.updatedAt || 0 });
+      return [...agents.values()].map(withRun);
     }
     const agents = agentList();
-    return agents.length ? agents.map(a => a.current && current ? { ...current, lastUsed: a.lastUsed || 0 } : {
-      thread: a.id, agentId: a.id, title: a.title, busy: a.running, waiting: null, last: a.last || '', lastUsed: a.lastUsed || 0,
-    }) : current ? [current] : [];
+    return agents.length ? agents.map(a => withRun(a.current && current ? { ...current, host: a.host || '', lastUsed: a.lastUsed || 0 } : {
+      thread: a.id, agentId: a.id, host: a.host || '', title: a.title, busy: a.running, waiting: null, last: a.last || '', lastUsed: a.lastUsed || 0,
+    })) : current ? [withRun(current)] : [];
   };
 
   // Integrated terminals: the Agents window puts them in editor tabs (aria-controls contains terminal-).

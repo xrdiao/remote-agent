@@ -44,24 +44,41 @@
   const devinModelButton = (reveal = true) => {
     if (reveal) revealDevinComposer();
     return [...doc.querySelectorAll('button')].find(e => {
-      // textContent first: innerText forces layout for every button on the page.
-      const text = (e.textContent || '').replace(/\s+/g, ' ').trim();
+      // The compact picker exposes its model through aria-label instead of text.
+      const text = (e.getAttribute('aria-label') || e.textContent || '').replace(/\s+/g, ' ').trim();
       if (!DEVIN_MODEL.test(text) || text.length >= 50) return false;
       return vis(e) && !e.closest('.space-y-2');
     });
   };
-  const devinModelMenu = () => [...doc.querySelectorAll('div')].find(e => vis(e) && /Recently Used|Recommended/.test(e.innerText || '') && (e.innerText || '').includes('See more') && (e.innerText || '').length < 2500);
+  const devinModelMenu = () => [...doc.querySelectorAll('div')].find(e => {
+    if (!vis(e) || (e.innerText || '').length >= 2500) return false;
+    const lines = (e.innerText || '').split('\n').map(line => line.trim());
+    return lines.some(line => nativeLabel(line, 'Recently Used') || line === 'Recommended') && lines.some(line => nativeLabel(line, 'See more'));
+  });
   const powerProps = () => doc.querySelector('[data-codex-intelligence-trigger]')
     ? codexFiberProps(modelButton(), 96).find(p => p.powerSelections && typeof p.onSelectPower === 'function' && typeof p.onCommitPower === 'function')
     : null;
   const codexPickerProps = () => {
     const trg = [...doc.querySelectorAll('[data-codex-intelligence-trigger]')].find(vis);
-    return trg ? codexFiberProps(trg, 70).find(p => p.modelOptions && p.onSelectModelOption) : null;
+    const props = trg ? codexFiberProps(trg, 70).find(p => p.modelOptions && p.onSelectModelOption) : null;
+    if (remoteContext?.app !== 'codex') return props;
+    const manager = codexNativeManager(), conversation = manager.getConversation(remoteContext.threadId);
+    const models = codexQueryClient()?.getQueryCache().getAll().find(query => query.queryKey[0] === 'models' && query.queryKey[2] === (remoteContext.host || 'local'))?.state.data?.data || [];
+    const model = models.find(model => model.id === conversation.latestModel);
+    return { ...props, modelOptions: models.map(model => ({ model })), model: conversation.latestModel,
+      reasoningEffort: conversation.latestReasoningEffort ?? model?.defaultReasoningEffort,
+      onSelectModel: (model, effort) => manager.updateThreadSettingsForNextTurn(remoteContext.threadId, nativeValue({ model, effort })),
+      onSelectComplete: undefined,
+      selectionMode: codexVisibleThread() === remoteContext.threadId ? props?.selectionMode : 'custom' };
   };
   const cursorPickerProps = (readOnly = false) => {
     const btn = modelButton(readOnly);
     if (!btn) return null;
-    return codexFiberProps(btn, 90).find(p => Array.isArray(p.models) && p.models.length > 5 && (p.selections || p.initialSelections) && typeof p.onSelectionChange === 'function') || null;
+    const props = codexFiberProps(btn, 90).find(p => Array.isArray(p.models) && p.models.length > 5 && (p.selections || p.initialSelections) && typeof p.onSelectionChange === 'function') || null;
+    if (!props || remoteContext?.app !== 'cursor') return props;
+    const services = cursorSessionServices(), handle = services.data.getHandleIfLoaded(remoteContext.threadId), service = services.composer.composerChatService._modelConfigService;
+    return { ...props, selections: service.getSelectedModelsForComposer(handle),
+      onSelectionChange: selectedModels => service.setModelConfigForComposer(handle, nativeValue({ selectedModels })) };
   };
   const normKey = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
   // Prop-based model list: no visible menu is opened. Returns null when only the DOM path can answer.
@@ -81,8 +98,35 @@
     if (selected) return fusionConfig() ? 'Fusion' : selected.familyLabel || selected.label;
     return normLabel(modelButton()?.innerText || '').split('\n')[0].slice(0, 60) || null;
   };
-  const modelItemsFast = () => {
-    if (doc.querySelector('[data-codex-intelligence-trigger]')) {
+  const modelItemsFast = (capabilities = false) => {
+    if (capabilities) {
+      const codex = codexPickerProps();
+      if (codex) return (codex.modelOptions || []).filter(option => !option.disabled && !option.model?.hidden).map(option => ({
+        label: (option.model.displayName || option.model.id).replace(/-/g, ' '),
+        efforts: (option.model.supportedReasoningEfforts || []).map(effort => ({ label: effort.reasoningEffort, description: effort.description || '' })),
+      }));
+      const cursor = !devinSurface() && cursorPickerProps(true);
+      if (cursor) return MENU_ITEMS.model().map(item => {
+        const model = cursor.models.find(value => [value.clientDisplayName, value.inputboxShortModelName, value.name, value.id].includes(item.label));
+        const values = model?.parameterDefinitions?.find(value => value.id === 'reasoning_effort')?.parameterType?.enumParameter?.values || [];
+        return { label: item.label, checked: item.checked, pricing: item.pricing,
+          efforts: values.filter(value => value.displayName).map(value => ({ label: value.displayName })) };
+      });
+      const devin = devinSurface() && devinPickerProps(true);
+      if (devin) return devinConfigs(devin, true).filter(config => !config.disabled && (config.isDefaultModelInFamily || config.displayOption === 'model-router'))
+        .map(config => ({ label: config.familyLabel || config.label, pricing: devinPricing(config),
+          efforts: devinConfigs(devin).filter(value => !value.disabled && value.familyUid === config.familyUid)
+            .flatMap(value => { const effort = value.familyMetadata?.['Reasoning Effort'] || value.familyMetadata?.Effort; return effort ? [{ label: effort.name, pricing: devinPricing(value) }] : []; }) }));
+    }
+    if (remoteContext?.app === 'cursor') {
+      const picker = cursorPickerProps(true), selected = picker.selections || picker.initialSelections || [];
+      const visible = new Set([...(picker.defaultVisibleModelIds || picker.models.filter(model => model.defaultOn).map(model => model.name)),
+        ...(picker.additionalVisibleModelIds || []), ...selected.map(selection => selection.modelId)]);
+      return picker.models.filter(model => visible.has(model.name)).map(model => ({ id: model.name,
+        label: model.clientDisplayName || model.inputboxShortModelName || model.name,
+        checked: selected.some(selection => selection.modelId === model.name), params: !!model.parameterDefinitions?.length }));
+    }
+    if (remoteContext?.app === 'codex' || doc.querySelector('[data-codex-intelligence-trigger]')) {
       const items = MENU_ITEMS.model();
       return items.length ? items : null;
     }
@@ -121,8 +165,8 @@
     const want = normKey(label);
     const c = devinConfigs(p).find(c => !c.disabled && (normKey(c.label) === want || (c.isDefaultModelInFamily && normKey(c.familyLabel) === want)));
     if (!c) return false;
-    p.onModelSelect(c);
-    return true;
+    const selected = p.onModelSelect(c);
+    return remoteContext?.app === 'devin' ? Promise.resolve(selected).then(() => true) : true;
   };
   const pickCodexModel = label => {
     const p = codexPickerProps();
@@ -137,13 +181,20 @@
       return false;
     }
     const effort = opt.model.supportedReasoningEfforts.find(x => x.reasoningEffort === p.reasoningEffort)?.reasoningEffort || opt.model.defaultReasoningEffort;
-    p.onSelectModel(opt.model?.id || opt.model?.model || opt.model?.displayName, effort);
+    const selected = p.onSelectModel(opt.model?.id || opt.model?.model || opt.model?.displayName, effort);
     p.onSelectComplete?.();
-    return true;
+    return remoteContext?.app === 'codex' ? Promise.resolve(selected).then(() => true) : true;
   };
   const devinPickerProps = (readOnly = false) => {
     const button = devinSurface() && devinModelButton(!readOnly);
-    return button ? codexFiberProps(button, 40).find(p => p.visibleModelConfigs && p.onModelSelect) : null;
+    const props = button ? codexFiberProps(button, 40).find(p => p.visibleModelConfigs && p.onModelSelect) : null;
+    if (!props || remoteContext?.app !== 'devin') return props;
+    const session = devinSessionRecord(remoteContext.threadId), model = session.configOptions.find(option => option.category === 'model');
+    return { ...props, selectedModels: [model.currentValue], onModelSelect: async config => {
+      const native = await import('@exa/chat-client');
+      return window.__acpStore.dispatch(native.sendAgentRequestThunk(session.providerId,
+        { method: 'session/set_config_option', params: { sessionId: session.sessionId, configId: model.id, value: config.modelUid } }, native.tryGetAcpSingleton('sendAgentRequest')));
+    } };
   };
   const devinConfigs = (p, visibleOnly) => visibleOnly
     ? [...new Map((p?.visibleModelConfigs || []).map(c => [c.modelUid, c])).values()]
@@ -195,8 +246,17 @@
       const model = codex.modelOptions.find(o => o.model.id === codex.model)?.model;
       if (!model?.supportedReasoningEfforts.some(x => x.reasoningEffort === label)
         && !(label === 'max' && effortItems(false, true).some(x => x.label === label))) return false;
-      codex.onSelectModel(codex.model, label);
+      const selected = codex.onSelectModel(codex.model, label);
       codex.onSelectComplete?.();
+      return remoteContext?.app === 'codex' ? Promise.resolve(selected).then(() => true) : true;
+    }
+    if (remoteContext?.app === 'cursor') {
+      const props = cursorPickerProps(true), selections = props.selections, selected = selections[0];
+      const model = props.models.find(model => model.name === selected.modelId || model.id === selected.modelId);
+      const value = model?.parameterDefinitions?.find(definition => definition.id === 'reasoning_effort')?.parameterType?.enumParameter?.values.find(value => value.displayName === label);
+      if (!value) return false;
+      const parameters = [...(selected.parameters || []).filter(parameter => parameter.id !== 'reasoning_effort'), { id: 'reasoning_effort', value: value.value }];
+      props.onSelectionChange([{ ...selected, parameters }, ...selections.slice(1)]);
       return true;
     }
     const p = powerProps();
@@ -211,14 +271,15 @@
     }
     const row = devinVariants('effort').find(x => x.label === label);
     if (!row) return false;
-    devinPickerProps().onModelSelect(row.config);
-    return true;
+    const selected = devinPickerProps().onModelSelect(row.config);
+    return remoteContext?.app === 'devin' ? Promise.resolve(selected).then(() => true) : true;
   };
   const effortTrigger = () => {
     const el = [...doc.querySelectorAll('[role=menuitem], .ui-menu__row')].find(e => vis(e) && /^Effort\b/.test(normLabel(e.innerText)));
     return el ? center(el) : null;
   };
   const closeCodexMenu = () => {
+    if (codexRecentPoint()?.open) { codexRecentPoint(false); return true; }
     const el = [...doc.querySelectorAll('button[aria-expanded=true][aria-haspopup=menu]')].find(vis);
     if (el) {
       el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse', ctrlKey: false }));
@@ -232,7 +293,15 @@
     el.click();
     return true;
   };
-  const fastProps = () => doc.querySelector('[data-codex-intelligence-trigger]') ? codexFiberProps(modelButton(), 40).find(p => p.serviceTierOptions && p.onSelectServiceTier) : null;
+  const fastProps = () => {
+    const props = doc.querySelector('[data-codex-intelligence-trigger]') ? codexFiberProps(modelButton(), 40).find(p => p.serviceTierOptions && p.onSelectServiceTier) : null;
+    if (remoteContext?.app !== 'codex') return props;
+    const manager = codexNativeManager(), conversation = manager.getConversation(remoteContext.threadId);
+    const model = codexPickerProps().modelOptions.find(option => option.model.id === conversation.latestModel)?.model;
+    return { ...props, serviceTierOptions: [{ value: null }, ...(model?.serviceTiers || []).map(tier => ({ value: tier.id, iconKind: tier.id === 'priority' ? 'fast' : '', description: { defaultMessage: tier.description } }))],
+      selectedServiceTier: conversation.latestThreadSettings?.serviceTier === 'default' ? null : conversation.latestThreadSettings?.serviceTier ?? null,
+      onSelectServiceTier: serviceTier => manager.updateThreadSettingsForNextTurn(remoteContext.threadId, nativeValue({ serviceTier })) };
+  };
   const cursorFastRow = () => [...doc.querySelectorAll('[role=menuitemcheckbox], [role=switch]')].find(e => vis(e) && /^Fast(?: Mode)?$/i.test(normLabel(e.innerText)));
   const fastInfo = () => {
     const p = fastProps();
@@ -256,13 +325,13 @@
     if (p) {
       const option = p.serviceTierOptions.find(x => on ? x.iconKind === 'fast' : x.value == null);
       if (!option) return false;
-      p.onSelectServiceTier(option.value);
-      return true;
+      const selected = p.onSelectServiceTier(option.value);
+      return remoteContext?.app === 'codex' ? Promise.resolve(selected).then(() => true) : true;
     }
     const row = devinVariants('fast').find(x => (x.order === 1) === on);
     if (!row) return false;
-    devinPickerProps().onModelSelect(row.config);
-    return true;
+    const selected = devinPickerProps().onModelSelect(row.config);
+    return remoteContext?.app === 'devin' ? Promise.resolve(selected).then(() => true) : true;
   };
   const fastTarget = () => { const el = cursorFastRow(); return el ? center(el) : null; };
   const clickCursorFast = () => cursorFastRow().click();
@@ -281,6 +350,7 @@
       const m = current.familyMetadata;
       return { lead: m.Lead.name, effort: m.Effort.name, sidekick: m.Sidekick.name, fast: m['Fast Mode']?.order === 1, fastSupported: devinVariants('fast').some(x => x.order === 1), ...(includePricing ? { pricing: devinPricing(current) } : {}) };
     }
+    if (remoteContext?.app === 'devin') return null;
     const panel = fusionPanel();
     if (!panel) return null;
     const boxes = [...panel.querySelectorAll('[role=combobox]')].filter(vis);

@@ -42,12 +42,11 @@ export async function listWindows(report = null, app = null) {
   }));
   const wins = lists.flat();
   if (!wins.length) throw new Error('连不上 Cursor、Devin 或 Codex。Cursor 用调试端口 9222，Devin 用 ./scripts/start-devin.sh（端口 9223），Codex 用 ./scripts/start-codex.sh（端口 9224）');
-  wins.push({ id: 'fusion', title: 'Fusion', ws: '', port: '', app: 'fusion', kind: 'local' });
   return wins;
 }
 
 export function phoneWindows(wins, current) {
-  const apps = [...new Set(wins.map(w => w.app))];
+  const apps = [...new Set(wins.filter(w => ['cursor', 'devin', 'codex'].includes(w.app)).map(w => w.app))];
   return apps.map(app => {
     const rows = wins.filter(w => w.app === app);
     const row = rows.find(w => w.id === current) || rows[0];
@@ -63,6 +62,7 @@ export const codexContextFiles = new Map();
 const codexContextChecks = new Map();
 const codexContextReads = new Map();
 const codexContextCache = new Map();
+const CODEX_CONTEXT_LIMIT = 256;
 const codexHome = () => process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
 const codexSessionNames = directory => fs.readdir(directory, { recursive: true });
 const codexSessionFile = (name, thread) => name.endsWith(`-${thread}.jsonl`) || path.basename(name).includes(`-${thread}_`) && name.endsWith('.jsonl');
@@ -87,11 +87,36 @@ export async function codexSessionStates(ids, nativePaths) {
 
 export function codexContext(thread) {
   if (!thread) return null;
+  const file = codexContextFiles.get(thread);
+  if (file) {
+    codexContextFiles.delete(thread);
+    codexContextFiles.set(thread, file);
+  }
   if (!codexContextReads.has(thread)) {
-    const read = readCodexContext(thread).finally(() => codexContextReads.delete(thread));
+    const read = readCodexContext(thread).finally(() => {
+      codexContextReads.delete(thread);
+      trimCodexContexts();
+    });
     codexContextReads.set(thread, read);
   }
   return codexContextReads.get(thread);
+}
+
+function forgetCodexContext(thread) {
+  codexContextFiles.delete(thread);
+  codexContextChecks.delete(thread);
+  codexContextCache.delete(thread);
+}
+
+function trimCodexContexts() {
+  let completed = codexContextFiles.size;
+  for (const thread of codexContextReads.keys()) if (codexContextFiles.has(thread)) completed--;
+  for (const thread of codexContextFiles.keys()) {
+    if (completed <= CODEX_CONTEXT_LIMIT) break;
+    if (codexContextReads.has(thread)) continue;
+    forgetCodexContext(thread);
+    completed--;
+  }
 }
 
 async function readCodexContext(thread) {
@@ -102,7 +127,7 @@ async function readCodexContext(thread) {
     const names = (await codexSessionNames(sessions)).filter(name => codexSessionFile(name, thread));
     const files = await Promise.all(names.map(async name => ({ name, modified: (await fs.stat(path.join(sessions, name))).mtimeMs })));
     const relative = files.sort((a, b) => b.modified - a.modified)[0]?.name;
-    if (!relative) return null;
+    if (!relative) { forgetCodexContext(thread); return null; }
     file = path.join(sessions, relative);
     codexContextFiles.set(thread, file);
     codexContextChecks.set(thread, now);

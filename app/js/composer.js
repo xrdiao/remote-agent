@@ -3,13 +3,13 @@ const text = $('text');
 let questionCompose = null;
 const drafts = new Map(), draftMentions = new Map();
 const dirtyDrafts = new Set();
-const inputHistory = new Map(), chatInputCache = new Map(), terminalInputHistory = new Map();
+const inputHistory = new Map(), chatInputCache = new Map();
 let inputRecall = null;
 function endInputRecall() {
   if (inputRecall) inputRecall.history.delete(inputRecall.key);
   inputRecall = null;
 }
-function chatInputKey(chat = lastChat) { return [currentComputer()?.id || '', viewSel, 'chat', chat?.thread || ''].join('|'); }
+function chatInputKey(chat = lastChat) { return [currentComputer()?.id || '', conversationKey(), 'chat', chat?.thread || ''].join('|'); }
 function rememberInputHistory(chat) {
   if (!chat) return;
   const key = chatInputKey(chat), rows = new Map(chatInputCache.get(key) || []);
@@ -72,7 +72,6 @@ function confirmSent(m, render = true) {
   const sent = pendingSends.get(m.requestId);
   if (!sent) return;
   pendingSends.delete(m.requestId);
-  if (sent.mode === 'terminal') terminalInputHistory.clear();
   for (const key of inputHistory.keys()) if (key.startsWith(sent.draft + '|')) inputHistory.delete(key);
   if (drafts.get(sent.draft) === sent.text && (draftVersions.get(sent.draft) || 0) === sent.version) { drafts.delete(sent.draft); draftMentions.delete(sent.draft); }
   const here = (currentComputer()?.id || '') === sent.computer && mode === sent.mode && (draftKey() === sent.draft || m.sel === viewSel);
@@ -81,7 +80,7 @@ function confirmSent(m, render = true) {
   }
   if (here && inputRevision === sent.revision && text.value === sent.text) {
     drafts.delete(activeDraft); draftMentions.delete(activeDraft);
-    text.value = ''; MN.mentions = []; MN.value = ''; autosize(); mirroredDraft = '';
+    text.value = ''; MN.mentions = []; MN.value = ''; mentionHide(text); autosize(); mirroredDraft = '';
     dirtyDrafts.delete(activeDraft); queueDraftSync();
   } else if (here && sent.mode === 'chat' && inputRevision !== sent.revision) {
     draftRevision++; pendingDesktopDraft = null;
@@ -150,7 +149,7 @@ function receiveQueueDone(m) {
   for (let n = submittedMessages.length - 1; n >= 0; n--) if (removed.has(submittedMessages[n].requestId)) submittedMessages.splice(n, 1);
   queueChatRender();
 }
-function draftKey() { return [currentComputer()?.id || '', viewSel, mode, ...(questionCompose?.sel === viewSel && mode === 'chat' ? [questionCompose.id] : [])].join('|'); }
+function draftKey() { return [currentComputer()?.id || '', mode === 'terminal' ? currentTerminalId : conversationKey(), mode, ...(questionCompose?.sel === viewSel && mode === 'chat' ? [questionCompose.id] : [])].join('|'); }
 function saveDraft() { if (activeDraft) { drafts.set(activeDraft, text.value); draftMentions.set(activeDraft, MN.mentions.slice()); } }
 function restoreDraft() {
   endInputRecall(); clearTimeout(draftPushTimer); activeDraft = draftKey();
@@ -173,7 +172,7 @@ function queueDraftSync() {
   }, 400);
 }
 function receiveDraft(m) {
-  if (questionCompose || m.sel !== viewSel || m.draftEpoch !== draftEpoch || m.revision !== draftRevision) return;
+  if (mode !== 'chat' || questionCompose || m.sel !== viewSel || m.draftEpoch !== draftEpoch || m.revision !== draftRevision) return;
   if (m.t === 'draftAck') {
     if (m.ok && m.read) { draftAckRevision = m.revision; receiveDraft({ ...m, t: 'draft' }); }
     else if (m.ok && text.value === m.text) { draftAckRevision = m.revision; mirroredDraft = m.text; dirtyDrafts.delete(activeDraft); }
@@ -181,7 +180,7 @@ function receiveDraft(m) {
   }
   if ([...pendingSends.values()].some(sent => sent.draft === activeDraft && sent.revision !== inputRevision)) return;
   if (draftAckRevision !== draftRevision || MN.mentions.length) return;
-  if (composing || document.activeElement === text) { pendingDesktopDraft = m; return; }
+  if (composing || document.activeElement === text || document.activeElement?.dataset?.ovInput) { pendingDesktopDraft = m; return; }
   pendingDesktopDraft = null;
   if (text.value !== m.text) {
     const selection = [text.selectionStart, text.selectionEnd, text.selectionDirection];
@@ -200,49 +199,64 @@ function autosize() {
   updateMathPrev(); updateComposeCompact();
   if (text.offsetHeight !== oldHeight) noteChatLayoutChange();
   if (questionCompose?.sel === viewSel && document.body.classList.contains('kb')) fitViewport();
+  document.dispatchEvent(new Event('composer-state'));
 }
-function recallInput(direction) {
+function recallInput(direction, input = text) {
   if (mode !== 'chat') return;
-  const key = chatInputKey();
+  const chat = input === text ? lastChat : chatBySel.get(chatCacheKey(viewSel));
+  const key = chatInputKey(chat ?? null);
   let state = inputHistory.get(key);
   if (!state) {
     if (direction > 0) return;
-    rememberInputHistory(lastChat);
+    rememberInputHistory(chat);
     const rows = (chatInputCache.get(key) || []).map(([, value]) => value);
     if (!rows.length) return status('当前会话暂无已发送内容');
-    state = { rows, index: rows.length, draft: text.value, mentions: MN.mentions.slice(), selection: [text.selectionStart, text.selectionEnd, text.selectionDirection] };
+    state = { rows, index: rows.length, draft: input.value, mentions: MN.mentions.slice(), selection: [input.selectionStart, input.selectionEnd, input.selectionDirection] };
     inputHistory.set(key, state);
   }
   state.index = Math.max(0, Math.min(state.rows.length, state.index + direction));
   const atDraft = state.index === state.rows.length;
-  text.value = atDraft ? state.draft : state.rows[state.index];
+  input.value = atDraft ? state.draft : state.rows[state.index];
   MN.mentions = atDraft ? state.mentions.slice() : [];
-  if (atDraft) text.setSelectionRange(...state.selection);
-  else text.setSelectionRange(text.value.length, text.value.length);
+  MN.value = input.value;
+  if (atDraft) input.setSelectionRange(...state.selection);
+  else input.setSelectionRange(input.value.length, input.value.length);
   // The synthetic input saves the recalled text without ending history browsing.
   inputRecall = null;
-  mentionHide(); text.dispatchEvent(new Event('input', { bubbles: true }));
+  mentionHide(input); input.dispatchEvent(new Event('input', { bubbles: true }));
   if (atDraft) inputHistory.delete(key);
   else inputRecall = { history: inputHistory, key };
 }
 $('inputPrev').onclick = () => recallInput(-1);
 $('inputNext').onclick = () => recallInput(1);
 let draftPushTimer = 0;
-text.addEventListener('input', e => {
+function editComposerInput(input, event) {
   endInputRecall();
-  syncMentions(text.value, e);
+  if (input !== text) {
+    text.value = input.value;
+    text.setSelectionRange(input.selectionStart, input.selectionEnd, input.selectionDirection);
+  }
+  syncMentions(input.value, event, input);
   recordDraftEdit();
-  syncQuestionDraft(text.value);
   queueDraftSync();
-});
+  mentionUpdate(input);
+}
 // ---- "@" mentions (Devin): the relay drives Devin's own typeahead, so a mention ends up as a real chip ----
 // Typing "@" (or "@file:ser") asks for the list; tapping a row puts "@label" into the text. When the message is
 // sent, the relay types the text and, at each "@label", lets Devin's typeahead insert the chip.
-const MN = { seq: 0, timer: 0, q: null, root: false, mentions: [], used: '', value: '' };
-function mentionToken() {
+const MN = { seq: 0, timer: 0, q: null, root: false, mentions: [], used: '', value: '', command: null };
+let mentionInput = text;
+function composerInput() { return ovToolInput() || text; }
+function composerMentionBox(input) { return input === text ? $('mentionBox') : input.closest('.ov-card').querySelector('.ov-mentions'); }
+function insertComposerText(value, input = composerInput(), start = input.selectionStart, end = input.selectionEnd) {
+  input.setRangeText(value, start, end, 'end');
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.focus();
+}
+function mentionToken(input = composerInput()) {
   if (questionCompose || mode !== 'chat' || !supportsCapability('fileReferences', currentApp === 'devin' || currentApp === 'codex')) return null;
-  const caret = text.selectionStart ?? text.value.length;
-  const value = text.value, head = value.slice(0, caret);
+  const caret = input.selectionStart ?? input.value.length;
+  const value = input.value, head = value.slice(0, caret);
   const end = (() => { let i = caret; while (i < value.length && !/[\s@]/.test(value[i])) i++; return i; })();
   if (currentApp === 'codex') {
     const m = /(^|\s)([@/])([^\s@]*)$/.exec(head);
@@ -251,56 +265,63 @@ function mentionToken() {
   const m = /(^|\s)@([^\s@]*)$/.exec(head);
   return m ? { start: caret - m[2].length - 1, caret, end, q: m[2], trigger: '@' } : null;
 }
-function mentionHide() {
+function mentionHide(input = text) {
   clearTimeout(MN.timer);
   MN.q = null;
   MN.parent = null;
+  MN.command = null;
   MN.seq++;
-  $('mentionBox').hidden = true;
+  composerMentionBox(input).hidden = true;
   updateComposeCompact();
 }
-function mentionAsk(o) {
+function mentionAsk(o, input = composerInput()) {
+  if (input !== composerInput()) return;
+  clearTimeout(MN.timer);
+  mentionInput = input;
   MN.seq++;
-  const token = mentionToken();
-  MN.request = { sel: viewSel, revision: inputRevision, value: text.value, caret: text.selectionStart };
+  const token = mentionToken(input);
+  MN.request = { sel: viewSel, revision: inputRevision, value: input.value, caret: input.selectionStart, seq: MN.seq };
   send({ t: 'mentionQuery', seq: MN.seq, trigger: token?.trigger || '@',
-    text: text.value, start: token?.start ?? text.selectionStart, caret: text.selectionStart, ...o });
-  const box = $('mentionBox');
+    text: input.value, start: token?.start ?? input.selectionStart, caret: input.selectionStart, ...o });
+  const box = composerMentionBox(input);
   if (box.hidden) { box.innerHTML = '<div class="mnHint">加载中…</div>'; box.hidden = false; updateComposeCompact(); }
 }
-function mentionUpdate() {
-  const t = mentionToken();
-  if (!t) return mentionHide();
+function mentionUpdate(input = composerInput()) {
+  mentionInput = input;
+  if (MN.command && !mentionRequestMatches(MN.command, input)) MN.command = null;
+  const t = mentionToken(input);
+  if (!t) return mentionHide(input);
   const queryKey = `${t.trigger || '@'}${t.q}|${t.start}|${t.caret}|${inputRevision}`;
   if (queryKey === MN.q) return;
   clearTimeout(MN.timer);
   MN.q = queryKey;
   MN.seq++;
-  MN.timer = setTimeout(() => mentionAsk({ q: t.q }), currentApp === 'codex' ? 150 : 220);
-  if (currentApp === 'codex' && !$('mentionBox').hidden) {
-    const hint = $('mentionBox').querySelector('.mnHint');
+  MN.timer = setTimeout(() => mentionAsk({ q: t.q }, input), currentApp === 'codex' ? 150 : 220);
+  if (currentApp === 'codex' && !composerMentionBox(input).hidden) {
+    const hint = composerMentionBox(input).querySelector('.mnHint');
     if (hint) hint.textContent = '搜索中…';
-    else $('mentionBox').insertAdjacentHTML('afterbegin', '<div class="mnHint">搜索中…</div>');
+    else composerMentionBox(input).insertAdjacentHTML('afterbegin', '<div class="mnHint">搜索中…</div>');
   }
-  if ($('mentionBox').hidden) { $('mentionBox').innerHTML = '<div class="mnHint">加载中…</div>'; $('mentionBox').hidden = false; updateComposeCompact(); }
+  if (composerMentionBox(input).hidden) { composerMentionBox(input).innerHTML = '<div class="mnHint">加载中…</div>'; composerMentionBox(input).hidden = false; updateComposeCompact(); }
 }
-text.addEventListener('input', mentionUpdate);
 $('mentionBox').addEventListener('pointerdown', e => { if (e.pointerType === 'mouse') e.preventDefault(); });
 document.addEventListener('pointerdown', e => {
-  if (!$('mentionBox').hidden && !e.target.closest('#mentionBox, #text')) mentionHide();
+  if (!composerMentionBox(mentionInput)?.hidden && !e.target.closest('#mentionBox, #text, .ov-mentions, [data-ov-input]')) mentionHide(mentionInput);
 }, { passive: true });
 function onMentions(m) {
+  const input = mentionInput;
+  if (input !== composerInput()) return;
   if (m.sel !== viewSel || m.seq !== MN.seq) return;
-  if (!MN.request || MN.request.sel !== viewSel || MN.request.revision !== inputRevision
-    || MN.request.value !== text.value || MN.request.caret !== text.selectionStart) return;
-  const t = mentionToken();
-  if (!m.submenu && !t) return mentionHide();
+  if (!mentionRequestMatches(MN.request, input)) return;
+  const command = MN.command?.input === input && mentionRequestMatches(MN.command, input) ? MN.command : null;
+  const t = mentionToken(input) || command?.token;
+  if (!m.submenu && !t) return mentionHide(input);
   MN.parent = m.parent || null;
-  const box = $('mentionBox');
+  const box = composerMentionBox(input);
   if (m.prefix) {
     // A category was chosen: the token becomes "@terminal:" and the list below is what that category offers.
-    text.setRangeText(m.prefix, t.start, t.end, 'end');
-    recordDraftEdit(); queueDraftSync();
+    input.setRangeText(m.prefix, t.start, t.end, 'end');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
     MN.q = m.prefix.slice(1);
     MN.used = MN.q;
   } else MN.used = m.q;
@@ -310,44 +331,74 @@ function onMentions(m) {
     : '<div class="mnHint">没有匹配的结果</div>';
   box.hidden = false;
   box._rows = m.rows;
+  box._request = MN.request;
   updateComposeCompact();
+  if (command) {
+    MN.command = null;
+    if (!submitComposerCommand(input)) sendComposer();
+  }
 }
-$('mentionBox').addEventListener('click', e => {
+function mentionRequestMatches(request, input) {
+  return request?.sel === viewSel && request.revision === inputRevision
+    && request.value === input.value && request.caret === input.selectionStart;
+}
+function submitComposerCommand(input = text) {
+  if (mode !== 'chat' || currentApp !== 'codex' || MN.mentions.length) return false;
+  const match = /^\s*\/([^\s/]+)\s*$/.exec(input.value);
+  if (!match) return false;
+  const token = { start: 0, end: input.value.length, q: match[1], trigger: '/' };
+  const box = composerMentionBox(input);
+  if (mentionRequestMatches(box._request, input)) {
+    const rows = box._rows.filter(row => row.section === 'commands');
+    if (!rows.length) return false;
+    if (rows.length === 1) selectComposerMention(rows[0], input, token);
+    else { box.hidden = false; updateComposeCompact(); }
+  } else {
+    MN.command = { input, token, sel: viewSel, revision: inputRevision, value: input.value, caret: input.selectionStart };
+    if (!mentionRequestMatches(MN.request, input) || MN.request.seq !== MN.seq)
+      mentionAsk({ q: token.q, trigger: '/', start: 0, caret: input.value.length }, input);
+  }
+  return true;
+}
+function pickMention(e, input = composerInput()) {
   const b = e.target.closest('[data-mi]');
-  const r = b && $('mentionBox')._rows?.[Number(b.dataset.mi)];
-  const t = mentionToken();
+  const r = b && composerMentionBox(input)._rows?.[Number(b.dataset.mi)];
+  return selectComposerMention(r, input);
+}
+function selectComposerMention(r, input, t = mentionToken(input)) {
   if (!r || (!t && !MN.parent)) return;
-  if (MN.root) return mentionAsk({ cat: r.label });
+  if (MN.root) return mentionAsk({ cat: r.label }, input);
   if (currentApp === 'codex' && (r.key === 'context-action:pick-local-files' || (r.section === 'context-actions' && r.label === 'Files and folders'))) {
-    return openCodexFilePicker(t);
+    return openCodexFilePicker(t, input);
   }
   const command = currentApp === 'codex' && (MN.parent || r.section === 'commands' || r.section === 'context-actions' || r.section === 'plugins' || r.section === 'apps');
   if (command) {
-    if (t) text.setRangeText('', t.start, t.end, 'end');
-    recordDraftEdit();
+    if (t) input.setRangeText('', t.start, t.end, 'end');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
     const parent = MN.parent;
-    mentionHide();
-    MN.request = { sel: viewSel, revision: inputRevision, value: text.value, caret: text.selectionStart };
+    mentionHide(input);
+    MN.request = { sel: viewSel, revision: inputRevision, value: input.value, caret: input.selectionStart };
     send({
       t: 'codexPick', key: r.key, label: r.label, section: r.section || '',
-      seq: MN.seq, text: text.value, start: text.selectionStart, caret: text.selectionStart,
+      seq: MN.seq, text: input.value, start: input.selectionStart, caret: input.selectionStart,
       q: MN.used || '', parentKey: parent?.key || '', parentLabel: parent?.label || '', parentQ: parent?.q || MN.used || '',
     });
-    queueDraftSync();
+
     return;
   }
   if (!t) return;
   const trigger = t.trigger || '@';
   const token = `${trigger}${r.label}`;
-  text.setRangeText(token + (/\s/.test(text.value[t.end] || '') ? '' : ' '), t.start, t.end, 'end');
+  input.setRangeText(token + (/\s/.test(input.value[t.end] || '') ? '' : ' '), t.start, t.end, 'end');
   // From a category ("@file:") the relay must type the file's name too, or Devin only lists its default entries.
   const q = MN.used.endsWith(':') && !r.label.startsWith(MN.used) ? MN.used + r.label : (MN.used || r.label.split(' ')[0]);
   MN.mentions.push({ token, q, label: r.label, sub: r.sub || '', key: r.key || '', section: r.section || '', trigger, at: t.start });
-  MN.value = text.value;
-  recordDraftEdit();
-  mentionHide();
-  text.focus();
-});
+  MN.value = input.value;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  mentionHide(input);
+  input.focus();
+}
+$('mentionBox').addEventListener('click', e => pickMention(e, text));
 // Mentions still present in the text, in the order they appear.
 const mentionsFor = v => { const ms = takeMentions(v); return ms.length ? { mentions: ms } : {}; };
 function matchedMentions(v) {
@@ -364,14 +415,14 @@ function matchedMentions(v) {
   return list.sort((a, b) => a.at - b.at);
 }
 function takeMentions(v) { return matchedMentions(v).map(({ at, ...mention }) => mention); }
-function syncMentions(v, event = null) {
+function syncMentions(v, event = null, input = text) {
   const old = MN.value, delta = v.length - old.length;
   if (old !== v && old) {
     let from = 0, oldEnd = old.length, newEnd = v.length;
     while (from < oldEnd && from < newEnd && old[from] === v[from]) from++;
     while (oldEnd > from && newEnd > from && old[oldEnd - 1] === v[newEnd - 1]) { oldEnd--; newEnd--; }
-    if (event?.inputType?.startsWith('delete') && Number.isInteger(text.selectionStart)) {
-      from = Math.min(text.selectionStart, old.length);
+    if (event?.inputType?.startsWith('delete') && Number.isInteger(input.selectionStart)) {
+      from = Math.min(input.selectionStart, old.length);
       oldEnd = Math.min(old.length, from + old.length - v.length);
     }
     MN.mentions = MN.mentions.filter(mention => {
@@ -383,18 +434,12 @@ function syncMentions(v, event = null) {
   }
   MN.mentions = matchedMentions(v); MN.value = v;
 }
-text.addEventListener('select', mentionUpdate);
-document.addEventListener('selectionchange', () => { if (document.activeElement === text) mentionUpdate(); });
-text.addEventListener('focus', () => {
-  updateComposeCompact();
-  fitViewport();
-  setTimeout(fitViewport, 60);
-  setTimeout(fitViewport, 320);
-});
-text.addEventListener('blur', () => {
-  if (pendingDesktopDraft) receiveDraft(pendingDesktopDraft);
-  setTimeout(fitViewport, 60);
-  updateComposeCompact();
+function mirrorComposerSelection(input) {
+  if (input !== text) text.setSelectionRange(input.selectionStart, input.selectionEnd, input.selectionDirection);
+}
+document.addEventListener('selectionchange', () => {
+  const input = composerInput();
+  if (document.activeElement === input) { mirrorComposerSelection(input); mentionUpdate(input); }
 });
 // Devin while its turn runs: Queue (default, Enter) or Send now (interrupts the turn, after confirmation).
 let chatBusy = false;
@@ -405,9 +450,8 @@ function codexFollow() {
   return mode === 'chat' && currentApp === 'codex' && chatBusy && (follow === 'queue' || follow === 'steer') ? follow : '';
 }
 $('stop').onclick = async () => {
-  const sel = viewSel;
-  if (!await ask('停止 Agent？\n它这一轮正在做的事会中断。', '停止')) return;
-  if (sel !== viewSel || send({ t: 'stop' }) === false) return;
+  if (!await ask('停止 Agent？\n它这一轮正在做的事会中断。', '停止', true)) return;
+  if (send({ t: 'stop' }) === false) return;
   if (currentApp !== 'fusion') for (const [id, pending] of pendingSends) {
     if (pending.mode === 'chat' && pending.scope === messageScope() && (!pending.thread || pending.thread === lastChat?.thread)) failPendingSend(id, '', false);
   }
@@ -426,11 +470,16 @@ function updateSendMode() {
   if (split) $('sendNow').textContent = '立即发送';
   document.body.classList.toggle('sendSplit', split || !!follow);
   updateComposeCompact();
+  document.dispatchEvent(new Event('composer-state'));
 }
 
-/* Idle chat text uses two lines; the existing short-screen empty capsule remains.
-   Both presentations share the same interaction state and collapse delay. */
-let composeCompactTimer = 0, composerEngaged = false;
+/* One presentation controller owns explicit/question folding and landscape idle folding. */
+let composeCompactTimer = 0, composerEngaged = false, composerCollapsed = false, composerPointerPending = false;
+const portraitComposer = () => mode === 'chat' && !document.body.classList.contains('land');
+function questionComposerFocused() {
+  const focused = document.activeElement;
+  return focused?.matches('#qnBar input, #qnBar textarea, #qnBar select') && !focused.disabled;
+}
 function micHeld() { return $('mic')?.classList.contains('on') || (typeof voiceSession !== 'undefined' && !!voiceSession); }
 function micPressing() { return $('mic')?.classList.contains('on') || (typeof voiceSession !== 'undefined' && !!voiceSession?.held); }
 function composeIdleWanted() {
@@ -455,13 +504,8 @@ function composerLayoutBusy() {
 const composeCompactAllowed = () => window.innerHeight / window.innerWidth < 1.6;
 window.addEventListener('resize', () => updateComposeCompact());
 function composeCompactWanted() {
-  return mode === 'chat' && composeCompactAllowed()
-    && !text.value.trim() && document.activeElement !== text && !composerEngaged
-    && !$('attachments').children.length
-    && $('mentionBox').hidden
-    && $('fusionWelcome').hidden
-    && !document.getElementById('imageEditor')?.open
-    && !micHeld();
+  // Both callers have already checked composeIdleWanted().
+  return composeCompactAllowed() && !text.value.trim() && !$('attachments').children.length;
 }
 function setComposerPresentation(idle, compact) {
   const oldCompact = document.body.classList.contains('composeCompact');
@@ -478,6 +522,11 @@ function setComposerPresentation(idle, compact) {
   noteChatLayoutChange();
   document.body.classList.toggle('composeIdle', idle);
   document.body.classList.toggle('composeCompact', compact);
+  const fold = $('composerFold');
+  const label = I18N.tr(compact ? '展开输入框' : '收起输入框');
+  fold.setAttribute('aria-expanded', String(!compact));
+  fold.setAttribute('aria-label', label);
+  fold.title = label;
   if (!idle) autosize();
   const h1 = foot.offsetHeight;
   if (stick) requestChatScroll();
@@ -486,10 +535,29 @@ function setComposerPresentation(idle, compact) {
   }
 }
 function setComposeCompact(on) { setComposerPresentation(on, on); }
+function setComposerFold(on) {
+  composerPointerPending = false;
+  composerCollapsed = on;
+  endComposerEditing();
+  composerEngaged = true;
+  updateComposeCompact();
+}
+$('composerFold').onclick = () => setComposerFold(!document.body.classList.contains('composeCompact'));
 function updateComposeCompact() {
+  if (mode === 'chat' && (composerCollapsed || questionComposerFocused())) {
+    clearTimeout(composeCompactTimer); composeCompactTimer = 0;
+    setComposerPresentation(false, true);
+    return;
+  }
+  // Explicit/question folding is immediate and does not use the idle delay.
+  if (document.body.classList.contains('composeCompact') && !document.body.classList.contains('composeIdle')) {
+    if (mode === 'chat' && composerPointerPending) return;
+    clearTimeout(composeCompactTimer); composeCompactTimer = 0;
+    setComposerPresentation(false, false);
+  }
   if (composeIdleWanted()) {
     if (composerLayoutBusy()) return;
-    const compact = composeCompactWanted();
+    const compact = !portraitComposer() && composeCompactWanted();
     if (document.body.classList.contains('composeIdle') && (!compact || document.body.classList.contains('composeCompact'))) {
       clearTimeout(composeCompactTimer); composeCompactTimer = 0;
       setComposerPresentation(true, compact);
@@ -498,7 +566,7 @@ function updateComposeCompact() {
     if (composeCompactTimer) return;
     composeCompactTimer = setTimeout(() => {
       composeCompactTimer = 0;
-      if (composeIdleWanted() && !composerLayoutBusy()) setComposerPresentation(true, composeCompactWanted());
+      if (composeIdleWanted() && !composerLayoutBusy()) setComposerPresentation(true, !portraitComposer() && composeCompactWanted());
     }, 1500);
   } else {
     clearTimeout(composeCompactTimer); composeCompactTimer = 0;
@@ -506,12 +574,17 @@ function updateComposeCompact() {
   }
 }
 // Capture-phase so it runs before controls that re-appear under the same tap.
-// In compact: taps outside +/mic/stop only expand the composer (the field ignores pointer events
-// while compact, so no keyboard yet); a second tap in the field then focuses it natively.
+// Landscape keeps click-to-open folding; the next tap can focus the revealed field.
 document.querySelector('.composerBox').addEventListener('click', e => {
+  if (portraitComposer()) return;
   if (document.body.classList.contains('composeCompact')) {
-    if (e.target.closest('#add, #mic, #stop')) return;
+    if (e.target.closest('button')) {
+      composerCollapsed = true;
+      return;
+    }
     e.preventDefault(); e.stopPropagation();
+    composerPointerPending = false;
+    composerCollapsed = false;
     clearTimeout(composeCompactTimer); composeCompactTimer = 0;
     composerEngaged = true;
     setComposeCompact(false);
@@ -523,132 +596,128 @@ document.querySelector('.composerBox').addEventListener('click', e => {
 // Tapping elsewhere disengages. While compact, don't re-evaluate here — expanding at
 // pointerdown would move controls under the finger; the click handler above handles it.
 document.addEventListener('pointerdown', e => {
+  composerPointerPending = !!e.target.closest('footer, #qnBar');
   if (e.target.closest('#sheet, #shade, #imageEditor')) return;
   const inside = !!e.target.closest('footer') && !e.target.closest('#send, #sendNow');
   if (inside === composerEngaged) return;
   composerEngaged = inside;
   if (!document.body.classList.contains('composeCompact') && !e.target.closest('button')) updateComposeCompact();
 }, true);
-document.querySelector('.composerBox').addEventListener('click', e => {
-  if (e.target.closest('button') && !e.target.closest('#mic')) queueMicrotask(updateComposeCompact);
+document.addEventListener('pointercancel', () => {
+  if (!composerPointerPending) return;
+  composerPointerPending = false;
+  updateComposeCompact();
 });
 for (const event of ['pointerup', 'keyup']) $('mic').addEventListener(event, () => queueMicrotask(updateComposeCompact));
 document.addEventListener('focusin', e => {
   if (e.target.matches('#qnBar input, #qnBar textarea, #qnBar select')) updateComposeCompact();
 });
+document.addEventListener('focusout', e => {
+  if (e.target.matches('#qnBar input, #qnBar textarea, #qnBar select')) queueMicrotask(updateComposeCompact);
+});
 document.addEventListener('click', e => {
-  if (e.target.closest('footer, #sheet, #shade, #imageEditor, #qnBar input, #qnBar textarea, #qnBar select')) return;
+  composerPointerPending = false;
+  if (e.target.closest('footer')) {
+    if (!e.target.closest('#mic')) queueMicrotask(updateComposeCompact);
+    return;
+  }
+  if (e.target.closest('#sheet, #shade, #imageEditor, #qnBar input, #qnBar textarea, #qnBar select')) return;
+  if (mode === 'chat' && e.target.closest('[data-question-compose]')) return;
   endComposerEditing();
 });
-$('fusionProject').onclick = () => { status('正在读取项目…'); send({ t: 'fusionProjects' }); };
-$('fusionA').onclick = () => send({ t: 'fusionSides', side: 'a' });
-$('fusionB').onclick = () => send({ t: 'fusionSides', side: 'b' });
-for (const side of ['a', 'b']) $('fusionModel' + side.toUpperCase()).onclick = () => {
-  status(lastChat?.fusion?.[side] ? `读取 ${side.toUpperCase()} 的模型…` : `正在选择 ${side.toUpperCase()} Agent…`);
-  if (lastChat?.fusion?.[side]) requestFusionModel(side);
-  else send({ t: 'fusionSides', side });
-};
-$('fusionBar').onclick = e => {
-  const b = e.target.closest('[data-fusion-act]');
-  if (!b) return;
-  if (b.dataset.fusionAct === 'history') return send({ t: 'fusionHistory' });
-  if (b.dataset.fusionAct === 'new') return send({ t: 'fusionNew' });
-  if (b.dataset.fusionAct === 'go') return send({ t: 'fusionGo' });
-  send({ t: 'fusionDecide', kind: b.dataset.fusionAct });
-};
-$('send').onclick = () => {
+function sendComposer() {
+  if ($('send').disabled) return;
+  if (mode === 'terminal') return sendTerminalInput();
+  cancelVoice();
   if (mode === 'chat' && questionCompose?.sel === viewSel) return submitQuestionCompose();
   if (mode === 'chat' && pendingImageUploads()) return status('图片尚未上传完成；失败图片请重试或删除', false);
   const v = text.value;
-  if (currentApp === 'fusion' && lastChat?.fusion?.busy) return status('Fusion 正在进行');
   if (!v.trim() && !$('attachments').children.length) return;
+  if (submitComposerCommand()) return;
   saveDraft();
   const follow = codexFollow();
   const when = devinBusySplit() || cursorBusyQueue() || follow === 'queue' ? 'queue' : follow === 'steer' ? 'now' : '';
   const receipt = sendReceipt(v);
   if (mode === 'chat') { status('正在发送…'); pushEcho(receipt.requestId, v, when === 'queue' || (!when && chatBusy) ? 'queue' : 'chat'); }
-  const sent = mode === 'terminal' ? send({ t: 'termSend', text: v, ...receipt })
+  const sent = currentApp === 'fusion' ? send({ t: 'fusionMessage', computer: currentComputer().id, runId: lastChat.fusionRun.id, text: v, ...receipt })
     : send({ t: 'send', text: v, submit: true, ...receipt, ...(when ? { when } : {}), ...mentionsFor(v) });
   if (sent === false) failPendingSend(receipt.requestId);
   if (mode === 'chat') jumpToLatest();
-};
-$('sendNow').onclick = async () => {
+}
+async function sendComposerNow() {
+  if ($('sendNow').disabled) return;
+  cancelVoice();
   if (pendingImageUploads()) return status('图片尚未上传完成；失败图片请重试或删除', false);
   const v = text.value;
   if (!v.trim() && !$('attachments').children.length) return;
   saveDraft();
   const follow = codexFollow();
   const steer = !follow || follow === 'queue';
-  if (!await ask(steer ? '立即追加到当前任务？' : '改为排队，等当前任务结束后再发送？', steer ? '立即追加' : '排队')) return;
+  if (!await ask(steer ? '立即追加到当前任务？' : '改为排队，等当前任务结束后再发送？', steer ? '立即追加' : '排队', true)) return;
   status('正在发送…');
   const receipt = sendReceipt(v);
   pushEcho(receipt.requestId, v, steer ? 'chat' : 'queue');
   if (send({ t: 'send', text: v, submit: true, ...receipt, when: steer ? 'now' : 'queue', ...mentionsFor(v) }) === false) failPendingSend(receipt.requestId);
   jumpToLatest();
-};
+}
+$('send').onclick = sendComposer;
+$('sendNow').onclick = sendComposerNow;
 $('insertNewline').addEventListener('pointerdown', e => e.preventDefault());
 $('insertNewline').onclick = () => {
-  text.setRangeText('\n', text.selectionStart, text.selectionEnd, 'end');
-  text.dispatchEvent(new Event('input', { bubbles: true }));
-  text.focus();
+  insertComposerText('\n', text);
 };
 // Enter sends. Shift+Enter keeps a newline. Ignore Enter that is confirming an IME candidate.
 // beforeinput's line-break event often has no shiftKey, so remember it from keydown.
 let composing = false;
 let shiftEnter = false;
-text.addEventListener('compositionstart', () => { endInputRecall(); composing = true; updateComposeCompact(); });
-text.addEventListener('compositionend', () => { setTimeout(() => { composing = false; updateComposeCompact(); queueDraftSync(); }, 0); });
 function submitOnEnter(e) {
   if (shiftEnter || e.shiftKey || e.isComposing || composing) return;
   e.preventDefault();
-  $('send').click();
+  sendComposer();
 }
-text.addEventListener('keydown', e => {
-  if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) endInputRecall();
-  if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-    if (!e.altKey || e.isComposing || composing || e.keyCode === 229 || !$('mentionBox').hidden) return;
-    if (e.ctrlKey || e.metaKey || e.shiftKey || text.selectionStart !== text.selectionEnd) return endInputRecall();
-    if (mode !== 'chat' && mode !== 'terminal') return;
-    e.preventDefault();
-    const direction = e.key === 'ArrowUp' ? -1 : 1;
-    if (mode === 'chat') recallInput(direction);
-    else send({ t: 'termHistory', direction });
-    return;
-  }
-  if (e.key !== 'Enter') return;
-  shiftEnter = e.shiftKey;
-  submitOnEnter(e);
-});
-text.addEventListener('keyup', e => { if (e.key === 'Enter') shiftEnter = false; });
-text.addEventListener('beforeinput', e => {
-  if (e.inputType === 'insertLineBreak' || e.inputType === 'insertParagraph') submitOnEnter(e);
-});
-$('pickTerms').onclick = () => { status('正在读取终端列表…'); send({ t: 'terminals' }); };
-$('newTerm').onclick = () => { status('正在新建终端…'); send({ t: 'newTerminal' }); };
-$('termEmptyNew').onclick = () => { status('正在新建终端…'); send({ t: 'newTerminal' }); };
-$('termInt').onclick = () => send({ t: 'key', key: 'Ctrl+c', focus: 'terminal' });
-function recallTerminal(m) {
-  if (mode !== 'terminal' || m.sel !== viewSel) return;
-  const key = [currentComputer()?.id || '', m.sel, m.id].join('|');
-  let state = terminalInputHistory.get(key);
-  if (!state) {
-    if (m.direction > 0) return;
-    if (!m.commands.length) return status('当前终端暂无可读取的命令历史');
-    state = { rows: m.commands, index: m.commands.length, draft: text.value, selection: [text.selectionStart, text.selectionEnd, text.selectionDirection] };
-    terminalInputHistory.set(key, state);
-  }
-  state.index = Math.max(0, Math.min(state.rows.length, state.index + m.direction));
-  const atDraft = state.index === state.rows.length;
-  text.value = atDraft ? state.draft : state.rows[state.index];
-  if (atDraft) text.setSelectionRange(...state.selection);
-  else text.setSelectionRange(text.value.length, text.value.length);
-  autosize(); saveDraft();
-  if (atDraft) terminalInputHistory.delete(key);
-  inputRecall = atDraft ? null : { history: terminalInputHistory, key };
+const composerInputHandlers = {
+  input: e => editComposerInput(e.target, e),
+  select: e => { mirrorComposerSelection(e.target); mentionUpdate(e.target); },
+  focus: e => {
+    mirrorComposerSelection(e.target);
+    updateComposeCompact(); fitViewport();
+    setTimeout(fitViewport, 60); setTimeout(fitViewport, 320);
+  },
+  blur: () => {
+    if (pendingDesktopDraft) receiveDraft(pendingDesktopDraft);
+    setTimeout(fitViewport, 60); updateComposeCompact();
+  },
+  compositionstart: () => { endInputRecall(); composing = true; updateComposeCompact(); },
+  compositionend: e => {
+    const input = e.target;
+    setTimeout(() => {
+      composing = false;
+      if (input === composerInput() && input.value !== text.value) editComposerInput(input);
+      updateComposeCompact(); queueDraftSync();
+    }, 0);
+  },
+  keydown: e => {
+    const input = e.target;
+    if (mode === 'terminal' && e.key === 'Tab' && !e.isComposing && !composing) { e.preventDefault(); completeTerminalInput(); return; }
+    if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) endInputRecall();
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      if (!e.altKey || e.isComposing || composing || e.keyCode === 229 || !composerMentionBox(input).hidden) return;
+      if (e.ctrlKey || e.metaKey || e.shiftKey || input.selectionStart !== input.selectionEnd) return endInputRecall();
+      if (mode !== 'chat' && mode !== 'terminal') return;
+      e.preventDefault();
+      const direction = e.key === 'ArrowUp' ? -1 : 1;
+      if (mode === 'terminal') recallTerminalInput(direction);
+      else recallInput(direction, input);
+      return;
+    }
+    if (e.key !== 'Enter') return;
+    shiftEnter = e.shiftKey; submitOnEnter(e);
+  },
+  keyup: e => { if (e.key === 'Enter') shiftEnter = false; },
+  beforeinput: e => { if (e.inputType === 'insertLineBreak' || e.inputType === 'insertParagraph') submitOnEnter(e); },
+};
+function composerInputEvent(e) {
+  if (e.target !== text && e.target !== ovToolInput()) return;
+  composerInputHandlers[e.type === 'focusin' ? 'focus' : e.type === 'focusout' ? 'blur' : e.type](e);
 }
-document.querySelectorAll('[data-termkey]').forEach(b => b.onclick = () => {
-  const direction = b.dataset.termkey === 'ArrowUp' ? -1 : b.dataset.termkey === 'ArrowDown' ? 1 : 0;
-  if (direction) send({ t: 'termHistory', direction });
-  else send({ t: 'key', key: b.dataset.termkey, focus: 'terminal' });
-});
-
+for (const event of Object.keys(composerInputHandlers)) text.addEventListener(event, composerInputEvent);

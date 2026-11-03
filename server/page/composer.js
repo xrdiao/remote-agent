@@ -1,4 +1,43 @@
   const selCardId = () => doc.querySelector('[data-sidebar-item-key] [data-active="true"]')?.closest('[data-sidebar-item-key]')?.getAttribute('data-sidebar-item-key')?.slice(4) || '';
+  // Import in the native iframe so the refs share the application's existing stores.
+  const codexComposerScope = async id => {
+    const composer = await (window.__remoteAgentComposerModule ||= (async () => {
+      const entry = [...doc.scripts].find(script => script.src).src;
+      const index = await (await fetch(entry)).text();
+      const main = new URL(index.match(/app-main-[a-f0-9]+\.js/)[0], entry);
+      const source = await (await fetch(main)).text();
+      return import(new URL(source.match(/composer-view-state-[a-f0-9]+\.js/)[0], main).href);
+    })());
+    const nodes = new Set(), pending = [...codexHistoryScopes()];
+    while (pending.length) {
+      const node = pending.pop();
+      if (nodes.has(node)) continue;
+      nodes.add(node);
+      if (node.parent) pending.push(node.parent);
+      for (const entries of node.retainedScopeEntries.values()) for (const entry of entries.values()) pending.push(entry.node);
+    }
+    const node = [...nodes].find(node => node.token.__scopeBrand === 'ComposerScope' && node.value.conversationId === id);
+    if (!node) throw new Error('所选 Codex 会话的原生输入状态尚未就绪');
+    const parents = [];
+    for (let parent = node; parent; parent = parent.parent) parents.push(parent);
+    const chain = new Map(parents.map(parent => [parent.token.id, parent]));
+    const scope = { node, chain, value: Object.assign({}, ...parents.reverse().map(parent => parent.value)),
+      get(ref, key) { const value = ref.resolve(node, chain, key); return typeof value.get === 'function' ? value.get() : node.store.get(value); },
+      set(ref, ...args) {
+        const value = ref.resolve(node, chain, args.length === 2 ? args[0] : undefined), next = args.at(-1);
+        if (typeof value.set === 'function') value.set(next); else node.store.set(value, next);
+      },
+    };
+    return { scope, composer };
+  };
+  const codexConversationDraft = async (id, text, expected) => {
+    const { scope, composer } = await codexComposerScope(id);
+    if (text !== undefined && (expected === undefined || scope.get(composer.M) === expected)) {
+      const draft = scope.get(composer.f);
+      composer.gt(scope, { ...draft, prompt: text, pullRequestChecks: draft?.pullRequestChecks || [] });
+    }
+    return scope.get(composer.M);
+  };
   const pickComposer = eds => {
     const sel = selCardId();
     return eds.find(e => e.contains(doc.activeElement))
@@ -165,7 +204,7 @@
     return { missing: false, quota: [], limits };
   };
   const codexRootProps = () => {
-    const el = doc.querySelector('button[aria-label^="Recent chats"]');
+    const el = [...doc.querySelectorAll('[data-composer-body], [data-response-annotation-conversation], [data-request-input-dismiss]')].find(vis);
     return el ? codexFiberProps(el, Infinity) : [];
   };
   const codexQueryClient = () => codexRootProps().find(p => typeof p.value?.getQueryData === 'function')?.value || null;
@@ -200,10 +239,10 @@
   // Devin's permission mode: a chip in the prompt toolbar (Code / Smart / Ask / Plan / Bypass Permissions). Its menu
   // only opens for real mouse events (a JS click does nothing), rows are role=menuitem with a description and a
   // second trailing svg on the current one.
-  const DEVIN_MODES = /^(Code|Smart|Ask|Plan|Bypass Permissions)$/;
+  const DEVIN_MODES = ['Code', 'Smart', 'Ask', 'Plan', 'Bypass Permissions'];
   const devinModeChip = () => !devinSurface() ? null : [...document.querySelectorAll('button[aria-haspopup="menu"]')]
-    .find(b => vis(b) && b.getBoundingClientRect().y > 120 && DEVIN_MODES.test((b.innerText || '').trim()));
-  const devinModeRows = () => [...document.querySelectorAll('[role="menuitem"]')].filter(e => vis(e) && /^(Code|Smart|Ask|Plan|Bypass Permissions)\b/.test((e.innerText || '').trim()))
+    .find(b => vis(b) && b.getBoundingClientRect().y > 120 && DEVIN_MODES.some(label => nativeLabel((b.innerText || '').trim(), label)));
+  const devinModeRows = () => [...document.querySelectorAll('[role="menuitem"]')].filter(e => vis(e) && DEVIN_MODES.some(label => nativeLabel((e.innerText || '').trim().split('\n')[0], label)))
     .map(e => {
       const lines = (e.innerText || '').split('\n').map(x => x.trim()).filter(Boolean);
       return { el: e, label: lines[0], desc: lines[1] || '', checked: e.querySelectorAll(':scope > svg').length > 1 };

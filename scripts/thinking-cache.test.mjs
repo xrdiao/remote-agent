@@ -78,7 +78,7 @@ test('view reset invalidates its read while preserving window history and the ot
 test('Fusion side view reset replaces only its private history', () => {
   const nativeCache = history(), native = populated(nativeCache), fusion = populated();
   const previous = fusion.itemCache;
-  fusion.fusionOwner = {};
+  fusion.fusionBinding = {};
   fusion.clearViewState();
   assert.notEqual(fusion.itemCache, previous);
   assert.equal(fusion.itemCache.size, 0);
@@ -134,7 +134,7 @@ for (const app of ['cursor', 'devin', 'codex']) {
     t.mock.method(NativeCdp.prototype, 'evaluate', async expression => {
       if (expression.endsWith('.workspaceTrustState()')) return { required: false };
       if (expression.endsWith('.codexThread()') || expression.endsWith('.activeThread()')) return 'thread-a';
-      if (expression.endsWith('.panelRect()')) return [0, 0, 500, 500];
+      if (expression.endsWith('.hasComposer()')) return true;
       throw new Error('Unexpected CDP read');
     });
     const editorUrl = `ws://thinking-cache-${app}/editor`, chatUrl = app === 'codex' ? `ws://thinking-cache-${app}/chat` : null;

@@ -13,7 +13,7 @@
         if (folder) { versions.extension = folder.replace(/-(?:win32|linux|darwin)-[\w-]+$/, ''); break; }
       }
     }
-    const input = [...doc.querySelectorAll('[contenteditable="true"]')].some(el => vis(el) && !el.closest('.monaco-editor, [aria-label="User message"], [aria-label="Devin message"]'));
+    const input = [...doc.querySelectorAll('[contenteditable="true"]')].some(el => vis(el) && !el.closest(`.monaco-editor, ${ITEM_SEL}`));
     const models = app === 'devin' ? devinPickerProps(true) : app === 'codex' ? codexPickerProps() : cursorPickerProps(true);
     const options = app === 'devin' ? models?.visibleModelConfigs : app === 'codex' ? models?.modelOptions : models?.models;
     const rows = app === 'codex' ? codexChatRows(true) : agentList();

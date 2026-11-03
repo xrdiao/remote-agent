@@ -11,7 +11,7 @@ function latencyBadge(id, label = '') {
   return `<span class="latency ${color}" title="手机到对应 Agent 界面的往返延迟"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M1 8h2v4H1zM5 5h2v7H5zM9 1h2v11H9z" fill="currentColor"/></svg>${label ? esc(label) + ' ' : ''}${caption}</span>`;
 }
 function latencyMarkup(id) {
-  return id === 'fusion' ? `<span class="latencyPair">${latencyBadge('fusion:a', 'A')}${latencyBadge('fusion:b', 'B')}</span>` : latencyBadge(id);
+  return id === 'fusion' ? '' : latencyBadge(id);
 }
 function paintLatency() {
   $('titleLatency').innerHTML = currentWindow ? latencyMarkup(currentWindow) : '';
@@ -26,7 +26,7 @@ function resetLatency() {
 // keep their last known value instead of being probed again.
 function measureLatency(ids = [currentWindow]) {
   if (!authed || document.hidden || !windowReady) return;
-  const fresh = [...new Set(ids.flatMap(id => id === 'fusion' ? ['fusion:a', 'fusion:b'] : id ? [id] : []))]
+  const fresh = [...new Set(ids.filter(id => id && id !== 'fusion'))]
     .filter(id => !latencyPending.has(id) && Date.now() - (latencyAt.get(id) || 0) >= LATENCY_MIN_AGE);
   if (!fresh.length) return;
   const requestId = ++latencySerial, start = performance.now();

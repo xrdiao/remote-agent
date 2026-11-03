@@ -1,5 +1,14 @@
-  const codexButton = label => [...doc.querySelectorAll('button')].find(e => vis(e) && (e.getAttribute('aria-label') || '') === label)
-    || [...doc.querySelectorAll('button')].find(e => vis(e) && (e.getAttribute('aria-label') || '').startsWith(label));
+  const codexButton = label => [...doc.querySelectorAll('button')].find(e => vis(e) && nativeLabel(e.getAttribute('aria-label'), label))
+    || [...doc.querySelectorAll('button')].find(e => vis(e) && nativeLabel(e.getAttribute('aria-label'), label, true));
+  const codexRecentState = () => {
+    const button = codexButton('Recent chats');
+    return button ? { button, menu: codexFiberProps(button, 30).find(p => p.triggerRef?.current?.contains(button) && typeof p.onOpenChange === 'function') } : null;
+  };
+  const codexRecentMenu = () => {
+    const state = codexRecentState();
+    const menu = state && doc.getElementById(state.menu.contentId);
+    return menu && vis(menu) ? menu : null;
+  };
   const codexPoint = el => {
     const c = center(el);
     const frame = document.getElementById('active-frame');
@@ -7,9 +16,16 @@
     const o = frame.getBoundingClientRect();
     return { x: c.x + o.x, y: c.y + o.y };
   };
-  const codexRecentPoint = () => {
-    const b = codexButton('Recent chats');
-    return b ? { ...codexPoint(b), open: [...doc.querySelectorAll('[role=menu]')].some(e => vis(e) && /Search recent chats/.test(e.innerText || '')) } : null;
+  const codexRecentPoint = (open = null) => {
+    const state = codexRecentState();
+    if (!state) return null;
+    const { button: b, menu } = state;
+    const expanded = menu.open;
+    // Recent chats uses its own popover state; archive toasts can cover its trigger.
+    if (open !== null && open !== expanded) {
+      menu.onOpenChange(open);
+    }
+    return { ...codexPoint(b), open: expanded };
   };
   const codexNewPoint = () => { const b = codexButton('New chat'); return b ? codexPoint(b) : null; };
   const codexNeedsLogin = () => [...doc.querySelectorAll('button')].some(b => vis(b) && /^(Sign in with ChatGPT|Use API Key|Use device code)$/.test(b.textContent.trim()));
@@ -27,7 +43,7 @@
       const r = e.getBoundingClientRect();
       if (r.width < 2 || r.height < 2 || r.bottom < 0) return false;
       const text = ((e.getAttribute('aria-label') || e.innerText || '').replace(/\s+/g, ' ').trim());
-      return text === label || text.startsWith(label);
+      return nativeLabel(text, label, true);
     });
     return el ? codexPoint(el) : null;
   };
@@ -52,7 +68,9 @@
     }
     return null;
   };
-  const codexViewState = () => ({ thread: codexThread(), turns: [...doc.querySelectorAll('[data-turn-key]')].filter(vis).length });
+  const codexViewState = (waitSubmission = false) => waitSubmission
+    ? Promise.all([...(window.__remoteAgentCodexSubmissions || [])]).then(() => codexViewState())
+    : { thread: codexThread(), turns: [...doc.querySelectorAll('[data-turn-key]')].filter(vis).length };
   // In-page waits: resolve as soon as the condition holds instead of round-trip polling.
   const codexWaitThread = (id, ms = 1800) => new Promise(resolve => {
     const t0 = Date.now();
@@ -105,7 +123,7 @@
   };
   // Recent-chat rows carry the conversation id on the React node, not on a stable attribute.
   const codexChatRows = (readOnly = false) => {
-    const menu = [...doc.querySelectorAll('[role=menu]')].find(e => vis(e) && /Search recent chats/.test(e.innerText || ''));
+    const menu = codexRecentMenu();
     const seen = new Set();
     const rows = [];
     const recent = codexQueryClient()?.getQueryData(['recent-conversations-meta', 'updated_at', '[]', 'live']) || [];
@@ -133,7 +151,7 @@
     return rows;
   };
   const codexChatPoint = id => {
-    const menu = [...doc.querySelectorAll('[role=menu]')].find(e => vis(e) && /Search recent chats/.test(e.innerText || ''));
+    const menu = codexRecentMenu();
     if (!menu) return null;
     for (const el of menu.querySelectorAll('[role=button]')) {
       const hit = codexFiberProps(el).some(p => p.conversationId === id || (typeof p.href === 'string' && p.href.endsWith('/' + id)));
@@ -143,15 +161,15 @@
   };
   // Each recent-chat row has its own Archive chat button. Delete chat is used only when that row actually shows it.
   const codexArchiveRow = id => {
-    const menu = [...doc.querySelectorAll('[role=menu]')].find(e => vis(e) && /Search recent chats/.test(e.innerText || ''));
+    const menu = codexRecentMenu();
     return menu && [...menu.querySelectorAll('[role=button]')].find(el => codexFiberProps(el).some(p => p.conversationId === id || (typeof p.href === 'string' && p.href.endsWith('/' + id))));
   };
-  const codexArchiveTarget = id => {
+  const codexArchiveTarget = (id, requiredAction = '') => {
     const el = codexArchiveRow(id);
     if (!el) return null;
     const buttons = [...el.querySelectorAll('button')].filter(b => b.getBoundingClientRect().width > 0);
     const labels = buttons.map(b => b.getAttribute('aria-label') || '');
-    const action = labels.includes('Delete chat') ? 'Delete chat' : labels.includes('Archive chat') ? 'Archive chat' : '';
+    const action = requiredAction || (labels.includes('Delete chat') ? 'Delete chat' : labels.includes('Archive chat') ? 'Archive chat' : '');
     const btn = buttons.find(b => (b.getAttribute('aria-label') || '') === action);
     if (!btn) return { action: '' };
     el.scrollIntoView({ block: 'nearest' });
@@ -217,11 +235,12 @@
     }
     return false;
   };
+  const codexIdeButton = () => [...doc.querySelectorAll('button')].find(e => vis(e) && codexFiberProps(e, 8).some(p => 'ideContext' in p));
   const codexButtonPoint = which => {
     const buttons = [...doc.querySelectorAll('button')].filter(vis);
-    const el = which === 'ide' ? buttons.find(b => /IDE context/i.test(b.getAttribute('aria-label') || ''))
-      : which === 'run' ? buttons.find(b => (b.getAttribute('aria-label') || '') === 'Select where to run the chat')
-      : which === 'actions' ? buttons.find(b => (b.getAttribute('aria-label') || '') === 'Chat actions')
+    const el = which === 'ide' ? codexIdeButton()
+      : which === 'run' ? [...doc.querySelectorAll('[data-composer-navigation-target="run-location"]')].find(vis)
+      : which === 'actions' ? buttons.find(b => nativeLabel(b.getAttribute('aria-label'), 'Chat actions'))
       : null;
     return el ? codexPoint(el) : null;
   };
@@ -333,26 +352,150 @@
     const fiber = key ? el[key] : null;
     let root = fiber;
     while (root?.return) root = root.return;
-    const stack = root?.stateNode?.current ? [[root.stateNode.current, null]] : [];
+    const stack = root?.stateNode?.current ? [[root.stateNode.current, null, null]] : [];
     // A reused child can retain an old return pointer. Follow the mounted tree's child links instead.
     while (stack.length) {
-      const [node, parentRequest] = stack.pop();
+      const [node, parentRequest, parentOwner] = stack.pop();
       const p = node.memoizedProps;
-      const request = Array.isArray(p?.questions) && typeof p.onDraftChange === 'function' && typeof p.onSubmit === 'function' ? node : parentRequest;
-      if (node.stateNode === el) return request;
-      if (node.sibling) stack.push([node.sibling, parentRequest]);
-      if (node.child) stack.push([node.child, request]);
+      const owner = p?.pendingRequest?.type === 'userInput' ? p : parentOwner;
+      const request = (Array.isArray(p?.questions) || owner && Array.isArray(p?.questionAndOptions)) && typeof p.onDraftChange === 'function' && typeof p.onSubmit === 'function' ? node : parentRequest;
+      if (node.stateNode === el) return request ? { fiber: request, owner } : null;
+      if (node.sibling) stack.push([node.sibling, parentRequest, parentOwner]);
+      if (node.child) stack.push([node.child, request, owner]);
     }
     return null;
   };
+  const codexNativeManager = () => codexConversationManager(remoteContext.threadId, codexHistoryScopes(), remoteContext.host || 'local');
+  const codexAsyncQuestionState = (thread, host = 'local', scopes = codexHistoryScopes()) => {
+    const sources = new Map();
+    let group;
+    for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
+      const source = codexHistoryBinding(scope, bindings.get(JSON.stringify(host))), value = source?.get();
+      if (value instanceof doc.defaultView.Map) sources.set(source.key, source);
+      if (value?.get?.(thread)?.selectedQuestionKey) { group = value.get(thread); sources.set(source.key, source); }
+    }
+    if (!group) return { sources, questions: [] };
+    const questions = [];
+    for (const itemId of group.questionIds) {
+      const key = JSON.stringify({ entityKey: group.selectedQuestionKey.entityKey, hostId: host, itemId, threadId: thread });
+      for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
+        const source = codexHistoryBinding(scope, bindings.get(key)), value = source?.get();
+        if (!value?.question || value.question.id !== itemId) continue;
+        sources.set(source.key, source);
+        if (!value.isSkipped && (value.lastSubmission == null || value.draft.trim() !== value.lastSubmission))
+          questions.push({ ...value, selected: itemId === group.selectedQuestionKey.itemId });
+      }
+    }
+    return { sources, questions };
+  };
+  const codexAsyncQuestionRows = () => codexAsyncQuestionState(remoteContext.threadId, remoteContext.host || 'local').questions
+    .filter(state => state.selected).map(state => ({ id: 'async:' + state.question.id, text: state.question.title,
+      buttons: [...state.question.options.map(option => ({ label: typeof option === 'string' ? option : option.label, disabled: state.isSubmitting })),
+        { label: 'Skip', disabled: state.isSubmitting }, { label: 'Send', disabled: state.isSubmitting || !state.draft?.trim() }],
+      fields: [{ label: '回答', value: state.draft || '', type: 'text', options: null }] }));
+  const codexNativeRequests = () => {
+    const conversation = codexNativeManager()?.getConversation(remoteContext.threadId);
+    return (conversation?.requests || []).filter(request => request.params?.threadId === remoteContext.threadId);
+  };
+  const codexNativeRequestId = request => (request.method === 'item/tool/requestUserInput' ? 'async:' : 'approval:')
+    + JSON.stringify([remoteContext.threadId, request.params.turnId, request.id]);
+  const codexNativeRequestRows = () => codexNativeRequests().map(request => {
+    const p = request.params, id = codexNativeRequestId(request);
+    if (request.method === 'item/tool/requestUserInput') {
+      const questions = p.questions;
+      const options = questions.length === 1 ? questions[0].options || [] : [];
+      return { id, text: questions.map(q => q.question).join('\n'),
+        buttons: [...options.map(option => ({ label: option.label })), { label: 'Skip' },
+          { label: 'Send', disabled: questions.some(q => q.isOther || !q.options?.length) }],
+        fields: questions.map(q => ({ label: questions.length > 1 ? q.question : '回答', value: '', type: q.isSecret ? 'password' : 'text',
+          options: !q.isOther && q.options?.length ? q.options.map(o => ({ value: o.label, label: o.label })) : null })) };
+    }
+    const decisions = p.availableDecisions || ['accept', 'acceptForSession', 'decline', 'cancel'];
+    return { id, text: [p.command || p.reason || p.grantReason || request.method, p.cwd].filter(Boolean).join('\n'),
+      buttons: decisions.map(decision => ({ label: typeof decision === 'string' ? decision : Object.keys(decision)[0] })), fields: [] };
+  });
+  const codexNativeRequestAction = async (id, n, fields) => {
+    const request = codexNativeRequests().find(request => codexNativeRequestId(request) === id);
+    if (!request) throw new Error('这条请求已不在所选会话的待处理列表中');
+    const manager = codexNativeManager(), thread = remoteContext.threadId, p = request.params;
+    if (request.method === 'item/tool/requestUserInput') {
+      const options = p.questions.length === 1 ? p.questions[0].options || [] : [], skip = n === options.length;
+      const answers = Object.fromEntries(p.questions.map((question, index) => {
+        const value = p.questions.length === 1 && n < options.length ? options[n].label : fields.find(field => field.n === index)?.value || '';
+        if (!skip && !value.trim()) throw new Error('请完成所有问题后再发送');
+        return [question.id, { answers: skip ? [] : [value] }];
+      }));
+      await manager.replyWithUserInputResponse(thread, request.id, nativeValue({ answers }));
+    } else {
+      const decision = (p.availableDecisions || ['accept', 'acceptForSession', 'decline', 'cancel'])[n];
+      if (decision == null) throw new Error('请求选项已更新');
+      if (request.method === 'item/commandExecution/requestApproval') await manager.replyWithCommandExecutionApprovalDecision(thread, request.id, nativeValue(decision));
+      else if (request.method === 'item/fileChange/requestApproval') await manager.replyWithFileChangeApprovalDecision(thread, request.id, nativeValue(decision));
+      else throw new Error('这个原生请求需要在电脑端处理');
+    }
+    return true;
+  };
+  const codexConversationChat = (history, pageSize) => {
+    const thread = remoteContext.threadId, scopes = codexHistoryScopes();
+    const manager = codexConversationManager(thread, scopes, remoteContext.host || 'local'), conversation = manager?.getConversation(thread);
+    if (!conversation) return null;
+    const state = codexHistoryState(conversation, false, scopes, thread), page = codexReadPage(state, Infinity, [], history, pageSize);
+    if (page.missingTurn && !page.items.length && state.entries.length) return null;
+    const run = agentRun('codex', thread, scopes, manager), settings = conversation.latestThreadSettings || {};
+    mergeCodexCapacity(page.items, state, codexVisibleThread() === thread ? codexCapacityItem() : null);
+    const model = settings.model || conversation.latestModel || '', effort = settings.effort ?? conversation.latestReasoningEffort;
+    const permissions = conversation.currentPermissions;
+    const permission = permissions?.approvalsReviewer === 'auto_review' ? 'Approve for me'
+      : permissions?.sandboxPolicy?.type === 'dangerFullAccess' ? 'Full access' : permissions ? 'Ask for approval' : null;
+    const view = codexVisibleThread() === thread ? codexFacts()?.view : null;
+    return { thread, title: conversation.title || '', rect: [0, 0, 0, 0], items: page.items, global: [],
+      _nativeState: { thread, run, busy: run?.status === 'running', host: remoteContext.host, ...nativeWaiting('codex', thread, manager) },
+      busy: run?.status === 'running', readonly: false, queued: codexQueued(false, state), subagents: [],
+      changed: codexChanges().count, questions: { codex: true, requests: codexRequestData() },
+      model: agentModelName() || model, effort, permission, mode: conversation.latestCollaborationMode?.mode || null,
+      context: null, capacityPresent: page.items.some(item => item.capacity),
+      _historyEarlier: page.earlier || !!page.missingTurn, historyBefore: page.before, _historyStart: state.entries[0]?.turnNumber,
+      ...(run?.startedAt ? { generation: { start: run.startedAt, end: run.status === 'running' ? null : run.completedAt || null } } : {}),
+      codex: { ...view, plan: conversation.latestCollaborationMode?.mode === 'plan',
+        follow: codexQueryClient()?.getQueryData(['vscode', 'get-settings'])?.values?.followUpQueueMode || 'queue',
+        actions: true },
+    };
+  };
   const codexRequests = () => {
+    if (remoteContext?.app === 'codex') return [...codexNativeRequestRows(), ...codexAsyncQuestionRows()];
     if (!activeThread()) return [];
     const rows = new Map();
+    const asyncSkips = new Set();
     const query = selector => [...new Set([doc, document])].flatMap(d => [...d.querySelectorAll(selector)]);
     for (const skip of query('[data-request-input-dismiss]').filter(vis)) {
-      const fiber = codexAsyncRequestFiber(skip);
-      const props = fiber?.memoizedProps;
+      const { fiber, owner } = codexAsyncRequestFiber(skip) || {};
+      let props = fiber?.memoizedProps;
       if (!props) continue;
+      asyncSkips.add(skip);
+      if (Array.isArray(props.questionAndOptions)) {
+        const item = owner?.pendingRequest.item;
+        if (owner?.conversationId !== activeThread() || item?.requestId == null || item.completed) continue;
+        const native = props, indexHook = fiber.memoizedState, answersHook = indexHook.next;
+        const index = indexHook.memoizedState, answers = answersHook.memoizedState;
+        props = {
+          questionIndex: index, isSubmitting: native.isSkipping || native.submissionDisabled,
+          questions: item.questions.map((question, i) => {
+            const options = native.questionAndOptions[i].options;
+            return { id: JSON.stringify([owner.conversationId, item.turnId, item.requestId, question.id]), question: question.question,
+              options: options.map(option => option.value), draft: options.find(option => option.id === answers[i]?.selectedOptionId)?.value ?? answers[i]?.freeformText ?? '',
+              type: question.isSecret ? 'password' : options.length && !question.isOther ? 'select' : 'text' };
+          }),
+          onDraftChange: value => {
+            const option = native.questionAndOptions[index].options.find(option => option.value === value);
+            const next = [...answers];
+            next[index] = { selectedOptionId: option?.id ?? null, freeformText: option ? null : value || null };
+            answersHook.queue.dispatch(next);
+            native.onDraftChange({ answers: next, questionIndex: index });
+          },
+          onQuestionChange: questionIndex => { indexHook.queue.dispatch(questionIndex); native.onDraftChange({ answers, questionIndex }); },
+          onSubmit: () => native.onSubmit(answers),
+        };
+      }
       const index = props.questionIndex;
       const question = props.questions[index];
       if (!question) continue;
@@ -360,12 +503,12 @@
       const buttons = question.options.map(option => ({ label: option, selected: question.draft === option, disabled: !!props.isSubmitting, action: () => props.onDraftChange(option) }));
       buttons.push({ el: skip, label: skip.innerText || 'Skip', disabled: !!props.isSubmitting });
       buttons.push({ label: index < props.questions.length - 1 ? 'Next' : props.hasSubmitted ? 'Send update' : 'Send', disabled: !!props.isSubmitting || !question.draft.trim(), submit: index === props.questions.length - 1, action: () => index < props.questions.length - 1 ? props.onQuestionChange(index + 1) : props.onSubmit() });
-      rows.set(id, { id, submissionKey: fiber.key, text: question.question, buttons, fields: [{ label: '回答', value: question.draft, type: 'text', onChange: props.onDraftChange }] });
+      rows.set(id, { id, submissionKey: fiber.key, text: question.question, buttons, fields: [{ label: '回答', value: question.draft, type: question.type || 'text', options: question.type === 'select' ? question.options.map(value => ({ value, label: value })) : null, onChange: props.onDraftChange }] });
     }
     for (const el of query('button, input, textarea, select, [role=radio], [role=checkbox]')) {
       if (!vis(el) || el.closest('[contenteditable=true]')) continue;
       const approvalCard = el.closest('[data-codex-approval-surface]');
-      const props = codexFiberProps(el, 32).find(p => p.request?.item?.requestId || (p.item?.requestId && (p.onReply || p.onApprove || p.onSubmit))
+      const props = codexFiberProps(el, 32).find(p => p.request?.item?.requestId != null || (p.item?.requestId != null && (p.onReply || p.onApprove || p.onSubmit))
         || (approvalCard && p.item?.type === 'exec' && p.item.approvalRequestId != null));
       const request = props?.request || (props?.item ? props : null);
       const item = request?.item;
@@ -408,6 +551,7 @@
       return (h >>> 0).toString(16);
     };
     for (const skip of query('button').filter(el => vis(el) && (el.innerText || '').trim() === 'Skip')) {
+      if (asyncSkips.has(skip)) continue;
       let card = skip.parentElement, options = [], fields = [];
       for (let depth = 0; card && depth < 12; depth++, card = card.parentElement) {
         options = [...card.querySelectorAll('button[role="radio"]')].filter(vis);
@@ -440,6 +584,7 @@
   const codexRequestData = () => codexRequests().map(r => ({ id: r.id, text: String(r.text).slice(0, 6000), buttons: r.buttons.map(({ label, disabled, selected }) => ({ label, disabled, selected })), fields: r.fields.map(({ label, value, type, options }) => ({ label, value, type, options })) }));
   const codexRequestTarget = (id, n) => { const b = codexRequests().find(r => r.id === id)?.buttons[n]; return b?.el ? codexPoint(b.el) : null; };
   const codexRequestAction = async (id, n, fields = [], advance = false) => {
+    if (remoteContext?.app === 'codex') return codexNativeRequestAction(id, n, fields);
     for (const field of fields) {
       if (!codexRequestField(id, field.n, field.value)) throw new Error('请求输入框已不存在');
     }
@@ -513,7 +658,9 @@
   const codexChanges = () => {
     const files = new Map();
     const turns = [...doc.querySelectorAll('[data-turn-key]')];
-    const entries = turns.length ? codexFiberProps(turns[0], 50).find(p => Array.isArray(p.entries))?.entries : null;
+    const entries = remoteContext?.app === 'codex'
+      ? codexHistoryState(codexNativeManager()?.getConversation(remoteContext.threadId), false).entries
+      : turns.length ? codexFiberProps(turns[0], 50).find(p => Array.isArray(p.entries))?.entries : null;
     let changed;
     if (entries) {
       const thread = codexThread(), scopes = codexHistoryScopes();
@@ -544,7 +691,8 @@
         files.set(name, { name, add: diff ? '+' + (add + Number(previous?.add || 0)) : '未获取', del: diff ? '-' + (del + Math.abs(Number(previous?.del || 0))) : '', diff: [previous?.diff, diff].filter(Boolean).join('\n') });
       }
     }
-    const last = [...turns].reverse().find(el => buttonsIn(el, false).some(b => /^(Undo|Apply|Revert|View changes|View changed files|View file changes)$/.test(b.label)));
+    const last = !remoteContext || codexVisibleThread() === remoteContext.threadId
+      ? [...turns].reverse().find(el => buttonsIn(el, false).some(b => /^(Undo|Apply|Revert|View changes|View changed files|View file changes)$/.test(b.label))) : null;
     const actions = last ? buttonsIn(last, false).filter(b => /^(Undo|Apply|Revert|View changes|View changed files|View file changes)$/.test(b.label)).map(b => b.label) : [];
     return { files: [...files.values()], actions, count: files.size, turn: last?.getAttribute('data-turn-key') || '' };
   };
@@ -555,9 +703,9 @@
     return b ? codexPoint(b.el) : null;
   };
   const codexFacts = () => {
-    if (!doc.querySelector('button[aria-label="Add files and more"]')) return null;
+    const add = [...doc.querySelectorAll('[data-composer-navigation-target="add-context"]')].find(vis);
+    if (!add) return null;
     let plan = false, ideStatus = '', autoContext, hasDraftAttachments;
-    const add = doc.querySelector('button[aria-label="Add files and more"]');
     let fiber = add?.[Object.keys(add).find(k => k.startsWith('__reactFiber'))];
     for (let i = 0; i < 40 && fiber; i++) {
       const props = fiber.memoizedProps || {};
@@ -567,9 +715,9 @@
       if (typeof props.hasDraftAttachments === 'boolean') hasDraftAttachments = props.hasDraftAttachments;
       fiber = fiber.return;
     }
-    const ideBtn = [...doc.querySelectorAll('button')].find(e => vis(e) && /IDE context/i.test(e.getAttribute('aria-label') || ''));
-    const runBtn = [...doc.querySelectorAll('button')].find(e => vis(e) && (e.getAttribute('aria-label') || '') === 'Select where to run the chat');
-    const ideOn = autoContext ?? (ideBtn ? /^turn off/i.test(ideBtn.getAttribute('aria-label') || '') : false);
+    const ideBtn = codexIdeButton();
+    const runBtn = [...doc.querySelectorAll('[data-composer-navigation-target="run-location"]')].find(vis);
+    const ideOn = autoContext ?? (ideBtn ? nativeLabel(ideBtn.getAttribute('aria-label'), 'Turn off IDE context') : false);
     let file = null;
     if (ideOn) {
       const active = codexQueryClient()?.getQueryData(['ide-context', null])?.activeFile;

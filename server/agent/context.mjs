@@ -1,38 +1,20 @@
 import { MOD, NAMED_KEYS, cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { EDITORS } from '../config.mjs';
-import { helpersCall } from '../page/build.mjs';
+import { helpersCall, DEVIN_COMPOSER_SRC } from '../page/build.mjs';
 import { resetThinkingCaches } from './thinking-cache.mjs';
 
 // Cursor's chat composer is a ProseMirror contenteditable; selectors ordered from most to least specific.
 export const FOCUS_COMPOSER = `(() => {
   // Codex draws its prompt inside a same-origin iframe. Cursor and Devin use this page.
   const doc = document.getElementById('active-frame')?.contentDocument || document;
-  // Same reveal as pageHelpers.revealDevinComposer: a new Devin session's prompt
-  // stays in a hidden welcome layer while a file tab is open.
-  for (const group of doc.querySelectorAll('.editor-group-container')) {
-    if (group.classList.contains('has-pending-new-session-welcome')) continue;
-    for (const el of group.querySelectorAll('[data-crl-devin-reveal]')) {
-      el.style.removeProperty('display');
-      el.removeAttribute('data-crl-devin-reveal');
-    }
-  }
-  for (const group of doc.querySelectorAll('.editor-group-container.has-pending-new-session-welcome')) {
-    const welcome = group.querySelector(':scope > .windsurf-welcome-container');
-    const editor = group.querySelector(':scope > .editor-container');
-    if (welcome && getComputedStyle(welcome).display === 'none') {
-      welcome.style.setProperty('display', 'flex', 'important');
-      welcome.setAttribute('data-crl-devin-reveal', '1');
-    }
-    if (editor && getComputedStyle(editor).display !== 'none') {
-      editor.style.setProperty('display', 'none', 'important');
-      editor.setAttribute('data-crl-devin-reveal', '1');
-    }
-  }
+  ${DEVIN_COMPOSER_SRC}
+  revealDevinComposer();
   const visible = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(e).visibility === 'visible'; };
+  const composer = e => visible(e) && !e.closest('[data-flat-index], [data-message-index], [data-message-kind], [data-turn-key], [data-transcript-row-key], [role=group][data-side], [aria-label="User message"], [aria-label="Devin message"]');
   const selectors = ['.aislash-editor-input[contenteditable="true"]', '.ui-prompt-input-editor__input[contenteditable="true"]', '.ProseMirror[contenteditable="true"]', '.composer-bar [contenteditable="true"]', '.auxiliarybar [contenteditable="true"]'];
   let eds = [];
-  for (const s of selectors) { eds = [...doc.querySelectorAll(s)].filter(visible); if (eds.length) break; }
-  if (!eds.length) eds = [...doc.querySelectorAll('[contenteditable="true"]')].filter(e => visible(e) && !e.closest('.monaco-editor, [aria-label="User message"], [aria-label="Devin message"]'));
+  for (const s of selectors) { eds = [...doc.querySelectorAll(s)].filter(composer); if (eds.length) break; }
+  if (!eds.length) eds = [...doc.querySelectorAll('[contenteditable="true"]')].filter(e => composer(e) && !e.closest('.monaco-editor'));
   if (!eds.length) return null;
   const selId = doc.querySelector('[data-sidebar-item-key] [data-active="true"]')?.closest('[data-sidebar-item-key]')?.getAttribute('data-sidebar-item-key')?.slice(4);
   const el = eds.find(e => e.contains(doc.activeElement)) || (selId && eds.find(e => e.closest('[data-glass-agent-id]')?.getAttribute('data-glass-agent-id') === selId)) || eds[eds.length - 1];
@@ -105,6 +87,7 @@ export class AgentContext {
     this.sel = 0;
     this.windowId = '';
     this.threadId = '';
+    this.conversation = null;
     this.pendingThread = '';
     this.codexPageId = '';
     this.lastPanel = '';
@@ -140,6 +123,32 @@ export class AgentContext {
     return [this.app || '', this.windowId || '', this.threadId || ''].join('|');
   }
 
+  nativeContext() {
+    const conversation = this.conversation;
+    return !this.fusionBinding && conversation?.app === this.app && conversation.threadId === this.threadId ? conversation : null;
+  }
+
+  nativeCall(call, options) {
+    return this.cdp.evaluate(helpersCall(call, this.nativeContext()), options);
+  }
+
+  async confirmConversation() {
+    if (!this.threadId || this.fusionBinding) return;
+    const cdp = this.cdp, app = this.app, threadId = this.threadId, sel = this.sel;
+    const context = await cdp.evaluate(helpersCall(`nativeSessionInfo(${JSON.stringify(app)}, ${JSON.stringify(threadId)}, 'bind')`));
+    if (this.cdp === cdp && this.sel === sel && this.app === app && this.threadId === threadId) this.conversation = context;
+    return context;
+  }
+
+  async bindNativeConversation(thread, message = '已切换会话') {
+    if (this.threadId !== thread) this.clearViewState();
+    this.threadId = this.selectedThread = thread;
+    await this.confirmConversation();
+    this.bindingReady = true;
+    this.publishThread(message);
+    if (!this.switchingThread) await this.setMode(this.mode, true);
+  }
+
   clearViewState() {
     this.sel = (this.sel || 0) + 1;
     this.lastChat = '';
@@ -149,7 +158,7 @@ export class AgentContext {
     this.latestThink = null;
     this.thinkTries = new Map();
     resetThinkingCaches(this);
-    if (this.fusionOwner) this.itemCache = new Map();
+    if (this.fusionBinding) this.itemCache = new Map();
     this.pendingThread = '';
     this.polling = null;
     this.lastDraft = undefined;
@@ -169,8 +178,25 @@ export class AgentContext {
 
   async assertSelectedThread() {
     if (!this.selectedThread) return;
+    if (this.nativeContext()) return this.ensureConversationUi();
     const active = await this.cdp.evaluate(helpersCall('activeThread()'));
     if (active !== this.selectedThread) throw new Error('当前窗口已不在所选会话，请从项目/会话重新连接后操作');
+  }
+
+  async ensureConversationUi() {
+    const context = this.nativeContext();
+    if (!context) return;
+    const id = JSON.stringify(context.threadId);
+    if (await this.cdp.evaluate(helpersCall('activeThread()')) === context.threadId) return;
+    if (context.app === 'codex') {
+      if (!await this.selectCodexThread(context.threadId, this.cdp, true)) throw new Error('当前窗口没有打开所选 Codex 会话');
+    } else if (context.app === 'cursor') {
+      await this.cdp.evaluate(helpersCall(`nativeSessionAction('cursor', ${id}, 'open')`));
+    } else if (await this.cdp.evaluate(helpersCall('devinSurface()')) === 'editor') {
+      await this.openSessionPicker(context.threadId);
+      if (!await this.cdp.evaluate(helpersCall(`sessionPickerTarget(${id}, true)`))) throw new Error('当前窗口没有所选 Devin 会话的打开入口');
+    } else if (!await this.cdp.evaluate(helpersCall(`agentTarget(${id}, true)`))) throw new Error('当前窗口没有所选 Devin 会话的打开入口');
+    if (!await this.waitFor(`activeThread() === ${id}`, 40)) throw new Error('原生界面尚未切到所选会话');
   }
 
   liveRead(cdp, sel) {
@@ -247,10 +273,7 @@ export class AgentContext {
   }
 
   async key(combo, opts = {}) {
-    const cdp = opts.focusTerminal ? this.editorCdp : (opts.cdp || this.cdp);
-    if (opts.focusTerminal) await this.focusTerminal();
-    const recall = opts.focusTerminal && (combo === 'ArrowUp' || combo === 'ArrowDown');
-    const before = recall ? await cdp.evaluate(helpersCall('terminalCommand()')) : undefined;
+    const cdp = opts.cdp || this.cdp;
     const parts = combo.split('+');
     const name = parts.pop();
     const modifiers = parts.reduce((m, p) => m | (MOD[p] || 0), 0);
@@ -264,15 +287,6 @@ export class AgentContext {
     const ev = { key: name, code: spec.code, windowsVirtualKeyCode: spec.vk, nativeVirtualKeyCode: spec.vk, modifiers };
     await cdp.send('Input.dispatchKeyEvent', { type: withText ? 'keyDown' : 'rawKeyDown', ...ev, ...(withText ? { text: spec.text } : {}) });
     await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...ev });
-    if (!recall) return;
-    let cmd = before;
-    for (let i = 0; i < 8; i++) {
-      await new Promise(r => setTimeout(r, 40));
-      const next = await cdp.evaluate(helpersCall('terminalCommand()'));
-      if (typeof next === 'string' && next !== before) { cmd = next; break; }
-      if (i === 7 && typeof next === 'string') cmd = next;
-    }
-    if (typeof cmd === 'string') this.emit({ t: 'termInput', text: cmd });
   }
 
   async typeText(text, cdp = this.cdp) {
@@ -288,7 +302,10 @@ export class AgentContext {
     try {
     await this.assertSelectedThread();
     if (sel != null && sel !== this.selectionKey()) throw new Error('会话已切换，请使用当前会话的按钮');
-    const pos = await this.cdp.evaluate(helpersCall(`locate(${JSON.stringify(String(item))}, ${Number(n) || 0}, ${JSON.stringify(actionId || '')}, ${JSON.stringify(label || '')})`));
+    const retry = this.nativeContext() && String(actionId).startsWith('retry:') ? JSON.parse(actionId.slice(6)) : null;
+    const pos = retry && retry[0] === this.threadId
+      ? await this.nativeCall(`nativeSessionAction('codex', ${JSON.stringify(retry[0])}, 'capacityTarget', ${JSON.stringify(retry[1])})`)
+      : await this.cdp.evaluate(helpersCall(`locate(${JSON.stringify(String(item))}, ${Number(n) || 0}, ${JSON.stringify(actionId || '')}, ${JSON.stringify(label || '')})`));
     if (!pos) { await this.pollChat(true); throw new Error('请求已更新，请查看最新选项'); }
     if (/^(Fork chat from here|Open agent|View agent|View subagent)$/.test(label || '')) this.selectedThread = '';
     if (pos.fork) {

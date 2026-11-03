@@ -4,6 +4,8 @@ import path from 'node:path';
 import { DATA_DIR } from '../lib/auth.mjs';
 import { Cdp } from './cdp.mjs';
 import { helpersCall } from './page/build.mjs';
+import { localFilePath } from '../lib/platform.mjs';
+import { readFile } from '../lib/files.mjs';
 
 const directory = path.join(DATA_DIR, 'chat-images');
 const reading = new Map();
@@ -41,14 +43,23 @@ export async function readChatImage(id) {
     const source = JSON.parse(fs.readFileSync(file, 'utf8'));
     if (source.image) return readChatImage(source.image);
     if (!reading.has(id)) reading.set(id, (async () => {
-      const cdp = new Cdp(source.wsUrl);
+      let cdp;
       try {
-        await cdp.connect();
-        const data = await cdp.evaluate(helpersCall(`codexImage(${JSON.stringify(source.source)})`), { timeout: 60000 });
+        const filePath = localFilePath(source.source);
+        let data;
+        if (filePath && path.isAbsolute(filePath)) {
+          const stat = await fs.promises.stat(filePath);
+          data = (await readFile(filePath, stat.size)).image;
+          if (!data) throw new Error('文件不是图片');
+        } else {
+          cdp = new Cdp(source.wsUrl);
+          await cdp.connect();
+          data = await cdp.evaluate(helpersCall(`codexImage(${JSON.stringify(source.source)})`), { timeout: 60000 });
+        }
         const image = imageReference(data).slice('chat-image:'.length);
         fs.writeFileSync(file, JSON.stringify({ image }), { mode: 0o600 });
         return readChatImage(image);
-      } finally { cdp.close(); }
+      } finally { cdp?.close(); }
     })().finally(() => reading.delete(id)));
     return reading.get(id);
   }

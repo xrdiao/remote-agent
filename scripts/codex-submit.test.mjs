@@ -1,9 +1,190 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import vm from 'node:vm';
+import { PAGE_SRC } from '../server/page/build.mjs';
 import '../server/routes.mjs';
-import { adapter } from '../server/apps/codex.mjs';
-import { cdpRead } from '../server/cdp.mjs';
+import { adapter, methods as codexMethods } from '../server/apps/codex.mjs';
+import { methods as chatMethods } from '../server/agent/chat.mjs';
+import { FOCUS_COMPOSER } from '../server/agent/context.mjs';
+import { cdpRead, awaitCdpRead } from '../server/cdp.mjs';
 import { withOperation } from '../server/operations.mjs';
+
+for (const chinese of [false, true]) for (const follow of ['', 'queue', 'steer']) for (const dispatch of [false, true]) {
+  test(`native submit keeps the original ${follow || 'default'} action with ${chinese ? 'Chinese' : 'English'} controls, dispatch=${dispatch}`, async () => {
+    const nativeCalls = [], clicked = [];
+    const names = chinese ? ['发送', '排队', '引导'] : ['Send', 'Queue', 'Steer'];
+    const buttons = names.map(label => ({ getBoundingClientRect: () => ({ width: 20, height: 20 }),
+      getAttribute: key => key === 'aria-label' ? label : null, click: () => clicked.push(label) }));
+    const root = { querySelectorAll: () => buttons };
+    const editor = { getBoundingClientRect: () => ({ width: 40, height: 20 }), closest: () => root,
+      __reactFiberFixture: { memoizedProps: { handleSubmit: value => { nativeCalls.push(value); }, isQueueingEnabled: true,
+        composerController: { getText: () => 'test draft' } } } };
+    const document = { getElementById: () => null,
+      querySelectorAll: selector => selector === '.ProseMirror[contenteditable="true"]' ? [editor] : [] };
+    const page = vm.runInNewContext(PAGE_SRC, { document, window: {} });
+    assert.equal(await page.submitCodexMessage(follow, dispatch, 'request-fixture'), true);
+    assert.equal(clicked.length, 0);
+    assert.equal(nativeCalls.length, 1);
+    assert.equal(nativeCalls[0]?.followUpSubmitAction, follow || undefined);
+  });
+}
+
+function submitLifecycle(handleSubmit) {
+  const events = [], nativeWindow = {};
+  const draft = { value: 'draft', writes: 0 };
+  const editor = { getBoundingClientRect: () => ({ width: 40, height: 20 }),
+    __reactFiberFixture: { memoizedProps: { handleSubmit, isQueueingEnabled: true, composerController: {
+      getText: () => draft.value, setText: value => { draft.value = value; draft.writes++; },
+    } } } };
+  const document = { getElementById: () => null,
+    defaultView: { Event: class { constructor(type) { this.type = type; } }, dispatchEvent: event => events.push(event.type) },
+    querySelectorAll: selector => selector === '.ProseMirror[contenteditable="true"]' ? [editor] : [] };
+  return { page: vm.runInNewContext(PAGE_SRC, { document, window: nativeWindow }), nativeWindow, events, draft };
+}
+
+test('native submit confirmation stays pending until its handler settles, without clearing a newer draft', async () => {
+  let confirm, calls = 0;
+  const h = submitLifecycle(() => { calls++; return new Promise(resolve => { confirm = resolve; }); });
+  await h.page.submitCodexMessage('', true, 'request');
+  h.draft.value = '新的未发草稿';
+  let settled = false;
+  const wait = h.page.codexViewState(true).then(() => { settled = true; });
+  await Promise.resolve(); assert.equal(settled, false); assert.equal(calls, 1);
+  assert.equal(h.nativeWindow.__remoteAgentCodexSubmissions.size, 1);
+  confirm(); await wait;
+  assert.equal(settled, true); assert.equal(h.nativeWindow.__remoteAgentCodexSubmissions.size, 0);
+  assert.equal(h.draft.value, '新的未发草稿'); assert.equal(h.draft.writes, 0); assert.equal(calls, 1);
+});
+
+test('native submit rejection preserves the existing error receipt and releases only the submission wait', async () => {
+  const h = submitLifecycle(() => Promise.reject(new Error('native submit rejected')));
+  await h.page.submitCodexMessage('queue', true, 'request-failed');
+  await h.page.codexViewState(true);
+  assert.deepEqual(h.events, ['remote-agent-submit-error']);
+  assert.equal(h.nativeWindow.__remoteAgentSubmitErrors[0].requestId, 'request-failed');
+  assert.equal(h.nativeWindow.__remoteAgentSubmitErrors[0].message, 'native submit rejected');
+  assert.equal(h.nativeWindow.__remoteAgentCodexSubmissions.size, 0);
+});
+
+test('RA new chat waits for send confirmation and can proceed while the previous reply is generating', async () => {
+  let confirm, clicked = false;
+  const generating = true;
+  const confirmation = new Promise(resolve => { confirm = resolve; });
+  const context = { cdp: { evaluate: async expression => {
+    if (expression.endsWith('.codexViewState(true)')) return confirmation;
+    if (expression.endsWith('.codexThread()')) return 'previous';
+    if (expression.endsWith('.codexNewPoint()')) return { x: 1, y: 1 };
+    if (expression.endsWith('.codexViewState()')) return { thread: '', turns: 0 };
+    assert.fail('unexpected native read');
+  } }, checkCodexLogin: async () => false, tapCss: async () => { clicked = true; }, adoptCodexThread: async () => {} };
+  const opening = codexMethods.newCodexChat.call(context);
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(clicked, false);
+  confirm(); await opening;
+  assert.equal(clicked, true); assert.equal(generating, true);
+});
+
+function sendAfterSubmission(app = 'codex') {
+  let settle;
+  const pending = new Promise(resolve => { settle = resolve; });
+  const writes = [], events = [], controller = new AbortController();
+  let waits = 0, draft = 'later draft';
+  const context = { app, scope: 'selection-1', sending: false, nativeContext: () => null,
+    selectionKey() { return this.scope; }, assertSelectedThread: async () => {},
+    emit: event => events.push(event), syncAttachments: async () => {},
+    adapter: {
+      async typeDraft(text) { writes.push(['draft', text]); draft = text; },
+      async submitPrompt(now, busy, when) { writes.push(['submit', draft, busy, when]); return !!busy; },
+    },
+  };
+  context.cdp = { nativeWindow: {}, async evaluate(expression) {
+    if (expression.endsWith('.codexViewState(true)')) { waits++; return awaitCdpRead(pending); }
+    if (expression.includes('return { focused, busy: h.agentState()?.busy, draft: h.composerDraft() };')) { writes.push(['focus']); return { focused: true, busy: true, draft }; }
+    if (expression.endsWith('.composerDraft()')) return draft;
+    if (expression.endsWith('.agentState()?.busy')) return true;
+    if (expression.endsWith(".setComposerDraft('')")) { writes.push(['clear']); draft = ''; return true; }
+    if (expression === FOCUS_COMPOSER) { writes.push(['focus']); return true; }
+    if (expression.includes('h.setComposerDraft(')) { draft = 'newer mobile draft'; writes.push(['mirror', draft]); return { draft }; }
+    assert.fail('unexpected send read');
+  } };
+  return { context, writes, events, controller, settle,
+    get waits() { return waits; }, get draft() { return draft; },
+    run(when) { return cdpRead.run(controller.signal, () => chatMethods.sendMessage.call(context,
+      'next message', true, when, [], { requestId: 'next-request' })); },
+  };
+}
+
+for (const when of [undefined, 'queue', 'now']) {
+  test(`Codex ${when || 'default'} waits before writing the next send, then submits once while generation continues`, async () => {
+    const h = sendAfterSubmission(), sending = h.run(when);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.waits, 1); assert.deepEqual(h.writes, []); assert.deepEqual(h.events, []);
+    assert.equal(h.draft, 'later draft');
+    h.settle(); await sending;
+    assert.deepEqual(h.writes, [['focus'], ['clear'], ['draft', 'next message'], ['submit', 'next message', true, when]]);
+    assert.equal(h.events.length, 1); assert.equal(h.events[0].requestId, 'next-request');
+  });
+}
+
+test('Codex stop cancels a send waiting for the previous submission without writes or a second submit', async () => {
+  const h = sendAfterSubmission(), sending = h.run('queue');
+  await new Promise(resolve => setImmediate(resolve));
+  h.controller.abort(); await assert.rejects(sending, { name: 'AbortError' });
+  h.settle(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(h.writes, []); assert.deepEqual(h.events, []); assert.equal(h.draft, 'later draft');
+});
+
+for (const change of ['selection', 'connection']) {
+  test(`Codex waiting send cannot write to a changed ${change}`, async () => {
+    const h = sendAfterSubmission(), sending = h.run('queue');
+    await new Promise(resolve => setImmediate(resolve));
+    if (change === 'selection') h.context.scope = 'selection-2';
+    else h.context.cdp = { evaluate: () => assert.fail('must not write to the new connection') };
+    h.settle(); await assert.rejects(sending, /会话已切换，消息未发送/);
+    assert.deepEqual(h.writes, []); assert.deepEqual(h.events, []); assert.equal(h.draft, 'later draft');
+  });
+}
+
+test('Codex draft editing remains available during native submission preparation', async () => {
+  const h = sendAfterSubmission();
+  assert.equal(await chatMethods.setDraft.call(h.context, 'newer mobile draft'), true);
+  assert.equal(h.waits, 0); assert.equal(h.draft, 'newer mobile draft');
+  assert.equal(h.context.lastDraft, 'newer mobile draft');
+  assert.deepEqual(h.writes, [['mirror', 'newer mobile draft']]);
+});
+
+for (const app of ['cursor', 'devin']) {
+  test(`${app} sends keep their existing path without the Codex submission wait`, async () => {
+    const h = sendAfterSubmission(app);
+    await h.run();
+    assert.equal(h.waits, 0); assert.equal(h.writes.filter(row => row[0] === 'submit').length, 1);
+  });
+}
+
+for (const chinese of [false, true]) for (const available of [false, true]) {
+  test(`native Max setting preserves selection and cleanup, Chinese=${chinese}, available=${available}`, async () => {
+    const points = [], keys = [], calls = [];
+    let current = 'general', enabled = false;
+    const data = () => ({ nav: [{ id: 'general', label: 'General', current: current === 'general' },
+      { id: 'config', label: chinese ? '配置' : 'Configuration', current: current === 'config' }],
+      rows: [{ label: chinese ? '可用推理强度' : 'Available reasoning efforts', controls: [{ id: 'efforts' }] }] });
+    const cdp = { async evaluate(source) {
+      if (source.endsWith('.codexSettingsData()') || source.includes('.waitSettings(')) return data();
+      if (source.includes('.codexSettingPoint(')) return { x: /"(general|config|efforts|max)"/.exec(source)[1], y: 1 };
+      if (source.startsWith('new Promise')) return enabled;
+      if (source.includes('[role=menuitemcheckbox]')) return available ? { id: 'max', enabled } : null;
+      throw Error('unexpected Max test read');
+    } };
+    const context = {
+      withCodexSettings: fn => fn(cdp), closeCodexSettings: async () => calls.push('close'),
+      tapCss: async x => { points.push(x); if (x === 'config' || x === 'general') current = x; if (x === 'max') enabled = true; },
+      key: async value => keys.push(value),
+    };
+    const work = codexMethods.enableCodexMax.call(context);
+    if (available) { await work; assert.equal(enabled, true); assert.deepEqual(points, ['config', 'efforts', 'max', 'general']); assert.deepEqual(keys, ['Escape']); }
+    else { await assert.rejects(work, /当前 Codex 无法启用 Max/); assert.equal(enabled, false); assert.deepEqual(points, ['config', 'efforts', 'general']); }
+    assert.deepEqual(calls, ['close']); assert.equal(current, 'general');
+  });
+}
 
 function submission({ native = true, busy = false, when, follow = 'queue', payload = '  hello\n world  ',
   attachments = false, mentions, receipt = true, submitted = true, submitError, waitError, afterRead, afterWait } = {}) {

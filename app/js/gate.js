@@ -62,7 +62,7 @@ $('gateComputers').onclick = () => showComputers();
 let connGen = 0;
 function repairPairing() {
   connGen++;
-  clearTimeout(retryTimer);
+  clearComputerRetry(currentComputer());
   pending = null;
   authed = false;
   const old = ws;
@@ -205,6 +205,7 @@ function connContentReady() {
 }
 
 function ensureReadyAgent() {
+  if (mode === 'terminal') return;
   if (!conn.initialSelection || navigationPending || windowReady) return;
   const ready = (conn.agents || []).filter(a => a.windows).map(a => a.app);
   if (!ready.length) return;

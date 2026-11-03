@@ -4,9 +4,12 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
-import yazl from 'yazl';
+import { zipFiles } from '../../lib/archive.mjs';
 import { listDevices, needsTotp } from '../../lib/auth.mjs';
 import { json, readBody, SECURITY_HEADERS, corsHeaders } from './static.mjs';
+import { readFile } from '../../lib/files.mjs';
+import { highlightText } from '../../lib/highlight.mjs';
+import { pdfUrl, videoUrl } from './video.mjs';
 
 const downloads = new Map();
 const localPath = value => path.resolve(value || os.homedir());
@@ -16,7 +19,13 @@ export async function transferApi(req, res, route, device) {
   let temporary = '';
   try {
     if (route === '/api/transfer/list' && req.method === 'GET') {
-      const directory = localPath(query.get('path'));
+      const browsing = query.get('browse') === '1', atRoots = query.get('roots') === '1';
+      const roots = process.platform === 'win32'
+        ? (await Promise.all('ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(async c => { const drive = c + ':\\'; try { await fsp.access(drive); return drive; } catch { return null; } }))).filter(Boolean)
+        : ['/'];
+      if (atRoots && process.platform === 'win32') return json(req, res, 200, { path: '', parent: null, os: process.platform, roots, entries: roots.map(root => ({ name: root, path: root, directory: true, selectable: true })) });
+      const directory = atRoots ? '/' : browsing ? path.resolve(query.get('base') || os.homedir(), query.get('path') || '.') : localPath(query.get('path'));
+      if (browsing && (await fsp.stat(directory)).isFile()) return json(req, res, 200, { file: directory });
       const entries = await fsp.readdir(directory, { withFileTypes: true });
       const rows = await Promise.all(entries.map(async entry => {
         const file = path.join(directory, entry.name);
@@ -26,10 +35,18 @@ export async function transferApi(req, res, route, device) {
         } catch { return { name: entry.name, path: file, selectable: false }; }
       }));
       rows.sort((a, b) => Number(!!b.directory) - Number(!!a.directory) || a.name.localeCompare(b.name));
-      const roots = process.platform === 'win32'
-        ? (await Promise.all('ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(async c => { const drive = c + ':\\'; try { await fsp.access(drive); return drive; } catch { return null; } }))).filter(Boolean)
-        : ['/'];
-      return json(req, res, 200, { path: directory, parent: path.dirname(directory), home: os.homedir(), roots, entries: rows });
+      let parent = path.dirname(directory);
+      if ((browsing || atRoots) && parent === directory) parent = process.platform === 'win32' ? '' : null;
+      return json(req, res, 200, { path: directory, parent, home: os.homedir(), roots, entries: rows, os: process.platform });
+    }
+    if (route === '/api/transfer/preview' && req.method === 'GET') {
+      const file = localPath(query.get('path')), stat = await fsp.stat(file);
+      const info = { name: path.basename(file), path: file, size: stat.size };
+      if (/\.mp4$/i.test(file)) return json(req, res, 200, { ...info, video: videoUrl(file, device.id) });
+      if (/\.pdf$/i.test(file)) return json(req, res, 200, { ...info, pdf: pdfUrl(file, device.id) });
+      const body = await readFile(file, stat.size);
+      const hl = body.text ? await highlightText(body.text, file, query.get('theme') === 'light' ? 'light-plus' : 'dark-plus').catch(() => null) : null;
+      return json(req, res, 200, { ...info, ...body, editable: body.text != null && !body.truncated, ...(hl ? { hl } : {}) });
     }
     if (route === '/api/transfer/download' && req.method === 'POST') {
       const { paths } = JSON.parse(await readBody(req, 1024 * 1024));
@@ -96,37 +113,8 @@ export async function serveTransfer(req, res, ticket) {
       await pipeline(fs.createReadStream(grant.files[0]), res);
       return;
     }
-    const zip = new yazl.ZipFile();
-    let active = null;
-    res.on('close', () => { zip.outputStream.destroy(); active?.destroy(); });
-    zip.on('error', () => res.destroy());
-    zip.outputStream.on('error', () => res.destroy());
     res.writeHead(200, headers);
-    zip.outputStream.pipe(res);
-    async function add(file, name) {
-      if (res.destroyed) return;
-      const stat = await fsp.lstat(file);
-      // Links are not followed when walking folders, so archives cannot recurse through link cycles.
-      if (stat.isSymbolicLink()) return;
-      if (stat.isDirectory()) {
-        zip.addEmptyDirectory(name, { mtime: stat.mtime });
-        for (const entry of await fsp.readdir(file)) await add(path.join(file, entry), name + '/' + entry);
-      } else if (stat.isFile()) {
-        zip.addReadStreamLazy(name, { size: stat.size, mtime: stat.mtime, compress: false }, callback => {
-          if (res.destroyed) return callback(Error('下载已取消'));
-          active = fs.createReadStream(file);
-          callback(null, active);
-        });
-      }
-    }
-    const names = new Set();
-    for (const file of grant.files) {
-      let name = path.basename(file) || 'root', suffix = 1;
-      while (names.has(name)) name = `${path.basename(file) || 'root'} (${suffix++})`;
-      names.add(name);
-      await add(await fsp.realpath(file), name);
-    }
-    zip.end();
+    await pipeline(zipFiles(grant.files), res);
   } catch (error) {
     if (res.headersSent) res.destroy(error);
     else json(req, res, 400, { error: error.message });

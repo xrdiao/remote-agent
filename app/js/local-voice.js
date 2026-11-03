@@ -20,10 +20,11 @@ function noteVoiceInput() {
   updateVoiceButton();
 }
 function updateVoiceButton() {
-  const visible = voiceEnabled() && mode === 'chat' && (!chatBusy || voiceComposerActive()) && !lastChat?.readonly;
+  const card = ovToolInput();
+  const visible = voiceEnabled() && mode === 'chat' && (!chatBusy || voiceComposerActive() || card) && !lastChat?.readonly;
   $('mic').hidden = !visible;
   $('mic').disabled = !windowReady;
-  $('stop').hidden = mode !== 'chat' || !chatBusy || !!lastChat?.readonly || visible;
+  $('stop').hidden = mode !== 'chat' || !chatBusy || !!lastChat?.readonly || (visible && !card);
   if (!visible) cancelVoice();
   if (typeof updateComposeCompact === 'function') updateComposeCompact();
   if (!voiceEnabled() || !authed) {
@@ -148,18 +149,21 @@ function voiceText(session, value) {
   session.writing = true;
   text.dispatchEvent(new Event('input', { bubbles: true }));
   session.writing = false;
-  if (text.scrollHeight > text.clientHeight) {
-    const style = getComputedStyle(text), mirror = document.createElement('div');
+  scrollVoiceInput(session.input);
+}
+function scrollVoiceInput(input) {
+  if (input.scrollHeight > input.clientHeight) {
+    const style = getComputedStyle(input), mirror = document.createElement('div');
     for (const key of ['font', 'lineHeight', 'letterSpacing', 'padding', 'boxSizing', 'wordBreak', 'overflowWrap', 'tabSize', 'textIndent']) mirror.style[key] = style[key];
-    Object.assign(mirror.style, { position: 'fixed', left: '-10000px', top: '0', visibility: 'hidden', width: text.clientWidth + 'px', whiteSpace: 'pre-wrap' });
-    mirror.textContent = text.value.slice(0, text.selectionEnd);
+    Object.assign(mirror.style, { position: 'fixed', left: '-10000px', top: '0', visibility: 'hidden', width: input.clientWidth + 'px', whiteSpace: 'pre-wrap' });
+    mirror.textContent = input.value.slice(0, input.selectionEnd);
     const caret = document.createElement('span');
     caret.textContent = '\u200b';
     mirror.append(caret); document.body.append(mirror);
     const y = caret.getBoundingClientRect().top - mirror.getBoundingClientRect().top;
     const line = parseFloat(style.lineHeight), padding = parseFloat(style.paddingBottom);
-    if (y < text.scrollTop) text.scrollTop = y;
-    else if (y + line > text.scrollTop + text.clientHeight - padding) text.scrollTop = y + line - text.clientHeight + padding;
+    if (y < input.scrollTop) input.scrollTop = y;
+    else if (y + line > input.scrollTop + input.clientHeight - padding) input.scrollTop = y + line - input.clientHeight + padding;
     mirror.remove();
   }
 }
@@ -185,7 +189,7 @@ async function startVoice(event) {
     prompt(); return;
   }
   if (event.pointerId != null) $('mic').setPointerCapture(event.pointerId);
-  const session = { scope: voiceScope(), expected: text.value, prefix: text.value.slice(0, text.selectionStart), suffix: text.value.slice(text.selectionEnd), selection: text.value.slice(text.selectionStart, text.selectionEnd), held: true, dbg: vdbg };
+  const session = { input: composerInput(), scope: voiceScope(), expected: text.value, prefix: text.value.slice(0, text.selectionStart), suffix: text.value.slice(text.selectionEnd), selection: text.value.slice(text.selectionStart, text.selectionEnd), held: true, dbg: vdbg };
   voiceSession = session;
   $('mic').classList.add('on'); $('mic').setAttribute('aria-label', '松开结束录音');
   status('正在连接本机语音并申请麦克风…');
@@ -252,7 +256,7 @@ function startSystemVoice(event) {
   const Recognition = systemRecognition();
   if (!Recognition) return status('这个浏览器/应用不支持系统语音识别，请改用 Safari/Chrome 或键盘语音输入', false);
   if (event.pointerId != null) $('mic').setPointerCapture(event.pointerId);
-  const session = { scope: voiceScope(), expected: text.value, prefix: text.value.slice(0, text.selectionStart), suffix: text.value.slice(text.selectionEnd), selection: text.value.slice(text.selectionStart, text.selectionEnd), held: true, system: true, finalText: '', interimText: '' };
+  const session = { input: composerInput(), scope: voiceScope(), expected: text.value, prefix: text.value.slice(0, text.selectionStart), suffix: text.value.slice(text.selectionEnd), selection: text.value.slice(text.selectionStart, text.selectionEnd), held: true, system: true, finalText: '', interimText: '' };
   voiceSession = session;
   $('mic').classList.add('on'); $('mic').setAttribute('aria-label', '松开结束录音');
   try {
@@ -319,8 +323,8 @@ function renderVoiceMenu() {
   openSheet('local-voice', '<h3>语音输入</h3>'
     + `<button class="opt" data-act="localVoiceToggle" role="switch" aria-checked="${voiceEnabled()}"><span class="lbl">开启语音输入<span class="sub">按住说话，松开结束，不自动发送</span></span><span class="switch${voiceEnabled() ? ' on' : ''}" aria-hidden="true"></span></button>`
     + '<div class="pSec">语音识别引擎</div>'
-    + engines.map(engine => `<button class="opt${engine.id === selected ? ' cur' : ''}" data-voice-engine="${esc(engine.id)}" role="radio" aria-checked="${engine.id === selected}" ${voiceSession ? 'disabled' : ''}><span class="lbl">${esc(engine.label)}<span class="sub">${esc(engine.detail)}</span></span>${engine.id === selected ? '<span class="tag">✓</span>' : ''}</button>`).join('')
-    + `<button class="opt${selected === SYSTEM_ENGINE ? ' cur' : ''}" data-voice-engine="${SYSTEM_ENGINE}" role="radio" aria-checked="${selected === SYSTEM_ENGINE}" ${voiceSession || !systemSupported ? 'disabled' : ''}><span class="lbl">${esc(I18N.tr('手机系统识别'))}<span class="sub">${esc(systemSupported ? I18N.tr('使用手机/浏览器自带识别 · 不经过电脑') : I18N.tr('当前浏览器/应用不支持系统识别，请改用 Safari/Chrome'))}</span></span>${selected === SYSTEM_ENGINE ? '<span class="tag">✓</span>' : ''}</button>`
+    + engines.map(engine => `<button class="opt${engine.id === selected ? ' cur' : ''}" data-voice-engine="${esc(engine.id)}" role="radio" aria-checked="${engine.id === selected}" ${voiceSession ? 'disabled' : ''}><span class="lbl">${esc(engine.label)}<span class="sub">${esc(engine.detail)}</span></span></button>`).join('')
+    + `<button class="opt${selected === SYSTEM_ENGINE ? ' cur' : ''}" data-voice-engine="${SYSTEM_ENGINE}" role="radio" aria-checked="${selected === SYSTEM_ENGINE}" ${voiceSession || !systemSupported ? 'disabled' : ''}><span class="lbl">${esc(I18N.tr('手机系统识别'))}<span class="sub">${esc(systemSupported ? I18N.tr('使用手机/浏览器自带识别 · 不经过电脑') : I18N.tr('当前浏览器/应用不支持系统识别，请改用 Safari/Chrome'))}</span></span></button>`
     + (engines.length ? '' : '<p class="hint">电脑尚未安装语音引擎。</p>')
     + '<p class="hint">选择后退出本列表才在后台准备引擎，连续切换只应用最后一次选择。识别过程中请先松手，等转录完成后再切换。语音仅发往配对电脑。</p><details><summary>安装语音引擎</summary><p class="hint">在电脑的 Remote Agent 目录运行，并按提示同意安装：</p><pre>npm run voice:setup</pre><p class="hint">Sherpa：CPU，中英混说，模型约 615 MB。</p><pre>npm run voice:setup -- --engine qwen</pre><p class="hint">Qwen3-ASR-1.7B：官方 vLLM 流式接口，需要 Linux / NVIDIA GPU；模型约 4 GB，运行依赖另计。安装后重新打开本列表即可。麦克风仍需 HTTPS 和浏览器授权。</p></details><button class="opt" data-act="voiceBack">← 返回菜单</button>');
 }
@@ -358,7 +362,6 @@ for (const event of ['focus', 'input']) text.addEventListener(event, noteVoiceIn
 text.addEventListener('blur', () => { if (!$('mic').hidden) noteVoiceInput(); });
 window.visualViewport?.addEventListener('resize', updateVoiceButton);
 window.addEventListener('resize', updateVoiceButton);
-for (const id of ['send', 'sendNow']) $(id).addEventListener('click', cancelVoice, true);
 function suspendVoice() { clearTimeout(voiceHideTimer); voiceHideTimer = 0; clearTimeout(voiceWarmTimer); voiceWarmTimer = 0; cancelVoice(); closeVoiceConnection(); closeVoiceAudio(); voicePrepared = ''; }
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {

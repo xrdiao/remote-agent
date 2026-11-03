@@ -1,3 +1,5 @@
+  const terminalControl = (root, label) => [...(root?.querySelectorAll('[aria-label]') || [])]
+    .find(e => nativeLabel(e.getAttribute('aria-label'), label, true));
   const terminalEntries = () => {
     const glass = [...doc.querySelectorAll('.ui-tab-system-tab')].filter(t => vis(t) && /terminal-/i.test(t.getAttribute('aria-controls') || ''));
     if (glass.length) {
@@ -9,34 +11,35 @@
           title: title || '终端',
           current: tab.getAttribute('aria-selected') === 'true' || tab.getAttribute('data-active') === 'true',
           tab,
-          close: [...tab.querySelectorAll('button')].find(b => (b.getAttribute('aria-label') || '').startsWith('Close')),
+          close: terminalControl(tab, 'Close'),
         };
       }).filter(t => t.id);
     }
     const single = doc.querySelector('.part.panel .single-terminal-tab');
     if (single && vis(single)) return [{
       id: 'classic-0', title: single.innerText.trim() || '终端', current: true, tab: single,
-      close: doc.querySelector('.part.panel .title-actions [aria-label="Kill Terminal"]'),
+      close: terminalControl(doc.querySelector('.part.panel .title-actions'), 'Kill Terminal'),
     }];
     const classic = [...doc.querySelectorAll('.terminal-tabs-list .terminal-tab, .monaco-list-row:has(.terminal-tabs-entry)')].filter(vis).map((tab, i) => ({
       id: tab.id || `classic-${i}`,
       title: (tab.querySelector('.label-name, a') || tab).innerText.trim().split('\n')[0].slice(0, 80) || `终端 ${i + 1}`,
       current: tab.classList.contains('active') || !!tab.querySelector('.terminal-tabs-entry.is-active') || tab.getAttribute('aria-selected') === 'true',
       tab,
-      close: tab.querySelector('[aria-label="Kill Terminal"], [aria-label^="Kill"]'),
+      close: terminalControl(tab, 'Kill'),
     }));
     if (classic.length) return classic;
     // Devin / VS Code monaco list: rows labelled "Terminal 1 cloudflared".
     // Kill/Split action anchors exist in the row but get a size only on hover.
-    const vt = [...document.querySelectorAll('[aria-label="Terminal tabs"] .monaco-list-row')].filter(vis);
+    const vt = [...document.querySelectorAll('[aria-label]')].filter(e => nativeLabel(e.getAttribute('aria-label'), 'Terminal tabs'))
+      .flatMap(e => [...e.querySelectorAll('.monaco-list-row')]).filter(vis);
     if (vt.length) return vt.map(tab => {
-      const m = /^Terminal (\d+)\s*(.*)$/.exec((tab.getAttribute('aria-label') || '').trim());
+      const m = /^(?:Terminal\s+|终端\s*)(\d+)\s*(.*)$/.exec((tab.getAttribute('aria-label') || '').trim());
       return {
         id: `term-vt${m?.[1] || vt.indexOf(tab)}`,
         title: ((m?.[2] || '').trim() || `终端 ${m?.[1] || ''}`.trim()).slice(0, 80),
         current: tab.getAttribute('aria-selected') === 'true',
         tab,
-        close: tab.querySelector('a.action-label[aria-label^="Kill"], [aria-label^="Kill"]'),
+        close: terminalControl(tab, 'Kill'),
       };
     });
     const solo = [...document.querySelectorAll('.terminal-wrapper.active .xterm')].filter(e => vis(e) && !e.querySelector('textarea')?.readOnly);
@@ -62,14 +65,14 @@
   // With ≥2 tabs the row Kill icons are 0×0 until hover; the panel title-bar Kill
   // button (which kills the *active* terminal) is always visible instead.
   const terminalKillActiveTarget = () => {
-    const b = [...doc.querySelectorAll('.part.panel .title-actions [aria-label="Kill Terminal"]')].find(vis);
-    return b ? center(b) : null;
+    const b = [...doc.querySelectorAll('.part.panel .title-actions [aria-label]')].find(e => vis(e) && nativeLabel(e.getAttribute('aria-label'), 'Kill Terminal', true));
+    return b && vis(b) ? center(b) : null;
   };
   const terminalFocus = () => {
     const el = [...doc.querySelectorAll('.terminal-wrapper.active .xterm, .terminal.xterm')].find(vis);
     return el ? center(el) : null;
   };
   const newTerminalDirect = () => {
-    const b = [...doc.querySelectorAll('[aria-label="New Terminal"], [aria-label^="New Terminal"]')].find(vis);
+    const b = [...doc.querySelectorAll('[aria-label]')].find(e => vis(e) && nativeLabel(e.getAttribute('aria-label'), 'New Terminal', true));
     return b ? center(b) : null;
   };

@@ -16,7 +16,7 @@ let failures = 0;
 const fail = msg => { failures++; console.error(`FAIL ${msg}`); };
 
 // Frontend sends types built dynamically (ternaries / string concat).
-const SEND_EXTRA = new Set(['codexPick', 'fusionModel']);
+const SEND_EXTRA = new Set(['codexPick', 'overviewManage', 'saveComputerFile']);
 // Server emits that the extraction sees but the frontend does not dispatch on.
 const EMIT_OK = new Set([]);
 
@@ -74,10 +74,12 @@ else console.log(`ok   protocol: ${sent.size} sent types all handled`);
 const emitted = new Set([
   ...grab(serverFiles, /emit\(\{\s*t:\s*'([A-Za-z]+)'/g),
   ...grab(serverFiles, /JSON\.stringify\(\{\s*t:\s*'([A-Za-z]+)'/g),
+  ...grab([path.join(ROOT, 'server/terminal-service.mjs')], /\{\s*t:\s*'([A-Za-z]+)'/g),
 ]);
 const frontendHandled = new Set([
   ...grab(appFiles, /\.t === '([A-Za-z]+)'/g),
   ...grab(appFiles, /case '([A-Za-z]+)'/g),
+  ...grab(appFiles, /\bresultType:\s*'([A-Za-z]+)'/g),
 ]);
 const unhandled = [...emitted].filter(t => !frontendHandled.has(t) && !EMIT_OK.has(t));
 if (unhandled.length) fail(`server emits but frontend never handles: ${unhandled.join(', ')}`);
@@ -250,6 +252,45 @@ modFiles.forEach((f, n) => {
   if (miss.size) fail(`missing imports: ${rel(f)}: ${[...miss].sort().join(', ')}`);
 });
 console.log(`ok   imports: ${modFiles.length} modules`);
+
+/* 5. app-shell versions and core precache entries */
+const indexHtml = fs.readFileSync(path.join(ROOT, 'app', 'index.html'), 'utf8');
+const coreJs = fs.readFileSync(path.join(ROOT, 'app', 'js', 'core.js'), 'utf8');
+const workerJs = fs.readFileSync(path.join(ROOT, 'app', 'sw.js'), 'utf8');
+const appVersion = /const APP_VERSION = '(v\d+)'/.exec(coreJs)?.[1];
+const cacheVersion = /const CACHE = CACHE_PREFIX \+ '(v\d+)'/.exec(workerJs)?.[1];
+if (!appVersion || cacheVersion !== appVersion) fail(`app shell version: APP_VERSION=${appVersion}, CACHE=${cacheVersion}`);
+const shellSource = /const SHELL = \[([\s\S]*?)\];/.exec(workerJs)?.[1];
+if (!shellSource) fail('app shell: cannot read the SHELL precache list');
+const shell = [...(shellSource || '').matchAll(/'([^']+)'/g)].map(m => m[1]);
+const coreRefs = [...indexHtml.matchAll(/<(?:script|link)\b[^>]*\b(?:src|href)="([^\"]+)"/g)]
+  .map(m => m[1]).filter(ref => /^(?:js\/|katex\/|vendor\/xterm\.|(?:app\.css|i18n\.js)(?:\?|$))/.test(ref));
+const coreRef = coreRefs.find(ref => ref.split('?')[0] === 'js/core.js');
+if (coreRef !== `js/core.js?v=${appVersion?.slice(1)}`) fail(`app shell version: ${coreRef} does not match APP_VERSION=${appVersion}`);
+for (const ref of coreRefs) {
+  const cached = shell.find(item => item.split('?')[0] === ref.split('?')[0]);
+  if (cached !== ref) fail(`app shell: index ${ref}; SHELL ${cached || 'missing'}`);
+}
+for (const ref of shell) {
+  if (!fs.existsSync(path.join(ROOT, 'app', ref.split('?')[0]))) fail(`app shell: precache path missing: ${ref}`);
+}
+const katexCss = fs.readFileSync(path.join(ROOT, 'app/katex/katex.min.css'), 'utf8');
+const katexFonts = [...katexCss.matchAll(/url\(([^)]+\.woff2)\)/g)].map(m => 'katex/' + m[1]);
+for (const ref of katexFonts) {
+  if (!shell.includes(ref)) fail(`app shell: KaTeX font missing from precache: ${ref}`);
+}
+console.log(`ok   app shell: ${coreRefs.length} core references and ${katexFonts.length} KaTeX fonts checked`);
+
+const terminalPackage = JSON.parse(fs.readFileSync(path.join(ROOT, 'node_modules/@xterm/xterm/package.json'), 'utf8'));
+for (const [asset, source] of [['xterm.js', 'lib/xterm.js'], ['xterm.css', 'css/xterm.css'], ['xterm.LICENSE.txt', 'LICENSE']]) {
+  const local = fs.readFileSync(path.join(ROOT, 'app/vendor', asset));
+  const installed = fs.readFileSync(path.join(ROOT, 'node_modules/@xterm/xterm', source));
+  if (!local.equals(installed)) fail(`terminal asset differs from installed xterm ${terminalPackage.version}: ${asset}`);
+  if (asset !== 'xterm.LICENSE.txt' && !coreRefs.includes(`vendor/${asset}?v=${terminalPackage.version}`))
+    fail(`terminal asset version reference missing: ${asset}`);
+}
+console.log(`ok   terminal assets: xterm ${terminalPackage.version}, JS/CSS/license checked`);
+if (!fs.existsSync(path.join(ROOT, 'server/terminal-shell.bash'))) fail('terminal Shell startup resource is missing');
 
 if (failures) {
   console.error(`\n${failures} check(s) failed`);

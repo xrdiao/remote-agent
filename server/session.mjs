@@ -5,9 +5,9 @@ import { PAGE_SRC, helpersCall } from './page/build.mjs';
 import { AgentContext, appPlans } from './agent/index.mjs';
 import { resetThinkingCaches } from './agent/thinking-cache.mjs';
 import { hasLaunched, takeLaunched } from './launch.mjs';
-import { fusionViewers, fusionHistory, fusionWorkers } from './fusion/state.mjs';
+import { fusionViewers, savedFusion } from './fusion/state.mjs';
 import { FUSION_OWNER } from './fusion/owner.mjs';
-import { FusionRunner } from './fusion/runner.mjs';
+import { fusionRunner } from './fusion/runner.mjs';
 import { ROUTES, SKIP, flag } from './routes.mjs';
 import { chatForWire } from './chat-images.mjs';
 import { watchChat } from './agent/updates.mjs';
@@ -20,32 +20,60 @@ import { rememberSelection, lastSelection, forgetSelection } from '../lib/auth.m
 import { editorRoots } from '../lib/files.mjs';
 import { NativeCdp, nativeWindow, nativeWindowAt, nativeTargets, subscribeCatalog } from './native-windows.mjs';
 import { captureOperation } from './operations.mjs';
+import { terminalService } from './terminal-service.mjs';
 
 export class Session extends AgentContext {
-  constructor(client, deviceId) {
+  constructor(client, deviceId, { fusionBinding = false } = {}) {
     super({ deviceId });
     this.client = client;
-    fusionViewers.add(this);
-    this.fusionSaved = fusionHistory[deviceId] ||= { current: '', runs: [] };
+    this.fusionBinding = fusionBinding;
+    if (!fusionBinding) fusionViewers.add(this);
+    this.fusionSaved = savedFusion(deviceId);
     this.fusionRun = this.fusionSaved.runs.find(f => f.id === this.fusionSaved.current);
     // The phone reports when the app goes to the background; notifications skip the window it is looking at.
-    this.visible = true;
-    this.notifyVisible = true;
+    this.visible = !fusionBinding;
+    this.notifyVisible = !fusionBinding;
     this.notifyPresenceAt = Date.now();
     this.viewport = { w: 1000, h: 800 };
     this.mode = 'chat';
     this.connectionMessages = new Map();
   }
 
+  stopChatUpdates() {
+    const stop = this.chatUpdatesStop;
+    this.chatUpdatesStop = null;
+    return stop?.();
+  }
+
+  stopTerminalUpdates() {
+    this.terminalGeneration = (this.terminalGeneration || 0) + 1;
+    this.terminalUpdatesStop?.();
+    this.terminalUpdatesStop = null;
+  }
+
+  async selectTerminal(id, subscription) {
+    this.stopTerminalUpdates();
+    this.terminalId = id;
+    this.terminalSubscription = subscription;
+    if (!this.visible || this.mode !== 'terminal') return;
+    const generation = this.terminalGeneration;
+    const stop = await terminalService.subscribe(id, message => {
+      if (this.terminalGeneration === generation && this.visible && this.mode === 'terminal' && !this.disposed)
+        this.emit({ ...message, subscription });
+    });
+    if (this.terminalGeneration !== generation) stop();
+    else this.terminalUpdatesStop = stop;
+  }
+
   async setMode(mode, firstScreen = false) {
     const watchGeneration = this.chatWatchGeneration = (this.chatWatchGeneration || 0) + 1;
-    cdpRead.run(null, () => this.chatUpdatesStop?.());
-    this.chatUpdatesStop = null;
+    cdpRead.run(null, () => this.stopChatUpdates());
+    this.stopTerminalUpdates();
     this.catalogUpdatesStop?.();
     this.catalogUpdatesStop = null;
     if (this.mode === 'screen' && mode !== 'screen') this.stopVisual();
     this.mode = mode === 'screen' || mode === 'terminal' ? mode : 'chat';
-    if (this.visible && !this.fusionOwner && ['cursor', 'devin', 'codex'].includes(this.app)) {
+    if (this.visible && !this.fusionBinding && ['cursor', 'devin', 'codex'].includes(this.app)) {
       const cdp = this.cdp, app = this.app;
       this.catalogUpdatesStop = subscribeCatalog(app, error => {
         if (!this.visible || this.cdp !== cdp || this.app !== app || this.switchingThread || !this.bindingReady) return;
@@ -63,9 +91,10 @@ export class Session extends AgentContext {
         }).finally(() => { if (this.catalogRefresh === refresh) this.catalogRefresh = null; });
       });
     }
-    this.lastChatAt = this.lastTermAt = 0;
+    this.lastChatAt = 0;
     clearInterval(this.chatTimer);
-    clearInterval(this.termTimer);
+    if (this.fusionBinding) return;
+    if (this.mode === 'terminal') return;
     if (this.mode === 'screen') {
       visualCapture.subscribe(this);
       const windows = await this.visualList();
@@ -75,14 +104,16 @@ export class Session extends AgentContext {
     if (!this.editorCdp || this.selectionHome && this.mode === 'chat') return;
     if (this.mode === 'chat') {
       const cdp = this.cdp;
+      if (this.threadId) await this.confirmConversation();
       this.lastChat = '';
       const source = nativeWindow(cdp);
       if (source) {
+        const context = this.chatUpdatesContext = this.nativeContext();
         this.chatUpdatesStop = source.subscribe(error => {
-          if (!this.visible || this.mode !== 'chat' || this.cdp !== cdp) return;
+          if (!this.visible || this.mode !== 'chat' || this.cdp !== cdp || this.nativeContext() !== context) return;
           if (error) this.emit({ t: 'status', ok: false, msg: error.message });
           else this.pollChat(true).catch(() => {});
-        });
+        }, context, this);
         if (firstScreen) await this.pollChat(true, true);
         else await this.pollChat(true);
         return;
@@ -101,11 +132,6 @@ export class Session extends AgentContext {
           this.emit({ t: 'status', ok: false, msg: error.message });
       });
       else { await watching; await this.pollChat(); }
-    } else if (this.mode === 'terminal') {
-      this.lastTermHash = undefined;
-      await this.pollTerminal();
-      if (this.chatWatchGeneration !== watchGeneration || this.mode !== 'terminal') return;
-      this.termTimer = cdpRead.run(null, () => setInterval(() => this.pollTerminal().catch(() => {}), 250));
     }
   }
 
@@ -135,11 +161,13 @@ export class Session extends AgentContext {
     if (!binding) return;
     if (this.mode === 'chat' && !result.chat) throw new Error('当前会话内容尚未就绪，请重试');
     this.emit({ ...binding, ready: true, windowId: this.windowId || '', threadId: this.threadId || '',
+      conversation: this.nativeContext(), project: this.projectName(),
       sel: this.selectionKey(), ...(result.chat ? { chat: result.chat.chat } : {}),
       ...(result.project ? { projectReady: result.project } : {}) });
   }
 
   emit(obj) {
+    if ((obj?.t === 'attached' || obj?.t === 'thread') && !obj.closed) obj = { ...obj, conversation: this.nativeContext() };
     if (captureOperation(this, obj)) return;
     if (cdpRead.getStore()?.aborted) return;
     const result = this.navigationResult;
@@ -172,12 +200,10 @@ export class Session extends AgentContext {
       }) };
     }
     if (obj?.t === 'attached' && !obj.closed && AGENT_REGISTRY[obj.app]?.capabilities) {
-      obj = { ...obj, capabilities: AGENT_REGISTRY[obj.app].capabilities };
-      if (obj.app === 'fusion') obj.sideCapabilities = Object.fromEntries(Object.entries(AGENT_REGISTRY)
-        .filter(([, entry]) => entry.kind !== 'orchestrator').map(([app, entry]) => [app, entry.capabilities]));
+      obj = { ...obj, capabilities: AGENT_REGISTRY[obj.app].capabilities, conversation: this.nativeContext() };
     }
     if ((obj?.t === 'chat' || obj?.t === 'attached') && obj.sel && obj.chat) {
-      if (this.bindingReady && obj.sel === this.selectionKey() && !obj.cached
+      if (!this.fusionBinding && this.bindingReady && obj.sel === this.selectionKey() && !obj.cached
           && (!obj.chat.readonly || obj.chat.empty) && !obj.chat.subagent
           && obj.chat.thread === this.threadId && ['cursor', 'devin', 'codex'].includes(this.app)
           && this.rememberedSelection !== obj.sel && this.rememberingSelection?.key !== obj.sel) {
@@ -196,9 +222,9 @@ export class Session extends AgentContext {
       (this.chatBySel ||= new Map()).delete(obj.sel);
       this.chatBySel.set(obj.sel, obj.chat);
       if (this.chatBySel.size > 12) this.chatBySel.delete(this.chatBySel.keys().next().value);
-      obj = { ...obj, chat: chatForWire(obj.chat, this.app === 'codex' ? this.cdp?.wsUrl : '') };
+      obj = { ...obj, chat: chatForWire(obj.chat, this.cdp?.wsUrl || '') };
     }
-    if (obj?.t === 'historyPage') obj = { ...obj, items: chatForWire({ items: obj.items }, this.app === 'codex' ? this.cdp?.wsUrl : '').items };
+    if (obj?.t === 'historyPage') obj = { ...obj, items: chatForWire({ items: obj.items }, this.cdp?.wsUrl || '').items };
     if (['attached', 'windows', 'plans', 'connAgents', 'agentCatalog'].includes(obj?.t)) {
       const { chat, ...metadata } = obj;
       this.connectionMessages.set(obj.t, metadata);
@@ -365,7 +391,7 @@ export class Session extends AgentContext {
     await this.refreshViewport();
     if (this.app !== 'codex') this.threadId = await this.cdp.evaluate(helpersCall('activeThread()')) || '';
     if (selection.deferred && selection.threadId) this.threadId = selection.threadId;
-    nativeWindow(cdp).setThread(this.threadId);
+    if (this.fusionBinding) nativeWindow(cdp).setThread(this.threadId);
     this.selectedThread = this.threadId;
     const attached = () => this.emit({
       t: 'attached', id: win.id, title: this.app === 'codex' ? 'Codex' : win.title, app: win.app,
@@ -432,7 +458,7 @@ export class Session extends AgentContext {
         throw error;
       }
       return;
-    } else if (win.app === 'cursor' && this.threadId && !await this.cdp.evaluate(helpersCall('panelRect()')).catch(() => null)) {
+    } else if (win.app === 'cursor' && this.threadId && !await this.cdp.evaluate(helpersCall('hasComposer()'))) {
       await this.withFocus(() => this.adapter.openAgent.call(this, this.threadId));
     }
     this.bindingReady = !selection.deferred && !this.startupPending;
@@ -458,10 +484,8 @@ export class Session extends AgentContext {
     this.chatRead?.reject?.(error);
     this.chatRead = null;
     this.chatWatchGeneration = (this.chatWatchGeneration || 0) + 1;
-    this.chatUpdatesStop?.();
-    this.chatUpdatesStop = null;
+    this.stopChatUpdates();
     clearInterval(this.chatTimer);
-    clearInterval(this.termTimer);
     this.startupPending = this.pendingProject = null;
     this.switchingThread = false;
     this.clearViewState();
@@ -494,6 +518,7 @@ export class Session extends AgentContext {
   // actions that type/tap, and is switched off again shortly after they finish.
 
   detach() {
+    this.conversation = null;
     this.catalogUpdatesStop?.();
     this.catalogUpdatesStop = null;
     this.bindingReady = false;
@@ -511,14 +536,12 @@ export class Session extends AgentContext {
     this.codexSettingsEditor = null;
     this.codexSettingsReturn = '';
     this.chatWatchGeneration = (this.chatWatchGeneration || 0) + 1;
-    cdpRead.run(null, () => this.chatUpdatesStop?.());
-    this.chatUpdatesStop = null;
+    cdpRead.run(null, () => this.stopChatUpdates());
     this.stopVisual();
     clearTimeout(this.focusTimer);
     this.focusTimer = null;
     this.focusCount = 0;
     clearInterval(this.chatTimer);
-    clearInterval(this.termTimer);
     const connections = new Set([this.cdp, this.editorCdp]);
     this.cdp = this.editorCdp = null;
     cdpRead.run(null, () => {
@@ -553,13 +576,7 @@ export class Session extends AgentContext {
   }
 
   fusionWorker() {
-    const key = JSON.stringify([this.deviceId, this.fusionRun.id]);
-    let worker = fusionWorkers.get(key);
-    if (!worker) {
-      worker = new FusionRunner(this.deviceId, this.fusionRun, key);
-      fusionWorkers.set(key, worker);
-    }
-    return worker;
+    return fusionRunner(this.fusionRun);
   }
 
   async handle(msg) {
@@ -597,15 +614,14 @@ export class Session extends AgentContext {
   suspend() {
     this.visible = this.notifyVisible = false;
     this.chatWatchGeneration = (this.chatWatchGeneration || 0) + 1;
-    this.chatUpdatesStop?.();
-    this.chatUpdatesStop = null;
+    this.stopChatUpdates();
     this.catalogUpdatesStop?.();
     this.catalogUpdatesStop = null;
     this.chatRead?.controller.abort(new Error('手机连接已挂起'));
     this.chatRead = null;
     this.polling = this.pollAgain = null;
     clearInterval(this.chatTimer);
-    clearInterval(this.termTimer);
+    this.stopTerminalUpdates();
     this.stopVisual();
     clearTimeout(this.focusTimer);
     this.focusTimer = null;
@@ -616,9 +632,9 @@ export class Session extends AgentContext {
   dispose() {
     this.disposed = true;
     fusionViewers.delete(this);
-    this.chatUpdatesStop?.();
+    this.stopChatUpdates();
     clearInterval(this.chatTimer);
-    clearInterval(this.termTimer);
+    this.stopTerminalUpdates();
     if (this.activeOperations) return;
     this.detach();
   }

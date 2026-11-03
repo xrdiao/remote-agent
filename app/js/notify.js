@@ -148,7 +148,7 @@ async function disableNotify() {
 
 function noticeTarget(raw) {
   if (!raw) return null;
-  let win = String(raw), computer = '', windowId = '', threadId = '';
+  let win = String(raw), computer = '', windowId = '', threadId = '', project, background = false;
   if (win.startsWith('{')) {
     try {
       const o = JSON.parse(win);
@@ -156,9 +156,11 @@ function noticeTarget(raw) {
       computer = o.computer || '';
       windowId = o.windowId || '';
       threadId = o.threadId || '';
+      project = o.project;
+      background = o.background === true;
     } catch { return null; }
   }
-  return win ? { computer, win, windowId, threadId } : null;
+  return win ? { computer, win, windowId, threadId, ...(project ? { project } : {}), ...(background ? { background } : {}) } : null;
 }
 function rememberNotice(raw) {
   const n = noticeTarget(raw);
@@ -169,10 +171,13 @@ function rememberNotice(raw) {
   const next = { ...here, win: n.win, windowId: n.windowId, threadId: n.threadId };
   saveComputers(list.map(c => c.key === here.key ? next : c), current?.key);
   if (here.key === current?.key) store.set('window', n.win);
-  ovConversationOpened();
-  return next;
+  ovConversationOpened(!n.background);
+  return n.project ? { ...next, project: n.project } : next;
 }
 function openWin(id) {
+  const target = noticeTarget(id);
+  const reuse = mode === 'chat' && currentApp === 'codex' && target && !target.project
+    && winTargetReady({ ...target, threadId: undefined });
   const before = currentComputer()?.id;
   const here = rememberNotice(id);
   if (!here) return false;
@@ -185,9 +190,45 @@ function openWin(id) {
     return true;
   }
   if (!authed) { pendingNotice = id; return false; }
-  return send({ t: 'attach', id: here.win, windowId: here.windowId || '', threadId: here.threadId || '' });
+  if (reuse && here.threadId) return openPickedSession(`thread:${here.windowId}:${here.threadId}`, '', false);
+  return send({ t: 'attach', id: here.win, windowId: here.windowId || '', threadId: here.threadId || '', ...(here.project ? { project: here.project } : {}) });
 }
 window.openWin = openWin;
+let winBinding = null;
+function winTargetReady(target) {
+  const current = currentComputer();
+  return authed && windowReady && !navigationPending && current?.id === target.computer
+    && current.windowId === target.windowId && (target.threadId === undefined || current.threadId === target.threadId) && currentApp === target.win.split(':')[0];
+}
+function finishWinBinding(error) {
+  const binding = winBinding;
+  if (!binding) return;
+  if (error) { winBinding = null; binding.reject(error); return; }
+  if (!authed || !windowReady || navigationPending || currentComputer()?.id !== binding.target.computer) return;
+  if (!winTargetReady(binding.target)) {
+    return openWin(JSON.stringify({ ...binding.target, background: true }));
+  }
+  winBinding = null;
+  binding.resolve();
+}
+function bindWin(target) {
+  finishWinBinding(new Error('目标会话已切换'));
+  if (mode !== 'chat') setMode('chat', false);
+  if (winTargetReady(target)) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    winBinding = { target, resolve, reject };
+    openWin(JSON.stringify({ ...target, background: true }));
+  });
+}
+document.addEventListener('window-ready', () => finishWinBinding());
+async function runComputerAction(target) {
+  closeSheet();
+  if (ovS.open) { ovS.open = null; ovSaveHistory(); ovRender(); }
+  try {
+    await bindWin(target);
+    return openAgentList(false, { computer: target.computer, source: 'computer' });
+  } catch (error) { status(error.message, false); }
+}
 let updateUntouched = true;
 for (const event of ['pointerdown', 'keydown']) document.addEventListener(event, () => { updateUntouched = false; }, { once: true, capture: true });
 navigator.serviceWorker?.addEventListener('message', e => {
@@ -199,51 +240,107 @@ navigator.serviceWorker?.addEventListener('message', e => {
 });
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') resumeComputerConnections();
-  else for (const link of computerSockets.values()) saveComputerResume(link);
-  if (authed) {
-    send({ t: 'visible', v: conversationVisible() });
-    if (document.visibilityState === 'visible') {
-      send({ t: 'usage', automatic: true });
-      requestAgentCatalog();
-    }
+  else suspendComputerConnections();
+  if (authed && mode !== 'terminal' && document.visibilityState === 'visible') {
+    send({ t: 'usage', automatic: true });
+    requestAgentCatalog();
   }
 });
+for (const event of ['pageshow', 'online']) window.addEventListener(event, resumeComputerConnections);
+window.addEventListener('pagehide', suspendComputerConnections);
+
+async function runAgentMenuAction(id, action, extra, target, entry) {
+  if (target) {
+    try {
+      await ovManageSession(target, action, extra);
+      status(action === 'favorite' ? extra.favorite ? '已收藏' : '已取消收藏' : action === 'rename' ? '已重命名会话' : '已删除／归档会话');
+    } catch (error) { status(error.message, false); }
+    return;
+  }
+  projectEntry = entry;
+  if (action === 'favorite') return setAgentFavorite(id, extra.favorite);
+  send(currentApp === 'codex' ? { t: action === 'rename' ? 'codexRename' : 'codexArchive', id, ...extra }
+    : { t: 'sessionManage', id, action, ...extra });
+  return renderAgentList();
+}
+function openPickedSession(id, title = '', enter = projectEntry?.source === 'computer') {
+  if (enter) ovShowConversation();
+  pendingAgentOpen = id;
+  closeSheet();
+  return send({ t: 'openAgent', id, title });
+}
 
 $('sheet').addEventListener('click', async e => {
   const b = e.target.closest('button');
   if (!b) return;
+  if (b.dataset.computerApp) return showComputerActions(b.dataset.computerId, b.dataset.computerApp);
+  if ('computerAction' in b.dataset) return runComputerAction(JSON.parse(b.dataset.computerTarget));
+  if ('computerRoot' in b.dataset) return browseComputerFiles('', true);
+  if ('computerComplete' in b.dataset) return completeComputerPath();
+  if ('computerCompletion' in b.dataset) {
+    $('computerFilePath').value = b.dataset.computerCompletion;
+    computerFiles.path = b.dataset.computerCompletion; computerFiles.completion++;
+    $('computerFileCompletions').replaceChildren();
+    return $('computerFilePath').focus();
+  }
+  if ('computerPath' in b.dataset) {
+    if (b.dataset.computerDirectory === 'true') return browseComputerFiles(b.dataset.computerPath, b.dataset.computerPath === '');
+    openFile(b.dataset.computerPath, '', false, computerFiles.computer);
+    return closeSheet();
+  }
+  if (b.dataset.computerProject) {
+    const { directory, project } = computerFiles;
+    if (b.dataset.computerProject === 'terminal') {
+      if (project.owner.computer !== currentComputer()?.id) return terminalMessage('电脑已切换，请从当前电脑新建终端', true);
+      closeSheet();
+      return createRaTerminal(directory.path);
+    }
+    if (b.dataset.computerProject === 'new') {
+      const name = window.prompt(I18N.tr('新项目的文件夹名称'));
+      if (!name?.trim()) return;
+      return openPickedProject({ t: 'newProject', parent: directory.path, name: name.trim(), newSession: true }, project.owner);
+    }
+    return openPickedProject({ t: 'openProject', path: directory.path, ...(b.dataset.computerProject === 'chat' ? { newSession: true } : {}) }, project.owner);
+  }
+  if (b.dataset.computerLaunch) {
+    const entry = ovList.find(e => e.id === b.dataset.computerId);
+    closeSheet(); status('正在启动 Agent…');
+    return computerSockets.get(entry.c.key).send({ t: 'launchAgents', apps: [b.dataset.computerLaunch] });
+  }
   if (sheetKind === 'agent-actions' && b.dataset.agentAction) {
     const id = b.dataset.agentActionId || '', name = b.dataset.agentActionTitle || '';
-    if (b.dataset.agentAction === 'open') {
-      pendingAgentOpen = id;
+    const target = agentActionTarget, app = target?.app || currentApp, entry = projectEntry;
+    if (b.dataset.agentAction === 'read') {
       closeSheet();
-      return send({ t: 'openAgent', id, title: name });
+      if (ovMarkRead(target.key)) ovRender();
+      return;
+    }
+    if (b.dataset.agentAction === 'copyLink') return copyText(b.dataset.copyLink, b.querySelector('.lbl'), false);
+    if (b.dataset.agentAction === 'open') {
+      if (target) { closeSheet(); return ovOpen(ovTarget(target)); }
+      return openPickedSession(id, name);
     }
     if (b.dataset.agentAction === 'favorite') {
-      const on = !agentFavoriteState(id);
-      closeSheet(); setAgentFavorite(id, on);
-      return;
+      const on = !(target ? target.favorite : agentFavoriteState(id));
+      closeSheet();
+      return runAgentMenuAction(id, 'favorite', { favorite: on }, target, entry);
     }
     if (b.dataset.agentAction === 'rename') {
       const next = window.prompt('新的会话名称', name);
       if (!next?.trim()) return;
       closeSheet(); status('正在重命名…');
-      if (currentApp !== 'codex') send({ t: 'sessionManage', id, action: 'rename', name: next.trim().slice(0, 80) });
-      else send({ t: 'codexRename', id, name: next.trim().slice(0, 80) });
-      return renderAgentList();
+      return runAgentMenuAction(id, 'rename', { name: next.trim().slice(0, 80) }, target, entry);
     }
-    if (b.dataset.agentAction === 'delete' || (b.dataset.agentAction === 'archive' && currentApp !== 'codex')) {
+    if (b.dataset.agentAction === 'delete' || (b.dataset.agentAction === 'archive' && app !== 'codex')) {
       const action = b.dataset.agentAction, label = action === 'delete' ? '删除' : '归档';
       if (!await ask(`${label}「${name}」？`, label)) return;
       closeSheet(); status(`正在${label}…`);
-      send({ t: 'sessionManage', id, action });
-      return renderAgentList();
+      return runAgentMenuAction(id, action, {}, target, entry);
     }
     if (b.dataset.agentAction === 'archive') {
       if (!await ask(`删除或归档「${name}」？\n桌面端会根据当前入口执行删除或归档。`, '继续')) return;
       closeSheet(); status('正在删除／归档…');
-      send({ t: 'codexArchive', id });
-      return renderAgentList();
+      return runAgentMenuAction(id, 'archive', {}, target, entry);
     }
   }
   if ('modelBack' in b.dataset) return requestMenu('model', '读取模型列表…');
@@ -257,7 +354,6 @@ $('sheet').addEventListener('click', async e => {
     return;
   }
   if ('editorChat' in b.dataset) { closeSheet(); status('正在打开聊天面板…'); return send({ t: 'openEditorChat' }); }
-  if ('editorReturn' in b.dataset) { closeSheet(); return; }
   if (b.dataset.nativeSurface) { closeSheet(); status('正在切换界面…'); return send({ t: 'surface', to: b.dataset.nativeSurface }); }
   if (b.dataset.sc) {
     if (b.dataset.sc === 'fold' || b.dataset.sc === 'unfold') { scFold('*', b.dataset.sc === 'fold'); return showCacheSheet(); }
@@ -325,19 +421,6 @@ $('sheet').addEventListener('click', async e => {
     return send({ t: 'launchAgents', apps: b.dataset.launchMissing.split(',') });
   }
   if (b.dataset.win) return switchToWindow(b.dataset.win);
-  if ('fusionTrust' in b.dataset) { closeSheet(); return send({ t: 'fusionTrust', approve: b.dataset.fusionTrust === 'yes' }); }
-  if ('fusionDir' in b.dataset) { status('正在读取项目…'); return send({ t: 'fusionProjects', path: b.dataset.fusionDir }); }
-  if ('fusionPath' in b.dataset) {
-    const path = window.prompt(I18N.tr('电脑上的文件夹完整路径'));
-    if (path?.trim()) { status('正在读取项目…'); send({ t: 'fusionProjects', path: path.trim() }); }
-    return;
-  }
-  if (b.dataset.fusionFolder) { closeSheet(); return send({ t: 'fusionProject', path: b.dataset.fusionFolder }); }
-  if (b.dataset.fusionContinue) {
-    if (!await ask('在当前项目创建新会话，并携带旧会话最近的历史摘录？原会话保留，不会发送任务。', '续接')) return;
-    closeSheet(); status('正在创建会话…');
-    return send({ t: 'fusionContinue', side: b.dataset.fusionSide, id: b.dataset.fusionContinue });
-  }
   if ('saveInstructions' in b.dataset) {
     status('正在保存指令…');
     return send({ t: 'codexInstructions', text: $('codexInstructions').value });
@@ -347,12 +430,6 @@ $('sheet').addEventListener('click', async e => {
     if (RISKY.test(label) && !await ask(label + '？')) return;
     status('正在读取设置…'); return send({ t: 'codexSetting', id: b.dataset.codexSetting });
   }
-  if (b.dataset.fusionProject) { closeSheet(); return send({ t: 'fusionProject', id: b.dataset.fusionProject }); }
-  if (b.dataset.fusionHistory) { closeSheet(); return send({ t: 'fusionOpen', id: b.dataset.fusionHistory }); }
-  if (b.dataset.fusionRefresh) { closeSheet(); status('正在读取额度…'); return send({ t: 'fusionUsage', side: b.dataset.fusionRefresh }); }
-  if (b.dataset.fusionSelect) { closeSheet(); return send({ t: 'fusionSides', side: b.dataset.fusionSelect }); }
-  if (b.dataset.fusionNew) { closeSheet(); status('正在创建会话…'); return send({ t: 'fusionNewSide', side: b.dataset.fusionSide, app: b.dataset.fusionNew }); }
-  if (b.dataset.fusionId) { closeSheet(); return send({ t: 'fusionSide', side: b.dataset.fusionPick, id: b.dataset.fusionId }); }
   if (b.dataset.codexArchive) {
     const id = b.dataset.codexArchive, name = b.dataset.codexName || '';
     if (!await ask(`归档「${name}」？\n它会从当前列表移除，历史记录仍保留。`, '归档')) { if (!sheetKind) renderAgentList(); return; }
@@ -360,42 +437,25 @@ $('sheet').addEventListener('click', async e => {
     send({ t: 'codexArchive', id });
     return renderAgentList();
   }
-  if (b.dataset.agent) { pendingAgentOpen = b.dataset.agent; closeSheet(); return send({ t: 'openAgent', id: b.dataset.agent, title: b.dataset.agentTitle || '' }); }
-  if (b.dataset.term) { closeSheet(); status('正在切换终端…'); return send({ t: 'openTerminal', id: b.dataset.term }); }
-  if ('projectPath' in b.dataset) {
-    const path = window.prompt(I18N.tr('电脑上的文件夹完整路径'));
-    if (!path?.trim()) return;
-    status('正在读取文件夹…');
-    return send({ t: 'projects', path: path.trim() });
-  }
-  if ('projectNew' in b.dataset) {
-    const name = window.prompt(I18N.tr('新项目的文件夹名称'));
-    if (!name?.trim()) return;
-    closeSheet(); status('正在打开项目…');
-    return send({ t: 'newProject', parent: b.dataset.projectNew, name: name.trim(), newSession: true });
-  }
-  if ('projectChat' in b.dataset) { closeSheet(); status('正在打开项目…'); return send({ t: 'openProject', path: b.dataset.projectChat, newSession: true }); }
+  if (b.dataset.agent) return openPickedSession(b.dataset.agent, b.dataset.agentTitle || '');
+  if (b.dataset.term) return openRaTerminal(b.dataset.term);
+  if ('projectPath' in b.dataset) return openProjectFolders(b.dataset.projectPath, projectSheetOwner(b), true);
+  if ('projectBrowse' in b.dataset) return openProjectFolders(b.dataset.projectBrowse, projectSheetOwner(b));
+  if ('projectChat' in b.dataset) return openPickedProject({ t: 'openProject', path: b.dataset.projectChat, newSession: true }, projectSheetOwner(b));
   if ('projectTrust' in b.dataset) {
+    const owner = projectSheetOwner(b);
     const here = currentComputer();
     const last = here?.lastConversation;
     const returnTo = last?.windowId !== here?.windowId ? last : here?.previousConversation;
     closeSheet(); status('正在打开项目…');
-    return send({ t: 'projectTrust', approve: b.dataset.projectTrust === 'yes', returnTo });
+    return sendProjectAction({ t: 'projectTrust', approve: b.dataset.projectTrust === 'yes', returnTo }, owner);
   }
-  if (b.dataset.open) { closeSheet(); status('正在打开项目…'); return send({ t: 'openProject', path: b.dataset.open }); }
-  if (b.dataset.dir) { status('正在读取文件夹…'); return send({ t: 'projects', path: b.dataset.dir }); }
-  if (b.dataset.docsFile) { openFile(b.dataset.docsFile, b.dataset.docsEditor === 'true'); closeSheet(); return; }
-  if ('docsUp' in b.dataset) {
-    status('正在读取文档…');
-    if (!b.dataset.docsUp) return send({ t: 'docs', editor: editorBrowsing });
-    return send({ t: 'docs', editor: editorBrowsing, root: b.dataset.root, host: b.dataset.docsHost || '', path: b.dataset.docsUp });
-  }
-  if (b.dataset.docsRoot) { status('正在读取文档…'); return send({ t: 'docs', editor: editorBrowsing, root: b.dataset.docsRoot, host: b.dataset.docsHost || '', path: b.dataset.docsDir || b.dataset.docsRoot }); }
+  if (b.dataset.open) return openPickedProject({ t: 'openProject', path: b.dataset.open }, projectSheetOwner(b));
   if (b.dataset.settingsNav) { status('正在读取设置…'); return send({ t: 'settings', section: b.dataset.settingsNav }); }
   if (b.dataset.setting) { status('正在修改…'); return send({ t: 'toggleSetting', label: b.dataset.setting }); }
   if (b.dataset.termDel) {
     if (!await ask(`删除终端「${b.dataset.termName || ''}」？\n里面正在跑的命令会停掉。`, '删除')) return;
-    closeSheet(); status('正在删除终端…'); return send({ t: 'closeTerminal', id: b.dataset.termDel });
+    closeSheet(); return removeRaTerminal(b.dataset.termDel);
   }
   if (b.dataset.fusionPick) { menuSheetKind = 'model'; status('正在修改…'); return send({ t: 'fusionPick', part: b.dataset.fusionPick, value: b.dataset.label }); }
   if (b.dataset.fusion) {
@@ -422,11 +482,10 @@ $('sheet').addEventListener('click', async e => {
       menuCache.delete(menuCacheKey('model'));
       menuCache.delete(menuCacheKey('effort'));
     }
-    if (/^fusion-model-[ab]$/.test(b.dataset.kind)) fusionModelSide = b.dataset.kind.slice(-1);
-    if (!['codex-run', 'codex-chat', 'model', 'effort'].includes(b.dataset.kind) && !/^fusion-(model|effort)-/.test(String(b.dataset.kind || ''))) beginSwitch(b.dataset.kind);
+    if (!['codex-run', 'codex-chat', 'model', 'effort'].includes(b.dataset.kind)) beginSwitch(b.dataset.kind);
     return send({ t: 'pickMenu', kind: b.dataset.kind, label: b.dataset.label });
   }
-  if (b.dataset.chopen) { const diff = changeFiles.find(f => f.name === b.dataset.chopen)?.diff || ''; closeSheet(); return openFile(b.dataset.chopen, false, diff, true); }
+  if (b.dataset.chopen) { const diff = changeFiles.find(f => f.name === b.dataset.chopen)?.diff || ''; closeSheet(); return openFile(b.dataset.chopen, diff, true); }
   if (b.dataset.ch) {
     const undo = b.dataset.act2 === 'undo';
     if (undo && !await ask(`撤销「${b.dataset.name}」的改动？\n文件会恢复成 Agent 改之前的样子。`, '撤销')) return send({ t: 'changes' });
@@ -442,6 +501,7 @@ $('sheet').addEventListener('click', async e => {
   if (b.dataset.params) { status('读取模型参数…'); return send({ t: 'params', model: b.dataset.params, label: b.dataset.plabel }); }
   if (b.dataset.section) { status('设置中…'); return send({ t: 'pickParam', model: b.dataset.model, label: b.dataset.plabel, section: b.dataset.section, value: b.dataset.value }); }
   const act = b.dataset.act;
+  if (act === 'overviewBatch') { closeSheet(); return ovStartBatch(); }
   if ('deviceRemoveCancel' in b.dataset) { deviceRemoval = []; return renderDevices(); }
   if ('deviceRemoveConfirm' in b.dataset) return removePairedDevices(deviceRemoval, true);
   if (b.dataset.entryInvite) return inviteDeviceEntry(b.dataset.entryInvite);
@@ -466,9 +526,7 @@ $('sheet').addEventListener('click', async e => {
   if (b.dataset.groupDelete != null) return deleteComputerGroup(b.dataset.groupDelete);
   if (act === 'toggleChanges') { toggleChangeNotice(); return closeSheet(); }
   if (act === 'executionToggle') return toggleExecutionRecords();
-  if (act === 'newTerm') { closeSheet(); status('正在新建终端…'); return send({ t: 'newTerminal' }); }
-  else if (act === 'fusionHistory') { closeSheet(); return send({ t: 'fusionHistory' }); }
-  else if (act === 'fusionNew') { closeSheet(); return send({ t: 'fusionNew' }); }
+  if (act === 'newTerm') { closeSheet(); return createRaTerminal(); }
   else if (act === 'localVoiceToggle') return toggleLocalVoice();
   else if (act === 'agentManager' || act === 'agentRefresh') return showAgentManager(true);
   else if (act === 'agentBack') return showMainMenu();
@@ -488,11 +546,8 @@ $('sheet').addEventListener('click', async e => {
   else if (act === 'mode') return requestMenu('mode', '读取模式列表…');
   else if (act === 'permission') return requestMenu(lastChat?.permission ? 'permission' : 'mode', '读取权限…');
   else if (act === 'agentsRefresh') return openAgentList(true);
-  else if (act === 'projects') { status('正在读取项目…'); return send({ t: 'projects' }); }
-  else if (act === 'projectNewChat') { closeSheet(); status('正在新建对话…'); return send({ t: 'newProjectChat' }); }
-  else if (act === 'codexResetHelp') {
-    openSheet('codex-reset', `<h3>Codex 额度重置</h3><p>官方发放的重置券用于恢复指定的额度窗口，不是充值余额。</p><ol><li>登录与电脑端 Codex 相同的 ChatGPT 账号，打开官方额度页面。</li><li>找到 Usage limit resets → Available，检查可用次数、重置范围和到期时间。</li><li>点击所选券的 Use reset，按官方页面提示确认。</li><li>完成后回到这里，点击额度展示并刷新数据。</li></ol><p class="hint">Full reset 用于恢复 5 小时和每周额度；具体范围以券的说明为准。已使用记录可在 History 查看。</p><a class="opt" href="https://chatgpt.com/codex/settings/usage" target="_blank" rel="noopener noreferrer">打开官方额度页面</a>`);
-  }
+  else if (act === 'projects') return openProjectPicker();
+  else if (act === 'projectNewChat') { if (projectEntry?.source === 'computer') ovShowConversation(); closeSheet(); status('正在新建对话…'); return send({ t: 'newProjectChat' }); }
   else if (act === 'editor') { return startEditor(); }
   else if (act === 'settings') return openSettings();
   else if (act === 'screen') { closeSheet(); return setMode('screen'); }
@@ -661,7 +716,7 @@ async function relayOf(c) {
   if (reg.self) return new URL(c.discovery).origin;
   if (reg.v === 2 && reg.data) return decryptEntry(c.key, reg);
   const id = c.id || await computerIdFromKey(c.key);
-  const entry = (reg.computers || []).find(e => e.id === id);
+  const entry = findPublishedEntry(reg, id);
   if (!entry) throw Error('not published');
   return decryptEntry(c.key, entry);
 }

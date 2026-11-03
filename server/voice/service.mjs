@@ -2,7 +2,8 @@ import { authenticateDevice } from '../../lib/device-proof.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
@@ -12,22 +13,37 @@ import { ASR_DIR, voiceEngines } from './config.mjs';
 // Exported for stop-rule tests; production code goes through loadWorker/stopWorker.
 export const runtimes = new Map();
 const LAST_ENGINE_FILE = path.join(ASR_DIR, 'last-engine.json');
+const execFileAsync = promisify(execFile);
 export function voiceStatus(engineId) {
   const engines = voiceEngines().map(({ id, label, detail }) => ({ id, label, detail, ready: runtimes.get(id)?.state === 'ready' }));
   const selected = engines.find(engine => engine.id === engineId) || (!engineId && engines[0]);
   return { installed: !!selected, ready: !!selected?.ready, engine: selected ? selected.label + ' · ' + selected.detail : '', engineId: selected?.id || '', engines };
 }
+function waitWorkerExit(stopping) {
+  let timer;
+  return Promise.race([stopping, new Promise((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error('旧语音进程尚未退出，切换未完成，请稍后重试')), 5000);
+  })]).finally(() => clearTimeout(timer));
+}
 function stopWorker(runtime, reason = 'engine switched', engineId = '') {
   if (runtime.stopping) return runtime.stopping;
   const child = runtime.worker;
-  if (!child) return;
-  console.error(`[voice:${engineId}] stopped (${reason})`);
+  if (!child) {
+    if (runtime.loading) {
+      runtime.cancelLoad();
+      runtime.loading = null; runtime.cancelLoad = null; runtime.state = 'stopped';
+    }
+    return;
+  }
+  console.error(`[voice:${engineId}] stopping (${reason})`);
   clearTimeout(runtime.idleTimer); runtime.idleTimer = null;
-  runtime.stopping = new Promise(resolve => child.once('close', resolve)).finally(() => { runtime.stopping = null; });
+  runtime.state = 'stopping';
+  runtime.stopping = new Promise(resolve => child.once('close', resolve)).then(() => {
+    runtime.worker = null; runtime.loading = null; runtime.cancelLoad = null;
+    runtime.state = 'stopped'; runtime.stopping = null;
+  });
   runtime.cancelLoad?.();
   runtime.activateReject?.(new Error('已切换语音引擎')); runtime.activating = null;
-  runtime.worker = null; runtime.loading = null; runtime.cancelLoad = null;
-  runtime.state = 'stopped';
   runtime.sessions.clear(); child.kill();
   return runtime.stopping;
 }
@@ -48,10 +64,14 @@ export async function loadWorker(engineId = voiceStatus().engineId, client, devi
     }
     // Stop an idle runtime only when the device that last used it switched away;
     // a call without a device never stops other engines.
-    if (deviceId && !other.clients.size && other.lastDevice === deviceId) stopping.push(stopWorker(other, 'engine switched', id));
+    if (deviceId && !other.clients.size && other.lastDevice === deviceId) {
+      const pending = stopWorker(other, 'engine switched', id);
+      if (pending) stopping.push(pending);
+    }
   }
-  await Promise.all(stopping);
-  if (runtime.stopping) await runtime.stopping;
+  if (runtime.stopping) stopping.push(runtime.stopping);
+  const stopped = Promise.all(stopping);
+  await (stopping.length ? waitWorkerExit(stopped) : stopped);
   if (client && client.readyState !== 1) throw new Error('语音连接已关闭');
   // Phase 1: ensure a spawned worker is prepared (Qwen: no GPU yet; Sherpa loads fully).
   if (!runtime.worker && !runtime.loading) spawnRuntime(engineId, runtime, config);
@@ -76,51 +96,72 @@ export async function loadWorker(engineId = voiceStatus().engineId, client, devi
 function spawnRuntime(engineId, runtime, config) {
   runtime.state = 'preparing';
   runtime.loadStartedAt = Date.now();
-  runtime.loading = new Promise((resolve, reject) => {
-    const child = spawn(config.python, [...(engineId === 'qwen' ? ['-I'] : []), '-u', fileURLToPath(new URL(config.script, import.meta.url)), config.model], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      ...(process.platform === 'win32' && engineId !== 'qwen' ? { env: { ...process.env, PYTHONIOENCODING: 'utf-8' } } : {}),
+  const controller = new AbortController();
+  let cancelLoad;
+  runtime.cancelLoad = () => { controller.abort(new Error('已切换语音引擎')); cancelLoad?.(); };
+  const loading = runtime.loading = (async () => {
+    let env;
+    if (engineId === 'qwen' && config.gpuUuid) {
+      const { stdout } = await execFileAsync('nvidia-smi', ['--query-gpu=pci.bus_id,uuid', '--format=csv,noheader'], { encoding: 'utf8', signal: controller.signal });
+      const gpus = stdout.trim().split('\n').map(line => line.split(',').map(value => value.trim())).sort(([a], [b]) => a.localeCompare(b));
+      const device = gpus.findIndex(([, uuid]) => uuid === config.gpuUuid);
+      if (device < 0) throw new Error(`未找到指定的 GPU：${config.gpuUuid}`);
+      env = { ...process.env, ...config.env, CUDA_DEVICE_ORDER: 'PCI_BUS_ID', CUDA_VISIBLE_DEVICES: String(device) };
+    } else if (process.platform === 'win32' && engineId !== 'qwen') {
+      env = { ...process.env, PYTHONIOENCODING: 'utf-8' };
+    }
+    controller.signal.throwIfAborted();
+    return new Promise((resolve, reject) => {
+      const child = spawn(config.python, [...(engineId === 'qwen' ? ['-I'] : []), '-u', fileURLToPath(new URL(config.script, import.meta.url)), config.model], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        ...(env ? { env } : {}),
+      });
+      runtime.worker = child;
+      let details = '', startupError = '', settled = false;
+      cancelLoad = () => { if (!settled) { settled = true; reject(controller.signal.reason); } };
+      child.stderr.on('data', chunk => { details = settled ? (details + chunk).slice(-2000) : details + chunk; });
+      const fail = error => {
+        if (runtime.worker !== child || runtime.stopping) return;
+        runtime.worker = null; runtime.loading = null; runtime.state = 'stopped';
+        if (!settled) { settled = true; reject(error); }
+        runtime.activateReject?.(error); runtime.activating = null;
+        for (const callback of runtime.sessions.values()) callback({ type: 'error', message: error.message });
+        runtime.sessions.clear();
+      };
+      child.on('error', fail);
+      child.stdin.on('error', fail);
+      child.on('close', code => {
+        if (runtime.worker !== child || runtime.stopping) return;
+        if (code !== 0) console.error(`[voice:${engineId}] ${details.trim()}`);
+        fail(new Error(startupError || `本机语音进程已退出（${code}）：${details.trim()}`));
+      });
+      createInterface({ input: child.stdout }).on('line', line => {
+        if (runtime.worker !== child || runtime.stopping) return;
+        const event = JSON.parse(line);
+        if (event.type === 'prepared') {
+          runtime.state = 'prepared';
+          console.log(`[voice:${engineId}] prepared in ${Date.now() - runtime.loadStartedAt}ms`);
+          settled = true; details = ''; runtime.loading = null;
+          resolve(runtime);
+        } else if (event.type === 'ready') {
+          runtime.state = 'ready';
+          const base = runtime.readyStartedAt ?? runtime.loadStartedAt;
+          console.log(`[voice:${engineId}] ready in ${Date.now() - base}ms`);
+          const activateResolve = runtime.activateResolve;
+          runtime.activateResolve = null; runtime.activateReject = null;
+          if (activateResolve) { activateResolve(runtime); }
+          else { settled = true; details = ''; runtime.loading = null; resolve(runtime); }
+        } else if (event.type === 'error' && !event.id) {
+          startupError = event.message;
+          runtime.activateReject?.(new Error(event.message)); runtime.activating = null;
+        } else runtime.sessions.get(event.id)?.(event);
+      });
     });
-    runtime.worker = child;
-    let details = '', startupError = '', settled = false;
-    runtime.cancelLoad = () => { if (!settled) { settled = true; reject(new Error('已切换语音引擎')); } };
-    child.stderr.on('data', chunk => { details = settled ? (details + chunk).slice(-2000) : details + chunk; });
-    const fail = error => {
-      if (runtime.worker !== child) return;
-      runtime.worker = null; runtime.loading = null; runtime.state = 'stopped';
-      if (!settled) { settled = true; reject(error); }
-      runtime.activateReject?.(error); runtime.activating = null;
-      for (const callback of runtime.sessions.values()) callback({ type: 'error', message: error.message });
-      runtime.sessions.clear();
-    };
-    child.on('error', fail);
-    child.stdin.on('error', fail);
-    child.on('close', code => {
-      if (runtime.worker !== child) return;
-      if (code !== 0) console.error(`[voice:${engineId}] ${details.trim()}`);
-      fail(new Error(startupError || `本机语音进程已退出（${code}）：${details.trim()}`));
-    });
-    createInterface({ input: child.stdout }).on('line', line => {
-      if (runtime.worker !== child) return;
-      const event = JSON.parse(line);
-      if (event.type === 'prepared') {
-        runtime.state = 'prepared';
-        console.log(`[voice:${engineId}] prepared in ${Date.now() - runtime.loadStartedAt}ms`);
-        settled = true; details = ''; runtime.loading = null;
-        resolve(runtime);
-      } else if (event.type === 'ready') {
-        runtime.state = 'ready';
-        const base = runtime.readyStartedAt ?? runtime.loadStartedAt;
-        console.log(`[voice:${engineId}] ready in ${Date.now() - base}ms`);
-        const activateResolve = runtime.activateResolve;
-        runtime.activateResolve = null; runtime.activateReject = null;
-        if (activateResolve) { activateResolve(runtime); }
-        else { settled = true; details = ''; runtime.loading = null; resolve(runtime); }
-      } else if (event.type === 'error' && !event.id) {
-        startupError = event.message;
-        runtime.activateReject?.(new Error(event.message)); runtime.activating = null;
-      } else runtime.sessions.get(event.id)?.(event);
-    });
+  })().catch(error => {
+    if (runtime.loading === loading && !runtime.stopping) {
+      runtime.loading = null; runtime.cancelLoad = null; runtime.state = 'stopped';
+    }
+    throw error;
   });
 }
 // Qwen releases all VRAM when nobody is listening: stop the worker and respawn a
@@ -133,7 +174,7 @@ function scheduleIdleRelease(engineId, runtime) {
     if (runtime.clients.size || runtime.sessions.size || runtime.state !== 'ready') return;
     void (async () => {
       const started = Date.now();
-      await stopWorker(runtime, 'idle release', engineId);
+      await waitWorkerExit(stopWorker(runtime, 'idle release', engineId));
       if (runtime.clients.size) return;
       const config = voiceEngines().find(engine => engine.id === engineId);
       if (!config) return;

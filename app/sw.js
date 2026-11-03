@@ -1,16 +1,29 @@
 // Caches the app shell so the installed app opens instantly; live data (url.json, relay) always goes to the network.
 const CACHE_PREFIX = 'remote-agent:' + self.registration.scope + ':';
-const CACHE = CACHE_PREFIX + 'v333'; // keep in sync with APP_VERSION in js/core.js
+const CACHE = CACHE_PREFIX + 'v384'; // keep in sync with APP_VERSION in js/core.js
 const NOTICES = CACHE_PREFIX + 'notices';
-const SHELL = ['./', 'index.html', 'app.css?v=333', 'i18n.js?v=326', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'logo.png',
-  'js/core.js?v=333', 'js/gate.js?v=326', 'js/auth.js?v=207', 'js/net.js?v=327', 'js/sheets.js?v=330', 'js/notify.js?v=327', 'js/mode.js?v=257', 'js/chat.js?v=295',
-  'js/history.js?v=333', 'js/files.js?v=273', 'js/screen.js?v=267', 'js/terminal.js?v=239', 'js/composer.js?v=332', 'js/voice.js?v=277', 'js/local-voice.js?v=267', 'js/voice-worklet.js?v=133',
-  'js/transfer.js?v=207', 'js/scanner.js',
-  'js/latency.js?v=142', 'js/image-editor.js?v=257', 'js/overview.js?v=333',
+const SHELL = ['./', 'index.html', 'app.css?v=383', 'i18n.js?v=383', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'logo.png',
+  'js/core.js?v=384', 'js/fusion.js?v=371', 'js/gate.js?v=382', 'js/auth.js?v=207', 'js/net.js?v=384', 'js/sheets.js?v=382', 'js/notify.js?v=382', 'js/mode.js?v=383', 'js/chat.js?v=382',
+  'js/history.js?v=384', 'js/files.js?v=375', 'js/screen.js?v=382', 'js/terminal.js?v=383', 'js/composer.js?v=384', 'js/voice.js?v=356', 'js/local-voice.js?v=376', 'js/voice-worklet.js?v=133',
+  'js/transfer.js?v=379', 'js/scanner.js',
+  'js/latency.js?v=367', 'js/image-editor.js?v=379', 'js/overview.js?v=382',
   'markdown-it/markdown-it-15.0.3.min.js', 'js/markdown.js?v=295',
+  'vendor/xterm.js?v=6.0.0', 'vendor/xterm.css?v=6.0.0',
+  'katex/katex.min.js', 'katex/katex.min.css',
+  'katex/fonts/KaTeX_AMS-Regular.woff2', 'katex/fonts/KaTeX_Caligraphic-Bold.woff2',
+  'katex/fonts/KaTeX_Caligraphic-Regular.woff2', 'katex/fonts/KaTeX_Fraktur-Bold.woff2',
+  'katex/fonts/KaTeX_Fraktur-Regular.woff2', 'katex/fonts/KaTeX_Main-Bold.woff2',
+  'katex/fonts/KaTeX_Main-BoldItalic.woff2', 'katex/fonts/KaTeX_Main-Italic.woff2',
+  'katex/fonts/KaTeX_Main-Regular.woff2', 'katex/fonts/KaTeX_Math-BoldItalic.woff2',
+  'katex/fonts/KaTeX_Math-Italic.woff2', 'katex/fonts/KaTeX_SansSerif-Bold.woff2',
+  'katex/fonts/KaTeX_SansSerif-Italic.woff2', 'katex/fonts/KaTeX_SansSerif-Regular.woff2',
+  'katex/fonts/KaTeX_Script-Regular.woff2', 'katex/fonts/KaTeX_Size1-Regular.woff2',
+  'katex/fonts/KaTeX_Size2-Regular.woff2', 'katex/fonts/KaTeX_Size3-Regular.woff2',
+  'katex/fonts/KaTeX_Size4-Regular.woff2', 'katex/fonts/KaTeX_Typewriter-Regular.woff2',
   'logo-cursor-dark.svg', 'logo-cursor-light.svg',
   'logo-devin-dark.svg', 'logo-devin-light.svg',
   'logo-codex-dark.svg', 'logo-codex-light.svg'];
+const SHELL_ASSETS = new Set(SHELL.filter(path => path !== './' && path !== 'index.html').map(path => new URL(path, self.registration.scope).href));
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL.map(path => new Request(path, { cache: 'reload' })))).then(() => self.skipWaiting()));
@@ -27,20 +40,21 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname.endsWith('url.json')) return;
-  // The versioned capture processor is already precached; do not wait on the network at mic press.
-  if (url.pathname.endsWith('/js/voice-worklet.js') && url.searchParams.has('v')) {
-    e.respondWith(caches.open(CACHE).then(async cache => await cache.match(e.request) || fetch(e.request)));
-    return;
-  }
-  // Network first so app updates show up immediately; cache only as an offline fallback.
   const entry = e.request.mode === 'navigate' || url.pathname.endsWith('/index.html');
-  e.respondWith(fetch(e.request, entry ? { cache: 'no-cache' } : undefined)
+  e.respondWith((async () => {
+    // The current shell is installed as one version; a slow network must not delay its cached assets.
+    if (!entry && SHELL_ASSETS.has(url.href)) {
+      const cached = await (await caches.open(CACHE)).match(e.request);
+      if (cached) return cached;
+    }
+    return fetch(e.request, entry ? { cache: 'no-cache' } : undefined)
     .then(res => {
       const copy = res.clone();
       caches.open(CACHE).then(c => c.put(e.request, copy));
       return res;
     })
-    .catch(() => caches.open(CACHE).then(cache => cache.match(e.request))));
+    .catch(() => caches.open(CACHE).then(cache => cache.match(e.request)));
+  })());
 });
 
 let pushTask = Promise.resolve();

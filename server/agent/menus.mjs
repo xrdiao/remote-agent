@@ -1,8 +1,20 @@
 // 菜单：模型/参数/设置/额度
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { appPlans } from './context.mjs';
+import { nativeWindow } from '../native-windows.mjs';
 
 export const methods = {
+  refreshModelChat() {
+    nativeWindow(this.cdp)?.invalidate();
+    return this.pollChat(true);
+  },
+  async openModelList() {
+    if (await this.cdp.evaluate(helpersCall('clickModelListTrigger()', this.nativeContext()))) return true;
+    const target = await this.cdp.evaluate(helpersCall('modelListTrigger()', this.nativeContext()));
+    if (!target) return false;
+    await this.tapCss(target.x, target.y);
+    return true;
+  },
   async ensureSettings(editorCdp = this.editorCdp) {
     const waitOpen = () => editorCdp.evaluate(helpersCall("waitSettings('open')"));
     if (await editorCdp.evaluate(helpersCall('settingsOpen()'))) return;
@@ -80,9 +92,10 @@ export const methods = {
     }
   },
   async pressControl(name) {
-    const clicked = await this.cdp.evaluate(helpersCall(`clickControl(${JSON.stringify(name)})`));
+    await this.assertSelectedThread();
+    const clicked = await this.cdp.evaluate(helpersCall(`clickControl(${JSON.stringify(name)})`, this.nativeContext()));
     if (clicked) return;
-    const pos = await this.cdp.evaluate(helpersCall(`control(${JSON.stringify(name)})`));
+    const pos = await this.cdp.evaluate(helpersCall(`control(${JSON.stringify(name)})`, this.nativeContext()));
     if (!pos) throw new Error(this.appMessage('当前窗口里没有这个按钮（可能是 {app} 版本或布局不同）'));
     await this.tapCss(pos.x, pos.y);
   },
@@ -102,10 +115,11 @@ export const methods = {
       ? this.withCursorUiRead(read) : read();
   },
   async readMenu(kind, requestId) {
+    if (kind !== 'model' && kind !== 'effort') await this.assertSelectedThread();
     const sel = this.sel;
     if (this.app === 'codex' && (kind === 'model' || kind === 'effort')) {
       const data = await this.cdp.evaluate(`(() => {
-        const h = ${PAGE_SRC};
+        const h = ${helpersCall('', this.nativeContext()).slice(0, -1)};
         if (!h.codexPickerProps()) return null;
         return { items: ${kind === 'model' ? 'h.modelItemsFast()' : 'h.effortItems(true, true)'}, fast: h.fastInfo(), model: h.agentModelName() };
       })()`);
@@ -115,59 +129,55 @@ export const methods = {
       }
     }
     if (kind === 'effort') {
-      let items = await this.cdp.evaluate(helpersCall(`effortItems(true, ${this.app === 'codex'})`));
-      let fast = await this.cdp.evaluate(helpersCall('fastInfo()'));
+      let items = await this.cdp.evaluate(helpersCall(`effortItems(true, ${this.app === 'codex'})`, this.nativeContext()));
+      let fast = await this.cdp.evaluate(helpersCall('fastInfo()', this.nativeContext()));
       if (!items.length) {
         await this.pressControl('model');
         await this.waitFor('menuOpen()');
-        fast = await this.cdp.evaluate(helpersCall('fastInfo()'));
-        const pos = await this.cdp.evaluate(helpersCall('effortTrigger()'));
+        fast = await this.cdp.evaluate(helpersCall('fastInfo()', this.nativeContext()));
+        const pos = await this.cdp.evaluate(helpersCall('effortTrigger()', this.nativeContext()));
         if (pos) {
           await this.tapCss(pos.x, pos.y);
           await this.waitFor('menuItems("effort").length');
-          items = await this.cdp.evaluate(helpersCall('menuItems("effort")'));
+          items = await this.cdp.evaluate(helpersCall('menuItems("effort")', this.nativeContext()));
         }
         await this.closeMenus();
       }
-      const chat = await this.cdp.evaluate(helpersCall('extract()'));
-      const pricing = this.app === 'devin' ? await this.cdp.evaluate(helpersCall('devinPricing()')) : null;
+      const chat = await this.cdp.evaluate(helpersCall('extract()', this.nativeContext()));
+      const pricing = this.app === 'devin' ? await this.cdp.evaluate(helpersCall('devinPricing()', this.nativeContext())) : null;
       if (this.sel === sel) this.emit({ t: 'menu', kind, items, fast, pricing, model: chat?.model, requestId, sel: this.selectionKey() });
       return;
     }
     if (kind === 'model') {
       // Prop-driven lists (Codex options, Devin visibleModelConfigs) need no visible menu.
       const [items, fast, fusion] = await Promise.all([
-        this.cdp.evaluate(helpersCall('modelItemsFast()')),
-        this.cdp.evaluate(helpersCall('fastInfo()')),
-        this.cdp.evaluate(helpersCall('fusionConfig(true)')),
+        this.cdp.evaluate(helpersCall('modelItemsFast()', this.nativeContext())),
+        this.cdp.evaluate(helpersCall('fastInfo()', this.nativeContext())),
+        this.cdp.evaluate(helpersCall('fusionConfig(true)', this.nativeContext())),
       ]);
       if (items?.length) {
         if (fusion) this.fusion = fusion;
-        const model = this.app === 'devin' && fusion ? 'Fusion' : (await this.cdp.evaluate(helpersCall('extract()')))?.model;
+        const model = this.app === 'devin' && fusion ? 'Fusion' : (await this.cdp.evaluate(helpersCall('extract()', this.nativeContext())))?.model;
         if (this.sel === sel) this.emit({ t: 'menu', kind, items, fast, fusion, model, requestId, sel: this.selectionKey() });
         return;
       }
     }
-    const modelOpen = kind === 'model' && this.app === 'cursor' && await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return !!h.modelListTrigger() || !!h.menuItems('model').length; })()`);
+    const modelOpen = kind === 'model' && this.app === 'cursor' && await this.cdp.evaluate(`(() => { const h = ${helpersCall('', this.nativeContext()).slice(0, -1)}; return !!h.modelListTrigger() || !!h.menuItems('model').length; })()`);
     if (!modelOpen) await this.pressControl(kind);
     let items = [];
     let fast = null;
     for (let i = 0; i < 12 && !items.length; i++) {
       await new Promise(r => setTimeout(r, 150));
-      if (kind === 'model') fast ||= await this.cdp.evaluate(helpersCall('fastInfo()'));
-      items = await this.cdp.evaluate(helpersCall(`menuItems(${JSON.stringify(kind)})`));
+      if (kind === 'model') fast ||= await this.cdp.evaluate(helpersCall('fastInfo()', this.nativeContext()));
+      items = await this.cdp.evaluate(helpersCall(`menuItems(${JSON.stringify(kind)})`, this.nativeContext()));
       if (kind === 'model' && !items.length) {
-        const opened = await this.cdp.evaluate(helpersCall('clickModelListTrigger()'));
-        if (!opened) {
-          const sub = await this.cdp.evaluate(helpersCall('modelListTrigger()'));
-          if (sub) await this.tapCss(sub.x, sub.y);
-        }
+        await this.openModelList();
       }
     }
-    const max = kind === 'model' ? await this.cdp.evaluate(helpersCall('maxToggle()?.on ?? null')) : null;
+    const max = kind === 'model' ? await this.cdp.evaluate(helpersCall('maxToggle()?.on ?? null', this.nativeContext())) : null;
     let fusion = null;
     if (kind === 'model') {
-      fusion = await this.cdp.evaluate(helpersCall('fusionConfig(true)'));
+      fusion = await this.cdp.evaluate(helpersCall('fusionConfig(true)', this.nativeContext()));
       if (fusion) this.fusion = fusion;
     }
     if (!modelOpen) await this.closeMenus();
@@ -175,12 +185,12 @@ export const methods = {
     if (this.sel === sel) this.emit({ t: 'menu', kind, items, max, fusion, fast, requestId, sel: this.selectionKey() });
   },
   async closeMenus() {
-    if (await this.cdp.evaluate(helpersCall('closeModelMenu()'))) await new Promise(r => setTimeout(r, 150));
+    if (await this.cdp.evaluate(helpersCall('closeModelMenu()', this.nativeContext()))) await new Promise(r => setTimeout(r, 150));
     if (this.app === 'codex') {
-      await this.cdp.evaluate(helpersCall('closeCodexMenu()'));
+      await this.cdp.evaluate(helpersCall('closeCodexMenu()', this.nativeContext()));
       return;
     }
-    for (let i = 0; i < 3 && await this.cdp.evaluate(helpersCall('menuOpen()')); i++) {
+    for (let i = 0; i < 3 && await this.cdp.evaluate(helpersCall('menuOpen()', this.nativeContext())); i++) {
       await this.key('Escape');
       await new Promise(r => setTimeout(r, 120));
     }
@@ -219,7 +229,7 @@ export const methods = {
   async pickParam(model, label, section, value) {
     try {
       await this.openParamMenu(model);
-      const pos = await this.cdp.evaluate(helpersCall(`paramTarget(${JSON.stringify(String(section))}, ${JSON.stringify(String(value))})`));
+      const pos = await this.cdp.evaluate(helpersCall(`paramTarget(${JSON.stringify(String(section))}, ${JSON.stringify(String(value))})`, this.nativeContext()));
       if (!pos) throw new Error(`没找到参数：${section} / ${value}`);
       await this.tapCss(pos.x, pos.y);
       await new Promise(r => setTimeout(r, 250));
@@ -227,11 +237,11 @@ export const methods = {
       await this.closeMenus();
     }
     await this.showParams(model, label);
-    setTimeout(() => this.pollChat().catch(() => {}), 300);
+    this.refreshSoon(300);
   },
   async syncFast(on) {
     const result = await this.cdp.evaluate(`(async () => {
-      const h = ${PAGE_SRC};
+      const h = ${helpersCall('', this.nativeContext()).slice(0, -1)};
       const deadline = performance.now() + 1200;
       do {
         const fast = h.fastInfo();
@@ -250,17 +260,29 @@ export const methods = {
     if (effort) this.emit({ t: 'menu', kind: 'effort', ...effort, sel: this.selectionKey() });
   },
   async pickMenu(kind, label, name) {
+    if (this.nativeContext() && (kind === 'model' || kind === 'effort')) {
+      if (kind === 'model' && this.app === 'codex' && /^Default\b/i.test(label)) {
+        await this.assertSelectedThread();
+        if (!await this.cdp.evaluate(helpersCall(`pickCodexModel(${JSON.stringify(label)})`))) throw new Error('当前没有默认模型入口');
+        await this.refreshModelChat();
+        return;
+      }
+      const selected = await this.nativeCall(`nativeSessionAction(${JSON.stringify(this.app)}, ${JSON.stringify(this.threadId)}, ${JSON.stringify(kind)}, ${JSON.stringify(label)})`);
+      if (!selected) throw new Error('所选会话的原生设置中没有这一项');
+      await this.refreshModelChat();
+      return;
+    }
     if (kind === 'fast') {
       const on = label === 'on';
-      if (!await this.cdp.evaluate(helpersCall(`pickFast(${on})`))) {
-        let pos = await this.cdp.evaluate(helpersCall('fastTarget()'));
+      if (!await this.cdp.evaluate(helpersCall(`pickFast(${on})`, this.nativeContext()))) {
+        let pos = await this.cdp.evaluate(helpersCall('fastTarget()', this.nativeContext()));
         if (!pos) {
           await this.pressControl('model');
-          pos = await this.cdp.evaluate(helpersCall('fastTarget()')) || await this.waitFor('fastTarget()');
+          pos = await this.cdp.evaluate(helpersCall('fastTarget()', this.nativeContext())) || await this.waitFor('fastTarget()');
         }
         if (!pos) { await this.closeMenus(); throw new Error('当前模型不支持 Fast'); }
-        const current = await this.cdp.evaluate(helpersCall('fastInfo()'));
-        if (current.on !== on) await this.cdp.evaluate(helpersCall('clickCursorFast()'));
+        const current = await this.cdp.evaluate(helpersCall('fastInfo()', this.nativeContext()));
+        if (current.on !== on) await this.cdp.evaluate(helpersCall('clickCursorFast()', this.nativeContext()));
       }
       try { await this.syncFast(on); }
       finally { await this.closeMenus(); }
@@ -270,14 +292,14 @@ export const methods = {
     if (kind === 'effort') {
       if (this.app === 'codex' && label === 'max') {
         const max = await this.cdp.evaluate(`(() => {
-          const h = ${PAGE_SRC};
+          const h = ${helpersCall('', this.nativeContext()).slice(0, -1)};
           if (h.effortItems().some(x => x.label === 'max')) return 'visible';
           return h.effortItems(false, true).some(x => x.label === 'max') ? 'hidden' : null;
         })()`);
         if (!max) throw new Error('当前 Codex 模型不支持 Max');
         if (max === 'hidden') await this.enableCodexMax();
       }
-      const picked = await this.cdp.evaluate(helpersCall(`pickEffort(${JSON.stringify(label)})`));
+      const picked = await this.cdp.evaluate(helpersCall(`pickEffort(${JSON.stringify(label)})`, this.nativeContext()));
       if (!picked) {
         await this.openEffortMenu();
         const pos = await this.waitFor(`menuItem("effort", ${JSON.stringify(label)})`);
@@ -286,29 +308,24 @@ export const methods = {
         await this.closeMenus();
       }
       if (this.app === 'codex' && !await this.waitFor(`effortItems().some(item => item.checked && item.label === ${JSON.stringify(label)})`)) throw new Error('尚未确认电脑端思考强度，请重新读取强度列表');
-      this.pollChat(this.app === 'codex').catch(() => {});
+      this.refreshModelChat().catch(() => {});
       return;
     }
-    if (String(kind || '').startsWith('fusion-effort-')) return this.fusionModelPick(kind.slice('fusion-effort-'.length), label, true);
-    if (String(kind || '').startsWith('fusion-model-')) return this.fusionModelPick(kind.slice('fusion-model-'.length), label);
     if (kind === 'codex-run') return this.codexRunPick(String(label || ''));
     if (kind === 'codex-chat') return this.codexChatPick(String(label || ''), name ? String(name).slice(0, 80) : '');
     if (kind === 'model' && await this.adapter.pickModelMenu.call(this, label)) return;
-    if (!(kind === 'model' && this.app === 'cursor' && await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return !!h.modelListTrigger() || !!h.menuItems('model').length; })()`))) await this.pressControl(kind);
+    if (!(kind === 'model' && this.app === 'cursor' && await this.cdp.evaluate(`(() => { const h = ${helpersCall('', this.nativeContext()).slice(0, -1)}; return !!h.modelListTrigger() || !!h.menuItems('model').length; })()`))) await this.pressControl(kind);
     if (kind === 'model' && this.app !== 'codex') {
       for (let i = 0; i < 8; i++) {
-        if (await this.cdp.evaluate(helpersCall('menuItems("model").length'))) break;
-        const opened = await this.cdp.evaluate(helpersCall('clickModelListTrigger()'));
-        if (opened) break;
-        const sub = await this.cdp.evaluate(helpersCall('modelListTrigger()'));
-        if (sub) { await this.tapCss(sub.x, sub.y); break; }
+        if (await this.cdp.evaluate(helpersCall('menuItems("model").length', this.nativeContext()))) break;
+        if (await this.openModelList()) break;
         await new Promise(r => setTimeout(r, 120));
       }
     }
-    let pos = await this.cdp.evaluate(helpersCall(`menuItem(${JSON.stringify(kind)}, ${JSON.stringify(String(label))})`));
+    let pos = await this.cdp.evaluate(helpersCall(`menuItem(${JSON.stringify(kind)}, ${JSON.stringify(String(label))})`, this.nativeContext()));
     for (let i = 0; i < 10 && !pos; i++) {
       await new Promise(r => setTimeout(r, 100));
-      pos = await this.cdp.evaluate(helpersCall(`menuItem(${JSON.stringify(kind)}, ${JSON.stringify(String(label))})`));
+      pos = await this.cdp.evaluate(helpersCall(`menuItem(${JSON.stringify(kind)}, ${JSON.stringify(String(label))})`, this.nativeContext()));
     }
     if (!pos) {
       await this.closeMenus();
@@ -318,13 +335,13 @@ export const methods = {
     if (kind === 'model' && label !== 'Fusion') {
       await this.waitModel(label);
       await this.closeMenus();
-      this.pollChat(this.app === 'cursor' || this.app === 'codex').catch(() => {});
+      this.refreshModelChat().catch(() => {});
       return;
     }
     let pending = false;
     if (this.app === 'codex' && kind === 'permission') {
       await new Promise(r => setTimeout(r, 150));
-      pending = (await this.cdp.evaluate(helpersCall('codexRequestData()'))).length > 0;
+      pending = (await this.cdp.evaluate(helpersCall('codexRequestData()', this.nativeContext()))).length > 0;
     }
     this.emit({ t: 'status', ok: true, msg: pending ? '请在下方确认权限变更' : `已切换到 ${label}` });
     if (kind === 'model' && label === 'Fusion') {
@@ -335,6 +352,6 @@ export const methods = {
       await this.pollChat(true);
       return;
     }
-    setTimeout(() => this.pollChat().catch(() => {}), 500);
+    this.refreshSoon(500);
   }
 };

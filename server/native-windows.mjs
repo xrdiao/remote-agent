@@ -6,6 +6,7 @@ import { bindOperation, publishDesktopState, withOperation } from './operations.
 import { AgentContext } from './agent/context.mjs';
 import { projectSessionIds, reconcileSessionCatalog, updateProjectWindowTargets } from './project-windows.mjs';
 import { codexSessionStates } from './windows.mjs';
+import { leaseWindow } from './window-use.mjs';
 
 // Native connections and read state belong to windows, not to a phone's current view.
 const windows = new Map();
@@ -44,7 +45,7 @@ async function refreshSessionCatalog(source, changed) {
     if (changed) read.pending = source;
     return read.promise;
   }
-  if (!changed && Date.now() - read.at < 15000) return;
+  if (!changed && read.catalog && Date.now() - read.at < 15000) return;
   read.at = Date.now();
   read.promise = (async () => {
     const sources = app === 'devin' ? [...new Set([source, ...[...windows.values()].filter(window => window.win?.app === app)])] : [source];
@@ -61,9 +62,9 @@ async function refreshSessionCatalog(source, changed) {
         else catalog.rows.push({ id, archived: state === 'archived' });
       }
     }
-    const reconciled = reconcileSessionCatalog(app, catalog);
+    const first = !read.catalog, reconciled = reconcileSessionCatalog(app, catalog);
     read.catalog = catalog;
-    if (changed || reconciled) publishCatalog(app);
+    if (first || changed || reconciled) publishCatalog(app);
   })().catch(error => publishCatalog(app, error)).finally(() => {
     read.promise = null;
     const pending = read.pending;
@@ -133,8 +134,14 @@ export class NativeWindow {
     this.queue = Promise.resolve();
     this.itemCache = new Map();
     this.previews = new Map();
+    this.runStates = new Map();
+    this.conversations = new Map();
+    this.contexts = new Map();
+    this.cdp.on('Runtime.executionContextCreated', ({ context }) => this.contexts.set(context.id, context));
+    this.cdp.on('Runtime.executionContextDestroyed', ({ executionContextId }) => this.contexts.delete(executionContextId));
     this.cdp.onclose = error => this.close(error);
     this.cdp.on('Runtime.executionContextsCleared', () => {
+      this.contexts.clear();
       if (!this.win) return;
       this.stopWatch?.();
       this.observer?.close();
@@ -149,14 +156,35 @@ export class NativeWindow {
       throw error;
     });
   }
+  async composerCall(call, context) {
+    await this.connect();
+    if (!this.contexts.has(this.composerRealm)) {
+      await this.cdp.send('Runtime.enable');
+      const { root } = await this.cdp.send('DOM.getDocument');
+      const { nodeId } = await this.cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: '#active-frame' });
+      const { node } = await this.cdp.send('DOM.describeNode', { nodeId });
+      this.composerRealm = [...this.contexts.values()].find(value => value.auxData.isDefault && value.auxData.frameId === node.frameId).id;
+    }
+    return this.cdp.evaluate(helpersCall(call, context), { contextId: this.composerRealm });
+  }
   async start(win) {
     this.win = win;
+    if (this.roots === undefined && !this.rootsRead) {
+      const editor = new NativeCdp(win.editorWs || win.ws);
+      this.rootsRead = cdpRead.run(null, async () => {
+        await editor.connect();
+        this.roots = await editorRoots(editor, win.app);
+        this.rootsError = null;
+      }).catch(error => { this.rootsError = error.message; }).finally(() => {
+        editor.close();
+        this.rootsRead = null;
+        publishCatalog(win.app);
+      });
+    }
     if (this.watching) return this.watching;
     this.watching = cdpRead.run(null, async () => {
       await this.connect();
-      const editor = new NativeCdp(win.editorWs || win.ws);
-      this.rootsRead = editor.connect().then(() => editorRoots(editor, win.app)).then(roots => { this.roots = roots; })
-        .catch(() => {}).finally(() => editor.close());
+      refreshSessionCatalog(this, false).catch(error => publishCatalog(win.app, error));
       const observer = this.observer = new NativeCdp(this.cdp.wsUrl);
       this.stopWatch = await watchChat(observer, () => {
         this.revision++;
@@ -167,7 +195,32 @@ export class NativeWindow {
     }).catch(error => { this.watching = null; this.observer?.close(); throw error; });
     return this.watching;
   }
-  subscribe(changed) {
+  subscribe(changed, context = null, owner = null) {
+    if (context) {
+      const view = this.conversationView(context);
+      const release = leaseWindow(this.win.app, this.win.pageId || this.win.id, owner || view);
+      view.listeners.add(changed);
+      if (!view.watching) {
+        const observer = view.observer = new NativeCdp(this.cdp.wsUrl);
+        view.watching = cdpRead.run(null, () => watchChat(observer, () => {
+          if (!view.listeners.size) return;
+          view.revision++;
+          this.readReceipts().catch(() => {});
+          this.readConversation(context).catch(() => {});
+        }, false, context)).then(stop => { view.stop = stop; }, error => {
+          withOperation(null, () => { for (const listener of view.listeners) listener(error); });
+        });
+      }
+      return () => {
+        release();
+        view.listeners.delete(changed);
+        if (!view.listeners.size) {
+          const watching = view.watching;
+          watching?.then(() => { view.stop?.(); view.observer?.close(); });
+          this.conversations.delete(JSON.stringify([context.host, context.threadId]));
+        }
+      };
+    }
     this.listeners.add(changed);
     return () => this.listeners.delete(changed);
   }
@@ -183,6 +236,13 @@ export class NativeWindow {
       await this.connect();
       const previous = !state.busy && state.lastUsed > 0 && entry.lastUsed === state.lastUsed ? entry.value : null;
       const value = await this.cdp.evaluate(helpersCall(`nativeSessionInfo(${JSON.stringify(this.win.app)}, ${JSON.stringify(threadId)}, 'preview', ${JSON.stringify(previous || null)})`), { timeout: 15000 });
+      const chat = this.snapshot?.chat;
+      if (chat?.thread === threadId) {
+        value.model = chat.model || value.model;
+        value.effort = chat.effort || value.effort;
+      }
+      const tasks = this.snapshot?.states?.find(row => row.thread === threadId)?.tasks;
+      if (!value.tasks && tasks?.total > 0) value.tasks = tasks;
       entry.value = value;
       entry.lastUsed = state.lastUsed;
       entry.at = Date.now();
@@ -195,13 +255,66 @@ export class NativeWindow {
     this.updatedAt = 0;
     this.reading?.controller.abort(new Error('原生窗口内容已切换'));
     this.reading = null;
+    for (const view of this.conversations.values()) view.revision++;
   }
   setThread(thread) {
     if (this.thread === thread) return;
     this.thread = thread;
     this.invalidate();
   }
-  async read(fresh = false) {
+  overviewStates() {
+    const states = new Map((this.snapshot?.states || []).map(row => [row.thread, row]));
+    for (const view of this.conversations.values()) if (view.snapshot?.state) {
+      const state = view.snapshot.state, known = state.run?.status !== 'unknown';
+      states.set(state.thread, { ...states.get(state.thread), ...state, statusKnown: known, observedAt: view.at,
+        runId: known && state.run ? this.win.app + ':' + state.run.id : undefined, runAt: state.run?.startedAt });
+    }
+    for (const [thread, run] of this.runStates) if (!states.get(thread)?.run) {
+      const observed = states.get(thread), known = run.status !== 'running';
+      states.set(thread, { ...observed, thread, busy: !!observed?.busy,
+        run: known ? run : { ...run, status: 'unknown' }, statusKnown: known });
+    }
+    return [...states.values()];
+  }
+  conversationView(context) {
+    const key = JSON.stringify([context.host, context.threadId]);
+    if (!this.conversations.has(key)) this.conversations.set(key, { revision: 0, at: 0, listeners: new Set() });
+    return this.conversations.get(key);
+  }
+  async readConversation(context, fresh = false) {
+    const view = this.conversationView(context);
+    if (view.reading) return awaitCdpRead(view.reading);
+    if (!fresh && view.snapshot && view.readRevision === view.revision) return view.snapshot;
+    const revision = view.revision;
+    view.reading = cdpRead.run(null, async () => {
+      await this.connect();
+      const [chat, composer] = await Promise.all([
+        this.cdp.evaluate(helpersCall(`extract(false, [], ${context.app === 'codex' ? 80 : 0})`, context)),
+        context.app === 'codex' ? this.composerCall(`nativeSessionInfo('codex', ${JSON.stringify(context.threadId)}, 'composer')`, context) : null,
+      ]);
+      if (chat && composer) chat.codex = { ...chat.codex,
+        run: composer.composerMode[0].toUpperCase() + composer.composerMode.slice(1),
+        ide: { on: composer.isAutoContextOn, file: composer.ideContext?.activeFile || null } };
+      const state = chat?._nativeState;
+      if (chat) delete chat._nativeState;
+      const result = { chat, state }, key = JSON.stringify(result), changed = view.key !== key;
+      view.snapshot = result; view.key = key; view.readRevision = revision; view.at = Date.now();
+      if (changed) withOperation(null, () => { for (const listener of view.listeners) listener(); });
+      cdpRead.run(null, () => this.retryCapacity(result));
+      return result;
+    }).catch(error => {
+      withOperation(null, () => { for (const listener of view.listeners) listener(error); });
+      throw error;
+    }).finally(() => {
+      view.reading = null;
+      if (view.listeners.size && revision !== view.revision) this.readConversation(context).catch(() => {});
+      if (!view.listeners.size && this.conversations.get(JSON.stringify([context.host, context.threadId])) === view)
+        this.conversations.delete(JSON.stringify([context.host, context.threadId]));
+    });
+    return awaitCdpRead(view.reading);
+  }
+  async read(fresh = false, context = null) {
+    if (context) return this.readConversation(context, fresh);
     if (this.reading) return awaitCdpRead(this.reading.promise);
     if (!fresh && this.snapshot && this.readRevision === this.revision && Date.now() - this.updatedAt < this.interval()) return this.snapshot;
     const revision = this.revision, controller = new AbortController();
@@ -212,16 +325,17 @@ export class NativeWindow {
       const result = await this.cdp.evaluate(`(() => {
         const h = ${PAGE_SRC};
         const chat = h.extract(false, [], ${app === 'codex' ? 80 : 0});
-        return { chat, activeTab: h.activeChatTab(), states: h.agentStates(),
+        return { chat, activeTab: h.activeChatTab(), states: h.agentStates(${JSON.stringify(app)}),
           surface: h.devinSurface(), catalog: ${app === 'codex' ? 'h.codexChatRows(true)' : app === 'devin' ? 'null' : 'h.agentList()'},
         };
       })()`);
       if (app === 'devin') result.catalog = await this.cdp.evaluate(helpersCall('sessionPickerRows(true)'));
       controller.signal.throwIfAborted();
+      for (const state of result.states || []) if (state.run && state.run.status !== 'unknown') this.runStates.set(state.thread, state.run);
       this.catalog = result.catalog || [];
       this.catalogAt = Date.now();
       const catalogKey = JSON.stringify(this.catalog.map(row => [row.id, row.title, row.workspace, row.host, row.current, row.running]));
-      const catalogChanged = catalogKey !== this.catalogKey;
+      const catalogChanged = this.catalogKey != null && catalogKey !== this.catalogKey;
       this.catalogKey = catalogKey;
       refreshSessionCatalog(this, catalogChanged).catch(error => publishCatalog(app, error));
       const key = JSON.stringify(result);
@@ -338,7 +452,7 @@ export class NativeWindow {
     if (!item) { for (const attempt of this.retryAttempts.values()) attempt.ready = true; return; }
     const settings = [...this.retrySettings].filter(([, setting]) => !setting.thread || setting.thread === chat.thread);
     const limit = Math.max(0, ...settings.map(([, setting]) => setting.count));
-    const key = `${chat.thread}|${item.capacityInstance || item.btnItem || item.i}`;
+    const key = `${chat.thread}|${item.retryTurn || item.capacityInstance || item.btnItem || item.i}`;
     if (!this.retryAttempts.has(key)) {
       this.retryAttempts.set(key, { count: 0, ready: true });
       if (this.retryAttempts.size > 100) this.retryAttempts.delete(this.retryAttempts.keys().next().value);
@@ -355,9 +469,16 @@ export class NativeWindow {
       try {
         await cdp.connect();
         await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true });
-        const pos = await cdp.evaluate(`(() => { const h = ${PAGE_SRC};
+        const retry = String(item.actions?.[n] || '').startsWith('retry:') ? JSON.parse(item.actions[n].slice(6)) : null;
+        let pos;
+        if (retry) {
+          if (!await cdp.evaluate(helpersCall(`openCodexThread(${JSON.stringify(chat.thread)})`))
+              || !await cdp.evaluate(helpersCall(`codexWaitThread(${JSON.stringify(chat.thread)}, 1800)`))) throw new Error('重试前尚未打开目标会话');
+          pos = await cdp.evaluate(helpersCall(`nativeSessionAction('codex', ${JSON.stringify(chat.thread)}, 'capacityTarget', ${JSON.stringify(retry[1])})`,
+            { app: 'codex', threadId: chat.thread, host: result.state?.host || '' }));
+        } else pos = await cdp.evaluate(`(() => { const h = ${PAGE_SRC};
           return h.activeThread() === ${JSON.stringify(chat.thread)} && h.locate(${JSON.stringify(String(item.btnItem || item.i))}, ${n}, ${JSON.stringify(item.actions?.[n] || '')}, ${JSON.stringify(item.b[n])}); })()`);
-        if (!pos) return;
+        if (!pos) { attempt.ready = true; return; }
         controller.signal.throwIfAborted();
         controller.submitted = true;
         await cdpRead.run(null, () => AgentContext.prototype.tapCss.call({ cdp }, pos.x, pos.y));
@@ -387,6 +508,9 @@ export class NativeWindow {
     for (const request of this.sends.values()) request.finish(null, error.message, true);
     this.sends.clear();
     this.retrySettings.clear();
+    this.runStates.clear();
+    for (const view of this.conversations.values()) { view.stop?.(); view.observer?.close(); }
+    this.conversations.clear();
     this.cdp.close();
   }
 }

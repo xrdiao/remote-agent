@@ -23,6 +23,18 @@ export const capabilities = {
   fork: true, extraActions: true,
 };
 
+async function readCodexMenu(context, button, select = items => items.length ? items : null) {
+  const pos = await context.cdp.evaluate(helpersCall(`codexButtonPoint(${JSON.stringify(button)})`));
+  if (!pos) throw new Error(button === 'run' ? '当前没有执行位置菜单' : '当前会话没有 Chat actions');
+  await context.tapCss(pos.x, pos.y);
+  let value;
+  for (let i = 0; i < 10 && !value; i++) {
+    await new Promise(r => setTimeout(r, 120));
+    value = select(await context.cdp.evaluate(helpersCall('codexRunItems()')) || []);
+  }
+  return value;
+}
+
 export const adapter = {
   async newChat() {
     return this.newCodexChat();
@@ -56,7 +68,7 @@ export const adapter = {
       const group = p.title;
       if (p.chatWs) {
         for (const root of states[pages.indexOf(p)]?.roots || []) addNew(p, root, group);
-        const cdp = p.pageId === this.codexPageId ? this.cdp : this.fusionOwner ? new Cdp(p.chatWs) : new NativeCdp(p.chatWs);
+        const cdp = p.pageId === this.codexPageId ? this.cdp : this.fusionBinding ? new Cdp(p.chatWs) : new NativeCdp(p.chatWs);
         let rows = [];
         try {
           if (cdp !== this.cdp) await cdp.connect();
@@ -117,7 +129,7 @@ export const adapter = {
     if (!await this.cdp.evaluate(helpersCall(`codexQueueAction(${JSON.stringify(String(id))}, ${JSON.stringify(action)})`))) throw new Error('Codex 排队消息或操作入口已不存在');
     if (action === 'send' && !await this.waitFor(`codexReceiptRows().some(item => item.i === ${JSON.stringify(target?.messageId || '')} || item.nativeIds?.includes(${JSON.stringify(String(id))}))`, 40))
       throw new Error('Codex 尚未确认立即追加结果，请查看会话或队列');
-    setTimeout(() => this.pollChat().catch(() => {}), 300);
+    this.refreshSoon(300);
   },
 
   async editQueued(id, text) {
@@ -163,12 +175,6 @@ export const adapter = {
     return this.withCursorFiles(fn);
   },
 
-  async newTerminal() {
-    // Let the workbench handle the shortcut instead of the focused Codex webview.
-    await this.editorCdp.evaluate('document.activeElement?.blur()');
-    await this.key('Ctrl+Shift+`', { cdp: this.editorCdp });
-  },
-
   async mentionQuery(q, cat, seq, trigger, query) {
     return this.codexMentionQuery(q, trigger === '/' ? '/' : '@', seq, query);
   },
@@ -186,7 +192,7 @@ export const adapter = {
     else await this.typeText(text);
   },
 
-  async submitPrompt(now, busy, when, queued, mentions, receipt, files = []) {
+  async submitPrompt(now, busy, when, queued, mentions, receipt, files = [], nativeInput = null) {
     const source = this.cdp?.nativeWindow;
     let token, sel, operation;
     if (source) {
@@ -196,7 +202,9 @@ export const adapter = {
       operation = currentOperation();
     }
     const hasLocalFiles = mentions?.some(m => m.section === 'local-files');
-    const before = await this.cdp.evaluate(helpersCall('codexSendState(true)'));
+    const before = await this.cdp.evaluate(helpersCall(nativeInput ? 'codexSendState(false)' : 'codexSendState(true)', nativeInput?.context));
+    if (nativeInput) Object.assign(before, { draft: nativeInput.text, payload: nativeInput.text,
+      follow: (await this.cdp.evaluate(helpersCall('codexFacts()')))?.view?.follow || 'queue' });
     const hasAttachments = hasLocalFiles || before.hasDraftAttachments;
     if (before.payload == null) throw new Error('Codex 输入尚未就绪');
     const expected = before.payload.trim();
@@ -219,6 +227,7 @@ export const adapter = {
             for (const file of files) file.pending = false;
             if (!accepted.queued) rememberSessionMessage('codex', accepted.thread, Date.now());
             this.emit({ t: 'sent', ...receipt, ...accepted, sel, sentAt: Date.now() });
+            if (nativeInput) source.composerCall(`nativeSessionInfo('codex', ${JSON.stringify(nativeInput.context.threadId)}, 'clearDraft', ${JSON.stringify(nativeInput.text)})`, nativeInput.context).catch(error => this.emit({ t: 'status', ok: false, msg: '消息已接收，原生草稿清理失败：' + error.message }));
           } else if (unknown) this.emit({ t: 'sent', ...receipt, pending: true, message: error, sel });
           else this.emit({ t: 'sendFailed', requestId: receipt.requestId, message: error, sel });
         });
@@ -227,7 +236,9 @@ export const adapter = {
       if (operation) operation.submitted = true;
       let submitted;
       try {
-        submitted = await cdpRead.run(null, () => this.cdp.evaluate(helpersCall(`submitCodexMessage(${JSON.stringify(action)}, true, ${JSON.stringify(receipt?.requestId || '')})`)));
+        submitted = await cdpRead.run(null, () => this.cdp.evaluate(nativeInput
+          ? helpersCall(`nativeSessionAction('codex', ${JSON.stringify(nativeInput.context.threadId)}, 'send', ${JSON.stringify(nativeInput)})`, nativeInput.context)
+          : helpersCall(`submitCodexMessage(${JSON.stringify(action)}, true, ${JSON.stringify(receipt?.requestId || '')})`)));
       } catch (error) {
         if (!receipt) throw error;
         if (token?.pending) this.emit({ t: 'sent', ...receipt, pending: true, message: error.message, sel });
@@ -274,7 +285,7 @@ export const adapter = {
     if (!await this.cdp.evaluate(helpersCall(`pickCodexModel(${JSON.stringify(String(label))})`))) return false;
     await this.waitModel(label);
     await this.closeMenus();
-    this.pollChat(true).catch(() => {});
+    this.refreshModelChat().catch(() => {});
     return true;
   },
 
@@ -427,7 +438,7 @@ async adoptCodexThread(thread, statusMsg) {
     this.switchingThread = switching;
   }
   this.publishThread(statusMsg);
-  if (!switching) {
+  if (!switching && this.bindingReady) {
     await this.pollChat(true, true);
   }
 },
@@ -463,6 +474,7 @@ async waitCodexNewChatReady() {
 async newCodexChat() {
   if (!this.cdp) throw new Error('还没有连上 Codex');
   if (await this.checkCodexLogin()) throw new Error('请先在电脑端登录此窗口的 Codex，再新建会话');
+  await this.cdp.evaluate(helpersCall('codexViewState(true)'));
   const before = await this.cdp.evaluate(helpersCall('codexThread()')) || '';
   const pos = await this.cdp.evaluate(helpersCall('codexNewPoint()'));
   if (!pos) throw new Error('这个窗口里没有新建对话');
@@ -497,6 +509,16 @@ async openCodexAgent(id, preferCurrentProject = false) {
   if (!match) throw new Error('这条会话已经不在列表里');
   const convId = match[2];
   const own = match[1] === this.codexPageId;
+  if (!this.fusionBinding) {
+    if (!own) {
+      const page = (await codexWindows(CODEX_CDP_URL, false, match[1]))[0];
+      if (!page?.chatWs) throw new Error('所选会话窗口已经关闭，请刷新项目与会话列表');
+      await this.openBound({ id: 'codex', app: 'codex', title: page.rawTitle, ws: page.ws, port: CODEX_CDP_URL },
+        page.ws, page.chatWs, { windowId: page.pageId, threadId: convId, deferred: true });
+    }
+    if (!await this.selectCodexThread(convId)) throw new Error('没有找到所选会话');
+    return this.bindNativeConversation(convId);
+  }
   let row;
   if (preferCurrentProject) row = (await this.cdp.evaluate(helpersCall('codexChatRows(true)')) || []).find(r => r.id === convId);
   if (!row) {
@@ -561,7 +583,7 @@ async codexPageForThread(pages, threadId) {
 
 async probeCodex(page) {
   if (!page?.chatWs && page?.pageId !== this.codexPageId) return null;
-  const source = !this.fusionOwner && nativeWindowAt(page.chatWs);
+  const source = !this.fusionBinding && nativeWindowAt(page.chatWs);
   if (source?.snapshot) return (await source.read()).states.find(state => state.thread === source.snapshot.chat?.thread) || null;
   if (page.pageId === this.codexPageId && this.cdp) {
     try { return await this.cdp.evaluate(helpersCall('agentState()')); } catch { return null; }
@@ -592,9 +614,8 @@ rememberCodexRoots(rows) {
 },
 
 async codexThreadRows(cdp = this.cdp) {
-  const pos = await cdp.evaluate(helpersCall('codexRecentPoint()'));
+  const pos = await cdp.evaluate(helpersCall('codexRecentPoint(true)'));
   if (!pos) return [];
-  await this.tapCss(pos.x, pos.y, 'left', cdp);
   let rows = [];
   for (let i = 0; i < 8 && !rows.length; i++) {
     await new Promise(r => setTimeout(r, 120));
@@ -619,10 +640,10 @@ async enableCodexMax() {
         data = await cdp.evaluate(helpersCall(`waitSettings('codex', ${JSON.stringify(before)})`));
       };
       try {
-        const config = data.nav.find(n => n.label === 'Configuration');
+        const config = data.nav.find(n => /^(Configuration|配置)$/.test(n.label));
         if (!config) throw new Error('没有找到 Codex 原生配置入口');
         if (!config.current) await navigate(config);
-        const row = data.rows.find(r => r.label === 'Available reasoning efforts');
+        const row = data.rows.find(r => /^(Available reasoning efforts|可用推理强度)$/.test(r.label));
         if (!row) throw new Error('没有找到 Codex 思考强度设置');
         const pos = await cdp.evaluate(helpersCall(`codexSettingPoint(${JSON.stringify(row.controls[0].id)})`));
         await this.tapCss(pos.x, pos.y, 'left', cdp);
@@ -839,6 +860,7 @@ async codexOpenMention(trigger, q) {
 },
 
 async codexPick(msg) {
+  await this.assertSelectedThread();
   if (this.app !== 'codex') return;
   const trigger = msg.section === 'commands' || msg.section === 'Skills' ? '/' : '@';
   const parentQ = String(msg.parentQ || msg.q || '').slice(0, 60);
@@ -859,7 +881,7 @@ async codexPick(msg) {
     const dialog = await this.cdp.evaluate(`(() => { const doc = document.getElementById('active-frame')?.contentDocument || document; return [...doc.querySelectorAll('[role=dialog]')].some(e => e.getBoundingClientRect().height > 40); })()`);
     if (dialog) {
       this.emit({ t: 'status', ok: true, msg: '请在请求卡片中确认' });
-      setTimeout(() => this.pollChat().catch(() => {}), 300);
+      this.refreshSoon(300);
       return;
     }
     const next = await this.cdp.evaluate(helpersCall('codexMentionRows()')) || [];
@@ -873,11 +895,12 @@ async codexPick(msg) {
       return;
     }
     this.emit({ t: 'status', ok: true, msg: `已执行 ${hit.label.split('\n')[0]}` });
-    setTimeout(() => this.pollChat().catch(() => {}), 300);
+    this.refreshSoon(300);
   }));
 },
 
 async codexSkillList() {
+  await this.assertSelectedThread();
   const rows = await this.withMentionLock(null, async () => {
     await this.codexFocusPrompt();
     const before = await this.codexPrompt();
@@ -899,6 +922,7 @@ async codexTogglePlan() {
 },
 
 async codexToggleIde() {
+  await this.assertSelectedThread();
   const before = (await this.cdp.evaluate(helpersCall('codexFacts()')))?.view?.ide?.on;
   await this.codexPick({ section: 'commands', label: 'IDE context', q: 'ide' });
   let after = before;
@@ -911,59 +935,33 @@ async codexToggleIde() {
 },
 
 async codexRunMenu() {
-  const pos = await this.cdp.evaluate(helpersCall(`codexButtonPoint('run')`));
-  if (!pos) throw new Error('当前没有执行位置菜单');
-  await this.tapCss(pos.x, pos.y);
-  let items = [];
-  for (let i = 0; i < 10 && !items.length; i++) {
-    await new Promise(r => setTimeout(r, 120));
-    items = await this.cdp.evaluate(helpersCall('codexRunItems()')) || [];
-  }
+  await this.assertSelectedThread();
+  const items = await readCodexMenu(this, 'run') || [];
   await this.closeMenus();
   this.emit({ t: 'menu', kind: 'codex-run', items: items.filter(it => /^(Local|Cloud|Worktree|Connect Codex web)\b/.test(it.label)).map(it => ({ label: it.label, checked: false })) });
 },
 
 async codexRunPick(label) {
-  const pos = await this.cdp.evaluate(helpersCall(`codexButtonPoint('run')`));
-  if (!pos) throw new Error('当前没有执行位置菜单');
-  await this.tapCss(pos.x, pos.y);
-  let hit = null;
-  for (let i = 0; i < 10 && !hit; i++) {
-    await new Promise(r => setTimeout(r, 120));
-    const items = await this.cdp.evaluate(helpersCall('codexRunItems()')) || [];
-    hit = items.find(it => it.label === label);
-  }
+  await this.assertSelectedThread();
+  const hit = await readCodexMenu(this, 'run', items => items.find(it => it.label === label));
   if (!hit) { await this.closeMenus(); throw new Error(`没找到执行位置：${label}`); }
   await this.tapCss(hit.x, hit.y);
   await new Promise(r => setTimeout(r, 300));
   const run = (await this.cdp.evaluate(helpersCall('codexFacts()')))?.view?.run || '';
   this.emit({ t: 'status', ok: true, msg: run ? `执行位置：${run}` : `已选择 ${label}` });
-  setTimeout(() => this.pollChat().catch(() => {}), 300);
+  this.refreshSoon(300);
 },
 
 async codexChatMenu() {
-  const pos = await this.cdp.evaluate(helpersCall(`codexButtonPoint('actions')`));
-  if (!pos) throw new Error('当前会话没有 Chat actions');
-  await this.tapCss(pos.x, pos.y);
-  let items = [];
-  for (let i = 0; i < 10 && !items.length; i++) {
-    await new Promise(r => setTimeout(r, 120));
-    items = await this.cdp.evaluate(helpersCall('codexRunItems()')) || [];
-  }
+  await this.assertSelectedThread();
+  const items = await readCodexMenu(this, 'actions') || [];
   await this.closeMenus();
   this.emit({ t: 'menu', kind: 'codex-chat', items: items.map(it => ({ label: it.label, checked: false })) });
 },
 
 async codexChatPick(label, name) {
-  const pos = await this.cdp.evaluate(helpersCall(`codexButtonPoint('actions')`));
-  if (!pos) throw new Error('当前会话没有 Chat actions');
-  await this.tapCss(pos.x, pos.y);
-  let hit = null;
-  for (let i = 0; i < 10 && !hit; i++) {
-    await new Promise(r => setTimeout(r, 120));
-    const items = await this.cdp.evaluate(helpersCall('codexRunItems()')) || [];
-    hit = items.find(it => it.label === label);
-  }
+  await this.assertSelectedThread();
+  const hit = await readCodexMenu(this, 'actions', items => items.find(it => it.label === label));
   if (!hit) { await this.key('Escape'); throw new Error(`没找到会话操作：${label}`); }
   const thread = await this.cdp.evaluate(helpersCall('codexThread()'));
   await this.tapCss(hit.x, hit.y);
@@ -984,7 +982,7 @@ async codexChatPick(label, name) {
   this.emit({ t: 'status', ok: true, msg: `已执行 ${label}` });
   const now = await this.cdp.evaluate(helpersCall('codexThread()'));
   if (now && now !== thread) await this.adoptCodexThread(now);
-  setTimeout(() => this.pollChat().catch(() => {}), 300);
+  this.refreshSoon(300);
   setTimeout(() => this.listAgents().catch(() => {}), 400);
 },
 
@@ -999,7 +997,7 @@ async codexRenameThread(agentId, name) {
   if (!page?.chatWs) throw new Error('这个窗口已经关闭');
   const own = pageId === this.codexPageId && this.cdp;
   const cdp = own ? this.cdp : new Cdp(page.chatWs);
-  let beforeThread = '';
+  let beforeThread = '', failure;
   try {
     if (!own) await cdp.connect();
     beforeThread = await cdp.evaluate(helpersCall('codexThread()')) || '';
@@ -1030,31 +1028,28 @@ async codexRenameThread(agentId, name) {
       renamed = rows.some(row => row.id === convId && String(row.title || '').trim() === next);
     }
     if (!renamed) throw new Error('桌面端未确认会话名称已更新');
-    if (beforeThread && beforeThread !== convId) await this.selectCodexThread(beforeThread, cdp);
-    if (own) { this.lastChatAt = 0; await this.pollChat(); }
-    await this.listAgents();
-  publishSessionChange('codex', convId, { action: 'rename', title: next });
-    this.emit({ t: 'status', ok: true, msg: '已重命名会话' });
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
-    if (!own) { try { cdp.close(); } catch {} }
-  }
-},
-
-noteFusionRemoved(convId) {
-  if (!this.fusionRun) return false;
-  let hit = false;
-  for (const which of ['a', 'b']) {
-    const side = this.fusionRun[which];
-    if (side && (side.agentId === convId || String(side.id || '').endsWith(':' + convId))) {
-      this.fusionRun[which] = null;
-      hit = true;
+    try {
+      await cdpRead.run(null, async () => {
+        if (beforeThread && beforeThread !== convId && !await this.selectCodexThread(beforeThread, cdp)) throw new Error('未能恢复原会话');
+        if (own) { this.lastChatAt = 0; await this.pollChat(); }
+      });
+    } catch (error) {
+      if (failure) throw new AggregateError([failure, error], failure.message);
+      throw error;
+    } finally {
+      if (!own) { try { cdp.close(); } catch {} }
     }
   }
-  if (hit) (this.fusionOwner || this).fusionEmit();
-  return hit;
+  await this.listAgents();
+  publishSessionChange('codex', convId, { action: 'rename', title: next });
+  this.emit({ t: 'status', ok: true, msg: '已重命名会话' });
 },
 
-async codexArchiveThread(agentId) {
+async codexArchiveThread(agentId, requiredAction = '') {
   if (this.app !== 'codex') throw new Error('只有 Codex 会话可以这样移除');
   const match = /^thread:([^:]+):(.+)$/.exec(String(agentId || ''));
   if (!match) throw new Error('这条会话不能移除');
@@ -1068,16 +1063,16 @@ async codexArchiveThread(agentId) {
   try {
     if (!own) await cdp.connect();
     const beforeThread = await cdp.evaluate(helpersCall('codexThread()')) || '';
-    const pos = await cdp.evaluate(helpersCall('codexRecentPoint()'));
+    const pos = await cdp.evaluate(helpersCall('codexRecentPoint(true)'));
     if (!pos) throw new Error('没有找到会话列表');
-    if (!pos.open) await this.tapCss(pos.x, pos.y, 'left', cdp);
     let target = null;
     for (let i = 0; i < 8 && !target; i++) {
       await new Promise(r => setTimeout(r, 120));
-      target = await cdp.evaluate(helpersCall(`codexArchiveTarget(${JSON.stringify(convId)})`));
+      target = await cdp.evaluate(helpersCall(`codexArchiveTarget(${JSON.stringify(convId)}, ${JSON.stringify(requiredAction)})`));
     }
     if (!target?.action) {
       await cdp.evaluate(helpersCall('closeCodexMenu()'));
+      if (requiredAction) return false;
       throw new Error(target ? '这个会话没有归档或删除入口' : '没有找到这个会话');
     }
     await this.tapCss(target.x, target.y, 'left', cdp);
@@ -1103,12 +1098,12 @@ async codexArchiveThread(agentId) {
       this.lastChatAt = 0;
       await this.pollChat();
     }
-    const fusion = this.noteFusionRemoved(convId);
     await this.listAgents();
     if (target.action === 'Delete chat') removeLibrarySession('codex', convId);
     publishSessionChange('codex', convId, { action: target.action === 'Delete chat' ? 'delete' : 'archive' });
     this.emit({ t: 'codexArchived', id: agentId, action: target.action });
-    this.emit({ t: 'status', ok: true, msg: fusion ? '会话已移除，请重新选择' : (target.action === 'Delete chat' ? '已删除' : '已归档') });
+    this.emit({ t: 'status', ok: true, msg: target.action === 'Delete chat' ? '已删除' : '已归档' });
+    if (requiredAction) return true;
   } catch (e) {
     await this.listAgents().catch(() => {});
     throw e;

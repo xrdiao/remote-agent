@@ -66,10 +66,11 @@ mark("imports done")
 
 
 def construct_recognizer():
+    dtype = os.environ.get("QWEN_ASR_DTYPE", "bfloat16")
     return Qwen3ASRModel.LLM(
         model=sys.argv[1],
-        dtype="bfloat16",  # explicit compute dtype; matches the resolved bfloat16
-        hf_overrides={"torch_dtype": "bfloat16"},  # skips the ~2s remote safetensors dtype probe
+        dtype=dtype,
+        hf_overrides={"torch_dtype": dtype},  # skips the ~2s remote safetensors dtype probe
         gpu_memory_utilization=float(os.environ.get("QWEN_ASR_GPU_MEMORY", "0.35")),
         max_model_len=8192,
         max_num_seqs=1,

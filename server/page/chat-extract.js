@@ -59,6 +59,8 @@
       const body = devinRoot || md || withoutThinking(el);
       item.t = (body.innerText || body.textContent || '').trim();
       item.h = devinRoot ? devinRich(devinRoot) : md ? clean(md) : esc((withoutThinking(el).innerText || '').trim()).replace(/\n/g, '<br>');
+      const images = messageImages(body);
+      if (images.length) item.images = images;
     }
     else item.t = summary(withoutThinking(el));
     if (k === 'tool') {
@@ -94,12 +96,13 @@
     });
   };
 
-  const codexThread = () => {
+  const codexVisibleThread = () => {
     let el = [...doc.querySelectorAll('.ProseMirror')].find(vis);
     while (el && !Object.keys(el).some(k => k.startsWith('__reactFiber'))) el = el.parentElement;
     const active = el && codexFiberProps(el, 40).find(p => typeof p.conversationId === 'string');
     return active?.conversationId || [...doc.querySelectorAll('[data-response-annotation-conversation]')].filter(vis).at(-1)?.getAttribute('data-response-annotation-conversation') || '';
   };
+  const codexThread = () => remoteContext?.app === 'codex' ? remoteContext.threadId : codexVisibleThread();
   const attachmentRows = (ready = false) => {
     const ed = [...doc.querySelectorAll(`${COMPOSER}, [data-slate-editor="true"][contenteditable="true"]`)].filter(vis).at(-1);
     if (!ed) return [];
@@ -161,15 +164,12 @@
     if (!props || props.submitDisabled || props.isInteractionBlocked || props.interactionsEnabled === false) return false;
     if (dispatch) {
       if (codexPromptPayload() == null) return false;
-      const labels = follow === 'queue' ? ['Queue'] : follow === 'steer' ? ['Steer'] : ['Send', 'Queue', 'Steer'];
-      const root = editor.closest('[data-composer-body]');
-      const button = [...root.querySelectorAll('button')].find(button => vis(button)
-        && labels.includes(button.getAttribute('aria-label')) && !button.disabled && button.getAttribute('aria-disabled') !== 'true');
-      if (button) button.click();
-      else Promise.resolve(props.handleSubmit(follow ? { followUpSubmitAction: follow } : undefined)).catch(error => {
+      const submissions = window.__remoteAgentCodexSubmissions ||= new Set();
+      const pending = Promise.resolve().then(() => props.handleSubmit(follow ? { followUpSubmitAction: follow } : undefined)).catch(error => {
         (window.__remoteAgentSubmitErrors ||= []).push({ requestId, message: String(error?.message || error) });
         doc.defaultView.dispatchEvent(new doc.defaultView.Event('remote-agent-submit-error'));
-      });
+      }).finally(() => submissions.delete(pending));
+      submissions.add(pending);
       return true;
     }
     await props.handleSubmit(follow ? { followUpSubmitAction: follow } : undefined);
@@ -197,16 +197,17 @@
     }
     return null;
   };
-  const codexConversationManager = (thread, scopes) => {
+  const codexConversationManager = (thread, scopes, host = null) => {
     const managers = doc.defaultView.__remoteAgentCodexManagers ||= new WeakMap();
+    const matches = manager => manager && !manager.disposed && (host == null ? manager.getConversation(thread) : manager.hostId === host);
     for (const scope of scopes) {
       const manager = managers.get(scope);
-      if (manager && !manager.disposed && manager.getConversation(thread)) return manager;
+      if (matches(manager)) return manager;
     }
     let manager = null, owner;
     for (const scope of scopes) for (const bindings of scope.familyBindings.values()) for (const binding of bindings.values()) {
       const value = codexHistoryBinding(scope, binding)?.get();
-      if (typeof value?.loadOlderConversationTurnsPage === 'function' && !value.disposed && value.getConversation(thread)) {
+      if (typeof value?.loadOlderConversationTurnsPage === 'function' && matches(value)) {
         manager = value;
         owner = scope;
       }
@@ -219,7 +220,7 @@
     const key = JSON.stringify({ hostId, threadId: thread });
     let index = null, hasLoadedOldest, nativeReader;
     const atoms = new Map(), turns = new Map(), queued = new Map();
-    for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
+    if (!remoteContext || !conversation || watchItems) for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
       const source = codexHistoryBinding(scope, bindings.get(key));
       const value = source?.get();
       if (Array.isArray(value) && value.some(turn => turn?.entityKey && turn.turnId)) index ||= value;
@@ -262,7 +263,7 @@
         isLatestTurn: n === index.length - 1, turnItemIds: [], metadata: turn,
         nativeTurn: conversation ? nativeReader.getSubscribedTurn(conversation, turn.entityKey) : turns.get(turn.turnId) };
     });
-    for (const entry of entries.slice(-2)) for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
+    if (!remoteContext || watchItems) for (const entry of entries.slice(-2)) for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
       const source = codexHistoryBinding(scope, bindings.get(entry.historyEntityKey));
       if (!source) continue;
       const value = source.get();
@@ -280,6 +281,20 @@
   };
   const chatRevision = () => doc.defaultView.__remoteAgentChatRevision || 0;
   const watchCodexData = changed => {
+    if (remoteContext?.app === 'codex') {
+      const manager = codexNativeManager(), stop = manager.addConversationCallback(remoteContext.threadId, changed), subscribed = new Map();
+      const refresh = () => {
+        const { sources } = codexAsyncQuestionState(remoteContext.threadId, remoteContext.host || 'local');
+        for (const [key, unsubscribe] of subscribed) if (!sources.has(key)) { unsubscribe(); subscribed.delete(key); }
+        for (const [key, source] of sources) if (!subscribed.has(key)) subscribed.set(key, source.subscribe(changed));
+      };
+      refresh();
+      return { refresh, stop() { stop(); for (const unsubscribe of subscribed.values()) unsubscribe(); } };
+    }
+    if (remoteContext?.app === 'cursor') {
+      const stop = cursorSessionServices().data.loadedComposers.subscribe(remoteContext.threadId, changed);
+      return { stop: () => stop.dispose(), refresh() {} };
+    }
     const subscribed = new Map();
     const update = () => changed();
     const refresh = () => {
@@ -373,6 +388,7 @@
       if (item.type === 'dynamicToolCall') return { ...item, type: 'dynamic-tool-call' };
       if (item.type === 'collabAgentToolCall') return item;
       if (item.type === 'webSearch') return { type: 'web-search', id: item.id, query: item.query };
+      if (item.type === 'imageView') return { type: 'generated-image', id: item.id, path: item.path };
       if (item.type === 'contextCompaction') return { type: 'context-compaction', id: item.id, source: item.source, status: complete ? 'completed' : 'inProgress' };
       return [];
     }).map(item => ({ ...item, sourceIndex: positions.get(item.callId || item.responseAnnotationTargetId || item.id || item.nativeIds?.[0]) }));
@@ -399,7 +415,53 @@
     const turn = codexStoredTurn(entry);
     return turn ? { ...entry, turn } : entry;
   };
-  const codexFusionTurn = (id = '', message = '', previous = []) => {
+  const codexFusionTurn = async (id = '', attemptId = '', previous = [], generationId = '') => {
+    if (!codexThread()) {
+      const threadId = activeThread();
+      if (devinSurface()) {
+        const state = window.__acpStore?.getState().acp;
+        const messages = state?.perSession[threadId]?.messages || [];
+        const body = item => (item.content || []).filter(block => block.content?.type === 'text').map(block => block.content.text).join('\n');
+        const users = messages.filter(item => item.kind === 'user_message' && !item.content?.some(block => block._meta?.['cognition.ai/isOptimistic']));
+        const user = id ? users.find(item => item.id === id) : attemptId ? users.findLast(item => !previous.includes(item.id) && body(item).includes(attemptId)) : users.at(-1);
+        const start = messages.indexOf(user), tail = start >= 0 ? messages.slice(start + 1) : [];
+        const next = tail.findIndex(item => item.kind === 'user_message');
+        const reply = (next < 0 ? tail : tail.slice(0, next)).findLast(item => item.kind === 'agent_message');
+        const requests = Object.values(state?.agentRequests.byId || {}).filter(request => request.method === 'session/prompt' && request.params?.sessionId === threadId);
+        const request = requests.findLast(request => request.params?.prompt?.some?.(block => attemptId && block.text?.includes(attemptId)));
+        const session = devinSessionRecord(threadId);
+        return { id: user?.id || '', ids: users.map(item => item.id), turnId: request?.id || user?.id || '', threadId, current: !!user && user === users.at(-1),
+          text: reply ? body(reply) : '', completed: !!reply && request?.status === 'completed' && !['active', 'pending', 'canceling', 'unknown_error'].includes(session?.status),
+          ended: request?.status === 'completed' && !['active', 'pending', 'canceling', 'unknown_error'].includes(session?.status),
+          error: session?.status === 'unknown_error' ? devinItems(devinLog()).find(item => item.kind === 'error')?.t || 'Devin 原生 unknown_error' : '', items: [] };
+      }
+      const service = cursorSessionServices()?.data;
+      if (!service || !threadId) return { id: '', ids: [], threadId, text: '', completed: false };
+      const peek = await service.composerDataHandleManager.peekComposerData(threadId);
+      const data = peek?.source === 'memory' ? peek.handle.data : peek?.data;
+      const headers = data?.fullConversationHeadersOnly || [];
+      const users = headers.filter(header => header.type === 1);
+      const load = async header => {
+        const cached = data.conversationMap[header.bubbleId];
+        if (cached && !cached.isPlaceholder) return cached;
+        return (await service._composerMessageStorageService.retrieveMessagesBatch(threadId, [header.bubbleId])).get(header.bubbleId);
+      };
+      let user = id ? users.find(header => header.bubbleId === id) : attemptId ? null : users.at(-1);
+      if (!id && attemptId) for (const header of users.filter(header => !previous.includes(header.bubbleId)).reverse()) {
+        if ((await load(header))?.text?.includes(attemptId)) { user = header; break; }
+      }
+      const start = headers.indexOf(user), tail = start >= 0 ? headers.slice(start + 1) : [];
+      const next = tail.findIndex(header => header.type === 1);
+      const replies = (next < 0 ? tail : tail.slice(0, next)).filter(header => header.type === 2);
+      const messages = await Promise.all(replies.map(load));
+      const final = messages.findLast(item => item?.text?.trim() && !item.toolFormerData && !item.thinking);
+      const nativeAbort = !user && !!id && !!generationId && data.latestChatGenerationUUID === generationId && data.status === 'aborted';
+      return { id: user?.bubbleId || (nativeAbort ? id : ''), ids: users.map(header => header.bubbleId), turnId: user?.bubbleId || (nativeAbort ? id : ''), threadId,
+        generationId: data.latestChatGenerationUUID || '', current: !!user && user === users.at(-1) || nativeAbort,
+        text: final?.text || '', completed: !!final && user === users.at(-1) && data.status === 'completed' && !isBusy(),
+        ended: (nativeAbort || !!user && user === users.at(-1) && ['completed', 'aborted'].includes(data.status)) && !isBusy(),
+        error: data.status === 'aborted' ? `Cursor 原生执行已中断：${data.abortReason || '原因未知'}` : '', items: [] };
+    }
     const state = codexHistoryState();
     const rows = [...doc.querySelectorAll('[data-turn-key]')];
     const entries = new Map(state.entries.map(entry => {
@@ -415,13 +477,18 @@
       if (entry.isLatestTurn) latest = entry.turnId;
     }
     const users = found => (found.entry.turn?.items || []).filter(it => it.type === 'user-message');
-    const matches = it => id ? it.clientUserMessageId === id || it.nativeIds?.includes(id)
-      : String(it.message || '').trim() === message.trim() && !previous.includes(it.clientUserMessageId);
-    const found = id || message ? [...entries.values()].reverse().find(found => users(found).some(matches)) : entries.get(latest);
+    const matches = it => id ? it.clientUserMessageId === id || it.nativeIds?.includes(id) || id === `${state.thread}:user-message:${it.clientUserMessageId}`
+      : !!attemptId && String(it.message || '').includes(attemptId) && !previous.includes(it.clientUserMessageId);
+    const found = id || attemptId ? [...entries.values()].reverse().find(found => users(found).some(matches)) : entries.get(latest);
     const turn = found?.entry.turn;
-    const user = found && (id || message ? users(found).find(matches) : users(found).at(-1));
+    const user = found && (id || attemptId ? users(found).find(matches) : users(found).at(-1));
     const reply = turn?.items?.filter(it => it.type === 'assistant-message' && it.phase !== 'commentary').at(-1);
-    return { id: user?.clientUserMessageId || '', ids: [...entries.values()].flatMap(found => users(found).map(it => it.clientUserMessageId)).filter(Boolean), user: user?.message || '', text: reply?.content || '', completed: turn?.status === 'complete' && !turn.partial && !!reply?.completed, items: turn ? codexTurnItems(found.el, found.entry) : [] };
+    return { id: user?.clientUserMessageId || '', ids: [...entries.values()].flatMap(found => users(found).map(it => it.clientUserMessageId)).filter(Boolean),
+      turnId: found?.entry.turnId || '', threadId: state.thread, current: !!found && found.entry.turnId === latest, user: user?.message || '', text: reply?.content || '',
+      accepted: !!user && codexSendState(false, state.thread).runs.some(value => value.id === found?.entry.turnId),
+      ended: turn?.status === 'complete' && !turn.partial,
+      completed: turn?.status === 'complete' && !turn.partial && !!reply?.completed, error: turn?.items?.find(item => item.type === 'system-error')?.content || '',
+      items: turn ? codexTurnItems(found.el, found.entry) : [] };
 
   };
   // One Codex turn can contain several markdown blocks. Keep them in order instead of keeping only the first reply.
@@ -469,7 +536,7 @@
         const rendered = markdown.get(item.responseAnnotationTargetId);
         const block = rendered?.content === item.content ? rendered.block : null;
         if (item.phase === 'commentary') out.push({ i: id, k: 'thinking', t: `工作过程\n${item.content}`, live: !item.completed });
-        else out.push({ i: id, k: 'assistant', t: item.content, completed: item.completed, htmlRead: !!block, bodyFormat: block ? 'html' : 'markdown', h: block ? clean(block) : esc(item.content).replace(/\n/g, '<br>') });
+        else out.push({ i: id, k: 'assistant', t: item.content, completed: item.completed, htmlRead: !!block, bodyFormat: block ? 'html' : 'markdown', h: block ? clean(block) : esc(item.content).replace(/\n/g, '<br>'), ...(block ? { images: messageImages(block) } : {}) });
       } else if (item.type === 'exec') {
         out.push({ i: id, k: 'tool', t: (item.cmd || []).join('\n').slice(0, 240), done: finished,
           ...(item.approvalRequestId != null || ['failed', 'declined'].includes(item.executionStatus) || (item.output?.exitCode != null && item.output.exitCode !== 0) ? { keep: true } : {}) });
@@ -492,8 +559,8 @@
         const result = (typeof raw === 'string' ? raw : raw == null ? '' : JSON.stringify(raw)).slice(0, 4000);
         out.push({ i: id, k: 'tool', kind: 'other', src: 'codex', t: `${item.type === 'mcp-tool-call' ? 'MCP' : '工具'} ${name}${status ? ' · ' + status : ''}${result ? ' · ' + result : ''}`.slice(0, 4400), keep: true });
       } else if (item.type === 'generated-image' || item.type === 'chatgpt-delayed-image-gen' || item.type === 'chatgpt-delayed-image-gen-received') {
-        if (!el) continue;
-        const images = [...el.querySelectorAll('img')].filter(vis).map(img => img.currentSrc || img.src).filter(src => /^(https?:|data:image\/|blob:)/.test(src));
+        if (!el && !item.path) continue;
+        const images = item.path ? [item.path] : messageImages(el);
         out.push({ i: id, k: 'tool', kind: 'other', src: 'codex', t: item.type === 'chatgpt-delayed-image-gen' ? '正在生成图片' : '生成的图片', images, keep: true });
       } else if (item.type === 'chatgpt-tool-approval') {
         out.push({ i: id, k: 'tool', kind: 'other', src: 'codex', t: `等待批准 ${textOf(item.title)}`.trim().slice(0, 240) });
@@ -503,7 +570,8 @@
         const body = textOf(item.content);
         if (CAPACITY_ERROR.test(body)) {
           const capacityId = `${thread}:capacity:${entry?.turnId || item.turnId || el?.getAttribute('data-turn-key') || item.id || ''}`;
-          if (!out.some(row => row.i === capacityId)) out.push({ i: capacityId, k: 'notice', kind: 'capacity', t: body.slice(0, 400), capacity: true, live: !finished && entry?.isLatestTurn !== false });
+          if (!out.some(row => row.i === capacityId)) out.push({ i: capacityId, k: 'notice', kind: 'capacity', t: body.slice(0, 400), capacity: true, live: !finished && entry?.isLatestTurn !== false,
+            ...(remoteContext?.app === 'codex' && entry?.isLatestTurn ? { retryTurn: entry.turnId, b: ['Retry'], actions: ['retry:' + JSON.stringify([thread, entry.turnId])] } : {}) });
         }
         else if (!finished && body) out.push({ i: id, k: 'thinking', t: `连接\n${body}`.slice(0, 400), live: true });
       } else if (item.type === 'turn-diff') {
@@ -543,7 +611,7 @@
   // Select raw item IDs before normalizing bodies; mounted DOM only enriches this page.
   const codexReadPage = (state, before = Infinity, known = [], details = false, limit = 80) => {
     const seen = new Set(known), items = [];
-    const mounted = new Map([...doc.querySelectorAll('[data-turn-key]')].map(el => [el.getAttribute('data-turn-key'), el]));
+    const mounted = new Map((!remoteContext || codexVisibleThread() === state.thread ? [...doc.querySelectorAll('[data-turn-key]')] : []).map(el => [el.getAttribute('data-turn-key'), el]));
     const end = Number.isFinite(before) ? before : Infinity;
     let cursor = end, visible = 0, headEntry = null, missingTurn = null, earlier = state.hasLoadedOldest === false;
     outer: for (const entry of [...state.entries].reverse()) {
@@ -925,7 +993,23 @@
     win.addEventListener('remote-agent-chat-update', changed);
     check();
   });
+  const mergeCodexCapacity = (items, state, capacity, paged = true) => {
+    const turn = capacity?._turnKey && state?.entries.find(entry => entry.turnKey === capacity._turnKey);
+    const host = turn && items.find(item => item.capacity && Math.floor(item.order / 10000) === turn.turnNumber);
+    if (!capacity) return;
+    delete capacity._retry; delete capacity._turnKey;
+    if (paged && host) {
+      const { i, order } = host;
+      delete host.b; delete host.actions; delete host.btnItem;
+      Object.assign(host, capacity, { i, order });
+    } else if (!host) {
+      capacity.order = Math.max(0, ...items.map(item => item.order || 0)) + 1;
+      items.push(capacity);
+    }
+  };
   const extract = (history = false, knownTurns = [], pageSize = 0) => {
+    if (remoteContext?.app === 'codex') return codexConversationChat(history, pageSize || 80);
+    if (remoteContext) return nativeConversationChat(history, pageSize || 80);
     const imagePreview = codexImagePreview();
     const log = devinLog();
     const panel = log || (devinSurface() ? null : findPanel());
@@ -1033,18 +1117,7 @@
       const rows = collect(null, entry), ids = new Set(items.map(item => item.i));
       items.push(...rows.filter(item => !ids.has(item.i)));
     }
-    const capacityTurn = capacity?._turnKey && state?.entries.find(entry => entry.turnKey === capacity._turnKey);
-    const capacityHost = capacityTurn && items.find(item => item.capacity && Math.floor(item.order / 10000) === capacityTurn.turnNumber);
-    if (capacity) {
-      delete capacity._retry; delete capacity._turnKey;
-      if (page && capacityHost) {
-        const { i, order } = capacityHost;
-        Object.assign(capacityHost, capacity, { i, order });
-      } else if (!capacityHost) {
-        capacity.order = Math.max(0, ...items.map(item => item.order || 0)) + 1;
-        items.push(capacity);
-      }
-    }
+    mergeCodexCapacity(items, state, capacity, !!page);
     const latestData = latestEntry?.turn || (latestTurn && codexTurnData(latestTurn));
     const turnTime = latestData?.items?.find(it => it.type === 'worked-for');
     let generation = turnTime?.startedAtMs ? { start: turnTime.startedAtMs, end: turnTime.completedAtMs || null } : null;
@@ -1095,8 +1168,108 @@
       ...(codexFacts()?.view ? { codex: codexFacts().view } : {}),
     };
   };
+  const cursorPendingTool = () => {
+    const data = cursorSessionServices()?.data.getComposerDataIfLoaded(remoteContext.threadId);
+    const capability = data?.capabilities.find(capability => typeof capability.getPendingUserDecisionGroup === 'function');
+    const decisions = capability?.getPendingUserDecisionGroup()() || [];
+    return { data, capability, decisions };
+  };
+  const cursorNativeQuestions = () => {
+    const { capability, decisions } = cursorPendingTool();
+    const decision = decisions.find(decision => capability.getBubbleDataByToolCallId(decision.toolCallId)?.name === 'ask_question');
+    const bubble = decision && capability.getBubbleDataByToolCallId(decision.toolCallId);
+    if (!bubble?.params?.questions) return null;
+    const { currentSelections = {}, freeformTexts = {} } = bubble.additionalData || {};
+    return { id: decision.toolCallId, list: bubble.params.questions.map(question => ({ text: question.prompt, multi: !!question.allowMultiple,
+      options: [...question.options.map(option => ({ label: option.label, sel: !!currentSelections[question.id]?.includes(option.id) })),
+        { label: '其他…', free: true, value: freeformTexts[question.id] || '', sel: !!currentSelections[question.id]?.includes('__freeform_other__') }] })),
+      canSubmit: bubble.params.questions.every(question => currentSelections[question.id]?.length > 0) };
+  };
+  const nativeMarkdownItem = (id, kind, text, at, images = []) => ({ i: id, k: kind, t: text,
+    ...(kind === 'human' && at ? { sentAt: at } : {}),
+    ...(kind === 'assistant' ? { bodyFormat: 'markdown', h: esc(text).replace(/\n/g, '<br>') } : {}),
+    ...(images.length ? { images } : {}) });
+  const nativeConversationChat = async (history, limit) => {
+    const { app, threadId: thread } = remoteContext;
+    let items = [], earlier = false, before = 0, questions = null, title = '', draft;
+    if (app === 'cursor') {
+      const { data, capability, decisions } = cursorPendingTool();
+      const end = history && Number.isFinite(remoteContext.before) ? remoteContext.before : data.fullConversationHeadersOnly.length;
+      const headers = data.fullConversationHeadersOnly.slice(Math.max(0, end - limit), end);
+      const messages = await cursorMessages(thread, data, headers);
+      const pending = new Map(decisions.map(decision => [decision.toolCallId, decision]));
+      for (const message of messages) {
+        const id = message.bubbleId, tool = message.toolFormerData;
+        const at = Number(message.startedAtMs) || Date.parse(message.createdAt || '') || 0;
+        if (message.thinking?.text) items.push({ i: id + ':think', k: 'thinking', t: `Thoughts\n${message.thinking.text}`,
+          live: !Number.isFinite(message.completedAtMs) && data.status === 'generating' });
+        if (message.text?.trim() && !tool) items.push(nativeMarkdownItem(id, message.type === 1 ? 'human' : 'assistant', message.text, at));
+        if (tool) {
+          const file = tool.params?.relativeWorkspacePath || tool.params?.targetFile;
+          const row = { i: id, k: 'tool', t: tool.params?.commandDescription || tool.params?.command || tool.toolCall?.tool?.value?.description || tool.name || '',
+            kind: /terminal|shell|command/.test(tool.name) ? 'command' : /edit|write|patch/.test(tool.name) ? 'edit' : 'other',
+            execution: tool.name !== 'ask_question' && !/edit|write|patch/.test(tool.name),
+            ...(file ? { f: file } : {}), done: tool.status === 'completed' || tool.status === 'cancelled',
+            ...(tool.error || tool.status === 'error' ? { keep: true } : {}) };
+          if (pending.has(tool.toolCallId) && tool.name !== 'ask_question') {
+            row.b = ['Run', 'Skip']; row.actions = [tool.toolCallId + ':accept', tool.toolCallId + ':reject'];
+          }
+          items.push(row);
+        }
+      }
+      const todos = data.todos || [];
+      if (todos.length) items.push({ i: thread + ':tasks', k: 'tasks', total: todos.length,
+        done: todos.filter(todo => todo.status === 'completed').length,
+        items: todos.map(todo => ({ t: todo.content, status: todo.status === 'completed' ? 'done' : todo.status })) });
+      title = data.name || ''; draft = data.text;
+      earlier = headers.length < data.fullConversationHeadersOnly.length;
+      before = data.fullConversationHeadersOnly.indexOf(headers[0]);
+      questions = cursorNativeQuestions();
+    } else {
+      const native = await import('@exa/chat-client');
+      const state = window.__acpStore.getState().acp, data = state.perSession[thread];
+      const messages = native.getAllMessages(data), end = history && Number.isFinite(remoteContext.before) ? remoteContext.before : messages.length;
+      const selected = messages.slice(Math.max(0, end - limit), end);
+      for (const message of selected) {
+        const id = 'acp' + messages.indexOf(message);
+        if (message.kind === 'user_message' || message.kind === 'agent_message' || message.kind === 'agent_thought') {
+          const blocks = message.content || [];
+          if (blocks.some(block => block._meta?.['cognition.ai/isOptimistic'])) continue;
+          const text = blocks.filter(block => block.content?.type === 'text').map(block => block.content.text).join('\n');
+          const images = blocks.filter(block => block.content?.type === 'image').map(block => `data:${block.content.mimeType};base64,${block.content.data}`);
+          const at = Date.parse(blocks.find(block => block._meta?.['cognition.ai/timestamp'])?._meta['cognition.ai/timestamp'] || '') || 0;
+          if (message.kind === 'agent_thought') items.push({ i: id + ':think', k: 'thinking', t: `Thoughts\n${text}` });
+          else if (text || images.length) items.push(nativeMarkdownItem(id, message.kind === 'user_message' ? 'human' : 'assistant', text, at, images));
+        } else if (message.kind === 'tool_call') {
+          const tool = message.content;
+          items.push({ i: id, k: 'tool', src: 'devin', kind: tool.kind || 'other', t: tool.title || '',
+            cmd: typeof tool.rawInput?.command === 'string' ? tool.rawInput.command : '',
+            output: (tool.content || []).filter(block => block.type === 'content' && block.content?.type === 'text').map(block => block.content.text).join('\n').slice(0, 4000),
+            ...(tool.locations?.[0]?.path ? { f: tool.locations[0].path } : {}),
+            done: tool.status === 'completed', ...(tool.status === 'failed' ? { keep: true } : {}) });
+        }
+      }
+      const session = devinSessionRecord(thread);
+      const failure = Object.entries(state.agentRequests.byId).findLast(([, request]) => request.method === 'session/prompt' && request.params?.sessionId === thread);
+      if (session.status === 'unknown_error' && failure?.[1].status === 'failed')
+        items.push({ i: 'acp' + messages.length + ':error', k: 'tool', kind: 'error', t: failure[1].errorMessage, keep: true });
+      title = session.title || '';
+      before = Math.max(0, end - limit); earlier = before > 0;
+      if (activeThread() === thread) questions = devinQuestions();
+      items = items.map(item => ({ ...item, src: 'devin' }));
+    }
+    const scopes = [], run = agentRun(app, thread, scopes), changed = items.filter(item => item.kind === 'edit').length;
+    return { thread, title, items, global: [], rect: [0, 0, 0, 0], busy: run?.status === 'running', readonly: false,
+      _nativeState: { thread, title, run, busy: run?.status === 'running', host: remoteContext.host, workspace: remoteContext.cwd, ...nativeWaiting(app, thread) },
+      queued: app === 'cursor' ? (cursorPendingTool().data.queueItems || []).map(item => ({ id: item.id, t: item.query, src: 'cursor' })) : [],
+      questions, changed, subagents: [], earlier, historyBefore: before,
+      model: agentModelName(), effort: effortName(), permission: null, context: null,
+      ...(draft !== undefined ? { draft } : {}),
+      ...(app === 'devin' ? { surface: devinSurface(), session: { key: thread, cwd: remoteContext.cwd }, workdir: { cwd: remoteContext.cwd } } : {}),
+      ...(run?.startedAt ? { generation: { start: run.startedAt, end: run.status === 'running' ? null : run.completedAt || null } } : {}) };
+  };
   const contextPct = () => {
-    const el = [...doc.querySelectorAll('button, [role=button], [role=img]')].find(e => vis(e) && /^Context(?:\s+usage)?:?\s*\d+%/i.test(((e.getAttribute('aria-label') || e.innerText || '').replace(/\s+/g, ' ').trim())));
+    const el = [...doc.querySelectorAll('button, [role=button], [role=img]')].find(e => vis(e) && /^(?:Context(?:\s+usage)?|上下文用量)[:：]?\s*\d+%/i.test(((e.getAttribute('aria-label') || e.innerText || '').replace(/\s+/g, ' ').trim())));
     if (el) {
       const text = ((el.getAttribute('aria-label') || el.innerText || '').replace(/\s+/g, ' ').trim());
       return { pct: Number(/(\d+)%/.exec(text)[1]), basis: /left|remaining|剩余/i.test(text) ? 'remaining' : 'used' };

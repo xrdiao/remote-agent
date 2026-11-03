@@ -100,7 +100,7 @@ export const adapter = {
     }
     if (!pos) throw new Error(this.appMessage('没找到排队消息的操作按钮（可能 {app} 版本不同）'));
     if (pos !== true) await this.tapCss(pos.x, pos.y);
-    setTimeout(() => this.pollChat().catch(() => {}), 300);
+    this.refreshSoon(300);
   },
 
   async editQueued(id, text) {
@@ -137,7 +137,7 @@ export const adapter = {
       await new Promise(r => setTimeout(r, 400));
     }, { act: act !== 'bar' });
     await this.listChanges();
-    setTimeout(() => this.pollChat().catch(() => {}), 300);
+    this.refreshSoon(300);
   },
 
   async listChanges() {
@@ -150,12 +150,6 @@ export const adapter = {
 
   async withFiles(fn, opts) {
     return this.withCursorFiles(fn);
-  },
-
-  async newTerminal() {
-    await this.editorCdp.send('Page.bringToFront');
-    await this.editorCdp.evaluate('document.activeElement?.blur()');
-    await this.key('Ctrl+Shift+`', { cdp: this.editorCdp });
   },
 
   async usageContext() {
@@ -391,6 +385,6 @@ async fusionPick(part, value) {
   await this.closeMenus();
   this.emit({ t: 'status', ok: true, msg: part === 'fast' ? `Fast Mode 已${fusion.fast ? '打开' : '关闭'}` : `已切换到 ${value}` });
   await this.openMenu('model');
-  setTimeout(() => this.pollChat().catch(() => {}), 300);
+  this.refreshSoon(300);
 }
 };

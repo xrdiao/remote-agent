@@ -35,7 +35,8 @@
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>Remote Agent</title>
-<link rel="stylesheet" href="app.css?v=333">
+<link rel="stylesheet" href="app.css?v=383">
+<link rel="stylesheet" href="vendor/xterm.css?v=6.0.0">
 </head>
 <body>
 <nav id="rail" aria-label="导航"></nav>
@@ -46,12 +47,9 @@
       <button class="meter" id="meterCtx" type="button"><span class="track"><i id="meterCtxFill"></i></span><span class="meterText"><span class="meterLabel">上下文</span><b id="meterCtxPct">未获取</b></span></button>
       <div id="quotaMeters"></div><span id="quotaStatus"></span>
     </div>
-  <div id="fusionHeader" hidden>
-    <div class="fusionAgent"><button id="fusionA" class="dd" aria-label="选择 A">A</button><span id="fusionMetersA" class="fusionInlineMeters"></span></div>
-    <div class="fusionAgent"><button id="fusionB" class="dd" aria-label="选择 B">B</button><span id="fusionMetersB" class="fusionInlineMeters"></span></div>
-  </div>
   <div class="seg"><button id="tabChat" class="on"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-8l-6 4v-4H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/><path d="M7 9h10M7 13h6"/></svg><span class="segLabel">对话</span></button><button id="tabTerm"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3 3-3 3m6 0h4"/></svg><span class="segLabel">终端</span></button></div>
   <button id="menuBtn" aria-label="菜单"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/></svg></button>
+  <div id="fusionHeader" hidden><button id="fusionRunConfig" data-fusion-config aria-label="主 Agent 配置">主 Agent 配置</button><button id="fusionTasks" data-fusion-tasks>任务与证据</button></div>
 </header>
 
 <main>
@@ -64,7 +62,7 @@
       <button id="cachedMore" hidden></button>
       <button id="taskChip" hidden></button>
       <div id="sessionNotice" hidden role="status"></div>
-      <div id="fusionWelcome" hidden><h2>让两个 AI 一起完成任务</h2><p>A 负责方案与检查，B 负责执行</p><div id="fusionSetup"></div><p id="fusionSetupReady" hidden>配置已就绪，在下方输入任务即可开始。各模块仍可单独调整。</p></div>
+      <div id="fusionWelcome" hidden><h2>Fusion</h2><p>配置主 Agent 后输入任务；你始终与主 Agent 对话。</p></div>
       <div id="items"></div>
       <div id="empty" hidden>没找到聊天面板。<br><span id="emptyHint"></span></div>
     </div>
@@ -82,7 +80,7 @@
   </section>
 
   <section id="screenView" class="view">
-    <div id="termBusy" hidden>Agent 正在运行</div>
+    <div id="termStatus" role="status" hidden></div>
     <div id="visualHeader" hidden>
       <div class="visualSource"><button id="visualBack" aria-label="返回对话"><svg class="arrowIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg></button><button id="visualChoose"><span id="visualTitle">选择窗口</span><svg class="arrowIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button><span id="visualStatus" role="status"></span></div>
     </div>
@@ -99,7 +97,7 @@
         <div>没有打开的终端</div>
         <button id="termEmptyNew" type="button">新建终端</button>
       </div>
-      <pre id="termText"></pre>
+      <div id="termText" class="ovRaw" hidden></div>
       <div id="visualEmpty" hidden role="status"></div>
       <div id="stage"><img id="screen" alt=""><div id="ripple"></div></div>
     </div>
@@ -135,16 +133,22 @@
     <button id="pickHistory" hidden>历史</button>
     <button id="pickDir" hidden></button>
     <button id="newChat">＋ 新建</button>
-    <div id="fusionConfig" hidden><button id="fusionModelA" class="dd">A 模型</button><button id="fusionModelB" class="dd">B 模型</button><button id="fusionProject" class="dd">项目</button></div>
+    <div id="fusionConfig" hidden><button data-fusion-config class="dd">主 Agent 配置</button><button data-fusion-tasks class="dd">任务与证据</button></div>
   </div>
+  <button id="composerFold" type="button" title="收起输入框" aria-label="收起输入框" aria-expanded="true" aria-controls="text"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
   <div id="termToolsLabel" hidden>终端操作</div>
   <div id="termTools" hidden>
     <button id="pickTerms">列表</button>
     <button id="newTerm">＋ 新建</button>
+    <button id="termFolder">选择目录新建</button>
     <button id="termInt">Ctrl+C</button>
     <button data-termkey="Tab">Tab</button>
+    <button id="termSize">尺寸</button>
+    <button id="termRefresh">刷新</button>
+    <button id="termPasswordToggle" type="button">密码输入</button>
     <button id="termCopy" disabled>复制</button>
     <button id="termSelectAll" disabled>全选</button>
+    <form id="termPasswordBox" hidden><input id="termPassword" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="终端密码" placeholder="输入终端密码"><button id="termPasswordSend" type="submit">发送密码</button><button id="termPasswordCancel" type="button">取消</button></form>
   </div>
   <div class="composerField"><textarea id="text" rows="1" placeholder="发给 Agent…" enterkeyhint="send"></textarea><button id="mic" title="按住说话，松开结束" aria-label="按住说话" hidden><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button><button id="stop" title="停止生成" aria-label="停止生成" hidden><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="3"/></svg></button></div>
   <div class="sendRow">
@@ -158,7 +162,7 @@
     </div>
     <button id="sendNow" hidden>立即发送</button><button id="send">发送</button>
   </div>
-  <div id="footerStatus"><div id="msg"></div><button id="retryChat" class="cBtn" hidden>重试当前会话</button><span id="elapsed" hidden></span></div>
+  <div id="footerStatus"><div id="composeStatus"><div id="msg"></div><button id="retryChat" class="cBtn" title="重试当前会话" aria-label="重试当前会话" hidden>重试</button><span id="elapsed" hidden></span></div><div id="changeNotice" hidden></div></div>
   </div>
 <input id="imgFile" type="file" accept="image/*" multiple hidden>
 <input id="docFile" type="file" accept=".pdf,.doc,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.py,.js,.ts,.tsx,.jsx,.sh,.yaml,.yml,.toml,.ini,.log,.xml,.html,.css,.c,.cpp,.h,.rs,.go" hidden>
@@ -177,6 +181,7 @@
       <div class="ov-lane" id="ovLane" hidden></div>
       <div class="ov-board" id="ovBoard"></div>
     </div>
+    <div class="ov-batch" id="ovBatch" hidden></div>
   </div>
   <div class="ov-toasts" id="ovToasts"></div>
 </div>
@@ -234,28 +239,30 @@
   <input id="scannerFile" type="file" accept="image/*" hidden>
 </div>
 
-<script src="i18n.js?v=326"></script>
-<script src="js/core.js?v=333"></script>
-<script src="js/gate.js?v=326"></script>
+<script src="i18n.js?v=383"></script>
+<script src="js/core.js?v=384"></script>
+<script src="js/gate.js?v=382"></script>
 <script src="js/scanner.js"></script>
 <script src="js/auth.js?v=207"></script>
-<script src="js/net.js?v=327"></script>
-<script src="js/sheets.js?v=330"></script>
-<script src="js/notify.js?v=327"></script>
-<script src="js/overview.js?v=333"></script>
-<script src="js/mode.js?v=257"></script>
+<script src="js/fusion.js?v=371"></script>
+<script src="js/net.js?v=384"></script>
+<script src="js/sheets.js?v=382"></script>
+<script src="js/notify.js?v=382"></script>
+<script src="js/overview.js?v=382"></script>
+<script src="js/mode.js?v=383"></script>
 <script src="markdown-it/markdown-it-15.0.3.min.js"></script>
 <script src="js/markdown.js?v=295"></script>
-<script src="js/chat.js?v=295"></script>
-<script src="js/history.js?v=333"></script>
-<script src="js/files.js?v=273"></script>
-<script src="js/transfer.js?v=207"></script>
-<script src="js/screen.js?v=267"></script>
-<script src="js/terminal.js?v=239"></script>
-<script src="js/composer.js?v=332"></script>
-<script src="js/latency.js?v=142"></script>
-<script src="js/image-editor.js?v=257"></script>
-<script src="js/voice.js?v=277"></script>
-<script src="js/local-voice.js?v=267"></script>
+<script src="js/chat.js?v=382"></script>
+<script src="js/history.js?v=384"></script>
+<script src="js/files.js?v=375"></script>
+<script src="js/transfer.js?v=379"></script>
+<script src="js/screen.js?v=382"></script>
+<script src="vendor/xterm.js?v=6.0.0"></script>
+<script src="js/terminal.js?v=383"></script>
+<script src="js/composer.js?v=384"></script>
+<script src="js/latency.js?v=367"></script>
+<script src="js/image-editor.js?v=379"></script>
+<script src="js/voice.js?v=356"></script>
+<script src="js/local-voice.js?v=376"></script>
 </body>
 </html>

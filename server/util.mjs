@@ -18,14 +18,6 @@ function printQr(label, url) {
   qrcode.generate(url, { small: true });
 }
 
-export async function waitReachable(url) {
-  for (let i = 0; i < 60; i++) {
-    try { if ((await fetch(`${url}/url.json`)).ok) return true; } catch {}
-    await new Promise(r => setTimeout(r, 2000));
-  }
-  return false;
-}
-
 export function appUrl() {
   const fixed = normalizeAppUrl(loadConfig().appUrl);
   if (fixed) return fixed;
