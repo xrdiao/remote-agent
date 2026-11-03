@@ -5,6 +5,21 @@ const I18N = (() => {
   const lang = saved === 'zh' || saved === 'en' ? saved : /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
 
   const EN = {
+    "RA 终端": "RA terminal",
+    "选择目录新建": "New in folder",
+    "在此文件夹新建终端": "New terminal in this folder",
+    "键盘": "Keyboard",
+    "尺寸": "Size",
+    "终端尺寸": "Terminal size",
+    "列数": "Columns",
+    "行数": "Rows",
+    "尺寸独立于手机屏幕，显示不下时滚动查看。": "Size is independent of the phone screen. Scroll to see the full terminal.",
+    "已退出": "Exited",
+    "终端已退出（{code}）": "Terminal exited ({code})",
+    "正在恢复终端…": "Restoring terminal…",
+    "终端连接已断开，等待重新连接…": "Terminal disconnected. Waiting to reconnect…",
+    "电脑已切换，请从当前电脑新建终端": "Computer changed. Create a terminal from the current computer.",
+    "终端输出顺序不连续，请刷新终端": "Terminal output is out of sequence. Refresh the terminal.",
     "默认进入": "Start view",
     "缩略图": "Overview",
     "会话内容": "Conversation",

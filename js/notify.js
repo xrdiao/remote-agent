@@ -213,7 +213,7 @@ function finishWinBinding(error) {
 }
 function bindWin(target) {
   finishWinBinding(new Error('目标会话已切换'));
-  if (mode !== 'chat') setMode('chat');
+  if (mode !== 'chat') setMode('chat', false);
   if (winTargetReady(target)) return Promise.resolve();
   return new Promise((resolve, reject) => {
     winBinding = { target, resolve, reject };
@@ -241,7 +241,7 @@ navigator.serviceWorker?.addEventListener('message', e => {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') resumeComputerConnections();
   else suspendComputerConnections();
-  if (authed && document.visibilityState === 'visible') {
+  if (authed && mode !== 'terminal' && document.visibilityState === 'visible') {
     send({ t: 'usage', automatic: true });
     requestAgentCatalog();
   }
@@ -290,6 +290,11 @@ $('sheet').addEventListener('click', async e => {
   }
   if (b.dataset.computerProject) {
     const { directory, project } = computerFiles;
+    if (b.dataset.computerProject === 'terminal') {
+      if (project.owner.computer !== currentComputer()?.id) return terminalMessage('电脑已切换，请从当前电脑新建终端', true);
+      closeSheet();
+      return createRaTerminal(directory.path);
+    }
     if (b.dataset.computerProject === 'new') {
       const name = window.prompt(I18N.tr('新项目的文件夹名称'));
       if (!name?.trim()) return;
@@ -433,7 +438,7 @@ $('sheet').addEventListener('click', async e => {
     return renderAgentList();
   }
   if (b.dataset.agent) return openPickedSession(b.dataset.agent, b.dataset.agentTitle || '');
-  if (b.dataset.term) { closeSheet(); status('正在切换终端…'); return send({ t: 'openTerminal', id: b.dataset.term }); }
+  if (b.dataset.term) return openRaTerminal(b.dataset.term);
   if ('projectPath' in b.dataset) return openProjectFolders(b.dataset.projectPath, projectSheetOwner(b), true);
   if ('projectBrowse' in b.dataset) return openProjectFolders(b.dataset.projectBrowse, projectSheetOwner(b));
   if ('projectChat' in b.dataset) return openPickedProject({ t: 'openProject', path: b.dataset.projectChat, newSession: true }, projectSheetOwner(b));
@@ -450,7 +455,7 @@ $('sheet').addEventListener('click', async e => {
   if (b.dataset.setting) { status('正在修改…'); return send({ t: 'toggleSetting', label: b.dataset.setting }); }
   if (b.dataset.termDel) {
     if (!await ask(`删除终端「${b.dataset.termName || ''}」？\n里面正在跑的命令会停掉。`, '删除')) return;
-    closeSheet(); status('正在删除终端…'); return send({ t: 'closeTerminal', id: b.dataset.termDel });
+    closeSheet(); return removeRaTerminal(b.dataset.termDel);
   }
   if (b.dataset.fusionPick) { menuSheetKind = 'model'; status('正在修改…'); return send({ t: 'fusionPick', part: b.dataset.fusionPick, value: b.dataset.label }); }
   if (b.dataset.fusion) {
@@ -521,7 +526,7 @@ $('sheet').addEventListener('click', async e => {
   if (b.dataset.groupDelete != null) return deleteComputerGroup(b.dataset.groupDelete);
   if (act === 'toggleChanges') { toggleChangeNotice(); return closeSheet(); }
   if (act === 'executionToggle') return toggleExecutionRecords();
-  if (act === 'newTerm') { closeSheet(); status('正在新建终端…'); return send({ t: 'newTerminal' }); }
+  if (act === 'newTerm') { closeSheet(); return createRaTerminal(); }
   else if (act === 'localVoiceToggle') return toggleLocalVoice();
   else if (act === 'agentManager' || act === 'agentRefresh') return showAgentManager(true);
   else if (act === 'agentBack') return showMainMenu();
