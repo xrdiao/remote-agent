@@ -187,7 +187,6 @@ function applySelection(m, clearChat = true) {
   }
   const changed = (m.sel || '') !== viewSel;
   if (changed) { if (typeof cancelVoice === 'function') cancelVoice(); menuRequest++; saveDraft(); }
-  if (m.conversation) conversationContexts.set(`${currentComputer()?.id || ''}|${m.sel}`, m.conversation);
   // A new chat gets its thread id once it materializes: keep its pending echoes attached to it.
   if (changed && viewSel.endsWith('|') && (m.sel || '').startsWith(viewSel)) for (const p of pendingEchoes) if (p.sel === viewSel) p.sel = m.sel;
   if (changed) {
@@ -200,7 +199,7 @@ function applySelection(m, clearChat = true) {
   }
   const here = currentComputer();
   const id = m.id || here?.win;
-  const selection = { windowId: m.windowId ?? here?.windowId ?? '', threadId: m.threadId ?? here?.threadId ?? '', conversation: m.conversation || null };
+  const selection = { windowId: m.windowId ?? here?.windowId ?? '', threadId: m.threadId ?? here?.threadId ?? '' };
   if (here) rememberComputer({
     ...here,
     win: id,

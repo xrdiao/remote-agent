@@ -3,69 +3,7 @@ let raTerminal = null;
 let terminalOrigin = null, terminalListRequest = null, terminalCreateRequest = null;
 let terminalSubscription = '', terminalSequence = 0, terminalReady = false;
 let terminalComputer = '', terminalExited = false, terminalCwd = '', terminalFollow = true;
-let terminalPrompt = false;
 let terminalPasswordTarget = null, terminalPasswordRequest = null;
-let terminalCompletion = null, terminalHistoryRequest = null;
-const terminalInputHistory = new Map();
-const terminalInputKey = () => [currentComputer()?.id || '', currentTerminalId].join('|');
-
-function sendTerminalInput() {
-  if (!terminalAvailable() || !text.value.trim()) return;
-  saveDraft();
-  const receipt = sendReceipt(text.value);
-  if (!send({ t: 'termSend', id: currentTerminalId, subscription: terminalSubscription, text: text.value, ...receipt }))
-    failPendingSend(receipt.requestId);
-}
-function completeTerminalInput() {
-  if (!terminalAvailable()) return;
-  if (terminalCompletion?.subscription === terminalSubscription && terminalCompletion.revision === inputRevision) { terminalCompletion.tabs++; return; }
-  terminalCompletion = { requestId: crypto.randomUUID(), id: currentTerminalId, subscription: terminalSubscription, revision: inputRevision, tabs: 0 };
-  if (!send({ t: 'termComplete', text: text.value, caret: text.selectionStart, ...terminalCompletion })) terminalCompletion = null;
-}
-function recallTerminalInput(direction, commands) {
-  if (!terminalAvailable()) return;
-  if (terminalHistoryRequest?.subscription === terminalSubscription && terminalHistoryRequest.revision === inputRevision) {
-    terminalHistoryRequest.directions.push(direction);
-    return;
-  }
-  const key = terminalInputKey();
-  let state = terminalInputHistory.get(key);
-  if (!state) {
-    if (direction > 0) return;
-    if (!commands) {
-      terminalHistoryRequest = { requestId: crypto.randomUUID(), id: currentTerminalId, subscription: terminalSubscription, revision: inputRevision, direction, directions: [direction] };
-      send({ t: 'termHistory', ...terminalHistoryRequest });
-      return;
-    }
-    if (!commands.length) return terminalMessage('当前终端暂无可读取的命令历史');
-    state = { rows: commands, index: commands.length, draft: text.value, selection: [text.selectionStart, text.selectionEnd, text.selectionDirection] };
-    terminalInputHistory.set(key, state);
-  }
-  state.index = Math.max(0, Math.min(state.rows.length, state.index + direction));
-  const atDraft = state.index === state.rows.length;
-  text.value = atDraft ? state.draft : state.rows[state.index];
-  if (atDraft) text.setSelectionRange(...state.selection);
-  else text.setSelectionRange(text.value.length, text.value.length);
-  inputRevision++; autosize(); saveDraft();
-  if (atDraft) terminalInputHistory.delete(key);
-  inputRecall = atDraft ? null : { history: terminalInputHistory, key };
-}
-function receiveTerminalInput(m) {
-  if (mode !== 'terminal' || m.id !== currentTerminalId || m.subscription !== terminalSubscription) return;
-  const request = m.t === 'termHistory' ? terminalHistoryRequest : terminalCompletion;
-  if (request?.requestId !== m.requestId) return;
-  if (m.t === 'termHistory') terminalHistoryRequest = null;
-  else terminalCompletion = null;
-  if (m.revision !== inputRevision) return;
-  if (m.t === 'termHistory') {
-    for (const direction of request.directions) recallTerminalInput(direction, m.commands);
-    return;
-  }
-  text.value = m.text;
-  text.setSelectionRange(m.caret, m.caret);
-  recordDraftEdit();
-  if (request.tabs) { completeTerminalInput(); if (terminalCompletion) terminalCompletion.tabs = request.tabs - 1; }
-}
 
 function terminalMessage(message = '', error = false) {
   $('termStatus').textContent = I18N.tr(message);
@@ -79,16 +17,15 @@ function terminalAvailable() {
 function updateTerminalControls() {
   const available = terminalAvailable();
   if (mode === 'terminal') $('dot').className = authed && terminalReady ? 'ok' : '';
-  if (mode === 'terminal') $('send').disabled = !available;
-  for (const id of ['termInt', 'termSize', 'termPasswordToggle']) $(id).disabled = !available;
-  for (const button of document.querySelectorAll('[data-termkey]')) button.disabled = !available || !terminalPrompt;
+  if (raTerminal) raTerminal.options.disableStdin = !available;
+  for (const id of ['termKeyboard', 'termInt', 'termSize', 'termPasswordToggle']) $(id).disabled = !available;
+  for (const button of document.querySelectorAll('[data-termkey]')) button.disabled = !available;
   $('termCopy').disabled = $('termSelectAll').disabled = !raTerminal;
   $('newTerm').disabled = $('termEmptyNew').disabled = $('termFolder').disabled = !authed;
   if (!available) closeTerminalPassword();
 }
 function terminalDisconnected() {
   terminalReady = false;
-  terminalCompletion = terminalHistoryRequest = null;
   updateTerminalControls();
   if (mode === 'terminal') terminalMessage('终端连接已断开，等待重新连接…');
 }
@@ -125,11 +62,12 @@ function terminalWrite(data, requestId, binary = false) {
     ...(requestId ? { requestId } : {}), ...(binary ? { binary: true } : {}) });
 }
 function terminalKey(key) {
-  if (key === 'Tab') completeTerminalInput();
-  else recallTerminalInput(key === 'ArrowUp' ? -1 : 1);
+  const cursor = raTerminal?.modes.applicationCursorKeysMode ? '\x1bO' : '\x1b[';
+  const keys = { Enter: '\r', Tab: '\t', Escape: '\x1b',
+    ArrowUp: cursor + 'A', ArrowDown: cursor + 'B', ArrowRight: cursor + 'C', ArrowLeft: cursor + 'D' };
+  terminalWrite(keys[key]);
 }
 function openRaTerminal(id) {
-  saveDraft();
   closeSheet();
   closeTerminalPassword();
   terminalListRequest = terminalCreateRequest = null;
@@ -141,7 +79,6 @@ function openRaTerminal(id) {
   terminalReady = false;
   terminalComputer = currentComputer().id;
   currentTerminalId = id;
-  restoreDraft();
   terminalSubscription = crypto.randomUUID();
   terminalSequence = 0;
   terminalMessage('正在恢复终端…');
@@ -154,7 +91,6 @@ function requestTerminals(select = false) {
   send({ t: 'terminals', requestId: terminalListRequest.requestId });
 }
 function resumeTerminal() {
-  saveDraft();
   if (terminalOrigin?.computer !== currentComputer().id) terminalOrigin = { computer: currentComputer().id, source: 'computer' };
   terminalReady = false;
   terminalComputer = currentComputer().id;
@@ -178,7 +114,6 @@ function leaveTerminalMode() {
   terminalSubscription = '';
   terminalOrigin = null;
   terminalListRequest = terminalCreateRequest = null;
-  terminalCompletion = terminalHistoryRequest = null;
   closeTerminalPassword();
   updateTerminalControls();
   $('termStatus').hidden = true;
@@ -218,15 +153,14 @@ function renderTerminalSnapshot(m) {
   disposeTerminalView();
   currentTerminalId = m.id; currentTerminal = m.title; terminalCwd = m.cwd;
   terminalExited = m.exited;
-  terminalPrompt = m.prompt;
   terminalSequence = m.seq; terminalFollow = !same;
   termState = 'text'; updateTermEmpty();
   const terminal = raTerminal = new Terminal({ cols: m.cols, rows: m.rows, scrollback: 1000,
     fontFamily: 'ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace', fontSize: 13,
-    cursorBlink: false, theme: terminalTheme(), allowProposedApi: true, disableStdin: true });
+    cursorBlink: true, theme: terminalTheme(), allowProposedApi: true, disableStdin: true });
   terminal.open($('termText'));
-  terminal.textarea.readOnly = true;
-  terminal.textarea.tabIndex = -1;
+  terminal.onData(data => { if (terminal === raTerminal) terminalWrite(data); });
+  terminal.onBinary(data => { if (terminal === raTerminal) terminalWrite(data, undefined, true); });
   const subscription = terminalSubscription;
   terminal.write(m.data, () => {
     if (raTerminal !== terminal || terminalSubscription !== subscription) return;
@@ -239,13 +173,6 @@ function renderTerminalSnapshot(m) {
   updateTitle(); updateTerminalControls();
 }
 function receiveTerminal(m) {
-  if (m.t === 'termInput' || m.t === 'termHistory') { receiveTerminalInput(m); return true; }
-  if (m.t === 'termSent') {
-    const sent = pendingSends.get(m.requestId);
-    confirmSent(m, false);
-    if (sent) terminalInputHistory.delete([sent.computer, m.id].join('|'));
-    return true;
-  }
   if (m.t === 'terminals') {
     const request = terminalListRequest;
     if (mode !== 'terminal' || !request || request.computer !== currentComputer()?.id || m.requestId !== request.requestId) return true;
@@ -276,9 +203,6 @@ function receiveTerminal(m) {
     if (m.action === 'newTerminal' && m.requestId !== terminalCreateRequest?.requestId) return true;
     if (m.action === 'terminals' && m.requestId !== terminalListRequest?.requestId) return true;
     if (m.requestId === terminalPasswordRequest) closeTerminalPassword();
-    if (m.requestId === terminalCompletion?.requestId) terminalCompletion = null;
-    if (m.requestId === terminalHistoryRequest?.requestId) terminalHistoryRequest = null;
-    if (m.action === 'termSend') failPendingSend(m.requestId, m.message);
     if (mode === 'terminal') terminalMessage(m.message, true);
     return true;
   }
@@ -286,7 +210,7 @@ function receiveTerminal(m) {
     if (m.requestId === terminalPasswordRequest) { closeTerminalPassword(); terminalMessage('密码输入已提交'); }
     return true;
   }
-  if (!['termSnapshot', 'termData', 'termShell', 'termSize', 'termExit', 'termClosed'].includes(m.t)) return false;
+  if (!['termSnapshot', 'termData', 'termSize', 'termExit', 'termClosed'].includes(m.t)) return false;
   if (mode !== 'terminal' || terminalComputer !== currentComputer()?.id || m.id !== currentTerminalId || m.subscription !== terminalSubscription) return true;
   if (m.t === 'termSnapshot') { renderTerminalSnapshot(m); return true; }
   if (m.seq <= terminalSequence) return true;
@@ -297,7 +221,6 @@ function receiveTerminal(m) {
   }
   terminalSequence = m.seq;
   if (m.t === 'termData') raTerminal.write(m.data, terminalCursorVisible);
-  else if (m.t === 'termShell') { terminalCwd = m.cwd; terminalPrompt = m.prompt; updateTerminalControls(); }
   else if (m.t === 'termSize') { raTerminal.resize(m.cols, m.rows); updateTitle(); }
   else if (m.t === 'termExit') {
     terminalExited = true; updateTerminalControls(); terminalMessage(ct('终端已退出（{code}）', { code: m.exitCode }));
@@ -313,6 +236,7 @@ function receiveTerminal(m) {
 $('pickTerms').onclick = () => requestTerminals();
 $('newTerm').onclick = $('termEmptyNew').onclick = () => createRaTerminal();
 $('termFolder').onclick = () => openProjectFolders(terminalCwd, { computer: currentComputer().id, source: 'terminal' });
+$('termKeyboard').onclick = () => { terminalFollow = true; raTerminal?.focus(); terminalCursorVisible(); };
 $('termInt').onclick = () => terminalWrite('\x03');
 $('termRefresh').onclick = () => { if (currentTerminalId) openRaTerminal(currentTerminalId); else requestTerminals(true); };
 $('termSize').onclick = showTerminalSize;
