@@ -279,6 +279,26 @@ test('Codex existing questions props and execution approvals retain their native
   assert.equal(h.data()[0].id, '0'); assert.equal(h.data()[0].buttons[0].label, '允许');
 });
 
+for (const options of [[], ['继续']]) test(`Codex async Question with ${options.length} options keeps its outer request when the inner renderer is shared with userInput`, async () => {
+  const h = codexQuestionReader();
+  delete h.owner.pendingRequest;
+  const question = { id: 'async-tool-question', question: '请补充说明', options, draft: '' };
+  const props = { questionIndex: 0, questions: [question], onDraftChange(value) { question.draft = value; },
+    onSubmit() { h.state.submitted.push(question.draft); h.state.mounted = false; } };
+  h.form.memoizedProps = props;
+  const renderer = { memoizedProps: { questionAndOptions: [{ question: { type: 'native-heading' }, options: [] }],
+    onDraftChange() { assert.fail('the shared renderer does not own this request'); },
+    onSubmit() { assert.fail('the answer belongs to the outer async request'); } }, return: h.form, child: h.host };
+  h.form.child = renderer; h.host.return = renderer;
+  const requests = h.data(); assert.equal(requests.length, 1);
+  const request = requests[0]; assert.equal(request.id, 'async:async-tool-question'); assert.equal(request.text, question.question);
+  assert.equal(request.fields.length, 1); assert.equal(request.fields[0].type, 'text');
+  assert.equal(request.buttons.at(-1).disabled, true);
+  if (options.length) { await h.action(request.id, 0); assert.equal(question.draft, '继续'); }
+  await h.action(request.id, request.buttons.length - 1, [{ n: 0, value: '异步问题的回答' }]);
+  assert.deepEqual(h.state.submitted, ['异步问题的回答']); assert.equal(h.data().length, 0);
+});
+
 test('Codex run status follows a loaded background native turn rather than current DOM controls', () => {
   const turn = { status: 'inProgress', turnStartedAtMs: 100 }, conversation = {};
   const context = nativeRunContext({ codexConversationManager: thread => ({ getConversation: id => id === 'background' ? conversation : null }),

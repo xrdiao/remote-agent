@@ -358,7 +358,7 @@
       const [node, parentRequest, parentOwner] = stack.pop();
       const p = node.memoizedProps;
       const owner = p?.pendingRequest?.type === 'userInput' ? p : parentOwner;
-      const request = (Array.isArray(p?.questions) || Array.isArray(p?.questionAndOptions)) && typeof p.onDraftChange === 'function' && typeof p.onSubmit === 'function' ? node : parentRequest;
+      const request = (Array.isArray(p?.questions) || owner && Array.isArray(p?.questionAndOptions)) && typeof p.onDraftChange === 'function' && typeof p.onSubmit === 'function' ? node : parentRequest;
       if (node.stateNode === el) return request ? { fiber: request, owner } : null;
       if (node.sibling) stack.push([node.sibling, parentRequest, parentOwner]);
       if (node.child) stack.push([node.child, request, owner]);

@@ -1108,12 +1108,12 @@ function rejectComputerConnection(computer, phase) {
   ovRender();
 }
 let computerWarmup = null;
-async function warmComputerSockets(probe = false) {
+async function warmComputerSockets(probe = false, fromBackground = false) {
   for (const [key, link] of computerSockets) if (!loadComputers().some(row => row.key === key && row.token === link.computer.token)) {
     dropComputerSocket(key);
   }
   if (computerWarmup) {
-    if (probe) computerWarmup.probeRequested = true;
+    if (probe && (!computerWarmup.probe || fromBackground)) computerWarmup.probeRequested = true;
     return computerWarmup;
   }
   const pending = loadComputers().filter(row => row.key !== currentComputer()?.key && computerRetryAllowed(row, probe));
@@ -1127,15 +1127,17 @@ async function warmComputerSockets(probe = false) {
       await reconnectComputer(computer.id, probe ? 'resume' : 'auto');
     }
   })).finally(() => {
-    const requested = computerWarmup.probeRequested && !probe;
+    const requested = computerWarmup.probeRequested;
     computerWarmup = null;
     if (requested) return warmComputerSockets(true);
   });
+  computerWarmup.probe = probe;
   return computerWarmup;
 }
 
 function resumeComputerConnections() {
   if (document.visibilityState !== 'visible') return;
+  const fromBackground = computerBackgroundAt !== null;
   if (computerBackgroundAt !== null && Date.now() - computerBackgroundAt >= COMPUTER_BACKGROUND_MS)
     for (const link of computerSockets.values()) if (link.socket?.readyState < 2) closeSocket(link.socket, 'background');
   for (const link of computerSockets.values()) recordComputerConnection(link, 'foreground');
@@ -1147,7 +1149,7 @@ function resumeComputerConnections() {
     else link.send?.({ t: 'visible', v: false, watching: false, background: false });
     probeComputerSocket(link);
   }
-  warmComputerSockets(true).catch(() => {});
+  warmComputerSockets(true, fromBackground).catch(() => {});
   return foreground;
 }
 

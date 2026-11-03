@@ -400,6 +400,27 @@ test('the two background workers wait for first screens, including across repeat
   assert.equal(h.state().thread, 'thread-a'); assert.equal(h.state().windowReady, true);
 });
 
+for (const probe of [false, true]) test(`foreground recovery queued during a ${probe ? 'probe' : 'startup'} batch is replayed once after its first screens finish`, async () => {
+  const h = harness({ count: 3 }); await h.start(); h.attached(0);
+  await h.run('openComputerSocket(loadComputers()[1],loadComputers()[1].relay)');
+  await h.open(2);
+  const batch = h.run(`warmComputerSockets(${probe})`); await h.settle();
+  h.link(1).socket.close(1006); await h.settle();
+  h.run('document.visibilityState="hidden";suspendComputerConnections()'); h.jump(1000);
+  h.run('document.visibilityState="visible";resumeComputerConnections();resumeComputerConnections()'); await h.settle();
+  assert.equal(h.link(1).lastClose.reconnect, undefined);
+  assert.equal(h.sockets.filter(socket => socket.url.includes('relay-b')).length, 1);
+  h.attached(2); await h.settle(); await h.settle();
+  assert.equal(h.sockets.filter(socket => socket.url.includes('relay-b')).length, 2);
+  assert.equal(h.link(1).lastClose.reconnect.source, 'resume');
+  assert.equal(h.link(1).phase, 'connecting');
+  assert(h.state().authed && h.state().windowReady);
+  await h.open(1); h.attached(1); await batch; await h.settle();
+  assert.equal(h.link(1).attempt, null); assert.equal(h.link(1).retry, null);
+  assert.equal(h.sockets.filter(socket => socket.url.includes('relay-b')).length, 2);
+  for (const i of [0, 1, 2]) assert(h.link(i).authed);
+});
+
 test('a changed background thread invalidates the never visited preloaded destination', async () => {
   const h = harness(); await h.start(); h.attached(0); await h.open(1); h.attached(1);
   h.deliver(1, { t: 'thread', sel: 'codex|window-b|other-thread', threadId: 'other-thread' });

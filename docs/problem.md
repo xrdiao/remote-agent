@@ -1215,3 +1215,38 @@ N2 的外层 @token 分段循环继续保留各 Agent 语义，不为十余行�
 - 手机 Safari 未执行。待用户用既有入口验收：正常结束且有文件改动的会话不误报待确认；真实 Question 出现时显示待确认；回答／跳过后清除；切换会话和返回主页仍归属正确。桌面配对浏览器不记作手机通过。未提交、推送或发布。
 
 证据在 `_shots/waiting-state-20261102/` 的 `controlled-before.json`，以及 `_shots/waiting-state-fix-20261103/` 的基准、`check-final.log`、`qa-recovery.json`、`question-session.json`、`native-single-question-contract.json`、`native-reader-after.json`、`browser-pending.json`、`answer-result.json`、`native-completed.json`、`restore-scene.json` 和截图；这些本机证据不随代码提交。
+
+## 25. Safari 返回前台漏恢复、异步 Question 回归及 capacity Retry 检查（2026-11-03）
+
+用户提供连接详情：关闭时间为北京时间 08:22:25.177，返回前台为 08:27:33.457，关闭码 1006、来源 transport，故障连接未验证／Socket 3，当前页面仍已验证；该次关闭后没有记录重连、新连接、认证及会话就绪。用户确认是 line 电脑，手动重新连接可恢复，随后报告同一电脑的无选项 Question 在手机不可见。用户确认修复方案，并要求追加检查 at capacity 的 Retry 卡片。
+
+修改前工作区干净，HEAD 与实际 GitHub HEAD／master 均为 `a79c8967a9762444f402dc05614b4b9b81540fd6`，源码 v379。以该当前工作区为回归基准，保存确认文件副本及 capacity 相关未改文件摘要；修改前 `npm run check` **499/499 通过**。
+
+### 25.1 根因、修改及直接影响
+
+| 项目 | 证据与根因 | 本轮实施 |
+|---|---|---|
+| 自动恢复丢失 | 受控三电脑场景中，当前电脑正常，故障电脑已被上一批恢复检查处理，另一电脑仍等首屏；故障后切后台清除其定时重试，返回前台将新请求记入 probeRequested。原 finally 的 `&& !probe` 丢弃了“旧批次本身也是恢复检查”的新请求，故障电脑继续离线，手动重连可恢复 | `app/js/net.js` 保留真实新后台返回产生的排队恢复请求。用现有后台状态区分新返回与同一次重复事件，批次记录自身是否为 probe；不改两路首屏预加载、单电脑在途复用和重试预算。初版仅删除条件被既有暂停回归拦下，已修正，保留重复事件不追加暂停电脑重试的规则 |
+| 无选项 Question 不可见 | 同一张真实异步卡片的外层有 questions／草稿／提交回调，内层复用 questionAndOptions，且没有原生 userInput 的 pendingRequest。上轮将内层视为请求拥有者，随后因归属为空丢弃。只读对照：上轮修改前读取器为 1 张，当前为 0 张，归属修正候选为 1 张；不是缺少选项本身导致 | `server/page/codex.js` 仅在存在真实 userInput 拥有者时匹配其内层 questionAndOptions；普通异步问题保留外层 questions 的身份与回调。恢复零选项及有选项卡片，不改原生请求 ID 0、多题、执行审批、答案状态或 Question 前端 |
+| 资源、回归与基准 | 新增四项实际函数回归，修改前三项失败；同一次返回合并及原生请求测试沿用既有覆盖 | 修改 `scripts/computer-switch.test.mjs`、`scripts/session-lifecycle.test.mjs`，同步基准 04／08 及本文；`core.js`／`index.html`／`sw.js` 更新为源码与缓存 **v380**，仅更新实际变化的 core／net 资源引用 |
+
+连接修复影响所有 Agent 共用的电脑连接生命周期，卡片修复仅影响 Codex。未改变 Cursor／Devin 适配、Fusion 编排、通知投递、page 导出快照或已安装扩展，未增加等待时间、重试次数或保护／兼容分支。
+
+受控复现能解释自动恢复遗漏及手动可恢复，但手机未记录当时的批次／在途任务，不能将此断定为此次唯一触发原因。截图中的 HTTP 检测只能说明检测时可达；1006、transport 和 lastRx 0ms 不能证明具体网络故障或零延迟。当前本机日志没有找到该关闭时间的对应记录，也没有足够身份字段将其他关闭行关联到该手机。
+
+### 25.2 at capacity／Retry 检查
+
+capacity 由 `chat-extract.js` 的 codexCapacityItem 读取，手动 Retry 走 `controls.js` 的 locate 和既有 click 消息；自动点击由 NativeWindow.retryCapacity 按原生窗口及提示实例计数。它们不依赖本轮修正的 Question 请求拥有者选择。这些文件和手机端 Retry 渲染／配置函数均未修改，前后摘要一致。
+
+受控 Chrome 使用实际读取、定位、手机卡片和事件函数：可用 Retry 显示并只触发一次对应按钮；禁用／倒计时不显示可点击动作；旧轮次及退役提示实例不能误点；零选项及有选项 Question 与 capacity 同时存在时，各自保持独立；自动 Retry 设置重复同步合并，连接配置失效后可重新同步原设置。没有发现本轮修改影响 Retry。当前项目和测试窗口均没有真实 capacity 提示，没有为制造现场调用模型，也没有执行真实模型重试；不把受控点击记作真实容量恢复。
+
+### 25.3 分层验证与现场恢复
+
+- 定向回归 **92/92 通过**，覆盖新恢复请求与重复事件、原有暂停／认证／接管规则、电脑切换、原生 ID 0／多题／审批，以及嵌套异步问题的读取和实际回调。原有暂停回归未删改断言。
+- 受控浏览器共 8 项组件检查通过。无选项问题按回车、有选项问题点选，各一次提交给对应回调，卡片消失，普通聊天草稿保留。Retry 结果及其边界见上节；没有真实模型请求。
+- 既有身份的临时 v380 页面完成 20 次短时合成后台／前台及重复恢复调用，健康连接仍是同一条；主动关闭一次真实 QA WebSocket 后，自动恢复只发起一次新认证，原 Agent、会话和草稿保持。桌面合成显隐不是 Safari 系统挂起验收。
+- 首轮临时页未启用 Page 域，启动隔离及错误记录脚本没有注入，已完成的连接场景在摘要函数引用错误变量时停止记录。该轮如实保留场景断言及恢复结果；仅 cr-agentLists 目录缓存变化，其他 cr 键、原页面和原生现场保持。补查启用 Page 域并验证注入，确认实际 v380、页面错误 0、存储无变化，未重跑已通过的压力场景。组件首轮 iframe 执行上下文错误仅修正测试夹具，没有为夹具失败改产品代码。
+- 隔离 QA relay 加载最终代码，正式 relay 未重启。临时标签均关闭，原配对页仍为 v379，旧 v377 标签及其未知请求保持，未刷新或重发。三个自有测试窗口的会话、模型、强度和草稿前后一致；设备数仍为 1，没有重新配对。没有发送、排队或回答真实模型请求。
+- 最终 `npm run check` **503/503 通过**，126 个语法文件、消息协议、196 个 page 导出及资源引用检查通过，差异空白检查通过。仅确认的 10 个跟踪文件变化，capacity 读取／点击／自动重试及手机渲染相关文件摘要未变。用户 Safari 待验：原场景后台返回自动恢复、重复进出后台不多连；同电脑零选项／有选项问题显示、回答及待确认清除；遇到真实 capacity 时检查 Retry 可见和原生接受。未提交、推送或发布。
+
+排查证据位于 gitignore 的 `_shots/safari-reconnect-20261103/`；实施证据位于 `_shots/safari-reconnect-fix-20261103/`，包括基准、前后回归日志、原生 capacity 只读结果、`browser-components.json`、`paired-live.json`、`paired-metadata.json`、`legacy-integrity.json` 及截图。本机身份和草稿快照不写入公开文档。
