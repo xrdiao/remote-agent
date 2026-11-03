@@ -9,7 +9,7 @@ function endInputRecall() {
   if (inputRecall) inputRecall.history.delete(inputRecall.key);
   inputRecall = null;
 }
-function chatInputKey(chat = lastChat) { return [currentComputer()?.id || '', viewSel, 'chat', chat?.thread || ''].join('|'); }
+function chatInputKey(chat = lastChat) { return [currentComputer()?.id || '', conversationKey(), 'chat', chat?.thread || ''].join('|'); }
 function rememberInputHistory(chat) {
   if (!chat) return;
   const key = chatInputKey(chat), rows = new Map(chatInputCache.get(key) || []);
@@ -149,10 +149,9 @@ function receiveQueueDone(m) {
   for (let n = submittedMessages.length - 1; n >= 0; n--) if (removed.has(submittedMessages[n].requestId)) submittedMessages.splice(n, 1);
   queueChatRender();
 }
-function draftKey() { return [currentComputer()?.id || '', viewSel, mode, ...(questionCompose?.sel === viewSel && mode === 'chat' ? [questionCompose.id] : [])].join('|'); }
-function saveDraft() { if (mode !== 'terminal' && activeDraft) { drafts.set(activeDraft, text.value); draftMentions.set(activeDraft, MN.mentions.slice()); } }
+function draftKey() { return [currentComputer()?.id || '', mode === 'terminal' ? currentTerminalId : conversationKey(), mode, ...(questionCompose?.sel === viewSel && mode === 'chat' ? [questionCompose.id] : [])].join('|'); }
+function saveDraft() { if (activeDraft) { drafts.set(activeDraft, text.value); draftMentions.set(activeDraft, MN.mentions.slice()); } }
 function restoreDraft() {
-  if (mode === 'terminal') return;
   endInputRecall(); clearTimeout(draftPushTimer); activeDraft = draftKey();
   pendingDesktopDraft = null;
   text.value = drafts.get(activeDraft) || ''; MN.mentions = draftMentions.get(activeDraft)?.slice() || [];
@@ -173,7 +172,7 @@ function queueDraftSync() {
   }, 400);
 }
 function receiveDraft(m) {
-  if (questionCompose || m.sel !== viewSel || m.draftEpoch !== draftEpoch || m.revision !== draftRevision) return;
+  if (mode !== 'chat' || questionCompose || m.sel !== viewSel || m.draftEpoch !== draftEpoch || m.revision !== draftRevision) return;
   if (m.t === 'draftAck') {
     if (m.ok && m.read) { draftAckRevision = m.revision; receiveDraft({ ...m, t: 'draft' }); }
     else if (m.ok && text.value === m.text) { draftAckRevision = m.revision; mirroredDraft = m.text; dirtyDrafts.delete(activeDraft); }
@@ -464,7 +463,7 @@ function updateSendMode() {
   const split = !answering && devinBusySplit();
   const follow = answering ? '' : codexFollow();
   const queue = !answering && (cursorBusyQueue() || follow === 'queue');
-  const label = answering ? '提交回答' : split || queue ? '排队' : follow === 'steer' ? '立即追加' : '发送';
+  const label = answering ? '提交回答' : mode === 'terminal' ? '发送到终端' : split || queue ? '排队' : follow === 'steer' ? '立即追加' : '发送';
   if ($('send').textContent !== label) $('send').textContent = label;
   $('sendNow').hidden = !split && !follow;
   $('sendNow').textContent = follow === 'steer' ? '改为排队' : '立即追加';
@@ -627,7 +626,8 @@ document.addEventListener('click', e => {
   endComposerEditing();
 });
 function sendComposer() {
-  if (mode === 'terminal' || $('send').disabled) return;
+  if ($('send').disabled) return;
+  if (mode === 'terminal') return sendTerminalInput();
   cancelVoice();
   if (mode === 'chat' && questionCompose?.sel === viewSel) return submitQuestionCompose();
   if (mode === 'chat' && pendingImageUploads()) return status('图片尚未上传完成；失败图片请重试或删除', false);
@@ -698,14 +698,16 @@ const composerInputHandlers = {
   },
   keydown: e => {
     const input = e.target;
+    if (mode === 'terminal' && e.key === 'Tab' && !e.isComposing && !composing) { e.preventDefault(); completeTerminalInput(); return; }
     if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) endInputRecall();
     if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
       if (!e.altKey || e.isComposing || composing || e.keyCode === 229 || !composerMentionBox(input).hidden) return;
       if (e.ctrlKey || e.metaKey || e.shiftKey || input.selectionStart !== input.selectionEnd) return endInputRecall();
-      if (mode !== 'chat') return;
+      if (mode !== 'chat' && mode !== 'terminal') return;
       e.preventDefault();
       const direction = e.key === 'ArrowUp' ? -1 : 1;
-      recallInput(direction, input);
+      if (mode === 'terminal') recallTerminalInput(direction);
+      else recallInput(direction, input);
       return;
     }
     if (e.key !== 'Enter') return;

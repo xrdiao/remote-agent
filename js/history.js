@@ -59,7 +59,7 @@ function saveComputerResumes() {
   computerResumeAt = Date.now();
   schedulePreviewSave();
 }
-const chatCacheKey = sel => `${currentComputer()?.id || ''}|${sel}`;
+const chatCacheKey = sel => `${currentComputer()?.id || ''}|${conversationKey(sel)}`;
 const chatPreviewGeneration = scGeneration, chatPreviewVersions = new Map(scVersions);
 const chatPreviewReady = idbGet('chat-previews').then(entries => {
   let filtered = false;
@@ -75,7 +75,7 @@ function chatTail(items, limit) {
   return [...(head ? [head] : []), ...items.slice(start)];
 }
 function cacheChat(sel, chat, computer = currentComputer()?.id || '') {
-  const key = `${computer}|${sel}`;
+  const key = `${computer}|${conversationKey(sel, computer)}`;
   const changed = chatBySel.get(key) !== chat;
   lruPut(chatBySel, key, chat, 12);
   if (key === SC.key) SC.cleared = false;
@@ -190,7 +190,7 @@ async function scMigrate() {
   store.set('histMig1', 1);
 }
 setTimeout(scMigrate, 2000);
-const scKeyFor = sess => `${currentComputer()?.id || '-'}|${currentApp || '?'}|${currentComputer()?.windowId || ''}|${sess}`;
+const scKeyFor = sess => `${currentComputer()?.id || '-'}|${conversationKey([currentApp || '?', currentComputer()?.windowId || '', sess].join('|'))}`;
 // A newer copy of a row replaces the stored one, except where the stored one holds more (thought text, task items).
 function scKeep(prev, it) {
   if (!prev) return it;
@@ -1120,7 +1120,7 @@ const ICONS = {
 };
 const ibtn = (icon, label, attrs = '', cls = '') => `<button class="ib ${cls}" ${attrs} title="${label}" aria-label="${label}"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[icon]}</svg></button>`;
 const hiddenChangeNotices = new Set();
-const changeNoticeKey = () => `${currentComputer()?.id || ''}|${viewSel}`;
+const changeNoticeKey = () => `${currentComputer()?.id || ''}|${conversationKey()}`;
 function toggleChangeNotice() {
   const key = changeNoticeKey();
   if (hiddenChangeNotices.has(key)) hiddenChangeNotices.delete(key); else hiddenChangeNotices.add(key);
