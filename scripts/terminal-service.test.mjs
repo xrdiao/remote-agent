@@ -29,17 +29,44 @@ class FakePty extends EventEmitter {
   resize(cols, rows) { this.sizes.push([cols, rows]); }
   kill() { this.killed = true; }
 }
-function fixture() {
+function fixture({ ready = true, spawned } = {}) {
   const children = [];
   const service = new TerminalService({ shell: '/bin/bash', env: { LANG: 'C.UTF-8' }, spawn: (shell, args, options) => {
     const child = new FakePty();
     children.push({ child, shell, args, options });
+    spawned?.(child);
+    if (ready) queueMicrotask(() => child.emit('data', '\x1b]777;RA;ready;\x07'));
     return child;
   } });
   return { service, children };
 }
 const writeScreen = (screen, data) => new Promise(resolve => screen.write(data, resolve));
 const lines = screen => Array.from({ length: screen.buffer.active.length }, (_, row) => screen.buffer.active.getLine(row).translateToString(true));
+
+test('creating a terminal waits for Readline rather than treating startup as foreground input', async t => {
+  let created;
+  const spawned = new Promise(resolve => { created = resolve; });
+  const { service } = fixture({ ready: false, spawned: created }); t.after(() => service.dispose());
+  let returned = false;
+  const creating = service.create({ cwd: directory }).then(meta => { returned = true; return meta; });
+  const child = await spawned;
+  child.emit('data', '\x1b]777;RA;prompt;' + Buffer.from(directory).toString('base64') + '\x07');
+  await service.get(service.list()[0].id).pending;
+  assert.equal(returned, false); assert.deepEqual(child.writes, []);
+  child.emit('data', '\x1b]777;RA;ready;\x07');
+  const meta = await creating; assert.equal(returned, true);
+  await service.submit(meta.id, 'printf first-command');
+  assert.match(child.writes[0], /^\x1b\[97~/);
+});
+
+test('a Shell exiting before Readline rejects creation instead of leaving its request pending', async t => {
+  let created;
+  const spawned = new Promise(resolve => { created = resolve; });
+  const { service } = fixture({ ready: false, spawned: created }); t.after(() => service.dispose());
+  const creating = service.create({ cwd: directory });
+  const child = await spawned; child.emit('exit', { exitCode: 1, signal: 0 });
+  await assert.rejects(creating, /Shell 在输入就绪前退出：1/);
+});
 
 test('RA terminals preserve explicit project directories and sizes independently of subscribers', async t => {
   const { service, children } = fixture(); t.after(() => service.dispose());
@@ -49,7 +76,7 @@ test('RA terminals preserve explicit project directories and sizes independently
   assert.equal(children[0].options.cwd, a.cwd);
   assert.equal(children[0].options.cols, 120); assert.equal(children[0].options.rows, 50);
   assert.equal(children[1].options.cwd, b.cwd);
-  assert.deepEqual(children[0].args, ['-i']);
+  assert.deepEqual(children[0].args, ['--rcfile', path.resolve('server/terminal-shell.bash'), '-i']);
   const stop = await service.subscribe(a.id, () => {}); stop();
   assert.equal(children[0].child.killed, false);
   assert.equal(service.list().length, 2);
@@ -106,6 +133,22 @@ test('alternate-screen contents and cursor survive a fresh subscription', async 
   assert(lines(restored)[48].includes('BOTTOM'));
   assert.equal(restored.buffer.active.cursorY, 49);
   assert.equal(restored.buffer.active.cursorX, 1);
+});
+
+test('private Shell messages can span output chunks and terminal queries have one server owner', async t => {
+  const { service, children } = fixture(); t.after(() => service.dispose());
+  const terminal = await service.create({ cwd: directory });
+  const events = [];
+  await service.subscribe(terminal.id, event => events.push(event));
+  const prompt = '\x1b]777;RA;prompt;' + Buffer.from(directory).toString('base64') + '\x07';
+  children[0].child.emit('data', 'visible\x1b]77');
+  children[0].child.emit('data', prompt.slice(4) + '\x1b[6n');
+  await service.get(terminal.id).pending;
+  assert.equal(service.get(terminal.id).prompt, true);
+  assert.equal(events.filter(e => e.t === 'termData').map(e => e.data).join(''), 'visible\x1b[6n');
+  assert.equal(children[0].child.writes.length, 1);
+  assert.match(children[0].child.writes[0], /^\x1b\[\d+;\d+R$/);
+  assert(!JSON.stringify(events).includes('777;RA;'));
 });
 
 test('thirty subscription switches never cross terminal identities or create shells', async t => {
@@ -225,12 +268,13 @@ function frontendTerminal() {
     mode: 'terminal', terminalComputer: 'computer-A', currentComputer: () => ({ id: 'computer-A' }),
     currentTerminalId: 'terminal-A', terminalSubscription: 'subscription-A', terminalSequence: 5,
     terminalReady: true, terminalExited: false, terminalPasswordRequest: null,
+    terminalCompletion: null, terminalHistoryRequest: null,
     terminalCreateRequest: { requestId: 'create-A', computer: 'computer-A' },
     terminalListRequest: { requestId: 'list-A', computer: 'computer-A' },
     raTerminal: { write: data => effects.push(['write', data]), resize: (cols, rows) => effects.push(['resize', cols, rows]) },
     renderTerminalSnapshot: message => effects.push(['snapshot', message.id]),
     terminalMessage: text => effects.push(['message', text]), updateTerminalControls() {},
-    closeTerminalPassword() {}, terminalCursorVisible() {}, disposeTerminalView() {}, updateTermEmpty() {}, updateTitle() {},
+    closeTerminalPassword() {}, terminalCursorVisible() {}, disposeTerminalView() {}, updateTermEmpty() {}, updateTitle() {}, saveDraft() {}, restoreDraft() {},
     showTerminals: list => effects.push(['list', list]), openRaTerminal: id => effects.push(['open', id]),
     requestTerminals() {}, store: { get: () => 'terminal-A', set() {} }, sheetKind: null,
     crypto: crypto.webcrypto, authed: true, terminalOrigin: { computer: 'computer-A', source: 'computer' },
@@ -293,7 +337,7 @@ test('visual frame layout still fits its viewport and scales without terminal cr
 });
 
 test('real Ubuntu PTY uses requested cwd and size and supports no-echo input', { timeout: 15000 }, async t => {
-  const service = new TerminalService({ shell: '/bin/bash', spawn: (shell, args, options) => pty.spawn(shell, ['--noprofile', '--norc', ...args],
+  const service = new TerminalService({ shell: '/bin/bash', spawn: (shell, args, options) => pty.spawn(shell, ['--noprofile', ...args],
     { ...options, env: { ...options.env, PS1: 'RA> ', PROMPT_COMMAND: '' } }) });
   t.after(() => service.dispose());
   const meta = await service.create({ cwd: path.join(directory, 'A') });
@@ -323,4 +367,51 @@ test('real Ubuntu PTY uses requested cwd and size and supports no-echo input', {
   const again = await service.subscribe(meta.id, event => restored.push(event)); t.after(again);
   assert.equal(restored[0].pid, meta.pid);
   assert(restored[0].data.includes('__RA_LENGTH__18'));
+});
+
+test('textbox completion, multiline submit, history and foreground input use the same Bash PTY', { timeout: 15000 }, async t => {
+  await fs.writeFile(path.join(directory, '补全 fixture.txt'), '');
+  await fs.writeFile(path.join(directory, 'completion-one'), '');
+  await fs.writeFile(path.join(directory, 'completion-two'), '');
+  const service = new TerminalService({ shell: '/bin/bash', env: { ...process.env, HISTFILE: '/dev/null' } });
+  t.after(() => service.dispose());
+  const meta = await service.create({ cwd: directory }), terminal = service.get(meta.id);
+  let output = '', check;
+  const stop = await service.subscribe(meta.id, event => {
+    if (event.t === 'termData') output += event.data;
+    check?.();
+  });
+  t.after(stop);
+  const until = predicate => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { check = null; reject(new Error('Shell state did not arrive')); }, 5000);
+    check = () => { if (predicate()) { clearTimeout(timer); check = null; resolve(); } };
+    check();
+  });
+  assert.equal(terminal.prompt, true);
+  await service.submit(meta.id, 'printf "__IMMEDIATE__\\n"');
+  await until(() => terminal.prompt && output.includes('__IMMEDIATE__\r\n'));
+  await terminal.pending;
+  assert.equal(lines(terminal.screen).filter(line => line.includes('printf ')).length, 1);
+  const result = await service.complete(meta.id, 'cat 补', 5);
+  assert.match(result.text, /补全\\ fixture\.txt/);
+  const first = await service.complete(meta.id, 'cat completion-', 15);
+  const repeated = await service.complete(meta.id, first.text, first.caret);
+  await terminal.pending;
+  assert.equal(repeated.text, first.text);
+  assert(output.includes('completion-one') && output.includes('completion-two'));
+  const caret = await service.complete(meta.id, 'echo 中文 tail', 6);
+  assert.equal(caret.caret, 6);
+  await service.submit(meta.id, 'printf "__BOX_ONE__\\n"\nprintf "__BOX_TWO__\\n"');
+  await until(() => terminal.prompt && output.includes('__BOX_TWO__\r\n'));
+  const history = await service.history(meta.id);
+  assert(history.some(command => command.includes('printf "__BOX_TWO__\\n"')), JSON.stringify(history));
+  await service.submit(meta.id, 'read -rs -p __SECRET__ RA_SECRET; printf "\\n__LENGTH__%s\\n" "${#RA_SECRET}"');
+  await until(() => output.endsWith('__SECRET__'));
+  await assert.rejects(service.complete(meta.id, 'never', 5), /正在运行/);
+  const before = output.length;
+  await service.write(meta.id, 'fictional-secret\r');
+  await until(() => terminal.prompt && output.includes('__LENGTH__16\r\n'));
+  assert(!output.slice(before).includes('fictional-secret'));
+  assert(!output.includes('777;RA;'));
+  assert.equal(service.get(meta.id).process.pid, meta.pid);
 });

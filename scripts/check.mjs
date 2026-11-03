@@ -290,6 +290,7 @@ for (const [asset, source] of [['xterm.js', 'lib/xterm.js'], ['xterm.css', 'css/
     fail(`terminal asset version reference missing: ${asset}`);
 }
 console.log(`ok   terminal assets: xterm ${terminalPackage.version}, JS/CSS/license checked`);
+if (!fs.existsSync(path.join(ROOT, 'server/terminal-shell.bash'))) fail('terminal Shell startup resource is missing');
 
 if (failures) {
   console.error(`\n${failures} check(s) failed`);

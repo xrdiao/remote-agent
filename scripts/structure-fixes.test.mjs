@@ -112,7 +112,7 @@ for (const label of ['Recent chats', '最近聊天', '最近のチャット', '�
     const button = nativeNode({ 'aria-label': label });
     const doc = {
       getElementById: () => null,
-      querySelectorAll: selector => selector === '[data-composer-body]' ? [hidden, root] : selector === 'button' ? [button] : [],
+      querySelectorAll: selector => selector.includes('[data-composer-body]') ? [hidden, root] : selector === 'button' ? [button] : [],
     };
     const page = nativePage(doc, {}, 'codexRootProps,codexQueryClient,codexHistoryScopes');
     assert.equal(page.codexQueryClient(), query);
@@ -121,6 +121,18 @@ for (const label of ['Recent chats', '最近聊天', '最近のチャット', '�
     assert.deepEqual(routes, ['/local/fixture-thread']);
   });
 }
+
+test('Codex state remains readable when a Question replaces the main composer', () => {
+  for (const anchor of ['[data-request-input-dismiss]', '[data-response-annotation-conversation]']) {
+    const query = { getQueryData: () => [] }, scope = { familyBindings: new Map() };
+    const question = fiber(nativeNode(), [{ value: query }, { value: new Map([['scope', scope]]) }]);
+    const hidden = fiber(nativeNode({}, {}, false), [{ value: { getQueryData() {} } }]);
+    const doc = { getElementById: () => null, querySelectorAll: selector => selector.includes(anchor) ? [hidden, question] : [] };
+    const page = nativePage(doc, {}, 'codexQueryClient,codexHistoryScopes');
+    assert.equal(page.codexQueryClient(), query);
+    assert.deepEqual([...page.codexHistoryScopes()], [scope]);
+  }
+});
 
 for (const label of ['Recent chats. 1 in progress', '最近聊天。1 个处理中']) {
   test(`Codex recent popover uses the native trigger state and content ID: ${label}`, () => {
@@ -165,7 +177,7 @@ test('Codex follow-up preferences and draft facts come from the visible native a
   const root = fiber(nativeNode(), [{ value: { getQueryData: () => ({ values: { followUpQueueMode: 'queue', composerEnterBehavior: 'newline' } }) } }]);
   const doc = { getElementById: () => null, querySelector: () => null,
     querySelectorAll: selector => selector === '[data-composer-navigation-target="add-context"]' ? [nativeNode({}, {}, false), add]
-      : selector === '[data-composer-body]' ? [root] : [] };
+      : selector.includes('[data-composer-body]') ? [root] : [] };
   const data = nativePage(doc).codexFacts();
   assert.equal(data.view.follow, 'queue'); assert.equal(data.view.enter, 'newline');
   assert.equal(data.view.plan, true); assert.equal(data.hasDraftAttachments, true);
@@ -233,7 +245,7 @@ for (const supported of [false, true]) {
     const client = { getQueryData: () => [], getQueryCache: () => ({ getAll: () => [{ queryKey: ['models', '', 'local'], state: { data: { data: [model] } } }] }) };
     const root = fiber(nativeNode(), [{ value: client }]);
     const doc = { getElementById: () => null, querySelector: () => null,
-      querySelectorAll: selector => selector === '[data-codex-intelligence-trigger]' ? [button] : selector === '[data-composer-body]' ? [root] : [] };
+      querySelectorAll: selector => selector === '[data-codex-intelligence-trigger]' ? [button] : selector.includes('[data-composer-body]') ? [root] : [] };
     const page = nativePage(doc);
     assert.deepEqual(Array.from(page.effortItems(false, true), row => row.label), [...efforts.map(row => row.reasoningEffort), ...(supported ? ['max'] : [])]);
   });
@@ -392,6 +404,7 @@ function composerCommands() {
     cursorBusyQueue: () => false, chatBusy: false, status() {}, sendReceipt: () => { receipts++; return { requestId: 'receipt-' + receipts }; },
     pushEcho: (...args) => echoes.push(args), mentionsFor: () => ({}), jumpToLatest() {}, failPendingSend() {},
     send: packet => { packets.push(packet); return true; },
+    sendTerminalInput: () => packets.push({ t: 'termSend', text: input.value }),
   });
   const composer = read('app/js/composer.js');
   vm.runInContext(part(composer, 'const MN =', '// Mentions still present in the text')
@@ -473,9 +486,9 @@ test('Cursor and ordinary Codex messages keep their send path', () => {
   }
 });
 
-test('the hidden chat composer never sends into an RA terminal', () => {
+test('the restored terminal textbox delegates once without creating a chat submission', () => {
   const h = composerCommands(); h.context.mode = 'terminal'; h.type('keep chat draft'); h.send();
-  assert.equal(h.packets.length, 0); assert.equal(h.receipts(), 0);
+  assert.deepEqual(h.packets, [{ t: 'termSend', text: 'keep chat draft' }]); assert.equal(h.receipts(), 0);
   assert.equal(h.input.value, 'keep chat draft');
 });
 

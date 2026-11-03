@@ -22,6 +22,7 @@ function setMode(m, restoreChat = true) {
   $('chatTools').hidden = m !== 'chat';
   $('termTools').hidden = m !== 'terminal';
   $('termToolsLabel').hidden = m !== 'terminal';
+  $('termHistory').hidden = m !== 'terminal';
   $('screenTools').hidden = m === 'terminal';
   $('screenKeys').hidden = true;
   view.classList.toggle('gesture', m === 'screen');

@@ -1331,3 +1331,40 @@ capacity 由 `chat-extract.js` 的 codexCapacityItem 读取，手动 Retry 走 `
 证据位于 gitignore 的 `_shots/independent-terminal-20261103/`：`baseline.json`、`check-before.log`、`check-final.log`、`mode-order-before.log`／`mode-order-after.log`、`browser-extended.json`、`browser-refresh.json`、`ttl-and-cadence.json`、`native-cases.json`、`native-final-completion.log`、`close-native.json`、`final-ui.json`、`stable-layout.json`、`cleanup.json` 和 `report.md`。其中原始失败日志保留用于区分测试夹具、实际缺陷及最终结果，不单看文件名判断通过。
 
 证据保存在 gitignore 的 `_shots/card-read-open-analysis-20261103/`，包括修改前基准、原始计时、`controlled.log`、`implementation-profile-results.json` 与配对现场恢复记录；敏感身份及草稿不写入公开文档。未提交、推送或发布。
+
+## 28. 从 debug 独立迁移终端输入框及 Codex 状态读取修复（2026-11-03）
+
+用户将上一轮改动保存在 debug，确认仅恢复与项目、会话、窗口改造无关的独立部分。已逐处拆分 51 个文件的分支差异，并取得 21 文件方案确认；不是合并整个 debug。修改前工作区干净，当前 master 与实际 GitHub master 均为 `e05f124b17875e119dce75e3df11c9029cfb2efb`，debug 与实际 GitHub debug 均为 `fe013062b7c6499260e43b631eae0a64552525e6`。回归以修改前 master 工作区为准，修改前 `npm run check` **525/525 通过**。
+
+### 28.1 根因与迁移范围
+
+| 根因／行为 | 迁移与影响 |
+|---|---|
+| master 隐藏终端输入框，直接将 xterm 按键送入 PTY；手机编辑命令不便 | `app/index.html`、`app.css`、`i18n.js`、`js/core.js`、`composer.js`、`mode.js`、`terminal.js`、`sw.js` 恢复输入框、发送、换行、中文输入、Tab 和上下历史；输出区只读，保留滚动、选区、复制、尺寸与 Ctrl+C。聊天仍使用原 viewSel，终端草稿按电脑／PTY ID 保存 |
+| 输入框需要取得当前 Shell 的真实补全、输入行、光标及历史，不能另开 Shell 或从可见提示猜测 | `server/terminal-service.mjs` 与新增 `server/terminal-shell.bash` 复用同一 Bash 的 Readline，通过私有消息回读；`server/routes.mjs` 只新增 termSend／termComplete／termHistory。沿用原有认证、订阅和接受回执，前台程序 stdin 与掩码密码分开处理；密码不进入普通草稿、补全、日志或重放 |
+| 创建回执早于 Readline 就绪，会使立即发送的首条命令先被内核回显，再被 Readline 绘制 | 同步迁移 debug 中真实 PS1 就绪标记及提前退出回执，避免首条命令重复显示；不增加固定延时或超时兜底。终端协议应答由同一个服务端 headless 屏幕负责 |
+| Codex Question 替换主输入框时，只查 data-composer-body 会找不到原生状态提供者 | `server/page/composer.js` 仅扩展可见节点选择器，从消息／Question 节点读取同一个状态提供者；保留隐藏旧节点过滤。未迁移原生 iframe 模块、contextId、后台会话接口或后台 Question 状态机 |
+| 既有检查与文档需要反映独立迁移后的行为 | `scripts/check.mjs` 核对 Bash 资源；`terminal-service.test.mjs`、`structure-fixes.test.mjs` 迁移终端回归与 Question 状态读取检查，保留 master 原项目绑定断言。README、usage、security、基准 04／06 及本文同步实际行为 |
+
+前端版本与实际变化资源同步为 **v385**，避免复用 debug 已使用的 v383／v384 缓存。保留独立 PTY 的 120×50 默认尺寸、1000 行回滚、事件输出和生命周期；原有项目初始目录解析不变。
+
+未迁移 debug 的项目根、原生会话身份、窗口租约、后台历史／发送、按会话切模型与强度、跨窗口通知／概览聚合、缓存身份及后台 Retry。`server/session.mjs`、Agent 适配、CDP、page build 和其他排除文件摘要保持；共享 routes 只增加终端路由，共享 composer 保留聊天身份规则。`scripts/page-exports.json` 和 package 文件未修改。
+
+### 28.2 分层验证
+
+| 层次 | 实际结果与边界 |
+|---|---|
+| 定向检查 | **231/231 通过**，包括真实 Ubuntu Bash PTY、补全／中文光标、多行／历史、前台输入、虚构无回显密码、Shell 就绪／提前退出、私有消息拆包、单一协议应答、旧订阅归属及终端委托发送。Question 替换主输入框的两个节点及隐藏旧提供者通过受控检查 |
+| 最终标准检查 | `npm run check` **530/530 通过**；128 个语法文件、90 种发送／80 种输出消息、196 个 page 导出、28 个核心资源引用、20 个 KaTeX 字体及 xterm 资源检查通过；差异空白与 Bash 语法检查通过 |
+| 既有配对浏览器 | 临时 v385 页面与已加载当前代码的隔离 QA relay 完成 9 组专项检查：无 Agent 绑定创建／首条命令只显示一次；目录选择新建；补全／连续候选／光标／历史；中文与多行、组合输入不提前发送；前台 stdin／掩码密码；30 次终端切换及各自草稿；聊天草稿往返；横竖屏显示；断线／刷新后恢复同一 PTY 且命令不重发。浏览器错误为 0、模型消息为 0 |
+| 手机及原生 Question | 桌面 Chrome 尺寸模拟与组合输入合成事件不能代表 Safari 真机。Question 提供者修复有受控证据；未为重新制造原生问题卡调用模型，不记为本轮真实 Question 回答验收 |
+
+首轮补全脚本用了同时匹配 completion-target.txt 与 completion-two 的前缀，Shell 正确保留歧义输入；修正夹具为唯一前缀后通过。首轮清理记录未解包 operation 中的删除回执，后续按实际包装记录，实际自有终端均已关闭。刷新脚本最初在默认主页等待终端快照，没有进入终端建立输出订阅；保留已通过的 8 组交互，只补验按实际入口进入终端后的断线／刷新恢复，不为夹具问题改产品逻辑或重复运行已通过的标准检查。
+
+### 28.3 现场与生效边界
+
+只重载登记的隔离 QA relay，正式 relay 未重启；没有新配对、发布、提交或推送。临时终端与标签已释放，临时浏览器权限恢复，原配对浏览器及 QA relay 保留。四个原生工作窗口的会话、草稿和 IDE 终端前后保持，未执行模型消息、原生窗口切换或项目创建。
+
+原配对页未刷新，仍为 v379，模式、电脑和输入草稿保持；QA 服务重载后，其运行时选择及 cr-computers 选择记录曾变化，已记录，没有覆盖原存储或宣称整个资料目录完全恢复。原有旧标签的未知请求未刷新或重发。实际采样与清理记录分别保存在本地 gitignore 的 `_shots/terminal-textbox-master-20261103/`，原始身份和草稿快照不写入公开文档。
+
+正式使用需一起加载本轮前后端；本轮未添加旧终端协议兼容。用户 Safari 待验：输入框键盘与中文选字、回车／换行、Tab／历史、前台交互及 sudo 密码、双向滚动与复制、横竖屏、后台与刷新恢复，以及 Codex 出现 Question 时的原生状态读取。Windows、其他 Shell 和真实第二台电脑未验，不把上轮 debug 的会话架构验收算作 master 本轮结果。

@@ -772,19 +772,19 @@ body.kb footer { padding-bottom: 8px; }
   flex: none; width: 36px; height: 36px; min-height: 0; padding: 0; border-radius: 50%;
   background: transparent; color: var(--fg-2); display: flex; align-items: center; justify-content: center;
 }
-body.term .composerField, body.term .sendRow, body.term #footerStatus, body.term #attachments, body.term #mentionBox, body.term #mathPrev { display: none; }
-#inputHistory { display: flex; gap: 2px; flex: none; }
-#inputHistory button, #insertNewline {
+body.term #attachments, body.term #mentionBox, body.term #mathPrev, body.term #add, body.term #img, body.term #uploadDoc { display: none; }
+#inputHistory, #termHistory { display: flex; gap: 2px; flex: none; }
+#inputHistory button, #termHistory button, #insertNewline {
   flex: none; width: 32px; height: 36px; min-height: 0; padding: 0; border-radius: 10px;
   background: transparent; color: var(--fg-3); display: flex; align-items: center; justify-content: center;
 }
 #insertNewline { width: 36px; }
-body:not(.chatmode) #inputHistory { display: none; }
+body:not(.chatmode) #inputHistory, body:not(.term) #termHistory { display: none; }
 /* Narrow phones: tighter left cluster; it scrolls before #sendNow/#send are squeezed. */
 @media (max-width: 430px) {
   .sendTools { gap: 0; }
   .sendTools > #add, .sendTools > #img, .sendTools > #uploadDoc { width: 32px; }
-  #inputHistory button, #insertNewline { width: 30px; }
+  #inputHistory button, #termHistory button, #insertNewline { width: 30px; }
   #sendNow { padding: 0 10px; }
   #send { padding: 0 12px 0 14px; }
 }
@@ -1097,7 +1097,7 @@ body.visual #stage { flex: none; margin: auto; }
   padding: 10px 14px 20px; box-sizing: border-box; background: var(--term-bg); color: var(--term-fg);
 }
 #termText .xterm { width: max-content; }
-#termText .xterm-helper-textarea { font-size: 16px; }
+#termText .xterm-helper-textarea { pointer-events: none; }
 body.term #view { overscroll-behavior: contain; }
 .terminalSizeForm { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; }
 .terminalSizeForm label { display: grid; gap: 6px; min-width: 0; flex: 1; }

@@ -165,7 +165,7 @@
     return { missing: false, quota: [], limits };
   };
   const codexRootProps = () => {
-    const el = [...doc.querySelectorAll('[data-composer-body]')].find(vis);
+    const el = [...doc.querySelectorAll('[data-composer-body], [data-response-annotation-conversation], [data-request-input-dismiss]')].find(vis);
     return el ? codexFiberProps(el, Infinity) : [];
   };
   const codexQueryClient = () => codexRootProps().find(p => typeof p.value?.getQueryData === 'function')?.value || null;

@@ -302,6 +302,21 @@ export const ROUTES = {
     terminalInputTarget(s, m);
     return terminalService.resize(m.id, m.cols, m.rows);
   }),
+  termSend: terminalRoute(async (s, m) => {
+    terminalInputTarget(s, m);
+    await terminalService.submit(m.id, String(m.text));
+    s.emit({ t: 'termSent', id: m.id, subscription: m.subscription, requestId: m.requestId });
+  }),
+  termComplete: terminalRoute(async (s, m) => {
+    terminalInputTarget(s, m);
+    const input = await terminalService.complete(m.id, String(m.text), m.caret);
+    s.emit({ t: 'termInput', id: m.id, subscription: m.subscription, requestId: m.requestId, revision: m.revision, ...input });
+  }),
+  termHistory: terminalRoute(async (s, m) => {
+    terminalInputTarget(s, m);
+    const commands = await terminalService.history(m.id);
+    s.emit({ t: 'termHistory', id: m.id, subscription: m.subscription, requestId: m.requestId, revision: m.revision, direction: m.direction, commands });
+  }),
   projects: { switchRead: true,  run: (s, m) => s.showProjects(String(m.path ?? '')) },
   docs: { switchRead: true, run: (s, m) => s.showDocs(m.requestId) },
   openProject: { navigation: true,  run: (s, m) => s.useProject(String(m.path ?? ''), m.newSession === true) },
