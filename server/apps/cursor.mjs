@@ -152,11 +152,6 @@ export const adapter = {
     return this.withCursorFiles(fn);
   },
 
-  async newTerminal() {
-    await this.editorCdp.send('Page.bringToFront');
-    await this.editorCdp.evaluate('document.activeElement?.blur()');
-    await this.key('Ctrl+Shift+`', { cdp: this.editorCdp });
-  },
   async terminalProject() {
     const roots = await this.currentRoots();
     return roots.length === 1 ? roots[0] : null;

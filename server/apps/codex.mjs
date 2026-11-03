@@ -175,13 +175,13 @@ export const adapter = {
     return this.withCursorFiles(fn);
   },
 
-  async newTerminal() {
-    // Let the workbench handle the shortcut instead of the focused Codex webview.
-    await this.editorCdp.evaluate('document.activeElement?.blur()');
-    await this.key('Ctrl+Shift+`', { cdp: this.editorCdp });
-  },
   async terminalProject() {
-    return this.cdp.evaluate(helpersCall('codexCurrentProject()'));
+    return this.cdp.evaluate(`(() => {
+      const h = ${PAGE_SRC};
+      if ((h.codexThread() || '') !== ${JSON.stringify(this.threadId || '')})
+        throw new Error('电脑端会话已切换，请从当前会话新建终端');
+      return h.codexCurrentProject();
+    })()`);
   },
 
   async mentionQuery(q, cat, seq, trigger, query) {

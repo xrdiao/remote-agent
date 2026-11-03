@@ -365,7 +365,7 @@ main { flex: 1; min-height: 0; position: relative; }
   body.split.chatmode:not(.visual) #actionBar { grid-column: 2; grid-row: 6; }
   body.split:not(.visual) footer { grid-column: 2; grid-row: 7; }
   body.split.term:not(.visual) main, body.split.term:not(.visual) #screenView { display: contents; }
-  body.split.term:not(.visual) #termBusy { grid-column: 2; grid-row: 2; }
+  body.split.term:not(.visual) #termStatus { grid-column: 2; grid-row: 2; }
   body.split.term:not(.visual) #view { grid-column: 2; grid-row: 3; min-height: 0; }
   body.split:not(.visual) .view { position: static; }
   body.split:not(.visual) .view.active { display: contents; }
@@ -772,19 +772,19 @@ body.kb footer { padding-bottom: 8px; }
   flex: none; width: 36px; height: 36px; min-height: 0; padding: 0; border-radius: 50%;
   background: transparent; color: var(--fg-2); display: flex; align-items: center; justify-content: center;
 }
-body.term #add, body.term #img, body.term #uploadDoc { display: none; }
-#inputHistory, #termHistory { display: flex; gap: 2px; flex: none; }
-#inputHistory button, #termHistory button, #insertNewline {
+body.term .composerField, body.term .sendRow, body.term #footerStatus, body.term #attachments, body.term #mentionBox, body.term #mathPrev { display: none; }
+#inputHistory { display: flex; gap: 2px; flex: none; }
+#inputHistory button, #insertNewline {
   flex: none; width: 32px; height: 36px; min-height: 0; padding: 0; border-radius: 10px;
   background: transparent; color: var(--fg-3); display: flex; align-items: center; justify-content: center;
 }
 #insertNewline { width: 36px; }
-body:not(.chatmode) #inputHistory, body:not(.term) #termHistory { display: none; }
+body:not(.chatmode) #inputHistory { display: none; }
 /* Narrow phones: tighter left cluster; it scrolls before #sendNow/#send are squeezed. */
 @media (max-width: 430px) {
   .sendTools { gap: 0; }
   .sendTools > #add, .sendTools > #img, .sendTools > #uploadDoc { width: 32px; }
-  #inputHistory button, #termHistory button, #insertNewline { width: 30px; }
+  #inputHistory button, #insertNewline { width: 30px; }
   #sendNow { padding: 0 10px; }
   #send { padding: 0 12px 0 14px; }
 }
@@ -1089,16 +1089,19 @@ body.visual #stage { flex: none; margin: auto; }
 .tools { flex: none; display: flex; gap: 6px; padding: 6px 8px; overflow-x: auto; scrollbar-width: none; min-width: 0; }
 .tools::-webkit-scrollbar { display: none; }
 #view { position: relative; flex: 1; min-height: 0; overflow: auto; background: var(--term-bg); -webkit-overflow-scrolling: touch; }
-#termBusy { flex: none; padding: 6px 12px; background: var(--warn-tint); color: var(--warn); font-size: 12.5px; }
+#termStatus { flex: none; padding: 6px 12px; background: var(--warn-tint); color: var(--warn); font-size: 12.5px; }
 #termEmpty { position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--term-mut); background: var(--term-bg); text-align: center; padding: 24px; }
 #termEmpty button { padding: 0 16px; min-height: 40px; }
 #termText {
-  display: none; position: absolute; inset: 0; margin: 0; overflow: auto; padding: 10px 14px 20px;
-  box-sizing: border-box; background: var(--term-bg); color: var(--term-fg);
-  font: 12.5px/1.45 ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
-  white-space: pre; tab-size: 8; -webkit-overflow-scrolling: touch;
-  user-select: text; -webkit-user-select: text; -webkit-touch-callout: default;
+  display: none; position: relative; width: max-content; min-width: 100%; margin: 0;
+  padding: 10px 14px 20px; box-sizing: border-box; background: var(--term-bg); color: var(--term-fg);
 }
+#termText .xterm { width: max-content; }
+#termText .xterm-helper-textarea { font-size: 16px; }
+body.term #view { overscroll-behavior: contain; }
+.terminalSizeForm { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; }
+.terminalSizeForm label { display: grid; gap: 6px; min-width: 0; flex: 1; }
+.terminalSizeForm input { min-width: 0; width: 100%; }
 :root[data-theme="light"] #termText {
   --term-ansi-0: #2e3436;
   --term-ansi-1: #a51d2d;
@@ -1119,7 +1122,10 @@ body.visual #stage { flex: none; margin: auto; }
 }
 body.term #termText { display: block; }
 body.term #stage { display: none; }
-#termText .caret { box-shadow: inset 2px 0 var(--term-fg); }
+body.term #meters { display: none; }
+body.term .appAvatar { background-image: none !important; display: grid; place-items: center; }
+body.term .appAvatar::before { content: ">_"; font: 600 14px ui-monospace, monospace; color: var(--fg-2); }
+body.term .appAvatar::after { display: none; }
 #stage { position: relative; overflow: hidden; margin: 0 auto; }
 #screen { position: absolute; left: 0; top: 0; max-width: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: none; }
 #view.gesture { touch-action: none; }
@@ -1502,20 +1508,20 @@ button { transition: background-color .12s var(--ease), color .12s var(--ease), 
 
 /* Persistent [hidden] bars and panels: fade + 4px slide. */
 #mentionBox, .attachmentRow, #mathPrev, #vSearch, #vTools, #vChanges,
-#sessBar, #fusionBar, #termBusy, #chatTools, #termTools, #termToolsLabel, #fusionConfig,
+#sessBar, #fusionBar, #termStatus, #chatTools, #termTools, #termToolsLabel, #fusionConfig,
 #screenKeys, #screenTools, #visualHeader, #visualCaption, #visualHint,
 #older, #cachedMore, #sessionNotice, #historyStatus {
   transition: opacity .18s var(--ease), transform .18s var(--ease), display .18s allow-discrete;
 }
 :is(#mentionBox, .attachmentRow, #mathPrev, #vSearch, #vTools, #vChanges,
-#sessBar, #fusionBar, #termBusy, #chatTools, #termTools, #termToolsLabel, #fusionConfig,
+#sessBar, #fusionBar, #termStatus, #chatTools, #termTools, #termToolsLabel, #fusionConfig,
 #screenKeys, #screenTools, #visualHeader, #visualCaption, #visualHint,
 #older, #cachedMore, #sessionNotice, #historyStatus)[hidden] {
   opacity: 0; transform: translateY(4px); pointer-events: none;
 }
 @starting-style {
   :is(#mentionBox, .attachmentRow, #mathPrev, #vSearch, #vTools, #vChanges,
-  #sessBar, #fusionBar, #termBusy, #chatTools, #termTools, #termToolsLabel, #fusionConfig,
+  #sessBar, #fusionBar, #termStatus, #chatTools, #termTools, #termToolsLabel, #fusionConfig,
   #screenKeys, #screenTools, #visualHeader, #visualCaption, #visualHint,
   #older, #cachedMore, #sessionNotice, #historyStatus):not([hidden]) {
     opacity: 0; transform: translateY(4px);

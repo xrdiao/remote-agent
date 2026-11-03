@@ -19,8 +19,10 @@ import { NativeCdp, nativeWindow, nativeTargets, startNativeWindows } from './na
 
 import { saveFusionRuns, initializeFusionState } from './fusion/state.mjs';
 import { recoverFusionRuns } from './fusion/runner.mjs';
+import { terminalService } from './terminal-service.mjs';
 for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) process.once(signal, () => {
   saveFusionRuns();
+  terminalService.dispose();
   process.exit(code);
 });
 

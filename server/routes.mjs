@@ -17,6 +17,8 @@ import { withOperation } from './operations.mjs';
 import { realpath } from 'node:fs/promises';
 import { writeTextFile } from '../lib/files.mjs';
 import { fileAction } from '../lib/file-actions.mjs';
+import os from 'node:os';
+import { terminalService } from './terminal-service.mjs';
 
 // One entry per message type the phone can send (auth/ack are handled inside ws.mjs itself).
 //   pre      — runs in handle() before the read-only/focus split, without a cdp
@@ -30,6 +32,7 @@ import { fileAction } from '../lib/file-actions.mjs';
 //   run      — the dispatch body
 //   after    — emits on success from the queued ws handler
 //   fail     — extra emits when run throws (sendFailed)
+//   errorStatus — false when fail owns a scoped error reply
 
 const flag = (v, s, m) => (typeof v === 'function' ? v(s, m) : !!v);
 // A pre handler returns SKIP when its condition does not match, letting the
@@ -97,6 +100,15 @@ function readAllPlans(session, windows) {
 
 const questionDone = (s, m) => s.emit({ t: 'questionDone', requestId: m.requestId, sel: s.selectionKey(), ok: true });
 const questionFailed = (s, m) => s.emit({ t: 'questionDone', requestId: m.requestId, sel: s.selectionKey(), ok: false });
+
+const terminalRoute = run => ({ fast: true, connection: true, fastRun: run, errorStatus: false,
+  fail: (s, m, error) => s.emit({ t: 'termError', requestId: m.requestId, id: m.id,
+    subscription: m.subscription, action: m.t, message: error.message }),
+});
+const terminalInputTarget = (s, m) => {
+  if (s.mode !== 'terminal' || s.terminalId !== m.id || s.terminalSubscription !== m.subscription)
+    throw new Error('终端已切换，请在当前终端重新输入');
+};
 
 export const ROUTES = {
   computerFileAction: { fast: true, connection: true,
@@ -195,13 +207,20 @@ export const ROUTES = {
     fast: true,
     fastRun: (s, m) => launchAgents(s, m.apps, () => ROUTES.connAgents.pre(s).catch(() => {})),
   },
-  mode: { switchRead: true, connection: true,  pre: (s, m) => s.setMode(m.mode) },
+  mode: { switchRead: true, connection: true, fast: (_s, m) => m.mode === 'terminal',
+    fastRun: (s, m) => s.setMode(m.mode), pre: (s, m) => s.setMode(m.mode) },
   visible: { switchRead: true, connection: true,
+    fast: s => s.mode === 'terminal', fastRun: (s, m) => ROUTES.visible.pre(s, m),
     pre: (s, m) => {
       s.notifyVisible = Boolean(m.watching);
       s.notifyPresenceAt = Date.now();
       if (s.visible === Boolean(m.v)) return;
       s.visible = Boolean(m.v);
+      if (s.mode === 'terminal') {
+        if (!s.visible) return s.stopTerminalUpdates();
+        if (s.terminalId) return s.selectTerminal(s.terminalId, s.terminalSubscription);
+        return;
+      }
       if (!s.visible) { s.chatUpdatesStop?.(); s.chatUpdatesStop = null; }
       if (!s.editorCdp && s.mode !== 'screen') return;
       if (!s.visible && s.mode === 'screen') return s.stopVisual();
@@ -254,27 +273,35 @@ export const ROUTES = {
   toggleMax: { run: s => s.toggleMax() },
   params: { switchRead: true,  run: (s, m) => s.showParams(String(m.model ?? ''), String(m.label ?? '')) },
   pickParam: { run: (s, m) => s.pickParam(String(m.model ?? ''), String(m.label ?? ''), m.section, m.value) },
-  terminals: { switchRead: true,  run: s => s.listTerminals() },
-  openTerminal: { run: (s, m) => s.openTerminal(String(m.id ?? '')) },
-  closeTerminal: { run: (s, m) => s.closeTerminal(String(m.id ?? '')) },
-  newTerminal: { run: s => s.newTerminal() },
-  termHistory: { switchRead: true,  readOnly: true, run: async (s, m) => {
-    const data = await s.editorCdp.evaluate(helpersCall('terminalHistory()'));
-    s.emit({ t: 'termHistory', sel: s.selectionKey(), direction: m.direction < 0 ? -1 : 1, id: data.id, commands: data.commands });
-  } },
-  termSend: {
-    run: (s, m) => s.sendTerminal(String(m.text ?? ''), String(m.id ?? ''), m.secret === true),
-    after: (s, m) => {
-      if (m.secret) return s.emit({ t: 'termSecretDone', requestId: m.requestId, ok: true });
-      s.emit({ t: 'sent', requestId: m.requestId, draft: m.draft, text: m.text, sel: s.selectionKey() });
-      s.emit({ t: 'status', ok: true, msg: '已发送' });
-    },
-    fail: (s, m) => s.emit(m.secret ? { t: 'termSecretDone', requestId: m.requestId, ok: false } : { t: 'sendFailed', requestId: m.requestId }),
-  },
-  termComplete: {
-    run: (s, m) => s.completeTerminal(String(m.text ?? ''), Number(m.caret), String(m.id ?? ''), m.revision, m.requestId),
-    fail: (s, m, error) => s.emit({ t: 'termInput', sel: s.selectionKey(), id: m.id, revision: m.revision, requestId: m.requestId, error: error.message }),
-  },
+  terminals: terminalRoute((s, m) => s.emit({ t: 'terminals', requestId: m.requestId,
+    list: terminalService.list().map(terminal => ({ ...terminal, current: terminal.id === s.terminalId })) })),
+  openTerminal: terminalRoute((s, m) => s.selectTerminal(String(m.id), String(m.subscription))),
+  closeTerminal: terminalRoute(async (s, m) => {
+    await terminalService.close(String(m.id));
+    s.emit({ t: 'termRemoved', id: m.id, requestId: m.requestId });
+  }),
+  newTerminal: terminalRoute(async (s, m) => {
+    let project = { root: m.cwd || os.homedir(), host: '' };
+    if (m.source === 'conversation') {
+      if (!s.bindingReady) throw new Error('当前会话项目尚未确认，请选择本机文件夹新建终端');
+      if (m.sel !== s.selectionKey()) throw new Error('会话已切换，请从当前会话新建终端');
+      // Freeze the originating native identities before the first asynchronous project read.
+      const origin = Object.assign(Object.create(Object.getPrototypeOf(s)), s);
+      project = await origin.adapter.terminalProject.call(origin);
+      if (!project?.root) throw new Error('未读取到唯一项目目录，请选择本机文件夹新建终端');
+    }
+    const terminal = await terminalService.create({ cwd: project.root, host: project.host || '' });
+    s.emit({ t: 'termCreated', requestId: m.requestId, terminal });
+  }),
+  termWrite: terminalRoute(async (s, m) => {
+    terminalInputTarget(s, m);
+    await terminalService.write(m.id, m.binary === true ? Buffer.from(String(m.data), 'binary') : String(m.data));
+    if (m.requestId) s.emit({ t: 'termWritten', id: m.id, subscription: m.subscription, requestId: m.requestId });
+  }),
+  termResize: terminalRoute((s, m) => {
+    terminalInputTarget(s, m);
+    return terminalService.resize(m.id, m.cols, m.rows);
+  }),
   projects: { switchRead: true,  run: (s, m) => s.showProjects(String(m.path ?? '')) },
   docs: { switchRead: true, run: (s, m) => s.showDocs(m.requestId) },
   openProject: { navigation: true,  run: (s, m) => s.useProject(String(m.path ?? ''), m.newSession === true) },
@@ -390,7 +417,10 @@ export const ROUTES = {
   appTheme: { fusionFree: true, run: (s, m) => { s.dark = m.dark !== false; s._theme = null; } },
   tap: { run: (s, m) => s.tap(m.x, m.y, m.button) },
   wheel: { run: (s, m) => s.wheel(m.x, m.y, m.dx || 0, m.dy || 0) },
-  key: { run: (s, m) => s.key(String(m.key || ''), { focusTerminal: m.focus === 'terminal', cdp: s.mode === 'chat' ? s.cdp : s.editorCdp }) },
+  key: { run: (s, m) => {
+    if (m.focus === 'terminal' || s.mode === 'terminal') throw new Error('终端输入已更新，请更新手机页面后使用 RA 终端');
+    return s.key(String(m.key || ''), { cdp: s.mode === 'chat' ? s.cdp : s.editorCdp });
+  } },
   send: {
     fusionFree: true,
     run: (s, m) => s.sendMessage(String(m.text ?? ''), m.submit !== false, m.when, cleanMentions(m.mentions), { requestId: m.requestId, draft: m.draft, text: m.text, draftEpoch: m.draftEpoch }),
@@ -424,7 +454,10 @@ export const ROUTES = {
   codexArchive: { run: (s, m) => s.codexArchiveThread(String(m.id || '')) },
   visualList: { connection: true, pre: s => s.visualList()},
   visualSelect: { connection: true, pre: (s, m) => s.visualSelect(m.id)},
-  refresh: { switchRead: true,  readOnly: true, fusionFree: true, run: s => s.mode === 'chat' ? s.pollChat(true, true) : s.mode === 'terminal' ? s.pollTerminal() : s.snapshot(true), fusion: s => s.mode === 'screen' ? s.snapshot(true) : s.adapter.pollChat.call(s) },
+  refresh: { switchRead: true, readOnly: true, fusionFree: true,
+    fast: s => s.mode === 'terminal', fastRun: s => s.terminalId && s.selectTerminal(s.terminalId, s.terminalSubscription),
+    run: s => s.mode === 'chat' ? s.pollChat(true, true) : s.snapshot(true),
+    fusion: s => s.mode === 'screen' ? s.snapshot(true) : s.adapter.pollChat.call(s) },
 
 };
 

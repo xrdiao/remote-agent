@@ -43,16 +43,10 @@ function onFrame(m) {
   layoutStage();
 }
 
-const cropRect = () => {
-  if (mode === 'terminal') return panel || [0, 0, frame.w, frame.h];
-  return [0, 0, frame.w, frame.h];
-};
-
 function layoutStage() {
-  if (mode !== 'screen' && mode !== 'terminal') return;
-  if (mode === 'terminal' && !panel) return;
-  const [rx, ry, rw, rh] = cropRect();
-  const stageW = (mode === 'screen' ? Math.min(view.clientWidth, view.clientHeight * rw / rh) : view.clientWidth) * zoom;
+  if (mode !== 'screen') return;
+  const [rx, ry, rw, rh] = [0, 0, frame.w, frame.h];
+  const stageW = Math.min(view.clientWidth, view.clientHeight * rw / rh) * zoom;
   const scale = stageW / rw;
   stage.style.width = stageW + 'px';
   stage.style.height = rh * scale + 'px';

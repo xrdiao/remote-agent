@@ -229,10 +229,7 @@ export class AgentContext {
   }
 
   async key(combo, opts = {}) {
-    const cdp = opts.focusTerminal ? this.editorCdp : (opts.cdp || this.cdp);
-    if (opts.focusTerminal) await this.focusTerminal();
-    const recall = opts.focusTerminal && (combo === 'ArrowUp' || combo === 'ArrowDown');
-    const before = recall ? await cdp.evaluate(helpersCall('terminalCommand()')) : undefined;
+    const cdp = opts.cdp || this.cdp;
     const parts = combo.split('+');
     const name = parts.pop();
     const modifiers = parts.reduce((m, p) => m | (MOD[p] || 0), 0);
@@ -246,15 +243,6 @@ export class AgentContext {
     const ev = { key: name, code: spec.code, windowsVirtualKeyCode: spec.vk, nativeVirtualKeyCode: spec.vk, modifiers };
     await cdp.send('Input.dispatchKeyEvent', { type: withText ? 'keyDown' : 'rawKeyDown', ...ev, ...(withText ? { text: spec.text } : {}) });
     await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...ev });
-    if (!recall) return;
-    let cmd = before;
-    for (let i = 0; i < 8; i++) {
-      await new Promise(r => setTimeout(r, 40));
-      const next = await cdp.evaluate(helpersCall('terminalCommand()'));
-      if (typeof next === 'string' && next !== before) { cmd = next; break; }
-      if (i === 7 && typeof next === 'string') cmd = next;
-    }
-    if (typeof cmd === 'string') this.emit({ t: 'termInput', text: cmd });
   }
 
   async typeText(text, cdp = this.cdp) {

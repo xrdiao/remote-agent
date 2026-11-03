@@ -5,7 +5,8 @@ function updateTermEmpty() {
   $('termEmpty').hidden = !empty;
   $('termText').hidden = !(mode === 'terminal' && termState === 'text');
 }
-function setMode(m) {
+function setMode(m, restoreChat = true) {
+  const previous = mode;
   if (typeof cancelVoice === 'function') cancelVoice();
   saveDraft();
   mode = m;
@@ -32,13 +33,14 @@ function setMode(m) {
   document.body.classList.toggle('chatmode', m === 'chat');
   updateSendMode();
   paintGenerationTime();
-  if (m !== 'terminal') $('termBusy').hidden = true;
   if (authed) send({ t: 'mode', mode: m });
+  if (m === 'terminal') enterTerminalMode(previous === 'chat');
+  else if (previous === 'terminal') { leaveTerminalMode(); if (restoreChat) restoreTerminalChat(); }
   updateTermEmpty();
   $('visualEmpty').hidden = m !== 'screen' || visualState.state === 'live';
   stage.hidden = m === 'screen' && visualState.state !== 'live';
   if (m === 'screen') { visualState = {state: 'idle', message: I18N.tr('正在查找窗口…')}; renderVisualState(visualState); }
-  if (m === 'screen' || m === 'terminal') { layoutStage(); }
+  if (m === 'screen') layoutStage();
   fitOrientation();
   if (typeof updateComposeCompact === 'function') updateComposeCompact();
 }
@@ -74,12 +76,7 @@ document.querySelector('main').addEventListener('touchend', e => {
   const dx = t.clientX - start.x;
   const dy = t.clientY - start.y;
   if (Math.abs(dx) < 56 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
-  const term = $('termText');
-  if (mode === 'terminal' && term.contains(start.target)) {
-    if (terminalSelection() || Date.now() - start.at > 450) return;
-    if (dx > 0 && term.scrollLeft > 2) return;
-    if (dx < 0 && term.scrollLeft + term.clientWidth < term.scrollWidth - 2) return;
-  }
+  if (mode === 'terminal' && $('termText').contains(start.target)) return;
   if (dx > 0 && mode === 'terminal') setMode('chat');
 });
 document.querySelector('main').addEventListener('touchcancel', () => { swipe = null; });

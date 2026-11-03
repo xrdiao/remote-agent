@@ -3,7 +3,7 @@ const text = $('text');
 let questionCompose = null;
 const drafts = new Map(), draftMentions = new Map();
 const dirtyDrafts = new Set();
-const inputHistory = new Map(), chatInputCache = new Map(), terminalInputHistory = new Map();
+const inputHistory = new Map(), chatInputCache = new Map();
 let inputRecall = null;
 function endInputRecall() {
   if (inputRecall) inputRecall.history.delete(inputRecall.key);
@@ -72,7 +72,6 @@ function confirmSent(m, render = true) {
   const sent = pendingSends.get(m.requestId);
   if (!sent) return;
   pendingSends.delete(m.requestId);
-  if (sent.mode === 'terminal') terminalInputHistory.clear();
   for (const key of inputHistory.keys()) if (key.startsWith(sent.draft + '|')) inputHistory.delete(key);
   if (drafts.get(sent.draft) === sent.text && (draftVersions.get(sent.draft) || 0) === sent.version) { drafts.delete(sent.draft); draftMentions.delete(sent.draft); }
   const here = (currentComputer()?.id || '') === sent.computer && mode === sent.mode && (draftKey() === sent.draft || m.sel === viewSel);
@@ -150,9 +149,10 @@ function receiveQueueDone(m) {
   for (let n = submittedMessages.length - 1; n >= 0; n--) if (removed.has(submittedMessages[n].requestId)) submittedMessages.splice(n, 1);
   queueChatRender();
 }
-function draftKey() { return [currentComputer()?.id || '', mode === 'terminal' ? viewSel.split('|').slice(0, 2).join('|') + '|' + currentTerminalId : viewSel, mode, ...(questionCompose?.sel === viewSel && mode === 'chat' ? [questionCompose.id] : [])].join('|'); }
-function saveDraft() { if (activeDraft) { drafts.set(activeDraft, text.value); draftMentions.set(activeDraft, MN.mentions.slice()); } }
+function draftKey() { return [currentComputer()?.id || '', viewSel, mode, ...(questionCompose?.sel === viewSel && mode === 'chat' ? [questionCompose.id] : [])].join('|'); }
+function saveDraft() { if (mode !== 'terminal' && activeDraft) { drafts.set(activeDraft, text.value); draftMentions.set(activeDraft, MN.mentions.slice()); } }
 function restoreDraft() {
+  if (mode === 'terminal') return;
   endInputRecall(); clearTimeout(draftPushTimer); activeDraft = draftKey();
   pendingDesktopDraft = null;
   text.value = drafts.get(activeDraft) || ''; MN.mentions = draftMentions.get(activeDraft)?.slice() || [];
@@ -464,7 +464,7 @@ function updateSendMode() {
   const split = !answering && devinBusySplit();
   const follow = answering ? '' : codexFollow();
   const queue = !answering && (cursorBusyQueue() || follow === 'queue');
-  const label = answering ? '提交回答' : mode === 'terminal' ? '发送到终端' : split || queue ? '排队' : follow === 'steer' ? '立即追加' : '发送';
+  const label = answering ? '提交回答' : split || queue ? '排队' : follow === 'steer' ? '立即追加' : '发送';
   if ($('send').textContent !== label) $('send').textContent = label;
   $('sendNow').hidden = !split && !follow;
   $('sendNow').textContent = follow === 'steer' ? '改为排队' : '立即追加';
@@ -627,7 +627,7 @@ document.addEventListener('click', e => {
   endComposerEditing();
 });
 function sendComposer() {
-  if ($('send').disabled) return;
+  if (mode === 'terminal' || $('send').disabled) return;
   cancelVoice();
   if (mode === 'chat' && questionCompose?.sel === viewSel) return submitQuestionCompose();
   if (mode === 'chat' && pendingImageUploads()) return status('图片尚未上传完成；失败图片请重试或删除', false);
@@ -639,8 +639,7 @@ function sendComposer() {
   const when = devinBusySplit() || cursorBusyQueue() || follow === 'queue' ? 'queue' : follow === 'steer' ? 'now' : '';
   const receipt = sendReceipt(v);
   if (mode === 'chat') { status('正在发送…'); pushEcho(receipt.requestId, v, when === 'queue' || (!when && chatBusy) ? 'queue' : 'chat'); }
-  const sent = mode === 'terminal' ? send({ t: 'termSend', text: v, id: currentTerminalId, ...receipt })
-    : currentApp === 'fusion' ? send({ t: 'fusionMessage', computer: currentComputer().id, runId: lastChat.fusionRun.id, text: v, ...receipt })
+  const sent = currentApp === 'fusion' ? send({ t: 'fusionMessage', computer: currentComputer().id, runId: lastChat.fusionRun.id, text: v, ...receipt })
     : send({ t: 'send', text: v, submit: true, ...receipt, ...(when ? { when } : {}), ...mentionsFor(v) });
   if (sent === false) failPendingSend(receipt.requestId);
   if (mode === 'chat') jumpToLatest();
@@ -699,16 +698,14 @@ const composerInputHandlers = {
   },
   keydown: e => {
     const input = e.target;
-    if (mode === 'terminal' && e.key === 'Tab' && !e.isComposing && !composing) { e.preventDefault(); completeTerminalInput(); return; }
     if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) endInputRecall();
     if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
       if (!e.altKey || e.isComposing || composing || e.keyCode === 229 || !composerMentionBox(input).hidden) return;
       if (e.ctrlKey || e.metaKey || e.shiftKey || input.selectionStart !== input.selectionEnd) return endInputRecall();
-      if (mode !== 'chat' && mode !== 'terminal') return;
+      if (mode !== 'chat') return;
       e.preventDefault();
       const direction = e.key === 'ArrowUp' ? -1 : 1;
-      if (mode === 'chat') recallInput(direction, input);
-      else send({ t: 'termHistory', direction });
+      recallInput(direction, input);
       return;
     }
     if (e.key !== 'Enter') return;
@@ -722,52 +719,3 @@ function composerInputEvent(e) {
   composerInputHandlers[e.type === 'focusin' ? 'focus' : e.type === 'focusout' ? 'blur' : e.type](e);
 }
 for (const event of Object.keys(composerInputHandlers)) text.addEventListener(event, composerInputEvent);
-$('pickTerms').onclick = () => { status('正在读取终端列表…'); send({ t: 'terminals' }); };
-$('newTerm').onclick = () => { status('正在新建终端…'); send({ t: 'newTerminal' }); };
-$('termEmptyNew').onclick = () => { status('正在新建终端…'); send({ t: 'newTerminal' }); };
-$('termInt').onclick = () => send({ t: 'key', key: 'Ctrl+c', focus: 'terminal' });
-function recallTerminal(m) {
-  if (mode !== 'terminal' || m.sel !== viewSel) return;
-  const key = [currentComputer()?.id || '', m.sel, m.id].join('|');
-  let state = terminalInputHistory.get(key);
-  if (!state) {
-    if (m.direction > 0) return;
-    if (!m.commands.length) return status('当前终端暂无可读取的命令历史');
-    state = { rows: m.commands, index: m.commands.length, draft: text.value, selection: [text.selectionStart, text.selectionEnd, text.selectionDirection] };
-    terminalInputHistory.set(key, state);
-  }
-  state.index = Math.max(0, Math.min(state.rows.length, state.index + m.direction));
-  const atDraft = state.index === state.rows.length;
-  text.value = atDraft ? state.draft : state.rows[state.index];
-  if (atDraft) text.setSelectionRange(...state.selection);
-  else text.setSelectionRange(text.value.length, text.value.length);
-  autosize(); saveDraft();
-  if (atDraft) terminalInputHistory.delete(key);
-  inputRecall = atDraft ? null : { history: terminalInputHistory, key };
-}
-let terminalCompletion = null;
-function completeTerminalInput() {
-  if (!windowReady || !currentTerminalId || mode !== 'terminal') return;
-  if (terminalCompletion?.sel === viewSel && terminalCompletion.id === currentTerminalId && terminalCompletion.revision === inputRevision) { terminalCompletion.tabs++; return; }
-  terminalCompletion = { requestId: crypto.randomUUID(), sel: viewSel, id: currentTerminalId, revision: inputRevision, tabs: 0 };
-  if (!send({ t: 'termComplete', text: text.value, caret: text.selectionStart, ...terminalCompletion })) terminalCompletion = null;
-}
-function receiveTerminalInput(m) {
-  if (mode !== 'terminal' || m.sel && m.sel !== viewSel || m.id && m.id !== currentTerminalId) return;
-  const completion = m.requestId ? terminalCompletion : null;
-  if (m.requestId && completion?.requestId !== m.requestId) return;
-  if (completion) terminalCompletion = null;
-  if (m.revision !== undefined && m.revision !== inputRevision) return;
-  if (m.error) return status(m.error, false);
-  text.value = m.text || '';
-  text.setSelectionRange(text.value.length, text.value.length);
-  recordDraftEdit();
-  if (completion?.tabs) { completeTerminalInput(); if (terminalCompletion) terminalCompletion.tabs = completion.tabs - 1; }
-}
-document.querySelectorAll('[data-termkey]').forEach(b => b.onclick = () => {
-  const direction = b.dataset.termkey === 'ArrowUp' ? -1 : b.dataset.termkey === 'ArrowDown' ? 1 : 0;
-  if (direction) send({ t: 'termHistory', direction });
-  else if (b.dataset.termkey === 'Tab') completeTerminalInput();
-  else send({ t: 'key', key: b.dataset.termkey, focus: 'terminal' });
-});
-

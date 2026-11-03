@@ -60,12 +60,12 @@
 
 ## 终端
 
-1. 选择终端模式，读取当前原生终端及可用终端列表；草稿按电脑／窗口／真实终端 ID 分开，与聊天和其他终端独立。
-2. 按原生能力选择／创建／关闭终端，明确目标。新建使用当前会话的真实项目，必要时先选择对应编辑器；不修改已有终端的目录和进程。标题显示原生终端名称，不能把会话项目冒充终端的实时 pwd。
-3. 输入框显示发送到终端；普通命令、交互输入、Ctrl+C、Tab 等进入所选原生终端，不作为 Agent 聊天消息。按钮和键盘 Tab 共用当前未发命令的真实补全，保留光标后内容及连续候选；读取当前终端缓冲区的提示行，不把 shell 集成保留的候选输出当作输入正文。
-4. 输入已提交不等于命令执行成功。密码使用单独的掩码输入，按原生无回显交互提交；不写入普通草稿／历史／重放队列，提交后清空，回执不含正文。
-5. 复制有选区时复制选区，无选区时复制当前已加载输出；调用命令历史不误替换其他终端输入。
-6. 切换或关闭面板不擅自结束电脑进程。自动窗口回收对终端／后台进程的约定见 [03](03-projects-sessions-windows.md)。
+1. 对话页和电脑栏终端入口共用 RA 终端列表；资源归属电脑和真实 RA 终端 ID，初始目录独立于 Agent、窗口及会话。仅需电脑连接认证，创建／选择／输入不要求 IDE 已打开或 attach 完成。
+2. 新建以发起操作的真实项目或明确选择的本机目录为 cwd。终端使用 RA 用户的交互式 Shell 配置，不继承另一终端手动激活的环境；标题显示初始目录，不冒充执行 cd 后的实时 pwd。原生 IDE 终端不迁移、不关闭，原生终端上下文不自动映射到 RA 终端。
+3. 点终端直接输入，普通文本、中文输入法、回车、Tab、连续候选、上下历史、光标及交互程序进入同一个真实 PTY；手机按钮与外接键盘走同一输入通路。聊天与 Question 草稿保持独立，不维护外部命令草稿或补全回读。
+4. 密码可直接按程序无回显方式输入，或用独立掩码控件。RA 不保存输入／密码到日志、历史、草稿或重放队列，回执不含输入正文；输入已提交不等于命令执行成功。Shell 自身的历史及回显遵循其配置。
+5. PTY 输出按事件推送，服务端保留屏幕及 1000 行回滚。初始逻辑尺寸为 120 列 × 50 行，支持调整；转屏和弹出键盘不自动缩小逻辑尺寸。程序换行保留，长行按列数折行，内容超出手机可视区域时双向滚动。复制有选区时复制选区，否则复制当前保留的输出，滚动／选择时不抢回光标。
+6. 后台、断网、刷新、Session 保留到期和关闭 Agent 只释放订阅，不结束 Shell。重新认证后按终端身份恢复快照，再接连续增量；旧目标的输出不串到新目标，不自动重发输入。正常退出的 Shell 保留结束画面，主动关闭或 RA 服务退出结束该 PTY；不提供跨服务重启恢复。原生终端／后台进程的窗口管理约定仍见 [03](03-projects-sessions-windows.md)。
 
 ## 绘图与仿真画面
 
@@ -81,7 +81,7 @@ Windows 按实际窗口句柄捕获，需要相应 FFmpeg；X11 使用窗口枚�
 | 附件与图片编辑 | [voice.js](../../app/js/voice.js)、[image-editor.js](../../app/js/image-editor.js)、[chat.mjs](../../server/agent/chat.mjs)、[chat-images.mjs](../../server/chat-images.mjs) |
 | 文件传输 | [transfer.js](../../app/js/transfer.js)、[transfer.mjs](../../server/http/transfer.mjs)、[file-actions.mjs](../../lib/file-actions.mjs)、[archive.mjs](../../lib/archive.mjs) |
 | 语音 | [local-voice.js](../../app/js/local-voice.js)、[voice-worklet.js](../../app/js/voice-worklet.js)、[service.mjs](../../server/voice/service.mjs)、[CPU worker](../../server/voice/worker.py)、[Qwen worker](../../server/voice/qwen-worker.py)、[安装器](../../cli/voice-setup.mjs) |
-| 终端 | [terminal.js](../../app/js/terminal.js)、[terminal.mjs](../../server/agent/terminal.mjs)、[原生 terminal.js](../../server/page/terminal.js)、[terminal-dump.js](../../server/page/terminal-dump.js)、[mode.js](../../app/js/mode.js) |
+| RA 终端 | [terminal.js](../../app/js/terminal.js)、[terminal-service.mjs](../../server/terminal-service.mjs)、[mode.js](../../app/js/mode.js)、[routes.mjs](../../server/routes.mjs) |
 | 画面 | [screen.js](../../app/js/screen.js)、[capture.mjs](../../server/visual/capture.mjs)、[Linux](../../server/visual/linux.py)、[Windows](../../server/visual/windows.ps1)、[session.mjs](../../server/session.mjs) |
 
 ## 回归场景
@@ -101,8 +101,9 @@ Windows 按实际窗口句柄捕获，需要相应 FFmpeg；X11 使用窗口枚�
 | CPU／Qwen／系统识别的准备、录音、松开与切换 | 已安装能力、光标插入、开麦和收尾语义正确，不自动发送 |
 | 语音中编辑草稿、断网、切会话或隐藏页面 | 停止对应资源，保留已显示文字，不写新会话 |
 | 三 Agent 终端选择、输入、交互、控制键和复制 | 指定终端收到输入，输出／历史正确，不误发聊天 |
-| 未发命令 Tab、连续 Tab、光标中间补全和切终端 | 结果来自真实 shell；候选不写成草稿，迟到结果不覆盖新输入 |
-| A 项目会话位于 B 编辑器时新建终端 | 新终端实际 pwd 为 A，B 的既有终端及进程保持 |
+| 直接输入、Tab／连续候选、光标中间编辑、历史与切终端 | 由真实 Shell 处理；输入不误发聊天或其他终端 |
+| A 项目会话位于 B 编辑器时新建终端 | RA 终端实际 pwd 为 A，不操作 B 的 IDE 终端或切项目 |
+| watch 全屏输出、尺寸、后台／刷新恢复 | 下方数据按逻辑屏幕生成，可滚动；PID 保持，快照与增量连续，无输入重放 |
 | 查看画面、换窗口、缩放、刷新、撤销授权和退出 | 只读、来源正确、资源结束；按实际平台分别记录 |
 
 ## 关联检查与维护

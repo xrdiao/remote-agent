@@ -12,10 +12,9 @@ import { AgentContext, FOCUS_COMPOSER } from '../server/agent/context.mjs';
 import { ensurePairedBrowser } from './paired-browser.mjs';
 import { writeTextFile } from '../lib/files.mjs';
 import { methods as menuMethods } from '../server/agent/menus.mjs';
-import { methods as terminalMethods } from '../server/agent/terminal.mjs';
 import { methods as projectMethods } from '../server/agent/projects.mjs';
 import { methods as codexMethods } from '../server/apps/codex.mjs';
-import { ROUTES } from '../server/routes.mjs';
+import { ROUTES, flag } from '../server/routes.mjs';
 
 const read = file => fs.readFileSync(new URL('../' + file, import.meta.url), 'utf8');
 const part = (source, start, end) => {
@@ -91,29 +90,6 @@ test('Codex imageView survives stored history without a mounted native turn', ()
   assert.equal(image.images[0], input.path); assert.equal(image.keep, true);
 });
 
-test('new terminal chooses the conversation project before using the editor creation control', async () => {
-  const calls = [];
-  const editor = root => ({ async evaluate(expression) {
-    if (expression === 'window.vscode?.context?.configuration?.()?.workspace || null') return { uri: { scheme: 'file', path: root, authority: '' } };
-    if (expression.endsWith('.terminalHistory()')) return { id: 'previous-terminal' };
-    if (expression.endsWith('.newTerminalDirect()')) { calls.push(['create', root]); return { x: 1, y: 1 }; }
-    return true;
-  } });
-  const context = { app: 'codex', threadId: 'conversation-A', editorCdp: editor('/B'),
-    adapter: { terminalProject: async () => ({ root: '/A', host: '' }) },
-    projectMatches: (roots, root) => roots.some(item => item.root === root),
-    async useProject(root, newSession, thread) { calls.push(['project', root, newSession, thread]); this.editorCdp = editor(root); },
-    async tapCss() {}, emit() {}, pollTerminal: async () => {},
-  };
-  await terminalMethods.newTerminal.call(context);
-  assert.deepEqual(calls, [['project', '/A', false, 'conversation-A'], ['create', '/A']]);
-});
-
-test('terminal input rejects an obsolete terminal identity before clearing or typing', async () => {
-  const context = { focusTerminal: async () => {}, editorCdp: { evaluate: async () => ({ id: 'new-terminal' }) } };
-  await assert.rejects(terminalMethods.prepareTerminalInput.call(context, 'old-terminal'), /终端已切换/);
-});
-
 test('terminal input reads the live prompt rather than candidate output retained by shell integration', () => {
   let value = 'user@host:~$ cat folder ';
   const terminal = { element: { dataset: { remoteTerminal: 'terminal' } },
@@ -125,55 +101,6 @@ test('terminal input reads the live prompt rather than candidate output retained
   assert.equal(page.terminalCommand(), 'cat folder');
   value = 'user@host:~$ ';
   assert.equal(page.terminalHistory().input, '');
-});
-
-for (const shellIntegration of [true, false]) test(`terminal completion waits in its editor and returns the native result with shell integration ${shellIntegration}`, async () => {
-  let input = '', hash = 'before';
-  const messages = [], h = { terminalHistory: () => ({ id: 'terminal', input: shellIntegration ? input : null }),
-    terminalCommand: () => input, terminalDump: () => ({ hash }) };
-  const editor = { evaluate: async expression => vm.runInNewContext(expression.replaceAll(PAGE_SRC, 'nativeHelpers'), { nativeHelpers: h }),
-    send: async (_method, value) => { input = value.text; } };
-  const chat = { evaluate() { throw new Error('terminal read in chat webview'); } };
-  const context = { cdp: chat, editorCdp: editor, sel: 'selection',
-    prepareTerminalInput: async () => ({ input: shellIntegration ? '' : null, executing: false, sameDraft: false }),
-    waitFor: AgentContext.prototype.waitFor, key: async key => { assert.equal(key, 'Tab'); input = 'cat folder/'; hash = 'after'; },
-    liveRead: (cdp, sel) => cdp === chat && sel === 'selection', selectionKey: () => 'selection',
-    emit: message => messages.push(message), pollTerminal: async () => {} };
-  await terminalMethods.completeTerminal.call(context, 'cat fol', 7, 'terminal', 2, 'request');
-  assert.deepEqual(messages, [{ t: 'termInput', sel: 'selection', id: 'terminal', revision: 2, requestId: 'request', text: 'cat folder/' }]);
-});
-
-test('password submission leaves native command state alone and its receipt omits the password', async () => {
-  const calls = [], events = [], context = { focusTerminal: async () => {},
-    editorCdp: { evaluate: async () => ({ id: 'terminal' }), send: async (_method, value) => calls.push(value.text) },
-    key: async key => calls.push(key), pollTerminal: async () => {}, emit: message => events.push(message) };
-  await terminalMethods.sendTerminal.call(context, 'fake-secret', 'terminal', true);
-  ROUTES.termSend.after(context, { secret: true, text: 'fake-secret', requestId: 'secret-request' });
-  assert.deepEqual(calls, ['fake-secret', 'Enter']);
-  assert.deepEqual(events, [{ t: 'termSecretDone', requestId: 'secret-request', ok: true }]);
-});
-
-test('terminal draft identity follows its window and terminal rather than the selected chat', () => {
-  const context = vm.createContext({ currentComputer: () => ({ id: 'computer' }), mode: 'terminal',
-    viewSel: 'codex|window|chat-A', currentTerminalId: 'terminal-one', questionCompose: null });
-  vm.runInContext(part(read('app/js/composer.js'), 'function draftKey()', 'function saveDraft()') + 'this.key=draftKey;', context);
-  const first = context.key(); context.viewSel = 'codex|window|chat-B'; assert.equal(context.key(), first);
-  context.currentTerminalId = 'terminal-two'; assert.notEqual(context.key(), first);
-  context.viewSel = 'codex|another-window|chat-A'; assert.notEqual(context.key(), first);
-});
-
-test('consecutive terminal Tabs use the first real completion and discard an edited draft response', () => {
-  const packets = [], input = { value: 'cd fol', selectionStart: 6, setSelectionRange() {} };
-  const context = vm.createContext({ windowReady: true, currentTerminalId: 'terminal', mode: 'terminal', viewSel: 'codex|window|thread', inputRevision: 1,
-    crypto: crypto.webcrypto, text: input, send: message => { packets.push(message); return true; },
-    recordDraftEdit() { context.inputRevision++; }, status() {} });
-  vm.runInContext(part(read('app/js/composer.js'), 'let terminalCompletion =', "document.querySelectorAll('[data-termkey]')")
-    + 'this.tab=completeTerminalInput;this.receive=receiveTerminalInput;', context);
-  context.tab(); context.tab(); assert.equal(packets.length, 1);
-  context.receive({ ...packets[0], text: 'cd folder/' });
-  assert.equal(packets.length, 2); assert.equal(packets[1].text, 'cd folder/');
-  input.value = 'edited later'; context.inputRevision++;
-  context.receive({ ...packets[1], text: 'stale' }); assert.equal(input.value, 'edited later');
 });
 
 for (const label of ['Recent chats', '最近聊天', '最近のチャット', 'واجهة محلية']) {
@@ -537,13 +464,19 @@ test('ambiguous slash results remain choices, and an unknown slash retains ordin
   assert.equal(messages[0].text, '/not-a-command'); assert.equal(unknown.receipts(), 1);
 });
 
-test('Cursor, terminal input and ordinary Codex messages keep their send path', () => {
-  for (const setting of [{ app: 'cursor', mode: 'chat', value: '/compact' }, { app: 'codex', mode: 'terminal', value: '/compact' },
+test('Cursor and ordinary Codex messages keep their send path', () => {
+  for (const setting of [{ app: 'cursor', mode: 'chat', value: '/compact' },
     { app: 'codex', mode: 'chat', value: 'ordinary text' }]) {
     const h = composerCommands(); h.context.currentApp = setting.app; h.context.mode = setting.mode; h.type(setting.value); h.send();
-    assert.equal(h.packets.length, 1); assert.equal(h.packets[0].t, setting.mode === 'terminal' ? 'termSend' : 'send');
+    assert.equal(h.packets.length, 1); assert.equal(h.packets[0].t, 'send');
     assert.equal(h.receipts(), 1);
   }
+});
+
+test('the hidden chat composer never sends into an RA terminal', () => {
+  const h = composerCommands(); h.context.mode = 'terminal'; h.type('keep chat draft'); h.send();
+  assert.equal(h.packets.length, 0); assert.equal(h.receipts(), 0);
+  assert.equal(h.input.value, 'keep chat draft');
 });
 
 test('an accepted message closes only its own suggestions and preserves a newer draft', () => {
@@ -1649,6 +1582,7 @@ function relayHeartbeat({ needsTwoFactor = false } = {}) {
     selectionKey() { return `${this.app}|${this.windowId}|${this.threadId}`; }
     async handle() {}
     suspend() { this.suspended = true; }
+    stopTerminalUpdates() {}
     dispose() { this.disposed = true; }
   }
   const context = vm.createContext({
@@ -1662,7 +1596,7 @@ function relayHeartbeat({ needsTwoFactor = false } = {}) {
     bindDeviceConnection(_id, close) { const binding = { valid: true, close, release() {} }; bindings.push(binding); return binding; },
     subscribeLibrary() {}, subscribeOperations: () => () => {}, lastSelection: () => null,
     addViewer() {}, removeViewer() {}, clientIp: () => 'fixture', originAllowed: () => true,
-    ROUTES: { visible: { connection: true } }, flag: value => !!value,
+    ROUTES: { visible: { connection: true } }, flag, configureNativeRetry() {},
     beginOperation, withOperation, cdpRead: new AsyncLocalStorage(),
   });
   const strip = source => source.replace(/^import .*;\n/gm, '').replace(/\bexport /g, '');
@@ -1700,6 +1634,36 @@ function relayHeartbeat({ needsTwoFactor = false } = {}) {
     },
   };
 }
+
+test('returning from terminal finishes chat mode restoration before a following native attachment', async () => {
+  const h = relayHeartbeat(), socket = await h.socket(), session = h.bind(socket), trace = [];
+  let finishRead;
+  const reading = new Promise(resolve => { finishRead = resolve; });
+  session.mode = 'terminal';
+  session.setMode = async mode => { session.mode = mode; trace.push('mode-start'); await reading; trace.push('mode-end'); };
+  session.handle = async message => { if (message.t === 'mode') return ROUTES.mode.pre(session, message); trace.push('attach'); };
+  session.finishNavigationResult = () => {};
+  h.routes.mode = ROUTES.mode;
+  h.routes.attach = { navigation: true };
+  socket.receive({ t: 'mode', mode: 'chat' });
+  socket.receive({ t: 'attach', id: 'codex', navigationId: 1 });
+  await h.settle();
+  assert.deepEqual(trace, ['mode-start']);
+  finishRead(); await h.settle(); await h.settle();
+  assert.deepEqual(trace, ['mode-start', 'mode-end', 'attach']);
+});
+
+test('a stale terminal input error remains scoped and never overwrites the current chat status', async () => {
+  const h = relayHeartbeat(), socket = await h.socket(), session = h.bind(socket);
+  session.emit = message => socket.send(JSON.stringify(message));
+  h.routes.termWrite = ROUTES.termWrite;
+  socket.receive({ t: 'termWrite', id: 'old-terminal', subscription: 'old-subscription', data: 'never sent' });
+  await h.settle();
+  const errors = socket.sent.filter(message => message.t === 'termError');
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].id, 'old-terminal'); assert.equal(errors[0].subscription, 'old-subscription');
+  assert.equal(socket.sent.filter(message => message.t === 'status').length, 0);
+});
 
 test('background deadline owns unanswered relay heartbeats for five minutes without extending on repeated visibility', async () => {
   const h = relayHeartbeat(), socket = await h.socket(); h.bind(socket);

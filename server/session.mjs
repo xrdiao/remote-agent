@@ -20,6 +20,7 @@ import { rememberSelection, lastSelection, forgetSelection } from '../lib/auth.m
 import { editorRoots } from '../lib/files.mjs';
 import { NativeCdp, nativeWindow, nativeWindowAt, nativeTargets, subscribeCatalog } from './native-windows.mjs';
 import { captureOperation } from './operations.mjs';
+import { terminalService } from './terminal-service.mjs';
 
 export class Session extends AgentContext {
   constructor(client, deviceId, { fusionBinding = false } = {}) {
@@ -44,9 +45,30 @@ export class Session extends AgentContext {
     return stop?.();
   }
 
+  stopTerminalUpdates() {
+    this.terminalGeneration = (this.terminalGeneration || 0) + 1;
+    this.terminalUpdatesStop?.();
+    this.terminalUpdatesStop = null;
+  }
+
+  async selectTerminal(id, subscription) {
+    this.stopTerminalUpdates();
+    this.terminalId = id;
+    this.terminalSubscription = subscription;
+    if (!this.visible || this.mode !== 'terminal') return;
+    const generation = this.terminalGeneration;
+    const stop = await terminalService.subscribe(id, message => {
+      if (this.terminalGeneration === generation && this.visible && this.mode === 'terminal' && !this.disposed)
+        this.emit({ ...message, subscription });
+    });
+    if (this.terminalGeneration !== generation) stop();
+    else this.terminalUpdatesStop = stop;
+  }
+
   async setMode(mode, firstScreen = false) {
     const watchGeneration = this.chatWatchGeneration = (this.chatWatchGeneration || 0) + 1;
     cdpRead.run(null, () => this.stopChatUpdates());
+    this.stopTerminalUpdates();
     this.catalogUpdatesStop?.();
     this.catalogUpdatesStop = null;
     if (this.mode === 'screen' && mode !== 'screen') this.stopVisual();
@@ -69,10 +91,10 @@ export class Session extends AgentContext {
         }).finally(() => { if (this.catalogRefresh === refresh) this.catalogRefresh = null; });
       });
     }
-    this.lastChatAt = this.lastTermAt = 0;
+    this.lastChatAt = 0;
     clearInterval(this.chatTimer);
-    clearInterval(this.termTimer);
     if (this.fusionBinding) return;
+    if (this.mode === 'terminal') return;
     if (this.mode === 'screen') {
       visualCapture.subscribe(this);
       const windows = await this.visualList();
@@ -108,11 +130,6 @@ export class Session extends AgentContext {
           this.emit({ t: 'status', ok: false, msg: error.message });
       });
       else { await watching; await this.pollChat(); }
-    } else if (this.mode === 'terminal') {
-      this.lastTermHash = undefined;
-      await this.pollTerminal();
-      if (this.chatWatchGeneration !== watchGeneration || this.mode !== 'terminal') return;
-      this.termTimer = cdpRead.run(null, () => setInterval(() => this.pollTerminal().catch(() => {}), 250));
     }
   }
 
@@ -465,7 +482,6 @@ export class Session extends AgentContext {
     this.chatWatchGeneration = (this.chatWatchGeneration || 0) + 1;
     this.stopChatUpdates();
     clearInterval(this.chatTimer);
-    clearInterval(this.termTimer);
     this.startupPending = this.pendingProject = null;
     this.switchingThread = false;
     this.clearViewState();
@@ -521,7 +537,6 @@ export class Session extends AgentContext {
     this.focusTimer = null;
     this.focusCount = 0;
     clearInterval(this.chatTimer);
-    clearInterval(this.termTimer);
     const connections = new Set([this.cdp, this.editorCdp]);
     this.cdp = this.editorCdp = null;
     cdpRead.run(null, () => {
@@ -601,7 +616,7 @@ export class Session extends AgentContext {
     this.chatRead = null;
     this.polling = this.pollAgain = null;
     clearInterval(this.chatTimer);
-    clearInterval(this.termTimer);
+    this.stopTerminalUpdates();
     this.stopVisual();
     clearTimeout(this.focusTimer);
     this.focusTimer = null;
@@ -614,7 +629,7 @@ export class Session extends AgentContext {
     fusionViewers.delete(this);
     this.stopChatUpdates();
     clearInterval(this.chatTimer);
-    clearInterval(this.termTimer);
+    this.stopTerminalUpdates();
     if (this.activeOperations) return;
     this.detach();
   }

@@ -74,6 +74,7 @@ else console.log(`ok   protocol: ${sent.size} sent types all handled`);
 const emitted = new Set([
   ...grab(serverFiles, /emit\(\{\s*t:\s*'([A-Za-z]+)'/g),
   ...grab(serverFiles, /JSON\.stringify\(\{\s*t:\s*'([A-Za-z]+)'/g),
+  ...grab([path.join(ROOT, 'server/terminal-service.mjs')], /\{\s*t:\s*'([A-Za-z]+)'/g),
 ]);
 const frontendHandled = new Set([
   ...grab(appFiles, /\.t === '([A-Za-z]+)'/g),
@@ -263,7 +264,7 @@ const shellSource = /const SHELL = \[([\s\S]*?)\];/.exec(workerJs)?.[1];
 if (!shellSource) fail('app shell: cannot read the SHELL precache list');
 const shell = [...(shellSource || '').matchAll(/'([^']+)'/g)].map(m => m[1]);
 const coreRefs = [...indexHtml.matchAll(/<(?:script|link)\b[^>]*\b(?:src|href)="([^\"]+)"/g)]
-  .map(m => m[1]).filter(ref => /^(?:js\/|katex\/|(?:app\.css|i18n\.js)(?:\?|$))/.test(ref));
+  .map(m => m[1]).filter(ref => /^(?:js\/|katex\/|vendor\/xterm\.|(?:app\.css|i18n\.js)(?:\?|$))/.test(ref));
 const coreRef = coreRefs.find(ref => ref.split('?')[0] === 'js/core.js');
 if (coreRef !== `js/core.js?v=${appVersion?.slice(1)}`) fail(`app shell version: ${coreRef} does not match APP_VERSION=${appVersion}`);
 for (const ref of coreRefs) {
@@ -279,6 +280,16 @@ for (const ref of katexFonts) {
   if (!shell.includes(ref)) fail(`app shell: KaTeX font missing from precache: ${ref}`);
 }
 console.log(`ok   app shell: ${coreRefs.length} core references and ${katexFonts.length} KaTeX fonts checked`);
+
+const terminalPackage = JSON.parse(fs.readFileSync(path.join(ROOT, 'node_modules/@xterm/xterm/package.json'), 'utf8'));
+for (const [asset, source] of [['xterm.js', 'lib/xterm.js'], ['xterm.css', 'css/xterm.css'], ['xterm.LICENSE.txt', 'LICENSE']]) {
+  const local = fs.readFileSync(path.join(ROOT, 'app/vendor', asset));
+  const installed = fs.readFileSync(path.join(ROOT, 'node_modules/@xterm/xterm', source));
+  if (!local.equals(installed)) fail(`terminal asset differs from installed xterm ${terminalPackage.version}: ${asset}`);
+  if (asset !== 'xterm.LICENSE.txt' && !coreRefs.includes(`vendor/${asset}?v=${terminalPackage.version}`))
+    fail(`terminal asset version reference missing: ${asset}`);
+}
+console.log(`ok   terminal assets: xterm ${terminalPackage.version}, JS/CSS/license checked`);
 
 if (failures) {
   console.error(`\n${failures} check(s) failed`);

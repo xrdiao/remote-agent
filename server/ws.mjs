@@ -107,6 +107,7 @@ wss.on('connection', (ws, req) => {
     authorization.valid = false;
     authorization.release();
     unsubscribeOperations?.();
+    session.stopTerminalUpdates();
     removeViewer(session);
     reads.abort(new Error('连接已移交'));
     retain();
@@ -149,7 +150,8 @@ wss.on('connection', (ws, req) => {
         previous.claim = null;
       }
       const resumed = candidate && contexts.get(msg.resume) === previous && previous.expires > Date.now()
-        && previous.session.bindingReady && !previous.session.disposed && previous.session.cdp?.ws?.readyState === 1;
+        && !previous.session.disposed && (previous.session.mode === 'terminal'
+          || previous.session.bindingReady && previous.session.cdp?.ws?.readyState === 1);
       if (resumed) {
         clearTimeout(previous.timer);
         context = previous;
@@ -226,7 +228,7 @@ wss.on('connection', (ws, req) => {
         catch (error) {
           if (!signal?.aborted) {
             route.fail?.(session, msg, error);
-            session.emit({ t: 'status', ok: false, msg: error.message });
+            if (route.errorStatus !== false) session.emit({ t: 'status', ok: false, msg: error.message });
           }
         } finally { pendingMetadata.delete(metadataKey); }
       });
@@ -355,12 +357,13 @@ wss.on('connection', (ws, req) => {
     unsubscribeOperations?.();
     console.log(`[ws-close] ${new Date().toISOString()} code=${code} source=${ws.closeSource || 'peer'} authorized=${!!authorized} background=${!!ws.backgroundTimer}`);
     if (retired) return;
+    session?.stopTerminalUpdates();
     reads.abort(new Error('连接已关闭'));
     if (!session || context.owner !== connection) return;
     if (session.sessionBatch) session.sessionBatch.cancelled = true;
     removeViewer(session);
-    if (authorized && !session.disposed && session.cdp?.ws?.readyState === 1
-        && ['cursor', 'devin', 'codex'].includes(session.app)) {
+    if (authorized && !session.disposed && (session.mode === 'terminal' || session.cdp?.ws?.readyState === 1
+        && ['cursor', 'devin', 'codex'].includes(session.app))) {
       retain();
     } else {
       navigationReads.abort(new Error('连接已关闭'));

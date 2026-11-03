@@ -869,7 +869,9 @@ function resumableComputerSocket(computer) {
   const notice = pendingNotice && noticeTarget(pendingNotice);
   if (notice?.project && notice.computer === computer.id) return null;
   const link = computerSockets.get(computer.key), binding = link?.binding;
-  if (mode !== 'chat' || link?.mode !== mode || !link.authed || link.socket?.readyState !== 1 || link.computer.token !== computer.token) return null;
+  if (!link?.authed || link.socket?.readyState !== 1 || link.computer.token !== computer.token) return null;
+  if (mode === 'terminal') return link;
+  if (mode !== 'chat' || link.mode !== mode) return null;
   const target = link.preload?.target || { win: binding?.id, windowId: binding?.windowId, threadId: binding?.threadId };
   if (target.win !== computer.win || (target.windowId || '') !== (computer.windowId || '') || (target.threadId || '') !== (computer.threadId || '')) return null;
   return link.preload || computerBindingReady(link) ? link : null;
@@ -972,13 +974,14 @@ async function openComputerSocket(computer, relay) {
           if (saved?.binding.id === m.selection.id && saved.binding.windowId === m.selection.windowId && saved.binding.threadId === m.selection.threadId)
             link.binding = { ...saved.binding, chat: chatBySel.get(`${expectedId}|${saved.binding.sel}`), ready: false, cached: true };
         } else computerResumes.delete(expectedId);
-        if (!link.receive) preloadComputerSocket(link);
+        if (!link.receive && !(mode === 'terminal' && currentComputer()?.key === computer.key)) preloadComputerSocket(link);
         if (computerBackgroundAt !== null) link.send({ t: 'visible', v: false, watching: false, background: true });
         replayDesktopOperations(link);
       }
       else link.finishFirstScreen();
     }
     if (receiveFusion(m, link)) return;
+    if (mode === 'terminal' && currentComputer()?.key === computer.key && ['terminals', 'termSnapshot'].includes(m.t)) link.finishFirstScreen();
     const currentNavigation = m.navigationId == null || m.navigationId === link.navigationId;
     if (currentNavigation && m.t === 'attached') {
       if (m.closed || m.ready === false && !link.preload) link.binding = null;
@@ -1163,9 +1166,16 @@ function startComputerUpdates() {
   ovVisible();
   send({ t: 'lang', v: I18N.lang });
   clearInterval(usageTimer);
-  usageTimer = setInterval(() => { if (authed && document.visibilityState === 'visible') send({ t: 'usage', automatic: true }); }, 60 * 1000);
+  usageTimer = setInterval(() => { if (authed && mode !== 'terminal' && document.visibilityState === 'visible') send({ t: 'usage', automatic: true }); }, 60 * 1000);
   syncNotify();
   setTimeout(checkAppUpdate, 3000);
+}
+function restoreTerminalChat() {
+  if (!authed || mode !== 'chat' || windowReady || navigationPending) return;
+  const link = computerSockets.get(currentComputer()?.key);
+  const chosen = link?.binding || conn.lastSelection;
+  send({ t: 'attach', id: chosen?.id || '', windowId: chosen?.windowId || '', threadId: chosen?.threadId || '',
+    project: typeof chosen?.project === 'object' ? chosen.project : null, initial: true, resume: !!link?.binding });
 }
 async function connect(resumeLink = null) {
   if (navigator.onLine === false || computerSockets.get(currentComputer()?.key)?.phase === 'paused') return;
@@ -1178,9 +1188,9 @@ async function connect(resumeLink = null) {
   const computer = currentComputer();
   const expectedId = computer.id || await computerIdFromKey(computer.key);
   if (gen !== connGen || attempt !== bootGeneration || computer.key !== currentComputer()?.key) return;
-  draftEpoch = resumeLink ? resumeLink.composer.epoch : '';
-  draftRevision = resumeLink ? resumeLink.composer.revision : 0;
-  draftAckRevision = resumeLink ? resumeLink.composer.ackRevision : 0;
+  draftEpoch = resumeLink?.composer?.epoch || '';
+  draftRevision = resumeLink?.composer?.revision || 0;
+  draftAckRevision = resumeLink?.composer?.ackRevision || 0;
   if (!resumeLink && (text.value || drafts.has(activeDraft))) draftRevision++;
   pendingDesktopDraft = null;
   if (!resumeLink) setWindowReady(false);
@@ -1200,6 +1210,7 @@ async function connect(resumeLink = null) {
     $('qnBar').classList.remove('show');
     $('dot').className = '';
     authed = false;
+    if (mode === 'terminal') terminalDisconnected();
     conn.host = 'err';
     if (link.replaced) {
       status('连接已在其他页面恢复', false);
@@ -1234,6 +1245,14 @@ async function connect(resumeLink = null) {
       if (sheetKind === 'computers') closeSheet();
       status('正在切换窗口…');
       if (!m.resumed || m.mode !== mode) send({ t: 'mode', mode });
+      if (mode === 'terminal') {
+        link.mode = mode;
+        link.composer = { epoch: draftEpoch, revision: draftRevision, ackRevision: draftAckRevision };
+        conn.initialSelection = false;
+        startComputerUpdates();
+        resumeTerminal();
+        return;
+      }
       if (m.resumed) for (const message of link.metadata.values()) link.receive({ data: JSON.stringify(message) });
       const fromNotice = window.AgentRemoteApp?.takeOpenWin?.() || pendingNotice;
       pendingNotice = '';
@@ -1251,6 +1270,7 @@ async function connect(resumeLink = null) {
         project: typeof chosen?.project === 'object' ? chosen.project : null, initial: !notice?.project, resume: (m.resumed || !!link.binding) && !fromNotice });
       startComputerUpdates();
     }
+    else if (receiveTerminal(m)) return;
     else if (m.t === 'sent') {
       confirmSent(m);
     }
@@ -1372,12 +1392,6 @@ async function connect(resumeLink = null) {
         if (key.endsWith('|' + conv)) await scClear(key);
       }))).catch(() => {});
     }
-    else if (m.t === 'terminals') { finishPending(['正在读取终端列表…']); showTerminals(m.list || []); }
-    else if (m.t === 'agentBusy') $('termBusy').hidden = !(mode === 'terminal' && m.busy);
-    else if (m.t === 'termText') { if (!m.sel || !viewSel || m.sel === viewSel) { renderTerm(m); connContentReady(); } }
-    else if (m.t === 'termHistory') recallTerminal(m);
-    else if (m.t === 'termInput') receiveTerminalInput(m);
-    else if (m.t === 'termSecretDone') finishTerminalPassword(m);
     else if (m.t === 'projects') { finishPending(['正在读取项目…', '正在读取文件夹…', '正在新建对话…']); showProjects(m); }
     else if (m.t === 'projectTrust') {
       if (m.sel && m.sel !== viewSel) return;
@@ -1461,6 +1475,16 @@ async function connect(resumeLink = null) {
     else if (m.t === 'status') { if (!m.ok) pendingAgentOpen = ''; clearSwitchWatch(); status(m.msg, m.ok); }
   };
   if (resumeLink) {
+    if (mode === 'terminal') {
+      authed = link.authed;
+      conn.host = true; conn.initialSelection = false;
+      link.mode = mode;
+      ungate();
+      send({ t: 'mode', mode });
+      startComputerUpdates();
+      resumeTerminal();
+      return;
+    }
     const ready = computerBindingReady(link), preload = link.preload;
     link.preload = null;
     Object.assign(conn, link.connection);

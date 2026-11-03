@@ -400,12 +400,19 @@ function updateTitle() {
   document.body.dataset.app = currentApp || '';
   const first = lastChat?.items?.find(it => it.k === 'user');
   const conversation = mode === 'terminal' ? currentTerminal : (lastChat?.title || first?.t || '');
+  if (mode === 'terminal') {
+    $('titleText').textContent = I18N.tr('RA 终端');
+    $('titlePlan').hidden = true;
+    $('titleProject').textContent = [currentComputer()?.name, terminalCwd || currentTerminal].filter(Boolean).join(' · ');
+    $('title').title = [currentComputer()?.name, terminalCwd, currentTerminal].filter(Boolean).join(' · ');
+    paintRail();
+    return;
+  }
   $('titleText').textContent = currentAppName || '连接中…';
   const plan = appPlans[currentApp] || '';
   $('titlePlan').textContent = plan;
   $('titlePlan').hidden = !plan;
   $('titleProject').textContent = cleanWindowTitle(currentProject).replace(/\s+-\s+Devin(?:\s+-.*)?$/, '') || conversation.split('\n')[0].slice(0, 40);
-  if (mode === 'terminal' && currentTerminal) $('titleProject').textContent += ' · ' + currentTerminal;
   $('title').title = [cleanWindowTitle(currentProject), conversation].filter(Boolean).join(' · ');
   if (currentApp === 'fusion') {
     const run = lastChat?.fusionRun;

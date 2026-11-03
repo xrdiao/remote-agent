@@ -63,7 +63,7 @@ function harness({ sameSelection = false, count = 2 } = {}) {
     clearInterval: id => timers.delete(id),
     requestAnimationFrame: fn => { const id = ++timerId; timers.set(id, { fn, ms: 0, at: now }); return id; },
     fetch: async () => ({ ok: true, json: async () => ({ v: 3, computers: [] }) }),
-    receiveFusion: () => false, entryProof: async () => 'test-proof', legacyAgentLibrary: () => [], trace,
+    receiveFusion: () => false, receiveTerminal: () => false, entryProof: async () => 'test-proof', legacyAgentLibrary: () => [], trace,
   });
   context.window = context;
   context.addEventListener = () => {};
@@ -124,8 +124,9 @@ function harness({ sameSelection = false, count = 2 } = {}) {
     'interruptSessionBatch', 'cancelCodexAutoRetry', 'markUploadsDisconnected', 'disconnectPendingSends',
     'updateAppText', 'updateTitle', 'invalidateChatRender', 'beginChatSelection', 'endInputRecall',
     'mentionHide', 'autosize', 'rememberAgentOpen', 'requestCompatibility', 'scheduleLatency',
-    'renderContext', 'renderQuota', 'renderQuestions', 'paintRail', 'checkAppUpdate',
+    'renderContext', 'renderQuota', 'renderQuestions', 'paintRail', 'checkAppUpdate', 'terminalDisconnected',
   ]) context[name] = () => {};
+  context.resumeTerminal = () => trace.push(['terminal-resume', run('currentComputer().id')]);
   context.conversationVisible = () => true;
   const projectSheets = read('app/js/sheets.js');
   run(projectSheets.slice(projectSheets.indexOf('function projectSheet('), projectSheets.indexOf('function showProjects(')));
@@ -474,11 +475,14 @@ test('an explicit destination change loads that destination rather than promotin
   assert.equal(h.state().windowReady, false);
 });
 
-test('changing the requested display mode does not reuse a chat first screen as terminal content', async () => {
+test('terminal mode reuses an authenticated computer without treating chat as terminal content', async () => {
   const h = harness(); await h.bothReady(); h.run(`mode='terminal'`);
   const boots = h.state().bootCalls;
   await h.switchTo(1);
-  assert.equal(h.state().bootCalls, boots+1);
+  assert.equal(h.state().bootCalls, boots);
+  assert(h.trace.some(row => row[0] === 'terminal-resume' && row[1] === h.records[1].id));
+  assert.equal(h.link(1).socket.sent.some(row => row.t === 'attach'), false);
+  assert(h.link(1).socket.sent.some(row => row.t === 'mode' && row.mode === 'terminal'));
 });
 
 test('a paired cold start and connection failure never open a full-page gate', async () => {
