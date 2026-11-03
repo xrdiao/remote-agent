@@ -150,7 +150,13 @@ export const methods = {
 
   // Only local workspaces: remote (SSH / Cursor cloud agent) files are not read from the phone.
   async currentRoots() {
+    const context = this.nativeContext();
+    if (context) return context.roots.filter(root => !root.host);
     return this.adapter.currentRoots.call(this);
+  },
+  async terminalProject() {
+    const roots = await this.currentRoots();
+    return roots.length === 1 ? roots[0] : null;
   },
   projectRows(list) {
     const all = workspaces();
@@ -209,6 +215,7 @@ export const methods = {
     const tried = new Set();
     const available = async page => {
       if (this.fusionBinding && fusionTargets().windows.has(app + ':' + page.id)) return false;
+      if (threadId && !this.fusionBinding) return true;
       if (!newSession && !threadId) return true;
       const state = await this.projectWindowState(page, threadId, this.fusionBinding);
       return !!threadId && state.thread === threadId.replace(/^tab:/, '') || !(IS_WIN && app === 'codex' ? state.agentBusy : state.busy) && !state.draft;
@@ -497,6 +504,8 @@ export const methods = {
     this.emit({ t: 'status', ok: true, msg: pending.newSession ? '已在所选项目新建会话' : pending.threadId ? '已切换会话' : `已打开 ${path.basename(pending.root)}` });
   },
   projectName() {
+    const context = this.nativeContext();
+    if (context?.cwd) return path.posix.basename(normPath(context.cwd));
     if (this.app === 'codex') return codexFolder(this.winTitle);
     // A Devin window can have no folder ("Untitled (Workspace)") while its session still
     // runs in a real directory; the session's own cwd names the project in that case.
@@ -505,7 +514,7 @@ export const methods = {
   },
   publishThread(statusMsg) {
     const source = this.cdp?.nativeWindow;
-    if (!this.switchingThread && source) source.setThread(this.threadId || '');
+    if (this.fusionBinding && !this.switchingThread && source) source.setThread(this.threadId || '');
     if (this.bindingReady && !this.switchingThread) this.selectionHome = false;
     if (this.selectedThread !== undefined) this.selectedThread = this.threadId || '';
     const msg = {
@@ -622,6 +631,7 @@ export const methods = {
     }
     const openHere = async (root, host, thread) => {
       if (!root || !this.projectMatches(await editorRoots(this.editorCdp, this.app), root, host)) return false;
+      if (!this.fusionBinding) { await this.bindNativeConversation(thread.replace(/^tab:/, '')); return true; }
       if (this.app === 'codex') {
         if (!await this.selectCodexThread(thread)) throw new Error('没有找到所选会话');
         await this.adoptCodexThread(thread, '已切换会话');
@@ -641,6 +651,11 @@ export const methods = {
         ? await this.cdp.evaluate(`(async () => { const h = ${PAGE_SRC}; return (await h.sessionPickerRows(true)).find(r => r.id === ${JSON.stringify(sessionId('devin', id))}) || null; })()`)
         : this.projectAgentCache?.get(window)?.list.find(r => r.id === decodeURIComponent(encodedThread || ''));
       const root = kind === 'project-new' && encodedThread ? decodeURIComponent(encodedThread) : row?.workspace || source?.project?.root || windowRoots(source?.title || '', this.app)[0]?.root;
+      if (kind === 'project' && source && !this.fusionBinding) {
+        if (window !== this.targetId) await this.openBound(source, source.ws, null, { windowId: window, threadId: decodeURIComponent(encodedThread), deferred: true });
+        await this.bindNativeConversation(decodeURIComponent(encodedThread));
+        return;
+      }
       if (kind === 'project' && await openHere(root, row?.host || source?.project?.host || '', decodeURIComponent(encodedThread))) return;
       if (root && !row?.host && !source?.project?.host) await this.useProject(root, kind === 'project-new', kind === 'project' ? decodeURIComponent(encodedThread) : '', title, window);
       else {

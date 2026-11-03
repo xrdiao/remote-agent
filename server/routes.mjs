@@ -240,7 +240,7 @@ export const ROUTES = {
       s.draftWriting = true;
       let ok = false;
       try {
-        if (read) { text = await s.cdp.evaluate(helpersCall('composerDraft()')); ok = typeof text === 'string'; }
+        if (read) { text = await s.readDraft(); ok = typeof text === 'string'; }
         else ok = await s.setDraft(text);
       } catch {}
       finally { s.draftWriting = false; }
@@ -287,7 +287,7 @@ export const ROUTES = {
       if (m.sel !== s.selectionKey()) throw new Error('会话已切换，请从当前会话新建终端');
       // Freeze the originating native identities before the first asynchronous project read.
       const origin = Object.assign(Object.create(Object.getPrototypeOf(s)), s);
-      project = await origin.adapter.terminalProject.call(origin);
+      project = await origin.terminalProject();
       if (!project?.root) throw new Error('未读取到唯一项目目录，请选择本机文件夹新建终端');
     }
     const terminal = await terminalService.create({ cwd: project.root, host: project.host || '' });
@@ -301,6 +301,21 @@ export const ROUTES = {
   termResize: terminalRoute((s, m) => {
     terminalInputTarget(s, m);
     return terminalService.resize(m.id, m.cols, m.rows);
+  }),
+  termSend: terminalRoute(async (s, m) => {
+    terminalInputTarget(s, m);
+    await terminalService.submit(m.id, String(m.text));
+    s.emit({ t: 'termSent', id: m.id, subscription: m.subscription, requestId: m.requestId });
+  }),
+  termComplete: terminalRoute(async (s, m) => {
+    terminalInputTarget(s, m);
+    const input = await terminalService.complete(m.id, String(m.text), m.caret);
+    s.emit({ t: 'termInput', id: m.id, subscription: m.subscription, requestId: m.requestId, revision: m.revision, ...input });
+  }),
+  termHistory: terminalRoute(async (s, m) => {
+    terminalInputTarget(s, m);
+    const commands = await terminalService.history(m.id);
+    s.emit({ t: 'termHistory', id: m.id, subscription: m.subscription, requestId: m.requestId, revision: m.revision, direction: m.direction, commands });
   }),
   projects: { switchRead: true,  run: (s, m) => s.showProjects(String(m.path ?? '')) },
   docs: { switchRead: true, run: (s, m) => s.showDocs(m.requestId) },
@@ -430,17 +445,19 @@ export const ROUTES = {
   codexRequest: {
     run: async (s, m) => {
       if (s.app !== 'codex') return;
+      const blocking = s.nativeContext() && await s.nativeCall(`codexRequestData().some(request => request.id === ${JSON.stringify(String(m.id))} && !request.id.includes('request_user_input_async'))`);
+      if (!blocking) await s.assertSelectedThread();
       if (m.field != null) {
         if (!await s.cdp.evaluate(helpersCall(`codexRequestField(${JSON.stringify(String(m.id))}, ${Number(m.field)}, ${JSON.stringify(String(m.value || ''))})`))) throw new Error('请求输入框已不存在');
       } else {
-        const acted = await s.cdp.evaluate(helpersCall(`codexRequestAction(${JSON.stringify(String(m.id))}, ${Number(m.n)}, ${JSON.stringify(m.fields || [])}, ${m.advance === true})`));
+        const acted = await s.cdp.evaluate(helpersCall(`codexRequestAction(${JSON.stringify(String(m.id))}, ${Number(m.n)}, ${JSON.stringify(m.fields || [])}, ${m.advance === true})`, blocking ? s.nativeContext() : null));
         if (!acted) {
           const pos = await s.cdp.evaluate(helpersCall(`codexRequestTarget(${JSON.stringify(String(m.id))}, ${Number(m.n)})`));
           if (!pos) throw new Error('请求已经处理或不存在');
           await s.tapCss(pos.x, pos.y);
         }
       }
-      s.pollChat(true).catch(() => {});
+      s.refreshModelChat().catch(() => {});
     },
     after: questionDone, fail: questionFailed,
   },

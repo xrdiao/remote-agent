@@ -88,7 +88,7 @@ function sendAfterSubmission(app = 'codex') {
   const pending = new Promise(resolve => { settle = resolve; });
   const writes = [], events = [], controller = new AbortController();
   let waits = 0, draft = 'later draft';
-  const context = { app, scope: 'selection-1', sending: false,
+  const context = { app, scope: 'selection-1', sending: false, nativeContext: () => null,
     selectionKey() { return this.scope; }, assertSelectedThread: async () => {},
     emit: event => events.push(event), syncAttachments: async () => {},
     adapter: {

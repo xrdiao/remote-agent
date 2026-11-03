@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
+import './conversation-context.test.mjs';
 import { NativeWindow } from '../server/native-windows.mjs';
 
 const read = file => fs.readFileSync(new URL('../' + file, import.meta.url), 'utf8');
@@ -210,7 +211,7 @@ function codexQuestionReader(questions = [{ id: 'choice', question: '请选择�
     if (selector === 'button' || selector.startsWith('button, input')) return [...(state.mounted ? [skip] : []), ...state.controls];
     return [];
   } };
-  const context = vm.createContext({ doc, document: doc, activeThread: () => state.thread, vis: () => true,
+  const context = vm.createContext({ remoteContext: null, doc, document: doc, activeThread: () => state.thread, vis: () => true,
     codexFiberProps: el => el.props || [], codexPoint: () => ({ x: 1, y: 2 }), setTimeout });
   vm.runInContext(fragment(read('server/page/codex.js'), '  const codexAsyncRequestFiber =', '  const codexImage =')
     + '\nthis.data=codexRequestData;this.field=codexRequestField;this.action=codexRequestAction;', context);
@@ -361,6 +362,7 @@ test('window-owned turn facts survive selection changes without assuming an unfi
 
 test('a new Codex conversation remains observable before it enters the recent catalog', () => {
   const context = vm.createContext({ agentState: () => ({ thread: 'new-thread', busy: true }),
+    nativeWaiting: () => null,
     codexHistoryScopes: () => [], codexThread: () => 'new-thread', codexChatRows: () => [],
     codexConversationManager: () => ({}),
     codexQueryClient: () => ({ getQueryData: () => [] }),
@@ -375,6 +377,7 @@ test('a new Codex conversation remains observable before it enters the recent ca
 test('one native read resolves each Codex host manager once for all background rows', () => {
   const calls = [], local = {}, remote = {};
   const context = vm.createContext({ agentState: () => ({ thread: 'selected', busy: false }),
+    nativeWaiting: () => null,
     codexHistoryScopes: () => [], codexThread: () => 'selected',
     codexChatRows: () => Array.from({ length: 50 }, (_, n) => ({ id: 'thread-' + n, host: n % 2 ? 'remote' : '' })),
     codexQueryClient: () => ({ getQueryData: () => [] }),

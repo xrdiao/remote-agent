@@ -96,12 +96,13 @@
     });
   };
 
-  const codexThread = () => {
+  const codexVisibleThread = () => {
     let el = [...doc.querySelectorAll('.ProseMirror')].find(vis);
     while (el && !Object.keys(el).some(k => k.startsWith('__reactFiber'))) el = el.parentElement;
     const active = el && codexFiberProps(el, 40).find(p => typeof p.conversationId === 'string');
     return active?.conversationId || [...doc.querySelectorAll('[data-response-annotation-conversation]')].filter(vis).at(-1)?.getAttribute('data-response-annotation-conversation') || '';
   };
+  const codexThread = () => remoteContext?.app === 'codex' ? remoteContext.threadId : codexVisibleThread();
   const attachmentRows = (ready = false) => {
     const ed = [...doc.querySelectorAll(`${COMPOSER}, [data-slate-editor="true"][contenteditable="true"]`)].filter(vis).at(-1);
     if (!ed) return [];
@@ -219,7 +220,7 @@
     const key = JSON.stringify({ hostId, threadId: thread });
     let index = null, hasLoadedOldest, nativeReader;
     const atoms = new Map(), turns = new Map(), queued = new Map();
-    for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
+    if (!remoteContext || !conversation || watchItems) for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
       const source = codexHistoryBinding(scope, bindings.get(key));
       const value = source?.get();
       if (Array.isArray(value) && value.some(turn => turn?.entityKey && turn.turnId)) index ||= value;
@@ -262,7 +263,7 @@
         isLatestTurn: n === index.length - 1, turnItemIds: [], metadata: turn,
         nativeTurn: conversation ? nativeReader.getSubscribedTurn(conversation, turn.entityKey) : turns.get(turn.turnId) };
     });
-    for (const entry of entries.slice(-2)) for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
+    if (!remoteContext || watchItems) for (const entry of entries.slice(-2)) for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
       const source = codexHistoryBinding(scope, bindings.get(entry.historyEntityKey));
       if (!source) continue;
       const value = source.get();
@@ -280,6 +281,20 @@
   };
   const chatRevision = () => doc.defaultView.__remoteAgentChatRevision || 0;
   const watchCodexData = changed => {
+    if (remoteContext?.app === 'codex') {
+      const manager = codexNativeManager(), stop = manager.addConversationCallback(remoteContext.threadId, changed), subscribed = new Map();
+      const refresh = () => {
+        const { sources } = codexAsyncQuestionState(remoteContext.threadId, remoteContext.host || 'local');
+        for (const [key, unsubscribe] of subscribed) if (!sources.has(key)) { unsubscribe(); subscribed.delete(key); }
+        for (const [key, source] of sources) if (!subscribed.has(key)) subscribed.set(key, source.subscribe(changed));
+      };
+      refresh();
+      return { refresh, stop() { stop(); for (const unsubscribe of subscribed.values()) unsubscribe(); } };
+    }
+    if (remoteContext?.app === 'cursor') {
+      const stop = cursorSessionServices().data.loadedComposers.subscribe(remoteContext.threadId, changed);
+      return { stop: () => stop.dispose(), refresh() {} };
+    }
     const subscribed = new Map();
     const update = () => changed();
     const refresh = () => {
@@ -555,7 +570,8 @@
         const body = textOf(item.content);
         if (CAPACITY_ERROR.test(body)) {
           const capacityId = `${thread}:capacity:${entry?.turnId || item.turnId || el?.getAttribute('data-turn-key') || item.id || ''}`;
-          if (!out.some(row => row.i === capacityId)) out.push({ i: capacityId, k: 'notice', kind: 'capacity', t: body.slice(0, 400), capacity: true, live: !finished && entry?.isLatestTurn !== false });
+          if (!out.some(row => row.i === capacityId)) out.push({ i: capacityId, k: 'notice', kind: 'capacity', t: body.slice(0, 400), capacity: true, live: !finished && entry?.isLatestTurn !== false,
+            ...(remoteContext?.app === 'codex' && entry?.isLatestTurn ? { retryTurn: entry.turnId, b: ['Retry'], actions: ['retry:' + JSON.stringify([thread, entry.turnId])] } : {}) });
         }
         else if (!finished && body) out.push({ i: id, k: 'thinking', t: `连接\n${body}`.slice(0, 400), live: true });
       } else if (item.type === 'turn-diff') {
@@ -595,7 +611,7 @@
   // Select raw item IDs before normalizing bodies; mounted DOM only enriches this page.
   const codexReadPage = (state, before = Infinity, known = [], details = false, limit = 80) => {
     const seen = new Set(known), items = [];
-    const mounted = new Map([...doc.querySelectorAll('[data-turn-key]')].map(el => [el.getAttribute('data-turn-key'), el]));
+    const mounted = new Map((!remoteContext || codexVisibleThread() === state.thread ? [...doc.querySelectorAll('[data-turn-key]')] : []).map(el => [el.getAttribute('data-turn-key'), el]));
     const end = Number.isFinite(before) ? before : Infinity;
     let cursor = end, visible = 0, headEntry = null, missingTurn = null, earlier = state.hasLoadedOldest === false;
     outer: for (const entry of [...state.entries].reverse()) {
@@ -977,7 +993,23 @@
     win.addEventListener('remote-agent-chat-update', changed);
     check();
   });
+  const mergeCodexCapacity = (items, state, capacity, paged = true) => {
+    const turn = capacity?._turnKey && state?.entries.find(entry => entry.turnKey === capacity._turnKey);
+    const host = turn && items.find(item => item.capacity && Math.floor(item.order / 10000) === turn.turnNumber);
+    if (!capacity) return;
+    delete capacity._retry; delete capacity._turnKey;
+    if (paged && host) {
+      const { i, order } = host;
+      delete host.b; delete host.actions; delete host.btnItem;
+      Object.assign(host, capacity, { i, order });
+    } else if (!host) {
+      capacity.order = Math.max(0, ...items.map(item => item.order || 0)) + 1;
+      items.push(capacity);
+    }
+  };
   const extract = (history = false, knownTurns = [], pageSize = 0) => {
+    if (remoteContext?.app === 'codex') return codexConversationChat(history, pageSize || 80);
+    if (remoteContext) return nativeConversationChat(history, pageSize || 80);
     const imagePreview = codexImagePreview();
     const log = devinLog();
     const panel = log || (devinSurface() ? null : findPanel());
@@ -1085,18 +1117,7 @@
       const rows = collect(null, entry), ids = new Set(items.map(item => item.i));
       items.push(...rows.filter(item => !ids.has(item.i)));
     }
-    const capacityTurn = capacity?._turnKey && state?.entries.find(entry => entry.turnKey === capacity._turnKey);
-    const capacityHost = capacityTurn && items.find(item => item.capacity && Math.floor(item.order / 10000) === capacityTurn.turnNumber);
-    if (capacity) {
-      delete capacity._retry; delete capacity._turnKey;
-      if (page && capacityHost) {
-        const { i, order } = capacityHost;
-        Object.assign(capacityHost, capacity, { i, order });
-      } else if (!capacityHost) {
-        capacity.order = Math.max(0, ...items.map(item => item.order || 0)) + 1;
-        items.push(capacity);
-      }
-    }
+    mergeCodexCapacity(items, state, capacity, !!page);
     const latestData = latestEntry?.turn || (latestTurn && codexTurnData(latestTurn));
     const turnTime = latestData?.items?.find(it => it.type === 'worked-for');
     let generation = turnTime?.startedAtMs ? { start: turnTime.startedAtMs, end: turnTime.completedAtMs || null } : null;
@@ -1146,6 +1167,106 @@
       ...(devinSurface() ? { surface: devinSurface() } : {}),
       ...(codexFacts()?.view ? { codex: codexFacts().view } : {}),
     };
+  };
+  const cursorPendingTool = () => {
+    const data = cursorSessionServices()?.data.getComposerDataIfLoaded(remoteContext.threadId);
+    const capability = data?.capabilities.find(capability => typeof capability.getPendingUserDecisionGroup === 'function');
+    const decisions = capability?.getPendingUserDecisionGroup()() || [];
+    return { data, capability, decisions };
+  };
+  const cursorNativeQuestions = () => {
+    const { capability, decisions } = cursorPendingTool();
+    const decision = decisions.find(decision => capability.getBubbleDataByToolCallId(decision.toolCallId)?.name === 'ask_question');
+    const bubble = decision && capability.getBubbleDataByToolCallId(decision.toolCallId);
+    if (!bubble?.params?.questions) return null;
+    const { currentSelections = {}, freeformTexts = {} } = bubble.additionalData || {};
+    return { id: decision.toolCallId, list: bubble.params.questions.map(question => ({ text: question.prompt, multi: !!question.allowMultiple,
+      options: [...question.options.map(option => ({ label: option.label, sel: !!currentSelections[question.id]?.includes(option.id) })),
+        { label: '其他…', free: true, value: freeformTexts[question.id] || '', sel: !!currentSelections[question.id]?.includes('__freeform_other__') }] })),
+      canSubmit: bubble.params.questions.every(question => currentSelections[question.id]?.length > 0) };
+  };
+  const nativeMarkdownItem = (id, kind, text, at, images = []) => ({ i: id, k: kind, t: text,
+    ...(kind === 'human' && at ? { sentAt: at } : {}),
+    ...(kind === 'assistant' ? { bodyFormat: 'markdown', h: esc(text).replace(/\n/g, '<br>') } : {}),
+    ...(images.length ? { images } : {}) });
+  const nativeConversationChat = async (history, limit) => {
+    const { app, threadId: thread } = remoteContext;
+    let items = [], earlier = false, before = 0, questions = null, title = '', draft;
+    if (app === 'cursor') {
+      const { data, capability, decisions } = cursorPendingTool();
+      const end = history && Number.isFinite(remoteContext.before) ? remoteContext.before : data.fullConversationHeadersOnly.length;
+      const headers = data.fullConversationHeadersOnly.slice(Math.max(0, end - limit), end);
+      const messages = await cursorMessages(thread, data, headers);
+      const pending = new Map(decisions.map(decision => [decision.toolCallId, decision]));
+      for (const message of messages) {
+        const id = message.bubbleId, tool = message.toolFormerData;
+        const at = Number(message.startedAtMs) || Date.parse(message.createdAt || '') || 0;
+        if (message.thinking?.text) items.push({ i: id + ':think', k: 'thinking', t: `Thoughts\n${message.thinking.text}`,
+          live: !Number.isFinite(message.completedAtMs) && data.status === 'generating' });
+        if (message.text?.trim() && !tool) items.push(nativeMarkdownItem(id, message.type === 1 ? 'human' : 'assistant', message.text, at));
+        if (tool) {
+          const file = tool.params?.relativeWorkspacePath || tool.params?.targetFile;
+          const row = { i: id, k: 'tool', t: tool.params?.commandDescription || tool.params?.command || tool.toolCall?.tool?.value?.description || tool.name || '',
+            kind: /terminal|shell|command/.test(tool.name) ? 'command' : /edit|write|patch/.test(tool.name) ? 'edit' : 'other',
+            execution: tool.name !== 'ask_question' && !/edit|write|patch/.test(tool.name),
+            ...(file ? { f: file } : {}), done: tool.status === 'completed' || tool.status === 'cancelled',
+            ...(tool.error || tool.status === 'error' ? { keep: true } : {}) };
+          if (pending.has(tool.toolCallId) && tool.name !== 'ask_question') {
+            row.b = ['Run', 'Skip']; row.actions = [tool.toolCallId + ':accept', tool.toolCallId + ':reject'];
+          }
+          items.push(row);
+        }
+      }
+      const todos = data.todos || [];
+      if (todos.length) items.push({ i: thread + ':tasks', k: 'tasks', total: todos.length,
+        done: todos.filter(todo => todo.status === 'completed').length,
+        items: todos.map(todo => ({ t: todo.content, status: todo.status === 'completed' ? 'done' : todo.status })) });
+      title = data.name || ''; draft = data.text;
+      earlier = headers.length < data.fullConversationHeadersOnly.length;
+      before = data.fullConversationHeadersOnly.indexOf(headers[0]);
+      questions = cursorNativeQuestions();
+    } else {
+      const native = await import('@exa/chat-client');
+      const state = window.__acpStore.getState().acp, data = state.perSession[thread];
+      const messages = native.getAllMessages(data), end = history && Number.isFinite(remoteContext.before) ? remoteContext.before : messages.length;
+      const selected = messages.slice(Math.max(0, end - limit), end);
+      for (const message of selected) {
+        const id = 'acp' + messages.indexOf(message);
+        if (message.kind === 'user_message' || message.kind === 'agent_message' || message.kind === 'agent_thought') {
+          const blocks = message.content || [];
+          if (blocks.some(block => block._meta?.['cognition.ai/isOptimistic'])) continue;
+          const text = blocks.filter(block => block.content?.type === 'text').map(block => block.content.text).join('\n');
+          const images = blocks.filter(block => block.content?.type === 'image').map(block => `data:${block.content.mimeType};base64,${block.content.data}`);
+          const at = Date.parse(blocks.find(block => block._meta?.['cognition.ai/timestamp'])?._meta['cognition.ai/timestamp'] || '') || 0;
+          if (message.kind === 'agent_thought') items.push({ i: id + ':think', k: 'thinking', t: `Thoughts\n${text}` });
+          else if (text || images.length) items.push(nativeMarkdownItem(id, message.kind === 'user_message' ? 'human' : 'assistant', text, at, images));
+        } else if (message.kind === 'tool_call') {
+          const tool = message.content;
+          items.push({ i: id, k: 'tool', src: 'devin', kind: tool.kind || 'other', t: tool.title || '',
+            cmd: typeof tool.rawInput?.command === 'string' ? tool.rawInput.command : '',
+            output: (tool.content || []).filter(block => block.type === 'content' && block.content?.type === 'text').map(block => block.content.text).join('\n').slice(0, 4000),
+            ...(tool.locations?.[0]?.path ? { f: tool.locations[0].path } : {}),
+            done: tool.status === 'completed', ...(tool.status === 'failed' ? { keep: true } : {}) });
+        }
+      }
+      const session = devinSessionRecord(thread);
+      const failure = Object.entries(state.agentRequests.byId).findLast(([, request]) => request.method === 'session/prompt' && request.params?.sessionId === thread);
+      if (session.status === 'unknown_error' && failure?.[1].status === 'failed')
+        items.push({ i: 'acp' + messages.length + ':error', k: 'tool', kind: 'error', t: failure[1].errorMessage, keep: true });
+      title = session.title || '';
+      before = Math.max(0, end - limit); earlier = before > 0;
+      if (activeThread() === thread) questions = devinQuestions();
+      items = items.map(item => ({ ...item, src: 'devin' }));
+    }
+    const scopes = [], run = agentRun(app, thread, scopes), changed = items.filter(item => item.kind === 'edit').length;
+    return { thread, title, items, global: [], rect: [0, 0, 0, 0], busy: run?.status === 'running', readonly: false,
+      _nativeState: { thread, title, run, busy: run?.status === 'running', host: remoteContext.host, workspace: remoteContext.cwd, ...nativeWaiting(app, thread) },
+      queued: app === 'cursor' ? (cursorPendingTool().data.queueItems || []).map(item => ({ id: item.id, t: item.query, src: 'cursor' })) : [],
+      questions, changed, subagents: [], earlier, historyBefore: before,
+      model: agentModelName(), effort: effortName(), permission: null, context: null,
+      ...(draft !== undefined ? { draft } : {}),
+      ...(app === 'devin' ? { surface: devinSurface(), session: { key: thread, cwd: remoteContext.cwd }, workdir: { cwd: remoteContext.cwd } } : {}),
+      ...(run?.startedAt ? { generation: { start: run.startedAt, end: run.status === 'running' ? null : run.completedAt || null } } : {}) };
   };
   const contextPct = () => {
     const el = [...doc.querySelectorAll('button, [role=button], [role=img]')].find(e => vis(e) && /^(?:Context(?:\s+usage)?|上下文用量)[:：]?\s*\d+%/i.test(((e.getAttribute('aria-label') || e.innerText || '').replace(/\s+/g, ' ').trim())));

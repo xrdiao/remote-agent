@@ -112,7 +112,7 @@ for (const label of ['Recent chats', '最近聊天', '最近のチャット', '�
     const button = nativeNode({ 'aria-label': label });
     const doc = {
       getElementById: () => null,
-      querySelectorAll: selector => selector === '[data-composer-body]' ? [hidden, root] : selector === 'button' ? [button] : [],
+      querySelectorAll: selector => selector.includes('[data-composer-body]') ? [hidden, root] : selector === 'button' ? [button] : [],
     };
     const page = nativePage(doc, {}, 'codexRootProps,codexQueryClient,codexHistoryScopes');
     assert.equal(page.codexQueryClient(), query);
@@ -165,7 +165,7 @@ test('Codex follow-up preferences and draft facts come from the visible native a
   const root = fiber(nativeNode(), [{ value: { getQueryData: () => ({ values: { followUpQueueMode: 'queue', composerEnterBehavior: 'newline' } }) } }]);
   const doc = { getElementById: () => null, querySelector: () => null,
     querySelectorAll: selector => selector === '[data-composer-navigation-target="add-context"]' ? [nativeNode({}, {}, false), add]
-      : selector === '[data-composer-body]' ? [root] : [] };
+      : selector.includes('[data-composer-body]') ? [root] : [] };
   const data = nativePage(doc).codexFacts();
   assert.equal(data.view.follow, 'queue'); assert.equal(data.view.enter, 'newline');
   assert.equal(data.view.plan, true); assert.equal(data.hasDraftAttachments, true);
@@ -233,7 +233,7 @@ for (const supported of [false, true]) {
     const client = { getQueryData: () => [], getQueryCache: () => ({ getAll: () => [{ queryKey: ['models', '', 'local'], state: { data: { data: [model] } } }] }) };
     const root = fiber(nativeNode(), [{ value: client }]);
     const doc = { getElementById: () => null, querySelector: () => null,
-      querySelectorAll: selector => selector === '[data-codex-intelligence-trigger]' ? [button] : selector === '[data-composer-body]' ? [root] : [] };
+      querySelectorAll: selector => selector === '[data-codex-intelligence-trigger]' ? [button] : selector.includes('[data-composer-body]') ? [root] : [] };
     const page = nativePage(doc);
     assert.deepEqual(Array.from(page.effortItems(false, true), row => row.label), [...efforts.map(row => row.reasoningEffort), ...(supported ? ['max'] : [])]);
   });
@@ -392,6 +392,7 @@ function composerCommands() {
     cursorBusyQueue: () => false, chatBusy: false, status() {}, sendReceipt: () => { receipts++; return { requestId: 'receipt-' + receipts }; },
     pushEcho: (...args) => echoes.push(args), mentionsFor: () => ({}), jumpToLatest() {}, failPendingSend() {},
     send: packet => { packets.push(packet); return true; },
+    sendTerminalInput: () => packets.push({ t: 'termSend', text: input.value }),
   });
   const composer = read('app/js/composer.js');
   vm.runInContext(part(composer, 'const MN =', '// Mentions still present in the text')
@@ -473,9 +474,9 @@ test('Cursor and ordinary Codex messages keep their send path', () => {
   }
 });
 
-test('the hidden chat composer never sends into an RA terminal', () => {
+test('the restored terminal textbox delegates once without creating a chat submission', () => {
   const h = composerCommands(); h.context.mode = 'terminal'; h.type('keep chat draft'); h.send();
-  assert.equal(h.packets.length, 0); assert.equal(h.receipts(), 0);
+  assert.deepEqual(h.packets, [{ t: 'termSend', text: 'keep chat draft' }]); assert.equal(h.receipts(), 0);
   assert.equal(h.input.value, 'keep chat draft');
 });
 
@@ -670,6 +671,7 @@ function previews({ saved, now = 1000 } = {}) {
     lruPut(map, key, value, max) { map.delete(key); map.set(key, value); while (map.size > max) map.delete(map.keys().next().value); },
   });
   const history = read('app/js/history.js');
+  vm.runInContext(part(read('app/js/core.js'), 'const conversationContexts =', '// Only migrated agents'), context);
   vm.runInContext(part(history, 'let chatPreviewTimer =', 'let chatFrame =')
     + part(history, "document.addEventListener('visibilitychange',", 'function scSwitch(')
     + part(history, 'async function scClear(', 'function showBgSheet('), context);
@@ -753,6 +755,7 @@ for (const mode of ['native', 'position', 'absent', 'error']) {
     const method = part(read('server/agent/menus.mjs'), '  async openModelList()', '  async ensureSettings(').replace(/,\s*$/, '');
     const open = vm.runInContext('({' + method + '}).openModelList', context);
     const target = {
+      nativeContext: () => null,
       cdp: { async evaluate(source) {
         calls.push(source);
         if (mode === 'error') throw new Error('native model read failed');
@@ -800,6 +803,7 @@ test('changed-file controls retain session and computer ownership outside the qu
     status() {}, send: message => packets.push(message),
   });
   const history = read('app/js/history.js');
+  vm.runInContext(part(read('app/js/core.js'), 'const conversationContexts =', '// Only migrated agents'), context);
   vm.runInContext(part(history, 'const hiddenChangeNotices = new Set();', 'function queuedMessages(')
     + part(history, 'function renderQueue(', 'let queueEditRequest = null;')
     + part(history, "$('changeNotice').onclick =", "$('queueBar').onclick ="), context);
@@ -1064,7 +1068,7 @@ for (const app of ['cursor', 'devin', 'codex']) {
     vm.runInContext(read('server/session.mjs').replace(/^import .*;\n/gm, '').replace(/\bexport /g, '') + '\nthis.Session=Session;', context);
     const route = vm.runInContext('({' + part(read('server/routes.mjs'), '  visible:', '  lang:') + '}).visible', context);
     const cdp = {}, session = Object.assign(Object.create(context.Session.prototype), {
-      app, cdp, editorCdp: cdp, mode: 'chat', visible: false,
+      app, cdp, editorCdp: cdp, mode: 'chat', visible: false, nativeContext: () => null,
       pollChat: async () => { snapshots.push(queued.slice()); },
     });
     await route.pre(session, { v: true, watching: false });

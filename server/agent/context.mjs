@@ -87,6 +87,7 @@ export class AgentContext {
     this.sel = 0;
     this.windowId = '';
     this.threadId = '';
+    this.conversation = null;
     this.pendingThread = '';
     this.codexPageId = '';
     this.lastPanel = '';
@@ -122,6 +123,32 @@ export class AgentContext {
     return [this.app || '', this.windowId || '', this.threadId || ''].join('|');
   }
 
+  nativeContext() {
+    const conversation = this.conversation;
+    return !this.fusionBinding && conversation?.app === this.app && conversation.threadId === this.threadId ? conversation : null;
+  }
+
+  nativeCall(call, options) {
+    return this.cdp.evaluate(helpersCall(call, this.nativeContext()), options);
+  }
+
+  async confirmConversation() {
+    if (!this.threadId || this.fusionBinding) return;
+    const cdp = this.cdp, app = this.app, threadId = this.threadId, sel = this.sel;
+    const context = await cdp.evaluate(helpersCall(`nativeSessionInfo(${JSON.stringify(app)}, ${JSON.stringify(threadId)}, 'bind')`));
+    if (this.cdp === cdp && this.sel === sel && this.app === app && this.threadId === threadId) this.conversation = context;
+    return context;
+  }
+
+  async bindNativeConversation(thread, message = '已切换会话') {
+    if (this.threadId !== thread) this.clearViewState();
+    this.threadId = this.selectedThread = thread;
+    await this.confirmConversation();
+    this.bindingReady = true;
+    this.publishThread(message);
+    if (!this.switchingThread) await this.setMode(this.mode, true);
+  }
+
   clearViewState() {
     this.sel = (this.sel || 0) + 1;
     this.lastChat = '';
@@ -151,8 +178,25 @@ export class AgentContext {
 
   async assertSelectedThread() {
     if (!this.selectedThread) return;
+    if (this.nativeContext()) return this.ensureConversationUi();
     const active = await this.cdp.evaluate(helpersCall('activeThread()'));
     if (active !== this.selectedThread) throw new Error('当前窗口已不在所选会话，请从项目/会话重新连接后操作');
+  }
+
+  async ensureConversationUi() {
+    const context = this.nativeContext();
+    if (!context) return;
+    const id = JSON.stringify(context.threadId);
+    if (await this.cdp.evaluate(helpersCall('activeThread()')) === context.threadId) return;
+    if (context.app === 'codex') {
+      if (!await this.selectCodexThread(context.threadId, this.cdp, true)) throw new Error('当前窗口没有打开所选 Codex 会话');
+    } else if (context.app === 'cursor') {
+      await this.cdp.evaluate(helpersCall(`nativeSessionAction('cursor', ${id}, 'open')`));
+    } else if (await this.cdp.evaluate(helpersCall('devinSurface()')) === 'editor') {
+      await this.openSessionPicker(context.threadId);
+      if (!await this.cdp.evaluate(helpersCall(`sessionPickerTarget(${id}, true)`))) throw new Error('当前窗口没有所选 Devin 会话的打开入口');
+    } else if (!await this.cdp.evaluate(helpersCall(`agentTarget(${id}, true)`))) throw new Error('当前窗口没有所选 Devin 会话的打开入口');
+    if (!await this.waitFor(`activeThread() === ${id}`, 40)) throw new Error('原生界面尚未切到所选会话');
   }
 
   liveRead(cdp, sel) {
@@ -258,7 +302,10 @@ export class AgentContext {
     try {
     await this.assertSelectedThread();
     if (sel != null && sel !== this.selectionKey()) throw new Error('会话已切换，请使用当前会话的按钮');
-    const pos = await this.cdp.evaluate(helpersCall(`locate(${JSON.stringify(String(item))}, ${Number(n) || 0}, ${JSON.stringify(actionId || '')}, ${JSON.stringify(label || '')})`));
+    const retry = this.nativeContext() && String(actionId).startsWith('retry:') ? JSON.parse(actionId.slice(6)) : null;
+    const pos = retry && retry[0] === this.threadId
+      ? await this.nativeCall(`nativeSessionAction('codex', ${JSON.stringify(retry[0])}, 'capacityTarget', ${JSON.stringify(retry[1])})`)
+      : await this.cdp.evaluate(helpersCall(`locate(${JSON.stringify(String(item))}, ${Number(n) || 0}, ${JSON.stringify(actionId || '')}, ${JSON.stringify(label || '')})`));
     if (!pos) { await this.pollChat(true); throw new Error('请求已更新，请查看最新选项'); }
     if (/^(Fork chat from here|Open agent|View agent|View subagent)$/.test(label || '')) this.selectedThread = '';
     if (pos.fork) {

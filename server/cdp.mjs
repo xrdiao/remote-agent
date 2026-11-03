@@ -89,7 +89,8 @@ export class Cdp {
   }
 
   async evaluate(expression, opts = {}) {
-    const r = await this.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, opts.timeout ?? 30000);
+    const r = await this.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true,
+      ...(opts.contextId != null ? { contextId: opts.contextId } : {}) }, opts.timeout ?? 30000);
     if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || 'evaluate failed');
     return r.result.value;
   }

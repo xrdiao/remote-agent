@@ -1,4 +1,43 @@
   const selCardId = () => doc.querySelector('[data-sidebar-item-key] [data-active="true"]')?.closest('[data-sidebar-item-key]')?.getAttribute('data-sidebar-item-key')?.slice(4) || '';
+  // Import in the native iframe so the refs share the application's existing stores.
+  const codexComposerScope = async id => {
+    const composer = await (window.__remoteAgentComposerModule ||= (async () => {
+      const entry = [...doc.scripts].find(script => script.src).src;
+      const index = await (await fetch(entry)).text();
+      const main = new URL(index.match(/app-main-[a-f0-9]+\.js/)[0], entry);
+      const source = await (await fetch(main)).text();
+      return import(new URL(source.match(/composer-view-state-[a-f0-9]+\.js/)[0], main).href);
+    })());
+    const nodes = new Set(), pending = [...codexHistoryScopes()];
+    while (pending.length) {
+      const node = pending.pop();
+      if (nodes.has(node)) continue;
+      nodes.add(node);
+      if (node.parent) pending.push(node.parent);
+      for (const entries of node.retainedScopeEntries.values()) for (const entry of entries.values()) pending.push(entry.node);
+    }
+    const node = [...nodes].find(node => node.token.__scopeBrand === 'ComposerScope' && node.value.conversationId === id);
+    if (!node) throw new Error('所选 Codex 会话的原生输入状态尚未就绪');
+    const parents = [];
+    for (let parent = node; parent; parent = parent.parent) parents.push(parent);
+    const chain = new Map(parents.map(parent => [parent.token.id, parent]));
+    const scope = { node, chain, value: Object.assign({}, ...parents.reverse().map(parent => parent.value)),
+      get(ref, key) { const value = ref.resolve(node, chain, key); return typeof value.get === 'function' ? value.get() : node.store.get(value); },
+      set(ref, ...args) {
+        const value = ref.resolve(node, chain, args.length === 2 ? args[0] : undefined), next = args.at(-1);
+        if (typeof value.set === 'function') value.set(next); else node.store.set(value, next);
+      },
+    };
+    return { scope, composer };
+  };
+  const codexConversationDraft = async (id, text, expected) => {
+    const { scope, composer } = await codexComposerScope(id);
+    if (text !== undefined && (expected === undefined || scope.get(composer.M) === expected)) {
+      const draft = scope.get(composer.f);
+      composer.gt(scope, { ...draft, prompt: text, pullRequestChecks: draft?.pullRequestChecks || [] });
+    }
+    return scope.get(composer.M);
+  };
   const pickComposer = eds => {
     const sel = selCardId();
     return eds.find(e => e.contains(doc.activeElement))
@@ -165,7 +204,7 @@
     return { missing: false, quota: [], limits };
   };
   const codexRootProps = () => {
-    const el = [...doc.querySelectorAll('[data-composer-body]')].find(vis);
+    const el = [...doc.querySelectorAll('[data-composer-body], [data-response-annotation-conversation], [data-request-input-dismiss]')].find(vis);
     return el ? codexFiberProps(el, Infinity) : [];
   };
   const codexQueryClient = () => codexRootProps().find(p => typeof p.value?.getQueryData === 'function')?.value || null;

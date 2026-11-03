@@ -39,9 +39,11 @@ export const methods = {
     return this.adapter.withFiles.call(this, fn, opts);
   },
   async listChanges() {
+    await this.assertSelectedThread();
     return this.adapter.listChanges.call(this);
   },
   async changeAction(i, name, act) {
+    await this.assertSelectedThread();
     return this.adapter.changeAction.call(this, i, name, act);
   },
 
@@ -148,7 +150,7 @@ export const methods = {
       return { marks, markSource: 'agent', diff: reviewDiff };
     }
     if (f.host) return null;
-    const changes = this.app === 'codex' ? await this.cdp.evaluate(helpersCall('codexChanges()')) : null;
+    const changes = this.app === 'codex' ? await this.nativeCall('codexChanges()') : null;
     const normalized = p => path.posix.normalize(pathKey(p));
     const diff = changes?.files.find(file => normalized(file.name) === normalized(f.path) || normalized(f.path).endsWith('/' + normalized(file.name)))?.diff;
     const git = await gitMarks(f.path).catch(() => null);

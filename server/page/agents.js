@@ -57,7 +57,7 @@
       const detector = (term._addonManager?._addons || []).map(a => a.instance || a).find(a => a.capabilities)?.capabilities.get(2);
       return !detector || !!detector.currentCommand?.commandExecutedMarker;
     });
-    let states = agentStates();
+    let states = agentStates().filter(state => state.nativeOwner !== false);
     const nativeSessions = window.__acpStore?.getState().acp.sessions;
     if (nativeSessions) {
       const root = window.vscode?.context?.configuration?.()?.workspace?.uri?.path;
@@ -412,12 +412,12 @@
     }
     if (app === 'devin') {
       const state = window.__acpStore?.getState().acp, session = devinSessionRecord(thread);
-      const request = Object.values(state?.agentRequests.byId || {}).findLast(row => row.method === 'session/prompt' && row.params?.sessionId === thread);
+      const [id, request] = Object.entries(state?.agentRequests.byId || {}).findLast(([, row]) => row.method === 'session/prompt' && row.params?.sessionId === thread) || [];
       if (!request) return null;
-      const status = session?.status === 'unknown_error' || request.error ? 'error'
+      const status = session?.status === 'unknown_error' || request.status === 'failed' ? 'error'
         : ['active', 'pending', 'canceling'].includes(session?.status) ? 'running'
         : request.status === 'completed' ? 'completed' : 'unknown';
-      return { id: request.id, status, startedAt: Number(request.startedAt || request.createdAt) || 0,
+      return { id, status, startedAt: Number(request.startedAt || request.createdAt) || 0,
         completedAt: status === 'completed' ? Number(request.completedAt) || 0 : 0 };
     }
     const data = cursorSessionServices()?.data.getComposerDataIfLoaded(thread);
@@ -429,6 +429,36 @@
       startedAt: Number(start.startedAtMs) || Date.parse(start.createdAt || '') || 0,
       completedAt: status === 'completed' ? Math.max(0, ...headers.slice(human + 1).map(row => Number(row.completedAtMs) || 0)) : 0 };
   };
+  const nativeWaiting = (app, thread, manager = null) => {
+    if (app === 'codex') {
+      const conversation = manager?.getConversation(thread);
+      if (!conversation) return null;
+      const requests = (conversation.requests || []).filter(request => request.params?.threadId === thread);
+      const questions = codexAsyncQuestionState(thread, manager.hostId).questions;
+      return { waiting: requests.length || questions.length ? JSON.stringify([thread, ...requests.map(request => [request.method, request.params.turnId, request.id]), ...questions.map(state => state.question.id)]) : null,
+        waitingText: [...requests.map(request => (request.params.questions || []).map(question => question.question).join('\n') || request.params.command || request.params.reason || ''), ...questions.map(state => state.question.title)].join('\n'),
+        workspace: conversation.cwd || '', nativeOwner: manager.getStreamRole(thread)?.role === 'owner' };
+    }
+    if (app === 'cursor') {
+      const data = cursorSessionServices()?.data.getComposerDataIfLoaded(thread);
+      if (!data) return null;
+      const capability = data.capabilities.find(capability => typeof capability.getPendingUserDecisionGroup === 'function');
+      const decisions = capability?.getPendingUserDecisionGroup()() || [];
+      const uri = data.workspaceIdentifier?.uri;
+      return { waiting: decisions.length ? JSON.stringify([thread, ...decisions.map(decision => decision.toolCallId)]) : null,
+        waitingText: decisions.map(decision => {
+          const tool = capability.getBubbleDataByToolCallId(decision.toolCallId);
+          return tool?.params?.questions?.map(question => question.prompt).join('\n') || tool?.params?.command || tool?.name || '';
+        }).join('\n'), nativeOwner: !!data.conversationActionManager && !data.conversationActionManager.signal.aborted,
+        ...(uri ? { workspace: uri.fsPath || uri.path } : {}) };
+    }
+    const state = window.__acpStore?.getState().acp, session = devinSessionRecord(thread);
+    if (!session) return null;
+    const requests = Object.values(state.clientRequests).filter(request => request.status === 'pending'
+      && `acp/${request.providerId}/${request.request.params?.sessionId}` === thread);
+    return { waiting: requests.length ? JSON.stringify([thread, ...requests.map(request => request.request.id)]) : null,
+      waitingText: requests.map(request => request.request.params?.toolCall?.title || '').join('\n'), workspace: session.cwd || '' };
+  };
   const agentStates = (app = '') => {
     const state = agentState();
     app ||= codexPromptEl() ? 'codex' : devinSurface() ? 'devin' : 'cursor';
@@ -438,7 +468,7 @@
       const host = row.host || 'local';
       if (app === 'codex' && !managers.has(host)) managers.set(host, codexConversationManager(null, scopes, host));
       const run = agentRun(app, row.thread, scopes, managers.get(host));
-      return { ...row, ...(run ? { run, busy: run.status === 'running' || !!row.busy,
+      return { ...row, ...nativeWaiting(app, row.thread, managers.get(host)), ...(run ? { run, busy: run.status === 'running' || !!row.busy,
         ...(run.status !== 'unknown' ? { runId: app + ':' + run.id, runAt: run.startedAt } : {}) } : {}) };
     };
     let generation = null;

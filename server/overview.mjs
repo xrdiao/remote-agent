@@ -42,7 +42,7 @@ export function overviewSnapshot(deviceId) {
       projectRows.set(key, { ...rows.get(key), ...row, lastUsed: row.lastUsed || rows.get(key)?.lastUsed || 0 });
     for (const state of source.overviewStates()) {
       const key = sessionId(win.app, state.thread), row = projectRows.get(key), known = rows.get(key) || local.get(key);
-      if (row || key === sessionId(win.app, snap?.chat?.thread) && (!known?.workspace || belongs(known)))
+      if (row || state.workspace || key === sessionId(win.app, snap?.chat?.thread) && (!known?.workspace || belongs(known)))
         projectRows.set(key, { ...row, ...state, id: key, title: state.title || row?.title || '', lastUsed: state.lastUsed || row?.lastUsed || 0 });
     }
     for (const [key, row] of projectRows) {
@@ -51,6 +51,8 @@ export function overviewSnapshot(deviceId) {
       const s = { ...row, busy: row.busy ?? row.running };
       const workspace = normPath(row.workspace || (roots.length === 1 ? roots[0].root : '')), host = row.host || '';
       const project = projectId(win.app, workspace, host, windowId);
+      if (!projects.has(project)) projects.set(project, { projectId: project, win: id, windowId, app: win.app, workspace, host,
+        project: path.posix.basename(workspace) || workspace, loading: false });
       const cachedPreview = source.previews.get(key);
       const preview = key !== sessionId(win.app, snap?.chat?.thread) || cachedPreview?.at >= source.updatedAt ? cachedPreview?.value : null;
       const value = {
@@ -63,13 +65,14 @@ export function overviewSnapshot(deviceId) {
         favorite: record?.favorite === true, lastMessageAt: Number(record?.lastMessageAt) || 0,
         workspace, host,
       };
-      const identity = JSON.stringify([project, key]), previous = collected.get(identity);
-      const quality = Number(!!s.run && s.run.status !== 'unknown') * 4 + Number(!!s.run) * 2
+      const identity = JSON.stringify([win.app, host, key]), previous = collected.get(identity);
+      const updatedAt = s.observedAt || source.updatedAt;
+      const quality = Number(s.nativeOwner === true) * 8 + Number(!!s.run && s.run.status !== 'unknown') * 4 + Number(!!s.run) * 2
         + Number(key === sessionId(win.app, snap?.chat?.thread));
       if (!previous || (s.run?.startedAt || 0) > (previous.value.run?.startedAt || 0)
         || (s.run?.startedAt || 0) === (previous.value.run?.startedAt || 0)
-          && (quality > previous.quality || quality === previous.quality && source.updatedAt > previous.updatedAt))
-        collected.set(identity, { value, quality, updatedAt: source.updatedAt });
+          && (quality > previous.quality || quality === previous.quality && updatedAt > previous.updatedAt))
+        collected.set(identity, { value, quality, updatedAt });
     }
   }
   const windows = [...projects.values()], locations = [...new Map(windows.filter(row => row.workspace)

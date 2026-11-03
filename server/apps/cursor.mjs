@@ -152,11 +152,6 @@ export const adapter = {
     return this.withCursorFiles(fn);
   },
 
-  async terminalProject() {
-    const roots = await this.currentRoots();
-    return roots.length === 1 ? roots[0] : null;
-  },
-
   async usageContext() {
     return this.cdp.evaluate(helpersCall('contextPct()'));
   },

@@ -175,15 +175,6 @@ export const adapter = {
     return this.withCursorFiles(fn);
   },
 
-  async terminalProject() {
-    return this.cdp.evaluate(`(() => {
-      const h = ${PAGE_SRC};
-      if ((h.codexThread() || '') !== ${JSON.stringify(this.threadId || '')})
-        throw new Error('电脑端会话已切换，请从当前会话新建终端');
-      return h.codexCurrentProject();
-    })()`);
-  },
-
   async mentionQuery(q, cat, seq, trigger, query) {
     return this.codexMentionQuery(q, trigger === '/' ? '/' : '@', seq, query);
   },
@@ -201,7 +192,7 @@ export const adapter = {
     else await this.typeText(text);
   },
 
-  async submitPrompt(now, busy, when, queued, mentions, receipt, files = []) {
+  async submitPrompt(now, busy, when, queued, mentions, receipt, files = [], nativeInput = null) {
     const source = this.cdp?.nativeWindow;
     let token, sel, operation;
     if (source) {
@@ -211,7 +202,9 @@ export const adapter = {
       operation = currentOperation();
     }
     const hasLocalFiles = mentions?.some(m => m.section === 'local-files');
-    const before = await this.cdp.evaluate(helpersCall('codexSendState(true)'));
+    const before = await this.cdp.evaluate(helpersCall(nativeInput ? 'codexSendState(false)' : 'codexSendState(true)', nativeInput?.context));
+    if (nativeInput) Object.assign(before, { draft: nativeInput.text, payload: nativeInput.text,
+      follow: (await this.cdp.evaluate(helpersCall('codexFacts()')))?.view?.follow || 'queue' });
     const hasAttachments = hasLocalFiles || before.hasDraftAttachments;
     if (before.payload == null) throw new Error('Codex 输入尚未就绪');
     const expected = before.payload.trim();
@@ -234,6 +227,7 @@ export const adapter = {
             for (const file of files) file.pending = false;
             if (!accepted.queued) rememberSessionMessage('codex', accepted.thread, Date.now());
             this.emit({ t: 'sent', ...receipt, ...accepted, sel, sentAt: Date.now() });
+            if (nativeInput) source.composerCall(`nativeSessionInfo('codex', ${JSON.stringify(nativeInput.context.threadId)}, 'clearDraft', ${JSON.stringify(nativeInput.text)})`, nativeInput.context).catch(error => this.emit({ t: 'status', ok: false, msg: '消息已接收，原生草稿清理失败：' + error.message }));
           } else if (unknown) this.emit({ t: 'sent', ...receipt, pending: true, message: error, sel });
           else this.emit({ t: 'sendFailed', requestId: receipt.requestId, message: error, sel });
         });
@@ -242,7 +236,9 @@ export const adapter = {
       if (operation) operation.submitted = true;
       let submitted;
       try {
-        submitted = await cdpRead.run(null, () => this.cdp.evaluate(helpersCall(`submitCodexMessage(${JSON.stringify(action)}, true, ${JSON.stringify(receipt?.requestId || '')})`)));
+        submitted = await cdpRead.run(null, () => this.cdp.evaluate(nativeInput
+          ? helpersCall(`nativeSessionAction('codex', ${JSON.stringify(nativeInput.context.threadId)}, 'send', ${JSON.stringify(nativeInput)})`, nativeInput.context)
+          : helpersCall(`submitCodexMessage(${JSON.stringify(action)}, true, ${JSON.stringify(receipt?.requestId || '')})`)));
       } catch (error) {
         if (!receipt) throw error;
         if (token?.pending) this.emit({ t: 'sent', ...receipt, pending: true, message: error.message, sel });
@@ -513,6 +509,16 @@ async openCodexAgent(id, preferCurrentProject = false) {
   if (!match) throw new Error('这条会话已经不在列表里');
   const convId = match[2];
   const own = match[1] === this.codexPageId;
+  if (!this.fusionBinding) {
+    if (!own) {
+      const page = (await codexWindows(CODEX_CDP_URL, false, match[1]))[0];
+      if (!page?.chatWs) throw new Error('所选会话窗口已经关闭，请刷新项目与会话列表');
+      await this.openBound({ id: 'codex', app: 'codex', title: page.rawTitle, ws: page.ws, port: CODEX_CDP_URL },
+        page.ws, page.chatWs, { windowId: page.pageId, threadId: convId, deferred: true });
+    }
+    if (!await this.selectCodexThread(convId)) throw new Error('没有找到所选会话');
+    return this.bindNativeConversation(convId);
+  }
   let row;
   if (preferCurrentProject) row = (await this.cdp.evaluate(helpersCall('codexChatRows(true)')) || []).find(r => r.id === convId);
   if (!row) {
@@ -854,6 +860,7 @@ async codexOpenMention(trigger, q) {
 },
 
 async codexPick(msg) {
+  await this.assertSelectedThread();
   if (this.app !== 'codex') return;
   const trigger = msg.section === 'commands' || msg.section === 'Skills' ? '/' : '@';
   const parentQ = String(msg.parentQ || msg.q || '').slice(0, 60);
@@ -893,6 +900,7 @@ async codexPick(msg) {
 },
 
 async codexSkillList() {
+  await this.assertSelectedThread();
   const rows = await this.withMentionLock(null, async () => {
     await this.codexFocusPrompt();
     const before = await this.codexPrompt();
@@ -914,6 +922,7 @@ async codexTogglePlan() {
 },
 
 async codexToggleIde() {
+  await this.assertSelectedThread();
   const before = (await this.cdp.evaluate(helpersCall('codexFacts()')))?.view?.ide?.on;
   await this.codexPick({ section: 'commands', label: 'IDE context', q: 'ide' });
   let after = before;
@@ -926,12 +935,14 @@ async codexToggleIde() {
 },
 
 async codexRunMenu() {
+  await this.assertSelectedThread();
   const items = await readCodexMenu(this, 'run') || [];
   await this.closeMenus();
   this.emit({ t: 'menu', kind: 'codex-run', items: items.filter(it => /^(Local|Cloud|Worktree|Connect Codex web)\b/.test(it.label)).map(it => ({ label: it.label, checked: false })) });
 },
 
 async codexRunPick(label) {
+  await this.assertSelectedThread();
   const hit = await readCodexMenu(this, 'run', items => items.find(it => it.label === label));
   if (!hit) { await this.closeMenus(); throw new Error(`没找到执行位置：${label}`); }
   await this.tapCss(hit.x, hit.y);
@@ -942,12 +953,14 @@ async codexRunPick(label) {
 },
 
 async codexChatMenu() {
+  await this.assertSelectedThread();
   const items = await readCodexMenu(this, 'actions') || [];
   await this.closeMenus();
   this.emit({ t: 'menu', kind: 'codex-chat', items: items.map(it => ({ label: it.label, checked: false })) });
 },
 
 async codexChatPick(label, name) {
+  await this.assertSelectedThread();
   const hit = await readCodexMenu(this, 'actions', items => items.find(it => it.label === label));
   if (!hit) { await this.key('Escape'); throw new Error(`没找到会话操作：${label}`); }
   const thread = await this.cdp.evaluate(helpersCall('codexThread()'));

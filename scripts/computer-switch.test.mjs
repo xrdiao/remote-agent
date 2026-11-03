@@ -131,6 +131,7 @@ function harness({ sameSelection = false, count = 2 } = {}) {
   const projectSheets = read('app/js/sheets.js');
   run(projectSheets.slice(projectSheets.indexOf('function projectSheet('), projectSheets.indexOf('function showProjects(')));
   run(core.slice(core.indexOf('function requestAgentCatalog()'), core.indexOf('function openAgentList(')));
+  run(core.slice(core.indexOf('const conversationContexts ='), core.indexOf('// Only migrated agents')));
   run(gate.slice(gate.indexOf('function newComputerConnection('), gate.indexOf('const connLaunchStatus')));
   run(gate.slice(gate.indexOf('function connReadFailed('), gate.indexOf('function connRetryCurrent(')));
   run(net);
