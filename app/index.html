@@ -35,7 +35,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>Remote Agent</title>
-<link rel="stylesheet" href="app.css?v=385">
+<link rel="stylesheet" href="app.css?v=386">
 <link rel="stylesheet" href="vendor/xterm.css?v=6.0.0">
 </head>
 <body>
@@ -136,20 +136,12 @@
     <div id="fusionConfig" hidden><button data-fusion-config class="dd">主 Agent 配置</button><button data-fusion-tasks class="dd">任务与证据</button></div>
   </div>
   <button id="composerFold" type="button" title="收起输入框" aria-label="收起输入框" aria-expanded="true" aria-controls="text"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
-  <div id="termToolsLabel" hidden>终端操作</div>
   <div id="termTools" hidden>
-    <button id="pickTerms">列表</button>
-    <button id="newTerm">＋ 新建</button>
-    <button id="termFolder">选择目录新建</button>
-    <button id="termInt">Ctrl+C</button>
-    <button data-termkey="Tab">Tab</button>
-    <button id="termSize">尺寸</button>
-    <button id="termRefresh">刷新</button>
-    <button id="termPasswordToggle" type="button">密码输入</button>
-    <button id="termCopy" disabled>复制</button>
-    <button id="termSelectAll" disabled>全选</button>
-    <form id="termPasswordBox" hidden><input id="termPassword" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="终端密码" placeholder="输入终端密码"><button id="termPasswordSend" type="submit">发送密码</button><button id="termPasswordCancel" type="button">取消</button></form>
+    <button id="pickTerms">终端列表 ▾</button>
+    <button id="termInt">中断 Ctrl+C</button>
+    <button id="termMore" type="button">更多</button>
   </div>
+  <form id="termPasswordBox" hidden><input id="termPassword" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="终端密码" placeholder="输入终端密码"><button id="termPasswordSend" type="submit">发送密码</button><button id="termPasswordCancel" type="button">取消</button></form>
   <div class="composerField"><textarea id="text" rows="1" placeholder="发给 Agent…" enterkeyhint="send"></textarea><button id="mic" title="按住说话，松开结束" aria-label="按住说话" hidden><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button><button id="stop" title="停止生成" aria-label="停止生成" hidden><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="3"/></svg></button></div>
   <div class="sendRow">
     <div class="sendTools">
@@ -157,7 +149,7 @@
     <button id="img" title="附加图片" aria-label="附加图片"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/></svg></button>
     <button id="uploadDoc" title="上传文档" aria-label="上传文档"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M6 3h8l4 4v14H6zM14 3v5h4"/></svg></button>
     <div id="inputHistory"><button id="inputPrev" aria-label="上一条已发送内容" title="上一条已发送内容"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 15 6-6 6 6"/></svg></button><button id="inputNext" aria-label="下一条已发送内容或恢复草稿" title="下一条已发送内容或恢复草稿"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button></div>
-    <div id="termHistory"><button data-termkey="ArrowUp" aria-label="上一条终端命令"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 15 6-6 6 6"/></svg></button><button data-termkey="ArrowDown" aria-label="下一条终端命令"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button></div>
+    <div id="termHistory"><button id="termTab" data-termkey="Tab" aria-label="终端补全">Tab</button><button data-termkey="ArrowUp" aria-label="上一条终端命令"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 15 6-6 6 6"/></svg></button><button data-termkey="ArrowDown" aria-label="下一条终端命令"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button></div>
     <button id="insertNewline" aria-label="插入换行" title="插入换行"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 10-5 5 5 5M20 4v7a4 4 0 0 1-4 4H4"/></svg></button>
     </div>
     <button id="sendNow" hidden>立即发送</button><button id="send">发送</button>
@@ -239,27 +231,27 @@
   <input id="scannerFile" type="file" accept="image/*" hidden>
 </div>
 
-<script src="i18n.js?v=385"></script>
-<script src="js/core.js?v=385"></script>
+<script src="i18n.js?v=386"></script>
+<script src="js/core.js?v=386"></script>
 <script src="js/gate.js?v=382"></script>
 <script src="js/scanner.js"></script>
 <script src="js/auth.js?v=207"></script>
 <script src="js/fusion.js?v=371"></script>
 <script src="js/net.js?v=382"></script>
-<script src="js/sheets.js?v=382"></script>
-<script src="js/notify.js?v=382"></script>
+<script src="js/sheets.js?v=386"></script>
+<script src="js/notify.js?v=386"></script>
 <script src="js/overview.js?v=382"></script>
-<script src="js/mode.js?v=385"></script>
+<script src="js/mode.js?v=386"></script>
 <script src="markdown-it/markdown-it-15.0.3.min.js"></script>
 <script src="js/markdown.js?v=295"></script>
 <script src="js/chat.js?v=382"></script>
-<script src="js/history.js?v=377"></script>
+<script src="js/history.js?v=386"></script>
 <script src="js/files.js?v=375"></script>
 <script src="js/transfer.js?v=379"></script>
 <script src="js/screen.js?v=382"></script>
 <script src="vendor/xterm.js?v=6.0.0"></script>
-<script src="js/terminal.js?v=385"></script>
-<script src="js/composer.js?v=385"></script>
+<script src="js/terminal.js?v=386"></script>
+<script src="js/composer.js?v=386"></script>
 <script src="js/latency.js?v=367"></script>
 <script src="js/image-editor.js?v=379"></script>
 <script src="js/voice.js?v=356"></script>

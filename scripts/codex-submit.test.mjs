@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import vm from 'node:vm';
 import { PAGE_SRC } from '../server/page/build.mjs';
-import '../server/routes.mjs';
+import { ROUTES } from '../server/routes.mjs';
 import { adapter, methods as codexMethods } from '../server/apps/codex.mjs';
 import { methods as chatMethods } from '../server/agent/chat.mjs';
 import { FOCUS_COMPOSER } from '../server/agent/context.mjs';
@@ -150,6 +150,51 @@ test('Codex draft editing remains available during native submission preparation
   assert.equal(h.waits, 0); assert.equal(h.draft, 'newer mobile draft');
   assert.equal(h.context.lastDraft, 'newer mobile draft');
   assert.deepEqual(h.writes, [['mirror', 'newer mobile draft']]);
+});
+
+for (const value of ['中文 text', 'first\n\n第三行\n', Array.from({ length: 30 }, (_, i) => 'line ' + i).join('\n')]) {
+  test(`Codex ordinary draft writes all ${value.split('\n').length} lines through one existing editor transaction`, async () => {
+    const calls = [];
+    const context = { cdp: { async evaluate(expression) {
+      calls.push(expression);
+      const expected = JSON.stringify(value);
+      assert(expression.endsWith(`.setComposerDraft(${expected})`));
+      return true;
+    } }, typeText: () => assert.fail('ordinary text must not be retyped line by line'),
+      typeWithCodexMentions: () => assert.fail('ordinary text has no references') };
+    await adapter.typeDraft.call(context, value, []);
+    assert.equal(calls.length, 1);
+  });
+}
+
+test('Codex draft references keep their existing rich-input path and unavailable input reports failure', async () => {
+  const mentions = [{ section: 'local-files', label: 'file.txt' }], calls = [];
+  await adapter.typeDraft.call({ typeWithCodexMentions: async (...args) => calls.push(args),
+    cdp: { evaluate: () => assert.fail('references must retain their native rich-input path') } }, 'body', mentions);
+  assert.deepEqual(calls, [['body', mentions]]);
+  await assert.rejects(adapter.typeDraft.call({ cdp: { evaluate: async () => false } }, 'body', []), /输入尚未就绪/);
+});
+
+test('Codex draft reads wait for native submission settlement and retain the genuinely newer desktop draft', async () => {
+  let settle, value = 'already submitted', done = false;
+  const pending = new Promise(resolve => { settle = resolve; }), events = [];
+  const fixture = { async codexViewState(wait) { assert.equal(wait, true); await pending; }, composerDraft: () => value };
+  const context = { app: 'codex', draftEpoch: 'epoch', draftGeneration: 0, selectionKey: () => 'codex|A',
+    cdp: { evaluate: expression => vm.runInNewContext(expression.replace(PAGE_SRC, 'fixture'), { fixture }) },
+    emit: event => events.push(event) };
+  const reading = ROUTES.draft.pre(context, { draftEpoch: 'epoch', revision: 3 }).then(() => { done = true; });
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(done, false); assert.equal(events.length, 0);
+  value = 'new unsent desktop draft'; settle(); await reading;
+  assert.equal(events[0].text, value); assert.equal(events[0].ok, true);
+  assert.equal(events[0].revision, 3); assert.equal(events[0].sel, 'codex|A');
+});
+
+for (const app of ['cursor', 'devin']) test(`${app} draft reads retain their immediate native read`, async () => {
+  const events = [], fixture = { composerDraft: () => app + ' draft', codexViewState: () => assert.fail('no Codex wait') };
+  await ROUTES.draft.pre({ app, draftEpoch: 'epoch', draftGeneration: 0, selectionKey: () => app + '|A',
+    cdp: { evaluate: expression => vm.runInNewContext(expression.replace(PAGE_SRC, 'fixture'), { fixture }) },
+    emit: event => events.push(event) }, { draftEpoch: 'epoch', revision: 1 });
+  assert.equal(events[0].text, app + ' draft'); assert.equal(events[0].ok, true);
 });
 
 for (const app of ['cursor', 'devin']) {

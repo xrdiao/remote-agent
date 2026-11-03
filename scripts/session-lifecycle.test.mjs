@@ -300,10 +300,10 @@ for (const options of [[], ['继续']]) test(`Codex async Question with ${option
 });
 
 test('Codex run status follows a loaded background native turn rather than current DOM controls', () => {
-  const turn = { status: 'inProgress', turnStartedAtMs: 100 }, conversation = {};
+  const turn = { turnId: 'native-turn', status: 'inProgress', turnStartedAtMs: 100 }, conversation = { turns: [turn] };
   const context = nativeRunContext({ codexConversationManager: thread => ({ getConversation: id => id === 'background' ? conversation : null }),
-    codexHistoryState: (_value, _watch, _scopes, thread) => { assert.equal(thread, 'background'); return { entries: [{ turnId: 'native-turn' }] }; },
-    codexTurnSource: () => ({ metadata: turn }),
+    codexHistoryState: () => assert.fail('card status must not parse full history'),
+    codexTurnSource: () => assert.fail('card status must not scan item bindings'),
   });
   assert.equal(context.run('codex', 'background').status, 'running');
   turn.status = 'completed'; turn.durationMs = 50;
@@ -313,14 +313,28 @@ test('Codex run status follows a loaded background native turn rather than curre
 });
 
 test('Codex stopped, failed and unreadable turn states cannot report a completed result', () => {
-  const turn = { status: 'interrupted' };
-  const context = nativeRunContext({ codexConversationManager: () => ({ getConversation: () => ({}) }),
-    codexHistoryState: () => ({ entries: [{ turnId: 'turn' }] }), codexTurnSource: () => ({ metadata: turn }) });
+  const turn = { turnId: 'turn', status: 'interrupted' };
+  const context = nativeRunContext({ codexConversationManager: () => ({ getConversation: () => ({ turns: [turn] }) }) });
   assert.equal(context.run('codex', 'thread').status, 'stopped');
   turn.status = 'completed'; turn.error = { message: 'native failure' };
   assert.equal(context.run('codex', 'thread').status, 'error');
   delete turn.error; turn.status = undefined;
   assert.equal(context.run('codex', 'thread').status, 'unknown');
+});
+
+test('Codex canonical card status reuses the native loaded-turn reader and skips entries without turn identity', () => {
+  const history = {}, turn = { turnId: 'canonical-latest', status: 'completed', turnStartedAtMs: 400, durationMs: 25 };
+  let reads = 0;
+  const manager = { getConversation: () => ({ turnHistory: { kind: 'canonical', history } }),
+    threadStore: { stateReaders: { getLoadedConversationHistoryTurns(value) {
+      assert.equal(value, history); reads++; return [{ turnId: 'older', status: 'inProgress' }, turn, {}];
+    } } } };
+  const context = nativeRunContext({ codexConversationManager: () => manager });
+  const run = context.run('codex', 'thread');
+  assert.equal(run.id, 'canonical-latest'); assert.equal(run.status, 'completed');
+  assert.equal(run.startedAt, 400); assert.equal(run.completedAt, 425); assert.equal(reads, 1);
+  manager.threadStore.stateReaders.getLoadedConversationHistoryTurns = () => [];
+  assert.equal(context.run('codex', 'thread'), null);
 });
 
 test('Cursor completion requires native completed status and retains its generation identity', () => {

@@ -229,7 +229,11 @@ export class NativeWindow {
     return [...states.values()];
   }
   async read(fresh = false) {
-    if (this.reading) return awaitCdpRead(this.reading.promise);
+    const wantedRevision = this.revision;
+    while (this.reading) {
+      const result = await awaitCdpRead(this.reading.promise);
+      if (!fresh || this.readRevision >= wantedRevision) return result;
+    }
     if (!fresh && this.snapshot && this.readRevision === this.revision && Date.now() - this.updatedAt < this.interval()) return this.snapshot;
     const revision = this.revision, controller = new AbortController();
     const read = { controller };

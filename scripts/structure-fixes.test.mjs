@@ -15,6 +15,7 @@ import { methods as menuMethods } from '../server/agent/menus.mjs';
 import { methods as projectMethods } from '../server/agent/projects.mjs';
 import { methods as codexMethods } from '../server/apps/codex.mjs';
 import { ROUTES, flag } from '../server/routes.mjs';
+import { cdpRead, awaitCdpRead } from '../server/cdp.mjs';
 
 const read = file => fs.readFileSync(new URL('../' + file, import.meta.url), 'utf8');
 const part = (source, start, end) => {
@@ -512,6 +513,124 @@ test('an accepted message closes only its own suggestions and preserves a newer 
   }
 });
 
+function acceptedDraft(newer) {
+  const value = 'submitted text', input = { value, selectionStart: 0, selectionEnd: 0,
+    setSelectionRange(start, end, direction) { this.selectionStart = start; this.selectionEnd = end; this.selectionDirection = direction; } };
+  const sent = { requestId: 'request', computer: 'computer', draft: 'draft', text: value, revision: 1, version: 1, mode: 'chat' };
+  const context = vm.createContext({ text: input, mode: 'chat', currentApp: 'codex', questionCompose: null,
+    currentComputer: () => ({ id: 'computer' }), draftKey: () => 'draft', activeDraft: 'draft', viewSel: 'codex|A',
+    inputRevision: newer ? 2 : 1, draftRevision: 7, draftAckRevision: 7, draftEpoch: 'epoch',
+    drafts: new Map([['draft', value]]), draftVersions: new Map([['draft', newer ? 2 : 1]]), draftMentions: new Map(),
+    pendingSends: new Map([['request', sent]]), pendingEchoes: [], inputHistory: new Map(), submittedMessages: [],
+    pendingDesktopDraft: { text: value }, pendingStatus: '', dirtyDrafts: new Set(), lastChat: null, mirroredDraft: value,
+    MN: { value, mentions: [] }, document: { activeElement: null }, composing: false,
+    $: () => ({ textContent: '' }), queueChatRender() {}, status() {}, mentionHide() {}, autosize() {}, saveDraft() {}, queueDraftSync() {},
+  });
+  vm.runInContext(part(read('app/js/composer.js'), 'function confirmSent(', 'function failPendingSend(')
+    + part(read('app/js/composer.js'), 'function receiveDraft(', 'function autosize('), context);
+  return { context, input, sent, ack: (revision, text) => context.receiveDraft({ t: 'draftAck', ok: true, read: true,
+    sel: 'codex|A', draftEpoch: 'epoch', revision, text }) };
+}
+
+test('accepted clearing invalidates late draft reads and a current native draft still synchronizes', () => {
+  const h = acceptedDraft(false);
+  h.context.confirmSent({ requestId: 'request', sel: 'codex|A' });
+  assert.equal(h.input.value, ''); assert.equal(h.context.draftRevision, 8); assert.equal(h.context.pendingDesktopDraft, null);
+  h.ack(7, h.sent.text); assert.equal(h.input.value, '');
+  h.ack(8, 'new desktop draft'); assert.equal(h.input.value, 'new desktop draft');
+});
+
+test('acceptance retains a later edit even when its text equals the previous submitted message', () => {
+  const h = acceptedDraft(true);
+  h.context.confirmSent({ requestId: 'request', sel: 'codex|A' });
+  assert.equal(h.input.value, h.sent.text); assert(h.context.dirtyDrafts.has('draft'));
+  h.ack(7, ''); assert.equal(h.input.value, h.sent.text);
+});
+
+function codexTranscript() {
+  const history = read('app/js/history.js'), context = vm.createContext({ currentApp: 'codex' });
+  const merge = part(history, '    const updates = new Map(chat.items.map', '    chat = { ...chat, items: merged };');
+  vm.runInContext(part(history, 'function scKeep(', 'function scSnapshot(')
+    + `\nthis.merge = (items, next, older = false) => {
+      const previous = { items }, chat = next, historyRequest = older, paged = true, historyExpanded = true;
+      ${merge}
+      return merged;
+    };`, context);
+  return { context, merge: (previous, next, older) => context.merge(previous, next, older), ids: rows => Array.from(rows, row => row.i) };
+}
+
+test('Codex displayed transcript follows live message identity after cached order numbers are rebuilt', () => {
+  const h = codexTranscript(), old = { i: 'older', k: 'human', order: 1400000, t: 'same text' },
+    latest = { i: 'latest', k: 'human', order: 770000, t: 'same text' }, answer = { i: 'answer', k: 'assistant', order: 770001 };
+  assert.deepEqual(h.ids(h.merge([old], { items: [latest, answer] })), ['older', 'latest', 'answer']);
+  assert.deepEqual(h.ids(h.merge([latest, answer, old], { items: [latest, answer] })), ['older', 'latest', 'answer']);
+  Object.assign(h.context, { SC: { key: null }, lastChat: { items: h.merge([old], { items: [latest, answer] }) } });
+  vm.runInContext(part(read('app/js/history.js'), 'function conversationTurns(', 'function jumpToTurn('), h.context);
+  assert.deepEqual(h.ids(h.context.conversationTurns()), ['older', 'latest']);
+});
+
+test('Codex displayed transcript retains omitted middle rows, longer thinking and task details', () => {
+  const h = codexTranscript(), head = { i: 'human', k: 'human', order: 10000 }, tool = { i: 'tool', k: 'tool', order: 10001 },
+    thought = { i: 'thinking', k: 'thinking', t: 'Thought\nfull reasoning', order: 10002 },
+    task = { i: 'tasks', k: 'tasks', total: 1, done: 0, items: ['detail'], order: 10003 };
+  const result = h.merge([head, tool, thought, task], { items: [{ ...head, order: 20000 }, { ...thought, order: 20001, t: 'Thought\nx' },
+    { i: 'tasks', k: 'tasks', total: 1, done: 0, order: 20002 }, { i: 'new', k: 'human', order: 30000 }] });
+  assert.deepEqual(h.ids(result), ['human', 'tool', 'thinking', 'tasks', 'new']);
+  assert.equal(result[2].t, thought.t); assert.deepEqual(result[3].items, ['detail']);
+});
+
+test('Codex older pages precede the current tail and expired capacity Retry controls disappear', () => {
+  const h = codexTranscript(), old = { i: 'old', k: 'human', order: 100000 }, shared = { i: 'shared', k: 'human', order: 200000 },
+    latest = { i: 'latest', k: 'assistant', order: 200001 };
+  assert.deepEqual(h.ids(h.merge([shared, latest], { items: [old, shared] }, true)), ['old', 'shared', 'latest']);
+  const capacity = { i: 'capacity', k: 'notice', capacity: true, syntheticCapacity: true, b: ['Retry'], order: 200002 };
+  const result = h.merge([shared, latest, capacity], { items: [shared, latest], capacityPresent: false });
+  assert.deepEqual(h.ids(result), ['shared', 'latest']);
+});
+
+function readingWindow() {
+  const calls = [];
+  const context = { cdpRead, awaitCdpRead, AbortController, PAGE_SRC: '{}', helpersCall: call => call,
+    refreshSessionCatalog: async () => {}, publishCatalog() {}, withOperation: (_operation, action) => action() };
+  const methods = vm.runInNewContext('({' + part(read('server/native-windows.mjs'), '  async read(fresh = false)', '  interval()') + '})', context);
+  const source = { revision: 1, readRevision: 0, snapshot: null, catalogKey: null,
+    win: { app: 'codex' }, runStates: new Map(), listeners: new Set(), connect: async () => {}, retryCapacity() {}, interval: () => 1800,
+    cdp: { evaluate: expression => expression === 'sessionPickerRows(true)' ? Promise.resolve([]) : new Promise(resolve => calls.push(resolve)) } };
+  source.read = methods.read.bind(source);
+  return { source, calls, release: (n, name) => calls[n]({ chat: { thread: 'A', items: [{ i: name }] }, states: [], catalog: [] }) };
+}
+
+test('fresh opening shares the existing followup read and stops at its captured revision while generation continues', async () => {
+  const h = readingWindow(), first = h.source.read();
+  await new Promise(resolve => setImmediate(resolve)); h.source.revision = 2;
+  const latest = Array.from({ length: 20 }, () => h.source.read(true)), joined = h.source.read();
+  h.release(0, 'old'); assert.equal((await first).chat.items[0].i, 'old'); assert.equal((await joined).chat.items[0].i, 'old');
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(h.calls.length, 2);
+  h.source.revision = 3; h.release(1, 'current');
+  assert((await Promise.all(latest)).every(result => result.chat.items[0].i === 'current'));
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(h.calls.length, 3);
+  const pending = h.source.read(); h.release(2, 'newer'); await pending;
+});
+
+test('cancelling a fresh consumer leaves the shared native read available to other consumers', async () => {
+  const h = readingWindow(), first = h.source.read(), controller = new AbortController();
+  await new Promise(resolve => setImmediate(resolve)); h.source.revision = 2;
+  const fresh = cdpRead.run(controller.signal, () => h.source.read(true)); controller.abort(new Error('selection changed'));
+  await assert.rejects(fresh, /selection changed/);
+  h.release(0, 'old'); await first;
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(h.calls.length, 2);
+  const next = h.source.read(); h.release(1, 'current'); assert.equal((await next).chat.items[0].i, 'current');
+});
+
+for (const app of ['cursor', 'devin']) test(`${app} latest reads share the existing followup and retain their catalog path`, async () => {
+  const h = readingWindow(); h.source.win.app = app;
+  const first = h.source.read(); await new Promise(resolve => setImmediate(resolve));
+  h.source.revision = 2; const fresh = h.source.read(true);
+  h.release(0, 'old'); await first; await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.calls.length, 2); h.release(1, 'current');
+  assert.equal((await fresh).chat.items[0].i, 'current'); assert.equal(h.source.catalog.length, 0);
+});
+
 for (const kind of ['thread', 'computer', 'mode']) {
   test(`append confirmation is cancelled when its ${kind} changes`, async () => {
     const h = confirmation(), work = h.nodes.sendNow.onclick();
@@ -654,7 +773,7 @@ test('Codex rename closes a temporary connection after an error', async () => {
   assert.equal(h.closed(), 1);
 });
 
-function previews({ saved, now = 1000 } = {}) {
+function previews({ saved, chatPreviews = null, now = 1000 } = {}) {
   const computers = ['A', 'B', 'C'].map(id => ({ id, key: 'key-' + id }));
   const links = computers.map((computer, i) => ({
     computer, expectedId: computer.id, auth: { resumeId: 'resume-' + computer.id },
@@ -669,7 +788,8 @@ function previews({ saved, now = 1000 } = {}) {
     computerBindingReady: () => true, loadComputers: () => computers, currentComputer: () => computers[0],
     ovSt: new Map(computers.map(c => [c.id, { data: { sessions: [] }, offset: 0 }])), ovCollapsed: new Set(),
     ovHistory: () => ({ ov: { level: 'sessions' } }), ovRestoreComputers() { restored++; },
-    idbGet: async key => key === 'computer-resumes' ? saved : null,
+    idbGet: async key => key === 'computer-resumes' ? saved : key === 'chat-previews' ? chatPreviews : null,
+    scClearing: () => false,
     idbPut(key, value) { writes.push({ key, value: structuredClone(value) }); return Promise.resolve(); },
     Date: class extends Date { static now() { return clock; } },
     setTimeout(fn, ms) { const id = ++serial; timers.set(id, { fn, at: clock + ms }); return id; },
@@ -696,6 +816,17 @@ function previews({ saved, now = 1000 } = {}) {
     },
   };
 }
+
+test('a late persisted Codex preview cannot replace the live snapshot already received for that selection', async () => {
+  let release;
+  const chatPreviews = new Promise(resolve => { release = resolve; }), h = previews({ chatPreviews });
+  await h.ready();
+  const sel = 'codex|window|A', live = { thread: 'A', items: [{ i: 'latest', k: 'human', order: 20000 }] };
+  h.context.cacheChat(sel, live);
+  release([['A|' + sel, { thread: 'A', items: [{ i: 'older', k: 'human', order: 90000 }] }]]);
+  await vm.runInContext('chatPreviewReady', h.context);
+  assert.equal(h.context.chatBySel.get('A|' + sel), live);
+});
 
 test('three computers share one restore write per round and unchanged chats are not saved again', async () => {
   const h = previews(); await h.ready();

@@ -426,6 +426,11 @@ function showTerminals(list) {
   const rows = list.map(t => `<div class="optRow"><button class="opt ${t.id === currentTerminalId ? 'cur' : ''}" data-term="${esc(t.id)}"><span class="lbl">${esc(t.title)}${t.exited ? ` · ${I18N.tr('已退出')}` : ''}<span class="sub ovRaw">${esc(t.cwd)}</span><span class="sub">${t.cols} × ${t.rows}</span></span>${t.id === currentTerminalId ? '<span class="tag">当前</span>' : ''}</button><button data-term-del="${esc(t.id)}" data-term-name="${esc(t.title)}">删除</button></div>`).join('');
   openSheet('terminals', `<h3>RA 终端</h3>${rows || '<div class="hint">还没有终端。</div>'}<button class="opt" data-act="newTerm"><span class="lbl">＋ 新建终端</span></button>`);
 }
+function showTerminalMore() {
+  const available = terminalAvailable();
+  const row = (action, label, enabled) => `<button class="opt" data-terminal-action="${action}"${enabled ? '' : ' disabled'}><span class="lbl">${I18N.tr(label)}</span></button>`;
+  openSheet('terminal-more', `<h3>RA 终端</h3>${row('password', '密码输入', available)}${row('copy', '复制', !!raTerminal)}${row('selectAll', '全选', !!raTerminal)}${row('size', '尺寸', available)}${row('refresh', '刷新输出', authed)}`);
+}
 function showTerminalSize() {
   if (!terminalAvailable()) return;
   openSheet('terminal-size', `<h3>${I18N.tr('终端尺寸')}</h3><p class="hint">${I18N.tr('尺寸独立于手机屏幕，显示不下时滚动查看。')}</p><form id="terminalSizeForm" class="terminalSizeForm"><label>${I18N.tr('列数')}<input id="terminalCols" type="number" min="2" step="1" required value="${raTerminal.cols}"></label><label>${I18N.tr('行数')}<input id="terminalRows" type="number" min="2" step="1" required value="${raTerminal.rows}"></label><button type="submit">${I18N.tr('应用')}</button></form>`);
@@ -476,9 +481,8 @@ function showComputerFiles() {
   const entries = state.roots ? state.roots.map(p => ({ name: p.name, path: p.path, directory: true, selectable: true })) : dir?.entries || [];
   const rows = entries.filter(e => !state.project || e.directory).map(e => `<button class="opt editorEntry${e.directory ? ' editorFolder' : ''}" data-computer-path="${esc(e.path)}" data-computer-directory="${!!e.directory}" ${e.selectable ? '' : 'disabled'}>${fileEntryIcon(e.directory)}<span class="lbl ovRaw">${esc(e.name)}</span>${e.directory ? '<span class="editorEntryArrow" aria-hidden="true">›</span>' : `<span class="sub">${e.selectable ? fmtSize(e.size) : I18N.tr('不可读取')}</span>`}</button>`).join('');
   const owner = state.project?.owner;
-  const terminal = owner?.source === 'terminal';
-  const context = terminal ? ' · RA Terminal' : owner ? ` · Fusion · ${OV_AGENT[owner.app]}` : '';
-  const actions = state.project && dir ? terminal ? '<div class="computerFileActions"><button class="opt" data-computer-project="terminal">在此文件夹新建终端</button></div>' : '<div class="computerFileActions"><button class="opt" data-computer-project="open">打开此文件夹</button><button class="opt" data-computer-project="chat">在此项目新建会话</button><button class="opt" data-computer-project="new">新建项目并创建会话</button></div>' : '';
+  const context = owner ? ` · Fusion · ${OV_AGENT[owner.app]}` : '';
+  const actions = state.project && dir ? '<div class="computerFileActions"><button class="opt" data-computer-project="open">打开此文件夹</button><button class="opt" data-computer-project="chat">在此项目新建会话</button><button class="opt" data-computer-project="new">新建项目并创建会话</button></div>' : '';
   openSheet('computer-files', `<h3>${I18N.tr(state.project ? '选择文件夹' : '打开文件')}</h3><p class="hint ovRaw">${esc(state.computer.name + context)}</p><form id="computerFilePathForm" class="computerFilePath"><input id="computerFilePath" class="ovRaw" aria-label="${I18N.tr('文件路径')}" placeholder="${I18N.tr('输入路径')}" value="${esc(state.path)}" autocomplete="off" autocapitalize="off" spellcheck="false"><button type="button" data-computer-complete title="Tab">${I18N.tr('补全')} ⇥</button><button type="submit">${I18N.tr('前往')}</button></form><div id="computerFileCompletions"></div><div class="computerFileNav"><button type="button" data-computer-path="${esc(dir?.parent ?? '')}" data-computer-directory="true" ${dir?.parent == null ? 'disabled' : ''}>${I18N.tr('返回上一级')}</button><button type="button" data-computer-root>${I18N.tr('根目录')}</button></div>${actions}<p id="computerFileStatus" class="hint${state.error ? ' err' : ''}" role="status">${esc(I18N.tr(state.message))}</p>${rows || (!state.message ? `<div class="hint">${I18N.tr('此目录暂无可显示的文件')}</div>` : '')}`);
   $('sheet').scrollTop = state.scroll;
   if (selection) { $('computerFilePath').focus(); $('computerFilePath').setSelectionRange(...selection); }

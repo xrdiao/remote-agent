@@ -2,7 +2,7 @@ import { updateDevice } from '../lib/auth.mjs';
 import { Cdp, cdpRead } from './cdp.mjs';
 import { listWindows, phoneWindows, codexWindows } from './windows.mjs';
 import { CODEX_CDP_URL, EDITORS } from './config.mjs';
-import { helpersCall } from './page/build.mjs';
+import { PAGE_SRC, helpersCall } from './page/build.mjs';
 import { appPlans, quotaErrorMessage } from './agent/context.mjs';
 import { probeLatency } from './latency.mjs';
 import { launchAgents, detectAgents } from './launch.mjs';
@@ -240,7 +240,12 @@ export const ROUTES = {
       s.draftWriting = true;
       let ok = false;
       try {
-        if (read) { text = await s.cdp.evaluate(helpersCall('composerDraft()')); ok = typeof text === 'string'; }
+        if (read) {
+          text = await s.cdp.evaluate(s.app === 'codex'
+            ? `(async () => { const h = ${PAGE_SRC}; await h.codexViewState(true); return h.composerDraft(); })()`
+            : helpersCall('composerDraft()'));
+          ok = typeof text === 'string';
+        }
         else ok = await s.setDraft(text);
       } catch {}
       finally { s.draftWriting = false; }
@@ -283,12 +288,12 @@ export const ROUTES = {
   newTerminal: terminalRoute(async (s, m) => {
     let project = { root: m.cwd || os.homedir(), host: '' };
     if (m.source === 'conversation') {
-      if (!s.bindingReady) throw new Error('当前会话项目尚未确认，请选择本机文件夹新建终端');
+      if (!s.bindingReady) throw new Error('当前会话项目尚未确认，暂时无法新建终端');
       if (m.sel !== s.selectionKey()) throw new Error('会话已切换，请从当前会话新建终端');
       // Freeze the originating native identities before the first asynchronous project read.
       const origin = Object.assign(Object.create(Object.getPrototypeOf(s)), s);
       project = await origin.adapter.terminalProject.call(origin);
-      if (!project?.root) throw new Error('未读取到唯一项目目录，请选择本机文件夹新建终端');
+      if (!project?.root) throw new Error('未读取到唯一项目目录，暂时无法新建终端');
     }
     const terminal = await terminalService.create({ cwd: project.root, host: project.host || '' });
     s.emit({ t: 'termCreated', requestId: m.requestId, terminal });

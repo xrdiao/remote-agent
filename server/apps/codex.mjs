@@ -198,7 +198,8 @@ export const adapter = {
 
   async typeDraft(text, mentions) {
     if (mentions?.length) await this.typeWithCodexMentions(text, mentions);
-    else await this.typeText(text);
+    else if (!await this.cdp.evaluate(helpersCall(`setComposerDraft(${JSON.stringify(text)})`)))
+      throw new Error('Codex 输入尚未就绪');
   },
 
   async submitPrompt(now, busy, when, queued, mentions, receipt, files = []) {

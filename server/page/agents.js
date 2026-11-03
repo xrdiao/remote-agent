@@ -398,16 +398,16 @@
     if (app === 'codex') {
       const conversation = manager?.getConversation(thread);
       if (!conversation) return null;
-      const state = codexHistoryState(conversation, false, scopes, thread), entry = state.entries.at(-1);
-      if (!entry) return null;
-      const source = codexTurnSource(entry, scopes, false, { before: Infinity, limit: 1 });
-      const turn = source?.metadata;
+      const turns = conversation.turnHistory?.kind === 'canonical'
+        ? manager.threadStore.stateReaders.getLoadedConversationHistoryTurns(conversation.turnHistory.history)
+        : conversation.turns;
+      const turn = turns.findLast(turn => turn?.turnId);
       if (!turn) return null;
       const completed = ['complete', 'completed'].includes(turn.status);
       const status = turn.error || ['failed', 'error'].includes(turn.status) ? 'error'
         : ['interrupted', 'aborted'].includes(turn.status) ? 'stopped'
         : completed ? 'completed' : turn.status === 'inProgress' ? 'running' : 'unknown';
-      return { id: entry.turnId, status, startedAt: Number(turn.turnStartedAtMs) || 0,
+      return { id: turn.turnId, status, startedAt: Number(turn.turnStartedAtMs) || 0,
         completedAt: completed && Number.isFinite(turn.durationMs) ? turn.turnStartedAtMs + turn.durationMs : 0 };
     }
     if (app === 'devin') {
