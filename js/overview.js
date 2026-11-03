@@ -41,6 +41,7 @@ const ovMain = $('overview').querySelector('.ov-main');
 const ovDone = (() => { try { return JSON.parse(store.get('ov-done') || '{}'); } catch { return {}; } })();
 const ovStoppedSeen = JSON.parse(store.get('ov-stopped-seen') || '{}');
 let ovEnterRequested = false;
+let ovOpenRequest = 0;
 let ovToolState = null;
 const ovComposerControls = { mic: $('mic'), stop: $('stop'), attachments: $('attachments').parentElement };
 let ovBatch = null;
@@ -720,6 +721,12 @@ function ovSessionMenu(key) {
   const id = r.app === 'codex' ? `thread:${r.windowId}:${r.threadId}` : r.threadId;
   showAgentActions(id, r.title, null, r);
 }
+function ovMarkRead(key) {
+  if (!ovDone[key]) return false;
+  delete ovDone[key];
+  store.set('ov-done', JSON.stringify(ovDone));
+  return true;
+}
 function ovStartBatch() {
   ovBatch ||= { selected: new Map(), running: false, cancelled: false, results: [], total: 0 };
   ovS.open = null;
@@ -857,11 +864,20 @@ function ovLocateReply() {
   const input = document.activeElement;
   if (input?.dataset?.ovInput) ovLocateCard(input.closest('.ov-composer'));
 }
-function ovOpen(target) {
+async function ovOpen(target) {
+  const request = ++ovOpenRequest;
   if (target.project && !target.project.root) return status(ovT('尚未读取到项目路径，请在电脑上打开项目后重试'), false);
   if (target.win === 'fusion') { ovS.level = 'fusion'; ovS.proj = null; ovSaveHistory(); }
   const json = JSON.stringify(target), e = ovList.find(x => x.id === target.computer);
   if (e.c.key === currentComputer()?.key) return openWin(json);
+  const resume = mode === 'chat' && target.win.split(':')[0] === 'codex' && !e.foreign && resumableComputerSocket(e.c);
+  if (resume && computerBindingReady(resume)) {
+    ovEnterRequested = false;
+    const changing = useComputer(e.index), generation = connGen;
+    await changing;
+    if (request === ovOpenRequest && generation === connGen && currentComputer()?.key === e.c.key) return openWin(json);
+    return;
+  }
   const here = rememberNotice(json);
   if (!here) return;
   if (target.project || !resumableComputerSocket(here)) pendingNotice = json;
@@ -965,14 +981,10 @@ $('overview').addEventListener('click', e => {
     case 'ext': { const b = loadComputerBookmarks().find(x => x.id === id); return openComputerEntry(new URL('./', b.discovery).href, b.id); }
     case 'full': {
       const r = ovRecs().find(r => r.key === id);
-      const stopped = r?.state === 'err' && r.run?.status === 'stopped', done = !!ovDone[id];
+      const stopped = r?.state === 'err' && r.run?.status === 'stopped', done = ovMarkRead(id);
       if (stopped) {
         ovStoppedSeen[id] = r.run.id;
         store.set('ov-stopped-seen', JSON.stringify(ovStoppedSeen));
-      }
-      if (done) {
-        delete ovDone[id];
-        store.set('ov-done', JSON.stringify(ovDone));
       }
       if (stopped || done) ovRender();
       return ovOpen(JSON.parse(el.dataset.t));
