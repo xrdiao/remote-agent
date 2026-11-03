@@ -125,6 +125,160 @@ function nativeRunContext(extra) {
   return context;
 }
 
+function nativeWaitingState(app = 'codex') {
+  const state = { thread: 'thread-A', requests: [], labels: [], busy: false, panel: true, questions: null };
+  const item = { innerText: '任务已正常完成', matches: () => false, querySelector: () => null, querySelectorAll: () => [],
+    hasAttribute: key => key === 'data-turn-key', getAttribute: () => 'native-turn' };
+  const panel = {};
+  const context = vm.createContext({ doc: { querySelectorAll: () => [] }, vis: () => true,
+    agentList: () => [{ id: state.thread, current: true, title: '会话' }], activeThread: () => state.thread,
+    codexButton: () => null, codexWorkspaceRoots: () => [], hasComposer: () => true,
+    findPanel: () => state.panel ? panel : null, isBusy: () => state.busy, topItems: () => [item],
+    buttonsIn: element => element === item ? state.labels.map(label => ({ label })) : [],
+    itemKey: () => 'native-turn', summary: () => 'Edited 22 files+1,277-24View changes', inItem: () => true, inQn: () => false,
+    devinLog: () => app === 'devin' ? {} : null, questions: () => state.questions, devinQuestions: () => state.questions,
+    devinSession: () => null, devinTaskState: () => null, changedCount: () => 0, fileBarButtons: () => [], agentChanges: () => null,
+    codexThread: () => app === 'codex' ? state.thread : '', codexRequestData: () => state.requests,
+    codexLatestEntry: () => ({ conversationId: state.thread, turnKey: 'native-turn', turn: { items: [
+      { type: 'assistant-message', completed: true, content: '任务已正常完成' },
+    ] } }),
+  });
+  const source = read('server/page/agents.js');
+  vm.runInContext(fragment(source, '  const WAIT =', '  // Per-file totals')
+    + fragment(source, '  const agentState =', '  // Cursor Agents window:') + '\nthis.read = agentState;', context);
+  return { state, read: () => context.read() };
+}
+
+test('Codex finished changes and ordinary action buttons are not pending native requests', () => {
+  const h = nativeWaitingState();
+  for (const label of ['Accept all changes', 'Run', 'Continue']) {
+    h.state.labels = [label];
+    const value = h.read();
+    assert.equal(value.waiting, null); assert.equal(value.waitingText, '');
+    assert.equal(value.busy, false); assert.equal(value.last, '任务已正常完成');
+  }
+});
+
+for (const id of ['async:question-1', 'approval:command-1']) test(`Codex ${id} is waiting even outside the message list or before an answer enables Send`, () => {
+  const h = nativeWaitingState();
+  h.state.requests = [{ id, text: '请选择处理方式', buttons: [{ label: 'Skip' }, { label: 'Send', disabled: true }], fields: [{ value: '' }] }];
+  h.state.questions = { list: [{ text: 'unrelated legacy question' }] };
+  for (const panel of [true, false]) {
+    h.state.panel = panel;
+    const value = h.read();
+    assert(value.waiting.includes(id)); assert.equal(value.waitingText, '请选择处理方式');
+    assert(value.waiting.includes(h.state.thread));
+  }
+});
+
+test('Codex waiting follows native request and thread identity and clears when its card disappears', () => {
+  const h = nativeWaitingState(), request = { id: 'async:first', text: '相同问题', fields: [{ value: '' }] };
+  h.state.requests = [request]; const first = h.read().waiting;
+  request.fields[0].value = 'answer draft'; assert.equal(h.read().waiting, first);
+  h.state.requests = [{ ...request, id: 'async:next' }]; assert.notEqual(h.read().waiting, first);
+  h.state.requests = []; assert.equal(h.read().waiting, null); assert.equal(h.read().waitingText, '');
+  h.state.thread = 'thread-B'; assert.equal(h.read().waiting, null);
+  h.state.requests = [request]; const second = h.read().waiting; assert.notEqual(second, first);
+  h.state.thread = 'thread-A'; assert.equal(h.read().waiting, first);
+});
+
+for (const app of ['cursor', 'devin']) test(`${app} retains its existing button and Question waiting behavior`, () => {
+  const h = nativeWaitingState(app); h.state.labels = ['Allow'];
+  assert(h.read().waiting); assert.equal(h.read().waitingText, 'Edited 22 files+1,277-24View changes');
+  h.state.questions = { list: [{ text: '原生问题', multi: false, options: [{ label: '第一项' }] }] };
+  const value = h.read(); assert(value.waiting.startsWith('q:')); assert.equal(value.waitingText, '原生问题');
+  if (app === 'devin') assert.equal(value.actions[0].label, '第一项');
+});
+
+function codexQuestionReader(questions = [{ id: 'choice', question: '请选择处理方式', isOther: true, options: [{ label: '继续' }, { label: '停止' }] }]) {
+  const state = { thread: 'thread-A', mounted: true, drafts: [], submitted: [], controls: [] };
+  const skip = { innerText: 'Skip', closest: () => null };
+  const owner = { conversationId: state.thread, pendingRequest: { type: 'userInput', item: { type: 'userInput', requestId: 0, turnId: 'turn-A', questions, completed: false } } };
+  const indexHook = { memoizedState: 0, queue: { dispatch(value) { indexHook.memoizedState = value; } } };
+  const answersHook = { memoizedState: questions.map(question => ({ selectedOptionId: question.options[0]?.label ?? null, freeformText: null })),
+    queue: { dispatch(value) { answersHook.memoizedState = value; } } };
+  indexHook.next = answersHook;
+  const form = { key: 'native-form', memoizedState: indexHook, memoizedProps: {
+    questionAndOptions: questions.map(question => ({ ...question, options: question.options.map(option => ({ id: option.label, value: option.label })) })),
+    onDraftChange(value) { state.drafts.push(value); },
+    onSubmit(value) { state.submitted.push(value); state.mounted = false; },
+  } };
+  const root = { stateNode: {} }, parent = { memoizedProps: owner, return: root, child: form }, host = { stateNode: skip, return: form };
+  root.stateNode.current = root; root.child = parent; form.return = parent; form.child = host; skip.__reactFiberFixture = host;
+  const doc = { querySelectorAll(selector) {
+    if (selector === '[data-request-input-dismiss]') return state.mounted ? [skip] : [];
+    if (selector === 'button' || selector.startsWith('button, input')) return [...(state.mounted ? [skip] : []), ...state.controls];
+    return [];
+  } };
+  const context = vm.createContext({ doc, document: doc, activeThread: () => state.thread, vis: () => true,
+    codexFiberProps: el => el.props || [], codexPoint: () => ({ x: 1, y: 2 }), setTimeout });
+  vm.runInContext(fragment(read('server/page/codex.js'), '  const codexAsyncRequestFiber =', '  const codexImage =')
+    + '\nthis.data=codexRequestData;this.field=codexRequestField;this.action=codexRequestAction;', context);
+  return { state, owner, form, root, host, skip, answersHook, ...context };
+}
+
+test('current Codex userInput request 0 is one native card, with stable conversation and turn ownership', () => {
+  const h = codexQuestionReader(), request = h.data()[0];
+  assert.equal(h.data().length, 1); assert(request.id.startsWith('async:'));
+  assert.equal(request.text, '请选择处理方式'); assert.equal(request.fields[0].value, '继续');
+  assert.equal(request.buttons[0].selected, true); assert.equal(request.buttons.at(-1).label, 'Send');
+  h.field(request.id, 0, '自定义回答');
+  assert.equal(h.data()[0].id, request.id); assert.equal(h.data()[0].fields[0].value, '自定义回答');
+  assert.equal(h.answersHook.memoizedState[0].selectedOptionId, null);
+  h.skip.parentElement = { querySelectorAll() { throw Error('a native card must not also become a generic card'); } };
+  h.state.thread = 'thread-B'; assert.equal(h.data().length, 0);
+  h.state.thread = 'thread-A'; assert.equal(h.data()[0].id, request.id);
+  h.owner.pendingRequest.item.turnId = 'turn-B'; assert.notEqual(h.data()[0].id, request.id);
+  h.owner.pendingRequest.item.completed = true; assert.equal(h.data().length, 0);
+});
+
+test('Codex native answer state preserves all questions and submits the answers array once', async () => {
+  const h = codexQuestionReader([
+    { id: 'first', question: '第一题', isOther: true, options: [{ label: '继续' }, { label: '停止' }] },
+    { id: 'second', question: '第二题', isSecret: true, options: [] },
+  ]);
+  const first = h.data()[0]; assert.equal(first.buttons.at(-1).label, 'Next');
+  await h.action(first.id, 1, [], true);
+  const second = h.data()[0]; assert.notEqual(second.id, first.id); assert.equal(second.text, '第二题');
+  assert.equal(second.fields[0].type, 'password'); assert.equal(second.buttons.at(-1).disabled, true);
+  await h.action(second.id, 1, [{ n: 0, value: '补充说明' }]);
+  assert.equal(h.state.submitted.length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(h.state.submitted[0])), [
+    { selectedOptionId: '停止', freeformText: null }, { selectedOptionId: null, freeformText: '补充说明' },
+  ]);
+  assert.equal(h.state.drafts.at(-1).questionIndex, 1); assert.equal(h.data().length, 0);
+});
+
+test('Codex native options without an other answer stay a select field', () => {
+  const h = codexQuestionReader([{ id: 'only', question: '只能选项', options: [{ label: 'A' }, { label: 'B' }] }]);
+  const request = h.data()[0]; assert.equal(request.fields[0].type, 'select');
+  assert.deepEqual(Array.from(request.fields[0].options, option => option.value), ['A', 'B']);
+  h.field(request.id, 0, 'B'); assert.equal(h.data()[0].buttons[1].selected, true);
+});
+
+test('Codex questions follow the mounted tree even when a reused control retains a stale return pointer', () => {
+  const h = codexQuestionReader();
+  const stale = { memoizedProps: { ...h.form.memoizedProps, questionAndOptions: [{ question: '旧题', options: [] }] }, return: h.root };
+  h.host.return = stale;
+  assert.equal(h.data()[0].text, '请选择处理方式');
+  h.root.child = null; assert.equal(h.data().length, 0);
+});
+
+test('Codex existing questions props and execution approvals retain their native controls, including id 0', async () => {
+  const h = codexQuestionReader();
+  const props = { questionIndex: 0, questions: [{ id: 'existing', question: '已有问题', options: ['同意'], draft: '' }],
+    onDraftChange(value) { props.questions[0].draft = value; }, onSubmit() { h.state.mounted = false; } };
+  h.form.memoizedProps = props;
+  const request = h.data()[0]; assert.equal(h.data().length, 1); assert.equal(request.id, 'async:existing');
+  await h.action(request.id, 0, [], true); assert.equal(h.data().length, 0);
+  const approval = { tagName: 'BUTTON', innerText: '允许', getAttribute: () => null, closest: selector => selector === '[data-codex-approval-surface]' ? {} : null,
+    props: [{ item: { type: 'exec', approvalRequestId: 0, cmd: ['pwd'] }, onApprove() {} }] };
+  h.state.controls = [approval];
+  assert.equal(h.data()[0].id, 'approval:0'); assert(h.data()[0].text.includes('pwd'));
+  approval.props = [{ request: { item: { requestId: 0, title: '原生请求' } } }];
+  assert.equal(h.data()[0].id, '0'); assert.equal(h.data()[0].buttons[0].label, '允许');
+});
+
 test('Codex run status follows a loaded background native turn rather than current DOM controls', () => {
   const turn = { status: 'inProgress', turnStartedAtMs: 100 }, conversation = {};
   const context = nativeRunContext({ codexConversationManager: thread => ({ getConversation: id => id === 'background' ? conversation : null }),

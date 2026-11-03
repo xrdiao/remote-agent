@@ -1873,6 +1873,22 @@ test('switching away or losing a live reading cannot turn a running session into
   assert.equal(h.rows()[0].state, 'unknown'); assert.equal(h.rows().length, 1);
 });
 
+test('Codex pending requests take card and project priority until the native request clears', () => {
+  const h = overviewCards();
+  h.apply({ run: { id: 'previous', status: 'completed', startedAt: 100 } });
+  const waiting = 'codex:["thread","async:question"]';
+  h.apply({ busy: true, waiting, waitingText: '请选择处理方式', run: { id: 'current', status: 'running', startedAt: 200 } });
+  h.apply({ busy: true, waiting, waitingText: '请选择处理方式', run: { id: 'current', status: 'running', startedAt: 200 } });
+  assert.equal(h.rows()[0].state, 'wait'); assert.equal(h.rows()[0].waitText, '请选择处理方式');
+  assert.equal(h.context.aggregate(h.rows()).state, 'wait'); assert.equal(h.notifications.length, 1);
+  h.apply({ waiting: '', waitingText: '', last: '正常完成', run: { id: 'current', status: 'completed', startedAt: 200 } });
+  assert.equal(h.rows()[0].state, 'done'); assert.equal(h.rows()[0].waitText, '');
+  assert.equal(h.context.aggregate(h.rows()).state, 'done');
+  assert.deepEqual(h.notifications.map(value => value.kind), ['wait', 'done']);
+  h.click(); h.apply({ run: { id: 'current', status: 'completed', startedAt: 200 } });
+  assert.equal(h.rows()[0].state, 'idle');
+});
+
 test('a temporary unknown reading retains the observed native run until its real completion', () => {
   const h = overviewCards(); h.apply({ busy: true, run: { id: 'turn', status: 'running' } });
   h.apply({ statusKnown: false, run: { id: 'turn', status: 'unknown' } });
@@ -2095,6 +2111,18 @@ test('waiting for confirmation cannot send a native completion notification', ()
   const h = nativeCompletionNotifications();
   for (let i = 0; i < 5; i++) h.read('completed', { waiting: 'q:approval', waitingText: 'Approve?' });
   assert.equal(h.events.filter(event => event.kind === 'done').length, 0);
+  assert.equal(h.events.filter(event => event.kind === 'waiting').length, 1);
+});
+
+test('Codex request identity deduplicates pending notifications and completion resumes after answering', () => {
+  const h = nativeCompletionNotifications();
+  const waiting = 'codex:["thread","async:question"]';
+  for (let i = 0; i < 8; i++) h.read('running', { waiting, waitingText: '请选择处理方式' });
+  assert.equal(h.events.filter(event => event.kind === 'waiting').length, 1);
+  assert.equal(h.events.find(event => event.kind === 'waiting').body, '请选择处理方式');
+  assert.equal(h.events.filter(event => event.kind === 'done').length, 0);
+  h.settle('completed', { waiting: null, waitingText: '' }); h.settle('completed', { waiting: null });
+  assert.equal(h.events.filter(event => event.kind === 'done').length, 1);
   assert.equal(h.events.filter(event => event.kind === 'waiting').length, 1);
 });
 

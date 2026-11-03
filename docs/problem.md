@@ -1180,3 +1180,38 @@ N2 的外层 @token 分段循环继续保留各 Agent 语义，不为十余行�
 - 最终标准检查、断线回执恢复、现场恢复及手机待验见[本轮功能测试结果](testing/full-functional-audit-20261102-results.md)。桌面 Chrome 和模拟尺寸不算 Safari／手机硬件通过；Windows、远程主机和真实账户 sudo 本轮未验。
 
 证据位于 gitignore 的 `_shots/six-functions-fix-20261102/`：`baseline.json`、`before/`、`check-before.log`、`browser-cases.json`、`model-timeline-after.json`、`cross-project-after.json`、各 `check-*.log`、截图和最终检查／恢复记录。原始本机草稿及配对身份不写入公开文档；未重新配对、提交、推送或发布。
+
+## 24. Codex 待确认误报与 Question 漏报（2026-11-03）
+
+用户报告正常结束的 Codex 会话被标记待确认，提示正文是 Edited files／View changes；有问题卡片的另一个 Codex 会话却没有标记。用户确认只先修复待确认来源、补回归及基准／问题记录。修改前工作区干净，HEAD 与实际远端 master 均为 `25abf680c1d31ca1e9b4e36ff266ccc8b3901404`，前端 v379；以此当前工作区为基准，修改前 `npm run check` **486/486 通过**。
+
+### 24.1 已确认范围的根因与实现
+
+- `server/page/agents.js` 的 agentState 原来通过最近三条消息及全局按钮的 Run／Accept／Continue 等文字判断等待。受控调用当前原函数：正常完成、没有原生请求、但有 Accept all changes 按钮时，得到 waiting 和 Edited files 正文。主页直接按该值显示待确认，文件改动操作被混入等待请求。
+- 聊天页使用 codexRequestData 读取 Codex 卡片，agentState 却继续读取 Cursor／Devin 的旧 Question 结构；没有消息列表时还直接返回 waiting=null。受控原函数在请求列表有一条 async Question 或审批、以及卡片位于列表外的情形都没有等待标记。
+- 已修改 `agents.js`：Codex 从现有 codexRequestData 取得等待身份与正文，身份包含当前会话和原生请求 ID；读取放在“没有消息列表”的返回之前。Codex 不再用普通按钮文字推断等待；Cursor／Devin 的按钮、问卷和通知动作代码保持原路径。问题消失后清除等待，不改变任务完成判定或投递通道。
+- `scripts/session-lifecycle.test.mjs` 补原生状态回归，`scripts/structure-fixes.test.mjs` 补主页、项目汇总和通知状态变化；基准 03／05 同步。新增 8 项中 4 项在修改前失败，修改后相关 **232/232 通过**；原确认范围的 `npm run check` **494/494 通过**，语法、协议、196 个 page 导出及资源引用通过。未修改 page 导出快照、前端资源、其他 Agent 或 Fusion。
+
+### 24.2 真实 Question 验收发现的追加缺口与修复
+
+专用 Codex 会话只发送一次 `RA_WAIT_20261103` 请求，原生已经出现真实 Question。只读捕获显示当前 userInput 卡片使用 `questionAndOptions` 和 pendingRequest，原生 requestId 为有效数字 **0**；现有 `server/page/codex.js` 只匹配另一种 questions 属性结构，部分 requestId 条件又使用真值判断。这张卡片在原生可见，但 codexRequestData 返回空数组，因而聊天页和已修改的主页仍未取得该请求。原先受控的“有请求但 agentState 没读取”与本次真实“底层读取器没有识别请求”是两个明确缺口，不将后一项冒充已通过。
+
+用户明确同意追加 `server/page/codex.js` 后实施：在现有已挂载 React 树读取中带上 userInput 的所属会话，读取 questionAndOptions、当前题号及原生答案状态，转换为已有 async Question 结构。身份包含会话、轮次、请求及题目；原生答案和题号更新通过原生状态分发及草稿回调，最终提交直接调用原生 onSubmit 的答案数组参数。保留已有 questions 结构和执行审批，补齐有效请求 ID 0；已识别的原生卡片不再由通用 Skip 分支重复识别，也不把其他会话的原生卡片当成通用问题。没有新增回答缓存、等待循环或重试，没有修改 Question 前端或安装的扩展。
+
+在已确认的生命周期测试中追加 5 项回归，覆盖 ID 0／会话轮次归属、答案变化不改身份、选项与自填、多题答案保留／原生数组提交、受限选项及密码输入、已挂载树与旧 return 指针、已有 questions 结构和执行审批。另一个已确认测试文件继续覆盖主页／项目优先级及通知去重。真实测试沿用那一次请求，没有重发模型消息。
+
+准备测试时还观察到 Plan 快捷入口返回 Cannot read properties of undefined (reading 'slice')；通过既有 `/plan` 命令已进入真实 Plan 模式，但 codexFacts 的 plan 仍为 false，原生 activeCollaborationMode.mode 明确为 plan。这两个入口／显示问题仅记录，不纳入本轮等待状态修复，不修改安装的 Codex 扩展。
+
+### 24.3 环境与验收边界
+
+原配对 Chrome9335 及同一身份继续复用。原隔离服务因自身 project-windows.json 为 0 字节而启动失败；已保留空文件现场，只重建 QA 窗口登记缓存并在本次验收中关闭自动回收。没有重新配对，不改正式数据或产品容错代码；原 QA 窗口缓存没有完整恢复，不宣称该缓存与开始相同。隔离 relay3949 加载本轮代码，前端仍为 v379，正式 relay 未重启。
+
+分层结果：
+
+- 定向受控回归 **237/237 通过**；最终 `npm run check` **499/499 通过**，语法、协议、196 个 page 导出及资源引用检查通过，差异空白检查通过。本轮仅修改两个 Codex 读取／状态产品文件、两个测试文件和上述三份文档，不改其他 Agent、通知投递、Fusion、前端资源或 page 导出快照。
+- 配对浏览器真实卡片只有 1 张，原生 requestId=0，overview 同一会话为 wait，正文与真实问题一致。在 Question 输入框自填并按回车，只观察到 1 次 codexRequest；原生卡片消失、等待清除，随后返回 RA_WAIT_DONE，原生轮次明确 completed，overview 转为 done。普通聊天草稿保留，页面错误 0。最终去重调整使用受控回归验证，没有再次调用模型造卡片。
+- 重载隔离服务后，默认恢复入口曾返回“项目已打开，但 Codex 会话数据尚未就绪”；原生 Question 仍可读取，使用明确窗口和会话入口立即恢复。该时刻普通 composer 未挂载，codexQueryClient 依赖的根属性不可读，启动状态为空；不是本次回答请求丢失或重复提交。此启动读取缺口只记录，不修改范围外的启动／连接逻辑。
+- 测试会话已归档，Plan 模式恢复默认，三个自有测试窗口的原会话、模型、强度和草稿一致，Codex 富文本文档摘要一致，终端均为 0。原 Codex 会话无原生请求时 waiting=null。配对页恢复 Devin 原会话及空草稿；恢复时底层 cr 存储摘要一致，最终隔离服务重载后仅 cr-agentLists 目录缓存更新，其他键仍一致。原认证可用，设备数为 1，url-key 摘要一致，未重新配对；真实认证期间 devices.json 字节摘要变化，没有修改前的完整语义副本，不声明该文件逐字恢复。旧 v377 标签的未知待处理请求保持原状，没有刷新或重发。
+- 手机 Safari 未执行。待用户用既有入口验收：正常结束且有文件改动的会话不误报待确认；真实 Question 出现时显示待确认；回答／跳过后清除；切换会话和返回主页仍归属正确。桌面配对浏览器不记作手机通过。未提交、推送或发布。
+
+证据在 `_shots/waiting-state-20261102/` 的 `controlled-before.json`，以及 `_shots/waiting-state-fix-20261103/` 的基准、`check-final.log`、`qa-recovery.json`、`question-session.json`、`native-single-question-contract.json`、`native-reader-after.json`、`browser-pending.json`、`answer-result.json`、`native-completed.json`、`restore-scene.json` 和截图；这些本机证据不随代码提交。

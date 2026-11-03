@@ -352,26 +352,53 @@
     const fiber = key ? el[key] : null;
     let root = fiber;
     while (root?.return) root = root.return;
-    const stack = root?.stateNode?.current ? [[root.stateNode.current, null]] : [];
+    const stack = root?.stateNode?.current ? [[root.stateNode.current, null, null]] : [];
     // A reused child can retain an old return pointer. Follow the mounted tree's child links instead.
     while (stack.length) {
-      const [node, parentRequest] = stack.pop();
+      const [node, parentRequest, parentOwner] = stack.pop();
       const p = node.memoizedProps;
-      const request = Array.isArray(p?.questions) && typeof p.onDraftChange === 'function' && typeof p.onSubmit === 'function' ? node : parentRequest;
-      if (node.stateNode === el) return request;
-      if (node.sibling) stack.push([node.sibling, parentRequest]);
-      if (node.child) stack.push([node.child, request]);
+      const owner = p?.pendingRequest?.type === 'userInput' ? p : parentOwner;
+      const request = (Array.isArray(p?.questions) || Array.isArray(p?.questionAndOptions)) && typeof p.onDraftChange === 'function' && typeof p.onSubmit === 'function' ? node : parentRequest;
+      if (node.stateNode === el) return request ? { fiber: request, owner } : null;
+      if (node.sibling) stack.push([node.sibling, parentRequest, parentOwner]);
+      if (node.child) stack.push([node.child, request, owner]);
     }
     return null;
   };
   const codexRequests = () => {
     if (!activeThread()) return [];
     const rows = new Map();
+    const asyncSkips = new Set();
     const query = selector => [...new Set([doc, document])].flatMap(d => [...d.querySelectorAll(selector)]);
     for (const skip of query('[data-request-input-dismiss]').filter(vis)) {
-      const fiber = codexAsyncRequestFiber(skip);
-      const props = fiber?.memoizedProps;
+      const { fiber, owner } = codexAsyncRequestFiber(skip) || {};
+      let props = fiber?.memoizedProps;
       if (!props) continue;
+      asyncSkips.add(skip);
+      if (Array.isArray(props.questionAndOptions)) {
+        const item = owner?.pendingRequest.item;
+        if (owner?.conversationId !== activeThread() || item?.requestId == null || item.completed) continue;
+        const native = props, indexHook = fiber.memoizedState, answersHook = indexHook.next;
+        const index = indexHook.memoizedState, answers = answersHook.memoizedState;
+        props = {
+          questionIndex: index, isSubmitting: native.isSkipping || native.submissionDisabled,
+          questions: item.questions.map((question, i) => {
+            const options = native.questionAndOptions[i].options;
+            return { id: JSON.stringify([owner.conversationId, item.turnId, item.requestId, question.id]), question: question.question,
+              options: options.map(option => option.value), draft: options.find(option => option.id === answers[i]?.selectedOptionId)?.value ?? answers[i]?.freeformText ?? '',
+              type: question.isSecret ? 'password' : options.length && !question.isOther ? 'select' : 'text' };
+          }),
+          onDraftChange: value => {
+            const option = native.questionAndOptions[index].options.find(option => option.value === value);
+            const next = [...answers];
+            next[index] = { selectedOptionId: option?.id ?? null, freeformText: option ? null : value || null };
+            answersHook.queue.dispatch(next);
+            native.onDraftChange({ answers: next, questionIndex: index });
+          },
+          onQuestionChange: questionIndex => { indexHook.queue.dispatch(questionIndex); native.onDraftChange({ answers, questionIndex }); },
+          onSubmit: () => native.onSubmit(answers),
+        };
+      }
       const index = props.questionIndex;
       const question = props.questions[index];
       if (!question) continue;
@@ -379,12 +406,12 @@
       const buttons = question.options.map(option => ({ label: option, selected: question.draft === option, disabled: !!props.isSubmitting, action: () => props.onDraftChange(option) }));
       buttons.push({ el: skip, label: skip.innerText || 'Skip', disabled: !!props.isSubmitting });
       buttons.push({ label: index < props.questions.length - 1 ? 'Next' : props.hasSubmitted ? 'Send update' : 'Send', disabled: !!props.isSubmitting || !question.draft.trim(), submit: index === props.questions.length - 1, action: () => index < props.questions.length - 1 ? props.onQuestionChange(index + 1) : props.onSubmit() });
-      rows.set(id, { id, submissionKey: fiber.key, text: question.question, buttons, fields: [{ label: '回答', value: question.draft, type: 'text', onChange: props.onDraftChange }] });
+      rows.set(id, { id, submissionKey: fiber.key, text: question.question, buttons, fields: [{ label: '回答', value: question.draft, type: question.type || 'text', options: question.type === 'select' ? question.options.map(value => ({ value, label: value })) : null, onChange: props.onDraftChange }] });
     }
     for (const el of query('button, input, textarea, select, [role=radio], [role=checkbox]')) {
       if (!vis(el) || el.closest('[contenteditable=true]')) continue;
       const approvalCard = el.closest('[data-codex-approval-surface]');
-      const props = codexFiberProps(el, 32).find(p => p.request?.item?.requestId || (p.item?.requestId && (p.onReply || p.onApprove || p.onSubmit))
+      const props = codexFiberProps(el, 32).find(p => p.request?.item?.requestId != null || (p.item?.requestId != null && (p.onReply || p.onApprove || p.onSubmit))
         || (approvalCard && p.item?.type === 'exec' && p.item.approvalRequestId != null));
       const request = props?.request || (props?.item ? props : null);
       const item = request?.item;
@@ -427,6 +454,7 @@
       return (h >>> 0).toString(16);
     };
     for (const skip of query('button').filter(el => vis(el) && (el.innerText || '').trim() === 'Skip')) {
+      if (asyncSkips.has(skip)) continue;
       let card = skip.parentElement, options = [], fields = [];
       for (let depth = 0; card && depth < 12; depth++, card = card.parentElement) {
         options = [...card.querySelectorAll('button[role="radio"]')].filter(vis);

@@ -150,29 +150,34 @@
     const progress = Number(/(\d+)\s*(?:in progress|个处理中)/.exec(recent?.getAttribute('aria-label') || '')?.[1] || 0);
     const thread = activeThread();
     const roots = codexWorkspaceRoots();
+    const codex = !!codexThread();
+    const requests = codex ? codexRequestData() : [];
+    let waiting = requests.length ? 'codex:' + JSON.stringify([thread, ...requests.map(request => request.id)]) : null;
+    let waitingText = requests.map(request => request.text).join(' / ');
     const panel = findPanel();
     if (!panel) {
       if (!thread && !hasComposer()) return null;
-      return { busy: isBusy(), waiting: null, waitingText: '', last: '', thread, agentId: active?.id || '', title, progress, roots };
+      return { busy: isBusy(), waiting, waitingText, last: '', thread, agentId: active?.id || '', title, progress, roots };
     }
     const busy = isBusy();
     const items = topItems(panel);
-    let waiting = null, waitingText = '';
-    for (const el of items.slice(-3)) {
-      const labels = buttonsIn(el, false).map(x => x.label).filter(l => WAIT.test(l));
-      if (labels.length) { waiting = `${itemKey(el)}:${labels.join('/')}`; waitingText = summary(el); }
-    }
-    const global = buttonsIn(panel, true).filter(x => !inItem(x.el) && !inQn(x.el) && WAIT.test(x.label)).map(x => x.label);
-    if (!waiting && global.length) { waiting = `g:${global.join('/')}`; waitingText = global.join(' / '); }
     const devin = !!devinLog();
-    const qs = devin ? devinQuestions() : questions();
     let actions;
-    if (qs?.list.length) {
-      const text = qs.list.map(q => q.text).join(' / ');
-      waiting = `q:${text.slice(0, 120)}${qs.pager ? `:${qs.pager.cur}` : ''}`;
-      waitingText = text;
-      // Devin: single-choice options can be answered from the notification (Android shows three buttons).
-      if (devin && !qs.list[0].multi) actions = qs.list[0].options.slice(0, 3).map((o, i) => ({ id: `opt:${i}`, label: o.label.slice(0, 40) }));
+    if (!codex) {
+      for (const el of items.slice(-3)) {
+        const labels = buttonsIn(el, false).map(x => x.label).filter(l => WAIT.test(l));
+        if (labels.length) { waiting = `${itemKey(el)}:${labels.join('/')}`; waitingText = summary(el); }
+      }
+      const global = buttonsIn(panel, true).filter(x => !inItem(x.el) && !inQn(x.el) && WAIT.test(x.label)).map(x => x.label);
+      if (!waiting && global.length) { waiting = `g:${global.join('/')}`; waitingText = global.join(' / '); }
+      const qs = devin ? devinQuestions() : questions();
+      if (qs?.list.length) {
+        const text = qs.list.map(q => q.text).join(' / ');
+        waiting = `q:${text.slice(0, 120)}${qs.pager ? `:${qs.pager.cur}` : ''}`;
+        waitingText = text;
+        // Devin: single-choice options can be answered from the notification (Android shows three buttons).
+        if (devin && !qs.list[0].multi) actions = qs.list[0].options.slice(0, 3).map((o, i) => ({ id: `opt:${i}`, label: o.label.slice(0, 40) }));
+      }
     }
     const changes = agentChanges(busy, buttons);
     const humanIndex = items.findLastIndex(el => el.matches('[data-message-kind="human"], [role=group][aria-label="User message"]') || el.querySelector('.composer-human-message, [data-message-kind="human"]'));
