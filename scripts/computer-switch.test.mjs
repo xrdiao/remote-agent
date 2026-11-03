@@ -55,7 +55,7 @@ function harness({ sameSelection = false, count = 2 } = {}) {
     history: { replaceState() {} }, navigator: { userAgent: 'test' },
     sessionStorage: { getItem: () => null, removeItem() {} },
     store: { get: key => stored.get(key) ?? null, set: (key, value) => value == null ? stored.delete(key) : stored.set(key, value) },
-    document: { visibilityState: 'visible', activeElement: null, documentElement: { dataset: { theme: 'dark' } }, dispatchEvent() {} },
+    document: Object.assign(new EventTarget(), { visibilityState: 'visible', activeElement: null, documentElement: { dataset: { theme: 'dark' } } }),
     $: element,
     setTimeout: (fn, ms) => { const id = ++timerId; timers.set(id, { fn, ms, at: now + ms }); return id; },
     clearTimeout: id => timers.delete(id),
@@ -79,7 +79,7 @@ function harness({ sameSelection = false, count = 2 } = {}) {
     var draftEpoch = '', draftRevision = 0, draftAckRevision = 0, pendingDesktopDraft = null, mirroredDraft = '';
     var activeDraft = '', draftPushTimer = 0, questionCompose = null, composing = false, inputRevision = 0;
     var drafts = new Map(), draftMentions = new Map(), dirtyDrafts = new Set(), draftVersions = new Map();
-    var pendingSends = new Map(), pendingEchoes = [], desktopRequests = new Map(), MN = { mentions: [], value: '' };
+    var pendingSends = new Map(), pendingEchoes = [], desktopRequests = new Map(), MN = { mentions: [], value: '' }, desktopAttachments = [];
     var agentLists = new Map(), cache = new Map(), chatBySel = new Map(), quotaCache = new Map();
     var lastChat = null, chatStale = false, text = $('text');
     var thoughtObserver = { disconnect() {} }, chatPreviewReady = Promise.resolve(), I18N = { lang: 'zh', tr: value => value };
@@ -135,6 +135,8 @@ function harness({ sameSelection = false, count = 2 } = {}) {
   run(gate.slice(gate.indexOf('function connReadFailed('), gate.indexOf('function connRetryCurrent(')));
   run(net);
   run(core.slice(core.indexOf('function desktopAction(obj)'), core.indexOf('\n\n', core.indexOf('function setWindowReady(ready)'))));
+  context.mentionsFor = () => ({});
+  run(composer.slice(composer.indexOf('function composerSendMatches('), composer.indexOf('function sendReceipt(')));
   run(composer.slice(composer.indexOf('function draftKey()'), composer.indexOf('function autosize()')));
   run(notify.slice(notify.indexOf('async function useComputer(i)'), notify.indexOf('async function removeComputer(i)')));
   run('var realBoot = boot; boot = function() { bootCalls++; return realBoot(); };');
@@ -243,6 +245,41 @@ test('drafts and draft epochs stay with their computers through repeated switche
   h.flushDraft();
   assert.equal(h.link(1).socket.sent.at(-1).draftEpoch, 'epoch-b');
   assert(h.state().activeDraft.startsWith(computers[1].id + '|'));
+});
+
+function useSendReceipts(h) {
+  h.run(`var queuedChat = null, submittedMessages = [], inputHistory = new Map();
+    function messageScope() { return currentComputer().id + '|' + viewSel; }
+    queueChatRender = () => {};`);
+  h.run(composer.slice(composer.indexOf('function echoTextMatches('), composer.indexOf('function pushEcho(')));
+  h.run(composer.slice(composer.indexOf('function sendReceipt('), composer.indexOf('function failPendingSend(')));
+}
+
+test('an in-flight draft stays on its computer after another computer edits its own draft', async () => {
+  const h = harness(); await h.bothReady(); useSendReceipts(h);
+  const a = h.run(`text.value='draft A';saveDraft();sendReceipt(text.value)`);
+  assert.equal(h.run("$('send').disabled"), true);
+  await h.switchTo(1);
+  assert.equal(h.run("$('send').disabled"), false);
+  h.run(`text.value='draft B';recordDraftEdit()`);
+  await h.switchTo(0);
+  assert.equal(h.state().draft, 'draft A'); assert.equal(h.run("$('send').disabled"), true);
+  h.run('setWindowReady(true)'); assert.equal(h.run("$('send').disabled"), true);
+  h.run(`confirmSent({requestId:${JSON.stringify(a.requestId)},sel:viewSel})`);
+  assert.equal(h.state().draft, ''); assert.equal(h.run("$('send').disabled"), false);
+});
+
+test('a late receipt from A does not clear or release the in-flight draft on B', async () => {
+  const h = harness(); await h.bothReady(); useSendReceipts(h);
+  const a = h.run(`text.value='draft A';saveDraft();sendReceipt(text.value)`);
+  const selA = h.state().viewSel;
+  await h.switchTo(1);
+  const b = h.run(`text.value='draft B';recordDraftEdit();sendReceipt(text.value)`);
+  h.run(`confirmSent({requestId:${JSON.stringify(a.requestId)},sel:${JSON.stringify(selA)}})`);
+  assert.equal(h.state().draft, 'draft B'); assert.equal(h.run("$('send').disabled"), true);
+  assert.equal(h.run('pendingSends.size'), 1);
+  h.run(`confirmSent({requestId:${JSON.stringify(b.requestId)},sel:viewSel})`);
+  assert.equal(h.state().draft, ''); assert.equal(h.run("$('send').disabled"), false);
 });
 
 test('rapid ready switches and late background updates do not change the active computer', async () => {

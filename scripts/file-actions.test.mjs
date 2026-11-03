@@ -106,3 +106,146 @@ test('native local images remain available after the original file and window di
   await fsp.unlink(source);
   assert.deepEqual(await fsp.readFile((await context.readImage(image.slice(11))).file), png);
 });
+
+function transferFixture(conversation = false) {
+  const read = file => fs.readFileSync(new URL('../' + file, import.meta.url), 'utf8');
+  const elements = new Map(), listeners = new Map(), stored = new Map(), requests = [], uploads = [], operations = [], created = [];
+  function element(id) {
+    if (!elements.has(id)) {
+      const classes = new Set(), children = new Map();
+      elements.set(id, { hidden: false, value: '', textContent: '', innerHTML: '',
+        classList: { add: x => classes.add(x), remove: x => classes.delete(x), contains: x => classes.has(x), toggle() {} },
+        setAttribute() {}, append() {}, remove() {}, replaceChildren() {}, click() { this.onclick?.(); },
+        querySelector(selector) { if (!children.has(selector)) children.set(selector, element(id + selector)); return children.get(selector); },
+        querySelectorAll: () => [],
+      });
+    }
+    return elements.get(id);
+  }
+  const computers = ['a', 'b'].map(id => ({ id, name: id, key: 'key-' + id, relay: 'https://' + id + '.invalid' }));
+  const sockets = new Map(computers.map(c => [c.key, { authed: true, auth: { device: 'device-' + c.id }, socket: { readyState: 1 } }]));
+  const states = [{ ov: { level: 'favorites', open: 'saved-card' }, ovScroll: 173, ovDepth: 0 }];
+  let index = 0, selected = computers[0];
+  if (conversation) { states.push({ ...states[0], ovConv: true, ovDepth: 1 }); index++; element('body').classList.add('conv'); }
+  function navigate(step) {
+    index += step;
+    for (const listener of listeners.get('popstate') || []) listener();
+  }
+  const history = { get state() { return states[index]; }, get length() { return states.length; },
+    replaceState(state) { states[index] = structuredClone(state); },
+    pushState(state) { states.splice(++index); states.push(structuredClone(state)); },
+    back: () => navigate(-1), forward: () => navigate(1),
+  };
+  const response = url => {
+    const parsed = new URL(url), owner = parsed.hostname[0], directory = parsed.searchParams.get('path') || '/home/' + owner;
+    const data = parsed.pathname.endsWith('/download') ? { url: '/download/own-file', name: 'own-file.txt' }
+      : { home: '/home/' + owner, path: directory, parent: '/', entries: [], roots: ['/'] };
+    return { ok: true, json: async () => data };
+  };
+  const context = vm.createContext({
+    URLSearchParams, AbortController, crypto, setTimeout, clearTimeout, history,
+    base: computers[0].relay, pending: null, currentComputer: () => selected, loadComputers: () => computers,
+    computerSockets: sockets, store: { get: key => stored.get(key), set: (key, value) => stored.set(key, value) },
+    document: { body: element('body'), createElement(tag) { const node = element('created-' + elements.size); node.tagName = tag; created.push(node); return node; } }, $: element,
+    addEventListener(type, listener) { if (!listeners.has(type)) listeners.set(type, []); listeners.get(type).push(listener); },
+    esc: text => text, fmtSize: size => String(size), fileEntryIcon: () => '', closeSheet() {},
+    ovSaveHistory() {}, ovMountComposerControls() {}, ovVisible() {},
+    ovLeave() { element('body').classList.remove('conv'); }, ovRestore() {},
+    entryHeaders: async computer => ({ 'X-Test-Computer': computer.id }),
+    fetch: async (url, opts) => { requests.push({ url, opts }); return response(url); },
+    sendDesktopOperation: (message, computer, socket, pending) => operations.push({ message, computer, socket, pending }),
+    XMLHttpRequest: class {
+      constructor() { this.upload = {}; this.headers = {}; uploads.push(this); }
+      open(method, url) { this.method = method; this.url = url; }
+      setRequestHeader(key, value) { this.headers[key] = value; }
+      send(file) { this.file = file; this.status = 200; this.responseText = '{}'; this.onload(); this.onloadend(); }
+    },
+  });
+  const net = read('app/js/net.js'), overview = read('app/js/overview.js');
+  vm.runInContext(net.slice(net.indexOf('async function api('), net.indexOf('\nconst post =')), context);
+  const pop = overview.indexOf("addEventListener('popstate', () => {");
+  vm.runInContext(overview.slice(pop, overview.indexOf("\ndocument.addEventListener('visibilitychange'", pop)), context);
+  vm.runInContext(read('app/js/transfer.js'), context);
+  element('transferCollision').value = 'rename';
+  const run = code => vm.runInContext(code, context);
+  return { run, context, element, computers, sockets, requests, uploads, operations, response, history, created,
+    select: computer => { selected = computer; },
+  };
+}
+
+test('file transfer has its own history and returns to its originating conversation or board', async () => {
+  for (const conversation of [true, false]) {
+    const h = transferFixture(conversation), original = structuredClone(h.history.state), length = h.history.length;
+    for (const close of [() => h.element('transferClose').click(), () => h.history.back()]) {
+      await h.run('openTransfer()');
+      assert.equal(h.history.length, length + 1);
+      await h.run('openTransfer()');
+      assert.equal(h.history.length, length + 1);
+      assert.equal(h.history.state.transfer, 'a');
+      close();
+      assert.equal(h.run('transferPanel.hidden'), true);
+      assert.equal(h.element('body').classList.contains('conv'), conversation);
+      assert.deepEqual(h.history.state, original);
+      h.history.forward();
+      assert.equal(h.run('transferPanel.hidden'), false);
+      assert.equal(h.run('transferComputer.id'), 'a');
+      h.history.back();
+    }
+  }
+});
+
+test('directory picker cancel stays in transfer and late reads cannot replace another computer', async () => {
+  const h = transferFixture(true);
+  await h.run('openTransfer("b")');
+  h.run('transferSwitchTab("upload")');
+  h.element('transferChangeTarget').click();
+  await new Promise(setImmediate);
+  h.element('transferClose').click();
+  assert.equal(h.history.state.transfer, 'b');
+  assert.equal(h.run('transferPicker'), null);
+  assert.equal(h.run('transferPanel.hidden'), false);
+  const { promise, resolve } = Promise.withResolvers();
+  h.context.fetch = async () => promise;
+  const pending = h.run('transferBrowse("/late-b")');
+  h.history.back();
+  h.context.fetch = async url => h.response(url);
+  await h.run('openTransfer("a")');
+  resolve(h.response('https://b.invalid/api/transfer/list?path=/late-b'));
+  await pending;
+  assert.equal(h.run('transferDirectory.path'), '/home/a');
+  assert.equal(h.run('transferComputer.id'), 'a');
+  assert.equal(h.run('transferPicker'), null);
+});
+
+test('computer entry owns browse, download, uploads, file operations and preferences without selecting it', async () => {
+  const h = transferFixture();
+  await h.run('openTransfer("b")');
+  assert.equal(h.history.state.transfer, 'b');
+  assert.equal(h.run('currentComputer().id'), 'a');
+  assert.equal(h.requests[0].url, 'https://b.invalid/api/transfer/list?path=');
+  h.run('transferSelection.set("/home/b/own-file.txt", {name:"own-file.txt"})');
+  await h.element('transferDownload').onclick();
+  const download = h.requests.find(r => r.url.endsWith('/download'));
+  assert.equal(download.url, 'https://b.invalid/api/transfer/download');
+  assert.equal(download.opts.headers['X-Test-Computer'], 'b');
+  assert.equal(h.created.find(node => node.tagName === 'a').href, 'https://b.invalid/download/own-file');
+  h.run('chooseTransferFiles([{name:"upload.txt",size:4}]);transferFileAction("create-file", {name:"created.txt"})');
+  assert.equal(h.operations.length, 1);
+  assert.equal(h.operations[0].computer, 'b');
+  assert.equal(h.operations[0].socket, h.sockets.get('key-b').socket);
+  assert.equal(h.operations[0].pending.device, 'device-b');
+  h.operations[0].pending.complete({ ok: true, results: [{ ok: true, path: '/home/b/created.txt' }] });
+  await new Promise(setImmediate);
+  h.run("$('transferCopy').click()");
+  assert.equal(h.run('transferClipboard.computer'), 'b');
+  assert.equal(h.run('transferDirectories.b.download'), '/home/b');
+  const item = h.run('transferUploads[0]');
+  h.history.back();
+  await h.run('openTransfer("a")');
+  assert.equal(h.element('transferPaste').disabled, true);
+  h.context.uploadItem = item;
+  await h.run('transferSendFile(uploadItem)');
+  assert.equal(h.uploads[0].url.startsWith('https://b.invalid/api/transfer/upload?'), true);
+  assert.equal(h.uploads[0].headers['X-Test-Computer'], 'b');
+  assert.equal(h.run('currentComputer().id'), 'a');
+});

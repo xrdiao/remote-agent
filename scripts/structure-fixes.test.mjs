@@ -343,44 +343,53 @@ for (const primary of [false, true]) {
 }
 
 function confirmation() {
-  const nodes = Object.fromEntries(['send', 'sendNow', 'stop', 'queueBar', 'attachments', 'askOk', 'askNo'].map(id => [id, {}]));
+  const nodes = Object.fromEntries(['send', 'sendNow', 'stop', 'queueBar', 'attachments', 'askOk', 'askNo', 'msg'].map(id => [id, {}]));
   nodes.attachments.children = [];
   const packets = [], calls = [], computer = { id: 'computer-A' }, listeners = new Set();
   const document = new EventTarget();
   const add = document.addEventListener.bind(document), remove = document.removeEventListener.bind(document);
-  document.addEventListener = (type, fn) => { listeners.add(fn); add(type, fn); };
-  document.removeEventListener = (type, fn) => { listeners.delete(fn); remove(type, fn); };
+  document.addEventListener = (type, fn, options) => { listeners.add(fn); add(type, fn, options); };
+  document.removeEventListener = (type, fn, options) => { listeners.delete(fn); remove(type, fn, options); };
   const context = vm.createContext({
-    document, $: id => nodes[id], currentComputer: () => computer,
-    mode: 'chat', currentApp: 'codex', viewSel: 'codex|window|A', sheetKind: null,
+    document, Event, $: id => nodes[id], currentComputer: () => computer,
+    mode: 'chat', currentApp: 'codex', viewSel: 'codex|window|A', sheetKind: null, windowReady: true,
     text: { value: 'draft from A' }, pendingImageUploads: () => false,
     questionCompose: null, chatBusy: true, devinBusySplit: () => false, cursorBusyQueue: () => false,
     cancelVoice: () => calls.push('cancelVoice'),
-    status() {}, saveDraft() {}, codexFollow: () => 'queue', pushEcho() {},
-    mentionsFor: () => ({}), submitComposerCommand: () => false, jumpToLatest() {}, failPendingSend() {}, esc: value => value,
+    status(value) { context.pendingStatus = value; }, saveDraft() {}, codexFollow: () => 'queue', pushEcho() {},
+    mentionsFor: () => ({}), submitComposerCommand: () => false, jumpToLatest() {}, esc: value => value,
     authed: true, ws: { readyState: 1, send: raw => packets.push(JSON.parse(raw)) },
     crypto: crypto.webcrypto, clearTimeout() {}, draftPushTimer: 0, draftEpoch: '',
     queuedChat: null, lastChat: { thread: 'A', items: [], queued: [] },
     activeDraft: 'computer-A|codex|window|A|chat', draftVersions: new Map(),
     inputRevision: 0, pendingSends: new Map(), pendingEchoes: [], messageScope: () => 'fixture',
+    desktopAttachments: [], MN: { mentions: [], value: '' }, drafts: new Map(), draftMentions: new Map(),
+    inputHistory: new Map(), dirtyDrafts: new Set(), submittedMessages: [], queueEditRequest: null,
+    pendingStatus: '', draftRevision: 0, pendingDesktopDraft: null, mirroredDraft: '',
+    queueChatRender() {}, queueDraftSync() {}, mentionHide() {}, endInputRecall() {}, ovEnterReady() {},
+    autosize() { document.dispatchEvent(new Event('composer-state')); },
     openSheet(kind) { context.sheetKind = kind; },
     closeSheet() { vm.runInContext('askDone?.(false); sheetKind = null;', context); },
   });
   const composer = read('app/js/composer.js'), history = read('app/js/history.js');
   vm.runInContext(
     part(read('app/js/sheets.js'), 'let askDone = null;', '// Buttons on Cursor')
-      + part(read('app/js/core.js'), 'const desktopRequests = new Map();', 'function setWindowReady(')
-      + part(composer, 'function sendReceipt(', 'function confirmSent(')
+      + read('app/js/core.js').slice(read('app/js/core.js').indexOf('const desktopRequests = new Map();'))
+      + part(composer, 'function composerSendMatches(', 'function reconcileSent(')
+      + part(composer, 'function draftKey()', 'function restoreDraft(')
+      + part(composer, 'function recordDraftEdit()', 'function queueDraftSync(')
       + part(composer, "$('stop').onclick =", 'function updateSendMode(')
       + part(composer, 'function sendComposer(', "$('insertNewline').addEventListener")
       + part(history, 'function sendQueueAction(', 'function editQueued(')
       + part(history, "$('queueBar').onclick =", 'function updateToBottom('), context);
+  listeners.clear(); // Track the scoped confirmation listeners added after fixture setup.
   return {
     context, nodes, packets, listeners, calls,
     change(kind) {
       if (kind === 'computer') computer.id = 'computer-B';
       else if (kind === 'mode') context.mode = 'terminal';
       else { context.viewSel = 'codex|window|B'; context.lastChat = { thread: 'B', items: [], queued: [] }; }
+      context.activeDraft = [computer.id, context.viewSel, context.mode].join('|');
       document.dispatchEvent(new Event('composer-state'));
     },
     accept() { nodes.askOk.onclick(); },
@@ -396,7 +405,7 @@ function composerCommands() {
     focus() {}, dispatchEvent() { context.inputRevision++; context.mentionUpdate(input); } };
   const nodes = { mentionBox: box, send: { disabled: false }, sendNow: { disabled: false }, attachments: { children: [] }, msg: { textContent: '' } };
   const context = vm.createContext({
-    text: input, $: id => nodes[id], document: { addEventListener: (type, callback) => listeners.set(type, callback) },
+    text: input, $: id => nodes[id], document: { addEventListener: (type, callback) => listeners.set(type, callback), dispatchEvent(event) { listeners.get(event.type)?.(event); } },
     Event: class { constructor(type) { this.type = type; } },
     currentApp: 'codex', mode: 'chat', viewSel: 'codex|fixture|thread', currentTerminalId: 'native-terminal', questionCompose: null, inputRevision: 0,
     ovToolInput: () => null, supportsCapability: () => true, updateComposeCompact() {}, esc: value => value,
@@ -497,16 +506,17 @@ test('an accepted message closes only its own suggestions and preserves a newer 
   for (const newer of [false, true]) {
     const h = composerCommands(); h.type('original text');
     const request = { requestId: 'accepted', computer: 'fixture', draft: 'draft-A', text: h.input.value,
-      revision: h.context.inputRevision, mode: 'chat', version: 0 };
+      revision: h.context.inputRevision, mode: 'chat', version: 0, mentions: '{}', attachmentIds: [] };
     Object.assign(h.context, { pendingSends: new Map([['accepted', request]]), pendingEchoes: [], inputHistory: new Map(),
       drafts: new Map([['draft-A', request.text]]), draftMentions: new Map(), draftVersions: new Map(),
       currentComputer: () => ({ id: 'fixture' }), draftKey: () => 'draft-A', activeDraft: 'draft-A', pendingStatus: '',
       dirtyDrafts: new Set(), submittedMessages: [], lastChat: null, draftRevision: 0,
-      queueDraftSync() {}, queueChatRender() {}, autosize() {} });
+      queueDraftSync() {}, queueChatRender() {}, autosize() {}, desktopAttachments: [] });
     if (newer) h.type('/new');
     h.box.hidden = false;
     const seq = h.mn().seq;
-    vm.runInContext(part(read('app/js/composer.js'), 'function confirmSent(', 'function failPendingSend('), h.context);
+    vm.runInContext(part(read('app/js/composer.js'), 'function composerSendMatches(', 'function pendingComposerSend(')
+      + part(read('app/js/composer.js'), 'function confirmSent(', 'function failPendingSend('), h.context);
     h.context.confirmSent({ requestId: 'accepted', sel: h.context.viewSel });
     assert.equal(h.input.value, newer ? '/new' : '');
     assert.equal(h.box.hidden, !newer); assert.equal(h.mn().seq > seq, !newer);
@@ -516,17 +526,18 @@ test('an accepted message closes only its own suggestions and preserves a newer 
 function acceptedDraft(newer) {
   const value = 'submitted text', input = { value, selectionStart: 0, selectionEnd: 0,
     setSelectionRange(start, end, direction) { this.selectionStart = start; this.selectionEnd = end; this.selectionDirection = direction; } };
-  const sent = { requestId: 'request', computer: 'computer', draft: 'draft', text: value, revision: 1, version: 1, mode: 'chat' };
+  const sent = { requestId: 'request', computer: 'computer', draft: 'draft', text: value, revision: 1, version: 1, mode: 'chat', mentions: '{}', attachmentIds: [] };
   const context = vm.createContext({ text: input, mode: 'chat', currentApp: 'codex', questionCompose: null,
     currentComputer: () => ({ id: 'computer' }), draftKey: () => 'draft', activeDraft: 'draft', viewSel: 'codex|A',
     inputRevision: newer ? 2 : 1, draftRevision: 7, draftAckRevision: 7, draftEpoch: 'epoch',
     drafts: new Map([['draft', value]]), draftVersions: new Map([['draft', newer ? 2 : 1]]), draftMentions: new Map(),
     pendingSends: new Map([['request', sent]]), pendingEchoes: [], inputHistory: new Map(), submittedMessages: [],
     pendingDesktopDraft: { text: value }, pendingStatus: '', dirtyDrafts: new Set(), lastChat: null, mirroredDraft: value,
-    MN: { value, mentions: [] }, document: { activeElement: null }, composing: false,
+    MN: { value, mentions: [] }, desktopAttachments: [], mentionsFor: () => ({}), document: Object.assign(new EventTarget(), { activeElement: null }), Event, composing: false,
     $: () => ({ textContent: '' }), queueChatRender() {}, status() {}, mentionHide() {}, autosize() {}, saveDraft() {}, queueDraftSync() {},
   });
-  vm.runInContext(part(read('app/js/composer.js'), 'function confirmSent(', 'function failPendingSend(')
+  vm.runInContext(part(read('app/js/composer.js'), 'function composerSendMatches(', 'function pendingComposerSend(')
+    + part(read('app/js/composer.js'), 'function confirmSent(', 'function failPendingSend(')
     + part(read('app/js/composer.js'), 'function receiveDraft(', 'function autosize('), context);
   return { context, input, sent, ack: (revision, text) => context.receiveDraft({ t: 'draftAck', ok: true, read: true,
     sel: 'codex|A', draftEpoch: 'epoch', revision, text }) };
@@ -1353,7 +1364,7 @@ test('composition end does not duplicate a final input event already saved to th
   assert.equal(h.edits.length, 0);
 });
 
-test('cards put input history before text and expose newline without secondary send menus', () => {
+test('cards retain editing while a draft is in flight and keep their shared input tools', () => {
   const button = (textContent = '') => ({ textContent, innerHTML: '<svg/>', title: '', ariaLabel: '', disabled: false });
   for (const row of [
     { app: 'codex', follow: 'queue', landscape: true, immediate: true },
@@ -1361,12 +1372,15 @@ test('cards put input history before text and expose newline without secondary s
     { app: 'devin', follow: '', landscape: true, immediate: true },
     { app: 'cursor', follow: '', landscape: true, immediate: false },
     { app: 'codex', follow: 'queue', landscape: false, immediate: true },
+    { app: 'codex', follow: 'queue', landscape: false, immediate: true, pending: true },
+    { app: 'codex', follow: 'queue', landscape: false, immediate: true, ready: false },
   ]) {
     const nodes = new Map([['send', button('排队')], ['sendNow', { ...button('立即追加'), hidden: row.app === 'cursor' }], ['msg', { className: 'quiet' }]]);
+    nodes.get('send').disabled = !!row.pending;
     const context = vm.createContext({
       $: id => nodes.get(id) || button(), esc: String, OV_ICON: { arrow: '<svg/>' }, OV_AGENT: { [row.app]: row.app },
       I18N: { tr: value => value }, ovT: value => value, ovBusy: new Set(), ovErr: new Map(),
-      ovBadge: () => '运行中', ovTime: () => '1m', ovContext: () => 'project', ovComposerReady: () => true,
+      ovBadge: () => '运行中', ovTime: () => '1m', ovContext: () => 'project', ovComposerReady: () => row.ready !== false,
       ovRunHtml: () => '', ovPreviewHtml: () => '', ovChangesRow: () => '', ovOpenLink: () => '',
       queuedMessages: () => ({ count: 0 }), questionCompose: null, viewSel: 'selection',
       devinBusySplit: () => row.app === 'devin', cursorBusyQueue: () => row.app === 'cursor', codexFollow: () => row.follow,
@@ -1377,6 +1391,8 @@ test('cards put input history before text and expose newline without secondary s
     assert.equal(html.includes('data-v="send"'), false);
     assert.equal(html.includes('data-v="sendNow"'), false);
     assert.equal(html.includes('data-ov="send"'), true);
+    assert.equal(/<textarea[^>]*\bdisabled/.test(html), row.ready === false);
+    assert.equal(/<button[^>]*class="ov-send"[^>]*\bdisabled/.test(html), row.ready === false || !!row.pending);
     assert(html.indexOf('class="ov-input-history"') < html.indexOf('<textarea'));
     for (const id of ['inputPrev', 'inputNext']) assert(html.indexOf(`data-v="${id}"`) < html.indexOf('<textarea'));
     assert(html.indexOf('data-v="insertNewline"') > html.indexOf('class="ov-tools"'));
@@ -1422,6 +1438,99 @@ test('direct send actions keep the existing disabled-button behavior', async () 
   h.context.submitOnEnter({ preventDefault() {} });
   assert.equal(h.packets.length, 0); assert.equal(h.context.sheetKind, null);
   assert.deepEqual(h.calls, []);
+});
+
+for (const app of ['codex', 'cursor', 'devin']) {
+  test(`${app} registers one operation for repeated activation of one in-flight draft`, () => {
+    const h = confirmation(); h.context.currentApp = app;
+    h.nodes.send.onclick();
+    const packet = h.packets[0];
+    assert.equal(h.nodes.send.disabled, true); assert.equal(h.nodes.sendNow.disabled, true);
+    h.nodes.send.onclick(); h.context.sendComposer();
+    assert.equal(h.context.sendReceipt(h.context.text.value), null);
+    h.context.setWindowReady(false); h.context.setWindowReady(true);
+    assert.equal(h.nodes.send.disabled, true);
+    assert.equal(h.packets.length, 1); assert.equal(h.context.pendingSends.size, 1);
+    assert.equal(h.context.pendingSends.get(packet.requestId).text, 'draft from A');
+    const session = { deviceId: crypto.randomUUID(), app, mode: 'chat', selectionKey: () => 'fixture' };
+    assert.equal(beginOperation(session, packet).duplicate, false);
+    assert.equal(beginOperation(session, packet).duplicate, true);
+    h.context.confirmSent({ requestId: packet.requestId, sel: h.context.viewSel, queued: true });
+    assert.equal(h.context.text.value, ''); assert.equal(h.context.pendingSends.size, 0);
+    assert.equal(h.nodes.send.disabled, false);
+  });
+}
+
+test('a new draft and an explicitly edited identical draft can send before an older receipt', () => {
+  for (const value of ['new draft', 'draft from A']) {
+    const h = confirmation(); h.context.sendComposer(); const first = h.packets[0];
+    h.context.text.value = value; h.context.recordDraftEdit();
+    assert.equal(h.nodes.send.disabled, false);
+    h.context.sendComposer(); const second = h.packets[1];
+    assert.notEqual(first.requestId, second.requestId); assert.notEqual(first.operationId, second.operationId);
+    h.context.confirmSent({ requestId: first.requestId, sel: h.context.viewSel });
+    assert.equal(h.context.text.value, value); assert.equal(h.nodes.send.disabled, true);
+    h.context.confirmSent({ requestId: second.requestId, sel: h.context.viewSel });
+    assert.equal(h.context.text.value, ''); assert.equal(h.nodes.send.disabled, false);
+  }
+});
+
+test('unknown delivery stays with its request while explicit failure releases it for retry', () => {
+  const h = confirmation(); h.context.sendComposer(); const request = h.packets[0].requestId;
+  h.context.confirmSent({ requestId: request, pending: true, message: 'read unavailable' });
+  h.context.disconnectPendingSends(); h.context.setWindowReady(false); h.context.setWindowReady(true);
+  h.context.sendComposer();
+  assert.equal(h.packets.length, 1); assert.equal(h.context.pendingSends.size, 1);
+  assert.equal(h.nodes.send.disabled, true); assert.equal(h.context.text.value, 'draft from A');
+  h.context.failPendingSend(request, 'not submitted');
+  assert.equal(h.nodes.send.disabled, false); assert.equal(h.context.pendingSends.size, 0);
+  h.context.sendComposer();
+  assert.equal(h.packets.length, 2); assert.notEqual(h.packets[1].requestId, request);
+  h.context.confirmSent({ requestId: request, sel: h.context.viewSel });
+  assert.equal(h.nodes.send.disabled, true); assert.equal(h.context.pendingSends.size, 1);
+});
+
+test('new attachment or reference content is a new draft and old acceptance cannot clear it', () => {
+  for (const change of ['attachment', 'reference']) {
+    const h = confirmation(); h.context.desktopAttachments = [{ id: 'old' }]; h.context.sendComposer();
+    const first = h.packets[0];
+    h.context.desktopAttachments = []; h.context.document.dispatchEvent(new Event('composer-state'));
+    assert.equal(h.nodes.send.disabled, true);
+    if (change === 'attachment') h.context.desktopAttachments = [{ id: 'new' }];
+    else h.context.mentionsFor = () => ({ mentions: [{ key: 'new-reference' }] });
+    h.context.document.dispatchEvent(new Event('composer-state'));
+    assert.equal(h.nodes.send.disabled, false); h.context.sendComposer(); const second = h.packets[1];
+    h.context.confirmSent({ requestId: first.requestId, sel: h.context.viewSel });
+    assert.equal(h.context.text.value, 'draft from A'); assert.equal(h.nodes.send.disabled, true);
+    assert.equal(h.context.drafts.get(h.context.activeDraft), 'draft from A');
+    h.context.confirmSent({ requestId: second.requestId, sel: h.context.viewSel });
+    assert.equal(h.context.text.value, ''); assert.equal(h.nodes.send.disabled, false);
+  }
+});
+
+test('Enter event overlap and an immediate-action confirmation share the same in-flight draft', async () => {
+  const h = confirmation(), source = read('app/js/composer.js');
+  vm.runInContext(part(source, 'let composing = false;', 'function composerInputEvent('), h.context);
+  vm.runInContext(`composerInputHandlers.keydown({key:'Enter',target:text,preventDefault(){}});
+    composerInputHandlers.beforeinput({inputType:'insertLineBreak',target:text,preventDefault(){}});`, h.context);
+  assert.equal(h.packets.length, 1);
+  const other = confirmation(), work = other.context.sendComposerNow();
+  other.context.sendComposer(); other.accept(); await work;
+  assert.equal(other.packets.length, 1); assert.equal(other.context.pendingSends.size, 1);
+});
+
+test('Question and terminal actions remain available and stop settles its pending chat request', async () => {
+  const h = confirmation(); h.context.sendComposer();
+  h.context.questionCompose = { sel: h.context.viewSel }; let answers = 0;
+  h.context.submitQuestionCompose = () => { answers++; };
+  h.context.document.dispatchEvent(new Event('composer-state'));
+  h.context.sendComposer(); assert.equal(answers, 1); assert.equal(h.packets.length, 1);
+  h.context.questionCompose = null; h.change('mode'); let terminal = 0;
+  h.context.sendTerminalInput = () => { terminal++; }; h.context.sendComposer(); assert.equal(terminal, 1);
+  const stopped = confirmation(); stopped.context.sendComposer();
+  const work = stopped.nodes.stop.onclick(); stopped.accept(); await work;
+  assert.equal(stopped.context.pendingSends.size, 0); assert.equal(stopped.nodes.send.disabled, false);
+  assert.equal(stopped.packets.at(-1).t, 'stop');
 });
 
 test('Enter uses the shared send action and still leaves IME and Shift+Enter untouched', () => {
