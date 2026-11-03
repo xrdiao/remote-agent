@@ -1585,7 +1585,7 @@ body.conv #overview { display: none; }
 #overview textarea { resize: none; line-height: 22px; padding: 7px 0; box-sizing: border-box; }
 #overview em { font-style: normal; }
 
-#overview .ov-top { flex: none; display: flex; align-items: center; gap: 6px; height: 52px; padding: 0 12px 0 10px; }
+#overview .ov-top { position: relative; z-index: 1; view-transition-name: ra-overview-top; background: var(--bg); flex: none; display: flex; align-items: center; gap: 6px; height: 52px; padding: 0 12px 0 10px; }
 #overview .ov-ibtn { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; color: var(--fg-2); flex: none; }
 #overview .ov-ibtn:active { background: var(--s2); }
 #overview .ov-ibtn svg { width: 22px; height: 22px; }
@@ -1602,7 +1602,11 @@ body.conv #overview { display: none; }
 #overview .ov-body { flex: 1; min-height: 0; display: grid; grid-template-rows: 1fr auto auto; grid-template-areas: "main" "tools" "levels"; }
 #overview .ov-main { grid-area: main; min-height: 0; overflow: auto; padding: 2px 16px 24px; scrollbar-width: none; }
 #overview .ov-main::-webkit-scrollbar { display: none; }
-#overview .ov-levels { grid-area: levels; display: flex; justify-content: space-around; padding: 8px 18px max(26px, env(safe-area-inset-bottom)); background: var(--s1); border-top: 1px solid var(--line-2); }
+#overview .ov-levels { position: relative; z-index: 1; view-transition-name: ra-overview-levels; grid-area: levels; display: flex; justify-content: space-around; padding: 8px 18px max(26px, env(safe-area-inset-bottom)); background: var(--s1); border-top: 1px solid var(--line-2); }
+/* Keep navigation above the separate moving card snapshots in the view transition layer. */
+::view-transition-group(ra-overview-top), ::view-transition-group(ra-overview-levels) { z-index: 1; animation: none; }
+::view-transition-old(ra-overview-top), ::view-transition-old(ra-overview-levels) { display: none; }
+::view-transition-new(ra-overview-top), ::view-transition-new(ra-overview-levels) { animation: none; }
 #overview.ov-landscape .ov-body { grid-template-columns: 1fr; grid-template-rows: 1fr auto auto; grid-template-areas: "main" "tools" "levels"; }
 #overview.ov-landscape .ov-main { padding: 4px 18px 14px 6px; }
 #overview.ov-landscape .ov-levels { flex-direction: row; padding-bottom: max(8px, env(safe-area-inset-bottom)); }
