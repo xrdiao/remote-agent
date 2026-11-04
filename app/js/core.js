@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v398'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v399'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false;
 let windowReady = false;
@@ -169,8 +169,8 @@ function fitViewport(event) {
   const vv = window.visualViewport;
   if (!vv) return;
   const focused = /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
-  const keyboard = !!focused && (vv.offsetTop > 0 || vv.height < window.innerHeight - 80);
   const wasKeyboard = document.body.classList.contains('kb');
+  const keyboard = (!!focused || wasKeyboard) && (vv.offsetTop > 0 || vv.height < window.innerHeight - 80);
   const key = `${keyboard}:${Math.round(vv.height)}:${Math.round(vv.offsetTop)}`;
   if (key !== vvApplied) {
     vvApplied = key;

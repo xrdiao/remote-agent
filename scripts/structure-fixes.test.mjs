@@ -3120,5 +3120,53 @@ test('viewport recording leaves existing keyboard height, displacement and editi
   const off = run(false), on = run(true);
   assert.deepEqual(on, off);
   assert.deepEqual(off.map(row => [row.style.height, row.style.transform, row.keyboard]),
-    [['', '', false], ['500px', 'translateY(20px)', true], ['', '', false], ['', '', false], ['', '', false]]);
+    [['', '', false], ['500px', 'translateY(20px)', true], ['500px', 'translateY(20px)', true], ['', '', false], ['', '', false]]);
+});
+
+test('keyboard compensation survives both recorded iPhone focusout phases until the viewport restores', () => {
+  const h = viewportTraceFixture(); h.window.innerHeight = 812;
+  for (let cycle = 0; cycle < 2; cycle++) {
+    h.document.activeElement = h.input; h.window.innerHeight = 477; h.window.scrollY = 335;
+    Object.assign(h.window.visualViewport, { height: 477, offsetTop: 335, pageTop: 335 });
+    h.run('fitViewport();');
+    assert(h.classes.has('kb')); assert.equal(h.style.height, '477px'); assert.equal(h.style.transform, 'translateY(335px)');
+    h.document.activeElement = null;
+    for (let event = 0; event < 3; event++) {
+      h.run('fitViewport();');
+      assert(h.classes.has('kb')); assert.equal(h.style.height, '477px'); assert.equal(h.style.transform, 'translateY(335px)');
+      assert.equal(h.counts().editingEnds, cycle);
+    }
+    h.window.innerHeight = 812; h.window.scrollY = 0;
+    Object.assign(h.window.visualViewport, { height: 812, offsetTop: 0, pageTop: 0 });
+    h.run('fitViewport();');
+    assert(!h.classes.has('kb')); assert.equal(h.style.height, ''); assert.equal(h.style.transform, '');
+    assert.equal(h.counts().editingEnds, cycle + 1);
+  }
+});
+
+test('keyboard viewport restoration before focusout releases editing once and does not reopen on blur', () => {
+  const h = viewportTraceFixture(); h.document.activeElement = h.input;
+  Object.assign(h.window.visualViewport, { height: 477, offsetTop: 335 }); h.run('fitViewport();');
+  assert(h.classes.has('kb'));
+  Object.assign(h.window.visualViewport, { height: 874, offsetTop: 0 }); h.run('fitViewport();');
+  assert(!h.classes.has('kb')); assert.equal(h.counts().editingEnds, 1);
+  h.document.activeElement = null; h.run('fitViewport();');
+  assert(!h.classes.has('kb')); assert.equal(h.counts().editingEnds, 1);
+  assert.equal(h.style.height, ''); assert.equal(h.style.transform, '');
+});
+
+test('pending keyboard close retains a reduced visual viewport at zero offset without changing normal idle paths', () => {
+  const h = viewportTraceFixture(); h.document.activeElement = h.input;
+  Object.assign(h.window.visualViewport, { height: 500, offsetTop: 0 }); h.run('fitViewport();');
+  h.document.activeElement = null;
+  for (let event = 0; event < 3; event++) h.run('fitViewport();');
+  assert(h.classes.has('kb')); assert.equal(h.style.height, '500px'); assert.equal(h.style.transform, 'translateY(0px)');
+  assert.equal(h.counts().editingEnds, 0);
+  h.window.visualViewport.height = 874; h.run('fitViewport();');
+  assert(!h.classes.has('kb')); assert.equal(h.counts().editingEnds, 1);
+  h.window.visualViewport.offsetTop = 25; h.run('fitViewport();');
+  assert(!h.classes.has('kb')); assert.equal(h.style.height, ''); assert.equal(h.style.transform, '');
+  Object.assign(h.window.visualViewport, { height: 812, offsetTop: 0 }); h.window.innerHeight = 812; h.document.activeElement = h.input;
+  h.run('fitViewport();');
+  assert(!h.classes.has('kb')); assert.equal(h.counts().editingEnds, 1);
 });
