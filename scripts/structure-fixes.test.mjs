@@ -3022,3 +3022,103 @@ for (const needsTwoFactor of [false, true]) {
     assert.equal(socket.sent.find(message => message.t === 'auth').needTotp, needsTwoFactor);
   });
 }
+
+function viewportTraceFixture() {
+  const events = () => {
+    const listeners = new Map();
+    return { listeners, addEventListener(type, listener) { if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(listener); },
+      removeEventListener(type, listener) { listeners.get(type)?.delete(listener); },
+      emit(type) { for (const listener of [...(listeners.get(type) || [])]) listener({ type, currentTarget: this }); } };
+  };
+  const classes = new Set(['conv']);
+  const style = { height: '', transform: '', setProperty(key, value) { this[key] = value; }, removeProperty(key) { delete this[key]; }, getPropertyValue(key) { return this[key] || ''; } };
+  const body = { style, classList: { contains: key => classes.has(key), toggle(key, on) { on ? classes.add(key) : classes.delete(key); } },
+    getBoundingClientRect: () => ({ top: 0, left: 0, width: 402, height: parseFloat(style.height) || 874 }) };
+  const header = nativeNode(), footer = nativeNode({}, { getBoundingClientRect: () => ({ top: 700, left: 0, width: 402, height: 174, bottom: 874 }) });
+  let contentReads = 0;
+  const input = nativeNode({}, { tagName: 'TEXTAREA', offsetHeight: 52, closest: selector => selector === 'footer' ? footer : null });
+  Object.defineProperty(input, 'value', { get() { contentReads++; throw Error('trace must not read input text'); } });
+  const nodes = { text: input, termText: nativeNode(), listWrap: { clientHeight: 500 }, sessBar: { offsetHeight: 0 }, actionBar: { offsetHeight: 0 },
+    viewer: nativeNode({}, { classList: { contains: () => false } }), transfer: { hidden: true },
+    sheet: nativeNode({}, { classList: { contains: () => false } }), shade: nativeNode({}, { classList: { contains: () => false } }), imageEditor: null };
+  const document = { ...events(), body, activeElement: null, querySelector: selector => selector === 'footer' ? footer : header };
+  const window = { ...events(), innerHeight: 874, scrollY: 0, visualViewport: { height: 874, offsetTop: 0, pageTop: 0, scale: 1 } };
+  const frames = new Map(); let nextFrame = 0, time = 0, styleReads = 0, editingEnds = 0, layoutNotes = 0;
+  const context = vm.createContext({ document, window, mode: 'chat', APP_VERSION: 'fixture', performance: { now: () => time++ }, $: id => nodes[id],
+    requestAnimationFrame(fn) { const id = ++nextFrame; frames.set(id, fn); return id; }, cancelAnimationFrame: id => frames.delete(id),
+    getComputedStyle: () => { styleReads++; return { position: 'fixed', transform: style.transform || 'none', filter: 'none', backdropFilter: 'none' }; },
+    endComposerEditing() { editingEnds++; }, noteChatLayoutChange() { layoutNotes++; },
+    localStorage: { setItem() { assert.fail('trace must not persist'); } }, indexedDB: { open() { assert.fail('trace must not persist'); } },
+    viewSel: 'PRIVATE_SESSION', base: 'PRIVATE_URL', token: 'PRIVATE_TOKEN' });
+  vm.runInContext(part(read('app/js/core.js'), 'let viewportTrace =', "window.addEventListener('resize', fitViewport);"), context);
+  return { context, frames, document, window, input, style, classes,
+    run: source => vm.runInContext(source, context),
+    data: () => JSON.parse(vm.runInContext('viewportTraceText()', context)),
+    flush() { for (const [id, callback] of [...frames]) { frames.delete(id); callback(); } },
+    counts: () => ({ contentReads, styleReads, editingEnds, layoutNotes }),
+    layout: () => JSON.parse(JSON.stringify({ style, keyboard: classes.has('kb'), editingEnds, layoutNotes })) };
+}
+
+test('viewport trace is opt-in, coalesces frame reads and excludes input content and identity', () => {
+  const h = viewportTraceFixture();
+  h.run('fitViewport();');
+  assert.equal(h.frames.size, 0); assert.equal(h.counts().styleReads, 0); assert.equal(h.data().state, 'not-started');
+  h.run('startViewportTrace();');
+  h.document.activeElement = h.input;
+  h.document.emit('focusin'); h.window.emit('scroll');
+  h.window.visualViewport.height = 500; h.window.visualViewport.offsetTop = 20;
+  h.run("fitViewport({type:'resize',currentTarget:window.visualViewport});");
+  assert.equal(h.frames.size, 1); assert.equal(h.counts().styleReads, 0);
+  h.flush();
+  const data = h.data(), frame = data.samples.find(row => row.source === 'frame');
+  assert(frame); assert.equal(data.samples.filter(row => row.source === 'frame').length, 1);
+  assert.equal(frame.focus, 'composer'); assert.equal(frame.page, 'chat'); assert.equal(frame.height, '500px');
+  assert.equal(frame.visual.offsetTop, 20); assert.equal(frame.transform, 'translateY(20px)');
+  assert.equal(frame.root.position, 'fixed'); assert.equal(frame.header.filter, 'none');
+  assert.equal(frame.overlays.image, false);
+  assert(data.samples.some(row => row.source === 'visualViewport:resize' && row.decision === true));
+  assert.equal(h.counts().contentReads, 0);
+  assert(!JSON.stringify(data).includes('PRIVATE_'));
+});
+
+test('viewport trace stops listeners and frames, and late callbacks cannot enter a restarted trace', () => {
+  const h = viewportTraceFixture(); h.run('startViewportTrace();');
+  const oldFrame = [...h.frames.values()][0];
+  h.run("recordViewportTrace('stop');stopViewportTrace();");
+  assert.equal(h.frames.size, 0); assert.equal(h.data().state, 'stopped');
+  assert([...h.document.listeners.values()].every(listeners => listeners.size === 0));
+  assert([...h.window.listeners.values()].every(listeners => listeners.size === 0));
+  const stopped = h.data(); h.document.emit('focusin'); h.window.emit('scroll'); oldFrame();
+  assert.deepEqual(h.data(), stopped);
+  h.run('startViewportTrace();'); const fresh = h.data(); oldFrame();
+  assert.deepEqual(h.data(), fresh); assert.equal(h.frames.size, 1);
+  h.flush(); assert.equal(h.data().samples.length, 2);
+});
+
+test('viewport trace retains exactly 200 samples at capacity and only explicit restart replaces them', () => {
+  const h = viewportTraceFixture(); h.run('startViewportTrace();');
+  for (let i = 0; i < 220; i++) h.run("recordViewportTrace('fixture-event');");
+  assert.equal(h.data().samples.length, 200); assert.equal(h.data().state, 'full'); assert.equal(h.frames.size, 0);
+  const full = h.data(); h.run('fitViewport();stopViewportTrace();'); h.document.emit('focusin');
+  assert.deepEqual(h.data(), full);
+  h.run('startViewportTrace();'); assert.equal(h.data().state, 'recording'); assert.equal(h.data().samples.length, 1);
+});
+
+test('viewport recording leaves existing keyboard height, displacement and editing transitions unchanged', () => {
+  const run = recording => {
+    const h = viewportTraceFixture(), phases = [];
+    if (recording) h.run('startViewportTrace();');
+    for (const state of [{ focus: false, height: 874, offset: 0, inner: 874 }, { focus: true, height: 500, offset: 20, inner: 874 },
+      { focus: false, height: 500, offset: 20, inner: 874 }, { focus: false, height: 874, offset: 0, inner: 874 },
+      { focus: true, height: 500, offset: 0, inner: 500 }]) {
+      h.document.activeElement = state.focus ? h.input : null;
+      Object.assign(h.window.visualViewport, { height: state.height, offsetTop: state.offset }); h.window.innerHeight = state.inner;
+      h.run('fitViewport();'); h.flush(); phases.push(h.layout());
+    }
+    return phases;
+  };
+  const off = run(false), on = run(true);
+  assert.deepEqual(on, off);
+  assert.deepEqual(off.map(row => [row.style.height, row.style.transform, row.keyboard]),
+    [['', '', false], ['500px', 'translateY(20px)', true], ['', '', false], ['', '', false], ['', '', false]]);
+});
