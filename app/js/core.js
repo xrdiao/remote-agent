@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v399'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v400'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false;
 let windowReady = false;
@@ -106,71 +106,13 @@ function updateAppText() {
 
 // iOS scrolls the page to reveal the focused field, which throws the chat off screen.
 // Pin the shell to the visible area above the keyboard instead.
-let viewportTrace = null;
-function viewportTraceEvent(event) { recordViewportTrace((event.currentTarget === window ? 'window:' : 'document:') + event.type); }
-function stopViewportTrace(reason = 'stopped') {
-  if (!viewportTrace?.active) return;
-  viewportTrace.active = false;
-  viewportTrace.reason = reason;
-  cancelAnimationFrame(viewportTrace.frame);
-  viewportTrace.frame = 0;
-  document.removeEventListener('focusin', viewportTraceEvent);
-  document.removeEventListener('focusout', viewportTraceEvent);
-  window.removeEventListener('scroll', viewportTraceEvent);
-}
-function startViewportTrace() {
-  stopViewportTrace('restarted');
-  viewportTrace = { active: true, reason: '', at: performance.now(), frame: 0, samples: [] };
-  document.addEventListener('focusin', viewportTraceEvent);
-  document.addEventListener('focusout', viewportTraceEvent);
-  window.addEventListener('scroll', viewportTraceEvent);
-  recordViewportTrace('start');
-}
-function recordViewportTrace(source, decision) {
-  const trace = viewportTrace;
-  if (!trace?.active) return;
-  const body = document.body, active = document.activeElement, vv = window.visualViewport;
-  const focus = active === $('text') ? 'composer' : active?.matches('[data-ov-input]') ? 'card-composer'
-    : active?.closest('#qnBar') ? 'question' : active === $('termText') ? 'terminal'
-      : /^(INPUT|TEXTAREA)$/.test(active?.tagName) ? 'other-input' : active?.isContentEditable ? 'contenteditable' : 'none';
-  const page = $('viewer').classList.contains('open') ? 'file' : $('transfer')?.hidden === false ? 'transfer'
-    : body.classList.contains('conv') ? mode : 'overview';
-  const sample = {
-    ms: Math.round(performance.now() - trace.at), source, page, focus,
-    keyboard: body.classList.contains('kb'), decision, innerHeight: window.innerHeight, scrollY: window.scrollY,
-    visual: vv ? { height: vv.height, offsetTop: vv.offsetTop, pageTop: vv.pageTop, scale: vv.scale } : null,
-    height: body.style.height, transform: body.style.transform,
-  };
-  if (source === 'frame') {
-    const header = page === 'overview' ? document.querySelector('#overview .ov-top') : document.querySelector('header');
-    const rect = element => {
-      const { top, left, width, height } = element.getBoundingClientRect();
-      return { top, left, width, height };
-    };
-    const rootStyle = getComputedStyle(body), headerStyle = getComputedStyle(header);
-    sample.root = { ...rect(body), position: rootStyle.position, transform: rootStyle.transform, filter: rootStyle.filter, backdropFilter: rootStyle.backdropFilter };
-    sample.header = { ...rect(header), filter: headerStyle.filter, backdropFilter: headerStyle.backdropFilter };
-    sample.input = rect(focus !== 'none' ? active : $('text'));
-    sample.footer = rect(document.querySelector('footer'));
-    sample.overlays = { sheet: $('sheet').classList.contains('open'), shade: $('shade').classList.contains('open'), image: !!$('imageEditor')?.open };
-  }
-  trace.samples.push(sample);
-  if (trace.samples.length === 200) stopViewportTrace('full');
-  else if (source !== 'frame' && !trace.frame) trace.frame = requestAnimationFrame(() => {
-    trace.frame = 0;
-    if (viewportTrace === trace && trace.active) recordViewportTrace('frame');
-  });
-}
-function viewportTraceText() {
-  return JSON.stringify({ version: APP_VERSION, state: viewportTrace?.active ? 'recording' : viewportTrace?.reason || 'not-started', samples: viewportTrace?.samples || [] }, null, 2);
-}
 let vvApplied = '';
-function fitViewport(event) {
+function fitViewport() {
   const vv = window.visualViewport;
   if (!vv) return;
   const focused = /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
+  const keyboard = !!focused && (vv.offsetTop > 0 || vv.height < window.innerHeight - 80);
   const wasKeyboard = document.body.classList.contains('kb');
-  const keyboard = (!!focused || wasKeyboard) && (vv.offsetTop > 0 || vv.height < window.innerHeight - 80);
   const key = `${keyboard}:${Math.round(vv.height)}:${Math.round(vv.offsetTop)}`;
   if (key !== vvApplied) {
     vvApplied = key;
@@ -195,7 +137,6 @@ function fitViewport(event) {
   }
   if (wasKeyboard && !keyboard && typeof endComposerEditing === 'function') endComposerEditing();
   if (typeof noteChatLayoutChange === 'function') noteChatLayoutChange();
-  recordViewportTrace(event ? (event.currentTarget === window.visualViewport ? 'visualViewport:' : 'window:') + event.type : 'fitViewport', keyboard);
 }
 window.addEventListener('resize', fitViewport);
 window.addEventListener('pageshow', fitViewport);
