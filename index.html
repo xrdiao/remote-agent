@@ -6,6 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Remote Agent">
 <meta name="theme-color" content="#0F1012">
 <script>
@@ -34,7 +35,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>Remote Agent</title>
-<link rel="stylesheet" href="app.css?v=400">
+<link rel="stylesheet" href="app.css?v=386">
 <link rel="stylesheet" href="vendor/xterm.css?v=6.0.0">
 </head>
 <body>
@@ -79,6 +80,7 @@
   </section>
 
   <section id="screenView" class="view">
+    <div id="termStatus" role="status" hidden></div>
     <div id="visualHeader" hidden>
       <div class="visualSource"><button id="visualBack" aria-label="返回对话"><svg class="arrowIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg></button><button id="visualChoose"><span id="visualTitle">选择窗口</span><svg class="arrowIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button><span id="visualStatus" role="status"></span></div>
     </div>
@@ -136,11 +138,7 @@
   <button id="composerFold" type="button" title="收起输入框" aria-label="收起输入框" aria-expanded="true" aria-controls="text"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
   <div id="termTools" hidden>
     <button id="pickTerms">终端列表 ▾</button>
-    <button type="button" data-terminal-action="password">密码输入</button>
-    <button type="button" data-terminal-action="copy">复制</button>
-    <button type="button" data-terminal-action="selectAll">全选</button>
-    <button type="button" class="termExtra" data-terminal-action="size">尺寸</button>
-    <button type="button" class="termExtra" data-terminal-action="refresh">刷新输出</button>
+    <button id="termInt">中断 Ctrl+C</button>
     <button id="termMore" type="button">更多</button>
   </div>
   <form id="termPasswordBox" hidden><input id="termPassword" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="终端密码" placeholder="输入终端密码"><button id="termPasswordSend" type="submit">发送密码</button><button id="termPasswordCancel" type="button">取消</button></form>
@@ -151,12 +149,12 @@
     <button id="img" title="附加图片" aria-label="附加图片"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/></svg></button>
     <button id="uploadDoc" title="上传文档" aria-label="上传文档"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M6 3h8l4 4v14H6zM14 3v5h4"/></svg></button>
     <div id="inputHistory"><button id="inputPrev" aria-label="上一条已发送内容" title="上一条已发送内容"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 15 6-6 6 6"/></svg></button><button id="inputNext" aria-label="下一条已发送内容或恢复草稿" title="下一条已发送内容或恢复草稿"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button></div>
-    <div id="termHistory"><button id="termInt" type="button" title="中断 Ctrl+C" aria-label="中断 Ctrl+C">中断</button><button id="termTab" data-termkey="Tab" aria-label="终端补全">Tab</button><button data-termkey="ArrowUp" aria-label="上一条终端命令"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 15 6-6 6 6"/></svg></button><button data-termkey="ArrowDown" aria-label="下一条终端命令"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button></div>
+    <div id="termHistory"><button id="termTab" data-termkey="Tab" aria-label="终端补全">Tab</button><button data-termkey="ArrowUp" aria-label="上一条终端命令"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 15 6-6 6 6"/></svg></button><button data-termkey="ArrowDown" aria-label="下一条终端命令"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button></div>
     <button id="insertNewline" aria-label="插入换行" title="插入换行"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 10-5 5 5 5M20 4v7a4 4 0 0 1-4 4H4"/></svg></button>
     </div>
     <button id="sendNow" hidden>立即发送</button><button id="send">发送</button>
   </div>
-  <div id="footerStatus"><div id="composeStatus"><div id="termStatus" role="status" hidden></div><div id="msg"></div><button id="retryChat" class="cBtn" title="重试当前会话" aria-label="重试当前会话" hidden>重试</button><span id="elapsed" hidden></span></div><div id="changeNotice" hidden></div></div>
+  <div id="footerStatus"><div id="composeStatus"><div id="msg"></div><button id="retryChat" class="cBtn" title="重试当前会话" aria-label="重试当前会话" hidden>重试</button><span id="elapsed" hidden></span></div><div id="changeNotice" hidden></div></div>
   </div>
 <input id="imgFile" type="file" accept="image/*" multiple hidden>
 <input id="docFile" type="file" accept=".pdf,.doc,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.py,.js,.ts,.tsx,.jsx,.sh,.yaml,.yml,.toml,.ini,.log,.xml,.html,.css,.c,.cpp,.h,.rs,.go" hidden>
@@ -233,30 +231,30 @@
   <input id="scannerFile" type="file" accept="image/*" hidden>
 </div>
 
-<script src="i18n.js?v=400"></script>
-<script src="js/core.js?v=401"></script>
+<script src="i18n.js?v=386"></script>
+<script src="js/core.js?v=386"></script>
 <script src="js/gate.js?v=382"></script>
 <script src="js/scanner.js"></script>
 <script src="js/auth.js?v=207"></script>
 <script src="js/fusion.js?v=371"></script>
 <script src="js/net.js?v=382"></script>
-<script src="js/sheets.js?v=400"></script>
-<script src="js/notify.js?v=392"></script>
-<script src="js/overview.js?v=397"></script>
+<script src="js/sheets.js?v=386"></script>
+<script src="js/notify.js?v=386"></script>
+<script src="js/overview.js?v=382"></script>
 <script src="js/mode.js?v=386"></script>
 <script src="markdown-it/markdown-it-15.0.3.min.js"></script>
 <script src="js/markdown.js?v=295"></script>
 <script src="js/chat.js?v=382"></script>
 <script src="js/history.js?v=386"></script>
 <script src="js/files.js?v=375"></script>
-<script src="js/transfer.js?v=388"></script>
+<script src="js/transfer.js?v=379"></script>
 <script src="js/screen.js?v=382"></script>
 <script src="vendor/xterm.js?v=6.0.0"></script>
-<script src="js/terminal.js?v=392"></script>
-<script src="js/composer.js?v=389"></script>
+<script src="js/terminal.js?v=386"></script>
+<script src="js/composer.js?v=386"></script>
 <script src="js/latency.js?v=367"></script>
 <script src="js/image-editor.js?v=379"></script>
 <script src="js/voice.js?v=356"></script>
-<script src="js/local-voice.js?v=391"></script>
+<script src="js/local-voice.js?v=376"></script>
 </body>
 </html>
