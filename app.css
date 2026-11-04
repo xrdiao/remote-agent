@@ -191,6 +191,8 @@ body[data-app="fusion"] .appAvatar::after {
 .optLogo { flex: none; width: 28px; height: 28px; border-radius: 8px; }
 
 /* ---------- header ---------- */
+#headerSlot { flex: none; height: 0; }
+body > header { position: fixed; top: env(safe-area-inset-top); left: env(safe-area-inset-left); right: env(safe-area-inset-right); z-index: 2; }
 header {
   flex: none; display: flex; align-items: center; gap: 8px;
   padding: 6px 12px 4px; min-width: 0; min-height: 56px; background: var(--bg);
@@ -335,9 +337,9 @@ main { flex: 1; min-height: 0; position: relative; }
   body.land:not(.wide).chatmode { display: grid; grid-template-columns: minmax(0, 1fr) clamp(300px, 40vw, 420px); grid-template-rows: auto auto minmax(0, 1fr) auto auto auto auto; }
   body.land:not(.wide).chatmode main, body.land:not(.wide).chatmode #chatView { display: contents; }
   body.land:not(.wide).chatmode #listWrap { grid-column: 1; grid-row: 1 / -1; border-right: 1px solid var(--line); min-width: 0; }
-  body.land:not(.wide).chatmode header, body.land:not(.wide).chatmode #sessBar, body.land:not(.wide).chatmode #qnBar,
+  body.land:not(.wide).chatmode #headerSlot, body.land:not(.wide).chatmode #sessBar, body.land:not(.wide).chatmode #qnBar,
   body.land:not(.wide).chatmode #queueBar, body.land:not(.wide).chatmode #actionBar, body.land:not(.wide).chatmode footer { grid-column: 2; min-width: 0; }
-  body.land:not(.wide).chatmode header { grid-row: 1; }
+  body.land:not(.wide).chatmode #headerSlot { grid-row: 1; }
   body.land:not(.wide).chatmode #sessBar { grid-row: 2; }
   body.land:not(.wide).chatmode #qnBar { grid-row: 4; max-height: 30dvh; }
   body.land:not(.wide).chatmode #queueBar { grid-row: 5; max-height: 22dvh; }
@@ -355,7 +357,7 @@ main { flex: 1; min-height: 0; position: relative; }
     transition: grid-template-columns .2s var(--ease);
   }
   body.split.railCollapsed:not(.visual) { grid-template-columns: 64px minmax(0, 1fr); }
-  body.split:not(.visual) header { grid-column: 2; grid-row: 1; }
+  body.split:not(.visual) #headerSlot { grid-column: 2; grid-row: 1; }
   body.split.chatmode:not(.visual) main, body.split.chatmode:not(.visual) #chatView { display: contents; }
   body.split.chatmode:not(.visual) #sessBar { grid-column: 2; grid-row: 2; }
   body.split.chatmode:not(.visual) #listWrap { grid-column: 2; grid-row: 3; min-height: 0; }
@@ -1589,7 +1591,8 @@ body.conv #overview { display: none; }
 #overview textarea { resize: none; line-height: 22px; padding: 7px 0; box-sizing: border-box; }
 #overview em { font-style: normal; }
 
-#overview .ov-top { position: relative; z-index: 1; view-transition-name: ra-overview-top; background: var(--bg); flex: none; display: flex; align-items: center; gap: 6px; height: calc(52px + env(safe-area-inset-top)); padding: env(safe-area-inset-top) 12px 0 10px; }
+#overview::before { content: ""; flex: none; height: calc(52px + env(safe-area-inset-top)); }
+#overview .ov-top { position: fixed; top: 0; left: env(safe-area-inset-left); right: env(safe-area-inset-right); z-index: 1; view-transition-name: ra-overview-top; background: var(--bg); display: flex; align-items: center; gap: 6px; height: calc(52px + env(safe-area-inset-top)); padding: env(safe-area-inset-top) 12px 0 10px; }
 #overview .ov-ibtn { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; color: var(--fg-2); flex: none; }
 #overview .ov-ibtn:active { background: var(--s2); }
 #overview .ov-ibtn svg { width: 22px; height: 22px; }

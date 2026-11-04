@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v403'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v404'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false;
 let windowReady = false;
@@ -346,6 +346,18 @@ window.screen.orientation?.addEventListener('change', fitOrientation);
 window.addEventListener('orientationchange', fitOrientation);
 window.addEventListener('resize', fitOrientation);
 fitOrientation();
+
+const appHeader = document.querySelector('body > header'), headerSlot = $('headerSlot');
+function layoutHeader() {
+  const rect = headerSlot.getBoundingClientRect();
+  appHeader.style.left = rect.left + 'px';
+  appHeader.style.width = rect.width + 'px';
+  headerSlot.style.marginBottom = appHeader.getBoundingClientRect().height + 'px';
+}
+const headerSizeObserver = new ResizeObserver(layoutHeader);
+headerSizeObserver.observe(headerSlot);
+headerSizeObserver.observe(appHeader);
+layoutHeader();
 
 // In-progress lines end with … and are cleared when the result arrives, or after a few seconds
 // so a finished action cannot leave "正在…" on screen. A short result then fades on its own.

@@ -34,11 +34,12 @@
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>Remote Agent</title>
-<link rel="stylesheet" href="app.css?v=403">
+<link rel="stylesheet" href="app.css?v=404">
 <link rel="stylesheet" href="vendor/xterm.css?v=6.0.0">
 </head>
 <body>
 <nav id="rail" aria-label="导航"></nav>
+<div id="headerSlot" aria-hidden="true"></div>
 <header>
   <button id="ovBack"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
   <button id="title"><span class="appAvatar"><span id="dot"></span></span><span class="titleLabels"><span class="titleRow"><span id="titleText">连接中…</span><span id="titlePlan" hidden></span></span><span id="titleProject"></span></span><span id="titleLatency"></span><svg class="arrowIcon titleArrow" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
@@ -234,7 +235,7 @@
 </div>
 
 <script src="i18n.js?v=402"></script>
-<script src="js/core.js?v=403"></script>
+<script src="js/core.js?v=404"></script>
 <script src="js/gate.js?v=382"></script>
 <script src="js/scanner.js"></script>
 <script src="js/auth.js?v=207"></script>
