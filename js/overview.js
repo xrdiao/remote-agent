@@ -1054,14 +1054,5 @@ else if (store.get('start-view') === 'conversation') {
   else ovConversationOpened();
 }
 ovRender();
-if ('standalone' in document.documentElement.dataset) requestAnimationFrame(() => requestAnimationFrame(() => {
-  const element = $('overview');
-  element.style.display = 'none';
-  void element.offsetHeight;
-  requestAnimationFrame(() => {
-    element.style.removeProperty('display');
-    void element.offsetHeight;
-  });
-}));
 ovPoll();
 setInterval(ovPoll, 4000);
