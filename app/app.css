@@ -69,6 +69,12 @@ body.kb { padding-bottom: 0; }
 html[data-standalone] { height: 100vh; }
 html[data-standalone] body { position: relative; inset: auto; height: 100%; }
 html[data-standalone] body.kb { position: fixed; inset: 0; }
+/* Keep a top-edge color available to WebKit's standalone shell sampler. */
+#pwaTopSurface { display: none; }
+html[data-standalone] #pwaTopSurface {
+  display: block; position: fixed; inset: 0 0 auto; height: 11px; z-index: 50;
+  background: var(--bg); background-clip: text; pointer-events: none;
+}
 [hidden] { display: none !important; }
 
 button, select, textarea, input { font: inherit; color: var(--fg-hi); }
