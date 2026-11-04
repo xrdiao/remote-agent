@@ -1058,8 +1058,10 @@ if ('standalone' in document.documentElement.dataset) requestAnimationFrame(() =
   const element = $('overview');
   element.style.display = 'none';
   void element.offsetHeight;
-  element.style.removeProperty('display');
-  void element.offsetHeight;
+  requestAnimationFrame(() => {
+    element.style.removeProperty('display');
+    void element.offsetHeight;
+  });
 }));
 ovPoll();
 setInterval(ovPoll, 4000);
