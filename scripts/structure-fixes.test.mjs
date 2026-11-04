@@ -3022,3 +3022,206 @@ for (const needsTwoFactor of [false, true]) {
     assert.equal(socket.sent.find(message => message.t === 'auth').needTotp, needsTwoFactor);
   });
 }
+
+test('fixed header follows its existing grid slot and natural height without touching the page shell', () => {
+  const observed = []; let callback, slotRect = { left: 0, width: 402 }, headerHeight = 56;
+  const writes = (allowed, initial = {}) => new Proxy(initial, {
+    set(target, property, value) { assert(allowed.includes(property), String(property)); target[property] = value; return true; },
+  });
+  const slot = { style: writes(['marginBottom'], { height: '0px' }), getBoundingClientRect: () => slotRect };
+  const header = { style: writes(['left', 'width']), getBoundingClientRect: () => ({ height: headerHeight }) };
+  const body = { style: writes([]) };
+  const context = vm.createContext({
+    document: { body, querySelector(selector) { assert.equal(selector, 'body > header'); return header; } },
+    $(id) { assert.equal(id, 'headerSlot'); return slot; },
+    ResizeObserver: class { constructor(fn) { callback = fn; } observe(node) { observed.push(node); } },
+  });
+  vm.runInContext(part(read('app/js/core.js'), 'const appHeader =', '// In-progress lines'), context);
+  assert.deepEqual(observed, [slot, header]);
+  assert.deepEqual({ ...header.style }, { left: '0px', width: '402px' });
+  assert.equal(slot.style.marginBottom, '56px');
+  slotRect = { left: 524.40625, width: 349.59375 }; headerHeight = 52; callback();
+  assert.deepEqual({ ...header.style }, { left: '524.40625px', width: '349.59375px' });
+  assert.equal(slot.style.marginBottom, '52px');
+  slotRect = { left: 64, width: 756 }; headerHeight = 138; callback();
+  assert.deepEqual({ ...header.style }, { left: '64px', width: '756px' });
+  assert.equal(slot.style.marginBottom, '138px');
+  assert.equal(slot.style.height, '0px'); assert.deepEqual({ ...body.style }, {});
+});
+
+function viewportTraceFixture() {
+  const events = () => {
+    const listeners = new Map(), once = new Set();
+    return { listeners, addEventListener(type, listener, options) {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type).add(listener); if (options?.once) once.add(listener);
+    }, removeEventListener(type, listener) { listeners.get(type)?.delete(listener); },
+    emit(type) { for (const listener of [...(listeners.get(type) || [])]) {
+      if (once.has(listener)) listeners.get(type).delete(listener);
+      listener({ type, currentTarget: this });
+    } } };
+  };
+  const classes = new Set(['conv']), persisted = new Map(), writes = [], frames = new Map(), observers = [];
+  let nextFrame = 0, time = 0, contentReads = 0, styleReads = 0, editingEnds = 0, layoutNotes = 0;
+  const style = () => ({ height: '', transform: '', setProperty(key, value) { this[key] = value; },
+    removeProperty(key) { delete this[key]; }, getPropertyValue(key) { return this[key] || ''; },
+    set cssText(value) { this.height = value.match(/(?:^|;)height:([^;]+)/)?.[1] || ''; this.raw = value; } });
+  const makeNode = (properties = {}) => nativeNode({}, { tagName: 'DIV', classList: { contains: () => false }, style: style(), children: [],
+    append(child) { this.children.push(child); child.parentElement = this; },
+    remove() { const parent = this.parentElement; if (parent) parent.children.splice(parent.children.indexOf(this), 1); },
+    setAttribute() {}, closest: () => null,
+    getBoundingClientRect: () => ({ top: 0, left: 0, right: 402, bottom: 874, width: 402, height: 874 }), ...properties });
+  const body = makeNode({ classList: { contains: key => classes.has(key), toggle(key, on) { on ? classes.add(key) : classes.delete(key); }, [Symbol.iterator]: () => classes.values() } });
+  const header = makeNode(), top = makeNode({ closest: selector => selector === '#overview' ? overview : null,
+    getBoundingClientRect: () => ({ top: 0, left: 0, right: 402, bottom: 114, width: 402, height: 114 }) });
+  const footer = makeNode({ getBoundingClientRect: () => ({ top: 700, left: 0, right: 402, bottom: 874, width: 402, height: 174 }) });
+  const bottom = makeNode({ getBoundingClientRect: () => ({ top: 780, left: 0, right: 402, bottom: 874, width: 402, height: 94 }) });
+  const overview = makeNode({ id: 'overview', closest: selector => selector === '#overview' ? overview : null });
+  const input = makeNode({ tagName: 'TEXTAREA', offsetHeight: 52, closest: selector => selector === 'footer' ? footer : null });
+  Object.defineProperty(input, 'value', { get() { contentReads++; throw Error('must not read private input'); } });
+  const nodes = { text: input, termText: makeNode(), listWrap: { clientHeight: 500 }, sessBar: { offsetHeight: 0 }, actionBar: { offsetHeight: 0 },
+    viewer: makeNode(), transfer: makeNode({ hidden: true }), sheet: makeNode(), shade: makeNode(), imageEditor: null, gate: null, overview, ovLevels: bottom };
+  const html = makeNode({ dataset: { theme: 'light' }, clientHeight: 874, clientWidth: 402, scrollHeight: 874 });
+  const document = { ...events(), body, documentElement: html, scrollingElement: { scrollTop: 0 }, activeElement: null,
+    baseURI: 'https://example.test/remote-agent/?pair=PRIVATE_PAIR', readyState: 'complete', visibilityState: 'visible', styleSheets: [],
+    createElement: () => makeNode(), querySelectorAll: () => [], elementsFromPoint: () => [top, overview, body],
+    querySelector(selector) {
+      if (selector === 'footer') return footer;
+      if (selector === 'body > header' || selector === 'header') return header;
+      if (selector === '#overview .ov-top') return top;
+      if (selector.includes('theme-color')) return { content: '#ffffff' };
+      if (selector.includes('name="viewport"')) return { content: 'width=device-width,viewport-fit=cover' };
+      return null;
+    } };
+  const window = { ...events(), innerHeight: 874, innerWidth: 402, scrollY: 0, devicePixelRatio: 3,
+    screen: { width: 402, height: 874, availWidth: 402, availHeight: 874, orientation: { type: 'portrait-primary' } },
+    visualViewport: { ...events(), height: 874, width: 402, offsetTop: 0, offsetLeft: 0, pageTop: 0, scale: 1 } };
+  const navigator = { userAgent: 'Fixture WebKit', standalone: true };
+  const context = vm.createContext({ document, window, navigator, history: { state: { ovDepth: 0 } }, mode: 'chat', APP_VERSION: 'fixture',
+    performance: { now: () => time++, getEntriesByType: () => [] }, URL, TextEncoder, Uint8Array, crypto: crypto.webcrypto,
+    matchMedia: query => ({ matches: query.includes('standalone') }), $: id => nodes[id],
+    store: { get(key) { assert.equal(key, 'viewport-trace-next'); return persisted.get(key); },
+      set(key, value) { assert.equal(key, 'viewport-trace-next'); writes.push([key, value]); value == null ? persisted.delete(key) : persisted.set(key, value); } },
+    requestAnimationFrame(callback) { const id = ++nextFrame; frames.set(id, callback); return id; }, cancelAnimationFrame: id => frames.delete(id),
+    MutationObserver: class { constructor(callback) { this.callback = callback; this.connected = true; observers.push(this); } observe() {} disconnect() { this.connected = false; } },
+    getComputedStyle(element) {
+      styleReads++;
+      const values = { position: element === body && !('standalone' in html.dataset) ? 'fixed' : 'relative', transform: element.style.transform || 'none',
+        display: 'flex', filter: 'none', 'backdrop-filter': 'none', height: /vh$/.test(element.style.height) ? '874px' : element.style.height || '874px',
+        paddingTop: '62px', paddingRight: '0px', paddingBottom: '34px', paddingLeft: '0px', backgroundColor: 'rgb(255, 255, 255)', opacity: '1' };
+      return { ...values, getPropertyValue: key => values[key] || '' };
+    }, endComposerEditing() { editingEnds++; }, noteChatLayoutChange() { layoutNotes++; },
+    localStorage: { getItem() { assert.fail('must not enumerate private storage'); }, setItem() { assert.fail('must not persist trace'); } },
+    indexedDB: { open() { assert.fail('must not persist trace'); } }, screen: makeNode(), viewSel: 'PRIVATE_SESSION', base: 'PRIVATE_URL', token: 'PRIVATE_TOKEN' });
+  vm.runInContext(part(read('app/js/core.js'), 'let viewportTrace =', "window.addEventListener('resize', fitViewport);"), context);
+  return { context, frames, document, window, navigator, input, body, classes, persisted, writes, observers, nodes, events,
+    run: source => vm.runInContext(source, context), data: () => JSON.parse(vm.runInContext('viewportTraceText()', context)),
+    flush() { for (const [id, callback] of [...frames]) { frames.delete(id); callback(); } },
+    counts: () => ({ contentReads, styleReads, editingEnds, layoutNotes }),
+    layout: () => JSON.parse(JSON.stringify({ height: body.style.height, transform: body.style.transform, keyboard: classes.has('kb'), editingEnds, layoutNotes })) };
+}
+
+test('viewport diagnostics stay inactive until requested and consume only the explicit one-time startup flag', () => {
+  const h = viewportTraceFixture(); h.run('resumeViewportTrace();fitViewport();');
+  assert.equal(h.data().state, 'not-started'); assert.equal(h.frames.size, 0); assert.equal(h.counts().styleReads, 0);
+  assert.equal(h.observers.length, 0); assert.equal(h.body.children.length, 0); assert.equal(h.writes.length, 0);
+  h.persisted.set('viewport-trace-next', '1'); h.run('resumeViewportTrace();');
+  assert.equal(h.data().state, 'recording'); assert.deepEqual(h.writes, [['viewport-trace-next', null]]);
+  h.run('resumeViewportTrace();'); assert.equal(h.data().samples.length, 1);
+});
+
+test('viewport diagnostics record the actual overview header, footer, safe area and top paint owners without input or identity', async () => {
+  const h = viewportTraceFixture(); h.classes.delete('conv'); h.run('startViewportTrace();');
+  h.document.activeElement = h.input; h.document.emit('focusin'); h.window.emit('scroll');
+  assert.equal(h.frames.size, 1); h.flush();
+  const frame = h.data().samples.find(sample => sample.source === 'frame');
+  assert.equal(frame.page, 'overview'); assert.equal(frame.header.height, 114); assert.equal(frame.header.css.height, '874px'); assert.equal(frame.footer.top, 780);
+  assert.deepEqual(frame.safeArea, { top: '62px', right: '0px', bottom: '34px', left: '0px' });
+  assert.equal(frame.units.dvh, '874px'); assert.equal(frame.topEdge[0].elements[0].owner, 'overview');
+  assert.equal(h.data().environment.screen.height, 874); assert.deepEqual(h.data().measurement.before, h.data().measurement.after);
+  assert.equal(h.counts().contentReads, 0); assert(!JSON.stringify(h.data()).includes('PRIVATE_'));
+  h.run('stopViewportTrace();');
+});
+
+test('viewport diagnostics release listeners, probes and frame callbacks without admitting late records into a new trace', () => {
+  const h = viewportTraceFixture(); h.run('startViewportTrace();');
+  const oldFrame = [...h.frames.values()][0], oldObserver = h.observers[0];
+  h.run("recordViewportTrace('stop');stopViewportTrace();");
+  assert.equal(h.frames.size, 0); assert.equal(h.body.children.length, 0); assert(!oldObserver.connected);
+  for (const target of [h.window, h.document, h.window.visualViewport]) assert([...target.listeners.values()].every(listeners => listeners.size === 0));
+  h.run('startViewportTrace();'); const fresh = h.data(); oldFrame(); oldObserver.callback([{ target: h.body, attributeName: 'style' }]);
+  assert.deepEqual(h.data(), fresh); assert.equal(h.frames.size, 1); h.run('stopViewportTrace();');
+});
+
+test('all entry modes retain keyboard controls without shell compensation during the recorded focusout sequences', () => {
+  const run = (recording, standalone, sequence) => {
+    const h = viewportTraceFixture(), states = [];
+    if (standalone) h.document.documentElement.dataset.standalone = '';
+    if (sequence.page === 'overview') h.classes.delete('conv');
+    for (const property of ['height', 'transform']) Object.defineProperty(h.body.style, property, {
+      get: () => '', set() { assert.fail(`keyboard processing must not write shell ${property}`); },
+    });
+    if (recording) h.run('startViewportTrace();');
+    const resting = { focus: false, inner: 874, height: 874, offset: 0, scroll: 0 };
+    const open = { focus: true, ...sequence };
+    for (const phase of [resting, open, { ...open, focus: false }, resting]) {
+      h.document.activeElement = phase.focus ? h.input : null;
+      Object.assign(h.window, { innerHeight: phase.inner, scrollY: phase.scroll });
+      Object.assign(h.window.visualViewport, { height: phase.height, offsetTop: phase.offset });
+      h.run('fitViewport();'); h.flush(); states.push(h.layout());
+    }
+    if (recording) {
+      const frames = h.data().samples.filter(sample => sample.source === 'frame');
+      assert(frames.every(frame => frame.root.css.position === (standalone ? 'relative' : 'fixed')));
+      assert(frames.every(frame => frame.root.css.transform === 'none'));
+      assert.equal(h.counts().contentReads, 0);
+    }
+    h.run('stopViewportTrace();'); return states;
+  };
+  for (const standalone of [false, true]) for (const sequence of [
+    { page: 'overview', inner: 768, height: 477, offset: 106, scroll: 106 },
+    { page: 'chat', inner: 477, height: 477, offset: 335, scroll: 397 },
+  ]) {
+    const plain = run(false, standalone, sequence);
+    assert.deepEqual(run(true, standalone, sequence), plain);
+    assert.deepEqual(plain.map(value => [value.height, value.transform, value.keyboard, value.editingEnds]),
+      [['', '', false, 0], ['', '', true, 0], ['', '', false, 1], ['', '', false, 1]]);
+  }
+});
+
+test('viewport diagnostics record conversation visibility transitions and stop exactly at the stated limit', () => {
+  const h = viewportTraceFixture(); h.classes.delete('conv'); h.run('startViewportTrace();'); h.flush();
+  h.classes.add('conv'); h.observers[0].callback([{ target: h.body, attributeName: 'class' }]); h.flush();
+  assert.equal(h.data().samples.at(-1).page, 'chat');
+  h.classes.delete('conv'); h.observers[0].callback([{ target: h.body, attributeName: 'class' }]); h.flush();
+  assert.equal(h.data().samples.at(-1).page, 'overview');
+  h.run("for(let i=0;i<500;i++)recordViewportTrace('fixture');");
+  const full = h.data(); assert.equal(full.state, 'full'); assert.equal(full.samples.length, full.limit); assert.equal(h.frames.size, 0); assert.equal(h.body.children.length, 0);
+  h.document.emit('focusin'); assert.deepEqual(h.data(), full);
+});
+
+test('startup resource metadata waits for the parsed document and is cancelled when tracing stops before parsing finishes', () => {
+  const h = viewportTraceFixture(); h.document.readyState = 'loading';
+  h.run('startViewportTrace();'); assert.equal(h.document.listeners.get('DOMContentLoaded').size, 1);
+  h.run('stopViewportTrace();'); assert.equal(h.document.listeners.get('DOMContentLoaded').size, 0);
+  h.run('startViewportTrace();'); h.document.emit('DOMContentLoaded');
+  assert.equal(h.document.listeners.get('DOMContentLoaded').size, 0); h.run('stopViewportTrace();');
+});
+
+test('viewport resource hashes distinguish loaded CSS from own cache entries and exclude credentials and unrelated resources', async () => {
+  const h = viewportTraceFixture();
+  h.document.querySelectorAll = () => [{ href: 'https://example.test/remote-agent/app.css?v=400&token=PRIVATE_TOKEN' },
+    { src: 'https://example.test/remote-agent/js/core.js?v=402' }, { src: 'https://private.test/PRIVATE_URL.js' }];
+  h.document.styleSheets = [{ href: 'https://example.test/remote-agent/app.css?v=400', disabled: false, cssRules: [{ cssText: 'body { color: red; }' }] }];
+  const worker = { scriptURL: 'https://example.test/remote-agent/sw.js?v=402&pair=PRIVATE_PAIR', state: 'activated' };
+  h.navigator.serviceWorker = { ...h.events(), controller: worker, getRegistration: async () => ({ scope: 'https://example.test/remote-agent/', active: worker }) };
+  const matches = [];
+  h.context.caches = { keys: async () => ['remote-agent:https://example.test/remote-agent/:v402', 'remote-agent:https://example.test/remote-agent/:notices', 'other-private-cache'],
+    match: async (url, options) => { matches.push([url, options.cacheName]); return new Response('public shell fixture'); } };
+  const data = JSON.parse(JSON.stringify(await h.run('viewportTraceResources()')));
+  assert.deepEqual(data.assets, ['app.css?v=400', 'js/core.js?v=402']); assert.equal(data.worker.controller.file, 'sw.js?v=402');
+  assert.equal(data.styles[0].source, 'loaded-cssom'); assert.equal(data.styles[0].sha256, crypto.createHash('sha256').update('body { color: red; }').digest('hex'));
+  assert.equal(data.caches.length, 1); assert.equal(data.caches[0].source, 'cache-entry-not-proof-of-loaded-bytes');
+  assert(matches.every(([url, name]) => !url.includes('PRIVATE') && name.endsWith(':v402')));
+  assert(!JSON.stringify(data).includes('PRIVATE')); assert.equal(h.writes.length, 0);
+});

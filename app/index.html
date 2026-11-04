@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'wasm-unsafe-eval' 'sha256-uDXlgGuHcVRVXHUxmrLs17yN1pNO/yqlP9Nszl5BYdw='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; frame-src blob:">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=auto, interactive-widget=resizes-content">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Remote Agent">
@@ -34,11 +34,12 @@
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>Remote Agent</title>
-<link rel="stylesheet" href="app.css?v=400">
+<link rel="stylesheet" href="app.css?v=404">
 <link rel="stylesheet" href="vendor/xterm.css?v=6.0.0">
 </head>
 <body>
 <nav id="rail" aria-label="导航"></nav>
+<div id="headerSlot" aria-hidden="true"></div>
 <header>
   <button id="ovBack"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
   <button id="title"><span class="appAvatar"><span id="dot"></span></span><span class="titleLabels"><span class="titleRow"><span id="titleText">连接中…</span><span id="titlePlan" hidden></span></span><span id="titleProject"></span></span><span id="titleLatency"></span><svg class="arrowIcon titleArrow" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
@@ -233,14 +234,14 @@
   <input id="scannerFile" type="file" accept="image/*" hidden>
 </div>
 
-<script src="i18n.js?v=400"></script>
-<script src="js/core.js?v=401"></script>
+<script src="i18n.js?v=402"></script>
+<script src="js/core.js?v=405"></script>
 <script src="js/gate.js?v=382"></script>
 <script src="js/scanner.js"></script>
 <script src="js/auth.js?v=207"></script>
 <script src="js/fusion.js?v=371"></script>
 <script src="js/net.js?v=382"></script>
-<script src="js/sheets.js?v=400"></script>
+<script src="js/sheets.js?v=402"></script>
 <script src="js/notify.js?v=392"></script>
 <script src="js/overview.js?v=397"></script>
 <script src="js/mode.js?v=386"></script>

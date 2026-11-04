@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v401'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v405'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false;
 let windowReady = false;
@@ -104,22 +104,199 @@ function updateAppText() {
   text.placeholder = mode === 'terminal' ? I18N.tr('发给终端…') : questionCompose?.sel === viewSel ? '回答当前问题…（仅提交文字）' : I18N.tr('输入你的问题，或粘贴图片、文档…');
 }
 
-// iOS scrolls the page to reveal the focused field, which throws the chat off screen.
-// Pin the shell to the visible area above the keyboard instead.
-let vvApplied = '';
-function fitViewport() {
+// Temporary, opt-in viewport diagnostics. Never read input or pairing data.
+let viewportTrace = null;
+const VIEWPORT_TRACE_LIMIT = 400;
+function viewportTraceRect(element) {
+  if (!element) return null;
+  const { top, left, right, bottom, width, height } = element.getBoundingClientRect();
+  return { top, left, right, bottom, width, height };
+}
+function viewportTraceNode(element) {
+  if (!element) return null;
+  const style = getComputedStyle(element);
+  return { ...viewportTraceRect(element), css: Object.fromEntries([
+    'position', 'display', 'height', 'min-height', 'max-height', 'overflow', 'overflow-x', 'overflow-y',
+    'padding-top', 'padding-bottom', 'padding-left', 'padding-right', 'margin-top', 'margin-bottom',
+    'background-color', 'opacity', 'visibility', 'transform', 'transform-origin', 'filter', 'backdrop-filter',
+    '-webkit-backdrop-filter', 'contain', 'will-change', 'z-index', 'view-transition-name',
+  ].map(key => [key, style.getPropertyValue(key)])) };
+}
+function viewportTraceAsset(raw) {
+  const base = new URL('./', document.baseURI), url = new URL(raw, base);
+  if (url.origin !== base.origin || !url.pathname.startsWith(base.pathname)) return null;
+  const file = url.pathname.slice(base.pathname.length);
+  if (!/^(?:index\.html|app\.css|i18n\.js|sw\.js|manifest\.webmanifest|js\/[\w-]+\.js|vendor\/xterm\.css)$/.test(file)) return null;
+  const version = url.searchParams.get('v');
+  return file + (version && /^v?\d+(?:\.\d+)*$/.test(version) ? '?v=' + version : '');
+}
+async function viewportTraceHash(bytes) {
+  return [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(value => value.toString(16).padStart(2, '0')).join('');
+}
+async function viewportTraceResources() {
+  const assets = [...document.querySelectorAll('script[src], link[rel="stylesheet"]')]
+    .map(node => viewportTraceAsset(node.src || node.href)).filter(Boolean);
+  const timings = performance.getEntriesByType('resource').map(entry => ({
+    file: viewportTraceAsset(entry.name), type: entry.initiatorType, start: entry.startTime, duration: entry.duration,
+    transfer: entry.transferSize, encoded: entry.encodedBodySize, decoded: entry.decodedBodySize,
+  })).filter(entry => entry.file);
+  const styles = await Promise.all([...document.styleSheets].filter(sheet => viewportTraceAsset(sheet.href || '')?.startsWith('app.css'))
+    .map(async sheet => ({ file: viewportTraceAsset(sheet.href), source: 'loaded-cssom', disabled: sheet.disabled,
+      sha256: await viewportTraceHash(new TextEncoder().encode([...sheet.cssRules].map(rule => rule.cssText).join('\n'))) })));
+  const resources = { state: 'complete', executedCore: APP_VERSION, assets, timings, styles, caches: [] };
+  if (!navigator.serviceWorker) return resources;
+  const registration = await navigator.serviceWorker.getRegistration();
+  const worker = value => value ? { file: viewportTraceAsset(value.scriptURL), state: value.state } : null;
+  resources.worker = { controller: worker(navigator.serviceWorker.controller), active: worker(registration?.active),
+    waiting: worker(registration?.waiting), installing: worker(registration?.installing) };
+  if (!registration) return resources;
+  const prefix = 'remote-agent:' + registration.scope + ':';
+  const names = (await caches.keys()).filter(name => name.startsWith(prefix) && /^v\d+$/.test(name.slice(prefix.length)));
+  const selected = ['index.html', ...assets.filter(file => /^(?:app\.css|i18n\.js|js\/(?:core|sheets|overview|composer)\.js)(?:\?|$)/.test(file))];
+  for (const name of names) {
+    const entries = [];
+    for (const file of selected) {
+      const response = await caches.match(new URL(file, document.baseURI).href, { cacheName: name });
+      if (response) {
+        const bytes = await response.arrayBuffer();
+        entries.push({ file, status: response.status, bytes: bytes.byteLength, sha256: await viewportTraceHash(bytes) });
+      }
+    }
+    resources.caches.push({ version: name.slice(prefix.length), source: 'cache-entry-not-proof-of-loaded-bytes', entries });
+  }
+  return resources;
+}
+function readViewportTraceResources(trace) {
+  const ms = Math.round(performance.now() - trace.at);
+  viewportTraceResources().then(resources => { trace.resources.push({ ms, ...resources }); }, error => {
+    trace.resources.push({ ms, state: 'error', name: error.name });
+  });
+}
+function viewportTraceEvent(event) {
+  const scope = event.currentTarget === window ? 'window' : event.currentTarget === window.visualViewport ? 'visualViewport'
+    : event.currentTarget === navigator.serviceWorker ? 'serviceWorker' : 'document';
+  recordViewportTrace(scope + ':' + event.type);
+  if (event.type === 'controllerchange' && viewportTrace?.active) readViewportTraceResources(viewportTrace);
+}
+function stopViewportTrace(reason = 'stopped') {
+  const trace = viewportTrace;
+  if (!trace?.active) return;
+  trace.active = false;
+  trace.reason = reason;
+  cancelAnimationFrame(trace.frame);
+  trace.frame = 0;
+  for (const [target, event] of trace.listeners) target.removeEventListener(event, viewportTraceEvent);
+  if (trace.loaded) document.removeEventListener('DOMContentLoaded', trace.loaded);
+  trace.observer.disconnect();
+  trace.probe.remove();
+}
+function startViewportTrace() {
+  stopViewportTrace('restarted');
+  const trace = viewportTrace = { active: true, reason: '', at: performance.now(), frame: 0, samples: [], resources: [],
+    environment: { userAgent: navigator.userAgent, standalone: navigator.standalone === true,
+      displayMode: ['standalone', 'fullscreen', 'minimal-ui', 'browser'].find(value => matchMedia('(display-mode: ' + value + ')').matches),
+      pixelRatio: window.devicePixelRatio, screen: { width: window.screen.width, height: window.screen.height,
+        availWidth: window.screen.availWidth, availHeight: window.screen.availHeight, orientation: window.screen.orientation?.type },
+      viewportMeta: document.querySelector('meta[name="viewport"]')?.content,
+      statusMeta: document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]')?.content || null } };
+  const before = { body: viewportTraceRect(document.body), scrollHeight: document.documentElement.scrollHeight, scrollY: window.scrollY };
+  trace.probe = document.createElement('div');
+  trace.probe.setAttribute('aria-hidden', 'true');
+  trace.probe.style.cssText = 'position:absolute;top:0;left:0;width:0;height:0;overflow:hidden;visibility:hidden;pointer-events:none';
+  trace.measures = {};
+  for (const unit of ['vh', 'dvh', 'svh', 'lvh', 'safe']) {
+    const child = document.createElement('div');
+    child.style.cssText = 'position:absolute;top:0;left:0;width:0;height:' + (unit === 'safe' ? '0' : '100' + unit)
+      + ';padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)';
+    trace.probe.append(child);
+    trace.measures[unit] = child;
+  }
+  document.body.append(trace.probe);
+  trace.measurement = { before, after: { body: viewportTraceRect(document.body), scrollHeight: document.documentElement.scrollHeight, scrollY: window.scrollY } };
+  trace.listeners = [...['pageshow', 'pagehide', 'resize', 'scroll', 'orientationchange', 'focus', 'blur', 'popstate'].map(event => [window, event]),
+    ...['focusin', 'focusout', 'visibilitychange'].map(event => [document, event]),
+    ...(window.visualViewport ? ['resize', 'scroll'].map(event => [window.visualViewport, event]) : []),
+    ...(navigator.serviceWorker ? [[navigator.serviceWorker, 'controllerchange']] : [])];
+  for (const [target, event] of trace.listeners) target.addEventListener(event, viewportTraceEvent);
+  trace.observer = new MutationObserver(records => {
+    if (viewportTrace !== trace || !trace.active) return;
+    recordViewportTrace('mutation:' + [...new Set(records.map(record => (record.target === document.body ? 'body' : record.target === document.documentElement ? 'html' : record.target.id) + ':' + record.attributeName))].join(','));
+  });
+  for (const target of [document.documentElement, document.body, $('overview'), $('gate'), $('shade'), $('sheet'), $('viewer'), $('transfer')].filter(Boolean))
+    trace.observer.observe(target, { attributes: true, attributeFilter: ['class', 'style', 'hidden', 'data-theme'] });
+  if (document.readyState === 'loading') {
+    trace.loaded = () => { trace.loaded = null; readViewportTraceResources(trace); };
+    document.addEventListener('DOMContentLoaded', trace.loaded, { once: true });
+  } else readViewportTraceResources(trace);
+  recordViewportTrace('start');
+}
+function recordViewportTrace(source, decision) {
+  const trace = viewportTrace;
+  if (!trace?.active) return;
+  const body = document.body, active = document.activeElement, vv = window.visualViewport;
+  const focus = active === $('text') ? 'composer' : active?.matches('[data-ov-input]') ? 'card-composer'
+    : active?.closest('#qnBar') ? 'question' : active === $('termText') ? 'terminal'
+      : /^(INPUT|TEXTAREA)$/.test(active?.tagName) ? 'other-input' : active?.isContentEditable ? 'contenteditable' : 'none';
+  const page = $('viewer')?.classList.contains('open') ? 'file' : $('transfer')?.hidden === false ? 'transfer'
+    : body.classList.contains('conv') ? mode : 'overview';
+  const sample = { ms: Math.round(performance.now() - trace.at), source, page, focus, decision,
+    keyboard: body.classList.contains('kb'), classes: [...body.classList].filter(value => /^(?:conv|kb|land|wide|split|railCollapsed|chatmode|composeCompact|composeIdle|visual|fusion|metersText)$/.test(value)),
+    innerHeight: window.innerHeight, innerWidth: window.innerWidth, scrollY: window.scrollY,
+    clientHeight: document.documentElement.clientHeight, clientWidth: document.documentElement.clientWidth,
+    rootScroll: document.scrollingElement?.scrollTop, visibility: document.visibilityState,
+    visual: vv ? { height: vv.height, width: vv.width, offsetTop: vv.offsetTop, offsetLeft: vv.offsetLeft, pageTop: vv.pageTop, scale: vv.scale } : null,
+    height: body.style.height, transform: body.style.transform,
+    theme: document.documentElement.dataset.theme, themeColor: document.querySelector('meta[name="theme-color"]')?.content,
+    history: { conversation: !!history.state?.ovConv, depth: history.state?.ovDepth },
+    overlays: { sheet: !!$('sheet')?.classList.contains('open'), shade: !!$('shade')?.classList.contains('open'), image: !!$('imageEditor')?.open,
+      gate: $('gate') ? getComputedStyle($('gate')).display !== 'none' : false } };
+  if (source === 'frame') {
+    sample.html = viewportTraceNode(document.documentElement);
+    sample.root = viewportTraceNode(body);
+    sample.overview = viewportTraceNode($('overview'));
+    sample.header = viewportTraceNode(page === 'overview' ? document.querySelector('#overview .ov-top') : document.querySelector('body > header'));
+    sample.footer = viewportTraceNode(page === 'overview' ? $('ovLevels') : document.querySelector('footer'));
+    sample.chatHeader = viewportTraceNode(document.querySelector('body > header'));
+    sample.input = viewportTraceRect(focus !== 'none' ? active : mode === 'terminal' ? $('termText') : $('text'));
+    sample.units = Object.fromEntries(['vh', 'dvh', 'svh', 'lvh'].map(unit => [unit, getComputedStyle(trace.measures[unit]).height]));
+    const safe = getComputedStyle(trace.measures.safe);
+    sample.safeArea = { top: safe.paddingTop, right: safe.paddingRight, bottom: safe.paddingBottom, left: safe.paddingLeft };
+    sample.topEdge = [0, Math.max(1, parseFloat(safe.paddingTop) || 1), Math.max(1, (sample.header?.top || 0) + 1)].map(y => ({ y,
+      elements: document.elementsFromPoint(window.innerWidth / 2, y).slice(0, 5).map(element => {
+        const style = getComputedStyle(element);
+        return { tag: element.tagName, owner: element.closest('#overview') ? 'overview' : element.closest('#sheet') ? 'sheet'
+          : element.closest('#gate') ? 'gate' : element.closest('body > header') ? 'chat-header' : element === body ? 'body' : 'other',
+          position: style.position, background: style.backgroundColor, opacity: style.opacity, transform: style.transform };
+      }) }));
+  }
+  trace.samples.push(sample);
+  if (trace.samples.length === VIEWPORT_TRACE_LIMIT) stopViewportTrace('full');
+  else if (source !== 'frame' && !trace.frame) trace.frame = requestAnimationFrame(() => {
+    trace.frame = 0;
+    if (viewportTrace === trace && trace.active) recordViewportTrace('frame');
+  });
+}
+function viewportTraceText() {
+  const trace = viewportTrace;
+  return JSON.stringify({ version: APP_VERSION, state: trace?.active ? 'recording' : trace?.reason || 'not-started',
+    limit: VIEWPORT_TRACE_LIMIT, environment: trace?.environment, measurement: trace?.measurement, resources: trace?.resources, samples: trace?.samples || [] }, null, 2);
+}
+function resumeViewportTrace() {
+  if (store.get('viewport-trace-next') !== '1') return;
+  store.set('viewport-trace-next', null);
+  startViewportTrace();
+}
+
+// Track keyboard state for composer controls without resizing or translating the shell.
+function fitViewport(event) {
+  const source = event ? (event.currentTarget === window.visualViewport ? 'visualViewport:' : 'window:') + event.type : 'fitViewport';
+  recordViewportTrace('before:' + source);
   const vv = window.visualViewport;
   if (!vv) return;
   const focused = /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
   const keyboard = !!focused && (vv.offsetTop > 0 || vv.height < window.innerHeight - 80);
   const wasKeyboard = document.body.classList.contains('kb');
-  const key = `${keyboard}:${Math.round(vv.height)}:${Math.round(vv.offsetTop)}`;
-  if (key !== vvApplied) {
-    vvApplied = key;
-    document.body.style.height = keyboard ? Math.round(vv.height) + 'px' : '';
-    document.body.style.transform = keyboard ? `translateY(${Math.max(0, Math.round(vv.offsetTop))}px)` : '';
-    document.body.classList.toggle('kb', keyboard);
-  }
+  if (wasKeyboard !== keyboard) document.body.classList.toggle('kb', keyboard);
   if (keyboard) {
     const input = $('text');
     const overflow = Math.max(0, input.closest('footer').getBoundingClientRect().bottom - vv.height - Math.max(0, vv.offsetTop));
@@ -137,12 +314,14 @@ function fitViewport() {
   }
   if (wasKeyboard && !keyboard && typeof endComposerEditing === 'function') endComposerEditing();
   if (typeof noteChatLayoutChange === 'function') noteChatLayoutChange();
+  recordViewportTrace(source, keyboard);
 }
 window.addEventListener('resize', fitViewport);
 window.addEventListener('pageshow', fitViewport);
 document.addEventListener('focusout', () => { fitViewport(); setTimeout(fitViewport, 350); });
 window.visualViewport?.addEventListener('resize', fitViewport);
 window.visualViewport?.addEventListener('scroll', fitViewport);
+resumeViewportTrace();
 fitViewport();
 
 // window.screen explicitly: a top-level const named screen (the screen view) is declared further down.
@@ -167,6 +346,18 @@ window.screen.orientation?.addEventListener('change', fitOrientation);
 window.addEventListener('orientationchange', fitOrientation);
 window.addEventListener('resize', fitOrientation);
 fitOrientation();
+
+const appHeader = document.querySelector('body > header'), headerSlot = $('headerSlot');
+function layoutHeader() {
+  const rect = headerSlot.getBoundingClientRect();
+  appHeader.style.left = rect.left + 'px';
+  appHeader.style.width = rect.width + 'px';
+  headerSlot.style.marginBottom = appHeader.getBoundingClientRect().height + 'px';
+}
+const headerSizeObserver = new ResizeObserver(layoutHeader);
+headerSizeObserver.observe(headerSlot);
+headerSizeObserver.observe(appHeader);
+layoutHeader();
 
 // In-progress lines end with … and are cleared when the result arrives, or after a few seconds
 // so a finished action cannot leave "正在…" on screen. A short result then fades on its own.
