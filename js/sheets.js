@@ -1224,6 +1224,27 @@ function showAgentManager(refresh = false) {
     <p class="hint">${I18N.tr('Codex 需要 VS Code 和 Codex 扩展；调试端口未开启不代表没有安装。')}</p>`);
 }
 
+function showViewportTrace() {
+  const trace = viewportTrace, armed = store.get('viewport-trace-next') === '1';
+  const state = !trace ? '尚未开始记录' : trace.active ? '正在记录布局' : trace.reason === 'full' ? '记录已达上限' : '记录已停止';
+  openSheet('viewport-trace', `<h3>页面布局记录</h3>
+    <p class="hint">记录视口、安全区、页面坐标和应用资源摘要，不含正文或配对信息，不上传；刷新后记录清除。</p>
+    <p role="status">${esc(I18N.tr(state))} · ${trace?.samples.length || 0} / ${VIEWPORT_TRACE_LIMIT}</p>
+    <button id="viewportTraceStart" class="opt" ${trace?.active ? 'disabled' : ''}>开始记录</button>
+    <button id="viewportTraceStop" class="opt" ${trace?.active ? '' : 'disabled'}>停止记录</button>
+    <button id="viewportTraceCopy" class="opt" ${!trace?.samples.length || trace.active ? 'disabled' : ''}>复制记录</button>
+    <button id="viewportTraceArm" class="opt">${armed ? '取消下次启动记录' : '记录下次启动'}</button>
+    <p class="hint">记录下次启动只保存一次性开关；关闭菜单后手动刷新或重新打开，即自动开始。不会自动刷新。</p>
+    <p class="hint">依次复现：刷新主页、卡片键盘展开和收起、进入会话再返回；最后停止并复制。重新开始会替换旧记录。</p>
+    <details><summary>查看记录</summary><pre class="ovRaw" style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(viewportTraceText())}</pre></details>
+    <button id="viewportTraceBack" class="opt">返回菜单</button>`);
+  $('viewportTraceStart').onclick = () => { startViewportTrace(); closeSheet(); };
+  $('viewportTraceStop').onclick = () => { recordViewportTrace('stop'); stopViewportTrace(); showViewportTrace(); };
+  $('viewportTraceCopy').onclick = () => copyText(viewportTraceText(), $('viewportTraceCopy'), false);
+  $('viewportTraceArm').onclick = () => { store.set('viewport-trace-next', armed ? null : '1'); showViewportTrace(); };
+  $('viewportTraceBack').onclick = showMainMenu;
+}
+
 let usageTimer = null;
 function showMainMenu() {
   const startConversation = store.get('start-view') === 'conversation';
@@ -1258,10 +1279,12 @@ function showMainMenu() {
     <button class="opt" data-act="theme"><span class="lbl">主题<span class="sub">深色 / 浅色 / 跟随系统（当前：${themeName()}）</span></span></button>
     ${inApp && window.AgentRemoteApp?.listenStatus ? '<button class="opt" data-act="bg"><span class="lbl">后台连接<span class="sub">状态、电池优化、立即重连</span></span></button>' : ''}
     <button class="opt" data-act="cache"><span class="lbl">会话缓存<span class="sub">手机上保存的对话记录，可折叠、可清除</span></span></button>
-    <button class="opt" data-act="lang"><span class="lbl">语言 / Language<span class="sub">中文 · English（${I18N.lang === 'en' ? 'English' : '中文'}）</span></span></button>`;
+    <button class="opt" data-act="lang"><span class="lbl">语言 / Language<span class="sub">中文 · English（${I18N.lang === 'en' ? 'English' : '中文'}）</span></span></button>
+    <button class="opt" id="viewportTraceEntry"><span class="lbl">页面布局记录</span></button>`;
   openSheet('main', `<div class="mainMenuHeader"><h3>菜单</h3><div class="mainMenuActions"><button class="menuHeaderAction" data-act="transfer" aria-label="${esc(I18N.tr('文件传输'))}" title="${esc(I18N.tr('文件传输'))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 16V4m0 0L3 8m4-4 4 4M17 8v12m0 0 4-4m-4 4-4-4"/></svg></button><button class="menuHeaderAction" data-act="localVoiceMenu" aria-label="${esc(I18N.tr('语音输入'))}" title="${esc(I18N.tr('语音输入'))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button><button class="menuHeaderAction menuComputer" data-act="computers" aria-label="${esc(I18N.tr('电脑'))}" title="${esc(I18N.tr('电脑'))}">${CONN_HOST_SVG}</button></div></div>${entryItem}${manageItem}${document.body.classList.contains('conv') ? menuGroup('model', '模型', (appName ? `<div class="pSec">${esc(appName)}</div>` : '') + modelItems) : ''}
     ${menuGroup('general', '通用', menuGroup('connection', 'Agent 与连接', connectionItems, false)
       + menuGroup('settings', '应用设置与帮助', settingsItems, false))}<p class="hint">网页版本 ${esc(APP_VERSION)}</p>`);
+  $('viewportTraceEntry').onclick = showViewportTrace;
 }
 $('menuBtn').onclick = showMainMenu;
 
