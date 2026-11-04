@@ -427,9 +427,8 @@ function showTerminals(list) {
   openSheet('terminals', `<h3>RA 终端</h3>${rows || '<div class="hint">还没有终端。</div>'}<button class="opt" data-act="newTerm"><span class="lbl">＋ 新建终端</span></button>`);
 }
 function showTerminalMore() {
-  const available = terminalAvailable();
-  const row = (action, label, enabled) => `<button class="opt" data-terminal-action="${action}"${enabled ? '' : ' disabled'}><span class="lbl">${I18N.tr(label)}</span></button>`;
-  openSheet('terminal-more', `<h3>RA 终端</h3>${row('password', '密码输入', available)}${row('copy', '复制', !!raTerminal)}${row('selectAll', '全选', !!raTerminal)}${row('size', '尺寸', available)}${row('refresh', '刷新输出', authed)}`);
+  const row = (action, label) => `<button class="opt" data-terminal-action="${action}"${terminalActionAvailable(action) ? '' : ' disabled'}><span class="lbl">${I18N.tr(label)}</span></button>`;
+  openSheet('terminal-more', `<h3>RA 终端</h3>${row('size', '尺寸')}${row('refresh', '刷新输出')}`);
 }
 function showTerminalSize() {
   if (!terminalAvailable()) return;

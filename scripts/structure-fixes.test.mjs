@@ -1704,6 +1704,130 @@ test('dictation keeps the shared draft and scrolls the recording owner after mir
   assert.deepEqual(h.calls, ['scroll']);
 });
 
+function systemVoice() {
+  const h = voiceComposer(), { context } = h, recognitions = [], timers = new Map(), classes = new Set(), attributes = {};
+  let now = 0, timer = 0;
+  const mic = { hidden: false, classList: { add: c => classes.add(c), remove: c => classes.delete(c) },
+    setAttribute: (k, v) => { attributes[k] = v; } };
+  const message = { textContent: '', className: '' }, document = new EventTarget(), textEvents = new EventTarget();
+  const mirror = h.text.dispatchEvent.bind(h.text);
+  h.text.addEventListener = textEvents.addEventListener.bind(textEvents);
+  h.text.dispatchEvent = e => { mirror(e); return textEvents.dispatchEvent(e); };
+  class Recognition {
+    constructor() { this.calls = []; recognitions.push(this); }
+    start() { this.calls.push('start'); if (context.startError) throw Object.assign(new Error('test startup'), { name: context.startError }); }
+    stop() { this.calls.push('stop'); }
+    abort() { this.calls.push('abort'); }
+    emit(type, data = {}) { this['on' + type]?.(data); }
+    result(value, final = false) { this.emit('result', { resultIndex: 0, results: [Object.assign([{ transcript: value }], { isFinal: final })] }); }
+  }
+  Object.assign(context, { voiceSession: null, voiceCatalog: { key: 'qa-engine', engines: [] }, systemVoiceTrace: null,
+    document, $: id => id === 'mic' ? mic : message, windowReady: true, mode: 'chat', viewSel: 'codex|window-A|thread-A',
+    currentComputer: () => ({ id: 'computer-A' }), voiceEngineKey: () => 'qa-engine', voiceEngine: () => 'system', voiceEnabled: () => true,
+    SYSTEM_ENGINE: 'system', systemRecognition: () => Recognition, composerInput: () => h.input, I18N: { speech: 'zh-CN', tr: String }, esc: String,
+    performance: { now: () => now }, ACTION_PENDING: new Set(),
+    setTimeout: (fn, delay) => { const id = ++timer; timers.set(id, { fn, at: now + delay }); return id; },
+    clearTimeout: id => timers.delete(id), openSheet: (_kind, html) => { h.menu = html; } });
+  vm.runInContext(part(read('app/js/core.js'), 'let statusGen = 0;', 'function finishPending(')
+    + part(read('app/js/local-voice.js'), 'function voiceScope(', 'function prepareVoiceAudio(')
+    + part(read('app/js/local-voice.js'), 'async function startVoice(', 'async function showLocalVoiceMenu(')
+    + part(read('app/js/local-voice.js'), "text.addEventListener('input', () => { if (voiceSession", "for (const event of ['focus', 'input'])"), context);
+  return { ...h, get menu() { return h.menu; }, recognitions, message, classes, attributes,
+    press: () => context.startVoice({ button: 0, pointerId: null, preventDefault() {} }), release: () => context.endVoice(),
+    advance(ms) { now += ms; for (const [id, t] of timers) if (t.at <= now) { timers.delete(id); t.fn(); } },
+  };
+}
+
+test('system dictation waits for actual audio and retains the active status beyond the ordinary notice lifetime', async () => {
+  const h = systemVoice(); await h.press(); const r = h.recognitions[0];
+  assert.equal(h.message.textContent, '正在启动系统语音…'); assert.equal(h.classes.has('on'), false);
+  h.advance(4000); assert.equal(h.message.textContent, '正在启动系统语音…');
+  r.emit('start'); assert.equal(h.message.textContent, '系统识别已启动，等待麦克风…');
+  r.emit('audiostart'); assert.equal(h.classes.has('on'), true); assert(h.message.textContent.startsWith('正在听'));
+  h.advance(4000); assert(h.message.textContent.startsWith('正在听')); assert.equal(h.classes.has('on'), true);
+  r.emit('soundstart'); assert.equal(h.message.textContent, '已检测到声音，等待识别…');
+  r.emit('speechstart'); assert.equal(h.message.textContent, '已检测到语音，正在识别…');
+  h.release(); assert.deepEqual(r.calls, ['start', 'stop']); assert.equal(h.classes.has('on'), false);
+  h.advance(4000); assert.equal(h.message.textContent, '录音已结束，正在完成转录…');
+  r.emit('end'); assert.equal(h.context.voiceSession, null); assert.equal(h.message.textContent, '没有识别到语音，请重试');
+});
+
+test('one deliberate system retry cancels the old recognizer and retains its transcript without accepting its late callbacks', async () => {
+  const h = systemVoice(); await h.press(); const old = h.recognitions[0];
+  old.emit('audiostart'); old.result(' first'); h.release(); await h.press();
+  assert.equal(h.recognitions.length, 2); assert.deepEqual(old.calls, ['start', 'stop', 'abort']);
+  const current = h.context.voiceSession, status = h.message.textContent, trace = h.context.systemVoiceTrace;
+  old.result(' old'); old.emit('error', { error: 'network' }); old.emit('end');
+  assert.equal(h.context.voiceSession, current); assert.equal(h.message.textContent, status); assert.equal(h.context.systemVoiceTrace, trace);
+  assert.equal(h.text.value, 'saved first');
+  h.recognitions[1].emit('audiostart'); h.recognitions[1].result(' second', true); h.release(); h.recognitions[1].emit('end');
+  assert.equal(h.text.value, 'saved first second'); assert.equal(h.input.value, h.text.value);
+  assert.equal(h.message.textContent, '转录完成，可编辑后发送'); assert.equal(h.context.voiceSession, null);
+});
+
+test('late start and speech events do not regress audio capture or restart capture after release', async () => {
+  const h = systemVoice(); await h.press(); const r = h.recognitions[0];
+  r.emit('audiostart'); const listening = h.message.textContent; r.emit('start'); assert.equal(h.message.textContent, listening);
+  r.emit('audioend'); const finishing = h.message.textContent; r.emit('speechstart');
+  assert.equal(h.message.textContent, finishing); assert.equal(h.classes.has('on'), false);
+  h.release(); h.release(); assert.deepEqual(r.calls, ['start', 'stop']);
+  const early = systemVoice(); await early.press(); early.release();
+  early.recognitions[0].emit('start'); early.recognitions[0].emit('audiostart'); early.recognitions[0].emit('speechstart');
+  assert.equal(early.message.textContent, '录音已结束，正在完成转录…'); assert.equal(early.classes.has('on'), false);
+  assert.deepEqual(early.recognitions[0].calls, ['start', 'stop']);
+});
+
+test('system cancellation ends only its own status and releases ownership before notifying composer observers', async () => {
+  const h = systemVoice(); await h.press(); h.recognitions[0].emit('audiostart');
+  let observed; h.context.document.addEventListener('composer-state', () => { observed = h.context.voiceSession; });
+  h.context.cancelVoice(); assert.equal(h.context.voiceSession, null); assert.equal(observed, null);
+  assert.equal(h.message.textContent, ''); assert.equal(h.classes.has('on'), false);
+  await h.press(); h.context.status('别的操作失败', false); h.context.cancelVoice();
+  assert.equal(h.message.textContent, '别的操作失败'); assert.equal(h.message.className, 'err');
+  const publishing = systemVoice();
+  publishing.context.document.addEventListener('composer-state', () => publishing.context.cancelVoice(), { once: true });
+  await publishing.press(); assert.equal(publishing.context.voiceSession, null); assert.equal(publishing.message.textContent, '');
+  assert.deepEqual(publishing.recognitions[0].calls, ['start', 'abort']);
+});
+
+test('editing or changing a dictation target preserves the edited draft and rejects transcripts from the old scope', async () => {
+  const h = systemVoice(); await h.press(); const old = h.recognitions[0];
+  old.emit('audiostart'); h.text.value = 'manually edited'; h.text.dispatchEvent(new Event('input'));
+  assert.equal(h.context.voiceSession, null); old.result(' late'); assert.equal(h.text.value, 'manually edited');
+  await h.press(); const r = h.recognitions[1], status = h.message.textContent;
+  h.context.viewSel = 'codex|window-A|thread-B'; r.result(' wrong target'); r.emit('error', { error: 'network' }); r.emit('end');
+  assert.equal(h.text.value, 'manually edited'); assert.equal(h.message.textContent, status);
+  h.context.cancelVoice(); assert.equal(h.context.voiceSession, null); assert.equal(h.message.textContent, '');
+});
+
+test('system error codes and synchronous startup failures release the recognizer without retrying or replacing the draft', async () => {
+  for (const code of ['network', 'audio-capture', 'no-speech', 'not-allowed', 'service-not-allowed', 'aborted', 'language-not-supported']) {
+    const h = systemVoice(); await h.press(); const r = h.recognitions[0];
+    r.emit('error', { error: code }); const error = h.message.textContent; r.emit('end');
+    assert(error.includes(code)); assert.equal(h.context.voiceSession, null); assert.equal(h.classes.has('on'), false);
+    assert.equal(h.context.systemVoiceTrace.error, code); assert.equal(h.text.value, 'saved');
+    assert.equal(h.message.textContent, error); assert.equal(h.recognitions.length, 1); assert.equal(h.message.className, 'err');
+  }
+  const h = systemVoice(); h.context.startError = 'InvalidStateError'; await h.press();
+  assert.equal(h.context.voiceSession, null); assert.equal(h.context.systemVoiceTrace.error, 'InvalidStateError');
+  assert(h.message.textContent.includes('InvalidStateError')); assert.equal(h.recognitions.length, 1);
+});
+
+test('the existing voice menu shows only the latest bounded event summary and never contains the draft or transcript', async () => {
+  const h = systemVoice(); h.text.value = 'private draft'; h.text.selectionStart = h.text.selectionEnd = h.text.value.length;
+  await h.press(); const r = h.recognitions[0]; h.advance(20); r.emit('audiostart'); h.advance(10); r.result(' private transcript');
+  h.release(); r.emit('end'); h.context.renderVoiceMenu();
+  assert(h.menu.includes('id="systemVoiceDetails"')); assert(h.menu.includes('开始采音 +20ms')); assert(h.menu.includes('返回文字 +30ms'));
+  assert(!h.menu.includes('private')); assert(!JSON.stringify(h.context.systemVoiceTrace).includes('private'));
+  await h.press(); h.context.renderVoiceMenu(); assert(!h.menu.includes('返回文字 +')); assert.equal(h.recognitions.length, 2);
+});
+
+test('computer dictation retains its explicit cancel-before-rerecord interaction', async () => {
+  const h = systemVoice(); h.context.voiceEngine = () => 'qwen'; h.context.voiceSession = { held: false };
+  await h.press(); assert.equal(h.context.voiceSession, null); assert.equal(h.recognitions.length, 0);
+  assert.equal(h.message.textContent, '已取消等待转录，请重新按住录音');
+});
+
 test('the shared voice caret calculation scrolls its supplied editor without changing another textarea', () => {
   const hidden = { scrollTop: 7 }, editor = { value: 'words', selectionEnd: 5, clientWidth: 180, clientHeight: 36, scrollHeight: 150, scrollTop: 0 };
   let caretTop = 100;

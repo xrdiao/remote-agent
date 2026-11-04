@@ -324,6 +324,86 @@ test('explicit creation and selection supersede an older automatic list and crea
   assert.equal(h.context.currentTerminalId, 'terminal-B');
 });
 
+async function frontendTerminalTools() {
+  const h = frontendTerminal(), nodes = new Map(), actions = ['password', 'copy', 'selectAll', 'size', 'refresh'];
+  let selected = 'selected output';
+  const node = id => {
+    if (!nodes.has(id)) nodes.set(id, { id, value: '', hidden: false, disabled: false, listeners: {},
+      classList: { toggle() {} }, addEventListener(type, fn) { this.listeners[type] = fn; },
+      focus() { h.effects.push(['focus', id]); } });
+    return nodes.get(id);
+  };
+  const buttons = actions.map(action => Object.assign(node(action), { dataset: { terminalAction: action },
+    closest: () => node(action), click() { if (!this.disabled) return node('termTools').listeners.click({ target: this }); } }));
+  Object.assign(h.context, { $: node, document: { querySelectorAll: selector => selector === '[data-terminal-action]' ? buttons : [] },
+    terminalPrompt: true, terminalFollow: true,
+    openSheet(kind, html) { h.menu = { kind, html }; }, I18N: { tr: String },
+    copyText: (value, button) => h.effects.push(['copy', value, button.id]),
+    showTerminalSize: () => h.effects.push(['size']),
+    showTerminalMore() {}, requestTerminals: select => h.effects.push(['list', select]),
+    raTerminal: { selectAll() { selected = 'all output\n'; h.effects.push(['selectAll']); },
+      getSelection: () => selected, clearSelection() { selected = ''; h.effects.push(['clearSelection']); } },
+  });
+  const source = (start, end) => frontendSource.slice(frontendSource.indexOf(start), frontendSource.indexOf(end, frontendSource.indexOf(start)));
+  const sheets = await fs.readFile(new URL('../app/js/sheets.js', import.meta.url), 'utf8');
+  const notify = await fs.readFile(new URL('../app/js/notify.js', import.meta.url), 'utf8');
+  const delegateStart = notify.indexOf('  if (b.dataset.terminalAction)'), delegateEnd = notify.indexOf("  else if (act === 'localVoiceToggle')", delegateStart);
+  assert(delegateStart >= 0 && delegateEnd > delegateStart);
+  vm.runInContext(source('function terminalAvailable()', 'function terminalTheme()')
+    + source('function terminalSelection()', 'function terminalCursorVisible()')
+    + source('function terminalWrite(', 'function openRaTerminal(')
+    + source("$('pickTerms').onclick", "view.addEventListener('touchstart'")
+    + source('function closeTerminalPassword()', "document.addEventListener('composer-state'")
+    + sheets.slice(sheets.indexOf('function showTerminalMore()'), sheets.indexOf('function showTerminalSize()'))
+    + 'function clickTerminalSheet(b) {' + notify.slice(delegateStart, delegateEnd) + '}', h.context);
+  return { ...h, get menu() { return h.menu; }, nodes, buttons, node,
+    click: action => node(action).click(), clickMore: action => h.context.clickTerminalSheet(node(action)),
+  };
+}
+
+test('terminal toolbar and more reuse one action path without duplicate writes', async () => {
+  const h = await frontendTerminalTools(); h.context.updateTerminalControls();
+  h.click('password');
+  assert.deepEqual(JSON.parse(JSON.stringify(h.context.terminalPasswordTarget)), { computer: 'computer-A', id: 'terminal-A', subscription: 'subscription-A' });
+  assert.equal(h.node('termPasswordBox').hidden, false);
+  await h.click('copy'); assert.deepEqual(h.effects.filter(e => e[0] === 'copy'), [['copy', 'selected output', 'copy']]);
+  h.click('selectAll'); await h.click('copy');
+  assert.deepEqual(h.effects.filter(e => e[0] === 'copy').at(-1), ['copy', 'all output\n', 'copy']);
+  h.click('size'); h.clickMore('size'); assert.equal(h.effects.filter(e => e[0] === 'size').length, 2);
+  h.click('refresh'); h.clickMore('refresh'); assert.equal(h.effects.filter(e => e[0] === 'open').length, 2);
+  assert.equal(h.effects.filter(e => e[0] === 'send').length, 0);
+});
+
+test('terminal tools preserve offline copy and authenticated refresh while disabling unavailable writes', async () => {
+  const h = await frontendTerminalTools(); h.context.terminalReady = false; h.context.updateTerminalControls();
+  assert.equal(h.node('password').disabled, true); assert.equal(h.node('size').disabled, true); assert.equal(h.node('termInt').disabled, true);
+  assert.equal(h.node('copy').disabled, false); assert.equal(h.node('selectAll').disabled, false); assert.equal(h.node('refresh').disabled, false);
+  h.click('password'); h.click('size'); assert(!h.effects.some(e => e[0] === 'focus' || e[0] === 'size'));
+  h.context.authed = false; h.context.updateTerminalControls(); assert.equal(h.node('refresh').disabled, true);
+  h.context.raTerminal = null; h.context.updateTerminalControls(); assert.equal(h.node('copy').disabled, true); assert.equal(h.node('selectAll').disabled, true);
+  h.context.authed = h.context.terminalReady = true; h.context.updateTerminalControls();
+  h.node('termInt').onclick(); assert.equal(h.effects.filter(e => e[0] === 'send').length, 1);
+  assert.equal(h.effects.find(e => e[0] === 'send')[1].data, '\x03');
+});
+
+test('terminal password toolbar retains subscription ownership and sends no ordinary command draft', async () => {
+  const h = await frontendTerminalTools(); h.context.updateTerminalControls(); h.click('password');
+  h.node('termPassword').value = 'fictional-secret'; h.context.terminalSubscription = 'subscription-B';
+  h.node('termPasswordBox').onsubmit({ preventDefault() {} }); assert.equal(h.effects.filter(e => e[0] === 'send').length, 0);
+  h.context.terminalSubscription = 'subscription-A'; h.node('termPasswordBox').onsubmit({ preventDefault() {} });
+  const sent = h.effects.filter(e => e[0] === 'send'); assert.equal(sent.length, 1); assert.equal(sent[0][1].t, 'termWrite');
+  assert.equal(sent[0][1].data, 'fictional-secret\r'); assert.equal(sent[0][1].subscription, 'subscription-A');
+  assert.equal(h.node('termPassword').value, ''); assert.equal(h.node('termPasswordSend').disabled, true);
+});
+
+test('terminal more contains only size and refresh and refresh keeps the current terminal identity', async () => {
+  const h = await frontendTerminalTools(); h.context.showTerminalMore();
+  assert.equal(h.menu.kind, 'terminal-more');
+  assert.deepEqual([...h.menu.html.matchAll(/data-terminal-action="([^"]+)"/g)].map(m => m[1]), ['size', 'refresh']);
+  h.clickMore('refresh'); assert.deepEqual(h.effects.at(-1), ['open', 'terminal-A']);
+  h.context.currentTerminalId = ''; h.clickMore('refresh'); assert.deepEqual(h.effects.at(-1), ['list', true]);
+});
+
 test('visual frame layout still fits its viewport and scales without terminal cropping', async () => {
   const source = await fs.readFile(new URL('../app/js/screen.js', import.meta.url), 'utf8');
   const start = source.indexOf('function layoutStage()'), end = source.indexOf('// One finger', start);

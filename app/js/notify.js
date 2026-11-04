@@ -522,14 +522,7 @@ $('sheet').addEventListener('click', async e => {
   if (act === 'toggleChanges') { toggleChangeNotice(); return closeSheet(); }
   if (act === 'executionToggle') return toggleExecutionRecords();
   if (act === 'newTerm') { closeSheet(); return createRaTerminal(); }
-  if (b.dataset.terminalAction === 'password') return openTerminalPassword();
-  if (b.dataset.terminalAction === 'copy') return copyTerminal(b);
-  if (b.dataset.terminalAction === 'selectAll') { closeSheet(); return raTerminal?.selectAll(); }
-  if (b.dataset.terminalAction === 'size') return showTerminalSize();
-  if (b.dataset.terminalAction === 'refresh') {
-    closeSheet();
-    return currentTerminalId ? openRaTerminal(currentTerminalId) : requestTerminals(true);
-  }
+  if (b.dataset.terminalAction) return runTerminalAction(b.dataset.terminalAction, b);
   else if (act === 'localVoiceToggle') return toggleLocalVoice();
   else if (act === 'agentManager' || act === 'agentRefresh') return showAgentManager(true);
   else if (act === 'agentBack') return showMainMenu();
