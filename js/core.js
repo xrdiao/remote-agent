@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v402'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v403'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false;
 let windowReady = false;
@@ -287,9 +287,7 @@ function resumeViewportTrace() {
   startViewportTrace();
 }
 
-// iOS scrolls the page to reveal the focused field, which throws the chat off screen.
-// Pin the shell to the visible area above the keyboard instead.
-let vvApplied = '';
+// Track keyboard state for composer controls without resizing or translating the shell.
 function fitViewport(event) {
   const source = event ? (event.currentTarget === window.visualViewport ? 'visualViewport:' : 'window:') + event.type : 'fitViewport';
   recordViewportTrace('before:' + source);
@@ -298,13 +296,7 @@ function fitViewport(event) {
   const focused = /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
   const keyboard = !!focused && (vv.offsetTop > 0 || vv.height < window.innerHeight - 80);
   const wasKeyboard = document.body.classList.contains('kb');
-  const key = `${keyboard}:${Math.round(vv.height)}:${Math.round(vv.offsetTop)}`;
-  if (key !== vvApplied) {
-    vvApplied = key;
-    document.body.style.height = keyboard ? Math.round(vv.height) + 'px' : '';
-    document.body.style.transform = keyboard ? `translateY(${Math.max(0, Math.round(vv.offsetTop))}px)` : '';
-    document.body.classList.toggle('kb', keyboard);
-  }
+  if (wasKeyboard !== keyboard) document.body.classList.toggle('kb', keyboard);
   if (keyboard) {
     const input = $('text');
     const overflow = Math.max(0, input.closest('footer').getBoundingClientRect().bottom - vv.height - Math.max(0, vv.offsetTop));

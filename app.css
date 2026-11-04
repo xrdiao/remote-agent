@@ -68,7 +68,6 @@ body {
 body.kb { padding-bottom: 0; }
 html[data-standalone] { height: 100vh; }
 html[data-standalone] body { position: relative; inset: auto; height: 100%; }
-html[data-standalone] body.kb { position: fixed; inset: 0; }
 [hidden] { display: none !important; }
 
 button, select, textarea, input { font: inherit; color: var(--fg-hi); }
