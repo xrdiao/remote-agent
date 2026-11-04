@@ -204,7 +204,9 @@ export async function handleApi(req, res, route) {
   }
   if (route.startsWith('/api/transfer/')) return transferApi(req, res, route, device);
   if (route.startsWith('/api/chat-image/') && req.method === 'GET') {
-    const image = await readChatImage(route.slice('/api/chat-image/'.length));
+    let image;
+    try { image = await readChatImage(route.slice('/api/chat-image/'.length)); }
+    catch (error) { return json(req, res, 502, { error: error.message }); }
     if (!image) return json(req, res, 404, { error: '图片不存在' });
     res.writeHead(200, { ...SECURITY_HEADERS, ...corsHeaders(req), 'content-type': image.type });
     return fs.createReadStream(image.file).pipe(res);

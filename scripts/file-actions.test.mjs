@@ -91,20 +91,76 @@ test('file operations retain partial results instead of repeating successful mov
   assert.equal(await fsp.readFile(path.join(target, 'source'), 'utf8'), 'once');
 });
 
+async function chatImageContext(directory, Cdp) {
+  const code = await fsp.readFile(new URL('../server/chat-images.mjs', import.meta.url), 'utf8');
+  const context = vm.createContext({ fs, path, crypto, Buffer, DATA_DIR: directory, localFilePath, readFile, Cdp, helpersCall: code => code });
+  vm.runInContext(code.replace(/^import .*;\n/gm, '').replace(/\bexport /g, '') + '\nthis.wire=chatForWire;this.readImage=readChatImage;', context);
+  return context;
+}
+
 test('native local images remain available after the original file and window disappear', async t => {
   const directory = await fixture(t), source = path.join(directory, 'image.png');
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aS1kAAAAASUVORK5CYII=', 'base64');
   await fsp.writeFile(source, png);
-  const code = await fsp.readFile(new URL('../server/chat-images.mjs', import.meta.url), 'utf8');
-  const context = vm.createContext({ fs, path, crypto, Buffer, DATA_DIR: directory, localFilePath, readFile,
-    Cdp: class { constructor() { assert.fail('local images must not reconnect to the native window'); } } });
-  vm.runInContext(code.replace(/^import .*;\n/gm, '').replace(/\bexport /g, '') + '\nthis.wire=chatForWire;this.readImage=readChatImage;', context);
+  const context = await chatImageContext(directory, class { constructor() { assert.fail('local images must not reconnect to the native window'); } });
   const image = context.wire({ items: [{ i: 'own-image', images: [source] }] }, 'ws://native-window').items[0].images[0];
   assert.match(image, /^chat-image:/);
   const first = await context.readImage(image.slice(11));
   assert.deepEqual(await fsp.readFile(first.file), png);
   await fsp.unlink(source);
   assert.deepEqual(await fsp.readFile((await context.readImage(image.slice(11))).file), png);
+});
+
+test('native image fetch failures reject without rewriting the source record and close CDP', async t => {
+  const directory = await fixture(t);
+  let closed = 0;
+  const context = await chatImageContext(directory, class {
+    async connect() {}
+    async evaluate() { throw new TypeError('Failed to fetch'); }
+    close() { closed++; }
+  });
+  const source = 'https://example.invalid/favicon.png';
+  const id = context.wire({ items: [{ images: [source] }] }, 'ws://native-window').items[0].images[0].slice(11);
+  const file = path.join(directory, 'chat-images', id), before = await fsp.readFile(file);
+  assert.deepEqual(JSON.parse(before), { wsUrl: 'ws://native-window', source });
+  await assert.rejects(context.readImage(id), { name: 'TypeError', message: 'Failed to fetch' });
+  assert.equal(closed, 1);
+  assert.deepEqual(await fsp.readFile(file), before);
+});
+
+test('chat-image HTTP failures return 502 while missing and successful images keep their responses', async t => {
+  const directory = await fixture(t);
+  const context = await chatImageContext(directory, class {
+    async connect() {}
+    async evaluate() { throw new TypeError('Failed to fetch'); }
+    close() {}
+  });
+  Object.assign(context, {
+    clientIp: () => '127.0.0.1', authenticateRequest: () => ({ id: 'paired-device' }), needsTotp: () => false,
+    json: (req, res, status, body) => { res.status = status; res.body = JSON.stringify(body); },
+    SECURITY_HEADERS: {}, corsHeaders: () => ({}),
+    fs: { ...fs, createReadStream: file => ({ pipe: res => { res.file = file; return res; } }) },
+  });
+  const code = await fsp.readFile(new URL('../server/http/api.mjs', import.meta.url), 'utf8');
+  vm.runInContext(code.replace(/^import .*;\n/gm, '').replace(/\bexport /g, '') + '\nthis.api=handleApi;', context);
+  const request = async id => {
+    const res = { writeHead(status, headers) { this.status = status; this.headers = headers; } };
+    await context.api({ method: 'GET', headers: {} }, res, '/api/chat-image/' + id);
+    return res;
+  };
+  const failedId = context.wire({ items: [{ images: ['https://example.invalid/favicon.png'] }] }, 'ws://native-window').items[0].images[0].slice(11);
+  const failed = await request(failedId);
+  assert.equal(failed.status, 502);
+  assert.deepEqual(JSON.parse(failed.body), { error: 'Failed to fetch' });
+  const missing = await request('a'.repeat(64) + '.png');
+  assert.equal(missing.status, 404);
+  assert.deepEqual(JSON.parse(missing.body), { error: '图片不存在' });
+  const imageId = context.wire({ items: [{ images: ['data:image/png;base64,aW1hZ2U='] }] }).items[0].images[0].slice(11);
+  const success = await request(imageId);
+  assert.equal(success.status, 200);
+  assert.equal(success.headers['content-type'], 'image/png');
+  assert.equal(success.file, path.join(directory, 'chat-images', imageId));
+  assert.equal(await fsp.readFile(success.file, 'utf8'), 'image');
 });
 
 function transferFixture(conversation = false) {
