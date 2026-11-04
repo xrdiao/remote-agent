@@ -32,7 +32,23 @@ let inputRevision = 0;
 let draftEpoch = '';
 let draftRevision = 0, draftAckRevision = 0, pendingDesktopDraft = null;
 let activeDraft = '';
+function composerSendMatches(sent, value = text.value) {
+  return sent.computer === (currentComputer()?.id || '')
+    && sent.mode === mode && sent.draft === activeDraft && sent.version === (draftVersions.get(activeDraft) || 0)
+    && sent.text === value && sent.mentions === JSON.stringify(mentionsFor(value))
+    && desktopAttachments.every(file => sent.attachmentIds.includes(file.id));
+}
+function pendingComposerSend(value = text.value) {
+  if (mode !== 'chat' || currentApp === 'fusion' || questionCompose?.sel === viewSel) return;
+  return [...pendingSends.values()].find(sent => composerSendMatches(sent, value));
+}
+function updateComposerSendAvailability() {
+  $('send').disabled = $('sendNow').disabled = !windowReady || !!pendingComposerSend();
+}
+document.addEventListener('composer-state', updateComposerSendAvailability, true);
+updateComposerSendAvailability();
 function sendReceipt(value) {
+  if (pendingComposerSend(value)) return null;
   const requestId = [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
   if (mode === 'chat') {
     clearTimeout(draftPushTimer);
@@ -42,8 +58,10 @@ function sendReceipt(value) {
   const candidate = queuedChat?.sel === viewSel ? queuedChat.chat : lastChat;
   const latest = candidate?.thread === targetThread ? candidate : null;
   pendingSends.set(requestId, { requestId, draft: activeDraft, text: value, computer: currentComputer()?.id || '', mode, version: draftVersions.get(activeDraft) || 0, revision: inputRevision,
+    mentions: JSON.stringify(mentionsFor(value)), attachmentIds: desktopAttachments.map(file => file.id),
     ...(mode === 'chat' ? { scope: messageScope(), thread: targetThread, before: new Set((latest?.items || []).filter(it => it.k === 'human').map(it => it.i)),
       beforeQueues: new Set((latest?.queued || []).map(it => it.id)), queuedSameText: (latest?.queued || []).filter(it => echoTextMatches(it, value)).length } : {}) });
+  document.dispatchEvent(new Event('composer-state'));
   return { requestId, draft: activeDraft, draftEpoch };
 }
 function confirmSent(m, render = true) {
@@ -73,17 +91,19 @@ function confirmSent(m, render = true) {
   if (!sent) return;
   pendingSends.delete(m.requestId);
   for (const key of inputHistory.keys()) if (key.startsWith(sent.draft + '|')) inputHistory.delete(key);
-  if (drafts.get(sent.draft) === sent.text && (draftVersions.get(sent.draft) || 0) === sent.version) { drafts.delete(sent.draft); draftMentions.delete(sent.draft); }
   const here = (currentComputer()?.id || '') === sent.computer && mode === sent.mode && (draftKey() === sent.draft || m.sel === viewSel);
+  const unchanged = sent.mode === 'chat' && currentApp !== 'fusion' ? composerSendMatches(sent)
+    : inputRevision === sent.revision && text.value === sent.text;
+  if ((!here || unchanged) && drafts.get(sent.draft) === sent.text && (draftVersions.get(sent.draft) || 0) === sent.version) { drafts.delete(sent.draft); draftMentions.delete(sent.draft); }
   if (here && (['正在发送…', '正在确认电脑端接收…', '连接已断开，发送结果待确认'].includes(pendingStatus) || $('msg').textContent === '发送结果未确认：' + sent.confirmationError) && ![...pendingSends.values()].some(p => p.draft === activeDraft)) {
     status(m.queued ? 'Agent 正在运行，已加入排队，这一轮结束后自动发送' : '已发送');
   }
-  if (here && inputRevision === sent.revision && text.value === sent.text) {
+  if (here && unchanged) {
     if (sent.mode === 'chat') { draftRevision++; pendingDesktopDraft = null; }
     drafts.delete(activeDraft); draftMentions.delete(activeDraft);
     text.value = ''; MN.mentions = []; MN.value = ''; mentionHide(text); autosize(); mirroredDraft = '';
     dirtyDrafts.delete(activeDraft); queueDraftSync();
-  } else if (here && sent.mode === 'chat' && inputRevision !== sent.revision) {
+  } else if (here && sent.mode === 'chat' && !unchanged) {
     draftRevision++; pendingDesktopDraft = null;
     dirtyDrafts.add(activeDraft); queueDraftSync();
   }
@@ -91,6 +111,7 @@ function confirmSent(m, render = true) {
     submittedMessages.push({ ...sent, messageId: m.messageId, queueId: m.queueId, sentAt: m.sentAt || Date.now() });
     if (here && lastChat && render) queueChatRender();
   }
+  document.dispatchEvent(new Event('composer-state'));
 }
 function failPendingSend(requestId, message = '发送失败，请重试', report = true) {
   const sent = pendingSends.get(requestId);
@@ -103,6 +124,7 @@ function failPendingSend(requestId, message = '发送失败，请重试', report
     text.value = sent.text; autosize();
   }
   if (report && (currentComputer()?.id || '') === sent.computer && draftKey() === sent.draft) status(message, false);
+  document.dispatchEvent(new Event('composer-state'));
 }
 function disconnectPendingSends() {
   if (queueEditRequest) receiveQueueEdit({ ...queueEditRequest, ok: false, error: '连接已断开，操作结果待确认，编辑内容已保留' });
@@ -640,6 +662,7 @@ function sendComposer() {
   const follow = codexFollow();
   const when = devinBusySplit() || cursorBusyQueue() || follow === 'queue' ? 'queue' : follow === 'steer' ? 'now' : '';
   const receipt = sendReceipt(v);
+  if (!receipt) return;
   if (mode === 'chat') { status('正在发送…'); pushEcho(receipt.requestId, v, when === 'queue' || (!when && chatBusy) ? 'queue' : 'chat'); }
   const sent = currentApp === 'fusion' ? send({ t: 'fusionMessage', computer: currentComputer().id, runId: lastChat.fusionRun.id, text: v, ...receipt })
     : send({ t: 'send', text: v, submit: true, ...receipt, ...(when ? { when } : {}), ...mentionsFor(v) });
@@ -658,6 +681,7 @@ async function sendComposerNow() {
   if (!await ask(steer ? '立即追加到当前任务？' : '改为排队，等当前任务结束后再发送？', steer ? '立即追加' : '排队', true)) return;
   status('正在发送…');
   const receipt = sendReceipt(v);
+  if (!receipt) return;
   pushEcho(receipt.requestId, v, steer ? 'chat' : 'queue');
   if (send({ t: 'send', text: v, submit: true, ...receipt, when: steer ? 'now' : 'queue', ...mentionsFor(v) }) === false) failPendingSend(receipt.requestId);
   jumpToLatest();
