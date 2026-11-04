@@ -5,6 +5,17 @@ const I18N = (() => {
   const lang = saved === 'zh' || saved === 'en' ? saved : /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
 
   const EN = {
+    "页面布局记录": "Page layout trace",
+    "尚未开始记录": "Not started",
+    "正在记录布局": "Recording layout",
+    "已达 200 条，记录已停止": "200 samples reached; recording stopped",
+    "记录已停止": "Recording stopped",
+    "开始记录": "Start recording",
+    "停止记录": "Stop recording",
+    "复制记录": "Copy trace",
+    "查看记录": "View trace",
+    "手动记录键盘开合的视口与页面坐标，仅在当前页面保留，不含正文或配对信息，不上传，刷新后清除。": "Manually record viewport and page coordinates while opening and closing the keyboard. Kept only on this page, without message text or pairing data. Nothing is uploaded; reloading clears the trace.",
+    "开始后菜单会关闭。复现一次键盘展开、收起，再回到这里停止并复制记录。重新开始会替换旧记录。": "Starting closes this menu. Open and close the keyboard once, then return here to stop and copy the trace. Starting again replaces the previous trace.",
     "RA 终端": "RA terminal",
     "终端列表 ▾": "Terminals ▾",
     "中断 Ctrl+C": "Interrupt Ctrl+C",
