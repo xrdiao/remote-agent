@@ -365,7 +365,6 @@ main { flex: 1; min-height: 0; position: relative; }
   body.split.chatmode:not(.visual) #actionBar { grid-column: 2; grid-row: 6; }
   body.split:not(.visual) footer { grid-column: 2; grid-row: 7; }
   body.split.term:not(.visual) main, body.split.term:not(.visual) #screenView { display: contents; }
-  body.split.term:not(.visual) #termStatus { grid-column: 2; grid-row: 2; }
   body.split.term:not(.visual) #view { grid-column: 2; grid-row: 3; min-height: 0; }
   body.split:not(.visual) .view { position: static; }
   body.split:not(.visual) .view.active { display: contents; }
@@ -704,11 +703,12 @@ body.kb footer { padding-bottom: 8px; }
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   min-height: 18px; padding: 2px 10px 0; min-width: 0;
 }
-#footerStatus:not(:has(#msg:not(:empty):not(.quiet), #elapsed:not([hidden]), #changeNotice:not([hidden]))) { display: none; }
+#footerStatus:not(:has(#msg:not(:empty):not(.quiet), #termStatus:not([hidden]), #elapsed:not([hidden]), #changeNotice:not([hidden]))) { display: none; }
 #composeStatus { display: contents; }
-#msg { flex: 1; min-width: 0; font-size: 11.5px; color: var(--fg-4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#msg, #termStatus { flex: 1; min-width: 0; font-size: 11.5px; color: var(--fg-4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #msg:empty, #msg.quiet { display: none; }
-#msg.err { color: var(--err); }
+#msg.err, #termStatus.err { color: var(--err); }
+body.term #composeStatus:has(#termStatus:not([hidden])) #msg { display: none; }
 #elapsed { flex: none; font-size: 11.5px; color: var(--fg-4); font-variant-numeric: tabular-nums; }
 .attachmentRow { display: flex; align-items: flex-end; gap: 8px; }
 .attachmentRow[hidden] { display: none; }
@@ -762,9 +762,12 @@ body.kb footer { padding-bottom: 8px; }
 #chatTools #pickDir, #chatTools #newChat { display: none; }
 #fusionConfig { display: flex; gap: 4px; min-width: 0; }
 #fusionConfig button { flex: 1; min-width: 0; }
-#termTools { padding: 0 0 6px; gap: 8px; overflow: visible; }
-#termTools button { min-height: 40px; max-width: none; background: var(--s2); }
-#termTools #pickTerms { flex: 1; min-width: 0; }
+#termTools { padding: 0 0 6px; gap: 4px; overflow: visible; flex-wrap: wrap; }
+#termTools button { min-height: 36px; max-width: none; font-size: 13px; background: var(--s2); }
+#termTools #pickTerms { flex: none; }
+#termTools .termExtra { display: none; }
+body.land #termTools .termExtra { display: inline-flex; align-items: center; }
+body.land #termMore { display: none; }
 .sendRow { display: flex; align-items: center; gap: 2px; padding-top: 4px; }
 .sendTools { display: flex; align-items: center; gap: 2px; flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .sendTools::-webkit-scrollbar { display: none; }
@@ -782,12 +785,14 @@ body.term #attachments, body.term #mentionBox, body.term #mathPrev, body.term #a
 body:not(.chatmode) #inputHistory, body:not(.term) #termHistory { display: none; }
 body.term .sendTools { overflow: visible; }
 body.term #termHistory button, body.term #insertNewline { width: 40px; height: 40px; }
+body.term #termHistory #termInt { width: auto; min-width: 40px; padding: 0 6px; }
 body.term #send { min-height: 44px; }
 /* Narrow phones: tighter left cluster; it scrolls before #sendNow/#send are squeezed. */
 @media (max-width: 430px) {
   .sendTools { gap: 0; }
   .sendTools > #add, .sendTools > #img, .sendTools > #uploadDoc { width: 32px; }
   #inputHistory button, #termHistory button, #insertNewline { width: 30px; }
+  body.term #termHistory button, body.term #insertNewline { width: 30px; height: 36px; }
   #sendNow { padding: 0 10px; }
   #send { padding: 0 12px 0 14px; }
 }
@@ -797,7 +802,7 @@ body.composeIdle.chatmode #text { max-height: calc(2.9em + 12px); overflow-y: hi
 
 /* Both orientations share the folded model/project row. */
 #composerFold { display: none; }
-body.chatmode .composerBox { position: relative; }
+body:is(.chatmode, .term) .composerBox { position: relative; }
 body.chatmode #chatTools { padding-right: 36px; }
 body.chatmode #composerFold {
   position: absolute; top: 8px; right: 8px; z-index: 2; display: grid; place-items: center;
@@ -823,15 +828,16 @@ body.composeCompact.chatmode .attachmentRow,
 body.composeCompact.chatmode #mentionBox,
 body.composeCompact.chatmode #mathPrev,
 body.composeCompact.chatmode #retryChat { display: none; }
-body.chatmode:is(:not(.land), .composeCompact) #footerStatus {
+body.chatmode:is(:not(.land), .composeCompact) #footerStatus, body.term #footerStatus {
   position: absolute; align-items: center; justify-content: flex-start; gap: 6px; min-height: 0;
   top: auto; bottom: calc(100% - 2px); left: 14px; right: auto; width: auto; max-width: calc(100% - 28px);
   padding: 2px 7px 0; border-radius: 8px 8px 0 0; background: var(--s1); pointer-events: auto;
 }
-body.chatmode:is(:not(.land), .composeCompact) #elapsed { order: -1; font-size: 10px; }
-body.chatmode:is(:not(.land), .composeCompact) #msg { font-size: 10px; }
-body.chatmode .composerBox:has(#changeNotice:not([hidden])) { margin-top: 24px; }
-body.chatmode #footerStatus:has(#changeNotice:not([hidden])) {
+body.chatmode:is(:not(.land), .composeCompact) #elapsed, body.term #elapsed { order: -1; font-size: 10px; }
+body.chatmode:is(:not(.land), .composeCompact) #msg, body.term #msg, body.term #termStatus { font-size: 10px; }
+body:is(.chatmode, .term) .composerBox:has(#changeNotice:not([hidden])),
+body.term .composerBox:has(#termStatus:not([hidden]), #msg:not(:empty):not(.quiet)) { margin-top: 24px; }
+body:is(.chatmode, .term) #footerStatus:has(#changeNotice:not([hidden])) {
   position: absolute; top: auto; bottom: calc(100% - 2px); left: 14px; right: 14px;
   min-height: 0; max-width: none; width: auto; padding: 0; border-radius: 0; gap: 8px; background: transparent;
 }
@@ -843,7 +849,7 @@ body.chatmode #footerStatus:has(#changeNotice:not([hidden])) {
 #footerStatus:has(#changeNotice:not([hidden])) #elapsed {
   order: -1; flex: 0 1 auto; min-width: 24px; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-body.chatmode #footerStatus:has(#changeNotice:not([hidden])) #retryChat { display: block; height: 24px; padding: 0 6px; font-size: 11px; }
+body:is(.chatmode, .term) #footerStatus:has(#changeNotice:not([hidden])) #retryChat { display: block; height: 24px; padding: 0 6px; font-size: 11px; }
 #changeNotice {
   display: flex; flex: none; align-items: center; margin-left: auto;
   padding: 2px 7px 0; border-radius: 8px 8px 0 0; background: var(--s1);
@@ -853,7 +859,7 @@ body.chatmode #footerStatus:has(#changeNotice:not([hidden])) #retryChat { displa
   font-size: 11px; background: transparent; color: var(--fg-3);
 }
 #changeNotice svg { width: 14px; height: 14px; }
-#footerStatus #composeStatus:not(:has(#msg:not(:empty):not(.quiet), #retryChat:not([hidden]), #elapsed:not([hidden]))) { display: none; }
+#footerStatus #composeStatus:not(:has(#msg:not(:empty):not(.quiet), #termStatus:not([hidden]), #retryChat:not([hidden]), #elapsed:not([hidden]))) { display: none; }
 
 /* Short screens (tablets, foldable inners, cover screens): reclaim chrome height. */
 @media (max-height: 760px) {
@@ -1092,7 +1098,6 @@ body.visual #stage { flex: none; margin: auto; }
 .tools { flex: none; display: flex; gap: 6px; padding: 6px 8px; overflow-x: auto; scrollbar-width: none; min-width: 0; }
 .tools::-webkit-scrollbar { display: none; }
 #view { position: relative; flex: 1; min-height: 0; overflow: auto; background: var(--term-bg); -webkit-overflow-scrolling: touch; }
-#termStatus { flex: none; padding: 6px 12px; background: var(--warn-tint); color: var(--warn); font-size: 12.5px; }
 #termEmpty { position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--term-mut); background: var(--term-bg); text-align: center; padding: 24px; }
 #termEmpty button { padding: 0 16px; min-height: 40px; }
 #termText {
@@ -1510,20 +1515,20 @@ button { transition: background-color .12s var(--ease), color .12s var(--ease), 
 
 /* Persistent [hidden] bars and panels: fade + 4px slide. */
 #mentionBox, .attachmentRow, #mathPrev, #vSearch, #vTools, #vChanges,
-#sessBar, #fusionBar, #termStatus, #chatTools, #termTools, #fusionConfig,
+#sessBar, #fusionBar, #chatTools, #termTools, #fusionConfig,
 #screenKeys, #screenTools, #visualHeader, #visualCaption, #visualHint,
 #older, #cachedMore, #sessionNotice, #historyStatus {
   transition: opacity .18s var(--ease), transform .18s var(--ease), display .18s allow-discrete;
 }
 :is(#mentionBox, .attachmentRow, #mathPrev, #vSearch, #vTools, #vChanges,
-#sessBar, #fusionBar, #termStatus, #chatTools, #termTools, #fusionConfig,
+#sessBar, #fusionBar, #chatTools, #termTools, #fusionConfig,
 #screenKeys, #screenTools, #visualHeader, #visualCaption, #visualHint,
 #older, #cachedMore, #sessionNotice, #historyStatus)[hidden] {
   opacity: 0; transform: translateY(4px); pointer-events: none;
 }
 @starting-style {
   :is(#mentionBox, .attachmentRow, #mathPrev, #vSearch, #vTools, #vChanges,
-  #sessBar, #fusionBar, #termStatus, #chatTools, #termTools, #fusionConfig,
+  #sessBar, #fusionBar, #chatTools, #termTools, #fusionConfig,
   #screenKeys, #screenTools, #visualHeader, #visualCaption, #visualHint,
   #older, #cachedMore, #sessionNotice, #historyStatus):not([hidden]) {
     opacity: 0; transform: translateY(4px);
@@ -1533,8 +1538,8 @@ button { transition: background-color .12s var(--ease), color .12s var(--ease), 
 #older, #cachedMore, #historyStatus { transition: none; transform: none; }
 /* The status row also stays visible when only the changed-file count remains. */
 #footerStatus { transition: opacity .18s var(--ease), transform .18s var(--ease), display .18s allow-discrete; }
-#footerStatus:not(:has(#msg:not(:empty):not(.quiet), #elapsed:not([hidden]), #changeNotice:not([hidden]))) { opacity: 0; transform: translateY(4px); pointer-events: none; }
-@starting-style { #footerStatus:has(#msg:not(:empty):not(.quiet), #elapsed:not([hidden]), #changeNotice:not([hidden])) { opacity: 0; transform: translateY(4px); } }
+#footerStatus:not(:has(#msg:not(:empty):not(.quiet), #termStatus:not([hidden]), #elapsed:not([hidden]), #changeNotice:not([hidden]))) { opacity: 0; transform: translateY(4px); pointer-events: none; }
+@starting-style { #footerStatus:has(#msg:not(:empty):not(.quiet), #termStatus:not([hidden]), #elapsed:not([hidden]), #changeNotice:not([hidden])) { opacity: 0; transform: translateY(4px); } }
 
 /* Large centered states: fade only. */
 #empty, #fusionWelcome, #visualEmpty, #termEmpty {
@@ -1574,7 +1579,7 @@ button { transition: background-color .12s var(--ease), color .12s var(--ease), 
   --ov-idle: #3973A3; --ov-amber: #D98200; --ov-amber-fg: #8A4E00; --ov-amber-tint: rgba(240,160,30,.18); --ov-amber-badge: rgba(240,160,30,.22); --ov-toast: #0B0B0D;
   position: absolute; inset: 0; z-index: 10; display: flex; flex-direction: column; overflow: hidden; text-align: left;
   background: var(--bg); color: var(--fg);
-  padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+  padding: 0 env(safe-area-inset-right) 0 env(safe-area-inset-left);
 }
 :root:not([data-theme="light"]) #overview { --ov-idle: #8DBBE3; --ov-amber: #FBBF4D; --ov-amber-fg: #FBBF4D; --ov-amber-tint: rgba(251,191,77,.16); --ov-amber-badge: rgba(251,191,77,.20); --ov-toast: #2A2C31; }
 body.conv #overview { display: none; }
@@ -1585,7 +1590,7 @@ body.conv #overview { display: none; }
 #overview textarea { resize: none; line-height: 22px; padding: 7px 0; box-sizing: border-box; }
 #overview em { font-style: normal; }
 
-#overview .ov-top { position: relative; z-index: 1; view-transition-name: ra-overview-top; background: var(--bg); flex: none; display: flex; align-items: center; gap: 6px; height: 52px; padding: 0 12px 0 10px; }
+#overview .ov-top { position: relative; z-index: 1; view-transition-name: ra-overview-top; background: var(--bg); flex: none; display: flex; align-items: center; gap: 6px; height: calc(52px + env(safe-area-inset-top)); padding: env(safe-area-inset-top) 12px 0 10px; }
 #overview .ov-ibtn { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; color: var(--fg-2); flex: none; }
 #overview .ov-ibtn:active { background: var(--s2); }
 #overview .ov-ibtn svg { width: 22px; height: 22px; }

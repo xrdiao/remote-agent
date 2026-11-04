@@ -3,6 +3,7 @@ let voiceSession = null, voiceLink = null, voiceAudio = null, voicePrepared = ''
 let voiceInputUntil = 0, voiceInputTimer = null, voiceInputScope = '';
 let voiceWarmTimer = 0, voiceWarmKey = '';
 let voiceHideTimer = 0;
+let systemVoiceTrace = null;
 function voiceEnabled() { return store.get('local-voice') === 'on'; }
 function voiceEngineKey() { return 'voice-engine:' + (currentComputer()?.id || base); }
 function voiceEngine() { return store.get(voiceEngineKey()) || ''; }
@@ -127,7 +128,10 @@ function releaseVoiceMedia(session) {
 function cancelVoice(notify = true) {
   const session = voiceSession;
   if (!session) return;
+  const clearStatus = session.system && session.statusGen === statusGen;
+  if (session.system && session.recognition) noteSystemVoice(session, 'cancel');
   voiceSession = null;
+  if (clearStatus) status('');
   clearTimeout(session.timer);
   releaseVoiceMedia(session);
   const link = session.link;
@@ -170,8 +174,10 @@ function scrollVoiceInput(input) {
 async function startVoice(event) {
   if (event.button !== 0 || $('mic').hidden || !windowReady) return;
   if (voiceSession) {
-    if (!voiceSession.held) { cancelVoice(); status('已取消等待转录，请重新按住录音'); }
-    return;
+    if (voiceSession.held) return;
+    const system = voiceSession.system;
+    cancelVoice();
+    if (!system) { status('已取消等待转录，请重新按住录音'); return; }
   }
   event.preventDefault();
   if (voiceEngine() === SYSTEM_ENGINE) return startSystemVoice(event);
@@ -252,20 +258,61 @@ async function startVoice(event) {
     }
   }
 }
+function noteSystemVoice(session, event, error) {
+  session.trace.events[event] = Math.round(performance.now() - session.trace.at);
+  if (error) session.trace.error = error;
+}
+function systemVoiceStatus(session, value) {
+  if (!voiceLive(session)) return;
+  session.statusGen = statusGen + 1;
+  status(value);
+}
+function systemVoiceDetails() {
+  if (!systemVoiceTrace) return '';
+  const labels = { request: '启动请求', start: '服务启动', audiostart: '开始采音', soundstart: '检测到声音', speechstart: '检测到语音', result: '返回文字', stop: '松手停止', audioend: '采音结束', error: '识别错误', end: '识别结束', cancel: '识别取消' };
+  return '<details id="systemVoiceDetails"><summary>' + esc(I18N.tr('最近一次系统识别')) + '</summary><p class="hint">'
+    + Object.entries(systemVoiceTrace.events).map(([event, time]) => esc(I18N.tr(labels[event])) + ' +' + time + 'ms').join('<br>')
+    + (systemVoiceTrace.error ? '<br>' + esc(I18N.tr('错误代码')) + ': ' + esc(systemVoiceTrace.error) : '') + '</p></details>';
+}
 function startSystemVoice(event) {
   const Recognition = systemRecognition();
   if (!Recognition) return status('这个浏览器/应用不支持系统语音识别，请改用 Safari/Chrome 或键盘语音输入', false);
   if (event.pointerId != null) $('mic').setPointerCapture(event.pointerId);
   const session = { input: composerInput(), scope: voiceScope(), expected: text.value, prefix: text.value.slice(0, text.selectionStart), suffix: text.value.slice(text.selectionEnd), selection: text.value.slice(text.selectionStart, text.selectionEnd), held: true, system: true, finalText: '', interimText: '' };
+  session.trace = systemVoiceTrace = { at: performance.now(), events: { request: 0 } };
   voiceSession = session;
-  $('mic').classList.add('on'); $('mic').setAttribute('aria-label', '松开结束录音');
+  $('mic').setAttribute('aria-label', '松开取消启动');
   try {
     const recognition = session.recognition = new Recognition();
     recognition.lang = I18N.speech || 'zh-CN';
     recognition.continuous = true;
     recognition.interimResults = true;
+    recognition.onstart = () => {
+      if (!voiceLive(session)) return;
+      noteSystemVoice(session, 'start');
+      if (session.held && session.trace.events.audiostart == null) systemVoiceStatus(session, '系统识别已启动，等待麦克风…');
+    };
+    recognition.onaudiostart = () => {
+      if (!voiceLive(session)) return;
+      noteSystemVoice(session, 'audiostart');
+      if (!session.held) return;
+      $('mic').classList.add('on'); $('mic').setAttribute('aria-label', '松开结束录音');
+      systemVoiceStatus(session, '正在听…松开结束，文字不会自动发送…');
+    };
+    for (const event of ['soundstart', 'speechstart']) recognition['on' + event] = () => {
+      if (!voiceLive(session)) return;
+      noteSystemVoice(session, event);
+      if (session.held && session.trace.events.audioend == null) systemVoiceStatus(session, event === 'speechstart' ? '已检测到语音，正在识别…' : '已检测到声音，等待识别…');
+    };
+    recognition.onaudioend = () => {
+      if (!voiceLive(session)) return;
+      noteSystemVoice(session, 'audioend');
+      $('mic').classList.remove('on'); $('mic').setAttribute('aria-label', '按住说话');
+      systemVoiceStatus(session, '录音已结束，正在完成转录…');
+    };
     recognition.onresult = e => {
       if (!voiceLive(session)) return;
+      noteSystemVoice(session, 'result');
       let interim = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const result = e.results[i];
@@ -276,20 +323,30 @@ function startSystemVoice(event) {
     };
     recognition.onerror = e => {
       if (!voiceLive(session)) return;
-      status(e.error === 'not-allowed' || e.error === 'service-not-allowed' ? '没有麦克风权限；请在浏览器设置中允许，或使用键盘语音输入'
-        : e.error === 'network' ? '语音识别连不上服务器（国内网络常见），可以用输入法键盘上的麦克风'
-        : e.error === 'no-speech' ? '没听清，再试一次' : (e.error || '语音识别失败'), false);
+      noteSystemVoice(session, 'error', e.error);
       cancelVoice(false);
+      const messages = {
+        'not-allowed': '系统语音权限未获允许（not-allowed），请检查麦克风权限',
+        'service-not-allowed': '系统语音服务不可用（service-not-allowed），请检查系统语音设置',
+        network: '系统语音连接失败（network），请重新按住重试',
+        'no-speech': '没有检测到语音（no-speech），请重新按住重试',
+        'audio-capture': '系统语音采集失败（audio-capture），请检查麦克风',
+        aborted: '系统语音已中断（aborted），请重新按住重试',
+        'language-not-supported': '系统语音不支持当前识别语言（language-not-supported）',
+      };
+      status(messages[e.error] || e.error || '语音识别失败', false);
     };
     recognition.onend = () => {
       session.recognition = null;
-      if (voiceSession !== session) return;
-      status(session.finalText || session.interimText ? '转录完成，可编辑后发送' : '没有识别到语音，请重试');
+      if (!voiceLive(session)) return;
+      noteSystemVoice(session, 'end');
       cancelVoice(false);
+      status(session.finalText || session.interimText ? '转录完成，可编辑后发送' : '没有识别到语音，请重试');
     };
     recognition.start();
-    status('正在听…松开结束，文字不会自动发送');
+    systemVoiceStatus(session, '正在启动系统语音…');
   } catch (error) {
+    noteSystemVoice(session, 'error', error.name);
     cancelVoice(false);
     status(`系统语音启动失败（${error.name}）：${error.message}，请重新按住麦克风`, false);
   }
@@ -300,9 +357,10 @@ function endVoice() {
   session.held = false;
   $('mic').classList.remove('on'); $('mic').setAttribute('aria-label', '按住说话');
   if (session.system) {
+    noteSystemVoice(session, 'stop');
     session.recognition?.stop();
-    if (!session.recognition) { status(session.finalText || session.interimText ? '转录完成，可编辑后发送' : '没有识别到语音，请重试'); cancelVoice(false); }
-    else status('录音已结束，正在完成转录…');
+    if (!session.recognition) { cancelVoice(false); status(session.finalText || session.interimText ? '转录完成，可编辑后发送' : '没有识别到语音，请重试'); }
+    else systemVoiceStatus(session, '录音已结束，正在完成转录…');
     return;
   }
   if (!session.node) { cancelVoice(); status('录音尚未开始，请重新按住说话'); return; }
@@ -326,6 +384,7 @@ function renderVoiceMenu() {
     + engines.map(engine => `<button class="opt${engine.id === selected ? ' cur' : ''}" data-voice-engine="${esc(engine.id)}" role="radio" aria-checked="${engine.id === selected}" ${voiceSession ? 'disabled' : ''}><span class="lbl">${esc(engine.label)}<span class="sub">${esc(engine.detail)}</span></span></button>`).join('')
     + `<button class="opt${selected === SYSTEM_ENGINE ? ' cur' : ''}" data-voice-engine="${SYSTEM_ENGINE}" role="radio" aria-checked="${selected === SYSTEM_ENGINE}" ${voiceSession || !systemSupported ? 'disabled' : ''}><span class="lbl">${esc(I18N.tr('手机系统识别'))}<span class="sub">${esc(systemSupported ? I18N.tr('使用手机/浏览器自带识别 · 不经过电脑') : I18N.tr('当前浏览器/应用不支持系统识别，请改用 Safari/Chrome'))}</span></span></button>`
     + (engines.length ? '' : '<p class="hint">电脑尚未安装语音引擎。</p>')
+    + systemVoiceDetails()
     + '<p class="hint">选择后退出本列表才在后台准备引擎，连续切换只应用最后一次选择。识别过程中请先松手，等转录完成后再切换。语音仅发往配对电脑。</p><details><summary>安装语音引擎</summary><p class="hint">在电脑的 Remote Agent 目录运行，并按提示同意安装：</p><pre>npm run voice:setup</pre><p class="hint">Sherpa：CPU，中英混说，模型约 615 MB。</p><pre>npm run voice:setup -- --engine qwen</pre><p class="hint">Qwen3-ASR-1.7B：官方 vLLM 流式接口，需要 Linux / NVIDIA GPU；模型约 4 GB，运行依赖另计。安装后重新打开本列表即可。麦克风仍需 HTTPS 和浏览器授权。</p></details><button class="opt" data-act="voiceBack">← 返回菜单</button>');
 }
 async function showLocalVoiceMenu() {
