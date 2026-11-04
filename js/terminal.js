@@ -76,16 +76,11 @@ function terminalAvailable() {
   return mode === 'terminal' && authed && terminalReady && !terminalExited
     && terminalComputer === currentComputer()?.id;
 }
-function terminalActionAvailable(action) {
-  if (action === 'copy' || action === 'selectAll') return !!raTerminal;
-  return action === 'refresh' ? authed : terminalAvailable();
-}
 function updateTerminalControls() {
   const available = terminalAvailable();
   if (mode === 'terminal') $('dot').className = authed && terminalReady ? 'ok' : '';
   if (mode === 'terminal') $('send').disabled = !available;
   $('termInt').disabled = !available;
-  for (const button of document.querySelectorAll('[data-terminal-action]')) button.disabled = !terminalActionAvailable(button.dataset.terminalAction);
   for (const button of document.querySelectorAll('[data-termkey]')) button.disabled = !available || !terminalPrompt;
   $('termEmptyNew').disabled = !authed;
   if (!available) closeTerminalPassword();
@@ -318,10 +313,6 @@ $('pickTerms').onclick = () => requestTerminals();
 $('termEmptyNew').onclick = () => createRaTerminal();
 $('termInt').onclick = () => terminalWrite('\x03');
 $('termMore').onclick = showTerminalMore;
-$('termTools').addEventListener('click', e => {
-  const button = e.target.closest('[data-terminal-action]');
-  if (button) return runTerminalAction(button.dataset.terminalAction, button);
-});
 for (const button of document.querySelectorAll('[data-termkey]')) {
   button.addEventListener('pointerdown', e => e.preventDefault());
   button.onclick = () => terminalKey(button.dataset.termkey);
@@ -335,16 +326,6 @@ async function copyTerminal(button) {
   }
   await copyText(value, button, false);
   clearTermSelection();
-}
-function runTerminalAction(action, button) {
-  if (action === 'password') return openTerminalPassword();
-  if (action === 'copy') return copyTerminal(button);
-  if (action === 'selectAll') { closeSheet(); return raTerminal?.selectAll(); }
-  if (action === 'size') return showTerminalSize();
-  if (action === 'refresh') {
-    closeSheet();
-    return currentTerminalId ? openRaTerminal(currentTerminalId) : requestTerminals(true);
-  }
 }
 view.addEventListener('touchstart', () => { if (mode === 'terminal') terminalFollow = false; }, { passive: true });
 view.addEventListener('wheel', () => { if (mode === 'terminal') terminalFollow = false; }, { passive: true });
