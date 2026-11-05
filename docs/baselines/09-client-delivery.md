@@ -31,11 +31,13 @@ v404 已按单独授权更新四项网页静态文件，Pages构建及公网五�
 
 v404 发布后的真机顶栏验收失败：用户确认主页卡片和对话页在键盘打开时都会上移，关闭后回来。随后提供的主页卡片记录确认计算样式为 fixed，但键盘打开时根和顶栏 top 均从0变为-161，关闭后恢复0；可视视口从874缩至477，offsetTop 变为161，body 内联 height／transform 始终为空，顶部安全区保持62。记录不包含独立对话页操作，不能将同时测量的未激活 chatHeader 算作第二次验收，也不能直接测量系统模糊。普通桌面文档滚动的检查结果不足以代表此场景。
 
-v405 按用户确认的五文件方案仅改变 viewport-fit 配置并同步 core 版本与缓存引用；CSS 继续使用v404，独立顶栏、原占位、尺寸观察器和整页补偿取消状态保持。需分别验收两处键盘开合、输入可见性、顶部模糊及横竖屏上下边缘；这是配置对照，尚不记为问题已修复或真机通过。
+v405 按用户确认的五文件方案仅改变 viewport-fit 配置并同步 core 版本与缓存引用；CSS 继续使用v404，独立顶栏、原占位、尺寸观察器和整页补偿取消状态保持。该配置对照的手机结果按用户实际反馈分项记录，不以桌面布局检查代替真机验收。
 
 v405 本地 npm run check 583/583通过，既有配对浏览器完成三个功能分组，四组横竖屏布局矩形与本次修改前v404一致，原配对页与存储保持。新旧版本同场景均报告 ResizeObserver 通知未送达，脚本整体“无错误”断言未通过；未为此扩大产品修改。
 
-用户于2026-11-05随后授权发布。gh-pages提交 `2db00b637201a3687d6b4afb57bd5e9351fa1545` 只更新index.html、js/core.js、sw.js，共享url.json与其他资产保持，master仍为 `e923d3b2e0f7c36d67ca096f388a74d6953dea2e`。当前[部署工作流](https://github.com/xrdiao/remote-agent/actions/runs/41864434629)持续排队，[GitHub官方](https://www.githubstatus.com/incidents/xr3myzj7ms51)已公告Actions／Pages性能异常。公网核对仍读到v404，不能记v405已生效；待部署完成后须核对公网，再由手机验收键盘、安全区和模糊效果。
+用户于2026-11-05随后授权发布。gh-pages提交 `2db00b637201a3687d6b4afb57bd5e9351fa1545` 只更新index.html、js/core.js、sw.js，共享url.json与其他资产保持，发布时master为 `e923d3b2e0f7c36d67ca096f388a74d6953dea2e`。首轮[部署工作流](https://github.com/xrdiao/remote-agent/actions/runs/41864434629)遇到排队，[GitHub官方](https://www.githubstatus.com/incidents/xr3myzj7ms51)公告Actions／Pages性能异常，当时公网仍为v404。后续核对当前Pages已built（提交 `657d9d1a65b4bb06672a33c56265e262883fb790`），公网根入口、index、core、sw及未改CSS五项哈希全部匹配v405静态包，发布生效已确认。
+
+v405 真机反馈：用户确认顶部不再模糊、底部正常、重新共享没有问题，手机显示v405；上述反馈范围记为通过。未明确反馈的键盘期间顶栏位置及全部横竖屏场景不外推为通过。用户另报Codex从卡片内“打开会话”后偶发留在主页、打开慢，补充时已恢复；该间歇问题独立保留排查记录，未据此修改v405产品代码。
 
 v401 仅按 [WebKit 317153 中 Apple 工程师的建议](https://bugs.webkit.org/show_bug.cgi?id=317153#c2)删除旧状态栏 meta，不替换成 default，也不增加页面层补偿。状态栏颜色、顶部模糊和可用区域由 iPhone 真机验证；入口实际更新至 v401 后，必须删除旧主屏幕图标，从 Safari 重新添加，再逐项核对冷启动／刷新、深浅主题、主页／会话／终端的上下沿、会话返回、键盘及横竖屏。桌面资源检查不能代替这项验收。若出现底部超屏或异常顶部留白，先记录 innerHeight、screen.height、visualViewport.height 及安全区上下计算值，再单独提出方案；模糊仍存在则记录失败，不在本轮叠加其他候选。
 

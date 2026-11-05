@@ -980,7 +980,7 @@ test('directory results from revoked credentials cannot update the replacement p
 });
 
 function installOverviewOpening(h) {
-  h.run(`var ovOpenRequest=0, ovEnterRequested=false, ovS={}, pendingAgentOpen='';
+  h.run(`var ovOpenRequest=0, ovEnterRequested=false, ovToolState=null, ovS={}, pendingAgentOpen='';
     function ovSaveHistory() {} function ovT(value) { return value; }
     function ovShowConversation() { trace.push(['enter',currentComputer().id,lastChat?.thread]); }`);
   h.run(notify.slice(notify.indexOf('function noticeTarget('), notify.indexOf('function finishWinBinding(')));
@@ -988,6 +988,136 @@ function installOverviewOpening(h) {
   h.run(overview.slice(overview.indexOf('async function ovOpen('), overview.indexOf('function conversationVisible(')));
   h.run(overview.slice(overview.indexOf('function ovConversationOpened('), overview.indexOf('function ovLeave(')));
 }
+
+function installOverviewBinding(h, app = 'codex') {
+  installOverviewOpening(h);
+  h.run(notify.slice(notify.indexOf('function finishWinBinding('), notify.indexOf('async function runComputerAction(')));
+  h.run(`document.body=$('fixtureBody');document.querySelector=()=>null;
+    var CSS={escape:value=>value}, voiceSession=null, mentionInput=text, ovErr=new Map();
+    var cardTargets=Object.fromEntries(['a','b'].map(key=>[key,{
+      computer:loadComputers()[0].id,win:${JSON.stringify(app === 'codex' ? 'codex' : app + ':window-a')},
+      windowId:'window-a',threadId:'card-'+key
+    }]));
+    function ovRecs(){return Object.keys(cardTargets).map(key=>({key}));}
+    function ovTarget(record){return cardTargets[record.key];}
+    function ovReflectComposer(){} function ovMountComposerControls(){}
+    function ovClearBatch(){} function ovVisible(){} function ovHistory(){return {...ovS};}
+    history.pushState=state=>{history.state=state;trace.push(['enter',currentComputer().id,currentComputer().threadId]);};`);
+  h.run(overview.slice(overview.indexOf('function ovComposerReady('), overview.indexOf('function ovToolInput(')));
+  h.run(overview.slice(overview.indexOf('function ovReleaseComposer('), overview.indexOf('function ovMountComposerControls(')));
+  h.run(overview.slice(overview.indexOf('function ovPrepareTools('), overview.indexOf('async function ovUseTool(')));
+  h.run(overview.slice(overview.indexOf('function conversationVisible('), overview.indexOf('function ovConversationOpened(')));
+}
+
+const cardNavigations = (h, computer = 0) => h.link(computer).socket.sent.filter(m => ['attach', 'openAgent'].includes(m.t));
+const cardEntries = h => h.trace.filter(row => row[0] === 'enter').map(row => Array.from(row));
+function cardAttached(h, thread, options = {}) {
+  h.attached(0, { threadId: thread, sel: `codex|window-a|${thread}`, chat: { thread, items: [] }, ...options });
+}
+
+test('opening a card reuses its unfinished native request for each Agent and repeated clicks enter once', async () => {
+  for (const app of ['codex', 'cursor', 'devin']) {
+    const h = harness(); await h.bothReady(); installOverviewBinding(h, app);
+    h.run("ovS.open='a';ovPrepareTools('a')");
+    const navigation = cardNavigations(h)[0];
+    assert.equal(cardNavigations(h).length, 1);
+    const first = h.run('ovOpen(cardTargets.a)'), second = h.run('ovOpen({...cardTargets.a})');
+    assert.equal(cardNavigations(h).length, 1);
+    assert.equal(h.trace.some(row => row[0] === 'enter'), false);
+    cardAttached(h, 'card-a', { app, id: app === 'codex' ? 'codex' : app + ':window-a', sel: `${app}|window-a|card-a`, navigationId: navigation.navigationId });
+    await Promise.all([first, second]);
+    assert.equal(h.state().windowReady, true); assert.equal(h.state().thread, 'card-a');
+    assert.deepEqual(cardEntries(h), [['enter', computers[0].id, 'card-a']]);
+    assert.equal(cardNavigations(h).length, 1);
+  }
+});
+
+test('expanding A then opening B waits for B and ignores A replies before and after B', async () => {
+  for (const openA of [false, true]) {
+    const h = harness(); await h.bothReady(); installOverviewBinding(h);
+    h.run("ovS.open='a';ovPrepareTools('a')");
+    const firstNavigation = cardNavigations(h)[0].navigationId;
+    const first = openA ? h.run('ovOpen(cardTargets.a)') : Promise.resolve();
+    await h.run('ovOpen(cardTargets.b)');
+    const requests = cardNavigations(h);
+    assert.equal(requests.length, 2); assert.equal(requests[1].threadId, 'card-b');
+    cardAttached(h, 'card-a', { navigationId: firstNavigation });
+    assert.equal(h.trace.some(row => row[0] === 'enter'), false);
+    assert.equal(h.state().windowReady, false);
+    cardAttached(h, 'card-b'); await first; await h.settle();
+    cardAttached(h, 'card-a', { navigationId: firstNavigation }); await h.settle();
+    assert.equal(h.state().thread, 'card-b');
+    assert.deepEqual(cardEntries(h), [['enter', computers[0].id, 'card-b']]);
+    assert.equal(cardNavigations(h).length, 2);
+  }
+});
+
+test('closing or changing the expanded card abandons a waiting foreground opening', async () => {
+  for (const change of [false, true]) {
+    const h = harness(); await h.bothReady(); installOverviewBinding(h);
+    h.run("ovS.open='a';ovPrepareTools('a')");
+    const navigation = cardNavigations(h)[0].navigationId;
+    const opening = h.run('ovOpen(cardTargets.a)');
+    h.run(`ovS.open=${change ? "'b'" : 'null'};ovReleaseComposer();${change ? "ovPrepareTools('b')" : ''}`);
+    await opening;
+    cardAttached(h, 'card-a', { navigationId: navigation });
+    if (change) cardAttached(h, 'card-b');
+    await h.settle();
+    assert.equal(h.trace.some(row => row[0] === 'enter'), false);
+    assert.equal(h.run('document.body.classList.contains("conv")'), false);
+    assert.equal(cardNavigations(h).length, change ? 2 : 1);
+    if (change) assert.equal(h.run('ovComposerReady("b")'), true);
+  }
+});
+
+test('an unfinished card binding is not reused for another computer, window, Agent or project', async () => {
+  for (const kind of ['computer', 'window', 'agent', 'project']) {
+    const h = harness(); await h.bothReady(); installOverviewBinding(h);
+    h.run("ovS.open='a';ovPrepareTools('a')");
+    const changes = {
+      computer: "computer:loadComputers()[1].id",
+      window: "windowId:'other-window'",
+      agent: "win:'cursor:window-a'",
+      project: "project:{root:'/project',host:''}",
+    };
+    await h.run(`ovOpen({...cardTargets.a,${changes[kind]}})`);
+    const computer = kind === 'computer' ? 1 : 0, requests = cardNavigations(h, computer);
+    assert.equal(requests.length, computer ? 1 : 2);
+    const request = requests.at(-1);
+    assert.equal(request.threadId, 'card-a');
+    if (kind === 'window') assert.equal(request.windowId, 'other-window');
+    if (kind === 'agent') assert.equal(request.id, 'cursor:window-a');
+    if (kind === 'project') assert.equal(request.project.root, '/project');
+    assert.equal(h.trace.some(row => row[0] === 'enter'), false);
+    h.run('ovReleaseComposer()'); await h.settle();
+  }
+});
+
+test('failed binding stays on the board and an explicit retry makes a fresh native request', async () => {
+  const h = harness(); await h.bothReady(); installOverviewBinding(h);
+  h.run("ovS.open='a';ovPrepareTools('a')");
+  const opening = h.run('ovOpen(cardTargets.a)');
+  h.deliver(0, { t: 'attachFailed', message: 'read failed' }); await h.settle();
+  assert.equal(h.state().failed, true); assert.equal(h.state().windowReady, false);
+  assert.equal(h.trace.some(row => row[0] === 'enter'), false);
+  await h.run('ovOpen(cardTargets.a)');
+  assert.equal(cardNavigations(h).length, 2);
+  cardAttached(h, 'card-a'); await opening; await h.settle();
+  assert.deepEqual(cardEntries(h), [['enter', computers[0].id, 'card-a']]);
+});
+
+test('a ready expanded card still confirms the native target instead of reusing an already resolved binding', async () => {
+  for (const settled of [false, true]) {
+    const h = harness(); await h.bothReady(); installOverviewBinding(h);
+    h.run("cardTargets.a.threadId='thread-a';ovS.open='a';ovPrepareTools('a')");
+    if (settled) await h.settle();
+    await h.run('ovOpen(cardTargets.a)');
+    assert.equal(cardNavigations(h).length, 1); assert.equal(cardNavigations(h)[0].t, 'openAgent');
+    assert.equal(h.trace.some(row => row[0] === 'enter'), false);
+    cardAttached(h, 'thread-a'); await h.settle();
+    assert.equal(h.trace.filter(row => row[0] === 'enter').length, 1);
+  }
+});
 
 test('Codex cards confirm even the last ready target through one existing session request', async () => {
   for (const same of [true, false]) {

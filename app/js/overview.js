@@ -869,6 +869,14 @@ function ovLocateReply() {
 async function ovOpen(target) {
   const request = ++ovOpenRequest;
   if (target.project && !target.project.root) return status(ovT('尚未读取到项目路径，请在电脑上打开项目后重试'), false);
+  const state = ovToolState;
+  if (state && winBinding?.target === state.target && navigationPending && !target.project
+    && state.target.computer === target.computer && state.target.win === target.win
+    && state.target.windowId === target.windowId && state.target.threadId === target.threadId) {
+    ovEnterRequested = false;
+    if (await state.ready && request === ovOpenRequest && ovToolState === state && ovComposerReady(state.key)) ovShowConversation();
+    return;
+  }
   if (target.win === 'fusion') { ovS.level = 'fusion'; ovS.proj = null; ovSaveHistory(); }
   const json = JSON.stringify(target), e = ovList.find(x => x.id === target.computer);
   if (e.c.key === currentComputer()?.key) return openWin(json);
