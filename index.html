@@ -34,7 +34,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>Remote Agent</title>
-<link rel="stylesheet" href="app.css?v=414">
+<link rel="stylesheet" href="app.css?v=415">
 <link rel="stylesheet" href="vendor/xterm.css?v=6.0.0">
 </head>
 <body>
@@ -49,7 +49,8 @@
     </div>
   <div class="seg"><button id="tabChat" class="on"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-8l-6 4v-4H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/><path d="M7 9h10M7 13h6"/></svg><span class="segLabel">对话</span></button><button id="tabTerm"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3 3-3 3m6 0h4"/></svg><span class="segLabel">终端</span></button></div>
   <button id="menuBtn" aria-label="菜单"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/></svg></button>
-  <div id="fusionHeader" hidden><button id="fusionRunConfig" data-fusion-config aria-label="主 Agent 配置">主 Agent 配置</button><button id="fusionTasks" data-fusion-tasks>任务与证据</button></div>
+  <div id="fusionHeader" hidden><button class="fusion-on-desktop" data-fusion-relations="" aria-label="Agent 关系与分工"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="logo-fusion.svg#fusion"/></svg></button><button id="fusionRunConfig" data-fusion-config aria-label="工作台设置"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 3-1 3-3 1-1 3-2 2 2 2 1 3 3 1 1 3h6l1-3 3-1 1-3 2-2-2-2-1-3-3-1-1-3Z"/><circle cx="12" cy="12" r="3"/></svg></button></div>
+  <div id="fusionTaskStrip" hidden></div>
 </header>
 
 <main>
@@ -111,6 +112,9 @@
     </div>
   </section>
 </main>
+
+<button id="fusionScrim" data-fusion-collapse aria-label="收起 Agent 关系与分工" hidden></button>
+<aside id="fusionPanel" aria-label="Agent 关系与分工" hidden><div id="fusionPanelBody"></div></aside>
 
 <footer>
   <div class="attachmentRow" hidden><div id="attachments"></div></div>
@@ -234,21 +238,21 @@
   <input id="scannerFile" type="file" accept="image/*" hidden>
 </div>
 
-<script src="i18n.js?v=402"></script>
-<script src="js/core.js?v=414"></script>
+<script src="i18n.js?v=415"></script>
+<script src="js/core.js?v=415"></script>
 <script src="js/gate.js?v=382"></script>
 <script src="js/scanner.js"></script>
 <script src="js/auth.js?v=207"></script>
-<script src="js/fusion.js?v=413"></script>
+<script src="js/fusion.js?v=415"></script>
 <script src="js/net.js?v=413"></script>
-<script src="js/sheets.js?v=402"></script>
+<script src="js/sheets.js?v=415"></script>
 <script src="js/notify.js?v=413"></script>
-<script src="js/overview.js?v=414"></script>
+<script src="js/overview.js?v=415"></script>
 <script src="js/mode.js?v=386"></script>
 <script src="markdown-it/markdown-it-15.0.3.min.js"></script>
 <script src="js/markdown.js?v=295"></script>
-<script src="js/chat.js?v=407"></script>
-<script src="js/history.js?v=386"></script>
+<script src="js/chat.js?v=415"></script>
+<script src="js/history.js?v=415"></script>
 <script src="js/files.js?v=375"></script>
 <script src="js/transfer.js?v=388"></script>
 <script src="js/screen.js?v=382"></script>

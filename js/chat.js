@@ -416,8 +416,10 @@ function updateTitle() {
   $('title').title = [cleanWindowTitle(currentProject), conversation].filter(Boolean).join(' · ');
   if (activeFusionController || currentApp === 'fusion') {
     const run = currentFusionRun();
+    const mainChat = lastChat?.thread === currentComputer()?.threadId ? lastChat : null;
     $('titleText').textContent = run?.title || 'Fusion';
-    $('titleProject').textContent = run ? `${run.project.name} · ${ovCompName(run.computer)}` : '';
+    $('titleProject').textContent = run ? [OV_AGENT[run.main.app], mainChat?.model || run.main.model, mainChat?.effort || run.main.effort,
+      I18N.tr(({ economy: '省钱', balanced: '均衡', performance: '性能' })[run.tier])].filter(Boolean).join(' · ') : '';
     $('title').title = run ? `${run.project.root} · ${ovCompName(run.computer)} · ${run.title}` : 'Fusion';
   }
   paintRail();

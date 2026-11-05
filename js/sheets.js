@@ -351,7 +351,8 @@ function paintRail() {
   const { entries, missingAgents } = windowEntries();
   entries.sort((a, b) => a.app.localeCompare(b.app));
   const collapsed = railCollapsed();
-  const sig = JSON.stringify([currentApp, mode, I18N.lang, currentComputer()?.name || '', $('dot').className, collapsed,
+  const fusion = !!currentFusionRun();
+  const sig = JSON.stringify([currentApp, fusion, mode, I18N.lang, currentComputer()?.name || '', $('dot').className, collapsed,
     entries.map(w => [w.id, w.app, appPlans[w.app] || '']), missingAgents]);
   // Latency probes only make sense where the badges render.
   const railOn = document.body.matches('.split');
@@ -361,7 +362,7 @@ function paintRail() {
   const agentRows = entries.map(w => {
     const plan = appPlans[w.app] ? `<span class="tag">${esc(appPlans[w.app])}</span>` : '';
     const label = names[w.app] || w.app;
-    return `<button class="railRow ${w.app === currentApp ? 'cur' : ''}" data-win="${esc(w.id)}" title="${esc(label)}"><span class="railLogo" data-logo="${esc(w.app)}"></span><span class="lbl">${esc(label)}</span>${plan}<span class="latency muted" data-latency="${esc(w.id)}">${latencyMarkup(w.id)}</span></button>`;
+    return `<button class="railRow ${!fusion && w.app === currentApp ? 'cur' : ''}" data-win="${esc(w.id)}" title="${esc(label)}"><span class="railLogo" data-logo="${esc(w.app)}"></span><span class="lbl">${esc(label)}</span>${plan}<span class="latency muted" data-latency="${esc(w.id)}">${latencyMarkup(w.id)}</span></button>`;
   }).join('')
     + (missingAgents.length ? `<button class="railRow" data-rail="windows" title="${esc(I18N.tr('启动未打开的 Agent'))}"><span class="railIc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></span><span class="lbl">${I18N.tr('启动未打开的 Agent')}</span></button>` : '');
   const row = (act, label, svg, cur) => `<button class="railRow${cur ? ' cur' : ''}" data-rail="${act}" title="${esc(I18N.tr(label))}"><span class="railIc">${svg}</span><span class="lbl">${I18N.tr(label)}</span></button>`;
@@ -380,6 +381,7 @@ function paintRail() {
     <div class="railComputer"><img src="logo.png" alt=""><button class="railComputerName" data-rail="computers" title="${esc(I18N.tr('切换电脑'))}">${esc(currentComputer()?.name || 'Remote Agent')}</button><span class="railDot${$('dot').classList.contains('ok') ? ' ok' : ''}"></span><button class="railToggle" data-rail="toggle" title="${I18N.tr(toggleLabel)}" aria-label="${I18N.tr(toggleLabel)}">${icRail}</button></div>
     <div class="pSec">Agent</div>
     ${agentRows}
+    <button class="railRow${fusion ? ' cur' : ''}" data-rail="fusion" title="Fusion"><span class="railLogo" data-logo="fusion"></span><span class="lbl">Fusion</span></button>
     <div class="pSec">${I18N.tr('工作区')}</div>
     ${row('agents', '项目/会话', icFolder)}
     ${supportsCapability('editor', ['cursor', 'devin', 'codex'].includes(currentApp)) ? row('editor', 'Editor', icEdit) : ''}
@@ -398,7 +400,11 @@ $('rail')?.addEventListener('click', e => {
   if (!b) return;
   if (b.dataset.win) return switchToWindow(b.dataset.win);
   const act = b.dataset.rail;
-  if (act === 'windows') { send({ t: 'windows' }); showWindows(); }
+  if (act === 'fusion') {
+    if (currentFusionRun()) { fusionPanelOpen = true; fusionPanelCollapsed = false; readFusionView(currentFusionRun().computer, currentFusionRun().id, 'tasks'); }
+    else { ovBackToBoard(); ovMove({ level: 'fusion', proj: null, open: null }); }
+  }
+  else if (act === 'windows') { send({ t: 'windows' }); showWindows(); }
   else if (act === 'computers') showComputers();
   else if (act === 'agents') openAgentList();
   else if (act === 'editor') startEditor();

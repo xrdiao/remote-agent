@@ -897,6 +897,7 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
       b.dataset.fold = V.turnOf.get(it.i);
     });
   }
+  if (currentFusionRun()) fusionChatRows(visibleItems, els, keepViewport, edge);
   els.push(...pendingEchoEls());
   syncChildren(itemsEl, els);
   itemsEl.classList.toggle('stale', chatStale);
