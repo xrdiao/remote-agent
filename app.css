@@ -1216,7 +1216,7 @@ body.term .appAvatar::after { display: none; }
 .fusion-board section { margin: 14px 0; padding: 14px; background: var(--s1); border: 1px solid var(--line); border-radius: 14px; }
 .fusion-board h2, .fusion-board h3 { margin: 0 0 12px; }
 .fusion-run-row { display: flex; width: 100%; padding: 14px 2px; border-top: 1px solid var(--line); gap: 10px; align-items: center; text-align: left; }
-.fusion-run-row .lbl { flex: 1; min-width: 0; }
+.fusion-run-row .lbl { flex: 1; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 .fusion-run-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .fusion-run-row small { display: block; color: var(--fg-3); margin-top: 4px; overflow-wrap: anywhere; }
 .fusion-form { display: grid; gap: 12px; }
@@ -1230,6 +1230,7 @@ body.term .appAvatar::after { display: none; }
 .fusion-task summary { cursor: pointer; overflow-wrap: anywhere; }
 .fusion-task pre, .fusion-evidence { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.6; }
 .fusion-task button { margin: 4px 6px 4px 0; }
+.fusion-task .fusion-run-row { margin-inline: 0; }
 .fusion-error { color: var(--err); white-space: pre-wrap; overflow-wrap: anywhere; }
 .fusion-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
 
