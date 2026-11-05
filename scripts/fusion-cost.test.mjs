@@ -1,34 +1,37 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { nativeCostSnapshot, validateExecution, validateCost, FUSION_TIERS } from '../server/fusion/cost.mjs';
-
-test('native Auto, Free and multiplier prices retain their names, units and source times', () => {
-  const rows = [{ label: 'Auto' }, { label: 'native-model', efforts: [{ label: 'high' }], pricing: { tag: 'Free', costs: [{ value: 2, unit: 'credits' }], creditMultiplier: 1.5 } }];
-  const snapshot = nativeCostSnapshot('cursor', rows, { limits: [] }, 123);
-  assert.equal(snapshot.models[0].model, 'Auto'); assert.equal(snapshot.models[0].amount, 'unknown');
-  assert.deepEqual(snapshot.models[1].pricing, rows[1].pricing); assert.equal(snapshot.at, 123);
-  assert.match(snapshot.basis, /不能归因/);
+import { fixture } from './fusion-fixture.mjs';
+test('Auto, Free and native multipliers retain exact units, source and observation time', () => {
+  const models = [{ id: 'Auto', label: 'Auto' }, { id: 'free', label: 'Free High', efforts: ['high'], pricing: { tag: 'Free', costs: [{ value: 2, unit: 'credits' }], creditMultiplier: 1.5 } }];
+  const snapshot = nativeCostSnapshot('cursor', models, null, { read: 'native-model-menu' }, 123);
+  assert.equal(snapshot.at, 123); assert.equal(snapshot.models[0].model, 'Auto'); assert.equal(snapshot.models[0].amount, 'unknown');
+  assert.deepEqual(snapshot.models[1].pricing, models[1].pricing); assert.equal(snapshot.origin.read, 'native-model-menu');
 });
-test('all three preferences permit any actual candidate and preserve the chosen main model', () => {
+test('all three tiers permit every native model and leave the chosen main unchanged', () => {
+  const h = fixture();
   for (const tier of Object.keys(FUSION_TIERS)) {
-    const run = { tier, main: { model: 'user-choice' }, capabilities: [nativeCostSnapshot('codex', [{ label: 'native-high', efforts: [{ label: 'max' }] }], null, 1)] };
-    validateExecution(run, { app: 'codex', model: 'native-high', effort: 'max' });
-    assert.equal(run.main.model, 'user-choice');
+    h.run.tier = tier; const selected = structuredClone(h.run.main);
+    validateExecution(h.run, { app: 'cursor', model: 'Auto', effort: '' });
+    assert.deepEqual(h.run.main, selected);
   }
 });
-test('model and effort selections must come from observed native candidates', () => {
-  const run = { capabilities: [nativeCostSnapshot('cursor', [{ label: 'Auto' }], null, 1)] };
-  assert.throws(() => validateExecution(run, { app: 'cursor', model: 'invented' }), /候选/);
-  assert.throws(() => validateExecution(run, { app: 'cursor', model: 'Auto', effort: 'invented' }), /未提供/);
+test('model, strength and cost provenance must belong to native observations', () => {
+  const h = fixture();
+  assert.throws(() => validateExecution(h.run, { app: 'codex', model: 'invented', effort: 'low' }), /候选/);
+  assert.throws(() => validateExecution(h.run, { app: 'codex', model: 'cheap', effort: 'invented' }), /实际选项/);
+  assert.throws(() => validateCost(h.run, { ...h.cost('codex'), overhead: '' }, h.run.main), /overhead/);
+  assert.throws(() => validateCost(h.run, { ...h.cost('codex'), sources: ['invented'] }, h.run.main), /来源/);
 });
-test('dispatch cost comparisons include self execution and all orchestration overheads', () => {
-  const run = { capabilities: [nativeCostSnapshot('cursor', [{ label: 'Auto' }], null, 1)] };
-  const cost = { selfExecute: 'unknown', delegate: 'unknown', planning: 'one decision', review: 'one review', contextTransfer: 'small', rework: 'unknown', reason: 'less total context',
-    sources: ['cursor:1'], alternatives: [{ app: 'cursor', model: 'Auto', effort: '', estimate: 'relative', reason: 'only candidate' }] };
-  validateCost(run, cost);
-  assert.throws(() => validateCost(run, { ...cost, planning: '' }), /planning/);
-  assert.throws(() => validateCost(run, { ...cost, sources: ['invented-price'] }), /来源/);
-  run.budget = { limit: 1, unit: 'USD' };
-  assert.throws(() => validateCost(run, cost), /核对用户预算/);
-  assert.throws(() => validateCost(run, { ...cost, total: { amount: 0.1, unit: 'USD' } }), /真实原生报价/);
+test('only explicit budgets create limits; unknown or incompatible units do not produce subscription bills', () => {
+  const h = fixture(); validateCost(h.run, h.cost('codex'), h.run.main);
+  h.run.budget = { limit: 1, unit: 'USD' };
+  assert.throws(() => validateCost(h.run, h.cost('codex'), h.run.main), /预算无法/);
+  assert.throws(() => validateCost(h.run, { ...h.cost('codex'), estimate: { amount: 0.1, unit: 'USD' } }, h.run.main), /真实报价/);
+});
+test('explicit native-unit budgets aggregate prior and queued reservations', () => {
+  const h = fixture(); h.run.budget = { limit: 3, unit: 'credits' }; h.run.capabilities[0].models[0].pricing = { unit: 'credits' };
+  const cost = { ...h.cost('codex'), estimate: { amount: 2, unit: 'credits' } };
+  validateCost(h.run, cost, h.run.main); h.run.assignments.push({ id: 'previous', cost }); h.run.attempts.push({ assignmentId: 'previous', status: 'queued', submission: 'not_submitted' });
+  assert.throws(() => validateCost(h.run, cost, h.run.main), /预计总成本超过/);
 });

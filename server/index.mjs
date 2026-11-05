@@ -14,7 +14,7 @@ import { preloadVoice } from './voice/service.mjs';
 import { offerFirstPairing } from './util.mjs';
 import { run } from './publish/pages.mjs';
 import { startTunnel } from './publish/tunnel.mjs';
-import { startProjectWindowCleanup } from './project-windows.mjs';
+import { startProjectWindowCleanup, clearLegacyFusionWindows } from './project-windows.mjs';
 import { NativeCdp, nativeWindow, nativeTargets, startNativeWindows } from './native-windows.mjs';
 
 import { saveFusionRuns, initializeFusionState } from './fusion/state.mjs';
@@ -82,6 +82,7 @@ server.listen(PORT, HOST, async () => {
   startProjectWindowCleanup();
   startNativeWindows(watchTargets);
   initializeFusionState();
+  clearLegacyFusionWindows();
   recoverFusionRuns();
   startWatcher({
     listWindows: nativeTargets,

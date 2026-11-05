@@ -9,6 +9,6 @@ const FRAGMENTS = [
 ];
 const sources = FRAGMENTS.map(f => fs.readFileSync(path.join(DIR, f), 'utf8').replace(/\s+$/, ''));
 const DEVIN_COMPOSER_SRC = sources[FRAGMENTS.indexOf('devin-composer.js')];
-const PAGE_SRC = '(() => {\n' + sources.join('\n') + '\n})()';
-const helpersCall = call => `${PAGE_SRC}.${call}`;
+const PAGE_SRC = '((remoteContext = null) => {\n' + sources.join('\n') + '\n})()';
+const helpersCall = (call, context = null) => `${context ? PAGE_SRC.slice(0, -2) + '(' + JSON.stringify(context) + ')' : PAGE_SRC}.${call}`;
 export { PAGE_SRC, helpersCall, DEVIN_COMPOSER_SRC };

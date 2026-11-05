@@ -26,10 +26,10 @@ test('dependent jobs wait for acceptance and a cancelled run does not cancel ano
   const scheduler = new FusionScheduler(); let accepted = false, calls = 0;
   const job = scheduler.submit({ runId: 'dependent', app: 'cursor', access: 'read', projectKey: 'p', ready: () => accepted, execute: () => calls++ });
   const cancelled = scheduler.submit({ runId: 'cancel', app: 'codex', access: 'read', projectKey: 'p', ready: () => false, execute: () => assert.fail('cancelled job executed') });
-  scheduler.cancel('cancel'); await assert.rejects(cancelled, /队列已取消/); assert.equal(calls, 0);
+  scheduler.cancel('cancel'); await assert.rejects(cancelled, /任务已取消/); assert.equal(calls, 0);
   accepted = true; scheduler.drain(); await job; assert.equal(calls, 1);
 });
-test('concurrent requests for the same dedicated window share one creation', async () => {
+test('concurrent main project window requests share one native creation', async () => {
   const scheduler = new FusionScheduler(); let created = 0, release;
   const create = () => { created++; return new Promise(resolve => { release = resolve; }); };
   const one = scheduler.window('same-computer/app/host/project', create), two = scheduler.window('same-computer/app/host/project', create);
@@ -44,4 +44,15 @@ test('an unknown native write reserves its software and project until reconcilia
   await reconciliation; assert.deepEqual(started, ['unknown']);
   scheduler.uncertain.delete('cursor'); scheduler.uncertainWriters.delete('p'); scheduler.drain(); await other;
   assert.deepEqual(started, ['unknown', 'other']);
+});
+
+test('the main management lane remains available during a same-app worker; stable reads wait for writes', async () => {
+  const scheduler = new FusionScheduler(), calls = [], release = {};
+  const submit = (id, options) => scheduler.submit({ runId: 'controller', attemptId: id, app: 'codex', projectKey: 'project', ready: () => true,
+    ...options, execute: () => { calls.push(id); return new Promise(resolve => { release[id] = resolve; }); } });
+  const worker = submit('writer', {access:'write'}), main = submit('main', {lane:'main', access:'read'});
+  const read = submit('validation', {app:'cursor', access:'read', stableRead:true});
+  await flush(); assert.deepEqual(calls, ['writer','main']);
+  release.writer(); await worker; await flush(); assert.deepEqual(calls, ['writer','main','validation']);
+  release.main(); release.validation(); await Promise.all([main,read]);
 });

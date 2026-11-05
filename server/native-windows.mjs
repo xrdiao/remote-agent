@@ -134,8 +134,15 @@ export class NativeWindow {
     this.itemCache = new Map();
     this.previews = new Map();
     this.runStates = new Map();
+    this.conversations = new Map();
+    this.contexts = new Map();
+    this.cdp.on('Runtime.executionContextCreated', ({ context }) => this.contexts.set(context.id, context));
+    this.cdp.on('Runtime.executionContextDestroyed', ({ executionContextId }) => this.contexts.delete(executionContextId));
     this.cdp.onclose = error => this.close(error);
     this.cdp.on('Runtime.executionContextsCleared', () => {
+      this.contexts.clear();
+      for (const view of this.conversations.values())
+        for (const listener of view.listeners) listener(new Error('原生页面已重载，需要核对后台会话与轮次'));
       if (!this.win) return;
       this.stopWatch?.();
       this.observer?.close();
@@ -149,6 +156,17 @@ export class NativeWindow {
       this.close();
       throw error;
     });
+  }
+  async composerCall(call, context) {
+    await this.connect();
+    if (!this.contexts.has(this.composerRealm)) {
+      await this.cdp.send('Runtime.enable');
+      const { root } = await this.cdp.send('DOM.getDocument');
+      const { nodeId } = await this.cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: '#active-frame' });
+      const { node } = await this.cdp.send('DOM.describeNode', { nodeId });
+      this.composerRealm = [...this.contexts.values()].find(value => value.auxData.isDefault && value.auxData.frameId === node.frameId).id;
+    }
+    return this.cdp.evaluate(helpersCall(call, context), { contextId: this.composerRealm });
   }
   async start(win) {
     this.win = win;
@@ -178,7 +196,30 @@ export class NativeWindow {
     }).catch(error => { this.watching = null; this.observer?.close(); throw error; });
     return this.watching;
   }
-  subscribe(changed) {
+  subscribe(changed, context = null, owner = null) {
+    if (context) {
+      const view = this.conversationView(context);
+      view.listeners.add(changed);
+      if (!view.watching) {
+        const observer = view.observer = new NativeCdp(this.cdp.wsUrl);
+        view.watching = cdpRead.run(null, () => watchChat(observer, () => {
+          if (!view.listeners.size) return;
+          view.revision++;
+          this.readReceipts().catch(() => {});
+          this.readConversation(context).catch(() => {});
+        }, false, context)).then(stop => { view.stop = stop; }, error => {
+          withOperation(null, () => { for (const listener of view.listeners) listener(error); });
+        });
+      }
+      return () => {
+        view.listeners.delete(changed);
+        if (!view.listeners.size) {
+          const watching = view.watching;
+          watching?.then(() => { view.stop?.(); view.observer?.close(); });
+          this.conversations.delete(JSON.stringify([context.host, context.threadId]));
+        }
+      };
+    }
     this.listeners.add(changed);
     return () => this.listeners.delete(changed);
   }
@@ -227,6 +268,42 @@ export class NativeWindow {
         run: known ? run : { ...run, status: 'unknown' }, statusKnown: known });
     }
     return [...states.values()];
+  }
+  conversationView(context) {
+    const key = JSON.stringify([context.host, context.threadId]);
+    if (!this.conversations.has(key)) this.conversations.set(key, { revision: 0, at: 0, listeners: new Set() });
+    return this.conversations.get(key);
+  }
+  async readConversation(context, fresh = false) {
+    const view = this.conversationView(context);
+    if (view.reading) return awaitCdpRead(view.reading);
+    if (!fresh && view.snapshot && view.readRevision === view.revision) return view.snapshot;
+    const revision = view.revision;
+    view.reading = cdpRead.run(null, async () => {
+      await this.connect();
+      const [chat, composer] = await Promise.all([
+        this.cdp.evaluate(helpersCall(`extract(false, [], ${context.app === 'codex' ? 80 : 0})`, context)),
+        context.app === 'codex' ? this.composerCall(`nativeSessionInfo('codex', ${JSON.stringify(context.threadId)}, 'composer')`, context) : null,
+      ]);
+      if (chat && composer) chat.codex = { ...chat.codex,
+        run: composer.composerMode[0].toUpperCase() + composer.composerMode.slice(1),
+        ide: { on: composer.isAutoContextOn, file: composer.ideContext?.activeFile || null } };
+      const state = chat?._nativeState;
+      if (chat) delete chat._nativeState;
+      const result = { chat, state }, key = JSON.stringify(result), changed = view.key !== key;
+      view.snapshot = result; view.key = key; view.readRevision = revision; view.at = Date.now();
+      if (changed) withOperation(null, () => { for (const listener of view.listeners) listener(); });
+      return result;
+    }).catch(error => {
+      withOperation(null, () => { for (const listener of view.listeners) listener(error); });
+      throw error;
+    }).finally(() => {
+      view.reading = null;
+      if (view.listeners.size && revision !== view.revision) this.readConversation(context).catch(() => {});
+      if (!view.listeners.size && this.conversations.get(JSON.stringify([context.host, context.threadId])) === view)
+        this.conversations.delete(JSON.stringify([context.host, context.threadId]));
+    });
+    return awaitCdpRead(view.reading);
   }
   async read(fresh = false) {
     const wantedRevision = this.revision;
@@ -420,6 +497,8 @@ export class NativeWindow {
     this.sends.clear();
     this.retrySettings.clear();
     this.runStates.clear();
+    for (const view of this.conversations.values()) { view.stop?.(); view.observer?.close(); }
+    this.conversations.clear();
     this.cdp.close();
   }
 }

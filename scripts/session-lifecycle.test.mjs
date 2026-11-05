@@ -8,7 +8,7 @@ const read = file => fs.readFileSync(new URL('../' + file, import.meta.url), 'ut
 const fragment = (text, start, end) => text.slice(text.indexOf(start), text.indexOf(end, text.indexOf(start)));
 
 function pageContext(extra = {}) {
-  const context = vm.createContext({ window: {}, doc: { defaultView: {} }, ...extra });
+  const context = vm.createContext({ remoteContext: null, window: {}, doc: { defaultView: {} }, ...extra });
   vm.runInContext(read('server/page/session-actions.js') + '\nthis.info = nativeSessionInfo; this.action = nativeSessionAction;', context);
   return context;
 }
@@ -38,7 +38,7 @@ for (const result of ['archive', 'delete', 'clear']) {
 for (const outcome of ['archive', 'clear', 'delete']) {
   test(`server records ${outcome} without turning other native outcomes into deletion`, async () => {
     const library = { favorite: true }, changes = [], messages = [];
-    const context = vm.createContext({
+    const context = vm.createContext({ remoteContext: null,
       sessionId: (_app, id) => id, helpersCall: call => call,
       removeLibrarySession: () => { library.favorite = false; library.deleted = true; },
       publishSessionChange: (_app, _id, change) => { changes.push(change.action); if (change.action === 'archive') library.archived = true; },
@@ -58,7 +58,7 @@ for (const outcome of ['archive', 'clear', 'delete']) {
 test('compact Devin model buttons expose the same picker as text buttons', () => {
   const model = { textContent: '', getAttribute: name => name === 'aria-label' ? 'SWE-2 High' : '', closest: () => null };
   const unrelated = { ...model, textContent: 'Local', getAttribute: () => '' };
-  const context = vm.createContext({ doc: { querySelectorAll: () => [unrelated, model] }, vis: () => true, revealDevinComposer() {} });
+  const context = vm.createContext({ remoteContext: null, doc: { querySelectorAll: () => [unrelated, model] }, vis: () => true, revealDevinComposer() {} });
   const source = read('server/page/menus.js');
   vm.runInContext(fragment(source, '  const DEVIN_MODEL', '  const devinModelMenu') + '\nthis.button = devinModelButton;', context);
   assert.equal(context.button(false), model);
@@ -70,7 +70,7 @@ test('Codex manager lookup on the empty home page follows the requested host', (
   const local = { hostId: 'local', getConversation: id => id === 'local-thread', loadOlderConversationTurnsPage() {} };
   const remote = { hostId: 'remote', getConversation: id => id === 'remote-thread', loadOlderConversationTurnsPage() {} };
   const scope = { familyBindings: new Map([['managers', new Map([['a', local], ['b', remote]])]]) };
-  const context = vm.createContext({ doc: { defaultView: {} }, codexHistoryBinding: (_scope, value) => ({ get: () => value }) });
+  const context = vm.createContext({ remoteContext: null, doc: { defaultView: {} }, codexHistoryBinding: (_scope, value) => ({ get: () => value }) });
   const source = read('server/page/chat-extract.js');
   vm.runInContext(fragment(source, '  const codexConversationManager', '  const codexHistoryState') + '\nthis.manager = codexConversationManager;', context);
   assert.equal(context.manager(null, [scope], 'local'), local);
@@ -82,7 +82,7 @@ test('Codex manager lookup on the empty home page follows the requested host', (
 test('Codex opens the identified recent-chat button once despite the archive toast', () => {
   let open = false, clicks = 0;
   const button = {};
-  const context = vm.createContext({ codexButton: () => button, codexPoint: () => ({ x: 1, y: 2 }), vis: () => true,
+  const context = vm.createContext({ remoteContext: null, codexButton: () => button, codexPoint: () => ({ x: 1, y: 2 }), vis: () => true,
     codexFiberProps: () => [{ triggerRef: { current: { contains: el => el === button } }, contentId: 'recent-menu', get open() { return open; }, onOpenChange(value) { clicks++; open = value; } }],
     doc: { querySelectorAll: () => open ? [{ innerText: 'Search recent chats' }] : [] } });
   const source = read('server/page/codex.js');
@@ -119,7 +119,7 @@ test('Codex preview and catalog use the host connection without selecting a conv
 });
 
 function nativeRunContext(extra) {
-  const context = vm.createContext(extra), source = read('server/page/agents.js');
+  const context = vm.createContext({ remoteContext: null, ...extra }), source = read('server/page/agents.js');
   vm.runInContext(fragment(source, '  const agentRun =', '  const agentStates =')
     + '\nthis.run = (app, thread, scopes=[]) => agentRun(app, thread, scopes, app === "codex" ? codexConversationManager(thread, scopes) : null);', context);
   return context;
@@ -130,7 +130,7 @@ function nativeWaitingState(app = 'codex') {
   const item = { innerText: '任务已正常完成', matches: () => false, querySelector: () => null, querySelectorAll: () => [],
     hasAttribute: key => key === 'data-turn-key', getAttribute: () => 'native-turn' };
   const panel = {};
-  const context = vm.createContext({ doc: { querySelectorAll: () => [] }, vis: () => true,
+  const context = vm.createContext({ remoteContext: null, doc: { querySelectorAll: () => [] }, vis: () => true,
     agentList: () => [{ id: state.thread, current: true, title: '会话' }], activeThread: () => state.thread,
     codexButton: () => null, codexWorkspaceRoots: () => [], hasComposer: () => true,
     findPanel: () => state.panel ? panel : null, isBusy: () => state.busy, topItems: () => [item],
@@ -210,7 +210,7 @@ function codexQuestionReader(questions = [{ id: 'choice', question: '请选择�
     if (selector === 'button' || selector.startsWith('button, input')) return [...(state.mounted ? [skip] : []), ...state.controls];
     return [];
   } };
-  const context = vm.createContext({ doc, document: doc, activeThread: () => state.thread, vis: () => true,
+  const context = vm.createContext({ remoteContext: null, doc, document: doc, activeThread: () => state.thread, vis: () => true,
     codexFiberProps: el => el.props || [], codexPoint: () => ({ x: 1, y: 2 }), setTimeout });
   vm.runInContext(fragment(read('server/page/codex.js'), '  const codexAsyncRequestFiber =', '  const codexImage =')
     + '\nthis.data=codexRequestData;this.field=codexRequestField;this.action=codexRequestAction;', context);
@@ -374,7 +374,7 @@ test('window-owned turn facts survive selection changes without assuming an unfi
 });
 
 test('a new Codex conversation remains observable before it enters the recent catalog', () => {
-  const context = vm.createContext({ agentState: () => ({ thread: 'new-thread', busy: true }),
+  const context = vm.createContext({ remoteContext: null, agentState: () => ({ thread: 'new-thread', busy: true }),
     codexHistoryScopes: () => [], codexThread: () => 'new-thread', codexChatRows: () => [],
     codexConversationManager: () => ({}),
     codexQueryClient: () => ({ getQueryData: () => [] }),
@@ -388,7 +388,7 @@ test('a new Codex conversation remains observable before it enters the recent ca
 
 test('one native read resolves each Codex host manager once for all background rows', () => {
   const calls = [], local = {}, remote = {};
-  const context = vm.createContext({ agentState: () => ({ thread: 'selected', busy: false }),
+  const context = vm.createContext({ remoteContext: null, agentState: () => ({ thread: 'selected', busy: false }),
     codexHistoryScopes: () => [], codexThread: () => 'selected',
     codexChatRows: () => Array.from({ length: 50 }, (_, n) => ({ id: 'thread-' + n, host: n % 2 ? 'remote' : '' })),
     codexQueryClient: () => ({ getQueryData: () => [] }),

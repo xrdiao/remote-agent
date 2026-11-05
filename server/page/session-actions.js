@@ -1,3 +1,4 @@
+  const nativeValue = value => doc.defaultView.JSON.parse(JSON.stringify(value));
   const cursorSessionServices = () => {
     if (window.__remoteAgentCursorServices) return window.__remoteAgentCursorServices;
     const props = [...doc.querySelectorAll('[data-message-id], [data-glass-agent-id], .composer-container')]
@@ -15,6 +16,34 @@
     }));
   };
   const devinSessionRecord = id => window.__acpStore?.getState().acp.sessions.find(s => devinRowSession(s) === id);
+  const nativeSessionContext = async (app, id) => {
+    if (app === 'codex') {
+      const host = remoteContext?.app === 'codex' ? remoteContext.host || 'local' : codexChatRows(true).find(row => row.id === id)?.host || 'local';
+      const manager = codexConversationManager(id, codexHistoryScopes(), host);
+      if (!manager) throw new Error('Codex 原生会话管理器尚未就绪');
+      const conversation = manager.getConversation(id);
+      const thread = conversation || (await manager.readThread(id, { includeTurns: false })).thread;
+      const workspace = manager.getThreadWorkspaceState(id);
+      const roots = workspace?.project?.projectSources || workspace?.applied?.projectSources || conversation?.currentPermissions?.runtimeWorkspaceRoots || [thread.cwd];
+      return { app, threadId: id, host: host === 'local' ? '' : host, cwd: thread.cwd,
+        roots: roots.filter(Boolean).map(root => ({ root, host: host === 'local' ? '' : host })) };
+    }
+    if (app === 'cursor') {
+      const services = cursorSessionServices();
+      if (!services) throw new Error('Cursor 原生会话管理器尚未就绪');
+      const handle = await services.data.getComposerHandleById(id);
+      if (!handle) throw new Error('Cursor 原生目录中没有这个会话');
+      const data = handle.data, workspace = services.composer.composerChatService._workspaceContextService.getWorkspace();
+      const selected = data.workspaceIdentifier;
+      if (selected && !selected.uri && selected.id !== workspace.id) throw new Error('尚未读取到这个 Cursor 会话的项目目录');
+      const uris = selected?.uri ? [selected.uri] : workspace.folders.map(folder => folder.uri);
+      const roots = uris.map(uri => ({ root: uri.fsPath || uri.path, host: uri.scheme === 'file' ? '' : uri.authority.replace(/^ssh-remote\+/, '') }));
+      return { app, threadId: id, host: roots[0]?.host || '', cwd: roots[0]?.root || '', roots };
+    }
+    const session = devinSessionRecord(id);
+    if (!session) throw new Error('Devin 原生目录中没有这个会话');
+    return { app, threadId: id, provider: session.providerId, host: '', cwd: session.cwd || '', roots: session.cwd ? [{ root: session.cwd, host: '' }] : [] };
+  };
   const devinSessionMenu = id => {
     for (const row of doc.querySelectorAll('li[data-slot="sidebar-menu-item"]')) {
       const props = codexFiberProps(row, 16);
@@ -111,6 +140,12 @@
       id: tool.id, label: String(tool.label || '').replace(/\s+/g, ' ').trim().slice(0, 240), state: states[tool.status] || '',
     })).filter(tool => tool.label) };
   };
+  const cursorMessages = async (id, data, headers) => {
+    const missing = headers.filter(header => !data.conversationMap[header.bubbleId] || data.conversationMap[header.bubbleId].isPlaceholder);
+    const service = cursorSessionServices().data;
+    const stored = missing.length ? await service._composerMessageStorageService.retrieveMessagesBatch(id, missing.map(header => header.bubbleId)) : new Map();
+    return headers.map(header => stored.get(header.bubbleId) || data.conversationMap[header.bubbleId]).filter(Boolean);
+  };
   const nativeSessionPreview = async (app, id, previous) => {
     const summary = value => {
       const text = String(value || '').replace(/\s+/g, ' ').trim();
@@ -122,9 +157,7 @@
       const data = peek?.source === 'memory' ? peek.handle.data : peek?.data;
       if (!data) return { available: false };
       const headers = (data.fullConversationHeadersOnly || []).slice(-12);
-      const missing = headers.filter(h => !data.conversationMap[h.bubbleId] || data.conversationMap[h.bubbleId].isPlaceholder);
-      const stored = missing.length ? await service._composerMessageStorageService.retrieveMessagesBatch(id, missing.map(h => h.bubbleId)) : new Map();
-      const messages = headers.map(h => stored.get(h.bubbleId) || data.conversationMap[h.bubbleId]);
+      const messages = await cursorMessages(id, data, headers);
       const selected = data.modelConfig?.selectedModels?.[0], model = cursorPickerProps(true)?.models.find(m => m.name === selected?.modelId || m.id === selected?.modelId);
       const todos = data.todos || [], tasks = todos.length ? { done: todos.filter(t => t.status === 'completed').length, total: todos.length, current: todos.find(t => t.status === 'in_progress')?.content || '' } : null;
       const tools = messages.slice(messages.findLastIndex(m => m?.type === 1) + 1).filter(m => m?.toolFormerData).map(m => {
@@ -177,6 +210,64 @@
       ...nativePreviewActivity(tools, conversation?.latestModel, conversation?.latestThreadSettings?.effort, tasks) };
   };
   const nativeSessionInfo = (app, id, catalog = false, previous = null) => {
+    if (catalog === 'settings') {
+      if (app === 'cursor') {
+        const services = cursorSessionServices(), handle = services.data.getHandleIfLoaded(id);
+        const selected = services.composer.composerChatService._modelConfigService.getSelectedModelsForComposer(handle)[0];
+        return { model: selected.modelId, effort: effortItems().find(row => row.checked)?.label || '', family: selected.modelId, usage: null };
+      }
+      if (app === 'codex') {
+        const value = codexConversationManager(id, codexHistoryScopes(), remoteContext?.host || 'local').getConversation(id);
+        const settings = value.latestThreadSettings || {};
+        return { model: settings.model || value.latestModel, effort: settings.effort ?? value.latestReasoningEffort ?? '', family: settings.model || value.latestModel,
+          usage: value.latestTokenUsageInfo || null, usageBasis: '原生会话用量资料；不等于单任务账单' };
+      }
+      const config = devinSessionRecord(id)?.configOptions.find(row => row.category === 'model');
+      return { model: config?.currentValue || '', family: '', effort: '', usage: null,
+        usageBasis: '原生 ACP 会话未提供可归因的任务账单；模型 ID 包含原生强度' };
+    }
+    if (catalog === 'creation') {
+      const value = window.__remoteAgentNativeCreations?.get(previous);
+      return value ? { status: value.status, context: value.context, nativeThreadId: value.nativeThreadId, error: value.error } : null;
+    }
+    if (catalog === 'tools' && app === 'codex') {
+      const manager = codexConversationManager(id, codexHistoryScopes(), remoteContext?.host || 'local');
+      return (manager.getConversation(id)?.requests || []).filter(request => request.method === 'item/tool/call');
+    }
+    if (catalog === 'draft' && app === 'codex') return codexConversationDraft(id, previous === null ? undefined : previous);
+    if (catalog === 'clearDraft' && app === 'codex') return codexConversationDraft(id, '', previous);
+    if (catalog === 'composer' && app === 'codex') return (async () => {
+      const value = await codexComposerScope(id, false);
+      if (!value) return null;
+      const { scope, composer } = value;
+      const state = scope.get(composer.q), context = await nativeSessionContext(app, id);
+      const ide = codexQueryClient()?.getQueryData(['ide-context', null]);
+      const activePath = ide?.activeFile?.path || '';
+      return { ...state, workspaceRoots: context.roots.map(row => row.root),
+        ideContext: state.isAutoContextOn && context.roots.some(row => activePath.startsWith(row.root + '/')) ? ide : null };
+    })();
+    if (catalog === 'sendError') return window.__remoteAgentNativeSubmissions?.get(previous) || null;
+    if (catalog === 'bind') return (async () => {
+      const context = await nativeSessionContext(app, id);
+      if (app === 'cursor') {
+        const handles = window.__remoteAgentNativeHandles ||= new Map();
+        const key = JSON.stringify([id, previous]);
+        if (!handles.has(key)) handles.set(key, await cursorSessionServices().data.getComposerHandleById(id));
+      } else if (app === 'codex') {
+        const manager = codexConversationManager(id, codexHistoryScopes(), context.host || 'local');
+        if (!manager.getConversation(id) || manager.needsResume(id)) {
+          const state = await manager.resumeConversation(nativeValue({ conversationId: id, model: null, reasoningEffort: null,
+            workspaceRoots: context.roots.map(row => row.root), collaborationMode: manager.getConversation(id)?.latestCollaborationMode || null }));
+          if (state.status === 'not-ready') throw new Error('Codex 原生会话尚未就绪');
+        }
+        await manager.ensureConversationHistoryLoaded(id);
+      } else if (app === 'devin') {
+        const native = await import('@exa/chat-client');
+        await window.__acpStore.dispatch(native.loadTranscriptsThunk([id]));
+      }
+      return context;
+    })();
+    if (catalog === 'context') return nativeSessionContext(app, id);
     if (catalog === 'preview') return nativeSessionPreview(app, id, previous);
     if (catalog) return nativeSessionCatalog(app, id);
     if (app === 'cursor') {
@@ -190,9 +281,201 @@
     return { title: session.title || '', archived: session._meta?.['cognition.ai/isArchived'] === true, running: ['active', 'pending', 'canceling'].includes(session.status),
       actions: ['rename', 'archive', 'delete'].filter(name => actions.some(a => a.label.toLowerCase() === name && !a.disabled)) };
   };
+  const nativeCodexCreation = async (id, spec, prepare) => {
+    const manager = codexConversationManager(id, codexHistoryScopes(), remoteContext?.host || 'local');
+    const parent = manager.getConversation(id);
+    const { scope } = await codexComposerScope(codexVisibleThread() || '');
+    const native = await codexNativeModule('create-window-thread-creation-inputs');
+    native.n();
+    const reader = native.t(scope, manager.hostId);
+    const root = spec.root || parent?.cwd;
+    if (!root) throw new Error('新建原生会话前需要明确项目目录');
+    const options = { input: [], cwd: root, workspaceRoots: [root], initialTitle: spec.title,
+      ...(root === parent?.cwd ? { permissionsConfig: parent.currentPermissions } : { useAppServerPermissionDefault: true }),
+      collaborationMode: spec.model ? { mode: 'default', settings: { model: spec.model, reasoning_effort: spec.effort || null, developer_instructions: null } } : parent?.latestCollaborationMode,
+      additionalDeveloperInstructions: spec.instructions };
+    const read = async (params, history) => {
+      const inputs = await reader.readCreationInputs(params, history);
+      if (spec.tools?.length) {
+        const original = inputs.readDynamicTools;
+        inputs.hasDeveloperInstructions = true;
+        inputs.readDynamicTools = async value => [...await original(value), ...nativeValue(spec.tools)];
+      }
+      return inputs;
+    };
+    if (prepare) {
+      const request = await manager.prepareThreadStart(options, read);
+      return { model: request.model, approvalPolicy: request.approvalPolicy, approvalsReviewer: request.approvalsReviewer,
+        tools: request.dynamicTools?.map(tool => ({ name: tool.name, type: tool.type, namespace: tool.namespace || '',
+          fields: Object.keys(tool), tools: tool.tools?.map(value => ({ name: value.name, type: value.type, fields: Object.keys(value) })) })),
+        handlerWritable: Object.getOwnPropertyDescriptor(manager.threadExecution, 'executeDynamicToolCall')?.writable };
+    }
+    const created = await manager.startConversation(options, { readThreadCreationInputs: read });
+    if (created.status !== 'created') throw new Error('原生新会话结果待核对，不能重新创建');
+    const record = window.__remoteAgentNativeCreations?.get(spec.requestId);
+    if (record) record.nativeThreadId = created.conversationId;
+    return nativeSessionContext('codex', created.conversationId);
+  };
   const nativeSessionAction = async (app, id, action, name) => {
+    if (action === 'create') {
+      const creations = window.__remoteAgentNativeCreations ||= new Map();
+      if (!name.requestId) throw new Error('后台会话创建缺少请求身份');
+      const previous = creations.get(name.requestId);
+      if (previous) return previous.promise;
+      const record = { status: 'creating', context: null };
+      creations.set(name.requestId, record);
+      record.promise = nativeSessionAction(app, id, 'createNative', name).then(context => {
+        record.status = 'created'; record.context = context; return context;
+      }, error => {
+        record.status = record.nativeThreadId ? 'created_context_pending' : error.jsonRpcCode != null ? 'rejected' : 'unknown';
+        record.error = String(error.message || error); throw error;
+      });
+      return record.promise;
+    }
+    if (action === 'bindTools' && app === 'codex') {
+      const manager = codexConversationManager(id, codexHistoryScopes(), remoteContext?.host || 'local');
+      const managers = window.__remoteAgentNativeTools ||= new WeakMap();
+      let bridge = managers.get(manager);
+      if (!bridge) {
+        const original = manager.threadExecution.executeDynamicToolCall;
+        bridge = { original, threads: new Map() };
+        bridge.dispatch = request => {
+          const tools = bridge.threads.get(request.params.threadId);
+          if (!tools?.has(request.params.tool)) return original.call(manager.threadExecution, request);
+          manager.updateConversationState(request.params.threadId, conversation => { conversation.requests.push(request); });
+        };
+        manager.threadExecution.executeDynamicToolCall = bridge.dispatch;
+        managers.set(manager, bridge);
+      }
+      bridge.threads.set(id, new Set(name));
+      return true;
+    }
+    if (action === 'unbindTools' && app === 'codex') {
+      const manager = codexConversationManager(id, codexHistoryScopes(), remoteContext?.host || 'local');
+      const bridge = window.__remoteAgentNativeTools.get(manager);
+      bridge.threads.delete(id);
+      if (!bridge.threads.size) {
+        manager.threadExecution.executeDynamicToolCall = bridge.original;
+        window.__remoteAgentNativeTools.delete(manager);
+      }
+      return true;
+    }
+    if (action === 'toolReply' && app === 'codex') {
+      const manager = codexConversationManager(id, codexHistoryScopes(), remoteContext?.host || 'local');
+      const request = manager.getDynamicToolRequest(id, name.requestId);
+      if (!window.__remoteAgentNativeTools.get(manager)?.threads.get(id)?.has(request?.tool)) throw new Error('管理工具请求已不属于这个主会话');
+      return manager.replyWithDynamicToolResponse(id, name.requestId, nativeValue(name.result));
+    }
+    if (action === 'prepare' && app === 'codex') return nativeCodexCreation(id, name, true);
+    if (action === 'createNative' && app === 'codex') return nativeCodexCreation(id, name, false);
+    if (action === 'release' && app === 'cursor') {
+      const handles = window.__remoteAgentNativeHandles;
+      const key = JSON.stringify([id, name]);
+      handles?.delete(key);
+      return true;
+    }
+    if (action === 'createNative' && app === 'cursor') {
+      const services = cursorSessionServices();
+      const parent = services.data.getComposerDataIfLoaded(id);
+      if (!parent) throw new Error('主会话尚未在这个 Cursor 窗口就绪');
+      const created = await services.composer.createComposer(nativeValue({
+        skipSelect: true, skipShowAndFocus: true,
+        partialState: { composerId: name.threadId, name: name.title, unifiedMode: 'agent', modelConfig: parent.modelConfig,
+          subagentInfo: { parentComposerId: id, subagentTypeName: 'side-chat' } },
+      }));
+      window.__remoteAgentNativeCreations.get(name.requestId).nativeThreadId = created.composerId;
+      return nativeSessionContext(app, created.composerId);
+    }
+    if (action === 'createNative' && app === 'devin') {
+      const native = await import('@exa/chat-client'), parent = devinSessionRecord(id);
+      if (!parent) throw new Error('当前 Devin 窗口没有就绪的原生会话');
+      const created = await window.__acpStore.dispatch(native.sendAgentRequestThunk(parent.providerId,
+        { method: 'session/new', params: { cwd: name.root, mcpServers: [] } }, native.tryGetAcpSingleton('sendAgentRequest')));
+      window.__remoteAgentNativeCreations.get(name.requestId).nativeThreadId = created.sessionId;
+      return nativeSessionContext(app, created.sessionId);
+    }
+    if (action === 'capacityTarget' && app === 'codex') {
+      const scopes = codexHistoryScopes(), manager = codexNativeManager();
+      if (agentRun(app, id, scopes, manager)?.id !== name || codexVisibleThread() !== id) return null;
+      const capacity = codexCapacityItem();
+      return capacity?.b?.length ? codexPoint(capacity._retry) : null;
+    }
+    if (action === 'send') {
+      const submissions = window.__remoteAgentNativeSubmissions ||= new Map();
+      if (submissions.has(name.requestId)) return true;
+      const record = { threadId: id, status: 'submitting', at: Date.now() };
+      submissions.set(name.requestId, record);
+      let submitted;
+      if (app === 'codex') {
+        const manager = codexNativeManager(), conversation = manager.getConversation(id);
+        const settings = conversation.latestThreadSettings || {};
+        submitted = manager.sendFollowUpMessage(id, nativeValue({ prompt: name.text, model: settings.model || conversation.latestModel,
+          reasoningEffort: settings.effort ?? conversation.latestReasoningEffort, attachmentContext: name.composer }));
+      } else if (app === 'cursor') {
+        submitted = cursorSessionServices().composer.composerChatService.submitChatMaybeAbortCurrent(id, name.text,
+          { skipClearInput: true, skipFocusAfterSubmission: true, _internalPreserveDraft: true, ignoreQueuing: name.when === 'now' });
+      } else {
+        const native = await import('@exa/chat-client'), session = devinSessionRecord(id);
+        submitted = window.__acpStore.dispatch(native.sendAgentRequestThunk(session.providerId,
+          { method: 'session/prompt', params: { sessionId: id, prompt: [{ type: 'text', text: name.text }] } }, native.tryGetAcpSingleton('sendAgentRequest')));
+      }
+      Promise.resolve(submitted).then(() => { record.status = 'handler_finished'; }, error => {
+        Object.assign(record, { status: 'error', message: String(error.message || error),
+          outcome: error.delivery?.stage === 'outcome-unknown' ? 'unknown' : error.jsonRpcCode != null ? 'rejected' : 'unknown' });
+        (window.__remoteAgentSubmitErrors ||= []).push({ requestId: name.requestId, message: String(error.message || error) });
+        doc.defaultView.dispatchEvent(new doc.defaultView.Event('remote-agent-submit-error'));
+      });
+      return true;
+    }
+    if (action === 'stop') {
+      if (app === 'codex') await codexNativeManager().interruptConversation(id, 'user-stop');
+      else if (app === 'cursor') await cursorSessionServices().composer.cancelChat(id);
+      else {
+        const native = await import('@exa/chat-client'), session = devinSessionRecord(id);
+        await window.__acpStore.dispatch(native.sendAgentRequestThunk(session.providerId,
+          { method: 'session/cancel', params: { sessionId: id } }, native.tryGetAcpSingleton('sendAgentRequest')));
+      }
+      return true;
+    }
+    if (action === 'model' && app === 'codex') {
+      const model = codexPickerProps().modelOptions.find(row => row.model.id === name)?.model;
+      if (!model) throw new Error('模型不属于当前 Codex 原生候选');
+      return pickCodexModel(model.displayName || model.id);
+    }
+    if (action === 'model' && app === 'devin') {
+      if (remoteContext) {
+        const session = devinSessionRecord(id), config = session.configOptions.find(option => option.category === 'model');
+        if (!config?.options.flatMap(group => group.options || [group]).some(option => option.value === name)) throw new Error('模型不属于该原生会话的可用候选');
+        const native = await import('@exa/chat-client');
+        await window.__acpStore.dispatch(native.sendAgentRequestThunk(session.providerId,
+          { method: 'session/set_config_option', params: { sessionId: id, configId: config.id, value: name } }, native.tryGetAcpSingleton('sendAgentRequest')));
+        return true;
+      }
+      const picker = devinPickerProps(true), model = devinConfigs(picker).find(row => row.modelUid === name);
+      if (!model) throw new Error('模型不属于当前 Devin 原生候选');
+      await picker.onModelSelect(model); return true;
+    }
+    if (action === 'effort') return pickEffort(name);
+    if (action === 'permission' && app === 'cursor' && remoteContext) {
+      const { capability, decisions } = cursorPendingTool();
+      const accept = name.endsWith(':accept'), reject = name.endsWith(':reject');
+      if (!accept && !reject) throw new Error('未知的原生权限决定');
+      const toolCallId = name.slice(0, -7);
+      const pending = decisions.find(decision => decision.toolCallId === toolCallId);
+      if (!pending || capability.getBubbleDataByToolCallId(toolCallId)?.name === 'ask_question') throw new Error('这个原生权限请求已更新');
+      if (accept) await capability.acceptToolCall(toolCallId);
+      else await capability.rejectToolCall(toolCallId);
+      return true;
+    }
     if (app === 'cursor') {
       const services = cursorSessionServices();
+      if (action === 'open') { await services.composer.openComposer(id); return true; }
+      if (action === 'model') {
+        const props = cursorPickerProps(true), model = props.models.find(model => [model.clientDisplayName, model.inputboxShortModelName, model.name].includes(name));
+        if (!model && name !== 'Auto') return false;
+        props.onSelectionChange([{ modelId: model?.name || 'default', parameters: [] }]);
+        return true;
+      }
       const session = services?.data.allComposersData.allComposers.find(c => c.composerId === id);
       if (!session) throw new Error('没有找到这个会话');
       if (action === 'rename') {

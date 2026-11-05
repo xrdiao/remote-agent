@@ -2108,7 +2108,7 @@ function overviewDirectory() {
     fusionMainWindow: (app, id) => Object.values(fusionRuns).flatMap(value => value.runs).some(run => run.bindings.some(binding => binding.role === 'main' && binding.app === app && binding.windowId === id)),
   });
   vm.runInContext(part(read('lib/files.mjs'), 'export function workspaceLabel(', '// Returns the size').replace('export ', '')
-    + part(read('server/project-windows.mjs'), 'export function fusionTargets(', 'export function trackFusionWindow(').replace('export ', '')
+    + part(read('server/project-windows.mjs'), 'export function fusionTargets(', 'export function clearLegacyFusionWindows(').replace('export ', '')
     + read('server/overview.mjs').replace(/^import .*;\n/gm, '').replace(/^export /gm, ''), context);
   return { targets, sources, catalogs, library, saved, fusionRuns,
     add(app, id, root = '/project/remote-agent', host = '') {
@@ -2141,7 +2141,7 @@ test('a temporarily unreadable selected window cannot replace confirmed native f
   assert.equal(result.sessions[0].run.status, 'completed');
 });
 
-test('Fusion child windows stay outside ordinary cards while main sessions remain ordinary, including favorites', () => {
+test('Fusion workers stay outside ordinary cards while shared windows and main favorites remain ordinary', () => {
   const h = overviewDirectory(); h.add('codex', 'ordinary'); h.add('codex', 'fusion');
   h.saved.windows['codex:fusion'] = { app: 'codex', id: 'fusion', purpose: 'fusion' };
   h.fusionRuns.device = { runs: [{ updated: Date.now(), bindings: [{ role: 'B1', app: 'codex', threadId: 'fusion-thread' },

@@ -365,7 +365,104 @@
     }
     return null;
   };
+  const codexNativeManager = () => codexConversationManager(remoteContext.threadId, codexHistoryScopes(), remoteContext.host || 'local');
+  const codexAsyncQuestionState = (thread, host = 'local', scopes = codexHistoryScopes()) => {
+    const sources = new Map();
+    let group;
+    for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
+      const source = codexHistoryBinding(scope, bindings.get(JSON.stringify(host))), value = source?.get();
+      if (value instanceof doc.defaultView.Map) sources.set(source.key, source);
+      if (value?.get?.(thread)?.selectedQuestionKey) { group = value.get(thread); sources.set(source.key, source); }
+    }
+    if (!group) return { sources, questions: [] };
+    const questions = [];
+    for (const itemId of group.questionIds) {
+      const key = JSON.stringify({ entityKey: group.selectedQuestionKey.entityKey, hostId: host, itemId, threadId: thread });
+      for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
+        const source = codexHistoryBinding(scope, bindings.get(key)), value = source?.get();
+        if (!value?.question || value.question.id !== itemId) continue;
+        sources.set(source.key, source);
+        if (!value.isSkipped && (value.lastSubmission == null || value.draft.trim() !== value.lastSubmission))
+          questions.push({ ...value, selected: itemId === group.selectedQuestionKey.itemId });
+      }
+    }
+    return { sources, questions };
+  };
+  const codexAsyncQuestionRows = () => codexAsyncQuestionState(remoteContext.threadId, remoteContext.host || 'local').questions
+    .filter(state => state.selected).map(state => ({ id: 'async:' + state.question.id, text: state.question.title,
+      buttons: [...state.question.options.map(option => ({ label: typeof option === 'string' ? option : option.label, disabled: state.isSubmitting })),
+        { label: 'Skip', disabled: state.isSubmitting }, { label: 'Send', disabled: state.isSubmitting || !state.draft?.trim() }],
+      fields: [{ label: '回答', value: state.draft || '', type: 'text', options: null }] }));
+  const codexNativeRequests = () => {
+    const conversation = codexNativeManager()?.getConversation(remoteContext.threadId);
+    return (conversation?.requests || []).filter(request => request.params?.threadId === remoteContext.threadId);
+  };
+  const codexNativeRequestId = request => (request.method === 'item/tool/requestUserInput' ? 'async:' : 'approval:')
+    + JSON.stringify([remoteContext.threadId, request.params.turnId, request.id]);
+  const codexNativeRequestRows = () => codexNativeRequests().filter(request => request.method !== 'item/tool/call').map(request => {
+    const p = request.params, id = codexNativeRequestId(request);
+    if (request.method === 'item/tool/requestUserInput') {
+      const questions = p.questions;
+      const options = questions.length === 1 ? questions[0].options || [] : [];
+      return { id, text: questions.map(q => q.question).join('\n'),
+        buttons: [...options.map(option => ({ label: option.label })), { label: 'Skip' },
+          { label: 'Send' }],
+        fields: questions.map(q => ({ label: questions.length > 1 ? q.question : '回答', value: '', type: q.isSecret ? 'password' : 'text',
+          options: !q.isOther && q.options?.length ? q.options.map(o => ({ value: o.label, label: o.label })) : null })) };
+    }
+    const decisions = p.availableDecisions || ['accept', 'acceptForSession', 'decline', 'cancel'];
+    return { id, text: [p.command || p.reason || p.grantReason || request.method, p.cwd].filter(Boolean).join('\n'),
+      buttons: decisions.map(decision => ({ label: typeof decision === 'string' ? decision : Object.keys(decision)[0] })), fields: [] };
+  });
+  const codexNativeRequestAction = async (id, n, fields) => {
+    const request = codexNativeRequests().find(request => codexNativeRequestId(request) === id);
+    if (!request) throw new Error('这条请求已不在所选会话的待处理列表中');
+    const manager = codexNativeManager(), thread = remoteContext.threadId, p = request.params;
+    if (request.method === 'item/tool/requestUserInput') {
+      const options = p.questions.length === 1 ? p.questions[0].options || [] : [], skip = n === options.length;
+      const answers = Object.fromEntries(p.questions.map((question, index) => {
+        const value = p.questions.length === 1 && n < options.length ? options[n].label : fields.find(field => field.n === index)?.value || '';
+        if (!skip && !value.trim()) throw new Error('请完成所有问题后再发送');
+        return [question.id, { answers: skip ? [] : [value] }];
+      }));
+      await manager.replyWithUserInputResponse(thread, request.id, nativeValue({ answers }));
+    } else {
+      const decision = (p.availableDecisions || ['accept', 'acceptForSession', 'decline', 'cancel'])[n];
+      if (decision == null) throw new Error('请求选项已更新');
+      if (request.method === 'item/commandExecution/requestApproval') await manager.replyWithCommandExecutionApprovalDecision(thread, request.id, nativeValue(decision));
+      else if (request.method === 'item/fileChange/requestApproval') await manager.replyWithFileChangeApprovalDecision(thread, request.id, nativeValue(decision));
+      else throw new Error('这个原生请求需要在电脑端处理');
+    }
+    return true;
+  };
+  const codexConversationChat = (history, pageSize) => {
+    const thread = remoteContext.threadId, scopes = codexHistoryScopes();
+    const manager = codexConversationManager(thread, scopes, remoteContext.host || 'local'), conversation = manager?.getConversation(thread);
+    if (!conversation) return null;
+    const state = codexHistoryState(conversation, false, scopes, thread), page = codexReadPage(state, Infinity, [], history, pageSize);
+    if (page.missingTurn && !page.items.length && state.entries.length) return null;
+    const run = agentRun('codex', thread, scopes, manager), settings = conversation.latestThreadSettings || {};
+    mergeCodexCapacity(page.items, state, codexVisibleThread() === thread ? codexCapacityItem() : null);
+    const model = settings.model || conversation.latestModel || '', effort = settings.effort ?? conversation.latestReasoningEffort;
+    const permissions = conversation.currentPermissions;
+    const permission = permissions?.approvalsReviewer === 'auto_review' ? 'Approve for me'
+      : permissions?.sandboxPolicy?.type === 'dangerFullAccess' ? 'Full access' : permissions ? 'Ask for approval' : null;
+    const view = codexVisibleThread() === thread ? codexFacts()?.view : null;
+    return { thread, title: conversation.title || '', rect: [0, 0, 0, 0], items: page.items, global: [],
+      _nativeState: { thread, run, busy: run?.status === 'running', host: remoteContext.host, ...nativeWaiting('codex', thread, manager) },
+      busy: run?.status === 'running', readonly: false, queued: codexQueued(false, state), subagents: [],
+      changed: codexChanges().count, questions: { codex: true, requests: codexRequestData() },
+      model: agentModelName() || model, effort, permission, mode: conversation.latestCollaborationMode?.mode || null,
+      context: null, capacityPresent: page.items.some(item => item.capacity),
+      _historyEarlier: page.earlier || !!page.missingTurn, historyBefore: page.before, _historyStart: state.entries[0]?.turnNumber,
+      ...(run?.startedAt ? { generation: { start: run.startedAt, end: run.status === 'running' ? null : run.completedAt || null } } : {}),
+      codex: { ...view, plan: conversation.latestCollaborationMode?.mode === 'plan',
+        follow: codexQueryClient()?.getQueryData(['vscode', 'get-settings'])?.values?.followUpQueueMode || 'queue',
+        actions: true },
+    };
+  };
   const codexRequests = () => {
+    if (remoteContext?.app === 'codex') return [...codexNativeRequestRows(), ...codexAsyncQuestionRows()];
     if (!activeThread()) return [];
     const rows = new Map();
     const asyncSkips = new Set();
@@ -487,6 +584,7 @@
   const codexRequestData = () => codexRequests().map(r => ({ id: r.id, text: String(r.text).slice(0, 6000), buttons: r.buttons.map(({ label, disabled, selected }) => ({ label, disabled, selected })), fields: r.fields.map(({ label, value, type, options }) => ({ label, value, type, options })) }));
   const codexRequestTarget = (id, n) => { const b = codexRequests().find(r => r.id === id)?.buttons[n]; return b?.el ? codexPoint(b.el) : null; };
   const codexRequestAction = async (id, n, fields = [], advance = false) => {
+    if (remoteContext?.app === 'codex') return codexNativeRequestAction(id, n, fields);
     for (const field of fields) {
       if (!codexRequestField(id, field.n, field.value)) throw new Error('请求输入框已不存在');
     }
@@ -560,7 +658,9 @@
   const codexChanges = () => {
     const files = new Map();
     const turns = [...doc.querySelectorAll('[data-turn-key]')];
-    const entries = turns.length ? codexFiberProps(turns[0], 50).find(p => Array.isArray(p.entries))?.entries : null;
+    const entries = remoteContext?.app === 'codex'
+      ? codexHistoryState(codexNativeManager()?.getConversation(remoteContext.threadId), false).entries
+      : turns.length ? codexFiberProps(turns[0], 50).find(p => Array.isArray(p.entries))?.entries : null;
     let changed;
     if (entries) {
       const thread = codexThread(), scopes = codexHistoryScopes();
@@ -591,7 +691,8 @@
         files.set(name, { name, add: diff ? '+' + (add + Number(previous?.add || 0)) : '未获取', del: diff ? '-' + (del + Math.abs(Number(previous?.del || 0))) : '', diff: [previous?.diff, diff].filter(Boolean).join('\n') });
       }
     }
-    const last = [...turns].reverse().find(el => buttonsIn(el, false).some(b => /^(Undo|Apply|Revert|View changes|View changed files|View file changes)$/.test(b.label)));
+    const last = !remoteContext || codexVisibleThread() === remoteContext.threadId
+      ? [...turns].reverse().find(el => buttonsIn(el, false).some(b => /^(Undo|Apply|Revert|View changes|View changed files|View file changes)$/.test(b.label))) : null;
     const actions = last ? buttonsIn(last, false).filter(b => /^(Undo|Apply|Revert|View changes|View changed files|View file changes)$/.test(b.label)).map(b => b.label) : [];
     return { files: [...files.values()], actions, count: files.size, turn: last?.getAttribute('data-turn-key') || '' };
   };

@@ -1,290 +1,326 @@
-import fs from 'node:fs/promises';
-import path from 'node:path';
-import crypto from 'node:crypto';
-import { EDITORS } from '../config.mjs';
-import { FusionAgent } from './agent.mjs';
+import { FusionAgent, fusionWorkspaceSnapshot } from './agent.mjs';
+import { FusionController } from './controller.mjs';
 import { fusionScheduler } from './scheduler.mjs';
-import { fusionRuns, fusionWorkers, newFusionAttempt, publishFusion, fusionEvent, fusionMessage, NATIVE_UNSETTLED } from './state.mjs';
-import { applyFusionDecision, fusionDecisionPrompt, fusionTaskPrompt } from './control.mjs';
-import { validateExecution } from './cost.mjs';
+import { applyFusionControl, fusionTaskPrompt } from './control.mjs';
+import { fusionRuns, fusionWorkers, fusionEvent, newFusionAttempt, publishFusion,
+  commitFusion, NATIVE_UNSETTLED } from './state.mjs';
 
 export class FusionRunner {
-  constructor(run, { agent = new FusionAgent(), scheduler = fusionScheduler, publish = publishFusion } = {}) {
-    this.run = run;
-    this.agent = agent;
-    this.scheduler = scheduler;
-    this.publish = publish;
-    this.jobs = new Map();
-    this.archiving = new Set();
-    this.recovering = new Set();
-    this.pumping = null;
-    this.decisionPending = false;
+  constructor(run, { scheduler = fusionScheduler, agent, controller } = {}) {
+    this.run = run; this.scheduler = scheduler;
+    this.agent = agent || new FusionAgent({ scheduler, onEvent: () => this.wake() });
+    this.controller = controller || new FusionController(this);
+    this.jobs = new Map(); this.effects = new Set();
   }
-  message(text, id) {
+  publish() { publishFusion(this.run); }
+  blockMain(error) {
+    this.run.status = this.run.stopRequested ? 'stopping' : 'blocked';
+    this.run.blockedReason = error.message; this.publish();
+  }
+  async start() {
+    if (!this.run.main.bindingId) return;
+    await this.controller.start();
+    this.wake();
+  }
+  async control(action, native) {
     const run = this.run;
-    if (run.events.some(event => event.id === id)) return;
-    if (!text.trim()) throw new Error('消息不能为空');
-    fusionMessage(run, 'human', text, { id });
-    fusionEvent(run, 'user', { text }, id);
-    if (run.title === '新 Fusion run') run.title = text.split('\n')[0].slice(0, 80);
-    if (!run.stopRequested) { run.status = 'running'; run.blockedReason = ''; }
-    this.publish(run);
+    if (action?.action === 'list_models') {
+      const snapshot = await this.agent.capabilities(run, action.app);
+      commitFusion(run, next => { next.capabilities.unshift(snapshot); });
+    }
+    const previous = run.commands.find(row => row.key === `${run.main.bindingId}:${native.turnId}:${String(native.requestId)}`);
+    let claim, baseline;
+    if (action?.action === 'self_execute' && !previous) {
+      const work = run.works.find(row => row.id === action.workId), main = run.bindings.find(row => row.id === run.main.bindingId);
+      if (!work || work.project.id !== main?.project.id) throw new Error('主 Agent 只能在自己的实际项目执行，其他项目请委派');
+      if (action.task?.access === 'write') {
+        claim = `main:${native.turnId}:${String(native.requestId)}`;
+        this.scheduler.claimWrite(work.project.id, claim);
+      } else if (action.task?.stableRead && (this.scheduler.writers.has(work.project.id) || this.scheduler.uncertainWriters.has(work.project.id)))
+        throw new Error('依赖写入的主控验证需要等待该项目写任务结束');
+      try { baseline = await fusionWorkspaceSnapshot(work.project, action.task?.scope || []); }
+      catch (error) { if (claim) this.scheduler.releaseWrite(work.project.id, claim); throw error; }
+    }
+    let result;
+    try { result = applyFusionControl(run, action, native); }
+    catch (error) { if (claim) this.scheduler.releaseWrite(run.works.find(row => row.id === action.workId).project.id, claim); throw error; }
+    if (action.action === 'self_execute' && !previous) {
+      const attempt = run.attempts.find(row => row.id === result.attemptId), work = run.works.find(row => row.id === action.workId);
+      attempt.baseline = baseline;
+      if (claim) this.scheduler.writers.set(work.project.id, { attemptId: attempt.id });
+      this.publish();
+    }
+    if (action.action === 'read_workspace') {
+      result = { ...result, management: { threadId: native.threadId, turnId: native.turnId,
+        evidenceReference: `main-turn:${native.turnId}` } };
+    }
+    if (action.action === 'set_priority') for (const job of this.scheduler.queue.filter(row => row.runId === run.id)) {
+      const attempt = run.attempts.find(row => row.id === job.attemptId);
+      if (attempt?.taskId === action.taskId) job.priority = action.priority;
+    }
     this.wake();
+    return result;
   }
-  confirm(planId) {
-    const authorization = this.run.authorization;
-    if (!authorization || authorization.planId !== planId || authorization.confirmed) throw new Error('方案已变化或已经确认，请读取当前方案');
-    authorization.confirmed = true;
-    authorization.confirmedAt = Date.now();
-    fusionEvent(this.run, 'authorization', { planId, scope: authorization.scope });
-    this.run.status = 'running';
-    this.publish(this.run);
-    this.wake();
+  acknowledge(native, eventIds) {
+    if (!eventIds?.length) return;
+    for (const id of eventIds) {
+      const event = this.run.events.find(row => row.id === id);
+      if (event && !event.deliveredTo) event.deliveredTo = native.turnId;
+    }
+    this.publish();
   }
   wake() {
-    if (this.pumping) { this.again = true; return this.pumping; }
-    this.pumping = this.pump().catch(error => this.block(error)).finally(() => {
-      this.pumping = null;
-      if (this.again) { this.again = false; this.wake(); }
-    });
-    return this.pumping;
-  }
-  block(error) {
-    this.run.status = this.run.stopRequested ? 'stopping' : 'blocked';
-    this.run.blockedReason = error.message;
-    this.publish(this.run);
-  }
-  async pump() {
-    const run = this.run;
-    if (run.stopRequested) return this.finishStop();
-    if (['blocked', 'completed', 'stopped'].includes(run.status)) return;
-    for (const attempt of run.attempts.filter(value => value.kind === 'task' && value.status === 'queued')) this.schedule(attempt.id);
-    const events = run.events.filter(event => !event.consumedBy);
-    if (!events.length || this.decisionPending) return;
-    // Plan confirmation is a distinct event; an unrelated message never silently grants it.
-    if (run.authorization?.required && !run.authorization.confirmed && !events.some(event => event.type === 'user')) return;
-    this.decisionPending = true;
-    try {
-      await this.prepareCapabilities();
-      if (run.stopRequested) return;
-      validateExecution(run, run.main);
-      const attempt = newFusionAttempt(run, null, { app: run.main.app, model: run.main.model, effort: run.main.effort || '' }, null, 'decision');
-      const request = { id: crypto.randomUUID(), attemptId: attempt.id, eventIds: run.events.filter(event => !event.consumedBy).map(event => event.id),
-        status: 'queued', created: Date.now(), native: null };
-      run.decisions.push(request);
-      this.publish(run);
-      await this.schedule(attempt.id, request.id);
-    } finally {
-      this.decisionPending = false;
-      for (const { app } of EDITORS) this.cleanup(app);
-    }
-  }
-  async prepareCapabilities() {
-    const run = this.run;
-    for (const editor of EDITORS) {
-      if (run.stopRequested) return;
-      if (this.scheduler.slots.has(editor.app) && run.capabilities.some(value => value.app === editor.app)) continue;
-      try {
-        const targets = await (await fetch(editor.url + '/json/list', { signal: AbortSignal.timeout(1500) })).json();
-        if (!targets.some(value => value.type === 'page' && /workbench/.test(value.url))) throw new Error('当前没有可用的原生窗口');
-        const snapshot = await this.scheduler.submit({ runId: run.id, app: editor.app, projectKey: run.project.id, access: 'read',
-          ready: () => !run.stopRequested, execute: () => this.agent.capabilities(run, editor.app, editor.app === run.main.app ? 'main' : 'child') });
-        run.capabilities = [...run.capabilities.filter(value => value.app !== editor.app), snapshot];
-      } catch (error) {
-        if (error.cancelled) return;
-        run.capabilities = [...run.capabilities.filter(value => value.app !== editor.app), { app: editor.app, available: false,
-          at: Date.now(), source: '本次原生能力读取', error: error.message, models: [] }];
+    if (this.waking) { this.wakeAgain = true; return; }
+    this.waking = true;
+    Promise.resolve().then(async () => {
+      for (const attempt of this.run.attempts.filter(row => row.status === 'cancelled')) this.scheduler.cancelAttempt(attempt.id);
+      for (const effect of this.run.effects.filter(row => row.status === 'pending' && !this.effects.has(row.id))) {
+        if (effect.kind === 'execute') { this.schedule(effect.data.attemptId); continue; }
+        this.effects.add(effect.id);
+        Promise.resolve().then(() => effect.kind === 'stop' ? this.stopAttempt(effect.data.attemptId) : null)
+          .then(() => { effect.status = 'done'; effect.endedAt = Date.now(); }, error => { effect.status = 'failed'; effect.error = error.message; })
+          .finally(() => { this.effects.delete(effect.id); this.publish(); });
       }
-    }
-    this.publish(run);
-  }
-  schedule(attemptId, decisionId = '') {
-    if (this.jobs.has(attemptId)) return this.jobs.get(attemptId);
-    const run = this.run;
-    const current = () => run.attempts.find(value => value.id === attemptId);
-    const task = () => run.tasks.find(value => value.id === current().taskId);
-    const isDecision = current().kind === 'decision';
-    const job = this.scheduler.submit({ runId: run.id, attemptId, app: current().app, projectKey: run.project.id,
-      access: isDecision ? 'read' : task().access,
-      ready: () => (this.recovering.has(attemptId) || !run.stopRequested) && (isDecision || current().status === 'queued' && task().dependsOn.every(id => run.tasks.find(value => value.id === id)?.status === 'accepted')),
-      execute: async () => {
-        const recovering = this.recovering.has(attemptId);
-        if (!recovering) current().status = 'preparing';
-        if (task()) task().status = recovering ? 'recovering' : 'running';
-        this.publish(run);
-        const request = isDecision && run.decisions.find(value => value.id === decisionId || value.attemptId === attemptId);
-        if (isDecision && !recovering) {
-          request.eventIds = run.events.filter(event => !event.consumedBy).map(event => event.id);
-          request.startedAt = Date.now();
-          this.publish(run);
-        }
-        const prompt = recovering ? current().prompt : isDecision
-          ? fusionDecisionPrompt(run, request, await this.projectInstructions()) : fusionTaskPrompt(run, task(), current());
-        return { result: await this.agent.execute(run, attemptId, prompt, recovering), decisionId: request?.id || '' };
-      },
-    }).then(({ result, decisionId: completedDecision }) => {
-      const attempt = current();
-      Object.assign(attempt, { status: result.stopped ? 'stopped' : isDecision ? 'completed' : 'awaiting_review',
-        native: result.native, endedAt: result.endedAt || Date.now(), result: { text: result.text, completed: result.completed },
-        changes: result.changes, usage: result.usage, durationMs: Date.now() - (attempt.acceptedAt || attempt.created) });
-      delete attempt.live;
-      if (task()) task().status = result.stopped ? 'stopped' : 'awaiting_review';
-      if (result.stopped) return;
-      if (isDecision) {
-        const request = run.decisions.find(value => value.id === completedDecision);
-        request.native = result.native;
-        try {
-          const applied = applyFusionDecision(run, request, { ...result, role: 'main' });
-          for (const command of applied.commands || []) {
-            if (command.type === 'cancel') this.scheduler.cancelAttempt(command.attemptId);
-            if (command.type === 'stop') this.agent.stop(command.attemptId).catch(error => this.block(error));
-            if (command.type === 'archive') this.archive(command.bindingId);
-          }
-        } catch (error) {
-          request.status = 'invalid'; request.error = error.message;
-          fusionMessage(run, 'assistant', result.text, { decisionId: request.id, invalidControl: error.message });
-          fusionEvent(run, 'control_error', { decisionId: request.id, reason: error.message });
-          this.block(error);
-        }
-      } else fusionEvent(run, 'task_result', { taskId: attempt.taskId, attemptId, result: attempt.result, changes: attempt.changes, usage: attempt.usage });
-    }).catch(error => {
-      const attempt = current();
-      if (error.cancelled) attempt.status = 'cancelled';
-      else {
-        if (attempt.submission !== 'not_submitted' && !attempt.nativeGenerationEndedAt && !error.nativeEnded) {
-          attempt.status = 'unknown';
-          this.scheduler.uncertain.set(attempt.app, attempt.id);
-          if (task()?.access === 'write') this.scheduler.uncertainWriters.set(run.project.id, attempt.id);
-        }
-        if (attempt.status !== 'unknown') { attempt.status = 'failed'; attempt.endedAt = attempt.nativeGenerationEndedAt || (error.nativeEnded ? Date.now() : null); }
-        attempt.error = error.message;
-        if (task()) task().status = attempt.status;
-        fusionEvent(run, 'native_error', { taskId: attempt.taskId, attemptId, reason: error.message, submission: attempt.submission });
-        if (isDecision || attempt.status === 'unknown') this.block(error);
-        else { run.status = run.stopRequested ? 'stopping' : 'running'; run.blockedReason = ''; }
-      }
-    }).finally(() => {
-      this.jobs.delete(attemptId);
-      this.recovering.delete(attemptId);
-      this.publish(run);
       this.scheduler.drain();
-      if (run.stopRequested) this.finishStop(); else this.wake();
-      this.cleanup(current().app);
+      if (this.run.stopRequested) { this.finishStop(); return; }
+      if (!this.run.main.bindingId || ['blocked', 'stopped'].includes(this.run.status) || this.sendingEvents) return;
+      const events = this.run.events.filter(row => !row.deliveredTo);
+      if (!events.length) return;
+      if (!await this.controller.idle()) return;
+      const pendingMain = this.run.attempts.find(row => row.kind === 'main' && (row.status === 'queued' || NATIVE_UNSETTLED.includes(row.status)));
+      if (pendingMain) return;
+      const attempt = newFusionAttempt(this.run, null, null, 'main');
+      attempt.origin = 'events'; attempt.eventIds = events.map(row => row.id); attempt.bindingId = this.run.main.bindingId;
+      attempt.prompt = `RA 工作台待处理事件。先 read_workspace，按归属处理；不要重复已完成的执行。\n本次输入：${attempt.id}\n` + JSON.stringify(events);
+      this.sendingEvents = true; this.publish();
+      this.scheduler.submit({ lane: 'main', runId: this.run.id, app: this.run.main.app,
+        attemptId: attempt.id, ready: () => !this.run.stopRequested,
+        execute: () => this.agent.execute(this.run, attempt.id, attempt.prompt) })
+        .then(result => this.mainEnded(attempt.id, { ...result, ended: true, text: result.text, error: result.error, completed: result.completed }))
+        .catch(error => this.attemptFailed(attempt.id, error, true))
+        .finally(() => { this.sendingEvents = false; this.publish(); this.wake(); });
+    }).catch(error => this.blockMain(error)).finally(() => {
+      this.waking = false;
+      if (this.wakeAgain) { this.wakeAgain = false; this.wake(); }
     });
+  }
+  schedule(attemptId, recovering = false) {
+    if (this.jobs.has(attemptId)) return this.jobs.get(attemptId);
+    const attempt = () => this.run.attempts.find(row => row.id === attemptId);
+    if (!attempt() || ['cancelled', 'stopped'].includes(attempt().status)) return;
+    const task = () => this.run.tasks.find(row => row.id === attempt().taskId);
+    if (!task() || task().executor === 'main') return;
+    const work = () => this.run.works.find(row => row.id === task().workId);
+    const job = this.scheduler.submit({ runId: this.run.id, app: attempt().app, attemptId,
+      projectKey: work().project.id, access: task().access, stableRead: task().stableRead, priority: task().priority,
+      ready: () => recovering || !this.run.stopRequested && !['stopping', 'stopped'].includes(work().status)
+        && !['cancelled', 'stopping'].includes(task().status) && task().dependsOn.every(id => this.run.tasks.find(row => row.id === id)?.status === 'accepted'),
+      execute: async () => {
+        const effect = this.run.effects.find(row => row.id === attemptId);
+        if (effect) { effect.status = 'executing'; effect.startedAt ||= Date.now(); }
+        if (!recovering) {
+          attempt().status = 'preparing';
+          attempt().inputIds = task().inputs.filter(input => !input.deliveredAt).map(input => input.id);
+        }
+        this.publish();
+        return this.agent.execute(this.run, attemptId, recovering ? attempt().prompt : fusionTaskPrompt(this.run, task(), attempt()), recovering);
+      } }).then(result => this.completed(attemptId, result)).catch(error => this.attemptFailed(attemptId, error))
+      .finally(() => {
+        this.jobs.delete(attemptId);
+        const effect = this.run.effects.find(row => row.id === attemptId);
+        if (effect) { if (effect.status !== 'cancelled') effect.status = 'done'; effect.endedAt = Date.now(); }
+        this.publish(); this.scheduler.drain(); this.wake();
+      });
     this.jobs.set(attemptId, job);
     return job;
   }
-  archive(bindingId) {
-    const binding = this.run.bindings.find(value => value.id === bindingId);
-    if (!binding || binding.role === 'main') return;
-    this.archiving.add(bindingId);
-    this.scheduler.submit({ runId: this.run.id, app: binding.app, projectKey: this.run.project.id, access: 'read',
-      ready: () => !this.run.stopRequested, execute: () => this.agent.archive(this.run, bindingId) })
-      .catch(error => { binding.archive = { supported: true, error: error.message }; this.publish(this.run); })
-      .finally(() => { this.archiving.delete(bindingId); this.cleanup(binding.app); });
+  completed(attemptId, result) {
+    const attempt = this.run.attempts.find(row => row.id === attemptId);
+    if (attempt.endedAt) return;
+    Object.assign(attempt, { status: result.stopped ? 'stopped' : result.completed && !result.error ? 'awaiting_review' : 'failed',
+      endedAt: result.endedAt || Date.now(), result: { text: result.text, completed: result.completed, error: result.error || '' },
+      usage: result.usage || null, changes: result.changes || null, durationMs: Date.now() - (attempt.acceptedAt || attempt.created) });
+    const task = this.run.tasks.find(row => row.id === attempt.taskId);
+    if (task) task.status = attempt.status;
+    const agent = task && this.run.agents.find(row => row.id === task.workerId);
+    if (agent) agent.status = 'idle';
+    if (this.scheduler.uncertain.get(attempt.app) === attempt.id) this.scheduler.uncertain.delete(attempt.app);
+    const work = this.run.works.find(row => row.id === attempt.workId);
+    if (work && this.scheduler.uncertainWriters.get(work.project.id) === attempt.id) this.scheduler.uncertainWriters.delete(work.project.id);
+    fusionEvent(this.run, result.error ? 'native_error' : 'task_result', { workId: attempt.workId, taskId: attempt.taskId, attemptId,
+      result: attempt.result, usage: attempt.usage, changes: attempt.changes }, `result:${attemptId}`);
+    this.publish();
   }
-  cleanup(app) {
-    this.scheduler.submit({ runId: this.run.id, app, projectKey: this.run.project.id, access: 'read', ready: () => true,
-      execute: () => this.agent.recycle(this.run, app) })
-      .catch(error => { if (!error.cancelled) console.log('[Fusion window cleanup]', error.message); });
+  attemptFailed(attemptId, error, main = false) {
+    const attempt = this.run.attempts.find(row => row.id === attemptId);
+    if (!attempt || attempt.endedAt) return;
+    const unknown = !error.cancelled && !error.nativeRejected && attempt.submission !== 'not_submitted' && !attempt.nativeGenerationEndedAt;
+    Object.assign(attempt, { status: error.cancelled ? 'cancelled' : unknown ? 'unknown' : 'failed', error: error.message,
+      endedAt: unknown ? null : Date.now() });
+    const task = this.run.tasks.find(row => row.id === attempt.taskId), work = this.run.works.find(row => row.id === attempt.workId);
+    if (task) task.status = attempt.status;
+    const agent = task && this.run.agents.find(row => row.id === task.workerId);
+    if (agent) agent.status = unknown ? 'unknown' : error.creationUnknown ? 'blocked' : 'idle';
+    if (unknown && task?.executor !== 'main') this.scheduler.uncertain.set(attempt.app, attempt.id);
+    if (unknown && task?.access === 'write') this.scheduler.uncertainWriters.set(work.project.id, attempt.id);
+    if (!error.cancelled) fusionEvent(this.run, 'native_error', { workId: attempt.workId, taskId: attempt.taskId, attemptId,
+      reason: error.message, submission: attempt.submission }, `error:${attemptId}`);
+    if (main) this.blockMain(error); else this.publish();
   }
-  async projectInstructions() {
-    if (this.run.project.host) return '远程项目：请使用当前原生会话只读核对实际项目及祖先目录的 AGENTS.md。';
-    const documents = [];
-    let directory = this.run.project.root;
-    for (;;) {
-      try { documents.unshift(`${path.join(directory, 'AGENTS.md')}\n${await fs.readFile(path.join(directory, 'AGENTS.md'), 'utf8')}`); }
-      catch (error) { if (error.code !== 'ENOENT') throw error; }
-      const parent = path.dirname(directory);
-      if (parent === directory) break;
-      directory = parent;
+  async mainEnded(attemptId, turn) {
+    const run = this.run, attempt = run.attempts.find(row => row.id === attemptId);
+    if (!attempt || attempt.endedAt && !NATIVE_UNSETTLED.includes(attempt.status)) return;
+    Object.assign(attempt, { status: run.stopRequested ? 'stopped' : turn.error || !turn.completed ? 'failed' : 'ended', endedAt: attempt.endedAt || Date.now(),
+      usage: turn.usage || attempt.usage,
+      result: { text: turn.text || '', completed: !!turn.completed, error: turn.error || '' }, durationMs: Date.now() - attempt.acceptedAt });
+    for (const id of attempt.eventIds || []) {
+      const event = run.events.find(row => row.id === id);
+      if (event) event.deliveredTo = attempt.native?.turnId || attempt.id;
     }
-    return documents.join('\n\n') || '祖先目录未找到 AGENTS.md；请核对本次范围内其他项目指令。';
+    for (const self of run.attempts.filter(row => row.kind === 'task' && row.native?.turnId === attempt.native?.turnId && !row.endedAt)) {
+      const task = run.tasks.find(row => row.id === self.taskId), work = run.works.find(row => row.id === self.workId);
+      this.completed(self.id, { text: turn.text, completed: turn.completed, error: turn.error, stopped: run.stopRequested,
+        changes: await fusionWorkspaceSnapshot(work.project, task.scope) });
+      this.scheduler.releaseWrite(work.project.id, self.id);
+    }
+    for (const work of run.works.filter(row => row.candidate?.nativeTurnId === attempt.native?.turnId)) {
+      const candidate = work.candidate;
+      const arrived = run.events.some(event => !candidate.eventIds.includes(event.id) && (!event.data.workId || event.data.workId === work.id));
+      const unresolved = run.tasks.some(task => task.workId === work.id && task.required && task.status !== 'accepted')
+        || run.attempts.some(row => row.workId === work.id && NATIVE_UNSETTLED.includes(row.status));
+      if (!turn.completed || turn.error || arrived || unresolved || candidate.planId !== work.planId) {
+        work.status = 'running'; work.candidate = null;
+        fusionEvent(run, 'delivery_pending', { workId: work.id, reason: '交付候选后有新事实或本轮没有成功完成，需要重新核对' });
+      } else { work.deliveries.push({ ...candidate, endedAt: attempt.endedAt, mainAttemptId: attempt.id }); work.status = 'completed'; work.candidate = null; }
+    }
+    if (!run.stopRequested && (turn.error || !turn.completed)) this.blockMain(new Error(turn.error || '主控原生轮次被中断或未完成，等待用户继续'));
+    else if (!run.stopRequested) { run.status = 'waiting'; run.blockedReason = ''; }
+    this.publish(); this.wake();
   }
-  async stop() {
-    this.agent.releaseMainProject(this.run);
-    const run = this.run;
-    run.stopRequested = true;
-    run.status = 'stopping';
-    for (const attempt of run.attempts) if (attempt.status === 'queued') {
-      attempt.status = 'cancelled';
-      const task = run.tasks.find(value => value.id === attempt.taskId);
+  confirm(planId) {
+    commitFusion(this.run, next => {
+      const work = next.works.find(row => row.planId === planId), plan = work?.plans.find(row => row.id === planId);
+      if (!plan || plan.confirmed) throw new Error('待确认方案已改变，请重新读取');
+      plan.confirmed = true; plan.confirmedAt = Date.now(); work.status = 'running';
+      fusionEvent(next, 'plan_confirmed', { workId: work.id, planId });
+    });
+    this.wake();
+  }
+  input({ workId, taskId, questionId, text, requestId }) {
+    if (typeof text !== 'string' || !text.trim()) throw new Error('请输入补充内容');
+    commitFusion(this.run, next => {
+      if (next.events.some(row => row.id === requestId)) return;
+      const question = questionId && next.questions.find(row => row.id === questionId);
+      const task = taskId && next.tasks.find(row => row.id === taskId);
+      const work = next.works.find(row => row.id === (question?.workId || task?.workId || workId));
+      if ((workId || taskId || questionId) && !work) throw new Error('请选择补充所属工作项');
+      if (!next.main.bindingId) throw new Error('请先启用主 Agent');
+      if (questionId && !question) throw new Error('这个问题已不存在');
+      if (question) Object.assign(question, { answer: text, answeredAt: Date.now(), inputId: requestId });
+      const target = task || next.tasks.find(row => row.id === question?.taskId);
+      if (target) target.inputs.push({ id: requestId, text, created: Date.now(), deliveredAt: null });
+      fusionEvent(next, 'user_input', { workId: work?.id || '', taskId: task?.id || question?.taskId || '', questionId, text }, requestId);
+    });
+    this.wake();
+  }
+  async stopAttempt(attemptId) {
+    const attempt = this.run.attempts.find(row => row.id === attemptId);
+    if (!attempt || attempt.endedAt) return;
+    if (attempt.status === 'queued') {
+      attempt.status = 'cancelled'; attempt.endedAt = Date.now(); this.scheduler.cancelAttempt(attemptId);
+      const effect = this.run.effects.find(row => row.id === attemptId);
+      if (effect) effect.status = 'cancelled';
+      const task = this.run.tasks.find(row => row.id === attempt.taskId);
       if (task) task.status = 'cancelled';
+      const agent = task && this.run.agents.find(row => row.id === task.workerId);
+      if (agent) agent.status = 'idle';
+      return;
     }
-    this.scheduler.cancel(run.id);
-    this.publish(run);
-    const results = await Promise.allSettled(run.attempts.filter(attempt => NATIVE_UNSETTLED.includes(attempt.status)).map(async attempt => {
-      attempt.status = 'stopping';
-      await this.agent.stop(attempt.id);
+    attempt.status = 'stopping'; this.publish();
+    if (attempt.kind === 'main') await this.controller.stop(attempt);
+    else if (this.run.tasks.find(row => row.id === attempt.taskId)?.executor === 'main') {
+      const main = this.run.attempts.find(row => row.kind === 'main' && row.native?.turnId === attempt.native?.turnId);
+      if (!main) throw new Error('主控实际轮次待核对');
+      await this.controller.stop(main);
+    } else await this.agent.stop(attemptId);
+  }
+  async stop({ workId = '', taskId = '' } = {}) {
+    const run = this.run;
+    if (!workId && !taskId) { run.stopRequested = true; run.status = 'stopping'; }
+    const work = workId && run.works.find(row => row.id === workId);
+    if (workId && !work) throw new Error('没有这个工作项');
+    if (taskId && !run.tasks.some(row => row.id === taskId)) throw new Error('没有这个任务');
+    if (work) work.status = 'stopping';
+    const targets = run.attempts.filter(row => (!workId || row.workId === workId) && (!taskId || row.taskId === taskId)
+      && (row.status === 'queued' || NATIVE_UNSETTLED.includes(row.status)));
+    for (const task of run.tasks.filter(row => (!workId || row.workId === workId) && (!taskId || row.id === taskId))) task.stopRequested = true;
+    this.publish();
+    await Promise.allSettled(targets.map(async attempt => {
+      try { await this.stopAttempt(attempt.id); }
+      catch (error) { attempt.stopError = error.message; this.publish(); }
     }));
-    const failed = results.find(result => result.status === 'rejected');
-    if (failed) run.blockedReason = failed.reason.message;
     this.finishStop();
   }
   finishStop() {
-    if (!this.run.stopRequested) return;
-    const unsettled = this.run.attempts.some(attempt => NATIVE_UNSETTLED.includes(attempt.status));
-    this.run.status = unsettled || this.jobs.size ? 'stopping' : 'stopped';
-    this.publish(this.run);
-    if (this.run.status === 'stopped') for (const { app } of EDITORS) this.cleanup(app);
+    const previous = JSON.stringify([this.run.status, this.run.works.map(work => work.status)]);
+    const unsettled = attempt => NATIVE_UNSETTLED.includes(attempt.status) || attempt.status === 'queued';
+    for (const work of this.run.works.filter(row => row.status === 'stopping'))
+      if (!this.run.attempts.some(row => row.workId === work.id && unsettled(row))) work.status = 'stopped';
+    if (this.run.stopRequested) this.run.status = this.run.attempts.some(unsettled) ? 'stopping' : 'stopped';
+    if (previous !== JSON.stringify([this.run.status, this.run.works.map(work => work.status)])) this.publish();
   }
-  resume() {
-    this.agent.reclaimRequests.set(this.run.id, new Set([this.run.main.app, ...this.run.bindings.map(binding => binding.app)]));
-    this.run.stopRequested = false;
-    this.run.blockedReason = '';
-    this.run.status = 'recovering';
-    for (const attempt of this.run.attempts.filter(value => NATIVE_UNSETTLED.includes(value.status))) {
-      this.recovering.add(attempt.id);
-      attempt.status = 'queued';
-      this.schedule(attempt.id);
+  async resume() {
+    this.run.stopRequested = false; this.run.blockedReason = ''; this.run.status = 'recovering';
+    for (const task of this.run.tasks) delete task.stopRequested;
+    for (const work of this.run.works.filter(row => ['stopped', 'stopping'].includes(row.status))) work.status = 'planned';
+    this.publish();
+    await this.recover();
+  }
+  async recover() {
+    for (const attempt of this.run.attempts.filter(row => NATIVE_UNSETTLED.includes(row.status) && row.submission !== 'not_submitted')) {
+      const task = this.run.tasks.find(row => row.id === attempt.taskId), work = this.run.works.find(row => row.id === attempt.workId);
+      if (task?.executor === 'child') this.scheduler.uncertain.set(attempt.app, attempt.id);
+      if (task?.access === 'write') this.scheduler.uncertainWriters.set(work.project.id, attempt.id);
     }
-    if (!this.jobs.size) {
-      this.run.status = 'running';
-      fusionEvent(this.run, 'resume', { reason: '用户明确继续，先核对所有未知原生执行' });
-      this.wake();
+    await this.controller.start();
+    for (const attempt of this.run.attempts.filter(row => NATIVE_UNSETTLED.includes(row.status) || row.status === 'queued')) {
+      if (this.jobs.has(attempt.id)) continue;
+      if (attempt.kind === 'main') {
+        if (attempt.origin === 'events') {
+          if (attempt.submission === 'not_submitted') {
+            attempt.status = 'cancelled'; attempt.endedAt = Date.now(); // inbox remains pending; no native submission occurred
+          } else {
+            try { const result = await this.agent.execute(this.run, attempt.id, attempt.prompt, true); await this.mainEnded(attempt.id, result); }
+            catch (error) { this.attemptFailed(attempt.id, error, true); }
+          }
+        } else if (attempt.native?.messageId && !attempt.endedAt) {
+          const turn = await this.agent.call(this.controller.context, `codexFusionTurn(${JSON.stringify(attempt.native.messageId)})`);
+          if (turn.ended) await this.mainEnded(attempt.id, turn);
+          else if (!turn.id) this.attemptFailed(attempt.id, new Error('无法确认主会话原生轮次，不能自动重发'), true);
+          else if (this.run.stopRequested) await this.controller.stop(attempt);
+        }
+      } else if (this.run.tasks.find(row => row.id === attempt.taskId)?.executor !== 'main') {
+        if (attempt.submission !== 'not_submitted') {
+          this.scheduler.uncertain.set(attempt.app, attempt.id);
+          const task = this.run.tasks.find(row => row.id === attempt.taskId), work = this.run.works.find(row => row.id === attempt.workId);
+          if (task.access === 'write') this.scheduler.uncertainWriters.set(work.project.id, attempt.id);
+        }
+        this.schedule(attempt.id, attempt.submission !== 'not_submitted');
+      }
     }
-    this.publish(this.run);
+    if (this.run.status === 'recovering') this.run.status = 'waiting';
+    this.publish(); this.wake();
   }
 }
 
 export function fusionRunner(run) {
   const key = JSON.stringify([run.computer, run.deviceId, run.id]);
-  let runner = fusionWorkers.get(key);
-  if (!runner) { runner = new FusionRunner(run); fusionWorkers.set(key, runner); }
-  return runner;
+  if (!fusionWorkers.has(key)) fusionWorkers.set(key, new FusionRunner(run));
+  return fusionWorkers.get(key);
 }
-
 export function recoverFusionRuns() {
-  for (const saved of Object.values(fusionRuns)) for (const run of saved.runs) {
-    const unsettled = run.attempts.filter(attempt => NATIVE_UNSETTLED.includes(attempt.status));
-    const queued = run.attempts.some(attempt => attempt.status === 'queued');
-    if (!unsettled.length && !queued && !run.events.some(event => !event.consumedBy)) continue;
-    if (['awaiting_user', 'completed', 'stopped', 'blocked'].includes(run.status) && !unsettled.length && !queued) continue;
-    const runner = fusionRunner(run);
-    run.status = 'recovering';
-    for (const attempt of unsettled) {
-      if (attempt.submission === 'not_submitted') attempt.status = 'queued';
-      else {
-        runner.recovering.add(attempt.id);
-        fusionScheduler.uncertain.set(attempt.app, attempt.id);
-        if (run.tasks.find(task => task.id === attempt.taskId)?.access === 'write') fusionScheduler.uncertainWriters.set(run.project.id, attempt.id);
-        attempt.status = 'queued';
-      }
-    }
-    if (run.stopRequested) {
-      for (const attempt of unsettled.filter(value => runner.recovering.has(value.id))) {
-        const stopRequested = run.stopRequested;
-        run.stopRequested = false;
-        runner.schedule(attempt.id);
-        run.stopRequested = stopRequested;
-      }
-    } else {
-      for (const attempt of run.attempts.filter(value => value.kind === 'decision' && value.status === 'queued')) {
-        runner.decisionPending = true;
-        runner.schedule(attempt.id).finally(() => { runner.decisionPending = false; runner.wake(); });
-      }
-      runner.wake();
-    }
-    runner.publish(run);
+  for (const owner of Object.values(fusionRuns)) for (const run of owner.runs) if (run.main.bindingId) {
+    run.status = run.stopRequested ? 'stopping' : 'recovering'; publishFusion(run);
+    fusionRunner(run).recover().catch(error => fusionRunner(run).blockMain(error));
   }
 }

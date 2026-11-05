@@ -1,8 +1,12 @@
 // Watch transcript mutations instead of waiting for the next periodic read.
 import { cdpRead } from '../cdp.mjs';
-import { PAGE_SRC } from '../page/build.mjs';
+import { PAGE_SRC, helpersCall } from '../page/build.mjs';
+import { createHash } from 'node:crypto';
+import { DATA_DIR } from '../../lib/auth.mjs';
 
-export async function watchChat(cdp, changed, shared = false) {
+const watchOwner = createHash('sha256').update(DATA_DIR).digest('hex');
+
+export async function watchChat(cdp, changed, shared = false, context = null) {
   const name = '__remoteChat' + crypto.randomUUID().replaceAll('-', '');
   let stopped = false;
   const receive = event => { if (!stopped && event.name === name) changed(); };
@@ -12,15 +16,23 @@ export async function watchChat(cdp, changed, shared = false) {
   cdp.on('Runtime.bindingCalled', receive);
   const removed = await cdp.evaluate(`(() => {
     const name = ${JSON.stringify(name)};
+    const context = ${JSON.stringify(context)};
+    const owner = ${JSON.stringify(watchOwner)};
     const removed = [];
-    if (${shared}) {
+    if (${shared} || context) {
       for (const key of Object.keys(window)) {
-        if (/^__remoteChat[0-9a-f]+Watch$/.test(key)) { window[key].stop(); delete window[key]; }
-        else if (/^__remoteChat[0-9a-f]+$/.test(key) && key !== name) { removed.push(key); delete window[key]; }
+        if (!/^__remoteChat[0-9a-f]+Watch$/.test(key)) continue;
+        const prior = window[key];
+        const sameContext = context && prior?.context && prior.context.app === context.app
+          && prior.context.threadId === context.threadId && prior.context.host === context.host;
+        if (prior.owner === owner && (context ? sameContext : !prior.context)) {
+          window[key].stop(); delete window[key]; removed.push(key.slice(0, -5));
+        }
       }
+      for (const key of removed) delete window[key];
     }
     let doc, native, observer;
-    const state = { timer: 0, stop: null };
+    const state = { timer: 0, stop: null, context, owner };
     const rows = '[data-turn-key], [data-flat-index], [data-message-kind], [data-acp-msg-index], [role="log"][aria-label="Session transcript"], [role="group"][aria-label$="message"], [aria-label^="Preview queued message"], [data-response-annotation-conversation]';
     const capacityRetry = node => {
       const el = node.nodeType === 1 ? node : node.parentElement;
@@ -50,9 +62,12 @@ export async function watchChat(cdp, changed, shared = false) {
       observer?.disconnect(); native?.stop();
       doc = next;
       doc.defaultView.addEventListener('remote-agent-submit-error', changed);
-      if (window.vscode?.context?.configuration?.().product?.applicationName === 'devin-desktop') {
+      if (context?.app === 'codex' || context?.app === 'cursor') {
+        native = ${helpersCall('watchCodexData(changed)', context)};
+      } else if (window.vscode?.context?.configuration?.().product?.applicationName === 'devin-desktop') {
         native = { stop: window.__acpStore.subscribe(changed), refresh() {} };
       } else native = (${PAGE_SRC}).watchCodexData(changed);
+      if (context) { changed(); return; }
       observer = new MutationObserver(records => {
         if (records.some(record => inTranscript(record.target) || capacityRetry(record.target)
           || [...record.addedNodes, ...record.removedNodes].some(node => inTranscript(node, true) || capacityRetry(node)))) changed();

@@ -6,7 +6,7 @@ import { AgentContext, appPlans } from './agent/index.mjs';
 import { resetThinkingCaches } from './agent/thinking-cache.mjs';
 import { hasLaunched, takeLaunched } from './launch.mjs';
 import { fusionViewers, savedFusion } from './fusion/state.mjs';
-import { FUSION_OWNER } from './fusion/owner.mjs';
+import { FUSION_OWNER, fusionRunView } from './fusion/owner.mjs';
 import { fusionRunner } from './fusion/runner.mjs';
 import { ROUTES, SKIP, flag } from './routes.mjs';
 import { chatForWire } from './chat-images.mjs';
@@ -166,6 +166,18 @@ export class Session extends AgentContext {
   emit(obj) {
     if (captureOperation(this, obj)) return;
     if (cdpRead.getStore()?.aborted) return;
+    if (['attached', 'thread'].includes(obj?.t) && obj.app !== 'fusion') {
+      const app = obj.app || this.app, threadId = obj.threadId ?? this.threadId;
+      this.fusionRun = this.fusionSaved.runs.find(run => run.bindings.some(binding => binding.id === run.main.bindingId
+        && binding.app === app && binding.threadId === threadId));
+      this.fusionDetailId = '';
+      obj = { ...obj, fusionController: this.fusionRun ? { id: this.fusionRun.id, computer: this.fusionRun.computer } : null };
+    }
+    if (obj?.t === 'chat' && this.fusionRun?.main.bindingId) {
+      const binding = this.fusionRun.bindings.find(row => row.id === this.fusionRun.main.bindingId);
+      if (binding.app === this.app && binding.threadId === obj.chat?.thread)
+        obj = { ...obj, chat: { ...obj.chat, fusionRun: fusionRunView(this.fusionRun) } };
+    }
     const result = this.navigationResult;
     if (result && (cdpRead.getStore()?.navigationId ?? this.navigationId) === result.id) {
       if (obj?.t === 'attached' && !obj.closed) {

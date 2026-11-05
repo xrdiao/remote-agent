@@ -6,7 +6,7 @@ import test from 'node:test';
 import { FusionScheduler } from '../server/fusion/scheduler.mjs';
 
 const source = fs.readFileSync(new URL('../server/project-windows.mjs', import.meta.url), 'utf8')
-  .replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
+  .replace(/^import .*;\n/gm, '').replace(/^export /gm, '').replaceAll('import.meta.url', JSON.stringify(new URL('../server/project-windows.mjs', import.meta.url).href));
 
 function fixture({ favorite = false, keep = false, owned = true, failClose = false, focused = false, nativeFocus = 2, busy = false, processes = [], singleWindow = false, nativePid = 0, endpointCloses = false } = {}) {
   const library = { cursor: { session: { favorite } } }, calls = [], closed = new Set(), probes = [];
@@ -130,14 +130,6 @@ test('ordinary executables are not excluded just because an argument mentions an
   await h.scan(); assert.equal(h.calls.length, 0);
 });
 
-test('a Fusion window switched to an unrelated session is retained by the existing idle scanner', async () => {
-  const h = fixture();
-  vm.runInContext("Object.assign(saved.windows['cursor:one'], {purpose:'fusion', ownership:'changed'})", h.context);
-  await h.scan();
-  assert.equal(h.calls.length, 0);
-  assert.equal(h.state().windows['cursor:one'].reason, 'Fusion 窗口归属已变化，等待用户处理');
-});
-
 test('system authentication service does not block every project when its cwd is private', async () => {
   const h = fixture({ processes: [{ id: 1, args: ['/usr/bin/ssh-agent', '-D'], denied: true }] });
   await h.scan(); assert.deepEqual([...h.closed], ['one']);
@@ -146,160 +138,17 @@ test('system authentication service does not block every project when its cwd is
   assert.equal(unknown.state().windows['cursor:one'].reason, '无法确认后台进程状态');
 });
 
-function fusion(h) {
-  vm.runInContext("Object.assign(saved.windows['cursor:one'], {purpose:'fusion',computer:'computer',projectId:'project',ownership:'fusion',bindingId:'binding',expectedThread:'owned',lastUsed:Date.now()})", h.context);
-}
-
-test('an unused Fusion window closes immediately, including the last window, while an ordinary window keeps its idle rules', async () => {
-  const owned = fixture({ singleWindow: true }); fusion(owned);
-  await owned.recycle(); assert.deepEqual([...owned.closed], ['one']);
-  const ordinary = fixture({ singleWindow: true });
-  await ordinary.scan(); assert.equal(ordinary.state().windows['cursor:one'].reason, '保留最后一个可用窗口');
-  const recent = fixture(); vm.runInContext("saved.windows['cursor:one'].lastUsed=Date.now()", recent.context);
-  await recent.scan(); assert.equal(recent.calls.length, 0);
+test('a shared window is retained only while Fusion is actually using it; no dedicated recycling is triggered', async () => {
+  const h = fixture(); h.context.fusionWindowInUse = () => true;
+  await h.scan(); assert.equal(h.calls.length, 0); assert.equal(h.state().windows['cursor:one'].reason, 'Fusion 正在使用窗口');
+  h.context.fusionWindowInUse = () => false;
+  vm.runInContext("saved.windows['cursor:one'].lastUsed -= 120000", h.context);
+  await h.scan(); assert.deepEqual([...h.closed], ['one']);
 });
-
-test('a Fusion cleanup request never probes or closes an ordinary window', async () => {
-  const h = fixture(); fusion(h);
-  vm.runInContext("saved.windows['cursor:two'].owned=true", h.context);
-  await h.recycle(); assert.deepEqual([...h.closed], ['one']);
-  assert.ok(h.probes.every(id => id === 'one'));
-  assert.equal(h.state().windows['cursor:two'].closed, undefined);
-});
-test('main ordinary sessions remain in normal lists and their windows are excluded from child recycling', async () => {
+test('Fusion hides worker sessions while main sessions and shared windows remain ordinary', () => {
   const h = fixture();
-  vm.runInContext(`saved.windows['cursor:one'].purpose='fusion'; saved.windows['cursor:one'].computer='computer';
-    saved.windows['cursor:one'].projectId='project';
-    fusionRuns.entry={runs:[{bindings:[{role:'main',app:'cursor',threadId:'main',windowId:'one'},
-      {role:'B1',app:'cursor',threadId:'child',windowId:'two'}]}]};`, h.context);
-  h.context.fusionMainWindow = (app, id) => app === 'cursor' && id === 'one';
+  vm.runInContext("fusionRuns.entry={runs:[{bindings:[{role:'main',app:'cursor',threadId:'main',windowId:'one'},{role:'worker',app:'cursor',threadId:'child',windowId:'one'}]}]}", h.context);
   const excluded = vm.runInContext('fusionTargets()', h.context);
   assert.equal(excluded.sessions.has('cursor:main'), false); assert.equal(excluded.sessions.has('cursor:child'), true);
-  assert.equal(excluded.windows.has('cursor:one'), false);
-  await h.recycle(); assert.equal(h.probes.length, 0); assert.equal(h.calls.length, 0);
-  await h.scan(); assert.equal(h.closed.has('one'), false);
-});
-
-test('shared Fusion use, native drafts, favorites, manual keep and foreground focus retain the window', async () => {
-  for (const reason of ['shared', 'draft', 'favorite', 'keep', 'foreground', 'ownership']) {
-    const h = fixture({ favorite: reason === 'favorite', keep: reason === 'keep', nativeFocus: reason === 'foreground' ? 1 : 2 }); fusion(h);
-    if (reason === 'shared') h.context.fusionWindowInUse = () => true;
-    if (reason === 'draft') h.context.Cdp.prototype.evaluate = async () => ({ ready: true, windowHandle: [1, 0, 0, 0], agentKnown: true, draft: true });
-    if (reason === 'ownership') vm.runInContext("saved.windows['cursor:one'].ownership='changed'", h.context);
-    await h.recycle(); assert.equal(h.calls.length, 0, reason);
-  }
-});
-
-test('a new native task or session change observed during the final check prevents Fusion closure', async () => {
-  for (const change of ['task', 'session']) {
-    const h = fixture(); fusion(h); let reads = 0;
-    h.beforeProbe(() => {
-      if (++reads === 2) {
-        if (change === 'task') h.context.fusionWindowInUse = () => true;
-        else vm.runInContext("saved.windows['cursor:one'].expectedThread='different'", h.context);
-      }
-    });
-    await h.recycle(); assert.equal(h.calls.length, 0, change);
-  }
-});
-
-test('a cleanup arriving during a scan is processed without another timer tick', async () => {
-  const h = fixture(); fusion(h); let entered, release, first = true;
-  const started = new Promise(resolve => { entered = resolve; });
-  h.beforeProbe(async () => { if (first) { first = false; entered(); await new Promise(resolve => { release = resolve; }); } });
-  const scan = h.scan();
-  await started;
-  const requested = h.recycle(); release(); await scan; await requested;
-  assert.deepEqual([...h.closed], ['one']);
-});
-
-test('Fusion excludes verified native resident processes, while actual project commands still block and ordinary behavior is unchanged', async () => {
-  const processes = [
-    { id: 9999, args: ['/node', 'server/index.mjs'] },
-    { id: 1, args: ['Code --remote-debugging-port=9224'], exe: '/editor/code' },
-    { id: 2, args: ['Code --type=utility'], exe: '/editor/code' },
-    { id: 3, args: ['/editor/chrome_crashpad_handler'], exe: '/editor/chrome_crashpad_handler' },
-    { id: 4, args: ['/user/.vscode/extensions/openai.chatgpt-version/bin/codex', 'app-server'] },
-  ];
-  const h = fixture({ processes, nativePid: 1 }); fusion(h);
-  await h.recycle(); assert.deepEqual([...h.closed], ['one']);
-  const ordinary = fixture({ processes, nativePid: 1 }); await ordinary.scan(); assert.equal(ordinary.calls.length, 0);
-  const command = fixture({ processes: [...processes, { id: 5, args: ['/node', '/project/task.js', 'text --type=utility'] }], nativePid: 1 }); fusion(command);
-  await command.recycle(); assert.equal(command.calls.length, 0);
-  assert.equal(command.state().windows['cursor:one'].reason, '项目进程或后台命令仍在运行');
-});
-
-test('Fusion Codex cleanup binds only its registered window webview and leaves ordinary windows alone', async () => {
-  const h = fixture(); fusion(h);
-  vm.runInContext("saved.windows = Object.fromEntries(Object.entries(saved.windows).map(([key,row]) => [key.replace('cursor:','codex:'),{...row,app:'codex'}])); EDITORS=[{app:'codex',url:'memory://codex'}]", h.context);
-  h.context.codexWindows = async (_base, _report, pageId) => { assert.equal(pageId, 'one'); return [{ pageId: 'one', chatWs: 'one-chat' }]; };
-  await vm.runInContext("recycleFusionWindows('computer','codex',{id:'project'})", h.context);
-  assert.deepEqual([...h.closed], ['one']);
-  assert.ok(h.probes.every(id => id === 'one' || id === 'one-chat'));
-});
-
-test('closing the last Fusion window confirms native process exit without repeating the close request', async () => {
-  const h = fixture({ singleWindow: true, endpointCloses: true, nativePid: 1, processes: [{ id: 1, args: ['/editor/code'] }] }); fusion(h);
-  let checks = 0;
-  h.context.process.kill = (pid, signal) => { assert.equal(pid, 1); assert.equal(signal, 0); if (++checks === 2) throw Object.assign(new Error('exited'), { code: 'ESRCH' }); };
-  await h.recycle(); assert.equal(h.state().windows['cursor:one'].closed, true);
-  assert.equal(checks, 2); assert.equal(h.calls.length, 1);
-  const unknown = fixture({ singleWindow: true, endpointCloses: true }); fusion(unknown);
-  await unknown.recycle(); assert.equal(unknown.state().windows['cursor:one'].closed, false);
-  assert.match(unknown.state().windows['cursor:one'].reason, /无法确认窗口关闭/);
-});
-
-test('periodic Fusion cleanup also waits for the software slot before probing or closing', async () => {
-  const h = fixture(); fusion(h); let release;
-  const native = h.context.fusionScheduler.submit({ runId: 'other-run', app: 'cursor', projectKey: 'other-project', access: 'read', ready: () => true,
-    execute: () => new Promise(resolve => { release = resolve; }) });
-  await new Promise(resolve => setImmediate(resolve));
-  await h.scan(); assert.equal(h.calls.length, 0); assert.equal(h.probes.length, 0);
-  assert.equal(h.context.fusionScheduler.queue.length, 1);
-  release(); await native;
-  for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual([...h.closed], ['one']);
-});
-
-for (const stage of ['fetch', 'body']) {
-  test(`the existing close budget ends a stalled ${stage} and releases the same-app Fusion slot`, async () => {
-    const h = fixture({ singleWindow: true }); fusion(h);
-    let now = Date.now(), closeSignal;
-    const budgets = [], controllers = [];
-    h.context.Date = class extends Date { static now() { return now; } };
-    h.context.AbortSignal = { timeout(ms) { budgets.push(ms); const controller = new AbortController(); controllers.push(controller); return controller.signal; } };
-    h.context.fetch = async (_url, { signal }) => {
-      if (!h.closed.has('one')) return { json: async () => [{ id: 'one', type: 'page', url: 'workbench', webSocketDebuggerUrl: 'one' }] };
-      closeSignal = signal;
-      const wait = () => new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
-      return stage === 'body' ? { json: wait } : wait();
-    };
-    const recycling = h.recycle(); await new Promise(resolve => setImmediate(resolve));
-    assert(closeSignal); assert.equal(budgets.at(-1), 5000);
-    let nextRan = false;
-    const next = h.context.fusionScheduler.submit({ app: 'cursor', runId: 'next', projectKey: 'next', access: 'read', ready: () => true,
-      execute: async () => { nextRan = true; } });
-    await new Promise(resolve => setImmediate(resolve)); assert.equal(nextRan, false);
-    now += 5000; controllers.at(-1).abort(new Error('existing close budget expired')); await recycling; await next;
-    assert.equal(nextRan, true); assert.equal(vm.runInContext('scanning', h.context), false);
-    assert.equal(h.state().windows['cursor:one'].closed, false);
-    assert.match(h.state().windows['cursor:one'].reason, /无法确认窗口关闭/);
-    assert.equal(h.calls.length, 1);
-  });
-}
-
-test('each close confirmation request receives only the remaining original budget', async () => {
-  const h = fixture({ singleWindow: true, nativePid: 42, processes: [{ id: 42, args: ['/editor/code'] }] }); fusion(h);
-  let now = Date.now(), confirmations = 0;
-  const budgets = [];
-  h.context.Date = class extends Date { static now() { return now; } };
-  h.context.process.kill = () => {};
-  h.context.AbortSignal = { timeout(ms) { if (h.closed.has('one')) budgets.push(ms); return new AbortController().signal; } };
-  h.context.fetch = async () => {
-    if (!h.closed.has('one')) return { json: async () => [{ id: 'one', type: 'page', url: 'workbench', webSocketDebuggerUrl: 'one' }] };
-    if (++confirmations === 1) { now += 1800; throw new Error('temporarily disconnected'); }
-    return { json: async () => [] };
-  };
-  await h.recycle(); assert.deepEqual(budgets, [5000, 3200]);
-  assert.equal(h.state().windows['cursor:one'].closed, true); assert.equal(h.calls.length, 1);
+  assert.equal(excluded.windows.size, 0); assert.equal(h.calls.length, 0);
 });

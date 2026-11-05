@@ -6,117 +6,106 @@ import { execFileSync } from 'node:child_process';
 import { workspaces } from '../../lib/files.mjs';
 import { readState, saveState, computerId, forgetSelection } from '../../lib/auth.mjs';
 import { normPath, pathKey, findBin } from '../../lib/platform.mjs';
+import { fusionStore } from './store.mjs';
 
-export const fusionRuns = readState().fusionRuns || {};
+export const fusionRuns = fusionStore.data.owners;
 export const conversationProjects = readState().conversationProjects || {};
 export const fusionWorkers = new Map();
 export const fusionViewers = new Set();
+export const fusionLive = new Map();
 export const FUSION_ACTIVE = ['running', 'waiting', 'recovering', 'stopping'];
 export const NATIVE_UNSETTLED = ['preparing', 'submitting', 'running', 'unknown', 'stopping'];
 const subscribers = new Set();
 
-export function saveFusionRuns() {
-  const facts = Object.fromEntries(Object.entries(fusionRuns).map(([deviceId, saved]) => [deviceId, { ...saved,
-    runs: saved.runs.map(({ main: { preparing, ...main }, ...run }) => ({ ...run, main,
-      attempts: run.attempts.map(({ live, ...attempt }) => attempt) })) }]));
-  saveState({ fusionRuns: facts });
-}
+export function saveFusionRuns() { fusionStore.write(); }
 
-// Startup owns the one-time cutover. Importing routes or running checks never cleans data.
 export function initializeFusionState() {
-  const old = readState().fusionHistory;
-  if (old !== undefined) {
-    const entries = readState().entrySelections?.[computerId()] || {};
-    const selections = Object.fromEntries(Object.entries(entries).filter(([, entry]) => entry.last?.app === 'fusion' || entry.apps?.fusion)
-      .map(([device, entry]) => [device, { last: entry.last?.app === 'fusion' ? entry.last : null, fusion: entry.apps?.fusion }]));
-    const dir = fileURLToPath(new URL('../../_shots/fusion-rewrite-20261101/', import.meta.url));
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, `legacy-fusion-${Date.now()}.json`), JSON.stringify({ fusionHistory: old, selections }, null, 2), { mode: 0o600 });
-    saveState({ fusionHistory: undefined, fusionRuns });
-    for (const device of Object.keys(selections)) forgetSelection(device, 'fusion');
-  }
+  const state = readState();
+  const legacy = state.fusionRuns;
+  if (!legacy && state.fusionHistory === undefined) return;
+  const unsettled = Object.values(legacy || {}).flatMap(owner => owner.runs || [])
+    .flatMap(run => run.attempts || []).filter(attempt => NATIVE_UNSETTLED.includes(attempt.status));
+  if (unsettled.length) throw new Error(`旧 Fusion 仍有 ${unsettled.length} 个原生执行待核对，切换前不能清理或重发`);
+  const directory = fileURLToPath(new URL('../../_shots/fusion-superagent-cutover/', import.meta.url));
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(directory, `legacy-${Date.now()}.json`), JSON.stringify({ fusionRuns: legacy, fusionHistory: state.fusionHistory }), { mode: 0o600 });
+  saveState({ fusionRuns: undefined, fusionHistory: undefined });
+  for (const [deviceId, saved] of Object.entries(state.entrySelections?.[computerId()] || {}))
+    if (saved.last?.app === 'fusion' || saved.apps?.fusion) forgetSelection(deviceId, 'fusion');
 }
 
 export function savedFusion(deviceId) { return fusionRuns[deviceId] ||= { current: '', runs: [] }; }
 export function findFusionRun(deviceId, id) {
-  const run = fusionRuns[deviceId]?.runs.find(value => value.id === id);
-  if (!run) throw new Error('没有这个 Fusion run，请从 Fusion 工作区重新选择');
-  return run;
+  const controller = fusionRuns[deviceId]?.runs.find(row => row.id === id);
+  if (!controller) throw new Error('没有这个 Fusion 工作台，请重新选择');
+  return controller;
 }
 export function newFusionRun(deviceId, project, main, tier = 'balanced') {
   const now = Date.now();
   return { id: crypto.randomUUID(), computer: computerId(), deviceId, created: now, updated: now, revision: 0,
-    title: '新 Fusion run', project, main: { ...main, bindingId: '' }, tier, budget: null,
-    status: 'ready', blockedReason: '', stopRequested: false,
-    authorization: null, criteria: [], messages: [], events: [], decisions: [],
-    tasks: [], attempts: [], bindings: [], capabilities: [] };
+    title: 'Fusion 主工作台', project, main: { ...main, bindingId: '' }, tier, budget: null,
+    status: 'ready', blockedReason: '', stopRequested: false, works: [], tasks: [], agents: [], assignments: [],
+    attempts: [], bindings: [], events: [], commands: [], effects: [], questions: [], capabilities: [],
+    observedMainMessages: [], observedMainTurns: [] };
 }
-export function publishFusion(run, persist = true) {
-  run.updated = Date.now();
-  run.revision++;
+export function publishFusion(controller, persist = true) {
+  controller.updated = Date.now();
+  controller.revision++;
   if (persist) saveFusionRuns();
-  for (const changed of subscribers) changed(run);
+  for (const changed of subscribers) changed(controller);
+}
+export function commitFusion(controller, edit) {
+  const next = structuredClone(controller);
+  const result = edit(next);
+  next.updated = Date.now(); next.revision++;
+  fusionStore.replace(controller, next);
+  for (const changed of subscribers) changed(controller);
+  return result;
 }
 export function subscribeFusion(changed) { subscribers.add(changed); return () => subscribers.delete(changed); }
-export function fusionEvent(run, type, data, id = crypto.randomUUID()) {
-  const previous = run.events.find(event => event.id === id);
-  if (previous) return previous;
-  const event = { id, type, data, at: Date.now(), consumedBy: '' };
-  run.events.push(event);
+export function fusionEvent(controller, type, data, id = crypto.randomUUID()) {
+  const existing = controller.events.find(event => event.id === id);
+  if (existing) return existing;
+  const event = { id, type, data, at: Date.now(), deliveredTo: '' };
+  controller.events.push(event);
   return event;
 }
-export function fusionMessage(run, role, text, extra = {}) {
-  const message = { id: crypto.randomUUID(), role, text, at: Date.now(), ...extra };
-  run.messages.push(message);
-  return message;
+export function fusionEffect(controller, kind, data, id = crypto.randomUUID()) {
+  const existing = controller.effects.find(effect => effect.id === id);
+  if (existing) return existing;
+  const effect = { id, kind, data, status: 'pending', created: Date.now() };
+  controller.effects.push(effect);
+  return effect;
 }
-export function newFusionAttempt(run, task, execution, cost, kind = 'task') {
-  const attempt = { id: crypto.randomUUID(), taskId: task?.id || '', kind, ...execution, cost,
-    created: Date.now(), status: 'queued', submission: 'not_submitted', bindingId: '',
+export function newFusionAttempt(controller, task, assignment, kind = 'task') {
+  const attempt = { id: crypto.randomUUID(), taskId: task?.id || '', workId: task?.workId || '', assignmentId: assignment?.id || '',
+    kind, app: assignment?.app || controller.main.app, model: assignment?.model || controller.main.model,
+    effort: assignment?.effort ?? controller.main.effort, created: Date.now(), status: 'queued', submission: 'not_submitted', bindingId: '',
     native: null, acceptedAt: null, endedAt: null, result: null, usage: null, baseline: null, changes: null };
-  run.attempts.push(attempt);
+  controller.attempts.push(attempt);
   if (task) { task.attemptIds.push(attempt.id); task.status = 'queued'; }
   return attempt;
 }
-export function fusionSummary(run) {
-  return { id: run.id, computer: run.computer, title: run.title, status: run.status,
-    project: run.project, main: run.main, tier: run.tier, updated: run.updated,
-    blockedReason: run.blockedReason, tasks: { done: run.tasks.filter(task => task.status === 'accepted').length,
-      total: run.tasks.length, running: run.tasks.filter(task => task.status === 'running').length } };
+export function fusionSummary(controller) {
+  return { id: controller.id, computer: controller.computer, title: controller.title, status: controller.status,
+    project: controller.project, main: controller.main, tier: controller.tier, updated: controller.updated,
+    blockedReason: controller.blockedReason,
+    works: { done: controller.works.filter(work => work.status === 'completed').length, total: controller.works.length },
+    tasks: { done: controller.tasks.filter(task => task.status === 'accepted').length,
+      total: controller.tasks.length, running: controller.tasks.filter(task => task.status === 'running').length } };
 }
+export function allFusionRuns() { return Object.values(fusionRuns).flatMap(owner => owner.runs); }
 export function fusionBindingInUse(app, thread) {
-  return [...fusionWorkers.values()].some(worker => worker.run.bindings.some(binding => binding.app === app && binding.threadId === thread
-    && worker.run.attempts.some(attempt => attempt.bindingId === binding.id && NATIVE_UNSETTLED.includes(attempt.status))));
-}
-export function fusionAttemptRole(run, attempt) {
-  const task = run.tasks.find(value => value.id === attempt.taskId);
-  return task?.executor === 'child' ? task.id : 'main';
-}
-function allFusionRuns() {
-  const runs = new Map(Object.values(fusionRuns).flatMap(saved => saved.runs).map(run => [run.id, run]));
-  for (const worker of fusionWorkers.values()) runs.set(worker.run.id, worker.run);
-  return runs.values();
-}
-export function fusionMainWindow(app, id) {
-  const target = String(id).replace(/^(cursor|devin|codex):/, '');
-  return [...allFusionRuns()].some(run => run.bindings.some(binding => binding.role === 'main' && binding.app === app
-    && binding.windowId.replace(/^(cursor|devin|codex):/, '') === target));
+  return allFusionRuns().some(controller => controller.bindings.some(binding => binding.role !== 'main' && binding.app === app && binding.threadId === thread
+    && controller.attempts.some(attempt => attempt.bindingId === binding.id && NATIVE_UNSETTLED.includes(attempt.status))));
 }
 export function fusionWindowInUse(window) {
-  for (const run of allFusionRuns()) {
-    const main = run.bindings.find(binding => binding.id === run.main.bindingId);
-    if ((!window.computer || run.computer === window.computer) && main?.app === window.app
-      && main.windowId.replace(/^(cursor|devin|codex):/, '') === String(window.id).replace(/^(cursor|devin|codex):/, '')
-      && run.messages.length && !['ready', 'completed', 'stopped'].includes(run.status)) return true;
-    if (run.computer !== window.computer || run.project.id !== window.projectId) continue;
-    if (run.attempts.some(attempt => fusionAttemptRole(run, attempt) !== 'main' && attempt.app === window.app
-      && (attempt.status === 'queued' || NATIVE_UNSETTLED.includes(attempt.status)))) return true;
-    if (!run.stopRequested && !['completed', 'stopped'].includes(run.status) && run.tasks.some(task => task.executor === 'child' && ['awaiting_review', 'needs_work'].includes(task.status)
-      && run.attempts.findLast(attempt => attempt.taskId === task.id)?.app === window.app)) return true;
-    const worker = [...fusionWorkers.values()].find(value => value.run === run);
-    if (run.bindings.some(binding => binding.role !== 'main' && binding.app === window.app && worker?.archiving.has(binding.id))) return true;
-  }
-  return false;
+  const target = String(window.id).replace(/^(cursor|devin|codex):/, '');
+  return allFusionRuns().some(controller => [...controller.agents, controller.main].some(owner => owner.creations?.some(creation =>
+    ['creating', 'unknown'].includes(creation.status) && creation.app === window.app && creation.windowId === target))
+    || controller.attempts.some(attempt => NATIVE_UNSETTLED.includes(attempt.status)
+    && controller.bindings.some(binding => binding.id === attempt.bindingId && binding.app === window.app
+      && binding.windowId.replace(/^(cursor|devin|codex):/, '') === target)));
 }
 
 // Shared native project identity, also used by ordinary sessions.
@@ -138,11 +127,4 @@ export function fusionCursorProjects() {
     } catch { continue; }
   }
   return projects;
-}
-export function fusionModelSpec(model) {
-  const [label, effort = ''] = String(model || '').split(' · ');
-  return { model: String(model || ''), modelLabel: label, modelEffort: effort };
-}
-export function fusionHtml(text) {
-  return String(text || '').replace(/[&<>]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[char])).replace(/\n/g, '<br>');
 }

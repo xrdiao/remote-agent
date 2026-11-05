@@ -8,9 +8,15 @@ export const capabilities = {
 };
 
 export const adapter = {
-  attach(req) {
+  async attach(req) {
     const saved = savedFusion(this.deviceId);
     const selected = req.threadId ? findFusionRun(this.deviceId, req.threadId) : null;
+    const main = selected?.bindings.find(binding => binding.id === selected.main.bindingId);
+    if (main) {
+      saved.current = selected.id;
+      return this.attach({ id: main.app, windowId: main.windowId, threadId: main.threadId,
+        project: main.project, initial: req.initial, resume: req.resume });
+    }
     this.detach();
     this.clearViewState();
     this.app = this.targetId = this.windowId = 'fusion';
@@ -29,7 +35,7 @@ export const adapter = {
   },
   listAgents() { return this.fusionWorkspace(); },
   openAgent(id) { return adapter.attach.call(this, { threadId: id }); },
-  sendMessage(text, requestId) { return this.fusionUserSend(text, requestId); },
+  sendMessage() { throw new Error('请先启用主 Agent，再进入原生主对话'); },
   stopAgent() { return this.fusionStop(); },
   pollChat() { return this.fusionEmit(); },
 };

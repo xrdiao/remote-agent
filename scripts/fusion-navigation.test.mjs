@@ -21,11 +21,11 @@ test('opening the Fusion workspace reads each scoped computer without attaching 
   assert.deepEqual(h.sent.map(message => [message.computer, message.t]), [['computer-one', 'fusionWorkspace'], ['computer-two', 'fusionWorkspace']]);
   h.sent.length = 0; h.run("ovS.comp = 'computer-two'; refreshFusionWorkspace()");
   assert.equal(h.sent.length, 1); assert.equal(h.sent[0].computer, 'computer-two');
-  assert.deepEqual([...h.stored.keys()], ['fusion-setup-done']);
+  assert.deepEqual([...h.stored.keys()], []);
 });
 test('all-computer Fusion board groups runs by computer and does not pick a creation target', () => {
   const h = fixture();
-  h.run(`fusionWorkspaces.set('computer-one', {runs:[{id:'r1',title:'first',project:{name:'p'},main:{app:'cursor',model:'Auto'},status:'waiting',tasks:{done:0,total:2}}]})`);
+  h.run(`fusionWorkspaces.set('computer-one', {runs:[{id:'r1',title:'first',project:{name:'p'},main:{app:'cursor',model:'Auto'},status:'waiting',works:{done:0,total:1},tasks:{done:0,total:2}}]})`);
   const html = h.run('fusionBoard()');
   assert.match(html, /computer-one/); assert.match(html, /computer-two/); assert.match(html, /data-fusion-open="r1"/);
   assert.equal(h.sent.length, 0);
