@@ -197,8 +197,6 @@ function paintFusionRun(run) {
   $('fusionConfig').hidden = true;
   $('fusionWelcome').hidden = currentApp !== 'fusion';
   if (!on) { fitFusionLayout(); return; }
-  const label = I18N.tr(run?.main.bindingId ? '工作台设置' : '启用主 Agent');
-  $('fusionRunConfig').title = label; $('fusionRunConfig').setAttribute('aria-label', label);
   $('fusionBar').innerHTML = run ? `<span>${esc(fusionStatus(run.status))}</span>`
     + (['blocked', 'stopped', 'stopping'].includes(run.status) ? `<button data-fusion-resume>${I18N.tr('核对并继续')}</button>` : '')
     + (run.blockedReason ? `<span class="fusion-error">${esc(run.blockedReason)}</span>` : '') : '';

@@ -274,10 +274,10 @@ body:not(.wide) .meter { gap: 4px; }
 body:not(.wide) .meter b { font-size: 10.5px; }
 body:not(.wide) .meter .meterLabel { display: block; }
 body.metersText:not(.wide) #title { min-width: 0; }
-body[data-app="cursor"]:not(.wide):not(.land) .meterText { display: none; }
-body[data-app="cursor"]:not(.wide):not(.land) .meter .track { width: 24px; height: 24px; }
-body[data-app="cursor"]:not(.wide):not(.land) .meter .track::after { inset: 3.5px; }
-body[data-app="cursor"]:not(.wide):not(.land) .meter .track::before {
+body[data-app="cursor"]:not(.wide):not(.land) .meterText, body.fusion .meterText { display: none; }
+body[data-app="cursor"]:not(.wide):not(.land) .meter .track, body.fusion .meter .track { width: 24px; height: 24px; }
+body[data-app="cursor"]:not(.wide):not(.land) .meter .track::after, body.fusion .meter .track::after { inset: 3.5px; }
+body[data-app="cursor"]:not(.wide):not(.land) .meter .track::before, body.fusion .meter .track::before {
   content: attr(data-n); position: absolute; inset: 0; z-index: 1; display: grid; place-items: center;
   font-size: 9px; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; color: var(--fg-2);
 }
@@ -312,20 +312,20 @@ body:not(.wide) .seg button.on { z-index: 2; translate: 0 0; scale: 1; backgroun
 }
 #menuBtn:active { background: var(--s2); }
 
-/* Fusion adds its own header rows without changing the native conversation controls. */
+/* Fusion keeps compact meters alongside the native conversation controls. */
 body.fusion > header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto auto; gap: 4px 6px; }
 body.fusion #ovBack { grid-column: 1; grid-row: 1; }
 body.fusion #title { grid-column: 2; grid-row: 1; min-width: 0; }
 body.fusion > header > .seg { grid-column: 4; grid-row: 1; }
 body.fusion #menuBtn { grid-column: 5; grid-row: 1; }
-body.fusion #meters { grid-column: 2 / -1; grid-row: 2; max-width: none; height: auto; }
+body.fusion #meters { grid-column: 3; grid-row: 1; max-width: 112px; }
 body.fusion #titleText { font-size: 16px; font-weight: 650; }
 body.fusion #titleProject { font-size: 11px; font-weight: 400; color: var(--fg-3); }
 body.fusion #titlePlan, body.fusion .titleArrow, body.fusion #titleLatency { display: none; }
-#fusionHeader { grid-column: 3; grid-row: 1; display: flex; gap: 4px; }
+#fusionHeader { grid-column: 4; grid-row: 1; display: none; }
 #fusionHeader button { display: grid; place-items: center; width: 34px; height: 36px; padding: 6px; background: none; }
 #fusionHeader svg { width: 22px; height: 22px; }
-#fusionTaskStrip { grid-column: 1 / -1; grid-row: 3; display: flex; gap: 8px; overflow-x: auto; padding: 3px 0 7px; scrollbar-width: none; }
+#fusionTaskStrip { grid-column: 1 / -1; grid-row: 2; display: flex; gap: 8px; overflow-x: auto; padding: 3px 0 7px; scrollbar-width: none; }
 #fusionTaskStrip::-webkit-scrollbar { display: none; }
 #fusionTaskStrip button { flex: none; }
 .fusion-task-pill { display: flex; align-items: center; gap: 7px; padding: 6px 10px 6px 6px; max-width: 200px; border: 1px solid var(--line-2); background: var(--s1); box-shadow: var(--shadow-1); }
@@ -1305,7 +1305,7 @@ body.split.fusion.conv.chatmode #fusionPanel { position: static; grid-column: 3;
 body.split.fusion #fusionPanelBody { height: 100%; max-height: 100%; padding: 18px; }
 body.split.fusion > header { grid-template-columns: auto minmax(0, 1fr) auto auto auto auto; }
 body.split.fusion #meters { grid-column: 3; grid-row: 1; }
-body.split.fusion #fusionHeader { grid-column: 4; }
+body.split.fusion #fusionHeader { grid-column: 4; display: flex; }
 body.split.fusion > header > .seg { grid-column: 5; }
 body.split.fusion #menuBtn { grid-column: 6; }
 body.split.fusion #fusionTaskStrip { display: none; }
