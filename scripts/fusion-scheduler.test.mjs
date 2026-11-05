@@ -3,24 +3,22 @@ import test from 'node:test';
 import { FusionScheduler } from '../server/fusion/scheduler.mjs';
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
-test('software slots are shared across projects while different software can run concurrently', async () => {
+test('independent jobs run concurrently regardless of software or project', async () => {
   const scheduler = new FusionScheduler(), started = [], finish = new Map();
   const job = (id, app, projectKey) => scheduler.submit({ runId: id, app, projectKey, access: 'read', ready: () => true,
     execute: () => { started.push(id); return new Promise(resolve => finish.set(id, resolve)); } });
   const first = job('one', 'cursor', 'p1'), second = job('two', 'cursor', 'p2'), third = job('three', 'codex', 'p1');
-  await flush(); assert.deepEqual(started, ['one', 'three']);
-  finish.get('one')(); await first; await flush(); assert.deepEqual(started, ['one', 'three', 'two']);
-  finish.get('two')(); finish.get('three')(); await Promise.all([second, third]);
-  assert.equal(scheduler.slots.size, 0);
+  await flush(); assert.deepEqual(started, ['one', 'two', 'three']);
+  finish.get('one')(); finish.get('two')(); finish.get('three')(); await Promise.all([first, second, third]);
+  assert.equal(scheduler.queue.length, 0);
 });
-test('one project writer excludes another writer while independent reads remain parallel', async () => {
+test('the scheduler does not infer conflicts from project or write access', async () => {
   const scheduler = new FusionScheduler(), calls = [], release = {};
   const job = (id, app, access) => scheduler.submit({ runId: id, app, access, projectKey: 'same-project', ready: () => true,
     execute: () => { calls.push(id); return new Promise(resolve => { release[id] = resolve; }); } });
   const one = job('write1', 'cursor', 'write'), two = job('write2', 'codex', 'write'), read = job('read', 'devin', 'read');
-  await flush(); assert.deepEqual(calls, ['write1', 'read']);
-  release.write1(); await one; await flush(); assert.equal(calls.at(-1), 'write2');
-  release.write2(); release.read(); await Promise.all([two, read]);
+  await flush(); assert.deepEqual(calls, ['write1', 'write2', 'read']);
+  release.write1(); release.write2(); release.read(); await Promise.all([one, two, read]);
 });
 test('dependent jobs wait for acceptance and a cancelled run does not cancel another queue', async () => {
   const scheduler = new FusionScheduler(); let accepted = false, calls = 0;
@@ -36,23 +34,25 @@ test('concurrent main project window requests share one native creation', async 
   assert.equal(one, two); await flush(); assert.equal(created, 1); release({ id: 'dedicated' });
   assert.equal(await one, await two); assert.equal(scheduler.creating.size, 0);
 });
-test('an unknown native write reserves its software and project until reconciliation', async () => {
-  const scheduler = new FusionScheduler(), started = [];
-  scheduler.uncertain.set('cursor', 'unknown'); scheduler.uncertainWriters.set('p', 'unknown');
-  const run = (id, app) => scheduler.submit({ runId: id, attemptId: id, app, projectKey: 'p', access: 'write', ready: () => true, execute: () => { started.push(id); } });
-  const other = run('other', 'codex'), reconciliation = run('unknown', 'cursor');
-  await reconciliation; assert.deepEqual(started, ['unknown']);
-  scheduler.uncertain.delete('cursor'); scheduler.uncertainWriters.delete('p'); scheduler.drain(); await other;
-  assert.deepEqual(started, ['unknown', 'other']);
+test('different software remains sequential when the main registers a dependency', async () => {
+  const scheduler = new FusionScheduler(), started = []; let accepted = false, finish;
+  const one = scheduler.submit({ runId: 'run', app: 'cursor', ready: () => true,
+    execute: () => { started.push('screenshots'); return new Promise(resolve => { finish = resolve; }); } });
+  const two = scheduler.submit({ runId: 'run', app: 'codex', ready: () => accepted, execute: () => started.push('readme') });
+  await flush(); assert.deepEqual(started, ['screenshots']);
+  finish(); await one; assert.deepEqual(started, ['screenshots']);
+  accepted = true; scheduler.drain(); await two; assert.deepEqual(started, ['screenshots', 'readme']);
 });
 
-test('the main management lane remains available during a same-app worker; stable reads wait for writes', async () => {
+test('only the same main decision lane is sequential while independent workers and other mains can run', async () => {
   const scheduler = new FusionScheduler(), calls = [], release = {};
   const submit = (id, options) => scheduler.submit({ runId: 'controller', attemptId: id, app: 'codex', projectKey: 'project', ready: () => true,
     ...options, execute: () => { calls.push(id); return new Promise(resolve => { release[id] = resolve; }); } });
-  const worker = submit('writer', {access:'write'}), main = submit('main', {lane:'main', access:'read'});
-  const read = submit('validation', {app:'cursor', access:'read', stableRead:true});
-  await flush(); assert.deepEqual(calls, ['writer','main']);
-  release.writer(); await worker; await flush(); assert.deepEqual(calls, ['writer','main','validation']);
-  release.main(); release.validation(); await Promise.all([main,read]);
+  const one = submit('write-a', {access:'write'}), main = submit('main', {lane:'main'});
+  const two = submit('write-b', {access:'write'}), next = submit('main-next', {lane:'main'});
+  const other = submit('other-main', {lane:'main', runId:'other'});
+  await flush(); assert.deepEqual(calls, ['write-a','main','write-b','other-main']);
+  release.main(); await main; await flush(); assert.equal(calls.at(-1), 'main-next');
+  release['write-a'](); release['write-b'](); release['main-next'](); release['other-main']();
+  await Promise.all([one,two,next,other]); assert.equal(scheduler.mainSlots.size, 0);
 });

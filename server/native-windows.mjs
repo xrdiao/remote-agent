@@ -160,11 +160,14 @@ export class NativeWindow {
   async composerCall(call, context) {
     await this.connect();
     if (!this.contexts.has(this.composerRealm)) {
-      await this.cdp.send('Runtime.enable');
-      const { root } = await this.cdp.send('DOM.getDocument');
-      const { nodeId } = await this.cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: '#active-frame' });
-      const { node } = await this.cdp.send('DOM.describeNode', { nodeId });
-      this.composerRealm = [...this.contexts.values()].find(value => value.auxData.isDefault && value.auxData.frameId === node.frameId).id;
+      this.composerRealmRead ||= (async () => {
+        await this.cdp.send('Runtime.enable');
+        const { root } = await this.cdp.send('DOM.getDocument');
+        const { nodeId } = await this.cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: '#active-frame' });
+        const { node } = await this.cdp.send('DOM.describeNode', { nodeId });
+        this.composerRealm = [...this.contexts.values()].find(value => value.auxData.isDefault && value.auxData.frameId === node.frameId).id;
+      })().finally(() => { this.composerRealmRead = null; });
+      await this.composerRealmRead;
     }
     return this.cdp.evaluate(helpersCall(call, context), { contextId: this.composerRealm });
   }

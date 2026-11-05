@@ -429,13 +429,14 @@
         const reply = (next < 0 ? tail : tail.slice(0, next)).findLast(item => item.kind === 'agent_message');
         const requests = Object.values(state?.agentRequests.byId || {}).filter(request => request.method === 'session/prompt' && request.params?.sessionId === threadId);
         const request = remoteContext && generationId
-          ? Object.entries(state?.agentRequests.byId || {}).find(([key]) => key === generationId)?.[1]
+          ? Object.entries(state?.agentRequests.byId || {}).find(([key, request]) => key === generationId && requests.includes(request))?.[1]
           : requests.findLast(request => request.params?.prompt?.some?.(block => attemptId && block.text?.includes(attemptId)));
         const session = devinSessionRecord(threadId);
+        const failed = remoteContext?.app === 'devin' && request?.status === 'failed';
         return { id: user?.id || '', ids: users.map(item => item.id), turnId: request?.id || user?.id || '', threadId, current: !!user && user === users.at(-1),
           text: reply ? body(reply) : '', completed: !!reply && request?.status === 'completed' && (remoteContext ? true : !['active', 'pending', 'canceling', 'unknown_error'].includes(session?.status)),
-          ended: request?.status === 'completed' && (remoteContext ? true : !['active', 'pending', 'canceling', 'unknown_error'].includes(session?.status)),
-          error: session?.status === 'unknown_error' ? devinItems(devinLog()).find(item => item.kind === 'error')?.t || 'Devin 原生 unknown_error' : '', items: [] };
+          ended: failed || request?.status === 'completed' && (remoteContext ? true : !['active', 'pending', 'canceling', 'unknown_error'].includes(session?.status)),
+          error: failed ? request.errorMessage : session?.status === 'unknown_error' ? devinItems(devinLog()).find(item => item.kind === 'error')?.t || 'Devin 原生 unknown_error' : '', items: [] };
       }
       const service = cursorSessionServices()?.data;
       if (!service || !threadId) return { id: '', ids: [], threadId, text: '', completed: false };
@@ -1230,7 +1231,9 @@
     } else {
       const native = await import('@exa/chat-client');
       const state = window.__acpStore.getState().acp, data = state.perSession[thread];
-      const messages = native.getAllMessages(data), end = history && Number.isFinite(remoteContext.before) ? remoteContext.before : messages.length;
+      const failure = Object.entries(state.agentRequests.byId).findLast(([, request]) => request.method === 'session/prompt' && request.params?.sessionId === thread);
+      const failed = failure?.[1].status === 'failed';
+      const messages = failed && !data ? [] : native.getAllMessages(data), end = history && Number.isFinite(remoteContext.before) ? remoteContext.before : messages.length;
       const selected = messages.slice(Math.max(0, end - limit), end);
       for (const message of selected) {
         const id = 'acp' + messages.indexOf(message);
@@ -1252,8 +1255,7 @@
         }
       }
       const session = devinSessionRecord(thread);
-      const failure = Object.entries(state.agentRequests.byId).findLast(([, request]) => request.method === 'session/prompt' && request.params?.sessionId === thread);
-      if (session.status === 'unknown_error' && failure?.[1].status === 'failed')
+      if (failed)
         items.push({ i: 'acp' + messages.length + ':error', k: 'tool', kind: 'error', t: failure[1].errorMessage, keep: true });
       title = session.title || '';
       before = Math.max(0, end - limit); earlier = before > 0;

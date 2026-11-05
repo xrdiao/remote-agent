@@ -7,6 +7,10 @@ import { FUSION_TIERS, validateExecution, validateCost } from './cost.mjs';
 
 export const FUSION_ACTIONS = ['read_workspace', 'read_task', 'list_projects', 'list_models', 'create_work', 'plan', 'dispatch',
   'continue_task', 'review', 'self_execute', 'wait', 'ask_user', 'cancel_task', 'finish', 'set_priority'];
+const FUSION_SCHEDULING = '串并行由主 Agent 按任务要求决定：判断输入产出、共享文件、命令与其他资源的依赖和冲突，使用 dependsOn 或分批派工表达顺序。'
+  + 'relay 不按软件或项目设置并发数量，也不自动互斥同项目写任务。同软件可并行，不同软件可串行；互不冲突的任务可同时派工。'
+  + '需要截图的 README 修改应先等截图任务验收，依赖写入产物的读取、集成和验证同样登记前置依赖；无依赖任务不要无故串行。'
+  + 'access 和 scope 描述授权与实际负责范围，不充当全项目锁。结果未知的任务先核对原生事实，不重发；其他任务是否依赖它由主 Agent 判断。';
 const string = { type: 'string' }, strings = { type: 'array', items: string };
 const scope = { ...strings, minItems: 1, description: 'Only project-relative filesystem paths. Put explanations in summary, never inside a path. Example: ["src", "_shots/test-project"].' };
 const criterion = { type: 'object', additionalProperties: false, required: ['id', 'text'], properties: { id: string, text: string } };
@@ -19,9 +23,10 @@ const cost = { type: 'object', additionalProperties: false, required: ['selfExec
   estimate: { type: 'object', additionalProperties: false, required: ['amount', 'unit'], properties: { amount: { type: 'number' }, unit: string } },
 } };
 const task = { type: 'object', additionalProperties: false, required: ['goal', 'scope', 'access', 'dependsOn', 'acceptance'], properties: {
-  id: string, goal: string, scope, access: { type: 'string', enum: ['read', 'write'] }, dependsOn: strings,
+  id: string, goal: string, scope, access: { type: 'string', enum: ['read', 'write'] },
+  dependsOn: { ...strings, description: 'Main-selected predecessor task IDs. All must be accepted before execution; independent tasks may run concurrently regardless of app, project or write access.' },
   acceptance: { ...strings, minItems: 1, description: 'An array of plain criterion text, not objects. RA returns the resulting criterion IDs.' },
-  stableRead: { type: 'boolean' }, required: { type: 'boolean' }, priority: { type: 'integer' },
+  required: { type: 'boolean' }, priority: { type: 'integer' },
 } };
 const dispatchedTask = { ...task, required: [...task.required, 'id', 'execution', 'cost'], properties: { ...task.properties, execution, cost } };
 const evidence = { type: 'object', additionalProperties: false, required: ['criterion', 'detail', 'reference'], properties: {
@@ -120,7 +125,7 @@ function readEvidence(attempt, query) {
 }
 export function fusionWorkspaceView(controller) {
   return { id: controller.id, revision: controller.revision, computer: controller.computer, main: controller.main,
-    project: controller.project, tier: controller.tier, budget: controller.budget,
+    project: controller.project, tier: controller.tier, budget: controller.budget, scheduling: FUSION_SCHEDULING,
     works: controller.works.map(workView),
     tasks: controller.tasks.map(({ inputs, reviews, ...task }) => ({ ...task, lastReview: reviews.at(-1), pendingInputs: inputs.filter(row => !row.deliveredAt) })),
     agents: controller.agents.map(({ creations, ...agent }) => agent),
@@ -174,7 +179,7 @@ function taskSpec(controller, work, spec) {
   if (!['read', 'write'].includes(spec.access)) throw new Error('任务需要声明 read 或 write');
   if (!Array.isArray(spec.dependsOn)) throw new Error('任务需要声明 dependsOn');
   return { id, workId: work.id, goal: spec.goal, access: spec.access, scope: spec.scope, dependsOn: spec.dependsOn,
-    stableRead: spec.stableRead === true, acceptance: spec.acceptance.map((value, index) => ({ id: `${id}:${index + 1}`, text: value })),
+    acceptance: spec.acceptance.map((value, index) => ({ id: `${id}:${index + 1}`, text: value })),
     required: spec.required !== false, priority: Number.isInteger(spec.priority) ? spec.priority : 0,
     status: 'planned', workerId: '', assignmentIds: [], attemptIds: [], reviews: [], inputs: [], executor: 'child' };
 }
@@ -352,7 +357,8 @@ export function fusionControllerPrompt(controller) {
     + `简单答复可直接完成；长实现或验证优先委派，避免占住主控。唯一 RA 派工入口是 ra_fusion，不调用 spawn_agent/collaboration 或软件内部多 Agent 扇出，不创建 worktree，不自动合并、提交、推送或发布。\n`
     + `list_models(app) 返回本次真实候选，主模型始终由用户选定，档位为 ${FUSION_TIERS[controller.tier]}。不得用档位替换主模型。金额未知、倍率、Free 与套餐额度保持来源原单位；Cursor Auto 就是 Auto。\n`
     + `dispatch 的 tasks 每项包含 id/goal/dependsOn/access(read|write)/scope/acceptance/required，以及 execution{app,model,effort,input} 和 cost{selfExecute,delegate,overhead,reason,sources,estimate?}。比较含规划、评审、上下文和返工的总成本，理由简洁；无需固定子任务数量。\n`
-    + `直接进行项目工作前，先 self_execute 登记 workId/task{goal,access,scope,dependsOn,acceptance}/cost，工具确认后才执行。它只适用于主会话实际项目；同项目写任务排他，其他项目应委派。self_execute 的结果需在本轮结束后再评审。\n`
+    + FUSION_SCHEDULING + '\n'
+    + `直接进行项目工作前，先 self_execute 登记 workId/task{goal,access,scope,dependsOn,acceptance}/cost，工具确认后才执行。它只适用于主会话实际项目，其他项目应委派；与子任务的顺序同样通过依赖安排。self_execute 的结果需在本轮结束后再评审。\n`
     + `工具返回 queued 仅表示登记，不能提前声称任务完成。派工后 wait 并结束当前轮，结果到达后再 read_task、review；验收失败用 continue_task 新增 Attempt，补做续接原会话。每次模型选择与重新执行保留历史，不重发结果未知的任务。\n`
     + `review 需要 taskId/attemptId/verdict(accept|rework)/reason/evidence[{criterion,attemptId,detail,reference}]。accept 对应 task.acceptance；无固定评审轮数。子 Agent 与原生会话持续保留，后续同一任务用 continue_task 续接上下文，不自动归档或关闭。\n`
     + `ask_user 包含 workId/可选taskId/question/options。原生权限仍由用户决定，派工授权不等于批准原生权限。\n`
@@ -365,7 +371,7 @@ export function fusionTaskPrompt(controller, task, attempt) {
   const dependencies = task.dependsOn.map(id => ({ task: findTask(controller, id), result: controller.attempts.findLast(row => row.taskId === id && row.result)?.result }));
   return `你是 RA Fusion 的原生子 Agent，负责 ${task.goal}。\n项目：${work.project.root}；host：${work.project.host || 'local'}。\n`
     + `遵循项目 AGENTS.md 和下列已确认范围，范围内工作不重复请示，范围外事项向主 Agent 提议。保留原生权限审批；不创建 RA 或软件内部子 Agent，不创建 worktree，不合并、提交、推送或发布。\n`
-    + `使用当前指定目录。记录已有改动，不把它们作为本次成果；原生回复结束前等待本任务的写操作与验证结束。不要修改其他任务或普通会话。\n`
+    + `使用当前指定目录。可能有其他子任务同时执行，只在本任务范围内操作；发现未登记的依赖或冲突向主 Agent 报告，不自行扩大范围。记录已有改动，不把原有或其他并行任务的改动作为本次成果；原生回复结束前等待本任务的写操作与验证结束。不要修改其他任务或普通会话。\n`
     + `完成后报告实际结果、逐项验收证据、验证、未完成事项和需要用户处理的问题；不要声明自己已被主 Agent 验收。\n`
     + JSON.stringify({ attemptId: attempt.id, task: { ...task, inputs: task.inputs.filter(input => attempt.inputIds?.includes(input.id)) },
       plan: work.plans.find(plan => plan.id === assignment.planId), input: assignment.input, dependencies });

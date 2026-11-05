@@ -3,6 +3,7 @@ import vm from 'node:vm';
 import fs from 'node:fs';
 import test from 'node:test';
 import { FusionAgent } from '../server/fusion/agent.mjs';
+import { NativeCdp, nativeWindow } from '../server/native-windows.mjs';
 import { fixture } from './fusion-fixture.mjs';
 import { helpersCall, PAGE_SRC } from '../server/page/build.mjs';
 
@@ -37,6 +38,48 @@ test('releasing a worker removes only its cursor data handle and own connection'
     source: { watching: true, clients: new Set([ordinary]), conversations: new Map(), listeners: new Set(), close: () => assert.fail('shared source closed') } };
   await agent.close(context);
   assert.match(calls[0], /'release'/); assert.equal(calls[1], 'client-close'); assert.deepEqual(ordinary, before);
+});
+test('finishing one same-window worker retains the other worker and ordinary client with their own subscriptions', async t => {
+  const ordinary = new NativeCdp('ws://fusion-concurrency-unit'), one = new NativeCdp(ordinary.wsUrl), two = new NativeCdp(ordinary.wsUrl);
+  const source = nativeWindow(ordinary), closed = [];
+  t.after(() => { one.close(); two.close(); ordinary.close(); source.close(); });
+  const context = threadId => ({ app: 'codex', threadId, host: 'local' });
+  const views = ['one', 'two'].map(threadId => {
+    const view = source.conversationView(context(threadId));
+    view.watching = Promise.resolve(); view.stop = () => closed.push(threadId);
+    return view;
+  });
+  const stopOne = source.subscribe(() => {}, context('one')), stopTwo = source.subscribe(() => {}, context('two'));
+  const agent = new FusionAgent({ publish() {} });
+  stopOne(); await agent.close({ app: 'codex', cdp: one, source, native: context('one') });
+  assert.deepEqual(closed, ['one']); assert.equal(source.clients.has(ordinary), true); assert.equal(source.clients.has(two), true);
+  assert.equal(source.clients.has(one), false); assert.equal(views[1].listeners.size, 1);
+  assert.equal(source.conversations.has(JSON.stringify(['local', 'two'])), true);
+  stopTwo(); await agent.close({ app: 'codex', cdp: two, source, native: context('two') });
+  assert.deepEqual(closed, ['one', 'two']); assert.equal(source.clients.has(ordinary), true);
+});
+test('concurrent Codex calls initialize the same window realm once and retain independent native contexts', async t => {
+  const cdp = new NativeCdp('ws://fusion-realm-concurrency-unit'), source = nativeWindow(cdp);
+  t.after(() => { cdp.close(); source.close(); });
+  source.connect = async () => {};
+  source.contexts.set(7, { id: 7, auxData: { isDefault: true, frameId: 'active' } });
+  let document = 0;
+  source.cdp.send = async (method, params) => {
+    if (method === 'DOM.getDocument') return { root: { nodeId: ++document } };
+    if (method === 'DOM.querySelector') {
+      if (params.nodeId !== document) throw new Error('Could not find node with given id');
+      return { nodeId: 100 };
+    }
+    if (method === 'DOM.describeNode') return { node: { frameId: 'active' } };
+    assert.equal(method, 'Runtime.enable'); return {};
+  };
+  const evaluated = [];
+  source.cdp.evaluate = async (code, options) => { evaluated.push({ code, contextId: options.contextId }); return options.contextId; };
+  const one = { app: 'codex', host: 'local', threadId: 'one' }, two = { ...one, threadId: 'two' };
+  assert.deepEqual(await Promise.all([source.composerCall('activeThread()', one), source.composerCall('activeThread()', two)]), [7, 7]);
+  assert.equal(document, 1); assert.equal(evaluated[0].code, helpersCall('activeThread()', one));
+  assert.equal(evaluated[1].code, helpersCall('activeThread()', two));
+  await source.composerCall('activeThread()', one); assert.equal(document, 1);
 });
 test('a stale stop cannot interrupt a newer native round', async () => {
   const h = fixture(), attempt = { id: 'attempt', native: { messageId: 'one', turnId: 'old-turn' }, beforeIds: [] }; h.run.attempts.push(attempt);
@@ -84,6 +127,45 @@ test('an unmounted Codex worker reads its native history rather than a different
   const result = await context.read('', 'attempt-1', []);
   assert.equal(result.threadId, 'worker'); assert.equal(result.id, 'user'); assert.equal(result.turnId, 'native-turn');
   assert.equal(result.accepted, true); assert.equal(result.ended, true); assert.equal(result.completed, true); assert.equal(result.text, 'worker-result');
+});
+test('a failed Devin native request ends its own Fusion round after transient messages are removed', async () => {
+  const source = fs.readFileSync(new URL('../server/page/chat-extract.js', import.meta.url), 'utf8');
+  const start = source.indexOf('  const codexFusionTurn ='), end = source.indexOf('  // One Codex turn', start);
+  const error = 'Permission denied: internal server error: error number 13';
+  const current = { method: 'session/prompt', params: { sessionId: 'worker', prompt: [{ text: 'attempt-1' }] }, status: 'failed', errorMessage: error };
+  const state = { perSession: {}, agentRequests: { byId: { current, foreign: { ...current, params: { sessionId: 'other' }, errorMessage: 'foreign failure' } } } };
+  const context = vm.createContext({ remoteContext: { app: 'devin', threadId: 'worker' }, window: { __acpStore: { getState: () => ({ acp: state }) } },
+    devinSurface: () => true, devinSessionRecord: () => ({ status: 'idle' }), devinLog: () => assert.fail('ordinary DOM read'), devinItems: () => assert.fail('ordinary DOM read') });
+  vm.runInContext(source.slice(start, end) + '\nthis.read = codexFusionTurn;', context);
+  const result = await context.read('known-user', 'attempt-1', [], 'current');
+  assert.equal(result.threadId, 'worker'); assert.equal(result.ended, true); assert.equal(result.completed, false); assert.equal(result.error, error);
+  const foreign = await context.read('known-user', 'attempt-1', [], 'foreign');
+  assert.equal(foreign.ended, false); assert.equal(foreign.error, '');
+  state.agentRequests.byId.current = { ...current, status: 'pending', errorMessage: undefined };
+  const pending = await context.read('known-user', 'attempt-1', [], 'current'); assert.equal(pending.ended, false);
+});
+test('Fusion Devin content reports a native failure without requiring a pruned transcript or showing another request error', async () => {
+  const source = fs.readFileSync(new URL('../server/page/chat-extract.js', import.meta.url), 'utf8');
+  const start = source.indexOf('  const nativeConversationChat ='), end = source.indexOf('  const contextPct =', start);
+  const error = 'Permission denied: internal server error: error number 13';
+  const state = { perSession: {}, agentRequests: { byId: { current: { method: 'session/prompt', params: { sessionId: 'worker' }, status: 'failed', errorMessage: error } } } };
+  let messageReads = 0;
+  const context = vm.createContext({ remoteContext: { app: 'devin', threadId: 'worker', cwd: '/project', host: '' },
+    window: { __acpStore: { getState: () => ({ acp: state }) } },
+    nativeModule: { getAllMessages: data => { messageReads++; assert(data, 'failed native transcript has been pruned'); return data.messages; } },
+    devinSessionRecord: () => ({ status: 'idle', title: 'Worker' }), activeThread: () => 'ordinary', devinQuestions: () => assert.fail('ordinary questions read'),
+    agentRun: () => ({ id: 'current', status: state.agentRequests.byId.current.status === 'failed' ? 'error' : 'completed' }), nativeWaiting: () => ({}),
+    agentModelName: () => 'SWE-2 High', effortName: () => '', devinSurface: () => 'editor',
+    nativeMarkdownItem: (i, k, t, at) => ({ i, k, t, at }) });
+  vm.runInContext(source.slice(start, end).replace("await import('@exa/chat-client')", 'nativeModule') + '\nthis.read = nativeConversationChat;', context);
+  const failed = await context.read(false, 80);
+  assert.equal(failed.thread, 'worker'); assert.equal(failed._nativeState.run.status, 'error');
+  assert.equal(failed.items.length, 1); assert.equal(failed.items[0].kind, 'error'); assert.equal(failed.items[0].t, error); assert.equal(messageReads, 0);
+  state.perSession.worker = { messages: [{ id: 'reply', kind: 'agent_message', content: [{ content: { type: 'text', text: 'worker-ok' } }] }] };
+  state.agentRequests.byId.current = { ...state.agentRequests.byId.current, status: 'completed', errorMessage: undefined };
+  state.agentRequests.byId.foreign = { method: 'session/prompt', params: { sessionId: 'other' }, status: 'failed', errorMessage: 'foreign failure' };
+  const completed = await context.read(false, 80);
+  assert.equal(completed.items.length, 1); assert.equal(completed.items[0].t, 'worker-ok'); assert.equal(messageReads, 1);
 });
 test('a background Codex free-text question can send its answer to the exact native request', async () => {
   const source = fs.readFileSync(new URL('../server/page/codex.js', import.meta.url), 'utf8');

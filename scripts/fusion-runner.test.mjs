@@ -11,6 +11,8 @@ function scenario() {
     calls.push({ id, kind: attempt.kind, prompt, recovering });
     attempt.status = 'running'; attempt.submission = 'accepted'; attempt.acceptedAt ||= Date.now();
     attempt.native ||= { threadId: attempt.kind === 'main' ? 'main-thread' : id, turnId: id, messageId: id };
+    const task = run.tasks.find(row => row.id === attempt.taskId);
+    if (task) task.status = 'running';
     return new Promise((resolve, reject) => pending.set(id, { resolve: result => resolve({ text: 'native evidence', completed: true, native: attempt.native, ...result }), reject }));
   }, async stop(id) { stops.push(id); } };
   const controller = { async start() {}, async idle() { return true; }, async stop(attempt) { stops.push(attempt.id); } };
@@ -23,7 +25,7 @@ test('a same-software child does not occupy the main controller lane', async () 
   assert.equal(h.calls[0].kind, 'task');
   fusionEvent(h.run, 'user_input', { workId, text: 'follow up' }, 'followup'); h.runner.wake(); await flush();
   assert.deepEqual(h.calls.map(row => row.kind), ['task', 'main']);
-  assert.equal(h.scheduler.slots.size, 1); assert.equal(h.scheduler.mainSlots.size, 1);
+  assert.equal(h.runner.jobs.size, 1); assert.equal(h.scheduler.mainSlots.size, 1);
   h.pending.get(h.calls[1].id).resolve(); h.pending.get(h.calls[0].id).resolve(); await flush();
 });
 test('no pending events means no main model call; arrivals during a turn form one next batch', async () => {
@@ -133,15 +135,71 @@ test('stopping one work item leaves another work item and its actual native targ
   assert.equal(second.status, 'running'); assert.deepEqual(h.stops, [first.id]);
   h.run.status = 'blocked'; h.pending.get(first.id).resolve({ stopped: true }); h.pending.get(second.id).resolve(); await flush();
 });
-test('unknown attempts reserve the software and recover the same attempt without a second prompt submission', async () => {
+test('an unknown attempt prevents its own resubmission but leaves independent same-app work runnable during recovery', async () => {
   const h = scenario(), workId = h.create(); h.plan(workId); h.run.status = 'blocked';
   await h.runner.control({ action: 'dispatch', workId, tasks: [h.task('A')] }, h.native()); await flush();
   const id = h.calls[0].id; h.pending.get(id).reject(new Error('connection lost')); await flush();
-  assert.equal(h.run.attempts[0].status, 'unknown'); assert.equal(h.scheduler.uncertain.get('codex'), id);
+  assert.equal(h.run.attempts[0].status, 'unknown');
+  assert.throws(() => h.apply({ action: 'continue_task', taskId: 'A', input: 'again', cost: h.cost('codex') }), /结果未知/);
+  await h.runner.control({ action: 'dispatch', workId, tasks: [h.task('independent')] }, h.native()); await flush();
+  const other = h.calls[1]; assert(other); assert.notEqual(other.id, id); assert(!other.recovering);
   h.run.events.forEach(event => { event.deliveredTo = 'known'; });
   await h.runner.resume(); await flush();
-  assert.equal(h.calls[1].id, id); assert.equal(h.calls[1].recovering, true); assert.equal(h.run.attempts.length, 1);
-  h.run.status = 'blocked'; h.pending.get(id).resolve(); await flush(); assert.equal(h.scheduler.uncertain.size, 0);
+  assert.equal(h.calls[2].id, id); assert.equal(h.calls[2].recovering, true); assert.equal(h.run.attempts.length, 2);
+  h.run.status = 'blocked'; h.pending.get(id).resolve(); h.pending.get(other.id).resolve(); await flush();
+  assert.equal(h.runner.jobs.size, 0);
+});
+test('independent same-project writes run in parallel and report to their own tasks when completed out of order', async () => {
+  const h = scenario(), workId = h.create(); h.plan(workId); h.run.status = 'blocked';
+  const one = { ...h.task('feature-a'), access: 'write', scope: ['feature-a'] };
+  const two = { ...h.task('feature-b'), access: 'write', scope: ['feature-b'] };
+  await h.runner.control({ action: 'dispatch', workId, tasks: [one, two] }, h.native()); await flush();
+  assert.equal(h.calls.length, 2);
+  const [a, b] = h.calls; assert.notEqual(a.id, b.id);
+  h.pending.get(b.id).resolve({ text: 'B evidence', changes: { files: ['feature-b'] } }); await flush();
+  assert.equal(h.run.tasks[0].status, 'running'); assert.equal(h.run.tasks[1].status, 'awaiting_review');
+  h.pending.get(a.id).resolve({ text: 'A evidence', changes: { files: ['feature-a'] } }); await flush();
+  assert.equal(h.run.attempts.find(row => row.id === a.id).result.text, 'A evidence');
+  assert.equal(h.run.attempts.find(row => row.id === b.id).result.text, 'B evidence');
+  assert.deepEqual(h.run.events.map(event => event.data.taskId), ['feature-b', 'feature-a']);
+  assert.equal(h.runner.jobs.size, 0);
+});
+test('parallel unknown native turns recover together without submitting new Attempts', async () => {
+  const h = scenario(), workId = h.create(); h.plan(workId); h.run.status = 'blocked';
+  await h.runner.control({ action: 'dispatch', workId, tasks: [h.task('A'), h.task('B')] }, h.native()); await flush();
+  const ids = h.calls.map(call => call.id); assert.equal(ids.length, 2);
+  for (const id of ids) h.pending.get(id).reject(new Error('connection lost'));
+  await flush(); assert(h.run.attempts.every(attempt => attempt.status === 'unknown'));
+  h.run.events.forEach(event => { event.deliveredTo = 'already-read'; });
+  await h.runner.resume(); await flush();
+  assert.deepEqual(h.calls.slice(2).map(call => call.id), ids); assert(h.calls.slice(2).every(call => call.recovering));
+  assert.equal(h.run.attempts.length, 2);
+  h.run.status = 'blocked'; for (const id of ids) h.pending.get(id).resolve(); await flush();
+  assert(h.run.attempts.every(attempt => attempt.status === 'awaiting_review')); assert.equal(h.runner.jobs.size, 0);
+});
+test('main self-execution can write alongside an independent child while its declared dependencies still apply', async () => {
+  const h = scenario(), workId = h.create(); h.plan(workId); h.run.status = 'blocked';
+  await h.runner.control({ action: 'dispatch', workId, tasks: [{ ...h.task('child'), access: 'write', scope: ['child-file'] }] }, h.native()); await flush();
+  const child = h.calls[0], spec = { goal: 'Independent main change', access: 'write', scope: ['main-file'], dependsOn: [], acceptance: ['main evidence'] };
+  await assert.rejects(h.runner.control({ action: 'self_execute', workId, task: { ...spec, dependsOn: ['child'] }, cost: h.cost('codex') }, h.native()), /前置任务尚未验收/);
+  const result = await h.runner.control({ action: 'self_execute', workId, task: spec, cost: h.cost('codex') }, h.native());
+  const self = h.run.attempts.find(attempt => attempt.id === result.attemptId); assert(self.baseline);
+  assert.equal(self.status, 'running'); assert.equal(h.run.tasks.find(task => task.id === 'child').status, 'running');
+  h.run.attempts.push({ id: 'main-turn', kind: 'main', status: 'running', acceptedAt: 1, native: { turnId: 'native-turn' } });
+  await h.runner.mainEnded('main-turn', { completed: true, text: 'main evidence' }); h.run.status = 'blocked';
+  assert.equal(h.run.attempts.find(attempt => attempt.id === self.id).result.text, 'main evidence');
+  h.pending.get(child.id).resolve({ text: 'child evidence' }); await flush();
+  assert.equal(h.run.attempts.find(attempt => attempt.id === child.id).result.text, 'child evidence');
+});
+test('stopping parallel same-app tasks waits for each exact target and cancels only the unsubmitted dependency', async () => {
+  const h = scenario(), workId = h.create(); h.plan(workId);
+  await h.runner.control({ action: 'dispatch', workId, tasks: [h.task('A'), h.task('dependent', 'codex', ['A']), h.task('B')] }, h.native()); await flush();
+  assert.equal(h.calls.length, 2); const [one, two] = h.calls;
+  await h.runner.stop(); assert.deepEqual(h.stops, [one.id, two.id]); assert.equal(h.run.status, 'stopping');
+  assert.equal(h.run.tasks[1].status, 'cancelled');
+  h.pending.get(two.id).resolve({ stopped: true, completed: false }); await flush(); assert.equal(h.run.status, 'stopping');
+  h.pending.get(one.id).resolve({ stopped: true, completed: false }); await flush(); assert.equal(h.run.status, 'stopped');
+  assert.equal(h.calls.length, 2);
 });
 test('a delivery candidate becomes complete only after its native main turn ends and no new work input arrived', async () => {
   const h = scenario(), workId = h.create(); h.plan(workId);

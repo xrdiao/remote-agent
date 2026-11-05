@@ -38,6 +38,9 @@ test('DAG permits forward dependencies but rejects missing dependencies and cycl
   assert.throws(() => h.apply({ action: 'dispatch', workId, tasks: [h.task('A', 'codex', ['missing'])] }), /依赖不存在/);
   h.apply({ action: 'dispatch', workId, tasks: [h.task('A', 'codex', ['B']), h.task('B', 'cursor')] });
   assert.equal(h.run.tasks.length, 2);
+  const workspace = h.apply({ action: 'read_workspace' });
+  assert.equal(typeof workspace.scheduling, 'string'); assert(workspace.scheduling.length > 0);
+  assert.deepEqual(workspace.tasks.find(task => task.id === 'A').dependsOn, ['B']);
 });
 test('there is no fixed number of tasks; rework preserves old assignments, plans and attempts', () => {
   const h = fixture(), workId = h.create(); h.plan(workId);

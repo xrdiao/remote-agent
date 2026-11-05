@@ -29,25 +29,16 @@ export class FusionRunner {
       commitFusion(run, next => { next.capabilities.unshift(snapshot); });
     }
     const previous = run.commands.find(row => row.key === `${run.main.bindingId}:${native.turnId}:${String(native.requestId)}`);
-    let claim, baseline;
+    let baseline;
     if (action?.action === 'self_execute' && !previous) {
       const work = run.works.find(row => row.id === action.workId), main = run.bindings.find(row => row.id === run.main.bindingId);
       if (!work || work.project.id !== main?.project.id) throw new Error('主 Agent 只能在自己的实际项目执行，其他项目请委派');
-      if (action.task?.access === 'write') {
-        claim = `main:${native.turnId}:${String(native.requestId)}`;
-        this.scheduler.claimWrite(work.project.id, claim);
-      } else if (action.task?.stableRead && (this.scheduler.writers.has(work.project.id) || this.scheduler.uncertainWriters.has(work.project.id)))
-        throw new Error('依赖写入的主控验证需要等待该项目写任务结束');
-      try { baseline = await fusionWorkspaceSnapshot(work.project, action.task?.scope || []); }
-      catch (error) { if (claim) this.scheduler.releaseWrite(work.project.id, claim); throw error; }
+      baseline = await fusionWorkspaceSnapshot(work.project, action.task?.scope || []);
     }
-    let result;
-    try { result = applyFusionControl(run, action, native); }
-    catch (error) { if (claim) this.scheduler.releaseWrite(run.works.find(row => row.id === action.workId).project.id, claim); throw error; }
+    let result = applyFusionControl(run, action, native);
     if (action.action === 'self_execute' && !previous) {
-      const attempt = run.attempts.find(row => row.id === result.attemptId), work = run.works.find(row => row.id === action.workId);
+      const attempt = run.attempts.find(row => row.id === result.attemptId);
       attempt.baseline = baseline;
-      if (claim) this.scheduler.writers.set(work.project.id, { attemptId: attempt.id });
       this.publish();
     }
     if (action.action === 'read_workspace') {
@@ -113,7 +104,7 @@ export class FusionRunner {
     if (!task() || task().executor === 'main') return;
     const work = () => this.run.works.find(row => row.id === task().workId);
     const job = this.scheduler.submit({ runId: this.run.id, app: attempt().app, attemptId,
-      projectKey: work().project.id, access: task().access, stableRead: task().stableRead, priority: task().priority,
+      priority: task().priority,
       ready: () => recovering || !this.run.stopRequested && !['stopping', 'stopped'].includes(work().status)
         && !['cancelled', 'stopping'].includes(task().status) && task().dependsOn.every(id => this.run.tasks.find(row => row.id === id)?.status === 'accepted'),
       execute: async () => {
@@ -145,9 +136,6 @@ export class FusionRunner {
     if (task) task.status = attempt.status;
     const agent = task && this.run.agents.find(row => row.id === task.workerId);
     if (agent) agent.status = 'idle';
-    if (this.scheduler.uncertain.get(attempt.app) === attempt.id) this.scheduler.uncertain.delete(attempt.app);
-    const work = this.run.works.find(row => row.id === attempt.workId);
-    if (work && this.scheduler.uncertainWriters.get(work.project.id) === attempt.id) this.scheduler.uncertainWriters.delete(work.project.id);
     fusionEvent(this.run, result.error ? 'native_error' : 'task_result', { workId: attempt.workId, taskId: attempt.taskId, attemptId }, `result:${attemptId}`);
     this.publish();
   }
@@ -157,12 +145,10 @@ export class FusionRunner {
     const unknown = !error.cancelled && !error.nativeRejected && attempt.submission !== 'not_submitted' && !attempt.nativeGenerationEndedAt;
     Object.assign(attempt, { status: error.cancelled ? 'cancelled' : unknown ? 'unknown' : 'failed', error: error.message,
       endedAt: unknown ? null : Date.now() });
-    const task = this.run.tasks.find(row => row.id === attempt.taskId), work = this.run.works.find(row => row.id === attempt.workId);
+    const task = this.run.tasks.find(row => row.id === attempt.taskId);
     if (task) task.status = attempt.status;
     const agent = task && this.run.agents.find(row => row.id === task.workerId);
     if (agent) agent.status = unknown ? 'unknown' : error.creationUnknown ? 'blocked' : 'idle';
-    if (unknown && task?.executor !== 'main') this.scheduler.uncertain.set(attempt.app, attempt.id);
-    if (unknown && task?.access === 'write') this.scheduler.uncertainWriters.set(work.project.id, attempt.id);
     if (!error.cancelled) fusionEvent(this.run, 'native_error', { workId: attempt.workId, taskId: attempt.taskId, attemptId,
       reason: error.message, submission: attempt.submission }, `error:${attemptId}`);
     if (main) this.blockMain(error); else this.publish();
@@ -181,7 +167,6 @@ export class FusionRunner {
       const task = run.tasks.find(row => row.id === self.taskId), work = run.works.find(row => row.id === self.workId);
       this.completed(self.id, { text: turn.text, completed: turn.completed, error: turn.error, stopped: run.stopRequested,
         changes: await fusionWorkspaceSnapshot(work.project, task.scope) });
-      this.scheduler.releaseWrite(work.project.id, self.id);
     }
     for (const work of run.works.filter(row => row.candidate?.nativeTurnId === attempt.native?.turnId)) {
       const candidate = work.candidate;
@@ -277,11 +262,6 @@ export class FusionRunner {
     await this.recover();
   }
   async recover() {
-    for (const attempt of this.run.attempts.filter(row => NATIVE_UNSETTLED.includes(row.status) && row.submission !== 'not_submitted')) {
-      const task = this.run.tasks.find(row => row.id === attempt.taskId), work = this.run.works.find(row => row.id === attempt.workId);
-      if (task?.executor === 'child') this.scheduler.uncertain.set(attempt.app, attempt.id);
-      if (task?.access === 'write') this.scheduler.uncertainWriters.set(work.project.id, attempt.id);
-    }
     await this.controller.start();
     for (const attempt of this.run.attempts.filter(row => NATIVE_UNSETTLED.includes(row.status) || row.status === 'queued')) {
       if (this.jobs.has(attempt.id)) continue;
@@ -300,11 +280,6 @@ export class FusionRunner {
           else if (this.run.stopRequested) await this.controller.stop(attempt);
         }
       } else if (this.run.tasks.find(row => row.id === attempt.taskId)?.executor !== 'main') {
-        if (attempt.submission !== 'not_submitted') {
-          this.scheduler.uncertain.set(attempt.app, attempt.id);
-          const task = this.run.tasks.find(row => row.id === attempt.taskId), work = this.run.works.find(row => row.id === attempt.workId);
-          if (task.access === 'write') this.scheduler.uncertainWriters.set(work.project.id, attempt.id);
-        }
         this.schedule(attempt.id, attempt.submission !== 'not_submitted');
       }
     }
