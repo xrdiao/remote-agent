@@ -10,6 +10,9 @@ const core = read('app/js/core.js');
 const composer = read('app/js/composer.js');
 const gate = read('app/js/gate.js');
 const overview = read('app/js/overview.js');
+const modes = read('app/js/mode.js');
+const terminal = read('app/js/terminal.js');
+const fusion = read('app/js/fusion.js');
 const computers = ['a', 'b'].map(name => ({
   id: name.repeat(16), key: 'key-' + name, token: 'token-' + name,
   relay: 'https://relay-' + name + '.invalid', win: 'codex',
@@ -33,7 +36,7 @@ function harness({ sameSelection = false, count = 2 } = {}) {
     if (!elements.has(id)) {
       const classes = new Set();
       elements.set(id, {
-        value: '', disabled: false, hidden: false, innerHTML: '', textContent: '', dataset: {},
+        value: '', disabled: false, hidden: false, innerHTML: '', textContent: '', dataset: {}, firstChild: { textContent: '' },
         classList: { add: key => classes.add(key), remove: key => classes.delete(key), contains: key => classes.has(key) },
         querySelector: () => null, querySelectorAll: () => [], replaceChildren() {},
       });
@@ -51,6 +54,7 @@ function harness({ sameSelection = false, count = 2 } = {}) {
     URL, URLSearchParams, AbortController, AbortSignal, Event, crypto, performance, structuredClone,
     Date: class extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } },
     WebSocket: FakeWebSocket,
+    MutationObserver: class { observe() {} },
     location: { href: 'https://phone.invalid/', origin: 'https://phone.invalid', pathname: '/', hash: '', search: '' },
     history: { replaceState() {} }, navigator: { userAgent: 'test' },
     sessionStorage: { getItem: () => null, removeItem() {} },
@@ -107,13 +111,13 @@ function harness({ sameSelection = false, count = 2 } = {}) {
     function setAgentList(key, value) { agentLists.set(key, value); }
     function syncNotify() { trace.push(['notify', currentComputer().id]); }
     function openComputerEntry(url, id) { trace.push(['entry', url, id]); }
-    function openSheet(kind) { trace.push(['sheet', kind]); }
+    function openSheet(kind) { sheetKind=kind;trace.push(['sheet', kind]); }
     function esc(value) { return value; }
     var bootCalls = 0, overviewRefreshes = 0, overviewFetches = [];
     var ovList = JSON.parse(store.get('computers')).map((c,index)=>({id:c.id,c,index})), ovSt = new Map();
     function ovStOf(id) { if(!ovSt.has(id))ovSt.set(id,{dataStatus:'loading'});return ovSt.get(id); }
     function ovRender() { overviewRefreshes++; }
-    function ovEnterReady() {}
+    function ovEnterReady() {} function ovNavigationChanged() {} function releaseFusionView() {} function ovCancelOpening() {}
     function ovFetch(e) { overviewFetches.push(e.id);return Promise.resolve(); }
     var connectionDetailsComputer = '';
     function showConnectionDetails() {}
@@ -980,11 +984,12 @@ test('directory results from revoked credentials cannot update the replacement p
 });
 
 function installOverviewOpening(h) {
-  h.run(`var ovOpenRequest=0, ovEnterRequested=false, ovToolState=null, ovS={}, pendingAgentOpen='';
+  h.run(`var ovOpenRequest=0, ovEnterRequested=false, ovToolState=null, ovOpening=null, ovS={}, pendingAgentOpen='';
     function ovSaveHistory() {} function ovT(value) { return value; }
     function ovShowConversation() { trace.push(['enter',currentComputer().id,lastChat?.thread]); }`);
   h.run(notify.slice(notify.indexOf('function noticeTarget('), notify.indexOf('function finishWinBinding(')));
   h.run(notify.slice(notify.indexOf('function openPickedSession('), notify.indexOf("$('sheet').addEventListener('click'")));
+  h.run(overview.slice(overview.indexOf('function ovOpenFeedback('), overview.indexOf('function ovUsageHtml(')));
   h.run(overview.slice(overview.indexOf('async function ovOpen('), overview.indexOf('function conversationVisible(')));
   h.run(overview.slice(overview.indexOf('function ovConversationOpened('), overview.indexOf('function ovLeave(')));
 }
@@ -1014,6 +1019,102 @@ const cardEntries = h => h.trace.filter(row => row[0] === 'enter').map(row => Ar
 function cardAttached(h, thread, options = {}) {
   h.attached(0, { threadId: thread, sel: `codex|window-a|${thread}`, chat: { thread, items: [] }, ...options });
 }
+
+function installCardModes(h) {
+  h.run(`var view=$('view'),stage=$('stage'),zoom=1,visualState={state:'idle'};
+    var terminalReady=true,terminalSubscription='qa-subscription',terminalOrigin=null;
+    var terminalListRequest=null,terminalCreateRequest=null,terminalCompletion=null,terminalHistoryRequest=null;
+    function clearTermSelection(){} function updateSendMode(){} function paintGenerationTime(){}
+    function fitOrientation(){} function closeTerminalPassword(){} function updateTerminalControls(){}
+    function ovRestore(){}
+    for(const node of [document.body,view,$('tabChat'),$('tabTerm'),$('chatView'),$('screenView')]){
+      node.classList.toggle=(key,on)=>on?node.classList.add(key):node.classList.remove(key);
+      node.setAttribute=(key,value)=>{node[key]=value;};
+    }`);
+  h.run(modes.slice(0, modes.indexOf('// On thin phones')));
+  h.run(terminal.slice(terminal.indexOf('function enterTerminalMode('), terminal.indexOf('async function openComputerTerminal(')));
+  h.run(overview.slice(overview.indexOf('function ovLeave('), overview.indexOf('function ovBackToBoard(')));
+}
+function cardTerminalHome(h) {
+  h.run("currentTerminalId='qa-terminal-a';ovShowConversation();setMode('terminal');ovLeave()");
+  h.trace.length = 0; h.link(0).socket.sent.length = 0;
+}
+
+test('card opening from a terminal switches to chat and waits for its own fresh first screen', async () => {
+  for (const app of ['codex', 'cursor', 'devin']) {
+    const h = harness(); await h.bothReady(); installOverviewBinding(h, app); installCardModes(h); cardTerminalHome(h);
+    await h.run('ovOpen(cardTargets.b)');
+    assert.equal(h.run('mode'), 'chat');
+    assert.equal(h.link(0).socket.sent[0].t, 'mode'); assert.equal(h.link(0).socket.sent[0].mode, 'chat');
+    assert.equal(cardNavigations(h).length, 1);
+    assert.equal(cardNavigations(h)[0].threadId || cardNavigations(h)[0].id, app === 'codex' ? 'thread:window-a:card-b' : 'card-b');
+    const selection = { app, id: app === 'codex' ? 'codex' : app + ':window-a', threadId: 'card-b', sel: `${app}|window-a|card-b` };
+    h.attached(0, { ...selection, chat: undefined });
+    assert.equal(h.state().windowReady, false); assert.deepEqual(cardEntries(h), []);
+    h.deliver(0, { t: 'chat', sel: selection.sel, cached: true, chat: { thread: 'card-b', items: [] } });
+    assert.equal(h.state().windowReady, false); assert.deepEqual(cardEntries(h), []);
+    h.deliver(0, { t: 'chat', sel: selection.sel, chat: { thread: 'card-b', items: [] } });
+    assert.equal(h.state().thread, 'card-b'); assert.equal(h.state().windowReady, true);
+    assert.deepEqual(cardEntries(h), [['enter', computers[0].id, 'card-b']]);
+    assert.equal(cardNavigations(h).length, 1); assert.equal(h.run('currentTerminalId'), 'qa-terminal-a');
+  }
+});
+
+test('card navigation preserves the old terminal and the separate chat and terminal drafts', async () => {
+  const h = harness(); await h.bothReady(); installOverviewBinding(h); installCardModes(h);
+  h.run("cardTargets.a.threadId='thread-a';text.value='chat A draft';saveDraft();currentTerminalId='qa-terminal-a';ovShowConversation();setMode('terminal');text.value='terminal draft';saveDraft();ovLeave()");
+  h.link(0).socket.sent.length = 0;
+  await h.run('ovOpen(cardTargets.b)'); cardAttached(h, 'card-b');
+  assert.equal(h.state().draft, '');
+  h.run("text.value='chat B draft';setMode('terminal')");
+  assert.equal(h.state().draft, 'terminal draft'); assert.equal(h.run('currentTerminalId'), 'qa-terminal-a');
+  h.run('ovLeave()'); await h.run('ovOpen(cardTargets.a)'); cardAttached(h, 'thread-a');
+  assert.equal(h.state().draft, 'chat A draft');
+  h.run('ovLeave()'); await h.run('ovOpen(cardTargets.b)'); cardAttached(h, 'card-b');
+  assert.equal(h.state().draft, 'chat B draft');
+  assert.equal(h.link(0).socket.sent.some(m => ['newTerminal', 'closeTerminal', 'termWrite', 'termSend'].includes(m.t)), false);
+});
+
+test('terminal card navigation enters a Fusion native main conversation and clears its controller on ordinary exit', async () => {
+  const h = harness(); await h.bothReady(); installOverviewBinding(h); installCardModes(h); h.run(fusion); cardTerminalHome(h);
+  h.run(`ovS.comp=currentComputer().id;var run={id:'qa-controller',computer:currentComputer().id,main:{bindingId:'qa-main',app:'codex'},tasks:{total:0},status:'waiting'};
+    fusionWorkspaces.set(currentComputer().id,{runs:[run]});openFusionController(currentComputer().id,run.id)`);
+  await h.settle();
+  assert.equal(h.run('mode'), 'chat'); assert.equal(cardNavigations(h).length, 1);
+  assert.equal(cardNavigations(h)[0].id, 'fusion'); assert.equal(cardNavigations(h)[0].threadId, 'qa-controller');
+  const main = { id: 'codex', app: 'codex', windowId: 'qa-main-window', threadId: 'qa-main-thread', sel: 'codex|qa-main-window|qa-main-thread',
+    fusionController: { id: 'qa-controller', computer: computers[0].id, main:{bindingId:'qa-main'}, tasks:{total:0} } };
+  h.attached(0, { ...main, chat: undefined });
+  assert.equal(h.run('currentApp'), 'codex'); assert.equal(h.run('currentFusionRun().id'), 'qa-controller');
+  assert.deepEqual(cardEntries(h), []); assert.equal(h.state().windowReady, false);
+  h.deliver(0, { t: 'chat', sel: main.sel, chat: { thread: main.threadId, items: [] } });
+  assert.equal(h.state().thread, main.threadId); assert.equal(h.run('document.body.classList.contains("fusion")'), true);
+  const mainNavigation = cardNavigations(h)[0].navigationId;
+  h.run("text.value='Fusion draft';setMode('terminal');ovLeave()"); await h.run('ovOpen(cardTargets.b)');
+  assert.equal(h.run('mode'), 'chat'); assert.equal(cardNavigations(h).length, 2);
+  cardAttached(h, 'card-b', { fusionController: null, chat: undefined });
+  assert.equal(h.run('activeFusionController'), null); assert.equal(h.state().windowReady, false);
+  h.attached(0, { ...main, navigationId: mainNavigation, chat: { thread: main.threadId, items: [] } });
+  assert.equal(h.run('activeFusionController'), null);
+  h.deliver(0, { t: 'chat', navigationId: mainNavigation, sel: main.sel, chat: { thread: main.threadId, items: [] } });
+  h.deliver(0, { t: 'chat', sel: 'codex|window-a|card-b', chat: { thread: 'card-b', items: [] } });
+  assert.equal(h.state().thread, 'card-b'); assert.equal(h.run('document.body.classList.contains("fusion")'), false);
+  assert.equal(h.run('ovS.comp'), computers[0].id); assert.equal(h.run('ovS.level'), 'fusion');
+  assert.deepEqual(cardEntries(h), [['enter', computers[0].id, main.threadId], ['enter', computers[0].id, 'card-b']]);
+});
+
+test('reading Fusion or opening an unconfigured controller keeps the terminal and only opens configuration', async () => {
+  const h = harness(); await h.bothReady(); installOverviewBinding(h); installCardModes(h); h.run(fusion); cardTerminalHome(h);
+  h.run("function showFusionConfig(run){trace.push(['config',run.id]);}ovS.level='fusion';ovS.comp=currentComputer().id;refreshFusionWorkspace();readFusionView(currentComputer().id,'qa-unconfigured','config')");
+  const request = h.link(0).socket.sent.at(-1);
+  h.deliver(0, { t: 'fusionState', computer: computers[0].id, requestId: request.requestId,
+    runId: 'qa-unconfigured', view: { kind: 'config', subscriptionId: request.requestId },
+    run: { id: 'qa-unconfigured', computer: computers[0].id, main: { bindingId: '' } } });
+  await h.settle();
+  assert.equal(h.run('mode'), 'terminal'); assert.equal(cardNavigations(h).length, 0); assert.deepEqual(cardEntries(h), []);
+  assert.equal(h.trace.some(row => row[0] === 'config' && row[1] === 'qa-unconfigured'), true);
+  assert.equal(h.link(0).socket.sent.some(m => m.t === 'mode'), false);
+});
 
 test('opening a card reuses its unfinished native request for each Agent and repeated clicks enter once', async () => {
   for (const app of ['codex', 'cursor', 'devin']) {
@@ -1184,4 +1285,46 @@ test('an unfinished destination preload is not treated as a ready Codex conversa
   assert.equal(h.state().windowReady, false); assert.equal(h.trace.some(row => row[0] === 'enter'), false);
   assert.equal(h.link(1).socket.sent.some(m => m.t === 'openAgent'), false);
   assert.equal(h.link(1).socket.sent.filter(m => m.t === 'attach').at(-1).threadId, 'thread-b-other');
+});
+
+test('collapsed-card repeated clicks share only the actual unfinished native operation', async () => {
+  const h = harness(); await h.bothReady(); installOverviewBinding(h);
+  await h.run('ovOpen(cardTargets.b);ovOpen({...cardTargets.b});ovOpen({...cardTargets.b})');
+  assert.equal(cardNavigations(h).length, 1);
+  assert.match(h.run('ovOpenFeedback(cardTargets.b)'), /等待会话内容/);
+  cardAttached(h, 'card-b'); await h.settle();
+  assert.deepEqual(cardEntries(h), [['enter', computers[0].id, 'card-b']]);
+  h.run('ovLeave=()=>{};document.body.classList.remove("conv")');
+  await h.run('ovOpen(cardTargets.b)');
+  assert.equal(cardNavigations(h).length, 2);
+});
+test('collapsed-card failures are visible on the owning card and retry starts one new operation', async () => {
+  const h = harness(); await h.bothReady(); installOverviewBinding(h);
+  await h.run('ovOpen(cardTargets.b)');
+  h.deliver(0, { t: 'attachFailed', home: true, message: 'native read failed' }); await h.settle();
+  assert.match(h.run('ovOpenFeedback(cardTargets.b)'), /native read failed/);
+  assert.equal(h.run('ovOpenFeedback(cardTargets.a)'), '');
+  assert.equal(h.run('ovEnterRequested'), false);
+  await h.run('ovOpen(cardTargets.b);ovOpen(cardTargets.b)');
+  assert.equal(cardNavigations(h).length, 2);
+  cardAttached(h, 'card-b'); assert.equal(cardEntries(h).length, 1);
+});
+test('a foreground card can take over the same background operation without losing entry ownership', async () => {
+  const h = harness(); await h.bothReady(); installOverviewBinding(h);
+  h.run("ovS.open='a';ovPrepareTools('a')");
+  const opening = h.run('ovOpen(cardTargets.a)');
+  h.run('openWin(JSON.stringify({...cardTargets.a,background:true}))');
+  assert.equal(cardNavigations(h).length, 1);
+  cardAttached(h, 'card-a'); await opening;
+  assert.equal(cardEntries(h).length, 1);
+});
+test('closed Fusion detail replies cannot override a newer ordinary card opening', async () => {
+  const h = harness(); await h.bothReady(); installOverviewBinding(h); h.run(fusion);
+  h.run("readFusionView(currentComputer().id,'old-controller','config')");
+  const read = h.link(0).socket.sent.at(-1);
+  await h.run('ovOpen(cardTargets.b)'); cardAttached(h, 'card-b');
+  h.deliver(0, { t: 'fusionState', computer: computers[0].id, requestId: read.requestId, runId: 'old-controller',
+    view: { kind: 'config', subscriptionId: read.requestId }, run: { id: 'old-controller', main: { bindingId: 'old-main' } } });
+  assert.equal(cardNavigations(h).length, 1); assert.equal(h.state().thread, 'card-b');
+  assert.equal(cardEntries(h).length, 1);
 });

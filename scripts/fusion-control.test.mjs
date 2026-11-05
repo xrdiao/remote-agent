@@ -66,3 +66,64 @@ test('unknown native results and unaccepted mandatory work prevent delivery or d
   assert.throws(() => h.apply({ action: 'finish', workId, summary: 'done', evidence: [] }), /必需任务/);
   assert.equal(h.run.attempts.length, 1);
 });
+
+const { FUSION_OWNER, fusionRunView, fusionControllerView } = await import('../server/fusion/owner.mjs');
+const { fusionLive, fusionViewers, publishFusion } = await import('../server/fusion/state.mjs');
+function largeViewFixture() {
+  const h = fixture(), workId = h.create(); h.plan(workId);
+  h.apply({ action: 'dispatch', workId, tasks: [h.task('view-task')] });
+  const attempt = h.run.attempts[0], bindingId = 'view-binding';
+  Object.assign(attempt, { bindingId, result: { text: 'result'.repeat(100000) }, changes: { diff: '+exact diff\n'.repeat(100000) }, baseline: { head: 'native-head' } });
+  h.run.agents[0].bindingId = bindingId;
+  h.run.bindings.push({ id: bindingId, role: 'worker', app: 'codex', threadId: 'native-child', windowId: 'native-window', project: h.project });
+  h.run.events.push({ id: 'result-event', type: 'task_result', data: { attemptId: attempt.id, changes: attempt.changes } });
+  h.run.works[0].deliveries.push({ summary: 'verified', evidence: [{ detail: 'evidence\n'.repeat(100000) }], mainAttemptId: attempt.id });
+  h.run.attempts.push({ ...attempt, id: 'latest-attempt', result: { text: 'new result' } });
+  fusionLive.set(bindingId, { state: 'awaiting_user', chat: { items: [{ i: 'body', k: 'assistant', t: 'live'.repeat(100000) },
+    { i: 'native-action', b: ['Allow'], actions: ['allow-once'], btnItem: 'native-button' }],
+    questions: { codex: true, requests: [{ id: 'approval', text: 'Approval', fields: [], buttons: [{ label: 'Allow' }] }] } } });
+  return { ...h, workId, attempt, bindingId };
+}
+test('Fusion summary and selected views omit full history, diffs and repeated native transcripts', t => {
+  const h = largeViewFixture(); t.after(() => fusionLive.delete(h.bindingId));
+  for (const view of [{ kind: 'config' }, { kind: 'tasks' }, { kind: 'task', taskId: 'view-task' }, { kind: 'input' }]) {
+    const result = fusionRunView(h.run, view), raw = JSON.stringify(result);
+    assert(Buffer.byteLength(raw) < 20000, view.kind + ' must remain a small projection');
+    assert(!raw.includes('+exact diff')); assert(!raw.includes('resultresult')); assert(!raw.includes('livelive'));
+  }
+  const task = fusionRunView(h.run, { kind: 'task', taskId: 'view-task' });
+  assert.equal(task.attempts[0].live, null); assert.equal(task.attempts[1].live.items.length, 1);
+  assert.equal(task.attempts[1].live.items[0].actions[0], 'allow-once');
+  assert.equal(task.attempts[1].live.requests[0].id, 'approval');
+  assert.equal(fusionControllerView(h.run).tasks.total, 1);
+});
+test('explicit audit reads preserve exact full diffs, native identity and delivery evidence', t => {
+  const h = largeViewFixture(); t.after(() => fusionLive.delete(h.bindingId));
+  const audit = fusionRunView(h.run, { kind: 'attempt', attemptId: h.attempt.id });
+  assert.equal(audit.changes.diff, h.attempt.changes.diff); assert.deepEqual(audit.baseline, h.attempt.baseline);
+  assert.deepEqual(audit.result, h.attempt.result); assert.equal(audit.events[0].data.changes.diff, h.attempt.changes.diff);
+  assert.deepEqual(fusionRunView(h.run, { kind: 'delivery', workId: h.workId, index: 0 }), h.run.works[0].deliveries[0]);
+  assert.deepEqual(fusionRunView(h.run, { kind: 'reviews', taskId: 'view-task' }).reviews, h.run.tasks[0].reviews);
+});
+test('detail subscriptions follow the requested view; audit reads and obsolete closes cannot replace it', t => {
+  const h = largeViewFixture(), messages = [], viewer = { deviceId: 'test', emit: message => messages.push(message) };
+  fusionViewers.add(viewer); t.after(() => { fusionViewers.delete(viewer); fusionLive.delete(h.bindingId); });
+  const read = (view, requestId, ids = {}) => FUSION_OWNER.fusionRead.call(viewer, { computer: h.run.computer, runId: h.run.id, view, requestId, ...ids });
+  read('tasks', 'list'); read('task', 'selected', { taskId: 'view-task' });
+  read('attempt', 'audit', { attemptId: h.attempt.id });
+  assert.equal(viewer.fusionDetail.view.subscriptionId, 'selected');
+  read('close', 'close-old', { subscriptionId: 'list' });
+  messages.length = 0; publishFusion(h.run, false);
+  assert.deepEqual(messages.map(m => m.t), ['fusionUpdate', 'fusionState']);
+  assert.equal(messages[1].view.kind, 'task'); assert.equal(messages[1].view.subscriptionId, 'selected');
+  read('close', 'close-selected', { subscriptionId: 'selected' });
+  messages.length = 0; publishFusion(h.run, false);
+  assert.deepEqual(messages.map(m => m.t), ['fusionUpdate']);
+});
+test('a configuration receipt cannot take back a newer task subscription', async () => {
+  const h = fixture(), workId = h.create(); h.plan(workId); h.apply({ action: 'dispatch', workId, tasks: [h.task('current-task')] });
+  const viewer = { deviceId: 'test', emit() {} };
+  FUSION_OWNER.fusionRead.call(viewer, { runId: h.run.id, view: 'task', taskId: 'current-task', requestId: 'current-view' });
+  await FUSION_OWNER.fusionConfigure.call(viewer, { runId: h.run.id, view: 'config', subscriptionId: 'old-config', requestId: 'old-save' });
+  assert.equal(viewer.fusionDetail.view.kind, 'task'); assert.equal(viewer.fusionDetail.view.subscriptionId, 'current-view');
+});

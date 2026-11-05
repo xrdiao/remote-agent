@@ -2187,7 +2187,7 @@ function overviewCards(saved = new Map()) {
     ovPrune() {}, store: { get: key => saved.get(key), set: (key, value) => saved.set(key, value) },
     ovS: { level: 'favorites' }, ovSessTile: row => row.key, ovEmpty: value => value, ovT: value => value, ovProjTile: project => project.key,
     $: () => ({ addEventListener: (type, handler) => handlers.set(type, handler) }),
-    ovHeld: '', ovBatch: null, ovSaveHistory() {}, ovRender() {}, ovOpen: target => opened.push(target),
+    ovHeld: '', ovBatch: null, ovSaveHistory() {}, ovRender() {}, ovCancelOpening() {}, ovOpen: target => opened.push(target),
     ovRecs: () => context.ovRecsOf(entry, state),
   });
   vm.runInContext(part(source, 'const ovDone =', 'let ovEnterRequested =')

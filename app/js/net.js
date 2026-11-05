@@ -74,13 +74,15 @@ function navigationState(message) {
   const messageText = { initial: '正在加载对话…', agent: '正在切换 Agent…', window: '正在切换窗口…', project: '正在打开项目…', session: '正在切换会话…', new: '正在新建对话…' }[kind];
   return { id: message.navigationId, targetId: message.t === 'attach' ? message.id : currentWindow, windowId: message.t === 'attach' ? message.windowId || message.id : currentWindow, confirmed: '', kind, message: messageText };
 }
-function beginNavigation(message) {
+function beginNavigation(message, target) {
   if (!message.initial) conn.initialSelection = false;
   failFileRead('目标已切换，文件读取已中断，请重新打开');
   message.navigationId = ++navigationSerial;
   const link = computerSockets.get(currentComputer()?.key);
   if (link) { link.navigationId = message.navigationId; link.binding = null; link.preload = null; }
   navigationPending = navigationState(message);
+  Object.assign(navigationPending, { target, generation: connGen });
+  ovNavigationChanged(navigationPending, 'opening', '正在等待会话内容…');
   status(navigationPending.message);
   conn.attachFailed = false;
   conn.failedTargets?.delete(navigationPending.targetId);
@@ -94,10 +96,12 @@ function beginNavigation(message) {
   renderQuestions(null);
 }
 function finishNavigation() {
+  const navigation = navigationPending;
   const kind = navigationPending?.kind;
   navigationPending = null;
   if (kind) status({ initial: '已连接', agent: '已切换 Agent', window: '已切换窗口', project: '已打开项目', session: '已切换会话', new: '已新建会话' }[kind]);
   ovEnterReady();
+  return navigation;
 }
 function selectionPreview() {
   $('items').inert = true;
@@ -115,7 +119,7 @@ function confirmNavigation() {
     selectionPreview();
     if (navigationPending) navigationPending.preview = viewSel;
   }
-  if (mode !== 'chat') { $('items').inert = false; setWindowReady(true); finishNavigation(); }
+  if (mode !== 'chat') { $('items').inert = false; setWindowReady(true); ovNavigationChanged(finishNavigation(), 'ready'); }
 }
 function receiveChat(m) {
   if (!m.sel || !viewSel || m.sel === viewSel) {
@@ -126,10 +130,11 @@ function receiveChat(m) {
       const becameReady = !windowReady;
       if (navigationPending?.preview === viewSel && chatStale) for (const item of m.chat.items) if (item.b?.length) cache.delete(item.i);
       liveChatSelection = m.sel || viewSel;
-      finishNavigation();
+      const navigation = finishNavigation();
       $('retryChat').hidden = true;
       $('items').inert = false;
       setWindowReady(true);
+      ovNavigationChanged(navigation, 'ready');
       if (becameReady) queueDraftSync();
     }
     if (m.chat && !m.cached && !m.chat.readonly) capabilityBlock = '';
@@ -155,9 +160,10 @@ function receiveProjectReady(m) {
   closeSheet(); currentProject = m.name;
   if (m.chat) {
     liveChatSelection = viewSel;
-    finishNavigation();
+    const navigation = finishNavigation();
     $('items').inert = false;
     setWindowReady(true);
+    ovNavigationChanged(navigation, 'ready');
     cacheChat(viewSel, m.chat);
     renderChat(m.chat);
     refreshSelectionMetadata();
@@ -1270,7 +1276,7 @@ async function connect(resumeLink = null) {
         selectionPreview();
       }
       send({ t: 'attach', id: chosen?.id || '', windowId: chosen?.windowId || '', threadId: chosen?.threadId || '',
-        project: typeof chosen?.project === 'object' ? chosen.project : null, initial: !notice?.project, resume: (m.resumed || !!link.binding) && !fromNotice });
+        project: typeof chosen?.project === 'object' ? chosen.project : null, initial: !notice?.project, resume: (m.resumed || !!link.binding) && !fromNotice }, fromNotice ? { ...noticeTarget(fromNotice), computer: m.id } : undefined);
       startComputerUpdates();
     }
     else if (receiveTerminal(m)) return;
@@ -1358,6 +1364,7 @@ async function connect(resumeLink = null) {
       if (m.chat) receiveChat(m);
     }
     else if (m.t === 'attachFailed') {
+      const navigation = navigationPending;
       if (m.home) {
         conn.initialSelection = false;
         conn.lastSelection = null;
@@ -1375,12 +1382,14 @@ async function connect(resumeLink = null) {
         $('quotaMeters').innerHTML = '';
         updateTitle();
         conn.attachFailed = !m.connected;
+        ovNavigationChanged(navigation, 'error', m.message || '打开失败，请重试');
         ovRender();
         status(m.message, false);
         return;
       }
       selectionReady = m.ready === true;
       connReadFailed(m.message || '当前会话读取失败，请重试或切换 Agent');
+      ovNavigationChanged(navigation, 'error', m.message || '当前会话读取失败，请重试');
     }
     else if (m.t === 'sessionLibrary') receiveSessionLibrary(m);
     else if (m.t === 'sessionChanged') receiveSessionChange(m);

@@ -26,15 +26,61 @@ function mainOf(value) {
   if (value?.app !== 'codex') throw new Error('当前已验证的主控软件为 Codex；Cursor 和 Devin 可作为子 Agent');
   return { app: value.app, model: String(value.model || ''), effort: String(value.effort || '') };
 }
-export function fusionRunView(run) {
-  return { ...run, commands: undefined, effects: undefined, observedMainMessages: undefined, observedMainTurns: undefined,
-    attempts: run.attempts.map(({ prompt, beforeIds, ...attempt }) => ({ ...attempt,
-      cost: run.assignments.find(row => row.id === attempt.assignmentId)?.cost,
-      live: fusionLive.get(attempt.bindingId) ? { ...fusionLive.get(attempt.bindingId).chat,
-        requests: fusionLive.get(attempt.bindingId).chat?.questions?.codex ? fusionLive.get(attempt.bindingId).chat.questions.requests : [],
-        questions: fusionLive.get(attempt.bindingId).chat?.questions?.codex ? null : fusionLive.get(attempt.bindingId).chat?.questions,
-        state: fusionLive.get(attempt.bindingId).state } : null,
-    })) };
+export function fusionControllerView(run) {
+  const { app, model, effort, bindingId, windowId, preparing, error, projectTrust } = run.main;
+  return { ...fusionSummary(run), main: { app, model, effort, bindingId, windowId, preparing, error, projectTrust } };
+}
+export function fusionRunView(run, view) {
+  const base = { ...fusionControllerView(run), revision: run.revision };
+  if (view.kind === 'config') return { ...base, budget: run.budget,
+    capabilities: [...new Set(run.capabilities.map(row => row.app))].map(app => {
+      const row = run.capabilities.find(row => row.app === app);
+      return { app, models: row.models };
+    }) };
+  if (view.kind === 'input') return { ...base, questions: run.questions.filter(row => row.id === view.questionId) };
+  if (view.kind === 'tasks') return { ...base,
+    agents: run.agents.map(({ id }) => ({ id })),
+    assignments: run.tasks.map(task => run.assignments.findLast(row => row.taskId === task.id)).filter(Boolean)
+      .map(({ taskId, app }) => ({ taskId, app })),
+    tasks: run.tasks.map(({ id, workId, goal, status, executor, dependsOn }) => ({ id, workId, goal, status, executor, dependsOn })),
+    questions: run.questions.filter(row => !row.answeredAt),
+    works: run.works.map(work => ({ id: work.id, title: work.title, goal: work.goal, status: work.status, project: work.project,
+      planId: work.planId, plans: work.plans.filter(row => row.id === work.planId),
+      deliveries: work.deliveries.map((row, index) => ({ index, summary: row.summary })) })) };
+  const task = run.tasks.find(row => row.id === view.taskId);
+  if (view.kind === 'reviews') return { reviews: task.reviews };
+  if (view.kind === 'attempt') {
+    const { prompt, beforeIds, ...attempt } = run.attempts.find(row => row.id === view.attemptId);
+    return { ...attempt, cost: run.assignments.find(row => row.id === attempt.assignmentId)?.cost,
+      events: run.events.filter(row => row.data?.attemptId === attempt.id) };
+  }
+  if (view.kind === 'delivery') return run.works.find(row => row.id === view.workId).deliveries[view.index];
+  if (view.kind !== 'task') throw new Error('未知 Fusion 视图');
+  const agent = run.agents.find(row => row.id === task.workerId);
+  const attempts = run.attempts.filter(row => row.taskId === task.id), latest = attempts.at(-1);
+  const bindingId = latest?.bindingId || agent?.bindingId;
+  return { ...base, tasks: [{ id: task.id, workId: task.workId, goal: task.goal, status: task.status, access: task.access,
+    dependsOn: task.dependsOn, workerId: task.workerId, inputs: task.inputs }],
+    agents: agent ? [{ id: agent.id, bindingId: agent.bindingId }] : [],
+    bindings: run.bindings.filter(row => row.id === bindingId),
+    attempts: attempts.map(attempt => {
+      const live = attempt === latest && fusionLive.get(attempt.bindingId);
+      return { id: attempt.id, taskId: attempt.taskId, bindingId: attempt.bindingId, app: attempt.app, model: attempt.model,
+        effort: attempt.effort, status: attempt.status, live: live ? {
+          items: (live.chat?.items || []).filter(item => item.b?.length).map(({ i, b, btnItem, actions }) => ({ i, b, btnItem, actions })),
+          requests: live.chat?.questions?.codex ? live.chat.questions.requests : [],
+          questions: live.chat?.questions?.codex ? null : live.chat?.questions, state: live.state } : null };
+    }) };
+}
+function fusionView(message, kind = 'config') {
+  return { kind: message.view || kind, subscriptionId: message.subscriptionId || message.requestId,
+    taskId: message.taskId, workId: message.workId, questionId: message.questionId,
+    attemptId: message.attemptId, index: message.index };
+}
+function emitFusionView(session, run, message, type = 'fusionState') {
+  const view = fusionView(message);
+  session.emit({ t: type, computer: run.computer, runId: run.id, requestId: message.requestId,
+    view, run: fusionRunView(run, view), ...(run.main.projectTrust ? { projectTrust: run.main.projectTrust } : {}) });
 }
 async function prepare(session, run, message, project = false) {
   if (run.main.preparing) throw new Error('主 Agent 正在准备，请等待当前操作结果');
@@ -56,27 +102,28 @@ async function prepare(session, run, message, project = false) {
   } catch (error) { run.main.error = error.message; }
   finally {
     run.main.preparing = false; publishFusion(run);
-    session.emit({ t: 'fusionState', computer: run.computer, requestId: message.requestId, run: fusionRunView(run),
-      ...(run.main.projectTrust ? { projectTrust: run.main.projectTrust } : {}) });
+    emitFusionView(session, run, message);
   }
 }
 subscribeFusion(run => {
   for (const viewer of fusionViewers) if (viewer.deviceId === run.deviceId) {
-    viewer.emit({ t: 'fusionUpdate', computer: run.computer, run: fusionSummary(run) });
-    if (viewer.fusionRun?.id === run.id || viewer.fusionDetailId === run.id)
-      viewer.emit({ t: 'fusionState', computer: run.computer, run: fusionRunView(run) });
+    viewer.emit({ t: 'fusionUpdate', computer: run.computer, run: fusionControllerView(run) });
+    if (viewer.fusionDetail?.runId === run.id) {
+      const view = viewer.fusionDetail.view;
+      viewer.emit({ t: 'fusionState', computer: run.computer, runId: run.id, view, run: fusionRunView(run, view) });
+    }
   }
 });
 export const FUSION_OWNER = {
   fusionWorkspace(message = {}) {
-    this.fusionDetailId = '';
+    this.fusionDetail = null;
     const projects = [...new Map(workspaces().map(workspace => {
       const project = fusionProject(workspace.root, workspace.host || '');
       return project && [project.id, project];
     }).filter(Boolean)).values()];
     this.emit({ t: 'fusionWorkspace', computer: computerId(), requestId: message.requestId,
       current: fusionRuns[this.deviceId]?.current || '',
-      runs: (fusionRuns[this.deviceId]?.runs || []).map(fusionSummary).sort((a, b) => b.updated - a.updated),
+      runs: (fusionRuns[this.deviceId]?.runs || []).map(fusionControllerView).sort((a, b) => b.updated - a.updated),
       projects, apps: EDITORS.map(({ app, name }) => ({ app, name, controller: app === 'codex' })),
       ...(message.path !== undefined ? { browse: projectList(message.path) } : {}) });
   },
@@ -91,7 +138,7 @@ export const FUSION_OWNER = {
     run.createRequestId = message.requestId;
     const saved = savedFusion(this.deviceId); saved.runs.push(run); saved.current = run.id;
     publishFusion(run);
-    if (emit) this.emit({ t: 'fusionCreated', computer: run.computer, run: fusionRunView(run), requestId: message.requestId });
+    if (emit) emitFusionView(this, run, message, 'fusionCreated');
     return run;
   },
   async fusionProject(message) {
@@ -102,17 +149,23 @@ export const FUSION_OWNER = {
       if (run.main.bindingId) throw new Error('主会话保留实际项目；其他项目可在主对话建立工作项');
     } else {
       const previous = fusionRuns[this.deviceId]?.runs.find(value => value.createRequestId === message.requestId);
-      if (previous) return this.emit({ t: 'fusionCreated', computer: previous.computer, run: fusionRunView(previous), requestId: message.requestId });
+      if (previous) return emitFusionView(this, previous, message, 'fusionCreated');
       const root = message.action === 'newProject' ? createProjectFolder(message.parent, String(message.name || '').trim()) : message.path;
       run = this.fusionCreate({ ...message, project: { root, host: '' } }, false);
-      this.emit({ t: 'fusionCreated', computer: run.computer, requestId: message.requestId, run: fusionRunView(run) });
+      emitFusionView(this, run, message, 'fusionCreated');
     }
     await prepare(this, run, message, true);
   },
   fusionRead(message) {
     const run = requestedRun(this, message);
-    this.fusionDetailId = run.id;
-    this.emit({ t: 'fusionState', computer: run.computer, requestId: message.requestId, run: fusionRunView(run) });
+    const view = fusionView(message);
+    if (view.kind === 'close') {
+      if (this.fusionDetail?.view.subscriptionId === message.subscriptionId) this.fusionDetail = null;
+      this.emit({ t: 'fusionState', computer: run.computer, runId: run.id, requestId: message.requestId, view });
+      return;
+    }
+    if (['config', 'tasks', 'task', 'input'].includes(view.kind)) this.fusionDetail = { runId: run.id, view };
+    emitFusionView(this, run, message);
   },
   async fusionConfigure(message) {
     const run = requestedRun(this, message), runner = fusionRunner(run);
@@ -141,7 +194,7 @@ export const FUSION_OWNER = {
       fusionEvent(run, 'configuration', { tier: run.tier, budget: run.budget });
       publishFusion(run); runner.wake();
     }
-    this.fusionRead(message);
+    emitFusionView(this, run, message);
   },
   fusionPrepare(message) { return prepare(this, requestedRun(this, message), message); },
   fusionConfirm(message) { fusionRunner(requestedRun(this, message)).confirm(String(message.planId || '')); },
@@ -165,7 +218,7 @@ export const FUSION_OWNER = {
     if (this.app !== 'fusion') return;
     const run = this.fusionRun;
     this.emit({ t: 'chat', sel: this.selectionKey(), chat: { items: [], earlier: false, global: [], queued: [], questions: null,
-      busy: false, changed: 0, readonly: true, title: 'Fusion', thread: run?.id || '', model: '', fusionRun: run ? fusionRunView(run) : null } });
+      busy: false, changed: 0, readonly: true, title: 'Fusion', thread: run?.id || '', model: '', fusionRun: run ? fusionControllerView(run) : null } });
   },
-  fusionUsage() { if (this.fusionRun) this.fusionRead({ runId: this.fusionRun.id }); },
+  fusionUsage() { if (this.fusionRun) this.emit({ t: 'fusionUpdate', computer: this.fusionRun.computer, run: fusionControllerView(this.fusionRun) }); },
 };

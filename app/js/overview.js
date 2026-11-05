@@ -41,6 +41,7 @@ const ovMain = $('overview').querySelector('.ov-main');
 const ovDone = (() => { try { return JSON.parse(store.get('ov-done') || '{}'); } catch { return {}; } })();
 const ovStoppedSeen = JSON.parse(store.get('ov-stopped-seen') || '{}');
 let ovEnterRequested = false;
+let ovOpening = null;
 let ovOpenRequest = 0;
 let ovToolState = null;
 const ovComposerControls = { mic: $('mic'), stop: $('stop'), attachments: $('attachments').parentElement };
@@ -369,7 +370,28 @@ function ovSessTile(r) {
   </div>`;
 }
 function ovOpenLink(r, cls = '') {
-  return `<button class="ov-link${cls}" data-ov="full" data-id="${esc(r.key)}" data-t="${esc(JSON.stringify(ovTarget(r)))}"${r.dormant && !r.workspace ? ' disabled' : ''}>${ovT('打开对话')}</button>`;
+  const target = ovTarget(r);
+  return `<span class="ov-open-feedback"><button class="ov-link${cls}" data-ov="full" data-id="${esc(r.key)}" data-t="${esc(JSON.stringify(target))}"${r.dormant && !r.workspace ? ' disabled' : ''}>${ovOpenLabel(target)}</button>${ovOpenFeedback(target)}</span>`;
+}
+function ovOpenLabel(target, label = '打开对话') {
+  return ovT(sameWinTarget(ovOpening?.target, target) ? ovOpening.phase === 'error' ? '重试打开' : '正在打开…' : label);
+}
+function ovOpenFeedback(target) {
+  return sameWinTarget(ovOpening?.target, target) ? `<small class="ov-opening ${ovOpening.phase === 'error' ? 'ov-opening-error' : ''}" role="status">${esc(ovOpening.message)}</small>` : '';
+}
+function ovCancelOpening() {
+  ovOpenRequest++;
+  ovEnterRequested = false;
+  ovOpening = null;
+}
+function ovNavigationChanged(navigation, phase, message) {
+  if (!sameWinTarget(ovOpening?.target, navigation?.target)) return;
+  if (phase === 'opening') ovOpening.navigationId = navigation.id;
+  else if (ovOpening.navigationId !== navigation.id) return;
+  if (phase === 'ready') ovOpening = null;
+  else Object.assign(ovOpening, { phase, message });
+  if (phase === 'error') ovEnterRequested = false;
+  ovRender();
 }
 function ovUsageHtml(key) {
   const data = ovComposerReady(key) ? currentUsageMeters() : { context: null, quota: [] };
@@ -635,6 +657,8 @@ function ovRestore(st) {
   ovRender(true, st?.ovScroll || 0);
 }
 function ovMove(change, push = false) {
+  ovCancelOpening();
+  releaseFusionView();
   ovClearBatch();
   ovSaveHistory();
   const depth = history.state?.ovDepth || 0;
@@ -644,6 +668,7 @@ function ovMove(change, push = false) {
   ovRender(true, 0);
 }
 function ovCloseCard() {
+  ovCancelOpening();
   ovS.open = null; ovSaveHistory(); return ovRender(true);
 }
 function ovUp() {
@@ -824,6 +849,7 @@ function ovMountComposerControls() {
 }
 function ovPrepareVisibleComposer() {
   const input = $('ovBoard').querySelector('[data-ov-input]');
+  if (ovOpening && input && !sameWinTarget(ovOpening.target, ovTarget(ovRecs().find(r => r.key === input.dataset.ovInput)))) return;
   if (input && ovToolState?.key !== input.dataset.ovInput) ovPrepareTools(input.dataset.ovInput);
 }
 function ovPrepareTools(key) {
@@ -869,14 +895,21 @@ function ovLocateReply() {
 async function ovOpen(target) {
   const request = ++ovOpenRequest;
   if (target.project && !target.project.root) return status(ovT('尚未读取到项目路径，请在电脑上打开项目后重试'), false);
+  releaseFusionView();
+  const pending = winTargetPending(target);
+  ovOpening = { target, phase: 'opening', navigationId: pending ? navigationPending.id : undefined,
+    message: ovT(pending ? '正在等待会话内容…' : '正在连接并打开会话…') };
+  if (mode !== 'chat') setMode('chat', false);
   const state = ovToolState;
   if (state && winBinding?.target === state.target && navigationPending && !target.project
-    && state.target.computer === target.computer && state.target.win === target.win
-    && state.target.windowId === target.windowId && state.target.threadId === target.threadId) {
+    && sameWinTarget(state.target, target)) {
+    ovOpening.navigationId = navigationPending.id;
+    ovRender();
     ovEnterRequested = false;
     if (await state.ready && request === ovOpenRequest && ovToolState === state && ovComposerReady(state.key)) ovShowConversation();
     return;
   }
+  if (state && !sameWinTarget(state.target, target)) ovReleaseComposer();
   if (target.win === 'fusion') { ovS.level = 'fusion'; ovS.proj = null; ovSaveHistory(); }
   const json = JSON.stringify(target), e = ovList.find(x => x.id === target.computer);
   if (e.c.key === currentComputer()?.key) return openWin(json);
@@ -896,6 +929,7 @@ async function ovOpen(target) {
 function conversationVisible() { return document.visibilityState === 'visible' && document.body.classList.contains('conv'); }
 function ovShowConversation() {
   if (document.body.classList.contains('conv')) return;
+  ovOpening = null;
   ovClearBatch();
   ovSaveHistory();
   history.pushState({ ...ovHistory(), ovConv: true, ovDepth: (history.state?.ovDepth || 0) + 1 }, '');
@@ -903,14 +937,16 @@ function ovShowConversation() {
   document.body.classList.add('conv');
   autosize(); ovVisible();
 }
-function ovConversationOpened(enter = true) { ovEnterRequested = enter; }
+function ovConversationOpened(enter = true, target) {
+  if (enter || !sameWinTarget(ovOpening?.target, target)) ovEnterRequested = enter;
+}
 function ovEnterReady() {
   if (!ovEnterRequested || !authed || !windowReady || navigationPending) return;
   ovEnterRequested = false;
   ovShowConversation();
 }
 function ovLeave(st = history.state) {
-  ovEnterRequested = false;
+  ovCancelOpening();
   document.body.classList.remove('conv');
   ovVisible();
   ovRestore(st);
@@ -952,6 +988,7 @@ $('overview').addEventListener('click', e => {
   switch (a) {
     case 'sess':
       if (ovBatch) return ovSelectSession(ovRecs().find(r => r.key === id));
+      ovCancelOpening();
       ovS.open = ovS.open === id ? null : id; ovSaveHistory(); return ovRender(true, undefined, !!ovS.open);
     case 'close': return ovCloseCard();
     case 'lane': case 'jump': return ovFocusSession(id);

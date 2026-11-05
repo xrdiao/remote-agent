@@ -7,6 +7,7 @@ function fixture() {
   const sent = [], listeners = [], stored = new Map();
   const entries = ['computer-one', 'computer-two'].map(id => ({ id, name: id, c: { key: id } }));
   const context = vm.createContext({ crypto, Map, Set, Date, Object, JSON,
+    MutationObserver: class { observe() {} }, $: () => ({}), ovOpenFeedback: () => '', ovOpenLabel: (_target, label) => label, releaseFusionView() {}, ovCancelOpening() {},
     store: { set: (key, value) => stored.set(key, value) }, I18N: { tr: value => value }, esc: value => String(value || ''),
     document: { addEventListener: (_event, listener) => listeners.push(listener) },
     ovList: entries, ovS: { comp: null, level: 'fusion' }, OV_AGENT: { cursor: 'Cursor' },
@@ -99,4 +100,73 @@ test('Fusion project browsing hands the shared folder picker its selected comput
   assert.equal(opened[0][0], 'computer-two'); assert.equal(opened[0][1].path, '/chosen/project');
   assert.equal(opened[0][1].project.owner, owner);
   assert.equal(h.sent.length, 0);
+});
+
+function viewFixture() {
+  const h = fixture(), painted = [], opened = [], sheet = { scrollTop: 0, querySelector: () => null, querySelectorAll: () => [] };
+  Object.assign(h.context, { $: () => sheet, sheetKind: '', currentComputer: () => ({ id: 'computer-one' }), currentApp: 'codex',
+    openSheet: kind => { h.context.sheetKind = kind; }, closeSheet: () => { h.context.sheetKind = ''; },
+    ovRender() {}, ovOpen: target => opened.push(target), updateTitle() {},
+    showFusionConfig: run => painted.push(['config', run.id]), showFusionTasks: run => painted.push(['tasks', run.id]),
+    showFusionTask: (run, id) => painted.push(['task', run.id, id]),
+  });
+  const reply = (request, run) => h.context.receiveFusion({ t: 'fusionState', computer: request.computer, runId: request.runId,
+    requestId: request.requestId, view: { kind: request.view, subscriptionId: request.requestId, taskId: request.taskId }, run },
+  { authed: true, computer: { id: request.computer } });
+  return { ...h, painted, opened, sheet, reply };
+}
+test('enabled Fusion goes straight to common navigation; unconfigured Fusion reads only configuration', () => {
+  const h = viewFixture();
+  h.run("fusionWorkspaces.set('computer-one',{runs:[{id:'ready',main:{bindingId:'native'}},{id:'new',main:{bindingId:''}}]})");
+  h.run("openFusionController('computer-one','ready')");
+  assert.equal(h.sent.length, 0); assert.equal(h.opened.length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(h.opened[0])), { computer: 'computer-one', win: 'fusion', windowId: 'fusion', threadId: 'ready' });
+  h.run("openFusionController('computer-one','new')");
+  assert.equal(h.sent.length, 1); assert.equal(h.sent[0].view, 'config'); assert.equal(h.opened.length, 1);
+});
+test('late detail responses cache their own view without reopening it over a newer view', () => {
+  const h = viewFixture();
+  h.run("readFusionView('computer-one','a','config')"); const a = h.sent.at(-1);
+  h.run("readFusionView('computer-one','b','tasks')"); const b = h.sent.at(-1);
+  assert.equal(h.sent[1].view, 'close'); assert.equal(h.sent[1].subscriptionId, a.requestId);
+  h.reply(a, { id: 'a' }); assert.deepEqual(h.painted, []);
+  h.reply(b, { id: 'b' }); assert.deepEqual(h.painted, [['tasks', 'b']]);
+  h.run('releaseFusionView();closeSheet()');
+  h.reply(b, { id: 'b' }); assert.deepEqual(h.painted, [['tasks', 'b']]);
+  assert.equal(h.sent.at(-1).view, 'close');
+});
+test('primary view reads carry explicit task and input identities and retain separate cache entries', () => {
+  const h = viewFixture();
+  h.run("readFusionView('computer-one','r','task',{taskId:'t1'})"); const task = h.sent.at(-1);
+  h.reply(task, { id: 'r', bindings: [] }); assert.deepEqual(h.painted, [['task', 'r', 't1']]);
+  h.run("readFusionView('computer-one','r','input',{taskId:'t2',workId:'w',questionId:'q'})"); const input = h.sent.at(-1);
+  assert.equal(input.view, 'input'); assert.equal(input.taskId, 't2'); assert.equal(input.questionId, 'q');
+  assert.equal(h.run('fusionStates.size'), 1);
+  assert.equal(h.run("fusionRunFor('computer-one','r')"), undefined);
+});
+test('refreshing selected task controls preserves native fields, caret, scroll and the matching open audit', () => {
+  const h = viewFixture();
+  const field = { name: '', dataset: { nativeRequest: 'request', fusionField: '0' }, value: 'draft', selectionStart: 2, selectionEnd: 4 };
+  const audit = (key, open) => ({ dataset: { fusionAudit: key }, open });
+  let fields = [field], details = [audit('old-attempt', true)]; h.context.document.activeElement = field; h.sheet.scrollTop = 138;
+  h.sheet.querySelectorAll = selector => selector === 'details' ? details : fields;
+  h.context.paint = () => {
+    fields = [{ ...field, value: 'native', focus() { this.focused = true; }, setSelectionRange(start, end) { this.range = [start, end]; } }];
+    details = [audit('new-attempt', false), audit('old-attempt', false)]; h.sheet.scrollTop = 0;
+  };
+  h.run('fusionPreserveSheet(paint)');
+  assert.equal(fields[0].value, 'draft'); assert.equal(fields[0].focused, true); assert.deepEqual(fields[0].range, [2, 4]);
+  assert.equal(details[0].open, false); assert.equal(details[1].open, true); assert.equal(h.sheet.scrollTop, 138);
+});
+test('reconnection restores only the still-open detail subscription on its own computer', () => {
+  const h = viewFixture();
+  h.run("readFusionView('computer-one','r','task',{taskId:'t1'})"); const task = h.sent.at(-1); h.sent.length = 0;
+  h.run("receiveFusion({t:'auth'},{authed:true,computer:{id:'computer-two'}})");
+  assert.equal(h.sent.some(m => m.t === 'fusionRead'), false);
+  h.run("receiveFusion({t:'auth'},{authed:true,computer:{id:'computer-one'}})");
+  const restored = h.sent.filter(m => m.t === 'fusionRead');
+  assert.equal(restored.length, 1); assert.equal(restored[0].requestId, task.requestId); assert.equal(restored[0].taskId, 't1');
+  h.run('releaseFusionView();closeSheet()'); h.sent.length = 0;
+  h.run("receiveFusion({t:'auth'},{authed:true,computer:{id:'computer-one'}})");
+  assert.equal(h.sent.some(m => m.t === 'fusionRead'), false);
 });

@@ -399,3 +399,23 @@ test('one native read resolves each Codex host manager once for all background r
   assert.equal(context.states('codex').length, 51);
   assert.deepEqual(calls, ['local', 'remote']);
 });
+
+test('native Fusion attachments carry summary metadata while ordinary chat packets keep their native transcript only', async () => {
+  const { fusionControllerView } = await import('../server/fusion/owner.mjs');
+  const sent = [], run = { id: 'controller', computer: 'computer', title: 'Fusion', status: 'waiting', project: { name: 'project' },
+    main: { bindingId: 'main', app: 'codex', model: 'model', effort: 'low' }, tier: 'balanced', works: [], tasks: [],
+    bindings: [{ id: 'main', app: 'codex', threadId: 'main-thread' }], attempts: [{ changes: { diff: 'large-diff'.repeat(100000) } }] };
+  const context = vm.createContext({ captureOperation: () => false, cdpRead: { getStore: () => null }, AGENT_REGISTRY: {},
+    fusionControllerView, chatForWire: value => value });
+  const body = fragment(read('server/session.mjs'), '  emit(obj) {', '\n  liveRead(cdp, sel)');
+  const emit = vm.runInContext(`({${body}}).emit`, context);
+  const session = { fusionSaved: { runs: [run] }, app: 'codex', threadId: 'main-thread', connectionMessages: new Map(),
+    selectionKey: () => 'native-selection', client: { readyState: 1, send: raw => sent.push(JSON.parse(raw)) } };
+  emit.call(session, { t: 'attached', app: 'codex', threadId: 'main-thread' });
+  assert.equal(sent[0].fusionController.id, run.id); assert.equal(sent[0].fusionController.tasks.total, 0);
+  assert.equal('attempts' in sent[0].fusionController, false);
+  emit.call(session, { t: 'chat', sel: 'native-selection', chat: { thread: 'main-thread', items: [{ i: 'native', t: 'native body' }] } });
+  assert.equal('fusionRun' in sent[1].chat, false); assert.equal(sent[1].chat.items[0].t, 'native body');
+  emit.call(session, { t: 'attached', app: 'codex', threadId: 'ordinary-thread' });
+  assert.equal(sent[2].fusionController, null);
+});
