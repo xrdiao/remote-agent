@@ -1871,3 +1871,7 @@ body.conv:not(.wide) #ovBack + #title { margin-left: -6px; padding-left: 0; }
 @keyframes ovPulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
 @keyframes ovTin { from { opacity: 0; transform: translateY(-14px) scale(.9); } }
 @media (prefers-reduced-motion: reduce) { #overview * { animation: none !important; transition: none !important; } }
+/* Opening feedback stays with the selected card or workbench. */
+.ov-open-feedback { display: inline-flex; flex-direction: column; align-items: flex-end; gap: 4px; min-width: 0; }
+.ov-opening { display: block; font-size: 12px; line-height: 1.4; color: var(--muted); overflow-wrap: anywhere; }
+.ov-opening-error { color: var(--err); }

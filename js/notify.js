@@ -171,11 +171,19 @@ function rememberNotice(raw) {
   const next = { ...here, win: n.win, windowId: n.windowId, threadId: n.threadId };
   saveComputers(list.map(c => c.key === here.key ? next : c), current?.key);
   if (here.key === current?.key) store.set('window', n.win);
-  ovConversationOpened(!n.background);
+  ovConversationOpened(!n.background, { ...n, computer: here.id });
   return n.project ? { ...next, project: n.project } : next;
 }
+function sameWinTarget(a, b) {
+  return !!a && !!b && ['computer', 'win', 'windowId', 'threadId'].every(key => (a[key] || '') === (b[key] || ''))
+    && (a.project?.root || '') === (b.project?.root || '') && (a.project?.host || '') === (b.project?.host || '');
+}
+function winTargetPending(target) {
+  return authed && ws?.readyState === 1 && navigationPending?.generation === connGen && sameWinTarget(navigationPending.target, target);
+}
 function openWin(id) {
-  const target = noticeTarget(id);
+  const parsed = noticeTarget(id);
+  const target = parsed && { ...parsed, computer: parsed.computer || currentComputer()?.id || '' };
   const reuse = mode === 'chat' && currentApp === 'codex' && target && !target.project
     && winTargetReady({ ...target, threadId: undefined });
   const before = currentComputer()?.id;
@@ -190,8 +198,9 @@ function openWin(id) {
     return true;
   }
   if (!authed) { pendingNotice = id; return false; }
-  if (reuse && here.threadId) return openPickedSession(`thread:${here.windowId}:${here.threadId}`, '', false);
-  return send({ t: 'attach', id: here.win, windowId: here.windowId || '', threadId: here.threadId || '', ...(here.project ? { project: here.project } : {}) });
+  if (winTargetPending(target)) return true;
+  if (reuse && here.threadId) return openPickedSession(`thread:${here.windowId}:${here.threadId}`, '', false, target);
+  return send({ t: 'attach', id: here.win, windowId: here.windowId || '', threadId: here.threadId || '', ...(here.project ? { project: here.project } : {}) }, target);
 }
 window.openWin = openWin;
 let winBinding = null;
@@ -263,11 +272,11 @@ async function runAgentMenuAction(id, action, extra, target, entry) {
     : { t: 'sessionManage', id, action, ...extra });
   return renderAgentList();
 }
-function openPickedSession(id, title = '', enter = projectEntry?.source === 'computer') {
+function openPickedSession(id, title = '', enter = projectEntry?.source === 'computer', target) {
   if (enter) ovShowConversation();
   pendingAgentOpen = id;
   closeSheet();
-  return send({ t: 'openAgent', id, title });
+  return send({ t: 'openAgent', id, title }, target);
 }
 
 $('sheet').addEventListener('click', async e => {

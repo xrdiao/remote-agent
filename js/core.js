@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v411'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v413'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false;
 let windowReady = false;
@@ -413,9 +413,9 @@ function sendDesktopOperation(obj, computer = currentComputer()?.id || '', socke
   desktopRequests.set(obj.operationId, { computer, revision: 0, ...pending });
   socket.send(JSON.stringify(obj));
 }
-function send(obj) {
+function send(obj, target) {
   if (!['terminals', 'openTerminal', 'closeTerminal', 'newTerminal', 'termWrite', 'termResize', 'termSend', 'termComplete', 'termHistory'].includes(obj.t)) obj.sel ??= viewSel;
-  if (['attach', 'openAgent', 'openProject'].includes(obj.t)) beginNavigation(obj);
+  if (['attach', 'openAgent', 'openProject'].includes(obj.t)) beginNavigation(obj, target);
   if (obj.t === 'attach') {
     const name = {cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion'}[String(obj.id || '').split(':')[0]];
     if (name) $('titleText').textContent = name + '…';
