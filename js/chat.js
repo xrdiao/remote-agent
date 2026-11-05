@@ -414,8 +414,9 @@ function updateTitle() {
   $('titlePlan').hidden = !plan;
   $('titleProject').textContent = cleanWindowTitle(currentProject).replace(/\s+-\s+Devin(?:\s+-.*)?$/, '') || conversation.split('\n')[0].slice(0, 40);
   $('title').title = [cleanWindowTitle(currentProject), conversation].filter(Boolean).join(' · ');
-  if (currentApp === 'fusion') {
-    const run = lastChat?.fusionRun;
+  if (activeFusionController || currentApp === 'fusion') {
+    const run = currentFusionRun();
+    $('titleText').textContent = run?.title || 'Fusion';
     $('titleProject').textContent = run ? `${run.project.name} · ${ovCompName(run.computer)}` : '';
     $('title').title = run ? `${run.project.root} · ${ovCompName(run.computer)} · ${run.title}` : 'Fusion';
   }

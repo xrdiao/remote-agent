@@ -664,8 +664,7 @@ function sendComposer() {
   const receipt = sendReceipt(v);
   if (!receipt) return;
   if (mode === 'chat') { status('正在发送…'); pushEcho(receipt.requestId, v, when === 'queue' || (!when && chatBusy) ? 'queue' : 'chat'); }
-  const sent = currentApp === 'fusion' ? send({ t: 'fusionMessage', computer: currentComputer().id, runId: lastChat.fusionRun.id, text: v, ...receipt })
-    : send({ t: 'send', text: v, submit: true, ...receipt, ...(when ? { when } : {}), ...mentionsFor(v) });
+  const sent = send({ t: 'send', text: v, submit: true, ...receipt, ...(when ? { when } : {}), ...mentionsFor(v) });
   if (sent === false) failPendingSend(receipt.requestId);
   if (mode === 'chat') jumpToLatest();
 }

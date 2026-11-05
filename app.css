@@ -320,6 +320,7 @@ body.fusion #ovBack { grid-column: 1; grid-row: 1; }
 body.fusion #title { grid-column: 2; grid-row: 1; min-width: 0; }
 body.fusion > header > .seg { grid-column: 3; grid-row: 1; }
 body.fusion #menuBtn { grid-column: 4; grid-row: 1; }
+body.fusion #meters { grid-column: 1 / -1; grid-row: 3; }
 #fusionHeader {
   grid-column: 1 / -1; grid-row: 2; min-width: 0; display: flex; align-items: center; gap: 8px; padding-bottom: 4px;
 }
@@ -1221,6 +1222,9 @@ body.term .appAvatar::after { display: none; }
 .fusion-form { display: grid; gap: 12px; }
 .fusion-form label { display: grid; gap: 6px; color: var(--fg-3); }
 .fusion-form select, .fusion-form input { width: 100%; min-height: 42px; padding: 8px; background: var(--s2); border: 1px solid var(--line); border-radius: 8px; color: var(--fg-hi); }
+.fusion-form textarea { width: 100%; padding: 10px; background: var(--s2); border: 1px solid var(--line); border-radius: 8px; color: var(--fg-hi); font: inherit; resize: vertical; }
+.fusion-content { min-width: 0; }
+.fusion-content pre { overflow-x: auto; }
 .fusion-form .primary { min-height: 44px; }
 .fusion-task { border-top: 1px solid var(--line); padding: 12px 0; }
 .fusion-task summary { cursor: pointer; overflow-wrap: anywhere; }

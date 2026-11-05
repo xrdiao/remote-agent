@@ -180,6 +180,7 @@ function refreshSelectionMetadata(initial = false) {
   }
 }
 function applySelection(m, clearChat = true) {
+  if ('fusionController' in m) activeFusionController = m.fusionController;
   if (m.app) {
     currentApp = m.app; currentAppName = m.appName; currentWindow = m.id;
     capabilityOwner = m.app; agentCapabilities = m.capabilities || null;
@@ -210,6 +211,7 @@ function applySelection(m, clearChat = true) {
   const cachedAgents = agentLists.get(agentListKey());
   if (cachedAgents && m.threadId) setAgentList(agentListKey(), cachedAgents.map(a => ({ ...a, current: agentThreadKey(a) === agentThreadKey({ id: m.threadId }) })));
   if (m.project) currentProject = m.project;
+  paintFusionRun(null);
   updateTitle();
   if (clearChat && changed) renderChat(null, false, true);
 }
