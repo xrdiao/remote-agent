@@ -360,6 +360,7 @@ function ovSessTile(r) {
   const cls = ['ov-tile', 'ov-session', 'ov-compact', `ov-st-${r.state}`, open && 'ov-open', r.off && 'ov-off', ovBatch && 'ov-selecting', selected && 'ov-selected'].filter(Boolean).join(' ');
   ovSig.push(`${r.key}:${cls}`);
   return `<div class="${cls}" data-ov-session="${esc(r.key)}" style="--p:${fill}%;view-transition-name:${ovTname(r.key)}"${open ? '' : ` data-ov="sess" data-id="${esc(r.key)}"`}${ovBatch ? ` role="checkbox" aria-checked="${selected}" aria-disabled="${!ovCanManage(r) || ovBatch.running}" tabindex="0"` : ''}>
+    <span class="ov-card-surface" aria-hidden="true"></span>${!open && !ovBatch ? ovOpenFeedback(ovTarget(r)) : ''}
     ${ovBatch && ovCanManage(r) ? `<span class="ov-check" aria-hidden="true">${selected ? '✓' : ''}</span>` : ''}
     ${ovRecLogo(r, open ? '<span class="ov-usage" data-ov-preserve></span>' : '')}<div class="ov-state"><span class="ov-badge">${esc(ovBadge(r))}</span><span class="ov-time">${esc(ovTime(r))}</span></div>
     <div class="ov-title ovRaw">${esc(r.title)}</div>
@@ -371,13 +372,18 @@ function ovSessTile(r) {
 }
 function ovOpenLink(r, cls = '') {
   const target = ovTarget(r);
-  return `<span class="ov-open-feedback"><button class="ov-link${cls}" data-ov="full" data-id="${esc(r.key)}" data-t="${esc(JSON.stringify(target))}"${r.dormant && !r.workspace ? ' disabled' : ''}>${ovOpenLabel(target)}</button>${ovOpenFeedback(target)}</span>`;
+  return `<button class="ov-link${cls}" data-ov="full" data-id="${esc(r.key)}" data-t="${esc(JSON.stringify(target))}"${r.dormant && !r.workspace ? ' disabled' : ''}>${ovOpenLabel(target)}</button>`;
+}
+function ovOpenState(target) {
+  return sameWinTarget(ovOpening?.target, target) ? ovOpening : null;
 }
 function ovOpenLabel(target, label = '打开对话') {
-  return ovT(sameWinTarget(ovOpening?.target, target) ? ovOpening.phase === 'error' ? '重试打开' : '正在打开…' : label);
+  const opening = ovOpenState(target);
+  return ovT(opening ? opening.phase === 'error' ? '重试打开' : '正在打开…' : label);
 }
 function ovOpenFeedback(target) {
-  return sameWinTarget(ovOpening?.target, target) ? `<small class="ov-opening ${ovOpening.phase === 'error' ? 'ov-opening-error' : ''}" role="status">${esc(ovOpening.message)}</small>` : '';
+  const opening = ovOpenState(target);
+  return opening ? `<small class="ov-opening ${opening.phase === 'error' ? 'ov-opening-error' : ''}" role="status">${esc(opening.message)}</small>` : '';
 }
 function ovCancelOpening() {
   ovOpenRequest++;
@@ -459,13 +465,15 @@ function ovCard(r) {
       + composer
       + (r.devin && r.state === 'done' && r.acceptAll ? `<button class="ov-btn ov-pri" data-ov="accept" data-id="${key}"${dis}>接受改动</button>` : '');
   }
-  const err = ovErr.has(r.key) ? `<div class="ov-errbox">${esc(ovErr.get(r.key))}</div>` : '';
+  const opening = ovOpenState(ovTarget(r)), errorMessage = ovErr.get(r.key);
+  const err = ovErr.has(r.key) && (!opening || errorMessage !== opening.message) ? `<div class="ov-errbox">${esc(errorMessage)}</div>` : '';
   const off = r.off ? '<div class="ov-hint">电脑离线</div>' : '';
   const queueCount = ready ? queuedMessages().count : 0;
   const queue = queueCount ? `<button class="ov-queue" data-ov="queue" data-id="${key}" aria-haspopup="dialog">${I18N.tr('排队')} ${queueCount} ▾</button>` : '';
   const tools = canReply ? `<div class="ov-tools">${['add', 'img', 'uploadDoc'].map(id => tool(id)).join('')}<span data-ov-node="mic:${key}" data-ov-control="mic" data-ov-preserve></span><span data-ov-node="stop:${key}" data-ov-control="stop" data-ov-preserve></span>${tool('insertNewline')}${queue}</div>` : '';
-  const message = ready && $('msg').className !== 'quiet' ? $('msg').textContent : '';
-  const toolStatus = tools ? `<div class="ov-tool-status ${$('msg').className}" role="status">${esc(message)}</div>` : '';
+  const message = opening ? opening.message : ready && $('msg').className !== 'quiet' ? $('msg').textContent : '';
+  const messageClass = opening ? opening.phase === 'error' ? 'err' : '' : $('msg').className;
+  const toolStatus = tools || opening ? `<div class="ov-tool-status ${messageClass}" role="status">${esc(message)}</div>` : '';
   return status + body + off + err + `<div class="ov-cfoot">${tools}${ovOpenLink(r)}</div>` + toolStatus;
 }
 function ovSessionGroup(label, recs, id) {

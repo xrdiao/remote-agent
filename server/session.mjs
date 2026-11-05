@@ -5,7 +5,7 @@ import { PAGE_SRC, helpersCall } from './page/build.mjs';
 import { AgentContext, appPlans } from './agent/index.mjs';
 import { resetThinkingCaches } from './agent/thinking-cache.mjs';
 import { hasLaunched, takeLaunched } from './launch.mjs';
-import { fusionViewers, savedFusion } from './fusion/state.mjs';
+import { fusionViewers, savedFusion, allFusionRuns } from './fusion/state.mjs';
 import { FUSION_OWNER, fusionControllerView } from './fusion/owner.mjs';
 import { fusionRunner } from './fusion/runner.mjs';
 import { ROUTES, SKIP, flag } from './routes.mjs';
@@ -29,7 +29,7 @@ export class Session extends AgentContext {
     this.fusionBinding = fusionBinding;
     if (!fusionBinding) fusionViewers.add(this);
     this.fusionSaved = savedFusion(deviceId);
-    this.fusionRun = this.fusionSaved.runs.find(f => f.id === this.fusionSaved.current);
+    this.fusionRun = allFusionRuns().find(f => f.id === this.fusionSaved.current);
     // The phone reports when the app goes to the background; notifications skip the window it is looking at.
     this.visible = !fusionBinding;
     this.notifyVisible = !fusionBinding;
@@ -168,7 +168,7 @@ export class Session extends AgentContext {
     if (cdpRead.getStore()?.aborted) return;
     if (['attached', 'thread'].includes(obj?.t) && obj.app !== 'fusion') {
       const app = obj.app || this.app, threadId = obj.threadId ?? this.threadId;
-      this.fusionRun = this.fusionSaved.runs.find(run => run.bindings.some(binding => binding.id === run.main.bindingId
+      this.fusionRun = allFusionRuns().find(run => run.bindings.some(binding => binding.id === run.main.bindingId
         && binding.app === app && binding.threadId === threadId));
       this.fusionDetail = null;
       obj = { ...obj, fusionController: this.fusionRun ? fusionControllerView(this.fusionRun) : null };

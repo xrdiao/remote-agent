@@ -1,6 +1,6 @@
 import { nativeTargets, nativeWindowAt, nativeSessionCatalog } from './native-windows.mjs';
 import { windowName } from '../lib/notify.mjs';
-import { fusionRuns, fusionSummary, FUSION_ACTIVE } from './fusion/state.mjs';
+import { allFusionRuns, fusionSummary, FUSION_ACTIVE } from './fusion/state.mjs';
 import { readLibrary, sessionId } from '../lib/session-library.mjs';
 import { samePath, normPath, pathKey } from '../lib/platform.mjs';
 import { workspaceLabel } from '../lib/files.mjs';
@@ -96,7 +96,7 @@ export function overviewSnapshot(deviceId) {
         lastUsed: Number(row.lastUsed) || 0, favorite: true, lastMessageAt: Number(record.lastMessageAt) || 0 });
     }
   }
-  const fusion = (fusionRuns[deviceId]?.runs || [])
+  const fusion = allFusionRuns()
     .filter(run => FUSION_ACTIVE.includes(run.status) || ['awaiting_user', 'blocked'].includes(run.status) || now - run.updated < FUSION_RECENT_MS)
     .sort((a, b) => b.updated - a.updated).slice(0, 8).map(fusionSummary);
   return { os: process.platform, now, ready: pendingWindows === 0 && errors.length === 0,

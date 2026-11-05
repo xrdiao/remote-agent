@@ -10,7 +10,7 @@ export const capabilities = {
 export const adapter = {
   async attach(req) {
     const saved = savedFusion(this.deviceId);
-    const selected = req.threadId ? findFusionRun(this.deviceId, req.threadId) : null;
+    const selected = req.threadId ? findFusionRun(req.threadId) : null;
     const main = selected?.bindings.find(binding => binding.id === selected.main.bindingId);
     if (main) {
       saved.current = selected.id;

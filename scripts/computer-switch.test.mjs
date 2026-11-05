@@ -989,7 +989,7 @@ function installOverviewOpening(h) {
     function ovShowConversation() { trace.push(['enter',currentComputer().id,lastChat?.thread]); }`);
   h.run(notify.slice(notify.indexOf('function noticeTarget('), notify.indexOf('function finishWinBinding(')));
   h.run(notify.slice(notify.indexOf('function openPickedSession('), notify.indexOf("$('sheet').addEventListener('click'")));
-  h.run(overview.slice(overview.indexOf('function ovOpenFeedback('), overview.indexOf('function ovUsageHtml(')));
+  h.run(overview.slice(overview.indexOf('function ovOpenLink('), overview.indexOf('function ovUsageHtml(')));
   h.run(overview.slice(overview.indexOf('async function ovOpen('), overview.indexOf('function conversationVisible(')));
   h.run(overview.slice(overview.indexOf('function ovConversationOpened('), overview.indexOf('function ovLeave(')));
 }
@@ -1292,6 +1292,7 @@ test('collapsed-card repeated clicks share only the actual unfinished native ope
   await h.run('ovOpen(cardTargets.b);ovOpen({...cardTargets.b});ovOpen({...cardTargets.b})');
   assert.equal(cardNavigations(h).length, 1);
   assert.match(h.run('ovOpenFeedback(cardTargets.b)'), /等待会话内容/);
+  assert.doesNotMatch(h.run('ovOpenLink({key:"b"})'), /ov-opening|ov-open-feedback|等待会话内容/);
   cardAttached(h, 'card-b'); await h.settle();
   assert.deepEqual(cardEntries(h), [['enter', computers[0].id, 'card-b']]);
   h.run('ovLeave=()=>{};document.body.classList.remove("conv")');

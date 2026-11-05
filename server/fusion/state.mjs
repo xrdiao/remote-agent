@@ -35,8 +35,8 @@ export function initializeFusionState() {
 }
 
 export function savedFusion(deviceId) { return fusionRuns[deviceId] ||= { current: '', runs: [] }; }
-export function findFusionRun(deviceId, id) {
-  const controller = fusionRuns[deviceId]?.runs.find(row => row.id === id);
+export function findFusionRun(id) {
+  const controller = allFusionRuns().find(row => row.id === id);
   if (!controller) throw new Error('没有这个 Fusion 工作台，请重新选择');
   return controller;
 }

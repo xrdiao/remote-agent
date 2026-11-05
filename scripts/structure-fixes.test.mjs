@@ -1374,14 +1374,20 @@ test('cards retain editing while a draft is in flight and keep their shared inpu
     { app: 'codex', follow: 'queue', landscape: false, immediate: true },
     { app: 'codex', follow: 'queue', landscape: false, immediate: true, pending: true },
     { app: 'codex', follow: 'queue', landscape: false, immediate: true, ready: false },
+    { app: 'codex', follow: 'queue', landscape: false, ready: false, opening: { phase: 'opening', message: 'QA_OPENING' } },
+    { app: 'codex', follow: 'queue', landscape: false, ready: false, opening: { phase: 'error', message: 'QA_OPEN_ERROR' } },
+    { app: 'codex', follow: 'queue', landscape: false, ready: false, error: 'QA_CARD_ACTION_ERROR' },
   ]) {
     const nodes = new Map([['send', button('排队')], ['sendNow', { ...button('立即追加'), hidden: row.app === 'cursor' }], ['msg', { className: 'quiet' }]]);
     nodes.get('send').disabled = !!row.pending;
+    if (row.opening) Object.assign(nodes.get('msg'), { className: 'err', textContent: 'QA_OTHER_STATUS' });
     const context = vm.createContext({
       $: id => nodes.get(id) || button(), esc: String, OV_ICON: { arrow: '<svg/>' }, OV_AGENT: { [row.app]: row.app },
-      I18N: { tr: value => value }, ovT: value => value, ovBusy: new Set(), ovErr: new Map(),
+      I18N: { tr: value => value }, ovT: value => value, ovBusy: new Set(),
+      ovErr: new Map(row.error ? [['card', row.error]] : row.opening?.phase === 'error' ? [['card', row.opening.message]] : []),
       ovBadge: () => '运行中', ovTime: () => '1m', ovContext: () => 'project', ovComposerReady: () => row.ready !== false,
       ovRunHtml: () => '', ovPreviewHtml: () => '', ovChangesRow: () => '', ovOpenLink: () => '',
+      ovTarget: value => value, ovOpenState: () => row.opening || null,
       queuedMessages: () => ({ count: 0 }), questionCompose: null, viewSel: 'selection',
       devinBusySplit: () => row.app === 'devin', cursorBusyQueue: () => row.app === 'cursor', codexFollow: () => row.follow,
       document: { body: { classList: { contains: () => row.landscape } } },
@@ -1397,6 +1403,13 @@ test('cards retain editing while a draft is in flight and keep their shared inpu
     for (const id of ['inputPrev', 'inputNext']) assert(html.indexOf(`data-v="${id}"`) < html.indexOf('<textarea'));
     assert(html.indexOf('data-v="insertNewline"') > html.indexOf('class="ov-tools"'));
     assert.equal(html.includes('ov-compose-more'), false);
+    assert.equal((html.match(/class="ov-tool-status/g) || []).length, 1);
+    if (row.opening) {
+      assert(html.includes(row.opening.message)); assert(!html.includes('QA_OTHER_STATUS'));
+      assert.equal(html.includes('class="ov-tool-status err"'), row.opening.phase === 'error');
+      assert(!html.includes('ov-errbox'));
+    }
+    if (row.error) { assert(html.includes('ov-errbox')); assert(html.includes(row.error)); }
   }
 });
 
@@ -2104,7 +2117,7 @@ function overviewDirectory() {
     sessionId: (_app, id) => id || '', readLibrary: () => library, storedProjectSession: () => null,
     normPath: value => String(value || '').replaceAll('\\', '/'), pathKey: value => value,
     samePath: (a, b) => a === b, windowName: title => title, workspaces: () => { throw Error('Do not rescan workspace storage'); },
-    FUSION_ACTIVE: [], fusionSummary: value => value,
+    FUSION_ACTIVE: [], fusionSummary: value => value, allFusionRuns: () => Object.values(fusionRuns).flatMap(value => value.runs),
     fusionMainWindow: (app, id) => Object.values(fusionRuns).flatMap(value => value.runs).some(run => run.bindings.some(binding => binding.role === 'main' && binding.app === app && binding.windowId === id)),
   });
   vm.runInContext(part(read('lib/files.mjs'), 'export function workspaceLabel(', '// Returns the size').replace('export ', '')

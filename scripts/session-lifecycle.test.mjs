@@ -400,16 +400,16 @@ test('one native read resolves each Codex host manager once for all background r
   assert.deepEqual(calls, ['local', 'remote']);
 });
 
-test('native Fusion attachments carry summary metadata while ordinary chat packets keep their native transcript only', async () => {
+test('native Fusion attachments from another paired entry carry the same summary while ordinary chat packets keep their native transcript only', async () => {
   const { fusionControllerView } = await import('../server/fusion/owner.mjs');
   const sent = [], run = { id: 'controller', computer: 'computer', title: 'Fusion', status: 'waiting', project: { name: 'project' },
     main: { bindingId: 'main', app: 'codex', model: 'model', effort: 'low' }, tier: 'balanced', works: [], tasks: [],
     bindings: [{ id: 'main', app: 'codex', threadId: 'main-thread' }], attempts: [{ changes: { diff: 'large-diff'.repeat(100000) } }] };
   const context = vm.createContext({ captureOperation: () => false, cdpRead: { getStore: () => null }, AGENT_REGISTRY: {},
-    fusionControllerView, chatForWire: value => value });
+    fusionControllerView, allFusionRuns: () => [run], chatForWire: value => value });
   const body = fragment(read('server/session.mjs'), '  emit(obj) {', '\n  liveRead(cdp, sel)');
   const emit = vm.runInContext(`({${body}}).emit`, context);
-  const session = { fusionSaved: { runs: [run] }, app: 'codex', threadId: 'main-thread', connectionMessages: new Map(),
+  const session = { deviceId: 'another-paired-entry', fusionSaved: { runs: [] }, app: 'codex', threadId: 'main-thread', connectionMessages: new Map(),
     selectionKey: () => 'native-selection', client: { readyState: 1, send: raw => sent.push(JSON.parse(raw)) } };
   emit.call(session, { t: 'attached', app: 'codex', threadId: 'main-thread' });
   assert.equal(sent[0].fusionController.id, run.id); assert.equal(sent[0].fusionController.tasks.total, 0);
@@ -418,4 +418,13 @@ test('native Fusion attachments carry summary metadata while ordinary chat packe
   assert.equal('fusionRun' in sent[1].chat, false); assert.equal(sent[1].chat.items[0].t, 'native body');
   emit.call(session, { t: 'attached', app: 'codex', threadId: 'ordinary-thread' });
   assert.equal(sent[2].fusionController, null);
+});
+test('a paired entry restores its recent shared Fusion workspace without creating or executing a run', () => {
+  const run = { id: 'shared-controller', deviceId: 'creator-entry' }, saved = { current: run.id, runs: [] }, viewers = new Set();
+  const context = vm.createContext({ AgentContext: class {}, savedFusion: () => saved, allFusionRuns: () => [run], fusionViewers: viewers });
+  const constructor = fragment(read('server/session.mjs'), '  constructor(client, deviceId,', '\n  stopChatUpdates()');
+  const Session = vm.runInContext(`(class extends AgentContext {${constructor}})`, context);
+  const session = new Session({}, 'phone-entry');
+  assert.equal(session.fusionRun, run); assert.equal(session.fusionSaved, saved);
+  assert.equal(viewers.has(session), true); assert.equal(saved.runs.length, 0);
 });

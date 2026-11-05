@@ -1716,8 +1716,10 @@ body.conv #overview { display: none; }
 
 #overview .ov-tile { position: relative; overflow: hidden; display: grid; cursor: pointer; color: var(--fg); background: var(--s1); border: 1px solid var(--line-2); border-radius: 30px; box-shadow: var(--shadow-1); padding: 14px; aspect-ratio: 1; transition: transform .15s var(--ease), box-shadow .2s; --sc: var(--fg-4); --tint: transparent;
   grid-template-columns: auto 1fr; grid-template-rows: auto min-content auto 1fr; grid-template-areas: "logo badge" "title title" "now now" "foot foot"; }
-#overview .ov-tile::before { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: var(--p, 0%); background: var(--tint); transition: height .7s var(--ease); z-index: 0; pointer-events: none; }
+#overview .ov-tile:not(.ov-session)::before, #overview .ov-card-surface::before { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: var(--p, 0%); background: var(--tint); transition: height .7s var(--ease); z-index: 0; pointer-events: none; }
 #overview .ov-tile > * { position: relative; z-index: 1; min-width: 0; }
+#overview .ov-session { overflow: visible; }
+#overview .ov-session > .ov-card-surface { position: absolute; inset: 0; z-index: 0; overflow: hidden; border-radius: inherit; pointer-events: none; }
 #overview .ov-tile:active { transform: scale(.975); }
 #overview .ov-st-run { --sc: var(--accent); --tint: var(--accent-tint); }
 #overview .ov-st-wait { --sc: var(--ov-amber); --tint: var(--ov-amber-tint); }
@@ -1726,7 +1728,7 @@ body.conv #overview { display: none; }
 #overview .ov-st-err { --sc: var(--err); --tint: var(--err-tint); border-color: color-mix(in srgb, var(--err) 35%, transparent); }
 #overview .ov-st-idle { --sc: var(--ov-idle); --tint: var(--line); }
 #overview .ov-tile.ov-off { --sc: var(--fg-4); --tint: var(--line); opacity: .62; }
-#overview .ov-st-run::after { content: ""; position: absolute; left: 0; right: 0; bottom: var(--p, 0%); height: 2px; background: var(--sc); opacity: .5; z-index: 0; animation: ovShimmer 2s ease-in-out infinite; }
+#overview .ov-st-run:not(.ov-session)::after, #overview .ov-st-run > .ov-card-surface::after { content: ""; position: absolute; left: 0; right: 0; bottom: var(--p, 0%); height: 2px; background: var(--sc); opacity: .5; z-index: 0; animation: ovShimmer 2s ease-in-out infinite; }
 
 #overview .ov-logo { grid-area: logo; width: 38px; height: 38px; border-radius: 50%; background: var(--s2); display: flex; align-items: center; justify-content: center; flex: none; color: var(--fg-2); }
 #overview .ov-logo svg { width: 20px; height: 20px; }
@@ -1768,7 +1770,7 @@ body.conv #overview { display: none; }
 
 #overview .ov-tile.ov-open { grid-column: 1 / -1; aspect-ratio: auto; border-radius: 30px; cursor: default; grid-template-columns: auto 1fr auto; grid-template-rows: auto auto; grid-template-areas: "logo title close" "card card card"; align-items: center; justify-items: stretch; text-align: left; column-gap: 12px; padding: 14px; min-height: 0; overflow: visible; transform: none; animation: none; box-shadow: 0 10px 40px rgba(0,0,0,.2); }
 #overview .ov-st-wait.ov-wide.ov-open { animation: none; }
-#overview .ov-tile.ov-open::before, #overview .ov-tile.ov-open::after { display: none; }
+#overview .ov-tile.ov-open::before, #overview .ov-tile.ov-open::after, #overview .ov-tile.ov-open > .ov-card-surface { display: none; }
 #overview .ov-tile.ov-open > .ov-state, #overview .ov-tile.ov-open > .ov-context, #overview .ov-tile.ov-open > .ov-now, #overview .ov-tile.ov-open > .ov-foot { display: none; }
 #overview .ov-tile.ov-open > .ov-title { margin: 0; font-size: 18px; -webkit-line-clamp: 2; }
 #overview .ov-tile.ov-open .ov-logo { width: 40px; height: 40px; }
@@ -1871,7 +1873,8 @@ body.conv:not(.wide) #ovBack + #title { margin-left: -6px; padding-left: 0; }
 @keyframes ovPulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
 @keyframes ovTin { from { opacity: 0; transform: translateY(-14px) scale(.9); } }
 @media (prefers-reduced-motion: reduce) { #overview * { animation: none !important; transition: none !important; } }
-/* Opening feedback stays with the selected card or workbench. */
-.ov-open-feedback { display: inline-flex; flex-direction: column; align-items: flex-end; gap: 4px; min-width: 0; }
+/* Collapsed cards carry their opening status along the lower edge. */
 .ov-opening { display: block; font-size: 12px; line-height: 1.4; color: var(--muted); overflow-wrap: anywhere; }
 .ov-opening-error { color: var(--err); }
+#overview .ov-session:not(.ov-open) > .ov-opening { position: absolute; top: calc(100% - 2px); left: 14px; max-width: calc(100% - 28px); padding: 0 7px 2px; border-radius: 0 0 8px 8px; background: var(--s1); font-size: 10px; line-height: 12px; color: var(--fg-4); white-space: nowrap; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+#overview .ov-session:not(.ov-open) > .ov-opening-error { color: var(--err); }

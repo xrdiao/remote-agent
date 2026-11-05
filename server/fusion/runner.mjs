@@ -1,7 +1,7 @@
 import { FusionAgent, fusionWorkspaceSnapshot } from './agent.mjs';
 import { FusionController } from './controller.mjs';
 import { fusionScheduler } from './scheduler.mjs';
-import { applyFusionControl, fusionTaskPrompt } from './control.mjs';
+import { applyFusionControl, fusionTaskPrompt, fusionEventView } from './control.mjs';
 import { fusionRuns, fusionWorkers, fusionEvent, newFusionAttempt, publishFusion,
   commitFusion, NATIVE_UNSETTLED } from './state.mjs';
 
@@ -91,7 +91,8 @@ export class FusionRunner {
       if (pendingMain) return;
       const attempt = newFusionAttempt(this.run, null, null, 'main');
       attempt.origin = 'events'; attempt.eventIds = events.map(row => row.id); attempt.bindingId = this.run.main.bindingId;
-      attempt.prompt = `RA 工作台待处理事件。先 read_workspace，按归属处理；不要重复已完成的执行。\n本次输入：${attempt.id}\n` + JSON.stringify(events);
+      attempt.prompt = `RA 工作台待处理事件。先 read_workspace，按归属处理；不要重复已完成的执行。\n本次输入：${attempt.id}\n`
+        + JSON.stringify(events.map(event => fusionEventView(this.run, event)));
       this.sendingEvents = true; this.publish();
       this.scheduler.submit({ lane: 'main', runId: this.run.id, app: this.run.main.app,
         attemptId: attempt.id, ready: () => !this.run.stopRequested,
@@ -147,8 +148,7 @@ export class FusionRunner {
     if (this.scheduler.uncertain.get(attempt.app) === attempt.id) this.scheduler.uncertain.delete(attempt.app);
     const work = this.run.works.find(row => row.id === attempt.workId);
     if (work && this.scheduler.uncertainWriters.get(work.project.id) === attempt.id) this.scheduler.uncertainWriters.delete(work.project.id);
-    fusionEvent(this.run, result.error ? 'native_error' : 'task_result', { workId: attempt.workId, taskId: attempt.taskId, attemptId,
-      result: attempt.result, usage: attempt.usage, changes: attempt.changes }, `result:${attemptId}`);
+    fusionEvent(this.run, result.error ? 'native_error' : 'task_result', { workId: attempt.workId, taskId: attempt.taskId, attemptId }, `result:${attemptId}`);
     this.publish();
   }
   attemptFailed(attemptId, error, main = false) {

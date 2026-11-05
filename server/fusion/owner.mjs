@@ -3,14 +3,14 @@ import { computerId } from '../../lib/auth.mjs';
 import { workspaces } from '../../lib/files.mjs';
 import { EDITORS } from '../config.mjs';
 import { safeHomePath, projectList, createProjectFolder } from '../agent/projects.mjs';
-import { fusionRuns, fusionViewers, fusionLive, savedFusion, findFusionRun, newFusionRun, fusionProject,
+import { fusionRuns, fusionViewers, fusionLive, savedFusion, findFusionRun, allFusionRuns, newFusionRun, fusionProject,
   publishFusion, subscribeFusion, fusionSummary, fusionEvent } from './state.mjs';
 import { fusionRunner } from './runner.mjs';
 import { FUSION_TIERS, validateExecution } from './cost.mjs';
 
 function requestedRun(session, message) {
   if (message.computer && message.computer !== computerId()) throw new Error('Fusion 请求不属于这台电脑');
-  return findFusionRun(session.deviceId, message.runId || session.fusionRun?.id || '');
+  return findFusionRun(message.runId || session.fusionRun?.id || '');
 }
 function projectOf(value) {
   if (value?.host) {
@@ -106,7 +106,7 @@ async function prepare(session, run, message, project = false) {
   }
 }
 subscribeFusion(run => {
-  for (const viewer of fusionViewers) if (viewer.deviceId === run.deviceId) {
+  for (const viewer of fusionViewers) {
     viewer.emit({ t: 'fusionUpdate', computer: run.computer, run: fusionControllerView(run) });
     if (viewer.fusionDetail?.runId === run.id) {
       const view = viewer.fusionDetail.view;
@@ -123,7 +123,7 @@ export const FUSION_OWNER = {
     }).filter(Boolean)).values()];
     this.emit({ t: 'fusionWorkspace', computer: computerId(), requestId: message.requestId,
       current: fusionRuns[this.deviceId]?.current || '',
-      runs: (fusionRuns[this.deviceId]?.runs || []).map(fusionControllerView).sort((a, b) => b.updated - a.updated),
+      runs: allFusionRuns().map(fusionControllerView).sort((a, b) => b.updated - a.updated),
       projects, apps: EDITORS.map(({ app, name }) => ({ app, name, controller: app === 'codex' })),
       ...(message.path !== undefined ? { browse: projectList(message.path) } : {}) });
   },

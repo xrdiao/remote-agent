@@ -67,8 +67,66 @@ test('unknown native results and unaccepted mandatory work prevent delivery or d
   assert.equal(h.run.attempts.length, 1);
 });
 
+test('workspace and task evidence indexes exclude binary patches and long replies without changing stored facts', () => {
+  const h = fixture(), workId = h.create(); h.plan(workId);
+  h.apply({ action: 'dispatch', workId, tasks: [h.task('image')] });
+  const attempt = h.run.attempts[0];
+  const binary = 'diff --git a/image.png b/image.png\nGIT binary patch\nliteral 500000\n' + 'binary-payload'.repeat(100000) + '\n';
+  Object.assign(attempt, { status: 'awaiting_review', endedAt: 20, result: { text: 'reply-text'.repeat(200000), completed: true, error: '' },
+    changes: { available: true, diff: binary, files: [{ path: 'image.png', sha256: 'after' }] },
+    baseline: { available: true, diff: binary, files: [{ path: 'image.png', sha256: 'before' }] } });
+  // Includes a pending event persisted by the previous producer, still backed by the same Attempt.
+  h.run.events.push({ id: 'pending-image', type: 'task_result', data: { workId, taskId: 'image', attemptId: attempt.id,
+    result: attempt.result, changes: attempt.changes }, deliveredTo: '' });
+  const before = structuredClone(h.run);
+  const workspace = h.apply({ action: 'read_workspace' }), task = h.apply({ action: 'read_task', taskId: 'image' });
+  for (const view of [workspace, task]) {
+    const json = JSON.stringify(view);
+    assert(json.length < 15000); assert(!json.includes('binary-payload')); assert(!json.includes('GIT binary patch'));
+  }
+  const event = workspace.events[0];
+  assert.equal(event.id, 'pending-image'); assert.equal(event.data.attemptId, attempt.id);
+  assert.equal(event.data.evidence.result.text.characters, attempt.result.text.length);
+  assert.equal(event.data.evidence.changes.diff.files[0].binary, true);
+  assert.equal(task.attempts[0].baseline.files[0].sha256, 'before');
+  assert.deepEqual(h.run, before); // Reading and summarizing do not acknowledge, accept or replace evidence.
+});
+
+test('read_task pages exact reply and text diffs by Attempt, while binary evidence stays a file reference', () => {
+  const h = fixture(), workId = h.create(); h.plan(workId);
+  h.apply({ action: 'dispatch', workId, tasks: [h.task('evidence')] });
+  const attempt = h.run.attempts[0], text = 'diff --git a/read me.md b/read me.md\n--- a/read me.md\n+++ b/read me.md\n@@ -1 +1 @@\n-old\n+新内容\n';
+  const binary = 'diff --git a/image.png b/image.png\nGIT binary patch\nliteral 5\nbytes\n';
+  attempt.result = { text: 'exact reply\n'.repeat(1500), completed: true };
+  attempt.changes = { diff: text + binary }; attempt.baseline = { diff: text.replace('+新内容', '+before') };
+  h.run.attempts.push({ ...attempt, id: 'newer-attempt', result: { text: 'new reply' } });
+  const read = query => h.apply({ action: 'read_task', taskId: 'evidence', attemptId: attempt.id, ...(query ? { input: JSON.stringify(query) } : {}) });
+  const index = read(); assert.equal(index.attempts[0].id, attempt.id);
+  const reference = index.attempts[0].result.text.read;
+  let reply = '', offset = 0;
+  do {
+    const page = h.apply({ ...reference, input: JSON.stringify({ ...JSON.parse(reference.input), offset }) });
+    assert.equal(page.totalCharacters, attempt.result.text.length);
+    reply += page.text; offset = page.nextOffset;
+  } while (offset !== null);
+  assert.equal(reply, attempt.result.text);
+  const file = index.attempts[0].changes.diff.files[0];
+  const page = h.apply({ ...file.read, input: JSON.stringify({ ...JSON.parse(file.read.input), offset: 13, length: 23 }) });
+  assert.equal(page.text, text.slice(13, 36)); assert.equal(page.nextOffset, 36);
+  assert.equal(read({ section: 'diff', snapshot: 'baseline', fileIndex: 0 }).text, attempt.baseline.diff);
+  const image = read({ section: 'diff', fileIndex: 1 });
+  assert.equal(image.binary, true); assert.match(image.header, /image.png/); assert.equal(image.text, undefined);
+  assert.throws(() => read({ section: 'diff', fileIndex: 9 }), /差异文件/);
+  assert.throws(() => read({ section: 'result', offset: -1 }), /offset/);
+  assert.throws(() => read({ section: 'result', length: 0 }), /length/);
+  assert.throws(() => read({ section: 'invented' }), /证据类型/);
+  assert.throws(() => h.apply({ ...reference, input: '{invalid' }), /JSON/);
+  assert.throws(() => h.apply({ ...reference, input: 'null' }), /JSON 对象/);
+  assert.throws(() => h.apply({ ...reference, attemptId: 'other-task' }), /不属于/);
+});
+
 const { FUSION_OWNER, fusionRunView, fusionControllerView } = await import('../server/fusion/owner.mjs');
-const { fusionLive, fusionViewers, publishFusion } = await import('../server/fusion/state.mjs');
+const { fusionLive, fusionViewers, fusionRuns, fusionWorkers, savedFusion, findFusionRun, publishFusion } = await import('../server/fusion/state.mjs');
 function largeViewFixture() {
   const h = fixture(), workId = h.create(); h.plan(workId);
   h.apply({ action: 'dispatch', workId, tasks: [h.task('view-task')] });
@@ -126,4 +184,68 @@ test('a configuration receipt cannot take back a newer task subscription', async
   FUSION_OWNER.fusionRead.call(viewer, { runId: h.run.id, view: 'task', taskId: 'current-task', requestId: 'current-view' });
   await FUSION_OWNER.fusionConfigure.call(viewer, { runId: h.run.id, view: 'config', subscriptionId: 'old-config', requestId: 'old-save' });
   assert.equal(viewer.fusionDetail.view.kind, 'task'); assert.equal(viewer.fusionDetail.view.subscriptionId, 'current-view');
+});
+test('every paired entry reads the same computer history without copying or changing its creator facts', async t => {
+  const h = fixture(), messages = [], phone = 'paired-phone-' + h.run.id;
+  const viewer = { deviceId: phone, emit: message => messages.push(message) };
+  const before = structuredClone(h.run);
+  t.after(() => { delete fusionRuns[phone]; });
+  FUSION_OWNER.fusionWorkspace.call(viewer);
+  assert(messages.at(-1).runs.some(run => run.id === h.run.id));
+  assert.equal(messages.at(-1).current, '');
+  FUSION_OWNER.fusionRead.call(viewer, { computer: h.run.computer, runId: h.run.id, view: 'tasks', requestId: 'phone-history' });
+  assert.equal(messages.at(-1).run.id, h.run.id);
+  assert.equal(findFusionRun(h.run.id), h.run);
+  assert.deepEqual(h.run, before);
+  const { overviewSnapshot } = await import('../server/overview.mjs');
+  const creator = overviewSnapshot(h.run.deviceId), visitor = overviewSnapshot(phone);
+  assert(visitor.fusion.some(run => run.id === h.run.id));
+  assert.deepEqual(visitor.fusion, creator.fusion);
+  assert.deepEqual(visitor.sessions, creator.sessions);
+});
+test('a different paired entry opens the original main binding and retains only its own recent selection', async t => {
+  const h = fixture(), phone = 'paired-phone-' + h.run.id, requests = [];
+  const { adapter } = await import('../server/apps/fusion.mjs');
+  const before = structuredClone(h.run);
+  t.after(() => { delete fusionRuns[phone]; });
+  await adapter.attach.call({ deviceId: phone, attach: request => requests.push(request) }, { threadId: h.run.id });
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].threadId, h.run.bindings[0].threadId);
+  assert.equal(requests[0].windowId, h.run.bindings[0].windowId);
+  assert.equal(savedFusion(phone).current, h.run.id);
+  assert.deepEqual(savedFusion(phone).runs, []);
+  assert.deepEqual(h.run, before);
+});
+test('paired entries share updates and inputs on one existing runner while closing only their own view', async t => {
+  const h = fixture(), workId = h.create(), phone = 'paired-phone-' + h.run.id;
+  const creatorMessages = [], phoneMessages = [];
+  const creator = { deviceId: h.run.deviceId, emit: message => creatorMessages.push(message) };
+  const viewer = { deviceId: phone, emit: message => phoneMessages.push(message) };
+  fusionViewers.add(creator); fusionViewers.add(viewer);
+  const { fusionRunner } = await import('../server/fusion/runner.mjs');
+  const runner = fusionRunner(h.run); runner.wake = () => {};
+  t.after(() => {
+    fusionViewers.delete(creator); fusionViewers.delete(viewer); delete fusionRuns[phone];
+    for (const [key, value] of fusionWorkers) if (value === runner) fusionWorkers.delete(key);
+  });
+  for (const entry of [creator, viewer]) FUSION_OWNER.fusionRead.call(entry, {
+    computer: h.run.computer, runId: h.run.id, view: 'tasks', requestId: entry.deviceId,
+  });
+  creatorMessages.length = phoneMessages.length = 0;
+  publishFusion(h.run, false);
+  assert.deepEqual(creatorMessages.map(message => message.t), ['fusionUpdate', 'fusionState']);
+  assert.deepEqual(phoneMessages.map(message => message.t), ['fusionUpdate', 'fusionState']);
+  assert.equal(phoneMessages[1].view.subscriptionId, phone);
+  FUSION_OWNER.fusionRead.call(viewer, { runId: h.run.id, view: 'close', subscriptionId: phone, requestId: 'close-phone' });
+  creatorMessages.length = phoneMessages.length = 0;
+  publishFusion(h.run, false);
+  assert.deepEqual(creatorMessages.map(message => message.t), ['fusionUpdate', 'fusionState']);
+  assert.deepEqual(phoneMessages.map(message => message.t), ['fusionUpdate']);
+  FUSION_OWNER.fusionInput.call(viewer, { computer: h.run.computer, runId: h.run.id, workId, text: 'Continue the same work', requestId: 'phone-followup' });
+  assert.equal(h.run.events.at(-1).data.workId, workId);
+  assert.equal(h.run.events.at(-1).data.text, 'Continue the same work');
+  assert.equal(fusionRunner(findFusionRun(h.run.id)), runner);
+  assert.equal(h.run.deviceId, creator.deviceId);
+  assert.equal(fusionRuns[creator.deviceId].runs[0], h.run);
+  assert.equal(h.run.attempts.length, 0);
 });

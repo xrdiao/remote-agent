@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { FusionRunner } from '../server/fusion/runner.mjs';
 import { FusionScheduler } from '../server/fusion/scheduler.mjs';
-import { fusionEvent } from '../server/fusion/state.mjs';
+import { fusionEvent, fusionLive } from '../server/fusion/state.mjs';
 import { fixture, flush } from './fusion-fixture.mjs';
 function scenario() {
   const h = fixture(), scheduler = new FusionScheduler(), calls = [], pending = new Map(), stops = [];
@@ -35,6 +35,76 @@ test('no pending events means no main model call; arrivals during a turn form on
   h.pending.get(first.id).resolve(); await flush(); assert.equal(h.calls.length, 2);
   const second = h.run.attempts.find(row => row.id === h.calls[1].id); assert.deepEqual(second.eventIds, ['two', 'three']);
   h.pending.get(second.id).resolve(); await flush(); h.runner.wake(); await flush(); assert.equal(h.calls.length, 2);
+});
+test('a completed child retains full evidence once and wakes the main with references, preserving event acknowledgement', async () => {
+  const h = scenario(), workId = h.create(); h.plan(workId); h.run.status = 'blocked';
+  await h.runner.control({ action: 'dispatch', workId, tasks: [h.task('image')] }, h.native()); await flush();
+  const child = h.calls[0], diff = 'diff --git a/image.png b/image.png\nGIT binary patch\nliteral 1000000\n' + 'patch-data'.repeat(120000);
+  h.pending.get(child.id).resolve({ text: '截图已保存，待主 Agent 验收', changes: { available: true, diff } }); await flush();
+  const attempt = h.run.attempts.find(row => row.id === child.id), event = h.run.events[0];
+  assert.equal(attempt.changes.diff, diff); assert.equal(attempt.status, 'awaiting_review');
+  assert.equal(event.data.changes, undefined); assert.equal(event.data.result, undefined);
+  assert.equal(event.data.attemptId, child.id); assert(!event.deliveredTo);
+  h.run.status = 'waiting'; h.runner.wake(); await flush();
+  const main = h.calls[1]; assert(main.prompt.length < 10000); assert(!main.prompt.includes('patch-data'));
+  assert(main.prompt.includes(child.id)); assert(main.prompt.includes('image.png'));
+  assert(!event.deliveredTo); assert.equal(h.run.tasks[0].status, 'awaiting_review');
+  h.runner.wake(); await flush(); assert.equal(h.calls.length, 2);
+  h.pending.get(main.id).resolve(); await flush();
+  assert.equal(event.deliveredTo, main.id); assert.equal(h.run.tasks[0].status, 'awaiting_review');
+  assert.equal(attempt.changes.diff, diff); assert.equal(h.calls.length, 2);
+});
+test('resuming a rejected oversized inbox uses a new compact Attempt and preserves the rejected facts', async () => {
+  const h = scenario(), workId = h.create(); h.plan(workId);
+  h.apply({ action: 'dispatch', workId, tasks: [h.task('image')] });
+  const child = h.run.attempts[0];
+  Object.assign(child, { status: 'awaiting_review', endedAt: 20, result: { text: 'ready', completed: true },
+    changes: { diff: 'diff --git a/image.png b/image.png\nGIT binary patch\n' + 'old-bytes'.repeat(120000) } });
+  h.run.effects[0].status = 'done';
+  fusionEvent(h.run, 'task_result', { taskId: 'image', attemptId: child.id, changes: child.changes }, 'old-result');
+  const rejected = { id: 'rejected-inbox', kind: 'main', origin: 'events', status: 'failed', endedAt: 30,
+    submission: 'submitting', error: 'Input exceeds maximum length', prompt: JSON.stringify(h.run.events), eventIds: ['old-result'] };
+  h.run.attempts.push(rejected); h.run.status = 'blocked';
+  const before = structuredClone(rejected);
+  await h.runner.resume(); await flush();
+  assert.equal(h.calls.length, 1); assert.notEqual(h.calls[0].id, rejected.id); assert(!h.calls[0].recovering);
+  assert(h.calls[0].prompt.length < 10000); assert(!h.calls[0].prompt.includes('old-bytes'));
+  assert.deepEqual(rejected, before); assert(!h.run.events[0].deliveredTo);
+  h.pending.get(h.calls[0].id).resolve(); await flush();
+  assert.equal(h.run.events[0].deliveredTo, h.calls[0].id);
+});
+test('native management replies transmit evidence references through the existing tool fields and acknowledge only after reply', async t => {
+  const { FusionController } = await import('../server/fusion/controller.mjs');
+  const h = scenario(), workId = h.create(); h.plan(workId); h.run.status = 'blocked';
+  h.apply({ action: 'dispatch', workId, tasks: [h.task('image')] }); h.run.effects[0].status = 'done';
+  const child = h.run.attempts[0];
+  Object.assign(child, { status: 'awaiting_review', endedAt: 20, result: { text: 'exact native reply', completed: true },
+    changes: { diff: 'diff --git a/image.png b/image.png\nGIT binary patch\n' + 'binary-bytes'.repeat(100000) } });
+  fusionEvent(h.run, 'task_result', { taskId: 'image', attemptId: child.id, changes: child.changes }, 'result-image');
+  const savedLive = fusionLive.get('main');
+  t.after(() => savedLive ? fusionLive.set('main', savedLive) : fusionLive.delete('main'));
+  const driver = new FusionController(h.runner), replies = [];
+  driver.context = { native: { threadId: 'main-thread' }, source: { readConversation: async () => ({ chat: { items: [] } }) } };
+  let action = { action: 'read_workspace' }, release;
+  h.agent.call = async (_context, code) => {
+    if (code === 'codexFusionTurn()') return {};
+    if (code.includes("'tools'")) return [{ id: 0, params: { threadId: 'main-thread', turnId: 'native-main', tool: 'ra_fusion', arguments: action } }];
+    return new Function('nativeSessionAction', 'return ' + code)((app, threadId, operation, payload) => {
+      assert.equal(app, 'codex'); assert.equal(threadId, 'main-thread'); assert.equal(operation, 'toolReply');
+      replies.push(payload); return new Promise(resolve => { release = resolve; });
+    });
+  };
+  const first = driver.read(); await flush();
+  const reply = replies[0]; assert.equal(reply.result.success, true);
+  assert(reply.result.contentItems[0].text.length < 10000); assert(!h.run.events[0].deliveredTo);
+  const value = JSON.parse(reply.result.contentItems[0].text);
+  action = value.events[0].data.evidence.result.text.read;
+  // These fields are already registered on existing native main conversations.
+  assert.deepEqual(Object.keys(action).sort(), ['action', 'attemptId', 'input', 'taskId']);
+  release(true); await first; assert.equal(h.run.events[0].deliveredTo, 'native-main');
+  const second = driver.read(); await flush(); release(true); await second;
+  assert.equal(JSON.parse(replies[1].result.contentItems[0].text).text, 'exact native reply');
+  assert.equal(h.run.attempts.length, 1); assert.equal(child.status, 'awaiting_review'); assert.equal(h.calls.length, 0);
 });
 test('dependent tasks wait for actual acceptance, not just generation completion', async () => {
   const h = scenario(), workId = h.create(); h.plan(workId);
