@@ -3,7 +3,7 @@ import { FusionController } from './controller.mjs';
 import { fusionScheduler } from './scheduler.mjs';
 import { applyFusionControl, fusionTaskPrompt } from './control.mjs';
 import { fusionRuns, fusionWorkers, fusionEvent, newFusionAttempt, publishFusion,
-  commitFusion, NATIVE_UNSETTLED } from './state.mjs';
+  commitFusion, fusionAttemptWorkIds, NATIVE_UNSETTLED } from './state.mjs';
 
 export class FusionRunner {
   constructor(run, { scheduler = fusionScheduler, agent, controller } = {}) {
@@ -29,17 +29,13 @@ export class FusionRunner {
       commitFusion(run, next => { next.capabilities.unshift(snapshot); });
     }
     const previous = run.commands.find(row => row.key === `${run.main.bindingId}:${native.turnId}:${String(native.requestId)}`);
-    let baseline;
-    if (action?.action === 'self_execute' && !previous) {
-      const work = run.works.find(row => row.id === action.workId), main = run.bindings.find(row => row.id === run.main.bindingId);
-      if (!work || work.project.id !== main?.project.id) throw new Error('主 Agent 只能在自己的实际项目执行，其他项目请委派');
-      baseline = await fusionWorkspaceSnapshot(work.project, action.task?.scope || []);
-    }
     let result = applyFusionControl(run, action, native);
-    if (action.action === 'self_execute' && !previous) {
-      const attempt = run.attempts.find(row => row.id === result.attemptId);
-      attempt.baseline = baseline;
-      this.publish();
+    const attempt = run.attempts.find(row => row.kind === 'main' && row.native?.turnId === native.turnId);
+    if (attempt && !previous) {
+      const workIds = new Set([action.workId, result.workId, run.tasks.find(row => row.id === action.taskId)?.workId,
+        ...(action.action === 'read_workspace' ? result.events.map(row => row.data.workId) : []),
+      ].filter(Boolean));
+      for (const workId of workIds) await this.recordMainWork(attempt, workId);
     }
     if (action.action === 'read_workspace') {
       result = { ...result, management: { threadId: native.threadId, turnId: native.turnId,
@@ -51,6 +47,17 @@ export class FusionRunner {
     }
     this.wake();
     return result;
+  }
+  async recordMainWork(attempt, workId) {
+    const work = this.run.works.find(row => row.id === workId);
+    if (!work) return;
+    const plan = work.plans.find(row => row.id === work.planId);
+    attempt.workExecutions ||= [];
+    if (attempt.workExecutions.some(row => row.workId === workId && row.planId === work.planId && row.confirmed === !!plan?.confirmed)) return;
+    const scope = plan?.confirmed ? plan.mainScope || [] : [];
+    const entry = { workId, planId: work.planId, confirmed: !!plan?.confirmed, scope, cost: plan?.cost || null, at: Date.now(),
+      baseline: scope.length ? await fusionWorkspaceSnapshot(work.project, scope) : null, changes: null };
+    this.run.attempts.find(row => row.id === attempt.id).workExecutions.push(entry); this.publish();
   }
   acknowledge(native, eventIds) {
     if (!eventIds?.length) return;
@@ -86,7 +93,10 @@ export class FusionRunner {
       this.sendingEvents = true; this.publish();
       this.scheduler.submit({ lane: 'main', runId: this.run.id, app: this.run.main.app,
         attemptId: attempt.id, ready: () => !this.run.stopRequested,
-        execute: () => this.agent.execute(this.run, attempt.id, attempt.prompt) })
+        execute: async () => {
+          for (const workId of fusionAttemptWorkIds(this.run, attempt)) await this.recordMainWork(attempt, workId);
+          return this.agent.execute(this.run, attempt.id, attempt.prompt);
+        } })
         .then(result => this.mainEnded(attempt.id, { ...result, ended: true, text: result.text, error: result.error, completed: result.completed }))
         .catch(error => this.attemptFailed(attempt.id, error, true))
         .finally(() => { this.sendingEvents = false; this.publish(); this.wake(); });
@@ -103,9 +113,13 @@ export class FusionRunner {
     if (!task() || task().executor === 'main') return;
     const work = () => this.run.works.find(row => row.id === task().workId);
     const job = this.scheduler.submit({ runId: this.run.id, app: attempt().app, attemptId,
+      workerKey: JSON.stringify([this.run.id, task().workerId]),
       priority: task().priority,
       ready: () => recovering || !this.run.stopRequested && !['stopping', 'stopped'].includes(work().status)
-        && !['cancelled', 'stopping'].includes(task().status) && task().dependsOn.every(id => this.run.tasks.find(row => row.id === id)?.status === 'accepted'),
+        && !['cancelled', 'stopping'].includes(task().status)
+        && !this.run.attempts.some(row => row.id !== attemptId && NATIVE_UNSETTLED.includes(row.status)
+          && this.run.tasks.find(value => value.id === row.taskId)?.workerId === task().workerId)
+        && task().dependsOn.every(id => this.run.tasks.find(row => row.id === id)?.status === 'accepted'),
       execute: async () => {
         const effect = this.run.effects.find(row => row.id === attemptId);
         if (effect) { effect.status = 'executing'; effect.startedAt ||= Date.now(); }
@@ -159,6 +173,12 @@ export class FusionRunner {
       usage: turn.usage || attempt.usage,
       result: { text: turn.text || '', completed: !!turn.completed, error: turn.error || '' }, durationMs: Date.now() - attempt.acceptedAt });
     const unread = run.events.some(event => attempt.eventIds?.includes(event.id) && !event.deliveredTo);
+    for (const entry of attempt.workExecutions || []) if (entry.baseline) {
+      const work = run.works.find(row => row.id === entry.workId);
+      const changes = await fusionWorkspaceSnapshot(work.project, entry.scope);
+      run.attempts.find(row => row.id === attempt.id).workExecutions.find(row => row.workId === entry.workId
+        && row.planId === entry.planId && row.confirmed === entry.confirmed).changes = changes;
+    }
     for (const self of run.attempts.filter(row => row.kind === 'task' && row.native?.turnId === attempt.native?.turnId && !row.endedAt)) {
       const task = run.tasks.find(row => row.id === self.taskId), work = run.works.find(row => row.id === self.workId);
       this.completed(self.id, { text: turn.text, completed: turn.completed, error: turn.error, stopped: run.stopRequested,
@@ -167,7 +187,7 @@ export class FusionRunner {
     for (const work of run.works.filter(row => row.candidate?.nativeTurnId === attempt.native?.turnId)) {
       const candidate = work.candidate;
       const arrived = run.events.some(event => !candidate.eventIds.includes(event.id) && (!event.data.workId || event.data.workId === work.id));
-      const unresolved = run.tasks.some(task => task.workId === work.id && task.required && task.status !== 'accepted')
+      const unresolved = run.tasks.some(task => task.workId === work.id && task.executor !== 'main' && task.required && task.status !== 'accepted')
         || run.attempts.some(row => row.workId === work.id && NATIVE_UNSETTLED.includes(row.status));
       if (!turn.completed || turn.error || arrived || unresolved || candidate.planId !== work.planId) {
         work.status = 'running'; work.candidate = null;
@@ -233,7 +253,7 @@ export class FusionRunner {
     if (workId && !work) throw new Error('没有这个工作项');
     if (taskId && !run.tasks.some(row => row.id === taskId)) throw new Error('没有这个任务');
     if (work) work.status = 'stopping';
-    const targets = run.attempts.filter(row => (!workId || row.workId === workId) && (!taskId || row.taskId === taskId)
+    const targets = run.attempts.filter(row => (!workId || fusionAttemptWorkIds(run, row).includes(workId)) && (!taskId || row.taskId === taskId)
       && (row.status === 'queued' || NATIVE_UNSETTLED.includes(row.status)));
     for (const task of run.tasks.filter(row => (!workId || row.workId === workId) && (!taskId || row.id === taskId))) task.stopRequested = true;
     this.publish();
@@ -247,18 +267,19 @@ export class FusionRunner {
     const previous = JSON.stringify([this.run.status, this.run.works.map(work => work.status)]);
     const unsettled = attempt => NATIVE_UNSETTLED.includes(attempt.status) || attempt.status === 'queued';
     for (const work of this.run.works.filter(row => row.status === 'stopping'))
-      if (!this.run.attempts.some(row => row.workId === work.id && unsettled(row))) work.status = 'stopped';
+      if (!this.run.attempts.some(row => fusionAttemptWorkIds(this.run, row).includes(work.id) && unsettled(row))) work.status = 'stopped';
     if (this.run.stopRequested) this.run.status = this.run.attempts.some(unsettled) ? 'stopping' : 'stopped';
     if (previous !== JSON.stringify([this.run.status, this.run.works.map(work => work.status)])) this.publish();
   }
   async resume() {
     this.run.stopRequested = false; this.run.blockedReason = ''; this.run.status = 'recovering';
     for (const task of this.run.tasks) delete task.stopRequested;
-    for (const work of this.run.works.filter(row => ['stopped', 'stopping'].includes(row.status))) work.status = 'planned';
     this.publish();
     await this.recover();
   }
   async recover() {
+    this.finishStop();
+    if (this.run.stopRequested && this.run.status === 'stopped') return;
     await this.controller.start();
     for (const attempt of this.run.attempts.filter(row => NATIVE_UNSETTLED.includes(row.status) || row.status === 'queued')) {
       if (this.jobs.has(attempt.id)) continue;

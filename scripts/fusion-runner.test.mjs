@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import test from 'node:test';
 import { FusionRunner } from '../server/fusion/runner.mjs';
 import { FusionScheduler } from '../server/fusion/scheduler.mjs';
@@ -21,11 +22,28 @@ function scenario({ readWorkspace = true } = {}) {
   }, async stop(id) { stops.push(id); } };
   const controller = { async start() {}, async idle() { return true; }, async stop(attempt) { stops.push(attempt.id); } };
   const runner = new FusionRunner(h.run, { scheduler, agent, controller });
-  return { ...h, runner, agent, scheduler, controller, calls, pending, stops };
+  const control = (action, native) => runner.control(h.request(action), native);
+  return { ...h, runner, control, agent, scheduler, controller, calls, pending, stops };
 }
+test('reused Worker waits for its native result while independent work continues, including unknown-result recovery', async () => {
+  const h = scenario(), workId = h.create(); h.plan(workId); h.controller.idle = async () => false;
+  await h.control({ action: 'dispatch', workId, tasks: [h.task('A')] }, h.native()); await flush();
+  const first = h.run.tasks[0], attempt = h.run.attempts[0];
+  await h.control({ action: 'dispatch', workId, tasks: [h.task('B'), h.task('C')], input: JSON.stringify({
+    B: { workerId: first.workerId, reason: 'Continue the established analysis context' }, C: { workerId: null, reason: 'Independent topic' },
+  }) }, h.native()); await flush();
+  const started = () => h.calls.filter(row => row.kind === 'task').map(row => h.run.attempts.find(attempt => attempt.id === row.id).taskId);
+  assert.deepEqual(started(), ['A', 'C']);
+  h.pending.get(attempt.id).reject(new Error('Connection lost after native acceptance')); await flush();
+  assert.equal(h.run.attempts[0].status, 'unknown'); h.scheduler.drain(); await flush(); assert.deepEqual(started(), ['A', 'C']);
+  h.runner.completed(attempt.id, { completed: true, text: 'Recovered actual native result' }); h.scheduler.drain(); await flush();
+  assert.deepEqual(started(), ['A', 'C', 'B']);
+  for (const task of h.run.tasks.slice(1)) h.pending.get(task.attemptIds[0]).resolve({});
+  await flush(); assert.equal(h.scheduler.workerSlots.size, 0);
+});
 test('a same-software child does not occupy the main controller lane', async () => {
   const h = scenario(), workId = h.create(); h.plan(workId);
-  await h.runner.control({ action: 'dispatch', workId, tasks: [h.task('B')] }, h.native()); await flush();
+  await h.control({ action: 'dispatch', workId, tasks: [h.task('B')] }, h.native()); await flush();
   assert.equal(h.calls[0].kind, 'task');
   fusionEvent(h.run, 'user_input', { workId, text: 'follow up' }, 'followup'); h.runner.wake(); await flush();
   assert.deepEqual(h.calls.map(row => row.kind), ['task', 'main']);
@@ -44,7 +62,7 @@ test('no pending events means no main model call; arrivals during a turn form on
 });
 test('a completed child retains full evidence once and wakes the main with references, preserving event acknowledgement', async () => {
   const h = scenario(), workId = h.create(); h.plan(workId); h.run.status = 'blocked';
-  await h.runner.control({ action: 'dispatch', workId, tasks: [h.task('image')] }, h.native()); await flush();
+  await h.control({ action: 'dispatch', workId, tasks: [h.task('image')] }, h.native()); await flush();
   const child = h.calls[0], diff = 'diff --git a/image.png b/image.png\nGIT binary patch\nliteral 1000000\n' + 'patch-data'.repeat(120000);
   h.pending.get(child.id).resolve({ text: '截图已保存，待主 Agent 验收', changes: { available: true, diff } }); await flush();
   const attempt = h.run.attempts.find(row => row.id === child.id), event = h.run.events[0];
@@ -129,16 +147,16 @@ test('a wake notification omits user text and an unread completed main turn pres
 test('dependent tasks wait for actual acceptance, not just generation completion', async () => {
   const h = scenario(), workId = h.create(); h.plan(workId);
   h.run.status = 'blocked';
-  await h.runner.control({ action: 'dispatch', workId, tasks: [h.task('A'), h.task('B', 'cursor', ['A'])] }, h.native()); await flush();
+  await h.control({ action: 'dispatch', workId, tasks: [h.task('A'), h.task('B', 'cursor', ['A'])] }, h.native()); await flush();
   const first = h.calls[0]; h.pending.get(first.id).resolve(); await flush(); assert.equal(h.calls.length, 1);
-  await h.runner.control({ action: 'review', taskId: 'A', attemptId: first.id, verdict: 'accept', reason: 'verified',
+  await h.control({ action: 'review', taskId: 'A', attemptId: first.id, verdict: 'accept', reason: 'verified',
     evidence: [{ criterion: 'A:1', detail: 'actual result', reference: 'native', attemptId: first.id }] }, h.native()); await flush();
   assert.equal(h.calls.length, 2); assert.equal(h.run.attempts.find(row => row.id === h.calls[1].id).taskId, 'B');
   h.pending.get(h.calls[1].id).resolve(); await flush();
 });
 test('stop cancels unsubmitted dependents and remains stopping until exact native execution ends', async () => {
   const h = scenario(), workId = h.create(); h.plan(workId);
-  await h.runner.control({ action: 'dispatch', workId, tasks: [h.task('A'), h.task('B', 'cursor', ['A'])] }, h.native()); await flush();
+  await h.control({ action: 'dispatch', workId, tasks: [h.task('A'), h.task('B', 'cursor', ['A'])] }, h.native()); await flush();
   const first = h.calls[0]; await h.runner.stop(); await flush();
   assert.equal(h.run.status, 'stopping'); assert.deepEqual(h.stops, [first.id]); assert.equal(h.run.tasks[1].status, 'cancelled');
   h.pending.get(first.id).resolve({ stopped: true, completed: false }); await flush();
@@ -146,8 +164,8 @@ test('stop cancels unsubmitted dependents and remains stopping until exact nativ
 });
 test('stopping one work item leaves another work item and its actual native target alone', async () => {
   const h = scenario(), a = h.create(), b = h.create(); h.plan(a); h.plan(b);
-  await h.runner.control({ action: 'dispatch', workId: a, tasks: [h.task('A')] }, h.native());
-  await h.runner.control({ action: 'dispatch', workId: b, tasks: [h.task('B', 'cursor')] }, h.native()); await flush();
+  await h.control({ action: 'dispatch', workId: a, tasks: [h.task('A')] }, h.native());
+  await h.control({ action: 'dispatch', workId: b, tasks: [h.task('B', 'cursor')] }, h.native()); await flush();
   await h.runner.stop({ workId: a }); assert.equal(h.run.stopRequested, false); assert.equal(h.stops.length, 1);
   const first = h.run.attempts.find(row => row.workId === a), second = h.run.attempts.find(row => row.workId === b);
   assert.equal(second.status, 'running'); assert.deepEqual(h.stops, [first.id]);
@@ -155,11 +173,11 @@ test('stopping one work item leaves another work item and its actual native targ
 });
 test('an unknown attempt prevents its own resubmission but leaves independent same-app work runnable during recovery', async () => {
   const h = scenario(), workId = h.create(); h.plan(workId); h.run.status = 'blocked';
-  await h.runner.control({ action: 'dispatch', workId, tasks: [h.task('A')] }, h.native()); await flush();
+  await h.control({ action: 'dispatch', workId, tasks: [h.task('A')] }, h.native()); await flush();
   const id = h.calls[0].id; h.pending.get(id).reject(new Error('connection lost')); await flush();
   assert.equal(h.run.attempts[0].status, 'unknown');
   assert.throws(() => h.apply({ action: 'continue_task', taskId: 'A', input: 'again', cost: h.cost('codex') }), /结果未知/);
-  await h.runner.control({ action: 'dispatch', workId, tasks: [h.task('independent')] }, h.native()); await flush();
+  await h.control({ action: 'dispatch', workId, tasks: [h.task('independent')] }, h.native()); await flush();
   const other = h.calls[1]; assert(other); assert.notEqual(other.id, id); assert(!other.recovering);
   h.run.events.forEach(event => { event.deliveredTo = 'known'; });
   await h.runner.resume(); await flush();
@@ -171,7 +189,7 @@ test('independent same-project writes run in parallel and report to their own ta
   const h = scenario(), workId = h.create(); h.plan(workId); h.run.status = 'blocked';
   const one = { ...h.task('feature-a'), access: 'write', scope: ['feature-a'] };
   const two = { ...h.task('feature-b'), access: 'write', scope: ['feature-b'] };
-  await h.runner.control({ action: 'dispatch', workId, tasks: [one, two] }, h.native()); await flush();
+  await h.control({ action: 'dispatch', workId, tasks: [one, two] }, h.native()); await flush();
   assert.equal(h.calls.length, 2);
   const [a, b] = h.calls; assert.notEqual(a.id, b.id);
   h.pending.get(b.id).resolve({ text: 'B evidence', changes: { files: ['feature-b'] } }); await flush();
@@ -184,7 +202,7 @@ test('independent same-project writes run in parallel and report to their own ta
 });
 test('parallel unknown native turns recover together without submitting new Attempts', async () => {
   const h = scenario(), workId = h.create(); h.plan(workId); h.run.status = 'blocked';
-  await h.runner.control({ action: 'dispatch', workId, tasks: [h.task('A'), h.task('B')] }, h.native()); await flush();
+  await h.control({ action: 'dispatch', workId, tasks: [h.task('A'), h.task('B')] }, h.native()); await flush();
   const ids = h.calls.map(call => call.id); assert.equal(ids.length, 2);
   for (const id of ids) h.pending.get(id).reject(new Error('connection lost'));
   await flush(); assert(h.run.attempts.every(attempt => attempt.status === 'unknown'));
@@ -195,29 +213,91 @@ test('parallel unknown native turns recover together without submitting new Atte
   h.run.status = 'blocked'; for (const id of ids) h.pending.get(id).resolve(); await flush();
   assert(h.run.attempts.every(attempt => attempt.status === 'awaiting_review')); assert.equal(h.runner.jobs.size, 0);
 });
-test('main self-execution can write alongside an independent child while its declared dependencies still apply', async () => {
-  const h = scenario(), workId = h.create(); h.plan(workId); h.run.status = 'blocked';
-  await h.runner.control({ action: 'dispatch', workId, tasks: [{ ...h.task('child'), access: 'write', scope: ['child-file'] }] }, h.native()); await flush();
-  const child = h.calls[0], spec = { goal: 'Independent main change', access: 'write', scope: ['main-file'], dependsOn: [], acceptance: ['main evidence'] };
-  await assert.rejects(h.runner.control({ action: 'self_execute', workId, task: { ...spec, dependsOn: ['child'] }, cost: h.cost('codex') }, h.native()), /前置任务尚未验收/);
-  const result = await h.runner.control({ action: 'self_execute', workId, task: spec, cost: h.cost('codex') }, h.native());
-  const self = h.run.attempts.find(attempt => attempt.id === result.attemptId); assert(self.baseline);
-  assert.equal(self.status, 'running'); assert.equal(h.run.tasks.find(task => task.id === 'child').status, 'running');
-  h.run.attempts.push({ id: 'main-turn', kind: 'main', status: 'running', acceptedAt: 1, native: { turnId: 'native-turn' } });
-  await h.runner.mainEnded('main-turn', { completed: true, text: 'main evidence' }); h.run.status = 'blocked';
-  assert.equal(h.run.attempts.find(attempt => attempt.id === self.id).result.text, 'main evidence');
-  h.pending.get(child.id).resolve({ text: 'child evidence' }); await flush();
-  assert.equal(h.run.attempts.find(attempt => attempt.id === child.id).result.text, 'child evidence');
+test('main work uses the actual native round, preserves its baseline and creates no self Task or Assignment', async () => {
+  const h = scenario(), workId = h.create(); h.controller.idle = async () => false;
+  const main = { id: 'main-round', kind: 'main', status: 'running', acceptedAt: Date.now(), bindingId: 'main',
+    native: { threadId: 'main-thread', turnId: 'native-turn', messageId: 'main-input' }, workExecutions: [] };
+  h.run.attempts.push(main);
+  const current = () => h.run.attempts.find(row => row.id === main.id);
+  fs.writeFileSync(h.project.root + '/main-file', 'preexisting');
+  const action = { action: 'plan', workId, summary: 'Direct main work', scope: ['main-file'],
+    input: JSON.stringify({ mainScope: ['main-file'] }), cost: h.cost('codex'),
+    criteria: [{ id: 'C', text: 'Actual native evidence' }], requiresConfirmation: false };
+  const native = h.native(); await h.control(action, native);
+  assert.equal(h.run.tasks.length, 0); assert.equal(h.run.assignments.length, 0); assert.equal(h.run.agents.length, 0);
+  assert.equal(current().workExecutions.length, 1); assert(current().workExecutions[0].baseline);
+  const before = structuredClone(current().workExecutions[0]);
+  await h.control(action, native); assert.equal(current().workExecutions.length, 1); assert.deepEqual(current().workExecutions[0], before);
+  fs.writeFileSync(h.project.root + '/main-file', 'main change');
+  await h.control({ action: 'finish', workId, summary: 'done', evidence: [{ criterion: 'C', detail: 'actual', reference: 'main-turn:native-turn' }] }, h.native());
+  assert.equal(h.run.works[0].status, 'closing');
+  await h.runner.mainEnded(main.id, { completed: true, text: 'native work complete' });
+  assert.equal(h.run.works[0].status, 'completed'); assert(current().workExecutions[0].changes);
+  assert.notEqual(current().workExecutions[0].baseline.files[0].sha256, current().workExecutions[0].changes.files[0].sha256);
+  assert.equal(h.run.attempts.length, 1); assert.equal(h.calls.length, 0);
+});
+test('stopping direct main work targets its actual round, preserves unrelated work and waits for native confirmation', async () => {
+  const h = scenario(), workId = h.create(), other = h.create(); h.plan(workId); h.plan(other);
+  const attempt = { id: 'main-round', kind: 'main', status: 'running', acceptedAt: Date.now(), workExecutions: [{workId}],
+    native: { threadId: 'main-thread', turnId: 'main-native', messageId: 'user' } };
+  h.run.attempts.push(attempt);
+  await h.runner.stop({ workId }); assert.deepEqual(h.stops, ['main-round']);
+  assert.equal(h.run.works[0].status, 'stopping'); assert.equal(h.run.works[1].status, 'running');
+  assert.equal(h.run.tasks.length, 0); assert.equal(attempt.status, 'stopping');
+  await h.runner.mainEnded(attempt.id, { completed: false, error: 'native interrupted' }); h.runner.finishStop();
+  assert.equal(h.run.works[0].status, 'stopped'); assert.equal(h.run.works[1].status, 'running');
 });
 test('stopping parallel same-app tasks waits for each exact target and cancels only the unsubmitted dependency', async () => {
   const h = scenario(), workId = h.create(); h.plan(workId);
-  await h.runner.control({ action: 'dispatch', workId, tasks: [h.task('A'), h.task('dependent', 'codex', ['A']), h.task('B')] }, h.native()); await flush();
+  await h.control({ action: 'dispatch', workId, tasks: [h.task('A'), h.task('dependent', 'codex', ['A']), h.task('B')] }, h.native()); await flush();
   assert.equal(h.calls.length, 2); const [one, two] = h.calls;
   await h.runner.stop(); assert.deepEqual(h.stops, [one.id, two.id]); assert.equal(h.run.status, 'stopping');
   assert.equal(h.run.tasks[1].status, 'cancelled');
   h.pending.get(two.id).resolve({ stopped: true, completed: false }); await flush(); assert.equal(h.run.status, 'stopping');
   h.pending.get(one.id).resolve({ stopped: true, completed: false }); await flush(); assert.equal(h.run.status, 'stopped');
   assert.equal(h.calls.length, 2);
+});
+test('recovery settles a stopped run with ended native facts without reconnecting its closed window', async () => {
+  const h = scenario(), workId = h.create(); h.plan(workId);
+  h.run.stopRequested = true; h.run.status = 'stopping'; h.run.works[0].status = 'stopping';
+  h.run.attempts.push({ id: 'ended-native', kind: 'main', workId, bindingId: 'main', status: 'ended',
+    submission: 'accepted', acceptedAt: 10, endedAt: 20,
+    native: { threadId: 'main-thread', turnId: 'ended-turn', messageId: 'ended-message' },
+    result: { text: 'Recorded result', completed: true } });
+  fusionEvent(h.run, 'task_result', { attemptId: 'ended-native' }, 'unread-result');
+  const facts = structuredClone({ attempts: h.run.attempts, events: h.run.events });
+  h.controller.start = async () => assert.fail('closed window must not be reconnected');
+  await h.runner.recover(); await flush();
+  assert.equal(h.run.status, 'stopped'); assert.equal(h.run.works[0].status, 'stopped');
+  assert.deepEqual({ attempts: h.run.attempts, events: h.run.events }, facts);
+  assert.equal(h.calls.length, 0); assert.equal(h.scheduler.queue.length, 0);
+});
+test('recovery still reconciles unknown or running native executions before confirming stop', async () => {
+  for (const status of ['unknown', 'running']) {
+    const h = scenario(); h.run.stopRequested = true; h.run.status = 'stopping';
+    h.run.attempts.push({ id: 'unsettled-native', kind: 'main', bindingId: 'main', status,
+      submission: 'accepted', acceptedAt: 10, endedAt: null,
+      native: { threadId: 'main-thread', turnId: 'unsettled-turn', messageId: 'unsettled-message' } });
+    const facts = structuredClone(h.run.attempts); let connects = 0;
+    h.controller.start = async () => { connects++; throw new Error('Native window is closed'); };
+    await h.runner.recover().catch(error => h.runner.blockMain(error)); await flush();
+    assert.equal(connects, 1); assert.equal(h.run.status, 'stopping');
+    assert.deepEqual(h.run.attempts, facts); assert.equal(h.calls.length, 0);
+  }
+});
+test('resuming the controller preserves individually stopped work while accepting a new request', async () => {
+  const h = scenario(), workId = h.create(); h.plan(workId);
+  await h.runner.stop({ workId }); assert.equal(h.run.works[0].status, 'stopped');
+  await h.runner.stop();
+  h.runner.input({ text: 'Independent new request; leave the old work stopped', requestId: 'new-work-input' });
+  await h.runner.resume(); await flush();
+  assert.equal(h.run.stopRequested, false); assert.equal(h.run.works[0].status, 'stopped');
+  assert.equal(h.calls.length, 1); assert.equal(h.calls[0].kind, 'main');
+  await assert.rejects(h.control({ action: 'finish', workId, summary: 'Old work must remain stopped',
+    evidence: [{ criterion: 'C1', detail: 'Prior evidence', reference: 'main-turn:native-turn' }] }, h.native()), /该工作项已停止/);
+  const created = await h.control({ action: 'create_work', title: 'New work', goal: 'New request' }, h.native());
+  assert.notEqual(created.workId, workId); assert.equal(h.run.works[0].status, 'stopped');
+  h.pending.get(h.calls[0].id).resolve(); await flush();
 });
 test('a delivery candidate becomes complete only after its native main turn ends and no new work input arrived', async () => {
   const h = scenario(), workId = h.create(); h.plan(workId);
@@ -249,8 +329,8 @@ test('a new inbox request wakes the existing main without inventing a work item 
 });
 test('cancelling a dependency-blocked task removes its software queue entry', async () => {
   const h = scenario(), workId = h.create(); h.plan(workId); h.run.status = 'blocked';
-  await h.runner.control({ action: 'dispatch', workId, tasks: [h.task('A'), h.task('B', 'cursor', ['A'])] }, h.native()); await flush();
-  await h.runner.control({ action: 'cancel_task', taskId: 'B', reason: 'no longer needed' }, h.native()); await flush();
+  await h.control({ action: 'dispatch', workId, tasks: [h.task('A'), h.task('B', 'cursor', ['A'])] }, h.native()); await flush();
+  await h.control({ action: 'cancel_task', taskId: 'B', reason: 'no longer needed' }, h.native()); await flush();
   assert.equal(h.scheduler.queue.length, 0); assert.equal(h.run.tasks[1].status, 'cancelled');
   assert.equal(h.run.effects.find(row => row.data.attemptId === h.run.attempts[1].id).status, 'cancelled');
   h.pending.get(h.calls[0].id).resolve(); await flush();
@@ -270,11 +350,32 @@ test('the controller observer does not finish a native event attempt owned by th
 });
 test('priority changes reorder dependency-blocked tasks when they become ready', async () => {
   const h = scenario(), workId = h.create(); h.plan(workId); h.run.status = 'blocked';
-  await h.runner.control({ action: 'dispatch', workId, tasks: [h.task('A'), h.task('B', 'cursor', ['A']), h.task('C', 'cursor', ['A'])] }, h.native()); await flush();
-  await h.runner.control({ action: 'set_priority', taskId: 'C', priority: 10 }, h.native());
+  await h.control({ action: 'dispatch', workId, tasks: [h.task('A'), h.task('B', 'cursor', ['A']), h.task('C', 'cursor', ['A'])] }, h.native()); await flush();
+  await h.control({ action: 'set_priority', taskId: 'C', priority: 10 }, h.native());
   const first = h.calls[0]; h.pending.get(first.id).resolve(); await flush();
-  await h.runner.control({ action: 'review', taskId: 'A', attemptId: first.id, verdict: 'accept', reason: 'verified',
+  await h.control({ action: 'review', taskId: 'A', attemptId: first.id, verdict: 'accept', reason: 'verified',
     evidence: [{ criterion: 'A:1', detail: 'actual', reference: 'native', attemptId: first.id }] }, h.native()); await flush();
   assert.equal(h.run.attempts.find(row => row.id === h.calls[1].id).taskId, 'C');
   h.pending.get(h.calls[1].id).resolve(); await flush(); h.pending.get(h.calls[2].id).resolve(); await flush();
+});
+
+test('management handles the current native request and call identity without reading transcript content', async () => {
+  const { FusionController } = await import('../server/fusion/controller.mjs');
+  const h = scenario(); h.run.status = 'blocked'; h.controller.idle = async () => false;
+  const requests = [{ id: 0, params: { threadId: 'main-thread', turnId: 'current-turn', callId: 'actual-call',
+    tool: 'ra_fusion', arguments: { action: 'create_work', title: 'current', goal: 'current' } } }];
+  let replies = 0, contentReads = 0;
+  h.agent.call = async (_ctx, code) => {
+    if (code === 'codexFusionTurn()') return { id: 'current-message', threadId: 'main-thread', turnId: 'current-turn', accepted: true, ended: false };
+    if (code.includes("'tools'")) return requests;
+    if (code.includes("'settings'")) return { model: 'cheap', effort: 'low' };
+    if (code.includes("'toolReply'")) { replies++; return true; }
+    throw Error(code);
+  };
+  const driver = new FusionController(h.runner);
+  driver.context = { native: { threadId: 'main-thread' }, source: { readConversation() { contentReads++; throw Error('Body not ready'); } } };
+  await driver.read(); assert.equal(contentReads, 0); assert.equal(replies, 1);
+  const command = h.run.commands.at(-1); assert.equal(command.native.callId, 'actual-call'); assert.equal(command.native.requestId, 0);
+  assert.equal(h.run.tasks.length, 0); assert.equal(h.run.works.length, 1); assert.equal(h.calls.length, 0);
+  await driver.read(); assert.equal(h.run.works.length, 1); assert.equal(h.run.commands.length, 1);
 });

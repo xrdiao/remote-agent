@@ -487,11 +487,14 @@
     const turn = found?.entry.turn;
     const user = found && (id || attemptId ? users(found).find(matches) : users(found).at(-1));
     const reply = turn?.items?.filter(it => it.type === 'assistant-message' && it.phase !== 'commentary').at(-1);
+    const ended = ['complete', 'completed', 'interrupted', 'failed'].includes(turn?.status);
+    const error = found?.entry.nativeTurn?.error?.message || turn?.items?.find(item => item.type === 'system-error')?.content
+      || (turn?.status === 'interrupted' ? 'Codex 原生执行已中断' : turn?.status === 'failed' ? 'Codex 原生执行失败' : '');
     return { id: user?.clientUserMessageId || '', ids: [...entries.values()].flatMap(found => users(found).map(it => it.clientUserMessageId)).filter(Boolean),
       turnId: found?.entry.turnId || '', threadId: state.thread, current: !!found && found.entry.turnId === latest, user: user?.message || '', text: reply?.content || '',
       accepted: !!user && codexSendState(false, state.thread).runs.some(value => value.id === found?.entry.turnId),
-      ended: turn?.status === 'complete' && !turn.partial,
-      completed: turn?.status === 'complete' && !turn.partial && !!reply?.completed, error: turn?.items?.find(item => item.type === 'system-error')?.content || '',
+      ended,
+      completed: ['complete', 'completed'].includes(turn?.status) && !!reply?.completed && !error, error,
       items: turn ? codexTurnItems(found.el, found.entry) : [] };
 
   };

@@ -2,6 +2,7 @@ export class FusionScheduler {
   constructor() {
     this.queue = [];
     this.mainSlots = new Map();
+    this.workerSlots = new Map();
     this.creating = new Map();
   }
   submit(job) {
@@ -14,11 +15,13 @@ export class FusionScheduler {
     const ordered = [...this.queue].sort((a, b) => (b.priority || 0) - (a.priority || 0));
     for (const job of ordered) {
       const main = job.lane === 'main';
-      if (main && this.mainSlots.has(job.runId) || !job.ready()) continue;
+      if (main && this.mainSlots.has(job.runId) || job.workerKey && this.workerSlots.has(job.workerKey) || !job.ready()) continue;
       this.queue.splice(this.queue.indexOf(job), 1);
       if (main) this.mainSlots.set(job.runId, job);
+      if (job.workerKey) this.workerSlots.set(job.workerKey, job);
       const finish = (value, error) => {
         if (this.mainSlots.get(job.runId) === job) this.mainSlots.delete(job.runId);
+        if (this.workerSlots.get(job.workerKey) === job) this.workerSlots.delete(job.workerKey);
         if (error) job.reject(error); else job.resolve(value);
         this.drain();
       };

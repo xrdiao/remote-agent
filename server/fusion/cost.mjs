@@ -38,10 +38,13 @@ export function validateCost(controller, cost, execution) {
     model.pricing && (model.pricing.unit === budget.unit || model.pricing.currency === budget.unit)));
   if (!quoted) throw new Error('原生资料没有该预算单位的真实报价，不能推算桌面订阅账单');
   let reserved = 0;
-  for (const assignment of controller.assignments) {
+  const estimates = controller.assignments.flatMap(assignment => {
     const attempts = controller.attempts.filter(row => row.assignmentId === assignment.id);
-    if (attempts.every(row => row.status === 'cancelled' && row.submission === 'not_submitted')) continue;
-    const previous = assignment.cost?.estimate;
+    return attempts.every(row => row.status === 'cancelled' && row.submission === 'not_submitted') ? [] : [assignment.cost?.estimate];
+  });
+  estimates.push(...controller.works.flatMap(work => work.plans.filter(plan => plan.confirmed && plan.mainScope?.length)
+    .map(plan => plan.cost?.estimate)));
+  for (const previous of estimates) {
     if (!previous || previous.unit !== budget.unit || !Number.isFinite(previous.amount)) throw new Error('已有执行含未知成本，不能承诺精确预算边界');
     reserved += previous.amount;
   }

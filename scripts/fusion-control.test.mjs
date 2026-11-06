@@ -1,7 +1,61 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import fs from 'node:fs';
+import vm from 'node:vm';
 import { applyFusionControl, fusionTaskPrompt } from '../server/fusion/control.mjs';
 import { fixture } from './fusion-fixture.mjs';
+
+test('a related new task can select a retained Worker without changing earlier task or execution facts', () => {
+  const h = fixture(), firstWork = h.create(); h.plan(firstWork);
+  const first = h.apply({ action: 'dispatch', workId: firstWork, tasks: [h.task('first')] }).tasks[0];
+  const worker = h.run.agents.find(row => row.id === first.workerId), attempt = h.run.attempts[0];
+  worker.bindingId = 'retained-binding';
+  h.run.bindings.push({ id: worker.bindingId, role: 'worker', app: 'codex', project: h.project, threadId: 'retained-native' });
+  Object.assign(attempt, { bindingId: worker.bindingId, status: 'accepted', endedAt: 20, result: { completed: true, text: 'Original evidence' } });
+  h.run.tasks[0].status = 'accepted';
+  const old = structuredClone({ task: h.run.tasks[0], attempt, assignment: h.run.assignments[0] });
+  const secondWork = h.create(); h.plan(secondWork);
+  const result = h.apply({ action: 'dispatch', workId: secondWork, tasks: [h.task('related')],
+    input: JSON.stringify({ related: { workerId: worker.id, reason: 'Retain the invoice analysis context' } }) }).tasks[0];
+  assert.equal(h.run.agents.length, 1); assert.equal(result.workerId, worker.id);
+  assert.notEqual(result.attemptId, first.attemptId); assert.equal(h.run.tasks[1].workId, secondWork);
+  assert.deepEqual({ task: h.run.tasks[0], attempt: h.run.attempts[0], assignment: h.run.assignments[0] }, old);
+  const board = h.apply({ action: 'read_workspace' });
+  assert.deepEqual(board.agents[0].taskIds, ['first', 'related']); assert.equal(board.agents[0].project.id, h.project.id);
+  const savedBinding = h.run.agents[0].bindingId;
+  h.run.agents[0].bindingId = 'a-later-binding';
+  assert.equal(h.apply({ action: 'read_task', taskId: 'first' }).binding.id, savedBinding);
+});
+test('dispatch requires an explicit per-task resource choice and rejects unrelated workers atomically', () => {
+  const h = fixture(), workId = h.create(); h.plan(workId);
+  assert.throws(() => applyFusionControl(h.run, { action: 'dispatch', workId, tasks: [h.task('A')] }, h.native()), /input/);
+  h.apply({ action: 'dispatch', workId, tasks: [h.task('A')] });
+  const worker = h.run.agents[0], before = JSON.stringify(h.run);
+  const select = workerId => JSON.stringify({ B: { workerId, reason: 'A deliberate resource decision' } });
+  assert.throws(() => h.apply({ action: 'dispatch', workId, tasks: [h.task('B')], input: select('missing') }), /不存在/);
+  assert.throws(() => h.apply({ action: 'dispatch', workId, tasks: [h.task('B', 'cursor')], input: select(worker.id) }), /同一软件/);
+  assert.equal(JSON.stringify(h.run), before);
+  const other = h.create(); h.run.works.find(row => row.id === other).project = { ...h.project, id: 'other-host-project', host: 'other-host' }; h.plan(other);
+  const beforeOther = JSON.stringify(h.run);
+  assert.throws(() => h.apply({ action: 'dispatch', workId: other, tasks: [h.task('B')], input: select(worker.id) }), /实际项目/);
+  assert.equal(JSON.stringify(h.run), beforeOther);
+});
+test('plan reports all missing fields and cannot silently consume a dispatch task list', () => {
+  const h = fixture(), workId = h.create();
+  assert.throws(() => h.apply({ action: 'plan', workId }), error => ['summary', 'scope', 'criteria', 'requiresConfirmation'].every(field => error.message.includes(field)));
+  assert.throws(() => h.apply({ action: 'plan', workId, summary: 'Scope', scope: ['.'], criteria: [{ id: 'C', text: 'Evidence' }],
+    requiresConfirmation: false, tasks: [h.task('A')] }), /plan.*dispatch/);
+  assert.equal(h.run.tasks.length, 0); assert.equal(h.run.works[0].plans.length, 0);
+});
+test('review evidence uses its selected completed Attempt without requiring duplicated nested identity', () => {
+  const h = fixture(), workId = h.create(); h.plan(workId); h.apply({ action: 'dispatch', workId, tasks: [h.task('A')] });
+  const attempt = h.run.attempts[0]; Object.assign(attempt, { status: 'awaiting_review', endedAt: 20, result: { completed: true, text: 'Verified 62.70' } });
+  h.apply({ action: 'review', taskId: 'A', attemptId: attempt.id, verdict: 'accept', reason: 'Recomputed from raw input',
+    evidence: [{ criterion: 'A:1', detail: 'Independent result is 62.70', reference: 'native result' }] });
+  assert.equal(h.run.tasks[0].status, 'accepted');
+  assert.equal(h.run.tasks[0].reviews[0].evidence[0].attemptId, attempt.id);
+  assert.equal(h.run.tasks[0].reviews[0].evidence[0].detail, 'Independent result is 62.70');
+});
 
 test('one persistent main manages multiple work items; zero workers can propose a native-turn delivery', () => {
   const h = fixture(), one = h.create(), two = h.create(); h.plan(one); h.plan(two);
@@ -168,6 +222,21 @@ test('read_task pages exact reply and text diffs by Attempt, while binary eviden
 });
 
 const { FUSION_OWNER, fusionRunView, fusionControllerView } = await import('../server/fusion/owner.mjs');
+
+test('main interaction projection keeps one question text, its native origin and the actual answer without mutating history', () => {
+  const h = fixture(), workId = h.create(); h.plan(workId, true);
+  const id = h.apply({ action: 'ask_user', workId, question: 'Canonical scope and criteria?', options: ['Approve', 'Change'] }).questionId;
+  h.run.attempts.push({ kind: 'main', native: { threadId: 'main-thread', turnId: 'native-turn', messageId: 'proposal-message' } });
+  const question = h.run.questions.find(row => row.id === id);
+  Object.assign(question, { answeredAt: 20, answer: 'Approve with model Sol', inputId: 'native-answer' });
+  h.run.events.push({ id: 'native-answer', type: 'user_input', data: { native: { threadId: 'main-thread', turnId: 'reply-turn', messageId: 'reply-message' } } });
+  const before = JSON.stringify(h.run), board = fusionRunView(h.run, { kind: 'tasks' });
+  assert.equal(board.questions.length, 1); assert.equal(board.questions[0].text, question.text);
+  assert.equal(board.questions[0].native.messageId, 'proposal-message'); assert.equal(board.questions[0].answerNative.messageId, 'reply-message');
+  assert.equal(board.works[0].plans[0].native.messageId, 'proposal-message');
+  assert.deepEqual(fusionControllerView(h.run).overview.attention.map(row => row.kind), ['plan']);
+  assert.equal(JSON.stringify(h.run), before);
+});
 const { fusionLive, fusionViewers, fusionRuns, fusionWorkers, savedFusion, findFusionRun, publishFusion } = await import('../server/fusion/state.mjs');
 function largeViewFixture() {
   const h = fixture(), workId = h.create(); h.plan(workId);
@@ -179,7 +248,8 @@ function largeViewFixture() {
   h.run.events.push({ id: 'result-event', type: 'task_result', data: { attemptId: attempt.id, changes: attempt.changes } });
   h.run.works[0].deliveries.push({ summary: 'verified', evidence: [{ detail: 'evidence\n'.repeat(100000) }], mainAttemptId: attempt.id });
   h.run.attempts.push({ ...attempt, id: 'latest-attempt', result: { text: 'new result' } });
-  fusionLive.set(bindingId, { state: 'awaiting_user', chat: { items: [{ i: 'body', k: 'assistant', t: 'live'.repeat(100000) },
+  h.run.tasks[0].status = 'awaiting_user';
+  fusionLive.set(bindingId, { state: { waiting: 'approval' }, chat: { items: [{ i: 'body', k: 'assistant', t: 'live'.repeat(100000) },
     { i: 'native-action', b: ['Allow'], actions: ['allow-once'], btnItem: 'native-button' }],
     questions: { codex: true, requests: [{ id: 'approval', text: 'Approval', fields: [], buttons: [{ label: 'Allow' }] }] } } });
   return { ...h, workId, attempt, bindingId };
@@ -192,9 +262,9 @@ test('Fusion summary and selected views omit full history, diffs and repeated na
     assert(!raw.includes('+exact diff')); assert(!raw.includes('resultresult')); assert(!raw.includes('livelive'));
   }
   const task = fusionRunView(h.run, { kind: 'task', taskId: 'view-task' });
-  assert.equal(task.attempts[0].live, null); assert.equal(task.attempts[1].live.items.length, 1);
-  assert.equal(task.attempts[1].live.items[0].actions[0], 'allow-once');
-  assert.equal(task.attempts[1].live.requests[0].id, 'approval');
+  assert.equal(task.attempts[0].live, undefined); assert.equal(task.attempts[1].live, undefined);
+  assert.equal(task.board.nativeInteractions[0].items.length, 0);
+  assert.equal(task.board.nativeInteractions[0].requests[0].id, 'approval');
   assert.equal(fusionControllerView(h.run).tasks.total, 1);
 });
 test('explicit audit reads preserve exact full diffs, native identity and delivery evidence', t => {
@@ -334,4 +404,76 @@ test('paired entries share updates and inputs on one existing runner while closi
   assert.equal(h.run.deviceId, creator.deviceId);
   assert.equal(fusionRuns[creator.deviceId].runs[0], h.run);
   assert.equal(h.run.attempts.length, 0);
+});
+
+test('direct main plans preserve real cost, source identity and no self-dispatch protocol', () => {
+  const h = fixture(), workId = h.create(), native = { ...h.native(), callId: 'native-plan-item' };
+  const action = { action: 'plan', workId, summary: 'Direct work', scope: ['src'], criteria: [{ id: 'C', text: 'Real result' }],
+    input: JSON.stringify({ mainScope: ['src/main.js'] }), cost: h.cost('codex'), requiresConfirmation: false };
+  applyFusionControl(h.run, action, native);
+  assert.deepEqual(h.run.works[0].plans[0].mainScope, ['src/main.js']);
+  assert.deepEqual(h.run.works[0].plans[0].cost, action.cost);
+  assert.equal(fusionRunView(h.run, { kind: 'tasks' }).works[0].plans[0].native.callId, 'native-plan-item');
+  assert.equal(h.run.tasks.length, 0); assert.equal(h.run.assignments.length, 0);
+  assert.throws(() => h.apply({ action: 'self_execute', workId }), /未知/);
+  const before = structuredClone(h.run);
+  assert.throws(() => h.apply({ ...action, input: JSON.stringify({mainScope:['other']}) }), /超出方案范围/);
+  assert.deepEqual(h.run, before);
+});
+test('explicit budgets include confirmed direct main plan reservations before a child is dispatched', () => {
+  const h = fixture(), workId = h.create();
+  h.run.capabilities.find(row => row.app === 'codex').models[0].pricing = {unit:'credits'};
+  h.run.budget = {limit:10,unit:'credits'};
+  h.apply({action:'plan',workId,summary:'Direct',scope:['.'],criteria:[{id:'C',text:'Evidence'}],requiresConfirmation:false,
+    input:JSON.stringify({mainScope:['main-file']}),cost:{...h.cost('codex'),estimate:{amount:6,unit:'credits'}}});
+  const child = {...h.task('child'),cost:{...h.cost('codex'),estimate:{amount:5,unit:'credits'}}};
+  assert.throws(() => h.apply({action:'dispatch',workId,tasks:[child]}),/超过用户预算/);
+  assert.equal(h.run.assignments.length,0); assert.equal(h.run.tasks.length,0);
+});
+test('ordinary message buttons never become native interactions and native approval keeps its actual task and request', t => {
+  const h=largeViewFixture();t.after(()=>fusionLive.delete(h.bindingId));
+  let board=fusionRunView(h.run,{kind:'tasks'});
+  assert.equal(board.nativeInteractions.length,1);assert.equal(board.nativeInteractions[0].taskId,'view-task');
+  assert.equal(board.nativeInteractions[0].requests[0].id,'approval');assert.equal(board.nativeInteractions[0].items.length,0);
+  fusionLive.set(h.bindingId,{state:{},chat:{items:[{i:'copy',b:['Copy message','Fork chat from here']}]}});
+  assert.equal(fusionRunView(h.run,{kind:'tasks'}).nativeInteractions.length,0);
+  fusionLive.set(h.bindingId,{state:{waiting:'native-item:Allow'},chat:{items:[{i:'native-item',b:['Copy message','Allow'],actions:['copy','allow']} ]}});
+  const item=fusionRunView(h.run,{kind:'tasks'}).nativeInteractions[0].items[0];
+  assert.deepEqual(item.buttons,[{label:'Allow',n:1,actionId:'allow'}]);
+  h.run.attempts.at(-1).endedAt=30;
+  assert.equal(fusionRunView(h.run,{kind:'tasks'}).nativeInteractions.length,0);
+});
+test('pending interaction stays after new output and completed cards use the actual native tool position', () => {
+  const source=fs.readFileSync(new URL('../app/js/fusion.js',import.meta.url),'utf8');
+  const run={id:'run',computer:'computer'},plan={id:'plan',created:1,confirmed:false,native:{threadId:'thread',messageId:'old',callId:'call'}};
+  const board={dispatches:[],questions:[],nativeInteractions:[],works:[{id:'work',plans:[plan]}]};
+  const nodes=new Map(),context=vm.createContext({currentFusionRun:()=>run,fusionBoards:new Map([['computer|run',board]]),fusionStateKey:(c,r)=>c+'|'+r,
+    fusionDispatchCards:new Map(),fusionInteractionCards:nodes,fusionFocusInteraction:'',fusionPendingGroup:null,deferredScrollRender:false,
+    fusionInteractionNode(_r,_w,kind,item){const k='computer|run|'+kind+':'+item.id;if(!nodes.has(k))nodes.set(k,{id:item.id});return nodes.get(k);},
+    document:{createElement:()=>({setAttribute(){},children:[]})},I18N:{tr:s=>s},syncChildren:(parent,children)=>{parent.children=children;},queueMicrotask(){}});
+  const a=source.indexOf('function fusionChatAnchor('),b=source.indexOf('function fusionNativeNode(',a);
+  const c=source.indexOf('function fusionChatRows('),d=source.indexOf('function fusionStateBadge(',c);
+  vm.runInContext(source.slice(a,b)+source.slice(c,d)+';this.paint=fusionChatRows;',context);
+  const items=[{i:'user',k:'human',nativeIds:['old']},{i:'thread:dynamic-tool-call:call',k:'tool'},{i:'reply',k:'assistant'}];
+  const rows=items.map(i=>({id:i.i}));context.paint(items,rows,false,0);
+  assert.equal(rows.at(-1).children[0].id,'plan');
+  const updated=[...items,{i:'next-reply',k:'assistant'}],next=updated.map(i=>({id:i.i}));context.paint(updated,next,false,0);
+  assert.equal(next.at(-2).id,'next-reply');assert.equal(next.at(-1).children[0].id,'plan');
+  plan.confirmed=true;const completed=items.map(i=>({id:i.i}));context.paint(items,completed,false,0);
+  assert.deepEqual(completed.map(n=>n.id),['user','thread:dynamic-tool-call:call','plan','reply']);
+});
+test('a native-only board update redraws the main conversation without another task or plan change', () => {
+  const source=fs.readFileSync(new URL('../app/js/fusion.js',import.meta.url),'utf8');
+  const run={id:'run',computer:'computer',tasks:[],works:[],questions:[],dispatches:[],nativeInteractions:[]};
+  let paints=0;
+  const context=vm.createContext({currentFusionRun:()=>run,fusionBoards:new Map(),fusionStateKey:(c,r)=>c+'|'+r,
+    paintFusionTaskStrip(){},fusionDispatchCards:new Map(),fusionChatActive:()=>true,lastChat:{thread:'main'},
+    currentComputer:()=>({threadId:'main'}),chatStale:false,renderChat(){paints++;}});
+  const a=source.indexOf('function fusionRememberBoard('),b=source.indexOf('function paintFusionTaskStrip(',a);
+  vm.runInContext(source.slice(a,b)+';this.remember=fusionRememberBoard;',context);
+  context.remember(run);paints=0;
+  const approval={...run,nativeInteractions:[{id:'attempt',requests:[{id:'approval'}]}]};
+  context.remember(approval);assert.equal(paints,1);
+  context.remember(approval);assert.equal(paints,1);
+  context.remember(run);assert.equal(paints,2);
 });

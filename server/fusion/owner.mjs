@@ -26,21 +26,42 @@ function mainOf(value) {
   if (value?.app !== 'codex') throw new Error('当前已验证的主控软件为 Codex；Cursor 和 Devin 可作为子 Agent');
   return { app: value.app, model: String(value.model || ''), effort: String(value.effort || '') };
 }
+function nativeInteractions(run) {
+  return run.tasks.flatMap(task => {
+    const attempt = run.attempts.findLast(row => row.taskId === task.id);
+    const live = attempt && !attempt.endedAt && fusionLive.get(attempt.bindingId);
+    if (!live) return [];
+    const requests = live.chat?.questions?.codex ? live.chat.questions.requests || [] : [];
+    const questions = live.chat?.questions?.codex ? null : live.chat?.questions;
+    const items = (live.chat?.items || []).flatMap(item => {
+      const key = item.btnItem || item.i, waiting = live.state?.waiting;
+      if (typeof waiting !== 'string' || !waiting.startsWith(key + ':')) return [];
+      const labels = waiting.slice(key.length + 1).split('/');
+      const buttons = (item.b || []).flatMap((label, n) => labels.includes(label) ? [{ label, n, actionId: item.actions?.[n] || '' }] : []);
+      return buttons.length ? [{ i: item.i, btnItem: key, buttons }] : [];
+    });
+    if (!requests.length && !questions?.list?.length && !items.length) return [];
+    return [{ id: attempt.id, taskId: task.id, workId: task.workId, goal: task.goal, app: attempt.app,
+      attemptId: attempt.id, bindingId: attempt.bindingId, native: attempt.native, items, requests, questions }];
+  });
+}
 function taskSummaries(run, taskId) {
   const assignments = new Map(run.assignments.map(row => [row.taskId, row]));
   const attempts = new Map(run.attempts.filter(row => row.taskId).map(row => [row.taskId, row]));
   const works = new Map(run.works.map(row => [row.id, row]));
   return run.tasks.map(task => {
     const assignment = assignments.get(task.id), attempt = attempts.get(task.id), work = works.get(task.workId);
-    const live = attempt && fusionLive.get(attempt.bindingId);
-    const needsUser = live?.state === 'awaiting_user' || run.questions.some(row => row.taskId === task.id && !row.answeredAt);
+    const needsUser = task.status === 'awaiting_user' && !attempt?.endedAt
+      || run.questions.some(row => row.taskId === task.id && !row.answeredAt);
     const state = needsUser ? 'wait' : ['failed', 'unknown', 'stopped'].includes(task.status) ? 'err'
       : task.status === 'accepted' ? 'done' : ['running', 'preparing', 'submitting', 'stopping'].includes(task.status) ? 'run' : 'idle';
     return { id: task.id, workId: task.workId, goal: task.goal, status: task.status, access: task.access,
       dependsOn: task.dependsOn, workerId: task.workerId, executor: task.executor,
       app: assignment?.app, model: assignment?.model, effort: assignment?.effort, state, needsUser,
       attemptCount: task.attemptIds.length, attemptId: attempt?.id, bindingId: attempt?.bindingId,
-      updated: Math.max(attempt?.endedAt || attempt?.acceptedAt || attempt?.created || 0, task.reviews.at(-1)?.at || 0),
+      updated: Math.max(task.updated || 0, attempt?.endedAt || attempt?.acceptedAt || attempt?.created || 0, task.reviews.at(-1)?.at || 0,
+        ...task.inputs.map(row => row.deliveredAt || row.created || 0),
+        ...run.events.filter(row => row.taskId === task.id || row.data?.taskId === task.id).map(row => row.at)),
       ...(task.id === taskId ? { summary: taskProgress(attempt, work, task) } : {}) };
   });
 }
@@ -57,18 +78,26 @@ function taskProgress(attempt, work, task) {
     acceptedAt: attempt?.acceptedAt, endedAt: attempt?.endedAt, completed: attempt?.result?.completed ?? null,
     reviewedAt: attempt?.reviewedAt, delivered: work?.status === 'completed' && task.status === 'accepted' };
 }
+function mainCommandOrigin(run, action, field, id) {
+  const command = run.commands.find(row => row.action === action && row.result[field] === id);
+  if (!command) return;
+  return { ...command.native,
+    messageId: run.attempts.find(row => row.kind === 'main' && row.native?.turnId === command.native.turnId)?.native.messageId };
+}
 function taskBoard(run, tasks) {
-  return { tasks,
+  return { tasks, nativeInteractions: nativeInteractions(run),
     agents: run.agents.map(({ id, bindingId }) => ({ id, bindingId })),
     assignments: run.tasks.map(task => run.assignments.findLast(row => row.taskId === task.id)).filter(Boolean)
       .map(({ taskId, app, model, effort }) => ({ taskId, app, model, effort })),
-    dispatches: run.commands.filter(row => ['dispatch', 'self_execute', 'continue_task'].includes(row.action)).map(row => ({
+    dispatches: run.commands.filter(row => row.action === 'dispatch' || row.action === 'continue_task' && run.tasks.find(task => task.id === row.result.taskId)?.executor !== 'main').map(row => ({
       id: row.id, action: row.action, native: { ...row.native,
         messageId: run.attempts.find(attempt => attempt.kind === 'main' && attempt.native?.turnId === row.native.turnId)?.native.messageId }, at: row.appliedAt,
       tasks: (row.result.tasks || [row.result]).map(({ taskId, attemptId }) => ({ taskId, attemptId })) })),
-    questions: run.questions.filter(row => !row.answeredAt),
+    questions: run.questions.map(row => ({ ...row, native: mainCommandOrigin(run, 'ask_user', 'questionId', row.id),
+      answerNative: run.events.find(event => event.id === row.inputId)?.data.native })),
     works: run.works.map(work => ({ id: work.id, title: work.title, goal: work.goal, status: work.status, project: work.project,
-      planId: work.planId, plans: work.plans.filter(row => row.id === work.planId),
+      planId: work.planId, plans: work.plans.filter(row => row.id === work.planId).map(row => ({ ...row,
+        native: mainCommandOrigin(run, 'plan', 'planId', row.id) })),
       deliveries: work.deliveries.map((row, index) => ({ index, summary: row.summary })) })) };
 }
 function controllerView(run, tasks) {
@@ -79,7 +108,7 @@ function controllerView(run, tasks) {
     taskId: row.taskId, questionId: row.id, text: row.text.slice(0, 200) }));
   for (const work of run.works) {
     const plan = work.plans.find(row => row.id === work.planId);
-    if (plan && !plan.confirmed) attention.push({ kind: 'plan', workId: work.id, text: work.title });
+    if (plan && !plan.confirmed) attention.push({ kind: 'plan', workId: work.id, planId: plan.id, text: work.title });
   }
   for (const task of tasks.filter(row => row.needsUser)) if (!attention.some(row => row.taskId === task.id))
     attention.push({ kind: 'native', workId: task.workId, taskId: task.id, text: task.goal });
@@ -119,14 +148,9 @@ export function fusionRunView(run, view) {
   return { ...base, board: taskBoard(run, tasks), tasks: [tasks.find(row => row.id === task.id)],
     agents: agent ? [{ id: agent.id, bindingId: agent.bindingId }] : [],
     bindings: run.bindings.filter(row => row.id === bindingId),
-    attempts: attempts.map(attempt => {
-      const live = attempt === latest && fusionLive.get(attempt.bindingId);
-      return { id: attempt.id, taskId: attempt.taskId, bindingId: attempt.bindingId, app: attempt.app, model: attempt.model,
-        effort: attempt.effort, status: attempt.status, live: live ? {
-          items: (live.chat?.items || []).filter(item => item.b?.length).map(({ i, b, btnItem, actions }) => ({ i, b, btnItem, actions })),
-          requests: live.chat?.questions?.codex ? live.chat.questions.requests : [],
-          questions: live.chat?.questions?.codex ? null : live.chat?.questions, state: live.state } : null };
-    }) };
+    attempts: attempts.map(attempt => ({ id: attempt.id, taskId: attempt.taskId, bindingId: attempt.bindingId,
+      app: attempt.app, model: attempt.model, effort: attempt.effort, status: attempt.status })) };
+
 }
 function fusionView(message, kind = 'config') {
   return { kind: message.view || kind, subscriptionId: message.subscriptionId || message.requestId,

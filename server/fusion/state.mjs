@@ -90,9 +90,18 @@ export function newFusionAttempt(controller, task, assignment, kind = 'task') {
     kind, app: assignment?.app || controller.main.app, model: assignment?.model || controller.main.model,
     effort: assignment?.effort ?? controller.main.effort, created: Date.now(), status: 'queued', submission: 'not_submitted', bindingId: '',
     native: null, acceptedAt: null, endedAt: null, result: null, usage: null, baseline: null, changes: null };
+  if (kind === 'main') attempt.workExecutions = [];
   controller.attempts.push(attempt);
   if (task) { task.attemptIds.push(attempt.id); task.status = 'queued'; }
   return attempt;
+}
+export function fusionAttemptWorkIds(controller, attempt) {
+  if (attempt.kind !== 'main') return attempt.workId ? [attempt.workId] : [];
+  return [...new Set([attempt.workId, ...(attempt.workExecutions || []).map(row => row.workId),
+    ...controller.commands.filter(row => row.native.turnId === attempt.native?.turnId)
+      .map(row => row.result.workId || controller.tasks.find(task => task.id === row.result.taskId)?.workId),
+    ...controller.events.filter(row => attempt.eventIds?.includes(row.id)).map(row => row.data.workId),
+  ].filter(Boolean))];
 }
 export function fusionSummary(controller) {
   return { id: controller.id, computer: controller.computer, title: controller.title, status: controller.status,

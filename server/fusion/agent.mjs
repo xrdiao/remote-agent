@@ -143,7 +143,7 @@ export class FusionAgent {
     const context = await this.carrierFor(controller, app, controller.project,
       app === controller.main.app ? main?.windowId || controller.main.windowId || '' : '');
     try {
-      if (context.native.threadId) {
+      if (context.native.threadId && app !== 'codex') {
         await this.call(context, `nativeSessionInfo(${JSON.stringify(app)}, ${JSON.stringify(context.native.threadId)}, 'bind', ${JSON.stringify(context.leaseId)})`);
         context.pinned = app === 'cursor';
       }
@@ -204,7 +204,7 @@ export class FusionAgent {
   }
   async workerBinding(controller, task, assignment) {
     const agent = controller.agents.find(row => row.id === task.workerId), work = controller.works.find(row => row.id === task.workId);
-    const binding = controller.bindings.find(row => row.id === agent.bindingId && row.app === assignment.app);
+    const binding = controller.bindings.find(row => row.id === agent.bindingId && row.app === assignment.app && row.project.id === work.project.id);
     if (binding) return binding;
     const main = controller.bindings.find(row => row.id === controller.main.bindingId);
     return this.createBinding(controller, agent, assignment.app, work.project, 'worker', { title: `Fusion · ${task.goal}`,
@@ -347,6 +347,7 @@ export class FusionAgent {
   async nativeAction(controller, attemptId, action) {
     const attempt = controller.attempts.find(row => row.id === attemptId);
     if (!attempt || attempt.bindingId !== action.bindingId) throw new Error('请求不属于这个任务 Binding');
+    if (attempt.endedAt) throw new Error('该次执行已结束，不能处理其它执行的原生交互');
     const binding = controller.bindings.find(row => row.id === attempt.bindingId), context = await this.openBinding(controller, binding);
     try {
       if (binding.app === 'codex' && action.kind === 'codexRequest')

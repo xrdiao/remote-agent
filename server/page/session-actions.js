@@ -347,7 +347,21 @@
         manager.threadExecution.executeDynamicToolCall = bridge.dispatch;
         managers.set(manager, bridge);
       }
-      bridge.threads.set(id, new Set(name));
+      bridge.threads.set(id, new Set(name.names));
+      const client = manager.requestClient;
+      const clients = window.__remoteAgentFusionRequests ||= new WeakMap();
+      let requests = clients.get(client);
+      if (!requests) {
+        requests = { original: client.sendRequest, threads: new Map() };
+        client.sendRequest = function(method, params, ...options) {
+          const authorization = (method === 'turn/start' || method === 'turn/steer') && requests.threads.get(params.threadId);
+          return requests.original.call(this, method, authorization ? { ...params,
+            additionalContext: { ...params.additionalContext, ra_fusion_user_authorization: authorization },
+          } : params, ...options);
+        };
+        clients.set(client, requests);
+      }
+      requests.threads.set(id, name.authorization);
       return true;
     }
     if (action === 'unbindTools' && app === 'codex') {
@@ -357,6 +371,12 @@
       if (!bridge.threads.size) {
         manager.threadExecution.executeDynamicToolCall = bridge.original;
         window.__remoteAgentNativeTools.delete(manager);
+      }
+      const client = manager.requestClient, requests = window.__remoteAgentFusionRequests.get(client);
+      requests.threads.delete(id);
+      if (!requests.threads.size) {
+        client.sendRequest = requests.original;
+        window.__remoteAgentFusionRequests.delete(client);
       }
       return true;
     }

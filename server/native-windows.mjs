@@ -142,7 +142,7 @@ export class NativeWindow {
     this.cdp.on('Runtime.executionContextsCleared', () => {
       this.contexts.clear();
       for (const view of this.conversations.values())
-        for (const listener of view.listeners) listener(new Error('原生页面已重载，需要核对后台会话与轮次'));
+        for (const listener of [...view.listeners, ...view.management]) listener(new Error('原生页面已重载，需要核对后台会话与轮次'));
       if (!this.win) return;
       this.stopWatch?.();
       this.observer?.close();
@@ -202,21 +202,25 @@ export class NativeWindow {
   subscribe(changed, context = null, owner = null) {
     if (context) {
       const view = this.conversationView(context);
-      view.listeners.add(changed);
+      const listeners = owner === 'fusion-control' ? view.management : view.listeners;
+      listeners.add(changed);
       if (!view.watching) {
         const observer = view.observer = new NativeCdp(this.cdp.wsUrl);
         view.watching = cdpRead.run(null, () => watchChat(observer, () => {
-          if (!view.listeners.size) return;
+          if (!view.listeners.size && !view.management.size) return;
           view.revision++;
-          this.readReceipts().catch(() => {});
-          this.readConversation(context).catch(() => {});
+          withOperation(null, () => { for (const listener of view.management) listener(); });
+          if (view.listeners.size) {
+            this.readReceipts().catch(() => {});
+            this.readConversation(context).catch(() => {});
+          }
         }, false, context)).then(stop => { view.stop = stop; }, error => {
-          withOperation(null, () => { for (const listener of view.listeners) listener(error); });
+          withOperation(null, () => { for (const listener of [...view.listeners, ...view.management]) listener(error); });
         });
       }
       return () => {
-        view.listeners.delete(changed);
-        if (!view.listeners.size) {
+        listeners.delete(changed);
+        if (!view.listeners.size && !view.management.size) {
           const watching = view.watching;
           watching?.then(() => { view.stop?.(); view.observer?.close(); });
           this.conversations.delete(JSON.stringify([context.host, context.threadId]));
@@ -274,7 +278,7 @@ export class NativeWindow {
   }
   conversationView(context) {
     const key = JSON.stringify([context.host, context.threadId]);
-    if (!this.conversations.has(key)) this.conversations.set(key, { revision: 0, at: 0, listeners: new Set() });
+    if (!this.conversations.has(key)) this.conversations.set(key, { revision: 0, at: 0, listeners: new Set(), management: new Set() });
     return this.conversations.get(key);
   }
   async readConversation(context, fresh = false) {
@@ -303,7 +307,7 @@ export class NativeWindow {
     }).finally(() => {
       view.reading = null;
       if (view.listeners.size && revision !== view.revision) this.readConversation(context).catch(() => {});
-      if (!view.listeners.size && this.conversations.get(JSON.stringify([context.host, context.threadId])) === view)
+      if (!view.listeners.size && !view.management.size && this.conversations.get(JSON.stringify([context.host, context.threadId])) === view)
         this.conversations.delete(JSON.stringify([context.host, context.threadId]));
     });
     return awaitCdpRead(view.reading);

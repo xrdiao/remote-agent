@@ -190,20 +190,24 @@ test('input audits are explicit reads and a late audit cannot reopen a closed ta
   h.reply(audit, { inputs: [], assignments: [] });
   assert.equal(h.run('fusionAudits.size'), 0); assert.equal(h.context.sheetKind, '');
 });
-test('native task controls submit only the selected Attempt and fields from the Fusion surface', () => {
+test('native main-conversation controls submit only their own Attempt and card fields when two requests coexist', () => {
   const h = viewFixture();
-  h.run("readFusionView('computer-one','r','task',{taskId:'t1'})");
-  const request = h.sent.at(-1); h.reply(request, { id: 'r', bindings: [] });
-  h.sheet.querySelectorAll = () => [{ dataset: { nativeRequest: 'approval', fusionField: '0' }, value: 'selected draft' },
-    { dataset: { nativeRequest: 'other-task', fusionField: '0' }, value: 'other draft' }];
-  const button = { dataset: { fusionNative: 'codexRequest', attempt: 'selected-attempt', binding: 'selected-binding', nativeRequest: 'approval', n: '1' },
-    closest: () => ({ dataset: { fusionComputer: 'computer-one', fusionRun: 'r' } }) };
-  for (const listener of h.listeners.get('click')) listener({ target: { closest: () => button } });
-  const message = h.sent.at(-1);
-  assert.equal(message.t, 'fusionNative'); assert.equal(message.runId, 'r'); assert.equal(message.attemptId, 'selected-attempt');
-  assert.equal(message.action.bindingId, 'selected-binding');
-  assert.deepEqual(JSON.parse(JSON.stringify(message.action.fields)), [{ n: 0, value: 'selected draft' }]);
-  assert.equal(h.sent.some(row => row.t === 'click' || row.t === 'send'), false);
+  h.sheet.querySelectorAll = () => assert.fail('native fields must come from their own main card');
+  const cards = ['first','second'].map(name => ({ dataset: { fusionComputer:'computer-one',fusionRun:'r' },
+    querySelectorAll: () => [{dataset:{nativeRequest:'approval',fusionField:'0'},value:name+' draft'},
+      {dataset:{nativeRequest:'unrelated',fusionField:'0'},value:'foreign draft'}] }));
+  for (const [index, card] of cards.entries()) {
+    const name = index ? 'second' : 'first';
+    const button = {dataset:{fusionNative:'codexRequest',attempt:name+'-attempt',binding:name+'-binding',nativeRequest:'approval',n:'1'},
+      closest: () => card};
+    for (const listener of h.listeners.get('click')) listener({target:{closest:()=>button}});
+    const message=h.sent.at(-1);
+    assert.equal(message.t,'fusionNative');assert.equal(message.runId,'r');assert.equal(message.attemptId,name+'-attempt');
+    assert.equal(message.action.bindingId,name+'-binding');
+    assert.deepEqual(JSON.parse(JSON.stringify(message.action.fields)),[{n:0,value:name+' draft'}]);
+  }
+  assert.equal(h.sent.filter(row=>row.t==='fusionNative').length,2);
+  assert.equal(h.sent.some(row=>row.t==='click'||row.t==='send'),false);
 });
 test('refreshing selected task controls preserves native fields, caret, scroll and the matching open audit', () => {
   const h = viewFixture();

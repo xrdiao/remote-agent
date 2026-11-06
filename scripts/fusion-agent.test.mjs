@@ -6,6 +6,58 @@ import { FusionAgent } from '../server/fusion/agent.mjs';
 import { NativeCdp, nativeWindow } from '../server/native-windows.mjs';
 import { fixture } from './fusion-fixture.mjs';
 import { helpersCall, PAGE_SRC } from '../server/page/build.mjs';
+import { FUSION_TOOLS, fusionAutonomyContext } from '../server/fusion/control.mjs';
+import { FusionController } from '../server/fusion/controller.mjs';
+
+test('Fusion reads the Codex model catalog without loading the ordinary conversation history', async () => {
+  const {run}=fixture(),agent=new FusionAgent(),calls=[];
+  const context={app:'codex',page:{id:'project-window'},native:{threadId:'ordinary-thread',host:''}};
+  agent.carrierFor=async()=>context;
+  agent.close=async value=>{assert.equal(value,context);calls.push('close');};
+  agent.call=async(_context,code)=>{
+    assert.equal(code,'modelItemsFast(true)');calls.push(code);
+    return [{id:'current-model',label:'Current model',efforts:[{label:'low'}]}];
+  };
+  const snapshot=await agent.capabilities(run,'codex');
+  assert.equal(snapshot.models[0].model,'current-model');
+  assert.deepEqual(calls,['modelItemsFast(true)','close']);
+  assert.equal(context.pinned,undefined);
+});
+
+test('the next actual native user turn answers its sole preceding Fusion question without another model request or plan approval', () => {
+  const h = fixture(), workId = h.create(); h.plan(workId, true);
+  const questionId = h.apply({ action: 'ask_user', workId, question: 'Use the displayed scope?', options: ['Yes', 'No'] }).questionId;
+  h.run.attempts.push({ kind: 'main', origin: 'events', acceptedAt: 5, native: { threadId: 'main-thread', turnId: 'native-turn' } });
+  h.run.observedMainTurns.push('native-turn', 'native-reply');
+  const native = { threadId: 'main-thread', turnId: 'native-reply', messageId: 'user-reply' };
+  h.run.attempts.push({ kind: 'main', origin: 'user', acceptedAt: 10, native });
+  h.run.events.push({ id: 'native-user-event', type: 'user_input', at: 11,
+    data: { text: '可以，但子模型改为Sol', native }, deliveredTo: native.turnId });
+  const controller = new FusionController({ run: h.run, agent: { call: () => assert.fail('model or native action') } });
+  const count = h.run.events.length; controller.acknowledgeUserAnswers();
+  const question = h.run.questions.find(row => row.id === questionId);
+  assert.equal(question.answer, '可以，但子模型改为Sol'); assert.equal(question.answeredAt, 11);
+  assert.equal(question.inputId, 'native-user-event'); assert.equal(h.run.events.length, count);
+  assert.equal(h.run.events.at(-1).data.questionId, questionId); assert.equal(h.run.events.at(-1).data.workId, workId);
+  assert.equal(h.run.works[0].plans[0].confirmed, false);
+  const revision = h.run.revision; controller.acknowledgeUserAnswers(); assert.equal(h.run.revision, revision);
+});
+test('multiple pending questions, event-generated turns and other-thread messages do not guess an answer target', () => {
+  for (const mode of ['multiple', 'events', 'other-thread', 'not-next']) {
+    const h = fixture(), workId = h.create(); h.plan(workId);
+    h.apply({ action: 'ask_user', workId, question: 'Question one' });
+    if (mode === 'multiple') h.apply({ action: 'ask_user', workId, question: 'Question two' });
+    h.run.attempts.push({ kind: 'main', origin: 'events', acceptedAt: 5, native: { threadId: 'main-thread', turnId: 'native-turn' } });
+    if (mode === 'not-next') h.run.attempts.push({ kind: 'main', origin: 'events', acceptedAt: 7,
+      native: { threadId: 'main-thread', turnId: 'intervening-turn' } });
+    h.run.observedMainTurns.push('native-turn', ...(mode === 'not-next' ? ['intervening-turn'] : []), 'reply-turn');
+    const native = { threadId: mode === 'other-thread' ? 'ordinary-thread' : 'main-thread', turnId: 'reply-turn', messageId: 'reply' };
+    h.run.attempts.push({ kind: 'main', origin: mode === 'events' ? 'events' : 'user', acceptedAt: 10, native });
+    h.run.events.push({ id: 'reply-event', type: 'user_input', at: 11, data: { text: 'Yes', native } });
+    new FusionController({ run: h.run }).acknowledgeUserAnswers();
+    assert(h.run.questions.every(row => !row.answeredAt), mode); assert.equal(h.run.events[0].data.questionId, undefined);
+  }
+});
 
 test('history reads use the actual project carrier and original child thread while execution keeps its recorded window', async () => {
   const { run } = fixture(), original = { id: 'worker', role: 'worker', app: 'codex', project: run.project,
@@ -120,6 +172,44 @@ test('a stale stop cannot interrupt a newer native round', async () => {
   agent.call = async () => { calls++; return { current: true, turnId: 'new-turn' }; };
   await assert.rejects(agent.stop(attempt.id), /不能停止其他执行/); assert.equal(calls, 1);
 });
+test('a retained Worker exposes native interaction only on its active task and marks that task for attention', async t => {
+  const { fusionLive } = await import('../server/fusion/state.mjs');
+  const { fusionRunView, fusionControllerView } = await import('../server/fusion/owner.mjs');
+  const h = fixture(), workId = h.create(); h.plan(workId);
+  h.apply({ action: 'dispatch', workId, tasks: [h.task('old')] });
+  h.apply({ action: 'dispatch', workId, tasks: [h.task('current')], input: JSON.stringify({
+    current: { workerId: h.run.agents[0].id, reason: 'Continue established context' },
+  }) });
+  const binding = { id: 'retained-' + h.run.id, role: 'worker', app: 'codex', threadId: 'retained-thread', windowId: 'shared', project: h.project };
+  h.run.bindings.push(binding); h.run.agents[0].bindingId = binding.id;
+  Object.assign(h.run.attempts[0], { bindingId: binding.id, status: 'accepted', endedAt: 20, result: { text: 'Old result', completed: true } });
+  h.run.tasks[0].status = 'accepted';
+  Object.assign(h.run.attempts[1], { bindingId: binding.id, status: 'running', acceptedAt: 30,
+    native: { threadId: binding.threadId, turnId: 'current-turn' } });
+  h.run.tasks[1].status = 'awaiting_user';
+  const request = { id: 'current-request', text: 'Current approval', fields: [], buttons: [{ label: 'accept' }] };
+  fusionLive.set(binding.id, { state: { waiting: 'approval-request' }, chat: { items: [], questions: { codex: true, requests: [request] } } });
+  t.after(() => fusionLive.delete(binding.id));
+  const old = fusionRunView(h.run, { kind: 'task', taskId: 'old' }), current = fusionRunView(h.run, { kind: 'task', taskId: 'current' });
+  assert.equal(old.attempts[0].live, undefined); assert.equal(old.tasks[0].needsUser, false); assert.equal(old.tasks[0].state, 'done');
+  assert.deepEqual(current.board.nativeInteractions[0].requests, [request]);
+  assert(!old.board.nativeInteractions.some(row => row.taskId === 'old-task'));
+  assert.equal(current.tasks[0].needsUser, true); assert.equal(current.tasks[0].state, 'wait');
+  assert.deepEqual(fusionControllerView(h.run).overview.attention.map(row => row.taskId), ['current']);
+});
+test('an ended Attempt cannot act on a retained thread current request and does not open a native connection', async () => {
+  const h = fixture(), binding = { id: 'retained', app: 'codex', threadId: 'retained-thread' };
+  h.run.bindings.push(binding);
+  h.run.attempts.push({ id: 'old', bindingId: binding.id, endedAt: 20 }, { id: 'current', bindingId: binding.id, endedAt: null });
+  const agent = new FusionAgent({ publish() {} }), calls = [];
+  agent.openBinding = async () => { calls.push('open'); return {}; };
+  agent.close = async () => calls.push('close');
+  agent.call = async (_context, code) => { calls.push(code); return true; };
+  const action = { bindingId: binding.id, kind: 'codexRequest', id: 'current-request', n: 0, fields: [] };
+  await assert.rejects(agent.nativeAction(h.run, 'old', action), /该次执行已结束/); assert.deepEqual(calls, []);
+  assert.equal(await agent.nativeAction(h.run, 'current', action), true);
+  assert.equal(calls[0], 'open'); assert.match(calls[1], /codexRequestAction\("current-request", 0, \[\]\)/); assert.equal(calls[2], 'close');
+});
 test('default page helper calls preserve their ordinary context while Fusion calls carry an explicit native identity', () => {
   assert.equal(helpersCall('activeThread()'), `${PAGE_SRC}.activeThread()`);
   const scoped = helpersCall('activeThread()', { app: 'codex', threadId: 'worker', host: 'local' });
@@ -129,20 +219,69 @@ test('single-conversation tool routing leaves every ordinary tool dispatch on th
   const source = fs.readFileSync(new URL('../server/page/session-actions.js', import.meta.url), 'utf8');
   const start = source.indexOf('  const nativeSessionAction ='), end = source.indexOf('  const nativeSessionConfirm', start);
   const ordinary = [], replies = [], main = { requests: [] };
-  const manager = { threadExecution: { executeDynamicToolCall: request => ordinary.push(request) },
+  const manager = { requestClient: { sendRequest() {} }, threadExecution: { executeDynamicToolCall: request => ordinary.push(request) },
     updateConversationState: (_id, edit) => edit(main), getDynamicToolRequest: (_id, id) => main.requests.find(row => row.id === id)?.params,
     replyWithDynamicToolResponse: (_id, id, result) => { replies.push({ id, result }); main.requests.splice(main.requests.findIndex(row => row.id === id), 1); } };
   const original = manager.threadExecution.executeDynamicToolCall;
   const context = vm.createContext({ Map, Set, WeakMap, Error, window: {}, remoteContext: { host: '' }, nativeValue: value => value,
     codexConversationManager: () => manager, codexHistoryScopes: () => [] });
   vm.runInContext(source.slice(start, end) + '\nthis.action = nativeSessionAction;', context);
-  await context.action('codex', 'main', 'bindTools', ['ra_fusion']);
+  await context.action('codex', 'main', 'bindTools', { names: ['ra_fusion'], authorization: fusionAutonomyContext({ id: 'workbench' }) });
   manager.threadExecution.executeDynamicToolCall({ id: 0, method: 'item/tool/call', params: { threadId: 'main', turnId: 't', tool: 'ra_fusion' } });
   manager.threadExecution.executeDynamicToolCall({ id: 1, params: { threadId: 'ordinary', tool: 'ra_fusion' } });
   manager.threadExecution.executeDynamicToolCall({ id: 2, params: { threadId: 'main', tool: 'ordinary-tool' } });
   assert.equal(main.requests.length, 1); assert.equal(main.requests[0].id, 0); assert.equal(ordinary.length, 2);
   await context.action('codex', 'main', 'toolReply', { requestId: 0, result: { success: true } }); assert.equal(replies[0].id, 0);
   await context.action('codex', 'main', 'unbindTools'); assert.equal(manager.threadExecution.executeDynamicToolCall, original);
+});
+test('native request context authorizes only registered Fusion mains and preserves ordinary calls, payloads and shared-client cleanup', async () => {
+  const source = fs.readFileSync(new URL('../server/page/session-actions.js', import.meta.url), 'utf8');
+  const start = source.indexOf('  const nativeSessionAction ='), end = source.indexOf('  const nativeSessionConfirm', start);
+  const calls = [], response = Promise.resolve({ accepted: true });
+  const client = { sendRequest(method, params, ...options) { assert.equal(this, client); calls.push({ method, params, options }); return response; } };
+  const original = client.sendRequest, manager = () => ({ requestClient: client, threadExecution: { executeDynamicToolCall() {} } });
+  const one = manager(), two = manager();
+  const context = vm.createContext({ Map, Set, WeakMap, window: {}, remoteContext: { host: '' },
+    codexConversationManager: id => id === 'main-one' ? one : two, codexHistoryScopes: () => [] });
+  vm.runInContext(source.slice(start, end) + '\nthis.action = nativeSessionAction;', context);
+  const authOne = fusionAutonomyContext({ id: 'workbench-one' }), authTwo = fusionAutonomyContext({ id: 'workbench-two' });
+  await context.action('codex', 'main-one', 'bindTools', { names: ['ra_fusion'], authorization: authOne });
+  const wrapped = client.sendRequest;
+  await context.action('codex', 'main-two', 'bindTools', { names: ['ra_fusion'], authorization: authTwo });
+  assert.equal(client.sendRequest, wrapped);
+  const input = [{ type: 'text', text: '只给需求 @file.js', text_elements: [{ range: { start: 5, end: 13 }, placeholder: '@file.js' }] },
+    { type: 'localImage', path: '/project/screenshot.png' }];
+  for (const method of ['turn/start', 'turn/steer']) {
+    const params = { threadId: 'main-one', input, clientUserMessageId: 'native-message', expectedTurnId: 'native-turn',
+      model: 'user-model', effort: 'high', additionalContext: { original: { kind: 'application', value: 'native context' } } };
+    const before = structuredClone(params), options = { timeoutMs: 1234 };
+    assert.equal(client.sendRequest(method, params, options), response);
+    const sent = calls.at(-1);
+    assert.equal(sent.params.input, input); assert.equal(sent.options[0], options); assert.deepEqual(params, before);
+    assert.deepEqual(JSON.parse(JSON.stringify(sent.params)), { ...before, additionalContext: { ...before.additionalContext, ra_fusion_user_authorization: authOne } });
+  }
+  for (const [method, threadId] of [['turn/start', 'ordinary'], ['turn/steer', 'child'], ['thread/resume', 'main-one']]) {
+    const params = { threadId, input }; assert.equal(client.sendRequest(method, params), response); assert.equal(calls.at(-1).params, params);
+  }
+  await context.action('codex', 'main-one', 'unbindTools');
+  const detached = { threadId: 'main-one', input }; client.sendRequest('turn/start', detached); assert.equal(calls.at(-1).params, detached);
+  client.sendRequest('turn/start', { threadId: 'main-two', input });
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1).params.additionalContext.ra_fusion_user_authorization)), authTwo);
+  await context.action('codex', 'main-two', 'unbindTools'); assert.equal(client.sendRequest, original);
+});
+test('connecting a persistent controller registers its own workbench authorization without submitting a turn', async () => {
+  const { run } = fixture(), calls = [], context = { native: { threadId: 'main-thread' }, cdp: {},
+    source: { subscribe: () => () => calls.push({ action: 'unsubscribe' }) } };
+  const agent = { openBinding: async (_run, binding) => { assert.equal(binding.id, run.main.bindingId); return context; },
+    async call(_context, code) { return new Function('nativeSessionAction', 'return ' + code)((app, thread, action, value) => calls.push({ app, thread, action, value })); },
+    close: async value => assert.equal(value, context) };
+  const controller = new FusionController({ run, agent }); controller.check = async () => {};
+  await controller.start(); await controller.start();
+  assert.equal(calls.length, 1); assert.equal(calls[0].action, 'bindTools'); assert.equal(calls[0].thread, 'main-thread');
+  assert.deepEqual(calls[0].value, { names: FUSION_TOOLS.map(tool => tool.name), authorization: fusionAutonomyContext(run) });
+  assert.equal(calls[0].value.authorization.kind, 'application'); assert(calls[0].value.authorization.value.includes(run.id));
+  assert(Buffer.byteLength(JSON.stringify(calls[0].value.authorization)) < 700);
+  await controller.close(); assert.deepEqual(calls.slice(1).map(call => call.action), ['unsubscribe', 'unbindTools']);
 });
 test('an unmounted Codex worker reads its native history rather than a different mounted conversation', async () => {
   const source = fs.readFileSync(new URL('../server/page/chat-extract.js', import.meta.url), 'utf8');
@@ -159,6 +298,26 @@ test('an unmounted Codex worker reads its native history rather than a different
   const result = await context.read('', 'attempt-1', []);
   assert.equal(result.threadId, 'worker'); assert.equal(result.id, 'user'); assert.equal(result.turnId, 'native-turn');
   assert.equal(result.accepted, true); assert.equal(result.ended, true); assert.equal(result.completed, true); assert.equal(result.text, 'worker-result');
+});
+test('Fusion native end status is independent of partial history and interrupted execution is never completed', async () => {
+  const source = fs.readFileSync(new URL('../server/page/chat-extract.js', import.meta.url), 'utf8');
+  const start = source.indexOf('  const codexFusionTurn ='), end = source.indexOf('  // One Codex turn', start);
+  for (const status of ['complete', 'completed', 'interrupted', 'failed', 'inProgress']) {
+    const turn = { status, partial: true, items: [{ type: 'user-message', clientUserMessageId: 'user', message: 'attempt' },
+      { type: 'assistant-message', completed: true, content: 'Actual final text' }] };
+    const context = vm.createContext({ Map, Set, remoteContext: { app: 'codex', threadId: 'worker' }, codexThread: () => 'worker',
+      codexVisibleThread: () => 'ordinary', codexNativeManager: () => ({ getConversation: () => ({}) }),
+      codexHistoryState: () => ({ thread: 'worker', scopes: [], entries: [{ turnId: 'native-turn', nativeTurn: { status,
+        ...(status === 'failed' ? { error: { message: 'Original native failure' } } : {}) } }] }),
+      doc: { querySelectorAll: () => assert.fail('ordinary conversation read') }, codexStoredTurn: () => turn,
+      codexTurnItems: () => [], codexSendState: () => ({ runs: [{ id: 'native-turn' }] }) });
+    vm.runInContext(source.slice(start, end) + '\nthis.read = codexFusionTurn;', context);
+    const result = await context.read();
+    assert.equal(result.ended, status !== 'inProgress', status);
+    assert.equal(result.completed, ['complete', 'completed'].includes(status), status);
+    if (status === 'interrupted') assert.match(result.error, /中断/);
+    if (status === 'failed') assert.equal(result.error, 'Original native failure');
+  }
 });
 test('a failed Devin native request ends its own Fusion round after transient messages are removed', async () => {
   const source = fs.readFileSync(new URL('../server/page/chat-extract.js', import.meta.url), 'utf8');
@@ -228,4 +387,30 @@ test('attempt evidence keeps the scoped preexisting file hash without attaching 
   assert.equal(before.diff, ''); assert.equal(after.diff, '');
   assert.notEqual(before.files[0].sha256, after.files[0].sha256);
   assert.equal(before.files[0].path, relative);
+});
+
+test('Fusion management notifications share the native watch but do not wait for or change ordinary snapshot subscribers', async () => {
+  const source=fs.readFileSync(new URL('../server/native-windows.mjs',import.meta.url),'utf8');
+  const section=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));
+  const watches=[],trace=[];let release,closed=0,stopped=0;
+  const body=new Promise(resolve=>release=resolve);
+  const context=vm.createContext({Map,Set,JSON,Date,Promise,
+    NativeCdp:class {close(){closed++;}},cdpRead:{run:(_owner,fn)=>Promise.resolve().then(fn)},awaitCdpRead:p=>p,
+    watchChat:async(_cdp,changed,_shared,native)=>{watches.push({changed,native});return ()=>{stopped++;};},
+    withOperation:(_owner,fn)=>fn(),helpersCall:s=>s});
+  const Window=vm.runInContext('(class {'+section('  subscribe(changed','  async preview(')
+    +section('  conversationView(context)','  async read(fresh')+'})',context);
+  const window=Object.assign(new Window(),{conversations:new Map(),cdp:{wsUrl:'owned-test',evaluate:async()=>{trace.push('body');return body;}},
+    connect:async()=>{},readReceipts:async()=>trace.push('receipts'),composerCall:async()=>null});
+  const native={app:'codex',threadId:'main',host:''};
+  const stopManagement=window.subscribe(()=>trace.push('management'),native,'fusion-control');
+  await window.conversationView(native).watching;watches[0].changed();await new Promise(r=>setImmediate(r));
+  assert.deepEqual(trace,['management']);assert.equal(watches.length,1);
+  const stopOrdinary=window.subscribe(()=>trace.push('ordinary'),native);
+  watches[0].changed();await new Promise(r=>setImmediate(r));
+  assert.deepEqual(trace,['management','management','receipts','body']);
+  stopManagement();release({items:[],_nativeState:{run:{status:'idle'}}});
+  await window.conversationView(native).reading;assert.equal(trace.at(-1),'ordinary');
+  assert.equal(window.conversations.size,1);assert.equal(closed,0);
+  stopOrdinary();await new Promise(r=>setImmediate(r));assert.equal(stopped,1);assert.equal(closed,1);assert.equal(window.conversations.size,0);
 });

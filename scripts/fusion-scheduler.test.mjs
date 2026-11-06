@@ -3,6 +3,16 @@ import test from 'node:test';
 import { FusionScheduler } from '../server/fusion/scheduler.mjs';
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
+test('one native Worker is sequential while another Worker in the same software remains parallel', async () => {
+  const scheduler = new FusionScheduler(), started = [], release = {};
+  const submit = (id, workerKey) => scheduler.submit({ runId: 'controller', app: 'codex', workerKey, ready: () => true,
+    execute: () => { started.push(id); return new Promise(resolve => { release[id] = resolve; }); } });
+  const first = submit('first', 'worker-one'), followup = submit('followup', 'worker-one'), independent = submit('independent', 'worker-two');
+  await flush(); assert.deepEqual(started, ['first', 'independent']); assert.equal(scheduler.workerSlots.size, 2);
+  release.first(); await first; await flush(); assert.deepEqual(started, ['first', 'independent', 'followup']);
+  release.followup(); release.independent(); await Promise.all([followup, independent]); assert.equal(scheduler.workerSlots.size, 0);
+});
+
 test('independent jobs run concurrently regardless of software or project', async () => {
   const scheduler = new FusionScheduler(), started = [], finish = new Map();
   const job = (id, app, projectKey) => scheduler.submit({ runId: id, app, projectKey, access: 'read', ready: () => true,

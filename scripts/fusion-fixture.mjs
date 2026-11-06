@@ -18,9 +18,11 @@ export function fixture() {
   run.capabilities = ['codex', 'cursor', 'devin'].map(app => nativeCostSnapshot(app,
     [{ id: app === 'cursor' ? 'Auto' : 'cheap', label: app === 'cursor' ? 'Auto' : 'Cheap', efforts: app === 'cursor' ? [] : ['low'] }], null, { host: '', windowId: 'shared' }, 10));
   fusionRuns.test = { current: run.id, runs: [run] };
-  let request = 0;
-  const native = () => ({ threadId: 'main-thread', turnId: 'native-turn', requestId: request++, decisionId: crypto.randomUUID() });
-  const apply = action => applyFusionControl(run, action, native());
+  let requestSerial = 0;
+  const native = () => ({ threadId: 'main-thread', turnId: 'native-turn', requestId: requestSerial++, decisionId: crypto.randomUUID() });
+  const request = action => action.action === 'dispatch' && Array.isArray(action.tasks) && action.input === undefined
+    ? { ...action, input: JSON.stringify(Object.fromEntries(action.tasks.map(task => [task.id, { workerId: null, reason: 'Fixture explicitly selects an independent new worker' }]))) } : action;
+  const apply = action => applyFusionControl(run, request(action), native());
   const cost = app => ({ selfExecute: 'unknown; short context', delegate: 'unknown; low cost', overhead: 'planning, review, context transfer and rework included',
     reason: 'relative total cost suits the task', sources: [run.capabilities.find(row => row.app === app).id] });
   const create = () => apply({ action: 'create_work', title: 'Work', goal: 'Read and verify' }).workId;
@@ -28,5 +30,5 @@ export function fixture() {
     criteria: [{ id: 'C1', text: 'Evidence available' }], requiresConfirmation });
   const task = (id, app = 'codex', dependsOn = []) => ({ id, goal: `Task ${id}`, scope: ['.'], access: 'read', acceptance: ['Evidence'], dependsOn,
     execution: { app, model: app === 'cursor' ? 'Auto' : 'cheap', effort: app === 'cursor' ? '' : 'low', input: 'Read only, report evidence' }, cost: cost(app) });
-  return { run, apply, native, cost, create, plan, task, project };
+  return { run, apply, request, native, cost, create, plan, task, project };
 }
