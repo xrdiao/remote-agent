@@ -301,7 +301,7 @@ export class FusionRunner {
         this.schedule(attempt.id, attempt.submission !== 'not_submitted');
       }
     }
-    if (this.run.status === 'recovering') this.run.status = 'waiting';
+    if (this.run.status === 'recovering') { this.run.status = 'waiting'; this.run.blockedReason = ''; }
     this.publish(); this.wake();
   }
 }

@@ -25,6 +25,32 @@ function scenario({ readWorkspace = true } = {}) {
   const control = (action, native) => runner.control(h.request(action), native);
   return { ...h, runner, control, agent, scheduler, controller, calls, pending, stops };
 }
+test('successful recovery clears the current block while preserving an ended native interruption', async () => {
+  const h=scenario(),attempt={id:'historical-main',kind:'main',status:'failed',submission:'accepted',acceptedAt:5,endedAt:10,
+    native:{threadId:'main-thread',turnId:'old-turn',messageId:'old-message'},result:{text:'',completed:false,error:'Codex interrupted'}};
+  h.run.attempts.push(attempt);h.run.status='recovering';h.run.blockedReason=attempt.result.error;
+  const before=structuredClone(attempt);
+  await h.runner.recover();await flush();
+  assert.equal(h.run.status,'waiting');assert.equal(h.run.blockedReason,'');
+  assert.deepEqual(h.run.attempts[0],before);assert.equal(h.calls.length,0);assert.equal(h.run.events.length,0);
+});
+test('failed recovery remains blocked and does not erase the actual connection failure', async () => {
+  const h=scenario();h.run.status='recovering';h.run.blockedReason='Old interruption';
+  h.controller.start=async()=>{throw new Error('Native connection is still unavailable');};
+  await h.runner.recover().catch(error=>h.runner.blockMain(error));await flush();
+  assert.equal(h.run.status,'blocked');assert.equal(h.run.blockedReason,'Native connection is still unavailable');
+  assert.equal(h.calls.length,0);assert.equal(h.run.attempts.length,0);
+});
+test('an unconfirmed native main turn stays unknown and blocked instead of clearing its error or resending', async () => {
+  const h=scenario();h.run.status='recovering';h.run.blockedReason='Prior uncertainty';
+  h.run.attempts.push({id:'unknown-main',kind:'main',origin:'user',status:'unknown',submission:'accepted',endedAt:null,
+    native:{threadId:'main-thread',turnId:'unknown-turn',messageId:'unknown-message'}});
+  h.agent.call=async()=>({id:''});h.controller.context={};
+  await h.runner.recover();await flush();
+  assert.equal(h.run.status,'blocked');assert.match(h.run.blockedReason,/无法确认/);
+  assert.equal(h.run.attempts[0].status,'unknown');assert.equal(h.run.attempts[0].endedAt,null);
+  assert.equal(h.calls.length,0);assert.equal(h.run.attempts.length,1);
+});
 test('reused Worker waits for its native result while independent work continues, including unknown-result recovery', async () => {
   const h = scenario(), workId = h.create(); h.plan(workId); h.controller.idle = async () => false;
   await h.control({ action: 'dispatch', workId, tasks: [h.task('A')] }, h.native()); await flush();

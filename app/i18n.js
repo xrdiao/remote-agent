@@ -5,6 +5,10 @@ const I18N = (() => {
   const lang = saved === 'zh' || saved === 'en' ? saved : /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
 
   const EN = {
+    "交互详情": "Interaction details",
+    "具体原因": "Details",
+    "查看工作台": "View workbench",
+    "工作台读取失败": "Could not read workbench",
     "一个主 Agent，持续管理多项工作": "One main agent, ongoing work",
     "确认方案": "Confirm plan",
     "主 Agent 提问": "Main agent question",

@@ -137,6 +137,38 @@ function viewFixture() {
   { authed: true, computer: { id: request.computer } });
   return { ...h, painted, opened, sheet, reply };
 }
+test('task-strip clicks use the actual workbench and computer rather than the composite scroll key', () => {
+  const h = fixture();
+  Object.assign(h.context, { currentComputer: () => ({id:'computer-one'}), sheetKind:'',
+    openSheet: kind => {h.context.sheetKind=kind;} });
+  h.run("activeFusionController={id:'actual-run',computer:'computer-two',tasks:{total:0}};");
+  const strip=h.context.$('fusionTaskStrip');strip.scrollLeft=0;strip.getBoundingClientRect=()=>({left:0});
+  h.run('paintFusionTaskStrip()');
+  assert.equal(strip.dataset.fusionScroll,'computer-two|actual-run');
+  assert.equal(strip.dataset.fusionRun,'actual-run');assert.equal(strip.dataset.fusionComputer,'computer-two');
+  const button={disabled:false,dataset:{fusionRelations:'selected-task'},closest:()=>strip};
+  for(const listener of h.listeners.get('click'))listener({target:{closest:()=>button}});
+  const reads=h.sent.filter(message=>message.t==='fusionRead'&&message.view==='tasks');
+  assert.equal(reads.length,1);assert.equal(reads[0].runId,'actual-run');assert.equal(reads[0].computer,'computer-two');
+  assert.equal(h.sent.some(message=>message.t==='attach'||message.t==='send'||message.t==='fusionContent'),false);
+});
+test('idle Fusion renders no permanent status row while a current block exposes only its own recovery actions', () => {
+  const h=fixture();
+  Object.assign(h.context,{fusionEnsureBoard(){},fitFusionLayout(){}});
+  const strip=h.context.$('fusionTaskStrip');strip.scrollLeft=0;strip.getBoundingClientRect=()=>({left:0});
+  h.run("activeFusionController={id:'run',computer:'computer-two',status:'waiting',blockedReason:'Historical interruption',tasks:{total:0}};");
+  for(const state of ['ready','waiting','running','completed']){
+    h.run(`activeFusionController.status=${JSON.stringify(state)};paintFusionRun()`);
+    assert.equal(h.context.$('fusionBar').hidden,true);assert.equal(h.context.$('fusionBar').innerHTML,'');
+  }
+  assert.equal(h.run('activeFusionController.blockedReason'),'Historical interruption');
+  h.run("activeFusionController.status='blocked';paintFusionRun()");
+  const bar=h.context.$('fusionBar');assert.equal(bar.hidden,false);
+  assert.equal(bar.dataset.fusionRun,'run');assert.equal(bar.dataset.fusionComputer,'computer-two');
+  assert.match(bar.innerHTML,/Historical interruption/);assert.match(bar.innerHTML,/data-fusion-resume/);
+  assert.match(bar.innerHTML,/data-fusion-new-input="run"/);assert.match(bar.innerHTML,/data-fusion-relations=""/);
+  assert.equal(h.sent.length,0);
+});
 test('enabled Fusion goes straight to common navigation; unconfigured Fusion reads only configuration', () => {
   const h = viewFixture();
   h.run("fusionWorkspaces.set('computer-one',{runs:[{id:'ready',main:{bindingId:'native'}},{id:'new',main:{bindingId:''}}]})");
