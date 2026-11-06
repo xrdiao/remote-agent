@@ -7,6 +7,12 @@ const I18N = (() => {
   const EN = {
     "一个主 Agent，持续管理多项工作": "One main agent, ongoing work",
     "确认方案": "Confirm plan",
+    "主 Agent 提问": "Main agent question",
+    "待你确认方案": "Awaiting your plan confirmation",
+    "待你回答": "Awaiting your answer",
+    "前往主对话": "Go to main conversation",
+    "方案已确认": "Plan confirmed",
+    "已回复": "Answered",
     "个工作台": "workbenches",
     "展开电脑": "Expand computer",
     "收起电脑": "Collapse computer",

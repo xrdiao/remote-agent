@@ -1258,7 +1258,14 @@ body.term .appAvatar::after { display: none; }
 .fusion-focused { outline: 2px solid var(--accent); outline-offset: 2px; }
 .fusion-work-items { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 18px; }
 .fusion-work-items > summary { font-size: 12px; color: var(--fg-3); cursor: pointer; }
-.fusion-dispatch { width: 100%; padding: 14px 16px; border: 1px solid var(--line-2); border-radius: var(--r-xl); box-shadow: var(--shadow-1); background: var(--s1); margin: 12px 0 18px; }
+.fusion-dispatch, .fusion-interaction { width: 100%; padding: 14px 16px; border: 1px solid var(--line-2); border-radius: var(--r-xl); box-shadow: var(--shadow-1); background: var(--s1); margin: 12px 0 18px; }
+.fusion-interaction-pending { border-color: var(--warn); }
+.fusion-interaction > p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.fusion-interaction > small, .fusion-answer-status { color: var(--fg-3); }
+.fusion-interaction > small { display: block; overflow-wrap: anywhere; }
+.fusion-interaction > button, .fusion-interaction details { margin-top: 12px; }
+.fusion-question-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.fusion-pending-link { width: 100%; margin-top: 10px; text-align: left; color: var(--warn); white-space: normal; }
 .fusion-dispatch-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--fg-3); font-size: 12px; }
 .fusion-dispatch-head button { color: var(--accent-text); padding: 0; background: none; font-size: 12px; }
 .fusion-dispatch-task { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; padding: 12px 0; background: none; text-align: left; white-space: normal; border-radius: 0; }
