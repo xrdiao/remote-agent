@@ -26,28 +26,85 @@ function mainOf(value) {
   if (value?.app !== 'codex') throw new Error('当前已验证的主控软件为 Codex；Cursor 和 Devin 可作为子 Agent');
   return { app: value.app, model: String(value.model || ''), effort: String(value.effort || '') };
 }
-export function fusionControllerView(run) {
-  const { app, model, effort, bindingId, windowId, preparing, error, projectTrust } = run.main;
-  return { ...fusionSummary(run), main: { app, model, effort, bindingId, windowId, preparing, error, projectTrust } };
+function taskSummaries(run, taskId) {
+  const assignments = new Map(run.assignments.map(row => [row.taskId, row]));
+  const attempts = new Map(run.attempts.filter(row => row.taskId).map(row => [row.taskId, row]));
+  const works = new Map(run.works.map(row => [row.id, row]));
+  return run.tasks.map(task => {
+    const assignment = assignments.get(task.id), attempt = attempts.get(task.id), work = works.get(task.workId);
+    const live = attempt && fusionLive.get(attempt.bindingId);
+    const needsUser = live?.state === 'awaiting_user' || run.questions.some(row => row.taskId === task.id && !row.answeredAt);
+    const state = needsUser ? 'wait' : ['failed', 'unknown', 'stopped'].includes(task.status) ? 'err'
+      : task.status === 'accepted' ? 'done' : ['running', 'preparing', 'submitting', 'stopping'].includes(task.status) ? 'run' : 'idle';
+    return { id: task.id, workId: task.workId, goal: task.goal, status: task.status, access: task.access,
+      dependsOn: task.dependsOn, workerId: task.workerId, executor: task.executor,
+      app: assignment?.app, model: assignment?.model, effort: assignment?.effort, state, needsUser,
+      attemptCount: task.attemptIds.length, attemptId: attempt?.id, bindingId: attempt?.bindingId,
+      updated: Math.max(attempt?.endedAt || attempt?.acceptedAt || attempt?.created || 0, task.reviews.at(-1)?.at || 0),
+      ...(task.id === taskId ? { summary: taskProgress(attempt, work, task) } : {}) };
+  });
 }
+function taskProgress(attempt, work, task) {
+  const before = attempt?.baseline, after = attempt?.changes;
+  // A directory snapshot has no per-file hashes for tracked descendants. Do not present a guessed count.
+  const files = before?.available && after?.available && ![...before.files, ...after.files].some(row => row.directory)
+    ? after.files.filter(row => {
+      const old = before.files.find(value => value.path === row.path);
+      return old && (row.exists !== old.exists || row.sha256 !== old.sha256);
+    }).length : null;
+  return { text: (attempt?.result?.error || attempt?.result?.text || '').slice(0, 400), files,
+    durationMs: attempt?.durationMs ?? null, submission: attempt?.submission || 'not_submitted',
+    acceptedAt: attempt?.acceptedAt, endedAt: attempt?.endedAt, completed: attempt?.result?.completed ?? null,
+    reviewedAt: attempt?.reviewedAt, delivered: work?.status === 'completed' && task.status === 'accepted' };
+}
+function taskBoard(run, tasks) {
+  return { tasks,
+    agents: run.agents.map(({ id, bindingId }) => ({ id, bindingId })),
+    assignments: run.tasks.map(task => run.assignments.findLast(row => row.taskId === task.id)).filter(Boolean)
+      .map(({ taskId, app, model, effort }) => ({ taskId, app, model, effort })),
+    dispatches: run.commands.filter(row => ['dispatch', 'self_execute', 'continue_task'].includes(row.action)).map(row => ({
+      id: row.id, action: row.action, native: { ...row.native,
+        messageId: run.attempts.find(attempt => attempt.kind === 'main' && attempt.native?.turnId === row.native.turnId)?.native.messageId }, at: row.appliedAt,
+      tasks: (row.result.tasks || [row.result]).map(({ taskId, attemptId }) => ({ taskId, attemptId })) })),
+    questions: run.questions.filter(row => !row.answeredAt),
+    works: run.works.map(work => ({ id: work.id, title: work.title, goal: work.goal, status: work.status, project: work.project,
+      planId: work.planId, plans: work.plans.filter(row => row.id === work.planId),
+      deliveries: work.deliveries.map((row, index) => ({ index, summary: row.summary })) })) };
+}
+function controllerView(run, tasks) {
+  const { app, model, effort, bindingId, windowId, preparing, error, projectTrust } = run.main;
+  const counts = { run: 0, wait: 0, done: 0, err: 0, idle: 0 };
+  for (const task of tasks) counts[task.state]++;
+  const attention = run.questions.filter(row => !row.answeredAt).map(row => ({ kind: 'question', workId: row.workId,
+    taskId: row.taskId, questionId: row.id, text: row.text.slice(0, 200) }));
+  for (const work of run.works) {
+    const plan = work.plans.find(row => row.id === work.planId);
+    if (plan && !plan.confirmed) attention.push({ kind: 'plan', workId: work.id, text: work.title });
+  }
+  for (const task of tasks.filter(row => row.needsUser)) if (!attention.some(row => row.taskId === task.id))
+    attention.push({ kind: 'native', workId: task.workId, taskId: task.id, text: task.goal });
+  const current = tasks.find(row => row.needsUser) || tasks.find(row => row.state === 'run') || tasks.find(row => row.state === 'err');
+  const state = attention.length || run.status === 'awaiting_user' ? 'wait'
+    : ['blocked', 'stopped'].includes(run.status) ? 'err' : counts.run || ['running', 'recovering', 'stopping'].includes(run.status) ? 'run'
+      : run.works.length && run.works.every(row => row.status === 'completed') ? 'done' : counts.err ? 'err' : 'idle';
+  return { ...fusionSummary(run), main: { app, model, effort, bindingId, windowId, preparing, error, projectTrust },
+    overview: { state, counts, apps: [...new Set([app, ...tasks.map(row => row.app)].filter(Boolean))], attention,
+      current: current ? { text: current.goal, status: current.status, needsUser: current.needsUser } : null } };
+}
+export function fusionControllerView(run) { return controllerView(run, taskSummaries(run)); }
 export function fusionRunView(run, view) {
-  const base = { ...fusionControllerView(run), revision: run.revision };
+  const tasks = taskSummaries(run, view.kind === 'task' ? view.taskId : undefined);
+  const base = { ...controllerView(run, tasks), revision: run.revision };
   if (view.kind === 'config') return { ...base, budget: run.budget,
     capabilities: [...new Set(run.capabilities.map(row => row.app))].map(app => {
       const row = run.capabilities.find(row => row.app === app);
       return { app, models: row.models };
     }) };
   if (view.kind === 'input') return { ...base, questions: run.questions.filter(row => row.id === view.questionId) };
-  if (view.kind === 'tasks') return { ...base,
-    agents: run.agents.map(({ id }) => ({ id })),
-    assignments: run.tasks.map(task => run.assignments.findLast(row => row.taskId === task.id)).filter(Boolean)
-      .map(({ taskId, app }) => ({ taskId, app })),
-    tasks: run.tasks.map(({ id, workId, goal, status, executor, dependsOn }) => ({ id, workId, goal, status, executor, dependsOn })),
-    questions: run.questions.filter(row => !row.answeredAt),
-    works: run.works.map(work => ({ id: work.id, title: work.title, goal: work.goal, status: work.status, project: work.project,
-      planId: work.planId, plans: work.plans.filter(row => row.id === work.planId),
-      deliveries: work.deliveries.map((row, index) => ({ index, summary: row.summary })) })) };
+  if (view.kind === 'tasks') return { ...base, ...taskBoard(run, tasks) };
   const task = run.tasks.find(row => row.id === view.taskId);
+  if (view.kind === 'inputs') return { inputs: task.inputs,
+    assignments: run.assignments.filter(row => row.taskId === task.id).map(({ id, input, created }) => ({ id, input, created })) };
   if (view.kind === 'reviews') return { reviews: task.reviews };
   if (view.kind === 'attempt') {
     const { prompt, beforeIds, ...attempt } = run.attempts.find(row => row.id === view.attemptId);
@@ -59,8 +116,7 @@ export function fusionRunView(run, view) {
   const agent = run.agents.find(row => row.id === task.workerId);
   const attempts = run.attempts.filter(row => row.taskId === task.id), latest = attempts.at(-1);
   const bindingId = latest?.bindingId || agent?.bindingId;
-  return { ...base, tasks: [{ id: task.id, workId: task.workId, goal: task.goal, status: task.status, access: task.access,
-    dependsOn: task.dependsOn, workerId: task.workerId, inputs: task.inputs }],
+  return { ...base, board: taskBoard(run, tasks), tasks: [tasks.find(row => row.id === task.id)],
     agents: agent ? [{ id: agent.id, bindingId: agent.bindingId }] : [],
     bindings: run.bindings.filter(row => row.id === bindingId),
     attempts: attempts.map(attempt => {

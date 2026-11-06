@@ -1,7 +1,7 @@
 import { FusionAgent, fusionWorkspaceSnapshot } from './agent.mjs';
 import { FusionController } from './controller.mjs';
 import { fusionScheduler } from './scheduler.mjs';
-import { applyFusionControl, fusionTaskPrompt, fusionEventView } from './control.mjs';
+import { applyFusionControl, fusionTaskPrompt } from './control.mjs';
 import { fusionRuns, fusionWorkers, fusionEvent, newFusionAttempt, publishFusion,
   commitFusion, NATIVE_UNSETTLED } from './state.mjs';
 
@@ -82,8 +82,7 @@ export class FusionRunner {
       if (pendingMain) return;
       const attempt = newFusionAttempt(this.run, null, null, 'main');
       attempt.origin = 'events'; attempt.eventIds = events.map(row => row.id); attempt.bindingId = this.run.main.bindingId;
-      attempt.prompt = `RA 工作台待处理事件。先 read_workspace，按归属处理；不要重复已完成的执行。\n本次输入：${attempt.id}\n`
-        + JSON.stringify(events.map(event => fusionEventView(this.run, event)));
+      attempt.prompt = `Fusion 有 ${events.length} 条待处理事件。调用 ra_fusion(action='read_workspace') 读取正文并按归属处理；结果未知的执行不重发。\n本次输入：${attempt.id}`;
       this.sendingEvents = true; this.publish();
       this.scheduler.submit({ lane: 'main', runId: this.run.id, app: this.run.main.app,
         attemptId: attempt.id, ready: () => !this.run.stopRequested,
@@ -159,10 +158,7 @@ export class FusionRunner {
     Object.assign(attempt, { status: run.stopRequested ? 'stopped' : turn.error || !turn.completed ? 'failed' : 'ended', endedAt: attempt.endedAt || Date.now(),
       usage: turn.usage || attempt.usage,
       result: { text: turn.text || '', completed: !!turn.completed, error: turn.error || '' }, durationMs: Date.now() - attempt.acceptedAt });
-    for (const id of attempt.eventIds || []) {
-      const event = run.events.find(row => row.id === id);
-      if (event) event.deliveredTo = attempt.native?.turnId || attempt.id;
-    }
+    const unread = run.events.some(event => attempt.eventIds?.includes(event.id) && !event.deliveredTo);
     for (const self of run.attempts.filter(row => row.kind === 'task' && row.native?.turnId === attempt.native?.turnId && !row.endedAt)) {
       const task = run.tasks.find(row => row.id === self.taskId), work = run.works.find(row => row.id === self.workId);
       this.completed(self.id, { text: turn.text, completed: turn.completed, error: turn.error, stopped: run.stopRequested,
@@ -178,7 +174,8 @@ export class FusionRunner {
         fusionEvent(run, 'delivery_pending', { workId: work.id, reason: '交付候选后有新事实或本轮没有成功完成，需要重新核对' });
       } else { work.deliveries.push({ ...candidate, endedAt: attempt.endedAt, mainAttemptId: attempt.id }); work.status = 'completed'; work.candidate = null; }
     }
-    if (!run.stopRequested && (turn.error || !turn.completed)) this.blockMain(new Error(turn.error || '主控原生轮次被中断或未完成，等待用户继续'));
+    if (!run.stopRequested && (turn.error || !turn.completed || unread)) this.blockMain(new Error(turn.error
+      || (unread ? '主 Agent 本轮未读取待处理事件，请核对后继续' : '主控原生轮次被中断或未完成，等待用户继续')));
     else if (!run.stopRequested) { run.status = 'waiting'; run.blockedReason = ''; }
     this.publish(); this.wake();
   }

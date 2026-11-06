@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { applyFusionControl } from '../server/fusion/control.mjs';
+import { applyFusionControl, fusionTaskPrompt } from '../server/fusion/control.mjs';
 import { fixture } from './fusion-fixture.mjs';
 
 test('one persistent main manages multiple work items; zero workers can propose a native-turn delivery', () => {
@@ -89,10 +89,49 @@ test('workspace and task evidence indexes exclude binary patches and long replie
   }
   const event = workspace.events[0];
   assert.equal(event.id, 'pending-image'); assert.equal(event.data.attemptId, attempt.id);
-  assert.equal(event.data.evidence.result.text.characters, attempt.result.text.length);
-  assert.equal(event.data.evidence.changes.diff.files[0].binary, true);
+  assert.deepEqual(event.data.evidence.read, { action: 'read_task', taskId: 'image', attemptId: attempt.id });
+  assert.equal('changes' in event.data.evidence, false);
+  assert.equal(task.attempts[0].result.text.characters, attempt.result.text.length);
+  assert.equal(task.attempts[0].changes.diff.files[0].binary, true);
   assert.equal(task.attempts[0].baseline.files[0].sha256, 'before');
   assert.deepEqual(h.run, before); // Reading and summarizing do not acknowledge, accept or replace evidence.
+});
+
+test('workspace summaries keep complete pending user input and retrieve full task and model details on demand', () => {
+  const h = fixture(), workId = h.create(); h.plan(workId);
+  h.apply({ action: 'dispatch', workId, tasks: [h.task('A')] });
+  const task = h.run.tasks[0], text = '完整用户补充，不截断。'.repeat(1000);
+  task.inputs.push({ id: 'user-supplement', text, deliveredAt: null });
+  h.run.events.push({ id: 'user-supplement', type: 'user_input', data: { workId, taskId: task.id, text }, deliveredTo: '' });
+  const before = structuredClone(h.run), workspace = h.apply({ action: 'read_workspace' });
+  assert.equal(workspace.events[0].data.text, text);
+  assert.deepEqual(workspace.tasks[0].pendingInputIds, ['user-supplement']);
+  assert.equal('inputs' in workspace.tasks[0], false); assert.equal('reviews' in workspace.tasks[0], false);
+  assert.equal('models' in workspace.capabilities[0], false);
+  assert.equal(workspace.capabilities[0].modelCount, h.run.capabilities[0].models.length);
+  assert.deepEqual(h.apply({ action: 'list_models', app: 'codex' }), h.run.capabilities[0]);
+  assert.deepEqual(h.apply({ action: 'read_task', taskId: task.id }).task, task);
+  assert.deepEqual(h.run, before);
+});
+test('child requests keep authorized scope, acceptance, exact new input and rework without embedding unrelated plans or dependency replies', () => {
+  const h = fixture(), workId = h.create(); h.plan(workId);
+  h.apply({ action: 'dispatch', workId, tasks: [h.task('A'), h.task('B', 'codex', ['A'])] });
+  const [upstream, attempt] = h.run.attempts, task = h.run.tasks[1], assignment = h.run.assignments[1];
+  upstream.result = { text: 'large-upstream-report'.repeat(10000), completed: true };
+  h.run.tasks[0].status = 'accepted';
+  task.inputs.push({ id: 'old', text: 'old unrelated supplement', deliveredAt: 1 }, { id: 'new', text: '完整的新补充\n保留换行', deliveredAt: null });
+  attempt.inputIds = ['new'];
+  task.reviews.push({ verdict: 'accept', reason: 'old review' }, { verdict: 'rework', reason: 'Recheck evidence', evidence: [] });
+  assignment.input = '上游截图位于 _shots/phone.png；只修改 README 的相应图片。';
+  h.run.works[0].plans[0].summary = 'unrelated-whole-plan'.repeat(1000);
+  const before = structuredClone(h.run), prompt = fusionTaskPrompt(h.run, task, attempt), payload = JSON.parse(prompt.slice(prompt.indexOf('{')));
+  assert.deepEqual(payload.scope, task.scope); assert.deepEqual(payload.acceptance, task.acceptance); assert.equal(payload.access, task.access);
+  assert.equal(payload.input, assignment.input); assert.equal(payload.planId, assignment.planId);
+  assert.deepEqual(payload.inputs, [{ id: 'new', text: '完整的新补充\n保留换行' }]);
+  assert.deepEqual(payload.review, task.reviews.at(-1));
+  assert.deepEqual(payload.dependencies, [{ id: 'A', goal: h.run.tasks[0].goal, status: 'accepted' }]);
+  assert(!prompt.includes('large-upstream-report')); assert(!prompt.includes('unrelated-whole-plan')); assert(!prompt.includes('old unrelated supplement'));
+  assert.equal(payload.attemptId, attempt.id); assert.deepEqual(h.run, before);
 });
 
 test('read_task pages exact reply and text diffs by Attempt, while binary evidence stays a file reference', () => {
@@ -165,6 +204,50 @@ test('explicit audit reads preserve exact full diffs, native identity and delive
   assert.deepEqual(audit.result, h.attempt.result); assert.equal(audit.events[0].data.changes.diff, h.attempt.changes.diff);
   assert.deepEqual(fusionRunView(h.run, { kind: 'delivery', workId: h.workId, index: 0 }), h.run.works[0].deliveries[0]);
   assert.deepEqual(fusionRunView(h.run, { kind: 'reviews', taskId: 'view-task' }).reviews, h.run.tasks[0].reviews);
+});
+test('UI summaries expose real agent assignments and dispatch identity without loading task inputs or evidence', t => {
+  const h = largeViewFixture(); t.after(() => fusionLive.delete(h.bindingId));
+  const task = h.run.tasks[0], command = h.run.commands.find(row => row.action === 'dispatch');
+  task.inputs.push({ id: 'supplement', text: 'private-input-'.repeat(10000) });
+  h.run.assignments[0].input = 'assignment-input-'.repeat(10000);
+  h.run.attempts.push({ id: 'main-observation', kind: 'main', native: { ...command.native, messageId: 'real-human-message' } });
+  const before = structuredClone(h.run), summary = fusionControllerView(h.run), board = fusionRunView(h.run, { kind: 'tasks' });
+  const detail = fusionRunView(h.run, { kind: 'task', taskId: task.id });
+  assert.equal(summary.overview.state, 'wait'); assert.equal(summary.overview.attention[0].taskId, task.id);
+  assert.equal(board.tasks[0].workerId, task.workerId); assert.equal(board.tasks[0].model, h.run.assignments[0].model);
+  assert.equal(board.tasks[0].access, task.access); assert.equal(board.dispatches[0].native.messageId, 'real-human-message');
+  assert.equal(board.dispatches[0].tasks[0].attemptId, h.attempt.id);
+  for (const value of [summary, board, detail]) {
+    const raw = JSON.stringify(value);
+    assert(!raw.includes('private-input-')); assert(!raw.includes('assignment-input-')); assert(!raw.includes('+exact diff'));
+  }
+  assert.equal(detail.tasks[0].inputs, undefined); assert.equal(detail.tasks[0].summary.text, 'new result');
+  assert.equal(board.tasks[0].summary, undefined); assert.deepEqual(h.run, before);
+});
+test('explicit input reads return complete original data and leave the selected task subscription in place', t => {
+  const h = largeViewFixture(); t.after(() => fusionLive.delete(h.bindingId));
+  h.run.tasks[0].inputs.push({ id: 'input', text: 'exact-input'.repeat(5000), deliveredAt: null });
+  const viewer = { emit() {} }, read = view => FUSION_OWNER.fusionRead.call(viewer, {
+    runId: h.run.id, view, taskId: 'view-task', requestId: view,
+  });
+  read('task'); const before = structuredClone(h.run); read('inputs');
+  assert.equal(viewer.fusionDetail.view.subscriptionId, 'task');
+  const value = fusionRunView(h.run, { kind: 'inputs', taskId: 'view-task' });
+  assert.deepEqual(value.inputs, h.run.tasks[0].inputs); assert.equal(value.assignments[0].input, h.run.assignments[0].input);
+  assert.deepEqual(h.run, before);
+});
+test('task progress separates receipt, generation and delivery and does not guess directory change counts', t => {
+  const h = largeViewFixture(); t.after(() => fusionLive.delete(h.bindingId));
+  const attempt = h.run.attempts.at(-1);
+  Object.assign(attempt, { submission: 'accepted', acceptedAt: 10, endedAt: 20, durationMs: 10,
+    result: { text: '', error: 'native failure', completed: false },
+    baseline: { available: true, files: [{ path: 'a.md', exists: true, sha256: 'before' }] },
+    changes: { available: true, files: [{ path: 'a.md', exists: true, sha256: 'after' }] } });
+  const selected = () => fusionRunView(h.run, { kind: 'task', taskId: 'view-task' }).tasks[0].summary;
+  assert.equal(selected().files, 1); assert.equal(selected().submission, 'accepted');
+  assert.equal(selected().completed, false); assert.equal(selected().delivered, false); assert.equal(selected().durationMs, 10);
+  attempt.changes.files.push({ path: '.', exists: true, directory: true });
+  assert.equal(selected().files, null);
 });
 test('detail subscriptions follow the requested view; audit reads and obsolete closes cannot replace it', t => {
   const h = largeViewFixture(), messages = [], viewer = { deviceId: 'test', emit: message => messages.push(message) };

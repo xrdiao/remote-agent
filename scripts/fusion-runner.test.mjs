@@ -4,7 +4,7 @@ import { FusionRunner } from '../server/fusion/runner.mjs';
 import { FusionScheduler } from '../server/fusion/scheduler.mjs';
 import { fusionEvent, fusionLive } from '../server/fusion/state.mjs';
 import { fixture, flush } from './fusion-fixture.mjs';
-function scenario() {
+function scenario({ readWorkspace = true } = {}) {
   const h = fixture(), scheduler = new FusionScheduler(), calls = [], pending = new Map(), stops = [];
   const agent = { async execute(run, id, prompt, recovering) {
     const attempt = run.attempts.find(row => row.id === id);
@@ -13,7 +13,11 @@ function scenario() {
     attempt.native ||= { threadId: attempt.kind === 'main' ? 'main-thread' : id, turnId: id, messageId: id };
     const task = run.tasks.find(row => row.id === attempt.taskId);
     if (task) task.status = 'running';
-    return new Promise((resolve, reject) => pending.set(id, { resolve: result => resolve({ text: 'native evidence', completed: true, native: attempt.native, ...result }), reject }));
+    const readEvents = attempt.kind === 'main' && readWorkspace ? h.apply({ action: 'read_workspace' }).events.map(event => event.id) : [];
+    return new Promise((resolve, reject) => pending.set(id, { resolve: result => {
+      runner.acknowledge({ turnId: attempt.native.turnId }, readEvents);
+      resolve({ text: 'native evidence', completed: true, native: attempt.native, ...result });
+    }, reject }));
   }, async stop(id) { stops.push(id); } };
   const controller = { async start() {}, async idle() { return true; }, async stop(attempt) { stops.push(attempt.id); } };
   const runner = new FusionRunner(h.run, { scheduler, agent, controller });
@@ -49,7 +53,9 @@ test('a completed child retains full evidence once and wakes the main with refer
   assert.equal(event.data.attemptId, child.id); assert(!event.deliveredTo);
   h.run.status = 'waiting'; h.runner.wake(); await flush();
   const main = h.calls[1]; assert(main.prompt.length < 10000); assert(!main.prompt.includes('patch-data'));
-  assert(main.prompt.includes(child.id)); assert(main.prompt.includes('image.png'));
+  assert(main.prompt.includes(main.id)); assert(!main.prompt.includes('image.png'));
+  const index = h.apply(h.apply({ action: 'read_workspace' }).events[0].data.evidence.read);
+  assert(index.attempts[0].changes.diff.files[0].header.includes('image.png'));
   assert(!event.deliveredTo); assert.equal(h.run.tasks[0].status, 'awaiting_review');
   h.runner.wake(); await flush(); assert.equal(h.calls.length, 2);
   h.pending.get(main.id).resolve(); await flush();
@@ -100,13 +106,25 @@ test('native management replies transmit evidence references through the existin
   const reply = replies[0]; assert.equal(reply.result.success, true);
   assert(reply.result.contentItems[0].text.length < 10000); assert(!h.run.events[0].deliveredTo);
   const value = JSON.parse(reply.result.contentItems[0].text);
-  action = value.events[0].data.evidence.result.text.read;
+  action = value.events[0].data.evidence.read;
   // These fields are already registered on existing native main conversations.
-  assert.deepEqual(Object.keys(action).sort(), ['action', 'attemptId', 'input', 'taskId']);
+  assert.deepEqual(Object.keys(action).sort(), ['action', 'attemptId', 'taskId']);
   release(true); await first; assert.equal(h.run.events[0].deliveredTo, 'native-main');
   const second = driver.read(); await flush(); release(true); await second;
-  assert.equal(JSON.parse(replies[1].result.contentItems[0].text).text, 'exact native reply');
+  action = JSON.parse(replies[1].result.contentItems[0].text).attempts[0].result.text.read;
+  assert.deepEqual(Object.keys(action).sort(), ['action', 'attemptId', 'input', 'taskId']);
+  const third = driver.read(); await flush(); release(true); await third;
+  assert.equal(JSON.parse(replies[2].result.contentItems[0].text).text, 'exact native reply');
   assert.equal(h.run.attempts.length, 1); assert.equal(child.status, 'awaiting_review'); assert.equal(h.calls.length, 0);
+});
+test('a wake notification omits user text and an unread completed main turn preserves events without spinning', async () => {
+  const h = scenario({ readWorkspace: false }), text = '完整用户原文'.repeat(10000);
+  fusionEvent(h.run, 'user_input', { text }, 'unread-input'); h.runner.wake(); await flush();
+  const main = h.calls[0]; assert(main.prompt.length < 300); assert(!main.prompt.includes(text));
+  assert(main.prompt.includes(main.id)); assert.equal(h.apply({ action: 'read_workspace' }).events[0].data.text, text);
+  h.pending.get(main.id).resolve(); await flush(); h.runner.wake(); await flush();
+  assert.equal(h.run.events[0].deliveredTo, ''); assert.equal(h.run.status, 'blocked'); assert.equal(h.calls.length, 1);
+  assert.equal(h.run.attempts[0].result.completed, true); // Native completion and inbox delivery remain separate facts.
 });
 test('dependent tasks wait for actual acceptance, not just generation completion', async () => {
   const h = scenario(), workId = h.create(); h.plan(workId);

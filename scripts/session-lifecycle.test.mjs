@@ -403,7 +403,7 @@ test('one native read resolves each Codex host manager once for all background r
 test('native Fusion attachments from another paired entry carry the same summary while ordinary chat packets keep their native transcript only', async () => {
   const { fusionControllerView } = await import('../server/fusion/owner.mjs');
   const sent = [], run = { id: 'controller', computer: 'computer', title: 'Fusion', status: 'waiting', project: { name: 'project' },
-    main: { bindingId: 'main', app: 'codex', model: 'model', effort: 'low' }, tier: 'balanced', works: [], tasks: [],
+    main: { bindingId: 'main', app: 'codex', model: 'model', effort: 'low' }, tier: 'balanced', works: [], tasks: [], assignments: [], questions: [],
     bindings: [{ id: 'main', app: 'codex', threadId: 'main-thread' }], attempts: [{ changes: { diff: 'large-diff'.repeat(100000) } }] };
   const context = vm.createContext({ captureOperation: () => false, cdpRead: { getStore: () => null }, AGENT_REGISTRY: {},
     fusionControllerView, allFusionRuns: () => [run], chatForWire: value => value });
@@ -418,6 +418,52 @@ test('native Fusion attachments from another paired entry carry the same summary
   assert.equal('fusionRun' in sent[1].chat, false); assert.equal(sent[1].chat.items[0].t, 'native body');
   emit.call(session, { t: 'attached', app: 'codex', threadId: 'ordinary-thread' });
   assert.equal(sent[2].fusionController, null);
+});
+test('a fresh native main first screen persists its current Fusion window without resuming work or rewriting attempts', async () => {
+  const { fixture, flush } = await import('./fusion-fixture.mjs');
+  const { rememberFusionMainWindow } = await import('../server/fusion/state.mjs');
+  const { fusionControllerView } = await import('../server/fusion/owner.mjs');
+  const { run } = fixture(), binding = run.bindings[0], cdp = {}, saved = [];
+  run.main.windowId = binding.windowId = 'closed-window'; run.stopRequested = true; run.status = 'stopping';
+  run.attempts.push({ id: 'unknown-native', status: 'unknown', native: { turnId: 'old-turn' }, bindingId: binding.id });
+  run.events.push({ id: 'pending-result', deliveredTo: '' });
+  const facts = JSON.stringify([run.attempts, run.events, run.stopRequested, run.status]);
+  const context = vm.createContext({ captureOperation: () => false, cdpRead: { getStore: () => null }, AGENT_REGISTRY: {},
+    fusionControllerView, allFusionRuns: () => [run], chatForWire: value => value, rememberFusionMainWindow,
+    rememberSelection: (_device, selection) => saved.push(selection) });
+  const emit = vm.runInContext(`({${fragment(read('server/session.mjs'), '  emit(obj) {', '\n  liveRead(cdp, sel) {')}}).emit`, context);
+  const session = { app: 'codex', cdp, sel: 1, deviceId: 'paired-entry', targetId: 'codex', windowId: 'current-window', threadId: binding.threadId,
+    bindingReady: true, selectionKey: () => 'current-selection', liveRead: () => true, currentRoots: async () => [run.project],
+    connectionMessages: new Map(), client: { readyState: 1, send() {} } };
+  emit.call(session, { t: 'attached', app: 'codex', threadId: binding.threadId, sel: 'current-selection', ready: true,
+    chat: { thread: binding.threadId, items: [] } });
+  await flush();
+  assert.equal(saved.length, 1); assert.equal(binding.windowId, 'current-window'); assert.equal(run.main.windowId, 'current-window');
+  assert.equal(JSON.stringify([run.attempts, run.events, run.stopRequested, run.status]), facts);
+  const revision = run.revision;
+  rememberFusionMainWindow(run, saved[0], [run.project]);
+  assert.equal(run.revision, revision);
+  for (const change of [{ app: 'cursor' }, { threadId: 'ordinary-thread' }])
+    rememberFusionMainWindow(run, { ...saved[0], windowId: 'unrelated', ...change }, [run.project]);
+  rememberFusionMainWindow(run, { ...saved[0], windowId: 'unrelated' }, [{ root: run.project.root, host: 'other-host' }]);
+  assert.equal(binding.windowId, 'current-window'); assert.equal(run.revision, revision);
+});
+test('cached, incomplete and superseded first screens do not move a Fusion main binding', async () => {
+  const { fixture, flush } = await import('./fusion-fixture.mjs');
+  const { fusionControllerView } = await import('../server/fusion/owner.mjs');
+  const { run } = fixture(); let rootsReady, confirmations = 0;
+  const context = vm.createContext({ captureOperation: () => false, cdpRead: { getStore: () => null }, AGENT_REGISTRY: {},
+    fusionControllerView, allFusionRuns: () => [run], chatForWire: value => value,
+    rememberFusionMainWindow: () => confirmations++, rememberSelection() {} });
+  const emit = vm.runInContext(`({${fragment(read('server/session.mjs'), '  emit(obj) {', '\n  liveRead(cdp, sel) {')}}).emit`, context);
+  const session = { app: 'codex', cdp: {}, sel: 1, windowId: 'new-window', threadId: 'main-thread', bindingReady: false,
+    selectionKey: () => 'selection', liveRead: () => true, currentRoots: () => new Promise(resolve => { rootsReady = resolve; }),
+    connectionMessages: new Map(), client: { readyState: 1, send() {} } };
+  const first = { t: 'attached', app: 'codex', threadId: 'main-thread', sel: 'selection', chat: { thread: 'main-thread', items: [] } };
+  emit.call(session, first); assert.equal(rootsReady, undefined);
+  session.bindingReady = true; emit.call(session, { ...first, cached: true }); assert.equal(rootsReady, undefined);
+  emit.call(session, first); session.liveRead = () => false; rootsReady([run.project]); await flush();
+  assert.equal(confirmations, 0); assert.equal(run.bindings[0].windowId, 'shared');
 });
 test('a paired entry restores its recent shared Fusion workspace without creating or executing a run', () => {
   const run = { id: 'shared-controller', deviceId: 'creator-entry' }, saved = { current: run.id, runs: [] }, viewers = new Set();

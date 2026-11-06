@@ -54,6 +54,14 @@ export function publishFusion(controller, persist = true) {
   if (persist) saveFusionRuns();
   for (const changed of subscribers) changed(controller);
 }
+export function rememberFusionMainWindow(controller, selection, roots) {
+  const binding = controller.bindings.find(row => row.id === controller.main.bindingId);
+  if (!binding || binding.app !== selection.app || binding.threadId !== selection.threadId
+      || !roots.some(root => fusionProject(root.root, root.host || '')?.id === binding.project.id)) return;
+  if (binding.windowId === selection.windowId && controller.main.windowId === selection.windowId) return;
+  binding.windowId = controller.main.windowId = selection.windowId;
+  publishFusion(controller);
+}
 export function commitFusion(controller, edit) {
   const next = structuredClone(controller);
   const result = edit(next);

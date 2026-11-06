@@ -37,7 +37,11 @@ function harness({ sameSelection = false, count = 2 } = {}) {
       const classes = new Set();
       elements.set(id, {
         value: '', disabled: false, hidden: false, innerHTML: '', textContent: '', dataset: {}, firstChild: { textContent: '' },
-        classList: { add: key => classes.add(key), remove: key => classes.delete(key), contains: key => classes.has(key) },
+        classList: { add: key => classes.add(key), remove: key => classes.delete(key), contains: key => classes.has(key),
+          toggle: (key, on = !classes.has(key)) => { if (on) classes.add(key); else classes.delete(key); return on; } },
+        setAttribute(name, value) { this[name] = value; },
+        style: { setProperty(name, value) { this[name] = value; } },
+        getBoundingClientRect: () => ({ bottom: 56 }),
         querySelector: () => null, querySelectorAll: () => [], replaceChildren() {},
       });
     }
@@ -59,7 +63,8 @@ function harness({ sameSelection = false, count = 2 } = {}) {
     history: { replaceState() {} }, navigator: { userAgent: 'test' },
     sessionStorage: { getItem: () => null, removeItem() {} },
     store: { get: key => stored.get(key) ?? null, set: (key, value) => value == null ? stored.delete(key) : stored.set(key, value) },
-    document: Object.assign(new EventTarget(), { visibilityState: 'visible', activeElement: null, documentElement: { dataset: { theme: 'dark' } } }),
+    document: Object.assign(new EventTarget(), { visibilityState: 'visible', activeElement: null, documentElement: { dataset: { theme: 'dark' } },
+      querySelector: selector => selector === 'body > header' ? element('header') : null }),
     $: element,
     setTimeout: (fn, ms) => { const id = ++timerId; timers.set(id, { fn, ms, at: now + ms }); return id; },
     clearTimeout: id => timers.delete(id),

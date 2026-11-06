@@ -7,6 +7,38 @@ import { NativeCdp, nativeWindow } from '../server/native-windows.mjs';
 import { fixture } from './fusion-fixture.mjs';
 import { helpersCall, PAGE_SRC } from '../server/page/build.mjs';
 
+test('history reads use the actual project carrier and original child thread while execution keeps its recorded window', async () => {
+  const { run } = fixture(), original = { id: 'worker', role: 'worker', app: 'codex', project: run.project,
+    windowId: 'closed-window', threadId: 'original-worker', host: '' };
+  run.bindings.push(original);
+  const agent = new FusionAgent({ publish: () => assert.fail('history must not publish or resume') }), calls = [], carriers = [];
+  agent.carrierFor = async (_run, app, project, windowId) => {
+    carriers.push({ app, project, windowId });
+    if (windowId) throw new Error('绑定的原生窗口已关闭，实际执行结果需要核对');
+    return { app, page: { id: 'current-project-window' }, native: {}, leaseId: 'read-only-lease' };
+  };
+  agent.close = async () => calls.push('close');
+  agent.call = async (context, code, native = context.native) => {
+    calls.push({ code, threadId: native.threadId, before: native.before });
+    if (code.startsWith('nativeSessionInfo(')) return { app: 'codex', threadId: original.threadId, cwd: run.project.root, host: '' };
+    assert.equal(code, 'extract(true, [], 80)'); return { thread: native.threadId, items: [{ i: 'worker-result', t: 'Original result' }] };
+  };
+  const before = JSON.stringify(run), result = await agent.readBinding(run, original.id, true, 'earlier-cursor');
+  assert.equal(result.chat.thread, original.threadId); assert.equal(result.binding, original);
+  assert.deepEqual(carriers.map(row => row.windowId), ['']);
+  assert.equal(calls[1].threadId, original.threadId); assert.equal(calls[1].before, 'earlier-cursor'); assert.equal(calls[2], 'close');
+  assert.equal(JSON.stringify(run), before);
+  await assert.rejects(agent.openBinding(run, original), /绑定的原生窗口已关闭/);
+  assert.equal(carriers[1].windowId, 'closed-window');
+});
+test('history reads reject a child with a mismatched native project and release its connection', async () => {
+  const { run } = fixture(), agent = new FusionAgent({ publish() {} }); let closed = 0;
+  agent.carrierFor = async () => ({ app: 'codex', native: {}, leaseId: 'history' });
+  agent.call = async () => ({ app: 'codex', threadId: 'main-thread', cwd: run.project.root, host: 'different-host' });
+  agent.close = async () => closed++;
+  await assert.rejects(agent.readBinding(run, 'main'), /原生会话目录与该任务项目不一致/);
+  assert.equal(closed, 1);
+});
 test('same-software workers use the main window and other-software workers use an existing carrier', async () => {
   const h = fixture(), workId = h.create(); h.plan(workId);
   h.apply({ action: 'dispatch', workId, tasks: [h.task('A'), h.task('B', 'cursor')] });

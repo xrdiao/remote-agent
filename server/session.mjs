@@ -5,7 +5,7 @@ import { PAGE_SRC, helpersCall } from './page/build.mjs';
 import { AgentContext, appPlans } from './agent/index.mjs';
 import { resetThinkingCaches } from './agent/thinking-cache.mjs';
 import { hasLaunched, takeLaunched } from './launch.mjs';
-import { fusionViewers, savedFusion, allFusionRuns } from './fusion/state.mjs';
+import { fusionViewers, savedFusion, allFusionRuns, rememberFusionMainWindow } from './fusion/state.mjs';
 import { FUSION_OWNER, fusionControllerView } from './fusion/owner.mjs';
 import { fusionRunner } from './fusion/runner.mjs';
 import { ROUTES, SKIP, flag } from './routes.mjs';
@@ -216,6 +216,7 @@ export class Session extends AgentContext {
         this.currentRoots().then(roots => {
           if (this.bindingReady && this.liveRead(cdp, sel) && obj.sel === this.selectionKey()) {
             rememberSelection(this.deviceId, { ...selection, project: roots[0] || null });
+            if (this.fusionRun) rememberFusionMainWindow(this.fusionRun, selection, roots);
             this.rememberedSelection = obj.sel;
           }
         }).catch(() => {}).finally(() => {

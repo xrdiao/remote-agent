@@ -351,7 +351,8 @@ function paintRail() {
   const { entries, missingAgents } = windowEntries();
   entries.sort((a, b) => a.app.localeCompare(b.app));
   const collapsed = railCollapsed();
-  const sig = JSON.stringify([currentApp, mode, I18N.lang, currentComputer()?.name || '', $('dot').className, collapsed,
+  const fusion = !!currentFusionRun();
+  const sig = JSON.stringify([currentApp, fusion, mode, I18N.lang, currentComputer()?.name || '', $('dot').className, collapsed,
     entries.map(w => [w.id, w.app, appPlans[w.app] || '']), missingAgents]);
   // Latency probes only make sense where the badges render.
   const railOn = document.body.matches('.split');
@@ -361,7 +362,7 @@ function paintRail() {
   const agentRows = entries.map(w => {
     const plan = appPlans[w.app] ? `<span class="tag">${esc(appPlans[w.app])}</span>` : '';
     const label = names[w.app] || w.app;
-    return `<button class="railRow ${w.app === currentApp ? 'cur' : ''}" data-win="${esc(w.id)}" title="${esc(label)}"><span class="railLogo" data-logo="${esc(w.app)}"></span><span class="lbl">${esc(label)}</span>${plan}<span class="latency muted" data-latency="${esc(w.id)}">${latencyMarkup(w.id)}</span></button>`;
+    return `<button class="railRow ${!fusion && w.app === currentApp ? 'cur' : ''}" data-win="${esc(w.id)}" title="${esc(label)}"><span class="railLogo" data-logo="${esc(w.app)}"></span><span class="lbl">${esc(label)}</span>${plan}<span class="latency muted" data-latency="${esc(w.id)}">${latencyMarkup(w.id)}</span></button>`;
   }).join('')
     + (missingAgents.length ? `<button class="railRow" data-rail="windows" title="${esc(I18N.tr('启动未打开的 Agent'))}"><span class="railIc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></span><span class="lbl">${I18N.tr('启动未打开的 Agent')}</span></button>` : '');
   const row = (act, label, svg, cur) => `<button class="railRow${cur ? ' cur' : ''}" data-rail="${act}" title="${esc(I18N.tr(label))}"><span class="railIc">${svg}</span><span class="lbl">${I18N.tr(label)}</span></button>`;
@@ -380,6 +381,7 @@ function paintRail() {
     <div class="railComputer"><img src="logo.png" alt=""><button class="railComputerName" data-rail="computers" title="${esc(I18N.tr('切换电脑'))}">${esc(currentComputer()?.name || 'Remote Agent')}</button><span class="railDot${$('dot').classList.contains('ok') ? ' ok' : ''}"></span><button class="railToggle" data-rail="toggle" title="${I18N.tr(toggleLabel)}" aria-label="${I18N.tr(toggleLabel)}">${icRail}</button></div>
     <div class="pSec">Agent</div>
     ${agentRows}
+    <button class="railRow${fusion ? ' cur' : ''}" data-rail="fusion" title="Fusion"><span class="railLogo" data-logo="fusion"></span><span class="lbl">Fusion</span></button>
     <div class="pSec">${I18N.tr('工作区')}</div>
     ${row('agents', '项目/会话', icFolder)}
     ${supportsCapability('editor', ['cursor', 'devin', 'codex'].includes(currentApp)) ? row('editor', 'Editor', icEdit) : ''}
@@ -398,7 +400,11 @@ $('rail')?.addEventListener('click', e => {
   if (!b) return;
   if (b.dataset.win) return switchToWindow(b.dataset.win);
   const act = b.dataset.rail;
-  if (act === 'windows') { send({ t: 'windows' }); showWindows(); }
+  if (act === 'fusion') {
+    if (currentFusionRun()) { fusionPanelOpen = true; fusionPanelCollapsed = false; readFusionView(currentFusionRun().computer, currentFusionRun().id, 'tasks'); }
+    else { ovBackToBoard(); ovMove({ level: 'fusion', proj: null, open: null }); }
+  }
+  else if (act === 'windows') { send({ t: 'windows' }); showWindows(); }
   else if (act === 'computers') showComputers();
   else if (act === 'agents') openAgentList();
   else if (act === 'editor') startEditor();
@@ -1247,6 +1253,8 @@ function showViewportTrace() {
 
 let usageTimer = null;
 function showMainMenu() {
+  const fusionRun = activeFusionController || currentApp === 'fusion' ? currentFusionRun() : null;
+  const fusionItem = fusionRun ? `<button class="opt" data-fusion-config data-computer="${esc(fusionRun.computer)}" data-fusion-run="${esc(fusionRun.id)}"><span class="lbl">${I18N.tr(fusionRun.main.bindingId ? '工作台设置' : '启用主 Agent')}</span></button>` : '';
   const startConversation = store.get('start-view') === 'conversation';
   const entryItem = `<div class="opt"><span class="lbl">默认进入<span class="sub">下次打开或刷新生效</span></span><div class="agentSessionFilter${startConversation ? ' common' : ''}" style="width:176px;max-width:70%;margin:0" role="group" aria-label="${esc(I18N.tr('默认进入'))}"><button type="button" data-start-view="overview" aria-pressed="${!startConversation}" style="padding:4px 2px">${I18N.tr('缩略图')}</button><button type="button" data-start-view="conversation" aria-pressed="${startConversation}" style="padding:4px 2px">${I18N.tr('会话内容')}</button></div></div>`;
   const manageItem = !document.body.classList.contains('conv') && ovS.level !== 'projects'
@@ -1281,7 +1289,7 @@ function showMainMenu() {
     <button class="opt" data-act="cache"><span class="lbl">会话缓存<span class="sub">手机上保存的对话记录，可折叠、可清除</span></span></button>
     <button class="opt" data-act="lang"><span class="lbl">语言 / Language<span class="sub">中文 · English（${I18N.lang === 'en' ? 'English' : '中文'}）</span></span></button>
     <button class="opt" id="viewportTraceEntry"><span class="lbl">页面布局记录</span></button>`;
-  openSheet('main', `<div class="mainMenuHeader"><h3>菜单</h3><div class="mainMenuActions"><button class="menuHeaderAction" data-act="transfer" aria-label="${esc(I18N.tr('文件传输'))}" title="${esc(I18N.tr('文件传输'))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 16V4m0 0L3 8m4-4 4 4M17 8v12m0 0 4-4m-4 4-4-4"/></svg></button><button class="menuHeaderAction" data-act="localVoiceMenu" aria-label="${esc(I18N.tr('语音输入'))}" title="${esc(I18N.tr('语音输入'))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button><button class="menuHeaderAction menuComputer" data-act="computers" aria-label="${esc(I18N.tr('电脑'))}" title="${esc(I18N.tr('电脑'))}">${CONN_HOST_SVG}</button></div></div>${entryItem}${manageItem}${document.body.classList.contains('conv') ? menuGroup('model', '模型', (appName ? `<div class="pSec">${esc(appName)}</div>` : '') + modelItems) : ''}
+  openSheet('main', `<div class="mainMenuHeader"><h3>菜单</h3><div class="mainMenuActions"><button class="menuHeaderAction" data-act="transfer" aria-label="${esc(I18N.tr('文件传输'))}" title="${esc(I18N.tr('文件传输'))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 16V4m0 0L3 8m4-4 4 4M17 8v12m0 0 4-4m-4 4-4-4"/></svg></button><button class="menuHeaderAction" data-act="localVoiceMenu" aria-label="${esc(I18N.tr('语音输入'))}" title="${esc(I18N.tr('语音输入'))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button><button class="menuHeaderAction menuComputer" data-act="computers" aria-label="${esc(I18N.tr('电脑'))}" title="${esc(I18N.tr('电脑'))}">${CONN_HOST_SVG}</button></div></div>${entryItem}${manageItem}${fusionItem}${document.body.classList.contains('conv') ? menuGroup('model', '模型', (appName ? `<div class="pSec">${esc(appName)}</div>` : '') + modelItems) : ''}
     ${menuGroup('general', '通用', menuGroup('connection', 'Agent 与连接', connectionItems, false)
       + menuGroup('settings', '应用设置与帮助', settingsItems, false))}<p class="hint">网页版本 ${esc(APP_VERSION)}</p>`);
   $('viewportTraceEntry').onclick = showViewportTrace;

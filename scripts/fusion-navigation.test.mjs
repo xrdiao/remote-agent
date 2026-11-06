@@ -4,19 +4,41 @@ import vm from 'node:vm';
 import test from 'node:test';
 
 function fixture() {
-  const sent = [], listeners = [], stored = new Map();
+  const sent = [], listeners = new Map(), stored = new Map(), nodes = new Map();
+  const classes = { contains: () => false, toggle() {}, remove() {} };
+  const node = () => ({ dataset: {}, classList: classes, scrollTop: 0, querySelector: () => null, querySelectorAll: () => [], contains: () => true });
   const entries = ['computer-one', 'computer-two'].map(id => ({ id, name: id, c: { key: id } }));
   const context = vm.createContext({ crypto, Map, Set, Date, Object, JSON,
-    MutationObserver: class { observe() {} }, $: () => ({}), ovOpenFeedback: () => '', ovOpenLabel: (_target, label) => label, releaseFusionView() {}, ovCancelOpening() {},
+    MutationObserver: class { observe() {} }, $: id => { if (!nodes.has(id)) nodes.set(id, node()); return nodes.get(id); },
+    window: { addEventListener() {} }, mode: 'chat', currentApp: 'codex',
+    ovSeg: () => '<span class="ov-seg"></span>', ovOpenFeedback: () => '', ovOpenLabel: (_target, label) => label, releaseFusionView() {}, ovCancelOpening() {},
     store: { set: (key, value) => stored.set(key, value) }, I18N: { tr: value => value }, esc: value => String(value || ''),
-    document: { addEventListener: (_event, listener) => listeners.push(listener) },
+    document: { body: { classList: classes }, addEventListener: (event, listener) => listeners.set(event, [...listeners.get(event) || [], listener]) },
     ovList: entries, ovS: { comp: null, level: 'fusion' }, OV_AGENT: { cursor: 'Cursor' },
     ovComputerStatus: () => 'online', status() {},
     computerSockets: new Map(entries.map(entry => [entry.id, { authed: true, socket: { readyState: 1, send: raw => sent.push(JSON.parse(raw)) } }])),
   });
   vm.runInContext(fs.readFileSync(new URL('../app/js/fusion.js', import.meta.url), 'utf8'), context);
-  return { context, sent, stored, run: code => vm.runInContext(code, context) };
+  return { context, sent, stored, nodes, listeners, run: code => vm.runInContext(code, context) };
 }
+test('Fusion titles show native model effort once and preserve ordinary titles', () => {
+  const nodes = new Map(), run = { title: 'Historical workbench', computer: 'computer-one', project: { root: '/project' },
+    main: { app: 'codex', model: 'gpt-6.1-sol', effort: 'high' }, tier: 'balanced' };
+  const context = vm.createContext({ currentApp: 'codex', currentAppName: 'Codex', mode: 'chat', activeFusionController: run,
+    lastChat: { thread: 'native-main', model: 'GPT 6.1 Sol · High', effort: 'high', items: [] },
+    currentComputer: () => ({ threadId: 'native-main' }), currentFusionRun: () => run,
+    OV_AGENT: { codex: 'Codex' }, ovCompName: value => value, appPlans: {}, I18N: { tr: value => value },
+    document: { body: { dataset: {} } }, cleanWindowTitle: value => value, paintRail() {},
+    $: id => { if (!nodes.has(id)) nodes.set(id, {}); return nodes.get(id); } });
+  const source = fs.readFileSync(new URL('../app/js/chat.js', import.meta.url), 'utf8');
+  vm.runInContext(source.slice(source.indexOf("let currentProject ="), source.indexOf('// Devin sessions:')), context);
+  context.updateTitle();
+  assert.equal(nodes.get('titleProject').textContent, 'Codex · GPT 6.1 Sol · High · 均衡');
+  context.lastChat = { ...context.lastChat, model: 'GPT 6.1 Sol' }; context.updateTitle();
+  assert.equal(nodes.get('titleProject').textContent, 'Codex · GPT 6.1 Sol · High · 均衡');
+  context.activeFusionController = null; context.lastChat = { title: 'Ordinary native chat', items: [] }; context.updateTitle();
+  assert.equal(nodes.get('titleText').textContent, 'Codex'); assert.equal(nodes.get('titleProject').textContent, 'Ordinary native chat');
+});
 test('opening the Fusion workspace reads each scoped computer without attaching or creating a native session', () => {
   const h = fixture(); h.run('refreshFusionWorkspace()');
   assert.deepEqual(h.sent.map(message => [message.computer, message.t]), [['computer-one', 'fusionWorkspace'], ['computer-two', 'fusionWorkspace']]);
@@ -26,7 +48,7 @@ test('opening the Fusion workspace reads each scoped computer without attaching 
 });
 test('all-computer Fusion board groups runs by computer and does not pick a creation target', () => {
   const h = fixture();
-  h.run(`fusionWorkspaces.set('computer-one', {runs:[{id:'r1',title:'first',project:{name:'p'},main:{app:'cursor',model:'Auto'},status:'waiting',works:{done:0,total:1},tasks:{done:0,total:2}}]})`);
+  h.run(`fusionWorkspaces.set('computer-one', {runs:[{id:'r1',title:'first',project:{name:'p'},main:{app:'cursor',model:'Auto'},status:'waiting',works:{done:0,total:1},tasks:{done:0,total:2},overview:{state:'idle',apps:['cursor'],counts:{idle:2},attention:[],current:null}}]})`);
   const html = h.run('fusionBoard()');
   assert.match(html, /computer-one/); assert.match(html, /computer-two/); assert.match(html, /data-fusion-open="r1"/);
   assert.equal(h.sent.length, 0);
@@ -103,7 +125,7 @@ test('Fusion project browsing hands the shared folder picker its selected comput
 });
 
 function viewFixture() {
-  const h = fixture(), painted = [], opened = [], sheet = { scrollTop: 0, querySelector: () => null, querySelectorAll: () => [] };
+  const h = fixture(), painted = [], opened = [], sheet = { dataset: {}, classList: { contains: () => false }, scrollTop: 0, querySelector: () => null, querySelectorAll: () => [], contains: () => true };
   Object.assign(h.context, { $: () => sheet, sheetKind: '', currentComputer: () => ({ id: 'computer-one' }), currentApp: 'codex',
     openSheet: kind => { h.context.sheetKind = kind; }, closeSheet: () => { h.context.sheetKind = ''; },
     ovRender() {}, ovOpen: target => opened.push(target), updateTitle() {},
@@ -143,6 +165,45 @@ test('primary view reads carry explicit task and input identities and retain sep
   assert.equal(input.view, 'input'); assert.equal(input.taskId, 't2'); assert.equal(input.questionId, 'q');
   assert.equal(h.run('fusionStates.size'), 1);
   assert.equal(h.run("fusionRunFor('computer-one','r')"), undefined);
+});
+test('opening a task uses only its summary; expanding the dialogue performs the first content read once', () => {
+  const h = viewFixture();
+  h.run("readFusionView('computer-one','r','task',{taskId:'t1'})"); const request = h.sent.at(-1);
+  h.reply(request, { id: 'r', bindings: [{ id: 'selected-binding' }] });
+  assert.equal(h.sent.filter(row => row.t === 'fusionContent').length, 0);
+  const detail = { open: true, dataset: { fusionDialogue: '', binding: 'selected-binding', attempt: 'attempt-2' } };
+  h.context.fusionFillDialogue = () => {};
+  for (const listener of h.listeners.get('toggle')) listener({ target: detail });
+  const reads = h.sent.filter(row => row.t === 'fusionContent');
+  assert.equal(reads.length, 1); assert.equal(reads[0].bindingId, 'selected-binding'); assert.equal(reads[0].runId, 'r');
+  for (const listener of h.listeners.get('toggle')) listener({ target: detail });
+  assert.equal(h.sent.filter(row => row.t === 'fusionContent').length, 1);
+});
+test('input audits are explicit reads and a late audit cannot reopen a closed task view', () => {
+  const h = viewFixture();
+  h.run("readFusionView('computer-one','r','task',{taskId:'t1'})"); const request = h.sent.at(-1);
+  h.reply(request, { id: 'r', bindings: [] });
+  const detail = { open: true, dataset: { fusionAudit: JSON.stringify({ kind: 'inputs', taskId: 't1' }) }, querySelector: () => ({}) };
+  for (const listener of h.listeners.get('toggle')) listener({ target: detail });
+  const audit = h.sent.at(-1); assert.equal(audit.view, 'inputs'); assert.equal(audit.taskId, 't1');
+  h.run('releaseFusionView();closeSheet()');
+  h.reply(audit, { inputs: [], assignments: [] });
+  assert.equal(h.run('fusionAudits.size'), 0); assert.equal(h.context.sheetKind, '');
+});
+test('native task controls submit only the selected Attempt and fields from the Fusion surface', () => {
+  const h = viewFixture();
+  h.run("readFusionView('computer-one','r','task',{taskId:'t1'})");
+  const request = h.sent.at(-1); h.reply(request, { id: 'r', bindings: [] });
+  h.sheet.querySelectorAll = () => [{ dataset: { nativeRequest: 'approval', fusionField: '0' }, value: 'selected draft' },
+    { dataset: { nativeRequest: 'other-task', fusionField: '0' }, value: 'other draft' }];
+  const button = { dataset: { fusionNative: 'codexRequest', attempt: 'selected-attempt', binding: 'selected-binding', nativeRequest: 'approval', n: '1' },
+    closest: () => ({ dataset: { fusionComputer: 'computer-one', fusionRun: 'r' } }) };
+  for (const listener of h.listeners.get('click')) listener({ target: { closest: () => button } });
+  const message = h.sent.at(-1);
+  assert.equal(message.t, 'fusionNative'); assert.equal(message.runId, 'r'); assert.equal(message.attemptId, 'selected-attempt');
+  assert.equal(message.action.bindingId, 'selected-binding');
+  assert.deepEqual(JSON.parse(JSON.stringify(message.action.fields)), [{ n: 0, value: 'selected draft' }]);
+  assert.equal(h.sent.some(row => row.t === 'click' || row.t === 'send'), false);
 });
 test('refreshing selected task controls preserves native fields, caret, scroll and the matching open audit', () => {
   const h = viewFixture();

@@ -96,8 +96,8 @@ export class FusionAgent {
     const source = context.source;
     if (!source.watching && !source.clients.size && !source.conversations.size && !source.listeners.size) source.close();
   }
-  async openBinding(controller, binding) {
-    const context = await this.carrierFor(controller, binding.app, binding.project, binding.windowId);
+  async openBinding(controller, binding, windowId = binding.windowId) {
+    const context = await this.carrierFor(controller, binding.app, binding.project, windowId);
     try {
       context.native = { app: binding.app, threadId: binding.threadId, host: binding.host || '', cwd: binding.project.root,
         roots: [{ root: binding.project.root, host: binding.host || '' }] };
@@ -359,7 +359,7 @@ export class FusionAgent {
   async readBinding(controller, bindingId, history = false, before = null) {
     const binding = controller.bindings.find(row => row.id === bindingId);
     if (!binding) throw new Error('没有这个原生 Binding');
-    const context = await this.openBinding(controller, binding);
+    const context = await this.openBinding(controller, binding, '');
     try {
       const native = { ...context.native, ...(before != null ? { before } : {}) };
       return { binding, chat: await this.call(context, `extract(${history === true}, [], 80)`, native) };
