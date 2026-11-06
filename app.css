@@ -1264,6 +1264,11 @@ body.term .appAvatar::after { display: none; }
 .fusion-interaction > small, .fusion-answer-status { color: var(--fg-3); }
 .fusion-interaction > small { display: block; overflow-wrap: anywhere; }
 .fusion-interaction > button, .fusion-interaction details { margin-top: 12px; }
+.fusion-interaction, .fusion-pending-interactions, .fusion-work-items, .fusion-tags > span { min-width: 0; max-width: 100%; }
+.fusion-interaction pre, .fusion-work-items pre { white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; max-width: 100%; }
+.fusion-tags > span { overflow-wrap: anywhere; }
+.fusion-pending-interactions { width: 100%; }
+.fusion-native-card input, .fusion-native-card select { max-width: 100%; }
 .fusion-question-options { display: flex; flex-wrap: wrap; gap: 8px; }
 .fusion-pending-link { width: 100%; margin-top: 10px; text-align: left; color: var(--warn); white-space: normal; }
 .fusion-dispatch-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--fg-3); font-size: 12px; }

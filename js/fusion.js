@@ -4,7 +4,7 @@ let fusionNewDraft = null, fusionSheetRun = '', fusionSheetTask = '', activeFusi
 const fusionAudits = new Map();
 const fusionBoards = new Map(), fusionComputerFolds = new Map(), fusionDispatchCards = new Map();
 const fusionInteractionCards = new Map();
-let fusionFocusInteraction = '';
+let fusionFocusInteraction = '', fusionPendingGroup = null;
 let fusionPanelOpen = false, fusionPanelCollapsed = false, fusionChatKey = '', fusionFocusTask = '', fusionFocusPending = false;
 const fusionStateKey = (computer, run) => `${computer}|${run}`;
 const fusionStatus = value => I18N.tr(({ ready: '待启用', running: '运行中', waiting: '等待新事件', awaiting_user: '需要你处理',
@@ -227,7 +227,7 @@ function fitFusionLayout() {
   const key = fusionStateKey(run.computer, run.id);
   if (fusionViewOwner && fusionViewOwner.surface !== 'sheet'
       && (fusionViewOwner.computer !== run.computer || fusionViewOwner.runId !== run.id)) releaseFusionView();
-  if (fusionChatKey !== key) { fusionChatKey = key; fusionPanelOpen = split; fusionPanelCollapsed = false; fusionFocusTask = ''; fusionFocusPending = false; }
+  if (fusionChatKey !== key) { fusionChatKey = key; fusionPanelOpen = split; fusionPanelCollapsed = false; fusionFocusTask = ''; fusionFocusPending = false; $('fusionTaskStrip').scrollLeft = 0; }
   if (split && !fusionPanelCollapsed) fusionPanelOpen = true;
   const owner = fusionViewOwner;
   if (owner?.computer === run.computer && owner.runId === run.id && ['tasks', 'task'].includes(owner.kind)) {
@@ -270,13 +270,27 @@ function fusionRememberBoard(run) {
   if (fusionChatActive() && lastChat?.thread === currentComputer()?.threadId
       && (JSON.stringify(previous?.dispatches) !== JSON.stringify(board.dispatches)
         || JSON.stringify(previous?.questions) !== JSON.stringify(board.questions)
+        || JSON.stringify(previous?.nativeInteractions) !== JSON.stringify(board.nativeInteractions)
         || JSON.stringify(previous?.works) !== JSON.stringify(board.works)))
     renderChat(lastChat, chatStale);
 }
 function paintFusionTaskStrip() {
   const run = currentFusionRun(), board = run && fusionBoards.get(fusionStateKey(run.computer, run.id));
-  $('fusionTaskStrip').innerHTML = (board?.tasks || []).map(task => `<button class="fusion-task-pill fusion-tone-${task.state}" data-fusion-relations="${esc(task.id)}">${fusionLogo(task.app)}<span class="ovRaw">${esc(task.goal)}</span><i class="fusion-state-dot"></i></button>`).join('')
-    + `<button class="fusion-all-tasks" id="fusionTasks" data-fusion-relations="">${I18N.tr('全部')} ${board?.tasks.length || run?.tasks.total || 0} ›</button>`;
+  const strip = $('fusionTaskStrip'), key = run ? fusionStateKey(run.computer, run.id) : '';
+  const left = strip.scrollLeft, edge = strip.getBoundingClientRect().left;
+  const anchor = left > 0 ? [...strip.querySelectorAll('[data-fusion-relations]')].find(node => node.getBoundingClientRect().right > edge) : null;
+  const anchorId = anchor?.dataset.fusionRelations, offset = anchor ? anchor.getBoundingClientRect().left - edge : 0;
+  const tasks = (board?.tasks || []).map((task, index) => ({ ...task, index }))
+    .sort((a, b) => b.updated - a.updated || b.index - a.index);
+  strip.innerHTML = tasks.map(task => `<button class="fusion-task-pill fusion-tone-${task.state}" data-fusion-relations="${esc(task.id)}">${fusionLogo(task.app)}<span class="ovRaw">${esc(task.goal)}</span><i class="fusion-state-dot"></i></button>`).join('')
+    + `<button class="fusion-all-tasks" id="fusionTasks" data-fusion-relations="">${I18N.tr('全部')} ${tasks.length || run?.tasks.total || 0} ›</button>`;
+  if (strip.dataset.fusionRun !== key) strip.scrollLeft = 0;
+  else if (left > 0) {
+    const next = [...strip.querySelectorAll('[data-fusion-relations]')].find(node => node.dataset.fusionRelations === anchorId);
+    if (next) strip.scrollLeft += next.getBoundingClientRect().left - strip.getBoundingClientRect().left - offset;
+    else strip.scrollLeft = left;
+  }
+  strip.dataset.fusionRun = key;
 }
 function fusionDispatchHtml(board, batch) {
   const tasks = batch.tasks.map(row => board.tasks.find(task => task.id === row.taskId)).filter(Boolean);
@@ -337,37 +351,65 @@ function fusionInteractionNode(run, work, kind, item) {
   }
   return node;
 }
+function fusionChatAnchor(items, native) {
+  if (native?.callId) {
+    const index = items.findIndex(item => item.i === `${native.threadId}:dynamic-tool-call:${native.callId}`);
+    if (index >= 0) return index + 1;
+  }
+  const start = items.findIndex(item => item.k === 'human' && item.nativeIds?.includes(native?.messageId));
+  if (start < 0) return null;
+  const next = items.findIndex((item, index) => index > start && item.k === 'human');
+  return next < 0 ? items.length : next;
+}
+function fusionNativeNode(run, item) {
+  const key = fusionStateKey(run.computer, run.id) + '|native:' + item.id;
+  let node = fusionInteractionCards.get(key);
+  if (!node) { node = document.createElement('section'); node.className = 'fusion-interaction fusion-native-card'; fusionInteractionCards.set(key, node); }
+  node.dataset.fusionNativeCard = item.id; node.dataset.fusionRun = run.id; node.dataset.fusionComputer = run.computer;
+  const signature = JSON.stringify(item);
+  if (node._nativeInteraction !== signature) fusionPreserveSheet(() => {
+    node.innerHTML = `<div class="fusion-dispatch-head"><strong>${I18N.tr('需要你处理')} · ${I18N.tr('原生交互')}</strong></div>`
+      + `<p class="ovRaw">${esc(OV_AGENT[item.app])} · ${esc(item.goal)}</p>` + fusionNativeHtml(run, item);
+    node._nativeInteraction = signature;
+  }, node);
+  return node;
+}
 function fusionChatRows(items, rows, keepViewport, edge) {
   const run = currentFusionRun(), board = run && fusionBoards.get(fusionStateKey(run.computer, run.id));
   if (!board) return;
-  const additions = [];
+  const additions = [], pending = [];
   for (const batch of board.dispatches) {
-    const start = items.findIndex(item => item.k === 'human' && (item.nativeIds || []).includes(batch.native.messageId));
-    if (start < 0) continue;
-    const next = items.findIndex((item, n) => n > start && item.k === 'human'), end = next < 0 ? items.length - 1 : next - 1;
+    const index = fusionChatAnchor(items, batch.native);
+    if (index === null) continue;
     const key = fusionStateKey(run.computer, run.id) + '|' + batch.id;
     let node = fusionDispatchCards.get(key);
-    if (!node && keepViewport && rows[end].isConnected && rows[end].getBoundingClientRect().top < edge) { deferredScrollRender = true; continue; }
+    if (!node && keepViewport && rows[index - 1]?.isConnected && rows[index - 1].getBoundingClientRect().top < edge) { deferredScrollRender = true; continue; }
     if (!node) {
       node = document.createElement('section'); node.className = 'fusion-dispatch'; node.dataset.fusionDispatch = batch.id;
       fusionDispatchCards.set(key, node);
     }
     node.dataset.fusionComputer = run.computer; node.dataset.fusionRun = run.id;
-    fusionPaintDispatch(node); additions.push({ index: end + 1, node });
+    fusionPaintDispatch(node); additions.push({ index, node });
   }
   const interactions = [...board.questions.map(item => ({ kind: 'question', item, work: board.works.find(work => work.id === item.workId) })),
     ...board.works.flatMap(work => work.plans.map(item => ({ kind: 'plan', item, work })))].sort((a, b) => a.item.created - b.item.created);
   for (const { kind, item, work } of interactions) {
-    const start = items.findIndex(row => row.k === 'human' && (row.nativeIds || []).includes(item.native?.messageId));
-    if (start < 0 && (kind === 'question' ? item.answeredAt : item.confirmed)) continue;
-    const next = start < 0 ? -1 : items.findIndex((row, index) => index > start && row.k === 'human');
-    const end = next < 0 ? items.length - 1 : next - 1;
+    if (!(kind === 'question' ? item.answeredAt : item.confirmed)) { pending.push(fusionInteractionNode(run, work, kind, item)); continue; }
+    const index = fusionChatAnchor(items, item.native);
+    if (index === null) continue;
     const key = fusionStateKey(run.computer, run.id) + '|' + kind + ':' + item.id;
-    if (!fusionInteractionCards.has(key) && keepViewport && rows[end]?.isConnected && rows[end].getBoundingClientRect().top < edge
+    if (!fusionInteractionCards.has(key) && keepViewport && rows[index - 1]?.isConnected && rows[index - 1].getBoundingClientRect().top < edge
         && fusionFocusInteraction !== key) { deferredScrollRender = true; continue; }
-    additions.push({ index: end + 1, node: fusionInteractionNode(run, work, kind, item) });
+    additions.push({ index, node: fusionInteractionNode(run, work, kind, item) });
   }
+  for (const item of board.nativeInteractions || []) pending.push(fusionNativeNode(run, item));
   for (const { index, node } of additions.reverse().sort((a, b) => b.index - a.index)) rows.splice(index, 0, node);
+  if (pending.length) {
+    fusionPendingGroup ||= document.createElement('section');
+    fusionPendingGroup.className = 'fusion-pending-interactions';
+    fusionPendingGroup.setAttribute('aria-label', I18N.tr('需要你处理'));
+    syncChildren(fusionPendingGroup, pending); rows.push(fusionPendingGroup);
+  }
   const focus = fusionInteractionCards.get(fusionFocusInteraction);
   if (focus) queueMicrotask(() => {
     if (!focus.isConnected || !fusionFocusInteraction) return;
@@ -381,25 +423,25 @@ function fusionChatRows(items, rows, keepViewport, edge) {
 }
 function fusionStateBadge(task) { return `<span class="fusion-state fusion-tone-${task.state}">${esc(fusionTaskStatus(task))}</span>`; }
 function fusionNativeHtml(run, attempt) {
-  const buttons = (attempt.live?.items || []).flatMap(item => (item.b || []).map((label, n) =>
-    `<button class="${PRIMARY.test(label) ? 'primary' : ''}" data-fusion-native="button" data-attempt="${esc(attempt.id)}" data-binding="${esc(attempt.bindingId)}" data-fusion-item="${esc(item.btnItem || item.i)}" data-n="${n}" data-action-id="${esc(item.actions?.[n] || '')}" data-label="${esc(label)}">${esc(label)}</button>`)).join('');
-  const requests = (attempt.live?.requests || []).map(request => `<div class="fusion-task"><p class="ovRaw">${esc(request.text)}</p>`
+  const buttons = (attempt.items || []).flatMap(item => item.buttons.map(button =>
+    `<button class="${PRIMARY.test(button.label) ? 'primary' : ''}" data-fusion-native="button" data-attempt="${esc(attempt.attemptId)}" data-binding="${esc(attempt.bindingId)}" data-fusion-item="${esc(item.btnItem)}" data-n="${button.n}" data-action-id="${esc(button.actionId)}" data-label="${esc(button.label)}">${esc(button.label)}</button>`)).join('');
+  const requests = (attempt.requests || []).map(request => `<div class="fusion-task"><p class="ovRaw">${esc(request.text)}</p>`
     + request.fields.map((field, index) => `<label><span class="ovRaw">${esc(field.label)}</span>${field.options
-      ? `<select data-fusion-field="${index}" data-attempt="${esc(attempt.id)}" data-native-request="${esc(request.id)}">${field.options.map(option => `<option value="${esc(option.value)}" ${field.value === option.value ? 'selected' : ''}>${esc(option.label)}</option>`).join('')}</select>`
-      : `<input type="${field.type === 'password' ? 'password' : 'text'}" data-fusion-field="${index}" data-attempt="${esc(attempt.id)}" data-native-request="${esc(request.id)}" value="${esc(field.value || '')}">`}</label>`).join('')
-    + request.buttons.map((button, index) => `<button class="${PRIMARY.test(button.label) ? 'primary' : ''}" data-fusion-native="codexRequest" data-attempt="${esc(attempt.id)}" data-binding="${esc(attempt.bindingId)}" data-native-request="${esc(request.id)}" data-n="${index}" ${button.disabled ? 'disabled' : ''}>${esc(button.label)}</button>`).join('') + '</div>').join('');
-  const questions = attempt.live?.questions;
+      ? `<select data-fusion-field="${index}" data-attempt="${esc(attempt.attemptId)}" data-native-request="${esc(request.id)}">${field.options.map(option => `<option value="${esc(option.value)}" ${field.value === option.value ? 'selected' : ''}>${esc(option.label)}</option>`).join('')}</select>`
+      : `<input type="${field.type === 'password' ? 'password' : 'text'}" data-fusion-field="${index}" data-attempt="${esc(attempt.attemptId)}" data-native-request="${esc(request.id)}" value="${esc(field.value || '')}">`}</label>`).join('')
+    + request.buttons.map((button, index) => `<button class="${PRIMARY.test(button.label) ? 'primary' : ''}" data-fusion-native="codexRequest" data-attempt="${esc(attempt.attemptId)}" data-binding="${esc(attempt.bindingId)}" data-native-request="${esc(request.id)}" data-n="${index}" ${button.disabled ? 'disabled' : ''}>${esc(button.label)}</button>`).join('') + '</div>').join('');
+  const questions = attempt.questions;
   const questionKey = esc(JSON.stringify(questions));
-  const questionButton = (label, qi, oi, part, extra = '') => `<button data-fusion-native="question" data-attempt="${esc(attempt.id)}" data-binding="${esc(attempt.bindingId)}" data-qi="${qi}" data-oi="${oi}" data-part="${part}" data-question-key="${questionKey}" ${extra}>${esc(label)}</button>`;
+  const questionButton = (label, qi, oi, part, extra = '') => `<button data-fusion-native="question" data-attempt="${esc(attempt.attemptId)}" data-binding="${esc(attempt.bindingId)}" data-qi="${qi}" data-oi="${oi}" data-part="${part}" data-question-key="${questionKey}" ${extra}>${esc(label)}</button>`;
   const questionRows = (questions?.list || []).map((question, qi) => `<div class="fusion-task"><p class="ovRaw">${esc(question.text)}</p>`
-    + question.options.map((option, oi) => option.free ? `<input data-fusion-answer="${qi}:${oi}" data-attempt="${esc(attempt.id)}" value="${esc(option.value || '')}">${questionButton(I18N.tr('填入'), qi, oi, 'option')}` : questionButton(option.label, qi, oi, 'option')).join('') + '</div>').join('');
+    + question.options.map((option, oi) => option.free ? `<input data-fusion-answer="${qi}:${oi}" data-attempt="${esc(attempt.attemptId)}" value="${esc(option.value || '')}">${questionButton(I18N.tr('填入'), qi, oi, 'option')}` : questionButton(option.label, qi, oi, 'option')).join('') + '</div>').join('');
   const questionActions = questions?.list?.length ? questionButton(I18N.tr('跳过'), 0, 0, 'skip')
     + questionButton(I18N.tr('提交'), 0, 0, 'submit', questions.canSubmit ? '' : 'disabled')
     + (questions.pager ? questionButton('‹', 0, 0, 'prev', questions.canPrev ? '' : 'disabled') + questionButton('›', 0, 0, 'next', questions.canNext ? '' : 'disabled') : '') : '';
   return buttons + requests + questionRows + questionActions;
 }
-function fusionPreserveSheet(paint) {
-  const root = fusionSurface(), scroll = root.scrollTop;
+function fusionPreserveSheet(paint, surface = null) {
+  const root = surface || fusionSurface(), scroll = root.scrollTop;
   const dialogue = root.querySelector('[data-fusion-dialogue]');
   const transcript = dialogue?.open ? dialogue.querySelector('.fusion-content') : null;
   const drafts = [...root.querySelectorAll('input, textarea, select')].map(input => ({ name: input.name, attempt: input.dataset.attempt, request: input.dataset.nativeRequest, field: input.dataset.fusionField,
@@ -408,7 +450,7 @@ function fusionPreserveSheet(paint) {
     : 'fusionDialogue' in detail.dataset ? 'dialogue' : detail.querySelector('summary').textContent);
   const expanded = new Map([...root.querySelectorAll('details')].map(detail => [detailKey(detail), detail.open]));
   paint();
-  const next = fusionSurface();
+  const next = surface || fusionSurface();
   const nextDialogue = next.querySelector('[data-fusion-dialogue]');
   if (transcript && nextDialogue?.dataset.binding === dialogue.dataset.binding)
     nextDialogue.querySelector('.fusion-content').replaceWith(transcript);
@@ -435,7 +477,7 @@ function showFusionTasks(run) {
       + `<div class="fusion-tree">${run.agents.map(agent => {
         const tasks = run.tasks.filter(task => task.workerId === agent.id), latest = tasks.at(-1);
         return latest ? group(OV_AGENT[latest.app], latest.app, [latest.model, latest.effort].filter(Boolean).join(' · '), tasks) : '';
-      }).join('')}${run.tasks.some(task => task.executor === 'main') ? group(I18N.tr('主 Agent 自己执行'), run.main.app, '', run.tasks.filter(task => task.executor === 'main')) : ''}</div>`
+      }).join('')}${run.tasks.some(task => task.executor === 'main') ? group(I18N.tr('历史主 Agent 执行'), run.main.app, '', run.tasks.filter(task => task.executor === 'main')) : ''}</div>`
       + (!run.tasks.length ? `<p class="hint">${I18N.tr('还没有子任务，主 Agent 可以直接完成简单需求。')}</p>` : '')
       + `<details class="fusion-work-items"><summary>${I18N.tr('工作项')} · ${run.works.length}</summary>${run.works.map(work => {
         const plan = work.plans.find(row => row.id === work.planId);
@@ -462,7 +504,7 @@ function showFusionTask(run, taskId) {
   const same = fusionSurface().dataset.fusionView === 'task:' + taskId;
   const paint = () => {
     fusionSheetRun = fusionStateKey(run.computer, run.id); fusionSheetTask = taskId;
-    const attempt = run.attempts.at(-1), summary = task.summary, native = attempt ? fusionNativeHtml(run, attempt) : '';
+    const attempt = run.attempts.at(-1), summary = task.summary;
     const steps = [['派工', task.attemptCount > 0], ['执行', !!summary.endedAt], ['验收', task.status === 'accepted'], ['交付', summary.delivered]];
     const step = task.status === 'accepted' ? 3 : summary.endedAt ? 2 : task.attemptCount ? 1 : 0;
     fusionDraw('task', `<button class="fusion-detail-back" data-fusion-tasks>‹ ${I18N.tr('Agent 关系与分工')}</button><h3 class="fusion-detail-title ovRaw">${esc(task.id)} ${esc(task.goal)}</h3>`
@@ -470,7 +512,7 @@ function showFusionTask(run, taskId) {
       + `<ol class="fusion-milestones" aria-label="${I18N.tr('任务进度')}">${steps.map(([label, done], index) => `<li class="${done ? 'done' : index === step ? 'current' : ''}">${I18N.tr(label)}</li>`).join('')}</ol>`
       + `<section class="fusion-progress-card"><div class="fusion-progress-heading">${fusionLogo(task.app)}<span>${I18N.tr('进展概括')}</span>${task.updated ? `<time datetime="${new Date(task.updated).toISOString()}">${esc(new Date(task.updated).toLocaleString())}</time>` : ''}</div><p class="ovRaw">${esc(summary.text || fusionTaskStatus(task))}</p>`
       + `<div class="fusion-tags"><span>${I18N.tr('改动文件')} ${summary.files ?? I18N.tr('未提供')}</span><span>${I18N.tr('耗时')} ${summary.durationMs == null ? I18N.tr('未提供') : fusionDuration(summary.durationMs)}</span><span>${I18N.tr('原生回执')} · ${I18N.tr(summary.submission === 'accepted' ? '已接受' : summary.submission === 'not_submitted' ? '未提交' : '待核对')}</span></div>${fusionStateBadge(task)}</section>`
-      + (native ? `<section class="fusion-attention-card fusion-form"><strong>${I18N.tr('需要你处理')} · ${I18N.tr('原生交互')}</strong>${native}</section>` : '')
+      + (run.board.nativeInteractions.some(row => row.taskId === task.id) ? `<button class="fusion-pending-link" data-fusion-locate="native:${esc(attempt?.id || '')}">${I18N.tr('需要你处理')} · ${I18N.tr('前往主对话')} ›</button>` : '')
       + run.board.questions.filter(question => question.taskId === taskId && !question.answeredAt).map(question => fusionInteractionButton('question', question.id)).join('')
       + `<details class="fusion-fold" data-fusion-dialogue data-binding="${esc(attempt?.bindingId || '')}" data-attempt="${esc(attempt?.id || '')}"><summary>${I18N.tr(task.executor === 'main' ? '主 Agent 对话' : '子 Agent 对话')}<small>${I18N.tr('点开后读取')} ›</small></summary><div class="fusion-content"></div></details>`
       + fusionAuditHtml('inputs', { taskId }, I18N.tr('任务输入'))
@@ -659,10 +701,11 @@ document.addEventListener('click', event => {
   if ('fusionNative' in button.dataset) {
     const action = { kind: button.dataset.fusionNative, bindingId: button.dataset.binding, item: button.dataset.fusionItem,
       actionId: button.dataset.actionId, label: button.dataset.label, n: Number(button.dataset.n), id: button.dataset.nativeRequest };
-    if (action.kind === 'codexRequest') action.fields = [...fusionSurface().querySelectorAll('[data-fusion-field]')].filter(input => input.dataset.nativeRequest === action.id).map(input => ({ n: Number(input.dataset.fusionField), value: input.value }));
+    const nativeCard = button.closest('[data-fusion-native-card]');
+    if (action.kind === 'codexRequest') action.fields = [...nativeCard.querySelectorAll('[data-fusion-field]')].filter(input => input.dataset.nativeRequest === action.id).map(input => ({ n: Number(input.dataset.fusionField), value: input.value }));
     if (action.kind === 'question') {
       Object.assign(action, { qi: Number(button.dataset.qi), oi: Number(button.dataset.oi), part: button.dataset.part, questionKey: button.dataset.questionKey });
-      const input = [...fusionSurface().querySelectorAll('[data-fusion-answer]')].find(input => input.dataset.fusionAnswer === `${action.qi}:${action.oi}`);
+      const input = [...nativeCard.querySelectorAll('[data-fusion-answer]')].find(input => input.dataset.fusionAnswer === `${action.qi}:${action.oi}`);
       if (input) action.text = input.value;
     }
     sendFusion(computer, { t: 'fusionNative', runId, attemptId: button.dataset.attempt, action });

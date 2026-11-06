@@ -36,6 +36,7 @@ const I18N = (() => {
     "未提交": "Not submitted",
     "待核对": "Unconfirmed",
     "原生交互": "Native interaction",
+    "历史主 Agent 执行": "Historical main agent executions",
     "主 Agent 对话": "Main agent conversation",
     "主 Agent 评审": "Main agent review",
     "点开后读取": "Load on expand",
