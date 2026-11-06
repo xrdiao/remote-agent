@@ -1838,6 +1838,8 @@ body.conv #overview { display: none; }
 #overview .ov-st-err { --sc: var(--err); --tint: var(--err-tint); border-color: color-mix(in srgb, var(--err) 35%, transparent); }
 #overview .ov-st-idle { --sc: var(--ov-idle); --tint: var(--line); }
 #overview .ov-tile.ov-off { --sc: var(--fg-4); --tint: var(--line); opacity: .62; }
+#overview .ov-session:not(.ov-st-idle) { background: color-mix(in srgb, var(--sc) 12%, var(--s1)); }
+#overview .ov-session:not(.ov-st-idle):not(.ov-st-wait) { border-color: color-mix(in srgb, var(--sc) 35%, var(--s1)); }
 #overview .ov-st-run:not(.ov-session)::after, #overview .ov-st-run > .ov-card-surface::after { content: ""; position: absolute; left: 0; right: 0; bottom: var(--p, 0%); height: 2px; background: var(--sc); opacity: .5; z-index: 0; animation: ovShimmer 2s ease-in-out infinite; }
 
 #overview .ov-logo { grid-area: logo; width: 38px; height: 38px; border-radius: 50%; background: var(--s2); display: flex; align-items: center; justify-content: center; flex: none; color: var(--fg-2); }
