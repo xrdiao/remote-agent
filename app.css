@@ -1217,6 +1217,12 @@ body.term .appAvatar::after { display: none; }
 
 /* ---------- Fusion workspace ---------- */
 #fusionBar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.fusion-run-notice { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid var(--line-2); border-left: 3px solid var(--warn); border-radius: var(--r-md); background: var(--s1); }
+.fusion-run-notice > strong { font-size: 12px; }
+.fusion-run-notice details { margin-top: 6px; font-size: 12px; color: var(--fg-3); }
+.fusion-run-notice p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.fusion-notice-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.fusion-notice-actions button { padding: 6px 10px; font-size: 12px; }
 #fusionWelcome { padding: 18px 0; text-align: center; }
 .fusion-board { grid-column: 1 / -1; width: 100%; min-width: 0; }
 .fusion-home-summary { display: flex; flex-wrap: wrap; gap: 14px; margin: 4px 0 14px; font-size: 12px; color: var(--fg-3); }
@@ -1250,6 +1256,12 @@ body.term .appAvatar::after { display: none; }
 .fusion-main-agent .fusion-state { max-width: 88px; overflow: hidden; text-overflow: ellipsis; display: block; }
 .fusion-tree { border-left: 1px solid var(--line-3); padding-left: 14px; margin: 18px 0 16px 14px; }
 .fusion-tree-agent + .fusion-tree-agent { margin-top: 20px; }
+.fusion-tree-agent { min-width: 0; border: 1px solid transparent; border-radius: var(--r-md); }
+.fusion-tree-agent > summary { padding: 6px; cursor: pointer; list-style: none; }
+.fusion-tree-agent > summary::-webkit-details-marker { display: none; }
+.fusion-tree-agent > summary::after { content: '›'; flex: none; color: var(--fg-3); }
+.fusion-tree-agent[open] > summary::after { transform: rotate(90deg); }
+.fusion-tree-agent .fusion-agent-heading strong { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .fusion-tree-task { width: calc(100% - 20px); margin: 6px 0 0 20px; padding: 9px 10px; display: flex; align-items: center; gap: 8px; text-align: left; white-space: normal; border-radius: var(--r-md); border: 1px solid transparent; }
 .fusion-tree-task .lbl { flex: 1; min-width: 0; }
 .fusion-tree-task strong { display: block; font-size: 12px; font-weight: 500; overflow-wrap: anywhere; }
@@ -1269,6 +1281,7 @@ body.term .appAvatar::after { display: none; }
 .fusion-tags > span { overflow-wrap: anywhere; }
 .fusion-pending-interactions { width: 100%; }
 .fusion-native-card input, .fusion-native-card select { max-width: 100%; }
+.fusion-native-details > summary { cursor: pointer; font-size: 12px; color: var(--accent-text); }
 .fusion-question-options { display: flex; flex-wrap: wrap; gap: 8px; }
 .fusion-pending-link { width: 100%; margin-top: 10px; text-align: left; color: var(--warn); white-space: normal; }
 .fusion-dispatch-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--fg-3); font-size: 12px; }
