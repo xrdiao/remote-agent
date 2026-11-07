@@ -279,6 +279,59 @@ test('same-software workers use the main window and other-software workers use a
   assert.equal(await agent.workerBinding(h.run, task, h.run.assignments[0]), binding);
   assert.equal(requests.length, 2);
 });
+test('a new task selected for a retained worker uses its original native thread even when model settings change', async () => {
+  for (const app of ['codex', 'cursor']) {
+    const h = fixture(), workId = h.create(); h.plan(workId);
+    const first = h.apply({ action: 'dispatch', workId, tasks: [h.task('first', app)] }).tasks[0];
+    const worker = h.run.agents[0], binding = { id: 'retained-' + app, app, role: 'worker', threadId: 'original-' + app,
+      windowId: 'shared', project: h.project };
+    worker.bindingId = binding.id; h.run.bindings.push(binding);
+    h.apply({ action: 'dispatch', workId, tasks: [h.task('related', app)], input: JSON.stringify({ related: {
+      workerId: first.workerId, label: '证据与性能复核', reason: 'Continue existing responsibility',
+      compared: [{ workerId: first.workerId, reason: 'Retain its native project context' }],
+    } }) });
+    const agent = new FusionAgent({ publish() {} }); agent.createBinding = async () => assert.fail('A reused worker must not create another native session');
+    const assignment = { ...h.run.assignments.at(-1), model: 'different-model', effort: 'different-effort' };
+    const retained = h.run.bindings.find(row => row.id === binding.id);
+    assert.equal(await agent.workerBinding(h.run, h.run.tasks[1], assignment), retained);
+    assert.deepEqual(retained, binding);
+    assert.equal(h.run.bindings.length, 2); assert.equal(h.run.agents.length, 1); assert.equal(binding.threadId, 'original-' + app);
+  }
+});
+test('native child execution persists its exact full or delta input before sending and recovery only observes it', async () => {
+  const h = fixture(), workId = h.create(); h.plan(workId);
+  h.apply({ action: 'dispatch', workId, tasks: [h.task('A')] });
+  const project = { ...h.project, host: 'qa-host', id: JSON.stringify(['qa-host', h.project.root]) };
+  h.run.works[0].project = project;
+  const binding = { id: 'owned-child', app: 'codex', role: 'worker', threadId: 'native-child', project, windowId: 'shared' };
+  h.run.bindings.push(binding); h.run.agents[0].bindingId = binding.id;
+  const agent = new FusionAgent({ publish() {} }), sends = [], context = { native: { threadId: binding.threadId },
+    source: { conversationView: () => ({ watching: Promise.resolve() }) } };
+  agent.workerBinding = async () => binding; agent.openBinding = async () => context;
+  agent.configure = async () => {}; agent.close = async () => {};
+  agent.observe = runtime => { runtime.check = () => {}; return Promise.resolve({ completed: true }); };
+  agent.call = async (_context, code) => {
+    const call = nativeInvocation(code);
+    if (call.method === 'codexFusionTurn') return { ids: ['previous'], turnId: 'previous-turn' };
+    assert.equal(call.method, 'nativeSessionAction'); assert.equal(call.args[2], 'send');
+    const request = call.args[3], attempt = h.run.attempts.find(row => row.id === request.requestId);
+    assert.equal(attempt.prompt, request.text); assert.equal(attempt.submission, 'submitting'); assert(attempt.promptContext);
+    sends.push({ ...request, mode: attempt.promptContext.mode }); return true;
+  };
+  const firstId = h.run.attempts[0].id;
+  await agent.execute(h.run, firstId, null);
+  assert.equal(sends[0].mode, 'full');
+  Object.assign(h.run.attempts[0], { status: 'accepted', submission: 'accepted', acceptedAt: 10, endedAt: 20,
+    native: { threadId: binding.threadId, turnId: 'first-native-turn' } }); h.run.tasks[0].status = 'accepted';
+  h.apply({ action: 'continue_task', taskId: 'A', input: 'Verify the additional value.', cost: h.cost('codex') });
+  const nextId = h.run.attempts.at(-1).id;
+  await agent.execute(h.run, nextId, null);
+  assert.equal(sends.length, 2); assert.equal(sends[1].mode, 'delta'); assert(sends[1].text.length < sends[0].text.length);
+  const stored = structuredClone(h.run.attempts.at(-1));
+  await agent.execute(h.run, nextId, 'This must neither be regenerated nor sent', true);
+  assert.equal(sends.length, 2); assert.equal(h.run.attempts.at(-1).prompt, stored.prompt);
+  assert.deepEqual(h.run.attempts.at(-1).promptContext, stored.promptContext); assert.equal(agent.active.size, 0);
+});
 test('a different-software assignment creates a new binding without overwriting old native facts', async () => {
   const h = fixture(), workId = h.create(); h.plan(workId); h.apply({ action: 'dispatch', workId, tasks: [h.task('A')] });
   const task = h.run.tasks[0], worker = h.run.agents[0], old = { id: 'old', app: 'codex', role: 'worker', threadId: 'native-old', windowId: 'shared' };

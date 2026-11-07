@@ -41,15 +41,22 @@ test('only recorded internal user-input identities are omitted from the matching
   h.run('fusionChatActive=()=>false');assert.equal(h.run('fusionVisibleItems(testItems)'),h.context.testItems);
 });
 test('each retained worker displays its responsibility label and tasks in descending activity order without reordering stored tasks', () => {
-  const h=fixture();h.context.testSurface={dataset:{},querySelectorAll:()=>[]};
+  const h=fixture();h.context.testSurface={dataset:{},querySelector:()=>null,querySelectorAll:()=>[],scrollTop:0};
   h.context.testRun={id:'r',computer:'computer-one',status:'waiting',main:{app:'cursor',model:'Auto',effort:''},agents:[{id:'worker',label:'训练证据复核'}],works:[],questions:[],
     tasks:[['old',1],['equal-first',2],['new',3],['equal-second',2]].map(([id,updated])=>({id,updated,workerId:'worker',goal:'Long detailed goal '+id,
       executor:'child',app:'cursor',model:'Auto',effort:'',state:'idle',status:'queued',dependsOn:[]}))};
   h.run("fusionViewOwner={surface:'panel'};fusionRememberBoard=()=>{};fusionSurface=()=>testSurface;fusionDraw=(_kind,html)=>{this.testHtml=html};showFusionTasks(testRun)");
   const html=h.context.testHtml;assert.match(html,/title="训练证据复核"/);
+  const heading = html.match(/<summary class="fusion-agent-heading">([\s\S]*?)<\/summary>/)[1];
+  assert.match(heading, /<strong[^>]*>训练证据复核<\/strong>/); assert.doesNotMatch(heading, /Long detailed goal/);
+  assert.doesNotMatch(html, /<details[^>]*data-fusion-agent="worker"[^>]*\bopen(?:\s|>)/);
   assert.deepEqual([...html.matchAll(/data-fusion-task="([^"]+)"/g)].map(match=>match[1]),['new','equal-first','equal-second','old']);
   assert.deepEqual(h.context.testRun.tasks.map(task=>task.id),['old','equal-first','new','equal-second']);
   assert.match(html,/Long detailed goal old/);assert.equal(h.sent.length,0);
+  h.context.testRun.agents[0].label='新采集性能复核';
+  h.run('showFusionTasks(testRun)');
+  assert.match(h.context.testHtml, /<strong[^>]*>新采集性能复核<\/strong>/);
+  assert.match(h.context.testHtml, /data-fusion-agent="worker"/); assert.equal(h.sent.length,0);
 });
 test('Fusion titles show native model effort once and preserve ordinary titles', () => {
   const nodes = new Map(), run = { title: 'Historical workbench', computer: 'computer-one', project: { root: '/project' },

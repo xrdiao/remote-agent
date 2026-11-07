@@ -135,6 +135,12 @@ export class FusionController {
       if (attempt && attempt.origin !== 'events' && turn.ended && !attempt.endedAt)
         await this.runner.mainEnded(attempt.id, turn);
     }
+    for (const attempt of controller.attempts.filter(row => row.kind === 'main' && row.bindingId === controller.main.bindingId
+      && row.status === 'stopping' && !row.endedAt && row.native?.messageId)) {
+      const execution = await nativeAgentProvider(controller.main.app).readTurn(this.runner.agent, context,
+        { id: attempt.native.messageId, generationId: attempt.native.generationId || '' });
+      if (execution.ended) await this.runner.mainEnded(attempt.id, execution);
+    }
     const live = new Set(requests.map(request => `${request.params.turnId}:${String(request.id)}`));
     for (const [key, native] of this.waiting) if (!live.has(key)) this.runner.cancelWait(native);
     if (acceptedInput) this.runner.acceptedInput(turn.turnId);

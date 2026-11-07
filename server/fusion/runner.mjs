@@ -2,7 +2,7 @@ import { FusionAgent, fusionWorkspaceSnapshot } from './agent.mjs';
 import { FusionController } from './controller.mjs';
 import { fusionScheduler } from './scheduler.mjs';
 import { nativeAgentProvider } from './providers.mjs';
-import { applyFusionControl, fusionTaskPrompt, fusionEventView } from './control.mjs';
+import { applyFusionControl, fusionEventView } from './control.mjs';
 import { fusionRuns, fusionWorkers, fusionEvent, publishFusion,
   commitFusion, fusionAttemptWorkIds, NATIVE_UNSETTLED } from './state.mjs';
 
@@ -39,7 +39,7 @@ export class FusionRunner {
       for (const workId of workIds) await this.recordMainWork(attempt, workId);
     }
     if (action.action === 'read_workspace') {
-      result = { ...result, apps: await this.agent.softwareCapabilities(), management: { threadId: native.threadId, turnId: native.turnId,
+      result = { ...result, ...(result.view === 'overview' ? { apps: await this.agent.softwareCapabilities() } : {}), management: { threadId: native.threadId, turnId: native.turnId,
         evidenceReference: `main-turn:${native.turnId}` } };
     }
     if (action.action === 'set_priority') for (const job of this.scheduler.queue.filter(row => row.runId === run.id)) {
@@ -132,7 +132,7 @@ export class FusionRunner {
           attempt().inputIds = task().inputs.filter(input => !input.deliveredAt).map(input => input.id);
         }
         this.publish();
-        return this.agent.execute(this.run, attemptId, recovering ? attempt().prompt : fusionTaskPrompt(this.run, task(), attempt()), recovering);
+        return this.agent.execute(this.run, attemptId, recovering ? attempt().prompt : null, recovering);
       } }).then(result => this.completed(attemptId, result)).catch(error => this.attemptFailed(attemptId, error))
       .finally(() => {
         this.jobs.delete(attemptId);

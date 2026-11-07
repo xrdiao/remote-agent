@@ -102,6 +102,35 @@ test('stopping the whole workbench cancels a waiting reply without delivering ev
   assert.equal(h.runner.waiters.size,0);assert.equal(h.replies.length,0);assert.equal(h.run.status,'stopping');
   assert.deepEqual(h.stops,[h.run.attempts[0].id]);await driver.close();
 });
+test('a stopping main Attempt collects its exact native terminal state after Cursor removes the first input bubble', async () => {
+  const h=await managementScenario(),driver=h.connect();h.run.main.app='cursor';h.run.bindings[0].app='cursor';h.turn.generationId='native-generation';
+  await driver.read();await flush();const attempt=h.run.attempts[0];await h.runner.stop();
+  const call=h.agent.call,reads=[];let ended=false;
+  h.turn={id:'',turnId:'',threadId:'main-thread',generationId:'native-generation',accepted:false,ended:false,error:'Cursor 原生执行已中断：user'};
+  h.agent.call=async(context,code)=>{const{method,args}=nativeInvocation(code);if(method==='codexFusionTurn'&&args[0]){
+    reads.push(args);assert.equal(args[0],attempt.native.messageId);assert.equal(args[3],attempt.native.generationId);
+    return{...h.turn,id:attempt.native.messageId,turnId:attempt.native.turnId,current:true,ended,completed:false};
+  }return call(context,code);};
+  await driver.read();await flush();assert.equal(h.run.status,'stopping');assert.equal(attempt.endedAt,null);
+  ended=true;await driver.read();await flush();assert.equal(h.run.status,'stopped');assert.equal(attempt.status,'stopped');
+  assert(attempt.endedAt);assert.equal(attempt.result.completed,false);assert.match(attempt.result.error,/已中断/);
+  const facts=structuredClone(attempt);await driver.read();await flush();assert.deepEqual(attempt,facts);
+  assert.equal(reads.length,2);assert.equal(h.run.attempts.length,1);assert.equal(h.run.events.filter(e=>e.type==='user_input').length,1);
+  assert.equal(h.calls.length,0);assert.deepEqual(h.stops,[attempt.id]);await driver.close();
+});
+test('stop terminal reads preserve native steering and do not inspect another Binding', async () => {
+  const h=await managementScenario(),driver=h.connect();h.turn.generationId='native-generation';await driver.read();await flush();
+  const attempt=h.run.attempts[0];attempt.status='stopping';
+  const other={...structuredClone(attempt),id:'other-binding-attempt',bindingId:'other-binding',native:{threadId:'other-thread',turnId:'other-turn',messageId:'other-message'}};
+  h.run.attempts.push(other);const before=structuredClone(other),call=h.agent.call,reads=[];
+  h.turn={...h.turn,id:'steer-message',user:'Keep the new instruction'};
+  h.agent.call=async(context,code)=>{const{method,args}=nativeInvocation(code);if(method==='codexFusionTurn'&&args[0]){
+    reads.push(args[0]);return{...h.turn,id:attempt.native.messageId,turnId:attempt.native.turnId,ended:false};
+  }return call(context,code);};
+  await driver.read();await flush();assert.deepEqual(reads,['user-message']);assert.deepEqual(other,before);
+  assert.equal(h.run.attempts.length,2);assert.equal(h.run.events.filter(e=>e.data.native?.messageId==='steer-message').length,1);
+  assert.equal(attempt.native.messageId,'user-message');assert.equal(attempt.status,'stopping');assert.equal(h.calls.length,0);await driver.close();
+});
 test('plan revision and rejection never authorize dispatch and the replacement plan requires a new explicit decision', async () => {
   for(const decision of ['revise','reject']){
     const h=scenario(),workId=h.create(),planId=h.plan(workId,true).planId;
@@ -146,7 +175,8 @@ test('reused Worker waits for its native result while independent work continues
   await h.control({ action: 'dispatch', workId, tasks: [h.task('A')] }, h.native()); await flush();
   const first = h.run.tasks[0], attempt = h.run.attempts[0];
   await h.control({ action: 'dispatch', workId, tasks: [h.task('B'), h.task('C')], input: JSON.stringify({
-    B: { workerId: first.workerId, reason: 'Continue the established analysis context' }, C: { workerId: null, reason: 'Independent topic' },
+    B: { workerId: first.workerId, reason: 'Continue the established analysis context', compared: [{ workerId: first.workerId, reason: 'Relevant original context' }] },
+    C: { workerId: null, reason: 'Independent topic', compared: [{ workerId: first.workerId, reason: 'Different responsibility and independent parallel work' }] },
   }) }, h.native()); await flush();
   const started = () => h.calls.filter(row => row.kind === 'task').map(row => h.run.attempts.find(attempt => attempt.id === row.id).taskId);
   assert.deepEqual(started(), ['A', 'C']);
@@ -156,6 +186,15 @@ test('reused Worker waits for its native result while independent work continues
   assert.deepEqual(started(), ['A', 'C', 'B']);
   for (const task of h.run.tasks.slice(1)) h.pending.get(task.attemptIds[0]).resolve({});
   await flush(); assert.equal(h.scheduler.workerSlots.size, 0);
+  const workId2 = h.create(); h.plan(workId2);
+  await h.control({ action: 'dispatch', workId: workId2, tasks: [h.task('return')], input: JSON.stringify({ return: {
+    workerId: first.workerId, label: '既有分析复核', reason: 'Return to the original responsibility',
+    compared: h.run.agents.map(row => ({ workerId: row.id, reason: row.id === first.workerId ? 'Owns the recovered evidence' : 'Independent topic' })),
+  } }) }, h.native()); await flush();
+  assert.equal(h.run.agents.length, 2); assert.equal(h.run.tasks.at(-1).workerId, first.workerId);
+  assert.deepEqual(started(), ['A', 'C', 'B', 'return']);
+  h.pending.get(h.run.tasks.at(-1).attemptIds[0]).resolve({}); await flush();
+  assert.equal(h.scheduler.workerSlots.size, 0);
 });
 test('a same-software child delivers through a waiting tool without occupying a main software slot', async () => {
   const h = scenario(), workId = h.create(); h.plan(workId);
@@ -169,6 +208,23 @@ test('a same-software child delivers through a waiting tool without occupying a 
   assert.equal(h.run.events[0].deliveredTo,native.turnId); assert.equal(h.calls.length,1);
 });
 
+test('detail reads keep event receipt semantics without rereading the global software capability index', async () => {
+  const h = scenario(), workId = h.create(); h.plan(workId); h.apply({ action: 'dispatch', workId, tasks: [h.task('A')] });
+  let catalogs = 0;
+  h.agent.softwareCapabilities = async () => { catalogs++; return [{ app: 'codex', connected: true }]; };
+  fusionEvent(h.run, 'user_input', { workId, text: 'Preserve this exact instruction' }, 'one');
+  const native = h.native(), overview = await h.control({ action: 'read_workspace' }, native); await flush();
+  assert.equal(catalogs, 1); assert.equal(overview.events[0].data.text, 'Preserve this exact instruction');
+  h.runner.acknowledge(native, overview.events.map(event => event.id));
+  fusionEvent(h.run, 'user_input', { workId, text: 'New instruction after the overview' }, 'two');
+  const detailNative = h.native(), detail = await h.control(overview.agents[0].read, detailNative);
+  assert.equal(catalogs, 1); assert.equal(detail.agents.length, 1); assert.equal('apps' in detail, false);
+  assert.deepEqual(detail.events.map(event => event.id), ['two']);
+  h.runner.acknowledge(detailNative, detail.events.map(event => event.id));
+  const protocol = await h.control(overview.protocol.read, h.native());
+  assert.equal(catalogs, 1); assert.deepEqual(protocol.events, []);
+  for (const value of h.pending.values()) value.resolve({}); await flush();
+});
 test('events during ordinary main work stay in the inbox and arrive together through the next actual tool', async () => {
   const h=scenario(); h.runner.wake(); await flush();
   const idle=await h.control({action:'wait'},h.native()); assert.deepEqual(idle.events,[]); assert.equal(h.runner.waiters.size,0);

@@ -21,10 +21,14 @@ export function fixture() {
   let requestSerial = 0;
   const native = () => ({ threadId: 'main-thread', turnId: 'native-turn', requestId: requestSerial++, decisionId: crypto.randomUUID() });
   const request = action => {
+    if (action.action === 'review') return { ...action, summary: action.summary ?? 'Verified evidence; no further issue in this fixture' };
     if (action.action !== 'dispatch' || !Array.isArray(action.tasks)) return action;
     const choices = action.input === undefined ? Object.fromEntries(action.tasks.map(task => [task.id,
       { workerId: null, reason: 'Fixture explicitly selects an independent new worker' }])) : JSON.parse(action.input);
-    for (const task of action.tasks) if (choices[task.id]) choices[task.id].label ??= `Analysis ${task.id}`;
+    for (const task of action.tasks) if (choices[task.id]) {
+      choices[task.id].label ??= `Analysis ${task.id}`;
+      choices[task.id].compared ??= [];
+    }
     return { ...action, input: JSON.stringify(choices) };
   };
   const apply = action => applyFusionControl(run, request(action), native());

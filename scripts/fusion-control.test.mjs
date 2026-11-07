@@ -2,8 +2,127 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import { applyFusionControl, fusionTaskPrompt } from '../server/fusion/control.mjs';
+import { applyFusionControl, fusionTaskPrompt, fusionTaskInput } from '../server/fusion/control.mjs';
 import { fixture } from './fusion-fixture.mjs';
+
+function readText(h, selector, length = 4096) {
+  const query = JSON.parse(selector.input); let text = '', offset = 0;
+  do { const page = h.apply({ ...selector, input: JSON.stringify({ ...query, offset, length }) }); text += page.text; offset = page.nextOffset; } while (offset !== null);
+  return text;
+}
+function childContextFixture() {
+  const h = fixture(), workId = h.create(); h.plan(workId);
+  h.apply({ action: 'dispatch', workId, tasks: [h.task('A')] });
+  const binding = { id: 'child-binding', app: 'codex', role: 'worker', threadId: 'native-child', project: h.project };
+  h.run.bindings.push(binding); h.run.agents[0].bindingId = binding.id;
+  const attempt = h.run.attempts[0]; attempt.bindingId = binding.id;
+  const first = fusionTaskInput(h.run, h.run.tasks[0], attempt);
+  Object.assign(attempt, { prompt: first.prompt, promptContext: first.context, submission: 'accepted', acceptedAt: 10,
+    endedAt: 20, status: 'accepted', native: { threadId: binding.threadId, turnId: 'first-turn' } });
+  h.run.tasks[0].status = 'accepted';
+  return { ...h, workId, binding, first };
+}
+
+test('work memory preserves current constraints and unresolved execution while accepted process stays behind evidence reads', () => {
+  const h = fixture(), workId = h.create(); h.plan(workId);
+  h.apply({ action: 'dispatch', workId, tasks: [h.task('verified'), h.task('unknown')] });
+  const [task] = h.run.tasks, attempt = h.run.attempts[0], original = 'complete original result '.repeat(10000);
+  Object.assign(attempt, { status: 'awaiting_review', endedAt: 20, result: { text: original, completed: true } });
+  h.apply({ action: 'review', taskId: task.id, attemptId: attempt.id, verdict: 'accept', reason: 'Full verification detail '.repeat(1000),
+    summary: 'Verified the file and calculation; no remaining issue in this task.',
+    evidence: [{ criterion: task.acceptance[0].id, detail: 'Actual native output', reference: 'native-output' }] });
+  h.run.attempts[1].status = 'unknown';
+  const constraint = '用户明确暂停训练，不授权启动任何训练作业。';
+  h.apply({ action: 'plan', workId, scope: ['.'], summary: constraint, criteria: [{ id: 'C1', text: 'Keep evidence without training' }], requiresConfirmation: true });
+  h.apply({ action: 'ask_user', workId, question: '继续前需确认新的范围。', options: ['确认', '修改'] });
+  h.run.stopRequested = true;
+  const before = structuredClone(h.run), view = h.apply({ action: 'read_workspace' });
+  assert.equal(view.stopRequested, true); assert.equal(view.works[0].plan.summary, constraint);
+  assert.equal(view.works[0].plan.confirmed, false); assert.deepEqual(view.works[0].plan.scope, ['.']);
+  assert.equal(view.questions[0].text, '继续前需确认新的范围。');
+  assert.equal(view.tasks.some(row => row.id === 'verified'), false); assert.equal(view.tasks.find(row => row.id === 'unknown').status, 'queued');
+  assert.equal(view.agents[1].status, 'unknown'); assert.equal(view.works[0].memory.summary, 'Verified the file and calculation; no remaining issue in this task.');
+  assert(!JSON.stringify(view).includes(original)); assert.equal('workers' in view.protocol, false);
+  const work = h.apply(view.works[0].read);
+  assert.equal(work.memory[0].taskId, 'verified'); assert.equal(work.memory[0].attemptId, attempt.id);
+  const detail = h.apply(work.memory[0].read);
+  assert.equal(readText(h, detail.attempts[0].result.text.read), original);
+  assert.deepEqual(JSON.parse(readText(h, detail.read.reviews)), h.run.tasks[0].reviews);
+  assert.deepEqual(h.run, before);
+});
+test('completed work keeps its delivery memory and paged original plans without returning old process by default', () => {
+  const h = fixture(), workId = h.create(); h.plan(workId);
+  const work = h.run.works[0]; work.status = 'completed';
+  work.plans.push({ id: 'old-plan', summary: 'long historical plan '.repeat(1000), scope: ['.'], criteria: [{ id: 'old', text: 'Original criteria' }] });
+  work.deliveries.push({ summary: 'All requested checks passed; the preserved artifact is evidence.txt.', evidence: [{ reference: 'evidence.txt' }] });
+  const before = structuredClone(h.run), overview = h.apply({ action: 'read_workspace' });
+  assert.equal('plan' in overview.works[0], false); assert.equal('goal' in overview.works[0], false);
+  assert.equal(overview.works[0].memory.summary, work.deliveries[0].summary);
+  const selected = h.apply(overview.works[0].read);
+  assert.deepEqual(selected.works[0].plan, work.plans[0]);
+  assert.deepEqual(JSON.parse(readText(h, selected.works[0].readPlans, 251)), work.plans);
+  assert.deepEqual(JSON.parse(readText(h, selected.works[0].readDeliveries, 31)), work.deliveries);
+  const history = JSON.parse(readText(h, { action: 'read_workspace', input: JSON.stringify({ view: 'history' }) }, 37));
+  assert.equal(history[0].id, workId); assert.equal(history[0].summary, work.deliveries[0].summary);
+  const protocol = h.apply(overview.protocol.read); assert.equal(protocol.protocol.required.review.includes('summary'), true);
+  assert.deepEqual(h.run, before);
+});
+test('semantic review memory is required without replacing detailed evidence or creating another execution', () => {
+  const h = fixture(), workId = h.create(); h.plan(workId);
+  h.apply({ action: 'dispatch', workId, tasks: [h.task('A')] });
+  const attempt = h.run.attempts[0]; Object.assign(attempt, { status: 'awaiting_review', endedAt: 20 });
+  const action = { action: 'review', taskId: 'A', attemptId: attempt.id, verdict: 'rework', reason: 'Precise issue and original evidence retained' };
+  assert.throws(() => applyFusionControl(h.run, action, h.native()), /summary/);
+  h.apply({ ...action, summary: 'Validation found one issue; fix the specified condition.' });
+  assert.equal(h.run.tasks[0].reviews[0].reason, action.reason);
+  assert.equal(h.run.tasks[0].reviews[0].summary, 'Validation found one issue; fix the specified condition.');
+  assert.equal(h.run.attempts.length, 1); assert.equal(h.run.effects.length, 1);
+});
+test('a received child task continues with only changes and links the actual accepted prior attempt', () => {
+  const h = childContextFixture();
+  assert.equal(h.first.context.mode, 'full');
+  h.apply({ action: 'continue_task', taskId: 'A', input: 'Check the second number and report the sum.', cost: h.cost('codex') });
+  const attempt = h.run.attempts.at(-1); attempt.bindingId = h.binding.id;
+  const before = structuredClone(h.run), next = fusionTaskInput(h.run, h.run.tasks[0], attempt), data = JSON.parse(next.prompt.slice(next.prompt.indexOf('{')));
+  assert.equal(next.context.mode, 'delta'); assert.equal(data.basedOn, h.run.attempts[0].id);
+  assert.equal(data.input, 'Check the second number and report the sum.'); assert.equal(data.taskId, 'A');
+  for (const key of ['goal', 'scope', 'acceptance', 'project', 'review', 'dependencies']) assert.equal(key in data, false);
+  assert(next.prompt.length < h.first.prompt.length / 2); assert.deepEqual(h.run, before);
+});
+test('related new tasks retain the session rules while sending complete new scope and acceptance', () => {
+  const h = childContextFixture(), spec = { ...h.task('B'), goal: 'Independently review the new file', access: 'write', scope: ['new-file'], acceptance: ['New output verified'] };
+  h.apply({ action: 'dispatch', workId: h.workId, tasks: [spec], input: JSON.stringify({ B: { workerId: h.run.agents[0].id,
+    label: '相关文件复核', reason: 'Reuse known project context', compared: [] } }) });
+  const attempt = h.run.attempts.at(-1); attempt.bindingId = h.binding.id;
+  const next = fusionTaskInput(h.run, h.run.tasks[1], attempt), data = JSON.parse(next.prompt.slice(next.prompt.indexOf('{')));
+  assert.equal(next.context.mode, 'task'); assert.equal(data.goal, spec.goal); assert.equal(data.access, 'write');
+  assert.deepEqual(data.scope, ['new-file']); assert.deepEqual(data.acceptance, h.run.tasks[1].acceptance);
+  assert.equal(next.prompt.includes('不创建 worktree'), false); assert.equal(h.run.agents.length, 1);
+});
+test('legacy, rejected and different-thread child inputs establish a full context instead of assuming delivery', () => {
+  for (const kind of ['legacy', 'rejected', 'different-thread', 'new-policy']) {
+    const h = childContextFixture(), previous = h.run.attempts[0];
+    if (kind === 'legacy') delete previous.promptContext;
+    if (kind === 'rejected') { previous.submission = 'submitting'; previous.acceptedAt = null; }
+    if (kind === 'different-thread') previous.native.threadId = 'foreign-thread';
+    if (kind === 'new-policy') previous.promptContext.policy = 'old-policy';
+    h.apply({ action: 'continue_task', taskId: 'A', input: 'Confirm the next value.', cost: h.cost('codex') });
+    const attempt = h.run.attempts.at(-1); attempt.bindingId = h.binding.id;
+    const next = fusionTaskInput(h.run, h.run.tasks[0], attempt), data = JSON.parse(next.prompt.slice(next.prompt.indexOf('{')));
+    assert.equal(next.context.mode, 'full', kind); assert.equal('basedOn' in data, false);
+    assert.equal(data.goal, h.run.tasks[0].goal); assert.deepEqual(data.scope, h.run.tasks[0].scope);
+  }
+});
+test('scope, permissions and review changes are explicit in child continuations', () => {
+  const h = childContextFixture();
+  h.apply({ action: 'continue_task', taskId: 'A', input: 'Use the newly restricted scope.', cost: h.cost('codex') });
+  const task = h.run.tasks[0], attempt = h.run.attempts.at(-1); attempt.bindingId = h.binding.id;
+  task.scope = ['narrow-file']; task.access = 'write'; task.acceptance = [{ id: 'A:2', text: 'Verify only the new file' }];
+  task.reviews.push({ verdict: 'rework', summary: 'Fix the exact validation failure.', reason: 'Original error details', evidence: [] });
+  const next = fusionTaskInput(h.run, task, attempt), data = JSON.parse(next.prompt.slice(next.prompt.indexOf('{')));
+  assert.equal(next.context.mode, 'delta'); assert.deepEqual(data.scope, ['narrow-file']); assert.equal(data.access, 'write');
+  assert.deepEqual(data.acceptance, task.acceptance); assert.equal(data.review.reason, 'Original error details');
+});
 
 test('Fusion refreshes only its idle native thread instructions and keeps ordinary sends and actual model permissions intact', async () => {
   const source=fs.readFileSync(new URL('../server/page/session-actions.js',import.meta.url),'utf8');
@@ -48,10 +167,86 @@ test('a related new task can select a retained Worker without changing earlier t
   assert.notEqual(result.attemptId, first.attemptId); assert.equal(h.run.tasks[1].workId, secondWork);
   assert.deepEqual({ task: h.run.tasks[0], attempt: h.run.attempts[0], assignment: h.run.assignments[0] }, old);
   const board = h.apply({ action: 'read_workspace' });
-  assert.deepEqual(board.agents[0].taskIds, ['first', 'related']); assert.equal(board.agents[0].project.id, h.project.id);
+  assert.equal(board.agents[0].taskCount, 2); assert.equal('lastResult' in board.agents[0], false);
+  const detail = h.apply(board.agents[0].read).agents[0];
+  assert.deepEqual(detail.taskIds, ['first', 'related']); assert.equal(detail.project.id, h.project.id);
   const savedBinding = h.run.agents[0].bindingId;
   h.run.agents[0].bindingId = 'a-later-binding';
   assert.equal(h.apply({ action: 'read_task', taskId: 'first' }).binding.id, savedBinding);
+});
+test('worker discovery exposes current ownership and bounded past evidence without reading or changing native history', () => {
+  const h = fixture(), workId = h.create(); h.plan(workId);
+  const first = h.apply({ action: 'dispatch', workId, tasks: [h.task('original')] }).tasks[0];
+  const ended = h.run.attempts[0], task = h.run.tasks[0];
+  Object.assign(ended, { status: 'accepted', acceptedAt: 10, endedAt: 20,
+    result: { completed: true, text: 'Earlier evidence '.repeat(1000) },
+    usage: { native: { modelContextWindow: 1000, totalTokenUsage: { totalTokens: 120 } }, observedAt: 20, actualCost: 'unknown' } });
+  task.status = 'accepted'; task.reviews.push({ attemptId: ended.id, verdict: 'accept', reason: 'Verified evidence '.repeat(100), at: 30 });
+  const input = id => JSON.stringify({ [id]: { workerId: first.workerId, label: '性能采集分析', reason: 'Keep established evidence',
+    compared: [{ workerId: first.workerId, reason: 'Same project and responsibility' }] } });
+  h.apply({ action: 'dispatch', workId, tasks: [h.task('active')], input: input('active') });
+  Object.assign(h.run.attempts[1], { status: 'unknown', acceptedAt: 40 });
+  h.apply({ action: 'dispatch', workId, tasks: [h.task('queued')], input: input('queued') });
+  const before = structuredClone(h.run), index = h.apply({ action: 'read_workspace' }).agents[0];
+  assert.equal('recentTask' in index, false); assert.equal(index.taskCount, 3);
+  const worker = h.apply(index.read).agents[0];
+  assert.equal(worker.id, first.workerId); assert.equal(worker.label, '性能采集分析');
+  assert.equal(worker.status, 'unknown'); assert.equal(worker.currentTaskId, 'active');
+  assert.deepEqual(worker.queuedTaskIds, ['queued']); assert.deepEqual(worker.taskIds, ['original', 'active', 'queued']);
+  assert.equal(worker.recentTask.id, 'queued'); assert.deepEqual(worker.recentTask.scope, ['.']);
+  assert.equal(worker.lastResult.taskId, 'original'); assert.equal(worker.lastResult.attemptId, ended.id);
+  assert(worker.lastResult.result.text.preview.length < ended.result.text.length);
+  assert.equal(worker.lastResult.result.text.characters, ended.result.text.length);
+  assert.deepEqual(worker.lastResult.usage, ended.usage); assert.equal(worker.lastReview.taskId, 'original');
+  assert(worker.lastReview.reason.length < task.reviews[0].reason.length);
+  assert(worker.lastActiveAt >= 40); assert.deepEqual(h.run, before);
+  const read = worker.lastResult.result.text.read;
+  assert.equal(h.apply({ ...read, input: JSON.stringify({ section: 'result', offset: 600 }) }).offset, 600);
+  assert.equal(JSON.parse(readText(h, h.apply(worker.lastReview.read).read.reviews))[0].reason, task.reviews[0].reason);
+});
+test('new related tasks reuse the chosen worker and independent tasks record why a new worker was selected', () => {
+  const h = fixture(), firstWork = h.create(); h.plan(firstWork);
+  const first = h.apply({ action: 'dispatch', workId: firstWork, tasks: [h.task('first')] }).tasks[0];
+  const original = structuredClone({ task: h.run.tasks[0], assignment: h.run.assignments[0], attempt: h.run.attempts[0] });
+  const workId = h.create(); h.plan(workId);
+  const reuse = { workerId: first.workerId, label: '采集性能分析', reason: 'Reuse the existing collection analysis',
+    compared: [{ workerId: first.workerId, reason: 'Owns the relevant project evidence and context' }] };
+  h.apply({ action: 'dispatch', workId, tasks: [h.task('related')], input: JSON.stringify({ related: reuse }) });
+  const create = { workerId: null, label: '文档独立复核', reason: 'A separate documentation review needs an independent context',
+    compared: [{ workerId: first.workerId, reason: 'Collection analysis responsibility differs from document review' }] };
+  h.apply({ action: 'dispatch', workId, tasks: [h.task('independent')], input: JSON.stringify({ independent: create }) });
+  assert.equal(h.run.agents.length, 2); assert.equal(h.run.tasks[1].workerId, first.workerId);
+  assert.notEqual(h.run.tasks[2].workerId, first.workerId);
+  assert.deepEqual(h.run.assignments[1].workerSelection, reuse); assert.deepEqual(h.run.assignments[2].workerSelection, create);
+  assert.deepEqual({ task: h.run.tasks[0], assignment: h.run.assignments[0], attempt: h.run.attempts[0] }, original);
+});
+test('worker choices require attributable comparisons and a responsibility short name before creating any task', () => {
+  const h = fixture(), workId = h.create(); h.plan(workId);
+  const first = h.apply({ action: 'dispatch', workId, tasks: [h.task('A')] }).tasks[0], before = structuredClone(h.run);
+  const apply = choice => applyFusionControl(h.run, { action: 'dispatch', workId, tasks: [h.task('B')], input: JSON.stringify({ B: choice }) }, h.native());
+  const choice = { workerId: null, label: 'Independent review', reason: 'Different responsibility' };
+  assert.throws(() => apply(choice), /compared/);
+  assert.throws(() => apply({ ...choice, compared: [{ workerId: 'missing', reason: 'Unrelated' }] }), /比较的 Worker 不存在/);
+  assert.throws(() => apply({ ...choice, compared: [{ workerId: first.workerId, reason: '' }] }), /比较理由/);
+  assert.throws(() => apply({ ...choice, label: 'A complete task description '.repeat(4), compared: [] }), /职责短名/);
+  assert.throws(() => apply({ ...choice, label: 'Analysis\nReview', compared: [] }), /单行/);
+  assert.deepEqual(h.run, before);
+});
+test('a legacy worker keeps its native identity and old facts while a normal follow-up updates its responsibility name', () => {
+  const h = fixture(), workId = h.create(); h.plan(workId);
+  const first = h.apply({ action: 'dispatch', workId, tasks: [h.task('legacy')] }).tasks[0];
+  const worker = h.run.agents[0]; worker.label = 'An old complete task description that predates responsibility short names'; worker.bindingId = 'old-binding';
+  h.run.bindings.push({ id: 'old-binding', role: 'worker', app: 'codex', threadId: 'old-native-thread', project: h.project });
+  const attempt = h.run.attempts[0]; Object.assign(attempt, { status: 'accepted', endedAt: 10, bindingId: worker.bindingId });
+  h.run.tasks[0].status = 'accepted'; delete h.run.assignments[0].workerSelection;
+  const before = structuredClone({ assignment: h.run.assignments[0], attempt, binding: h.run.bindings[1] });
+  assert.equal(h.apply({ action: 'read_workspace' }).agents[0].label, worker.label);
+  assert.equal(h.run.attempts.length, 1);
+  h.apply({ action: 'continue_task', taskId: 'legacy', title: '采集性能复核', input: 'Verify the updated measurements', cost: h.cost('codex') });
+  assert.equal(h.run.tasks.length, 1); assert.equal(h.run.agents.length, 1);
+  assert.equal(h.run.agents[0].id, first.workerId); assert.equal(h.run.agents[0].label, '采集性能复核');
+  assert.equal(h.run.agents[0].bindingId, 'old-binding'); assert.equal(h.run.attempts.length, 2);
+  assert.deepEqual({ assignment: h.run.assignments[0], attempt: h.run.attempts[0], binding: h.run.bindings[1] }, before);
 });
 test('dispatch requires an explicit per-task resource choice and rejects unrelated workers atomically', () => {
   const h = fixture(), workId = h.create(); h.plan(workId);
@@ -191,7 +386,11 @@ test('workspace summaries keep complete pending user input and retrieve full tas
   assert.equal('models' in workspace.capabilities[0], false);
   assert.equal(workspace.capabilities[0].modelCount, h.run.capabilities[0].models.length);
   assert.deepEqual(h.apply({ action: 'list_models', app: 'codex' }), h.run.capabilities[0]);
-  assert.deepEqual(h.apply({ action: 'read_task', taskId: task.id }).task, task);
+  const detail = h.apply({ action: 'read_task', taskId: task.id });
+  assert.deepEqual(detail.task.scope, task.scope); assert.deepEqual(detail.task.acceptance, task.acceptance);
+  assert.equal('inputs' in detail.task, false); assert.equal('reviews' in detail.task, false);
+  assert.deepEqual(JSON.parse(readText(h, detail.read.inputs)), task.inputs);
+  assert.deepEqual(JSON.parse(readText(h, detail.read.reviews)), task.reviews);
   assert.deepEqual(h.run, before);
 });
 test('child requests keep authorized scope, acceptance, exact new input and rework without embedding unrelated plans or dependency replies', () => {

@@ -13,7 +13,7 @@ import { helpersCall } from '../page/build.mjs';
 import { rememberFusionSession } from '../project-windows.mjs';
 import { fusionProject, fusionLive, publishFusion, fusionEvent } from './state.mjs';
 import { nativeCostSnapshot } from './cost.mjs';
-import { FUSION_TOOLS, fusionControllerPrompt } from './control.mjs';
+import { FUSION_TOOLS, fusionControllerPrompt, fusionTaskInput } from './control.mjs';
 import { fusionScheduler } from './scheduler.mjs';
 import { nativeAgentProvider, nativeAgentProviders } from './providers.mjs';
 
@@ -245,6 +245,10 @@ export class FusionAgent {
         if (cancelled()) throw Object.assign(new Error('未提交的任务已取消'), { cancelled: true });
         if (task) await this.configure(context, controller, current());
         const before = await nativeAgentProvider(binding.app).readTurn(this, context);
+        if (task) {
+          const input = fusionTaskInput(controller, task, current());
+          prompt = input.prompt; current().promptContext = input.context;
+        }
         Object.assign(current(), { beforeIds: before.ids, beforeTurnId: before.turnId || '', prompt,
           baseline: task ? await fusionWorkspaceSnapshot(work.project, task.scope) : null, status: 'preparing' });
         this.publish(controller);
