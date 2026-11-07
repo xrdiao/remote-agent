@@ -86,7 +86,7 @@ function mainCommandOrigin(run, action, field, id) {
 }
 function taskBoard(run, tasks) {
   return { tasks, nativeInteractions: nativeInteractions(run),
-    agents: run.agents.map(({ id, bindingId }) => ({ id, bindingId })),
+    agents: run.agents.map(({ id, label, bindingId }) => ({ id, label, bindingId })),
     assignments: run.tasks.map(task => run.assignments.findLast(row => row.taskId === task.id)).filter(Boolean)
       .map(({ taskId, app, model, effort }) => ({ taskId, app, model, effort })),
     dispatches: run.commands.filter(row => row.action === 'dispatch' || row.action === 'continue_task' && run.tasks.find(task => task.id === row.result.taskId)?.executor !== 'main').map(row => ({
@@ -108,7 +108,7 @@ function controllerView(run, tasks) {
     taskId: row.taskId, questionId: row.id, text: row.text.slice(0, 200) }));
   for (const work of run.works) {
     const plan = work.plans.find(row => row.id === work.planId);
-    if (plan && !plan.confirmed) attention.push({ kind: 'plan', workId: work.id, planId: plan.id, text: work.title });
+    if (plan && !plan.confirmed && !plan.decision) attention.push({ kind: 'plan', workId: work.id, planId: plan.id, text: work.title });
   }
   for (const task of tasks.filter(row => row.needsUser)) if (!attention.some(row => row.taskId === task.id))
     attention.push({ kind: 'native', workId: task.workId, taskId: task.id, text: task.goal });
@@ -117,6 +117,8 @@ function controllerView(run, tasks) {
     : ['blocked', 'stopped'].includes(run.status) ? 'err' : counts.run || ['running', 'recovering', 'stopping'].includes(run.status) ? 'run'
       : run.works.length && run.works.every(row => row.status === 'completed') ? 'done' : counts.err ? 'err' : 'idle';
   return { ...fusionSummary(run), main: { app, model, effort, bindingId, windowId, preparing, error, projectTrust },
+    internalInputs: run.attempts.filter(row => row.kind === 'main' && row.origin === 'events' && row.native?.messageId)
+      .map(row => ({ threadId: row.native.threadId, messageId: row.native.messageId })),
     overview: { state, counts, apps: [...new Set([app, ...tasks.map(row => row.app)].filter(Boolean))], attention,
       current: current ? { text: current.goal, status: current.status, needsUser: current.needsUser } : null } };
 }
@@ -277,7 +279,11 @@ export const FUSION_OWNER = {
     emitFusionView(this, run, message);
   },
   fusionPrepare(message) { return prepare(this, requestedRun(this, message), message); },
-  fusionConfirm(message) { fusionRunner(requestedRun(this, message)).confirm(String(message.planId || '')); },
+  fusionConfirm(message) {
+    const run = requestedRun(this, message);
+    fusionRunner(run).confirm(String(message.planId || ''), message.decision, message.text || '');
+    this.emit({ t: 'fusionInputDone', computer: computerId(), requestId: message.requestId });
+  },
   fusionInput(message) {
     if (!message.requestId) throw new Error('补充内容缺少请求身份');
     fusionRunner(requestedRun(this, message)).input(message);

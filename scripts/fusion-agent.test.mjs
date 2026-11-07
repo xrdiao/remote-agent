@@ -6,7 +6,7 @@ import { FusionAgent } from '../server/fusion/agent.mjs';
 import { NativeCdp, nativeWindow } from '../server/native-windows.mjs';
 import { fixture } from './fusion-fixture.mjs';
 import { helpersCall, PAGE_SRC } from '../server/page/build.mjs';
-import { FUSION_TOOLS, fusionAutonomyContext } from '../server/fusion/control.mjs';
+import { FUSION_TOOLS, fusionAutonomyContext, fusionControllerPrompt } from '../server/fusion/control.mjs';
 import { FusionController } from '../server/fusion/controller.mjs';
 
 test('Fusion reads the Codex model catalog without loading the ordinary conversation history', async () => {
@@ -278,7 +278,7 @@ test('connecting a persistent controller registers its own workbench authorizati
   const controller = new FusionController({ run, agent }); controller.check = async () => {};
   await controller.start(); await controller.start();
   assert.equal(calls.length, 1); assert.equal(calls[0].action, 'bindTools'); assert.equal(calls[0].thread, 'main-thread');
-  assert.deepEqual(calls[0].value, { names: FUSION_TOOLS.map(tool => tool.name), authorization: fusionAutonomyContext(run) });
+  assert.deepEqual(calls[0].value, { names: FUSION_TOOLS.map(tool => tool.name), authorization: fusionAutonomyContext(run), instructions: fusionControllerPrompt(run) });
   assert.equal(calls[0].value.authorization.kind, 'application'); assert(calls[0].value.authorization.value.includes(run.id));
   assert(Buffer.byteLength(JSON.stringify(calls[0].value.authorization)) < 700);
   await controller.close(); assert.deepEqual(calls.slice(1).map(call => call.action), ['unsubscribe', 'unbindTools']);

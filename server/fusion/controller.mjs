@@ -1,11 +1,11 @@
 import crypto from 'node:crypto';
-import { FUSION_TOOLS, fusionAutonomyContext } from './control.mjs';
+import { FUSION_TOOLS, fusionAutonomyContext, fusionControllerPrompt } from './control.mjs';
 import { fusionEvent, newFusionAttempt, publishFusion } from './state.mjs';
 
 // The native conversation owns chat, input, models and permissions. This observer
 // handles only this conversation's registered management tools and event inbox.
 export class FusionController {
-  constructor(runner) { this.runner = runner; this.controller = runner.run; this.pending = new Set(); }
+  constructor(runner) { this.runner = runner; this.controller = runner.run; this.pending = new Set(); this.waiting = new Map(); this.delivering = new Set(); }
   async start() {
     if (this.context) return;
     if (this.starting) return this.starting;
@@ -17,18 +17,23 @@ export class FusionController {
     if (!binding) return;
     const context = await this.runner.agent.openBinding(controller, binding);
     try {
-      await this.runner.agent.call(context, `nativeSessionAction('codex', ${JSON.stringify(binding.threadId)}, 'bindTools', ${JSON.stringify({
-        names: FUSION_TOOLS.map(row => row.name), authorization: fusionAutonomyContext(controller),
-      })})`);
+      await this.bind(context);
       this.context = context;
       context.cdp.onclose = error => this.failed(error);
       this.unsubscribe = context.source.subscribe(error => error ? this.failed(error) : this.check(), context.native, 'fusion-control');
       await this.check();
     } catch (error) { await this.close(); if (this.context !== context) await this.runner.agent.close(context); throw error; }
   }
+  async bind(context) {
+    const result = await this.runner.agent.call(context, `nativeSessionAction('codex', ${JSON.stringify(context.native.threadId)}, 'bindTools', ${JSON.stringify({
+      names: FUSION_TOOLS.map(row => row.name), authorization: fusionAutonomyContext(this.controller), instructions: fusionControllerPrompt(this.controller),
+    })})`);
+    this.profileReady = result.profileReady;
+  }
   async close() {
     const context = this.context;
     this.context = null;
+    for (const native of this.waiting.values()) this.runner.cancelWait(native);
     this.unsubscribe?.(); this.unsubscribe = null;
     if (!context) return;
     try { await this.runner.agent.call(context, `nativeSessionAction('codex', ${JSON.stringify(context.native.threadId)}, 'unbindTools')`); }
@@ -91,6 +96,8 @@ export class FusionController {
     ]);
     if (this.context !== context) return;
     this.latest = { turn, requests };
+    if (this.profileReady === false && (turn.ended || !turn.turnId)) await this.bind(context);
+    let acceptedInput = false;
     if (turn.id && turn.accepted) {
       let attempt = controller.attempts.find(row => row.bindingId === controller.main.bindingId && row.kind === 'main' && row.native?.turnId === turn.turnId);
       attempt ||= controller.attempts.find(row => row.kind === 'main' && row.origin === 'events'
@@ -106,10 +113,16 @@ export class FusionController {
         attempt.model = settings.model; attempt.effort = settings.effort || '';
         Object.assign(attempt, { status: 'running', submission: 'accepted', acceptedAt: Date.now(),
           native: { threadId: turn.threadId, turnId: turn.turnId, messageId: turn.id } });
-        controller.observedMainMessages.push(turn.id); controller.observedMainTurns.push(turn.turnId);
-        if (attempt.origin === 'user') {
-          const event = fusionEvent(controller, 'user_input', { text: turn.user, native: attempt.native }, `user:${turn.threadId}:${turn.id}`);
+        controller.observedMainTurns.push(turn.turnId);
+        publishFusion(controller);
+      }
+      if (attempt && !controller.observedMainMessages.includes(turn.id)) {
+        controller.observedMainMessages.push(turn.id);
+        if (attempt.origin === 'user' || turn.id !== attempt.native.messageId) {
+          const native = { ...attempt.native, messageId: turn.id };
+          const event = fusionEvent(controller, 'user_input', { text: turn.user, native }, `user:${turn.threadId}:${turn.id}`);
           event.deliveredTo = turn.turnId;
+          acceptedInput = true;
           if (controller.status === 'blocked') { controller.status = 'running'; controller.blockedReason = ''; }
         }
         publishFusion(controller);
@@ -118,30 +131,50 @@ export class FusionController {
       if (attempt && attempt.origin !== 'events' && turn.ended && !attempt.endedAt)
         await this.runner.mainEnded(attempt.id, turn);
     }
+    const live = new Set(requests.map(request => `${request.params.turnId}:${String(request.id)}`));
+    for (const [key, native] of this.waiting) if (!live.has(key)) this.runner.cancelWait(native);
+    if (acceptedInput) this.runner.acceptedInput(turn.turnId);
     for (const request of requests) {
       const key = `${request.params.turnId}:${String(request.id)}`;
       if (this.pending.has(key)) continue;
       this.pending.add(key);
-      try {
-        const native = { threadId: request.params.threadId, turnId: request.params.turnId,
+      const native = { threadId: request.params.threadId, turnId: request.params.turnId,
           requestId: request.id, callId: request.params.callId, decisionId: crypto.randomUUID() };
+      if (request.params.arguments?.action === 'wait') {
+        this.waiting.set(key, native);
+        this.reply(context, request, native).catch(error => { if (this.context === context) this.failed(error); });
+      } else await this.reply(context, request, native);
+    }
+  }
+  async reply(context, request, native) {
+      const key = `${native.turnId}:${String(native.requestId)}`;
+      const delivery = [];
+      try {
         let result, value;
+        let errorEvent;
         try {
           if (request.params.tool !== 'ra_fusion') throw new Error('未注册这个主控工具');
           value = await this.runner.control(request.params.arguments, native);
+          if (value.cancelled || this.context !== context) return;
+          const unread = new Set(this.controller.events.filter(event => !event.deliveredTo).map(event => event.id));
+          value.events = value.events.filter(event => unread.has(event.id) && !this.delivering.has(event.id));
+          delivery.push(...value.events.map(event => event.id));
+          for (const id of delivery) this.delivering.add(id);
           result = { success: true, contentItems: [{ type: 'inputText', text: JSON.stringify(value) }] };
         } catch (error) {
           result = { success: false, contentItems: [{ type: 'inputText', text: error.message }] };
-          fusionEvent(controller, 'control_error', { native, reason: error.message }, `control-error:${key}`);
-          // The model receives this error in the current native turn.
-          controller.events.at(-1).deliveredTo = native.turnId;
-          publishFusion(controller);
+          errorEvent = fusionEvent(this.controller, 'control_error', { native, reason: error.message }, `control-error:${key}`);
+          delivery.push(errorEvent.id); this.delivering.add(errorEvent.id);
+          publishFusion(this.controller);
         }
+        if (this.context !== context) return;
         await this.runner.agent.call(context,
           `nativeSessionAction('codex', ${JSON.stringify(context.native.threadId)}, 'toolReply', ${JSON.stringify({ requestId: request.id, result })})`);
-        this.runner.acknowledge(native, value?.events?.map(event => event.id));
-      } finally { this.pending.delete(key); }
-    }
+        this.runner.acknowledge(native, errorEvent ? [errorEvent.id] : value.events.map(event => event.id));
+      } finally {
+        for (const id of delivery) this.delivering.delete(id);
+        this.pending.delete(key); this.waiting.delete(key);
+      }
   }
   async idle() {
     await this.start();

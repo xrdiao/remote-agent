@@ -5,6 +5,13 @@ const I18N = (() => {
   const lang = saved === 'zh' || saved === 'en' ? saved : /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
 
   const EN = {
+    "确认执行": "Approve and proceed",
+    "要求修改": "Request changes",
+    "拒绝方案": "Reject plan",
+    "希望如何修改方案": "How should the plan change?",
+    "提交修改意见": "Send requested changes",
+    "已要求修改": "Changes requested",
+    "方案已拒绝": "Plan rejected",
     "交互详情": "Interaction details",
     "具体原因": "Details",
     "查看工作台": "View workbench",

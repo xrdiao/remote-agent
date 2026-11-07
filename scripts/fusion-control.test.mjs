@@ -5,6 +5,33 @@ import vm from 'node:vm';
 import { applyFusionControl, fusionTaskPrompt } from '../server/fusion/control.mjs';
 import { fixture } from './fusion-fixture.mjs';
 
+test('Fusion refreshes only its idle native thread instructions and keeps ordinary sends and actual model permissions intact', async () => {
+  const source=fs.readFileSync(new URL('../server/page/session-actions.js',import.meta.url),'utf8');
+  const calls=[],originalToolCalls=[],settings={model:'native-user-model',effort:'max',cwd:'/actual-project',serviceTier:null};
+  const permissions={approvalPolicy:'on-request',approvalsReviewer:'auto_review',activePermissionProfile:{id:':workspace'},runtimeWorkspaceRoots:['/actual-project']};
+  let busy=true;const conversation={latestThreadSettings:settings,currentPermissions:permissions};
+  const manager={hostId:'local',getConversation:()=>conversation,isConversationStreaming:()=>busy,
+    requestClient:{sendRequest(method,params){calls.push({method,params});return Promise.resolve({});}},
+    threadExecution:{executeDynamicToolCall(request){originalToolCalls.push(request);}}};
+  const context=vm.createContext({window:{},Map,WeakMap,Set,JSON,nativeValue:structuredClone,codexConversationManager:()=>manager,codexHistoryScopes:()=>[],remoteContext:{host:'local'}});
+  const start=source.indexOf('  const nativeSessionAction ='),end=source.indexOf('  const nativeSessionRenameInput',start);
+  vm.runInContext(source.slice(start,end)+';this.act=nativeSessionAction;',context);
+  const spec={names:['ra_fusion'],authorization:{kind:'application',value:'current policy'},instructions:'Current Fusion instructions'};
+  let result=await context.act('codex','fusion-main','bindTools',spec);assert.equal(result.profileReady,false);assert.equal(calls.length,0);
+  const ordinary={threadId:'ordinary',input:[{type:'text',text:'keep my input'}],model:'ordinary-model',effort:'low',additionalContext:{existing:{kind:'application',value:'keep'}}};
+  await manager.requestClient.sendRequest('turn/start',ordinary);assert.equal(calls[0].params,ordinary);assert.equal(calls[0].method,'turn/start');
+  busy=false;result=await context.act('codex','fusion-main','bindTools',spec);assert.equal(result.profileReady,true);
+  const update=calls[1];assert.equal(update.method,'thread/resume');assert.equal(update.params.threadId,'fusion-main');assert.equal(update.params.developerInstructions,spec.instructions);
+  assert.equal(update.params.model,settings.model);assert.equal(update.params.config.model_reasoning_effort,'max');assert.equal(update.params.permissions,':workspace');assert.equal(update.params.approvalsReviewer,'auto_review');
+  assert.deepEqual(update.params.runtimeWorkspaceRoots,permissions.runtimeWorkspaceRoots);assert.equal('dynamicTools' in update.params,false);assert.equal('input' in update.params,false);
+  await context.act('codex','fusion-main','bindTools',spec);assert.equal(calls.length,2);
+  const main={...ordinary,threadId:'fusion-main'};await manager.requestClient.sendRequest('turn/start',main);
+  assert.equal(calls[2].params.model,main.model);assert.equal(calls[2].params.effort,main.effort);assert.deepEqual(calls[2].params.input,main.input);
+  assert.equal(calls[2].params.additionalContext.ra_fusion_user_authorization,spec.authorization);assert.equal(calls[2].params.additionalContext.existing,ordinary.additionalContext.existing);
+  manager.threadExecution.executeDynamicToolCall({params:{threadId:'ordinary',tool:'ordinary-tool'}});assert.equal(originalToolCalls.length,1);
+  await context.act('codex','fusion-main','unbindTools');await manager.requestClient.sendRequest('turn/start',ordinary);assert.equal(calls.at(-1).params,ordinary);
+});
+
 test('a related new task can select a retained Worker without changing earlier task or execution facts', () => {
   const h = fixture(), firstWork = h.create(); h.plan(firstWork);
   const first = h.apply({ action: 'dispatch', workId: firstWork, tasks: [h.task('first')] }).tasks[0];
@@ -406,30 +433,22 @@ test('paired entries share updates and inputs on one existing runner while closi
   assert.equal(h.run.attempts.length, 0);
 });
 
-test('direct main plans preserve real cost, source identity and no self-dispatch protocol', () => {
-  const h = fixture(), workId = h.create(), native = { ...h.native(), callId: 'native-plan-item' };
-  const action = { action: 'plan', workId, summary: 'Direct work', scope: ['src'], criteria: [{ id: 'C', text: 'Real result' }],
-    input: JSON.stringify({ mainScope: ['src/main.js'] }), cost: h.cost('codex'), requiresConfirmation: false };
-  applyFusionControl(h.run, action, native);
-  assert.deepEqual(h.run.works[0].plans[0].mainScope, ['src/main.js']);
-  assert.deepEqual(h.run.works[0].plans[0].cost, action.cost);
-  assert.equal(fusionRunView(h.run, { kind: 'tasks' }).works[0].plans[0].native.callId, 'native-plan-item');
-  assert.equal(h.run.tasks.length, 0); assert.equal(h.run.assignments.length, 0);
-  assert.throws(() => h.apply({ action: 'self_execute', workId }), /未知/);
-  const before = structuredClone(h.run);
-  assert.throws(() => h.apply({ ...action, input: JSON.stringify({mainScope:['other']}) }), /超出方案范围/);
-  assert.deepEqual(h.run, before);
+test('child plans do not require main scope or reserve main costs and preserve actual native identity', () => {
+  const h=fixture(),workId=h.create(),native={...h.native(),callId:'native-plan-item'};
+  const action={action:'plan',workId,summary:'Delegate review',scope:['src'],criteria:[{id:'C',text:'Real result'}],requiresConfirmation:false};
+  applyFusionControl(h.run,action,native);const plan=h.run.works[0].plans[0];
+  assert.equal('mainScope' in plan,false);assert.equal('cost' in plan,false);
+  assert.equal(fusionRunView(h.run,{kind:'tasks'}).works[0].plans[0].native.callId,'native-plan-item');
+  assert.equal(h.run.tasks.length,0);assert.equal(h.run.assignments.length,0);
+  assert.throws(()=>h.apply({action:'self_execute',workId}),/未知/);
 });
-test('explicit budgets include confirmed direct main plan reservations before a child is dispatched', () => {
-  const h = fixture(), workId = h.create();
-  h.run.capabilities.find(row => row.app === 'codex').models[0].pricing = {unit:'credits'};
-  h.run.budget = {limit:10,unit:'credits'};
-  h.apply({action:'plan',workId,summary:'Direct',scope:['.'],criteria:[{id:'C',text:'Evidence'}],requiresConfirmation:false,
-    input:JSON.stringify({mainScope:['main-file']}),cost:{...h.cost('codex'),estimate:{amount:6,unit:'credits'}}});
-  const child = {...h.task('child'),cost:{...h.cost('codex'),estimate:{amount:5,unit:'credits'}}};
-  assert.throws(() => h.apply({action:'dispatch',workId,tasks:[child]}),/超过用户预算/);
-  assert.equal(h.run.assignments.length,0); assert.equal(h.run.tasks.length,0);
+test('explicit budgets still include previously confirmed main cost facts before a child is dispatched', () => {
+  const h=fixture(),workId=h.create();h.plan(workId);h.run.capabilities.find(row=>row.app==='codex').models[0].pricing={unit:'credits'};h.run.budget={limit:10,unit:'credits'};
+  Object.assign(h.run.works[0].plans[0],{mainScope:['historical-main-file'],cost:{...h.cost('codex'),estimate:{amount:6,unit:'credits'}}});
+  const child={...h.task('child'),cost:{...h.cost('codex'),estimate:{amount:5,unit:'credits'}}};
+  assert.throws(()=>h.apply({action:'dispatch',workId,tasks:[child]}),/超过用户预算/);assert.equal(h.run.assignments.length,0);assert.equal(h.run.tasks.length,0);
 });
+
 test('ordinary message buttons never become native interactions and native approval keeps its actual task and request', t => {
   const h=largeViewFixture();t.after(()=>fusionLive.delete(h.bindingId));
   let board=fusionRunView(h.run,{kind:'tasks'});
@@ -445,7 +464,7 @@ test('ordinary message buttons never become native interactions and native appro
 });
 test('pending interaction stays after new output and completed cards use the actual native tool position', () => {
   const source=fs.readFileSync(new URL('../app/js/fusion.js',import.meta.url),'utf8');
-  const run={id:'run',computer:'computer'},plan={id:'plan',created:1,confirmed:false,native:{threadId:'thread',messageId:'old',callId:'call'}};
+  const run={id:'run',computer:'computer'},plan={id:'plan',created:1,confirmed:false,requiresConfirmation:true,native:{threadId:'thread',messageId:'old',callId:'call'}};
   const board={dispatches:[],questions:[],nativeInteractions:[],works:[{id:'work',plans:[plan]}]};
   const nodes=new Map(),context=vm.createContext({currentFusionRun:()=>run,fusionBoards:new Map([['computer|run',board]]),fusionStateKey:(c,r)=>c+'|'+r,
     fusionDispatchCards:new Map(),fusionInteractionCards:nodes,fusionFocusInteraction:'',fusionPendingGroup:null,deferredScrollRender:false,
@@ -476,4 +495,20 @@ test('a native-only board update redraws the main conversation without another t
   context.remember(approval);assert.equal(paints,1);
   context.remember(approval);assert.equal(paints,1);
   context.remember(run);assert.equal(paints,2);
+});
+test('worker responsibility labels update when reused while retaining the native binding and earlier task facts', () => {
+  const h=fixture(),workId=h.create();h.plan(workId);
+  const first=h.apply({action:'dispatch',workId,tasks:[h.task('audit')],input:JSON.stringify({audit:{workerId:null,label:'训练协议审查',reason:'Independent audit'}})}).tasks[0];
+  h.run.agents[0].bindingId='existing-native-binding';
+  const before=structuredClone({task:h.run.tasks[0],attempt:h.run.attempts[0]});
+  const reused=h.apply({action:'dispatch',workId,tasks:[h.task('related')],input:JSON.stringify({related:{workerId:first.workerId,label:'训练与证据复核',reason:'Reuse related evidence'}})}).tasks[0];
+  assert.equal(reused.workerId,first.workerId);assert.equal(h.run.agents.length,1);assert.equal(h.run.agents[0].bindingId,'existing-native-binding');
+  assert.equal(fusionRunView(h.run,{kind:'tasks'}).agents[0].label,'训练与证据复核');
+  assert.deepEqual({task:h.run.tasks[0],attempt:h.run.attempts[0]},before);
+});
+
+test('dispatch without an explicit responsibility label fails without creating a worker or task', () => {
+  const h=fixture(),workId=h.create();h.plan(workId);
+  assert.throws(()=>applyFusionControl(h.run,{action:'dispatch',workId,tasks:[h.task('new')],input:JSON.stringify({new:{workerId:null,reason:'New context'}})},h.native()),/职责短名/);
+  assert.equal(h.run.tasks.length,0);assert.equal(h.run.agents.length,0);assert.equal(h.run.attempts.length,0);
 });

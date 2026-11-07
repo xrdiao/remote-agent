@@ -21,6 +21,36 @@ function fixture() {
   vm.runInContext(fs.readFileSync(new URL('../app/js/fusion.js', import.meta.url), 'utf8'), context);
   return { context, sent, stored, nodes, listeners, run: code => vm.runInContext(code, context) };
 }
+test('new requirements use the existing main composer rather than an internal inbox wake message', () => {
+  const h=fixture();let focused=0,closed=0;const reads=[];
+  h.context.text={focus(){focused++;}};h.context.closeSheet=()=>{closed++;};
+  h.context.testRun={id:'r',computer:'computer-one'};
+  h.run('currentFusionRun=()=>testRun;fusionChatActive=()=>true');h.context.readFusionView=(...args)=>reads.push(args);
+  h.run("focusFusionInput('computer-one','r')");assert.equal(focused,1);assert.equal(closed,1);assert.equal(reads.length,1);
+  assert.deepEqual(reads[0].slice(0,3),['computer-one','r','tasks']);assert.equal(reads[0][4],'strip');assert.equal(h.sent.length,0);
+});
+test('only recorded internal user-input identities are omitted from the matching Fusion main display', () => {
+  const h=fixture();h.context.testRun={internalInputs:[{threadId:'native-main',messageId:'event-message'},{threadId:'other-thread',messageId:'other-message'}]};
+  h.context.currentComputer=()=>({threadId:'native-main'});
+  h.context.testItems=[{i:'internal',k:'human',nativeIds:['event-message'],t:'Fusion notice'},
+    {i:'actual-user',k:'human',nativeIds:['actual-user'],t:'Fusion notice'},
+    {i:'other',k:'human',nativeIds:['other-message']},{i:'reply',k:'assistant',nativeIds:['event-message']}];
+  h.run('currentFusionRun=()=>testRun;fusionChatActive=()=>true');
+  const ids=h.run('fusionVisibleItems(testItems).map(item=>item.i)');assert.deepEqual([...ids],['actual-user','other','reply']);
+  assert.equal(h.context.testItems.length,4);
+  h.run('fusionChatActive=()=>false');assert.equal(h.run('fusionVisibleItems(testItems)'),h.context.testItems);
+});
+test('each retained worker displays its responsibility label and tasks in descending activity order without reordering stored tasks', () => {
+  const h=fixture();h.context.testSurface={dataset:{},querySelectorAll:()=>[]};
+  h.context.testRun={id:'r',computer:'computer-one',status:'waiting',main:{app:'cursor',model:'Auto',effort:''},agents:[{id:'worker',label:'训练证据复核'}],works:[],questions:[],
+    tasks:[['old',1],['equal-first',2],['new',3],['equal-second',2]].map(([id,updated])=>({id,updated,workerId:'worker',goal:'Long detailed goal '+id,
+      executor:'child',app:'cursor',model:'Auto',effort:'',state:'idle',status:'queued',dependsOn:[]}))};
+  h.run("fusionViewOwner={surface:'panel'};fusionRememberBoard=()=>{};fusionSurface=()=>testSurface;fusionDraw=(_kind,html)=>{this.testHtml=html};showFusionTasks(testRun)");
+  const html=h.context.testHtml;assert.match(html,/title="训练证据复核"/);
+  assert.deepEqual([...html.matchAll(/data-fusion-task="([^"]+)"/g)].map(match=>match[1]),['new','equal-first','equal-second','old']);
+  assert.deepEqual(h.context.testRun.tasks.map(task=>task.id),['old','equal-first','new','equal-second']);
+  assert.match(html,/Long detailed goal old/);assert.equal(h.sent.length,0);
+});
 test('Fusion titles show native model effort once and preserve ordinary titles', () => {
   const nodes = new Map(), run = { title: 'Historical workbench', computer: 'computer-one', project: { root: '/project' },
     main: { app: 'codex', model: 'gpt-6.1-sol', effort: 'high' }, tier: 'balanced' };

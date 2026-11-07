@@ -362,7 +362,19 @@
         clients.set(client, requests);
       }
       requests.threads.set(id, name.authorization);
-      return true;
+      requests.profiles ||= new Map();
+      if (requests.profiles.get(id) !== name.instructions && !manager.isConversationStreaming(id)) {
+        const conversation = manager.getConversation(id), settings = conversation.latestThreadSettings, permissions = conversation.currentPermissions;
+        await requests.original.call(client, 'thread/resume', nativeValue({
+          threadId: id, excludeTurns: true, developerInstructions: name.instructions,
+          model: settings.model, serviceTier: settings.serviceTier, cwd: settings.cwd,
+          approvalPolicy: permissions.approvalPolicy, approvalsReviewer: permissions.approvalsReviewer,
+          permissions: permissions.activePermissionProfile?.id, runtimeWorkspaceRoots: permissions.runtimeWorkspaceRoots,
+          ...(settings.effort ? { config: { model_reasoning_effort: settings.effort } } : {}),
+        }));
+        requests.profiles.set(id, name.instructions);
+      }
+      return { profileReady: requests.profiles.get(id) === name.instructions };
     }
     if (action === 'unbindTools' && app === 'codex') {
       const manager = codexConversationManager(id, codexHistoryScopes(), remoteContext?.host || 'local');

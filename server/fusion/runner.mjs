@@ -1,8 +1,8 @@
 import { FusionAgent, fusionWorkspaceSnapshot } from './agent.mjs';
 import { FusionController } from './controller.mjs';
 import { fusionScheduler } from './scheduler.mjs';
-import { applyFusionControl, fusionTaskPrompt } from './control.mjs';
-import { fusionRuns, fusionWorkers, fusionEvent, newFusionAttempt, publishFusion,
+import { applyFusionControl, fusionTaskPrompt, fusionEventView } from './control.mjs';
+import { fusionRuns, fusionWorkers, fusionEvent, publishFusion,
   commitFusion, fusionAttemptWorkIds, NATIVE_UNSETTLED } from './state.mjs';
 
 export class FusionRunner {
@@ -10,7 +10,7 @@ export class FusionRunner {
     this.run = run; this.scheduler = scheduler;
     this.agent = agent || new FusionAgent({ scheduler, onEvent: () => this.wake() });
     this.controller = controller || new FusionController(this);
-    this.jobs = new Map(); this.effects = new Set();
+    this.jobs = new Map(); this.effects = new Set(); this.waiters = new Map();
   }
   publish() { publishFusion(this.run); }
   blockMain(error) {
@@ -46,7 +46,12 @@ export class FusionRunner {
       if (attempt?.taskId === action.taskId) job.priority = action.priority;
     }
     this.wake();
-    return result;
+    if (action.action === 'wait' && run.stopRequested) return { cancelled: true };
+    if (action.action === 'wait' && !this.pendingEvents().length && this.hasPendingWork() && !run.stopRequested) {
+      const delivered = await new Promise(resolve => this.waiters.set(this.waitKey(native), { native, resolve }));
+      if (!delivered) return { cancelled: true };
+    }
+    return { ...result, events: this.pendingEvents() };
   }
   async recordMainWork(attempt, workId) {
     const work = this.run.works.find(row => row.id === workId);
@@ -54,10 +59,24 @@ export class FusionRunner {
     const plan = work.plans.find(row => row.id === work.planId);
     attempt.workExecutions ||= [];
     if (attempt.workExecutions.some(row => row.workId === workId && row.planId === work.planId && row.confirmed === !!plan?.confirmed)) return;
-    const scope = plan?.confirmed ? plan.mainScope || [] : [];
-    const entry = { workId, planId: work.planId, confirmed: !!plan?.confirmed, scope, cost: plan?.cost || null, at: Date.now(),
-      baseline: scope.length ? await fusionWorkspaceSnapshot(work.project, scope) : null, changes: null };
+    const entry = { workId, planId: work.planId, confirmed: !!plan?.confirmed, at: Date.now() };
     this.run.attempts.find(row => row.id === attempt.id).workExecutions.push(entry); this.publish();
+  }
+  pendingEvents() { return this.run.events.filter(row => !row.deliveredTo).map(row => fusionEventView(this.run, row)); }
+  hasPendingWork() {
+    return this.run.tasks.some(task => ['queued', 'preparing', 'submitting', 'running', 'stopping', 'awaiting_user'].includes(task.status))
+      || this.run.questions.some(question => !question.answeredAt)
+      || this.run.works.some(work => work.plans.some(plan => plan.id === work.planId && plan.requiresConfirmation && !plan.confirmed && !plan.decision));
+  }
+  waitKey(native) { return `${native.turnId}:${String(native.requestId)}`; }
+  acceptedInput(turnId) {
+    for (const [key, waiter] of this.waiters) if (waiter.native.turnId === turnId) {
+      this.waiters.delete(key); waiter.resolve(true);
+    }
+  }
+  cancelWait(native) {
+    const key = this.waitKey(native), waiter = this.waiters.get(key);
+    if (waiter) { this.waiters.delete(key); waiter.resolve(false); }
   }
   acknowledge(native, eventIds) {
     if (!eventIds?.length) return;
@@ -81,25 +100,9 @@ export class FusionRunner {
       }
       this.scheduler.drain();
       if (this.run.stopRequested) { this.finishStop(); return; }
-      if (!this.run.main.bindingId || ['blocked', 'stopped'].includes(this.run.status) || this.sendingEvents) return;
-      const events = this.run.events.filter(row => !row.deliveredTo);
-      if (!events.length) return;
-      if (!await this.controller.idle()) return;
-      const pendingMain = this.run.attempts.find(row => row.kind === 'main' && (row.status === 'queued' || NATIVE_UNSETTLED.includes(row.status)));
-      if (pendingMain) return;
-      const attempt = newFusionAttempt(this.run, null, null, 'main');
-      attempt.origin = 'events'; attempt.eventIds = events.map(row => row.id); attempt.bindingId = this.run.main.bindingId;
-      attempt.prompt = `Fusion 有 ${events.length} 条待处理事件。调用 ra_fusion(action='read_workspace') 读取正文并按归属处理；结果未知的执行不重发。\n本次输入：${attempt.id}`;
-      this.sendingEvents = true; this.publish();
-      this.scheduler.submit({ lane: 'main', runId: this.run.id, app: this.run.main.app,
-        attemptId: attempt.id, ready: () => !this.run.stopRequested,
-        execute: async () => {
-          for (const workId of fusionAttemptWorkIds(this.run, attempt)) await this.recordMainWork(attempt, workId);
-          return this.agent.execute(this.run, attempt.id, attempt.prompt);
-        } })
-        .then(result => this.mainEnded(attempt.id, { ...result, ended: true, text: result.text, error: result.error, completed: result.completed }))
-        .catch(error => this.attemptFailed(attempt.id, error, true))
-        .finally(() => { this.sendingEvents = false; this.publish(); this.wake(); });
+      if (this.pendingEvents().length || !this.hasPendingWork()) for (const [key, waiter] of this.waiters) {
+        this.waiters.delete(key); waiter.resolve(true);
+      }
     }).catch(error => this.blockMain(error)).finally(() => {
       this.waking = false;
       if (this.wakeAgain) { this.wakeAgain = false; this.wake(); }
@@ -172,7 +175,7 @@ export class FusionRunner {
     Object.assign(attempt, { status: run.stopRequested ? 'stopped' : turn.error || !turn.completed ? 'failed' : 'ended', endedAt: attempt.endedAt || Date.now(),
       usage: turn.usage || attempt.usage,
       result: { text: turn.text || '', completed: !!turn.completed, error: turn.error || '' }, durationMs: Date.now() - attempt.acceptedAt });
-    const unread = run.events.some(event => attempt.eventIds?.includes(event.id) && !event.deliveredTo);
+    for (const waiter of this.waiters.values()) if (waiter.native.turnId === attempt.native?.turnId) this.cancelWait(waiter.native);
     for (const entry of attempt.workExecutions || []) if (entry.baseline) {
       const work = run.works.find(row => row.id === entry.workId);
       const changes = await fusionWorkspaceSnapshot(work.project, entry.scope);
@@ -194,17 +197,21 @@ export class FusionRunner {
         fusionEvent(run, 'delivery_pending', { workId: work.id, reason: '交付候选后有新事实或本轮没有成功完成，需要重新核对' });
       } else { work.deliveries.push({ ...candidate, endedAt: attempt.endedAt, mainAttemptId: attempt.id }); work.status = 'completed'; work.candidate = null; }
     }
-    if (!run.stopRequested && (turn.error || !turn.completed || unread)) this.blockMain(new Error(turn.error
-      || (unread ? '主 Agent 本轮未读取待处理事件，请核对后继续' : '主控原生轮次被中断或未完成，等待用户继续')));
+    if (!run.stopRequested && (turn.error || !turn.completed)) this.blockMain(new Error(turn.error
+      || '主控原生轮次被中断或未完成，等待用户继续'));
     else if (!run.stopRequested) { run.status = 'waiting'; run.blockedReason = ''; }
     this.publish(); this.wake();
   }
-  confirm(planId) {
+  confirm(planId, decision = 'confirm', feedback = '') {
+    if (!['confirm', 'revise', 'reject'].includes(decision)) throw new Error('请选择确认、要求修改或拒绝方案');
+    if (decision === 'revise' && !feedback.trim()) throw new Error('请输入希望修改的内容');
     commitFusion(this.run, next => {
       const work = next.works.find(row => row.planId === planId), plan = work?.plans.find(row => row.id === planId);
-      if (!plan || plan.confirmed) throw new Error('待确认方案已改变，请重新读取');
-      plan.confirmed = true; plan.confirmedAt = Date.now(); work.status = 'running';
-      fusionEvent(next, 'plan_confirmed', { workId: work.id, planId });
+      if (!plan || plan.confirmed || plan.decision) throw new Error('待确认方案已改变，请重新读取');
+      Object.assign(plan, { decision, feedback, decidedAt: Date.now(), confirmed: decision === 'confirm' });
+      if (plan.confirmed) plan.confirmedAt = plan.decidedAt;
+      work.status = plan.confirmed ? 'running' : 'awaiting_user';
+      fusionEvent(next, decision === 'confirm' ? 'plan_confirmed' : 'plan_feedback', { workId: work.id, planId, decision, text: feedback });
     });
     this.wake();
   }
@@ -248,7 +255,10 @@ export class FusionRunner {
   }
   async stop({ workId = '', taskId = '' } = {}) {
     const run = this.run;
-    if (!workId && !taskId) { run.stopRequested = true; run.status = 'stopping'; }
+    if (!workId && !taskId) {
+      run.stopRequested = true; run.status = 'stopping';
+      for (const waiter of this.waiters.values()) this.cancelWait(waiter.native);
+    }
     const work = workId && run.works.find(row => row.id === workId);
     if (workId && !work) throw new Error('没有这个工作项');
     if (taskId && !run.tasks.some(row => row.id === taskId)) throw new Error('没有这个任务');

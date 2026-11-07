@@ -821,7 +821,8 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
     return el?.isConnected && el.getBoundingClientRect().top < edge;
   }) : -1;
   const readingRows = new Set(V.items.slice(0, readingEnd + 1).map(it => String(it.i)));
-  const visibleItems = visibleChatItems(V.items, chat.busy, readingExecutionRows).filter(it => {
+  const displayItems = currentFusionRun() ? fusionVisibleItems(V.items) : V.items;
+  const visibleItems = visibleChatItems(displayItems, chat.busy, readingExecutionRows).filter(it => {
     if (!readingRows.has(String(it.i)) || existing.has(String(it.i))) return true;
     deferredScrollRender = true;
     return false;

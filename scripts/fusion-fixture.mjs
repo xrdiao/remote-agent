@@ -20,8 +20,13 @@ export function fixture() {
   fusionRuns.test = { current: run.id, runs: [run] };
   let requestSerial = 0;
   const native = () => ({ threadId: 'main-thread', turnId: 'native-turn', requestId: requestSerial++, decisionId: crypto.randomUUID() });
-  const request = action => action.action === 'dispatch' && Array.isArray(action.tasks) && action.input === undefined
-    ? { ...action, input: JSON.stringify(Object.fromEntries(action.tasks.map(task => [task.id, { workerId: null, reason: 'Fixture explicitly selects an independent new worker' }]))) } : action;
+  const request = action => {
+    if (action.action !== 'dispatch' || !Array.isArray(action.tasks)) return action;
+    const choices = action.input === undefined ? Object.fromEntries(action.tasks.map(task => [task.id,
+      { workerId: null, reason: 'Fixture explicitly selects an independent new worker' }])) : JSON.parse(action.input);
+    for (const task of action.tasks) if (choices[task.id]) choices[task.id].label ??= `Analysis ${task.id}`;
+    return { ...action, input: JSON.stringify(choices) };
+  };
   const apply = action => applyFusionControl(run, request(action), native());
   const cost = app => ({ selfExecute: 'unknown; short context', delegate: 'unknown; low cost', overhead: 'planning, review, context transfer and rework included',
     reason: 'relative total cost suits the task', sources: [run.capabilities.find(row => row.app === app).id] });
