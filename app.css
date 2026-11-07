@@ -1270,7 +1270,7 @@ body.term .appAvatar::after { display: none; }
 .fusion-focused { outline: 2px solid var(--accent); outline-offset: 2px; }
 .fusion-work-items { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 18px; }
 .fusion-work-items > summary { font-size: 12px; color: var(--fg-3); cursor: pointer; }
-.fusion-dispatch, .fusion-interaction { width: 100%; padding: 14px 16px; border: 1px solid var(--line-2); border-radius: var(--r-xl); box-shadow: var(--shadow-1); background: var(--s1); margin: 12px 0 18px; }
+.fusion-interaction { width: 100%; padding: 14px 16px; border: 1px solid var(--line-2); border-radius: var(--r-xl); box-shadow: var(--shadow-1); background: var(--s1); margin: 12px 0 18px; }
 .fusion-interaction-pending { border-color: var(--warn); }
 .fusion-interaction > p { white-space: pre-wrap; overflow-wrap: anywhere; }
 .fusion-interaction > small, .fusion-answer-status { color: var(--fg-3); }
@@ -1283,14 +1283,12 @@ body.term .appAvatar::after { display: none; }
 .fusion-native-card input, .fusion-native-card select { max-width: 100%; }
 .fusion-native-details > summary { cursor: pointer; font-size: 12px; color: var(--accent-text); }
 .fusion-question-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.fusion-plan-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.fusion-plan-revision > summary { display: inline-flex; cursor: pointer; padding: 8px 16px; background: var(--s2); border-radius: var(--r-pill); }
+.fusion-plan-revision .fusion-form { margin-top: 12px; }
 .fusion-pending-link { width: 100%; margin-top: 10px; text-align: left; color: var(--warn); white-space: normal; }
 .fusion-dispatch-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--fg-3); font-size: 12px; }
 .fusion-dispatch-head button { color: var(--accent-text); padding: 0; background: none; font-size: 12px; }
-.fusion-dispatch-task { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; padding: 12px 0; background: none; text-align: left; white-space: normal; border-radius: 0; }
-.fusion-dispatch-task + .fusion-dispatch-task { border-top: 1px solid var(--line); }
-.fusion-dispatch-task .lbl { flex: 1; min-width: 0; }
-.fusion-dispatch-task strong { display: block; font-size: 14px; overflow-wrap: anywhere; }
-.fusion-dispatch-task small { display: block; font-size: 11px; color: var(--fg-3); margin-top: 3px; }
 .fusion-detail-title { margin: 4px 0 12px; font-size: 20px; line-height: 1.4; overflow-wrap: anywhere; }
 .fusion-tags { display: flex; flex-wrap: wrap; gap: 6px; font-size: 11px; color: var(--fg-3); }
 .fusion-tags > span { display: inline-block; padding: 3px 9px; background: var(--s2); border-radius: var(--r-pill); }
@@ -1346,8 +1344,10 @@ body.split.fusion #fusionPanelBody .fusion-detail-actions { bottom: -18px; }
 .fusion-form label { display: grid; gap: 6px; color: var(--fg-3); }
 .fusion-form select, .fusion-form input { width: 100%; min-height: 42px; padding: 8px; background: var(--s2); border: 1px solid var(--line); border-radius: 8px; color: var(--fg-hi); }
 .fusion-form textarea { width: 100%; padding: 10px; background: var(--s2); border: 1px solid var(--line); border-radius: 8px; color: var(--fg-hi); font: inherit; resize: vertical; }
-.fusion-content { min-width: 0; }
-.fusion-content pre { overflow-x: auto; }
+.fusion-content { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.fusion-content pre { max-width: 100%; overflow-x: auto; }
+.fusion-content table { display: block; max-width: 100%; overflow-x: auto; }
+.fusion-content img, .fusion-content video { max-width: 100%; height: auto; }
 .fusion-form .primary { min-height: 44px; }
 .fusion-task { border-top: 1px solid var(--line); padding: 12px 0; }
 .fusion-task summary { cursor: pointer; overflow-wrap: anywhere; }
