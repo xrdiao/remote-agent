@@ -5,6 +5,7 @@ const I18N = (() => {
   const lang = saved === 'zh' || saved === 'en' ? saved : /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
 
   const EN = {
+    "子 Agent 的软件和模型由主 Agent 按任务选择。": "The main agent chooses worker apps and models for each task.",
     "确认执行": "Approve and proceed",
     "要求修改": "Request changes",
     "拒绝方案": "Reject plan",

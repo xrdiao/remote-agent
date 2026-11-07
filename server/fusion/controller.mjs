@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { FUSION_TOOLS, fusionAutonomyContext, fusionControllerPrompt } from './control.mjs';
 import { fusionEvent, newFusionAttempt, publishFusion } from './state.mjs';
+import { nativeAgentProvider } from './providers.mjs';
 
 // The native conversation owns chat, input, models and permissions. This observer
 // handles only this conversation's registered management tools and event inbox.
@@ -16,18 +17,21 @@ export class FusionController {
     const controller = this.controller, binding = controller.bindings.find(row => row.id === controller.main.bindingId);
     if (!binding) return;
     const context = await this.runner.agent.openBinding(controller, binding);
+    context.native = { ...context.native, fusionController: true };
     try {
+      context.fusionChanged = () => this.check();
       await this.bind(context);
       this.context = context;
       context.cdp.onclose = error => this.failed(error);
       this.unsubscribe = context.source.subscribe(error => error ? this.failed(error) : this.check(), context.native, 'fusion-control');
       await this.check();
-    } catch (error) { await this.close(); if (this.context !== context) await this.runner.agent.close(context); throw error; }
+    } catch (error) { this.context = context; await this.close(); throw error; }
   }
   async bind(context) {
-    const result = await this.runner.agent.call(context, `nativeSessionAction('codex', ${JSON.stringify(context.native.threadId)}, 'bindTools', ${JSON.stringify({
-      names: FUSION_TOOLS.map(row => row.name), authorization: fusionAutonomyContext(this.controller), instructions: fusionControllerPrompt(this.controller),
-    })})`);
+    const result = await nativeAgentProvider(this.controller.main.app).bindController(this.runner.agent, context, this.controller, {
+      names: FUSION_TOOLS.map(row => row.name), tools: FUSION_TOOLS,
+      authorization: fusionAutonomyContext(this.controller), instructions: fusionControllerPrompt(this.controller),
+    });
     this.profileReady = result.profileReady;
   }
   async close() {
@@ -36,7 +40,7 @@ export class FusionController {
     for (const native of this.waiting.values()) this.runner.cancelWait(native);
     this.unsubscribe?.(); this.unsubscribe = null;
     if (!context) return;
-    try { await this.runner.agent.call(context, `nativeSessionAction('codex', ${JSON.stringify(context.native.threadId)}, 'unbindTools')`); }
+    try { await nativeAgentProvider(this.controller.main.app).unbindController(this.runner.agent, context); }
     finally { await this.runner.agent.close(context); }
   }
   failed(error) {
@@ -91,8 +95,8 @@ export class FusionController {
   async read() {
     const context = this.context, controller = this.controller;
     const [turn, requests] = await Promise.all([
-      this.runner.agent.call(context, 'codexFusionTurn()'),
-      this.runner.agent.call(context, `nativeSessionInfo('codex', ${JSON.stringify(context.native.threadId)}, 'tools')`),
+      nativeAgentProvider(controller.main.app).readTurn(this.runner.agent, context),
+      nativeAgentProvider(controller.main.app).toolRequests(this.runner.agent, context),
     ]);
     if (this.context !== context) return;
     this.latest = { turn, requests };
@@ -107,12 +111,12 @@ export class FusionController {
         attempt.origin = 'user'; attempt.bindingId = controller.main.bindingId;
       }
       if (attempt && !attempt.acceptedAt) {
-        const settings = await this.runner.agent.call(context,
-          `nativeSessionInfo('codex', ${JSON.stringify(context.native.threadId)}, 'settings')`);
+        const settings = await nativeAgentProvider(controller.main.app).info(this.runner.agent, context, 'settings');
         controller.main.model = settings.model; controller.main.effort = settings.effort || '';
         attempt.model = settings.model; attempt.effort = settings.effort || '';
         Object.assign(attempt, { status: 'running', submission: 'accepted', acceptedAt: Date.now(),
-          native: { threadId: turn.threadId, turnId: turn.turnId, messageId: turn.id } });
+          native: { threadId: turn.threadId, turnId: turn.turnId, messageId: turn.id,
+            ...(turn.generationId ? { generationId: turn.generationId } : {}) } });
         controller.observedMainTurns.push(turn.turnId);
         publishFusion(controller);
       }
@@ -139,7 +143,8 @@ export class FusionController {
       if (this.pending.has(key)) continue;
       this.pending.add(key);
       const native = { threadId: request.params.threadId, turnId: request.params.turnId,
-          requestId: request.id, callId: request.params.callId, decisionId: crypto.randomUUID() };
+          requestId: request.id, callId: request.params.callId, decisionId: crypto.randomUUID(),
+          ...(request.params.generationId ? { generationId: request.params.generationId } : {}) };
       if (request.params.arguments?.action === 'wait') {
         this.waiting.set(key, native);
         this.reply(context, request, native).catch(error => { if (this.context === context) this.failed(error); });
@@ -168,8 +173,7 @@ export class FusionController {
           publishFusion(this.controller);
         }
         if (this.context !== context) return;
-        await this.runner.agent.call(context,
-          `nativeSessionAction('codex', ${JSON.stringify(context.native.threadId)}, 'toolReply', ${JSON.stringify({ requestId: request.id, result })})`);
+        await nativeAgentProvider(this.controller.main.app).replyTool(this.runner.agent, context, request, result);
         this.runner.acknowledge(native, errorEvent ? [errorEvent.id] : value.events.map(event => event.id));
       } finally {
         for (const id of delivery) this.delivering.delete(id);
@@ -185,10 +189,11 @@ export class FusionController {
   async stop(attempt) {
     await this.start();
     if (!this.context) throw new Error('主会话已断开，停止待核对');
-    const turn = await this.runner.agent.call(this.context, `codexFusionTurn(${JSON.stringify(attempt.native?.messageId || '')})`);
+    const provider = nativeAgentProvider(this.controller.main.app);
+    const turn = await provider.readTurn(this.runner.agent, this.context, { id: attempt.native?.messageId || '', generationId: attempt.native?.generationId || '' });
     if (turn.ended) { await this.check(); return; }
     if (!turn.current || turn.turnId !== attempt.native?.turnId) throw new Error('主会话已不在本次轮次，未停止其他执行');
-    await this.runner.agent.call(this.context, `nativeSessionAction('codex', ${JSON.stringify(this.context.native.threadId)}, 'stop')`);
+    await provider.action(this.runner.agent, this.context, 'stop');
     await this.check();
   }
 }

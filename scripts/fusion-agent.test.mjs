@@ -4,10 +4,183 @@ import fs from 'node:fs';
 import test from 'node:test';
 import { FusionAgent } from '../server/fusion/agent.mjs';
 import { NativeCdp, nativeWindow } from '../server/native-windows.mjs';
-import { fixture } from './fusion-fixture.mjs';
+import { fixture, nativeInvocation } from './fusion-fixture.mjs';
 import { helpersCall, PAGE_SRC } from '../server/page/build.mjs';
 import { FUSION_TOOLS, fusionAutonomyContext, fusionControllerPrompt } from '../server/fusion/control.mjs';
 import { FusionController } from '../server/fusion/controller.mjs';
+import { NativeAgentProvider, nativeAgentProvider, nativeAgentProviders, registerNativeAgentProvider } from '../server/fusion/providers.mjs';
+import { FusionMcpServer } from '../server/fusion/mcp.mjs';
+
+test('native applications share one controller creation contract and model choices remain ordinary data', async () => {
+  for (const app of ['cursor', 'devin', 'codex']) {
+    const h = fixture(), calls = [], agent = new FusionAgent({ publish() {} });
+    h.run.main = { app, model: 'native-new-model', effort: 'native-strength', bindingId: '', windowId: 'existing-project-window' };
+    agent.createBinding = async (_run, _owner, software, project, role, spec, windowId) => {
+      calls.push({ software, project, role, spec, windowId }); return { id: 'created-' + app };
+    };
+    assert.equal((await agent.prepareMain(h.run)).id, 'created-' + app);
+    assert.equal(calls.length, 1); assert.equal(calls[0].software, app); assert.equal(calls[0].role, 'main');
+    assert.equal(calls[0].spec.model, 'native-new-model'); assert.equal(calls[0].spec.effort, 'native-strength');
+    assert.equal(calls[0].spec.tools, FUSION_TOOLS); assert.equal(calls[0].windowId, 'existing-project-window');
+  }
+  assert.deepEqual(nativeAgentProviders().map(row => row.app).sort(), ['codex', 'cursor', 'devin']);
+});
+test('a registered software adapter supports future model IDs without a per-model manager', async t => {
+  const provider = new NativeAgentProvider({ app: 'fixture-editor', name: 'Fixture editor' });
+  t.after(registerNativeAgentProvider(provider));
+  assert.equal(nativeAgentProvider('fixture-editor'), provider);
+  const calls = [], agent = { call: async (_context, code) => { calls.push(code); return {}; } }, context = { native: { threadId: 'retained-thread' } };
+  for (const model of ['model-before', 'newly-added-model']) await provider.create(agent, context, { model, effort: 'native-option' });
+  assert.equal(calls.length, 2); assert(calls.every(code => code.includes('fixture-editor') && code.includes('retained-thread')));
+  assert(calls[1].includes('newly-added-model'));
+});
+test('Cursor tool snapshots and native replies are scoped to bound composers and restore the exact ordinary RPC methods', async () => {
+  const ordinary = [], base = [{ serverIdentifier: 'ordinary', tools: [] }], events = [];
+  class Rpc {
+    async $getMcpSnapshots(context) { ordinary.push(['snapshots', context]); return base; }
+    $getMcpSnapshot(server, context) { ordinary.push(['snapshot', server, context]); return base[0]; }
+    async $getMcpSnapshotTools(context) { ordinary.push(['tools', context]); return base; }
+    $callMcpLeaseTool(...args) { ordinary.push(['call', ...args]); return 'ordinary-result'; }
+  }
+  const rpc = new Rpc(), originals = Object.fromEntries(['$getMcpSnapshots', '$getMcpSnapshot', '$getMcpSnapshotTools', '$callMcpLeaseTool'].map(key => [key, rpc[key]]));
+  const extension = { _extensionHostManagers: { _extensionHostManagers: [{ extensionHost: { _rpcProtocol: { _locals: [rpc] } } }] } };
+  const data = { fullConversationHeadersOnly: [{ type: 1, bubbleId: 'actual-user' }], latestChatGenerationUUID: 'actual-generation' };
+  const nativeType = { fromJson: structuredClone }, fields = () => [{ localName: 'tools', T: nativeType }, { localName: 'mcpInstructions', T: nativeType }];
+  class RequestContext {
+    static fields = { list: fields };
+    constructor() { this.tools = []; this.mcpInstructions = []; this.mcpMetaToolOptions = { constructor: { fields: { list: () => [{ localName: 'mcpDescriptors', T: nativeType }] } }, mcpDescriptors: [] }; }
+    clone() { const value = new RequestContext(); value.tools = [...this.tools]; value.mcpInstructions = [...this.mcpInstructions]; return value; }
+  }
+  const ordinaryRequest = new RequestContext(), agent = { async buildComposerRequestContext() { return ordinaryRequest; } }, originalContext = agent.buildComposerRequestContext;
+  const context = vm.createContext({ window: {}, Map, Set, WeakMap, Error, JSON, nativeValue: structuredClone,
+    cursorSessionInstantiation: () => ({ _services: { _entries: new Map([['extensionService', 'extensionService']]) }, invokeFunction: fn => fn({ get: () => extension }) }),
+    cursorSessionServices: () => ({ data: { getComposerDataIfLoaded: () => data }, composer: { composerChatService: { _composerAgentService: agent } } }),
+    doc: { defaultView: { CustomEvent, dispatchEvent: event => events.push(event.detail) } } });
+  vm.runInContext(fs.readFileSync(new URL('../server/page/fusion-tools.js', import.meta.url), 'utf8') + ';this.tools=fusionNativeTools;', context);
+  await context.tools.bind('cursor', 'main-one', { tools: FUSION_TOOLS, instructions: 'Only main one' });
+  await context.tools.bind('cursor', 'main-two', { tools: FUSION_TOOLS, instructions: 'Only main two' });
+  const ordinaryContext = { composerId: 'ordinary', conversationId: 'ordinary-round' };
+  assert.equal(await rpc.$getMcpSnapshots(ordinaryContext), base);
+  assert.equal(await rpc.$getMcpSnapshotTools(ordinaryContext), base);
+  const one = await rpc.$getMcpSnapshots({ composerId: 'main-one' }), two = await rpc.$getMcpSnapshots({ composerId: 'main-two' });
+  assert.equal(one[1].instructions, 'Only main one'); assert.equal(two[1].instructions, 'Only main two');
+  assert.equal(one[1].tools[0].name, 'ra_fusion'); assert.equal(base.length, 1);
+  assert.equal(await agent.buildComposerRequestContext(null, 'ordinary'), ordinaryRequest);
+  const mainContext = await agent.buildComposerRequestContext(null, 'main-one');
+  assert.equal(mainContext.tools[0].toolName, 'ra_fusion'); assert.equal(mainContext.mcpInstructions[0].instructions, 'Only main one');
+  assert.equal(mainContext.mcpMetaToolOptions.mcpDescriptors[0].tools[0].toolName, 'ra_fusion'); assert.equal(ordinaryRequest.tools.length, 0);
+  const token = { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) };
+  assert.equal(rpc.$callMcpLeaseTool('ordinary', 'native-tool', {}, 'ordinary-call', ordinaryContext, null, 'ordinary', token), 'ordinary-result');
+  const waiting = rpc.$callMcpLeaseTool('ra-fusion', 'ra_fusion', { action: 'read_workspace' }, 0, { composerId: 'main-one' }, null, 'main-one', token);
+  const pending = context.tools.requests('cursor', 'main-one');
+  assert.equal(pending.length, 1); assert.equal(pending[0].id, 0); assert.equal(pending[0].params.turnId, 'actual-user');
+  assert.equal(pending[0].params.generationId, 'actual-generation'); assert.equal(context.tools.requests('cursor', 'main-two').length, 0);
+  context.tools.reply('cursor', 'main-one', { requestId: 0, result: { success: true, contentItems: [{ type: 'inputText', text: 'actual result' }] } });
+  assert.deepEqual(JSON.parse(JSON.stringify(await waiting)), { content: [{ type: 'text', text: 'actual result' }], isError: false });
+  assert(events.every(event => event.app === 'cursor' && event.threadId === 'main-one'));
+  context.tools.unbind('cursor', 'main-one'); assert.notEqual(rpc.$getMcpSnapshots, originals.$getMcpSnapshots);
+  context.tools.unbind('cursor', 'main-two');
+  assert.equal(agent.buildComposerRequestContext, originalContext);
+  for (const [key, original] of Object.entries(originals)) { assert.equal(rpc[key], original); assert.equal(Object.hasOwn(rpc, key), false); }
+});
+test('session-scoped MCP carries the same tool request and reply without a model execution channel', async t => {
+  const server = new FusionMcpServer(), binding = { id: 'main-binding' }, identified = [], notifications = [];
+  const channel = await server.bind(binding, { tools: FUSION_TOOLS, instructions: 'Main scope', changed: () => notifications.push('changed'),
+    identify: async input => { identified.push(input); return { id: 'actual-call', params: { threadId: 'native-main', turnId: 'native-round', callId: 'actual-call', tool: input.tool, arguments: input.arguments } }; } });
+  t.after(() => channel.close());
+  const request = async (id, method, params) => fetch(channel.config.url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id, method, params }) });
+  const initialization = await (await request(0, 'initialize', { protocolVersion: '2025-06-18' })).json();
+  assert.equal(initialization.id, 0); assert.equal(initialization.result.instructions, 'Main scope');
+  const catalog = await (await request(1, 'tools/list', {})).json(); assert.equal(catalog.result.tools[0].name, 'ra_fusion');
+  assert.equal((await fetch(channel.config.url)).status, 405);
+  assert.equal((await fetch(channel.config.url, { method: 'POST', headers: { origin: 'https://unrelated.example' }, body: '{}' })).status, 403);
+  const call = request(7, 'tools/call', { name: 'ra_fusion', arguments: { action: 'read_workspace' } });
+  for (let n = 0; n < 100 && !channel.requests().length; n++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(channel.requests()[0].id, 'actual-call'); assert.equal(channel.requests()[0].params.threadId, 'native-main');
+  await channel.reply('actual-call', { success: true, contentItems: [{ type: 'inputText', text: 'workspace events' }] });
+  const result = await (await call).json(); assert.equal(result.id, 7); assert.equal(result.result.content[0].text, 'workspace events');
+  assert.equal(result.result.isError, false); assert.equal(identified.length, 1); assert(notifications.length);
+});
+test('an MCP main carries its durable tool endpoint in the initial native creation without loading an empty session', async () => {
+  const provider = nativeAgentProvider('devin'), creation = { id: 'actual-creation' }, calls = [], controller = { main: { bindingId: 'new-binding' }, bindings: [] };
+  const context = { native: { threadId: 'ordinary' } }, spec = { role: 'main', model: 'native-model', tools: FUSION_TOOLS, instructions: 'Own controller' };
+  const agent = { publish(value) { assert.equal(value, controller); assert(creation.mcp?.port); },
+    call: async (_context, code) => { const invocation = nativeInvocation(code); calls.push(invocation); return {}; } };
+  await provider.create(agent, context, spec, controller, creation);
+  const request = calls[0].args[3]; assert.equal(calls[0].args[2], 'create'); assert.equal(request.model, spec.model);
+  assert.equal(new URL(request.mcp.url).port, String(creation.mcp.port));
+  controller.bindings.push({ id: 'new-binding', threadId: 'own-main', mcp: creation.mcp });
+  try { await provider.bindController(agent, context, controller, spec);
+    assert.equal(context.fusionMcp.config.url, request.mcp.url);
+    assert.equal(calls.filter(call => call.args[2] === 'create').length, 1);
+  } finally { await provider.unbindController(agent, context); }
+});
+test('Devin binds MCP to its own session and preserves native request identity and failed facts after transcript cleanup', async () => {
+  const session = { sessionId: 'main-devin', providerId: 'devin-cli', cwd: '/project', status: 'idle', mcpServers: [{ name: 'existing', type: 'http', url: 'http://native-existing' }] };
+  const state = { sessions: [session], perSession: { 'main-devin': { messages: [] } }, agentRequests: { byId: {} } }, listeners = new Set(), sent = [];
+  const update = () => { for (const listener of [...listeners]) listener(); };
+  const nativeModule = { tryGetAcpSingleton: name => name === 'connectorService'
+    ? { getConnectors: () => [{ id: 'devin-cli', capabilities: { mcpCapabilities: { http: true } } }] } : 'native-sender',
+    sendAgentRequestThunk: (provider, request, sender) => ({ provider, request, sender }) };
+  const window = { __acpStore: { getState: () => ({ acp: state }), subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); },
+    dispatch: async request => sent.push(request) } };
+  const context = vm.createContext({ window, Map, Set, WeakMap, Error, JSON, nativeModule, devinSessionRecord: () => session });
+  const source = fs.readFileSync(new URL('../server/page/fusion-tools.js', import.meta.url), 'utf8').replace("await import('@exa/chat-client')", 'nativeModule');
+  vm.runInContext(source + ';this.tools=fusionNativeTools;this.turn=fusionDevinTurn;this.identify=fusionDevinCall;', context);
+  const config = { name: 'ra-fusion', type: 'http', url: 'http://native-test', headers: [] };
+  assert.equal((await context.tools.bind('devin', 'main-devin', { tools: FUSION_TOOLS, mcp: config })).profileReady, true);
+  assert.equal(sent.length, 1); assert.equal(sent[0].request.method, 'session/load');
+  assert.deepEqual(JSON.parse(JSON.stringify(sent[0].request.params.mcpServers)), [...session.mcpServers, config]);
+  session.status = 'active'; state.agentRequests.byId['actual-generation'] = { method: 'session/prompt', status: 'started',
+    params: { sessionId: 'main-devin', _meta: { 'cognition.ai/clientMessageId': 'client-message' } } };
+  state.perSession['main-devin'].messages.push({ id: 'actual-user', kind: 'user_message',
+    content: [{ content: { type: 'text', text: 'Authorized native request' }, _meta: { 'cognition.ai/clientMessageId': 'client-message' } }] });
+  state.perSession['main-devin'].messages.push({ kind: 'tool_call', content: { name: 'ra_fusion', toolCallId: 'actual-tool', status: 'in_progress', rawInput: { action: 'read_workspace' } } });
+  update();
+  const call = await context.identify('main-devin', { tool: 'ra_fusion', arguments: { action: 'read_workspace' } });
+  assert.equal(call.id, 'actual-tool'); assert.equal(call.params.turnId, 'actual-user'); assert.equal(call.params.generationId, 'actual-generation');
+  state.agentRequests.byId['actual-generation'].status = 'failed'; state.agentRequests.byId['actual-generation'].errorMessage = 'Native error 13'; update();
+  delete state.agentRequests.byId['actual-generation']; state.perSession['main-devin'].messages = []; session.status = 'idle'; update();
+  const ended = context.turn('main-devin'); assert.equal(ended.id, 'actual-user'); assert.equal(ended.accepted, true);
+  assert.equal(ended.ended, true); assert.equal(ended.completed, false); assert.equal(ended.error, 'Native error 13');
+  assert.equal(ended.user, 'Authorized native request'); context.tools.unbind('devin', 'main-devin'); assert.equal(listeners.size, 0);
+  session.mcpServers.push(config); session.status = 'idle';
+  assert.equal((await context.tools.bind('devin', 'main-devin', { tools: FUSION_TOOLS, mcp: config })).profileReady, true);
+  assert.equal(sent.length, 1); context.tools.unbind('devin', 'main-devin'); assert.equal(listeners.size, 0);
+});
+test('a new Devin Fusion session keeps ordinary pending preferences and sends its explicitly selected model', async () => {
+  const ordinary = { sessionId: 'ordinary', providerId: 'devin-cli', cwd: '/project', draft: 'untouched',
+    configOptions: [{ id: 'model', category: 'model', currentValue: 'ordinary-model', options: [{ value: 'swe-2-high' }] }] };
+  const pending = { model: 'ordinary-pending-model' }, initial = structuredClone({ ordinary, pending });
+  const sessions = new Map([[ordinary.sessionId, ordinary]]), staged = new Map(), calls = [];
+  const nativeModule = { tryGetAcpSingleton: () => 'native-sender', sendAgentRequestThunk: (provider, request) => ({ provider, request }),
+    setClientSideConfigValue: value => ({ type: 'setClientSideConfigValue', value }) };
+  const window = { __acpStore: { dispatch: async action => {
+    if (action.type === 'setClientSideConfigValue') { staged.set(action.value.sessionId, action.value.value); return; }
+    const request = action.request; calls.push(request);
+    if (request.method === 'session/new') {
+      assert.equal(request.params._meta['cognition.ai/skipPreferenceSeeding'], true);
+      sessions.set('own', { ...structuredClone(ordinary), sessionId: 'own', configOptions: [{ ...structuredClone(ordinary.configOptions[0]), currentValue: 'native-default' }] });
+      return { sessionId: 'own' };
+    }
+    if (request.method === 'session/set_config_option') sessions.get(request.params.sessionId).configOptions[0].currentValue = request.params.value;
+    if (request.method === 'session/prompt') {
+      const model = staged.get(request.params.sessionId); if (model) sessions.get(request.params.sessionId).configOptions[0].currentValue = model;
+      assert.equal(sessions.get('own').configOptions[0].currentValue, 'swe-2-high');
+    }
+    return true;
+  } } };
+  const context = vm.createContext({ window, nativeModule, Map, Promise, Error, JSON, remoteContext: { app: 'devin', threadId: 'ordinary' },
+    doc: { defaultView: { Event: class {}, dispatchEvent() {} } }, devinSessionRecord: id => sessions.get(id), nativeSessionContext: async (_app, id) => ({ threadId: id }) });
+  const source = fs.readFileSync(new URL('../server/page/session-actions.js', import.meta.url), 'utf8'), start = source.indexOf('  const nativeSessionAction ='), end = source.indexOf('  const nativeSessionConfirm', start);
+  vm.runInContext(source.slice(start, end).replaceAll("await import('@exa/chat-client')", 'nativeModule') + ';this.action=nativeSessionAction;', context);
+  const mcp = { type: 'http', name: 'ra-fusion', url: 'http://own-endpoint', headers: [] };
+  assert.equal((await context.action('devin', 'ordinary', 'create', { role: 'main', requestId: 'new-own', root: '/project', model: 'swe-2-high', mcp })).threadId, 'own');
+  assert.deepEqual(JSON.parse(JSON.stringify(calls[0].params.mcpServers)), [mcp]); assert.equal(staged.get('own'), 'swe-2-high');
+  assert.equal(await context.action('devin', 'own', 'send', { requestId: 'new-prompt', text: 'A fresh test' }), true);
+  assert.equal(calls.filter(request => request.method === 'session/prompt').length, 1);
+  assert.deepEqual({ ordinary, pending }, initial);
+});
 
 test('Fusion reads the Codex model catalog without loading the ordinary conversation history', async () => {
   const {run}=fixture(),agent=new FusionAgent(),calls=[];
@@ -225,7 +398,7 @@ test('single-conversation tool routing leaves every ordinary tool dispatch on th
   const original = manager.threadExecution.executeDynamicToolCall;
   const context = vm.createContext({ Map, Set, WeakMap, Error, window: {}, remoteContext: { host: '' }, nativeValue: value => value,
     codexConversationManager: () => manager, codexHistoryScopes: () => [] });
-  vm.runInContext(source.slice(start, end) + '\nthis.action = nativeSessionAction;', context);
+  vm.runInContext(fs.readFileSync(new URL('../server/page/fusion-tools.js', import.meta.url), 'utf8') + source.slice(start, end) + '\nthis.action = nativeSessionAction;', context);
   await context.action('codex', 'main', 'bindTools', { names: ['ra_fusion'], authorization: fusionAutonomyContext({ id: 'workbench' }) });
   manager.threadExecution.executeDynamicToolCall({ id: 0, method: 'item/tool/call', params: { threadId: 'main', turnId: 't', tool: 'ra_fusion' } });
   manager.threadExecution.executeDynamicToolCall({ id: 1, params: { threadId: 'ordinary', tool: 'ra_fusion' } });
@@ -243,7 +416,7 @@ test('native request context authorizes only registered Fusion mains and preserv
   const one = manager(), two = manager();
   const context = vm.createContext({ Map, Set, WeakMap, window: {}, remoteContext: { host: '' },
     codexConversationManager: id => id === 'main-one' ? one : two, codexHistoryScopes: () => [] });
-  vm.runInContext(source.slice(start, end) + '\nthis.action = nativeSessionAction;', context);
+  vm.runInContext(fs.readFileSync(new URL('../server/page/fusion-tools.js', import.meta.url), 'utf8') + source.slice(start, end) + '\nthis.action = nativeSessionAction;', context);
   const authOne = fusionAutonomyContext({ id: 'workbench-one' }), authTwo = fusionAutonomyContext({ id: 'workbench-two' });
   await context.action('codex', 'main-one', 'bindTools', { names: ['ra_fusion'], authorization: authOne });
   const wrapped = client.sendRequest;
@@ -278,7 +451,7 @@ test('connecting a persistent controller registers its own workbench authorizati
   const controller = new FusionController({ run, agent }); controller.check = async () => {};
   await controller.start(); await controller.start();
   assert.equal(calls.length, 1); assert.equal(calls[0].action, 'bindTools'); assert.equal(calls[0].thread, 'main-thread');
-  assert.deepEqual(calls[0].value, { names: FUSION_TOOLS.map(tool => tool.name), authorization: fusionAutonomyContext(run), instructions: fusionControllerPrompt(run) });
+  assert.deepEqual(calls[0].value, { names: FUSION_TOOLS.map(tool => tool.name), tools: FUSION_TOOLS, authorization: fusionAutonomyContext(run), instructions: fusionControllerPrompt(run) });
   assert.equal(calls[0].value.authorization.kind, 'application'); assert(calls[0].value.authorization.value.includes(run.id));
   assert(Buffer.byteLength(JSON.stringify(calls[0].value.authorization)) < 700);
   await controller.close(); assert.deepEqual(calls.slice(1).map(call => call.action), ['unsubscribe', 'unbindTools']);

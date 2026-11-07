@@ -15,7 +15,7 @@ test('Fusion refreshes only its idle native thread instructions and keeps ordina
     threadExecution:{executeDynamicToolCall(request){originalToolCalls.push(request);}}};
   const context=vm.createContext({window:{},Map,WeakMap,Set,JSON,nativeValue:structuredClone,codexConversationManager:()=>manager,codexHistoryScopes:()=>[],remoteContext:{host:'local'}});
   const start=source.indexOf('  const nativeSessionAction ='),end=source.indexOf('  const nativeSessionRenameInput',start);
-  vm.runInContext(source.slice(start,end)+';this.act=nativeSessionAction;',context);
+  vm.runInContext(fs.readFileSync(new URL('../server/page/fusion-tools.js', import.meta.url), 'utf8') + source.slice(start,end)+';this.act=nativeSessionAction;',context);
   const spec={names:['ra_fusion'],authorization:{kind:'application',value:'current policy'},instructions:'Current Fusion instructions'};
   let result=await context.act('codex','fusion-main','bindTools',spec);assert.equal(result.profileReady,false);assert.equal(calls.length,0);
   const ordinary={threadId:'ordinary',input:[{type:'text',text:'keep my input'}],model:'ordinary-model',effort:'low',additionalContext:{existing:{kind:'application',value:'keep'}}};
@@ -373,7 +373,7 @@ test('every paired entry reads the same computer history without copying or chan
   const viewer = { deviceId: phone, emit: message => messages.push(message) };
   const before = structuredClone(h.run);
   t.after(() => { delete fusionRuns[phone]; });
-  FUSION_OWNER.fusionWorkspace.call(viewer);
+  await FUSION_OWNER.fusionWorkspace.call(viewer);
   assert(messages.at(-1).runs.some(run => run.id === h.run.id));
   assert.equal(messages.at(-1).current, '');
   FUSION_OWNER.fusionRead.call(viewer, { computer: h.run.computer, runId: h.run.id, view: 'tasks', requestId: 'phone-history' });

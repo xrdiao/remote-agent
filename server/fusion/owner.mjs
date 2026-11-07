@@ -1,12 +1,13 @@
 import fs from 'node:fs';
 import { computerId } from '../../lib/auth.mjs';
 import { workspaces } from '../../lib/files.mjs';
-import { EDITORS } from '../config.mjs';
 import { safeHomePath, projectList, createProjectFolder } from '../agent/projects.mjs';
 import { fusionRuns, fusionViewers, fusionLive, savedFusion, findFusionRun, allFusionRuns, newFusionRun, fusionProject,
   publishFusion, subscribeFusion, fusionSummary, fusionEvent } from './state.mjs';
 import { fusionRunner } from './runner.mjs';
 import { FUSION_TIERS, validateExecution } from './cost.mjs';
+import { nativeAgentProvider } from './providers.mjs';
+import { FusionAgent } from './agent.mjs';
 
 function requestedRun(session, message) {
   if (message.computer && message.computer !== computerId()) throw new Error('Fusion 请求不属于这台电脑');
@@ -23,7 +24,7 @@ function projectOf(value) {
   return fusionProject(real);
 }
 function mainOf(value) {
-  if (value?.app !== 'codex') throw new Error('当前已验证的主控软件为 Codex；Cursor 和 Devin 可作为子 Agent');
+  if (!value?.app || !nativeAgentProvider(value.app).controller) throw new Error('请选择提供原生主控工具的软件');
   return { app: value.app, model: String(value.model || ''), effort: String(value.effort || '') };
 }
 function nativeInteractions(run) {
@@ -197,7 +198,7 @@ subscribeFusion(run => {
   }
 });
 export const FUSION_OWNER = {
-  fusionWorkspace(message = {}) {
+  async fusionWorkspace(message = {}) {
     this.fusionDetail = null;
     const projects = [...new Map(workspaces().map(workspace => {
       const project = fusionProject(workspace.root, workspace.host || '');
@@ -206,7 +207,7 @@ export const FUSION_OWNER = {
     this.emit({ t: 'fusionWorkspace', computer: computerId(), requestId: message.requestId,
       current: fusionRuns[this.deviceId]?.current || '',
       runs: allFusionRuns().map(fusionControllerView).sort((a, b) => b.updated - a.updated),
-      projects, apps: EDITORS.map(({ app, name }) => ({ app, name, controller: app === 'codex' })),
+      projects, apps: await new FusionAgent().softwareCapabilities(),
       ...(message.path !== undefined ? { browse: projectList(message.path) } : {}) });
   },
   fusionCreate(message, emit = true) {
@@ -255,8 +256,12 @@ export const FUSION_OWNER = {
     if (message.main) {
       const main = mainOf(message.main);
       validateExecution(run, main);
+      if (run.main.bindingId && main.app !== run.main.app) throw new Error('更换主软件请新建工作台，已有主会话保留');
       if (run.main.bindingId && (main.model !== run.main.model || main.effort !== run.main.effort))
         throw new Error('已启用主 Agent 的模型与强度请使用普通原生模型菜单修改');
+      if (main.app !== run.main.app) {
+        runner.agent.releaseMainProject(run); run.main.windowId = ''; run.main.error = ''; run.main.projectTrust = null;
+      }
       Object.assign(run.main, main);
     }
     if (message.tier) {
@@ -278,7 +283,18 @@ export const FUSION_OWNER = {
     }
     emitFusionView(this, run, message);
   },
-  fusionPrepare(message) { return prepare(this, requestedRun(this, message), message); },
+  fusionPrepare(message) {
+    const run = requestedRun(this, message);
+    if (message.main) {
+      if (run.main.bindingId) throw new Error('已有主会话保留，请使用普通原生模型菜单');
+      const main = mainOf(message.main);
+      if (main.app !== run.main.app) {
+        fusionRunner(run).agent.releaseMainProject(run);
+        Object.assign(run.main, main, { windowId: '', error: '', projectTrust: null });
+      }
+    }
+    return prepare(this, run, message);
+  },
   fusionConfirm(message) {
     const run = requestedRun(this, message);
     fusionRunner(run).confirm(String(message.planId || ''), message.decision, message.text || '');

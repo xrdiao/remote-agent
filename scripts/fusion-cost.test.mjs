@@ -2,6 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { nativeCostSnapshot, validateExecution, validateCost, FUSION_TIERS } from '../server/fusion/cost.mjs';
 import { fixture } from './fusion-fixture.mjs';
+import { NativeAgentProvider, registerNativeAgentProvider } from '../server/fusion/providers.mjs';
+test('registered software and newly observed models use the same native capability validation', t => {
+  t.after(registerNativeAgentProvider(new NativeAgentProvider({ app: 'fixture-editor', name: 'Fixture editor' })));
+  const h = fixture();
+  h.run.capabilities.unshift(nativeCostSnapshot('fixture-editor', [{ id: 'new-model', efforts: ['native-strength'] }], null));
+  assert.equal(validateExecution(h.run, { app: 'fixture-editor', model: 'new-model', effort: 'native-strength' }).model, 'new-model');
+  assert.throws(() => validateExecution(h.run, { app: 'fixture-editor', model: 'invented-model', effort: 'native-strength' }), /原生候选/);
+});
 test('Auto, Free and native multipliers retain exact units, source and observation time', () => {
   const models = [{ id: 'Auto', label: 'Auto' }, { id: 'free', label: 'Free High', efforts: ['high'], pricing: { tag: 'Free', costs: [{ value: 2, unit: 'credits' }], creditMultiplier: 1.5 } }];
   const snapshot = nativeCostSnapshot('cursor', models, null, { read: 'native-model-menu' }, 123);

@@ -1,6 +1,7 @@
 import { FusionAgent, fusionWorkspaceSnapshot } from './agent.mjs';
 import { FusionController } from './controller.mjs';
 import { fusionScheduler } from './scheduler.mjs';
+import { nativeAgentProvider } from './providers.mjs';
 import { applyFusionControl, fusionTaskPrompt, fusionEventView } from './control.mjs';
 import { fusionRuns, fusionWorkers, fusionEvent, publishFusion,
   commitFusion, fusionAttemptWorkIds, NATIVE_UNSETTLED } from './state.mjs';
@@ -38,7 +39,7 @@ export class FusionRunner {
       for (const workId of workIds) await this.recordMainWork(attempt, workId);
     }
     if (action.action === 'read_workspace') {
-      result = { ...result, management: { threadId: native.threadId, turnId: native.turnId,
+      result = { ...result, apps: await this.agent.softwareCapabilities(), management: { threadId: native.threadId, turnId: native.turnId,
         evidenceReference: `main-turn:${native.turnId}` } };
     }
     if (action.action === 'set_priority') for (const job of this.scheduler.queue.filter(row => row.runId === run.id)) {
@@ -302,7 +303,8 @@ export class FusionRunner {
             catch (error) { this.attemptFailed(attempt.id, error, true); }
           }
         } else if (attempt.native?.messageId && !attempt.endedAt) {
-          const turn = await this.agent.call(this.controller.context, `codexFusionTurn(${JSON.stringify(attempt.native.messageId)})`);
+          const turn = await nativeAgentProvider(this.run.main.app).readTurn(this.agent, this.controller.context,
+            { id: attempt.native.messageId, generationId: attempt.native.generationId || '' });
           if (turn.ended) await this.mainEnded(attempt.id, turn);
           else if (!turn.id) this.attemptFailed(attempt.id, new Error('无法确认主会话原生轮次，不能自动重发'), true);
           else if (this.run.stopRequested) await this.controller.stop(attempt);

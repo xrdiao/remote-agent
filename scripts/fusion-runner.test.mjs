@@ -4,7 +4,7 @@ import test from 'node:test';
 import { FusionRunner } from '../server/fusion/runner.mjs';
 import { FusionScheduler } from '../server/fusion/scheduler.mjs';
 import { fusionEvent, fusionLive } from '../server/fusion/state.mjs';
-import { fixture, flush } from './fusion-fixture.mjs';
+import { fixture, flush, nativeInvocation } from './fusion-fixture.mjs';
 function scenario({ readWorkspace = true } = {}) {
   const h = fixture(), scheduler = new FusionScheduler(), calls = [], pending = new Map(), stops = [];
   const agent = { async execute(run, id, prompt, recovering) {
@@ -19,7 +19,7 @@ function scenario({ readWorkspace = true } = {}) {
       runner.acknowledge({ turnId: attempt.native.turnId }, readEvents);
       resolve({ text: 'native evidence', completed: true, native: attempt.native, ...result });
     }, reject }));
-  }, async stop(id) { stops.push(id); } };
+  }, async stop(id) { stops.push(id); }, async softwareCapabilities() { return h.run.capabilities.map(row => ({ app: row.app, controller: true, worker: true, connected: true })); } };
   const controller = { async start() {}, async idle() { return true; }, async stop(attempt) { stops.push(attempt.id); } };
   const runner = new FusionRunner(h.run, { scheduler, agent, controller });
   const control = (action, native) => runner.control(h.request(action), native);
@@ -31,15 +31,16 @@ async function managementScenario() {
   h.turn={id:'user-message',threadId:'main-thread',turnId:'native-turn',accepted:true,ended:false};
   h.agent.close=async()=>{};
   h.agent.call=async(_context,code)=>{
-    if(code==='codexFusionTurn()')return h.turn;
-    if(code.includes("'tools'"))return requests.slice();
-    if(code.includes("'settings'"))return {model:'cheap',effort:'low'};
-    if(code.includes("'toolReply'")){
-      const reply=JSON.parse(code.match(/'toolReply', (.*)\)$/s)[1]);replies.push(reply);
+    const {method,args}=nativeInvocation(code);
+    if(method==='codexFusionTurn')return h.turn;
+    if(method==='nativeSessionInfo'&&args[2]==='tools')return requests.slice();
+    if(method==='nativeSessionInfo'&&args[2]==='settings')return {model:'cheap',effort:'low'};
+    if(method==='nativeSessionAction'&&args[2]==='toolReply'){
+      const reply=args[3];replies.push(reply);
       requests.splice(requests.findIndex(request=>request.id===reply.requestId),1);
       if(h.replyGate)await h.replyGate(reply);return true;
     }
-    if(code.includes("'unbindTools'"))return true;
+    if(method==='nativeSessionAction'&&args[2]==='unbindTools')return true;
     throw Error(code);
   };
   const connect=()=>{const driver=new FusionController(h.runner);driver.context={native:{threadId:'main-thread'}};return driver;};
@@ -221,8 +222,9 @@ test('native management replies transmit evidence references through the existin
   driver.context = { native: { threadId: 'main-thread' }, source: { readConversation: async () => ({ chat: { items: [] } }) } };
   let action = { action: 'read_workspace' }, release;
   h.agent.call = async (_context, code) => {
-    if (code === 'codexFusionTurn()') return {};
-    if (code.includes("'tools'")) return [{ id: 0, params: { threadId: 'main-thread', turnId: 'native-main', tool: 'ra_fusion', arguments: action } }];
+    const {method,args}=nativeInvocation(code);
+    if (method === 'codexFusionTurn') return {};
+    if (method === 'nativeSessionInfo'&&args[2]==='tools') return [{ id: 0, params: { threadId: 'main-thread', turnId: 'native-main', tool: 'ra_fusion', arguments: action } }];
     return new Function('nativeSessionAction', 'return ' + code)((app, threadId, operation, payload) => {
       assert.equal(app, 'codex'); assert.equal(threadId, 'main-thread'); assert.equal(operation, 'toolReply');
       replies.push(payload); return new Promise(resolve => { release = resolve; });
@@ -431,7 +433,7 @@ test('the controller observer does not finish a native event attempt owned by th
   const driver = new FusionController(h.runner); let ended = 0;
   const original = h.runner.mainEnded.bind(h.runner); h.runner.mainEnded = (...args) => { ended++; return original(...args); };
   driver.context = { native: { threadId: 'main-thread' }, source: { readConversation: async () => ({ state: { run: { status: 'completed' } }, chat: { items: [] } }) } };
-  h.agent.call = async (_context, code) => code === 'codexFusionTurn()' ? turn : [];
+  h.agent.call = async (_context, code) => nativeInvocation(code).method === 'codexFusionTurn' ? turn : [];
   await driver.read(); assert.equal(ended, 0); assert.equal(attempt.status, 'running'); assert.equal(attempt.endedAt, null);
   await h.runner.mainEnded(attempt.id, turn); assert.equal(ended, 1); assert.equal(attempt.status, 'ended'); assert(attempt.endedAt);
 });
@@ -453,10 +455,11 @@ test('management handles the current native request and call identity without re
     tool: 'ra_fusion', arguments: { action: 'create_work', title: 'current', goal: 'current' } } }];
   let replies = 0, contentReads = 0;
   h.agent.call = async (_ctx, code) => {
-    if (code === 'codexFusionTurn()') return { id: 'current-message', threadId: 'main-thread', turnId: 'current-turn', accepted: true, ended: false };
-    if (code.includes("'tools'")) return requests;
-    if (code.includes("'settings'")) return { model: 'cheap', effort: 'low' };
-    if (code.includes("'toolReply'")) { replies++; return true; }
+    const {method,args}=nativeInvocation(code);
+    if (method === 'codexFusionTurn') return { id: 'current-message', threadId: 'main-thread', turnId: 'current-turn', accepted: true, ended: false };
+    if (method === 'nativeSessionInfo'&&args[2]==='tools') return requests;
+    if (method === 'nativeSessionInfo'&&args[2]==='settings') return { model: 'cheap', effort: 'low' };
+    if (method === 'nativeSessionAction'&&args[2]==='toolReply') { replies++; return true; }
     throw Error(code);
   };
   const driver = new FusionController(h.runner);

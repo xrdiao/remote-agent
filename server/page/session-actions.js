@@ -1,9 +1,12 @@
   const nativeValue = value => doc.defaultView.JSON.parse(JSON.stringify(value));
-  const cursorSessionServices = () => {
-    if (window.__remoteAgentCursorServices) return window.__remoteAgentCursorServices;
+  const cursorSessionInstantiation = () => {
     const props = [...doc.querySelectorAll('[data-message-id], [data-glass-agent-id], .composer-container')]
       .flatMap(el => codexFiberProps(el, 40)).find(p => p.uiContextMenuServices);
-    const inst = props?.uiContextMenuServices?.instantiationService;
+    return props?.uiContextMenuServices?.instantiationService;
+  };
+  const cursorSessionServices = () => {
+    if (window.__remoteAgentCursorServices) return window.__remoteAgentCursorServices;
+    const inst = cursorSessionInstantiation();
     if (!inst) return null;
     const ids = new Map();
     for (let scope = inst; scope; scope = scope._parent)
@@ -230,10 +233,8 @@
       const value = window.__remoteAgentNativeCreations?.get(previous);
       return value ? { status: value.status, context: value.context, nativeThreadId: value.nativeThreadId, error: value.error } : null;
     }
-    if (catalog === 'tools' && app === 'codex') {
-      const manager = codexConversationManager(id, codexHistoryScopes(), remoteContext?.host || 'local');
-      return (manager.getConversation(id)?.requests || []).filter(request => request.method === 'item/tool/call');
-    }
+    if (catalog === 'tools') return fusionNativeTools.requests(app, id);
+    if (catalog === 'fusionCall' && app === 'devin') return fusionDevinCall(id, previous);
     if (catalog === 'draft' && app === 'codex') return codexConversationDraft(id, previous === null ? undefined : previous);
     if (catalog === 'clearDraft' && app === 'codex') return codexConversationDraft(id, '', previous);
     if (catalog === 'composer' && app === 'codex') return (async () => {
@@ -332,72 +333,9 @@
       });
       return record.promise;
     }
-    if (action === 'bindTools' && app === 'codex') {
-      const manager = codexConversationManager(id, codexHistoryScopes(), remoteContext?.host || 'local');
-      const managers = window.__remoteAgentNativeTools ||= new WeakMap();
-      let bridge = managers.get(manager);
-      if (!bridge) {
-        const original = manager.threadExecution.executeDynamicToolCall;
-        bridge = { original, threads: new Map() };
-        bridge.dispatch = request => {
-          const tools = bridge.threads.get(request.params.threadId);
-          if (!tools?.has(request.params.tool)) return original.call(manager.threadExecution, request);
-          manager.updateConversationState(request.params.threadId, conversation => { conversation.requests.push(request); });
-        };
-        manager.threadExecution.executeDynamicToolCall = bridge.dispatch;
-        managers.set(manager, bridge);
-      }
-      bridge.threads.set(id, new Set(name.names));
-      const client = manager.requestClient;
-      const clients = window.__remoteAgentFusionRequests ||= new WeakMap();
-      let requests = clients.get(client);
-      if (!requests) {
-        requests = { original: client.sendRequest, threads: new Map() };
-        client.sendRequest = function(method, params, ...options) {
-          const authorization = (method === 'turn/start' || method === 'turn/steer') && requests.threads.get(params.threadId);
-          return requests.original.call(this, method, authorization ? { ...params,
-            additionalContext: { ...params.additionalContext, ra_fusion_user_authorization: authorization },
-          } : params, ...options);
-        };
-        clients.set(client, requests);
-      }
-      requests.threads.set(id, name.authorization);
-      requests.profiles ||= new Map();
-      if (requests.profiles.get(id) !== name.instructions && !manager.isConversationStreaming(id)) {
-        const conversation = manager.getConversation(id), settings = conversation.latestThreadSettings, permissions = conversation.currentPermissions;
-        await requests.original.call(client, 'thread/resume', nativeValue({
-          threadId: id, excludeTurns: true, developerInstructions: name.instructions,
-          model: settings.model, serviceTier: settings.serviceTier, cwd: settings.cwd,
-          approvalPolicy: permissions.approvalPolicy, approvalsReviewer: permissions.approvalsReviewer,
-          permissions: permissions.activePermissionProfile?.id, runtimeWorkspaceRoots: permissions.runtimeWorkspaceRoots,
-          ...(settings.effort ? { config: { model_reasoning_effort: settings.effort } } : {}),
-        }));
-        requests.profiles.set(id, name.instructions);
-      }
-      return { profileReady: requests.profiles.get(id) === name.instructions };
-    }
-    if (action === 'unbindTools' && app === 'codex') {
-      const manager = codexConversationManager(id, codexHistoryScopes(), remoteContext?.host || 'local');
-      const bridge = window.__remoteAgentNativeTools.get(manager);
-      bridge.threads.delete(id);
-      if (!bridge.threads.size) {
-        manager.threadExecution.executeDynamicToolCall = bridge.original;
-        window.__remoteAgentNativeTools.delete(manager);
-      }
-      const client = manager.requestClient, requests = window.__remoteAgentFusionRequests.get(client);
-      requests.threads.delete(id);
-      if (!requests.threads.size) {
-        client.sendRequest = requests.original;
-        window.__remoteAgentFusionRequests.delete(client);
-      }
-      return true;
-    }
-    if (action === 'toolReply' && app === 'codex') {
-      const manager = codexConversationManager(id, codexHistoryScopes(), remoteContext?.host || 'local');
-      const request = manager.getDynamicToolRequest(id, name.requestId);
-      if (!window.__remoteAgentNativeTools.get(manager)?.threads.get(id)?.has(request?.tool)) throw new Error('管理工具请求已不属于这个主会话');
-      return manager.replyWithDynamicToolResponse(id, name.requestId, nativeValue(name.result));
-    }
+    if (action === 'bindTools') return fusionNativeTools.bind(app, id, name);
+    if (action === 'unbindTools') return fusionNativeTools.unbind(app, id, name);
+    if (action === 'toolReply') return fusionNativeTools.reply(app, id, name);
     if (action === 'prepare' && app === 'codex') return nativeCodexCreation(id, name, true);
     if (action === 'createNative' && app === 'codex') return nativeCodexCreation(id, name, false);
     if (action === 'release' && app === 'cursor') {
@@ -412,8 +350,11 @@
       if (!parent) throw new Error('主会话尚未在这个 Cursor 窗口就绪');
       const created = await services.composer.createComposer(nativeValue({
         skipSelect: true, skipShowAndFocus: true,
-        partialState: { composerId: name.threadId, name: name.title, unifiedMode: 'agent', modelConfig: parent.modelConfig,
-          subagentInfo: { parentComposerId: id, subagentTypeName: 'side-chat' } },
+        partialState: { composerId: name.threadId, name: name.title, unifiedMode: 'agent',
+          modelConfig: name.role === 'main' && name.model ? { ...parent.modelConfig,
+            selectedModels: [{ modelId: name.model,
+              parameters: name.effort ? [{ id: 'reasoning_effort', value: name.effort }] : [] }] } : parent.modelConfig,
+          ...(name.role === 'main' ? {} : { subagentInfo: { parentComposerId: id, subagentTypeName: 'side-chat' } }) },
       }));
       window.__remoteAgentNativeCreations.get(name.requestId).nativeThreadId = created.composerId;
       return nativeSessionContext(app, created.composerId);
@@ -422,8 +363,10 @@
       const native = await import('@exa/chat-client'), parent = devinSessionRecord(id);
       if (!parent) throw new Error('当前 Devin 窗口没有就绪的原生会话');
       const created = await window.__acpStore.dispatch(native.sendAgentRequestThunk(parent.providerId,
-        { method: 'session/new', params: { cwd: name.root, mcpServers: [] } }, native.tryGetAcpSingleton('sendAgentRequest')));
+        { method: 'session/new', params: { cwd: name.root, mcpServers: name.mcp ? [name.mcp] : [],
+          _meta: { 'cognition.ai/skipPreferenceSeeding': true } } }, native.tryGetAcpSingleton('sendAgentRequest')));
       window.__remoteAgentNativeCreations.get(name.requestId).nativeThreadId = created.sessionId;
+      if (name.role === 'main' && name.model) await nativeSessionAction(app, created.sessionId, 'model', name.model);
       return nativeSessionContext(app, created.sessionId);
     }
     if (action === 'capacityTarget' && app === 'codex') {
@@ -449,7 +392,8 @@
       } else {
         const native = await import('@exa/chat-client'), session = devinSessionRecord(id);
         submitted = window.__acpStore.dispatch(native.sendAgentRequestThunk(session.providerId,
-          { method: 'session/prompt', params: { sessionId: id, prompt: [{ type: 'text', text: name.text }] } }, native.tryGetAcpSingleton('sendAgentRequest')));
+          { method: 'session/prompt', params: { sessionId: id, prompt: [{ type: 'text', text: name.text }],
+            _meta: { 'cognition.ai/clientMessageId': name.requestId } } }, native.tryGetAcpSingleton('sendAgentRequest')));
       }
       Promise.resolve(submitted).then(() => { record.status = 'handler_finished'; }, error => {
         Object.assign(record, { status: 'error', message: String(error.message || error),
@@ -481,6 +425,7 @@
         const native = await import('@exa/chat-client');
         await window.__acpStore.dispatch(native.sendAgentRequestThunk(session.providerId,
           { method: 'session/set_config_option', params: { sessionId: id, configId: config.id, value: name } }, native.tryGetAcpSingleton('sendAgentRequest')));
+        window.__acpStore.dispatch(native.setClientSideConfigValue({ sessionId: id, configId: config.id, value: name }));
         return true;
       }
       const picker = devinPickerProps(true), model = devinConfigs(picker).find(row => row.modelUid === name);

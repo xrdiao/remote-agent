@@ -416,6 +416,7 @@
     return turn ? { ...entry, turn } : entry;
   };
   const codexFusionTurn = async (id = '', attemptId = '', previous = [], generationId = '') => {
+    if (remoteContext?.app === 'devin' && remoteContext.fusionController) return fusionDevinTurn(remoteContext.threadId, id, generationId);
     if (remoteContext && remoteContext.app !== 'codex' || !codexThread()) {
       const threadId = remoteContext?.threadId || activeThread();
       if (devinSurface()) {
@@ -459,7 +460,9 @@
       const messages = await Promise.all(replies.map(load));
       const final = messages.findLast(item => item?.text?.trim() && !item.toolFormerData && !item.thinking);
       const nativeAbort = !user && !!id && !!generationId && data.latestChatGenerationUUID === generationId && data.status === 'aborted';
+      const acceptedUser = user ? await load(user) : null;
       return { id: user?.bubbleId || (nativeAbort ? id : ''), ids: users.map(header => header.bubbleId), turnId: user?.bubbleId || (nativeAbort ? id : ''), threadId,
+        accepted: !!acceptedUser && !!data.latestChatGenerationUUID, user: acceptedUser?.text || '',
         generationId: data.latestChatGenerationUUID || '', current: !!user && user === users.at(-1) || nativeAbort,
         text: final?.text || '', completed: !!final && user === users.at(-1) && data.status === 'completed' && (remoteContext ? true : !isBusy()),
         ended: (nativeAbort || !!user && user === users.at(-1) && ['completed', 'aborted'].includes(data.status)) && (remoteContext ? true : !isBusy()),

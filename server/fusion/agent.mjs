@@ -15,10 +15,9 @@ import { fusionProject, fusionLive, publishFusion, fusionEvent } from './state.m
 import { nativeCostSnapshot } from './cost.mjs';
 import { FUSION_TOOLS, fusionControllerPrompt } from './control.mjs';
 import { fusionScheduler } from './scheduler.mjs';
+import { nativeAgentProvider, nativeAgentProviders } from './providers.mjs';
 
 const executeFile = promisify(execFile);
-const turnCall = (id = '', attemptId = '', previous = [], generationId = '') =>
-  `codexFusionTurn(${JSON.stringify(id)}, ${JSON.stringify(attemptId)}, ${JSON.stringify(previous)}, ${JSON.stringify(generationId)})`;
 
 export async function fusionWorkspaceSnapshot(project, scope = []) {
   if (project.host) return { available: false, reason: '远程工作区差异需由原生 Agent 提供证据', at: Date.now() };
@@ -62,6 +61,12 @@ export class FusionAgent {
     return pages.filter(row => row.type === 'page' && /workbench/.test(row.url))
       .map(row => ({ id: row.id, app, editorWs: row.webSocketDebuggerUrl, ws: row.webSocketDebuggerUrl, title: row.title }));
   }
+  async softwareCapabilities() {
+    return Promise.all(nativeAgentProviders().map(async ({ app, name, controller, worker }) => {
+      try { return { app, name, controller, worker, connected: (await this.carriers(app)).length > 0 }; }
+      catch (error) { return { app, name, controller, worker, connected: false, reason: error.message }; }
+    }));
+  }
   async carrierFor(controller, app, project = controller.project, preferred = '') {
     const pages = await this.carriers(app);
     if (!pages.length) throw new Error(`${app} 没有已打开且就绪的原生窗口`);
@@ -101,7 +106,7 @@ export class FusionAgent {
     try {
       context.native = { app: binding.app, threadId: binding.threadId, host: binding.host || '', cwd: binding.project.root,
         roots: [{ root: binding.project.root, host: binding.host || '' }] };
-      const actual = await this.call(context, `nativeSessionInfo(${JSON.stringify(binding.app)}, ${JSON.stringify(binding.threadId)}, 'bind', ${JSON.stringify(context.leaseId)})`);
+      const actual = await nativeAgentProvider(binding.app).info(this, context, 'bind', context.leaseId);
       context.pinned = binding.app === 'cursor';
       if (fusionProject(actual.cwd, actual.host || '')?.id !== binding.project.id) throw new Error('原生会话目录与该任务项目不一致，未切换任何普通窗口');
       context.native = actual;
@@ -144,10 +149,10 @@ export class FusionAgent {
       app === controller.main.app ? main?.windowId || controller.main.windowId || '' : '');
     try {
       if (context.native.threadId && app !== 'codex') {
-        await this.call(context, `nativeSessionInfo(${JSON.stringify(app)}, ${JSON.stringify(context.native.threadId)}, 'bind', ${JSON.stringify(context.leaseId)})`);
+        await nativeAgentProvider(app).info(this, context, 'bind', context.leaseId);
         context.pinned = app === 'cursor';
       }
-      const models = await this.call(context, 'modelItemsFast(true)', context.native.threadId ? context.native : null);
+      const models = await nativeAgentProvider(app).models(this, context);
       if (!models?.length) throw new Error('未读取到当前窗口实际原生模型候选');
       return nativeCostSnapshot(app, models, { available: false, reason: '未读取账号账单；不能推算子任务费用' },
         { windowId: context.page.id, host: context.native.host, read: 'native-model-catalog' });
@@ -162,21 +167,20 @@ export class FusionAgent {
       let creation = currentOwner().creations.findLast(row => row.app === app && row.projectId === project.id && !['rejected', 'bound'].includes(row.status));
       let actual;
       if (creation) {
-        const record = await this.call(context, `nativeSessionInfo(${JSON.stringify(app)}, ${JSON.stringify(context.native.threadId)}, 'creation', ${JSON.stringify(creation.id)})`);
+        const record = await nativeAgentProvider(app).info(this, context, 'creation', creation.id);
         if (!record) throw Object.assign(new Error('后台创建结果无法确认，不能重新创建会话'), { creationUnknown: true });
         if (record.status === 'rejected') { creation.status = 'rejected'; creation.error = record.error; this.publish(controller); throw new Error(record.error); }
         actual = record.context;
-        if (!actual && record.nativeThreadId) actual = await this.call(context,
-          `nativeSessionInfo(${JSON.stringify(app)}, ${JSON.stringify(record.nativeThreadId)}, 'context')`,
-          { ...context.native, threadId: record.nativeThreadId, host: project.host || '' });
+        if (!actual && record.nativeThreadId) actual = await nativeAgentProvider(app).info(this,
+          { ...context, native: { ...context.native, threadId: record.nativeThreadId, host: project.host || '' } }, 'context');
         if (!actual) throw Object.assign(new Error('原生仍在创建会话，结果待核对'), { creationUnknown: true });
       } else {
         creation = { id: crypto.randomUUID(), app, projectId: project.id, windowId: context.page.id, status: 'creating', startedAt: Date.now() };
         currentOwner().creations.push(creation); this.publish(controller);
         try {
-          actual = await this.call(context, `nativeSessionAction(${JSON.stringify(app)}, ${JSON.stringify(context.native.threadId)}, 'create', ${JSON.stringify({
-            ...spec, requestId: creation.id, root: project.root, threadId: crypto.randomUUID(),
-          })})`, { ...context.native, host: project.host || '' });
+          actual = await nativeAgentProvider(app).create(this, { ...context, native: { ...context.native, host: project.host || '' } }, {
+            ...spec, role, requestId: creation.id, root: project.root, threadId: crypto.randomUUID(),
+          }, controller, creation);
         } catch (error) {
           const pending = currentOwner().creations.find(row => row.id === creation.id);
           pending.error = error.message; pending.status = 'unknown'; this.publish(controller);
@@ -184,7 +188,8 @@ export class FusionAgent {
         }
       }
       const binding = { id: crypto.randomUUID(), role, app, windowId: context.page.id, threadId: actual.threadId,
-        host: actual.host || '', project, nativeProject: actual, created: Date.now() };
+        host: actual.host || '', project, nativeProject: actual, created: Date.now(),
+        ...(creation.mcp ? { mcp: creation.mcp } : {}) };
       controller.bindings.push(binding); currentOwner().bindingId = binding.id;
       creation = currentOwner().creations.find(row => row.id === creation.id);
       creation.status = 'bound'; creation.bindingId = binding.id;
@@ -195,7 +200,7 @@ export class FusionAgent {
     } finally { await this.close(context); }
   }
   async prepareMain(controller) {
-    if (controller.main.app !== 'codex') throw new Error('当前只验证了 Codex 的单会话主控工具；Cursor／Devin 可作为子 Agent');
+    if (!nativeAgentProvider(controller.main.app).controller) throw new Error('这个软件尚未提供原生主控工具');
     if (controller.main.bindingId) return controller.bindings.find(row => row.id === controller.main.bindingId);
     if (!controller.main.windowId) await this.prepareProject(controller);
     return this.createBinding(controller, controller.main, controller.main.app, controller.project, 'main',
@@ -213,12 +218,10 @@ export class FusionAgent {
   }
   async configure(context, controller, attempt) {
     const model = controller.capabilities.find(row => row.app === attempt.app)?.models.find(row => row.model === attempt.model);
-    const current = await this.call(context, `nativeSessionInfo(${JSON.stringify(attempt.app)}, ${JSON.stringify(context.native.threadId)}, 'settings')`);
-    if (current.model !== attempt.model) await this.call(context,
-      `nativeSessionAction(${JSON.stringify(attempt.app)}, ${JSON.stringify(context.native.threadId)}, 'model', ${JSON.stringify(attempt.model)})`);
-    if (attempt.effort) await this.call(context,
-      `nativeSessionAction(${JSON.stringify(attempt.app)}, ${JSON.stringify(context.native.threadId)}, 'effort', ${JSON.stringify(attempt.effort)})`);
-    const actual = await this.call(context, `nativeSessionInfo(${JSON.stringify(attempt.app)}, ${JSON.stringify(context.native.threadId)}, 'settings')`);
+    const provider = nativeAgentProvider(attempt.app), current = await provider.info(this, context, 'settings');
+    if (current.model !== attempt.model) await provider.action(this, context, 'model', attempt.model);
+    if (attempt.effort) await provider.action(this, context, 'effort', attempt.effort);
+    const actual = await provider.info(this, context, 'settings');
     if (actual.model !== attempt.model && (!model?.family || actual.family !== model.family)) throw new Error('原生未确认选中任务模型');
     if (attempt.effort && actual.effort !== attempt.effort) throw new Error('原生未确认任务思考强度');
     return actual;
@@ -241,7 +244,7 @@ export class FusionAgent {
       if (!recovering) {
         if (cancelled()) throw Object.assign(new Error('未提交的任务已取消'), { cancelled: true });
         if (task) await this.configure(context, controller, current());
-        const before = await this.call(context, turnCall());
+        const before = await nativeAgentProvider(binding.app).readTurn(this, context);
         Object.assign(current(), { beforeIds: before.ids, beforeTurnId: before.turnId || '', prompt,
           baseline: task ? await fusionWorkspaceSnapshot(work.project, task.scope) : null, status: 'preparing' });
         this.publish(controller);
@@ -253,7 +256,7 @@ export class FusionAgent {
         if (cancelled()) { runtime.cancelBeforeSend(); return observing; }
         Object.assign(current(), { status: 'submitting', submission: 'submitting', submittedAt: Date.now() }); this.publish(controller);
         try {
-          await this.call(context, `nativeSessionAction(${JSON.stringify(binding.app)}, ${JSON.stringify(binding.threadId)}, 'send', ${JSON.stringify({ text: prompt, requestId: attemptId })})`);
+          await nativeAgentProvider(binding.app).action(this, context, 'send', { text: prompt, requestId: attemptId });
         } catch (error) { runtime.fail(error); }
         runtime.check();
       }
@@ -288,13 +291,13 @@ export class FusionAgent {
             }
           }
           const generationId = current().native?.generationId || (binding.app === 'devin' ? snapshot.state?.run?.id : '');
-          const turn = await this.call(context, turnCall(current().native?.messageId || '', attemptId, current().beforeIds || [], generationId || ''));
-          const nativeError = await this.call(context,
-            `nativeSessionInfo(${JSON.stringify(binding.app)}, ${JSON.stringify(binding.threadId)}, 'sendError', ${JSON.stringify(attemptId)})`);
+          const provider = nativeAgentProvider(binding.app);
+          const turn = await provider.readTurn(this, context, { id: current().native?.messageId || '', attemptId, previous: current().beforeIds || [], generationId: generationId || '' });
+          const nativeError = await provider.info(this, context, 'sendError', attemptId);
           if (turn.threadId !== binding.threadId) throw new Error('原生结果身份与 Binding 不一致');
           if (turn.id && turn.accepted !== false) {
             if (current().kind === 'main' && !current().acceptedAt) {
-              const settings = await this.call(context, `nativeSessionInfo(${JSON.stringify(binding.app)}, ${JSON.stringify(binding.threadId)}, 'settings')`);
+              const settings = await provider.info(this, context, 'settings');
               current().model = controller.main.model = settings.model;
               current().effort = controller.main.effort = settings.effort || '';
             }
@@ -314,7 +317,7 @@ export class FusionAgent {
             const endedAt = Date.now();
             current().nativeGenerationEndedAt = endedAt;
             const task = controller.tasks.find(row => row.id === current().taskId), work = task && controller.works.find(row => row.id === task.workId);
-            const settings = await this.call(context, `nativeSessionInfo(${JSON.stringify(binding.app)}, ${JSON.stringify(binding.threadId)}, 'settings')`);
+            const settings = await provider.info(this, context, 'settings');
             const result = { text: turn.text || '', completed: !!turn.completed, stopped: runtime.stopping, error: turn.error || (snapshot.state?.run?.status === 'error' ? '原生执行失败' : ''),
               native: current().native, endedAt, changes: task ? await fusionWorkspaceSnapshot(work.project, task.scope) : null,
               usage: { native: settings.usage, observedAt: endedAt,
@@ -338,10 +341,11 @@ export class FusionAgent {
     runtime.stopping = true;
     if (runtime.stopSubmitted) return;
     const attempt = runtime.controller.attempts.find(row => row.id === attemptId);
-    const turn = await this.call(runtime.context, turnCall(attempt.native?.messageId || '', attemptId, attempt.beforeIds || [], attempt.native?.generationId || ''));
+    const provider = nativeAgentProvider(runtime.binding.app);
+    const turn = await provider.readTurn(this, runtime.context, { id: attempt.native?.messageId || '', attemptId, previous: attempt.beforeIds || [], generationId: attempt.native?.generationId || '' });
     if (turn.ended) { runtime.check(); return; }
     if (!turn.current || !attempt.native || turn.turnId && turn.turnId !== attempt.native.turnId) throw new Error('原生已不在该任务轮次，不能停止其他执行');
-    await this.call(runtime.context, `nativeSessionAction(${JSON.stringify(runtime.binding.app)}, ${JSON.stringify(runtime.binding.threadId)}, 'stop')`);
+    await provider.action(this, runtime.context, 'stop');
     runtime.stopSubmitted = true; runtime.check();
   }
   async nativeAction(controller, attemptId, action) {
@@ -362,8 +366,7 @@ export class FusionAgent {
     if (!binding) throw new Error('没有这个原生 Binding');
     const context = await this.openBinding(controller, binding, '');
     try {
-      const native = { ...context.native, ...(before != null ? { before } : {}) };
-      return { binding, chat: await this.call(context, `extract(${history === true}, [], 80)`, native) };
+      return { binding, chat: await nativeAgentProvider(binding.app).content(this, context, history, before) };
     } finally { await this.close(context); }
   }
 }

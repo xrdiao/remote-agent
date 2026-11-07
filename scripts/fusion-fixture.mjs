@@ -37,3 +37,7 @@ export function fixture() {
     execution: { app, model: app === 'cursor' ? 'Auto' : 'cheap', effort: app === 'cursor' ? '' : 'low', input: 'Read only, report evidence' }, cost: cost(app) });
   return { run, apply, request, native, cost, create, plan, task, project };
 }
+export function nativeInvocation(code) {
+  const names = ['nativeSessionInfo', 'nativeSessionAction', 'codexFusionTurn'];
+  return new Function(...names, 'return ' + code)(...names.map(method => (...args) => ({ method, args })));
+}

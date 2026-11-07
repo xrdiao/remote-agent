@@ -297,3 +297,11 @@ test('reconnection restores only the still-open detail subscription on its own c
   h.run("receiveFusion({t:'auth'},{authed:true,computer:{id:'computer-one'}})");
   assert.equal(h.sent.some(m => m.t === 'fusionRead'), false);
 });
+test('Fusion controller software choices come from the selected computer metadata', () => {
+  const h = fixture();
+  h.run("fusionWorkspaces.set('computer-one',{apps:[{app:'cursor',name:'Cursor',controller:true,connected:true},{app:'devin',name:'Devin',controller:true,connected:false},{app:'codex',name:'Codex',controller:true,connected:true},{app:'fixture-editor',name:'Fixture editor',controller:true,connected:true},{app:'worker-only',name:'Worker',controller:false}]})");
+  const html = h.run("fusionAppSelect('computer-one','devin')");
+  for (const app of ['cursor', 'devin', 'codex', 'fixture-editor']) assert(html.includes('value="' + app + '"'));
+  assert(html.includes('value="devin" selected')); assert(!html.includes('worker-only'));
+  assert(!h.run("fusionAppSelect('computer-two','devin')").includes('value="devin"'));
+});

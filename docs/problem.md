@@ -2245,3 +2245,29 @@ CWM读取到waiting状态与遗留的Codex原生中断blockedReason，同时所�
 真实Codex使用原remote-agent窗口、gpt-6-luna／low，严格3次全新原生提交：主控委派、子任务、主控普通问题。旧schema创建的主线程经指令更新后，在同一原生轮次完成create_work→plan→dispatch→wait→review→finish；wait先于子结束约2.4秒登记，子结果返回后被验收，工作项completed，没有origin=events额外主轮次。最后普通发送直接回答23×19为437，Work／Task／Worker／Assignment及管理命令均无新增。模型一次交付证据参数错误在同轮收到错误并纠正，未被全局阻塞，不记为模型永不出错。原生可读用量如实保留，金额未知；会话token不当作单任务精确账单。
 
 停止并保存自有测试工作台后，两条自有原生会话用原生能力归档，测试元数据及临时标签清理，恢复原隔离relay配置；保留旧隔离工作台11次执行事实及原配对身份。普通Cursor一窗、Codex两窗的会话、项目、host、模型、强度、草稿长度及哈希与测试前一致；没有关闭共享窗口或操作CWM业务。正式relay未重启，未发布、提交或推送；源码v421须由用户同步网页及配套后端后再验收。手机Safari／PWA、新的真实修改／拒绝闭环及同轮立即追加本轮仍待验；Cursor／Devin未追加模型请求，不据本轮Codex结果宣称它们可任主控。详见本轮report.md、verification.json及phone-checklist.md。
+
+## 47. Fusion 软件级原生接口与三软件主控（2026-11-07，源码 v422）
+
+用户确认 `_shots/fusion-main-adapters-20261107/plan.md` 的27文件方案及最多9次真实原生提交。基准为本轮修改前干净工作区991048462b771d4eace7b2eb1a3ca64ab4523759／v421，实际GitHub master相同，debug为fe013062b7c6499260e43b631eae0a64552525e6，仅只读参考。修改前完整检查659项通过；本轮不是沿用上一轮结果。后续用户要求不再测试Devin，未再追加请求。
+
+原限制来自owner、prepareMain、Controller及客户端的Codex主控分支，并非缺少其他软件的模型。新增软件级NativeAgentProvider注册表，统一模型／能力、原生创建与动作、轮次／内容、主控绑定、工具请求／回复及解除；Runner、任务事实、成本及ra_fusion协议共用。模型ID和强度保持原生目录数据；新模型不新增管理实现，新软件在RA原生基础接入后登记软件适配器。主控通过read_workspace.apps了解已接入软件和当前连接状态，按需list_models查询真实候选，支持跨软件派工；主模型由用户选择。
+
+Codex沿现有单会话动态工具，提取原逻辑后保留旧thread、旧schema和授权。Cursor按实际composerId提供原生MCP快照及调用，只为绑定主会话补入原生请求上下文的工具、说明和描述；未向全窗口注册Provider。真实初轮先做了大量工具搜索，后续日志证实仍经过会话级RPC完成派工，不能把短时未观察到调用认定为走了另一执行路径。补齐首次请求上下文后，普通直接回答成功；受控回归核对普通上下文仍返回原对象、两个主会话工具不串用及最后解绑恢复原属性。
+
+Devin通过原生ACP会话配置连接本机MCP管理服务，不接模型API或CLI执行器。MCP只转发同一Runner的管理工具，JSON-RPC ID与原生toolCallId／generation分别记录。初次“先创建空会话再load加工具”返回Session not found；改为session/new携带工具配置，后续绑定复用同一配置。不能据该错误断言上游持久化实现的唯一根因。
+
+实测另发现原生新会话会接收待选配置／偏好种子，直接set_config_option选定SWE-2 High后，首次prompt仍可能被待提交的默认Fusion模型覆盖。仅Fusion后台创建使用原生cognition.ai/skipPreferenceSeeding；显式模型同时同步所属会话的setClientSideConfigValue。普通新建和模型菜单默认路径不改，不清草稿或重发。零消息原生检查确认新主会话及其待提交模型均为swe-2-high，普通pendingConfigValues在该次创建前后保持。前期基准没有记录全局待选配置，不能声称早期所有内部偏好均做过前后对照。
+
+### 本轮实际验证与限制
+
+最终npm run check退出0：644项常规检查加24项终端检查，共668项通过、零跳过。使用既有测试shell，仅终端文件采用Node退出选项，未修改package.json或page导出快照。测试覆盖三软件主控契约、原生请求归属、MCP创建／回执／释放、未来软件及模型数据、Cursor普通RPC隔离和Devin偏好归属；既有plan／问题／wait／停止恢复回归保留。
+
+真实提交按原生轮次共9次：6次测试主输入、2次子任务，以及Cursor原生后台命令完成通知自动触发的1次主轮次；没有原请求重发。Codex Luna／low派给Cursor原生Auto，wait收回token并review验收，模型未调用finish，因此该工作项不能记为completed。Codex随后普通直接回答437，无新管理动作。Cursor Auto真实完成read_workspace、list_models(devin)、create_work、plan、dispatch、wait及失败证据读取，管理请求关联其实际composer／原生输入／call ID；Devin子执行失败，未被验收为成功。首次Cursor轮次与后续通知轮次分别保留，没有把它们合并成一次无误闭环；之后普通直接回答437。
+
+Devin主会话有一次实际被原生偏好覆盖到默认Fusion型号的失败请求，不计为SWE-2 High验证；修复配置后，在全新主会话中一次新的直接问题确认为swe-2-high，仍返回Permission denied: internal server error: error number 13。Devin子执行也返回同类错误，其首次发送前的最终生效型号未完整核验，不冒充免费High成功结果。未绕过、重试或据此推断上游账号根因；Devin成功主控工具调用、跨软件子结果评审交付仍未验证。按用户后续要求停止Devin测试。
+
+既有配对Chrome、实际隔离relay和v422本地资源核对三软件入口、真实模型目录、按软件变更清空未启用配置的模型／强度草稿，以及手机竖屏／桌面宽屏深浅主题。配置表单使用未发送的隔离夹具，不把它当作真实启用。实际已完成Cursor子历史首开fusionContent为0、展开后1，内容与Binding正确、关闭释放；业务写请求0，12张截图，原配对页指纹保持。最初夹具漏设视图归属，另有临时标签启动恢复普通页面干扰详情，两者仅修验收脚本；最终限制该标签为Fusion只读传输后通过，不作为产品修复。
+
+停止并保留三个测试工作台事实后清理7条自有原生会话：Codex1条使用原生归档；Cursor2条调用既有deleteComposer，目录随后标为archived，按删除清理记录，不宣称新增了原生归档接口；Devin4条使用实际支持的session/delete。未关闭共享窗口。移除本轮测试映射和临时标签，恢复原隔离relay启动配置与原配对身份；旧隔离工作台11次执行及命令／事件事实保持。普通Cursor1窗、Devin1窗、Codex2窗的会话／目录／host／模型／强度／草稿长度及哈希对照保持，未操作CWM业务。
+
+仅源码及隔离验收环境加载v422；正式relay未重启，网页未发布，master未提交／推送。手机Safari／PWA、其他电脑同步、Cursor完整成功跨软件交付及Devin成功主控仍未验；后者按用户要求暂停测试。详细记录、实际错误、清理及手机清单位于本轮 `_shots/` 目录。

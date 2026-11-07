@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { nativeAgentProvider } from './providers.mjs';
 
 export const FUSION_TIERS = {
   economy: '省钱：满足验收，优先降低包含规划、评审、上下文传递和返工的预计总成本。',
@@ -15,7 +16,7 @@ export function nativeCostSnapshot(app, models, usage, origin = {}, at = Date.no
     usage, available: candidates.length > 0 };
 }
 export function validateExecution(controller, execution) {
-  if (!execution || !['cursor', 'devin', 'codex'].includes(execution.app)) throw new Error('请选择实际执行软件');
+  if (!execution?.app || !nativeAgentProvider(execution.app).worker) throw new Error('请选择实际执行软件');
   const snapshot = controller.capabilities.find(row => row.app === execution.app);
   if (!snapshot?.available) throw new Error(`尚无 ${execution.app} 的可用原生候选：${snapshot?.error || '请先 list_models'}`);
   const model = snapshot.models.find(row => row.model === execution.model);

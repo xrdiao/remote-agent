@@ -55,13 +55,18 @@ export async function watchChat(cdp, changed, shared = false, context = null) {
         window[name]('');
       }, 250);
     };
+    const fusionChanged = event => {
+      if (context && event.detail?.app === context.app && event.detail.threadId === context.threadId) changed();
+    };
     const bind = () => {
       const next = document.getElementById('active-frame')?.contentDocument || document;
       if (next === doc) return;
       doc?.defaultView.removeEventListener('remote-agent-submit-error', changed);
+      doc?.defaultView.removeEventListener('remote-agent-fusion-tool', fusionChanged);
       observer?.disconnect(); native?.stop();
       doc = next;
       doc.defaultView.addEventListener('remote-agent-submit-error', changed);
+      if (context) doc.defaultView.addEventListener('remote-agent-fusion-tool', fusionChanged);
       if (context?.app === 'codex' || context?.app === 'cursor') {
         native = ${helpersCall('watchCodexData(changed)', context)};
       } else if (window.vscode?.context?.configuration?.().product?.applicationName === 'devin-desktop') {
@@ -79,7 +84,7 @@ export async function watchChat(cdp, changed, shared = false, context = null) {
     const outer = new MutationObserver(bind);
     outer.observe(document.body, { subtree: true, childList: true });
     document.addEventListener('load', bind, true);
-    state.stop = () => { doc?.defaultView.removeEventListener('remote-agent-submit-error', changed); observer?.disconnect(); native?.stop(); outer.disconnect(); document.removeEventListener('load', bind, true); clearTimeout(state.timer); };
+    state.stop = () => { doc?.defaultView.removeEventListener('remote-agent-submit-error', changed); doc?.defaultView.removeEventListener('remote-agent-fusion-tool', fusionChanged); observer?.disconnect(); native?.stop(); outer.disconnect(); document.removeEventListener('load', bind, true); clearTimeout(state.timer); };
     bind();
     window[name + 'Watch'] = state;
     return removed;
