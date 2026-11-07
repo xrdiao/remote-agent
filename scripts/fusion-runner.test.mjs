@@ -23,7 +23,11 @@ function scenario({ readWorkspace = true } = {}) {
   }, async stop(id) { stops.push(id); }, async softwareCapabilities() { return h.run.capabilities.map(row => ({ app: row.app, controller: true, worker: true, connected: true })); } };
   const controller = { async start() {}, async idle() { return true; }, async stop(attempt) { stops.push(attempt.id); } };
   const runner = new FusionRunner(h.run, { scheduler, agent, controller });
-  const control = (action, native) => runner.control(h.request(action), native);
+  const control = async (action, native) => {
+    const result = await runner.control(h.request(action), native);
+    if (!['read_workspace', 'read_task', 'list_models', 'list_projects'].includes(action.action)) h.readWorkers();
+    return result;
+  };
   return { ...h, runner, control, agent, scheduler, controller, calls, pending, stops };
 }
 async function managementScenario() {
@@ -141,7 +145,66 @@ test('an idle main gets one compact background review for a new result even afte
   assert.equal(h.runner.pendingEvents().length,0);assert.equal(reply.pendingReviews.total,1);
   h.pending.get(main.id).resolve({text:'Ended without reviewing'});await flush();h.runner.wake();await flush();
   assert.equal(h.calls.length,2);assert.equal(h.run.tasks[0].status,'awaiting_review');assert.equal(h.run.attempts.length,2);
+  assert.equal(h.run.status,'blocked');assert(h.run.blockedReason.includes('A'));assert.equal(h.run.attempts.find(a=>a.id===main.id).reviewBatch.outcome,'incomplete');
   assert.equal((await h.control({action:'read_workspace'},h.native())).pendingReviews.total,1);
+});
+test('historical notification coverage does not hide pending results and partial review schedules the remaining batch', async () => {
+  const h=scenario(),workId=h.create();h.plan(workId);h.run.status='blocked';
+  await h.control({action:'dispatch',workId,tasks:[h.task('A'),h.task('B')]},h.native());await flush();
+  const [one,two]=h.calls;h.pending.get(one.id).resolve({});h.pending.get(two.id).resolve({});await flush();
+  for(const event of h.run.events)event.deliveredTo='old-turn';
+  h.run.attempts.push({id:'old-background',kind:'main',origin:'events',status:'ended',endedAt:30,eventIds:h.run.events.map(e=>e.id)});
+  h.run.status='waiting';h.runner.wake();await flush();const first=h.calls.find(row=>row.kind==='main');assert(first);
+  const review=async(id,child,turn)=>h.control({action:'review',taskId:id,attemptId:child.id,verdict:'accept',reason:'Checked original',summary:'Verified '+id,
+    evidence:[{criterion:id+':1',detail:'Actual evidence',reference:'result.text'}]},{...h.native(),turnId:turn});
+  await review('A',one,first.id);h.pending.get(first.id).resolve({});await flush();
+  const mains=h.calls.filter(row=>row.kind==='main');assert.equal(mains.length,2);const next=mains[1];
+  assert.equal(h.run.attempts.find(a=>a.id===first.id).reviewBatch.outcome,'progress');
+  assert.deepEqual(h.run.attempts.find(a=>a.id===next.id).reviewBatch.attemptIds,[two.id]);
+  await review('B',two,next.id);h.pending.get(next.id).resolve({});await flush();h.runner.wake();await flush();
+  assert.equal(h.calls.length,4);assert.equal(h.run.status,'waiting');assert.equal(h.run.tasks.every(t=>t.status==='accepted'),true);
+});
+test('incomplete review survives recovery without another call and explicit user continue permits one new decision', async () => {
+  const h=scenario(),workId=h.create();h.plan(workId);h.run.status='waiting';
+  await h.control({action:'dispatch',workId,tasks:[h.task('A')]},h.native());await flush();h.pending.get(h.calls[0].id).resolve({});await flush();
+  const main=h.calls.find(row=>row.kind==='main');h.pending.get(main.id).resolve({});await flush();assert.equal(h.run.status,'blocked');
+  const old=structuredClone(h.run.attempts.find(a=>a.id===main.id));await h.runner.recover();h.runner.wake();await flush();
+  assert.equal(h.calls.length,2);assert.deepEqual(h.run.attempts.find(a=>a.id===main.id),old);
+  await h.runner.resume();await flush();const next=h.calls.filter(row=>row.kind==='main').at(-1);assert.notEqual(next.id,main.id);assert.equal(h.calls.length,3);
+  h.pending.get(next.id).resolve({});await flush();assert.equal(h.run.status,'blocked');h.runner.wake();await flush();assert.equal(h.calls.length,3);
+});
+test('result-specific questions hold only their result and a real answer resumes pending review on the same child', async () => {
+  const h=scenario(),workId=h.create();h.plan(workId);h.run.status='waiting';
+  await h.control({action:'dispatch',workId,tasks:[h.task('A')]},h.native());await flush();const child=h.calls[0];h.pending.get(child.id).resolve({});await flush();
+  const main=h.calls.find(row=>row.kind==='main');
+  const asked=await h.control({action:'ask_user',workId,attemptId:child.id,question:'Which result should be accepted?'},{...h.native(),turnId:main.id});
+  h.pending.get(main.id).resolve({});await flush();h.runner.wake();await flush();assert.equal(h.calls.length,2);assert.equal(h.run.status,'waiting');
+  assert.equal(h.run.attempts.find(a=>a.id===main.id).reviewBatch.outcome,'waiting');assert.equal(h.run.tasks[0].status,'awaiting_review');
+  h.runner.input({questionId:asked.questionId,text:'Use the actual original result',requestId:'real-answer'});await flush();
+  const next=h.calls.filter(row=>row.kind==='main').at(-1);assert.notEqual(next.id,main.id);assert.equal(h.run.tasks[0].workerId,h.run.agents[0].id);
+  await h.control({action:'review',taskId:'A',attemptId:child.id,verdict:'accept',reason:'Answered and verified',summary:'Original result verified',
+    evidence:[{criterion:'A:1',detail:'Actual original evidence',reference:'result.text'}]},{...h.native(),turnId:next.id});
+  h.pending.get(next.id).resolve({});await flush();assert.equal(h.calls.length,3);assert.equal(h.run.questions[0].answer,'Use the actual original result');
+  assert.equal(h.run.tasks[0].status,'accepted');assert.equal(h.run.attempts.filter(a=>a.kind==='task').length,1);
+});
+test('an ended failed child wakes one decision and cancellation handles it without changing its native failure', async () => {
+  const h=scenario(),workId=h.create();h.plan(workId);h.run.status='waiting';
+  await h.control({action:'dispatch',workId,tasks:[h.task('A')]},h.native());await flush();const child=h.calls[0];
+  h.pending.get(child.id).resolve({completed:false,error:'Actual native failure'});await flush();const main=h.calls.find(row=>row.kind==='main');assert(main);
+  const view=await h.control({action:'read_workspace'},{...h.native(),turnId:main.id});assert.equal(view.pendingReviews.items[0].outcome,'failed');
+  await h.control({action:'cancel_task',taskId:'A',reason:'Failure examined, no further work needed'},{...h.native(),turnId:main.id});
+  h.pending.get(main.id).resolve({});await flush();assert.equal(h.calls.length,2);assert.equal(h.run.tasks[0].status,'cancelled');
+  const attempt=h.run.attempts.find(a=>a.id===child.id);assert.equal(attempt.status,'failed');assert.equal(attempt.result.completed,false);assert.equal(attempt.result.error,'Actual native failure');
+});
+test('directory knowledge and review delivery are recorded only after the actual native tool reply is accepted', async () => {
+  const h=await managementScenario(),workId=h.create();h.plan(workId);h.apply({action:'dispatch',workId,tasks:[h.task('A')]});
+  const child=h.run.attempts[0];Object.assign(child,{status:'awaiting_review',endedAt:20,result:{completed:true,text:'42'}});h.run.effects[0].status='done';
+  delete h.run.bindings[0].workerReads;const driver=h.connect();let release;h.replyGate=()=>new Promise(resolve=>{release=resolve;});
+  h.request('directory',{action:'read_workspace'});const flight=driver.read();await flush();
+  assert.equal(h.run.bindings[0].workerReads,undefined);assert.equal(h.run.attempts.find(a=>a.kind==='main').reviewBatch,undefined);
+  release();await flight;await flush();const receipt=h.run.bindings[0].workerReads[0];assert.equal(receipt.requestId,'directory');assert.equal(receipt.threadId,'main-thread');
+  assert.equal(h.run.attempts.find(a=>a.kind==='main').reviewBatch.delivered[0].attemptId,child.id);
+  assert.equal(h.run.attempts[0].status,'awaiting_review');await driver.close();
 });
 test('new result batches resume review while another child runs and never resend a prior batch', async () => {
   const h=scenario(),workId=h.create();h.plan(workId);h.run.status='waiting';

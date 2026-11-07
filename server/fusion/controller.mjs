@@ -183,7 +183,7 @@ export class FusionController {
         }
         if (this.context !== context) return;
         await nativeAgentProvider(this.controller.main.app).replyTool(this.runner.agent, context, request, result);
-        this.runner.acknowledge(native, errorEvent ? [errorEvent.id] : value.events.map(event => event.id));
+        this.runner.acknowledge(native, errorEvent ? [errorEvent.id] : value.events.map(event => event.id), errorEvent ? undefined : value);
       } finally {
         for (const id of delivery) this.delivering.delete(id);
         this.pending.delete(key); this.waiting.delete(key);

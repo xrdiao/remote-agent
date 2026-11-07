@@ -6,7 +6,7 @@ import { nativeCostSnapshot } from './cost.mjs';
 import { FUSION_READ_ACTIONS, validateFusionAction } from './contract.mjs';
 import { applyFusionControl, fusionActor, fusionEventView, fusionPendingReviews, fusionReviewQueue } from './control.mjs';
 import { fusionRuns, fusionWorkers, fusionEvent, publishFusion,
-  commitFusion, fusionAttemptWorkIds, newFusionAttempt, NATIVE_UNSETTLED } from './state.mjs';
+  commitFusion, fusionAttemptWorkIds, newFusionAttempt, fusionReviewBatch, fusionReviewKey, recordFusionReceipt, NATIVE_UNSETTLED } from './state.mjs';
 
 export class FusionRunner {
   constructor(run, { scheduler = fusionScheduler, agent, controller } = {}) {
@@ -17,6 +17,7 @@ export class FusionRunner {
   }
   publish() { publishFusion(this.run); }
   blockMain(error) {
+    delete this.run.reviewBlock;
     this.run.status = this.run.stopRequested ? 'stopping' : 'blocked';
     this.run.blockedReason = error.message; this.publish();
   }
@@ -76,12 +77,14 @@ export class FusionRunner {
   }
   pendingEvents() { return this.run.events.filter(row => !row.deliveredTo).map(row => fusionEventView(this.run, row)); }
   hasPendingWork() {
-    return this.run.tasks.some(task => ['queued', 'preparing', 'submitting', 'running', 'stopping', 'awaiting_user'].includes(task.status))
+    return fusionPendingReviews(this.run).length > 0
+      || this.run.tasks.some(task => ['queued', 'preparing', 'submitting', 'running', 'stopping', 'awaiting_user'].includes(task.status))
       || this.run.questions.some(question => !question.answeredAt)
       || this.run.works.some(work => work.plans.some(plan => plan.id === work.planId && plan.requiresConfirmation && !plan.confirmed && !plan.decision));
   }
   waitKey(native) { return `${native.turnId}:${String(native.requestId)}`; }
   acceptedInput(turnId) {
+    delete this.run.reviewBlock;
     for (const [key, waiter] of this.waiters) if (waiter.native.turnId === turnId) {
       this.waiters.delete(key); waiter.resolve(true);
     }
@@ -95,12 +98,13 @@ export class FusionRunner {
     const key = this.waitKey(native), waiter = this.waiters.get(key);
     if (waiter) { this.waiters.delete(key); waiter.resolve(false); }
   }
-  acknowledge(native, eventIds) {
-    if (!eventIds?.length) return;
-    for (const id of eventIds) {
+  acknowledge(native, eventIds, value) {
+    if (!eventIds?.length && !value) return;
+    for (const id of eventIds || []) {
       const event = this.run.events.find(row => row.id === id);
       if (event && !event.deliveredTo) event.deliveredTo = native.turnId;
     }
+    if (value) recordFusionReceipt(this.run, native, value);
     this.publish();
   }
   wake() {
@@ -128,23 +132,35 @@ export class FusionRunner {
   }
   async reviewResults() {
     const run = this.run;
-    if (this.reviewJob || this.waiters.size || run.stopRequested || !['waiting', 'running'].includes(run.status)
+    if (this.reviewJob || this.waiters.size || run.stopRequested
       || run.attempts.some(row => row.status === 'unknown' || row.kind === 'main' && (NATIVE_UNSETTLED.includes(row.status) || row.status === 'queued'))) return;
-    const covered = new Set(run.attempts.filter(row => row.kind === 'main' && row.origin === 'events'
-      && !(row.status === 'cancelled' && row.submission === 'not_submitted')).flatMap(row => row.eventIds || []));
-    const reviewEvents = () => {
-      const ids = new Set(fusionPendingReviews(run).map(row => row.attemptId));
-      return run.events.filter(row => row.type === 'task_result' && ids.has(row.data.attemptId) && !covered.has(row.id));
-    };
-    let pending = reviewEvents();
+    let pending = fusionPendingReviews(run);
+    if (run.reviewBlock) {
+      if (run.reviewBlock.key === fusionReviewKey(run, pending)) {
+        if (run.status !== 'blocked') { run.status = 'blocked'; run.blockedReason = run.reviewBlock.reason; this.publish(); }
+        return;
+      }
+      delete run.reviewBlock;
+      if (run.status === 'blocked') { run.status = 'waiting'; run.blockedReason = ''; }
+    }
+    if (!['waiting', 'running'].includes(run.status)) return;
+    pending = pending.filter(row => !row.waitingFor);
+    const previousMain = run.attempts.findLast(row => row.kind === 'main');
+    if (pending.length && previousMain?.status === 'failed') {
+      this.blockMain(new Error(previousMain.error || previousMain.result?.error || '主控原生执行失败，待核对后继续'));
+      return;
+    }
     if (!pending.length || !await this.controller.idle()) return;
     if (run.stopRequested || run.attempts.some(row => row.status === 'unknown' || row.kind === 'main' && NATIVE_UNSETTLED.includes(row.status))) return;
-    pending = reviewEvents();
+    pending = fusionPendingReviews(run).filter(row => !row.waitingFor);
     if (!pending.length) return;
     const attempt = newFusionAttempt(run, null, null, 'main');
+    const ids = new Set(pending.map(row => row.attemptId));
+    const batch = fusionReviewBatch(attempt, [...ids]);
+    batch.key = fusionReviewKey(run, fusionPendingReviews(run));
     Object.assign(attempt, { origin: 'events', bindingId: run.main.bindingId,
-      eventIds: pending.map(row => row.id),
-      prompt: `Fusion 有 ${pending.length} 项新增子结果待验收。调用 ra_fusion(action='read_workspace') 读取 pendingReviews，逐项 read_task/review；已读不等于验收。核对工作项标准，全部满足再finish。仅按现有授权处理，保留用户暂停与未知执行，不重发。\n本次输入：${attempt.id}` });
+      eventIds: run.events.filter(row => ids.has(row.data.attemptId) && ['task_result', 'native_error'].includes(row.type)).map(row => row.id),
+      prompt: `Fusion 有 ${pending.length} 项子结果待处置。read_workspace读取pendingReviews，逐项read_task；成功结果review，失败明确补做、取消或提问。已读不等于验收；处理全部可处理项，满足工作标准再finish。保留用户暂停与未知执行，不重发。\n本次输入：${attempt.id}` });
     this.publish();
     this.reviewJob = this.scheduler.submit({ runId: run.id, lane: 'main', attemptId: attempt.id,
       ready: () => !run.stopRequested && !run.attempts.some(row => row.id !== attempt.id && row.kind === 'main' && NATIVE_UNSETTLED.includes(row.status)),
@@ -211,7 +227,7 @@ export class FusionRunner {
     if (agent) agent.status = unknown ? 'unknown' : error.creationUnknown ? 'blocked' : 'idle';
     if (!error.cancelled) fusionEvent(this.run, 'native_error', { workId: attempt.workId, taskId: attempt.taskId, attemptId,
       reason: error.message, submission: attempt.submission }, `error:${attemptId}`);
-    if (main) this.blockMain(error); else this.publish();
+    if (main) this.blockMain(error); else { this.publish(); this.wake(); }
   }
   async mainEnded(attemptId, turn) {
     const run = this.run, attempt = run.attempts.find(row => row.id === attemptId);
@@ -248,8 +264,22 @@ export class FusionRunner {
         fusionEvent(run, 'delivery_pending', { workId: work.id, reason: '交付候选后有新事实或本轮没有成功完成，需要重新核对' });
       } else { work.deliveries.push({ ...candidate, endedAt: attempt.endedAt, mainAttemptId: attempt.id }); work.status = 'completed'; work.candidate = null; }
     }
+    const batch = attempt.reviewBatch;
+    if (batch) {
+      const pending = fusionPendingReviews(run), ids = new Set(batch.attemptIds);
+      const remaining = pending.filter(row => ids.has(row.attemptId));
+      batch.remaining = remaining.map(row => row.attemptId); batch.endedAt = attempt.endedAt;
+      batch.outcome = run.stopRequested ? 'stopped' : !remaining.length ? 'done' : remaining.every(row => row.waitingFor) ? 'waiting'
+        : remaining.length < ids.size || batch.key !== fusionReviewKey(run, pending) ? 'progress' : 'incomplete';
+    }
     if (!run.stopRequested && (turn.error || !turn.completed)) this.blockMain(new Error(turn.error
       || '主控原生轮次被中断或未完成，等待用户继续'));
+    else if (!run.stopRequested && attempt.origin === 'events' && batch?.outcome === 'incomplete') {
+      const tasks = [...new Set(batch.remaining.map(id => run.attempts.find(row => row.id === id).taskId))];
+      const reason = `主控本轮有 ${batch.remaining.length} 项结果未处置：${tasks.slice(0, 3).join('、')}${tasks.length > 3 ? '…' : ''}。需继续审核。`;
+      run.reviewBlock = { attemptId: attempt.id, key: fusionReviewKey(run, fusionPendingReviews(run)), reason };
+      run.status = 'blocked'; run.blockedReason = reason;
+    }
     else if (!run.stopRequested) { run.status = 'waiting'; run.blockedReason = ''; }
     this.publish(); this.wake();
   }
@@ -333,6 +363,7 @@ export class FusionRunner {
     if (previous !== JSON.stringify([this.run.status, this.run.works.map(work => work.status)])) this.publish();
   }
   async resume() {
+    delete this.run.reviewBlock;
     this.run.stopRequested = false; this.run.blockedReason = ''; this.run.status = 'recovering';
     for (const task of this.run.tasks) delete task.stopRequested;
     this.publish();

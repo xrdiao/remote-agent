@@ -2,10 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { newFusionRun, fusionRuns, fusionProject } from '../server/fusion/state.mjs';
+import { newFusionRun, fusionRuns, fusionProject, recordFusionReceipt } from '../server/fusion/state.mjs';
 import { fusionStore } from '../server/fusion/store.mjs';
 import { nativeCostSnapshot } from '../server/fusion/cost.mjs';
-import { applyFusionControl } from '../server/fusion/control.mjs';
+import { applyFusionControl, fusionWorkspaceView } from '../server/fusion/control.mjs';
 const directory = fileURLToPath(new URL('../_shots/fusion-superagent-unit/', import.meta.url));
 fs.mkdirSync(directory, { recursive: true });
 fusionStore.file = path.join(directory, `${process.pid}-${crypto.randomUUID()}.json`);
@@ -31,11 +31,18 @@ export function fixture() {
       { workerId: null, reason: 'Fixture explicitly selects an independent new worker' }])) : JSON.parse(action.input);
     for (const task of action.tasks) if (choices[task.id]) {
       choices[task.id].label ??= `Analysis ${task.id}`;
-      choices[task.id].compared ??= [];
+      choices[task.id].compared ??= run.agents.map(worker => ({ workerId: worker.id, reason: 'Independent fixture responsibility; explicitly compared' }));
     }
     return { ...action, input: JSON.stringify(choices) };
   };
-  const apply = action => applyFusionControl(run, request(action), native());
+  // Primitive control cases model a main that reads its worker directory after
+  // successful mutations. Native delivery cases exercise the real controller.
+  const readWorkers = () => recordFusionReceipt(run, native(), { agents: fusionWorkspaceView(run).agents });
+  const apply = action => {
+    const result = applyFusionControl(run, request(action), native());
+    if (!['read_workspace', 'read_task', 'list_models', 'list_projects'].includes(action.action)) readWorkers();
+    return result;
+  };
   const cost = app => ({ selfExecute: 'unknown; short context', delegate: 'unknown; low cost', overhead: 'planning, review, context transfer and rework included',
     reason: 'relative total cost suits the task', sources: [run.capabilities.find(row => row.app === app).id] });
   const create = () => apply({ action: 'create_work', title: 'Work', goal: 'Read and verify' }).workId;
@@ -43,7 +50,7 @@ export function fixture() {
     criteria: [{ id: 'C1', text: 'Evidence available' }], requiresConfirmation });
   const task = (id, app = 'codex', dependsOn = []) => ({ id, goal: `Task ${id}`, scope: ['.'], access: 'read', acceptance: ['Evidence'], dependsOn,
     execution: { app, model: app === 'cursor' ? 'Auto' : 'cheap', effort: app === 'cursor' ? '' : 'low', input: 'Read only, report evidence' }, cost: cost(app) });
-  return { run, apply, request, native, cost, create, plan, task, project };
+  return { run, apply, request, native, cost, create, plan, task, project, readWorkers };
 }
 export function nativeInvocation(code) {
   const names = ['nativeSessionInfo', 'nativeSessionAction', 'codexFusionTurn'];

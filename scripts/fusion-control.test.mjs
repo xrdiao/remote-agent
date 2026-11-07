@@ -5,6 +5,7 @@ import vm from 'node:vm';
 import { applyFusionControl, fusionTaskPrompt, fusionTaskInput } from '../server/fusion/control.mjs';
 import { fixture } from './fusion-fixture.mjs';
 import { FusionControlError, FUSION_TOOLS, ACTION_FIELDS } from '../server/fusion/contract.mjs';
+import { recordFusionReceipt } from '../server/fusion/state.mjs';
 
 function readText(h, selector, length = 4096) {
   const query = JSON.parse(selector.input); let text = '', offset = 0;
@@ -100,6 +101,49 @@ test('work reads use the existing top-level workId without nested selector JSON 
   assert.deepEqual(h.run,before);
   const plans=h.apply(selector).works[0].readPlans;assert.deepEqual(plans,{...selector,input:'{"section":"plans"}'});
   assert.deepEqual(JSON.parse(readText(h,plans,31)),h.run.works[0].plans);
+});
+
+test('new workers require a real same-project comparison and choices retain only actually delivered directory receipts', () => {
+  const h=fixture(),workId=h.create();h.plan(workId);
+  const worker=h.apply({action:'dispatch',workId,tasks:[h.task('original')]}).tasks[0].workerId;
+  const action={action:'dispatch',workId,tasks:[h.task('related')],input:JSON.stringify({related:{workerId:null,label:'独立复核',reason:'Independent review',compared:[]}})};
+  let before=structuredClone(h.run);
+  assert.throws(()=>applyFusionControl(h.run,action,h.native()),e=>e instanceof FusionControlError&&e.feedback.field==='input.related.compared');
+  assert.deepEqual(h.run,before);
+  delete h.run.bindings[0].workerReads;
+  action.input=JSON.stringify({related:{workerId:worker,label:'已有职责',reason:'Use existing project evidence',compared:[]}});
+  before=structuredClone(h.run);
+  assert.throws(()=>applyFusionControl(h.run,action,h.native()),e=>e instanceof FusionControlError&&e.feedback.read.input.includes(worker));
+  const view=h.apply({action:'read_workspace',input:JSON.stringify({view:'worker',id:worker})}),native=h.native();
+  recordFusionReceipt(h.run,{...native,threadId:'unrelated'},view);assert.deepEqual(h.run,before);
+  recordFusionReceipt(h.run,native,view);
+  const expected=structuredClone(h.run.bindings[0].workerReads[0]);
+  applyFusionControl(h.run,action,h.native());const choice=h.run.assignments.at(-1).workerSelection;
+  assert.deepEqual(choice.basis,[expected]);assert.equal(h.run.agents.length,1);
+  assert.equal(choice.basis[0].requestId,native.requestId);assert.equal(h.run.tasks.at(-1).workerId,worker);
+});
+
+test('worker directory memory is a bounded preview of actual accepted evidence and preserves its full original summary', () => {
+  const h=fixture(),workId=h.create();h.plan(workId);h.apply({action:'dispatch',workId,tasks:[h.task('A')]});
+  const attempt=h.run.attempts[0],summary='已核对原数据和计算，保留真实成果。'.repeat(200);
+  Object.assign(attempt,{status:'awaiting_review',endedAt:20,result:{completed:true,text:'42'}});
+  h.apply({action:'review',taskId:'A',attemptId:attempt.id,verdict:'accept',reason:'Checked original',summary,evidence:[{criterion:'A:1',detail:'42 verified',reference:'result.text'}]});
+  const before=structuredClone(h.run),view=h.apply({action:'read_workspace'}),memory=view.agents[0].memory;
+  assert.equal(memory.summary,summary.slice(0,120));assert.equal(memory.characters,summary.length);assert.equal(memory.read.attemptId,attempt.id);
+  const detail=h.apply(memory.read);assert.equal(JSON.parse(readText(h,detail.read.reviews))[0].summary,summary);assert.deepEqual(h.run,before);
+});
+
+test('failed results wait for an explicit disposition and result-specific questions do not pretend the execution passed', () => {
+  const h=fixture(),workId=h.create();h.plan(workId);h.apply({action:'dispatch',workId,tasks:[h.task('A')]});
+  const attempt=h.run.attempts[0];Object.assign(attempt,{status:'failed',endedAt:Date.now(),result:{completed:false,error:'Original native failure',text:''}});h.run.tasks[0].status='failed';
+  let pending=h.apply({action:'read_workspace'}).pendingReviews;assert.equal(pending.items[0].outcome,'failed');
+  assert.equal(h.apply(pending.items[0].read).review,undefined);assert.throws(()=>h.apply({action:'wait'}),/失败需明确/);
+  const asked=h.apply({action:'ask_user',workId,attemptId:attempt.id,question:'Which missing input should be used?'});
+  pending=h.apply({action:'read_workspace'}).pendingReviews;assert.deepEqual(pending.items[0].waitingFor.questions,[asked.questionId]);
+  assert.equal(h.run.questions[0].taskId,'A');assert.equal(h.run.questions[0].attemptId,attempt.id);h.apply({action:'wait'});
+  assert.equal(attempt.status,'failed');assert.equal(attempt.result.completed,false);
+  h.run.questions[0].answeredAt=Date.now();h.apply({action:'continue_task',taskId:'A',input:'Use clarified input',cost:h.cost('codex')});
+  assert.equal(h.apply({action:'read_workspace'}).pendingReviews.total,0);assert.equal(h.run.attempts[0].status,'failed');assert.equal(h.run.attempts.length,2);
 });
 
 test('delivered result notifications remain pending review even when a later task state would hide the attempt', () => {
@@ -331,7 +375,10 @@ test('new related tasks reuse the chosen worker and independent tasks record why
   h.apply({ action: 'dispatch', workId, tasks: [h.task('independent')], input: JSON.stringify({ independent: create }) });
   assert.equal(h.run.agents.length, 2); assert.equal(h.run.tasks[1].workerId, first.workerId);
   assert.notEqual(h.run.tasks[2].workerId, first.workerId);
-  assert.deepEqual(h.run.assignments[1].workerSelection, reuse); assert.deepEqual(h.run.assignments[2].workerSelection, create);
+  for (const [assignment, expected] of [[h.run.assignments[1], reuse], [h.run.assignments[2], create]]) {
+    const { basis, ...choice } = assignment.workerSelection; assert.deepEqual(choice, expected);
+    assert.equal(basis[0].id, first.workerId); assert.equal(basis[0].threadId, 'main-thread'); assert(basis[0].fingerprint);
+  }
   assert.deepEqual({ task: h.run.tasks[0], assignment: h.run.assignments[0], attempt: h.run.attempts[0] }, original);
 });
 test('worker choices require attributable comparisons and a responsibility short name before creating any task', () => {

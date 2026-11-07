@@ -95,6 +95,37 @@ export function newFusionAttempt(controller, task, assignment, kind = 'task') {
   if (task) { task.attemptIds.push(attempt.id); task.status = 'queued'; }
   return attempt;
 }
+export function fusionReviewBatch(attempt, attemptIds) {
+  const batch = attempt.reviewBatch ||= { attemptIds: [], delivered: [] };
+  for (const id of attemptIds) if (!batch.attemptIds.includes(id)) batch.attemptIds.push(id);
+  return batch;
+}
+export function recordFusionReceipt(controller, native, value) {
+  const binding = controller.bindings.find(row => row.id === controller.main.bindingId && row.threadId === native.threadId);
+  if (!binding) return;
+  const now = Date.now();
+  if (value.agents?.length) {
+    binding.workerReads ||= [];
+    for (const row of value.agents) {
+      const receipt = { id: row.id, label: row.label, app: row.app, projectId: row.project?.id,
+        fingerprint: crypto.createHash('sha256').update(JSON.stringify(row)).digest('hex'),
+        threadId: native.threadId, turnId: native.turnId, requestId: native.requestId, at: now };
+      const index = binding.workerReads.findIndex(read => read.id === row.id);
+      if (index < 0) binding.workerReads.push(receipt); else binding.workerReads[index] = receipt;
+    }
+  }
+  const main = controller.attempts.find(row => row.kind === 'main' && row.native?.threadId === native.threadId && row.native.turnId === native.turnId);
+  const ids = value.pendingReviews?.items.map(row => row.attemptId) || [];
+  if (main && ids.length) {
+    const batch = fusionReviewBatch(main, ids);
+    for (const attemptId of ids) if (!batch.delivered.some(row => row.attemptId === attemptId))
+      batch.delivered.push({ attemptId, requestId: native.requestId, at: now });
+  }
+}
+export function fusionReviewKey(controller, items) {
+  return crypto.createHash('sha256').update(JSON.stringify([items.map(row => [row.attemptId, row.waitingFor]),
+    controller.events.findLast(row => row.type === 'user_input')?.id])).digest('hex');
+}
 export function fusionAttemptWorkIds(controller, attempt) {
   if (attempt.kind !== 'main') return attempt.workId ? [attempt.workId] : [];
   return [...new Set([attempt.workId, ...(attempt.workExecutions || []).map(row => row.workId),
