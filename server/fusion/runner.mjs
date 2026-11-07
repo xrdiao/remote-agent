@@ -2,9 +2,11 @@ import { FusionAgent, fusionWorkspaceSnapshot } from './agent.mjs';
 import { FusionController } from './controller.mjs';
 import { fusionScheduler } from './scheduler.mjs';
 import { nativeAgentProvider } from './providers.mjs';
-import { applyFusionControl, fusionEventView } from './control.mjs';
+import { nativeCostSnapshot } from './cost.mjs';
+import { FUSION_READ_ACTIONS, validateFusionAction } from './contract.mjs';
+import { applyFusionControl, fusionActor, fusionEventView, fusionPendingReviews, fusionReviewQueue } from './control.mjs';
 import { fusionRuns, fusionWorkers, fusionEvent, publishFusion,
-  commitFusion, fusionAttemptWorkIds, NATIVE_UNSETTLED } from './state.mjs';
+  commitFusion, fusionAttemptWorkIds, newFusionAttempt, NATIVE_UNSETTLED } from './state.mjs';
 
 export class FusionRunner {
   constructor(run, { scheduler = fusionScheduler, agent, controller } = {}) {
@@ -24,13 +26,22 @@ export class FusionRunner {
     this.wake();
   }
   async control(action, native) {
-    const run = this.run;
-    if (action?.action === 'list_models') {
-      const snapshot = await this.agent.capabilities(run, action.app);
-      commitFusion(run, next => { next.capabilities.unshift(snapshot); });
+    const run = this.run, key = fusionActor(run, native);
+    const previous = run.commands.find(row => row.key === key);
+    const query = previous ? null : validateFusionAction(action);
+    if (action?.action === 'list_models' && !previous) {
+      if (!query.snapshotIds) {
+        const apps = action.app === 'all' ? (await this.agent.softwareCapabilities()).filter(row => row.connected).map(row => row.app) : [action.app];
+        const snapshots = await Promise.all(apps.map(async app => {
+          try { return await this.agent.capabilities(run, app); }
+          catch (error) { return { ...nativeCostSnapshot(app, [], null, { read: 'native-model-catalog' }), error: error.message }; }
+        }));
+        await this.agent.catalog.refresh(snapshots.flatMap(snapshot => snapshot.models.map(model => ({ app: snapshot.app, model: model.model }))));
+        commitFusion(run, next => { next.capabilities.unshift(...snapshots.map(snapshot => this.agent.catalog.enrich(snapshot))); });
+        action = { ...action, input: JSON.stringify({ ...query, snapshotIds: snapshots.map(snapshot => snapshot.id) }) };
+      }
     }
-    const previous = run.commands.find(row => row.key === `${run.main.bindingId}:${native.turnId}:${String(native.requestId)}`);
-    let result = applyFusionControl(run, action, native);
+    let result = applyFusionControl(run, action, native, { catalog: this.agent.catalog });
     const attempt = run.attempts.find(row => row.kind === 'main' && row.native?.turnId === native.turnId);
     if (attempt && !previous) {
       const workIds = new Set([action.workId, result.workId, run.tasks.find(row => row.id === action.taskId)?.workId,
@@ -52,7 +63,7 @@ export class FusionRunner {
       const delivered = await new Promise(resolve => this.waiters.set(this.waitKey(native), { native, resolve }));
       if (!delivered) return { cancelled: true };
     }
-    return { ...result, events: this.pendingEvents() };
+    return { ...result, events: this.pendingEvents(), pendingReviews: fusionReviewQueue(run) };
   }
   async recordMainWork(attempt, workId) {
     const work = this.run.works.find(row => row.id === workId);
@@ -73,6 +84,11 @@ export class FusionRunner {
   acceptedInput(turnId) {
     for (const [key, waiter] of this.waiters) if (waiter.native.turnId === turnId) {
       this.waiters.delete(key); waiter.resolve(true);
+    }
+    for (const attempt of this.run.attempts.filter(row => row.kind === 'main' && row.origin === 'events'
+      && row.submission === 'not_submitted' && !row.endedAt)) {
+      attempt.status = 'cancelled'; attempt.endedAt = Date.now(); this.scheduler.cancelAttempt(attempt.id);
+      this.publish();
     }
   }
   cancelWait(native) {
@@ -104,10 +120,37 @@ export class FusionRunner {
       if (this.pendingEvents().length || !this.hasPendingWork()) for (const [key, waiter] of this.waiters) {
         this.waiters.delete(key); waiter.resolve(true);
       }
+      await this.reviewResults();
     }).catch(error => this.blockMain(error)).finally(() => {
       this.waking = false;
       if (this.wakeAgain) { this.wakeAgain = false; this.wake(); }
     });
+  }
+  async reviewResults() {
+    const run = this.run;
+    if (this.reviewJob || this.waiters.size || run.stopRequested || !['waiting', 'running'].includes(run.status)
+      || run.attempts.some(row => row.status === 'unknown' || row.kind === 'main' && (NATIVE_UNSETTLED.includes(row.status) || row.status === 'queued'))) return;
+    const covered = new Set(run.attempts.filter(row => row.kind === 'main' && row.origin === 'events'
+      && !(row.status === 'cancelled' && row.submission === 'not_submitted')).flatMap(row => row.eventIds || []));
+    const reviewEvents = () => {
+      const ids = new Set(fusionPendingReviews(run).map(row => row.attemptId));
+      return run.events.filter(row => row.type === 'task_result' && ids.has(row.data.attemptId) && !covered.has(row.id));
+    };
+    let pending = reviewEvents();
+    if (!pending.length || !await this.controller.idle()) return;
+    if (run.stopRequested || run.attempts.some(row => row.status === 'unknown' || row.kind === 'main' && NATIVE_UNSETTLED.includes(row.status))) return;
+    pending = reviewEvents();
+    if (!pending.length) return;
+    const attempt = newFusionAttempt(run, null, null, 'main');
+    Object.assign(attempt, { origin: 'events', bindingId: run.main.bindingId,
+      eventIds: pending.map(row => row.id),
+      prompt: `Fusion 有 ${pending.length} 项新增子结果待验收。调用 ra_fusion(action='read_workspace') 读取 pendingReviews，逐项 read_task/review；已读不等于验收。核对工作项标准，全部满足再finish。仅按现有授权处理，保留用户暂停与未知执行，不重发。\n本次输入：${attempt.id}` });
+    this.publish();
+    this.reviewJob = this.scheduler.submit({ runId: run.id, lane: 'main', attemptId: attempt.id,
+      ready: () => !run.stopRequested && !run.attempts.some(row => row.id !== attempt.id && row.kind === 'main' && NATIVE_UNSETTLED.includes(row.status)),
+      execute: () => this.agent.execute(run, attempt.id, attempt.prompt),
+    }).then(result => this.mainEnded(attempt.id, result)).catch(error => this.attemptFailed(attempt.id, error, !error.cancelled))
+      .finally(() => { this.reviewJob = null; this.finishStop(); this.publish(); this.wake(); });
   }
   schedule(attemptId, recovering = false) {
     if (this.jobs.has(attemptId)) return this.jobs.get(attemptId);
@@ -154,7 +197,7 @@ export class FusionRunner {
     const agent = task && this.run.agents.find(row => row.id === task.workerId);
     if (agent) agent.status = 'idle';
     fusionEvent(this.run, result.error ? 'native_error' : 'task_result', { workId: attempt.workId, taskId: attempt.taskId, attemptId }, `result:${attemptId}`);
-    this.publish();
+    this.publish(); this.wake();
   }
   attemptFailed(attemptId, error, main = false) {
     const attempt = this.run.attempts.find(row => row.id === attemptId);
@@ -190,11 +233,18 @@ export class FusionRunner {
     }
     for (const work of run.works.filter(row => row.candidate?.nativeTurnId === attempt.native?.turnId)) {
       const candidate = work.candidate;
-      const arrived = run.events.some(event => !candidate.eventIds.includes(event.id) && (!event.data.workId || event.data.workId === work.id));
+      const arrived = run.events.some(event => {
+        const receivedReadError = event.type === 'control_error' && FUSION_READ_ACTIONS.includes(event.data.action) && event.data.details
+          && attempt.native?.threadId && event.data.native?.threadId === attempt.native.threadId
+          && event.data.native?.turnId === candidate.nativeTurnId && event.deliveredTo === candidate.nativeTurnId;
+        return !candidate.eventIds.includes(event.id) && (!event.data.workId || event.data.workId === work.id) && !receivedReadError;
+      });
       const unresolved = run.tasks.some(task => task.workId === work.id && task.executor !== 'main' && task.required && task.status !== 'accepted')
+        || fusionPendingReviews(run).some(row => row.workId === work.id)
         || run.attempts.some(row => row.workId === work.id && NATIVE_UNSETTLED.includes(row.status));
-      if (!turn.completed || turn.error || arrived || unresolved || candidate.planId !== work.planId) {
-        work.status = 'running'; work.candidate = null;
+      const stopping = run.stopRequested || ['stopping', 'stopped'].includes(work.status);
+      if (!turn.completed || turn.error || arrived || unresolved || stopping || candidate.planId !== work.planId) {
+        work.status = stopping ? work.status === 'stopped' ? 'stopped' : 'stopping' : 'running'; work.candidate = null;
         fusionEvent(run, 'delivery_pending', { workId: work.id, reason: '交付候选后有新事实或本轮没有成功完成，需要重新核对' });
       } else { work.deliveries.push({ ...candidate, endedAt: attempt.endedAt, mainAttemptId: attempt.id }); work.status = 'completed'; work.candidate = null; }
     }

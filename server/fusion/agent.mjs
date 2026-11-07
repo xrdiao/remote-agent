@@ -13,6 +13,7 @@ import { helpersCall } from '../page/build.mjs';
 import { rememberFusionSession } from '../project-windows.mjs';
 import { fusionProject, fusionLive, publishFusion, fusionEvent } from './state.mjs';
 import { nativeCostSnapshot } from './cost.mjs';
+import { fusionModelCatalog } from './model-catalog.mjs';
 import { FUSION_TOOLS, fusionControllerPrompt, fusionTaskInput } from './control.mjs';
 import { fusionScheduler } from './scheduler.mjs';
 import { nativeAgentProvider, nativeAgentProviders } from './providers.mjs';
@@ -45,8 +46,9 @@ export async function fusionWorkspaceSnapshot(project, scope = []) {
 }
 
 export class FusionAgent {
-  constructor({ scheduler = fusionScheduler, publish = publishFusion, onEvent = () => {} } = {}) {
+  constructor({ scheduler = fusionScheduler, publish = publishFusion, onEvent = () => {}, catalog = fusionModelCatalog } = {}) {
     this.scheduler = scheduler;
+    this.catalog = catalog;
     this.publish = publish;
     this.onEvent = onEvent;
     this.active = new Map();
@@ -143,7 +145,7 @@ export class FusionAgent {
     this.mainProjects.delete(controller.id);
     context?.dispose();
   }
-  async capabilities(controller, app) {
+  async capabilities(controller, app, { knowledge = false } = {}) {
     const main = controller.bindings.find(row => row.id === controller.main.bindingId);
     const context = await this.carrierFor(controller, app, controller.project,
       app === controller.main.app ? main?.windowId || controller.main.windowId || '' : '');
@@ -154,8 +156,9 @@ export class FusionAgent {
       }
       const models = await nativeAgentProvider(app).models(this, context);
       if (!models?.length) throw new Error('未读取到当前窗口实际原生模型候选');
-      return nativeCostSnapshot(app, models, { available: false, reason: '未读取账号账单；不能推算子任务费用' },
-        { windowId: context.page.id, host: context.native.host, read: 'native-model-catalog' });
+      if (knowledge) await this.catalog.refresh(models.map(model => ({ app, model: model.id })));
+      return this.catalog.enrich(nativeCostSnapshot(app, models, { available: false, reason: '未读取账号账单；不能推算子任务费用' },
+        { windowId: context.page.id, host: context.native.host, read: 'native-model-catalog' }));
     } finally { await this.close(context); }
   }
   async createBinding(controller, owner, app, project, role, spec, preferred = '') {

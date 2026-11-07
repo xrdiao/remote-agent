@@ -183,7 +183,8 @@ test('a new Devin Fusion session keeps ordinary pending preferences and sends it
 });
 
 test('Fusion reads the Codex model catalog without loading the ordinary conversation history', async () => {
-  const {run}=fixture(),agent=new FusionAgent(),calls=[];
+  const {run}=fixture(),calls=[],refreshes=[];
+  const agent=new FusionAgent({catalog:{async refresh(models){refreshes.push(models);},enrich:snapshot=>({...snapshot,publicSources:[]})}});
   const context={app:'codex',page:{id:'project-window'},native:{threadId:'ordinary-thread',host:''}};
   agent.carrierFor=async()=>context;
   agent.close=async value=>{assert.equal(value,context);calls.push('close');};
@@ -195,6 +196,11 @@ test('Fusion reads the Codex model catalog without loading the ordinary conversa
   assert.equal(snapshot.models[0].model,'current-model');
   assert.deepEqual(calls,['modelItemsFast(true)','close']);
   assert.equal(context.pinned,undefined);
+  assert.equal(refreshes.length,0);
+  const next=await agent.capabilities(run,'codex',{knowledge:true});
+  assert.deepEqual(refreshes,[[{app:'codex',model:'current-model'}]]);
+  assert.deepEqual(next.models,snapshot.models);assert.equal(context.native.threadId,'ordinary-thread');
+  assert.deepEqual(calls,['modelItemsFast(true)','close','modelItemsFast(true)','close']);
 });
 
 test('the next actual native user turn answers its sole preceding Fusion question without another model request or plan approval', () => {

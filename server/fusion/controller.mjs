@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { FUSION_TOOLS, fusionAutonomyContext, fusionControllerPrompt } from './control.mjs';
 import { fusionEvent, newFusionAttempt, publishFusion } from './state.mjs';
 import { nativeAgentProvider } from './providers.mjs';
+import { FusionControlError } from './contract.mjs';
 
 // The native conversation owns chat, input, models and permissions. This observer
 // handles only this conversation's registered management tools and event inbox.
@@ -173,8 +174,10 @@ export class FusionController {
           for (const id of delivery) this.delivering.add(id);
           result = { success: true, contentItems: [{ type: 'inputText', text: JSON.stringify(value) }] };
         } catch (error) {
-          result = { success: false, contentItems: [{ type: 'inputText', text: error.message }] };
-          errorEvent = fusionEvent(this.controller, 'control_error', { native, reason: error.message }, `control-error:${key}`);
+          const details = error instanceof FusionControlError ? error.feedback : null;
+          result = { success: false, contentItems: [{ type: 'inputText', text: details ? JSON.stringify(details) : error.message }] };
+          errorEvent = fusionEvent(this.controller, 'control_error', { native, action: request.params.arguments?.action,
+            reason: error.message, ...(details ? { details } : {}) }, `control-error:${key}`);
           delivery.push(errorEvent.id); this.delivering.add(errorEvent.id);
           publishFusion(this.controller);
         }

@@ -22,6 +22,10 @@ export function fixture() {
   const native = () => ({ threadId: 'main-thread', turnId: 'native-turn', requestId: requestSerial++, decisionId: crypto.randomUUID() });
   const request = action => {
     if (action.action === 'review') return { ...action, summary: action.summary ?? 'Verified evidence; no further issue in this fixture' };
+    if (action.action === 'continue_task' && action.execution === undefined) {
+      const previous = run.assignments.findLast(row => row.taskId === action.taskId);
+      return { ...action, execution: { app: previous?.app || 'codex', model: previous?.model || 'cheap', effort: previous?.effort || '', input: action.input } };
+    }
     if (action.action !== 'dispatch' || !Array.isArray(action.tasks)) return action;
     const choices = action.input === undefined ? Object.fromEntries(action.tasks.map(task => [task.id,
       { workerId: null, reason: 'Fixture explicitly selects an independent new worker' }])) : JSON.parse(action.input);

@@ -5,9 +5,10 @@ import { FusionRunner } from '../server/fusion/runner.mjs';
 import { FusionScheduler } from '../server/fusion/scheduler.mjs';
 import { fusionEvent, fusionLive } from '../server/fusion/state.mjs';
 import { fixture, flush, nativeInvocation } from './fusion-fixture.mjs';
+import { FusionControlError } from '../server/fusion/contract.mjs';
 function scenario({ readWorkspace = true } = {}) {
   const h = fixture(), scheduler = new FusionScheduler(), calls = [], pending = new Map(), stops = [];
-  const agent = { async execute(run, id, prompt, recovering) {
+  const agent = { catalog: { async refresh() {}, enrich: snapshot => snapshot }, async execute(run, id, prompt, recovering) {
     const attempt = run.attempts.find(row => row.id === id);
     calls.push({ id, kind: attempt.kind, prompt, recovering });
     attempt.status = 'running'; attempt.submission = 'accepted'; attempt.acceptedAt ||= Date.now();
@@ -47,6 +48,153 @@ async function managementScenario() {
   const request=(id,action)=>requests.push({id,params:{threadId:'main-thread',turnId:h.turn.turnId,callId:'call-'+id,tool:'ra_fusion',arguments:action}});
   return Object.assign(h,{requests,replies,connect,request});
 }
+test('invalid model parameters and wrong native actors never read catalogs or create capability snapshots', async () => {
+  const h=scenario(),before=structuredClone(h.run);
+  h.agent.softwareCapabilities=async()=>assert.fail('software discovery must not run');
+  h.agent.capabilities=async()=>assert.fail('native model reading must not run');
+  h.agent.catalog.refresh=async()=>assert.fail('public refresh must not run');
+  for(const [input,field] of [['{"limit":1000}','input.limit'],['{"offset":-1}','input.offset'],['{"view":"profile"}','input.model'],['{"view":"source","source":"codex-billing","length":0}','input.length']])
+    await assert.rejects(()=>h.control({action:'list_models',app:'all',input},h.native()),e=>e instanceof FusionControlError&&e.feedback.field===field);
+  await assert.rejects(()=>h.control({action:'list_models',app:'codex'},{...h.native(),threadId:'other-thread'}),/真实原生轮次/);
+  assert.deepEqual(h.run,before);assert.equal(h.calls.length,0);
+  const snapshot=h.run.capabilities[0];const view=await h.control({action:'list_models',app:'codex',input:JSON.stringify({snapshotIds:[snapshot.id]})},h.native());
+  assert.equal(view.models.length,1);assert.deepEqual(view.snapshotIds,[snapshot.id]);
+});
+test('parameter feedback belongs to the actual native request and preserves the original error event', async () => {
+  const h=await managementScenario(),driver=h.connect();h.agent.capabilities=async()=>assert.fail('invalid query performed I/O');
+  h.request('bad',{action:'list_models',app:'codex',input:'{"limit":1000}'});await driver.read();await flush();
+  assert.equal(h.replies.length,1);assert.equal(h.replies[0].requestId,'bad');assert.equal(h.replies[0].result.success,false);
+  const feedback=JSON.parse(h.replies[0].result.contentItems[0].text);assert.equal(feedback.field,'input.limit');assert.equal(feedback.expected.max,8);
+  const event=h.run.events.find(e=>e.type==='control_error');assert.equal(event.native,undefined);assert.equal(event.data.native.turnId,h.turn.turnId);
+  assert.equal(event.data.native.requestId,'bad');assert.equal(event.data.action,'list_models');assert.equal(event.data.reason,feedback.message);assert.deepEqual(event.data.details,feedback);assert.equal(event.deliveredTo,h.turn.turnId);
+  h.request('index',{action:'read_workspace'});await driver.read();assert.equal(h.replies[1].result.success,true);
+  assert.equal(h.run.tasks.length,0);assert.equal(h.run.effects.length,0);assert.equal(h.calls.length,0);await driver.close();
+});
+test('non-parameter native failures keep their original text and do not become suggested commands', async () => {
+  const h=await managementScenario(),driver=h.connect();h.runner.control=async()=>{throw Error('CDP closed during native operation');};
+  h.request('native-failure',{action:'read_workspace'});await driver.read();await flush();
+  assert.equal(h.replies[0].result.success,false);assert.equal(h.replies[0].result.contentItems[0].text,'CDP closed during native operation');
+  const event=h.run.events.find(e=>e.type==='control_error');assert.equal(event.data.details,undefined);assert.equal(event.data.reason,'CDP closed during native operation');await driver.close();
+});
+test('background review uses the returned task and work templates and completes only after its native turn ends', async () => {
+  const h=scenario(),workId=h.create();h.plan(workId);h.run.status='waiting';
+  await h.control({action:'dispatch',workId,tasks:[h.task('A')]},h.native());await flush();const child=h.calls[0];
+  h.pending.get(child.id).resolve({text:'42'});await flush();const main=h.calls.find(c=>c.kind==='main');assert(main);
+  const current=async action=>{const native={...h.native(),turnId:main.id};const result=await h.control(action,native);h.runner.acknowledge(native,result.events.map(e=>e.id));return result;};
+  const detail=await current({action:'read_task',taskId:'A',attemptId:child.id}),template=detail.review;
+  const reviewed=await current({...template,verdict:'accept',reason:'Read the original result',summary:'42 verified',evidence:template.evidence.map(e=>({...e,detail:'Result is 42',reference:'result.text'}))});
+  const work=await current(reviewed.work.read);await current({...work.finish,summary:'Delivered verified evidence',evidence:work.finish.evidence.map(e=>({...e,attemptId:child.id,detail:'42 verified',reference:'result.text'}))});
+  assert.equal(h.run.works[0].status,'closing');assert.equal(h.run.works[0].deliveries.length,0);
+  h.pending.get(main.id).resolve({text:'Delivery complete'});await flush();assert.equal(h.run.works[0].status,'completed');assert.equal(h.run.works[0].deliveries.length,1);assert.equal(h.calls.length,2);
+});
+test('an acknowledged read parameter failure after finish stays in the journal without revoking a valid delivery', async () => {
+  const h=await managementScenario(),driver=h.connect();await driver.read();
+  const workId=h.create();h.plan(workId);
+  h.apply({action:'finish',workId,summary:'Verified',evidence:[{criterion:'C1',detail:'Native evidence',reference:'main-turn:native-turn'}]});
+  h.request('post-finish-read',{action:'read_workspace',workId,input:'not-json'});await driver.read();await flush();
+  const error=h.run.events.find(e=>e.type==='control_error'),record=structuredClone(error);
+  assert.equal(error.data.action,'read_workspace');assert.equal(error.data.details.field,'input');assert.equal(error.deliveredTo,'native-turn');
+  assert.deepEqual(error.data.details.read,{action:'read_workspace',workId});assert.equal(h.run.works[0].status,'closing');
+  h.turn={...h.turn,ended:true,completed:true,text:'Done'};await driver.read();await flush();
+  assert.equal(h.run.works[0].status,'completed');assert.equal(h.run.works[0].deliveries.length,1);
+  assert.deepEqual(h.run.events.find(e=>e.id===error.id),record);assert.equal(h.run.events.some(e=>e.type==='delivery_pending'),false);
+  assert.equal(h.calls.length,0);await driver.close();
+});
+test('unacknowledged, foreign-turn, mutating and native failures still invalidate a delivery candidate', async () => {
+  const cases=[
+    ['unacknowledged',e=>e.deliveredTo=''],['foreign turn',e=>e.data.native.turnId='other-turn'],
+    ['foreign thread',e=>e.data.native.threadId='other-thread'],['missing thread',e=>delete e.data.native.threadId],
+    ['native failure',e=>delete e.data.details],['legacy diagnostic',e=>delete e.data.action],
+    ['mutating action',e=>e.data.action='dispatch'],['new user input',e=>e.type='user_input'],
+    ['new child result',e=>e.type='task_result'],['native approval',e=>e.type='native_interaction'],
+  ];
+  for(const [name,change] of cases){
+    const h=scenario(),workId=h.create();h.plan(workId);h.runner.wake=()=>{};
+    const main={id:'main',kind:'main',status:'running',acceptedAt:10,native:{threadId:'main-thread',turnId:'native-turn'}};h.run.attempts.push(main);
+    h.apply({action:'finish',workId,summary:'ready',evidence:[{criterion:'C1',detail:'actual',reference:'main-turn:native-turn'}]});
+    const event=fusionEvent(h.run,'control_error',{workId,action:'read_workspace',native:{...main.native},reason:'bad input',details:{field:'input'}},name);
+    event.deliveredTo='native-turn';change(event);const record=structuredClone(event);
+    await h.runner.mainEnded(main.id,{completed:true});assert.equal(h.run.works[0].status,'running',name);assert.equal(h.run.works[0].deliveries.length,0,name);
+    assert.deepEqual(h.run.events.find(e=>e.id===name),record);assert(h.run.events.some(e=>e.type==='delivery_pending'),name);
+  }
+});
+test('stop requests and unknown executions still prevent delivery after an acknowledged read error', async () => {
+  for(const state of ['run stop','work stop','unknown']){
+    const h=scenario(),workId=h.create();h.plan(workId);h.runner.wake=()=>{};
+    const main={id:'main',kind:'main',status:'running',workExecutions:[{workId}],acceptedAt:10,native:{threadId:'main-thread',turnId:'native-turn'}};h.run.attempts.push(main);
+    h.apply({action:'finish',workId,summary:'ready',evidence:[{criterion:'C1',detail:'actual',reference:'main-turn:native-turn'}]});
+    const error=fusionEvent(h.run,'control_error',{action:'read_workspace',native:{...main.native},details:{field:'input'}});error.deliveredTo='native-turn';
+    if(state==='unknown')h.run.attempts.push({id:'unknown',kind:'task',workId,status:'unknown',endedAt:null});
+    else await h.runner.stop(state==='work stop'?{workId}:{});
+    await h.runner.mainEnded(main.id,{completed:true});h.runner.finishStop();
+    assert.equal(h.run.works[0].status,state==='unknown'?'running':'stopped',state);assert.equal(h.run.works[0].deliveries.length,0,state);
+    assert.equal(h.run.events.find(e=>e.id===error.id).deliveredTo,'native-turn');
+  }
+});
+test('an idle main gets one compact background review for a new result even after its notification was read', async () => {
+  const h=scenario(),workId=h.create();h.plan(workId);h.run.status='waiting';
+  await h.control({action:'dispatch',workId,tasks:[h.task('A')]},h.native());await flush();
+  const child=h.calls[0];h.pending.get(child.id).resolve({text:'Result requiring actual review'});await flush();
+  const main=h.calls.find(c=>c.kind==='main');assert(main);assert.equal(h.calls.length,2);assert(main.prompt.length<400);
+  const attempt=h.run.attempts.find(a=>a.id===main.id);assert.equal(attempt.origin,'events');assert.deepEqual(attempt.eventIds,['result:'+child.id]);
+  const reply=await h.control({action:'read_workspace'},h.native());h.runner.acknowledge(h.native(),reply.events.map(e=>e.id));
+  assert.equal(h.runner.pendingEvents().length,0);assert.equal(reply.pendingReviews.total,1);
+  h.pending.get(main.id).resolve({text:'Ended without reviewing'});await flush();h.runner.wake();await flush();
+  assert.equal(h.calls.length,2);assert.equal(h.run.tasks[0].status,'awaiting_review');assert.equal(h.run.attempts.length,2);
+  assert.equal((await h.control({action:'read_workspace'},h.native())).pendingReviews.total,1);
+});
+test('new result batches resume review while another child runs and never resend a prior batch', async () => {
+  const h=scenario(),workId=h.create();h.plan(workId);h.run.status='waiting';
+  await h.control({action:'dispatch',workId,tasks:[h.task('A'),h.task('B')]},h.native());await flush();
+  const [one,two]=h.calls;h.pending.get(one.id).resolve({});await flush();
+  const firstMain=h.calls.find(c=>c.kind==='main');assert(firstMain);assert.equal(h.run.tasks[1].status,'running');
+  await h.control({action:'review',taskId:'A',attemptId:one.id,verdict:'accept',reason:'verified',evidence:[{criterion:'A:1',detail:'actual',reference:'native'}]},h.native());
+  h.pending.get(firstMain.id).resolve({});await flush();h.runner.wake();await flush();assert.equal(h.calls.length,3);
+  h.pending.get(two.id).resolve({});await flush();const mains=h.calls.filter(c=>c.kind==='main');assert.equal(mains.length,2);
+  const second=h.run.attempts.find(a=>a.id===mains[1].id);assert.deepEqual(second.eventIds,['result:'+two.id]);
+  await h.control({action:'review',taskId:'B',attemptId:two.id,verdict:'accept',reason:'verified',evidence:[{criterion:'B:1',detail:'actual',reference:'native'}]},h.native());
+  h.pending.get(second.id).resolve({});await flush();assert.equal(h.scheduler.mainSlots.size,0);assert.equal(h.calls.length,4);
+});
+test('stopped or unknown native work never starts a background review call', async () => {
+  for(const state of ['stopped','unknown']){
+    const h=scenario(),workId=h.create();h.plan(workId);h.apply({action:'dispatch',workId,tasks:[h.task('A')]});h.run.effects[0].status='done';
+    Object.assign(h.run.attempts[0],{status:'awaiting_review',endedAt:20});h.run.status='waiting';
+    fusionEvent(h.run,'task_result',{workId,taskId:'A',attemptId:h.run.attempts[0].id},'result:'+h.run.attempts[0].id);
+    if(state==='stopped')h.run.stopRequested=true;else h.run.attempts.push({id:'unknown',kind:'main',status:'unknown',endedAt:null});
+    h.runner.wake();await flush();assert.equal(h.calls.length,0);assert.equal(h.run.attempts.length,state==='stopped'?1:2);
+  }
+});
+test('an accepted user turn cancels only an unsubmitted queued background review and leaves the result pending', async () => {
+  const h=scenario(),workId=h.create();h.plan(workId);h.apply({action:'dispatch',workId,tasks:[h.task('A')]});h.run.effects[0].status='done';
+  const child=h.run.attempts[0];Object.assign(child,{status:'awaiting_review',endedAt:20});h.run.tasks[0].status='awaiting_review';
+  fusionEvent(h.run,'task_result',{workId,taskId:'A',attemptId:child.id},'result:'+child.id);h.run.status='waiting';
+  let release;const holder=h.scheduler.submit({runId:h.run.id,lane:'main',attemptId:'occupied',ready:()=>true,execute:()=>new Promise(resolve=>{release=resolve;})});
+  h.runner.wake();await flush();const review=h.run.attempts.find(a=>a.origin==='events');assert(review);assert.equal(h.calls.length,0);
+  h.run.attempts.push({id:'real-user',kind:'main',origin:'user',status:'running',submission:'accepted',native:{turnId:'real-user'}});
+  h.runner.acceptedInput('real-user');await flush();release();await holder;await flush();
+  assert.equal(review.status,'cancelled');assert.equal(review.submission,'not_submitted');assert.equal(h.calls.length,0);
+  assert.equal(h.run.tasks[0].status,'awaiting_review');assert.equal((await h.control({action:'read_workspace'},h.native())).pendingReviews.total,1);
+  assert.equal(h.run.events.find(e=>e.id==='result:'+child.id).deliveredTo,'');
+});
+test('all-software model discovery shares one public refresh and immutable detail reads do not revisit native windows', async () => {
+  const h=scenario(),reads=[],refreshes=[];
+  h.agent.softwareCapabilities=async()=>[{app:'codex',connected:true},{app:'cursor',connected:true},{app:'devin',connected:false}];
+  h.agent.capabilities=async(_run,app)=>{reads.push(app);const snapshot=structuredClone(h.run.capabilities.find(row=>row.app===app));snapshot.id+='-read';return snapshot;};
+  h.agent.catalog.refresh=async models=>refreshes.push(models);
+  const view=await h.control({action:'list_models',app:'all',input:JSON.stringify({needs:{kind:'code-review',tools:true}})},h.native());
+  assert.deepEqual(reads,['codex','cursor']);assert.equal(refreshes.length,1);assert.deepEqual(refreshes[0].map(m=>m.app),['codex','cursor']);
+  assert.deepEqual(view.models.map(m=>m.app),['codex','cursor']);assert.equal(view.models[1].model,'Auto');
+  await h.control(view.models[0].read,h.native());await h.control(view.apps[1].read,h.native());
+  assert.deepEqual(reads,['codex','cursor']);assert.equal(refreshes.length,1);
+});
+test('an unavailable native catalog records its own error without converting public models into executable candidates', async () => {
+  const h=scenario();h.agent.softwareCapabilities=async()=>[{app:'codex',connected:true},{app:'cursor',connected:true}];
+  h.agent.capabilities=async(_run,app)=>{if(app==='cursor')throw Error('native catalog unavailable');const snapshot=structuredClone(h.run.capabilities[0]);snapshot.id+='-read';return snapshot;};
+  const view=await h.control({action:'list_models',app:'all'},h.native());
+  assert.equal(view.models.length,1);assert.equal(view.apps.find(a=>a.app==='cursor').available,false);
+  assert.equal(h.run.capabilities.find(s=>s.app==='cursor').error,'native catalog unavailable');
+  assert(view.apps.find(a=>a.app==='cursor').error.includes('native catalog'));
+});
 test('native accepted steering in the same turn releases wait without duplicating the user message or creating another main Attempt', async () => {
   const h=await managementScenario(),driver=h.connect();h.run.tasks.push({id:'B',status:'running',goal:'Pending child',attemptIds:[],inputs:[],reviews:[],dependsOn:[]});
   h.request('wait',{action:'wait'});await driver.read();await flush();assert.equal(h.runner.waiters.size,1);

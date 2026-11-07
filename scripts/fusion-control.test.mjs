@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { applyFusionControl, fusionTaskPrompt, fusionTaskInput } from '../server/fusion/control.mjs';
 import { fixture } from './fusion-fixture.mjs';
+import { FusionControlError, FUSION_TOOLS, ACTION_FIELDS } from '../server/fusion/contract.mjs';
 
 function readText(h, selector, length = 4096) {
   const query = JSON.parse(selector.input); let text = '', offset = 0;
@@ -22,6 +23,119 @@ function childContextFixture() {
   h.run.tasks[0].status = 'accepted';
   return { ...h, workId, binding, first };
 }
+
+test('the eleven captured parameter failures identify their fields, preserve facts and lead to actual review and finish templates', () => {
+  const h=fixture(),workId=h.create();h.plan(workId);const fields=[];
+  const rejected=(action,field)=>{
+    const before=structuredClone(h.run);
+    assert.throws(()=>h.apply(action),error=>{
+      assert(error instanceof FusionControlError);assert.equal(error.feedback.field,field);assert(error.feedback.expected);assert(error.feedback.read?.action);
+      fields.push(field);return true;
+    });
+    assert.deepEqual(h.run,before);
+  };
+  for(const snapshot of h.run.capabilities)rejected({action:'list_models',app:'all',input:JSON.stringify({snapshotIds:[snapshot.id],limit:1000})},'input.limit');
+  rejected({action:'read_workspace',input:'{"view":"workers"}'},'input.view');
+  rejected({action:'read_workspace',input:'{"view":"worker"}'},'input.id');
+  rejected({action:'read_workspace',input:'{"view":"agents"}'},'input.view');
+  rejected({action:'plan',workId,summary:'Compute without writing',scope:[],criteria:[{id:'C1',text:'Evidence available'}],requiresConfirmation:false},'scope');
+  h.apply({action:'dispatch',workId,tasks:[{...h.task('sum42'),acceptance:['返回42']}]});
+  const attempt=h.run.attempts[0];Object.assign(attempt,{status:'awaiting_review',endedAt:20,result:{text:'17 + 25 = 42',completed:true}});
+  const detail=h.apply({action:'read_task',taskId:'sum42',attemptId:attempt.id}),review=detail.review;
+  assert.equal(review.verdict,'');assert.equal(review.evidence[0].detail,'');assert.equal(review.evidence[0].reference,'');
+  rejected({...review,verdict:'accept',reason:'checked',summary:'42',evidence:[{criterion:'返回42',detail:'actual result is 42',reference:attempt.id}]},'evidence[].criterion');
+  const accepted=h.apply({...review,verdict:'accept',reason:'Read the actual original result',summary:'42 verified',evidence:review.evidence.map(e=>({...e,detail:'17+25=42',reference:'result.text'}))});
+  const work=h.apply(accepted.work.read),finish=work.finish;
+  assert.equal(finish.evidence[0].criterion,'C1');assert.equal(finish.evidence[0].attemptId,'');assert.equal(work.sources.items[0].attemptId,attempt.id);
+  for(let i=0;i<2;i++)rejected({...finish,summary:'done',evidence:[{criterion:'C1',detail:'actual 42 accepted',reference:attempt.id}]},'evidence[0].attemptId');
+  rejected({...finish,summary:'done',evidence:[{criterion:'Evidence available',detail:'actual 42 accepted',reference:attempt.id}]},'evidence[].criterion');
+  assert.equal(fields.length,11);
+  h.apply({...finish,summary:'All conditions verified',evidence:finish.evidence.map(e=>({...e,attemptId:work.sources.items[0].attemptId,detail:'Actual native result is 42',reference:'result.text'}))});
+  assert.equal(h.run.works[0].status,'closing');assert.equal(h.run.tasks[0].reviews.length,1);assert.equal(h.run.attempts.length,1);
+});
+
+test('multi-criterion finish templates keep sources explicit and reject evidence from a different work item', () => {
+  const h=fixture(),workId=h.create();
+  h.apply({action:'plan',workId,summary:'Two independent facts',scope:['.'],criteria:[{id:'first',text:'First fact'},{id:'second',text:'Second fact'}],requiresConfirmation:false});
+  h.apply({action:'dispatch',workId,tasks:[h.task('A'),h.task('B')]});
+  for(const id of ['A','B']){
+    const attempt=h.run.attempts.find(a=>a.taskId===id);Object.assign(attempt,{status:'awaiting_review',endedAt:20,result:{text:id,completed:true}});
+    const template=h.apply({action:'read_task',taskId:id,attemptId:attempt.id}).review;
+    h.apply({...template,verdict:'accept',reason:'Checked '+id,summary:'Verified '+id,evidence:template.evidence.map(e=>({...e,detail:'Native result '+id,reference:'result.text'}))});
+  }
+  const other=h.create();h.plan(other);h.apply({action:'dispatch',workId:other,tasks:[h.task('foreign')]});
+  const foreign=h.run.attempts.at(-1);Object.assign(foreign,{status:'accepted',endedAt:30,result:{completed:true,text:'foreign'}});
+  const work=h.apply({action:'read_workspace',workId});
+  assert.deepEqual(work.finish.evidence.map(e=>e.criterion),['first','second']);assert(work.finish.evidence.every(e=>e.attemptId===''&&e.detail===''&&e.reference===''));
+  assert.equal(work.sources.total,2);assert(work.sources.items.every(s=>s.attemptId!==foreign.id));
+  const evidence=work.finish.evidence.map((e,index)=>({...e,detail:'Verified '+index,reference:'result.text',attemptId:work.sources.items[index].attemptId}));
+  const before=structuredClone(h.run);
+  assert.throws(()=>h.apply({...work.finish,summary:'done',evidence:evidence.map(e=>({...e,attemptId:foreign.id}))}),e=>e instanceof FusionControlError&&e.feedback.field==='evidence[0].attemptId');
+  assert.deepEqual(h.run,before);h.apply({...work.finish,summary:'Two facts verified',evidence});assert.equal(h.run.works[0].candidate.evidence[1].attemptId,evidence[1].attemptId);
+});
+
+test('work evidence sources page all ended attempts without adding full templates to default workspace memory', () => {
+  const h=fixture(),workId=h.create();h.plan(workId);h.apply({action:'dispatch',workId,tasks:Array.from({length:7},(_,i)=>h.task('S'+i))});
+  for(const attempt of h.run.attempts)Object.assign(attempt,{status:'accepted',endedAt:20,result:{text:'original',completed:true}});
+  const overview=h.apply({action:'read_workspace'});assert.equal('finish' in overview,false);assert.equal('sources' in overview,false);
+  const detail=h.apply(overview.works[0].read);assert.equal(detail.sources.total,7);assert.equal(detail.sources.items.length,4);
+  const sources=JSON.parse(readText(h,detail.sources.read,83));assert.equal(sources.length,7);assert.deepEqual(sources.map(s=>s.attemptId),h.run.attempts.map(a=>a.id));
+  assert(sources.every(s=>s.read.action==='read_task'));assert(FUSION_TOOLS[0].inputSchema.properties.input.type==='string');assert.deepEqual(FUSION_TOOLS[0].inputSchema.required,['action']);
+  assert.deepEqual(overview.protocol.required,ACTION_FIELDS);
+});
+
+test('work reads use the existing top-level workId without nested selector JSON and reject the old selector explicitly', () => {
+  const h=fixture(),created=h.apply({action:'create_work',title:'One work',goal:'Read its actual criteria'}),workId=created.workId;h.plan(workId);
+  const selector={action:'read_workspace',workId};assert.deepEqual(created.read,selector);
+  const overview=h.apply({action:'read_workspace'}),before=structuredClone(h.run);
+  assert.deepEqual(overview.works[0].read,selector);assert.deepEqual(h.apply(selector).works[0].plan.criteria,[{id:'C1',text:'Evidence available'}]);
+  for(const [action,field,read] of [
+    [{action:'read_workspace',input:JSON.stringify({view:'work',id:workId})},'workId',selector],
+    [{...selector,input:'not-json'},'input',selector],
+    [{...selector,input:JSON.stringify({view:'worker',id:'other'})},'input',selector],
+    [{action:'read_workspace',workId:''},'workId',{action:'read_workspace'}],
+  ])assert.throws(()=>h.apply(action),error=>{
+    assert(error instanceof FusionControlError);assert.equal(error.feedback.field,field);assert.deepEqual(error.feedback.read,read);return true;
+  });
+  assert.deepEqual(h.run,before);
+  const plans=h.apply(selector).works[0].readPlans;assert.deepEqual(plans,{...selector,input:'{"section":"plans"}'});
+  assert.deepEqual(JSON.parse(readText(h,plans,31)),h.run.works[0].plans);
+});
+
+test('delivered result notifications remain pending review even when a later task state would hide the attempt', () => {
+  const h=fixture(),workId=h.create();h.plan(workId);h.apply({action:'dispatch',workId,tasks:[h.task('A')]});
+  const attempt=h.run.attempts[0];Object.assign(attempt,{status:'awaiting_review',endedAt:20,result:{text:'full output '.repeat(10000),completed:true}});
+  h.run.tasks[0].status='accepted';h.run.events.push({id:'result:'+attempt.id,type:'task_result',data:{workId,taskId:'A',attemptId:attempt.id},deliveredTo:'previous-turn'});
+  const view=h.apply({action:'read_workspace'});assert.equal(view.events.length,0);assert.equal(view.pendingReviews.total,1);
+  assert.equal(view.pendingReviews.items[0].attemptId,attempt.id);assert(!JSON.stringify(view.pendingReviews).includes('full output'));
+  const refs=JSON.parse(readText(h,view.pendingReviews.read));assert.equal(refs[0].attemptId,attempt.id);
+  assert.throws(()=>h.apply({action:'wait'}),/已读不等于已验收/);
+  assert.throws(()=>h.apply({action:'continue_task',taskId:'A',input:'more',cost:h.cost('codex')}),/尚未验收/);
+  assert.throws(()=>h.apply({action:'finish',workId,summary:'done',evidence:[]}),/未验收/);
+  h.apply({action:'review',taskId:'A',attemptId:attempt.id,verdict:'accept',reason:'Checked the original output',evidence:[{criterion:'A:1',detail:'Verified actual output',reference:'native'}]});
+  assert.equal(h.apply({action:'read_workspace'}).pendingReviews.total,0);
+});
+test('reviewing an older attempt never accepts or overwrites a newer running execution', () => {
+  const h=fixture(),workId=h.create();h.plan(workId);h.apply({action:'dispatch',workId,tasks:[h.task('A')]});
+  const first=h.run.attempts[0];Object.assign(first,{status:'awaiting_review',endedAt:20,result:{text:'old result',completed:true}});
+  const newer={...structuredClone(first),id:'newer-attempt',status:'running',endedAt:null,result:null};h.run.attempts.push(newer);
+  h.run.tasks[0].attemptIds.push(newer.id);h.run.tasks[0].status='running';
+  h.apply({action:'review',taskId:'A',attemptId:first.id,verdict:'accept',reason:'Only the old result was checked',evidence:[{criterion:'A:1',detail:'Verified old result',reference:'old-native'}]});
+  assert.equal(h.run.attempts[0].status,'accepted');assert.equal(h.run.attempts[1].status,'running');assert.equal(h.run.tasks[0].status,'running');
+  assert.equal(h.run.tasks[0].reviews[0].attemptId,first.id);assert.equal(h.run.attempts.length,2);
+  Object.assign(h.run.attempts[1],{status:'awaiting_review',endedAt:30,result:{completed:true,text:'new result'}});
+  h.apply({action:'review',taskId:'A',attemptId:newer.id,verdict:'accept',reason:'Newest evidence checked',summary:'Current verified result',evidence:[{criterion:'A:1',detail:'New output',reference:'new-native'}]});
+  const legacy={...structuredClone(h.run.attempts[0]),id:'legacy-result',status:'awaiting_review',endedAt:10};
+  h.run.attempts.unshift(legacy);h.run.tasks[0].attemptIds.unshift(legacy.id);
+  h.apply({action:'review',taskId:'A',attemptId:legacy.id,verdict:'accept',reason:'Older evidence checked later',summary:'Historical result',evidence:[{criterion:'A:1',detail:'Old output',reference:'old-native'}]});
+  const detail=h.apply({action:'read_task',taskId:'A'});assert.equal(detail.task.memory.attemptId,newer.id);assert.equal(detail.task.memory.summary,'Current verified result');
+});
+test('large review queues keep a bounded summary and page every pending attempt without reading native content', () => {
+  const h=fixture(),workId=h.create();h.plan(workId);h.apply({action:'dispatch',workId,tasks:Array.from({length:12},(_,i)=>h.task('A'+i))});
+  for(const attempt of h.run.attempts)Object.assign(attempt,{status:'awaiting_review',endedAt:20});
+  const view=h.apply({action:'read_workspace'});assert.equal(view.pendingReviews.total,12);assert.equal(view.pendingReviews.items.length,4);
+  assert.equal(JSON.parse(readText(h,view.pendingReviews.read,73)).length,12);
+});
 
 test('work memory preserves current constraints and unresolved execution while accepted process stays behind evidence reads', () => {
   const h = fixture(), workId = h.create(); h.plan(workId);
@@ -385,13 +499,26 @@ test('workspace summaries keep complete pending user input and retrieve full tas
   assert.equal('inputs' in workspace.tasks[0], false); assert.equal('reviews' in workspace.tasks[0], false);
   assert.equal('models' in workspace.capabilities[0], false);
   assert.equal(workspace.capabilities[0].modelCount, h.run.capabilities[0].models.length);
-  assert.deepEqual(h.apply({ action: 'list_models', app: 'codex' }), h.run.capabilities[0]);
+  const models = h.apply({ action: 'list_models', app: 'codex' });
+  assert.deepEqual(models.snapshotIds, [h.run.capabilities[0].id]);
+  const selected = h.apply({ ...models.models[0].read });
+  assert.deepEqual(selected.model, h.run.capabilities[0].models[0]);
   const detail = h.apply({ action: 'read_task', taskId: task.id });
   assert.deepEqual(detail.task.scope, task.scope); assert.deepEqual(detail.task.acceptance, task.acceptance);
   assert.equal('inputs' in detail.task, false); assert.equal('reviews' in detail.task, false);
   assert.deepEqual(JSON.parse(readText(h, detail.read.inputs)), task.inputs);
   assert.deepEqual(JSON.parse(readText(h, detail.read.reviews)), task.reviews);
   assert.deepEqual(h.run, before);
+});
+test('continuing a reviewed task requires an explicit current native model selection and preserves the original worker', () => {
+  const h = childContextFixture(), task = h.run.tasks[0], worker = task.workerId, before = structuredClone(h.run);
+  const action = { action: 'continue_task', taskId: task.id, input: 'Check only the changed line.', cost: h.cost('codex') };
+  assert.throws(() => applyFusionControl(h.run, action, h.native()), /execution/);
+  assert.deepEqual(h.run, before);
+  h.apply({ ...action, execution: { app: 'codex', model: 'cheap', effort: 'low' } });
+  assert.equal(h.run.tasks[0].workerId, worker); assert.equal(h.run.attempts.length, 2);
+  assert.equal(h.run.agents[0].bindingId, h.binding.id); assert.equal(h.run.bindings[1].threadId, 'native-child');
+  assert.equal(h.run.assignments.at(-1).model, 'cheap'); assert.equal(h.run.assignments.at(-1).input, action.input);
 });
 test('child requests keep authorized scope, acceptance, exact new input and rework without embedding unrelated plans or dependency replies', () => {
   const h = fixture(), workId = h.create(); h.plan(workId);
