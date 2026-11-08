@@ -262,7 +262,8 @@ async function runAgentMenuAction(id, action, extra, target, entry) {
   if (target) {
     try {
       await ovManageSession(target, action, extra);
-      status(action === 'favorite' ? extra.favorite ? '已收藏' : '已取消收藏' : action === 'rename' ? '已重命名会话' : '已删除／归档会话');
+      status(action === 'favorite' ? extra.favorite ? '已收藏' : '已取消收藏' : target.fusion
+        ? action === 'rename' ? '已重命名工作台' : action === 'stop' ? '已请求停止工作台' : '已删除工作台' : action === 'rename' ? '已重命名会话' : '已删除／归档会话');
     } catch (error) { status(error.message, false); }
     return;
   }
@@ -316,11 +317,15 @@ $('sheet').addEventListener('click', async e => {
     const target = agentActionTarget, app = target?.app || currentApp, entry = projectEntry;
     if (b.dataset.agentAction === 'read') {
       closeSheet();
-      if (ovMarkRead(target.key)) ovRender();
+      if (target?.fusion) {
+        const run = fusionWorkspaces.get(target.comp)?.runs.find(row => row.id === target.threadId);
+        if (run && fusionReadResult(run)) ovRender();
+      } else if (ovMarkRead(target.key)) ovRender();
       return;
     }
     if (b.dataset.agentAction === 'copyLink') return copyText(b.dataset.copyLink, b.querySelector('.lbl'), false);
     if (b.dataset.agentAction === 'open') {
+      if (target?.fusion) return openFusionController(target.comp, target.threadId);
       if (target) { closeSheet(); return ovOpen(ovTarget(target)); }
       return openPickedSession(id, name);
     }
@@ -330,10 +335,21 @@ $('sheet').addEventListener('click', async e => {
       return runAgentMenuAction(id, 'favorite', { favorite: on }, target, entry);
     }
     if (b.dataset.agentAction === 'rename') {
-      const next = window.prompt('新的会话名称', name);
+      const next = window.prompt(target?.fusion ? I18N.tr('新的工作台名称') : '新的会话名称', name);
       if (!next?.trim()) return;
       closeSheet(); status('正在重命名…');
       return runAgentMenuAction(id, 'rename', { name: next.trim().slice(0, 80) }, target, entry);
+    }
+    if (target?.fusion) {
+      const action = b.dataset.agentAction;
+      if (action === 'tasks' || action === 'config') {
+        closeSheet(); return readFusionView(target.comp, target.threadId, action);
+      }
+      if (action === 'stop') { closeSheet(); return runAgentMenuAction(id, action, {}, target, entry); }
+      if (action === 'remove') {
+        if (!await ask(I18N.tr('删除这个工作台及其绑定的主／子 Agent？对应原生会话将按软件能力删除或归档，执行记录保留。') + '\n' + name, I18N.tr('删除工作台'))) return;
+        closeSheet(); return runAgentMenuAction(id, action, {}, target, entry);
+      }
     }
     if (b.dataset.agentAction === 'delete' || (b.dataset.agentAction === 'archive' && app !== 'codex')) {
       const action = b.dataset.agentAction, label = action === 'delete' ? '删除' : '归档';

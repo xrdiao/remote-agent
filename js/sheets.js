@@ -536,17 +536,19 @@ function showAgentActions(id, title, actions = null, target = null) {
   const current = !target && (agentLists.get(agentListKey()) || []).find(a => a.id === id);
   const codexThread = (target ? target.app === 'codex' : currentAppName === 'Codex') && String(id).startsWith('thread:');
   const favorite = target ? target.favorite : agentFavoriteState(id);
+  const fusion = target?.fusion;
   const disabled = target?.off ? ' disabled' : '';
   const nativeDisabled = target?.off || target?.dormant ? ' disabled' : '';
   const rows = [
-    current?.current ? '' : `<button class="opt" data-agent-action="open" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"${target?.dormant && !target.workspace ? ' disabled' : ''}><span class="lbl">打开会话</span></button>`,
-    target?.state === 'done' ? '<button class="opt" data-agent-action="read"><span class="lbl">已读</span></button>' : '',
+    current?.current ? '' : `<button class="opt" data-agent-action="open" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"${target?.dormant && !target.workspace ? ' disabled' : ''}><span class="lbl">${fusion ? I18N.tr('打开主对话') : '打开会话'}</span></button>`,
+    (fusion ? target.resultKey && ['done', 'err'].includes(target.state) : target?.state === 'done') ? '<button class="opt" data-agent-action="read"><span class="lbl">已读</span></button>' : '',
     `<button class="opt" data-agent-action="favorite" data-agent-action-id="${esc(id)}"${disabled}><span class="lbl">${target ? favorite ? '取消收藏' : '收藏' : favorite ? '取消常用' : '设置为常用'}</span></button>`,
     codexThread ? `<button class="opt" data-agent-action="copyLink" disabled aria-busy="${!target?.off}"><span class="lbl">复制会话链接</span></button>` : '',
-    ...(actions || (codexThread ? ['rename', 'archive'] : [])).map(action => `<button class="opt" data-agent-action="${action}" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"${nativeDisabled}><span class="lbl">${action === 'rename' ? '重命名' : action === 'delete' ? '删除' : codexThread ? '删除／归档' : '归档'}</span></button>`),
+    ...(actions || (codexThread ? ['rename', 'archive'] : [])).map(action => `<button class="opt" data-agent-action="${action}" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"${nativeDisabled}><span class="lbl">${fusion ? I18N.tr(({ tasks: '查看任务', config: '工作台设置', rename: '重命名', stop: '停止工作台', remove: '删除工作台' })[action]) : action === 'rename' ? '重命名' : action === 'delete' ? '删除' : codexThread ? '删除／归档' : '归档'}</span></button>`),
     target?.off ? '<div class="hint">电脑离线，连接后可管理会话</div>' : target?.dormant ? '<div class="hint">项目窗口已关闭，打开对话后可重命名或归档／删除</div>' : actions === null && !codexThread ? '<div class="hint">正在读取会话操作…</div>' : '',
   ].filter(Boolean).join('');
-  const owner = target ? `<div class="hint">${esc(ovCompName(target.comp))} · ${esc(target.projName)} · ${esc(ovAgName(target))}</div>` : '';
+  const owner = (target ? `<div class="hint">${esc(ovCompName(target.comp))} · ${esc(target.projName)} · ${esc(ovAgName(target))}</div>` : '')
+    + (fusion && target.removal ? `<div class="hint">${I18N.tr('原生会话清理')} ${target.removal.done}/${target.removal.total}${target.removal.error ? `<br>${esc(target.removal.target.app)} · ${esc(target.removal.target.label || I18N.tr('主 Agent'))}：${esc(I18N.tr(target.removal.error))}` : ''}</div>` : '');
   openSheet('agent-actions', `<h3>${esc(title)}</h3>${owner}${rows || '<div class="hint">没有可用操作。</div>'}`);
   if (codexThread && !target?.off) {
     const requestId = ++agentActionRequest;

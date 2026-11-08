@@ -40,11 +40,49 @@ function fusionMarkResultRead() {
     || navigationPending || chatStale) return false;
   const computer = currentComputer();
   if (run.computer !== computer?.id || lastChat?.thread !== computer.threadId) return false;
+  return fusionReadResult(run);
+}
+function fusionReadResult(run) {
   const key = fusionStateKey(run.computer, run.id);
+  if (!run.overview.resultKey) return false;
   if (fusionResultSeen[key] === run.overview.resultKey) return false;
   fusionResultSeen[key] = run.overview.resultKey;
   store.set('fusion-result-seen', JSON.stringify(fusionResultSeen));
   return true;
+}
+function fusionWorkbenchRecord(run) {
+  const entry = ovList.find(value => value.id === run.computer), state = fusionOverviewState(run);
+  return { key: 'fusion:' + fusionStateKey(run.computer, run.id), comp: run.computer, app: 'fusion', win: 'fusion', windowId: 'fusion',
+    threadId: run.id, fusion: true, main: run.main, title: run.title, projName: run.project.name,
+    workspace: run.project.root, host: run.project.host, project: run.project.id, state, busy: state === 'run',
+    favorite: run.favorite === true, resultKey: run.overview.resultKey, removal: run.removal, common: true, used: run.updated,
+    off: ovComputerStatus(entry) !== 'online' };
+}
+function fusionWorkbenchRecords() {
+  return ovList.flatMap(entry => (fusionWorkspaces.get(entry.id)?.runs || []).map(fusionWorkbenchRecord));
+}
+function fusionWorkbenchTile(entry, run) {
+  const online = ovComputerStatus(entry) === 'online', state = fusionOverviewState(run), resultRead = state !== run.overview.state;
+  const target = { computer: entry.id, win: 'fusion', windowId: 'fusion', threadId: run.id };
+  const wide = run.tasks.running || ['running', 'recovering', 'stopping'].includes(run.status);
+  const label = ({ run: '运行中', wait: '需要你处理', done: '已完成', err: '执行阻塞', idle: '空闲' })[state];
+  const current = resultRead ? null : run.overview.current, progress = run.tasks.total ? run.tasks : run.works;
+  return `<div class="ov-tile ov-st-${state} fusion-workbench${wide ? ' ov-wide' : ''}${!online ? ' ov-off' : ''}" style="--p:${progress.total ? progress.done / progress.total * 100 : 0}%" role="button" tabindex="0" data-fusion-open="${esc(run.id)}" data-computer="${esc(entry.id)}" data-ov-menu="${esc(fusionWorkbenchRecord(run).key)}">`
+    + `<div class="ov-logo fusion-logo-stack">${run.overview.apps.map(fusionLogo).join('')}</div><span class="ov-badge">${I18N.tr(ovT(label))}</span>`
+    + `<div class="ov-title ovRaw">${esc(run.title)}</div><div class="ov-now ovRaw">${esc(!resultRead && run.blockedReason || (current ? current.text + ' · ' + fusionTaskStatus(current) : run.project.name))}</div>`
+    + `<div class="ov-foot"><span class="ov-num">${run.tasks.done}<small>/${run.tasks.total} ${I18N.tr('任务')}</small></span>${ovSeg(run.overview.counts)}</div>`
+    + `<div class="fusion-open-feedback">${ovOpenFeedback(target)}<span>${ovOpenLabel(target, '')}</span></div></div>`;
+}
+function fusionUpdateWorkspace(computer, run) {
+  const workspace = fusionWorkspaces.get(computer);
+  if (workspace) workspace.runs = [...(run.removedAt ? [] : [run]), ...workspace.runs.filter(row => row.id !== run.id)].sort((a, b) => b.updated - a.updated);
+  if (activeFusionController?.id === run.id && activeFusionController.computer === computer) {
+    if (run.removedAt) {
+      releaseFusionView(); activeFusionController = null;
+      if (lastChat?.fusionRun?.id === run.id) lastChat.fusionRun = null;
+    } else activeFusionController = run;
+    paintFusionRun(); updateTitle();
+  }
 }
 function fusionBoard() {
   const computers = ovList.filter(value => !ovS.comp || value.id === ovS.comp);
@@ -67,19 +105,7 @@ function fusionBoard() {
         + `<button class="ov-computer-toggle" data-fusion-fold="${esc(entry.id)}" aria-expanded="${!folded}"><i class="fusion-computer-dot${online ? ' online' : ''}"></i><span class="lbl"><strong class="ovRaw">${esc(entry.name)}</strong><small>${!online ? I18N.tr('未连接') + ' · ' : ''}${runs.length} ${I18N.tr('个工作台')}${running ? ' · ' + running + ' ' + I18N.tr('运行中') : ''}</small></span></button>`
         + `<button class="ov-computer-action" data-fusion-new data-computer="${esc(entry.id)}" ${online ? '' : 'disabled'}>＋ ${I18N.tr('启用')}</button>`
         + `<button class="ov-computer-fold" data-fusion-fold="${esc(entry.id)}" aria-expanded="${!folded}" aria-label="${I18N.tr(folded ? '展开电脑' : '收起电脑')}"><svg class="ov-computer-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m9 5 7 7-7 7"/></svg></button></div>`
-        + (folded ? '' : `<div class="ov-board fusion-grid">${!workspace ? `<p class="hint">${I18N.tr(online ? '正在读取 Fusion 状态…' : '电脑尚未连接')}</p>` : !runs.length ? `<p class="hint">${I18N.tr('暂无主工作台')}</p>` : runs.map(run => {
-          const state = fusionOverviewState(run), resultRead = state !== run.overview.state;
-          const target = { computer: entry.id, win: 'fusion', windowId: 'fusion', threadId: run.id };
-          const wide = run.tasks.running || ['running', 'recovering', 'stopping'].includes(run.status);
-          const label = ({ run: '运行中', wait: '需要你处理', done: '已完成', err: '执行阻塞', idle: '空闲' })[state];
-          const current = resultRead ? null : run.overview.current;
-          const progress = run.tasks.total ? run.tasks : run.works;
-          return `<div class="ov-tile ov-st-${state} fusion-workbench${wide ? ' ov-wide' : ''}${!online ? ' ov-off' : ''}" style="--p:${progress.total ? progress.done / progress.total * 100 : 0}%" role="button" tabindex="0" data-fusion-open="${esc(run.id)}" data-computer="${esc(entry.id)}">`
-            + `<div class="ov-logo fusion-logo-stack">${run.overview.apps.map(fusionLogo).join('')}</div><span class="ov-badge">${I18N.tr(ovT(label))}</span>`
-            + `<div class="ov-title ovRaw">${esc(run.title)}</div><div class="ov-now ovRaw">${esc(!resultRead && run.blockedReason || (current ? current.text + ' · ' + fusionTaskStatus(current) : run.project.name))}</div>`
-            + `<div class="ov-foot"><span class="ov-num">${run.tasks.done}<small>/${run.tasks.total} ${I18N.tr('任务')}</small></span>${ovSeg(run.overview.counts)}</div>`
-            + `<div class="fusion-open-feedback">${ovOpenFeedback(target)}<span>${ovOpenLabel(target, '')}</span></div></div>`;
-        }).join('')}</div>`) + '</section>';
+        + (folded ? '' : `<div class="ov-board fusion-grid">${!workspace ? `<p class="hint">${I18N.tr(online ? '正在读取 Fusion 状态…' : '电脑尚未连接')}</p>` : !runs.length ? `<p class="hint">${I18N.tr('暂无主工作台')}</p>` : runs.map(run => fusionWorkbenchTile(entry, run)).join('')}</div>`) + '</section>';
     }).join('') + '</div>';
 }
 function fusionLogo(app) { return `<span class="fusion-logo" data-logo="${esc(app)}" aria-label="${esc(OV_AGENT[app] || app)}"></span>`; }
@@ -620,7 +646,7 @@ document.addEventListener('toggle', event => {
 }, true);
 function receiveFusion(message, link) {
   if (message.t === 'auth') {
-    if (link.authed && ovS.level === 'fusion' && (!ovS.comp || ovS.comp === link.computer.id)) sendFusion(link.computer.id, { t: 'fusionWorkspace' });
+    if (link.authed && ['fusion', 'favorites'].includes(ovS.level) && (!ovS.comp || ovS.comp === link.computer.id)) sendFusion(link.computer.id, { t: 'fusionWorkspace' });
     if (link.authed && fusionViewOwner?.computer === link.computer.id && fusionOwnsView(link.computer.id, fusionViewOwner.runId, { subscriptionId: fusionViewOwner.requestId })) {
       delete fusionViewOwner.dialogueAttempt;
       const { computer, runId, kind, requestId, taskId, workId, questionId } = fusionViewOwner;
@@ -656,11 +682,7 @@ function receiveFusion(message, link) {
     if (sheetKind === 'fusion-create' && fusionNewDraft?.computer === computer)
       fusionPreserveSheet(paintFusionNew, $('sheet'));
   } else if (message.t === 'fusionUpdate') {
-    const workspace = fusionWorkspaces.get(computer);
-    if (workspace) workspace.runs = [message.run, ...workspace.runs.filter(run => run.id !== message.run.id)].sort((a, b) => b.updated - a.updated);
-    if (activeFusionController?.id === message.run.id && activeFusionController.computer === computer) {
-      activeFusionController = message.run; paintFusionRun(); updateTitle();
-    }
+    fusionUpdateWorkspace(computer, message.run);
   } else if (message.t === 'fusionContent') {
     const key = `${computer}|${message.runId}|${message.binding.id}`, previous = fusionContents.get(key), chat = message.chat;
     if (previous && pending?.purpose === 'history') chat.items = [...chat.items, ...previous.items.filter(row => !chat.items.some(item => item.i === row.i))];
@@ -695,11 +717,12 @@ function receiveFusion(message, link) {
     if (message.projectTrust) showProjectTrust(message.projectTrust,
       { computer, app: run.main.app, runId, requestId: crypto.randomUUID() });
   }
-  if (ovS.level === 'fusion') ovRender();
+  if (['fusion', 'favorites'].includes(ovS.level)) ovRender();
   return true;
 }
 
 document.addEventListener('click', event => {
+  if (event.defaultPrevented) return;
   const button = event.target.closest('[data-fusion-fold], [data-fusion-collapse], [data-fusion-relations], [data-fusion-retry], [data-fusion-new], [data-fusion-new-input], [data-fusion-board-tasks], [data-fusion-open], [data-fusion-config], [data-fusion-tasks], [data-fusion-task], [data-fusion-prepare], [data-fusion-trust], [data-fusion-confirm], [data-fusion-stop], [data-fusion-resume], [data-fusion-native], [data-fusion-content], [data-fusion-answer-work], [data-fusion-locate], [data-fusion-option]');
   if (!button || button.disabled) return;
   const surface = button.closest('[data-fusion-run]');

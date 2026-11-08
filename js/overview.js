@@ -251,7 +251,8 @@ function ovRecsOf(e, st) {
   }
   return out;
 }
-const ovRecs = () => ovList.flatMap(e => ovSt.get(e.id)?.data ? ovRecsOf(e, ovSt.get(e.id)) : []);
+const ovRecs = () => [...ovList.flatMap(e => ovSt.get(e.id)?.data ? ovRecsOf(e, ovSt.get(e.id)) : []),
+  ...(ovS.level === 'favorites' ? fusionWorkbenchRecords().filter(row => row.favorite) : [])];
 function ovScopedRecs(all = ovRecs()) {
   if (ovS.level === 'favorites') return [...new Map(all.filter(r => r.favorite).map(r => [ovSessionIdentity(r), r])).values()];
   return all.filter(r => !r.dormant && (!ovS.comp || r.comp === ovS.comp) && (!ovS.proj || r.project === ovS.proj));
@@ -497,7 +498,8 @@ function ovSessions(recs, scope) {
 function ovEmpty(text) { return `<div class="ov-empty">${text}</div>`; }
 function ovBoard(all, projs, scoped) {
   if (ovS.level === 'fusion') return fusionBoard();
-  if (ovS.level === 'favorites') return scoped.sort(ovCompare).map(ovSessTile).join('')
+  if (ovS.level === 'favorites') return scoped.sort(ovCompare).map(row => row.fusion
+    ? fusionWorkbenchTile(ovList.find(entry => entry.id === row.comp), fusionWorkspaces.get(row.comp).runs.find(run => run.id === row.threadId)) : ovSessTile(row)).join('')
     || ovEmpty(`${ovT('还没有收藏会话')}<small>${ovT('长按会话卡片可收藏')}</small>`);
   if (!ovS.proj) {
     const list = ovList.filter(e => !ovS.comp || e.id === ovS.comp).sort((a, b) => ovOn(b) - ovOn(a));
@@ -535,7 +537,7 @@ function ovPatch(container, html) {
   const active = document.activeElement;
   const anchor = $('mic').classList.contains('on') ? $('mic') : active;
   const key = node => node.nodeType === 1 ? [node.nodeName, node.getAttribute('data-ov') || '',
-    node.getAttribute('data-ov-session') || node.getAttribute('data-ov-node') || node.getAttribute('data-ov-input') || node.getAttribute('data-ov-scroll')
+    node.getAttribute('data-ov-session') || node.getAttribute('data-ov-menu') || node.getAttribute('data-ov-node') || node.getAttribute('data-ov-input') || node.getAttribute('data-ov-scroll')
       || node.getAttribute('data-id') || node.getAttribute('data-v') || node.getAttribute('class')?.split(' ')[0] || ''].join('|') : node.nodeName;
   const patch = (parent, next) => {
     const previous = [...parent.childNodes], pool = new Map();
@@ -662,7 +664,7 @@ function ovRestore(st) {
   for (const id of st?.ovCollapsed || []) ovCollapsed.add(id);
   ovExpanded.clear();
   for (const id of st?.ovExpanded || []) ovExpanded.add(id);
-  if (ovS.level === 'fusion') refreshFusionWorkspace();
+  if (['fusion', 'favorites'].includes(ovS.level)) refreshFusionWorkspace();
   ovRender(true, st?.ovScroll || 0);
 }
 function ovMove(change, push = false) {
@@ -672,7 +674,7 @@ function ovMove(change, push = false) {
   ovSaveHistory();
   const depth = history.state?.ovDepth || 0;
   Object.assign(ovS, change);
-  if (ovS.level === 'fusion') refreshFusionWorkspace();
+  if (['fusion', 'favorites'].includes(ovS.level)) refreshFusionWorkspace();
   history[push ? 'pushState' : 'replaceState']({ ...ovHistory(0), ovDepth: depth + Number(push) }, '');
   ovRender(true, 0);
 }
@@ -723,7 +725,7 @@ async function ovSend(key, act, extra, ok) {
 }
 async function ovSessionRequest(r, action, extra = {}) {
   const entry = ovList.find(e => e.id === r.comp), route = '/api/overview/session';
-  if (['rename', 'archive', 'delete', 'remove'].includes(action)) {
+  if (r.fusion || ['rename', 'archive', 'delete', 'remove'].includes(action)) {
     const link = computerSockets.get(entry.c.key), device = link?.auth?.device;
     const target = { ...ovTarget(r), action, ...extra }, identity = JSON.stringify([device, target]);
     const existing = [...desktopRequests.values()].find(request => request.overview === identity);
@@ -747,13 +749,15 @@ async function ovManageSession(r, action, extra = {}) {
   ovBusy.add(r.key); ovRender();
   try {
     const value = await ovSessionRequest(r, action, extra);
-    await ovFetch(ovList.find(e => e.id === r.comp));
+    if (r.fusion) fusionUpdateWorkspace(r.comp, value.run);
+    else await ovFetch(ovList.find(e => e.id === r.comp));
     return value;
   } finally { ovBusy.delete(r.key); ovRender(); }
 }
 function ovSessionMenu(key) {
-  const r = ovRecs().find(r => r.key === key);
-  if (!r || r.fusion) return;
+  const r = ovRecs().find(r => r.key === key) || fusionWorkbenchRecords().find(r => r.key === key);
+  if (!r) return;
+  if (r.fusion) return showAgentActions(r.threadId, r.title, ['tasks', 'config', 'rename', 'stop', 'remove'], r);
   const id = r.app === 'codex' ? `thread:${r.windowId}:${r.threadId}` : r.threadId;
   showAgentActions(id, r.title, null, r);
 }
@@ -971,9 +975,9 @@ function ovCancelHold() { clearTimeout(ovHold?.timer); ovHold = null; }
 $('overview').addEventListener('pointerdown', e => {
   if (e.target.closest('.ov-input-history, [data-ov="tool"][data-v="insertNewline"], .ov-mentions') && e.pointerType === 'mouse') e.preventDefault();
   ovCancelHold(); ovHeld = '';
-  const card = e.target.closest('[data-ov-session]');
+  const card = e.target.closest('[data-ov-session], [data-ov-menu]');
   if (!card || ovBatch || e.button !== 0 || e.target.closest('button, summary, input, textarea, a, [contenteditable], .ov-last, .ov-run-tools, .ov-attachments')) return;
-  const key = card.dataset.ovSession;
+  const key = card.dataset.ovSession || card.dataset.ovMenu;
   ovHold = { x: e.clientX, y: e.clientY, timer: setTimeout(() => {
     ovHeld = key; ovCancelHold(); ovSessionMenu(key);
   }, 500) };
@@ -987,7 +991,8 @@ $('overview').addEventListener('click', e => {
   if (e.target.closest('[data-ov-control]')) return;
   if (e.target.closest('.ov-mentions')) return pickMention(e);
   if (e.target.dataset.ovInput) return ovLocateReply();
-  if (ovHeld && e.target.closest('[data-ov-session]')?.dataset.ovSession === ovHeld) { ovHeld = ''; e.preventDefault(); return; }
+  const heldCard = e.target.closest('[data-ov-session], [data-ov-menu]');
+  if (ovHeld && (heldCard?.dataset.ovSession || heldCard?.dataset.ovMenu) === ovHeld) { ovHeld = ''; e.preventDefault(); return; }
   const el = e.target.closest('[data-ov]');
   if (!el) {
     if (ovS.open && e.target.closest('.ov-main') && !e.target.closest('[data-ov-session], button, a, input, textarea, select, summary, [contenteditable]')) return ovCloseCard();
