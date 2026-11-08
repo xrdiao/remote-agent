@@ -19,6 +19,8 @@ function fixture(stored = new Map()) {
     computerSockets: new Map(entries.map(entry => [entry.id, { authed: true, socket: { readyState: 1, send: raw => sent.push(JSON.parse(raw)) } }])),
   });
   vm.runInContext(fs.readFileSync(new URL('../app/js/fusion.js', import.meta.url), 'utf8'), context);
+  const overview = fs.readFileSync(new URL('../app/js/overview.js', import.meta.url), 'utf8');
+  vm.runInContext(overview.slice(overview.indexOf('const ovAg ='), overview.indexOf('const ovText =')), context);
   return { context, sent, stored, nodes, listeners, run: code => vm.runInContext(code, context) };
 }
 function resultFixture(stored) {
@@ -47,6 +49,25 @@ function workbenchMenuFixture() {
   h.run(overview.slice(overview.indexOf('function ovSessionMenu('), overview.indexOf('function ovMarkRead(')));
   return { ...h, menus, overview };
 }
+test('Fusion compact session cards keep task progress and navigate directly without a preview or bottom native actions', () => {
+  const h = resultFixture(), opened = []; h.context.closeSheet = () => {}; h.context.ovOpen = target => opened.push(target);
+  const original = JSON.stringify(h.context.testRun);
+  const html = h.run("fusionWorkbenchTile(ovList[0],testRun)");
+  assert.match(html, /ov-tile ov-session ov-compact/); assert.match(html, /ov-state.*ov-badge/);
+  assert.match(html, /computer-one · project-one/); assert.match(html, /5<small>\/5/);
+  assert.match(html, /ov-seg/); assert.equal((html.match(/class="ov-badge"/g) || []).length, 1);
+  assert.doesNotMatch(html, /data-ov-session=|data-ov="sess"|class="ov-actions"|class="ov-card"|<button|fusion-open-feedback/);
+  h.context.ovS.open = 'ordinary-preview';
+  const card = { dataset: { fusionOpen: 'same-id', computer: 'computer-one' }, closest: () => null };
+  const event = { target: { closest: selector => selector.includes('[data-fusion-open]') ? card : null } };
+  for (const handler of h.listeners.get('click')) handler(event);
+  assert.equal(opened.length, 1); assert.equal(opened[0].computer, 'computer-one'); assert.equal(opened[0].threadId, 'same-id');
+  assert.equal(h.context.ovS.open, 'ordinary-preview'); assert.equal(h.sent.length, 0); assert.equal(JSON.stringify(h.context.testRun), original);
+  h.context.ovOpenFeedback = () => '<small role="status">Target loading failed</small>';
+  h.context.ovOpenLabel = () => '重试打开';
+  const failed = h.run('fusionWorkbenchTile(ovList[0],testRun)');
+  assert.match(failed, /fusion-open-feedback/); assert.match(failed, /Target loading failed/); assert.doesNotMatch(failed, /<button/);
+});
 test('workbench cards share ordinary long-hold cancellation and suppress the subsequent open click', () => {
   const h = workbenchMenuFixture(), events = new Map(), timers = new Map(); let next = 0, opens = 0;
   const overview = h.context.$('overview');
@@ -92,6 +113,36 @@ test('favorite workbenches retain computer identity and reuse the Fusion card re
   h.run('testRun.favorite=false'); assert.equal(h.run('ovScopedRecs().length'), 2);
   assert.match(h.run('fusionBoard()'), /Completed workbench/);
   assert.equal(h.sent.length, 0);
+});
+test('opening a favorite workbench preserves its source and return position without changing other navigation routes', async () => {
+  const source = fs.readFileSync(new URL('../app/js/overview.js', import.meta.url), 'utf8');
+  for (const [level, win, expected] of [['favorites', 'fusion', 'favorites'], ['fusion', 'fusion', 'fusion'], ['sessions', 'fusion', 'fusion'], ['favorites', 'cursor', 'favorites']]) {
+    const h = fixture(), classes = new Set(), opened = [], previous = [];
+    Object.assign(h.context.ovS, { level, comp: 'computer-two', proj: null, open: null });
+    Object.assign(h.context.document.body.classList, { contains: name => classes.has(name), add: name => classes.add(name), remove: name => classes.delete(name) });
+    Object.assign(h.context, { ovOpenRequest: 0, ovToolState: null, ovOpening: null, ovEnterRequested: false, ovMain: { scrollTop: 137 },
+      ovCollapsed: new Set(), ovExpanded: new Set(), OV_ROOT: { level: 'sessions', comp: null, proj: null, open: null },
+      currentComputer: () => ({ key: 'computer-two' }), winTargetPending: () => false, openWin: raw => opened.push(JSON.parse(raw)),
+      ovClearBatch() {}, ovReleaseComposer() {}, ovVisible() {}, autosize() {}, saveComputerResumes() {},
+      ovRender: (_reset, scroll) => { if (scroll != null) h.context.ovMain.scrollTop = scroll; },
+      history: { state: { ovDepth: 0 }, replaceState(state) { this.state = state; },
+        pushState(state) { previous.push(this.state); this.state = state; }, back() { this.state = previous.pop(); h.context.ovLeave(this.state); } },
+    });
+    h.run(source.slice(source.indexOf('function ovHistory('), source.indexOf('function ovRestoreComputers(')));
+    h.run(source.slice(source.indexOf('function ovRestore('), source.indexOf('function ovMove(')));
+    h.run(source.slice(source.indexOf('async function ovOpen('), source.indexOf('let ovHold =')));
+    const target = { computer: 'computer-two', win, windowId: win, threadId: 'main-session' };
+    await h.context.ovOpen(target);
+    assert.equal(h.context.ovS.level, expected); assert.equal(h.context.ovS.comp, 'computer-two');
+    assert.deepEqual(opened, [target]); assert.equal(classes.has('conv'), false);
+    h.run('ovShowConversation()');
+    assert.equal(classes.has('conv'), true); assert.equal(h.context.history.state.ov.level, expected);
+    h.context.ovMain.scrollTop = 0;
+    h.run('ovBackToBoard()');
+    assert.equal(classes.has('conv'), false); assert.equal(h.context.ovS.level, expected);
+    assert.equal(h.context.ovS.comp, 'computer-two'); assert.equal(h.context.ovMain.scrollTop, 137);
+    assert.equal(h.sent.some(message => message.t !== 'fusionWorkspace'), false);
+  }
 });
 test('workbench menus keep required interactions unread and leave ordinary session actions unchanged', () => {
   const h = workbenchMenuFixture();
