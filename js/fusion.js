@@ -64,10 +64,9 @@ function fusionWorkbenchRecords() {
 function fusionWorkbenchTile(entry, run) {
   const online = ovComputerStatus(entry) === 'online', state = fusionOverviewState(run);
   const target = { computer: entry.id, win: 'fusion', windowId: 'fusion', threadId: run.id };
-  const wide = run.tasks.running || ['running', 'recovering', 'stopping'].includes(run.status);
   const label = ({ run: '运行中', wait: '待处理', done: '已完成', err: '执行阻塞', idle: '空闲' })[state];
   const progress = run.tasks.total ? run.tasks : run.works, context = `${entry.name} · ${run.project.name}`;
-  return `<div class="ov-tile ov-session ov-compact ov-st-${state} fusion-workbench${wide ? ' ov-wide' : ''}${!online ? ' ov-off' : ''}" style="--p:${progress.total ? progress.done / progress.total * 100 : 0}%" role="button" tabindex="0" data-fusion-open="${esc(run.id)}" data-computer="${esc(entry.id)}" data-ov-menu="${esc(fusionWorkbenchRecord(run).key)}">`
+  return `<div class="ov-tile ov-session ov-compact ov-st-${state} fusion-workbench${!online ? ' ov-off' : ''}" style="--p:${progress.total ? progress.done / progress.total * 100 : 0}%" role="button" tabindex="0" data-fusion-open="${esc(run.id)}" data-computer="${esc(entry.id)}" data-ov-menu="${esc(fusionWorkbenchRecord(run).key)}">`
     + `<span class="ov-card-surface" aria-hidden="true"></span>${ovOpenFeedback(target)}${ovLogo(fusionLogo('fusion'))}`
     + `<div class="ov-state"><span class="ov-badge">${I18N.tr(ovT(label))}</span></div><div class="ov-title ovRaw">${esc(run.title)}</div>`
     + `<div class="ov-context ovRaw" title="${esc(context)}">${esc(context)}</div>`
