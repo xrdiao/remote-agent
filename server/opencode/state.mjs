@@ -10,6 +10,9 @@ export class OpenCodeState {
     this.messages = new Map();
     this.statuses = new Map();
     this.permissions = new Map();
+    this.automaticSessions = new Set();
+    this.autoReplies = new Map();
+    this.approvalErrors = new Map();
     this.questions = new Map();
     this.models = new Map();
     this.selections = new Map();
@@ -77,6 +80,7 @@ export class OpenCodeState {
       if (controller.signal.aborted) return;
       this.connected = true;
       this.error = '';
+      for (const request of this.permissions.values()) this.approveAutomatically(request.id);
       this.changed();
     } catch (error) {
       controller.abort();
@@ -84,7 +88,34 @@ export class OpenCodeState {
     }
   }
 
-  close() { this.connected = false; this.controller?.abort(); }
+  close() { this.connected = false; this.controller?.abort(); this.automaticSessions.clear(); }
+
+  approvalMode(id) { return this.automaticSessions.has(id) ? '自动审批' : '手动审批'; }
+
+  setAutomatic(id, enabled) {
+    if (enabled) this.automaticSessions.add(id);
+    else this.automaticSessions.delete(id);
+    this.changed(id);
+    if (enabled) for (const request of this.permissions.values())
+      if (request.sessionID === id) this.approveAutomatically(request.id);
+  }
+
+  approveAutomatically(id) {
+    const request = this.permissions.get(id);
+    if (!request || !this.automaticSessions.has(request.sessionID) || this.autoReplies.has(id)) return;
+    const reply = this.client.request(`/permission/${id}/reply`, {
+      directory: this.sessions.get(request.sessionID).directory, method: 'POST', body: { reply: 'once' },
+    }).then(() => {
+      this.permissions.delete(id);
+      this.approvalErrors.delete(id);
+    }).catch(error => {
+      if (this.permissions.has(id)) this.approvalErrors.set(id, '自动审批失败：' + error.message);
+    }).finally(() => {
+      this.autoReplies.delete(id);
+      this.changed(request.sessionID);
+    });
+    this.autoReplies.set(id, reply);
+  }
 
   async discover(report) {
     try {
@@ -104,10 +135,11 @@ export class OpenCodeState {
     switch (event.type) {
       case 'session.created': case 'session.updated':
         if (!p.info.parentID && !p.info.time.archived) this.sessions.set(p.info.id, p.info);
-        else this.sessions.delete(p.info.id);
+        else { this.sessions.delete(p.info.id); this.automaticSessions.delete(p.info.id); }
         break;
       case 'session.deleted':
         this.sessions.delete(p.info.id); this.messages.delete(p.info.id); this.selections.delete(p.info.id);
+        this.automaticSessions.delete(p.info.id);
         break;
       case 'session.status': this.statuses.set(p.sessionID, p.status); break;
       case 'session.idle': this.statuses.set(p.sessionID, { type: 'idle' }); break;
@@ -128,8 +160,8 @@ export class OpenCodeState {
       }
       case 'message.removed': this.messages.get(p.sessionID)?.delete(p.messageID); break;
       case 'message.part.removed': this.messages.get(p.sessionID)?.get(p.messageID)?.parts.delete(p.partID); break;
-      case 'permission.asked': this.permissions.set(p.id, p); break;
-      case 'permission.replied': this.permissions.delete(p.requestID); break;
+      case 'permission.asked': this.permissions.set(p.id, p); this.approveAutomatically(p.id); break;
+      case 'permission.replied': this.permissions.delete(p.requestID); this.approvalErrors.delete(p.requestID); break;
       case 'question.asked': this.questions.set(p.id, p); break;
       case 'question.replied': case 'question.rejected': this.questions.delete(p.requestID); break;
       case 'session.error':
@@ -166,6 +198,23 @@ export class OpenCodeState {
       variant: native?.variant && native.variant !== 'default' ? native.variant : '' };
   }
 
+  context(id) {
+    const calls = [...this.messages.get(id)?.values() || []].map(row => row.info)
+      .filter(info => info.role === 'assistant' && info.time?.completed && info.tokens)
+      .sort((a, b) => b.time.created - a.time.created || b.id.localeCompare(a.id));
+    let call, used = null;
+    for (const info of calls) {
+      const t = info.tokens;
+      const count = t.input + t.output + t.reasoning + t.cache.read + t.cache.write;
+      if (count > 0) { call = info; used = count; break; }
+    }
+    const key = call ? `${call.providerID}/${call.modelID}` : this.selection(id).key;
+    const model = this.models.get(key), limit = model?.limit?.context || null;
+    return { source: 'opencode', basis: 'used', used, limit, model: model?.name || key || '',
+      pct: used != null && limit ? Math.round(used / limit * 1000) / 10 : null,
+      updated: call?.time.completed || null };
+  }
+
   chat(id) {
     const session = this.sessions.get(id), items = [];
     const messages = [...this.messages.get(id)?.values() || []].sort((a, b) => (a.info.time?.created || 0) - (b.info.time?.created || 0) || a.info.id.localeCompare(b.info.id));
@@ -186,13 +235,14 @@ export class OpenCodeState {
     const permissions = [...this.permissions.values()].filter(p => p.sessionID === id);
     const questions = [...this.questions.values()].filter(p => p.sessionID === id);
     for (const p of permissions) items.push({ i: 'permission:' + p.id, k: 'tool', src: 'opencode', kind: 'command',
-      t: '请求批准：' + p.permission, cmd: p.patterns.join('\n'), output: p.metadata.diff || '',
+      t: '请求批准：' + p.permission, cmd: p.patterns.join('\n'), output: [this.approvalErrors.get(p.id), p.metadata.diff].filter(Boolean).join('\n'),
       b: ['允许一次', '拒绝'], actions: ['once', 'reject'], keep: true });
     for (const q of questions) items.push({ i: 'question:' + q.id, k: 'opencodeQuestion', requestID: q.id, questions: q.questions, keep: true });
     const selected = this.selection(id), model = this.models.get(selected.key), status = this.statuses.get(id);
     if (status?.error) items.push({ i: id + ':status', k: 'notice', t: status.error });
     return { thread: id, title: session?.title || '', items, busy: !!status && status.type !== 'idle',
       model: model?.name || selected.key || '', effort: selected.variant || '默认（服务端）',
+      permission: this.approvalMode(id), context: this.context(id),
       global: [], questions: null, queued: [], subagents: [], changed: session?.summary?.files || 0,
       waiting: questions.length ? 'question' : permissions.length ? 'approval' : '',
       waitingText: questions[0]?.questions[0]?.question || permissions[0]?.patterns.join(' · ') || '',

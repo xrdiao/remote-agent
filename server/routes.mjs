@@ -273,8 +273,8 @@ export const ROUTES = {
       try { return await s.pickMenu(m.kind, m.label, m.name); }
       catch (error) { if (m.kind === 'model' || m.kind === 'effort') await s.closeMenus(); throw error; }
     },
-    after: (s, m) => { if (m.kind === 'model' || m.kind === 'effort' || m.kind === 'fast') s.emit({ t: 'menuPicked', sel: s.selectionKey(), requestId: m.requestId, kind: m.kind, label: m.label, ok: true }); },
-    fail: (s, m) => { if (m.kind === 'model' || m.kind === 'effort' || m.kind === 'fast') s.emit({ t: 'menuPicked', sel: s.selectionKey(), requestId: m.requestId, kind: m.kind, label: m.label, ok: false }); },
+    after: (s, m) => { if (m.kind === 'model' || m.kind === 'effort' || m.kind === 'fast' || s.app === 'opencode' && m.kind === 'permission') s.emit({ t: 'menuPicked', sel: s.selectionKey(), requestId: m.requestId, kind: m.kind, label: m.label, ok: true }); },
+    fail: (s, m) => { if (m.kind === 'model' || m.kind === 'effort' || m.kind === 'fast' || s.app === 'opencode' && m.kind === 'permission') s.emit({ t: 'menuPicked', sel: s.selectionKey(), requestId: m.requestId, kind: m.kind, label: m.label, ok: false }); },
   },
   fusionOptions: { run: (s, m) => s.fusionOptions(String(m.part ?? '')) },
   fusionPick: { run: (s, m) => s.fusionPick(String(m.part ?? ''), m.value) },

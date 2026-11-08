@@ -64,3 +64,78 @@ test('OpenCode overview groups sessions by directory and excludes archived and c
   assert.equal(state.overview().windows.length, 2);
   assert.deepEqual(state.overview().sessions.map(row => row.threadId), ['ses_1', 'ses_3']);
 });
+
+test('automatic approvals process pending and future requests once, leaving other sessions and questions alone', async () => {
+  const requests = [];
+  let finish;
+  const state = new OpenCodeState({ request: (route, options) => {
+    requests.push({ route, options });
+    return new Promise(resolve => { finish = resolve; });
+  } });
+  state.sessions.set('ses_1', native('ses_1'));
+  state.sessions.set('ses_2', native('ses_2', '/other'));
+  const ask = (id, sessionID = 'ses_1') => state.apply({ type: 'permission.asked', properties: { id, sessionID, permission: 'bash', patterns: ['echo test'], metadata: {} } });
+  ask('per_pending'); ask('per_other', 'ses_2');
+  state.setAutomatic('ses_1', true);
+  state.setAutomatic('ses_1', true);
+  assert.equal(requests.length, 1);
+  assert.deepEqual(requests[0], { route: '/permission/per_pending/reply', options: { directory: '/project', method: 'POST', body: { reply: 'once' } } });
+  finish(); await Promise.all(state.autoReplies.values());
+  assert.equal(state.permissions.has('per_pending'), false);
+  assert.equal(state.permissions.has('per_other'), true);
+  ask('per_future');
+  assert.equal(requests.length, 2);
+  finish(); await Promise.all(state.autoReplies.values());
+  state.apply({ type: 'question.asked', properties: { id: 'que_1', sessionID: 'ses_1', questions: [{ question: 'Choose' }] } });
+  assert.equal(requests.length, 2);
+  assert.equal(state.chat('ses_1').waiting, 'question');
+  state.setAutomatic('ses_1', false);
+  ask('per_manual');
+  assert.equal(requests.length, 2);
+  assert.equal(state.permissions.has('per_manual'), true);
+  state.setAutomatic('ses_2', true);
+  finish(); await Promise.all(state.autoReplies.values());
+  state.close();
+  assert.equal(state.approvalMode('ses_2'), '手动审批');
+});
+
+test('failed automatic approvals remain visible for manual handling without a retry loop', async () => {
+  let calls = 0;
+  const state = new OpenCodeState({ request: async () => { calls++; throw new Error('native failure'); } });
+  state.sessions.set('ses_1', native('ses_1'));
+  state.setAutomatic('ses_1', true);
+  state.apply({ type: 'permission.asked', properties: { id: 'per_1', sessionID: 'ses_1', permission: 'edit', patterns: ['x'], metadata: {} } });
+  await Promise.all(state.autoReplies.values());
+  assert.equal(calls, 1);
+  assert.equal(state.permissions.has('per_1'), true);
+  assert.match(state.chat('ses_1').items[0].output, /自动审批失败：native failure/);
+  state.apply({ type: 'permission.replied', properties: { requestID: 'per_1', sessionID: 'ses_1' } });
+  assert.equal(state.approvalErrors.size, 0);
+});
+
+test('OpenCode context uses the last valid native call and its actual model limit rather than session totals or the next selected model', () => {
+  const state = new OpenCodeState();
+  state.defaultModel = 'local/bonsai';
+  state.models.set('local/bonsai', { name: 'Bonsai', limit: { context: 131072 } });
+  state.models.set('other/model', { name: 'Other', limit: { context: 1000 } });
+  state.sessions.set('ses_1', { ...native('ses_1'), tokens: { total: 999999 } });
+  assert.equal(state.context('ses_1').used, null);
+  assert.equal(state.context('ses_1').limit, 131072);
+  const update = (id, created, tokens, completed = created + 1) => state.apply({ type: 'message.updated', properties: { info: {
+    id, sessionID: 'ses_1', role: 'assistant', providerID: 'local', modelID: 'bonsai', time: { created, completed }, tokens,
+  } } });
+  update('msg_1', 10, { total: 99999, input: 7000, output: 100, reasoning: 200, cache: { read: 300, write: 400 } });
+  const usage = state.context('ses_1');
+  assert.equal(usage.used, 8000);
+  assert.equal(usage.pct, 6.1);
+  assert.equal(usage.updated, 11);
+  state.selections.set('ses_1', { key: 'other/model', variant: '' });
+  assert.deepEqual(state.context('ses_1'), usage);
+  update('msg_2', 20, { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } });
+  assert.deepEqual(state.context('ses_1'), usage);
+  update('msg_2', 20, { input: 10000, output: 100, reasoning: 200, cache: { read: 300, write: 400 } }, null);
+  assert.deepEqual(state.context('ses_1'), usage);
+  update('msg_2', 20, { input: 10000, output: 100, reasoning: 200, cache: { read: 300, write: 400 } });
+  assert.equal(state.context('ses_1').used, 11000);
+  assert.equal(state.context('ses_2').used, null);
+});

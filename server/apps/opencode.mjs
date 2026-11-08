@@ -29,7 +29,8 @@ function publish(s) {
   const selected = openCode.selection(s.threadId || s.openCodeDirectory);
   const chat = s.threadId ? openCode.chat(s.threadId) : { thread: '', items: [], busy: false,
     model: openCode.models.get(selected.key)?.name || selected.key,
-    effort: selected.variant || '默认（服务端）', global: [], questions: null, queued: [], subagents: [] };
+    effort: selected.variant || '默认（服务端）', permission: '手动审批', context: openCode.context(s.openCodeDirectory),
+    global: [], questions: null, queued: [], subagents: [] };
   const page = s.openCodePages?.get(s.threadId);
   s.emit({ t: 'chat', sel: s.selectionKey(), chat: { ...chat, earlier: !!page?.before, empty: !s.threadId } });
 }
@@ -110,6 +111,21 @@ async function list(s, m = {}) {
   s.emit({ t: 'agents', app: 'opencode', sel: s.selectionKey(), silent: m.silent === true, list: rows });
 }
 
+async function ensureSession(s) {
+  if (s.threadId) return;
+  const model = openCode.selection(s.openCodeDirectory);
+  const native = await openCode.client.request('/session', { directory: s.openCodeDirectory, method: 'POST', body: {} });
+  cdpRead.getStore()?.throwIfAborted();
+  openCode.sessions.set(native.id, native);
+  s.threadId = s.selectedThread = native.id;
+  s.clearViewState();
+  openCode.selections.set(native.id, model);
+  s.stopChatUpdates();
+  s.chatUpdatesStop = watch(s);
+  rememberSelection(s.deviceId, selection(s));
+  attached(s);
+}
+
 export async function manageOpenCodeSession(id, action, name) {
   const session = openCode.sessions.get(id), directory = session.directory;
   if (action === 'actions') return { actions: ['rename', 'archive', 'delete'] };
@@ -147,18 +163,7 @@ const routes = {
     if (m.submit === false) return routes.draft.call(this, m);
     cdpRead.getStore()?.throwIfAborted();
     const model = openCode.selection(this.threadId || this.openCodeDirectory), native = openCode.models.get(model.key);
-    if (!this.threadId) {
-      const native = await openCode.client.request('/session', { directory: this.openCodeDirectory, method: 'POST', body: {} });
-      cdpRead.getStore()?.throwIfAborted();
-      openCode.sessions.set(native.id, native);
-      this.threadId = this.selectedThread = native.id;
-      this.clearViewState();
-      openCode.selections.set(native.id, model);
-      this.stopChatUpdates();
-      this.chatUpdatesStop = watch(this);
-      rememberSelection(this.deviceId, selection(this));
-      attached(this);
-    }
+    await ensureSession(this);
     const messageID = createMessageID();
     this.openCodeSends ||= new Map();
     const pending = { messageID, threadID: this.threadId, text: m.text, draft: m.draft,
@@ -213,15 +218,21 @@ const routes = {
   },
   attachments() { this.emit({ t: 'attachments', sel: this.selectionKey(), list: [] }); },
   image() { throw new Error('当前 OpenCode 适配仅支持文本消息'); },
-  usage() {},
+  async usage(m) {
+    const id = this.threadId, sel = this.selectionKey();
+    if (id && !m.automatic) await openCode.loadMessages(id);
+    if (this.selectionKey() !== sel) return;
+    this.emit({ t: 'usage', sel, context: openCode.context(id || this.openCodeDirectory), automatic: m.automatic });
+  },
   async openMenu(m) {
     const selected = openCode.selection(this.threadId || this.openCodeDirectory), model = openCode.models.get(selected.key);
     const items = m.kind === 'model' ? [...openCode.models].map(([id, row]) => ({ id, label: row.label, checked: selected.key === id }))
       : m.kind === 'effort' ? [{ label: '默认（服务端）', checked: !selected.variant },
-        ...Object.keys(model?.variants || {}).map(label => ({ label, checked: selected.variant === label }))] : [];
+        ...Object.keys(model?.variants || {}).map(label => ({ label, checked: selected.variant === label }))]
+      : m.kind === 'permission' ? ['手动审批', '自动审批'].map(label => ({ label, checked: openCode.approvalMode(this.threadId) === label })) : [];
     this.emit({ t: 'menu', kind: m.kind, requestId: m.requestId, sel: this.selectionKey(), items, model: model?.name });
   },
-  pickMenu(m) {
+  async pickMenu(m) {
     const key = this.threadId || this.openCodeDirectory, selected = openCode.selection(key);
     if (m.kind === 'model') {
       const entry = [...openCode.models].find(([, row]) => row.label === m.label);
@@ -231,6 +242,12 @@ const routes = {
       const model = openCode.models.get(selected.key);
       if (m.label !== '默认（服务端）' && !Object.hasOwn(model.variants, m.label)) throw new Error('OpenCode 思考强度已不存在');
       openCode.selections.set(key, { ...selected, variant: m.label === '默认（服务端）' ? '' : m.label });
+    } else if (m.kind === 'permission') {
+      if (!['手动审批', '自动审批'].includes(m.label)) throw new Error('未知的 OpenCode 审批模式');
+      await ensureSession(this);
+      const operation = currentOperation();
+      if (operation) operation.sel = this.selectionKey();
+      openCode.setAutomatic(this.threadId, m.label === '自动审批');
     }
     openCode.changed(this.threadId);
   },
@@ -240,7 +257,7 @@ const routes = {
       if (m.sel !== this.selectionKey() || request?.sessionID !== this.threadId) throw new Error('审批已处理或会话已切换');
       if (!['once', 'reject'].includes(m.actionId)) throw new Error('未知的 OpenCode 审批操作');
       await openCode.client.request(`/permission/${id}/reply`, { directory: this.openCodeDirectory, method: 'POST', body: { reply: m.actionId } });
-      openCode.permissions.delete(id); openCode.changed(this.threadId);
+      openCode.permissions.delete(id); openCode.approvalErrors.delete(id); openCode.changed(this.threadId);
     } finally { this.emit({ t: 'clickDone', sel: m.sel, item: m.item, actionId: m.actionId }); }
   },
   async opencodeQuestion(m) {

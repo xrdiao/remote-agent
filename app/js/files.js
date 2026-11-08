@@ -10,6 +10,9 @@ let filePdf = null;
 let readingFile = null;
 let computerFiles = null;
 let returnToBrowser = null;
+function computerFileEntries(state, entries) {
+  return entries.filter(e => (!state.project || e.directory) && (!state.hideHidden || !e.name.startsWith('.')));
+}
 async function computerFileRequest(computer, route, opts = {}) {
   const response = await api(route, { ...opts, computer });
   const data = await response.json();
@@ -18,7 +21,7 @@ async function computerFileRequest(computer, route, opts = {}) {
 }
 function openComputerFiles(id, { path = '', project = null, current = false, focusPath = false } = {}) {
   computerFiles = { computer: loadComputers().find(c => c.id === id), directory: null, roots: null, path, project, focusPath, os: '',
-    message: '', error: false, scroll: 0, request: 0, completion: 0 };
+    message: '', error: false, scroll: 0, request: 0, completion: 0, hideHidden: store.get('file-hide-hidden') !== 'off' };
   if (current) {
     computerFiles.message = '正在读取项目文件…';
     showComputerFiles();
@@ -79,7 +82,7 @@ async function completeComputerPath() {
     const data = !parent && state.directory?.path === '' ? state.directory
       : await computerFileRequest(state.computer, '/api/transfer/list?' + new URLSearchParams({ browse: '1', path: parent || '.', base: state.directory?.path || '' }));
     if (computerFiles !== state || state.completion !== request || sheetKind !== 'computer-files') return;
-    const rows = data.entries.filter(e => e.selectable && (!state.project || e.directory) && fold(e.name).startsWith(fold(prefix)));
+    const rows = computerFileEntries(state, data.entries).filter(e => e.selectable && fold(e.name).startsWith(fold(prefix)));
     const suffix = e => e.directory && !/[\\/]$/.test(e.name) ? sep : '';
     let common = rows[0]?.name || prefix;
     for (const row of rows) while (!fold(row.name).startsWith(fold(common))) common = common.slice(0, -1);
@@ -107,6 +110,14 @@ $('sheet').addEventListener('input', e => {
   if (e.target.id !== 'computerFilePath') return;
   computerFiles.path = e.target.value; computerFiles.completion++;
   $('computerFileCompletions').replaceChildren();
+});
+$('sheet').addEventListener('change', e => {
+  if (e.target.id !== 'computerFileHideHidden') return;
+  computerFiles.hideHidden = e.target.checked;
+  store.set('file-hide-hidden', computerFiles.hideHidden ? 'on' : 'off');
+  computerFiles.completion++;
+  computerFiles.scroll = $('sheet').scrollTop;
+  showComputerFiles();
 });
 function finishFileRead() {
   clearTimeout(readingFile?.timer);

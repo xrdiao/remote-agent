@@ -1897,6 +1897,25 @@ test('context stays scoped to a conversation while quota stays scoped to its com
   assert.deepEqual(h.data(), { context: null, quota: [] });
 });
 
+test('OpenCode context preserves native token details and distinguishes unknown usage from zero', () => {
+  const h = usageMeters();
+  h.context.renderContext({ source: 'opencode', used: null, limit: 131072, pct: null, basis: 'used', model: 'Bonsai', updated: null });
+  assert.equal(h.node('meterCtxPct').textContent, '尚未统计 / 128K');
+  const usage = { source: 'opencode', used: 8000, limit: 131072, pct: 6.1, basis: 'used', model: 'Bonsai', updated: 123456789 };
+  h.context.renderContext(usage);
+  assert.deepEqual(h.data().context, usage);
+  assert.equal(h.node('meterCtxPct').textContent, '已用6.1%');
+  assert.match(h.node('meterCtx').title, /上次调用/);
+  let sheet, message;
+  Object.assign(h.context, { openSheet: (_kind, html) => { sheet = html; }, closeSheet() {}, send: m => { message = m; } });
+  vm.runInContext(part(read('app/js/sheets.js'), 'function showUsageDetails(', 'function menuGroup('), h.context);
+  h.context.showUsageDetails('context');
+  assert.match(sheet, /8000 \/ 131072 tokens/);
+  assert.match(sheet, /Bonsai/);
+  h.node('refreshUsage').onclick();
+  assert.equal(message.t, 'usage');
+});
+
 test('unbound and missing card metrics remain unknown rather than becoming zero', () => {
   const h = usageMeters(); h.context.renderQuota({ context: 0, missing: true, quota: [] });
   assert(h.html().includes('上下文 已用 0%')); assert(h.html().includes('额度 未获取'));
@@ -2574,7 +2593,7 @@ function sharedFileBrowser(readDirectory = () => ({ path: '/project', parent: '/
   { name: 'reports', path: '/project/reports', directory: true, selectable: true },
   { name: 'readme.txt', path: '/project/readme.txt', directory: false, selectable: true, size: 12 },
 ] })) {
-  const handlers = new Map(), requests = [], packets = [], opened = [], nodes = new Map();
+  const handlers = new Map(), requests = [], packets = [], opened = [], nodes = new Map(), preferences = new Map();
   const computers = ['computer-one', 'computer-two'].map(id => ({ id, name: id }));
   let selected = computers[0];
   const node = id => {
@@ -2586,9 +2605,10 @@ function sharedFileBrowser(readDirectory = () => ({ path: '/project', parent: '/
   };
   const context = vm.createContext({ URLSearchParams, $: node, loadComputers: () => computers, currentComputer: () => selected,
     sheetKind: '', projectEntry: null, docsPending: null, viewSel: 'selected-thread', menuRefreshTimer: 0, clearTimeout,
+    store: { get: key => preferences.get(key), set: (key, value) => preferences.set(key, value) },
     document: { activeElement: null }, I18N: { tr: value => value }, esc: String, fmtSize: String,
     OV_AGENT: { cursor: 'Cursor' }, status() {}, finishPending() {}, capabilityState: () => ({ available: true }),
-    openSheet(kind, html) { context.sheetKind = kind; node('sheet').innerHTML = html; },
+    openSheet(kind, html) { context.sheetKind = kind; node('sheet').innerHTML = html; node('computerFileCompletions').innerHTML = ''; },
     closeSheet() { context.sheetKind = ''; context.projectEntry = null; },
     send: packet => { packets.push(packet); return true; }, openFile: (...args) => opened.push(args),
     api: async (route, options) => {
@@ -2608,6 +2628,7 @@ function sharedFileBrowser(readDirectory = () => ({ path: '/project', parent: '/
     state: () => vm.runInContext('computerFiles', context),
     select: id => { selected = computers.find(computer => computer.id === id); },
     type(value) { node('computerFilePath').value = value; handlers.get('input')({ target: { id: 'computerFilePath', value } }); },
+    hideHidden(checked) { handlers.get('change')({ target: { id: 'computerFileHideHidden', checked } }); },
   };
 }
 
@@ -2656,6 +2677,74 @@ test('file and project browsing share completion while project choices include d
     assert.equal(h.node('sheet').innerHTML.includes('readme.txt'), !project);
     if (project) assert(h.node('sheet').innerHTML.includes('data-computer-project="open"'));
   }
+});
+
+test('hidden entries default to hidden and the shared browser remembers the switch without refetching', async () => {
+  const entries = ['.git', '.config', '.env', 'src', 'readme.txt'].map(name => ({
+    name, path: '/project/' + name, directory: !['.env', 'readme.txt'].includes(name), selectable: true, size: 12,
+  }));
+  const h = sharedFileBrowser(() => ({ path: '/project', parent: '/', os: 'linux', entries }));
+  await h.open('computer-two', { path: '/project', project: { owner: null } });
+  assert.equal(h.state().hideHidden, true);
+  assert(h.node('sheet').innerHTML.includes('data-computer-path="/project/src"'));
+  assert(!h.node('sheet').innerHTML.includes('data-computer-path="/project/.git"'));
+  h.node('sheet').scrollTop = 64;
+  h.hideHidden(false);
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.state().directory.entries.length, 5);
+  assert.equal(h.node('sheet').scrollTop, 64);
+  assert(h.node('sheet').innerHTML.includes('data-computer-path="/project/.git"'));
+  assert(!h.node('sheet').innerHTML.includes('data-computer-path="/project/.env"'));
+  await h.context.browseComputerFiles('/project');
+  assert.equal(h.state().hideHidden, false);
+  await h.open('computer-one', { path: '/project' });
+  assert.equal(h.state().hideHidden, false);
+  assert(h.node('sheet').innerHTML.includes('data-computer-path="/project/.env"'));
+  assert(h.node('sheet').innerHTML.includes('data-computer-path="/project/readme.txt"'));
+  const count = h.requests.length;
+  h.hideHidden(true);
+  assert.equal(h.requests.length, count);
+  assert(!h.node('sheet').innerHTML.includes('data-computer-path="/project/.env"'));
+  assert(!h.node('sheet').innerHTML.includes('data-computer-path="/project/.config"'));
+  assert(h.node('sheet').innerHTML.includes('data-computer-path="/project/readme.txt"'));
+  await h.open('computer-two', { path: '/project' });
+  assert.equal(h.state().hideHidden, true);
+});
+
+test('hidden-entry completion follows the shared switch and still restricts project choices to folders', async () => {
+  const entries = ['.git', '.config', '.env'].map(name => ({ name, path: '/project/' + name,
+    directory: name !== '.env', selectable: true, size: 12 }));
+  for (const project of [null, { owner: null }]) {
+    const h = sharedFileBrowser(() => ({ path: '/project', parent: '/', os: 'linux', entries }));
+    await h.open('computer-two', { path: '/project', project });
+    h.type('/project/.'); await h.context.completeComputerPath();
+    assert.equal(h.node('computerFilePath').value, '/project/.');
+    assert(h.node('computerFileCompletions').innerHTML.includes('没有匹配项'));
+    h.hideHidden(false);
+    h.type('/project/.'); await h.context.completeComputerPath();
+    assert(h.node('computerFileCompletions').innerHTML.includes('.git'));
+    assert(h.node('computerFileCompletions').innerHTML.includes('.config'));
+    assert.equal(h.node('computerFileCompletions').innerHTML.includes('.env'), !project);
+    const count = h.requests.length;
+    h.hideHidden(true);
+    assert.equal(h.node('computerFileCompletions').innerHTML, '');
+    assert.equal(h.requests.length, count);
+  }
+});
+
+test('changing the hidden-entry switch releases the previous completion result', async () => {
+  const data = { path: '/project', os: 'linux', entries: [{ name: '.git', path: '/project/.git', directory: true, selectable: true }] };
+  let resolveCompletion, waiting = false;
+  const h = sharedFileBrowser(() => waiting ? new Promise(resolve => { resolveCompletion = resolve; }) : data);
+  await h.open('computer-two', { path: '/project' });
+  h.hideHidden(false); h.type('/project/.g'); waiting = true;
+  const pending = h.context.completeComputerPath();
+  h.hideHidden(true);
+  resolveCompletion(data); await pending;
+  assert.equal(h.node('computerFilePath').value, '/project/.g');
+  assert.equal(h.state().path, '/project/.g');
+  assert.equal(h.node('computerFileCompletions').innerHTML, '');
+  assert.equal(h.requests.length, 2);
 });
 
 test('shared Windows folder completion follows the computer OS and ignores file candidates', async () => {

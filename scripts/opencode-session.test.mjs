@@ -17,11 +17,12 @@ const native = id => ({ id, directory: root.slice(0, -1), title: id, time: { cre
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 function fixture(t) {
-  for (const map of [openCode.sessions, openCode.messages, openCode.statuses, openCode.permissions, openCode.questions, openCode.models, openCode.selections]) map.clear();
+  for (const map of [openCode.sessions, openCode.messages, openCode.statuses, openCode.permissions, openCode.questions, openCode.models, openCode.selections,
+    openCode.automaticSessions, openCode.autoReplies, openCode.approvalErrors]) map.clear();
   openCode.listeners.clear();
   openCode.connected = true;
   openCode.defaultModel = 'local/model';
-  openCode.models.set('local/model', { id: 'model', providerID: 'local', name: 'Local Model', label: 'Local / Model', variants: { high: {} } });
+  openCode.models.set('local/model', { id: 'model', providerID: 'local', name: 'Local Model', label: 'Local / Model', variants: { high: {} }, limit: { context: 131072 } });
   t.mock.method(openCode, 'connect', async () => {});
   t.mock.method(openCode.client, 'messages', async () => ({ rows: [], before: null }));
   const events = [], requests = [];
@@ -143,4 +144,50 @@ test('archiving the selected native OpenCode session returns its view to an empt
   assert.equal(session.threadId, '');
   assert.equal(events.findLast(e => e.t === 'attached').appName, 'OpenCode');
   assert.equal(events.findLast(e => e.t === 'chat').chat.empty, true);
+});
+
+test('OpenCode permission menu works before the first send and its mode stays with the native session', async t => {
+  const { session, events, requests } = fixture(t);
+  await session.handle({ t: 'attach', id: 'opencode', project: { root }, newSession: true });
+  assert.equal(events.findLast(e => e.t === 'chat').chat.context.limit, 131072);
+  await session.handle({ t: 'openMenu', kind: 'permission' });
+  assert.deepEqual(events.findLast(e => e.t === 'menu').items, [
+    { label: '手动审批', checked: true }, { label: '自动审批', checked: false },
+  ]);
+  await session.handle({ t: 'pickMenu', kind: 'permission', label: '自动审批' });
+  assert.equal(session.threadId, 'ses_new');
+  assert.equal(openCode.approvalMode('ses_new'), '自动审批');
+  await session.handle({ t: 'send', text: 'hello', requestId: 'auto-first-send' });
+  assert.equal(requests.filter(r => r.route === '/session').length, 1);
+  await session.handle({ t: 'newProjectChat' });
+  assert.equal(events.findLast(e => e.t === 'chat').chat.permission, '手动审批');
+  await session.handle({ t: 'openAgent', id: 'ses_new' });
+  assert.equal(events.findLast(e => e.t === 'chat').chat.permission, '自动审批');
+  await session.handle({ t: 'pickMenu', kind: 'permission', label: '手动审批' });
+  assert.equal(openCode.approvalMode('ses_new'), '手动审批');
+});
+
+test('OpenCode context refresh loads native history and discards responses after switching sessions', async t => {
+  const { session, events } = fixture(t);
+  for (const id of ['ses_one', 'ses_two']) openCode.sessions.set(id, native(id));
+  await session.handle({ t: 'attach', id: 'opencode', threadId: 'ses_one' });
+  const reads = [];
+  t.mock.method(openCode.client, 'messages', async id => {
+    reads.push(id);
+    return { rows: [{ info: { id: 'msg_usage', sessionID: id, role: 'assistant', providerID: 'local', modelID: 'model',
+      time: { created: 10, completed: 20 }, tokens: { input: 500, output: 50, reasoning: 10, cache: { read: 200, write: 0 } } }, parts: [] }], before: null };
+  });
+  await session.handle({ t: 'usage', automatic: true });
+  assert.equal(reads.length, 0);
+  await session.handle({ t: 'usage' });
+  assert.deepEqual(reads, ['ses_one']);
+  assert.equal(events.findLast(e => e.t === 'usage').context.used, 760);
+  let complete;
+  t.mock.method(openCode.client, 'messages', id => id === 'ses_one' ? new Promise(resolve => { complete = resolve; }) : Promise.resolve({ rows: [], before: null }));
+  const pending = session.handle({ t: 'usage' });
+  await session.handle({ t: 'openAgent', id: 'ses_two' });
+  events.length = 0;
+  complete({ rows: [], before: null });
+  await pending;
+  assert.equal(events.some(e => e.t === 'usage'), false);
 });
