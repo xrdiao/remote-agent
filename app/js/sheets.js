@@ -480,9 +480,11 @@ function showComputerActions(id, app = '') {
   const projects = list.filter(w => w.app === app);
   const targetAttr = w => `data-computer-target="${esc(JSON.stringify({ computer: id, win: w.win, windowId: w.windowId }))}"`;
   const selected = projects.find(w => w.windowId === entry.c.windowId) || projects[0];
+  const service = app === 'opencode' && link.metadata.get('windows')?.list.find(w => w.app === 'opencode');
+  const target = app === 'opencode' ? (service ? { win: service.id, windowId: selected?.windowId || '' } : null) : selected;
   const agent = catalog.find(a => a.app === app);
   const missing = `<p class="hint">${esc(I18N.tr(agent?.reason || '请先打开此 Agent'))}</p>${agent?.installed === true && !agent.running && agent.launchSupported ? `<button class="opt" data-computer-launch="${app}" ${attr}>${I18N.tr('启动')} ${names[app]}</button>` : ''}`;
-  openSheet('computer-actions', `<h3>${I18N.tr('项目与会话')}</h3><p class="hint">${esc(entry.name)}</p><div class="pSec">${I18N.tr('选择 Agent')}</div><div class="computerAgentTabs">${tabs}</div>${selected ? `<button class="opt" data-computer-action ${targetAttr(selected)}>${I18N.tr('项目与会话')}</button>` : missing}`);
+  openSheet('computer-actions', `<h3>${I18N.tr('项目与会话')}</h3><p class="hint">${esc(entry.name)}</p><div class="pSec">${I18N.tr('选择 Agent')}</div><div class="computerAgentTabs">${tabs}</div>${target ? `<button class="opt" data-computer-action ${targetAttr(target)}>${I18N.tr('项目与会话')}</button>` : missing}`);
 }
 function showComputerFiles() {
   const state = computerFiles, dir = state.directory;

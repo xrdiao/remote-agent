@@ -129,3 +129,99 @@ test('phone Agent management exposes the OpenCode launch checkbox through the ex
   assert.match(html, /data-act="agentStart" >启动所选 Agent/);
   assert.match(html, /后台运行/);
 });
+
+function computerActions({ online = true, projects = [] } = {}) {
+  let html;
+  const metadata = new Map([
+    ['windows', { list: online ? [{ id: 'opencode', app: 'opencode' }] : [] }],
+    ['agentCatalog', { agents: [{ app: 'opencode', installed: true, running: online, launchSupported: true }] }],
+  ]);
+  const context = vm.createContext({
+    ovList: [{ id: 'computer', name: 'Test computer', c: { key: 'key', windowId: '/chosen' } }],
+    ovSt: new Map([['computer', { data: { windows: projects } }]]),
+    computerSockets: new Map([['key', { metadata }]]), I18N: { tr: text => text },
+    esc: text => String(text).replace(/&/g, '&amp;').replace(/"/g, '&quot;'),
+    openSheet: (_kind, value) => { html = value; },
+  });
+  const source = read('app/js/sheets.js');
+  vm.runInContext(source.slice(source.indexOf('function showComputerActions('), source.indexOf('function showComputerFiles(')), context);
+  return {
+    show(app = 'opencode') { context.showComputerActions('computer', app); return html; },
+    target() { return JSON.parse(html.match(/data-computer-target="([^"]+)"/)[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&')); },
+  };
+}
+
+test('the computer OpenCode entry opens a healthy service without any projects or session history', () => {
+  const h = computerActions();
+  const html = h.show();
+  assert.match(html, /data-computer-action /);
+  assert.equal(html.includes('请先打开此 Agent'), false);
+  assert.deepEqual(h.target(), { computer: 'computer', win: 'opencode', windowId: '' });
+});
+
+test('a stopped OpenCode service offers launch even when a cached project exists', () => {
+  const h = computerActions({ online: false, projects: [{ app: 'opencode', win: 'opencode', windowId: '/chosen' }] });
+  const html = h.show();
+  assert.match(html, /data-computer-launch="opencode"/);
+  assert.equal(html.includes('data-computer-action '), false);
+});
+
+test('the computer entry retains the selected OpenCode project and existing desktop Agent targets', () => {
+  const h = computerActions({ projects: [
+    { app: 'opencode', win: 'opencode', windowId: '/other' },
+    { app: 'opencode', win: 'opencode', windowId: '/chosen' },
+    { app: 'codex', win: 'codex', windowId: 'desktop-window' },
+  ] });
+  h.show();
+  assert.equal(h.target().windowId, '/chosen');
+  h.show('codex');
+  assert.deepEqual(h.target(), { computer: 'computer', win: 'codex', windowId: 'desktop-window' });
+});
+
+test('late metadata refreshes only the open OpenCode panel belonging to that computer', () => {
+  const refreshed = [], metadata = new Map();
+  const tab = { dataset: { computerId: 'computer' } };
+  const context = vm.createContext({
+    sheetKind: 'computer-actions', expectedId: 'computer', link: { metadata }, m: null,
+    $: () => ({ querySelector: () => tab }),
+    showComputerActions: (id, app) => refreshed.push({ id, app, online: metadata.get('windows')?.list.length > 0 }),
+  });
+  const net = read('app/js/net.js');
+  const source = net.slice(net.indexOf("    if (['windows', 'connAgents', 'agentCatalog', 'plans', 'sessionLibrary'].includes(m.t))"), net.indexOf('    if (link.receive) link.receive(event);'));
+  context.m = { t: 'windows', list: [{ id: 'opencode', app: 'opencode' }] };
+  vm.runInContext(source, context);
+  assert.deepEqual(refreshed, [{ id: 'computer', app: 'opencode', online: true }]);
+  context.expectedId = 'another-computer';
+  vm.runInContext(source, context);
+  context.expectedId = 'computer'; context.sheetKind = 'computer-files';
+  vm.runInContext(source, context);
+  assert.equal(refreshed.length, 1);
+});
+
+test('the first OpenCode service binding adopts its native directory and finishes without another attach', () => {
+  let resolved = 0, attaches = 0;
+  const context = vm.createContext({ currentNavigation: true, expectedId: 'computer', link: { binding: null },
+    m: { t: 'attached', id: 'opencode', app: 'opencode', windowId: '/native/project', sel: 'opencode|/native/project|', ready: true },
+    winBinding: { target: { computer: 'computer', win: 'opencode', windowId: '' }, resolve: () => { resolved++; } },
+    currentComputer: () => ({ id: 'computer', windowId: '/native/project', threadId: '' }),
+    authed: true, windowReady: true, navigationPending: null, currentApp: 'opencode', openWin: () => { attaches++; },
+  });
+  const net = read('app/js/net.js');
+  const binding = net.slice(net.indexOf("    if (currentNavigation && m.t === 'attached') {"), net.indexOf("    if (currentNavigation && m.t === 'chat'"));
+  vm.runInContext(binding, context);
+  const notify = read('app/js/notify.js');
+  vm.runInContext(notify.slice(notify.indexOf('function winTargetReady('), notify.indexOf('function bindWin(')), context);
+  context.finishWinBinding();
+  assert.equal(resolved, 1);
+  assert.equal(attaches, 0);
+});
+
+test('an OpenCode native directory from another computer cannot resolve the current service binding', () => {
+  const target = { computer: 'current-computer', win: 'opencode', windowId: '' };
+  const context = vm.createContext({ currentNavigation: true, expectedId: 'another-computer', link: { binding: null },
+    m: { t: 'attached', app: 'opencode', windowId: '/other/project', ready: true }, winBinding: { target },
+  });
+  const net = read('app/js/net.js');
+  vm.runInContext(net.slice(net.indexOf("    if (currentNavigation && m.t === 'attached') {"), net.indexOf("    if (currentNavigation && m.t === 'chat'")), context);
+  assert.equal(target.windowId, '');
+});

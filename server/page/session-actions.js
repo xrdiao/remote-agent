@@ -304,7 +304,6 @@
             workspaceRoots: context.roots.map(row => row.root), collaborationMode: manager.getConversation(id)?.latestCollaborationMode || null }));
           if (state.status === 'not-ready') throw new Error('Codex 原生会话尚未就绪');
         }
-        await manager.ensureConversationHistoryLoaded(id);
       } else if (app === 'devin') {
         const native = await import('@exa/chat-client');
         await window.__acpStore.dispatch(native.loadTranscriptsThunk([id]));

@@ -997,6 +997,8 @@ async function openComputerSocket(computer, relay) {
       else {
         link.binding = { ...(link.binding?.sel === m.sel ? link.binding : {}), ...m };
         if (m.chat) link.binding.cached = !!m.cached;
+        if (m.app === 'opencode' && winBinding?.target.computer === expectedId
+            && winBinding.target.win === 'opencode' && !winBinding.target.windowId) winBinding.target.windowId = m.windowId;
       }
     }
     if (currentNavigation && m.t === 'chat' && link.binding?.sel === m.sel) link.binding = { ...link.binding, chat: m.chat, cached: !!m.cached };
@@ -1015,6 +1017,10 @@ async function openComputerSocket(computer, relay) {
     }
     if (currentNavigation && (computerBindingReady(link) || ['attachFailed', 'projectTrust'].includes(m.t) || m.t === 'attached' && m.closed)) link.finishFirstScreen();
     if (['windows', 'connAgents', 'agentCatalog', 'plans', 'sessionLibrary'].includes(m.t)) link.metadata.set(m.t, m);
+    if (sheetKind === 'computer-actions' && ['windows', 'agentCatalog'].includes(m.t)) {
+      const tab = $('sheet').querySelector('[data-computer-app="opencode"][aria-pressed="true"]');
+      if (tab?.dataset.computerId === expectedId) showComputerActions(expectedId, 'opencode');
+    }
     if (link.receive) link.receive(event);
     else if (m.t === 'sent') confirmSent(m);
     else if (m.t === 'sendFailed') failPendingSend(m.requestId, m.message, false);

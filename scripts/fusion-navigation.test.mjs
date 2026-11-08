@@ -57,6 +57,12 @@ test('Fusion compact session cards keep task progress and navigate directly with
   assert.match(html, /computer-one · project-one/); assert.match(html, /5<small>\/5/);
   assert.match(html, /ov-seg/); assert.equal((html.match(/class="ov-badge"/g) || []).length, 1);
   assert.doesNotMatch(html, /data-ov-session=|data-ov="sess"|class="ov-actions"|class="ov-card"|<button|fusion-open-feedback/);
+  for (const status of ['running', 'recovering', 'stopping']) {
+    h.context.activeCard = { ...h.context.testRun, status, tasks: { ...h.context.testRun.tasks, running: 1 } };
+    const active = h.run('fusionWorkbenchTile(ovList[0],activeCard)');
+    assert.doesNotMatch(active, /ov-wide|ov-open|data-ov="sess"/);
+    assert.match(active, /5<small>\/5/); assert.match(active, /data-fusion-open="same-id"/);
+  }
   h.context.ovS.open = 'ordinary-preview';
   const card = { dataset: { fusionOpen: 'same-id', computer: 'computer-one' }, closest: () => null };
   const event = { target: { closest: selector => selector.includes('[data-fusion-open]') ? card : null } };

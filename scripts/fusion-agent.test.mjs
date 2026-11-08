@@ -363,6 +363,64 @@ test('Fusion reads the Codex model catalog without loading the ordinary conversa
   assert.deepEqual(calls,['modelItemsFast(true)','close','modelItemsFast(true)','close']);
 });
 
+function nativeBindingFixture() {
+  const { run } = fixture(), binding = run.bindings.find(row => row.id === run.main.bindingId), calls = [];
+  const ordinary = { threadId: 'ordinary', model: 'unchanged', effort: 'high', draft: 'retained' };
+  const conversation = { id: binding.threadId, cwd: run.project.root, latestCollaborationMode: { mode: 'default' }, historyComplete: false };
+  const manager = { needsResume: () => false, getConversation: () => conversation,
+    async resumeConversation(value) { calls.push({ action: 'resume', value }); return { status: 'ready' }; },
+    ensureConversationHistoryLoaded: () => assert.fail('Fusion binding must not load complete history') };
+  const context = vm.createContext({ Error, nativeValue: value => JSON.parse(JSON.stringify(value)),
+    nativeSessionContext: async (app, id) => {
+      assert.equal(app, binding.app); assert.equal(id, binding.threadId);
+      return { app, threadId: id, cwd: conversation.cwd, host: binding.host, roots: [{ root: conversation.cwd, host: binding.host }] };
+    }, codexHistoryScopes: () => [], codexConversationManager: () => manager });
+  const source = fs.readFileSync(new URL('../server/page/session-actions.js', import.meta.url), 'utf8');
+  vm.runInContext(source.slice(source.indexOf('  const nativeSessionInfo ='), source.indexOf('  const nativeCodexCreation ='))
+    + ';this.info=nativeSessionInfo;', context);
+  const agent = new FusionAgent({ publish: () => assert.fail('binding does not publish execution facts') });
+  const carrier = { app: 'codex', native: { threadId: ordinary.threadId }, leaseId: 'binding-test' };
+  agent.carrierFor = async () => carrier;
+  agent.call = async (_context, code) => {
+    const call = nativeInvocation(code); assert.equal(call.method, 'nativeSessionInfo');
+    assert.equal(call.args[2], 'bind'); return context.info(...call.args);
+  };
+  agent.close = async value => { assert.equal(value, carrier); calls.push({ action: 'close' }); };
+  return { run, binding, ordinary, conversation, manager, agent, calls };
+}
+test('a ready Fusion Codex binding reads its own incomplete-history conversation without requiring full history', async () => {
+  const h = nativeBindingFixture(), ordinary = structuredClone(h.ordinary), before = JSON.stringify(h.run);
+  const context = await h.agent.openBinding(h.run, h.binding);
+  assert.equal(context.native.threadId, h.binding.threadId); assert.equal(context.native.cwd, h.binding.project.root);
+  assert.equal(h.conversation.historyComplete, false); assert.equal(h.calls.length, 0);
+  assert.equal(JSON.stringify(h.run), before); assert.deepEqual(h.ordinary, ordinary);
+  h.conversation.cwd = '/different-project';
+  await assert.rejects(h.agent.openBinding(h.run, h.binding), /原生会话目录与该任务项目不一致/);
+  assert.deepEqual(h.calls, [{ action: 'close' }]); assert.deepEqual(h.ordinary, ordinary);
+});
+test('Fusion Codex binding still awaits native resume and refuses a not-ready or failed resume', async () => {
+  for (const outcome of ['ready', 'not-ready', 'error']) {
+    const h = nativeBindingFixture(), ordinary = structuredClone(h.ordinary), before = JSON.stringify(h.run);
+    h.manager.needsResume = () => true;
+    let complete;
+    h.manager.resumeConversation = value => { h.calls.push({ action: 'resume', value }); return new Promise(resolve => { complete = resolve; }); };
+    let finished = false;
+    const opening = h.agent.openBinding(h.run, h.binding).finally(() => { finished = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(finished, false); assert.equal(h.calls.length, 1);
+    const options = h.calls[0].value;
+    assert.equal(options.conversationId, h.binding.threadId); assert.equal(options.model, null); assert.equal(options.reasoningEffort, null);
+    assert.deepEqual(options.workspaceRoots, [h.binding.project.root]); assert.equal(options.collaborationMode.mode, 'default');
+    if (outcome === 'error') complete(Promise.reject(new Error('Native resume failed'))); else complete({ status: outcome });
+    if (outcome === 'ready') assert.equal((await opening).native.threadId, h.binding.threadId);
+    else {
+      await assert.rejects(opening, outcome === 'error' ? /Native resume failed/ : /Codex 原生会话尚未就绪/);
+      assert.equal(h.calls.at(-1).action, 'close');
+    }
+    assert.equal(h.conversation.historyComplete, false); assert.deepEqual(h.ordinary, ordinary); assert.equal(JSON.stringify(h.run), before);
+  }
+});
+
 test('the next actual native user turn answers its sole preceding Fusion question without another model request or plan approval', () => {
   const h = fixture(), workId = h.create(); h.plan(workId, true);
   const questionId = h.apply({ action: 'ask_user', workId, question: 'Use the displayed scope?', options: ['Yes', 'No'] }).questionId;
@@ -690,6 +748,8 @@ test('an unmounted Codex worker reads its native history rather than a different
   const result = await context.read('', 'attempt-1', []);
   assert.equal(result.threadId, 'worker'); assert.equal(result.id, 'user'); assert.equal(result.turnId, 'native-turn');
   assert.equal(result.accepted, true); assert.equal(result.ended, true); assert.equal(result.completed, true); assert.equal(result.text, 'worker-result');
+  const unknown = await context.read('not-in-loaded-history');
+  assert.equal(unknown.id, ''); assert.equal(unknown.turnId, ''); assert.equal(unknown.ended, false); assert.equal(unknown.completed, false);
 });
 test('Fusion native end status is independent of partial history and interrupted execution is never completed', async () => {
   const source = fs.readFileSync(new URL('../server/page/chat-extract.js', import.meta.url), 'utf8');
