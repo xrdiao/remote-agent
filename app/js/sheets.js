@@ -1230,7 +1230,10 @@ function showAgentManager(refresh = false) {
   const known = rows.filter(a => a.installed === true), unknown = rows.filter(a => a.installed === null), missing = rows.filter(a => a.installed === false);
   const row = a => {
     const ready = agentReports.get(agentComputerKey())?.find(r => r.app === a.app)?.windows;
-    if (a.app === 'opencode') return `<div class="opt agentManageRow"><span class="optLogo" data-logo="opencode"></span><span class="lbl">OpenCode<span class="sub">${esc(I18N.tr(ready ? '已连接' : a.reason))}</span></span></div>`;
+    if (a.app === 'opencode') {
+      const note = connLaunchNote(a) || (ready || a.running ? '已连接' : a.reason || '未启动 · 点击启动后在后台运行');
+      return `<label class="opt agentManageRow"><span class="optLogo" data-logo="opencode"></span><span class="lbl">OpenCode<span class="sub">${esc(I18N.tr(note))}</span></span>${a.installed === true ? `<input type="checkbox" data-agent-start="opencode" aria-label="OpenCode" ${selected.includes(a.app) ? 'checked' : ''}>` : ''}</label>`;
+    }
     const note = connLaunchNote(a) || (ready ? '已连接' : a.running ? '已运行，请开启调试端口' : a.reason || (a.installed === null ? '安装状态待确认' : '未启动'));
     return `<label class="opt agentManageRow"><span class="cTile cBrand agentManageLogo"><img class="on-dark" src="logo-${a.app}-dark.svg" alt=""><img class="on-light" src="logo-${a.app}-light.svg" alt=""></span><span class="lbl">${esc(a.name)}<span class="sub">${esc(I18N.tr(note))}</span></span>${a.installed === true ? `<input type="checkbox" data-agent-start="${a.app}" aria-label="${esc(a.name)}" ${selected.includes(a.app) ? 'checked' : ''}>` : ''}</label><details data-compatibility-app="${a.app}" ${compatibilityOpen.has(compatibilityKey(a.app)) ? 'open' : ''}><summary>${esc(I18N.tr('版本与适配'))}</summary><pre class="hint">${esc(compatibilityText(a.app))}</pre><button class="opt" data-compatibility-refresh="${a.app}">${esc(I18N.tr('重新检查适配'))}</button></details>`;
   };

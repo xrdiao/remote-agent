@@ -96,7 +96,7 @@ test('automatic approvals process pending and future requests once, leaving othe
   state.setAutomatic('ses_2', true);
   finish(); await Promise.all(state.autoReplies.values());
   state.close();
-  assert.equal(state.approvalMode('ses_2'), '手动审批');
+  assert.equal(state.approvalMode('ses_2'), '自动审批');
 });
 
 test('failed automatic approvals remain visible for manual handling without a retry loop', async () => {
@@ -138,4 +138,48 @@ test('OpenCode context uses the last valid native call and its actual model limi
   update('msg_2', 20, { input: 10000, output: 100, reasoning: 200, cache: { read: 300, write: 400 } });
   assert.equal(state.context('ses_1').used, 11000);
   assert.equal(state.context('ses_2').used, null);
+});
+
+test('OpenCode approval modes survive restart and remove saved automatic modes when switched to manual or deleted', () => {
+  let saved = [];
+  const restore = () => new OpenCodeState({}, saved, ids => { saved = ids; });
+  const first = restore();
+  first.setAutomatic('ses_auto', true);
+  first.close();
+  const restarted = restore();
+  assert.equal(restarted.approvalMode('ses_auto'), '自动审批');
+  assert.equal(restarted.approvalMode('ses_new'), '手动审批');
+  restarted.setAutomatic('ses_auto', false);
+  restarted.close();
+  assert.equal(restore().approvalMode('ses_auto'), '手动审批');
+  restarted.setAutomatic('ses_deleted', true);
+  restarted.apply({ type: 'session.deleted', properties: { info: native('ses_deleted') } });
+  assert.equal(restore().approvalMode('ses_deleted'), '手动审批');
+});
+
+test('OpenCode restores saved modes before processing pending approvals during startup', async () => {
+  const replies = [];
+  const pending = ['ses_auto', 'ses_manual'].map(id => ({ id: 'per_' + id, sessionID: id, permission: 'bash', patterns: ['printf test'], metadata: {} }));
+  const client = {
+    sessions: async () => ['ses_auto', 'ses_manual'].map(id => native(id)),
+    request: async (route, options) => {
+      if (route === '/global/event') return new Response(new ReadableStream({ start(controller) {
+        options.signal.addEventListener('abort', () => controller.close(), { once: true });
+      } }));
+      if (route === '/config/providers') return { providers: [] };
+      if (route === '/permission') return pending;
+      if (route === '/question') return [{ id: 'que_1', sessionID: 'ses_auto' }];
+      if (route.endsWith('/reply')) replies.push({ route, options });
+      return {};
+    },
+  };
+  const state = new OpenCodeState(client, ['ses_auto']);
+  try {
+    await state.connect();
+    await Promise.all(state.autoReplies.values());
+    assert.deepEqual(replies.map(row => row.route), ['/permission/per_ses_auto/reply']);
+    assert.deepEqual(replies[0].options.body, { reply: 'once' });
+    assert.equal(state.permissions.has('per_ses_manual'), true);
+    assert.equal(state.questions.has('que_1'), true);
+  } finally { state.close(); }
 });

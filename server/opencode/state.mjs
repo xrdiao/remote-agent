@@ -2,15 +2,17 @@ import path from 'node:path';
 import { OpenCodeClient, readEvents } from './client.mjs';
 import { cdpRead } from '../cdp.mjs';
 import { withOperation } from '../operations.mjs';
+import { readState, saveState } from '../../lib/auth.mjs';
 
 export class OpenCodeState {
-  constructor(client = new OpenCodeClient()) {
+  constructor(client = new OpenCodeClient(), automaticSessions = [], saveApprovals = () => {}) {
     this.client = client;
+    this.saveApprovals = saveApprovals;
     this.sessions = new Map();
     this.messages = new Map();
     this.statuses = new Map();
     this.permissions = new Map();
-    this.automaticSessions = new Set();
+    this.automaticSessions = new Set(automaticSessions);
     this.autoReplies = new Map();
     this.approvalErrors = new Map();
     this.questions = new Map();
@@ -88,16 +90,23 @@ export class OpenCodeState {
     }
   }
 
-  close() { this.connected = false; this.controller?.abort(); this.automaticSessions.clear(); }
+  close() { this.connected = false; this.controller?.abort(); }
 
   approvalMode(id) { return this.automaticSessions.has(id) ? '自动审批' : '手动审批'; }
 
   setAutomatic(id, enabled) {
-    if (enabled) this.automaticSessions.add(id);
-    else this.automaticSessions.delete(id);
+    const automatic = new Set(this.automaticSessions);
+    if (enabled) automatic.add(id);
+    else automatic.delete(id);
+    this.saveApprovals([...automatic]);
+    this.automaticSessions = automatic;
     this.changed(id);
     if (enabled) for (const request of this.permissions.values())
       if (request.sessionID === id) this.approveAutomatically(request.id);
+  }
+
+  forgetAutomatic(id) {
+    if (this.automaticSessions.delete(id)) this.saveApprovals([...this.automaticSessions]);
   }
 
   approveAutomatically(id) {
@@ -135,11 +144,11 @@ export class OpenCodeState {
     switch (event.type) {
       case 'session.created': case 'session.updated':
         if (!p.info.parentID && !p.info.time.archived) this.sessions.set(p.info.id, p.info);
-        else { this.sessions.delete(p.info.id); this.automaticSessions.delete(p.info.id); }
+        else { this.sessions.delete(p.info.id); this.forgetAutomatic(p.info.id); }
         break;
       case 'session.deleted':
         this.sessions.delete(p.info.id); this.messages.delete(p.info.id); this.selections.delete(p.info.id);
-        this.automaticSessions.delete(p.info.id);
+        this.forgetAutomatic(p.info.id);
         break;
       case 'session.status': this.statuses.set(p.sessionID, p.status); break;
       case 'session.idle': this.statuses.set(p.sessionID, { type: 'idle' }); break;
@@ -278,4 +287,7 @@ function toolItem(part) {
     status: state.status, done: kind !== 'edit' && ['completed', 'error'].includes(state.status), keep: state.status === 'error' };
 }
 
-export const openCode = new OpenCodeState();
+const client = new OpenCodeClient();
+export const openCode = new OpenCodeState(client, readState().openCodeApprovals?.[client.url] || [], sessions => {
+  saveState({ openCodeApprovals: { ...readState().openCodeApprovals, [client.url]: sessions } });
+});

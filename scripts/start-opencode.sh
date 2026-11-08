@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-exec opencode serve --hostname 127.0.0.1 --port 4096
+exec node "$(dirname "$0")/../server/opencode/launch.mjs" --start-opencode

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { IS_WIN, IS_MAC, installDirs } from '../lib/platform.mjs';
 import { listWindows } from './windows.mjs';
 import { EDITORS } from './config.mjs';
+import { detectOpenCode, launchOpenCode } from './opencode/launch.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const AGENTS = EDITORS.map(editor => editor.app);
@@ -30,7 +31,7 @@ export function takeLaunched(app) {
 // then re-probes so the connection overlay updates. Never awaits the caller's
 // command queue — callers run this detached.
 export function launchAgents(s, apps, probe) {
-  const requested = (Array.isArray(apps) ? apps : []).map(a => String(a).toLowerCase()).filter(a => AGENTS.includes(a));
+  const requested = (Array.isArray(apps) ? apps : []).map(a => String(a).toLowerCase()).filter(a => AGENTS.includes(a) || a === 'opencode');
   const targets = requested.length ? [...new Set(requested)] : AGENTS;
   const fresh = targets.filter(a => !inFlight.has(a));
   if (fresh.length) {
@@ -60,12 +61,12 @@ export function launchAgents(s, apps, probe) {
 let detecting = null;
 // Installation checks reuse the launcher resolvers, without starting applications.
 export function detectAgents() {
-  if (!detecting) detecting = runLaunchers(AGENTS, true).then(async results => {
+  if (!detecting) detecting = runLaunchers([...AGENTS, 'opencode'], true).then(async results => {
     const extensions = await readdir(process.env.VSCODE_EXTENSIONS || path.join(os.homedir(), '.vscode', 'extensions')).catch(() => []);
     return results.map(r => ({ ...r,
       installed: r.status === 'missing' ? false : ['installed', 'running', 'reused'].includes(r.status) ? true : null,
       running: ['running', 'reused'].includes(r.status),
-      launchSupported: !IS_MAC,
+      launchSupported: r.app === 'opencode' || !IS_MAC,
       ...(r.app === 'codex' && ['installed', 'running', 'reused'].includes(r.status) && !extensions.some(n => /^openai\.chatgpt-/.test(n))
         ? { installed: null, reason: '已找到 VS Code，Codex 扩展待确认' } : {}),
     }));
@@ -74,6 +75,13 @@ export function detectAgents() {
 }
 
 async function runLaunchers(apps, probe = false) {
+  if (apps.includes('opencode')) {
+    const editors = apps.filter(app => app !== 'opencode');
+    const [native, desktop] = await Promise.all([
+      probe ? detectOpenCode() : launchOpenCode(), editors.length ? runLaunchers(editors, probe) : [],
+    ]);
+    return apps.map(app => app === 'opencode' ? native : desktop.find(row => row.app === app));
+  }
   if (IS_MAC) {
     if (!probe) return apps.map(app => ({ app, status: 'unsupported' }));
     return Promise.all(apps.map(async app => {

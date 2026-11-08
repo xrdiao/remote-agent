@@ -186,9 +186,7 @@ export const ROUTES = {
       if (s.agentProbe !== probe) return [...found.values()];
       const wins = [...found.values()];
       if (!options.deferPlans && wins.length) readAllPlans(s, wins).catch(() => {});
-      catalog.then(list => { if (s.agentProbe === probe) s.emit({ t: 'agentCatalog', agents: [...list.map(a => agents.some(r => r.app === a.app && r.windows) ? { ...a, installed: true, running: true, reason: '' } : a),
-        { app: 'opencode', name: 'OpenCode', installed: found.has('opencode') ? true : null, running: found.has('opencode'), launchSupported: false,
-          reason: '请在电脑运行 scripts/start-opencode.sh' }] }); }).catch(() => {});
+      catalog.then(list => { if (s.agentProbe === probe) s.emit({ t: 'agentCatalog', agents: list.map(a => agents.some(r => r.app === a.app && r.windows) ? { ...a, installed: true, running: true, reason: '' } : a) }); }).catch(() => {});
       return wins;
     },
   },
