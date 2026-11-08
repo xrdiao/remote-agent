@@ -36,6 +36,77 @@ function resultFixture(stored) {
   h.emit = name => { for (const listener of h.listeners.get(name) || []) listener({}); };
   return h;
 }
+function workbenchMenuFixture() {
+  const h = resultFixture(), menus = [], overview = fs.readFileSync(new URL('../app/js/overview.js', import.meta.url), 'utf8');
+  h.context.document.body.classList.contains = () => false;
+  Object.assign(h.context, { agentActionTarget: null, ovCompName: value => value, ovAgName: () => 'Fusion',
+    openSheet: (kind, html) => { h.context.sheetKind = kind; menus.push({ kind, html }); },
+    ovRecs: () => [], agentFavoriteState: () => false });
+  const sheets = fs.readFileSync(new URL('../app/js/sheets.js', import.meta.url), 'utf8');
+  h.run(sheets.slice(sheets.indexOf('function showAgentActions('), sheets.indexOf('function receiveAgentActions(')));
+  h.run(overview.slice(overview.indexOf('function ovSessionMenu('), overview.indexOf('function ovMarkRead(')));
+  return { ...h, menus, overview };
+}
+test('workbench cards share ordinary long-hold cancellation and suppress the subsequent open click', () => {
+  const h = workbenchMenuFixture(), events = new Map(), timers = new Map(); let next = 0, opens = 0;
+  const overview = h.context.$('overview');
+  overview.addEventListener = (name, fn) => events.set(name, fn);
+  Object.assign(h.context, { ovMain: { addEventListener: (name, fn) => events.set(name, fn) }, ovBatch: null,
+    addEventListener: (name, fn) => events.set(name, fn), setTimeout: fn => { timers.set(++next, fn); return next; },
+    clearTimeout: id => timers.delete(id), openFusionController: () => opens++ });
+  h.run(h.overview.slice(h.overview.indexOf('let ovHold ='), h.overview.indexOf("$('overview').addEventListener('change'")));
+  const key = h.run('fusionWorkbenchRecord(testRun).key');
+  const card = { dataset: { ovMenu: key, fusionOpen: 'same-id', computer: 'computer-one' } };
+  const target = { dataset: {}, closest: selector => ['[data-ov-session], [data-ov-menu]', '[data-fusion-open]'].includes(selector) ? card : null };
+  const down = () => events.get('pointerdown')({ target, button: 0, clientX: 20, clientY: 20, pointerType: 'touch' });
+  const fire = () => { for (const fn of [...timers.values()]) fn(); timers.clear(); };
+  down(); events.get('pointermove')({ clientX: 40, clientY: 20 }); fire(); assert.equal(h.menus.length, 0);
+  down(); events.get('pointercancel')(); fire(); assert.equal(h.menus.length, 0);
+  down(); events.get('pointerup')(); fire(); assert.equal(h.menus.length, 0);
+  down(); events.get('scroll')(); fire(); assert.equal(h.menus.length, 0);
+  down(); fire(); assert.equal(h.menus.length, 1); assert.equal(h.sent.length, 0);
+  const click = { target, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+  events.get('click')(click);
+  for (const fn of h.listeners.get('click')) fn(click);
+  assert.equal(click.defaultPrevented, true); assert.equal(opens, 0);
+  assert.match(h.menus[0].html, /data-agent-action="open"/);
+  assert.match(h.menus[0].html, /data-agent-action="favorite"/);
+  assert.match(h.menus[0].html, /data-agent-action="rename"/);
+  assert.match(h.menus[0].html, /data-agent-action="remove"/);
+  assert.match(h.menus[0].html, /data-agent-action="read"/);
+});
+test('favorite workbenches retain computer identity and reuse the Fusion card renderer beside ordinary favorites', () => {
+  const h = workbenchMenuFixture(); h.context.testRun.favorite = true;
+  h.context.ovSt = new Map([['computer-one', { data: {} }]]);
+  h.context.ovRecsOf = () => [{ key: 'ordinary', favorite: true, state: 'idle' }];
+  h.context.ovSessionIdentity = row => row.key;
+  h.context.ovCompare = (a, b) => a.key.localeCompare(b.key);
+  h.context.ovSessTile = () => '<div>ordinary favorite</div>';
+  h.run(`ovS.level='favorites';fusionWorkspaces.set('computer-two',{runs:[{...testRun,computer:'computer-two',title:'Other computer',favorite:true}]})`);
+  h.run(h.overview.slice(h.overview.indexOf('const ovRecs ='), h.overview.indexOf('function ovProjects(')));
+  h.run(h.overview.slice(h.overview.indexOf('function ovBoard('), h.overview.indexOf('function ovPlan(')));
+  const rows = h.run('ovScopedRecs()'); assert.equal(rows.length, 3);
+  assert.notEqual(rows[1].key, rows[2].key);
+  const html = h.run('ovBoard([],[],ovScopedRecs())'); assert.match(html, /ordinary favorite/);
+  assert.match(html, /data-computer="computer-one"/); assert.match(html, /data-computer="computer-two"/);
+  h.run('testRun.favorite=false'); assert.equal(h.run('ovScopedRecs().length'), 2);
+  assert.match(h.run('fusionBoard()'), /Completed workbench/);
+  assert.equal(h.sent.length, 0);
+});
+test('workbench menus keep required interactions unread and leave ordinary session actions unchanged', () => {
+  const h = workbenchMenuFixture();
+  for (const state of ['run', 'wait', 'err']) {
+    h.context.testRun.overview = { ...h.context.testRun.overview, state, resultKey: '' };
+    h.run('ovSessionMenu(fusionWorkbenchRecord(testRun).key)');
+    assert.doesNotMatch(h.menus.at(-1).html, /data-agent-action="read"/);
+  }
+  const ordinary = { app: 'cursor', comp: 'computer-one', projName: 'ordinary project', title: 'Ordinary session', state: 'done', favorite: false };
+  h.context.ordinary = ordinary;
+  h.run("showAgentActions('native-thread','Ordinary session',['rename','delete'],ordinary)");
+  const html = h.menus.at(-1).html;
+  for (const action of ['open','read','favorite','rename','delete']) assert.match(html, new RegExp(`data-agent-action="${action}"`));
+  assert.doesNotMatch(html, /工作台设置|查看任务|停止工作台|删除工作台/); assert.equal(h.sent.length, 0);
+});
 test('only a visible ready Fusion main acknowledges its ended result without changing actual status or task progress', () => {
   const h = resultFixture(), original = JSON.stringify(h.context.testRun);
   assert.match(h.run('fusionBoard()'), /ov-st-done/); assert.equal(h.stored.size, 0);

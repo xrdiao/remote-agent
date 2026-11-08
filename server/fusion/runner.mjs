@@ -5,7 +5,7 @@ import { nativeAgentProvider } from './providers.mjs';
 import { nativeCostSnapshot } from './cost.mjs';
 import { FUSION_READ_ACTIONS, validateFusionAction } from './contract.mjs';
 import { applyFusionControl, fusionActor, fusionEventView, fusionPendingReviews, fusionReviewQueue } from './control.mjs';
-import { fusionRuns, fusionWorkers, fusionEvent, publishFusion,
+import { fusionRuns, fusionWorkers, fusionLive, allFusionRuns, fusionEvent, publishFusion,
   commitFusion, fusionAttemptWorkIds, newFusionAttempt, fusionReviewBatch, fusionReviewKey, recordFusionReceipt, NATIVE_UNSETTLED } from './state.mjs';
 
 export class FusionRunner {
@@ -369,6 +369,42 @@ export class FusionRunner {
     this.publish();
     await this.recover();
   }
+  async remove() {
+    const run = this.run;
+    if (run.main.preparing || run.attempts.some(row => row.status === 'queued' || NATIVE_UNSETTLED.includes(row.status)))
+      throw new Error('工作台仍有未结束或结果待核对的执行，请先停止并核对');
+    run.stopRequested = true;
+    this.publish();
+    await this.controller.close();
+    this.agent.releaseMainProject(run);
+    const targets = new Map();
+    for (const binding of run.bindings.filter(row => row.threadId)) {
+      const key = JSON.stringify([binding.app, binding.project.id, binding.threadId]);
+      if (!targets.has(key) || binding.role === 'main') targets.set(key, binding);
+    }
+    const bindings = [...targets.values()].sort((a, b) => Number(a.role === 'main') - Number(b.role === 'main'));
+    run.removal = { total: bindings.length, done: 0, error: '' };
+    for (const binding of bindings) {
+      if (binding.cleanup?.confirmed !== true) {
+        try { binding.cleanup = await this.agent.cleanupBinding(run, binding); }
+        catch (error) {
+          binding.cleanup = { confirmed: false, error: error.message, at: Date.now() };
+          run.removal.error = error.message;
+          run.removal.target = { app: binding.app, label: binding.role === 'main' ? '' : run.agents.find(row => row.bindingId === binding.id)?.label || binding.threadId };
+          this.publish();
+          throw new Error(run.removal.error);
+        }
+      }
+      for (const duplicate of run.bindings.filter(row => row.app === binding.app && row.project.id === binding.project.id && row.threadId === binding.threadId))
+        duplicate.cleanup = binding.cleanup;
+      run.removal.done++; this.publish();
+    }
+    run.removedAt = Date.now(); run.favorite = false;
+    for (const owner of Object.values(fusionRuns)) if (owner.current === run.id) owner.current = '';
+    for (const binding of run.bindings) fusionLive.delete(binding.id);
+    this.publish();
+    fusionWorkers.delete(JSON.stringify([run.computer, run.deviceId, run.id]));
+  }
   async recover() {
     this.finishStop();
     if (this.run.stopRequested && this.run.status === 'stopped') return;
@@ -405,7 +441,7 @@ export function fusionRunner(run) {
   return fusionWorkers.get(key);
 }
 export function recoverFusionRuns() {
-  for (const owner of Object.values(fusionRuns)) for (const run of owner.runs) if (run.main.bindingId) {
+  for (const run of allFusionRuns()) if (run.main.bindingId) {
     run.status = run.stopRequested ? 'stopping' : 'recovering'; publishFusion(run);
     fusionRunner(run).recover().catch(error => fusionRunner(run).blockMain(error));
   }

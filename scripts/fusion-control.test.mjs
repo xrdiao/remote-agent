@@ -5,7 +5,32 @@ import vm from 'node:vm';
 import { applyFusionControl, fusionTaskPrompt, fusionTaskInput } from '../server/fusion/control.mjs';
 import { fixture } from './fusion-fixture.mjs';
 import { FusionControlError, FUSION_TOOLS, ACTION_FIELDS } from '../server/fusion/contract.mjs';
-import { recordFusionReceipt } from '../server/fusion/state.mjs';
+import { recordFusionReceipt, fusionViewers as workbenchMenuViewers } from '../server/fusion/state.mjs';
+import { manageOverviewSession } from '../server/overview-actions.mjs';
+import { fusionStore } from '../server/fusion/store.mjs';
+
+test('workbench menu management persists shared names and favorites without mutating native or task facts', async t => {
+  const h = fixture(), messages = [[], []];
+  const viewers = messages.map(rows => ({ emit: message => rows.push(message) }));
+  for (const viewer of viewers) workbenchMenuViewers.add(viewer);
+  t.after(() => { for (const viewer of viewers) workbenchMenuViewers.delete(viewer); });
+  const facts = () => JSON.stringify({ main: h.run.main, bindings: h.run.bindings, tasks: h.run.tasks,
+    attempts: h.run.attempts, agents: h.run.agents, works: h.run.works, events: h.run.events, commands: h.run.commands });
+  const original = facts(), target = { computer: h.run.computer, win: 'fusion', windowId: 'fusion', threadId: h.run.id };
+  const renamed = await manageOverviewSession('another-paired-entry', { ...target, action: 'rename', name: '  Project audit  ' });
+  assert.equal(renamed.run.title, 'Project audit'); assert.equal(h.run.title, 'Project audit');
+  const favorite = await manageOverviewSession('another-paired-entry', { ...target, action: 'favorite', favorite: true });
+  assert.equal(favorite.run.favorite, true);
+  const saved = JSON.parse(fs.readFileSync(fusionStore.file, 'utf8')).owners.test.runs.find(row => row.id === h.run.id);
+  assert.equal(saved.title, 'Project audit'); assert.equal(saved.favorite, true);
+  for (const rows of messages) { assert.equal(rows.length, 2); assert.equal(rows[1].run.id, h.run.id); assert.equal(rows[1].run.favorite, true); }
+  await manageOverviewSession('another-paired-entry', { ...target, action: 'favorite', favorite: false });
+  assert.equal(h.run.favorite, false); assert.equal(facts(), original);
+  const before = structuredClone(h.run);
+  await assert.rejects(() => manageOverviewSession('another-paired-entry', { ...target, action: 'rename', name: ' ' }), /名称不能为空/);
+  await assert.rejects(() => manageOverviewSession('another-paired-entry', { ...target, computer: 'wrong-computer', action: 'rename', name: 'wrong' }), /所选电脑已变化/);
+  assert.deepEqual(h.run, before);
+});
 
 function readText(h, selector, length = 4096) {
   const query = JSON.parse(selector.input); let text = '', offset = 0;

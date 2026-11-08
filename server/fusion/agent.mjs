@@ -17,6 +17,7 @@ import { fusionModelCatalog } from './model-catalog.mjs';
 import { FUSION_TOOLS, fusionControllerPrompt, fusionTaskInput } from './control.mjs';
 import { fusionScheduler } from './scheduler.mjs';
 import { nativeAgentProvider, nativeAgentProviders } from './providers.mjs';
+import { favoriteSession, removeLibrarySession, publishSessionChange } from '../../lib/session-library.mjs';
 
 const executeFile = promisify(execFile);
 
@@ -374,6 +375,22 @@ export class FusionAgent {
     const context = await this.openBinding(controller, binding, '');
     try {
       return { binding, chat: await nativeAgentProvider(binding.app).content(this, context, history, before) };
+    } finally { await this.close(context); }
+  }
+  async cleanupBinding(controller, binding) {
+    const context = await this.carrierFor(controller, binding.app, binding.project);
+    context.native = { app: binding.app, threadId: binding.threadId, host: binding.project.host || '', cwd: binding.project.root };
+    try {
+      const provider = nativeAgentProvider(binding.app), state = await provider.cleanupState(this, context);
+      if (state.running) throw new Error('原生会话仍在运行，请先停止并核对');
+      if (state.exists && fusionProject(state.context.cwd, state.context.host || '')?.id !== binding.project.id)
+        throw new Error('原生会话目录与该 Binding 项目不一致，未执行清理');
+      const result = await provider.cleanup(this, context);
+      if (result?.confirmed !== true || !['delete', 'archive'].includes(result.action)) throw new Error('桌面端尚未确认删除或归档完成');
+      if (result.action === 'delete') removeLibrarySession(binding.app, binding.threadId);
+      else favoriteSession(binding.app, binding.threadId, false);
+      publishSessionChange(binding.app, binding.threadId, { action: result.action });
+      return { ...result, app: binding.app, threadId: binding.threadId, at: Date.now() };
     } finally { await this.close(context); }
   }
 }

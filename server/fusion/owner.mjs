@@ -215,12 +215,30 @@ async function prepare(session, run, message, project = false) {
 subscribeFusion(run => {
   for (const viewer of fusionViewers) {
     viewer.emit({ t: 'fusionUpdate', computer: run.computer, run: fusionControllerView(run) });
+    if (run.removedAt) {
+      if (viewer.fusionDetail?.runId === run.id) viewer.fusionDetail = null;
+      if (viewer.fusionRun?.id === run.id) viewer.fusionRun = null;
+      continue;
+    }
     if (viewer.fusionDetail?.runId === run.id) {
       const view = viewer.fusionDetail.view;
       viewer.emit({ t: 'fusionState', computer: run.computer, runId: run.id, view, run: fusionRunView(run, view) });
     }
   }
 });
+export async function manageFusionWorkbench(body) {
+  const run = requestedRun({}, { computer: body.computer, runId: body.threadId });
+  if (body.action === 'rename') {
+    const title = String(body.name || '').trim().slice(0, 80);
+    if (!title) throw new Error('工作台名称不能为空');
+    run.title = title; publishFusion(run);
+  } else if (body.action === 'favorite') {
+    run.favorite = body.favorite === true; publishFusion(run);
+  } else if (body.action === 'stop') await fusionRunner(run).stop();
+  else if (body.action === 'remove') await fusionRunner(run).remove();
+  else throw new Error('不支持的工作台操作');
+  return { ok: true, run: fusionControllerView(run) };
+}
 export const FUSION_OWNER = {
   async fusionWorkspace(message = {}) {
     this.fusionDetail = null;

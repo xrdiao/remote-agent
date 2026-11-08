@@ -5,9 +5,11 @@ import { Session } from './session.mjs';
 import { overviewSession } from './overview.mjs';
 import { NativeCdp, nativeWindowAt } from './native-windows.mjs';
 import { catalogSessions, storedProjectSession } from './project-windows.mjs';
+import { manageFusionWorkbench } from './fusion/owner.mjs';
 
 export async function manageOverviewSession(deviceId, body) {
   if (body.computer !== computerId()) throw new Error('所选电脑已变化，请刷新概览后重试');
+  if (body.win === 'fusion') return manageFusionWorkbench(body);
   const { session, target } = overviewSession(deviceId, body);
   const { app, threadId, windowId } = session, action = body.action;
   const id = app === 'codex' ? `thread:${windowId}:${threadId}` : threadId;

@@ -43,7 +43,7 @@ export function findFusionRun(id) {
 export function newFusionRun(deviceId, project, main, tier = 'balanced') {
   const now = Date.now();
   return { id: crypto.randomUUID(), computer: computerId(), deviceId, created: now, updated: now, revision: 0,
-    title: 'Fusion 主工作台', project, main: { ...main, bindingId: '' }, tier, budget: null,
+    title: 'Fusion 主工作台', favorite: false, removedAt: 0, project, main: { ...main, bindingId: '' }, tier, budget: null,
     status: 'ready', blockedReason: '', stopRequested: false, works: [], tasks: [], agents: [], assignments: [],
     attempts: [], bindings: [], events: [], commands: [], effects: [], questions: [], capabilities: [],
     observedMainMessages: [], observedMainTurns: [] };
@@ -135,14 +135,16 @@ export function fusionAttemptWorkIds(controller, attempt) {
   ].filter(Boolean))];
 }
 export function fusionSummary(controller) {
-  return { id: controller.id, computer: controller.computer, title: controller.title, status: controller.status,
+  return { id: controller.id, computer: controller.computer, title: controller.title, favorite: controller.favorite === true,
+    removedAt: controller.removedAt || 0, status: controller.status,
+    ...(controller.removal ? { removal: controller.removal } : {}),
     project: controller.project, main: controller.main, tier: controller.tier, updated: controller.updated,
     blockedReason: controller.blockedReason,
     works: { done: controller.works.filter(work => work.status === 'completed').length, total: controller.works.length },
     tasks: { done: controller.tasks.filter(task => task.status === 'accepted').length,
       total: controller.tasks.length, running: controller.tasks.filter(task => task.status === 'running').length } };
 }
-export function allFusionRuns() { return Object.values(fusionRuns).flatMap(owner => owner.runs); }
+export function allFusionRuns() { return Object.values(fusionRuns).flatMap(owner => owner.runs).filter(run => !run.removedAt); }
 export function fusionBindingInUse(app, thread) {
   return allFusionRuns().some(controller => controller.bindings.some(binding => binding.role !== 'main' && binding.app === app && binding.threadId === thread
     && controller.attempts.some(attempt => attempt.bindingId === binding.id && NATIVE_UNSETTLED.includes(attempt.status))));

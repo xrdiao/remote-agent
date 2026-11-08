@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import test from 'node:test';
 import { FusionRunner } from '../server/fusion/runner.mjs';
 import { FusionScheduler } from '../server/fusion/scheduler.mjs';
-import { fusionEvent, fusionLive } from '../server/fusion/state.mjs';
+import { fusionEvent, fusionLive, fusionRuns as menuRuns, allFusionRuns, findFusionRun } from '../server/fusion/state.mjs';
+import { fusionStore } from '../server/fusion/store.mjs';
 import { fixture, flush, nativeInvocation } from './fusion-fixture.mjs';
 import { FusionControlError } from '../server/fusion/contract.mjs';
 function scenario({ readWorkspace = true } = {}) {
@@ -30,6 +31,55 @@ function scenario({ readWorkspace = true } = {}) {
   };
   return { ...h, runner, control, agent, scheduler, controller, calls, pending, stops };
 }
+function removalScenario() {
+  const h = scenario(), actions = [];
+  h.run.bindings.push(...['first', 'second'].map(id => ({ id, role: 'worker', app: 'cursor', threadId: 'worker-' + id, project: h.project })));
+  h.controller.close = async () => { actions.push('unbind-main'); };
+  h.agent.releaseMainProject = () => { actions.push('release-project'); };
+  h.agent.cleanupBinding = async (_run, binding) => {
+    actions.push(binding.threadId);
+    if (binding.id === h.failId) throw new Error('Native cleanup not confirmed');
+    return { confirmed: true, action: binding.app === 'codex' ? 'archive' : 'delete', app: binding.app, threadId: binding.threadId, at: 20 };
+  };
+  return Object.assign(h, { actions });
+}
+test('deleting a workbench cleans each bound native worker before its main and retains execution records', async () => {
+  const h = removalScenario(), original = structuredClone({ tasks: h.run.tasks, attempts: h.run.attempts, works: h.run.works });
+  h.run.bindings.push({ ...h.run.bindings[1], id: 'duplicate-binding' });
+  h.run.favorite = true;
+  const unrelated = structuredClone(h.run); unrelated.id = 'unrelated-menu-workbench'; unrelated.bindings = []; unrelated.title = 'Do not change';
+  menuRuns.test.runs.push(unrelated); const untouched = structuredClone(unrelated);
+  await h.runner.remove();
+  assert.deepEqual(h.actions, ['unbind-main', 'release-project', 'worker-first', 'worker-second', 'main-thread']);
+  assert(h.run.removedAt); assert.equal(h.run.favorite, false); assert.equal(h.run.stopRequested, true);
+  assert.equal(h.run.removal.done, 3); assert.equal(h.run.removal.total, 3); assert.equal(menuRuns.test.current, '');
+  assert(h.run.bindings.every(binding => binding.cleanup.confirmed));
+  assert.deepEqual({ tasks: h.run.tasks, attempts: h.run.attempts, works: h.run.works }, original);
+  assert.deepEqual(unrelated, untouched); assert(!allFusionRuns().some(row => row.id === h.run.id));
+  assert.throws(() => findFusionRun(h.run.id), /没有这个 Fusion 工作台/);
+  const saved = JSON.parse(fs.readFileSync(fusionStore.file, 'utf8')).owners.test.runs.find(row => row.id === h.run.id);
+  assert(saved.removedAt); assert(saved.bindings.every(binding => binding.cleanup.confirmed)); assert.deepEqual(h.stops, []);
+});
+test('partial native cleanup preserves the workbench and explicit retry skips confirmed targets', async () => {
+  const h = removalScenario(); h.failId = 'second';
+  await assert.rejects(() => h.runner.remove(), /Native cleanup not confirmed/);
+  assert.equal(h.run.removedAt, 0); assert.equal(findFusionRun(h.run.id), h.run);
+  assert.equal(h.run.removal.done, 1); assert.equal(h.run.removal.total, 3);
+  assert.equal(h.run.bindings[1].cleanup.confirmed, true); assert.equal(h.run.bindings[2].cleanup.confirmed, false);
+  assert.equal(h.run.bindings[0].cleanup, undefined); assert.deepEqual(h.actions.slice(2), ['worker-first', 'worker-second']);
+  await flush(); assert.equal(h.actions.length, 4);
+  h.failId = ''; const recovered = new FusionRunner(h.run, { agent: h.agent, controller: h.controller, scheduler: h.scheduler });
+  await recovered.remove();
+  assert.deepEqual(h.actions.filter(value => value.startsWith('worker') || value === 'main-thread'), ['worker-first', 'worker-second', 'worker-second', 'main-thread']);
+  assert.equal(h.run.removal.done, 3); assert(h.run.removedAt); assert.equal(h.run.removal.error, '');
+});
+test('unfinished unknown and stopping executions cannot be deleted or reported as cleaned', async () => {
+  for (const status of ['queued','preparing','submitting','running','unknown','stopping']) {
+    const h = removalScenario(); h.run.attempts.push({ id: 'unsettled', status, kind: 'task' }); const before = structuredClone(h.run);
+    await assert.rejects(() => h.runner.remove(), /请先停止并核对/);
+    assert.deepEqual(h.run, before); assert.deepEqual(h.actions, []);
+  }
+});
 async function managementScenario() {
   const {FusionController}=await import('../server/fusion/controller.mjs');
   const h=scenario(),requests=[],replies=[];

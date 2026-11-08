@@ -10,6 +10,75 @@ import { FUSION_TOOLS, fusionAutonomyContext, fusionControllerPrompt } from '../
 import { FusionController } from '../server/fusion/controller.mjs';
 import { NativeAgentProvider, nativeAgentProvider, nativeAgentProviders, registerNativeAgentProvider } from '../server/fusion/providers.mjs';
 import { FusionMcpServer } from '../server/fusion/mcp.mjs';
+import { fusionProject } from '../server/fusion/state.mjs';
+
+function nativeCleanupFixture(app) {
+  const rows = new Map([['own', { id: 'own', providerId: 'native-provider', workspace: '/qa-project', cwd: '/qa-project', path: '/qa/sessions/own.jsonl', archived: false, running: false, status: { type: 'idle' } }],
+    ['ordinary', { id: 'ordinary', workspace: '/ordinary', cwd: '/ordinary', model: 'unchanged', draft: 'retained' }]]), calls = [];
+  const manager = { async readThread(id) { if (!rows.has(id)) throw new Error('thread not found'); return { thread: rows.get(id) }; },
+    async archiveConversation(id) { calls.push(['archive', id]); rows.get(id).path = '/qa/archived_sessions/' + id + '.jsonl'; } };
+  const capabilities = { sessionCapabilities: { delete: true } };
+  const nativeModule = { tryGetAcpSingleton: key => key === 'connectorService' ? { getConnectorById: () => ({ capabilities }) } : {},
+    sendAgentRequestThunk: (_provider, request) => ({ request }) };
+  const context = vm.createContext({ remoteContext: { app, threadId: 'own', host: '' }, Error, String,
+    codexConversationManager: () => manager, codexHistoryScopes: () => [],
+    nativeSessionCatalog: async () => ({ ready: true, complete: app === 'cursor', rows: [...rows.values()], removed: rows.has('own') ? [] : ['own'] }),
+    nativeSessionContext: async (_app, id) => ({ cwd: rows.get(id).cwd, host: '' }),
+    cursorSessionServices: () => ({ data: { allComposersData: { allComposers: [...rows.values()] } } }),
+    nativeSessionAction: async (_app, id, action) => { calls.push([action, id]); rows.get(id).archived = true; return { action: 'archive', confirmed: true }; },
+    devinSessionRecord: id => rows.get(id), nativeModule,
+    window: { __acpStore: { async dispatch({ request }) { calls.push([request.method, request.params.sessionId]); rows.delete(request.params.sessionId); } } } });
+  const source = fs.readFileSync(new URL('../server/page/session-actions.js', import.meta.url), 'utf8');
+  vm.runInContext(source.slice(source.indexOf('  const nativeSessionCleanup ='), source.indexOf('  const nativeSessionInfo ='))
+    .replaceAll("await import('@exa/chat-client')", 'nativeModule') + ';this.cleanup=nativeSessionCleanup;', context);
+  return { rows, calls, context, capabilities, cleanup: context.cleanup };
+}
+test('Fusion native cleanup targets one actual conversation, records delete or archive, and leaves ordinary state unchanged', async () => {
+  for (const app of ['codex','cursor','devin']) {
+    const h = nativeCleanupFixture(app), ordinary = structuredClone(h.rows.get('ordinary'));
+    const before = await h.cleanup(app, 'own'); assert.equal(before.exists, true); assert.equal(h.calls.length, 0);
+    const result = await h.cleanup(app, 'own', true);
+    assert.equal(result.confirmed, true); assert.equal(result.action, app === 'devin' ? 'delete' : 'archive');
+    assert.equal(h.calls.length, 1); assert.equal(h.calls[0][1], 'own'); assert.deepEqual(h.rows.get('ordinary'), ordinary);
+    const again = await h.cleanup(app, 'own', true); assert.equal(again.already, true); assert.equal(h.calls.length, 1);
+  }
+});
+test('native cleanup does not guess an uncertain absence, clear the last Cursor conversation, or stop a running target', async () => {
+  const cursor = nativeCleanupFixture('cursor'); cursor.rows.delete('ordinary');
+  await assert.rejects(() => cursor.cleanup('cursor', 'own', true), /清空不能代替删除或归档/); assert.equal(cursor.calls.length, 0);
+  const codex = nativeCleanupFixture('codex'); codex.rows.get('own').status.type = 'active';
+  await assert.rejects(() => codex.cleanup('codex', 'own', true), /仍在运行/); assert.equal(codex.calls.length, 0);
+  const devin = nativeCleanupFixture('devin'); devin.capabilities.sessionCapabilities.delete = false;
+  await assert.rejects(() => devin.cleanup('devin', 'own', true), /未提供.*后台删除能力/); assert.equal(devin.calls.length, 0);
+  devin.context.nativeSessionCatalog = async () => ({ ready: true, complete: false, rows: [], removed: [] });
+  await assert.rejects(() => devin.cleanup('devin', 'own', true), /状态尚未确认/); assert.equal(devin.calls.length, 0);
+  const wrong = nativeCleanupFixture('cursor'); wrong.context.remoteContext.threadId = 'ordinary';
+  await assert.rejects(() => wrong.cleanup('cursor', 'own', true), /不属于这个原生 Binding/); assert.equal(wrong.calls.length, 0);
+});
+test('cleanupBinding uses the software provider and exact project without loading ordinary history or changing drafts', async () => {
+  const h = fixture(), library = [], context = vm.createContext({ nativeAgentProvider, fusionProject, Date, Error,
+    favoriteSession: (...args) => library.push(['favorite', ...args]), removeLibrarySession: (...args) => library.push(['remove', ...args]),
+    publishSessionChange: (...args) => library.push(['change', ...args]) });
+  const cleanup = vm.runInContext('({' + FusionAgent.prototype.cleanupBinding.toString() + '}).cleanupBinding', context);
+  for (const app of ['codex','cursor','devin']) {
+    const calls = [], native = { app, page: { id: 'shared-window' }, native: { threadId: 'ordinary' } }, binding = { app, threadId: 'own-' + app, project: h.project };
+    const agent = { carrierFor: async (_run, software, project) => { assert.equal(software, app); assert.equal(project, h.project); return native; },
+      close: async value => { assert.equal(value, native); calls.push('close'); },
+      call: async (value, code) => { assert.equal(value.native.threadId, binding.threadId); const call = nativeInvocation(code); calls.push(call);
+        return call.method === 'nativeSessionInfo' ? { exists: true, running: false, context: { cwd: h.project.root, host: '' } }
+          : { confirmed: true, action: app === 'codex' ? 'archive' : 'delete' }; } };
+    const result = await cleanup.call(agent, h.run, binding);
+    assert.equal(result.confirmed, true); assert.equal(result.threadId, binding.threadId);
+    assert.deepEqual(calls.slice(0,2).map(row => row.args[2]), ['cleanup','cleanup']); assert.equal(calls[2], 'close');
+  }
+  assert(library.every(row => row[2].startsWith('own-')));
+  const calls = [], native = { native: {} }, binding = { app: 'codex', threadId: 'own-mismatch', project: h.project };
+  const agent = { carrierFor: async () => native, close: async () => calls.push('close'),
+    call: async (_context, code) => { calls.push(nativeInvocation(code)); return { exists: true, running: false, context: { cwd: '/unrelated-project', host: '' } }; } };
+  const before = library.length;
+  await assert.rejects(() => cleanup.call(agent, h.run, binding), /项目不一致/);
+  assert.equal(calls.length, 2); assert.equal(calls[1], 'close'); assert.equal(library.length, before);
+});
 
 test('native applications share one controller creation contract and model choices remain ordinary data', async () => {
   for (const app of ['cursor', 'devin', 'codex']) {

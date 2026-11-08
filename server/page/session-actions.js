@@ -212,7 +212,50 @@
     return { ...summary(text(items.findLast(item => text(item)?.trim()) || {})), historical,
       ...nativePreviewActivity(tools, conversation?.latestModel, conversation?.latestThreadSettings?.effort, tasks) };
   };
+  const nativeSessionCleanup = async (app, id, perform = false) => {
+    const inspect = async () => {
+      if (app === 'codex') {
+        const host = remoteContext?.host || 'local', manager = codexConversationManager(id, codexHistoryScopes(), host);
+        let thread;
+        try { ({ thread } = await manager.readThread(id, { includeTurns: false })); }
+        catch (error) {
+          if (/thread.*not found|no rollout found|thread.*does not exist/i.test(String(error))) return { exists: false };
+          throw error;
+        }
+        return { exists: true, archived: /[\\/]archived_sessions[\\/]/.test(thread.path || ''), running: thread.status?.type === 'active',
+          context: { cwd: thread.cwd, host: host === 'local' ? '' : host } };
+      }
+      const catalog = await nativeSessionCatalog(app, [id]);
+      if (!catalog.ready || catalog.unknown?.includes(id) || catalog.missing?.includes(id)) throw new Error('原生会话清理状态尚未确认');
+      const row = catalog.rows.find(row => row.id === id);
+      if (!row && !catalog.complete && !catalog.removed?.includes(id)) throw new Error('原生会话清理状态尚未确认');
+      return { exists: !!row, archived: !!row?.archived, running: !!row?.running,
+        context: row ? row.workspace ? { cwd: row.workspace, host: row.host || '' } : await nativeSessionContext(app, id) : null };
+    };
+    const before = await inspect();
+    if (!perform) return before;
+    if (!remoteContext || remoteContext.app !== app || remoteContext.threadId !== id) throw new Error('清理请求不属于这个原生 Binding');
+    if (!before.exists || before.archived) return { confirmed: true, action: before.archived ? 'archive' : 'delete', already: true };
+    if (before.running) throw new Error('原生会话仍在运行，请先停止并核对');
+    if (app === 'codex') {
+      const manager = codexConversationManager(id, codexHistoryScopes(), remoteContext.host || 'local');
+      await manager.archiveConversation(id, { useAppServerPins: false });
+    } else if (app === 'cursor') {
+      if (cursorSessionServices().data.allComposersData.allComposers.length <= 1) throw new Error('Cursor 当前只有一个原生会话，清空不能代替删除或归档');
+      await nativeSessionAction(app, id, 'delete');
+    } else {
+      const native = await import('@exa/chat-client'), session = devinSessionRecord(id);
+      const connector = native.tryGetAcpSingleton('connectorService').getConnectorById(session.providerId);
+      if (!connector?.capabilities?.sessionCapabilities?.delete) throw new Error('Devin 未提供该会话的后台删除能力');
+      await window.__acpStore.dispatch(native.sendAgentRequestThunk(session.providerId,
+        { method: 'session/delete', params: { sessionId: id } }, native.tryGetAcpSingleton('sendAgentRequest')));
+    }
+    const after = await inspect();
+    if (after.exists && !after.archived) throw new Error('桌面端尚未确认删除或归档完成');
+    return { confirmed: true, action: after.archived ? 'archive' : 'delete', already: false };
+  };
   const nativeSessionInfo = (app, id, catalog = false, previous = null) => {
+    if (catalog === 'cleanup') return nativeSessionCleanup(app, id);
     if (catalog === 'settings') {
       if (app === 'cursor') {
         const services = cursorSessionServices(), handle = services.data.getHandleIfLoaded(id);
@@ -334,6 +377,7 @@
       return record.promise;
     }
     if (action === 'bindTools') return fusionNativeTools.bind(app, id, name);
+    if (action === 'cleanup') return nativeSessionCleanup(app, id, true);
     if (action === 'unbindTools') return fusionNativeTools.unbind(app, id, name);
     if (action === 'toolReply') return fusionNativeTools.reply(app, id, name);
     if (action === 'prepare' && app === 'codex') return nativeCodexCreation(id, name, true);

@@ -50,6 +50,8 @@ export class NativeAgentProvider {
     try { return await this.action(agent, context, 'unbindTools'); }
     finally { await context.fusionMcp?.close(); context.fusionMcp = null; }
   }
+  cleanupState(agent, context) { return this.info(agent, context, 'cleanup'); }
+  cleanup(agent, context) { return this.action(agent, context, 'cleanup'); }
   toolRequests(agent, context) {
     return context.fusionMcp ? context.fusionMcp.requests() : this.info(agent, context, 'tools');
   }
