@@ -7,6 +7,7 @@ const fusionInteractionCards = new Map();
 let fusionFocusInteraction = '', fusionPendingGroup = null;
 let fusionPanelOpen = false, fusionPanelCollapsed = false, fusionChatKey = '', fusionFocusTask = '', fusionFocusPending = false;
 const fusionStateKey = (computer, run) => `${computer}|${run}`;
+const fusionResultSeen = JSON.parse(store.get('fusion-result-seen') || '{}');
 const fusionStatus = value => I18N.tr(({ ready: '待启用', running: '运行中', waiting: '等待新事件', awaiting_user: '需要你处理',
   recovering: '核对原生执行', blocked: '执行阻塞', stopping: '正在停止', stopped: '已停止', completed: '已完成', closing: '核对交付',
   planned: '已规划', queued: '排队中', preparing: '准备中', submitting: '提交中', unknown: '结果待核对', awaiting_review: '等待主 Agent 验收',
@@ -29,11 +30,27 @@ function refreshFusionWorkspace() {
     if (link?.authed && link.socket.readyState === 1) sendFusion(entry.id, { t: 'fusionWorkspace' });
   }
 }
+function fusionOverviewState(run) {
+  return run.overview.resultKey && fusionResultSeen[fusionStateKey(run.computer, run.id)] === run.overview.resultKey
+    ? 'idle' : run.overview.state;
+}
+function fusionMarkResultRead() {
+  const run = currentFusionRun();
+  if (!run?.overview?.resultKey || !fusionChatActive(run) || !conversationVisible() || !authed || !windowReady
+    || navigationPending || chatStale) return false;
+  const computer = currentComputer();
+  if (run.computer !== computer?.id || lastChat?.thread !== computer.threadId) return false;
+  const key = fusionStateKey(run.computer, run.id);
+  if (fusionResultSeen[key] === run.overview.resultKey) return false;
+  fusionResultSeen[key] = run.overview.resultKey;
+  store.set('fusion-result-seen', JSON.stringify(fusionResultSeen));
+  return true;
+}
 function fusionBoard() {
   const computers = ovList.filter(value => !ovS.comp || value.id === ovS.comp);
   const all = computers.flatMap(entry => (fusionWorkspaces.get(entry.id)?.runs || []).map(run => ({ entry, run })));
   const counts = { run: 0, wait: 0, done: 0, err: 0, idle: 0 };
-  for (const { run } of all) counts[run.overview.state]++;
+  for (const { run } of all) counts[fusionOverviewState(run)]++;
   const stats = [['run', '运行中'], ['wait', '需要你处理'], ['done', '已完成'], ['err', '执行阻塞']]
     .filter(([key]) => counts[key]).map(([key, label]) => `<span class="fusion-stat fusion-tone-${key}"><i></i><b>${counts[key]}</b>${I18N.tr(label)}</span>`).join('');
   const attention = all.flatMap(({ entry, run }) => run.overview.attention.map(item =>
@@ -45,20 +62,21 @@ function fusionBoard() {
     + computers.map(entry => {
       const workspace = fusionWorkspaces.get(entry.id), runs = workspace?.runs || [], online = ovComputerStatus(entry) === 'online';
       const folded = fusionComputerFolds.has(entry.id) ? fusionComputerFolds.get(entry.id) : !online;
-      const running = runs.filter(run => run.overview.state === 'run').length;
+      const running = runs.filter(run => fusionOverviewState(run) === 'run').length;
       return `<section class="ov-computer" data-fusion-computer="${esc(entry.id)}"><div class="ov-computer-row">`
         + `<button class="ov-computer-toggle" data-fusion-fold="${esc(entry.id)}" aria-expanded="${!folded}"><i class="fusion-computer-dot${online ? ' online' : ''}"></i><span class="lbl"><strong class="ovRaw">${esc(entry.name)}</strong><small>${!online ? I18N.tr('未连接') + ' · ' : ''}${runs.length} ${I18N.tr('个工作台')}${running ? ' · ' + running + ' ' + I18N.tr('运行中') : ''}</small></span></button>`
         + `<button class="ov-computer-action" data-fusion-new data-computer="${esc(entry.id)}" ${online ? '' : 'disabled'}>＋ ${I18N.tr('启用')}</button>`
         + `<button class="ov-computer-fold" data-fusion-fold="${esc(entry.id)}" aria-expanded="${!folded}" aria-label="${I18N.tr(folded ? '展开电脑' : '收起电脑')}"><svg class="ov-computer-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m9 5 7 7-7 7"/></svg></button></div>`
         + (folded ? '' : `<div class="ov-board fusion-grid">${!workspace ? `<p class="hint">${I18N.tr(online ? '正在读取 Fusion 状态…' : '电脑尚未连接')}</p>` : !runs.length ? `<p class="hint">${I18N.tr('暂无主工作台')}</p>` : runs.map(run => {
-          const state = run.overview.state, target = { computer: entry.id, win: 'fusion', windowId: 'fusion', threadId: run.id };
+          const state = fusionOverviewState(run), resultRead = state !== run.overview.state;
+          const target = { computer: entry.id, win: 'fusion', windowId: 'fusion', threadId: run.id };
           const wide = run.tasks.running || ['running', 'recovering', 'stopping'].includes(run.status);
-          const label = ({ run: '运行中', wait: '需要你处理', done: '已完成', err: '执行阻塞', idle: '等待' })[state];
-          const current = run.overview.current;
+          const label = ({ run: '运行中', wait: '需要你处理', done: '已完成', err: '执行阻塞', idle: '空闲' })[state];
+          const current = resultRead ? null : run.overview.current;
           const progress = run.tasks.total ? run.tasks : run.works;
           return `<div class="ov-tile ov-st-${state} fusion-workbench${wide ? ' ov-wide' : ''}${!online ? ' ov-off' : ''}" style="--p:${progress.total ? progress.done / progress.total * 100 : 0}%" role="button" tabindex="0" data-fusion-open="${esc(run.id)}" data-computer="${esc(entry.id)}">`
-            + `<div class="ov-logo fusion-logo-stack">${run.overview.apps.map(fusionLogo).join('')}</div><span class="ov-badge">${I18N.tr(label)}</span>`
-            + `<div class="ov-title ovRaw">${esc(run.title)}</div><div class="ov-now ovRaw">${esc(run.blockedReason || (current ? current.text + ' · ' + fusionTaskStatus(current) : run.project.name))}</div>`
+            + `<div class="ov-logo fusion-logo-stack">${run.overview.apps.map(fusionLogo).join('')}</div><span class="ov-badge">${I18N.tr(ovT(label))}</span>`
+            + `<div class="ov-title ovRaw">${esc(run.title)}</div><div class="ov-now ovRaw">${esc(!resultRead && run.blockedReason || (current ? current.text + ' · ' + fusionTaskStatus(current) : run.project.name))}</div>`
             + `<div class="ov-foot"><span class="ov-num">${run.tasks.done}<small>/${run.tasks.total} ${I18N.tr('任务')}</small></span>${ovSeg(run.overview.counts)}</div>`
             + `<div class="fusion-open-feedback">${ovOpenFeedback(target)}<span>${ovOpenLabel(target, '')}</span></div></div>`;
         }).join('')}</div>`) + '</section>';
@@ -241,6 +259,7 @@ function fusionNoticeHtml(title, reason, actions) {
     + `<div class="fusion-notice-actions">${actions}</div></section>`;
 }
 function fusionEnsureBoard() {
+  fusionMarkResultRead();
   const run = currentFusionRun();
   if (!fusionChatActive(run) || fusionViewOwner || $('sheet').classList.contains('open')) return;
   readFusionView(run.computer, run.id, 'tasks', {}, fusionPanelOpen ? 'panel' : 'strip');
@@ -294,6 +313,8 @@ const fusionLayoutObserver = new MutationObserver(() => {
 });
 fusionLayoutObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
 window.addEventListener('resize', () => { fitFusionLayout(); fusionEnsureBoard(); });
+document.addEventListener('window-ready', fusionEnsureBoard);
+document.addEventListener('visibilitychange', fusionMarkResultRead);
 function fusionRememberBoard(run) {
   const board = run.board || run, key = fusionStateKey(run.computer, run.id), previous = fusionBoards.get(key);
   fusionBoards.set(key, { ...board, id: run.id, computer: run.computer, main: run.main, status: run.status });
