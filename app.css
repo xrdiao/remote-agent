@@ -1752,7 +1752,7 @@ body.conv #overview { display: none; }
 #overview .ov-lv.on { color: var(--accent); }
 #overview .ov-lv.on i { background: var(--accent-tint-2); }
 #overview .ov-favorites-title { color: var(--fg-hi); font-weight: 650; }
-#overview .ov-session { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+#overview :is(.ov-session, .fusion-workbench) { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 #overview .ov-session :is(input, textarea, [contenteditable], .ov-last, .ov-run-tools, .ov-attachments) { -webkit-touch-callout: default; -webkit-user-select: text; user-select: text; }
 #overview .ov-selected { outline: 2px solid var(--accent); outline-offset: -2px; }
 #overview .ov-selecting > .ov-title { padding-right: 18px; }
