@@ -5,12 +5,18 @@ import vm from 'node:vm';
 import { applyFusionControl, fusionTaskPrompt, fusionTaskInput } from '../server/fusion/control.mjs';
 import { fixture } from './fusion-fixture.mjs';
 import { FusionControlError, FUSION_TOOLS, ACTION_FIELDS } from '../server/fusion/contract.mjs';
-import { recordFusionReceipt, fusionViewers as workbenchMenuViewers } from '../server/fusion/state.mjs';
+import { recordFusionReceipt, fusionViewers as workbenchMenuViewers, fusionWorkers as workbenchMenuWorkers } from '../server/fusion/state.mjs';
 import { manageOverviewSession } from '../server/overview-actions.mjs';
 import { fusionStore } from '../server/fusion/store.mjs';
 
-test('workbench menu management persists shared names and favorites without mutating native or task facts', async t => {
+test('workbench menu management confirms its main name and persists shared names and favorites without mutating task facts', async t => {
   const h = fixture(), messages = [[], []];
+  const renamedMains = [], runnerKey = JSON.stringify([h.run.computer, h.run.deviceId, h.run.id]);
+  workbenchMenuWorkers.set(runnerKey, { agent: { async renameMain(run, title) {
+    assert.equal(run, h.run); assert.equal(run.main.bindingId, 'main');
+    assert.notEqual(run.title, title); renamedMains.push(title); return { title };
+  } } });
+  t.after(() => workbenchMenuWorkers.delete(runnerKey));
   const viewers = messages.map(rows => ({ emit: message => rows.push(message) }));
   for (const viewer of viewers) workbenchMenuViewers.add(viewer);
   t.after(() => { for (const viewer of viewers) workbenchMenuViewers.delete(viewer); });
@@ -30,6 +36,29 @@ test('workbench menu management persists shared names and favorites without muta
   await assert.rejects(() => manageOverviewSession('another-paired-entry', { ...target, action: 'rename', name: ' ' }), /名称不能为空/);
   await assert.rejects(() => manageOverviewSession('another-paired-entry', { ...target, computer: 'wrong-computer', action: 'rename', name: 'wrong' }), /所选电脑已变化/);
   assert.deepEqual(h.run, before);
+  assert.deepEqual(renamedMains, ['Project audit']);
+});
+test('workbench renaming waits for native confirmation, uses the actual native name, and preserves failures', async t => {
+  const h = fixture(), original = h.run.title, runnerKey = JSON.stringify([h.run.computer, h.run.deviceId, h.run.id]);
+  let resolve;
+  const pending = new Promise(done => { resolve = done; });
+  const agent = { renameMain: async () => pending };
+  workbenchMenuWorkers.set(runnerKey, { agent }); t.after(() => workbenchMenuWorkers.delete(runnerKey));
+  const target = { computer: h.run.computer, win: 'fusion', threadId: h.run.id, action: 'rename', name: 'Requested title' };
+  const renaming = manageOverviewSession('paired-entry', target);
+  assert.equal(h.run.title, original);
+  resolve({ title: 'Native normalized title' }); await renaming;
+  assert.equal(h.run.title, 'Native normalized title');
+  const before = structuredClone(h.run);
+  agent.renameMain = async () => { throw new Error('Native rename unconfirmed'); };
+  await assert.rejects(() => manageOverviewSession('paired-entry', target), /Native rename unconfirmed/);
+  assert.deepEqual(h.run, before);
+});
+test('a workbench without a native main can be named before its first native creation', async t => {
+  const h = fixture(); h.run.main.bindingId = '';
+  const key = JSON.stringify([h.run.computer, h.run.deviceId, h.run.id]); t.after(() => workbenchMenuWorkers.delete(key));
+  const response = await manageOverviewSession('paired-entry', { computer: h.run.computer, win: 'fusion', threadId: h.run.id, action: 'rename', name: 'Named before enabling' });
+  assert.equal(response.run.title, 'Named before enabling'); assert.equal(h.run.main.bindingId, '');
 });
 
 function readText(h, selector, length = 4096) {

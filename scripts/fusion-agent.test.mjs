@@ -12,6 +12,97 @@ import { NativeAgentProvider, nativeAgentProvider, nativeAgentProviders, registe
 import { FusionMcpServer } from '../server/fusion/mcp.mjs';
 import { fusionProject } from '../server/fusion/state.mjs';
 
+function nativeRenameFixture(app) {
+  const rows = new Map([['own', { id: 'own', composerId: 'own', providerId: 'native-provider', name: 'Old name', title: 'Old name', workspace: '/qa-project', cwd: '/qa-project', path: '/qa/sessions/own.jsonl', status: { type: 'active' }, running: true }],
+    ['ordinary', { id: 'ordinary', composerId: 'ordinary', name: 'Ordinary', title: 'Ordinary', workspace: '/ordinary', cwd: '/ordinary', model: 'kept', draft: 'untouched' }]]), calls = [];
+  const rename = (id, title) => { rows.get(id).name = rows.get(id).title = title; };
+  const manager = { readThread: async id => ({ thread: rows.get(id) }), getConversation: id => rows.get(id),
+    async setThreadTitle(id, title, options) { calls.push(['codex', id, title, options]); rename(id, title.slice(0, 60)); return true; } };
+  const services = { data: { allComposersData: { allComposers: [...rows.values()] }, getComposerDataIfLoaded: () => null },
+    composer: { async renameComposer(id, title) { calls.push(['cursor', id, title]); rename(id, title); } } };
+  const nativeModule = { renameSessionThunk: (provider, id, title) => ({ provider, id, title }) };
+  const context = vm.createContext({ remoteContext: { app, threadId: 'own', host: '' }, Error, String, nativeModule,
+    codexConversationManager: () => manager, codexNativeManager: () => manager, codexHistoryScopes: () => [],
+    nativeSessionCatalog: async () => ({ ready: true, complete: true, rows: [...rows.values()] }),
+    nativeSessionContext: async (_app, id) => ({ cwd: rows.get(id).cwd, host: '' }), cursorSessionServices: () => services,
+    devinSessionRecord: id => rows.get(id), window: { __acpStore: { async dispatch({ provider, id, title }) { calls.push(['devin', provider, id, title]); rename(id, title); } } },
+    devinSessionMenu: id => ({ actions: [{ label: 'rename', disabled: false, direct: true, onClick: title => { calls.push(['ordinary-menu', id, title]); rename(id, title); } }] }) });
+  const source = fs.readFileSync(new URL('../server/page/session-actions.js', import.meta.url), 'utf8');
+  const code = source.slice(source.indexOf('  const nativeSessionCleanup ='), source.indexOf('  const nativeCodexCreation ='))
+    + source.slice(source.indexOf('  const nativeSessionAction ='), source.indexOf('  const nativeSessionRenameInput ='));
+  vm.runInContext(code.replaceAll("await import('@exa/chat-client')", 'nativeModule') + ';this.info=nativeSessionInfo;this.action=nativeSessionAction;', context);
+  return { rows, calls, manager, context, action: context.action, info: context.info };
+}
+test('Fusion native name operations target the bound session in each software without switching ordinary state', async () => {
+  for (const app of ['codex', 'cursor', 'devin']) {
+    const h = nativeRenameFixture(app), ordinary = structuredClone(h.rows.get('ordinary'));
+    const before = await h.info(app, 'own', 'name'); assert.equal(before.title, 'Old name'); assert.equal(before.running, true);
+    const result = await h.action(app, 'own', 'rename', 'Workbench title');
+    assert.equal(result.confirmed, true); assert.equal(result.title, 'Workbench title');
+    const actual = await h.info(app, 'own', 'name'); assert.equal(actual.title, 'Workbench title'); assert.equal(actual.running, true);
+    assert.deepEqual(h.rows.get('ordinary'), ordinary); assert.equal(h.calls.length, 1);
+    if (app === 'codex') assert.equal(h.calls[0][3].requireAcknowledgement, true);
+    if (app !== 'cursor') {
+      const calls = h.calls.length;
+      await assert.rejects(() => h.action(app, 'ordinary', 'rename', 'Wrong binding'), /不属于这个任务 Binding/);
+      assert.equal(h.calls.length, calls);
+    }
+  }
+  const h = nativeRenameFixture('codex'), title = 'Long workbench title '.repeat(5);
+  const result = await h.action('codex', 'own', 'rename', title);
+  assert.equal(result.title, title.slice(0, 60)); assert.equal((await h.info('codex', 'own', 'name')).title, result.title);
+  for (const app of ['cursor', 'devin']) {
+    const ordinary = nativeRenameFixture(app); ordinary.context.remoteContext = null;
+    const result = await ordinary.action(app, 'ordinary', 'rename', 'Ordinary renamed');
+    assert.equal(ordinary.rows.get('ordinary').title, 'Ordinary renamed'); assert.equal(result.title, undefined);
+    assert.equal(ordinary.calls[0][0], app === 'cursor' ? 'cursor' : 'ordinary-menu');
+  }
+});
+test('renameMain uses the current main binding and publishes the acknowledged native title while keeping task facts', async () => {
+  const library = [], scope = vm.createContext({ nativeAgentProvider, fusionProject, Error, publishSessionChange: (...args) => library.push(args) });
+  const rename = vm.runInContext('({' + FusionAgent.prototype.renameMain.toString() + '}).renameMain', scope);
+  for (const app of ['codex', 'cursor', 'devin']) {
+    const h = fixture(), binding = h.run.bindings[0], calls = [], ordinary = { threadId: 'ordinary', model: 'kept', draft: 'kept' };
+    binding.app = h.run.main.app = app; binding.threadId = 'main-' + app;
+    h.run.bindings.push({ ...binding, id: 'worker', role: 'worker', threadId: 'worker' });
+    const before = structuredClone(h.run), context = { native: ordinary }, state = { exists: true, title: 'Old', running: true, context: { cwd: h.project.root, host: '' } };
+    const canonical = app === 'codex' ? 'Canonical native title' : 'New title';
+    const agent = { carrierFor: async (_run, software, project) => { assert.equal(software, app); assert.equal(project, binding.project); return context; },
+      close: async value => { assert.equal(value, context); calls.push('close'); }, call: async (value, code) => {
+        assert.equal(value.native.threadId, binding.threadId); const call = nativeInvocation(code); calls.push(call.args[2]);
+        if (call.method === 'nativeSessionInfo') return { ...state };
+        assert.equal(call.args[2], 'rename'); assert.equal(call.args[3], 'New title');
+        state.title = canonical; return { confirmed: true, title: canonical };
+      } };
+    const result = await rename.call(agent, h.run, 'New title'); assert.equal(result.title, canonical);
+    assert.deepEqual(calls, ['name', 'rename', 'name', 'close']); assert.deepEqual(h.run, before);
+    assert.deepEqual(ordinary, { threadId: 'ordinary', model: 'kept', draft: 'kept' });
+    assert.deepEqual(library.at(-1).slice(0, 2), [app, binding.threadId]);
+    assert.equal(library.at(-1)[2].action, 'rename'); assert.equal(library.at(-1)[2].title, canonical);
+    calls.length = 0;
+    await rename.call(agent, h.run, canonical); assert.deepEqual(calls, ['name', 'close']);
+  }
+});
+test('main rename refuses unconfirmed results and wrong projects while releasing connections and leaving unbound names local', async () => {
+  const library = [], scope = vm.createContext({ nativeAgentProvider, fusionProject, Error, publishSessionChange: (...args) => library.push(args) });
+  const rename = vm.runInContext('({' + FusionAgent.prototype.renameMain.toString() + '}).renameMain', scope);
+  for (const failure of ['project', 'receipt', 'readback', 'request']) {
+    const h = fixture(), context = { native: {} }, calls = [];
+    const agent = { carrierFor: async () => context, close: async () => calls.push('close'), call: async (_context, code) => {
+      const call = nativeInvocation(code); calls.push(call.args[2]);
+      if (call.method === 'nativeSessionInfo') return { exists: true, title: 'Old', context: { cwd: failure === 'project' ? '/wrong-project' : h.project.root, host: '' } };
+      if (failure === 'request') throw new Error('Native request failed');
+      return { confirmed: failure !== 'receipt', title: 'New' };
+    } };
+    await assert.rejects(() => rename.call(agent, h.run, 'New'), /项目不一致|尚未确认|Native request failed/);
+    assert.equal(calls.at(-1), 'close'); assert.equal(library.length, 0);
+  }
+  const h = fixture(); h.run.main.bindingId = '';
+  assert.equal((await rename.call({}, h.run, 'Before creation')).title, 'Before creation');
+  h.run.main.bindingId = 'not-a-binding';
+  await assert.rejects(() => rename.call({}, h.run, 'Invalid'), /没有这个原生 Binding/);
+});
+
 function nativeCleanupFixture(app) {
   const rows = new Map([['own', { id: 'own', providerId: 'native-provider', workspace: '/qa-project', cwd: '/qa-project', path: '/qa/sessions/own.jsonl', archived: false, running: false, status: { type: 'idle' } }],
     ['ordinary', { id: 'ordinary', workspace: '/ordinary', cwd: '/ordinary', model: 'unchanged', draft: 'retained' }]]), calls = [];

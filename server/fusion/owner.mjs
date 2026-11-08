@@ -231,7 +231,8 @@ export async function manageFusionWorkbench(body) {
   if (body.action === 'rename') {
     const title = String(body.name || '').trim().slice(0, 80);
     if (!title) throw new Error('工作台名称不能为空');
-    run.title = title; publishFusion(run);
+    const renamed = await fusionRunner(run).agent.renameMain(run, title);
+    run.title = renamed.title; publishFusion(run);
   } else if (body.action === 'favorite') {
     run.favorite = body.favorite === true; publishFusion(run);
   } else if (body.action === 'stop') await fusionRunner(run).stop();
@@ -318,6 +319,8 @@ export const FUSION_OWNER = {
     if (message.enable) {
       if (!run.main.model) throw new Error('请先选择主模型与思考强度');
       await runner.agent.prepareMain(run);
+      const renamed = await runner.agent.renameMain(run, run.title);
+      run.title = renamed.title; publishFusion(run);
       await runner.start();
     } else if (run.main.bindingId && previous !== JSON.stringify({ tier: run.tier, budget: run.budget })) {
       fusionEvent(run, 'configuration', { tier: run.tier, budget: run.budget });

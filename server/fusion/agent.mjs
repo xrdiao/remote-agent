@@ -377,6 +377,30 @@ export class FusionAgent {
       return { binding, chat: await nativeAgentProvider(binding.app).content(this, context, history, before) };
     } finally { await this.close(context); }
   }
+  async renameMain(controller, title) {
+    if (!controller.main.bindingId) return { title };
+    const binding = controller.bindings.find(row => row.id === controller.main.bindingId && row.role === 'main' && row.app === controller.main.app);
+    if (!binding) throw new Error('没有这个原生 Binding');
+    const context = await this.carrierFor(controller, binding.app, binding.project);
+    context.native = { app: binding.app, threadId: binding.threadId, host: binding.project.host || '', cwd: binding.project.root };
+    try {
+      const provider = nativeAgentProvider(binding.app);
+      let state = await provider.info(this, context, 'name');
+      if (!state.exists) throw new Error('没有找到这个会话');
+      if (fusionProject(state.context.cwd, state.context.host || '')?.id !== binding.project.id)
+        throw new Error('原生会话目录与该任务项目不一致，未切换任何普通窗口');
+      let expected = title;
+      if (state.title !== title) {
+        const result = await provider.action(this, context, 'rename', title);
+        if (!result?.confirmed) throw new Error('桌面端尚未确认会话操作完成，请刷新列表查看');
+        expected = result.title;
+        state = await provider.info(this, context, 'name');
+      }
+      if (!state.exists || !state.title || state.title !== expected) throw new Error('桌面端尚未确认会话操作完成，请刷新列表查看');
+      publishSessionChange(binding.app, binding.threadId, { action: 'rename', title: state.title });
+      return { confirmed: true, title: state.title, app: binding.app, threadId: binding.threadId };
+    } finally { await this.close(context); }
+  }
   async cleanupBinding(controller, binding) {
     const context = await this.carrierFor(controller, binding.app, binding.project);
     context.native = { app: binding.app, threadId: binding.threadId, host: binding.project.host || '', cwd: binding.project.root };

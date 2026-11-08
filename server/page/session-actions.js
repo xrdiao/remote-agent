@@ -222,14 +222,14 @@
           if (/thread.*not found|no rollout found|thread.*does not exist/i.test(String(error))) return { exists: false };
           throw error;
         }
-        return { exists: true, archived: /[\\/]archived_sessions[\\/]/.test(thread.path || ''), running: thread.status?.type === 'active',
+        return { exists: true, title: thread.name || '', archived: /[\\/]archived_sessions[\\/]/.test(thread.path || ''), running: thread.status?.type === 'active',
           context: { cwd: thread.cwd, host: host === 'local' ? '' : host } };
       }
       const catalog = await nativeSessionCatalog(app, [id]);
       if (!catalog.ready || catalog.unknown?.includes(id) || catalog.missing?.includes(id)) throw new Error('原生会话清理状态尚未确认');
       const row = catalog.rows.find(row => row.id === id);
       if (!row && !catalog.complete && !catalog.removed?.includes(id)) throw new Error('原生会话清理状态尚未确认');
-      return { exists: !!row, archived: !!row?.archived, running: !!row?.running,
+      return { exists: !!row, title: row?.title || '', archived: !!row?.archived, running: !!row?.running,
         context: row ? row.workspace ? { cwd: row.workspace, host: row.host || '' } : await nativeSessionContext(app, id) : null };
     };
     const before = await inspect();
@@ -255,7 +255,7 @@
     return { confirmed: true, action: after.archived ? 'archive' : 'delete', already: false };
   };
   const nativeSessionInfo = (app, id, catalog = false, previous = null) => {
-    if (catalog === 'cleanup') return nativeSessionCleanup(app, id);
+    if (catalog === 'cleanup' || catalog === 'name') return nativeSessionCleanup(app, id);
     if (catalog === 'settings') {
       if (app === 'cursor') {
         const services = cursorSessionServices(), handle = services.data.getHandleIfLoaded(id);
@@ -361,6 +361,17 @@
     return nativeSessionContext('codex', created.conversationId);
   };
   const nativeSessionAction = async (app, id, action, name) => {
+    if (action === 'rename' && remoteContext && ['codex', 'devin'].includes(app)) {
+      if (remoteContext.app !== app || remoteContext.threadId !== id) throw new Error('请求不属于这个任务 Binding');
+      if (app === 'codex') {
+        const manager = codexNativeManager(), confirmed = await manager.setThreadTitle(id, name, { requireAcknowledgement: true });
+        return { action: 'rename', confirmed, title: manager.getConversation(id)?.title };
+      }
+      const native = await import('@exa/chat-client'), session = devinSessionRecord(id);
+      if (!session) throw new Error('没有找到这个会话');
+      await window.__acpStore.dispatch(native.renameSessionThunk(session.providerId, id, name));
+      return { action: 'rename', confirmed: true, title: name };
+    }
     if (action === 'create') {
       const creations = window.__remoteAgentNativeCreations ||= new Map();
       if (!name.requestId) throw new Error('后台会话创建缺少请求身份');
@@ -509,7 +520,8 @@
       const after = (await nativeSessionCatalog('cursor')).rows.find(c => c.id === id);
       const empty = services.data.getComposerDataIfLoaded(id)?.fullConversationHeadersOnly?.length === 0;
       const outcome = action === 'rename' ? 'rename' : after?.archived ? 'archive' : !after ? 'delete' : empty ? 'clear' : null;
-      return { confirmed: action === 'rename' ? after?.title === name : !!outcome, action: outcome };
+      return { confirmed: action === 'rename' ? after?.title === name : !!outcome, action: outcome,
+        ...(remoteContext && action === 'rename' ? { title: after?.title } : {}) };
     }
     const item = devinSessionMenu(id)?.actions.find(a => a.label.toLowerCase() === action && !a.disabled);
     if (!item) throw new Error('此会话没有对应的原生操作入口');
