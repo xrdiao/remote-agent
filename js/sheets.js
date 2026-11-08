@@ -11,6 +11,11 @@ function finishModelPick(m) {
     $('sheet').querySelectorAll('[data-fast]').forEach(button => { button.disabled = false; button.removeAttribute('aria-busy'); button.querySelector('[data-fast-pending]')?.remove(); });
     return;
   }
+  if (m.kind === 'permission' && currentApp === 'opencode') {
+    menuCache.delete(menuCacheKey('permission'));
+    if (m.ok) status(`已切换到 ${m.label}`);
+    return;
+  }
   menuCache.delete(menuCacheKey('model')); menuCache.delete(menuCacheKey('effort'));
   if (m.ok) status(`已切换到 ${m.label}`);
 }
@@ -484,11 +489,11 @@ function showComputerFiles() {
   const field = document.activeElement?.id === 'computerFilePath' ? document.activeElement : null;
   const selection = field && [field.selectionStart, field.selectionEnd];
   const entries = state.roots ? state.roots.map(p => ({ name: p.name, path: p.path, directory: true, selectable: true })) : dir?.entries || [];
-  const rows = entries.filter(e => !state.project || e.directory).map(e => `<button class="opt editorEntry${e.directory ? ' editorFolder' : ''}" data-computer-path="${esc(e.path)}" data-computer-directory="${!!e.directory}" ${e.selectable ? '' : 'disabled'}>${fileEntryIcon(e.directory)}<span class="lbl ovRaw">${esc(e.name)}</span>${e.directory ? '<span class="editorEntryArrow" aria-hidden="true">›</span>' : `<span class="sub">${e.selectable ? fmtSize(e.size) : I18N.tr('不可读取')}</span>`}</button>`).join('');
+  const rows = computerFileEntries(state, entries).map(e => `<button class="opt editorEntry${e.directory ? ' editorFolder' : ''}" data-computer-path="${esc(e.path)}" data-computer-directory="${!!e.directory}" ${e.selectable ? '' : 'disabled'}>${fileEntryIcon(e.directory)}<span class="lbl ovRaw">${esc(e.name)}</span>${e.directory ? '<span class="editorEntryArrow" aria-hidden="true">›</span>' : `<span class="sub">${e.selectable ? fmtSize(e.size) : I18N.tr('不可读取')}</span>`}</button>`).join('');
   const owner = state.project?.owner;
   const context = owner ? ` · Fusion · ${OV_AGENT[owner.app]}` : '';
   const actions = state.project && dir ? '<div class="computerFileActions"><button class="opt" data-computer-project="open">打开此文件夹</button><button class="opt" data-computer-project="chat">在此项目新建会话</button><button class="opt" data-computer-project="new">新建项目并创建会话</button></div>' : '';
-  openSheet('computer-files', `<h3>${I18N.tr(state.project ? '选择文件夹' : '打开文件')}</h3><p class="hint ovRaw">${esc(state.computer.name + context)}</p><form id="computerFilePathForm" class="computerFilePath"><input id="computerFilePath" class="ovRaw" aria-label="${I18N.tr('文件路径')}" placeholder="${I18N.tr('输入路径')}" value="${esc(state.path)}" autocomplete="off" autocapitalize="off" spellcheck="false"><button type="button" data-computer-complete title="Tab">${I18N.tr('补全')} ⇥</button><button type="submit">${I18N.tr('前往')}</button></form><div id="computerFileCompletions"></div><div class="computerFileNav"><button type="button" data-computer-path="${esc(dir?.parent ?? '')}" data-computer-directory="true" ${dir?.parent == null ? 'disabled' : ''}>${I18N.tr('返回上一级')}</button><button type="button" data-computer-root>${I18N.tr('根目录')}</button></div>${actions}<p id="computerFileStatus" class="hint${state.error ? ' err' : ''}" role="status">${esc(I18N.tr(state.message))}</p>${rows || (!state.message ? `<div class="hint">${I18N.tr('此目录暂无可显示的文件')}</div>` : '')}`);
+  openSheet('computer-files', `<h3>${I18N.tr(state.project ? '选择文件夹' : '打开文件')}</h3><p class="hint ovRaw">${esc(state.computer.name + context)}</p><form id="computerFilePathForm" class="computerFilePath"><input id="computerFilePath" class="ovRaw" aria-label="${I18N.tr('文件路径')}" placeholder="${I18N.tr('输入路径')}" value="${esc(state.path)}" autocomplete="off" autocapitalize="off" spellcheck="false"><button type="button" data-computer-complete title="Tab">${I18N.tr('补全')} ⇥</button><button type="submit">${I18N.tr('前往')}</button></form><div id="computerFileCompletions"></div><div class="computerFileNav"><button type="button" data-computer-path="${esc(dir?.parent ?? '')}" data-computer-directory="true" ${dir?.parent == null ? 'disabled' : ''}>${I18N.tr('返回上一级')}</button><button type="button" data-computer-root>${I18N.tr('根目录')}</button></div><label class="opt computerFileHidden"><span class="lbl">${I18N.tr('不显示隐藏文件和文件夹')}</span><input id="computerFileHideHidden" type="checkbox" role="switch"${state.hideHidden ? ' checked' : ''}><span class="switch${state.hideHidden ? ' on' : ''}" aria-hidden="true"></span></label>${actions}<p id="computerFileStatus" class="hint${state.error ? ' err' : ''}" role="status">${esc(I18N.tr(state.message))}</p>${rows || (!state.message ? `<div class="hint">${I18N.tr('此目录暂无可显示的文件')}</div>` : '')}`);
   $('sheet').scrollTop = state.scroll;
   if (selection) { $('computerFilePath').focus(); $('computerFilePath').setSelectionRange(...selection); }
   else if (state.focusPath) { $('computerFilePath').focus(); state.focusPath = false; }
@@ -1066,15 +1071,18 @@ function renderContext(info) {
   const basis = info && typeof info === 'object' ? (info.basis || 'used') : 'used';
   const pct = info == null ? null : typeof info === 'object' ? info.pct : info;
   const n = meterPercent(pct === '' ? null : pct);
-  contextInfo = { pct: n, basis };
+  contextInfo = info?.source === 'opencode' ? { ...info, pct: n, basis } : { pct: n, basis };
   contextMeterOwner = contextMeterScope();
-  $('meterCtxPct').textContent = n == null ? '未获取' : (basis === 'remaining' ? '剩余' : '已用') + n + '%';
+  const local = info?.source === 'opencode';
+  const capacity = local && info.limit ? (info.limit % 1024 === 0 ? info.limit / 1024 + 'K' : info.limit) : '';
+  $('meterCtxPct').textContent = n == null ? (local ? '尚未统计' + (capacity ? ' / ' + capacity : '') : '未获取') : (basis === 'remaining' ? '剩余' : '已用') + n + '%';
   const fill = $('meterCtxFill');
   fill.style.width = (n ?? 0) + '%';
   fill.parentElement.style.setProperty('--pct', n ?? 0);
   fill.parentElement.dataset.n = n == null ? '' : Math.round(n);
   fill.className = meterFill(n, basis);
-  $('meterCtx').title = '上下文 · ' + (basis === 'remaining' ? '剩余' : '已用') + ' ' + (n ?? '–') + '%';
+  $('meterCtx').title = local ? '上下文 · ' + (info.updated ? '上次调用 · ' : '') + $('meterCtxPct').textContent
+    : '上下文 · ' + (basis === 'remaining' ? '剩余' : '已用') + ' ' + (n ?? '–') + '%';
   $('meterCtx').setAttribute('aria-label', $('meterCtx').title);
   $('meterCtx').onclick = () => showUsageDetails('context');
   document.dispatchEvent(new Event('usage-state'));
@@ -1100,6 +1108,7 @@ const quotaCache = new Map();
 const quotaKey = () => [currentComputer()?.id || '', ...viewSel.split('|').slice(0, 2)].join('|');
 function renderQuota(m) {
   if ('context' in m) renderContext(m.context);
+  if (m.context?.source === 'opencode' && !m.automatic) finishPending(['正在读取上下文…']);
   if (m.error) { $('quotaStatus').textContent = m.error; $('quotaStatus').title = $('quotaMeters').title = m.detail || m.error; if (!m.automatic) status('额度刷新失败：' + m.error, false); return; }
   if (!m.cached || m.updated > (quotaCache.get(quotaKey())?.updated || 0)) $('quotaStatus').textContent = '';
   if (m.refreshError) { $('quotaStatus').textContent = '刷新失败，显示桌面缓存'; $('quotaStatus').title = m.refreshError; }
@@ -1141,15 +1150,17 @@ function renderQuota(m) {
 }
 function showUsageDetails(kind) {
   const context = kind === 'context';
+  const local = context && contextInfo?.source === 'opencode';
   const m = quotaInfo || {};
   const bars = fusionUsageBars(m);
   const value = b => b?.pct == null ? String(b?.value || '未获取') : `${b.basis === 'remaining' ? '剩余' : '已用'} ${b.pct}%`;
-  const rows = context ? `<p>${esc(value(contextInfo))}</p><p class="hint">上下文表示当前会话的上下文容量使用情况，与账号额度分别统计。</p>`
+  const rows = local ? `<p>${contextInfo.used == null ? '尚未统计' : esc(String(contextInfo.used))} / ${contextInfo.limit == null ? '未获取' : esc(String(contextInfo.limit))} tokens</p><p>模型 · ${esc(contextInfo.model)}</p>${contextInfo.updated ? `<p>上次调用 · ${esc(new Date(contextInfo.updated).toLocaleString())}</p>` : ''}<p class="hint">显示最近一次有效模型调用的 token 用量；生成期间保留上次调用数据。</p>`
+    : context ? `<p>${esc(value(contextInfo))}</p><p class="hint">上下文表示当前会话的上下文容量使用情况，与账号额度分别统计。</p>`
     : `<p class="hint">额度表示账号在对应周期内的使用限制，百分比统一显示剩余额度。</p>` + (m.plan ? `<p>方案 · ${esc(m.plan)}</p>` : '') + (m.missing || !bars.length ? '<p>未获取额度数据</p>' : bars.map(b => `<p>${esc(b.label)} · ${esc(value(b))}${b.detail ? `<br><span class="hint">${esc(b.detail)}</span>` : ''}${b.reset ? `<br><span class="hint">${esc(b.reset)}</span>` : ''}</p>`).join(''))
       + (m.extra ? `<p>额外用量余额 · ${esc(m.extra)}</p>` : '');
   const updated = m.updated ? new Date(m.updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
   openSheet('usage', `<h3>${context ? '上下文说明' : '额度说明'}</h3>${rows}${!context && updated ? `<p class="hint">${m.cached ? '缓存数据' : '最近更新'} · ${esc(updated)}</p>` : ''}${!context && $('quotaStatus').textContent ? `<p class="hint">${esc($('quotaStatus').textContent)}</p>` : ''}<button id="refreshUsage" class="opt">刷新数据</button>`);
-  $('refreshUsage').onclick = () => { closeSheet(); status('正在读取额度…'); send({ t: 'usage' }); };
+  $('refreshUsage').onclick = () => { closeSheet(); status(local ? '正在读取上下文…' : '正在读取额度…'); send({ t: 'usage' }); };
 }
 function menuGroup(key, label, content, initial = true) {
   const saved = store.get('menu-group:' + key);

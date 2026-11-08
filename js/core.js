@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v430'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v432'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false;
 let windowReady = false;
@@ -368,7 +368,7 @@ const ACTION_PENDING = new Set([
   '正在新建对话…', '正在切换窗口…', '正在切换 Agent…', '正在切换会话…', '正在读取 Agent 列表…', '正在打开子 Agent…', '返回主对话…',
   '正在切换终端…', '正在删除终端…', '正在新建终端…', '正在读取终端列表…',
   '正在打开项目…', '正在读取项目…', '正在读取文件夹…', '正在读取文档…', '正在保存…',
-  '正在读取设置…', '正在修改…', '正在读取额度…', '正在停止…',
+  '正在读取设置…', '正在修改…', '正在读取额度…', '正在读取上下文…', '正在停止…',
   '正在撤销…', '正在保留…', '处理中…', '正在修改排队消息…',
   '切换 MAX Mode…', '读取模型参数…', '设置中…',
   '读取模式列表…', '读取模型列表…', '读取历史对话…',
@@ -425,7 +425,7 @@ function send(obj, target) {
     obj.requestId = ++menuRequest;
     menuPending = { requestId: obj.requestId, kind: obj.kind, sel: viewSel };
   }
-  if (obj.t === 'pickMenu' && (obj.kind === 'model' || obj.kind === 'effort' || obj.kind === 'fast')) {
+  if (obj.t === 'pickMenu' && (obj.kind === 'model' || obj.kind === 'effort' || obj.kind === 'fast' || currentApp === 'opencode' && obj.kind === 'permission')) {
     clearSwitchWatch();
     obj.requestId = ++menuPickRequest;
     modelSwitchRequest = { requestId: obj.requestId, sel: viewSel };
