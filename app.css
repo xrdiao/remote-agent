@@ -2012,6 +2012,8 @@ body.conv:not(.wide) #ovBack + #title { margin-left: -6px; padding-left: 0; }
 #overview .fusion-workbench.ov-st-wait { border: 2px solid var(--ov-amber); }
 #overview .fusion-workbench.ov-session.ov-compact { grid-template-rows: auto auto 1fr auto; grid-template-areas: "logo title" "logo badge" "context context" "foot foot"; }
 #overview .fusion-workbench.ov-compact > .ov-foot { display: flex; align-items: center; }
+#overview .fusion-workbench .ov-num { font-size: 16px; }
+#overview .fusion-workbench .ov-num small { font-size: 12px; }
 #overview .fusion-workbench .ov-seg { max-width: 64%; }
 #overview .fusion-workbench .fusion-open-feedback:empty { display: none; }
 #overview .ov-fusion-title { flex: none; color: var(--fg-hi); font-size: 17px; }
