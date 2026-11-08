@@ -481,6 +481,8 @@ $('stop').onclick = async () => {
   status('正在停止…');
 };
 function updateSendMode() {
+  const textOnly = currentApp === 'opencode' && mode === 'chat';
+  for (const id of ['add', 'img', 'uploadDoc']) $(id).hidden = textOnly;
   if (typeof updateVoiceButton === 'function') updateVoiceButton();
   const answering = mode === 'chat' && questionCompose?.sel === viewSel;
   const split = !answering && devinBusySplit();

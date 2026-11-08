@@ -176,6 +176,12 @@ body[data-app="fusion"] .appAvatar, body.fusion header #title .appAvatar { backg
 [data-logo="cursor"], .railRow[data-app="cursor"] .railLogo { background-image: url(logo-cursor-dark.svg); }
 [data-logo="devin"], .railRow[data-app="devin"] .railLogo { background-image: url(logo-devin-dark.svg); }
 [data-logo="codex"], .railRow[data-app="codex"] .railLogo { background-image: url(logo-codex-dark.svg); }
+[data-logo="opencode"], body[data-app="opencode"] .appAvatar { background-image: url(logo-opencode.svg); }
+.opencodeQuestion fieldset { border: 1px solid var(--line); border-radius: 10px; margin: 8px 0; padding: 10px; }
+.opencode-option { display: flex; align-items: start; gap: 8px; margin: 10px 0; }
+.opencode-option input { flex: none; width: auto; }
+.opencode-option small { display: block; color: var(--fg-3); }
+.opencodeQuestion input[data-opencode-custom] { box-sizing: border-box; width: 100%; }
 :root[data-theme="light"] [data-logo="cursor"], :root[data-theme="light"] .railRow[data-app="cursor"] .railLogo { background-image: url(logo-cursor-light.svg); }
 :root[data-theme="light"] [data-logo="devin"], :root[data-theme="light"] .railRow[data-app="devin"] .railLogo { background-image: url(logo-devin-light.svg); }
 :root[data-theme="light"] [data-logo="codex"], :root[data-theme="light"] .railRow[data-app="codex"] .railLogo { background-image: url(logo-codex-light.svg); }

@@ -48,6 +48,20 @@ itemsEl.addEventListener('click', async e => {
     requestThought(b.dataset.think);
   }
 });
+list.addEventListener('submit', e => {
+  const form = e.target.closest('[data-opencode-question]');
+  if (!form) return;
+  e.preventDefault();
+  const reject = e.submitter?.name === 'reject';
+  const answers = [...form.querySelectorAll('[data-opencode-answer]')].map(field => {
+    const values = [...field.querySelectorAll('input:checked')].map(input => input.value);
+    const custom = field.querySelector('[data-opencode-custom]')?.value.trim();
+    return custom ? field.dataset.multiple === 'true' ? [...values, custom] : [custom] : values;
+  });
+  if (!reject && answers.some(values => !values.length)) return status(I18N.tr('请回答所有问题'), false);
+  if (send({ t: 'opencodeQuestion', id: form.dataset.opencodeQuestion, answers, reject }))
+    form.querySelectorAll('input, button').forEach(input => { input.disabled = true; });
+});
 const thoughtFull = new Map();
 function setThought(id, text) {
   thoughtFull.set(id, text);
@@ -261,7 +275,14 @@ function renderItem(it) {
     if (it.src === 'devin') el.insertAdjacentHTML('beforeend', `<div class="rv"><button class="foldBtn" data-fold="${esc(it.i)}" title="折叠这一轮">▾</button><span class="turnSum"></span><button class="revertBtn" data-revert="${esc(it.i)}">回到这里</button></div>`);
   }
   // it.h comes from the whitelist sanitizer in server/page/common.js (clean): plain tags only, text escaped.
-  else if (it.k === 'assistant') { el.copyText = it.t || ''; el.innerHTML = currentApp === 'codex' ? codexReplyHtml(it) : it.h || ''; dressMessage(el); }
+  else if (it.k === 'assistant') { el.copyText = it.t || ''; el.innerHTML = currentApp === 'codex' ? codexReplyHtml(it) : currentApp === 'opencode' ? codexMarkdown.render(it.t || '') : it.h || ''; dressMessage(el); }
+  else if (it.k === 'opencodeQuestion') {
+    el.innerHTML = `<form data-opencode-question="${esc(it.requestID)}">${it.questions.map((question, qi) =>
+      `<fieldset data-opencode-answer data-multiple="${question.multiple === true}"><legend class="ovRaw">${esc(question.header)} · ${esc(question.question)}</legend>${question.options.map(option =>
+        `<label class="opencode-option ovRaw"><input type="${question.multiple ? 'checkbox' : 'radio'}" name="answer-${qi}" value="${esc(option.label)}"><span>${esc(option.label)}${option.description ? `<small>${esc(option.description)}</small>` : ''}</span></label>`).join('')}
+      ${question.custom !== false ? '<input data-opencode-custom placeholder="其他回答" aria-label="其他回答">' : ''}</fieldset>`).join('')}
+      <div class="btns"><button type="submit">提交回答</button><button type="submit" name="reject" value="1">拒绝</button></div></form>`;
+  }
   else if (it.k === 'thinking') {
     const lines = String(it.t || '').split('\n');
     el.copyText = lines.length > 1 ? lines.slice(1).join('\n') : (it.t || '');
@@ -269,7 +290,7 @@ function renderItem(it) {
   }
   else if (it.k === 'tool') {
     el.copyText = it.t || '';
-    if (it.kind && (it.src === 'devin' || it.src === 'codex')) { renderTool(el, it); el.classList.add('toolrow'); if (it.kind !== 'command') el.classList.add('open'); }
+    if (it.kind && (it.src === 'devin' || it.src === 'codex' || it.src === 'opencode')) { renderTool(el, it); el.classList.add('toolrow'); if (it.kind !== 'command' || it.keep) el.classList.add('open'); }
     else {
       el.innerHTML = `<div class="txt">${esc(it.t || '')}</div>`;
       if (it.f) el.dataset.file = it.f;
