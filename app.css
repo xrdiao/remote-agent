@@ -2010,8 +2010,8 @@ body.conv:not(.wide) #ovBack + #title { margin-left: -6px; padding-left: 0; }
 #overview .fusion-board .ov-computer-row small { display: block; color: var(--fg-3); font-size: 11px; }
 #overview .fusion-board .ov-computer-action { padding: 6px 12px; }
 #overview .fusion-workbench.ov-st-wait { border: 2px solid var(--ov-amber); }
-#overview .fusion-workbench .ov-now { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#overview .fusion-workbench .ov-foot { align-items: center; }
+#overview .fusion-workbench.ov-session.ov-compact { grid-template-rows: auto auto 1fr auto; grid-template-areas: "logo title" "logo badge" "context context" "foot foot"; }
+#overview .fusion-workbench.ov-compact > .ov-foot { display: flex; align-items: center; }
 #overview .fusion-workbench .ov-seg { max-width: 64%; }
 #overview .fusion-workbench .fusion-open-feedback:empty { display: none; }
 #overview .ov-fusion-title { flex: none; color: var(--fg-hi); font-size: 17px; }

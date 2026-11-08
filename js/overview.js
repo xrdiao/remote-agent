@@ -923,7 +923,7 @@ async function ovOpen(target) {
     return;
   }
   if (state && !sameWinTarget(state.target, target)) ovReleaseComposer();
-  if (target.win === 'fusion') { ovS.level = 'fusion'; ovS.proj = null; ovSaveHistory(); }
+  if (target.win === 'fusion' && ovS.level !== 'favorites') { ovS.level = 'fusion'; ovS.proj = null; ovSaveHistory(); }
   const json = JSON.stringify(target), e = ovList.find(x => x.id === target.computer);
   if (e.c.key === currentComputer()?.key) return openWin(json);
   const resume = mode === 'chat' && target.win.split(':')[0] === 'codex' && !e.foreign && resumableComputerSocket(e.c);
