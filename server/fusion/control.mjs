@@ -9,7 +9,7 @@ import { FUSION_ACTIONS, ACTION_FIELDS, FusionControlError, WORKSPACE_VIEWS, EVI
 export { FUSION_ACTIONS, FUSION_TOOLS } from './contract.mjs';
 
 const FUSION_SCHEDULING = '主 Agent 按输入产出、文件及资源冲突，用 dependsOn 或分批派工决定串并行；前置任务验收后执行依赖任务。软件、项目及读写属性不强制互斥。'
-  + '先查看 agents 职责索引，需要上下文依据时沿read读取指定Worker的近期任务和结果。原任务补做用continue_task；相关新任务比较旧Worker与新建成本，独立职责或并行需要可新建。同一Worker轮次顺序执行，不同Worker按依赖执行。子模型独立选择。'
+  + '派工前先问自己：有没有能复用的 Agent？先查看 agents 职责索引，需要上下文依据时沿read读取指定Worker的近期任务和结果。原任务补做用continue_task；相关新任务比较旧Worker与新建成本，独立职责或并行需要可新建。同一Worker轮次顺序执行，不同Worker按依赖执行。子模型独立选择。'
   + '新Task的输入、Attempt和评审独立保留；复用Worker只续接原生上下文，不覆盖旧记录。“另立任务／保留记录”不要求新Worker，独立复核应与被复核执行分开。'
   + 'execution.input 只写本次补充、必需的上游结论与文件路径，不重复目标、范围和验收。子 Agent 无 ra_fusion 工具；缺少依赖资料时向主控询问。';
 

@@ -3,16 +3,16 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
 
-function fixture() {
-  const sent = [], listeners = new Map(), stored = new Map(), nodes = new Map();
+function fixture(stored = new Map()) {
+  const sent = [], listeners = new Map(), nodes = new Map();
   const classes = { contains: () => false, toggle() {}, remove() {} };
   const node = () => ({ dataset: {}, classList: classes, scrollTop: 0, querySelector: () => null, querySelectorAll: () => [], contains: () => true });
   const entries = ['computer-one', 'computer-two'].map(id => ({ id, name: id, c: { key: id } }));
   const context = vm.createContext({ crypto, Map, Set, Date, Object, JSON,
     MutationObserver: class { observe() {} }, $: id => { if (!nodes.has(id)) nodes.set(id, node()); return nodes.get(id); },
     window: { addEventListener() {} }, mode: 'chat', currentApp: 'codex',
-    ovSeg: () => '<span class="ov-seg"></span>', ovOpenFeedback: () => '', ovOpenLabel: (_target, label) => label, releaseFusionView() {}, ovCancelOpening() {},
-    store: { set: (key, value) => stored.set(key, value) }, I18N: { tr: value => value }, esc: value => String(value || ''),
+    ovSeg: () => '<span class="ov-seg"></span>', ovT: value => value, ovOpenFeedback: () => '', ovOpenLabel: (_target, label) => label, releaseFusionView() {}, ovCancelOpening() {},
+    store: { get: key => stored.get(key), set: (key, value) => stored.set(key, value) }, I18N: { tr: value => value }, esc: value => String(value || ''),
     document: { body: { classList: classes }, addEventListener: (event, listener) => listeners.set(event, [...listeners.get(event) || [], listener]) },
     ovList: entries, ovS: { comp: null, level: 'fusion' }, OV_AGENT: { cursor: 'Cursor' },
     ovComputerStatus: () => 'online', status() {},
@@ -21,6 +21,73 @@ function fixture() {
   vm.runInContext(fs.readFileSync(new URL('../app/js/fusion.js', import.meta.url), 'utf8'), context);
   return { context, sent, stored, nodes, listeners, run: code => vm.runInContext(code, context) };
 }
+function resultFixture(stored) {
+  const h = fixture(stored);
+  h.context.testRun = { id: 'same-id', computer: 'computer-one', title: 'Completed workbench', project: { name: 'project-one' },
+    main: { app: 'cursor', bindingId: 'main' }, status: 'waiting', works: { total: 1, done: 1 }, tasks: { total: 5, done: 5, running: 0 },
+    overview: { state: 'done', resultKey: 'ended-one', apps: ['cursor'], counts: { done: 5 }, attention: [], current: null } };
+  Object.assign(h.context, { authed: true, windowReady: true, navigationPending: null, chatStale: false, lastChat: { thread: 'native-main' },
+    currentComputer: () => ({ id: 'computer-one', threadId: 'native-main' }), ovRender() {} });
+  h.context.document.visibilityState = 'visible';
+  h.context.document.body.classList.contains = name => name === 'conv';
+  h.run(`activeFusionController=testRun;fusionViewOwner={surface:'strip'};
+    conversationVisible=()=>document.visibilityState==='visible'&&document.body.classList.contains('conv');
+    fusionWorkspaces.set('computer-one',{runs:[testRun]})`);
+  h.emit = name => { for (const listener of h.listeners.get(name) || []) listener({}); };
+  return h;
+}
+test('only a visible ready Fusion main acknowledges its ended result without changing actual status or task progress', () => {
+  const h = resultFixture(), original = JSON.stringify(h.context.testRun);
+  assert.match(h.run('fusionBoard()'), /ov-st-done/); assert.equal(h.stored.size, 0);
+  h.emit('window-ready');
+  assert.equal(h.run('fusionOverviewState(testRun)'), 'idle');
+  const html = h.run('fusionBoard()'); assert.match(html, /ov-st-idle/); assert.match(html, /空闲/);
+  assert.doesNotMatch(html, /fusion-stat fusion-tone-done|ov-st-done/);
+  assert.match(html, /5<small>\/5/); assert.equal(JSON.stringify(h.context.testRun), original);
+  assert.equal(h.sent.length, 0);
+  const saved = h.stored.get('fusion-result-seen'); h.emit('window-ready'); assert.equal(h.stored.get('fusion-result-seen'), saved);
+  const overview = fs.readFileSync(new URL('../app/js/overview.js', import.meta.url), 'utf8');
+  vm.runInContext(overview.slice(overview.indexOf('const OV_EN ='), overview.indexOf('const OV_ICON =')), h.context);
+  h.context.I18N.lang = 'en'; assert.match(h.run('fusionBoard()'), /<span class="ov-badge">Idle<\/span>/);
+});
+test('Fusion opening failures cancelled navigation cached previews and other targets cannot clear result notices', () => {
+  for (const state of [ { windowReady: false }, { navigationPending: { id: 'opening' } }, { authed: false },
+    { chatStale: true }, { lastChat: { thread: 'old-native' } },
+    { currentComputer: () => ({ id: 'computer-two', threadId: 'native-main' }) } ]) {
+    const h = resultFixture(); Object.assign(h.context, state); h.emit('window-ready');
+    assert.equal(h.run('fusionOverviewState(testRun)'), 'done'); assert.equal(h.stored.size, 0);
+  }
+  const h = resultFixture(); h.context.document.body.classList.contains = () => false;
+  h.emit('window-ready'); h.emit('visibilitychange'); h.run('fusionBoard();refreshFusionWorkspace()');
+  assert.equal(h.stored.size, 0);
+  h.context.document.body.classList.contains = name => name === 'conv'; h.context.document.visibilityState = 'hidden';
+  h.emit('window-ready'); assert.equal(h.stored.size, 0);
+  h.context.document.visibilityState = 'visible'; h.emit('visibilitychange'); assert.equal(h.run('fusionOverviewState(testRun)'), 'idle');
+});
+test('Fusion ended-result reads survive reload and do not swallow a new result or another computer or workbench', () => {
+  const h = resultFixture(); h.emit('window-ready');
+  const reload = resultFixture(h.stored); assert.equal(reload.run('fusionOverviewState(testRun)'), 'idle');
+  reload.run('testRun.updated=100;testRun.revision=10'); assert.equal(reload.run('fusionOverviewState(testRun)'), 'idle');
+  reload.context.testRun.overview.resultKey = 'ended-two';
+  assert.equal(reload.run('fusionOverviewState(testRun)'), 'done');
+  assert.equal(reload.run("fusionOverviewState({...testRun,computer:'computer-two',overview:{...testRun.overview,resultKey:'ended-one'}})"), 'done');
+  assert.equal(reload.run("fusionOverviewState({...testRun,id:'other-run',overview:{...testRun.overview,resultKey:'ended-one'}})"), 'done');
+  reload.emit('window-ready'); assert.equal(reload.run('fusionOverviewState(testRun)'), 'idle');
+  assert.equal(h.sent.length + reload.sent.length, 0);
+});
+test('Fusion blocked-result reads clear only the home notice and required interactions retain their actual presentation', () => {
+  const h = resultFixture(); Object.assign(h.context.testRun, { status: 'blocked', blockedReason: 'Exact stopped execution reason' });
+  Object.assign(h.context.testRun.overview, { state: 'err', resultKey: 'failed-one', current: { text: 'Failed task', status: 'failed' } });
+  const original = JSON.stringify(h.context.testRun); assert.match(h.run('fusionBoard()'), /ov-st-err/);
+  h.emit('window-ready'); assert.equal(h.run('fusionOverviewState(testRun)'), 'idle');
+  const html = h.run('fusionBoard()'); assert.doesNotMatch(html, /ov-st-err|fusion-tone-err|Exact stopped execution reason/);
+  assert.match(html, /project-one/); assert.equal(JSON.stringify(h.context.testRun), original);
+  for (const state of ['run','wait','err']) {
+    Object.assign(h.context.testRun.overview, { state, resultKey: '' });
+    h.emit('window-ready'); assert.equal(h.run('fusionOverviewState(testRun)'), state);
+  }
+});
+
 test('new requirements use the existing main composer rather than an internal inbox wake message', () => {
   const h=fixture();let focused=0,closed=0;const reads=[];
   h.context.text={focus(){focused++;}};h.context.closeSheet=()=>{closed++;};

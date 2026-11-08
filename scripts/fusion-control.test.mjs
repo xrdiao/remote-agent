@@ -623,6 +623,124 @@ test('read_task pages exact reply and text diffs by Attempt, while binary eviden
 
 const { FUSION_OWNER, fusionRunView, fusionControllerView } = await import('../server/fusion/owner.mjs');
 
+test('a running main and historical stopped task project the current work without changing either execution fact', () => {
+  const h = fixture(), oldWork = h.create(); h.plan(oldWork);
+  h.apply({ action: 'dispatch', workId: oldWork, tasks: [h.task('historical-training')] });
+  const oldAttempt = h.run.attempts[0]; Object.assign(oldAttempt, { status: 'stopped', endedAt: 20 });
+  h.run.tasks[0].status = 'stopped';
+  const workId = h.create(); h.plan(workId); h.run.works.at(-1).title = 'Current AB automation';
+  h.run.status = 'waiting'; h.run.blockedReason = '';
+  const main = { id: 'current-main', kind: 'main', status: 'running', endedAt: null,
+    native: { turnId: 'current-turn' }, workExecutions: [{ workId }] };
+  h.run.attempts.push(main); const before = structuredClone(h.run);
+  const summary = fusionControllerView(h.run);
+  assert.equal(summary.overview.state, 'run'); assert.equal(summary.overview.current.text, 'Current AB automation');
+  assert.equal(summary.overview.current.status, 'running'); assert.equal(summary.overview.resultKey, '');
+  assert.equal(summary.overview.counts.err, 1); assert.equal(summary.tasks.running, 0);
+  assert.equal(fusionRunView(h.run, { kind: 'task', taskId: 'historical-training' }).overview.state, 'run');
+  assert.deepEqual(h.run, before);
+  Object.assign(main, { status: 'ended', endedAt: 40 });
+  const ended = fusionControllerView(h.run);
+  assert.equal(ended.overview.state, 'idle'); assert.equal(ended.overview.current, null);
+  assert.equal(h.run.tasks[0].status, 'stopped'); assert.equal(h.run.attempts.find(row => row.id === oldAttempt.id).status, 'stopped');
+});
+test('main-only work follows actual native stages and retains real questions block recovery and unknown states', () => {
+  const h = fixture(); h.run.status = 'waiting';
+  const main = { id: 'only-main', kind: 'main', status: 'running', endedAt: null, native: { turnId: 'only-turn' } };
+  h.run.attempts.push(main); h.run.events.push({ id: 'request', type: 'user_input', data: { text: 'Current direct request', native: { turnId: 'only-turn' } } });
+  for (const status of ['queued', 'preparing', 'submitting', 'running', 'stopping']) {
+    main.status = status; const summary = fusionControllerView(h.run);
+    assert.equal(summary.overview.state, 'run', status); assert.equal(summary.overview.current.status, status);
+    assert.equal(summary.overview.current.text, 'Current direct request'); assert.equal(summary.overview.resultKey, '');
+  }
+  main.status = 'unknown';
+  assert.equal(fusionControllerView(h.run).overview.state, 'err'); assert.equal(fusionControllerView(h.run).overview.current.status, 'unknown');
+  assert.equal(fusionControllerView(h.run).overview.resultKey, '');
+  h.run.status = 'recovering'; assert.equal(fusionControllerView(h.run).overview.state, 'run');
+  h.run.status = 'blocked'; h.run.blockedReason = 'Current native failure';
+  main.status = 'running'; assert.equal(fusionControllerView(h.run).overview.state, 'err');
+  h.run.questions.push({ id: 'current-question', text: 'Required decision' });
+  assert.equal(fusionControllerView(h.run).overview.state, 'wait');
+  h.run.questions[0].answeredAt = 50; h.run.status = 'waiting'; h.run.blockedReason = '';
+  Object.assign(main, { status: 'ended', endedAt: 60 }); assert.equal(fusionControllerView(h.run).overview.state, 'idle');
+});
+test('only unresolved current failed results block while disposed and closed-work failures remain historical', () => {
+  const h = fixture(), workId = h.create(); h.plan(workId);
+  h.apply({ action: 'dispatch', workId, tasks: [h.task('failed-analysis')] });
+  h.run.status = 'waiting'; const attempt = h.run.attempts[0];
+  Object.assign(attempt, { status: 'failed', endedAt: 20, result: { completed: false, error: 'Native error' } });
+  h.run.tasks[0].status = 'failed'; const failed = fusionControllerView(h.run);
+  assert.equal(failed.overview.state, 'err'); assert.equal(failed.overview.current.text, 'Task failed-analysis');
+  assert(failed.overview.resultKey);
+  h.run.works[0].status = 'stopped';
+  assert.equal(fusionControllerView(h.run).overview.state, 'idle'); assert.equal(fusionControllerView(h.run).overview.counts.err, 1);
+  h.run.works[0].status = 'running';
+  h.apply({ action: 'cancel_task', taskId: 'failed-analysis', reason: 'Handled, no further execution' });
+  assert.equal(fusionControllerView(h.run).overview.state, 'idle');
+  const historical = h.run.attempts.find(row => row.id === attempt.id);
+  assert.equal(historical.status, 'failed'); assert.equal(historical.result.error, 'Native error');
+});
+test('pending successful results remain visible for review rather than looking like an idle or delivered workbench', () => {
+  const h = fixture(), workId = h.create(); h.plan(workId);
+  h.apply({ action: 'dispatch', workId, tasks: [h.task('pending-review')] });
+  h.run.status = 'waiting'; const attempt = h.run.attempts[0];
+  Object.assign(attempt, { status: 'awaiting_review', endedAt: 20, result: { completed: true, text: 'Actual result' } });
+  h.run.tasks[0].status = 'awaiting_review';
+  const before = structuredClone(h.run), summary = fusionControllerView(h.run);
+  assert.equal(summary.overview.state, 'run'); assert.equal(summary.overview.current.status, 'awaiting_review');
+  assert.equal(summary.overview.resultKey, ''); assert.deepEqual(h.run, before);
+  h.apply({ action: 'review', taskId: 'pending-review', attemptId: attempt.id, verdict: 'accept', reason: 'Checked', summary: 'Verified',
+    evidence: [{ criterion: 'pending-review:1', detail: 'Actual result', reference: 'result.text' }] });
+  assert.equal(fusionControllerView(h.run).overview.state, 'idle');
+  h.run.works[0].status = 'completed'; h.run.works[0].deliveries.push({ mainAttemptId: 'ended-main', nativeTurnId: 'ended-turn', endedAt: 40 });
+  assert.equal(fusionControllerView(h.run).overview.state, 'done');
+});
+
+test('Fusion result identity follows ended execution and delivery facts while connection and read metadata stay irrelevant', () => {
+  const h = fixture(), workId = h.create(); h.plan(workId);
+  Object.assign(h.run, { status: 'blocked', blockedReason: 'Original execution stopped' });
+  h.run.attempts.push({ id: 'main-one', kind: 'main', status: 'ended', endedAt: 20 });
+  const before = structuredClone(h.run), first = fusionControllerView(h.run).overview.resultKey;
+  assert(first); assert.deepEqual(h.run, before);
+  h.run.updated++; h.run.revision++; h.run.main.windowId = 'restored-window';
+  h.run.bindings[0].workerReads = [{ id: 'directory-read', at: 30 }];
+  assert.equal(fusionControllerView(h.run).overview.resultKey, first);
+  assert.equal(fusionRunView(h.run, { kind: 'config' }).overview.resultKey, first);
+  h.run.attempts.push({ id: 'main-two', kind: 'main', status: 'failed', endedAt: 40 });
+  const second = fusionControllerView(h.run).overview.resultKey;
+  assert.notEqual(second, first);
+  h.run.blockedReason = 'A different execution failure';
+  assert.notEqual(fusionControllerView(h.run).overview.resultKey, second);
+  h.run.status = 'waiting'; h.run.works[0].status = 'completed'; h.run.blockedReason = '';
+  h.run.works[0].deliveries.push({ mainAttemptId: 'main-two', nativeTurnId: 'turn-two', endedAt: 50 });
+  const delivered = fusionControllerView(h.run).overview;
+  assert.equal(delivered.state, 'done'); assert(delivered.resultKey);
+  h.run.works[0].deliveries.push({ mainAttemptId: 'main-three', nativeTurnId: 'turn-three', endedAt: 60 });
+  assert.notEqual(fusionControllerView(h.run).overview.resultKey, delivered.resultKey);
+});
+test('Fusion results cannot be acknowledged while native execution or a required user decision remains pending', () => {
+  const h = fixture(), workId = h.create(); h.plan(workId);
+  h.run.status = 'blocked'; h.run.blockedReason = 'Must remain visible';
+  assert(fusionControllerView(h.run).overview.resultKey);
+  for (const status of ['queued', 'preparing', 'submitting', 'running', 'unknown', 'stopping']) {
+    h.run.attempts = [{ id: 'native-one', kind: 'main', status, endedAt: null }];
+    assert.equal(fusionControllerView(h.run).overview.resultKey, '', status);
+  }
+  h.run.attempts = [];
+  for (const status of ['running', 'recovering', 'stopping', 'awaiting_user']) {
+    h.run.status = status; assert.equal(fusionControllerView(h.run).overview.resultKey, '', status);
+  }
+  h.run.status = 'blocked'; h.run.main.preparing = true;
+  assert.equal(fusionControllerView(h.run).overview.resultKey, ''); delete h.run.main.preparing;
+  h.run.questions.push({ id: 'unanswered', workId, text: 'A real decision is required' });
+  assert.equal(fusionControllerView(h.run).overview.state, 'wait');
+  assert.equal(fusionControllerView(h.run).overview.resultKey, '');
+  h.run.questions[0].answeredAt = 30;
+  const plan = h.run.works[0].plans[0]; plan.requiresConfirmation = true; plan.confirmed = false;
+  assert.equal(fusionControllerView(h.run).overview.resultKey, '');
+  plan.confirmed = true; assert(fusionControllerView(h.run).overview.resultKey);
+});
+
 test('main interaction projection keeps one question text, its native origin and the actual answer without mutating history', () => {
   const h = fixture(), workId = h.create(); h.plan(workId, true);
   const id = h.apply({ action: 'ask_user', workId, question: 'Canonical scope and criteria?', options: ['Approve', 'Change'] }).questionId;

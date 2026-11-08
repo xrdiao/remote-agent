@@ -1,11 +1,13 @@
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { computerId } from '../../lib/auth.mjs';
 import { workspaces } from '../../lib/files.mjs';
 import { safeHomePath, projectList, createProjectFolder } from '../agent/projects.mjs';
 import { fusionRuns, fusionViewers, fusionLive, savedFusion, findFusionRun, allFusionRuns, newFusionRun, fusionProject,
-  publishFusion, subscribeFusion, fusionSummary, fusionEvent } from './state.mjs';
+  publishFusion, subscribeFusion, fusionSummary, fusionEvent, NATIVE_UNSETTLED } from './state.mjs';
 import { fusionRunner } from './runner.mjs';
 import { FUSION_TIERS, validateExecution } from './cost.mjs';
+import { fusionPendingReviews } from './control.mjs';
 import { nativeAgentProvider } from './providers.mjs';
 import { FusionAgent } from './agent.mjs';
 
@@ -113,15 +115,37 @@ function controllerView(run, tasks) {
   }
   for (const task of tasks.filter(row => row.needsUser)) if (!attention.some(row => row.taskId === task.id))
     attention.push({ kind: 'native', workId: task.workId, taskId: task.id, text: task.goal });
-  const current = tasks.find(row => row.needsUser) || tasks.find(row => row.state === 'run') || tasks.find(row => row.state === 'err');
+  const tasksById = new Map(tasks.map(task => [task.id, task])), worksById = new Map(run.works.map(work => [work.id, work]));
+  const attemptsById = new Map(run.attempts.map(attempt => [attempt.id, attempt]));
+  const executing = run.attempts.filter(row => !row.endedAt && (row.status === 'queued' || NATIVE_UNSETTLED.includes(row.status)));
+  const unknown = executing.find(row => row.status === 'unknown');
+  const pending = tasks.length ? fusionPendingReviews(run).filter(row => !['stopped', 'cancelled'].includes(tasksById.get(row.taskId)?.status)) : [];
+  const failure = pending.find(row => row.outcome === 'failed');
+  const currentAttempt = unknown || executing.findLast(row => row.kind === 'main') || executing.at(-1)
+    || attemptsById.get((failure || pending[0])?.attemptId);
+  const currentTask = tasks.find(row => row.needsUser) || tasksById.get(currentAttempt?.taskId);
+  const currentWork = worksById.get(currentAttempt?.workExecutions?.at(-1)?.workId || currentAttempt?.workId);
+  const currentInput = currentAttempt?.kind === 'main' ? run.events.findLast(event => event.type === 'user_input'
+    && (currentAttempt.native?.turnId && event.data.native?.turnId === currentAttempt.native.turnId || currentAttempt.eventIds?.includes(event.id))) : null;
+  const current = currentTask ? { text: currentTask.goal,
+    status: currentAttempt?.taskId === currentTask.id ? currentAttempt.status : currentTask.status, needsUser: currentTask.needsUser }
+    : currentAttempt ? { text: currentWork?.title || currentInput?.data.text?.slice(0, 200) || run.title,
+      status: currentAttempt.status, needsUser: false } : null;
   const state = attention.length || run.status === 'awaiting_user' ? 'wait'
-    : ['blocked', 'stopped'].includes(run.status) ? 'err' : counts.run || ['running', 'recovering', 'stopping'].includes(run.status) ? 'run'
-      : run.works.length && run.works.every(row => row.status === 'completed') ? 'done' : counts.err ? 'err' : 'idle';
+    : ['blocked', 'stopped'].includes(run.status) ? 'err' : ['recovering', 'stopping'].includes(run.status) ? 'run'
+      : unknown ? 'err' : executing.length || preparing ? 'run' : failure ? 'err'
+        : run.works.length && run.works.every(row => row.status === 'completed') ? 'done' : pending.length ? 'run' : 'idle';
+  const settled = !run.main.preparing && !['running', 'recovering', 'stopping', 'awaiting_user'].includes(run.status)
+    && !run.attempts.some(row => row.status === 'queued' || NATIVE_UNSETTLED.includes(row.status));
+  const resultKey = settled && ['done', 'err'].includes(state) ? crypto.createHash('sha256').update(JSON.stringify([
+    state, run.status, run.blockedReason, run.attempts.map(row => [row.id, row.status, row.endedAt]),
+    run.works.map(work => [work.id, work.status, work.deliveries.map(row => [row.mainAttemptId, row.nativeTurnId, row.endedAt])]),
+  ])).digest('hex') : '';
   return { ...fusionSummary(run), main: { app, model, effort, bindingId, windowId, preparing, error, projectTrust },
     internalInputs: run.attempts.filter(row => row.kind === 'main' && row.origin === 'events' && row.native?.messageId)
       .map(row => ({ threadId: row.native.threadId, messageId: row.native.messageId })),
-    overview: { state, counts, apps: [...new Set([app, ...tasks.map(row => row.app)].filter(Boolean))], attention,
-      current: current ? { text: current.goal, status: current.status, needsUser: current.needsUser } : null } };
+    overview: { state, resultKey, counts, apps: [...new Set([app, ...tasks.map(row => row.app)].filter(Boolean))], attention,
+      current } };
 }
 export function fusionControllerView(run) { return controllerView(run, taskSummaries(run)); }
 export function fusionRunView(run, view) {
