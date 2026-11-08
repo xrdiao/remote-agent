@@ -67,13 +67,11 @@ function fusionWorkbenchTile(entry, run) {
   const wide = run.tasks.running || ['running', 'recovering', 'stopping'].includes(run.status);
   const label = ({ run: '运行中', wait: '待处理', done: '已完成', err: '执行阻塞', idle: '空闲' })[state];
   const progress = run.tasks.total ? run.tasks : run.works, context = `${entry.name} · ${run.project.name}`;
-  const feedback = ovOpenFeedback(target), opening = ovOpenLabel(target, '');
   return `<div class="ov-tile ov-session ov-compact ov-st-${state} fusion-workbench${wide ? ' ov-wide' : ''}${!online ? ' ov-off' : ''}" style="--p:${progress.total ? progress.done / progress.total * 100 : 0}%" role="button" tabindex="0" data-fusion-open="${esc(run.id)}" data-computer="${esc(entry.id)}" data-ov-menu="${esc(fusionWorkbenchRecord(run).key)}">`
-    + `<span class="ov-card-surface" aria-hidden="true"></span>${ovLogo(fusionLogo('fusion'))}`
+    + `<span class="ov-card-surface" aria-hidden="true"></span>${ovOpenFeedback(target)}${ovLogo(fusionLogo('fusion'))}`
     + `<div class="ov-state"><span class="ov-badge">${I18N.tr(ovT(label))}</span></div><div class="ov-title ovRaw">${esc(run.title)}</div>`
     + `<div class="ov-context ovRaw" title="${esc(context)}">${esc(context)}</div>`
-    + `<div class="ov-foot"><span class="ov-num">${run.tasks.done}<small>/${run.tasks.total} ${I18N.tr('任务')}</small></span>${ovSeg(run.overview.counts)}</div>`
-    + (feedback || opening ? `<div class="fusion-open-feedback">${feedback}<span>${opening}</span></div>` : '') + '</div>';
+    + `<div class="ov-foot"><span class="ov-num">${run.tasks.done}<small>/${run.tasks.total} ${I18N.tr('任务')}</small></span>${ovSeg(run.overview.counts)}</div></div>`;
 }
 function fusionUpdateWorkspace(computer, run) {
   const workspace = fusionWorkspaces.get(computer);

@@ -63,10 +63,10 @@ test('Fusion compact session cards keep task progress and navigate directly with
   for (const handler of h.listeners.get('click')) handler(event);
   assert.equal(opened.length, 1); assert.equal(opened[0].computer, 'computer-one'); assert.equal(opened[0].threadId, 'same-id');
   assert.equal(h.context.ovS.open, 'ordinary-preview'); assert.equal(h.sent.length, 0); assert.equal(JSON.stringify(h.context.testRun), original);
-  h.context.ovOpenFeedback = () => '<small role="status">Target loading failed</small>';
-  h.context.ovOpenLabel = () => '重试打开';
+  h.context.ovOpenFeedback = () => '<small class="ov-opening ov-opening-error" role="status">Target loading failed</small>';
+  h.context.ovOpenLabel = () => assert.fail('Fusion cards use the lower-edge feedback without an extra opening label');
   const failed = h.run('fusionWorkbenchTile(ovList[0],testRun)');
-  assert.match(failed, /fusion-open-feedback/); assert.match(failed, /Target loading failed/); assert.doesNotMatch(failed, /<button/);
+  assert.match(failed, /class="ov-opening ov-opening-error"/); assert.match(failed, /Target loading failed/); assert.doesNotMatch(failed, /fusion-open-feedback|重试打开|<button/);
 });
 test('workbench cards share ordinary long-hold cancellation and suppress the subsequent open click', () => {
   const h = workbenchMenuFixture(), events = new Map(), timers = new Map(); let next = 0, opens = 0;
