@@ -75,6 +75,7 @@ $('gateRepair').onclick = () => repairPairing();
 // Connection state is shared by preloading and Agent management; presentation lives in the overview.
 const CONN_AGENTS = [
   { app: 'cursor', name: 'Cursor' }, { app: 'devin', name: 'Devin' }, { app: 'codex', name: 'Codex' },
+  { app: 'opencode', name: 'OpenCode', service: true },
 ];
 function newComputerConnection() {
   return { initialSelection: true, host: false, agents: null, catalogReady: false, autoLaunched: false, attachFailed: false, probeComplete: false, failedTargets: new Map() };
@@ -108,6 +109,7 @@ const compatibilityReports = new Map(), compatibilityRequests = new Map(), compa
 let compatibilitySerial = 0;
 const compatibilityKey = app => `${agentComputerKey()}|${app}`;
 function requestCompatibility(app, force = false, windowId = '') {
+  if (app === 'opencode') return;
   if (!authed || !CONN_AGENTS.some(a => a.app === app)) return;
   const key = compatibilityKey(app), previous = compatibilityRequests.get(key);
   if (!force && previous && (!windowId || previous.windowId === windowId)) return;
@@ -141,7 +143,7 @@ function compatibilityText(app) {
 }
 function startupAgents() {
   const saved = store.get('agent-start:' + agentComputerKey());
-  return saved === null ? CONN_AGENTS.map(a => a.app) : JSON.parse(saved);
+  return saved === null ? CONN_AGENTS.filter(a => !a.service).map(a => a.app) : JSON.parse(saved);
 }
 function selectedLaunchAgents() {
   const selected = startupAgents(), reports = agentReports.get(agentComputerKey()) || [];

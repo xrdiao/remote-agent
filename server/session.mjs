@@ -101,6 +101,7 @@ export class Session extends AgentContext {
       await visualCapture.restore(windows);
       return;
     }
+    if (this.app === 'opencode' && this.mode === 'chat') return this.adapter.setMode.call(this);
     if (!this.editorCdp || this.selectionHome && this.mode === 'chat') return;
     if (this.mode === 'chat') {
       const cdp = this.cdp;
@@ -257,6 +258,7 @@ export class Session extends AgentContext {
       const saved = lastSelection(this.deviceId, app);
       if (saved) req = { ...req, ...saved };
     }
+    if (app === 'opencode') return AGENT_REGISTRY.opencode.adapter.attach.call(this, req);
     if (req.initial && hasLaunched(app)) req = { ...req, id: app, windowId: '', threadId: '', project: null };
     if (req.project && !req.projectSwitch) {
       const matches = nativeTargets().filter(win => win.app === app && this.projectMatches(nativeWindowAt(win.ws)?.roots || [], req.project.root, req.project.host));
@@ -522,6 +524,7 @@ export class Session extends AgentContext {
   // actions that type/tap, and is switched off again shortly after they finish.
 
   detach() {
+    if (this.app === 'opencode') this.adapter.detach.call(this);
     this.catalogUpdatesStop?.();
     this.catalogUpdatesStop = null;
     this.bindingReady = false;
@@ -583,6 +586,8 @@ export class Session extends AgentContext {
   }
 
   async handle(msg) {
+    const apiHandler = this.app === 'opencode' && this.adapter.routes[msg.t];
+    if (apiHandler) return apiHandler.call(this, msg);
     const target = msg.id?.startsWith('project:') ? decodeURIComponent(msg.id.split(':')[1]) : msg.id?.startsWith('thread:') ? msg.id.split(':')[1] : this.windowId;
     if (windowOperationLocked(this.app, target, this)) throw new Error('窗口正在批量处理会话，请稍后操作');
     const release = leaseWindow(this.app, this.windowId, this);
@@ -609,7 +614,7 @@ export class Session extends AgentContext {
     const fusionFree = this.app === 'fusion' && flag(route?.fusionFree, this, msg);
     if (fusionFree) {
       if (route.fusion) return route.fusion(this, msg);
-    } else if (!this.cdp) throw new Error(this.appMessage('尚未连接到 {app} 窗口'));
+    } else if (!this.cdp && this.app !== 'opencode') throw new Error(this.appMessage('尚未连接到 {app} 窗口'));
     if (!route) throw new Error(`未知指令: ${msg.t}`);
     return route.run(this, msg);
   }

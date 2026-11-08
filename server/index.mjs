@@ -20,9 +20,11 @@ import { NativeCdp, nativeWindow, nativeTargets, startNativeWindows } from './na
 import { saveFusionRuns, initializeFusionState } from './fusion/state.mjs';
 import { recoverFusionRuns } from './fusion/runner.mjs';
 import { terminalService } from './terminal-service.mjs';
+import { openCode } from './opencode/state.mjs';
 for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) process.once(signal, () => {
   saveFusionRuns();
   terminalService.dispose();
+  openCode.close();
   process.exit(code);
 });
 
@@ -60,7 +62,7 @@ export async function detectAppUrl() {
 // Notifications follow each real Codex chat, not the single merged Codex entry.
 async function watchTargets() {
   const wins = await listWindows();
-  const out = wins.filter(w => w.app !== 'codex');
+  const out = wins.filter(w => w.app !== 'codex' && w.app !== 'opencode');
   for (const p of await codexWindows(CODEX_CDP_URL)) {
     if (!p.chatWs) continue;
     out.push({ id: `codex:${p.pageId}`, title: p.title, ws: p.chatWs, editorWs: p.ws, app: 'codex', pageId: p.pageId, kind: 'local' });
@@ -91,6 +93,7 @@ server.listen(PORT, HOST, async () => {
   });
   try {
     const wins = await listWindows();
+    if (wins.some(win => win.app === 'opencode')) await openCode.connect();
     console.log(`已连上 ${wins.length} 个窗口：${wins.map(w => `${w.app}:${w.title}`).join(' | ')}`);
   } catch (e) {
     console.log(`!! ${e.message}`);

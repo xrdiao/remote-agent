@@ -150,6 +150,22 @@ npm run pair -- --temporary
 
 语音安装器会询问并创建独立 Python 虚拟环境，下载模型与依赖。本机引擎在电脑处理音频；Qwen 首次加载与就绪可能需要等待。详见[语音说明](docs/voice-input.md)。原生壳需要单独构建或更新，发布网页不会升级已安装的壳；iOS 推送部署见 [push-service/README.md](push-service/README.md)。
 
+## OpenCode 本地 Agent
+
+RA 可以直接连接 **OpenCode 1.15.5 的后台服务**，无需打开 OpenCode 桌面窗口或终端交互界面。OpenCode 负责模型调用、文件工具和命令执行，RA 提供手机端的项目与会话、流式回复、工具记录、审批及提问回复。
+
+先在 OpenCode 中配置可用模型。例如本机 Bonsai 2 使用 `local-bonsai/bonsai2-27b`，推理接口为 `http://127.0.0.1:18080/v1`。保持模型服务运行，再在电脑上启动 OpenCode 后台：
+
+```bash
+./scripts/start-opencode.sh
+```
+
+脚本运行 `opencode serve --hostname 127.0.0.1 --port 4096`，保持该进程运行。然后启动或重启 RA 中继，继续使用既有手机配对入口，在「切换 Agent」中选择 OpenCode，或从概览中的 OpenCode 项目进入会话。通过「项目/会话」可以选择本机目录、新建会话和加载原生历史；项目操作直接调用后台接口，不启动编辑器窗口。
+
+RA 默认连接 `http://127.0.0.1:4096`；OpenCode 使用其他地址时，在启动中继时设置 `OPENCODE_URL`。模型和思考强度菜单读取 OpenCode 实际提供的候选，「默认（服务端）」保留服务端思考设置。Bonsai 配置中的文件修改和 Shell 审批继续生效，手机显示实际补丁或命令，由用户选择「允许一次」或「拒绝」。
+
+文件预览与高亮、RA 独立终端沿用现有入口。当前接入文本对话与工具执行，OpenCode 尚未接入 Fusion。原生审批、问题和会话数据以 OpenCode 后台为准。
+
 ## Fusion
 
 Fusion 是 RA 的持续主工作台。你始终与一个原生主 Agent 对话，由它理解需求、规划和验收，并在需要时调用原生子 Agent。**当前主 Agent 限 Codex；子 Agent 可使用 Cursor、Devin 或 Codex。**各软件必须有可用的桌面窗口与实际模型候选。Devin 自己模型菜单中的 Fusion 是另一项原生能力。

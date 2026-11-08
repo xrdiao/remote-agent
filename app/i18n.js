@@ -5,6 +5,10 @@ const I18N = (() => {
   const lang = saved === 'zh' || saved === 'en' ? saved : /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
 
   const EN = {
+    "默认（服务端）": "Default (server)",
+    "其他回答": "Custom answer",
+    "请回答所有问题": "Please answer every question",
+    "请在电脑运行 scripts/start-opencode.sh": "Run scripts/start-opencode.sh on the computer",
     "打开主对话": "Open main conversation",
     "查看任务": "View tasks",
     "停止工作台": "Stop workbench",

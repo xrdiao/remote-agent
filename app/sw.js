@@ -1,12 +1,12 @@
 // Caches the app shell so the installed app opens instantly; live data (url.json, relay) always goes to the network.
 const CACHE_PREFIX = 'remote-agent:' + self.registration.scope + ':';
-const CACHE = CACHE_PREFIX + 'v429'; // keep in sync with APP_VERSION in js/core.js
+const CACHE = CACHE_PREFIX + 'v430'; // keep in sync with APP_VERSION in js/core.js
 const NOTICES = CACHE_PREFIX + 'notices';
-const SHELL = ['./', 'index.html', 'app.css?v=429', 'i18n.js?v=426', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'logo.png',
-  'js/core.js?v=429', 'js/fusion.js?v=428', 'js/gate.js?v=382', 'js/auth.js?v=207', 'js/net.js?v=413', 'js/sheets.js?v=424', 'js/notify.js?v=424', 'js/mode.js?v=386', 'js/chat.js?v=416',
-  'js/history.js?v=421', 'js/files.js?v=375', 'js/screen.js?v=382', 'js/terminal.js?v=392', 'js/composer.js?v=407', 'js/voice.js?v=356', 'js/local-voice.js?v=391', 'js/voice-worklet.js?v=133',
+const SHELL = ['./', 'index.html', 'app.css?v=430', 'i18n.js?v=430', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'logo.png',
+  'js/core.js?v=430', 'js/fusion.js?v=428', 'js/gate.js?v=430', 'js/auth.js?v=207', 'js/net.js?v=430', 'js/sheets.js?v=430', 'js/notify.js?v=424', 'js/mode.js?v=386', 'js/chat.js?v=430',
+  'js/history.js?v=421', 'js/files.js?v=375', 'js/screen.js?v=382', 'js/terminal.js?v=392', 'js/composer.js?v=430', 'js/voice.js?v=356', 'js/local-voice.js?v=391', 'js/voice-worklet.js?v=133',
   'js/transfer.js?v=388', 'js/scanner.js',
-  'js/latency.js?v=367', 'js/image-editor.js?v=379', 'js/overview.js?v=426',
+  'js/latency.js?v=367', 'js/image-editor.js?v=379', 'js/overview.js?v=430',
   'markdown-it/markdown-it-15.0.3.min.js', 'js/markdown.js?v=295',
   'vendor/xterm.js?v=6.0.0', 'vendor/xterm.css?v=6.0.0',
   'katex/katex.min.js', 'katex/katex.min.css',
@@ -20,7 +20,7 @@ const SHELL = ['./', 'index.html', 'app.css?v=429', 'i18n.js?v=426', 'manifest.w
   'katex/fonts/KaTeX_Script-Regular.woff2', 'katex/fonts/KaTeX_Size1-Regular.woff2',
   'katex/fonts/KaTeX_Size2-Regular.woff2', 'katex/fonts/KaTeX_Size3-Regular.woff2',
   'katex/fonts/KaTeX_Size4-Regular.woff2', 'katex/fonts/KaTeX_Typewriter-Regular.woff2',
-  'logo-fusion.svg', 'logo-cursor-dark.svg', 'logo-cursor-light.svg',
+  'logo-fusion.svg', 'logo-opencode.svg', 'logo-cursor-dark.svg', 'logo-cursor-light.svg',
   'logo-devin-dark.svg', 'logo-devin-light.svg',
   'logo-codex-dark.svg', 'logo-codex-light.svg'];
 const SHELL_ASSETS = new Set(SHELL.filter(path => path !== './' && path !== 'index.html').map(path => new URL(path, self.registration.scope).href));

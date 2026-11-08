@@ -1294,6 +1294,14 @@ async function connect(resumeLink = null) {
     }
     else if (m.t === 'sendFailed') failPendingSend(m.requestId, m.message || '发送失败，请重试', !m.cancelled);
     else if (m.t === 'questionDone') finishQuestion(m);
+    else if (m.t === 'opencodeQuestionDone') {
+      if (m.sel !== viewSel) return;
+      const form = [...list.querySelectorAll('[data-opencode-question]')].find(node => node.dataset.opencodeQuestion === m.id);
+      if (!m.ok) {
+        form?.querySelectorAll('input, button').forEach(node => { node.disabled = false; });
+        status(m.error, false);
+      }
+    }
     else if (m.t === 'latency') receiveLatency(m);
     else if (m.t === 'visual') renderVisualState(m);
     else if (m.t === 'visualWindows') { receiveVisualWindows(m); if (mode === 'screen') connContentReady(); }
@@ -1348,7 +1356,7 @@ async function connect(resumeLink = null) {
       scheduleLatency();
       $('dot').className = 'ok';
       status(mode === 'chat' ? navigationPending?.message || '正在加载对话…' : '已连接');
-      $('titleText').textContent = m.app === 'fusion' ? 'Fusion' : m.app === 'devin' ? 'Devin agent' : m.app === 'codex' ? 'Codex' : winLabel(m.title).name;
+      $('titleText').textContent = m.app === 'fusion' ? 'Fusion' : m.app === 'devin' ? 'Devin agent' : m.app === 'codex' ? 'Codex' : m.app === 'opencode' ? 'OpenCode' : winLabel(m.title).name;
       currentProject = m.app === 'fusion' ? '' : (m.project || winLabel(m.title).name);
       updateAppText(); updateTitle();
       if (selectionReady) confirmNavigation();

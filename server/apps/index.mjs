@@ -5,6 +5,8 @@ import { adapter as cursorAdapter, methods as cursorMethods, capabilities as cur
 import { adapter as devinAdapter, methods as devinMethods, capabilities as devinCapabilities } from './devin.mjs';
 import { adapter as codexAdapter, methods as codexMethods, capabilities as codexCapabilities } from './codex.mjs';
 import { adapter as fusionAdapter, capabilities as fusionCapabilities } from './fusion.mjs';
+import { adapter as opencodeAdapter, capabilities as opencodeCapabilities } from './opencode.mjs';
+import { openCode } from '../opencode/state.mjs';
 
 // Static registration references the existing discovery/configuration and adapter methods.
 // Preserve the existing native overrides and shared defaults.
@@ -23,6 +25,10 @@ export const AGENT_REGISTRY = Object.fromEntries(EDITORS.map(editor => [editor.a
 AGENT_REGISTRY.fusion = {
   app: 'fusion', name: 'Fusion', kind: 'orchestrator',
   adapter: fusionAdapter, methods: {}, capabilities: fusionCapabilities,
+};
+AGENT_REGISTRY.opencode = {
+  app: 'opencode', name: 'OpenCode', kind: 'api', discover: () => openCode.discover(),
+  adapter: opencodeAdapter, methods: {}, capabilities: opencodeCapabilities,
 };
 export const ADAPTERS = Object.fromEntries(Object.entries(AGENT_REGISTRY).map(([app, entry]) => [app, entry.adapter]));
 Object.assign(AgentContext.prototype, ...Object.values(AGENT_REGISTRY).map(entry => entry.methods));

@@ -2,7 +2,7 @@
 const OV_ROOT = { level: 'sessions', comp: null, proj: null, open: null };
 const ovS = { ...OV_ROOT, level: store.get('ov-level') || OV_ROOT.level };
 const OV_RANK = { done: 0, wait: 1, err: 1, run: 2, idle: 3, unknown: 4 };
-const OV_AGENT = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex' };
+const OV_AGENT = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', opencode: 'OpenCode' };
 const OV_EN = {
   '返回概览': 'Back to overview', '上一级': 'Up one level', '菜单': 'Menu', '全部': 'All', '在线': 'Online', '项目': 'Projects', '会话': 'Sessions',
   '概览': 'Overview', '全部电脑': 'All computers', '电脑范围': 'Computer scope', '不常用': 'Infrequent', '打开对话': 'Open conversation', '进行中': 'In progress',

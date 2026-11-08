@@ -4,6 +4,7 @@ import path from 'node:path';
 import { IS_WIN } from '../lib/platform.mjs';
 import { Cdp } from './cdp.mjs';
 import { EDITORS } from './config.mjs';
+import { openCode } from './opencode/state.mjs';
 
 const targetReads = new Map();
 function editorTargets(base) {
@@ -41,16 +42,17 @@ export async function listWindows(report = null, app = null) {
     }
   }));
   const wins = lists.flat();
+  if (!app || app === 'opencode') wins.push(...await openCode.discover(report));
   if (!wins.length) throw new Error('连不上 Cursor、Devin 或 Codex。Cursor 用调试端口 9222，Devin 用 ./scripts/start-devin.sh（端口 9223），Codex 用 ./scripts/start-codex.sh（端口 9224）');
   return wins;
 }
 
 export function phoneWindows(wins, current) {
-  const apps = [...new Set(wins.filter(w => ['cursor', 'devin', 'codex'].includes(w.app)).map(w => w.app))];
+  const apps = [...new Set(wins.filter(w => ['cursor', 'devin', 'codex', 'opencode'].includes(w.app)).map(w => w.app))];
   return apps.map(app => {
     const rows = wins.filter(w => w.app === app);
     const row = rows.find(w => w.id === current) || rows[0];
-    return { id: row.id, title: { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion' }[app] || app,
+    return { id: row.id, title: { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion', opencode: 'OpenCode' }[app] || app,
       kind: row.kind, app, windowIds: rows.map(w => w.id) };
   });
 }

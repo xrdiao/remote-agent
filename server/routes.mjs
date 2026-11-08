@@ -172,20 +172,23 @@ export const ROUTES = {
       const probe = s.agentProbe = (s.agentProbe || 0) + 1;
       const catalog = detectAgents();
       const agents = [], found = new Map();
+      const sources = [...EDITORS, { app: 'opencode' }];
       let finished = 0;
-      await Promise.all(EDITORS.map(async editor => {
+      await Promise.all(sources.map(async editor => {
         let wins = [];
         try { wins = await listWindows(agents, editor.app); } catch {}
         for (const win of wins) found.set(win.id, win);
         finished++;
         if (s.agentProbe !== probe) return;
         s.emit({ t: 'windows', list: phoneWindows([...found.values()], s.targetId), current: s.targetId, plans: appPlans });
-        s.emit({ t: 'connAgents', agents: [...agents], complete: finished === EDITORS.length });
+        s.emit({ t: 'connAgents', agents: [...agents], complete: finished === sources.length });
       }));
       if (s.agentProbe !== probe) return [...found.values()];
       const wins = [...found.values()];
       if (!options.deferPlans && wins.length) readAllPlans(s, wins).catch(() => {});
-      catalog.then(list => { if (s.agentProbe === probe) s.emit({ t: 'agentCatalog', agents: list.map(a => agents.some(r => r.app === a.app && r.windows) ? { ...a, installed: true, running: true, reason: '' } : a) }); }).catch(() => {});
+      catalog.then(list => { if (s.agentProbe === probe) s.emit({ t: 'agentCatalog', agents: [...list.map(a => agents.some(r => r.app === a.app && r.windows) ? { ...a, installed: true, running: true, reason: '' } : a),
+        { app: 'opencode', name: 'OpenCode', installed: found.has('opencode') ? true : null, running: found.has('opencode'), launchSupported: false,
+          reason: '请在电脑运行 scripts/start-opencode.sh' }] }); }).catch(() => {});
       return wins;
     },
   },
@@ -222,7 +225,7 @@ export const ROUTES = {
         return;
       }
       if (!s.visible) { s.chatUpdatesStop?.(); s.chatUpdatesStop = null; }
-      if (!s.editorCdp && s.mode !== 'screen') return;
+      if (!s.editorCdp && s.app !== 'opencode' && s.mode !== 'screen') return;
       if (!s.visible && s.mode === 'screen') return s.stopVisual();
       if (s.visible) return s.setMode(s.mode);
     },
@@ -464,6 +467,11 @@ export const ROUTES = {
       s.pollChat(true).catch(() => {});
     },
     after: questionDone, fail: questionFailed,
+  },
+  opencodeQuestion: {
+    run: (s, m) => s.adapter.routes.opencodeQuestion.call(s, m),
+    after: (s, m) => s.emit({ t: 'opencodeQuestionDone', sel: s.selectionKey(), id: m.id, ok: true }),
+    fail: (s, m, error) => s.emit({ t: 'opencodeQuestionDone', sel: s.selectionKey(), id: m.id, ok: false, error: error.message }),
   },
   codexPick: { run: (s, m) => s.codexPick(m) },
   codexSkills: { switchRead: true,  run: s => s.codexSkillList() },

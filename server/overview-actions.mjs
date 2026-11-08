@@ -6,6 +6,7 @@ import { overviewSession } from './overview.mjs';
 import { NativeCdp, nativeWindowAt } from './native-windows.mjs';
 import { catalogSessions, storedProjectSession } from './project-windows.mjs';
 import { manageFusionWorkbench } from './fusion/owner.mjs';
+import { manageOpenCodeSession } from './apps/opencode.mjs';
 
 export async function manageOverviewSession(deviceId, body) {
   if (body.computer !== computerId()) throw new Error('所选电脑已变化，请刷新概览后重试');
@@ -32,6 +33,7 @@ export async function manageOverviewSession(deviceId, body) {
     throw new Error('项目窗口已关闭，请先打开对话');
   }
   if (action === 'actions' && app === 'codex') return { actions: ['rename', 'archive'] };
+  if (app === 'opencode') return manageOpenCodeSession(threadId, action, body.name);
   if (!['actions', 'rename', 'archive', 'delete', 'remove'].includes(action)) throw new Error('不支持的会话操作');
   const messages = [];
   const s = new Session({ readyState: 1, send: raw => messages.push(JSON.parse(raw)) }, deviceId);

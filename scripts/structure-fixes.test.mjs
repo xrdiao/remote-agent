@@ -2112,6 +2112,7 @@ test('peer loss during background still requires fresh proof to recover the reta
 function overviewDirectory() {
   const targets = [], sources = new Map(), catalogs = new Map(), library = {}, saved = { windows: {} }, fusionRuns = {};
   const context = vm.createContext({ path, Date, process: { platform: 'linux' }, saved, fusionRuns,
+    openCode: { overview: () => ({ windows: [], sessions: [] }) },
     key: (app, id) => app + ':' + id.replace(/^(cursor|devin|codex):/, ''),
     nativeTargets: () => targets, nativeWindowAt: id => sources.get(id), nativeSessionCatalog: app => catalogs.get(app),
     sessionId: (_app, id) => id || '', readLibrary: () => library, storedProjectSession: () => null,

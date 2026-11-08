@@ -132,8 +132,8 @@ wss.on('connection', (ws, req) => {
       updateDevice(device.id, { lastSeen: Date.now() });
       const previous = contexts.get(msg.resume);
       const candidate = previous?.session.deviceId === device.id && previous.expires > Date.now()
-        && !previous.session.disposed && previous.session.cdp?.ws?.readyState === 1
-        && ['cursor', 'devin', 'codex'].includes(previous.session.app);
+        && !previous.session.disposed && (previous.session.app === 'opencode' && previous.session.bindingReady
+          || previous.session.cdp?.ws?.readyState === 1 && ['cursor', 'devin', 'codex'].includes(previous.session.app));
       if (candidate) {
         previous.claim?.close(4002, 'connection replaced');
         previous.claim = ws;
@@ -151,7 +151,7 @@ wss.on('connection', (ws, req) => {
       }
       const resumed = candidate && contexts.get(msg.resume) === previous && previous.expires > Date.now()
         && !previous.session.disposed && (previous.session.mode === 'terminal'
-          || previous.session.bindingReady && previous.session.cdp?.ws?.readyState === 1);
+          || previous.session.bindingReady && (previous.session.app === 'opencode' || previous.session.cdp?.ws?.readyState === 1));
       if (resumed) {
         clearTimeout(previous.timer);
         context = previous;
@@ -362,7 +362,7 @@ wss.on('connection', (ws, req) => {
     if (!session || context.owner !== connection) return;
     if (session.sessionBatch) session.sessionBatch.cancelled = true;
     removeViewer(session);
-    if (authorized && !session.disposed && (session.mode === 'terminal' || session.cdp?.ws?.readyState === 1
+    if (authorized && !session.disposed && (session.mode === 'terminal' || session.app === 'opencode' && session.bindingReady || session.cdp?.ws?.readyState === 1
         && ['cursor', 'devin', 'codex'].includes(session.app))) {
       retain();
     } else {

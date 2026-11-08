@@ -6,6 +6,7 @@ import { samePath, normPath, pathKey } from '../lib/platform.mjs';
 import { workspaceLabel } from '../lib/files.mjs';
 import path from 'node:path';
 import { storedProjectSession, fusionTargets } from './project-windows.mjs';
+import { openCode } from './opencode/state.mjs';
 
 const APP = { cursor: 'Cursor', codex: 'Codex', devin: 'Devin' };
 const FUSION_RECENT_MS = 24 * 3600 * 1000;
@@ -72,6 +73,8 @@ export function overviewSnapshot(deviceId) {
         collected.set(identity, { value, quality, updatedAt: source.updatedAt });
     }
   }
+  const api = openCode.overview();
+  for (const row of api.windows) projects.set(row.projectId, row);
   const windows = [...projects.values()], locations = [...new Map(windows.filter(row => row.workspace)
     .map(row => [JSON.stringify([row.host, pathKey(row.workspace, !row.host)]), { root: row.workspace, host: row.host }])).values()];
   for (const row of windows.filter(row => row.workspace)) {
@@ -81,6 +84,11 @@ export function overviewSnapshot(deviceId) {
   }
   const sessions = [...collected.values()].map(({ value }) => ({ ...value, project: projects.get(value.projectId)?.project
     || path.posix.basename(value.workspace) || '项目' }));
+  for (const row of api.sessions) {
+    const record = readLibrary().opencode?.[row.threadId];
+    sessions.push({ ...row, project: projects.get(row.projectId)?.project || row.project,
+      title: record?.title || row.title, favorite: record?.favorite === true, dormant: !openCode.connected });
+  }
   const present = new Set(sessions.map(s => s.app + ':' + s.threadId));
   for (const app of Object.keys(APP)) {
     const rows = new Map((nativeSessionCatalog(app)?.rows || []).map(row => [sessionId(app, row.id), row]));
@@ -113,6 +121,16 @@ export function overviewSession(deviceId, { win, windowId, threadId }) {
 
 export async function overviewPreview(deviceId, { win, windowId, threadId }) {
   const { session, target } = overviewSession(deviceId, { win, windowId, threadId });
+  if (session.app === 'opencode') {
+    await openCode.connect();
+    await openCode.loadMessages(threadId);
+    const chat = openCode.chat(threadId);
+    return { win, windowId, threadId, available: true,
+      last: chat.items.findLast(row => row.k === 'assistant')?.t || '',
+      text: chat.items.filter(row => ['human', 'assistant'].includes(row.k)).map(row => row.t).join('\n\n'),
+      model: chat.model, effort: chat.effort, tasks: null,
+      tools: chat.items.filter(row => row.k === 'tool').map(row => ({ name: row.t, status: row.status || 'running' })) };
+  }
   if (session.dormant) return { win, windowId, threadId, available: false, last: '', text: '' };
   const value = await nativeWindowAt(target.ws).preview(threadId, session);
   return { win, windowId, threadId, available: value.available, last: value.last || '', text: value.text || '',

@@ -81,7 +81,7 @@ function legacyAgentLibrary() {
     if (id.startsWith('project:')) id = decodeURIComponent(id.split(':').slice(2).join(':'));
     if (app === 'codex' && id.startsWith('thread:')) id = id.split(':').slice(2).join(':');
     if (app === 'devin') id = id.replace(/^tab:/, '');
-    if (!['cursor', 'devin', 'codex'].includes(app) || !id || /^(?:pick|new|win|window|project-new):/.test(id)) continue;
+    if (!['cursor', 'devin', 'codex', 'opencode'].includes(app) || !id || /^(?:pick|new|win|window|project-new):/.test(id)) continue;
     const entry = entries.get(app + '|' + id) || { app, id };
     if (agentFavorites[key]) entry.favorite = true;
     entry.lastMessageAt = Math.max(entry.lastMessageAt || 0, Number(agentUsage[key]?.lastMessageAt) || 0);
@@ -100,7 +100,7 @@ function agentSessionAvailable(row, app = currentApp) {
 function receiveSessionLibrary(message) {
   if (message.computer !== currentComputer()?.id) return;
   sharedAgentLibrary = message;
-  for (const app of ['cursor', 'devin', 'codex']) {
+  for (const app of ['cursor', 'devin', 'codex', 'opencode']) {
     const prefix = currentComputer().key + ':' + app;
     for (const [key, list] of [...agentLists]) {
       if (key !== prefix && !key.startsWith(prefix + ':')) continue;
@@ -303,7 +303,7 @@ function winLabel(title) {
 function windowEntries() {
   const saved = currentComputer()?.selections || {};
   const available = new Set(windows.flatMap(w => w.windowIds || [w.id]));
-  const entries = windows.filter(w => ['cursor', 'devin', 'codex'].includes(w.app)).map(w => {
+  const entries = windows.filter(w => ['cursor', 'devin', 'codex', 'opencode'].includes(w.app)).map(w => {
     const selected = saved[w.app]?.id;
     return { ...w, id: selected && available.has(selected) ? selected : w.id };
   });
@@ -330,7 +330,7 @@ function showWindows() {
   if (sheetKind === 'windows' && $('sheet')._winSig === sig) return measureLatency(entries.map(w => w.id));
   $('sheet')._winSig = sig;
   const rows = entries.map(w => {
-    const software = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion' }[w.app] || w.app;
+    const software = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion', opencode: 'OpenCode' }[w.app] || w.app;
     const plan = appPlans[w.app] ? `<span class="winPlan">${esc(appPlans[w.app])}</span>` : '';
     return `<button class="opt ${w.app === currentApp ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="optLogo" data-logo="${esc(w.app)}"></span><span class="lbl">${esc(software)}${plan}</span><span data-latency="${esc(w.id)}">${latencyMarkup(w.id)}</span></button>`;
   }).join('');
@@ -358,7 +358,7 @@ function paintRail() {
   const railOn = document.body.matches('.split');
   if (rail._sig === sig) { if (railOn) measureLatency(entries.map(w => w.id)); return; }
   rail._sig = sig;
-  const names = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion' };
+  const names = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion', opencode: 'OpenCode' };
   const agentRows = entries.map(w => {
     const plan = appPlans[w.app] ? `<span class="tag">${esc(appPlans[w.app])}</span>` : '';
     const label = names[w.app] || w.app;
@@ -469,7 +469,7 @@ function showComputerActions(id, app = '') {
   const link = computerSockets.get(entry.c.key);
   const catalog = link.metadata.get('agentCatalog')?.agents || [];
   app ||= list.find(w => w.windowId === entry.c.windowId)?.app || list[0]?.app || 'cursor';
-  const names = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex' };
+  const names = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', opencode: 'OpenCode' };
   const attr = `data-computer-id="${esc(id)}"`;
   const tabs = Object.entries(names).map(([key, name]) => `<button type="button" class="paramBtn${key === app ? ' cur' : ''}" data-computer-app="${key}" ${attr} aria-pressed="${key === app}">${name}</button>`).join('');
   const projects = list.filter(w => w.app === app);
@@ -1219,6 +1219,7 @@ function showAgentManager(refresh = false) {
   const known = rows.filter(a => a.installed === true), unknown = rows.filter(a => a.installed === null), missing = rows.filter(a => a.installed === false);
   const row = a => {
     const ready = agentReports.get(agentComputerKey())?.find(r => r.app === a.app)?.windows;
+    if (a.app === 'opencode') return `<div class="opt agentManageRow"><span class="optLogo" data-logo="opencode"></span><span class="lbl">OpenCode<span class="sub">${esc(I18N.tr(ready ? '已连接' : a.reason))}</span></span></div>`;
     const note = connLaunchNote(a) || (ready ? '已连接' : a.running ? '已运行，请开启调试端口' : a.reason || (a.installed === null ? '安装状态待确认' : '未启动'));
     return `<label class="opt agentManageRow"><span class="cTile cBrand agentManageLogo"><img class="on-dark" src="logo-${a.app}-dark.svg" alt=""><img class="on-light" src="logo-${a.app}-light.svg" alt=""></span><span class="lbl">${esc(a.name)}<span class="sub">${esc(I18N.tr(note))}</span></span>${a.installed === true ? `<input type="checkbox" data-agent-start="${a.app}" aria-label="${esc(a.name)}" ${selected.includes(a.app) ? 'checked' : ''}>` : ''}</label><details data-compatibility-app="${a.app}" ${compatibilityOpen.has(compatibilityKey(a.app)) ? 'open' : ''}><summary>${esc(I18N.tr('版本与适配'))}</summary><pre class="hint">${esc(compatibilityText(a.app))}</pre><button class="opt" data-compatibility-refresh="${a.app}">${esc(I18N.tr('重新检查适配'))}</button></details>`;
   };
@@ -1274,7 +1275,7 @@ function showMainMenu() {
     <button class="opt" data-act="screen"><span class="lbl">画面<span class="sub">查看绘图与仿真窗口</span></span></button>
     ${currentApp === 'codex' ? '<button class="opt" data-act="codexRetryMenu"><span class="lbl">Codex 自动重试<span class="sub">' + (codexAutoRetryEnabled() ? `已开启 · 最多 ${codexAutoRetryCount()} 次` : '已关闭') + '</span></span><span class="tag">›</span></button>' : ''}
     ${supportsCapability('settings') ? '<button class="opt" data-act="settings"><span class="lbl">设置</span></button>' : ''}
-    ${['cursor', 'devin', 'codex', 'fusion'].includes(currentApp) ? `<button class="opt" data-act="executionToggle" role="switch" aria-checked="${executionRecordsShown()}"><span class="lbl">显示执行指令<span class="sub">包含工具读取和搜索记录；关闭后在本轮结束时隐藏</span></span><span class="switch${executionRecordsShown() ? ' on' : ''}" aria-hidden="true"></span></button>` : ''}
+    ${['cursor', 'devin', 'codex', 'fusion', 'opencode'].includes(currentApp) ? `<button class="opt" data-act="executionToggle" role="switch" aria-checked="${executionRecordsShown()}"><span class="lbl">显示执行指令<span class="sub">包含工具读取和搜索记录；关闭后在本轮结束时隐藏</span></span><span class="switch${executionRecordsShown() ? ' on' : ''}" aria-hidden="true"></span></button>` : ''}
     ${lastChat?.changed && !lastChat?.readonly ? `<button class="opt" data-act="toggleChanges"><span class="lbl">${hiddenChangeNotices.has(changeNoticeKey()) ? '显示改动' : '隐藏改动提示'}</span></button>` : ''}`;
   const connectionItems = `
     <button class="opt" data-act="agentManager"><span class="lbl">Agent 管理<span class="sub">检测安装状态、选择并启动 Agent</span></span></button>
