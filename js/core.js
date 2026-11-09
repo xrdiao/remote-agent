@@ -101,7 +101,7 @@ function capabilityState(name) {
 const appMessage = template => I18N.tr(template).replaceAll('{app}', currentAppName);
 function updateAppText() {
   $('emptyHint').textContent = appMessage('请在 {app} 里打开 Agent 对话，或切到「画面」查看。');
-  text.placeholder = mode === 'terminal' ? I18N.tr('发给终端…') : questionCompose?.sel === viewSel ? '回答当前问题…（仅提交文字）' : currentApp === 'opencode' ? I18N.tr('输入你的问题…') : I18N.tr('输入你的问题，或粘贴图片、文档…');
+  text.placeholder = mode === 'terminal' ? I18N.tr('发给终端…') : questionCompose?.sel === viewSel ? '回答当前问题…（仅提交文字）' : I18N.tr('输入你的问题，或粘贴图片、文档…');
 }
 
 // Temporary, opt-in viewport diagnostics. Never read input or pairing data.
