@@ -599,6 +599,67 @@ test('Codex older pages precede the current tail and expired capacity Retry cont
   assert.deepEqual(h.ids(result), ['shared', 'latest']);
 });
 
+function chatReadingFixture(top = 220) {
+  let rows = [];
+  const list = { scrollTop: top, getBoundingClientRect: () => ({ top: 40 }) };
+  const itemsEl = { querySelectorAll: () => rows };
+  const context = vm.createContext({ list, itemsEl, setChatScrollTop: value => { list.scrollTop = value; } });
+  vm.runInContext(part(read('app/js/history.js'), 'function chatReadingPosition()', 'function finishHistory('), context);
+  return {
+    list,
+    replace(entries) {
+      let position = 0;
+      rows = entries.map(([id, height]) => {
+        const start = position;
+        position += height;
+        return { dataset: { i: id }, getBoundingClientRect: () => ({ top: 40 + start - list.scrollTop, bottom: 40 + start + height - list.scrollTop }) };
+      });
+    },
+    capture: () => context.chatReadingPosition(),
+    offset: id => rows.find(row => row.dataset.i === id).getBoundingClientRect().top - 40,
+  };
+}
+
+test('replacing updated messages above the viewport preserves the current reading offset', () => {
+  const h = chatReadingFixture();
+  h.replace([['a', 100], ['b', 100], ['reading', 400]]);
+  const offset = h.offset('reading'), restore = h.capture();
+  h.replace([['a', 160], ['b', 100], ['reading', 400]]);
+  restore();
+  assert.equal(h.list.scrollTop, 280);
+  assert.equal(h.offset('reading'), offset);
+});
+
+test('an updated message spanning the viewport can grow without moving its reading position', () => {
+  const h = chatReadingFixture();
+  h.replace([['a', 100], ['reading', 500], ['later', 100]]);
+  const offset = h.offset('reading'), restore = h.capture();
+  h.replace([['a', 100], ['reading', 700], ['later', 100]]);
+  restore();
+  assert.equal(h.list.scrollTop, 220);
+  assert.equal(h.offset('reading'), offset);
+});
+
+test('prepending older history retains the reading position even when message nodes are replaced', () => {
+  const h = chatReadingFixture();
+  h.replace([['a', 100], ['b', 100], ['reading', 400]]);
+  const offset = h.offset('reading'), restore = h.capture();
+  h.replace([['older', 90], ['a', 100], ['b', 100], ['reading', 400]]);
+  restore();
+  assert.equal(h.list.scrollTop, 310);
+  assert.equal(h.offset('reading'), offset);
+});
+
+test('history insertion and earlier message growth preserve the same reading offset together', () => {
+  const h = chatReadingFixture();
+  h.replace([['a', 100], ['b', 100], ['reading', 400]]);
+  const offset = h.offset('reading'), restore = h.capture();
+  h.replace([['older', 90], ['a', 160], ['b', 100], ['reading', 400]]);
+  restore();
+  assert.equal(h.list.scrollTop, 370);
+  assert.equal(h.offset('reading'), offset);
+});
+
 function readingWindow() {
   const calls = [];
   const context = { cdpRead, awaitCdpRead, AbortController, PAGE_SRC: '{}', helpersCall: call => call,
