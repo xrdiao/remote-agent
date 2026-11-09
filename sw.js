@@ -20,7 +20,7 @@ const SHELL = ['./', 'index.html', 'app.css?v=431', 'i18n.js?v=433', 'manifest.w
   'katex/fonts/KaTeX_Script-Regular.woff2', 'katex/fonts/KaTeX_Size1-Regular.woff2',
   'katex/fonts/KaTeX_Size2-Regular.woff2', 'katex/fonts/KaTeX_Size3-Regular.woff2',
   'katex/fonts/KaTeX_Size4-Regular.woff2', 'katex/fonts/KaTeX_Typewriter-Regular.woff2',
-  'logo-fusion.svg', 'logo-opencode.svg', 'logo-opencode-dark.svg', 'logo-opencode-light.svg', 'logo-cursor-dark.svg', 'logo-cursor-light.svg',
+  'logo-fusion.svg', 'logo-opencode.svg', 'logo-cursor-dark.svg', 'logo-cursor-light.svg',
   'logo-devin-dark.svg', 'logo-devin-light.svg',
   'logo-codex-dark.svg', 'logo-codex-light.svg'];
 const SHELL_ASSETS = new Set(SHELL.filter(path => path !== './' && path !== 'index.html').map(path => new URL(path, self.registration.scope).href));
