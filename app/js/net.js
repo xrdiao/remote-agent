@@ -103,6 +103,14 @@ function finishNavigation() {
   ovEnterReady();
   return navigation;
 }
+function cancelNavigation(target) {
+  if (navigationPending?.generation !== connGen || !sameWinTarget(navigationPending?.target, target)) return;
+  navigationPending = null;
+  navigationSerial++;
+  const link = computerSockets.get(currentComputer()?.key);
+  if (link) { link.navigationId = navigationSerial; link.binding = null; link.preload = null; }
+  invalidateChatRender();
+}
 function selectionPreview() {
   $('items').inert = true;
   const preview = chatBySel.get(chatCacheKey(viewSel));

@@ -36,8 +36,8 @@ export class OpenCodeClient {
     return rows;
   }
 
-  async messages(id, directory, before) {
-    const result = await this.request(`/session/${id}/message`, { directory, query: { limit: 80, before }, response: true });
+  async messages(id, directory, before, signal) {
+    const result = await this.request(`/session/${id}/message`, { directory, query: { limit: 80, before }, signal, response: true });
     return { rows: await result.json(), before: result.headers.get('x-next-cursor') };
   }
 }

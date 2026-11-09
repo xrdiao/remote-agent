@@ -389,6 +389,7 @@ function ovOpenFeedback(target) {
 function ovCancelOpening() {
   ovOpenRequest++;
   ovEnterRequested = false;
+  if (ovOpening && !sameWinTarget(winBinding?.target, ovOpening.target)) cancelNavigation(ovOpening.target);
   ovOpening = null;
 }
 function ovNavigationChanged(navigation, phase, message) {

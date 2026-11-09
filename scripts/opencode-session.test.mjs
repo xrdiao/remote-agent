@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { cdpRead } from '../server/cdp.mjs';
 
 const root = fileURLToPath(new URL(`../_shots/opencode-tests-${process.pid}/`, import.meta.url));
 fs.mkdirSync(root, { recursive: true });
@@ -15,6 +16,45 @@ test.after(() => { openCode.close(); fs.rmSync(root, { recursive: true, force: t
 
 const native = id => ({ id, directory: root.slice(0, -1), title: id, time: { created: 1, updated: 2 } });
 const tick = () => new Promise(resolve => setImmediate(resolve));
+
+test('cancelled OpenCode history leaves the previous selection unbound and does not publish a first screen', async t => {
+  const { session, events } = fixture(t);
+  openCode.sessions.set('ses_one', native('ses_one'));
+  const controller = new AbortController(), reason = new Error('target changed');
+  const previousReady = session.bindingReady;
+  let reading = false;
+  t.mock.method(openCode.client, 'messages', (_id, _directory, _before, signal) => {
+    assert.equal(signal, controller.signal);
+    reading = true;
+    return new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+  });
+  const pending = cdpRead.run(controller.signal, () => session.handle({ t: 'attach', id: 'opencode', threadId: 'ses_one' }));
+  await tick(); assert(reading);
+  controller.abort(reason);
+  await assert.rejects(pending, error => error === reason);
+  assert.equal(events.some(row => ['attached', 'chat'].includes(row.t)), false);
+  assert.equal(session.bindingReady, previousReady);
+  assert.equal(openCode.messages.has('ses_one'), false);
+});
+
+test('cancelling a navigation releases its shared OpenCode initialization wait without stopping initialization', async t => {
+  const { session, events } = fixture(t);
+  openCode.sessions.set('ses_one', native('ses_one'));
+  let ready, completed = false;
+  const connecting = new Promise(resolve => { ready = () => { completed = true; resolve(); }; });
+  t.mock.method(openCode, 'connect', () => connecting);
+  const controller = new AbortController(), reason = new Error('target changed');
+  const pending = cdpRead.run(controller.signal, () => session.handle({ t: 'attach', id: 'opencode', threadId: 'ses_one' }));
+  await tick(); controller.abort(reason);
+  await assert.rejects(pending, error => error === reason);
+  assert.equal(completed, false);
+  assert.equal(events.some(row => row.t === 'attached'), false);
+  ready(); await tick();
+  assert.equal(events.some(row => row.t === 'attached'), false);
+  await session.handle({ t: 'attach', id: 'opencode', threadId: 'ses_one' });
+  assert.equal(events.filter(row => row.t === 'attached').length, 1);
+  assert.equal(events.findLast(row => row.t === 'chat').chat.thread, 'ses_one');
+});
 
 function fixture(t) {
   for (const map of [openCode.sessions, openCode.messages, openCode.statuses, openCode.permissions, openCode.questions, openCode.models, openCode.selections,

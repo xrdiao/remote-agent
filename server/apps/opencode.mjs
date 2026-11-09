@@ -1,7 +1,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import { openCode } from '../opencode/state.mjs';
-import { cdpRead } from '../cdp.mjs';
+import { cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { safeHomePath, projectList, createProjectFolder } from '../agent/projects.mjs';
 import { rememberSelection } from '../../lib/auth.mjs';
 import { resolveLocal, writeTextFile } from '../../lib/files.mjs';
@@ -75,7 +75,7 @@ function watch(s) {
 }
 
 async function bind(s, req) {
-  await openCode.connect();
+  await awaitCdpRead(openCode.connect());
   const native = req.threadId ? openCode.sessions.get(req.threadId) : null;
   if (req.threadId && !native) throw new Error('OpenCode 会话已不存在');
   const directory = safeHomePath(req.project?.root || native?.directory || req.windowId ||
@@ -311,7 +311,7 @@ export const adapter = {
   terminalProject() { return { root: this.openCodeDirectory, host: '' }; },
   async setMode() {
     if (this.mode !== 'chat') return;
-    await openCode.connect();
+    await awaitCdpRead(openCode.connect());
     this.chatUpdatesStop = watch(this);
     publish(this);
   },

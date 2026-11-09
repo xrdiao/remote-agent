@@ -55,3 +55,24 @@ test('OpenCode HTTP failures remain visible to the caller', async t => {
   t.mock.method(globalThis, 'fetch', async () => new Response('native failure', { status: 500 }));
   await assert.rejects(new OpenCodeClient().request('/session'), /OpenCode 500: native failure/);
 });
+
+for (const phase of ['headers', 'body']) test(`OpenCode history cancellation releases a pending ${phase} read`, async t => {
+  const controller = new AbortController(), reason = new Error('navigation cancelled');
+  let received;
+  t.mock.method(globalThis, 'fetch', (url, { signal }) => {
+    received = { url, signal };
+    if (phase === 'headers') return new Promise((resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+    return Promise.resolve(new Response(new ReadableStream({ start(body) {
+      body.enqueue(new TextEncoder().encode('[{"info":'));
+      signal.addEventListener('abort', () => body.error(signal.reason), { once: true });
+    } })));
+  });
+  const pending = new OpenCodeClient().messages('ses_1', '/project', 'opaque-cursor', controller.signal);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(received.signal, controller.signal);
+  assert.equal(received.url.searchParams.get('before'), 'opaque-cursor');
+  controller.abort(reason);
+  await assert.rejects(pending, error => error === reason);
+});

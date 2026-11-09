@@ -188,9 +188,9 @@ export class OpenCodeState {
     return messages.get(messageID);
   }
 
-  async loadMessages(id, before) {
+  async loadMessages(id, before, signal = cdpRead.getStore()) {
     const revision = this.revision;
-    const page = await this.client.messages(id, this.sessions.get(id).directory, before);
+    const page = await this.client.messages(id, this.sessions.get(id).directory, before, signal);
     for (const row of page.rows) {
       const message = this.message(id, row.info.id);
       if (message.revision <= revision) message.info = row.info;

@@ -1304,6 +1304,67 @@ test('collapsed-card repeated clicks share only the actual unfinished native ope
   await h.run('ovOpen(cardTargets.b)');
   assert.equal(cardNavigations(h).length, 2);
 });
+
+test('leaving a pending collapsed-card navigation allows one new request and ignores the cancelled reply', async () => {
+  for (const app of ['codex', 'cursor', 'opencode']) {
+    const h = harness(); await h.bothReady(); installOverviewBinding(h, app); installCardModes(h);
+    await h.run('ovOpen(cardTargets.b)');
+    const cancelled = cardNavigations(h)[0].navigationId;
+    h.run('ovLeave()');
+    assert.equal(h.state().navigation, undefined);
+    await h.run('ovOpen(cardTargets.b);ovOpen({...cardTargets.b})');
+    const current = cardNavigations(h).at(-1).navigationId;
+    assert(current > cancelled); assert.equal(cardNavigations(h).length, 2);
+    const selected = { app, id: app === 'codex' ? 'codex' : app + ':window-a', sel: `${app}|window-a|card-b` };
+    cardAttached(h, 'card-b', { ...selected, navigationId: cancelled });
+    assert.equal(h.state().navigation, current); assert.equal(h.state().windowReady, false);
+    assert.equal(cardEntries(h).length, 0);
+    cardAttached(h, 'card-b', { ...selected, navigationId: current });
+    assert.equal(h.state().navigation, undefined); assert.equal(h.state().windowReady, true);
+    assert.equal(cardEntries(h).length, 1);
+  }
+});
+
+test('closing a pending expanded card releases its navigation before reopening the same card', async () => {
+  const h = harness(); await h.bothReady(); installOverviewBinding(h);
+  const old = h.run('ovS.open="a";ovPrepareTools("a").ready');
+  const cancelled = cardNavigations(h)[0].navigationId;
+  h.run('ovS.open=null;ovReleaseComposer()'); await old;
+  assert.equal(h.state().navigation, undefined);
+  const reopened = h.run('ovS.open="a";ovPrepareTools("a").ready');
+  const current = cardNavigations(h).at(-1).navigationId;
+  assert(current > cancelled); assert.equal(cardNavigations(h).length, 2);
+  cardAttached(h, 'card-a', { navigationId: cancelled });
+  assert.equal(h.run('ovToolState.phase'), 'binding');
+  cardAttached(h, 'card-a', { navigationId: current });
+  assert.equal(await reopened, true); assert.equal(h.run('ovToolState.phase'), 'ready');
+});
+
+test('cancelling foreground entry preserves the same expanded-card read until its owner closes', async () => {
+  const h = harness(); await h.bothReady(); installOverviewBinding(h);
+  h.run('ovS.open="a";ovPrepareTools("a")');
+  const cancelledEntry = h.run('ovOpen(cardTargets.a)');
+  const navigation = h.state().navigation;
+  h.run('ovCancelOpening()');
+  assert.equal(h.state().navigation, navigation);
+  const nextEntry = h.run('ovOpen(cardTargets.a)');
+  assert.equal(cardNavigations(h).length, 1);
+  cardAttached(h, 'card-a'); await cancelledEntry; await nextEntry;
+  assert.equal(cardEntries(h).length, 1);
+});
+
+test('same-target binding handoff reuses its read and releasing another target cannot cancel the newer navigation', async () => {
+  const h = harness(); await h.bothReady(); installOverviewBinding(h);
+  const first = h.run('bindWin(cardTargets.a).catch(error=>error.message)');
+  const second = h.run('bindWin({...cardTargets.a})');
+  await first;
+  assert.equal(cardNavigations(h).length, 1);
+  h.run('openWin(JSON.stringify(cardTargets.b));finishWinBinding(new Error("old owner released"))');
+  await assert.rejects(second, /old owner released/);
+  const current = cardNavigations(h).at(-1).navigationId;
+  assert.equal(h.state().navigation, current);
+  assert.equal(h.run('navigationPending.target.threadId'), 'card-b');
+});
 test('collapsed-card failures are visible on the owning card and retry starts one new operation', async () => {
   const h = harness(); await h.bothReady(); installOverviewBinding(h);
   await h.run('ovOpen(cardTargets.b)');

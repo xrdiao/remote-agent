@@ -2013,7 +2013,7 @@ function relayHeartbeat({ needsTwoFactor = false } = {}) {
   context.attachWss(new EventEmitter());
   const settle = () => new Promise(resolve => setImmediate(resolve));
   return {
-    logs, sessions, settle, routes: context.ROUTES,
+    logs, sessions, settle, routes: context.ROUTES, readScope: context.cdpRead,
     async socket({ valid = true, resume, authenticate = true } = {}) {
       const socket = new Socket(); wss.clients.add(socket); wss.emit('connection', socket, { headers: {} });
       if (authenticate) {
@@ -2043,6 +2043,34 @@ function relayHeartbeat({ needsTwoFactor = false } = {}) {
     },
   };
 }
+
+test('switching away from an unfinished OpenCode history read releases the shared queue for another app', async t => {
+  const { OpenCodeClient } = await import('../server/opencode/client.mjs');
+  const h = relayHeartbeat(), socket = await h.socket(), session = h.bind(socket), trace = [];
+  const client = new OpenCodeClient('http://controlled.invalid');
+  t.mock.method(globalThis, 'fetch', (_url, { signal }) => {
+    trace.push('history-start');
+    return new Promise((resolve, reject) => signal.addEventListener('abort', () => {
+      trace.push('history-cancelled'); reject(signal.reason);
+    }, { once: true }));
+  });
+  session.handle = async message => {
+    if (message.id === 'opencode') return client.messages('held-thread', '/project', undefined, h.readScope.getStore());
+    trace.push('codex-attach');
+  };
+  session.finishNavigationResult = () => {};
+  session.emit = message => socket.send(JSON.stringify(message));
+  h.routes.attach = ROUTES.attach; h.routes.ping = ROUTES.ping;
+  socket.receive({ t: 'attach', id: 'opencode', navigationId: 1 }); await h.settle();
+  assert.deepEqual(trace, ['history-start']);
+  socket.receive({ t: 'attach', id: 'codex', navigationId: 2 });
+  await h.settle(); await h.settle();
+  assert.deepEqual(trace, ['history-start', 'history-cancelled', 'codex-attach']);
+  assert.equal(socket.readyState, 1);
+  socket.receive({ t: 'ping' }); await h.settle();
+  assert.equal(socket.sent.at(-1).t, 'pong');
+  socket.close(1000);
+});
 
 test('returning from terminal finishes chat mode restoration before a following native attachment', async () => {
   const h = relayHeartbeat(), socket = await h.socket(), session = h.bind(socket), trace = [];
