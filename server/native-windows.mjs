@@ -324,9 +324,9 @@ export class NativeWindow {
     const app = this.win?.app;
     read.promise = cdpRead.run(controller.signal, async () => {
       await this.connect();
-      const result = await this.cdp.evaluate(`(() => {
+      const result = await this.cdp.evaluate(`(async () => {
         const h = ${PAGE_SRC};
-        const chat = h.extract(false, [], ${app === 'codex' ? 80 : 0});
+        const chat = await h.extract(false, [], ${app === 'codex' ? 80 : 0}, ${app === 'cursor'});
         return { chat, activeTab: h.activeChatTab(), states: h.agentStates(${JSON.stringify(app)}),
           surface: h.devinSurface(), catalog: ${app === 'codex' ? 'h.codexChatRows(true)' : app === 'devin' ? 'null' : 'h.agentList()'},
         };

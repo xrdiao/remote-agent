@@ -291,9 +291,18 @@
       refresh();
       return { refresh, stop() { stop(); for (const unsubscribe of subscribed.values()) unsubscribe(); } };
     }
-    if (remoteContext?.app === 'cursor') {
-      const stop = cursorSessionServices().data.loadedComposers.subscribe(remoteContext.threadId, changed);
-      return { stop: () => stop.dispose(), refresh() {} };
+    if (remoteContext?.app === 'cursor' || !remoteContext && cursorSessionServices()) {
+      const data = cursorSessionServices().data;
+      let thread, subscription;
+      const refresh = () => {
+        const selected = remoteContext?.threadId || activeThread();
+        if (selected === thread) return;
+        subscription?.dispose();
+        thread = selected;
+        subscription = thread ? data.loadedComposers.subscribe(thread, changed) : null;
+      };
+      refresh();
+      return { stop: () => subscription?.dispose(), refresh };
     }
     const subscribed = new Map();
     const update = () => changed();
@@ -1016,7 +1025,31 @@
       }
     }
   };
-  const extract = (history = false, knownTurns = [], pageSize = 0) => {
+  // Keep native text independent of the desktop's virtualized transcript; DOM rows still own UI actions.
+  const cursorCurrentChat = async (chat, limit) => {
+    if (!chat?.thread) return chat;
+    const data = cursorSessionServices().data.getComposerDataIfLoaded(chat.thread);
+    const headers = data.fullConversationHeadersOnly;
+    const positions = new Map(headers.map((header, index) => [header.bubbleId, index]));
+    const messages = await cursorMessages(chat.thread, data, headers.slice(-limit));
+    const text = new Map(messages.filter(message => message.text?.trim() && !message.toolFormerData).map(message => {
+      const at = Number(message.startedAtMs) || Date.parse(message.createdAt || '') || 0;
+      return [message.bubbleId, nativeMarkdownItem(message.bubbleId, message.type === 1 ? 'human' : 'assistant', message.text, at)];
+    }));
+    const existing = new Set(chat.items.map(item => item.i));
+    const missing = [...text.values()].filter(item => !existing.has(item.i));
+    const items = [];
+    let next = 0;
+    for (const item of chat.items) {
+      const position = positions.get(item.i.split(':think')[0]);
+      while (next < missing.length && positions.get(missing[next].i) < position) items.push(missing[next++]);
+      items.push(text.has(item.i) ? { ...item, ...text.get(item.i) } : item);
+    }
+    items.push(...missing.slice(next));
+    return { ...chat, items };
+  };
+  const extract = (history = false, knownTurns = [], pageSize = 0, nativeCursor = false) => {
+    if (nativeCursor) return cursorCurrentChat(extract(history, knownTurns), pageSize || 80);
     if (remoteContext?.app === 'codex') return codexConversationChat(history, pageSize || 80);
     if (remoteContext) return nativeConversationChat(history, pageSize || 80);
     const imagePreview = codexImagePreview();

@@ -660,6 +660,109 @@ test('history insertion and earlier message growth preserve the same reading off
   assert.equal(h.offset('reading'), offset);
 });
 
+function cursorBodyFixture() {
+  const data = new Map(), reads = [];
+  const service = { getComposerDataIfLoaded: id => data.get(id), _composerMessageStorageService: {
+    async retrieveMessagesBatch(id, ids) {
+      reads.push({ id, ids });
+      return new Map(ids.map(key => [key, data.get(id).stored.get(key)]));
+    },
+  } };
+  const context = vm.createContext({ cursorSessionServices: () => ({ data: service }), esc: value => value.replace(/</g, '&lt;') });
+  const source = read('server/page/chat-extract.js');
+  vm.runInContext(part(read('server/page/session-actions.js'), '  const cursorMessages =', '  const nativeSessionPreview =')
+    + part(source, '  const nativeMarkdownItem =', '  const nativeConversationChat =')
+    + part(source, '  const cursorCurrentChat =', '  const extract =') + '\nthis.update = cursorCurrentChat;', context);
+  return { reads, update: (chat, limit = 80) => context.update(chat, limit),
+    load(id, messages, stored = new Map()) {
+      data.set(id, { fullConversationHeadersOnly: messages.map(message => ({ bubbleId: message.bubbleId })),
+        conversationMap: Object.fromEntries(messages.map(message => [message.bubbleId, message])), stored });
+    } };
+}
+
+test('Cursor native text fills the virtualized body and updates existing replies without replacing tool actions', async () => {
+  const h = cursorBodyFixture();
+  h.load('A', [{ bubbleId: 'human', type: 1, text: '原生问题', startedAtMs: 1000 },
+    { bubbleId: 'reply', type: 2, text: '**完整回复**' },
+    { bubbleId: 'next', type: 1, text: '新问题' },
+    { bubbleId: 'tool', type: 2, text: '', toolFormerData: { name: 'run_terminal_command_v2' } },
+    { bubbleId: 'latest', type: 2, text: '电脑列表外的最新回复' }]);
+  const tool = { i: 'tool', k: 'tool', b: ['Run', 'Skip'], actions: ['run-id', 'skip-id'], output: '保留输出' };
+  const chat = { thread: 'A', items: [{ i: 'human', k: 'human', t: '旧问题' },
+    { i: 'reply', k: 'assistant', t: '部分', h: '<p>部分</p>', b: ['Copy'], actions: ['copy-id'], images: ['image'] }, tool],
+    questions: { id: 'approval' }, context: { pct: 25 }, model: 'model', earlier: true, draft: '真实草稿' };
+  const next = await h.update(chat);
+  assert.deepEqual(Array.from(next.items, item => item.i), ['human', 'reply', 'next', 'tool', 'latest']);
+  assert.equal(next.items[1].t, '**完整回复**');
+  assert.equal(next.items[1].bodyFormat, 'markdown');
+  assert.equal(next.items[1].actions, chat.items[1].actions);
+  assert.equal(next.items[1].images, chat.items[1].images);
+  assert.equal(next.items[3], tool);
+  for (const key of ['questions', 'context', 'model', 'earlier', 'draft']) assert.equal(next[key], chat[key]);
+  assert.equal(chat.items.length, 3);
+  assert.equal(chat.items[1].t, '部分');
+});
+
+test('Cursor body reads only the native tail, loads its placeholders and keeps message storage scoped to the thread', async () => {
+  const h = cursorBodyFixture();
+  const messages = Array.from({ length: 100 }, (_, i) => ({ bubbleId: String(i), type: 2, text: 'A-' + i }));
+  messages[99] = { bubbleId: '99', isPlaceholder: true };
+  h.load('A', messages, new Map([['99', { bubbleId: '99', type: 2, text: 'A最新' }]]));
+  h.load('B', [{ bubbleId: '99', type: 2, text: 'B最新' }]);
+  const a = await h.update({ thread: 'A', items: [] });
+  assert.equal(a.items.length, 80);
+  assert.equal(a.items[0].i, '20');
+  assert.equal(a.items.at(-1).t, 'A最新');
+  const b = await h.update({ thread: 'B', items: [] });
+  assert.equal(b.items[0].t, 'B最新');
+  assert.deepEqual(h.reads.map(row => ({ id: row.id, ids: Array.from(row.ids) })), [{ id: 'A', ids: ['99'] }]);
+});
+
+test('ordinary Cursor data subscriptions follow the active thread and release the previous native listener', () => {
+  let selected = 'A', changes = 0;
+  const active = new Map(), disposed = [];
+  const context = vm.createContext({ remoteContext: null, activeThread: () => selected,
+    cursorSessionServices: () => ({ data: { loadedComposers: {
+      subscribe(id, changed) { active.set(id, changed); return { dispose() { active.delete(id); disposed.push(id); } }; },
+    } } }) });
+  vm.runInContext(part(read('server/page/chat-extract.js'), '  const watchCodexData =', '  const codexUserText =')
+    + '\nthis.watch = watchCodexData;', context);
+  const watch = context.watch(() => changes++);
+  active.get('A')();
+  watch.refresh(); assert.equal(active.size, 1);
+  selected = 'B'; watch.refresh();
+  assert.equal(active.has('A'), false); active.get('B')();
+  assert.equal(changes, 2);
+  watch.stop(); assert.equal(active.size, 0);
+  assert.deepEqual(disposed, ['A', 'B']);
+  context.remoteContext = { app: 'cursor', threadId: 'fixed' };
+  const fixed = context.watch(() => changes++);
+  selected = 'C'; fixed.refresh();
+  assert.equal(active.has('fixed'), true); assert.equal(active.has('C'), false);
+  fixed.stop(); assert.equal(active.size, 0);
+});
+
+test('native window snapshots await Cursor text before publishing and keep the other app extract paths', async () => {
+  for (const app of ['cursor', 'codex', 'devin']) {
+    const calls = [], chat = { thread: 'A', items: [{ i: 'latest', k: 'assistant', t: '已完成读取' }] };
+    const helper = { extract(...args) { calls.push(args); return app === 'cursor' ? Promise.resolve(chat) : chat; },
+      activeChatTab: () => '', agentStates: () => [], devinSurface: () => null, agentList: () => [], codexChatRows: () => [] };
+    const context = { cdpRead, awaitCdpRead, AbortController, PAGE_SRC: 'helper', helpersCall: call => call,
+      refreshSessionCatalog: async () => {}, publishCatalog() {}, withOperation: (_operation, action) => action() };
+    const methods = vm.runInNewContext('({' + part(read('server/native-windows.mjs'), '  async read(fresh = false)', '  interval()') + '})', context);
+    const source = { revision: 1, win: { app }, runStates: new Map(), listeners: new Set(), connect: async () => {}, retryCapacity() {},
+      cdp: { evaluate: expression => expression === 'sessionPickerRows(true)' ? [] : vm.runInNewContext(expression, { helper }) } };
+    source.read = methods.read.bind(source);
+    const snapshot = await source.read();
+    assert.equal(snapshot.chat, chat);
+    assert.equal(source.snapshot.chat.items[0].t, '已完成读取');
+    assert.equal(calls[0][0], false);
+    assert.equal(calls[0][1].length, 0);
+    assert.equal(calls[0][2], app === 'codex' ? 80 : 0);
+    assert.equal(calls[0][3], app === 'cursor');
+  }
+});
+
 function readingWindow() {
   const calls = [];
   const context = { cdpRead, awaitCdpRead, AbortController, PAGE_SRC: '{}', helpersCall: call => call,
