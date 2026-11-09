@@ -161,10 +161,10 @@ export class Session extends AgentContext {
     if (this.mode === 'chat' && !result.chat) throw new Error('当前会话内容尚未就绪，请重试');
     this.emit({ ...binding, ready: true, windowId: this.windowId || '', threadId: this.threadId || '',
       sel: this.selectionKey(), ...(result.chat ? { chat: result.chat.chat } : {}),
-      ...(result.project ? { projectReady: result.project } : {}) });
+      ...(result.project ? { projectReady: result.project } : {}) }, result.chatSent);
   }
 
-  emit(obj) {
+  emit(obj, sent) {
     if (captureOperation(this, obj)) return;
     if (cdpRead.getStore()?.aborted) return;
     if (['attached', 'thread'].includes(obj?.t) && obj.app !== 'fusion') {
@@ -181,7 +181,11 @@ export class Session extends AgentContext {
           keepQuota: result.attached ? !!result.attached.keepQuota && !!obj.keepQuota : obj.keepQuota };
         if (obj.ready !== false) return;
       } else if (obj?.t === 'thread') return;
-      else if (obj?.t === 'chat' && obj.chat) { result.chat = obj; return; }
+      else if (obj?.t === 'chat' && obj.chat) {
+        result.chat = obj;
+        if (sent) result.chatSent = sent;
+        return;
+      }
       else if (obj?.t === 'projectReady') {
         const { chat, ...project } = obj;
         result.project = project;
@@ -234,7 +238,7 @@ export class Session extends AgentContext {
       const { chat, ...metadata } = obj;
       this.connectionMessages.set(obj.t, metadata);
     }
-    if (this.client.readyState === 1) this.client.send(JSON.stringify(obj), obj?.t === 'frame' ? { compress: false } : undefined);
+    if (this.client.readyState === 1) this.client.send(JSON.stringify(obj), obj?.t === 'frame' ? { compress: false } : undefined, sent);
   }
 
   liveRead(cdp, sel) {

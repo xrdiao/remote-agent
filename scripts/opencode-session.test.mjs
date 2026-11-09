@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { EventEmitter } from 'node:events';
 import { cdpRead } from '../server/cdp.mjs';
+import { createDocuments } from './fixtures/opencode-documents.mjs';
 
 const root = fileURLToPath(new URL(`../_shots/opencode-tests-${process.pid}/`, import.meta.url));
 fs.mkdirSync(root, { recursive: true });
@@ -11,6 +13,7 @@ const homedir = os.homedir;
 os.homedir = () => root;
 const { Session } = await import('../server/session.mjs');
 const { openCode } = await import('../server/opencode/state.mjs');
+const { uploads } = await import('../server/agent/context.mjs');
 os.homedir = homedir;
 test.after(() => { openCode.close(); fs.rmSync(root, { recursive: true, force: true }); });
 
@@ -57,6 +60,7 @@ test('cancelling a navigation releases its shared OpenCode initialization wait w
 });
 
 function fixture(t) {
+  uploads.clear();
   for (const map of [openCode.sessions, openCode.messages, openCode.statuses, openCode.permissions, openCode.questions, openCode.models, openCode.selections,
     openCode.automaticSessions, openCode.autoReplies, openCode.approvalErrors]) map.clear();
   openCode.listeners.clear();
@@ -71,10 +75,168 @@ function fixture(t) {
     if (route === '/session') return native('ses_new');
     return null;
   });
-  const session = new Session({ readyState: 1, send: raw => events.push(JSON.parse(raw)) }, 'opencode-test');
+  const client = Object.assign(new EventEmitter(), {
+    readyState: 1,
+    send(raw, _options, sent) { events.push(JSON.parse(raw)); sent?.(); },
+    ping(data) { this.emit('pong', data); },
+  });
+  const session = new Session(client, 'opencode-test');
   t.after(() => session.dispose());
   return { session, events, requests };
 }
+
+function holdWrites(session, events) {
+  const writes = [];
+  session.client.send = (raw, _options, sent) => {
+    events.push(JSON.parse(raw));
+    if (sent) writes.push(sent);
+  };
+  return writes;
+}
+
+function messageText(id, text) {
+  openCode.apply({ type: 'message.updated', properties: { info: { id: 'msg_stream', sessionID: id, role: 'assistant', time: { created: 3 } } } });
+  openCode.apply({ type: 'message.part.updated', properties: { part: { id: 'part_stream', sessionID: id, messageID: 'msg_stream', type: 'text', text } } });
+}
+
+test('OpenCode waits for a snapshot write and then publishes the latest text, status and approval together', async t => {
+  const { session, events } = fixture(t);
+  openCode.sessions.set('ses_one', native('ses_one'));
+  await session.handle({ t: 'attach', id: 'opencode', threadId: 'ses_one' });
+  const writes = holdWrites(session, events);
+  events.length = 0;
+  openCode.statuses.set('ses_one', { type: 'busy' });
+  messageText('ses_one', 'first');
+  await tick();
+  assert.equal(writes.length, 1);
+  for (let i = 0; i < 30; i++) {
+    messageText('ses_one', 'latest-' + i);
+    await tick();
+  }
+  openCode.statuses.set('ses_one', { type: 'idle' });
+  openCode.permissions.set('per_stream', { id: 'per_stream', sessionID: 'ses_one', patterns: ['file.py'], permission: 'edit', metadata: {} });
+  openCode.changed('ses_one');
+  await tick();
+  assert.equal(events.filter(e => e.t === 'chat').length, 1);
+  assert.equal(events[0].chat.busy, true);
+  writes.shift()();
+  await tick();
+  const chats = events.filter(e => e.t === 'chat');
+  assert.equal(chats.length, 2);
+  assert.equal(chats[1].chat.items[0].t, 'latest-29');
+  assert.equal(chats[1].chat.busy, false);
+  assert.equal(chats[1].chat.waiting, 'approval');
+  assert(chats[1].chat.items.some(item => item.i === 'permission:per_stream' && item.actions.includes('once')));
+  writes.shift()();
+  await tick();
+  assert.equal(events.filter(e => e.t === 'chat').length, 2);
+});
+
+test('OpenCode waits for its browser receipt rather than a completed server write or an unrelated heartbeat pong', async t => {
+  const { session, events } = fixture(t);
+  openCode.sessions.set('ses_one', native('ses_one'));
+  await session.handle({ t: 'attach', id: 'opencode', threadId: 'ses_one' });
+  const receipts = [];
+  session.client.ping = data => receipts.push(data);
+  const writes = holdWrites(session, events);
+  events.length = 0;
+  messageText('ses_one', 'first'); await tick();
+  writes.shift()();
+  assert.equal(receipts.length, 1);
+  for (let i = 0; i < 30; i++) { messageText('ses_one', 'latest-' + i); await tick(); }
+  session.client.emit('pong', Buffer.alloc(0));
+  await tick();
+  assert.equal(events.filter(e => e.t === 'chat').length, 1);
+  session.client.emit('pong', receipts.shift()); await tick();
+  assert.deepEqual(events.filter(e => e.t === 'chat').map(e => e.chat.items[0].t), ['first', 'latest-29']);
+  writes.shift()();
+  await session.handle({ t: 'visible', v: false });
+  assert.equal(session.client.listenerCount('pong'), 0);
+  const before = events.length;
+  session.client.emit('pong', receipts.shift()); await tick();
+  assert.equal(events.length, before);
+});
+
+test('returning home and reopening the same OpenCode session discards the old pending refresh and its write callback', async t => {
+  const { session, events } = fixture(t);
+  openCode.sessions.set('ses_one', native('ses_one'));
+  await session.handle({ t: 'attach', id: 'opencode', threadId: 'ses_one' });
+  const writes = holdWrites(session, events);
+  messageText('ses_one', 'old write'); await tick();
+  const oldWrite = writes.shift();
+  messageText('ses_one', 'old pending'); await tick();
+  await session.handle({ t: 'visible', v: false });
+  await session.handle({ t: 'visible', v: true });
+  events.length = 0;
+  messageText('ses_one', 'new write'); await tick();
+  assert.equal(writes.length, 1);
+  messageText('ses_one', 'new pending'); await tick();
+  oldWrite(); await tick();
+  assert.deepEqual(events.filter(e => e.t === 'chat').map(e => e.chat.items[0].t), ['new write']);
+  writes.shift()(); await tick();
+  assert.deepEqual(events.filter(e => e.t === 'chat').map(e => e.chat.items[0].t), ['new write', 'new pending']);
+});
+
+test('switching OpenCode sessions releases A updates without letting its late write interfere with B', async t => {
+  const { session, events } = fixture(t);
+  for (const id of ['ses_one', 'ses_two']) openCode.sessions.set(id, native(id));
+  await session.handle({ t: 'attach', id: 'opencode', threadId: 'ses_one' });
+  const writes = holdWrites(session, events);
+  messageText('ses_one', 'A write'); await tick();
+  const oldWrite = writes.shift();
+  messageText('ses_one', 'A pending'); await tick();
+  await session.handle({ t: 'openAgent', id: 'ses_two' });
+  events.length = 0;
+  messageText('ses_two', 'B write'); await tick();
+  messageText('ses_one', 'A late event');
+  messageText('ses_two', 'B pending'); await tick();
+  oldWrite(); await tick();
+  assert.deepEqual(events.filter(e => e.t === 'chat').map(e => e.chat.thread), ['ses_two']);
+  writes.shift()(); await tick();
+  const chats = events.filter(e => e.t === 'chat');
+  assert.deepEqual(chats.map(e => [e.chat.thread, e.chat.items[0].t]), [['ses_two', 'B write'], ['ses_two', 'B pending']]);
+});
+
+test('OpenCode stops pending refreshes on terminal switch and on disposal', async t => {
+  const { session, events } = fixture(t);
+  openCode.sessions.set('ses_one', native('ses_one'));
+  await session.handle({ t: 'attach', id: 'opencode', threadId: 'ses_one' });
+  const writes = holdWrites(session, events);
+  messageText('ses_one', 'first'); await tick();
+  messageText('ses_one', 'pending'); await tick();
+  await session.setMode('terminal');
+  events.length = 0;
+  writes.shift()(); await tick();
+  assert.equal(events.length, 0);
+  await session.setMode('chat');
+  messageText('ses_one', 'after terminal'); await tick();
+  messageText('ses_one', 'pending disposal'); await tick();
+  session.dispose();
+  events.length = 0;
+  writes.shift()(); await tick();
+  assert.equal(events.length, 0);
+});
+
+test('a first-screen snapshot waits for the combined navigation reply to be written before advancing live updates', async t => {
+  const { session, events } = fixture(t);
+  openCode.sessions.set('ses_one', native('ses_one'));
+  session.navigationId = 1;
+  const result = session.navigationResult = { id: 1 };
+  const writes = holdWrites(session, events);
+  await session.handle({ t: 'attach', id: 'opencode', threadId: 'ses_one' });
+  messageText('ses_one', 'captured'); await tick();
+  messageText('ses_one', 'latest while first screen waits'); await tick();
+  assert.equal(events.length, 0);
+  assert.equal(writes.length, 0);
+  session.finishNavigationResult(result);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].t, 'attached');
+  assert.equal(events[0].chat.items[0].t, 'captured');
+  assert.equal(writes.length, 1);
+  writes.shift()(); await tick();
+  assert.equal(events[1].t, 'chat');
+  assert.equal(events[1].chat.items[0].t, 'latest while first screen waits');
+});
 
 test('OpenCode attaches and switches native sessions without any CDP or desktop window', async t => {
   const { session, events } = fixture(t);
@@ -230,4 +392,72 @@ test('OpenCode context refresh loads native history and discards responses after
   complete({ rows: [], before: null });
   await pending;
   assert.equal(events.some(e => e.t === 'usage'), false);
+});
+
+test('OpenCode sends parsed Excel from an empty conversation and confirms only when all native parts are saved', async t => {
+  const { session, events, requests } = fixture(t);
+  const documents = await createDocuments(root + 'excel');
+  await session.handle({ t: 'attach', id: 'opencode', project: { root }, newSession: true });
+  const source = session.selectionKey();
+  uploads.set('excel', { name: '工作簿.XLSX', path: documents.xlsx, pending: true, sel: source });
+  uploads.set('other', { name: 'other.txt', path: documents.txt, pending: true, sel: 'another-session' });
+  await session.handle({ t: 'send', text: '读取第二表', requestId: 'excel-send' });
+  const prompt = requests.find(row => row.route.endsWith('/prompt_async')).options.body;
+  assert.equal(prompt.parts.length, 2);
+  assert.equal(prompt.parts[1].mime, 'text/plain');
+  assert.match(Buffer.from(prompt.parts[1].url.split(',')[1], 'base64').toString(), /第二表[\s\S]*ZEBRA_731/);
+  assert.equal(uploads.get('excel').pending, false);
+  assert.equal(uploads.get('other').pending, true);
+  assert.notEqual(session.selectionKey(), source);
+  assert.equal(events.findLast(e => e.t === 'attachments').sel, session.selectionKey());
+  openCode.apply({ type: 'message.updated', properties: { info: { id: prompt.messageID, sessionID: 'ses_new', role: 'user', time: { created: 10 } } } });
+  openCode.apply({ type: 'message.part.updated', properties: { part: { id: 'part_text', messageID: prompt.messageID, sessionID: 'ses_new', type: 'text', text: '读取第二表' } } });
+  assert.equal(events.some(e => e.t === 'sent' && !e.pending), false);
+  openCode.apply({ type: 'message.part.updated', properties: { part: { ...prompt.parts[1], id: 'part_file', messageID: prompt.messageID, sessionID: 'ses_new' } } });
+  assert.equal(events.findLast(e => e.t === 'sent').pending, undefined);
+  assert.equal(events.findLast(e => e.t === 'sent').sel, session.selectionKey());
+});
+
+test('OpenCode parse failures keep uploads pending without creating a native session or a hanging send', async t => {
+  const { session, events, requests } = fixture(t);
+  const file = root + 'broken.xlsx'; fs.writeFileSync(file, 'not an Excel workbook');
+  await session.handle({ t: 'attach', id: 'opencode', project: { root }, newSession: true });
+  uploads.set('broken', { name: 'broken.xlsx', path: file, pending: true, sel: session.selectionKey() });
+  const subscribers = openCode.listeners.size;
+  await assert.rejects(session.handle({ t: 'send', text: '读取附件', requestId: 'bad-file' }));
+  assert.equal(requests.length, 0);
+  assert.equal(session.threadId, '');
+  assert.equal(session.openCodeSends?.size || 0, 0);
+  assert.equal(openCode.listeners.size, subscribers);
+  assert.equal(uploads.get('broken').pending, true);
+  assert.equal(events.some(e => e.t === 'sent'), false);
+  await session.handle({ t: 'removeAttachment', id: 'broken', sel: session.selectionKey() });
+  await session.handle({ t: 'send', text: '继续文字提问', requestId: 'after-bad-file' });
+  assert.deepEqual(requests.find(row => row.route.endsWith('/prompt_async')).options.body.parts, [{ type: 'text', text: '继续文字提问' }]);
+});
+
+test('an attachment-only OpenCode send waits for its native file part rather than an empty user shell', async t => {
+  const { session, events, requests } = fixture(t);
+  const file = root + 'only.txt'; fs.writeFileSync(file, 'ATTACHMENT_ONLY_738');
+  await session.handle({ t: 'attach', id: 'opencode', project: { root }, newSession: true });
+  uploads.set('only', { name: 'only.txt', path: file, pending: true, sel: session.selectionKey() });
+  await session.handle({ t: 'send', text: '   ', requestId: 'file-only' });
+  const prompt = requests.find(row => row.route.endsWith('/prompt_async')).options.body;
+  assert.equal(prompt.parts.length, 1);
+  openCode.apply({ type: 'message.updated', properties: { info: { id: prompt.messageID, sessionID: 'ses_new', role: 'user', time: { created: 10 } } } });
+  assert.equal(events.some(e => e.t === 'sent' && !e.pending), false);
+  openCode.apply({ type: 'message.part.updated', properties: { part: { ...prompt.parts[0], id: 'part_file_only', messageID: prompt.messageID, sessionID: 'ses_new' } } });
+  assert.equal(events.findLast(e => e.t === 'sent').pending, undefined);
+});
+
+test('a failed native OpenCode submission retains the prepared upload for retry', async t => {
+  const { session } = fixture(t);
+  const file = root + 'retry.txt'; fs.writeFileSync(file, 'RETRY_739');
+  openCode.sessions.set('ses_one', native('ses_one'));
+  await session.handle({ t: 'attach', id: 'opencode', threadId: 'ses_one' });
+  uploads.set('retry', { name: 'retry.txt', path: file, pending: true, sel: session.selectionKey() });
+  t.mock.method(openCode.client, 'request', async () => { throw new Error('native submission failed'); });
+  await assert.rejects(session.handle({ t: 'send', text: 'read', requestId: 'retry-file' }), /native submission failed/);
+  assert.equal(uploads.get('retry').pending, true);
+  assert.equal(session.openCodeSends.size, 0);
 });

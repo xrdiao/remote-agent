@@ -172,6 +172,10 @@ RA 默认连接 `http://127.0.0.1:4096`；OpenCode 使用其他地址时，在�
 
 文件预览与高亮、RA 独立终端沿用现有入口。当前接入文本对话与工具执行，OpenCode 尚未接入 Fusion。原生审批、问题和会话数据以 OpenCode 后台为准。
 
+OpenCode 聊天附件中的文本、代码文件直接读取；Excel（`.xlsx`）、Word（`.docx`）、PowerPoint（`.pptx`）和 PDF 通过 `officeparser` 提取文字，再以 OpenCode 原生文本附件输入。旧 Word（`.doc`）先由本机 LibreOffice 转换；使用该格式需安装 LibreOffice。解析失败时不会向会话写入附件，上传项保留，可移除或重试。扫描 PDF 没有可提取文字时会提示改为图片发送，不自动启用 CPU OCR。
+
+PNG、JPEG、GIF、WebP 保留图片输入，需要 OpenCode 所选模型和推理服务支持视觉；本机 Bonsai 已加载配套视觉组件。上传新文件后，后续文字追问仍可读取其内容。已经存入历史的不支持二进制附件需单独移除，修复发送代码不会自动更改旧会话。
+
 ## Fusion
 
 Fusion 是 RA 的持续主工作台。你始终与一个原生主 Agent 对话，由它理解需求、规划和验收，并在需要时调用原生子 Agent。**当前主 Agent 限 Codex；子 Agent 可使用 Cursor、Devin 或 Codex。**各软件必须有可用的桌面窗口与实际模型候选。Devin 自己模型菜单中的 Fusion 是另一项原生能力。

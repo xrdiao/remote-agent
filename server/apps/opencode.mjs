@@ -1,5 +1,6 @@
 import path from 'node:path';
 import os from 'node:os';
+import fs from 'node:fs';
 import { openCode } from '../opencode/state.mjs';
 import { cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { safeHomePath, projectList, createProjectFolder } from '../agent/projects.mjs';
@@ -8,10 +9,12 @@ import { resolveLocal, writeTextFile } from '../../lib/files.mjs';
 import { publishSessionChange, rememberSessionMessage, removeLibrarySession } from '../../lib/session-library.mjs';
 import { currentOperation, withOperation } from '../operations.mjs';
 import { createMessageID } from '../opencode/client.mjs';
+import { uploads } from '../agent/context.mjs';
+import { openCodeAttachment } from '../opencode/attachments.mjs';
 
 export const capabilities = {
   model: true, effort: true, fast: false, queue: false, steer: false, queueEdit: false,
-  questions: true, approvals: true, attachments: false, fileReferences: false,
+  questions: true, approvals: true, attachments: true, fileReferences: false,
   editor: true, terminal: true, settings: false, usage: false, fork: false, extraActions: false,
 };
 
@@ -25,17 +28,23 @@ function attached(s, initial = false) {
     sel: s.selectionKey(), ready: true, initial });
 }
 
-function publish(s) {
+function publish(s, sent) {
   const selected = openCode.selection(s.threadId || s.openCodeDirectory);
   const chat = s.threadId ? openCode.chat(s.threadId) : { thread: '', items: [], busy: false,
     model: openCode.models.get(selected.key)?.name || selected.key,
     effort: selected.variant || '默认（服务端）', permission: '手动审批', context: openCode.context(s.openCodeDirectory),
     global: [], questions: null, queued: [], subagents: [] };
   const page = s.openCodePages?.get(s.threadId);
-  s.emit({ t: 'chat', sel: s.selectionKey(), chat: { ...chat, earlier: !!page?.before, empty: !s.threadId } });
+  s.emit({ t: 'chat', sel: s.selectionKey(), chat: { ...chat, earlier: !!page?.before, empty: !s.threadId } }, sent);
 }
 
 function confirmSend(s, requestID, pending) {
+  const files = [...openCode.messages.get(pending.threadID)?.get(pending.messageID)?.parts.values() || []].filter(part => part.type === 'file');
+  for (const expected of pending.attachments) {
+    const index = files.findIndex(part => part.filename === expected.filename && part.mime === expected.mime);
+    if (index < 0) return;
+    files.splice(index, 1);
+  }
   const item = openCode.chat(pending.threadID).items.find(row => row.i === pending.messageID && row.k === 'human' && row.t === pending.text);
   if (!item) return;
   pending.unsubscribe();
@@ -47,12 +56,15 @@ function confirmSend(s, requestID, pending) {
 
 function watch(s) {
   const key = s.selectionKey();
-  const stop = openCode.subscribe(id => {
-    if (id && id !== s.threadId) return;
-    if (s.openCodeUpdate) return;
+  const client = s.client, receipt = Buffer.from(crypto.randomUUID());
+  let sending = false, pending = false, stopped = false;
+  const refresh = () => {
+    pending = true;
+    if (sending || s.openCodeUpdate) return;
     s.openCodeUpdate = setImmediate(() => {
       s.openCodeUpdate = null;
       if (s.app !== 'opencode' || s.selectionKey() !== key || !s.visible || s.mode !== 'chat' || s.disposed) return;
+      pending = false;
       if (!openCode.connected) s.emit({ t: 'status', ok: false, msg: openCode.error });
       else {
         if (s.threadId && !openCode.sessions.has(s.threadId)) {
@@ -63,12 +75,29 @@ function watch(s) {
           s.stopChatUpdates();
           s.chatUpdatesStop = watch(s);
         }
-        publish(s);
+        sending = true;
+        publish(s, error => {
+          if (error || stopped) return;
+          client.ping(receipt);
+        });
       }
     });
+  };
+  const stop = openCode.subscribe(id => {
+    if (id && id !== s.threadId) return;
+    refresh();
   });
+  const received = data => {
+    if (!data.equals(receipt)) return;
+    sending = false;
+    if (pending) refresh();
+  };
+  client.on('pong', received);
   return () => {
+    stopped = true;
+    pending = false;
     stop();
+    client.off('pong', received);
     clearImmediate(s.openCodeUpdate);
     s.openCodeUpdate = null;
   };
@@ -146,6 +175,10 @@ export async function manageOpenCodeSession(id, action, name) {
   return { ok: true };
 }
 
+function attachmentList(context, sel) {
+  return [...uploads.entries()].filter(([, f]) => f.pending && f.sel === sel).map(([id, f]) => ({ id, name: f.name, size: f.size }));
+}
+
 const routes = {
   agents(m) { return list(this, m); },
   openAgent(m) {
@@ -163,10 +196,16 @@ const routes = {
     if (m.submit === false) return routes.draft.call(this, m);
     cdpRead.getStore()?.throwIfAborted();
     const model = openCode.selection(this.threadId || this.openCodeDirectory), native = openCode.models.get(model.key);
+    const sel = this.selectionKey();
+    const files = [...uploads].filter(([, file]) => file.pending && file.sel === sel);
+    const parts = m.text?.trim() ? [{ type: 'text', text: m.text }] : [];
+    parts.push(...await Promise.all(files.map(([, file]) => openCodeAttachment(file))));
+    cdpRead.getStore()?.throwIfAborted();
     await ensureSession(this);
     const messageID = createMessageID();
     this.openCodeSends ||= new Map();
-    const pending = { messageID, threadID: this.threadId, text: m.text, draft: m.draft,
+    const pending = { messageID, threadID: this.threadId, text: m.text?.trim() ? m.text : '', draft: m.draft,
+      attachments: parts.filter(part => part.type === 'file').map(({ filename, mime }) => ({ filename, mime })),
       sel: this.selectionKey(), operation: currentOperation() };
     if (pending.operation) pending.operation.pending = true;
     pending.unsubscribe = openCode.subscribe(id => { if (!id || id === pending.threadID) confirmSend(this, m.requestId, pending); });
@@ -176,13 +215,15 @@ const routes = {
       if (pending.operation) pending.operation.submitted = true;
       await openCode.client.request(`/session/${this.threadId}/prompt_async`, { directory: this.openCodeDirectory, method: 'POST', body: {
         messageID, model: { providerID: native.providerID, modelID: native.id },
-        ...(model.variant ? { variant: model.variant } : {}), parts: [{ type: 'text', text: m.text }],
+        ...(model.variant ? { variant: model.variant } : {}), parts,
       } });
     } catch (error) {
       pending.unsubscribe(); this.openCodeSends.delete(m.requestId);
       if (pending.operation) pending.operation.pending = false;
       throw error;
     }
+    for (const [, file] of files) file.pending = false;
+    this.emit({ t: 'attachments', sel: pending.sel, list: attachmentList(this, pending.sel) });
     this.openCodeDrafts?.delete(m.sel || pending.sel);
     this.openCodeDrafts?.delete(pending.sel);
     this.draftEpoch = m.draftEpoch || this.draftEpoch;
@@ -216,8 +257,31 @@ const routes = {
     this.emit({ t: 'draftAck', sel: this.selectionKey(), ok: true, text: this.openCodeDrafts.get(m.sel) || '', read,
       draftEpoch: this.draftEpoch || '', revision: m.revision });
   },
-  attachments() { this.emit({ t: 'attachments', sel: this.selectionKey(), list: [] }); },
-  image() { throw new Error('当前 OpenCode 适配仅支持文本消息'); },
+  async attachments(m) {
+    const sel = m.sel || this.selectionKey();
+    this.emit({ t: 'attachments', sel, list: attachmentList(this, sel) });
+    return { ok: true };
+  },
+  async image(m) {
+    const upload = uploads.get(m.uploadId);
+    if (!upload) throw new Error('图片上传已失效');
+    if (m.sel && upload.sel && m.sel !== upload.sel) throw new Error('上传所属会话不匹配');
+    upload.pending = true;
+    const sel = this.selectionKey();
+    this.emit({ t: 'attachments', sel, list: attachmentList(this, sel) });
+    this.emit({ t: 'imageDone', clientImageId: m.clientImageId, attachmentId: m.uploadId, ok: true });
+    return { ok: true };
+  },
+  async removeAttachment(m) {
+    const sel = m.sel || this.selectionKey();
+    const f = uploads.get(m.id);
+    if (f && f.pending && f.sel === sel) {
+      if (fs.existsSync(f.path)) fs.rmSync(f.path, { recursive: true, force: true });
+      uploads.delete(m.id);
+    }
+    this.emit({ t: 'attachments', sel, list: attachmentList(this, sel) });
+    return { ok: true };
+  },
   async usage(m) {
     const id = this.threadId, sel = this.selectionKey();
     if (id && !m.automatic) await openCode.loadMessages(id);

@@ -229,12 +229,30 @@ export class OpenCodeState {
     const messages = [...this.messages.get(id)?.values() || []].sort((a, b) => (a.info.time?.created || 0) - (b.info.time?.created || 0) || a.info.id.localeCompare(b.info.id));
     for (const { info, parts } of messages) {
       const start = items.length;
+      const partsArr = [...parts.values()];
+      const compaction = partsArr.find(p => p.type === 'compaction');
+      const label = compaction ? (compaction.auto ? '已完成自动压缩上下文' : '已完成压缩上下文') : '';
       if (info.role === 'user') {
-        items.push({ i: info.id, k: 'human', t: [...parts.values()].filter(p => p.type === 'text' && !p.synthetic).map(p => p.text).join('\n'), sentAt: info.time.created, order: info.time.created });
+        const t = partsArr.filter(p => p.type === 'text' && !p.synthetic).map(p => p.text).join('\n');
+        if (compaction && !t.trim()) {
+          items.push({ i: info.id, k: 'notice', kind: 'compaction', t: label, order: info.time.created });
+        } else {
+          items.push({ i: info.id, k: 'human', t, sentAt: info.time.created, order: info.time.created });
+        }
         continue;
       }
-      for (const part of parts.values()) {
-        if (part.type === 'text') items.push({ i: part.id, k: 'assistant', t: part.text || '' });
+      const hasContent = partsArr.some(p =>
+        (p.type === 'text' && !p.synthetic && (p.text || '').trim()) ||
+        p.type === 'reasoning' || p.type === 'tool');
+      if (compaction && !hasContent) {
+        items.push({ i: info.id, k: 'notice', kind: 'compaction', t: label, order: info.time?.created || 0 });
+        continue;
+      }
+      for (const part of partsArr) {
+        if (part.type === 'text') {
+          if (compaction && !part.text?.trim()) continue;
+          items.push({ i: part.id, k: 'assistant', t: part.text || '' });
+        }
         if (part.type === 'reasoning') items.push({ i: part.id, k: 'thinking', t: '思考\n' + (part.text || ''), live: !info.time?.completed });
         if (part.type === 'tool') items.push(toolItem(part));
       }

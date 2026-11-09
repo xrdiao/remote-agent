@@ -407,7 +407,7 @@ test('native Fusion attachments from another paired entry carry the same summary
     bindings: [{ id: 'main', app: 'codex', threadId: 'main-thread' }], attempts: [{ changes: { diff: 'large-diff'.repeat(100000) } }] };
   const context = vm.createContext({ captureOperation: () => false, cdpRead: { getStore: () => null }, AGENT_REGISTRY: {},
     fusionControllerView, allFusionRuns: () => [run], chatForWire: value => value });
-  const body = fragment(read('server/session.mjs'), '  emit(obj) {', '\n  liveRead(cdp, sel)');
+  const body = fragment(read('server/session.mjs'), '  emit(', '\n  liveRead(cdp, sel)');
   const emit = vm.runInContext(`({${body}}).emit`, context);
   const session = { deviceId: 'another-paired-entry', fusionSaved: { runs: [] }, app: 'codex', threadId: 'main-thread', connectionMessages: new Map(),
     selectionKey: () => 'native-selection', client: { readyState: 1, send: raw => sent.push(JSON.parse(raw)) } };
@@ -431,7 +431,7 @@ test('a fresh native main first screen persists its current Fusion window withou
   const context = vm.createContext({ captureOperation: () => false, cdpRead: { getStore: () => null }, AGENT_REGISTRY: {},
     fusionControllerView, allFusionRuns: () => [run], chatForWire: value => value, rememberFusionMainWindow,
     rememberSelection: (_device, selection) => saved.push(selection) });
-  const emit = vm.runInContext(`({${fragment(read('server/session.mjs'), '  emit(obj) {', '\n  liveRead(cdp, sel) {')}}).emit`, context);
+  const emit = vm.runInContext(`({${fragment(read('server/session.mjs'), '  emit(', '\n  liveRead(cdp, sel) {')}}).emit`, context);
   const session = { app: 'codex', cdp, sel: 1, deviceId: 'paired-entry', targetId: 'codex', windowId: 'current-window', threadId: binding.threadId,
     bindingReady: true, selectionKey: () => 'current-selection', liveRead: () => true, currentRoots: async () => [run.project],
     connectionMessages: new Map(), client: { readyState: 1, send() {} } };
@@ -455,7 +455,7 @@ test('cached, incomplete and superseded first screens do not move a Fusion main 
   const context = vm.createContext({ captureOperation: () => false, cdpRead: { getStore: () => null }, AGENT_REGISTRY: {},
     fusionControllerView, allFusionRuns: () => [run], chatForWire: value => value,
     rememberFusionMainWindow: () => confirmations++, rememberSelection() {} });
-  const emit = vm.runInContext(`({${fragment(read('server/session.mjs'), '  emit(obj) {', '\n  liveRead(cdp, sel) {')}}).emit`, context);
+  const emit = vm.runInContext(`({${fragment(read('server/session.mjs'), '  emit(', '\n  liveRead(cdp, sel) {')}}).emit`, context);
   const session = { app: 'codex', cdp: {}, sel: 1, windowId: 'new-window', threadId: 'main-thread', bindingReady: false,
     selectionKey: () => 'selection', liveRead: () => true, currentRoots: () => new Promise(resolve => { rootsReady = resolve; }),
     connectionMessages: new Map(), client: { readyState: 1, send() {} } };

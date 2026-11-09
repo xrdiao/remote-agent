@@ -12,7 +12,7 @@
     "devices": "node cli/devices.mjs",
     "2fa": "node cli/twofa.mjs",
     "check": "node scripts/check.mjs && npm test",
-    "test": "node --test scripts/codex-submit.test.mjs scripts/thinking-cache.test.mjs scripts/computer-switch.test.mjs scripts/ratelimit.test.mjs scripts/codex-context-cache.test.mjs scripts/structure-fixes.test.mjs scripts/project-windows.test.mjs scripts/session-lifecycle.test.mjs scripts/file-actions.test.mjs scripts/fusion-store.test.mjs scripts/fusion-control.test.mjs scripts/fusion-runner.test.mjs scripts/fusion-scheduler.test.mjs scripts/fusion-agent.test.mjs scripts/fusion-cost.test.mjs scripts/fusion-navigation.test.mjs scripts/voice-runtime.test.mjs scripts/auth-storage.test.mjs scripts/terminal-service.test.mjs scripts/opencode-client.test.mjs scripts/opencode-launch.test.mjs scripts/opencode-state.test.mjs scripts/opencode-session.test.mjs",
+    "test": "node --test scripts/codex-submit.test.mjs scripts/thinking-cache.test.mjs scripts/computer-switch.test.mjs scripts/ratelimit.test.mjs scripts/codex-context-cache.test.mjs scripts/structure-fixes.test.mjs scripts/project-windows.test.mjs scripts/session-lifecycle.test.mjs scripts/file-actions.test.mjs scripts/fusion-store.test.mjs scripts/fusion-control.test.mjs scripts/fusion-runner.test.mjs scripts/fusion-scheduler.test.mjs scripts/fusion-agent.test.mjs scripts/fusion-cost.test.mjs scripts/fusion-navigation.test.mjs scripts/voice-runtime.test.mjs scripts/auth-storage.test.mjs scripts/terminal-service.test.mjs scripts/opencode-client.test.mjs scripts/opencode-attachments.test.mjs scripts/opencode-launch.test.mjs scripts/opencode-state.test.mjs scripts/opencode-session.test.mjs",
     "reset": "node -e \"const d=require('os').homedir()+'/.agent-remote/';for(const f of ['url-key','devices.json','pairing.json','totp.json','config.json','state.json'])require('fs').rmSync(d+f,{force:true});console.log('已重置：所有设备需要重新配对，二次验证已关闭')\"",
     "voice:setup": "node cli/voice-setup.mjs"
   },
@@ -35,6 +35,7 @@
     "@xterm/xterm": "6.0.0",
     "markdown-it": "15.0.3",
     "node-pty": "1.1.0",
+    "officeparser": "7.0.3",
     "qrcode-terminal": "^0.12.0",
     "shiki": "4.5.0",
     "web-push": "^3.6.7",
