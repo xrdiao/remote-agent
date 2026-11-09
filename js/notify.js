@@ -209,10 +209,15 @@ function winTargetReady(target) {
   return authed && windowReady && !navigationPending && current?.id === target.computer
     && current.windowId === target.windowId && (target.threadId === undefined || current.threadId === target.threadId) && currentApp === target.win.split(':')[0];
 }
-function finishWinBinding(error) {
+function finishWinBinding(error, nextTarget) {
   const binding = winBinding;
   if (!binding) return;
-  if (error) { winBinding = null; binding.reject(error); return; }
+  if (error) {
+    winBinding = null;
+    if (!sameWinTarget(binding.target, nextTarget)) cancelNavigation(binding.target);
+    binding.reject(error);
+    return;
+  }
   if (!authed || !windowReady || navigationPending || currentComputer()?.id !== binding.target.computer) return;
   if (!winTargetReady(binding.target)) {
     return openWin(JSON.stringify({ ...binding.target, background: true }));
@@ -221,7 +226,7 @@ function finishWinBinding(error) {
   binding.resolve();
 }
 function bindWin(target) {
-  finishWinBinding(new Error('目标会话已切换'));
+  finishWinBinding(new Error('目标会话已切换'), target);
   if (mode !== 'chat') setMode('chat', false);
   if (winTargetReady(target)) return Promise.resolve();
   return new Promise((resolve, reject) => {
