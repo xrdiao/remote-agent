@@ -275,7 +275,7 @@ function renderItem(it) {
     if (it.src === 'devin') el.insertAdjacentHTML('beforeend', `<div class="rv"><button class="foldBtn" data-fold="${esc(it.i)}" title="折叠这一轮">▾</button><span class="turnSum"></span><button class="revertBtn" data-revert="${esc(it.i)}">回到这里</button></div>`);
   }
   // it.h comes from the whitelist sanitizer in server/page/common.js (clean): plain tags only, text escaped.
-  else if (it.k === 'assistant') { el.copyText = it.t || ''; el.innerHTML = currentApp === 'codex' ? codexReplyHtml(it) : currentApp === 'opencode' ? codexMarkdown.render(it.t || '') : it.h || ''; dressMessage(el); }
+  else if (it.k === 'assistant') { el.copyText = it.t || ''; el.innerHTML = currentApp === 'codex' || currentApp === 'cursor' && it.bodyFormat === 'markdown' ? codexReplyHtml(it) : currentApp === 'opencode' ? codexMarkdown.render(it.t || '') : it.h || ''; dressMessage(el); }
   else if (it.k === 'opencodeQuestion') {
     el.innerHTML = `<form data-opencode-question="${esc(it.requestID)}">${it.questions.map((question, qi) =>
       `<fieldset data-opencode-answer data-multiple="${question.multiple === true}"><legend class="ovRaw">${esc(question.header)} · ${esc(question.question)}</legend>${question.options.map(option =>
