@@ -238,7 +238,7 @@ function ovNotify(r, kind) {
 function ovRecsOf(e, st) {
   const off = ovComputerStatus(e, st) !== 'online', out = [];
   for (const s of st.data.sessions) {
-    const key = ovNativeKey(e.id, s), done = s.run?.status === 'completed' && ovDone[key]?.runId === s.run.id ? ovDone[key].at : 0;
+    const key = ovNativeKey(e.id, s), done = s.run?.status === 'completed' && ovDone[key] && ovDone[key].runId === s.run.id ? ovDone[key].at : 0;
     const since = s.startedAt || st.first.get(key);
     const stopped = s.run?.status === 'stopped' && ovStoppedSeen[key] !== s.run.id;
     const state = s.dormant ? 'idle' : s.waiting ? 'wait' : s.busy ? 'run' : s.run?.status === 'error' || stopped ? 'err'

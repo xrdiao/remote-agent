@@ -2435,6 +2435,13 @@ function overviewCards(saved = new Map()) {
   };
 }
 
+test('completed session without run id or stored completion keeps overview available', () => {
+  const h = overviewCards();
+  h.apply({ run: { status: 'completed' } });
+  assert.equal(h.rows()[0].state, 'idle');
+  assert.equal(h.rows()[0].ended, 0);
+});
+
 test('marking a completed card read persists locally, updates its project and allows a new completed turn', () => {
   const h = overviewCards();
   h.apply({ busy: true, run: { id: 'turn', status: 'running', startedAt: 100 } });
