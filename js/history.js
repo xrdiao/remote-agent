@@ -746,9 +746,8 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
   }
   const followBottom = followingChat();
   const existing = new Set([...itemsEl.children].map(el => el.dataset.i));
-  const restoreInsertion = !followBottom && !threadChanged && scrollMode === 'freeScroll'
-    && historyInsertion
-    ? historyInsertionPosition() : null;
+  let restorePosition = !followBottom && !threadChanged && scrollMode === 'freeScroll'
+    && (keepReading || historyInsertion) ? chatReadingPosition() : null;
   noteChatLayoutChange();
   lastChat = chat; updateTitle();
   paintGenerationTime();
@@ -795,6 +794,7 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
     if (echoes.length) $('empty').hidden = true;
     itemsEl.replaceChildren(...echoes); itemsEl.classList.remove('stale'); renderQueue(false, []); renderQuestions(null); paintSessions(null); latestTasks = null; $('taskChip').hidden = true; return; }
   const sessionChanged = paintSessions(chat);
+  if (sessionChanged) restorePosition = null;
   const keepViewport = keepReading && !followBottom && !threadChanged && !sessionChanged && !historyInsertion && scrollMode === 'freeScroll';
   const V = scMerge(chat, keepViewport ? existing : new Set());
   if (keepViewport && V.items.length > SC.show + 1) deferredScrollRender = true;
@@ -840,11 +840,6 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
       hit.key = key;
       return hit.el;
     }
-    if (keepViewport && hit?.el.isConnected && !hit.refresh && hit.el.getBoundingClientRect().top < edge) {
-      paintItemActions(hit.el, it);
-      deferredScrollRender = true;
-      return hit.el;
-    }
     if (it.k === 'thinking' && hit?.el) {
       paintThinking(hit.el, it);
       paintItemActions(hit.el, it);
@@ -887,7 +882,7 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
     visibleItems.forEach((it, n) => {
       const el = els[n];
       let b = el.querySelector(':scope > .endFold');
-      if (keepViewport && existing.has(String(it.i)) && el.getBoundingClientRect().top < edge) return;
+      if (keepViewport && el.isConnected && existing.has(String(it.i)) && el.getBoundingClientRect().top < edge) return;
       if (!keep.has(n)) return b?.remove();
       if (!b) {
         b = document.createElement('button');
@@ -915,8 +910,8 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
   renderQueue(chatStale ? false : chat.busy, chatStale ? [] : (chat.queued || []), chat.subagents || [], chat.readonly, chat.changed, chat.queuedCount);
   renderQuestions(chatStale || (chat.readonly && !chat.questions?.codex) ? null : chat.questions);
 
-  paintHistoryStatus(!!restoreInsertion);
-  restoreInsertion?.();
+  paintHistoryStatus(!!restorePosition);
+  restorePosition?.();
   restoreChatPosition(stick);
   historyRendering = false;
   if (!stick && previous && JSON.stringify(previous.items) !== JSON.stringify(chat.items)) $('toBottom').textContent = '↓ 有新消息';
@@ -1568,18 +1563,18 @@ function applyPendingHistory() {
   renderChat(chat, chatStale, false, true, true);
   if (isFollowingBottom()) requestChatScroll();
 }
-// Measure and commit only within the synchronous insertion; no reading position survives it.
-function historyInsertionPosition() {
+// Preserve the reading offset during synchronous message updates and history insertion.
+function chatReadingPosition() {
   const top = list.scrollTop, edge = list.getBoundingClientRect().top;
-  const before = new Map([...itemsEl.children].map(el => {
+  const before = new Map([...itemsEl.querySelectorAll(':scope > [data-i]')].map(el => {
     const r = el.getBoundingClientRect();
-    return [el, { top: r.top - edge + top, bottom: r.bottom - edge + top }];
+    return [el.dataset.i, { top: r.top - edge + top, bottom: r.bottom - edge + top }];
   }));
   return () => {
     const offset = list.scrollTop - list.getBoundingClientRect().top;
     let delta = 0, previous = null;
-    for (const el of itemsEl.children) {
-      const old = before.get(el);
+    for (const el of itemsEl.querySelectorAll(':scope > [data-i]')) {
+      const old = before.get(el.dataset.i);
       if (!old) continue;
       const r = el.getBoundingClientRect(), now = { top: r.top + offset, bottom: r.bottom + offset };
       if (!previous) delta = now.top - old.top;
