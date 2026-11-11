@@ -1,6 +1,7 @@
 /* ---------- chat view ---------- */
 const list = $('list'), itemsEl = $('items');
 const cache = new Map();
+const openCodeTools = new Set();
 $('cachedMore').onclick = () => loadOlderMessages();
 itemsEl.addEventListener('click', async e => {
   const copy = e.target.closest('[data-copy-message]');
@@ -24,6 +25,12 @@ itemsEl.addEventListener('click', async e => {
     const box = tr.closest('.toolrow');
     box.classList.add('anim');
     box.classList.toggle('open');
+    if (currentApp === 'opencode' && tr.dataset.lazy) {
+      const open = box.classList.contains('open');
+      if (open) openCodeTools.add(box.dataset.i);
+      else openCodeTools.delete(box.dataset.i);
+      send({ t: 'toolDetails', sel: viewSel, i: box.dataset.i, open });
+    }
     const chev = tr.querySelector('.chev');
     if (chev) chev.textContent = box.classList.contains('open') ? '▾' : '▸';
     const hit = cache.get(box.dataset.i);
@@ -193,17 +200,21 @@ function renderTool(el, it) {
     const path = it.chipFiles?.[index] || (isFile ? fileRef(it.f, it.r) : '');
     return `<code class="chip"${path ? ` data-file="${esc(path)}"` : ''}>${esc(c)}${isFile && it.r ? ' ' + esc(it.r) : ''}</code>`;
   }).join('');
-  if (it.kind === 'command') {
+  if (it.lazy && !it.details) {
+    el.innerHTML = `<div class="trow toggle" data-ttoggle data-lazy="1">${icon}<span class="tl">${esc(it.t)}</span><span class="chev">▸</span></div>`;
+    return;
+  }
+  if (it.kind === 'command' || it.lazy && it.kind !== 'edit') {
     const cmd = it.cmd || '';
     const output = it.output || '';
-    el.innerHTML = `<div class="trow toggle" data-ttoggle>${icon}<span class="tl">${esc(it.t || TOOL_LABEL.command)}</span>${it.d ? `<span class="dur">${esc(it.d)}</span>` : ''}${cmd || output ? '<span class="chev">▸</span>' : ''}</div>`
+    el.innerHTML = `<div class="trow toggle" data-ttoggle${it.lazy ? ' data-lazy="1"' : ''}>${icon}<span class="tl">${esc(it.t || TOOL_LABEL.command)}</span>${it.d ? `<span class="dur">${esc(it.d)}</span>` : ''}${it.lazy || cmd || output ? '<span class="chev">▸</span>' : ''}</div>`
       + (cmd ? `<pre class="tcmd">${esc(cmd)}</pre>` : '')
       + (output ? `<pre class="tcmd">${esc(output)}</pre>` : '');
     return;
   }
   if (it.kind === 'edit') {
     const diff = (it.diff || []).map(([ty, text]) => `<div class="dl ${ty === '+' ? 'di' : ty === '-' ? 'dd' : ty === '…' ? 'dm' : ''}">${esc(ty === '…' ? text : ty + ' ' + text)}</div>`).join('');
-    el.innerHTML = `<div class="trow toggle" data-ttoggle>${icon}<span class="tl">${esc(TOOL_LABEL.edit)}</span><code class="chip" data-file="${esc(it.f || '')}">${esc(it.f || '')}</code>`
+    el.innerHTML = `<div class="trow toggle" data-ttoggle${it.lazy ? ' data-lazy="1"' : ''}>${icon}<span class="tl">${esc(TOOL_LABEL.edit)}</span><code class="chip" data-file="${esc(it.f || '')}">${esc(it.f || '')}</code>`
       + `<span class="stat add">+${it.add || 0}</span><span class="stat del">-${it.del || 0}</span><span class="chev">▾</span></div>`
       + `<div class="tdiff">${diff}</div>`;
     return;
@@ -290,7 +301,7 @@ function renderItem(it) {
   }
   else if (it.k === 'tool') {
     el.copyText = it.t || '';
-    if (it.kind && (it.src === 'devin' || it.src === 'codex' || it.src === 'opencode')) { renderTool(el, it); el.classList.add('toolrow'); if (it.kind !== 'command' || it.keep) el.classList.add('open'); }
+    if (it.kind && (it.src === 'devin' || it.src === 'codex' || it.src === 'opencode')) { renderTool(el, it); el.classList.add('toolrow'); if (it.lazy ? openCodeTools.has(it.i) : it.kind !== 'command' || it.keep) el.classList.add('open'); }
     else {
       el.innerHTML = `<div class="txt">${esc(it.t || '')}</div>`;
       if (it.f) el.dataset.file = it.f;
