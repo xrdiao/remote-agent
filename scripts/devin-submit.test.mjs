@@ -92,9 +92,34 @@ function nativePage({ contexts = [], hooks = [], options = true, sessions = [SES
   const window = { __acpStore: store,
     __SSG_COMPOSER_PROVIDER__: { getStates: () => [{ id: focusedId, state: 'focused' }] } };
   const page = vm.runInNewContext(PAGE_SRC, { document, window, crypto: crypto.webcrypto });
-  return { page, calls, store, composer, inputBox, controller: queueController, questionContext, nativeOptions, blocks, fiber,
+  return { page, calls, store, composer, inputBox, controller: queueController, questionContext, nativeOptions, blocks, fiber, document, editor,
     setFocused: id => { focusedId = id; } };
 }
+
+test('Devin native submission skips an unrelated first visible editor for both queue and text answers', async () => {
+  const h = nativePage({ question: 'allow' });
+  const unrelated = { ...h.editor, __reactFiber$fixture: fiberNode() };
+  h.document.querySelectorAll = selector => selector.includes('data-slate-editor') ? [unrelated, h.editor] : [];
+  await h.page.nativeSessionAction('devin', SESSION, 'queue', {});
+  assert.equal(h.calls.dispatch.length, 1);
+  assert.equal(h.calls.toAcpBlocks, h.nativeOptions);
+  await h.page.nativeSessionAction('devin', SESSION, 'questionText', { text: '正确会话的回答' });
+  assert.equal(h.calls.submits.length, 1);
+  assert.equal(h.calls.submits[0].text, '正确会话的回答');
+});
+
+test('Devin native submission uses the registered current composer instead of another input in the same registry', async () => {
+  const h = nativePage();
+  let foreignConverted = 0;
+  const foreignInput = { composerRef: { current: { toAcpBlocks() { foreignConverted++; return []; } } } };
+  const registry = { getCurrentComposer: () => h.composer, registerInputBox() {} };
+  const other = { ...h.editor, __reactFiber$fixture: fiberNode([selectorWrapped(foreignInput), selectorWrapped(registry)], [h.nativeOptions]) };
+  h.document.querySelectorAll = selector => selector.includes('data-slate-editor') ? [other, h.editor] : [];
+  await h.page.nativeSessionAction('devin', SESSION, 'queue', { now: true });
+  assert.equal(foreignConverted, 0);
+  assert.equal(h.calls.interrupt.length, 1);
+  assert.equal(h.calls.toAcpBlocks, h.nativeOptions);
+});
 
 test('Devin queue with a pending question writes the native queue once and never touches the question handler', async () => {
   const h = nativePage({ question: 'allow' });

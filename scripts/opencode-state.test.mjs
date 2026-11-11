@@ -121,6 +121,10 @@ test('OpenCode context uses the last valid native call and its actual model limi
   state.sessions.set('ses_1', { ...native('ses_1'), tokens: { total: 999999 } });
   assert.equal(state.context('ses_1').used, null);
   assert.equal(state.context('ses_1').limit, 131072);
+  assert.equal(state.context('ses_1').durationMs, null);
+  assert.equal(state.context('ses_1').speedTokS, null);
+  assert.equal(state.context('ses_1').cacheRate, null);
+  assert.equal(state.context('ses_1').tokens, null);
   const update = (id, created, tokens, completed = created + 1) => state.apply({ type: 'message.updated', properties: { info: {
     id, sessionID: 'ses_1', role: 'assistant', providerID: 'local', modelID: 'bonsai', time: { created, completed }, tokens,
   } } });
@@ -129,6 +133,10 @@ test('OpenCode context uses the last valid native call and its actual model limi
   assert.equal(usage.used, 8000);
   assert.equal(usage.pct, 6.1);
   assert.equal(usage.updated, 11);
+  assert.equal(usage.durationMs, 1);
+  assert.equal(usage.speedTokS, 300000);
+  assert.equal(usage.cacheRate, 3.9);
+  assert.deepEqual(usage.tokens, { total: 99999, input: 7000, output: 100, reasoning: 200, cache: { read: 300, write: 400 } });
   state.selections.set('ses_1', { key: 'other/model', variant: '' });
   assert.deepEqual(state.context('ses_1'), usage);
   update('msg_2', 20, { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } });

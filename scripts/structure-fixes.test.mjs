@@ -41,7 +41,7 @@ function nativeNode(attributes = {}, properties = {}, visible = true) {
 }
 
 function devinAccountUsage({ inactive = false, fail = false, emit = true, unchanged = false,
-  missingApi = false, missingSnapshot = false, daily = false } = {}) {
+  missingApi = false, missingSnapshot = false, daily = false, unrelatedFirst = false } = {}) {
   const calls = [], listeners = new Set();
   const planInfo = { planName: 'Max', hideDailyQuota: !daily, hideWeeklyQuota: daily };
   class UserStatus {
@@ -80,14 +80,23 @@ function devinAccountUsage({ inactive = false, fail = false, emit = true, unchan
   currentApi.alternate = oldApi; oldApi.alternate = currentApi;
   currentAccount.alternate = oldAccount; oldAccount.alternate = currentAccount;
   const input = nativeNode({}, { isContentEditable: false, __reactFiberTest: inactive ? oldApi : currentApi }, false);
+  const unrelated = nativeNode({}, { isContentEditable: true, __reactFiberTest: { return: null } });
   const badge = nativeNode({ 'aria-label': 'Max, Weekly: 18% quota used' });
   const document = {
     getElementById: id => id === 'codeium.windsurf.settings.planInfo' ? badge : null,
     querySelector: selector => selector.includes('data-slate-editor') ? input : null,
-    querySelectorAll: selector => selector.includes('data-slate-editor') ? [input] : [],
+    querySelectorAll: selector => selector.includes('data-slate-editor') ? unrelatedFirst ? [unrelated, input] : [input] : [],
   };
   return { page: nativePage(document, { atob, Uint8Array }), calls, listeners };
 }
+
+test('Devin quota skips an unrelated first editor and reads the actual account context even without focus', async () => {
+  const h = devinAccountUsage({ unrelatedFirst: true });
+  const usage = await h.page.readDevinUsage(false);
+  assert.equal(usage.missing, false);
+  assert.equal(usage.limits[0].pct, 40);
+  assert.deepEqual(h.calls, [['decode', 'cached']]);
+});
 
 test('Devin quota refresh reads the native account snapshot, not stale React data or a window badge', async () => {
   const h = devinAccountUsage();

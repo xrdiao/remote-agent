@@ -167,18 +167,11 @@
     return true;
   };
   const readDevinUsage = async (refresh = false) => {
-    const input = doc.querySelector('[data-slate-editor]');
-    const key = input && Object.keys(input).find(k => k.startsWith('__reactFiber'));
-    const fiber = input?.[key];
-    let root = fiber, account, auth;
-    while (root?.return) root = root.return;
-    const current = root?.stateNode?.current === root;
-    for (let f = fiber; f; f = f.return) {
-      const provider = current ? f : f.alternate;
-      if (provider?.tag !== 10) continue;
-      const value = provider.memoizedProps?.value;
-      if (typeof value?.refetchUserStatus === 'function') account = value;
-      if (value?.api?.auth) auth = value.api.auth;
+    let account, auth;
+    for (const { values } of devinEditorContexts()) {
+      account = values.find(value => typeof value?.refetchUserStatus === 'function');
+      auth = values.find(value => value?.api?.auth)?.api.auth;
+      if (account && auth) break;
     }
     const UserStatus = account?.userStatus?.constructor;
     if (typeof UserStatus?.fromBinary !== 'function' || !auth) return { missing: true, quota: [], limits: [] };

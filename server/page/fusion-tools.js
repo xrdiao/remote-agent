@@ -214,12 +214,27 @@
     const states = fusionDevinStates();
     let state = states.get(id);
     if (!state) {
-      state = { turns: fusionNativeControllers().get(fusionNativeKey('devin', id))?.turns || new Map(), data: null, stop: null };
+      state = { turns: fusionNativeControllers().get(fusionNativeKey('devin', id))?.turns || new Map(), data: null, stop: null, listeners: new Set() };
       states.set(id, state);
-      state.stop = window.__acpStore.subscribe(() => fusionDevinCapture(id, state));
       fusionDevinCapture(id, state);
     }
     return state;
+  };
+  const fusionDevinWatch = (id, changed) => {
+    const state = fusionDevinState(id), listener = () => changed?.();
+    state.listeners.add(listener);
+    if (!state.stop) {
+      const stop = window.__acpStore.subscribe(() => {
+        fusionDevinCapture(id, state);
+        for (const notify of state.listeners) notify();
+      });
+      state.stop = () => { state.stop = null; stop(); };
+    }
+    fusionDevinCapture(id, state);
+    return () => {
+      state.listeners.delete(listener);
+      if (!state.listeners.size) state.stop?.();
+    };
   };
   const fusionDevinTurn = (id, messageId = '', generationId = '', attemptId = '') => {
     const spec = fusionDevinState(id);
@@ -243,6 +258,7 @@
     const controllers = fusionNativeControllers(), key = fusionNativeKey('devin', id), previous = controllers.get(key);
     const state = { ...spec, waiting: previous?.waiting || new Set(), turns: fusionDevinState(id).turns, applied: previous?.applied };
     controllers.set(key, state);
+    state.stop = fusionDevinWatch(id);
     previous?.stop?.();
     const profile = JSON.stringify(spec.mcp);
     if (state.applied === profile || session.mcpServers?.some(server => JSON.stringify(server) === profile)) {

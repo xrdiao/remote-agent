@@ -219,7 +219,12 @@ export class OpenCodeState {
     }
     const key = call ? `${call.providerID}/${call.modelID}` : this.selection(id).key;
     const model = this.models.get(key), limit = model?.limit?.context || null;
+    const dur = call ? call.time.completed - call.time.created : null;
+    const t = call?.tokens, cacheIn = t ? t.input + t.cache.read + t.cache.write : 0;
     return { source: 'opencode', basis: 'used', used, limit, model: model?.name || key || '',
+      tokens: t || null, durationMs: dur,
+      speedTokS: t && dur > 0 ? (t.output + t.reasoning) / (dur / 1000) : null,
+      cacheRate: t && cacheIn > 0 ? Math.round(t.cache.read / cacheIn * 1000) / 10 : null,
       pct: used != null && limit ? Math.round(used / limit * 1000) / 10 : null,
       updated: call?.time.completed || null };
   }

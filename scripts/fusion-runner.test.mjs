@@ -212,8 +212,8 @@ test('a devin worker attempt finishes awaiting_review from its cached native tur
     + ';this.read=codexFusionTurn;', vmContext);
   vm.runInContext(slice('chat-extract.js', '  const nativeConversationChat =', '  const contextPct =')
     + ';this.chat=nativeConversationChat;', vmContext);
-  await vmContext.action('devin', thread, 'send', { text: 'task', requestId: attemptId });
-  assert.equal(dispatched.length, 1); assert.equal(dispatched[0].request.method, 'session/prompt');
+  vm.runInContext(slice('chat-extract.js', '  const watchCodexData =', '  const codexUserText =')
+    + ';this.watch=watchCodexData;', vmContext);
   const binding = { id: 'w1', role: 'worker', app: 'devin', threadId: thread, windowId: '', host: '', project: h.project,
     nativeProject: { app: 'devin', threadId: thread, provider: 'devin-cli', host: '', cwd: h.project.root,
       roots: [{ root: h.project.root, host: '' }] } };
@@ -223,18 +223,10 @@ test('a devin worker attempt finishes awaiting_review from its cached native tur
   h.run.tasks.push(task); h.run.agents.push({ id: 'agent-1', bindingId: 'w1', status: 'running' });
   h.run.attempts.push({ id: attemptId, kind: 'task', workId, taskId: task.id, assignmentId: '', status: 'submitting',
     submission: 'submitting', bindingId: 'w1', native: null, created: Date.now(), acceptedAt: null, endedAt: null });
-  state.agentRequests.byId['gen-1'] = { method: 'session/prompt', status: 'started',
-    params: { sessionId: thread, prompt: [{ type: 'text', text: 'task' }], _meta: { 'cognition.ai/clientMessageId': attemptId } } };
-  state.perSession[thread] = { messages: [
-    { id: 'u1', kind: 'user_message', content: [{ content: { type: 'text', text: 'task' },
-      _meta: { 'cognition.ai/clientMessageId': attemptId } }] },
-    { id: 'r1', kind: 'agent_message', content: [{ content: { type: 'text', text: '12 files' } }] }] };
-  update();
-  state.agentRequests.byId['gen-1'].status = 'completed'; delete state.perSession[thread]; update();
   const agent = new FusionAgent({ scheduler: h.scheduler, publish: () => {}, onEvent: () => {} });
   let notify;
   const context = { native: { app: 'devin', threadId: thread, cwd: h.project.root, host: '', roots: [] },
-    source: { subscribe: cb => { notify = cb; return () => {}; },
+    source: { subscribe: cb => { notify = cb; return vmContext.watch(() => {}).stop; },
       readConversation: async () => { const chat = await vmContext.chat(false, 80), snapshot = { chat: { ...chat }, state: chat?._nativeState };
         delete snapshot.chat._nativeState; return snapshot; } },
     cdp: { onclose: null } };
@@ -244,6 +236,17 @@ test('a devin worker attempt finishes awaiting_review from its cached native tur
     if (method === 'nativeSessionInfo' && args[2] === 'sendError') return null;
     throw new Error(code); };
   const observing = agent.observe({ controller: h.run, attemptId, binding, context, stopping: false }, false);
+  assert.equal(listeners.size, 1, 'the native observer owns capture before submission');
+  await vmContext.action('devin', thread, 'send', { text: 'task', requestId: attemptId });
+  assert.equal(dispatched.length, 1); assert.equal(dispatched[0].request.method, 'session/prompt');
+  state.agentRequests.byId['gen-1'] = { method: 'session/prompt', status: 'started',
+    params: { sessionId: thread, prompt: [{ type: 'text', text: 'task' }], _meta: { 'cognition.ai/clientMessageId': attemptId } } };
+  state.perSession[thread] = { messages: [
+    { id: 'u1', kind: 'user_message', content: [{ content: { type: 'text', text: 'task' },
+      _meta: { 'cognition.ai/clientMessageId': attemptId } }] },
+    { id: 'r1', kind: 'agent_message', content: [{ content: { type: 'text', text: '12 files' } }] }] };
+  update();
+  state.agentRequests.byId['gen-1'].status = 'completed'; delete state.perSession[thread]; update();
   notify();
   const result = await observing;
   h.runner.completed(attemptId, result);
@@ -252,6 +255,7 @@ test('a devin worker attempt finishes awaiting_review from its cached native tur
   assert.equal(attempt.result.text, '12 files'); assert.equal(attempt.native.messageId, 'u1');
   assert.equal(attempt.native.generationId, 'gen-1'); assert.equal(attempt.acceptedAt > 0, true);
   assert.equal(attempt.submission, 'accepted'); assert.equal(task.status, 'awaiting_review');
+  assert.equal(listeners.size, 0, 'completed observation releases native capture');
 });
 test('background review uses the returned task and work templates and completes only after its native turn ends', async () => {
   const h=scenario(),workId=h.create();h.plan(workId);h.run.status='waiting';

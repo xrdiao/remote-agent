@@ -281,6 +281,8 @@
   };
   const chatRevision = () => doc.defaultView.__remoteAgentChatRevision || 0;
   const watchCodexData = changed => {
+    if (remoteContext?.app === 'devin')
+      return { stop: fusionDevinWatch(remoteContext.threadId, changed), refresh() {} };
     if (remoteContext?.app === 'codex') {
       const manager = codexNativeManager(), stop = manager.addConversationCallback(remoteContext.threadId, changed), subscribed = new Map();
       const refresh = () => {

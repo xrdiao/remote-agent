@@ -316,10 +316,10 @@ test('Devin binds MCP to its own session and preserves native request identity a
   delete state.agentRequests.byId['actual-generation']; state.perSession['main-devin'].messages = []; session.status = 'idle'; update();
   const ended = context.turn('main-devin'); assert.equal(ended.id, 'actual-user'); assert.equal(ended.accepted, true);
   assert.equal(ended.ended, true); assert.equal(ended.completed, false); assert.equal(ended.error, 'Native error 13');
-  assert.equal(ended.user, 'Authorized native request'); context.tools.unbind('devin', 'main-devin'); assert.equal(listeners.size, 1);
+  assert.equal(ended.user, 'Authorized native request'); context.tools.unbind('devin', 'main-devin'); assert.equal(listeners.size, 0);
   session.mcpServers.push(config); session.status = 'idle';
   assert.equal((await context.tools.bind('devin', 'main-devin', { tools: FUSION_TOOLS, mcp: config })).profileReady, true);
-  assert.equal(sent.length, 1); context.tools.unbind('devin', 'main-devin'); assert.equal(listeners.size, 1);
+  assert.equal(sent.length, 1); context.tools.unbind('devin', 'main-devin'); assert.equal(listeners.size, 0);
 });
 function devinToolsFixture() {
   const session = { sessionId: 'main-devin', providerId: 'devin-cli', cwd: '/project', status: 'idle',
@@ -380,7 +380,7 @@ test('Devin tool identification only matches the real qualified name with post-a
   h.context.tools.unbind('devin', 'main-devin');
   await waiting;
   assert.match(String(rejected[0]?.message || rejected[0]), /连接已释放/);
-  assert.equal(h.listeners.size, 1);
+  assert.equal(h.listeners.size, 0);
 });
 test('Devin turn cache preserves accepted identity and final reply through pruning and request removal', async () => {
   const h = devinToolsFixture();
@@ -407,7 +407,7 @@ test('Devin turn cache preserves accepted identity and final reply through pruni
   assert.deepEqual(facts(h.context.turn('main-devin')), expected);
   delete h.state.agentRequests.byId['generation-1']; h.update();
   assert.deepEqual(facts(h.context.turn('main-devin')), expected);
-  h.context.tools.unbind('devin', 'main-devin'); assert.equal(h.listeners.size, 1);
+  h.context.tools.unbind('devin', 'main-devin'); assert.equal(h.listeners.size, 0);
 });
 test('Devin turn cache keeps replies scoped to each user turn without leaking across users', async () => {
   const h = devinToolsFixture();
@@ -438,8 +438,52 @@ test('Devin turn cache keeps replies scoped to each user turn without leaking ac
   assert.equal(real.ended, true); assert.equal(real.completed, false); assert.equal(real.text, '');
   assert.equal(h.context.turn('main-devin', 'u1').text, 'first answer');
   assert.equal(h.context.turn('main-devin', 'u2').text, 'second answer');
-  h.context.tools.unbind('devin', 'main-devin'); assert.equal(h.listeners.size, 1);
+  h.context.tools.unbind('devin', 'main-devin'); assert.equal(h.listeners.size, 0);
 });
+test('idle Devin bindings release their store listeners while retaining cached turn facts', async () => {
+  const h = devinToolsFixture();
+  for (let n = 0; n < 40; n++) {
+    const thread = 'released-' + n;
+    h.state.perSession[thread] = { messages: [] };
+    await h.context.tools.bind('devin', thread, { tools: FUSION_TOOLS, mcp: h.session.mcpServers[0] });
+    assert.equal(h.listeners.size, 1);
+    h.context.tools.unbind('devin', thread);
+    assert.equal(h.listeners.size, 0);
+    h.context.turn(thread);
+    assert.equal(h.listeners.size, 0, 'a one-shot cached read does not reopen a subscription');
+  }
+  assert.equal(h.context.window.__remoteAgentDevinTurns.size, 40);
+  h.update();
+  assert.equal(h.listeners.size, 0);
+});
+
+test('a live Devin observer survives controller unbinding and releases the last shared listener when it closes', async () => {
+  const h = devinToolsFixture();
+  h.context.remoteContext = { app: 'devin', threadId: 'main-devin' };
+  const source = fs.readFileSync(new URL('../server/page/chat-extract.js', import.meta.url), 'utf8');
+  vm.runInContext(source.slice(source.indexOf('  const watchCodexData ='), source.indexOf('  const codexUserText ='))
+    + ';this.watch=watchCodexData;', h.context);
+  await h.bind();
+  let changed = 0;
+  const watching = h.context.watch(() => changed++);
+  assert.equal(h.listeners.size, 1);
+  h.prompt('generation', 'client'); h.user('user', 'client', 'task'); h.agent('reply', 'partial'); h.update();
+  h.context.tools.unbind('devin', 'main-devin');
+  assert.equal(h.listeners.size, 1);
+  h.state.perSession['main-devin'].messages.at(-1).content[0].content.text = 'final'; h.update();
+  h.state.agentRequests.byId.generation.status = 'completed'; delete h.state.perSession['main-devin']; h.update();
+  assert.equal(changed, 3);
+  watching.stop();
+  assert.equal(h.listeners.size, 0);
+  assert.equal(h.context.turn('main-devin').text, 'final');
+  assert.equal(h.context.turn('main-devin').completed, true);
+  assert.equal(h.listeners.size, 0);
+  const resumed = h.context.watch(() => changed++);
+  assert.equal(h.listeners.size, 1);
+  h.update(); assert.equal(changed, 4);
+  resumed.stop(); assert.equal(h.listeners.size, 0);
+});
+
 test('a new Devin Fusion session keeps ordinary pending preferences and sends its explicitly selected model', async () => {
   const ordinary = { sessionId: 'ordinary', providerId: 'devin-cli', cwd: '/project', draft: 'untouched',
     configOptions: [{ id: 'model', category: 'model', currentValue: 'ordinary-model', options: [{ value: 'swe-2-high' }] }] };
@@ -1018,7 +1062,10 @@ function devinWorkerFixture(thread = 'worker-thread') {
     + ';this.read=codexFusionTurn;', context);
   vm.runInContext(slice('chat-extract.js', '  const nativeConversationChat =', '  const contextPct =')
     + ';this.chat=nativeConversationChat;', context);
-  return { session, state, update, context, listeners, dispatched, thread,
+  vm.runInContext(slice('chat-extract.js', '  const watchCodexData =', '  const codexUserText =')
+    + ';this.watch=watchCodexData;', context);
+  const watching = context.watch(() => {});
+  return { session, state, update, context, listeners, dispatched, thread, stop: watching.stop,
     prompt: (generationId, clientId, status = 'started') => { state.agentRequests.byId[generationId] = { method: 'session/prompt', status,
       params: { sessionId: thread, prompt: [{ type: 'text', text: 'task' }], _meta: { 'cognition.ai/clientMessageId': clientId } } }; },
     user: (id, clientId, text, optimistic = false) => (state.perSession[thread] ||= { messages: [] }).messages.push({ id, kind: 'user_message',
@@ -1026,8 +1073,9 @@ function devinWorkerFixture(thread = 'worker-thread') {
     agent: (id, text) => (state.perSession[thread] ||= { messages: [] }).messages.push({ id, kind: 'agent_message',
       content: [{ content: { type: 'text', text } }] }) };
 }
-test('a Devin worker result survives transcript pruning through the shared turn cache', async () => {
+test('a Devin worker result survives transcript pruning through the shared turn cache', async t => {
   const h = devinWorkerFixture();
+  t.after(h.stop);
   const attemptId = 'bea1dba8-8beb-4dbf-882b-bc40614b6c96';
   await h.context.action('devin', 'worker-thread', 'send', { text: 'task', requestId: attemptId });
   assert.equal(h.dispatched.length, 1); assert.equal(h.dispatched[0].request.request.method, 'session/prompt');
@@ -1053,8 +1101,9 @@ test('a Devin worker result survives transcript pruning through the shared turn 
   assert.equal(h.dispatched[0].listeners, 1);
   assert.throws(() => h.context.call('worker-thread', { tool: 'x', arguments: {} }), /没有绑定主控工具/);
 });
-test('Devin worker lookups never reuse another turn identity across sends', async () => {
+test('Devin worker lookups never reuse another turn identity across sends', async t => {
   const h = devinWorkerFixture();
+  t.after(h.stop);
   h.prompt('gen-1', 'attempt-1'); h.user('u1', 'attempt-1', 'first'); h.agent('r1', 'first result');
   h.state.agentRequests.byId['gen-1'].status = 'completed'; h.update();
   h.prompt('gen-2', 'attempt-2'); h.update();
@@ -1079,8 +1128,9 @@ test('Devin worker lookups never reuse another turn identity across sends', asyn
   assert.equal(owned.get('other-thread'), undefined);
   assert([...owned.get('worker-thread').turns.keys()].every(key => key !== 'foreign-gen'));
 });
-test('a Devin worker turn stays incomplete without a real reply and keeps its own failure', async () => {
+test('a Devin worker turn stays incomplete without a real reply and keeps its own failure', async t => {
   const h = devinWorkerFixture();
+  t.after(h.stop);
   h.prompt('gen-3', 'attempt-3'); h.user('u3', 'attempt-3', 'ghost', true); h.update();
   const ghost = await h.context.read('', 'attempt-3', [], 'gen-3');
   assert.equal(ghost.accepted, false); assert.equal(ghost.id, '');

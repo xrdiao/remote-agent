@@ -67,7 +67,7 @@ export async function watchChat(cdp, changed, shared = false, context = null) {
       doc = next;
       doc.defaultView.addEventListener('remote-agent-submit-error', changed);
       if (context) doc.defaultView.addEventListener('remote-agent-fusion-tool', fusionChanged);
-      if (context?.app === 'codex' || context?.app === 'cursor') {
+      if (context?.app === 'codex' || context?.app === 'cursor' || context?.app === 'devin') {
         native = ${helpersCall('watchCodexData(changed)', context)};
       } else if (window.vscode?.context?.configuration?.().product?.applicationName === 'devin-desktop') {
         native = { stop: window.__acpStore.subscribe(changed), refresh() {} };

@@ -688,12 +688,13 @@
     const keys = Object.keys(value).sort();
     return keys.length === DEVIN_OPTION_KEYS.length && keys.every((key, i) => key === DEVIN_OPTION_KEYS[i]) ? value : null;
   };
-  const devinEditorFiber = () => {
-    const el = [...doc.querySelectorAll('[data-slate-editor="true"][role="textbox"]')].find(vis);
-    let host = el;
-    while (host && !Object.keys(host).some(key => key.startsWith('__reactFiber'))) host = host.parentElement;
-    const key = host && Object.keys(host).find(key => key.startsWith('__reactFiber'));
-    return key ? host[key] : null;
+  const devinEditorContexts = function* () {
+    for (const el of doc.querySelectorAll('[data-slate-editor="true"][role="textbox"]')) {
+      let host = el;
+      while (host && !Object.keys(host).some(key => key.startsWith('__reactFiber'))) host = host.parentElement;
+      const key = host && Object.keys(host).find(key => key.startsWith('__reactFiber'));
+      if (key) yield { el, fiber: host[key], values: devinContextValues(host[key]) };
+    }
   };
   const devinContextValues = fiber => {
     const values = [];
@@ -703,7 +704,7 @@
         while (root.return) root = root.return;
         const current = root.stateNode.current === root ? f : f.alternate;
         const value = current?.memoizedProps?.value;
-        if (devinQuestionContext(value)) values.push(value);
+        if (value && typeof value === 'object') values.push(value);
       }
       for (let dep = f.dependencies?.firstContext; dep; dep = dep.next) {
         const value = dep.memoizedValue;
@@ -730,21 +731,20 @@
   const devinQuestionContext = value => value && typeof value === 'object'
     && typeof value.answerQuestion === 'function' && typeof value.skipQuestion === 'function'
     && 'handleComposerSubmit' in value && 'activeQuestionId' in value && Array.isArray(value.questions);
-  const devinNativeQuestion = () => {
-    const fiber = devinEditorFiber();
-    return fiber ? devinContextValues(fiber).find(devinQuestionContext) || null : null;
-  };
   const devinNativeSubmission = () => {
-    const fiber = devinEditorFiber();
-    if (!fiber) return null;
-    const values = devinContextValues(fiber);
-    const input = values.find(value => value?.composerRef || typeof value?.getSelectedImages === 'function');
-    const registry = values.find(value => typeof value?.getCurrentComposer === 'function' && typeof value?.registerInputBox === 'function');
-    const composer = input?.composerRef?.current || registry?.getCurrentComposer?.() || null;
-    const controller = values.find(value => ['cancelInvocation', 'cancelInvocationAndWait', 'interruptWithQueuedMessage']
-      .every(key => typeof value?.[key] === 'function'));
-    return { input, composer, controller, question: values.find(devinQuestionContext) || null, options: devinNativeOptions(fiber) };
+    for (const { el, fiber, values } of devinEditorContexts()) {
+      if (!vis(el)) continue;
+      const registry = values.find(value => typeof value?.getCurrentComposer === 'function' && typeof value?.registerInputBox === 'function');
+      const composer = registry?.getCurrentComposer();
+      const input = composer && values.find(value => value?.composerRef?.current === composer);
+      if (!input) continue;
+      const controller = values.find(value => ['cancelInvocation', 'cancelInvocationAndWait', 'interruptWithQueuedMessage']
+        .every(key => typeof value?.[key] === 'function'));
+      return { input, composer, controller, question: values.find(devinQuestionContext) || null, options: devinNativeOptions(fiber) };
+    }
+    return null;
   };
+  const devinNativeQuestion = () => devinNativeSubmission()?.question || null;
   // Mirrors of the native quote formatters (tjZ/tjQ/tj0/tj1/tqo in the installed
   // workbench bundle): escape &, <, >, "; artifact attributes per kind; line anchors
   // only for file/attachment/diff/pr/editor; <quoted_artifact> XML wrapper.
