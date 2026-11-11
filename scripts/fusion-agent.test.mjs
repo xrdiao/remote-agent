@@ -13,33 +13,35 @@ import { FusionMcpServer } from '../server/fusion/mcp.mjs';
 import { fusionProject } from '../server/fusion/state.mjs';
 
 function nativeRenameFixture(app) {
-  const rows = new Map([['own', { id: 'own', composerId: 'own', providerId: 'native-provider', name: 'Old name', title: 'Old name', workspace: '/qa-project', cwd: '/qa-project', path: '/qa/sessions/own.jsonl', status: { type: 'active' }, running: true }],
+  const bound = app === 'devin' ? 'acp/devin-cli/own' : 'own';
+  const rows = new Map([[bound, { id: bound, composerId: bound, providerId: app === 'devin' ? 'devin-cli' : 'native-provider', name: 'Old name', title: 'Old name', workspace: '/qa-project', cwd: '/qa-project', path: '/qa/sessions/own.jsonl', status: { type: 'active' }, running: true }],
     ['ordinary', { id: 'ordinary', composerId: 'ordinary', name: 'Ordinary', title: 'Ordinary', workspace: '/ordinary', cwd: '/ordinary', model: 'kept', draft: 'untouched' }]]), calls = [];
   const rename = (id, title) => { rows.get(id).name = rows.get(id).title = title; };
   const manager = { readThread: async id => ({ thread: rows.get(id) }), getConversation: id => rows.get(id),
     async setThreadTitle(id, title, options) { calls.push(['codex', id, title, options]); rename(id, title.slice(0, 60)); return true; } };
   const services = { data: { allComposersData: { allComposers: [...rows.values()] }, getComposerDataIfLoaded: () => null },
     composer: { async renameComposer(id, title) { calls.push(['cursor', id, title]); rename(id, title); } } };
-  const nativeModule = { renameSessionThunk: (provider, id, title) => ({ provider, id, title }) };
-  const context = vm.createContext({ remoteContext: { app, threadId: 'own', host: '' }, Error, String, nativeModule,
+  const nativeModule = { renameSessionThunk: (provider, id, title) => { assert.equal(id, 'own'); return { provider, id, title }; },
+    unprefixSessionId: id => { assert.equal(id, bound); return { connectorId: 'devin-cli', sessionId: 'own' }; } };
+  const context = vm.createContext({ remoteContext: { app, threadId: bound, host: '' }, Error, String, nativeModule,
     codexConversationManager: () => manager, codexNativeManager: () => manager, codexHistoryScopes: () => [],
     nativeSessionCatalog: async () => ({ ready: true, complete: true, rows: [...rows.values()] }),
     nativeSessionContext: async (_app, id) => ({ cwd: rows.get(id).cwd, host: '' }), cursorSessionServices: () => services,
-    devinSessionRecord: id => rows.get(id), window: { __acpStore: { async dispatch({ provider, id, title }) { calls.push(['devin', provider, id, title]); rename(id, title); } } },
+    devinSessionRecord: id => rows.get(id), window: { __acpStore: { async dispatch({ provider, id, title }) { calls.push(['devin', provider, id, title]); rename(bound, title); } } },
     devinSessionMenu: id => ({ actions: [{ label: 'rename', disabled: false, direct: true, onClick: title => { calls.push(['ordinary-menu', id, title]); rename(id, title); } }] }) });
   const source = fs.readFileSync(new URL('../server/page/session-actions.js', import.meta.url), 'utf8');
   const code = source.slice(source.indexOf('  const nativeSessionCleanup ='), source.indexOf('  const nativeCodexCreation ='))
     + source.slice(source.indexOf('  const nativeSessionAction ='), source.indexOf('  const nativeSessionRenameInput ='));
   vm.runInContext(code.replaceAll("await import('@exa/chat-client')", 'nativeModule') + ';this.info=nativeSessionInfo;this.action=nativeSessionAction;', context);
-  return { rows, calls, manager, context, action: context.action, info: context.info };
+  return { rows, calls, manager, context, action: context.action, info: context.info, id: bound };
 }
 test('Fusion native name operations target the bound session in each software without switching ordinary state', async () => {
   for (const app of ['codex', 'cursor', 'devin']) {
     const h = nativeRenameFixture(app), ordinary = structuredClone(h.rows.get('ordinary'));
-    const before = await h.info(app, 'own', 'name'); assert.equal(before.title, 'Old name'); assert.equal(before.running, true);
-    const result = await h.action(app, 'own', 'rename', 'Workbench title');
+    const before = await h.info(app, h.id, 'name'); assert.equal(before.title, 'Old name'); assert.equal(before.running, true);
+    const result = await h.action(app, h.id, 'rename', 'Workbench title');
     assert.equal(result.confirmed, true); assert.equal(result.title, 'Workbench title');
-    const actual = await h.info(app, 'own', 'name'); assert.equal(actual.title, 'Workbench title'); assert.equal(actual.running, true);
+    const actual = await h.info(app, h.id, 'name'); assert.equal(actual.title, 'Workbench title'); assert.equal(actual.running, true);
     assert.deepEqual(h.rows.get('ordinary'), ordinary); assert.equal(h.calls.length, 1);
     if (app === 'codex') assert.equal(h.calls[0][3].requireAcknowledgement, true);
     if (app !== 'cursor') {
@@ -49,14 +51,22 @@ test('Fusion native name operations target the bound session in each software wi
     }
   }
   const h = nativeRenameFixture('codex'), title = 'Long workbench title '.repeat(5);
-  const result = await h.action('codex', 'own', 'rename', title);
-  assert.equal(result.title, title.slice(0, 60)); assert.equal((await h.info('codex', 'own', 'name')).title, result.title);
+  const result = await h.action('codex', h.id, 'rename', title);
+  assert.equal(result.title, title.slice(0, 60)); assert.equal((await h.info('codex', h.id, 'name')).title, result.title);
   for (const app of ['cursor', 'devin']) {
     const ordinary = nativeRenameFixture(app); ordinary.context.remoteContext = null;
     const result = await ordinary.action(app, 'ordinary', 'rename', 'Ordinary renamed');
     assert.equal(ordinary.rows.get('ordinary').title, 'Ordinary renamed'); assert.equal(result.title, undefined);
     assert.equal(ordinary.calls[0][0], app === 'cursor' ? 'cursor' : 'ordinary-menu');
   }
+});
+test('a bound devin rename passes the raw ACP session id while binding and state keep the full id', async () => {
+  const h = nativeRenameFixture('devin'), ordinary = structuredClone(h.rows.get('ordinary'));
+  const result = await h.action('devin', h.id, 'rename', 'Workbench title');
+  assert.equal(result.confirmed, true); assert.equal(result.title, 'Workbench title');
+  assert.deepEqual(h.calls, [['devin', 'devin-cli', 'own', 'Workbench title']]);
+  assert.equal((await h.info('devin', h.id, 'name')).title, 'Workbench title');
+  assert.equal(h.context.remoteContext.threadId, 'acp/devin-cli/own'); assert.deepEqual(h.rows.get('ordinary'), ordinary);
 });
 test('renameMain uses the current main binding and publishes the acknowledged native title while keeping task facts', async () => {
   const library = [], scope = vm.createContext({ nativeAgentProvider, fusionProject, Error, publishSessionChange: (...args) => library.push(args) });
@@ -295,18 +305,140 @@ test('Devin binds MCP to its own session and preserves native request identity a
     params: { sessionId: 'main-devin', _meta: { 'cognition.ai/clientMessageId': 'client-message' } } };
   state.perSession['main-devin'].messages.push({ id: 'actual-user', kind: 'user_message',
     content: [{ content: { type: 'text', text: 'Authorized native request' }, _meta: { 'cognition.ai/clientMessageId': 'client-message' } }] });
-  state.perSession['main-devin'].messages.push({ kind: 'tool_call', content: { name: 'ra_fusion', toolCallId: 'actual-tool', status: 'in_progress', rawInput: { action: 'read_workspace' } } });
+  state.perSession['main-devin'].messages.push({ kind: 'tool_call', content: { toolCallId: 'actual-tool', status: 'in_progress',
+    rawInput: { action: 'read_workspace' }, _meta: { 'cognition.ai/toolName': 'mcp__ra-fusion__ra_fusion' } } });
   update();
-  const call = await context.identify('main-devin', { tool: 'ra_fusion', arguments: { action: 'read_workspace' } });
-  assert.equal(call.id, 'actual-tool'); assert.equal(call.params.turnId, 'actual-user'); assert.equal(call.params.generationId, 'actual-generation');
+  const call = context.identify('main-devin', { tool: 'ra_fusion', arguments: { action: 'read_workspace' } });
+  session.status = 'idle'; update();
+  const identified = await call;
+  assert.equal(identified.id, 'actual-tool'); assert.equal(identified.params.turnId, 'actual-user'); assert.equal(identified.params.generationId, 'actual-generation');
   state.agentRequests.byId['actual-generation'].status = 'failed'; state.agentRequests.byId['actual-generation'].errorMessage = 'Native error 13'; update();
   delete state.agentRequests.byId['actual-generation']; state.perSession['main-devin'].messages = []; session.status = 'idle'; update();
   const ended = context.turn('main-devin'); assert.equal(ended.id, 'actual-user'); assert.equal(ended.accepted, true);
   assert.equal(ended.ended, true); assert.equal(ended.completed, false); assert.equal(ended.error, 'Native error 13');
-  assert.equal(ended.user, 'Authorized native request'); context.tools.unbind('devin', 'main-devin'); assert.equal(listeners.size, 0);
+  assert.equal(ended.user, 'Authorized native request'); context.tools.unbind('devin', 'main-devin'); assert.equal(listeners.size, 1);
   session.mcpServers.push(config); session.status = 'idle';
   assert.equal((await context.tools.bind('devin', 'main-devin', { tools: FUSION_TOOLS, mcp: config })).profileReady, true);
-  assert.equal(sent.length, 1); context.tools.unbind('devin', 'main-devin'); assert.equal(listeners.size, 0);
+  assert.equal(sent.length, 1); context.tools.unbind('devin', 'main-devin'); assert.equal(listeners.size, 1);
+});
+function devinToolsFixture() {
+  const session = { sessionId: 'main-devin', providerId: 'devin-cli', cwd: '/project', status: 'idle',
+    mcpServers: [{ name: 'ra-fusion', type: 'http', url: 'http://native-test', headers: [] }] };
+  const state = { sessions: [session], perSession: { 'main-devin': { messages: [] } }, agentRequests: { byId: {} } }, listeners = new Set();
+  const update = () => { for (const listener of [...listeners]) listener(); };
+  const nativeModule = { tryGetAcpSingleton: name => name === 'connectorService'
+    ? { getConnectors: () => [{ id: 'devin-cli', capabilities: { mcpCapabilities: { http: true } } }] } : 'native-sender',
+    sendAgentRequestThunk: (provider, request, sender) => ({ provider, request, sender }) };
+  const window = { __acpStore: { getState: () => ({ acp: state }), subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); },
+    dispatch: async () => true } };
+  const context = vm.createContext({ window, Map, Set, WeakMap, Error, JSON, nativeModule, devinSessionRecord: () => session });
+  const source = fs.readFileSync(new URL('../server/page/fusion-tools.js', import.meta.url), 'utf8').replace("await import('@exa/chat-client')", 'nativeModule');
+  vm.runInContext(source + ';this.tools=fusionNativeTools;this.turn=fusionDevinTurn;this.identify=fusionDevinCall;', context);
+  const config = { name: 'ra-fusion', type: 'http', url: 'http://native-test', headers: [] };
+  return { session, state, update, context, listeners,
+    bind: () => context.tools.bind('devin', 'main-devin', { tools: FUSION_TOOLS, mcp: config }),
+    prompt: (generationId, clientId, status = 'started') => { state.agentRequests.byId[generationId] = { method: 'session/prompt', status,
+      params: { sessionId: 'main-devin', _meta: { 'cognition.ai/clientMessageId': clientId } } }; },
+    user: (id, clientId, text, optimistic = false) => state.perSession['main-devin'].messages.push({ id, kind: 'user_message',
+      content: [{ content: { type: 'text', text }, _meta: { 'cognition.ai/clientMessageId': clientId,
+        ...(optimistic ? { 'cognition.ai/isOptimistic': true } : {}) } }] }),
+    agent: (id, text) => state.perSession['main-devin'].messages.push({ id, kind: 'agent_message',
+      content: [{ content: { type: 'text', text } }] }) };
+}
+test('Devin tool identification only matches the real qualified name with post-approval facts', async () => {
+  const h = devinToolsFixture();
+  assert.equal((await h.bind()).profileReady, true);
+  const clientId = '3f8c2e1a-7b4d-4e5f-9a6b-1c2d3e4f5a6b';
+  h.session.status = 'active';
+  h.prompt('generation-1', clientId);
+  h.user('user-1', clientId, 'Call the tool');
+  h.state.perSession['main-devin'].messages.push({ kind: 'tool_call',
+    content: { toolCallId: 'call-1', rawInput: { arguments: { action: 'read_workspace' } } } });
+  h.update();
+  let p1 = 'pending';
+  h.context.identify('main-devin', { tool: 'ra_fusion', arguments: { action: 'read_workspace' } })
+    .then(value => p1 = value, error => p1 = error);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(p1, 'pending');
+  const tool = h.state.perSession['main-devin'].messages.at(-1).content;
+  tool.status = 'in_progress'; tool.rawInput = { action: 'read_workspace' }; tool._meta = { 'cognition.ai/toolName': 'mcp__ra-fusion__ra_fusion' };
+  h.update(); await new Promise(resolve => setImmediate(resolve));
+  if (p1 === 'pending') { h.session.status = 'idle'; h.update(); await new Promise(resolve => setImmediate(resolve)); }
+  assert.equal(p1.id, 'call-1'); assert.equal(p1.params.turnId, 'user-1'); assert.equal(p1.params.generationId, 'generation-1');
+  const rejected = [];
+  const waiting = h.context.identify('main-devin', { tool: 'ra_fusion', arguments: { action: 'list_models' } })
+    .then(value => rejected.push(value), error => rejected.push(error));
+  h.state.perSession['main-devin'].messages.push(
+    { kind: 'tool_call', content: { toolCallId: 'call-other', status: 'in_progress', rawInput: { action: 'list_models' },
+      _meta: { 'cognition.ai/toolName': 'mcp__other-server__ra_fusion' } } },
+    { kind: 'tool_call', content: { toolCallId: 'call-done', status: 'completed', rawInput: { action: 'list_models' },
+      _meta: { 'cognition.ai/toolName': 'mcp__ra-fusion__ra_fusion' } } },
+    { kind: 'tool_call', content: { toolCallId: 'call-failed', status: 'failed', rawInput: { action: 'list_models' },
+      _meta: { 'cognition.ai/toolName': 'mcp__ra-fusion__ra_fusion' } } });
+  h.update(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(rejected.length, 0);
+  h.context.tools.unbind('devin', 'main-devin');
+  await waiting;
+  assert.match(String(rejected[0]?.message || rejected[0]), /连接已释放/);
+  assert.equal(h.listeners.size, 1);
+});
+test('Devin turn cache preserves accepted identity and final reply through pruning and request removal', async () => {
+  const h = devinToolsFixture();
+  assert.equal((await h.bind()).profileReady, true);
+  const clientId = '5f2a0f6e-9b1c-4a3d-8e7f-2c6b9a1d4e5f';
+  h.session.status = 'active';
+  h.prompt('generation-1', clientId);
+  h.user('user-1', clientId, 'First question');
+  h.agent('reply-1', 'partial answer');
+  h.update();
+  let turn = h.context.turn('main-devin');
+  assert.equal(turn.id, 'user-1'); assert.equal(turn.accepted, true); assert.equal(turn.text, 'partial answer'); assert.equal(turn.ended, false);
+  h.state.perSession['main-devin'].messages.at(-1).content[0].content.text = 'final answer';
+  h.update();
+  turn = h.context.turn('main-devin'); assert.equal(turn.text, 'final answer');
+  h.state.agentRequests.byId['generation-1'].status = 'completed';
+  h.state.perSession['main-devin'].messages = [];
+  h.update();
+  const facts = value => ({ id: value.id, turnId: value.turnId, generationId: value.generationId, accepted: value.accepted,
+    ended: value.ended, completed: value.completed, user: value.user, text: value.text });
+  const expected = { id: 'user-1', turnId: 'user-1', generationId: 'generation-1', accepted: true, ended: true,
+    completed: true, user: 'First question', text: 'final answer' };
+  assert.deepEqual(facts(h.context.turn('main-devin')), expected);
+  assert.deepEqual(facts(h.context.turn('main-devin')), expected);
+  delete h.state.agentRequests.byId['generation-1']; h.update();
+  assert.deepEqual(facts(h.context.turn('main-devin')), expected);
+  h.context.tools.unbind('devin', 'main-devin'); assert.equal(h.listeners.size, 1);
+});
+test('Devin turn cache keeps replies scoped to each user turn without leaking across users', async () => {
+  const h = devinToolsFixture();
+  assert.equal((await h.bind()).profileReady, true);
+  h.session.status = 'active';
+  const [c1, c2, c3] = ['a1b2c3d4-1111-4000-8000-000000000001', 'a1b2c3d4-2222-4000-8000-000000000002', 'a1b2c3d4-3333-4000-8000-000000000003'];
+  h.prompt('gen-1', c1); h.user('u1', c1, 'first question'); h.agent('r1', 'first answer');
+  h.state.agentRequests.byId['gen-1'].status = 'completed';
+  h.prompt('gen-2', c2); h.user('u2', c2, 'second question'); h.agent('r2', 'second answer');
+  h.update();
+  assert.equal(h.context.turn('main-devin', 'u1').text, 'first answer');
+  assert.equal(h.context.turn('main-devin', '', 'gen-1').text, 'first answer');
+  assert.equal(h.context.turn('main-devin', 'u2').text, 'second answer');
+  const latest = h.context.turn('main-devin');
+  assert.equal(latest.id, 'u2'); assert.equal(latest.text, 'second answer'); assert.equal(latest.generationId, 'gen-2');
+  h.prompt('gen-3', c3); h.user('u3', c3, 'ghost turn', true);
+  h.update();
+  const ghost = h.context.turn('main-devin', '', 'gen-3');
+  assert.equal(ghost.accepted, false); assert.equal(ghost.id, '');
+  h.state.agentRequests.byId['gen-3'].status = 'completed';
+  h.update();
+  const closed = h.context.turn('main-devin', '', 'gen-3');
+  assert.equal(closed.ended, true); assert.equal(closed.completed, false);
+  h.user('u3-real', c3, 'ghost turn');
+  h.update();
+  const real = h.context.turn('main-devin', '', 'gen-3');
+  assert.equal(real.accepted, true); assert.equal(real.id, 'u3-real');
+  assert.equal(real.ended, true); assert.equal(real.completed, false); assert.equal(real.text, '');
+  assert.equal(h.context.turn('main-devin', 'u1').text, 'first answer');
+  assert.equal(h.context.turn('main-devin', 'u2').text, 'second answer');
+  h.context.tools.unbind('devin', 'main-devin'); assert.equal(h.listeners.size, 1);
 });
 test('a new Devin Fusion session keeps ordinary pending preferences and sends its explicitly selected model', async () => {
   const ordinary = { sessionId: 'ordinary', providerId: 'devin-cli', cwd: '/project', draft: 'untouched',
@@ -332,6 +464,10 @@ test('a new Devin Fusion session keeps ordinary pending preferences and sends it
   } } };
   const context = vm.createContext({ window, nativeModule, Map, Promise, Error, JSON, remoteContext: { app: 'devin', threadId: 'ordinary' },
     doc: { defaultView: { Event: class {}, dispatchEvent() {} } }, devinSessionRecord: id => sessions.get(id), nativeSessionContext: async (_app, id) => ({ threadId: id }) });
+  window.__acpStore.subscribe = () => () => {};
+  window.__acpStore.getState = () => ({ acp: { sessions: [], perSession: {}, agentRequests: { byId: {} } } });
+  const tools = fs.readFileSync(new URL('../server/page/fusion-tools.js', import.meta.url), 'utf8');
+  vm.runInContext(tools.slice(tools.indexOf('  const fusionNativeControllers ='), tools.indexOf('  const fusionNativeTools =')), context);
   const source = fs.readFileSync(new URL('../server/page/session-actions.js', import.meta.url), 'utf8'), start = source.indexOf('  const nativeSessionAction ='), end = source.indexOf('  const nativeSessionConfirm', start);
   vm.runInContext(source.slice(start, end).replaceAll("await import('@exa/chat-client')", 'nativeModule') + ';this.action=nativeSessionAction;', context);
   const mcp = { type: 'http', name: 'ra-fusion', url: 'http://own-endpoint', headers: [] };
@@ -775,10 +911,14 @@ test('a failed Devin native request ends its own Fusion round after transient me
   const source = fs.readFileSync(new URL('../server/page/chat-extract.js', import.meta.url), 'utf8');
   const start = source.indexOf('  const codexFusionTurn ='), end = source.indexOf('  // One Codex turn', start);
   const error = 'Permission denied: internal server error: error number 13';
-  const current = { method: 'session/prompt', params: { sessionId: 'worker', prompt: [{ text: 'attempt-1' }] }, status: 'failed', errorMessage: error };
+  const current = { method: 'session/prompt', params: { sessionId: 'worker', prompt: [{ text: 'attempt-1' }],
+    _meta: { 'cognition.ai/clientMessageId': 'attempt-1' } }, status: 'failed', errorMessage: error };
   const state = { perSession: {}, agentRequests: { byId: { current, foreign: { ...current, params: { sessionId: 'other' }, errorMessage: 'foreign failure' } } } };
-  const context = vm.createContext({ remoteContext: { app: 'devin', threadId: 'worker' }, window: { __acpStore: { getState: () => ({ acp: state }) } },
+  const context = vm.createContext({ remoteContext: { app: 'devin', threadId: 'worker' },
+    window: { __acpStore: { getState: () => ({ acp: state }), subscribe: () => () => {} } },
     devinSurface: () => true, devinSessionRecord: () => ({ status: 'idle' }), devinLog: () => assert.fail('ordinary DOM read'), devinItems: () => assert.fail('ordinary DOM read') });
+  const tools = fs.readFileSync(new URL('../server/page/fusion-tools.js', import.meta.url), 'utf8');
+  vm.runInContext(tools.slice(tools.indexOf('  const fusionNativeControllers ='), tools.indexOf('  const fusionNativeTools =')), context);
   vm.runInContext(source.slice(start, end) + '\nthis.read = codexFusionTurn;', context);
   const result = await context.read('known-user', 'attempt-1', [], 'current');
   assert.equal(result.threadId, 'worker'); assert.equal(result.ended, true); assert.equal(result.completed, false); assert.equal(result.error, error);
@@ -787,6 +927,206 @@ test('a failed Devin native request ends its own Fusion round after transient me
   state.agentRequests.byId.current = { ...current, status: 'pending', errorMessage: undefined };
   const pending = await context.read('known-user', 'attempt-1', [], 'current'); assert.equal(pending.ended, false);
 });
+function devinItemsFixture(rows) {
+  for (const row of rows) {
+    const msg = { item: { k: 'human', i: '', t: '', sentAt: 0, b: ['body'], actions: ['copy'], ...(row.itemExtra || {}) },
+      meta: row.meta, time: row.time ?? 1794284911053 };
+    row.el = { key: row.key, native: row.native, innerText: 'x',
+      hasAttribute: name => name === 'data-transcript-row-key' && row.native != null,
+      querySelector: selector => selector.includes('aria-label') ? msg : null,
+      classList: { contains: () => false }, msg };
+  }
+  const context = vm.createContext({
+    devinTranscriptRows: () => rows.map(row => row.el), vis: () => true,
+    itemKey: row => row.key, codexFiberProps: row => [{ row: { item: row.native } }],
+    messageItem: msg => msg.item, devinNativeItems: () => null,
+    devinMessageMeta: msg => msg.meta || {}, devinMessageTime: msg => msg.time,
+    devinTasks: () => assert.fail('devinTasks must not run'), devinCommand: () => assert.fail('devinCommand must not run'),
+    devinEdit: () => assert.fail('devinEdit must not run'), devinEventTool: () => assert.fail('devinEventTool must not run'),
+    devinTranscriptIndex: () => 0, devinNodeSessionId: () => 'thread-1', devinSessionRecord: () => ({ status: 'active' }),
+    doc: { querySelectorAll: () => [] } });
+  const source = fs.readFileSync(new URL('../server/page/chat-extract.js', import.meta.url), 'utf8');
+  const start = source.indexOf('  const devinItems ='), end = source.indexOf('  // Cursor keeps message times', start);
+  vm.runInContext(source.slice(start, end) + ';this.devinItems=devinItems;', context);
+  return context.devinItems;
+}
+test('Devin transcript shows an answered native question as its own human message', () => {
+  const native = { id: 'tool:call_FsFl9WTY12Ii0wx2SZXmYIRu', timestamp: '2026-11-10T04:28:31.053554927+00:00',
+    event_type: 'user_message', message: '', kind: 'question_answers',
+    answers: [{ question: '代码和离线检查已完成。是否现在继续 Devin / swe-2-medium 的真实主子闭环？继续时只用 npm start 重启中继，隧道不动，不发布、不提交、不推送，工作台保留。',
+      options: ['暂不继续实测', '保持累计六条上限', '累计上限提高到八条'], selected_options: ['累计上限提高到八条'] }] };
+  const devinItems = devinItemsFixture([{ key: 'tool:call_FsFl9WTY12Ii0wx2SZXmYIRu', native }]);
+  const items = devinItems({});
+  assert.equal(items.length, 1);
+  const it = items[0];
+  assert.equal(it.k, 'human'); assert.equal(it.i, 'tool:call_FsFl9WTY12Ii0wx2SZXmYIRu');
+  assert.equal(it.t, '问题：代码和离线检查已完成。是否现在继续 Devin / swe-2-medium 的真实主子闭环？继续时只用 npm start 重启中继，隧道不动，不发布、不提交、不推送，工作台保留。\n回复：累计上限提高到八条');
+  assert.equal(it.src, 'devin'); assert.equal(it.sentAt, 1794284911053);
+  assert.deepEqual(it.actions, ['copy']); assert.deepEqual(it.b, ['body']);
+  const again = devinItems({});
+  assert.equal(again.length, 1); assert.equal(again[0].i, it.i); assert.equal(again[0].t, it.t);
+});
+test('Devin transcript joins all answered questions and chosen options in one bubble', () => {
+  const native = { event_type: 'user_message', message: '', kind: 'question_answers',
+    answers: [
+      { question: '继续路径 _shots/fusion-devin-20261109/very-long-name？', options: ['暂不', '继续'], selected_options: ['暂不', '继续'] },
+      { question: '特殊字符 <tag> & "quotes" 怎么处理？', options: ['跳过', '保留'], selected_options: ['保留'] }] };
+  const devinItems = devinItemsFixture([{ key: 'tool:call_multi', native }]);
+  const items = devinItems({});
+  assert.equal(items.length, 1);
+  assert.equal(items[0].t, '问题：继续路径 _shots/fusion-devin-20261109/very-long-name？\n回复：暂不、继续\n\n问题：特殊字符 <tag> & "quotes" 怎么处理？\n回复：保留');
+});
+test('Devin transcript keeps ordinary user text and image-only messages intact', () => {
+  const devinItems = devinItemsFixture([
+    { key: 'user:1', native: { event_type: 'user_message', message: '普通用户消息' } },
+    { key: 'user:2', native: { event_type: 'user_message', message: '', images: [{ url: 'data:image/png;base64,iVBORw0KGgo=', width: 1, height: 1 }] },
+      itemExtra: { images: ['data:image/png;base64,iVBORw0KGgo='] } }]);
+  const items = devinItems({});
+  assert.equal(items.length, 2);
+  assert.equal(items[0].t, '普通用户消息');
+  assert.equal(items[1].i, 'user:2'); assert.equal(items[1].t, ''); assert.deepEqual(items[1].images, ['data:image/png;base64,iVBORw0KGgo=']);
+});
+test('Devin transcript still skips an optimistic answered question row', () => {
+  const native = { event_type: 'user_message', message: '', kind: 'question_answers',
+    answers: [{ question: '授权？', options: ['允许'], selected_options: ['允许'] }] };
+  const devinItems = devinItemsFixture([{ key: 'tool:call_opt', native, meta: { 'cognition.ai/isOptimistic': true } }]);
+  assert.equal(devinItems({}).length, 0);
+});
+function devinWorkerFixture(thread = 'worker-thread') {
+  const session = { sessionId: thread, providerId: 'devin-cli', cwd: '/project', status: 'idle', title: 'Worker' };
+  const state = { sessions: [session], perSession: {}, agentRequests: { byId: {} } }, listeners = new Set(), dispatched = [];
+  const update = () => { for (const listener of [...listeners]) listener(); };
+  const window = { __acpStore: { getState: () => ({ acp: state }),
+    subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); },
+    dispatch: async request => { dispatched.push({ request, listeners: listeners.size }); return request; } } };
+  const nativeModule = { getAllMessages: data => data.messages, tryGetAcpSingleton: () => 'sender',
+    sendAgentRequestThunk: (provider, request, sender) => ({ provider, request, sender }) };
+  const context = vm.createContext({ window, Map, Set, WeakMap, Error, JSON, Promise, Date, Number, Array, Object, String, RegExp, crypto: { randomUUID: () => 'uuid' },
+    remoteContext: { app: 'devin', threadId: thread, cwd: '/project', host: '' },
+    nativeModule, devinSessionRecord: id => id === thread ? session : null,
+    nativeMarkdownItem: (i, k, t, at, images) => ({ i, k, t, at, ...(images?.length ? { images } : {}) }),
+    activeThread: () => 'other-thread', devinQuestions: () => null, agentRun: () => null, nativeWaiting: () => ({}),
+    agentModelName: () => 'SWE-2 Medium', effortName: () => '', devinSurface: () => false });
+  const slice = (file, start, end) => { const source = fs.readFileSync(new URL(`../server/page/${file}`, import.meta.url), 'utf8')
+      .replaceAll("await import('@exa/chat-client')", 'nativeModule'), s = source.indexOf(start);
+    assert(s >= 0, start); const e = source.indexOf(end, s); assert(e > s, end); return source.slice(s, e); };
+  vm.runInContext(slice('fusion-tools.js', '  const fusionNativeControllers =', '  const fusionNativeTools =')
+    + ';this.turn=fusionDevinTurn;this.call=fusionDevinCall;', context);
+  vm.runInContext(slice('session-actions.js', '  const nativeSessionAction = async', '  const nativeSessionRenameInput =')
+    + ';this.action=nativeSessionAction;', context);
+  vm.runInContext(slice('chat-extract.js', '  const codexFusionTurn =', '  // One Codex turn')
+    + ';this.read=codexFusionTurn;', context);
+  vm.runInContext(slice('chat-extract.js', '  const nativeConversationChat =', '  const contextPct =')
+    + ';this.chat=nativeConversationChat;', context);
+  return { session, state, update, context, listeners, dispatched, thread,
+    prompt: (generationId, clientId, status = 'started') => { state.agentRequests.byId[generationId] = { method: 'session/prompt', status,
+      params: { sessionId: thread, prompt: [{ type: 'text', text: 'task' }], _meta: { 'cognition.ai/clientMessageId': clientId } } }; },
+    user: (id, clientId, text, optimistic = false) => (state.perSession[thread] ||= { messages: [] }).messages.push({ id, kind: 'user_message',
+      content: [{ content: { type: 'text', text }, _meta: { 'cognition.ai/clientMessageId': clientId, ...(optimistic ? { 'cognition.ai/isOptimistic': true } : {}) } }] }),
+    agent: (id, text) => (state.perSession[thread] ||= { messages: [] }).messages.push({ id, kind: 'agent_message',
+      content: [{ content: { type: 'text', text } }] }) };
+}
+test('a Devin worker result survives transcript pruning through the shared turn cache', async () => {
+  const h = devinWorkerFixture();
+  const attemptId = 'bea1dba8-8beb-4dbf-882b-bc40614b6c96';
+  await h.context.action('devin', 'worker-thread', 'send', { text: 'task', requestId: attemptId });
+  assert.equal(h.dispatched.length, 1); assert.equal(h.dispatched[0].request.request.method, 'session/prompt');
+  h.prompt('gen-1', attemptId); h.user('u1', attemptId, 'task'); h.agent('r1', 'partial');
+  h.state.perSession['worker-thread'].messages.splice(1, 0,
+    { id: 't1', kind: 'tool_call', content: { toolCallId: 'exec:1', status: 'completed', title: 'wc',
+      rawInput: { command: 'wc -l x' }, content: [{ type: 'content', content: { type: 'text', text: '12 x' } }] } },
+    { id: 'img1', kind: 'agent_message', content: [{ content: { type: 'image', mimeType: 'image/png', data: 'AA==' } }] });
+  h.update();
+  h.state.perSession['worker-thread'].messages[3].content[0].content.text = 'final result';
+  h.update();
+  h.state.agentRequests.byId['gen-1'].status = 'completed'; delete h.state.perSession['worker-thread']; h.update();
+  const chat = await h.context.chat(false, 80);
+  assert.equal(chat.items.filter(i => i.k === 'human').length, 1);
+  assert.equal(chat.items.find(i => i.t === 'final result').k, 'assistant');
+  assert.equal(chat.items.find(i => i.k === 'tool').output, '12 x');
+  assert.deepEqual(chat.items.find(i => i.images)?.images, ['data:image/png;base64,AA==']);
+  const turn = await h.context.read('', attemptId, [], 'gen-1');
+  assert.equal(turn.id, 'u1'); assert.equal(turn.accepted, true); assert.equal(turn.generationId, 'gen-1');
+  assert.equal(turn.ended, true); assert.equal(turn.completed, true); assert.equal(turn.text, 'final result');
+  const again = await h.context.read('', attemptId, [], 'gen-1');
+  assert.equal(again.text, 'final result'); assert.equal(again.id, 'u1');
+  assert.equal(h.dispatched[0].listeners, 1);
+  assert.throws(() => h.context.call('worker-thread', { tool: 'x', arguments: {} }), /没有绑定主控工具/);
+});
+test('Devin worker lookups never reuse another turn identity across sends', async () => {
+  const h = devinWorkerFixture();
+  h.prompt('gen-1', 'attempt-1'); h.user('u1', 'attempt-1', 'first'); h.agent('r1', 'first result');
+  h.state.agentRequests.byId['gen-1'].status = 'completed'; h.update();
+  h.prompt('gen-2', 'attempt-2'); h.update();
+  const stale = await h.context.read('', 'attempt-2', [], 'gen-1');
+  assert.equal(stale.accepted, false); assert.equal(stale.id, ''); assert.equal(stale.ended, false); assert.equal(stale.text, '');
+  const fresh = await h.context.read('', 'attempt-2', [], '');
+  assert.equal(fresh.id, ''); assert.equal(fresh.accepted, false); assert.equal(fresh.generationId, 'gen-2');
+  h.user('u2', 'attempt-2', 'second'); h.agent('r2', 'second result');
+  h.state.agentRequests.byId['gen-2'].status = 'completed'; h.update();
+  const done = await h.context.read('', 'attempt-2', [], 'gen-2');
+  assert.equal(done.id, 'u2'); assert.equal(done.text, 'second result'); assert.equal(done.completed, true);
+  const old = await h.context.read('', 'attempt-1', [], 'gen-1');
+  assert.equal(old.id, 'u1'); assert.equal(old.text, 'first result');
+  const wrongUser = await h.context.read('u1', 'attempt-2', [], '');
+  assert.equal(wrongUser.accepted, false); assert.equal(wrongUser.id, ''); assert.equal(wrongUser.text, '');
+  const wrongId = await h.context.read('unknown-id', 'attempt-2', [], '');
+  assert.equal(wrongId.accepted, false); assert.equal(wrongId.id, ''); assert.equal(wrongId.text, '');
+  h.state.agentRequests.byId['foreign-gen'] = { method: 'session/prompt', status: 'started',
+    params: { sessionId: 'other-thread', _meta: { 'cognition.ai/clientMessageId': 'foreign-attempt' } } };
+  h.update();
+  const owned = h.context.window.__remoteAgentDevinTurns;
+  assert.equal(owned.get('other-thread'), undefined);
+  assert([...owned.get('worker-thread').turns.keys()].every(key => key !== 'foreign-gen'));
+});
+test('a Devin worker turn stays incomplete without a real reply and keeps its own failure', async () => {
+  const h = devinWorkerFixture();
+  h.prompt('gen-3', 'attempt-3'); h.user('u3', 'attempt-3', 'ghost', true); h.update();
+  const ghost = await h.context.read('', 'attempt-3', [], 'gen-3');
+  assert.equal(ghost.accepted, false); assert.equal(ghost.id, '');
+  h.prompt('gen-4', 'attempt-4'); h.user('u4', 'attempt-4', 'real');
+  h.state.agentRequests.byId['gen-4'].status = 'completed'; h.update();
+  const empty = await h.context.read('', 'attempt-4', [], 'gen-4');
+  assert.equal(empty.accepted, true); assert.equal(empty.ended, true); assert.equal(empty.completed, false); assert.equal(empty.text, '');
+  h.prompt('gen-5', 'attempt-5');
+  h.state.agentRequests.byId['gen-5'] = { ...h.state.agentRequests.byId['gen-5'], status: 'failed', errorMessage: 'native failure 13' };
+  h.state.agentRequests.byId.foreign = { method: 'session/prompt', status: 'failed', errorMessage: 'foreign', params: { sessionId: 'other' } };
+  delete h.state.perSession['worker-thread']; h.update();
+  const failed = await h.context.read('', 'attempt-5', [], 'gen-5');
+  assert.equal(failed.ended, true); assert.equal(failed.completed, false); assert.equal(failed.error, 'native failure 13');
+});
+test('an explicit Devin binding cleanup releases its turn cache at every confirmed end state', async () => {
+  const remoteContext = { app: 'devin', threadId: 'worker-thread' };
+  const session = { sessionId: 'worker-thread', providerId: 'devin-cli', cwd: '/project', status: 'idle', title: 'Worker' };
+  const catalogRows = { before: [], after: [] };
+  const nativeModule = { tryGetAcpSingleton: name => name === 'connectorService'
+    ? { getConnectorById: () => ({ capabilities: { sessionCapabilities: { delete: true } } }) } : 'sender',
+    sendAgentRequestThunk: (provider, request, sender) => ({ provider, request, sender }) };
+  const window = { __acpStore: { dispatch: async () => { catalogRows.before = catalogRows.after; return true; } },
+    __remoteAgentDevinTurns: new Map() };
+  const context = vm.createContext({ window, remoteContext, nativeModule, JSON, Error, devinSessionRecord: () => session,
+    nativeSessionCatalog: async () => ({ ready: true, rows: catalogRows.before, complete: true }),
+    nativeSessionContext: async () => ({ threadId: 'worker-thread' }), codexConversationManager: () => assert.fail('codex path'),
+    cursorSessionServices: () => assert.fail('cursor path') });
+  const source = fs.readFileSync(new URL('../server/page/session-actions.js', import.meta.url), 'utf8'),
+    start = source.indexOf('  const nativeSessionCleanup ='), end = source.indexOf('  const nativeSessionInfo =', start);
+  vm.runInContext(source.slice(start, end).replaceAll("await import('@exa/chat-client')", 'nativeModule') + ';this.cleanup=nativeSessionCleanup;', context);
+  const seed = () => { const state = { turns: new Map(), data: null, stops: 0, stop: () => { state.stops += 1; } };
+    window.__remoteAgentDevinTurns.set('worker-thread', state); return state; };
+  catalogRows.before = [{ id: 'worker-thread' }]; catalogRows.after = [];
+  let state = seed();
+  assert.equal((await context.cleanup('devin', 'worker-thread', true)).confirmed, true);
+  assert.equal(window.__remoteAgentDevinTurns.get('worker-thread'), undefined); assert.equal(state.stops, 1);
+  catalogRows.before = []; state = seed();
+  assert.equal((await context.cleanup('devin', 'worker-thread', true)).already, true);
+  assert.equal(window.__remoteAgentDevinTurns.get('worker-thread'), undefined); assert.equal(state.stops, 1);
+  catalogRows.before = [{ id: 'worker-thread', archived: true }]; state = seed();
+  assert.equal((await context.cleanup('devin', 'worker-thread', true)).already, true);
+  assert.equal(window.__remoteAgentDevinTurns.get('worker-thread'), undefined); assert.equal(state.stops, 1);
+  remoteContext.threadId = 'foreign-thread'; catalogRows.before = [{ id: 'worker-thread' }]; state = seed();
+  await assert.rejects(() => context.cleanup('devin', 'worker-thread', true), /不属于这个原生 Binding/);
+  assert.equal(window.__remoteAgentDevinTurns.get('worker-thread'), state); assert.equal(state.stops, 0);
+});
 test('Fusion Devin content reports a native failure without requiring a pruned transcript or showing another request error', async () => {
   const source = fs.readFileSync(new URL('../server/page/chat-extract.js', import.meta.url), 'utf8');
   const start = source.indexOf('  const nativeConversationChat ='), end = source.indexOf('  const contextPct =', start);
@@ -794,12 +1134,14 @@ test('Fusion Devin content reports a native failure without requiring a pruned t
   const state = { perSession: {}, agentRequests: { byId: { current: { method: 'session/prompt', params: { sessionId: 'worker' }, status: 'failed', errorMessage: error } } } };
   let messageReads = 0;
   const context = vm.createContext({ remoteContext: { app: 'devin', threadId: 'worker', cwd: '/project', host: '' },
-    window: { __acpStore: { getState: () => ({ acp: state }) } },
+    window: { __acpStore: { getState: () => ({ acp: state }), subscribe: () => () => {} } },
     nativeModule: { getAllMessages: data => { messageReads++; assert(data, 'failed native transcript has been pruned'); return data.messages; } },
     devinSessionRecord: () => ({ status: 'idle', title: 'Worker' }), activeThread: () => 'ordinary', devinQuestions: () => assert.fail('ordinary questions read'),
     agentRun: () => ({ id: 'current', status: state.agentRequests.byId.current.status === 'failed' ? 'error' : 'completed' }), nativeWaiting: () => ({}),
     agentModelName: () => 'SWE-2 High', effortName: () => '', devinSurface: () => 'editor',
     nativeMarkdownItem: (i, k, t, at) => ({ i, k, t, at }) });
+  const tools = fs.readFileSync(new URL('../server/page/fusion-tools.js', import.meta.url), 'utf8');
+  vm.runInContext(tools.slice(tools.indexOf('  const fusionNativeControllers ='), tools.indexOf('  const fusionNativeTools =')), context);
   vm.runInContext(source.slice(start, end).replace("await import('@exa/chat-client')", 'nativeModule') + '\nthis.read = nativeConversationChat;', context);
   const failed = await context.read(false, 80);
   assert.equal(failed.thread, 'worker'); assert.equal(failed._nativeState.run.status, 'error');

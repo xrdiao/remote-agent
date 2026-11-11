@@ -1012,6 +1012,7 @@ function finishQuestion(m) {
       setQuestionCompose(null);
     }
   }
+  if (m.ok && pending.message.qkey) qnDrafts.delete(pending.message.qkey);
   qnSig = '';
   renderQuestions(qnState);
   status(m.ok ? '已提交' : '回答提交失败', m.ok);
@@ -1075,13 +1076,27 @@ function renderQuestions(qs) {
   if (!qs?.list?.length) { bar.innerHTML = ''; bar.classList.remove('show'); updateComposeCompact(); return; }
   if (qs.devin) {
     const q = qs.list[0], pg = qs.pager;
+    const focused = bar.contains(document.activeElement) ? document.activeElement : null;
+    const focusKey = focused?.matches('[data-qtext]') ? focused.dataset.qkey : null;
+    const selection = focusKey ? [focused.selectionStart, focused.selectionEnd] : null;
+    const draftKey = ['devin', viewSel, qs.textKey || '', q.text, pg?.cur ?? 0].join('|');
     bar.innerHTML = questionCard(`Devin 在问你<span class="qnCount">${pg ? `${pg.cur}/${pg.total}` : '1 个问题'}</span>`,
       (pg && pg.total > 1 ? `<div class="qnPg"><button data-qpart="prev" ${qs.canPrev ? '' : 'disabled'}>‹</button><button data-qpart="next" ${qs.canNext ? '' : 'disabled'}>›</button></div>` : '')
       + `<div class="qnQ">${esc(q.text)}</div><div class="qnOpts">`
       + q.options.map((o, oi) => `<button class="qnOpt ${o.sel ? 'on' : ''}" data-qi="0" data-oi="${oi}"><b>${q.multi ? (o.sel ? '☑' : '☐') : String.fromCharCode(65 + oi)}</b><span>${esc(o.label)}${o.desc ? `<small>${esc(o.desc)}</small>` : ''}</span></button>`).join('')
-      + `</div><div class="qnHint">想自己回答？直接在下方输入框写</div>`
+      + `</div>`
+      + (qs.canText ? `<div class="qnFree"><input data-qtext data-qkey="${esc(draftKey)}" placeholder="其他回答…" enterkeyhint="send"><button data-qanswer>回答</button></div>` : '')
       + `<div class="qnAct"><button data-qpart="skip">跳过</button>${qs.hasSubmit ? `<button class="primary" data-qpart="submit" ${qs.canSubmit ? '' : 'disabled'}>提交</button>` : ''}</div>`, open);
     bar.classList.add('show');
+    const qtext = bar.querySelector('[data-qtext]');
+    if (qtext) {
+      if (qnDrafts.has(draftKey)) qtext.value = qnDrafts.get(draftKey);
+      qtext.oninput = () => qnDrafts.set(draftKey, qtext.value);
+      if (focusKey === draftKey && !qnPending) {
+        qtext.focus();
+        qtext.setSelectionRange(...selection);
+      }
+    }
     questionBusy();
     return;
   }
@@ -1109,12 +1124,19 @@ $('qnBar').onclick = e => {
     const [qi, oi] = b.dataset.qfree.split(':').map(Number);
     return sendQuestion({ t: 'question', qi, oi, part: 'option', text: b.previousElementSibling.value });
   }
+  if ('qanswer' in b.dataset) {
+    const input = $('qnBar').querySelector('[data-qtext]');
+    const answer = input?.value.trim();
+    if (!answer) return;
+    return sendQuestion({ t: 'question', part: 'text', text: answer, qkey: input.dataset.qkey });
+  }
   if (b.dataset.qi) sendQuestion({ t: 'question', qi: Number(b.dataset.qi), oi: Number(b.dataset.oi), part: 'option' });
 };
 $('qnBar').addEventListener('keydown', e => {
   if (e.key !== 'Enter' || !e.target.matches('input')) return;
   const answering = e.target.dataset.request?.startsWith('async:');
   if (answering && e.isComposing) return;
+  if (e.target.matches('[data-qtext]') && e.isComposing) return;
   e.preventDefault();
   if (answering) return e.target.closest('.qnRequest').querySelector('.qnAct button:last-child').click();
   if ('field' in e.target.dataset) { e.target.blur(); return; }

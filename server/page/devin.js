@@ -512,11 +512,16 @@
     const text = [...band.querySelectorAll('p')].find(p => !p.closest('[data-slot="scroll-area"]'))?.innerText.trim() || '';
     const submit = devinQnButton(band, 'Submit') || devinQnButton(band, 'Continue');
     const prev = devinQnButton(band, 'Previous question'), next = devinQnButton(band, 'Next question');
+    const question = devinNativeQuestion();
+    const canText = typeof question?.handleComposerSubmit === 'function';
+    const active = canText ? question.questions?.find(q => q.id === question.activeQuestionId) : null;
     return {
       devin: true, src: 'devin', list: [{ text, options, multi }],
       pager: pg ? { cur: Number(pg[1]), total: Number(pg[2]) } : null,
       canPrev: !!prev && !prev.disabled, canNext: !!next && !next.disabled,
       hasSubmit: !!submit, canSubmit: !!submit && !submit.disabled,
+      canText,
+      textKey: active?.resetKey || '',
     };
   };
   const devinQuestionTarget = (oi, part) => {
@@ -671,4 +676,158 @@
     const b = permissionButton();
     if (!b) return null;
     return (b.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40) || null;
+  };
+
+  // ---- Ordinary Devin submission internals ----
+  // The visible Slate editor's React fiber reaches the live native contexts: the
+  // InputBox (composer + selected images/quotes), the queue controller and the
+  // ask-question hook, plus the conversion options kept in a useMemo hook state.
+  const DEVIN_OPTION_KEYS = ['copyToAgentHost', 'httpUpload', 'maxEmbeddedResourceBytes', 'readFile', 'readTerminal'];
+  const devinOptionValue = value => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const keys = Object.keys(value).sort();
+    return keys.length === DEVIN_OPTION_KEYS.length && keys.every((key, i) => key === DEVIN_OPTION_KEYS[i]) ? value : null;
+  };
+  const devinEditorFiber = () => {
+    const el = [...doc.querySelectorAll('[data-slate-editor="true"][role="textbox"]')].find(vis);
+    let host = el;
+    while (host && !Object.keys(host).some(key => key.startsWith('__reactFiber'))) host = host.parentElement;
+    const key = host && Object.keys(host).find(key => key.startsWith('__reactFiber'));
+    return key ? host[key] : null;
+  };
+  const devinContextValues = fiber => {
+    const values = [];
+    for (let f = fiber, depth = 0; f && depth < 200; f = f.return, depth++) {
+      if (f.tag === 10) {
+        let root = f;
+        while (root.return) root = root.return;
+        const current = root.stateNode.current === root ? f : f.alternate;
+        const value = current?.memoizedProps?.value;
+        if (devinQuestionContext(value)) values.push(value);
+      }
+      for (let dep = f.dependencies?.firstContext; dep; dep = dep.next) {
+        const value = dep.memoizedValue;
+        if (!value || typeof value !== 'object') continue;
+        values.push(value);
+        for (const symbol of Object.getOwnPropertySymbols(value)) {
+          const current = value[symbol]?.v?.current;
+          if (current && typeof current === 'object') values.push(current);
+        }
+      }
+    }
+    return values;
+  };
+  const devinNativeOptions = fiber => {
+    for (let f = fiber, depth = 0; f && depth < 200; f = f.return, depth++) {
+      for (let hook = f.memoizedState, guard = 0; hook && typeof hook === 'object' && guard < 5000; hook = hook.next, guard++) {
+        const state = hook.memoizedState;
+        const options = devinOptionValue(Array.isArray(state) && state.length === 2 ? state[0] : state);
+        if (options) return options;
+      }
+    }
+    return null;
+  };
+  const devinQuestionContext = value => value && typeof value === 'object'
+    && typeof value.answerQuestion === 'function' && typeof value.skipQuestion === 'function'
+    && 'handleComposerSubmit' in value && 'activeQuestionId' in value && Array.isArray(value.questions);
+  const devinNativeQuestion = () => {
+    const fiber = devinEditorFiber();
+    return fiber ? devinContextValues(fiber).find(devinQuestionContext) || null : null;
+  };
+  const devinNativeSubmission = () => {
+    const fiber = devinEditorFiber();
+    if (!fiber) return null;
+    const values = devinContextValues(fiber);
+    const input = values.find(value => value?.composerRef || typeof value?.getSelectedImages === 'function');
+    const registry = values.find(value => typeof value?.getCurrentComposer === 'function' && typeof value?.registerInputBox === 'function');
+    const composer = input?.composerRef?.current || registry?.getCurrentComposer?.() || null;
+    const controller = values.find(value => ['cancelInvocation', 'cancelInvocationAndWait', 'interruptWithQueuedMessage']
+      .every(key => typeof value?.[key] === 'function'));
+    return { input, composer, controller, question: values.find(devinQuestionContext) || null, options: devinNativeOptions(fiber) };
+  };
+  // Mirrors of the native quote formatters (tjZ/tjQ/tj0/tj1/tqo in the installed
+  // workbench bundle): escape &, <, >, "; artifact attributes per kind; line anchors
+  // only for file/attachment/diff/pr/editor; <quoted_artifact> XML wrapper.
+  const devinQuoteEscape = value => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+  const devinQuoteAttrs = artifact => {
+    switch (artifact.kind) {
+      case 'file': return ` path="${devinQuoteEscape(artifact.path)}" version_ref="${devinQuoteEscape(artifact.versionRef)}"`;
+      case 'attachment': return ` path="${devinQuoteEscape(artifact.path)}"` + (artifact.subPath ? ` sub_path="${devinQuoteEscape(artifact.subPath)}"` : '') + ` url="${devinQuoteEscape(artifact.url)}"`;
+      case 'diff': return ` path="${devinQuoteEscape(artifact.path)}"` + (artifact.side ? ` side="${artifact.side}"` : '');
+      case 'event_context': return ` event_type="${devinQuoteEscape(artifact.path)}" source="${devinQuoteEscape(artifact.source)}"`;
+      case 'pr': return ` repo="${devinQuoteEscape(artifact.repo)}" pr_number="${artifact.prNumber}" path="${devinQuoteEscape(artifact.path)}" commit_sha="${devinQuoteEscape(artifact.commitSha)}" side="${artifact.side}"`;
+      case 'pr_description': return ` repo="${devinQuoteEscape(artifact.repo)}" pr_number="${artifact.prNumber}"`;
+      case 'pr_comment': return ` repo="${devinQuoteEscape(artifact.repo)}" pr_number="${artifact.prNumber}" comment_id="${devinQuoteEscape(artifact.commentId)}"` + (artifact.path ? ` path="${devinQuoteEscape(artifact.path)}"` : '');
+      case 'worklog': return ` start_event_id="${devinQuoteEscape(artifact.startEventId)}" end_event_id="${devinQuoteEscape(artifact.endEventId)}" view="${artifact.view}"`;
+      case 'editor': return ` path="${devinQuoteEscape(artifact.path)}" version_ref="${devinQuoteEscape(artifact.resource)}"`;
+      case 'shell': return ` shell_id="${devinQuoteEscape(artifact.shellId)}"`;
+      case 'markdown': return ` plan_id="${devinQuoteEscape(artifact.planId)}" version_ref="${devinQuoteEscape(artifact.versionRef)}"`;
+      case 'message': return ` event_id="${devinQuoteEscape(artifact.eventId)}" author="${artifact.author}"`;
+      case 'sidechain_message': return ` event_id="${devinQuoteEscape(artifact.eventId)}" author="${artifact.author}" anchor_event_id="${devinQuoteEscape(artifact.anchorEventId)}"`;
+      case 'preview': return ` page_url="${devinQuoteEscape(artifact.pageUrl)}" selector="${devinQuoteEscape(artifact.selector)}"` + (artifact.localPort != null ? ` local_port="${artifact.localPort}"` : '') + (artifact.component ? ` component="${devinQuoteEscape(artifact.component)}"` : '') + (artifact.source ? ` source="${devinQuoteEscape(artifact.source.fileName)}:${artifact.source.lineNumber}"` : '') + (artifact.accessibility ? ` ax_role="${devinQuoteEscape(artifact.accessibility.role)}"` + (artifact.accessibility.label ? ` ax_label="${devinQuoteEscape(artifact.accessibility.label)}"` : '') + (artifact.accessibility.value ? ` ax_value="${devinQuoteEscape(artifact.accessibility.value)}"` : '') + (artifact.accessibility.identifier ? ` ax_identifier="${devinQuoteEscape(artifact.accessibility.identifier)}"` : '') + ` ax_enabled="${artifact.accessibility.enabled}" ax_focused="${artifact.accessibility.focused}"` + (artifact.accessibility.actions.length ? ` ax_actions="${devinQuoteEscape(artifact.accessibility.actions.join(', '))}"` : '') + ` ax_discovery="${artifact.accessibility.discovery}"` : '');
+    }
+  };
+  const devinQuoteAnchored = artifact => ['file', 'attachment', 'diff', 'pr', 'editor'].includes(artifact.kind);
+  const devinQuoteXml = quote => {
+    const { artifact, anchor, text, diffText, caption } = quote;
+    const body = diffText ?? text;
+    const lines = devinQuoteAnchored(artifact) ? ` start_line="${anchor.startLine}" end_line="${anchor.endLine}"` : '';
+    const cap = caption ? `\n<caption>${devinQuoteEscape(caption)}</caption>` : '';
+    return `\n<quoted_artifact kind="${artifact.kind}"${devinQuoteAttrs(artifact)}${lines}>${cap}\n<content>\n${devinQuoteEscape(body)}\n</content>\n</quoted_artifact>`;
+  };
+  const devinQuoteBlock = quote => ({ type: 'text', text: devinQuoteXml(quote), _meta: { quote } });
+  const devinCheckSession = id => {
+    const active = activeThread();
+    if (active && active !== id) throw new Error('Devin 会话已切换，请重试');
+  };
+  const devinNativeQueue = async (id, spec = {}) => {
+    devinCheckSession(id);
+    if (!devinSessionRecord(id)) throw new Error('Devin 原生目录中没有这个会话');
+    const found = devinNativeSubmission();
+    const composer = found?.composer;
+    if (!composer || typeof composer.toAcpBlocks !== 'function') throw new Error('Devin 原生输入框尚未就绪');
+    const images = found.input?.getSelectedImages?.() || [];
+    const quotes = found.input?.getSelectedQuotes?.() || [];
+    if (typeof composer.isEmpty === 'function' && composer.isEmpty() && !images.length && !quotes.length)
+      throw new Error('输入框是空的');
+    if (!found.options) throw new Error('Devin 原生消息转换选项尚未就绪');
+    let blocks;
+    try {
+      blocks = await composer.toAcpBlocks(found.options);
+      if (!Array.isArray(blocks)) throw new Error('没有可发送的内容');
+    } catch (error) {
+      throw new Error(`Devin 原生消息转换失败：${error?.message || error}`);
+    }
+    for (const image of images) blocks.push({ type: 'image', data: image.base64Data, mimeType: image.mimeType });
+    for (const quote of quotes) blocks.push(devinQuoteBlock(quote));
+    if (!blocks.length) throw new Error('没有可发送的内容');
+    devinCheckSession(id);
+    // addQueuedMessage only enqueues: the native drain runs on prompt end/idle, so an
+    // explicit queue while the session is already idle must go through the same
+    // interrupt path a "now" send uses, or the message would sit queued forever.
+    const requests = window.__acpStore.getState().acp.agentRequests.byId;
+    const running = Object.values(requests).some(request => request.method === 'session/prompt'
+      && request.status === 'started' && request.params?.sessionId === id);
+    const send = spec.now === true || !running;
+    if (send && typeof found.controller?.interruptWithQueuedMessage !== 'function')
+      throw new Error('Devin 原生队列控制器尚未就绪');
+    const messageId = crypto.randomUUID();
+    window.__acpStore.dispatch({ type: 'acp/addQueuedMessage', payload: { sessionId: id, message: { id: messageId, contentBlocks: blocks } } });
+    const accepted = window.__acpStore.getState().acp.perSession[id]?.queuedMessages?.some(message => message.id === messageId);
+    if (!accepted) throw new Error('Devin 原生队列没有接受这条消息');
+    composer.clear?.();
+    found.input?.setSelectedImages?.([]);
+    found.input?.setSelectedQuotes?.([]);
+    if (send) await found.controller.interruptWithQueuedMessage(messageId);
+    return { queued: true, id: messageId, now: spec.now === true };
+  };
+  const devinNativeQuestionText = (id, spec = {}) => {
+    const text = String(spec.text ?? '');
+    if (!text.trim()) throw new Error('回答不能为空');
+    devinCheckSession(id);
+    const question = devinNativeQuestion();
+    if (typeof question?.handleComposerSubmit !== 'function') throw new Error('当前问题不支持自由文字回答');
+    const result = question.handleComposerSubmit({ text, items: [], images: [] });
+    if (typeof result === 'string') throw new Error(result);
+    return { answered: true };
   };

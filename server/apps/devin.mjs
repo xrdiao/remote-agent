@@ -193,7 +193,12 @@ export const adapter = {
   },
 
   async submitPrompt(now, busy, when, queued) {
-    return this.submitPromptKey(now ? mod('Enter') : 'Enter', queued);
+    if (queued || now || when === 'queue') {
+      return this.submitPromptKey(null, queued, async () => {
+        await this.cdp.evaluate(helpersCall(`nativeSessionAction('devin', ${JSON.stringify(this.threadId || '')}, 'queue', ${JSON.stringify({ now: !!now })})`));
+      });
+    }
+    return this.submitPromptKey('Enter', queued);
   },
 
   async fileAgentMarks(f, text) {
@@ -716,6 +721,7 @@ async openEditorChat() {
 // Devin "New": the Agent surface has the New session control. The Editor surface has none
 // visible, so it switches to Agent first and stays there (the new session lives in Agent).
 async devinNewChat() {
+  const previous = await this.cdp.evaluate(helpersCall('activeThread()'));
   const session = await this.cdp.evaluate(helpersCall('devinSession()'));
   const surface = session?.surface;
   if (surface === 'agent' && session.cwd && session.key.startsWith('acp/devin-cli/')) {
@@ -733,7 +739,34 @@ async devinNewChat() {
   }
   this.resetDevinView();
   this.lastChatAt = 0;
-  await this.pollChat();
+  // The old thread can keep an empty transcript on screen while the new session is
+  // still being created; only a different active thread with a real native record,
+  // a ready composer and the expected working directory counts as the new chat.
+  const expectedRoot = this.pendingProject?.root || session?.cwd || '';
+  const rootMatches = cwd => !expectedRoot || this.projectMatches([{ root: cwd }], expectedRoot);
+  let created = null;
+  for (let i = 0; i < 40 && !created; i++) {
+    const state = await this.cdp.evaluate(`(() => {
+      const h = ${PAGE_SRC};
+      const thread = h.activeThread();
+      const session = h.devinSession();
+      return { thread, key: session?.key || '', surface: session?.surface || '', cwd: session?.cwd || '',
+        composer: h.hasComposer(), record: !!thread && !!h.nativeSessionInfo('devin', thread) };
+    })()`);
+    const isNew = !!state?.thread && state.thread !== previous;
+    if (isNew && state.cwd && expectedRoot && !rootMatches(state.cwd))
+      throw new Error('Devin 新会话的工作目录与所选项目不一致，尚未发送消息；请检查电脑端的工作目录');
+    if (isNew && state.record && state.composer && state.cwd && rootMatches(state.cwd)) created = state;
+    else await new Promise(r => setTimeout(r, 150));
+  }
+  if (!created) throw new Error('新会话尚未就绪，请检查电脑上的会话');
+  if (this.threadId !== created.thread) this.clearViewState();
+  this.threadId = this.selectedThread = created.thread;
+  // Inside a project switch finishProject owns the first screen, thread publish and
+  // projectReady; pollChat would throw while switchingThread is still set.
+  if (this.pendingProject) return created;
+  this.publishThread();
+  await this.pollChat(true, true);
   this.emit({ t: 'status', ok: true, msg: '已新建对话' });
 },
 

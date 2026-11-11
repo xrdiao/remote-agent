@@ -193,30 +193,47 @@
   const fusionDevinBody = message => (message?.content || []).filter(block => block.content?.type === 'text').map(block => block.content.text).join('\n');
   const fusionDevinCapture = (id, spec) => {
     const state = window.__acpStore.getState().acp;
+    if (state.perSession[id]) spec.data = state.perSession[id];
     for (const [generationId, request] of Object.entries(state.agentRequests.byId))
       if (request.method === 'session/prompt' && request.params.sessionId === id)
-        spec.turns.set(generationId, { ...request, generationId });
+        spec.turns.set(generationId, { ...spec.turns.get(generationId), ...request, generationId });
     const messages = state.perSession[id]?.messages || [];
     for (const turn of spec.turns.values()) {
       const clientId = turn.params._meta?.['cognition.ai/clientMessageId'];
       const user = clientId && messages.find(row => row.kind === 'user_message'
         && row.content.some(block => block._meta?.['cognition.ai/clientMessageId'] === clientId && !block._meta?.['cognition.ai/isOptimistic']));
-      if (user) { turn.messageId = user.id; turn.user = fusionDevinBody(user); }
+      if (!user) continue;
+      turn.messageId = user.id; turn.user = fusionDevinBody(user);
+      const start = messages.indexOf(user), rest = messages.slice(start + 1), next = rest.findIndex(row => row.kind === 'user_message');
+      const reply = (next < 0 ? rest : rest.slice(0, next)).findLast(row => row.kind === 'agent_message');
+      if (reply) { turn.replyText = fusionDevinBody(reply); turn.hasReply = true; }
     }
   };
-  const fusionDevinTurn = (id, messageId = '', generationId = '') => {
-    const spec = fusionNativeControllers().get(fusionNativeKey('devin', id));
-    if (!spec) return { id: '', turnId: '', threadId: id, accepted: false, ended: false, completed: false, text: '' };
+  const fusionDevinStates = () => window.__remoteAgentDevinTurns ||= new Map();
+  const fusionDevinState = id => {
+    const states = fusionDevinStates();
+    let state = states.get(id);
+    if (!state) {
+      state = { turns: fusionNativeControllers().get(fusionNativeKey('devin', id))?.turns || new Map(), data: null, stop: null };
+      states.set(id, state);
+      state.stop = window.__acpStore.subscribe(() => fusionDevinCapture(id, state));
+      fusionDevinCapture(id, state);
+    }
+    return state;
+  };
+  const fusionDevinTurn = (id, messageId = '', generationId = '', attemptId = '') => {
+    const spec = fusionDevinState(id);
     fusionDevinCapture(id, spec);
-    const turn = generationId ? spec.turns.get(generationId)
-      : messageId ? [...spec.turns.values()].find(row => row.messageId === messageId) : [...spec.turns.values()].findLast(row => row.messageId);
-    const messages = window.__acpStore.getState().acp.perSession[id]?.messages || [], start = messages.findIndex(row => row.id === turn?.messageId);
-    const user = messages[start], rest = start < 0 ? [] : messages.slice(start + 1), next = rest.findIndex(row => row.kind === 'user_message');
-    const reply = (next < 0 ? rest : rest.slice(0, next)).findLast(row => row.kind === 'agent_message');
+    const clientId = row => row.params._meta?.['cognition.ai/clientMessageId'], values = [...spec.turns.values()];
+    let turn = generationId ? spec.turns.get(generationId)
+      : messageId ? values.find(row => row.messageId === messageId)
+      : attemptId ? values.find(row => clientId(row) === attemptId)
+      : values.findLast(row => row.messageId);
+    if (attemptId && (!turn || clientId(turn) !== attemptId)) turn = undefined;
     const ended = ['completed', 'failed'].includes(turn?.status);
     return { id: turn?.messageId || '', ids: [...spec.turns.values()].map(row => row.messageId).filter(Boolean), turnId: turn?.messageId || '',
       generationId: turn?.generationId || '', threadId: id, current: turn === [...spec.turns.values()].at(-1), accepted: !!turn?.messageId,
-      user: turn?.user || '', text: fusionDevinBody(reply), ended, completed: turn?.status === 'completed' && !!reply,
+      user: turn?.user || '', text: turn?.replyText || '', ended, completed: turn?.status === 'completed' && !!turn?.hasReply,
       error: turn?.status === 'failed' ? turn.errorMessage || 'Devin 原生执行失败' : '', items: [] };
   };
   const fusionDevinBind = async (id, spec) => {
@@ -224,10 +241,9 @@
     const connector = native.tryGetAcpSingleton('connectorService').getConnectors().find(row => row.id === session.providerId);
     if (!connector?.capabilities?.mcpCapabilities?.http) throw new Error('这个 Devin 连接器未提供会话级 HTTP MCP 工具');
     const controllers = fusionNativeControllers(), key = fusionNativeKey('devin', id), previous = controllers.get(key);
-    const state = { ...spec, waiting: previous?.waiting || new Set(), turns: previous?.turns || new Map(), applied: previous?.applied };
+    const state = { ...spec, waiting: previous?.waiting || new Set(), turns: fusionDevinState(id).turns, applied: previous?.applied };
     controllers.set(key, state);
     previous?.stop?.();
-    state.stop = window.__acpStore.subscribe(() => fusionDevinCapture(id, state)); fusionDevinCapture(id, state);
     const profile = JSON.stringify(spec.mcp);
     if (state.applied === profile || session.mcpServers?.some(server => JSON.stringify(server) === profile)) {
       state.applied = profile;
@@ -255,7 +271,7 @@
         const messages = state.perSession[id]?.messages || [];
         const user = messages.findLast(row => row.kind === 'user_message' && !row.content?.some(block => block._meta?.['cognition.ai/isOptimistic']));
         const start = messages.indexOf(user), tail = start >= 0 ? messages.slice(start + 1) : [];
-        const matches = tail.filter(row => row.kind === 'tool_call' && row.content.name === input.tool
+        const matches = tail.filter(row => row.kind === 'tool_call' && row.content._meta?.['cognition.ai/toolName'] === 'mcp__ra-fusion__' + input.tool
           && ['pending', 'in_progress'].includes(row.content.status) && canonical(row.content.rawInput) === canonical(input.arguments));
         if (matches.length > 1) { finish(null, new Error('多个原生工具调用参数相同，无法确认本次归属')); return; }
         if (matches.length === 1 && user) {

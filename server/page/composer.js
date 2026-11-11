@@ -167,49 +167,52 @@
     return true;
   };
   const readDevinUsage = async (refresh = false) => {
-    const input = [...doc.querySelectorAll(`${COMPOSER}, [data-slate-editor="true"]`)].filter(e => vis(e) && e.isContentEditable && !inItem(e)).at(-1);
-    const api = input && codexFiberProps(input, Infinity).find(p => p.value?.api?.windsurfSettingsPage?.planInfo)?.value.api;
-    if (refresh && api) {
-      try { await api.executeCommand('devin.updatePlanInfo'); }
-      catch (error) {
-        const cached = await readDevinUsage(false);
-        if (cached.missing || !cached.limits.some(limit => Number.isFinite(limit.pct))) throw error;
-        // Reading the desktop's stored value is not a successful quota refresh.
-        delete cached.updated;
-        return { ...cached, cached: true, refreshError: String(error.message || error) };
+    const input = doc.querySelector('[data-slate-editor]');
+    const key = input && Object.keys(input).find(k => k.startsWith('__reactFiber'));
+    const fiber = input?.[key];
+    let root = fiber, account, auth;
+    while (root?.return) root = root.return;
+    const current = root?.stateNode?.current === root;
+    for (let f = fiber; f; f = f.return) {
+      const provider = current ? f : f.alternate;
+      if (provider?.tag !== 10) continue;
+      const value = provider.memoizedProps?.value;
+      if (typeof value?.refetchUserStatus === 'function') account = value;
+      if (value?.api?.auth) auth = value.api.auth;
+    }
+    const UserStatus = account?.userStatus?.constructor;
+    if (typeof UserStatus?.fromBinary !== 'function' || !auth) return { missing: true, quota: [], limits: [] };
+    let confirmed = false, refreshError;
+    if (refresh) {
+      const stop = auth.onDidChangeUserStatus(() => { confirmed = true; });
+      try {
+        await auth.refreshUserStatus();
+        if (!confirmed) refreshError = '原生账户未确认额度刷新';
+      } catch (error) {
+        refreshError = String(error.message || error);
+      } finally {
+        stop();
       }
     }
-    const info = api?.windsurfSettingsPage?.planInfo?.getPlanInfo();
-    if (info) return {
-      missing: false, quota: [], plan: info.planName, updated: Date.now(),
-      limits: [['每日额度', info.dailyRemainingPercent, info.dailyResetAtUnix, info.hideDailyQuota], ['每周额度', info.weeklyRemainingPercent, info.weeklyResetAtUnix, info.hideWeeklyQuota]]
+    // React can still hold the previous account value after the native refresh resolves.
+    const binary = auth.getUserStatusBinaryBase64();
+    const status = binary && UserStatus.fromBinary(Uint8Array.from(atob(binary), c => c.charCodeAt(0))).planStatus;
+    if (!status) return { missing: true, quota: [], limits: [] };
+    const info = status.planInfo || {};
+    return {
+      missing: false, quota: [], plan: info.planName,
+      ...(refresh && confirmed && !refreshError ? { updated: Date.now() } : { cached: true, ...(refreshError ? { refreshError } : {}) }),
+      limits: [['每日额度', status.dailyQuotaRemainingPercent, status.dailyQuotaResetAtUnix, info.hideDailyQuota],
+        ['每周额度', status.weeklyQuotaRemainingPercent, status.weeklyQuotaResetAtUnix, info.hideWeeklyQuota]]
         .filter(([, , , hidden]) => !hidden)
         .map(([label, pct, reset]) => ({
           label, kind: 'limit', basis: 'remaining', pct: Number.isFinite(pct) ? pct : null,
           reset: Number(reset) ? new Date(Number(reset) * 1000).toLocaleString('zh-CN') : '',
         })),
+      extra: status.overageBalanceMicros == null ? '' : new Intl.NumberFormat('en-US', {
+        style: 'currency', currency: 'USD',
+      }).format(Number(status.overageBalanceMicros) / 1000000),
     };
-    const status = document.getElementById('codeium.windsurf.settings.planInfo') || [...doc.querySelectorAll('[aria-label*="quota used"]')].find(a => a.getBoundingClientRect().width > 0);
-    const summary = status?.getAttribute('aria-label') || '';
-    const sections = [...doc.querySelectorAll('.breakdown-details .quota-section')];
-    const section = word => sections.find(s => (s.querySelector('.quota-label')?.textContent || '').trim().startsWith(word));
-    const nativeLimits = [...summary.matchAll(/\b(Daily|Weekly):\s*(\d+(?:\.\d+)?)%\s+(?:quota\s+)?(used|left|remaining)/gi)].map(m => ({
-      label: /^daily$/i.test(m[1]) ? '每日额度' : '每周额度', kind: 'limit',
-      basis: /^used$/i.test(m[3]) ? 'used' : 'remaining', pct: Number(m[2]),
-      reset: section(m[1])?.querySelector('.quota-reset-label')?.textContent.trim() || '',
-    }));
-    if (nativeLimits.length) return { missing: false, quota: [], limits: nativeLimits, updated: Date.now(), plan: summary.split(',')[0], extra: section('Extra')?.querySelector('.quota-value')?.textContent.trim() || '' };
-    const text = [...doc.querySelectorAll('p')].map(e => (e.innerText || '').replace(/\s+/g, ' ').trim()).find(t => /usage quota/i.test(t));
-    if (!text) return { missing: true, quota: [], limits: [] };
-    const reset = (/resets\s+(.+?)\.?$/i.exec(text) || [])[1] || '';
-    const limits = [];
-    const used = /(\d+)%\s+used/i.exec(text);
-    const left = /(\d+)%\s+(?:left|remaining)/i.exec(text);
-    if (used) limits.push({ label: '每周额度', kind: 'limit', basis: 'used', pct: Number(used[1]), reset });
-    else if (left) limits.push({ label: '每周额度', kind: 'limit', basis: 'remaining', pct: Number(left[1]), reset });
-    else if (/exhausted/i.test(text)) limits.push({ label: '每周额度', kind: 'limit', basis: 'used', pct: 100, reset, detail: '包含额度已用完' });
-    else limits.push({ label: '每周额度', kind: 'limit', basis: 'used', pct: null, reset, detail: text.slice(0, 160) });
-    return { missing: false, quota: [], limits };
   };
   const codexRootProps = () => {
     const el = [...doc.querySelectorAll('[data-composer-body], [data-response-annotation-conversation], [data-request-input-dismiss]')].find(vis);

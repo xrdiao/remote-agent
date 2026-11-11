@@ -636,7 +636,7 @@ export const methods = {
       await cdpRead.run(null, () => cdp.evaluate(helpersCall('composerQuery("", 0, true)')));
     }
   },
-  async submitPromptKey(key, queued) {
+  async submitPromptKey(key, queued, submit) {
     const cdp = this.cdp, scope = this.selectionKey(), receipt = this.sendNativeReceipt;
     const read = timeout => cdp.evaluate(`(() => {
       const h = ${PAGE_SRC}, chat = h.extract();
@@ -650,7 +650,8 @@ export const methods = {
     const queues = new Set(before.queued.map(it => it.id));
     const queueText = norm(before.draft.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim().slice(0, 4000));
     const queuedMatches = rows => rows.filter(it => norm(it.t) === queueText).length;
-    await this.key(key);
+    if (submit) await submit();
+    else await this.key(key);
     const deadline = Date.now() + 5000;
     while (Date.now() < deadline) {
       let after;
@@ -733,6 +734,11 @@ export const methods = {
   },
   async answerQuestion(qi, oi, part, text) {
     await this.assertSelectedThread();
+    if (this.app === 'devin' && part === 'text') {
+      await this.cdp.evaluate(helpersCall(`nativeSessionAction('devin', ${JSON.stringify(this.threadId || '')}, 'questionText', ${JSON.stringify({ text: String(text ?? '') })})`));
+      this.refreshSoon(300);
+      return;
+    }
     const call = p => helpersCall(`questionTarget(${Number(qi) || 0}, ${Number(oi) || 0}, ${JSON.stringify(p)})`);
     const pos = await this.cdp.evaluate(call(part));
     if (!pos) throw new Error('这个问题已经不在了（可能已在电脑上回答）');

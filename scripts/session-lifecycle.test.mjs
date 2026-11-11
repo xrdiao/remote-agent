@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
 import vm from 'node:vm';
 import test from 'node:test';
 import { NativeWindow } from '../server/native-windows.mjs';
@@ -473,4 +474,112 @@ test('a paired entry restores its recent shared Fusion workspace without creatin
   const session = new Session({}, 'phone-entry');
   assert.equal(session.fusionRun, run); assert.equal(session.fusionSaved, saved);
   assert.equal(viewers.has(session), true); assert.equal(saved.runs.length, 0);
+});
+
+function devinCreation({ active = 'acp/devin-cli/old', appearAfter = 0, recordDelay = 0, cwd = '/project', extractCwd = '/project', newCwd = '/project' } = {}) {
+  const emitted = [], calls = [], sessions = new Set(['acp/devin-cli/old']);
+  const NEW = 'acp/devin-cli/new-1';
+  let polls = 0, activeNow = active, created = false;
+  const context = vm.createContext({ path, helpersCall: value => value, fusionProject: root => ({ id: root }),
+    setTimeout: action => action(), PAGE_SRC: 'H' });
+  const newChat = vm.runInContext('({' + fragment(read('server/apps/devin.mjs'), 'async devinNewChat() {', '// ---- Devin working directory') + '})', context);
+  const finish = vm.runInContext('({' + fragment(read('server/agent/projects.mjs'), '  async finishProject() {', '  projectName() {') + '})', context);
+  const sessionCwd = () => activeNow === NEW ? newCwd : cwd;
+  const session = { ...newChat, ...finish, app: 'devin', mode: 'chat',
+    pendingProject: { root: '/project', threadId: '', newSession: true },
+    threadId: 'acp/devin-cli/old', selectedThread: 'acp/devin-cli/old',
+    adapter: { newChat: async function () { await this.devinNewChat(); } },
+    projectMatches(roots, root, host = '') {
+      return roots.some(project => (project.host || '') === host && project.root === root);
+    },
+    editorCdp: { evaluate: async () => ({ required: false }) },
+    cdp: { evaluate: async expression => {
+      calls.push(expression.slice(0, 60));
+      if (expression === 'activeThread()') return activeNow;
+      if (expression === 'devinSession()') return { surface: 'editor', key: activeNow, cwd: sessionCwd() };
+      if (expression === 'hasComposer()') return true;
+      if (expression === "control('newChat')") { created = true; return { x: 1, y: 1 }; }
+      if (expression === 'extract()') return { thread: activeNow, items: [], session: { key: activeNow, cwd: extractCwd } };
+      if (expression.includes('nativeSessionInfo')) {
+        polls++;
+        if (created && polls > appearAfter) { activeNow = NEW; sessions.add(NEW); }
+        const thread = activeNow;
+        const ready = polls > recordDelay && thread !== 'acp/devin-cli/old' && sessions.has(thread);
+        return { thread, key: thread, surface: 'editor', cwd: sessionCwd(), composer: true, record: ready };
+      }
+      return null;
+    } },
+    waitFor: async () => null, currentRoots: async () => [{ root: '/project' }],
+    resetDevinView() { calls.push('resetView'); }, clearViewState() { calls.push('clearView'); },
+    publishThread() { emitted.push({ t: 'thread', threadId: this.threadId }); },
+    selectionKey() { return 'devin|window|' + this.threadId; }, emit: value => emitted.push(value),
+    async pollChat(immediate, firstScreen) {
+      if (this.switchingThread && firstScreen) throw new Error('当前会话尚未就绪，请重试');
+      emitted.push({ t: 'chat', chat: { thread: activeNow, items: [] } });
+    },
+    tapCss: async () => { calls.push('tapNew'); }, setSurface: async () => { calls.push('setSurface'); },
+    syncSession(chat) { this.lastChat = chat; },
+    prefetchMenus: async () => {},
+  };
+  return { session, emitted, calls, get polls() { return polls; }, get activeNow() { return activeNow; } };
+}
+
+test('Devin new chat never accepts the old empty view as the new session', async () => {
+  const h = devinCreation({ appearAfter: 999 });
+  await assert.rejects(h.session.finishProject(), /新会话尚未就绪/);
+  assert.equal(h.session.pendingProject.newSession, true);
+  assert.equal(h.emitted.some(message => message.t === 'projectReady'), false);
+  assert.equal(h.session.threadId, 'acp/devin-cli/old');
+});
+
+test('Devin new chat binds only after a distinct native identity appears', async () => {
+  const h = devinCreation({ appearAfter: 3 });
+  await h.session.finishProject();
+  assert.equal(h.session.threadId, 'acp/devin-cli/new-1');
+  assert.equal(h.session.selectedThread, 'acp/devin-cli/new-1');
+  const ready = h.emitted.find(message => message.t === 'projectReady');
+  assert.equal(ready.chat.thread, 'acp/devin-cli/new-1');
+  assert.equal(ready.chat.session.cwd, '/project');
+  assert.equal(h.emitted.some(message => message.t === 'chat'), false, 'the helper does not publish a first screen during a project switch');
+  assert.equal(h.emitted.some(message => message.t === 'status' && message.msg === '已新建对话'), false);
+});
+
+test('Devin project new chat never polls a first screen while the thread switch is still active', async () => {
+  const h = devinCreation({ appearAfter: 2 });
+  h.session.switchingThread = true;
+  await h.session.finishProject();
+  assert.equal(h.session.threadId, 'acp/devin-cli/new-1');
+  assert.equal(h.emitted.some(message => message.t === 'projectReady'), true);
+});
+
+test('Devin standalone new chat publishes its own first screen after adoption', async () => {
+  const h = devinCreation({ appearAfter: 1 });
+  h.session.pendingProject = null;
+  await h.session.devinNewChat();
+  assert.equal(h.session.threadId, 'acp/devin-cli/new-1');
+  assert.deepEqual(h.emitted.map(message => message.t), ['thread', 'chat', 'status']);
+  assert.equal(h.emitted.at(-1).msg, '已新建对话');
+  assert.equal(h.emitted.find(message => message.t === 'chat').chat.thread, 'acp/devin-cli/new-1');
+});
+
+test('Devin new chat rejects a new session rooted in another directory before adopting it', async () => {
+  const h = devinCreation({ appearAfter: 1, newCwd: '/other-project' });
+  await assert.rejects(h.session.finishProject(), /工作目录与所选项目不一致/);
+  assert.equal(h.session.threadId, 'acp/devin-cli/old');
+  assert.equal(h.calls.includes('clearView'), false);
+  assert.equal(h.emitted.some(message => message.t === 'projectReady' || message.t === 'thread'), false);
+});
+
+test('Devin new chat requires the native session record before confirming', async () => {
+  const h = devinCreation({ appearAfter: 0, recordDelay: 5 });
+  await h.session.finishProject();
+  assert.ok(h.polls > 5);
+  assert.equal(h.session.threadId, 'acp/devin-cli/new-1');
+});
+
+test('Devin project creation rejects a new session rooted in another directory', async () => {
+  const h = devinCreation({ extractCwd: '/other-project' });
+  await assert.rejects(h.session.finishProject(), /工作目录与所选项目不一致/);
+  assert.equal(h.session.pendingProject.newSession, true);
+  assert.equal(h.emitted.some(message => message.t === 'projectReady'), false);
 });

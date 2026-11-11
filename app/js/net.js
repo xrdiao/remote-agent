@@ -1501,7 +1501,8 @@ async function connect(resumeLink = null) {
     else if (m.t === 'codexSkills') showCodexSkills(m.rows || []);
     else if (m.t === 'unqueued') {
       text.value = text.value.trim() ? `${text.value.replace(/\s+$/, '')}\n${m.text}` : m.text;
-      autosize();
+      if (currentApp === 'devin') text.dispatchEvent(new Event('input', { bubbles: true }));
+      else autosize();
       text.focus();
       status('已取出，放回输入框');
     }
@@ -1544,4 +1545,3 @@ async function connect(resumeLink = null) {
     startComputerUpdates();
   } else if (link.auth && socket.readyState === 1) link.receive({ data: JSON.stringify(link.auth) });
 }
-

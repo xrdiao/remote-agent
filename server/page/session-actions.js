@@ -213,6 +213,10 @@
       ...nativePreviewActivity(tools, conversation?.latestModel, conversation?.latestThreadSettings?.effort, tasks) };
   };
   const nativeSessionCleanup = async (app, id, perform = false) => {
+    const releaseDevinTurnCache = () => {
+      const owned = window.__remoteAgentDevinTurns?.get(id);
+      owned?.stop?.(); window.__remoteAgentDevinTurns?.delete(id);
+    };
     const inspect = async () => {
       if (app === 'codex') {
         const host = remoteContext?.host || 'local', manager = codexConversationManager(id, codexHistoryScopes(), host);
@@ -235,7 +239,10 @@
     const before = await inspect();
     if (!perform) return before;
     if (!remoteContext || remoteContext.app !== app || remoteContext.threadId !== id) throw new Error('清理请求不属于这个原生 Binding');
-    if (!before.exists || before.archived) return { confirmed: true, action: before.archived ? 'archive' : 'delete', already: true };
+    if (!before.exists || before.archived) {
+      if (app === 'devin') releaseDevinTurnCache();
+      return { confirmed: true, action: before.archived ? 'archive' : 'delete', already: true };
+    }
     if (before.running) throw new Error('原生会话仍在运行，请先停止并核对');
     if (app === 'codex') {
       const manager = codexConversationManager(id, codexHistoryScopes(), remoteContext.host || 'local');
@@ -252,6 +259,7 @@
     }
     const after = await inspect();
     if (after.exists && !after.archived) throw new Error('桌面端尚未确认删除或归档完成');
+    if (app === 'devin') releaseDevinTurnCache();
     return { confirmed: true, action: after.archived ? 'archive' : 'delete', already: false };
   };
   const nativeSessionInfo = (app, id, catalog = false, previous = null) => {
@@ -368,7 +376,7 @@
       }
       const native = await import('@exa/chat-client'), session = devinSessionRecord(id);
       if (!session) throw new Error('没有找到这个会话');
-      await window.__acpStore.dispatch(native.renameSessionThunk(session.providerId, id, name));
+      await window.__acpStore.dispatch(native.renameSessionThunk(session.providerId, native.unprefixSessionId(id).sessionId, name));
       return { action: 'rename', confirmed: true, title: name };
     }
     if (action === 'create') {
@@ -429,6 +437,8 @@
       const capacity = codexCapacityItem();
       return capacity?.b?.length ? codexPoint(capacity._retry) : null;
     }
+    if (action === 'queue' && app === 'devin') return devinNativeQueue(id, name);
+    if (action === 'questionText' && app === 'devin') return devinNativeQuestionText(id, name);
     if (action === 'send') {
       const submissions = window.__remoteAgentNativeSubmissions ||= new Map();
       if (submissions.has(name.requestId)) return true;
@@ -445,6 +455,7 @@
           { skipClearInput: true, skipFocusAfterSubmission: true, _internalPreserveDraft: true, ignoreQueuing: name.when === 'now' });
       } else {
         const native = await import('@exa/chat-client'), session = devinSessionRecord(id);
+        fusionDevinState(id);
         submitted = window.__acpStore.dispatch(native.sendAgentRequestThunk(session.providerId,
           { method: 'session/prompt', params: { sessionId: id, prompt: [{ type: 'text', text: name.text }],
             _meta: { 'cognition.ai/clientMessageId': name.requestId } } }, native.tryGetAcpSingleton('sendAgentRequest')));

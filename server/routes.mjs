@@ -408,7 +408,7 @@ export const ROUTES = {
   attachments: { switchRead: true,  readOnly: true, fusionFree: true, run: s => s.syncAttachments() },
   removeAttachment: { run: (s, m) => s.removeAttachment(String(m.id)) },
   question: {
-    run: (s, m) => s.answerQuestion(m.qi, m.oi, ['option', 'submit', 'skip', 'prev', 'next'].includes(m.part) ? m.part : 'option', m.text),
+    run: (s, m) => s.answerQuestion(m.qi, m.oi, m.part === 'text' && s.app === 'devin' ? 'text' : ['option', 'submit', 'skip', 'prev', 'next'].includes(m.part) ? m.part : 'option', m.text),
     after: questionDone, fail: questionFailed,
   },
   workdir: { switchRead: true,  run: s => s.workdirList() },

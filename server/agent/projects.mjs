@@ -475,9 +475,12 @@ export const methods = {
       await this.adapter.newChat.call(this);
       if (this.app === 'cursor' && this.winTitle === 'Cursor Agents')
         await this.cdp.evaluate(helpersCall(`cursorSelectProject(${JSON.stringify(pending.root)})`));
+      const expected = this.app === 'devin' ? this.threadId : '';
       for (let i = 0; i < 20; i++) {
         chat = await this.cdp.evaluate(helpersCall('extract()'));
-        if (chat && !chat.items?.length && await this.cdp.evaluate(helpersCall('hasComposer()'))) break;
+        const ready = chat && !chat.items?.length && await this.cdp.evaluate(helpersCall('hasComposer()'))
+          && (!expected || chat.thread === expected || chat.session?.key === expected);
+        if (ready) break;
         chat = null;
         await new Promise(r => setTimeout(r, 150));
       }

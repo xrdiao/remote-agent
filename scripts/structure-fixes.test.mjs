@@ -40,6 +40,136 @@ function nativeNode(attributes = {}, properties = {}, visible = true) {
   };
 }
 
+function devinAccountUsage({ inactive = false, fail = false, emit = true, unchanged = false,
+  missingApi = false, missingSnapshot = false, daily = false } = {}) {
+  const calls = [], listeners = new Set();
+  const planInfo = { planName: 'Max', hideDailyQuota: !daily, hideWeeklyQuota: daily };
+  class UserStatus {
+    constructor(remaining) {
+      this.planStatus = { planInfo, dailyQuotaRemainingPercent: 75, weeklyQuotaRemainingPercent: remaining,
+        overageBalanceMicros: daily ? 0n : 11311950n, dailyQuotaResetAtUnix: 1794384000n, weeklyQuotaResetAtUnix: 1794729600n };
+    }
+    static fromBinary(bytes) {
+      const key = Buffer.from(bytes).toString();
+      calls.push(['decode', key]);
+      return snapshots[key];
+    }
+  }
+  const snapshots = { cached: new UserStatus(40), fresh: new UserStatus(35) };
+  let snapshot = missingSnapshot ? '' : 'cached';
+  const auth = {
+    getUserStatusBinaryBase64: () => snapshot ? btoa(snapshot) : '',
+    onDidChangeUserStatus(fn) { listeners.add(fn); return () => listeners.delete(fn); },
+    async refreshUserStatus() {
+      calls.push(['refresh']);
+      if (fail) throw new Error('native account unavailable');
+      if (!unchanged && !missingSnapshot) snapshot = 'fresh';
+      if (emit) for (const fn of listeners) fn();
+    },
+  };
+  const currentRoot = { stateNode: {} }, oldRoot = { stateNode: {} };
+  currentRoot.stateNode.current = currentRoot;
+  oldRoot.stateNode.current = currentRoot;
+  const account = { userStatus: snapshots.cached, refetchUserStatus() {} };
+  const currentAccount = { tag: 10, memoizedProps: { value: account }, return: currentRoot };
+  const oldAccount = { tag: 10, memoizedProps: { value: account }, return: oldRoot };
+  const api = { auth };
+  const staleApi = { auth: { refreshUserStatus() { throw new Error('stale API must not run'); } } };
+  const currentApi = { tag: 10, memoizedProps: { value: missingApi ? {} : { api } }, return: currentAccount };
+  const oldApi = { tag: 10, memoizedProps: { value: { api: staleApi } }, return: oldAccount };
+  currentApi.alternate = oldApi; oldApi.alternate = currentApi;
+  currentAccount.alternate = oldAccount; oldAccount.alternate = currentAccount;
+  const input = nativeNode({}, { isContentEditable: false, __reactFiberTest: inactive ? oldApi : currentApi }, false);
+  const badge = nativeNode({ 'aria-label': 'Max, Weekly: 18% quota used' });
+  const document = {
+    getElementById: id => id === 'codeium.windsurf.settings.planInfo' ? badge : null,
+    querySelector: selector => selector.includes('data-slate-editor') ? input : null,
+    querySelectorAll: selector => selector.includes('data-slate-editor') ? [input] : [],
+  };
+  return { page: nativePage(document, { atob, Uint8Array }), calls, listeners };
+}
+
+test('Devin quota refresh reads the native account snapshot, not stale React data or a window badge', async () => {
+  const h = devinAccountUsage();
+  const usage = await h.page.readDevinUsage(true);
+  assert.equal(usage.missing, false);
+  assert.equal(usage.plan, 'Max');
+  assert.equal(usage.limits.length, 1);
+  assert.equal(usage.limits[0].basis, 'remaining');
+  assert.equal(usage.limits[0].pct, 35);
+  assert.equal(usage.limits[0].reset, new Date(1794729600000).toLocaleString('zh-CN'));
+  assert.equal(usage.extra, '$11.31');
+  assert.equal(typeof usage.updated, 'number');
+  assert.equal(usage.cached, undefined);
+  assert.deepEqual(h.calls, [['refresh'], ['decode', 'fresh']]);
+  assert.equal(h.listeners.size, 0);
+});
+
+test('Devin quota chooses the current native provider when the DOM fiber is on its alternate', async () => {
+  const h = devinAccountUsage({ inactive: true });
+  const usage = await h.page.readDevinUsage(true);
+  assert.equal(usage.limits[0].pct, 35);
+  assert.deepEqual(h.calls, [['refresh'], ['decode', 'fresh']]);
+});
+
+test('an unchanged native quota snapshot still confirms a successful account refresh', async () => {
+  const h = devinAccountUsage({ unchanged: true });
+  const usage = await h.page.readDevinUsage(true);
+  assert.equal(usage.limits[0].pct, 40);
+  assert.equal(typeof usage.updated, 'number');
+  assert.equal(usage.cached, undefined);
+  assert.equal(h.listeners.size, 0);
+});
+
+test('a failed native account refresh returns explicit cached quota without a new timestamp', async () => {
+  const h = devinAccountUsage({ fail: true });
+  const usage = await h.page.readDevinUsage(true);
+  assert.equal(usage.limits[0].pct, 40);
+  assert.equal(usage.cached, true);
+  assert.match(usage.refreshError, /native account unavailable/);
+  assert.equal(usage.updated, undefined);
+  assert.equal(h.listeners.size, 0);
+});
+
+test('an unconfirmed native account refresh is not labeled freshly updated', async () => {
+  const h = devinAccountUsage({ emit: false });
+  const usage = await h.page.readDevinUsage(true);
+  assert.equal(usage.cached, true);
+  assert(usage.refreshError);
+  assert.equal(usage.updated, undefined);
+  assert.equal(h.listeners.size, 0);
+});
+
+test('reading native quota without refresh does not invent freshness', async () => {
+  const h = devinAccountUsage();
+  const usage = await h.page.readDevinUsage(false);
+  assert.equal(usage.limits[0].pct, 40);
+  assert.equal(usage.cached, true);
+  assert.equal(usage.updated, undefined);
+  assert.deepEqual(h.calls, [['decode', 'cached']]);
+});
+
+test('Devin quota respects native period visibility and formats a zero balance separately', async () => {
+  const h = devinAccountUsage({ daily: true });
+  const usage = await h.page.readDevinUsage(true);
+  assert.equal(usage.limits.length, 1);
+  assert.equal(usage.limits[0].pct, 75);
+  assert.equal(usage.limits[0].basis, 'remaining');
+  assert.equal(usage.limits[0].reset, new Date(1794384000000).toLocaleString('zh-CN'));
+  assert.equal(usage.extra, '$0.00');
+});
+
+for (const options of [{ missingApi: true }, { missingSnapshot: true }]) {
+  test(`missing native account data is unknown, not a freshly read window badge: ${JSON.stringify(options)}`, async () => {
+    const h = devinAccountUsage(options);
+    const usage = await h.page.readDevinUsage(true);
+    assert.equal(usage.missing, true);
+    assert.equal(usage.updated, undefined);
+    assert.equal(usage.limits.length, 0);
+    assert.equal(h.listeners.size, 0);
+  });
+}
+
 function fiber(element, props) {
   element.__reactFiberFixture = props.reduceRight((parent, memoizedProps) => ({ memoizedProps, return: parent }), null);
   return element;
@@ -557,6 +687,64 @@ test('acceptance retains a later edit even when its text equals the previous sub
   assert.equal(h.input.value, h.sent.text); assert(h.context.dirtyDrafts.has('draft'));
   h.ack(7, ''); assert.equal(h.input.value, h.sent.text);
 });
+
+function takenOutDraft(app = 'devin', value = '') {
+  const document = { activeElement: null }, calls = [];
+  const input = Object.assign(new EventTarget(), { value, selectionStart: 0, selectionEnd: 0,
+    focus() { document.activeElement = input; }, setSelectionRange() {} });
+  const context = vm.createContext({
+    currentApp: app, mode: 'chat', questionCompose: null, text: input, document, Event,
+    viewSel: app + '|window|thread', activeDraft: 'draft', draftEpoch: 'epoch',
+    inputRevision: 5, draftRevision: 5, draftAckRevision: 5, pendingDesktopDraft: null,
+    drafts: new Map(), draftMentions: new Map(), draftVersions: new Map(), dirtyDrafts: new Set(),
+    pendingSends: new Map(), composing: false, MN: { value, mentions: [] }, mirroredDraft: '',
+    endInputRecall() {}, autosize() { calls.push('resize'); },
+    syncMentions(next) { context.MN.value = next; }, mentionUpdate() {},
+    queueDraftSync() { calls.push('sync'); }, status() {}, fitViewport() {}, updateComposeCompact() {}, setTimeout() {},
+  });
+  const composer = read('app/js/composer.js');
+  vm.runInContext(part(composer, 'function saveDraft()', 'function restoreDraft(')
+    + part(composer, 'function recordDraftEdit()', 'function queueDraftSync(')
+    + part(composer, 'function receiveDraft(', 'function autosize(')
+    + part(composer, 'function editComposerInput(', '// ---- "@" mentions')
+    + part(composer, 'const composerInputHandlers =', 'function composerInputEvent(')
+    + 'this.blurDraft=()=>{document.activeElement=null;composerInputHandlers.blur();};\n'
+    + 'this.takeOut=m=>{' + part(read('app/js/net.js'), "else if (m.t === 'unqueued') {", "else if (m.t === 'saved')")
+      .replace('else if', 'if') + '};', context);
+  input.addEventListener('input', event => context.editComposerInput(input, event));
+  return { context, input, calls,
+    oldDraft: () => context.receiveDraft({ t: 'draft', sel: context.viewSel, draftEpoch: 'epoch', revision: 5, text: '' }) };
+}
+
+for (const initial of ['', 'existing ordinary draft']) {
+  test(`Devin take-out registers its draft before a stale empty desktop read and blur: ${JSON.stringify(initial)}`, () => {
+    const h = takenOutDraft('devin', initial);
+    h.context.takeOut({ t: 'unqueued', text: 'queued follow-up' });
+    const expected = initial ? initial + '\nqueued follow-up' : 'queued follow-up';
+    assert.equal(h.context.draftRevision, 6);
+    assert.equal(h.context.drafts.get('draft'), expected);
+    assert.equal(h.context.MN.value, expected);
+    assert.equal(h.context.dirtyDrafts.has('draft'), true);
+    assert(h.calls.includes('sync'));
+    h.oldDraft(); h.context.blurDraft();
+    assert.equal(h.input.value, expected);
+    assert.equal(h.context.pendingDesktopDraft, null);
+    h.context.receiveDraft({ t: 'draftAck', ok: true, read: true,
+      sel: h.context.viewSel, draftEpoch: 'epoch', revision: 6, text: 'current desktop draft' });
+    assert.equal(h.input.value, 'current desktop draft');
+  });
+}
+
+for (const app of ['cursor', 'codex']) {
+  test(`${app} take-out retains its existing input behavior`, () => {
+    const h = takenOutDraft(app);
+    h.context.takeOut({ t: 'unqueued', text: 'queued follow-up' });
+    assert.equal(h.input.value, 'queued follow-up');
+    assert.equal(h.context.draftRevision, 5);
+    assert.equal(h.context.drafts.size, 0);
+    assert.deepEqual(h.calls, ['resize']);
+  });
+}
 
 function codexTranscript() {
   const history = read('app/js/history.js'), context = vm.createContext({ currentApp: 'codex' });
@@ -1816,6 +2004,137 @@ test('Question Enter retains approval field blur and the existing free-answer fi
   let filled = 0;
   h.enter({ dataset: {}, matches: () => true, nextElementSibling: { click: () => filled++ } });
   assert.equal(filled, 1); assert.equal(h.packets.length, 0);
+});
+
+function devinQuestionCards(qs) {
+  const handlers = new Map(), packets = [];
+  const renders = [];
+  const bar = {
+    _html: '', classList: { toggle() {}, add() {}, remove() {} },
+    addEventListener(type, handler) { handlers.set(type, handler); },
+    setAttribute() {},
+    contains: el => renders.some(render => render.qtext === el || render.qanswer === el),
+    querySelector: selector => selector === '[data-qtext]' ? renders.at(-1)?.qtext || null
+      : selector === '[data-qanswer]' ? renders.at(-1)?.qanswer || null : null,
+    querySelectorAll: selector => selector === 'button,input,select' ? renders.at(-1) ? [renders.at(-1).qanswer, renders.at(-1).qtext].filter(Boolean) : [] : [],
+  };
+  Object.defineProperty(bar, 'innerHTML', {
+    get() { return this._html; },
+    set(value) {
+      this._html = value;
+      const qkey = /data-qkey="([^"]*)"/.exec(value)?.[1] || '';
+      const qtext = { value: '', dataset: { qtext: '', qkey }, tagName: 'INPUT', disabled: false,
+        selectionStart: 0, selectionEnd: 0,
+        matches: selector => selector === 'input' || selector === '[data-qtext]',
+        closest: selector => selector === 'input' ? qtext : null,
+        focus() { this.focused = true; },
+        setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; },
+        get nextElementSibling() { return renders.at(-1)?.qanswer || null; } };
+      const qanswer = { dataset: { qanswer: '' }, disabled: false,
+        closest: selector => selector === 'button' ? qanswer : null,
+        click() { if (!this.disabled) { handlers.get('click')({ target: this }); bar.onclick({ target: this }); } } };
+      renders.push({ qtext, qanswer, html: value });
+    },
+  });
+  const text = { value: '普通聊天草稿' };
+  const context = vm.createContext({
+    $: () => bar, document: { activeElement: null, body: { classList: { contains: () => false } } },
+    currentApp: 'devin', viewSel: 'devin|window|thread', mode: 'chat', questionCompose: null, text,
+    ws: { readyState: 1 }, authed: true, windowReady: true, crypto: crypto.webcrypto,
+    esc: value => String(value), updateComposeCompact() {}, status() {}, send: packet => packets.push(packet),
+    qnState: null, qnSig: '', qnView: '', qnPending: null,
+    setQuestionCompose() {}, submitQuestionCompose() {}, finishPending() {},
+    currentComputer: () => null, drafts: new Map(), draftMentions: new Map(),
+  });
+  const source = read('app/js/history.js');
+  vm.runInContext(part(source, "$('qnBar').addEventListener('click'", '// Small stroke icons'), context);
+  context.renderQuestions(qs);
+  return { bar, text, packets, renders, handlers, context,
+    enter(target, extra = {}) {
+      let prevented = false;
+      handlers.get('keydown')({ key: 'Enter', target, isComposing: false, preventDefault() { prevented = true; }, ...extra });
+      return prevented;
+    },
+  };
+}
+
+const devinQuestionState = (overrides = {}) => ({
+  devin: true, src: 'devin', canText: true, textKey: 'req-0',
+  list: [{ text: '选哪条路径？', options: [{ label: '路径 A', desc: '', sel: false }, { label: '路径 B', desc: '', sel: false }], multi: false }],
+  pager: null, canPrev: false, canNext: false, hasSubmit: false, canSubmit: false, ...overrides,
+});
+
+test('Devin question card offers a dedicated text answer only when the native question allows it', () => {
+  const allowed = devinQuestionCards(devinQuestionState());
+  assert.match(allowed.bar.innerHTML, /data-qtext/);
+  assert.match(allowed.bar.innerHTML, /data-qanswer/);
+  assert.doesNotMatch(allowed.bar.innerHTML, /qnHint/);
+  const denied = devinQuestionCards(devinQuestionState({ canText: false }));
+  assert.doesNotMatch(denied.bar.innerHTML, /data-qtext/);
+  assert.doesNotMatch(denied.bar.innerHTML, /想自己回答/);
+});
+
+test('Devin question draft survives re-renders with focus and selection intact', () => {
+  const h = devinQuestionCards(devinQuestionState());
+  const first = h.renders.at(-1).qtext;
+  first.value = '草稿回答'; first.oninput();
+  first.selectionStart = 2; first.selectionEnd = 5;
+  h.context.document.activeElement = first;
+  h.context.renderQuestions(devinQuestionState({ canNext: true }));
+  const second = h.renders.at(-1).qtext;
+  assert.notEqual(second, first);
+  assert.equal(second.value, '草稿回答');
+  assert.equal(second.focused, true, 'the repainted input takes focus back');
+  assert.deepEqual([second.selectionStart, second.selectionEnd], [2, 5]);
+  h.context.renderQuestions(devinQuestionState());
+  assert.equal(h.renders.at(-1).qtext.value, '草稿回答');
+});
+
+test('Devin question text sends one native text answer without an ordinary echo and keeps IME safe', () => {
+  const h = devinQuestionCards(devinQuestionState());
+  const input = h.renders.at(-1).qtext, answer = h.renders.at(-1).qanswer;
+  input.value = '自由文本回答'; input.oninput();
+  assert.equal(h.enter(input, { isComposing: true }), false);
+  assert.equal(h.packets.length, 0);
+  assert.equal(h.enter(input), true);
+  assert.equal(h.packets.length, 1);
+  const packet = JSON.parse(JSON.stringify(h.packets[0]));
+  assert.equal(packet.t, 'question'); assert.equal(packet.part, 'text'); assert.equal(packet.text, '自由文本回答');
+  assert.equal(typeof packet.qkey, 'string'); assert.equal(typeof packet.requestId, 'string');
+  assert.equal(h.text.value, '普通聊天草稿');
+  answer.click();
+  assert.equal(h.packets.length, 1);
+});
+
+test('Devin question answer clears only its own draft on success and keeps it on failure', () => {
+  const h = devinQuestionCards(devinQuestionState());
+  const input = h.renders.at(-1).qtext;
+  input.value = '待清除草稿'; input.oninput();
+  h.renders.at(-1).qanswer.click();
+  const failedId = h.packets[0].requestId;
+  h.context.finishQuestion({ t: 'questionDone', requestId: failedId, sel: h.context.viewSel, ok: false });
+  h.context.renderQuestions(devinQuestionState({ canNext: true }));
+  assert.equal(h.renders.at(-1).qtext.value, '待清除草稿', 'a failed answer keeps the draft on the same card');
+  h.context.renderQuestions(devinQuestionState());
+  h.renders.at(-1).qanswer.click();
+  const doneId = h.packets[1].requestId;
+  h.context.finishQuestion({ t: 'questionDone', requestId: doneId, sel: h.context.viewSel, ok: true });
+  h.context.renderQuestions(devinQuestionState({ canNext: true }));
+  assert.equal(h.renders.at(-1).qtext.value, '', 'a successful answer clears the draft on the same card');
+});
+
+test('Devin question draft is keyed by the native request so an identical new question starts empty', () => {
+  const h = devinQuestionCards(devinQuestionState({ textKey: 'req-0' }));
+  const input = h.renders.at(-1).qtext;
+  input.value = '旧请求的回答'; input.oninput();
+  h.renders.at(-1).qanswer.click();
+  const requestId = h.packets[0].requestId;
+  h.context.renderQuestions(null);
+  assert.equal(h.bar.innerHTML, '');
+  h.context.finishQuestion({ t: 'questionDone', requestId, sel: h.context.viewSel, ok: true });
+  h.context.renderQuestions(devinQuestionState({ textKey: 'req2-0' }));
+  assert.equal(h.renders.at(-1).qtext.value, '', 'a new elicitation with the same text gets an empty input');
+  assert.equal(h.text.value, '普通聊天草稿', 'the ordinary composer draft is untouched');
 });
 
 test('card input tools retain the bound editor for history and newline actions', async () => {

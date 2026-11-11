@@ -528,6 +528,7 @@ div.math { display: block; margin: .35em 0; text-align: center; }
 .tool .ticon, .toolrow .ticon { width: 15px; height: 15px; flex: none; color: var(--fg-3); }
 .tool .tl, .toolrow .tl { font-weight: 500; flex: none; font-family: inherit; }
 .toolrow .tl { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+body[data-app="devin"] .toolrow:has(> .tcmd) > .trow > .tl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool .tsub, .toolrow .tsub { color: var(--fg-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .tool .dur, .toolrow .dur { flex: none; font-size: 11px; color: var(--fg-3); background: var(--s2); border-radius: 999px; padding: 1px 7px; font-variant-numeric: tabular-nums; }
 .tool .chev, .toolrow .chev { flex: none; margin-left: auto; color: var(--fg-4); font-size: 11px; }
@@ -704,6 +705,9 @@ body.kb.chatmode #qnBar.codex .qnQ { max-height: none; overflow: visible; }
 #qnBar.codex .qnAct button:disabled { opacity: .4; }
 #qnBar.codex .qnAct { flex-wrap: wrap; flex: none; }
 #qnBar.codex .qnOpt { width: 100%; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+body[data-app="devin"] #qnBar .qnOpt { width: 100%; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+body[data-app="devin"] #qnBar .qnOpt > span { flex: 1; min-width: 0; }
+body[data-app="devin"] #qnBar .qnQ { overflow-wrap: anywhere; }
 #qnBar .qnAct .primary:disabled { opacity: .4; }
 
 /* ---------- composer ---------- */

@@ -1,0 +1,51 @@
+{
+  "endpoint": "http://127.0.0.1:8080",
+  "model": "qwen3.8-flash-next-gyro-gyro-s",
+  "context_tokens": 110592,
+  "request": {
+    "reasoning_effort": "high",
+    "chat_template_kwargs": {"enable_thinking": true},
+    "temperature": 0,
+    "top_p": 1,
+    "seed": 0,
+    "max_tokens": 32768,
+    "stream": true,
+    "stream_options": {"include_usage": true}
+  },
+  "effective_thinking": "xhigh (high aliases xhigh in the installed model template)",
+  "request_timeout_s": 1800,
+  "request_retries": 0,
+  "concurrency": 1,
+  "scoring_workers": 1,
+  "sandbox_memory_bytes": 2147483648,
+  "sandbox_tasks_max": 64,
+  "sandbox_swap_bytes": 0,
+  "scoring_process_timeout_s": 300,
+  "evalplus_min_time_limit": 1.0,
+  "evalplus_gt_time_limit_factor": 4.0,
+  "evalplus_fast_check": true,
+  "ifeval_langdetect_seed": 0,
+  "artifact_root": "/home/rong/atest/remote-agent/_shots/local-qwen-eval",
+  "datasets": {
+    "humaneval_plus": {
+      "count": 164,
+      "version": "v0.1.10",
+      "file": "humaneval_plus.jsonl",
+      "sha256": "42526ec0e7d5f3ee0b06d6ced98f8c8bae3d76519151bfb3d36f79010645bd7f"
+    },
+    "mbpp_plus": {
+      "count": 378,
+      "version": "v0.2.0",
+      "file": "mbpp_plus.jsonl",
+      "sha256": "b54e762755248ca411b523c917fa9f93c07b5ff2966bf60b3917b853926a3dad"
+    },
+    "ifeval": {
+      "count": 541,
+      "version": "google-research@e6890f85757dd84e27ca6df2dd30651dafad28e0",
+      "file": "ifeval.jsonl",
+      "sha256": "67ffeee0fcb87c317c5b08a2de85557b4a7e96ada6178aa645b4954fe4b53d49"
+    }
+  },
+  "evalplus_version": "0.3.1",
+  "evalplus_wheel_sha256": "cd601debb67419113d10ac5c3317689d847f27de5d8cf3837975f3cab571b75d"
+}

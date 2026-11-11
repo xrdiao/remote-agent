@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
+import vm from 'node:vm';
 import { FusionRunner } from '../server/fusion/runner.mjs';
 import { FusionScheduler } from '../server/fusion/scheduler.mjs';
 import { fusionEvent, fusionLive, fusionRuns as menuRuns, allFusionRuns, findFusionRun } from '../server/fusion/state.mjs';
 import { fusionStore } from '../server/fusion/store.mjs';
 import { fixture, flush, nativeInvocation } from './fusion-fixture.mjs';
-import { FusionControlError } from '../server/fusion/contract.mjs';
+import { FusionControlError, FUSION_TOOLS } from '../server/fusion/contract.mjs';
 function scenario({ readWorkspace = true } = {}) {
   const h = fixture(), scheduler = new FusionScheduler(), calls = [], pending = new Map(), stops = [];
   const agent = { catalog: { async refresh() {}, enrich: snapshot => snapshot }, async execute(run, id, prompt, recovering) {
@@ -129,6 +130,128 @@ test('non-parameter native failures keep their original text and do not become s
   h.request('native-failure',{action:'read_workspace'});await driver.read();await flush();
   assert.equal(h.replies[0].result.success,false);assert.equal(h.replies[0].result.contentItems[0].text,'CDP closed during native operation');
   const event=h.run.events.find(e=>e.type==='control_error');assert.equal(event.data.details,undefined);assert.equal(event.data.reason,'CDP closed during native operation');await driver.close();
+});
+test('a devin main turn ends with its cached reply after transcript pruning and a next user keeps a separate attempt', async () => {
+  const h=await managementScenario();
+  h.run.main.app='devin';h.run.bindings[0].app='devin';
+  const session={sessionId:'main-thread',providerId:'devin-cli',cwd:'/project',status:'active',
+    mcpServers:[{name:'ra-fusion',type:'http',url:'http://native-test',headers:[]}]};
+  const state={sessions:[session],perSession:{'main-thread':{messages:[]}},agentRequests:{byId:{}}},listeners=new Set();
+  const update=()=>{for(const listener of [...listeners])listener()};
+  const nativeModule={tryGetAcpSingleton:name=>name==='connectorService'
+    ?{getConnectors:()=>[{id:'devin-cli',capabilities:{mcpCapabilities:{http:true}}}]}:'native-sender',
+    sendAgentRequestThunk:(provider,request,sender)=>({provider,request,sender})};
+  const window={__acpStore:{getState:()=>({acp:state}),subscribe:fn=>{listeners.add(fn);return()=>listeners.delete(fn)},
+    dispatch:async()=>true}};
+  const vmContext=vm.createContext({window,Map,Set,WeakMap,Error,JSON,nativeModule,devinSessionRecord:()=>session});
+  const source=fs.readFileSync(new URL('../server/page/fusion-tools.js',import.meta.url),'utf8').replace("await import('@exa/chat-client')",'nativeModule');
+  vm.runInContext(source+';this.tools=fusionNativeTools;this.turn=fusionDevinTurn;',vmContext);
+  const mcpConfig={name:'ra-fusion',type:'http',url:'http://native-test',headers:[]};
+  assert.equal((await vmContext.tools.bind('devin','main-thread',{tools:FUSION_TOOLS,mcp:mcpConfig})).profileReady,true);
+  const original=h.agent.call;
+  h.agent.call=async(_context,code)=>{const {method,args}=nativeInvocation(code);
+    if(method==='codexFusionTurn')return vmContext.turn('main-thread',args[0],args[3]);
+    return original(_context,code);};
+  const driver=h.connect();
+  const prompt=(generationId,clientId,status='started')=>{state.agentRequests.byId[generationId]={method:'session/prompt',status,
+    params:{sessionId:'main-thread',_meta:{'cognition.ai/clientMessageId':clientId}}};};
+  const user=(id,clientId,text)=>state.perSession['main-thread'].messages.push({id,kind:'user_message',
+    content:[{content:{type:'text',text},_meta:{'cognition.ai/clientMessageId':clientId}}]});
+  const agent=(id,text)=>state.perSession['main-thread'].messages.push({id,kind:'agent_message',
+    content:[{content:{type:'text',text}}]});
+  prompt('gen-1','7c9e6679-7425-40de-944b-e07fc1f90ae7');user('u1','7c9e6679-7425-40de-944b-e07fc1f90ae7','first task');agent('r1','partial');
+  update();await driver.read();await flush();
+  assert.equal(h.run.attempts.length,1);assert.equal(h.run.attempts[0].status,'running');assert(h.run.attempts[0].acceptedAt);
+  state.perSession['main-thread'].messages.at(-1).content[0].content.text='final answer';update();
+  state.agentRequests.byId['gen-1'].status='completed';state.perSession['main-thread'].messages=[];update();
+  await driver.read();await flush();
+  const attempt=h.run.attempts[0];
+  assert.equal(attempt.status,'ended');assert(attempt.endedAt);assert.equal(attempt.result.completed,true);
+  assert.equal(attempt.result.text,'final answer');assert.equal(attempt.native.generationId,'gen-1');
+  const ended=structuredClone(attempt);
+  await driver.read();await flush();
+  assert.deepEqual(attempt,ended);
+  assert.equal(h.run.attempts.length,1);assert.equal(h.run.events.filter(e=>e.type==='user_input').length,1);
+  assert.equal(h.calls.length,0);
+  prompt('gen-2','8d0f7780-8536-51ef-a55c-f18fd2f01bf8');user('u2','8d0f7780-8536-51ef-a55c-f18fd2f01bf8','second task');
+  update();await driver.read();await flush();
+  assert.equal(h.run.attempts.length,2);
+  const second=h.run.attempts[1];
+  assert.equal(second.status,'running');assert.equal(second.native.generationId,'gen-2');
+  assert.equal(second.native.turnId,'u2');assert.equal(second.result,null);assert.equal(second.endedAt,null);
+  vmContext.tools.unbind('devin','main-thread');await driver.close();
+});
+test('a devin worker attempt finishes awaiting_review from its cached native turn after pruning', { timeout: 5000 }, async () => {
+  const { FusionAgent } = await import('../server/fusion/agent.mjs');
+  const h = scenario(); h.run.main.app = 'devin';
+  const thread = 'worker-thread', attemptId = 'att-1';
+  const session = { sessionId: thread, providerId: 'devin-cli', cwd: h.project.root, status: 'idle', title: 'Worker' };
+  const state = { sessions: [session], perSession: {}, agentRequests: { byId: {} } };
+  const listeners = new Set(), dispatched = [];
+  const update = () => { for (const listener of [...listeners]) listener(); };
+  const window = { __acpStore: { getState: () => ({ acp: state }),
+    subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); },
+    dispatch: async request => { dispatched.push(request); return request; } } };
+  const nativeModule = { getAllMessages: data => data.messages, tryGetAcpSingleton: () => 'sender',
+    sendAgentRequestThunk: (provider, request, sender) => ({ provider, request, sender }) };
+  const vmContext = vm.createContext({ window, Map, Set, WeakMap, Error, JSON, Promise, Date, Number, Array, Object, String, RegExp,
+    remoteContext: { app: 'devin', threadId: thread, cwd: h.project.root, host: '' },
+    nativeModule, devinSessionRecord: id => id === thread ? session : null,
+    nativeMarkdownItem: (i, k, t, at, images) => ({ i, k, t, at, ...(images?.length ? { images } : {}) }),
+    activeThread: () => 'other', devinQuestions: () => null, nativeWaiting: () => ({}),
+    agentRun: () => ({ id: 'gen-1', status: { started: 'running', completed: 'completed', failed: 'error' }[state.agentRequests.byId['gen-1'].status] }),
+    agentModelName: () => 'SWE-2 Medium', effortName: () => '', devinSurface: () => false });
+  const slice = (file, start, end) => { const source = fs.readFileSync(new URL(`../server/page/${file}`, import.meta.url), 'utf8')
+      .replaceAll("await import('@exa/chat-client')", 'nativeModule'), s = source.indexOf(start);
+    assert(s >= 0, start); const e = source.indexOf(end, s); assert(e > s, end); return source.slice(s, e); };
+  vm.runInContext(slice('fusion-tools.js', '  const fusionNativeControllers =', '  const fusionNativeTools =')
+    + ';this.turn=fusionDevinTurn;', vmContext);
+  vm.runInContext(slice('session-actions.js', '  const nativeSessionAction = async', '  const nativeSessionRenameInput =')
+    + ';this.action=nativeSessionAction;', vmContext);
+  vm.runInContext(slice('chat-extract.js', '  const codexFusionTurn =', '  // One Codex turn')
+    + ';this.read=codexFusionTurn;', vmContext);
+  vm.runInContext(slice('chat-extract.js', '  const nativeConversationChat =', '  const contextPct =')
+    + ';this.chat=nativeConversationChat;', vmContext);
+  await vmContext.action('devin', thread, 'send', { text: 'task', requestId: attemptId });
+  assert.equal(dispatched.length, 1); assert.equal(dispatched[0].request.method, 'session/prompt');
+  const binding = { id: 'w1', role: 'worker', app: 'devin', threadId: thread, windowId: '', host: '', project: h.project,
+    nativeProject: { app: 'devin', threadId: thread, provider: 'devin-cli', host: '', cwd: h.project.root,
+      roots: [{ root: h.project.root, host: '' }] } };
+  h.run.bindings.push(binding);
+  const workId = h.create(); h.run.works.find(work => work.id === workId).status = 'running';
+  const task = { ...h.task('fusion-wc'), workId, status: 'running', workerId: 'agent-1', inputs: [] };
+  h.run.tasks.push(task); h.run.agents.push({ id: 'agent-1', bindingId: 'w1', status: 'running' });
+  h.run.attempts.push({ id: attemptId, kind: 'task', workId, taskId: task.id, assignmentId: '', status: 'submitting',
+    submission: 'submitting', bindingId: 'w1', native: null, created: Date.now(), acceptedAt: null, endedAt: null });
+  state.agentRequests.byId['gen-1'] = { method: 'session/prompt', status: 'started',
+    params: { sessionId: thread, prompt: [{ type: 'text', text: 'task' }], _meta: { 'cognition.ai/clientMessageId': attemptId } } };
+  state.perSession[thread] = { messages: [
+    { id: 'u1', kind: 'user_message', content: [{ content: { type: 'text', text: 'task' },
+      _meta: { 'cognition.ai/clientMessageId': attemptId } }] },
+    { id: 'r1', kind: 'agent_message', content: [{ content: { type: 'text', text: '12 files' } }] }] };
+  update();
+  state.agentRequests.byId['gen-1'].status = 'completed'; delete state.perSession[thread]; update();
+  const agent = new FusionAgent({ scheduler: h.scheduler, publish: () => {}, onEvent: () => {} });
+  let notify;
+  const context = { native: { app: 'devin', threadId: thread, cwd: h.project.root, host: '', roots: [] },
+    source: { subscribe: cb => { notify = cb; return () => {}; },
+      readConversation: async () => { const chat = await vmContext.chat(false, 80), snapshot = { chat: { ...chat }, state: chat?._nativeState };
+        delete snapshot.chat._nativeState; return snapshot; } },
+    cdp: { onclose: null } };
+  agent.call = async (_ctx, code) => { const { method, args } = nativeInvocation(code);
+    if (method === 'codexFusionTurn') return vmContext.read(args[0], args[1], args[2], args[3]);
+    if (method === 'nativeSessionInfo' && args[2] === 'settings') return { model: 'swe-2-medium', effort: '', usage: null, usageBasis: 'test' };
+    if (method === 'nativeSessionInfo' && args[2] === 'sendError') return null;
+    throw new Error(code); };
+  const observing = agent.observe({ controller: h.run, attemptId, binding, context, stopping: false }, false);
+  notify();
+  const result = await observing;
+  h.runner.completed(attemptId, result);
+  const attempt = h.run.attempts[0];
+  assert.equal(attempt.status, 'awaiting_review'); assert.equal(attempt.result.completed, true);
+  assert.equal(attempt.result.text, '12 files'); assert.equal(attempt.native.messageId, 'u1');
+  assert.equal(attempt.native.generationId, 'gen-1'); assert.equal(attempt.acceptedAt > 0, true);
+  assert.equal(attempt.submission, 'accepted'); assert.equal(task.status, 'awaiting_review');
 });
 test('background review uses the returned task and work templates and completes only after its native turn ends', async () => {
   const h=scenario(),workId=h.create();h.plan(workId);h.run.status='waiting';

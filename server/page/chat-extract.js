@@ -425,7 +425,7 @@
     return turn ? { ...entry, turn } : entry;
   };
   const codexFusionTurn = async (id = '', attemptId = '', previous = [], generationId = '') => {
-    if (remoteContext?.app === 'devin' && remoteContext.fusionController) return fusionDevinTurn(remoteContext.threadId, id, generationId);
+    if (remoteContext?.app === 'devin') return fusionDevinTurn(remoteContext.threadId, id, generationId, remoteContext.fusionController ? '' : attemptId);
     if (remoteContext && remoteContext.app !== 'codex' || !codexThread()) {
       const threadId = remoteContext?.threadId || activeThread();
       if (devinSurface()) {
@@ -843,7 +843,11 @@
       const msg = row.querySelector('[role=group][aria-label="User message"], [role=group][aria-label="Devin message"]');
       if (msg) {
         const it = messageItem(msg);
-        if (it.k === 'human' && native?.event_type === 'user_message' && typeof native.message === 'string') it.t = native.message;
+        if (it.k === 'human' && native?.event_type === 'user_message') {
+          if (native.kind === 'question_answers')
+            it.t = native.answers.map(answer => `问题：${answer.question}\n回复：${answer.selected_options.join('、')}`).join('\n\n');
+          else if (typeof native.message === 'string') it.t = native.message;
+        }
         const meta = it.k === 'human' ? devinMessageMeta(msg) : {};
         if (meta['cognition.ai/isOptimistic']) return;
         if (!it.i) it.i = i;
@@ -1269,10 +1273,10 @@
       questions = cursorNativeQuestions();
     } else {
       const native = await import('@exa/chat-client');
-      const state = window.__acpStore.getState().acp, data = state.perSession[thread];
+      const state = window.__acpStore.getState().acp, data = state.perSession[thread] || fusionDevinState(thread).data;
       const failure = Object.entries(state.agentRequests.byId).findLast(([, request]) => request.method === 'session/prompt' && request.params?.sessionId === thread);
       const failed = failure?.[1].status === 'failed';
-      const messages = failed && !data ? [] : native.getAllMessages(data), end = history && Number.isFinite(remoteContext.before) ? remoteContext.before : messages.length;
+      const messages = data ? native.getAllMessages(data) : [], end = history && Number.isFinite(remoteContext.before) ? remoteContext.before : messages.length;
       const selected = messages.slice(Math.max(0, end - limit), end);
       for (const message of selected) {
         const id = 'acp' + messages.indexOf(message);
