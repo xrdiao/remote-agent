@@ -1087,7 +1087,37 @@ function renderContext(info) {
     : '上下文 · ' + (basis === 'remaining' ? '剩余' : '已用') + ' ' + (n ?? '–') + '%';
   $('meterCtx').setAttribute('aria-label', $('meterCtx').title);
   $('meterCtx').onclick = () => showUsageDetails('context');
+  renderPerfChip(info);
   document.dispatchEvent(new Event('usage-state'));
+}
+/* ---------- opencode perf chip (footer) ---------- */
+let _perfOpen = false;
+function fmtTokPerSec(tokS) {
+  if (tokS == null) return '—';
+  return tokS >= 1000 ? (tokS / 1000).toFixed(1).replace(/\.?0$/, '') + ' kt/s' : Math.round(tokS) + ' tok/s';
+}
+function fmtDuration(ms) {
+  if (ms == null) return '—';
+  const s = ms / 1000;
+  if (s < 0.06) return Math.round(ms) + 'ms';
+  if (s < 60) return Math.round(s) + 's';
+  return Math.floor(s / 60) + 'm' + Math.round(s % 60) + 's';
+}
+function fmtTok(n) {
+  if (n == null) return '—';
+  return n >= 1000 ? (n / 1000).toFixed(1).replace(/\.?0$/, '') + 'k' : String(n);
+}
+function buildPerfPanel(panel, info) {
+  const row = (label, val) => '<div class="perf-row"><span class="perf-key">' + label + '</span><span class="perf-val">' + esc(val) + '</span></div>';
+  panel.innerHTML = row('速度', fmtTokPerSec(info.speedTokS)) + row('时长', fmtDuration(info.durationMs)) + row('缓存', info.cacheRate != null ? info.cacheRate + '%' : '—') + row('用量', fmtTok(info.used)) + row('模型', info.model || '—');
+}
+function renderPerfChip(info) {
+  const chip = $('perfChip'), panel = $('perfPanel');
+  if (info?.source !== 'opencode' || info?.used == null) { _perfOpen = false; chip.hidden = true; panel.hidden = true; return; }
+  chip.textContent = info.speedTokS != null ? fmtTokPerSec(info.speedTokS) : fmtTok(info.used);
+  chip.hidden = false;
+  buildPerfPanel(panel, info);
+  panel.hidden = !_perfOpen;
 }
 // Phones show the value text ("已用 56%") beside each ring whenever every meter fits that way next to
 // a readable title; otherwise the number moves inside the ring. Measured, so fonts/languages don't matter.
@@ -1168,7 +1198,19 @@ function menuGroup(key, label, content, initial = true) {
   const saved = store.get('menu-group:' + key);
   const open = saved === null ? initial : saved === '1';
   return `<details class="mainGroup" data-menu-group="${key}" ${open ? 'open' : ''}><summary>${esc(I18N.tr(label))}</summary><div class="mainGroupBody">${content}</div></details>`;
+  }
+function closePerfPanel() {
+  _perfOpen = false;
+  $('perfPanel').hidden = true;
 }
+function togglePerfPanel() {
+  _perfOpen = !_perfOpen;
+  $('perfPanel').hidden = !_perfOpen;
+}
+$('perfChip').addEventListener('click', togglePerfPanel);
+document.addEventListener('pointerdown', e => {
+  if (_perfOpen && !e.target.closest('#perfPanel, #perfChip')) closePerfPanel();
+});
 $('sheet').addEventListener('toggle', e => {
   if (e.target.matches('details[data-menu-group]')) store.set('menu-group:' + e.target.dataset.menuGroup, e.target.open ? '1' : '0');
   if (e.target.dataset.compatibilityApp) {
