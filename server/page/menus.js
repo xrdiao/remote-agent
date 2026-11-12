@@ -1,3 +1,4 @@
+  const codexModelButton = () => [...doc.querySelectorAll('[data-composer-navigation-target="reasoning"]')].find(vis);
   const codexModelName = () => {
     const cp = codexPickerProps();
     if (cp) {
@@ -16,7 +17,7 @@
     return pretty ? `${name} · ${pretty}` : name;
   };
   const modelButton = (readOnly = false) => {
-    const codex = [...doc.querySelectorAll('[data-codex-intelligence-trigger]')].find(vis);
+    const codex = codexModelButton();
     if (codex && vis(codex)) return codex;
     const composer = pickComposer([...doc.querySelectorAll(COMPOSER)].filter(e => vis(e) && !e.closest(ITEM_SEL)));
     const toolbar = composer?.closest('.ai-input-full-input-box') || composer?.parentElement?.closest('.ui-prompt-input');
@@ -55,11 +56,11 @@
     const lines = (e.innerText || '').split('\n').map(line => line.trim());
     return lines.some(line => nativeLabel(line, 'Recently Used') || line === 'Recommended') && lines.some(line => nativeLabel(line, 'See more'));
   });
-  const powerProps = () => doc.querySelector('[data-codex-intelligence-trigger]')
+  const powerProps = () => codexModelButton()
     ? codexFiberProps(modelButton(), 96).find(p => p.powerSelections && typeof p.onSelectPower === 'function' && typeof p.onCommitPower === 'function')
     : null;
   const codexPickerProps = () => {
-    const trg = [...doc.querySelectorAll('[data-codex-intelligence-trigger]')].find(vis);
+    const trg = codexModelButton();
     const props = trg ? codexFiberProps(trg, 70).find(p => p.modelOptions && p.onSelectModelOption) : null;
     if (remoteContext?.app !== 'codex' || !remoteContext.threadId) return props;
     const manager = codexNativeManager(), conversation = manager.getConversation(remoteContext.threadId);
@@ -133,7 +134,7 @@
         label: model.clientDisplayName || model.inputboxShortModelName || model.name,
         checked: selected.some(selection => selection.modelId === model.name), params: !!model.parameterDefinitions?.length }));
     }
-    if (remoteContext?.app === 'codex' || doc.querySelector('[data-codex-intelligence-trigger]')) {
+    if (remoteContext?.app === 'codex' || codexModelButton()) {
       const items = MENU_ITEMS.model();
       return items.length ? items : null;
     }
@@ -301,7 +302,7 @@
     return true;
   };
   const fastProps = () => {
-    const props = doc.querySelector('[data-codex-intelligence-trigger]') ? codexFiberProps(modelButton(), 40).find(p => p.serviceTierOptions && p.onSelectServiceTier) : null;
+    const props = codexModelButton() ? codexFiberProps(modelButton(), 40).find(p => p.serviceTierOptions && p.onSelectServiceTier) : null;
     if (remoteContext?.app !== 'codex') return props;
     const manager = codexNativeManager(), conversation = manager.getConversation(remoteContext.threadId);
     const model = codexPickerProps().modelOptions.find(option => option.model.id === conversation.latestModel)?.model;

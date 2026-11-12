@@ -52,7 +52,11 @@
       return item;
     }
     const readable = el.querySelector('.aislash-editor-input-readonly, .composer-human-message') || withoutThinking(el);
-    if (k === 'human') item.t = aria === 'User message' ? devinUserText(readable) : (readable.innerText || readable.textContent || '').trim();
+    if (k === 'human') {
+      item.t = aria === 'User message' ? devinUserText(readable) : (readable.innerText || readable.textContent || '').trim();
+      const images = messageImages(el);
+      if (images.length) item.images = images;
+    }
     else if (k === 'assistant') {
       const devinRoot = aria === 'Devin message' ? el.querySelector('.prose-main') : null;
       const md = [...el.querySelectorAll('.markdown-root, .ui-markdown, .rendered-markdown, .anysphere-markdown-container-root')].find(n => !n.closest(THINKING_ROOT));
@@ -158,16 +162,50 @@
     const el = [...doc.querySelectorAll('[data-remote-attachment]')].find(e => e.dataset.remoteAttachment === id);
     return el ? center(el) : null;
   };
+  const codexSubmitError = (requestId, message) => {
+    (window.__remoteAgentSubmitErrors ||= []).push({ requestId, message });
+    doc.defaultView.dispatchEvent(new doc.defaultView.Event('remote-agent-submit-error'));
+  };
+  const codexQueueConfirmRequests = () => {
+    const thread = codexVisibleThread();
+    if (!thread || remoteContext && remoteContext.threadId !== thread) return [];
+    for (const dialog of [...doc.querySelectorAll('[role="dialog"]')].filter(vis)) {
+      const props = codexFiberProps(dialog, Infinity).find(p => p.open === true
+        && Number.isInteger(p.queuedMessageCount) && typeof p.onClearQueue === 'function'
+        && typeof p.onSubmit === 'function' && typeof p.onOpenChange === 'function');
+      if (!props) continue;
+      const requestId = window.__remoteAgentCodexSubmitRequests?.get(thread) || '';
+      const act = (action, cancel = false) => () => {
+        window.__remoteAgentCodexSubmitRequests?.delete(thread);
+        if (cancel && requestId) codexSubmitError(requestId, '已取消发送，内容已保留');
+        return action();
+      };
+      return [{ id: 'queue-confirm:' + JSON.stringify([thread, requestId]), dialog,
+        text: `旧队列因中断而暂停，共 ${props.queuedMessageCount} 条。发送本条消息时如何处理？`, fields: [],
+        buttons: [
+          { label: '保留队列并发送', action: act(props.onSubmit) },
+          { label: '清空队列并发送', action: act(props.onClearQueue) },
+          { label: '取消发送', action: act(() => props.onOpenChange(false), true) },
+        ] }];
+    }
+    return [];
+  };
   const submitCodexMessage = async (follow = '', dispatch = false, requestId = '') => {
     const editor = codexPromptEl();
-    const props = editor && codexFiberProps(editor, Infinity).find(p => typeof p.handleSubmit === 'function' && 'isQueueingEnabled' in p);
+    const props = editor && codexFiberProps(editor, Infinity).find(p => typeof p.handleSubmit === 'function' && 'submitDisabled' in p);
     if (!props || props.submitDisabled || props.isInteractionBlocked || props.interactionsEnabled === false) return false;
     if (dispatch) {
       if (codexPromptPayload() == null) return false;
       const submissions = window.__remoteAgentCodexSubmissions ||= new Set();
-      const pending = Promise.resolve().then(() => props.handleSubmit(follow ? { followUpSubmitAction: follow } : undefined)).catch(error => {
-        (window.__remoteAgentSubmitErrors ||= []).push({ requestId, message: String(error?.message || error) });
-        doc.defaultView.dispatchEvent(new doc.defaultView.Event('remote-agent-submit-error'));
+      const thread = codexThread(), requests = window.__remoteAgentCodexSubmitRequests ||= new Map();
+      const clear = () => { if (requests.get(thread) === requestId) requests.delete(thread); };
+      if (requestId) requests.set(thread, requestId);
+      const options = { ...(follow ? { followUpSubmitAction: follow } : {}), ...(requestId ? {
+        onSubmitted: clear,
+        onNotSent: () => { clear(); codexSubmitError(requestId, 'Codex 未提交这条消息，内容已保留'); },
+      } : {}) };
+      const pending = Promise.resolve().then(() => props.handleSubmit(options)).catch(error => {
+        clear(); codexSubmitError(requestId, String(error?.message || error));
       }).finally(() => submissions.delete(pending));
       submissions.add(pending);
       return true;
@@ -994,7 +1032,7 @@
     }
     return result;
   };
-  const waitCodexReceipt = (before, expected, hasAttachments, timeout = 5000) => new Promise(resolve => {
+  const waitCodexReceipt = (before, expected, queueExpected, hasAttachments, timeout = 5000) => new Promise(resolve => {
     const messages = new Set(before.messages.map(item => item.id)), queues = new Set(before.queued.map(item => item.id));
     const win = doc.defaultView;
     let finished = false, pending = false;
@@ -1007,7 +1045,7 @@
       const after = codexSendState();
       if (before.thread && after.thread !== before.thread) return finish(null);
       const accepted = after.messages.filter(item => !messages.has(item.id) && !item.nativeIds?.some(id => queues.has(id)) && (expected ? item.t.trim() === expected : hasAttachments));
-      const queued = after.queued.filter(item => !queues.has(item.id) && (expected ? item.t.trim() === expected : hasAttachments));
+      const queued = after.queued.filter(item => !queues.has(item.id) && (queueExpected ? item.t.trim() === queueExpected : hasAttachments));
       if (accepted.length + queued.length === 1) finish(queued.length
         ? { queued: true, queueId: queued[0].id, ...(queued[0].messageId ? { messageId: queued[0].messageId } : {}) }
         : { queued: false, messageId: accepted[0].i });
@@ -1031,6 +1069,50 @@
       }
     }
   };
+  // Token counters and elapsed time retain their native call/turn scope, separate from context capacity.
+  const nativePerformance = (app, thread, run, model, data) => {
+    if (!run) return null;
+    let tokens = null, counter = null, usageId = run.id, runId = run.id, startedAt = run.startedAt, completedAt = run.completedAt;
+    let busy = run.status === 'running';
+    if (app === 'cursor') {
+      const usage = data.turnTokenUsage;
+      if (usage) tokens = { input: usage.inputTokens, output: usage.outputTokens,
+        cacheRead: usage.cacheReadTokens, cacheWrite: usage.cacheWriteTokens };
+      counter = tokens?.output ?? null;
+      if (run.status === 'completed') {
+        const last = data.conversationMap[data.fullConversationHeadersOnly.at(-1)?.bubbleId];
+        if (Number.isFinite(last?.startedAtMs) && Number.isFinite(last?.turnDurationMs)) completedAt = last.startedAtMs + last.turnDurationMs;
+      }
+    } else if (app === 'codex') {
+      const usage = data.latestTokenUsageInfo;
+      if (usage?.last) tokens = { input: usage.last.inputTokens, output: usage.last.outputTokens,
+        reasoning: usage.last.reasoningOutputTokens, cacheRead: usage.last.cachedInputTokens, cacheWrite: usage.last.cacheWriteInputTokens };
+      counter = usage?.total?.outputTokens ?? null;
+    } else {
+      usageId = data?.currentTurnId || '';
+      runId = usageId;
+      const stats = data?.turnStats?.[usageId];
+      const dimensions = stats?.responseDimensions;
+      const user = data?.messages.findLast(message => message.kind === 'user_message'
+        && message.content.some(block => block._meta?.['cognition.ai/clientMessageId'] === usageId));
+      startedAt = Date.parse(user?.content.find(block => block._meta?.['cognition.ai/timestamp'])?._meta['cognition.ai/timestamp'] || '');
+      const last = data?.messages.findLast(message => message.turnId === usageId && Array.isArray(message.content));
+      completedAt = stats?.cause === 'complete'
+        ? Date.parse(last?.content.findLast(block => block._meta?.['cognition.ai/timestamp'])?._meta['cognition.ai/timestamp'] || '') : 0;
+      busy = stats?.cause !== 'complete' && busy;
+      if (dimensions) {
+        const values = Object.fromEntries(dimensions.map(row => [row.uid, row.kind.value]));
+        tokens = { input: values.input_tokens, output: values.output_tokens,
+          cacheRead: values.cached_input_tokens, cacheWrite: values.cached_write_tokens };
+        counter = tokens.output ?? null;
+        model = values.model || model;
+      }
+    }
+    const durationMs = completedAt && Number.isFinite(startedAt) ? completedAt - startedAt : null;
+    return { source: app, runId, usageId, busy, model, tokens, counter,
+      unit: 'tokens', durationMs,
+      rate: app !== 'codex' && !busy && counter != null && durationMs > 0 ? counter / (durationMs / 1000) : null };
+  };
   // Keep native text independent of the desktop's virtualized transcript; DOM rows still own UI actions.
   const cursorCurrentChat = async (chat, limit) => {
     if (!chat?.thread) return chat;
@@ -1038,9 +1120,9 @@
     const headers = data.fullConversationHeadersOnly;
     const positions = new Map(headers.map((header, index) => [header.bubbleId, index]));
     const messages = await cursorMessages(chat.thread, data, headers.slice(-limit));
-    const text = new Map(messages.filter(message => message.text?.trim() && !message.toolFormerData).map(message => {
+    const text = new Map(messages.filter(message => !message.toolFormerData && (message.text?.trim() || cursorMessageImages(message).length)).map(message => {
       const at = Number(message.startedAtMs) || Date.parse(message.createdAt || '') || 0;
-      return [message.bubbleId, nativeMarkdownItem(message.bubbleId, message.type === 1 ? 'human' : 'assistant', message.text, at)];
+      return [message.bubbleId, nativeMarkdownItem(message.bubbleId, message.type === 1 ? 'human' : 'assistant', message.text || '', at, cursorMessageImages(message))];
     }));
     const existing = new Set(chat.items.map(item => item.i));
     const missing = [...text.values()].filter(item => !existing.has(item.i));
@@ -1052,7 +1134,7 @@
       items.push(text.has(item.i) ? { ...item, ...text.get(item.i) } : item);
     }
     items.push(...missing.slice(next));
-    return { ...chat, items };
+    return { ...chat, items, performance: nativePerformance('cursor', chat.thread, agentRun('cursor', chat.thread), chat.model, data) };
   };
   const extract = (history = false, knownTurns = [], pageSize = 0, nativeCursor = false) => {
     if (nativeCursor) return cursorCurrentChat(extract(history, knownTurns), pageSize || 80);
@@ -1211,6 +1293,9 @@
       title: agentState()?.title || '',
       model: agentModelName(),
       context: contextPct(),
+      performance: log || devinSurface()
+        ? nativePerformance('devin', activeThread(), agentRun('devin', activeThread()), agentModelName(), window.__acpStore?.getState().acp.perSession[activeThread()])
+        : codexId ? nativePerformance('codex', codexId, agentRun('codex', codexId, scopes, manager), agentModelName(), manager?.getConversation(codexId)) : null,
       draft: composerDraft(),
       ...(devinSurface() ? { surface: devinSurface() } : {}),
       ...(codexFacts()?.view ? { codex: codexFacts().view } : {}),
@@ -1237,11 +1322,13 @@
     ...(kind === 'human' && at ? { sentAt: at } : {}),
     ...(kind === 'assistant' ? { bodyFormat: 'markdown', h: esc(text).replace(/\n/g, '<br>') } : {}),
     ...(images.length ? { images } : {}) });
+  const cursorMessageImages = message => (message.context?.selectedImages || []).map(image => image.path);
   const nativeConversationChat = async (history, limit) => {
     const { app, threadId: thread } = remoteContext;
-    let items = [], earlier = false, before = 0, questions = null, title = '', draft;
+    let items = [], earlier = false, before = 0, questions = null, title = '', draft, performanceData;
     if (app === 'cursor') {
       const { data, capability, decisions } = cursorPendingTool();
+      performanceData = data;
       const end = history && Number.isFinite(remoteContext.before) ? remoteContext.before : data.fullConversationHeadersOnly.length;
       const headers = data.fullConversationHeadersOnly.slice(Math.max(0, end - limit), end);
       const messages = await cursorMessages(thread, data, headers);
@@ -1251,7 +1338,8 @@
         const at = Number(message.startedAtMs) || Date.parse(message.createdAt || '') || 0;
         if (message.thinking?.text) items.push({ i: id + ':think', k: 'thinking', t: `Thoughts\n${message.thinking.text}`,
           live: !Number.isFinite(message.completedAtMs) && data.status === 'generating' });
-        if (message.text?.trim() && !tool) items.push(nativeMarkdownItem(id, message.type === 1 ? 'human' : 'assistant', message.text, at));
+        const images = cursorMessageImages(message);
+        if (!tool && (message.text?.trim() || images.length)) items.push(nativeMarkdownItem(id, message.type === 1 ? 'human' : 'assistant', message.text || '', at, images));
         if (tool) {
           const file = tool.params?.relativeWorkspacePath || tool.params?.targetFile;
           const row = { i: id, k: 'tool', t: tool.params?.commandDescription || tool.params?.command || tool.toolCall?.tool?.value?.description || tool.name || '',
@@ -1276,6 +1364,7 @@
     } else {
       const native = await import('@exa/chat-client');
       const state = window.__acpStore.getState().acp, data = state.perSession[thread] || fusionDevinState(thread).data;
+      performanceData = data;
       const failure = Object.entries(state.agentRequests.byId).findLast(([, request]) => request.method === 'session/prompt' && request.params?.sessionId === thread);
       const failed = failure?.[1].status === 'failed';
       const messages = data ? native.getAllMessages(data) : [], end = history && Number.isFinite(remoteContext.before) ? remoteContext.before : messages.length;
@@ -1313,6 +1402,7 @@
       queued: app === 'cursor' ? (cursorPendingTool().data.queueItems || []).map(item => ({ id: item.id, t: item.query, src: 'cursor' })) : [],
       questions, changed, subagents: [], earlier, historyBefore: before,
       model: agentModelName(), effort: effortName(), permission: null, context: null,
+      performance: nativePerformance(app, thread, run, agentModelName(), performanceData),
       ...(draft !== undefined ? { draft } : {}),
       ...(app === 'devin' ? { surface: devinSurface(), session: { key: thread, cwd: remoteContext.cwd }, workdir: { cwd: remoteContext.cwd } } : {}),
       ...(run?.startedAt ? { generation: { start: run.startedAt, end: run.status === 'running' ? null : run.completedAt || null } } : {}) };

@@ -430,7 +430,7 @@ export class NativeWindow {
             && (request.expected ? run.t.trim() === request.expected : request.hasAttachments)) messages.set(run.i, run);
       }
       const queued = state.queued.filter(row => !request.beforeQueues.has(row.id) && !claimed.has(row.id)
-        && (request.expected ? row.t.trim() === request.expected : request.hasAttachments));
+        && (request.queueExpected ? row.t.trim() === request.queueExpected : request.hasAttachments));
       if (messages.size + queued.length === 1) {
         const row = queued[0] || messages.values().next().value;
         claimed.add(row.id);

@@ -380,7 +380,7 @@ export const ROUTES = {
     },
     after: (s, m, result) => {
       s.emit({ t: 'queueDone', sel: m.sel || s.selectionKey(), requestId: m.requestId, id: m.id, action: m.action, text: m.action === 'read' ? result : m.text, echoes: m.echoes, ...(m.action === 'edit' && result), ok: true });
-      if (m.action === 'edit') s.emit({ t: 'status', ok: true, msg: '已修改，仍在排队' });
+      if (m.action === 'edit') s.emit({ t: 'status', ok: true, msg: s.app === 'codex' && result.queued === false ? '已修改并已发送' : '已修改，仍在排队' });
     },
     fail: (s, m, error) => s.emit({ t: 'queueDone', sel: m.sel || s.selectionKey(), requestId: m.requestId, id: m.id, action: m.action, ok: false, error: error?.message }),
   },
@@ -415,6 +415,7 @@ export const ROUTES = {
   workdirPick: { run: (s, m) => s.workdirPick(String(m.name ?? '').slice(0, 200), String(m.path ?? '').slice(0, 400)) },
   envPick: { run: (s, m) => s.envPick(String(m.label ?? '')) },
   changes: { switchRead: true,  run: s => s.listChanges() },
+  toolDetails: { switchRead: true, readOnly: true, run: (s, m) => s.adapter.routes.toolDetails.call(s, m) },
   thought: { switchRead: true,  readOnly: true, run: (s, m) => s.thought(String(m.i ?? '')) },
   revert: { run: (s, m) => s.revert(String(m.i ?? '')) },
   revertOk: { run: (s, m) => s.revertAnswer(true, typeof m.apply === 'boolean' ? m.apply : undefined) },

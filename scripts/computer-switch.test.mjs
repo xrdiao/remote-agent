@@ -72,7 +72,7 @@ function harness({ sameSelection = false, count = 2 } = {}) {
     clearInterval: id => timers.delete(id),
     requestAnimationFrame: fn => { const id = ++timerId; timers.set(id, { fn, ms: 0, at: now }); return id; },
     fetch: async () => ({ ok: true, json: async () => ({ v: 3, computers: [] }) }),
-    receiveFusion: () => false, receiveTerminal: () => false, entryProof: async () => 'test-proof', legacyAgentLibrary: () => [], trace,
+    finishWinBinding() {}, receiveFusion: () => false, receiveTerminal: () => false, entryProof: async () => 'test-proof', legacyAgentLibrary: () => [], trace,
   });
   context.window = context;
   context.addEventListener = () => {};
@@ -1394,4 +1394,15 @@ test('closed Fusion detail replies cannot override a newer ordinary card opening
     view: { kind: 'config', subscriptionId: read.requestId }, run: { id: 'old-controller', main: { bindingId: 'old-main' } } });
   assert.equal(cardNavigations(h).length, 1); assert.equal(h.state().thread, 'card-b');
   assert.equal(cardEntries(h).length, 1);
+});
+
+for (const home of [true, false]) test(`native attachment failure settles bindWin without overview tools (home=${home})`, async () => {
+  const h = harness(); await h.bothReady(); installOverviewBinding(h, 'cursor');
+  let outcome = 'pending';
+  const bound = h.run('bindWin(cardTargets.a)').then(() => { outcome = 'resolved'; }, error => { outcome = error.message; });
+  h.deliver(0, { t: 'attachFailed', home, ready: false, message: 'empty Cursor read failed' });
+  await h.settle();
+  assert.equal(outcome, 'empty Cursor read failed');
+  assert.equal(h.run('winBinding'), null);
+  await bound;
 });

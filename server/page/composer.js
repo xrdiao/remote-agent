@@ -1,18 +1,48 @@
   const selCardId = () => doc.querySelector('[data-sidebar-item-key] [data-active="true"]')?.closest('[data-sidebar-item-key]')?.getAttribute('data-sidebar-item-key')?.slice(4) || '';
-  const codexNativeModule = async prefix => {
+  const codexNativeModule = async kind => {
     const modules = window.__remoteAgentNativeModules ||= new Map();
-    if (!modules.has(prefix)) modules.set(prefix, (async () => {
-      const entry = [...doc.scripts].find(script => script.src).src;
-      const index = await (await fetch(entry)).text();
-      const main = new URL(index.match(/app-main-[a-f0-9]+\.js/)[0], entry);
-      const source = await (await fetch(main)).text();
-      const file = source.match(new RegExp(prefix + '-[a-f0-9]+\\.js'))[0];
-      return import(new URL(file, main).href);
+    const bindingsFor = (role, source) => {
+      const names = new Map(source.match(/\bexport\s*\{([^}]+)\}/)[1].split(',').map(entry => {
+        const [local, exported = local] = entry.trim().split(/\s+as\s+/);
+        return [local, exported];
+      }));
+      if (role === 'scope') return { scope: names.get(source.match(/function ([\w$]+)\([^)]*\)\{[^}]*\.retainedScopeEntries\.get\([^}]*new Map\([^}]*\.chain\)/)[1]) };
+      if (role === 'composer') {
+        const state = source.match(/([\w$]+)=[\w$]+\([\w$]+,\(\{get:([\w$]+)\}\)=>\(\{\.\.\.\2\([\w$]+\),prompt:\2\(([\w$]+)\)\}\)\)/);
+        const edit = source.match(/function ([\w$]+)\([^)]*\)\{let [\w$]+=[\w$]+\.get\([\w$]+\)\?\?\{prompt:(?:``|""|''),pullRequestChecks:\[\]\}/);
+        return { state: names.get(state[1]), text: names.get(state[3]), editDraft: names.get(edit[1]) };
+      }
+      const create = source.match(/function ([\w$]+)\([^)]*\)\{return new ([\w$]+)\(\{scope:[^}]*dynamicTools:/);
+      const initializeClass = [...source.matchAll(/var ([\w$]+);function ([\w$]+)\(\)/g)].find(match => match[1] === create[2])[2];
+      const initialize = [...source.matchAll(/function ([\w$]+)\(\)\{return\([\w$]+=[\w$]+\(\(\(\)=>\{([^{}]*)\}/g)]
+        .find(match => names.has(match[1]) && [...match[2].matchAll(/([\w$]+)\(\)/g)].some(call => call[1] === initializeClass))[1];
+      return { initialize: names.get(initialize), createInputs: names.get(create[1]) };
+    };
+    if (!modules.has('graph')) modules.set('graph', (async () => {
+      const markers = { scope: '.retainedScopeEntries.get(', composer: 'discardRetainedDraft', creation: 'async readCreationInputs(' };
+      const pending = [[...doc.scripts].find(script => script.src).src], seen = new Set(pending), found = {};
+      for (const url of pending) {
+        const source = await (await fetch(url)).text();
+        for (const [role, marker] of Object.entries(markers)) if (!found[role] && source.includes(marker)) found[role] = { url, bindings: bindingsFor(role, source) };
+        if (Object.keys(found).length === Object.keys(markers).length) return found;
+        for (const match of source.matchAll(/\b(?:from\s*|import\s*\(\s*)["'`]([^"'`]+\.js)["'`]/g)) {
+          const next = new URL(match[1], url).href;
+          if (!seen.has(next)) { seen.add(next); pending.push(next); }
+        }
+      }
+      throw new Error('Codex 原生输入模块未提供所需入口');
     })());
-    return modules.get(prefix);
+    if (!modules.has(kind)) modules.set(kind, (async () => {
+      const { url, bindings } = (await modules.get('graph'))[kind];
+      const native = await import(url);
+      if (kind === 'scope') return native[bindings.scope];
+      if (kind === 'creation') { native[bindings.initialize](); return native[bindings.createInputs]; }
+      return Object.fromEntries(Object.entries(bindings).map(([role, name]) => [role, native[name]]));
+    })());
+    return modules.get(kind);
   };
   const codexComposerScope = async (id, required = true) => {
-    const composer = await codexNativeModule('composer-view-state');
+    const [composer, retainedScope] = await Promise.all([codexNativeModule('composer'), codexNativeModule('scope')]);
     const nodes = new Set(), pending = [...codexHistoryScopes()];
     while (pending.length) {
       const node = pending.pop();
@@ -29,22 +59,15 @@
     const parents = [];
     for (let parent = node; parent; parent = parent.parent) parents.push(parent);
     const chain = new Map(parents.map(parent => [parent.token.id, parent]));
-    const scope = { node, chain, value: Object.assign({}, ...parents.reverse().map(parent => parent.value)),
-      get(ref, key) { const value = ref.resolve(node, chain, key); return typeof value.get === 'function' ? value.get() : node.store.get(value); },
-      set(ref, ...args) {
-        const value = ref.resolve(node, chain, args.length === 2 ? args[0] : undefined), next = args.at(-1);
-        if (typeof value.set === 'function') value.set(next); else node.store.set(value, next);
-      },
-    };
+    const scope = retainedScope({ chain }, node.token, node.key);
     return { scope, composer };
   };
   const codexConversationDraft = async (id, text, expected) => {
     const { scope, composer } = await codexComposerScope(id);
-    if (text !== undefined && (expected === undefined || scope.get(composer.M) === expected)) {
-      const draft = scope.get(composer.f);
-      composer.gt(scope, { ...draft, prompt: text, pullRequestChecks: draft?.pullRequestChecks || [] });
+    if (text !== undefined && (expected === undefined || scope.get(composer.text) === expected)) {
+      composer.editDraft(scope, draft => { draft.prompt = text; });
     }
-    return scope.get(composer.M);
+    return scope.get(composer.text);
   };
   const pickComposer = eds => {
     const sel = selCardId();

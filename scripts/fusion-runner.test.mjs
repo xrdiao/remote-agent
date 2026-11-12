@@ -210,7 +210,8 @@ test('a devin worker attempt finishes awaiting_review from its cached native tur
     + ';this.action=nativeSessionAction;', vmContext);
   vm.runInContext(slice('chat-extract.js', '  const codexFusionTurn =', '  // One Codex turn')
     + ';this.read=codexFusionTurn;', vmContext);
-  vm.runInContext(slice('chat-extract.js', '  const nativeConversationChat =', '  const contextPct =')
+  vm.runInContext(slice('chat-extract.js', '  const nativePerformance =', '  const cursorCurrentChat =')
+    + slice('chat-extract.js', '  const nativeConversationChat =', '  const contextPct =')
     + ';this.chat=nativeConversationChat;', vmContext);
   vm.runInContext(slice('chat-extract.js', '  const watchCodexData =', '  const codexUserText =')
     + ';this.watch=watchCodexData;', vmContext);

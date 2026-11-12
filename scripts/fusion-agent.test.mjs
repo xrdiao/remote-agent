@@ -1060,7 +1060,8 @@ function devinWorkerFixture(thread = 'worker-thread') {
     + ';this.action=nativeSessionAction;', context);
   vm.runInContext(slice('chat-extract.js', '  const codexFusionTurn =', '  // One Codex turn')
     + ';this.read=codexFusionTurn;', context);
-  vm.runInContext(slice('chat-extract.js', '  const nativeConversationChat =', '  const contextPct =')
+  vm.runInContext(slice('chat-extract.js', '  const nativePerformance =', '  const cursorCurrentChat =')
+    + slice('chat-extract.js', '  const nativeConversationChat =', '  const contextPct =')
     + ';this.chat=nativeConversationChat;', context);
   vm.runInContext(slice('chat-extract.js', '  const watchCodexData =', '  const codexUserText =')
     + ';this.watch=watchCodexData;', context);
@@ -1192,7 +1193,8 @@ test('Fusion Devin content reports a native failure without requiring a pruned t
     nativeMarkdownItem: (i, k, t, at) => ({ i, k, t, at }) });
   const tools = fs.readFileSync(new URL('../server/page/fusion-tools.js', import.meta.url), 'utf8');
   vm.runInContext(tools.slice(tools.indexOf('  const fusionNativeControllers ='), tools.indexOf('  const fusionNativeTools =')), context);
-  vm.runInContext(source.slice(start, end).replace("await import('@exa/chat-client')", 'nativeModule') + '\nthis.read = nativeConversationChat;', context);
+  vm.runInContext(source.slice(source.indexOf('  const nativePerformance ='), source.indexOf('  const cursorCurrentChat ='))
+    + source.slice(start, end).replace("await import('@exa/chat-client')", 'nativeModule') + '\nthis.read = nativeConversationChat;', context);
   const failed = await context.read(false, 80);
   assert.equal(failed.thread, 'worker'); assert.equal(failed._nativeState.run.status, 'error');
   assert.equal(failed.items.length, 1); assert.equal(failed.items[0].kind, 'error'); assert.equal(failed.items[0].t, error); assert.equal(messageReads, 0);

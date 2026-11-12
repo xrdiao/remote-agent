@@ -1,8 +1,8 @@
   const nativeValue = value => doc.defaultView.JSON.parse(JSON.stringify(value));
   const cursorSessionInstantiation = () => {
-    const props = [...doc.querySelectorAll('[data-message-id], [data-glass-agent-id], .composer-container')]
-      .flatMap(el => codexFiberProps(el, 40)).find(p => p.uiContextMenuServices);
-    return props?.uiContextMenuServices?.instantiationService;
+    const props = codexFiberProps(modelButton(true), 40)
+      .find(p => p.services?.workspace?.instantiationService);
+    return props?.services.workspace.instantiationService;
   };
   const cursorSessionServices = () => {
     if (window.__remoteAgentCursorServices) return window.__remoteAgentCursorServices;
@@ -292,7 +292,7 @@
       const value = await codexComposerScope(id, false);
       if (!value) return null;
       const { scope, composer } = value;
-      const state = scope.get(composer.q), context = await nativeSessionContext(app, id);
+      const state = scope.get(composer.state), context = await nativeSessionContext(app, id);
       const ide = codexQueryClient()?.getQueryData(['ide-context', null]);
       const activePath = ide?.activeFile?.path || '';
       return { ...state, workspaceRoots: context.roots.map(row => row.root),
@@ -336,9 +336,8 @@
     const manager = codexConversationManager(id, codexHistoryScopes(), remoteContext?.host || 'local');
     const parent = manager.getConversation(id);
     const { scope } = await codexComposerScope(codexVisibleThread() || '');
-    const native = await codexNativeModule('create-window-thread-creation-inputs');
-    native.n();
-    const reader = native.t(scope, manager.hostId);
+    const createInputs = await codexNativeModule('creation');
+    const reader = createInputs(scope, manager.hostId);
     const root = spec.root || parent?.cwd;
     if (!root) throw new Error('新建原生会话前需要明确项目目录');
     const options = { input: [], cwd: root, workspaceRoots: [root], initialTitle: spec.title,

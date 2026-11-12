@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import vm from 'node:vm';
+import fs from 'node:fs';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import { PAGE_SRC } from '../server/page/build.mjs';
 import { ROUTES } from '../server/routes.mjs';
 import { adapter, methods as codexMethods } from '../server/apps/codex.mjs';
@@ -8,6 +10,73 @@ import { methods as chatMethods } from '../server/agent/chat.mjs';
 import { FOCUS_COMPOSER } from '../server/agent/context.mjs';
 import { cdpRead, awaitCdpRead } from '../server/cdp.mjs';
 import { withOperation } from '../server/operations.mjs';
+import { NativeWindow } from '../server/native-windows.mjs';
+
+for (const revision of ['first', 'renamed']) {
+  test(`Codex discovers merged modules and renamed exports, retaining native per-thread drafts: ${revision}`, async () => {
+    fs.mkdirSync('_shots', { recursive: true });
+    const folder = fs.mkdtempSync('_shots/codex-module-test-'), base = pathToFileURL(process.cwd() + '/' + folder + '/');
+    const names = revision === 'first' ? ['aa', 'bb', 'cc', 'dd', 'ee', 'ff'] : ['X', 'Y', 'Z', '$q', '$r', '$s'];
+    const [scopeName, stateName, textName, editName, createName, initName] = names;
+    const files = {
+      'entry.js': `import('./shell-${revision}.js');`,
+      [`shell-${revision}.js`]: `export{${scopeName}}from'./scope-${revision}.js';export{${stateName}}from'./merged-${revision}.js';export{${createName}}from'./inputs-${revision}.js';`,
+      [`scope-${revision}.js`]: `function ignored(e,t){e.parent?.retainedScopeEntries.get(t)}function retained(e,t,n){if(t.parent==null)return null;let r=e.chain.get(t.parent.id).retainedScopeEntries.get(t)?.get(n)?.node;if(r==null)return null;let i=new Map(e.chain);return i.set(t.id,r),r.accessor}export{retained as ${scopeName}};`,
+      [`merged-${revision}.js`]: 'function derive(s,read){return{read}}const S={},D={key:"draft"},V={key:"view"},T={key:"text"};' +
+        'var C=derive(S,({get:g})=>({...g(V),prompt:g(T)}));' +
+        'function edit(s,fn){let n=s.get(D)??{prompt:``,pullRequestChecks:[]},r=produce(n,fn);r!==n&&commit(s,r)}' +
+        'function produce(d,fn){const next=structuredClone(d);fn(next);return next}function commit(s,next,{discardRetainedDraft=false}={}){s.set(D,next)}' +
+        `export{C as ${stateName},T as ${textName},edit as ${editName}};`,
+      [`inputs-${revision}.js`]: 'function once(fn){let ran=false;return()=>{if(!ran){ran=true;fn()}}}var Reader;function initClass(){Reader=class{constructor(params){this.params=params}async readCreationInputs(options,history){return{options,history,scope:this.params.scope.value,host:this.params.hostId}}}}' +
+        'const Client={key:"client"};function factory(s,h){return new Reader({scope:s,hostId:h,requestClient:s.get(Client),dynamicTools:{}})}' +
+        'function initialize(){return(initialize=once((()=>{initClass()})))()}' +
+        `export{factory as ${createName},initialize as ${initName}};`,
+    };
+    for (const [name, source] of Object.entries(files)) {
+      const renamed = revision === 'renamed' ? source.replace(/\b(retained|ignored|derive|edit|produce|commit|Reader|initClass|factory|initialize|once)\b/g, local => '$new_' + local) : source;
+      fs.writeFileSync(new URL(name, base), renamed);
+    }
+    try {
+      const token = { id: 'composer', __scopeBrand: 'ComposerScope', parent: { id: 'root' } };
+      const drafts = new Map([['A', { prompt: 'draft A', pullRequestChecks: ['check-A'], attachment: { id: 'file-A' } }],
+        ['B', { prompt: 'draft B', pullRequestChecks: [] }]]), writes = [];
+      const root = { token: token.parent, value: {}, retainedScopeEntries: new Map(), familyBindings: new Map() };
+      const children = new Map(); root.retainedScopeEntries.set(token, children);
+      for (const id of drafts.keys()) {
+        const accessor = { value: { conversationId: id }, query: { native: true },
+          get(ref) { return ref.read ? ref.read({ get: value => this.get(value) }) : ref.key === 'draft' ? drafts.get(id)
+            : ref.key === 'text' ? drafts.get(id).prompt : ref.key === 'view' ? { composerMode: 'local', isAutoContextOn: id === 'A' } : null; },
+          set(ref, value) { assert.equal(ref.key, 'draft'); writes.push(id); drafts.set(id, value); },
+        };
+        const node = { token, key: id, parent: root, value: accessor.value, accessor,
+          retainedScopeEntries: new Map(), familyBindings: new Map() };
+        children.set(id, { node });
+      }
+      const reads = [], window = {}, document = { scripts: [{ src: new URL('entry.js', base).href }], getElementById: () => null };
+      const fetch = async url => { reads.push(url); return { text: async () => fs.readFileSync(fileURLToPath(url), 'utf8') }; };
+      const source = PAGE_SRC.replace('return { historyAtStart', 'return { codexNativeModule, historyAtStart');
+      const page = new Function('document', 'window', 'fetch', 'return ' + source)(document, window, fetch);
+      // Use the existing history-scope discovery with a native provider root.
+      const provider = { getBoundingClientRect: () => ({ width: 10, height: 10 }),
+        __reactFiberFixture: { memoizedProps: { value: new Map([['root', root]]) } } };
+      document.querySelectorAll = selector => selector.includes('[data-composer-body]') ? [provider] : [];
+      const [a, b] = await Promise.all([page.nativeSessionInfo('codex', 'A', 'draft'), page.nativeSessionInfo('codex', 'B', 'draft')]);
+      assert.equal(a, 'draft A'); assert.equal(b, 'draft B');
+      assert.equal(await page.nativeSessionInfo('codex', 'A', 'draft', 'updated A'), 'updated A');
+      assert.deepEqual(writes, ['A']); assert.equal(drafts.get('B').prompt, 'draft B');
+      assert.deepEqual(drafts.get('A').pullRequestChecks, ['check-A']); assert.deepEqual(drafts.get('A').attachment, { id: 'file-A' });
+      assert.equal(await page.nativeSessionInfo('codex', 'A', 'clearDraft', 'old draft'), 'updated A');
+      assert.equal(await page.nativeSessionInfo('codex', 'A', 'clearDraft', 'updated A'), '');
+      assert.equal(drafts.get('B').prompt, 'draft B');
+      const create = await page.codexNativeModule('creation'), reader = create(children.get('A').node.accessor, 'local');
+      assert.equal(reader.params.scope.query.native, true);
+      const options = { cwd: '/project-A', model: 'chosen-model', permissions: 'existing-policy', tools: ['ra_fusion'] };
+      assert.deepEqual(await reader.readCreationInputs(options, []), { options, history: [], scope: { conversationId: 'A' }, host: 'local' });
+      assert.equal(reads.length, Object.keys(files).length); assert.equal(new Set(reads).size, reads.length);
+      assert(Object.values(await window.__remoteAgentNativeModules.get('graph')).every(module => !('source' in module)));
+    } finally { fs.rmSync(folder, { recursive: true, force: true }); }
+  });
+}
 
 for (const chinese of [false, true]) for (const follow of ['', 'queue', 'steer']) for (const dispatch of [false, true]) {
   test(`native submit keeps the original ${follow || 'default'} action with ${chinese ? 'Chinese' : 'English'} controls, dispatch=${dispatch}`, async () => {
@@ -17,7 +86,7 @@ for (const chinese of [false, true]) for (const follow of ['', 'queue', 'steer']
       getAttribute: key => key === 'aria-label' ? label : null, click: () => clicked.push(label) }));
     const root = { querySelectorAll: () => buttons };
     const editor = { getBoundingClientRect: () => ({ width: 40, height: 20 }), closest: () => root,
-      __reactFiberFixture: { memoizedProps: { handleSubmit: value => { nativeCalls.push(value); }, isQueueingEnabled: true,
+      __reactFiberFixture: { memoizedProps: { handleSubmit: value => { nativeCalls.push(value); }, submitDisabled: false, isInteractionBlocked: false, interactionsEnabled: true,
         composerController: { getText: () => 'test draft' } } } };
     const document = { getElementById: () => null,
       querySelectorAll: selector => selector === '.ProseMirror[contenteditable="true"]' ? [editor] : [] };
@@ -29,17 +98,30 @@ for (const chinese of [false, true]) for (const follow of ['', 'queue', 'steer']
   });
 }
 
-function submitLifecycle(handleSubmit) {
+function submitLifecycle(handleSubmit, flags = {}) {
   const events = [], nativeWindow = {};
   const draft = { value: 'draft', writes: 0 };
   const editor = { getBoundingClientRect: () => ({ width: 40, height: 20 }),
-    __reactFiberFixture: { memoizedProps: { handleSubmit, isQueueingEnabled: true, composerController: {
+    __reactFiberFixture: { memoizedProps: { handleSubmit, submitDisabled: false, isInteractionBlocked: false, interactionsEnabled: true, ...flags, conversationId: 'thread', composerController: {
       getText: () => draft.value, setText: value => { draft.value = value; draft.writes++; },
     } } } };
   const document = { getElementById: () => null,
     defaultView: { Event: class { constructor(type) { this.type = type; } }, dispatchEvent: event => events.push(event.type) },
-    querySelectorAll: selector => selector === '.ProseMirror[contenteditable="true"]' ? [editor] : [] };
+    querySelectorAll: selector => selector === '.ProseMirror[contenteditable="true"]' || selector === '.ProseMirror' ? [editor] : [] };
   return { page: vm.runInNewContext(PAGE_SRC, { document, window: nativeWindow }), nativeWindow, events, draft };
+}
+
+for (const dispatch of [false, true]) for (const flags of [
+  { submitDisabled: true }, { isInteractionBlocked: true }, { interactionsEnabled: false },
+]) {
+  test(`native submit respects ${Object.keys(flags)[0]}, dispatch=${dispatch}`, async () => {
+    let calls = 0;
+    const h = submitLifecycle(() => { calls++; }, flags);
+    assert.equal(await h.page.submitCodexMessage('', dispatch, 'blocked-request'), false);
+    assert.equal(calls, 0);
+    assert.equal(h.draft.value, 'draft'); assert.equal(h.draft.writes, 0);
+    assert.deepEqual(h.events, []);
+  });
 }
 
 test('native submit confirmation stays pending until its handler settles, without clearing a newer draft', async () => {
@@ -231,7 +313,7 @@ for (const chinese of [false, true]) for (const available of [false, true]) {
   });
 }
 
-function submission({ native = true, busy = false, when, follow = 'queue', payload = '  hello\n world  ',
+function submission({ native = true, busy = false, when, follow = 'queue', payload = '  hello\n world  ', serialized = payload,
   attachments = false, mentions, receipt = true, submitted = true, submitError, waitError, afterRead, afterWait } = {}) {
   const events = [], calls = [], operation = { pending: false, submitted: false }, controller = new AbortController();
   const before = { thread: 'thread-1', payload, draft: 'draft', hasDraftAttachments: attachments, follow,
@@ -248,6 +330,7 @@ function submission({ native = true, busy = false, when, follow = 'queue', paylo
       afterRead?.(context, controller);
       return structuredClone(before);
     }
+    if (expression.includes(".nativeSessionInfo('codex',")) { controller.signal.throwIfAborted(); return serialized; }
     if (expression.includes('.submitCodexMessage(')) {
       calls.push(['submit', ...args(expression, 'submitCodexMessage')]);
       if (native) assert.equal(operation.submitted, true);
@@ -259,7 +342,9 @@ function submission({ native = true, busy = false, when, follow = 'queue', paylo
     afterWait?.(context, controller);
     return { queued: intended, messageId: 'message-2', ...(intended ? { queueId: 'queue-2' } : {}) };
   } };
-  if (native) context.cdp.nativeWindow = { registerSend(value, callback) {
+  if (native) context.cdp.nativeWindow = {
+    async composerCall(call) { controller.signal.throwIfAborted(); assert.equal(call, `nativeSessionInfo('codex', ${JSON.stringify(before.thread)}, 'draft')`); return serialized; },
+    registerSend(value, callback) {
     assert.equal(context.sendNativeReceipt.pending, true);
     assert.equal(operation.pending, true);
     assert.equal(operation.submitted, false);
@@ -314,7 +399,7 @@ for (const native of [true, false]) {
       await state.run();
       const expected = !!input.attachments || !!input.mentions?.length;
       assert.equal(native ? state.request.hasAttachments
-        : state.calls.find(call => Array.isArray(call) && call[0] === 'wait')[3], expected);
+        : state.calls.find(call => Array.isArray(call) && call[0] === 'wait')[4], expected);
     });
   }
 
@@ -385,10 +470,11 @@ test('window: cancellation before reading prevents registration and submit', asy
   assert.deepEqual(state.calls, []);
 });
 
-test('window: cancellation during preparation still prevents submit', async () => {
+test('window: cancellation before serialized payload prevents registration and submit', async () => {
   const state = submission({ afterRead: (context, controller) => controller.abort() });
   await assert.rejects(state.run(), { name: 'AbortError' });
-  assert.deepEqual(state.calls, ['read', 'register']);
+  assert.deepEqual(state.calls, ['read']);
+  assert.equal(state.request, undefined);
 });
 
 test('page: read failure while waiting leaves the receipt pending', async () => {
@@ -408,4 +494,130 @@ test('page: cancellation while waiting propagates', async () => {
   const state = submission({ native: false, waitError: new Error('read cancelled'),
     afterRead: (context, controller) => controller.abort() });
   await assert.rejects(state.run(), { name: 'AbortError' });
+});
+
+for (const native of [true, false]) test(`Codex receipt uses native serialized Markdown (${native ? 'window' : 'page'})`, async () => {
+  const serialized = 'literal \\*\\*bold\\*\\* and C:\\tmp';
+  const h = submission({ native, payload: 'literal **bold** and C:\\tmp', serialized });
+  await h.run();
+  if (native) { assert.equal(h.request.expected, serialized); assert.equal(h.request.queueExpected, 'literal **bold** and C:\\tmp'); }
+  else { const call = h.calls.find(call => Array.isArray(call) && call[0] === 'wait'); assert.equal(call[2], serialized); assert.equal(call[3], 'literal **bold** and C:\\tmp'); }
+});
+
+for (const queued of [true, false]) test(`Codex queue edit confirms native ${queued ? 'queue' : 'already admitted message'}`, async () => {
+  const calls = [], before = { thread: 'thread', messages: [{ id: 'old-user' }], queued: [{ id: 'old-queue' }] };
+  const accepted = queued ? { queued: true, queueId: 'new-queue' } : { queued: false, messageId: 'new-user' };
+  const cdp = { nativeWindow: { async composerCall(call) {
+    assert.equal(call, `nativeSessionInfo('codex', "thread", 'draft')`); return 'literal \\*bold\\*';
+  } }, async evaluate(expression) {
+    calls.push(expression);
+    if (expression.endsWith('.queueEditing() === "old-queue"')) return true;
+    if (expression.endsWith('.codexSendState()')) return before;
+    if (expression.endsWith('.codexSelectPrompt()')) return true;
+    if (expression.endsWith('.submitCodexMessage("queue")')) return true;
+    if (expression.includes('.waitCodexReceipt(')) {
+      const args = JSON.parse('[' + expression.slice(expression.lastIndexOf('.waitCodexReceipt(') + 18, -1) + ']');
+      assert.deepEqual(args[0], before); assert.equal(args[1], 'literal \\*bold\\*'); assert.equal(args[2], 'literal *bold*'); assert.equal(args[3], false); return accepted;
+    }
+    throw Error('unexpected queue edit read');
+  }, async send(method, params) { assert.equal(method, 'Input.insertText'); assert.equal(params.text, 'literal *bold*'); } };
+  const context = { cdp, codexFocusPrompt: async () => true, pollChat: async () => calls.push('poll') };
+  assert.deepEqual(await adapter.editQueued.call(context, 'old-queue', 'literal *bold*'), accepted);
+  assert(calls.includes('poll'));
+});
+
+test('Codex queue edit status reflects immediate execution without changing Devin take-out', () => {
+  for (const [app, result, expected] of [['codex', { queued: false, messageId: 'sent' }, '已修改并已发送'],
+    ['codex', { queued: true, queueId: 'queued' }, '已修改，仍在排队'], ['devin', undefined, '已修改，仍在排队']]) {
+    const events = []; ROUTES.queue.after({ app, selectionKey: () => 'selection', emit: message => events.push(message) },
+      { action: 'edit', id: 'old', text: 'new' }, result);
+    assert.equal(events.at(-1).msg, expected);
+  }
+});
+
+for (const queued of [true, false]) test(`page receipt distinguishes queued Markdown from serialized admission (queued=${queued})`, async () => {
+  const text = '**bold** C:\\tmp', serialized = '\\*\\*bold\\*\\* C:\\tmp';
+  const state = { thread: 'thread', messages: queued ? [] : [{ id: 'new-message', i: 'user-new', t: serialized }],
+    queued: queued ? [{ id: 'new-queue', t: text }] : [] };
+  const win = new EventTarget(), context = vm.createContext({ doc: { defaultView: win }, codexSendState: () => state, setTimeout, clearTimeout, queueMicrotask });
+  const src = fs.readFileSync(new URL('../server/page/chat-extract.js', import.meta.url), 'utf8');
+  vm.runInContext(src.slice(src.indexOf('  const waitCodexReceipt ='), src.indexOf('  const mergeCodexCapacity =')) + '\nglobalThis.waitReceipt = waitCodexReceipt;', context);
+  const value = await context.waitReceipt({ thread: 'thread', messages: [], queued: [] }, serialized, text, false);
+  assert.equal(value.queued, queued); assert.equal(queued ? value.queueId : value.messageId, queued ? 'new-queue' : 'user-new');
+});
+
+for (const scenario of ['queue', 'message', 'wrong-message-text', 'wrong-queue-text', 'old-queue', 'other-thread']) test(`shared native receipt retains strict identity with dual Markdown payloads: ${scenario}`, () => {
+  const expected = '\\*bold\\*', queueExpected = '*bold*'; let result;
+  const request = { thread: 'thread', expected, queueExpected, action: 'queue', before: new Set(['old-message']), beforeQueues: new Set(['old-queue']), beforeTurns: new Set(), finish: value => { result = value; } };
+  const state = { thread: scenario === 'other-thread' ? 'other' : 'thread', messages: [], queued: [] };
+  if (scenario.includes('message')) state.messages = [{ id: 'new-message', i: 'user-new', t: scenario === 'wrong-message-text' ? queueExpected : expected }];
+  else state.queued = [{ id: scenario === 'old-queue' ? 'old-queue' : 'new-queue', t: scenario === 'wrong-queue-text' ? expected : queueExpected }];
+  const source = { sends: new Map([['request', request]]), claimed: new Set() };
+  NativeWindow.prototype.confirmSends.call(source, { receipt: state });
+  if (scenario === 'queue' || scenario === 'message') { assert.equal(result.queued, scenario === 'queue'); assert.equal(source.sends.size, 0); }
+  else { assert.equal(result, undefined); assert.equal(source.sends.size, 1); }
+});
+
+function pausedQueueDialog(remoteThread = 'thread-A') {
+  const calls = [], nativeWindow = { __remoteAgentCodexSubmitRequests: new Map([['thread-A', 'send-A'], ['thread-B', 'send-B']]) };
+  const props = { open: true, queuedMessageCount: 2,
+    onSubmit() { calls.push('keep'); }, onClearQueue() { calls.push('clear'); },
+    onOpenChange(value) { calls.push(['open', value]); } };
+  const context = vm.createContext({ window: nativeWindow, remoteContext: { app: 'codex', threadId: remoteThread },
+    codexVisibleThread: () => 'thread-A', codexFiberProps: () => [props], vis: () => true,
+    doc: { querySelectorAll: () => [{}], defaultView: { Event: class { constructor(type) { this.type = type; } },
+      dispatchEvent: event => calls.push(['event', event.type]) } } });
+  const src = fs.readFileSync(new URL('../server/page/chat-extract.js', import.meta.url), 'utf8');
+  vm.runInContext(src.slice(src.indexOf('  const codexSubmitError ='), src.indexOf('  const submitCodexMessage ='))
+    + ';globalThis.requests=codexQueueConfirmRequests;', context);
+  return { calls, nativeWindow, props, context, rows: () => context.requests() };
+}
+
+for (const n of [0, 1, 2]) test(`paused native queue confirmation preserves the explicit user decision: ${n}`, async () => {
+  const h = pausedQueueDialog(), [row] = h.rows();
+  assert.equal(row.buttons.length, 3); assert(row.id.includes('send-A'));
+  await row.buttons[n].action();
+  assert.equal(h.nativeWindow.__remoteAgentCodexSubmitRequests.has('thread-A'), false);
+  assert.equal(h.nativeWindow.__remoteAgentCodexSubmitRequests.get('thread-B'), 'send-B');
+  if (n === 2) {
+    assert.deepEqual(h.calls, [['event', 'remote-agent-submit-error'], ['open', false]]);
+    assert.equal(h.nativeWindow.__remoteAgentSubmitErrors[0].requestId, 'send-A');
+    assert.match(h.nativeWindow.__remoteAgentSubmitErrors[0].message, /已取消发送/);
+  } else { assert.deepEqual(h.calls, [n === 0 ? 'keep' : 'clear']); assert.equal(h.nativeWindow.__remoteAgentSubmitErrors, undefined); }
+});
+
+test('paused queue confirmation belongs only to the visible selected thread', () => {
+  const h = pausedQueueDialog('thread-B'); assert.equal(h.rows().length, 0); assert.deepEqual(h.calls, []);
+  assert.equal(h.nativeWindow.__remoteAgentCodexSubmitRequests.get('thread-A'), 'send-A');
+});
+
+test('native queue confirmation action rejects a stale request instead of acting on a new dialog', async () => {
+  const h = pausedQueueDialog(), src = fs.readFileSync(new URL('../server/page/codex.js', import.meta.url), 'utf8');
+  vm.runInContext(src.slice(src.indexOf('  const codexRequestAction ='), src.indexOf('  const codexRequestField ='))
+    + ';globalThis.act=codexRequestAction;', h.context);
+  const id = h.rows()[0].id;
+  h.nativeWindow.__remoteAgentCodexSubmitRequests.set('thread-A', 'new-send');
+  await assert.rejects(h.context.act(id, 0), /这条队列确认已不在所选会话中/);
+  assert.deepEqual(h.calls, []);
+});
+
+test('native accepted and explicitly not-sent callbacks settle only their own submit record', async () => {
+  let options;
+  const h = submitLifecycle(value => { options = value; });
+  await h.page.submitCodexMessage('', true, 'send-1'); await h.page.codexViewState(true);
+  assert.equal(h.nativeWindow.__remoteAgentCodexSubmitRequests.get('thread'), 'send-1');
+  options.onSubmitted(); assert.equal(h.nativeWindow.__remoteAgentCodexSubmitRequests.size, 0);
+  await h.page.submitCodexMessage('', true, 'send-2'); await h.page.codexViewState(true);
+  options.onNotSent(); assert.equal(h.nativeWindow.__remoteAgentSubmitErrors[0].requestId, 'send-2');
+  assert.equal(h.draft.value, 'draft');
+});
+
+test('normal Codex read includes the paused queue confirmation once rather than a generic duplicate dialog', () => {
+  const dialog = {}, row = { id: 'queue-confirm:thread', dialog, text: 'paused queue', buttons: [{ label: 'keep' }], fields: [] };
+  const document = { querySelectorAll: selector => selector === '[role=dialog]' ? [dialog] : [] };
+  const context = vm.createContext({ remoteContext: null, activeThread: () => 'thread', codexQueueConfirmRequests: () => [row],
+    doc: document, document, vis: () => true });
+  const source = fs.readFileSync(new URL('../server/page/codex.js', import.meta.url), 'utf8');
+  vm.runInContext(source.slice(source.indexOf('  const codexRequests ='), source.indexOf('  const codexRequestData =')) + ';globalThis.read=codexRequests;', context);
+  const rows = context.read(); assert.equal(rows.length, 1); assert.equal(rows[0].id, row.id);
 });

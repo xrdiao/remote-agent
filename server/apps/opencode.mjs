@@ -28,14 +28,29 @@ function attached(s, initial = false) {
     sel: s.selectionKey(), ready: true, initial });
 }
 
+const PAGE_SIZE = 20;
+const messageKey = row => ({ created: row.info.time?.created || 0, id: row.info.id });
+const beforeMessage = (row, key) => (row.info.time?.created || 0) < key.created
+  || (row.info.time?.created || 0) === key.created && row.info.id.localeCompare(key.id) < 0;
+function viewPage(id) {
+  const rows = openCode.messageRows(id).slice(-PAGE_SIZE);
+  return { start: rows.length ? messageKey(rows[0]) : null, tools: new Set() };
+}
+function viewRows(id, page) {
+  return openCode.messageRows(id).filter(row => !page.start || !beforeMessage(row, page.start));
+}
+function hasEarlier(id, page) {
+  return !!openCode.historyPages.get(id)?.before || !!page.start && openCode.messageRows(id).some(row => beforeMessage(row, page.start));
+}
+
 function publish(s, sent) {
   const selected = openCode.selection(s.threadId || s.openCodeDirectory);
-  const chat = s.threadId ? openCode.chat(s.threadId) : { thread: '', items: [], busy: false,
+  const page = s.openCodePages?.get(s.threadId);
+  const chat = s.threadId ? openCode.chat(s.threadId, { rows: viewRows(s.threadId, page), tools: page.tools }) : { thread: '', items: [], busy: false,
     model: openCode.models.get(selected.key)?.name || selected.key,
     effort: selected.variant || '默认（服务端）', permission: '手动审批', context: openCode.context(s.openCodeDirectory),
     global: [], questions: null, queued: [], subagents: [] };
-  const page = s.openCodePages?.get(s.threadId);
-  s.emit({ t: 'chat', sel: s.selectionKey(), chat: { ...chat, earlier: !!page?.before, empty: !s.threadId } }, sent);
+  s.emit({ t: 'chat', sel: s.selectionKey(), chat: { ...chat, windowed: true, earlier: !!page && hasEarlier(s.threadId, page), empty: !s.threadId } }, sent);
 }
 
 function confirmSend(s, requestID, pending) {
@@ -45,7 +60,10 @@ function confirmSend(s, requestID, pending) {
     if (index < 0) return;
     files.splice(index, 1);
   }
-  const item = openCode.chat(pending.threadID).items.find(row => row.i === pending.messageID && row.k === 'human' && row.t === pending.text);
+  const message = openCode.messages.get(pending.threadID)?.get(pending.messageID);
+  const text = [...message?.parts.values() || []].filter(part => part.type === 'text' && !part.synthetic).map(part => part.text).join('\n');
+  if (text !== pending.text) return;
+  const item = openCode.chat(pending.threadID, { rows: message ? [message] : [] }).items.find(row => row.i === pending.messageID && row.k === 'human');
   if (!item) return;
   pending.unsubscribe();
   s.openCodeSends.delete(requestID);
@@ -112,7 +130,7 @@ async function bind(s, req) {
   if (native && native.directory !== directory) throw new Error('OpenCode 会话不属于所选项目');
   const thread = native || (!req.newSession && [...openCode.sessions.values()]
     .filter(row => row.directory === directory).sort((a, b) => b.time.updated - a.time.updated)[0]);
-  const page = thread && await openCode.loadMessages(thread.id);
+  if (thread) await openCode.loadMessages(thread.id);
   cdpRead.getStore()?.throwIfAborted();
   s.detach();
   s.clearViewState();
@@ -123,7 +141,7 @@ async function bind(s, req) {
   s.selectionHome = false;
   s.winTitle = 'OpenCode';
   s.openCodePages ||= new Map();
-  if (thread) s.openCodePages.set(thread.id, page);
+  if (thread) s.openCodePages.set(thread.id, viewPage(thread.id));
   rememberSelection(s.deviceId, selection(s));
   attached(s, req.initial === true);
   await s.setMode(s.mode, true);
@@ -147,6 +165,7 @@ async function ensureSession(s) {
   cdpRead.getStore()?.throwIfAborted();
   openCode.sessions.set(native.id, native);
   s.threadId = s.selectedThread = native.id;
+  s.openCodePages.set(native.id, viewPage(native.id));
   s.clearViewState();
   openCode.selections.set(native.id, model);
   s.stopChatUpdates();
@@ -235,19 +254,33 @@ const routes = {
   },
   async refresh() {
     await openCode.connect();
-    if (this.threadId) this.openCodePages.set(this.threadId, await openCode.loadMessages(this.threadId));
+    if (this.threadId) await openCode.loadMessages(this.threadId);
     publish(this);
   },
   async scrollChat(m) {
     if (!m.history) return;
-    const id = this.threadId, sel = this.selectionKey(), cursor = this.openCodePages.get(id)?.before;
-    if (cursor) {
-      const page = await openCode.loadMessages(id, cursor);
+    const id = this.threadId, sel = this.selectionKey(), page = this.openCodePages.get(id);
+    let rows = openCode.messageRows(id).filter(row => page.start && beforeMessage(row, page.start));
+    const cursor = openCode.historyPages.get(id)?.before;
+    if (!rows.length && cursor) {
+      await openCode.loadMessages(id, cursor);
       if (this.threadId !== id || this.selectionKey() !== sel) return;
-      this.openCodePages.set(id, page);
-      this.emit({ t: 'historyPage', sel, requestId: m.requestId, thread: id, items: openCode.chat(id).items, earlier: !!page.before });
+      rows = openCode.messageRows(id).filter(row => page.start && beforeMessage(row, page.start));
     }
-    this.emit({ t: 'historyDone', sel, requestId: m.requestId, earlier: !!this.openCodePages.get(id)?.before });
+    rows = rows.slice(-PAGE_SIZE);
+    if (rows.length) {
+      page.start = messageKey(rows[0]);
+      this.emit({ t: 'historyPage', sel, requestId: m.requestId, thread: id,
+        items: openCode.chat(id, { rows, tools: page.tools }).items, earlier: hasEarlier(id, page) });
+    }
+    this.emit({ t: 'historyDone', sel, requestId: m.requestId, earlier: hasEarlier(id, page) });
+  },
+  toolDetails(m) {
+    if (m.sel !== this.selectionKey()) return;
+    const page = this.openCodePages.get(this.threadId);
+    if (m.open) page.tools.add(m.i);
+    else page.tools.delete(m.i);
+    publish(this);
   },
   draft(m) {
     if (m.sel !== this.selectionKey()) return;
@@ -380,6 +413,7 @@ export const adapter = {
     publish(this);
   },
   detach() {
+    this.openCodePages?.get(this.threadId)?.tools.clear();
     this.stopChatUpdates();
   },
 };

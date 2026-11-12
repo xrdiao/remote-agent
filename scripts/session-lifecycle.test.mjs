@@ -212,7 +212,7 @@ function codexQuestionReader(questions = [{ id: 'choice', question: '请选择�
     return [];
   } };
   const context = vm.createContext({ remoteContext: null, doc, document: doc, activeThread: () => state.thread, vis: () => true,
-    codexFiberProps: el => el.props || [], codexPoint: () => ({ x: 1, y: 2 }), setTimeout });
+    codexQueueConfirmRequests: () => [], codexFiberProps: el => el.props || [], codexPoint: () => ({ x: 1, y: 2 }), setTimeout });
   vm.runInContext(fragment(read('server/page/codex.js'), '  const codexAsyncRequestFiber =', '  const codexImage =')
     + '\nthis.data=codexRequestData;this.field=codexRequestField;this.action=codexRequestAction;', context);
   return { state, owner, form, root, host, skip, answersHook, ...context };

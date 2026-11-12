@@ -288,16 +288,9 @@
     const r = e.getBoundingClientRect();
     return { label, ...codexPoint(e) };
   }).filter(x => x.label);
-  const codexQueued = (full = false, state = null, previousIds = null) => {
+  const codexQueued = (full = false, state = null) => {
     const thread = state?.thread || codexThread();
     if (!thread) return [];
-    if (previousIds) {
-      const previous = new Set(previousIds);
-      return (state || codexHistoryState(null, false)).queued.filter(item => !previous.has(item.id)).map(item => ({
-        id: item.id, t: full ? item.text : item.text.slice(0, 4000), src: 'codex',
-        messageId: `${thread}:user-message:${item.clientUserMessageId}`,
-      }));
-    }
     // Newer Codex keeps the queue in the composer's own rows (props carry messageId / fullMessageText);
     // older builds kept it in the queued-follow-ups global state read below.
     const rows = [...doc.querySelectorAll('[aria-label^="Preview queued message"]')].filter(vis)
@@ -454,6 +447,7 @@
       changed: codexChanges().count, questions: { codex: true, requests: codexRequestData() },
       model: agentModelName() || model, effort, permission, mode: conversation.latestCollaborationMode?.mode || null,
       context: null, capacityPresent: page.items.some(item => item.capacity),
+      performance: nativePerformance('codex', thread, run, model, conversation),
       _historyEarlier: page.earlier || !!page.missingTurn, historyBefore: page.before, _historyStart: state.entries[0]?.turnNumber,
       ...(run?.startedAt ? { generation: { start: run.startedAt, end: run.status === 'running' ? null : run.completedAt || null } } : {}),
       codex: { ...view, plan: conversation.latestCollaborationMode?.mode === 'plan',
@@ -462,9 +456,9 @@
     };
   };
   const codexRequests = () => {
-    if (remoteContext?.app === 'codex') return [...codexNativeRequestRows(), ...codexAsyncQuestionRows()];
+    if (remoteContext?.app === 'codex') return [...codexNativeRequestRows(), ...codexAsyncQuestionRows(), ...codexQueueConfirmRequests()];
     if (!activeThread()) return [];
-    const rows = new Map();
+    const rows = new Map(codexQueueConfirmRequests().map(row => [row.id, row]));
     const asyncSkips = new Set();
     const query = selector => [...new Set([doc, document])].flatMap(d => [...d.querySelectorAll(selector)]);
     for (const skip of query('[data-request-input-dismiss]').filter(vis)) {
@@ -532,7 +526,7 @@
       }
     }
     for (const dialog of questionCards) {
-      if ([...rows.values()].some(r => [...r.buttons, ...r.fields].some(b => b.el && dialog.contains(b.el)))) continue;
+      if ([...rows.values()].some(r => r.dialog === dialog || [...r.buttons, ...r.fields].some(b => b.el && dialog.contains(b.el)))) continue;
       const title = dialog.getAttribute('aria-label') || dialog.querySelector('h1,h2,h3')?.innerText || 'Codex';
       const content = dialog.cloneNode(true);
       content.querySelectorAll('button,input,textarea,select,[contenteditable=true],[role=radio],[role=checkbox]').forEach(el => el.remove());
@@ -584,6 +578,12 @@
   const codexRequestData = () => codexRequests().map(r => ({ id: r.id, text: String(r.text).slice(0, 6000), buttons: r.buttons.map(({ label, disabled, selected }) => ({ label, disabled, selected })), fields: r.fields.map(({ label, value, type, options }) => ({ label, value, type, options })) }));
   const codexRequestTarget = (id, n) => { const b = codexRequests().find(r => r.id === id)?.buttons[n]; return b?.el ? codexPoint(b.el) : null; };
   const codexRequestAction = async (id, n, fields = [], advance = false) => {
+    if (id.startsWith('queue-confirm:')) {
+      const button = codexQueueConfirmRequests().find(row => row.id === id)?.buttons[n];
+      if (!button) throw new Error('这条队列确认已不在所选会话中');
+      await button.action();
+      return true;
+    }
     if (remoteContext?.app === 'codex') return codexNativeRequestAction(id, n, fields);
     for (const field of fields) {
       if (!codexRequestField(id, field.n, field.value)) throw new Error('请求输入框已不存在');

@@ -1,7 +1,9 @@
 /* ---------- image and document attachments ---------- */
 // Photos from phone cameras are several MB; shrink to something the model can read and the relay accepts.
-async function shrinkImage(file, canvas) {
-  if (/^image\/(png|jpeg|gif|webp)$/.test(file.type) && file.size < 600e3) return file;
+async function shrinkImage(file, canvas, app) {
+  const png = app === 'devin' && file.type === 'image/webp';
+  const type = png ? 'image/png' : 'image/jpeg';
+  if (!png && /^image\/(png|jpeg|gif|webp)$/.test(file.type) && file.size < 600e3) return file;
   const bmp = canvas || await createImageBitmap(file);
   let side = 1600, q = 0.85, blob;
   do {
@@ -9,11 +11,11 @@ async function shrinkImage(file, canvas) {
     const c = document.createElement('canvas');
     c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
     c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
-    blob = await new Promise(r => c.toBlob(r, 'image/jpeg', q));
+    blob = await new Promise(r => c.toBlob(r, type, q));
     side *= 0.75; q -= 0.1;
   } while (blob.size > 1.5e6 && q > 0.4);
   if (!canvas) bmp.close();
-  return new File([blob], file.name.replace(/\.\w+$/, '') + '.jpg', { type: 'image/jpeg' });
+  return new File([blob], file.name.replace(/\.\w+$/, '') + (png ? '.png' : '.jpg'), { type });
 }
 
 const imageUploads = new Map(), editableImages = new Map();
@@ -169,7 +171,7 @@ async function attachImageFile(file, options = {}) {
   const sel = options.sel || viewSel, scope = imageUploadScope();
   if (sel !== viewSel) { status('会话已切换，请重新选择图片', false); return false; }
   const id = crypto.randomUUID();
-  imageUploads.set(id, { id, file, name: file.name, scope, sel, preview: URL.createObjectURL(file), options });
+  imageUploads.set(id, { id, file, name: file.name, app: currentApp, scope, sel, preview: URL.createObjectURL(file), options });
   renderAttachments(desktopAttachments);
   status('正在处理图片…');
   imageUploadQueue = imageUploadQueue.then(() => uploadImageFile(id));
@@ -179,7 +181,8 @@ async function attachImageFile(file, options = {}) {
 async function uploadImageFile(id) {
   try {
     const record = imageUploads.get(id), { file, options, scope, sel } = record;
-    const img = options.prepared ? file : await shrinkImage(file);
+    const convert = record.app === 'devin' && file.type === 'image/webp';
+    const img = options.prepared && !convert ? file : await shrinkImage(file, undefined, record.app);
     if (record.cancelled) { URL.revokeObjectURL(record.preview); imageUploads.delete(id); return true; }
     record.uploadFile = img;
     if (scope !== imageUploadScope()) throw new Error('会话已切换，请回到原会话重试上传');

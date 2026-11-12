@@ -124,12 +124,15 @@ export async function overviewPreview(deviceId, { win, windowId, threadId }) {
   if (session.app === 'opencode') {
     await openCode.connect();
     await openCode.loadMessages(threadId);
-    const chat = openCode.chat(threadId);
+    const rows = openCode.messageRows(threadId);
+    const turn = rows.findLastIndex(row => row.info.role === 'user' && [...row.parts.values()].some(part => part.type === 'text' && !part.synthetic && part.text?.trim()));
+    const chat = openCode.chat(threadId, { rows: rows.slice(Math.max(0, turn)), tools: new Set() });
+    const text = chat.items.filter(row => ['human', 'assistant'].includes(row.k)).map(row => row.t).join('\n\n').slice(-600);
     return { win, windowId, threadId, available: true,
-      last: chat.items.findLast(row => row.k === 'assistant')?.t || '',
-      text: chat.items.filter(row => ['human', 'assistant'].includes(row.k)).map(row => row.t).join('\n\n'),
+      last: (chat.items.findLast(row => row.k === 'assistant')?.t || '').slice(-600), text,
       model: chat.model, effort: chat.effort, tasks: null,
-      tools: chat.items.filter(row => row.k === 'tool').map(row => ({ name: row.t, status: row.status || 'running' })) };
+      tools: chat.items.filter(row => row.k === 'tool').slice(-3).map(row => ({ id: row.i, label: row.t.slice(0, 240),
+        state: row.status === 'error' ? 'error' : row.status === 'completed' ? 'done' : 'run' })) };
   }
   if (session.dormant) return { win, windowId, threadId, available: false, last: '', text: '' };
   const value = await nativeWindowAt(target.ws).preview(threadId, session);

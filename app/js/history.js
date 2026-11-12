@@ -218,6 +218,11 @@ function codexRows(previous, updates) {
 function scSnapshot(pending) {
   let items = [...pending.items.values()].sort((a, b) => (a.order ?? acpNum(a.i)) - (b.order ?? acpNum(b.i)));
   if (items.length > SC_MAX) items = items.slice(-SC_MAX);
+  items = items.map(item => {
+    if (!item.lazy) return item;
+    const { cmd, output, diff, ...summary } = item;
+    return { ...summary, details: false };
+  });
   return { items, collapsed: [...pending.collapsed] };
 }
 let scDrainTimer = 0;
@@ -290,7 +295,7 @@ function scMerge(chat, retained = new Set()) {
     changed = true;
   }
   if (changed) scDirty();
-  const all = [...(SC.cleared ? chat.items : SC.items.values())].sort((a, b) => (a.order ?? acpNum(a.i)) - (b.order ?? acpNum(b.i)));
+  const all = [...(chat.windowed || SC.cleared ? chat.items : SC.items.values())].sort((a, b) => (a.order ?? acpNum(a.i)) - (b.order ?? acpNum(b.i)));
   const stat = new Map(), turnOf = new Map();
   let turn = null;
   for (const it of all) {
@@ -457,6 +462,7 @@ function noteChatLayoutChange() {
 }
 function beginChatSelection() {
   cancelCodexAutoRetry();
+  openCodeTools.clear();
   cancelChatMotion();
   restoringChatScroll = false;
   resetTurnNav();
@@ -705,6 +711,7 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
   }
   const threadChanged = !chat || previous?.thread !== chat.thread;
   if (threadChanged) {
+    openCodeTools.clear();
     historyCursor = null;
     readingExecutionRows.clear();
     clearHistoryRequest(); historyRendering = false; historyExpanded = false; historyArmed = false; historyAtEnd = false; chatUserScroll = false; bottomScrollIntent = null; bottomFollowPending = false; historyPagePending = null; layoutDirty = false; syncScrollFlush = false; pendingHistoryStatus = null;
@@ -714,7 +721,7 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
   if (chat && !historyExpanded && Number.isFinite(chat.historyBefore)) historyCursor = chat.historyBefore;
   if (chat?.earlier === true && (currentApp !== 'codex' || !historyExpanded)) historyAtEnd = false;
   const paged = currentApp === 'codex' && Number.isFinite(chat?.historyBefore) && !stale && !previousStale;
-  if (chat && previous?.thread === chat.thread && (historyExpanded || paged) && currentApp !== 'devin') {
+  if (chat && previous?.thread === chat.thread && (historyExpanded || paged) && currentApp !== 'devin' && !chat.windowed) {
     const updates = new Map(chat.items.map(it => [it.i, it]));
     const bodies = previous.items.flatMap(item => {
       if (updates.has(item.i)) return [currentApp === 'codex' ? scKeep(item, updates.get(item.i)) : updates.get(item.i)];
@@ -847,12 +854,12 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
       return hit.el;
     }
     const el = renderItem(it);
-    if (it.k === 'tool' && it.kind === 'command' && hit?.el.classList.contains('toolrow') && patchToolRow(hit.el, el)) {
+    if (it.k === 'tool' && (it.kind === 'command' || it.lazy && it.kind !== 'edit') && hit?.el.classList.contains('toolrow') && patchToolRow(hit.el, el)) {
       cache.set(it.i, { key, bodyKey, el: hit.el });
       return hit.el;
     }
     if (it.k === 'tool' && hit?.el.classList.contains('toolrow')) {
-      const open = hit.el.classList.contains('open');
+      const open = it.lazy ? openCodeTools.has(it.i) : hit.el.classList.contains('open');
       el.classList.toggle('open', open);
       const chev = el.querySelector('.chev');
       if (chev) chev.textContent = open ? '▾' : '▸';

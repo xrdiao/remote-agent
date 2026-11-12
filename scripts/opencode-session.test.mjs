@@ -61,7 +61,7 @@ test('cancelling a navigation releases its shared OpenCode initialization wait w
 
 function fixture(t) {
   uploads.clear();
-  for (const map of [openCode.sessions, openCode.messages, openCode.statuses, openCode.permissions, openCode.questions, openCode.models, openCode.selections,
+  for (const map of [openCode.sessions, openCode.messages, openCode.historyPages, openCode.statuses, openCode.permissions, openCode.questions, openCode.models, openCode.selections,
     openCode.automaticSessions, openCode.autoReplies, openCode.approvalErrors]) map.clear();
   openCode.listeners.clear();
   openCode.connected = true;
@@ -317,7 +317,7 @@ test('OpenCode history requests use the native opaque cursor rather than a DOM p
   await session.handle({ t: 'attach', id: 'opencode', threadId: 'ses_one' });
   await session.handle({ t: 'scrollChat', history: true, requestId: 'history-one' });
   assert.deepEqual(cursors, [undefined, 'opaque+/=']);
-  assert.deepEqual(events.find(row => row.t === 'historyPage').items.map(row => row.t), ['older', 'newer']);
+  assert.deepEqual(events.find(row => row.t === 'historyPage').items.map(row => row.t), ['older']);
   assert.equal(events.find(row => row.t === 'historyDone').earlier, false);
 });
 
@@ -460,4 +460,78 @@ test('a failed native OpenCode submission retains the prepared upload for retry'
   await assert.rejects(session.handle({ t: 'send', text: 'read', requestId: 'retry-file' }), /native submission failed/);
   assert.equal(uploads.get('retry').pending, true);
   assert.equal(session.openCodeSends.size, 0);
+});
+
+const pageRows = (from, to) => Array.from({ length: to - from }, (_, i) => {
+  const n = from + i, id = 'msg_' + String(n).padStart(3, '0');
+  return { info: { id, sessionID: 'ses_one', role: 'user', time: { created: n + 1 } },
+    parts: [{ id: 'part_' + n, type: 'text', text: String(n) }] };
+});
+test('OpenCode first view is 20 native messages, pages cached rows first, and reopening resets only the view', async t => {
+  const { session, events } = fixture(t);
+  openCode.sessions.set('ses_one', native('ses_one'));
+  const cursors = [];
+  t.mock.method(openCode.client, 'messages', async (_id, _directory, before) => {
+    cursors.push(before); return { rows: before ? pageRows(0, 20) : pageRows(20, 100), before: before ? null : 'older' };
+  });
+  await session.handle({ t: 'attach', id: 'opencode', threadId: 'ses_one' });
+  assert.deepEqual(events.findLast(row => row.t === 'chat').chat.items.map(row => row.t), Array.from({ length: 20 }, (_, n) => String(n + 80)));
+  assert.equal(openCode.messages.get('ses_one').size, 80);
+  for (let n = 0; n < 3; n++) await session.handle({ t: 'scrollChat', history: true, requestId: String(n) });
+  assert.deepEqual(cursors, [undefined]);
+  assert.equal(events.filter(row => row.t === 'historyPage').flatMap(row => row.items).length, 60);
+  await session.handle({ t: 'scrollChat', history: true, requestId: 'native' });
+  assert.deepEqual(cursors, [undefined, 'older']);
+  assert.equal(events.findLast(row => row.t === 'historyDone').earlier, false);
+  assert.equal(openCode.messages.get('ses_one').size, 100);
+  await session.handle({ t: 'refresh' });
+  assert.equal(events.findLast(row => row.t === 'chat').chat.items.length, 100);
+  await session.handle({ t: 'attach', id: 'opencode', threadId: 'ses_one' });
+  assert.equal(events.findLast(row => row.t === 'chat').chat.items.length, 20);
+  assert.equal(openCode.messages.get('ses_one').size, 100);
+  for (let n = 0; n < 4; n++) await session.handle({ t: 'scrollChat', history: true, requestId: 'reopen-' + n });
+  assert.deepEqual(cursors, [undefined, 'older', undefined, undefined]);
+  assert.equal(events.findLast(row => row.t === 'historyDone').earlier, false);
+});
+
+test('OpenCode tool detail belongs to the current view, follows native changes, and resumes after visibility changes', async t => {
+  const { session, events } = fixture(t);
+  for (const id of ['ses_one', 'ses_two']) openCode.sessions.set(id, native(id));
+  messageText('ses_one', 'answer');
+  const tool = output => ({ id: 'tool', messageID: 'msg_stream', sessionID: 'ses_one', type: 'tool', tool: 'bash',
+    state: { status: 'running', input: { command: 'echo test' }, output } });
+  openCode.apply({ type: 'message.part.updated', properties: { part: tool('first') } });
+  await session.handle({ t: 'attach', id: 'opencode', threadId: 'ses_one' });
+  const sel = session.selectionKey(), last = () => events.findLast(row => row.t === 'chat').chat.items.find(row => row.i === 'tool');
+  assert.equal(last().output, undefined);
+  await session.handle({ t: 'toolDetails', sel, i: 'tool', open: true });
+  assert.equal(last().output, 'first');
+  openCode.apply({ type: 'message.part.updated', properties: { part: tool('first\nsecond') } });
+  await tick(); assert.equal(last().output, 'first\nsecond');
+  await session.handle({ t: 'toolDetails', sel, i: 'tool', open: false });
+  assert.equal(last().output, undefined);
+  await session.handle({ t: 'toolDetails', sel, i: 'tool', open: true });
+  await session.handle({ t: 'visible', v: false });
+  assert.equal(session.openCodePages.get('ses_one').tools.size, 1);
+  await session.handle({ t: 'visible', v: true });
+  assert.equal(last().output, 'first\nsecond');
+  await session.handle({ t: 'attach', id: 'opencode', threadId: 'ses_two' });
+  assert.equal(session.openCodePages.get('ses_one').tools.size, 0);
+  const count = events.length;
+  await session.handle({ t: 'toolDetails', sel, i: 'tool', open: true });
+  assert.equal(events.length, count);
+});
+
+test('OpenCode navigation during a native history read cannot deliver old rows into another session', async t => {
+  const { session, events } = fixture(t);
+  for (const id of ['ses_one', 'ses_two']) openCode.sessions.set(id, native(id));
+  let resolve;
+  t.mock.method(openCode.client, 'messages', async (id, _directory, before) => before
+    ? new Promise(done => { resolve = done; }) : { rows: id === 'ses_one' ? pageRows(20, 21) : [], before: id === 'ses_one' ? 'older' : null });
+  await session.handle({ t: 'attach', id: 'opencode', threadId: 'ses_one' });
+  const pending = session.handle({ t: 'scrollChat', history: true, requestId: 'A' });
+  await session.handle({ t: 'attach', id: 'opencode', threadId: 'ses_two' });
+  resolve({ rows: pageRows(0, 20), before: null }); await pending;
+  assert.equal(events.some(row => row.t === 'historyPage' && row.requestId === 'A'), false);
+  assert.equal(events.findLast(row => row.t === 'chat').chat.thread, 'ses_two');
 });

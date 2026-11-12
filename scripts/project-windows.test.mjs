@@ -152,3 +152,57 @@ test('Fusion hides worker sessions while main sessions and shared windows remain
   assert.equal(excluded.sessions.has('cursor:main'), false); assert.equal(excluded.sessions.has('cursor:child'), true);
   assert.equal(excluded.windows.size, 0); assert.equal(h.calls.length, 0);
 });
+
+function codexOpening({ own = true, closed = false, prefer = false, host = '', cwd = '/native/project-B', error } = {}) {
+  const calls = [], pageId = own ? 'current' : 'other', pages = closed ? [] : [{ pageId: 'other', chatWs: 'other-view', ws: 'other-editor', rawTitle: 'Other' }];
+  const evaluate = async expression => {
+    assert(expression.endsWith(`.nativeSessionInfo('codex', "thread-B", 'context')`));
+    calls.push('native-context'); if (error) throw error; return { cwd, host, roots: [{ root: cwd, host }] };
+  };
+  const cdp = { evaluate }, scope = vm.createContext({
+    CODEX_CDP_URL: 'fixture', helpersCall: call => '.' + call,
+    codexWindows: async () => pages, editorRoots: async () => [{ root: '/native/project-B' }],
+    Cdp: class { async connect() { calls.push('connect-other'); } async evaluate(expression) { return evaluate(expression); } close() { calls.push('close-other'); } },
+  });
+  const text = fs.readFileSync(new URL('../server/apps/codex.mjs', import.meta.url), 'utf8');
+  vm.runInContext('globalThis.open = ({' + text.slice(text.indexOf('async openCodexAgent('), text.indexOf('async codexPageForThread(')) + '}).openCodexAgent;', scope);
+  const session = { codexPageId: 'current', cdp, editorCdp: cdp, codexRoots: new Map([['thread-B', '/stale/project-A']]),
+    useProject: (...args) => calls.push(['project', ...args]), projectMatches: (_roots, root, host) => root === '/native/project-B' && !host,
+    selectCodexThread: async id => { calls.push(['select', id]); return true; }, adoptCodexThread: async id => calls.push(['adopt', id]),
+    projectWindowState: async () => ({ busy: false }), checkProjectTrust: async () => false,
+    openBound: async (...args) => calls.push(['open-bound', ...args]), resumeProjectSwitch: async () => calls.push('resume'),
+  };
+  return { calls, run: () => scope.open.call(session, `thread:${pageId}:thread-B`, prefer) };
+}
+
+for (const mode of [{ own: true }, { own: false }, { own: false, closed: true }]) {
+  test(`Codex protocol-created thread reads its own native cwd ${JSON.stringify(mode)}`, async () => {
+    const h = codexOpening(mode); await h.run();
+    assert.deepEqual(h.calls.find(c => Array.isArray(c) && c[0] === 'project'), ['project', '/native/project-B', false, 'thread-B', '', mode.own ? 'current' : 'other']);
+    assert(h.calls.includes('native-context'));
+    assert.equal(h.calls.includes('close-other'), !mode.own && !mode.closed);
+  });
+}
+
+test('Codex current-project optimization uses the selected native thread rather than stale cached roots', async () => {
+  const h = codexOpening({ prefer: true }); await h.run();
+  assert(h.calls.some(c => Array.isArray(c) && c[0] === 'select' && c[1] === 'thread-B'));
+  assert(!h.calls.some(c => Array.isArray(c) && c[0] === 'project'));
+});
+
+test('Codex remote native context stays in its own carrier', async () => {
+  const h = codexOpening({ own: false, host: 'remote-host', cwd: '/remote/project' }); await h.run();
+  assert(h.calls.some(c => Array.isArray(c) && c[0] === 'open-bound' && c[1].ws === 'other-editor'));
+  assert(!h.calls.some(c => Array.isArray(c) && c[0] === 'project'));
+});
+
+test('Codex unknown native cwd cannot borrow the cached project root', async () => {
+  const h = codexOpening({ cwd: '' }); await assert.rejects(h.run(), /无法确认会话所属项目/);
+  assert(!h.calls.some(c => Array.isArray(c) && c[0] === 'project'));
+});
+
+test('Codex native context failure closes the borrowed connection without guessing a project', async () => {
+  const h = codexOpening({ own: false, error: Error('thread missing') }); await assert.rejects(h.run(), /thread missing/);
+  assert(h.calls.includes('close-other'));
+  assert(!h.calls.some(c => Array.isArray(c) && c[0] === 'project'));
+});

@@ -10,9 +10,13 @@ import { resetThinkingCaches } from '../agent/thinking-cache.mjs';
 import { computerId, saveState } from '../../lib/auth.mjs';
 import { conversationProjects, fusionProject } from '../fusion/state.mjs';
 import { removeLibrarySession, publishSessionChange, rememberSessionMessage } from '../../lib/session-library.mjs';
-import { storedProjectSession } from '../project-windows.mjs';
 import { NativeCdp, nativeWindowAt } from '../native-windows.mjs';
 import { currentOperation } from '../operations.mjs';
+
+function serializedCodexPrompt(cdp, thread) {
+  const call = `nativeSessionInfo('codex', ${JSON.stringify(thread)}, 'draft')`;
+  return cdp.nativeWindow ? cdp.nativeWindow.composerCall(call) : cdp.evaluate(helpersCall(call));
+}
 
 // Native support; availability still follows the selected thread, model and controls.
 export const capabilities = {
@@ -148,15 +152,16 @@ export const adapter = {
       return null;
     };
     if (!await wait(`queueEditing() === ${JSON.stringify(String(id))}`)) throw new Error('Codex 没有进入对应队列消息的编辑状态');
-    const before = await this.cdp.evaluate(helpersCall('codexQueued(false, null, []).map(item => item.id)'));
+    const before = await this.cdp.evaluate(helpersCall('codexSendState()'));
     await this.codexFocusPrompt();
     await this.cdp.evaluate(helpersCall('codexSelectPrompt()'));
     await this.cdp.send('Input.insertText', { text });
+    const expected = (await serializedCodexPrompt(this.cdp, before.thread)).trim();
     if (!await this.cdp.evaluate(helpersCall('submitCodexMessage("queue")'))) throw new Error('Codex 保存排队消息的按钮不可用');
-    const result = await wait(`codexQueued(true, null, ${JSON.stringify(before)}).find(item => item.t.trim() === ${JSON.stringify(text.trim())})`);
+    const result = await this.cdp.evaluate(helpersCall(`waitCodexReceipt(${JSON.stringify(before)}, ${JSON.stringify(expected)}, ${JSON.stringify(text.trim())}, false)`), { timeout: 6000 });
     if (!result) throw new Error('Codex 尚未确认排队消息已保存，请核对队列后重试');
     this.pollChat(true).catch(() => {});
-    return { queueId: result.id, messageId: result.messageId };
+    return result;
   },
 
   async changeAction(i, name, act) {
@@ -215,7 +220,7 @@ export const adapter = {
     const before = await this.cdp.evaluate(helpersCall('codexSendState(true)'));
     const hasAttachments = hasLocalFiles || before.hasDraftAttachments;
     if (before.payload == null) throw new Error('Codex 输入尚未就绪');
-    const expected = before.payload.trim();
+    const expected = (await serializedCodexPrompt(this.cdp, before.thread)).trim();
     this.lastDraft = before.draft;
     queued = !!busy && (when === 'queue' || (!when && before.follow === 'queue'));
     const action = when === 'now' ? 'steer' : when === 'queue' ? 'queue' : '';
@@ -224,7 +229,7 @@ export const adapter = {
       let unregister;
       if (receipt) {
         if (operation) operation.pending = true;
-        const request = { ...receipt, thread: before.thread, expected,
+        const request = { ...receipt, thread: before.thread, expected, queueExpected: before.payload.trim(),
           action: queued ? 'queue' : busy ? 'steer' : 'send', afterTurn: before.lastTurn,
           beforeTurns: new Set(before.runs.map(row => row.id)),
           hasAttachments: !!hasAttachments,
@@ -261,7 +266,7 @@ export const adapter = {
     const receiptThread = this.threadId, receiptCdp = this.cdp, receiptScope = this.selectionKey();
     if (!await this.cdp.evaluate(helpersCall(`submitCodexMessage(${JSON.stringify(action)})`))) throw new Error('Codex 提交入口当前不可用');
     const baseline = { thread: before.thread, messages: before.messages.map(({ id }) => ({ id })), queued: before.queued.map(({ id }) => ({ id })) };
-    const accepted = await this.cdp.evaluate(helpersCall(`waitCodexReceipt(${JSON.stringify(baseline)}, ${JSON.stringify(expected)}, ${!!hasAttachments})`), { timeout: 6000 }).catch(error => {
+    const accepted = await this.cdp.evaluate(helpersCall(`waitCodexReceipt(${JSON.stringify(baseline)}, ${JSON.stringify(expected)}, ${JSON.stringify(before.payload.trim())}, ${!!hasAttachments})`), { timeout: 6000 }).catch(error => {
       cdpRead.getStore()?.throwIfAborted();
       return null;
     });
@@ -514,30 +519,23 @@ async openCodexAgent(id, preferCurrentProject = false) {
   if (!match) throw new Error('这条会话已经不在列表里');
   const convId = match[2];
   const own = match[1] === this.codexPageId;
-  let row;
-  if (preferCurrentProject) row = (await this.cdp.evaluate(helpersCall('codexChatRows(true)')) || []).find(r => r.id === convId);
-  if (!row) {
-    const page = own ? null : (await codexWindows(CODEX_CDP_URL, false, match[1]))[0];
-    const source = own ? this.cdp : page?.chatWs ? new Cdp(page.chatWs) : null;
-    try {
-      if (source) {
-        if (!own) await source.connect();
-        row = (await source.evaluate(helpersCall('codexChatRows(true)')) || []).find(r => r.id === convId);
-      }
-    } finally { if (!own) source?.close(); }
-  }
-  const workspace = row?.workspace || this.codexRoots?.get(convId)
-    || conversationProjects[JSON.stringify([computerId(), 'codex', '', convId])]?.project?.root
-    || storedProjectSession('codex', id)?.workspace;
-  if (preferCurrentProject && workspace && this.projectMatches(await editorRoots(this.editorCdp, 'codex'), workspace, row?.host || '')) {
+  const page = own ? null : (await codexWindows(CODEX_CDP_URL, false, match[1]))[0];
+  const source = page?.chatWs ? new Cdp(page.chatWs) : this.cdp;
+  let context;
+  try {
+    if (source !== this.cdp) await source.connect();
+    context = await source.evaluate(helpersCall(`nativeSessionInfo('codex', ${JSON.stringify(convId)}, 'context')`));
+  } finally { if (source !== this.cdp) source.close(); }
+  const workspace = context?.cwd, host = context?.host || '';
+  if (preferCurrentProject && workspace && this.projectMatches(await editorRoots(this.editorCdp, 'codex'), workspace, host)) {
     if (!await this.selectCodexThread(convId)) throw new Error('没有找到所选会话');
     await this.adoptCodexThread(convId, '已切换会话');
     return;
   }
-  if (workspace && !row?.host) {
+  if (workspace && !host) {
     return this.useProject(workspace, false, convId, '', match[1]);
   }
-  if (row?.host) {
+  if (host) {
     const page = (await codexWindows(CODEX_CDP_URL, false, match[1]))[0];
     if (!page) throw new Error('所选会话窗口已经关闭');
     const state = await this.projectWindowState({ ...page, id: page.pageId });

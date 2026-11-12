@@ -10,6 +10,7 @@ export class OpenCodeState {
     this.saveApprovals = saveApprovals;
     this.sessions = new Map();
     this.messages = new Map();
+    this.historyPages = new Map();
     this.statuses = new Map();
     this.permissions = new Map();
     this.automaticSessions = new Set(automaticSessions);
@@ -147,7 +148,7 @@ export class OpenCodeState {
         else { this.sessions.delete(p.info.id); this.forgetAutomatic(p.info.id); }
         break;
       case 'session.deleted':
-        this.sessions.delete(p.info.id); this.messages.delete(p.info.id); this.selections.delete(p.info.id);
+        this.sessions.delete(p.info.id); this.messages.delete(p.info.id); this.historyPages.delete(p.info.id); this.selections.delete(p.info.id);
         this.forgetAutomatic(p.info.id);
         break;
       case 'session.status': this.statuses.set(p.sessionID, p.status); break;
@@ -159,16 +160,23 @@ export class OpenCodeState {
       }
       case 'message.part.updated': {
         const message = this.message(p.part.sessionID, p.part.messageID);
-        message.parts.set(p.part.id, { ...p.part, revision: this.revision });
+        this.outputPart(message, { ...p.part, revision: this.revision });
         break;
       }
       case 'message.part.delta': {
-        const part = this.message(p.sessionID, p.messageID).parts.get(p.partID);
-        if (part) { part[p.field] = (part[p.field] || '') + p.delta; part.revision = this.revision; }
+        const message = this.message(p.sessionID, p.messageID), part = message.parts.get(p.partID);
+        if (part) this.outputPart(message, { ...part, [p.field]: (part[p.field] || '') + p.delta, revision: this.revision },
+          p.field === 'text' && !part.synthetic && ['text', 'reasoning'].includes(part.type)
+            ? (part.outputChars ?? Array.from(part.text || '').length) + Array.from(p.delta).length : undefined);
         break;
       }
       case 'message.removed': this.messages.get(p.sessionID)?.delete(p.messageID); break;
-      case 'message.part.removed': this.messages.get(p.sessionID)?.get(p.messageID)?.parts.delete(p.partID); break;
+      case 'message.part.removed': {
+        const message = this.messages.get(p.sessionID)?.get(p.messageID);
+        if (message?.outputSample) message.outputSample.chars -= message.parts.get(p.partID)?.outputChars || 0;
+        message?.parts.delete(p.partID);
+        break;
+      }
       case 'permission.asked': this.permissions.set(p.id, p); this.approveAutomatically(p.id); break;
       case 'permission.replied': this.permissions.delete(p.requestID); this.approvalErrors.delete(p.requestID); break;
       case 'question.asked': this.questions.set(p.id, p); break;
@@ -188,6 +196,23 @@ export class OpenCodeState {
     return messages.get(messageID);
   }
 
+  outputPart(message, part, chars, live = true) {
+    const previous = message.parts.get(part.id);
+    const output = value => value && !value.synthetic && ['text', 'reasoning'].includes(value.type)
+      ? Array.from(value.text || '').length : 0;
+    part.outputChars = chars ?? output(part);
+    const difference = part.outputChars - (previous?.outputChars ?? output(previous));
+    if (message.info.role === 'assistant' && !message.info.time?.completed && difference && (live || message.outputSample)) {
+      const now = Date.now();
+      const sample = message.outputSample ||= { chars: [...message.parts.values()].reduce((n, p) => n + (p.outputChars ?? output(p)), 0),
+        baseline: null, startedAt: null, updatedAt: null };
+      sample.chars += difference;
+      if (sample.startedAt === null) { sample.startedAt = now; sample.baseline = sample.chars; }
+      sample.updatedAt = now;
+    }
+    message.parts.set(part.id, part);
+  }
+
   async loadMessages(id, before, signal = cdpRead.getStore()) {
     const revision = this.revision;
     const page = await this.client.messages(id, this.sessions.get(id).directory, before, signal);
@@ -195,8 +220,13 @@ export class OpenCodeState {
       const message = this.message(id, row.info.id);
       if (message.revision <= revision) message.info = row.info;
       for (const part of row.parts)
-        if ((message.parts.get(part.id)?.revision || 0) <= revision) message.parts.set(part.id, { ...part, revision });
+        if ((message.parts.get(part.id)?.revision || 0) <= revision) this.outputPart(message, { ...part, revision }, undefined, false);
     }
+    const first = page.rows.map(row => row.info).sort((a, b) => (a.time?.created || 0) - (b.time?.created || 0) || a.id.localeCompare(b.id))[0];
+    const previous = this.historyPages.get(id);
+    if (!previous?.first || first && ((first.time?.created || 0) < (previous.first.time?.created || 0)
+      || (first.time?.created || 0) === (previous.first.time?.created || 0) && first.id.localeCompare(previous.first.id) < 0)
+      || before && before === previous.before) this.historyPages.set(id, { first: first || previous?.first, before: page.before });
     return page;
   }
 
@@ -229,37 +259,44 @@ export class OpenCodeState {
       updated: call?.time.completed || null };
   }
 
-  chat(id) {
+  messageRows(id) {
+    return [...this.messages.get(id)?.values() || []].sort((a, b) => (a.info.time?.created || 0) - (b.info.time?.created || 0) || a.info.id.localeCompare(b.info.id));
+  }
+
+  chat(id, { rows, tools } = {}) {
     const session = this.sessions.get(id), items = [];
-    const messages = [...this.messages.get(id)?.values() || []].sort((a, b) => (a.info.time?.created || 0) - (b.info.time?.created || 0) || a.info.id.localeCompare(b.info.id));
-    for (const { info, parts } of messages) {
+    const messages = this.messageRows(id);
+    for (const { info, parts } of rows || messages) {
       const start = items.length;
       const partsArr = [...parts.values()];
       const compaction = partsArr.find(p => p.type === 'compaction');
       const label = compaction ? (compaction.auto ? '已完成自动压缩上下文' : '已完成压缩上下文') : '';
       if (info.role === 'user') {
-        const t = partsArr.filter(p => p.type === 'text' && !p.synthetic).map(p => p.text).join('\n');
+        const files = partsArr.filter(p => p.type === 'file');
+        const images = files.filter(p => p.mime.startsWith('image/')).map(p => p.url);
+        const t = [...partsArr.filter(p => p.type === 'text' && !p.synthetic).map(p => p.text),
+          ...files.filter(p => !p.mime.startsWith('image/')).map(p => '[附件：' + p.filename + ']')].join('\n');
         if (compaction && !t.trim()) {
           items.push({ i: info.id, k: 'notice', kind: 'compaction', t: label, order: info.time.created });
-        } else {
-          items.push({ i: info.id, k: 'human', t, sentAt: info.time.created, order: info.time.created });
+        } else if (t.trim() || images.length) {
+          items.push({ i: info.id, k: 'human', t, ...(images.length ? { images } : {}), sentAt: info.time.created, order: info.time.created });
         }
         continue;
       }
       const hasContent = partsArr.some(p =>
         (p.type === 'text' && !p.synthetic && (p.text || '').trim()) ||
-        p.type === 'reasoning' || p.type === 'tool');
+        (p.type === 'reasoning' && p.text?.trim()) || p.type === 'tool');
       if (compaction && !hasContent) {
         items.push({ i: info.id, k: 'notice', kind: 'compaction', t: label, order: info.time?.created || 0 });
         continue;
       }
       for (const part of partsArr) {
         if (part.type === 'text') {
-          if (compaction && !part.text?.trim()) continue;
+          if (part.synthetic || !part.text?.trim()) continue;
           items.push({ i: part.id, k: 'assistant', t: part.text || '' });
         }
-        if (part.type === 'reasoning') items.push({ i: part.id, k: 'thinking', t: '思考\n' + (part.text || ''), live: !info.time?.completed });
-        if (part.type === 'tool') items.push(toolItem(part));
+        if (part.type === 'reasoning' && part.text?.trim()) items.push({ i: part.id, k: 'thinking', t: '思考\n' + (part.text || ''), live: !info.time?.completed });
+        if (part.type === 'tool') items.push(toolItem(part, !tools || tools.has(part.id)));
       }
       if (info.error) items.push({ i: info.id + ':error', k: 'notice', t: info.error.data?.message || info.error.name });
       for (let i = start; i < items.length; i++) items[i].order = info.time?.created || 0;
@@ -272,9 +309,21 @@ export class OpenCodeState {
     for (const q of questions) items.push({ i: 'question:' + q.id, k: 'opencodeQuestion', requestID: q.id, questions: q.questions, keep: true });
     const selected = this.selection(id), model = this.models.get(selected.key), status = this.statuses.get(id);
     if (status?.error) items.push({ i: id + ':status', k: 'notice', t: status.error });
-    return { thread: id, title: session?.title || '', items, busy: !!status && status.type !== 'idle',
+    const context = this.context(id), latest = messages.findLast(row => row.info.role === 'assistant');
+    const busy = !!status && status.type !== 'idle', live = busy && latest && !latest.info.time?.completed;
+    const call = live ? latest.info : context.updated && messages.find(row => row.info.time?.completed === context.updated)?.info;
+    const tokens = call?.tokens;
+    const sample = live && latest.outputSample;
+    const elapsed = sample ? sample.updatedAt - sample.startedAt : 0;
+    const performance = call ? { source: 'opencode', runId: call.id, busy: !!live,
+      model: this.models.get(`${call.providerID}/${call.modelID}`)?.name || `${call.providerID}/${call.modelID}`,
+      unit: live ? 'characters' : 'tokens', rate: live ? elapsed > 0 ? Math.max(0, sample.chars - sample.baseline) / (elapsed / 1000) : null : context.speedTokS,
+      durationMs: live ? sample ? elapsed : null : context.durationMs,
+      tokens: live ? null : { input: tokens.input, output: tokens.output, reasoning: tokens.reasoning, cacheRead: tokens.cache.read, cacheWrite: tokens.cache.write },
+      cacheRate: live ? null : context.cacheRate } : null;
+    return { thread: id, title: session?.title || '', items, busy,
       model: model?.name || selected.key || '', effort: selected.variant || '默认（服务端）',
-      permission: this.approvalMode(id), context: this.context(id),
+      permission: this.approvalMode(id), context, performance,
       global: [], questions: null, queued: [], subagents: [], changed: session?.summary?.files || 0,
       waiting: questions.length ? 'question' : permissions.length ? 'approval' : '',
       waitingText: questions[0]?.questions[0]?.question || permissions[0]?.patterns.join(' · ') || '',
@@ -287,7 +336,10 @@ export class OpenCodeState {
       const root = session.directory, projectId = JSON.stringify(['opencode', '', root]);
       const project = path.basename(root) || root;
       windows.set(root, { projectId, win: 'opencode', windowId: root, app: 'opencode', workspace: root, host: '', project });
-      const chat = this.chat(session.id);
+      const rows = this.messageRows(session.id);
+      const lastReply = rows.findLast(row => row.info.role === 'assistant'
+        && [...row.parts.values()].some(part => part.type === 'text' && !part.synthetic && part.text?.trim()));
+      const chat = this.chat(session.id, { rows: lastReply ? [lastReply] : [], tools: new Set() });
       const last = chat.items.findLast(row => row.k === 'assistant')?.t || '';
       sessions.push({ ...windows.get(root), threadId: session.id, title: session.title,
         busy: chat.busy, waiting: chat.waiting, waitingText: chat.waitingText, last,
@@ -298,15 +350,17 @@ export class OpenCodeState {
   }
 }
 
-function toolItem(part) {
+function toolItem(part, details = true) {
   const state = part.state, input = state.input || {}, meta = state.metadata || {};
   const kind = { read: 'read', grep: 'search', glob: 'explore', list: 'explore', bash: 'command', edit: 'edit', write: 'edit', apply_patch: 'edit' }[part.tool] || 'other';
-  const diff = (meta.diff || '').split('\n').filter(line => /^[ +\-]/.test(line) && !/^(---|\+\+\+)/.test(line)).map(line => [line[0], line.slice(1)]);
+  const changes = (meta.diff || '').match(/^(?!\+\+\+|---)[+\-]/gm) || [];
+  const diff = details ? (meta.diff || '').split('\n').filter(line => /^[ +\-]/.test(line) && !/^(---|\+\+\+)/.test(line)).map(line => [line[0], line.slice(1)]) : [];
   const f = input.filePath || meta.filepath || '';
   return { i: part.id, k: 'tool', src: 'opencode', kind,
     t: (state.status === 'error' ? '错误：' : '') + part.tool + ' ' + (state.title || input.pattern || f),
-    f, chips: f ? [f] : [], cmd: input.command || '', output: state.error || state.output || '',
-    diff, add: diff.filter(row => row[0] === '+').length, del: diff.filter(row => row[0] === '-').length,
+    f, chips: f ? [f] : [], lazy: true, details,
+    ...(details ? { cmd: input.command || '', output: state.error || state.output || '', diff } : {}),
+    add: changes.filter(sign => sign === '+').length, del: changes.filter(sign => sign === '-').length,
     status: state.status, done: kind !== 'edit' && ['completed', 'error'].includes(state.status), keep: state.status === 'error' };
 }
 

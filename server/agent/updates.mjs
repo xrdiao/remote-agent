@@ -72,8 +72,11 @@ export async function watchChat(cdp, changed, shared = false, context = null) {
       } else if (window.vscode?.context?.configuration?.().product?.applicationName === 'devin-desktop') {
         native = { stop: window.__acpStore.subscribe(changed), refresh() {} };
       } else native = (${PAGE_SRC}).watchCodexData(changed);
-      if (context) { changed(); return; }
+      if (context && context.app !== 'codex') { changed(); return; }
       observer = new MutationObserver(records => {
+        const dialog = node => node.nodeType === 1 && (node.matches('[role=dialog]') || node.closest('[role=dialog]') || node.querySelector('[role=dialog]'));
+        if ((${shared} || context?.app === 'codex') && records.some(record => dialog(record.target) || [...record.addedNodes, ...record.removedNodes].some(dialog))) changed();
+        if (context) return;
         if (records.some(record => inTranscript(record.target) || capacityRetry(record.target)
           || [...record.addedNodes, ...record.removedNodes].some(node => inTranscript(node, true) || capacityRetry(node)))) changed();
       });

@@ -376,6 +376,32 @@ test('native effort IDs match their displayed casing without losing non-Latin la
   assert.deepEqual(Array.from(context.result, row => row.label), ['Low', 'High', '深度']);
 });
 
+test('Codex unified reasoning trigger supplies models, effort and service tier through the same native picker', () => {
+  const calls = [], queries = [];
+  const efforts = ['low', 'high'].map(reasoningEffort => ({ reasoningEffort }));
+  const picker = { model: 'model-a', reasoningEffort: 'high', selectionMode: 'model',
+    modelOptions: ['model-a', 'model-b'].map(id => ({ model: { id, displayName: id, supportedReasoningEfforts: efforts, defaultReasoningEffort: 'low' } })),
+    onSelectModelOption() {}, onSelectComplete() {},
+    onSelectModel(model, effort) { calls.push(['model', model, effort]); this.model = model; this.reasoningEffort = effort; },
+    serviceTierOptions: [{ value: null }, { value: 'priority', iconKind: 'fast' }], selectedServiceTier: null,
+    onSelectServiceTier(value) { calls.push(['tier', value]); this.selectedServiceTier = value; },
+  };
+  const button = fiber(nativeNode({ 'data-composer-navigation-target': 'reasoning' }), [picker]);
+  const doc = { getElementById: () => null, querySelector: () => null, querySelectorAll: selector => {
+    queries.push(selector); return selector === '[data-composer-navigation-target="reasoning"]' ? [button] : [];
+  } };
+  const page = nativePage(doc);
+  assert.deepEqual(Array.from(page.modelItemsFast(), row => row.id), ['model-a', 'model-b']);
+  assert.equal(page.agentModelName(), 'model a · High');
+  assert.equal(page.control('model').x, 20);
+  assert.equal(page.pickCodexModel('model-b'), true);
+  assert.equal(page.pickEffort('low'), true);
+  assert.equal(page.pickFast(true), true); assert.equal(page.fastInfo().on, true);
+  assert.equal(page.pickFast(false), true); assert.equal(page.fastInfo().on, false);
+  assert.deepEqual(calls, [['model', 'model-b', 'high'], ['model', 'model-b', 'low'], ['tier', 'priority'], ['tier', null]]);
+  assert(!queries.includes('[data-codex-intelligence-trigger]'));
+});
+
 for (const supported of [false, true]) {
   test(`Codex includes hidden Max only when its native model capability supports it: ${supported}`, () => {
     const efforts = ['low', 'medium', 'high'].map(reasoningEffort => ({ reasoningEffort }));
@@ -385,7 +411,7 @@ for (const supported of [false, true]) {
     const client = { getQueryData: () => [], getQueryCache: () => ({ getAll: () => [{ queryKey: ['models', '', 'local'], state: { data: { data: [model] } } }] }) };
     const root = fiber(nativeNode(), [{ value: client }]);
     const doc = { getElementById: () => null, querySelector: () => null,
-      querySelectorAll: selector => selector === '[data-codex-intelligence-trigger]' ? [button] : selector.includes('[data-composer-body]') ? [root] : [] };
+      querySelectorAll: selector => selector === '[data-composer-navigation-target="reasoning"]' ? [button] : selector.includes('[data-composer-body]') ? [root] : [] };
     const page = nativePage(doc);
     assert.deepEqual(Array.from(page.effortItems(false, true), row => row.label), [...efforts.map(row => row.reasoningEffort), ...(supported ? ['max'] : [])]);
   });
@@ -865,9 +891,10 @@ function cursorBodyFixture() {
       return new Map(ids.map(key => [key, data.get(id).stored.get(key)]));
     },
   } };
-  const context = vm.createContext({ cursorSessionServices: () => ({ data: service }), esc: value => value.replace(/</g, '&lt;') });
+  const context = vm.createContext({ cursorSessionServices: () => ({ data: service }), agentRun: () => null, esc: value => value.replace(/</g, '&lt;') });
   const source = read('server/page/chat-extract.js');
   vm.runInContext(part(read('server/page/session-actions.js'), '  const cursorMessages =', '  const nativeSessionPreview =')
+    + part(source, '  const nativePerformance =', '  const cursorCurrentChat =')
     + part(source, '  const nativeMarkdownItem =', '  const nativeConversationChat =')
     + part(source, '  const cursorCurrentChat =', '  const extract =') + '\nthis.update = cursorCurrentChat;', context);
   return { reads, update: (chat, limit = 80) => context.update(chat, limit),
@@ -2353,7 +2380,8 @@ function usageMeters() {
       querySelector: () => ({}), querySelectorAll: () => [], insertAdjacentHTML(_where, html) { this.innerHTML += html; } });
     return nodes.get(id);
   };
-  const context = vm.createContext({ document, Event, $: node, currentComputer: () => computer,
+  let clock = 0;
+  const context = vm.createContext({ document, Event, $: node, currentComputer: () => computer, lastChat: null, performance: { now: () => clock },
     currentApp: 'codex', viewSel: 'codex|window-A|thread-A', esc: String, ready: true, status() {} });
   context.ovComposerReady = key => context.ready && key === 'card';
   const source = read('app/js/sheets.js');
@@ -2361,7 +2389,7 @@ function usageMeters() {
     + part(source, 'function meterFill(', '// Phones show the value text')
     + part(source, 'const quotaCache = new Map();', 'function showUsageDetails(')
     + part(read('app/js/overview.js'), 'function ovUsageHtml(', 'function ovUpdateUsage('), context);
-  return { context, computer, nodes, node,
+  return { context, computer, nodes, node, at: ms => { clock = ms; },
     data: () => JSON.parse(JSON.stringify(context.currentUsageMeters())), html: () => context.ovUsageHtml('card') };
 }
 
@@ -2406,6 +2434,86 @@ test('OpenCode context preserves native token details and distinguishes unknown 
   assert.match(sheet, /Bonsai/);
   h.node('refreshUsage').onclick();
   assert.equal(message.t, 'usage');
+});
+
+function nativePerformanceFixture(requests = {}) {
+  const context = vm.createContext({ window: { __acpStore: { getState: () => ({ acp: { agentRequests: { byId: requests } } }) } } });
+  vm.runInContext(part(read('server/page/chat-extract.js'), '  const nativePerformance =', '  const cursorCurrentChat =')
+    + '\nthis.read=nativePerformance;', context);
+  return (...args) => JSON.parse(JSON.stringify(context.read(...args)));
+}
+
+test('native performance uses output counters and keeps Codex reasoning inside its native output total', () => {
+  const take = nativePerformanceFixture(), run = { id: 'run', status: 'running', startedAt: 1000, completedAt: 0 };
+  const codex = take('codex', 'thread', run, 'model', { latestTokenUsageInfo: {
+    total: { outputTokens: 10000 }, last: { inputTokens: 9000, outputTokens: 500, reasoningOutputTokens: 200, cachedInputTokens: 8000, cacheWriteInputTokens: 0 },
+  } });
+  assert.equal(codex.counter, 10000); assert.equal(codex.tokens.output, 500); assert.equal(codex.tokens.reasoning, 200);
+  assert.equal(codex.rate, null); assert.equal(codex.durationMs, null);
+  const data = { fullConversationHeadersOnly: [{ bubbleId: 'last' }], conversationMap: { last: { startedAtMs: 2000, turnDurationMs: 3000 } },
+    turnTokenUsage: { inputTokens: 8000, outputTokens: 400, cacheReadTokens: 7000, cacheWriteTokens: 0 } };
+  const cursor = take('cursor', 'thread', { ...run, status: 'completed' }, 'actual', data);
+  assert.equal(cursor.counter, 400); assert.equal(cursor.durationMs, 4000); assert.equal(cursor.rate, 100);
+  assert.equal(cursor.model, 'actual');
+  assert.equal(take('cursor', 'thread', run, 'actual', { ...data, turnTokenUsage: undefined }).counter, null);
+});
+
+test('Devin metrics and elapsed time share the native turn identity independently of client request IDs', () => {
+  const take = nativePerformanceFixture(), run = { id: 'client-request', status: 'completed', startedAt: 500, completedAt: 8000 };
+  const data = { currentTurnId: 'turn', messages: [
+    { kind: 'user_message', content: [{ _meta: { 'cognition.ai/clientMessageId': 'turn', 'cognition.ai/timestamp': '1970-01-01T00:00:01.000Z' } }] },
+    { kind: 'agent_message', turnId: 'old', content: [{ _meta: { 'cognition.ai/timestamp': '1970-01-01T00:00:20.000Z' } }] },
+    { kind: 'agent_message', turnId: 'turn', content: [{ _meta: { 'cognition.ai/timestamp': '1970-01-01T00:00:05.000Z' } }] },
+  ], turnStats: { turn: { requestId: 'server-request', cause: 'complete', responseDimensions: [
+    { uid: 'model', kind: { value: 'Actual SWE' } }, { uid: 'input_tokens', kind: { value: 8000 } },
+    { uid: 'output_tokens', kind: { value: 200 } }, { uid: 'cached_input_tokens', kind: { value: 6000 } },
+  ] } } };
+  const perf = take('devin', 'thread', run, 'selected', data);
+  assert.equal(perf.runId, 'turn'); assert.equal(perf.counter, 200); assert.equal(perf.rate, 50);
+  assert.equal(perf.durationMs, 4000);
+  assert.equal(perf.tokens.cacheRead, 6000); assert.equal(perf.model, 'Actual SWE');
+  data.currentTurnId = 'next-turn';
+  const next = take('devin', 'thread', { ...run, status: 'running' }, 'selected', data);
+  assert.equal(next.counter, null); assert.equal(next.rate, null); assert.equal(next.runId, 'next-turn');
+});
+
+test('performance interval rates ignore repeated snapshots and isolate counters by computer, conversation, run and model', () => {
+  const h = usageMeters(), info = { source: 'codex', runId: 'run-1', usageId: 'run-1', model: 'model-1', unit: 'tokens',
+    busy: true, tokens: { input: 90000, output: 100, reasoning: 40, cacheRead: 80000 }, counter: 1000, rate: null };
+  const paint = perf => { h.context.lastChat = { performance: perf }; h.context.renderContext({ pct: 40, basis: 'used' }); };
+  paint(info);
+  assert.equal(h.node('perfChip').textContent, '统计中');
+  h.at(1000); paint(info); h.at(2000); paint({ ...info, counter: 1100 });
+  assert.equal(h.node('perfChip').textContent, '50 tok/s'); assert.equal(h.node('perfChip').title, '区间平均');
+  assert.match(h.node('perfPanel').innerHTML, /统计区间/); assert.match(h.node('perfPanel').innerHTML, /输出 token/);
+  h.at(3000); paint({ ...info, counter: 1100 });
+  assert.equal(h.node('perfChip').textContent, '50 tok/s');
+  h.at(4000); paint({ ...info, counter: 1200 }); assert.equal(h.node('perfChip').textContent, '50 tok/s');
+  h.at(5000); paint({ ...info, counter: 10 }); assert.equal(h.node('perfChip').textContent, '统计中');
+  h.at(6000); paint({ ...info, counter: 20 }); assert.equal(h.node('perfChip').textContent, '10 tok/s');
+  paint({ ...info, counter: null }); assert.equal(h.node('perfChip').textContent, '统计中');
+  h.at(7000); paint({ ...info, counter: 20 }); assert.equal(h.node('perfChip').textContent, '统计中');
+  for (const change of [() => { h.computer.id = 'computer-B'; }, () => { h.context.viewSel = 'codex|window-A|thread-B'; }]) {
+    change(); paint({ ...info, counter: 30 }); assert.equal(h.node('perfChip').textContent, '统计中');
+  }
+  paint({ ...info, runId: 'run-2', counter: 40 }); assert.equal(h.node('perfChip').textContent, '统计中');
+  paint({ ...info, runId: 'run-2', model: 'model-2', counter: 50 }); assert.equal(h.node('perfChip').textContent, '统计中');
+  paint(null); assert.equal(h.node('perfChip').hidden, true); assert.equal(h.node('perfPanel').hidden, true);
+});
+
+test('performance distinguishes live characters, completed native tokens and turn averages without changing context meters', () => {
+  const h = usageMeters(), paint = performance => {
+    h.context.lastChat = { performance }; h.context.renderContext({ source: 'opencode', pct: 12, used: 120, limit: 1000 });
+  };
+  const live = { source: 'opencode', runId: 'message', busy: true, unit: 'characters', rate: null, model: 'Bonsai', durationMs: null, tokens: null };
+  paint(live); assert.equal(h.node('perfChip').hidden, false); assert.equal(h.node('perfChip').textContent, '统计中');
+  paint({ ...live, rate: 25, durationMs: 2000 });
+  assert.equal(h.node('perfChip').textContent, '25 字符/秒'); assert.equal(h.node('perfChip').title, '实时字符速度');
+  paint({ ...live, unit: 'tokens', busy: false, rate: 40, durationMs: 6000, tokens: { input: 50, output: 240, reasoning: 0, cacheRead: 0, cacheWrite: 0 } });
+  assert.equal(h.node('perfChip').textContent, '40 tok/s'); assert.equal(h.node('perfChip').title, '本次平均');
+  assert.equal(h.node('meterCtxPct').textContent, '已用12%');
+  paint({ source: 'cursor', runId: 'turn', unit: 'tokens', busy: false, rate: 60, durationMs: 1000, tokens: { output: 60 } });
+  assert.equal(h.node('perfChip').title, '轮次平均');
 });
 
 test('unbound and missing card metrics remain unknown rather than becoming zero', () => {
@@ -3855,3 +3963,133 @@ test('viewport resource hashes distinguish loaded CSS from own cache entries and
   assert(matches.every(([url, name]) => !url.includes('PRIVATE') && name.endsWith(':v402')));
   assert(!JSON.stringify(data).includes('PRIVATE')); assert.equal(h.writes.length, 0);
 });
+
+test('Cursor native image attachments survive virtualized and image-only messages', async () => {
+  const h = cursorBodyFixture(), image = '/home/user/Cursor/images/icon.png';
+  h.load('A', [{ bubbleId: 'image-only', type: 1, text: '', context: { selectedImages: [{ path: image }] } },
+    { bubbleId: 'with-text', type: 1, text: '看图片', context: { selectedImages: [{ path: image }] } }]);
+  const next = await h.update({ thread: 'A', model: 'model', items: [] });
+  assert.deepEqual(Array.from(next.items, row => row.i), ['image-only', 'with-text']);
+  assert.deepEqual(Array.from(next.items[0].images), [image]);
+  assert.equal(next.items[0].t, '');
+  assert.equal(next.items[1].t, '看图片');
+});
+
+test('OpenCode live view renders its page while retaining older rows in the local history cache', () => {
+  const old = { i: 'old', k: 'human', order: 1, t: 'old' }, fresh = { i: 'new', k: 'human', order: 2, t: 'new' };
+  const context = vm.createContext({ SC: { key: 'one', cleared: false, items: new Map([['old', old]]), sig: new Map(), collapsed: new Set(), show: 400 },
+    scItemBytes: new WeakMap(), scDirty() {}, acpNum: () => -1 });
+  vm.runInContext(part(read('app/js/history.js'), 'function scKeep(', 'function codexRows(')
+    + part(read('app/js/history.js'), 'function scMerge(', 'function scFold(') + '\nthis.merge = scMerge;', context);
+  const v = context.merge({ windowed: true, items: [fresh] });
+  assert.deepEqual(Array.from(v.items, row => row.i), ['new']);
+  assert.equal(context.SC.items.has('old'), true);
+});
+
+test('OpenCode history persistence stores tool metadata without expanded output', () => {
+  const context = vm.createContext({ SC_MAX: 100, acpNum: () => -1 });
+  vm.runInContext(part(read('app/js/history.js'), 'function scSnapshot(', 'let scDrainTimer') + '\nthis.snapshot = scSnapshot;', context);
+  const tool = { i: 'tool', lazy: true, details: true, t: 'read', cmd: 'command', output: 'large body', diff: [['+', 'line']] };
+  const snapshot = context.snapshot({ items: new Map([['tool', tool]]), collapsed: new Set() });
+  assert.equal(snapshot.items[0].output, undefined); assert.equal(snapshot.items[0].details, false);
+  assert.equal(tool.output, 'large body');
+});
+
+test('OpenCode preview limits the current turn to 600 characters and the latest three normalized tools', async () => {
+  const source = part(read('server/overview.mjs'), "  if (session.app === 'opencode') {", '  if (session.dormant)');
+  const rows = [{ info: { role: 'user' }, parts: new Map([['text', { type: 'text', text: 'question' }]]) },
+    { info: { role: 'assistant' }, parts: new Map() }];
+  let selected;
+  const context = vm.createContext({ openCode: { connect: async () => {}, loadMessages: async () => {}, messageRows: () => rows,
+    chat: (_id, options) => { selected = options; return { model: 'model', effort: 'default', items: [
+      { k: 'human', t: 'question' }, { k: 'assistant', t: 'X'.repeat(800) },
+      ...Array.from({ length: 8 }, (_, n) => ({ i: String(n), k: 'tool', t: 'tool ' + n, status: n === 7 ? 'error' : 'completed' }))] }; } } });
+  vm.runInContext(`this.preview = async () => { const session = { app: 'opencode' }, win = '', windowId = '', threadId = 'A'; ${source} };`, context);
+  const value = await context.preview();
+  assert.equal(value.text.length, 600); assert.equal(value.last.length, 600);
+  assert.deepEqual(Array.from(value.tools, tool => [tool.id, tool.label, tool.state]), [['5', 'tool 5', 'done'], ['6', 'tool 6', 'done'], ['7', 'tool 7', 'error']]);
+  assert.equal(selected.tools.size, 0); assert.equal(selected.rows.length, 2);
+});
+
+test('Cursor empty composer resolves its native services before transcript rows exist', () => {
+  const button = {}, data = { getComposerDataIfLoaded: id => ({ composerId: id, fullConversationHeadersOnly: [] }) };
+  const services = { composerService: {}, composerDataService: data, backgroundComposerService: {}, nativeHostService: {} };
+  const instantiationService = { _services: { _entries: new Map(Object.keys(services).map(id => [id, null])) },
+    invokeFunction: fn => fn({ get: id => services[id] }) };
+  let lookups = 0;
+  const context = vm.createContext({ window: {}, doc: { querySelectorAll: () => [] },
+    modelButton: () => button, codexFiberProps: element => {
+      assert.equal(element, button); lookups++;
+      return [{ services: { workspace: { instantiationService } } }];
+    } });
+  vm.runInContext(part(read('server/page/session-actions.js'), '  const cursorSessionInstantiation =', '  const devinSessionRecord =')
+    + '\nglobalThis.readServices = cursorSessionServices;', context);
+  const resolved = context.readServices();
+  assert.equal(resolved.data, data);
+  assert.equal(resolved.data.getComposerDataIfLoaded('empty').fullConversationHeadersOnly.length, 0);
+  assert.equal(resolved.composer, services.composerService);
+  assert.equal(context.readServices(), resolved);
+  assert.equal(lookups, 1);
+});
+
+for (const app of ['devin', 'cursor', 'codex', 'opencode']) test(`small WebP follows ${app} native format`, async () => {
+  const blobs = [], file = new File([new Uint8Array([1])], 'transparent.webp', { type: 'image/webp' });
+  let closed = false;
+  const context = vm.createContext({ File, Blob,
+    createImageBitmap: async () => ({ width: 20, height: 10, close: () => { closed = true; } }),
+    document: { createElement: () => ({ getContext: () => ({ drawImage() {} }),
+      toBlob(fn, type) { blobs.push(type); fn(new Blob([new Uint8Array([1])], { type })); } }) },
+  });
+  vm.runInContext(part(read('app/js/voice.js'), 'async function shrinkImage(', 'const imageUploads ='), context);
+  const converted = await context.shrinkImage(file, undefined, app);
+  if (app === 'devin') {
+    assert.equal(converted.name, 'transparent.png'); assert.equal(converted.type, 'image/png');
+    assert.deepEqual(blobs, ['image/png']); assert.equal(closed, true);
+  } else { assert.equal(converted, file); assert.deepEqual(blobs, []); }
+});
+
+for (const [app, mime, converted] of [['devin', 'image/webp', true], ['devin', 'image/png', false], ['cursor', 'image/webp', false]]) {
+  test(`prepared image upload retains its captured owner (${app}, ${mime})`, async () => {
+    const original = new File(['fixture'], 'sample.webp', { type: mime }), calls = [], options = { prepared: true };
+    const record = { app, file: original, options, scope: 'owner-A', sel: 'thread-A' };
+    const context = vm.createContext({ imageUploads: new Map([['upload', record]]), currentApp: 'other-app',
+      shrinkImage: async (file, canvas, owner) => { calls.push(['convert', owner]); return new File(['png'], 'sample.png', { type: 'image/png' }); },
+      imageUploadScope: () => 'owner-A', viewSel: 'thread-A', authed: true, ws: { readyState: 1 },
+      uploadDocument: async file => { calls.push(['upload', file.type]); return { id: 'server-upload' }; },
+      send: message => { calls.push(['send', message.sel]); }, finishImageUpload() {}, status() {},
+    });
+    vm.runInContext(part(read('app/js/voice.js'), 'async function uploadImageFile(', '// Older Android'), context);
+    assert.equal(await context.uploadImageFile('upload'), true);
+    assert.deepEqual(calls, [...(converted ? [['convert', app]] : []), ['upload', converted ? 'image/png' : mime], ['send', 'thread-A']]);
+  });
+}
+
+for (const kind of ['unchanged', 'undone', 'rotated', 'cropped', 'first-upload', 'pending-edit']) {
+  test(`image editor save retains or uploads the correct attachment: ${kind}`, async () => {
+    const calls = [], file = new File(['image'], 'sample.png', { type: 'image/png' });
+    const current = { cursor: kind === 'rotated' ? 1 : 0, width: 20, height: 10,
+      crop: kind === 'cropped' ? { x: 0, y: 0, w: 10, h: 10 } : { x: 0, y: 0, w: 20, h: 10 },
+      file: kind === 'first-upload' || kind === 'pending-edit' ? file : undefined, name: 'sample.png', uploaded: false };
+    const image = { sel: 'thread-A', ...(kind === 'first-upload' ? { files: [current] }
+      : kind === 'pending-edit' ? { onSave: async value => { calls.push(['pending', value.type]); return true; } } : { id: 'existing-image' }) };
+    const dialog = { close() { calls.push(['close']); } }, button = { dataset: { edit: 'save' }, textContent: '保存', disabled: false };
+    const context = vm.createContext({ File, Blob, dialog, image, documents: [current], current: () => current,
+      scope: 'scope-A', imageUploadScope: () => 'scope-A', viewSel: 'thread-A', app: 'devin',
+      saving: false, loading: false, loadError: false, cancelled: false, finishGesture() {},
+      fullCrop: crop => crop.x === 0 && crop.y === 0 && crop.w === current.width && crop.h === current.height,
+      load: async () => {}, applyCrop() { if (current.crop.w !== current.width) current.cursor++; },
+      base: { width: 20, height: 10 }, marks: {}, merged: { getContext: () => ({ drawImage() {} }),
+        toBlob: fn => fn(new Blob(['edited'], { type: 'image/png' })) },
+      shrinkImage: async value => value,
+      attachImageFile: async (value, options) => { calls.push(['upload', value.type, options.replace || '']); return true; },
+      status: (...args) => calls.push(['status', ...args]),
+    });
+    vm.runInContext(part(read('app/js/image-editor.js'), '  dialog.onclick = async', '  const resize ='), context);
+    await dialog.onclick({ target: { closest: () => button } });
+    const writes = calls.filter(call => call[0] === 'upload' || call[0] === 'pending');
+    if (kind === 'unchanged' || kind === 'undone') assert.deepEqual(writes, []);
+    else if (kind === 'pending-edit') assert.deepEqual(writes, [['pending', 'image/png']]);
+    else assert.deepEqual(writes, [['upload', 'image/png', kind === 'first-upload' ? '' : 'existing-image']]);
+    assert.equal(calls.filter(call => call[0] === 'close').length, 1);
+  });
+}
