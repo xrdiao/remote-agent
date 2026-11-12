@@ -6,11 +6,225 @@ import test from 'node:test';
 import { NativeWindow } from '../server/native-windows.mjs';
 import { read, fragment, createPageContext } from './page-fixture.mjs';
 
-function pageContext(extra = {}) {
+function batchFixture(cancel = false) {
+  const calls = [], events = [], archived = [], releases = [];
+  const rows = [
+    { id: 'thread:desktop:N', app: 'codex' }, { id: 'thread:backend:B', app: 'codex' },
+    { id: 'thread:backend:busy', app: 'codex' }, { id: 'thread:backend:fusion', app: 'codex' },
+    { id: 'thread:backend:missing', app: 'codex' },
+  ];
+  const common = vm.runInContext(read('server/agent/session-actions.mjs').replace(/^import .*;\n/gm, '').replace('export const methods', 'const methods') + '\nmethods;', vm.createContext({
+    sessionId: (_app, id) => id.split(':').at(-1), helpersCall: value => value,
+    fusionBindingInUse: (_app, id) => id === 'fusion', leaseWindow: (_app, id) => () => releases.push(id),
+  }));
+  class Context {
+    constructor({ emit }) { this.emit = emit; }
+    async codexThreadRows() { return [{ id: 'N', running: false }]; }
+    async codexArchiveThread(id) { archived.push(id); }
+  }
+  Context.prototype.archiveBatchSession = common.archiveBatchSession;
+  class Cdp {
+    async connect() { calls.push('connect'); }
+    async evaluate(call) { return call === 'codexThread()' ? 'N' : { thread: 'N', busy: false }; }
+    close() { calls.push('close'); }
+  }
+  const routes = vm.runInContext(fragment(read('server/apps/codex.mjs'), 'const backendRoutes =', 'function serializedCodexPrompt') + '\nbackendRoutes;', vm.createContext({
+    CODEX_BACKEND: 'backend', path, AgentContext: Context, NativeCdp: Cdp, helpersCall: value => value,
+    nativeTargets: () => [{ app: 'codex', pageId: 'desktop', ws: 'ws' }], nativeSessionCatalog: () => ({ rows: [] }), backendAgentRows: () => [],
+    publishSessionChange: (_app, id, value) => calls.push(['publish', id, value.action]),
+    codexBackend: { load: async id => {
+      if (id === 'missing') throw Error('sample missing');
+      return { turns: id === 'busy' ? [{ status: 'inProgress' }] : [] };
+    }, manage: async id => archived.push('thread:backend:' + id) },
+  }));
+  const session = { ...common, app: 'codex', codexBackend: true, codexDirectory: '/B', threadId: 'B', deviceId: 'test',
+    selectionKey: () => 'B', sessionEntries: new Map(rows.map(row => [row.id, row])), emit: message => {
+      events.push(message);
+      if (cancel && message.t === 'sessionBatchProgress' && message.results.length === 1 && !message.done) session.sessionBatch.cancelled = true;
+    } };
+  return { calls, events, archived, releases, routes, session, rows };
+}
+
+test('mixed backend/native batch archive keeps the backend binding and checks fresh busy/Fusion state', async () => {
+  const h = batchFixture(); await h.routes.sessionBatch.call(h.session, { ids: h.rows.map(row => row.id), requestId: 'mixed' });
+  assert.deepEqual(h.archived, ['thread:desktop:N', 'thread:backend:B']);
+  const done = h.events.findLast(row => row.t === 'sessionBatchProgress');
+  assert.equal(done.done, true); assert.equal(done.results.length, 5);
+  assert.equal(done.results.find(row => row.id.endsWith(':busy')).ok, false);
+  assert.equal(done.results.find(row => row.id.endsWith(':fusion')).ok, false);
+  assert.equal(done.results.find(row => row.id.endsWith(':missing')).ok, false);
+  assert.equal(h.session.threadId, 'B'); assert.equal(h.session.codexBackend, true);
+  assert.deepEqual(h.calls.filter(row => typeof row === 'string'), ['connect', 'close']);
+  assert.equal(h.releases.length, 2); assert.equal(h.session.sessionBatch, null);
+});
+
+test('cancel mixed batch archive stops remaining rows and releases all window leases', async () => {
+  const h = batchFixture(true); await h.routes.sessionBatch.call(h.session, { ids: h.rows.map(row => row.id), requestId: 'cancel' });
+  assert.deepEqual(h.archived, ['thread:desktop:N']);
+  const done = h.events.findLast(row => row.t === 'sessionBatchProgress');
+  assert.equal(done.done, true); assert.equal(done.cancelled, true); assert.equal(done.results.length, 1);
+  assert.equal(h.releases.length, 2); assert.equal(h.session.sessionBatch, null);
+});
+
+test('existing desktop batch still uses the same fresh native archive checks', async () => {
+  const h = batchFixture(), removed = [];
+  Object.assign(h.session, { codexBackend: false, cdp: { evaluate: async () => ({ busy: false }) },
+    codexThreadRows: async () => [{ id: 'N' }], codexArchiveThread: async id => removed.push(id) });
+  await h.session.batchSessions(['thread:desktop:N'], 'desktop');
+  assert.deepEqual(removed, ['thread:desktop:N']);
+});
+
+test('backend chat subscription cleanup removes its retry registration on return, switch and hide', async () => {
+  const calls = [], context = vm.createContext({ awaitCdpRead: promise => promise,
+    codexBackend: { load: async () => {}, subscribe: () => () => {}, clearRetry: owner => calls.push(owner) },
+    watchChatUpdates: () => () => calls.push('unsubscribe'), backendPublish: () => {},
+    backendRoutes: { codexRetry: () => calls.push('configure') },
+  });
+  const method = vm.runInContext('({' + fragment(read('server/apps/codex.mjs'), '  async setBackendMode(', '  async sendBackendMessage(') + '}).setBackendMode', context);
+  const session = { threadId: 'A', visible: true, codexRetrySettings: { sel: 'A' } };
+  await method.call(session); session.chatUpdatesStop();
+  assert.equal(calls[0], 'configure'); assert.equal(calls[1], session); assert.equal(calls[2], 'unsubscribe');
+});
+
+test('retry menu distinguishes backend continuation from desktop Retry clicks', () => {
+  for (const backend of [true, false]) {
+    let html;
+    const context = vm.createContext({ currentComputer: () => ({ windowId: backend ? 'backend' : 'desktop' }),
+      codexAutoRetryEnabled: () => true, codexAutoRetryCount: () => 2, openSheet: (_kind, value) => { html = value; }, $: () => ({}) });
+    vm.runInContext(fragment(read('app/js/sheets.js'), 'function showCodexRetryMenu(', 'function toggleCodexAutoRetry(') + '\nshowCodexRetryMenu();', context);
+    assert.equal(html.includes('离开对话页后停止'), backend); assert.equal(html.includes('自动点击电脑端 Retry'), !backend);
+    assert.equal(html.includes('保留'), true);
+  }
+});
+
+function settingsOwnerFixture(created = false) {
+  const calls = [], pages = created ? [] : [{ pageId: 'bound', ws: 'editor', chatWs: 'sidebar' }];
+  class Context {
+    async withFocus(fn) { return fn(); }
+    async showCodexSettings() { calls.push('show'); return 'settings'; }
+    async closeCodexSettings() { calls.push('restore'); }
+  }
+  class Cdp {
+    constructor(ws) { this.ws = ws; }
+    async connect() { calls.push(['connect', this.ws]); }
+    async send(method) { calls.push(['send', this.ws, method]); }
+    close() { calls.push(['disconnect', this.ws]); }
+  }
+  const context = createPageContext({ AgentContext: Context, Cdp, CODEX_CDP_URL: 'codex',
+    clearTimeout, setTimeout, cdpRead: { run: (_signal, fn) => fn() }, awaitCdpRead: promise => promise,
+    orderedProjectWindows: (_app, rows) => rows, codexWindows: async () => pages,
+    bindProjectWindow: (_app, id) => calls.push(['bind-window', id]),
+    leaseWindow: () => () => calls.push('release'), nativeCloseProjectWindow: async () => calls.push('close-window'),
+    openFolder: async (...args) => { calls.push(['open-folder', ...args]); pages.push({ pageId: 'created', ws: 'editor', chatWs: 'sidebar' }); },
+  });
+  const helpers = vm.runInContext(fragment(read('server/apps/codex.mjs'), 'async function backendSettingsOwner(', 'const backendRoutes =')
+    + '\n({backendSettingsOwner,closeBackendSettings,withBackendSettings});', context);
+  const session = { deviceId: 'device', app: 'codex', threadId: 'backend-thread', cdp: null, editorCdp: null, codexDirectory: '/A', emit() {} };
+  return { calls, helpers, session };
+}
+
+for (const created of [false, true]) test(`backend settings ${created ? 'create' : 'borrow'} a window while preserving the backend selection`, async () => {
+  const h = settingsOwnerFixture(created), { session, helpers, calls } = h;
+  assert.equal(await helpers.withBackendSettings(session, context => context.showCodexSettings()), 'settings');
+  const owner = session.codexBackendSettings;
+  await helpers.withBackendSettings(session, context => context.showCodexSettings());
+  assert.equal(session.codexBackendSettings, owner);
+  assert.equal(session.threadId, 'backend-thread'); assert.equal(session.cdp, null); assert.equal(session.editorCdp, null);
+  await Promise.all([helpers.closeBackendSettings(session, owner), helpers.closeBackendSettings(session, owner)]);
+  assert.equal(calls.filter(call => call === 'restore').length, 1);
+  assert.equal(calls.filter(call => call === 'release').length, 1);
+  assert.equal(calls.filter(call => call === 'close-window').length, created ? 1 : 0);
+  assert.equal(calls.filter(call => Array.isArray(call) && call[0] === 'disconnect').length, 2);
+});
+
+test('closing an old settings owner after a session change never releases the new owner', async () => {
+  const h = settingsOwnerFixture();
+  const old = await h.helpers.backendSettingsOwner(h.session);
+  h.session.codexBackendSettings = null;
+  const next = await h.helpers.backendSettingsOwner(h.session);
+  await h.helpers.closeBackendSettings(h.session, old);
+  assert.equal(h.session.codexBackendSettings, next);
+  assert.equal(next.closing, undefined);
+  await h.helpers.closeBackendSettings(h.session);
+});
+
+for (const operation of ['detach', 'suspend']) test(`${operation} releases backend settings without stopping the background thread`, () => {
+  const calls = [], context = createPageContext({ setTimeout, clearTimeout, clearInterval,
+    cdpRead: { run: (_signal, fn) => fn() }, console,
+  });
+  const source = read('server/session.mjs');
+  const release = fragment(source, '  releaseBackendSettings() {', '  detach() {');
+  const action = operation === 'detach' ? fragment(source, '  detach() {', '  async refreshViewport() {') : fragment(source, '  suspend() {', '  dispose() {');
+  const methods = vm.runInContext('({' + release.trimEnd() + ',\n' + action + '})', context);
+  const session = { ...methods, app: 'codex', threadId: 'background', codexBackend: true, codexBackendSettings: {},
+    adapter: { closeBackendSettings: async function () { this.codexBackendSettings = null; calls.push('release-settings'); } },
+    stopChatUpdates() {}, stopTerminalUpdates() {}, stopVisual() {},
+  };
+  session[operation]();
+  assert.deepEqual(calls, ['release-settings']);
+  assert.equal(session.threadId, 'background');
+});
+
+function pageContext(extra = {}, source = read('server/page/session-actions.js')) {
   const context = createPageContext({ remoteContext: null, window: {}, doc: { defaultView: {} }, ...extra });
-  vm.runInContext(read('server/page/session-actions.js') + '\nthis.info = nativeSessionInfo; this.action = nativeSessionAction;', context);
+  vm.runInContext(source + '\nthis.info = nativeSessionInfo; this.action = nativeSessionAction;', context);
   return context;
 }
+
+test('Cursor adopts the actual workspace thread only after its Agent panel is ready', async () => {
+  const events = [], calls = [];
+  const context = createPageContext({ path, helpersCall: value => value, fusionProject: root => ({ id: root }) });
+  const methods = vm.runInContext('({' + fragment(read('server/agent/projects.mjs'), '  async finishProject() {', '  projectName() {') + '})', context);
+  const session = { ...methods, app: 'cursor', pendingProject: { root: '/B', newSession: false },
+    threadId: 'thread-A', selectedThread: 'thread-A', editorCdp: { evaluate: async () => ({ required: false }) },
+    waitFor: async expression => { calls.push(expression); return { thread: 'thread-B' }; },
+    clearViewState: () => calls.push('clear'), currentRoots: async () => [{ root: '/B' }],
+    selectionKey: () => 'cursor|carrier|thread-B', emit: message => events.push(message),
+  };
+  await session.finishProject();
+  assert.deepEqual(calls, ['agentStartupState("cursor", true)', 'clear']);
+  assert.equal(session.threadId, 'thread-B'); assert.equal(session.selectedThread, 'thread-B');
+  assert.equal(events[0].t, 'projectReady'); assert.equal(events[0].path, '/B');
+});
+
+test('Devin cross-project creation completes in one switch before reading the new first screen', async () => {
+  const calls = [], controller = new AbortController();
+  const context = createPageContext({ path, crypto: { randomUUID: () => 'request' },
+    safeHomePath: real => ({ real }), cdpRead: { getStore: () => controller.signal }, helpersCall: value => value,
+  });
+  const methods = vm.runInContext('({' + fragment(read('server/agent/projects.mjs'), '  async useProject(', '  async resumeProjectSwitch(') + '})', context);
+  const cdp = { evaluate: async () => ({ threadId: 'new-B', roots: [{ root: '/B' }] }) };
+  const session = { ...methods, app: 'devin', cdp, threadId: 'old-A', mode: 'chat',
+    projectMatches: (roots, root) => roots[0].root === root,
+    adapter: { openAgent: async function (id) { assert.equal(this.switchingThread, true); assert.equal(this.bindingReady, false); this.threadId = id; calls.push('open'); } },
+    projectReady: pending => calls.push(['projectReady', pending.root, pending.newSession]),
+    async resumeProjectSwitch(previous) { assert.equal(previous, cdp); assert.equal(this.bindingReady, true); assert.equal(this.threadId, 'new-B'); this.switchingThread = false; calls.push('first-screen'); },
+  };
+  await session.useProject('/B', true);
+  assert.deepEqual(calls, ['open', ['projectReady', '/B', true], 'first-screen']);
+});
+
+test('Devin opens the requested empty thread through the selected IDE window native main-panel command', async () => {
+  const opened = [], chat = {}, id = 'acp/devin-cli/new-empty';
+  const source = read('server/page/session-actions.js').replace("const native = await import('@exa/chat-client');\n      const api", 'const native = nativeModule;\n      const api');
+  const context = pageContext({ document: { querySelector: () => chat }, devinRowSession: row => row.sessionId,
+    nativeModule: { encodeOpenCascadeIdInChatPanelPayload: value => [value] },
+    window: { __acpStore: { getState: () => ({ acp: { sessions: [{ sessionId: id, cwd: '/B' }] } }) } },
+    codexFiberProps: element => { assert.equal(element, chat); return [{ vscodeAPI: { executeCommand: async (command, action) => opened.push([command, action]) } }]; } }, source);
+  assert.equal(await context.action('devin', id, 'open'), true);
+  assert.deepEqual(JSON.parse(JSON.stringify(opened)), [['devin.sendChatActionMessage', { actionType: 'openCascadeIdInChatPanel', payload: [id] }]]);
+});
+
+test('Cursor project replacement calls the selected window native host with forceReuseWindow', async () => {
+  class Uri { static file(value) { return { scheme: 'file', path: value }; } }
+  const calls = [], uri = new Uri();
+  const context = pageContext({ window: { __remoteAgentCursorServices: {
+    composer: { composerChatService: { _workspaceContextService: { getWorkspace: () => ({ folders: [{ uri }] }) } } },
+    nativeHost: { openWindow: async (...args) => calls.push(args) },
+  } } });
+  await context.action('cursor', '', 'project', '/B');
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [[[{ folderUri: { scheme: 'file', path: '/B' } }], { forceReuseWindow: true }]]);
+});
 
 for (const result of ['archive', 'delete', 'clear']) {
   test(`Cursor removal uses the persisted native outcome: ${result}`, async () => {
@@ -209,11 +423,11 @@ function codexQuestionReader(questions = [{ id: 'choice', question: '请选择�
     if (selector === 'button' || selector.startsWith('button, input')) return [...(state.mounted ? [skip] : []), ...state.controls];
     return [];
   } };
-  const context = createPageContext({ remoteContext: null, doc, document: doc, activeThread: () => state.thread, vis: () => true,
+  const context = createPageContext({ codexThread: () => 'native-thread', codexRootProps: () => [], remoteContext: null, doc, document: doc, activeThread: () => state.thread, vis: () => true,
     codexQueueConfirmRequests: () => [], codexFiberProps: el => el.props || [], codexPoint: () => ({ x: 1, y: 2 }), setTimeout });
   vm.runInContext(fragment(read('server/page/codex.js'), '  const codexAsyncRequestFiber =', '  const codexImage =')
     + '\nthis.data=codexRequestData;this.field=codexRequestField;this.action=codexRequestAction;', context);
-  return { state, owner, form, root, host, skip, answersHook, ...context };
+  return { state, owner, form, root, host, skip, answersHook, ...context, context };
 }
 
 test('current Codex userInput request 0 is one native card, with stable conversation and turn ownership', () => {
@@ -580,4 +794,87 @@ test('Devin project creation rejects a new session rooted in another directory',
   await assert.rejects(h.session.finishProject(), /工作目录与所选项目不一致/);
   assert.equal(h.session.pendingProject.newSession, true);
   assert.equal(h.emitted.some(message => message.t === 'projectReady'), false);
+});
+
+for (const app of ['cursor', 'devin', 'codex', 'opencode']) test(`failed project navigation retains the previous successful selection: ${app}`, () => {
+  const saved = { app, threadId: 'A', project: { root: '/A' } }, emitted = [], calls = [];
+  const scope = createPageContext({ forgetSelection: () => assert.fail('successful persisted selection was discarded') });
+  const fn = vm.runInContext('({' + fragment(read('server/session.mjs'), '  navigationFailed(', '  // Warms') + '}).navigationFailed', scope);
+  const session = { app, deviceId: 'one-entry', cdp: null, rememberedSelection: 'A', threadId: 'A', selectedThread: 'A',
+    chatWatchGeneration: 0, stopChatUpdates: () => calls.push('stop'), clearViewState: () => calls.push('clear'),
+    selectionKey: () => app + '||', emit: message => emitted.push(message), selectionStore: saved };
+  scope.clearInterval = () => {};
+  fn.call(session, { t: 'openProject', path: '/missing' }, new Error('missing directory'));
+  assert.equal(session.selectionStore, saved); assert.equal(session.selectionStore.threadId, 'A');
+  assert.equal(session.bindingReady, false); assert.equal(emitted[0].t, 'attachFailed'); assert.equal(emitted[0].message, 'missing directory');
+  assert.deepEqual(calls, ['stop', 'clear']);
+});
+
+test('native mention segmentation shares ordering while preserving application insert callbacks', async () => {
+  const context = createPageContext(), source = read('server/agent/context.mjs');
+  const fn = vm.runInContext('({' + fragment(source, '  async typeWithNativeMentions(', '  async withFocus(') + '}).typeWithNativeMentions', context);
+  const calls = [], mentions = [{ token: '@a' }, { token: '@missing' }, { token: '@b' }];
+  await fn.call({ typeText: async text => calls.push(['text', text]) }, 'pre @a between @b end', mentions,
+    async mention => { calls.push(['insert', mention.token]); return mention.token === '@a'; });
+  assert.deepEqual(calls, [['text', 'pre '], ['insert', '@a'], ['text', 'between '], ['insert', '@b'], ['text', '@b'], ['text', ' end']]);
+});
+
+test('Codex request detection cannot promote generic Cursor IDE notifications into approvals', () => {
+  const h = codexQuestionReader(); assert(h.data().length);
+  h.context.codexThread = () => ''; h.context.codexRootProps = () => [];
+  assert.equal(h.data().length, 0);
+});
+
+test('Devin text fragments join within their native stream and retain independent paragraphs', () => {
+  const context = createPageContext(); vm.runInContext(fragment(read('server/page/devin.js'), '  const devinMessageText =', '  const THINKING_ROOT =') + ';this.join=devinMessageText;', context);
+  const block = (text, id) => ({ content: { type: 'text', text }, _meta: { 'cognition.ai/streamingMessageId': id } });
+  assert.equal(context.join([block('RA_DEV', 's'), block('IN 中文', 's'), block('🙂', 's'), block('new paragraph', 't'), block(' plain', null)]), 'RA_DEVIN 中文🙂\nnew paragraph\n plain');
+});
+
+test('Devin native permission replies preserve provider, store key and exact option identity', async () => {
+  const row = { status: 'pending', providerId: 'devin-cli', request: { id: 0, method: 'session/request_permission', params: { sessionId: 'A',
+    toolCall: { title: 'Run command' }, options: [{ optionId: 'allow-project', name: 'Allow in project' }, { optionId: 'reject_once', name: 'Reject' }] } } };
+  const state = { clientRequests: { 'store-key-A': row, other: { ...row, request: { ...row.request, params: { ...row.request.params, sessionId: 'B' } } } } }, dispatched = [];
+  const nativeModule = { clientRequestCompleted: payload => ({ type: 'complete', payload }) };
+  const context = pageContext({ window: { __acpStore: { getState: () => ({ acp: state }), dispatch: action => dispatched.push(action) } }, nativeModule,
+    activeThread: () => 'acp/devin-cli/A', remoteContext: null }, read('server/page/session-actions.js').replaceAll("await import('@exa/chat-client')", 'nativeModule'));
+  vm.runInContext(fragment(read('server/page/devin.js'), '  const devinPermissionEntries =', '  const devinQuestions =') + ';this.requests=devinPermissions;', context);
+  const requests = context.requests('acp/devin-cli/A'); assert.equal(requests.length, 1); assert.equal(requests[0].buttons[0].label, 'Allow in project');
+  await context.action('devin', 'acp/devin-cli/A', 'permission', { id: requests[0].id, n: 1 });
+  assert.equal(dispatched.length, 1); assert.equal(dispatched[0].payload.clientRequestId, 'store-key-A');
+  assert.equal(dispatched[0].payload.response.outcome.optionId, 'reject_once');
+  await assert.rejects(context.action('devin', 'acp/devin-cli/B', 'permission', { id: requests[0].id, n: 0 }), /不属于/);
+  assert.equal(dispatched.length, 1);
+});
+
+test('deferred Cursor project binding leaves native session opening to finishProject', async () => {
+  for (const deferred of [true, false]) {
+    const calls = [], events = [];
+    class Connection {
+      constructor(wsUrl) { this.wsUrl = wsUrl; }
+      async connect() {}
+      close() {}
+      async evaluate(call) {
+        if (call === 'workspaceTrustState()') return { required: false };
+        if (call === 'activeThread()') return 'thread-A';
+        if (call === 'hasComposer()') { calls.push('composer-ready'); return false; }
+        throw Error(call);
+      }
+    }
+    const context = vm.createContext({ NativeCdp: Connection, helpersCall: value => value,
+      nativeWindow: () => ({ itemCache: new Map(), start: async () => {}, setThread() {} }),
+      resetThinkingCaches() {}, appPlans: [], hasLaunched: () => false,
+    });
+    const open = vm.runInContext('({' + fragment(read('server/session.mjs'), '  async openBound(', '  navigationFailed(') + '}).openBound', context);
+    const session = { detach() {}, clearViewState() {}, refreshViewport: async () => {},
+      appMessage: value => value, projectName: () => 'Project', selectionKey: () => 'selection',
+      emit: value => events.push(value), withFocus: task => task(), setMode: async () => calls.push('mode'),
+      prefetchMenus: async () => {}, adapter: { openAgent: async id => calls.push(['open', id]) } };
+    await open.call(session, { id: 'cursor:window', app: 'cursor' }, 'ws', null,
+      { windowId: 'cursor:window', threadId: 'thread-A', deferred });
+    assert.equal(calls.some(call => Array.isArray(call) && call[0] === 'open'), !deferred);
+    assert.equal(calls.includes('composer-ready'), !deferred);
+    assert.equal(session.bindingReady, !deferred);
+    assert.equal(events.at(-1).ready, !deferred);
+  }
 });

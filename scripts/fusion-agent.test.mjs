@@ -17,18 +17,24 @@ function nativeRenameFixture(app) {
   const bound = app === 'devin' ? 'acp/devin-cli/own' : 'own';
   const rows = new Map([[bound, { id: bound, composerId: bound, providerId: app === 'devin' ? 'devin-cli' : 'native-provider', name: 'Old name', title: 'Old name', workspace: '/qa-project', cwd: '/qa-project', path: '/qa/sessions/own.jsonl', status: { type: 'active' }, running: true }],
     ['ordinary', { id: 'ordinary', composerId: 'ordinary', name: 'Ordinary', title: 'Ordinary', workspace: '/ordinary', cwd: '/ordinary', model: 'kept', draft: 'untouched' }]]), calls = [];
+  const persisted = new Map([...rows].map(([id, row]) => [id, { ...row }]));
   const rename = (id, title) => { rows.get(id).name = rows.get(id).title = title; };
   const manager = { readThread: async id => ({ thread: rows.get(id) }), getConversation: id => rows.get(id),
     async setThreadTitle(id, title, options) { calls.push(['codex', id, title, options]); rename(id, title.slice(0, 60)); return true; } };
-  const services = { data: { allComposersData: { allComposers: [...rows.values()] }, getComposerDataIfLoaded: () => null },
+  const services = { data: { allComposersData: { allComposers: [...rows.values()] }, getComposerDataIfLoaded: () => null,
+    async persistComposerWorkspacePlacement(id, value) {
+      assert.equal(rows.get(id).name, value.name);
+      Object.assign(persisted.get(id), { name: value.name, title: value.name });
+    },
+    async syncComposerHeadersFromCanonicalStorage() {} },
     composer: { async renameComposer(id, title) { calls.push(['cursor', id, title]); rename(id, title); } } };
-  const nativeModule = { renameSessionThunk: (provider, id, title) => { assert.equal(id, 'own'); return { provider, id, title }; },
-    unprefixSessionId: id => { assert.equal(id, bound); return { connectorId: 'devin-cli', sessionId: 'own' }; } };
+  const nativeModule = { tryGetAcpSingleton: () => ({ getConnectorById: () => ({ status: 'connected', capabilities: { _meta: { 'cognition.ai/sessionRename': true } } }) }), renameSessionThunk: (provider, id, title) => { assert(['own', 'ordinary'].includes(id)); return { provider, id, title }; },
+    unprefixSessionId: id => { assert([bound, 'ordinary'].includes(id)); return { connectorId: 'devin-cli', sessionId: id === bound ? 'own' : id }; } };
   const context = createPageContext({ remoteContext: { app, threadId: bound, host: '' }, Error, String, nativeModule,
     codexConversationManager: () => manager, codexNativeManager: () => manager, codexHistoryScopes: () => [],
-    nativeSessionCatalog: async () => ({ ready: true, complete: true, rows: [...rows.values()] }),
+    nativeSessionCatalog: async () => ({ ready: true, complete: true, rows: [...(app === 'cursor' ? persisted : rows).values()] }),
     nativeSessionContext: async (_app, id) => ({ cwd: rows.get(id).cwd, host: '' }), cursorSessionServices: () => services,
-    devinSessionRecord: id => rows.get(id), window: { __acpStore: { async dispatch({ provider, id, title }) { calls.push(['devin', provider, id, title]); rename(bound, title); } } },
+    devinSessionRecord: id => rows.get(id), window: { __acpStore: { async dispatch({ provider, id, title }) { calls.push(['devin', provider, id, title]); rename(id === 'own' ? bound : id, title); } } },
     devinSessionMenu: id => ({ actions: [{ label: 'rename', disabled: false, direct: true, onClick: title => { calls.push(['ordinary-menu', id, title]); rename(id, title); } }] }) });
   const source = fs.readFileSync(new URL('../server/page/session-actions.js', import.meta.url), 'utf8');
   const code = source.slice(source.indexOf('  const nativeSessionCleanup ='), source.indexOf('  const nativeCodexCreation ='))
@@ -58,7 +64,7 @@ test('Fusion native name operations target the bound session in each software wi
     const ordinary = nativeRenameFixture(app); ordinary.context.remoteContext = null;
     const result = await ordinary.action(app, 'ordinary', 'rename', 'Ordinary renamed');
     assert.equal(ordinary.rows.get('ordinary').title, 'Ordinary renamed'); assert.equal(result.title, undefined);
-    assert.equal(ordinary.calls[0][0], app === 'cursor' ? 'cursor' : 'ordinary-menu');
+    assert.equal(ordinary.calls[0][0], app === 'cursor' ? 'cursor' : 'devin');
   }
 });
 test('a bound devin rename passes the raw ACP session id while binding and state keep the full id', async () => {
@@ -1062,6 +1068,8 @@ function devinWorkerFixture(thread = 'worker-thread') {
   vm.runInContext(slice('chat-extract.js', '  const codexFusionTurn =', '  // One Codex turn')
     + ';this.read=codexFusionTurn;', context);
   vm.runInContext(slice('chat-extract.js', '  const nativePerformance =', '  const cursorCurrentChat =')
+    + slice('devin.js', '  const devinMessageText =', '  const THINKING_ROOT =')
+    + slice('devin.js', '  const devinPermissionEntries =', '  const devinQuestions =')
     + slice('chat-extract.js', '  const nativeConversationChat =', '  const contextPct =')
     + ';this.chat=nativeConversationChat;', context);
   vm.runInContext(slice('chat-extract.js', '  const watchCodexData =', '  const codexUserText =')
@@ -1195,6 +1203,7 @@ test('Fusion Devin content reports a native failure without requiring a pruned t
   const tools = fs.readFileSync(new URL('../server/page/fusion-tools.js', import.meta.url), 'utf8');
   vm.runInContext(tools.slice(tools.indexOf('  const fusionNativeControllers ='), tools.indexOf('  const fusionNativeTools =')), context);
   vm.runInContext(source.slice(source.indexOf('  const nativePerformance ='), source.indexOf('  const cursorCurrentChat ='))
+    + readDevinHelperSource()
     + source.slice(start, end).replace("await import('@exa/chat-client')", 'nativeModule') + '\nthis.read = nativeConversationChat;', context);
   const failed = await context.read(false, 80);
   assert.equal(failed.thread, 'worker'); assert.equal(failed._nativeState.run.status, 'error');
@@ -1260,4 +1269,24 @@ test('Fusion management notifications share the native watch but do not wait for
   await window.conversationView(native).reading;assert.equal(trace.at(-1),'ordinary');
   assert.equal(window.conversations.size,1);assert.equal(closed,0);
   stopOrdinary();await new Promise(r=>setImmediate(r));assert.equal(stopped,1);assert.equal(closed,1);assert.equal(window.conversations.size,0);
+});
+
+function readDevinHelperSource() {
+  const source = fs.readFileSync(new URL('../server/page/devin.js', import.meta.url), 'utf8');
+  return source.slice(source.indexOf('  const devinMessageText ='), source.indexOf('  const THINKING_ROOT ='))
+    + source.slice(source.indexOf('  const devinPermissionEntries ='), source.indexOf('  const devinQuestions ='));
+}
+
+test('confirmed native Devin deletion wins over missing while unknown or unconfirmed missing stays unresolved', async () => {
+  const id = 'own', stopped = [], cache = new Map([[id, { stop: () => stopped.push(id) }]]);
+  let catalog = { ready: true, complete: false, rows: [], removed: [id], missing: [id] };
+  const context = createPageContext({ remoteContext: { app: 'devin', threadId: id }, Error,
+    window: { __remoteAgentDevinTurns: cache }, nativeSessionCatalog: async () => catalog,
+    nativeSessionContext: () => assert.fail('deleted native session must not be reopened') });
+  const source = fs.readFileSync(new URL('../server/page/session-actions.js', import.meta.url), 'utf8');
+  vm.runInContext(source.slice(source.indexOf('  const nativeSessionCleanup ='), source.indexOf('  const nativeSessionInfo =')) + ';this.cleanup=nativeSessionCleanup;', context);
+  assert.equal((await context.cleanup('devin', id, true)).confirmed, true); assert.deepEqual(stopped, [id]);
+  for (const next of [{ ready: true, rows: [], missing: [id] }, { ready: true, rows: [], removed: [id], unknown: [id] }, { ready: false, rows: [], removed: [id] }]) {
+    catalog = next; await assert.rejects(context.cleanup('devin', id, true), /尚未确认/);
+  }
 });

@@ -1374,7 +1374,7 @@
         if (message.kind === 'user_message' || message.kind === 'agent_message' || message.kind === 'agent_thought') {
           const blocks = message.content || [];
           if (blocks.some(block => block._meta?.['cognition.ai/isOptimistic'])) continue;
-          const text = blocks.filter(block => block.content?.type === 'text').map(block => block.content.text).join('\n');
+          const text = devinMessageText(blocks);
           const images = blocks.filter(block => block.content?.type === 'image').map(block => `data:${block.content.mimeType};base64,${block.content.data}`);
           const at = Date.parse(blocks.find(block => block._meta?.['cognition.ai/timestamp'])?._meta['cognition.ai/timestamp'] || '') || 0;
           if (message.kind === 'agent_thought') items.push({ i: id + ':think', k: 'thinking', t: `Thoughts\n${text}` });
@@ -1393,7 +1393,9 @@
         items.push({ i: 'acp' + messages.length + ':error', k: 'tool', kind: 'error', t: failure[1].errorMessage, keep: true });
       title = session.title || '';
       before = Math.max(0, end - limit); earlier = before > 0;
-      if (activeThread() === thread) questions = devinQuestions();
+      const requests = devinPermissions(thread);
+      if (requests.length) questions = { codex: true, src: 'devin', requests, list: [] };
+      else if (activeThread() === thread) questions = devinQuestions();
       items = items.map(item => ({ ...item, src: 'devin' }));
     }
     const scopes = [], run = agentRun(app, thread, scopes), changed = items.filter(item => item.kind === 'edit').length;

@@ -467,9 +467,10 @@
     const managers = new Map();
     const withRun = row => {
       const host = row.host || 'local';
+      const session = app === 'devin' ? devinSessionRecord(row.thread) : null;
       if (app === 'codex' && !managers.has(host)) managers.set(host, codexConversationManager(null, scopes, host));
       const run = agentRun(app, row.thread, scopes, managers.get(host));
-      return { ...row, ...(run ? { run, busy: run.status === 'running' || !!row.busy,
+      return { ...row, ...(session?.cwd ? { workspace: session.cwd } : {}), ...(run ? { run, busy: run.status === 'running' || !!row.busy,
         ...(run.status !== 'unknown' ? { runId: app + ':' + run.id, runAt: run.startedAt } : {}) } : {}) };
     };
     let generation = null;

@@ -309,6 +309,8 @@ export class OpenCodeState {
     for (const q of questions) items.push({ i: 'question:' + q.id, k: 'opencodeQuestion', requestID: q.id, questions: q.questions, keep: true });
     const selected = this.selection(id), model = this.models.get(selected.key), status = this.statuses.get(id);
     if (status?.error) items.push({ i: id + ':status', k: 'notice', t: status.error });
+    if (status?.type === 'retry') items.push({ i: id + ':retry', k: 'notice', live: true,
+      t: ['正在重试（第 ' + status.attempt + ' 次）', status.message, status.next ? '下次重试：' + new Date(status.next).toISOString() : ''].filter(Boolean).join(' · ') });
     const context = this.context(id), latest = messages.findLast(row => row.info.role === 'assistant');
     const busy = !!status && status.type !== 'idle', live = busy && latest && !latest.info.time?.completed;
     const call = live ? latest.info : context.updated && messages.find(row => row.info.time?.completed === context.updated)?.info;

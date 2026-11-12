@@ -10,6 +10,7 @@ import { currentOperation, withOperation } from '../operations.mjs';
 import { createMessageID } from '../opencode/client.mjs';
 import { uploads, pendingUploads, uploadAttachments, removeUpload } from '../../lib/uploads.mjs';
 import { openCodeAttachment } from '../opencode/attachments.mjs';
+import { watchChatUpdates } from '../agent/updates.mjs';
 
 export const capabilities = {
   model: true, effort: true, fast: false, queue: false, steer: false, queueEdit: false,
@@ -72,52 +73,24 @@ function confirmSend(s, requestID, pending) {
 }
 
 function watch(s) {
-  const key = s.selectionKey();
-  const client = s.client, receipt = Buffer.from(crypto.randomUUID());
-  let sending = false, pending = false, stopped = false;
-  const refresh = () => {
-    pending = true;
-    if (sending || s.openCodeUpdate) return;
-    s.openCodeUpdate = setImmediate(() => {
-      s.openCodeUpdate = null;
-      if (s.app !== 'opencode' || s.selectionKey() !== key || !s.visible || s.mode !== 'chat' || s.disposed) return;
-      pending = false;
-      if (!openCode.connected) s.emit({ t: 'status', ok: false, msg: openCode.error });
-      else {
-        if (s.threadId && !openCode.sessions.has(s.threadId)) {
-          s.threadId = s.selectedThread = '';
-          s.clearViewState();
-          rememberSelection(s.deviceId, selection(s));
-          attached(s);
-          s.stopChatUpdates();
-          s.chatUpdatesStop = watch(s);
-        }
-        sending = true;
-        publish(s, error => {
-          if (error || stopped) return;
-          client.ping(receipt);
-        });
-      }
-    });
-  };
-  const stop = openCode.subscribe(id => {
+  return watchChatUpdates(s, refresh => openCode.subscribe(id => {
     if (id && id !== s.threadId) return;
     refresh();
+  }), sent => {
+    if (!openCode.connected) {
+      s.emit({ t: 'status', ok: false, msg: openCode.error });
+      return false;
+    }
+    if (s.threadId && !openCode.sessions.has(s.threadId)) {
+      s.threadId = s.selectedThread = '';
+      s.clearViewState();
+      rememberSelection(s.deviceId, selection(s));
+      attached(s);
+      s.stopChatUpdates();
+      s.chatUpdatesStop = watch(s);
+    }
+    publish(s, sent);
   });
-  const received = data => {
-    if (!data.equals(receipt)) return;
-    sending = false;
-    if (pending) refresh();
-  };
-  client.on('pong', received);
-  return () => {
-    stopped = true;
-    pending = false;
-    stop();
-    client.off('pong', received);
-    clearImmediate(s.openCodeUpdate);
-    s.openCodeUpdate = null;
-  };
 }
 
 async function bind(s, req) {

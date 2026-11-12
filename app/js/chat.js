@@ -55,10 +55,42 @@ itemsEl.addEventListener('click', async e => {
     requestThought(b.dataset.think);
   }
 });
+const openCodeQuestionSubmissions = new Map();
+function captureOpenCodeAnswers(form) {
+  [...form.querySelectorAll('[data-opencode-answer]')].forEach((field, index) => {
+    qnDrafts.set(questionDraftKey(form.dataset.opencodeQuestion, String(index)), {
+      selected: [...field.querySelectorAll('input:checked')].map(input => input.value),
+      custom: field.querySelector('[data-opencode-custom]')?.value || '',
+    });
+  });
+}
+function restoreOpenCodeAnswers(form) {
+  [...form.querySelectorAll('[data-opencode-answer]')].forEach((field, index) => {
+    const draft = qnDrafts.get(questionDraftKey(form.dataset.opencodeQuestion, String(index)));
+    if (!draft) return;
+    field.querySelectorAll('input[type=radio],input[type=checkbox]').forEach(input => { input.checked = draft.selected.includes(input.value); });
+    const custom = field.querySelector('[data-opencode-custom]');
+    if (custom) custom.value = draft.custom;
+  });
+  form.oninput = form.onchange = () => captureOpenCodeAnswers(form);
+}
+function finishOpenCodeQuestion(message) {
+  const pending = openCodeQuestionSubmissions.get(message.requestId);
+  if (!pending || pending.id !== message.id) return;
+  openCodeQuestionSubmissions.delete(message.requestId);
+  if (message.ok) clearQuestionDraft(pending.id, pending.scope);
+  if (pending.scope !== questionScope() || pending.sel !== viewSel) return;
+  const form = [...list.querySelectorAll('[data-opencode-question]')].find(form => form.dataset.opencodeQuestion === pending.id);
+  if (!message.ok) {
+    form?.querySelectorAll('input, button').forEach(node => { node.disabled = false; });
+    status(message.error, false);
+  }
+}
 list.addEventListener('submit', e => {
   const form = e.target.closest('[data-opencode-question]');
   if (!form) return;
   e.preventDefault();
+  captureOpenCodeAnswers(form);
   const reject = e.submitter?.name === 'reject';
   const answers = [...form.querySelectorAll('[data-opencode-answer]')].map(field => {
     const values = [...field.querySelectorAll('input:checked')].map(input => input.value);
@@ -66,8 +98,11 @@ list.addEventListener('submit', e => {
     return custom ? field.dataset.multiple === 'true' ? [...values, custom] : [custom] : values;
   });
   if (!reject && answers.some(values => !values.length)) return status(I18N.tr('请回答所有问题'), false);
-  if (send({ t: 'opencodeQuestion', id: form.dataset.opencodeQuestion, answers, reject }))
+  const requestId = crypto.randomUUID();
+  if (send({ t: 'opencodeQuestion', id: form.dataset.opencodeQuestion, requestId, answers, reject })) {
+    openCodeQuestionSubmissions.set(requestId, { id: form.dataset.opencodeQuestion, scope: questionScope(), sel: viewSel });
     form.querySelectorAll('input, button').forEach(input => { input.disabled = true; });
+  }
 });
 const thoughtFull = new Map();
 function setThought(id, text) {
@@ -308,6 +343,7 @@ function renderItem(it) {
     }
   }
   else el.textContent = it.t || '';
+  if (it.k === 'opencodeQuestion') restoreOpenCodeAnswers(el.querySelector('form'));
   if (it.agents?.length) el.insertAdjacentHTML('beforeend', '<div class="btns agentActions"></div>');
   if (it.images?.length) {
     el.insertAdjacentHTML('beforeend', it.images.filter(src => /^(https?:|data:image\/|chat-image:)/.test(src)).map(src => src.startsWith('chat-image:')

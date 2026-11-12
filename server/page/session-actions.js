@@ -179,7 +179,7 @@
       const tools = messages.slice(messages.findLastIndex(m => m.kind === 'user_message') + 1).filter(m => m.kind === 'tool_call').map(m => ({
         id: m.content.toolCallId || m.id, label: m.content.title, status: m.content.status,
       }));
-      return { ...summary(message?.content.filter(block => block.content?.type === 'text').map(block => block.content.text).join('\n')), ...nativePreviewActivity(tools, model) };
+      return { ...summary(devinMessageText(message?.content)), ...nativePreviewActivity(tools, model) };
     }
     const scopes = codexHistoryScopes();
     const host = codexChatRows(true).find(row => row.id === id)?.host || 'local';
@@ -230,7 +230,7 @@
           context: { cwd: thread.cwd, host: host === 'local' ? '' : host } };
       }
       const catalog = await nativeSessionCatalog(app, [id]);
-      if (!catalog.ready || catalog.unknown?.includes(id) || catalog.missing?.includes(id)) throw new Error('原生会话清理状态尚未确认');
+      if (!catalog.ready || catalog.unknown?.includes(id) || catalog.missing?.includes(id) && !catalog.removed?.includes(id)) throw new Error('原生会话清理状态尚未确认');
       const row = catalog.rows.find(row => row.id === id);
       if (!row && !catalog.complete && !catalog.removed?.includes(id)) throw new Error('原生会话清理状态尚未确认');
       return { exists: !!row, title: row?.title || '', archived: !!row?.archived, running: !!row?.running,
@@ -284,6 +284,17 @@
       const value = window.__remoteAgentNativeCreations?.get(previous);
       return value ? { status: value.status, context: value.context, nativeThreadId: value.nativeThreadId, error: value.error } : null;
     }
+    if (catalog === 'actions' && app === 'devin') return (async () => {
+      const native = await import('@exa/chat-client'), session = devinSessionRecord(id);
+      if (!session) return null;
+      const connector = native.tryGetAcpSingleton('connectorService').getConnectorById(session.providerId);
+      if (connector?.status !== 'connected') throw new Error('Devin 原生连接尚未就绪');
+      return { title: session.title || '', archived: session._meta?.['cognition.ai/isArchived'] === true,
+        running: ['active', 'pending', 'canceling'].includes(session.status),
+        actions: [...(connector.capabilities?._meta?.['cognition.ai/sessionRename'] ? ['rename'] : []), 'archive',
+          ...(connector.capabilities?.sessionCapabilities?.delete ? ['delete'] : [])] };
+    })();
+    if (catalog === 'actions') return nativeSessionInfo(app, id);
     if (catalog === 'tools') return fusionNativeTools.requests(app, id);
     if (catalog === 'fusionCall' && app === 'devin') return fusionDevinCall(id, previous);
     if (catalog === 'draft' && app === 'codex') return codexConversationDraft(id, previous === null ? undefined : previous);
@@ -367,16 +378,50 @@
     return nativeSessionContext('codex', created.conversationId);
   };
   const nativeSessionAction = async (app, id, action, name) => {
-    if (action === 'rename' && remoteContext && ['codex', 'devin'].includes(app)) {
+    if (action === 'project' && app === 'cursor') {
+      const services = cursorSessionServices();
+      const uri = services.composer.composerChatService._workspaceContextService.getWorkspace().folders[0].uri;
+      await services.nativeHost.openWindow([{ folderUri: uri.constructor.file(name) }], { forceReuseWindow: true });
+      return true;
+    }
+    if (action === 'permission' && app === 'devin') {
+      const entry = devinPermissionEntries(id).find(entry => entry.id === name.id);
+      if (!entry) throw new Error('这条权限请求已结束或不属于当前会话');
+      const option = entry.row.request.params.options[name.n];
+      if (!option) throw new Error('原生权限选项已变化');
+      const native = await import('@exa/chat-client');
+      window.__acpStore.dispatch(native.clientRequestCompleted({ clientRequestId: entry.key,
+        response: { outcome: { outcome: 'selected', optionId: option.optionId } } }));
+      return true;
+    }
+    if (app === 'devin' && ['rename', 'archive', 'delete'].includes(action)) {
+      if (remoteContext && (remoteContext.app !== app || remoteContext.threadId !== id)) throw new Error('请求不属于这个任务 Binding');
+      const native = await import('@exa/chat-client'), session = devinSessionRecord(id);
+      if (!session) throw new Error('没有找到这个会话');
+      const info = await nativeSessionInfo(app, id, 'actions');
+      if (!info.actions.includes(action)) throw new Error('此会话没有对应的原生操作入口');
+      if (action === 'rename') await window.__acpStore.dispatch(native.renameSessionThunk(session.providerId, native.unprefixSessionId(id).sessionId, name));
+      else await window.__acpStore.dispatch(native.sendAgentRequestThunk(session.providerId,
+        { method: action === 'archive' ? 'session/archive' : 'session/delete', params: { sessionId: id, ...(action === 'archive' ? { archived: true } : {}) } }, native.tryGetAcpSingleton('sendAgentRequest')));
+      const after = action === 'delete' ? await nativeSessionCleanup(app, id) : nativeSessionInfo(app, id);
+      return { action, confirmed: action === 'rename' ? after?.title === name : action === 'archive' ? !!after?.archived : !after.exists, ...(remoteContext && action === 'rename' ? { title: after?.title } : {}) };
+    }
+    if (action === 'open' && app === 'devin') {
+      const native = await import('@exa/chat-client');
+      const api = codexFiberProps(document.querySelector('#chat'), Infinity)
+        .find(props => props.vscodeAPI?.executeCommand)?.vscodeAPI;
+      if (!api || !devinSessionRecord(id)) throw new Error('Devin 原生会话导航尚未就绪');
+      await api.executeCommand('devin.sendChatActionMessage', {
+        actionType: 'openCascadeIdInChatPanel', payload: native.encodeOpenCascadeIdInChatPanelPayload(id),
+      });
+      return true;
+    }
+    if (action === 'rename' && remoteContext && app === 'codex') {
       if (remoteContext.app !== app || remoteContext.threadId !== id) throw new Error('请求不属于这个任务 Binding');
       if (app === 'codex') {
         const manager = codexNativeManager(), confirmed = await manager.setThreadTitle(id, name, { requireAcknowledgement: true });
         return { action: 'rename', confirmed, title: manager.getConversation(id)?.title };
       }
-      const native = await import('@exa/chat-client'), session = devinSessionRecord(id);
-      if (!session) throw new Error('没有找到这个会话');
-      await window.__acpStore.dispatch(native.renameSessionThunk(session.providerId, native.unprefixSessionId(id).sessionId, name));
-      return { action: 'rename', confirmed: true, title: name };
     }
     if (action === 'create') {
       const creations = window.__remoteAgentNativeCreations ||= new Map();
@@ -421,7 +466,8 @@
       return nativeSessionContext(app, created.composerId);
     }
     if (action === 'createNative' && app === 'devin') {
-      const native = await import('@exa/chat-client'), parent = devinSessionRecord(id);
+      const native = await import('@exa/chat-client');
+      const parent = devinSessionRecord(id || window.__acpStore.getState().acp.focusedSessionId);
       if (!parent) throw new Error('当前 Devin 窗口没有就绪的原生会话');
       const created = await window.__acpStore.dispatch(native.sendAgentRequestThunk(parent.providerId,
         { method: 'session/new', params: { cwd: name.root, mcpServers: name.mcp ? [name.mcp] : [],
@@ -451,7 +497,7 @@
           reasoningEffort: settings.effort ?? conversation.latestReasoningEffort, attachmentContext: name.composer }));
       } else if (app === 'cursor') {
         submitted = cursorSessionServices().composer.composerChatService.submitChatMaybeAbortCurrent(id, name.text,
-          { skipClearInput: true, skipFocusAfterSubmission: true, _internalPreserveDraft: true, ignoreQueuing: name.when === 'now' });
+          { ...(remoteContext ? { skipClearInput: true, skipFocusAfterSubmission: true, _internalPreserveDraft: true } : {}), ignoreQueuing: name.when === 'now' });
       } else {
         const native = await import('@exa/chat-client'), session = devinSessionRecord(id);
         fusionDevinState(id);
@@ -521,7 +567,11 @@
       if (!session) throw new Error('没有找到这个会话');
       if (action === 'rename') {
         if (session.createdFromBackgroundAgent?.bcId) await services.background.renameBackgroundComposer(session.createdFromBackgroundAgent.bcId, name);
-        else await services.composer.renameComposer(id, name);
+        else {
+          await services.composer.renameComposer(id, name, { throwOnFailure: true });
+          await services.data.persistComposerWorkspacePlacement(id, { name });
+          await services.data.syncComposerHeadersFromCanonicalStorage();
+        }
       } else if (action === 'delete') {
         if (services.data.allComposersData.allComposers.length > 1) await services.composer.deleteComposer(id);
         else await services.composer.resetComposer(id);

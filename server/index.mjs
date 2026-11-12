@@ -21,10 +21,12 @@ import { saveFusionRuns, initializeFusionState } from './fusion/state.mjs';
 import { recoverFusionRuns } from './fusion/runner.mjs';
 import { terminalService } from './terminal-service.mjs';
 import { openCode } from './opencode/state.mjs';
+import { codexBackend } from './codex/state.mjs';
 for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) process.once(signal, () => {
   saveFusionRuns();
   terminalService.dispose();
   openCode.close();
+  codexBackend.close();
   process.exit(code);
 });
 
@@ -87,9 +89,12 @@ server.listen(PORT, HOST, async () => {
   clearLegacyFusionWindows();
   recoverFusionRuns();
   startWatcher({
-    listWindows: nativeTargets,
-    openCdp: async ws => { const c = new NativeCdp(ws); await c.connect(); return c; },
-    readStates: async cdp => (await nativeWindow(cdp).read()).states,
+    listWindows: () => [...nativeTargets(), ...(codexBackend.threads.size ? [{ id: 'codex:backend', pageId: 'backend', title: 'Codex', app: 'codex', ws: 'codex-backend', kind: 'api' }] : [])],
+    openCdp: async ws => {
+      if (ws === 'codex-backend') return { backend: true, close() {} };
+      const c = new NativeCdp(ws); await c.connect(); return c;
+    },
+    readStates: async cdp => cdp.backend ? codexBackend.states() : (await nativeWindow(cdp).read()).states,
   });
   try {
     const wins = await listWindows();

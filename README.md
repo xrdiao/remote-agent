@@ -178,7 +178,7 @@ PNG、JPEG、GIF、WebP 保留图片输入，需要 OpenCode 所选模型和推�
 
 ## Fusion
 
-Fusion 是 RA 的持续主工作台。你始终与一个原生主 Agent 对话，由它理解需求、规划和验收，并在需要时调用原生子 Agent。**当前主 Agent 限 Codex；子 Agent 可使用 Cursor、Devin 或 Codex。**各软件必须有可用的桌面窗口与实际模型候选。Devin 自己模型菜单中的 Fusion 是另一项原生能力。
+Fusion 是 RA 的持续主工作台。你始终与一个原生主 Agent 对话，由它理解需求、规划和验收，并在需要时调用原生子 Agent。**主 Agent 与子 Agent 的原生 provider 支持 Cursor、Devin 和 Codex，具体候选以当前电脑的模型菜单为准；OpenCode 尚未接入 Fusion。**Codex 可使用 RA 后台会话，Cursor／Devin 使用可用的原生窗口。候选可选不代表所有执行分支均已验收；当前后台问卷与正文读取／终态核对的已知缺口见[合并修复方案](docs/testing/backend-runtime-fixes-v450-20261112.md)。Devin 自己模型菜单中的 Fusion 是另一项原生能力。
 
 ### 开始使用
 

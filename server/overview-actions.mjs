@@ -7,6 +7,8 @@ import { NativeCdp, nativeWindowAt } from './native-windows.mjs';
 import { catalogSessions, storedProjectSession } from './project-windows.mjs';
 import { manageFusionWorkbench } from './fusion/owner.mjs';
 import { manageOpenCodeSession } from './apps/opencode.mjs';
+import { codexBackend, CODEX_BACKEND } from './codex/state.mjs';
+import { publishSessionChange } from '../lib/session-library.mjs';
 
 export async function manageOverviewSession(deviceId, body) {
   if (body.computer !== computerId()) throw new Error('所选电脑已变化，请刷新概览后重试');
@@ -27,6 +29,12 @@ export async function manageOverviewSession(deviceId, body) {
   if (action === 'copyLink') {
     if (app !== 'codex' || session.host) throw new Error('此会话没有本地 deeplink');
     return { text: `codex://threads/${threadId}` };
+  }
+  if (app === 'codex' && windowId === CODEX_BACKEND) {
+    if (action === 'actions') return { actions: ['rename', 'archive'] };
+    await codexBackend.manage(threadId, action, body.name);
+    publishSessionChange('codex', threadId, { action, ...(action === 'rename' ? { title: body.name } : {}) });
+    return { ok: true };
   }
   if (session.dormant) {
     if (action === 'actions') return { actions: [] };

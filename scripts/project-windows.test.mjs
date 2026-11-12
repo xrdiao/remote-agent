@@ -8,6 +8,17 @@ import { FusionScheduler } from '../server/fusion/scheduler.mjs';
 const source = fs.readFileSync(new URL('../server/project-windows.mjs', import.meta.url), 'utf8')
   .replace(/^import .*;\n/gm, '').replace(/^export /gm, '').replaceAll('import.meta.url', JSON.stringify(new URL('../server/project-windows.mjs', import.meta.url).href));
 
+test('automatic window binding is stable across discovery order and switches only after a new successful binding', () => {
+  const h = fixture();
+  const read = expression => JSON.parse(vm.runInContext(`JSON.stringify(${expression})`, h.context));
+  assert.deepEqual(read("orderedProjectWindows('cursor',[{id:'two'},{id:'one'}]).map(row=>row.id)"), ['one', 'two']);
+  vm.runInContext("bindProjectWindow('cursor','cursor:two')", h.context);
+  assert.deepEqual(read("orderedProjectWindows('cursor',[{id:'one'},{id:'two'}]).map(row=>row.id)"), ['two', 'one']);
+  assert.deepEqual(read("orderedProjectWindows('cursor',[{id:'one'}]).map(row=>row.id)"), ['one']);
+  assert.equal(read("ownedProjectWindow('cursor','one')"), true);
+  assert.equal(read("ownedProjectWindow('cursor','two')"), false);
+});
+
 function fixture({ favorite = false, keep = false, owned = true, failClose = false, focused = false, nativeFocus = 2, busy = false, processes = [], singleWindow = false, nativePid = 0, endpointCloses = false } = {}) {
   const library = { cursor: { session: { favorite } } }, calls = [], closed = new Set(), probes = [];
   const pages = (singleWindow ? ['one'] : ['one', 'two']).map((id, i) => ({ id, title: 'same title', type: 'page', url: 'workbench', webSocketDebuggerUrl: id, handle: i + 1 }));

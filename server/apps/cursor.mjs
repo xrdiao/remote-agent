@@ -160,8 +160,11 @@ export const adapter = {
     await this.typeText(text);
   },
 
-  async submitPrompt(now, busy, when, queued) {
-    return this.submitPromptKey(now ? mod('Enter') : 'Enter', queued);
+  async submitPrompt(now, busy, when, queued, mentions, receipt) {
+    return this.submitPromptKey('', queued, async () => {
+      const text = await this.cdp.evaluate(helpersCall('composerDraft()'));
+      await this.cdp.evaluate(helpersCall(`nativeSessionAction('cursor', ${JSON.stringify(this.threadId)}, 'send', ${JSON.stringify({ text, requestId: receipt.requestId, when: when || '' })})`));
+    });
   },
 
   async fileAgentMarks(f, text, changes, diff) {

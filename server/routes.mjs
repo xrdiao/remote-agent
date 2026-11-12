@@ -40,8 +40,10 @@ const flag = (v, s, m) => (typeof v === 'function' ? v(s, m) : !!v);
 export const SKIP = Symbol('route-skip');
 export function resolveRoute(session, type) {
   const route = ROUTES[type];
-  const native = session.app === 'opencode' && session.adapter.routes[type];
-  return native ? { ...route, native: true, run: (s, m) => native.call(s, m) } : route;
+  const native = session.codexBackend ? session.adapter.backendRoutes[type] : session.app === 'opencode' && session.adapter.routes[type];
+  if (!native) return route;
+  const run = (s, m) => native.call(s, m);
+  return { ...route, native: true, run, ...(session.codexBackend && route?.fastRun ? { fastRun: run } : {}) };
 }
 const fusionRoute = method => ({ fast: true, fastRun: async (session, message) => {
   try { return await session[method](message); }
@@ -228,7 +230,7 @@ export const ROUTES = {
         return;
       }
       if (!s.visible) { s.chatUpdatesStop?.(); s.chatUpdatesStop = null; }
-      if (!s.editorCdp && s.app !== 'opencode' && s.mode !== 'screen') return;
+      if (!s.editorCdp && s.app !== 'opencode' && !s.codexBackend && s.mode !== 'screen') return;
       if (!s.visible && s.mode === 'screen') return s.stopVisual();
       if (s.visible) return s.setMode(s.mode);
     },
@@ -457,6 +459,7 @@ export const ROUTES = {
   mentionQuery: { switchRead: true,  run: (s, m) => s.mentionQuery(String(m.q ?? '').slice(0, 80), m.cat ? String(m.cat).slice(0, 40) : '', Number(m.seq) || 0, m.trigger === '/' ? '/' : '@', { text: String(m.text ?? ''), start: m.start, caret: m.caret }) },
   codexRequest: {
     run: async (s, m) => {
+      if (s.app === 'devin') return s.adapter.answerRequest.call(s, m);
       if (s.app !== 'codex') return;
       if (m.field != null) {
         if (!await s.cdp.evaluate(helpersCall(`codexRequestField(${JSON.stringify(String(m.id))}, ${Number(m.field)}, ${JSON.stringify(String(m.value || ''))})`))) throw new Error('请求输入框已不存在');
@@ -474,8 +477,8 @@ export const ROUTES = {
   },
   opencodeQuestion: {
     run: (s, m) => s.adapter.routes.opencodeQuestion.call(s, m),
-    after: (s, m) => s.emit({ t: 'opencodeQuestionDone', sel: s.selectionKey(), id: m.id, ok: true }),
-    fail: (s, m, error) => s.emit({ t: 'opencodeQuestionDone', sel: s.selectionKey(), id: m.id, ok: false, error: error.message }),
+    after: (s, m) => s.emit({ t: 'opencodeQuestionDone', requestId: m.requestId, sel: s.selectionKey(), id: m.id, ok: true }),
+    fail: (s, m, error) => s.emit({ t: 'opencodeQuestionDone', requestId: m.requestId, sel: s.selectionKey(), id: m.id, ok: false, error: error.message }),
   },
   codexPick: { run: (s, m) => s.codexPick(m) },
   codexSkills: { switchRead: true,  run: s => s.codexSkillList() },

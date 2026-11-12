@@ -19,6 +19,26 @@ let scanning = false;
 let activityWriteTimer;
 const persist = () => { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(file, JSON.stringify(saved), { mode: 0o600 }); };
 
+export function bindProjectWindow(app, id) {
+  const value = key(app, id);
+  if (saved.bindings?.[app] === value) return;
+  (saved.bindings ||= {})[app] = value;
+  persist();
+}
+
+export function orderedProjectWindows(app, pages) {
+  return [...pages].sort((a, b) => {
+    const rank = page => key(app, page.pageId || page.id) === saved.bindings?.[app] ? 0
+      : saved.windows[key(app, page.pageId || page.id)]?.owned ? 1 : 2;
+    return rank(a) - rank(b) || String(a.pageId || a.id).localeCompare(String(b.pageId || b.id));
+  });
+}
+
+export function ownedProjectWindow(app, id) {
+  const row = saved.windows[key(app, id)];
+  return row?.owned === true && !row.keep;
+}
+
 export function trackProjectWindow(app, page, root, created = false) {
   const k = key(app, page.id), old = saved.windows[k];
   saved.windows[k] = { ...old, app, id: page.id, root, title: page.title, owned: created || !!old?.owned, lastUsed: Date.now(), closed: false };

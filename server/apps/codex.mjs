@@ -5,13 +5,365 @@ import { IS_WIN, mod, normPath, pathKey } from '../../lib/platform.mjs';
 import { codexWindows, codexContext } from '../windows.mjs';
 import { CODEX_CDP_URL } from '../config.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
-import { FOCUS_COMPOSER, codexUsage } from '../agent/context.mjs';
+import { AgentContext, FOCUS_COMPOSER, codexUsage } from '../agent/context.mjs';
 import { resetThinkingCaches } from '../agent/thinking-cache.mjs';
 import { computerId, saveState } from '../../lib/auth.mjs';
 import { conversationProjects, fusionProject } from '../fusion/state.mjs';
 import { removeLibrarySession, publishSessionChange, rememberSessionMessage } from '../../lib/session-library.mjs';
-import { NativeCdp, nativeWindowAt } from '../native-windows.mjs';
+import { NativeCdp, nativeWindowAt, nativeSessionCatalog, nativeTargets } from '../native-windows.mjs';
 import { currentOperation } from '../operations.mjs';
+import { codexBackend, CODEX_BACKEND } from '../codex/state.mjs';
+import { safeHomePath, createProjectFolder, projectList, openFolder } from '../agent/projects.mjs';
+import { rememberSelection } from '../../lib/auth.mjs';
+import { uploads, pendingUploads, uploadAttachments, removeUpload } from '../../lib/uploads.mjs';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import { resolveLocal, writeTextFile } from '../../lib/files.mjs';
+import { watchChatUpdates } from '../agent/updates.mjs';
+import { orderedProjectWindows, bindProjectWindow, nativeCloseProjectWindow } from '../project-windows.mjs';
+import { leaseWindow } from '../window-use.mjs';
+
+function backendAgentRows(s) {
+  return [...codexBackend.records.values()].map(row => ({ id: `thread:${CODEX_BACKEND}:${row.id}`,
+    title: row.title, workspace: row.cwd, window: path.basename(row.cwd), group: '', lastUsed: row.updatedAt * 1000,
+    current: s.codexBackend && row.id === s.threadId, running: !codexBackend.threads.get(row.id)?.disconnected && (codexBackend.threads.get(row.id)?.turns.some(turn => turn.status === 'inProgress') || false) }));
+}
+
+async function backendSkills(s) {
+  const { data } = await codexBackend.client.request('skills/list', { cwds: [s.codexDirectory] });
+  return data.flatMap(entry => entry.skills.filter(skill => skill.enabled).map(skill => ({ label: skill.name,
+    sub: skill.shortDescription || skill.description, key: skill.path, path: skill.path, section: 'Skills' })));
+}
+
+function backendAttached(s, initial = false) {
+  s.emit({ t: 'attached', id: 'codex', app: 'codex', title: 'Codex', appName: 'Codex',
+    windowId: CODEX_BACKEND, threadId: s.threadId, project: path.basename(s.codexDirectory),
+    sel: s.selectionKey(), ready: true, initial,
+    capabilities: { ...capabilities, extraActions: false } });
+}
+
+function backendPublish(s, sent) {
+  if (!codexBackend.threads.has(s.threadId)) return false;
+  s.emit({ t: 'chat', sel: s.selectionKey(), chat: codexBackend.chat(s.threadId, s.codexHistoryLimit || 40) }, sent);
+  return true;
+}
+
+async function bindBackend(s, req) {
+  const directory = safeHomePath(req.project?.root || codexBackend.records.get(req.threadId)?.cwd || s.codexDirectory || os.homedir()).real;
+  const id = req.threadId || (!req.newSession && [...codexBackend.records.values()].filter(row => path.resolve(row.cwd) === directory)
+    .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))[0]?.id);
+  const thread = await awaitCdpRead(id ? codexBackend.load(id) : codexBackend.create(directory));
+  if (path.resolve(thread.cwd) !== directory) throw new Error('Codex 会话不属于所选项目');
+  cdpRead.getStore()?.throwIfAborted();
+  s.detach();
+  s.clearViewState();
+  s.app = s.targetId = 'codex';
+  s.codexBackend = true;
+  s.codexPageId = '';
+  s.windowId = CODEX_BACKEND;
+  s.codexDirectory = thread.cwd;
+  s.threadId = s.selectedThread = thread.id;
+  s.bindingReady = true;
+  s.selectionHome = false;
+  s.codexHistoryLimit = 40;
+  rememberSelection(s.deviceId, { id: 'codex', app: 'codex', windowId: CODEX_BACKEND, threadId: thread.id, project: { root: thread.cwd, host: '' } });
+  backendAttached(s, req.initial === true);
+  await s.setMode(s.mode, true);
+  if (req.project) s.projectReady({ root: directory, newSession: !id, threadId: id });
+}
+
+async function backendSettingsOwner(s) {
+  if (!s.codexBackendSettings) {
+    const context = new AgentContext({ deviceId: s.deviceId });
+    context.app = 'codex';
+    context.emit = message => s.emit(message);
+    const owner = s.codexBackendSettings = { context };
+    owner.ready = (async () => {
+      let page = orderedProjectWindows('codex', await codexWindows(CODEX_CDP_URL))[0];
+      if (!page) {
+        await openFolder(s.codexDirectory, 'codex', true, true);
+        const deadline = Date.now() + 30000;
+        while (!page && Date.now() < deadline) {
+          page = orderedProjectWindows('codex', await codexWindows(CODEX_CDP_URL))[0];
+          if (!page) await awaitCdpRead(new Promise(resolve => setTimeout(resolve, 120)));
+        }
+        if (!page) throw new Error('Codex 设置窗口尚未就绪');
+        owner.created = true;
+      }
+      owner.page = page;
+      owner.release = leaseWindow('codex', page.pageId, owner);
+      bindProjectWindow('codex', page.pageId);
+      context.editorCdp = new Cdp(page.ws);
+      await context.editorCdp.connect();
+      if (!page.chatWs) {
+        const pageId = page.pageId;
+        await context.withFocus(async () => {
+          await context.key(mod('Shift+p'), { cdp: context.editorCdp });
+          await context.editorCdp.send('Input.insertText', { text: 'Codex: Open Codex Sidebar' });
+          await context.key('Enter', { cdp: context.editorCdp });
+        });
+        const deadline = Date.now() + 30000;
+        while (!page?.chatWs && Date.now() < deadline) {
+          page = (await codexWindows(CODEX_CDP_URL, false, pageId))[0];
+          if (!page?.chatWs) await awaitCdpRead(new Promise(resolve => setTimeout(resolve, 120)));
+        }
+        if (!page?.chatWs) throw new Error('Codex 设置需要已就绪的桌面插件侧边栏');
+      }
+      context.cdp = new Cdp(page.chatWs);
+      await context.cdp.connect();
+      return owner;
+    })();
+  }
+  return awaitCdpRead(s.codexBackendSettings.ready);
+}
+
+async function closeBackendSettings(s, owner = s.codexBackendSettings) {
+  if (s.codexBackendSettings === owner) s.codexBackendSettings = null;
+  if (!owner) return;
+  return owner.closing ||= (async () => {
+    const context = owner.context;
+    try {
+      await owner.ready;
+      await context.closeCodexSettings();
+    } finally {
+      clearTimeout(context.focusTimer);
+      try {
+        try {
+          await Promise.all([...new Set([context.cdp, context.editorCdp])].filter(Boolean).map(async cdp => {
+            try { await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: false }); }
+            finally { cdp.close(); }
+          }));
+        } finally { if (owner.created) await nativeCloseProjectWindow({ webSocketDebuggerUrl: owner.page.ws }); }
+      } finally { owner.release?.(); }
+    }
+  })();
+}
+
+async function withBackendSettings(s, action) {
+  const ready = backendSettingsOwner(s), owner = s.codexBackendSettings;
+  try {
+    const { context } = await ready;
+    return await context.withFocus(() => action(context));
+  } catch (error) {
+    try { await cdpRead.run(null, () => closeBackendSettings(s, owner)); }
+    finally { throw error; }
+  }
+}
+
+const backendRoutes = {
+  settings(m) { return withBackendSettings(this, context => context.showCodexSettings('', m.requestId)); },
+  codexSetting(m) { return withBackendSettings(this, context => context.showCodexSettings(String(m.id || ''), m.requestId, typeof m.value === 'string' ? m.value : undefined)); },
+  codexInstructions(m) { return withBackendSettings(this, context => context.saveCodexInstructions(String(m.text || ''), m.requestId)); },
+  closeCodexSettings() { return closeBackendSettings(this); },
+  async click(m) {
+    let clicked = false;
+    try {
+      if (m.sel !== this.selectionKey()) throw new Error('会话已切换，请使用当前会话的按钮');
+      if (!['fork', 'capacity-retry'].includes(m.actionId) || !codexBackend.chat(this.threadId, this.codexHistoryLimit || 40).items.some(item => item.btnItem === m.item && item.actions?.[m.n] === m.actionId))
+        throw new Error('请求已更新，请查看最新选项');
+      if (m.actionId === 'capacity-retry') await codexBackend.retry(this.threadId, m.item);
+      else {
+        const thread = await awaitCdpRead(codexBackend.fork(this.threadId, m.item));
+        await bindBackend(this, { threadId: thread.id });
+      }
+      clicked = true;
+    } finally { this.emit({ t: 'clickDone', item: m.item, actionId: m.actionId, sel: m.sel, clicked, requestId: m.requestId }); }
+  },
+  codexRetry(m) {
+    if (m.sel !== this.selectionKey()) return;
+    this.codexRetrySettings = { ...m };
+    codexBackend.setRetry(this, this.threadId, { enabled: m.enabled === true && this.visible && this.mode === 'chat',
+      count: Math.max(1, Math.min(5, Math.round(Number(m.count) || 1))),
+      notify: result => this.emit({ t: 'codexRetryState', sel: m.sel, ...result }) });
+  },
+  async agents(m) {
+    const list = backendAgentRows(this), windows = nativeTargets().filter(row => row.app === 'codex');
+    for (const row of nativeSessionCatalog('codex')?.rows || []) {
+      if (row.archived || codexBackend.owns(row.id)) continue;
+      const win = windows.find(win => nativeWindowAt(win.ws)?.roots?.some(root => root.root === row.workspace && (root.host || '') === (row.host || ''))) || windows[0];
+      if (win) list.push({ ...row, id: `thread:${win.pageId || win.id}:${row.id}`, window: path.basename(row.workspace || '') || win.title, group: '', current: false });
+    }
+    list.unshift({ id: `new:${CODEX_BACKEND}:${encodeURIComponent(this.codexDirectory)}`, title: '＋ 新建会话', window: path.basename(this.codexDirectory), workspace: this.codexDirectory, group: '', ui: true });
+    this.emit({ t: 'agents', app: 'codex', sel: this.selectionKey(), silent: m.silent === true, list });
+  },
+  async openAgent(m) {
+    const [kind, windowId, ...rest] = m.id.split(':');
+    if (windowId !== CODEX_BACKEND) return this.attach({ id: 'codex', windowId, threadId: rest.join(':') });
+    return bindBackend(this, kind === 'new' ? { project: { root: decodeURIComponent(rest.join(':')) }, newSession: true } : { threadId: rest.join(':') });
+  },
+  newProjectChat() { return bindBackend(this, { project: { root: this.codexDirectory }, newSession: true }); },
+  openProject(m) { return bindBackend(this, { project: { root: m.path }, newSession: m.newSession }); },
+  newProject(m) { return bindBackend(this, { project: { root: createProjectFolder(m.parent, m.name) }, newSession: true }); },
+  projects(m) {
+    const data = projectList(m.path || '');
+    if (!m.path) data.recent = [...new Set([...codexBackend.records.values()].map(row => row.cwd))].map(root => ({ name: path.basename(root), path: root }));
+    this.emit({ t: 'projects', ...data });
+  },
+  send(m) { return this.sendMessage(String(m.text || ''), m.submit !== false, m.when, m.mentions || [], { requestId: m.requestId, draft: m.draft, text: m.text, draftEpoch: m.draftEpoch }); },
+  draft(m) {
+    const read = m.text === undefined, key = this.selectionKey();
+    this.codexDrafts ||= new Map();
+    if (!read) { this.codexDrafts.set(key, String(m.text)); this.draftEpoch = m.draftEpoch; }
+    this.emit({ t: 'draftAck', sel: key, ok: true, text: this.codexDrafts.get(key) || '', read, draftEpoch: this.draftEpoch || '', revision: m.revision });
+  },
+  async stop() {
+    const thread = await codexBackend.load(this.threadId);
+    const turn = thread.turns.findLast(turn => turn.status === 'inProgress');
+    if (turn) await codexBackend.client.request('turn/interrupt', { threadId: this.threadId, turnId: turn.id });
+  },
+  async refresh() { await codexBackend.refresh(this.threadId); backendPublish(this); },
+  scrollChat(m) {
+    if (!m.history) return;
+    this.codexHistoryLimit += 40;
+    const chat = codexBackend.chat(this.threadId, this.codexHistoryLimit);
+    this.emit({ t: 'historyPage', sel: this.selectionKey(), thread: this.threadId, requestId: m.requestId, items: chat.items, earlier: chat.earlier });
+    this.emit({ t: 'historyDone', sel: this.selectionKey(), requestId: m.requestId, earlier: chat.earlier });
+  },
+  async openMenu(m) {
+    const thread = codexBackend.threads.get(this.threadId), settings = thread.settings;
+    const { data } = await codexBackend.client.request('model/list', {});
+    const current = data.find(row => row.model === (settings.model || thread.model));
+    const items = m.kind === 'model' ? data.filter(row => !row.hidden).map(row => ({ label: row.displayName, id: row.model, checked: current?.model === row.model }))
+      : m.kind === 'effort' ? (current?.supportedReasoningEfforts || []).map(row => ({ label: row.reasoningEffort, checked: row.reasoningEffort === (settings.effort ?? settings.reasoningEffort) }))
+      : m.kind === 'permission' ? ['Ask for approval', 'Full access'].map(label => ({ label, checked: label === codexBackend.chat(this.threadId).permission }))
+      : m.kind === 'fast' ? ['Standard', 'Fast'].map(label => ({ label, checked: (settings.serviceTier === 'fast' ? 'Fast' : 'Standard') === label })) : [];
+    this.emit({ t: 'menu', kind: m.kind, requestId: m.requestId, sel: this.selectionKey(), items,
+      fast: { on: settings.serviceTier === 'fast' } });
+  },
+  async pickMenu(m) {
+    let update;
+    if (m.kind === 'codex-chat') {
+      if (m.label === 'Archive') return backendRoutes.codexArchive.call(this, { id: `thread:backend:${this.threadId}` });
+      return backendRoutes.codexRename.call(this, { id: `thread:backend:${this.threadId}`, name: m.name });
+    }
+    if (m.kind === 'model') {
+      const { data } = await codexBackend.client.request('model/list', {});
+      const model = data.find(row => row.displayName === m.label);
+      if (!model) throw new Error('Codex 模型已不存在');
+      update = { model: model.model, effort: model.defaultReasoningEffort };
+    } else if (m.kind === 'effort') update = { effort: m.label };
+    else if (m.kind === 'permission') update = { approvalPolicy: m.label === 'Full access' ? 'never' : 'on-request', sandboxPolicy: { type: m.label === 'Full access' ? 'dangerFullAccess' : 'workspaceWrite', ...(m.label === 'Full access' ? {} : { writableRoots: [this.codexDirectory], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false }) } };
+    else if (m.kind === 'fast') update = { serviceTier: m.label === 'on' || m.label === 'Fast' ? 'fast' : null };
+    else throw new Error('当前后台没有此设置');
+    await codexBackend.client.request('thread/settings/update', { threadId: this.threadId, ...update });
+    Object.assign(codexBackend.threads.get(this.threadId).settings, update);
+    if (m.kind === 'fast') this.emit({ t: 'fastState', sel: this.selectionKey(), fast: { on: update.serviceTier === 'fast' } });
+    codexBackend.changed(this.threadId);
+  },
+  codexRequest(m) {
+    if (m.field != null) return;
+    codexBackend.answer(this.threadId, m.id, m.n, m.fields);
+  },
+  async queue(m) {
+    const id = this.threadId, row = codexBackend.queues.get(id)?.find(row => row.id === m.id);
+    if (!row) throw new Error('排队消息已不存在');
+    if (m.action === 'read') return row.input.filter(part => part.type === 'text').map(part => part.text).join('\n');
+    if (m.action === 'edit') await codexBackend.client.request('thread/queue/update', { threadId: id, queuedSubmissionId: m.id,
+      input: [{ type: 'text', text: m.text }, ...row.input.filter(part => part.type !== 'text')] });
+    else if (m.action === 'send') await codexBackend.startQueued(id, m.id);
+    else await codexBackend.client.request('thread/queue/delete', { threadId: id, queuedSubmissionId: m.id });
+    await codexBackend.readQueue(id);
+    return { queued: m.action !== 'send' };
+  },
+  attachments() { this.emit({ t: 'attachments', sel: this.selectionKey(), list: uploadAttachments(this.selectionKey()) }); },
+  image(m) {
+    const file = uploads.get(m.uploadId);
+    if (!file?.image || file.deviceId !== this.deviceId || file.sel !== this.selectionKey()) throw new Error('找不到当前会话的上传图片');
+    if (this.imageTransfers?.get(m.clientImageId)?.cancelled) return;
+    if (m.replace) {
+      if (uploads.get(m.replace)?.sel !== file.sel) throw new Error('原图片已不在当前输入框中');
+      removeUpload(m.replace);
+    }
+    file.pending = true;
+    backendRoutes.attachments.call(this);
+    return m.uploadId;
+  },
+  removeAttachment(m) {
+    if (uploads.get(m.id)?.sel !== this.selectionKey()) throw new Error('附件不属于当前会话');
+    removeUpload(m.id); return backendRoutes.attachments.call(this);
+  },
+  async editImage(m) {
+    const file = uploads.get(m.id);
+    if (!file || file.sel !== this.selectionKey()) throw new Error('图片不属于当前会话');
+    this.emit({ t: 'imageEdit', id: m.id, sel: this.selectionKey(), data: `data:${file.type};base64,${(await fs.readFile(file.path)).toString('base64')}`, name: file.name, type: file.type });
+  },
+  file(m) { return this.openFile(m.path, m.diff || '', m.changes === true, m.requestId); },
+  async saveFile(m) {
+    const file = await resolveLocal({ root: this.codexDirectory, host: '' }, m.path);
+    const relative = path.relative(this.codexDirectory, file.path);
+    if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) throw new Error('只能修改当前项目里的文件');
+    const size = await writeTextFile(file.path, String(m.text));
+    this.emit({ t: 'saved', requestId: m.requestId, path: m.path, host: '', ok: true, size });
+  },
+  changes() {
+    const thread = codexBackend.threads.get(this.threadId);
+    const files = thread.turns.flatMap(turn => turn.items.filter(item => item.type === 'fileChange').flatMap(item => item.changes.map(row => ({ name: row.path, diff: row.diff }))));
+    this.emit({ t: 'changes', historical: true, actions: [], files });
+  },
+  async usage(m) {
+    const result = await codexBackend.client.request('account/rateLimits/read', {});
+    const limits = result.rateLimits;
+    this.emit({ t: 'usage', sel: this.selectionKey(), automatic: m.automatic, updated: Date.now(), context: codexBackend.chat(this.threadId).context,
+      ...(limits ? { plan: limits.planType || '', limits: [limits.primary, limits.secondary].filter(Boolean).map(row => ({ label: row.windowDurationMins < 1440 ? '5h' : 'Weekly', pct: row.usedPercent, basis: 'used', reset: new Date(row.resetsAt * 1000).toLocaleString('zh-CN') })) } : {}) });
+  },
+  async codexPlan() {
+    const thread = codexBackend.threads.get(this.threadId), settings = thread.settings;
+    const collaborationMode = { mode: settings.collaborationMode?.mode === 'plan' ? 'default' : 'plan',
+      settings: { model: settings.model || thread.model, reasoning_effort: settings.effort ?? settings.reasoningEffort ?? null } };
+    await codexBackend.client.request('thread/settings/update', { threadId: this.threadId, collaborationMode });
+    settings.collaborationMode = collaborationMode;
+    codexBackend.changed(this.threadId);
+  },
+  async codexSkills() { this.emit({ t: 'codexSkills', rows: await backendSkills(this) }); },
+  async mentionQuery(m) {
+    let rows;
+    if (m.trigger === '/') rows = (await backendSkills(this)).filter(row => (row.label + ' ' + row.sub).toLowerCase().includes(String(m.q || '').toLowerCase()));
+    else {
+      const { files } = await codexBackend.client.request('fuzzyFileSearch', { query: String(m.q || ''), roots: [this.codexDirectory] });
+      rows = files.map(file => ({ label: file.file_name, sub: file.path, key: path.resolve(file.root, file.path), section: 'files' }));
+    }
+    this.emit({ t: 'mentions', sel: this.selectionKey(), seq: m.seq, q: m.q, trigger: m.trigger, rows });
+  },
+  codexChat() { this.emit({ t: 'menu', kind: 'codex-chat', items: [{ label: 'Rename' }, { label: 'Archive' }] }); },
+  sessionActions(m) { this.emit({ t: 'sessionActions', app: 'codex', id: m.id, requestId: m.requestId, actions: ['rename', 'archive'] }); },
+  async sessionBatch(m) {
+    await this.batchSessions(m.ids, m.requestId, async row => {
+      const [, windowId, ...rest] = row.id.split(':'), id = rest.join(':');
+      if (windowId === CODEX_BACKEND) {
+        const thread = await codexBackend.load(id);
+        if (thread.turns.some(turn => turn.status === 'inProgress')) throw new Error('会话正在运行，已跳过');
+        return backendRoutes.codexArchive.call(this, { id: row.id });
+      }
+      const page = nativeTargets().find(win => win.app === 'codex' && (win.pageId || win.id) === windowId);
+      if (!page) throw new Error('这个窗口已经关闭');
+      const context = new AgentContext({ deviceId: this.deviceId, emit: message => this.emit(message) });
+      context.app = 'codex'; context.codexPageId = context.windowId = windowId;
+      context.cdp = new NativeCdp(page.ws);
+      context.listAgents = context.pollChat = async () => {};
+      context.publishThread = () => {};
+      try {
+        await context.cdp.connect();
+        context.threadId = await context.cdp.evaluate(helpersCall('codexThread()')) || '';
+        await context.archiveBatchSession(row);
+      } finally { context.cdp.close(); }
+    });
+    return backendRoutes.agents.call(this, {});
+  },
+  async codexRename(m) {
+    const id = m.id.split(':').at(-1);
+    await codexBackend.manage(id, 'rename', m.name);
+    publishSessionChange('codex', id, { action: 'rename', title: m.name });
+    return backendRoutes.agents.call(this, {});
+  },
+  async codexArchive(m) {
+    const id = m.id.split(':').at(-1);
+    await codexBackend.manage(id, 'archive');
+    publishSessionChange('codex', id, { action: 'archive' });
+    this.emit({ t: 'codexArchived', id: m.id });
+    return backendRoutes.agents.call(this, {});
+  },
+};
 
 function serializedCodexPrompt(cdp, thread) {
   const call = `nativeSessionInfo('codex', ${JSON.stringify(thread)}, 'draft')`;
@@ -40,6 +392,44 @@ async function readCodexMenu(context, button, select = items => items.length ? i
 }
 
 export const adapter = {
+  backendRoutes,
+  closeBackendSettings() { return closeBackendSettings(this); },
+  attachBackend(req) { return bindBackend(this, req); },
+  async setBackendMode() {
+    await awaitCdpRead(codexBackend.load(this.threadId));
+    if (!this.visible) { backendPublish(this); return; }
+    const stop = watchChatUpdates(this, refresh => codexBackend.subscribe(this.threadId, error => {
+      if (error) this.emit({ t: 'status', ok: false, msg: error.message });
+      refresh();
+    }), sent => backendPublish(this, sent));
+    this.chatUpdatesStop = () => { codexBackend.clearRetry(this); stop(); };
+    if (this.codexRetrySettings) backendRoutes.codexRetry.call(this, this.codexRetrySettings);
+    backendPublish(this);
+  },
+  async sendBackendMessage(text, submit, when, mentions, receipt) {
+    if (!submit) return backendRoutes.draft.call(this, { text, draftEpoch: receipt?.draftEpoch });
+    const id = this.threadId, sel = this.selectionKey(), files = pendingUploads(sel);
+    const input = text.trim() ? [{ type: 'text', text }] : [];
+    for (const [, file] of files) {
+      if (file.type?.startsWith('image/')) input.push({ type: 'image', url: `data:${file.type};base64,${(await fs.readFile(file.path)).toString('base64')}` });
+      else input.push({ type: 'text', text: `附加文件（请读取）：${file.path}` });
+    }
+    for (const mention of mentions || []) {
+      if (mention.section === 'Skills') input.push({ type: 'skill', name: mention.label, path: mention.path || mention.key });
+      else if (mention.section === 'files' || mention.path) input.push({ type: 'text', text: `引用文件：${mention.path || mention.key}` });
+    }
+    cdpRead.getStore()?.throwIfAborted();
+    const operation = currentOperation();
+    if (operation) operation.submitted = true;
+    const result = await codexBackend.send(id, input, when, receipt.requestId);
+    for (const [, file] of files) file.pending = false;
+    this.codexDrafts?.delete(sel);
+    rememberSessionMessage('codex', id, Date.now());
+    this.emit({ t: 'sent', ...receipt, ...result, sel, sentAt: Date.now() });
+    this.emit({ t: 'attachments', sel, list: uploadAttachments(sel) });
+    if (this.selectionKey() === sel) backendPublish(this);
+    return result.queued;
+  },
   async newChat() {
     return this.newCodexChat();
   },
@@ -85,6 +475,7 @@ export const adapter = {
           return parts.at(-1) || '';
         };
         for (const row of rows) {
+          if (codexBackend.owns(row.id)) continue;
           if (seen.has(row.id)) continue;
           seen.add(row.id);
           const owner = pages.find((page, i) => states[i]?.thread === row.id && states[i]?.roots?.includes(row.workspace))
@@ -109,6 +500,7 @@ export const adapter = {
         list.push({ id: `win:${p.pageId}`, title: '打开这个窗口', window: group, group: '', current: false, running: !!state?.busy || (state?.progress > 0), ui: true });
       }
     }
+    list.push(...backendAgentRows(this));
     const projectKey = (root, host) => `${host || ''}\0${pathKey(root, !host)}`;
     const projects = new Map();
     for (const row of list) if (row.workspace) {
@@ -125,6 +517,7 @@ export const adapter = {
   },
 
   async currentRoots() {
+    if (this.codexBackend) return [{ root: this.codexDirectory, host: '' }];
     return (await editorRoots(this.editorCdp, 'codex')).filter(w => !w.host);
   },
 
@@ -181,6 +574,7 @@ export const adapter = {
   },
 
   async terminalProject() {
+    if (this.codexBackend) return { root: this.codexDirectory, host: '' };
     return this.cdp.evaluate(`(() => {
       const h = ${PAGE_SRC};
       if ((h.codexThread() || '') !== ${JSON.stringify(this.threadId || '')})
@@ -282,7 +676,7 @@ export const adapter = {
 
   async fileAgentMarks(f, text, changes, diff) {
     const edits = new Map();
-    for (const file of changes.files) for (const hunk of (file.diff || '').split(/^@@[^\n]*\n/m)) {
+    for (const file of changes?.files || []) for (const hunk of (file.diff || '').split(/^@@[^\n]*\n/m)) {
       const diff = hunk.split('\n').filter(l => /^[ +\-]/.test(l) && !/^---|^\+\+\+/.test(l)).map(l => [l[0], l.slice(1)]);
       if (diff.length) edits.set(edits.size, { kind: 'edit', f: file.name, diff });
     }
@@ -1112,16 +1506,6 @@ async insertCodexMention(m, before) {
 },
 
 async typeWithCodexMentions(text, mentions) {
-  let rest = text;
-  for (const m of mentions) {
-    const at = rest.indexOf(m.token);
-    if (at < 0) continue;
-    if (at > 0) await this.typeText(rest.slice(0, at));
-    rest = rest.slice(at + m.token.length);
-    const before = await this.codexPrompt();
-    if (await this.insertCodexMention(m, before)) rest = rest.replace(/^ /, '');
-    else await this.typeText(m.token);
-  }
-  if (rest) await this.typeText(rest);
+  return this.typeWithNativeMentions(text, mentions, async mention => this.insertCodexMention(mention, await this.codexPrompt()));
 }
 };

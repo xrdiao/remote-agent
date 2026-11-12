@@ -239,11 +239,11 @@ function codexAutoRetryCount() {
   return Number.isInteger(n) && n >= 1 && n <= 5 ? n : 1;
 }
 function showCodexRetryMenu() {
-  const enabled = codexAutoRetryEnabled(), count = codexAutoRetryCount();
+  const enabled = codexAutoRetryEnabled(), count = codexAutoRetryCount(), backend = currentComputer()?.windowId === 'backend';
   openSheet('codex-retry', `<h3>Codex 自动重试</h3>`
-    + `<button class="opt" data-act="codexRetryToggle" role="switch" aria-checked="${enabled}"><span class="lbl">自动点击 Retry<span class="sub">模型容量不足时自动点击电脑端 Retry</span></span><span class="switch${enabled ? ' on' : ''}" aria-hidden="true"></span></button>`
-    + `<label class="opt"><span class="lbl">每次最多点击次数<span class="sub">只限制同一条容量提示的自动点击次数</span></span><input id="codexRetryCount" type="number" min="1" max="5" step="1" value="${count}" ${enabled ? '' : 'disabled'}></label>`
-    + '<p class="hint">默认关闭；达到次数后保留 Retry 按钮，由你手动决定是否继续。</p><button class="opt" data-act="codexRetryBack">← 返回菜单</button>');
+    + `<button class="opt" data-act="codexRetryToggle" role="switch" aria-checked="${enabled}"><span class="lbl">${backend ? '自动重试' : '自动点击 Retry'}<span class="sub">${backend ? '模型容量不足且原生重试结束后，继续当前会话' : '模型容量不足时自动点击电脑端 Retry'}</span></span><span class="switch${enabled ? ' on' : ''}" aria-hidden="true"></span></button>`
+    + `<label class="opt"><span class="lbl">${backend ? '每次最多重试次数' : '每次最多点击次数'}<span class="sub">${backend ? '限制连续容量错误的自动重试次数；离开对话页后停止' : '只限制同一条容量提示的自动点击次数'}</span></span><input id="codexRetryCount" type="number" min="1" max="5" step="1" value="${count}" ${enabled ? '' : 'disabled'}></label>`
+    + `<p class="hint">默认关闭；达到次数后保留${backend ? '手动重试' : ' Retry '}按钮，由你决定是否继续。</p><button class="opt" data-act="codexRetryBack">← 返回菜单</button>`);
   $('codexRetryCount').onchange = () => {
     const n = Math.max(1, Math.min(5, Math.round(Number($('codexRetryCount').value) || 1)));
     store.set('codex-auto-retry-count', String(n));

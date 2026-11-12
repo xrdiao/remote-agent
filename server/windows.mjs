@@ -5,6 +5,7 @@ import { IS_WIN } from '../lib/platform.mjs';
 import { Cdp } from './cdp.mjs';
 import { EDITORS } from './config.mjs';
 import { openCode } from './opencode/state.mjs';
+import { codexBinary } from './codex/client.mjs';
 
 const targetReads = new Map();
 function editorTargets(base, timeout = 1500) {
@@ -43,6 +44,12 @@ export async function listWindows(report = null, app = null) {
     }
   }));
   const wins = lists.flat();
+  if ((!app || app === 'codex') && !wins.some(win => win.app === 'codex')) {
+    try {
+      await codexBinary();
+      wins.push({ id: 'codex', title: 'Codex', app: 'codex', kind: 'api' });
+    } catch (error) { report?.push({ app: 'codex', windows: 0, error: error.message }); }
+  }
   if (!app || app === 'opencode') wins.push(...await openCode.discover(report));
   if (!wins.length) throw new Error('连不上 Cursor、Devin 或 Codex。Cursor 用调试端口 9222，Devin 用 ./scripts/start-devin.sh（端口 9223），Codex 用 ./scripts/start-codex.sh（端口 9224）');
   return wins;

@@ -1,5 +1,6 @@
 // 项目与会话：项目目录、窗口复用、会话切换
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -11,7 +12,7 @@ import { listWindows, codexWindows, codexFolder } from '../windows.mjs';
 import { CDP_URL, DEVIN_CDP_URL, CODEX_CDP_URL, EDITORS } from '../config.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { fusionProject } from '../fusion/state.mjs';
-import { trackProjectWindow, storedProjectSession, fusionTargets } from '../project-windows.mjs';
+import { trackProjectWindow, storedProjectSession, fusionTargets, orderedProjectWindows, ownedProjectWindow } from '../project-windows.mjs';
 import { sessionId } from '../../lib/session-library.mjs';
 
 export function safeHomePath(input) {
@@ -202,6 +203,33 @@ export const methods = {
     signal?.throwIfAborted();
     const { real } = safeHomePath(folder);
     const app = this.app;
+    if (app === 'codex' && !this.fusionBinding && (newSession || !threadId))
+      return this.adapter.attachBackend.call(this, { project: { root: real }, newSession });
+    if (app === 'devin' && !this.fusionBinding && this.cdp) {
+      let selected = threadId.replace(/^tab:/, '');
+      if (!newSession && !selected) {
+        const catalog = await this.cdp.evaluate(helpersCall("nativeSessionInfo('devin', [], true)"));
+        selected = catalog.rows.filter(row => !row.archived && this.projectMatches([{ root: row.workspace, host: row.host || '' }], real))
+          .sort((a, b) => b.lastUsed - a.lastUsed || a.id.localeCompare(b.id))[0]?.id || '';
+      }
+      const native = selected && !newSession
+        ? await this.cdp.evaluate(helpersCall(`nativeSessionInfo('devin', ${JSON.stringify(selected)}, 'context')`))
+        : await this.cdp.evaluate(helpersCall(`nativeSessionAction('devin', ${JSON.stringify(this.threadId)}, 'create', ${JSON.stringify({ root: real, requestId: crypto.randomUUID() })})`));
+      if (!this.projectMatches(native.roots, real)) throw new Error('Devin 返回的会话项目与所选目录不一致');
+      const switching = this.switchingThread, previousCdp = this.cdp;
+      this.switchingThread = true;
+      this.bindingReady = false;
+      try {
+        await this.adapter.openAgent.call(this, native.threadId);
+        this.pendingProject = null;
+        this.bindingReady = true;
+        this.projectReady({ root: real, newSession, threadId: selected });
+      } finally {
+        if (switching) this.switchingThread = switching;
+        else await this.resumeProjectSwitch(previousCdp);
+      }
+      return;
+    }
     const editor = EDITORS.find(e => e.app === app);
     const belongs = roots => roots.some(w => !w.host && fusionProject(w.root)?.id === fusionProject(real)?.id);
     const ownId = this.windowId.replace(/^[^:]+:/, '');
@@ -216,7 +244,7 @@ export const methods = {
     let target, projectPages = [];
     const matching = async pages => {
       const found = await Promise.allSettled(pages.map(async page => {
-        const own = page.id === this.windowId.replace(/^[^:]+:/, '');
+        const own = this.editorCdp && page.id === this.windowId.replace(/^[^:]+:/, '');
         const cdp = own ? this.editorCdp : new Cdp(page.webSocketDebuggerUrl);
         try {
           if (!own) await cdp.connect();
@@ -234,7 +262,7 @@ export const methods = {
     }
     if (!target) {
       const pages = await (await fetch(`${editor.url}/json/list`, { signal })).json();
-      projectPages = pages.filter(p => p.type === 'page' && /workbench/.test(p.url));
+      projectPages = orderedProjectWindows(app, pages.filter(p => p.type === 'page' && /workbench/.test(p.url)));
       const known = (this.projectAgentWindows?.get(app) || []).filter(w => belongs([w.project || {}])).map(w => w.id.replace(/^[^:]+:/, ''));
       for (const id of new Set([ownerId, ownId, ...known])) {
         const page = projectPages.find(p => p.id === id);
@@ -245,6 +273,33 @@ export const methods = {
       if (!target) {
         const candidates = await matching(projectPages.filter(page => !tried.has(page.id)));
         for (const page of candidates) if (await available(page)) { target = page; break; }
+      }
+    }
+    let reused = false;
+    if (!target && app === 'cursor' && !this.fusionBinding) {
+      for (const page of projectPages) {
+        if (!ownedProjectWindow(app, page.id)) continue;
+        const state = await this.projectWindowState(page, '', true);
+        if (state.busy || state.draft) continue;
+        const cdp = new Cdp(page.webSocketDebuggerUrl);
+        try {
+          await cdp.connect();
+          const lifecycle = await cdp.evaluate(helpersCall('projectWindowProbe()'));
+          if (!lifecycle.ready || lifecycle.dirty || lifecycle.dialog || lifecycle.agentBusy || lifecycle.terminalBusy) continue;
+          this.stopChatUpdates();
+          this.bindingReady = false;
+          if (this.editorCdp?.wsUrl === page.webSocketDebuggerUrl) this.detach();
+          await cdp.evaluate(helpersCall(`nativeSessionAction('cursor', '', 'project', ${JSON.stringify(real)})`));
+        } finally { cdp.close(); }
+        const deadline = Date.now() + 25000;
+        while (!target && Date.now() < deadline) {
+          const pages = await (await fetch(`${editor.url}/json/list`, { signal })).json();
+          target = (await matching(pages.filter(p => p.type === 'page' && /workbench/.test(p.url))))[0];
+          if (!target) await awaitCdpRead(new Promise(resolve => setTimeout(resolve, 150)));
+        }
+        if (!target) throw new Error('Cursor 绑定窗口尚未完成项目切换');
+        reused = true;
+        break;
       }
     }
     const newWindow = !target;
@@ -266,7 +321,7 @@ export const methods = {
 
     }
     if (!target) throw new Error('应用尚未打开所选项目，请检查电脑上的窗口');
-    trackProjectWindow(app, target, real, newWindow);
+    trackProjectWindow(app, target, real, newWindow || reused);
     const switching = this.switchingThread, previousCdp = this.cdp;
     this.switchingThread = true;
     this.bindingReady = false;
@@ -283,7 +338,7 @@ export const methods = {
           windowId: app === 'codex' ? target.id : win.id, threadId, deferred: true,
         });
       }
-      this.pendingProject = { ...this.pendingProject, root: real, app, windowId: this.windowId, newSession, threadId, title, reopening: newWindow && !!threadId };
+      this.pendingProject = { ...this.pendingProject, root: real, app, windowId: this.windowId, newSession, threadId, title, reopening: (newWindow || reused) && !!threadId };
       if (await this.checkProjectTrust({}, binding?.trust)) return;
       if (app === 'devin') await this.ensureDevinIde(threadId.replace(/^tab:/, ''), real);
       if (app === 'codex' && !await this.ensureCodexReady(target, newSession)) return;
@@ -294,7 +349,7 @@ export const methods = {
       else await this.resumeProjectSwitch(previousCdp);
     }
     if (newSession) await this.listAgents(true);
-    if (newWindow) cdpRead.run(null, async () => {
+    if (newWindow || reused) cdpRead.run(null, async () => {
         try {
           const { webSocketDebuggerUrl } = await (await fetch(`${editor.url}/json/version`)).json();
           const browser = new Cdp(webSocketDebuggerUrl);
@@ -437,6 +492,14 @@ export const methods = {
     if ((await this.editorCdp.evaluate(helpersCall('workspaceTrustState()'))).required) throw new Error('请先确认项目是否可信');
     if (this.fusionBinding && this.app === 'cursor' && !await this.waitFor('control("model")', 250))
       throw new Error('主会话的原生模型控件尚未就绪');
+    if (this.app === 'cursor') {
+      const state = await this.waitFor('agentStartupState("cursor", true)', 250);
+      if (!state) throw new Error('Cursor 项目已切换，会话面板尚未就绪');
+      if (!pending.threadId && !pending.newSession) {
+        if (this.threadId !== state.thread) this.clearViewState();
+        this.threadId = this.selectedThread = state.thread || '';
+      }
+    }
     if (this.app === 'devin' && !pending.threadId && !pending.newSession) {
       const state = await this.adapter.openDefaultSession.call(this);
       if (!await this.confirmDevinThread(state.thread || '', '已打开项目')) throw new Error('Devin 项目会话尚未就绪，请重试');
@@ -472,6 +535,8 @@ export const methods = {
     if (pending.newSession) {
       const roots = await this.currentRoots();
       if (!roots.some(w => !w.host && fusionProject(w.root)?.id === fusionProject(pending.root)?.id)) throw new Error('当前窗口不属于所选项目，尚未创建会话');
+      if (this.app === 'cursor' && !await this.waitFor('control("newChat")', 250))
+        throw new Error('Cursor 项目已切换，Agent 新建入口尚未就绪');
       await this.adapter.newChat.call(this);
       if (this.app === 'cursor' && this.winTitle === 'Cursor Agents')
         await this.cdp.evaluate(helpersCall(`cursorSelectProject(${JSON.stringify(pending.root)})`));
@@ -496,6 +561,9 @@ export const methods = {
     if (!roots.some(w => !w.host && fusionProject(w.root)?.id === fusionProject(pending.root)?.id)) throw new Error('会话工作目录与所选项目不一致');
     this.pendingProject = null;
     this.bindingReady = true;
+    this.projectReady(pending, chat);
+  },
+  projectReady(pending, chat) {
     this.emit({ t: 'projectReady', path: pending.root, name: path.basename(pending.root), newSession: pending.newSession, sessionSwitch: !!pending.threadId, sel: this.selectionKey(), chat });
     this.emit({ t: 'status', ok: true, msg: pending.newSession ? '已在所选项目新建会话' : pending.threadId ? '已切换会话' : `已打开 ${path.basename(pending.root)}` });
   },
@@ -616,6 +684,10 @@ export const methods = {
     return list.map(row => row.workspace ? { ...row, window: labels.get(identity(row)) } : row);
   },
   async openAgent(id, title = '') {
+    if (this.app === 'codex' && /^(?:thread|new):backend:/.test(id)) {
+      const [kind, , ...parts] = id.split(':');
+      return this.adapter.attachBackend.call(this, kind === 'new' ? { project: { root: decodeURIComponent(parts.join(':')) } } : { threadId: parts.join(':') });
+    }
     if (this.selectionHome) {
       this.selectionHome = false;
       this.bindingReady = true;

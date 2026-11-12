@@ -184,6 +184,19 @@ export class AgentContext {
       else done();
     }
   }
+  async typeWithNativeMentions(text, mentions, insert) {
+    let rest = text;
+    for (const mention of mentions) {
+      const at = rest.indexOf(mention.token);
+      if (at < 0) continue;
+      if (at > 0) await this.typeText(rest.slice(0, at));
+      rest = rest.slice(at + mention.token.length);
+      if (await insert(mention)) rest = rest.replace(/^ /, '');
+      else await this.typeText(mention.token);
+    }
+    if (rest) await this.typeText(rest);
+  }
+
   async withFocus(fn) {
     while (!this.focusCount && this.chatUiDetails) await awaitCdpRead(this.chatUiDetails);
     cdpRead.getStore()?.throwIfAborted();

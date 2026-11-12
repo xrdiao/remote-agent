@@ -1964,6 +1964,11 @@ function questionCards(requests) {
         closest: () => ({ querySelector: () => actions.at(-1) }),
         blur() { node.blurred = true; }, focus() {}, setSelectionRange() {},
       };
+      if (field.options) {
+        node.tagName = 'SELECT'; node.multiple = !!field.multiple;
+        node.options = field.options.map(option => ({ ...option, selected: field.multiple ? field.value.includes(option.value) : option.value === field.value }));
+        Object.defineProperty(node, 'selectedOptions', { get: () => node.options.filter(option => option.selected) });
+      }
       fields.push(node);
     }
   }
@@ -1971,13 +1976,14 @@ function questionCards(requests) {
   const context = createPageContext({
     $: () => bar, document: { activeElement: null, body: { classList: { contains: () => false } } },
     currentApp: 'codex', viewSel: 'codex|window|thread', mode: 'chat', questionCompose: null, text,
+    chatStale: false, navigationPending: null, lastChat: { thread: 'thread', items: [] }, currentComputer: () => ({ id: 'computer' }),
     ws: { readyState: 1 }, authed: true, windowReady: true, crypto: crypto.webcrypto,
     esc: value => String(value), updateComposeCompact() {}, status() {}, send: packet => packets.push(packet),
   });
   const source = read('app/js/history.js');
   vm.runInContext(part(source, "$('qnBar').addEventListener('click'", '// Small stroke icons'), context);
   context.renderQuestions({ codex: true, requests });
-  return { bar, text, fields, buttons, packets,
+  return { bar, text, fields, buttons, packets, context,
     enter(target, extra = {}) {
       let prevented = false;
       handlers.get('keydown')({ key: 'Enter', target, isComposing: false, preventDefault() { prevented = true; }, ...extra });
@@ -1997,6 +2003,24 @@ test('Codex Question cards expose only skip and native next or send actions', ()
     .map(row => [...row[1].matchAll(/<button\b[^>]*>(.*?)<\/button>/g)].map(button => button[1]));
   assert.deepEqual(actions, [['Skip', 'Next'], ['Skip', 'Send']]);
   assert.equal((h.bar.innerHTML.match(/class="qnOpt /g) || []).length, 2);
+});
+
+test('MCP multi-select cards restore selected answers and submit arrays through the existing request action', () => {
+  const request = { id: 'approval:mcp', text: '选择工具', fields: [{ label: '工具', multiple: true, value: ['a'],
+    options: [{ value: 'a', label: '工具甲' }, { value: 'b', label: '工具乙' }] }],
+  buttons: [{ label: 'accept' }, { label: 'decline' }, { label: 'cancel' }] };
+  const h = questionCards([request]), field = h.fields[0];
+  assert.match(h.bar.innerHTML, /<select[^>]* multiple>/);
+  field.options[1].selected = true; field.oninput();
+  field.options.forEach(option => { option.selected = false; });
+  vm.runInContext("qnSig='';", h.context);
+  h.context.renderQuestions({ codex: true, requests: [request] });
+  assert.deepEqual(field.selectedOptions.map(option => option.value), ['a', 'b']);
+  h.buttons[0].click();
+  const packet = JSON.parse(JSON.stringify(h.packets.at(-1)));
+  assert.equal(packet.t, 'codexRequest'); assert.equal(packet.id, request.id); assert.equal(packet.n, 0);
+  assert.deepEqual(packet.fields, [{ n: 0, value: ['a', 'b'] }]);
+  assert.equal(h.text.value, '普通聊天草稿');
 });
 
 test('Question Enter sends the edited answer once to its own request and preserves the chat draft', () => {
@@ -2047,7 +2071,7 @@ function devinQuestionCards(qs) {
     get() { return this._html; },
     set(value) {
       this._html = value;
-      const qkey = /data-qkey="([^"]*)"/.exec(value)?.[1] || '';
+      const qkey = (/data-qkey="([^"]*)"/.exec(value)?.[1] || '').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
       const qtext = { value: '', dataset: { qtext: '', qkey }, tagName: 'INPUT', disabled: false,
         selectionStart: 0, selectionEnd: 0,
         matches: selector => selector === 'input' || selector === '[data-qtext]',
@@ -2065,8 +2089,9 @@ function devinQuestionCards(qs) {
   const context = createPageContext({
     $: () => bar, document: { activeElement: null, body: { classList: { contains: () => false } } },
     currentApp: 'devin', viewSel: 'devin|window|thread', mode: 'chat', questionCompose: null, text,
+    chatStale: false, navigationPending: null, lastChat: { thread: 'thread', items: [] },
     ws: { readyState: 1 }, authed: true, windowReady: true, crypto: crypto.webcrypto,
-    esc: value => String(value), updateComposeCompact() {}, status() {}, send: packet => packets.push(packet),
+    esc: value => String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;'), updateComposeCompact() {}, status() {}, send: packet => packets.push(packet),
     qnState: null, qnSig: '', qnView: '', qnPending: null,
     setQuestionCompose() {}, submitQuestionCompose() {}, finishPending() {},
     currentComputer: () => null, drafts: new Map(), draftMentions: new Map(),
@@ -2748,7 +2773,9 @@ test('peer loss during background still requires fresh proof to recover the reta
 
 function overviewDirectory() {
   const targets = [], sources = new Map(), catalogs = new Map(), library = {}, saved = { windows: {} }, fusionRuns = {};
+  const codexBackend = { records: new Map(), states: () => [], owns: id => codexBackend.records.has(id) };
   const context = createPageContext({ path, Date, process: { platform: 'linux' }, saved, fusionRuns,
+    codexBackend, CODEX_BACKEND: 'backend',
     openCode: { overview: () => ({ windows: [], sessions: [] }) },
     key: (app, id) => app + ':' + id.replace(/^(cursor|devin|codex):/, ''),
     nativeTargets: () => targets, nativeWindowAt: id => sources.get(id), nativeSessionCatalog: app => catalogs.get(app),
@@ -2761,7 +2788,7 @@ function overviewDirectory() {
   vm.runInContext(part(read('lib/files.mjs'), 'export function workspaceLabel(', '// Returns the size').replace('export ', '')
     + part(read('server/project-windows.mjs'), 'export function fusionTargets(', 'export function clearLegacyFusionWindows(').replace('export ', '')
     + read('server/overview.mjs').replace(/^import .*;\n/gm, '').replace(/^export /gm, ''), context);
-  return { targets, sources, catalogs, library, saved, fusionRuns,
+  return { targets, sources, catalogs, library, saved, fusionRuns, codexBackend,
     add(app, id, root = '/project/remote-agent', host = '') {
       targets.push({ app, id: app + ':' + id, pageId: id, title: 'workspace alias', ws: id });
       const source = { roots: [{ root, host }], catalog: [], previews: new Map(), updatedAt: 100, snapshot: { chat: {}, states: [] },
@@ -2769,6 +2796,30 @@ function overviewDirectory() {
       sources.set(id, source); return source;
     }, snapshot: () => JSON.parse(JSON.stringify(context.overviewSnapshot('device'))) };
 }
+
+test('a Codex background thread visible in a native catalog has one card with its actual API carrier', () => {
+  const h = overviewDirectory();
+  const source = h.add('codex', 'window');
+  source.catalog = [{ id: 'thread', workspace: '/project/remote-agent', title: 'native copy' }];
+  h.catalogs.set('codex', { rows: source.catalog });
+  h.codexBackend.records.set('thread', { id: 'thread', cwd: '/project/remote-agent', title: 'background', updatedAt: 10 });
+  const snapshot = h.snapshot();
+  assert.equal(snapshot.sessions.length, 1);
+  assert.equal(snapshot.sessions[0].threadId, 'thread');
+  assert.equal(snapshot.sessions[0].windowId, 'backend');
+  assert.equal(snapshot.sessions[0].title, 'background');
+  assert.equal(snapshot.sessions[0].dormant, false);
+});
+
+test('Devin session projects belong to the native session even when the IDE carrier has another workspace', () => {
+  const h = overviewDirectory();
+  h.add('devin', 'window-A', '/project/A');
+  h.catalogs.set('devin', { rows: [{ id: 'session-B', workspace: '/project/B', title: 'B', running: false }] });
+  const snapshot = h.snapshot(), session = snapshot.sessions.find(row => row.threadId === 'session-B');
+  assert.equal(session.workspace, '/project/B');
+  assert.equal(session.windowId, 'window-A');
+  assert.equal(snapshot.windows.find(row => row.projectId === session.projectId).workspace, '/project/B');
+});
 
 test('ordinary windows for one actual project produce one session and keep its live source', () => {
   const h = overviewDirectory();
@@ -4083,3 +4134,73 @@ for (const kind of ['unchanged', 'undone', 'rotated', 'cropped', 'first-upload',
     assert.equal(calls.filter(call => call[0] === 'close').length, 1);
   });
 }
+
+function answerDraftFixture() {
+  const context = createPageContext({ currentApp: 'codex', currentComputer: () => ({ id: 'computer-one' }), lastChat: { thread: 'A' }, viewSel: 'codex|carrier|A',
+    list: { querySelectorAll: () => [] }, status() {} });
+  const source = read('app/js/history.js');
+  vm.runInContext(part(source, 'const qnDrafts =', 'const questionCard =')
+    + ';Object.assign(globalThis,{qnDrafts,questionScope,questionDraftKey,clearQuestionDraft,syncQuestionDrafts});', context);
+  vm.runInContext(part(read('app/js/chat.js'), 'const openCodeQuestionSubmissions =', "list.addEventListener('submit'")
+    + ';this.submissions=openCodeQuestionSubmissions;', context);
+  return context;
+}
+
+test('answer drafts survive A/B navigation while isolating identical request IDs by computer and application', () => {
+  const h = answerDraftFixture(), keyA = h.questionDraftKey('same-request', '0');
+  h.syncQuestionDrafts(['same-request']); h.qnDrafts.set(keyA, 'answer A');
+  h.lastChat = { thread: 'B' }; h.syncQuestionDrafts(['same-request']);
+  const keyB = h.questionDraftKey('same-request', '0'); assert.notEqual(keyA, keyB); assert.equal(h.qnDrafts.has(keyB), false);
+  h.qnDrafts.set(keyB, 'answer B'); h.lastChat = { thread: 'A' }; assert.equal(h.qnDrafts.get(h.questionDraftKey('same-request', '0')), 'answer A');
+  h.currentApp = 'opencode'; assert.equal(h.qnDrafts.has(h.questionDraftKey('same-request', '0')), false);
+  h.currentApp = 'codex'; h.currentComputer = () => ({ id: 'computer-two' }); assert.equal(h.qnDrafts.has(h.questionDraftKey('same-request', '0')), false);
+});
+
+test('OpenCode answer restoration preserves selected options and custom text without mixing requests', () => {
+  const h = answerDraftFixture(); h.currentApp = 'opencode';
+  const makeForm = () => {
+    const choice = { value: '继续', checked: true }, custom = { value: 'custom answer' };
+    const field = { querySelector: () => custom, querySelectorAll: selector => selector === 'input:checked' ? choice.checked ? [choice] : [] : [choice] };
+    return { dataset: { opencodeQuestion: 'request-one' }, choice, custom, querySelectorAll: () => [field] };
+  };
+  const first = makeForm(); h.captureOpenCodeAnswers(first);
+  const next = makeForm(); next.choice.checked = false; next.custom.value = ''; h.restoreOpenCodeAnswers(next);
+  assert.equal(next.choice.checked, true); assert.equal(next.custom.value, 'custom answer');
+  next.dataset.opencodeQuestion = 'request-two'; next.choice.checked = false; next.custom.value = ''; h.restoreOpenCodeAnswers(next);
+  assert.equal(next.choice.checked, false); assert.equal(next.custom.value, '');
+});
+
+test('answer success after switching clears only the submitted origin, while failure retains its draft', () => {
+  const h = answerDraftFixture(); h.currentApp = 'opencode';
+  const scopeA = h.questionScope(), keyA = h.questionDraftKey('request', '0'); h.qnDrafts.set(keyA, 'A');
+  h.submissions.set('submit-A', { id: 'request', scope: scopeA, sel: 'opencode|carrier|A' });
+  h.lastChat = { thread: 'B' }; h.viewSel = 'opencode|carrier|B'; const keyB = h.questionDraftKey('request', '0'); h.qnDrafts.set(keyB, 'B');
+  h.finishOpenCodeQuestion({ requestId: 'submit-A', id: 'request', ok: false, error: 'native failure' });
+  assert.equal(h.qnDrafts.get(keyA), 'A'); assert.equal(h.qnDrafts.get(keyB), 'B');
+  h.submissions.set('submit-A2', { id: 'request', scope: scopeA, sel: 'opencode|carrier|A' });
+  h.finishOpenCodeQuestion({ requestId: 'submit-A2', id: 'request', ok: true });
+  assert.equal(h.qnDrafts.has(keyA), false); assert.equal(h.qnDrafts.get(keyB), 'B');
+  h.syncQuestionDrafts(['request']); h.syncQuestionDrafts([]); assert.equal(h.qnDrafts.has(keyB), false);
+});
+
+test('Codex card preview keeps only the current turn tools across repeated turns', async () => {
+  const items = [{ k: 'human', t: 'old user' }, { k: 'tool', i: 'old', t: 'old command', status: 'completed' },
+    { k: 'human', t: 'current user' }, { k: 'assistant', t: 'current answer without tools' }];
+  const scope = createPageContext({ CODEX_BACKEND: 'backend',
+    overviewSession: () => ({ session: { app: 'codex' } }),
+    codexBackend: { load: async () => {}, chat: () => ({ items, model: 'native', effort: 'high' }) } });
+  vm.runInContext(read('server/overview.mjs').slice(read('server/overview.mjs').indexOf('export async function overviewPreview'))
+    .replace('export async function', 'async function') + ';this.preview=overviewPreview;', scope);
+  const target = { win: 'codex', windowId: 'backend', threadId: 'qa' };
+  const first = await scope.preview('qa', target);
+  assert.equal(first.tools.length, 0); assert.equal(first.text, 'current user\n\ncurrent answer without tools');
+  assert.equal(first.last, 'current answer without tools'); assert.equal(first.model, 'native'); assert.equal(first.effort, 'high');
+  items.push(...['completed', 'completed', 'failed', 'inProgress'].map((status, n) => ({ k: 'tool', i: 'new-' + n, t: 'command-' + n, status })));
+  const next = await scope.preview('qa', target);
+  assert.deepEqual([...next.tools].map(row => [row.id, row.state]), [['new-1', 'done'], ['new-2', 'error'], ['new-3', 'run']]);
+  items.push({ k: 'human', t: 'next user' });
+  const pending = await scope.preview('qa', target);
+  assert.equal(pending.tools.length, 0); assert.equal(pending.text, 'next user');
+  items.push({ k: 'tool', i: 'latest', t: 'latest command', status: 'completed' });
+  assert.deepEqual([...(await scope.preview('qa', target)).tools].map(row => row.id), ['latest']);
+});

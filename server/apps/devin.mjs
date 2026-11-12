@@ -21,6 +21,9 @@ export const capabilities = {
 };
 
 export const adapter = {
+  async answerRequest(message) {
+    await this.cdp.evaluate(helpersCall(`nativeSessionAction('devin', ${JSON.stringify(this.threadId)}, 'permission', ${JSON.stringify({ id: message.id, n: message.n })})`));
+  },
   async newChat() {
     return this.devinNewChat();
   },
@@ -73,9 +76,7 @@ export const adapter = {
           await focusedCdp.send('Emulation.setFocusEmulationEnabled', { enabled: true });
         }
         if (!await this.cdp.evaluate(helpersCall('hasComposer()'))) await this.openEditorChat();
-        await this.openSessionPicker(id);
-        if (!await this.cdp.evaluate(helpersCall(`sessionPickerTarget(${JSON.stringify(id)}, true)`)))
-          throw new Error('Devin 会话打开入口已变化，请重新选择');
+        await this.cdp.evaluate(helpersCall(`nativeSessionAction('devin', ${JSON.stringify(id)}, 'open')`));
         confirmed = await this.confirmDevinThread(id);
         if (!confirmed) throw new Error('会话切换没有生效');
         return;
@@ -102,6 +103,10 @@ export const adapter = {
   },
 
   async currentRoots() {
+    if (this.threadId) {
+      const context = await this.cdp.evaluate(helpersCall(`nativeSessionInfo('devin', ${JSON.stringify(this.threadId.replace(/^tab:/, ''))}, 'context')`));
+      return context.roots;
+    }
     const session = await this.cdp.evaluate(helpersCall('devinSession()'));
     if (session?.surface === 'agent') return session.cwd ? [{ root: session.cwd, host: null, source: 'devin', workspaceFile: '' }] : [];
     return (await editorRoots(this.editorCdp, 'devin')).filter(w => !w.host);
@@ -907,15 +912,6 @@ devinGeneration(chat) {
 
 // Text with @tokens: type the text, and at every token let Devin's typeahead insert the real chip.
 async typeWithMentions(text, mentions) {
-  let rest = text;
-  for (const m of mentions) {
-    const at = rest.indexOf(m.token);
-    if (at < 0) continue;
-    if (at > 0) await this.typeText(rest.slice(0, at));
-    rest = rest.slice(at + m.token.length);
-    if (await this.insertMention(m)) rest = rest.replace(/^ /, '');
-    else await this.typeText(m.token);
-  }
-  if (rest) await this.typeText(rest);
+  return this.typeWithNativeMentions(text, mentions, mention => this.insertMention(mention));
 }
 };

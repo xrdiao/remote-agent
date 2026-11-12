@@ -672,6 +672,7 @@ export const methods = {
   },
 
   async sendMessage(text, submit, when, mentions, receipt) {
+    if (this.codexBackend) return this.adapter.sendBackendMessage.call(this, text, submit, when, mentions, receipt);
     const receiptToken = submit ? (this.sendNativeReceipt = {}) : null;
     const receiptScope = this.selectionKey(), receiptCdp = this.cdp;
     if (submit && receipt) this.draftEpoch = receipt.draftEpoch || '';

@@ -68,6 +68,7 @@ export const methods = {
     }
   },
   async resolveFile(text) {
+    if (this.codexBackend) return resolveLocal({ root: this.codexDirectory, host: '' }, text);
     const ref = parseRef(text);
     if (!ref.p) throw new Error('不是文件路径');
     const roots = await this.currentRoots();
@@ -147,7 +148,7 @@ export const methods = {
       return { marks, markSource: 'agent', diff: reviewDiff };
     }
     if (f.host) return null;
-    const changes = this.app === 'codex' ? await this.cdp.evaluate(helpersCall('codexChanges()')) : null;
+    const changes = this.app === 'codex' && !this.codexBackend ? await this.cdp.evaluate(helpersCall('codexChanges()')) : null;
     const normalized = p => path.posix.normalize(pathKey(p));
     const diff = changes?.files.find(file => normalized(file.name) === normalized(f.path) || normalized(f.path).endsWith('/' + normalized(file.name)))?.diff;
     const git = await gitMarks(f.path).catch(() => null);
@@ -171,7 +172,7 @@ export const methods = {
   },
   async openFile(text, reviewDiff = '', fromChanges = false, requestId) {
     const emit = data => this.emit({ requestId, ...data });
-    if (this.app === 'codex') {
+    if (this.app === 'codex' && !this.codexBackend) {
       const run = (await this.cdp.evaluate(helpersCall('codexFacts()')))?.view?.run || '';
       if (run && !/local|本地/i.test(run)) {
         emit({ t: 'file', error: '当前执行位置不是本机，不能把远程路径当成电脑上的文件打开', name: path.posix.basename(parseRef(text).p) });

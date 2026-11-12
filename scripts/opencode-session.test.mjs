@@ -535,3 +535,16 @@ test('OpenCode navigation during a native history read cannot deliver old rows i
   assert.equal(events.some(row => row.t === 'historyPage' && row.requestId === 'A'), false);
   assert.equal(events.findLast(row => row.t === 'chat').chat.thread, 'ses_two');
 });
+
+test('OpenCode retry status updates its reason, attempt and next time, then disappears on idle', async t => {
+  fixture(t); openCode.sessions.set('ses_retry', native('ses_retry'));
+  const next = 1794497000000;
+  openCode.apply({ type: 'session.status', properties: { sessionID: 'ses_retry', status: { type: 'retry', attempt: 2, message: 'provider temporarily unavailable', next } } });
+  const chat = openCode.chat('ses_retry'), notice = chat.items.find(row => row.i === 'ses_retry:retry');
+  assert.equal(chat.busy, true); assert.match(notice.t, /第 2 次/); assert.match(notice.t, /provider temporarily unavailable/);
+  assert(notice.t.includes(new Date(next).toISOString()));
+  openCode.apply({ type: 'session.status', properties: { sessionID: 'ses_retry', status: { type: 'retry', attempt: 3, message: 'still retrying', next: next + 1000 } } });
+  assert.match(openCode.chat('ses_retry').items.find(row => row.i === 'ses_retry:retry').t, /第 3 次/);
+  openCode.apply({ type: 'session.idle', properties: { sessionID: 'ses_retry' } });
+  assert.equal(openCode.chat('ses_retry').busy, false); assert.equal(openCode.chat('ses_retry').items.some(row => row.i === 'ses_retry:retry'), false);
+});

@@ -6,6 +6,40 @@ import { DATA_DIR } from '../../lib/auth.mjs';
 
 const watchOwner = createHash('sha256').update(DATA_DIR).digest('hex');
 
+// Keep one snapshot in flight. Intermediate updates collapse into the next current snapshot.
+export function watchChatUpdates(session, subscribe, publish) {
+  const key = session.selectionKey(), app = session.app, client = session.client;
+  const receipt = Buffer.from(crypto.randomUUID());
+  let sending = false, pending = false, stopped = false, scheduled;
+  const refresh = () => {
+    pending = true;
+    if (sending || scheduled) return;
+    scheduled = setImmediate(() => {
+      scheduled = null;
+      if (stopped || session.app !== app || session.selectionKey() !== key || !session.visible || session.mode !== 'chat' || session.disposed) return;
+      pending = false;
+      sending = true;
+      if (publish(error => {
+        if (!error && !stopped) client.ping(receipt);
+      }) === false) sending = false;
+    });
+  };
+  const stop = subscribe(refresh);
+  const received = data => {
+    if (!data.equals(receipt)) return;
+    sending = false;
+    if (pending) refresh();
+  };
+  client.on('pong', received);
+  return () => {
+    stopped = true;
+    pending = false;
+    stop();
+    client.off('pong', received);
+    clearImmediate(scheduled);
+  };
+}
+
 export async function watchChat(cdp, changed, shared = false, context = null) {
   const name = '__remoteChat' + crypto.randomUUID().replaceAll('-', '');
   let stopped = false;

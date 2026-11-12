@@ -152,7 +152,7 @@ The voice installer asks for confirmation, creates an isolated Python virtual en
 
 ## Fusion
 
-Fusion is RA's persistent main workspace. You always converse with one native main Agent, which interprets requirements, plans and reviews work, and calls native subagents as needed. **Currently, only Codex can be the main Agent; subagents can use Cursor, Devin or Codex.** Each application needs an available desktop window and actual model candidates. Fusion in Devin's own model menu is a separate native capability.
+Fusion supports Cursor, Devin, and Codex as native main and child Agent providers; available models come from the selected computer. OpenCode is not integrated with Fusion. Codex can use RA background sessions, while Cursor and Devin use native windows. Model availability does not imply every execution branch has passed acceptance; known background questionnaire and transcript/terminal-state gaps are tracked in the [combined repair plan](docs/testing/backend-runtime-fixes-v450-20261112.md).
 
 ### Getting started
 

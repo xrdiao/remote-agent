@@ -1,3 +1,14 @@
+  const devinMessageText = blocks => {
+    let text = '', stream = null, hasText = false;
+    for (const block of blocks || []) {
+      if (block.content?.type !== 'text') continue;
+      const next = block._meta?.['cognition.ai/streamingMessageId'];
+      if (hasText && (!next || next !== stream)) text += '\n';
+      text += block.content.text;
+      stream = next; hasText = true;
+    }
+    return text;
+  };
   const THINKING_ROOT = '.ui-thinking-collapsible, .chat-thinking-box, .highlight-wrapper';
   const ROW_SEL = `${ITEM_SEL}, ${THINKING_ROOT}`;
   const topItems = panel => [...panel.querySelectorAll(ROW_SEL)].filter(e => vis(e) && !e.parentElement?.closest(ROW_SEL));
@@ -498,7 +509,16 @@
     .find(e => vis(e) && [...e.querySelectorAll('button')].some(b => nativeLabel(b.getAttribute('aria-label'), 'Skip')));
   const devinQnRows = band => [...band.querySelectorAll('[data-slot="scroll-area-viewport"] > [role="button"]')];
   const devinQnButton = (band, name) => [...band.querySelectorAll('button')].find(b => vis(b) && (nativeLabel(b.getAttribute('aria-label'), name) || nativeLabel((b.innerText || '').trim(), name)));
+  const devinPermissionEntries = thread => Object.entries(window.__acpStore?.getState().acp.clientRequests || {})
+    .filter(([, row]) => row.status === 'pending' && row.request.method === 'session/request_permission'
+      && (row.request.params.sessionId.startsWith('acp/') ? row.request.params.sessionId : `acp/${row.providerId}/${row.request.params.sessionId}`) === thread)
+    .map(([key, row]) => ({ key, row, id: 'devin-permission:' + JSON.stringify([thread, row.providerId, key, row.request.id]) }));
+  const devinPermissions = thread => devinPermissionEntries(thread).map(({ id, row }) => ({ id,
+    text: [row.request.params.toolCall?.title, row.request.params.toolCall?._meta?.['cognition.ai/editableCommand'], row.request.params.toolCall?._meta?.['cognition.ai/permissionRule']].filter(Boolean).join('\n'),
+    buttons: row.request.params.options.map(option => ({ label: option.name })), fields: [] }));
   const devinQuestions = () => {
+    const requests = devinPermissions(remoteContext?.app === 'devin' ? remoteContext.threadId : activeThread());
+    if (requests.length) return { codex: true, src: 'devin', requests, list: [] };
     const band = devinQnBand();
     if (!band) return null;
     const pg = /\b(\d+) of (\d+)\b/.exec(band.innerText || '');

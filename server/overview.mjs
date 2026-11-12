@@ -7,6 +7,7 @@ import { workspaceLabel } from '../lib/files.mjs';
 import path from 'node:path';
 import { storedProjectSession, fusionTargets } from './project-windows.mjs';
 import { openCode } from './opencode/state.mjs';
+import { codexBackend, CODEX_BACKEND } from './codex/state.mjs';
 
 const APP = { cursor: 'Cursor', codex: 'Codex', devin: 'Devin' };
 const FUSION_RECENT_MS = 24 * 3600 * 1000;
@@ -38,7 +39,7 @@ export function overviewSnapshot(deviceId) {
     const belongs = row => row.workspace
       ? roots.some(root => (root.host || '') === (row.host || '') && samePath(root.root, row.workspace, !row.host))
       : !!row.workspaceId && workspaceIds.has(row.workspaceId);
-    const projectRows = new Map([...rows].filter(([, row]) => belongs(row)));
+    const projectRows = new Map([...rows].filter(([, row]) => belongs(row) || win.app === 'devin' && row.workspace && !row.host));
     for (const [key, row] of local) if (belongs(row) || !row.workspace && win.app === 'cursor')
       projectRows.set(key, { ...rows.get(key), ...row, lastUsed: row.lastUsed || rows.get(key)?.lastUsed || 0 });
     for (const state of source.overviewStates()) {
@@ -47,11 +48,14 @@ export function overviewSnapshot(deviceId) {
         projectRows.set(key, { ...row, ...state, id: key, title: state.title || row?.title || '', lastUsed: state.lastUsed || row?.lastUsed || 0 });
     }
     for (const [key, row] of projectRows) {
+      if (win.app === 'codex' && codexBackend.owns(key)) continue;
       const record = readLibrary()[win.app]?.[key];
       if (!key || row.archived || record?.archived || record?.deleted || excluded.sessions.has(win.app + ':' + key)) continue;
       const s = { ...row, busy: row.busy ?? row.running };
       const workspace = normPath(row.workspace || (roots.length === 1 ? roots[0].root : '')), host = row.host || '';
       const project = projectId(win.app, workspace, host, windowId);
+      if (!projects.has(project)) projects.set(project, { projectId: project, win: id, windowId, app: win.app,
+        workspace, host, project: path.posix.basename(workspace) || workspace, loading: false });
       const cachedPreview = source.previews.get(key);
       const preview = key !== sessionId(win.app, snap?.chat?.thread) || cachedPreview?.at >= source.updatedAt ? cachedPreview?.value : null;
       const value = {
@@ -74,6 +78,15 @@ export function overviewSnapshot(deviceId) {
     }
   }
   const api = openCode.overview();
+  const backendStates = new Map(codexBackend.states().map(row => [row.thread, row]));
+  for (const row of codexBackend.records.values()) {
+    const state = backendStates.get(row.id), workspace = normPath(row.cwd), key = projectId('codex', workspace, '', CODEX_BACKEND);
+    const win = { projectId: key, win: 'codex', windowId: CODEX_BACKEND, app: 'codex', workspace, host: '', project: path.basename(workspace) };
+    api.windows.push(win);
+    api.sessions.push({ ...win, threadId: row.id, title: row.title, busy: !!state?.busy, waiting: state?.waiting || '', waitingText: state?.waitingText || '',
+      last: state?.last || '', run: state?.run || null, statusKnown: !!state, startedAt: state?.generation?.start || 0,
+      tasks: null, actions: [], changed: 0, lastUsed: row.updatedAt * 1000 });
+  }
   for (const row of api.windows) projects.set(row.projectId, row);
   const windows = [...projects.values()], locations = [...new Map(windows.filter(row => row.workspace)
     .map(row => [JSON.stringify([row.host, pathKey(row.workspace, !row.host)]), { root: row.workspace, host: row.host }])).values()];
@@ -85,9 +98,9 @@ export function overviewSnapshot(deviceId) {
   const sessions = [...collected.values()].map(({ value }) => ({ ...value, project: projects.get(value.projectId)?.project
     || path.posix.basename(value.workspace) || '项目' }));
   for (const row of api.sessions) {
-    const record = readLibrary().opencode?.[row.threadId];
+    const record = readLibrary()[row.app]?.[row.threadId];
     sessions.push({ ...row, project: projects.get(row.projectId)?.project || row.project,
-      title: record?.title || row.title, favorite: record?.favorite === true, dormant: !openCode.connected });
+      title: record?.title || row.title, favorite: record?.favorite === true, dormant: row.app === 'opencode' && !openCode.connected });
   }
   const present = new Set(sessions.map(s => s.app + ':' + s.threadId));
   for (const app of Object.keys(APP)) {
@@ -121,6 +134,15 @@ export function overviewSession(deviceId, { win, windowId, threadId }) {
 
 export async function overviewPreview(deviceId, { win, windowId, threadId }) {
   const { session, target } = overviewSession(deviceId, { win, windowId, threadId });
+  if (session.app === 'codex' && windowId === CODEX_BACKEND) {
+    await codexBackend.load(threadId);
+    const chat = codexBackend.chat(threadId), start = chat.items.findLastIndex(row => row.k === 'human');
+    const turn = chat.items.slice(Math.max(0, start));
+    const text = turn.filter(row => ['human', 'assistant'].includes(row.k)).map(row => row.t).join('\n\n').slice(-600);
+    return { win, windowId, threadId, available: true, last: (chat.items.findLast(row => row.k === 'assistant')?.t || '').slice(-600), text,
+      model: chat.model, effort: chat.effort, tasks: null,
+      tools: turn.filter(row => row.k === 'tool').slice(-3).map(row => ({ id: row.i, label: row.t.slice(0, 240), state: row.status === 'completed' ? 'done' : row.status === 'failed' ? 'error' : 'run' })) };
+  }
   if (session.app === 'opencode') {
     await openCode.connect();
     await openCode.loadMessages(threadId);
