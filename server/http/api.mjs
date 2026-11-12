@@ -12,14 +12,15 @@ import { readChatImage } from '../chat-images.mjs';
 import { listWindows } from '../windows.mjs';
 import { Cdp } from '../cdp.mjs';
 import { helpersCall } from '../page/build.mjs';
-import { Session } from '../session.mjs';
+import { withTemporarySession } from '../session.mjs';
 import { videoGrant, serveVideo, servePdf } from './video.mjs';
 import { transferApi, serveTransfer } from './transfer.mjs';
 import { voiceStatus, loadWorker } from '../voice/service.mjs';
 import { voiceEngines } from '../voice/config.mjs';
-import { uploads } from '../agent/context.mjs';
+import { uploads, removeUpload } from '../../lib/uploads.mjs';
 import { overviewSnapshot, overviewPreview } from '../overview.mjs';
 import { manageOverviewSession } from '../overview-actions.mjs';
+import { uploadDocument, imageTypes } from '../../lib/shared-rules.mjs';
 
 // A device is usable once paired and, when 2FA asks for it, re-verified.
 function deviceFor(req) {
@@ -40,8 +41,7 @@ async function actOnWindow(deviceId, { win, threadId, act, index, text, question
   const wins = await listWindows();
   const w = wins.find(x => x.id === String(win));
   if (!w || w.app !== 'devin') throw new Error('找不到这个窗口，或它不支持通知里的操作');
-  const s = new Session({ readyState: 3, send() {} }, deviceId);
-  try {
+  return withTemporarySession({ readyState: 3, send() {} }, deviceId, async s => {
     s.cdp = new Cdp(w.ws);
     await s.cdp.connect();
     s.app = w.app;
@@ -58,9 +58,7 @@ async function actOnWindow(deviceId, { win, threadId, act, index, text, question
       await s.sendMessage(reply, true);
     } else if (act === 'acceptAll') await s.changeAction(0, 'Accept all', 'bar');
     else throw new Error('不支持的操作');
-  } finally {
-    s.dispose();
-  }
+  });
 }
 
 export async function handleApi(req, res, route) {
@@ -216,8 +214,7 @@ export async function handleApi(req, res, route) {
     const { clientImageId } = await readJson(req);
     for (const [id, file] of uploads) if (file.clientImageId === clientImageId && file.deviceId === device.id && file.image) {
       file.request?.destroy();
-      fs.rmSync(path.dirname(file.path), { recursive: true, force: true });
-      uploads.delete(id);
+      removeUpload(id);
     }
     return json(req, res, 200, { ok: true });
   }
@@ -225,7 +222,7 @@ export async function handleApi(req, res, route) {
     const query = new URL(req.url, 'http://localhost').searchParams;
     const name = path.basename(query.get('name') || '');
     const image = query.get('image'), type = query.get('type');
-    if (image ? !/^image\/(png|jpeg|gif|webp)$/.test(type) : !/\.(pdf|doc|docx|xlsx|pptx|txt|md|csv|json|py|js|ts|tsx|jsx|sh|yaml|yml|toml|ini|log|xml|html|css|c|cpp|h|rs|go)$/i.test(name)) return json(req, res, 400, { error: image ? '只支持 PNG / JPEG / GIF / WebP 图片' : '目前支持文档、表格、文本和代码文件' });
+    if (image ? !Object.values(imageTypes).includes(type) : !uploadDocument(name)) return json(req, res, 400, { error: image ? '只支持 PNG / JPEG / GIF / WebP 图片' : '目前支持文档、表格、文本和代码文件' });
     const id = crypto.randomUUID();
     const dir = path.join(DATA_DIR, 'uploads', id);
     const filePath = path.join(dir, name);

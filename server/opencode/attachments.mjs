@@ -5,12 +5,12 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { parseOffice } from 'officeparser';
+import { textExtensions, documentExtensions, imageTypes } from '../../lib/shared-rules.mjs';
 
 const run = promisify(execFile);
-const textTypes = new Set(['.txt', '.md', '.csv', '.json', '.log', '.sh', '.yaml', '.yml', '.xml', '.html', '.css',
-  '.py', '.js', '.ts', '.jsx', '.tsx', '.cpp', '.c', '.h', '.rs', '.go', '.toml', '.ini']);
-const images = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' };
-const documents = new Set(['.pdf', '.doc', '.docx', '.xlsx', '.pptx']);
+const textTypes = new Set(textExtensions.map(ext => '.' + ext));
+const images = imageTypes;
+const documents = new Set(documentExtensions.map(ext => '.' + ext));
 
 async function parseDocument(file) {
   const ast = await parseOffice(file, { ocr: false, extractAttachments: false });

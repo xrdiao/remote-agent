@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v448'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v449'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false;
 let windowReady = false;
@@ -403,11 +403,7 @@ function finishPending(list) {
 
 const desktopRequests = new Map();
 function desktopAction(obj) {
-  if (['overviewManage', 'saveComputerFile', 'computerFileAction', 'newTerminal', 'closeTerminal'].includes(obj.t)) return true;
-  if (currentApp === 'fusion') return false;
-  return obj.t === 'send' ? obj.submit !== false && mode !== 'terminal'
-    : obj.t === 'queue' ? obj.action !== 'read'
-    : ['stop', 'pickMenu', 'question', 'codexRequest', 'click', 'subagent', 'saveFile', 'sessionManage', 'sessionBatch', 'codexRename', 'codexArchive'].includes(obj.t);
+  return RemoteAgentRules.desktopAction(obj, currentApp, mode);
 }
 function sendDesktopOperation(obj, computer = currentComputer()?.id || '', socket = ws, pending = {}) {
   obj.operationId ||= crypto.randomUUID();

@@ -13,7 +13,7 @@ const homedir = os.homedir;
 os.homedir = () => root;
 const { Session } = await import('../server/session.mjs');
 const { openCode } = await import('../server/opencode/state.mjs');
-const { uploads } = await import('../server/agent/context.mjs');
+const { uploads } = await import('../lib/uploads.mjs');
 os.homedir = homedir;
 test.after(() => { openCode.close(); fs.rmSync(root, { recursive: true, force: true }); });
 

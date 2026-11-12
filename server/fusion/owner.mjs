@@ -10,6 +10,7 @@ import { FUSION_TIERS, validateExecution } from './cost.mjs';
 import { fusionPendingReviews } from './control.mjs';
 import { nativeAgentProvider } from './providers.mjs';
 import { FusionAgent } from './agent.mjs';
+import { indexFusionRun } from './run-index.mjs';
 
 function requestedRun(session, message) {
   if (message.computer && message.computer !== computerId()) throw new Error('Fusion 请求不属于这台电脑');
@@ -48,10 +49,10 @@ function nativeInteractions(run) {
       attemptId: attempt.id, bindingId: attempt.bindingId, native: attempt.native, items, requests, questions }];
   });
 }
-function taskSummaries(run, taskId) {
-  const assignments = new Map(run.assignments.map(row => [row.taskId, row]));
-  const attempts = new Map(run.attempts.filter(row => row.taskId).map(row => [row.taskId, row]));
-  const works = new Map(run.works.map(row => [row.id, row]));
+function taskSummaries(run, taskId, index) {
+  const assignments = index('assignments', 'taskId');
+  const attempts = index('attempts', 'taskId');
+  const works = index('works');
   return run.tasks.map(task => {
     const assignment = assignments.get(task.id), attempt = attempts.get(task.id), work = works.get(task.workId);
     const needsUser = task.status === 'awaiting_user' && !attempt?.endedAt
@@ -103,7 +104,7 @@ function taskBoard(run, tasks) {
         native: mainCommandOrigin(run, 'plan', 'planId', row.id) })),
       deliveries: work.deliveries.map((row, index) => ({ index, summary: row.summary })) })) };
 }
-function controllerView(run, tasks) {
+function controllerView(run, tasks, index) {
   const { app, model, effort, bindingId, windowId, preparing, error, projectTrust } = run.main;
   const counts = { run: 0, wait: 0, done: 0, err: 0, idle: 0 };
   for (const task of tasks) counts[task.state]++;
@@ -115,11 +116,11 @@ function controllerView(run, tasks) {
   }
   for (const task of tasks.filter(row => row.needsUser)) if (!attention.some(row => row.taskId === task.id))
     attention.push({ kind: 'native', workId: task.workId, taskId: task.id, text: task.goal });
-  const tasksById = new Map(tasks.map(task => [task.id, task])), worksById = new Map(run.works.map(work => [work.id, work]));
-  const attemptsById = new Map(run.attempts.map(attempt => [attempt.id, attempt]));
+  const tasksById = new Map(tasks.map(task => [task.id, task])), worksById = index('works');
+  const attemptsById = index('attempts');
   const executing = run.attempts.filter(row => !row.endedAt && (row.status === 'queued' || NATIVE_UNSETTLED.includes(row.status)));
   const unknown = executing.find(row => row.status === 'unknown');
-  const pending = tasks.length ? fusionPendingReviews(run).filter(row => !['stopped', 'cancelled'].includes(tasksById.get(row.taskId)?.status)) : [];
+  const pending = tasks.length ? fusionPendingReviews(run, index).filter(row => !['stopped', 'cancelled'].includes(tasksById.get(row.taskId)?.status)) : [];
   const failure = pending.find(row => row.outcome === 'failed');
   const currentAttempt = unknown || executing.findLast(row => row.kind === 'main') || executing.at(-1)
     || attemptsById.get((failure || pending[0])?.attemptId);
@@ -141,16 +142,24 @@ function controllerView(run, tasks) {
     state, run.status, run.blockedReason, run.attempts.map(row => [row.id, row.status, row.endedAt]),
     run.works.map(work => [work.id, work.status, work.deliveries.map(row => [row.mainAttemptId, row.nativeTurnId, row.endedAt])]),
   ])).digest('hex') : '';
-  return { ...fusionSummary(run), main: { app, model, effort, bindingId, windowId, preparing, error, projectTrust },
+  const binding = run.bindings.find(row => row.id === bindingId);
+  const nativeWindowId = binding && (binding.app === 'codex' ? binding.windowId : `${binding.app}:${binding.windowId}`);
+  const target = binding ? { computer: run.computer, win: binding.app === 'codex' ? 'codex' : nativeWindowId,
+    windowId: nativeWindowId, threadId: binding.threadId, project: { root: binding.project.root, host: binding.host || '' } } : null;
+  return { ...fusionSummary(run), main: { app, model, effort, bindingId, windowId, preparing, error, projectTrust, target },
     internalInputs: run.attempts.filter(row => row.kind === 'main' && row.origin === 'events' && row.native?.messageId)
       .map(row => ({ threadId: row.native.threadId, messageId: row.native.messageId })),
     overview: { state, resultKey, counts, apps: [...new Set([app, ...tasks.map(row => row.app)].filter(Boolean))], attention,
       current } };
 }
-export function fusionControllerView(run) { return controllerView(run, taskSummaries(run)); }
+export function fusionControllerView(run) {
+  const index = indexFusionRun(run);
+  return controllerView(run, taskSummaries(run, undefined, index), index);
+}
 export function fusionRunView(run, view) {
-  const tasks = taskSummaries(run, view.kind === 'task' ? view.taskId : undefined);
-  const base = { ...controllerView(run, tasks), revision: run.revision };
+  const index = indexFusionRun(run);
+  const tasks = taskSummaries(run, view.kind === 'task' ? view.taskId : undefined, index);
+  const base = { ...controllerView(run, tasks, index), revision: run.revision };
   if (view.kind === 'config') return { ...base, budget: run.budget,
     capabilities: [...new Set(run.capabilities.map(row => row.app))].map(app => {
       const row = run.capabilities.find(row => row.app === app);

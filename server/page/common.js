@@ -169,12 +169,11 @@
         const plainLine = el => (el.innerText || '').replace(/\u00a0/g, ' ').replace(/\n/g, '');
         const plain = (lines.length ? lines.map(plainLine).join('\n') : (content.innerText || '').replace(/\u00a0/g, ' ')).replace(/\n$/, '');
         const body = (lines.length ? lines.map(l => clean(l)).join('\n') : esc(plain));
-        out += `<div class="codebox"><textarea class="src" hidden readonly>${esc(plain)}</textarea><pre>${body}</pre></div>`;
+        out += RemoteAgentRules.codeBlockHtml(esc(plain), body);
         continue;
       }
       const href = n.tagName === 'A' ? n.getAttribute('href') || '' : '';
-      const localHref = /^(?:file:\/\/|\/|~\/|[A-Za-z]:[\\/]|\.{1,2}\/)/.test(href)
-        || (!/^[A-Za-z][\w+.-]*:/.test(href) && /\.[A-Za-z0-9]{1,10}(?:#L\d+(?:-L?\d+)?)?$/.test(href));
+      const localHref = RemoteAgentRules.isLocalFileReference(href);
       const filePath = n.getAttribute('data-file-reference') === 'true'
         ? n.getAttribute('data-prompt-link-href') || n.getAttribute('data-markdown-copy-text')
         : n.matches(FILE_REF) ? n.innerText.trim()

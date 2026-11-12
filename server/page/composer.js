@@ -69,16 +69,10 @@
     }
     return scope.get(composer.text);
   };
-  const pickComposer = eds => {
-    const sel = selCardId();
-    return eds.find(e => e.contains(doc.activeElement))
-      || (sel && eds.find(e => e.closest('[data-glass-agent-id]')?.getAttribute('data-glass-agent-id') === sel))
-      || eds.at(-1);
-  };
+  const pickComposer = eds => chooseComposer(doc, eds);
   const composerDraft = () => {
     if (document.getElementById('active-frame')) return codexPromptText() || '';
-    const eds = [...doc.querySelectorAll(`${COMPOSER}, [data-slate-editor="true"][contenteditable="true"]`)].filter(e => vis(e) && !inItem(e));
-    const ed = pickComposer(eds);
+    const ed = composerTarget(doc);
     if (!ed || ed.querySelector('[data-slate-placeholder]')) return '';
     return (ed.innerText || '').replace(/\n+$/g, '');
   };
@@ -107,7 +101,7 @@
     text = String(text ?? '');
     if (document.getElementById('active-frame')) {
       // Codex keeps its current EditorView on the native composer controller.
-      const ed = [...doc.querySelectorAll('.ProseMirror[contenteditable="true"]')].find(e => vis(e));
+      const ed = codexPromptEl();
       if (!ed) return false;
       const view = codexFiberProps(ed, Infinity).find(p => p.composerController)?.composerController.view;
       if (!view) return false;

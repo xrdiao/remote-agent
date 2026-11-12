@@ -221,28 +221,13 @@ function renderTransferUploads() {
 async function transferSendFile(item) {
   const query = new URLSearchParams({ directory: item.directory, name: item.name, mode: item.mode });
   const path = '/api/transfer/upload?' + query;
-  const headers = await entryHeaders(item.computer, 'POST', path);
-  if (transferCancelled) throw Error('已取消');
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    transferXhrs.add(xhr);
-    xhr.onloadend = () => transferXhrs.delete(xhr);
-    xhr.open('POST', item.base + path);
-    for (const [key, value] of Object.entries(headers)) xhr.setRequestHeader(key, value);
-    xhr.setRequestHeader('content-type', 'application/octet-stream');
-    xhr.upload.onprogress = event => {
+  return uploadBinary({ target: item.base, computer: item.computer, path, file: item.file,
+    cancelled: () => transferCancelled,
+    onRequest: request => transferXhrs.add(request), onEnd: request => transferXhrs.delete(request),
+    onProgress: event => {
       item.status = event.lengthComputable ? `上传中 ${Math.round(event.loaded / event.total * 100)}%` : '上传中';
       renderTransferUploads();
-    };
-    xhr.onload = () => {
-      let data;
-      try { data = JSON.parse(xhr.responseText); } catch { reject(Error('上传响应无效')); return; }
-      if (xhr.status < 200 || xhr.status >= 300) reject(Error(data.error || '上传失败'));
-      else resolve(data);
-    };
-    xhr.onerror = () => reject(Error('连接中断，上传失败'));
-    xhr.onabort = () => reject(Error('已取消'));
-    xhr.send(item.file);
+    },
   });
 }
 async function runTransferUploads(items) {

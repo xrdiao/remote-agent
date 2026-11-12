@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { desktopAction as isDesktopAction } from '../lib/shared-rules.mjs';
 
 // Native results belong to the paired entry, not to its current WebSocket.
 const entries = new Map();
@@ -19,11 +20,7 @@ export function publishDesktopState(deviceId, message) {
 }
 
 export function desktopAction(session, message) {
-  if (['overviewManage', 'saveComputerFile', 'computerFileAction', 'newTerminal', 'closeTerminal'].includes(message.t)) return true;
-  if (session.app === 'fusion') return false;
-  return message.t === 'send' ? message.submit !== false && session.mode !== 'terminal'
-    : message.t === 'queue' ? message.action !== 'read'
-    : ['stop', 'pickMenu', 'question', 'codexRequest', 'click', 'subagent', 'saveFile', 'sessionManage', 'sessionBatch', 'codexRename', 'codexArchive'].includes(message.t);
+  return isDesktopAction(message, session.app, session.mode);
 }
 
 export function beginOperation(session, message) {

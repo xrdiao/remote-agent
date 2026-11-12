@@ -11,6 +11,7 @@ import { FOCUS_COMPOSER } from '../server/agent/context.mjs';
 import { cdpRead, awaitCdpRead } from '../server/cdp.mjs';
 import { withOperation } from '../server/operations.mjs';
 import { NativeWindow } from '../server/native-windows.mjs';
+import { nativePage } from './page-fixture.mjs';
 
 for (const revision of ['first', 'renamed']) {
   test(`Codex discovers merged modules and renamed exports, retaining native per-thread drafts: ${revision}`, async () => {
@@ -85,12 +86,12 @@ for (const chinese of [false, true]) for (const follow of ['', 'queue', 'steer']
     const buttons = names.map(label => ({ getBoundingClientRect: () => ({ width: 20, height: 20 }),
       getAttribute: key => key === 'aria-label' ? label : null, click: () => clicked.push(label) }));
     const root = { querySelectorAll: () => buttons };
-    const editor = { getBoundingClientRect: () => ({ width: 40, height: 20 }), closest: () => root,
+    const editor = { getBoundingClientRect: () => ({ width: 40, height: 20 }), closest: () => null, contains: () => false,
       __reactFiberFixture: { memoizedProps: { handleSubmit: value => { nativeCalls.push(value); }, submitDisabled: false, isInteractionBlocked: false, interactionsEnabled: true,
         composerController: { getText: () => 'test draft' } } } };
-    const document = { getElementById: () => null,
+    const document = { getElementById: () => null, querySelector: () => null,
       querySelectorAll: selector => selector === '.ProseMirror[contenteditable="true"]' ? [editor] : [] };
-    const page = vm.runInNewContext(PAGE_SRC, { document, window: {} });
+    const page = nativePage(document, { getComputedStyle: () => ({ visibility: 'visible' }) });
     assert.equal(await page.submitCodexMessage(follow, dispatch, 'request-fixture'), true);
     assert.equal(clicked.length, 0);
     assert.equal(nativeCalls.length, 1);
@@ -101,15 +102,35 @@ for (const chinese of [false, true]) for (const follow of ['', 'queue', 'steer']
 function submitLifecycle(handleSubmit, flags = {}) {
   const events = [], nativeWindow = {};
   const draft = { value: 'draft', writes: 0 };
-  const editor = { getBoundingClientRect: () => ({ width: 40, height: 20 }),
+  const editor = { getBoundingClientRect: () => ({ width: 40, height: 20 }), closest: () => null, contains: () => false,
     __reactFiberFixture: { memoizedProps: { handleSubmit, submitDisabled: false, isInteractionBlocked: false, interactionsEnabled: true, ...flags, conversationId: 'thread', composerController: {
       getText: () => draft.value, setText: value => { draft.value = value; draft.writes++; },
     } } } };
-  const document = { getElementById: () => null,
+  const document = { getElementById: () => null, querySelector: () => null,
     defaultView: { Event: class { constructor(type) { this.type = type; } }, dispatchEvent: event => events.push(event.type) },
     querySelectorAll: selector => selector === '.ProseMirror[contenteditable="true"]' || selector === '.ProseMirror' ? [editor] : [] };
-  return { page: vm.runInNewContext(PAGE_SRC, { document, window: nativeWindow }), nativeWindow, events, draft };
+  return { page: nativePage(document, { window: nativeWindow, getComputedStyle: () => ({ visibility: 'visible' }) }), nativeWindow, events, draft };
 }
+
+test('Codex submit and draft reads select the focused composer instead of the first visible blocked editor', async () => {
+  const calls = [];
+  const editor = (name, blocked) => ({ closest: () => null,
+    contains: active => active === name, getBoundingClientRect: () => ({ width: 40, height: 20 }),
+    __reactFiberFixture: { memoizedProps: { submitDisabled: blocked, isInteractionBlocked: blocked, interactionsEnabled: true,
+      composerController: { getText: () => name }, handleSubmit: options => calls.push({ name, options }) } } });
+  const blocked = editor('other-composer', true), selected = editor('selected-composer', false);
+  const document = { activeElement: 'selected-composer', getElementById: () => null, querySelector: () => null,
+    querySelectorAll: selector => selector === '.ProseMirror[contenteditable="true"]' ? [blocked, selected] : [] };
+  const page = nativePage(document, { getComputedStyle: () => ({ visibility: 'visible' }) });
+  assert.equal(page.codexPromptPayload(), 'selected-composer');
+  assert.equal(await page.submitCodexMessage('queue', true, 'multiple-composers'), true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, 'selected-composer');
+  assert.equal(calls[0].options.followUpSubmitAction, 'queue');
+  document.activeElement = 'other-composer';
+  assert.equal(await page.submitCodexMessage('', true, 'blocked-composer'), false);
+  assert.equal(calls.length, 1);
+});
 
 for (const dispatch of [false, true]) for (const flags of [
   { submitDisabled: true }, { isInteractionBlocked: true }, { interactionsEnabled: false },

@@ -1,6 +1,5 @@
 import path from 'node:path';
 import os from 'node:os';
-import fs from 'node:fs';
 import { openCode } from '../opencode/state.mjs';
 import { cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { safeHomePath, projectList, createProjectFolder } from '../agent/projects.mjs';
@@ -9,7 +8,7 @@ import { resolveLocal, writeTextFile } from '../../lib/files.mjs';
 import { publishSessionChange, rememberSessionMessage, removeLibrarySession } from '../../lib/session-library.mjs';
 import { currentOperation, withOperation } from '../operations.mjs';
 import { createMessageID } from '../opencode/client.mjs';
-import { uploads } from '../agent/context.mjs';
+import { uploads, pendingUploads, uploadAttachments, removeUpload } from '../../lib/uploads.mjs';
 import { openCodeAttachment } from '../opencode/attachments.mjs';
 
 export const capabilities = {
@@ -194,9 +193,7 @@ export async function manageOpenCodeSession(id, action, name) {
   return { ok: true };
 }
 
-function attachmentList(context, sel) {
-  return [...uploads.entries()].filter(([, f]) => f.pending && f.sel === sel).map(([id, f]) => ({ id, name: f.name, size: f.size }));
-}
+
 
 const routes = {
   agents(m) { return list(this, m); },
@@ -216,7 +213,7 @@ const routes = {
     cdpRead.getStore()?.throwIfAborted();
     const model = openCode.selection(this.threadId || this.openCodeDirectory), native = openCode.models.get(model.key);
     const sel = this.selectionKey();
-    const files = [...uploads].filter(([, file]) => file.pending && file.sel === sel);
+    const files = pendingUploads(sel);
     const parts = m.text?.trim() ? [{ type: 'text', text: m.text }] : [];
     parts.push(...await Promise.all(files.map(([, file]) => openCodeAttachment(file))));
     cdpRead.getStore()?.throwIfAborted();
@@ -242,7 +239,7 @@ const routes = {
       throw error;
     }
     for (const [, file] of files) file.pending = false;
-    this.emit({ t: 'attachments', sel: pending.sel, list: attachmentList(this, pending.sel) });
+    this.emit({ t: 'attachments', sel: pending.sel, list: uploadAttachments(pending.sel) });
     this.openCodeDrafts?.delete(m.sel || pending.sel);
     this.openCodeDrafts?.delete(pending.sel);
     this.draftEpoch = m.draftEpoch || this.draftEpoch;
@@ -292,7 +289,7 @@ const routes = {
   },
   async attachments(m) {
     const sel = m.sel || this.selectionKey();
-    this.emit({ t: 'attachments', sel, list: attachmentList(this, sel) });
+    this.emit({ t: 'attachments', sel, list: uploadAttachments(sel) });
     return { ok: true };
   },
   async image(m) {
@@ -301,7 +298,7 @@ const routes = {
     if (m.sel && upload.sel && m.sel !== upload.sel) throw new Error('上传所属会话不匹配');
     upload.pending = true;
     const sel = this.selectionKey();
-    this.emit({ t: 'attachments', sel, list: attachmentList(this, sel) });
+    this.emit({ t: 'attachments', sel, list: uploadAttachments(sel) });
     this.emit({ t: 'imageDone', clientImageId: m.clientImageId, attachmentId: m.uploadId, ok: true });
     return { ok: true };
   },
@@ -309,10 +306,9 @@ const routes = {
     const sel = m.sel || this.selectionKey();
     const f = uploads.get(m.id);
     if (f && f.pending && f.sel === sel) {
-      if (fs.existsSync(f.path)) fs.rmSync(f.path, { recursive: true, force: true });
-      uploads.delete(m.id);
+      removeUpload(m.id);
     }
-    this.emit({ t: 'attachments', sel, list: attachmentList(this, sel) });
+    this.emit({ t: 'attachments', sel, list: uploadAttachments(sel) });
     return { ok: true };
   },
   async usage(m) {

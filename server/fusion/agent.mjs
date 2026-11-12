@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { Cdp } from '../cdp.mjs';
 import { NativeCdp, nativeWindow } from '../native-windows.mjs';
 import { EDITORS, CODEX_CDP_URL } from '../config.mjs';
-import { codexWindows } from '../windows.mjs';
+import { codexWindows, editorWorkbenches } from '../windows.mjs';
 import { editorRoots } from '../../lib/files.mjs';
 import { findBin } from '../../lib/platform.mjs';
 import { helpersCall } from '../page/build.mjs';
@@ -60,8 +60,8 @@ export class FusionAgent {
     if (!editor) throw new Error('未知执行软件');
     if (app === 'codex') return (await codexWindows(CODEX_CDP_URL, false)).filter(row => row.chatWs)
       .map(row => ({ id: row.pageId, app, editorWs: row.ws, ws: row.chatWs, title: row.rawTitle }));
-    const pages = await (await fetch(editor.url + '/json/list', { signal: AbortSignal.timeout(2500) })).json();
-    return pages.filter(row => row.type === 'page' && /workbench/.test(row.url))
+    const pages = await editorWorkbenches(editor.url, 2500);
+    return pages
       .map(row => ({ id: row.id, app, editorWs: row.webSocketDebuggerUrl, ws: row.webSocketDebuggerUrl, title: row.title }));
   }
   async softwareCapabilities() {

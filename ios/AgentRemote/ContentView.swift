@@ -166,10 +166,8 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
               let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else {
             return openPairLink(url)
         }
-        var target: [String: String] = [:]
-        for key in ["computer", "win", "windowId", "threadId"] { target[key] = items.first { $0.name == key }?.value ?? "" }
-        guard let data = try? JSONSerialization.data(withJSONObject: target, options: [.sortedKeys]) else { return }
-        openFromNotification(String(decoding: data, as: UTF8.self))
+        guard let target = NotificationTarget.json(read: { key in items.first { $0.name == key }?.value }) else { return }
+        openFromNotification(target)
     }
 
     // agentremote://pair?app=<https app address>&d=<url key>.<one-time code>, from the web app in a browser or a QR code.

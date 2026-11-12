@@ -221,7 +221,7 @@ function transferFixture(conversation = false) {
   vm.runInContext(net.slice(net.indexOf('async function api('), net.indexOf('\nconst post =')), context);
   const pop = overview.indexOf("addEventListener('popstate', () => {");
   vm.runInContext(overview.slice(pop, overview.indexOf("\ndocument.addEventListener('visibilitychange'", pop)), context);
-  vm.runInContext(read('app/js/transfer.js'), context);
+  vm.runInContext(read('app/js/ui-helpers.js') + read('app/js/transfer.js'), context);
   element('transferCollision').value = 'rename';
   const run = code => vm.runInContext(code, context);
   return { run, context, element, computers, sockets, requests, uploads, operations, response, history, created,

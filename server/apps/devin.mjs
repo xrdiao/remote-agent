@@ -6,6 +6,7 @@ import { listWindows } from '../windows.mjs';
 import { Cdp, cdpRead } from '../cdp.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { FOCUS_COMPOSER } from '../agent/context.mjs';
+import { activateQueuedAction } from '../agent/queued-action.mjs';
 
 // Shared across phone sessions: thread|start → end ms (null while the turn is still running).
 const devinTurnEnds = new Map();
@@ -293,17 +294,7 @@ mergeDevinHistory(chat, prepend = false) {
 async devinQueueAction(id, action) {
   if (!['send', 'remove'].includes(action)) throw new Error('不支持的排队操作');
   const n = /^dq(\d+)$/.exec(String(id))?.[1];
-  const row = n == null ? null : await this.cdp.evaluate(helpersCall(`devinQueueTarget(${n})`));
-  if (!row) throw new Error('这条排队消息已经不在了（可能刚被发出）');
-  await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: row.x, y: row.y });
-  let pos = null;
-  for (let i = 0; i < 6 && !pos; i++) {
-    await new Promise(r => setTimeout(r, 80));
-    pos = await this.cdp.evaluate(helpersCall(`devinQueueTarget(${n}, ${JSON.stringify(action)})`));
-  }
-  if (!pos) throw new Error('没找到排队消息的操作按钮（可能 Devin 版本不同）');
-  await this.tapCss(pos.x, pos.y);
-  this.refreshSoon(300);
+  return activateQueuedAction(this, a => n == null ? null : this.cdp.evaluate(helpersCall(`devinQueueTarget(${n}${a ? `, ${JSON.stringify(a)}` : ''})`)), action);
 },
 
 

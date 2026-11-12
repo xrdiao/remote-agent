@@ -7,11 +7,13 @@ import { EDITORS } from './config.mjs';
 import { openCode } from './opencode/state.mjs';
 
 const targetReads = new Map();
-function editorTargets(base) {
-  if (!targetReads.has(base)) targetReads.set(base,
-    fetch(`${base}/json/list`, { signal: AbortSignal.timeout(1500) }).then(r => r.json()).finally(() => targetReads.delete(base)));
-  return targetReads.get(base);
+function editorTargets(base, timeout = 1500) {
+  const key = `${base}|${timeout}`;
+  if (!targetReads.has(key)) targetReads.set(key,
+    fetch(`${base}/json/list`, { signal: AbortSignal.timeout(timeout) }).then(r => r.json()).finally(() => targetReads.delete(key)));
+  return targetReads.get(key);
 }
+export const editorWorkbenches = async (base, timeout = 1500) => (await editorTargets(base, timeout)).filter(row => row.type === 'page' && /workbench/.test(row.url));
 
 export async function listWindows(report = null, app = null) {
   const lists = await Promise.all(EDITORS.filter(ed => !app || ed.app === app).map(async ed => {
@@ -23,9 +25,8 @@ export async function listWindows(report = null, app = null) {
         // Several VS Code windows are agents inside one Codex entry, not separate phone windows.
         return [{ id: 'codex', title: 'Codex', ws: pages[0].ws, port: ed.url, app: 'codex', kind: 'local' }];
       }
-      const targets = await editorTargets(ed.url);
+      const targets = await editorWorkbenches(ed.url);
       const found = targets
-        .filter(t => t.type === 'page' && /workbench/.test(t.url))
         .map(t => ({
           id: `${ed.app}:${t.id}`,
           title: t.title,

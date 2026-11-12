@@ -8,7 +8,7 @@ import { hasLaunched, takeLaunched } from './launch.mjs';
 import { fusionViewers, savedFusion, allFusionRuns, rememberFusionMainWindow } from './fusion/state.mjs';
 import { FUSION_OWNER, fusionControllerView } from './fusion/owner.mjs';
 import { fusionRunner } from './fusion/runner.mjs';
-import { ROUTES, SKIP, flag } from './routes.mjs';
+import { resolveRoute, SKIP, flag } from './routes.mjs';
 import { chatForWire } from './chat-images.mjs';
 import { watchChat } from './agent/updates.mjs';
 import { AGENT_REGISTRY } from './apps/index.mjs';
@@ -21,6 +21,12 @@ import { editorRoots } from '../lib/files.mjs';
 import { NativeCdp, nativeWindow, nativeWindowAt, nativeTargets, subscribeCatalog } from './native-windows.mjs';
 import { captureOperation } from './operations.mjs';
 import { terminalService } from './terminal-service.mjs';
+
+export async function withTemporarySession(client, deviceId, action) {
+  const session = new Session(client, deviceId);
+  try { return await action(session); }
+  finally { session.dispose(); }
+}
 
 export class Session extends AgentContext {
   constructor(client, deviceId, { fusionBinding = false } = {}) {
@@ -590,13 +596,12 @@ export class Session extends AgentContext {
   }
 
   async handle(msg) {
-    const apiHandler = this.app === 'opencode' && this.adapter.routes[msg.t];
-    if (apiHandler) return apiHandler.call(this, msg);
+    const route = resolveRoute(this, msg.t);
+    if (route?.native) return this.dispatch(msg, route);
     const target = msg.id?.startsWith('project:') ? decodeURIComponent(msg.id.split(':')[1]) : msg.id?.startsWith('thread:') ? msg.id.split(':')[1] : this.windowId;
     if (windowOperationLocked(this.app, target, this)) throw new Error('窗口正在批量处理会话，请稍后操作');
     const release = leaseWindow(this.app, this.windowId, this);
     if (!['ping', 'visible', 'usage', 'agents', 'connAgents', 'windows', 'sessionLibrary', 'sessionActions'].includes(msg.t)) touchProjectWindow(this.app, this.windowId);
-    const route = ROUTES[msg.t];
     const execute = async () => {
     if (route?.pre) {
       const r = await route.pre(this, msg);
@@ -613,8 +618,7 @@ export class Session extends AgentContext {
     } finally { release(); }
   }
 
-  async dispatch(msg) {
-    const route = ROUTES[msg.t];
+  async dispatch(msg, route = resolveRoute(this, msg.t)) {
     const fusionFree = this.app === 'fusion' && flag(route?.fusionFree, this, msg);
     if (fusionFree) {
       if (route.fusion) return route.fusion(this, msg);

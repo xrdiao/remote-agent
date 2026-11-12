@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { computerId } from '../lib/auth.mjs';
 import { favoriteSession } from '../lib/session-library.mjs';
-import { Session } from './session.mjs';
+import { withTemporarySession } from './session.mjs';
 import { overviewSession } from './overview.mjs';
 import { NativeCdp, nativeWindowAt } from './native-windows.mjs';
 import { catalogSessions, storedProjectSession } from './project-windows.mjs';
@@ -36,16 +36,15 @@ export async function manageOverviewSession(deviceId, body) {
   if (app === 'opencode') return manageOpenCodeSession(threadId, action, body.name);
   if (!['actions', 'rename', 'archive', 'delete', 'remove'].includes(action)) throw new Error('不支持的会话操作');
   const messages = [];
-  const s = new Session({ readyState: 1, send: raw => messages.push(JSON.parse(raw)) }, deviceId);
-  s.visible = s.notifyVisible = false;
-  s.app = app;
-  s.targetId = target.id;
-  s.windowId = s.codexPageId = windowId;
-  s.threadId = nativeWindowAt(target.ws).snapshot.chat?.thread || '';
-  s.cdp = s.editorCdp = new NativeCdp(target.ws);
-  // Management uses the native menu and library; it does not load a conversation screen.
-  s.pollChat = s.listAgents = async () => {};
-  try {
+  return withTemporarySession({ readyState: 1, send: raw => messages.push(JSON.parse(raw)) }, deviceId, async s => {
+    s.visible = s.notifyVisible = false;
+    s.app = app;
+    s.targetId = target.id;
+    s.windowId = s.codexPageId = windowId;
+    s.threadId = nativeWindowAt(target.ws).snapshot.chat?.thread || '';
+    s.cdp = s.editorCdp = new NativeCdp(target.ws);
+    // Management uses the native menu and library; it does not load a conversation screen.
+    s.pollChat = s.listAgents = async () => {};
     await s.cdp.connect();
     if (action === 'actions') {
       await s.handle({ t: 'sessionActions', id });
@@ -62,8 +61,6 @@ export async function manageOverviewSession(deviceId, body) {
         : { t: 'sessionManage', id, action, name: body.name });
     }
     return { ok: true };
-  } finally {
-    s.dispose();
-  }
+  });
 }
 

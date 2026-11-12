@@ -38,6 +38,11 @@ const flag = (v, s, m) => (typeof v === 'function' ? v(s, m) : !!v);
 // A pre handler returns SKIP when its condition does not match, letting the
 // message continue to the normal dispatch path (used by codex `agents`).
 export const SKIP = Symbol('route-skip');
+export function resolveRoute(session, type) {
+  const route = ROUTES[type];
+  const native = session.app === 'opencode' && session.adapter.routes[type];
+  return native ? { ...route, native: true, run: (s, m) => native.call(s, m) } : route;
+}
 const fusionRoute = method => ({ fast: true, fastRun: async (session, message) => {
   try { return await session[method](message); }
   catch (error) { session.emit({ t: 'fusionError', computer: computerId(), runId: message.runId || '', requestId: message.requestId, message: error.message }); }

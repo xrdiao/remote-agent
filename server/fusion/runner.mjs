@@ -8,6 +8,11 @@ import { applyFusionControl, fusionActor, fusionEventView, fusionPendingReviews,
 import { fusionRuns, fusionWorkers, fusionLive, allFusionRuns, fusionEvent, publishFusion,
   commitFusion, fusionAttemptWorkIds, newFusionAttempt, fusionReviewBatch, fusionReviewKey, recordFusionReceipt, NATIVE_UNSETTLED } from './state.mjs';
 
+function recordAttemptResult(attempt, result, fields, startedAt) {
+  Object.assign(attempt, fields, { result: { text: result.text, completed: result.completed, error: result.error || '' },
+    durationMs: Date.now() - startedAt });
+}
+
 export class FusionRunner {
   constructor(run, { scheduler = fusionScheduler, agent, controller } = {}) {
     this.run = run; this.scheduler = scheduler;
@@ -205,9 +210,8 @@ export class FusionRunner {
   completed(attemptId, result) {
     const attempt = this.run.attempts.find(row => row.id === attemptId);
     if (attempt.endedAt) return;
-    Object.assign(attempt, { status: result.stopped ? 'stopped' : result.completed && !result.error ? 'awaiting_review' : 'failed',
-      endedAt: result.endedAt || Date.now(), result: { text: result.text, completed: result.completed, error: result.error || '' },
-      usage: result.usage || null, changes: result.changes || null, durationMs: Date.now() - (attempt.acceptedAt || attempt.created) });
+    recordAttemptResult(attempt, result, { status: result.stopped ? 'stopped' : result.completed && !result.error ? 'awaiting_review' : 'failed',
+      endedAt: result.endedAt || Date.now(), usage: result.usage || null, changes: result.changes || null }, attempt.acceptedAt || attempt.created);
     const task = this.run.tasks.find(row => row.id === attempt.taskId);
     if (task) task.status = attempt.status;
     const agent = task && this.run.agents.find(row => row.id === task.workerId);
@@ -232,9 +236,9 @@ export class FusionRunner {
   async mainEnded(attemptId, turn) {
     const run = this.run, attempt = run.attempts.find(row => row.id === attemptId);
     if (!attempt || attempt.endedAt && !NATIVE_UNSETTLED.includes(attempt.status)) return;
-    Object.assign(attempt, { status: run.stopRequested ? 'stopped' : turn.error || !turn.completed ? 'failed' : 'ended', endedAt: attempt.endedAt || Date.now(),
-      usage: turn.usage || attempt.usage,
-      result: { text: turn.text || '', completed: !!turn.completed, error: turn.error || '' }, durationMs: Date.now() - attempt.acceptedAt });
+    recordAttemptResult(attempt, { ...turn, text: turn.text || '', completed: !!turn.completed }, {
+      status: run.stopRequested ? 'stopped' : turn.error || !turn.completed ? 'failed' : 'ended',
+      endedAt: attempt.endedAt || Date.now(), usage: turn.usage || attempt.usage }, attempt.acceptedAt);
     for (const waiter of this.waiters.values()) if (waiter.native.turnId === attempt.native?.turnId) this.cancelWait(waiter.native);
     for (const entry of attempt.workExecutions || []) if (entry.baseline) {
       const work = run.works.find(row => row.id === entry.workId);

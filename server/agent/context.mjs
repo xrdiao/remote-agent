@@ -1,6 +1,6 @@
 import { MOD, NAMED_KEYS, cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { EDITORS } from '../config.mjs';
-import { helpersCall, DEVIN_COMPOSER_SRC } from '../page/build.mjs';
+import { helpersCall, DEVIN_COMPOSER_SRC, COMPOSER_TARGET_SRC } from '../page/build.mjs';
 import { resetThinkingCaches } from './thinking-cache.mjs';
 
 // Cursor's chat composer is a ProseMirror contenteditable; selectors ordered from most to least specific.
@@ -9,15 +9,9 @@ export const FOCUS_COMPOSER = `(() => {
   const doc = document.getElementById('active-frame')?.contentDocument || document;
   ${DEVIN_COMPOSER_SRC}
   revealDevinComposer();
-  const visible = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(e).visibility === 'visible'; };
-  const composer = e => visible(e) && !e.closest('[data-flat-index], [data-message-index], [data-message-kind], [data-turn-key], [data-transcript-row-key], [role=group][data-side], [aria-label="User message"], [aria-label="Devin message"]');
-  const selectors = ['.aislash-editor-input[contenteditable="true"]', '.ui-prompt-input-editor__input[contenteditable="true"]', '.ProseMirror[contenteditable="true"]', '.composer-bar [contenteditable="true"]', '.auxiliarybar [contenteditable="true"]'];
-  let eds = [];
-  for (const s of selectors) { eds = [...doc.querySelectorAll(s)].filter(composer); if (eds.length) break; }
-  if (!eds.length) eds = [...doc.querySelectorAll('[contenteditable="true"]')].filter(e => composer(e) && !e.closest('.monaco-editor'));
-  if (!eds.length) return null;
-  const selId = doc.querySelector('[data-sidebar-item-key] [data-active="true"]')?.closest('[data-sidebar-item-key]')?.getAttribute('data-sidebar-item-key')?.slice(4);
-  const el = eds.find(e => e.contains(doc.activeElement)) || (selId && eds.find(e => e.closest('[data-glass-agent-id]')?.getAttribute('data-glass-agent-id') === selId)) || eds[eds.length - 1];
+  ${COMPOSER_TARGET_SRC}
+  const el = composerTarget(doc);
+  if (!el) return null;
   el.focus();
   const range = doc.createRange();
   range.selectNodeContents(el);
@@ -29,7 +23,6 @@ export const FOCUS_COMPOSER = `(() => {
 })()`;
 
 
-export const uploads = new Map();
 export const codexUsage = { data: null, refresh: null, retryAt: 0, failures: 0 };
 export const cursorUsage = { data: null, initial: null };
 export const appPlans = {};
@@ -65,12 +58,6 @@ export function quotaErrorMessage(app, error) {
   return `${quotaName(app)} 账号额度或频率限制，当前请求未发送成功。请等待额度重置、升级套餐或切换账号后重试。`;
 }
 
-const tapPoint = async (cdp, x, y) => {
-  const base = { x, y, button: 'left', clickCount: 1 };
-  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
-  await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...base });
-  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base });
-};
 export class AgentContext {
   constructor({ deviceId = '', emit } = {}) {
     this.deviceId = deviceId;

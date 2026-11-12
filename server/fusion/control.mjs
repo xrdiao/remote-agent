@@ -5,6 +5,7 @@ import { workspaces } from '../../lib/files.mjs';
 import { commitFusion, fusionProject, fusionEffect, newFusionAttempt, fusionAttemptWorkIds, NATIVE_UNSETTLED } from './state.mjs';
 import { FUSION_TIERS, validateExecution, validateCost, modelQuery, fusionModelView } from './cost.mjs';
 import { nativeAgentProviders } from './providers.mjs';
+import { indexFusionRun } from './run-index.mjs';
 import { FUSION_ACTIONS, ACTION_FIELDS, FusionControlError, WORKSPACE_VIEWS, EVIDENCE_FIELDS, scopeList, validateFusionAction } from './contract.mjs';
 export { FUSION_ACTIONS, FUSION_TOOLS } from './contract.mjs';
 
@@ -102,10 +103,10 @@ function workSources(controller, workId) {
     .map(attempt => ({ attemptId: attempt.id, kind: attempt.kind, taskId: attempt.taskId, status: attempt.status,
       ...(attempt.taskId ? { read: { action: 'read_task', taskId: attempt.taskId, attemptId: attempt.id } } : { native: attempt.native }) }));
 }
-export function fusionPendingReviews(controller) {
-  const tasks = new Map(controller.tasks.map(task => [task.id, task]));
-  const works = new Map(controller.works.map(work => [work.id, work]));
-  const attempts = new Map(controller.attempts.map(attempt => [attempt.id, attempt])), continuedThrough = new Map();
+export function fusionPendingReviews(controller, index = indexFusionRun(controller)) {
+  const tasks = index('tasks');
+  const works = index('works');
+  const attempts = index('attempts'), continuedThrough = new Map();
   for (const command of controller.commands) if (command.action === 'continue_task') {
     const next = attempts.get(command.result.attemptId);
     if (next) continuedThrough.set(next.taskId, Math.max(continuedThrough.get(next.taskId) || 0, next.created));
@@ -127,8 +128,8 @@ export function fusionPendingReviews(controller) {
       read: { action: 'read_task', taskId: attempt.taskId, attemptId: attempt.id } };
   });
 }
-export function fusionReviewQueue(controller) {
-  const items = fusionPendingReviews(controller);
+export function fusionReviewQueue(controller, index = indexFusionRun(controller)) {
+  const items = fusionPendingReviews(controller, index);
   return { total: items.length, items: items.slice(0, 4), read: workspaceRead('reviews') };
 }
 function taskMemory(task) {
@@ -140,12 +141,13 @@ function taskMemory(task) {
     read: { action: 'read_task', taskId: task.id } };
 }
 export function fusionWorkspaceView(controller, query = {}) {
+  const index = indexFusionRun(controller);
   const { app, model, effort, bindingId } = controller.main;
-  const assignments = new Map(controller.assignments.map(row => [row.id, row]));
+  const assignments = index('assignments');
   const latestAssignments = new Map(controller.assignments.filter(row => row.agentId).map(row => [row.agentId, row]));
   const reviewsByAttempt = new Map(controller.tasks.flatMap(task => task.reviews.map(review => [review.attemptId, review])));
   const workerAttempts = new Map(), workerTasks = new Map(), workMemories = new Map(), unsettledTasks = new Set(), latestTaskAttempts = new Map();
-  const worksById = new Map(controller.works.map(work => [work.id, work]));
+  const worksById = index('works');
   for (const attempt of controller.attempts) {
     if (attempt.taskId) latestTaskAttempts.set(attempt.taskId, attempt);
     if (NATIVE_UNSETTLED.includes(attempt.status)) unsettledTasks.add(attempt.taskId);
@@ -163,9 +165,9 @@ export function fusionWorkspaceView(controller, query = {}) {
   }
   const common = { id: controller.id, revision: controller.revision, computer: controller.computer, view: query.view || 'overview',
     status: controller.status, stopRequested: controller.stopRequested, blockedReason: controller.blockedReason,
-    pendingReviews: fusionReviewQueue(controller),
+    pendingReviews: fusionReviewQueue(controller, index),
     events: controller.events.filter(event => !event.deliveredTo).map(event => fusionEventView(controller, event)) };
-  if (query.view === 'reviews') return { ...common, ...textPage(JSON.stringify(fusionPendingReviews(controller)), query, { view: 'reviews' }) };
+  if (query.view === 'reviews') return { ...common, ...textPage(JSON.stringify(fusionPendingReviews(controller, index)), query, { view: 'reviews' }) };
   if (query.view === 'history') return { ...common, ...textPage(JSON.stringify(controller.works.map(work => ({ id: work.id,
     title: work.title, status: work.status, summary: work.deliveries.at(-1)?.summary || null, read: workspaceRead('work', work.id) }))), query, { view: 'history' }) };
   const selectedWork = query.view === 'work' ? findWork(controller, query.id) : null;

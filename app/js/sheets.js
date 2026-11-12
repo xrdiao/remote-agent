@@ -66,13 +66,8 @@ function setAgentFilter(value) {
   store.set('agent-filters', JSON.stringify(agentFilters));
 }
 function agentThreadKey(a, app = currentApp) {
-  const id = String(a.id || '');
   if (a.threadId) return a.threadId;
-  if (app === 'codex' && id.startsWith('thread:')) return id.split(':').slice(2).join(':');
-  if (id.startsWith('project:')) {
-    try { return decodeURIComponent(id.split(':').slice(2).join(':')).replace(/^tab:/, ''); } catch {}
-  }
-  return app === 'devin' ? id.replace(/^tab:/, '') : id;
+  return RemoteAgentRules.parseSessionRef(app, a.id);
 }
 function legacyAgentLibrary() {
   const entries = new Map();
@@ -82,10 +77,7 @@ function legacyAgentLibrary() {
     if (!prefix) continue;
     const [appName, ...parts] = key.slice(prefix.length).split('|');
     const app = appName.toLowerCase();
-    let id = parts.join('|');
-    if (id.startsWith('project:')) id = decodeURIComponent(id.split(':').slice(2).join(':'));
-    if (app === 'codex' && id.startsWith('thread:')) id = id.split(':').slice(2).join(':');
-    if (app === 'devin') id = id.replace(/^tab:/, '');
+    const id = RemoteAgentRules.parseSessionRef(app, parts.join('|'));
     if (!['cursor', 'devin', 'codex', 'opencode'].includes(app) || !id || /^(?:pick|new|win|window|project-new):/.test(id)) continue;
     const entry = entries.get(app + '|' + id) || { app, id };
     if (agentFavorites[key]) entry.favorite = true;
@@ -293,16 +285,11 @@ const KIND_TAG = { agents: 'Agents', ssh: 'SSH', local: '本地' };
 
 // Cursor titles look like "file.py — Folder [SSH: host]"; the window is identified by folder (+ host), not the open file.
 function cleanWindowTitle(title) {
-  return String(title || '').replace(/\s*\[(?:Administrator|Administer)\]/gi, '').trim();
+  return RemoteAgentRules.cleanWindowTitle(title);
 }
 function winLabel(title) {
-  title = cleanWindowTitle(title);
-  const windowsTitle = /\s+-\s+(?:Cursor|Devin|Visual Studio Code)$/.test(title);
-  title = title.replace(/\s+-\s+(?:Cursor|Devin|Visual Studio Code)$/, '');
-  const host = /\[SSH: ([^\]]+)\]/.exec(title)?.[1];
-  const parts = title.replace(/\s*\[SSH: [^\]]+\]\s*$/, '').split(windowsTitle ? / — | - / : ' — ').map(s => s.replace(/^●\s*/, '').trim());
-  const folder = parts.pop() || title;
-  return { name: host ? `${folder} · ${host}` : folder, file: parts.join(' — ') };
+  const { name, file, host } = RemoteAgentRules.parseWindowTitle(title);
+  return { name: host ? `${name} · ${host}` : name, file };
 }
 
 function windowEntries() {
@@ -909,12 +896,7 @@ function deviceGroups() {
 function drawEntryQr(modules) {
   const canvas = $('entryInviteQr');
   if (!canvas || !Array.isArray(modules) || !modules.length) return;
-  const size = modules.length + 8, scale = 4;
-  canvas.width = canvas.height = size * scale;
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = '#000';
-  modules.forEach((row, y) => row.forEach((dark, x) => { if (dark) ctx.fillRect((x + 4) * scale, (y + 4) * scale, scale, scale); }));
+  drawQrModules(canvas, modules);
 }
 function renderDevices() {
   const when = t => new Date(t).toLocaleDateString();
@@ -1180,14 +1162,8 @@ function renderQuota(m) {
   document.dispatchEvent(new Event('usage-state'));
   $('quotaMeters').classList.toggle('devinLimits', currentApp === 'devin' && bars.length > 1);
   const when = m.updated ? new Date(m.updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
-  if (m.missing) {
-    $('quotaMeters').title = '没有额度数据' + (when ? ` · 更新于 ${when}` : '');
-    $('quotaMeters').innerHTML = `<button class="meter" type="button"><span class="track"></span><span class="meterText"><span class="meterLabel">额度</span><b>未获取</b></span></button>`;
-    $('quotaMeters').querySelector('button').onclick = () => showUsageDetails('quota');
-    return;
-  }
-  if (!bars.length) {
-    $('quotaMeters').title = '没有额度指标' + (when ? ` · 更新于 ${when}` : '');
+  if (m.missing || !bars.length) {
+    $('quotaMeters').title = (m.missing ? '没有额度数据' : '没有额度指标') + (when ? ` · 更新于 ${when}` : '');
     $('quotaMeters').innerHTML = `<button class="meter" type="button"><span class="track"></span><span class="meterText"><span class="meterLabel">额度</span><b>未获取</b></span></button>`;
     $('quotaMeters').querySelector('button').onclick = () => showUsageDetails('quota');
     return;

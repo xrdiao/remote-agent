@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
+import { createPageContext } from './page-fixture.mjs';
 
 const read = file => fs.readFileSync(new URL('../' + file, import.meta.url), 'utf8');
 const net = read('app/js/net.js');
@@ -54,7 +55,7 @@ function harness({ sameSelection = false, count = 2 } = {}) {
     receive(message) { this.onmessage({ data: JSON.stringify(message) }); }
     close(code = 1000) { this.readyState = 3; return this.onclose?.({ code }); }
   }
-  const context = vm.createContext({
+  const context = createPageContext({
     URL, URLSearchParams, AbortController, AbortSignal, Event, crypto, performance, structuredClone,
     Date: class extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } },
     WebSocket: FakeWebSocket,
@@ -1082,11 +1083,11 @@ test('card navigation preserves the old terminal and the separate chat and termi
 
 test('terminal card navigation enters a Fusion native main conversation and clears its controller on ordinary exit', async () => {
   const h = harness(); await h.bothReady(); installOverviewBinding(h); installCardModes(h); h.run(fusion); cardTerminalHome(h);
-  h.run(`ovS.comp=currentComputer().id;var run={id:'qa-controller',computer:currentComputer().id,main:{bindingId:'qa-main',app:'codex'},tasks:{total:0},status:'waiting'};
+  h.run(`ovS.comp=currentComputer().id;var run={id:'qa-controller',computer:currentComputer().id,main:{bindingId:'qa-main',app:'codex',target:{computer:currentComputer().id,win:'codex',windowId:'qa-main-window',threadId:'qa-main-thread'}},tasks:{total:0},status:'waiting'};
     fusionWorkspaces.set(currentComputer().id,{runs:[run]});openFusionController(currentComputer().id,run.id)`);
   await h.settle();
   assert.equal(h.run('mode'), 'chat'); assert.equal(cardNavigations(h).length, 1);
-  assert.equal(cardNavigations(h)[0].id, 'fusion'); assert.equal(cardNavigations(h)[0].threadId, 'qa-controller');
+  assert.equal(cardNavigations(h)[0].id, 'codex'); assert.equal(cardNavigations(h)[0].threadId, 'qa-main-thread');
   const main = { id: 'codex', app: 'codex', windowId: 'qa-main-window', threadId: 'qa-main-thread', sel: 'codex|qa-main-window|qa-main-thread',
     fusionController: { id: 'qa-controller', computer: computers[0].id, main:{bindingId:'qa-main'}, tasks:{total:0} } };
   h.attached(0, { ...main, chat: undefined });

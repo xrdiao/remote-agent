@@ -338,8 +338,7 @@ public class NotifyService extends Service {
                 lastData = android.os.SystemClock.elapsedRealtime();
                 if (line.startsWith("data:")) {
                     JSONObject e = new JSONObject(line.substring(5).trim());
-                    String k = e.optString("computer") + "|" + e.optString("win", "") + "|" + e.optString("windowId", "") + "|" + e.optString("threadId", "");
-                    int id = k.replace("|", "").isEmpty() ? 2 : 3 + (k.hashCode() & 0x7fffffff) % 100000;
+                    int id = notificationId(notificationKey(e));
                     Log.i(TAG, "data kind=" + e.optString("kind") + " id=" + id + (e.has("startedAt") ? " startedAt=" + e.optLong("startedAt") : ""));
                     show(e);
                 }
@@ -354,9 +353,12 @@ public class NotifyService extends Service {
         }
     }
 
-    private static int notificationId(String win) {
-        // One notification per window: a newer event replaces the older one.
-        return win.isEmpty() ? 2 : 3 + (win.hashCode() & 0x7fffffff) % 100000;
+    private static String notificationKey(JSONObject event) {
+        return event.optString("computer") + "|" + event.optString("win", "") + "|" + event.optString("windowId", "") + "|" + event.optString("threadId", "");
+    }
+
+    private static int notificationId(String key) {
+        return key.replace("|", "").isEmpty() ? 2 : 3 + (key.hashCode() & 0x7fffffff) % 100000;
     }
 
     private void show(JSONObject e) {
@@ -364,14 +366,14 @@ public class NotifyService extends Service {
         String windowId = e.optString("windowId", "");
         String threadId = e.optString("threadId", "");
         // One notification per thread, so a second session does not replace the first.
-        String key = e.optString("computer") + "|" + win + "|" + windowId + "|" + threadId;
+        String key = notificationKey(e);
         long seq = e.optLong("seq", 0);
         if (seq > 0) {
             long previous = latestSeq.containsKey(key) ? latestSeq.get(key) : 0;
             if (seq <= previous) return;
             latestSeq.put(key, seq);
         }
-        int id = key.replace("|", "").isEmpty() ? 2 : 3 + (key.hashCode() & 0x7fffffff) % 100000;
+        int id = notificationId(key);
         String kind = e.optString("kind");
         if ("end".equals(kind)) { Log.i(TAG, "cancel id=" + id); ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).cancel(id); return; }
         if ("working".equals(kind)) { Log.i(TAG, "notify working id=" + id + " when=" + e.optLong("startedAt")); showWorking(e, id, win, windowId, threadId); return; }
@@ -433,7 +435,7 @@ public class NotifyService extends Service {
 
     // Devin's todo list as a progress chip; its own id, so the run's end and alerts leave it alone.
     private void showTasks(JSONObject e, String win, String windowId, String threadId) {
-        String key = e.optString("computer") + "|" + win + "|" + windowId + "|" + threadId;
+        String key = notificationKey(e);
         int tid = 3 + ((key + "|tasks").hashCode() & 0x7fffffff) % 100000;
         int done = e.optInt("done"), total = e.optInt("total");
         boolean complete = total > 0 && done >= total;

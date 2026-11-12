@@ -1,9 +1,8 @@
 // 文件：项目元数据、变更列表、打开与保存
 import path from 'node:path';
-import { workspaces, fileSize, readFile, parseRef, locateWritable, writeTextFile, resolveLocal } from '../../lib/files.mjs';
-import { videoUrl, pdfUrl } from '../http/video.mjs';
+import { workspaces, fileSize, parseRef, locateWritable, writeTextFile, resolveLocal } from '../../lib/files.mjs';
+import { buildFilePreview } from '../file-preview.mjs';
 import { themeFor } from '../../lib/theme.mjs';
-import { highlightText } from '../../lib/highlight.mjs';
 import { gitMarks, agentMarks, parseGitDiff, lastCommitMarks } from '../../lib/marks.mjs';
 import { IS_WIN, mod, pathKey, normPath, localFilePath } from '../../lib/platform.mjs';
 import { CDP_URL, EDITORS } from '../config.mjs';
@@ -182,21 +181,9 @@ export const methods = {
     emit({ t: 'file', loading: true, name: path.posix.basename(parseRef(text).p) });
     try {
       const f = await this.resolveFile(text);
-      if (/\.mp4$/i.test(f.path) && !f.host) {
-        emit({ t: 'file', name: path.basename(f.path), path: f.path, size: f.size, video: videoUrl(f.path, this.deviceId) });
-        return;
-      }
-      if (/\.pdf$/i.test(f.path) && !f.host) {
-        emit({ t: 'file', name: path.basename(f.path), path: f.path, size: f.size, pdf: pdfUrl(f.path, this.deviceId) });
-        return;
-      }
-      const body = await readFile(f.path, f.size);
-      let hl = null;
-      if (body.text) {
-        const theme = await this.fileTheme();
-        hl = await highlightText(body.text, f.path, theme).catch(() => null);
-      }
-      emit({ t: 'file', name: path.posix.basename(f.path), path: f.path, host: f.host, size: f.size, line: f.line, editable: body.text != null && !body.truncated, ...body, ...(hl ? { hl } : {}) });
+      const body = await buildFilePreview(f, this.deviceId, () => this.fileTheme());
+      emit({ t: 'file', name: body.video || body.pdf ? path.basename(f.path) : path.posix.basename(f.path), path: f.path,
+        size: f.size, ...(body.video || body.pdf ? {} : { host: f.host, line: f.line }), ...body });
       // Gutter marks come afterwards — the git calls shouldn't hold the first paint.
       if (body.text) {
         this.fileMarks(f, body.text, reviewDiff, fromChanges).then(marked => {

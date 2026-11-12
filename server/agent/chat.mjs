@@ -5,9 +5,11 @@ import { IS_MAC, mod } from '../../lib/platform.mjs';
 import { codexContext } from '../windows.mjs';
 import { cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
-import { FOCUS_COMPOSER, uploads } from './context.mjs';
+import { FOCUS_COMPOSER } from './context.mjs';
+import { uploads, pendingUploads, uploadAttachments, removeUpload } from '../../lib/uploads.mjs';
 import { rememberSessionMessage, observeSessionTitle, readLibrary } from '../../lib/session-library.mjs';
 import { nativeWindow } from '../native-windows.mjs';
+import { normalizeReceiptText, withoutAttachmentLabels } from '../../lib/shared-rules.mjs';
 
 // Cursor accepts images pasted into the composer; a synthetic paste event carrying a File works the same way.
 const pasteImage = (b64, name, type) => `(async () => {
@@ -643,7 +645,7 @@ export const methods = {
       return { thread: chat?.thread || '', draft: h.composerDraft(),
         human: (chat?.items || []).filter(it => it.k === 'human'), queued: chat?.queued || [] };
     })()`, { timeout });
-    const norm = value => (value || '').replace(/\s+/g, ' ').trim();
+    const norm = normalizeReceiptText;
     const before = await read(), expected = norm(before.draft);
     this.lastDraft = before.draft;
     const human = new Set(before.human.map(it => `${it.i}:${it.sentAt || ''}`));
@@ -658,7 +660,7 @@ export const methods = {
       try { after = await read(Math.max(1, deadline - Date.now())); } catch { break; }
       if (this.cdp !== cdp || this.selectionKey() !== scope || before.thread && after.thread && after.thread !== before.thread) break;
       const item = after.human.find(it => !human.has(`${it.i}:${it.sentAt || ''}`)
-        && (!expected || norm((it.t || '').replace(/(?:^|\n)\[(?:图片|附件) \d+\](?:\n\[(?:图片|附件) \d+\])*$/, '')) === expected));
+        && (!expected || norm(withoutAttachmentLabels(it.t)) === expected));
       if (item) { receipt.messageId = item.i; return false; }
       const pending = after.queued.find(it => norm(it.t) === queueText
         && (!queues.has(it.id) || this.app === 'devin' && queuedMatches(after.queued) > queuedMatches(before.queued)));
@@ -683,7 +685,7 @@ export const methods = {
       if (this.cdp !== receiptCdp || this.selectionKey() !== receiptScope) throw new Error('会话已切换，消息未发送');
     }
     await this.assertSelectedThread();
-    const files = [...uploads.values()].filter(f => f.pending && f.sel === this.selectionKey());
+    const files = pendingUploads(this.selectionKey()).map(([, file]) => file);
     if (files.length) text += '\n\n附加文件（请读取这些电脑端文件）：\n' + files.map(f => f.path).join('\n');
     this.sendGen = (this.sendGen || 0) + 1;
     this.sending = true;
@@ -785,7 +787,7 @@ export const methods = {
     const matches = JSON.parse(this.lastAttachments).filter(f => f.preview && f.preview === added?.preview);
     return matches.length === 1 ? matches[0].id : undefined;
     } finally {
-      if (file) { fs.rmSync(path.dirname(file.path), { recursive: true, force: true }); uploads.delete(uploadId); }
+      if (file) removeUpload(uploadId);
     }
   },
   async editAttachmentImage(id, scope) {
@@ -806,7 +808,7 @@ export const methods = {
     if (!cdp) return;
     const list = await cdp.evaluate(helpersCall('attachmentRows()'));
     if (!this.liveRead(cdp, sel)) return;
-    list.push(...[...uploads.entries()].filter(([, f]) => f.pending && f.sel === this.selectionKey()).map(([id, f]) => ({ id, name: f.name, size: f.size })));
+    list.push(...uploadAttachments(this.selectionKey()));
     const json = JSON.stringify(list);
     if (json === this.lastAttachments) return;
     this.lastAttachments = json;
@@ -815,8 +817,7 @@ export const methods = {
   async removeAttachment(id) {
     const file = uploads.get(id);
     if (file?.pending && file.sel === this.selectionKey()) {
-      fs.rmSync(path.dirname(file.path), { recursive: true });
-      uploads.delete(id);
+      removeUpload(id);
     } else {
       const point = await this.cdp.evaluate(helpersCall(`attachmentPoint(${JSON.stringify(id)})`));
       if (point) {

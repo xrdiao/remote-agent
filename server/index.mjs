@@ -1,8 +1,8 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
-import { PORT, HOST, CDP_URL, CODEX_CDP_URL, EDITORS, TUNNEL, PUBLISH_REPO, CONFIG_FILE, ALLOWED_ORIGINS, loadConfig } from './config.mjs';
-import { DATA_DIR, listDevices, saveState, normalizeAppUrl } from '../lib/auth.mjs';
+import { PORT, HOST, CDP_URL, CODEX_CDP_URL, EDITORS, TUNNEL, PUBLISH_REPO, ALLOWED_ORIGINS, loadConfig } from './config.mjs';
+import { DATA_DIR, listDevices, saveState, saveConfig, normalizeAppUrl } from '../lib/auth.mjs';
 import { startWatcher } from '../lib/notify.mjs';
 import { themeFor } from '../lib/theme.mjs';
 import { warmHighlighter } from '../lib/highlight.mjs';
@@ -53,7 +53,7 @@ export async function detectAppUrl() {
     if (!u || new URL(u).origin === `https://${PUBLISH_REPO.split('/')[0].toLowerCase()}.github.io`) return;
     const cfg = loadConfig();
     cfg.appUrl = u;
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
+    saveConfig(cfg);
     ALLOWED_ORIGINS.add(new URL(u).origin);
     console.log(`检测到自定义域名，手机 App 固定地址：${u}`);
   } catch {}

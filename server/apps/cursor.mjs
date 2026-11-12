@@ -2,6 +2,7 @@ import { windowRoots, editorRoots } from '../../lib/files.mjs';
 import { mod } from '../../lib/platform.mjs';
 import { helpersCall, PAGE_SRC } from '../page/build.mjs';
 import { cursorUsage } from '../agent/context.mjs';
+import { activateQueuedAction } from '../agent/queued-action.mjs';
 
 // Phone viewers of the same window share its native menu/thought UI.
 const cursorUiReads = new Map();
@@ -90,17 +91,7 @@ export const adapter = {
 
   async queueAction(id, action) {
     const call = a => this.cdp.evaluate(helpersCall(`queueTarget(${JSON.stringify(String(id))}${a ? `, ${JSON.stringify(a)}` : ''})`));
-    const row = await call();
-    if (!row) throw new Error('这条排队消息已经不在了（可能刚被发出）');
-    await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: row.x, y: row.y });
-    let pos = null;
-    for (let i = 0; i < 6 && !pos; i++) {
-      await new Promise(r => setTimeout(r, 80));
-      pos = await call(action);
-    }
-    if (!pos) throw new Error(this.appMessage('没找到排队消息的操作按钮（可能 {app} 版本不同）'));
-    if (pos !== true) await this.tapCss(pos.x, pos.y);
-    this.refreshSoon(300);
+    return activateQueuedAction(this, call, action);
   },
 
   async editQueued(id, text) {

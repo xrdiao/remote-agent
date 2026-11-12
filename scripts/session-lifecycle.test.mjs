@@ -4,12 +4,10 @@ import path from 'node:path';
 import vm from 'node:vm';
 import test from 'node:test';
 import { NativeWindow } from '../server/native-windows.mjs';
-
-const read = file => fs.readFileSync(new URL('../' + file, import.meta.url), 'utf8');
-const fragment = (text, start, end) => text.slice(text.indexOf(start), text.indexOf(end, text.indexOf(start)));
+import { read, fragment, createPageContext } from './page-fixture.mjs';
 
 function pageContext(extra = {}) {
-  const context = vm.createContext({ remoteContext: null, window: {}, doc: { defaultView: {} }, ...extra });
+  const context = createPageContext({ remoteContext: null, window: {}, doc: { defaultView: {} }, ...extra });
   vm.runInContext(read('server/page/session-actions.js') + '\nthis.info = nativeSessionInfo; this.action = nativeSessionAction;', context);
   return context;
 }
@@ -39,7 +37,7 @@ for (const result of ['archive', 'delete', 'clear']) {
 for (const outcome of ['archive', 'clear', 'delete']) {
   test(`server records ${outcome} without turning other native outcomes into deletion`, async () => {
     const library = { favorite: true }, changes = [], messages = [];
-    const context = vm.createContext({ remoteContext: null,
+    const context = createPageContext({ remoteContext: null,
       sessionId: (_app, id) => id, helpersCall: call => call,
       removeLibrarySession: () => { library.favorite = false; library.deleted = true; },
       publishSessionChange: (_app, _id, change) => { changes.push(change.action); if (change.action === 'archive') library.archived = true; },
@@ -59,7 +57,7 @@ for (const outcome of ['archive', 'clear', 'delete']) {
 test('compact Devin model buttons expose the same picker as text buttons', () => {
   const model = { textContent: '', getAttribute: name => name === 'aria-label' ? 'SWE-2 High' : '', closest: () => null };
   const unrelated = { ...model, textContent: 'Local', getAttribute: () => '' };
-  const context = vm.createContext({ remoteContext: null, doc: { querySelectorAll: () => [unrelated, model] }, vis: () => true, revealDevinComposer() {} });
+  const context = createPageContext({ remoteContext: null, doc: { querySelectorAll: () => [unrelated, model] }, vis: () => true, revealDevinComposer() {} });
   const source = read('server/page/menus.js');
   vm.runInContext(fragment(source, '  const DEVIN_MODEL', '  const devinModelMenu') + '\nthis.button = devinModelButton;', context);
   assert.equal(context.button(false), model);
@@ -71,7 +69,7 @@ test('Codex manager lookup on the empty home page follows the requested host', (
   const local = { hostId: 'local', getConversation: id => id === 'local-thread', loadOlderConversationTurnsPage() {} };
   const remote = { hostId: 'remote', getConversation: id => id === 'remote-thread', loadOlderConversationTurnsPage() {} };
   const scope = { familyBindings: new Map([['managers', new Map([['a', local], ['b', remote]])]]) };
-  const context = vm.createContext({ remoteContext: null, doc: { defaultView: {} }, codexHistoryBinding: (_scope, value) => ({ get: () => value }) });
+  const context = createPageContext({ remoteContext: null, doc: { defaultView: {} }, codexHistoryBinding: (_scope, value) => ({ get: () => value }) });
   const source = read('server/page/chat-extract.js');
   vm.runInContext(fragment(source, '  const codexConversationManager', '  const codexHistoryState') + '\nthis.manager = codexConversationManager;', context);
   assert.equal(context.manager(null, [scope], 'local'), local);
@@ -83,7 +81,7 @@ test('Codex manager lookup on the empty home page follows the requested host', (
 test('Codex opens the identified recent-chat button once despite the archive toast', () => {
   let open = false, clicks = 0;
   const button = {};
-  const context = vm.createContext({ remoteContext: null, codexButton: () => button, codexPoint: () => ({ x: 1, y: 2 }), vis: () => true,
+  const context = createPageContext({ remoteContext: null, codexButton: () => button, codexPoint: () => ({ x: 1, y: 2 }), vis: () => true,
     codexFiberProps: () => [{ triggerRef: { current: { contains: el => el === button } }, contentId: 'recent-menu', get open() { return open; }, onOpenChange(value) { clicks++; open = value; } }],
     doc: { querySelectorAll: () => open ? [{ innerText: 'Search recent chats' }] : [] } });
   const source = read('server/page/codex.js');
@@ -120,7 +118,7 @@ test('Codex preview and catalog use the host connection without selecting a conv
 });
 
 function nativeRunContext(extra) {
-  const context = vm.createContext({ remoteContext: null, ...extra }), source = read('server/page/agents.js');
+  const context = createPageContext({ remoteContext: null, ...extra }), source = read('server/page/agents.js');
   vm.runInContext(fragment(source, '  const agentRun =', '  const agentStates =')
     + '\nthis.run = (app, thread, scopes=[]) => agentRun(app, thread, scopes, app === "codex" ? codexConversationManager(thread, scopes) : null);', context);
   return context;
@@ -131,7 +129,7 @@ function nativeWaitingState(app = 'codex') {
   const item = { innerText: '任务已正常完成', matches: () => false, querySelector: () => null, querySelectorAll: () => [],
     hasAttribute: key => key === 'data-turn-key', getAttribute: () => 'native-turn' };
   const panel = {};
-  const context = vm.createContext({ remoteContext: null, doc: { querySelectorAll: () => [] }, vis: () => true,
+  const context = createPageContext({ remoteContext: null, doc: { querySelectorAll: () => [] }, vis: () => true,
     agentList: () => [{ id: state.thread, current: true, title: '会话' }], activeThread: () => state.thread,
     codexButton: () => null, codexWorkspaceRoots: () => [], hasComposer: () => true,
     findPanel: () => state.panel ? panel : null, isBusy: () => state.busy, topItems: () => [item],
@@ -211,7 +209,7 @@ function codexQuestionReader(questions = [{ id: 'choice', question: '请选择�
     if (selector === 'button' || selector.startsWith('button, input')) return [...(state.mounted ? [skip] : []), ...state.controls];
     return [];
   } };
-  const context = vm.createContext({ remoteContext: null, doc, document: doc, activeThread: () => state.thread, vis: () => true,
+  const context = createPageContext({ remoteContext: null, doc, document: doc, activeThread: () => state.thread, vis: () => true,
     codexQueueConfirmRequests: () => [], codexFiberProps: el => el.props || [], codexPoint: () => ({ x: 1, y: 2 }), setTimeout });
   vm.runInContext(fragment(read('server/page/codex.js'), '  const codexAsyncRequestFiber =', '  const codexImage =')
     + '\nthis.data=codexRequestData;this.field=codexRequestField;this.action=codexRequestAction;', context);
@@ -375,7 +373,7 @@ test('window-owned turn facts survive selection changes without assuming an unfi
 });
 
 test('a new Codex conversation remains observable before it enters the recent catalog', () => {
-  const context = vm.createContext({ remoteContext: null, agentState: () => ({ thread: 'new-thread', busy: true }),
+  const context = createPageContext({ remoteContext: null, agentState: () => ({ thread: 'new-thread', busy: true }),
     codexHistoryScopes: () => [], codexThread: () => 'new-thread', codexChatRows: () => [],
     codexConversationManager: () => ({}),
     codexQueryClient: () => ({ getQueryData: () => [] }),
@@ -389,7 +387,7 @@ test('a new Codex conversation remains observable before it enters the recent ca
 
 test('one native read resolves each Codex host manager once for all background rows', () => {
   const calls = [], local = {}, remote = {};
-  const context = vm.createContext({ remoteContext: null, agentState: () => ({ thread: 'selected', busy: false }),
+  const context = createPageContext({ remoteContext: null, agentState: () => ({ thread: 'selected', busy: false }),
     codexHistoryScopes: () => [], codexThread: () => 'selected',
     codexChatRows: () => Array.from({ length: 50 }, (_, n) => ({ id: 'thread-' + n, host: n % 2 ? 'remote' : '' })),
     codexQueryClient: () => ({ getQueryData: () => [] }),
@@ -405,8 +403,8 @@ test('native Fusion attachments from another paired entry carry the same summary
   const { fusionControllerView } = await import('../server/fusion/owner.mjs');
   const sent = [], run = { id: 'controller', computer: 'computer', title: 'Fusion', status: 'waiting', project: { name: 'project' },
     main: { bindingId: 'main', app: 'codex', model: 'model', effort: 'low' }, tier: 'balanced', works: [], tasks: [], assignments: [], questions: [],
-    bindings: [{ id: 'main', app: 'codex', threadId: 'main-thread' }], attempts: [{ changes: { diff: 'large-diff'.repeat(100000) } }] };
-  const context = vm.createContext({ captureOperation: () => false, cdpRead: { getStore: () => null }, AGENT_REGISTRY: {},
+    bindings: [{ id: 'main', app: 'codex', threadId: 'main-thread', windowId: 'main-window', project: { root: '/project' } }], attempts: [{ changes: { diff: 'large-diff'.repeat(100000) } }] };
+  const context = createPageContext({ captureOperation: () => false, cdpRead: { getStore: () => null }, AGENT_REGISTRY: {},
     fusionControllerView, allFusionRuns: () => [run], chatForWire: value => value });
   const body = fragment(read('server/session.mjs'), '  emit(', '\n  liveRead(cdp, sel)');
   const emit = vm.runInContext(`({${body}}).emit`, context);
@@ -429,7 +427,7 @@ test('a fresh native main first screen persists its current Fusion window withou
   run.attempts.push({ id: 'unknown-native', status: 'unknown', native: { turnId: 'old-turn' }, bindingId: binding.id });
   run.events.push({ id: 'pending-result', deliveredTo: '' });
   const facts = JSON.stringify([run.attempts, run.events, run.stopRequested, run.status]);
-  const context = vm.createContext({ captureOperation: () => false, cdpRead: { getStore: () => null }, AGENT_REGISTRY: {},
+  const context = createPageContext({ captureOperation: () => false, cdpRead: { getStore: () => null }, AGENT_REGISTRY: {},
     fusionControllerView, allFusionRuns: () => [run], chatForWire: value => value, rememberFusionMainWindow,
     rememberSelection: (_device, selection) => saved.push(selection) });
   const emit = vm.runInContext(`({${fragment(read('server/session.mjs'), '  emit(', '\n  liveRead(cdp, sel) {')}}).emit`, context);
@@ -453,7 +451,7 @@ test('cached, incomplete and superseded first screens do not move a Fusion main 
   const { fixture, flush } = await import('./fusion-fixture.mjs');
   const { fusionControllerView } = await import('../server/fusion/owner.mjs');
   const { run } = fixture(); let rootsReady, confirmations = 0;
-  const context = vm.createContext({ captureOperation: () => false, cdpRead: { getStore: () => null }, AGENT_REGISTRY: {},
+  const context = createPageContext({ captureOperation: () => false, cdpRead: { getStore: () => null }, AGENT_REGISTRY: {},
     fusionControllerView, allFusionRuns: () => [run], chatForWire: value => value,
     rememberFusionMainWindow: () => confirmations++, rememberSelection() {} });
   const emit = vm.runInContext(`({${fragment(read('server/session.mjs'), '  emit(', '\n  liveRead(cdp, sel) {')}}).emit`, context);
@@ -468,7 +466,7 @@ test('cached, incomplete and superseded first screens do not move a Fusion main 
 });
 test('a paired entry restores its recent shared Fusion workspace without creating or executing a run', () => {
   const run = { id: 'shared-controller', deviceId: 'creator-entry' }, saved = { current: run.id, runs: [] }, viewers = new Set();
-  const context = vm.createContext({ AgentContext: class {}, savedFusion: () => saved, allFusionRuns: () => [run], fusionViewers: viewers });
+  const context = createPageContext({ AgentContext: class {}, savedFusion: () => saved, allFusionRuns: () => [run], fusionViewers: viewers });
   const constructor = fragment(read('server/session.mjs'), '  constructor(client, deviceId,', '\n  stopChatUpdates()');
   const Session = vm.runInContext(`(class extends AgentContext {${constructor}})`, context);
   const session = new Session({}, 'phone-entry');
@@ -480,7 +478,7 @@ function devinCreation({ active = 'acp/devin-cli/old', appearAfter = 0, recordDe
   const emitted = [], calls = [], sessions = new Set(['acp/devin-cli/old']);
   const NEW = 'acp/devin-cli/new-1';
   let polls = 0, activeNow = active, created = false;
-  const context = vm.createContext({ path, helpersCall: value => value, fusionProject: root => ({ id: root }),
+  const context = createPageContext({ path, helpersCall: value => value, fusionProject: root => ({ id: root }),
     setTimeout: action => action(), PAGE_SRC: 'H' });
   const newChat = vm.runInContext('({' + fragment(read('server/apps/devin.mjs'), 'async devinNewChat() {', '// ---- Devin working directory') + '})', context);
   const finish = vm.runInContext('({' + fragment(read('server/agent/projects.mjs'), '  async finishProject() {', '  projectName() {') + '})', context);

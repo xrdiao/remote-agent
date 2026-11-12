@@ -1,7 +1,6 @@
 /* Codex replies whose native Markdown block is not mounted still carry the full source. */
 const codexMarkdown = window.markdownit({ html: false, breaks: true });
-const markdownFile = href => /^(?:file:\/\/|\/|~\/|[A-Za-z]:[\\/]|\.{1,2}\/)/.test(href)
-  || (!/^[A-Za-z][\w+.-]*:/.test(href) && /\.[A-Za-z0-9]{1,10}(?:#L\d+(?:-L?\d+)?)?$/.test(href));
+const markdownFile = RemoteAgentRules.isLocalFileReference;
 const markdownLinkValid = codexMarkdown.validateLink.bind(codexMarkdown);
 codexMarkdown.validateLink = href => href.startsWith('file://') || markdownLinkValid(href);
 const markdownLinkOpen = codexMarkdown.renderer.rules.link_open || ((tokens, n, options, env, self) => self.renderToken(tokens, n, options));
@@ -13,7 +12,7 @@ codexMarkdown.renderer.rules.link_open = (tokens, n, options, env, self) => {
 codexMarkdown.renderer.rules.link_close = (tokens, n, options, env, self) => env.fileLinks.pop() ? '</code>' : self.renderToken(tokens, n, options);
 const markdownCode = (tokens, n) => {
   const text = tokens[n].content.replace(/\n$/, '');
-  return `<div class="codebox"><textarea class="src" hidden readonly>${esc(text)}</textarea><pre>${esc(text)}</pre></div>\n`;
+  return RemoteAgentRules.codeBlockHtml(esc(text), esc(text)) + '\n';
 };
 codexMarkdown.renderer.rules.fence = markdownCode;
 codexMarkdown.renderer.rules.code_block = markdownCode;

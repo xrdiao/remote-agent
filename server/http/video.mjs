@@ -7,15 +7,12 @@ const key = crypto.randomBytes(32);
 const sign = value => crypto.createHmac('sha256', key).update(value).digest('base64url');
 
 // A scoped, short-lived URL lets native video controls seek without exposing the device token.
-export function videoUrl(file, deviceId) {
+function mediaUrl(kind, file, deviceId) {
   const data = Buffer.from(JSON.stringify({ file, deviceId, expires: Date.now() + 30 * 60 * 1000 })).toString('base64url');
-  return `/api/video/${data}.${sign(data)}`;
+  return `/api/${kind}/${data}.${sign(data)}`;
 }
-
-export function pdfUrl(file, deviceId) {
-  const data = Buffer.from(JSON.stringify({ file, deviceId, expires: Date.now() + 30 * 60 * 1000 })).toString('base64url');
-  return `/api/pdf/${data}.${sign(data)}`;
-}
+export const videoUrl = (file, deviceId) => mediaUrl('video', file, deviceId);
+export const pdfUrl = (file, deviceId) => mediaUrl('pdf', file, deviceId);
 
 export function videoGrant(ticket) {
   const [data, signature] = ticket.split('.');

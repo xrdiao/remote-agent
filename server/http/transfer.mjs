@@ -7,9 +7,8 @@ import { pipeline } from 'node:stream/promises';
 import { zipFiles } from '../../lib/archive.mjs';
 import { listDevices, needsTotp } from '../../lib/auth.mjs';
 import { json, readBody, SECURITY_HEADERS, corsHeaders } from './static.mjs';
-import { readFile } from '../../lib/files.mjs';
-import { highlightText } from '../../lib/highlight.mjs';
-import { pdfUrl, videoUrl } from './video.mjs';
+import { buildFilePreview } from '../file-preview.mjs';
+import { collisionPath } from '../../lib/file-actions.mjs';
 
 const downloads = new Map();
 const localPath = value => path.resolve(value || os.homedir());
@@ -42,11 +41,8 @@ export async function transferApi(req, res, route, device) {
     if (route === '/api/transfer/preview' && req.method === 'GET') {
       const file = localPath(query.get('path')), stat = await fsp.stat(file);
       const info = { name: path.basename(file), path: file, size: stat.size };
-      if (/\.mp4$/i.test(file)) return json(req, res, 200, { ...info, video: videoUrl(file, device.id) });
-      if (/\.pdf$/i.test(file)) return json(req, res, 200, { ...info, pdf: pdfUrl(file, device.id) });
-      const body = await readFile(file, stat.size);
-      const hl = body.text ? await highlightText(body.text, file, query.get('theme') === 'light' ? 'light-plus' : 'dark-plus').catch(() => null) : null;
-      return json(req, res, 200, { ...info, ...body, editable: body.text != null && !body.truncated, ...(hl ? { hl } : {}) });
+      const body = await buildFilePreview({ path: file, size: stat.size }, device.id, () => query.get('theme') === 'light' ? 'light-plus' : 'dark-plus');
+      return json(req, res, 200, { ...info, ...body });
     }
     if (route === '/api/transfer/download' && req.method === 'POST') {
       const { paths } = JSON.parse(await readBody(req, 1024 * 1024));
@@ -79,8 +75,7 @@ export async function transferApi(req, res, route, device) {
         } catch (error) {
           if (error.code !== 'EEXIST') throw error;
           if (mode === 'skip') { req.resume(); return json(req, res, 200, { skipped: true, path: target }); }
-          const ext = path.extname(original);
-          target = path.join(path.dirname(original), `${path.basename(original, ext)} (${suffix++})${ext}`);
+          target = collisionPath(original, suffix++);
         }
       }
       temporary = path.join(path.dirname(target), '.remote-agent-' + crypto.randomUUID() + '.upload');

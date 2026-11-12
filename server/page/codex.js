@@ -91,17 +91,18 @@
     tick();
   });
   const codexImagePreview = () => [...doc.querySelectorAll('img[class*="ZoomableImage"]')].some(vis);
-  const codexFiberProps = (el, depth = 16) => {
+  const codexFibers = (el, depth = Infinity) => {
     while (el && !Object.keys(el).some(k => k.startsWith('__reactFiber'))) el = el.parentElement;
     const key = el && Object.keys(el).find(k => k.startsWith('__reactFiber'));
     let fiber = key ? el[key] : null;
-    const props = [];
+    const fibers = [];
     for (let i = 0; i < depth && fiber; i++) {
-      if (fiber.memoizedProps && typeof fiber.memoizedProps === 'object') props.push(fiber.memoizedProps);
+      fibers.push(fiber);
       fiber = fiber.return;
     }
-    return props;
+    return fibers;
   };
+  const codexFiberProps = (el, depth = 16) => codexFibers(el, depth).map(fiber => fiber.memoizedProps).filter(props => props && typeof props === 'object');
   const codexForkProps = (root, entry = null) => {
     const button = root?.querySelector('button[aria-label="More actions"]');
     const action = button && codexFiberProps(button, 30).find(p => typeof p.onFork === 'function' && typeof p.forkLabel === 'string');
@@ -196,7 +197,7 @@
     return false;
   };
 
-  const codexPromptEl = () => [...doc.querySelectorAll('.ProseMirror[contenteditable="true"]')].find(vis);
+  const codexPromptEl = () => composerTarget(doc);
   const codexPromptText = () => {
     const ed = codexPromptEl();
     if (!ed) return null;
@@ -225,15 +226,10 @@
     return codexPoint(ed);
   };
   const codexClearDraftAttachments = () => {
-    let el = codexPromptEl();
-    while (el && !Object.keys(el).some(k => k.startsWith('__reactFiber'))) el = el.parentElement;
-    let fiber = el && el[Object.keys(el).find(k => k.startsWith('__reactFiber'))];
-    while (fiber) {
-      const clear = fiber.memoizedProps?.clearDraftAttachments;
-      if (typeof clear === 'function') { clear(); return true; }
-      fiber = fiber.return;
-    }
-    return false;
+    const props = codexFiberProps(codexPromptEl(), Infinity).find(props => typeof props.clearDraftAttachments === 'function');
+    if (!props) return false;
+    props.clearDraftAttachments();
+    return true;
   };
   const codexIdeButton = () => [...doc.querySelectorAll('button')].find(e => vis(e) && codexFiberProps(e, 8).some(p => 'ideContext' in p));
   const codexButtonPoint = which => {
@@ -245,16 +241,12 @@
     return el ? codexPoint(el) : null;
   };
   const codexAddFiles = paths => {
-    let el = codexPromptEl();
-    while (el && !Object.keys(el).some(k => k.startsWith('__reactFiber'))) el = el.parentElement;
-    let fiber = el && el[Object.keys(el).find(k => k.startsWith('__reactFiber'))];
-    while (fiber) {
+    for (const fiber of codexFibers(codexPromptEl())) {
       const actions = fiber.updateQueue?.memoCache?.data?.flat().find(v => typeof v?.addFileDescriptorsAsMentions === 'function');
       if (actions) {
         actions.addFileDescriptorsAsMentions(paths.map(path => ({ fsPath: path, path, label: path.split(/[\\/]/).pop() })));
         return true;
       }
-      fiber = fiber.return;
     }
     throw new Error('当前 Codex 输入框没有可用的添加文件入口');
   };

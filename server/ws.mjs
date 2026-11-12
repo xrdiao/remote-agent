@@ -8,7 +8,7 @@ import { originAllowed } from './http/static.mjs';
 import { Session } from './session.mjs';
 import { subscribeLibrary } from '../lib/session-library.mjs';
 import { quotaErrorMessage } from './agent/context.mjs';
-import { ROUTES, flag } from './routes.mjs';
+import { ROUTES, resolveRoute, flag } from './routes.mjs';
 import { voiceWss } from './voice/service.mjs';
 import { lastSelection } from '../lib/auth.mjs';
 import { cdpRead } from './cdp.mjs';
@@ -187,7 +187,7 @@ wss.on('connection', (ws, req) => {
         ws.close(4000, 'background timeout');
       }, BACKGROUND_MS);
     }
-    const route = ROUTES[msg.t];
+    const route = resolveRoute(session, msg.t);
     const request = beginOperation(session, msg);
     if (request?.duplicate) return;
     const operation = request?.operation;

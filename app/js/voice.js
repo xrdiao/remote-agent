@@ -129,24 +129,10 @@ async function uploadDocument(file, sel, image) {
       method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ clientImageId: image.id }),
     })).catch(() => {});
   };
-  const headers = await entryHeaders(computer, 'POST', path);
-  if (image?.cancelled) throw new Error('已取消上传');
-  return new Promise((resolve, reject) => {
-    const request = new XMLHttpRequest();
-    if (image) image.request = request;
-    request.open('POST', target + path);
-    for (const [key, value] of Object.entries(headers)) request.setRequestHeader(key, value);
-    request.setRequestHeader('content-type', 'application/octet-stream');
-    request.timeout = 60000;
-    request.upload.onprogress = e => { if (e.lengthComputable) status(`正在上传 ${file.name} ${Math.round(e.loaded / e.total * 100)}%`); };
-    request.onload = () => {
-      try { const result = JSON.parse(request.responseText); if (request.status !== 200) throw new Error(result.error); resolve(result); }
-      catch (error) { reject(error); }
-    };
-    request.onerror = () => reject(new Error('文件上传失败'));
-    request.ontimeout = () => reject(new Error('文件上传超时'));
-    request.onabort = () => reject(new Error('已取消上传'));
-    request.send(file);
+  return uploadBinary({ target, computer, path, file, timeout: 60000,
+    cancelled: () => image?.cancelled,
+    onRequest: request => { if (image) image.request = request; },
+    onProgress: e => { if (e.lengthComputable) status(`正在上传 ${file.name} ${Math.round(e.loaded / e.total * 100)}%`); },
   });
 }
 async function attachDocumentFile(file) {
@@ -159,6 +145,7 @@ async function attachDocumentFile(file) {
     status('文件已上传，写好文字后点发送');
   } catch (error) { status(error.name === 'AbortError' ? '文件上传超时' : error.message, false); }
 }
+$('docFile').accept = RemoteAgentRules.uploadAccept;
 $('docFile').onchange = async () => {
   const file = $('docFile').files[0], target = documentPickerTarget;
   documentPickerTarget = null;

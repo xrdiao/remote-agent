@@ -1,8 +1,8 @@
 // Shared personal Pages setup. Discovery is read-only; creation requires an explicit answer.
 import fs from 'node:fs';
 import path from 'node:path';
-import { DATA_DIR, readConfig, normalizeAppUrl } from '../lib/auth.mjs';
-import { appFiles, putFile, remoteShas, gitBlobSha, run } from '../server/publish/pages.mjs';
+import { readConfig, saveConfig, normalizeAppUrl } from '../lib/auth.mjs';
+import { syncApp, putFile, run } from '../server/publish/pages.mjs';
 import { APP_DIR } from '../server/config.mjs';
 import { findBin } from '../lib/platform.mjs';
 
@@ -43,8 +43,7 @@ export async function discoverFixedEntry(config = readConfig()) {
 function saveEntry(entry) {
   const config = readConfig();
   if (Object.entries(entry).every(([key, value]) => config[key] === value)) return;
-  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(path.join(DATA_DIR, 'config.json'), JSON.stringify({ ...config, ...entry }, null, 2) + '\n', { mode: 0o600 });
+  saveConfig({ ...config, ...entry });
 }
 export async function ensureFixedEntry({ ask, interactive }) {
   try { await run('gh', ['--version']); }
@@ -77,11 +76,9 @@ export async function ensureFixedEntry({ ask, interactive }) {
   }
   await run('gh', ['repo', 'create', repo, '--public', '--description', 'My Remote Agent phone app']);
   meta = await api(`repos/${repo}`);
-  const remote = await remoteShas(repo, '');
-  for (const file of appFiles()) {
-    const data = fs.readFileSync(path.join(APP_DIR, file));
-    if (remote.get(file) !== gitBlobSha(data)) await putFile(file, data, remote.get(file), repo, '');
-  }
+  // Git tree APIs need a first commit in a newly created empty repository.
+  await putFile('index.html', fs.readFileSync(path.join(APP_DIR, 'index.html')), undefined, repo, '');
+  await syncApp(undefined, repo, meta.default_branch);
   await run('gh', ['api', '-X', 'POST', `repos/${repo}/pages`, '-f', `source[branch]=${meta.default_branch}`, '-f', 'source[path]=/']);
   const entry = await entryFor(repo);
   if (!entry) throw new Error('Pages 已请求创建，地址尚未就绪，请稍后重新运行');

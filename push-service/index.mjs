@@ -182,6 +182,7 @@ function readBody(req) {
 }
 
 const cut = (v, n) => String(v ?? '').slice(0, n);
+const notificationTarget = value => Object.fromEntries(['computer', 'win', 'windowId', 'threadId'].map(key => [key, cut(value[key], 200)]));
 
 async function register(ip, body) {
   if (!hit(`reg:${ip}`, 20, HOUR)) return [429, { error: '注册太频繁' }];
@@ -214,7 +215,7 @@ async function send(ip, body) {
   if (!reg) return [410, { error: 'gone' }];
   if (!secretOk(reg, secret)) return [401, { error: 'secret 无效' }];
   const d = body.data && typeof body.data === 'object' ? body.data : {};
-  const data = { computer: cut(d.computer, 200), win: cut(d.win, 200), windowId: cut(d.windowId, 200), threadId: cut(d.threadId, 200), kind: cut(d.kind, 200), seq: Math.max(0, Number(d.seq) || 0), createdAt: Math.max(0, Number(d.createdAt) || 0) };
+  const data = { ...notificationTarget(d), kind: cut(d.kind, 200), seq: Math.max(0, Number(d.seq) || 0), createdAt: Math.max(0, Number(d.createdAt) || 0) };
   const title = cut(body.title, 200), text = cut(body.body, 1000);
   const collapse = crypto.createHash('sha256').update(`${data.computer}|${data.win}|${data.windowId}|${data.threadId}`).digest('hex').slice(0, 32);
   const payload = { aps: { alert: { title, body: text }, sound: 'default', 'thread-id': collapse }, ...data };
@@ -262,7 +263,7 @@ async function livePush(reg, tag, token, kind, apsPayload, priority) {
 
 function liveFields(body, nowSec) {
   const a = typeof body.attributes === 'object' && body.attributes ? body.attributes : {};
-  const attributes = { win: cut(a.win, 200), windowId: cut(a.windowId, 200), threadId: cut(a.threadId, 200),
+  const attributes = { ...notificationTarget(a),
     app: cut(a.app, 200), project: cut(a.project, 200), thread: cut(a.thread, 200), pc: cut(a.pc, 200) };
   const s = typeof body.state === 'object' && body.state ? body.state : {};
   const state = { phase: cut(s.phase, 40), label: cut(s.label, 200), detail: cut(s.detail, 300),

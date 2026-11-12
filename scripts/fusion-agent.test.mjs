@@ -11,6 +11,7 @@ import { FusionController } from '../server/fusion/controller.mjs';
 import { NativeAgentProvider, nativeAgentProvider, nativeAgentProviders, registerNativeAgentProvider } from '../server/fusion/providers.mjs';
 import { FusionMcpServer } from '../server/fusion/mcp.mjs';
 import { fusionProject } from '../server/fusion/state.mjs';
+import { createPageContext } from './page-fixture.mjs';
 
 function nativeRenameFixture(app) {
   const bound = app === 'devin' ? 'acp/devin-cli/own' : 'own';
@@ -23,7 +24,7 @@ function nativeRenameFixture(app) {
     composer: { async renameComposer(id, title) { calls.push(['cursor', id, title]); rename(id, title); } } };
   const nativeModule = { renameSessionThunk: (provider, id, title) => { assert.equal(id, 'own'); return { provider, id, title }; },
     unprefixSessionId: id => { assert.equal(id, bound); return { connectorId: 'devin-cli', sessionId: 'own' }; } };
-  const context = vm.createContext({ remoteContext: { app, threadId: bound, host: '' }, Error, String, nativeModule,
+  const context = createPageContext({ remoteContext: { app, threadId: bound, host: '' }, Error, String, nativeModule,
     codexConversationManager: () => manager, codexNativeManager: () => manager, codexHistoryScopes: () => [],
     nativeSessionCatalog: async () => ({ ready: true, complete: true, rows: [...rows.values()] }),
     nativeSessionContext: async (_app, id) => ({ cwd: rows.get(id).cwd, host: '' }), cursorSessionServices: () => services,
@@ -69,7 +70,7 @@ test('a bound devin rename passes the raw ACP session id while binding and state
   assert.equal(h.context.remoteContext.threadId, 'acp/devin-cli/own'); assert.deepEqual(h.rows.get('ordinary'), ordinary);
 });
 test('renameMain uses the current main binding and publishes the acknowledged native title while keeping task facts', async () => {
-  const library = [], scope = vm.createContext({ nativeAgentProvider, fusionProject, Error, publishSessionChange: (...args) => library.push(args) });
+  const library = [], scope = createPageContext({ nativeAgentProvider, fusionProject, Error, publishSessionChange: (...args) => library.push(args) });
   const rename = vm.runInContext('({' + FusionAgent.prototype.renameMain.toString() + '}).renameMain', scope);
   for (const app of ['codex', 'cursor', 'devin']) {
     const h = fixture(), binding = h.run.bindings[0], calls = [], ordinary = { threadId: 'ordinary', model: 'kept', draft: 'kept' };
@@ -94,7 +95,7 @@ test('renameMain uses the current main binding and publishes the acknowledged na
   }
 });
 test('main rename refuses unconfirmed results and wrong projects while releasing connections and leaving unbound names local', async () => {
-  const library = [], scope = vm.createContext({ nativeAgentProvider, fusionProject, Error, publishSessionChange: (...args) => library.push(args) });
+  const library = [], scope = createPageContext({ nativeAgentProvider, fusionProject, Error, publishSessionChange: (...args) => library.push(args) });
   const rename = vm.runInContext('({' + FusionAgent.prototype.renameMain.toString() + '}).renameMain', scope);
   for (const failure of ['project', 'receipt', 'readback', 'request']) {
     const h = fixture(), context = { native: {} }, calls = [];
@@ -121,7 +122,7 @@ function nativeCleanupFixture(app) {
   const capabilities = { sessionCapabilities: { delete: true } };
   const nativeModule = { tryGetAcpSingleton: key => key === 'connectorService' ? { getConnectorById: () => ({ capabilities }) } : {},
     sendAgentRequestThunk: (_provider, request) => ({ request }) };
-  const context = vm.createContext({ remoteContext: { app, threadId: 'own', host: '' }, Error, String,
+  const context = createPageContext({ remoteContext: { app, threadId: 'own', host: '' }, Error, String,
     codexConversationManager: () => manager, codexHistoryScopes: () => [],
     nativeSessionCatalog: async () => ({ ready: true, complete: app === 'cursor', rows: [...rows.values()], removed: rows.has('own') ? [] : ['own'] }),
     nativeSessionContext: async (_app, id) => ({ cwd: rows.get(id).cwd, host: '' }),
@@ -157,7 +158,7 @@ test('native cleanup does not guess an uncertain absence, clear the last Cursor 
   await assert.rejects(() => wrong.cleanup('cursor', 'own', true), /不属于这个原生 Binding/); assert.equal(wrong.calls.length, 0);
 });
 test('cleanupBinding uses the software provider and exact project without loading ordinary history or changing drafts', async () => {
-  const h = fixture(), library = [], context = vm.createContext({ nativeAgentProvider, fusionProject, Date, Error,
+  const h = fixture(), library = [], context = createPageContext({ nativeAgentProvider, fusionProject, Date, Error,
     favoriteSession: (...args) => library.push(['favorite', ...args]), removeLibrarySession: (...args) => library.push(['remove', ...args]),
     publishSessionChange: (...args) => library.push(['change', ...args]) });
   const cleanup = vm.runInContext('({' + FusionAgent.prototype.cleanupBinding.toString() + '}).cleanupBinding', context);
@@ -222,7 +223,7 @@ test('Cursor tool snapshots and native replies are scoped to bound composers and
     clone() { const value = new RequestContext(); value.tools = [...this.tools]; value.mcpInstructions = [...this.mcpInstructions]; return value; }
   }
   const ordinaryRequest = new RequestContext(), agent = { async buildComposerRequestContext() { return ordinaryRequest; } }, originalContext = agent.buildComposerRequestContext;
-  const context = vm.createContext({ window: {}, Map, Set, WeakMap, Error, JSON, nativeValue: structuredClone,
+  const context = createPageContext({ window: {}, Map, Set, WeakMap, Error, JSON, nativeValue: structuredClone,
     cursorSessionInstantiation: () => ({ _services: { _entries: new Map([['extensionService', 'extensionService']]) }, invokeFunction: fn => fn({ get: () => extension }) }),
     cursorSessionServices: () => ({ data: { getComposerDataIfLoaded: () => data }, composer: { composerChatService: { _composerAgentService: agent } } }),
     doc: { defaultView: { CustomEvent, dispatchEvent: event => events.push(event.detail) } } });
@@ -294,7 +295,7 @@ test('Devin binds MCP to its own session and preserves native request identity a
     sendAgentRequestThunk: (provider, request, sender) => ({ provider, request, sender }) };
   const window = { __acpStore: { getState: () => ({ acp: state }), subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); },
     dispatch: async request => sent.push(request) } };
-  const context = vm.createContext({ window, Map, Set, WeakMap, Error, JSON, nativeModule, devinSessionRecord: () => session });
+  const context = createPageContext({ window, Map, Set, WeakMap, Error, JSON, nativeModule, devinSessionRecord: () => session });
   const source = fs.readFileSync(new URL('../server/page/fusion-tools.js', import.meta.url), 'utf8').replace("await import('@exa/chat-client')", 'nativeModule');
   vm.runInContext(source + ';this.tools=fusionNativeTools;this.turn=fusionDevinTurn;this.identify=fusionDevinCall;', context);
   const config = { name: 'ra-fusion', type: 'http', url: 'http://native-test', headers: [] };
@@ -331,7 +332,7 @@ function devinToolsFixture() {
     sendAgentRequestThunk: (provider, request, sender) => ({ provider, request, sender }) };
   const window = { __acpStore: { getState: () => ({ acp: state }), subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); },
     dispatch: async () => true } };
-  const context = vm.createContext({ window, Map, Set, WeakMap, Error, JSON, nativeModule, devinSessionRecord: () => session });
+  const context = createPageContext({ window, Map, Set, WeakMap, Error, JSON, nativeModule, devinSessionRecord: () => session });
   const source = fs.readFileSync(new URL('../server/page/fusion-tools.js', import.meta.url), 'utf8').replace("await import('@exa/chat-client')", 'nativeModule');
   vm.runInContext(source + ';this.tools=fusionNativeTools;this.turn=fusionDevinTurn;this.identify=fusionDevinCall;', context);
   const config = { name: 'ra-fusion', type: 'http', url: 'http://native-test', headers: [] };
@@ -506,7 +507,7 @@ test('a new Devin Fusion session keeps ordinary pending preferences and sends it
     }
     return true;
   } } };
-  const context = vm.createContext({ window, nativeModule, Map, Promise, Error, JSON, remoteContext: { app: 'devin', threadId: 'ordinary' },
+  const context = createPageContext({ window, nativeModule, Map, Promise, Error, JSON, remoteContext: { app: 'devin', threadId: 'ordinary' },
     doc: { defaultView: { Event: class {}, dispatchEvent() {} } }, devinSessionRecord: id => sessions.get(id), nativeSessionContext: async (_app, id) => ({ threadId: id }) });
   window.__acpStore.subscribe = () => () => {};
   window.__acpStore.getState = () => ({ acp: { sessions: [], perSession: {}, agentRequests: { byId: {} } } });
@@ -550,7 +551,7 @@ function nativeBindingFixture() {
   const manager = { needsResume: () => false, getConversation: () => conversation,
     async resumeConversation(value) { calls.push({ action: 'resume', value }); return { status: 'ready' }; },
     ensureConversationHistoryLoaded: () => assert.fail('Fusion binding must not load complete history') };
-  const context = vm.createContext({ Error, nativeValue: value => JSON.parse(JSON.stringify(value)),
+  const context = createPageContext({ Error, nativeValue: value => JSON.parse(JSON.stringify(value)),
     nativeSessionContext: async (app, id) => {
       assert.equal(app, binding.app); assert.equal(id, binding.threadId);
       return { app, threadId: id, cwd: conversation.cwd, host: binding.host, roots: [{ root: conversation.cwd, host: binding.host }] };
@@ -853,7 +854,7 @@ test('single-conversation tool routing leaves every ordinary tool dispatch on th
     updateConversationState: (_id, edit) => edit(main), getDynamicToolRequest: (_id, id) => main.requests.find(row => row.id === id)?.params,
     replyWithDynamicToolResponse: (_id, id, result) => { replies.push({ id, result }); main.requests.splice(main.requests.findIndex(row => row.id === id), 1); } };
   const original = manager.threadExecution.executeDynamicToolCall;
-  const context = vm.createContext({ Map, Set, WeakMap, Error, window: {}, remoteContext: { host: '' }, nativeValue: value => value,
+  const context = createPageContext({ Map, Set, WeakMap, Error, window: {}, remoteContext: { host: '' }, nativeValue: value => value,
     codexConversationManager: () => manager, codexHistoryScopes: () => [] });
   vm.runInContext(fs.readFileSync(new URL('../server/page/fusion-tools.js', import.meta.url), 'utf8') + source.slice(start, end) + '\nthis.action = nativeSessionAction;', context);
   await context.action('codex', 'main', 'bindTools', { names: ['ra_fusion'], authorization: fusionAutonomyContext({ id: 'workbench' }) });
@@ -871,7 +872,7 @@ test('native request context authorizes only registered Fusion mains and preserv
   const client = { sendRequest(method, params, ...options) { assert.equal(this, client); calls.push({ method, params, options }); return response; } };
   const original = client.sendRequest, manager = () => ({ requestClient: client, threadExecution: { executeDynamicToolCall() {} } });
   const one = manager(), two = manager();
-  const context = vm.createContext({ Map, Set, WeakMap, window: {}, remoteContext: { host: '' },
+  const context = createPageContext({ Map, Set, WeakMap, window: {}, remoteContext: { host: '' },
     codexConversationManager: id => id === 'main-one' ? one : two, codexHistoryScopes: () => [] });
   vm.runInContext(fs.readFileSync(new URL('../server/page/fusion-tools.js', import.meta.url), 'utf8') + source.slice(start, end) + '\nthis.action = nativeSessionAction;', context);
   const authOne = fusionAutonomyContext({ id: 'workbench-one' }), authTwo = fusionAutonomyContext({ id: 'workbench-two' });
@@ -919,7 +920,7 @@ test('an unmounted Codex worker reads its native history rather than a different
   const conversation = { id: 'worker' }, turn = { status: 'complete', partial: false, items: [
     { type: 'user-message', clientUserMessageId: 'user', message: 'attempt-1' },
     { type: 'assistant-message', completed: true, content: 'worker-result' } ] };
-  const context = vm.createContext({ Map, Set, remoteContext: { app: 'codex', threadId: 'worker' },
+  const context = createPageContext({ Map, Set, remoteContext: { app: 'codex', threadId: 'worker' },
     codexThread: () => 'worker', codexVisibleThread: () => 'ordinary', codexNativeManager: () => ({ getConversation: id => { assert.equal(id, 'worker'); return conversation; } }),
     codexHistoryState: native => { assert.equal(native, conversation); return { thread: 'worker', scopes: [], entries: [{ turnId: 'native-turn' }] }; },
     doc: { querySelectorAll: () => assert.fail('ordinary DOM read') }, codexStoredTurn: () => turn, codexTurnItems: () => [],
@@ -937,7 +938,7 @@ test('Fusion native end status is independent of partial history and interrupted
   for (const status of ['complete', 'completed', 'interrupted', 'failed', 'inProgress']) {
     const turn = { status, partial: true, items: [{ type: 'user-message', clientUserMessageId: 'user', message: 'attempt' },
       { type: 'assistant-message', completed: true, content: 'Actual final text' }] };
-    const context = vm.createContext({ Map, Set, remoteContext: { app: 'codex', threadId: 'worker' }, codexThread: () => 'worker',
+    const context = createPageContext({ Map, Set, remoteContext: { app: 'codex', threadId: 'worker' }, codexThread: () => 'worker',
       codexVisibleThread: () => 'ordinary', codexNativeManager: () => ({ getConversation: () => ({}) }),
       codexHistoryState: () => ({ thread: 'worker', scopes: [], entries: [{ turnId: 'native-turn', nativeTurn: { status,
         ...(status === 'failed' ? { error: { message: 'Original native failure' } } : {}) } }] }),
@@ -958,7 +959,7 @@ test('a failed Devin native request ends its own Fusion round after transient me
   const current = { method: 'session/prompt', params: { sessionId: 'worker', prompt: [{ text: 'attempt-1' }],
     _meta: { 'cognition.ai/clientMessageId': 'attempt-1' } }, status: 'failed', errorMessage: error };
   const state = { perSession: {}, agentRequests: { byId: { current, foreign: { ...current, params: { sessionId: 'other' }, errorMessage: 'foreign failure' } } } };
-  const context = vm.createContext({ remoteContext: { app: 'devin', threadId: 'worker' },
+  const context = createPageContext({ remoteContext: { app: 'devin', threadId: 'worker' },
     window: { __acpStore: { getState: () => ({ acp: state }), subscribe: () => () => {} } },
     devinSurface: () => true, devinSessionRecord: () => ({ status: 'idle' }), devinLog: () => assert.fail('ordinary DOM read'), devinItems: () => assert.fail('ordinary DOM read') });
   const tools = fs.readFileSync(new URL('../server/page/fusion-tools.js', import.meta.url), 'utf8');
@@ -980,7 +981,7 @@ function devinItemsFixture(rows) {
       querySelector: selector => selector.includes('aria-label') ? msg : null,
       classList: { contains: () => false }, msg };
   }
-  const context = vm.createContext({
+  const context = createPageContext({
     devinTranscriptRows: () => rows.map(row => row.el), vis: () => true,
     itemKey: row => row.key, codexFiberProps: row => [{ row: { item: row.native } }],
     messageItem: msg => msg.item, devinNativeItems: () => null,
@@ -1045,7 +1046,7 @@ function devinWorkerFixture(thread = 'worker-thread') {
     dispatch: async request => { dispatched.push({ request, listeners: listeners.size }); return request; } } };
   const nativeModule = { getAllMessages: data => data.messages, tryGetAcpSingleton: () => 'sender',
     sendAgentRequestThunk: (provider, request, sender) => ({ provider, request, sender }) };
-  const context = vm.createContext({ window, Map, Set, WeakMap, Error, JSON, Promise, Date, Number, Array, Object, String, RegExp, crypto: { randomUUID: () => 'uuid' },
+  const context = createPageContext({ window, Map, Set, WeakMap, Error, JSON, Promise, Date, Number, Array, Object, String, RegExp, crypto: { randomUUID: () => 'uuid' },
     remoteContext: { app: 'devin', threadId: thread, cwd: '/project', host: '' },
     nativeModule, devinSessionRecord: id => id === thread ? session : null,
     nativeMarkdownItem: (i, k, t, at, images) => ({ i, k, t, at, ...(images?.length ? { images } : {}) }),
@@ -1155,7 +1156,7 @@ test('an explicit Devin binding cleanup releases its turn cache at every confirm
     sendAgentRequestThunk: (provider, request, sender) => ({ provider, request, sender }) };
   const window = { __acpStore: { dispatch: async () => { catalogRows.before = catalogRows.after; return true; } },
     __remoteAgentDevinTurns: new Map() };
-  const context = vm.createContext({ window, remoteContext, nativeModule, JSON, Error, devinSessionRecord: () => session,
+  const context = createPageContext({ window, remoteContext, nativeModule, JSON, Error, devinSessionRecord: () => session,
     nativeSessionCatalog: async () => ({ ready: true, rows: catalogRows.before, complete: true }),
     nativeSessionContext: async () => ({ threadId: 'worker-thread' }), codexConversationManager: () => assert.fail('codex path'),
     cursorSessionServices: () => assert.fail('cursor path') });
@@ -1184,7 +1185,7 @@ test('Fusion Devin content reports a native failure without requiring a pruned t
   const error = 'Permission denied: internal server error: error number 13';
   const state = { perSession: {}, agentRequests: { byId: { current: { method: 'session/prompt', params: { sessionId: 'worker' }, status: 'failed', errorMessage: error } } } };
   let messageReads = 0;
-  const context = vm.createContext({ remoteContext: { app: 'devin', threadId: 'worker', cwd: '/project', host: '' },
+  const context = createPageContext({ remoteContext: { app: 'devin', threadId: 'worker', cwd: '/project', host: '' },
     window: { __acpStore: { getState: () => ({ acp: state }), subscribe: () => () => {} } },
     nativeModule: { getAllMessages: data => { messageReads++; assert(data, 'failed native transcript has been pruned'); return data.messages; } },
     devinSessionRecord: () => ({ status: 'idle', title: 'Worker' }), activeThread: () => 'ordinary', devinQuestions: () => assert.fail('ordinary questions read'),
@@ -1212,7 +1213,7 @@ test('a background Codex free-text question can send its answer to the exact nat
       params: { threadId: 'worker', turnId: 'turn', questions: [{ id: 'q', question: '请补充说明', options: [] }] } }] }),
     replyWithUserInputResponse: async (...args) => replies.push(args),
   };
-  const context = vm.createContext({ remoteContext: { threadId: 'worker' }, codexNativeManager: () => manager, nativeValue: value => value });
+  const context = createPageContext({ remoteContext: { threadId: 'worker' }, codexNativeManager: () => manager, nativeValue: value => value });
   vm.runInContext(source.slice(start, end) + '\nthis.rows = codexNativeRequestRows; this.answer = codexNativeRequestAction;', context);
   const row = context.rows()[0];
   assert.equal(row.buttons[1].label, 'Send'); assert.notEqual(row.buttons[1].disabled, true);
@@ -1240,7 +1241,7 @@ test('Fusion management notifications share the native watch but do not wait for
   const section=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));
   const watches=[],trace=[];let release,closed=0,stopped=0;
   const body=new Promise(resolve=>release=resolve);
-  const context=vm.createContext({Map,Set,JSON,Date,Promise,
+  const context=createPageContext({Map,Set,JSON,Date,Promise,
     NativeCdp:class {close(){closed++;}},cdpRead:{run:(_owner,fn)=>Promise.resolve().then(fn)},awaitCdpRead:p=>p,
     watchChat:async(_cdp,changed,_shared,native)=>{watches.push({changed,native});return ()=>{stopped++;};},
     withOperation:(_owner,fn)=>fn(),helpersCall:s=>s});

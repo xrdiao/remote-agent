@@ -15,7 +15,7 @@ function fixture(stored = new Map()) {
     store: { get: key => stored.get(key), set: (key, value) => stored.set(key, value) }, I18N: { tr: value => value }, esc: value => String(value || ''),
     document: { body: { classList: classes }, addEventListener: (event, listener) => listeners.set(event, [...listeners.get(event) || [], listener]) },
     ovList: entries, ovS: { comp: null, level: 'fusion' }, OV_AGENT: { cursor: 'Cursor' },
-    ovComputerStatus: () => 'online', status() {},
+    ovComputerStatus: () => 'online', status() {}, ovSaveHistory() {},
     computerSockets: new Map(entries.map(entry => [entry.id, { authed: true, socket: { readyState: 1, send: raw => sent.push(JSON.parse(raw)) } }])),
   });
   vm.runInContext(fs.readFileSync(new URL('../app/js/fusion.js', import.meta.url), 'utf8'), context);
@@ -26,7 +26,7 @@ function fixture(stored = new Map()) {
 function resultFixture(stored) {
   const h = fixture(stored);
   h.context.testRun = { id: 'same-id', computer: 'computer-one', title: 'Completed workbench', project: { name: 'project-one' },
-    main: { app: 'cursor', bindingId: 'main' }, status: 'waiting', works: { total: 1, done: 1 }, tasks: { total: 5, done: 5, running: 0 },
+    main: { app: 'cursor', bindingId: 'main', target: { computer: 'computer-one', win: 'cursor:window-one', windowId: 'cursor:window-one', threadId: 'native-main' } }, status: 'waiting', works: { total: 1, done: 1 }, tasks: { total: 5, done: 5, running: 0 },
     overview: { state: 'done', resultKey: 'ended-one', apps: ['cursor'], counts: { done: 5 }, attention: [], current: null } };
   Object.assign(h.context, { authed: true, windowReady: true, navigationPending: null, chatStale: false, lastChat: { thread: 'native-main' },
     currentComputer: () => ({ id: 'computer-one', threadId: 'native-main' }), ovRender() {} });
@@ -67,7 +67,7 @@ test('Fusion compact session cards keep task progress and navigate directly with
   const card = { dataset: { fusionOpen: 'same-id', computer: 'computer-one' }, closest: () => null };
   const event = { target: { closest: selector => selector.includes('[data-fusion-open]') ? card : null } };
   for (const handler of h.listeners.get('click')) handler(event);
-  assert.equal(opened.length, 1); assert.equal(opened[0].computer, 'computer-one'); assert.equal(opened[0].threadId, 'same-id');
+  assert.equal(opened.length, 1); assert.equal(opened[0].computer, 'computer-one'); assert.equal(opened[0].threadId, 'native-main');
   assert.equal(h.context.ovS.open, 'ordinary-preview'); assert.equal(h.sent.length, 0); assert.equal(JSON.stringify(h.context.testRun), original);
   h.context.ovOpenFeedback = () => '<small class="ov-opening ov-opening-error" role="status">Target loading failed</small>';
   h.context.ovOpenLabel = () => assert.fail('Fusion cards use the lower-edge feedback without an extra opening label');
@@ -403,10 +403,10 @@ test('idle Fusion renders no permanent status row while a current block exposes 
 });
 test('enabled Fusion goes straight to common navigation; unconfigured Fusion reads only configuration', () => {
   const h = viewFixture();
-  h.run("fusionWorkspaces.set('computer-one',{runs:[{id:'ready',main:{bindingId:'native'}},{id:'new',main:{bindingId:''}}]})");
+  h.run("fusionWorkspaces.set('computer-one',{runs:[{id:'ready',main:{bindingId:'native',target:{computer:'computer-one',win:'codex',windowId:'native-window',threadId:'native-thread'}}},{id:'new',main:{bindingId:''}}]})");
   h.run("openFusionController('computer-one','ready')");
   assert.equal(h.sent.length, 0); assert.equal(h.opened.length, 1);
-  assert.deepEqual(JSON.parse(JSON.stringify(h.opened[0])), { computer: 'computer-one', win: 'fusion', windowId: 'fusion', threadId: 'ready' });
+  assert.deepEqual(JSON.parse(JSON.stringify(h.opened[0])), { computer: 'computer-one', win: 'codex', windowId: 'native-window', threadId: 'native-thread' });
   h.run("openFusionController('computer-one','new')");
   assert.equal(h.sent.length, 1); assert.equal(h.sent[0].view, 'config'); assert.equal(h.opened.length, 1);
 });
@@ -506,4 +506,32 @@ test('Fusion controller software choices come from the selected computer metadat
   for (const app of ['cursor', 'devin', 'codex', 'fixture-editor']) assert(html.includes('value="' + app + '"'));
   assert(html.includes('value="devin" selected')); assert(!html.includes('worker-only'));
   assert(!h.run("fusionAppSelect('computer-two','devin')").includes('value="devin"'));
+});
+test('Fusion navigation uses the native binding while management retains the workbench identity', () => {
+  const h = resultFixture(), opened = [];
+  h.context.closeSheet = () => {};
+  h.context.ovOpen = target => opened.push(target);
+  h.run("openFusionController('computer-one','same-id')");
+  assert.deepEqual(JSON.parse(JSON.stringify(opened[0])), h.context.testRun.main.target);
+  const record = h.run('fusionWorkbenchRecord(testRun)');
+  assert.equal(record.win, 'fusion');
+  assert.equal(record.threadId, 'same-id');
+});
+
+test('Fusion controller targets preserve native application, window, thread and project identities', () => {
+  const owner = fs.readFileSync(new URL('../server/fusion/owner.mjs', import.meta.url), 'utf8');
+  const context = vm.createContext({ fusionSummary: run => ({ id: run.id }), NATIVE_UNSETTLED: [] });
+  vm.runInContext(owner.slice(owner.indexOf('function controllerView('), owner.indexOf('export function fusionControllerView(')), context);
+  for (const app of ['codex', 'cursor', 'devin']) {
+    const binding = { id: 'main-binding', app, windowId: 'native-window', threadId: 'native-thread',
+      host: 'ssh-host', project: { root: '/project' } };
+    const run = { id: 'workbench', computer: 'computer-two', status: 'ready',
+      main: { app, bindingId: binding.id }, bindings: [binding], questions: [], works: [], attempts: [] };
+    const view = context.controllerView(run, [], () => new Map());
+    const windowId = app === 'codex' ? 'native-window' : `${app}:native-window`;
+    assert.deepEqual(JSON.parse(JSON.stringify(view.main.target)), { computer: 'computer-two',
+      win: app === 'codex' ? 'codex' : windowId, windowId, threadId: 'native-thread', project: { root: '/project', host: 'ssh-host' } });
+    run.main.bindingId = '';
+    assert.equal(context.controllerView(run, [], () => new Map()).main.target, null);
+  }
 });

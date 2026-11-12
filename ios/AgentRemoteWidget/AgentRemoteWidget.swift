@@ -94,7 +94,8 @@ private func deepLink(_ a: AgentActivityAttributes) -> URL? {
     var c = URLComponents()
     c.scheme = "agentremote"
     c.host = "open"
-    c.queryItems = [URLQueryItem(name: "computer", value: a.computer), URLQueryItem(name: "win", value: a.win), URLQueryItem(name: "windowId", value: a.windowId), URLQueryItem(name: "threadId", value: a.threadId)]
+    let target = a.target
+    c.queryItems = NotificationTarget.fields.map { URLQueryItem(name: $0, value: target[$0]) }
     return c.url
 }
 

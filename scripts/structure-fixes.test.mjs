@@ -16,18 +16,7 @@ import { methods as projectMethods } from '../server/agent/projects.mjs';
 import { methods as codexMethods } from '../server/apps/codex.mjs';
 import { ROUTES, flag } from '../server/routes.mjs';
 import { cdpRead, awaitCdpRead } from '../server/cdp.mjs';
-
-const read = file => fs.readFileSync(new URL('../' + file, import.meta.url), 'utf8');
-const part = (source, start, end) => {
-  const a = source.indexOf(start), b = source.indexOf(end, a + start.length);
-  assert(a >= 0 && b > a, start);
-  return source.slice(a, b);
-};
-
-function nativePage(document, extra = {}, expose = '') {
-  const source = PAGE_SRC.replace('  return { historyAtStart,', `  return { ${expose ? expose + ',' : ''} historyAtStart,`);
-  return vm.runInNewContext(source, { document, window: {}, crypto: crypto.webcrypto, CSS: { escape: value => value }, ...extra });
-}
+import { read, fragment as part, createPageContext, nativePage } from './page-fixture.mjs';
 
 function nativeNode(attributes = {}, properties = {}, visible = true) {
   return {
@@ -218,7 +207,7 @@ test('native reply images retain supported sources independently of cleaned HTML
 
 test('Codex imageView survives stored history without a mounted native turn', () => {
   const input = { id: 'native-image-id', type: 'imageView', path: '/project/generated.png' };
-  const context = vm.createContext({ codexUserItem: () => null, CAPACITY_ERROR: /capacity/,
+  const context = createPageContext({ codexUserItem: () => null, CAPACITY_ERROR: /capacity/,
     codexThread: () => 'thread', codexForkProps: () => null, codexFiberProps: () => [],
     doc: { querySelectorAll: () => [] }, source: { metadata: { status: 'completed' }, rawItems: [input], positions: new Map([[input.id, 0]]), nativeComplete: true, ids: [input.id] } });
   const source = read('server/page/chat-extract.js');
@@ -307,7 +296,7 @@ for (const busy of [false, true]) {
 test('a stop button in message content cannot mark an idle Codex composer as running', () => {
   const root = nativeNode(), editor = fiber(nativeNode({}, { closest: () => root }), [{ isResponseInProgress: false }]);
   const message = nativeNode(), stop = nativeNode({ 'aria-label': '停止生成' }, { closest: () => message });
-  const doc = { getElementById: () => null,
+  const doc = { getElementById: () => null, querySelector: () => null,
     querySelectorAll: selector => selector === '.ProseMirror[contenteditable="true"]' ? [editor] : selector === 'button, [role=button]' ? [stop] : [] };
   assert.equal(nativePage(doc, {}, 'isBusy').isBusy(), false);
 });
@@ -344,7 +333,7 @@ for (const [text, basis] of [['20% remaining', 'remaining'], ['剩余 20%', 'rem
     const bar = nativeNode({ 'aria-valuenow': '20', 'aria-valuemax': '100', 'aria-label': 'usage', 'aria-valuetext': text });
     const root = nativeNode({}, { innerText: '当前套餐\nPro\n' + text,
       querySelectorAll: selector => selector === '[role=progressbar]' ? [bar] : [] });
-    const context = vm.createContext({ settingsPanel: () => root, vis: () => true, fullText: el => el.innerText || '' });
+    const context = createPageContext({ settingsPanel: () => root, vis: () => true, fullText: el => el.innerText || '' });
     vm.runInContext(part(read('server/page/settings.js'), '  const readUsage =', '\n\n\n\n  // Full xterm') + '\nthis.result=readUsage();', context);
     assert.equal(context.result.plan, 'Pro');
     assert.equal(context.result.limits[0].pct, 20);
@@ -363,14 +352,14 @@ test('Cursor quota reads the plan container rather than its heading-only child',
   const heading = { innerText: '当前套餐' }, card = { innerText: '当前套餐\nPro\n剩余20%' };
   const bar = nativeNode({ 'aria-valuenow': '20', 'aria-label': 'usage', 'aria-valuetext': '剩余20%' });
   const root = { innerText: card.innerText, querySelectorAll: selector => selector === 'div, section' ? [heading, card] : selector === '[role=progressbar]' ? [bar] : [] };
-  const context = vm.createContext({ settingsPanel: () => root, vis: () => true, fullText: el => el.innerText || '' });
+  const context = createPageContext({ settingsPanel: () => root, vis: () => true, fullText: el => el.innerText || '' });
   vm.runInContext(part(read('server/page/settings.js'), '  const readUsage =', '\n\n\n\n  // Full xterm') + '\nthis.result=readUsage();', context);
   assert.equal(context.result.plan, 'Pro'); assert.equal(context.result.limits[0].basis, 'remaining');
 });
 
 test('native effort IDs match their displayed casing without losing non-Latin labels', () => {
   const rows = ['Low', 'High', '深度', 'unrelated'].map(innerText => nativeNode({}, { innerText }));
-  const context = vm.createContext({ effortItems: () => [{ label: 'low' }, { label: 'high' }, { label: '深度' }],
+  const context = createPageContext({ effortItems: () => [{ label: 'low' }, { label: 'high' }, { label: '深度' }],
     doc: { querySelectorAll: () => rows }, vis: () => true, normLabel: value => value });
   vm.runInContext('this.menu={' + part(read('server/page/controls.js'), '    effort: () => {', '    mode: () => {') + '};this.result=menu.effort();', context);
   assert.deepEqual(Array.from(context.result, row => row.label), ['Low', 'High', '深度']);
@@ -421,7 +410,7 @@ for (const generating of [false, true]) {
   test(`Cursor running state follows the selected native composer, generating=${generating}`, () => {
     const states = [{ id: 'current', state: generating ? 'generating' : 'focused' }, { id: 'other', state: 'generating' }];
     const source = part(read('server/page/devin.js'), '  const isBusy =', "  // Devin's queue");
-    const context = vm.createContext({ window: { __SSG_COMPOSER_PROVIDER__: { getStates: () => states } },
+    const context = createPageContext({ window: { __SSG_COMPOSER_PROVIDER__: { getStates: () => states } },
       codexPromptEl: () => null, activeThread: () => 'current', stopGenerationButton: () => null, legacyStopIcon: () => null, devinSubmitBusy: () => false });
     vm.runInContext(source + '\nthis.busy=isBusy();', context);
     assert.equal(context.busy, generating);
@@ -515,7 +504,7 @@ function confirmation() {
   const add = document.addEventListener.bind(document), remove = document.removeEventListener.bind(document);
   document.addEventListener = (type, fn, options) => { listeners.add(fn); add(type, fn, options); };
   document.removeEventListener = (type, fn, options) => { listeners.delete(fn); remove(type, fn, options); };
-  const context = vm.createContext({
+  const context = createPageContext({
     document, Event, $: id => nodes[id], currentComputer: () => computer,
     mode: 'chat', currentApp: 'codex', viewSel: 'codex|window|A', sheetKind: null, windowReady: true,
     text: { value: 'draft from A' }, pendingImageUploads: () => false,
@@ -544,7 +533,7 @@ function confirmation() {
       + part(composer, 'function draftKey()', 'function restoreDraft(')
       + part(composer, 'function recordDraftEdit()', 'function queueDraftSync(')
       + part(composer, "$('stop').onclick =", 'function updateSendMode(')
-      + part(composer, 'function sendComposer(', "$('insertNewline').addEventListener")
+      + part(composer, 'function submitComposerReceipt(', "$('insertNewline').addEventListener")
       + part(history, 'function sendQueueAction(', 'function editQueued(')
       + part(history, "$('queueBar').onclick =", 'function updateToBottom('), context);
   listeners.clear(); // Track the scoped confirmation listeners added after fixture setup.
@@ -569,7 +558,7 @@ function composerCommands() {
     setRangeText(value, start, end) { this.value = this.value.slice(0, start) + value + this.value.slice(end); this.selectionStart = this.selectionEnd = start + value.length; },
     focus() {}, dispatchEvent() { context.inputRevision++; context.mentionUpdate(input); } };
   const nodes = { mentionBox: box, send: { disabled: false }, sendNow: { disabled: false }, attachments: { children: [] }, msg: { textContent: '' } };
-  const context = vm.createContext({
+  const context = createPageContext({
     text: input, $: id => nodes[id], document: { addEventListener: (type, callback) => listeners.set(type, callback), dispatchEvent(event) { listeners.get(event.type)?.(event); } },
     Event: class { constructor(type) { this.type = type; } },
     currentApp: 'codex', mode: 'chat', viewSel: 'codex|fixture|thread', currentTerminalId: 'native-terminal', questionCompose: null, inputRevision: 0,
@@ -583,7 +572,7 @@ function composerCommands() {
   });
   const composer = read('app/js/composer.js');
   vm.runInContext(part(composer, 'const MN =', '// Mentions still present in the text')
-    + part(composer, 'function sendComposer(', "$('insertNewline').addEventListener")
+    + part(composer, 'function submitComposerReceipt(', "$('insertNewline').addEventListener")
     + part(composer, 'let composing = false;', 'const composerInputHandlers ='), context);
   return { context, input, box, packets, echoes, nodes, timers,
     mn: () => vm.runInContext('MN', context),
@@ -692,7 +681,7 @@ function acceptedDraft(newer) {
   const value = 'submitted text', input = { value, selectionStart: 0, selectionEnd: 0,
     setSelectionRange(start, end, direction) { this.selectionStart = start; this.selectionEnd = end; this.selectionDirection = direction; } };
   const sent = { requestId: 'request', computer: 'computer', draft: 'draft', text: value, revision: 1, version: 1, mode: 'chat', mentions: '{}', attachmentIds: [] };
-  const context = vm.createContext({ text: input, mode: 'chat', currentApp: 'codex', questionCompose: null,
+  const context = createPageContext({ text: input, mode: 'chat', currentApp: 'codex', questionCompose: null,
     currentComputer: () => ({ id: 'computer' }), draftKey: () => 'draft', activeDraft: 'draft', viewSel: 'codex|A',
     inputRevision: newer ? 2 : 1, draftRevision: 7, draftAckRevision: 7, draftEpoch: 'epoch',
     drafts: new Map([['draft', value]]), draftVersions: new Map([['draft', newer ? 2 : 1]]), draftMentions: new Map(),
@@ -727,7 +716,7 @@ function takenOutDraft(app = 'devin', value = '') {
   const document = { activeElement: null }, calls = [];
   const input = Object.assign(new EventTarget(), { value, selectionStart: 0, selectionEnd: 0,
     focus() { document.activeElement = input; }, setSelectionRange() {} });
-  const context = vm.createContext({
+  const context = createPageContext({
     currentApp: app, mode: 'chat', questionCompose: null, text: input, document, Event,
     viewSel: app + '|window|thread', activeDraft: 'draft', draftEpoch: 'epoch',
     inputRevision: 5, draftRevision: 5, draftAckRevision: 5, pendingDesktopDraft: null,
@@ -782,7 +771,7 @@ for (const app of ['cursor', 'codex']) {
 }
 
 function codexTranscript() {
-  const history = read('app/js/history.js'), context = vm.createContext({ currentApp: 'codex' });
+  const history = read('app/js/history.js'), context = createPageContext({ currentApp: 'codex' });
   const merge = part(history, '    const updates = new Map(chat.items.map', '    chat = { ...chat, items: merged };');
   vm.runInContext(part(history, 'function scKeep(', 'function scSnapshot(')
     + `\nthis.merge = (items, next, older = false) => {
@@ -826,7 +815,7 @@ function chatReadingFixture(top = 220) {
   let rows = [];
   const list = { scrollTop: top, getBoundingClientRect: () => ({ top: 40 }) };
   const itemsEl = { querySelectorAll: () => rows };
-  const context = vm.createContext({ list, itemsEl, setChatScrollTop: value => { list.scrollTop = value; } });
+  const context = createPageContext({ list, itemsEl, setChatScrollTop: value => { list.scrollTop = value; } });
   vm.runInContext(part(read('app/js/history.js'), 'function chatReadingPosition()', 'function finishHistory('), context);
   return {
     list,
@@ -891,7 +880,7 @@ function cursorBodyFixture() {
       return new Map(ids.map(key => [key, data.get(id).stored.get(key)]));
     },
   } };
-  const context = vm.createContext({ cursorSessionServices: () => ({ data: service }), agentRun: () => null, esc: value => value.replace(/</g, '&lt;') });
+  const context = createPageContext({ cursorSessionServices: () => ({ data: service }), agentRun: () => null, esc: value => value.replace(/</g, '&lt;') });
   const source = read('server/page/chat-extract.js');
   vm.runInContext(part(read('server/page/session-actions.js'), '  const cursorMessages =', '  const nativeSessionPreview =')
     + part(source, '  const nativePerformance =', '  const cursorCurrentChat =')
@@ -945,7 +934,7 @@ test('Cursor body reads only the native tail, loads its placeholders and keeps m
 test('ordinary Cursor data subscriptions follow the active thread and release the previous native listener', () => {
   let selected = 'A', changes = 0;
   const active = new Map(), disposed = [];
-  const context = vm.createContext({ remoteContext: null, activeThread: () => selected,
+  const context = createPageContext({ remoteContext: null, activeThread: () => selected,
     cursorSessionServices: () => ({ data: { loadedComposers: {
       subscribe(id, changed) { active.set(id, changed); return { dispose() { active.delete(id); disposed.push(id); } }; },
     } } }) });
@@ -1100,7 +1089,7 @@ function rename({ fail = false, restore = true, own = true, abort = false } = {}
       return true;
     },
   };
-  const context = vm.createContext({
+  const context = createPageContext({
     CODEX_CDP_URL: 'fixture', codexWindows: async () => [{ pageId: 'window', chatWs: 'ws://fixture.invalid' }],
     helpersCall: value => value, Cdp: class { constructor() { return cdp; } },
     setTimeout: fn => { fn(); return 1; }, cdpRead: readScope, publishSessionChange() {},
@@ -1181,7 +1170,7 @@ function previews({ saved, chatPreviews = null, now = 1000 } = {}) {
   }));
   let clock = now, serial = 0, restored = 0;
   const timers = new Map(), writes = [], document = new EventTarget(), window = new EventTarget();
-  const context = vm.createContext({
+  const context = createPageContext({
     document, addEventListener: window.addEventListener.bind(window),
     computerSockets: new Map(links.map(link => [link.computer.key, link])), ws: links[0].socket,
     computerBindingReady: () => true, loadComputers: () => computers, currentComputer: () => computers[0],
@@ -1292,7 +1281,7 @@ test('a computer removed before the flush is absent from the saved restore map',
 for (const mode of ['native', 'position', 'absent', 'error']) {
   test(`the shared model opener retains the ${mode} outcome`, async () => {
     const calls = [];
-    const context = vm.createContext({ helpersCall: value => value });
+    const context = createPageContext({ helpersCall: value => value });
     const method = part(read('server/agent/menus.mjs'), '  async openModelList()', '  async ensureSettings(').replace(/,\s*$/, '');
     const open = vm.runInContext('({' + method + '}).openModelList', context);
     const target = {
@@ -1318,7 +1307,7 @@ for (const mode of ['native', 'position', 'absent', 'error']) {
 test('reading queue counts does not build buttons for any Agent', () => {
   for (const app of ['cursor', 'devin', 'codex']) {
     let buttons = 0;
-    const context = vm.createContext({
+    const context = createPageContext({
       chatStale: false, currentApp: app, viewSel: 'fixture', pendingEchoes: [],
       lastChat: { queued: [1, 2, 3].map(id => ({ id: String(id), t: 'fixture' })) },
       I18N: { tr: value => value }, esc: value => value, supportsCapability: () => true,
@@ -1334,7 +1323,7 @@ test('reading queue counts does not build buttons for any Agent', () => {
 
 test('changed-file controls retain session and computer ownership outside the queue bar', () => {
   const packets = [], nodes = { changeNotice: { hidden: true }, queueBar: { innerHTML: '', classList: { toggle(_, visible) { this.visible = visible; } } } };
-  const context = vm.createContext({
+  const context = createPageContext({
     $: id => nodes[id], computer: 'A', viewSel: 'codex|window|one', sheetKind: null, chatStale: false,
     currentComputer() { return { id: context.computer }; }, lastChat: { changed: 12345, queued: [] }, subsOpen: false, queueOpen: false,
     queuedMessages: () => ({ count: 0 }), I18N: { tr: value => value }, esc: value => value,
@@ -1367,7 +1356,7 @@ function overviewClient() {
   const packets = [], requests = [];
   const links = computers.map(computer => ({ expectedId: computer.id, authed: true, auth: { device: 'device-' + computer.id }, operations: new Map(),
     socket: { readyState: 1, send: raw => packets.push({ computer: computer.id, message: JSON.parse(raw) }) } }));
-  const context = vm.createContext({
+  const context = createPageContext({
     currentComputer: () => computers[0], currentApp: 'codex', mode: 'chat', viewSel: 'codex|window|A',
     ws: links[0].socket, crypto: crypto.webcrypto, authed: true,
     ovList: computers.map(c => ({ id: c.id, c })), computerSockets: new Map(links.map((l, i) => [computers[i].key, l])),
@@ -1480,7 +1469,7 @@ test('operation identities and replayed overview results remain scoped to the pa
 test('the overview route collects internal native messages separately from its terminal operation result', async () => {
   const h = operationFixture(), first = beginOperation(h.session, h.message), calls = [];
   h.session.emit = message => captureOperation(h.session, message);
-  const context = vm.createContext({ withOperation,
+  const context = createPageContext({ withOperation,
     manageOverviewSession: async (device, body) => {
       assert.equal(currentOperation(), null); calls.push([device, body.operationId]);
       assert.equal(captureOperation(h.session, { t: 'sessionBatchProgress' }), false);
@@ -1496,7 +1485,7 @@ test('the overview route collects internal native messages separately from its t
 
 test('the HTTP overview endpoint retains favorites and queries and no longer executes mutations', async () => {
   let executions = 0;
-  const context = vm.createContext({
+  const context = createPageContext({
     URL, clientIp: () => 'fixture', originAllowed: () => true,
     authenticateRequest: () => ({ id: 'fixture-device' }), needsTotp: () => false,
     readJson: async request => request.body, json: (request, response, status, body) => ({ status, body }),
@@ -1531,7 +1520,7 @@ function cardSubscription() {
     if (!nodes.has(id)) nodes.set(id, { classList: { toggle() {} }, querySelectorAll: () => [], querySelector: () => null });
     return nodes.get(id);
   };
-  const context = vm.createContext({
+  const context = createPageContext({
     document: { visibilityState: 'visible', body: { classList: { contains: value => classes.has(value) } } },
     authed: true, mode: 'chat', viewSel: 'codex|window|thread', targetReady: true,
     ovS: { open: 'card' }, ovToolState: { key: 'card', phase: 'ready', sel: 'codex|window|thread', target: {} },
@@ -1600,7 +1589,7 @@ for (const app of ['cursor', 'devin', 'codex']) {
     const listeners = new Set(), snapshots = [];
     let queued = [], subscriptions = 0;
     const source = { subscribe(listener) { subscriptions++; listeners.add(listener); return () => listeners.delete(listener); } };
-    const context = vm.createContext({
+    const context = createPageContext({
       AgentContext: class {}, FUSION_OWNER: {}, cdpRead: new AsyncLocalStorage(),
       nativeWindow: () => source, subscribeCatalog: () => () => {}, clearInterval() {},
     });
@@ -1626,7 +1615,7 @@ for (const app of ['cursor', 'devin', 'codex']) {
 function shellWorker() {
   const handlers = new Map(), cached = new Map(), requests = [], writes = [];
   const scope = 'https://fixture.invalid/remote-agent/';
-  const context = vm.createContext({
+  const context = createPageContext({
     URL, Request, Response, Promise,
     self: { registration: { scope }, addEventListener: (type, handler) => handlers.set(type, handler) },
     location: { origin: new URL(scope).origin },
@@ -1709,7 +1698,7 @@ function preedit() {
   const input = { value: 'pinyin', dataset: { ovInput: 'card' }, selectionStart: 6, selectionEnd: 6,
     setSelectionRange: (...selection) => selections.push(selection) };
   const text = { value: 'old draft', selectionStart: 1, selectionEnd: 1, selectionDirection: 'none', setSelectionRange() {} };
-  const context = vm.createContext({
+  const context = createPageContext({
     document: { activeElement: input }, input, text, composing: true,
     ovComposerReady: () => true, composerInput: () => context.owner, owner: input,
     setTimeout: callback => timers.push(callback), updateComposeCompact() {}, queueDraftSync() {},
@@ -1769,7 +1758,7 @@ test('cards retain editing while a draft is in flight and keep their shared inpu
     const nodes = new Map([['send', button('排队')], ['sendNow', { ...button('立即追加'), hidden: row.app === 'cursor' }], ['msg', { className: 'quiet' }]]);
     nodes.get('send').disabled = !!row.pending;
     if (row.opening) Object.assign(nodes.get('msg'), { className: 'err', textContent: 'QA_OTHER_STATUS' });
-    const context = vm.createContext({
+    const context = createPageContext({
       $: id => nodes.get(id) || button(), esc: String, OV_ICON: { arrow: '<svg/>' }, OV_AGENT: { [row.app]: row.app },
       I18N: { tr: value => value }, ovT: value => value, ovBusy: new Set(),
       ovErr: new Map(row.error ? [['card', row.error]] : row.opening?.phase === 'error' ? [['card', row.opening.message]] : []),
@@ -1979,7 +1968,7 @@ function questionCards(requests) {
     }
   }
   const text = { value: '普通聊天草稿' };
-  const context = vm.createContext({
+  const context = createPageContext({
     $: () => bar, document: { activeElement: null, body: { classList: { contains: () => false } } },
     currentApp: 'codex', viewSel: 'codex|window|thread', mode: 'chat', questionCompose: null, text,
     ws: { readyState: 1 }, authed: true, windowReady: true, crypto: crypto.webcrypto,
@@ -2073,7 +2062,7 @@ function devinQuestionCards(qs) {
     },
   });
   const text = { value: '普通聊天草稿' };
-  const context = vm.createContext({
+  const context = createPageContext({
     $: () => bar, document: { activeElement: null, body: { classList: { contains: () => false } } },
     currentApp: 'devin', viewSel: 'devin|window|thread', mode: 'chat', questionCompose: null, text,
     ws: { readyState: 1 }, authed: true, windowReady: true, crypto: crypto.webcrypto,
@@ -2175,7 +2164,7 @@ test('Devin question draft is keyed by the native request so an identical new qu
 
 test('card input tools retain the bound editor for history and newline actions', async () => {
   const calls = [], state = { ready: Promise.resolve(true) }, input = {};
-  const context = vm.createContext({
+  const context = createPageContext({
     ovToolState: state, ovPrepareTools: () => state, ovToolInput: () => input,
     recallInput: (direction, editor) => { assert.equal(editor, input); calls.push(direction); },
     endInputRecall: () => calls.push('end'),
@@ -2194,7 +2183,7 @@ function voiceComposer() {
   const text = { value: 'saved', selectionStart: 5, selectionEnd: 5,
     setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; },
     dispatchEvent() { input.value = text.value; input.selectionStart = text.selectionStart; input.selectionEnd = text.selectionEnd; } };
-  const context = vm.createContext({
+  const context = createPageContext({
     input, text, Event, CSS: { escape: value => value }, ovToolState: { key: 'card' },
     document: { querySelector: () => input }, $: () => ({ classList: { remove() {} }, setAttribute() {} }),
     voiceSession: { input, expected: 'saved', prefix: '', suffix: '', selection: '',
@@ -2363,7 +2352,7 @@ test('computer dictation retains its explicit cancel-before-rerecord interaction
 test('the shared voice caret calculation scrolls its supplied editor without changing another textarea', () => {
   const hidden = { scrollTop: 7 }, editor = { value: 'words', selectionEnd: 5, clientWidth: 180, clientHeight: 36, scrollHeight: 150, scrollTop: 0 };
   let caretTop = 100;
-  const context = vm.createContext({ text: hidden,
+  const context = createPageContext({ text: hidden,
     getComputedStyle: input => { assert.equal(input, editor); return { lineHeight: '22px', paddingBottom: '0px' }; },
     document: { body: { append() {} }, createElement: tag => ({ style: {}, append() {}, remove() {}, getBoundingClientRect: () => ({ top: tag === 'span' ? caretTop : 0 }) }) },
   });
@@ -2381,7 +2370,7 @@ function usageMeters() {
     return nodes.get(id);
   };
   let clock = 0;
-  const context = vm.createContext({ document, Event, $: node, currentComputer: () => computer, lastChat: null, performance: { now: () => clock },
+  const context = createPageContext({ document, Event, $: node, currentComputer: () => computer, lastChat: null, performance: { now: () => clock },
     currentApp: 'codex', viewSel: 'codex|window-A|thread-A', esc: String, ready: true, status() {} });
   context.ovComposerReady = key => context.ready && key === 'card';
   const source = read('app/js/sheets.js');
@@ -2437,7 +2426,7 @@ test('OpenCode context preserves native token details and distinguishes unknown 
 });
 
 function nativePerformanceFixture(requests = {}) {
-  const context = vm.createContext({ window: { __acpStore: { getState: () => ({ acp: { agentRequests: { byId: requests } } }) } } });
+  const context = createPageContext({ window: { __acpStore: { getState: () => ({ acp: { agentRequests: { byId: requests } } }) } } });
   vm.runInContext(part(read('server/page/chat-extract.js'), '  const nativePerformance =', '  const cursorCurrentChat =')
     + '\nthis.read=nativePerformance;', context);
   return (...args) => JSON.parse(JSON.stringify(context.read(...args)));
@@ -2594,7 +2583,7 @@ function relayHeartbeat({ needsTwoFactor = false } = {}) {
     stopTerminalUpdates() {}
     dispose() { this.disposed = true; }
   }
-  const context = vm.createContext({
+  const context = createPageContext({
     crypto, Buffer, URL, AbortController, Session, WebSocketServer: Server,
     Date: class extends Date { static now() { return now; } },
     setTimeout: schedule, clearTimeout: id => timers.delete(id),
@@ -2606,6 +2595,7 @@ function relayHeartbeat({ needsTwoFactor = false } = {}) {
     subscribeLibrary() {}, subscribeOperations: () => () => {}, lastSelection: () => null,
     addViewer() {}, removeViewer() {}, clientIp: () => 'fixture', originAllowed: () => true,
     ROUTES: { visible: { connection: true } }, flag, configureNativeRetry() {},
+    resolveRoute: (session, type) => context.ROUTES[type],
     beginOperation, withOperation, cdpRead: new AsyncLocalStorage(),
   });
   const strip = source => source.replace(/^import .*;\n/gm, '').replace(/\bexport /g, '');
@@ -2758,7 +2748,7 @@ test('peer loss during background still requires fresh proof to recover the reta
 
 function overviewDirectory() {
   const targets = [], sources = new Map(), catalogs = new Map(), library = {}, saved = { windows: {} }, fusionRuns = {};
-  const context = vm.createContext({ path, Date, process: { platform: 'linux' }, saved, fusionRuns,
+  const context = createPageContext({ path, Date, process: { platform: 'linux' }, saved, fusionRuns,
     openCode: { overview: () => ({ windows: [], sessions: [] }) },
     key: (app, id) => app + ':' + id.replace(/^(cursor|devin|codex):/, ''),
     nativeTargets: () => targets, nativeWindowAt: id => sources.get(id), nativeSessionCatalog: app => catalogs.get(app),
@@ -2843,7 +2833,7 @@ test('available directories do not wait for chat extraction or another window re
 function overviewCards(saved = new Map()) {
   const source = read('app/js/overview.js'), notifications = [], opened = [], handlers = new Map();
   const entry = { id: 'computer', c: { key: 'paired' } }, state = { fetched: false, prev: new Map(), first: new Map(), offset: 0 };
-  const context = vm.createContext({ Date, computerSockets: new Map(), saveComputerResume() {},
+  const context = createPageContext({ Date, computerSockets: new Map(), saveComputerResume() {},
     ovComputerStatus: () => 'online', agentSessionCommon: () => true, ovNotify: (record, kind) => notifications.push({ thread: record.threadId, kind }),
     ovPrune() {}, store: { get: key => saved.get(key), set: (key, value) => saved.set(key, value) },
     ovS: { level: 'favorites' }, ovSessTile: row => row.key, ovEmpty: value => value, ovT: value => value, ovProjTile: project => project.key,
@@ -2899,7 +2889,7 @@ test('marking a completed card read persists locally, updates its project and al
 
 test('only completed overview cards offer a local read action without binding or managing the native session', async () => {
   const source = read('app/js/sheets.js'); let html = '', reads = 0, renders = 0, closes = 0;
-  const context = vm.createContext({ agentActionTarget: null, esc: value => value, ovCompName: () => 'computer', ovAgName: () => 'Cursor',
+  const context = createPageContext({ agentActionTarget: null, esc: value => value, ovCompName: () => 'computer', ovAgName: () => 'Cursor',
     openSheet(_kind, body) { html = body; }, sheetKind: 'agent-actions', currentApp: 'cursor', projectEntry: null,
     closeSheet() { closes++; }, ovMarkRead(key) { assert.equal(key, 'card'); reads++; return true; }, ovRender() { renders++; },
     send: () => assert.fail('read must not send'), ovSessionRequest: () => assert.fail('read must not manage a native session'),
@@ -3113,7 +3103,7 @@ test('favorites and project cards share completed-running-idle ordering and aggr
 function foldingComposer(land) {
   const source = read('app/js/composer.js'), classes = new Set(land ? ['land'] : []), timers = [], handlers = {};
   const input = { value: '' }, attachments = { children: [] }, nodes = { attachments }, focus = { question: false };
-  const context = vm.createContext({ mode: 'chat', text: input, composing: false,
+  const context = createPageContext({ mode: 'chat', text: input, composing: false,
     document: { activeElement: { matches: () => focus.question, disabled: false }, body: { classList: { contains: key => classes.has(key) } },
       querySelector: () => ({ addEventListener: (name, callback) => { handlers[name] = callback; } }) },
     $: id => nodes[id] ||= {}, composeCompactAllowed: () => true, composerLayoutBusy: () => false, micPressing: () => false,
@@ -3161,7 +3151,7 @@ test('landscape retains idle automatic folding and click-to-open while preservin
 function nativeCompletionNotifications() {
   const source = read('lib/notify.mjs'), events = [], activeWorking = new Map(), state = {};
   const idle = Number(/const IDLE_POLLS = (\d+)/.exec(source)[1]);
-  const context = vm.createContext({ Date, os: { hostname: () => 'fixture' }, notifySeq: 0,
+  const context = createPageContext({ Date, os: { hostname: () => 'fixture' }, notifySeq: 0,
     windowName: title => title, activeWorking, keyOf: event => event.win + '|' + event.threadId,
     deliver: event => events.push(event),
   });
@@ -3238,7 +3228,7 @@ function sharedFileBrowser(readDirectory = () => ({ path: '/project', parent: '/
     });
     return nodes.get(id);
   };
-  const context = vm.createContext({ URLSearchParams, $: node, loadComputers: () => computers, currentComputer: () => selected,
+  const context = createPageContext({ URLSearchParams, $: node, loadComputers: () => computers, currentComputer: () => selected,
     sheetKind: '', projectEntry: null, docsPending: null, viewSel: 'selected-thread', menuRefreshTimer: 0, clearTimeout,
     store: { get: key => preferences.get(key), set: (key, value) => preferences.set(key, value) },
     document: { activeElement: null }, I18N: { tr: value => value }, esc: String, fmtSize: String,
@@ -3557,7 +3547,7 @@ function nativeRoots() {
     async evaluate(expression) { return expression.includes('nativeSessionInfo')
       ? { ready: true, rows: [], removed: [] } : { chat: { items: [], thread: 'thread' }, states: [], catalog: [] }; }
   }
-  const context = vm.createContext({ Cdp, cdpRead: { run: (_signal, action) => action(), getStore: () => null }, awaitCdpRead: value => value,
+  const context = createPageContext({ Cdp, cdpRead: { run: (_signal, action) => action(), getStore: () => null }, awaitCdpRead: value => value,
     watchChat: async () => { watches++; return () => {}; }, editorRoots: async () => { reads++; return result(); },
     PAGE_SRC: '({})', helpersCall: value => value, projectSessionIds: () => [], reconcileSessionCatalog: () => false,
     updateProjectWindowTargets() {}, bindOperation: action => action, publishDesktopState() {}, withOperation: (_op, action) => action(),
@@ -3605,7 +3595,7 @@ test('directory errors end pending state while successful windows stay available
 
 test('an authenticated computer with a directory error leaves the loading state', () => {
   const link = { authed: true, socket: { readyState: 1 } };
-  const context = vm.createContext({ computerSockets: new Map([['key', link]]), navigator: { onLine: true } });
+  const context = createPageContext({ computerSockets: new Map([['key', link]]), navigator: { onLine: true } });
   vm.runInContext(part(read('app/js/overview.js'), 'function ovComputerStatus(', 'function ovStOf('), context);
   assert.equal(context.ovComputerStatus({ c: { key: 'key' } }, { data: { errors: [{ error: 'denied' }] } }), 'online');
   assert.equal(context.ovComputerStatus({ c: { key: 'key' } }, { data: { pendingWindows: 1 } }), 'loading');
@@ -3614,7 +3604,7 @@ test('an authenticated computer with a directory error leaves the loading state'
 function devinProject(thread = 'acp/devin-cli/new-session') {
   const emitted = [], calls = [], state = { thread, surface: 'editor', items: 0 };
   let active = thread;
-  const context = vm.createContext({ path, helpersCall: value => value, fusionProject: root => ({ id: root }),
+  const context = createPageContext({ path, helpersCall: value => value, fusionProject: root => ({ id: root }),
     cdpRead: { getStore: () => null }, setTimeout: action => action() });
   const adapter = vm.runInContext('({' + part(read('server/apps/devin.mjs'), '  async openDefaultSession() {', '  async openAgent(') + '})', context);
   const methods = vm.runInContext('({' + part(read('server/agent/projects.mjs'), '  async finishProject() {', '  projectName() {')
@@ -3769,7 +3759,7 @@ test('fixed header follows its existing grid slot and natural height without tou
   const slot = { style: writes(['marginBottom'], { height: '0px' }), getBoundingClientRect: () => slotRect };
   const header = { style: writes(['left', 'width']), getBoundingClientRect: () => ({ height: headerHeight }) };
   const body = { style: writes([]) };
-  const context = vm.createContext({
+  const context = createPageContext({
     document: { body, querySelector(selector) { assert.equal(selector, 'body > header'); return header; } },
     $(id) { assert.equal(id, 'headerSlot'); return slot; },
     ResizeObserver: class { constructor(fn) { callback = fn; } observe(node) { observed.push(node); } },
@@ -3835,7 +3825,7 @@ function viewportTraceFixture() {
     screen: { width: 402, height: 874, availWidth: 402, availHeight: 874, orientation: { type: 'portrait-primary' } },
     visualViewport: { ...events(), height: 874, width: 402, offsetTop: 0, offsetLeft: 0, pageTop: 0, scale: 1 } };
   const navigator = { userAgent: 'Fixture WebKit', standalone: true };
-  const context = vm.createContext({ document, window, navigator, history: { state: { ovDepth: 0 } }, mode: 'chat', APP_VERSION: 'fixture',
+  const context = createPageContext({ document, window, navigator, history: { state: { ovDepth: 0 } }, mode: 'chat', APP_VERSION: 'fixture',
     performance: { now: () => time++, getEntriesByType: () => [] }, URL, TextEncoder, Uint8Array, crypto: crypto.webcrypto,
     matchMedia: query => ({ matches: query.includes('standalone') }), $: id => nodes[id],
     store: { get(key) { assert.equal(key, 'viewport-trace-next'); return persisted.get(key); },
@@ -3977,7 +3967,7 @@ test('Cursor native image attachments survive virtualized and image-only message
 
 test('OpenCode live view renders its page while retaining older rows in the local history cache', () => {
   const old = { i: 'old', k: 'human', order: 1, t: 'old' }, fresh = { i: 'new', k: 'human', order: 2, t: 'new' };
-  const context = vm.createContext({ SC: { key: 'one', cleared: false, items: new Map([['old', old]]), sig: new Map(), collapsed: new Set(), show: 400 },
+  const context = createPageContext({ SC: { key: 'one', cleared: false, items: new Map([['old', old]]), sig: new Map(), collapsed: new Set(), show: 400 },
     scItemBytes: new WeakMap(), scDirty() {}, acpNum: () => -1 });
   vm.runInContext(part(read('app/js/history.js'), 'function scKeep(', 'function codexRows(')
     + part(read('app/js/history.js'), 'function scMerge(', 'function scFold(') + '\nthis.merge = scMerge;', context);
@@ -3987,7 +3977,7 @@ test('OpenCode live view renders its page while retaining older rows in the loca
 });
 
 test('OpenCode history persistence stores tool metadata without expanded output', () => {
-  const context = vm.createContext({ SC_MAX: 100, acpNum: () => -1 });
+  const context = createPageContext({ SC_MAX: 100, acpNum: () => -1 });
   vm.runInContext(part(read('app/js/history.js'), 'function scSnapshot(', 'let scDrainTimer') + '\nthis.snapshot = scSnapshot;', context);
   const tool = { i: 'tool', lazy: true, details: true, t: 'read', cmd: 'command', output: 'large body', diff: [['+', 'line']] };
   const snapshot = context.snapshot({ items: new Map([['tool', tool]]), collapsed: new Set() });
@@ -4000,7 +3990,7 @@ test('OpenCode preview limits the current turn to 600 characters and the latest 
   const rows = [{ info: { role: 'user' }, parts: new Map([['text', { type: 'text', text: 'question' }]]) },
     { info: { role: 'assistant' }, parts: new Map() }];
   let selected;
-  const context = vm.createContext({ openCode: { connect: async () => {}, loadMessages: async () => {}, messageRows: () => rows,
+  const context = createPageContext({ openCode: { connect: async () => {}, loadMessages: async () => {}, messageRows: () => rows,
     chat: (_id, options) => { selected = options; return { model: 'model', effort: 'default', items: [
       { k: 'human', t: 'question' }, { k: 'assistant', t: 'X'.repeat(800) },
       ...Array.from({ length: 8 }, (_, n) => ({ i: String(n), k: 'tool', t: 'tool ' + n, status: n === 7 ? 'error' : 'completed' }))] }; } } });
@@ -4017,7 +4007,7 @@ test('Cursor empty composer resolves its native services before transcript rows 
   const instantiationService = { _services: { _entries: new Map(Object.keys(services).map(id => [id, null])) },
     invokeFunction: fn => fn({ get: id => services[id] }) };
   let lookups = 0;
-  const context = vm.createContext({ window: {}, doc: { querySelectorAll: () => [] },
+  const context = createPageContext({ window: {}, doc: { querySelectorAll: () => [] },
     modelButton: () => button, codexFiberProps: element => {
       assert.equal(element, button); lookups++;
       return [{ services: { workspace: { instantiationService } } }];
@@ -4035,7 +4025,7 @@ test('Cursor empty composer resolves its native services before transcript rows 
 for (const app of ['devin', 'cursor', 'codex', 'opencode']) test(`small WebP follows ${app} native format`, async () => {
   const blobs = [], file = new File([new Uint8Array([1])], 'transparent.webp', { type: 'image/webp' });
   let closed = false;
-  const context = vm.createContext({ File, Blob,
+  const context = createPageContext({ File, Blob,
     createImageBitmap: async () => ({ width: 20, height: 10, close: () => { closed = true; } }),
     document: { createElement: () => ({ getContext: () => ({ drawImage() {} }),
       toBlob(fn, type) { blobs.push(type); fn(new Blob([new Uint8Array([1])], { type })); } }) },
@@ -4052,7 +4042,7 @@ for (const [app, mime, converted] of [['devin', 'image/webp', true], ['devin', '
   test(`prepared image upload retains its captured owner (${app}, ${mime})`, async () => {
     const original = new File(['fixture'], 'sample.webp', { type: mime }), calls = [], options = { prepared: true };
     const record = { app, file: original, options, scope: 'owner-A', sel: 'thread-A' };
-    const context = vm.createContext({ imageUploads: new Map([['upload', record]]), currentApp: 'other-app',
+    const context = createPageContext({ imageUploads: new Map([['upload', record]]), currentApp: 'other-app',
       shrinkImage: async (file, canvas, owner) => { calls.push(['convert', owner]); return new File(['png'], 'sample.png', { type: 'image/png' }); },
       imageUploadScope: () => 'owner-A', viewSel: 'thread-A', authed: true, ws: { readyState: 1 },
       uploadDocument: async file => { calls.push(['upload', file.type]); return { id: 'server-upload' }; },
@@ -4073,7 +4063,7 @@ for (const kind of ['unchanged', 'undone', 'rotated', 'cropped', 'first-upload',
     const image = { sel: 'thread-A', ...(kind === 'first-upload' ? { files: [current] }
       : kind === 'pending-edit' ? { onSave: async value => { calls.push(['pending', value.type]); return true; } } : { id: 'existing-image' }) };
     const dialog = { close() { calls.push(['close']); } }, button = { dataset: { edit: 'save' }, textContent: '保存', disabled: false };
-    const context = vm.createContext({ File, Blob, dialog, image, documents: [current], current: () => current,
+    const context = createPageContext({ File, Blob, dialog, image, documents: [current], current: () => current,
       scope: 'scope-A', imageUploadScope: () => 'scope-A', viewSel: 'thread-A', app: 'devin',
       saving: false, loading: false, loadError: false, cancelled: false, finishGesture() {},
       fullCrop: crop => crop.x === 0 && crop.y === 0 && crop.w === current.width && crop.h === current.height,

@@ -1,6 +1,6 @@
 import qrcode from 'qrcode-terminal';
 import { PUBLISH_REPO, loadConfig, PORT } from './config.mjs';
-import { appBase, createPairing, listDevices, normalizeAppUrl } from '../lib/auth.mjs';
+import { appBase, createPairing, listDevices, resolveAppEntry } from '../lib/auth.mjs';
 import { runPairingWindow } from '../lib/pairing-window.mjs';
 
 // Until a first device exists, print a pairing QR so a fresh install works without extra commands.
@@ -19,8 +19,5 @@ function printQr(label, url) {
 }
 
 export function appUrl() {
-  const fixed = normalizeAppUrl(loadConfig().appUrl);
-  if (fixed) return fixed;
-  const [owner, repo] = PUBLISH_REPO.split('/');
-  return `https://${owner.toLowerCase()}.github.io/${repo}/`;
+  return resolveAppEntry({ ...loadConfig(), publishRepo: PUBLISH_REPO });
 }

@@ -45,9 +45,9 @@ export function appFiles(dir = APP_DIR, prefix = '') {
 }
 
 // Keeps the GitHub Pages copy of the app identical to app/, uploading only files that changed.
-async function syncApp(signal) {
-  const api = async (suffix, body) => JSON.parse(await run('gh', ['api', ...(body ? ['-X', 'POST'] : []), `repos/${PUBLISH_REPO}${suffix && `/${suffix}`}`, ...(body ? ['--input', '-'] : [])], body && JSON.stringify(body), { signal }));
-  const branch = PAGES_BRANCH || (await api('')).default_branch;
+export async function syncApp(signal, repo = PUBLISH_REPO, selectedBranch = PAGES_BRANCH) {
+  const api = async (suffix, body) => JSON.parse(await run('gh', ['api', ...(body ? ['-X', 'POST'] : []), `repos/${repo}${suffix && `/${suffix}`}`, ...(body ? ['--input', '-'] : [])], body && JSON.stringify(body), { signal }));
+  const branch = selectedBranch || (await api('')).default_branch;
   const files = appFiles().map(name => {
     const buf = fs.readFileSync(path.join(APP_DIR, name));
     return { path: name, mode: '100644', type: 'blob', sha: gitBlobSha(buf), buf };
@@ -67,7 +67,7 @@ async function syncApp(signal) {
     const tree = await api('git/trees', { base_tree: commit.tree.sha, tree: changed.map(({ buf, ...row }) => row) });
     const next = await api('git/commits', { message: 'Update app', tree: tree.sha, parents: [head.object.sha] });
     try {
-      await run('gh', ['api', '-X', 'PATCH', `repos/${PUBLISH_REPO}/git/refs/heads/${branch}`, '--input', '-'], JSON.stringify({ sha: next.sha, force: false }), { signal });
+      await run('gh', ['api', '-X', 'PATCH', `repos/${repo}/git/refs/heads/${branch}`, '--input', '-'], JSON.stringify({ sha: next.sha, force: false }), { signal });
       console.log(`已同步 ${changed.length} 个 App 文件到 GitHub Pages`);
       return;
     } catch (error) {
