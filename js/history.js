@@ -955,14 +955,31 @@ $('qnBar').addEventListener('click', e => {
     const id = b.dataset.request, n = Number(b.dataset.action);
     const request = qnState?.requests?.find(r => r.id === id);
     const fields = !id.startsWith('async:') || n === request.buttons.length - 1
-      ? [...$('qnBar').querySelectorAll('[data-field]')].filter(el => el.dataset.request === id).map(el => ({ n: Number(el.dataset.field), value: el.value })) : [];
+      ? [...$('qnBar').querySelectorAll('[data-field]')].filter(el => el.dataset.request === id).map(el => ({ n: Number(el.dataset.field), value: questionFieldValue(el) })) : [];
     sendQuestion({ t: 'codexRequest', id, n, fields, ...(id.startsWith('async:') && n < request.buttons.length - 2 ? { advance: true } : {}) });
   }
 });
 // The Agent's ask-question tool: a card with the questions, options, a free-text answer and submit / skip.
 let qnSig = '', qnState = null, qnView = '', qnPending = null;
-const qnDrafts = new Map();
-const questionFieldKey = el => `${el.dataset.request}|${el.dataset.field}`;
+const qnDrafts = new Map(), questionSubmissions = new Map(), questionDraftRequests = new Map();
+const questionScope = () => JSON.stringify([currentComputer()?.id || '', currentApp, lastChat?.thread || currentComputer()?.threadId || '']);
+const questionDraftKey = (request, field, scope = questionScope()) => JSON.stringify([scope, request, field]);
+const questionFieldKey = el => questionDraftKey(el.dataset.request, el.dataset.field);
+const questionFieldValue = el => el.multiple ? [...el.selectedOptions].map(option => option.value) : el.value;
+function setQuestionFieldValue(el, value) {
+  if (el.multiple) [...el.options].forEach(option => { option.selected = value.includes(option.value); });
+  else el.value = value;
+}
+function clearQuestionDraft(request, scope = questionScope()) {
+  const prefix = JSON.stringify([scope, request]).slice(0, -1) + ',';
+  for (const key of qnDrafts.keys()) if (key.startsWith(prefix)) qnDrafts.delete(key);
+}
+function syncQuestionDrafts(requests) {
+  const scope = questionScope(), active = new Set(requests);
+  for (const id of questionDraftRequests.get(scope) || []) if (!active.has(id)) clearQuestionDraft(id, scope);
+  questionDraftRequests.set(scope, active);
+}
+const devinQuestionId = qs => JSON.stringify(['devin', qs.textKey || '', qs.list[0]?.text || '', qs.pager?.cur ?? 0]);
 const questionCard = (head, body, open) => `<details class="qnCard" ${open ? 'open' : ''}><summary class="qnHead"><span class="qnHeading">${head}</span><svg class="arrowIcon qnFold" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><div class="qnBody">${body}</div></details>`;
 function questionBusy() {
   const bar = $('qnBar');
@@ -974,7 +991,8 @@ function sendQuestion(message) {
   if (qnPending) return;
   if (!ws || ws.readyState !== 1 || !authed || !windowReady) { status('未连接', false); return; }
   const requestId = [...crypto.getRandomValues(new Uint32Array(4))].join('-');
-  qnPending = { requestId, sel: viewSel, message };
+  qnPending = { requestId, sel: viewSel, scope: questionScope(), message };
+  questionSubmissions.set(requestId, qnPending);
   questionBusy();
   status('正在提交回答…');
   send({ ...message, requestId });
@@ -996,10 +1014,13 @@ function submitQuestionCompose() {
   sendQuestion({ t: 'codexRequest', id: request.id, n: request.buttons.length - 1, fields: [{ n: 0, value: text.value }] });
 }
 function finishQuestion(m) {
-  if (!qnPending || m.requestId !== qnPending.requestId) return;
-  const pending = qnPending;
-  qnPending = null;
-  if (pending.sel !== viewSel) return;
+  const pending = questionSubmissions.get(m.requestId);
+  if (!pending) return;
+  questionSubmissions.delete(m.requestId);
+  if (qnPending === pending) qnPending = null;
+  if (m.ok && pending.message.id) clearQuestionDraft(pending.message.id, pending.scope);
+  if (m.ok && pending.message.qkey) qnDrafts.delete(pending.message.qkey);
+  if (pending.sel !== viewSel || pending.scope !== questionScope()) return;
   const request = qnState?.requests?.find(r => r.id === pending.message.id);
   if (pending.message.id && !request) {
     qnSig = '';
@@ -1013,7 +1034,6 @@ function finishQuestion(m) {
     if (pending.message.id.startsWith('async:') && (pending.message.advance || pending.message.n === request.buttons.length - 1)) {
       qnState = { ...qnState, requests: qnState.requests.filter(r => r.id !== pending.message.id) };
     }
-    for (const key of qnDrafts.keys()) if (key.startsWith(pending.message.id + '|')) qnDrafts.delete(key);
     if (questionCompose?.id === pending.message.id) {
       if (mode === 'chat') text.value = '';
       setQuestionCompose(null);
@@ -1026,18 +1046,23 @@ function finishQuestion(m) {
 }
 function renderQuestions(qs) {
   const bar = $('qnBar');
-  if (qs?.codex && currentApp !== 'codex') qs = null;
+  if (qs?.codex && currentApp !== (qs.src || 'codex')) qs = null;
   const keys = value => value?.codex ? value.requests.map(r => r.id)
     : (value?.list || []).map(q => JSON.stringify([!!value.devin, value.pager?.cur, q.text]));
   const known = new Set(keys(qnState));
   const open = qnView !== viewSel || keys(qs).some(key => !known.has(key)) || bar.querySelector('.qnCard')?.open !== false;
-  if (qnView !== viewSel) { qnView = viewSel; qnSig = ''; qnPending = null; qnDrafts.clear(); }
+  if (qnView !== viewSel) { qnView = viewSel; qnSig = ''; qnPending = [...questionSubmissions.values()].find(pending => pending.scope === questionScope()) || null; }
   if (qnPending && (qnPending.message.id ? !qs?.requests?.some(r => r.id === qnPending.message.id) : !qs?.list?.length)) {
     qnPending = null;
     finishPending(['正在提交回答…']);
     questionBusy();
   }
   qnState = qs;
+  if (!chatStale && !navigationPending) syncQuestionDrafts([
+    ...(qs?.requests || []).map(request => request.id),
+    ...(qs?.devin && qs.list?.length ? [devinQuestionId(qs)] : []),
+    ...(lastChat?.items || []).filter(item => item.k === 'opencodeQuestion').map(item => item.requestID),
+  ]);
   const answers = qs?.codex ? qs.requests.filter(r => r.id.startsWith('async:')) : [];
   setQuestionCompose(answers.find(r => r.id === questionCompose?.id && questionCompose.sel === viewSel)?.id || null);
   bar.classList.toggle('codex', !!qs?.codex);
@@ -1049,27 +1074,27 @@ function renderQuestions(qs) {
     const focusKey = focused?.matches('[data-field]') ? questionFieldKey(focused) : null;
     const selection = focusKey ? [focused.selectionStart, focused.selectionEnd] : null;
     const expanded = new Set([...bar.querySelectorAll('.qnDetails[open]')].map(el => el.dataset.question));
-    bar.innerHTML = questionCard(`Codex 等待你${qs.requests.some(r => r.id.startsWith('approval:')) ? '审批' : '回答'}<span class="qnCount">${qs.requests.length} 个请求</span>`, qs.requests.map(r => {
+    bar.innerHTML = questionCard(`${qs.src === 'devin' ? 'Devin' : 'Codex'} 等待你${qs.requests.some(r => r.id.startsWith('approval:')) ? '审批' : '回答'}<span class="qnCount">${qs.requests.length} 个请求</span>`, qs.requests.map(r => {
       const lines = r.text.trim().split('\n'), heading = lines.shift();
       const remaining = lines.join('\n').trim();
       return `<section class="qnRequest"><div class="qnQ">${esc(heading)}</div>`
       + (remaining ? `<details class="qnDetails" data-question="${esc(r.id)}" ${expanded.has(r.id) ? 'open' : ''}><summary>展开问题详情</summary>${esc(remaining)}</details>` : '')
       + (r.id.startsWith('async:') ? `<div class="qnOpts">${r.buttons.slice(0, -2).map((b, n) => `<button class="qnOpt ${b.selected ? 'on' : ''}" data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div>` : '')
-      + r.fields.map((f, n) => `<label class="qnFree">${esc(f.label)}${f.options ? `<select data-request="${esc(r.id)}" data-field="${n}">${f.options.map(o => `<option value="${esc(o.value)}" ${o.value === f.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>` : `<input data-request="${esc(r.id)}" data-field="${n}" type="${f.type === 'password' ? 'password' : 'text'}" value="${esc(f.value)}"${r.id.startsWith('async:') ? ' enterkeyhint="send"' : ''}>`}</label>`).join('')
+      + r.fields.map((f, n) => `<label class="qnFree">${esc(f.label)}${f.options ? `<select data-request="${esc(r.id)}" data-field="${n}"${f.multiple ? ' multiple' : ''}>${f.options.map(o => `<option value="${esc(o.value)}" ${(f.multiple ? f.value.includes(o.value) : o.value === f.value) ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>` : `<input data-request="${esc(r.id)}" data-field="${n}" type="${f.type === 'password' ? 'password' : 'text'}" value="${esc(f.value)}"${r.id.startsWith('async:') ? ' enterkeyhint="send"' : ''}>`}</label>`).join('')
       + `<div class="qnAct">${r.buttons.map((b, n) => r.id.startsWith('async:') && n < r.buttons.length - 2 ? '' : `<button data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div></section>`; }).join(''), open);
     bar.classList.toggle('show', qs.requests.length > 0);
     bar.querySelectorAll('[data-field]').forEach(el => {
       const key = questionFieldKey(el);
-      if (qnDrafts.has(key)) el.value = qnDrafts.get(key);
+      if (qnDrafts.has(key)) setQuestionFieldValue(el, qnDrafts.get(key));
       el.oninput = () => {
-        qnDrafts.set(key, el.value);
+        qnDrafts.set(key, questionFieldValue(el));
         const r = qnState.requests.find(r => r.id === el.dataset.request);
         if (r.id.startsWith('async:') && !r.buttons.every(b => b.disabled) && !qnPending) {
           const submit = [...bar.querySelectorAll('[data-action]')].find(b => b.dataset.request === r.id && Number(b.dataset.action) === r.buttons.length - 1);
           submit.disabled = !el.value.trim();
         }
       };
-      el.onchange = () => { if (!el.dataset.request.startsWith('async:')) send({ t: 'codexRequest', id: el.dataset.request, field: Number(el.dataset.field), value: el.value }); };
+      el.onchange = () => { if (!el.dataset.request.startsWith('async:')) send({ t: 'codexRequest', id: el.dataset.request, field: Number(el.dataset.field), value: questionFieldValue(el) }); };
       if (qnDrafts.has(key)) el.oninput();
       if (key === focusKey && !qnPending) {
         el.focus();
@@ -1086,7 +1111,7 @@ function renderQuestions(qs) {
     const focused = bar.contains(document.activeElement) ? document.activeElement : null;
     const focusKey = focused?.matches('[data-qtext]') ? focused.dataset.qkey : null;
     const selection = focusKey ? [focused.selectionStart, focused.selectionEnd] : null;
-    const draftKey = ['devin', viewSel, qs.textKey || '', q.text, pg?.cur ?? 0].join('|');
+    const draftKey = questionDraftKey(devinQuestionId(qs), 'text');
     bar.innerHTML = questionCard(`Devin 在问你<span class="qnCount">${pg ? `${pg.cur}/${pg.total}` : '1 个问题'}</span>`,
       (pg && pg.total > 1 ? `<div class="qnPg"><button data-qpart="prev" ${qs.canPrev ? '' : 'disabled'}>‹</button><button data-qpart="next" ${qs.canNext ? '' : 'disabled'}>›</button></div>` : '')
       + `<div class="qnQ">${esc(q.text)}</div><div class="qnOpts">`

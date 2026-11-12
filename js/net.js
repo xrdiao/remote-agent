@@ -1308,14 +1308,7 @@ async function connect(resumeLink = null) {
     }
     else if (m.t === 'sendFailed') failPendingSend(m.requestId, m.message || '发送失败，请重试', !m.cancelled);
     else if (m.t === 'questionDone') finishQuestion(m);
-    else if (m.t === 'opencodeQuestionDone') {
-      if (m.sel !== viewSel) return;
-      const form = [...list.querySelectorAll('[data-opencode-question]')].find(node => node.dataset.opencodeQuestion === m.id);
-      if (!m.ok) {
-        form?.querySelectorAll('input, button').forEach(node => { node.disabled = false; });
-        status(m.error, false);
-      }
-    }
+    else if (m.t === 'opencodeQuestionDone') finishOpenCodeQuestion(m);
     else if (m.t === 'latency') receiveLatency(m);
     else if (m.t === 'visual') renderVisualState(m);
     else if (m.t === 'visualWindows') { receiveVisualWindows(m); if (mode === 'screen') connContentReady(); }
