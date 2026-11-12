@@ -1,7 +1,7 @@
 /* Edits stay local until Save; the desktop original is replaced only after upload. */
 async function openImageEditor(image) {
   if (document.getElementById('imageEditor')) return;
-  const scope = imageUploadScope();
+  const scope = imageUploadScope(), app = currentApp;
   const documents = (image.files || [image]).map(file => ({ ...file, ops: [], cursor: 0, crop: null, ratio: 0, zoom: 1, x: 0, y: 0, uploaded: false }));
   const dialog = document.createElement('dialog');
   dialog.id = 'imageEditor';
@@ -261,6 +261,7 @@ async function openImageEditor(image) {
     const original = action === 'original';
     if (original && !image.files) { dialog.close(); return; }
     if (scope !== imageUploadScope() || image.sel !== viewSel) return status('会话已切换，请回到原会话编辑图片', false);
+    if (image.id && !image.onSave && !image.files && !current().cursor && fullCrop(current().crop)) { dialog.close(); return; }
     const buttonLabel = button.textContent;
     saving = true; button.disabled = true;
     try {
@@ -274,7 +275,7 @@ async function openImageEditor(image) {
         if (!original && (current().cursor || !file)) {
           merged.width = base.width; merged.height = base.height; const ctx = merged.getContext('2d'); ctx.drawImage(base, 0, 0); ctx.drawImage(marks, 0, 0);
           const blob = await new Promise(resolve => merged.toBlob(resolve, 'image/png'));
-          file = await shrinkImage(new File([blob], current().name.replace(/\.[^.]+$/, '') + '.png', { type: 'image/png' }), merged);
+          file = await shrinkImage(new File([blob], current().name.replace(/\.[^.]+$/, '') + '.png', { type: 'image/png' }), merged, app);
         }
         if (cancelled || scope !== imageUploadScope() || image.sel !== viewSel) break;
         const ok = image.files ? await attachImageFile(file, { sel: image.sel, prepared: !original && !!current().cursor }) : image.onSave ? await image.onSave(file) : await attachImageFile(file, { replace: image.id, sel: image.sel, prepared: true });

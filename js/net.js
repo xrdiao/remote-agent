@@ -1407,11 +1407,13 @@ async function connect(resumeLink = null) {
         ovNavigationChanged(navigation, 'error', m.message || '打开失败，请重试');
         ovRender();
         status(m.message, false);
+        finishWinBinding(new Error(m.message || '打开失败，请重试'));
         return;
       }
       selectionReady = m.ready === true;
       connReadFailed(m.message || '当前会话读取失败，请重试或切换 Agent');
       ovNavigationChanged(navigation, 'error', m.message || '当前会话读取失败，请重试');
+      finishWinBinding(new Error(m.message || '当前会话读取失败，请重试'));
     }
     else if (m.t === 'sessionLibrary') receiveSessionLibrary(m);
     else if (m.t === 'sessionChanged') receiveSessionChange(m);
