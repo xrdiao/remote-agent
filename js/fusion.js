@@ -61,9 +61,13 @@ function fusionWorkbenchRecord(run) {
 function fusionWorkbenchRecords() {
   return ovList.flatMap(entry => (fusionWorkspaces.get(entry.id)?.runs || []).map(fusionWorkbenchRecord));
 }
+function fusionOpenTarget(run) {
+  return run.main.bindingId ? run.main.target
+    : { computer: run.computer, win: 'fusion', windowId: 'fusion', threadId: run.id };
+}
 function fusionWorkbenchTile(entry, run) {
   const online = ovComputerStatus(entry) === 'online', state = fusionOverviewState(run);
-  const target = { computer: entry.id, win: 'fusion', windowId: 'fusion', threadId: run.id };
+  const target = fusionOpenTarget(run);
   const label = ({ run: '运行中', wait: '待处理', done: '已完成', err: '执行阻塞', idle: '空闲' })[state];
   const progress = run.tasks.total ? run.tasks : run.works, context = `${entry.name} · ${run.project.name}`;
   return `<div class="ov-tile ov-session ov-compact ov-st-${state} fusion-workbench${!online ? ' ov-off' : ''}" style="--p:${progress.total ? progress.done / progress.total * 100 : 0}%" role="button" tabindex="0" data-fusion-open="${esc(run.id)}" data-computer="${esc(entry.id)}" data-ov-menu="${esc(fusionWorkbenchRecord(run).key)}">`
@@ -185,7 +189,11 @@ function currentFusionRun() {
 }
 function openFusionController(computer, id) {
   const run = fusionWorkspaces.get(computer)?.runs.find(row => row.id === id) || fusionRunFor(computer, id) || currentFusionRun();
-  if (run.main.bindingId) { closeSheet(); return ovOpen({ computer, win: 'fusion', windowId: 'fusion', threadId: id }); }
+  if (run.main.bindingId) {
+    closeSheet();
+    if (ovS.level !== 'favorites') { ovS.level = 'fusion'; ovS.proj = null; ovSaveHistory(); }
+    return ovOpen(fusionOpenTarget(run));
+  }
   return readFusionView(computer, id, 'config');
 }
 function focusFusionInput(computer, id) {

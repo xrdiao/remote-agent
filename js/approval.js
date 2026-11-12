@@ -24,12 +24,7 @@ function tick() {
   if (!seconds) end('本次配对已到时，已批准的入口仍可连接。');
 }
 function drawQr(modules) {
-  const canvas = $('qr'), size = modules.length + 8, scale = 4;
-  canvas.width = canvas.height = size * scale;
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = '#000';
-  modules.forEach((row, y) => row.forEach((dark, x) => { if (dark) ctx.fillRect((x + 4) * scale, (y + 4) * scale, scale, scale); }));
+  drawQrModules($('qr'), modules);
 }
 async function refresh() {
   clearTimeout(timer);

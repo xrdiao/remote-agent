@@ -22,7 +22,7 @@ let pendingEchoes = [];
 function echoTextMatches(it, t) {
   const s = (it.t || '').trim(), x = t.trim();
   return s === x || s.startsWith(x + '\n\n附加文件（')
-    || s.replace(/(?:^|\n)\[(?:图片|附件) \d+\](?:\n\[(?:图片|附件) \d+\])*$/, '').trim() === x;
+    || RemoteAgentRules.withoutAttachmentLabels(s).trim() === x;
 }
 function pushEcho(requestId, text, kind) {
   pendingEchoes.push({ requestId, text, kind, at: Date.now(), sel: viewSel });
@@ -650,6 +650,13 @@ document.addEventListener('click', e => {
   if (mode === 'chat' && e.target.closest('[data-question-compose]')) return;
   endComposerEditing();
 });
+function submitComposerReceipt(v, when) {
+  const receipt = sendReceipt(v);
+  if (!receipt) return;
+  if (mode === 'chat') { status('正在发送…'); pushEcho(receipt.requestId, v, when === 'queue' || (!when && chatBusy) ? 'queue' : 'chat'); }
+  if (send({ t: 'send', text: v, submit: true, ...receipt, ...(when ? { when } : {}), ...mentionsFor(v) }) === false) failPendingSend(receipt.requestId);
+  if (mode === 'chat') jumpToLatest();
+}
 function sendComposer() {
   if ($('send').disabled) return;
   if (mode === 'terminal') return sendTerminalInput();
@@ -662,12 +669,7 @@ function sendComposer() {
   saveDraft();
   const follow = codexFollow();
   const when = devinBusySplit() || cursorBusyQueue() || follow === 'queue' ? 'queue' : follow === 'steer' ? 'now' : '';
-  const receipt = sendReceipt(v);
-  if (!receipt) return;
-  if (mode === 'chat') { status('正在发送…'); pushEcho(receipt.requestId, v, when === 'queue' || (!when && chatBusy) ? 'queue' : 'chat'); }
-  const sent = send({ t: 'send', text: v, submit: true, ...receipt, ...(when ? { when } : {}), ...mentionsFor(v) });
-  if (sent === false) failPendingSend(receipt.requestId);
-  if (mode === 'chat') jumpToLatest();
+  submitComposerReceipt(v, when);
 }
 async function sendComposerNow() {
   if ($('sendNow').disabled) return;
@@ -679,12 +681,7 @@ async function sendComposerNow() {
   const follow = codexFollow();
   const steer = !follow || follow === 'queue';
   if (!await ask(steer ? '立即追加到当前任务？' : '改为排队，等当前任务结束后再发送？', steer ? '立即追加' : '排队', true)) return;
-  status('正在发送…');
-  const receipt = sendReceipt(v);
-  if (!receipt) return;
-  pushEcho(receipt.requestId, v, steer ? 'chat' : 'queue');
-  if (send({ t: 'send', text: v, submit: true, ...receipt, when: steer ? 'now' : 'queue', ...mentionsFor(v) }) === false) failPendingSend(receipt.requestId);
-  jumpToLatest();
+  submitComposerReceipt(v, steer ? 'now' : 'queue');
 }
 $('send').onclick = sendComposer;
 $('sendNow').onclick = sendComposerNow;

@@ -1,13 +1,14 @@
 // Caches the app shell so the installed app opens instantly; live data (url.json, relay) always goes to the network.
+importScripts('js/shared-rules.js?v=449');
 const CACHE_PREFIX = 'remote-agent:' + self.registration.scope + ':';
-const CACHE = CACHE_PREFIX + 'v448'; // keep in sync with APP_VERSION in js/core.js
+const CACHE = CACHE_PREFIX + 'v449'; // keep in sync with APP_VERSION in js/core.js
 const NOTICES = CACHE_PREFIX + 'notices';
-const SHELL = ['./', 'index.html',   'app.css?v=448', 'i18n.js?v=433', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'logo.png',
-  'js/core.js?v=448', 'js/fusion.js?v=435', 'js/gate.js?v=430', 'js/auth.js?v=207', 'js/net.js?v=446',   'js/sheets.js?v=444', 'js/notify.js?v=436', 'js/mode.js?v=386', 'js/chat.js?v=445',
-  'js/history.js?v=445', 'js/files.js?v=431', 'js/screen.js?v=382',   'js/terminal.js?v=392', 'js/composer.js?v=431', 'js/voice.js?v=446', 'js/local-voice.js?v=391', 'js/voice-worklet.js?v=133',
-  'js/transfer.js?v=388', 'js/scanner.js',
+const SHELL = ['js/shared-rules.js?v=449', 'js/ui-helpers.js?v=449', './', 'index.html',   'app.css?v=448', 'i18n.js?v=433', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'logo.png',
+  'js/core.js?v=449', 'js/fusion.js?v=449', 'js/gate.js?v=430', 'js/auth.js?v=207', 'js/net.js?v=446',   'js/sheets.js?v=449', 'js/notify.js?v=436', 'js/mode.js?v=386', 'js/chat.js?v=445',
+  'js/history.js?v=445', 'js/files.js?v=431', 'js/screen.js?v=382',   'js/terminal.js?v=392', 'js/composer.js?v=449', 'js/voice.js?v=449', 'js/local-voice.js?v=391', 'js/voice-worklet.js?v=133',
+  'js/transfer.js?v=449', 'js/scanner.js',
   'js/latency.js?v=367', 'js/image-editor.js?v=447', 'js/overview.js?v=440',
-  'markdown-it/markdown-it-15.0.3.min.js', 'js/markdown.js?v=295',
+  'markdown-it/markdown-it-15.0.3.min.js', 'js/markdown.js?v=449',
   'vendor/xterm.js?v=6.0.0', 'vendor/xterm.css?v=6.0.0',
   'katex/katex.min.js', 'katex/katex.min.css',
   'katex/fonts/KaTeX_AMS-Regular.woff2', 'katex/fonts/KaTeX_Caligraphic-Bold.woff2',
@@ -67,7 +68,7 @@ function showPush(text) {
 async function deliverPush(text) {
   let d = {};
   try { d = JSON.parse(text); } catch {}
-  const tag = [d.computer, d.win, d.windowId, d.threadId].filter(Boolean).join('|') || 'remote-agent';
+  const tag = RemoteAgentRules.notificationKey(d, true) || 'remote-agent';
   const seq = Number(d.seq) || 0;
   const cache = await caches.open(NOTICES);
   const key = new URL('__push_seq__?tag=' + encodeURIComponent(tag), self.registration.scope).href;
@@ -79,7 +80,7 @@ async function deliverPush(text) {
     renotify: true,
     icon: 'icon-192.png',
     badge: 'icon-192.png',
-    data: { computer: d.computer || '', win: d.win || '', windowId: d.windowId || '', threadId: d.threadId || '', seq, createdAt: Number(d.createdAt) || 0 },
+    data: { ...RemoteAgentRules.notificationTarget(d), seq, createdAt: Number(d.createdAt) || 0 },
   });
   if (seq) await cache.put(key, new Response(String(seq)));
 }
@@ -89,7 +90,7 @@ self.addEventListener('push', e => e.waitUntil(showPush(e.data ? e.data.text() :
 self.addEventListener('notificationclick', e => {
   e.notification.close();
   const data = e.notification.data || {};
-  const payload = JSON.stringify({ computer: data.computer || '', win: data.win || '', windowId: data.windowId || '', threadId: data.threadId || '' });
+  const payload = JSON.stringify(RemoteAgentRules.notificationTarget(data));
   e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
     const entry = new URL(self.registration.scope);
     const client = list.find(client => {
