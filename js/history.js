@@ -667,9 +667,10 @@ function pruneEchoes(chat) {
 }
 function pendingEchoEls() {
   return pendingEchoes.filter(p => p.kind === 'chat' && p.sel === viewSel).map(p => {
-    const el = document.createElement('div');
-    el.className = 'msg human pending';
-    el.innerHTML = `<div class="humanContent"><div class="bubble">${esc(p.text)}</div><div class="messageMeta">${I18N.tr(p.syncing ? '正在同步…' : p.confirmed ? '已发送' : p.unknown ? '发送结果待确认' : '发送中…')}</div></div>`;
+    const el = renderItem({ i: 'pending:' + p.requestId, k: 'human', t: p.text, images: p.images });
+    el.classList.add('pending');
+    el.querySelector('.bubble').hidden = !p.text.trim() && !!p.images?.length;
+    el.querySelector('.messageMeta').textContent = I18N.tr(p.syncing ? '正在同步…' : p.confirmed ? '已发送' : p.unknown ? '发送结果待确认' : '发送中…');
     return el;
   });
 }

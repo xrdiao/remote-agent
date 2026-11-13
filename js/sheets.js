@@ -1121,8 +1121,8 @@ function renderPerfChip(info) {
       perfSample.baseline = perfSample.counter;
     }
   }
-  const interval = info.unit === 'tokens' && info.rate == null;
-  const rate = info.rate ?? (interval ? perfSample.rate : null);
+  const interval = info.unit === 'tokens' && (info.source === 'codex' || info.rate == null);
+  const rate = interval ? perfSample.rate : info.rate;
   const label = info.unit === 'characters' ? '实时字符速度' : interval ? '3 秒估算速度'
     : info.source === 'opencode' ? '本次平均' : '轮次平均';
   const speed = rate == null ? info.busy ? '统计中' : '—' : info.unit === 'characters' ? Math.round(rate) + ' 字符/秒' : fmtTokPerSec(rate);
