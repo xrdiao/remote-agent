@@ -191,6 +191,44 @@ test('OpenCode live performance counts streamed Unicode text and reasoning once,
   assert.equal(state.chat('ses_1').performance.runId, 'msg_live');
 });
 
+test('OpenCode waiting and live statistics belong to the current user and advance without streamed output', t => {
+  let now = 10000;
+  t.mock.method(Date, 'now', () => now);
+  const state = new OpenCodeState();
+  state.defaultModel = 'local/new';
+  state.models.set('local/new', { name: 'New model' }); state.models.set('local/old', { name: 'Old model' });
+  state.sessions.set('ses_1', native('ses_1'));
+  const update = info => state.apply({ type: 'message.updated', properties: { info: { sessionID: 'ses_1', ...info } } });
+  update({ id: 'old', role: 'assistant', providerID: 'local', modelID: 'old', time: { created: 1000, completed: 2000 },
+    tokens: { input: 1000, output: 100, reasoning: 0, cache: { read: 200, write: 0 } } });
+  update({ id: 'user', role: 'user', time: { created: 10000 } });
+  state.statuses.set('ses_1', { type: 'busy' });
+  now = 14000;
+  let chat = state.chat('ses_1');
+  assert.equal(chat.performance.runId, 'user'); assert.equal(chat.performance.busy, true);
+  assert.equal(chat.performance.model, 'New model'); assert.equal(chat.performance.tokens, null);
+  assert.equal(chat.performance.rate, null); assert.equal(chat.performance.durationMs, 4000);
+  assert.deepEqual(chat.generation, { start: 10000, end: null });
+  const live = { id: 'current', role: 'assistant', providerID: 'local', modelID: 'new', time: { created: 11000 },
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } };
+  update(live); now = 15000;
+  chat = state.chat('ses_1');
+  assert.equal(chat.performance.runId, 'current'); assert.equal(chat.performance.tokens, null);
+  assert.equal(chat.performance.durationMs, 4000); assert.equal(chat.performance.rate, null);
+  update({ ...live, tokens: { input: 20, output: 3, reasoning: 2, cache: { read: 60, write: 20 } } });
+  chat = state.chat('ses_1');
+  assert.deepEqual(chat.performance.tokens, { input: 20, output: 3, reasoning: 2, cacheRead: 60, cacheWrite: 20 });
+  assert.equal(chat.performance.cacheRate, 60); assert.equal(chat.performance.unit, 'characters');
+  assert.equal(chat.performance.model, 'New model'); assert.equal(chat.context.used, 1300);
+  assert.equal(state.chat('ses_2').performance, null);
+  update({ ...live, time: { created: 11000, completed: 16000 },
+    tokens: { input: 20, output: 10, reasoning: 5, cache: { read: 60, write: 20 } } });
+  state.statuses.set('ses_1', { type: 'idle' });
+  chat = state.chat('ses_1');
+  assert.equal(chat.performance.unit, 'tokens'); assert.equal(chat.performance.rate, 3);
+  assert.equal(chat.performance.durationMs, 5000); assert.deepEqual(chat.generation, { start: 10000, end: 16000 });
+});
+
 test('OpenCode output samples remain owned by their message and session, including removal and restarted observation', t => {
   let now = 1000;
   t.mock.method(Date, 'now', () => now);

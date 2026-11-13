@@ -1155,10 +1155,10 @@ test('native window snapshots await Cursor text before publishing and keep the o
       activeChatTab: () => '', agentStates: () => [], devinSurface: () => null, agentList: () => [], nativeSessionInfo: async () => [], codexChatRows: () => [] };
     const context = { cdpRead, awaitCdpRead, AbortController, PAGE_SRC: 'helper', helpersCall: call => call,
       refreshSessionCatalog: async () => {}, publishCatalog() {}, withOperation: (_operation, action) => action() };
-    const methods = vm.runInNewContext('({' + part(read('server/native-windows.mjs'), '  async read(fresh = false)', '  interval()') + '})', context);
+    const methods = vm.runInNewContext('({' + part(read('server/native-windows.mjs'), '  async read(fresh = false)', '  interval()').replace('\n  readCatalog()', ',\n  readCatalog()') + '})', context);
     const source = { revision: 1, win: { app }, runStates: new Map(), listeners: new Set(), connect: async () => {}, retryCapacity() {},
-      cdp: { evaluate: expression => expression === 'sessionPickerRows(true)' ? [] : vm.runInNewContext(expression, { helper }) } };
-    source.read = methods.read.bind(source);
+      cdp: { evaluate: expression => expression === 'sessionPickerRows(true)' ? [] : vm.runInNewContext(expression, { helper, ...helper }) } };
+    Object.assign(source, methods);
     const snapshot = await source.read();
     assert.equal(snapshot.chat, chat);
     assert.equal(source.snapshot.chat.items[0].t, '已完成读取');
@@ -1173,11 +1173,11 @@ function readingWindow() {
   const calls = [];
   const context = { cdpRead, awaitCdpRead, AbortController, PAGE_SRC: '{}', helpersCall: call => call,
     refreshSessionCatalog: async () => {}, publishCatalog() {}, withOperation: (_operation, action) => action() };
-  const methods = vm.runInNewContext('({' + part(read('server/native-windows.mjs'), '  async read(fresh = false)', '  interval()') + '})', context);
+  const methods = vm.runInNewContext('({' + part(read('server/native-windows.mjs'), '  async read(fresh = false)', '  interval()').replace('\n  readCatalog()', ',\n  readCatalog()') + '})', context);
   const source = { revision: 1, readRevision: 0, snapshot: null, catalogKey: null,
     win: { app: 'codex' }, runStates: new Map(), listeners: new Set(), connect: async () => {}, retryCapacity() {}, interval: () => 1800,
-    cdp: { evaluate: expression => expression === 'sessionPickerRows(true)' ? Promise.resolve([]) : new Promise(resolve => calls.push(resolve)) } };
-  source.read = methods.read.bind(source);
+    cdp: { evaluate: expression => !expression.startsWith('(async') ? Promise.resolve([]) : new Promise(resolve => calls.push(resolve)) } };
+  Object.assign(source, methods);
   return { source, calls, release: (n, name) => calls[n]({ chat: { thread: 'A', items: [{ i: name }] }, states: [], catalog: [] }) };
 }
 
@@ -1209,7 +1209,82 @@ for (const app of ['cursor', 'devin']) test(`${app} latest reads share the exist
   h.source.revision = 2; const fresh = h.source.read(true);
   h.release(0, 'old'); await first; await new Promise(resolve => setImmediate(resolve));
   assert.equal(h.calls.length, 2); h.release(1, 'current');
-  assert.equal((await fresh).chat.items[0].i, 'current'); assert.equal(h.source.catalog.length, 0);
+  assert.equal((await fresh).chat.items[0].i, 'current'); await h.source.catalogReading; assert.equal(h.source.catalog.length, 0);
+});
+
+test('slow native catalogs do not block body snapshots and coalesce concurrent refreshes', async () => {
+  const h = readingWindow(), catalog = [], evaluate = h.source.cdp.evaluate;
+  h.source.cdp.evaluate = expression => expression.startsWith('(async') ? evaluate(expression)
+    : new Promise(resolve => catalog.push(resolve));
+  const first = h.source.read();
+  await new Promise(resolve => setImmediate(resolve)); h.release(0, 'first');
+  assert.equal((await first).chat.items[0].i, 'first');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(catalog.length, 1);
+  h.source.revision++;
+  const second = h.source.read(true);
+  await new Promise(resolve => setImmediate(resolve)); h.release(1, 'second');
+  assert.equal((await second).chat.items[0].i, 'second');
+  assert.equal(catalog.length, 1);
+  const pending = h.source.catalogReading;
+  catalog[0]([{ id: 'A', title: 'old' }]); await pending;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(catalog.length, 2);
+  catalog[1]([{ id: 'B', title: 'latest' }]); await h.source.catalogReading;
+  assert.equal(h.source.catalog[0].id, 'B');
+});
+
+test('repeated opening after long native conversations retains the latest thread identity', async () => {
+  const h = readingWindow();
+  for (let index = 0; index < 20; index++) {
+    const thread = index % 2 ? 'B' : 'A', count = index % 3 ? 1 : 80;
+    h.source.revision++;
+    const work = h.source.read(true);
+    await new Promise(resolve => setImmediate(resolve));
+    h.calls[index]({ chat: { thread, items: Array.from({ length: count }, (_, i) => ({ i: String(i), t: thread.repeat(2000) })) }, states: [] });
+    const snapshot = await work;
+    assert.equal(snapshot.chat.thread, thread); assert.equal(snapshot.chat.items.length, count);
+    assert.equal(h.source.reading, null);
+    await h.source.catalogReading;
+  }
+});
+
+function firstBodyFixture({ target = 'A', actual = 'A' } = {}) {
+  let finishContext, resolved = 0;
+  const events = [], context = new Promise(resolve => { finishContext = resolve; });
+  const methods = vm.runInNewContext('({' + part(read('server/agent/chat.mjs'), '  async pollChatRead(immediate, state)', '  async sendPanelRect()') + '})', {
+    cdpRead, awaitCdpRead, nativeWindow: () => null, PAGE_SRC: '{}', uploads: new Map(), readLibrary: () => ({}),
+    rememberSessionMessage() {}, codexContext: () => context,
+  });
+  const cdp = { evaluate: async () => ({ thread: actual, model: 'Codex', items: [{ i: 'last', k: 'assistant', t: '最新正文' }], draft: 'native draft' }) };
+  const source = { app: 'codex', cdp, threadId: target, sel: 1, selectionKey: () => 'codex|window|' + source.threadId,
+    liveRead: (readCdp, sel) => source.cdp === readCdp && source.sel === sel,
+    acceptsChat: chat => chat?.thread === source.threadId, syncSession() {}, emit: event => events.push(event),
+    mergeCodexItems() {}, fillThinking() {}, retainThinking() {}, fillDevinCommands() {}, mergeDevinHistory() {},
+    withChatUiDetails: action => action(), captureThoughts: async () => {}, rememberThinking() {}, syncAttachments: async () => {} };
+  const state = { cdp, sel: 1, requested: true, sent: false, resolve: () => resolved++ };
+  return { source, state, events, finishContext, resolved: () => resolved, run: () => methods.pollChatRead.call(source, false, state) };
+}
+
+test('Codex first body resolves before context enrichment and never publishes a stale target afterwards', async () => {
+  const h = firstBodyFixture(), work = h.run();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.resolved(), 1); assert.equal(h.events.length, 1);
+  assert.equal(h.events[0].chat.items[0].t, '最新正文');
+  assert.equal(h.events[0].chat.draft, undefined);
+  h.source.threadId = 'B'; h.source.sel++;
+  h.finishContext({ pct: 10 }); await work;
+  assert.equal(h.events.length, 1);
+});
+
+test('Codex first body preserves context enrichment and rejects a body from another conversation', async () => {
+  const h = firstBodyFixture(), work = h.run();
+  await new Promise(resolve => setImmediate(resolve));
+  h.finishContext({ pct: 25 }); await work;
+  assert.equal(h.events.filter(event => event.t === 'chat').length, 2);
+  assert.equal(h.events.at(-1).chat.context.pct, 25);
+  const other = firstBodyFixture({ actual: 'B' }); await other.run();
+  assert.equal(other.events.length, 0); assert.equal(other.resolved(), 0);
 });
 
 for (const kind of ['thread', 'computer', 'mode']) {
@@ -2651,7 +2726,7 @@ function usageMeters() {
     return nodes.get(id);
   };
   let clock = 0;
-  const context = createPageContext({ document, Event, $: node, currentComputer: () => computer, lastChat: null, performance: { now: () => clock },
+  const context = createPageContext({ document, Event, $: node, currentComputer: () => computer, lastChat: null, performance: { now: () => clock }, Date: class extends Date { static now() { return 100000 + clock; } },
     currentApp: 'codex', viewSel: 'codex|window-A|thread-A', esc: String, ready: true, status() {} });
   context.ovComposerReady = key => context.ready && key === 'card';
   const source = read('app/js/sheets.js');
@@ -2747,28 +2822,50 @@ test('Devin metrics and elapsed time share the native turn identity independentl
   assert.equal(next.counter, null); assert.equal(next.rate, null); assert.equal(next.runId, 'next-turn');
 });
 
-test('performance interval rates ignore repeated snapshots and isolate counters by computer, conversation, run and model', () => {
+test('token estimates settle fixed three-second windows, ignore duplicate snapshots and reset on scope changes', () => {
   const h = usageMeters(), info = { source: 'codex', runId: 'run-1', usageId: 'run-1', model: 'model-1', unit: 'tokens',
-    busy: true, tokens: { input: 90000, output: 100, reasoning: 40, cacheRead: 80000 }, counter: 1000, rate: null };
+    busy: true, tokens: { input: 90000, output: 100, reasoning: 40, cacheRead: 80000 }, counter: 1000, rate: null, startedAt: 100000 };
   const paint = perf => { h.context.lastChat = { performance: perf }; h.context.renderContext({ pct: 40, basis: 'used' }); };
   paint(info);
   assert.equal(h.node('perfChip').textContent, '统计中');
-  h.at(1000); paint(info); h.at(2000); paint({ ...info, counter: 1100 });
-  assert.equal(h.node('perfChip').textContent, '50 tok/s'); assert.equal(h.node('perfChip').title, '区间平均');
-  assert.match(h.node('perfPanel').innerHTML, /统计区间/); assert.match(h.node('perfPanel').innerHTML, /输出 token/);
-  h.at(3000); paint({ ...info, counter: 1100 });
-  assert.equal(h.node('perfChip').textContent, '50 tok/s');
-  h.at(4000); paint({ ...info, counter: 1200 }); assert.equal(h.node('perfChip').textContent, '50 tok/s');
-  h.at(5000); paint({ ...info, counter: 10 }); assert.equal(h.node('perfChip').textContent, '统计中');
-  h.at(6000); paint({ ...info, counter: 20 }); assert.equal(h.node('perfChip').textContent, '10 tok/s');
+  h.at(1000); paint({ ...info, counter: 1030 }); h.at(2500); paint({ ...info, counter: 1090 });
+  assert.equal(h.node('perfChip').textContent, '统计中');
+  h.at(3000); paint({ ...info, counter: 1120 });
+  assert.equal(h.node('perfChip').textContent, '40 tok/s'); assert.equal(h.node('perfChip').title, '3 秒估算速度');
+  assert.match(h.node('perfPanel').innerHTML, /统计区间<\/span><span class="perf-val">3s/);
+  h.at(4000); paint({ ...info, counter: 1150 }); assert.equal(h.node('perfChip').textContent, '40 tok/s');
+  h.at(6000); paint({ ...info, counter: 1180 }); assert.equal(h.node('perfChip').textContent, '20 tok/s');
+  assert.match(h.node('perfPanel').innerHTML, /耗时<\/span><span class="perf-val">6s/);
+  h.at(9000); paint({ ...info, counter: 1180 }); assert.equal(h.node('perfChip').textContent, '统计中');
+  h.at(10000); paint({ ...info, counter: 10 }); assert.equal(h.node('perfChip').textContent, '统计中');
+  h.at(11000); paint({ ...info, counter: 40 }); assert.equal(h.node('perfChip').textContent, '统计中');
+  h.at(13000); paint({ ...info, counter: 70 }); assert.equal(h.node('perfChip').textContent, '20 tok/s');
   paint({ ...info, counter: null }); assert.equal(h.node('perfChip').textContent, '统计中');
-  h.at(7000); paint({ ...info, counter: 20 }); assert.equal(h.node('perfChip').textContent, '统计中');
+  h.at(14000); paint({ ...info, counter: 20 }); assert.equal(h.node('perfChip').textContent, '统计中');
+  h.at(23000); paint({ ...info, counter: 920 }); assert.equal(h.node('perfChip').textContent, '统计中');
   for (const change of [() => { h.computer.id = 'computer-B'; }, () => { h.context.viewSel = 'codex|window-A|thread-B'; }]) {
     change(); paint({ ...info, counter: 30 }); assert.equal(h.node('perfChip').textContent, '统计中');
   }
   paint({ ...info, runId: 'run-2', counter: 40 }); assert.equal(h.node('perfChip').textContent, '统计中');
   paint({ ...info, runId: 'run-2', model: 'model-2', counter: 50 }); assert.equal(h.node('perfChip').textContent, '统计中');
   paint(null); assert.equal(h.node('perfChip').hidden, true); assert.equal(h.node('perfPanel').hidden, true);
+});
+
+test('OpenCode pending statistics keep every field visible and elapsed time advances without token events', () => {
+  const h = usageMeters();
+  const info = { source: 'opencode', runId: 'message', busy: true, model: 'Bonsai', unit: 'characters', rate: null, tokens: null, startedAt: 100000 };
+  h.context.renderPerfChip(info);
+  const panel = h.node('perfPanel');
+  for (const label of ['输入 token', '输出 token', '推理 token', '缓存读取 token', '缓存写入 token', '缓存命中率'])
+    assert(panel.innerHTML.includes(label + '</span><span class="perf-val">待返回'));
+  assert.match(panel.innerHTML, /Bonsai/);
+  h.at(7000); h.context.renderPerfChip(info);
+  assert.match(panel.innerHTML, /耗时<\/span><span class="perf-val">7s/);
+  assert.equal(h.node('perfChip').textContent, '统计中');
+  h.context.renderPerfChip({ ...info, busy: false, unit: 'tokens', rate: 10, durationMs: 9000,
+    tokens: { input: 100, output: 90, reasoning: 0, cacheRead: 0, cacheWrite: 0 }, cacheRate: 0 });
+  assert.equal(panel.innerHTML.includes('待返回'), false);
+  assert.match(panel.innerHTML, /耗时<\/span><span class="perf-val">9s/);
 });
 
 test('performance distinguishes live characters, completed native tokens and turn averages without changing context meters', () => {

@@ -230,6 +230,20 @@ export const methods = {
       this.syncSession(chat);
       for (const file of uploads.values()) if (file.pending && file.awaitingReceipt && file.sel === this.selectionKey()
         && chat?.items.some(item => item.k === 'human' && item.t?.split('\n').includes(file.path))) updateUpload(file, { pending: false });
+      const extracted = chat && JSON.stringify({ ...chat, draft: undefined });
+      if ((this.app !== 'codex' || state.requested && !state.sent) && chat && chat.thread === (this.threadId || '') && (!this.lastChat || extracted !== this.lastExtractedChat || state.requested && !state.sent)) {
+        const initial = { ...chat, items: chat.items.map(it => ({ ...it })) };
+        delete initial.draft;
+        this.mergeCodexItems(initial);
+        this.lastExtractedChat = extracted;
+        this.fillThinking(initial);
+        this.retainThinking(initial);
+        this.fillDevinCommands(initial);
+        this.mergeDevinHistory(initial);
+        if (initial?.model === 'Fusion' && this.fusion) initial.fusion = this.fusion;
+        this.lastChat = JSON.stringify(initial);
+        publish(initial);
+      }
       if (chat?.thread && chat.title && readLibrary()[this.app]?.[chat.thread]?.title && chat.title !== readLibrary()[this.app][chat.thread].title) {
         const title = await cdp.evaluate(helpersCall(`nativeConfirmedTitle(${JSON.stringify(this.app)}, ${JSON.stringify(chat.thread)})`));
         if (!this.liveRead(cdp, sel)) return;
@@ -245,20 +259,6 @@ export const methods = {
         if (!this.liveRead(cdp, sel) || !this.acceptsChat(chat)) return;
       }
       const emptyCodex = this.app === 'codex' && !this.threadId && !this.selectedThread && !chat?.thread && chat?.items?.length === 0 && (!chat.readonly || chat.empty === true);
-      const extracted = chat && JSON.stringify({ ...chat, draft: undefined });
-      if (this.app !== 'codex' && chat && chat.thread === (this.threadId || '') && (!this.lastChat || extracted !== this.lastExtractedChat || state.requested && !state.sent)) {
-        const initial = { ...chat, items: chat.items.map(it => ({ ...it })) };
-        delete initial.draft;
-        this.mergeCodexItems(initial);
-        this.lastExtractedChat = extracted;
-        this.fillThinking(initial);
-        this.retainThinking(initial);
-        this.fillDevinCommands(initial);
-        this.mergeDevinHistory(initial);
-        if (initial?.model === 'Fusion' && this.fusion) initial.fusion = this.fusion;
-        this.lastChat = JSON.stringify(initial);
-        publish(initial);
-      }
       const thinkingAction = async action => {
         const result = await cdp.evaluate(helpersCall(action));
         nativeWindow(cdp)?.invalidate();

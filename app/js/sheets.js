@@ -1074,6 +1074,7 @@ function renderContext(info) {
 }
 /* ---------- native performance (footer) ---------- */
 let _perfOpen = false, perfSample = null;
+const PERF_WINDOW_MS = 3000;
 function fmtTokPerSec(tokS) {
   if (tokS == null) return '—';
   return tokS >= 1000 ? (tokS / 1000).toFixed(1).replace(/\.?0$/, '') + ' kt/s' : Math.round(tokS) + ' tok/s';
@@ -1092,37 +1093,46 @@ function fmtTok(n) {
 function buildPerfPanel(panel, info) {
   const row = (label, val) => '<div class="perf-row"><span class="perf-key">' + label + '</span><span class="perf-val">' + esc(val) + '</span></div>';
   const tokens = info.tokens;
-  panel.innerHTML = row(info.label, info.speed) + row(info.interval ? '统计区间' : '时长', fmtDuration(info.durationMs))
-    + (tokens ? row('输入 token', fmtTok(tokens.input)) + row('输出 token', fmtTok(tokens.output))
-      + (tokens.reasoning != null ? row('推理 token', fmtTok(tokens.reasoning)) : '')
-      + row('缓存读取 token', fmtTok(tokens.cacheRead)) + row('缓存写入 token', fmtTok(tokens.cacheWrite)) : '')
-    + (info.cacheRate != null ? row('缓存命中率', info.cacheRate + '%') : '') + row('模型', info.model || '—');
+  const token = value => value == null ? info.busy ? '待返回' : '—' : fmtTok(value);
+  panel.innerHTML = row(info.label, info.speed) + (info.interval ? row('统计区间', fmtDuration(PERF_WINDOW_MS)) : '')
+    + row('耗时', fmtDuration(info.durationMs))
+    + row('输入 token', token(tokens?.input)) + row('输出 token', token(tokens?.output))
+    + row('推理 token', token(tokens?.reasoning)) + row('缓存读取 token', token(tokens?.cacheRead)) + row('缓存写入 token', token(tokens?.cacheWrite))
+    + row('缓存命中率', info.cacheRate == null ? info.busy ? '待返回' : '—' : info.cacheRate + '%')
+    + row('模型', info.model || '—');
 }
 function renderPerfChip(info) {
   const chip = $('perfChip'), panel = $('perfPanel');
   if (!info) { _perfOpen = false; perfSample = null; chip.hidden = true; panel.hidden = true; return; }
-  const key = JSON.stringify([contextMeterScope(), info.source, info.runId, info.usageId, info.model]);
-  const now = performance.now();
+  const key = JSON.stringify([contextMeterScope(), info.source, info.runId, info.usageId, info.model, info.unit]);
+  const now = performance.now(), counter = info.counter ?? null;
   if (perfSample?.key !== key) {
     _perfOpen = false;
-    perfSample = { key, counter: info.counter, at: now, rate: null, durationMs: null };
-  } else if (info.counter !== perfSample.counter) {
-    const elapsed = now - perfSample.at, difference = info.counter - perfSample.counter;
-    perfSample.rate = info.counter != null && perfSample.counter != null && difference > 0 && elapsed > 0 ? difference / (elapsed / 1000) : null;
-    perfSample.durationMs = perfSample.rate == null ? null : elapsed;
-    perfSample.counter = info.counter;
-    perfSample.at = now;
+    perfSample = { key, counter, baseline: counter, at: now, rate: null };
+  } else if (counter == null || perfSample.counter == null || counter < perfSample.counter) {
+    Object.assign(perfSample, { counter, baseline: counter, at: now, rate: null });
+  } else {
+    perfSample.counter = counter;
+    const windows = Math.floor((now - perfSample.at) / PERF_WINDOW_MS);
+    if (windows && info.busy) {
+      const difference = perfSample.counter - perfSample.baseline;
+      perfSample.rate = windows === 1 && difference > 0 ? difference / (PERF_WINDOW_MS / 1000) : null;
+      perfSample.at += windows * PERF_WINDOW_MS;
+      perfSample.baseline = perfSample.counter;
+    }
   }
-  const interval = info.rate == null && perfSample.rate != null;
-  const rate = info.rate ?? perfSample.rate;
-  const label = info.unit === 'characters' ? '实时字符速度' : info.source === 'opencode' ? '本次平均'
-    : interval ? '区间平均' : info.rate != null ? '轮次平均' : '等待统计更新';
+  const interval = info.unit === 'tokens' && info.rate == null;
+  const rate = info.rate ?? (interval ? perfSample.rate : null);
+  const label = info.unit === 'characters' ? '实时字符速度' : interval ? '3 秒估算速度'
+    : info.source === 'opencode' ? '本次平均' : '轮次平均';
   const speed = rate == null ? info.busy ? '统计中' : '—' : info.unit === 'characters' ? Math.round(rate) + ' 字符/秒' : fmtTokPerSec(rate);
+  const startedAt = info.startedAt || lastChat?.generation?.start;
+  const durationMs = info.busy && startedAt ? Math.max(0, Date.now() - startedAt) : info.durationMs;
   chip.textContent = speed;
   chip.title = label;
   chip.setAttribute('aria-label', label + ' · ' + speed);
   chip.hidden = false;
-  buildPerfPanel(panel, { ...info, label, speed, interval, durationMs: interval ? perfSample.durationMs : info.durationMs });
+  buildPerfPanel(panel, { ...info, label, speed, interval, durationMs });
   panel.hidden = !_perfOpen;
 }
 // Phones show the value text ("已用 56%") beside each ring whenever every meter fits that way next to

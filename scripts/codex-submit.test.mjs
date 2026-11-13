@@ -279,6 +279,45 @@ test('Codex draft references keep their existing rich-input path and unavailable
   await assert.rejects(adapter.typeDraft.call({ cdp: { evaluate: async () => false } }, 'body', []), /输入尚未就绪/);
 });
 
+function codexMultilineDraft() {
+  const submissions = [], writes = [];
+  const paragraph = content => ({ type: 'paragraph', content: content == null ? [] : Array.isArray(content) ? content : [content] });
+  let nodes = [paragraph(null)];
+  const render = markdown => nodes.map(node => node.content.map(child => child.type === 'hard_break' ? markdown ? '\\\n' : '\n'
+    : markdown ? child.text.replace(/\\$/, '\\\\') : child.text).join('')).join('\n');
+  const view = { state: { schema: { nodes: { paragraph: { create: (_attrs, content) => paragraph(content) },
+    hard_break: { create: () => ({ type: 'hard_break' }) } }, text: text => ({ type: 'text', text }) },
+    doc: { content: { size: 1 } }, tr: { replaceWith: (_from, _to, content) => content } },
+    dispatch(content) { nodes = Array.isArray(content) ? content : [content]; writes.push(nodes); } };
+  const controller = { view, getText: () => render(false), getPersistedText: () => render(true) };
+  const editor = { get innerText() { return render(false); }, closest: () => null, contains: () => false,
+    getBoundingClientRect: () => ({ width: 40, height: 20 }),
+    __reactFiberFixture: { memoizedProps: { composerController: controller, conversationId: 'recalled', submitDisabled: false,
+      handleSubmit: options => submissions.push({ options, text: controller.getText(), persisted: controller.getPersistedText() }) } } };
+  const doc = { querySelector: () => null, querySelectorAll: selector => selector === '.ProseMirror[contenteditable="true"]' || selector === '.ProseMirror' ? [editor] : [] };
+  const document = { getElementById: () => ({ contentDocument: doc }) };
+  return { page: nativePage(document), controller, submissions, writes };
+}
+
+for (const follow of ['', 'queue', 'steer']) test(`Codex recalled multiline text keeps its serialized payload for ${follow || 'send'}`, async () => {
+  const h = codexMultilineDraft();
+  const samples = ['你好\n', 'first\n\n第三行\n', 'trailing\n\n', ''].map(text => [text, text]);
+  samples.push(['C:\\tmp\\\n/path/\n', 'C:\\tmp\\\\\n/path/\n']);
+  for (const [original, persisted] of samples) {
+    const before = h.writes.length;
+    assert.equal(h.page.setComposerDraft(original), true, JSON.stringify(original));
+    assert.equal(h.writes.length, before + 1, 'one native editor transaction per recalled input');
+    assert.equal(h.controller.getPersistedText(), persisted, 'native persistence must not add Markdown hard-break escapes');
+    assert.equal(h.page.codexPromptPayload(), original, 'actual prompt keeps intentional slashes and newlines');
+    if (!original) continue;
+    assert.equal(await h.page.submitCodexMessage(follow, true, 'recalled-input'), true);
+    await h.page.codexViewState(true);
+    const sent = h.submissions.at(-1);
+    assert.equal(sent.text, original); assert.equal(sent.persisted, persisted);
+    assert.equal(sent.options.followUpSubmitAction, follow || undefined);
+  }
+});
+
 test('Codex draft reads wait for native submission settlement and retain the genuinely newer desktop draft', async () => {
   let settle, value = 'already submitted', done = false;
   const pending = new Promise(resolve => { settle = resolve; }), events = [];

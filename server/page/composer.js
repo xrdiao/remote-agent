@@ -107,8 +107,8 @@
       const view = codexFiberProps(ed, Infinity).find(p => p.composerController)?.composerController.view;
       if (!view) return false;
       const schema = view.state.schema;
-      const children = text.split('\n').flatMap((line, i) => [...(i ? [schema.nodes.hard_break.create()] : []), ...(line ? [schema.text(line)] : [])]);
-      view.dispatch(view.state.tr.replaceWith(0, view.state.doc.content.size, schema.nodes.paragraph.create(null, children)));
+      const paragraphs = text.split('\n').map(line => schema.nodes.paragraph.create(null, line ? schema.text(line) : null));
+      view.dispatch(view.state.tr.replaceWith(0, view.state.doc.content.size, paragraphs));
       return composerDraft() === text.replace(/\n+$/g, '');
     }
     const ed = composerTarget(doc);

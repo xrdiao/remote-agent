@@ -459,7 +459,10 @@ function updateGenerationTime(chat, stale) {
     generationClocks.set(activeGeneration, { ...clock, busy: !!chat.busy });
   }
 }
-setInterval(paintGenerationTime, 1000);
+setInterval(() => {
+  paintGenerationTime();
+  if (mode === 'chat' && document.visibilityState === 'visible') renderPerfChip(lastChat?.performance);
+}, 1000);
 const chatBySel = new Map(), menuCache = new Map();
 const lruPut = (map, key, val, max) => { map.delete(key); map.set(key, val); while (map.size > max) map.delete(map.keys().next().value); };
 let menuSheetKind = '', chatStale = false;

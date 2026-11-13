@@ -1111,7 +1111,7 @@
       }
     }
     const durationMs = completedAt && Number.isFinite(startedAt) ? completedAt - startedAt : null;
-    return { source: app, runId, usageId, busy, model, tokens, counter,
+    return { source: app, runId, usageId, busy, model, tokens, counter, startedAt, completedAt,
       unit: 'tokens', durationMs,
       rate: app !== 'codex' && !busy && counter != null && durationMs > 0 ? counter / (durationMs / 1000) : null };
   };

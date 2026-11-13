@@ -336,18 +336,12 @@ export class NativeWindow {
         const h = ${PAGE_SRC};
         const chat = await h.extract(false, [], ${app === 'codex' ? 80 : 0}, ${app === 'cursor'});
         return { chat, activeTab: h.activeChatTab(), states: h.agentStates(${JSON.stringify(app)}),
-          surface: h.devinSurface(), catalog: ${app === 'codex' ? 'h.codexChatRows(true)' : app === 'devin' ? 'null' : "await h.nativeSessionInfo('cursor', '', 'list')"},
+          surface: h.devinSurface(),
         };
       })()`);
-      if (app === 'devin') result.catalog = await this.cdp.evaluate(helpersCall('sessionPickerRows(true)'));
       controller.signal.throwIfAborted();
       for (const state of result.states || []) if (state.run && state.run.status !== 'unknown') this.runStates.set(state.thread, state.run);
-      this.catalog = result.catalog || [];
-      this.catalogAt = Date.now();
-      const catalogKey = JSON.stringify(this.catalog.map(row => [row.id, row.title, row.workspace, row.host, row.current, row.running]));
-      const catalogChanged = this.catalogKey != null && catalogKey !== this.catalogKey;
-      this.catalogKey = catalogKey;
-      refreshSessionCatalog(this, catalogChanged).catch(error => publishCatalog(app, error));
+      this.readCatalog().catch(error => publishCatalog(app, error));
       const key = JSON.stringify(result);
       const changed = key !== this.snapshotKey;
       this.snapshotKey = key;
@@ -373,6 +367,25 @@ export class NativeWindow {
     });
     this.reading = read;
     return awaitCdpRead(read.promise);
+  }
+  readCatalog() {
+    if (this.catalogReading) { this.catalogAgain = true; return this.catalogReading; }
+    const app = this.win.app;
+    this.catalogReading = cdpRead.run(null, async () => {
+      await this.connect();
+      const catalog = await this.cdp.evaluate(helpersCall(app === 'codex' ? 'codexChatRows(true)'
+        : app === 'devin' ? 'sessionPickerRows(true)' : "nativeSessionInfo('cursor', '', 'list')"));
+      this.catalog = catalog;
+      this.catalogAt = Date.now();
+      const key = JSON.stringify(catalog.map(row => [row.id, row.title, row.workspace, row.host, row.current, row.running]));
+      const changed = this.catalogKey != null && this.catalogKey !== key;
+      this.catalogKey = key;
+      await refreshSessionCatalog(this, changed);
+    }).finally(() => {
+      this.catalogReading = null;
+      if (this.catalogAgain) { this.catalogAgain = false; this.readCatalog().catch(error => publishCatalog(app, error)); }
+    });
+    return this.catalogReading;
   }
   interval() { return this.listeners.size || this.sends.size || this.snapshot?.states?.some(s => s.busy) ? 1800 : 15000; }
   run(action) {

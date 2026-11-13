@@ -311,21 +311,32 @@ export class OpenCodeState {
     if (status?.error) items.push({ i: id + ':status', k: 'notice', t: status.error });
     if (status?.type === 'retry') items.push({ i: id + ':retry', k: 'notice', live: true,
       t: ['正在重试（第 ' + status.attempt + ' 次）', status.message, status.next ? '下次重试：' + new Date(status.next).toISOString() : ''].filter(Boolean).join(' · ') });
-    const context = this.context(id), latest = messages.findLast(row => row.info.role === 'assistant');
+    const context = this.context(id), userIndex = messages.findLastIndex(row => row.info.role === 'user');
+    const latest = messages.slice(userIndex + 1).findLast(row => row.info.role === 'assistant');
     const busy = !!status && status.type !== 'idle', live = busy && latest && !latest.info.time?.completed;
-    const call = live ? latest.info : context.updated && messages.find(row => row.info.time?.completed === context.updated)?.info;
-    const tokens = call?.tokens;
+    const call = busy ? latest?.info : context.updated && messages.find(row => row.info.time?.completed === context.updated)?.info;
+    const nativeTokens = call?.tokens;
+    const tokens = nativeTokens && (call.time?.completed || nativeTokens.input + nativeTokens.output + nativeTokens.reasoning
+      + nativeTokens.cache.read + nativeTokens.cache.write > 0) ? nativeTokens : null;
     const sample = live && latest.outputSample;
     const elapsed = sample ? sample.updatedAt - sample.startedAt : 0;
-    const performance = call ? { source: 'opencode', runId: call.id, busy: !!live,
-      model: this.models.get(`${call.providerID}/${call.modelID}`)?.name || `${call.providerID}/${call.modelID}`,
-      unit: live ? 'characters' : 'tokens', rate: live ? elapsed > 0 ? Math.max(0, sample.chars - sample.baseline) / (elapsed / 1000) : null : context.speedTokS,
-      durationMs: live ? sample ? elapsed : null : context.durationMs,
-      tokens: live ? null : { input: tokens.input, output: tokens.output, reasoning: tokens.reasoning, cacheRead: tokens.cache.read, cacheWrite: tokens.cache.write },
-      cacheRate: live ? null : context.cacheRate } : null;
+    const user = messages[userIndex]?.info, startedAt = call?.time?.created || user?.time?.created || null;
+    const completedAt = call?.time?.completed || null;
+    const durationMs = startedAt ? Math.max(0, (completedAt || Date.now()) - startedAt) : null;
+    const modelKey = call ? [call.providerID, call.modelID].filter(Boolean).join('/') : selected.key;
+    const cacheInput = tokens ? tokens.input + tokens.cache.read + tokens.cache.write : 0;
+    const performance = call || busy && user ? { source: 'opencode', runId: call?.id || user.id, busy: !!live || !call && busy,
+      model: this.models.get(modelKey)?.name || modelKey || '', startedAt, completedAt,
+      unit: live || !call && busy ? 'characters' : 'tokens',
+      rate: live ? elapsed > 0 ? Math.max(0, sample.chars - sample.baseline) / (elapsed / 1000) : null
+        : tokens && durationMs > 0 ? (tokens.output + tokens.reasoning) / (durationMs / 1000) : null,
+      durationMs,
+      tokens: tokens ? { input: tokens.input, output: tokens.output, reasoning: tokens.reasoning, cacheRead: tokens.cache.read, cacheWrite: tokens.cache.write } : null,
+      cacheRate: tokens && cacheInput > 0 ? Math.round(tokens.cache.read / cacheInput * 1000) / 10 : null } : null;
     return { thread: id, title: session?.title || '', items, busy,
       model: model?.name || selected.key || '', effort: selected.variant || '默认（服务端）',
       permission: this.approvalMode(id), context, performance,
+      generation: performance ? { start: user?.time?.created || performance.startedAt, end: busy ? null : performance.completedAt } : null,
       global: [], questions: null, queued: [], subagents: [], changed: session?.summary?.files || 0,
       waiting: questions.length ? 'question' : permissions.length ? 'approval' : '',
       waitingText: questions[0]?.questions[0]?.question || permissions[0]?.patterns.join(' · ') || '',
