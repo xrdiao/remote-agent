@@ -13,10 +13,12 @@
       newc: '＋ 新建', ctx: '上下文', menu: '菜单', copy: '复制', skip: '跳过', submit: '提交',
       qnHead: 'Agent 在问你', switchAgent: '切换 Agent', cur: '当前', running: '运行中',
       listening: '正在听…松开结束，文字不会自动发送', termBusy: 'Agent 正在运行',
-      tList: '列表', tNew: '＋ 新建', tCopy: '复制', tAll: '全选', sendTerm: '发送到终端',
+      tList: '列表', tNew: '＋ 新建', tCopy: '复制', tAll: '全选', sendTerm: '发送',
       termOps: '终端操作', older: '↑ 加载更早的消息', now: '现在',
       vSearch: '搜索', vWrap: '换行', vOnly: '只看改动', vSrc: 'Agent 的改动',
       phTerm: '发给终端…',
+      vBack: '返回对话', vLive: '实时', vPreview: '窗口预览', vRead: '只读',
+      vHint: '双指缩放 · 拖动查看', vRefresh: '刷新', vFit: '适应',
       mMenu: '菜单', mModel: '更换模型', mModelSub: '选择当前 Agent 的模型',
       mEditor: 'Editor · 项目文件编辑', mProj: '打开项目', mProjSub: '选择文件夹或新建项目',
       mSet: '设置', mScreen: '画面', mScreenSub: '查看绘图与仿真窗口',
@@ -46,17 +48,20 @@
       mCache: '会话缓存', mCacheSub: '手机上保存的对话记录，可折叠、可清除',
       mVer: '网页版本 2.4.0', mTransfer: '文件传输', mVoiceMenu: '语音输入', mComputer: '电脑',
       mTerms: '终端列表 ▾', mTermPwd: '密码输入', mTermCopy: '复制', mTermAll: '全选',
-      mTermSize: '尺寸', mTermRefresh: '刷新输出', mTermMore: '更多', mTermInt: '中断'
+      mTermSize: '尺寸', mTermRefresh: '刷新输出', mTermMore: '更多', mTermInt: '中断',
+      termTitle: 'RA 终端', termSub: 'studio-pc · ~/work/auth-service'
     },
     en: {
       chat: 'Chat', term: 'Terminal', ph: 'Message Agent…', send: 'Send', agents: 'Projects / sessions',
       newc: '+ New', ctx: 'Context', menu: 'Menu', copy: 'Copy', skip: 'Skip', submit: 'Submit',
       qnHead: 'The agent is asking', switchAgent: 'Switch Agent', cur: 'Current', running: 'Running',
       listening: 'Listening… release to finish; text is not sent automatically', termBusy: 'Agent is running',
-      tList: 'List', tNew: '+ New', tCopy: 'Copy', tAll: 'Select all', sendTerm: 'Send to terminal',
+      tList: 'List', tNew: '+ New', tCopy: 'Copy', tAll: 'Select all', sendTerm: 'Send',
       termOps: 'Terminal controls', older: '↑ Load earlier messages', now: 'now',
       vSearch: 'Find', vWrap: 'Wrap', vOnly: 'Changes only', vSrc: "Agent's edits",
       phTerm: 'Message the terminal…',
+      vBack: 'Back to chat', vLive: 'Live', vPreview: 'Window preview', vRead: 'Read only',
+      vHint: 'Pinch to zoom · Drag to pan', vRefresh: 'Refresh', vFit: 'Fit',
       mMenu: 'Menu', mModel: 'Change model', mModelSub: 'Choose the current Agent model',
       mEditor: 'Editor · project files', mProj: 'Open project', mProjSub: 'Pick a folder or create a project',
       mSet: 'Settings', mScreen: 'Screen', mScreenSub: 'View canvas and emulator windows',
@@ -86,7 +91,8 @@
       mCache: 'Session cache', mCacheSub: 'Conversations saved on this phone; collapsible, clearable',
       mVer: 'Web version 2.4.0', mTransfer: 'File transfer', mVoiceMenu: 'Voice input', mComputer: 'Computer',
       mTerms: 'Terminals ▾', mTermPwd: 'Password', mTermCopy: 'Copy', mTermAll: 'Select all',
-      mTermSize: 'Size', mTermRefresh: 'Refresh output', mTermMore: 'More', mTermInt: 'Interrupt'
+      mTermSize: 'Size', mTermRefresh: 'Refresh output', mTermMore: 'More', mTermInt: 'Interrupt',
+      termTitle: 'RA Terminal', termSub: 'studio-pc · ~/work/auth-service'
     }
   }[LANG] || {};
   var SCREEN = new URLSearchParams(location.search).get('screen') || 'chat';
@@ -103,7 +109,8 @@
   function itemsHtml(msgs) {
     return (msgs || []).map(function (m) {
       if (m.k === 'human') {
-        return '<div class="msg human"><div class="humanContent"><div class="bubble">' + esc(m.t) + '</div>' +
+        var pic = m.img ? '<span class="sentImage"><img src="' + m.img + '" alt=""></span>' : '';
+        return '<div class="msg human">' + pic + '<div class="humanContent"><div class="bubble">' + esc(m.t) + '</div>' +
           '<div class="messageMeta">' + (m.time ? '<time>' + esc(m.time) + '</time>' : '') +
           '<button data-copy-message>' + esc(L.copy) + '</button></div></div></div>';
       }
@@ -215,9 +222,11 @@
   }
   function fillTerm() {
     var t = ST.term || {};
-    var out = '$ ' + (t.cmd || '') + (t.lines && t.lines.length ? '\n' + t.lines.join('\n') : '');
-    $('termText').textContent = out;
-    var tt = $('termText'); tt.scrollTop = tt.scrollHeight;
+    var html = '<span class="tprompt">' + esc(t.prompt || '$') + '</span>';
+    if (t.cmd) html += ' ' + esc(t.cmd);
+    if (t.lines && t.lines.length) html += '\n' + t.lines.map(esc).join('\n');
+    $('termText').innerHTML = html;
+    var tt = $('termText'); tt.scrollTop = 0;
   }
   function fillFile() {
     var f = ST.file || {};
@@ -256,7 +265,7 @@
     return 'Ran';
   }
   function sessTile(o) {
-    return '<div class="ov-tile ov-session ov-compact ov-st-' + o.st + '" style="--p:' + (o.p || 0) + '%">' +
+    return '<div class="ov-tile ov-session ov-compact ov-st-' + o.st + (o.cls ? ' ' + o.cls : '') + '">' +
       '<span class="ov-card-surface" aria-hidden="true"></span>' +
       '<span class="ov-logo">' + ovLogo(o.app) + '</span><div class="ov-state"><span class="ov-badge">' + esc(o.badge) + '</span><span class="ov-time">' + (o.time || '') + '</span></div>' +
       '<div class="ov-title ovRaw">' + esc(o.title) + '</div>' +
@@ -289,6 +298,7 @@
     var draft = ST.draft
       ? '<div class="faket" style="font:inherit">' + esc(ST.draft) + '<span class="vcaret"></span></div>'
       : '<div class="faket" style="color:var(--fg-4,#9AA0AA);flex:1">' + esc(L.phNext) + '</div>';
+    var shot = ST.attach ? '<img class="ov-shot" src="' + ST.attach.src + '" alt="">' : '';
     /* approved order: tools first, latest-message line last (shot7 splits 2+preview+2) */
     var mid = toolHtml.length > 3
       ? toolHtml.slice(0, 2).join('') + '</div>' + preview + '<div class="ov-run-tools">' + toolHtml.slice(2).join('')
@@ -304,7 +314,7 @@
       '<div class="ov-run-meta"><span class="ov-run-model ovRaw">Claude 4.5 Sonnet</span><span class="ov-run-count">' + esc(L.progDone) + ' ' + pr.done + '/' + pr.total + '</span></div>' +
       '<div class="ov-progress"><i style="width:' + pct + '%"></i></div>' +
       '<div class="ov-run-tools" tabindex="0">' + mid + '</div>' +
-      '<div class="ov-composer">' + OV_HIST + draft + '<button class="ov-send">' + OV_ARROW + '</button></div>' +
+      '<div class="ov-composer">' + shot + OV_HIST + draft + '<button class="ov-send">' + OV_ARROW + '</button></div>' +
       '<div class="ov-cfoot"><div class="ov-tools">' + OV_TOOL_ICONS + '</div>' + link + '</div>' +
       '</div></div>';
   }
@@ -318,13 +328,13 @@
     } else {
       var f7 = (ST.msgs || []).some(function (m) { return m.f === 'README.md'; });
       var cursor = h.expanded ? openCard(h, pr, f7)
-        : sessTile({ st: 'run', app: 'cursor', badge: L.bRun, time: '14m', title: L.tCur, ctx: 'Cursor · auth-service', now: L.nCur, num: pr.done + '<small>/' + pr.total + '</small>', work: L.wWork, p: Math.round(100 * pr.done / pr.total) });
+        : sessTile({ st: 'run', app: 'cursor', cls: 'ov-cursor', badge: L.bRun, time: '14m', title: L.tCur, ctx: 'Cursor · auth-service', now: L.nCur, num: pr.done + '<small>/' + pr.total + '</small>', work: L.wWork });
       board = '<section class="ov-computer"><div class="ov-computer-row online"><button type="button" class="ov-computer-toggle" aria-expanded="true"><span class="ov-computer-dot"></span><span class="ov-computer-label"><span class="ov-computer-name ovRaw">' + esc(L.wk) + '</span></span></button><button type="button" class="ov-computer-fold"><svg class="ov-computer-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 5 7 7-7 7"/></svg></button></div>' +
         '<div class="ov-board">' +
         '<div class="ov-div">' + esc(L.gNeed) + ' · 1</div>' +
         sessTile({ st: 'wait', app: 'devin', badge: L.bWait, title: L.tWait, ctx: 'Devin · data-pipeline', now: L.nWait, work: L.bWait }) +
         '<div class="ov-div">' + esc(L.gRun) + ' · 2</div>' + cursor +
-        sessTile({ st: 'run', app: 'codex', badge: L.bRun, time: '8m', title: L.tCodex, ctx: 'Codex · web-console', now: L.nCodex, work: L.wWork, p: 20 }) +
+        sessTile({ st: 'run', app: 'codex', badge: L.bRun, time: '8m', title: L.tCodex, ctx: 'Codex · web-console', now: L.nCodex, work: L.wWork }) +
         '<div class="ov-div">' + esc(L.gDone) + ' · 1</div>' +
         sessTile({ st: 'done', app: 'cursor', badge: L.bDone, title: L.tDoc, ctx: 'Cursor · docs', now: L.nDoc, work: L.bDone }) +
         '</div></section>';
@@ -343,8 +353,22 @@
       }
     }
   }
+  /* Same fit as the app's screen view: the window keeps its aspect and sits in the middle. */
+  function layoutVisual(retry) {
+    var view = $('view'), stage = $('stage'), img = $('screen');
+    var rw = img.naturalWidth || 442, rh = img.naturalHeight || 250;
+    var stageW = Math.min(view.clientWidth || 0, (view.clientHeight || 0) * rw / rh);
+    if (!stageW) { if (!retry) requestAnimationFrame(function () { layoutVisual(true); }); return; }
+    var scale = stageW / rw;
+    stage.style.width = stageW + 'px';
+    stage.style.height = (rh * scale) + 'px';
+    img.style.width = (rw * scale) + 'px';
+    img.style.height = (rh * scale) + 'px';
+    img.style.left = '0px';
+    img.style.top = '0px';
+  }
   var prevScreen = null;
-  function apply() {
+  function apply(instant) {
     var st = ST;
     if (st.theme) document.documentElement.dataset.theme = st.theme;
     document.body.dataset.app = st.app || 'cursor';
@@ -354,19 +378,64 @@
     $('homeView').classList.toggle('active', st.screen === 'home');
     $('chatView').classList.toggle('active', st.screen === 'chat' || st.screen === 'term');
     document.body.classList.toggle('kb', !!st.kb);
-    if (st.screen !== prevScreen && prevScreen) {
+    if (!instant && st.screen !== prevScreen && prevScreen) {
       var dir = st.screen === 'chat' ? 'pushin' : 'pushout';
       document.body.classList.remove('pushin', 'pushout');
       void document.body.offsetHeight;
       document.body.classList.add(dir);
     }
     prevScreen = st.screen;
-    $('titleText').textContent = st.title || 'Cursor';
-    $('titleProject').textContent = st.project || '';
+    $('titleText').textContent = st.screen === 'term' ? L.termTitle : (st.title || 'Cursor');
+    $('titleProject').textContent = st.screen === 'term' ? L.termSub : (st.project || '');
     $('tabChat').classList.toggle('on', st.screen !== 'term');
     $('tabTerm').classList.toggle('on', st.screen === 'term');
-    $('chatView').classList.toggle('active', st.screen !== 'term');
-    $('screenView').classList.toggle('active', st.screen === 'term');
+    $('chatView').classList.toggle('active', st.screen !== 'term' && st.screen !== 'visual');
+    $('screenView').classList.toggle('active', st.screen === 'term' || st.screen === 'visual');
+    document.body.classList.toggle('visual', st.screen === 'visual');
+    var visualOn = st.screen === 'visual';
+    var head = document.querySelector('body > header');
+    var underHeader = (visualOn || st.screen === 'term') && head;
+    $('screenView').style.top = underHeader ? head.offsetHeight + 'px' : '';
+    if (st.screen === 'term') document.documentElement.dataset.theme = 'dark';
+    ['visualHeader', 'visualCaption', 'visualHint'].forEach(function (id) { $(id).hidden = !visualOn; });
+    $('view').classList.toggle('gesture', visualOn);
+    if (visualOn) {
+      $('chatView').classList.remove('active');
+      $('homeView').classList.remove('active');
+      $('visualEmpty').hidden = true;
+      $('termEmpty').hidden = true;
+      $('termBusy').hidden = true;
+      $('screenKeys').hidden = true;
+      $('visualBack').setAttribute('aria-label', L.vBack);
+      $('visualTitle').textContent = st.screenTitle || '';
+      $('visualChoose').title = st.screenTitle || '';
+      $('visualStatus').textContent = L.vLive;
+      $('visualStatus').dataset.state = 'live';
+      $('visualPreview').textContent = L.vPreview;
+      $('visualRead').textContent = L.vRead;
+      $('zoom').hidden = false;
+      $('zoom').textContent = L.vFit;
+      $('refresh').textContent = L.vRefresh;
+      $('visualHintText').textContent = L.vHint;
+      $('visualZoom').textContent = '100%';
+      $('stage').hidden = false;
+      if (st.screenImg && $('screen').dataset.shot !== st.screenImg) {
+        $('screen').onload = function () { layoutVisual(); };
+        $('screen').src = st.screenImg;
+        $('screen').dataset.shot = st.screenImg;
+      }
+      layoutVisual();
+    }
+    var attRow = document.querySelector('footer > .attachmentRow');
+    if (attRow) {
+      if (st.attach && st.screen === 'chat') {
+        attRow.hidden = false;
+        $('attachments').innerHTML = '<div class="attachment"><img src="' + st.attach.src + '" alt=""><span>' + esc(st.attach.name) + '</span></div>';
+      } else {
+        attRow.hidden = true;
+        $('attachments').innerHTML = '';
+      }
+    }
     $('chatTools').hidden = st.screen !== 'chat';
     $('termTools').hidden = st.screen !== 'term';
     $('termToolsLabel').hidden = st.screen !== 'term';
@@ -453,7 +522,7 @@
     if (m.type === 'state') {
       ST = m.state || {};
       ST.screen = ST.screen || SCREEN;
-      if (m.instant) noanim(apply); else apply();
+      if (m.instant) noanim(function () { apply(true); }); else apply();
       try {
         parent.postMessage({ type: 'probeRes',
           card: !!document.querySelector('#homeView .ov-card'),
@@ -463,7 +532,9 @@
     } else if (m.type === 'theme') {
       /* ack at once: the parent's view-transition update phase suppresses
          rendering, so waiting for rAF here would stall until its timeout */
-      noanim(function () { document.documentElement.dataset.theme = m.theme || 'light'; });
+      noanim(function () {
+        document.documentElement.dataset.theme = document.body.classList.contains('term') ? 'dark' : (m.theme || 'light');
+      });
       parent.postMessage({ type: 'themed' }, '*');
     } else if (m.type === 'fx') { fx(m); }
   });

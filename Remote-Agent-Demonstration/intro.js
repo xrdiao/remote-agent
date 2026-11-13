@@ -21,7 +21,7 @@ const P = orient === 'portrait';
     <filter id="b8" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="9"/></filter>
   </defs>`;
   /* seated person, back-3/4 view; anchor = floor point under hips; ~570px tall at s=1 */
-  const miniPh = `<g transform="rotate(-16)"><rect x="-19" y="-36" width="38" height="72" rx="9" fill="#14161A"/><rect x="-14" y="-30" width="28" height="60" rx="5" fill="#C9DBF5"/></g>`;
+  const miniPh = `<g transform="rotate(-14)"><rect x="-22" y="-44" width="44" height="86" rx="12" fill="#14161A"/><rect x="-16" y="-37" width="32" height="70" rx="6" fill="#E7F0FC"/><rect x="-12" y="-30" width="24" height="5" rx="2" fill="#9BB4D4"/></g>`;
     /* seated person back-3/4; o={c:chair, ph:0|1|2 phone pos, pose:'eat'|'run'|'cafe'|null} */
   const seatP = (x, y, s, cl, o = {}) => { const { c = 1, ph = 0, pose } = o;
   const legs = pose === 'run'
@@ -39,34 +39,51 @@ const P = orient === 'portrait';
        <path d="M-56 -270 L-34 -212 L104 -196 L110 -236 L-30 -252 Z" fill="#4E5A70"/><circle cx="107" cy="-216" r="21" fill="#4E5A70"/>
        <rect x="92" y="-212" width="30" height="205" rx="13" fill="#46536B"/><ellipse cx="108" cy="-8" rx="38" ry="15" fill="#EDEFF3" transform="rotate(-5 108 -8)"/>`;
   const arms = pose === 'eat'
-    ? `<path d="M58 -430 Q116 -386 148 -322" stroke="${cl}" stroke-width="34" fill="none" stroke-linecap="round"/>
-       <path d="M148 -322 Q172 -292 186 -272" stroke="url(#sk)" stroke-width="23" fill="none" stroke-linecap="round"/>
-       <circle cx="190" cy="-266" r="14" fill="url(#sk)"/>
-       <path d="M194 -260 L236 -226 M200 -252 L240 -222" stroke="#8A6A50" stroke-width="5" stroke-linecap="round"/>
-       <path d="M-66 -430 Q-40 -380 0 -350" stroke="${cl}" stroke-width="30" fill="none" stroke-linecap="round"/>
-       <path d="M0 -350 Q30 -330 60 -318" stroke="url(#sk)" stroke-width="21" fill="none" stroke-linecap="round"/>
-       <circle cx="66" cy="-316" r="13" fill="url(#sk)"/>`
+    ? (ph
+      ? `<path d="M58 -430 Q116 -386 148 -322" stroke="${cl}" stroke-width="34" fill="none" stroke-linecap="round"/>
+         <path d="M148 -322 Q172 -292 186 -272" stroke="url(#sk)" stroke-width="23" fill="none" stroke-linecap="round"/>
+         <circle cx="190" cy="-266" r="14" fill="url(#sk)"/>
+         <path d="M194 -260 L236 -226 M200 -252 L240 -222" stroke="#8A6A50" stroke-width="5" stroke-linecap="round"/>
+         <path d="M-66 -430 Q-40 -400 -16 -352" stroke="${cl}" stroke-width="30" fill="none" stroke-linecap="round"/>
+         <circle cx="-12" cy="-344" r="13" fill="url(#sk)"/>`
+      : `<path d="M58 -430 Q116 -386 148 -322" stroke="${cl}" stroke-width="34" fill="none" stroke-linecap="round"/>
+         <path d="M148 -322 Q172 -292 186 -272" stroke="url(#sk)" stroke-width="23" fill="none" stroke-linecap="round"/>
+         <circle cx="190" cy="-266" r="14" fill="url(#sk)"/>
+         <path d="M194 -260 L236 -226 M200 -252 L240 -222" stroke="#8A6A50" stroke-width="5" stroke-linecap="round"/>
+         <path d="M-66 -430 Q-40 -380 0 -350" stroke="${cl}" stroke-width="30" fill="none" stroke-linecap="round"/>
+         <path d="M0 -350 Q30 -330 60 -318" stroke="url(#sk)" stroke-width="21" fill="none" stroke-linecap="round"/>
+         <circle cx="66" cy="-316" r="13" fill="url(#sk)"/>`)
     : pose === 'run'
-    ? `<path d="M56 -432 Q116 -396 98 -348" stroke="${cl}" stroke-width="32" fill="none" stroke-linecap="round"/>
-       <path d="M98 -348 Q66 -336 42 -362" stroke="url(#sk)" stroke-width="22" fill="none" stroke-linecap="round"/>
-       <circle cx="36" cy="-368" r="13" fill="url(#sk)"/>
-       <path d="M-66 -432 Q-36 -370 -2 -312" stroke="${cl}" stroke-width="30" fill="none" stroke-linecap="round"/>
-       <path d="M-2 -312 Q30 -278 52 -258" stroke="url(#sk)" stroke-width="21" fill="none" stroke-linecap="round"/>
-       <circle cx="58" cy="-252" r="13" fill="url(#sk)"/>`
+    ? (ph
+      ? `<path d="M56 -432 Q40 -390 8 -348" stroke="${cl}" stroke-width="32" fill="none" stroke-linecap="round"/>
+         <circle cx="2" cy="-340" r="13" fill="url(#sk)"/>
+         <path d="M-66 -432 Q-120 -400 -132 -348" stroke="${cl}" stroke-width="30" fill="none" stroke-linecap="round"/>
+         <circle cx="-138" cy="-340" r="13" fill="url(#sk)"/>`
+      : `<path d="M56 -432 Q130 -410 156 -360" stroke="${cl}" stroke-width="32" fill="none" stroke-linecap="round"/>
+         <circle cx="162" cy="-352" r="13" fill="url(#sk)"/>
+         <path d="M-66 -432 Q-140 -410 -158 -360" stroke="${cl}" stroke-width="30" fill="none" stroke-linecap="round"/>
+         <circle cx="-164" cy="-352" r="13" fill="url(#sk)"/>`)
     : pose === 'cafe'
-    ? `<path d="M58 -432 Q104 -400 104 -354" stroke="${cl}" stroke-width="32" fill="none" stroke-linecap="round"/>
-       <path d="M104 -354 Q96 -330 66 -338" stroke="url(#sk)" stroke-width="22" fill="none" stroke-linecap="round"/>
-       <circle cx="58" cy="-342" r="13" fill="url(#sk)"/>
-       <path d="M36 -392 h30 v24 h-30z" fill="#fff" transform="rotate(-14 51 -380)"/><path d="M66 -388 a8 8 0 1 1 -0.1 0" fill="none" stroke="#fff" stroke-width="4" transform="rotate(-14 60 -384)"/>
-       <path d="M-66 -432 Q-104 -384 -98 -310" stroke="${cl}" stroke-width="30" fill="none" stroke-linecap="round"/>
-       <circle cx="-96" cy="-300" r="13" fill="url(#sk)"/>`
+    ? (ph
+      ? `<path d="M58 -432 Q96 -390 78 -338" stroke="${cl}" stroke-width="32" fill="none" stroke-linecap="round"/>
+         <circle cx="74" cy="-328" r="14" fill="url(#sk)"/>
+         <path d="M-66 -432 Q-104 -384 -98 -310" stroke="${cl}" stroke-width="30" fill="none" stroke-linecap="round"/>
+         <circle cx="-96" cy="-300" r="13" fill="url(#sk)"/>`
+      : `<path d="M58 -432 Q104 -400 104 -354" stroke="${cl}" stroke-width="32" fill="none" stroke-linecap="round"/>
+         <path d="M104 -354 Q96 -330 66 -338" stroke="url(#sk)" stroke-width="22" fill="none" stroke-linecap="round"/>
+         <circle cx="58" cy="-342" r="13" fill="url(#sk)"/>
+         <path d="M36 -392 h30 v24 h-30z" fill="#fff" transform="rotate(-14 51 -380)"/><path d="M66 -388 a8 8 0 1 1 -0.1 0" fill="none" stroke="#fff" stroke-width="4" transform="rotate(-14 60 -384)"/>
+         <path d="M-66 -432 Q-104 -384 -98 -310" stroke="${cl}" stroke-width="30" fill="none" stroke-linecap="round"/>
+         <circle cx="-96" cy="-300" r="13" fill="url(#sk)"/>`)
     : `<path d="M60 -436 Q122 -398 152 -326" stroke="${cl}" stroke-width="34" fill="none" stroke-linecap="round"/>
        <path d="M152 -326 Q170 -292 176 -256" stroke="url(#sk)" stroke-width="23" fill="none" stroke-linecap="round"/>
        <circle cx="179" cy="-248" r="14" fill="url(#sk)"/>
        <path d="M-66 -436 Q-104 -384 -98 -306" stroke="${cl}" stroke-width="30" fill="none" stroke-linecap="round"/>
        <circle cx="-96" cy="-296" r="13" fill="url(#sk)"/>`;
   const lean = pose === 'eat' ? 9 : pose === 'run' ? 13 : pose === 'cafe' ? -7 : 0;
-  const phoneAt = ph === 2 ? 'translate(-116,-300) rotate(8)' : pose === 'run' ? 'translate(70,-255) rotate(-12)' : 'translate(198,-286)';
+  const phoneAt = pose === 'cafe' ? 'translate(78,-400) rotate(-16) scale(1.55)'
+    : pose === 'run' ? 'translate(16,-412) rotate(-8) scale(1.3)'
+    : 'translate(-4,-408) rotate(10) scale(1.15)';
   return `<g transform="translate(${x},${y}) scale(${s})">
     <ellipse cx="30" cy="8" rx="170" ry="20" fill="#000" opacity=".12"/>
     ${c ? `<rect x="-98" y="-470" width="196" height="245" rx="44" fill="#7A6248"/><rect x="-98" y="-470" width="196" height="245" rx="44" fill="url(#sh)"/>
@@ -77,13 +94,13 @@ const P = orient === 'portrait';
     <path d="M-70 -452 Q-84 -362 -60 -262 L56 -262 Q78 -362 64 -452 Q0 -472 -70 -452 Z" fill="${cl}"/>
     <path d="M-70 -452 Q-84 -362 -60 -262 L56 -262 Q78 -362 64 -452 Q0 -472 -70 -452 Z" fill="url(#sh)"/>
     ${arms}
+    ${ph ? `<g transform="${phoneAt}">${miniPh}</g>` : ''}
     <rect x="-15" y="-496" width="30" height="36" rx="9" fill="url(#sk)"/>
     <circle cx="0" cy="-534" r="39" fill="url(#sk)"/>
     <circle cx="33" cy="-526" r="8" fill="${SKIN2}"/>
     <path d="M38 -510 q5 8 -1 13" stroke="${SKIN2}" stroke-width="4" fill="none" stroke-linecap="round"/>
     <path d="M-39 -534 a39 38 0 0 1 78 0 l3 18 q-8 10 -16 3 q-3 -20 -22 -21 q-20 -1 -25 19 q-10 9 -18 -1 z" fill="${HAIR}"/>
     </g>
-    ${ph ? `<g transform="${phoneAt}">${miniPh}</g>` : ''}
   </g>`; };
   /* standing person from behind, left arm raised to rail; anchor = floor point; ~720px at s=1 */
   const standP = (x, y, s, cl, ph = 0) => `<g transform="translate(${x},${y}) scale(${s})">
@@ -95,10 +112,13 @@ const P = orient === 'portrait';
     <path d="M-50 -424 Q-116 -388 -112 -480" stroke="${cl}" stroke-width="30" fill="none" stroke-linecap="round"/>
     <path d="M-112 -480 Q-110 -530 -106 -568" stroke="url(#sk)" stroke-width="22" fill="none" stroke-linecap="round"/>
     <circle cx="-105" cy="-574" r="13" fill="url(#sk)"/>
-    <path d="M52 -424 Q86 -356 80 -276" stroke="${cl}" stroke-width="28" fill="none" stroke-linecap="round"/>
-    <circle cx="80" cy="-264" r="13" fill="url(#sk)"/>
-    <path d="M46 -412 Q62 -330 58 -252" stroke="#39414F" stroke-width="9" fill="none"/><rect x="38" y="-252" width="46" height="60" rx="12" fill="#39414F"/>
-    ${ph ? `<g transform="translate(98,-300)">${miniPh}</g>` : ''}
+    ${ph
+      ? `<path d="M52 -424 Q96 -390 92 -470" stroke="${cl}" stroke-width="28" fill="none" stroke-linecap="round"/>
+         <circle cx="90" cy="-480" r="13" fill="url(#sk)"/>
+         <g transform="translate(112,-548) rotate(-12) scale(1.25)">${miniPh}</g>`
+      : `<path d="M52 -424 Q86 -356 80 -276" stroke="${cl}" stroke-width="28" fill="none" stroke-linecap="round"/>
+         <circle cx="80" cy="-264" r="13" fill="url(#sk)"/>
+         <path d="M46 -412 Q62 -330 58 -252" stroke="#39414F" stroke-width="9" fill="none"/><rect x="38" y="-252" width="46" height="60" rx="12" fill="#39414F"/>`}
     <rect x="-15" y="-478" width="30" height="34" rx="9" fill="url(#sk)"/>
     <circle cx="0" cy="-518" r="39" fill="url(#sk)"/>
     <circle cx="33" cy="-510" r="8" fill="${SKIN2}"/>
@@ -109,10 +129,15 @@ const P = orient === 'portrait';
   const phoneShell = (inner, at) => `<div id="phonewrap" style="${at};opacity:1"><div class="pframe"></div><div class="pscr">${inner}${pstat}<div class="pisland"></div></div></div>`;
   /* POV hand: sleeve cuff + palm + 3 fingers + thumb */
   const hand = (x, y, rot, flip, sc) => `<g transform="translate(${x},${y}) rotate(${rot}) scale(${flip ? -sc : sc},${sc})">
-    <rect x="-30" y="60" width="140" height="90" rx="24" fill="#5A6B85"/>
-    <rect x="-70" y="-46" width="130" height="120" rx="36" fill="url(#sk)"/>
-    ${[0, 1, 2].map(k => `<rect x="${-86 - k * 4}" y="${-92 + k * 30}" width="34" height="70" rx="16" fill="url(#sk)"/>`).join('')}
-    <ellipse cx="64" cy="-12" rx="26" ry="52" fill="url(#sk)" transform="rotate(-38 64 -12)"/>
+    <path d="M8 96 C-8 70 6 36 28 22 L96 14 C118 20 124 42 108 64 L78 96 C48 112 18 114 8 96 Z" fill="#7C8BA3"/>
+    <path d="M22 28 C40 4 88 -6 118 16 C128 36 112 52 86 48 C54 42 30 46 22 28 Z" fill="url(#sk)"/>
+    <g fill="url(#sk)">
+      <rect x="4" y="-70" width="26" height="78" rx="13"/>
+      <rect x="32" y="-86" width="24" height="82" rx="12"/>
+      <rect x="58" y="-80" width="24" height="74" rx="12"/>
+      <rect x="82" y="-62" width="22" height="60" rx="11"/>
+    </g>
+    <ellipse cx="36" cy="18" rx="20" ry="34" fill="url(#sk)" transform="rotate(52 36 18)"/>
   </g>`;
   const cafe = `<rect width="${W}" height="${H}" fill="#EFE7DA"/>
     <g filter="url(#b8)">${[...Array(6)].map((_, k) => `<rect x="${W * (.58 + k * .07)}" y="${H * .3}" width="${W * .045}" height="${H * .3}" rx="6" fill="${k % 2 ? '#D8CFC2' : '#CEC6BA'}"/>`).join('')}
@@ -182,7 +207,8 @@ const P = orient === 'portrait';
   const phoneAt = P ? 'left:203px;top:120px;transform:scale(1.6);transform-origin:0 0' : 'left:750px;top:99px';
   const raC = P ? { x: 203 + 22 + 61 * 1.6, y: 120 + 22 + 300 * 1.6 } : { x: 750 + 14 + 61, y: 99 + 14 + 300 };
   const phx = P ? 203 : 750, phy = P ? 120 : 99, phW = P ? 421 * 1.6 : 421, phH = P ? 882 * 1.6 : 882;
-  const povHands = op => svg(DEFS + `<g opacity="${op}">${hand(phx + phW * .06, phy + phH * .86, -24, 0, P ? 1.1 : 1)}${hand(phx + phW * .92, phy + phH * .95, 10, 1, P ? 1.1 : 1)}</g>`);
+  const hs = P ? 1.05 : 1.15;
+  const povHands = op => svg(DEFS + `<g opacity="${op}">${hand(phx - (P ? 10 : 36), phy + phH * (P ? .72 : .78), -28, 0, hs)}${hand(phx + phW + (P ? 8 : 28), phy + phH * (P ? .78 : .84), 22, 1, hs)}</g>`);
   const thumb = op => svg(DEFS + `<g opacity="${op}"><ellipse cx="${raC.x + 8}" cy="${raC.y - 4}" rx="30" ry="54" fill="url(#sk)" transform="rotate(-18 ${raC.x + 8} ${raC.y - 4})"/></g>`);
   S[5] = `<div class="blurbg">${svg(DEFS + cafe)}</div>` + povHands(1)
     + phoneShell(hsc + `<div class="rip" style="left:29px;top:263px;width:64px;height:64px"></div>`, phoneAt)

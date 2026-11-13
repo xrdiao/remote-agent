@@ -206,9 +206,19 @@
   var dim = el('div', '', stage); dim.id = 'dim';
 
   /* ================= THE AGENT SESSION (single state, two renderers) ================= */
-  var AG = { msgs: [], mid: 0, status: 'run', q: null, draft: '', screen: 'home',
+  var SHOT = 'data:image/svg+xml,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="120" viewBox="0 0 160 120">' +
+    '<rect width="160" height="120" rx="10" fill="#E8E6F6"/>' +
+    '<rect x="10" y="12" width="62" height="10" rx="4" fill="#4A3FD4"/>' +
+    '<rect x="10" y="30" width="140" height="8" rx="3" fill="#C8C4E4"/>' +
+    '<rect x="10" y="44" width="108" height="8" rx="3" fill="#C8C4E4"/>' +
+    '<rect x="10" y="64" width="140" height="42" rx="8" fill="#fff"/>' +
+    '<rect x="20" y="74" width="48" height="8" rx="3" fill="#4A3FD4" opacity=".7"/>' +
+    '<rect x="20" y="88" width="110" height="6" rx="3" fill="#D9D6EE"/></svg>');
+  var AG = { msgs: [], mid: 0, status: 'run', q: null, draft: '', attach: null, screen: 'home',
              focused: false, kb: false, voice: false, sheet: null, lock: null, notif: null,
              clock: '12:02', statusMsg: '', theme: 'light',
+             screenImg: 'assets/mujoco-view.jpg', screenTitle: 'Mujoco',
              sess: { title: S.sess_t, project: S.project, app: 'Cursor' },
              home: { loading: 1, pct: 0, expanded: 0, opening: 0 }, prog: { done: 0, total: 7 } };
 
@@ -287,11 +297,11 @@
 
   var dPanel = el('div', 'apanel dpanel', scr);
   dPanel.innerHTML = '<div class="ahead"></div><div class="abody"></div>' +
-    '<div class="ainput"><div class="abox"><span class="ph">' + (LANG === 'en' ? 'Ask anything' : '问点什么') + '</span>' +
+    '<div class="ainput"><div class="abox"><img class="dshot" alt=""><span class="ph">' + (LANG === 'en' ? 'Ask anything' : '问点什么') + '</span>' +
     '<span class="dt"></span><span class="caret"></span></div><div class="sendbtn">↑</div></div>';
   var dHead = dPanel.querySelector('.ahead'), dBody = dPanel.querySelector('.abody');
   var dBox = dPanel.querySelector('.abox'), dPh = dBox.querySelector('.ph'), dTxt = dBox.querySelector('.dt'),
-      dCaret = dBox.querySelector('.caret');
+      dCaret = dBox.querySelector('.caret'), dShot = dBox.querySelector('.dshot');
 
   var taskbar = el('div', 'taskbar', scr);
   ['tb1', 'tb2', 'tb3', 'tb4', 'tb5'].forEach(function (c) { el('i', 'tbi ' + c, taskbar, ''); });
@@ -390,7 +400,7 @@
   function postTo(f, m) { try { f.contentWindow.postMessage(m, '*'); } catch (e) {} }
   function phoneMsgs() {
     return AG.msgs.map(function (m) {
-      if (m.type === 'user') return { k: 'human', t: m.text, time: m.time };
+      if (m.type === 'user') return { k: 'human', t: m.text, time: m.time, img: m.img || '' };
       if (m.type === 'ai' || m.type === 'final') return { k: 'assistant', t: m.text };
       if (m.type === 'ans') return { k: 'ans', t: m.text };
       if (m.type === 'read') return { k: 'tool', kind: 'read', f: m.f, state: m.state };
@@ -404,17 +414,19 @@
   function baseState() {
     return {
       app: 'cursor', title: AG.sess.title, project: AG.sess.project, model: S.model,
-      status: AG.status, msgs: phoneMsgs(), q: AG.q, draft: AG.draft,
+      status: AG.status, msgs: phoneMsgs(), q: AG.q, draft: AG.draft, attach: AG.attach,
       focused: AG.focused, kb: AG.kb, voice: AG.voice, sheet: AG.sheet,
       lock: AG.lock, notif: AG.notif, statusMsg: AG.statusMsg, theme: AG.theme,
-      screen: AG.screen, home: AG.home, prog: AG.prog
+      screen: AG.screen, home: AG.home, prog: AG.prog,
+      screenImg: AG.screenImg, screenTitle: AG.screenTitle
     };
   }
   function syncPhone(instant) {
     var st = baseState();
     postTo(pApp, { type: 'state', state: st, instant: !!instant });
     var stT = baseState(); stT.screen = 'term'; stT.sheet = null; stT.lock = null; stT.notif = null;
-    stT.term = { cmd: S.term_cmd, lines: S.term_lines };
+    stT.status = 'done';
+    stT.term = { cmd: S.term_cmd, lines: S.term_lines, prompt: S.term_prompt };
     postTo(sAppT, { type: 'state', state: stT, instant: !!instant });
     var stF = baseState(); stF.screen = 'file'; stF.sheet = null; stF.lock = null; stF.notif = null;
     stF.file = fileState();
@@ -540,7 +552,10 @@
     return h + '</div>';
   }
   function dMsgHtml(m) {
-    if (m.type === 'user') return '<div class="msg user"><div class="bub">' + m.text + '</div></div>';
+    if (m.type === 'user') {
+      var img = m.img ? '<img class="bubimg" src="' + m.img + '" alt="">' : '';
+      return '<div class="msg user"><div class="bub">' + img + m.text + '</div></div>';
+    }
     if (m.type === 'final') return '<div class="msg ai"><div class="bub final"><span class="check">✓</span> ' + m.text + '</div></div>';
     if (m.type === 'ans') return '<div class="ansrow"><span class="check">✓</span>' + m.text + '</div>';
     if (m.type === 'ai') return '<div class="msg ai"><div class="bub">' + m.text + '</div></div>';
@@ -559,9 +574,16 @@
   }
   function renderDDraft() {
     dPh.style.display = AG.draft ? 'none' : '';
-    dTxt.style.display = AG.draft ? '' : 'none';
+    dTxt.style.display = AG.draft ? 'inline' : 'none';
     dTxt.textContent = AG.draft;
-    dCaret.style.display = AG.draft ? '' : 'none';
+    dCaret.style.display = AG.draft ? 'inline-block' : 'none';
+    dShot.style.display = AG.attach ? 'block' : 'none';
+    if (AG.attach) dShot.src = AG.attach.src;
+  }
+  function agAttach(a) {
+    AG.attach = a;
+    renderDDraft();
+    syncPhone(FF);
   }
   function agPush(msg) {
     msg.id = 'm' + (++AG.mid);
@@ -633,7 +655,8 @@
   function termState(cmd, lines) {
     var st = baseState(); st.screen = 'term';
     st.sheet = null; st.lock = null; st.notif = null;
-    st.term = { cmd: cmd, lines: lines || [] };
+    st.status = 'done';
+    st.term = { cmd: cmd, lines: lines || [], prompt: S.term_prompt };
     postTo(sAppT, { type: 'state', state: st, instant: FF });
   }
 
@@ -687,96 +710,103 @@
   world.style.opacity = '1';
   monWrap.style.transform = LAY.monEnter; monWrap.style.opacity = '0';
 
-  /* intro 1 — four panels + pill appear together */
-  scene('quad', 2.5, function (t0) {
+  /* intro 1 — four panels and the line together; nobody is holding a phone yet */
+  scene('quad', 1.15, function (t0) {
     at(t0, function () {
       quadPanes.forEach(function (p) {
-        tween(p, [{ opacity: 0, transform: 'scale(.94)' }, { opacity: 1, transform: 'scale(1)' }], 500);
+        tween(p, [{ opacity: 0, transform: 'scale(.94)' }, { opacity: 1, transform: 'scale(1)' }], 420);
       });
       tween(pill, [{ opacity: 0, transform: 'translate(-50%,-50%) scale(.9)' },
-        { opacity: 1, transform: 'translate(-50%,-50%) scale(1)' }], 450);
+        { opacity: 1, transform: 'translate(-50%,-50%) scale(1)' }], 380);
     });
   });
 
-  /* intro 2 — pill fades, everyone raises a phone */
-  scene('phoneout', 1.0, function (t0) {
+  /* intro 2 — all four raise a phone; the line stays until the zoom */
+  scene('phoneout', 0.8, function (t0) {
     at(t0, function () {
-      tween(pill, [{ opacity: 1 }, { opacity: 0 }], 280);
       quadPanes.forEach(function (p) {
-        tween(p.querySelector('.phvar'), [{ opacity: 0, transform: 'translateY(10px)' },
-          { opacity: 1, transform: 'translateY(0px)' }], 350);
+        tween(p.querySelector('.phvar'), [{ opacity: 0, transform: 'translateY(16px)' },
+          { opacity: 1, transform: 'translateY(0px)' }], 320);
       });
     });
   });
 
-  /* intro 3 — cafe panel FLIP-expands, others shrink/fade */
-  scene('expand', 0.9, function (t0) {
+  /* intro 3 — cafe panel FLIP-expands, phone still in the hand */
+  scene('expand', 0.7, function (t0) {
     at(t0, function () {
+      tween(pill, [{ opacity: 1 }, { opacity: 0 }], 220);
       var cafe = quadPanes[3];
       cafe.style.zIndex = '5';
       tween(cafe, [
         { left: RI.PX[1] + 'px', top: RI.PY[1] + 'px', width: RI.PW + 'px', height: RI.PH + 'px' },
         { left: '40px', top: '40px', width: (LAY.W - 80) + 'px', height: (LAY.H - 80) + 'px' }
-      ], 800);
+      ], 620);
       [0, 1, 2].forEach(function (i) {
         tween(quadPanes[i], [{ opacity: 1, transform: 'scale(1)' },
-          { opacity: 0, transform: 'scale(.7)' }], 500);
+          { opacity: 0, transform: 'scale(.7)' }], 400);
       });
     });
   });
 
-  /* intro 4 — match cut: mini phone FLIPs into the real phone frame */
-  scene('matchcut', 1.2, function (t0) {
+  /* intro 4 — the phone in that hand becomes the real phone */
+  scene('matchcut', 0.85, function (t0) {
+    var handPh = ORIENT === 'portrait' ? [430, 980, 48, 92] : [760, 460, 52, 100];
+    var msc = mphone.querySelector('.mpscr');
+    var scr0 = 'scale(' + (handPh[2] / 393) + ',' + (handPh[3] / 854) + ')';
+    var scr1 = 'scale(' + LAY.povS + ',' + LAY.povS + ')';
     at(t0, function () {
-      tween(blur, [{ opacity: 0 }, { opacity: 1 }], 450);
-      tween(mphone, [{ opacity: 0 }, { opacity: 1 }], 200);
+      tween(blur, [{ opacity: 0 }, { opacity: 1 }], 280);
+      mphone.style.left = handPh[0] + 'px';
+      mphone.style.top = handPh[1] + 'px';
+      mphone.style.width = handPh[2] + 'px';
+      mphone.style.height = handPh[3] + 'px';
+      msc.style.transform = scr0;
+      tween(mphone, [{ opacity: 0 }, { opacity: 1 }], 160);
     });
-    at(t0 + 0.5, function () {
-      tween(hands, [{ opacity: 0 }, { opacity: 1 }], 380);
-    });
-    at(t0 + 0.25, function () {
+    at(t0 + 0.12, function () {
       var scr = [LAY.povAbs[0] + 14 * LAY.povS, LAY.povAbs[1] + 14 * LAY.povS,
                  393 * LAY.povS, 854 * LAY.povS];
       tween(mphone, [
-        { left: LAY.mphone[0] + 'px', top: LAY.mphone[1] + 'px', width: LAY.mphone[2] + 'px',
-          height: LAY.mphone[3] + 'px', borderRadius: '10px', opacity: 1 },
+        { left: handPh[0] + 'px', top: handPh[1] + 'px', width: handPh[2] + 'px',
+          height: handPh[3] + 'px', borderRadius: '12px', opacity: 1 },
         { left: scr[0] + 'px', top: scr[1] + 'px', width: scr[2] + 'px',
           height: scr[3] + 'px', borderRadius: '42px', opacity: 1 }
-      ], 700);
-      var msc = mphone.querySelector('.mpscr');
-      tween(msc, [{ transform: 'scale(' + (LAY.mphone[2] / 393) + ',' + (LAY.mphone[3] / 854) + ')' },
-        { transform: 'scale(1,1)' }], 700);
-      tween(quadPanes[3], [{ opacity: 1 }, { opacity: 0 }], 500);
+      ], 460);
+      tween(msc, [{ transform: scr0 }, { transform: scr1 }], 460);
+      tween(quadPanes[3], [{ opacity: 1 }, { opacity: 0 }], 360);
     });
-    at(t0 + 0.95, function () {
+    at(t0 + 0.28, function () {
+      tween(hands, [{ opacity: 0 }, { opacity: 1 }], 280);
+    });
+    at(t0 + 0.62, function () {
       phoneWrap.style.opacity = '1';
-      tween(mphone, [{ opacity: 1 }, { opacity: 0 }], 200);
+      tween(mphone, [{ opacity: 1 }, { opacity: 0 }], 160);
       var ic = phoneWrap.querySelector('#raIcon');
-      var ir = rectInWorld(ic);
+      var ib = ic.getBoundingClientRect(), pb = pRip.getBoundingClientRect();
+      var sx = pb.width ? pRip.clientWidth / pb.width : 1;
+      var sy = pb.height ? pRip.clientHeight / pb.height : 1;
       var rp = el('div', 'ripple', pRip);
-      rp.style.left = (ir[0] + ir[2] / 2) + 'px'; rp.style.top = (ir[1] + ir[3] / 2) + 'px';
+      rp.style.left = ((ib.left - pb.left) + ib.width / 2) * sx + 'px';
+      rp.style.top = ((ib.top - pb.top) + ib.height / 2) * sy + 'px';
       rp.style.width = '56px'; rp.style.height = '56px'; rp.style.margin = '-28px 0 0 -28px';
-      tween(rp, [{ opacity: 0.9, transform: 'scale(.3)' }, { opacity: 0, transform: 'scale(1.6)' }], 600)
+      tween(rp, [{ opacity: 0.9, transform: 'scale(.3)' }, { opacity: 0, transform: 'scale(1.6)' }], 420)
         .then(function () { rp.remove(); });
     });
   });
 
-  /* intro 5 — launch: icon zooms, brand, mark flies to the watermark */
-  scene('launch', 1.5, function (t0) {
+  /* intro 5 — full-screen splash holds, then the app is up */
+  scene('launch', 1.45, function (t0) {
     at(t0, function () {
       pLaunch.classList.add('on');
       var lz = pLaunch.querySelector('.lzicon');
-      tween(lz, [{ transform: 'scale(.55)', opacity: .5 }, { transform: 'scale(1)', opacity: 1 }], 450);
-      tween(pLaunch.querySelector('.lname'), [{ opacity: 0 }, { opacity: 1 }], 350);
-      tween(pLaunch.querySelector('.ltag'), [{ opacity: 0 }, { opacity: 1 }], 350);
+      tween(lz, [{ transform: 'scale(.55)', opacity: .5 }, { transform: 'scale(1)', opacity: 1 }], 280);
+      tween(pLaunch.querySelector('.lname'), [{ opacity: 0 }, { opacity: 1 }], 220);
+      tween(pLaunch.querySelector('.ltag'), [{ opacity: 0 }, { opacity: 1 }], 220);
       tween(hands, [{ opacity: 1, transform: 'translateY(0px)' },
-        { opacity: 0, transform: 'translateY(120px)' }], 500);
-      tween(blur, [{ opacity: 1 }, { opacity: 0 }], 600);
+        { opacity: 0, transform: 'translateY(80px)' }], 320);
+      tween(blur, [{ opacity: 1 }, { opacity: 0 }], 360);
     });
-    at(t0 + 0.7, function () {
-      tween(pLaunch, [{ opacity: 1 }, { opacity: 0 }], 450);
-    });
-    at(t0 + 0.55, function () {
+    at(t0 + 0.9, function () {
       brandfly.style.opacity = '1';
       /* fly the splash's icon+wordmark lockup: start exactly on it, arc up-left,
          shrink, land on the top-left watermark (brandmark fades in on arrival) */
@@ -801,14 +831,14 @@
                  opacity: f > .82 ? Math.max(0, 1 - (f - .82) / .18) : 1,
                  offset: f };
       });
-      tween(brandfly, kf, 620).then(function () { brandfly.style.opacity = '0'; });
-      tween(phoneWrap.querySelector('.hscr'), [{ opacity: 1 }, { opacity: 0 }], 350);
+      tween(brandfly, kf, 320).then(function () { brandfly.style.opacity = '0'; });
+      tween(phoneWrap.querySelector('.hscr'), [{ opacity: 1 }, { opacity: 0 }], 240);
     });
-    at(t0 + 1.2, function () {
-      tween(brandmark, [{ opacity: 0 }, { opacity: 1 }], 400);
-      tween(pLaunch, [{ opacity: 1 }, { opacity: 0 }], 350);
-      tween(pApp, [{ opacity: 0 }, { opacity: 1 }], 300);
-      tween(introL, [{ opacity: 1 }, { opacity: 0 }], 300)
+    at(t0 + 1.16, function () {
+      tween(brandmark, [{ opacity: 0 }, { opacity: 1 }], 240);
+      tween(pLaunch, [{ opacity: 1 }, { opacity: 0 }], 220);
+      tween(pApp, [{ opacity: 0 }, { opacity: 1 }], 220);
+      tween(introL, [{ opacity: 1 }, { opacity: 0 }], 220)
         .then(function () { introL.remove(); });
     });
   });
@@ -829,84 +859,128 @@
   });
 
   /* ================= shot 1 — home loading ================= */
-  scene('shot1', 2.5, function (t0) {
-    at(t0, function () { caption('cap_s1'); agScreen('home'); agHome({ loading: 1, pct: 8 }); setTime('12:02'); });
-    for (var i = 1; i <= 6; i++) {
-      (function (n) { at(t0 + 0.3 + n * 0.25, function () { agHome({ pct: 8 + Math.round(82 * n / 6) }); }); })(i);
-    }
+  scene('shot1', 1.4, function (t0) {
+    at(t0, function () { caption('cap_s1'); agScreen('home'); agHome({ loading: 1, pct: 28 }); setTime('12:02'); });
+    at(t0 + 0.5, function () { agHome({ pct: 64 }); });
+    at(t0 + 1.05, function () { agHome({ pct: 100 }); });
   });
 
   /* ================= shot 2 — tiles fill in ================= */
   scene('shot2', 2.2, function (t0) {
     at(t0, function () { caption('cap_s2'); agHome({ loading: 0, pct: 100 }); });
-    at(t0 + 1.2, function () { pTap('.ov-cursor'); });
+    at(t0 + 1.15, function () { pTap('.ov-cursor .ov-title'); });
+    at(t0 + 1.55, function () { agHome({ expanded: 1 }); });
   });
 
   /* ================= shot 3 — card expands + typing ================= */
-  var DRAFT = S.draft, dN = DRAFT.length;
-  scene('shot3', 4.6, function (t0) {
-    at(t0, function () { caption('cap_s3'); agHome({ expanded: 1 }); });
-    at(t0 + 0.4, function () { agFocus(true); });
+  var DRAFT = S.draft, dN = DRAFT.length, dStep = 0.042;
+  scene('shot3', 0.25 + dN * dStep + 0.55, function (t0) {
+    at(t0, function () {
+      caption('cap_s3'); agHome({ expanded: 1 }); agFocus(true);
+      agAttach({ name: S.shot_name, src: SHOT });
+    });
     for (var i = 1; i <= dN; i++) {
-      (function (n) { at(t0 + 1.0 + n * 0.09, function () { agDraft(DRAFT.slice(0, n)); }); })(i);
+      (function (n) { at(t0 + 0.25 + n * dStep, function () { agDraft(DRAFT.slice(0, n)); }); })(i);
     }
   });
 
   /* ================= shot 4 — tap open ================= */
-  scene('shot4', 1.5, function (t0) {
-    at(t0, function () { caption('cap_s4'); agFocus(false); });
-    at(t0 + 0.4, function () { pTap('.ov-open').then(function () { agHome({ opening: 1 }); }); });
+  scene('shot4', 0.5, function (t0) {
+    at(t0, function () { agFocus(false); });
+    at(t0 + 0.1, function () {
+      pTap('.ov-open .ov-cfoot .ov-link').then(function () { agHome({ opening: 1 }); });
+    });
   });
 
   /* ================= shot 5 — chat pushes in, send ================= */
-  scene('shot5', 2.5, function (t0) {
+  scene('shot5', 1.35, function (t0) {
     at(t0, function () { caption('cap_s5'); agScreen('chat'); agHome({ opening: 0 }); });
-    at(t0 + 1.4, function () {
+    at(t0 + 0.4, function () {
       pTap('#send').then(function () {
-        agPush({ type: 'user', text: DRAFT });
+        agPush({ type: 'user', text: DRAFT, img: SHOT });
         agDraft('');
+        agAttach(null);
         AG.home.sent = 1;
       });
     });
   });
 
-  /* ================= shot 6 — back home + computer arrives ================= */
-  scene('shot6', 4.0, function (t0) {
-    at(t0, function () { caption('cap_s6'); agScreen('home'); });
-    at(t0 + 0.3, function () {
+  /* ================= shot 6 — computer arrives, phone stays on the sent chat ================= */
+  scene('shot6', 2.05, function (t0) {
+    at(t0, function () { caption('cap_s6'); });
+    at(t0 + 0.05, function () {
       monWrap.style.opacity = '1';
-      tween(monWrap, [{ transform: LAY.monEnter }, { transform: LAY.monSplit }], 850);
-      tween(phoneWrap, [{ transform: LAY.phonePov }, { transform: LAY.phoneSplit }], 800);
+      tween(monWrap, [{ transform: LAY.monEnter }, { transform: LAY.monSplit }], 680);
+      tween(phoneWrap, [{ transform: LAY.phonePov }, { transform: LAY.phoneSplit }], 640);
     });
-    at(t0 + 1.2, function () {
+    at(t0 + 0.65, function () {
       relay.classList.remove('hidden');
-      if (LAY.relay.vert) tween(relay, [{ height: '0px' }, { height: LAY.relay.h + 'px' }], 650);
-      else tween(relay, [{ width: '0px' }, { width: LAY.relay.w + 'px' }], 650);
+      if (LAY.relay.vert) tween(relay, [{ height: '0px' }, { height: LAY.relay.h + 'px' }], 420);
+      else tween(relay, [{ width: '0px' }, { width: LAY.relay.w + 'px' }], 420);
       relayLbl.classList.remove('hidden');
-      tween(relayLbl, [{ opacity: 0 }, { opacity: 1 }], 400);
+      tween(relayLbl, [{ opacity: 0 }, { opacity: 1 }], 280);
       pulseBeam();
     });
   });
 
   /* ================= shot 7 — new steps, mirrored ================= */
-  scene('shot7', 3.5, function (t0) {
-    at(t0, function () { caption('cap_s7'); });
-    at(t0 + 0.3, function () {
+  scene('shot7', 1.7, function (t0) {
+    at(t0, function () { caption('cap_s7'); agScreen('chat'); });
+    at(t0 + 0.15, function () {
       agRemove(AG.testId);
       agPush({ type: 'edit', f: 'README.md', state: 'done' });
       pulseBeam();
     });
-    at(t0 + 1.4, function () {
+    at(t0 + 0.7, function () {
       AG.testId = agPush({ type: 'test', cmd: 'npm test', count: 97, total: 132, state: 'run' });
       termPush('Tests: 97 of 132 passed');
+      agProg(4, 7);
       pulseBeam();
     });
-    at(t0 + 2.1, function () { agProg(4, 7); });
-    at(t0 + 3.1, function () { agScreen('chat'); });
+  });
+
+  /* voice sits once the computer is beside the phone, so the words land in both inputs */
+  var words = S.voice_text.split(LANG === 'en' ? ' ' : '');
+  var vStep = 0.06, vLead = 0.55;
+  scene('voice', vLead + words.length * vStep + 1.15, function (t0) {
+    at(t0, function () { caption('cap_voice'); });
+    at(t0 + 0.12, function () { pTap('#text'); });
+    at(t0 + 0.28, function () {
+      agFocus(true);
+      showCallout();
+    });
+    at(t0 + 0.42, function () {
+      fx(pApp, 'hold', { sel: '#mic' }, Math.round((words.length * vStep + 0.2) * 1000));
+      agVoice(true);
+    });
+    for (var i = 1; i <= words.length; i++) {
+      (function (n) {
+        at(t0 + vLead + n * vStep, function () {
+          agDraftLate(LANG === 'en' ? words.slice(0, n).join(' ') : words.slice(0, n).join(''));
+        });
+      })(i);
+    }
+    var typeEnd = t0 + vLead + words.length * vStep;
+    at(typeEnd + 0.18, function () { agVoice(false); });
+    at(typeEnd + 0.4, function () {
+      pTap('#send').then(function () {
+        hideCallout();
+        agPush({ type: 'user', text: S.voice_text });
+        agDraft('');
+        agFocus(false);
+        renderDDraft();
+        pulseBeam();
+      });
+    });
+    at(typeEnd + 0.85, function () {
+      var id = agPush({ type: 'edit', f: S.t_readme, add: 24, del: 6, state: 'run' });
+      pulseBeam();
+      wait(0.35).then(function () { agUpdate(id, { state: 'done' }); });
+    });
   });
 
   /* ================= scene 6 — ask ================= */
-  scene('ask', 7.5, function (t0) {
+  scene('ask', 6.6, function (t0) {
     at(t0, function () { caption('cap_ask'); setTime('12:28'); agScreen('chat'); });
     at(t0 + 0.2, function () {
       agStatus('wait');
@@ -918,87 +992,22 @@
       agNotif(S.notif_wait_t, S.q);
       fx(pApp, 'shake', {}, 0);
     });
-    at(t0 + 2.2, function () { fx(pApp, 'shake', {}, 0); });
     at(t0 + 2.8, function () {
       pTap('#notif').then(function () { agLock(false); });
     });
     at(t0 + 3.5, function () { focusPhone(true); });
     at(t0 + 4.2, function () {
-      pTap('.qnOpts .qnOpt:nth-child(2)').then(function () { agSel(1); });
-    });
-    at(t0 + 4.9, function () {
-      pTap('.qnAct .primary').then(function () {
-        agAnswer(1);
-        agStatus('run');
+      pTap('.qnOpts .qnOpt:nth-child(2)').then(function () {
+        agSel(1);
+        wait(0.28).then(function () { agAnswer(1); agStatus('run'); });
       });
     });
-    at(t0 + 5.6, function () { focusPhone(false); });
-    at(t0 + 6.2, function () {
+    at(t0 + 5.0, function () { focusPhone(false); });
+    at(t0 + 5.5, function () {
       var id = agPush({ type: 'edit', f: S.t_compat, add: 58, del: 4, state: 'run' });
       pulseBeam();
       wait(0.6).then(function () { agUpdate(id, { state: 'done' }); });
     });
-  });
-
-  /* ================= scene 7 — voice ================= */
-  var words = S.voice_text.split(LANG === 'en' ? ' ' : '');
-  scene('voice', 6.0, function (t0) {
-    at(t0, function () { caption('cap_voice'); });
-    at(t0 + 0.3, function () { pTap('#text'); });
-    at(t0 + 0.7, function () {
-      agFocus(true);
-      showCallout();
-    });
-    at(t0 + 1.2, function () {
-      fx(pApp, 'hold', { sel: '#mic' }, 2400);
-      agVoice(true);
-    });
-    for (var i = 1; i <= words.length; i++) {
-      (function (n) {
-        at(t0 + 1.5 + n * 0.17, function () {
-          agDraftLate(LANG === 'en' ? words.slice(0, n).join(' ') : words.slice(0, n).join(''));
-        });
-      })(i);
-    }
-    var typeEnd = t0 + 1.5 + words.length * 0.17;
-    at(typeEnd + 0.4, function () { agVoice(false); });
-    at(typeEnd + 0.8, function () {
-      pTap('#send').then(function () {
-        hideCallout();
-        agPush({ type: 'user', text: S.voice_text });
-        agDraft('');
-        agFocus(false);
-        renderDDraft();
-        pulseBeam();
-      });
-    });
-    at(typeEnd + 1.6, function () {
-      var id = agPush({ type: 'edit', f: S.t_readme, add: 24, del: 6, state: 'run' });
-      pulseBeam();
-      wait(0.6).then(function () { agUpdate(id, { state: 'done' }); });
-    });
-  });
-
-  /* ================= scene 7b — theme ================= */
-  scene('theme', 2.7, function (t0) {
-    at(t0, function () { caption('cap_theme'); });
-    at(t0 + 0.15, function () { pTap('#menuBtn'); });
-    at(t0 + 0.45, function () { agMenu(); });
-    at(t0 + 0.85, function () {
-      var tap = pTapReport('#menuThemeRow');
-      (tap || Promise.resolve(null)).then(function (pt) {
-        var vp = pt ? iframeToViewport(pApp, pt) : [innerWidth * 0.8, innerHeight * 0.7];
-        switchTheme('dark', vp[0], vp[1]);
-      });
-    });
-    at(t0 + 2.25, function () {
-      var tap = pTapReport('#menuThemeRow');
-      (tap || Promise.resolve(null)).then(function (pt) {
-        var vp = pt ? iframeToViewport(pApp, pt) : [innerWidth * 0.8, innerHeight * 0.7];
-        switchTheme('light', vp[0], vp[1]);
-      });
-    });
-    at(t0 + 2.55, function () { agSheetOff(); });
   });
 
   /* ================= scene 8 — more ================= */
@@ -1014,6 +1023,7 @@
     });
     var MO = LAY.more, SL = MO.slide;
     at(t0 + 0.7, function () {
+      agScreen('visual');
       sPhoneT.classList.remove('hidden');
       sPhoneT.style.left = MO.t.x + 'px'; sPhoneT.style.top = MO.t.y + 'px';
       tween(sPhoneT, [{ transform: 'translate(' + (-SL) + 'px,0px) rotate(' + (MO.t.r - 2) + 'deg) scale(' + MO.t.s + ')', opacity: 0 },
@@ -1024,16 +1034,15 @@
         { transform: 'translate(0px,0px) rotate(' + MO.f.r + 'deg) scale(' + MO.f.s + ')', opacity: 1 }], 700);
     });
     at(t0 + 1.6, function () {
-      lblTerm.classList.remove('hidden'); lblAgents.classList.remove('hidden'); lblFile.classList.remove('hidden');
+      lblAgents.textContent = S.lbl_screen;
+      lblTerm.classList.remove('hidden'); lblFile.classList.remove('hidden'); lblAgents.classList.remove('hidden');
       lblTerm.style.left = MO.lbl.term[0] + 'px'; lblTerm.style.top = MO.lbl.term[1] + 'px';
-      lblAgents.style.left = MO.lbl.agents[0] + 'px'; lblAgents.style.top = MO.lbl.agents[1] + 'px';
       lblFile.style.left = MO.lbl.file[0] + 'px'; lblFile.style.top = MO.lbl.file[1] + 'px';
-      [lblTerm, lblAgents, lblFile].forEach(function (l) {
+      lblAgents.style.left = MO.lbl.agents[0] + 'px'; lblAgents.style.top = MO.lbl.agents[1] + 'px';
+      [lblTerm, lblFile, lblAgents].forEach(function (l) {
         tween(l, [{ opacity: 0, transform: 'translateY(14px)' }, { opacity: 1, transform: 'translateY(0px)' }], 400);
       });
     });
-    at(t0 + 2.2, function () { pTap('#title'); });
-    at(t0 + 2.6, function () { agSheet(); });
     for (var ci = 1; ci <= S.term_cmd.length; ci++) {
       (function (n) {
         at(t0 + 1.0 + n * 0.07, function () { termState(S.term_cmd.slice(0, n), []); });
@@ -1045,28 +1054,32 @@
       })(li);
     }
     at(t0 + 5.3, function () {
-      agSheetOff();
       tween(sPhoneT, [{ opacity: 1, transform: 'translate(0px,0px) rotate(' + MO.t.r + 'deg) scale(' + MO.t.s + ')' },
         { opacity: 0, transform: 'translate(' + (-SL) + 'px,0px) rotate(' + (MO.t.r - 2) + 'deg) scale(' + MO.t.s + ')' }], 500)
         .then(function () { sPhoneT.classList.add('hidden'); });
       tween(sPhoneF, [{ opacity: 1, transform: 'translate(0px,0px) rotate(' + MO.f.r + 'deg) scale(' + MO.f.s + ')' },
         { opacity: 0, transform: 'translate(' + SL + 'px,0px) rotate(' + (MO.f.r + 2) + 'deg) scale(' + MO.f.s + ')' }], 500)
         .then(function () { sPhoneF.classList.add('hidden'); });
-      [lblTerm, lblAgents, lblFile].forEach(function (l) {
+      [lblTerm, lblFile, lblAgents].forEach(function (l) {
         tween(l, [{ opacity: 1 }, { opacity: 0 }], 300).then(function () { l.classList.add('hidden'); });
       });
+      agScreen('chat');
+      caption('cap_done');
     });
     at(t0 + 5.7, function () {
-      tween(phoneWrap, [{ transform: LAY.more.main }, { transform: LAY.phoneSolo }], 600);
-      tween(monWrap, [{ opacity: 0 }, { opacity: 1 }], 600);
-      tween(relay, [{ opacity: 0 }, { opacity: 1 }], 500);
-      tween(relayLbl, [{ opacity: 0 }, { opacity: 1 }], 500);
+      var solo = ORIENT === 'portrait' ? LAY.phoneSolo : LAY.phonePov;
+      tween(phoneWrap, [{ transform: LAY.more.main }, { transform: solo }], 600);
+      monWrap.style.opacity = '0';
+      relay.style.opacity = '0';
+      relayLbl.style.opacity = '0';
+      relay.classList.add('hidden');
+      relayLbl.classList.add('hidden');
     });
   });
 
   /* ================= scene 9 — done ================= */
-  scene('done', 4.5, function (t0) {
-    at(t0, function () { caption('cap_done'); setTime('12:41'); });
+  scene('done', 2.6, function (t0) {
+    at(t0, function () { setTime('12:41'); });
     for (var n = 1; n <= 8; n++) {
       (function (k) { at(t0 + k * 0.12, function () { agUpdate(AG.testId, { count: 97 + Math.round(35 * k / 8) }); }); })(n);
     }
@@ -1074,15 +1087,6 @@
       agUpdate(AG.testId, { state: 'done' });
       agPush({ type: 'final', text: S.final });
       agStatus('done');
-      pulseBeam();
-    });
-    at(t0 + 1.9, function () { agLock(true); });
-    at(t0 + 2.3, function () {
-      agNotif(S.notif_done_t, S.final);
-      fx(pApp, 'shake', {}, 0);
-    });
-    at(t0 + 3.2, function () {
-      pTap('#notif').then(function () { agLock(false); });
     });
   });
 
@@ -1105,32 +1109,32 @@
     : Array.from(S.motto).map(function (w) { return '<span class="tok">' + w + '</span>'; })).join('');
   var oToks = outro.querySelectorAll('.tok');
 
-  scene('outro', 7.0, function (t0) {
+  scene('outro', 4.0, function (t0) {
     at(t0, function () {
       captionOff();
-      tween(world, [{ opacity: 1 }, { opacity: 0 }], 500);
-      tween(outro, [{ opacity: 0 }, { opacity: 1 }], 600);
-      tween(brandmark, [{ opacity: 1 }, { opacity: 0 }], 300);
+      tween(world, [{ opacity: 1 }, { opacity: 0 }], 420);
+      tween(outro, [{ opacity: 0 }, { opacity: 1 }], 480);
+      tween(brandmark, [{ opacity: 1 }, { opacity: 0 }], 240);
     });
-    at(t0 + 0.2, function () { pop(oIcon, 520); });
-    at(t0 + 0.5, function () { tween(oTitle, [{ opacity: 0, transform: 'translateY(28px)' }, { opacity: 1, transform: 'translateY(0px)' }], 500); });
+    at(t0 + 0.12, function () { pop(oIcon, 420); });
+    at(t0 + 0.32, function () { tween(oTitle, [{ opacity: 0, transform: 'translateY(28px)' }, { opacity: 1, transform: 'translateY(0px)' }], 400); });
     for (var i = 0; i < oToks.length; i++) {
       (function (n) {
-        at(t0 + 0.9 + n * 0.05, function () {
-          tween(oToks[n], [{ opacity: 0, transform: 'translateY(30px)' }, { opacity: 1, transform: 'translateY(0px)' }], 380);
+        at(t0 + 0.5 + n * 0.028, function () {
+          tween(oToks[n], [{ opacity: 0, transform: 'translateY(30px)' }, { opacity: 1, transform: 'translateY(0px)' }], 320);
         });
       })(i);
     }
     [0, 1, 2].forEach(function (i) {
-      at(t0 + 2.2 + i * 0.35, function () {
-        pop(oCards[i], 420);
-        tween(oBars[i], [{ width: '0%' }, { width: '100%' }], 700);
+      at(t0 + 1.25 + i * 0.22, function () {
+        pop(oCards[i], 360);
+        tween(oBars[i], [{ width: '0%' }, { width: '100%' }], 480);
       });
     });
-    at(t0 + 3.6, function () {
-      pop(oCta, 450).then(function () { oCta.classList.add('shine'); });
+    at(t0 + 2.1, function () {
+      pop(oCta, 380).then(function () { oCta.classList.add('shine'); });
     });
-    at(t0 + 4.2, function () { tween(oMeta, [{ opacity: 0 }, { opacity: 1 }], 480); });
+    at(t0 + 2.5, function () { tween(oMeta, [{ opacity: 0 }, { opacity: 1 }], 360); });
   });
   END_T = T;
 
@@ -1179,6 +1183,7 @@
           }
           vsleep.length = 0;
           elapsed = SEEK; FF = false;
+          document.documentElement.dataset.ready = '1';
           if (DEBUG) dumpDebug();
           if (!PAUSE) start();
         })();

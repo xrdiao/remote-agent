@@ -3,6 +3,16 @@
 html.noanim *, html.noanim *::before, html.noanim *::after { transition: none !important; }
 body { cursor: none; }
 
+/* Terminal phone matches the real dark terminal: back, RA 终端, green prompt. */
+body.term > header::before {
+  content: ""; width: 18px; height: 18px; flex: none; margin-left: 4px; background: var(--fg-2);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m15 6-6 6 6 6'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m15 6-6 6 6 6'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+body.term .seg, body.term .titleArrow, body.term #dot, body.term #termToolsLabel, body.term #termBusy { display: none !important; }
+body.term #termText { font: 13px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace; }
+body.term #termText .tprompt { color: #3DDC84; }
+
 /* fake iOS-style keyboard: the app layout shrinks above it (interactive-widget=resizes-content) */
 body.kb { height: calc(100dvh - var(--kbh)); }
 #fakekb {
@@ -99,8 +109,16 @@ body.home main { position:absolute; inset:0; }
 .ov-skel i:nth-child(1){width:42%} .ov-skel i:nth-child(2){width:64%} .ov-skel i:nth-child(3){width:50%;opacity:.6;margin-bottom:0}
 /* card composer caret + wrapping draft (storyboard frame-03: wraps, never under send) */
 #homeView .ov-composer .faket { flex:1; min-width:0; font-size:14px; line-height:1.45; color:var(--fg); white-space:normal; overflow-wrap:anywhere; }
+#homeView .ov-composer .ov-shot { width:44px; height:34px; object-fit:cover; border-radius:8px; flex:none; }
 .vcaret { display:inline-block; width:2px; height:1.05em; background:var(--accent); vertical-align:-2px; margin-left:1px; animation:blink .7s step-end infinite; }
 .ov-hide { visibility:hidden; }
+/* Compact running cards are one flat tint, like the app: no progress wash, no divider. */
+#homeView .ov-session:not(.ov-open) > .ov-card-surface::before,
+#homeView .ov-session:not(.ov-open) > .ov-card-surface::after {
+  content: none !important;
+  display: none !important;
+  animation: none !important;
+}
 
 /* screen push transitions (home <-> chat) */
 body.pushin #chatView { animation:pushin .45s cubic-bezier(.22,.61,.36,1); }

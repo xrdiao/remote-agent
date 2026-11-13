@@ -6,7 +6,8 @@
 <title>Remote Agent — phone</title>
 <link rel="stylesheet" href="app-ui/app.css">
 <link rel="stylesheet" href="phone.css">
-<script>window.PHONE_LANG = new URLSearchParams(location.search).get('lang') || 'zh';</script>
+<script>window.PHONE_LANG = new URLSearchParams(location.search).get('lang') || 'zh';
+if (new URLSearchParams(location.search).get('screen') === 'term') document.documentElement.dataset.theme = 'dark';</script>
 <script src="phone.js" defer></script>
 </head>
 <body class="chatmode">
@@ -43,15 +44,24 @@
 
   <section id="screenView" class="view">
     <div id="termBusy" hidden>Agent 正在运行</div>
-    <div id="visualHeader" hidden></div>
-    <div id="visualCaption" hidden></div>
+    <div id="visualHeader" hidden>
+      <div class="visualSource"><button id="visualBack" aria-label="返回对话"><svg class="arrowIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg></button><button id="visualChoose"><span id="visualTitle">选择窗口</span><svg class="arrowIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button><span id="visualStatus" role="status"></span></div>
+    </div>
+    <div id="visualCaption" hidden>
+      <span id="visualPreview">窗口预览</span><span class="visualReadOnly" id="visualRead">只读</span>
+      <div id="screenTools" class="tools">
+        <button id="visualShare" hidden>请求共享窗口</button>
+        <button id="zoom" hidden>适应</button>
+        <button id="refresh">刷新</button>
+      </div>
+    </div>
     <div id="view">
       <div id="termEmpty" hidden><div>没有打开的终端</div><button id="termEmptyNew" type="button">新建终端</button></div>
       <pre id="termText"></pre>
       <div id="visualEmpty" hidden role="status"></div>
       <div id="stage"><img id="screen" alt=""><div id="ripple"></div></div>
     </div>
-    <div id="visualHint" hidden></div>
+    <div id="visualHint" hidden><span id="visualHintText">双指缩放 · 拖动查看</span><span id="visualZoom">100%</span></div>
     <div id="screenKeys" class="tools" hidden>
       <button data-key="Escape">Esc</button>
       <button data-key="Enter">回车</button>
