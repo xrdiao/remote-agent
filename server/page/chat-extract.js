@@ -51,9 +51,11 @@
       if (/^thinking\b/i.test(action) || el.querySelector('[data-loading]')) item.live = true;
       return item;
     }
-    const readable = el.querySelector('.aislash-editor-input-readonly, .composer-human-message') || withoutThinking(el);
+    // Devin keeps the sender and timestamp outside the message's Markdown body.
+    const readable = aria === 'User message' ? el.querySelector('.prose-main')
+      : el.querySelector('.aislash-editor-input-readonly, .composer-human-message') || withoutThinking(el);
     if (k === 'human') {
-      item.t = aria === 'User message' ? devinUserText(readable) : (readable.innerText || readable.textContent || '').trim();
+      item.t = aria === 'User message' ? (readable ? devinUserText(readable) : '') : (readable.innerText || readable.textContent || '').trim();
       const images = messageImages(el);
       if (images.length) item.images = images;
     }

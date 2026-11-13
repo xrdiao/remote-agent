@@ -996,11 +996,17 @@ test('a failed Devin native request ends its own Fusion round after transient me
   state.agentRequests.byId.current = { ...current, status: 'pending', errorMessage: undefined };
   const pending = await context.read('known-user', 'attempt-1', [], 'current'); assert.equal(pending.ended, false);
 });
-function devinItemsFixture(rows) {
+function devinItemsFixture(rows, readBody = false) {
   for (const row of rows) {
     const msg = { item: { k: 'human', i: '', t: '', sentAt: 0, b: ['body'], actions: ['copy'], ...(row.itemExtra || {}) },
       meta: row.meta, time: row.time ?? 1794284911053 };
-    row.el = { key: row.key, native: row.native, innerText: 'x',
+    if (readBody) Object.assign(msg, {
+      innerText: '19:03Luojia:' + (row.body?.innerText || '') + '复制',
+      matches: () => false, getAttribute: name => name === 'aria-label' ? 'User message' : null,
+      querySelector: selector => selector === '.prose-main' ? row.body || null : selector === 'time[datetime]' ? { getAttribute: () => '2026-11-13T11:03:00Z' } : null,
+      images: row.itemExtra?.images || [],
+    });
+    row.el = { key: row.key, get native() { return row.native; }, innerText: 'x',
       hasAttribute: name => name === 'data-transcript-row-key' && row.native != null,
       querySelector: selector => selector.includes('aria-label') ? msg : null,
       classList: { contains: () => false }, msg };
@@ -1015,10 +1021,60 @@ function devinItemsFixture(rows) {
     devinTranscriptIndex: () => 0, devinNodeSessionId: () => 'thread-1', devinSessionRecord: () => ({ status: 'active' }),
     doc: { querySelectorAll: () => [] } });
   const source = fs.readFileSync(new URL('../server/page/chat-extract.js', import.meta.url), 'utf8');
+  if (readBody) {
+    Object.assign(context, {
+      withoutThinking: () => assert.fail('Devin user text must not read the outer message wrapper'),
+      itemKey: () => '', buttonsIn: () => [], messageImages: msg => msg.images,
+      THINKING_ROOT: '.thinking',
+    });
+    vm.runInContext(source.slice(source.indexOf('  const devinUserText ='), source.indexOf('  const cursorToolItems =')), context);
+  }
   const start = source.indexOf('  const devinItems ='), end = source.indexOf('  // Cursor keeps message times', start);
   vm.runInContext(source.slice(start, end) + ';this.devinItems=devinItems;', context);
   return context.devinItems;
 }
+function devinTextNode(tag, children = [], className = '', tex = '') {
+  const classes = className.split(' ');
+  return { nodeType: 1, tagName: tag, childNodes: children,
+    get innerText() { return children.map(node => node.innerText ?? node.textContent).join(''); },
+    matches: selector => selector.split(',').some(part => part.trim().startsWith('.') ? classes.includes(part.trim().slice(1)) : part.trim().toUpperCase() === tag),
+    querySelector(selector) {
+      if (selector === 'annotation' && tex) return { textContent: tex };
+      for (const child of children) {
+        if (child.matches?.(selector)) return child;
+        const found = child.querySelector?.(selector); if (found) return found;
+      }
+      return null;
+    },
+  };
+}
+test('Devin pending and confirmed user messages share the same body without sender, timestamp or actions', () => {
+  const row = { key: 'user:pending', body: devinTextNode('DIV', [{ nodeType: 3, textContent: '你好\n第二行' }]) };
+  const read = devinItemsFixture([row], true);
+  const pending = read({})[0];
+  assert.equal(pending.t, '你好\n第二行');
+  assert.equal(pending.sentAt, Date.parse('2026-11-13T11:03:00Z'));
+  row.native = { event_type: 'user_message', message: '你好\n第二行' };
+  const confirmed = read({})[0];
+  assert.equal(confirmed.t, pending.t); assert.equal(confirmed.i, pending.i);
+  assert.equal(confirmed.sentAt, pending.sentAt);
+});
+test('Devin pending image-only messages keep their images and no metadata becomes text', () => {
+  const images = ['data:image/png;base64,AA=='];
+  for (const body of [null, devinTextNode('DIV')]) {
+    const row = { key: 'user:image', body, itemExtra: { images } }, read = devinItemsFixture([row], true);
+    assert.equal(read({})[0].t, ''); assert.deepEqual(read({})[0].images, images);
+    row.native = { event_type: 'user_message', message: '' };
+    assert.equal(read({})[0].t, ''); assert.deepEqual(read({})[0].images, images);
+  }
+});
+test('Devin pending user messages preserve inline and block formulas inside the body', () => {
+  const text = value => ({ nodeType: 3, textContent: value });
+  const body = devinTextNode('DIV', [text('计算 '), devinTextNode('SPAN', [text('duplicated glyphs')], 'katex', 'a+b'),
+    devinTextNode('DIV', [devinTextNode('SPAN', [text('duplicated block')], 'katex', 'x^2')], 'katex-display', 'x^2')]);
+  const read = devinItemsFixture([{ key: 'user:math', body }], true);
+  assert.equal(read({})[0].t, '计算 $a+b$\n$$x^2$$');
+});
 test('Devin transcript shows an answered native question as its own human message', () => {
   const native = { id: 'tool:call_FsFl9WTY12Ii0wx2SZXmYIRu', timestamp: '2026-11-10T04:28:31.053554927+00:00',
     event_type: 'user_message', message: '', kind: 'question_answers',
