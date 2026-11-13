@@ -672,3 +672,37 @@ Devin 与 Codex 的 MCP 表单共用 `lib/shared-rules.mjs` 中的 `elicitationF
 - 正式 3939 已按授权重启，HTTP 正常；index、core、notify、overview、Service Worker 与工作区逐字节一致，提供 v455。隧道 PID、公开地址和配对密钥校验值一致，启动无警告，Codex 桌面窗口仍为 2 个。未提交、未推送、未发布 Pages；Pages 入口需要发布网页后才能取得 v455 前端卡片修复。手机系统后台自然重连未在本轮登记为实测通过。
 
 证据目录：`_shots/codex-active-writer-20261113/`。包含 native-check.json、paired-results.json、paired-summary-results.json、paired-expanded-results.json、paired-candidate-results.json、expanded-events.json、final-check.log。最终追加证据为 paired-v455-results.json、browser-v455-cleanup.json、v455-events.json、final-v455-check.log、qa-cleanup.json、formal-restart.json、formal-verify.json。首次失败及候选测试均保留，不当作最终产品验收通过。
+
+## 17. Codex 无项目窗口收藏卡片的可用性（2026-11-13）
+
+基准提交 `d08c24a`。用户确认 3 文件范围：`server/overview.mjs`、`scripts/structure-fixes.test.mjs`、本文档，以及验证后重启正式 relay。
+
+### 根因与实施
+
+- 概览末尾补齐收藏会话时统一写入 `dormant: true`。未登记于 RA 后台、又不属于当前桌面项目的 Codex 本地旧会话因而被当作不可用；前端根据这个字段显示“项目未打开”、停止摘要请求并移除卡片输入框。进入正文使用后台恢复链路，可以正常读取，造成卡片与正文行为不一致。
+- 当原生目录／窗口项目路径尚未就绪时，收藏会话暂时进入同一分支；目录同步后又变为普通可用卡片，形成短暂误提示。
+- 现在概览复用既有 `codexAdapter.backendThread` 规则及已知项目路径判定可用性。可后台读取的 Codex 本地会话直接输出 `dormant: false`；状态尚未读取时保留 `statusKnown: false`，由原前端显示“状态待确认”并正常请求摘要、绑定输入框。摘要与打开会话继续使用原入口，不新建窗口、不因构造目录而导入后台。远程、其他 Agent、Fusion 及没有项目路径的处理沿用原规则。
+
+### 验证记录
+
+- 新增回归覆盖：项目窗口关闭且尚未导入后台、只有其他项目窗口、原生项目路径／目录从未就绪到就绪，以及窗口依赖应用、远程和缺少路径的既有行为。就绪后的原生卡片省略 dormant 字段，测试按前端原有布尔语义核对，不要求额外输出字段。
+- 修改后 `npm run check` **1073／1073 通过**，语法、消息协议、196 项 page 导出及 `git diff --check` 通过；未执行修改前全量检查。
+- 在独立目录创建并持久化自有空会话，不打开它的桌面项目窗口，关闭创建它的原生客户端；独立 relay 保存该会话收藏及“原窗口已关闭”的项目记录。实测时电脑保留 1 个其他项目的 Codex 窗口。未向用户或测试会话发送消息，也未启动模型生成。
+- 使用既有配对浏览器独立标签、实际仓库 v455 资产完成 5 个场景：后台导入前卡片可用且无关闭提示；未打开正文前摘要 HTTP 200 且 available 为 true、未登记后台写入权；展开后摘要及输入框就绪、只 attach 1 次；真实点击进入正文并返回后卡片仍可用；再次展开两次无页面错误、无新增桌面窗口。空会话摘要按已有界面显示暂无文本消息。目录冷启动前后的状态分支由回归模拟验证，不记为额外真机验收。
+- 自有测试会话已归档，3979／3980 隔离服务及本轮原生监听已清理；原配对页面的应用、线程、草稿、存储和浏览器权限核对一致。原 3949 与共享 OpenCode 4096 保持运行，本地模型 18080 保持关闭。
+- 正式 3939 已重启，HTTP 正常；隧道 PID、公开地址、配对密钥校验值一致，启动无警告，Codex 桌面窗口仍为 1 个。本次只改服务端状态归属，网页版本保持 v455，无需发布新前端资产。未提交或推送。
+
+证据目录：`_shots/codex-card-availability-20261113/`，主要结果为 final-check.log、paired-results.json、browser-events.json、browser-cleanup.json、qa-cleanup.json、formal-restart.json、formal-verify.json。
+
+## 18. Codex 无项目窗口卡片采用当前原生状态（2026-11-13）
+
+用户确认继续修改同 3 个文件及通过后重启正式 relay。保留第 17 节未提交的修改。本节补齐第 17 节遗漏的状态更新，不修改前端。
+
+- 根因：收藏卡片补齐分支解除 dormant 限制后，仍固定输出 `busy: false`、`statusKnown: false`，没有采用已经读到的原生目录状态。因此目录就绪的卡片仍可能停在“状态待确认”。上次验收确认了卡片可用、摘要和输入框，没有检查后台导入前的状态必须从 unknown 转为原生状态。
+- 实施：区分当前 `nativeSessionCatalog` 条目与保存的会话资料。仅对可后台读取的 Codex 本地会话，在当前目录条目的 running 为布尔值时设置 statusKnown，并据此输出 busy；目录未返回此字段时才保留 unknown。保存记录中的旧 running 不作为当前状态。继续复用原生目录、概览消息与前端状态展示，不新增查询或定时器。
+- 回归：增加当前原生空闲／运行中与保存记录相反时的判定，以及目录未就绪→空闲→运行中→条目缺失的转换；同时检查实际前端 ovRecsOf 的 unknown／idle／run 输出，不只核对服务端字段。修改后 `npm run check` **1075／1075 通过**，语法、消息协议、196 项 page 导出及 `git diff --check` 通过。
+- 配对浏览器：独立无桌面窗口项目的自有空会话，电脑保留 1 个其他项目窗口。当前原生目录就绪后、尚未导入 RA 后台前，服务端返回 statusKnown=true、busy=false，卡片为 idle；真实摘要读取、展开输入框、进入正文后返回、反复展开均通过，只有 1 次绑定、无页面错误、无新桌面窗口。运行中及目录状态变化由回归验证，本轮未发送消息或进行真实模型生成。
+- 清理：自有会话已归档，3979／3980 隔离服务及本轮原生监听清除；原配对页面应用、线程、草稿、存储及权限核对一致。原 3949 与共享 OpenCode 4096 保持运行，本地模型 18080 保持关闭。
+- 正式 3939 已重启，HTTP 正常、启动无警告；隧道 PID、公开地址及配对密钥校验值一致，原生 Codex 窗口仍为 1 个。网页仍为 v455，本次服务端修改无需发布新前端资产。未提交或推送。
+
+证据目录：`_shots/codex-card-status-20261113/`。final-check.log 为最终检查，paired-results.json、browser-events.json、browser-cleanup.json、qa-cleanup.json、formal-restart.json、formal-verify.json 为现场记录。

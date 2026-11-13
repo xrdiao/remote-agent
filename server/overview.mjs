@@ -111,12 +111,14 @@ export function overviewSnapshot(deviceId) {
     for (const [id, record] of Object.entries(readLibrary()[app] || {})) {
       if (!record.favorite || record.archived || record.deleted || present.has(app + ':' + id) || rows.get(id)?.archived || excluded.sessions.has(app + ':' + id)) continue;
       const saved = storedProjectSession(app, id);
-      const row = { ...saved, ...rows.get(id) };
+      const native = rows.get(id), row = { ...saved, ...native };
+      const dormant = app !== 'codex' || !row.workspace || !codexAdapter.backendThread(id, row.host || '');
+      const statusKnown = !dormant && typeof native?.running === 'boolean';
       sessions.push({ win: app, windowId: saved?.ownerWindow || app, threadId: id, app,
         projectId: projectId(app, normPath(row.workspace), row.host || '', saved?.ownerWindow || app),
         project: row.workspace ? path.posix.basename(normPath(row.workspace)) : '项目', title: record.title || row.title || '未命名会话',
-        workspace: row.workspace || '', host: row.host || '', dormant: true, busy: false, waiting: '', waitingText: '', last: row.last || '',
-        run: null, statusKnown: false, startedAt: 0, tasks: null, actions: [], devin: app === 'devin', changed: 0, acceptAll: false, changes: null,
+        workspace: row.workspace || '', host: row.host || '', dormant, busy: statusKnown && native.running, waiting: '', waitingText: '', last: row.last || '',
+        run: null, statusKnown, startedAt: 0, tasks: null, actions: [], devin: app === 'devin', changed: 0, acceptAll: false, changes: null,
         lastUsed: Number(row.lastUsed) || 0, favorite: true, lastMessageAt: Number(record.lastMessageAt) || 0 });
     }
   }

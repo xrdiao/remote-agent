@@ -2836,19 +2836,20 @@ test('peer loss during background still requires fresh proof to recover the reta
 });
 
 function overviewDirectory() {
-  const targets = [], sources = new Map(), catalogs = new Map(), library = {}, saved = { windows: {} }, fusionRuns = {};
+  const targets = [], sources = new Map(), catalogs = new Map(), library = {}, saved = { windows: {}, sessions: {} }, fusionRuns = {};
   const codexBackend = { records: new Map(), states: () => [], owns: id => codexBackend.records.has(id) };
   const context = createPageContext({ path, Date, process: { platform: 'linux' }, saved, fusionRuns,
     codexBackend, CODEX_BACKEND: 'backend',
     openCode: { overview: () => ({ windows: [], sessions: [] }) },
     key: (app, id) => app + ':' + id.replace(/^(cursor|devin|codex):/, ''),
     nativeTargets: () => targets, nativeWindowAt: id => sources.get(id), nativeSessionCatalog: app => catalogs.get(app),
-    sessionId: (_app, id) => id || '', readLibrary: () => library, storedProjectSession: () => null,
+    sessionId: (_app, id) => id || '', readLibrary: () => library, storedProjectSession: (app, id) => saved.sessions[app + ':' + id],
     normPath: value => String(value || '').replaceAll('\\', '/'), pathKey: value => value,
     samePath: (a, b) => a === b, windowName: title => title, workspaces: () => { throw Error('Do not rescan workspace storage'); },
     FUSION_ACTIVE: [], fusionSummary: value => value, allFusionRuns: () => Object.values(fusionRuns).flatMap(value => value.runs),
     fusionMainWindow: (app, id) => Object.values(fusionRuns).flatMap(value => value.runs).some(run => run.bindings.some(binding => binding.role === 'main' && binding.app === app && binding.windowId === id)),
   });
+  context.codexAdapter = vm.runInContext('({' + part(read('server/apps/codex.mjs'), '  backendThread(', '  closeBackendSettings(') + '})', context);
   vm.runInContext(part(read('lib/files.mjs'), 'export function workspaceLabel(', '// Returns the size').replace('export ', '')
     + part(read('server/project-windows.mjs'), 'export function fusionTargets(', 'export function clearLegacyFusionWindows(').replace('export ', '')
     + read('server/overview.mjs').replace(/^import .*;\n/gm, '').replace(/^export /gm, ''), context);
@@ -2873,6 +2874,72 @@ test('a Codex background thread visible in a native catalog has one card with it
   assert.equal(snapshot.sessions[0].windowId, 'backend');
   assert.equal(snapshot.sessions[0].title, 'background');
   assert.equal(snapshot.sessions[0].dormant, false);
+});
+
+test('a local Codex favorite remains available after its project window closes before backend import', () => {
+  const h = overviewDirectory();
+  h.library.codex = { old: { favorite: true, title: 'Old native session' } };
+  h.saved.sessions['codex:old'] = { workspace: '/project/B', host: '', ownerWindow: 'closed', dormant: true };
+  const snapshot = h.snapshot(), row = snapshot.sessions[0];
+  assert.equal(snapshot.sessions.length, 1); assert.equal(row.dormant, false);
+  assert.equal(row.windowId, 'closed'); assert.equal(row.workspace, '/project/B');
+  assert.equal(row.statusKnown, false); assert.equal(h.codexBackend.records.size, 0);
+});
+
+test('another open project does not make an available Codex favorite dormant', () => {
+  const h = overviewDirectory(); h.add('codex', 'A', '/project/A');
+  h.library.codex = { old: { favorite: true } };
+  h.catalogs.set('codex', { rows: [{ id: 'old', workspace: '/project/B', host: '', title: 'Native B' }] });
+  h.saved.sessions['codex:old'] = { workspace: '/project/B', host: '', ownerWindow: 'closed' };
+  const row = h.snapshot().sessions.find(row => row.threadId === 'old');
+  assert.equal(row.dormant, false); assert.equal(row.workspace, '/project/B'); assert.equal(row.title, 'Native B');
+});
+
+test('closed-project Codex cards use current native idle and running states before backend import', () => {
+  for (const running of [false, true]) {
+    const h = overviewDirectory(); h.add('codex', 'A', '/project/A');
+    h.library.codex = { old: { favorite: true } };
+    h.saved.sessions['codex:old'] = { workspace: '/project/B', host: '', ownerWindow: 'closed', running: !running };
+    h.catalogs.set('codex', { rows: [{ id: 'old', workspace: '/project/B', host: '', running }] });
+    const row = h.snapshot().sessions.find(row => row.threadId === 'old');
+    assert.equal(row.statusKnown, true); assert.equal(row.busy, running); assert.equal(row.dormant, false);
+    assert.equal(h.codexBackend.records.size, 0);
+    const cards = overviewCards(); cards.apply(row);
+    assert.equal(cards.rows()[0].state, running ? 'run' : 'idle');
+  }
+});
+
+test('closed-project Codex status waits for current native data instead of using a saved running flag', () => {
+  const h = overviewDirectory(); h.library.codex = { old: { favorite: true } };
+  h.saved.sessions['codex:old'] = { workspace: '/project/B', host: '', ownerWindow: 'closed', running: true };
+  const cards = overviewCards();
+  for (const running of [undefined, false, true, undefined]) {
+    h.catalogs.set('codex', { rows: running === undefined ? [] : [{ id: 'old', workspace: '/project/B', running }] });
+    const row = h.snapshot().sessions[0]; cards.apply(row);
+    assert.equal(row.statusKnown, running !== undefined); assert.equal(row.busy, running === true);
+    assert.equal(cards.rows()[0].state, running === undefined ? 'unknown' : running ? 'run' : 'idle');
+  }
+});
+
+test('a Codex favorite never flashes project-closed while native roots and catalog become ready', () => {
+  const h = overviewDirectory(), source = h.add('codex', 'B', '/project/B'); source.roots = undefined;
+  h.library.codex = { old: { favorite: true } };
+  h.saved.sessions['codex:old'] = { workspace: '/project/B', host: '', ownerWindow: 'B' };
+  const before = h.snapshot(); assert.equal(before.ready, false); assert.equal(before.sessions[0].dormant, false);
+  source.roots = [{ root: '/project/B', host: '' }];
+  h.catalogs.set('codex', { rows: [{ id: 'old', workspace: '/project/B', host: '', running: false }] });
+  const after = h.snapshot(); assert.equal(after.ready, true); assert.equal(!!after.sessions[0].dormant, false);
+  assert.equal(before.sessions[0].projectId, after.sessions[0].projectId);
+  assert.equal(before.sessions[0].threadId, after.sessions[0].threadId);
+});
+
+test('window-dependent favorites and Codex entries with no project path keep their existing dormant state', () => {
+  for (const [app, workspace, host] of [['cursor', '/project/B', ''], ['devin', '/project/B', ''],
+    ['codex', '/project/B', 'ssh-host'], ['codex', '', '']]) {
+    const h = overviewDirectory(); h.library[app] = { old: { favorite: true } };
+    h.saved.sessions[app + ':old'] = { workspace, host, ownerWindow: 'closed' };
+    assert.equal(h.snapshot().sessions[0].dormant, true, `${app}: ${host || workspace || 'missing path'}`);
+  }
 });
 
 test('Devin session projects belong to the native session even when the IDE carrier has another workspace', () => {
