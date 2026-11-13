@@ -519,29 +519,31 @@ div.math { display: block; margin: .35em 0; text-align: center; }
 /* Tool rows: quiet lines, chips mono. */
 .tool, .toolrow {
   font-size: 13px; color: var(--fg-2); background: transparent; border: 0;
-  border-radius: 12px; padding: 6px 10px;
+  border-radius: 12px; padding: 6px 10px; max-width: 100%;
 }
 .tool { font: 12.5px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: var(--fg-3); }
 .tool .txt { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .toolrow .trow, .tool .trow { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .toolrow .trow.toggle, .tool .trow.toggle { cursor: pointer; }
 .tool .ticon, .toolrow .ticon { width: 15px; height: 15px; flex: none; color: var(--fg-3); }
-.tool .tl, .toolrow .tl { font-weight: 500; flex: none; font-family: inherit; }
+.tool .tl, .toolrow .tl { font-weight: 500; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: inherit; }
 .toolrow .tl { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
-body[data-app="devin"] .toolrow:has(> .tcmd) > .trow > .tl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toolrow > .trow.toggle:not(:has(> .chip)) > .tl { flex: 1; }
+.toolrow > .trow > .chip { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool .tsub, .toolrow .tsub { color: var(--fg-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .tool .dur, .toolrow .dur { flex: none; font-size: 11px; color: var(--fg-3); background: var(--s2); border-radius: 999px; padding: 1px 7px; font-variant-numeric: tabular-nums; }
 .tool .chev, .toolrow .chev { flex: none; margin-left: auto; color: var(--fg-4); font-size: 11px; }
 .tool .chips, .toolrow .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.tool .chips > .chip, .toolrow .chips > .chip { min-width: 0; max-width: 100%; }
 .chip { font: 11.5px ui-monospace, "SF Mono", Menlo, Consolas, monospace; background: var(--code-bg); color: var(--fg-2); padding: 1px 6px; border-radius: var(--r-xs); overflow-wrap: anywhere; }
 .chip[data-file] { cursor: pointer; color: var(--accent-text); text-decoration: underline dotted; text-underline-offset: 2px; }
 .tool .stat, .toolrow .stat { flex: none; font-weight: 600; font-size: 11px; }
 .tool .stat.add, .toolrow .stat.add { color: var(--add); }
 .tool .stat.del, .toolrow .stat.del { color: var(--del); }
-.tcmd { margin: 4px 0 0; background: var(--pre-bg); border: 1px solid var(--line); color: var(--fg); padding: 6px 8px; border-radius: var(--r-sm); white-space: pre; overflow: hidden; font: 12px ui-monospace, "SF Mono", Menlo, Consolas, monospace; display: none; }
+.tcmd { margin: 4px 0 0; max-width: 100%; min-width: 0; background: var(--pre-bg); border: 1px solid var(--line); color: var(--fg); padding: 6px 8px; border-radius: var(--r-sm); white-space: pre; overflow: hidden; font: 12px ui-monospace, "SF Mono", Menlo, Consolas, monospace; display: none; }
 .toolrow.open .tcmd { display: block; max-height: 40vh; overflow: auto; }
 .toolrow.open { background: var(--s1); }
-.tdiff { margin: 4px 0 0; background: var(--pre-bg); border: 1px solid var(--line); border-radius: var(--r-sm); overflow-x: auto; display: none; font: 12px ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+.tdiff { margin: 4px 0 0; max-width: 100%; min-width: 0; background: var(--pre-bg); border: 1px solid var(--line); border-radius: var(--r-sm); overflow-x: auto; display: none; font: 12px ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
 .toolrow.open .tdiff { display: block; }
 .tdiff .dl { white-space: pre; padding: 0 8px; color: var(--fg-3); }
 .tdiff .dl.di { background: var(--addbg); color: var(--add); }
