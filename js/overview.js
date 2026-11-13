@@ -873,9 +873,9 @@ function ovPrepareTools(key) {
   const refresh = winTargetReady(state.target);
   ovErr.delete(key);
   mentionHide();
-  state.ready = bindWin(state.target).then(() => {
+  state.ready = bindWin(state.target).then(target => {
     if (ovToolState !== state || ovS.open !== key || document.body.classList.contains('conv')) return false;
-    state.phase = 'ready'; state.sel = viewSel;
+    state.target = target; state.phase = 'ready'; state.sel = viewSel;
     if (refresh) send({ t: 'attachments' });
     ovReflectComposer();
     return true;
