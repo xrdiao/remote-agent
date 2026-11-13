@@ -1039,7 +1039,7 @@ function meterFill(pct, basis) {
   const warm = basis === 'remaining' ? pct <= 25 : pct >= 75;
   return tight ? 'hot' : warm ? 'warm' : '';
 }
-const meterPercent = pct => pct == null ? null : Math.max(0, Math.min(100, Number(pct)));
+const meterPercent = pct => pct == null ? null : Math.round(Math.max(0, Math.min(100, Number(pct))));
 const contextMeterScope = () => [currentComputer()?.id || '', viewSel].join('|');
 let contextInfo = null, quotaInfo = null;
 let contextMeterOwner = '', quotaMeterOwner = '';

@@ -1157,6 +1157,8 @@ body.visual #stage { flex: none; margin: auto; }
   padding: 10px 14px 20px; box-sizing: border-box; background: var(--term-bg); color: var(--term-fg);
 }
 #termText .xterm { width: max-content; }
+#termText :is(.xterm, .xterm-screen, .xterm-rows) { user-select: text; -webkit-user-select: text; -webkit-touch-callout: default; }
+#termText .xterm-rows { pointer-events: auto; }
 #termText .xterm-helper-textarea { pointer-events: none; }
 body.term #view { overscroll-behavior: contain; }
 .terminalSizeForm { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; }
