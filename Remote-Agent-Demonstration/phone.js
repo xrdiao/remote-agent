@@ -366,7 +366,105 @@
     img.style.height = (rh * scale) + 'px';
     img.style.left = '0px';
     img.style.top = '0px';
+    var sim = $('sim');
+    if (sim) {
+      sim.style.width = img.style.width;
+      sim.style.height = img.style.height;
+    }
   }
+  /* One pass: the ball rolls in, slowly pushes the cube, then rolls away. The cube stays. */
+  var SIM = { on: false, t0: 0, raf: 0, ready: 0, cx: 220, cy: 128, bx: 258, by: 156 };
+  var simBg = new Image(), simCube = new Image(), simBall = new Image();
+  function simCenter(img) {
+    try {
+      var c = document.createElement('canvas');
+      c.width = img.naturalWidth; c.height = img.naturalHeight;
+      var g = c.getContext('2d');
+      g.drawImage(img, 0, 0);
+      var d = g.getImageData(0, 0, c.width, c.height).data, w = c.width;
+      var sx = 0, sy = 0, n = 0;
+      for (var i = 3; i < d.length; i += 16) {
+        if (d[i] > 40) {
+          var p = (i - 3) >> 2;
+          sx += p % w; sy += (p / w) | 0; n++;
+        }
+      }
+      return n ? [sx / n, sy / n] : null;
+    } catch (e) { return null; }
+  }
+  function simPose(t) {
+    var approach = 1, push = 2.5, leave = 1.15;
+    function sm(u) { u = u < 0 ? 0 : u > 1 ? 1 : u; return u * u * (3 - 2 * u); }
+    if (t < approach) {
+      var u = sm(t / approach);
+      return { cube: 0, ball: 36 * (1 - u), spin: 36 * u };
+    }
+    t -= approach;
+    if (t < push) {
+      var d = -26 * (t / push);
+      return { cube: d, ball: d, spin: 36 - d };
+    }
+    t -= push;
+    var v = sm(t < 0 ? 0 : t > leave ? 1 : t / leave);
+    return { cube: -26, ball: -26 + 52 * v, spin: 62 + 52 * v };
+  }
+  function drawSim() {
+    var c = $('sim');
+    if (!c || !simBg.naturalWidth) return;
+    var ctx = c.getContext('2d');
+    var w = simBg.naturalWidth, h = simBg.naturalHeight;
+    if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+    var p = simPose(SIM.on ? (performance.now() - SIM.t0) / 1000 : 0);
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(simBg, 0, 0);
+    function shade(x, y, rx, ry) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.scale(rx, ry);
+      ctx.beginPath();
+      ctx.arc(0, 0, 1, 0, 6.2832);
+      ctx.fillStyle = 'rgba(0,0,0,.32)';
+      ctx.fill();
+      ctx.restore();
+    }
+    shade(SIM.cx + p.cube, SIM.cy + 16, 30, 9);
+    shade(SIM.bx + p.ball, SIM.by + 9, 12, 5);
+    ctx.drawImage(simCube, p.cube, 0);
+    ctx.save();
+    ctx.translate(SIM.bx + p.ball, SIM.by);
+    ctx.rotate(-p.spin / 13);
+    ctx.drawImage(simBall, -SIM.bx, -SIM.by);
+    ctx.restore();
+  }
+  function simLoop() {
+    drawSim();
+    if (SIM.on) SIM.raf = requestAnimationFrame(simLoop);
+  }
+  function startSim() {
+    if (SIM.on) return;
+    SIM.on = true;
+    SIM.t0 = performance.now();
+    if (SIM.ready >= 3) simLoop();
+  }
+  function stopSim() {
+    SIM.on = false;
+    if (SIM.raf) cancelAnimationFrame(SIM.raf);
+    SIM.raf = 0;
+  }
+  function simWatch(img, src, pivot) {
+    img.onload = function () {
+      if (pivot) {
+        var c = simCenter(img);
+        if (c) { SIM[pivot + 'x'] = c[0]; SIM[pivot + 'y'] = c[1]; }
+      }
+      SIM.ready++;
+      if (SIM.ready >= 3 && SIM.on && !SIM.raf) simLoop();
+    };
+    img.src = src;
+  }
+  simWatch(simBg, 'assets/mujoco-bg.png');
+  simWatch(simCube, 'assets/mujoco-cube.png', 'c');
+  simWatch(simBall, 'assets/mujoco-ball.png', 'b');
   var prevScreen = null;
   function apply(instant) {
     var st = ST;
@@ -425,7 +523,8 @@
         $('screen').dataset.shot = st.screenImg;
       }
       layoutVisual();
-    }
+      startSim();
+    } else stopSim();
     var attRow = document.querySelector('footer > .attachmentRow');
     if (attRow) {
       if (st.attach && st.screen === 'chat') {

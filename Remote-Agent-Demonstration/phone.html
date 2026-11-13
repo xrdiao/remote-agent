@@ -59,7 +59,7 @@ if (new URLSearchParams(location.search).get('screen') === 'term') document.docu
       <div id="termEmpty" hidden><div>没有打开的终端</div><button id="termEmptyNew" type="button">新建终端</button></div>
       <pre id="termText"></pre>
       <div id="visualEmpty" hidden role="status"></div>
-      <div id="stage"><img id="screen" alt=""><div id="ripple"></div></div>
+      <div id="stage"><img id="screen" alt=""><canvas id="sim"></canvas><div id="ripple"></div></div>
     </div>
     <div id="visualHint" hidden><span id="visualHintText">双指缩放 · 拖动查看</span><span id="visualZoom">100%</span></div>
     <div id="screenKeys" class="tools" hidden>

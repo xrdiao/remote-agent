@@ -12,6 +12,7 @@ body.term > header::before {
 body.term .seg, body.term .titleArrow, body.term #dot, body.term #termToolsLabel, body.term #termBusy { display: none !important; }
 body.term #termText { font: 13px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace; }
 body.term #termText .tprompt { color: #3DDC84; }
+#sim { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
 
 /* fake iOS-style keyboard: the app layout shrinks above it (interactive-widget=resizes-content) */
 body.kb { height: calc(100dvh - var(--kbh)); }

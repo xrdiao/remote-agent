@@ -218,7 +218,7 @@
   var AG = { msgs: [], mid: 0, status: 'run', q: null, draft: '', attach: null, screen: 'home',
              focused: false, kb: false, voice: false, sheet: null, lock: null, notif: null,
              clock: '12:02', statusMsg: '', theme: 'light',
-             screenImg: 'assets/mujoco-view.jpg', screenTitle: 'Mujoco',
+             screenImg: 'assets/mujoco-bg.png', screenTitle: 'Mujoco',
              sess: { title: S.sess_t, project: S.project, app: 'Cursor' },
              home: { loading: 1, pct: 0, expanded: 0, opening: 0 }, prog: { done: 0, total: 7 } };
 
