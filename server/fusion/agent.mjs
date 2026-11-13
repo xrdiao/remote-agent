@@ -98,7 +98,7 @@ export class FusionAgent {
         if (!page) throw new Error('所选项目的原生窗口已关闭');
       } finally { projectSession.dispose(); }
     }
-    const cdp = new NativeCdp(page.ws);
+    const cdp = new NativeCdp(page.ws, app);
     await cdp.connect();
     const source = nativeWindow(cdp);
     source.win ||= { app, id: page.id, pageId: page.id, ws: page.ws, editorWs: page.editorWs };

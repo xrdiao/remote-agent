@@ -361,8 +361,8 @@ export class Session extends AgentContext {
   }
 
   async openBound(win, editorWs, chatWs, selection) {
-    const editorCdp = new NativeCdp(editorWs);
-    const cdp = chatWs ? new NativeCdp(chatWs) : editorCdp;
+    const editorCdp = new NativeCdp(editorWs, win.app);
+    const cdp = chatWs ? new NativeCdp(chatWs, win.app) : editorCdp;
     // A phone-launched app keeps its native home/new-chat view, not a remembered thread.
     // Keep the marker until startup and the first chat read complete successfully.
     const launchDefault = this.launchDefault = !selection.nativeOwner && selection.initial === true && hasLaunched(win.app);

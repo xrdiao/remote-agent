@@ -1127,7 +1127,7 @@ test('Cursor body reads only the native tail, loads its placeholders and keeps m
 test('ordinary Cursor data subscriptions follow the active thread and release the previous native listener', () => {
   let selected = 'A', changes = 0;
   const active = new Map(), disposed = [];
-  const context = createPageContext({ remoteContext: null, activeThread: () => selected,
+  const context = createPageContext({ remoteContext: null, devinSurface: () => null, activeThread: () => selected,
     cursorSessionServices: () => ({ data: { loadedComposers: {
       subscribe(id, changed) { active.set(id, changed); return { dispose() { active.delete(id); disposed.push(id); } }; },
     } } }) });
@@ -4488,7 +4488,7 @@ test('Cursor empty composer resolves its native services before transcript rows 
       assert.equal(element, status); lookups++;
       return [{ services: { workspace: { instantiationService } } }];
     } });
-  vm.runInContext(part(read('server/page/session-actions.js'), '  const cursorSessionInstantiation =', '  const devinSessionRecord =')
+  vm.runInContext(part(read('server/page/session-actions.js'), '  const cursorSessionInstantiation =', '  const nativeSessionContext =')
     + '\nglobalThis.readServices = cursorSessionServices;', context);
   const resolved = context.readServices();
   assert.equal(resolved.data, data);

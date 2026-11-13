@@ -77,10 +77,11 @@ let targets = [];
 export const nativeTargets = () => targets;
 
 export class NativeCdp extends Cdp {
-  constructor(url) {
+  constructor(url, app) {
     super(url);
     this.nativeWindow = windows.get(url);
     if (!this.nativeWindow) windows.set(url, this.nativeWindow = new NativeWindow(url));
+    if (app) this.nativeWindow.app = app;
     this.nativeWindow.clients.add(this);
   }
   get ws() { return this.nativeWindow.cdp.ws; }
@@ -141,6 +142,7 @@ export class NativeWindow {
     this.cdp.onclose = error => this.close(error);
     this.cdp.on('Runtime.executionContextsCleared', () => {
       this.contexts.clear();
+      this.nativeApi = null;
       for (const view of this.conversations.values())
         for (const listener of [...view.listeners, ...view.management]) listener(new Error('原生页面已重载，需要核对后台会话与轮次'));
       if (!this.win) return;
@@ -152,9 +154,15 @@ export class NativeWindow {
     });
   }
   connect() {
-    return this.connecting ||= cdpRead.run(null, () => this.cdp.connect()).catch(error => {
+    const connecting = this.connecting ||= cdpRead.run(null, () => this.cdp.connect()).catch(error => {
       this.close();
       throw error;
+    });
+    return connecting.then(() => {
+      if ((this.app || this.win?.app) !== 'devin') return;
+      return this.nativeApi ||= cdpRead.run(null, () => this.cdp.evaluate(`(async () => {
+        window.__remoteAgentDevinNative = await import('@exa/chat-client');
+      })()`));
     });
   }
   async composerCall(call, context) {

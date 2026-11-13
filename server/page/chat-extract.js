@@ -321,6 +321,7 @@
   const watchCodexData = changed => {
     if (remoteContext?.app === 'devin')
       return { stop: fusionDevinWatch(remoteContext.threadId, changed), refresh() {} };
+    if (!remoteContext && devinSurface()) return devinWatch(changed);
     if (remoteContext?.app === 'codex') {
       const manager = codexNativeManager(), stop = manager.addConversationCallback(remoteContext.threadId, changed), subscribed = new Map();
       const refresh = () => {
@@ -469,17 +470,16 @@
     if (remoteContext && remoteContext.app !== 'codex' || !codexThread()) {
       const threadId = remoteContext?.threadId || activeThread();
       if (devinSurface()) {
-        const state = window.__acpStore?.getState().acp;
-        const messages = state?.perSession[threadId]?.messages || [];
+        const messages = devinMessages(threadId);
         const body = item => (item.content || []).filter(block => block.content?.type === 'text').map(block => block.content.text).join('\n');
         const users = messages.filter(item => item.kind === 'user_message' && !item.content?.some(block => block._meta?.['cognition.ai/isOptimistic']));
         const user = id ? users.find(item => item.id === id) : attemptId ? users.findLast(item => !previous.includes(item.id) && body(item).includes(attemptId)) : users.at(-1);
         const start = messages.indexOf(user), tail = start >= 0 ? messages.slice(start + 1) : [];
         const next = tail.findIndex(item => item.kind === 'user_message');
         const reply = (next < 0 ? tail : tail.slice(0, next)).findLast(item => item.kind === 'agent_message');
-        const requests = Object.values(state?.agentRequests.byId || {}).filter(request => request.method === 'session/prompt' && request.params?.sessionId === threadId);
+        const requests = Object.values(devinAgentRequests(threadId)).filter(request => request.method === 'session/prompt' && request.params?.sessionId === threadId);
         const request = remoteContext && generationId
-          ? Object.entries(state?.agentRequests.byId || {}).find(([key, request]) => key === generationId && requests.includes(request))?.[1]
+          ? Object.entries(devinAgentRequests(threadId)).find(([key, request]) => key === generationId && requests.includes(request))?.[1]
           : requests.findLast(request => request.params?.prompt?.some?.(block => attemptId && block.text?.includes(attemptId)));
         const session = devinSessionRecord(threadId);
         const failed = remoteContext?.app === 'devin' && request?.status === 'failed';
@@ -740,7 +740,7 @@
     const selected = devinSurface() === 'agent' ? agentList().find(a => a.current)?.id : devinTabs().find(t => t.active)?.id;
     const log = [...doc.querySelectorAll('[role="log"][aria-label="Session transcript"]')].find(e => vis(e) && (!selected || devinNodeSessionId(e) === selected));
     if (log) return log;
-    const current = selected || window.__acpStore?.getState()?.acp?.focusedSessionId;
+    const current = selected || '';
     return [...doc.querySelectorAll('[data-chat-history-variant]')].find(e => vis(e)
       && (!current || devinNodeSessionId(e.querySelector('[data-transcript-row-key]') || e) === current));
   };
@@ -1294,7 +1294,7 @@
       model: agentModelName(),
       context: contextPct(),
       performance: log || devinSurface()
-        ? nativePerformance('devin', activeThread(), agentRun('devin', activeThread()), agentModelName(), window.__acpStore?.getState().acp.perSession[activeThread()])
+        ? nativePerformance('devin', activeThread(), agentRun('devin', activeThread()), agentModelName(), devinSessionData(activeThread()))
         : codexId ? nativePerformance('codex', codexId, agentRun('codex', codexId, scopes, manager), agentModelName(), manager?.getConversation(codexId)) : null,
       draft: composerDraft(),
       ...(devinSurface() ? { surface: devinSurface() } : {}),
@@ -1362,12 +1362,11 @@
       before = data.fullConversationHeadersOnly.indexOf(headers[0]);
       questions = cursorNativeQuestions();
     } else {
-      const native = await import('@exa/chat-client');
-      const state = window.__acpStore.getState().acp, data = state.perSession[thread] || fusionDevinState(thread).data;
+      const data = devinSessionData(thread) || fusionDevinState(thread).data;
       performanceData = data;
-      const failure = Object.entries(state.agentRequests.byId).findLast(([, request]) => request.method === 'session/prompt' && request.params?.sessionId === thread);
+      const failure = Object.entries(devinAgentRequests(thread)).findLast(([, request]) => request.method === 'session/prompt' && request.params?.sessionId === thread);
       const failed = failure?.[1].status === 'failed';
-      const messages = data ? native.getAllMessages(data) : [], end = history && Number.isFinite(remoteContext.before) ? remoteContext.before : messages.length;
+      const messages = devinMessages(thread, data), end = history && Number.isFinite(remoteContext.before) ? remoteContext.before : messages.length;
       const selected = messages.slice(Math.max(0, end - limit), end);
       for (const message of selected) {
         const id = 'acp' + messages.indexOf(message);
@@ -1421,7 +1420,7 @@
       return { pct: Number(/(\d+)%/.exec(text)[1]), basis: /left|remaining|剩余/i.test(text) ? 'remaining' : 'used' };
     }
     const thread = activeThread();
-    const usage = window.__acpStore?.getState()?.acp?.perSession?.[thread]?.contextUsage;
+    const usage = devinSurface() ? devinSessionData(thread)?.status.contextUsage : null;
     if (usage?.size > 0) return { pct: Math.round(Math.min(100, usage.used / usage.size * 100)), basis: 'used' };
     const indicator = [...doc.querySelectorAll('.composer-context-usage-indicator')].find(e => vis(e)
       && (!e.closest('[data-glass-agent-id]') || e.closest('[data-glass-agent-id]').getAttribute('data-glass-agent-id') === thread));

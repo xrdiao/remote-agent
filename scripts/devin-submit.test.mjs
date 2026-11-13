@@ -8,331 +8,142 @@ import { adapter as devinAdapter } from '../server/apps/devin.mjs';
 import { ROUTES } from '../server/routes.mjs';
 
 const SESSION = 'acp/devin-cli/sess-1';
-const OPTION_KEYS = ['copyToAgentHost', 'httpUpload', 'maxEmbeddedResourceBytes', 'readFile', 'readTerminal'];
 const plain = value => JSON.parse(JSON.stringify(value));
-const STARTED_PROMPT = { method: 'session/prompt', status: 'started', params: { sessionId: SESSION } };
+const NATIVE = 'devin-' + SESSION;
 
-function fiberNode(contexts = [], hooks = [], parent = null) {
-  return {
-    memoizedState: hooks.length ? hooks.reduceRight((next, memoizedState) => ({ memoizedState, next }), null) : null,
-    dependencies: contexts.length ? { firstContext: contexts.reduceRight((next, memoizedValue) => ({ memoizedValue, next }), null) } : null,
-    return: parent,
+function nativePage({ busy = true, question = false, staleQuestion = false, acceptQueue = true, mounted = true } = {}) {
+  const calls = { submit: 0, enqueue: 0, sendNow: 0, answers: [], released: 0, requests: [], order: [] };
+  const listeners = new Set(), pending = new Map();
+  const data = { sessionId: NATIVE, messages: [], optimisticMessages: [], localQueuedMessages: [],
+    loadStatus: 'replayed', promptInFlight: busy, pendingPrompts: 0, currentTurnId: null, lastPromptStopReason: null,
+    status: {}, sessionInfo: { cwd: '/project', title: 'Test', configOptions: [] },
+    setPromptInFlight(value, reason) { this.promptInFlight = value; this.lastPromptStopReason = reason; },
+    replaceConfigOptions(options) { this.sessionInfo.configOptions = options; } };
+  const handle = { sessionId: NATIVE, store: { getState: () => data, subscribe: callback => { listeners.add(callback); return () => listeners.delete(callback); } },
+    resumeSession() {}, release() { calls.released++; }, pendingRequests: pending,
+    respond(key, response) { calls.answers.push({ key, response }); return pending.delete(key); },
+    connection: { async send(request) { calls.requests.push(request); return { stopReason: 'end_turn', configOptions: [] }; } } };
+  const bounds = () => ({ x: 0, y: 0, top: 0, left: 0, width: 40, height: 20 });
+  const rows = [], bar = { innerText: '1 message queued' };
+  const enqueue = () => {
+    calls.enqueue++; calls.order.push('enqueue');
+    if (acceptQueue) rows.push({ className: 'cursor-grab', getBoundingClientRect: bounds,
+      querySelectorAll: () => [{ getAttribute: () => 'Send now', click: () => { calls.sendNow++; calls.order.push('sendNow'); } }] });
   };
+  const currentQuestion = question ? { currentQuestion: { id: 'q' }, currentEvent: { event_id: 'event' },
+    submitAllWithText: async (text, rich) => { calls.answers.push({ text, rich }); return true; } } : null;
+  const root = { tag: 3, return: null, stateNode: {} }; root.stateNode.current = root;
+  const provider = { tag: 10, memoizedProps: { value: currentQuestion }, return: root };
+  const mountedProvider = staleQuestion ? { tag: 10, memoizedProps: { value: { currentQuestion: { id: 'old' },
+    submitAllWithText() { throw Error('stale handler'); } } }, return: { stateNode: {}, return: null }, alternate: provider } : provider;
+  const props = { 'data-devin-input-box': true, channelId: 'channel', onSubmit: () => { calls.submit++; }, onEnqueue: busy ? enqueue : undefined };
+  const fiber = { memoizedProps: props, return: mountedProvider, dependencies: { firstContext: { memoizedValue: handle } } };
+  const editor = { __reactFiber$fixture: fiber, getBoundingClientRect: bounds, parentElement: null, closest: () => null };
+  const document = { getElementById: () => null, querySelector: () => null, querySelectorAll: selector => selector.includes('data-slate-editor') ? mounted ? [editor] : []
+    : selector === 'span.text-12' ? rows.length ? [bar] : [] : selector === 'ol li[role="button"]' ? rows : [],
+    body: { classList: { contains: () => false } }, defaultView: { Event: class {}, dispatchEvent() {} } };
+  let focused = SESSION;
+  const native = { sharedAcpEngine: { peekSession: () => null, acquire: () => handle }, isKnownSession: id => id === NATIVE,
+    getSessionRow: () => ({ cwd: '/project' }), sessionProviderId: () => 'devin-cli', sessionTitle: () => 'Test',
+    sessionCwdOf: () => '/project', sessionConfigOptions: () => [], deriveAgentStatus: () => ({ isWorking: busy }),
+    listedSessions: () => [{ sessionId: NATIVE }], subscribeSessionFeed: () => () => { calls.feedStopped = true; } };
+  const window = { __remoteAgentDevinNative: native,
+    __SSG_COMPOSER_PROVIDER__: { getStates: () => [{ id: focused, state: 'focused' }] } };
+  const expose = PAGE_SRC.replace('return { historyAtStart,', () => 'return { devinReadSession,devinWatch,devinSend,devinClientRequests,devinMessages,devinSessionRecord,historyAtStart,');
+  const page = vm.runInNewContext(expose, { document, window, crypto: crypto.webcrypto, requestAnimationFrame: callback => callback(), MutationObserver: class { observe() {} disconnect() { calls.observerStopped = true; } } });
+  return { page, calls, data, handle, native, pending, document, editor, rows, props, window, listeners, setFocused: id => { focused = id; } };
 }
-const selectorWrapped = value => ({ [Symbol.for('test.selector')]: { v: { current: value } } });
 
-function nativePage({ contexts = [], hooks = [], options = true, sessions = [SESSION], queuedMessages = [],
-  question = null, staleQuestion = null, controller = true, agentRequests, blocks, toAcpBlocks, focused } = {}) {
-  const calls = { dispatch: [], cleared: 0, images: 0, quotes: 0, interrupt: [], submits: [], order: [] };
-  const nativeOptions = { copyToAgentHost: undefined, readFile: undefined, maxEmbeddedResourceBytes: 1024, httpUpload: undefined, readTerminal: () => 'terminal-data' };
-  const composer = {
-    isEmpty: () => false,
-    toAcpBlocks: optionsArg => { calls.toAcpBlocks = optionsArg; calls.order.push('convert'); return toAcpBlocks ? toAcpBlocks(optionsArg) : Promise.resolve(blocks || [{ type: 'text', text: 'converted' }]); },
-    clear: () => { calls.cleared++; calls.order.push('clear'); },
-  };
-  const inputBox = {
-    composerRef: { current: composer },
-    getSelectedImages: () => [{ base64Data: 'QUJD', mimeType: 'image/png' }],
-    setSelectedImages: value => { calls.images = value.length; calls.order.push('images'); },
-    getSelectedQuotes: () => [{ artifact: { kind: 'file', path: '/a"b', versionRef: 'v1' }, anchor: { startLine: 1, endLine: 2 }, text: 'a<&"' }],
-    setSelectedQuotes: value => { calls.quotes = value.length; calls.order.push('quotes'); },
-  };
-  const queueController = { cancelInvocation() {}, cancelInvocationAndWait() {}, isCanceling: false,
-    interruptWithQueuedMessage: async id => { calls.interrupt.push(id); calls.order.push('interrupt'); calls.clearedAtInterrupt = calls.cleared; await Promise.resolve(); } };
-  const makeQuestion = spec => spec === null ? null : {
-    questions: [{ id: 'q0', question: 'pick', status: 'waiting', resetKey: spec === 'stale' ? 'req-old-0' : 'req-0' }], activeQuestionId: 'q0',
-    setActiveQuestionId() {}, answerQuestion() {}, skipQuestion() {},
-    isEditorDisabled: false, composerPlaceholder: null, composerAcceptsRichContent: false,
-    handleComposerSubmit: spec === 'deny' ? null : value => { calls.submits.push(value); return spec === 'error' ? '答案无效' : spec === 'stale' ? '旧分支处理器' : null; },
-  };
-  const questionContext = makeQuestion(question), staleContext = makeQuestion(staleQuestion);
-  const allContexts = [...contexts];
-  if (inputBox && !contexts.some(value => value?.composerRef)) allContexts.push(selectorWrapped(inputBox));
-  if (!contexts.some(value => typeof value?.getCurrentComposer === 'function'))
-    allContexts.push(selectorWrapped({ getCurrentComposer: () => composer, registerInputBox() {}, unregisterInputBox() {}, activateInputBox() {}, activeInputBox: null, inputBoxes: new Map(), registerUserMessageEditCallback() {}, unregisterUserMessageEditCallback() {}, triggerLatestUserMessageEdit: () => false }));
-  if (controller && !contexts.some(value => typeof value?.interruptWithQueuedMessage === 'function')) allContexts.push(selectorWrapped(queueController));
-  // The native question hook is a Context Provider value on an ancestor fiber (tag 10),
-  // not a consumer dependency of the Slate editor — mirror that real shape here.
-  let questionProvider = null;
-  if (questionContext || staleContext) {
-    if (staleContext) {
-      const currentRoot = { tag: 3, stateNode: {}, return: null };
-      currentRoot.stateNode.current = currentRoot;
-      const inactiveRoot = { tag: 3, stateNode: { current: currentRoot }, return: null };
-      const currentProvider = { tag: 10, memoizedProps: { value: questionContext }, return: currentRoot, alternate: null };
-      questionProvider = { tag: 10, memoizedProps: { value: staleContext }, return: inactiveRoot, alternate: currentProvider };
-      currentProvider.alternate = questionProvider;
-    } else {
-      const hostRoot = { tag: 3, stateNode: {}, return: null };
-      hostRoot.stateNode.current = hostRoot;
-      questionProvider = { tag: 10, memoizedProps: { value: questionContext }, return: hostRoot, alternate: null };
-    }
+test('Devin queue reuses the session native callback and send-now action without ordinary submission', async () => {
+  for (const now of [false, true]) {
+    const h = nativePage();
+    const result = await h.page.nativeSessionAction('devin', SESSION, 'queue', { now });
+    assert.deepEqual(plain(result), { queued: true, now });
+    assert.equal(h.calls.enqueue, 1); assert.equal(h.calls.submit, 0); assert.equal(h.calls.sendNow, Number(now));
+    assert.deepEqual(h.calls.order, now ? ['enqueue', 'sendNow'] : ['enqueue']);
   }
-  const fiber = fiberNode(allContexts, [...hooks, ...(options ? [nativeOptions] : [])], questionProvider);
-  const editor = { parentElement: null, getBoundingClientRect: () => ({ x: 0, y: 0, top: 0, left: 0, bottom: 20, right: 40, width: 40, height: 20 }),
-    querySelectorAll: () => [], querySelector: () => null, closest: () => null };
-  editor.__reactFiber$fixture = fiber;
-  const perSession = Object.fromEntries(sessions.map(id => [id, { queuedMessages: [...queuedMessages] }]));
-  const store = {
-    calls,
-    state: { acp: { sessions: sessions.map(id => ({ sessionId: id, providerId: 'devin-cli', cwd: '/project', status: 'idle', title: 'T' })),
-      perSession, agentRequests: { byId: agentRequests === undefined ? { 'req-1': { ...STARTED_PROMPT } } : agentRequests } } },
-    dispatch(action) {
-      calls.dispatch.push(action); calls.order.push('dispatch');
-      if (action.type === 'acp/addQueuedMessage') {
-        const list = perSession[action.payload.sessionId]?.queuedMessages;
-        if (list && !action.payload.prepend) list.push(action.payload.message);
-      }
-    },
-    getState() { return this.state; },
-  };
-  const document = { getElementById: () => null, querySelector: () => null, querySelectorAll: selector => selector.includes('data-slate-editor') ? [editor] : [],
-    activeElement: null, body: { classList: { contains: () => false } }, defaultView: { Event: class {}, dispatchEvent: () => {} } };
-  let focusedId = focused === undefined ? SESSION : focused;
-  const window = { __acpStore: store,
-    __SSG_COMPOSER_PROVIDER__: { getStates: () => [{ id: focusedId, state: 'focused' }] } };
-  const page = vm.runInNewContext(PAGE_SRC, { document, window, crypto: crypto.webcrypto });
-  return { page, calls, store, composer, inputBox, controller: queueController, questionContext, nativeOptions, blocks, fiber, document, editor,
-    setFocused: id => { focusedId = id; } };
-}
+});
 
-test('Devin native submission skips an unrelated first visible editor for both queue and text answers', async () => {
-  const h = nativePage({ question: 'allow' });
-  const unrelated = { ...h.editor, __reactFiber$fixture: fiberNode() };
-  h.document.querySelectorAll = selector => selector.includes('data-slate-editor') ? [unrelated, h.editor] : [];
+test('Devin explicit queue while idle reuses the native submit callback', async () => {
+  const h = nativePage({ busy: false });
   await h.page.nativeSessionAction('devin', SESSION, 'queue', {});
-  assert.equal(h.calls.dispatch.length, 1);
-  assert.equal(h.calls.toAcpBlocks, h.nativeOptions);
-  await h.page.nativeSessionAction('devin', SESSION, 'questionText', { text: '正确会话的回答' });
-  assert.equal(h.calls.submits.length, 1);
-  assert.equal(h.calls.submits[0].text, '正确会话的回答');
+  assert.equal(h.calls.submit, 1); assert.equal(h.calls.enqueue, 0);
 });
 
-test('Devin native submission uses the registered current composer instead of another input in the same registry', async () => {
+test('Devin queue cannot use another session or an unrelated first editor', async () => {
   const h = nativePage();
-  let foreignConverted = 0;
-  const foreignInput = { composerRef: { current: { toAcpBlocks() { foreignConverted++; return []; } } } };
-  const registry = { getCurrentComposer: () => h.composer, registerInputBox() {} };
-  const other = { ...h.editor, __reactFiber$fixture: fiberNode([selectorWrapped(foreignInput), selectorWrapped(registry)], [h.nativeOptions]) };
-  h.document.querySelectorAll = selector => selector.includes('data-slate-editor') ? [other, h.editor] : [];
-  await h.page.nativeSessionAction('devin', SESSION, 'queue', { now: true });
-  assert.equal(foreignConverted, 0);
-  assert.equal(h.calls.interrupt.length, 1);
-  assert.equal(h.calls.toAcpBlocks, h.nativeOptions);
-});
-
-test('Devin queue with a pending question writes the native queue once and never touches the question handler', async () => {
-  const h = nativePage({ question: 'allow' });
-  const result = await h.page.nativeSessionAction('devin', SESSION, 'queue', {});
-  assert.equal(result.queued, true);
-  assert.equal(h.calls.dispatch.length, 1);
-  const action = h.calls.dispatch[0];
-  assert.equal(action.type, 'acp/addQueuedMessage');
-  assert.equal(action.payload.sessionId, SESSION);
-  assert.equal(typeof action.payload.message.id, 'string');
-  assert.deepEqual(action.payload.message.contentBlocks.map(b => b.type), ['text', 'image', 'text']);
-  assert.equal(h.calls.submits.length, 0);
-  assert.equal(h.calls.cleared, 1);
-  assert.equal(h.calls.images, 0);
-  assert.equal(h.calls.quotes, 0);
-  assert.equal(h.calls.interrupt.length, 0);
-});
-
-test('Devin queue without a question still dispatches addQueuedMessage directly', async () => {
-  const h = nativePage({ question: 'deny' });
-  const result = await h.page.nativeSessionAction('devin', SESSION, 'queue', { now: false });
-  assert.equal(result.queued, true);
-  assert.equal(h.calls.dispatch.length, 1);
-  assert.equal(h.calls.dispatch[0].payload.message.contentBlocks[0].text, 'converted');
-  assert.equal(h.calls.interrupt.length, 0);
-});
-
-test('Devin queue now interrupts with the exact newly generated native message id', async () => {
-  const h = nativePage();
-  const result = await h.page.nativeSessionAction('devin', SESSION, 'queue', { now: true });
-  assert.equal(result.now, true);
-  assert.equal(h.calls.interrupt.length, 1);
-  assert.equal(h.calls.interrupt[0], h.calls.dispatch[0].payload.message.id);
-  assert.match(h.calls.interrupt[0], /^[0-9a-f-]{36}$/);
-  assert.equal(h.calls.cleared, 1);
-});
-
-test('Devin queue clears owned input before awaiting the native controller and never re-clears', async () => {
-  const h = nativePage();
-  await h.page.nativeSessionAction('devin', SESSION, 'queue', { now: true });
-  assert.equal(h.calls.clearedAtInterrupt, 1, 'composer already cleared when the controller runs');
-  assert.equal(h.calls.cleared, 1, 'no cleanup runs after the controller await');
-  assert.deepEqual(h.calls.order.slice(-4), ['clear', 'images', 'quotes', 'interrupt']);
-});
-
-test('Devin queue forwards the identical native options object to the real converter', async () => {
-  const h = nativePage();
-  await h.page.nativeSessionAction('devin', SESSION, 'queue', {});
-  assert.equal(h.calls.toAcpBlocks, h.nativeOptions);
-  assert.equal(typeof h.nativeOptions.readTerminal, 'function');
-  assert.equal(h.nativeOptions.maxEmbeddedResourceBytes, 1024);
-});
-
-test('Devin queue finds native conversion options beyond five hundred linked hooks', async () => {
-  const customOptions = { copyToAgentHost: undefined, httpUpload: undefined, maxEmbeddedResourceBytes: undefined, readFile: undefined, readTerminal: () => 't' };
-  const h = nativePage({ options: false, hooks: [...Array.from({ length: 600 }, () => null), [customOptions, []]] });
-  await h.page.nativeSessionAction('devin', SESSION, 'queue', {});
-  assert.equal(h.calls.toAcpBlocks, customOptions);
-});
-
-test('Devin queue preserves native image and quoted-artifact content blocks', async () => {
-  const h = nativePage();
-  await h.page.nativeSessionAction('devin', SESSION, 'queue', {});
-  const blocks = h.calls.dispatch[0].payload.message.contentBlocks;
-  assert.deepEqual(plain(blocks[1]), { type: 'image', data: 'QUJD', mimeType: 'image/png' });
-  const quote = blocks[2];
-  assert.equal(quote.type, 'text');
-  assert.equal(quote._meta.quote.artifact.kind, 'file');
-  assert.match(quote.text, /<quoted_artifact kind="file" path="\/a&quot;b" version_ref="v1" start_line="1" end_line="2">/);
-  assert.match(quote.text, /<content>\na&lt;&amp;&quot;\n<\/content>/);
-});
-
-test('Devin queue keeps converter resource blocks for files and terminals verbatim', async () => {
-  const resource = { type: 'resource', resource: { uri: 'file:///tmp/a.txt', text: 'file body', mimeType: 'text/plain' }, _meta: { 'cognition.ai/scope-item-type': 'file' } };
-  const terminal = { type: 'resource', resource: { uri: 'terminal://1', text: 'term', mimeType: 'text/plain' } };
-  const h = nativePage({ blocks: [resource, { type: 'text', text: 'see attached' }, terminal] });
-  await h.page.nativeSessionAction('devin', SESSION, 'queue', {});
-  const blocks = h.calls.dispatch[0].payload.message.contentBlocks;
-  assert.deepEqual(plain(blocks.slice(0, 3)), [resource, { type: 'text', text: 'see attached' }, terminal]);
-});
-
-test('Devin queue accepts image-only and quote-only composers after conversion', async () => {
-  const imageOnly = nativePage({ blocks: [], toAcpBlocks: () => Promise.resolve([]) });
-  imageOnly.inputBox.getSelectedQuotes = () => [];
-  const imageResult = await imageOnly.page.nativeSessionAction('devin', SESSION, 'queue', {});
-  assert.equal(imageResult.queued, true);
-  assert.deepEqual(imageOnly.calls.dispatch[0].payload.message.contentBlocks.map(b => b.type), ['image']);
-  const quoteOnly = nativePage({ blocks: [], toAcpBlocks: () => Promise.resolve([]) });
-  quoteOnly.inputBox.getSelectedImages = () => [];
-  const quoteResult = await quoteOnly.page.nativeSessionAction('devin', SESSION, 'queue', {});
-  assert.equal(quoteResult.queued, true);
-  assert.deepEqual(quoteOnly.calls.dispatch[0].payload.message.contentBlocks.map(b => b.type), ['text']);
-  assert.equal(quoteOnly.calls.dispatch[0].payload.message.contentBlocks[0]._meta.quote.artifact.kind, 'file');
-});
-
-test('Devin queue rejects when conversion plus attachments still produce no content', async () => {
-  const h = nativePage({ blocks: [], toAcpBlocks: () => Promise.resolve([]) });
-  h.inputBox.getSelectedImages = () => [];
-  h.inputBox.getSelectedQuotes = () => [];
-  await assert.rejects(h.page.nativeSessionAction('devin', SESSION, 'queue', {}), /没有可发送的内容/);
-  assert.equal(h.calls.dispatch.length, 0);
-  assert.equal(h.calls.cleared, 0);
-});
-
-test('Devin queue conversion failure preserves the owned composer input', async () => {
-  const h = nativePage();
-  h.composer.toAcpBlocks = () => Promise.reject(new Error('convert failed'));
-  await assert.rejects(h.page.nativeSessionAction('devin', SESSION, 'queue', {}), /转换失败/);
-  assert.equal(h.calls.dispatch.length, 0);
-  assert.equal(h.calls.cleared, 0);
-  assert.equal(h.calls.images, 0);
-  assert.equal(h.calls.quotes, 0);
-});
-
-test('Devin queue re-checks the active session after awaited conversion', async () => {
-  const h = nativePage({ toAcpBlocks: () => { h.setFocused('acp/devin-cli/other'); return Promise.resolve([{ type: 'text', text: 'x' }]); } });
+  const unrelated = { ...h.editor, __reactFiber$fixture: { memoizedProps: { ...h.props, onEnqueue() { throw Error('foreign callback'); } } } };
+  const query = h.document.querySelectorAll;
+  h.document.querySelectorAll = selector => selector.includes('data-slate-editor') ? [unrelated, h.editor] : query(selector);
+  await h.page.nativeSessionAction('devin', SESSION, 'queue', {}); assert.equal(h.calls.enqueue, 1);
+  h.setFocused('other');
   await assert.rejects(h.page.nativeSessionAction('devin', SESSION, 'queue', {}), /会话已切换/);
-  assert.equal(h.calls.dispatch.length, 0);
-  assert.equal(h.calls.cleared, 0);
+  assert.equal(h.calls.enqueue, 1);
 });
 
-test('Devin queue clears only the owned input after native acceptance', async () => {
-  const h = nativePage();
-  h.store.state.acp.perSession[SESSION].queuedMessages = null;
-  h.store.dispatch = action => { h.calls.dispatch.push(action); };
+test('Devin queue reports native rejection and preserves native ownership of rich-content conversion', async () => {
+  const h = nativePage({ acceptQueue: false });
   await assert.rejects(h.page.nativeSessionAction('devin', SESSION, 'queue', {}), /没有接受/);
-  assert.equal(h.calls.cleared, 0);
+  assert.equal(h.calls.enqueue, 1); assert.equal(h.calls.submit, 0); assert.equal(h.calls.sendNow, 0);
 });
 
-test('Devin queue rejects an empty composer without dispatching', async () => {
-  const h = nativePage();
-  h.composer.isEmpty = () => true;
-  h.inputBox.getSelectedImages = () => [];
-  h.inputBox.getSelectedQuotes = () => [];
-  await assert.rejects(h.page.nativeSessionAction('devin', SESSION, 'queue', {}), /空的/);
-  assert.equal(h.calls.dispatch.length, 0);
-});
-
-test('Devin queue delivers immediately through the native controller when the session is idle', async () => {
-  const h = nativePage({ agentRequests: {} });
-  const result = await h.page.nativeSessionAction('devin', SESSION, 'queue', {});
-  assert.equal(result.queued, true);
-  assert.equal(h.calls.interrupt.length, 1);
-  assert.equal(h.calls.interrupt[0], h.calls.dispatch[0].payload.message.id);
-  assert.equal(h.calls.clearedAtInterrupt, 1);
-});
-
-test('Devin queue stays queued while a native prompt is in flight, even with a pending question', async () => {
-  const h = nativePage({ question: 'allow', agentRequests: { 'req-1': { ...STARTED_PROMPT } } });
-  await h.page.nativeSessionAction('devin', SESSION, 'queue', {});
-  assert.equal(h.calls.interrupt.length, 0);
-  const other = nativePage({ agentRequests: { 'req-2': { method: 'session/prompt', status: 'started', params: { sessionId: 'acp/devin-cli/other' } } } });
-  await other.page.nativeSessionAction('devin', SESSION, 'queue', {});
-  assert.equal(other.calls.interrupt.length, 1, 'a prompt for another session does not block delivery');
-});
-
-test('Devin queue validates the native controller before dispatch whenever delivery is needed', async () => {
-  const idle = nativePage({ controller: false, agentRequests: {} });
-  await assert.rejects(idle.page.nativeSessionAction('devin', SESSION, 'queue', {}), /控制器/);
-  assert.equal(idle.calls.dispatch.length, 0);
-  assert.equal(idle.calls.cleared, 0);
-  const now = nativePage({ controller: false });
-  await assert.rejects(now.page.nativeSessionAction('devin', SESSION, 'queue', { now: true }), /控制器/);
-  assert.equal(now.calls.dispatch.length, 0);
-  assert.equal(now.calls.cleared, 0);
-  const busy = nativePage({ controller: false });
-  const result = await busy.page.nativeSessionAction('devin', SESSION, 'queue', {});
-  assert.equal(result.queued, true, 'a busy queue needs no controller');
-  assert.equal(busy.calls.interrupt.length, 0);
-});
-
-test('Devin questionText invokes only the native handler with the exact payload', async () => {
-  const h = nativePage({ question: 'allow' });
-  const result = await h.page.nativeSessionAction('devin', SESSION, 'questionText', { text: '我的回答' });
-  assert.deepEqual(plain(result), { answered: true });
-  assert.equal(h.calls.submits.length, 1);
-  assert.deepEqual(plain(h.calls.submits[0]), { text: '我的回答', items: [], images: [] });
-  assert.equal(h.calls.dispatch.length, 0);
-  assert.equal(h.calls.cleared, 0);
-});
-
-test('Devin questionText propagates native validation errors and rejects blank text', async () => {
-  const h = nativePage({ question: 'error' });
-  await assert.rejects(h.page.nativeSessionAction('devin', SESSION, 'questionText', { text: 'x' }), /答案无效/);
-  const blank = nativePage({ question: 'allow' });
-  await assert.rejects(blank.page.nativeSessionAction('devin', SESSION, 'questionText', { text: '  ' }), /不能为空/);
-  assert.equal(blank.calls.submits.length, 0);
-});
-
-test('Devin questionText refuses questions without a native free-text handler', async () => {
-  const h = nativePage({ question: 'deny' });
-  await assert.rejects(h.page.nativeSessionAction('devin', SESSION, 'questionText', { text: 'x' }), /不支持自由文字/);
-  assert.equal(h.calls.submits.length, 0);
-});
-
-test('Devin questionText reads the current provider branch, never the stale alternate', async () => {
-  const h = nativePage({ question: 'allow', staleQuestion: 'stale' });
+test('Devin text answer uses the current provider native rich-content handler', async () => {
+  const h = nativePage({ question: true, staleQuestion: true });
   const result = await h.page.nativeSessionAction('devin', SESSION, 'questionText', { text: '新答案' });
   assert.deepEqual(plain(result), { answered: true });
-  assert.equal(h.calls.submits.length, 1);
-  assert.equal(h.calls.submits[0].text, '新答案');
+  assert.deepEqual(plain(h.calls.answers), [{ text: '新答案', rich: [{ text: '新答案' }] }]);
+  assert.equal(h.calls.enqueue, 0); assert.equal(h.calls.submit, 0);
 });
 
-test('Devin questionText rejects when the current provider has no handler, never calling the stale one', async () => {
-  const h = nativePage({ question: 'deny', staleQuestion: 'stale' });
-  await assert.rejects(h.page.nativeSessionAction('devin', SESSION, 'questionText', { text: 'x' }), /不支持自由文字/);
-  assert.equal(h.calls.submits.length, 0);
+test('Devin text answer rejects an empty answer or a missing current question', async () => {
+  const h = nativePage({ question: true });
+  await assert.rejects(h.page.nativeSessionAction('devin', SESSION, 'questionText', { text: ' ' }), /不能为空/);
+  const none = nativePage({ staleQuestion: true });
+  await assert.rejects(none.page.nativeSessionAction('devin', SESSION, 'questionText', { text: 'answer' }), /不支持自由文字/);
+  assert.equal(none.calls.answers.length, 0);
 });
 
-test('queue and questionText actions stay Devin-only', async () => {
+test('Devin data reads use the native UI session and preserve optimistic insertion order', async () => {
+  const h = nativePage(); h.data.messages = [{ id: 'a' }, { id: 'b' }]; h.data.optimisticMessages = [{ id: 'own' }]; h.data.optimisticInsertIndex = 1;
+  assert.deepEqual(Array.from(h.page.devinMessages(SESSION), row => row.id), ['a', 'own', 'b']);
+  assert.equal(h.page.devinSessionRecord(SESSION).cwd, '/project');
+  await h.page.devinReadSession(SESSION, () => true);
+  assert.equal(h.calls.released, 0, 'UI owns its session retention');
+});
+
+test('Devin prompt/config send uses the same native connection with a canonical wire target', async () => {
   const h = nativePage();
-  await assert.rejects(h.page.nativeSessionAction('cursor', 'cursor-1', 'queue', {}));
-  await assert.rejects(h.page.nativeSessionAction('cursor', 'cursor-1', 'questionText', { text: 'x' }));
+  await h.page.devinSend('devin-cli', { method: 'session/prompt', params: { sessionId: SESSION, prompt: [{ type: 'text', text: 'one' }] } }, 'request');
+  assert.equal(h.calls.requests[0].params.sessionId, NATIVE); assert.equal(h.data.promptInFlight, false);
+  assert.equal(h.window.__remoteAgentDevinRequests.get('request').status, 'completed');
+  await h.page.devinSend('devin-cli', { method: 'session/set_config_option', params: { sessionId: SESSION, value: 'model' } });
+  assert.deepEqual(plain(h.data.sessionInfo.configOptions), []);
+});
+
+test('Devin pending native requests preserve store keys and nested elicitation session ownership', () => {
+  const h = nativePage(); h.pending.set('own', { id: 0, method: 'ext/method', params: { method: '_session/elicitation', params: { sessionId: 'wire' } } });
+  const entry = h.page.devinClientRequests(SESSION).own;
+  assert.equal(entry.request.id, 0); assert.equal(entry.request.params.params.sessionId, SESSION);
+});
+
+test('Devin background reads release their own lease and propagate native load failure', async () => {
+  const h = nativePage({ mounted: false });
+  await h.page.devinReadSession(SESSION, () => true);
+  assert.equal(h.calls.released, 1);
+  h.data.loadStatus = 'failed'; h.data.loadErrorKind = 'native-error';
+  await assert.rejects(h.page.devinReadSession(SESSION, () => true), /native-error/);
+  assert.equal(h.calls.released, 2);
+});
+
+test('Devin watcher releases background subscriptions and never releases UI-owned sessions', () => {
+  for (const mounted of [false, true]) {
+    const h = nativePage({ mounted }), watch = h.page.devinWatch(() => {}, SESSION);
+    assert.equal(h.listeners.size, 1);
+    watch.refresh(); assert.equal(h.listeners.size, 1);
+    watch.stop();
+    assert.equal(h.listeners.size, 0); assert.equal(h.calls.released, mounted ? 0 : 1);
+    assert.equal(h.calls.feedStopped, true); assert.equal(h.calls.observerStopped, true);
+  }
 });
 
 function devinSendContext({ busy = true, when = '', draft = 'hello', human = [], queued = [] } = {}) {
@@ -456,7 +267,9 @@ test('Devin background elicitation uses the shared MCP field types and exact nat
     const state = { clientRequests: { own: row, foreign: { ...row, request: { ...row.request, params: method === 'ext/method'
       ? { method: '_session/elicitation', params: { ...params, sessionId: 'other' } } : { ...params, sessionId: 'other' } } } } };
     const context = vm.createContext({ RemoteAgentRules: { elicitationFields }, remoteContext: { app: 'devin', threadId: thread },
-      nativeModule: { clientRequestCompleted: value => value },
+      nativeModule: {},
+      devinClientRequests: () => state.clientRequests,
+      devinSessionHandle: () => ({ respond(key, response) { replies.push({ clientRequestId: key, response }); state.clientRequests[key].status = 'completed'; return true; } }),
       window: { __acpStore: { getState: () => ({ acp: state }), dispatch(value) { replies.push(value); state.clientRequests[value.clientRequestId].status = 'completed'; } } } });
     vm.runInContext(source.slice(source.indexOf('  const devinPermissionEntries ='), source.indexOf('  const devinQuestions ='))
       + actions.slice(actions.indexOf('  const nativeSessionAction ='), actions.indexOf('  const nativeSessionRenameInput =')).replaceAll("await import('@exa/chat-client')", 'nativeModule')

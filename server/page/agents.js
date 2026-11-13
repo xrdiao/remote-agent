@@ -58,7 +58,7 @@
       return !detector || !!detector.currentCommand?.commandExecutedMarker;
     });
     let states = agentStates();
-    const nativeSessions = window.__acpStore?.getState().acp.sessions;
+    const nativeSessions = devinSurface() ? devinSessions() : null;
     if (nativeSessions) {
       const root = window.vscode?.context?.configuration?.()?.workspace?.uri?.path;
       const open = new Set(devinTabs().map(t => t.id));
@@ -285,7 +285,7 @@
     ]).values()].filter(row => available.has(row.id)).map(row => ({ ...row, lastUsed: lastUsed.get(row.id) || 0, title: names.get(row.id) || row.title, titleNative: names.has(row.id), titleAt: Date.now() }));
     if (devinSurface() === 'editor') {
       const selected = devinTabs().find(tab => tab.active)?.id;
-      return (window.__acpStore?.getState().acp.sessions || []).filter(session => !session._meta?.['cognition.ai/isArchived'])
+      return (devinSessions() || []).filter(session => !session._meta?.['cognition.ai/isArchived'])
         .map(session => ({ ...devinCatalogRow(session), current: session.sessionId === selected, lastUsed: Date.parse(session.updatedAt || '') || 0 }));
     }
     // Read the native session id; titles can repeat or change.
@@ -412,8 +412,8 @@
         completedAt: completed && Number.isFinite(turn.durationMs) ? turn.turnStartedAtMs + turn.durationMs : 0 };
     }
     if (app === 'devin') {
-      const state = window.__acpStore?.getState().acp, session = devinSessionRecord(thread);
-      const [requestId, request] = Object.entries(state?.agentRequests.byId || {}).findLast(([, row]) => row.method === 'session/prompt' && row.params?.sessionId === thread) || [];
+      const session = devinSessionRecord(thread);
+      const [requestId, request] = Object.entries(devinAgentRequests(thread)).findLast(([, row]) => row.method === 'session/prompt' && row.params?.sessionId === thread) || [];
       if (!request) return null;
       const status = session?.status === 'unknown_error' || (remoteContext ? request.status === 'failed' : request.error) ? 'error'
         : ['active', 'pending', 'canceling'].includes(session?.status) ? 'running'
@@ -453,10 +453,10 @@
         }).join('\n'), nativeOwner: !!data.conversationActionManager && !data.conversationActionManager.signal.aborted,
         ...(uri ? { workspace: uri.fsPath || uri.path } : {}) };
     }
-    const state = window.__acpStore?.getState().acp, session = devinSessionRecord(thread);
+    const session = devinSessionRecord(thread);
     if (!session) return null;
-    const requests = Object.values(state.clientRequests).filter(request => request.status === 'pending'
-      && `acp/${request.providerId}/${request.request.params?.sessionId}` === thread);
+    const requests = Object.values(devinClientRequests(thread)).filter(request => request.status === 'pending'
+      && request.request.params?.sessionId === thread);
     return { waiting: requests.length ? JSON.stringify([thread, ...requests.map(request => request.request.id)]) : null,
       waitingText: requests.map(request => request.request.params?.toolCall?.title || '').join('\n'), workspace: session.cwd || '' };
   };

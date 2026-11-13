@@ -104,7 +104,7 @@ export async function watchChat(cdp, changed, shared = false, context = null) {
       if (context?.app === 'codex' || context?.app === 'cursor' || context?.app === 'devin') {
         native = ${helpersCall('watchCodexData(changed)', context)};
       } else if (window.vscode?.context?.configuration?.().product?.applicationName === 'devin-desktop') {
-        native = { stop: window.__acpStore.subscribe(changed), refresh() {} };
+        native = ${helpersCall('watchCodexData(changed)')};
       } else native = (${PAGE_SRC}).watchCodexData(changed);
       if (context && context.app !== 'codex') { changed(); return; }
       observer = new MutationObserver(records => {

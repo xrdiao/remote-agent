@@ -1,3 +1,116 @@
+  // Devin's shared ACP engine owns sessions; Redux only retains window configuration.
+  const devinClient = () => window.__remoteAgentDevinNative;
+  const devinNativeId = id => id.startsWith('acp/') ? 'devin-' + id : id;
+  let devinUiHandles;
+  const devinUiSession = id => {
+    if (!devinUiHandles) {
+      devinUiHandles = new Map();
+      for (const { values } of devinEditorContexts()) for (const value of values)
+        if (value.sessionId && value.store && typeof value.resumeSession === 'function') devinUiHandles.set(value.sessionId, value);
+    }
+    return devinUiHandles.get(devinNativeId(id));
+  };
+  const devinSessionHandle = id => devinUiSession(id) || devinClient().sharedAcpEngine.peekSession(devinNativeId(id));
+  const devinSessionData = id => devinSessionHandle(id)?.store.getState();
+  const devinMessages = (id, data = devinSessionData(id)) => {
+    if (!data) return [];
+    const rows = [...data.messages];
+    rows.splice(data.optimisticInsertIndex ?? rows.length, 0, ...data.optimisticMessages);
+    return rows;
+  };
+  const devinSessionRecord = id => {
+    const native = devinClient(), key = devinNativeId(id);
+    if (!native.isKnownSession(key)) return null;
+    const row = native.getSessionRow(key), data = devinSessionData(id), info = data?.sessionInfo;
+    const active = data?.promptInFlight || data?.pendingPrompts > 0 || row && native.deriveAgentStatus(row).isWorking;
+    return { ...info, sessionId: id.replace(/^devin-/, ''), providerId: native.sessionProviderId(key),
+      title: info?.title || native.sessionTitle(key) || '', cwd: info?.cwd || native.sessionCwdOf(key) || '',
+      configOptions: info?.configOptions || native.sessionConfigOptions(key), status: data?.loadStatus === 'failed' ? 'unknown_error' : active ? 'active' : 'idle',
+      updatedAt: row?.updated_at, latest_message_event_at: row?.latest_message_event_at,
+      _meta: { ...info?._meta, 'cognition.ai/isArchived': row?.is_archived === true } };
+  };
+  const devinSessions = () => devinClient().listedSessions().map(row => devinSessionRecord(row.sessionId));
+  const devinRequestRecords = () => window.__remoteAgentDevinRequests ||= new Map();
+  const devinAgentRequests = id => {
+    const rows = [...devinRequestRecords()].filter(([, row]) => !id || row.params.sessionId === id);
+    const data = id && devinSessionData(id), turn = data?.currentTurnId;
+    if (turn && !rows.some(([, row]) => row.turnId === turn || row.method === 'session/prompt' && row.status === 'started')) {
+      const user = devinMessages(id).findLast(row => row.kind === 'user_message');
+      const meta = user?.content?.find(block => block._meta?.['cognition.ai/clientMessageId'])?._meta;
+      const at = user?.content?.[0]?._meta?.['cognition.ai/timestamp'];
+      rows.push([turn, { id: turn, method: 'session/prompt', params: { sessionId: id,
+        _meta: { 'cognition.ai/clientMessageId': meta?.['cognition.ai/clientMessageId'] } },
+        status: data.promptInFlight ? 'started' : data.lastPromptStopReason || data.turnStats?.[turn]?.cause === 'complete' ? 'completed' : 'unknown',
+        startedAt: typeof at === 'number' ? at : Date.parse(at || '') || 0, completedAt: 0 }]);
+    }
+    return Object.fromEntries(rows);
+  };
+  const devinSend = async (provider, request, requestId = crypto.randomUUID()) => {
+    const records = devinRequestRecords(), record = { id: requestId, method: request.method, params: request.params,
+      status: 'started', startedAt: Date.now(), createdAt: Date.now() };
+    records.set(requestId, record);
+    const handle = request.params.sessionId && devinSessionHandle(request.params.sessionId);
+    if (request.method === 'session/prompt') handle.store.getState().setPromptInFlight(true);
+    try {
+      const nativeRequest = { ...request, params: { ...request.params,
+        ...(request.params.sessionId ? { sessionId: devinNativeId(request.params.sessionId) } : {}) } };
+      const result = await (handle ? handle.connection.send(nativeRequest) : devinClient().sharedAcpEngine.send(provider, nativeRequest));
+      Object.assign(record, { status: 'completed', completedAt: Date.now(), result });
+      if (request.method === 'session/prompt') {
+        record.turnId = handle.store.getState().currentTurnId;
+        handle.store.getState().setPromptInFlight(false, result.stopReason);
+      }
+      if (request.method === 'session/set_config_option') handle.store.getState().replaceConfigOptions(result.configOptions);
+      if (request.method === 'session/new') {
+        const host = devinClient().sharedAcpEngine.hostFor(provider), created = host.adoptCreatedSession(result.sessionId, result);
+        host.preloadSession(result.sessionId);
+        created.release();
+      }
+      return result;
+    } catch (error) {
+      Object.assign(record, { status: 'failed', completedAt: Date.now(), errorMessage: String(error.message || error) });
+      if (request.method === 'session/prompt') handle.store.getState().setPromptInFlight(false);
+      throw error;
+    }
+  };
+  const devinClientRequests = id => {
+    const session = devinSessionRecord(id), pending = devinSessionHandle(id)?.pendingRequests;
+    return Object.fromEntries([...(pending || [])].map(([key, request]) => {
+      const params = request.method === 'ext/method' && request.params.method === '_session/elicitation'
+        ? { ...request.params, params: { ...request.params.params, sessionId: id } } : { ...request.params, sessionId: id };
+      return [key, { providerId: session.providerId, status: 'pending', request: { ...request, params } }];
+    }));
+  };
+  const devinReadSession = async (id, read) => {
+    const ui = devinUiSession(id), handle = ui || devinClient().sharedAcpEngine.acquire(devinNativeId(id));
+    try {
+      handle.resumeSession();
+      if (handle.store.getState().loadStatus === 'loading') await new Promise(resolve => {
+        const stop = handle.store.subscribe(state => { if (state.loadStatus !== 'loading') { stop(); resolve(); } });
+      });
+      const data = handle.store.getState();
+      if (data.loadStatus === 'failed') throw new Error('Devin 会话读取失败：' + data.loadErrorKind);
+      return await read(handle, data);
+    } finally { if (!ui) handle.release(); }
+  };
+  const devinWatch = (changed, thread = '') => {
+    const native = devinClient(); let handle, owned, stop, selected;
+    const refresh = () => {
+      devinUiHandles = null;
+      const id = thread || activeThread();
+      const ui = id && devinUiSession(id);
+      if (id === selected && (!ui || ui === handle)) return;
+      stop?.(); if (owned) handle.release(); selected = id;
+      owned = !!id && !ui;
+      handle = id ? ui || native.sharedAcpEngine.acquire(devinNativeId(id)) : null;
+      stop = handle?.store.subscribe(changed); handle?.resumeSession();
+    };
+    const feed = native.subscribeSessionFeed(() => { refresh(); changed(); });
+    const observer = new MutationObserver(() => { const before = selected; refresh(); if (before !== selected) changed(); });
+    observer.observe(doc.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'data-active'] });
+    refresh();
+    return { refresh, stop() { feed(); observer.disconnect(); stop?.(); if (owned) handle.release(); } };
+  };
   const devinMessageText = blocks => {
     let text = '', stream = null, hasText = false;
     for (const block of blocks || []) {
@@ -72,7 +185,7 @@
     if (!id) return '';
     const nativeId = id.replace(/^devin-/, '');
     if (nativeId.startsWith('acp/')) return nativeId;
-    return window.__acpStore?.getState().acp.sessions.find(session => session.providerId === 'devin-cloud'
+    return devinSessions().find(session => session.providerId === 'devin-cloud'
       && session.sessionId === `acp/devin-cloud/${nativeId}`)?.sessionId || '';
   };
   const devinNodeSessionId = el => {
@@ -94,7 +207,7 @@
     const props = codexFiberProps(row, 40);
     const data = props.find(p => p.row)?.row;
     const sessionId = devinNodeSessionId(row);
-    const messages = window.__acpStore?.getState()?.acp?.perSession?.[sessionId]?.messages;
+    const messages = devinMessages(sessionId);
     const index = messages?.findIndex(message => message.id === data?.item?.id || data?.memberIds?.includes(message.id));
     return index >= 0 ? index : null;
   };
@@ -118,14 +231,14 @@
     return b ? { ...center(b), open: !!input && vis(input) } : null;
   };
   const devinPickerSessions = async () => {
-    const native = await import('@exa/chat-client');
-    let sessions = native.filterActiveSessions(window.__acpStore.getState().acp.sessions);
+    const native = devinClient();
+    let sessions = devinSessions().filter(session => !session._meta?.['cognition.ai/isArchived']);
     const connectors = native.tryGetAcpSingleton('connectorService');
     if (connectors?.hasReceivedConnectors()) {
       const ids = new Set(connectors.getConnectors().map(c => c.id));
       sessions = sessions.filter(s => s.providerId === 'cascade' || ids.has(s.providerId));
     }
-    return native.sortSessions(sessions);
+    return sessions.sort((a, b) => (Date.parse(b.latest_message_event_at || b.updatedAt) || 0) - (Date.parse(a.latest_message_event_at || a.updatedAt) || 0));
   };
   const sessionPickerRows = async (catalog = false) => {
     if (catalog) {
@@ -153,8 +266,8 @@
   // The tabs live in the chat panel (#chat) even when the open session is empty and has no transcript.
   const devinTabEls = () => [...document.querySelectorAll('#chat [draggable="true"]')].filter(e => vis(e) && /h-\[34px\]/.test(String(e.className)));
   const devinTabs = () => devinTabEls().map(t => {
-    const id = codexFiberProps(t, 24).find(p => p.sessionId)?.sessionId || '';
-    const session = window.__acpStore?.getState().acp.sessions.find(s => devinRowSession(s) === id);
+    const id = devinRowSession({ sessionId: codexFiberProps(t, 24).find(p => p.sessionId)?.sessionId });
+    const session = devinSessionRecord(id);
     return { id, title: session?.title || sessNorm((t.querySelector('span') || t).innerText),
       titleNative: !!session?.title, titleAt: Date.now(), active: /bg-ide-tab-active-background-color/.test(String(t.className)) };
   }).filter(t => t.title);
@@ -166,32 +279,32 @@
     const node = devinLog() || tab || [...doc.querySelectorAll('[data-slate-editor="true"][role="textbox"]')].find(vis)
       || (surface === 'editor' ? doc.querySelector('.editor-group-container.has-pending-new-session-welcome [data-slate-editor="true"][role="textbox"]') : null);
     const key = (surface === 'agent' ? active?.id : '') || devinNodeSessionId(node);
-    const session = window.__acpStore?.getState().acp.sessions.find(s => devinRowSession(s) === key);
+    const session = devinSessionRecord(key);
     const title = (surface === 'editor' ? tabs.find(t => t.active)?.title : active?.title) || '';
     return { key, title, surface, tabs, cwd: (surface === 'agent' ? active?.workspace : '') || session?.cwd || active?.workspace || '' };
   };
   const devinTabTarget = id => {
-    const el = devinTabEls().find(t => codexFiberProps(t, 24).some(p => p.sessionId === id));
+    const el = devinTabEls().find(t => codexFiberProps(t, 24).some(p => devinRowSession(p) === id));
     if (!el) return null;
     const r = (el.querySelector('span') || el).getBoundingClientRect();
     return { x: r.x + Math.min(r.width / 2, 40), y: r.y + r.height / 2 };
   };
   const clickDevinTab = id => {
-    const el = devinTabEls().find(t => codexFiberProps(t, 24).some(p => p.sessionId === id));
+    const el = devinTabEls().find(t => codexFiberProps(t, 24).some(p => devinRowSession(p) === id));
     if (!el) return false;
     el.click();
     return true;
   };
   // The tab's own close button (an icon at its right edge, hover-revealed); null while it has no size.
   const devinTabCloseTarget = id => {
-    const el = devinTabEls().find(t => codexFiberProps(t, 24).some(p => p.sessionId === id));
+    const el = devinTabEls().find(t => codexFiberProps(t, 24).some(p => devinRowSession(p) === id));
     const b = el?.querySelector('button');
     if (!b) return null;
     const r = b.getBoundingClientRect();
     return r.width > 2 && r.height > 2 ? { x: r.x + r.width * 0.78, y: r.y + r.height / 2 } : null;
   };
   const clickDevinTabClose = id => {
-    const el = devinTabEls().find(t => codexFiberProps(t, 24).some(p => p.sessionId === id));
+    const el = devinTabEls().find(t => codexFiberProps(t, 24).some(p => devinRowSession(p) === id));
     el.querySelector('button').click();
   };
   const sessionPickerTarget = async (id, select = false) => {
@@ -331,7 +444,7 @@
   const devinSubmitBusy = () => {
     if (!devinSurface()) return false;
     const id = devinSession()?.key;
-    const session = window.__acpStore?.getState().acp.sessions.find(s => devinRowSession(s) === id);
+    const session = devinSessionRecord(id);
     return ['active', 'pending', 'canceling'].includes(session?.status);
   };
   const isBusy = () => {
@@ -509,14 +622,14 @@
     .find(e => vis(e) && [...e.querySelectorAll('button')].some(b => nativeLabel(b.getAttribute('aria-label'), 'Skip')));
   const devinQnRows = band => [...band.querySelectorAll('[data-slot="scroll-area-viewport"] > [role="button"]')];
   const devinQnButton = (band, name) => [...band.querySelectorAll('button')].find(b => vis(b) && (nativeLabel(b.getAttribute('aria-label'), name) || nativeLabel((b.innerText || '').trim(), name)));
-  const devinPermissionEntries = thread => Object.entries(window.__acpStore?.getState().acp.clientRequests || {})
+  const devinPermissionEntries = thread => Object.entries(devinClientRequests(thread))
     .filter(([, row]) => row.status === 'pending' && row.request.method === 'session/request_permission'
       && (row.request.params.sessionId.startsWith('acp/') ? row.request.params.sessionId : `acp/${row.providerId}/${row.request.params.sessionId}`) === thread)
     .map(([key, row]) => ({ key, row, id: 'devin-permission:' + JSON.stringify([thread, row.providerId, key, row.request.id]) }));
   const devinPermissions = thread => devinPermissionEntries(thread).map(({ id, row }) => ({ id,
     text: [row.request.params.toolCall?.title, row.request.params.toolCall?._meta?.['cognition.ai/editableCommand'], row.request.params.toolCall?._meta?.['cognition.ai/permissionRule']].filter(Boolean).join('\n'),
     buttons: row.request.params.options.map(option => ({ label: option.name })), fields: [] }));
-  const devinElicitationEntries = thread => Object.entries(window.__acpStore?.getState().acp.clientRequests || {})
+  const devinElicitationEntries = thread => Object.entries(devinClientRequests(thread))
     .filter(([, row]) => row.status === 'pending')
     .flatMap(([key, row]) => {
       const params = row.request.method === 'elicitation/create' ? row.request.params
@@ -545,15 +658,15 @@
     const submit = devinQnButton(band, 'Submit') || devinQnButton(band, 'Continue');
     const prev = devinQnButton(band, 'Previous question'), next = devinQnButton(band, 'Next question');
     const question = devinNativeQuestion();
-    const canText = typeof question?.handleComposerSubmit === 'function';
-    const active = canText ? question.questions?.find(q => q.id === question.activeQuestionId) : null;
+    const canText = !!question?.currentQuestion && typeof question.submitAllWithText === 'function';
+    const active = question?.currentEvent;
     return {
       devin: true, src: 'devin', list: [{ text, options, multi }],
       pager: pg ? { cur: Number(pg[1]), total: Number(pg[2]) } : null,
       canPrev: !!prev && !prev.disabled, canNext: !!next && !next.disabled,
       hasSubmit: !!submit, canSubmit: !!submit && !submit.disabled,
       canText,
-      textKey: active?.resetKey || '',
+      textKey: active?.event_id || '',
     };
   };
   const devinQuestionTarget = (oi, part) => {
@@ -710,16 +823,7 @@
     return (b.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40) || null;
   };
 
-  // ---- Ordinary Devin submission internals ----
-  // The visible Slate editor's React fiber reaches the live native contexts: the
-  // InputBox (composer + selected images/quotes), the queue controller and the
-  // ask-question hook, plus the conversion options kept in a useMemo hook state.
-  const DEVIN_OPTION_KEYS = ['copyToAgentHost', 'httpUpload', 'maxEmbeddedResourceBytes', 'readFile', 'readTerminal'];
-  const devinOptionValue = value => {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-    const keys = Object.keys(value).sort();
-    return keys.length === DEVIN_OPTION_KEYS.length && keys.every((key, i) => key === DEVIN_OPTION_KEYS[i]) ? value : null;
-  };
+  // Native callbacks own rich-content conversion, attachment cleanup and queue semantics.
   const devinEditorContexts = function* () {
     for (const el of doc.querySelectorAll('[data-slate-editor="true"][role="textbox"]')) {
       let host = el;
@@ -748,66 +852,18 @@
         }
       }
     }
-    return values;
+    return [...new Set(values)];
   };
-  const devinNativeOptions = fiber => {
-    for (let f = fiber, depth = 0; f && depth < 200; f = f.return, depth++) {
-      for (let hook = f.memoizedState, guard = 0; hook && typeof hook === 'object' && guard < 5000; hook = hook.next, guard++) {
-        const state = hook.memoizedState;
-        const options = devinOptionValue(Array.isArray(state) && state.length === 2 ? state[0] : state);
-        if (options) return options;
-      }
-    }
-    return null;
-  };
-  const devinQuestionContext = value => value && typeof value === 'object'
-    && typeof value.answerQuestion === 'function' && typeof value.skipQuestion === 'function'
-    && 'handleComposerSubmit' in value && 'activeQuestionId' in value && Array.isArray(value.questions);
-  const devinNativeSubmission = () => {
+  const devinQuestionContext = value => typeof value?.submitAllWithText === 'function' && 'currentQuestion' in value;
+  const devinNativeSubmission = id => {
     for (const { el, fiber, values } of devinEditorContexts()) {
-      if (!vis(el)) continue;
-      const registry = values.find(value => typeof value?.getCurrentComposer === 'function' && typeof value?.registerInputBox === 'function');
-      const composer = registry?.getCurrentComposer();
-      const input = composer && values.find(value => value?.composerRef?.current === composer);
-      if (!input) continue;
-      const controller = values.find(value => ['cancelInvocation', 'cancelInvocationAndWait', 'interruptWithQueuedMessage']
-        .every(key => typeof value?.[key] === 'function'));
-      return { input, composer, controller, question: values.find(devinQuestionContext) || null, options: devinNativeOptions(fiber) };
+      if (!vis(el) || !values.some(value => value.sessionId === devinNativeId(id) && value.store)) continue;
+      const props = codexFiberProps(el, Infinity).find(p => p['data-devin-input-box'] && p.channelId && typeof p.onSubmit === 'function');
+      if (props) return { el, props, question: values.find(devinQuestionContext) || null };
     }
     return null;
   };
-  const devinNativeQuestion = () => devinNativeSubmission()?.question || null;
-  // Mirrors of the native quote formatters (tjZ/tjQ/tj0/tj1/tqo in the installed
-  // workbench bundle): escape &, <, >, "; artifact attributes per kind; line anchors
-  // only for file/attachment/diff/pr/editor; <quoted_artifact> XML wrapper.
-  const devinQuoteEscape = value => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
-  const devinQuoteAttrs = artifact => {
-    switch (artifact.kind) {
-      case 'file': return ` path="${devinQuoteEscape(artifact.path)}" version_ref="${devinQuoteEscape(artifact.versionRef)}"`;
-      case 'attachment': return ` path="${devinQuoteEscape(artifact.path)}"` + (artifact.subPath ? ` sub_path="${devinQuoteEscape(artifact.subPath)}"` : '') + ` url="${devinQuoteEscape(artifact.url)}"`;
-      case 'diff': return ` path="${devinQuoteEscape(artifact.path)}"` + (artifact.side ? ` side="${artifact.side}"` : '');
-      case 'event_context': return ` event_type="${devinQuoteEscape(artifact.path)}" source="${devinQuoteEscape(artifact.source)}"`;
-      case 'pr': return ` repo="${devinQuoteEscape(artifact.repo)}" pr_number="${artifact.prNumber}" path="${devinQuoteEscape(artifact.path)}" commit_sha="${devinQuoteEscape(artifact.commitSha)}" side="${artifact.side}"`;
-      case 'pr_description': return ` repo="${devinQuoteEscape(artifact.repo)}" pr_number="${artifact.prNumber}"`;
-      case 'pr_comment': return ` repo="${devinQuoteEscape(artifact.repo)}" pr_number="${artifact.prNumber}" comment_id="${devinQuoteEscape(artifact.commentId)}"` + (artifact.path ? ` path="${devinQuoteEscape(artifact.path)}"` : '');
-      case 'worklog': return ` start_event_id="${devinQuoteEscape(artifact.startEventId)}" end_event_id="${devinQuoteEscape(artifact.endEventId)}" view="${artifact.view}"`;
-      case 'editor': return ` path="${devinQuoteEscape(artifact.path)}" version_ref="${devinQuoteEscape(artifact.resource)}"`;
-      case 'shell': return ` shell_id="${devinQuoteEscape(artifact.shellId)}"`;
-      case 'markdown': return ` plan_id="${devinQuoteEscape(artifact.planId)}" version_ref="${devinQuoteEscape(artifact.versionRef)}"`;
-      case 'message': return ` event_id="${devinQuoteEscape(artifact.eventId)}" author="${artifact.author}"`;
-      case 'sidechain_message': return ` event_id="${devinQuoteEscape(artifact.eventId)}" author="${artifact.author}" anchor_event_id="${devinQuoteEscape(artifact.anchorEventId)}"`;
-      case 'preview': return ` page_url="${devinQuoteEscape(artifact.pageUrl)}" selector="${devinQuoteEscape(artifact.selector)}"` + (artifact.localPort != null ? ` local_port="${artifact.localPort}"` : '') + (artifact.component ? ` component="${devinQuoteEscape(artifact.component)}"` : '') + (artifact.source ? ` source="${devinQuoteEscape(artifact.source.fileName)}:${artifact.source.lineNumber}"` : '') + (artifact.accessibility ? ` ax_role="${devinQuoteEscape(artifact.accessibility.role)}"` + (artifact.accessibility.label ? ` ax_label="${devinQuoteEscape(artifact.accessibility.label)}"` : '') + (artifact.accessibility.value ? ` ax_value="${devinQuoteEscape(artifact.accessibility.value)}"` : '') + (artifact.accessibility.identifier ? ` ax_identifier="${devinQuoteEscape(artifact.accessibility.identifier)}"` : '') + ` ax_enabled="${artifact.accessibility.enabled}" ax_focused="${artifact.accessibility.focused}"` + (artifact.accessibility.actions.length ? ` ax_actions="${devinQuoteEscape(artifact.accessibility.actions.join(', '))}"` : '') + ` ax_discovery="${artifact.accessibility.discovery}"` : '');
-    }
-  };
-  const devinQuoteAnchored = artifact => ['file', 'attachment', 'diff', 'pr', 'editor'].includes(artifact.kind);
-  const devinQuoteXml = quote => {
-    const { artifact, anchor, text, diffText, caption } = quote;
-    const body = diffText ?? text;
-    const lines = devinQuoteAnchored(artifact) ? ` start_line="${anchor.startLine}" end_line="${anchor.endLine}"` : '';
-    const cap = caption ? `\n<caption>${devinQuoteEscape(caption)}</caption>` : '';
-    return `\n<quoted_artifact kind="${artifact.kind}"${devinQuoteAttrs(artifact)}${lines}>${cap}\n<content>\n${devinQuoteEscape(body)}\n</content>\n</quoted_artifact>`;
-  };
-  const devinQuoteBlock = quote => ({ type: 'text', text: devinQuoteXml(quote), _meta: { quote } });
+  const devinNativeQuestion = () => devinNativeSubmission(activeThread())?.question || null;
   const devinCheckSession = id => {
     const active = activeThread();
     if (active && active !== id) throw new Error('Devin 会话已切换，请重试');
@@ -815,51 +871,32 @@
   const devinNativeQueue = async (id, spec = {}) => {
     devinCheckSession(id);
     if (!devinSessionRecord(id)) throw new Error('Devin 原生目录中没有这个会话');
-    const found = devinNativeSubmission();
-    const composer = found?.composer;
-    if (!composer || typeof composer.toAcpBlocks !== 'function') throw new Error('Devin 原生输入框尚未就绪');
-    const images = found.input?.getSelectedImages?.() || [];
-    const quotes = found.input?.getSelectedQuotes?.() || [];
-    if (typeof composer.isEmpty === 'function' && composer.isEmpty() && !images.length && !quotes.length)
-      throw new Error('输入框是空的');
-    if (!found.options) throw new Error('Devin 原生消息转换选项尚未就绪');
-    let blocks;
-    try {
-      blocks = await composer.toAcpBlocks(found.options);
-      if (!Array.isArray(blocks)) throw new Error('没有可发送的内容');
-    } catch (error) {
-      throw new Error(`Devin 原生消息转换失败：${error?.message || error}`);
+    const found = devinNativeSubmission(id);
+    if (!found) throw new Error('Devin 原生输入框尚未就绪');
+    const before = new Set(devinQueueRows());
+    if (typeof found.props.onEnqueue !== 'function') {
+      found.props.onSubmit();
+      return { queued: true, now: spec.now === true };
     }
-    for (const image of images) blocks.push({ type: 'image', data: image.base64Data, mimeType: image.mimeType });
-    for (const quote of quotes) blocks.push(devinQuoteBlock(quote));
-    if (!blocks.length) throw new Error('没有可发送的内容');
+    found.props.onEnqueue();
+    await new Promise(resolve => requestAnimationFrame(resolve));
     devinCheckSession(id);
-    // addQueuedMessage only enqueues: the native drain runs on prompt end/idle, so an
-    // explicit queue while the session is already idle must go through the same
-    // interrupt path a "now" send uses, or the message would sit queued forever.
-    const requests = window.__acpStore.getState().acp.agentRequests.byId;
-    const running = Object.values(requests).some(request => request.method === 'session/prompt'
-      && request.status === 'started' && request.params?.sessionId === id);
-    const send = spec.now === true || !running;
-    if (send && typeof found.controller?.interruptWithQueuedMessage !== 'function')
-      throw new Error('Devin 原生队列控制器尚未就绪');
-    const messageId = crypto.randomUUID();
-    window.__acpStore.dispatch({ type: 'acp/addQueuedMessage', payload: { sessionId: id, message: { id: messageId, contentBlocks: blocks } } });
-    const accepted = window.__acpStore.getState().acp.perSession[id]?.queuedMessages?.some(message => message.id === messageId);
-    if (!accepted) throw new Error('Devin 原生队列没有接受这条消息');
-    composer.clear?.();
-    found.input?.setSelectedImages?.([]);
-    found.input?.setSelectedQuotes?.([]);
-    if (send) await found.controller.interruptWithQueuedMessage(messageId);
-    return { queued: true, id: messageId, now: spec.now === true };
+    const row = devinQueueRows().find(row => !before.has(row));
+    if (!row) throw new Error('Devin 原生队列没有接受这条消息');
+    if (spec.now === true) {
+      const button = [...row.querySelectorAll('button[aria-label]')].find(el => nativeLabel(el.getAttribute('aria-label'), 'Send now'));
+      if (!button) throw new Error('Devin 原生立即发送入口尚未就绪');
+      button.click();
+    }
+    return { queued: true, now: spec.now === true };
   };
-  const devinNativeQuestionText = (id, spec = {}) => {
+  const devinNativeQuestionText = async (id, spec = {}) => {
     const text = String(spec.text ?? '');
     if (!text.trim()) throw new Error('回答不能为空');
     devinCheckSession(id);
     const question = devinNativeQuestion();
-    if (typeof question?.handleComposerSubmit !== 'function') throw new Error('当前问题不支持自由文字回答');
-    const result = question.handleComposerSubmit({ text, items: [], images: [] });
+    if (!question?.currentQuestion || typeof question.submitAllWithText !== 'function') throw new Error('当前问题不支持自由文字回答');
+    const result = await question.submitAllWithText(text, [{ text }]);
     if (typeof result === 'string') throw new Error(result);
     return { answered: true };
   };

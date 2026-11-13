@@ -202,9 +202,8 @@
     if (!props || remoteContext?.app !== 'devin') return props;
     const session = devinSessionRecord(remoteContext.threadId), model = session.configOptions.find(option => option.category === 'model');
     return { ...props, selectedModels: [model.currentValue], onModelSelect: async config => {
-      const native = await import('@exa/chat-client');
-      return window.__acpStore.dispatch(native.sendAgentRequestThunk(session.providerId,
-        { method: 'session/set_config_option', params: { sessionId: session.sessionId, configId: model.id, value: config.modelUid } }, native.tryGetAcpSingleton('sendAgentRequest')));
+      return devinSend(session.providerId,
+        { method: 'session/set_config_option', params: { sessionId: session.sessionId, configId: model.id, value: config.modelUid } });
     } };
   };
   const devinConfigs = (p, visibleOnly) => visibleOnly

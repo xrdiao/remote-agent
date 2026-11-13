@@ -8,6 +8,22 @@ import { fusionEvent, fusionLive, fusionRuns as menuRuns, allFusionRuns, findFus
 import { fusionStore } from '../server/fusion/store.mjs';
 import { fixture, flush, nativeInvocation } from './fusion-fixture.mjs';
 import { FusionControlError, FUSION_TOOLS } from '../server/fusion/contract.mjs';
+// Transcript/control fixtures inject the shared adapter contract; native-engine behavior is covered in devin-submit.test.mjs.
+function devinRuntimeFixture(extra) {
+  const store = () => extra.window.__acpStore;
+  return {
+    devinSessionData: id => store().getState().acp.perSession[id],
+    devinMessages: (id, data = store().getState().acp.perSession[id]) => { return !data ? [] : extra.nativeModule?.getAllMessages ? extra.nativeModule.getAllMessages(data) : data.messages; },
+    devinAgentRequests: () => store().getState().acp.agentRequests.byId,
+    devinClientRequests: () => store().getState().acp.clientRequests || {},
+    devinSend: (provider, request, requestId) => store().dispatch({ provider, request, requestId, sender: extra.nativeModule?.tryGetAcpSingleton('sendAgentRequest') }),
+    devinWatch: changed => ({ stop: store().subscribe(changed), refresh() {} }),
+    ...extra,
+  };
+}
+
+const createNativeContext = extra => vm.createContext(devinRuntimeFixture(extra));
+
 function scenario({ readWorkspace = true } = {}) {
   const h = fixture(), scheduler = new FusionScheduler(), calls = [], pending = new Map(), stops = [];
   const agent = { catalog: { async refresh() {}, enrich: snapshot => snapshot }, async execute(run, id, prompt, recovering) {
@@ -143,7 +159,7 @@ test('a devin main turn ends with its cached reply after transcript pruning and 
     sendAgentRequestThunk:(provider,request,sender)=>({provider,request,sender})};
   const window={__acpStore:{getState:()=>({acp:state}),subscribe:fn=>{listeners.add(fn);return()=>listeners.delete(fn)},
     dispatch:async()=>true}};
-  const vmContext=vm.createContext({window,Map,Set,WeakMap,Error,JSON,nativeModule,devinSessionRecord:()=>session});
+  const vmContext=createNativeContext({window,Map,Set,WeakMap,Error,JSON,nativeModule,devinSessionRecord:()=>session});
   const source=fs.readFileSync(new URL('../server/page/fusion-tools.js',import.meta.url),'utf8').replace("await import('@exa/chat-client')",'nativeModule');
   vm.runInContext(source+';this.tools=fusionNativeTools;this.turn=fusionDevinTurn;',vmContext);
   const mcpConfig={name:'ra-fusion',type:'http',url:'http://native-test',headers:[]};
@@ -194,7 +210,7 @@ test('a devin worker attempt finishes awaiting_review from its cached native tur
     dispatch: async request => { dispatched.push(request); return request; } } };
   const nativeModule = { getAllMessages: data => data.messages, tryGetAcpSingleton: () => 'sender',
     sendAgentRequestThunk: (provider, request, sender) => ({ provider, request, sender }) };
-  const vmContext = vm.createContext({ window, Map, Set, WeakMap, Error, JSON, Promise, Date, Number, Array, Object, String, RegExp,
+  const vmContext = createNativeContext({ window, Map, Set, WeakMap, Error, JSON, Promise, Date, Number, Array, Object, String, RegExp,
     remoteContext: { app: 'devin', threadId: thread, cwd: h.project.root, host: '' },
     nativeModule, devinSessionRecord: id => id === thread ? session : null,
     nativeMarkdownItem: (i, k, t, at, images) => ({ i, k, t, at, ...(images?.length ? { images } : {}) }),

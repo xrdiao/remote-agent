@@ -192,12 +192,12 @@
   };
   const fusionDevinBody = message => (message?.content || []).filter(block => block.content?.type === 'text').map(block => block.content.text).join('\n');
   const fusionDevinCapture = (id, spec) => {
-    const state = window.__acpStore.getState().acp;
-    if (state.perSession[id]) spec.data = state.perSession[id];
-    for (const [generationId, request] of Object.entries(state.agentRequests.byId))
+    const data = devinSessionData(id);
+    if (data) spec.data = data;
+    for (const [generationId, request] of Object.entries(devinAgentRequests(id)))
       if (request.method === 'session/prompt' && request.params.sessionId === id)
         spec.turns.set(generationId, { ...spec.turns.get(generationId), ...request, generationId });
-    const messages = state.perSession[id]?.messages || [];
+    const messages = devinMessages(id);
     for (const turn of spec.turns.values()) {
       const clientId = turn.params._meta?.['cognition.ai/clientMessageId'];
       const user = clientId && messages.find(row => row.kind === 'user_message'
@@ -224,11 +224,11 @@
     const state = fusionDevinState(id), listener = () => changed?.();
     state.listeners.add(listener);
     if (!state.stop) {
-      const stop = window.__acpStore.subscribe(() => {
+      const watch = devinWatch(() => {
         fusionDevinCapture(id, state);
         for (const notify of state.listeners) notify();
-      });
-      state.stop = () => { state.stop = null; stop(); };
+      }, id);
+      state.stop = () => { state.stop = null; watch.stop(); };
     }
     fusionDevinCapture(id, state);
     return () => {
@@ -266,10 +266,9 @@
       return { profileReady: true };
     }
     if (['active', 'pending', 'canceling'].includes(session.status)) return { profileReady: false };
-    await window.__acpStore.dispatch(native.sendAgentRequestThunk(session.providerId,
+    await devinSend(session.providerId,
       { method: 'session/load', params: { sessionId: id, cwd: session.cwd, additionalDirectories: session.additionalDirectories || [],
-        mcpServers: [...(session.mcpServers || []).filter(server => server.name !== spec.mcp.name), spec.mcp] } },
-      native.tryGetAcpSingleton('sendAgentRequest')));
+        mcpServers: [...(session.mcpServers || []).filter(server => server.name !== spec.mcp.name), spec.mcp] } });
     state.applied = profile;
     return { profileReady: true };
   };
@@ -283,8 +282,8 @@
       const waiting = { stop: null, reject };
       const finish = (value, error) => { waiting.stop?.(); spec.waiting.delete(waiting); error ? reject(error) : resolve(value); };
       const read = () => {
-        const state = window.__acpStore.getState().acp, session = devinSessionRecord(id);
-        const messages = state.perSession[id]?.messages || [];
+        const session = devinSessionRecord(id);
+        const messages = devinMessages(id);
         const user = messages.findLast(row => row.kind === 'user_message' && !row.content?.some(block => block._meta?.['cognition.ai/isOptimistic']));
         const start = messages.indexOf(user), tail = start >= 0 ? messages.slice(start + 1) : [];
         const matches = tail.filter(row => row.kind === 'tool_call' && row.content._meta?.['cognition.ai/toolName'] === 'mcp__ra-fusion__' + input.tool
@@ -299,7 +298,7 @@
             callId: tool.toolCallId, tool: input.tool, arguments: input.arguments } });
         } else if (!['active', 'pending', 'canceling'].includes(session.status)) finish(null, new Error('原生轮次已结束，未找到对应管理工具请求'));
       };
-      waiting.stop = window.__acpStore.subscribe(read); spec.waiting.add(waiting); read();
+      waiting.stop = devinWatch(read, id).stop; spec.waiting.add(waiting); read();
     });
   };
   const fusionNativeTools = {

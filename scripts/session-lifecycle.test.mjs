@@ -222,12 +222,12 @@ test('Devin cross-project creation completes in one switch before reading the ne
 test('Devin opens the requested empty thread through the selected IDE window native main-panel command', async () => {
   const opened = [], chat = {}, id = 'acp/devin-cli/new-empty';
   const source = read('server/page/session-actions.js').replace("const native = await import('@exa/chat-client');\n      const api", 'const native = nativeModule;\n      const api');
-  const context = pageContext({ document: { querySelector: () => chat }, devinRowSession: row => row.sessionId,
+  const context = pageContext({ document: { querySelector: () => chat }, devinRowSession: row => row.sessionId, devinSessionRecord: value => value === id ? { sessionId: id } : null, devinNativeId: id => 'devin-' + id,
     nativeModule: { encodeOpenCascadeIdInChatPanelPayload: value => [value] },
     window: { __acpStore: { getState: () => ({ acp: { sessions: [{ sessionId: id, cwd: '/B' }] } }) } },
     codexFiberProps: element => { assert.equal(element, chat); return [{ vscodeAPI: { executeCommand: async (command, action) => opened.push([command, action]) } }]; } }, source);
   assert.equal(await context.action('devin', id, 'open'), true);
-  assert.deepEqual(JSON.parse(JSON.stringify(opened)), [['devin.sendChatActionMessage', { actionType: 'openCascadeIdInChatPanel', payload: [id] }]]);
+  assert.deepEqual(JSON.parse(JSON.stringify(opened)), [['devin.sendChatActionMessage', { actionType: 'openCascadeIdInChatPanel', payload: ['devin-' + id] }]]);
 });
 
 test('Cursor project replacement calls the selected window native host with forceReuseWindow', async () => {
@@ -350,7 +350,7 @@ test('Codex preview and catalog use the host connection without selecting a conv
 });
 
 function nativeRunContext(extra) {
-  const context = createPageContext({ remoteContext: null, ...extra }), source = read('server/page/agents.js');
+  const context = createPageContext({ remoteContext: null, devinAgentRequests: () => extra.window.__acpStore.getState().acp.agentRequests.byId, ...extra }), source = read('server/page/agents.js');
   vm.runInContext(fragment(source, '  const agentRun =', '  const agentStates =')
     + '\nthis.run = (app, thread, scopes=[]) => agentRun(app, thread, scopes, app === "codex" ? codexConversationManager(thread, scopes) : null);', context);
   return context;
@@ -854,7 +854,7 @@ test('Devin native permission replies preserve provider, store key and exact opt
     toolCall: { title: 'Run command' }, options: [{ optionId: 'allow-project', name: 'Allow in project' }, { optionId: 'reject_once', name: 'Reject' }] } } };
   const state = { clientRequests: { 'store-key-A': row, other: { ...row, request: { ...row.request, params: { ...row.request.params, sessionId: 'B' } } } } }, dispatched = [];
   const nativeModule = { clientRequestCompleted: payload => ({ type: 'complete', payload }) };
-  const context = pageContext({ window: { __acpStore: { getState: () => ({ acp: state }), dispatch: action => dispatched.push(action) } }, nativeModule,
+  const context = pageContext({ devinClientRequests: () => state.clientRequests, devinSessionHandle: () => ({ respond: (key, response) => dispatched.push({ payload: { clientRequestId: key, response } }) }), nativeModule,
     activeThread: () => 'acp/devin-cli/A', remoteContext: null }, read('server/page/session-actions.js').replaceAll("await import('@exa/chat-client')", 'nativeModule'));
   vm.runInContext(fragment(read('server/page/devin.js'), '  const devinPermissionEntries =', '  const devinQuestions =') + ';this.requests=devinPermissions;', context);
   const requests = context.requests('acp/devin-cli/A'); assert.equal(requests.length, 1); assert.equal(requests[0].buttons[0].label, 'Allow in project');
@@ -1116,4 +1116,19 @@ test('cross-project creation verifies the carrier workspace before creating and 
   await session.finishProject();
   assert.deepEqual(calls, ['carrier-B', 'create-B', 'thread-B', 'publish-B', 'thread-B']);
   assert.equal(session.bindingReady, true);
+});
+
+
+test('Devin cold native connection initializes its module once and reload resets initialization', async () => {
+  for (const app of ['devin', 'cursor', 'codex']) {
+    const source = new NativeWindow('ws://fixture-' + app); source.app = app;
+    const calls = [];
+    source.cdp.connect = async () => calls.push('connect');
+    source.cdp.evaluate = async expression => { assert.match(expression, /import\('@exa\/chat-client'\)/); calls.push('native-api'); };
+    await Promise.all([source.connect(), source.connect()]);
+    assert.deepEqual(calls, app === 'devin' ? ['connect', 'native-api'] : ['connect']);
+    source.cdp.handlers.get('Runtime.executionContextsCleared')();
+    await source.connect();
+    assert.equal(calls.filter(call => call === 'native-api').length, app === 'devin' ? 2 : 0);
+  }
 });
