@@ -24,17 +24,45 @@
   var stage = document.getElementById('stage');
   var EASE = 'cubic-bezier(.22,.61,.36,1)';
   var SPRING = 'cubic-bezier(.34,1.56,.5,1)';
-  var MON_FULL = 'translate(300px,60px) scale(1)';
-  var MON_SIDE = 'translate(40px,130px) scale(.85)';
-  var MON_SPLIT = 'translate(120px,285px) scale(.58)'; // monitor vertically centered on the phone's line
-  var PHONE_HOME = 'translate(0px,0px) scale(1)';
-  var PHONE_CENTER = 'translate(-540px,10px) scale(.85)';
+  var ORIENT = (window.DEMO_ORIENT || params.get('o') || 'landscape') === 'portrait' ? 'portrait' : 'landscape';
+  if (ORIENT === 'portrait') document.getElementById('stage').classList.add('portrait');
+  /* layout table: phone = left/top base + transform strings; mon/pulse/relay are world-space */
+  var LAY = ({
+    landscape: {
+      W: 1920, H: 1080, phBase: [1290, 70], phoneSolo: 'translate(0px,0px) scale(1)',
+      phonePov: 'translate(-540px,29px) scale(1)', phoneSplit: 'translate(0px,0px) scale(1)',
+      phoneCenter: 'translate(-540px,10px) scale(.85)',
+      monFull: 'translate(300px,60px) scale(1)', monSide: 'translate(40px,130px) scale(.85)',
+      monSplit: 'translate(60px,195px) scale(.75)', monEnter: 'translate(-1450px,195px) scale(.75)',
+      relay: { x: 1065, y: 508, w: 215, h: 5, vert: 0, lbl: [985, 528, 388] },
+      pulse: { x0: 1070, y0: 510, x1: 1275, y1: 510 },
+      mphone: [642, 615, 44, 88], povAbs: [750, 99], povS: 1,
+      more: { main: 'translate(-540px,10px) scale(.85)', slide: 360,
+        t: { x: 250, y: 150, s: .72, r: -8 }, f: { x: 1230, y: 150, s: .72, r: 8 },
+        lbl: { term: [250, 945], agents: [750, 945], file: [1230, 945] } },
+      vcall: null
+    },
+    portrait: {
+      W: 1080, H: 1920, phBase: [203, 120], phoneSolo: 'translate(0px,0px) scale(1.6)',
+      phonePov: 'translate(0px,0px) scale(1.6)', phoneSplit: 'translate(67px,560px) scale(1.28)',
+      phoneCenter: 'translate(-50px,80px) scale(1.35)',
+      monFull: 'translate(124px,110px) scale(.63)', monSide: 'translate(124px,110px) scale(.63)',
+      monSplit: 'translate(124px,110px) scale(.63)', monEnter: 'translate(124px,-820px) scale(.63)',
+      relay: { x: 536, y: 601, w: 5, h: 87, vert: 1, lbl: [556, 626, 320] },
+      pulse: { x0: 531, y0: 601, x1: 531, y1: 660 },
+      mphone: [620, 610, 56, 112], povAbs: [203, 120], povS: 1.6,
+      more: { main: 'translate(127px,300px) scale(1.05)', slide: 300,
+        t: { x: -24, y: 310, s: .68, r: -8 }, f: { x: 686, y: 310, s: .68, r: 8 },
+        lbl: { term: [36, 1095], agents: [390, 1350], file: [746, 1095] } },
+      vcall: [540, 4, 520, 100]
+    }
+  })[ORIENT];
 
   /* ---------------- stage scaling ---------------- */
   function fit() {
-    var s = Math.min(innerWidth / 1920, innerHeight / 1080);
-    stage.style.transform = 'translate(' + ((innerWidth - 1920 * s) / 2) + 'px,' +
-      ((innerHeight - 1080 * s) / 2) + 'px) scale(' + s + ')';
+    var s = Math.min(innerWidth / LAY.W, innerHeight / LAY.H);
+    stage.style.transform = 'translate(' + ((innerWidth - LAY.W * s) / 2) + 'px,' +
+      ((innerHeight - LAY.H * s) / 2) + 'px) scale(' + s + ')';
   }
   addEventListener('resize', fit); fit();
 
@@ -133,14 +161,15 @@
   var capbar = el('div', '', stage); capbar.id = 'capbar';
   var capIn = el('span', 'cap-inner', capbar);
   var capVisible = false;
+  function capHtml(t) { return ORIENT === 'portrait' ? t : t.replace(/<br\s*\/?>/g, ''); }
   function caption(key) {
     var txt = S[key]; if (!txt) return Promise.resolve();
     if (!capVisible) {
-      capVisible = true; capIn.innerHTML = txt;
+      capVisible = true; capIn.innerHTML = capHtml(txt);
       return tween(capbar, [{ opacity: 0, transform: 'translateY(24px)' }, { opacity: 1, transform: 'translateY(0px)' }], 500);
     }
     return tween(capIn, [{ opacity: 1 }, { opacity: 0 }], 150).then(function () {
-      capIn.innerHTML = txt;
+      capIn.innerHTML = capHtml(txt);
       return tween(capIn, [{ opacity: 0 }, { opacity: 1 }], 220);
     });
   }
@@ -171,19 +200,22 @@
   function worldZoomIn(ms) { return worldTo('translate(0px,0px) scale(1)', ms); }
   function rectInWorld(e) {
     var r = e.getBoundingClientRect(), sr = stage.getBoundingClientRect();
-    var k = sr.width / 1920;
+    var k = sr.width / LAY.W;
     return [(r.left - sr.left) / k, (r.top - sr.top) / k, r.width / k, r.height / k];
   }
   var dim = el('div', '', stage); dim.id = 'dim';
 
   /* ================= THE AGENT SESSION (single state, two renderers) ================= */
-  var AG = { msgs: [], mid: 0, status: 'run', q: null, draft: '', screen: 'chat',
+  var AG = { msgs: [], mid: 0, status: 'run', q: null, draft: '', screen: 'home',
              focused: false, kb: false, voice: false, sheet: null, lock: null, notif: null,
-             clock: '12:02', statusMsg: '', theme: 'light' };
+             clock: '12:02', statusMsg: '', theme: 'light',
+             sess: { title: S.sess_t, project: S.project, app: 'Cursor' },
+             home: { loading: 1, pct: 0, expanded: 0, opening: 0 }, prog: { done: 0, total: 7 } };
 
   /* ---------- desktop ---------- */
   var monWrap = el('div', '', world); monWrap.id = 'monwrap';
-  monWrap.style.transform = MON_FULL;
+  monWrap.style.transform = LAY.monEnter;
+  monWrap.style.opacity = '0';
   el('div', 'monframe', monWrap); el('div', 'monstand', monWrap); el('div', 'monbase', monWrap);
   var scr = el('div', 'scr', monWrap);
 
@@ -192,42 +224,30 @@
   wBrowser.innerHTML = winHtml('<div class="wurl"></div><div class="whero"></div>' +
     '<div class="wl" style="left:14px;top:160px;width:250px"></div><div class="wl" style="left:14px;top:182px;width:210px"></div>' +
     '<div class="wl" style="left:14px;top:204px;width:236px"></div><div class="wl" style="left:14px;top:226px;width:150px"></div>');
-  var wFolder = el('div', 'bwin', scr); place(wFolder, [60, 330, 270, 250]);
-  wFolder.innerHTML = winHtml(
-    '<i class="wfi f1" style="left:16px;top:20px"></i><i class="wfi f2" style="left:96px;top:20px"></i>' +
-    '<i class="wfi f3" style="left:176px;top:20px"></i><i class="wfi f4" style="left:16px;top:110px"></i>' +
-    '<i class="wfi f5" style="left:96px;top:110px"></i><i class="wfi f6" style="left:176px;top:110px"></i>' +
-    '<div class="wl" style="left:16px;top:190px;width:200px"></div><div class="wl" style="left:16px;top:210px;width:150px"></div>');
-  var bwins = [wBrowser, wFolder];
+  var bwins = [wBrowser];
 
   var ide = el('div', 'ide', scr); place(ide, [270, 24, 1010, 690]);
   ide.innerHTML = '<div class="itb"><i></i><i></i><i></i><span>' + S.project + ' — Cursor</span></div>';
   var tree = el('div', 'tree', ide);
-  [[10, 12, 'src/', 'dir'], [22, 34, 'auth/', 'dir'], [34, 56, 'session.ts', 'sel'], [34, 78, 'token.ts', ''],
-   [34, 100, 'refresh.ts', ''], [34, 122, 'compat.ts', ''], [22, 144, 'api/', 'dir'], [34, 166, 'legacy.ts', ''],
-   [22, 188, 'tests/', 'dir'], [34, 210, 'auth.test.ts', ''], [10, 232, 'package.json', ''], [10, 254, 'README.md', '']
+  [[10, 12, 'src/', 'dir'], [22, 34, 'auth/', 'dir'], [34, 56, 'token.ts', 'sel'], [34, 78, 'refresh.ts', ''],
+   [10, 100, 'README.md', ''], [10, 122, 'package.json', '']
   ].forEach(function (n) {
     var t = el('div', 'tnode ' + n[3], tree, n[2]);
     t.style.left = n[0] + 'px'; t.style.top = n[1] + 'px';
   });
   var CODE = [
-    '<span class="kw">import</span> { <span class="ty">Session</span> } <span class="kw">from</span> <span class="str">\'./session\'</span>',
-    '<span class="kw">import</span> { legacy } <span class="kw">from</span> <span class="str">\'../api/legacy\'</span>',
+    '<span class="kw">import</span> { request } <span class="kw">from</span> <span class="str">\'./http\'</span>',
     '',
-    '<span class="cm">// compat layer for the 3 legacy callers</span>',
-    '<span class="kw">export function</span> <span class="fn">compat</span>(s: <span class="ty">Session</span>) {',
-    '  <span class="kw">const</span> mapped = legacy.<span class="fn">wrap</span>(s, {',
-    '    api: <span class="str">\'v1\'</span>, strict: <span class="kw">false</span>,',
-    '  });',
-    '  <span class="kw">return</span> mapped.<span class="fn">bind</span>(s.token);',
+    '<span class="kw">export async function</span> <span class="fn">refreshToken</span>(<span class="ty">session</span>) {',
+    '  <span class="kw">if</span> (session.expires &lt; Date.now()) {',
+    '    <span class="kw">const</span> next = <span class="kw">await</span> <span class="fn">request</span>(<span class="str">\'/oauth/refresh\'</span>, {',
+    '      method: <span class="str">\'POST\'</span>, body: session.refresh,',
+    '      retry: { attempts: <span class="num">3</span>, backoff: <span class="str">\'exp\'</span> },',
+    '    });',
+    '    <span class="kw">return</span> <span class="fn">applyToken</span>(next); <span class="cm">// 失败时保留旧令牌</span>',
+    '  }',
+    '  <span class="kw">return</span> session.token;',
     '}',
-    '',
-    '<span class="kw">export async function</span> <span class="fn">refreshAll</span>() {',
-    '  <span class="kw">await</span> Session.<span class="fn">refresh</span>({ window: <span class="num">300</span> });',
-    '  <span class="kw">return</span> Session.<span class="fn">current</span>();',
-    '}',
-    '',
-    '<span class="cm">// tests cover migrate + refresh + compat</span>',
     ''
   ];
   var editor = el('div', 'editor', ide); place(editor, [168, 34, 690, 456]);
@@ -284,8 +304,13 @@
   function showCallout() {
     if (FF) { vcall.style.opacity = '1'; vlead.style.opacity = '1'; }
     var r = rectInWorld(dBox);
-    var cx = Math.min(760, Math.max(120, r[0] - 320));
-    place(vcall, [cx, Math.max(60, r[1] - 560), 400, 110]);
+    var cx, cy, w;
+    if (LAY.vcall) { cx = LAY.vcall[0]; cy = LAY.vcall[1]; w = LAY.vcall[2]; }
+    else {
+      cx = Math.min(760, Math.max(120, r[0] - 320));
+      cy = Math.max(46, Math.min(r[1] - 620, 160)); w = 400;
+    }
+    place(vcall, [cx, cy, w, LAY.vcall ? LAY.vcall[3] : 110]);
     /* leader from callout bottom to the input box top edge */
     var ax = cx + 200, ay = vcall.offsetTop + 110, bx = r[0] + r[2] / 2, by = r[1] + 8;
     var dx = bx - ax, dy = by - ay, len = Math.sqrt(dx * dx + dy * dy), ang = Math.atan2(dy, dx) * 180 / Math.PI;
@@ -304,22 +329,25 @@
 
   /* ---------- phone (parent chrome + iframe app) ---------- */
   var phoneWrap = el('div', '', world); phoneWrap.id = 'phonewrap';
-  phoneWrap.innerHTML = '<div class="pframe"></div><div class="pscr">' +
-    '<iframe class="papp" src="phone.html?lang=' + LANG + '&screen=chat"></iframe>' +
-    '<div class="pclone"><div class="pclonewrap"><div class="pclonein"></div></div></div>' +
-    '<div class="rdptag"><span>' + S.rdp_tag + '</span></div>' +
-    '<div class="px">✕</div><div class="pflash"></div><div class="prip"></div>' +
+  var pscrFx = '<div class="hscr"><div class="hgrid">' + [0,1,2,3,4,5,6,7,'RA',9,10,11].map(function (c) {
+      return c === 'RA' ? '<div class="hic ra" id="raIcon"><img src="assets/ra-icon.svg"></div>'
+        : '<div class="hic" style="background:' + ['#D8DEEA','#E5D9C8','#D9E4D9','#E8D2D2','#D5DCE8','#E3D8EA','#D2E0E4','#E9E0CE','#DCE2EC','#E6DBD2','#D8E3DA'][c] + '"></div>';
+    }).join('') + '</div></div>' +
+    '<div class="launch"><img class="lzicon" src="assets/ra-icon.svg"><div class="lname">Remote Agent</div>' +
+    '<div class="ltag">' + S.brand_tag + '</div></div>' +
+    '<div class="pflash"></div><div class="prip"></div>' +
     '<div class="pstatus"><span class="ptime">12:02</span><span class="sic"><span class="sbar"></span>' +
     '<span class="sbar"></span><span class="sbar"></span><svg class="wifi" viewBox="0 0 16 12"><path d="M8 10.5 2.5 5a8 8 0 0 1 11 0Z"/><circle cx="8" cy="10" r="1.6"/></svg>' +
-    '<span class="batt"></span></span></div><div class="pisland"></div></div>';
+    '<span class="batt"></span></span></div><div class="pisland"></div>';
+  phoneWrap.innerHTML = '<div class="pframe"></div><div class="pscr">' +
+    '<iframe class="papp" src="phone.html?lang=' + LANG + '&screen=home"></iframe>' + pscrFx + '</div>';
   var pScr = phoneWrap.querySelector('.pscr');
   var pApp = pScr.querySelector('.papp');
-  var pClone = pScr.querySelector('.pclone'), pCloneIn = pScr.querySelector('.pclonein');
-  var pTag = pScr.querySelector('.rdptag'), pX = pScr.querySelector('.px'),
+  var pHscr = pScr.querySelector('.hscr'), pLaunch = pScr.querySelector('.launch'),
       pFlash = pScr.querySelector('.pflash'), pRip = pScr.querySelector('.prip');
   var pTime = pScr.querySelector('.ptime');
-  pTag.style.opacity = '0';
-  phoneWrap.style.transform = 'translate(620px,0px)';
+  phoneWrap.style.left = LAY.phBase[0] + 'px'; phoneWrap.style.top = LAY.phBase[1] + 'px';
+  phoneWrap.style.transform = LAY.phonePov;
 
   /* side phones for the "more" scene: same renderer, other screens */
   function sidePhone() {
@@ -329,23 +357,33 @@
   }
   var sPhoneT = sidePhone();
   sPhoneT.querySelector('.papp').src = 'phone.html?lang=' + LANG + '&screen=term';
-  sPhoneT.querySelector('.pclone').remove(); sPhoneT.querySelector('.rdptag').remove(); sPhoneT.querySelector('.px').remove();
   var sPhoneF = sidePhone();
   sPhoneF.querySelector('.papp').src = 'phone.html?lang=' + LANG + '&screen=file';
-  sPhoneF.querySelector('.pclone').remove(); sPhoneF.querySelector('.rdptag').remove(); sPhoneF.querySelector('.px').remove();
+  [sPhoneT, sPhoneF].forEach(function (w) {
+    var h = w.querySelector('.hscr'); if (h) h.remove();
+    var l = w.querySelector('.launch'); if (l) l.remove();
+  });
   var sAppT = sPhoneT.querySelector('.papp'), sAppF = sPhoneF.querySelector('.papp');
   var lblTerm = el('div', 'slbl hidden', world, S.lbl_term);
   var lblAgents = el('div', 'slbl hidden', world, S.lbl_agents);
   var lblFile = el('div', 'slbl hidden', world, S.lbl_file);
 
   var relay = el('div', 'relay hidden', world);
+  if (LAY.relay.vert) relay.classList.add('vert');
+  relay.style.left = LAY.relay.x + 'px'; relay.style.top = LAY.relay.y + 'px';
+  if (LAY.relay.vert) { relay.style.width = '5px'; relay.style.height = '0px'; }
+  else { relay.style.width = '0px'; relay.style.height = '5px'; }
   var relayLbl = el('div', 'relaylbl hidden', world, S.relay);
+  relayLbl.style.left = LAY.relay.lbl[0] + 'px'; relayLbl.style.top = LAY.relay.lbl[1] + 'px';
+  relayLbl.style.width = LAY.relay.lbl[2] + 'px';
+  relayLbl.style.textAlign = LAY.relay.vert ? 'left' : 'center';
 
   /* ---------- iframe protocol ---------- */
   var frames = [pApp, sAppT, sAppF], readyCount = 0, themedCount = 0, themedWaiters = [], lastTapRect = null, tapWaiters = [];
   addEventListener('message', function (e) {
     var d = e.data || {};
     if (d.type === 'ready') readyCount++;
+    if (d.type === 'probeRes') window.__probe = d;
     else if (d.type === 'themed') { themedCount++; themedWaiters.forEach(function (r) { r(); }); themedWaiters = []; }
     else if (d.type === 'fxrect') { lastTapRect = d.rect; tapWaiters.forEach(function (r) { r(d.rect); }); tapWaiters = []; }
   });
@@ -365,14 +403,15 @@
   }
   function baseState() {
     return {
-      app: 'cursor', title: 'Cursor', project: S.project, model: S.model,
+      app: 'cursor', title: AG.sess.title, project: AG.sess.project, model: S.model,
       status: AG.status, msgs: phoneMsgs(), q: AG.q, draft: AG.draft,
       focused: AG.focused, kb: AG.kb, voice: AG.voice, sheet: AG.sheet,
-      lock: AG.lock, notif: AG.notif, statusMsg: AG.statusMsg, theme: AG.theme
+      lock: AG.lock, notif: AG.notif, statusMsg: AG.statusMsg, theme: AG.theme,
+      screen: AG.screen, home: AG.home, prog: AG.prog
     };
   }
   function syncPhone(instant) {
-    var st = baseState(); st.screen = 'chat';
+    var st = baseState();
     postTo(pApp, { type: 'state', state: st, instant: !!instant });
     var stT = baseState(); stT.screen = 'term'; stT.sheet = null; stT.lock = null; stT.notif = null;
     stT.term = { cmd: S.term_cmd, lines: S.term_lines };
@@ -458,7 +497,7 @@
       AG.theme = th;
       if (AG.sheet && AG.sheet.kind === 'menu') { AG.sheet.theme = th; }
     }
-    if (FF || VT || !document.startViewTransition) { commit(); setThemeInstant(th); return; }
+    if (FF || !document.startViewTransition) { commit(); setThemeInstant(th); return; }
     var R = Math.ceil(Math.max(
       Math.hypot(px, py), Math.hypot(innerWidth - px, py),
       Math.hypot(px, innerHeight - py), Math.hypot(innerWidth - px, innerHeight - py)));
@@ -488,8 +527,8 @@
   function headHtml() {
     var lab = AG.status === 'wait' ? (LANG === 'en' ? 'Waiting' : '等待')
       : AG.status === 'done' ? (LANG === 'en' ? 'Done' : '已完成') : (LANG === 'en' ? 'Running' : '运行中');
-    return '<span class="adot"></span><div class="hname"><span class="aname">Cursor Agent</span>' +
-      '<span class="asub">' + S.session + '</span></div>' +
+    return '<span class="adot"></span><div class="hname"><span class="aname">' + AG.sess.title + '</span>' +
+      '<span class="asub">' + AG.sess.project + ' · ' + AG.sess.app + '</span></div>' +
       '<span class="stpill ' + AG.status + '"><span class="sd"></span>' + lab + '</span>';
   }
   function qCardHtml(q) {
@@ -564,6 +603,10 @@
     syncPhone(FF);
   }
   function agStatus(s) { AG.status = s; renderDPanel(); syncPhone(FF); }
+  function agScreen(s) { AG.screen = s; syncPhone(FF); }
+  function agHome(patch) { Object.keys(patch).forEach(function (k) { AG.home[k] = patch[k]; }); syncPhone(FF); }
+  function agRemove(id) { var i = AG.msgs.findIndex(function (m) { return m.id === id; }); if (i >= 0) AG.msgs.splice(i, 1); renderDPanel(); syncPhone(FF); }
+  function agProg(d, t) { AG.prog.done = d; if (t) AG.prog.total = t; syncPhone(FF); }
   function agFocus(on) { AG.focused = on; AG.kb = on; syncPhone(FF); }
   function agVoice(on) {
     AG.voice = on;
@@ -578,7 +621,7 @@
   function agNotif(title, body) { AG.notif = { title: title, body: body }; syncPhone(FF); }
   function agSheet() {
     AG.sheet = { kind: 'agents', rows: [
-      { logo: 'cursor', label: 'Cursor', cur: true, running: true },
+      { logo: 'cursor', label: 'Cursor', sub: AG.sess.project + ' · ' + AG.sess.title, cur: true, running: true },
       { logo: 'devin', label: 'Devin' },
       { logo: 'codex', label: 'Codex' },
       { logo: 'fusion', label: 'Fusion' }
@@ -606,8 +649,9 @@
   function pulseBeam() {
     if (FF || VT) return;
     var b = el('div', 'pulsebeam', world);
-    b.style.left = '900px'; b.style.top = '508px';
-    tween(b, [{ left: '900px', opacity: 1 }, { left: '1284px', opacity: 1 }], 700, 'linear')
+    b.style.left = LAY.pulse.x0 + 'px'; b.style.top = LAY.pulse.y0 + 'px';
+    tween(b, [{ left: LAY.pulse.x0 + 'px', top: LAY.pulse.y0 + 'px', opacity: 1 },
+      { left: LAY.pulse.x1 + 'px', top: LAY.pulse.y1 + 'px', opacity: 1 }], 700, 'linear')
       .then(function () { return tween(b, [{ opacity: 1 }, { opacity: 0 }], 150); })
       .then(function () { b.remove(); });
   }
@@ -622,189 +666,248 @@
 
   renderDPanel(); renderDDraft(); syncPhone(true);
 
-  /* ================= scene 1 — hook ================= */
-  world.style.transform = 'translate(-38px,-21px) scale(1.04)';
-  scene('hook', 4.5, function (t0) {
+  /* ================= intro scenes ================= */
+  var RI = RA_INTRO.build(ORIENT);
+  var introL = el('div', 'introL', world);
+  var quadPanes = [0, 1, 2, 3].map(function (i) {
+    var p = el('div', 'ipanel', introL, RI.SC(0)[i] + '<div class="phvar">' + RI.SC(1)[i] + '</div>');
+    place(p, [RI.PX[i & 1], RI.PY[i >> 1], RI.PW, RI.PH]);
+    return p;
+  });
+  var pill = el('div', 'cpill', introL, (ORIENT === 'portrait' && S.intro_line_p) ? S.intro_line_p : S.intro_line);
+  var blur = el('div', 'blurbg', introL, RI.svg(RI.DEFS + RI.cafe));
+  blur.style.opacity = '0';
+  var hands = el('div', 'povhands', introL, RI.povHands(1));
+  hands.style.opacity = '0';
+  var mphone = el('div', 'mphone', introL);
+  place(mphone, LAY.mphone); mphone.style.opacity = '0';
+  mphone.innerHTML = '<div class="mpscr">' + pscrFx + '</div>';
+  var brandfly = el('div', 'brandfly', world);
+  brandfly.innerHTML = '<img class="bfi" src="assets/ra-icon.svg"><div class="bft">Remote Agent</div>';
+  world.style.opacity = '1';
+  monWrap.style.transform = LAY.monEnter; monWrap.style.opacity = '0';
+
+  /* intro 1 — four panels + pill appear together */
+  scene('quad', 2.5, function (t0) {
     at(t0, function () {
-      caption('cap_hook');
-      worldTo('translate(0px,0px) scale(1)', 1600);
-      tween(world, [{ opacity: 0 }, { opacity: 1 }], 700);
-      setTime('12:02');
+      quadPanes.forEach(function (p) {
+        tween(p, [{ opacity: 0, transform: 'scale(.94)' }, { opacity: 1, transform: 'scale(1)' }], 500);
+      });
+      tween(pill, [{ opacity: 0, transform: 'translate(-50%,-50%) scale(.9)' },
+        { opacity: 1, transform: 'translate(-50%,-50%) scale(1)' }], 450);
     });
-    at(t0 + 0.15, function () { agPush({ type: 'user', text: S.prompt }); });
-    var m1 = null, m2 = null, tid = null;
-    at(t0 + 0.65, function () { m1 = agPush({ type: 'read', f: S.t_read, state: 'run' }); });
-    at(t0 + 1.2, function () { agUpdate(m1, { state: 'done' }); });
-    at(t0 + 1.6, function () { m2 = agPush({ type: 'edit', f: S.t_edit6, add: 182, del: 96, state: 'run' }); });
-    at(t0 + 2.1, function () { agUpdate(m2, { state: 'done' }); });
-    at(t0 + 2.5, function () {
-      tid = agPush({ type: 'test', cmd: S.t_test, count: 0, total: 132, state: 'run' });
-      AG.testId = tid;
-      termPush('<span class="tp">$</span> npm test');
-      termPush('Test Suites: running…');
-    });
-    for (var i = 1; i <= 12; i++) {
-      (function (n) { at(t0 + 2.5 + n * 0.14, function () { agUpdate(AG.testId, { count: Math.round(38 * n / 12) }); }); })(i);
-    }
-    for (var ei = 0; ei < 8; ei++) (function (n) { at(t0 + 0.5 + n * 0.5, function () { flashCode(n); }); })(ei);
   });
 
-  /* ================= scene 2 — rdp ================= */
-  scene('rdp', 4.0, function (t0) {
+  /* intro 2 — pill fades, everyone raises a phone */
+  scene('phoneout', 1.0, function (t0) {
     at(t0, function () {
-      caption('cap_rdp');
-      tween(monWrap, [{ transform: MON_FULL }, { transform: MON_SIDE }], 800);
-      var clone = scr.cloneNode(true);
-      clone.style.cssText = 'position:absolute;left:0;top:0;width:1296px;height:756px;transform:scale(.303) translate(0px,0px);transform-origin:0 0;';
-      pCloneIn.appendChild(clone);
-      pCloneIn.style.transform = 'translate(0px,288px)';
+      tween(pill, [{ opacity: 1 }, { opacity: 0 }], 280);
+      quadPanes.forEach(function (p) {
+        tween(p.querySelector('.phvar'), [{ opacity: 0, transform: 'translateY(10px)' },
+          { opacity: 1, transform: 'translateY(0px)' }], 350);
+      });
+    });
+  });
+
+  /* intro 3 — cafe panel FLIP-expands, others shrink/fade */
+  scene('expand', 0.9, function (t0) {
+    at(t0, function () {
+      var cafe = quadPanes[3];
+      cafe.style.zIndex = '5';
+      tween(cafe, [
+        { left: RI.PX[1] + 'px', top: RI.PY[1] + 'px', width: RI.PW + 'px', height: RI.PH + 'px' },
+        { left: '40px', top: '40px', width: (LAY.W - 80) + 'px', height: (LAY.H - 80) + 'px' }
+      ], 800);
+      [0, 1, 2].forEach(function (i) {
+        tween(quadPanes[i], [{ opacity: 1, transform: 'scale(1)' },
+          { opacity: 0, transform: 'scale(.7)' }], 500);
+      });
+    });
+  });
+
+  /* intro 4 — match cut: mini phone FLIPs into the real phone frame */
+  scene('matchcut', 1.2, function (t0) {
+    at(t0, function () {
+      tween(blur, [{ opacity: 0 }, { opacity: 1 }], 450);
+      tween(mphone, [{ opacity: 0 }, { opacity: 1 }], 200);
+    });
+    at(t0 + 0.5, function () {
+      tween(hands, [{ opacity: 0 }, { opacity: 1 }], 380);
     });
     at(t0 + 0.25, function () {
-      tween(phoneWrap, [{ transform: 'translate(620px,0px)', opacity: 0 }, { transform: 'translate(0px,0px)', opacity: 1 }], 900);
-      tween(pClone, [{ opacity: 0 }, { opacity: 1 }], 500);
-      tween(pTag, [{ opacity: 0 }, { opacity: 1 }], 400);
+      var scr = [LAY.povAbs[0] + 14 * LAY.povS, LAY.povAbs[1] + 14 * LAY.povS,
+                 393 * LAY.povS, 854 * LAY.povS];
+      tween(mphone, [
+        { left: LAY.mphone[0] + 'px', top: LAY.mphone[1] + 'px', width: LAY.mphone[2] + 'px',
+          height: LAY.mphone[3] + 'px', borderRadius: '10px', opacity: 1 },
+        { left: scr[0] + 'px', top: scr[1] + 'px', width: scr[2] + 'px',
+          height: scr[3] + 'px', borderRadius: '42px', opacity: 1 }
+      ], 700);
+      var msc = mphone.querySelector('.mpscr');
+      tween(msc, [{ transform: 'scale(' + (LAY.mphone[2] / 393) + ',' + (LAY.mphone[3] / 854) + ')' },
+        { transform: 'scale(1,1)' }], 700);
+      tween(quadPanes[3], [{ opacity: 1 }, { opacity: 0 }], 500);
     });
-    var pd1 = null, pd2 = null;
-    at(t0 + 1.0, function () {
-      pd1 = el('div', 'pdot', pRip); pd1.style.left = '150px'; pd1.style.top = '430px';
-      pd2 = el('div', 'pdot', pRip); pd2.style.left = '250px'; pd2.style.top = '430px';
-      tween(pd1, [{ opacity: 0 }, { opacity: 1 }], 200); tween(pd2, [{ opacity: 0 }, { opacity: 1 }], 200);
-    });
-    at(t0 + 1.35, function () {
-      tween(pd1, [{ left: '150px', top: '430px' }, { left: '70px', top: '400px' }], 800);
-      tween(pd2, [{ left: '250px', top: '430px' }, { left: '330px', top: '410px' }], 800);
-      tween(pCloneIn, [{ transform: 'translate(0px,288px) scale(1)' }, { transform: 'translate(-390px,120px) scale(2.6)' }], 800);
-    });
-    at(t0 + 2.3, function () {
-      tween(pd1, [{ left: '70px', top: '400px' }, { left: '150px', top: '430px' }], 600);
-      tween(pd2, [{ left: '330px', top: '410px' }, { left: '250px', top: '430px' }], 600);
-      tween(pCloneIn, [{ transform: 'translate(-390px,120px) scale(2.6)' }, { transform: 'translate(0px,288px) scale(1)' }], 600);
-    });
-    at(t0 + 3.0, function () {
+    at(t0 + 0.95, function () {
+      phoneWrap.style.opacity = '1';
+      tween(mphone, [{ opacity: 1 }, { opacity: 0 }], 200);
+      var ic = phoneWrap.querySelector('#raIcon');
+      var ir = rectInWorld(ic);
       var rp = el('div', 'ripple', pRip);
-      rp.style.left = '176px'; rp.style.top = '478px';
-      tween(rp, [{ opacity: 0.9, transform: 'scale(.3)' }, { opacity: 0, transform: 'scale(1.6)' }], 520)
+      rp.style.left = (ir[0] + ir[2] / 2) + 'px'; rp.style.top = (ir[1] + ir[3] / 2) + 'px';
+      rp.style.width = '56px'; rp.style.height = '56px'; rp.style.margin = '-28px 0 0 -28px';
+      tween(rp, [{ opacity: 0.9, transform: 'scale(.3)' }, { opacity: 0, transform: 'scale(1.6)' }], 600)
         .then(function () { rp.remove(); });
-      tween(pd1, [{ opacity: 1 }, { opacity: 0 }], 250).then(function () { pd1.remove(); });
-      tween(pd2, [{ opacity: 1 }, { opacity: 0 }], 250).then(function () { pd2.remove(); });
-    });
-    at(t0 + 3.4, function () {
-      tween(phoneWrap, [
-        { transform: 'translate(0px,0px)' },
-        { offset: .25, transform: 'translate(-9px,4px)' },
-        { offset: .5, transform: 'translate(8px,14px)' },
-        { offset: .75, transform: 'translate(-4px,26px)' },
-        { transform: 'translate(0px,40px)' }
-      ], 550);
-      tween(pX, [{ opacity: 0 }, { opacity: 1 }], 300);
-      tween(phoneWrap, [{ opacity: 1 }, { opacity: 0 }], 400);
-      wait(0.45).then(function () {
-        [phoneWrap, pClone, pX, pTag].forEach(cutAnim);
-        phoneWrap.style.opacity = '0';
-        pClone.style.opacity = '0'; pX.style.opacity = '0'; pTag.style.opacity = '0';
-      });
     });
   });
 
-  /* ================= scene 3 — brand ================= */
-  var brand = el('div', 'intro', stage);
-  brand.innerHTML = '<div class="brand-wrap"><img class="title-icon" src="assets/ra-icon.svg">' +
-    '<div class="title-main">Remote Agent</div><div class="title-tag">' + S.brand_tag + '</div></div>';
-  var bIcon = brand.querySelector('.title-icon'), bTtl = brand.querySelector('.title-main'), bTag = brand.querySelector('.title-tag');
-  scene('brand', 2.5, function (t0) {
+  /* intro 5 — launch: icon zooms, brand, mark flies to the watermark */
+  scene('launch', 1.5, function (t0) {
     at(t0, function () {
-      captionOff();
-      tween(dim, [{ opacity: 0 }, { opacity: 1 }], 400);
-      tween(brand, [{ opacity: 0 }, { opacity: 1 }], 350);
-      pop(bIcon, 520);
-    });
-    at(t0 + 0.45, function () { tween(bTtl, [{ opacity: 0, transform: 'translateY(28px)' }, { opacity: 1, transform: 'translateY(0px)' }], 500); });
-    at(t0 + 0.75, function () { tween(bTag, [{ opacity: 0 }, { opacity: 1 }], 400); });
-    at(t0 + 1.85, function () {
-      tween(brand, [{ opacity: 1, transform: 'translate(0px,0px) scale(1)' },
-        { opacity: 0, transform: 'translate(-810px,-420px) scale(.3)' }], 550)
-        .then(function () { brand.style.display = 'none'; });
-      tween(brandmark, [{ opacity: 0 }, { opacity: 1 }], 500);
-      tween(dim, [{ opacity: 1 }, { opacity: 0 }], 600);
-    });
-  });
-
-  /* ================= scene 4 — fly (smooth bezier flight, ~1.0 s) ================= */
-  var flight = null;
-  scene('fly', 5.0, function (t0) {
-    at(t0, function () {
-      caption('cap_fly');
-      bwins.forEach(function (w) {
-        tween(w, [{ filter: 'grayscale(0) opacity(.75)' }, { filter: 'grayscale(.8) opacity(.3)' }], 500);
-      });
-      dPanel.classList.add('liftoff');
-    });
-    at(t0 + 0.35, function () {
-      tween(phoneWrap, [{ transform: 'translate(620px,0px)', opacity: 0 }, { transform: PHONE_HOME, opacity: 1 }], 800);
+      pLaunch.classList.add('on');
+      var lz = pLaunch.querySelector('.lzicon');
+      tween(lz, [{ transform: 'scale(.55)', opacity: .5 }, { transform: 'scale(1)', opacity: 1 }], 450);
+      tween(pLaunch.querySelector('.lname'), [{ opacity: 0 }, { opacity: 1 }], 350);
+      tween(pLaunch.querySelector('.ltag'), [{ opacity: 0 }, { opacity: 1 }], 350);
+      tween(hands, [{ opacity: 1, transform: 'translateY(0px)' },
+        { opacity: 0, transform: 'translateY(120px)' }], 500);
+      tween(blur, [{ opacity: 1 }, { opacity: 0 }], 600);
     });
     at(t0 + 0.7, function () {
-      var r = rectInWorld(dPanel);
-      dPanel.classList.remove('liftoff');
-      dPanel.style.opacity = '0';
-      flight = el('div', 'flight', world);
-      var x0 = r[0] + r[2] / 2, y0 = r[1] + r[3] / 2;           /* panel center */
-      var x1 = 1304 + 393 / 2, y1 = 133 + 805 / 2;             /* phone app-area center */
-      var cxq = (x0 + x1) / 2, cyq = Math.min(y0, y1) - 150;   /* quadratic arc apex */
-      flight.style.offsetPath = 'path("M ' + x0 + ' ' + y0 + ' Q ' + cxq + ' ' + cyq + ' ' + x1 + ' ' + y1 + '")';
-      flight.style.width = r[2] + 'px'; flight.style.height = r[3] + 'px';
-      flight.style.borderRadius = '10px';
-      var clone = dPanel.cloneNode(true);
-      clone.classList.add('fclone'); clone.classList.remove('liftoff');
-      clone.style.cssText = 'opacity:1;left:0px;top:0px;width:100%;height:100%;border-left:0;';
-      flight.appendChild(clone);
-      tween(flight, [
-        { offsetDistance: '0%', width: r[2] + 'px', height: r[3] + 'px', borderRadius: '10px', opacity: 1 },
-        { offsetDistance: '100%', width: '393px', height: '805px', borderRadius: '40px', opacity: 1 }
-      ], 1000);
+      tween(pLaunch, [{ opacity: 1 }, { opacity: 0 }], 450);
     });
-    at(t0 + 1.75, function () {
-      tween(flight, [{ opacity: 1 }, { opacity: 0 }], 250).then(function () { flight.remove(); });
-      tween(dPanel, [{ opacity: 0 }, { opacity: 1 }], 300);
+    at(t0 + 0.55, function () {
+      brandfly.style.opacity = '1';
+      /* fly the splash's icon+wordmark lockup: start exactly on it, arc up-left,
+         shrink, land on the top-left watermark (brandmark fades in on arrival) */
+      var ri = rectInWorld(pLaunch.querySelector('.lzicon'));
+      var rn = rectInWorld(pLaunch.querySelector('.lname'));
+      var sL = Math.min(ri[0], rn[0]), sR = Math.max(ri[0] + ri[2], rn[0] + rn[2]);
+      var sT = Math.min(ri[1], rn[1]), sB = Math.max(ri[1] + ri[3], rn[1] + rn[3]);
+      var scx = (sL + sR) / 2, scy = (sT + sB) / 2;
+      var bm = rectInWorld(brandmark);
+      var dcx = bm[0] + bm[2] / 2, dcy = bm[1] + bm[3] / 2;
+      var W = 210, H = 200, k = 0.2;
+      var mx = (scx + dcx) / 2 - 160, my = (scy + dcy) / 2 - 140;
+      function bp(f) {
+        var u = 1 - f;
+        return [u * u * scx + 2 * u * f * mx + f * f * dcx,
+                u * u * scy + 2 * u * f * my + f * f * dcy];
+      }
+      var kf = [0, .22, .5, .78, 1].map(function (f) {
+        var p = bp(f), s = 1 + (k - 1) * f;
+        return { left: (p[0] - W / 2) + 'px', top: (p[1] - H / 2) + 'px',
+                 transform: 'scale(' + s + ')',
+                 opacity: f > .82 ? Math.max(0, 1 - (f - .82) / .18) : 1,
+                 offset: f };
+      });
+      tween(brandfly, kf, 620).then(function () { brandfly.style.opacity = '0'; });
+      tween(phoneWrap.querySelector('.hscr'), [{ opacity: 1 }, { opacity: 0 }], 350);
+    });
+    at(t0 + 1.2, function () {
+      tween(brandmark, [{ opacity: 0 }, { opacity: 1 }], 400);
+      tween(pLaunch, [{ opacity: 1 }, { opacity: 0 }], 350);
       tween(pApp, [{ opacity: 0 }, { opacity: 1 }], 300);
-      tween(pFlash, [{ opacity: 0 }, { opacity: 0.85 }, { opacity: 0 }], 420);
-      tween(phoneWrap, [{ transform: PHONE_HOME }, { transform: 'translate(0px,-8px) scale(1.02)' },
-        { transform: PHONE_HOME }], 460);
-    });
-    at(t0 + 2.4, function () {
-      tween(monWrap, [{ transform: MON_SIDE }, { transform: MON_SPLIT }], 800);
-    });
-    at(t0 + 3.0, function () {
-      relay.classList.remove('hidden');
-      tween(relay, [{ width: '0px' }, { width: '388px' }], 700);
-      relayLbl.classList.remove('hidden');
-      tween(relayLbl, [{ opacity: 0 }, { opacity: 1 }], 400);
+      tween(introL, [{ opacity: 1 }, { opacity: 0 }], 300)
+        .then(function () { introL.remove(); });
     });
   });
 
-  /* ================= scene 5 — sync ================= */
-  scene('sync', 4.5, function (t0) {
-    at(t0, function () { caption('cap_sync'); setTime('12:15'); });
-    var mA = null, mB = null;
-    at(t0 + 0.35, function () { mA = agPush({ type: 'edit', f: S.t_token, add: 46, del: 12, state: 'run' }); pulseBeam(); });
-    at(t0 + 0.95, function () {
-      agUpdate(mA, { state: 'done' });
-      mB = agPush({ type: 'edit', f: S.t_refresh, add: 31, del: 8, state: 'run' });
+  /* seed the session the overview card mirrors (same AG the desktop panel shows) */
+  scene('seed', 0.01, function (t0) {
+    at(t0, function () {
+      agPush({ type: 'user', text: S.prompt });
+      agPush({ type: 'ai', text: S.ai_prev });
+      agPush({ type: 'read', f: 'src/auth/token.ts', state: 'done' });
+      agPush({ type: 'edit', f: 'src/auth/refresh.ts', add: 64, del: 21, state: 'done' });
+      agPush({ type: 'ai', text: S.ai_mid });
+      AG.testId = agPush({ type: 'test', cmd: 'npm test', count: 0, total: 132, state: 'run' });
+      termPush('<span class="tp">$</span> npm test');
+      termPush('Test Suites: running…');
+      agProg(3, 7);
+    });
+  });
+
+  /* ================= shot 1 — home loading ================= */
+  scene('shot1', 2.5, function (t0) {
+    at(t0, function () { caption('cap_s1'); agScreen('home'); agHome({ loading: 1, pct: 8 }); setTime('12:02'); });
+    for (var i = 1; i <= 6; i++) {
+      (function (n) { at(t0 + 0.3 + n * 0.25, function () { agHome({ pct: 8 + Math.round(82 * n / 6) }); }); })(i);
+    }
+  });
+
+  /* ================= shot 2 — tiles fill in ================= */
+  scene('shot2', 2.2, function (t0) {
+    at(t0, function () { caption('cap_s2'); agHome({ loading: 0, pct: 100 }); });
+    at(t0 + 1.2, function () { pTap('.ov-cursor'); });
+  });
+
+  /* ================= shot 3 — card expands + typing ================= */
+  var DRAFT = S.draft, dN = DRAFT.length;
+  scene('shot3', 4.6, function (t0) {
+    at(t0, function () { caption('cap_s3'); agHome({ expanded: 1 }); });
+    at(t0 + 0.4, function () { agFocus(true); });
+    for (var i = 1; i <= dN; i++) {
+      (function (n) { at(t0 + 1.0 + n * 0.09, function () { agDraft(DRAFT.slice(0, n)); }); })(i);
+    }
+  });
+
+  /* ================= shot 4 — tap open ================= */
+  scene('shot4', 1.5, function (t0) {
+    at(t0, function () { caption('cap_s4'); agFocus(false); });
+    at(t0 + 0.4, function () { pTap('.ov-open').then(function () { agHome({ opening: 1 }); }); });
+  });
+
+  /* ================= shot 5 — chat pushes in, send ================= */
+  scene('shot5', 2.5, function (t0) {
+    at(t0, function () { caption('cap_s5'); agScreen('chat'); agHome({ opening: 0 }); });
+    at(t0 + 1.4, function () {
+      pTap('#send').then(function () {
+        agPush({ type: 'user', text: DRAFT });
+        agDraft('');
+        AG.home.sent = 1;
+      });
+    });
+  });
+
+  /* ================= shot 6 — back home + computer arrives ================= */
+  scene('shot6', 4.0, function (t0) {
+    at(t0, function () { caption('cap_s6'); agScreen('home'); });
+    at(t0 + 0.3, function () {
+      monWrap.style.opacity = '1';
+      tween(monWrap, [{ transform: LAY.monEnter }, { transform: LAY.monSplit }], 850);
+      tween(phoneWrap, [{ transform: LAY.phonePov }, { transform: LAY.phoneSplit }], 800);
+    });
+    at(t0 + 1.2, function () {
+      relay.classList.remove('hidden');
+      if (LAY.relay.vert) tween(relay, [{ height: '0px' }, { height: LAY.relay.h + 'px' }], 650);
+      else tween(relay, [{ width: '0px' }, { width: LAY.relay.w + 'px' }], 650);
+      relayLbl.classList.remove('hidden');
+      tween(relayLbl, [{ opacity: 0 }, { opacity: 1 }], 400);
       pulseBeam();
     });
-    at(t0 + 1.5, function () { agUpdate(mB, { state: 'done' }); });
-    for (var n = 1; n <= 18; n++) {
-      (function (k) {
-        at(t0 + 1.0 + k * 0.08, function () {
-          agUpdate(AG.testId, { count: 38 + Math.round(59 * k / 18) });
-          if (k % 6 === 0) pulseBeam();
-        });
-      })(n);
-    }
+  });
+
+  /* ================= shot 7 — new steps, mirrored ================= */
+  scene('shot7', 3.5, function (t0) {
+    at(t0, function () { caption('cap_s7'); });
+    at(t0 + 0.3, function () {
+      agRemove(AG.testId);
+      agPush({ type: 'edit', f: 'README.md', state: 'done' });
+      pulseBeam();
+    });
+    at(t0 + 1.4, function () {
+      AG.testId = agPush({ type: 'test', cmd: 'npm test', count: 97, total: 132, state: 'run' });
+      termPush('Tests: 97 of 132 passed');
+      pulseBeam();
+    });
+    at(t0 + 2.1, function () { agProg(4, 7); });
+    at(t0 + 3.1, function () { agScreen('chat'); });
   });
 
   /* ================= scene 6 — ask ================= */
   scene('ask', 7.5, function (t0) {
-    at(t0, function () { caption('cap_ask'); setTime('12:28'); });
+    at(t0, function () { caption('cap_ask'); setTime('12:28'); agScreen('chat'); });
     at(t0 + 0.2, function () {
       agStatus('wait');
       agQuestion({ q: S.q, opts: S.opts });
@@ -907,23 +1010,24 @@
       tween(relayLbl, [{ opacity: 1 }, { opacity: 0 }], 300);
     });
     at(t0 + 0.4, function () {
-      tween(phoneWrap, [{ transform: PHONE_HOME }, { transform: PHONE_CENTER }], 700);
+      tween(phoneWrap, [{ transform: LAY.phoneSolo }, { transform: LAY.more.main }], 700);
     });
+    var MO = LAY.more, SL = MO.slide;
     at(t0 + 0.7, function () {
       sPhoneT.classList.remove('hidden');
-      sPhoneT.style.left = '250px'; sPhoneT.style.top = '150px';
-      tween(sPhoneT, [{ transform: 'translate(-360px,0px) rotate(-10deg) scale(.72)', opacity: 0 },
-        { transform: 'translate(0px,0px) rotate(-8deg) scale(.72)', opacity: 1 }], 700);
+      sPhoneT.style.left = MO.t.x + 'px'; sPhoneT.style.top = MO.t.y + 'px';
+      tween(sPhoneT, [{ transform: 'translate(' + (-SL) + 'px,0px) rotate(' + (MO.t.r - 2) + 'deg) scale(' + MO.t.s + ')', opacity: 0 },
+        { transform: 'translate(0px,0px) rotate(' + MO.t.r + 'deg) scale(' + MO.t.s + ')', opacity: 1 }], 700);
       sPhoneF.classList.remove('hidden');
-      sPhoneF.style.left = '1230px'; sPhoneF.style.top = '150px';
-      tween(sPhoneF, [{ transform: 'translate(360px,0px) rotate(10deg) scale(.72)', opacity: 0 },
-        { transform: 'translate(0px,0px) rotate(8deg) scale(.72)', opacity: 1 }], 700);
+      sPhoneF.style.left = MO.f.x + 'px'; sPhoneF.style.top = MO.f.y + 'px';
+      tween(sPhoneF, [{ transform: 'translate(' + SL + 'px,0px) rotate(' + (MO.f.r + 2) + 'deg) scale(' + MO.f.s + ')', opacity: 0 },
+        { transform: 'translate(0px,0px) rotate(' + MO.f.r + 'deg) scale(' + MO.f.s + ')', opacity: 1 }], 700);
     });
     at(t0 + 1.6, function () {
       lblTerm.classList.remove('hidden'); lblAgents.classList.remove('hidden'); lblFile.classList.remove('hidden');
-      lblTerm.style.left = '250px'; lblTerm.style.top = '885px';
-      lblAgents.style.left = '750px'; lblAgents.style.top = '885px';
-      lblFile.style.left = '1230px'; lblFile.style.top = '885px';
+      lblTerm.style.left = MO.lbl.term[0] + 'px'; lblTerm.style.top = MO.lbl.term[1] + 'px';
+      lblAgents.style.left = MO.lbl.agents[0] + 'px'; lblAgents.style.top = MO.lbl.agents[1] + 'px';
+      lblFile.style.left = MO.lbl.file[0] + 'px'; lblFile.style.top = MO.lbl.file[1] + 'px';
       [lblTerm, lblAgents, lblFile].forEach(function (l) {
         tween(l, [{ opacity: 0, transform: 'translateY(14px)' }, { opacity: 1, transform: 'translateY(0px)' }], 400);
       });
@@ -942,18 +1046,18 @@
     }
     at(t0 + 5.3, function () {
       agSheetOff();
-      tween(sPhoneT, [{ opacity: 1, transform: 'translate(0px,0px) rotate(-8deg) scale(.72)' },
-        { opacity: 0, transform: 'translate(-300px,0px) rotate(-10deg) scale(.72)' }], 500)
+      tween(sPhoneT, [{ opacity: 1, transform: 'translate(0px,0px) rotate(' + MO.t.r + 'deg) scale(' + MO.t.s + ')' },
+        { opacity: 0, transform: 'translate(' + (-SL) + 'px,0px) rotate(' + (MO.t.r - 2) + 'deg) scale(' + MO.t.s + ')' }], 500)
         .then(function () { sPhoneT.classList.add('hidden'); });
-      tween(sPhoneF, [{ opacity: 1, transform: 'translate(0px,0px) rotate(8deg) scale(.72)' },
-        { opacity: 0, transform: 'translate(300px,0px) rotate(10deg) scale(.72)' }], 500)
+      tween(sPhoneF, [{ opacity: 1, transform: 'translate(0px,0px) rotate(' + MO.f.r + 'deg) scale(' + MO.f.s + ')' },
+        { opacity: 0, transform: 'translate(' + SL + 'px,0px) rotate(' + (MO.f.r + 2) + 'deg) scale(' + MO.f.s + ')' }], 500)
         .then(function () { sPhoneF.classList.add('hidden'); });
       [lblTerm, lblAgents, lblFile].forEach(function (l) {
         tween(l, [{ opacity: 1 }, { opacity: 0 }], 300).then(function () { l.classList.add('hidden'); });
       });
     });
     at(t0 + 5.7, function () {
-      tween(phoneWrap, [{ transform: PHONE_CENTER }, { transform: PHONE_HOME }], 600);
+      tween(phoneWrap, [{ transform: LAY.more.main }, { transform: LAY.phoneSolo }], 600);
       tween(monWrap, [{ opacity: 0 }, { opacity: 1 }], 600);
       tween(relay, [{ opacity: 0 }, { opacity: 1 }], 500);
       tween(relayLbl, [{ opacity: 0 }, { opacity: 1 }], 500);
@@ -1087,6 +1191,24 @@
       var e = document.getElementById(id);
       if (e) { var r = e.getBoundingClientRect(); out[id] = [r.left | 0, r.top | 0, r.width | 0, r.height | 0]; }
     });
+    function rr(e) { if (!e) return null; var r = e.getBoundingClientRect();
+      return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]; }
+    function hit(a, b) { return a && b && a[0] < b[0] + b[2] && b[0] < a[0] + a[2] &&
+      a[1] < b[1] + b[3] && b[1] < a[1] + a[3]; }
+    function visOp(e) { return e ? parseFloat(getComputedStyle(e).opacity) : 0; }
+    function rr2(e) { return visOp(e) > 0.05 ? rr(e) : null; }
+    var pr = { phoneProbe: window.__probe || null, agHome: AG.home };
+    pr.relayLblFit = relayLbl.scrollWidth <= relayLbl.clientWidth + 1;
+    pr.vcallVsBrand = hit(rr2(vcall), rr2(brandmark));
+    pr.brandOp = Math.round(parseFloat(getComputedStyle(brandmark).opacity) * 100) / 100;
+    pr.mphoneScr = !!(mphone && mphone.querySelector('.mpscr'));
+    var pairs = [];
+    stage.querySelectorAll('.sphone').forEach(function (sp) {
+      if (visOp(sp) < 0.05) return;
+      stage.querySelectorAll('.slbl').forEach(function (lb) { pairs.push(hit(rr(sp), rr(lb))); });
+    });
+    pr.slblHitsPhone = pairs;
+    out.probe = pr;
     var d = el('pre', '', stage); d.id = 'dbg';
     d.style.cssText = 'position:absolute;left:0;top:0;z-index:9999;color:#0f0;font-size:10px;';
     d.textContent = JSON.stringify(out) + ' title=' + document.title;

@@ -5,14 +5,19 @@ Total run ≈ 55 s, then the outro holds.
 
 ## Scenes (v2, see `RA-STORYBOARD.md`)
 
-`hook` 4.5s → `rdp` 4.0s → `brand` 2.5s → `fly` 5.0s → `sync` 4.5s → `ask` 7.5s → `voice` 6.0s → `theme` 2.7s → `more` 6.5s → `done` 4.5s → `outro` 7.0s (timeline offset 0.35s; ends ≈55.05s).
+`quad` 2.5s → `phoneout` 1.0s → `expand` 0.9s → `matchcut` 1.2s → `launch` 1.5s → `seed` → `shot1` 2.5s → `shot2` 2.2s → `shot3` 4.6s → `shot4` 1.5s → `shot5` 2.5s → `shot6` 4.0s → `shot7` 3.5s → `ask` 7.5s → `voice` 6.0s → `theme` 2.7s → `more` 6.5s → `done` 4.5s → `outro` 7.0s (timeline offset 0.35s; ends ≈62.5s).
+
+Phase 1: the four-panel intro (four people, one thought) + shots 1-7 (overview loading → grouped tiles → expanded card + typing → open → chat push + send → back + monitor + vertical/horizontal relay → mirrored new steps) are built for **both orientations**. Scenes `ask`→`outro` still render in the v2 look and are landscape-complete; their portrait restyle is **竖屏化完成**.
 
 The whole demo is light-themed. The `theme` beat is the exception: the phone opens the real ⋮ main menu, taps 主题/Theme, and a View Transition circle expands from that row to flip stage + desktop + every phone to dark for ~1 s, then a second circle returns to light. All demo colors are theme variables on `html[data-theme="light"|"dark"]`.
 
 ## Entry files
 
-- `RA-Demo-zh.html` — Chinese version
-- `RA-Demo-en.html` — English version
+- `RA-Demo-zh.html` — Chinese version (landscape)
+- `RA-Demo-en.html` — English version (landscape)
+- `RA-Demo-zh-portrait.html` / `RA-Demo-en-portrait.html` — portrait versions (`window.DEMO_ORIENT='portrait'`); any entry also accepts `?o=portrait`
+- `intro.js` — quad-intro keyframe art (SVG scene builders shared by both orientations)
+- `app-ui/` — master `app.css` + `logo-*.svg` + `icon-192.png`, so `phone.html` no longer depends on `../app/`
 - `ra-demo.js` — engine, session state `AG`, scenes, desktop renderer, phone orchestration, theme transitions
 - `ra-demo.css` — light/dark theme variables, stage geometry
 - `phone.html` — the phone screen: a mock of the real app UI (`../app/` DOM structure), loaded in an iframe
@@ -22,7 +27,7 @@ The whole demo is light-themed. The `theme` beat is the exception: the phone ope
 - `assets/ra-icon.svg` — the only image (brand icon, outro)
 - `RA-STORYBOARD.md` — the authoritative shot list
 
-`phone.html` links `../app/app.css` for the real app theme, reuses the app's DOM ids/classes, and loads `../app/logo-*-dark.svg` / `../app/icon-192.png`, so `app/` must sit next to this folder. Everything still works from `file://`: the parent and iframes only talk via `postMessage` (`{type:'ready'}` and `{type:'themed'}` up; `{type:'state', state, instant}`, `{type:'fx', name, args, dur}` and `{type:'theme', theme}` down). The theme switch posts `{type:'theme'}` to every iframe and the View Transition update resolves only after all ack `{type:'themed'}`.
+`phone.html` links `app-ui/app.css` for the real app theme, reuses the app's DOM ids/classes, and loads `app-ui/logo-*` / `app-ui/icon-192.png` (a self-contained copy of the master assets). Everything still works from `file://`: the parent and iframes only talk via `postMessage` (`{type:'ready'}` and `{type:'themed'}` up; `{type:'state', state, instant}`, `{type:'fx', name, args, dur}` and `{type:'theme', theme}` down). The theme switch posts `{type:'theme'}` to every iframe and the View Transition update resolves only after all ack `{type:'themed'}`.
 
 Open either HTML file by double-clicking it. No server, network, fonts or libraries are needed.
 

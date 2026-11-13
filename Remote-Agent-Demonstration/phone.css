@@ -77,3 +77,38 @@ html[data-theme="light"] #fakekb .kbar span { background: #BFC2CA; }
 .rspin { width: 15px; height: 15px; flex: none; border: 2px solid var(--line-3); border-top-color: var(--accent); border-radius: 50%; animation: rsp .8s linear infinite; }
 @keyframes rsp { to { transform: rotate(360deg); } }
 .tdone { color: var(--ok); font-weight: 700; font-size: 15px; line-height: 1; flex: none; }
+
+
+/* ---------- home (overview) screen: real master DOM, storyboard glue ---------- */
+#homeView { display:none; }
+body.home #homeView.active { display:flex !important; flex-direction:column; }
+body.home #chatView, body.home header, body.home footer { display:none !important; }
+body.home main { position:absolute; inset:0; }
+#homeRoot { position:absolute; inset:0; background:var(--s1,#F5F5F4); font-family:var(--font,'Segoe UI',sans-serif); }
+#homeView #overview { position:absolute; inset:0; display:flex; flex-direction:column; font-family:var(--font); }
+#homeView .ov-body { flex:1; overflow:hidden; display:flex; flex-direction:column; }
+#homeView .ov-main { flex:1; overflow:hidden; display:flex; flex-direction:column; }
+#homeView .ov-board { flex:1; overflow-y:auto; overflow-x:hidden; scrollbar-width:none; align-content:start; align-items:start; }
+#homeView .ov-top { position:absolute !important; top:0; left:0; right:0; }
+#homeView .ov-crumbs { position:absolute !important; top:0; left:0; right:48px; height:100%; display:flex; align-items:center; gap:6px; padding:0 12px; box-sizing:border-box; }
+#homeView .ov-scope select { pointer-events:none; }
+#homeView .ov-toasts { display:none; }
+/* skeleton tiles (frame-1 loading) */
+.ov-skel { height:78px; border-radius:24px; background:var(--s1,#fff); border:1px solid var(--line-2,#E7E9EE); padding:14px; box-sizing:border-box; }
+.ov-skel i { display:block; height:9px; border-radius:5px; background:linear-gradient(90deg,var(--line-2,#E7E9EE),var(--s2,#F0F1F4),var(--line-2,#E7E9EE)); margin-bottom:9px; }
+.ov-skel i:nth-child(1){width:42%} .ov-skel i:nth-child(2){width:64%} .ov-skel i:nth-child(3){width:50%;opacity:.6;margin-bottom:0}
+/* card composer caret + wrapping draft (storyboard frame-03: wraps, never under send) */
+#homeView .ov-composer .faket { flex:1; min-width:0; font-size:14px; line-height:1.45; color:var(--fg); white-space:normal; overflow-wrap:anywhere; }
+.vcaret { display:inline-block; width:2px; height:1.05em; background:var(--accent); vertical-align:-2px; margin-left:1px; animation:blink .7s step-end infinite; }
+.ov-hide { visibility:hidden; }
+
+/* screen push transitions (home <-> chat) */
+body.pushin #chatView { animation:pushin .45s cubic-bezier(.22,.61,.36,1); }
+body.pushout #chatView { animation:pushout .45s cubic-bezier(.22,.61,.36,1); }
+body.pushin #homeView, body.pushout #homeView { display:block; }
+@keyframes pushin { from { transform:translateX(100%); } to { transform:translateX(0); } }
+@keyframes pushout { from { transform:translateX(0); } to { transform:translateX(100%); } }
+
+/* fusion glyph: app.css's mask of logo-fusion.svg renders blank (luminance mask
+   zeroes the stroke alpha); render the same paths inline with currentColor */
+.optLogo .flogo { width: 20px; height: 20px; display: block; margin: auto; color: var(--fg); }

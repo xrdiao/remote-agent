@@ -31,6 +31,34 @@ Agent 在电脑上跑长任务，人得出门。手机远程桌面字小、点�
 
 | # | 场景 | 时长 | 画面 | 字幕 |
 |---|---|---|---|---|
+| 0a | quad | 2.5 s | 四格同时出现（餐厅/公园/地铁/咖啡馆），中央 pill「我想看看 Agent 干活干得怎么样了」同刻浮现 | — |
+| 0b | phoneout | 1.0 s | pill 淡出，四人同时掏出手机（pose crossfade） | — |
+| 0c | expand | 0.9 s | 咖啡馆格 FLIP 扩展到全屏，其余三格缩小淡出 | — |
+| 0d | matchcut | 1.2 s | 人物手中手机 FLIP 到真机框（POV 双手 + 模糊咖啡馆），点 RA 图标 | — |
+| 0e | launch | 1.5 s | 图标放大成启动页（Remote Agent + tagline），双手滑出，品牌标飞到左上角水印 | — |
+| 1 | shot1 | 2.5 s | 手机概览页：工作站 loading 行 + 进度 + 2×2 骨架 | cap_s1 |
+| 2 | shot2 | 2.2 s | 骨架淡出成 需要你·1 / 进行中·2 / 已完成·1 分组卡片，涟漪点 Cursor 卡 | cap_s2 |
+| 3 | shot3 | 4.6 s | Cursor 卡原地展开（用量环 ctx38 + 周额度72、进度3/7、工具行、草稿输入框），键盘升起，草稿逐字打出 | cap_s3 |
+| 4 | shot4 | 1.5 s | 键盘收起，点「打开对话」→「正在打开…」 | cap_s4 |
+| 5 | shot5 | 2.5 s | 对话页从右侧推入（composer 同一份草稿），点发送，消息落入列表 | cap_s5 |
+| 6 | shot6 | 4.0 s | 对话页右滑退出回到展开卡（已含发出消息）；显示器入场（横屏左滑入/竖屏顶部滑下），手机到分屏位，中继绘出 | cap_s6 |
+| 7 | shot7 | 3.5 s | 新步骤进 AG（Edited README.md、Ran npm test 97/132、进度4/7），光点沿中继电脑→手机；两端一致 | cap_s7 |
+| 8 | ask | 7.5 s | 手机锁屏通知（Agent 提问）→ 点通知进对话，qnBar 选「加兼容层」提交；电脑问题卡同步收为 ✓；两边新增 Edited compat.ts | cap_ask |
+| 9 | voice | 6.0 s | 点输入框键盘升起、停止钮换麦克风；按住说话 voice_text 逐字上屏，0.4s 后电脑输入框同步出现（标注气泡+引线）；松开发送，两边同现用户消息 + Edited README | cap_voice |
+| 10 | theme | 2.7 s | ⋮ 主菜单（master mainMenu 结构）→ 主题行：view-transition 圆从该点扩张，舞台+IDE+手机 iframe 一起切深色 ~1s，再点切回浅色 | cap_theme |
+| 11 | more | 6.5 s | 显示器+中继淡出；主手机居中，左右滑入小号倾斜手机（终端 git status 输出 / 文件预览 compat.ts 高亮改动行）；主手机开 Agent 切换面板（Cursor 运行中·当前 / Devin / Codex / Fusion 带 logo）；三标签 lbl_term/agents/file 在各自手机下方 | cap_more |
+| 12 | done | 4.5 s | 测试 97→132/132 ✓，final 消息，状态已完成；手机 12:41 锁屏完成通知 → 点开对话停在最终消息 | cap_done |
+| 13 | outro | 7.0 s | 舞台淡到品牌页：图标、Remote Agent、motto 逐词 → 三张亮点卡 → CTA（扫光）→ cta_meta；**竖屏同内容纵向堆叠** | — |
+
+总时长 ≈ 62.5 s（intro 7.1 + shots 20.8 + ask..done 27.7 + outro 7.0）。
+
+## 竖屏布局（portrait，1080×1920）
+
+- shots 1–5：大手机 (203,120) scale 1.6；shot 6–7 起：显示器顶部 (124,110) scale .63，手机 (270,680) scale 1.28，竖直中继 x536。
+- ask/voice/theme/done 沿用分屏位；voice 标注气泡置于显示器上方 (260,2) 不压水印。
+- more：主手机居中 scale .95，侧手机 scale .6 左右倾斜，标签各在手机下方。
+- outro：图标/标题/motto 居中，三卡纵向排列，CTA/meta 下移适配 1920 高。
+
 | 1 | hook | 4.5 s | 桌面全景淡入并轻推（1.04→1）。Agent 面板：用户消息 `prompt`；工具行逐条出现（转圈→✓）：Read `t_read`、Edited `t_edit6`（+182 −96）、Ran `t_test`，测试计数 0→38/132；终端滚动、编辑器行依次高亮。 | `cap_hook` |
 | 2 | rdp | 4.0 s | 显示器侧移。手机从右滑入 P，屏幕里是电脑屏幕的等比缩小克隆（字完全看不清），顶部红色标签 `rdp_tag`。两个手指圆点张合：画面放大到 2.6× 只看到局部，再缩回；一次点按涟漪落在按钮旁边。随后手机抖动、红色 ✕，下沉淡出。 | `cap_rdp` |
 | 3 | brand | 2.5 s | 桌面压暗。中央：图标弹出 → “Remote Agent” → `brand_tag`。最后 0.6 s 品牌组缩到左上角成为水印，桌面恢复亮度。 | — |
