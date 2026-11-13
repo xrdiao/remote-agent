@@ -11,6 +11,7 @@ import { PAGE_SRC } from '../server/page/build.mjs';
 import { AgentContext, FOCUS_COMPOSER } from '../server/agent/context.mjs';
 import { ensurePairedBrowser } from './paired-browser.mjs';
 import { writeTextFile } from '../lib/files.mjs';
+import { methods as sessionMethods } from '../server/agent/session-actions.mjs';
 import { methods as menuMethods } from '../server/agent/menus.mjs';
 import { methods as projectMethods } from '../server/agent/projects.mjs';
 import { methods as codexMethods } from '../server/apps/codex.mjs';
@@ -959,7 +960,7 @@ test('native window snapshots await Cursor text before publishing and keep the o
   for (const app of ['cursor', 'codex', 'devin']) {
     const calls = [], chat = { thread: 'A', items: [{ i: 'latest', k: 'assistant', t: '已完成读取' }] };
     const helper = { extract(...args) { calls.push(args); return app === 'cursor' ? Promise.resolve(chat) : chat; },
-      activeChatTab: () => '', agentStates: () => [], devinSurface: () => null, agentList: () => [], codexChatRows: () => [] };
+      activeChatTab: () => '', agentStates: () => [], devinSurface: () => null, agentList: () => [], nativeSessionInfo: async () => [], codexChatRows: () => [] };
     const context = { cdpRead, awaitCdpRead, AbortController, PAGE_SRC: 'helper', helpersCall: call => call,
       refreshSessionCatalog: async () => {}, publishCatalog() {}, withOperation: (_operation, action) => action() };
     const methods = vm.runInNewContext('({' + part(read('server/native-windows.mjs'), '  async read(fresh = false)', '  interval()') + '})', context);
@@ -4203,4 +4204,48 @@ test('Codex card preview keeps only the current turn tools across repeated turns
   assert.equal(pending.tools.length, 0); assert.equal(pending.text, 'next user');
   items.push({ k: 'tool', i: 'latest', t: 'latest command', status: 'completed' });
   assert.deepEqual([...(await scope.preview('qa', target)).tools].map(row => row.id), ['latest']);
+});
+
+test('a batch cancelled while its request waits in the relay queue never reaches a native removal', async () => {
+  for (const app of ['codex', 'cursor', 'devin', 'opencode']) {
+    const h = relayHeartbeat(), socket = await h.socket(), session = h.bind(socket), removed = [];
+    Object.assign(session, sessionMethods, { app, emit: message => socket.send(JSON.stringify(message)),
+      sessionEntries: new Map(['one', 'two'].map(id => [id, { id, app }])) });
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
+    h.routes.hold = { run: () => held };
+    h.routes.sessionBatch = ROUTES.sessionBatch; h.routes.sessionBatchCancel = ROUTES.sessionBatchCancel;
+    session.handle = msg => msg.t === 'hold' ? held : session.batchSessions(msg.ids, msg.requestId, row => { removed.push(row.id); });
+    socket.receive({ t: 'hold' }); await h.settle();
+    socket.receive({ t: 'sessionBatch', ids: ['one', 'two'], requestId: 'batch-' + app });
+    assert.equal(session.sessionBatch.requestId, 'batch-' + app);
+    socket.receive({ t: 'sessionBatchCancel', requestId: 'other-batch' }); await h.settle();
+    assert.equal(session.sessionBatch.cancelled, false);
+    socket.receive({ t: 'sessionBatchCancel', requestId: 'batch-' + app }); await h.settle();
+    assert.equal(session.sessionBatch.cancelled, true);
+    release(); await h.settle(); await h.settle();
+    assert.deepEqual(removed, []);
+    const done = socket.sent.findLast(message => message.t === 'sessionBatchProgress' && message.done);
+    assert.equal(done.cancelled, true); assert.equal(done.results.length, 0);
+    assert.equal(session.sessionBatch, null); socket.close(1000);
+  }
+});
+
+test('Fusion native forms retain multiple selected values through repaint and use the shared field reader', () => {
+  const context = createPageContext({ I18N: { tr: value => value }, esc: String, PRIMARY: /accept/, document: { activeElement: null } });
+  const history = read('app/js/history.js'), source = read('app/js/fusion.js');
+  vm.runInContext(part(history, 'const questionFieldValue =', 'function clearQuestionDraft(')
+    + part(source, 'function fusionNativeHtml(', 'function showFusionTasks('), context);
+  const html = context.fusionNativeHtml({}, { attemptId: 'attempt', bindingId: 'binding', requests: [{ id: 'request', text: 'Tools',
+    fields: [{ label: 'Select', multiple: true, value: ['read', 'write'], options: [{ label: 'Read', value: 'read' }, { label: 'Write', value: 'write' }] }], buttons: [{ label: 'accept' }] }] });
+  assert.match(html, /multiple/); assert.equal((html.match(/selected/g) || []).length, 2);
+  const field = selected => ({ name: '', dataset: { nativeRequest: 'request', fusionField: '0', attempt: 'attempt' }, multiple: true,
+    options: ['read', 'write', 'run'].map(value => ({ value, selected: selected.includes(value) })),
+    get selectedOptions() { return this.options.filter(option => option.selected); } });
+  let fields = [field(['read', 'write'])];
+  const root = { scrollTop: 140, querySelector: () => null, querySelectorAll: selector => selector === 'details' ? [] : fields };
+  context.fusionSurface = () => root;
+  context.fusionPreserveSheet(() => { fields = [field([])]; root.scrollTop = 0; });
+  assert.deepEqual([...fields[0].selectedOptions].map(option => option.value), ['read', 'write']);
+  assert.equal(root.scrollTop, 140);
 });

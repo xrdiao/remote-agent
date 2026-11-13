@@ -274,7 +274,7 @@ export class Session extends AgentContext {
     }
     if (app === 'opencode') return AGENT_REGISTRY.opencode.adapter.attach.call(this, req);
     if (app === 'codex' && !this.fusionBinding && (req.windowId === CODEX_BACKEND || codexBackend.owns(req.threadId)
-      || !req.windowId && !req.threadId)) return AGENT_REGISTRY.codex.adapter.attachBackend.call(this, req);
+      || !req.projectSwitch && !req.windowId && !req.threadId)) return AGENT_REGISTRY.codex.adapter.attachBackend.call(this, req);
     if (req.initial && hasLaunched(app)) req = { ...req, id: app, windowId: '', threadId: '', project: null };
     if (req.project && !req.projectSwitch && app === 'codex') {
       const matches = nativeTargets().filter(win => win.app === app && this.projectMatches(nativeWindowAt(win.ws)?.roots || [], req.project.root, req.project.host));

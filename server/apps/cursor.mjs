@@ -48,7 +48,7 @@ export const adapter = {
     try {
       await this.cdp.evaluate(`(async () => {
         const h = ${PAGE_SRC}, id = ${JSON.stringify(id)};
-        const info = h.nativeSessionInfo('cursor', id);
+        const info = await h.nativeSessionInfo('cursor', id, 'actions');
         if (!window.__remoteAgentCursorServices) throw new Error('Cursor 原生会话目录尚未就绪');
         if (!info) throw new Error('Cursor 原生目录中没有这个会话');
         if (info.archived) throw new Error('这个 Cursor 会话已归档');
@@ -77,7 +77,7 @@ export const adapter = {
 
   async listAgents(silent, readOnly, emit) {
     const list = readOnly && this.cdp.nativeWindow?.catalog ? structuredClone(this.cdp.nativeWindow.catalog)
-      : await this.cdp.evaluate(helpersCall('agentList()'));
+      : await this.cdp.evaluate(helpersCall("nativeSessionInfo('cursor', '', 'list')"));
     emit({ list: list || [] });
   },
 

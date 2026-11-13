@@ -18,6 +18,8 @@ function fixture(stored = new Map()) {
     ovComputerStatus: () => 'online', status() {}, ovSaveHistory() {},
     computerSockets: new Map(entries.map(entry => [entry.id, { authed: true, socket: { readyState: 1, send: raw => sent.push(JSON.parse(raw)) } }])),
   });
+  const history = fs.readFileSync(new URL('../app/js/history.js', import.meta.url), 'utf8');
+  vm.runInContext(history.slice(history.indexOf('const questionFieldValue ='), history.indexOf('function clearQuestionDraft(')), context);
   vm.runInContext(fs.readFileSync(new URL('../app/js/fusion.js', import.meta.url), 'utf8'), context);
   const overview = fs.readFileSync(new URL('../app/js/overview.js', import.meta.url), 'utf8');
   vm.runInContext(overview.slice(overview.indexOf('const ovAg ='), overview.indexOf('const ovText =')), context);

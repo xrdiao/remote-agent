@@ -6,18 +6,22 @@ import { leaseWindow } from '../window-use.mjs';
 import { fusionBindingInUse } from '../fusion/state.mjs';
 
 export const methods = {
-  async batchSessions(ids, requestId, remove) {
+  beginSessionBatch(requestId) {
     if (this.sessionBatch) throw new Error('已有批量操作正在执行');
-    const app = this.app;
-    const rows = [...new Set(ids)].map(id => this.sessionEntries?.get(id)).filter(row => row?.app === app);
-    if (!rows.length) throw new Error('请刷新会话列表后重新选择');
+    return this.sessionBatch = { requestId, app: this.app, cancelled: false };
+  },
+  async batchSessions(ids, requestId, remove) {
+    const batch = this.sessionBatch || this.beginSessionBatch(requestId);
+    if (batch.requestId !== requestId) throw new Error('已有批量操作正在执行');
+    const app = batch.app;
+    const rows = [...new Set(ids)].map(id => app === 'opencode' ? { id, app } : this.sessionEntries?.get(id)).filter(row => row?.app === app);
+    if (!rows.length) { this.sessionBatch = null; throw new Error('请刷新会话列表后重新选择'); }
     rows.sort((a, b) => Number(sessionId(app, a.id) === this.threadId) - Number(sessionId(app, b.id) === this.threadId));
-    const batch = this.sessionBatch = { requestId, cancelled: false };
     const results = [], releases = [];
     const progress = done => this.emit({ t: 'sessionBatchProgress', app, requestId, total: rows.length, results, done, cancelled: batch.cancelled });
     progress(false);
     try {
-      for (const window of new Set(rows.map(row => row.id.startsWith('project:') ? decodeURIComponent(row.id.split(':')[1]) : row.id.startsWith('thread:') ? row.id.split(':')[1] : this.targetId))) releases.push(leaseWindow(app, window, this, true));
+      for (const window of new Set((app === 'opencode' ? [] : rows).map(row => row.id.startsWith('project:') ? decodeURIComponent(row.id.split(':')[1]) : row.id.startsWith('thread:') ? row.id.split(':')[1] : this.targetId))) releases.push(leaseWindow(app, window, this, true));
       for (const row of rows) {
         if (batch.cancelled || this.app !== app) break;
         try {

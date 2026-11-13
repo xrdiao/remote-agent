@@ -66,14 +66,16 @@
   };
   const nativeSessionCatalog = async (app, ids) => {
     if (app === 'cursor') {
-      const service = cursorSessionServices()?.data;
+      const services = cursorSessionServices(), service = services?.data;
       if (!service) return { ready: false };
       await service.whenInitialComposerDataLoaded();
       const rows = (await service._storageService.collectionQuery('composerHeaders')).map(row => JSON.parse(row));
       const loaded = new Map(service.allComposersData.allComposers.map(row => [row.composerId, row]));
       const running = new Set((window.__SSG_COMPOSER_PROVIDER__?.getStates?.() || []).filter(row => row.state === 'generating').map(row => row.id));
+      const workspace = services.composer.composerChatService._workspaceContextService.getWorkspace();
       return { ready: true, complete: true, rows: rows.map(row => {
-        const current = loaded.get(row.composerId) || row, uri = current.workspaceIdentifier?.uri;
+        const current = loaded.get(row.composerId) || row, selected = current.workspaceIdentifier || row.workspaceIdentifier;
+        const uri = selected?.uri || (selected?.id === workspace.id ? workspace.folders[0]?.uri : null);
         return { id: row.composerId, archived: !!row.isArchived, title: current.name || row.name || '',
           workspace: uri?.fsPath || uri?.path || '', host: uri && uri.scheme !== 'file' ? uri.authority.replace(/^ssh-remote\+/, '') : '',
           workspaceId: row.workspaceIdentifier?.id || '', lastUsed: current.lastUpdatedAt || row.createdAt || 0, running: running.has(row.composerId) };
@@ -294,6 +296,17 @@
         actions: [...(connector.capabilities?._meta?.['cognition.ai/sessionRename'] ? ['rename'] : []), 'archive',
           ...(connector.capabilities?.sessionCapabilities?.delete ? ['delete'] : [])] };
     })();
+    if (app === 'cursor' && ['actions', 'list'].includes(catalog)) return (async () => {
+      const value = await nativeSessionCatalog(app, [id]);
+      if (!value.ready) throw new Error('Cursor 原生会话目录尚未就绪');
+      if (catalog === 'actions') {
+        const row = value.rows.find(row => row.id === id);
+        return row ? { ...row, actions: ['rename', 'delete'] } : null;
+      }
+      const displayed = new Map(agentList().map(row => [row.id, row]));
+      return value.rows.filter(row => !row.archived).map(row => ({ ...displayed.get(row.id), ...row,
+        title: row.title || '新会话', current: row.id === activeThread(), titleNative: true }));
+    })();
     if (catalog === 'actions') return nativeSessionInfo(app, id);
     if (catalog === 'tools') return fusionNativeTools.requests(app, id);
     if (catalog === 'fusionCall' && app === 'devin') return fusionDevinCall(id, previous);
@@ -382,6 +395,19 @@
       const services = cursorSessionServices();
       const uri = services.composer.composerChatService._workspaceContextService.getWorkspace().folders[0].uri;
       await services.nativeHost.openWindow([{ folderUri: uri.constructor.file(name) }], { forceReuseWindow: true });
+      return true;
+    }
+    if (action === 'question' && app === 'devin') {
+      if (remoteContext && (remoteContext.app !== app || remoteContext.threadId !== id)) throw new Error('请求不属于这个任务 Binding');
+      if (name.id.startsWith('devin-permission:')) return nativeSessionAction(app, id, 'permission', name);
+      const entry = devinElicitationEntries(id).find(entry => entry.id === name.id);
+      if (!entry) throw new Error('这条问题已处理或不属于当前会话');
+      const choice = ['accept', 'decline', 'cancel'][name.n];
+      if (!choice) throw new Error('问题选项已变化');
+      const answer = { action: choice, ...(choice === 'accept' ? { content: RemoteAgentRules.elicitationFields(entry.params.requestedSchema, name.fields || []) } : {}) };
+      const response = entry.row.providerId === 'devin-cloud' && entry.row.request.method === 'ext/method' ? { action: answer } : answer;
+      const native = await import('@exa/chat-client');
+      window.__acpStore.dispatch(native.clientRequestCompleted({ clientRequestId: entry.key, response }));
       return true;
     }
     if (action === 'permission' && app === 'devin') {
@@ -543,6 +569,33 @@
       await picker.onModelSelect(model); return true;
     }
     if (action === 'effort') return pickEffort(name);
+    if (action === 'question' && app === 'cursor' && remoteContext) {
+      if (remoteContext.app !== app || remoteContext.threadId !== id) throw new Error('请求不属于这个任务 Binding');
+      const { capability, decisions } = cursorPendingTool(), questions = cursorNativeQuestions();
+      if (!questions || name.id !== questions.id || name.questionKey !== JSON.stringify(questions)) throw new Error('这个问题已更新，请重新查看');
+      const bubbleId = capability.getPendingDecisionBubbleIdForToolCall(questions.id);
+      const pending = decisions.find(row => row.toolCallId === questions.id);
+      if (!pending || !bubbleId) throw new Error('这个问题已不再等待回答');
+      const bubble = capability.getBubbleDataByToolCallId(questions.id);
+      if (name.part === 'skip') { await capability.rejectToolCall(questions.id, nativeValue({ skipReason: 'user' })); return true; }
+      if (name.part === 'submit') {
+        if (!questions.canSubmit) throw new Error('请完成所有问题后再提交');
+        capability.setBubbleDataOrThrow(bubbleId, nativeValue({ status: 'completed', additionalData: { status: 'submitted' } }));
+        await capability.acceptToolCall(questions.id);
+        return true;
+      }
+      if (name.part !== 'option') throw new Error('这个问题没有对应的操作');
+      const question = bubble.params.questions[name.qi];
+      if (!question || !questions.list[name.qi]?.options[name.oi]) throw new Error('问题选项已更新');
+      const currentSelections = { ...bubble.additionalData?.currentSelections }, freeformTexts = { ...bubble.additionalData?.freeformTexts };
+      const option = question.options[name.oi]?.id || '__freeform_other__', selected = currentSelections[question.id] || [];
+      currentSelections[question.id] = question.allowMultiple
+        ? option === '__freeform_other__' ? [...new Set([...selected, option])]
+          : selected.includes(option) ? selected.filter(value => value !== option) : [...selected, option] : [option];
+      if (option === '__freeform_other__') freeformTexts[question.id] = String(name.text || '');
+      capability.setBubbleDataOrThrow(bubbleId, nativeValue({ additionalData: { currentSelections, freeformTexts } }));
+      return true;
+    }
     if (action === 'permission' && app === 'cursor' && remoteContext) {
       const { capability, decisions } = cursorPendingTool();
       const accept = name.endsWith(':accept'), reject = name.endsWith(':reject');
@@ -563,7 +616,8 @@
         props.onSelectionChange([{ modelId: model?.name || 'default', parameters: [] }]);
         return true;
       }
-      const session = services?.data.allComposersData.allComposers.find(c => c.composerId === id);
+      const handle = await services.data.getComposerHandleById(id);
+      const session = handle?.data;
       if (!session) throw new Error('没有找到这个会话');
       if (action === 'rename') {
         if (session.createdFromBackgroundAgent?.bcId) await services.background.renameBackgroundComposer(session.createdFromBackgroundAgent.bcId, name);

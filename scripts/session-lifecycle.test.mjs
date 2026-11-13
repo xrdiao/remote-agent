@@ -232,10 +232,12 @@ for (const result of ['archive', 'delete', 'clear']) {
     let headers = [row, other], loaded = result === 'clear' ? [row] : [row, other], empty = false;
     const data = { get allComposersData() { return { allComposers: loaded }; },
       async whenInitialComposerDataLoaded() {},
+      async getComposerHandleById(id) { return { data: loaded.find(row => row.composerId === id) }; },
       _storageService: { collectionQuery: async () => headers.map(row => JSON.stringify(row)) },
       getComposerDataIfLoaded: () => ({ fullConversationHeadersOnly: empty ? [] : ['message'] }),
     };
     const composer = {
+      composerChatService: { _workspaceContextService: { getWorkspace: () => ({ id: 'workspace', folders: [] }) } },
       async deleteComposer(id) {
         assert.equal(id, 'target'); loaded = [other];
         headers = result === 'archive' ? [{ ...row, isArchived: true }, other] : [other];
@@ -876,5 +878,91 @@ test('deferred Cursor project binding leaves native session opening to finishPro
     assert.equal(calls.includes('composer-ready'), !deferred);
     assert.equal(session.bindingReady, !deferred);
     assert.equal(events.at(-1).ready, !deferred);
+  }
+});
+
+test('Cursor cold history opens from persisted headers, retains native menu metadata and excludes archived rows', async () => {
+  const cold = { composerId: 'cold', name: 'Cold history', workspaceIdentifier: { id: 'workspace' } };
+  const rows = [cold, { composerId: 'ordinary', name: 'Ordinary' }, { composerId: 'archived', isArchived: true }];
+  const data = { allComposersData: { allComposers: [rows[1]] }, whenInitialComposerDataLoaded: async () => {},
+    _storageService: { collectionQuery: async () => rows.map(row => JSON.stringify(row)) } };
+  const workspace = { id: 'workspace', folders: [{ uri: { scheme: 'file', fsPath: '/same-project' } }] };
+  const page = pageContext({ window: { __remoteAgentCursorServices: { data,
+    composer: { composerChatService: { _workspaceContextService: { getWorkspace: () => workspace } } } } },
+    agentList: () => [{ id: 'ordinary', group: 'Native group' }], activeThread: () => 'ordinary' });
+  assert.equal(page.info('cursor', 'cold'), null);
+  assert.equal((await page.info('cursor', 'cold', 'actions')).title, 'Cold history');
+  const listed = JSON.parse(JSON.stringify(await page.info('cursor', '', 'list')));
+  assert.deepEqual(listed.map(row => row.id), ['cold', 'ordinary']);
+  assert.equal(listed[0].workspace, '/same-project'); assert.equal(listed[1].current, true);
+  assert.equal(listed[1].group, 'Native group');
+});
+
+function projectAttachFixture(app, { catalogReady = true, targetOpen = false } = {}) {
+  const calls = [], page = id => ({ id: app === 'codex' ? app : `${app}:${id}`, app, pageId: id,
+    ws: `ws-${id}`, chatWs: `chat-${id}`, roots: [{ root: `/${id}` }] });
+  const pages = [page('A'), ...(targetOpen ? [page('B')] : [])];
+  const context = vm.createContext({ cdpRead: { getStore: () => null }, hasLaunched: () => false,
+    lastSelection: () => null, CODEX_BACKEND: 'backend', CODEX_CDP_URL: 'native', helpersCall: value => value,
+    codexBackend: { owns: id => id === 'backend-thread' }, nativeTargets: () => pages,
+    nativeWindowAt: ws => ({ roots: catalogReady ? pages.find(row => row.ws === ws).roots : [] }),
+    orderedProjectWindows: (_app, rows) => rows,
+    AGENT_REGISTRY: { [app]: { discover: async () => pages, adapter: {
+      attachBackend: async function (req) {
+        calls.push({ kind: 'backend', thread: req.threadId, root: req.project?.root });
+        this.cdp = null; this.app = app;
+      },
+    } } },
+  });
+  const attach = vm.runInContext('({' + fragment(read('server/session.mjs'), '  async attach(', '  async openBound(') + '}).attach', context);
+  const session = { app, cdp: null, threadId: '', windowId: '', attach,
+    projectMatches: (roots, root) => roots.some(row => row.root === root),
+    async openBound(_win, _editor, _chat, selection) {
+      calls.push({ kind: 'desktop', window: selection.windowId, thread: selection.threadId, deferred: selection.deferred });
+      this.app = app; this.cdp = {}; this.windowId = selection.windowId;
+    },
+    async useProject(root, newSession, thread, title, ownerWindow) {
+      calls.push({ kind: 'project', root, newSession, thread, ownerWindow });
+    },
+  };
+  return { session, calls };
+}
+
+test('project attachment and cold reconnect preserve the target through a desktop carrier for all three apps', async () => {
+  for (const app of ['codex', 'cursor', 'devin']) for (const initial of [false, true]) {
+    const { session, calls } = projectAttachFixture(app, { catalogReady: !initial });
+    const windowId = app === 'codex' ? 'B' : `${app}:B`;
+    await session.attach({ id: app, windowId, threadId: 'native-B', project: { root: '/B' }, initial });
+    assert.deepEqual(calls, [
+      { kind: 'desktop', window: app === 'codex' ? 'A' : `${app}:A`, thread: '', deferred: true },
+      { kind: 'project', root: '/B', newSession: false, thread: 'native-B', ownerWindow: windowId },
+    ], `${app}: initial=${initial}`);
+  }
+});
+
+test('Codex reuses an already matched project window and its original thread', async () => {
+  const { session, calls } = projectAttachFixture('codex', { targetOpen: true });
+  await session.attach({ id: 'codex', windowId: 'B', threadId: 'native-B', project: { root: '/B' } });
+  assert.deepEqual(calls, [{ kind: 'desktop', window: 'B', thread: 'native-B', deferred: false }]);
+});
+
+test('Codex default project entry and owned background threads still use the backend', async () => {
+  for (const selected of [{}, { windowId: 'backend', threadId: 'native-B' }, { windowId: 'old-window', threadId: 'backend-thread' }]) {
+    const { session, calls } = projectAttachFixture('codex');
+    await session.attach({ id: 'codex', project: { root: '/B' }, ...selected });
+    assert.deepEqual(calls, [{ kind: 'backend', root: '/B', thread: selected.threadId }]);
+  }
+});
+
+test('live native reconnect restores the existing thread without reattaching or selecting another project', async () => {
+  for (const app of ['codex', 'cursor', 'devin']) {
+    const { session, calls } = projectAttachFixture(app);
+    Object.assign(session, { bindingReady: true, windowId: 'A', threadId: 'native-A',
+      cdp: { ws: { readyState: 1 }, evaluate: async () => 'native-A' },
+      connectionMessages: new Map([['attached', { t: 'attached', threadId: 'native-A' }]]),
+      emit: message => calls.push(message), setMode: async () => calls.push('mode') });
+    await session.attach({ id: app, windowId: 'A', threadId: 'native-A', project: { root: '/A' }, resume: true, initial: true });
+    assert.equal(calls.length, 2); assert.equal(calls[0].threadId, 'native-A');
+    assert.equal(calls[0].ready, true); assert.equal(calls[1], 'mode');
   }
 });

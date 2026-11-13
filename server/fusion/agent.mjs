@@ -82,7 +82,22 @@ export class FusionAgent {
         if ((await editorRoots(editor, app)).some(root => fusionProject(root.root, root.host || '')?.id === project.id)) { page = candidate; break; }
       } finally { editor.close(); }
     }
-    page ||= pages[0];
+    // Cursor stores project sessions in its project window; Codex and Devin accept cwd in native creation.
+    if (!page && app !== 'cursor') page = pages[0];
+    if (!page) {
+      const { Session } = await import('../session.mjs');
+      const projectSession = new Session({ readyState: 1, send() {} }, controller.deviceId, { fusionBinding: true });
+      projectSession.app = app;
+      try {
+        if (project.host) await projectSession.attach({ id: app, project });
+        else await projectSession.withFocus(() => projectSession.useProject(project.root, false));
+        if (projectSession.pendingProject?.trust) throw new Error('请先在原生应用中确认该项目的信任请求');
+        if (!projectSession.bindingReady) throw new Error('项目原生窗口尚未就绪');
+        const windowId = projectSession.windowId.replace(/^(cursor|devin|codex):/, '');
+        page = (await this.carriers(app)).find(row => row.id === windowId);
+        if (!page) throw new Error('所选项目的原生窗口已关闭');
+      } finally { projectSession.dispose(); }
+    }
     const cdp = new NativeCdp(page.ws);
     await cdp.connect();
     const source = nativeWindow(cdp);
@@ -191,6 +206,11 @@ export class FusionAgent {
           throw Object.assign(error, { creationUnknown: true });
         }
       }
+      if (fusionProject(actual.cwd, actual.host || '')?.id !== project.id) {
+        creation.status = 'rejected'; creation.error = '新原生会话的实际项目不匹配，未提交任务';
+        this.publish(controller);
+        throw new Error(creation.error);
+      }
       const binding = { id: crypto.randomUUID(), role, app, windowId: context.page.id, threadId: actual.threadId,
         host: actual.host || '', project, nativeProject: actual, created: Date.now(),
         ...(creation.mcp ? { mcp: creation.mcp } : {}) };
@@ -199,7 +219,6 @@ export class FusionAgent {
       creation.status = 'bound'; creation.bindingId = binding.id;
       this.publish(controller);
       rememberFusionSession(app, binding.threadId, project, binding.windowId);
-      if (fusionProject(actual.cwd, actual.host || '')?.id !== project.id) throw new Error('新原生会话的实际项目不匹配，未提交任务');
       return binding;
     } finally { await this.close(context); }
   }
@@ -288,8 +307,22 @@ export class FusionAgent {
         if (reading) { again = true; return; }
         reading = true;
         try {
-          const snapshot = await context.source.readConversation(context.native, true);
-          fusionLive.set(binding.id, { ...snapshot, at: Date.now() });
+          const provider = nativeAgentProvider(binding.app);
+          const turn = await provider.readTurn(this, context, { id: current().native?.messageId || '', attemptId,
+            previous: current().beforeIds || [], generationId: current().native?.generationId || '' });
+          const nativeError = await provider.info(this, context, 'sendError', attemptId);
+          if (turn.threadId !== binding.threadId) throw new Error('原生结果身份与 Binding 不一致');
+          let snapshot = {};
+          if (!turn.ended) {
+            try {
+              snapshot = await context.source.readConversation(context.native, true);
+              delete current().contentError;
+              fusionLive.set(binding.id, { ...snapshot, at: Date.now() });
+            } catch (error) {
+              current().contentError = error.message;
+              fusionLive.delete(binding.id);
+            }
+          }
           if (snapshot.state?.waiting) {
             const id = `native-question:${attemptId}:${snapshot.state.waiting}`;
             if (!controller.events.some(event => event.id === id)) {
@@ -298,11 +331,7 @@ export class FusionAgent {
               this.publish(controller); this.onEvent();
             }
           }
-          const generationId = current().native?.generationId || (binding.app === 'devin' ? snapshot.state?.run?.id : '');
-          const provider = nativeAgentProvider(binding.app);
-          const turn = await provider.readTurn(this, context, { id: current().native?.messageId || '', attemptId, previous: current().beforeIds || [], generationId: generationId || '' });
-          const nativeError = await provider.info(this, context, 'sendError', attemptId);
-          if (turn.threadId !== binding.threadId) throw new Error('原生结果身份与 Binding 不一致');
+          const generationId = turn.generationId || current().native?.generationId || '';
           if (turn.id && turn.accepted !== false) {
             if (current().kind === 'main' && !current().acceptedAt) {
               const settings = await provider.info(this, context, 'settings');
@@ -315,7 +344,7 @@ export class FusionAgent {
             const task = controller.tasks.find(row => row.id === current().taskId);
             if (task && !current().acceptanceSaved) for (const input of task.inputs.filter(row => current().inputIds?.includes(row.id)))
               Object.assign(input, { deliveredAt: current().acceptedAt, attemptId, nativeTurnId: current().native.turnId });
-            if (task) task.status = snapshot.chat?.questions?.requests?.length || snapshot.state?.waiting ? 'awaiting_user' : 'running';
+            if (task) task.status = snapshot.chat?.questions?.requests?.length || snapshot.chat?.questions?.list?.length || snapshot.state?.waiting ? 'awaiting_user' : 'running';
             const agent = task && controller.agents.find(row => row.id === task.workerId);
             if (agent) agent.status = task.status;
             this.publish(controller, !current().acceptanceSaved);
@@ -364,6 +393,8 @@ export class FusionAgent {
     try {
       if (binding.app === 'codex' && action.kind === 'codexRequest')
         return this.call(context, `codexRequestAction(${JSON.stringify(String(action.id))}, ${Number(action.n)}, ${JSON.stringify(action.fields || [])})`);
+      if (binding.app === 'devin' && action.kind === 'codexRequest' || ['cursor', 'devin'].includes(binding.app) && action.kind === 'question')
+        return this.call(context, `nativeSessionAction(${JSON.stringify(binding.app)}, ${JSON.stringify(binding.threadId)}, 'question', ${JSON.stringify(action)})`);
       if (binding.app === 'cursor' && action.kind === 'button')
         return this.call(context, `nativeSessionAction('cursor', ${JSON.stringify(binding.threadId)}, 'permission', ${JSON.stringify(action.actionId)})`);
       throw new Error('该原生交互尚无不切换普通会话的后台接口');

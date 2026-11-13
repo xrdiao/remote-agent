@@ -328,7 +328,7 @@ export class NativeWindow {
         const h = ${PAGE_SRC};
         const chat = await h.extract(false, [], ${app === 'codex' ? 80 : 0}, ${app === 'cursor'});
         return { chat, activeTab: h.activeChatTab(), states: h.agentStates(${JSON.stringify(app)}),
-          surface: h.devinSurface(), catalog: ${app === 'codex' ? 'h.codexChatRows(true)' : app === 'devin' ? 'null' : 'h.agentList()'},
+          surface: h.devinSurface(), catalog: ${app === 'codex' ? 'h.codexChatRows(true)' : app === 'devin' ? 'null' : "await h.nativeSessionInfo('cursor', '', 'list')"},
         };
       })()`);
       if (app === 'devin') result.catalog = await this.cdp.evaluate(helpersCall('sessionPickerRows(true)'));

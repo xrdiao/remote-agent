@@ -1393,14 +1393,19 @@
         items.push({ i: 'acp' + messages.length + ':error', k: 'tool', kind: 'error', t: failure[1].errorMessage, keep: true });
       title = session.title || '';
       before = Math.max(0, end - limit); earlier = before > 0;
-      const requests = devinPermissions(thread);
+      const requests = devinNativeRequests(thread);
       if (requests.length) questions = { codex: true, src: 'devin', requests, list: [] };
       else if (activeThread() === thread) questions = devinQuestions();
       items = items.map(item => ({ ...item, src: 'devin' }));
     }
     const scopes = [], run = agentRun(app, thread, scopes), changed = items.filter(item => item.kind === 'edit').length;
+    const waiting = nativeWaiting(app, thread);
+    if (app === 'devin' && questions?.requests?.length) Object.assign(waiting, {
+      waiting: JSON.stringify([thread, ...questions.requests.map(request => request.id)]),
+      waitingText: questions.requests.map(request => request.text).join('\n'),
+    });
     return { thread, title, items, global: [], rect: [0, 0, 0, 0], busy: run?.status === 'running', readonly: false,
-      _nativeState: { thread, title, run, busy: run?.status === 'running', host: remoteContext.host, workspace: remoteContext.cwd, ...nativeWaiting(app, thread) },
+      _nativeState: { thread, title, run, busy: run?.status === 'running', host: remoteContext.host, workspace: remoteContext.cwd, ...waiting },
       queued: app === 'cursor' ? (cursorPendingTool().data.queueItems || []).map(item => ({ id: item.id, t: item.query, src: 'cursor' })) : [],
       questions, changed, subagents: [], earlier, historyBefore: before,
       model: agentModelName(), effort: effortName(), permission: null, context: null,

@@ -439,3 +439,42 @@ test('question route allows text only for Devin', async () => {
   assert.deepEqual(calls[0].slice(2), ['text', 'free']);
   assert.deepEqual(calls[1].slice(2), ['option', 'free']);
 });
+
+test('Devin background elicitation uses the shared MCP field types and exact native request identity', async () => {
+  const { elicitationFields } = await import('../lib/shared-rules.mjs');
+  const fs = await import('node:fs');
+  const source = fs.readFileSync(new URL('../server/page/devin.js', import.meta.url), 'utf8');
+  const actions = fs.readFileSync(new URL('../server/page/session-actions.js', import.meta.url), 'utf8');
+  const schema = { type: 'object', required: ['count', 'flag', 'plan', 'tools'], properties: {
+    count: { type: 'integer', default: 0 }, flag: { type: 'boolean', default: false },
+    plan: { type: 'string', oneOf: [{ const: 'a', title: 'Plan A' }, { const: 'b', title: 'Plan B' }] },
+    tools: { type: 'array', items: { anyOf: [{ const: 'read', title: 'Read' }, { const: 'write', title: 'Write' }] }, default: ['read'] },
+  } };
+  for (const provider of ['devin-cli', 'devin-cloud']) for (const method of ['elicitation/create', 'ext/method']) {
+    const thread = 'acp/' + provider + '/session', replies = [], params = { sessionId: 'session', message: 'Choose', requestedSchema: schema };
+    const row = { providerId: provider, status: 'pending', request: { id: 0, method, params: method === 'ext/method' ? { method: '_session/elicitation', params } : params } };
+    const state = { clientRequests: { own: row, foreign: { ...row, request: { ...row.request, params: method === 'ext/method'
+      ? { method: '_session/elicitation', params: { ...params, sessionId: 'other' } } : { ...params, sessionId: 'other' } } } } };
+    const context = vm.createContext({ RemoteAgentRules: { elicitationFields }, remoteContext: { app: 'devin', threadId: thread },
+      nativeModule: { clientRequestCompleted: value => value },
+      window: { __acpStore: { getState: () => ({ acp: state }), dispatch(value) { replies.push(value); state.clientRequests[value.clientRequestId].status = 'completed'; } } } });
+    vm.runInContext(source.slice(source.indexOf('  const devinPermissionEntries ='), source.indexOf('  const devinQuestions ='))
+      + actions.slice(actions.indexOf('  const nativeSessionAction ='), actions.indexOf('  const nativeSessionRenameInput =')).replaceAll("await import('@exa/chat-client')", 'nativeModule')
+      + ';this.requests=devinNativeRequests;this.answer=nativeSessionAction;', context);
+    const requests = context.requests(thread); assert.equal(requests.length, 1);
+    assert.deepEqual(plain(requests[0].fields), elicitationFields(schema));
+    assert.equal(requests[0].fields[0].value, '0'); assert.equal(requests[0].fields[1].value, 'false');
+    await assert.rejects(context.answer('devin', 'acp/' + provider + '/other', 'question', { id: requests[0].id, n: 0 }), /Binding/);
+    const fields = [{ n: 0, value: '0' }, { n: 1, value: 'false' }, { n: 2, value: 'b' }, { n: 3, value: ['read', 'write'] }];
+    await context.answer('devin', thread, 'question', { id: requests[0].id, n: 0, fields });
+    const expected = { action: 'accept', content: { count: 0, flag: false, plan: 'b', tools: ['read', 'write'] } };
+    assert.deepEqual(plain(replies[0]), { clientRequestId: 'own', response: provider === 'devin-cloud' && method === 'ext/method' ? { action: expected } : expected });
+    assert.equal(state.clientRequests.foreign.status, 'pending');
+    await assert.rejects(context.answer('devin', thread, 'question', { id: requests[0].id, n: 0, fields }), /已处理/);
+    for (const n of [1, 2]) {
+      row.status = 'pending'; await context.answer('devin', thread, 'question', { id: requests[0].id, n });
+      const value = provider === 'devin-cloud' && method === 'ext/method' ? replies.at(-1).response.action : replies.at(-1).response;
+      assert.deepEqual(plain(value), { action: n === 1 ? 'decline' : 'cancel' });
+    }
+  }
+});

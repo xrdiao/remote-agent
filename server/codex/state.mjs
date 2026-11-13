@@ -5,6 +5,7 @@ import { CodexClient } from './client.mjs';
 import { DATA_DIR } from '../../lib/auth.mjs';
 import { cdpRead } from '../cdp.mjs';
 import { withOperation } from '../operations.mjs';
+import { elicitationFields } from '../../lib/shared-rules.mjs';
 
 export const CODEX_BACKEND = 'backend';
 const textInput = input => input.filter(part => part.type === 'text').map(part => part.text).join('\n');
@@ -14,11 +15,6 @@ const capacityFailure = turn => turn?.status === 'failed' && !turn.nativeRetryin
 const requestKey = row => (row.method === 'item/tool/requestUserInput' ? 'async:' : 'approval:')
   + JSON.stringify([row.params.threadId, row.params.turnId, row.id]);
 const threadSettings = ({ thread, sandbox, reasoningEffort, ...settings }) => ({ ...settings, sandboxPolicy: sandbox, effort: reasoningEffort });
-const mcpFieldOptions = schema => {
-  const field = schema.type === 'array' ? schema.items : schema;
-  return field.enum ? field.enum.map((value, index) => ({ value, label: field.enumNames?.[index] ?? String(value) }))
-    : (field.oneOf || field.anyOf)?.map(option => ({ value: option.const, label: option.title }));
-};
 
 export class CodexState extends EventEmitter {
   constructor({ client = new CodexClient(), file = path.join(DATA_DIR, 'codex-backend.json') } = {}) {
@@ -293,16 +289,7 @@ export class CodexState extends EventEmitter {
       return { id: requestKey(row), text: [p.command, p.reason, p.message, p.cwd, permission ? JSON.stringify(p.permissions) : ''].filter(Boolean).join('\n'),
         buttons: (elicitation ? ['accept', 'decline', 'cancel'] : permission ? ['accept', 'decline'] : p.availableDecisions || ['accept', 'acceptForSession', 'decline', 'cancel'])
           .map(decision => ({ label: typeof decision === 'string' ? decision : Object.keys(decision)[0] })),
-        fields: elicitation ? Object.entries(p.requestedSchema?.properties || {}).map(([name, schema]) => {
-          const multiple = schema.type === 'array', options = mcpFieldOptions(schema);
-          return { label: schema.title || name, type: 'text',
-            value: multiple ? (schema.default || []).map(String) : schema.default == null ? '' : String(schema.default),
-            ...(multiple ? { multiple: true } : {}),
-            options: options ? [...(multiple ? [] : [{ value: '', label: '请选择' }]),
-              ...options.map(option => ({ ...option, value: String(option.value) }))]
-              : schema.type === 'boolean' ? [{ value: '', label: '请选择' }, { value: 'true', label: 'true' }, { value: 'false', label: 'false' }] : null,
-          };
-        }) : [] };
+        fields: elicitation ? elicitationFields(p.requestedSchema) : [] };
     });
   }
 
@@ -320,35 +307,9 @@ export class CodexState extends EventEmitter {
       })) };
     } else if (request.method === 'item/permissions/requestApproval') result = { permissions: n === 0 ? p.permissions : {}, scope: 'turn' };
     else if (request.method === 'mcpServer/elicitation/request') {
-      const action = ['accept', 'decline', 'cancel'][n], content = {};
+      const action = ['accept', 'decline', 'cancel'][n];
       if (!action) throw new Error('请求选项已变化');
-      if (action === 'accept') for (const [i, [name, schema]] of Object.entries(p.requestedSchema?.properties || {}).entries()) {
-        const value = fields.find(field => field.n === i)?.value ?? '';
-        if ((value === '' || Array.isArray(value) && !value.length) && !(p.requestedSchema.required || []).includes(name)) continue;
-        let typed = value;
-        const options = mcpFieldOptions(schema);
-        const selected = value => {
-          const option = options.find(option => String(option.value) === value);
-          if (!option) throw new Error('请选择有效的 ' + name);
-          return option.value;
-        };
-        if (schema.type === 'array') {
-          typed = value.map(selected);
-          if (schema.minItems != null && typed.length < schema.minItems || schema.maxItems != null && typed.length > schema.maxItems)
-            throw new Error(name + ' 的选项数量不符合要求');
-        } else if (options) {
-          typed = selected(value);
-        } else if (schema.type === 'boolean') {
-          if (!['true', 'false'].includes(value)) throw new Error(name + ' 必须为 true 或 false');
-          typed = value === 'true';
-        } else if (schema.type === 'integer' || schema.type === 'number') {
-          typed = Number(value);
-          if (!String(value).trim() || !Number.isFinite(typed) || schema.type === 'integer' && !Number.isInteger(typed))
-            throw new Error(name + ' 的数值格式不正确');
-        }
-        content[name] = typed;
-      }
-      result = { action, content: action === 'accept' ? content : null };
+      result = { action, content: action === 'accept' ? elicitationFields(p.requestedSchema, fields) : null };
     } else {
       const decision = (p.availableDecisions || ['accept', 'acceptForSession', 'decline', 'cancel'])[n];
       if (decision === undefined) throw new Error('请求选项已变化');

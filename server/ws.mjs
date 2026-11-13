@@ -191,6 +191,14 @@ wss.on('connection', (ws, req) => {
     const request = beginOperation(session, msg);
     if (request?.duplicate) return;
     const operation = request?.operation;
+    let batch;
+    try { if (route?.accept) batch = route.accept(session, msg); }
+    catch (error) {
+      route.fail?.(session, msg, error);
+      session.emit({ t: 'status', ok: false, msg: error.message });
+      operation?.finish();
+      return;
+    }
     const run = action => track(withOperation(operation, async () => {
       if (operation) session.activeOperations = (session.activeOperations || 0) + 1;
       try { return await action(); }
@@ -264,6 +272,7 @@ wss.on('connection', (ws, req) => {
           if (msg.t !== 'send') session.emit({ t: 'status', ok: false, msg: error.message });
         }
         if (sendRequest) sends.delete(sendRequest);
+        if (batch && session.sessionBatch === batch) session.sessionBatch = null;
         return;
       }
       if (executed) return;
@@ -341,6 +350,7 @@ wss.on('connection', (ws, req) => {
       } finally {
         if (metadataKey) pendingMetadata.delete(metadataKey);
         if (sendRequest) sends.delete(sendRequest);
+        if (batch && session.sessionBatch === batch) session.sessionBatch = null;
       }
     };
     const executeRequest = () => run(execute);

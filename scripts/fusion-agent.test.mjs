@@ -22,6 +22,7 @@ function nativeRenameFixture(app) {
   const manager = { readThread: async id => ({ thread: rows.get(id) }), getConversation: id => rows.get(id),
     async setThreadTitle(id, title, options) { calls.push(['codex', id, title, options]); rename(id, title.slice(0, 60)); return true; } };
   const services = { data: { allComposersData: { allComposers: [...rows.values()] }, getComposerDataIfLoaded: () => null,
+    async getComposerHandleById(id) { return { data: rows.get(id) }; },
     async persistComposerWorkspacePlacement(id, value) {
       assert.equal(rows.get(id).name, value.name);
       Object.assign(persisted.get(id), { name: value.name, title: value.name });
@@ -1288,5 +1289,106 @@ test('confirmed native Devin deletion wins over missing while unknown or unconfi
   assert.equal((await context.cleanup('devin', id, true)).confirmed, true); assert.deepEqual(stopped, [id]);
   for (const next of [{ ready: true, rows: [], missing: [id] }, { ready: true, rows: [], removed: [id], unknown: [id] }, { ready: false, rows: [], removed: [id] }]) {
     catalog = next; await assert.rejects(context.cleanup('devin', id, true), /尚未确认/);
+  }
+});
+
+test('Fusion never commits a wrong-project native creation and a retry creates a verified binding', async () => {
+  const h = fixture(), agent = new FusionAgent({ publish() {} });
+  h.run.bindings = []; delete h.run.main.bindingId;
+  let cwd = '/wrong-project', created = 0;
+  agent.carrierFor = async () => ({ app: 'cursor', native: {}, page: { id: 'carrier' } });
+  agent.close = async () => {};
+  agent.call = async (_context, code) => {
+    const call = nativeInvocation(code);
+    assert.equal(call.method, 'nativeSessionAction'); assert.equal(call.args[2], 'create'); created++;
+    return { threadId: 'created-' + created, cwd, host: '' };
+  };
+  await assert.rejects(agent.createBinding(h.run, h.run.main, 'cursor', h.project, 'main', {}), /实际项目不匹配/);
+  assert.equal(h.run.bindings.length, 0); assert.equal(h.run.main.bindingId, undefined);
+  assert.equal(h.run.main.creations[0].status, 'rejected');
+  cwd = h.project.root;
+  const binding = await agent.createBinding(h.run, h.run.main, 'cursor', h.project, 'main', {});
+  assert.equal(created, 2); assert.equal(binding.nativeProject.cwd, h.project.root);
+  assert.equal(h.run.bindings.length, 1); assert.equal(h.run.main.bindingId, binding.id);
+});
+
+test('Fusion verifies native acceptance and completion when transcript reads fail without resending', async () => {
+  for (const app of ['codex', 'cursor', 'devin']) {
+    const original = nativeAgentProvider(app), h = fixture(), binding = h.run.bindings[0];
+    binding.app = app; binding.threadId = 'worker';
+    const attempt = { id: 'attempt', kind: 'worker', beforeIds: [], submission: 'submitting' };
+    h.run.attempts = [attempt];
+    let ended = false, read = 0, transcripts = 0;
+    const restore = registerNativeAgentProvider({ app,
+      readTurn: async () => { read++; return { threadId: 'worker', id: 'message', turnId: 'message', generationId: 'generation', accepted: true, ended, completed: ended, text: ended ? 'done' : '' }; },
+      info: async (_agent, _context, kind) => kind === 'settings' ? { usage: null } : null });
+    try {
+      const agent = new FusionAgent({ publish() {} });
+      const runtime = { controller: h.run, binding, attemptId: attempt.id,
+        context: { native: {}, cdp: {}, source: { subscribe: () => () => {}, readConversation: async () => { transcripts++; throw Error('transcript unavailable'); } } } };
+      const finished = agent.observe(runtime, false);
+      await runtime.check();
+      assert.equal(attempt.submission, 'accepted'); assert.equal(attempt.contentError, 'transcript unavailable');
+      assert.equal(attempt.native.generationId, 'generation');
+      ended = true; await runtime.check();
+      const result = await finished;
+      assert.equal(result.completed, true); assert.equal(result.text, 'done');
+      assert.equal(read, 2); assert.equal(transcripts, 1);
+    } finally { restore(); registerNativeAgentProvider(original); }
+  }
+});
+
+test('Cursor background questions use the exact pending tool and native decision state without selecting a visible thread', async () => {
+  const calls = [], bubble = { name: 'ask_question', params: { questions: [
+    { id: 'single', prompt: 'Pick', options: [{ id: 'one', label: 'One' }] },
+    { id: 'multi', prompt: 'Many', allowMultiple: true, options: [{ id: 'x', label: 'X' }, { id: 'y', label: 'Y' }] },
+  ] }, additionalData: {} };
+  let pending = true;
+  const capability = {
+    getPendingUserDecisionGroup: () => () => pending ? [{ toolCallId: 'question-tool' }] : [],
+    getBubbleDataByToolCallId: id => { assert.equal(id, 'question-tool'); return bubble; },
+    getPendingDecisionBubbleIdForToolCall: () => pending ? 'question-bubble' : undefined,
+    setBubbleDataOrThrow(id, value) { assert.equal(id, 'question-bubble'); Object.assign(bubble, { ...value,
+      additionalData: { ...bubble.additionalData, ...value.additionalData } }); calls.push('draft'); },
+    acceptToolCall: async id => { assert.equal(id, 'question-tool'); pending = false; calls.push('accepted'); },
+    rejectToolCall: async () => { pending = false; calls.push('rejected'); },
+  };
+  const context = createPageContext({ window: {}, remoteContext: { app: 'cursor', threadId: 'worker' },
+    nativeValue: value => JSON.parse(JSON.stringify(value)), cursorSessionServices: () => ({ data: {
+      getComposerDataIfLoaded(id) { assert.equal(id, 'worker'); return { capabilities: [capability] }; } } }) });
+  const extract = fs.readFileSync(new URL('../server/page/chat-extract.js', import.meta.url), 'utf8');
+  const source = fs.readFileSync(new URL('../server/page/session-actions.js', import.meta.url), 'utf8');
+  vm.runInContext(extract.slice(extract.indexOf('  const cursorPendingTool ='), extract.indexOf('  const nativeMarkdownItem ='))
+    + source.slice(source.indexOf('  const nativeSessionAction ='), source.indexOf('  const nativeSessionRenameInput ='))
+    + ';this.questions=cursorNativeQuestions;this.answer=nativeSessionAction;', context);
+  const action = spec => context.answer('cursor', 'worker', 'question', { id: 'question-tool', questionKey: JSON.stringify(context.questions()), ...spec });
+  const old = JSON.stringify(context.questions());
+  await action({ qi: 0, oi: 0, part: 'option' });
+  await assert.rejects(action({ qi: 1, oi: 0, part: 'option', questionKey: old }), /问题已更新/);
+  await action({ qi: 1, oi: 0, part: 'option' }); await action({ qi: 1, oi: 1, part: 'option' });
+  assert.equal(context.questions().canSubmit, true);
+  assert.deepEqual(bubble.additionalData.currentSelections, { single: ['one'], multi: ['x', 'y'] });
+  await action({ qi: 1, oi: 2, part: 'option', text: 'First answer' });
+  await action({ qi: 1, oi: 2, part: 'option', text: 'Edited answer' });
+  assert.deepEqual(bubble.additionalData.currentSelections.multi, ['x', 'y', '__freeform_other__']);
+  assert.equal(bubble.additionalData.freeformTexts.multi, 'Edited answer');
+  await action({ part: 'submit' }); assert.equal(calls.at(-1), 'accepted');
+  await assert.rejects(action({ part: 'submit' }), /问题已更新/);
+});
+
+test('Devin and Codex retain their native carrier for another cwd instead of opening a project window', async () => {
+  for (const app of ['devin', 'codex']) {
+    class Cdp {
+      async connect() {}
+      close() {}
+      async evaluate(code) { return code === 'activeThread()' ? 'native-thread' : { app, threadId: 'native-thread', cwd: '/current', host: '', roots: [] }; }
+    }
+    const source = {}, context = createPageContext({ Cdp, NativeCdp: Cdp, nativeWindow: () => source,
+      editorRoots: async () => [{ root: '/current', host: '' }], fusionProject: root => ({ id: root }), helpersCall: code => code,
+      crypto: { randomUUID: () => 'lease' } });
+    const carrierFor = vm.runInContext('({' + FusionAgent.prototype.carrierFor.toString() + '}).carrierFor', context);
+    const result = await carrierFor.call({ carriers: async () => [{ id: 'existing', editorWs: 'editor', ws: 'chat' }] },
+      { project: { id: '/new', root: '/new' } }, app);
+    assert.equal(result.page.id, 'existing'); assert.equal(result.native.threadId, 'native-thread');
   }
 });

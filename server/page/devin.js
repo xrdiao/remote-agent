@@ -516,6 +516,18 @@
   const devinPermissions = thread => devinPermissionEntries(thread).map(({ id, row }) => ({ id,
     text: [row.request.params.toolCall?.title, row.request.params.toolCall?._meta?.['cognition.ai/editableCommand'], row.request.params.toolCall?._meta?.['cognition.ai/permissionRule']].filter(Boolean).join('\n'),
     buttons: row.request.params.options.map(option => ({ label: option.name })), fields: [] }));
+  const devinElicitationEntries = thread => Object.entries(window.__acpStore?.getState().acp.clientRequests || {})
+    .filter(([, row]) => row.status === 'pending')
+    .flatMap(([key, row]) => {
+      const params = row.request.method === 'elicitation/create' ? row.request.params
+        : row.request.method === 'ext/method' && row.request.params.method === '_session/elicitation' ? row.request.params.params : null;
+      if (!params?.requestedSchema || !params.sessionId) return [];
+      const sessionId = params.sessionId.startsWith('acp/') ? params.sessionId : `acp/${row.providerId}/${params.sessionId}`;
+      return sessionId === thread ? [{ key, row, params, id: 'devin-elicitation:' + JSON.stringify([thread, row.providerId, key, row.request.id]) }] : [];
+    });
+  const devinNativeRequests = thread => [...devinPermissions(thread), ...devinElicitationEntries(thread).map(({ id, params }) => ({ id,
+    text: params.message, fields: RemoteAgentRules.elicitationFields(params.requestedSchema),
+    buttons: ['accept', 'decline', 'cancel'].map(label => ({ label })) }))];
   const devinQuestions = () => {
     const requests = devinPermissions(remoteContext?.app === 'devin' ? remoteContext.threadId : activeThread());
     if (requests.length) return { codex: true, src: 'devin', requests, list: [] };

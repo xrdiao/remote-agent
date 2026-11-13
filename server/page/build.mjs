@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isLocalFileReference, codeBlockHtml } from '../../lib/shared-rules.mjs';
+import { isLocalFileReference, codeBlockHtml, elicitationFields } from '../../lib/shared-rules.mjs';
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const FRAGMENTS = [
@@ -9,7 +9,7 @@ const FRAGMENTS = [
   'agents.js', 'terminal.js', 'settings.js', 'terminal-dump.js', 'codex.js', 'fusion-tools.js', 'session-actions.js', 'compatibility.js', 'exports.js',
 ];
 const sources = FRAGMENTS.map(f => fs.readFileSync(path.join(DIR, f), 'utf8').replace(/\s+$/, ''));
-const SHARED_SRC = `const RemoteAgentRules = { isLocalFileReference: ${isLocalFileReference.toString()}, codeBlockHtml: ${codeBlockHtml.toString()} };`;
+const SHARED_SRC = `const RemoteAgentRules = { isLocalFileReference: ${isLocalFileReference.toString()}, codeBlockHtml: ${codeBlockHtml.toString()}, elicitationFields: ${elicitationFields.toString()} };`;
 const DEVIN_COMPOSER_SRC = sources[FRAGMENTS.indexOf('devin-composer.js')];
 const COMPOSER_TARGET_SRC = sources[FRAGMENTS.indexOf('composer-target.js')];
 const PAGE_SRC = '((remoteContext = null) => {\n' + SHARED_SRC + '\n' + sources.join('\n') + '\n})()';

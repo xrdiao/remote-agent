@@ -147,7 +147,9 @@ async function ensureSession(s) {
 }
 
 export async function manageOpenCodeSession(id, action, name) {
-  const session = openCode.sessions.get(id), directory = session.directory;
+  const session = openCode.sessions.get(id);
+  if (!session) throw new Error('OpenCode 会话已不存在，请刷新列表');
+  const directory = session.directory;
   if (action === 'actions') return { actions: ['rename', 'archive', 'delete'] };
   if (action === 'rename') {
     const updated = await openCode.client.request(`/session/${id}`, { directory, method: 'PATCH', body: { title: name } });
@@ -337,17 +339,8 @@ const routes = {
   sessionActions(m) { this.emit({ t: 'sessionActions', app: 'opencode', id: m.id, requestId: m.requestId, actions: ['rename', 'archive', 'delete'] }); },
   async sessionManage(m) { await manageOpenCodeSession(m.id, m.action, m.name); return list(this); },
   async sessionBatch(m) {
-    const results = [];
-    this.sessionBatch = { requestId: m.requestId, cancelled: false };
-    try {
-      for (const id of m.ids) {
-        if (this.sessionBatch.cancelled) break;
-        try { await manageOpenCodeSession(id, 'delete'); results.push({ id, ok: true }); }
-        catch (error) { results.push({ id, ok: false, error: error.message }); }
-        this.emit({ t: 'sessionBatchProgress', app: 'opencode', requestId: m.requestId, total: m.ids.length, results: [...results], done: false });
-      }
-      this.emit({ t: 'sessionBatchProgress', app: 'opencode', requestId: m.requestId, total: m.ids.length, results, done: true });
-    } finally { this.sessionBatch = null; }
+    await this.batchSessions(Array.isArray(m.ids) ? m.ids.map(String) : [], m.requestId,
+      row => manageOpenCodeSession(row.id, 'delete'));
     return list(this);
   },
   file(m) {

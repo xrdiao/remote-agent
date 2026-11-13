@@ -548,3 +548,26 @@ test('OpenCode retry status updates its reason, attempt and next time, then disa
   openCode.apply({ type: 'session.idle', properties: { sessionID: 'ses_retry' } });
   assert.equal(openCode.chat('ses_retry').busy, false); assert.equal(openCode.chat('ses_retry').items.some(row => row.i === 'ses_retry:retry'), false);
 });
+
+test('OpenCode batch uses shared cancellation progress and retains targets after the first completed deletion', async t => {
+  const { session, events } = fixture(t);
+  session.app = 'opencode'; session.openCodeDirectory = root.slice(0, -1);
+  for (const id of ['ses_one', 'ses_two']) openCode.sessions.set(id, native(id));
+  session.beginSessionBatch('cancel');
+  const unsubscribe = openCode.subscribe(() => { if (!openCode.sessions.has('ses_one')) session.sessionBatch.cancelled = true; });
+  await session.handle({ t: 'sessionBatch', requestId: 'cancel', ids: ['ses_one', 'ses_two'] }); unsubscribe();
+  const done = events.findLast(message => message.t === 'sessionBatchProgress' && message.done);
+  assert.equal(done.cancelled, true); assert.deepEqual(done.results, [{ id: 'ses_one', ok: true }]);
+  assert.equal(openCode.sessions.has('ses_two'), true); assert.equal(session.sessionBatch, null);
+});
+
+test('OpenCode batch reports an externally removed selection as a per-target failure and continues', async t => {
+  const { session, events } = fixture(t);
+  session.app = 'opencode'; session.openCodeDirectory = root.slice(0, -1);
+  openCode.sessions.set('ses_present', native('ses_present'));
+  await session.handle({ t: 'sessionBatch', requestId: 'partial', ids: ['ses_missing', 'ses_present'] });
+  const done = events.findLast(message => message.t === 'sessionBatchProgress' && message.done);
+  assert.equal(done.results[0].ok, false); assert.match(done.results[0].error, /会话已不存在/);
+  assert.deepEqual(done.results[1], { id: 'ses_present', ok: true });
+  assert.equal(done.cancelled, false); assert.equal(session.sessionBatch, null);
+});
