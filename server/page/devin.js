@@ -832,6 +832,26 @@
       if (key) yield { el, fiber: host[key], values: devinContextValues(host[key]) };
     }
   };
+  const devinAccountServices = () => {
+    const roots = new Set();
+    for (const el of doc.querySelectorAll('*')) {
+      const key = Object.keys(el).find(key => key.startsWith('__reactContainer'));
+      if (key) roots.add(el[key].stateNode.current);
+    }
+    for (const root of roots) {
+      let api, UserStatus;
+      const pending = [root];
+      while (pending.length) {
+        const node = pending.pop(), value = node.memoizedProps?.value;
+        if (value?.api?.auth) api = value.api;
+        if (value?.userStatus) UserStatus = value.userStatus.constructor;
+        if (node.child) pending.push(node.child);
+        if (node.sibling) pending.push(node.sibling);
+      }
+      if (api && UserStatus) return { api, UserStatus };
+    }
+    return null;
+  };
   const devinContextValues = fiber => {
     const values = [];
     for (let f = fiber, depth = 0; f && depth < 200; f = f.return, depth++) {

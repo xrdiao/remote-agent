@@ -420,7 +420,8 @@ export class CodexState extends EventEmitter {
       codex: { plan: settings.collaborationMode?.mode === 'plan', follow: 'queue', actions: true },
       generation: latest?.startedAt ? { start: latest.startedAt * 1000, end: turn || thread.disconnected ? null : latest.completedAt * 1000 || null } : null,
       performance: latest ? { source: 'codex', runId: latest.id, busy: !!turn, model: current?.model || '',
-        unit: 'tokens', durationMs, rate: tokens && durationMs > 0 ? tokens.outputTokens / (durationMs / 1000) : null,
+        unit: 'tokens', counter: current?.usage?.total?.outputTokens ?? null,
+        durationMs, rate: tokens && durationMs > 0 ? tokens.outputTokens / (durationMs / 1000) : null,
         tokens: tokens ? { input: tokens.inputTokens, output: tokens.outputTokens, reasoning: tokens.reasoningOutputTokens, cacheRead: tokens.cachedInputTokens, cacheWrite: tokens.cacheWriteInputTokens } : null } : null,
       windowed: true, earlier: all.length > limit,
     };

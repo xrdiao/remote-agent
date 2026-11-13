@@ -309,6 +309,34 @@ function usageEvent(client, id, turnId, total, last = total) {
 }
 const firstUsage = { totalTokens: 100, inputTokens: 90, outputTokens: 10, reasoningOutputTokens: 2, cachedInputTokens: 40, cacheWriteInputTokens: 5 };
 
+test('backend sampling exposes only the current turn native output counter across updates, completion and session switches', async () => {
+  const { state, client } = fixture(); await state.create('/A'); await state.create('/B');
+  const start = (threadId, id) => client.emit('notification', { method: 'turn/started', params: {
+    threadId, turn: { id, status: 'inProgress', items: [], startedAt: 100 },
+  } });
+  start('/A', 'first');
+  assert.equal(state.chat('/A').performance.counter, null);
+  usageEvent(client, '/A', 'first', firstUsage);
+  assert.equal(state.chat('/A').performance.counter, 10);
+  usageEvent(client, '/A', 'first', { ...firstUsage, outputTokens: 100 });
+  assert.equal(state.chat('/A').performance.counter, 100);
+  start('/B', 'other');
+  usageEvent(client, '/B', 'other', { ...firstUsage, outputTokens: 0 });
+  assert.equal(state.chat('/B').performance.counter, 0);
+  assert.equal(state.chat('/A').performance.counter, 100);
+  client.emit('notification', { method: 'turn/completed', params: { threadId: '/A', turn: {
+    id: 'first', status: 'completed', items: [], startedAt: 100, completedAt: 105, durationMs: 5000,
+  } } });
+  assert.equal(state.chat('/A').performance.counter, 100);
+  assert.equal(state.chat('/A').performance.busy, false);
+  start('/A', 'next');
+  assert.equal(state.chat('/A').performance.runId, 'next');
+  assert.equal(state.chat('/A').performance.counter, null);
+  usageEvent(client, '/A', 'next', { ...firstUsage, outputTokens: 130 });
+  assert.equal(state.chat('/A').performance.counter, 130);
+  assert.equal(state.chat('/A').performance.tokens.output, 30);
+});
+
 test('a turn sums all native calls without double counting, while context uses only the last call', async () => {
   const { state, client } = fixture(); await state.create('/A');
   client.emit('notification', { method: 'turn/started', params: { threadId: '/A', turn: { id: 'first', status: 'inProgress', items: [] } } });

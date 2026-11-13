@@ -30,7 +30,8 @@ function echoTextMatches(it, t) {
     || RemoteAgentRules.withoutAttachmentLabels(s).trim() === x;
 }
 function pushEcho(requestId, text, kind) {
-  pendingEchoes.push({ requestId, text, kind, at: Date.now(), sel: viewSel });
+  const images = desktopAttachments.map(file => file.preview).filter(Boolean);
+  pendingEchoes.push({ requestId, text, kind, images, at: Date.now(), sel: viewSel });
   queueChatRender();
 }
 let inputRevision = 0;

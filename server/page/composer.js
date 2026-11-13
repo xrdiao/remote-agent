@@ -109,7 +109,7 @@
       const schema = view.state.schema;
       const paragraphs = text.split('\n').map(line => schema.nodes.paragraph.create(null, line ? schema.text(line) : null));
       view.dispatch(view.state.tr.replaceWith(0, view.state.doc.content.size, paragraphs));
-      return composerDraft() === text.replace(/\n+$/g, '');
+      return codexPromptPayload() === text;
     }
     const ed = composerTarget(doc);
     if (!ed) return false;
@@ -180,19 +180,14 @@
     return true;
   };
   const readDevinUsage = async (refresh = false) => {
-    let account, auth;
-    for (const { values } of devinEditorContexts()) {
-      account = values.find(value => typeof value?.refetchUserStatus === 'function');
-      auth = values.find(value => value?.api?.auth)?.api.auth;
-      if (account && auth) break;
-    }
-    const UserStatus = account?.userStatus?.constructor;
+    const { api, UserStatus } = devinAccountServices() || {};
+    const auth = api?.auth;
     if (typeof UserStatus?.fromBinary !== 'function' || !auth) return { missing: true, quota: [], limits: [] };
     let confirmed = false, refreshError;
     if (refresh) {
       const stop = auth.onDidChangeUserStatus(() => { confirmed = true; });
       try {
-        await auth.refreshUserStatus();
+        await api.executeCommand('devin.updatePlanInfo');
         if (!confirmed) refreshError = '原生账户未确认额度刷新';
       } catch (error) {
         refreshError = String(error.message || error);

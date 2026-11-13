@@ -149,37 +149,36 @@ function devinAccountUsage({ inactive = false, fail = false, emit = true, unchan
   const auth = {
     getUserStatusBinaryBase64: () => snapshot ? btoa(snapshot) : '',
     onDidChangeUserStatus(fn) { listeners.add(fn); return () => listeners.delete(fn); },
-    async refreshUserStatus() {
-      calls.push(['refresh']);
-      if (fail) throw new Error('native account unavailable');
-      if (!unchanged && !missingSnapshot) snapshot = 'fresh';
-      if (emit) for (const fn of listeners) fn();
-    },
   };
+  const api = { auth, async executeCommand(command) {
+    assert.equal(command, 'devin.updatePlanInfo');
+    calls.push(['refresh']);
+    if (fail) throw new Error('native account unavailable');
+    if (!unchanged && !missingSnapshot) snapshot = 'fresh';
+    if (emit) for (const fn of listeners) fn();
+  } };
   const currentRoot = { stateNode: {} }, oldRoot = { stateNode: {} };
   currentRoot.stateNode.current = currentRoot;
   oldRoot.stateNode.current = currentRoot;
-  const account = { userStatus: snapshots.cached, refetchUserStatus() {} };
-  const currentAccount = { tag: 10, memoizedProps: { value: account }, return: currentRoot };
-  const oldAccount = { tag: 10, memoizedProps: { value: account }, return: oldRoot };
-  const api = { auth };
-  const staleApi = { auth: { refreshUserStatus() { throw new Error('stale API must not run'); } } };
-  const currentApi = { tag: 10, memoizedProps: { value: missingApi ? {} : { api } }, return: currentAccount };
-  const oldApi = { tag: 10, memoizedProps: { value: { api: staleApi } }, return: oldAccount };
-  currentApi.alternate = oldApi; oldApi.alternate = currentApi;
-  currentAccount.alternate = oldAccount; oldAccount.alternate = currentAccount;
-  const input = nativeNode({}, { isContentEditable: false, __reactFiberTest: inactive ? oldApi : currentApi }, false);
-  const unrelated = nativeNode({}, { isContentEditable: true, __reactFiberTest: { return: null } });
+  const currentAccount = { tag: 10, memoizedProps: { value: { userStatus: snapshots.cached } } };
+  const currentApi = { tag: 10, memoizedProps: { value: missingApi ? {} : { api } }, child: currentAccount };
+  currentRoot.child = currentApi;
+  oldRoot.child = { tag: 10, memoizedProps: { value: { api: { auth: {}, executeCommand() { throw Error('stale API must not run'); } } } } };
+  const mount = nativeNode({}, { __reactContainerTest: inactive ? oldRoot : currentRoot });
+  const unrelatedRoot = { stateNode: {} }; unrelatedRoot.stateNode.current = unrelatedRoot;
+  const unrelated = nativeNode({}, { __reactContainerTest: unrelatedRoot });
+  const input = nativeNode({}, { isContentEditable: false }, false);
   const badge = nativeNode({ 'aria-label': 'Max, Weekly: 18% quota used' });
   const document = {
     getElementById: id => id === 'codeium.windsurf.settings.planInfo' ? badge : null,
     querySelector: selector => selector.includes('data-slate-editor') ? input : null,
-    querySelectorAll: selector => selector.includes('data-slate-editor') ? unrelatedFirst ? [unrelated, input] : [input] : [],
+    querySelectorAll: selector => selector === '*' ? unrelatedFirst ? [unrelated, mount] : [mount]
+      : selector.includes('data-slate-editor') ? [input] : [],
   };
-  return { page: nativePage(document, { atob, Uint8Array }), calls, listeners };
+  return { page: nativePage(document, { atob, Uint8Array }), calls, listeners, currentAccount, currentApi, unrelatedRoot, document };
 }
 
-test('Devin quota skips an unrelated first editor and reads the actual account context even without focus', async () => {
+test('Devin quota reads mounted account roots independently of unrelated editors and focus', async () => {
   const h = devinAccountUsage({ unrelatedFirst: true });
   const usage = await h.page.readDevinUsage(false);
   assert.equal(usage.missing, false);
@@ -203,11 +202,27 @@ test('Devin quota refresh reads the native account snapshot, not stale React dat
   assert.equal(h.listeners.size, 0);
 });
 
-test('Devin quota chooses the current native provider when the DOM fiber is on its alternate', async () => {
+test('Devin quota chooses the current native provider when the DOM root points to its alternate', async () => {
   const h = devinAccountUsage({ inactive: true });
   const usage = await h.page.readDevinUsage(true);
   assert.equal(usage.limits[0].pct, 35);
   assert.deepEqual(h.calls, [['refresh'], ['decode', 'fresh']]);
+});
+
+test('Devin quota keeps the account decoder and native API in the same mounted root', async () => {
+  const h = devinAccountUsage({ unrelatedFirst: true });
+  h.unrelatedRoot.child = h.currentAccount;
+  h.currentApi.child = null;
+  const result = await h.page.readDevinUsage(true);
+  assert.equal(result.missing, true); assert.equal(h.calls.length, 0);
+});
+
+test('Devin quota still reads the native account when no composer is mounted', async () => {
+  const h = devinAccountUsage(), query = h.document.querySelectorAll;
+  h.document.querySelectorAll = selector => selector === '*' ? query(selector) : [];
+  const result = await h.page.readDevinUsage(false);
+  assert.equal(result.limits[0].pct, 40);
+  assert.equal(result.cached, true);
 });
 
 test('an unchanged native quota snapshot still confirms a successful account refresh', async () => {
@@ -796,6 +811,37 @@ function acceptedDraft(newer) {
   return { context, input, sent, ack: (revision, text) => context.receiveDraft({ t: 'draftAck', ok: true, read: true,
     sel: 'codex|A', draftEpoch: 'epoch', revision, text }) };
 }
+
+test('image-only optimistic messages retain previews, reuse image rendering and disappear on their own native receipt', () => {
+  const image = 'data:image/png;base64,fixture', rendered = [], nodes = [];
+  const context = createPageContext({ desktopAttachments: [{ id: 'image-A', preview: image }], viewSel: 'codex|window|A',
+    pendingEchoes: [], submittedMessages: [], currentApp: 'codex', Date, I18N: { tr: value => value }, queueChatRender() {},
+    renderItem(item) {
+      rendered.push(item);
+      const bubble = {}, meta = {}, node = { classList: { add(value) { node.pending = value; } },
+        querySelector: selector => selector === '.bubble' ? bubble : meta, bubble, meta };
+      nodes.push(node); return node;
+    } });
+  vm.runInContext(part(read('app/js/composer.js'), 'function pushEcho(', 'let inputRevision =')
+    + part(read('app/js/history.js'), 'function pruneEchoes(', 'const executionRecordsShown ='), context);
+  context.pushEcho('image-request', '', 'chat');
+  context.desktopAttachments.length = 0;
+  assert.equal(context.pendingEchoes[0].images[0], image);
+  const pending = context.pendingEchoEls();
+  assert.equal(pending.length, 1); assert.equal(rendered[0].k, 'human'); assert.equal(rendered[0].images[0], image);
+  assert.equal(nodes[0].bubble.hidden, true); assert.equal(nodes[0].meta.textContent, '发送中…');
+  context.pendingEchoes[0].confirmed = true; context.pendingEchoes[0].messageId = 'image-user';
+  context.pruneEchoes({ items: [{ i: 'other-user', k: 'human', t: '' }], queued: [] });
+  assert.equal(context.pendingEchoes.length, 1);
+  context.viewSel = 'codex|window|B'; assert.equal(context.pendingEchoEls().length, 0);
+  context.pruneEchoes({ items: [{ i: 'image-user', k: 'human', t: '' }], queued: [] });
+  assert.equal(context.pendingEchoes.length, 1);
+  context.viewSel = 'codex|window|A';
+  context.pruneEchoes({ items: [{ i: 'image-user', k: 'human', t: '' }], queued: [] });
+  assert.equal(context.pendingEchoEls().length, 0);
+  context.pushEcho('text-request', 'caption', 'chat'); context.pendingEchoEls();
+  assert.equal(nodes.at(-1).bubble.hidden, false); assert.equal(rendered.at(-1).t, 'caption');
+});
 
 function syncingDraft(newer = false) {
   const h = acceptedDraft(newer), scheduled = new Map(), packets = [];
@@ -2866,6 +2912,66 @@ test('OpenCode pending statistics keep every field visible and elapsed time adva
     tokens: { input: 100, output: 90, reasoning: 0, cacheRead: 0, cacheWrite: 0 }, cacheRate: 0 });
   assert.equal(panel.innerHTML.includes('待返回'), false);
   assert.match(panel.innerHTML, /耗时<\/span><span class="perf-val">9s/);
+});
+
+test('Codex backend and desktop keep the last complete three-second sample instead of native turn averages', () => {
+  for (const rate of [null, 999]) {
+    const h = usageMeters(), info = { source: 'codex', runId: 'turn', model: 'actual', unit: 'tokens',
+      busy: true, counter: 100, rate, durationMs: 10000 };
+    h.context.renderPerfChip(info);
+    assert.equal(h.node('perfChip').textContent, '统计中');
+    h.at(1000); h.context.renderPerfChip({ ...info, counter: 160 });
+    assert.equal(h.node('perfChip').textContent, '统计中');
+    h.at(3000); h.context.renderPerfChip({ ...info, counter: 190 });
+    assert.equal(h.node('perfChip').textContent, '30 tok/s');
+    h.at(5000); h.context.renderPerfChip({ ...info, busy: false, counter: 250, rate: 50, durationMs: 15000 });
+    assert.equal(h.node('perfChip').textContent, '30 tok/s');
+    assert.equal(h.node('perfChip').title, '3 秒估算速度');
+    assert.match(h.node('perfPanel').innerHTML, /统计区间<\/span><span class="perf-val">3s/);
+    assert.match(h.node('perfPanel').innerHTML, /耗时<\/span><span class="perf-val">15s/);
+    h.at(9000); h.context.renderPerfChip({ ...info, busy: false, counter: 250, rate: 50, durationMs: 15000 });
+    assert.equal(h.node('perfChip').textContent, '30 tok/s');
+    h.context.renderPerfChip({ ...info, runId: 'historical', busy: false, counter: 1000, rate: 50 });
+    assert.equal(h.node('perfChip').textContent, '—');
+    h.context.renderPerfChip({ ...info, runId: 'next', counter: null });
+    assert.equal(h.node('perfChip').textContent, '统计中');
+    h.at(12000); h.context.renderPerfChip({ ...info, runId: 'next', busy: false, counter: 200, rate: 100 });
+    assert.equal(h.node('perfChip').textContent, '—');
+  }
+});
+
+for (const app of ['cursor', 'devin']) test(`${app} live native counters enter three-second sampling and completion retains its native average`, () => {
+  const h = usageMeters(), take = nativePerformanceFixture();
+  const run = { id: 'turn', status: 'running', startedAt: 100000, completedAt: 0 };
+  const data = output => app === 'cursor' ? {
+    fullConversationHeadersOnly: [{ bubbleId: 'last' }],
+    conversationMap: { last: { startedAtMs: 100000, turnDurationMs: 5000 } },
+    turnTokenUsage: { inputTokens: 90000, outputTokens: output, cacheReadTokens: 0, cacheWriteTokens: 0 },
+  } : {
+    currentTurnId: 'turn', messages: [
+      { kind: 'user_message', content: [{ _meta: { 'cognition.ai/clientMessageId': 'turn', 'cognition.ai/timestamp': '1970-01-01T00:01:40.000Z' } }] },
+      { kind: 'agent_message', turnId: 'turn', content: [{ _meta: { 'cognition.ai/timestamp': '1970-01-01T00:01:45.000Z' } }] },
+    ], turnStats: { turn: { responseDimensions: [
+      { uid: 'model', kind: { value: 'actual' } }, { uid: 'input_tokens', kind: { value: 90000 } },
+      { uid: 'output_tokens', kind: { value: output } },
+    ] } },
+  };
+  const paint = (output, completed = false) => {
+    const native = data(output);
+    if (app === 'devin' && completed) native.turnStats.turn.cause = 'complete';
+    const info = take(app, 'thread', { ...run, status: completed ? 'completed' : 'running' }, 'actual', native);
+    assert.equal(info.counter, output);
+    assert.equal(info.rate, completed ? 50 : null);
+    h.context.renderPerfChip(info);
+  };
+  paint(100);
+  h.at(1000); paint(160); assert.equal(h.node('perfChip').textContent, '统计中');
+  h.at(3000); paint(190);
+  assert.equal(h.node('perfChip').textContent, '30 tok/s');
+  assert.equal(h.node('perfChip').title, '3 秒估算速度');
+  h.at(5000); paint(250, true);
+  assert.equal(h.node('perfChip').textContent, '50 tok/s');
+  assert.equal(h.node('perfChip').title, '轮次平均');
 });
 
 test('performance distinguishes live characters, completed native tokens and turn averages without changing context meters', () => {

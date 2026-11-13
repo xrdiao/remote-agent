@@ -1029,7 +1029,7 @@
       const editor = codexPromptEl();
       result.draft = codexPromptText() || '';
       result.payload = codexPromptPayload();
-      result.hasDraftAttachments = !!editor && codexFiberProps(editor, Infinity).some(p => p.hasDraftAttachments === true);
+      result.hasDraftAttachments = !!editor && codexFiberProps(editor, Infinity).some(p => p.hasVisibleAttachments === true);
       result.follow = codexQueryClient()?.getQueryData(['vscode', 'get-settings'])?.values?.followUpQueueMode || 'queue';
     }
     return result;
@@ -1409,21 +1409,24 @@
       _nativeState: { thread, title, run, busy: run?.status === 'running', host: remoteContext.host, workspace: remoteContext.cwd, ...waiting },
       queued: app === 'cursor' ? (cursorPendingTool().data.queueItems || []).map(item => ({ id: item.id, t: item.query, src: 'cursor' })) : [],
       questions, changed, subagents: [], earlier, historyBefore: before,
-      model: agentModelName(), effort: effortName(), permission: null, context: null,
+      model: agentModelName(), effort: effortName(), permission: null, context: app === 'devin' ? contextPct() : null,
       performance: nativePerformance(app, thread, run, agentModelName(), performanceData),
       ...(draft !== undefined ? { draft } : {}),
       ...(app === 'devin' ? { surface: devinSurface(), session: { key: thread, cwd: remoteContext.cwd }, workdir: { cwd: remoteContext.cwd } } : {}),
       ...(run?.startedAt ? { generation: { start: run.startedAt, end: run.status === 'running' ? null : run.completedAt || null } } : {}) };
   };
   const contextPct = () => {
+    if (devinSurface()) {
+      const thread = remoteContext?.app === 'devin' ? remoteContext.threadId : activeThread();
+      const usage = devinSessionData(thread)?.status?.contextUsage;
+      return usage?.size > 0 ? { pct: Math.round(Math.min(100, usage.used / usage.size * 100)), basis: 'used' } : null;
+    }
     const el = [...doc.querySelectorAll('button, [role=button], [role=img]')].find(e => vis(e) && /^(?:Context(?:\s+usage)?|上下文用量)[:：]?\s*\d+%/i.test(((e.getAttribute('aria-label') || e.innerText || '').replace(/\s+/g, ' ').trim())));
     if (el) {
       const text = ((el.getAttribute('aria-label') || el.innerText || '').replace(/\s+/g, ' ').trim());
       return { pct: Number(/(\d+)%/.exec(text)[1]), basis: /left|remaining|剩余/i.test(text) ? 'remaining' : 'used' };
     }
     const thread = activeThread();
-    const usage = devinSurface() ? devinSessionData(thread)?.status.contextUsage : null;
-    if (usage?.size > 0) return { pct: Math.round(Math.min(100, usage.used / usage.size * 100)), basis: 'used' };
     const indicator = [...doc.querySelectorAll('.composer-context-usage-indicator')].find(e => vis(e)
       && (!e.closest('[data-glass-agent-id]') || e.closest('[data-glass-agent-id]').getAttribute('data-glass-agent-id') === thread));
     const ring = indicator?.querySelector('.token-ring-progress');

@@ -11,7 +11,7 @@ import { FOCUS_COMPOSER } from '../server/agent/context.mjs';
 import { cdpRead, awaitCdpRead } from '../server/cdp.mjs';
 import { withOperation } from '../server/operations.mjs';
 import { NativeWindow } from '../server/native-windows.mjs';
-import { nativePage } from './page-fixture.mjs';
+import { nativePage, read, fragment } from './page-fixture.mjs';
 import { registerUpload, removeUpload } from '../lib/uploads.mjs';
 
 for (const revision of ['first', 'renamed']) {
@@ -279,7 +279,7 @@ test('Codex draft references keep their existing rich-input path and unavailable
   await assert.rejects(adapter.typeDraft.call({ cdp: { evaluate: async () => false } }, 'body', []), /输入尚未就绪/);
 });
 
-function codexMultilineDraft() {
+function codexMultilineDraft(paragraphText = false) {
   const submissions = [], writes = [];
   const paragraph = content => ({ type: 'paragraph', content: content == null ? [] : Array.isArray(content) ? content : [content] });
   let nodes = [paragraph(null)];
@@ -290,7 +290,7 @@ function codexMultilineDraft() {
     doc: { content: { size: 1 } }, tr: { replaceWith: (_from, _to, content) => content } },
     dispatch(content) { nodes = Array.isArray(content) ? content : [content]; writes.push(nodes); } };
   const controller = { view, getText: () => render(false), getPersistedText: () => render(true) };
-  const editor = { get innerText() { return render(false); }, closest: () => null, contains: () => false,
+  const editor = { get innerText() { return paragraphText ? nodes.map(node => node.content.map(child => child.text || '').join('')).join('\n\n') : render(false); }, closest: () => null, contains: () => false,
     getBoundingClientRect: () => ({ width: 40, height: 20 }),
     __reactFiberFixture: { memoizedProps: { composerController: controller, conversationId: 'recalled', submitDisabled: false,
       handleSubmit: options => submissions.push({ options, text: controller.getText(), persisted: controller.getPersistedText() }) } } };
@@ -298,6 +298,20 @@ function codexMultilineDraft() {
   const document = { getElementById: () => ({ contentDocument: doc }) };
   return { page: nativePage(document), controller, submissions, writes };
 }
+
+test('Codex multiline and long input validates its native payload instead of layout paragraph separators', async () => {
+  const h = codexMultilineDraft(true);
+  for (const original of ['first\nsecond', 'many lines\n\n' + 'long text\n'.repeat(1200)]) {
+    assert.equal(h.page.setComposerDraft(original), true);
+    assert.notEqual(h.page.composerDraft(), original.replace(/\n+$/g, ''), 'DOM text includes paragraph layout separators');
+    assert.equal(h.page.codexPromptPayload(), original);
+    assert.equal(h.controller.getPersistedText(), original);
+    assert.equal(await h.page.submitCodexMessage('', true, 'long-input'), true);
+    await h.page.codexViewState(true);
+    assert.equal(h.submissions.at(-1).text, original);
+    assert.equal(h.submissions.at(-1).persisted, original);
+  }
+});
 
 for (const follow of ['', 'queue', 'steer']) test(`Codex recalled multiline text keeps its serialized payload for ${follow || 'send'}`, async () => {
   const h = codexMultilineDraft();
@@ -419,6 +433,34 @@ function submission({ native = true, busy = false, when, follow = 'queue', paylo
       () => adapter.submitPrompt.call(context, when === 'now', busy, when, false, mentions,
         receipt ? { requestId: 'request-1' } : undefined, files))); } };
 }
+
+function imageDraftState(visible = true) {
+  const context = vm.createContext({ codexReceiptState: () => ({ thread: 'thread-1', entries: [] }),
+    codexReceiptRows: () => [], codexQueued: () => [], codexPromptEl: () => ({}), codexPromptText: () => '',
+    codexPromptPayload: () => '', codexFiberProps: () => [{ hasVisibleAttachments: visible }], codexQueryClient: () => null });
+  return vm.runInContext(fragment(read('server/page/chat-extract.js'), '  const codexSendState =', '  const waitCodexReceipt =')
+    + '\ncodexSendState(true);', context);
+}
+
+test('Codex image-only drafts read the current native attachment flag independently of empty text', () => {
+  const image = imageDraftState();
+  assert.equal(image.payload, ''); assert.equal(image.draft, ''); assert.equal(image.hasDraftAttachments, true);
+  assert.equal(imageDraftState(false).hasDraftAttachments, false);
+});
+
+for (const queued of [false, true]) test(`native image-only ${queued ? 'queued' : 'admitted'} messages finish their registered receipt`, async () => {
+  const draft = imageDraftState(), h = submission({ payload: draft.payload, attachments: draft.hasDraftAttachments, busy: queued });
+  h.files.length = 0; await h.run();
+  assert.equal(h.request.expected, ''); assert.equal(h.request.queueExpected, ''); assert.equal(h.request.hasAttachments, true);
+  const request = { ...h.request, finish: result => h.finish(result) };
+  const source = { claimed: new Set(), sends: new Map([[request.requestId, request]]) };
+  NativeWindow.prototype.confirmSends.call(source, { receipt: { thread: 'thread-1', runs: [],
+    messages: queued ? [] : [{ id: 'image-native', i: 'image-user', nativeIds: ['image-native'], t: '' }],
+    queued: queued ? [{ id: 'image-queue', messageId: 'image-user', t: '' }] : [] } });
+  assert.equal(source.sends.size, 0); assert.equal(h.context.sendNativeReceipt.pending, false);
+  assert.equal(h.events[0].t, 'sent'); assert.equal(h.events[0].queued, queued);
+  assert.equal(h.events[0].messageId, 'image-user');
+});
 
 for (const native of [true, false]) {
   const mode = native ? 'window' : 'page';

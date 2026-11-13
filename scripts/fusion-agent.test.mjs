@@ -1131,7 +1131,7 @@ function devinWorkerFixture(thread = 'worker-thread') {
     nativeModule, devinSessionRecord: id => id === thread ? session : null,
     nativeMarkdownItem: (i, k, t, at, images) => ({ i, k, t, at, ...(images?.length ? { images } : {}) }),
     activeThread: () => 'other-thread', devinQuestions: () => null, agentRun: () => null, nativeWaiting: () => ({}),
-    agentModelName: () => 'SWE-2 Medium', effortName: () => '', devinSurface: () => false });
+    agentModelName: () => 'SWE-2 Medium', effortName: () => '', devinSurface: () => 'editor' });
   const slice = (file, start, end) => { const source = fs.readFileSync(new URL(`../server/page/${file}`, import.meta.url), 'utf8')
       .replaceAll("await import('@exa/chat-client')", 'nativeModule'), s = source.indexOf(start);
     assert(s >= 0, start); const e = source.indexOf(end, s); assert(e > s, end); return source.slice(s, e); };
@@ -1144,8 +1144,8 @@ function devinWorkerFixture(thread = 'worker-thread') {
   vm.runInContext(slice('chat-extract.js', '  const nativePerformance =', '  const cursorCurrentChat =')
     + slice('devin.js', '  const devinMessageText =', '  const THINKING_ROOT =')
     + slice('devin.js', '  const devinPermissionEntries =', '  const devinQuestions =')
-    + slice('chat-extract.js', '  const nativeConversationChat =', '  const contextPct =')
-    + ';this.chat=nativeConversationChat;', context);
+    + slice('chat-extract.js', '  const nativeConversationChat =', '  // Cursor\'s Agents window')
+    + ';this.chat=nativeConversationChat;this.readContext=contextPct;', context);
   vm.runInContext(slice('chat-extract.js', '  const watchCodexData =', '  const codexUserText =')
     + ';this.watch=watchCodexData;', context);
   const watching = context.watch(() => {});
@@ -1157,6 +1157,30 @@ function devinWorkerFixture(thread = 'worker-thread') {
     agent: (id, text) => (state.perSession[thread] ||= { messages: [] }).messages.push({ id, kind: 'agent_message',
       content: [{ content: { type: 'text', text } }] }) };
 }
+test('Devin bound transcript context follows A/B while the visible desktop conversation stays separate', async () => {
+  const h = devinWorkerFixture('A');
+  try {
+    h.state.perSession.A = { messages: [], status: { contextUsage: { used: 14230, size: 262000 } } };
+    h.state.perSession.B = { messages: [], status: { contextUsage: { used: 800, size: 1000 } } };
+    h.state.perSession['other-thread'] = { messages: [], status: { contextUsage: { used: 900, size: 1000 } } };
+    h.context.devinSessionRecord = id => ({ ...h.session, sessionId: id });
+    const read = async id => {
+      h.context.remoteContext.threadId = id;
+      const chat = await h.context.chat(false, 80);
+      assert.equal(chat.thread, id);
+      return chat.context && JSON.parse(JSON.stringify(chat.context));
+    };
+    assert.deepEqual(await read('A'), { pct: 5, basis: 'used' });
+    assert.deepEqual(await read('B'), { pct: 80, basis: 'used' });
+    h.state.perSession.A.status.contextUsage.used = 0;
+    assert.deepEqual(await read('A'), { pct: 0, basis: 'used' });
+    h.state.perSession.A.status.contextUsage.size = 0;
+    assert.equal(await read('A'), null);
+    h.context.remoteContext = null;
+    assert.equal(h.context.readContext().pct, 90);
+    assert.equal(h.context.activeThread(), 'other-thread');
+  } finally { h.stop(); }
+});
 test('a Devin worker result survives transcript pruning through the shared turn cache', async t => {
   const h = devinWorkerFixture();
   t.after(h.stop);
@@ -1263,7 +1287,7 @@ test('an explicit Devin binding cleanup releases its turn cache at every confirm
 });
 test('Fusion Devin content reports a native failure without requiring a pruned transcript or showing another request error', async () => {
   const source = fs.readFileSync(new URL('../server/page/chat-extract.js', import.meta.url), 'utf8');
-  const start = source.indexOf('  const nativeConversationChat ='), end = source.indexOf('  const contextPct =', start);
+  const start = source.indexOf('  const nativeConversationChat ='), end = source.indexOf("  // Cursor's Agents window", start);
   const error = 'Permission denied: internal server error: error number 13';
   const state = { perSession: {}, agentRequests: { byId: { current: { method: 'session/prompt', params: { sessionId: 'worker' }, status: 'failed', errorMessage: error } } } };
   let messageReads = 0;
