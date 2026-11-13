@@ -260,6 +260,14 @@ export class Session extends AgentContext {
   async attach(target, windows) {
     let req = target && typeof target === 'object' ? target : { id: target || '' };
     const app = String(req.id || '').split(':')[0];
+    if (req.restore) {
+      const saved = lastSelection(this.deviceId, app);
+      if (saved) req = { ...req, ...saved };
+    }
+    if (app === 'opencode') return AGENT_REGISTRY.opencode.adapter.attach.call(this, req);
+    if (app === 'codex' && !this.fusionBinding && (req.windowId === CODEX_BACKEND || codexBackend.owns(req.threadId)
+      || !req.projectSwitch && (req.threadId && AGENT_REGISTRY.codex.adapter.backendThread(req.threadId, req.project?.host)
+        || !req.windowId && !req.threadId))) return AGENT_REGISTRY.codex.adapter.attachBackend.call(this, req);
     if (req.resume && this.bindingReady && this.cdp?.ws?.readyState === 1 && this.app === app
         && this.windowId === req.windowId && this.threadId === (req.threadId || '')) {
       const actual = await this.cdp.evaluate(helpersCall(this.app === 'codex' ? 'codexThread()' : 'activeThread()'));
@@ -268,13 +276,6 @@ export class Session extends AgentContext {
         return this.setMode(this.mode, true);
       }
     }
-    if (req.restore) {
-      const saved = lastSelection(this.deviceId, app);
-      if (saved) req = { ...req, ...saved };
-    }
-    if (app === 'opencode') return AGENT_REGISTRY.opencode.adapter.attach.call(this, req);
-    if (app === 'codex' && !this.fusionBinding && (req.windowId === CODEX_BACKEND || codexBackend.owns(req.threadId)
-      || !req.projectSwitch && !req.windowId && !req.threadId)) return AGENT_REGISTRY.codex.adapter.attachBackend.call(this, req);
     if (req.initial && hasLaunched(app)) req = { ...req, id: app, windowId: '', threadId: '', project: null };
     if (req.project && !req.projectSwitch && app === 'codex') {
       const matches = nativeTargets().filter(win => win.app === app && this.projectMatches(nativeWindowAt(win.ws)?.roots || [], req.project.root, req.project.host));

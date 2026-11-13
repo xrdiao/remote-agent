@@ -536,7 +536,7 @@ function ovPatch(container, html) {
   const template = document.createElement('template');
   template.innerHTML = html;
   const active = document.activeElement;
-  const anchor = $('mic').classList.contains('on') ? $('mic') : active;
+  const anchor = ovComposerControls.mic.classList.contains('on') ? ovComposerControls.mic : active;
   const key = node => node.nodeType === 1 ? [node.nodeName, node.getAttribute('data-ov') || '',
     node.getAttribute('data-ov-session') || node.getAttribute('data-ov-menu') || node.getAttribute('data-ov-node') || node.getAttribute('data-ov-input') || node.getAttribute('data-ov-scroll')
       || node.getAttribute('data-id') || node.getAttribute('data-v') || node.getAttribute('class')?.split(' ')[0] || ''].join('|') : node.nodeName;

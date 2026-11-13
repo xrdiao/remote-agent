@@ -621,3 +621,28 @@ Devin 与 Codex 的 MCP 表单共用 `lib/shared-rules.mjs` 中的 `elicitationF
 验证范围：三软件仅有 A 窗口时打开 B 项目、目录未就绪时冷重连、已有原生连接恢复；Codex 已有匹配项目窗口、默认后台入口及后台线程恢复。以上为连接分流的受控回归，不将窗口操作夹具登记为真实原生或手机验收。最终 `npm run check` **1050／1050 通过**，语法、消息协议及 196 项 page 导出检查通过；`git diff --check` 通过。日志位于 `_shots/project-reconnect-20261113/final-check.log`，修改前的定向复现结果保存在同目录 `attach-repro.json`。
 
 本次实际修改限定为上述三文件，保留此前工作区改动；未改前端版本、未提交或发布。正式 3939 尚未重启，手机上跨项目打开、会话页切后台再返回的验收待服务生效后由用户执行。
+
+## 15. v454：Codex 普通本地旧会话无窗口恢复、Devin 模型控件归属（2026-11-13）
+
+基准提交 `c0bdb06`。用户确认 10 文件范围及验证通过后重启正式 3939：`server/session.mjs`、`server/codex/state.mjs`、`server/apps/codex.mjs`、`server/agent/projects.mjs`、`server/overview.mjs`、`server/page/menus.js`、`scripts/codex-backend.test.mjs`、`scripts/session-lifecycle.test.mjs`、`scripts/structure-fixes.test.mjs`、本文档。
+
+### 根因与实施
+
+- Codex 原生 `thread/resume` 可以恢复非 RA 创建的持久化会话；RA 的 `CodexState.load` 原先只接受 records 中已有的会话，普通旧会话因而一直走桌面路径。现在复用同一加载流程，核对返回 ID 及已有记录目录，保留原 ID、历史、模型配置和原生队列，恢复后登记后台记录；失败不登记成其他线程，也不复制或另建旧会话。
+- 后台绑定在没有显式目标目录时采用原生会话实际目录，避免沿用上次项目或家目录。卡片／正文连接、项目及会话菜单、旧卡片预览统一复用该入口；普通本地旧会话无需先打开项目窗口。Fusion 所有原生绑定及远程会话仍使用其原链路。
+- Devin 界面同时挂载可见的 `Normal` 能力模式与 `SWE-2 High` 模型控件。旧代码按按钮文字取到第一个 Normal，优先读取其能力模式菜单。现在先按 `visibleModelConfigs`／`onModelSelect` 原生属性定位模型控件；只有能力模式控件的原有界面仍沿用原行为。模型名称、候选及强度继续复用原有读取与操作实现。
+
+配对验收中追加确认 4 文件：`app/js/overview.js`、`app/js/core.js`、`app/index.html`、`app/sw.js`。卡片分组／状态重绘会暂时移除包含麦克风的旧子树，紧接着的补丁渲染通过 `$('mic')` 查文档而取到 null，抛错后无法重新挂载控件。改为复用既有 `ovComposerControls.mic` 引用；页面版本、core 和 overview 资产引用同步 v454，其他资产版本不变。新增真实子树移除后连续渲染的回归。
+
+### 验证记录
+
+- 修改前的协议核实：两个独立原生进程按同一 ID 恢复未登记于 RA 的空会话，目录一致、原生队列可读，无模型生成、无项目窗口；测试线程已归档。记录：`_shots/legacy-codex-devin-model-20261113/native-resume.json`。
+- 受影响回归 426 项通过；覆盖旧历史与队列保留、并发只恢复一次、恢复失败／返回错误 ID、不串用上次目录、三软件连接、Fusion／远程归属、无对应窗口的卡片预览及 Devin 双控件／云端单控件。
+- 现有 Devin 窗口只读实测：模型由 Normal 恢复为 SWE-2，原生 ID 仍为 swe-2-high，强度 High 选中，实际候选模型 38 项；未切换用户模型或发送消息。
+- 既有配对浏览器使用独立测试标签完成 10 个场景：未登记原生旧会话历史、另一项目旧会话、折叠卡片真实点击、展开卡片真实发送并收到回复、反复 A／B 打开关闭、会话菜单切换、会话页实际断线重连、受控隐藏／返回并重连、原生窗口数量不增加、Devin 模型与强度菜单。Codex 全程绑定 backend，保留原会话 ID；最终 v454 卡片发送后 pendingSends 为 0、麦克风已挂载、测试页无脚本错误。前后台分支通过浏览器可见性事件及真实 WebSocket 关闭模拟，不登记为手机系统自然断连实测。
+- 初始卡片测试未展开空闲／不常用分组，且测试概览与渲染等待不完整；修正脚本后重验。实际复现的麦克风脱离文档缺陷经用户确认扩展后修复，v454 使用重新加载的正式资产验收，未把仅在测试页预览的补丁登记为产品通过。首次可见重连的瞬时未认证状态已被自动重连越过，改查新旧 socket 身份核对重连。
+- 最终 `npm run check` **1059／1059 通过**，语法、消息协议、196 项 page 导出及 `git diff --check` 通过。一次并行运行中未修改的 codex-submit 测试进程以 SIGSEGV 退出；清理隔离资源后原命令重跑通过，未修改产品代码压制该退出。保留首次日志 check-process-exit.log。
+- 正式 3939 已按授权重启，HTTP 正常，入口、core、Service Worker 均提供 v454；隧道 PID、公开地址和配对密钥校验值一致，启动无警告。未新增配对、未提交或推送。本轮尚未发布 Pages；服务端修复已生效，Pages 入口取得 v454 卡片前端修复仍需发布网页。
+- 两条自有原生测试会话已归档，3979／3980 隔离服务关闭，本轮原生监听清除；原配对页应用、会话、草稿、存储及浏览器权限恢复核对一致。正式 3939、原 3949、共享 OpenCode 4096 正常，本地模型 18080 保持关闭。Devin 本轮只读核对与菜单检查，未生成或切换用户模型。
+
+证据目录：`_shots/legacy-codex-devin-model-20261113/`，主要结果为 acceptance-summary.json、paired-final-results.json、paired-follow-results.json、devin-read-after.json、final-check.log、formal-restart.json、formal-verify.json、browser-cleanup.json、qa-cleanup.json；截图为 devin-model-menu.png、legacy-codex-v454.png。

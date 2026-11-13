@@ -205,6 +205,8 @@ export const methods = {
     const app = this.app;
     if (app === 'codex' && !this.fusionBinding && (newSession || !threadId))
       return this.adapter.attachBackend.call(this, { project: { root: real }, newSession });
+    if (app === 'codex' && !this.fusionBinding && this.adapter.backendThread(threadId, ''))
+      return this.adapter.attachBackend.call(this, { project: { root: real }, threadId });
     if (app === 'devin' && !this.fusionBinding && this.cdp) {
       let selected = threadId.replace(/^tab:/, '');
       if (!newSession && !selected) {
@@ -684,6 +686,10 @@ export const methods = {
     return list.map(row => row.workspace ? { ...row, window: labels.get(identity(row)) } : row);
   },
   async openAgent(id, title = '') {
+    if (this.app === 'codex' && !this.fusionBinding && id.startsWith('thread:')) {
+      const threadId = sessionId('codex', id);
+      if (this.adapter.backendThread(threadId)) return this.adapter.attachBackend.call(this, { threadId });
+    }
     if (this.app === 'codex' && /^(?:thread|new):backend:/.test(id)) {
       const [kind, , ...parts] = id.split(':');
       return this.adapter.attachBackend.call(this, kind === 'new' ? { project: { root: decodeURIComponent(parts.join(':')) } } : { threadId: parts.join(':') });

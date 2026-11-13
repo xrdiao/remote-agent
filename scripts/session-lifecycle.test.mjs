@@ -273,7 +273,8 @@ for (const outcome of ['archive', 'clear', 'delete']) {
 test('compact Devin model buttons expose the same picker as text buttons', () => {
   const model = { textContent: '', getAttribute: name => name === 'aria-label' ? 'SWE-2 High' : '', closest: () => null };
   const unrelated = { ...model, textContent: 'Local', getAttribute: () => '' };
-  const context = createPageContext({ remoteContext: null, doc: { querySelectorAll: () => [unrelated, model] }, vis: () => true, revealDevinComposer() {} });
+  const context = createPageContext({ remoteContext: null, doc: { querySelectorAll: () => [unrelated, model] }, vis: () => true,
+    codexFiberProps: () => [], revealDevinComposer() {} });
   const source = read('server/page/menus.js');
   vm.runInContext(fragment(source, '  const DEVIN_MODEL', '  const devinModelMenu') + '\nthis.button = devinModelButton;', context);
   assert.equal(context.button(false), model);
@@ -908,6 +909,7 @@ function projectAttachFixture(app, { catalogReady = true, targetOpen = false } =
     nativeWindowAt: ws => ({ roots: catalogReady ? pages.find(row => row.ws === ws).roots : [] }),
     orderedProjectWindows: (_app, rows) => rows,
     AGENT_REGISTRY: { [app]: { discover: async () => pages, adapter: {
+      backendThread: (id, host) => !host && !id.startsWith('fusion-'),
       attachBackend: async function (req) {
         calls.push({ kind: 'backend', thread: req.threadId, root: req.project?.root });
         this.cdp = null; this.app = app;
@@ -928,22 +930,22 @@ function projectAttachFixture(app, { catalogReady = true, targetOpen = false } =
   return { session, calls };
 }
 
-test('project attachment and cold reconnect preserve the target through a desktop carrier for all three apps', async () => {
+test('project attachment and cold reconnect preserve the target using the native backend or desktop carrier', async () => {
   for (const app of ['codex', 'cursor', 'devin']) for (const initial of [false, true]) {
     const { session, calls } = projectAttachFixture(app, { catalogReady: !initial });
     const windowId = app === 'codex' ? 'B' : `${app}:B`;
     await session.attach({ id: app, windowId, threadId: 'native-B', project: { root: '/B' }, initial });
-    assert.deepEqual(calls, [
+    assert.deepEqual(calls, app === 'codex' ? [{ kind: 'backend', thread: 'native-B', root: '/B' }] : [
       { kind: 'desktop', window: app === 'codex' ? 'A' : `${app}:A`, thread: '', deferred: true },
       { kind: 'project', root: '/B', newSession: false, thread: 'native-B', ownerWindow: windowId },
     ], `${app}: initial=${initial}`);
   }
 });
 
-test('Codex reuses an already matched project window and its original thread', async () => {
+test('Codex legacy threads use the backend even when the old project window is open', async () => {
   const { session, calls } = projectAttachFixture('codex', { targetOpen: true });
   await session.attach({ id: 'codex', windowId: 'B', threadId: 'native-B', project: { root: '/B' } });
-  assert.deepEqual(calls, [{ kind: 'desktop', window: 'B', thread: 'native-B', deferred: false }]);
+  assert.deepEqual(calls, [{ kind: 'backend', thread: 'native-B', root: '/B' }]);
 });
 
 test('Codex default project entry and owned background threads still use the backend', async () => {
@@ -954,7 +956,7 @@ test('Codex default project entry and owned background threads still use the bac
   }
 });
 
-test('live native reconnect restores the existing thread without reattaching or selecting another project', async () => {
+test('live reconnect keeps Cursor and Devin bindings while Codex legacy threads move to their backend', async () => {
   for (const app of ['codex', 'cursor', 'devin']) {
     const { session, calls } = projectAttachFixture(app);
     Object.assign(session, { bindingReady: true, windowId: 'A', threadId: 'native-A',
@@ -962,7 +964,24 @@ test('live native reconnect restores the existing thread without reattaching or 
       connectionMessages: new Map([['attached', { t: 'attached', threadId: 'native-A' }]]),
       emit: message => calls.push(message), setMode: async () => calls.push('mode') });
     await session.attach({ id: app, windowId: 'A', threadId: 'native-A', project: { root: '/A' }, resume: true, initial: true });
+    if (app === 'codex') { assert.deepEqual(calls, [{ kind: 'backend', thread: 'native-A', root: '/A' }]); continue; }
     assert.equal(calls.length, 2); assert.equal(calls[0].threadId, 'native-A');
     assert.equal(calls[0].ready, true); assert.equal(calls[1], 'mode');
   }
+});
+
+test('a Codex Fusion project still connects its original desktop binding', async () => {
+  const { session, calls } = projectAttachFixture('codex', { targetOpen: true });
+  await session.attach({ id: 'codex', windowId: 'B', threadId: 'fusion-main', project: { root: '/B' } });
+  assert.deepEqual(calls, [{ kind: 'desktop', window: 'B', thread: 'fusion-main', deferred: false }]);
+});
+
+test('Codex project and session-menu entries share the backend binding for legacy threads', async () => {
+  const { methods } = await import('../server/agent/projects.mjs');
+  const calls = [], session = { app: 'codex',
+    adapter: { backendThread: () => true, attachBackend: async req => calls.push(req) } };
+  await methods.openAgent.call(session, 'thread:closed-window:legacy');
+  assert.equal(calls[0].threadId, 'legacy');
+  await methods.useProject.call(session, process.cwd(), false, 'legacy');
+  assert.equal(calls[1].threadId, 'legacy'); assert.equal(calls[1].project.root, process.cwd());
 });

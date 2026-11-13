@@ -44,11 +44,14 @@
       checked: p.menu.selection.kind === 'mode' && p.menu.selection.mode === id }));
   const devinModelButton = (reveal = true) => {
     if (reveal) revealDevinComposer();
-    return [...doc.querySelectorAll('button')].find(e => {
+    const buttons = [...doc.querySelectorAll('button')].filter(e => vis(e) && !e.closest('.space-y-2'));
+    const model = buttons.find(e => codexFiberProps(e, 40).some(p => p.visibleModelConfigs && typeof p.onModelSelect === 'function'));
+    if (model) return model;
+    return buttons.find(e => {
       // The compact picker exposes its model through aria-label instead of text.
       const text = (e.getAttribute('aria-label') || e.textContent || '').replace(/\s+/g, ' ').trim();
       if (!DEVIN_MODEL.test(text) || text.length >= 50) return false;
-      return vis(e) && !e.closest('.space-y-2');
+      return true;
     });
   };
   const devinModelMenu = () => [...doc.querySelectorAll('div')].find(e => {

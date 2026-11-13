@@ -8,7 +8,7 @@ import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { AgentContext, FOCUS_COMPOSER, codexUsage } from '../agent/context.mjs';
 import { resetThinkingCaches } from '../agent/thinking-cache.mjs';
 import { computerId, saveState } from '../../lib/auth.mjs';
-import { conversationProjects, fusionProject } from '../fusion/state.mjs';
+import { conversationProjects, fusionProject, allFusionRuns } from '../fusion/state.mjs';
 import { removeLibrarySession, publishSessionChange, rememberSessionMessage } from '../../lib/session-library.mjs';
 import { NativeCdp, nativeWindowAt, nativeSessionCatalog, nativeTargets } from '../native-windows.mjs';
 import { currentOperation } from '../operations.mjs';
@@ -50,10 +50,12 @@ function backendPublish(s, sent) {
 }
 
 async function bindBackend(s, req) {
-  const directory = safeHomePath(req.project?.root || codexBackend.records.get(req.threadId)?.cwd || s.codexDirectory || os.homedir()).real;
+  let directory = req.project?.root ? safeHomePath(req.project.root).real
+    : req.threadId ? null : safeHomePath(s.codexDirectory || os.homedir()).real;
   const id = req.threadId || (!req.newSession && [...codexBackend.records.values()].filter(row => path.resolve(row.cwd) === directory)
     .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))[0]?.id);
   const thread = await awaitCdpRead(id ? codexBackend.load(id) : codexBackend.create(directory));
+  directory = safeHomePath(directory || thread.cwd).real;
   if (path.resolve(thread.cwd) !== directory) throw new Error('Codex 会话不属于所选项目');
   cdpRead.getStore()?.throwIfAborted();
   s.detach();
@@ -393,6 +395,9 @@ async function readCodexMenu(context, button, select = items => items.length ? i
 
 export const adapter = {
   backendRoutes,
+  backendThread(id, host = nativeSessionCatalog('codex')?.rows.find(row => row.id === id)?.host || '') {
+    return !host && !allFusionRuns().some(run => run.bindings.some(binding => binding.app === 'codex' && binding.threadId === id));
+  },
   closeBackendSettings() { return closeBackendSettings(this); },
   attachBackend(req) { return bindBackend(this, req); },
   async setBackendMode() {

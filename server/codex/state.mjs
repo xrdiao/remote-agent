@@ -128,7 +128,6 @@ export class CodexState extends EventEmitter {
   }
 
   load(id) {
-    if (!this.owns(id)) throw new Error('所选会话不属于 Codex 后台');
     if (this.loading.has(id)) return this.loading.get(id);
     if (this.threads.has(id) && !this.threads.get(id).disconnected) return Promise.resolve(this.threads.get(id));
     if (!this.loading.has(id)) this.loading.set(id, (async () => {
@@ -137,7 +136,9 @@ export class CodexState extends EventEmitter {
       if (!thread || thread.disconnected) {
         const result = await this.client.request('thread/resume', { threadId: id });
         thread = { ...result.thread, settings: threadSettings(result), generation: this.client.generation };
-        if (path.resolve(thread.cwd) !== path.resolve(this.records.get(id).cwd)) throw new Error('Codex 原生会话项目已变化，请重新选择项目');
+        if (thread.id !== id) throw new Error('Codex 返回的会话 ID 与所选会话不一致');
+        const previous = this.records.get(id);
+        if (previous && path.resolve(thread.cwd) !== path.resolve(previous.cwd)) throw new Error('Codex 原生会话项目已变化，请重新选择项目');
         this.threads.set(id, thread);
         this.remember(thread);
       }

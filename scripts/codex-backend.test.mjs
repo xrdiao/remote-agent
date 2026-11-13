@@ -164,6 +164,67 @@ function fixture(file = null) {
   return { client, state };
 }
 
+test('an unregistered native thread resumes once with its original history, directory and queue', async () => {
+  const { state, client } = fixture(), request = client.request;
+  const turns = [{ id: 'old-turn', status: 'completed', items: [
+    { type: 'userMessage', id: 'user', content: [{ type: 'text', text: 'old question' }] },
+    { type: 'agentMessage', id: 'answer', text: 'old answer' },
+  ] }];
+  client.request = async (method, params) => {
+    if (method === 'thread/resume') {
+      client.sent.push({ method, params });
+      return { thread: { id: 'legacy', cwd: '/B', name: 'Native title', turns, updatedAt: 7, createdAt: 1 }, model: 'native-model' };
+    }
+    if (method === 'thread/queue/list') return { data: [{ id: 'native-queued', input: [{ type: 'text', text: 'queued message' }] }] };
+    return request(method, params);
+  };
+  const [first, second] = await Promise.all([state.load('legacy'), state.load('legacy')]);
+  assert.equal(first, second); assert.equal(first.id, 'legacy'); assert.equal(first.cwd, '/B');
+  assert.deepEqual(first.turns, turns); assert.equal(state.records.get('legacy').title, 'Native title');
+  assert.equal(state.records.get('legacy').cwd, '/B'); assert.equal(state.queues.get('legacy')[0].id, 'native-queued');
+  assert.equal(client.sent.filter(row => row.method === 'thread/resume').length, 1);
+  assert.equal(client.sent.some(row => row.method === 'thread/start'), false);
+  assert.deepEqual(state.chat('legacy').items.filter(row => ['human', 'assistant'].includes(row.k)).map(row => row.t), ['old question', 'old answer']);
+});
+
+test('a failed or mismatched native resume does not register a legacy thread', async () => {
+  for (const wrongId of [false, true]) {
+    const { state, client } = fixture();
+    client.request = async () => {
+      if (!wrongId) throw Error('native thread missing');
+      return { thread: { id: 'other', cwd: '/B', turns: [] } };
+    };
+    await assert.rejects(state.load('legacy'), wrongId ? /ID/ : /native thread missing/);
+    assert.equal(state.owns('legacy'), false); assert.equal(state.threads.has('legacy'), false);
+    assert.equal(state.loading.size, 0);
+  }
+});
+
+test('legacy backend binding uses the native directory instead of the previously selected project', async () => {
+  const events = [], context = vm.createContext({ path, os: { homedir: () => '/home' },
+    safeHomePath: real => ({ real }), CODEX_BACKEND: 'backend', cdpRead, awaitCdpRead: promise => promise,
+    rememberSelection: (_device, selected) => events.push(selected), backendAttached() {},
+    codexBackend: { records: new Map(), load: async id => ({ id, cwd: '/B' }) } });
+  const bind = vm.runInContext(fragment(read('server/apps/codex.mjs'), 'async function bindBackend(', 'async function backendSettingsOwner(') + '\nbindBackend;', context);
+  const session = { codexDirectory: '/A', threadId: 'A', detach() {}, clearViewState() {}, setMode: async () => {} };
+  await bind(session, { threadId: 'legacy' });
+  assert.equal(session.codexDirectory, '/B'); assert.equal(session.threadId, 'legacy');
+  assert.equal(events[0].project.root, '/B'); assert.equal(events[0].windowId, 'backend');
+  await assert.rejects(bind(session, { threadId: 'legacy', project: { root: '/A' } }), /不属于所选项目/);
+  assert.equal(session.codexDirectory, '/B'); assert.equal(session.threadId, 'legacy');
+});
+
+test('native legacy routing preserves remote sessions and every Fusion binding', () => {
+  const context = vm.createContext({
+    nativeSessionCatalog: () => ({ rows: [{ id: 'remote', host: 'ssh-host' }] }),
+    allFusionRuns: () => [{ bindings: [{ app: 'codex', threadId: 'fusion-main' }, { app: 'codex', threadId: 'fusion-worker' }] }],
+  });
+  const target = vm.runInContext('({' + fragment(read('server/apps/codex.mjs'), '  backendThread(', '  closeBackendSettings(') + '}).backendThread', context);
+  assert.equal(target('local'), true); assert.equal(target('remote'), false);
+  assert.equal(target('local', 'ssh-host'), false);
+  assert.equal(target('fusion-main'), false); assert.equal(target('fusion-worker'), false);
+});
+
 test('Codex backend fast routes reuse their native handler; desktop and OpenCode routes retain theirs', async () => {
   const calls = [], desktop = () => calls.push('desktop'), native = function (m) { calls.push(['native', this.threadId, m.automatic]); };
   const context = vm.createContext({ ROUTES: { usage: { fast: true, fastRun: desktop }, stop: { fast: true, fastRun: desktop } } });

@@ -1545,6 +1545,23 @@ function cardSubscription() {
   };
 }
 
+test('overview patching retains its captured microphone while replacing the card subtree', () => {
+  const microphone = { classList: { contains: () => false } };
+  let connected = true;
+  const wrapper = { nodeType: 1, nodeName: 'DIV', getAttribute: () => null,
+    remove() { connected = false; container.childNodes = []; } };
+  const container = { childNodes: [wrapper], firstChild: wrapper, querySelectorAll: () => [] };
+  const empty = { childNodes: [], firstChild: null, querySelectorAll: () => [] };
+  const scope = createPageContext({ document: { activeElement: null,
+    createElement: () => ({ content: { childNodes: [] } }) },
+    $: () => connected ? microphone : null, ovComposerControls: { mic: microphone }, ovToolState: null,
+  });
+  vm.runInContext(part(read('app/js/overview.js'), 'function ovPatch(', 'function ovCommit(') + ';this.patch=ovPatch;', scope);
+  scope.patch(container, '');
+  assert.equal(connected, false);
+  assert.doesNotThrow(() => scope.patch(empty, ''));
+});
+
 test('an expanded bound card subscribes to chat updates while keeping overview notification presence', () => {
   const h = cardSubscription(); h.update();
   assert.deepEqual(JSON.parse(JSON.stringify(h.packets)), [{ t: 'visible', v: true, watching: false, background: false }]);
@@ -4204,6 +4221,43 @@ test('Codex card preview keeps only the current turn tools across repeated turns
   assert.equal(pending.tools.length, 0); assert.equal(pending.text, 'next user');
   items.push({ k: 'tool', i: 'latest', t: 'latest command', status: 'completed' });
   assert.deepEqual([...(await scope.preview('qa', target)).tools].map(row => row.id), ['latest']);
+});
+
+test('legacy Codex card preview reads native backend content after its project window closes', async () => {
+  const calls = [], scope = createPageContext({ CODEX_BACKEND: 'backend',
+    overviewSession: () => ({ session: { app: 'codex', host: '', dormant: true } }),
+    codexAdapter: { backendThread: () => true },
+    codexBackend: { load: async id => calls.push(id), chat: () => ({ items: [{ k: 'human', t: 'old question' },
+      { k: 'assistant', t: 'old answer' }], model: 'native', effort: 'high' }) } });
+  vm.runInContext(read('server/overview.mjs').slice(read('server/overview.mjs').indexOf('export async function overviewPreview'))
+    .replace('export async function', 'async function') + ';this.preview=overviewPreview;', scope);
+  const preview = await scope.preview('device', { win: 'codex', windowId: 'closed', threadId: 'legacy' });
+  assert.deepEqual(calls, ['legacy']); assert.equal(preview.available, true);
+  assert.equal(preview.threadId, 'legacy'); assert.equal(preview.last, 'old answer');
+});
+
+test('Devin model controls prefer the native model picker over a simultaneous Normal capability picker', () => {
+  const high = { modelUid: 'swe-2-high', familyUid: 'swe-2', familyLabel: 'SWE-2', label: 'SWE-2 High',
+    isDefaultModelInFamily: true, familyMetadata: { 'Reasoning Effort': { name: 'High', order: 2 } } };
+  const medium = { ...high, modelUid: 'swe-2-medium', label: 'SWE-2 Medium', isDefaultModelInFamily: false,
+    familyMetadata: { 'Reasoning Effort': { name: 'Medium', order: 1 } } };
+  const cloud = { menu: { enabledModes: ['normal', 'lite'], planLockedModes: new Set(), selection: { kind: 'mode', mode: 'normal' } }, onCapabilityChange() {} };
+  const picker = { visibleModelConfigs: [high, medium], selectedModels: ['swe-2-high'], onModelSelect() {} };
+  for (const modelsPresent of [false, true]) {
+    const cloudButton = { textContent: 'Normal', props: [cloud], closest: () => null, getAttribute: () => null };
+    const modelButton = { textContent: 'SWE-2 High', props: [picker], closest: () => null, getAttribute: () => null };
+    const scope = createPageContext({
+      doc: { querySelector: () => null, querySelectorAll: selector => selector === 'button' ? [cloudButton, ...(modelsPresent ? [modelButton] : [])] : [] },
+      vis: () => true, codexFiberProps: button => button?.props || [], revealDevinComposer() {},
+      devinSurface: () => 'editor', remoteContext: null, normLabel: text => text,
+    });
+    vm.runInContext(read('server/page/menus.js') + ';this.model={name:agentModelName,items:modelItemsFast,effort:effortItems};', scope);
+    assert.equal(scope.model.name(), modelsPresent ? 'SWE-2' : 'Normal');
+    if (modelsPresent) {
+      assert.deepEqual(Array.from(scope.model.effort(), row => [row.label, row.checked]), [['Medium', false], ['High', true]]);
+      assert.equal(scope.model.items().find(row => row.label === 'SWE-2').checked, true);
+    } else assert.deepEqual(Array.from(scope.model.items(), row => row.label), ['Normal', 'Lite']);
+  }
 });
 
 test('a batch cancelled while its request waits in the relay queue never reaches a native removal', async () => {
