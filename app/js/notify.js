@@ -219,16 +219,19 @@ function finishWinBinding(error, nextTarget) {
     return;
   }
   if (!authed || !windowReady || navigationPending || currentComputer()?.id !== binding.target.computer) return;
+  const current = currentComputer();
+  if (currentApp === 'codex' && binding.target.win === 'codex' && binding.target.threadId
+      && current.threadId === binding.target.threadId) binding.target = { ...binding.target, windowId: current.windowId };
   if (!winTargetReady(binding.target)) {
     return openWin(JSON.stringify({ ...binding.target, background: true }));
   }
   winBinding = null;
-  binding.resolve();
+  binding.resolve(binding.target);
 }
 function bindWin(target) {
   finishWinBinding(new Error('目标会话已切换'), target);
   if (mode !== 'chat') setMode('chat', false);
-  if (winTargetReady(target)) return Promise.resolve();
+  if (winTargetReady(target)) return Promise.resolve(target);
   return new Promise((resolve, reject) => {
     winBinding = { target, resolve, reject };
     openWin(JSON.stringify({ ...target, background: true }));

@@ -646,3 +646,29 @@ Devin 与 Codex 的 MCP 表单共用 `lib/shared-rules.mjs` 中的 `elicitationF
 - 两条自有原生测试会话已归档，3979／3980 隔离服务关闭，本轮原生监听清除；原配对页应用、会话、草稿、存储及浏览器权限恢复核对一致。正式 3939、原 3949、共享 OpenCode 4096 正常，本地模型 18080 保持关闭。Devin 本轮只读核对与菜单检查，未生成或切换用户模型。
 
 证据目录：`_shots/legacy-codex-devin-model-20261113/`，主要结果为 acceptance-summary.json、paired-final-results.json、paired-follow-results.json、devin-read-after.json、final-check.log、formal-restart.json、formal-verify.json、browser-cleanup.json、qa-cleanup.json；截图为 devin-model-menu.png、legacy-codex-v454.png。
+
+## 16. Codex 旧会话已有原生写入者：摘要只读与 owner 归属（2026-11-13）
+
+基准提交 `479f61f`。用户确认 9 文件：`server/page/session-actions.js`、`server/apps/codex.mjs`、`server/session.mjs`、`server/codex/state.mjs`、`server/overview.mjs`、`scripts/codex-backend.test.mjs`、`scripts/session-lifecycle.test.mjs`、`scripts/structure-fixes.test.mjs`、本文档，以及检查通过后重启正式 3939。
+
+### 根因与已实施部分
+
+- 原生会话 `01a19650-27d4-72b2-aac8-c1d97d9566a0` 同时存在于两个桌面窗口的缓存。CWM 窗口是原生 stream owner，remote-agent 窗口只是 follower；可见会话与 `getConversation(id)` 有值均不能证明拥有写入权。之前 v454 的恢复验收关闭了原写入进程，未覆盖原生 writer 仍存活的分支。
+- 卡片摘要错误调用 `CodexState.load`，从而通过独立 app-server 执行 `thread/resume`，触发原生 `already has an active writer`。现在摘要使用原生 owner 的已有预览；无桌面 owner 时通过 `thread/read` 复用现有 chat 转换，不登记 records、threads 或 statistics，不接管写入权。
+- 会话绑定统一在 `bindBackend` 按线程 ID 查询各窗口的 `getStreamRole(id)`，找到 owner 就绑定其现有窗口，直接选择该线程，跳过按项目打开窗口的路径；没有原生 owner 的线程继续沿用后台恢复。已存活的 RA 后台线程直接复用，不扫描桌面窗口。原生 owner 的线程目录用于项目资料和终端目录，不能用承载它的编辑器工作区替代。
+- 远程会话与 Fusion 的路由政策不变。未修改 page 导出快照或其他 Agent。
+
+### 验证与发现
+
+- 相关回归通过；修改后 `npm run check` **1066／1066 通过**，语法、消息协议、196 项 page 导出及 `git diff --check` 通过。受限执行环境对子进程的语法检查全部失败，随后在本机执行原命令通过；未修改产品代码规避检查。
+- 隔离原生会话实测：保留第一进程时第二进程 resume 明确返回写入冲突；同一第二进程 read-only 摘要成功且未取得所有权；第一进程退出后按原 ID 恢复后台成功，自有测试线程已归档。真实报错线程只读摘要与原生模型／强度读取成功，未向它发送消息或停止生成。
+- 既有配对浏览器的独立测试标签通过实际卡片打开（读到 188 个正文项目）、真实 WebSocket 重连、3 次返回／再次打开（650／809／568 ms）及桌面窗口数量保持 2 个；QA 后台 records、threads 均未占用报错线程。摘要 HTTP 接口 200，读取前后原生可见会话一致。
+- 补验展开卡片发现关联问题：卡片请求的 windowId 是 follower，成功回执的 windowId 是 owner。`finishWinBinding` 一直要求旧 windowId，导致已成功收到正文后反复 attach；不是 resume 冲突继续发生。首次测试把“展开卡片会绑定输入框”误当成纯预览，因此其可见会话不变断言无效；另通过真实摘要接口验证了只读行为。
+- 已准备 `_shots/codex-active-writer-20261113/frontend-binding.patch`：`bindWin` 返回成功解析的实际目标，Codex 同一明确线程收到 window-ready 时采用实际 windowId，卡片保存该目标；其他应用的绑定判定不变。候选代码仅在隔离标签内注入后，展开卡片的摘要与输入框均就绪，原页面应用、会话、草稿、存储及权限恢复一致。**这项候选验证不登记为仓库前端修复已经生效**。
+- 用户随后确认上述 5 个前端文件，补丁已应用至仓库，版本及 core／notify／overview 资产同步 v455。新增回归验证精确线程收到就绪回执后才解析实际窗口、其他应用与其他电脑／线程不改归属、卡片重绘复用已解析目标、已就绪绑定不再 attach。
+- 追加修改后的最终 `npm run check` **1069／1069 通过**；196 项 page 导出、语法及消息协议通过，`git diff --check` 通过。`final-v455-check.log` 为最终检查，早期 1066 项结果仅为 9 文件阶段。
+- 使用既有配对浏览器独立标签重新加载实际仓库 v455 资产，未注入候选函数。展开卡片摘要可用、输入框可编辑、绑定 actual owner，实际 attach **1 次**；重绘并等待后 attach 数未增加。原页面应用、会话、草稿、存储及浏览器权限恢复一致。
+- 本轮 3979／3980 隔离服务停止，本轮原生监听清除，CWM 原可见会话恢复；原 3949 与共享 OpenCode 4096 保持运行，本地模型 18080 保持关闭。测试线程已归档，未向用户报错会话发送消息。
+- 正式 3939 已按授权重启，HTTP 正常；index、core、notify、overview、Service Worker 与工作区逐字节一致，提供 v455。隧道 PID、公开地址和配对密钥校验值一致，启动无警告，Codex 桌面窗口仍为 2 个。未提交、未推送、未发布 Pages；Pages 入口需要发布网页后才能取得 v455 前端卡片修复。手机系统后台自然重连未在本轮登记为实测通过。
+
+证据目录：`_shots/codex-active-writer-20261113/`。包含 native-check.json、paired-results.json、paired-summary-results.json、paired-expanded-results.json、paired-candidate-results.json、expanded-events.json、final-check.log。最终追加证据为 paired-v455-results.json、browser-v455-cleanup.json、v455-events.json、final-v455-check.log、qa-cleanup.json、formal-restart.json、formal-verify.json。首次失败及候选测试均保留，不当作最终产品验收通过。

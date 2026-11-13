@@ -1545,6 +1545,52 @@ function cardSubscription() {
   };
 }
 
+test('Codex binding resolves the actual writer window only after its exact thread is ready', () => {
+  const source = part(read('app/js/notify.js'), 'function finishWinBinding(', 'function bindWin(');
+  for (const [app, currentThread, computer, expected] of [
+    ['codex', 'thread', 'computer', 'resolved'], ['codex', 'other-thread', 'computer', 'retry'],
+    ['cursor', 'thread', 'computer', 'retry'], ['devin', 'thread', 'computer', 'retry'],
+    ['codex', 'thread', 'other-computer', 'pending'],
+  ]) {
+    const calls = [], target = { computer: 'computer', win: app, windowId: 'follower', threadId: 'thread', project: { root: '/B' } };
+    const context = createPageContext({ authed: true, windowReady: true, navigationPending: null, currentApp: app,
+      currentComputer: () => ({ id: computer, windowId: 'writer', threadId: currentThread }),
+      winBinding: { target, resolve: value => calls.push(['resolved', value]), reject: () => assert.fail('unexpected rejection') },
+      winTargetReady: value => value.windowId === 'writer' && value.threadId === currentThread,
+      openWin: raw => calls.push(['retry', JSON.parse(raw)]),
+    });
+    vm.runInContext(source, context); context.finishWinBinding();
+    assert.equal(calls[0]?.[0] || 'pending', expected);
+    if (expected === 'resolved') {
+      assert.equal(context.winBinding, null); assert.equal(calls[0][1].windowId, 'writer');
+      assert.equal(calls[0][1].project.root, '/B'); assert.equal(target.windowId, 'follower');
+    } else if (expected === 'retry') assert.equal(calls[0][1].windowId, 'follower');
+  }
+});
+
+test('expanded Codex card retains its resolved writer target across composer redraws', async () => {
+  let bindings = 0;
+  const target = { computer: 'computer', win: 'codex', windowId: 'follower', threadId: 'thread' };
+  const resolved = { ...target, windowId: 'writer' };
+  const context = createPageContext({ ovToolState: null, ovS: { open: 'card' }, viewSel: 'codex|writer|thread',
+    ovRecs: () => [{ key: 'card' }], ovTarget: () => target, ovErr: new Map(), mentionHide() {},
+    document: { body: { classList: { contains: () => false } } }, ovReflectComposer() {},
+    bindWin: async () => { bindings++; return resolved; }, winTargetReady: value => value.windowId === 'writer',
+    ovComposerReady: () => context.ovToolState?.phase === 'ready' && context.ovToolState.target.windowId === 'writer',
+  });
+  vm.runInContext(part(read('app/js/overview.js'), 'function ovPrepareTools(', 'async function ovUseTool('), context);
+  const state = context.ovPrepareTools('card'); assert.equal(await state.ready, true);
+  assert.equal(state.target, resolved); assert.equal(state.sel, 'codex|writer|thread');
+  assert.equal(context.ovPrepareTools('card'), state); assert.equal(bindings, 1);
+});
+
+test('an already-ready window binding returns its resolved target without another attach', async () => {
+  const context = createPageContext({ finishWinBinding() {}, mode: 'chat', winTargetReady: () => true });
+  vm.runInContext(part(read('app/js/notify.js'), 'function bindWin(', "document.addEventListener('window-ready'"), context);
+  const target = { computer: 'computer', win: 'codex', windowId: 'writer', threadId: 'thread' };
+  assert.equal(await context.bindWin(target), target);
+});
+
 test('overview patching retains its captured microphone while replacing the card subtree', () => {
   const microphone = { classList: { contains: () => false } };
   let connected = true;
@@ -4206,7 +4252,8 @@ test('Codex card preview keeps only the current turn tools across repeated turns
     { k: 'human', t: 'current user' }, { k: 'assistant', t: 'current answer without tools' }];
   const scope = createPageContext({ CODEX_BACKEND: 'backend',
     overviewSession: () => ({ session: { app: 'codex' } }),
-    codexBackend: { load: async () => {}, chat: () => ({ items, model: 'native', effort: 'high' }) } });
+    codexAdapter: { backendOwner: async () => null },
+    codexBackend: { readChat: async () => ({ items, model: 'native', effort: 'high' }) } });
   vm.runInContext(read('server/overview.mjs').slice(read('server/overview.mjs').indexOf('export async function overviewPreview'))
     .replace('export async function', 'async function') + ';this.preview=overviewPreview;', scope);
   const target = { win: 'codex', windowId: 'backend', threadId: 'qa' };
@@ -4226,14 +4273,31 @@ test('Codex card preview keeps only the current turn tools across repeated turns
 test('legacy Codex card preview reads native backend content after its project window closes', async () => {
   const calls = [], scope = createPageContext({ CODEX_BACKEND: 'backend',
     overviewSession: () => ({ session: { app: 'codex', host: '', dormant: true } }),
-    codexAdapter: { backendThread: () => true },
-    codexBackend: { load: async id => calls.push(id), chat: () => ({ items: [{ k: 'human', t: 'old question' },
-      { k: 'assistant', t: 'old answer' }], model: 'native', effort: 'high' }) } });
+    codexAdapter: { backendThread: () => true, backendOwner: async () => null },
+    codexBackend: { readChat: async id => { calls.push(id); return { items: [{ k: 'human', t: 'old question' },
+      { k: 'assistant', t: 'old answer' }], model: 'native', effort: 'high' }; } } });
   vm.runInContext(read('server/overview.mjs').slice(read('server/overview.mjs').indexOf('export async function overviewPreview'))
     .replace('export async function', 'async function') + ';this.preview=overviewPreview;', scope);
   const preview = await scope.preview('device', { win: 'codex', windowId: 'closed', threadId: 'legacy' });
   assert.deepEqual(calls, ['legacy']); assert.equal(preview.available, true);
   assert.equal(preview.threadId, 'legacy'); assert.equal(preview.last, 'old answer');
+});
+
+test('Codex live preview reads the writer without changing its visible thread or claiming ownership', async () => {
+  const calls = [], scope = createPageContext({ CODEX_BACKEND: 'backend', helpersCall: value => value,
+    overviewSession: () => ({ session: { app: 'codex', host: '' } }),
+    codexAdapter: { backendThread: () => true, backendOwner: async () => ({ chatWs: 'writer' }) },
+    Cdp: class {
+      constructor(ws) { assert.equal(ws, 'writer'); }
+      async connect() {}
+      async evaluate(expression) { calls.push(expression); return { available: true, last: 'live answer', tools: [] }; }
+      close() { calls.push('close'); }
+    } });
+  vm.runInContext(read('server/overview.mjs').slice(read('server/overview.mjs').indexOf('export async function overviewPreview'))
+    .replace('export async function', 'async function') + ';this.preview=overviewPreview;', scope);
+  const value = await scope.preview('device', { win: 'codex', windowId: 'follower', threadId: 'desktop' });
+  assert.equal(value.last, 'live answer'); assert.equal(value.windowId, 'follower');
+  assert.deepEqual(calls, [`nativeSessionInfo('codex', "desktop", 'preview')`, 'close']);
 });
 
 test('Devin model controls prefer the native model picker over a simultaneous Normal capability picker', () => {

@@ -127,7 +127,8 @@ test('opening a Codex project resumes its latest backend thread; new-session exp
   const calls = [], records = new Map([['A', { id: 'A', cwd: '/A', updatedAt: 10 }], ['B', { id: 'B', cwd: '/B', updatedAt: 20 }]]);
   const context = vm.createContext({ path, os: { homedir: () => '/home' }, safeHomePath: real => ({ real }),
     CODEX_BACKEND: 'backend', cdpRead, awaitCdpRead: promise => promise, rememberSelection: () => {}, backendAttached: () => {},
-    codexBackend: { records, load: async id => { calls.push(['load', id]); return { id, cwd: records.get(id).cwd }; },
+    adapter: { backendOwner: async () => null },
+    codexBackend: { threads: new Map(), records, load: async id => { calls.push(['load', id]); return { id, cwd: records.get(id).cwd }; },
       create: async cwd => { calls.push(['create', cwd]); return { id: 'new-B', cwd }; } },
   });
   const bind = vm.runInContext(fragment(read('server/apps/codex.mjs'), 'async function bindBackend(', 'const backendRoutes =') + '\nbindBackend;', context);
@@ -204,7 +205,8 @@ test('legacy backend binding uses the native directory instead of the previously
   const events = [], context = vm.createContext({ path, os: { homedir: () => '/home' },
     safeHomePath: real => ({ real }), CODEX_BACKEND: 'backend', cdpRead, awaitCdpRead: promise => promise,
     rememberSelection: (_device, selected) => events.push(selected), backendAttached() {},
-    codexBackend: { records: new Map(), load: async id => ({ id, cwd: '/B' }) } });
+    adapter: { backendOwner: async () => null },
+    codexBackend: { records: new Map(), threads: new Map(), load: async id => ({ id, cwd: '/B' }) } });
   const bind = vm.runInContext(fragment(read('server/apps/codex.mjs'), 'async function bindBackend(', 'async function backendSettingsOwner(') + '\nbindBackend;', context);
   const session = { codexDirectory: '/A', threadId: 'A', detach() {}, clearViewState() {}, setMode: async () => {} };
   await bind(session, { threadId: 'legacy' });
@@ -212,6 +214,53 @@ test('legacy backend binding uses the native directory instead of the previously
   assert.equal(events[0].project.root, '/B'); assert.equal(events[0].windowId, 'backend');
   await assert.rejects(bind(session, { threadId: 'legacy', project: { root: '/A' } }), /不属于所选项目/);
   assert.equal(session.codexDirectory, '/B'); assert.equal(session.threadId, 'legacy');
+});
+
+test('native read-only summaries never resume or register another process writer', async () => {
+  const { state, client } = fixture();
+  client.request = async (method, params) => {
+    client.sent.push({ method, params });
+    assert.equal(method, 'thread/read'); assert.equal(params.includeTurns, true);
+    return { thread: { id: 'desktop', cwd: '/B', model: 'native-model', reasoningEffort: 'high', preview: 'Native title', turns: [
+      { id: 'turn', status: 'completed', items: [{ id: 'answer', type: 'agentMessage', text: 'latest answer' }] },
+    ] } };
+  };
+  const chat = await state.readChat('desktop');
+  assert.equal(chat.items[0].t, 'latest answer'); assert.equal(chat.model, 'native-model'); assert.equal(chat.effort, 'high');
+  assert.equal(state.owns('desktop'), false); assert.equal(state.threads.size, 0); assert.equal(state.statistics.size, 0);
+  assert.equal(client.sent.length, 1);
+});
+
+test('legacy binding reuses the exact native writer and does not resume or create a project window', async () => {
+  const calls = [], context = vm.createContext({ path, os: { homedir: () => '/home' },
+    safeHomePath: real => ({ real }),
+    adapter: { backendOwner: async id => ({ pageId: 'writer-window', cwd: '/B', id }) },
+    codexBackend: { records: new Map(), threads: new Map() } });
+  const bind = vm.runInContext(fragment(read('server/apps/codex.mjs'), 'async function bindBackend(', 'async function backendSettingsOwner(') + '\nbindBackend;', context);
+  const session = { codexDirectory: '/A', attach: async req => calls.push(req), projectReady: value => calls.push(value) };
+  await bind(session, { threadId: 'desktop', project: { root: '/B' }, initial: true });
+  assert.equal(calls.length, 2); assert.equal(calls[0].windowId, 'writer-window'); assert.equal(calls[0].threadId, 'desktop');
+  assert.equal(calls[0].project, undefined); assert.equal(calls[0].nativeOwner.cwd, '/B'); assert.equal(calls[0].initial, true);
+  await assert.rejects(bind(session, { threadId: 'desktop', project: { root: '/A' } }), /不属于所选项目/);
+  assert.equal(calls.length, 2);
+});
+
+test('writer lookup scans both windows and selects owner rather than visible follower', async () => {
+  const closed = [], calls = [], context = vm.createContext({ CODEX_CDP_URL: 'native',
+    codexBackend: { threads: new Map() }, helpersCall: value => value,
+    codexWindows: async () => ['follower', 'writer'].map(id => ({ pageId: id, chatWs: id })),
+    Cdp: class {
+      constructor(ws) { this.ws = ws; }
+      async connect() {}
+      async evaluate(expression) { calls.push(expression); return this.ws === 'writer' ? { cwd: '/B' } : null; }
+      close() { closed.push(this.ws); }
+    },
+  });
+  const lookup = vm.runInContext('({' + fragment(read('server/apps/codex.mjs'), '  async backendOwner(', '  backendThread(') + '}).backendOwner', context);
+  const owner = await lookup('desktop');
+  assert.equal(owner.pageId, 'writer'); assert.equal(owner.cwd, '/B'); assert.equal(calls.length, 2);
+  assert.ok(calls.every(call => call === `nativeSessionInfo('codex', "desktop", 'owner')`));
+  assert.deepEqual(closed.sort(), ['follower', 'writer']);
 });
 
 test('native legacy routing preserves remote sessions and every Fusion binding', () => {

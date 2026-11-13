@@ -54,6 +54,15 @@ async function bindBackend(s, req) {
     : req.threadId ? null : safeHomePath(s.codexDirectory || os.homedir()).real;
   const id = req.threadId || (!req.newSession && [...codexBackend.records.values()].filter(row => path.resolve(row.cwd) === directory)
     .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))[0]?.id);
+  if (id && (!codexBackend.threads.has(id) || codexBackend.threads.get(id).disconnected)) {
+    const owner = await adapter.backendOwner(id);
+    if (owner) {
+      if (directory && path.resolve(owner.cwd) !== directory) throw new Error('Codex 会话不属于所选项目');
+      await s.attach({ id: 'codex', windowId: owner.pageId, threadId: id, nativeOwner: { cwd: owner.cwd }, initial: req.initial });
+      if (req.project) s.projectReady({ root: owner.cwd, newSession: false, threadId: id });
+      return;
+    }
+  }
   const thread = await awaitCdpRead(id ? codexBackend.load(id) : codexBackend.create(directory));
   directory = safeHomePath(directory || thread.cwd).real;
   if (path.resolve(thread.cwd) !== directory) throw new Error('Codex 会话不属于所选项目');
@@ -395,6 +404,19 @@ async function readCodexMenu(context, button, select = items => items.length ? i
 
 export const adapter = {
   backendRoutes,
+  async backendOwner(id) {
+    if (codexBackend.threads.has(id) && !codexBackend.threads.get(id).disconnected) return null;
+    const pages = await codexWindows(CODEX_CDP_URL);
+    const matches = await Promise.all(pages.filter(page => page.chatWs).map(async page => {
+      const cdp = new Cdp(page.chatWs);
+      try {
+        await cdp.connect();
+        const owner = await cdp.evaluate(helpersCall(`nativeSessionInfo('codex', ${JSON.stringify(id)}, 'owner')`));
+        return owner ? { ...page, ...owner } : null;
+      } finally { cdp.close(); }
+    }));
+    return matches.find(Boolean) || null;
+  },
   backendThread(id, host = nativeSessionCatalog('codex')?.rows.find(row => row.id === id)?.host || '') {
     return !host && !allFusionRuns().some(run => run.bindings.some(binding => binding.app === 'codex' && binding.threadId === id));
   },
@@ -523,6 +545,7 @@ export const adapter = {
 
   async currentRoots() {
     if (this.codexBackend) return [{ root: this.codexDirectory, host: '' }];
+    if (this.codexOwnerRoot) return [{ root: this.codexOwnerRoot, host: '' }];
     return (await editorRoots(this.editorCdp, 'codex')).filter(w => !w.host);
   },
 
@@ -580,6 +603,7 @@ export const adapter = {
 
   async terminalProject() {
     if (this.codexBackend) return { root: this.codexDirectory, host: '' };
+    if (this.codexOwnerRoot) return { root: this.codexOwnerRoot, host: '' };
     return this.cdp.evaluate(`(() => {
       const h = ${PAGE_SRC};
       if ((h.codexThread() || '') !== ${JSON.stringify(this.threadId || '')})
@@ -843,6 +867,7 @@ async adoptCodexThread(thread, statusMsg) {
   try {
     if (this.threadId !== (thread || '')) this.clearViewState();
     this.threadId = thread || '';
+    if (this.codexOwnerRoot && thread) this.codexOwnerRoot = (await this.cdp.evaluate(helpersCall(`nativeSessionInfo('codex', ${JSON.stringify(thread)}, 'context')`))).cwd;
   } finally {
     this.switchingThread = switching;
   }

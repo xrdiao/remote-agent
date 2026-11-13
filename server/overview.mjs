@@ -9,6 +9,8 @@ import { storedProjectSession, fusionTargets } from './project-windows.mjs';
 import { openCode } from './opencode/state.mjs';
 import { codexBackend, CODEX_BACKEND } from './codex/state.mjs';
 import { adapter as codexAdapter } from './apps/codex.mjs';
+import { Cdp } from './cdp.mjs';
+import { helpersCall } from './page/build.mjs';
 
 const APP = { cursor: 'Cursor', codex: 'Codex', devin: 'Devin' };
 const FUSION_RECENT_MS = 24 * 3600 * 1000;
@@ -136,8 +138,16 @@ export function overviewSession(deviceId, { win, windowId, threadId }) {
 export async function overviewPreview(deviceId, { win, windowId, threadId }) {
   const { session, target } = overviewSession(deviceId, { win, windowId, threadId });
   if (session.app === 'codex' && (windowId === CODEX_BACKEND || codexAdapter.backendThread(threadId, session.host))) {
-    await codexBackend.load(threadId);
-    const chat = codexBackend.chat(threadId), start = chat.items.findLastIndex(row => row.k === 'human');
+    const owner = await codexAdapter.backendOwner(threadId);
+    if (owner) {
+      const cdp = new Cdp(owner.chatWs);
+      try {
+        await cdp.connect();
+        const value = await cdp.evaluate(helpersCall(`nativeSessionInfo('codex', ${JSON.stringify(threadId)}, 'preview')`));
+        return { ...value, win, windowId, threadId };
+      } finally { cdp.close(); }
+    }
+    const chat = await codexBackend.readChat(threadId), start = chat.items.findLastIndex(row => row.k === 'human');
     const turn = chat.items.slice(Math.max(0, start));
     const text = turn.filter(row => ['human', 'assistant'].includes(row.k)).map(row => row.t).join('\n\n').slice(-600);
     return { win, windowId, threadId, available: true, last: (chat.items.findLast(row => row.k === 'assistant')?.t || '').slice(-600), text,

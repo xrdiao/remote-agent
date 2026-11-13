@@ -265,7 +265,7 @@ export class Session extends AgentContext {
       if (saved) req = { ...req, ...saved };
     }
     if (app === 'opencode') return AGENT_REGISTRY.opencode.adapter.attach.call(this, req);
-    if (app === 'codex' && !this.fusionBinding && (req.windowId === CODEX_BACKEND || codexBackend.owns(req.threadId)
+    if (app === 'codex' && !this.fusionBinding && !req.nativeOwner && (req.windowId === CODEX_BACKEND || codexBackend.owns(req.threadId)
       || !req.projectSwitch && (req.threadId && AGENT_REGISTRY.codex.adapter.backendThread(req.threadId, req.project?.host)
         || !req.windowId && !req.threadId))) return AGENT_REGISTRY.codex.adapter.attachBackend.call(this, req);
     if (req.resume && this.bindingReady && this.cdp?.ws?.readyState === 1 && this.app === app
@@ -276,7 +276,7 @@ export class Session extends AgentContext {
         return this.setMode(this.mode, true);
       }
     }
-    if (req.initial && hasLaunched(app)) req = { ...req, id: app, windowId: '', threadId: '', project: null };
+    if (req.initial && !req.nativeOwner && hasLaunched(app)) req = { ...req, id: app, windowId: '', threadId: '', project: null };
     if (req.project && !req.projectSwitch && app === 'codex') {
       const matches = nativeTargets().filter(win => win.app === app && this.projectMatches(nativeWindowAt(win.ws)?.roots || [], req.project.root, req.project.host));
       const picked = matches.find(win => (win.pageId || win.id) === req.windowId) || orderedProjectWindows(app, matches)[0];
@@ -345,7 +345,7 @@ export class Session extends AgentContext {
       if (!picked) throw new Error('没有找到 Codex 窗口。请用 ./scripts/start-codex.sh 启动，并打开 Codex 侧边栏');
       const entry = wins.find(w => w.id === 'codex');
       if (!entry) throw new Error('没有找到 Codex 窗口。请用 ./scripts/start-codex.sh 启动，并打开 Codex 侧边栏');
-      await this.openBound({ ...entry, title: picked.rawTitle }, picked.ws, picked.chatWs, { windowId: picked.pageId, threadId, deferred: req.projectSwitch === true, initial: req.initial === true });
+      await this.openBound({ ...entry, title: picked.rawTitle }, picked.ws, picked.chatWs, { windowId: picked.pageId, threadId, nativeOwner: req.nativeOwner, deferred: req.projectSwitch === true, initial: req.initial === true });
       if (this.cdp === this.editorCdp && !req.projectSwitch) this.emit({ t: 'status', ok: false, msg: 'Codex 侧边栏还没打开' });
       return;
     }
@@ -364,7 +364,7 @@ export class Session extends AgentContext {
     const cdp = chatWs ? new NativeCdp(chatWs) : editorCdp;
     // A phone-launched app keeps its native home/new-chat view, not a remembered thread.
     // Keep the marker until startup and the first chat read complete successfully.
-    const launchDefault = this.launchDefault = selection.initial === true && hasLaunched(win.app);
+    const launchDefault = this.launchDefault = !selection.nativeOwner && selection.initial === true && hasLaunched(win.app);
     let thread = '';
     let trust;
     try {
@@ -389,6 +389,7 @@ export class Session extends AgentContext {
     this.selectionHome = false;
     this.windowId = selection.windowId;
     if (win.app === 'codex') this.codexPageId = selection.windowId;
+    this.codexOwnerRoot = selection.nativeOwner?.cwd || '';
     this.threadId = thread;
     this.selectedThread = thread;
     this.targetId = win.id;
@@ -439,7 +440,12 @@ export class Session extends AgentContext {
     if (startup || (restore && selection.initial)) attached();
     if (restore) {
       const id = win.app === 'codex' ? `thread:${this.codexPageId}:${selection.threadId}` : selection.threadId;
-      await this.withFocus(() => this.openAgent(id));
+      await this.withFocus(async () => {
+        if (selection.nativeOwner) {
+          if (!await this.selectCodexThread(selection.threadId)) throw new Error('没有找到所选会话');
+          await this.adoptCodexThread(selection.threadId);
+        } else await this.openAgent(id);
+      });
       if (this.cdp !== cdp) return;
       if (this.bindingReady && this.chatUpdatesStop && this.lastChat) {
         this.prefetchMenus().catch(() => {});
@@ -573,6 +579,7 @@ export class Session extends AgentContext {
     const connections = new Set([this.cdp, this.editorCdp]);
     this.cdp = this.editorCdp = null;
     this.codexBackend = false;
+    this.codexOwnerRoot = '';
     cdpRead.run(null, () => {
       for (const cdp of connections) {
         if (cdp) cdp.send('Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {})

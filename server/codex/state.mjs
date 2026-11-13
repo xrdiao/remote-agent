@@ -370,8 +370,15 @@ export class CodexState extends EventEmitter {
       messageId: `${id}:user-message:${requestId}` };
   }
 
-  chat(id, limit = 40) {
-    const thread = this.threads.get(id), turn = thread.disconnected ? null : busyTurn(thread), latest = thread.turns.at(-1), items = [];
+  async readChat(id) {
+    if (this.threads.has(id) && !this.threads.get(id).disconnected) return this.chat(id);
+    await this.client.connect();
+    const { thread } = await this.client.request('thread/read', { threadId: id, includeTurns: true });
+    return this.chat(id, 40, thread);
+  }
+
+  chat(id, limit = 40, thread = this.threads.get(id)) {
+    const turn = thread.disconnected ? null : busyTurn(thread), latest = thread.turns.at(-1), items = [];
     const all = thread.turns.flatMap(row => {
       const last = row.status === 'completed' && row.items.findLast(item => item.type === 'agentMessage' && item.text);
       return row.items.map(item => ({ item, turn: row, fork: item === last }));
@@ -396,14 +403,14 @@ export class CodexState extends EventEmitter {
     if (thread.disconnected) items.push({ i: id + ':disconnected', k: 'notice', t: 'Codex 后台中断，结果待核对：' + thread.disconnected });
     if (!thread.disconnected && (latest?.error || thread.error)) items.push({ i: id + ':error', k: 'notice', t: latest?.error?.message || thread.error,
       ...(capacityFailure(latest) ? { kind: 'capacity', b: ['重试'], btnItem: latest.id, actions: ['capacity-retry'] } : {}) });
-    const settings = thread.settings, statistics = this.statisticsFor(id), current = latest && statistics[latest.id];
+    const settings = thread.settings || {}, statistics = this.statistics.get(id) || {}, current = latest && statistics[latest.id];
     const usageTurn = thread.turns.findLast(turn => statistics[turn.id]?.usage), usage = usageTurn && statistics[usageTurn.id].usage;
     const previous = thread.turns.at(-2), baseline = previous ? statistics[previous.id]?.usage?.total : {};
     const tokens = current?.usage && baseline ? Object.fromEntries(Object.entries(current.usage.total)
       .map(([key, value]) => [key, value - (baseline[key] || 0)])) : null;
     const durationMs = latest?.durationMs ?? (latest?.startedAt ? ((latest.completedAt || Date.now() / 1000) - latest.startedAt) * 1000 : null);
     const requests = this.requestRows(id);
-    return { thread: id, title: thread.name || this.records.get(id).title, items, busy: !!turn,
+    return { thread: id, title: thread.name || this.records.get(id)?.title || thread.preview, items, busy: !!turn,
       model: settings.model || thread.model || '', effort: settings.effort ?? settings.reasoningEffort ?? thread.reasoningEffort,
       permission: settings.approvalsReviewer === 'auto_review' ? 'Approve for me' : settings.sandboxPolicy?.type === 'dangerFullAccess' ? 'Full access' : 'Ask for approval',
       context: usage ? { used: usage.last.totalTokens, max: usage.modelContextWindow, pct: usage.modelContextWindow ? usage.last.totalTokens / usage.modelContextWindow * 100 : null } : null,

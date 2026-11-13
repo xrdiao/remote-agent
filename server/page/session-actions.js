@@ -265,6 +265,10 @@
     return { confirmed: true, action: after.archived ? 'archive' : 'delete', already: false };
   };
   const nativeSessionInfo = (app, id, catalog = false, previous = null) => {
+    if (app === 'codex' && catalog === 'owner') {
+      const manager = codexConversationManager(id, codexHistoryScopes(), 'local');
+      return manager?.getStreamRole(id)?.role === 'owner' ? { cwd: manager.getConversation(id).cwd } : null;
+    }
     if (catalog === 'cleanup' || catalog === 'name') return nativeSessionCleanup(app, id);
     if (catalog === 'settings') {
       if (app === 'cursor') {

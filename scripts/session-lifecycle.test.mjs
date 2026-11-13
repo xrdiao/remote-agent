@@ -171,6 +171,19 @@ function pageContext(extra = {}, source = read('server/page/session-actions.js')
   return context;
 }
 
+test('Codex ownership uses native stream role, not the visible thread or cached conversation', () => {
+  for (const role of ['owner', 'follower', undefined]) {
+    let inspected = '';
+    const page = pageContext({ codexHistoryScopes: () => [], codexConversationManager: id => ({
+      getStreamRole: value => { inspected = value; return role ? { role } : null; },
+      getConversation: value => { assert.equal(value, id); return { cwd: '/other-project' }; },
+    }) });
+    const value = page.info('codex', 'native-thread', 'owner');
+    assert.equal(inspected, 'native-thread');
+    assert.equal(value?.cwd || null, role === 'owner' ? '/other-project' : null);
+  }
+});
+
 test('Cursor adopts the actual workspace thread only after its Agent panel is ready', async () => {
   const events = [], calls = [];
   const context = createPageContext({ path, helpersCall: value => value, fusionProject: root => ({ id: root }) });
@@ -882,6 +895,32 @@ test('deferred Cursor project binding leaves native session opening to finishPro
   }
 });
 
+test('an existing Codex writer opens its exact thread without the project-window navigation path', async () => {
+  const calls = [], events = [];
+  const context = vm.createContext({
+    NativeCdp: class {
+      constructor(wsUrl) { this.wsUrl = wsUrl; }
+      async connect() {}
+      close() {}
+      async evaluate(expression) { return expression === 'workspaceTrustState()' ? { required: false } : 'visible-other-thread'; }
+    },
+    helpersCall: value => value, hasLaunched: () => true, resetThinkingCaches() {}, appPlans: [],
+    nativeWindow: () => ({ itemCache: new Map(), start: async () => {}, setThread() {} }),
+  });
+  const open = vm.runInContext('({' + fragment(read('server/session.mjs'), '  async openBound(', '  navigationFailed(') + '}).openBound', context);
+  const session = { detach() {}, clearViewState() {}, refreshViewport: async () => {}, withFocus: fn => fn(),
+    appMessage: value => value, projectName: () => 'Target', selectionKey: () => 'selected', emit: value => events.push(value),
+    selectCodexThread: async id => { calls.push(['select', id]); return true; },
+    adoptCodexThread: async id => { calls.push(['adopt', id]); }, setMode: async () => calls.push('mode'), prefetchMenus: async () => {},
+  };
+  await open.call(session, { id: 'codex', app: 'codex' }, 'editor-writer', 'chat-writer', {
+    windowId: 'writer', threadId: 'target', nativeOwner: { cwd: '/B' }, initial: true,
+  });
+  assert.deepEqual(calls, [['select', 'target'], ['adopt', 'target'], 'mode']);
+  assert.equal(session.codexOwnerRoot, '/B'); assert.equal(session.bindingReady, true);
+  assert.equal(events.at(-1).threadId, 'target'); assert.equal(events.at(-1).windowId, 'writer');
+});
+
 test('Cursor cold history opens from persisted headers, retains native menu metadata and excludes archived rows', async () => {
   const cold = { composerId: 'cold', name: 'Cold history', workspaceIdentifier: { id: 'workspace' } };
   const rows = [cold, { composerId: 'ordinary', name: 'Ordinary' }, { composerId: 'archived', isArchived: true }];
@@ -946,6 +985,12 @@ test('Codex legacy threads use the backend even when the old project window is o
   const { session, calls } = projectAttachFixture('codex', { targetOpen: true });
   await session.attach({ id: 'codex', windowId: 'B', threadId: 'native-B', project: { root: '/B' } });
   assert.deepEqual(calls, [{ kind: 'backend', thread: 'native-B', root: '/B' }]);
+});
+
+test('resolved native writer attachment bypasses backend recursion and keeps its window on initial reconnect', async () => {
+  const { session, calls } = projectAttachFixture('codex', { targetOpen: true });
+  await session.attach({ id: 'codex', windowId: 'B', threadId: 'native-B', nativeOwner: { cwd: '/other-project' }, initial: true });
+  assert.deepEqual(calls, [{ kind: 'desktop', window: 'B', thread: 'native-B', deferred: false }]);
 });
 
 test('Codex default project entry and owned background threads still use the backend', async () => {
