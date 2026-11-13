@@ -1,6 +1,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 import { PORT, HOST, CDP_URL, CODEX_CDP_URL, EDITORS, TUNNEL, PUBLISH_REPO, ALLOWED_ORIGINS, loadConfig } from './config.mjs';
 import { DATA_DIR, listDevices, saveState, saveConfig, normalizeAppUrl } from '../lib/auth.mjs';
 import { startWatcher } from '../lib/notify.mjs';
@@ -22,6 +23,7 @@ import { recoverFusionRuns } from './fusion/runner.mjs';
 import { terminalService } from './terminal-service.mjs';
 import { openCode } from './opencode/state.mjs';
 import { codexBackend } from './codex/state.mjs';
+import { initializeUploads } from '../lib/uploads.mjs';
 for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) process.once(signal, () => {
   saveFusionRuns();
   terminalService.dispose();
@@ -45,6 +47,8 @@ const server = http.createServer(async (req, res) => {
 attachWss(server);
 
 fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+const orphanUploads = initializeUploads(path.join(DATA_DIR, 'uploads'), listDevices().map(device => device.id));
+if (orphanUploads.length) console.log(`未登记的旧上传目录已保留，待确认回收：${orphanUploads.join('，')}`);
 
 // Pages on a user site with a custom domain serves project sites from that domain too.
 // Ask gh for the real address once, persist it, and allow its origin. Best effort only.

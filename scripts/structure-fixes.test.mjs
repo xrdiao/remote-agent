@@ -15,9 +15,108 @@ import { methods as sessionMethods } from '../server/agent/session-actions.mjs';
 import { methods as menuMethods } from '../server/agent/menus.mjs';
 import { methods as projectMethods } from '../server/agent/projects.mjs';
 import { methods as codexMethods } from '../server/apps/codex.mjs';
+import { methods as chatMethods } from '../server/agent/chat.mjs';
 import { ROUTES, flag } from '../server/routes.mjs';
 import { cdpRead, awaitCdpRead } from '../server/cdp.mjs';
 import { read, fragment as part, createPageContext, nativePage } from './page-fixture.mjs';
+
+for (const selector of ['.composer-bar [contenteditable="true"]', '.auxiliarybar [contenteditable="true"]']) {
+  test(`shared composer targeting reads, writes and focuses ${selector} without selecting history`, () => {
+    const history = nativeNode({}, { innerText: 'history', closest: () => ({}) });
+    const editor = nativeNode({}, { innerText: 'before', focus() { document.activeElement = editor; } });
+    editor.editor = { commands: { setContent(value) { editor.innerText = value.content[0].content.map(row => row.type === 'hardBreak' ? '\n' : row.text).join(''); } } };
+    const document = { activeElement: null, getElementById: () => null, querySelector: () => null,
+      querySelectorAll: value => value === selector ? [history, editor] : [] };
+    const page = nativePage(document, {}, 'composerTarget,composerFocused');
+    assert.equal(page.composerTarget(document), editor);
+    assert.equal(page.composerDraft(), 'before');
+    assert.equal(page.setComposerDraft('new\ntext'), true);
+    assert.equal(page.composerDraft(), 'new\ntext');
+    editor.focus(); assert.equal(page.composerFocused(), true);
+    document.activeElement = history; assert.equal(page.composerFocused(), false);
+    assert.equal(history.innerText, 'history');
+  });
+}
+
+test('shared composer targeting writes the selected Slate editor in an auxiliary bar', () => {
+  const editor = nativeNode({}, { innerText: 'old' }), other = nativeNode({}, { innerText: 'other' });
+  const slate = { children: [{ children: [{ text: 'old' }] }], apply() {}, select() {},
+    deleteFragment() { editor.innerText = ''; }, insertBreak() { editor.innerText += '\n'; }, insertText(text) { editor.innerText += text; } };
+  const document = { activeElement: editor, getElementById: () => null, querySelector: () => null,
+    querySelectorAll: selector => selector === '.auxiliarybar [contenteditable="true"]' ? [editor, other] : [] };
+  const source = read('server/page/composer-target.js')
+    + part(read('server/page/composer.js'), '  const pickComposer', '  const queueEditing')
+    + part(read('server/page/composer.js'), '  const setComposerDraft', '  // Typeahead queries');
+  const context = createPageContext({ doc: document, document, codexFiberProps: () => [{ editor: slate }] });
+  vm.runInContext(source + ';this.write=setComposerDraft;this.draft=composerDraft;', context);
+  assert.equal(context.write('one\ntwo'), true); assert.equal(context.draft(), 'one\ntwo'); assert.equal(other.innerText, 'other');
+});
+
+test('image confirmation returns its local list when the shared attachment cache is null or unchanged', async () => {
+  const list = [{ id: 'image', preview: 'data:image/png;base64,YQ==' }], events = [];
+  const session = { cdp: { evaluate: async () => list }, sel: 1, lastAttachments: null,
+    liveRead: () => true, selectionKey: () => 'image-test', emit: value => events.push(value) };
+  assert.deepEqual(await chatMethods.syncAttachments.call(session), list);
+  assert.deepEqual(await chatMethods.syncAttachments.call(session), list); assert.equal(events.length, 1);
+  session.liveRead = () => false;
+  assert.equal(await chatMethods.syncAttachments.call(session), undefined); assert.equal(events.length, 1);
+});
+
+for (const current of [true, false]) test(`image attachment confirms only its current local result: current=${current}`, async () => {
+  const rows = [{ id: 'image', preview: 'preview' }], replies = [[], true, rows], events = [];
+  const session = { cdp: { evaluate: async () => replies.shift() }, selectedThread: '', lastAttachments: null,
+    selectionKey: () => 'scope', syncAttachments: async () => current ? rows : undefined,
+    emit: event => events.push(event), appMessage: message => message };
+  const pending = chatMethods.attachImage.call(session, 'YQ==', 'test.png', 'image/png', '', 'scope');
+  if (current) assert.equal(await pending, 'image');
+  else await assert.rejects(pending, /会话已切换，附件确认已取消/);
+  assert.equal(events.some(event => event.ok === true), current);
+});
+
+test('Devin queue edit reports take-out while preserving the shared completion receipt', async () => {
+  const events = [], session = { app: 'devin', selectionKey: () => 'devin|window|thread', emit: row => events.push(row),
+    devinTakeOut: async id => { events.push({ t: 'unqueued', id }); } };
+  const message = { action: 'edit', id: 'queued', requestId: 'edit', text: 'draft' };
+  const result = await ROUTES.queue.run(session, message); ROUTES.queue.after(session, message, result);
+  assert.equal(events[0].t, 'unqueued'); assert.equal(events[1].t, 'queueDone'); assert.equal(events[1].ok, true);
+  assert.equal(events[2].msg, '已取回输入框，编辑后需重新发送');
+});
+
+test('Markdown HTTPS links keep nested formatting and Devin external-link attributes', () => {
+  const text = { nodeType: 3, textContent: 'a & b' };
+  const strong = nativeNode({}, { nodeType: 1, tagName: 'STRONG', childNodes: [text] });
+  const anchor = nativeNode({ href: 'https://example.invalid/?a=1&b="x"' }, { nodeType: 1, tagName: 'A', childNodes: [strong] });
+  const document = { getElementById: () => null };
+  const page = nativePage(document, { getComputedStyle: () => ({ color: '' }) }, 'clean');
+  const generic = page.clean({ childNodes: [anchor] }), devin = page.clean({ childNodes: [anchor] }, true);
+  assert.match(generic, /href="https:\/\/example.invalid\/\?a=1&amp;b=&quot;x&quot;"/);
+  assert.match(generic, /<strong>a &amp; b<\/strong>/); assert.equal(generic.includes('target='), false);
+  assert.match(devin, /target="_blank" rel="noopener noreferrer"/); assert.match(devin, /<strong>a &amp; b<\/strong>/);
+});
+
+test('visual snapshots and live frames share visibility and buffer rules while Wayland is read at entry', async () => {
+  const env = {}, events = [], children = [], commands = [];
+  const context = createPageContext({ process: { platform: 'linux', env }, Buffer, path, dir: '/visual', stateFile: '/state',
+    fs: { existsSync: () => false, writeFileSync() {} },
+    spawn(command) {
+      commands.push(command); const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), kill() {} });
+      children.push(child); return child;
+    },
+  });
+  vm.runInContext(part(read('server/visual/capture.mjs'), 'export const isWayland', 'function jpegSize').replace(/^export /gm, '')
+    + part(read('server/visual/capture.mjs'), 'class VisualCapture', 'export const visualCapture') + ';this.capture=new VisualCapture();this.isWayland=isWayland;', context);
+  const capture = context.capture, viewer = { visible: false, client: { bufferedAmount: 0 }, emit: event => events.push(event) };
+  capture.viewers.add(viewer); capture.state.state = 'live'; capture.frame = { data: 'cached' };
+  capture.publish(viewer); capture.sendFrame({ data: 'live' }); assert.equal(events.filter(row => row.t === 'frame').length, 0);
+  viewer.visible = true; capture.publish(viewer); assert.equal(events.findLast(row => row.t === 'frame').data, 'live');
+  viewer.client.bufferedAmount = 2 * 1024 * 1024; capture.publish(viewer); capture.sendFrame({ data: 'blocked' });
+  assert.equal(events.filter(row => row.t === 'frame').length, 1);
+  env.XDG_SESSION_TYPE = 'wayland'; assert.equal(context.isWayland(), true);
+  viewer.client.bufferedAmount = 0; await capture.start('select'); assert.deepEqual(commands, ['/usr/bin/python3']);
+  delete env.XDG_SESSION_TYPE; assert.equal(context.isWayland(), false);
+  children[0].stdout.emit('data', Buffer.from('{"frame":"wayland-frame","w":10,"h":20}\n'));
+  assert.equal(events.findLast(row => row.t === 'frame').data, 'wayland-frame'); capture.stop();
+});
 
 function nativeNode(attributes = {}, properties = {}, visible = true) {
   return {
@@ -2641,7 +2740,7 @@ test('unchanged usage updates leave the ring DOM intact and never repaint the ca
   h.context.ovUpdateUsage(); assert.equal(writes, 2);
 });
 
-function relayHeartbeat({ needsTwoFactor = false } = {}) {
+function relayHeartbeat({ needsTwoFactor = false, operations = false } = {}) {
   let now = 1000000, wss;
   const timers = new Map(), sessions = [], bindings = [], logs = [];
   const pair = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
@@ -2681,7 +2780,7 @@ function relayHeartbeat({ needsTwoFactor = false } = {}) {
     findDevice: token => token === 'fixture-token' ? device : null, needsTotp: () => needsTwoFactor,
     computerId: () => 'fixture-computer', computerName: () => 'Fixture', updateDevice() {},
     bindDeviceConnection(_id, close) { const binding = { valid: true, close, release() {} }; bindings.push(binding); return binding; },
-    subscribeLibrary() {}, subscribeOperations: () => () => {}, lastSelection: () => null,
+    subscribeLibrary() {}, subscribeOperations: operations ? subscribeOperations : () => () => {}, lastSelection: () => null,
     addViewer() {}, removeViewer() {}, clientIp: () => 'fixture', originAllowed: () => true,
     ROUTES: { visible: { connection: true } }, flag, configureNativeRetry() {},
     resolveRoute: (session, type) => context.ROUTES[type],
@@ -2721,6 +2820,38 @@ function relayHeartbeat({ needsTwoFactor = false } = {}) {
       now = end;
     },
   };
+}
+
+for (const submitted of [false, true]) for (const tracked of [false, true]) {
+  test(`OpenCode switching cancels only unsubmitted sends and preserves origin receipts: submitted=${submitted}, operation=${tracked}`, async () => {
+    const h = relayHeartbeat({ operations: tracked }), socket = await h.socket(), session = h.bind(socket), events = [];
+    session.app = 'opencode'; session.cdp = null;
+    const origin = session.selectionKey(); let signal, complete;
+    session.emit = message => {
+      if (captureOperation(session, message) || h.readScope.getStore()?.aborted) return;
+      events.push(message); socket.send(JSON.stringify(message));
+    };
+    session.finishNavigationResult = () => {};
+    session.handle = async message => {
+      if (message.t === 'attach') { session.threadId = 'thread-B'; return; }
+      signal = h.readScope.getStore();
+      if (submitted) { signal.submitted = true; if (currentOperation()) currentOperation().submitted = true; }
+      await new Promise((resolve, reject) => { complete = resolve; signal.addEventListener('abort', () => reject(signal.reason), { once: true }); });
+      session.emit({ t: 'sent', requestId: message.requestId, sel: origin });
+    };
+    h.routes.send = ROUTES.send; h.routes.attach = ROUTES.attach;
+    socket.receive({ t: 'send', requestId: 'open-code-send', text: 'test', sel: origin, ...(tracked ? { operationId: 'operation-send' } : {}) });
+    await h.settle(); socket.receive({ t: 'attach', id: 'opencode', navigationId: 2 }); await h.settle();
+    assert.equal(signal.aborted, !submitted);
+    if (submitted) complete();
+    await h.settle(); await h.settle();
+    const results = tracked ? socket.sent.filter(row => row.t === 'operation').flatMap(row => row.events.map(event => event.message)) : events;
+    const result = results.findLast(row => row.t === (submitted ? 'sent' : 'sendFailed'));
+    assert(result); if (submitted && tracked) assert.equal(result.sel, origin);
+    if (!submitted) assert.equal(result.cancelled, true);
+    assert.equal(results.some(row => row.t === (submitted ? 'sendFailed' : 'sent')), false);
+    assert.equal(session.threadId, 'thread-B'); socket.close(1000);
+  });
 }
 
 test('switching away from an unfinished OpenCode history read releases the shared queue for another app', async t => {
@@ -3283,22 +3414,44 @@ test('favorites and project cards share completed-running-idle ordering and aggr
 });
 
 function foldingComposer(land) {
-  const source = read('app/js/composer.js'), classes = new Set(land ? ['land'] : []), timers = [], handlers = {};
-  const input = { value: '' }, attachments = { children: [] }, nodes = { attachments }, focus = { question: false };
+  const source = read('app/js/composer.js'), classes = new Set(['chatmode', ...(land ? ['land'] : [])]), timers = new Map(), handlers = {}, documentHandlers = {};
+  let timerId = 0;
+  const input = { value: '', matches: () => false }, attachments = { children: [] }, focus = { question: false };
+  const attributes = {}, layout = { notes: 0, scrolls: 0, reads: 0, sizes: 0, animations: 0 };
+  const nodes = { attachments, mentionBox: { hidden: true }, fusionWelcome: { hidden: true }, termPasswordBox: { hidden: true },
+    mic: { classList: { contains: () => false }, addEventListener() {} }, sheet: { classList: { contains: () => false } },
+    composerFold: { setAttribute: (key, value) => { attributes[key] = value; } } };
+  const background = { matches: selector => focus.question && selector.includes('#qnBar'), disabled: false };
+  const footer = { get offsetHeight() { return classes.has('composeCompact') ? 48 : 170; }, animate() { layout.animations++; } };
+  const document = { activeElement: background, body: { classList: { contains: key => classes.has(key),
+    toggle(key, on) { if (on) classes.add(key); else classes.delete(key); } } },
+    getElementById: () => null, addEventListener: (name, callback) => { (documentHandlers[name] ||= []).push(callback); },
+    querySelector: selector => selector === 'footer' ? footer : { addEventListener: (name, callback) => { handlers[name] = callback; } } };
+  input.blur = background.blur = () => { document.activeElement = background; focus.question = false; };
   const context = createPageContext({ mode: 'chat', text: input, composing: false,
-    document: { activeElement: { matches: () => focus.question, disabled: false }, body: { classList: { contains: key => classes.has(key) } },
-      querySelector: () => ({ addEventListener: (name, callback) => { handlers[name] = callback; } }) },
-    $: id => nodes[id] ||= {}, composeCompactAllowed: () => true, composerLayoutBusy: () => false, micPressing: () => false,
-    setTimeout: callback => { timers.push(callback); return timers.length; }, clearTimeout() {},
-    setComposerPresentation: (idle, compact) => { for (const [key, on] of [['composeIdle', idle], ['composeCompact', compact]]) on ? classes.add(key) : classes.delete(key); },
+    document, $: id => nodes[id] ||= {}, I18N: { tr: value => value }, queueMicrotask: callback => callback(),
+    window: { innerHeight: land ? 600 : 874, innerWidth: land ? 900 : 402, addEventListener() {} },
+    chatTouching: false, chatMomentum: false, chatScrolling: false, turnNavPointer: null,
+    isFollowingBottom: () => { layout.reads++; return true; }, atBottom: () => true,
+    noteChatLayoutChange: () => { layout.notes++; }, requestChatScroll: () => { layout.scrolls++; },
+    autosize: () => { layout.sizes++; }, matchMedia: () => ({ matches: false }),
+    setTimeout: callback => { timers.set(++timerId, callback); return timerId; }, clearTimeout: id => timers.delete(id),
   });
-  vm.runInContext(part(source, 'let composeCompactTimer =', 'function questionComposerFocused(')
-    + part(source, 'function questionComposerFocused(', 'function micHeld(')
-    + part(source, 'function composeCompactWanted(', 'function setComposerPresentation(')
-    + 'function composeIdleWanted(){return !composerEngaged && !text.value && !composing && !questionComposerFocused();}\n'
-    + 'function endComposerEditing(){composerEngaged=false;}\n'
-    + part(source, 'function setComposeCompact(', '// A tap on the composer'), context);
-  return { context, classes, input, focus, handlers, flush: () => { for (const timer of timers.splice(0)) timer(); } };
+  vm.runInContext(part(source, 'let composeCompactTimer =', 'function submitComposerReceipt('), context);
+  return { context, classes, input, focus, handlers, nodes, attributes, layout,
+    setMode(mode) {
+      context.mode = mode; document.body.classList.toggle('chatmode', mode === 'chat'); document.body.classList.toggle('term', mode === 'terminal');
+      context.updateComposeCompact();
+    },
+    focusPassword() {
+      const password = { id: 'termPassword', disabled: false, matches: selector => selector.includes('#termPassword'),
+        blur() { document.activeElement = background; } };
+      nodes.termPasswordBox.hidden = false; document.activeElement = password;
+      for (const handler of documentHandlers.focusin) handler({ target: password });
+      return password;
+    },
+    flush() { const pending = [...timers.values()]; timers.clear(); for (const timer of pending) timer(); },
+  };
 }
 
 test('collapsed landscape tools retain their action and only a blank-area click expands the composer', () => {
@@ -3328,6 +3481,53 @@ test('landscape retains idle automatic folding and click-to-open while preservin
   assert(!h.classes.has('composeCompact')); assert.equal(h.input.value, 'typing draft');
   h.context.setComposerFold(true); assert(h.classes.has('composeCompact')); h.context.setComposerFold(false);
   assert(!h.classes.has('composeCompact')); assert.equal(h.input.value, 'typing draft');
+});
+
+for (const land of [false, true]) test(`terminal folds manually without changing its draft or chat scroll, landscape=${land}`, () => {
+  const h = foldingComposer(land); h.setMode('terminal'); h.input.value = 'echo keep this draft';
+  h.context.setComposerFold(true);
+  assert(h.classes.has('composeCompact')); assert.equal(h.attributes['aria-expanded'], 'false');
+  h.context.setComposerFold(false);
+  assert(!h.classes.has('composeCompact')); assert.equal(h.attributes['aria-expanded'], 'true');
+  assert.equal(h.input.value, 'echo keep this draft');
+  assert.equal(h.layout.notes, 0); assert.equal(h.layout.scrolls, 0); assert.equal(h.layout.reads, 0);
+});
+
+test('chat and terminal retain independent manual folding across mode switches', () => {
+  const h = foldingComposer(false); h.context.setComposerFold(true);
+  h.setMode('terminal'); assert(!h.classes.has('composeCompact'));
+  h.context.setComposerFold(true); h.setMode('chat'); assert(h.classes.has('composeCompact'));
+  h.context.setComposerFold(false); h.setMode('terminal'); assert(h.classes.has('composeCompact'));
+  h.setMode('chat'); assert(!h.classes.has('composeCompact'));
+});
+
+test('terminal idle folding ignores retained chat attachments and question controls', () => {
+  const h = foldingComposer(true); h.nodes.attachments.children.push({ id: 'chat-image' }); h.focus.question = true;
+  h.setMode('terminal'); h.flush(); assert(h.classes.has('composeCompact'));
+  let intercepted = false;
+  h.handlers.click({ target: { closest: () => ({ tagName: 'BUTTON' }) }, preventDefault: () => { intercepted = true; }, stopPropagation() {} });
+  assert.equal(intercepted, false); h.context.updateComposeCompact(); assert(h.classes.has('composeCompact'));
+  h.handlers.click({ target: { closest: () => null }, preventDefault: () => { intercepted = true; }, stopPropagation() {} });
+  assert.equal(intercepted, true); assert(!h.classes.has('composeCompact'));
+});
+
+test('portrait terminal stays expanded when idle and landscape preserves a non-empty command', () => {
+  const portrait = foldingComposer(false); portrait.setMode('terminal'); portrait.flush(); assert(!portrait.classes.has('composeCompact'));
+  const landscape = foldingComposer(true); landscape.input.value = 'unfinished command'; landscape.setMode('terminal'); landscape.flush();
+  assert(!landscape.classes.has('composeCompact')); assert.equal(landscape.input.value, 'unfinished command');
+});
+
+test('terminal password entry expands the composer without losing focus and prevents idle folding', () => {
+  const h = foldingComposer(true); h.setMode('terminal'); h.context.setComposerFold(true);
+  const password = h.focusPassword(); assert(!h.classes.has('composeCompact')); assert.equal(h.context.document.activeElement, password);
+  h.context.endComposerEditing(); h.flush(); assert(!h.classes.has('composeCompact'));
+  h.context.chatTouching = true; h.nodes.termPasswordBox.hidden = true;
+  h.context.updateComposeCompact(); h.flush(); assert(h.classes.has('composeCompact'));
+});
+
+test('screen mode cannot retain chat or terminal folding', () => {
+  const h = foldingComposer(false); h.context.setComposerFold(true); h.setMode('screen'); h.flush();
+  assert(!h.classes.has('composeCompact')); assert(!h.classes.has('composeIdle'));
 });
 
 function nativeCompletionNotifications() {

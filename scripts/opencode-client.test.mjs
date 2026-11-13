@@ -56,6 +56,21 @@ test('OpenCode HTTP failures remain visible to the caller', async t => {
   await assert.rejects(new OpenCodeClient().request('/session'), /OpenCode 500: native failure/);
 });
 
+test('OpenCode mutating HTTP requests preserve their cancellation signal and body', async t => {
+  const controller = new AbortController(), reason = new Error('send cancelled');
+  let captured;
+  t.mock.method(globalThis, 'fetch', (_url, options) => {
+    captured = options;
+    return new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }));
+  });
+  const pending = new OpenCodeClient().request('/session/ses_1/prompt_async', {
+    method: 'POST', body: { parts: [{ type: 'text', text: 'test' }] }, signal: controller.signal,
+  });
+  assert.equal(captured.signal, controller.signal); assert.equal(captured.method, 'POST');
+  assert.equal(JSON.parse(captured.body).parts[0].text, 'test');
+  controller.abort(reason); await assert.rejects(pending, error => error === reason);
+});
+
 for (const phase of ['headers', 'body']) test(`OpenCode history cancellation releases a pending ${phase} read`, async t => {
   const controller = new AbortController(), reason = new Error('navigation cancelled');
   let received;

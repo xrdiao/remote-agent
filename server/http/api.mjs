@@ -17,7 +17,7 @@ import { videoGrant, serveVideo, servePdf } from './video.mjs';
 import { transferApi, serveTransfer } from './transfer.mjs';
 import { voiceStatus, loadWorker } from '../voice/service.mjs';
 import { voiceEngines } from '../voice/config.mjs';
-import { uploads, removeUpload } from '../../lib/uploads.mjs';
+import { uploads, removeUpload, registerUpload, updateUpload } from '../../lib/uploads.mjs';
 import { overviewSnapshot, overviewPreview } from '../overview.mjs';
 import { manageOverviewSession } from '../overview-actions.mjs';
 import { uploadDocument, imageTypes } from '../../lib/shared-rules.mjs';
@@ -226,9 +226,10 @@ export async function handleApi(req, res, route) {
     const id = crypto.randomUUID();
     const dir = path.join(DATA_DIR, 'uploads', id);
     const filePath = path.join(dir, name);
-    const file = { name, path: filePath, sel: query.get('sel') || '', deviceId: device.id, pending: !image };
-    if (image) { Object.assign(file, { image: true, clientImageId: image, type, request: req }); uploads.set(id, file); }
+    const file = { name, path: filePath, sel: query.get('sel') || '', deviceId: device.id, pending: !image, request: req, complete: false };
+    if (image) Object.assign(file, { image: true, clientImageId: image, type });
     try {
+      registerUpload(path.join(DATA_DIR, 'uploads'), id, file);
       const chunks = [];
       let size = 0;
       for await (const chunk of req) {
@@ -236,15 +237,12 @@ export async function handleApi(req, res, route) {
         if (size > 20 * 1024 * 1024) throw new Error('文件不能超过 20 MB');
         chunks.push(chunk);
       }
-      fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(filePath, Buffer.concat(chunks));
       delete file.request;
-      file.size = size;
-      uploads.set(id, file);
+      updateUpload(file, { size, complete: true });
       return json(req, res, 200, { id, name, size });
     } catch (error) {
-      fs.rmSync(dir, { recursive: true, force: true });
-      uploads.delete(id);
+      removeUpload(id);
       return json(req, res, 400, { error: error.message });
     }
   }

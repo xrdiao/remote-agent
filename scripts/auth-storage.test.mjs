@@ -9,8 +9,9 @@ const source = fs.readFileSync(new URL('../lib/auth.mjs', import.meta.url), 'utf
   .replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
 
 function storage(initial = {}) {
-  const files = new Map(Object.entries(initial)), errors = new Map(), writes = [];
+  const files = new Map(Object.entries(initial)), errors = new Map(), writes = [], removedUploads = [];
   const context = vm.createContext({ path, Buffer, crypto, os: { homedir: () => '/fixture', hostname: () => 'fixture' },
+    removeDeviceUploads: (root, id) => removedUploads.push({ root, id }),
     fs: {
       readFileSync(file) {
         const name = path.basename(file);
@@ -21,8 +22,8 @@ function storage(initial = {}) {
       mkdirSync() {}, writeFileSync(file, value) { writes.push(path.basename(file)); files.set(path.basename(file), value); },
     },
   });
-  vm.runInContext(source + '\nthis.api = { readState, saveState, readConfig, urlKey, computerId, listDevices, totpConfig };', context);
-  return { ...context.api, files, errors, writes };
+  vm.runInContext(source + '\nthis.api = { readState, saveState, readConfig, urlKey, computerId, listDevices, totpConfig, removeDevice };', context);
+  return { ...context.api, files, errors, writes, removedUploads };
 }
 
 test('missing identity initializes once and subsequent reads preserve the same computer', () => {
@@ -74,4 +75,11 @@ test('configuration, device and two-factor reads retain normal values and propag
     h.errors.set(file, 'EACCES'); assert.throws(read, { code: 'EACCES' });
   }
   assert.equal(h.writes.length, 0);
+});
+
+test('all device removal callers share upload ownership cleanup', () => {
+  const h = storage({ 'devices.json': '[{"id":"A","publicKey":"key-A"},{"id":"B","publicKey":"key-B"}]' });
+  assert.equal(h.removeDevice('A'), true);
+  assert.deepEqual(h.removedUploads, [{ root: '/fixture/.agent-remote/uploads', id: 'A' }]);
+  assert.deepEqual(JSON.parse(h.files.get('devices.json')), [{ id: 'B', publicKey: 'key-B' }]);
 });

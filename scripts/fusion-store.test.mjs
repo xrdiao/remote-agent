@@ -21,3 +21,25 @@ test('a failed durable write leaves the original live facts unchanged', () => {
   store.write = () => { throw new Error('disk failure'); };
   assert.throws(() => store.replace(controller, { ...controller, tasks: [{ id: 'B' }] }), /disk failure/); assert.deepEqual(controller.tasks, []);
 });
+
+test('replacement removes omitted fields and keeps exported owners and controller references authoritative', () => {
+  const file = path.join(directory, `${process.pid}-replace.json`); fs.rmSync(file, { force: true });
+  const store = new FusionStore(file), controller = { id: 'c', deviceId: 'd', obsolete: 'remove', tasks: [] };
+  const owners = store.data.owners; owners.d = { runs: [controller] };
+  const next = { id: 'c', deviceId: 'd', tasks: [{ id: 'new' }] };
+  store.replace(controller, next);
+  assert.equal(store.data.owners, owners); assert.equal(owners.d.runs[0], controller);
+  assert.equal(Object.hasOwn(controller, 'obsolete'), false);
+  store.write(); assert.deepEqual(new FusionStore(file).data.owners.d.runs[0], next);
+  fs.rmSync(file, { force: true });
+});
+
+test('replacement updates the stored entry even when the caller holds a separate controller object', () => {
+  const file = path.join(directory, `${process.pid}-detached.json`); fs.rmSync(file, { force: true });
+  const store = new FusionStore(file), controller = { id: 'c', deviceId: 'd', obsolete: true };
+  store.data.owners.d = { runs: [{ ...controller }] };
+  store.replace(controller, { id: 'c', deviceId: 'd', status: 'ready' });
+  assert.equal(store.data.owners.d.runs[0], controller); store.write();
+  assert.deepEqual(new FusionStore(file).data.owners.d.runs[0], controller);
+  fs.rmSync(file, { force: true });
+});

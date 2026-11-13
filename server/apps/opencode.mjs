@@ -8,7 +8,7 @@ import { resolveLocal, writeTextFile } from '../../lib/files.mjs';
 import { publishSessionChange, rememberSessionMessage, removeLibrarySession } from '../../lib/session-library.mjs';
 import { currentOperation, withOperation } from '../operations.mjs';
 import { createMessageID } from '../opencode/client.mjs';
-import { uploads, pendingUploads, uploadAttachments, removeUpload } from '../../lib/uploads.mjs';
+import { uploads, pendingUploads, uploadAttachments, removeUpload, updateUpload } from '../../lib/uploads.mjs';
 import { openCodeAttachment } from '../opencode/attachments.mjs';
 import { watchChatUpdates } from '../agent/updates.mjs';
 
@@ -120,7 +120,7 @@ async function bind(s, req) {
 }
 
 async function list(s, m = {}) {
-  await openCode.connect();
+  await awaitCdpRead(openCode.connect());
   const rows = [...openCode.sessions.values()].sort((a, b) => b.time.updated - a.time.updated).map(row => ({
     id: row.id, title: row.title, workspace: row.directory, window: path.basename(row.directory), group: '',
     current: s.threadId === row.id, running: openCode.statuses.get(row.id)?.type === 'busy', lastUsed: row.time.updated,
@@ -133,7 +133,7 @@ async function list(s, m = {}) {
 async function ensureSession(s) {
   if (s.threadId) return;
   const model = openCode.selection(s.openCodeDirectory);
-  const native = await openCode.client.request('/session', { directory: s.openCodeDirectory, method: 'POST', body: {} });
+  const native = await openCode.client.request('/session', { directory: s.openCodeDirectory, method: 'POST', body: {}, signal: cdpRead.getStore() });
   cdpRead.getStore()?.throwIfAborted();
   openCode.sessions.set(native.id, native);
   s.threadId = s.selectedThread = native.id;
@@ -152,15 +152,15 @@ export async function manageOpenCodeSession(id, action, name) {
   const directory = session.directory;
   if (action === 'actions') return { actions: ['rename', 'archive', 'delete'] };
   if (action === 'rename') {
-    const updated = await openCode.client.request(`/session/${id}`, { directory, method: 'PATCH', body: { title: name } });
+    const updated = await openCode.client.request(`/session/${id}`, { directory, method: 'PATCH', body: { title: name }, signal: cdpRead.getStore() });
     openCode.sessions.set(id, updated);
     publishSessionChange('opencode', id, { action: 'rename', title: updated.title });
   } else if (action === 'archive') {
-    await openCode.client.request(`/session/${id}`, { directory, method: 'PATCH', body: { time: { archived: Date.now() } } });
+    await openCode.client.request(`/session/${id}`, { directory, method: 'PATCH', body: { time: { archived: Date.now() } }, signal: cdpRead.getStore() });
     openCode.sessions.delete(id);
     publishSessionChange('opencode', id, { action: 'archive' });
   } else if (action === 'delete' || action === 'remove') {
-    await openCode.client.request(`/session/${id}`, { directory, method: 'DELETE' });
+    await openCode.client.request(`/session/${id}`, { directory, method: 'DELETE', signal: cdpRead.getStore() });
     openCode.sessions.delete(id);
     removeLibrarySession('opencode', id, 'delete');
   } else throw new Error('不支持的 OpenCode 会话操作');
@@ -204,16 +204,17 @@ const routes = {
     try {
       cdpRead.getStore()?.throwIfAborted();
       if (pending.operation) pending.operation.submitted = true;
+      if (cdpRead.getStore()) cdpRead.getStore().submitted = true;
       await openCode.client.request(`/session/${this.threadId}/prompt_async`, { directory: this.openCodeDirectory, method: 'POST', body: {
         messageID, model: { providerID: native.providerID, modelID: native.id },
         ...(model.variant ? { variant: model.variant } : {}), parts,
-      } });
+      }, signal: cdpRead.getStore() });
     } catch (error) {
       pending.unsubscribe(); this.openCodeSends.delete(m.requestId);
       if (pending.operation) pending.operation.pending = false;
       throw error;
     }
-    for (const [, file] of files) file.pending = false;
+    for (const [, file] of files) updateUpload(file, { pending: false });
     this.emit({ t: 'attachments', sel: pending.sel, list: uploadAttachments(pending.sel) });
     this.openCodeDrafts?.delete(m.sel || pending.sel);
     this.openCodeDrafts?.delete(pending.sel);
@@ -222,10 +223,10 @@ const routes = {
     publish(this);
   },
   async stop() {
-    await openCode.client.request(`/session/${this.threadId}/abort`, { directory: this.openCodeDirectory, method: 'POST' });
+    await openCode.client.request(`/session/${this.threadId}/abort`, { directory: this.openCodeDirectory, method: 'POST', signal: cdpRead.getStore() });
   },
   async refresh() {
-    await openCode.connect();
+    await awaitCdpRead(openCode.connect());
     if (this.threadId) await openCode.loadMessages(this.threadId);
     publish(this);
   },
@@ -271,11 +272,10 @@ const routes = {
     const upload = uploads.get(m.uploadId);
     if (!upload) throw new Error('图片上传已失效');
     if (m.sel && upload.sel && m.sel !== upload.sel) throw new Error('上传所属会话不匹配');
-    upload.pending = true;
+    updateUpload(upload, { pending: true });
     const sel = this.selectionKey();
     this.emit({ t: 'attachments', sel, list: uploadAttachments(sel) });
-    this.emit({ t: 'imageDone', clientImageId: m.clientImageId, attachmentId: m.uploadId, ok: true });
-    return { ok: true };
+    return m.uploadId;
   },
   async removeAttachment(m) {
     const sel = m.sel || this.selectionKey();
@@ -324,7 +324,7 @@ const routes = {
     try {
       if (m.sel !== this.selectionKey() || request?.sessionID !== this.threadId) throw new Error('审批已处理或会话已切换');
       if (!['once', 'reject'].includes(m.actionId)) throw new Error('未知的 OpenCode 审批操作');
-      await openCode.client.request(`/permission/${id}/reply`, { directory: this.openCodeDirectory, method: 'POST', body: { reply: m.actionId } });
+      await openCode.client.request(`/permission/${id}/reply`, { directory: this.openCodeDirectory, method: 'POST', body: { reply: m.actionId }, signal: cdpRead.getStore() });
       openCode.permissions.delete(id); openCode.approvalErrors.delete(id); openCode.changed(this.threadId);
     } finally { this.emit({ t: 'clickDone', sel: m.sel, item: m.item, actionId: m.actionId }); }
   },
@@ -332,7 +332,7 @@ const routes = {
     const request = openCode.questions.get(m.id);
     if (m.sel !== this.selectionKey() || request?.sessionID !== this.threadId) throw new Error('提问已处理或会话已切换');
     await openCode.client.request(`/question/${m.id}/${m.reject ? 'reject' : 'reply'}`, {
-      directory: this.openCodeDirectory, method: 'POST', ...(m.reject ? {} : { body: { answers: m.answers } }),
+      directory: this.openCodeDirectory, method: 'POST', signal: cdpRead.getStore(), ...(m.reject ? {} : { body: { answers: m.answers } }),
     });
     openCode.questions.delete(m.id); openCode.changed(this.threadId);
   },
@@ -358,7 +358,7 @@ const routes = {
     this.emit({ t: 'saved', requestId: m.requestId, path: m.path, host: '', ok: true, size });
   },
   async changes() {
-    const files = await openCode.client.request(`/session/${this.threadId}/diff`, { directory: this.openCodeDirectory });
+    const files = await openCode.client.request(`/session/${this.threadId}/diff`, { directory: this.openCodeDirectory, signal: cdpRead.getStore() });
     this.emit({ t: 'changes', historical: true, actions: [], files: files.map(row => ({ name: row.file, add: row.additions, del: row.deletions })) });
   },
 };

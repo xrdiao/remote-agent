@@ -15,7 +15,7 @@ import { currentOperation } from '../operations.mjs';
 import { codexBackend, CODEX_BACKEND } from '../codex/state.mjs';
 import { safeHomePath, createProjectFolder, projectList, openFolder } from '../agent/projects.mjs';
 import { rememberSelection } from '../../lib/auth.mjs';
-import { uploads, pendingUploads, uploadAttachments, removeUpload } from '../../lib/uploads.mjs';
+import { uploads, pendingUploads, uploadAttachments, removeUpload, updateUpload } from '../../lib/uploads.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -286,7 +286,7 @@ const backendRoutes = {
       if (uploads.get(m.replace)?.sel !== file.sel) throw new Error('原图片已不在当前输入框中');
       removeUpload(m.replace);
     }
-    file.pending = true;
+    updateUpload(file, { pending: true });
     backendRoutes.attachments.call(this);
     return m.uploadId;
   },
@@ -449,7 +449,7 @@ export const adapter = {
     const operation = currentOperation();
     if (operation) operation.submitted = true;
     const result = await codexBackend.send(id, input, when, receipt.requestId);
-    for (const [, file] of files) file.pending = false;
+    for (const [, file] of files) updateUpload(file, { pending: false });
     this.codexDrafts?.delete(sel);
     rememberSessionMessage('codex', id, Date.now());
     this.emit({ t: 'sent', ...receipt, ...result, sel, sentAt: Date.now() });
@@ -660,7 +660,7 @@ export const adapter = {
         unregister = source.registerSend(request, (accepted, error, unknown = false) => {
           if (accepted) {
             if (token) Object.assign(token, accepted, { pending: false });
-            for (const file of files) file.pending = false;
+            for (const file of files) updateUpload(file, { pending: false });
             if (!accepted.queued) rememberSessionMessage('codex', accepted.thread, Date.now());
             this.emit({ t: 'sent', ...receipt, ...accepted, sel, sentAt: Date.now() });
           } else if (unknown) this.emit({ t: 'sent', ...receipt, pending: true, message: error, sel });

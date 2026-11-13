@@ -10,12 +10,12 @@ const dir = path.dirname(fileURLToPath(import.meta.url));
 const stateFile = path.join(DATA_DIR, 'visual.json');
 const plotting = /python|figure|matplotlib|isaac|omniverse|mujoco|gazebo|rviz|pybullet|vtk|plot|simulate|simulation|open3d|仿真|绘图/i;
 const editor = /(?:visual studio code|cursor|devin|codex)/i;
-export const wayland = process.platform === 'linux' && (process.env.XDG_SESSION_TYPE === 'wayland' || !!process.env.WAYLAND_DISPLAY);
+export const isWayland = () => process.platform === 'linux' && (process.env.XDG_SESSION_TYPE === 'wayland' || !!process.env.WAYLAND_DISPLAY);
 function saved() { return fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, 'utf8')) : {}; }
 function save(value) { fs.writeFileSync(stateFile, JSON.stringify(value), {mode: 0o600}); }
 
 export async function visualWindows() {
-  if (wayland) return [];
+  if (isWayland()) return [];
   let text;
   if (process.platform === 'win32') {
     const script = fs.readFileSync(path.join(dir, 'windows.ps1'), 'utf8');
@@ -44,23 +44,27 @@ class VisualCapture {
   subscribe(session) { this.viewers.add(session); this.publish(session); }
   unsubscribe(session) { this.viewers.delete(session); if (!this.viewers.size) this.stop(); }
   publish(session) {
-    session.emit({t: 'visual', ...this.state, wayland});
-    if (this.frame && this.state.state === 'live') session.emit({t: 'frame', ...this.frame, visual: true});
+    session.emit({t: 'visual', ...this.state, wayland: isWayland()});
+    if (this.frame && this.state.state === 'live') this.publishFrame(session, this.frame);
   }
-  update(state) { this.state = {...this.state, ...state}; for (const viewer of this.viewers) viewer.emit({t: 'visual', ...this.state, wayland}); }
+  update(state) { this.state = {...this.state, ...state}; for (const viewer of this.viewers) viewer.emit({t: 'visual', ...this.state, wayland: isWayland()}); }
+  publishFrame(viewer, frame) {
+    if (viewer.visible && viewer.client.bufferedAmount < 2 * 1024 * 1024) viewer.emit({t: 'frame', ...frame, visual: true});
+  }
   sendFrame(frame) {
     this.frame = frame;
-    for (const viewer of this.viewers) if (viewer.visible && viewer.client.bufferedAmount < 2 * 1024 * 1024) viewer.emit({t: 'frame', ...frame, visual: true});
+    for (const viewer of this.viewers) this.publishFrame(viewer, frame);
   }
   stop() { const child = this.child; this.child = null; child?.kill(); this.frame = null; this.state = {...this.state, state: 'idle'}; }
   async restore(windows) {
     if (this.child) return;
-    if (wayland) { if (saved().restoreToken) return this.start('restore'); return; }
+    if (isWayland()) { if (saved().restoreToken) return this.start('restore'); return; }
     const list = windows || await visualWindows();
     if (!list.length) return this.update({state: 'idle', title: '', message: '当前没有窗口'});
     return this.start((list.find(w => w.id === saved().id) || list[0]).id);
   }
   async start(id) {
+    const wayland = isWayland();
     let target;
     if (!wayland) {
       target = (await visualWindows()).find(w => w.id === id);

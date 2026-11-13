@@ -15,7 +15,7 @@ import { AGENT_REGISTRY } from './apps/index.mjs';
 import { sessionRows } from '../lib/session-library.mjs';
 import { catalogSessions, touchProjectWindow, bindProjectWindow, orderedProjectWindows } from './project-windows.mjs';
 import { leaseWindow, windowOperationLocked } from './window-use.mjs';
-import {visualCapture, visualWindows, wayland} from './visual/capture.mjs';
+import {visualCapture, visualWindows, isWayland} from './visual/capture.mjs';
 import { rememberSelection, lastSelection } from '../lib/auth.mjs';
 import { editorRoots } from '../lib/files.mjs';
 import { NativeCdp, nativeWindow, nativeWindowAt, nativeTargets, subscribeCatalog } from './native-windows.mjs';
@@ -145,17 +145,17 @@ export class Session extends AgentContext {
   async visualList() {
     try {
       const windows = await visualWindows();
-      this.emit({t: 'visualWindows', windows, wayland});
+      this.emit({t: 'visualWindows', windows, wayland: isWayland()});
       return windows;
     } catch (error) {
-      this.emit({t: 'visual', state: 'error', message: '读取绘图或仿真窗口失败：' + error.message, wayland});
+      this.emit({t: 'visual', state: 'error', message: '读取绘图或仿真窗口失败：' + error.message, wayland: isWayland()});
       throw error;
     }
   }
 
   async visualSelect(id) {
     if (this.mode !== 'screen') return;
-    await visualCapture.start(wayland ? 'select' : String(id));
+    await visualCapture.start(isWayland() ? 'select' : String(id));
   }
 
   stopVisual() { visualCapture.unsubscribe(this); }
@@ -617,12 +617,13 @@ export class Session extends AgentContext {
 
   async handle(msg) {
     const route = resolveRoute(this, msg.t);
-    if (route?.native) return this.dispatch(msg, route);
+    if (route?.native && this.app !== 'opencode') return this.dispatch(msg, route);
     const target = msg.id?.startsWith('project:') ? decodeURIComponent(msg.id.split(':')[1]) : msg.id?.startsWith('thread:') ? msg.id.split(':')[1] : this.windowId;
     if (windowOperationLocked(this.app, target, this)) throw new Error('窗口正在批量处理会话，请稍后操作');
     const release = leaseWindow(this.app, this.windowId, this);
     if (!['ping', 'visible', 'usage', 'agents', 'connAgents', 'windows', 'sessionLibrary', 'sessionActions'].includes(msg.t)) touchProjectWindow(this.app, this.windowId);
     const execute = async () => {
+    if (route?.native) return this.dispatch(msg, route);
     if (route?.pre) {
       const r = await route.pre(this, msg);
       if (r !== SKIP) return r;

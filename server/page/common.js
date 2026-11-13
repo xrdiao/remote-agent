@@ -94,8 +94,7 @@
   const itemByKey = (panel, key) => [...panel.querySelectorAll(`${ITEM_SEL}, [data-remote-item]`)].find(el => itemKey(el) === key) || panel.querySelector(`[data-flat-index="${CSS.escape(key)}"], [data-message-id="${CSS.escape(key)}"], [data-turn-key="${CSS.escape(key)}"]`);
 
   const findPanel = () => {
-    const real = [...doc.querySelectorAll(COMPOSER)].filter(e => vis(e) && !e.closest(ITEM_SEL));
-    const base = real.length ? real : [...doc.querySelectorAll(COMPOSER)].filter(vis);
+    const base = composerInputs(doc);
     // Cursor's Agents window can show several cards at once; read the card the sidebar marks selected.
     const selId = doc.querySelector('[data-sidebar-item-key] [data-active="true"]')?.closest('[data-sidebar-item-key]')?.getAttribute('data-sidebar-item-key')?.slice(4);
     const eds = selId ? [...base].sort((a, b) => (a.closest('[data-glass-agent-id]')?.getAttribute('data-glass-agent-id') === selId ? 0 : 1) - (b.closest('[data-glass-agent-id]')?.getAttribute('data-glass-agent-id') === selId ? 0 : 1)) : base;
@@ -191,11 +190,7 @@
       if (tag === 'BR') { out += '<br>'; continue; }
       if (tag === 'HR') { out += '<hr>'; continue; }
       if (tag === 'A' && /^https?:\/\//i.test(n.getAttribute('href') || '')) {
-        out += `<a href="${esc(n.getAttribute('href'))}">${clean(n)}</a>`;
-        continue;
-      }
-      if (devin && tag === 'A' && /^https?:\/\//i.test(n.getAttribute('href') || '')) {
-        out += `<a href="${esc(n.getAttribute('href'))}" target="_blank" rel="noopener noreferrer">${clean(n, devin)}</a>`;
+        out += `<a href="${esc(n.getAttribute('href'))}"${devin ? ' target="_blank" rel="noopener noreferrer"' : ''}>${clean(n, devin)}</a>`;
         continue;
       }
       const inner = clean(n, devin);

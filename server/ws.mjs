@@ -75,6 +75,13 @@ wss.on('connection', (ws, req) => {
   ws.backgroundTimer = null;
   let queue = Promise.resolve();
   const sends = new Set();
+  const cancelSends = (matches, message) => {
+    for (const pending of sends) if (matches(pending) && !pending.operation?.submitted && !pending.controller.signal.submitted && !pending.controller.signal.aborted) {
+      const error = Object.assign(new Error(message), { cancelled: true });
+      pending.controller.abort(error);
+      cdpRead.run(null, () => withOperation(pending.operation, () => ROUTES.send.fail(session, pending.msg, error)));
+    }
+  };
   let questionQueue = Promise.resolve();
   let binding = 0;
   let activeBinding = 0;
@@ -212,11 +219,7 @@ wss.on('connection', (ws, req) => {
     if (sendRequest) sends.add(sendRequest);
     if (msg.t === 'stop' && session.app !== 'fusion') {
       const scope = msg.sel || session.selectionKey();
-      for (const pending of sends) if (pending.sel === scope && !pending.operation?.submitted && !pending.controller.signal.aborted) {
-        const error = Object.assign(new Error('发送已取消，草稿已保留'), { cancelled: true });
-        pending.controller.abort(error);
-        withOperation(pending.operation, () => ROUTES.send.fail(session, pending.msg, error));
-      }
+      cancelSends(pending => pending.sel === scope, '发送已取消，草稿已保留');
     }
     const mention = msg.t === 'mentionQuery';
     if (mention) session.mentionSeq = msg.seq;
@@ -249,6 +252,7 @@ wss.on('connection', (ws, req) => {
       pendingNavigation = navigation;
     } else if (route?.switchRead !== true && route?.connection !== true) pendingNavigation = null;
     if (switching) {
+      if (session.app === 'opencode') cancelSends(() => true, '会话已切换，消息未提交，草稿已保留');
       if (session.app !== 'fusion') configureNativeRetry(session.deviceId, null);
       if (navigation && activeNavigation) navigationReads.abort(new Error('窗口已切换'));
       session.chatRead?.controller.abort(new Error('窗口已切换'));

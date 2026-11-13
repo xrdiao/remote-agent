@@ -220,7 +220,7 @@ function autosize() {
   text.style.height = 'auto'; text.style.height = text.scrollHeight + 'px';
   field.style.height = fieldHeight;
   updateMathPrev(); updateComposeCompact();
-  if (text.offsetHeight !== oldHeight) noteChatLayoutChange();
+  if (mode === 'chat' && text.offsetHeight !== oldHeight) noteChatLayoutChange();
   if (questionCompose?.sel === viewSel && document.body.classList.contains('kb')) fitViewport();
   document.dispatchEvent(new Event('composer-state'));
 }
@@ -499,8 +499,9 @@ function updateSendMode() {
 }
 
 /* One presentation controller owns explicit/question folding and landscape idle folding. */
-let composeCompactTimer = 0, composerEngaged = false, composerCollapsed = false, composerPointerPending = false;
-const portraitComposer = () => mode === 'chat' && !document.body.classList.contains('land');
+let composeCompactTimer = 0, composerEngaged = false, composerPointerPending = false;
+const composerCollapsed = { chat: false, terminal: false };
+const portraitComposer = () => (mode === 'chat' || mode === 'terminal') && !document.body.classList.contains('land');
 function questionComposerFocused() {
   const focused = document.activeElement;
   return focused?.matches('#qnBar input, #qnBar textarea, #qnBar select') && !focused.disabled;
@@ -509,19 +510,19 @@ function micHeld() { return $('mic')?.classList.contains('on') || (typeof voiceS
 function micPressing() { return $('mic')?.classList.contains('on') || (typeof voiceSession !== 'undefined' && !!voiceSession?.held); }
 function composeIdleWanted() {
   const focused = document.activeElement;
-  return mode === 'chat' && focused !== text && !composerEngaged && !composing
-    && !focused?.matches('#qnBar input, #qnBar textarea, #qnBar select')
-    && $('mentionBox').hidden && $('fusionWelcome').hidden
-    && !document.getElementById('imageEditor')?.open && !micHeld();
+  return (mode === 'chat' || mode === 'terminal') && focused !== text && !composerEngaged && !composing
+    && (mode === 'terminal' ? $('termPasswordBox').hidden
+      : !questionComposerFocused() && $('mentionBox').hidden && $('fusionWelcome').hidden
+        && !document.getElementById('imageEditor')?.open && !micHeld());
 }
 function endComposerEditing() {
   composerEngaged = false;
   const focused = document.activeElement;
-  if (focused === text || focused?.matches('#qnBar input, #qnBar textarea, #qnBar select')) focused.blur();
+  if (focused === text || focused?.matches('#qnBar input, #qnBar textarea, #qnBar select, #termPassword')) focused.blur();
   updateComposeCompact();
 }
 function composerLayoutBusy() {
-  return chatTouching || chatMomentum || chatScrolling || turnNavPointer?.dragging || $('sheet').classList.contains('open');
+  return mode === 'chat' && (chatTouching || chatMomentum || chatScrolling || turnNavPointer?.dragging) || $('sheet').classList.contains('open');
 }
 // Only where vertical room is scarce, judged by the window's actual shape rather than the reported
 // orientation (foldables disagree on what "portrait" means): a tall phone window keeps its tools,
@@ -530,21 +531,21 @@ const composeCompactAllowed = () => window.innerHeight / window.innerWidth < 1.6
 window.addEventListener('resize', () => updateComposeCompact());
 function composeCompactWanted() {
   // Both callers have already checked composeIdleWanted().
-  return composeCompactAllowed() && !text.value.trim() && !$('attachments').children.length;
+  return composeCompactAllowed() && !text.value.trim() && (mode !== 'chat' || !$('attachments').children.length);
 }
 function setComposerPresentation(idle, compact) {
   const oldCompact = document.body.classList.contains('composeCompact');
   if (oldCompact === compact && document.body.classList.contains('composeIdle') === idle) return;
-  const stick = isFollowingBottom();
+  const stick = mode === 'chat' && isFollowingBottom();
   const foot = document.querySelector('footer');
   const h0 = foot.offsetHeight;
-  if (idle && !stick && !atBottom()) {
+  if (mode === 'chat' && idle && !stick && !atBottom()) {
     const style = getComputedStyle(text);
     const idleHeight = Math.max(parseFloat(style.minHeight), parseFloat(style.fontSize) * 2.9 + 12);
     const reduction = compact ? h0 : Math.max(0, text.offsetHeight - idleHeight);
     if (list.scrollHeight - list.scrollTop - list.clientHeight < reduction) return;
   }
-  noteChatLayoutChange();
+  if (mode === 'chat') noteChatLayoutChange();
   document.body.classList.toggle('composeIdle', idle);
   document.body.classList.toggle('composeCompact', compact);
   const fold = $('composerFold');
@@ -562,21 +563,21 @@ function setComposerPresentation(idle, compact) {
 function setComposeCompact(on) { setComposerPresentation(on, on); }
 function setComposerFold(on) {
   composerPointerPending = false;
-  composerCollapsed = on;
+  composerCollapsed[mode] = on;
   endComposerEditing();
   composerEngaged = true;
   updateComposeCompact();
 }
 $('composerFold').onclick = () => setComposerFold(!document.body.classList.contains('composeCompact'));
 function updateComposeCompact() {
-  if (mode === 'chat' && (composerCollapsed || questionComposerFocused())) {
+  if ((mode === 'chat' || mode === 'terminal') && (composerCollapsed[mode] || mode === 'chat' && questionComposerFocused())) {
     clearTimeout(composeCompactTimer); composeCompactTimer = 0;
     setComposerPresentation(false, true);
     return;
   }
   // Explicit/question folding is immediate and does not use the idle delay.
   if (document.body.classList.contains('composeCompact') && !document.body.classList.contains('composeIdle')) {
-    if (mode === 'chat' && composerPointerPending) return;
+    if ((mode === 'chat' || mode === 'terminal') && composerPointerPending) return;
     clearTimeout(composeCompactTimer); composeCompactTimer = 0;
     setComposerPresentation(false, false);
   }
@@ -604,12 +605,12 @@ document.querySelector('.composerBox').addEventListener('click', e => {
   if (portraitComposer()) return;
   if (document.body.classList.contains('composeCompact')) {
     if (e.target.closest('button')) {
-      composerCollapsed = true;
+      composerCollapsed[mode] = true;
       return;
     }
     e.preventDefault(); e.stopPropagation();
     composerPointerPending = false;
-    composerCollapsed = false;
+    composerCollapsed[mode] = false;
     clearTimeout(composeCompactTimer); composeCompactTimer = 0;
     composerEngaged = true;
     setComposeCompact(false);
@@ -635,10 +636,15 @@ document.addEventListener('pointercancel', () => {
 });
 for (const event of ['pointerup', 'keyup']) $('mic').addEventListener(event, () => queueMicrotask(updateComposeCompact));
 document.addEventListener('focusin', e => {
-  if (e.target.matches('#qnBar input, #qnBar textarea, #qnBar select')) updateComposeCompact();
+  if (mode === 'terminal' && e.target.id === 'termPassword') {
+    composerCollapsed.terminal = false;
+    composerEngaged = true;
+    updateComposeCompact();
+  }
+  else if (e.target.matches('#qnBar input, #qnBar textarea, #qnBar select')) updateComposeCompact();
 });
 document.addEventListener('focusout', e => {
-  if (e.target.matches('#qnBar input, #qnBar textarea, #qnBar select')) queueMicrotask(updateComposeCompact);
+  if (e.target.matches('#qnBar input, #qnBar textarea, #qnBar select, #termPassword')) queueMicrotask(updateComposeCompact);
 });
 document.addEventListener('click', e => {
   composerPointerPending = false;

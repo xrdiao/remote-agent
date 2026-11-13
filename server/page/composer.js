@@ -78,7 +78,8 @@
   };
   const composerFocused = () => {
     const a = doc.activeElement;
-    return !!a?.closest?.(`${COMPOSER}, [data-slate-editor="true"]`) && !inItem(a);
+    const ed = composerTarget(doc);
+    return !!ed && ed.contains(a);
   };
   const queueEditing = () => document.getElementById('active-frame')
     ? codexQueueController()?.editingMessageId || ''
@@ -110,12 +111,7 @@
       view.dispatch(view.state.tr.replaceWith(0, view.state.doc.content.size, schema.nodes.paragraph.create(null, children)));
       return composerDraft() === text.replace(/\n+$/g, '');
     }
-    const eds = [...doc.querySelectorAll(`${COMPOSER}, [data-slate-editor="true"][contenteditable="true"]`)].filter(e => vis(e) && !inItem(e));
-    const sel = selCardId();
-    const selEds = sel ? eds.filter(e => e.closest('[data-glass-agent-id]')?.getAttribute('data-glass-agent-id') === sel) : [];
-    const ed = (selEds.length ? selEds : eds).filter(e => e.editor?.commands?.setContent).at(-1)
-      || (selEds.length ? selEds : eds).find(e => e.contains(doc.activeElement))
-      || (selEds.length ? selEds.at(-1) : eds.at(-1));
+    const ed = composerTarget(doc);
     if (!ed) return false;
     // Cursor tiptap keeps the Editor on the DOM node.
     const cmd = ed.editor?.commands;

@@ -93,8 +93,7 @@ function registryWith(existing, mine) {
   if (existing?.v === 3 && Array.isArray(existing.computers)) {
     others = existing.computers.filter(c => c && c.id && c.id !== mine.id && c.iv && c.data);
   } else if (existing?.v === 2 && existing.iv && existing.data && !opensEntry(existing)) {
-    const id = crypto.createHash('sha256').update(String(existing.data)).digest().subarray(0, 8).toString('hex');
-    others = [{ id, name: existing.name || '另一台电脑', iv: existing.iv, data: existing.data, updated: existing.updated }];
+    throw new Error('旧地址记录属于另一台电脑，请先在原电脑发布 v3 地址记录，再加入当前电脑');
   }
   const computers = [...others, mine].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   return { v: 3, computers };

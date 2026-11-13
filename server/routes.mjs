@@ -43,7 +43,8 @@ export function resolveRoute(session, type) {
   const native = session.codexBackend ? session.adapter.backendRoutes[type] : session.app === 'opencode' && session.adapter.routes[type];
   if (!native) return route;
   const run = (s, m) => native.call(s, m);
-  return { ...route, native: true, run, ...(session.codexBackend && route?.fastRun ? { fastRun: run } : {}) };
+  return { ...route, native: true, run,
+    ...(session.codexBackend && route?.fastRun ? { fastRun: run } : {}) };
 }
 const fusionRoute = method => ({ fast: true, fastRun: async (session, message) => {
   try { return await session[method](message); }
@@ -387,7 +388,7 @@ export const ROUTES = {
     },
     after: (s, m, result) => {
       s.emit({ t: 'queueDone', sel: m.sel || s.selectionKey(), requestId: m.requestId, id: m.id, action: m.action, text: m.action === 'read' ? result : m.text, echoes: m.echoes, ...(m.action === 'edit' && result), ok: true });
-      if (m.action === 'edit') s.emit({ t: 'status', ok: true, msg: s.app === 'codex' && result.queued === false ? '已修改并已发送' : '已修改，仍在排队' });
+      if (m.action === 'edit') s.emit({ t: 'status', ok: true, msg: s.app === 'devin' ? '已取回输入框，编辑后需重新发送' : s.app === 'codex' && result.queued === false ? '已修改并已发送' : '已修改，仍在排队' });
     },
     fail: (s, m, error) => s.emit({ t: 'queueDone', sel: m.sel || s.selectionKey(), requestId: m.requestId, id: m.id, action: m.action, ok: false, error: error?.message }),
   },

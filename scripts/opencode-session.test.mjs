@@ -6,6 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 import { cdpRead } from '../server/cdp.mjs';
 import { createDocuments } from './fixtures/opencode-documents.mjs';
+import { leaseWindow, windowLeased } from '../server/window-use.mjs';
+import { resolveRoute } from '../server/routes.mjs';
+import { registerUpload } from '../lib/uploads.mjs';
 
 const root = fileURLToPath(new URL(`../_shots/opencode-tests-${process.pid}/`, import.meta.url));
 fs.mkdirSync(root, { recursive: true });
@@ -19,6 +22,48 @@ test.after(() => { openCode.close(); fs.rmSync(root, { recursive: true, force: t
 
 const native = id => ({ id, directory: root.slice(0, -1), title: id, time: { created: 1, updated: 2 } });
 const tick = () => new Promise(resolve => setImmediate(resolve));
+
+test('OpenCode native dispatch shares the generic window lease and source wrapper without invoking desktop focus', async () => {
+  const trace = [], session = { app: 'opencode', windowId: 'native-lock',
+    adapter: { routes: { openMenu() {} } }, cdp: { nativeWindow: { run: async action => { trace.push('source'); return action(); } } },
+    async dispatch() { assert.equal(windowLeased('opencode', 'native-lock'), true); trace.push('dispatch'); return 'menu'; },
+    withFocus() { assert.fail('native OpenCode must not focus a desktop editor'); } };
+  assert.equal(await Session.prototype.handle.call(session, { t: 'openMenu' }), 'menu');
+  assert.deepEqual(trace, ['source', 'dispatch']); assert.equal(windowLeased('opencode', 'native-lock'), false);
+  const release = leaseWindow('opencode', 'native-lock', {}, true);
+  try { await assert.rejects(Session.prototype.handle.call(session, { t: 'openMenu' }), /窗口正在批量处理/); }
+  finally { release(); }
+  session.dispatch = async () => { throw new Error('native failure'); };
+  await assert.rejects(Session.prototype.handle.call(session, { t: 'openMenu' }), /native failure/);
+  assert.equal(windowLeased('opencode', 'native-lock'), false);
+});
+
+test('OpenCode diff and empty-session creation pass the active read signal to native HTTP', async t => {
+  const { session, requests } = fixture(t), controller = new AbortController();
+  await session.handle({ t: 'attach', id: 'opencode', project: { root }, newSession: true });
+  await cdpRead.run(controller.signal, () => session.handle({ t: 'send', text: 'signal', requestId: 'signal-send' }));
+  assert.equal(controller.signal.submitted, true);
+  assert.equal(requests.find(row => row.route === '/session').options.signal, controller.signal);
+  assert.equal(requests.find(row => row.route.endsWith('/prompt_async')).options.signal, controller.signal);
+  t.mock.method(openCode.client, 'request', async (route, options) => {
+    assert.equal(options.signal, controller.signal); assert.match(route, /\/diff$/); return [];
+  });
+  await cdpRead.run(controller.signal, () => session.handle({ t: 'changes' }));
+});
+
+test('OpenCode image native dispatch leaves one receipt with the attachment ID to the shared route', async t => {
+  const { session, events } = fixture(t);
+  await session.handle({ t: 'attach', id: 'opencode', project: { root }, newSession: true });
+  const id = 'image-receipt', file = { name: 'image.png', path: root + 'uploads/' + id + '/image.png',
+    deviceId: session.deviceId, sel: session.selectionKey(), complete: true, image: true, pending: false };
+  registerUpload(root + 'uploads', id, file); fs.writeFileSync(file.path, 'image');
+  const message = { t: 'image', uploadId: id, sel: session.selectionKey(), clientImageId: 'client-image' };
+  const route = resolveRoute(session, message.t), result = await session.handle(message);
+  route.after(session, message, result);
+  const receipts = events.filter(row => row.t === 'imageDone');
+  assert.equal(receipts.length, 1); assert.equal(receipts[0].attachmentId, id); assert.equal(receipts[0].ok, true);
+  assert.equal(JSON.parse(fs.readFileSync(root + 'uploads/' + id + '.json')).pending, true);
+});
 
 test('cancelled OpenCode history leaves the previous selection unbound and does not publish a first screen', async t => {
   const { session, events } = fixture(t);
@@ -420,7 +465,7 @@ test('OpenCode sends parsed Excel from an empty conversation and confirms only w
 
 test('OpenCode parse failures keep uploads pending without creating a native session or a hanging send', async t => {
   const { session, events, requests } = fixture(t);
-  const file = root + 'broken.xlsx'; fs.writeFileSync(file, 'not an Excel workbook');
+  const file = root + 'broken/broken.xlsx'; fs.mkdirSync(root + 'broken'); fs.writeFileSync(file, 'not an Excel workbook');
   await session.handle({ t: 'attach', id: 'opencode', project: { root }, newSession: true });
   uploads.set('broken', { name: 'broken.xlsx', path: file, pending: true, sel: session.selectionKey() });
   const subscribers = openCode.listeners.size;

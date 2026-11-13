@@ -12,6 +12,7 @@ import { cdpRead, awaitCdpRead } from '../server/cdp.mjs';
 import { withOperation } from '../server/operations.mjs';
 import { NativeWindow } from '../server/native-windows.mjs';
 import { nativePage } from './page-fixture.mjs';
+import { registerUpload, removeUpload } from '../lib/uploads.mjs';
 
 for (const revision of ['first', 'renamed']) {
   test(`Codex discovers merged modules and renamed exports, retaining native per-thread drafts: ${revision}`, async () => {
@@ -459,12 +460,17 @@ test('window: submit without request receipt rethrows the original failure', asy
   assert.deepEqual(state.events, []);
 });
 
-test('window: accepted queue clears the receipt and attachment pending state', async () => {
+test('window: accepted queue clears the receipt and attachment pending state', async t => {
   const state = submission({ busy: true, when: 'queue' });
+  const root = fs.mkdtempSync('_shots/codex-upload-receipt-'), id = 'queued-file';
+  Object.assign(state.files[0], { name: 'file.txt', path: root + '/' + id + '/file.txt', complete: true, deviceId: 'fixture' });
+  registerUpload(root, id, state.files[0]); fs.writeFileSync(state.files[0].path, 'test');
+  t.after(() => { removeUpload(id); fs.rmSync(root, { recursive: true, force: true }); });
   await state.run();
   state.finish({ queued: true, thread: 'thread-1', queueId: 'queue-2' });
   assert.equal(state.context.sendNativeReceipt.pending, false);
   assert.equal(state.files[0].pending, false);
+  assert.equal(JSON.parse(fs.readFileSync(root + '/' + id + '.json')).pending, false);
   assert.equal(state.events[0].queueId, 'queue-2');
 });
 
@@ -549,7 +555,7 @@ for (const queued of [true, false]) test(`Codex queue edit confirms native ${que
 
 test('Codex queue edit status reflects immediate execution without changing Devin take-out', () => {
   for (const [app, result, expected] of [['codex', { queued: false, messageId: 'sent' }, '已修改并已发送'],
-    ['codex', { queued: true, queueId: 'queued' }, '已修改，仍在排队'], ['devin', undefined, '已修改，仍在排队']]) {
+    ['codex', { queued: true, queueId: 'queued' }, '已修改，仍在排队'], ['devin', undefined, '已取回输入框，编辑后需重新发送']]) {
     const events = []; ROUTES.queue.after({ app, selectionKey: () => 'selection', emit: message => events.push(message) },
       { action: 'edit', id: 'old', text: 'new' }, result);
     assert.equal(events.at(-1).msg, expected);

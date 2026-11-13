@@ -6,7 +6,7 @@ import { codexContext } from '../windows.mjs';
 import { cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { FOCUS_COMPOSER } from './context.mjs';
-import { uploads, pendingUploads, uploadAttachments, removeUpload } from '../../lib/uploads.mjs';
+import { uploads, pendingUploads, uploadAttachments, removeUpload, updateUpload } from '../../lib/uploads.mjs';
 import { rememberSessionMessage, observeSessionTitle, readLibrary } from '../../lib/session-library.mjs';
 import { nativeWindow } from '../native-windows.mjs';
 import { normalizeReceiptText, withoutAttachmentLabels } from '../../lib/shared-rules.mjs';
@@ -229,7 +229,7 @@ export const methods = {
       if (!this.acceptsChat(chat)) return;
       this.syncSession(chat);
       for (const file of uploads.values()) if (file.pending && file.awaitingReceipt && file.sel === this.selectionKey()
-        && chat?.items.some(item => item.k === 'human' && item.t?.split('\n').includes(file.path))) file.pending = false;
+        && chat?.items.some(item => item.k === 'human' && item.t?.split('\n').includes(file.path))) updateUpload(file, { pending: false });
       if (chat?.thread && chat.title && readLibrary()[this.app]?.[chat.thread]?.title && chat.title !== readLibrary()[this.app][chat.thread].title) {
         const title = await cdp.evaluate(helpersCall(`nativeConfirmedTitle(${JSON.stringify(this.app)}, ${JSON.stringify(chat.thread)})`));
         if (!this.liveRead(cdp, sel)) return;
@@ -722,7 +722,7 @@ export const methods = {
       this.sendGen++;
     }
     if (submit) {
-      files.forEach(f => { if (receiptToken?.pending) f.awaitingReceipt = true; else f.pending = false; });
+      files.forEach(file => updateUpload(file, receiptToken?.pending ? { awaitingReceipt: true } : { pending: false }));
       if (!receiptToken?.pending) this.lastDraft = text;
       if (!queued && !receiptToken?.pending) rememberSessionMessage(this.app, this.threadId, Date.now());
     }
@@ -779,13 +779,14 @@ export const methods = {
       return;
     }
     if (replace) await this.removeAttachment(replace);
-    await this.syncAttachments();
+    const confirmed = await this.syncAttachments();
     if (transfer?.cancelled) {
       if (added) await this.removeAttachment(added.id);
       return;
     }
+    if (!confirmed) throw new Error('会话已切换，附件确认已取消');
     this.emit({ t: 'status', ok: true, msg: this.appMessage('图片已附加到 {app} 输入框，写好文字后点发送') });
-    const matches = JSON.parse(this.lastAttachments).filter(f => f.preview && f.preview === added?.preview);
+    const matches = confirmed.filter(f => f.preview && f.preview === added?.preview);
     return matches.length === 1 ? matches[0].id : undefined;
     } finally {
       if (file) removeUpload(uploadId);
@@ -811,9 +812,11 @@ export const methods = {
     if (!this.liveRead(cdp, sel)) return;
     list.push(...uploadAttachments(this.selectionKey()));
     const json = JSON.stringify(list);
-    if (json === this.lastAttachments) return;
-    this.lastAttachments = json;
-    this.emit({ t: 'attachments', sel: this.selectionKey(), list });
+    if (json !== this.lastAttachments) {
+      this.lastAttachments = json;
+      this.emit({ t: 'attachments', sel: this.selectionKey(), list });
+    }
+    return list;
   },
   async removeAttachment(id) {
     const file = uploads.get(id);

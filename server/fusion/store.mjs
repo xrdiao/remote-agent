@@ -19,7 +19,9 @@ export class FusionStore {
     const value = { ...this.data, owners: { ...this.data.owners, [controller.deviceId]: { ...owner,
       runs: owner.runs.map(row => row.id === controller.id ? next : row) } } };
     this.write(value);
+    for (const key of Object.keys(controller)) if (!Object.hasOwn(next, key)) delete controller[key];
     Object.assign(controller, next);
+    owner.runs = owner.runs.map(row => row.id === controller.id ? controller : row);
     return controller;
   }
 }

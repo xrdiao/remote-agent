@@ -3,8 +3,9 @@ import test from 'node:test';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import { notificationTarget, notificationKey } from '../lib/shared-rules.mjs';
-import { uploads, removeUpload } from '../lib/uploads.mjs';
+import { uploads, removeUpload, registerUpload, updateUpload, initializeUploads, removeDeviceUploads } from '../lib/uploads.mjs';
 import { read, fragment } from './page-fixture.mjs';
 import { gitBlobSha } from '../server/publish/pages.mjs';
 
@@ -39,6 +40,75 @@ test('removing a staged upload deletes its UUID directory and preserves adjacent
     assert.equal(uploads.has('contract-own'), false);
     assert.equal(fs.readFileSync(path.join(other, 'keep.txt'), 'utf8'), 'keep');
   } finally { uploads.delete('contract-own'); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('upload restart restores committed resources and reclaims only registered incomplete or revoked uploads', () => {
+  const root = fs.mkdtempSync('_shots/upload-restart-');
+  const add = (id, deviceId, complete) => {
+    const file = { name: 'sample.txt', path: path.join(root, id, 'sample.txt'), deviceId, sel: 'scope', pending: true, complete: false };
+    registerUpload(root, id, file); fs.writeFileSync(file.path, id);
+    if (complete) updateUpload(file, { complete: true, size: id.length });
+    return file;
+  };
+  try {
+    const kept = add('committed', 'paired', true); updateUpload(kept, { pending: false });
+    add('incomplete', 'paired', false); add('revoked', 'removed', true);
+    const legacy = path.join(root, 'legacy'); fs.mkdirSync(legacy); fs.writeFileSync(path.join(legacy, 'keep.txt'), 'legacy');
+    uploads.clear();
+    assert.deepEqual(initializeUploads(root, ['paired']), [legacy]);
+    assert.equal(uploads.get('committed').pending, false); assert.equal(fs.readFileSync(kept.path, 'utf8'), 'committed');
+    assert.equal(fs.existsSync(path.join(root, 'incomplete')), false); assert.equal(fs.existsSync(path.join(root, 'revoked.json')), false);
+    assert.equal(fs.existsSync(path.join(legacy, 'keep.txt')), true);
+  } finally { uploads.clear(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('device upload removal cancels in-flight requests and also reads ownership in a fresh process map', () => {
+  const root = fs.mkdtempSync('_shots/upload-device-'); let cancelled = 0;
+  const add = (id, deviceId) => { const file = { name: 'file.txt', path: path.join(root, id, 'file.txt'), deviceId, pending: true, complete: false };
+    registerUpload(root, id, file); return file; };
+  try {
+    add('own', 'A').request = { destroy() { cancelled++; } }; add('other', 'B');
+    removeDeviceUploads(root, 'A'); assert.equal(cancelled, 1); assert.equal(fs.existsSync(path.join(root, 'own')), false);
+    uploads.clear(); removeDeviceUploads(root, 'B');
+    assert.equal(fs.existsSync(path.join(root, 'other')), false); assert.equal(fs.existsSync(path.join(root, 'other.json')), false);
+  } finally { uploads.clear(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+for (const revoked of [false, true]) test(`HTTP upload persists completion and cannot finish after device removal: revoked=${revoked}`, async () => {
+  const root = fs.mkdtempSync('_shots/http-upload-'), id = 'http-document', req = new PassThrough();
+  req.url = '/api/upload?name=sample.txt&sel=scope'; req.method = 'POST';
+  const context = vm.createContext({ fs, path, URL, Buffer, DATA_DIR: root, crypto: { randomUUID: () => id },
+    registerUpload, updateUpload, removeUpload, uploads, uploadDocument: () => true,
+    json: (_req, _res, status, body) => ({ status, body }), imageTypes: {} });
+  const source = fragment(read('server/http/api.mjs'), "  if (route === '/api/upload' &&", "  if (route === '/api/devices')");
+  vm.runInContext(`this.upload=async (req) => { const route='/api/upload',res={},device={id:'paired'};${source}};`, context);
+  try {
+    const pending = context.upload(req); req.write('document');
+    assert.equal(uploads.get(id).request, req); assert.equal(uploads.get(id).complete, false);
+    if (revoked) removeDeviceUploads(path.join(root, 'uploads'), 'paired'); else req.end();
+    const result = await pending;
+    assert.equal(result.status, revoked ? 400 : 200);
+    const directory = path.join(root, 'uploads', id), metadata = directory + '.json';
+    if (revoked) {
+      assert.equal(uploads.has(id), false); assert.equal(fs.existsSync(directory), false); assert.equal(fs.existsSync(metadata), false);
+    } else {
+      assert.equal(fs.readFileSync(path.join(directory, 'sample.txt'), 'utf8'), 'document');
+      assert.equal(JSON.parse(fs.readFileSync(metadata)).complete, true); assert.equal(uploads.get(id).request, undefined);
+    }
+  } finally { req.destroy(); uploads.clear(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('Pages migration uses the real local identity and never invents another computer identity from ciphertext', () => {
+  const context = vm.createContext({ opensEntry: entry => entry.data === 'own' });
+  vm.runInContext(fragment(read('server/publish/pages.mjs'), 'function registryWith(', '// Writes this computer') + ';this.merge=registryWith;', context);
+  const mine = { id: 'real-id', iv: 'iv', data: 'own' };
+  assert.equal(context.merge({ v: 2, iv: 'iv', data: 'own' }, mine).computers[0].id, 'real-id');
+  const foreign = { v: 2, iv: 'iv', data: 'foreign' };
+  assert.throws(() => context.merge(foreign, mine), /原电脑发布 v3/); assert.equal(foreign.data, 'foreign');
+  const others = { id: 'other-id', iv: 'iv', data: 'foreign' };
+  const merged = context.merge({ v: 3, computers: [others, mine] }, { ...mine, data: 'fresh' });
+  assert.deepEqual(Array.from(merged.computers, row => row.id), ['other-id', 'real-id']);
+  assert.equal(merged.computers[0], others); assert.equal(merged.computers[1].data, 'fresh');
 });
 
 test('Pages sync uses the selected repository and branch, uploading changed files in one tree commit', async () => {
