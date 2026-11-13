@@ -726,7 +726,8 @@ body.kb footer { padding-bottom: 8px; }
 #msg, #termStatus { flex: 1; min-width: 0; font-size: 11.5px; color: var(--fg-4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #msg:empty, #msg.quiet { display: none; }
 #msg.err, #termStatus.err { color: var(--err); }
-body.term #composeStatus:has(#termStatus:not([hidden])) #msg { display: none; }
+body.term #composeMetrics, body.term #perfPanel, body.term #msg,
+body.term #retryChat, body.term #stop, body.term #sendNow { display: none; }
 #elapsed { flex: none; font-size: 11.5px; color: var(--fg-4); font-variant-numeric: tabular-nums; }
 .attachmentRow { display: flex; align-items: flex-end; gap: 8px; }
 .attachmentRow[hidden] { display: none; }
@@ -818,19 +819,20 @@ body.term #send { min-height: 44px; }
 }
 
 /* Idle drafts keep the tools visible while the text uses at most two lines. */
-body.composeIdle.chatmode #text { max-height: calc(2.9em + 12px); overflow-y: hidden; }
+body.composeIdle:is(.chatmode, .term) #text { max-height: calc(2.9em + 12px); overflow-y: hidden; }
 
-/* Both orientations share the folded model/project row. */
+/* Chat and terminal share one folding control in both orientations. */
 #composerFold { display: none; }
 body:is(.chatmode, .term) .composerBox { position: relative; }
 body.chatmode #chatTools { padding-right: 36px; }
-body.chatmode #composerFold {
+body.term #termTools { padding-right: 36px; }
+body:is(.chatmode, .term) #composerFold {
   position: absolute; top: 8px; right: 8px; z-index: 2; display: grid; place-items: center;
   width: 28px; height: 28px; min-height: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--fg-3);
 }
-body.chatmode #composerFold:active { background: var(--s2); transform: none; }
-body.composeCompact.chatmode #composerFold svg { transform: rotate(180deg); }
-body.composeCompact.chatmode .composerBox { display: block; min-height: 48px; padding: 8px; border-radius: var(--r-xl); }
+body:is(.chatmode, .term) #composerFold:active { background: var(--s2); transform: none; }
+body.composeCompact:is(.chatmode, .term) #composerFold svg { transform: rotate(180deg); }
+body.composeCompact:is(.chatmode, .term) .composerBox { display: block; min-height: 48px; padding: 8px; border-radius: var(--r-xl); }
 body.composeCompact.chatmode #chatTools { display: flex; padding: 0 34px 0 0; overflow: hidden; -webkit-mask-image: none; mask-image: none; }
 body.composeCompact.chatmode #chatTools > :not(#pickModel):not(#pickAgents):not(#pickEditor):not(#fusionConfig) { display: none; }
 body.composeCompact.chatmode #pickModel { flex: 1 1 auto; min-width: 0; max-width: none; padding: 0 6px; }
@@ -842,34 +844,24 @@ body.land.composeCompact.chatmode #pickModel,
 body.land.composeCompact.chatmode #pickAgents { flex: none; min-width: auto; max-width: 60vw; padding: 0 10px; }
 body.land.composeCompact.chatmode #pickEditor { flex: none; }
 body.land.composeCompact.chatmode #fusionConfig { flex: 0 1 auto; }
-body.composeCompact.chatmode .composerField,
-body.composeCompact.chatmode .sendRow,
-body.composeCompact.chatmode .attachmentRow,
-body.composeCompact.chatmode #mentionBox,
-body.composeCompact.chatmode #mathPrev,
-body.composeCompact.chatmode #retryChat { display: none; }
+body.composeCompact.term #termTools { display: flex; flex-wrap: nowrap; padding: 0 34px 0 0; overflow: hidden; }
+body.composeCompact.term #termTools > :not(#pickTerms) { display: none; }
+body.composeCompact.term #pickTerms { min-width: 0; min-height: 30px; max-width: 100%; }
+body.composeCompact:is(.chatmode, .term) .composerField,
+body.composeCompact:is(.chatmode, .term) .sendRow,
+body.composeCompact:is(.chatmode, .term) .attachmentRow,
+body.composeCompact:is(.chatmode, .term) #mentionBox,
+body.composeCompact:is(.chatmode, .term) #mathPrev,
+body.composeCompact:is(.chatmode, .term) #retryChat,
+body.composeCompact.term #termPasswordBox { display: none; }
 body.term #footerStatus {
   position: absolute; align-items: center; justify-content: flex-start; gap: 6px; min-height: 0;
   top: auto; bottom: calc(100% - 2px); left: 14px; right: auto; width: auto; max-width: calc(100% - 28px);
   padding: 2px 7px 0; border-radius: 8px 8px 0 0; background: var(--s1); pointer-events: auto;
 }
-body.term #elapsed { order: -1; font-size: 10px; }
-body.term #msg, body.term #termStatus { font-size: 10px; }
-body.term .composerBox:has(#changeNotice:not([hidden])),
-body.term .composerBox:has(#termStatus:not([hidden]), #msg:not(:empty):not(.quiet)) { margin-top: 24px; }
-body.term #footerStatus:has(#changeNotice:not([hidden])) {
-  position: absolute; top: auto; bottom: calc(100% - 2px); left: 14px; right: 14px;
-  min-height: 0; max-width: none; width: auto; padding: 0; border-radius: 0; gap: 8px; background: transparent;
-}
-body.term #footerStatus:has(#changeNotice:not([hidden])) #composeStatus {
-  display: flex; align-items: center; flex: 0 1 auto; min-width: 0; gap: 4px; overflow: hidden;
-  padding: 2px 7px 0; border-radius: 8px 8px 0 0; background: var(--s1);
-}
-body.term #footerStatus:has(#changeNotice:not([hidden])) #msg { font-size: 10px; }
-body.term #footerStatus:has(#changeNotice:not([hidden])) #elapsed {
-  order: -1; flex: 0 1 auto; min-width: 24px; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-body.term #footerStatus:has(#changeNotice:not([hidden])) #retryChat { display: block; height: 24px; padding: 0 6px; font-size: 11px; }
+body.term #footerStatus:not(:has(#termStatus:not([hidden]))) { display: none; }
+body.term #termStatus { font-size: 10px; }
+body.term .composerBox:has(#termStatus:not([hidden])) { margin-top: 24px; }
 #changeNotice {
   display: flex; flex: none; align-items: center; margin-left: auto;
   padding: 2px 7px 0; border-radius: 8px 8px 0 0; background: var(--s1);
