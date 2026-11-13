@@ -26,6 +26,7 @@ export const adapter = {
       if (!chat || (chat.thread === before && chat.items.length)) continue;
       this.clearViewState();
       this.threadId = chat.thread || '';
+      await this.currentRoots();
       this.publishThread('已新建对话');
       this.lastChatAt = 0;
       await this.pollChat();
@@ -58,6 +59,7 @@ export const adapter = {
         if (await this.cdp.evaluate(helpersCall(`cursorChatReady(${JSON.stringify(id)})`))) {
           if (this.threadId !== id) this.clearViewState();
           this.threadId = this.selectedThread = id;
+          await this.currentRoots();
           this.publishThread('已切换会话');
           confirmed = true;
           return;
@@ -82,6 +84,10 @@ export const adapter = {
   },
 
   async currentRoots() {
+    if (this.threadId) {
+      const context = await this.cdp.evaluate(helpersCall(`nativeSessionInfo('cursor', ${JSON.stringify(this.threadId)}, 'context')`));
+      return context.roots.filter(root => !root.host);
+    }
     if (this.winTitle === 'Cursor Agents') {
       const workspace = await this.cdp.evaluate(helpersCall('cursorWorkspace()'));
       return workspace && !workspace.host ? [workspace] : [];

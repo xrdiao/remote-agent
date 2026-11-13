@@ -4,6 +4,8 @@ import path from 'node:path';
 import vm from 'node:vm';
 import test from 'node:test';
 import { NativeWindow } from '../server/native-windows.mjs';
+import { adapter as codexAdapter } from '../server/apps/codex.mjs';
+import { adapter as cursorAdapter } from '../server/apps/cursor.mjs';
 import { read, fragment, createPageContext } from './page-fixture.mjs';
 
 function batchFixture(cancel = false) {
@@ -166,7 +168,7 @@ for (const operation of ['detach', 'suspend']) test(`${operation} releases backe
 });
 
 function pageContext(extra = {}, source = read('server/page/session-actions.js')) {
-  const context = createPageContext({ remoteContext: null, window: {}, doc: { defaultView: {} }, ...extra });
+  const context = createPageContext({ remoteContext: null, window: {}, doc: { defaultView: {} }, activeThread: () => '', ...extra });
   vm.runInContext(source + '\nthis.info = nativeSessionInfo; this.action = nativeSessionAction;', context);
   return context;
 }
@@ -709,7 +711,7 @@ function devinCreation({ active = 'acp/devin-cli/old', appearAfter = 0, recordDe
   const NEW = 'acp/devin-cli/new-1';
   let polls = 0, activeNow = active, created = false;
   const context = createPageContext({ path, helpersCall: value => value, fusionProject: root => ({ id: root }),
-    setTimeout: action => action(), PAGE_SRC: 'H' });
+    setTimeout: action => action(), PAGE_SRC: 'H', editorRoots: async () => [{ root: '/project' }] });
   const newChat = vm.runInContext('({' + fragment(read('server/apps/devin.mjs'), 'async devinNewChat() {', '// ---- Devin working directory') + '})', context);
   const finish = vm.runInContext('({' + fragment(read('server/agent/projects.mjs'), '  async finishProject() {', '  projectName() {') + '})', context);
   const sessionCwd = () => activeNow === NEW ? newCwd : cwd;
@@ -883,7 +885,7 @@ test('deferred Cursor project binding leaves native session opening to finishPro
     });
     const open = vm.runInContext('({' + fragment(read('server/session.mjs'), '  async openBound(', '  navigationFailed(') + '}).openBound', context);
     const session = { detach() {}, clearViewState() {}, refreshViewport: async () => {},
-      appMessage: value => value, projectName: () => 'Project', selectionKey: () => 'selection',
+      appMessage: value => value, projectName: () => 'Project', selectionKey: () => 'selection', currentRoots: async () => [{ root: '/Project' }],
       emit: value => events.push(value), withFocus: task => task(), setMode: async () => calls.push('mode'),
       prefetchMenus: async () => {}, adapter: { openAgent: async id => calls.push(['open', id]) } };
     await open.call(session, { id: 'cursor:window', app: 'cursor' }, 'ws', null,
@@ -909,7 +911,7 @@ test('an existing Codex writer opens its exact thread without the project-window
   });
   const open = vm.runInContext('({' + fragment(read('server/session.mjs'), '  async openBound(', '  navigationFailed(') + '}).openBound', context);
   const session = { detach() {}, clearViewState() {}, refreshViewport: async () => {}, withFocus: fn => fn(),
-    appMessage: value => value, projectName: () => 'Target', selectionKey: () => 'selected', emit: value => events.push(value),
+    appMessage: value => value, projectName: () => 'Target', selectionKey: () => 'selected', currentRoots: async () => [{ root: '/B' }], emit: value => events.push(value),
     selectCodexThread: async id => { calls.push(['select', id]); return true; },
     adoptCodexThread: async id => { calls.push(['adopt', id]); }, setMode: async () => calls.push('mode'), prefetchMenus: async () => {},
   };
@@ -1029,4 +1031,89 @@ test('Codex project and session-menu entries share the backend binding for legac
   assert.equal(calls[0].threadId, 'legacy');
   await methods.useProject.call(session, process.cwd(), false, 'legacy');
   assert.equal(calls[1].threadId, 'legacy'); assert.equal(calls[1].project.root, process.cwd());
+});
+
+test('Cursor context and catalog agree on a cold thread project in another window', async () => {
+  const uri = root => ({ scheme: 'file', fsPath: root });
+  const headers = [{ composerId: 'B', workspaceIdentifier: { uri: uri('/B') } },
+    { composerId: 'unknown', workspaceIdentifier: { id: 'unloaded-workspace' } }];
+  const loaded = { composerId: 'B' }, workspace = { id: 'A-workspace', folders: [{ uri: uri('/A') }] };
+  const data = { allComposersData: { allComposers: [loaded] }, whenInitialComposerDataLoaded: async () => {},
+    getComposerHandleById: async id => ({ data: { composerId: id } }),
+    _storageService: { collectionQuery: async () => headers.map(row => JSON.stringify(row)) } };
+  const page = pageContext({ activeThread: () => 'A', window: { __remoteAgentCursorServices: { data,
+    composer: { composerChatService: { _workspaceContextService: { getWorkspace: () => workspace } } } } } });
+  const catalog = await page.info('cursor', [], true);
+  const context = await page.info('cursor', 'B', 'context');
+  assert.equal(catalog.rows.find(row => row.id === 'B').workspace, '/B');
+  assert.equal(context.cwd, '/B');
+  assert.equal((await page.info('cursor', 'A', 'context')).cwd, '/A');
+  await assert.rejects(page.info('cursor', 'unknown', 'context'), /项目目录/);
+  await assert.rejects(page.info('cursor', 'missing', 'context'), /项目目录/);
+});
+
+function sessionProjectMethods() {
+  const source = read('server/agent/projects.mjs');
+  return vm.runInContext('({' + fragment(source, '  async currentRoots() {', '  projectRows(')
+    + fragment(source, '  projectName() {', '  publishThread(')
+    + fragment(source, '  async newProjectChat() {', '  async confirmProjectTrust(') + '})',
+    createPageContext({ path, normPath: value => value }));
+}
+
+test('desktop Codex and Cursor project labels, files and new-chat target follow the selected thread rather than its carrier', async () => {
+  for (const [app, adapter] of [['codex', codexAdapter], ['cursor', cursorAdapter]]) {
+    const methods = sessionProjectMethods(), created = [];
+    const session = { ...methods, app, adapter, winTitle: 'CWM', threadId: 'thread',
+      selectionKey() { return app + '|' + this.threadId; },
+      cdp: { evaluate: async expression => {
+        assert(expression.endsWith(`.nativeSessionInfo('${app}', "thread", 'context')`));
+        return { cwd: '/remote-agent', host: '', roots: [{ root: '/remote-agent', host: '' }] };
+      } },
+      editorCdp: { evaluate: async () => { throw Error('window project must not be used'); } },
+      useProject: async (...args) => created.push(args),
+    };
+    assert.equal((await session.currentRoots())[0].root, '/remote-agent');
+    assert.equal(session.projectName(), 'remote-agent');
+    await session.newProjectChat();
+    assert.deepEqual(created, [['/remote-agent', true]]);
+  }
+});
+
+test('a delayed A project read cannot overwrite B identity, including after returning to an empty view', async () => {
+  const methods = sessionProjectMethods(); let finishA;
+  const session = { ...methods, app: 'cursor', threadId: 'A', winTitle: 'old-window',
+    selectionKey() { return this.threadId; }, adapter: { currentRoots() { return this.threadId === 'A'
+      ? new Promise(resolve => { finishA = resolve; }) : Promise.resolve([{ root: '/B' }]); } },
+  };
+  const pending = session.currentRoots(); session.threadId = 'B'; await session.currentRoots();
+  finishA([{ root: '/A' }]); await pending;
+  assert.equal(session.projectName(), 'B');
+  session.threadId = ''; assert.equal(session.projectName(), '');
+});
+
+test('Devin and OpenCode preserve their native project while their carrier title belongs elsewhere', async () => {
+  const methods = sessionProjectMethods();
+  for (const app of ['devin', 'opencode']) {
+    const session = { ...methods, app, winTitle: 'CWM', threadId: 'thread', selectionKey: () => app + '|thread',
+      sessionCwd: '/old', adapter: { currentRoots: async () => [{ root: '/remote-agent' }] } };
+    await session.currentRoots(); assert.equal(session.projectName(), 'remote-agent');
+    if (app === 'devin') { session.sessionCwd = '/native-changed'; assert.equal(session.projectName(), 'native-changed'); }
+  }
+});
+
+test('cross-project creation verifies the carrier workspace before creating and reads the new thread afterwards', async () => {
+  const calls = [], context = createPageContext({ path, helpersCall: value => value, fusionProject: root => ({ id: root }),
+    editorRoots: async () => { calls.push('carrier-B'); return [{ root: '/B' }]; } });
+  const methods = vm.runInContext('({' + fragment(read('server/agent/projects.mjs'), '  async finishProject() {', '  projectName() {') + '})', context);
+  const session = { ...methods, app: 'cursor', pendingProject: { root: '/B', newSession: true }, threadId: 'A',
+    editorCdp: { evaluate: async () => ({ required: false }) },
+    cdp: { evaluate: async expression => expression === 'hasComposer()' ? true : { thread: 'B', items: [] } },
+    waitFor: async () => ({ thread: 'A' }),
+    adapter: { newChat: async () => { calls.push('create-B'); } }, syncSession() {},
+    currentRoots: async function () { calls.push('thread-' + this.threadId); return [{ root: '/' + this.threadId }]; },
+    publishThread() { calls.push('publish-' + this.threadId); }, selectionKey: () => 'B', emit() {},
+  };
+  await session.finishProject();
+  assert.deepEqual(calls, ['carrier-B', 'create-B', 'thread-B', 'publish-B', 'thread-B']);
+  assert.equal(session.bindingReady, true);
 });

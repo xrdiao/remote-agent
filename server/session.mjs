@@ -307,6 +307,7 @@ export class Session extends AgentContext {
         await this.adoptCodexThread(req.threadId || await this.cdp.evaluate(helpersCall('codexThread()')) || '');
       } else if (req.threadId) await this.withFocus(() => this.adapter.openAgent.call(this, req.threadId));
       this.bindingReady = true;
+      await this.currentRoots();
       this.publishThread();
       return this.setMode(this.mode, true);
     }
@@ -418,12 +419,15 @@ export class Session extends AgentContext {
     if (selection.deferred && selection.threadId) this.threadId = selection.threadId;
     nativeWindow(cdp).setThread(this.threadId);
     this.selectedThread = this.threadId;
-    const attached = () => this.emit({
-      t: 'attached', id: win.id, title: this.app === 'codex' ? 'Codex' : win.title, app: win.app,
-      appName: this.appMessage('{app}'), project: this.projectName(), windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(), plans: appPlans, initial: selection.initial === true, ready: this.bindingReady === true,
-    });
+    const attached = async () => {
+      if (this.bindingReady) await this.currentRoots();
+      this.emit({
+        t: 'attached', id: win.id, title: this.app === 'codex' ? 'Codex' : win.title, app: win.app,
+        appName: this.appMessage('{app}'), project: this.projectName(), windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(), plans: appPlans, initial: selection.initial === true, ready: this.bindingReady === true,
+      });
+    };
     if (trust.required) {
-      attached();
+      await attached();
       await this.checkProjectTrust({ threadId: selection.threadId || '' }, trust);
       if (!selection.deferred) this.setMode(this.mode).catch(e => this.emit({ t: 'status', ok: false, msg: e.message }));
       return;
@@ -437,7 +441,7 @@ export class Session extends AgentContext {
     const recoverInitial = win.app === 'codex' && selection.initial === true && !thread;
     const startup = !selection.deferred && (launchDefault || recoverInitial || win.app === 'devin' && !this.threadId);
     if (restore) this.threadId = this.selectedThread = selection.threadId;
-    if (startup || (restore && selection.initial)) attached();
+    if (startup || (restore && selection.initial)) await attached();
     if (restore) {
       const id = win.app === 'codex' ? `thread:${this.codexPageId}:${selection.threadId}` : selection.threadId;
       await this.withFocus(async () => {
@@ -470,7 +474,7 @@ export class Session extends AgentContext {
           return;
         }
         this.bindingReady = true;
-        attached();
+        await attached();
         await this.withFocus(() => this.setMode(this.mode, true));
         for (let i = 0; this.mode === 'chat' && !this.lastChat && i < 40; i++) {
           await new Promise(resolve => setTimeout(resolve, 120));
@@ -492,7 +496,7 @@ export class Session extends AgentContext {
       await this.withFocus(() => this.adapter.openAgent.call(this, this.threadId));
     }
     this.bindingReady = !selection.deferred && !this.startupPending;
-    attached();
+    await attached();
     if (this.startupPending || selection.deferred) return { trust };
     await this.withFocus(() => this.setMode(this.mode, true));
     if (this.cdp === cdp) this.prefetchMenus().catch(() => {});
@@ -580,6 +584,8 @@ export class Session extends AgentContext {
     this.cdp = this.editorCdp = null;
     this.codexBackend = false;
     this.codexOwnerRoot = '';
+    this.sessionProject = null;
+    this.sessionCwd = '';
     cdpRead.run(null, () => {
       for (const cdp of connections) {
         if (cdp) cdp.send('Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {})

@@ -1,6 +1,6 @@
   const nativeValue = value => doc.defaultView.JSON.parse(JSON.stringify(value));
   const cursorSessionInstantiation = () => {
-    const props = codexFiberProps(modelButton(true), 40)
+    const props = codexFiberProps(doc.querySelector('.ui-agent-status-dot'), 40)
       .find(p => p.services?.workspace?.instantiationService);
     return props?.services.workspace.instantiationService;
   };
@@ -19,6 +19,12 @@
     }));
   };
   const devinSessionRecord = id => window.__acpStore?.getState().acp.sessions.find(s => devinRowSession(s) === id);
+  const cursorSessionWorkspaceUris = (id, current, header, workspace) => {
+    const selected = current.workspaceIdentifier || header?.workspaceIdentifier;
+    if (selected?.uri) return [selected.uri];
+    return selected?.id === workspace.id || !selected && id === activeThread()
+      ? workspace.folders.map(folder => folder.uri) : null;
+  };
   const nativeSessionContext = async (app, id) => {
     if (app === 'codex') {
       const host = remoteContext?.app === 'codex' ? remoteContext.host || 'local' : codexChatRows(true).find(row => row.id === id)?.host || 'local';
@@ -37,9 +43,9 @@
       const handle = await services.data.getComposerHandleById(id);
       if (!handle) throw new Error('Cursor 原生目录中没有这个会话');
       const data = handle.data, workspace = services.composer.composerChatService._workspaceContextService.getWorkspace();
-      const selected = data.workspaceIdentifier;
-      if (selected && !selected.uri && selected.id !== workspace.id) throw new Error('尚未读取到这个 Cursor 会话的项目目录');
-      const uris = selected?.uri ? [selected.uri] : workspace.folders.map(folder => folder.uri);
+      const headers = (await services.data._storageService.collectionQuery('composerHeaders')).map(row => JSON.parse(row));
+      const uris = cursorSessionWorkspaceUris(id, data, headers.find(row => row.composerId === id), workspace);
+      if (!uris) throw new Error('尚未读取到这个 Cursor 会话的项目目录');
       const roots = uris.map(uri => ({ root: uri.fsPath || uri.path, host: uri.scheme === 'file' ? '' : uri.authority.replace(/^ssh-remote\+/, '') }));
       return { app, threadId: id, host: roots[0]?.host || '', cwd: roots[0]?.root || '', roots };
     }
@@ -74,8 +80,8 @@
       const running = new Set((window.__SSG_COMPOSER_PROVIDER__?.getStates?.() || []).filter(row => row.state === 'generating').map(row => row.id));
       const workspace = services.composer.composerChatService._workspaceContextService.getWorkspace();
       return { ready: true, complete: true, rows: rows.map(row => {
-        const current = loaded.get(row.composerId) || row, selected = current.workspaceIdentifier || row.workspaceIdentifier;
-        const uri = selected?.uri || (selected?.id === workspace.id ? workspace.folders[0]?.uri : null);
+        const current = loaded.get(row.composerId) || row;
+        const uri = cursorSessionWorkspaceUris(row.composerId, current, row, workspace)?.[0];
         return { id: row.composerId, archived: !!row.isArchived, title: current.name || row.name || '',
           workspace: uri?.fsPath || uri?.path || '', host: uri && uri.scheme !== 'file' ? uri.authority.replace(/^ssh-remote\+/, '') : '',
           workspaceId: row.workspaceIdentifier?.id || '', lastUsed: current.lastUpdatedAt || row.createdAt || 0, running: running.has(row.composerId) };

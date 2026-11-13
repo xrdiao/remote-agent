@@ -3,7 +3,7 @@ const text = $('text');
 let questionCompose = null;
 const drafts = new Map(), draftMentions = new Map();
 const dirtyDrafts = new Set();
-const inputHistory = new Map(), chatInputCache = new Map();
+const inputHistory = new Map(), chatInputCache = new Map(), sentInputCache = new Map();
 let inputRecall = null;
 function endInputRecall() {
   if (inputRecall) inputRecall.history.delete(inputRecall.key);
@@ -13,7 +13,12 @@ function chatInputKey(chat = lastChat) { return [currentComputer()?.id || '', vi
 function rememberInputHistory(chat) {
   if (!chat) return;
   const key = chatInputKey(chat), rows = new Map(chatInputCache.get(key) || []);
-  for (const it of chat.items || []) if (it.k === 'human' && it.t?.trim()) { rows.delete(it.i); rows.set(it.i, it.t); }
+  const sent = sentInputCache.get([currentComputer()?.id || '', currentApp, chat.thread || ''].join('|')) || [];
+  const originals = new Map(sent.flatMap(row => row.ids.map(id => [id, row.text])));
+  for (const it of chat.items || []) if (it.k === 'human' && it.t?.trim()) {
+    const original = [it.i, ...(it.nativeIds || [])].find(id => originals.has(id));
+    rows.delete(it.i); rows.set(it.i, original === undefined ? it.t : originals.get(original));
+  }
   chatInputCache.set(key, [...rows].slice(-10));
 }
 const pendingSends = new Map(), draftVersions = new Map();
@@ -57,12 +62,19 @@ function sendReceipt(value) {
   const targetThread = viewSel.split('|').pop() || '';
   const candidate = queuedChat?.sel === viewSel ? queuedChat.chat : lastChat;
   const latest = candidate?.thread === targetThread ? candidate : null;
-  pendingSends.set(requestId, { requestId, draft: activeDraft, text: value, computer: currentComputer()?.id || '', mode, version: draftVersions.get(activeDraft) || 0, revision: inputRevision,
+  pendingSends.set(requestId, { requestId, draft: activeDraft, text: value, computer: currentComputer()?.id || '', app: currentApp, mode, version: draftVersions.get(activeDraft) || 0, revision: inputRevision,
     mentions: JSON.stringify(mentionsFor(value)), attachmentIds: desktopAttachments.map(file => file.id),
     ...(mode === 'chat' ? { scope: messageScope(), thread: targetThread, before: new Set((latest?.items || []).filter(it => it.k === 'human').map(it => it.i)),
       beforeQueues: new Set((latest?.queued || []).map(it => it.id)), queuedSameText: (latest?.queued || []).filter(it => echoTextMatches(it, value)).length } : {}) });
   document.dispatchEvent(new Event('composer-state'));
   return { requestId, draft: activeDraft, draftEpoch };
+}
+function rememberSentInput(sent, receipt) {
+  const thread = receipt.sel?.split('|').pop() || sent.thread || '';
+  const key = [sent.computer, sent.app, thread].join('|');
+  const rows = (sentInputCache.get(key) || []).filter(row => row.requestId !== sent.requestId);
+  rows.push({ requestId: sent.requestId, ids: [...new Set([receipt.messageId, receipt.queueId].filter(Boolean))], text: sent.text });
+  sentInputCache.set(key, rows.slice(-10));
 }
 function confirmSent(m, render = true) {
   if (m.pending) {
@@ -90,11 +102,15 @@ function confirmSent(m, render = true) {
   const sent = pendingSends.get(m.requestId);
   if (!sent) return;
   pendingSends.delete(m.requestId);
+  if (sent.mode === 'chat' && sent.app === 'codex' && (m.messageId || m.queueId)) rememberSentInput(sent, m);
   for (const key of inputHistory.keys()) if (key.startsWith(sent.draft + '|')) inputHistory.delete(key);
   const here = (currentComputer()?.id || '') === sent.computer && mode === sent.mode && (draftKey() === sent.draft || m.sel === viewSel);
   const unchanged = sent.mode === 'chat' && currentApp !== 'fusion' ? composerSendMatches(sent)
     : inputRevision === sent.revision && text.value === sent.text;
-  if ((!here || unchanged) && drafts.get(sent.draft) === sent.text && (draftVersions.get(sent.draft) || 0) === sent.version) { drafts.delete(sent.draft); draftMentions.delete(sent.draft); }
+  if ((!here || unchanged) && drafts.get(sent.draft) === sent.text && (draftVersions.get(sent.draft) || 0) === sent.version) {
+    drafts.delete(sent.draft); draftMentions.delete(sent.draft);
+    if (sent.mode === 'chat') dirtyDrafts.add(sent.draft);
+  }
   if (here && (['正在发送…', '正在确认电脑端接收…', '连接已断开，发送结果待确认'].includes(pendingStatus) || $('msg').textContent === '发送结果未确认：' + sent.confirmationError) && ![...pendingSends.values()].some(p => p.draft === activeDraft)) {
     status(m.queued ? 'Agent 正在运行，已加入排队，这一轮结束后自动发送' : '已发送');
   }
@@ -102,7 +118,9 @@ function confirmSent(m, render = true) {
     if (sent.mode === 'chat') { draftRevision++; pendingDesktopDraft = null; }
     drafts.delete(activeDraft); draftMentions.delete(activeDraft);
     text.value = ''; MN.mentions = []; MN.value = ''; mentionHide(text); autosize(); mirroredDraft = '';
-    dirtyDrafts.delete(activeDraft); queueDraftSync();
+    if (sent.mode === 'chat') dirtyDrafts.add(activeDraft);
+    else dirtyDrafts.delete(activeDraft);
+    queueDraftSync();
   } else if (here && sent.mode === 'chat' && !unchanged) {
     draftRevision++; pendingDesktopDraft = null;
     dirtyDrafts.add(activeDraft); queueDraftSync();
@@ -157,6 +175,13 @@ function receiptMatchesHuman(it, receipt) {
 function receiveQueueDone(m) {
   receiveQueueEdit(m);
   if (!m.ok || m.sel !== viewSel || m.action === 'read') return;
+  if (currentApp === 'codex' && m.action === 'edit') {
+    const key = [currentComputer()?.id || '', currentApp, viewSel.split('|').pop() || ''].join('|');
+    for (const row of sentInputCache.get(key) || []) if ((m.echoes || []).includes(row.requestId)) {
+      row.text = m.text;
+      row.ids = [...new Set([...row.ids, m.messageId, m.queueId].filter(Boolean))];
+    }
+  }
   const removed = new Set();
   for (const echo of pendingEchoes) {
     if (echo.sel !== viewSel || !(m.echoes || []).includes(echo.requestId)) continue;

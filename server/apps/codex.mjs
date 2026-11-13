@@ -545,7 +545,10 @@ export const adapter = {
 
   async currentRoots() {
     if (this.codexBackend) return [{ root: this.codexDirectory, host: '' }];
-    if (this.codexOwnerRoot) return [{ root: this.codexOwnerRoot, host: '' }];
+    if (this.threadId) {
+      const context = await this.cdp.evaluate(helpersCall(`nativeSessionInfo('codex', ${JSON.stringify(this.threadId)}, 'context')`));
+      return [{ root: context.cwd, host: context.host }, ...context.roots.filter(root => root.root !== context.cwd || root.host !== context.host)].filter(root => !root.host);
+    }
     return (await editorRoots(this.editorCdp, 'codex')).filter(w => !w.host);
   },
 
@@ -867,7 +870,8 @@ async adoptCodexThread(thread, statusMsg) {
   try {
     if (this.threadId !== (thread || '')) this.clearViewState();
     this.threadId = thread || '';
-    if (this.codexOwnerRoot && thread) this.codexOwnerRoot = (await this.cdp.evaluate(helpersCall(`nativeSessionInfo('codex', ${JSON.stringify(thread)}, 'context')`))).cwd;
+    const roots = await this.currentRoots();
+    if (this.codexOwnerRoot) this.codexOwnerRoot = roots[0]?.root || '';
   } finally {
     this.switchingThread = switching;
   }
@@ -1504,6 +1508,7 @@ async codexArchiveThread(agentId, requiredAction = '') {
       finally { this.cdp = saved; if (!own) this.threadId = phoneThread; }
     } else if (wasCurrent) {
       this.threadId = afterThread;
+      await this.currentRoots();
       this.publishThread();
       this.lastChatAt = 0;
       await this.pollChat();

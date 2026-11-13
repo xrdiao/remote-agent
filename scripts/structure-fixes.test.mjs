@@ -797,6 +797,99 @@ function acceptedDraft(newer) {
     sel: 'codex|A', draftEpoch: 'epoch', revision, text }) };
 }
 
+function syncingDraft(newer = false) {
+  const h = acceptedDraft(newer), scheduled = new Map(), packets = [];
+  let next = 0, key = 'draft';
+  Object.assign(h.context, { windowReady: true, draftPushTimer: 0, endInputRecall() {},
+    draftKey: () => key, send: message => packets.push({ ...message, sel: h.context.viewSel }),
+    setTimeout: callback => { scheduled.set(++next, callback); return next; }, clearTimeout: id => scheduled.delete(id),
+  });
+  const source = read('app/js/composer.js');
+  vm.runInContext(part(source, 'function saveDraft()', 'function autosize(')
+    + part(source, 'function failPendingSend(', 'function disconnectPendingSends('), h.context);
+  return { ...h, packets,
+    flush() { const callbacks = [...scheduled.values()]; scheduled.clear(); for (const callback of callbacks) callback(); },
+    navigate(target, sel) { h.context.saveDraft(); key = target; h.context.viewSel = sel; h.context.restoreDraft(); },
+    writeAck(message) { h.context.receiveDraft({ ...message, t: 'draftAck', ok: true, read: false }); },
+  };
+}
+
+for (const app of ['codex', 'cursor', 'devin', 'opencode']) test(`${app} acceptance writes an empty draft before reading desktop state again`, () => {
+  const h = syncingDraft(); h.context.currentApp = app;
+  h.context.confirmSent({ requestId: 'request', sel: h.context.viewSel });
+  h.flush();
+  const clear = h.packets.at(-1);
+  assert.equal(clear.t, 'draft'); assert.equal(clear.text, ''); assert.equal(h.input.value, '');
+  assert(h.context.dirtyDrafts.has('draft'));
+  h.ack(7, h.sent.text); assert.equal(h.input.value, '');
+  h.writeAck(clear); assert.equal(h.context.dirtyDrafts.has('draft'), false);
+  h.navigate('draft', 'codex|A'); h.flush();
+  const reopened = h.packets.at(-1);
+  assert.equal(Object.hasOwn(reopened, 'text'), false);
+  h.ack(reopened.revision, ''); assert.equal(h.input.value, '');
+  h.context.receiveDraft({ t: 'draft', sel: 'codex|A', text: 'new desktop draft', draftEpoch: 'epoch', revision: reopened.revision });
+  assert.equal(h.input.value, 'new desktop draft');
+});
+
+test('the Codex backend acknowledges an explicit empty draft and retains the empty state when reopened', () => {
+  const h = syncingDraft(), source = read('server/apps/codex.mjs');
+  const routes = vm.runInNewContext('({' + part(source, '  draft(m) {', '  async stop()') + '})');
+  const session = { codexDrafts: new Map([['codex|A', h.sent.text]]), selectionKey: () => 'codex|A',
+    emit: message => h.context.receiveDraft(message) };
+  h.context.confirmSent({ requestId: 'request', sel: 'codex|A' }); h.flush();
+  routes.draft.call(session, h.packets.at(-1));
+  assert.equal(session.codexDrafts.get('codex|A'), ''); assert.equal(h.context.dirtyDrafts.size, 0);
+  h.navigate('draft', 'codex|A'); h.flush(); routes.draft.call(session, h.packets.at(-1));
+  assert.equal(h.input.value, '');
+});
+
+test('a failed empty-draft write remains pending for the originating conversation', () => {
+  const h = syncingDraft(); h.context.confirmSent({ requestId: 'request', sel: 'codex|A' }); h.flush();
+  const clear = h.packets.at(-1);
+  h.context.receiveDraft({ ...clear, t: 'draftAck', ok: false, read: false });
+  assert(h.context.dirtyDrafts.has('draft')); assert.equal(h.input.value, '');
+  h.navigate('draft', 'codex|A'); h.flush(); assert.equal(h.packets.at(-1).text, '');
+});
+
+for (const sameText of [false, true]) test(`an A receipt preserves B and clears A when reopened, identical text=${sameText}`, () => {
+  const h = syncingDraft(); h.navigate('draft-B', 'codex|B');
+  const value = sameText ? h.sent.text : 'new B command';
+  h.input.value = value; h.context.recordDraftEdit();
+  h.context.confirmSent({ requestId: 'request', sel: 'codex|A' });
+  assert.equal(h.input.value, value); assert.equal(h.context.drafts.has('draft'), false);
+  assert(h.context.dirtyDrafts.has('draft')); h.flush();
+  assert.equal(h.packets.at(-1).sel, 'codex|B'); assert.equal(h.packets.at(-1).text, value);
+  h.navigate('draft', 'codex|A'); h.flush();
+  assert.equal(h.input.value, ''); assert.equal(h.packets.at(-1).text, '');
+  assert.equal(h.context.drafts.get('draft-B'), value);
+});
+
+test('a newer A draft survives an older acceptance delivered while B is selected', () => {
+  const h = syncingDraft();
+  h.input.value = 'new A text'; h.context.recordDraftEdit(); h.navigate('draft-B', 'codex|B');
+  h.context.confirmSent({ requestId: 'request', sel: 'codex|A' });
+  assert.equal(h.context.drafts.get('draft'), 'new A text');
+  h.navigate('draft', 'codex|A'); h.flush();
+  assert.equal(h.input.value, 'new A text'); assert.equal(h.packets.at(-1).text, 'new A text');
+});
+
+test('a later edit, including identical text, is synchronized instead of cleared by an earlier receipt', () => {
+  for (const sameText of [false, true]) {
+    const h = syncingDraft(true); if (!sameText) { h.input.value = 'new command'; h.context.recordDraftEdit(); }
+    h.context.confirmSent({ requestId: 'request', sel: 'codex|A' }); h.flush();
+    assert.equal(h.packets.at(-1).text, sameText ? h.sent.text : 'new command');
+    assert.equal(h.context.pendingDesktopDraft, null);
+  }
+});
+
+test('pending or rejected sends retain their drafts and do not schedule an empty write', () => {
+  const h = syncingDraft();
+  h.context.confirmSent({ requestId: 'request', pending: true }); h.flush();
+  assert.equal(h.input.value, h.sent.text); assert.equal(h.packets.length, 0);
+  h.context.failPendingSend('request', 'not submitted'); h.flush();
+  assert.equal(h.input.value, h.sent.text); assert.equal(h.packets.length, 0);
+});
+
 test('accepted clearing invalidates late draft reads and a current native draft still synchronizes', () => {
   const h = acceptedDraft(false);
   h.context.confirmSent({ requestId: 'request', sel: 'codex|A' });
@@ -2600,8 +2693,8 @@ test('OpenCode context preserves native token details and distinguishes unknown 
   assert.equal(h.node('meterCtxPct').textContent, '尚未统计 / 128K');
   const usage = { source: 'opencode', used: 8000, limit: 131072, pct: 6.1, basis: 'used', model: 'Bonsai', updated: 123456789 };
   h.context.renderContext(usage);
-  assert.deepEqual(h.data().context, usage);
-  assert.equal(h.node('meterCtxPct').textContent, '已用6.1%');
+  assert.deepEqual(h.data().context, { ...usage, pct: 6 });
+  assert.equal(h.node('meterCtxPct').textContent, '已用6%');
   assert.match(h.node('meterCtx').title, /上次调用/);
   let sheet, message;
   Object.assign(h.context, { openSheet: (_kind, html) => { sheet = html; }, closeSheet() {}, send: m => { message = m; } });
@@ -3254,6 +3347,7 @@ test('a genuinely unready Codex project retains its native wait, failure and new
 test('Codex thread adoption reads directly only for an established binding and preserves project-switch ownership', async () => {
   for (const bindingReady of [false, true]) for (const switchingThread of [false, true]) {
     const calls = [], session = { bindingReady, switchingThread, threadId: 'old',
+      currentRoots: async () => [{ root: '/new' }],
       clearViewState: () => calls.push('clear'), publishThread: () => calls.push('publish'),
       pollChat: async (...args) => { assert.deepEqual(args, [true, true]); calls.push('read'); } };
     await codexMethods.adoptCodexThread.call(session, 'new');
@@ -4384,14 +4478,14 @@ test('OpenCode preview limits the current turn to 600 characters and the latest 
 });
 
 test('Cursor empty composer resolves its native services before transcript rows exist', () => {
-  const button = {}, data = { getComposerDataIfLoaded: id => ({ composerId: id, fullConversationHeadersOnly: [] }) };
+  const status = {}, data = { getComposerDataIfLoaded: id => ({ composerId: id, fullConversationHeadersOnly: [] }) };
   const services = { composerService: {}, composerDataService: data, backgroundComposerService: {}, nativeHostService: {} };
   const instantiationService = { _services: { _entries: new Map(Object.keys(services).map(id => [id, null])) },
     invokeFunction: fn => fn({ get: id => services[id] }) };
   let lookups = 0;
-  const context = createPageContext({ window: {}, doc: { querySelectorAll: () => [] },
-    modelButton: () => button, codexFiberProps: element => {
-      assert.equal(element, button); lookups++;
+  const context = createPageContext({ window: {}, doc: { querySelector: selector => { assert.equal(selector, '.ui-agent-status-dot'); return status; } },
+    modelButton: () => assert.fail('service discovery must not depend on the model button'), codexFiberProps: element => {
+      assert.equal(element, status); lookups++;
       return [{ services: { workspace: { instantiationService } } }];
     } });
   vm.runInContext(part(read('server/page/session-actions.js'), '  const cursorSessionInstantiation =', '  const devinSessionRecord =')
@@ -4633,4 +4727,86 @@ test('Fusion native forms retain multiple selected values through repaint and us
   context.fusionPreserveSheet(() => { fields = [field([])]; root.scrollTop = 0; });
   assert.deepEqual([...fields[0].selectedOptions].map(option => option.value), ['read', 'write']);
   assert.equal(root.scrollTop, 140);
+});
+
+test('context and quota meter percentages use integers for text, rings and accessible labels', () => {
+  const context = createPageContext();
+  vm.runInContext(part(read('app/js/sheets.js'), 'const meterPercent =', 'const contextMeterScope =') + ';this.percent=meterPercent;', context);
+  assert.equal(context.percent(59.80821052631578), 60);
+  assert.equal(context.percent(0.123456789), 0);
+  assert.equal(context.percent(99.6), 100);
+  assert.equal(context.percent(101), 100);
+  assert.equal(context.percent(-1), 0);
+  assert.equal(context.percent(null), null);
+});
+
+function codexInputRecall() {
+  const h = acceptedDraft(), source = read('app/js/composer.js');
+  Object.assign(h.sent, { app: 'codex', thread: 'A', scope: 'computer|codex|window', before: new Set(), beforeQueues: new Set() });
+  Object.assign(h.context, { chatInputCache: new Map(), sentInputCache: new Map(), inputRecall: null,
+    chatBySel: new Map(), chatCacheKey: value => value, receiveQueueEdit() {},
+  });
+  h.input.dispatchEvent = () => {};
+  vm.runInContext(part(source, 'function endInputRecall()', 'const pendingSends =')
+    + part(source, 'function rememberSentInput(', 'function confirmSent(')
+    + part(source, 'function receiveQueueDone(', 'function draftKey(')
+    + part(source, 'function recallInput(', "$('inputPrev').onclick"), h.context);
+  return h;
+}
+
+test('Codex up/down history uses confirmed original text after receipts and echoes are consumed', () => {
+  const h = codexInputRecall(), original = '第一行\nC:\\tmp\\\n第二行/\n';
+  h.sent.text = original;
+  h.input.value = original;
+  h.context.confirmSent({ requestId: 'request', sel: h.context.viewSel, messageId: 'accepted' }, false);
+  h.context.submittedMessages.length = 0;
+  h.context.pendingEchoes = [];
+  const chat = { thread: 'A', items: [
+    { i: 'older', k: 'human', t: '旧消息\\\n' },
+    { i: 'turn:human:accepted', nativeIds: ['accepted'], k: 'human', t: original.replace(/\n/g, '\\\n') + '\n' },
+  ] };
+  h.context.lastChat = chat;
+  for (let n = 0; n < 3; n++) h.context.rememberInputHistory(chat);
+  h.input.value = 'unfinished draft';
+  h.input.setSelectionRange(2, 4, 'forward');
+  h.context.MN.mentions = [{ token: '@draft' }];
+  h.context.recallInput(-1); assert.equal(h.input.value, original);
+  h.context.recallInput(-1); assert.equal(h.input.value, '旧消息\\\n');
+  h.context.recallInput(1); assert.equal(h.input.value, original);
+  h.context.recallInput(1); assert.equal(h.input.value, 'unfinished draft');
+  assert.deepEqual([h.input.selectionStart, h.input.selectionEnd], [2, 4]);
+  assert.equal(h.context.MN.mentions[0].token, '@draft');
+  h.context.inputHistory.clear(); h.context.chatInputCache.clear();
+  h.context.lastChat = null;
+  h.context.lastChat = structuredClone(chat);
+  h.context.recallInput(-1); assert.equal(h.input.value, original);
+});
+
+test('a late Codex receipt preserves A original without leaking through another thread, computer or app', () => {
+  const h = codexInputRecall(); h.sent.text = 'original A';
+  h.context.viewSel = 'codex|B';
+  h.context.confirmSent({ requestId: 'request', sel: 'codex|A', messageId: 'shared-id' }, false);
+  const makeChat = thread => ({ thread, items: [{ i: 'shared-id', k: 'human', t: 'native\\\n' }] });
+  const cached = chat => {
+    h.context.rememberInputHistory(chat);
+    return [...h.context.chatInputCache.values()].at(-1).at(-1)[1];
+  };
+  assert.equal(cached(makeChat('B')), 'native\\\n');
+  h.context.viewSel = 'codex|A';
+  assert.equal(cached(makeChat('A')), 'original A');
+  h.context.chatInputCache.clear(); h.context.currentComputer = () => ({ id: 'other-computer' });
+  assert.equal(cached(makeChat('A')), 'native\\\n');
+  h.context.currentComputer = () => ({ id: 'computer' }); h.context.currentApp = 'cursor';
+  h.context.chatInputCache.clear(); assert.equal(cached(makeChat('A')), 'native\\\n');
+});
+
+test('Codex queued original follows an explicit queue edit and its execution message alias', () => {
+  const h = codexInputRecall(); h.sent.text = 'queued original';
+  h.context.confirmSent({ requestId: 'request', sel: h.context.viewSel, queueId: 'queue-before', queued: true }, false);
+  const edited = 'edited /\nC:\\project\\';
+  h.context.receiveQueueDone({ ok: true, sel: h.context.viewSel, action: 'edit', text: edited,
+    queueId: 'queue-after', echoes: ['request'] });
+  const chat = { thread: 'A', items: [{ i: 'executed-message', nativeIds: ['queue-after'], k: 'human', t: edited + '\\\n' }] };
+  h.context.lastChat = chat; h.context.recallInput(-1);
+  assert.equal(h.input.value, edited);
 });

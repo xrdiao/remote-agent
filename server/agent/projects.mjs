@@ -8,7 +8,7 @@ import { workspaces, windowRoots, workspaceLabel, editorRoots } from '../../lib/
 import { IS_WIN, IS_MAC, mod, normPath, findBin } from '../../lib/platform.mjs';
 import { Cdp, cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { nativeWindowAt } from '../native-windows.mjs';
-import { listWindows, codexWindows, codexFolder } from '../windows.mjs';
+import { listWindows, codexWindows } from '../windows.mjs';
 import { CDP_URL, DEVIN_CDP_URL, CODEX_CDP_URL, EDITORS } from '../config.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { fusionProject } from '../fusion/state.mjs';
@@ -123,7 +123,7 @@ export const methods = {
     const cdp = this.editorCdp;
     state ||= await cdp.evaluate(helpersCall('workspaceTrustState()'));
     if (!state.required || cdp !== this.editorCdp) return false;
-    const roots = await this.currentRoots();
+    const roots = await editorRoots(cdp, this.app);
     if (cdp !== this.editorCdp) return false;
     this.pendingProject = { root: roots[0]?.root || '', app: this.app, windowId: this.windowId,
       newSession: false, ...pending, ...options, trust: true };
@@ -151,7 +151,13 @@ export const methods = {
 
   // Only local workspaces: remote (SSH / Cursor cloud agent) files are not read from the phone.
   async currentRoots() {
-    return this.adapter.currentRoots.call(this);
+    const selection = this.selectionKey();
+    const roots = await this.adapter.currentRoots.call(this);
+    if (selection === this.selectionKey()) {
+      this.sessionProject = { selection, roots };
+      if (this.app === 'devin') this.sessionCwd = roots[0]?.root || '';
+    }
+    return roots;
   },
   projectRows(list) {
     const all = workspaces();
@@ -375,6 +381,7 @@ export const methods = {
     this.switchingThread = false;
     this.lastChatAt = 0;
     if (!this.bindingReady || cdpRead.getStore()?.aborted) return;
+    await this.currentRoots();
     this.publishThread();
     if (this.cdp !== previousCdp || this.mode === 'chat' && !this.chatUpdatesStop) await this.setMode(this.mode, true);
     else await this.pollChat(true, true);
@@ -438,7 +445,7 @@ export const methods = {
   async confirmProjectTrust(approve, returnTo) {
     const pending = this.pendingProject;
     if (!pending || this.app !== pending.app || this.windowId !== pending.windowId) throw new Error('项目窗口已改变，请重新选择项目');
-    const roots = await this.currentRoots();
+    const roots = await editorRoots(this.editorCdp, this.app);
     if (!roots.some(w => !w.host && fusionProject(w.root)?.id === fusionProject(pending.root)?.id)) throw new Error('当前窗口不是待确认的项目');
     let state = await this.editorCdp.evaluate(helpersCall('workspaceTrustState()'));
     if (!approve) {
@@ -531,11 +538,13 @@ export const methods = {
       else if (this.threadId !== current) {
         this.clearViewState();
         this.threadId = current;
+        await this.currentRoots();
         this.publishThread();
       }
     }
     if (pending.newSession) {
-      const roots = await this.currentRoots();
+      const roots = this.app === 'cursor' && this.winTitle === 'Cursor Agents'
+        ? await this.currentRoots() : await editorRoots(this.editorCdp, this.app);
       if (!roots.some(w => !w.host && fusionProject(w.root)?.id === fusionProject(pending.root)?.id)) throw new Error('当前窗口不属于所选项目，尚未创建会话');
       if (this.app === 'cursor' && !await this.waitFor('control("newChat")', 250))
         throw new Error('Cursor 项目已切换，Agent 新建入口尚未就绪');
@@ -557,6 +566,7 @@ export const methods = {
       chat.empty = true;
       this.syncSession(chat);
       this.threadId = chat.thread || chat.session?.key || '';
+      await this.currentRoots();
       this.publishThread();
     }
     const roots = await this.currentRoots();
@@ -570,11 +580,8 @@ export const methods = {
     this.emit({ t: 'status', ok: true, msg: pending.newSession ? '已在所选项目新建会话' : pending.threadId ? '已切换会话' : `已打开 ${path.basename(pending.root)}` });
   },
   projectName() {
-    if (this.app === 'codex') return codexFolder(this.winTitle);
-    // A Devin window can have no folder ("Untitled (Workspace)") while its session still
-    // runs in a real directory; the session's own cwd names the project in that case.
-    if (this.app === 'devin') return path.posix.basename(normPath(windowRoots(this.winTitle, 'devin')[0]?.root || this.sessionCwd || ''));
-    return '';
+    const roots = this.sessionProject?.selection === this.selectionKey() ? this.sessionProject.roots : [];
+    return path.posix.basename(normPath((this.app === 'devin' ? this.sessionCwd : roots[0]?.root) || ''));
   },
   publishThread(statusMsg) {
     const source = this.cdp?.nativeWindow;

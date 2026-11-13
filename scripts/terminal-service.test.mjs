@@ -329,6 +329,7 @@ async function frontendTerminalTools() {
   let selected = 'selected output';
   const node = id => {
     if (!nodes.has(id)) nodes.set(id, { id, value: '', hidden: false, disabled: false, listeners: {},
+      contains: value => value?.owner === id,
       classList: { toggle() {} }, addEventListener(type, fn) { this.listeners[type] = fn; },
       focus() { h.effects.push(['focus', id]); } });
     return nodes.get(id);
@@ -336,6 +337,7 @@ async function frontendTerminalTools() {
   const buttons = actions.map(action => Object.assign(node(action), { dataset: { terminalAction: action },
     closest: () => node(action), click() { if (!this.disabled) return node('termTools').listeners.click({ target: this }); } }));
   Object.assign(h.context, { $: node, document: { querySelectorAll: selector => selector === '[data-terminal-action]' ? buttons : [] },
+    window: { getSelection: () => null },
     terminalPrompt: true, terminalFollow: true,
     openSheet(kind, html) { h.menu = { kind, html }; }, I18N: { tr: String },
     copyText: (value, button) => h.effects.push(['copy', value, button.id]),
@@ -494,4 +496,22 @@ test('textbox completion, multiline submit, history and foreground input use the
   assert(!output.slice(before).includes('fictional-secret'));
   assert(!output.includes('777;RA;'));
   assert.equal(service.get(meta.id).process.pid, meta.pid);
+});
+
+test('native terminal selection copies selected text and leaves a selection outside the terminal intact', async () => {
+  const h = await frontendTerminalTools();
+  let selection = { anchorNode: { owner: 'termText' }, focusNode: { owner: 'termText' },
+    toString: () => '中文\nselected output', removeAllRanges() { h.effects.push(['clearNative']); } };
+  h.context.window.getSelection = () => selection;
+  assert.equal(h.context.terminalSelection(), '中文\nselected output');
+  await h.context.copyTerminal(h.node('copy'));
+  assert.deepEqual(h.effects.filter(e => e[0] === 'copy'), [['copy', '中文\nselected output', 'copy']]);
+  assert(h.effects.some(e => e[0] === 'clearNative'));
+  h.effects.length = 0;
+  selection = { anchorNode: { owner: 'chat' }, focusNode: { owner: 'chat' },
+    toString: () => 'chat selection', removeAllRanges() { throw Error('outside selection must remain'); } };
+  h.context.raTerminal.getSelection = () => 'legacy terminal selection';
+  assert.equal(h.context.terminalSelection(), 'legacy terminal selection');
+  h.context.clearTermSelection();
+  assert.deepEqual(h.effects, [['clearSelection']]);
 });

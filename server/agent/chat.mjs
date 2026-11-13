@@ -312,6 +312,7 @@ export const methods = {
         if (this.app === 'devin') { this.sel++; this.lastChat = ''; this.lastAttachments = null; }
         else this.clearViewState();
         this.threadId = chat.thread || '';
+        await this.currentRoots();
         this.publishThread('桌面上的会话已切换');
         this.lastChatAt = 0;
         return;
