@@ -2869,7 +2869,7 @@ test('Devin metrics and elapsed time share the native turn identity independentl
 });
 
 test('token estimates settle fixed three-second windows, ignore duplicate snapshots and reset on scope changes', () => {
-  const h = usageMeters(), info = { source: 'codex', runId: 'run-1', usageId: 'run-1', model: 'model-1', unit: 'tokens',
+  const h = usageMeters(), info = { source: 'cursor', runId: 'run-1', usageId: 'run-1', model: 'model-1', unit: 'tokens',
     busy: true, tokens: { input: 90000, output: 100, reasoning: 40, cacheRead: 80000 }, counter: 1000, rate: null, startedAt: 100000 };
   const paint = perf => { h.context.lastChat = { performance: perf }; h.context.renderContext({ pct: 40, basis: 'used' }); };
   paint(info);
@@ -2914,29 +2914,53 @@ test('OpenCode pending statistics keep every field visible and elapsed time adva
   assert.match(panel.innerHTML, /耗时<\/span><span class="perf-val">9s/);
 });
 
-test('Codex backend and desktop keep the last complete three-second sample instead of native turn averages', () => {
+test('Codex speed uses elapsed time between changed counters and preserves its measured interval', () => {
   for (const rate of [null, 999]) {
     const h = usageMeters(), info = { source: 'codex', runId: 'turn', model: 'actual', unit: 'tokens',
       busy: true, counter: 100, rate, durationMs: 10000 };
     h.context.renderPerfChip(info);
-    assert.equal(h.node('perfChip').textContent, '统计中');
-    h.at(1000); h.context.renderPerfChip({ ...info, counter: 160 });
-    assert.equal(h.node('perfChip').textContent, '统计中');
-    h.at(3000); h.context.renderPerfChip({ ...info, counter: 190 });
-    assert.equal(h.node('perfChip').textContent, '30 tok/s');
-    h.at(5000); h.context.renderPerfChip({ ...info, busy: false, counter: 250, rate: 50, durationMs: 15000 });
-    assert.equal(h.node('perfChip').textContent, '30 tok/s');
-    assert.equal(h.node('perfChip').title, '3 秒估算速度');
+    assert.equal(h.node('perfChip').textContent, '待更新');
+    assert.match(h.node('perfPanel').innerHTML, /统计区间<\/span><span class="perf-val">—/);
+    h.at(1000); h.context.renderPerfChip(info);
+    assert.equal(h.node('perfChip').textContent, '待更新');
+    h.at(12000); h.context.renderPerfChip({ ...info, counter: 400 });
+    assert.equal(h.node('perfChip').textContent, '25 tok/s');
+    assert.equal(h.node('perfChip').title, '更新区间平均速度');
+    assert.match(h.node('perfPanel').innerHTML, /统计区间<\/span><span class="perf-val">12s/);
+    h.at(13000); h.context.renderPerfChip({ ...info, counter: 400 });
+    assert.equal(h.node('perfChip').textContent, '25 tok/s');
+    h.at(30000); h.context.renderPerfChip({ ...info, counter: 1300 });
+    assert.equal(h.node('perfChip').textContent, '50 tok/s');
+    assert.match(h.node('perfPanel').innerHTML, /统计区间<\/span><span class="perf-val">18s/);
+    h.at(33000); h.context.renderPerfChip({ ...info, busy: false, counter: 1450, rate: 999, durationMs: 35000 });
+    assert.equal(h.node('perfChip').textContent, '50 tok/s');
     assert.match(h.node('perfPanel').innerHTML, /统计区间<\/span><span class="perf-val">3s/);
-    assert.match(h.node('perfPanel').innerHTML, /耗时<\/span><span class="perf-val">15s/);
-    h.at(9000); h.context.renderPerfChip({ ...info, busy: false, counter: 250, rate: 50, durationMs: 15000 });
-    assert.equal(h.node('perfChip').textContent, '30 tok/s');
-    h.context.renderPerfChip({ ...info, runId: 'historical', busy: false, counter: 1000, rate: 50 });
+    assert.match(h.node('perfPanel').innerHTML, /耗时<\/span><span class="perf-val">35s/);
+    h.at(50000); h.context.renderPerfChip({ ...info, busy: false, counter: 1450, rate: 999, durationMs: 35000 });
+    assert.equal(h.node('perfChip').textContent, '50 tok/s');
+    assert.match(h.node('perfPanel').innerHTML, /统计区间<\/span><span class="perf-val">3s/);
+    h.context.renderPerfChip({ ...info, runId: 'historical', busy: false, counter: 1000, rate: 999 });
     assert.equal(h.node('perfChip').textContent, '—');
     h.context.renderPerfChip({ ...info, runId: 'next', counter: null });
-    assert.equal(h.node('perfChip').textContent, '统计中');
-    h.at(12000); h.context.renderPerfChip({ ...info, runId: 'next', busy: false, counter: 200, rate: 100 });
+    assert.equal(h.node('perfChip').textContent, '待更新');
+    h.at(60000); h.context.renderPerfChip({ ...info, runId: 'next', busy: false, counter: 200, rate: 999 });
     assert.equal(h.node('perfChip').textContent, '—');
+  }
+});
+
+test('Codex update intervals restart at missing or rolled-back counters and remain scoped to their owner', () => {
+  const h = usageMeters(), info = { source: 'codex', runId: 'turn', model: 'actual', unit: 'tokens', busy: true, rate: null };
+  const paint = counter => h.context.renderPerfChip({ ...info, counter });
+  paint(null); h.at(4000); paint(1000);
+  assert.equal(h.node('perfChip').textContent, '待更新');
+  h.at(14000); paint(1300); assert.equal(h.node('perfChip').textContent, '30 tok/s');
+  h.at(15000); paint(1); assert.equal(h.node('perfChip').textContent, '待更新');
+  h.at(17000); paint(61); assert.equal(h.node('perfChip').textContent, '30 tok/s');
+  for (const change of [() => { h.computer.id = 'other-computer'; },
+    () => { h.context.viewSel = 'codex|window|other-thread'; },
+    () => { info.runId = 'other-turn'; }, () => { info.model = 'other-model'; }]) {
+    change(); paint(61); assert.equal(h.node('perfChip').textContent, '待更新');
+    assert.match(h.node('perfPanel').innerHTML, /统计区间<\/span><span class="perf-val">—/);
   }
 });
 
