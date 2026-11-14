@@ -241,9 +241,9 @@ function ovRecsOf(e, st) {
     const key = ovNativeKey(e.id, s), done = s.run?.status === 'completed' && ovDone[key] && ovDone[key].runId === s.run.id ? ovDone[key].at : 0;
     const since = s.startedAt || st.first.get(key);
     const stopped = s.run?.status === 'stopped' && ovStoppedSeen[key] !== s.run.id;
-    const state = s.dormant ? 'idle' : s.waiting ? 'wait' : s.busy ? 'run' : s.run?.status === 'error' || stopped ? 'err'
+    const state = s.dormant && !s.cachedStatusAt ? 'idle' : s.waiting ? 'wait' : s.busy ? 'run' : s.run?.status === 'error' || stopped ? 'err'
       : s.statusKnown === false || s.run?.status === 'unknown' ? 'unknown' : done ? 'done' : 'idle';
-    out.push({ key, comp: e.id, off, state, run: s.run, busy: !!s.busy, wait: s.waiting || '',
+    out.push({ key, comp: e.id, off, state, run: s.run, busy: !!s.busy, wait: s.waiting || '', cachedStatusAt: s.cachedStatusAt || 0,
       waitText: s.waitingText || '', last: s.last || '', tasks: s.tasks, actions: s.actions || [], devin: !!s.devin, changed: s.changed || 0, acceptAll: !!s.acceptAll,
       win: s.win, windowId: s.windowId, threadId: s.threadId || '', app: s.app, title: s.title || '', project: `${e.id}|${s.projectId}`, projName: s.project,
       start: since ? since - st.offset : 0, ended: done || 0, used: s.lastUsed ? s.lastUsed - st.offset : 0, changes: s.changes || null, favorite: s.favorite === true, common: agentSessionCommon(s),
@@ -269,7 +269,10 @@ function ovProjects(all) {
 }
 function ovBadge(r) {
   if (r.off) return ovT('离线');
-  if (r.dormant) return ovT('项目未打开');
+  if (r.cachedStatusAt) return (I18N.lang === 'en' ? 'Last: ' : '上次：')
+    + ovBadge({ ...r, cachedStatusAt: 0, dormant: false }) + ' · '
+    + new Date(r.cachedStatusAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (r.dormant && !r.cachedStatusAt) return ovT('项目未打开');
   if (r.state === 'wait') return r.fusion ? ovT('等你确认') : r.wait.startsWith('q:') ? ovT('问题') : ovT('待确认');
   if (r.state === 'run') return r.fusion ? fusionStatus(r.status) : ovT(ovS.proj ? '正在工作' : '运行中');
   return { done: ovT('已完成'), err: ovT(r.run?.status === 'error' ? '执行失败' : '已停止'), idle: ovT(!r.common ? '不常用' : '空闲'), unknown: ovT('状态待确认') }[r.state];
@@ -438,7 +441,7 @@ function ovChangesRow(r) {
 }
 function ovRunHtml(r) {
   const value = ovPreviews.get(r.key)?.value, tasks = value?.tasks || r.tasks;
-  const model = value?.model || '';
+  const model = [value?.model, modelEffortLabel(value?.model || '', value?.effort)].filter(Boolean).join(' · ');
   const progress = tasks?.total > 0 ? tasks : null;
   const count = progress ? `${ovT('已完成')} ${progress.done}/${progress.total}` : ovT(value ? '未提供任务进度' : '正在读取运行状态…');
   const tools = value?.tools || [];
