@@ -390,7 +390,8 @@ function showUnpaired(msg = '') {
 async function pastePair(text) {
   const manual = /^([a-f0-9]{16})\.([\w-]{22})$/.exec(text.replace(/\s/g, ''));
   if (manual) {
-    const request = pending = { id: manual[1], code: manual[2], discovery: new URL('url.json', location.href).href };
+    const known = loadComputers().find(c => c.id === manual[1] && c.relay);
+    const request = pending = { id: manual[1], code: manual[2], discovery: known ? known.relay.replace(/\/$/, '') + '/url.json' : new URL('url.json', location.href).href };
     sessionStorage.removeItem('entry-request');
     bootGeneration++; connGen++;
     authed = false;
@@ -401,7 +402,7 @@ async function pastePair(text) {
     gate({ pairStatus: { state: 'loading', title: '正在配对…' } });
     try {
       const discovery = request.discovery;
-      const registry = await fetch(discovery + '?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then(r => { if (!r.ok) throw Error('地址记录读取失败'); return r.json(); });
+      const registry = await fetch(discovery + '?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then(r => { if (!r.ok) throw Error(known ? '中继地址记录读取失败' : '入口地址记录读取失败，请改用电脑上的二维码或配对链接'); return r.json(); });
       if (pending !== request) return;
       if (registry.self) {
         base = new URL(discovery).origin;
@@ -411,7 +412,7 @@ async function pastePair(text) {
         return boot();
       }
       const entry = registry.computers?.find(c => c.id === manual[1]);
-      if (!entry?.pairing || entry.pairing.expires <= Date.now()) throw Error('配对码未发布或已过期，请在电脑上重新运行 npm run pair');
+      if (!entry?.pairing || entry.pairing.expires <= Date.now()) throw Error('入口地址记录尚未更新或配对码已过期，请改用电脑上的二维码或配对链接');
       const rawKey = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(manual[2]));
       const key = await crypto.subtle.importKey('raw', rawKey, 'AES-GCM', false, ['decrypt']);
       const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64(entry.pairing.iv) }, key, b64(entry.pairing.data));
@@ -423,7 +424,11 @@ async function pastePair(text) {
     } catch (e) {
       if (pending !== request) return;
       pending = null;
-      return showUnpaired(e.name === 'OperationError' ? '配对码不正确' : e.message);
+      return showUnpaired(e.name === 'OperationError' ? '配对码与入口地址记录不匹配，请改用电脑上的二维码或配对链接'
+        : e instanceof TypeError || e.name === 'TimeoutError' ? known
+          ? '无法连接这台电脑的中继，请检查电脑服务和隧道，或使用电脑上的新配对链接'
+          : '无法读取入口地址记录，请改用电脑上的二维码或配对链接'
+        : e.message);
     }
   }
   const p = parsePair(text);

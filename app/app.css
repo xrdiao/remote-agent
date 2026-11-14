@@ -1552,6 +1552,16 @@ body.split.fusion #fusionPanelBody .fusion-detail-actions { bottom: -18px; }
 #gate.pairStatus #gateInfo { margin-top: 16px; text-align: center; }
 #gate.pairStatus #gateInfo:empty { display: none; }
 
+@media (min-width: 560px) {
+  body.land:not(.wide) #gate.pairing { height: 100dvh; grid-template-columns: minmax(0, 1fr) clamp(300px, 40vw, 420px); grid-template-rows: auto minmax(0, 1fr); gap: 8px clamp(16px, 3vw, 36px); align-content: stretch; align-items: safe center; }
+  body.land:not(.wide) #gate.pairing.open { display: grid; }
+  body.land:not(.wide) #gate.pairing > * { width: 100%; max-width: none; min-width: 0; margin: 0; }
+  body.land:not(.wide) #gate.pairing #gateHeader { grid-column: 1 / -1; grid-row: 1; }
+  body.land:not(.wide) #gate.pairing .pairHero { grid-column: 1; grid-row: 2; display: flex; align-items: flex-start; text-align: left; padding: 0; }
+  body.land:not(.wide) #gate.pairing #pairIntro { text-align: left; }
+  body.land:not(.wide) #gate.pairing .pairControls { grid-column: 2; grid-row: 2; display: flex; flex-direction: column; margin: 0; padding: 0; border-radius: 0; background: none; box-shadow: none; }
+}
+
 /* ---------- shared connection controls ---------- */
 .cTile { flex: none; width: 36px; height: 36px; border-radius: 10px; background: var(--s2); display: grid; place-items: center; color: var(--fg-hi); font-weight: 600; font-size: 14px; }
 .cTile.cBrand { padding: 3px; }

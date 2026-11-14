@@ -1,4 +1,6 @@
 node_modules/
+.runtime/
+nul
 .DS_Store
 *.log
 android/.gradle/

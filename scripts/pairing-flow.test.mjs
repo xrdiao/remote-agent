@@ -41,7 +41,8 @@ function backend({ twoFactor = false } = {}) {
 function frontend(server = backend()) {
   const trace = [], calls = [], timers = new Map(), storage = new Map();
   let timerId = 0, computers = [{ ...computer }], gateOpen = true;
-  const context = vm.createContext({ URL, AbortController, AbortSignal, Date, JSON,
+  const context = vm.createContext({ URL, AbortController, AbortSignal, Date, JSON, TypeError,
+    crypto: crypto.webcrypto, TextEncoder, TextDecoder, b64: value => Buffer.from(value, 'base64url'),
     pending: { key: computer.key, code, relay }, base: relay, info: { self: true }, connGen: 0,
     ws: null, authed: false, inApp: false, entryComputer: '',
     navigator: { userAgent: 'test', onLine: true }, location: { href: relay + '/', origin: relay },
@@ -49,7 +50,7 @@ function frontend(server = backend()) {
     store: { get: key => key === 'token' ? computer.token : null, set() {} },
     entryKey: async () => ({ publicKey: 'entry-public-key' }), entryName: () => 'Test phone',
     entryHeaders: async owner => owner?.token ? { authorization: 'Bearer ' + owner.token } : {},
-    loadComputers: () => computers, currentComputer: () => computers[0], discoveryUrl: () => relay + '/url.json',
+    loadComputers: () => computers, currentComputer: () => computers[0],
     saveComputers: list => { computers = list; }, computerIdFromKey: async () => computer.id,
     gate: state => { gateOpen = true; trace.push(state); },
     ungate: () => { gateOpen = false; }, showUnpaired: message => { gateOpen = true; trace.push({ error: message }); },
@@ -68,6 +69,7 @@ function frontend(server = backend()) {
       return server.request(target.pathname, body, opts.headers?.authorization === 'Bearer old-token');
     },
   });
+  context.discoveryUrl = () => context.pending?.discovery || new URL('url.json', context.location.href).href;
   vm.runInContext(fragment(net, 'async function api(', '// Pairing links look like')
     + fragment(net, 'async function pastePair(', 'function showTotp(')
     + fragment(net, 'async function pair(', 'async function verifyTotp(')
@@ -170,6 +172,7 @@ test('retrying a waiting approval keeps its persisted relay and does not redisco
 
 test('manual code submission suspends the old connection before discovery completes', async () => {
   const h = frontend(), connect = h.context.connect; h.installConnectionGuards(); let resolveDiscovery;
+  h.context.saveComputers([]);
   h.storage.set('entry-request', JSON.stringify({ requestId: 'previous', secret: 'previous-secret' }));
   const fetch = h.context.fetch; let discoveryCalls = 0, closes = 0;
   h.context.fetch = (...args) => String(args[0]).includes('/url.json') && discoveryCalls++ === 0
@@ -183,4 +186,64 @@ test('manual code submission suspends the old connection before discovery comple
   resolveDiscovery({ ok: true, json: async () => ({ self: true }) });
   await h.waiting(); h.context.connect = connect; h.server.approve(); h.poll(); await work;
   assert.equal(h.computers[0].token, 'new-token');
+});
+
+test('a manual code for a known computer pairs through its live relay without the entry registry', async () => {
+  const h = frontend();
+  const fixed = 'https://entry.invalid';
+  h.context.location = { href: fixed + '/', origin: fixed };
+  const inner = h.context.fetch;
+  let registryFetches = 0;
+  h.context.fetch = async (url, opts = {}) => {
+    const target = new URL(url);
+    if (target.origin === fixed) {
+      registryFetches++;
+      if (target.pathname === '/url.json') return { ok: true, json: async () => ({ v: 3, computers: [{ id: computer.id }] }) };
+      throw new Error('unexpected entry call: ' + target.pathname);
+    }
+    return inner(url, opts);
+  };
+  const work = h.context.pastePair(computer.id + '.' + code);
+  await h.waiting(); h.server.approve(); h.poll(); await work;
+  assert.equal(registryFetches, 0);
+  assert(h.calls.some(call => call.origin === relay && call.path === '/url.json'));
+  assert(h.calls.some(call => call.origin === relay && call.path === '/api/me'));
+  assert(h.calls.some(call => call.origin === relay && call.path === '/api/pair'));
+  assert.equal(h.computers[0].token, 'new-token'); assert.equal(h.computers[0].relay, relay);
+});
+
+test('a known computer with an unreachable relay reports that failure without reading the entry registry', async () => {
+  const h = frontend();
+  const fixed = 'https://entry.invalid';
+  h.context.location = { href: fixed + '/', origin: fixed };
+  const urls = [];
+  h.context.fetch = async url => {
+    const target = new URL(url);
+    urls.push(target);
+    throw new TypeError('Failed to fetch');
+  };
+  await h.context.pastePair(computer.id + '.' + code);
+  assert.deepEqual(urls.map(url => url.origin + url.pathname), [relay + '/url.json']);
+  assert.match(h.trace.at(-1).error, /中继.*隧道/);
+  assert.equal(h.context.pending, null); assert.equal(h.computers[0].token, 'old-token');
+});
+
+test('an unknown computer uses the entry registry and stale or unreachable records suggest a QR code or link', async () => {
+  for (const failure of ['stale', 'network', 'http', 'decrypt']) {
+    const h = frontend(), fixed = 'https://entry.invalid';
+    h.context.saveComputers([]);
+    h.context.location = { href: fixed + '/', origin: fixed };
+    const urls = [];
+    h.context.fetch = async url => {
+      const target = new URL(url); urls.push(target.origin + target.pathname);
+      if (failure === 'network') throw new TypeError('Failed to fetch');
+      return { ok: failure !== 'http', json: async () => ({ v: 3, computers: [{ id: computer.id,
+        ...(failure === 'decrypt' ? { pairing: { expires: Date.now() + 60000, iv: 'AA', data: 'AA' } } : {}),
+      }] }) };
+    };
+    await h.context.pastePair(computer.id + '.' + code);
+    assert.deepEqual(urls, [fixed + '/url.json']);
+    assert.match(h.trace.at(-1).error, /二维码或配对链接/, failure);
+    assert.equal(h.context.pending, null);
+  }
 });
