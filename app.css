@@ -1498,6 +1498,26 @@ body.split.fusion #fusionPanelBody .fusion-detail-actions { bottom: -18px; }
   #gate.pairing #gateApp, #gate.pairing #gateActions { grid-column: 2; grid-row: 6; margin-top: 0; }
   #gate.pairing #gateHelp { grid-column: 2; grid-row: 7; margin: 0; padding-top: 0; }
   #gate.pairing #gateInfo { grid-column: 2; grid-row: 8; margin-top: 0; }
+  #gate.pairing.pairStatus.open { grid-template-rows: repeat(9, auto); padding-top: calc(8px + env(safe-area-inset-top)); padding-bottom: 8px; }
+  #gate.pairing.pairStatus > * { width: auto; max-width: none; margin-left: 0; margin-right: 0; }
+  #gate.pairing.pairStatus #gateHeader { margin-bottom: 0; }
+  #gate.pairing.pairStatus .pairHero { align-items: flex-start; text-align: left; }
+  #gate.pairing.pairStatus #gateLead,
+  #gate.pairing.pairStatus #pairIntro { text-align: left; }
+  #gate.pairing.pairStatus .pairControls { display: contents; margin: 0; padding: 0; border-radius: 0; background: none; box-shadow: none; }
+  #gate.pairing.pairStatus #gateStatus { grid-column: 2; grid-row: 2; }
+  #gate.pairing.pairStatus #gateStatusIcon { width: 36px; height: 36px; margin-bottom: 8px; }
+  #gate.pairing.pairStatus #gateMsg { grid-column: 2; grid-row: 3; margin: 0; }
+  #gate.pairing.pairStatus #gateMsg.err { padding: 8px 12px; }
+  #gate.pairing.pairStatus #gateNote,
+  #gate.pairing.pairStatus #gateWaiting,
+  #gate.pairing.pairStatus #gateApp,
+  #gate.pairing.pairStatus #gateActions { grid-column: 2; grid-row: 7; margin-top: 0; }
+  #gate.pairing.pairStatus #gateEntry { grid-column: 2; grid-row: 4; margin-top: 0; border-radius: 22px; background: var(--s1); padding: clamp(10px, calc(var(--pair-height) * .018), 16px); }
+  #gate.pairing.pairStatus #pairOr { grid-column: 2; grid-row: 5; }
+  #gate.pairing.pairStatus #gateScan { grid-column: 2; grid-row: 6; }
+  #gate.pairing.pairStatus #gateHelp { grid-column: 2; grid-row: 8; min-height: 21px; }
+  #gate.pairing.pairStatus #gateInfo { grid-column: 2; grid-row: 9; }
 }
 
 #gate.pairStatus {
