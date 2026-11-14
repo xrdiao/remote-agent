@@ -138,11 +138,12 @@ The file image shows the selection UI; no transfer was performed. The voice imag
 
 | Capability | Installation or runtime requirements |
 |---|---|
-| RA terminal | Uses the computer account's shell, initialized with Bash's `--rcfile` and Readline integration. Only the initial Ubuntu UI was captured; terminal support for other shells/platforms remains to be verified. The initial directory must be local to the computer |
-| Sherpa CPU voice | `npm run voice:setup`; Python 3.10+, approximately 615 MB of model files plus runtime dependencies |
+| RA terminal | Uses the computer account's shell, initialized with Bash's `--rcfile` and Readline integration. Ubuntu and Windows are supported and covered by automated tests: Windows requires Git for Windows and supports Git Bash only (no PowerShell/cmd); macOS remains unverified. Screenshots still come from Ubuntu only. The initial directory must be local to the computer |
+| Sherpa CPU voice | `npm run voice:setup`; Python 3.10+ (on Windows via `py -3`), approximately 615 MB of model files plus runtime dependencies; on Windows only the Sherpa engine is available |
 | Qwen3-ASR-1.7B voice | `npm run voice:setup -- --engine qwen`; the current installer requires Linux / NVIDIA GPU and uses the official vLLM streaming interface; approximately 4 GB of model files plus runtime dependencies |
 | Browser recording | HTTPS, microphone permission and the selected engine installed on the computer; selecting an engine and opening the microphone are separate operations |
 | Phone system recognition | Requires support in the browser or native shell; bypasses the computer's speech engine, with network use determined by the phone OS/browser |
+| Windows ZIP extraction | A local Python 3 (`py -3` enabled or `python.exe` on PATH) |
 | Windows plot/simulation viewing | FFmpeg with `gdigrab hwnd=` support |
 | Linux X11 plot/simulation viewing | FFmpeg, `xprop` and system Python 3 |
 | Linux Wayland plot/simulation viewing | Desktop-sharing authorization, PyGObject and GStreamer / PipeWire |
@@ -214,13 +215,14 @@ Detailed guides and design records may contain older workflows. Use this README,
 
 Source directories: `server/` for the relay, application adapters and Fusion; `app/` for the phone web UI; `lib/` for shared authentication, file and notification capabilities; `cli/` for setup and pairing tools; `ubuntu_start/` and `window_start/` for platform launchers; `android/` and `ios/` for native shells; `push-service/` for iOS push forwarding.
 
-Development checks:
+Development checks come in two tiers:
 
 ```bash
-npm run check
+npm run check        # Daily maintenance: syntax, message protocols, injected-script export snapshot, and fast behavioral tests
+npm run check:full   # Before committing, pushing or releasing: adds the full spec test suites on top of the daily check
 ```
 
-This command checks syntax, message protocols and the injected-script export snapshot, then runs automated tests. See [AGENTS.md](AGENTS.md) for modification rules, physical-device acceptance of affected features, and native build/release conventions.
+See [AGENTS.md](AGENTS.md) for modification rules, physical-device acceptance of affected features, and native build/release conventions.
 
 ## License and acknowledgements
 

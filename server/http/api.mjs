@@ -120,7 +120,7 @@ export async function handleApi(req, res, route) {
     if (lockedOut(ip)) return json(req, res, 429, { error: '尝试次数过多，请 15 分钟后再试' });
     const { code, name, totp, publicKey } = await readJson(req);
     const batch = pairingSession(code);
-    if (!device && !batch) {
+    if (!batch && (!device || code)) {
       recordFailure(ip);
       return json(req, res, 401, { error: '配对链接无效或已过期（3 分钟内有效）。请在电脑上重新运行 npm run pair' });
     }
@@ -129,7 +129,7 @@ export async function handleApi(req, res, route) {
       if (totp) recordFailure(ip);
       return json(req, res, 401, { needTotp: true, error: totp ? '验证码不对' : '' });
     }
-    if (device) {
+    if (device && !batch) {
       if (needsVerification) updateDevice(device.id, { verifiedAt: Date.now() });
       return json(req, res, 200, { token: bearer(req), id: computerId(), name: computerName(), device: device.id, key: urlKey().toString('base64url') });
     }

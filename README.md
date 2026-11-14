@@ -138,11 +138,12 @@ npm run pair -- --temporary
 
 | 能力 | 安装或运行要求 |
 |---|---|
-| RA 终端 | 当前使用电脑账号的 Shell，并按 Bash 的 `--rcfile` 和 Readline 方式初始化；本次仅有 Ubuntu 初始界面采图，其他 Shell／平台的终端能力尚待验证。初始目录须为电脑本地目录 |
-| Sherpa CPU 语音 | `npm run voice:setup`；Python 3.10+，模型约 615 MB，运行依赖另计 |
+| RA 终端 | 使用电脑账号的 Shell，按 Bash 的 `--rcfile` 和 Readline 方式初始化。Ubuntu 与 Windows 已支持并纳入自动化测试：Windows 需安装 Git for Windows，仅支持 Git Bash，不支持 PowerShell／cmd；macOS 尚待验证。界面采图目前仍仅 Ubuntu。初始目录须为电脑本地目录 |
+| Sherpa CPU 语音 | `npm run voice:setup`；Python 3.10+（Windows 通过 `py -3` 创建环境），模型约 615 MB，运行依赖另计；Windows 语音仅支持 Sherpa |
 | Qwen3-ASR-1.7B 语音 | `npm run voice:setup -- --engine qwen`；当前安装入口要求 Linux / NVIDIA GPU，使用官方 vLLM 流式接口，模型约 4 GB，运行依赖另计 |
 | 网页录音 | HTTPS 和麦克风权限；电脑需已安装所选引擎。选择引擎与打开麦克风是独立操作 |
 | 手机系统识别 | 浏览器或原生壳实际支持系统识别；不经电脑语音引擎，是否联网由手机系统／浏览器决定 |
+| Windows 解压 ZIP | 本机可用的 Python 3（启用 `py -3` 或将 `python.exe` 加入 PATH） |
 | Windows 绘图／仿真画面 | 支持 `gdigrab hwnd=` 的 FFmpeg |
 | Linux X11 绘图／仿真画面 | FFmpeg、`xprop`、系统 Python 3 |
 | Linux Wayland 绘图／仿真画面 | 桌面共享授权、PyGObject、GStreamer / PipeWire |
@@ -240,13 +241,14 @@ RA 能操作当前电脑用户的真实文件与终端。只配对可信入口�
 
 源码目录：`server/` 中继、应用适配与 Fusion；`app/` 手机网页；`lib/` 认证、文件、通知等公共能力；`cli/` 设置与配对工具；`ubuntu_start/`、`window_start/` 平台快捷入口；`android/`、`ios/` 原生壳；`push-service/` iOS 推送转发服务。
 
-开发检查：
+开发检查分两层：
 
 ```bash
-npm run check
+npm run check        # 日常维护：语法、消息协议、注入脚本导出快照核对及快速行为测试
+npm run check:full   # 提交、推送或发版前：在日常检查基础上加跑规格测试套件
 ```
 
-该命令执行语法、消息协议、注入脚本导出快照核对及自动化测试。修改规则、受影响功能的真机验收与原生构建发布约定见 [AGENTS.md](AGENTS.md)。
+修改规则、受影响功能的真机验收与原生构建发布约定见 [AGENTS.md](AGENTS.md)。
 
 ## 许可与致谢
 

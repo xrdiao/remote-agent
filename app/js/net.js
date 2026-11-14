@@ -321,7 +321,7 @@ async function api(path, opts = {}) {
     clearTimeout(timer);
   }
 }
-const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body || {}) });
+const post = (path, body, opts = {}) => api(path, { ...opts, method: 'POST', body: JSON.stringify(body || {}) });
 
 // Pairing links look like <app>#pair=<url key>.<one-time code>.
 function parsePair(text) {
@@ -390,32 +390,41 @@ function showUnpaired(msg = '') {
 async function pastePair(text) {
   const manual = /^([a-f0-9]{16})\.([\w-]{22})$/.exec(text.replace(/\s/g, ''));
   if (manual) {
+    const request = pending = { id: manual[1], code: manual[2], discovery: new URL('url.json', location.href).href };
+    sessionStorage.removeItem('entry-request');
+    bootGeneration++; connGen++;
+    authed = false;
+    const old = ws;
+    ws = null;
+    clearComputerRetry(currentComputer());
+    try { old?.close(); } catch {}
+    gate({ pairStatus: { state: 'loading', title: '正在配对…' } });
     try {
-      const discovery = new URL('url.json', location.href).href;
+      const discovery = request.discovery;
       const registry = await fetch(discovery + '?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then(r => { if (!r.ok) throw Error('地址记录读取失败'); return r.json(); });
+      if (pending !== request) return;
       if (registry.self) {
         base = new URL(discovery).origin;
         const me = await fetch(base + '/api/me').then(r => r.json());
+        if (pending !== request) return;
         if (me.id !== manual[1]) throw Error('配对码对应的电脑与当前入口不一致');
-        pending = { id: manual[1], code: manual[2], discovery };
-        connGen++;
-        authed = false;
-        ws?.close();
-        return pair();
+        return boot();
       }
       const entry = registry.computers?.find(c => c.id === manual[1]);
       if (!entry?.pairing || entry.pairing.expires <= Date.now()) throw Error('配对码未发布或已过期，请在电脑上重新运行 npm run pair');
       const rawKey = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(manual[2]));
       const key = await crypto.subtle.importKey('raw', rawKey, 'AES-GCM', false, ['decrypt']);
       const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64(entry.pairing.iv) }, key, b64(entry.pairing.data));
+      if (pending !== request) return;
       const decoded = JSON.parse(new TextDecoder().decode(plain));
       if (decoded.id !== manual[1]) throw Error('配对码对应的电脑不一致');
-      pending = { key: decoded.key, code: manual[2], discovery, stay: true };
-      connGen++;
-      authed = false;
-      ws?.close();
+      Object.assign(request, { key: decoded.key, stay: true });
       return boot();
-    } catch (e) { return showUnpaired(e.name === 'OperationError' ? '配对码不正确' : e.message); }
+    } catch (e) {
+      if (pending !== request) return;
+      pending = null;
+      return showUnpaired(e.name === 'OperationError' ? '配对码不正确' : e.message);
+    }
   }
   const p = parsePair(text);
   if (!p) return showUnpaired('请输入完整配对链接或电脑码.一次性配对码');
@@ -535,6 +544,7 @@ function authorizeComputer(id) {
   return useComputer(index);
 }
 function reconnectComputer(id, source = 'manual') {
+  if (pending) return;
   const entry = ovList.find(e => e.id === id);
   if (!entry?.c || navigator.onLine === false) return;
   const computer = loadComputers().find(c => c.key === entry.c.key);
@@ -565,22 +575,26 @@ function reconnectComputer(id, source = 'manual') {
 }
 
 async function pair(totp) {
+  const request = pending, computer = { ...loadComputers().find(c => request.key ? c.key === request.key : c.id === request.id), relay: request.relay };
   gate({ pairStatus: { state: 'loading', title: '正在配对…' } });
   let r, body;
   try {
     const { publicKey } = await entryKey();
-    r = await post('/api/pair', { code: pending.code, name: entryName(), publicKey, totp });
+    if (pending !== request) return;
+    r = await post('/api/pair', { code: request.code, name: entryName(), publicKey, totp }, { computer });
     body = await r.json().catch(() => ({}));
   } catch (error) {
+    if (pending !== request) return;
     return showUnpaired(error.message);
   }
+  if (pending !== request) return;
   if (r.ok) {
     if (body.pending) {
-      Object.assign(pending, { key: body.key, requestId: body.id, secret: body.secret, code: body.code, expires: body.expires, desktop: true });
-      sessionStorage.setItem('entry-request', JSON.stringify(pending));
+      Object.assign(request, { key: body.key, requestId: body.id, secret: body.secret, code: body.code, expires: body.expires, desktop: true });
+      sessionStorage.setItem('entry-request', JSON.stringify(request));
       return joinEntryRequest();
     }
-    return finishPair(body);
+    return finishPair(body, request);
   }
   if (body.needTotp) return showTotp(code => pair(code), body.error);
   pending = null;
@@ -588,13 +602,15 @@ async function pair(totp) {
   showUnpaired(body.error || '配对失败');
 }
 
-async function finishPair(body) {
-  const key = body.key || pending.key;
+async function finishPair(body, request = pending) {
+  const key = body.key || request.key;
   const id = body.id || await computerIdFromKey(key);
+  if (pending !== request) return;
   const prev = loadComputers().find(c => c.key === key);
   const list = loadComputers().filter(c => c.key !== key);
-  list.push({ ...prev, id, name: body.name || prev?.name || '电脑', key, token: body.token, device: body.device || prev?.device || '', win: prev?.win || '', discovery: discoveryUrl(), relay: base });
+  list.push({ ...prev, id, name: body.name || prev?.name || '电脑', key, token: body.token, device: body.device || prev?.device || '', win: prev?.win || '', discovery: request.discovery || discoveryUrl(), relay: request.relay });
   saveComputers(list, key);
+  base = request.relay;
   pending = null;
   entryComputer = '';
   sessionStorage.removeItem('entry-request');
@@ -604,9 +620,11 @@ async function finishPair(body) {
 let entryJoinGeneration = 0;
 async function joinEntryRequest() {
   const generation = ++entryJoinGeneration, request = pending;
+  const computer = { ...loadComputers().find(c => request.key ? c.key === request.key : c.id === request.id), relay: request.relay };
   let terminal = false;
   const cancel = () => {
-    post('/api/entries/cancel', { id: request.requestId, secret: request.secret }).catch(() => {});
+    if (generation !== entryJoinGeneration || pending !== request) return;
+    post('/api/entries/cancel', { id: request.requestId, secret: request.secret }, { computer }).catch(() => {});
     entryJoinGeneration++; pending = null; sessionStorage.removeItem('entry-request');
     showUnpaired('已取消入口授权');
   };
@@ -614,21 +632,22 @@ async function joinEntryRequest() {
     if (!request.requestId) {
       gate({ pairStatus: { state: 'loading', title: '正在申请入口授权…' } });
       const { publicKey } = await entryKey();
-      const r = await post('/api/entries/join', { invitation: request.invitation, name: entryName(), publicKey });
-      const body = await r.json();
-      if (!r.ok) { terminal = true; throw new Error(body.error || '申请失败'); }
       if (generation !== entryJoinGeneration || pending !== request) return;
+      const r = await post('/api/entries/join', { invitation: request.invitation, name: entryName(), publicKey }, { computer });
+      const body = await r.json();
+      if (generation !== entryJoinGeneration || pending !== request) return;
+      if (!r.ok) { terminal = true; throw new Error(body.error || '申请失败'); }
       Object.assign(request, { requestId: body.id, secret: body.secret, code: body.code, expires: body.expires });
       delete request.invitation;
       sessionStorage.setItem('entry-request', JSON.stringify(request));
     }
     gate({ msg: request.desktop ? '请在电脑配对窗口核对验证码，然后点击「允许连接」。' : '请在已配对入口的「已配对设备」中核对验证码并同意。', pairStatus: { state: 'waiting', title: request.desktop ? '等待电脑批准' : '等待入口批准', detail: '请核对两端的验证码', code: request.code }, retry: '取消申请', onRetry: cancel });
     while (generation === entryJoinGeneration && pending === request) {
-      const r = await post('/api/entries/status', { id: request.requestId, secret: request.secret });
+      const r = await post('/api/entries/status', { id: request.requestId, secret: request.secret }, { computer });
       const body = await r.json();
       if (generation !== entryJoinGeneration || pending !== request) return;
       if (!r.ok) { terminal = true; throw new Error(body.error || '授权查询失败'); }
-      if (body.state === 'approved') return finishPair(body);
+      if (body.state === 'approved') return finishPair(body, request);
       if (body.state === 'denied') { terminal = true; throw new Error('本次入口申请已被拒绝'); }
       if (Date.now() >= request.expires) { terminal = true; throw new Error('授权请求已过期，请重新生成链接'); }
       await new Promise(resolve => setTimeout(resolve, 2000));
@@ -674,6 +693,8 @@ async function boot() {
   parkComputerSocket(old);
   authed = false;
   clearComputerRetry(currentComputer());
+  if (pending && !pending.requestId) sessionStorage.removeItem('entry-request');
+  if (pending?.requestId) { base = pending.relay; return joinEntryRequest(); }
   // Android browser opened a pairing link: offer to hand it to the installed app instead.
   if (pending?.code && !pending.requestId && /Android/.test(navigator.userAgent) && !inApp && !pending.stay) {
     const link = `agentremote://pair?app=${encodeURIComponent(location.origin + location.pathname)}&d=${pending.key}.${pending.code}`;
@@ -713,11 +734,12 @@ async function boot() {
     info = data;
   } catch (error) {
     if (!current()) return;
+    if (pending) return showUnpaired(error.message);
     base = currentComputer()?.relay || '';
     return showOffline({ stage: '页面地址读取', error: error.message });
   }
   if (pending) {
-    try { const relay = await resolvePending(); if (!current()) return; base = relay; }
+    try { const relay = await resolvePending(); if (!current()) return; base = pending.relay = relay; }
     catch (e) { if (current()) return showUnpaired(e.message || '这台电脑还没有发布地址'); return; }
     return pending.invitation || pending.requestId ? joinEntryRequest() : pair();
   }
@@ -837,7 +859,7 @@ function clearComputerRetry(computer) {
   if (link) link.retry = null;
 }
 function computerRetryAllowed(computer, probe = false) {
-  if (!computer || navigator.onLine === false || computerBackgroundAt !== null) return false;
+  if (pending || !computer || navigator.onLine === false || computerBackgroundAt !== null) return false;
   const link = computerSockets.get(computer.key);
   if (link?.computer.token !== computer.token) return true;
   return (link?.phase !== 'paused' || probe) && !link?.replaced && !link?.rejected;
@@ -1089,9 +1111,9 @@ function replayDesktopOperations(link) {
     link.socket.send(JSON.stringify(request.message));
 }
 async function warmComputerSocket(computer) {
-  if (navigator.onLine === false || computerSockets.get(computer.key)?.phase === 'paused'
+  if (pending || navigator.onLine === false || computerSockets.get(computer.key)?.phase === 'paused'
       || computer.discovery && new URL(computer.discovery).origin !== location.origin) return;
-  const current = () => loadComputers().some(row => row.key === computer.key && row.token === computer.token);
+  const current = () => !pending && loadComputers().some(row => row.key === computer.key && row.token === computer.token);
   const previous = computerSockets.get(computer.key), refresh = !computer.relay || !previous?.auth?.ok;
   const activate = async relay => {
     if (!current() || navigator.onLine === false) return null;
@@ -1138,6 +1160,7 @@ function rejectComputerConnection(computer, phase) {
 }
 let computerWarmup = null;
 async function warmComputerSockets(probe = false, fromBackground = false) {
+  if (pending) return;
   for (const [key, link] of computerSockets) if (!loadComputers().some(row => row.key === key && row.token === link.computer.token)) {
     dropComputerSocket(key);
   }
@@ -1145,11 +1168,11 @@ async function warmComputerSockets(probe = false, fromBackground = false) {
     if (probe && (!computerWarmup.probe || fromBackground)) computerWarmup.probeRequested = true;
     return computerWarmup;
   }
-  const pending = loadComputers().filter(row => row.key !== currentComputer()?.key && computerRetryAllowed(row, probe));
+  const queue = loadComputers().filter(row => row.key !== currentComputer()?.key && computerRetryAllowed(row, probe));
   // Two complete first-screen loads at a time; the current computer never waits for them.
   computerWarmup = Promise.all([0, 1].map(async () => {
-    while (pending.length) {
-      const computer = pending.shift();
+    while (queue.length) {
+      const computer = queue.shift();
       if (!computerRetryAllowed(computer, probe) || !probe && computerSockets.get(computer.key)?.retry != null) continue;
       const link = computerSockets.get(computer.key);
       if (link?.socket?.readyState < 2) { await link.firstScreen; continue; }
@@ -1204,7 +1227,7 @@ function restoreTerminalChat() {
     project: typeof chosen?.project === 'object' ? chosen.project : null, initial: true, resume: !!link?.binding });
 }
 async function connect(resumeLink = null) {
-  if (navigator.onLine === false || computerSockets.get(currentComputer()?.key)?.phase === 'paused') return;
+  if (pending || navigator.onLine === false || computerSockets.get(currentComputer()?.key)?.phase === 'paused') return;
   const gen = ++connGen, attempt = bootGeneration;
   resetLatency();
   liveChatSelection = '';
