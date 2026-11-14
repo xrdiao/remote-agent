@@ -229,7 +229,7 @@ function receiveDraft(m) {
   }
   if ([...pendingSends.values()].some(sent => sent.draft === activeDraft && sent.revision !== inputRevision)) return;
   if (draftAckRevision !== draftRevision || MN.mentions.length) return;
-  if (composing || document.activeElement === text || document.activeElement?.dataset?.ovInput) { pendingDesktopDraft = m; return; }
+  if (composing) { pendingDesktopDraft = m; return; }
   pendingDesktopDraft = null;
   if (text.value !== m.text) {
     const selection = [text.selectionStart, text.selectionEnd, text.selectionDirection];

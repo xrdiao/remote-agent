@@ -1,29 +1,14 @@
 import crypto from 'node:crypto';
-import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { realpath, stat } from 'node:fs/promises';
-import { IS_WIN, localFilePath, findBin, samePath } from '../lib/platform.mjs';
+import { IS_WIN, localFilePath } from '../lib/platform.mjs';
 import headless from '@xterm/headless';
 import serialize from '@xterm/addon-serialize';
 
 export const TERMINAL_SIZE = { cols: 120, rows: 50 };
 export const TERMINAL_SCROLLBACK = 1000;
-const shellRc = fileURLToPath(new URL('./terminal-shell.bash', import.meta.url));
 const shellMarker = '\x1b]777;RA;';
-let pty, ptyError;
-try { pty = (await import('node-pty')).default; }
-catch (error) { if (!IS_WIN) throw error; ptyError = error; }
-
-function spawnPty(shell, args, options) {
-  const child = pty.spawn(shell, args, options);
-  if (IS_WIN) child.onExit(() => {
-    // node-pty 1.1.0 retains these ConPTY resources after a natural shell exit.
-    child._agent.inSocket.destroy();
-    child._agent._conoutSocketWorker.dispose();
-  });
-  return child;
-}
+const runtime = await import(IS_WIN ? './terminal/windows.mjs' : './terminal/posix.mjs');
 
 function terminalSize(cols, rows) {
   if (!Number.isInteger(cols) || cols < 2 || !Number.isInteger(rows) || rows < 2)
@@ -33,7 +18,7 @@ function terminalSize(cols, rows) {
 
 // The relay owns shells. A phone Session owns only a subscription to one of them.
 export class TerminalService {
-  constructor({ spawn = pty && spawnPty, shell = IS_WIN ? null : os.userInfo().shell, env = process.env } = {}) {
+  constructor({ spawn = runtime.spawnPty, shell = runtime.defaultShell, env = process.env } = {}) {
     this.spawn = spawn;
     this.shell = shell;
     this.env = env;
@@ -149,10 +134,7 @@ export class TerminalService {
 
   async create({ cwd, host = '', cols = TERMINAL_SIZE.cols, rows = TERMINAL_SIZE.rows } = {}) {
     if (host) throw new Error('RA 终端暂不直接进入远程 SSH 或容器项目，请选择电脑本地目录');
-    if (!this.spawn) throw new Error(`RA 终端无法加载 node-pty，请重新安装依赖：${ptyError?.message || 'node-pty 不可用'}`);
-    const shell = this.shell || (IS_WIN ? findBin('bash') : '/bin/bash');
-    if (IS_WIN && (!samePath(shell, findBin('bash')) || !path.isAbsolute(shell)))
-      throw new Error('Windows RA 终端仅支持 Git Bash，请安装 Git for Windows；不支持 PowerShell/cmd');
+    const { shell, args, options, env } = runtime.command(this.shell, this.env);
     cwd = localFilePath(cwd);
     if (!path.isAbsolute(cwd || '')) throw new Error('新建终端需要明确的本机绝对目录');
     cwd = localFilePath(await realpath(cwd));
@@ -163,9 +145,7 @@ export class TerminalService {
     screen.loadAddon(serializer);
     let process;
     try {
-      process = this.spawn(shell, ['--rcfile', localFilePath(shellRc), '-i'], { ...size, name: 'xterm-256color', cwd,
-        ...(IS_WIN ? { useConpty: true, useConptyDll: true } : {}),
-        env: { ...this.env, TERM: 'xterm-256color', ...(IS_WIN ? { RA_WINDOWS: '1' } : {}) } });
+      process = this.spawn(shell, args, { ...size, name: 'xterm-256color', cwd, ...options, env });
     } catch (error) { screen.dispose(); throw error; }
     const terminal = { id: crypto.randomUUID(), title: path.basename(shell), cwd, process, screen, serializer,
       seq: 0, pending: Promise.resolve(), inputPending: Promise.resolve(), shellBuffer: '', prompt: false,
@@ -243,8 +223,7 @@ export class TerminalService {
     terminal.query?.reject(new Error('终端已经关闭'));
     terminal.query = null;
     if (!terminal.exited) {
-      terminal.process.kill();
-      if (IS_WIN) await terminal.exit;
+      await runtime.closePty(terminal);
     }
     await this.schedule(terminal, () => {
       this.publish(terminal, { t: 'termClosed' });

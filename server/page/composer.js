@@ -68,7 +68,8 @@
   const codexConversationDraft = async (id, text, expected) => {
     const { scope, composer } = await codexComposerScope(id);
     if (text !== undefined && (expected === undefined || scope.get(composer.text) === expected)) {
-      composer.editDraft(scope, draft => { draft.prompt = text; });
+      if (codexVisibleThread() === id) setComposerDraft(text);
+      else composer.editDraft(scope, draft => { draft.prompt = text; });
     }
     return scope.get(composer.text);
   };
@@ -103,7 +104,7 @@
   // Write the composer via the editor's own API (no keyboard, no focus). Returns true only when it worked.
   const setComposerDraft = text => {
     text = String(text ?? '');
-    if (document.getElementById('active-frame')) {
+    if (remoteContext?.app === 'codex' || document.getElementById('active-frame')) {
       // Codex keeps its current EditorView on the native composer controller.
       const ed = codexPromptEl();
       if (!ed) return false;
@@ -219,7 +220,8 @@
     };
   };
   const codexRootProps = () => {
-    const el = [...doc.querySelectorAll('[data-composer-body], [data-response-annotation-conversation], [data-request-input-dismiss]')].find(vis);
+    const roots = [...doc.querySelectorAll('[data-composer-body], [data-response-annotation-conversation], [data-request-input-dismiss]')];
+    const el = roots.find(vis) || roots[0];
     return el ? codexFiberProps(el, Infinity) : [];
   };
   const codexQueryClient = () => codexRootProps().find(p => typeof p.value?.getQueryData === 'function')?.value || null;

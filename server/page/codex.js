@@ -476,7 +476,7 @@
   const codexRequests = () => {
     if (remoteContext?.app === 'codex') return [...codexNativeRequestRows(), ...codexAsyncQuestionRows(), ...codexQueueConfirmRequests()];
     if (!activeThread()) return [];
-    if (IS_WIN) {
+    {
       const native = codexNativeRequestRows();
       if (native.length) return [...native, ...codexQueueConfirmRequests()];
     }
@@ -595,7 +595,7 @@
       if (!options.length && text === 'Codex 请求') continue;
       if (!rows.has(id)) rows.set(id, { id, text: text || buttons.filter(b => b.el.matches('[role="radio"]')).map(b => b.label).join(' / ') || 'Codex 请求', buttons, fields: fieldRows });
     }
-    if (IS_WIN) for (const row of codexAsyncQuestionRows()) if (!rows.has(row.id)) rows.set(row.id, row);
+    for (const row of codexAsyncQuestionRows()) if (!rows.has(row.id)) rows.set(row.id, row);
     return [...rows.values()].filter(row => row.id.startsWith('async:') || row.id.startsWith('approval:') || row.text.trim() !== 'Codex 请求');
   };
   const codexRequestData = () => {
@@ -611,7 +611,7 @@
       return true;
     }
     if (remoteContext?.app === 'codex') return codexNativeRequestAction(id, n, fields);
-    if (IS_WIN) {
+    {
       if (codexNativeRequests().some(request => codexNativeRequestId(request) === id)) return codexNativeRequestAction(id, n, fields);
       if (id.startsWith('async:') && !codexRequests().find(row => row.id === id)?.buttons.some(button => button.action)) await codexOpenQuestion(id);
     }
@@ -652,7 +652,7 @@
   };
   const codexRequestField = (id, n, value) => {
     const field = codexRequests().find(r => r.id === id)?.fields[n];
-    if (IS_WIN && !remoteContext && id.startsWith('async:') && field && !field.el && !field.onChange
+    if (!remoteContext && id.startsWith('async:') && field && !field.el && !field.onChange
         && !codexNativeRequests().some(request => codexNativeRequestId(request) === id))
       return codexOpenQuestion(id).then(() => codexRequestField(id, n, value));
     if (field?.onChange) { field.onChange(value); return true; }
@@ -738,11 +738,11 @@
   const codexFacts = () => {
     const add = [...doc.querySelectorAll('[data-composer-navigation-target="add-context"]')].find(vis);
     if (!add) return null;
-    let plan = false, ideStatus = '', autoContext, hasDraftAttachments;
+    const plan = codexNativeManager()?.getConversation(codexThread())?.latestCollaborationMode?.mode === 'plan';
+    let ideStatus = '', autoContext, hasDraftAttachments;
     let fiber = add?.[Object.keys(add).find(k => k.startsWith('__reactFiber'))];
     for (let i = 0; i < 40 && fiber; i++) {
       const props = fiber.memoizedProps || {};
-      if (!plan && props.activeCollaborationMode?.mode) plan = props.activeCollaborationMode.mode === 'plan';
       if (!ideStatus && typeof props.ideContextStatus === 'string') ideStatus = props.ideContextStatus;
       if (typeof props.isAutoContextOn === 'boolean') autoContext = props.isAutoContextOn;
       if (typeof props.hasDraftAttachments === 'boolean') hasDraftAttachments = props.hasDraftAttachments;

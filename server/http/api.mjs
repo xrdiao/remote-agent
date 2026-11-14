@@ -14,14 +14,14 @@ import { Cdp } from '../cdp.mjs';
 import { helpersCall } from '../page/build.mjs';
 import { withTemporarySession } from '../session.mjs';
 import { videoGrant, serveVideo, servePdf } from './video.mjs';
-import { transferApi, serveTransfer } from './transfer.mjs';
+import { transferApi, serveTransfer, filePlatform } from './transfer.mjs';
 import { voiceStatus, loadWorker } from '../voice/service.mjs';
 import { voiceEngines } from '../voice/config.mjs';
 import { uploads, removeUpload, registerUpload, updateUpload } from '../../lib/uploads.mjs';
 import { overviewSnapshot, overviewPreview } from '../overview.mjs';
 import { manageOverviewSession } from '../overview-actions.mjs';
 import { uploadDocument, imageTypes } from '../../lib/shared-rules.mjs';
-import { IS_WIN, validLocalName, localFilePath } from '../../lib/platform.mjs';
+import { localFilePath } from '../../lib/platform.mjs';
 
 // A device is usable once paired and, when 2FA asks for it, re-verified.
 function deviceFor(req) {
@@ -222,8 +222,8 @@ export async function handleApi(req, res, route) {
   if (route === '/api/upload' && req.method === 'POST') {
     const query = new URL(req.url, 'http://localhost').searchParams;
     const rawName = query.get('name') || '';
-    const name = IS_WIN ? rawName : path.basename(rawName);
-    if (IS_WIN && !validLocalName(name)) return json(req, res, 400, { error: '文件名无效，请检查非法字符或 Windows 保留名称' });
+    const name = filePlatform.uploadName(rawName);
+    if (!filePlatform.validName(name)) return json(req, res, 400, { error: '文件名无效，请检查非法字符或系统保留名称' });
     const image = query.get('image'), type = query.get('type');
     if (image ? !Object.values(imageTypes).includes(type) : !uploadDocument(name)) return json(req, res, 400, { error: image ? '只支持 PNG / JPEG / GIF / WebP 图片' : '目前支持文档、表格、文本和代码文件' });
     const id = crypto.randomUUID();

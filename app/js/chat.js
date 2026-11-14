@@ -25,7 +25,7 @@ itemsEl.addEventListener('click', async e => {
     const box = tr.closest('.toolrow');
     box.classList.add('anim');
     box.classList.toggle('open');
-    if (currentApp === 'opencode' && tr.dataset.lazy) {
+    if (['opencode', 'codex'].includes(currentApp) && tr.dataset.lazy) {
       const open = box.classList.contains('open');
       if (open) openCodeTools.add(box.dataset.i);
       else openCodeTools.delete(box.dataset.i);
@@ -467,6 +467,10 @@ const chatBySel = new Map(), menuCache = new Map();
 const lruPut = (map, key, val, max) => { map.delete(key); map.set(key, val); while (map.size > max) map.delete(map.keys().next().value); };
 let menuSheetKind = '', chatStale = false;
 let currentProject = '', currentTerminal = '', currentTerminalId = '';
+function modelEffortLabel(model, effort) {
+  return effort && effort !== 'Effort' && !model.toLowerCase().includes(effort.toLowerCase())
+    ? effort.replace(/^([a-z])/, c => c.toUpperCase()) : '';
+}
 function updateTitle() {
   document.body.dataset.app = currentApp || '';
   const first = lastChat?.items?.find(it => it.k === 'user');
@@ -490,8 +494,7 @@ function updateTitle() {
     const mainChat = lastChat?.thread === currentComputer()?.threadId ? lastChat : null;
     const model = mainChat?.model || run?.main.model || '';
     const effort = mainChat?.effort || run?.main.effort || '';
-    const effortLabel = effort && effort !== 'Effort' && !model.toLowerCase().includes(effort.toLowerCase())
-      ? String(effort).replace(/^([a-z])/, c => c.toUpperCase()) : '';
+    const effortLabel = modelEffortLabel(model, effort);
     $('titleText').textContent = run?.title || 'Fusion';
     $('titleProject').textContent = run ? [OV_AGENT[run.main.app], model, effortLabel,
       I18N.tr(({ economy: '省钱', balanced: '均衡', performance: '性能' })[run.tier])].filter(Boolean).join(' · ') : '';

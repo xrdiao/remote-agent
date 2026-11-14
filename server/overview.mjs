@@ -1,8 +1,8 @@
 import { nativeTargets, nativeWindowAt, nativeSessionCatalog } from './native-windows.mjs';
 import { windowName } from '../lib/notify.mjs';
 import { allFusionRuns, fusionSummary, FUSION_ACTIVE } from './fusion/state.mjs';
-import { readLibrary, sessionId } from '../lib/session-library.mjs';
-import { IS_WIN, samePath, normPath, pathKey } from '../lib/platform.mjs';
+import { readLibrary, sessionId, rememberSessionStatuses, storedSessionStatus } from '../lib/session-library.mjs';
+import { IS_WIN, samePath, localFilePath, pathKey } from '../lib/platform.mjs';
 import { workspaceLabel } from '../lib/files.mjs';
 import path from 'node:path';
 import { storedProjectSession, fusionTargets } from './project-windows.mjs';
@@ -32,7 +32,7 @@ export function overviewSnapshot(deviceId) {
     if (!catalog) pendingWindows++;
     const id = win.app === 'codex' ? 'codex' : win.id;
     for (const root of roots.length ? roots : [{ root: '', host: '' }]) {
-      const workspace = normPath(root.root), host = root.host || '', key = projectId(win.app, workspace, host, windowId);
+      const workspace = localFilePath(root.root, !root.host && IS_WIN), host = root.host || '', key = projectId(win.app, workspace, host, windowId);
       if (!projects.has(key)) projects.set(key, { projectId: key, win: id, windowId, app: win.app, workspace, host,
         project: workspace ? path.posix.basename(workspace) || workspace : windowName(win.title, APP[win.app]), loading: !catalog });
     }
@@ -43,7 +43,7 @@ export function overviewSnapshot(deviceId) {
       ? roots.some(root => (root.host || '') === (row.host || '') && samePath(root.root, row.workspace, !row.host))
       : !!row.workspaceId && workspaceIds.has(row.workspaceId);
     const projectRows = new Map([...rows].filter(([, row]) => belongs(row)
-      || win.app === 'devin' && row.workspace && !row.host || IS_WIN && win.app === 'cursor' && row.workspace));
+      || win.app === 'devin' && row.workspace && !row.host || win.app === 'cursor' && row.workspace));
     for (const [key, row] of local) if (belongs(row) || !row.workspace && win.app === 'cursor')
       projectRows.set(key, { ...rows.get(key), ...row, lastUsed: row.lastUsed || rows.get(key)?.lastUsed || 0 });
     for (const state of source.overviewStates()) {
@@ -56,7 +56,7 @@ export function overviewSnapshot(deviceId) {
       const record = readLibrary()[win.app]?.[key];
       if (!key || row.archived || record?.archived || record?.deleted || excluded.sessions.has(win.app + ':' + key)) continue;
       const s = { ...row, busy: row.busy ?? row.running };
-      const workspace = normPath(row.workspace || (roots.length === 1 ? roots[0].root : '')), host = row.host || '';
+      const workspace = localFilePath(row.workspace || (roots.length === 1 ? roots[0].root : ''), !row.host && IS_WIN), host = row.host || '';
       const project = projectId(win.app, workspace, host, windowId);
       if (!projects.has(project)) projects.set(project, { projectId: project, win: id, windowId, app: win.app,
         workspace, host, project: path.posix.basename(workspace) || workspace, loading: false });
@@ -72,7 +72,7 @@ export function overviewSnapshot(deviceId) {
         favorite: record?.favorite === true, lastMessageAt: Number(record?.lastMessageAt) || 0,
         workspace, host,
       };
-      if (IS_WIN && win.app === 'devin' && value.statusKnown && s.busy === false && value.run?.status === 'unknown') value.run = null;
+      if (win.app === 'devin' && value.statusKnown && s.busy === false && value.run?.status === 'unknown') value.run = null;
       const identity = JSON.stringify([project, key]), previous = collected.get(identity);
       const quality = Number(!!s.run && s.run.status !== 'unknown') * 4 + Number(!!s.run) * 2
         + Number(key === sessionId(win.app, snap?.chat?.thread));
@@ -85,7 +85,7 @@ export function overviewSnapshot(deviceId) {
   const api = openCode.overview();
   const backendStates = new Map(codexBackend.states().map(row => [row.thread, row]));
   for (const row of codexBackend.records.values()) {
-    const state = backendStates.get(row.id), workspace = normPath(row.cwd), key = projectId('codex', workspace, '', CODEX_BACKEND);
+    const state = backendStates.get(row.id), workspace = localFilePath(row.cwd), key = projectId('codex', workspace, '', CODEX_BACKEND);
     const win = { projectId: key, win: 'codex', windowId: CODEX_BACKEND, app: 'codex', workspace, host: '', project: path.basename(workspace) };
     api.windows.push(win);
     api.sessions.push({ ...win, threadId: row.id, title: row.title, busy: !!state?.busy, waiting: state?.waiting || '', waitingText: state?.waitingText || '',
@@ -120,12 +120,18 @@ export function overviewSnapshot(deviceId) {
       const dormant = app !== 'codex' || !row.workspace || !codexAdapter.backendThread(id, row.host || '');
       const statusKnown = !dormant && typeof native?.running === 'boolean';
       sessions.push({ win: app, windowId: saved?.ownerWindow || app, threadId: id, app,
-        projectId: projectId(app, normPath(row.workspace), row.host || '', saved?.ownerWindow || app),
-        project: row.workspace ? path.posix.basename(normPath(row.workspace)) : '项目', title: record.title || row.title || '未命名会话',
+        projectId: projectId(app, localFilePath(row.workspace, !row.host && IS_WIN), row.host || '', saved?.ownerWindow || app),
+        project: row.workspace ? path.posix.basename(localFilePath(row.workspace, !row.host && IS_WIN)) : '项目', title: record.title || row.title || '未命名会话',
         workspace: row.workspace || '', host: row.host || '', dormant, busy: statusKnown && native.running, waiting: '', waitingText: '', last: row.last || '',
         run: null, statusKnown, startedAt: 0, tasks: null, actions: [], devin: app === 'devin', changed: 0, acceptAll: false, changes: null,
         lastUsed: Number(row.lastUsed) || 0, favorite: true, lastMessageAt: Number(record.lastMessageAt) || 0 });
     }
+  }
+  rememberSessionStatuses(sessions);
+  for (const row of sessions) if (row.dormant || row.statusKnown === false || row.run?.status === 'unknown') {
+    const status = storedSessionStatus(row.app, row.threadId, row.host || '');
+    if (status) Object.assign(row, { busy: status.busy, waiting: status.waiting, run: status.run,
+      statusKnown: true, cachedStatusAt: status.at, startedAt: status.run?.startedAt || 0 });
   }
   const fusion = allFusionRuns()
     .filter(run => FUSION_ACTIVE.includes(run.status) || ['awaiting_user', 'blocked'].includes(run.status) || now - run.updated < FUSION_RECENT_MS)

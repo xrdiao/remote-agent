@@ -949,7 +949,7 @@ function projectAttachFixture(app, { catalogReady = true, targetOpen = false, wi
   const calls = [], page = id => ({ id: app === 'codex' ? app : `${app}:${id}`, app, pageId: id,
     ws: `ws-${id}`, chatWs: `chat-${id}`, roots: [{ root: `/${id}` }] });
   const pages = [page('A'), ...(targetOpen ? [page('B')] : [])];
-  const context = createPageContext({ IS_WIN: windows, windowsCursorSource: () => null, nativeSessionCatalog: () => ({ rows: catalog }), cdpRead: { getStore: () => null }, hasLaunched: () => false,
+  const context = createPageContext({ IS_WIN: windows, cursorSource: () => null, nativeSessionCatalog: () => ({ rows: catalog }), cdpRead: { getStore: () => null }, hasLaunched: () => false,
     lastSelection: () => null, CODEX_BACKEND: 'backend', CODEX_CDP_URL: 'native', helpersCall: value => value,
     codexBackend: { owns: id => id === 'backend-thread' }, nativeTargets: () => pages,
     nativeWindowAt: ws => ({ roots: catalogReady ? pages.find(row => row.ws === ws).roots : [] }),
@@ -976,15 +976,15 @@ function projectAttachFixture(app, { catalogReady = true, targetOpen = false, wi
   return { session, calls };
 }
 
-test('Windows Cursor card attachment uses the session project instead of its catalog carrier window', async () => {
+test('Cursor card attachment uses the session project instead of its catalog carrier window on both platforms', async () => {
   for (const windows of [true, false]) {
     const { session, calls } = projectAttachFixture('cursor', { windows,
       catalog: [{ id: 'native-B', workspace: '/B', host: '' }] });
     await session.attach({ id: 'cursor:A', windowId: 'cursor:A', threadId: 'native-B' });
-    assert.deepEqual(calls, windows ? [
+    assert.deepEqual(calls, [
       { kind: 'desktop', window: 'cursor:A', thread: '', deferred: true },
       { kind: 'project', root: '/B', newSession: false, thread: 'native-B', ownerWindow: 'cursor:A' },
-    ] : [{ kind: 'desktop', window: 'cursor:A', thread: 'native-B', deferred: false }]);
+    ]);
   }
 });
 
@@ -1051,7 +1051,7 @@ test('Codex project and session-menu entries share the backend binding for legac
 });
 
 test('a cold Cursor catalog is loading until native services appear and is readable on retry', async () => {
-  const page = pageContext({ codexFiberProps: () => [], doc: { defaultView: {}, querySelector: () => null },
+  const page = pageContext({ codexFiberProps: () => [], doc: { defaultView: {}, querySelectorAll: () => [] },
     agentList: () => [], activeThread: () => '' });
   assert.equal(await page.info('cursor', '', 'list'), null);
   page.window.__remoteAgentCursorServices = { composer: { composerChatService: {

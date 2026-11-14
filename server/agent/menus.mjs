@@ -2,7 +2,6 @@
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { appPlans } from './context.mjs';
 import { nativeWindow } from '../native-windows.mjs';
-import { IS_WIN } from '../../lib/platform.mjs';
 
 export const methods = {
   refreshModelChat() {
@@ -116,9 +115,9 @@ export const methods = {
       ? this.withCursorUiRead(read) : read();
   },
   async readMenu(kind, requestId) {
-    if (IS_WIN && this.app === 'devin' && kind === 'mode') return this.readWindowsDevinMode(requestId);
-    if (IS_WIN && this.app === 'cursor' && (kind === 'model' || kind === 'effort' || kind === 'mode'))
-      return this.readWindowsCursorMenu(kind, requestId);
+    if (this.app === 'devin' && kind === 'mode') return this.readWindowsDevinMode(requestId);
+    if (this.app === 'cursor' && (kind === 'model' || kind === 'effort' || kind === 'mode'))
+      return this.readCursorMenu(kind, requestId);
     const sel = this.sel;
     if (this.app === 'codex' && (kind === 'model' || kind === 'effort')) {
       const data = await this.cdp.evaluate(`(() => {
@@ -263,9 +262,9 @@ export const methods = {
     if (effort) this.emit({ t: 'menu', kind: 'effort', ...effort, sel: this.selectionKey() });
   },
   async pickMenu(kind, label, name) {
-    if (IS_WIN && this.app === 'devin' && kind === 'mode') return this.pickWindowsDevinMode(label);
-    if (IS_WIN && this.app === 'cursor' && (kind === 'model' || kind === 'effort' || kind === 'mode'))
-      return this.withCursorUiRead(() => this.pickWindowsCursorMenu(kind, label));
+    if (this.app === 'devin' && kind === 'mode') return this.pickWindowsDevinMode(label);
+    if (this.app === 'cursor' && (kind === 'model' || kind === 'effort' || kind === 'mode'))
+      return this.withCursorUiRead(() => this.pickCursorMenu(kind, label));
     if (kind === 'fast') {
       const on = label === 'on';
       if (!await this.cdp.evaluate(helpersCall(`pickFast(${on})`))) {

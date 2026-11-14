@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { workspaces, windowRoots, workspaceLabel, editorRoots } from '../../lib/files.mjs';
-import { IS_WIN, IS_MAC, mod, normPath, findBin, localFilePath, pathKey, samePath, localDrives, launchCommand } from '../../lib/platform.mjs';
+import { IS_WIN, IS_MAC, mod, normPath, findBin, localFilePath, pathKey, samePath, projectPathAllowed, projectDrives, projectParent, nativeLauncher, launchCommand } from '../../lib/platform.mjs';
 import { Cdp, cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { nativeWindowAt } from '../native-windows.mjs';
 import { listWindows, codexWindows } from '../windows.mjs';
@@ -23,7 +23,7 @@ export function safeHomePath(input) {
   try { real = localFilePath(fs.realpathSync(target)); }
   catch { throw new Error('找不到这个文件夹'); }
   // Windows intentionally allows any drive — projects are not limited to the home dir.
-  if (!IS_WIN && real !== home && !real.startsWith(home + path.sep)) throw new Error('只能打开家目录里的文件夹');
+  if (!projectPathAllowed(real, home)) throw new Error('只能打开家目录里的文件夹');
   return { home, real };
 }
 
@@ -55,8 +55,8 @@ export function projectList(dir) {
     recent,
     browsing: Boolean(dir),
     path: real,
-    parent: (IS_WIN ? samePath(real, path.dirname(real)) : real === home) ? null : localFilePath(path.dirname(real)),
-    drives: IS_WIN ? localDrives().map(letter => `${letter}:/`) : [],
+    parent: projectParent(real, home),
+    drives: projectDrives(),
     dirs: names.map(name => ({ name, path: localFilePath(path.join(real, name)) })),
   };
 }
@@ -81,7 +81,7 @@ export async function openFolder(folder, app, newWindow = false, withDebugPort =
   delete env.VSCODE_IPC_HOOK_CLI;
   const mode = newWindow ? '-n' : '-r';
   const { command, args } = launchCommand(bin, [mode, ...(withDebugPort ? ['--remote-debugging-port=' + port] : []), real]);
-  const native = IS_WIN && /\.exe$/i.test(bin);
+  const native = nativeLauncher(bin);
   const child = spawn(command, args, { env, detached: true, stdio: native ? 'ignore' : ['ignore', 'ignore', 'pipe'], windowsHide: true });
   await new Promise((resolve, reject) => {
     child.once('error', reject);

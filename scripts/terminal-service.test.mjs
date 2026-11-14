@@ -78,7 +78,7 @@ test('RA terminals preserve explicit project directories and sizes independently
   assert.equal(children[0].options.cols, 120); assert.equal(children[0].options.rows, 50);
   if (IS_WIN) assert.equal(children[0].options.useConpty, true);
   assert.equal(children[1].options.cwd, b.cwd);
-  assert.deepEqual(children[0].args, ['--rcfile', localFilePath(path.resolve('server/terminal-shell.bash')), '-i']);
+  assert.deepEqual(children[0].args, ['--rcfile', localFilePath(path.resolve('server/terminal/' + (IS_WIN ? 'windows' : 'posix') + '.bash')), '-i']);
   const stop = await service.subscribe(a.id, () => {}); stop();
   assert.equal(children[0].child.killed, false);
   assert.equal(service.list().length, 2);
@@ -457,6 +457,8 @@ test('real Ubuntu PTY uses requested cwd and size and supports no-echo input', {
     { ...options, env: { ...options.env, PS1: 'RA> ', PROMPT_COMMAND: '' } }) });
   t.after(() => service.dispose());
   const meta = await service.create({ cwd: path.join(directory, 'A') });
+  const child = service.get(meta.id).process;
+  t.after(() => child.kill('SIGKILL'));
   let output = '';
   const changed = new EventEmitter();
   const stop = await service.subscribe(meta.id, event => { if (event.t === 'termData') { output += event.data; changed.emit('data'); } });
@@ -492,6 +494,7 @@ test('textbox completion, multiline submit, history and foreground input use the
   const service = new TerminalService({ shell: '/bin/bash', env: { ...process.env, HISTFILE: '/dev/null' } });
   t.after(() => service.dispose());
   const meta = await service.create({ cwd: directory }), terminal = service.get(meta.id);
+  t.after(() => terminal.process.kill('SIGKILL'));
   let output = '', check;
   const stop = await service.subscribe(meta.id, event => {
     if (event.t === 'termData') output += event.data;

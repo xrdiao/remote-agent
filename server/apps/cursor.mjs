@@ -1,5 +1,5 @@
-import { IS_WIN, localFilePath } from '../../lib/platform.mjs';
-import { windowsCursorSource } from '../native-windows.mjs';
+import { localFilePath } from '../../lib/platform.mjs';
+import { cursorSource } from '../native-windows.mjs';
 import { windowRoots, editorRoots } from '../../lib/files.mjs';
 import { mod } from '../../lib/platform.mjs';
 import { helpersCall, PAGE_SRC } from '../page/build.mjs';
@@ -45,7 +45,7 @@ export const adapter = {
 
   async openAgent(id, title = '') {
     if (!id || id.length > 200) throw new Error('这条 Agent 已经不在列表里');
-    const source = IS_WIN && !this.fusionBinding && windowsCursorSource(id);
+    const source = !this.fusionBinding && cursorSource(id);
     if (source && source.cdp.wsUrl !== this.cdp.wsUrl)
       return this.attach({ id: source.win.id, windowId: source.win.id, threadId: id });
     const switching = this.switchingThread;
@@ -206,7 +206,7 @@ export const adapter = {
 };
 
 export const methods = {
-async readWindowsCursorMenu(kind, requestId) {
+async readCursorMenu(kind, requestId) {
   const sel = this.sel, context = { app: 'cursor', threadId: this.threadId };
   const data = await this.cdp.evaluate(`(async () => {
     const h = ${PAGE_SRC.slice(0, -2)}(${JSON.stringify(context)});
@@ -219,7 +219,7 @@ async readWindowsCursorMenu(kind, requestId) {
   if (this.sel === sel) this.emit({ t: 'menu', kind, ...data, requestId, sel: this.selectionKey() });
 },
 
-async pickWindowsCursorMenu(kind, label) {
+async pickCursorMenu(kind, label) {
   const context = { app: 'cursor', threadId: this.threadId };
   const confirmed = await this.cdp.evaluate(`(async () => {
     const h = ${PAGE_SRC.slice(0, -2)}(${JSON.stringify(context)});

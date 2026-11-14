@@ -110,6 +110,7 @@ export class AgentContext {
   }
 
   clearViewState() {
+    this.expandedTools = new Set();
     this.sel = (this.sel || 0) + 1;
     this.lastChat = '';
     this.lastExtractedChat = '';

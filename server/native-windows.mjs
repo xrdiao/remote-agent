@@ -1,4 +1,4 @@
-import { IS_WIN, localFilePath } from '../lib/platform.mjs';
+import { localFilePath } from '../lib/platform.mjs';
 import { Cdp, cdpRead, awaitCdpRead } from './cdp.mjs';
 import { watchChat } from './agent/updates.mjs';
 import { PAGE_SRC, helpersCall } from './page/build.mjs';
@@ -111,7 +111,7 @@ export class NativeCdp extends Cdp {
 }
 
 export function nativeWindow(cdp) { return cdp?.nativeWindow; }
-export function windowsCursorSource(thread) {
+export function cursorSource(thread) {
   let selected, updatedAt = 0;
   for (const source of windows.values()) {
     if (source.win?.app !== 'cursor') continue;
@@ -207,6 +207,7 @@ export class NativeWindow {
     if (this.watching) return this.watching;
     this.watching = cdpRead.run(null, async () => {
       await this.connect();
+      if (win.app === 'codex') await this.cdp.evaluate(helpersCall("nativeSessionInfo('codex', '', 'refreshCatalog')"));
       refreshSessionCatalog(this, false).catch(error => publishCatalog(win.app, error));
       const observer = this.observer = new NativeCdp(this.cdp.wsUrl);
       this.stopWatch = await watchChat(observer, () => {
@@ -314,6 +315,7 @@ export class NativeWindow {
       if (chat && composer) chat.codex = { ...chat.codex,
         run: composer.composerMode[0].toUpperCase() + composer.composerMode.slice(1),
         ide: { on: composer.isAutoContextOn, file: composer.ideContext?.activeFile || null } };
+      if (chat && composer) chat.draft = composer.prompt;
       const state = chat?._nativeState;
       if (chat) delete chat._nativeState;
       const result = { chat, state }, key = JSON.stringify(result), changed = view.key !== key;
@@ -347,7 +349,7 @@ export class NativeWindow {
         const h = ${PAGE_SRC};
         const chat = await h.extract(false, [], ${app === 'codex' ? 80 : 0}, ${app === 'cursor'});
         const activeTab = h.activeChatTab(), states = h.agentStates(${JSON.stringify(app)});
-        ${IS_WIN && app === 'cursor' ? "for (const state of states) state.nativeUpdatedAt = h.nativeSessionInfo('cursor', state.thread, 'connection')?.updatedAt || 0;" : ''}
+        ${app === 'cursor' ? "for (const state of states) state.nativeUpdatedAt = h.nativeSessionInfo('cursor', state.thread, 'connection')?.updatedAt || 0;" : ''}
         return { chat, activeTab, states,
           surface: h.devinSurface(),
         };
@@ -364,7 +366,7 @@ export class NativeWindow {
       this.readRevision = revision;
       this.updatedAt = Date.now();
       if (changed) withOperation(null, () => { for (const notify of this.listeners) notify(); });
-      if (changed && IS_WIN && app === 'cursor') withOperation(null, () => {
+      if (changed && app === 'cursor') withOperation(null, () => {
         for (const source of windows.values()) {
           if (source === this || source.win?.app !== 'cursor') continue;
           const thread = source.snapshot?.chat?.thread;

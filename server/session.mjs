@@ -1,4 +1,4 @@
-import { IS_WIN, localFilePath } from '../lib/platform.mjs';
+import { localFilePath } from '../lib/platform.mjs';
 import { parseAgentRef } from '../lib/shared-rules.mjs';
 import { Cdp, cdpRead } from './cdp.mjs';
 import { listWindows, codexWindows } from './windows.mjs';
@@ -20,7 +20,7 @@ import { leaseWindow, windowOperationLocked } from './window-use.mjs';
 import {visualCapture, visualWindows, isWayland} from './visual/capture.mjs';
 import { rememberSelection, lastSelection } from '../lib/auth.mjs';
 import { editorRoots } from '../lib/files.mjs';
-import { NativeCdp, nativeWindow, nativeWindowAt, nativeTargets, nativeSessionCatalog, subscribeCatalog, windowsCursorSource } from './native-windows.mjs';
+import { NativeCdp, nativeWindow, nativeWindowAt, nativeTargets, nativeSessionCatalog, subscribeCatalog, cursorSource } from './native-windows.mjs';
 import { captureOperation } from './operations.mjs';
 import { terminalService } from './terminal-service.mjs';
 import { codexBackend, CODEX_BACKEND } from './codex/state.mjs';
@@ -121,8 +121,8 @@ export class Session extends AgentContext {
         this.chatUpdatesStop = source.subscribe(error => {
           if (!this.visible || this.mode !== 'chat' || this.cdp !== cdp) return;
           if (error) this.emit({ t: 'status', ok: false, msg: error.message });
-          else if (IS_WIN && this.app === 'cursor') {
-            const newer = this.bindingReady && !this.switchingThread && windowsCursorSource(this.threadId);
+          else if (this.app === 'cursor') {
+            const newer = this.bindingReady && !this.switchingThread && cursorSource(this.threadId);
             const read = newer && newer.cdp.wsUrl !== cdp.wsUrl
               ? cdpRead.run(null, () => this.attach({ id: newer.win.id, windowId: newer.win.id, threadId: this.threadId })) : this.pollChat(true);
             read.catch(error => this.emit({ t: 'status', ok: false, msg: error.message }));
@@ -271,12 +271,12 @@ export class Session extends AgentContext {
       const saved = lastSelection(this.deviceId, app);
       if (saved) req = { ...req, ...saved };
     }
-    if (IS_WIN && app === 'cursor' && req.threadId && !req.project && !req.projectSwitch && !this.fusionBinding) {
+    if (app === 'cursor' && req.threadId && !req.project && !req.projectSwitch && !this.fusionBinding) {
       const row = nativeSessionCatalog('cursor')?.rows.find(row => row.id === req.threadId);
       if (row?.workspace) req = { ...req, project: { root: row.workspace, host: row.host || '' } };
     }
-    if (IS_WIN && app === 'cursor' && req.threadId && !req.projectSwitch && !this.fusionBinding) {
-      const source = windowsCursorSource(req.threadId);
+    if (app === 'cursor' && req.threadId && !req.projectSwitch && !this.fusionBinding) {
+      const source = cursorSource(req.threadId);
       if (source) {
         const context = await source.cdp.evaluate(helpersCall(`nativeSessionInfo('cursor', ${JSON.stringify(req.threadId)}, 'context')`));
         if (!req.project || this.projectMatches(context.roots, req.project.root, req.project.host))

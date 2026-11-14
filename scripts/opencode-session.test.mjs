@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { localFilePath } from '../lib/platform.mjs';
 import { EventEmitter } from 'node:events';
@@ -312,7 +313,7 @@ test('OpenCode confirms a send only after the matching native user message is sa
   await session.handle({ t: 'pickMenu', kind: 'effort', label: 'high' });
   await session.handle({ t: 'send', text: 'read files', requestId: 'receipt-one', draftEpoch: 'epoch' });
   const prompt = requests.find(row => row.route.endsWith('/prompt_async'));
-  assert.equal(prompt.options.directory, localFilePath(root));
+  assert.equal(prompt.options.directory, path.resolve(localFilePath(root)));
   assert.equal(prompt.options.body.variant, 'high');
   assert.equal(events.find(row => row.t === 'sent').pending, true);
   assert.equal(events.some(row => row.t === 'sent' && !row.pending), false);
@@ -523,7 +524,7 @@ test('OpenCode first view is 20 native messages, pages cached rows first, and re
   await session.handle({ t: 'attach', id: 'opencode', threadId: 'ses_one' });
   assert.deepEqual(events.findLast(row => row.t === 'chat').chat.items.map(row => row.t), Array.from({ length: 20 }, (_, n) => String(n + 80)));
   assert.equal(openCode.messages.get('ses_one').size, 80);
-  for (let n = 0; n < 3; n++) await session.handle({ t: 'scrollChat', history: true, requestId: String(n) });
+  await session.handle({ t: 'scrollChat', history: true, requestId: 'cached-60' });
   assert.deepEqual(cursors, [undefined]);
   assert.equal(events.filter(row => row.t === 'historyPage').flatMap(row => row.items).length, 60);
   await session.handle({ t: 'scrollChat', history: true, requestId: 'native' });

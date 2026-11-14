@@ -6,6 +6,8 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { CodexClient } from '../server/codex/client.mjs';
 import { CodexState } from '../server/codex/state.mjs';
+import { adapter as codexAdapter } from '../server/apps/codex.mjs';
+import { resolveRoute } from '../server/routes.mjs';
 import { cdpRead, awaitCdpRead } from '../server/cdp.mjs';
 import { currentOperation, withOperation } from '../server/operations.mjs';
 import { watchChatUpdates } from '../server/agent/updates.mjs';
@@ -17,8 +19,147 @@ import { read, fragment, createPageContext } from './page-fixture.mjs';
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 function backendRoutesFor(extra) {
-  return vm.runInContext(fragment(read('server/apps/codex.mjs'), 'const backendRoutes =', 'function serializedCodexPrompt') + '\nbackendRoutes;', createPageContext({ path, localFilePath, samePath, parseAgentRef, awaitCdpRead, ...extra }));
+  return vm.runInContext(fragment(read('server/apps/codex.mjs'), 'function backendCommands(', 'async function syncCodexCatalog(')
+    + fragment(read('server/apps/codex.mjs'), 'const backendRoutes =', 'function serializedCodexPrompt') + '\nbackendRoutes;', createPageContext({ path, localFilePath, samePath, parseAgentRef, awaitCdpRead, backendDraftSource: () => null, ...extra }));
 }
+
+test('backend slash compact uses the native protocol and reports both manual and automatic compaction', async () => {
+  const { state, client } = fixture(null), thread = await state.create('/compact');
+  const events = [], routes = backendRoutesFor({ codexBackend: state, backendSkills: async () => [] });
+  const session = { threadId: thread.id, selectionKey: () => 'compact', emit: event => events.push(event) };
+  await routes.mentionQuery.call(session, { trigger: '/', q: 'compact' });
+  assert.equal(events[0].rows[0].key, 'compact'); assert.equal(events[0].rows[0].section, 'commands');
+  await routes.codexPick.call(session, { section: 'commands', key: 'compact' });
+  assert.deepEqual(client.sent.filter(row => row.method === 'thread/compact/start').map(row => row.params), [{ threadId: thread.id }]);
+  assert.equal(client.sent.some(row => row.method === 'turn/start'), false);
+  thread.turns = [{ id: 'manual', status: 'completed', items: [{ type: 'contextCompaction', id: 'm', source: 'manual' }] },
+    { id: 'auto', status: 'inProgress', items: [{ type: 'contextCompaction', id: 'a', source: 'auto' }] }];
+  assert.deepEqual(state.chat(thread.id).items.map(row => [row.t, row.live]), [['已完成压缩上下文', false], ['正在自动压缩上下文', true]]);
+});
+
+test('backend draft is shared by thread across entry connections and rejects an old input epoch', async () => {
+  const { state } = fixture(null), routes = backendRoutesFor({ codexBackend: state });
+  const events = [], session = (thread, epoch) => ({ threadId: thread, draftEpoch: epoch, draftGeneration: 0,
+    selectionKey: () => thread, emit: event => events.push(event) });
+  const a = session('A', 'first');
+  await routes.draft.call(a, { text: 'phone edit', draftEpoch: 'first', revision: 1 });
+  await routes.draft.call(session('A', 'second'), { draftEpoch: 'second', revision: 2 });
+  assert.equal(events.at(-1).text, 'phone edit');
+  await routes.draft.call(a, { text: 'late edit', draftEpoch: 'old', revision: 0 });
+  assert.equal(state.draft('A'), 'phone edit'); assert.equal(state.draft('B'), '');
+  await routes.draft.call(a, { text: '', draftEpoch: 'first', revision: 3 });
+  assert.equal(state.draft('A'), ''); assert.equal(events.at(-1).read, false);
+});
+
+test('draft-only changes notify other entries without retransmitting the conversation body', () => {
+  const { state } = fixture(null), events = [], bodies = [];
+  state.subscribe('A', () => bodies.push('chat'));
+  const publish = vm.runInNewContext(fragment(read('server/apps/codex.mjs'), 'function backendPublishDraft(', 'function backendDraftSource(')
+    + 'backendPublishDraft;', { codexBackend: state });
+  const session = { threadId: 'A', selectionKey: () => 'A', emit: event => events.push(event) };
+  state.on('draftChanged', id => { if (id === session.threadId) publish(session); });
+  state.draft('A', 'shared draft'); state.draft('A', 'shared draft'); state.draft('B', 'other');
+  assert.equal(events.length, 1); assert.equal(events[0].t, 'draft'); assert.equal(events[0].text, 'shared draft');
+  assert.equal(bodies.length, 0);
+});
+
+test('backend draft subscriptions are removed on leaving a conversation and do not accumulate on reopening', async () => {
+  const { state } = fixture(null); await state.create('/A');
+  let updates = 0;
+  const setMode = vm.runInNewContext('({' + fragment(read('server/apps/codex.mjs'), '  async setBackendMode(', '  async syncBackendDraft(')
+    + '}).setBackendMode;', { codexBackend: state, awaitCdpRead, nativeTargets: () => [], backendPublish() {},
+    backendPublishDraft: () => updates++, watchChatUpdates: (session, subscribe) => subscribe(() => {}) });
+  const session = { threadId: '/A', visible: true, emit() {}, adapter: { syncBackendDraft: async () => {} } };
+  for (let n = 0; n < 3; n++) {
+    await setMode.call(session); assert.equal(state.listenerCount('draftChanged'), 1);
+    state.draft('/A', 'draft ' + n); assert.equal(updates, n + 1);
+    session.chatUpdatesStop(); assert.equal(state.listenerCount('draftChanged'), 0); assert.equal(state.listenerCount('changed'), 0);
+  }
+});
+
+test('a desktop draft read finishing after a phone write or thread switch cannot overwrite the shared draft', async () => {
+  const drafts = new Map(), selected = { id: 'A' };
+  let finish;
+  const context = createPageContext({ backendDraftSource: () => ({ composerCall: () => new Promise(resolve => { finish = resolve; }) }),
+    codexBackend: { nativeDrafts: new Map(), draft: (id, text) => drafts.set(id, text) } });
+  const sync = vm.runInContext('({' + fragment(read('server/apps/codex.mjs'), '  async syncBackendDraft(', '  async sendBackendMessage(') + '}).syncBackendDraft', context);
+  const session = { threadId: 'A', draftGeneration: 1, selectionKey: () => selected.id };
+  const old = sync.call(session); session.draftGeneration++; drafts.set('A', 'new phone'); finish({prompt:'old desktop',draftEditedAt:0}); await old;
+  assert.equal(drafts.get('A'), 'new phone');
+  const other = sync.call(session); selected.id = 'B'; finish({prompt:'other desktop',draftEditedAt:0}); await other;
+  assert.equal(drafts.get('A'), 'new phone'); assert.equal(drafts.has('B'), false);
+});
+
+test('a newly opened desktop receives the shared phone draft, then desktop edits and sending update all entries', async () => {
+  const { state } = fixture(null);
+  state.draft('A', 'phone', 100);
+  let native = '', editedAt = 0;
+  const writes = [], source = { composerCall: async call => {
+    if (call.includes("'composer'")) return { prompt: native, draftEditedAt: editedAt };
+    const value = JSON.parse(call.slice(call.indexOf("'draft', ") + 9, -1)); writes.push(value);
+    native = value.text; return native;
+  } };
+  const text = read('server/apps/codex.mjs'), context = createPageContext({ codexBackend: state, backendDraftSource: () => source });
+  const sync = vm.runInContext(fragment(text, 'function recordBackendNativeDraft(', 'function backendCommands(')
+    + '({' + fragment(text, '  async syncBackendDraft(', '  async sendBackendMessage(') + '}).syncBackendDraft', context);
+  const session = { threadId: 'A', draftGeneration: 1, selectionKey: () => 'A' };
+  await sync.call(session);
+  assert.deepEqual(writes, [{ text: 'phone', expected: '' }]); assert.equal(state.draft('A'), 'phone');
+  native = 'desktop'; editedAt = 200; await sync.call(session); assert.equal(state.draft('A'), 'desktop');
+  native = ''; await sync.call(session); assert.equal(state.draft('A'), ''); assert.equal(writes.length, 1);
+  state.draft('A', 'phone while desktop hidden', 300);
+  await sync.call(session);
+  assert.equal(native, 'phone while desktop hidden'); assert.equal(writes.length, 2);
+  state.nativeDrafts.delete('A'); state.draft('A', 'old phone', 100); native = 'new desktop';
+  await sync.call(session); assert.equal(state.draft('A'), 'new desktop'); assert.equal(writes.length, 2);
+});
+
+test('backend history appends 160 items while the initial view remains 40', async () => {
+  const { state } = fixture(null), thread = await state.create('/history');
+  thread.turns = [{ id: 'long', status: 'completed', items: Array.from({ length: 320 }, (_, n) => ({ type: 'agentMessage', id: String(n), text: String(n) })) }];
+  const first = state.chat(thread.id); assert.equal(first.items.length, 40);
+  const events = [], routes = backendRoutesFor({ codexBackend: state });
+  await routes.scrollChat.call({ threadId: thread.id, codexHistoryLimit: 40, expandedTools: new Set(), selectionKey: () => 'history',
+    emit: event => events.push(event) }, { history: true, requestId: 'older' });
+  assert.equal(events[0].items.length, 200); assert.equal(events[0].items[0].i, '120'); assert.equal(events[0].earlier, true);
+});
+
+test('desktop and backend Codex use the same tool expansion handler through their normal dispatch', async () => {
+  const calls = [], session = { app: 'codex', codexBackend: false, adapter: codexAdapter,
+    selectionKey: () => 'A', pollChat: async force => calls.push(force) };
+  const route = resolveRoute(session, 'toolDetails');
+  await route.run(session, { sel: 'old-A', i: 'tool', open: true });
+  assert.equal(calls.length, 0);
+  await route.run(session, { sel: 'A', i: 'tool', open: true });
+  assert.equal(session.expandedTools.has('tool'), true); assert.deepEqual(calls, [true]);
+  await route.run(session, { sel: 'A', i: 'tool', open: false });
+  assert.equal(session.expandedTools.size, 0); assert.deepEqual(calls, [true, true]);
+});
+
+test('backend tool expansion sends only selected details, retains diffs and ignores a previous session request', async () => {
+  const { state } = fixture(null), thread = await state.create('/A');
+  const output = 'native output\n'.repeat(5000);
+  thread.turns = [{ id: 'turn', startedAt: 1, completedAt: 2, status: 'completed', items: [
+    { id: 'command', type: 'commandExecution', command: 'run command', aggregatedOutput: output, status: 'completed', exitCode: 0 },
+    { id: 'edit', type: 'fileChange', status: 'completed', changes: [{ path: '/A/file.txt', diff: '-old\n+new' }] },
+  ] }];
+  const events = [], routes = backendRoutesFor({ codexBackend: state, backendPublish: s => {
+    events.push(state.chat(s.threadId, 40, undefined, s.expandedTools));
+  } });
+  const session = { codexBackend: true, threadId: thread.id, expandedTools: new Set(), selectionKey: () => 'A' };
+  const initial = state.chat(thread.id, 40, undefined, session.expandedTools);
+  assert.equal(initial.items[0].output, undefined); assert.equal(initial.items[1].diff, undefined);
+  assert(JSON.stringify(initial).length < 2500);
+  await routes.toolDetails.call(session, { sel: 'B', i: 'command', open: true });
+  assert.equal(events.length, 0);
+  await routes.toolDetails.call(session, { sel: 'A', i: 'command', open: true });
+  assert.equal(events.at(-1).items[0].output, output); assert.equal(events.at(-1).items[1].diff, undefined);
+  await routes.toolDetails.call(session, { sel: 'A', i: 'command', open: false });
+  assert.equal(events.at(-1).items[0].output, undefined);
+  await routes.toolDetails.call(session, { sel: 'A', i: 'edit', open: true });
+  assert.deepEqual(events.at(-1).items[1].diff, [['…', '/A/file.txt'], ['-', 'old'], ['+', 'new']]);
+  assert.equal(events.at(-1).items[0].output, undefined);
+});
 
 test('backend model menus read native options, mark the selected model, and never mutate settings', async () => {
   const calls = [], events = [];
@@ -66,7 +207,7 @@ test('backend @ search uses the selected project and keeps distinct full paths; 
 test('backend sending resolves selected @ file keys without losing existing skills or local files', async () => {
   const sent = [], events = [], context = createPageContext({
     pendingUploads: () => [], cdpRead, currentOperation: () => null, backendPublish: () => {}, rememberSessionMessage: () => {},
-    uploadAttachments: () => [], codexBackend: { send: async (...args) => { sent.push(args); return { queued: false }; } },
+    uploadAttachments: () => [], backendDraftSource: () => null, codexBackend: { draft: () => '', send: async (...args) => { sent.push(args); return { queued: false }; } },
   });
   const method = vm.runInContext('({' + fragment(read('server/apps/codex.mjs'), '  async sendBackendMessage(', '  async newChat(') + '}).sendBackendMessage', context);
   await method.call({ threadId: 'B', selectionKey: () => 'B', emit: value => events.push(value) }, 'question', true, '', [
@@ -209,7 +350,7 @@ for (const IS_WIN of [true, false]) {
     state.notification({ method: 'thread/name/updated', params: { threadId: thread.id, threadName: 'new title' } });
     state.notification({ method: 'thread/name/updated', params: { threadId: thread.id, threadName: 'desktop title' } });
     state.notification({ method: 'turn/completed', params: { threadId: thread.id, turn: { id: 'turn', status: 'completed', items: [] } } });
-    assert.deepEqual(events, IS_WIN ? [['/A', '新会话'], ['/A', 'new title'], ['/A', 'desktop title'], ['/A', 'desktop title']] : []);
+    assert.deepEqual(events, [['/A', '新会话'], ['/A', 'new title'], ['/A', 'desktop title'], ['/A', 'desktop title']]);
   });
 
   test(`${IS_WIN ? 'Windows' : 'Linux'} Codex permission menus read without mutation and switch the selected thread`, async () => {
@@ -221,17 +362,16 @@ for (const IS_WIN of [true, false]) {
     const events = [], routes = backendRoutesFor({ IS_WIN, codexBackend: state });
     const session = { threadId: thread.id, codexDirectory: '/A', selectionKey: () => 'own-A', emit: value => events.push(value) };
     await routes.openMenu.call(session, { kind: 'permission', requestId: 7 });
-    assert.deepEqual(Array.from(events[0].items, row => row.label), IS_WIN ? ['Ask for approval', 'Approve for me', 'Full access'] : ['Ask for approval', 'Full access']);
+    assert.deepEqual(Array.from(events[0].items, row => row.label), ['Ask for approval', 'Approve for me', 'Full access']);
     assert.equal(client.sent.some(row => row.method === 'thread/settings/update'), false);
     assert.equal(events[0].requestId, 7); assert.equal(events[0].sel, 'own-A');
-    for (const label of IS_WIN ? ['Approve for me', 'Ask for approval', 'Approve for me', 'Full access'] : ['Ask for approval', 'Full access']) {
+    for (const label of ['Approve for me', 'Ask for approval', 'Approve for me', 'Full access']) {
       await routes.pickMenu.call(session, { kind: 'permission', label });
       const { params } = client.sent.at(-1);
       assert.equal(params.threadId, thread.id);
       assert.equal(params.approvalPolicy, label === 'Full access' ? 'never' : 'on-request');
       assert.equal(params.sandboxPolicy.type, label === 'Full access' ? 'dangerFullAccess' : 'workspaceWrite');
-      if (IS_WIN) assert.equal(params.approvalsReviewer, label === 'Approve for me' ? 'guardian_subagent' : 'user');
-      else assert.equal('approvalsReviewer' in params, false);
+      assert.equal(params.approvalsReviewer, label === 'Approve for me' ? (IS_WIN ? 'guardian_subagent' : 'auto_review') : 'user');
       assert.equal(state.chat(thread.id).permission, label);
     }
     thread.settings = { approvalsReviewer: 'auto_review' };
@@ -241,9 +381,9 @@ for (const IS_WIN of [true, false]) {
   });
 }
 
-test('Windows Codex catalog synchronization targets existing desktop webviews and closes CDP reads', async () => {
+test('Codex catalog synchronization targets existing desktop webviews and closes CDP reads', async () => {
   const calls = [];
-  const synchronize = vm.runInContext(fragment(read('server/apps/codex.mjs'), 'async function syncWindowsCodexCatalog()', "if (IS_WIN) codexBackend.on(") + '\nsyncWindowsCodexCatalog;', createPageContext({
+  const synchronize = vm.runInContext(fragment(read('server/apps/codex.mjs'), 'async function syncCodexCatalog()', "codexBackend.on(") + '\nsyncCodexCatalog;', createPageContext({
     nativeTargets: () => [{ app: 'cursor', ws: 'cursor' }, { app: 'codex', ws: 'A' }, { app: 'codex', ws: 'B' }],
     helpersCall: call => call,
     Cdp: class {
@@ -352,7 +492,7 @@ test('writer lookup scans both windows and selects owner rather than visible fol
   const lookup = vm.runInContext('({' + fragment(read('server/apps/codex.mjs'), '  async backendOwner(', '  backendThread(') + '}).backendOwner', context);
   const owner = await lookup('desktop');
   assert.equal(owner.pageId, 'writer'); assert.equal(owner.cwd, '/B'); assert.equal(calls.length, 2);
-  assert.ok(calls.every(call => call === `nativeSessionInfo('codex', "desktop", '${process.platform === 'win32' ? 'connection' : 'owner'}')`));
+  assert.ok(calls.every(call => call === `nativeSessionInfo('codex', "desktop", 'connection')`));
   assert.deepEqual(closed.sort(), ['follower', 'writer']);
 });
 
@@ -564,6 +704,7 @@ test('creating in project B reads back native cwd and never changes project A', 
 test('forking preserves native history through the chosen turn, source identity and project', async () => {
   const { state, client } = fixture();
   const source = await state.create('/A');
+  Object.assign(source.settings, { effort: 'high', approvalPolicy: 'on-request', approvalsReviewer: 'auto_review', sandboxPolicy: { type: 'workspaceWrite' } });
   source.turns.push(...[1, 2].map(n => ({ id: 'turn-' + n, status: 'completed', items: [
     { id: 'human-' + n, type: 'userMessage', content: [{ type: 'text', text: 'question ' + n }] },
     { id: 'reply-' + n, type: 'agentMessage', text: 'reply ' + n },
@@ -574,7 +715,8 @@ test('forking preserves native history through the chosen turn, source identity 
   assert.deepEqual(source.turns.map(turn => turn.id), ['turn-1', 'turn-2']);
   assert.equal(state.records.get(child.id).cwd, '/A');
   assert.deepEqual(client.sent.find(row => row.method === 'thread/fork').params,
-    { threadId: '/A', lastTurnId: 'turn-1', deferGoalContinuation: true });
+    { threadId: '/A', lastTurnId: 'turn-1', deferGoalContinuation: true, cwd: '/A', model: 'test',
+      approvalPolicy: 'on-request', approvalsReviewer: 'auto_review', sandbox: 'workspace-write', config: { model_reasoning_effort: 'high' } });
   assert.equal(client.sent.some(row => row.method === 'turn/start'), false);
 });
 

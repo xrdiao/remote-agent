@@ -46,11 +46,38 @@ function backendAttached(s, initial = false) {
 
 function backendPublish(s, sent) {
   if (!codexBackend.threads.has(s.threadId)) return false;
-  s.emit({ t: 'chat', sel: s.selectionKey(), chat: codexBackend.chat(s.threadId, s.codexHistoryLimit || 40) }, sent);
+  s.emit({ t: 'chat', sel: s.selectionKey(), chat: codexBackend.chat(s.threadId, s.codexHistoryLimit || 40, undefined, s.expandedTools || new Set()) }, sent);
+  backendPublishDraft(s);
   return true;
 }
 
-async function syncWindowsCodexCatalog() {
+function backendPublishDraft(s) {
+  const text = codexBackend.draft(s.threadId);
+  if (!s.draftWriting && !s.sending && text !== s.lastDraft) {
+    s.lastDraft = text;
+    s.emit({ t: 'draft', sel: s.selectionKey(), text, draftEpoch: s.draftEpoch || '', revision: s.draftRevision });
+  }
+}
+
+function backendDraftSource(id) {
+  return nativeTargets().filter(win => win.app === 'codex').map(win => nativeWindowAt(win.ws))
+    .find(source => source.snapshot?.chat?.thread === id && source.snapshot.chat.readonly === false);
+}
+
+function recordBackendNativeDraft(source, id, text) {
+  let drafts = codexBackend.nativeDrafts.get(id);
+  if (!drafts) codexBackend.nativeDrafts.set(id, drafts = new WeakMap());
+  drafts.set(source, text);
+}
+
+function backendCommands() {
+  return [
+    ['compact', 'Compact', '压缩当前会话上下文'], ['plan', 'Plan', '切换计划模式'],
+    ['model', 'Model', '选择模型'], ['permissions', 'Permissions', '选择权限模式'], ['skills', 'Skills', '查看技能'],
+  ].map(([key, label, sub]) => ({ key, label, sub, section: 'commands' }));
+}
+
+async function syncCodexCatalog() {
   await Promise.all(nativeTargets().filter(win => win.app === 'codex').map(async win => {
     const cdp = new Cdp(win.ws);
     try {
@@ -60,8 +87,8 @@ async function syncWindowsCodexCatalog() {
   }));
 }
 
-if (IS_WIN) codexBackend.on('catalogChanged', () => {
-  syncWindowsCodexCatalog().catch(error => console.error('Codex 桌面会话列表同步失败:', error.message));
+codexBackend.on('catalogChanged', () => {
+  syncCodexCatalog().catch(error => console.error('Codex 桌面会话列表同步失败:', error.message));
 });
 
 async function bindBackend(s, req) {
@@ -228,11 +255,27 @@ const backendRoutes = {
     this.emit({ t: 'projects', ...data });
   },
   send(m) { return this.sendMessage(String(m.text || ''), m.submit !== false, m.when, m.mentions || [], { requestId: m.requestId, draft: m.draft, text: m.text, draftEpoch: m.draftEpoch }); },
-  draft(m) {
+  async draft(m) {
+    if ((m.draftEpoch || '') !== (this.draftEpoch || '')) return;
     const read = m.text === undefined, key = this.selectionKey();
-    this.codexDrafts ||= new Map();
-    if (!read) { this.codexDrafts.set(key, String(m.text)); this.draftEpoch = m.draftEpoch; }
-    this.emit({ t: 'draftAck', sel: key, ok: true, text: this.codexDrafts.get(key) || '', read, draftEpoch: this.draftEpoch || '', revision: m.revision });
+    this.draftRevision = m.revision;
+    this.draftGeneration++;
+    this.draftWriting = true;
+    let text;
+    try {
+      const id = this.threadId, source = backendDraftSource(id);
+      if (read) {
+        this.draftWriting = false;
+        if (source) await this.adapter.syncBackendDraft.call(this);
+        text = codexBackend.draft(id);
+      } else {
+        text = source ? await source.composerCall(`nativeSessionInfo('codex', ${JSON.stringify(id)}, 'draft', ${JSON.stringify(String(m.text))})`, { app: 'codex', threadId: id }) : String(m.text);
+        codexBackend.draft(id, text);
+        if (source) recordBackendNativeDraft(source, id, text);
+      }
+      this.lastDraft = text;
+    } finally { this.draftWriting = false; }
+    this.emit({ t: 'draftAck', sel: key, ok: true, text, read, draftEpoch: m.draftEpoch || '', revision: m.revision });
   },
   async stop() {
     const thread = await codexBackend.load(this.threadId);
@@ -240,10 +283,17 @@ const backendRoutes = {
     if (turn) await codexBackend.client.request('turn/interrupt', { threadId: this.threadId, turnId: turn.id });
   },
   async refresh() { await codexBackend.refresh(this.threadId); backendPublish(this); },
+  async toolDetails(m) {
+    if (m.sel !== this.selectionKey()) return;
+    this.expandedTools ||= new Set();
+    if (m.open) this.expandedTools.add(m.i); else this.expandedTools.delete(m.i);
+    if (this.codexBackend) return backendPublish(this);
+    return this.pollChat(true);
+  },
   scrollChat(m) {
     if (!m.history) return;
-    this.codexHistoryLimit += 40;
-    const chat = codexBackend.chat(this.threadId, this.codexHistoryLimit);
+    this.codexHistoryLimit += 160;
+    const chat = codexBackend.chat(this.threadId, this.codexHistoryLimit, undefined, this.expandedTools || new Set());
     this.emit({ t: 'historyPage', sel: this.selectionKey(), thread: this.threadId, requestId: m.requestId, items: chat.items, earlier: chat.earlier });
     this.emit({ t: 'historyDone', sel: this.selectionKey(), requestId: m.requestId, earlier: chat.earlier });
   },
@@ -254,7 +304,7 @@ const backendRoutes = {
     const current = data.find(row => row.model === (settings.model || thread.model));
     const items = m.kind === 'model' ? data.filter(row => !row.hidden).map(row => ({ label: row.displayName, id: row.model, checked: current?.model === row.model }))
       : m.kind === 'effort' ? (current?.supportedReasoningEfforts || []).map(row => ({ label: row.reasoningEffort, checked: row.reasoningEffort === (settings.effort ?? settings.reasoningEffort) }))
-      : m.kind === 'permission' ? (IS_WIN ? ['Ask for approval', 'Approve for me', 'Full access'] : ['Ask for approval', 'Full access']).map(label => ({ label, checked: label === codexBackend.chat(this.threadId).permission }))
+      : m.kind === 'permission' ? ['Ask for approval', 'Approve for me', 'Full access'].map(label => ({ label, checked: label === codexBackend.chat(this.threadId).permission }))
       : m.kind === 'fast' ? ['Standard', 'Fast'].map(label => ({ label, checked: (settings.serviceTier === 'fast' ? 'Fast' : 'Standard') === label })) : [];
     this.emit({ t: 'menu', kind: m.kind, requestId: m.requestId, sel, items,
       fast: { on: settings.serviceTier === 'fast' } });
@@ -271,7 +321,7 @@ const backendRoutes = {
       if (!model) throw new Error('Codex 模型已不存在');
       update = { model: model.model, effort: model.defaultReasoningEffort };
     } else if (m.kind === 'effort') update = { effort: m.label };
-    else if (m.kind === 'permission') update = { approvalPolicy: m.label === 'Full access' ? 'never' : 'on-request', ...(IS_WIN ? { approvalsReviewer: m.label === 'Approve for me' ? 'guardian_subagent' : 'user' } : {}), sandboxPolicy: { type: m.label === 'Full access' ? 'dangerFullAccess' : 'workspaceWrite', ...(m.label === 'Full access' ? {} : { writableRoots: [this.codexDirectory], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false }) } };
+    else if (m.kind === 'permission') update = { approvalPolicy: m.label === 'Full access' ? 'never' : 'on-request', approvalsReviewer: m.label === 'Approve for me' ? (IS_WIN ? 'guardian_subagent' : 'auto_review') : 'user', sandboxPolicy: { type: m.label === 'Full access' ? 'dangerFullAccess' : 'workspaceWrite', ...(m.label === 'Full access' ? {} : { writableRoots: [this.codexDirectory], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false }) } };
     else if (m.kind === 'fast') update = { serviceTier: m.label === 'on' || m.label === 'Fast' ? 'fast' : null };
     else throw new Error('当前后台没有此设置');
     await codexBackend.client.request('thread/settings/update', { threadId: this.threadId, ...update });
@@ -346,12 +396,22 @@ const backendRoutes = {
   async codexSkills() { this.emit({ t: 'codexSkills', rows: await backendSkills(this) }); },
   async mentionQuery(m) {
     let rows;
-    if (m.trigger === '/') rows = (await backendSkills(this)).filter(row => (row.label + ' ' + row.sub).toLowerCase().includes(String(m.q || '').toLowerCase()));
+    if (m.trigger === '/') rows = [...backendCommands(), ...await backendSkills(this)].filter(row => (row.label + ' ' + row.sub).toLowerCase().includes(String(m.q || '').toLowerCase()));
     else {
       const { files } = await codexBackend.client.request('fuzzyFileSearch', { query: String(m.q || ''), roots: [this.codexDirectory] });
       rows = files.map(file => ({ label: file.file_name, sub: file.path, key: localFilePath(path.resolve(localFilePath(file.root), localFilePath(file.path))), section: 'files' }));
     }
     this.emit({ t: 'mentions', sel: this.selectionKey(), seq: m.seq, q: m.q, trigger: m.trigger, rows });
+  },
+  async codexPick(m) {
+    const command = backendCommands().find(row => row.key === m.key && m.section === 'commands');
+    if (!command) throw new Error('当前后台没有这条命令');
+    if (command.key === 'compact') {
+      await codexBackend.compact(this.threadId);
+      this.emit({ t: 'status', ok: true, msg: '已请求压缩当前会话上下文' });
+    } else if (command.key === 'plan') await backendRoutes.codexPlan.call(this);
+    else if (command.key === 'skills') await backendRoutes.codexSkills.call(this);
+    else await backendRoutes.openMenu.call(this, { kind: command.key === 'permissions' ? 'permission' : 'model' });
   },
   codexChat() { this.emit({ t: 'menu', kind: 'codex-chat', items: [{ label: 'Rename' }, { label: 'Archive' }] }); },
   sessionActions(m) { this.emit({ t: 'sessionActions', app: 'codex', id: m.id, requestId: m.requestId, actions: ['rename', 'archive'] }); },
@@ -421,6 +481,7 @@ async function readCodexMenu(context, button, select = items => items.length ? i
 
 export const adapter = {
   backendRoutes,
+  routes: { toolDetails: backendRoutes.toolDetails },
   async backendOwner(id) {
     if (codexBackend.threads.has(id) && !codexBackend.threads.get(id).disconnected) return null;
     const pages = await codexWindows(CODEX_CDP_URL);
@@ -428,11 +489,11 @@ export const adapter = {
       const cdp = new Cdp(page.chatWs);
       try {
         await cdp.connect();
-        const owner = await cdp.evaluate(helpersCall(`nativeSessionInfo('codex', ${JSON.stringify(id)}, '${IS_WIN ? 'connection' : 'owner'}')`));
+        const owner = await cdp.evaluate(helpersCall(`nativeSessionInfo('codex', ${JSON.stringify(id)}, 'connection')`));
         return owner ? { ...page, ...owner } : null;
       } finally { cdp.close(); }
     }));
-    return (IS_WIN && matches.find(row => row?.role === 'owner')) || matches.find(Boolean) || null;
+    return matches.find(row => row?.role === 'owner') || matches.find(Boolean) || null;
   },
   backendThread(id, host = nativeSessionCatalog('codex')?.rows.find(row => row.id === id)?.host || '') {
     return !host && !allFusionRuns().some(run => run.bindings.some(binding => binding.app === 'codex' && binding.threadId === id));
@@ -442,13 +503,38 @@ export const adapter = {
   async setBackendMode() {
     await awaitCdpRead(codexBackend.load(this.threadId));
     if (!this.visible) { backendPublish(this); return; }
-    const stop = watchChatUpdates(this, refresh => codexBackend.subscribe(this.threadId, error => {
-      if (error) this.emit({ t: 'status', ok: false, msg: error.message });
-      refresh();
-    }), sent => backendPublish(this, sent));
-    this.chatUpdatesStop = () => { codexBackend.clearRetry(this); stop(); };
+    const stop = watchChatUpdates(this, refresh => {
+      const stops = [codexBackend.subscribe(this.threadId, error => {
+        if (error) this.emit({ t: 'status', ok: false, msg: error.message });
+        refresh();
+      })];
+      for (const win of nativeTargets().filter(win => win.app === 'codex')) stops.push(nativeWindowAt(win.ws).subscribe(() => {
+        this.adapter.syncBackendDraft.call(this).catch(error => this.emit({ t: 'status', ok: false, msg: error.message }));
+      }));
+      return () => { for (const stop of stops) stop(); };
+    }, sent => backendPublish(this, sent));
+    const draftChanged = id => { if (id === this.threadId) backendPublishDraft(this); };
+    codexBackend.on('draftChanged', draftChanged);
+    this.chatUpdatesStop = () => { codexBackend.off('draftChanged', draftChanged); codexBackend.clearRetry(this); stop(); };
     if (this.codexRetrySettings) backendRoutes.codexRetry.call(this, this.codexRetrySettings);
+    await this.adapter.syncBackendDraft.call(this);
     backendPublish(this);
+  },
+  async syncBackendDraft() {
+    const id = this.threadId, sel = this.selectionKey(), generation = this.draftGeneration, source = backendDraftSource(id);
+    if (!source || this.draftWriting || this.sending) return;
+    const context = { app: 'codex', threadId: id };
+    const composer = await source.composerCall(`nativeSessionInfo('codex', ${JSON.stringify(id)}, 'composer')`, context);
+    if (this.selectionKey() !== sel || generation !== this.draftGeneration || this.draftWriting || this.sending) return;
+    const previous = codexBackend.nativeDrafts.get(id), first = !previous?.has(source);
+    let text = composer.prompt;
+    const phoneOwns = first ? (codexBackend.draftTimes.get(id) || 0) > composer.draftEditedAt : previous.get(source) === text;
+    if (phoneOwns && codexBackend.drafts.has(id) && codexBackend.draft(id) !== text) {
+      text = await source.composerCall(`nativeSessionInfo('codex', ${JSON.stringify(id)}, 'draft', ${JSON.stringify({ text: codexBackend.draft(id), expected: text })})`, context);
+      if (this.selectionKey() !== sel || generation !== this.draftGeneration || this.draftWriting || this.sending) return;
+    }
+    if (first || previous.get(source) !== text) codexBackend.draft(id, text);
+    recordBackendNativeDraft(source, id, text);
   },
   async sendBackendMessage(text, submit, when, mentions, receipt) {
     if (!submit) return backendRoutes.draft.call(this, { text, draftEpoch: receipt?.draftEpoch });
@@ -467,7 +553,7 @@ export const adapter = {
     if (operation) operation.submitted = true;
     const result = await codexBackend.send(id, input, when, receipt.requestId);
     for (const [, file] of files) updateUpload(file, { pending: false });
-    this.codexDrafts?.delete(sel);
+    if (codexBackend.draft(id) === text) codexBackend.draft(id, '');
     rememberSessionMessage('codex', id, Date.now());
     this.emit({ t: 'sent', ...receipt, ...result, sel, sentAt: Date.now() });
     this.emit({ t: 'attachments', sel, list: uploadAttachments(sel) });
@@ -1348,7 +1434,7 @@ async codexSkillList() {
 
 async codexTogglePlan() {
   const before = (await this.cdp.evaluate(helpersCall('codexFacts()')))?.view?.plan;
-  await this.codexPick({ section: 'commands', key: 'plan-mode', label: 'Plan mode', q: '' });
+  await this.codexPick({ section: 'commands', key: 'plan-mode', label: 'Plan mode', q: '', text: await this.codexPrompt(), start: 0, caret: 0 });
   const after = (await this.cdp.evaluate(helpersCall('codexFacts()')))?.view?.plan;
   if (after === before) throw new Error('Plan 模式没有跟着电脑变化');
   this.emit({ t: 'status', ok: true, msg: after ? '已打开 Plan' : '已关闭 Plan' });
@@ -1356,7 +1442,7 @@ async codexTogglePlan() {
 
 async codexToggleIde() {
   const before = (await this.cdp.evaluate(helpersCall('codexFacts()')))?.view?.ide?.on;
-  await this.codexPick({ section: 'commands', label: 'IDE context', q: 'ide' });
+  await this.codexPick({ section: 'commands', label: 'IDE context', q: 'ide', text: await this.codexPrompt(), start: 0, caret: 0 });
   let after = before;
   for (let i = 0; i < 12 && after === before; i++) {
     await new Promise(r => setTimeout(r, 150));

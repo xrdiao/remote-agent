@@ -1,6 +1,6 @@
   const nativeValue = value => doc.defaultView.JSON.parse(JSON.stringify(value));
   const cursorSessionInstantiation = () => {
-    const props = codexFiberProps(doc.querySelector(IS_WIN ? '.vscode-model-picker__trigger' : '.ui-agent-status-dot'), Infinity)
+    const props = [...doc.querySelectorAll('.ui-agent-status-dot, .vscode-model-picker__trigger')].flatMap(el => codexFiberProps(el, Infinity))
       .find(p => p.services?.workspace?.instantiationService);
     return props?.services.workspace.instantiationService;
   };
@@ -273,24 +273,37 @@
     return { confirmed: true, action: after.archived ? 'archive' : 'delete', already: false };
   };
   const nativeSessionInfo = (app, id, catalog = false, previous = null) => {
-    if (IS_WIN && app === 'cursor' && catalog === 'connection') {
+    if (catalog === 'history' && (app === 'cursor' || app === 'devin')) return (async () => {
+      const context = await nativeSessionContext(app, id);
+      if (app === 'devin') await devinReadSession(id, () => true);
+      return nativeConversationChat(true, 160, previous, context);
+    })();
+    if (app === 'codex' && catalog === 'toolDetails') {
+      const scopes = codexHistoryScopes(), manager = codexConversationManager(id, scopes);
+      const state = codexHistoryState(manager.getConversation(id), false, scopes, id), tools = new Set(previous);
+      return state.entries.flatMap(entry => {
+        const turn = codexStoredTurn(entry, scopes);
+        return codexTurnItems(null, { ...entry, turn }, 0, tools, id).filter(item => tools.has(item.i));
+      });
+    }
+    if (app === 'cursor' && catalog === 'connection') {
       const data = cursorSessionServices()?.data.getComposerDataIfLoaded(id);
       return data ? { updatedAt: Math.max(Number(data.lastUpdatedAt) || 0, Number(data.conversationCheckpointLastUpdatedAt) || 0) } : null;
     }
-    if (IS_WIN && app === 'cursor' && catalog === 'mode') {
+    if (app === 'cursor' && catalog === 'mode') {
       const modes = cursorSessionServices(true), current = modes.getComposerUnifiedMode(id);
       return { items: modes.getAllModes().map(mode => ({ label: mode.name, id: mode.id,
         desc: mode.description || '', checked: mode.id === current })) };
     }
-    if (IS_WIN && app === 'devin' && catalog === 'mode') {
+    if (app === 'devin' && catalog === 'mode') {
       const config = devinSessionRecord(id).configOptions.find(option => option.category === 'mode');
       return { items: (config?.options || []).flatMap(group => group.options || [group]).map(option => ({
         label: option.name, id: option.value, desc: option.description || '', checked: option.value === config.currentValue })) };
     }
-    if (IS_WIN && app === 'codex' && catalog === 'refreshCatalog')
+    if (app === 'codex' && catalog === 'refreshCatalog')
       return codexConversationManager(null, codexHistoryScopes(), 'local').refreshRecentConversations({ afterCurrent: true })
         .then(() => codexQueryClient().refetchQueries({ queryKey: ['recent-conversations-meta'], type: 'all' }, { throwOnError: true, cancelRefetch: false })).then(() => true);
-    if (IS_WIN && app === 'codex' && catalog === 'connection') {
+    if (app === 'codex' && catalog === 'connection') {
       const manager = codexConversationManager(id, codexHistoryScopes(), 'local');
       const role = manager?.getStreamRole(id)?.role;
       return role === 'owner' || role === 'follower' ? { cwd: localFilePath(manager.getConversation(id).cwd), role } : null;
@@ -347,7 +360,8 @@
     if (catalog === 'actions') return nativeSessionInfo(app, id);
     if (catalog === 'tools') return fusionNativeTools.requests(app, id);
     if (catalog === 'fusionCall' && app === 'devin') return fusionDevinCall(id, previous);
-    if (catalog === 'draft' && app === 'codex') return codexConversationDraft(id, previous === null ? undefined : previous);
+    if (catalog === 'draft' && app === 'codex') return previous && typeof previous === 'object'
+      ? codexConversationDraft(id, previous.text, previous.expected) : codexConversationDraft(id, previous === null ? undefined : previous);
     if (catalog === 'clearDraft' && app === 'codex') return codexConversationDraft(id, '', previous);
     if (catalog === 'composer' && app === 'codex') return (async () => {
       const value = await codexComposerScope(id, false);
@@ -356,7 +370,7 @@
       const state = scope.get(composer.state), context = await nativeSessionContext(app, id);
       const ide = codexQueryClient()?.getQueryData(['ide-context', null]);
       const activePath = ide?.activeFile?.path || '';
-      return { ...state, workspaceRoots: context.roots.map(row => row.root),
+      return { ...state, draftEditedAt: doc.defaultView.__remoteAgentDraftEdits?.get(id) || 0, workspaceRoots: context.roots.map(row => row.root),
         ideContext: state.isAutoContextOn && context.roots.some(row => pathKey(activePath, !context.host).startsWith(pathKey(row.root, !context.host).replace(/\/$/, '') + '/')) ? ide : null };
     })();
     if (catalog === 'sendError') return window.__remoteAgentNativeSubmissions?.get(previous) || null;
@@ -586,14 +600,14 @@
       if (!model) throw new Error('模型不属于当前 Codex 原生候选');
       return pickCodexModel(model.displayName || model.id);
     }
-    if (IS_WIN && action === 'mode' && app === 'cursor') {
+    if (action === 'mode' && app === 'cursor') {
       const modes = cursorSessionServices(true), option = modes.getAllModes().find(mode => mode.name === name);
       if (!option) throw new Error('模式不属于该 Cursor 会话的原生候选');
       const handle = await cursorSessionServices().data.getComposerHandleById(id);
       modes.setComposerUnifiedMode(handle, option.id);
       return modes.getComposerUnifiedMode(id) === option.id;
     }
-    if (IS_WIN && action === 'mode' && app === 'devin') {
+    if (action === 'mode' && app === 'devin') {
       const session = devinSessionRecord(id), config = session.configOptions.find(option => option.category === 'mode');
       const option = config?.options.flatMap(group => group.options || [group]).find(option => option.name === name);
       if (!option) throw new Error('模式不属于该 Devin 会话的原生候选');

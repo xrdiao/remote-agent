@@ -331,7 +331,7 @@
     return [...lis, ...welcome.filter(a => !seen.has(a.id))];
   };
   const agentStartupState = (app, inputReady = false) => {
-    if (IS_WIN && app === 'cursor' && !cursorSessionServices()) return null;
+    if (app === 'cursor' && !cursorSessionServices()) return null;
     if (app === 'codex') {
       const client = codexQueryClient();
       const recent = client?.getQueryData(['recent-conversations-meta', 'updated_at', '[]', 'live']);

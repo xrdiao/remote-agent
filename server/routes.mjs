@@ -19,7 +19,6 @@ import { writeTextFile } from '../lib/files.mjs';
 import { fileAction } from '../lib/file-actions.mjs';
 import os from 'node:os';
 import { terminalService } from './terminal-service.mjs';
-import { IS_WIN } from '../lib/platform.mjs';
 
 // One entry per message type the phone can send (auth/ack are handled inside ws.mjs itself).
 //   pre      — runs in handle() before the read-only/focus split, without a cdp
@@ -217,9 +216,9 @@ export const ROUTES = {
     fast: true,
     fastRun: (s, m) => launchAgents(s, m.apps, () => ROUTES.connAgents.pre(s).catch(() => {})),
   },
-  mode: { switchRead: !IS_WIN, connection: true, fast: (_s, m) => m.mode === 'terminal',
+  mode: { connection: true, fast: (_s, m) => m.mode === 'terminal',
     fastRun: (s, m) => s.setMode(m.mode), pre: (s, m) => s.setMode(m.mode) },
-  visible: { switchRead: !IS_WIN, connection: true,
+  visible: { connection: true,
     fast: s => s.mode === 'terminal', fastRun: (s, m) => ROUTES.visible.pre(s, m),
     pre: (s, m) => {
       s.notifyVisible = Boolean(m.watching);
@@ -251,9 +250,9 @@ export const ROUTES = {
       let ok = false;
       try {
         if (read) {
-          text = await s.cdp.evaluate(s.app === 'codex'
-            ? `(async () => { const h = ${PAGE_SRC}; await h.codexViewState(true); return h.composerDraft(); })()`
-            : helpersCall('composerDraft()'));
+          text = s.app === 'codex'
+            ? await nativeWindow(s.cdp).composerCall(`nativeSessionInfo('codex', ${JSON.stringify(s.threadId)}, 'draft')`, { app: 'codex', threadId: s.threadId })
+            : await s.cdp.evaluate(helpersCall('composerDraft()'));
           ok = typeof text === 'string';
         }
         else ok = await s.setDraft(text);
@@ -463,7 +462,7 @@ export const ROUTES = {
     run: async (s, m) => {
       if (s.app === 'devin') return s.adapter.answerRequest.call(s, m);
       if (s.app !== 'codex') return;
-      const call = method => IS_WIN ? nativeWindow(s.cdp).composerCall(method) : s.cdp.evaluate(helpersCall(method));
+      const call = method => nativeWindow(s.cdp).composerCall(method);
       if (m.field != null) {
         if (!await call(`codexRequestField(${JSON.stringify(String(m.id))}, ${Number(m.field)}, ${JSON.stringify(String(m.value || ''))})`)) throw new Error('请求输入框已不存在');
       } else {

@@ -243,7 +243,7 @@ const routes = {
       if (this.threadId !== id || this.selectionKey() !== sel) return;
       rows = openCode.messageRows(id).filter(row => page.start && beforeMessage(row, page.start));
     }
-    rows = rows.slice(-PAGE_SIZE);
+    rows = rows.slice(-60);
     if (rows.length) {
       page.start = messageKey(rows[0]);
       this.emit({ t: 'historyPage', sel, requestId: m.requestId, thread: id,

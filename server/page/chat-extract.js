@@ -321,6 +321,17 @@
   };
   const chatRevision = () => doc.defaultView.__remoteAgentChatRevision || 0;
   const watchCodexData = changed => {
+    const watchDraft = watch => {
+      const input = event => {
+        if (!composerTarget(doc)?.contains(event.target)) return;
+        (doc.defaultView.__remoteAgentDraftEdits ||= new Map()).set(codexThread(), Date.now());
+        changed();
+      };
+      doc.addEventListener('input', input, true);
+      const stop = watch.stop;
+      watch.stop = () => { doc.removeEventListener('input', input, true); stop(); };
+      return watch;
+    };
     if (remoteContext?.app === 'devin')
       return { stop: fusionDevinWatch(remoteContext.threadId, changed), refresh() {} };
     if (!remoteContext && devinSurface()) return devinWatch(changed);
@@ -332,7 +343,7 @@
         for (const [key, source] of sources) if (!subscribed.has(key)) subscribed.set(key, source.subscribe(changed));
       };
       refresh();
-      return { refresh, stop() { stop(); for (const unsubscribe of subscribed.values()) unsubscribe(); } };
+      return watchDraft({ refresh, stop() { stop(); for (const unsubscribe of subscribed.values()) unsubscribe(); } });
     }
     if (remoteContext?.app === 'cursor' || !remoteContext && cursorSessionServices()) {
       const data = cursorSessionServices().data;
@@ -351,7 +362,7 @@
     const update = () => changed();
     const refresh = () => {
       const state = codexHistoryState(), wanted = new Map();
-      if (IS_WIN && state.thread) {
+      if (state.thread) {
         const manager = codexNativeManager();
         if (manager) {
           wanted.set('requests:' + manager.hostId + ':' + state.thread, () => manager.addConversationCallback(state.thread, update));
@@ -371,7 +382,7 @@
       for (const [source, start] of wanted) if (!subscribed.has(source)) subscribed.set(source, start());
     };
     refresh();
-    return { refresh, stop() { for (const stop of subscribed.values()) stop(); subscribed.clear(); } };
+    return watchDraft({ refresh, stop() { for (const stop of subscribed.values()) stop(); subscribed.clear(); } });
   };
   const codexUserText = content => {
     const text = content.filter(c => c.type === 'text').map(c => c.text).join('\n');
@@ -562,8 +573,7 @@
 
   };
   // One Codex turn can contain several markdown blocks. Keep them in order instead of keeping only the first reply.
-  const codexTurnItems = (el, entry = null, limit = 0) => {
-    const thread = codexThread();
+  const codexTurnItems = (el, entry = null, limit = 0, tools = new Set(), thread = codexThread()) => {
     const blocks = el ? [...el.querySelectorAll('[class*="MarkdownRoot"]')] : [];
     const out = [];
     const turn = entry?.turn || codexTurnData(el);
@@ -579,7 +589,7 @@
       const start = out.length;
       const id = `${thread}:${item.type}:${item.sourceItemId || item.callId || item.responseAnnotationTargetId || item.clientUserMessageId || item.id || ''}`;
       if (item.type === 'context-compaction') {
-        const automatic = item.source !== 'manual';
+        const automatic = item.source === 'auto' || item.source === 'automatic';
         const live = item.status === 'inProgress';
         const state = live ? '正在' : item.status === 'completed' ? '已完成' : '已中断';
         out.push({ i: id, k: 'notice', kind: 'compaction', t: `${state}${automatic ? '自动' : ''}压缩上下文`, live });
@@ -608,16 +618,18 @@
         if (item.phase === 'commentary') out.push({ i: id, k: 'thinking', t: `工作过程\n${item.content}`, live: !item.completed });
         else out.push({ i: id, k: 'assistant', t: item.content, completed: item.completed, htmlRead: !!block, bodyFormat: block ? 'html' : 'markdown', h: block ? clean(block) : esc(item.content).replace(/\n/g, '<br>'), ...(block ? { images: messageImages(block) } : {}) });
       } else if (item.type === 'exec') {
-        const cmd = (item.cmd || []).join('\n');
-        out.push({ i: id, k: 'tool', src: 'codex', kind: 'command', t: cmd.slice(0, 240), cmd,
-          output: item.output?.aggregatedOutput || '', exitCode: item.output?.exitCode, status: item.executionStatus, done: finished,
+        const cmd = (item.cmd || []).join('\n'), details = tools.has(id);
+        out.push({ i: id, k: 'tool', src: 'codex', kind: 'command', t: cmd.slice(0, 240), lazy: true, details,
+          ...(details ? { cmd, output: item.output?.aggregatedOutput || '' } : {}),
+          exitCode: item.output?.exitCode, status: item.executionStatus, done: finished,
           ...(item.approvalRequestId != null || ['failed', 'declined'].includes(item.executionStatus) || (item.output?.exitCode != null && item.output.exitCode !== 0) ? { keep: true } : {}) });
       } else if (item.type === 'patch') {
-        const files = Object.keys(item.changes || {});
-        const diff = files.flatMap(file => [['…', file], ...(item.changes[file].diff || '').split('\n')
-          .map(line => /^(--- |\+\+\+ |@@)/.test(line) ? ['…', line] : /^[+-]/.test(line) ? [line[0], line.slice(1)] : [' ', line.startsWith(' ') ? line.slice(1) : line])]);
+        const files = Object.keys(item.changes || {}), details = tools.has(id);
+        const diff = details ? files.flatMap(file => [['…', file], ...(item.changes[file].diff || '').split('\n')
+          .map(line => /^(--- |\+\+\+ |@@)/.test(line) ? ['…', line] : /^[+-]/.test(line) ? [line[0], line.slice(1)] : [' ', line.startsWith(' ') ? line.slice(1) : line])])
+          : [];
         out.push({ i: id, k: 'tool', src: 'codex', kind: 'edit', t: `修改 ${files.join(', ')}`.slice(0, 240), f: files[0],
-          diff, add: diff.filter(([type]) => type === '+').length, del: diff.filter(([type]) => type === '-').length,
+          lazy: true, details, ...(details ? { diff, add: diff.filter(([type]) => type === '+').length, del: diff.filter(([type]) => type === '-').length } : {}),
           status: item.executionStatus, done: finished });
       } else if (item.type === 'todo-list') {
         const steps = Array.isArray(item.plan) ? item.plan : (Array.isArray(item.items) ? item.items : []);
@@ -735,7 +747,7 @@
     const read = async () => {
       for (;;) {
         state = codexHistoryState(manager.getConversation(thread), false, scopes, thread);
-        const page = codexReadPage(state, before, known, details);
+        const page = codexReadPage(state, before, known, details, 160);
         if (!page.missingTurn) return page;
         const entry = page.missingTurn;
         if (loaded.has(entry.turnId)) throw new Error('这段历史尚未载入完整，请稍后重试');
@@ -1193,7 +1205,7 @@
         questions: codexThread() ? { codex: true, requests: codexRequestData() } : pendingCodexRequests.length ? { codex: true, requests: pendingCodexRequests } : null,
         ...(devinSurface() ? { session: devinSession(), workdir: workdirInfo() } : {}),
         readonly: !hasComposer(),
-        mode: IS_WIN && devinSurface() && activeThread() ? nativeSessionInfo('devin', activeThread(), 'mode').items.find(item => item.checked)?.label || null
+        mode: devinSurface() && activeThread() ? nativeSessionInfo('devin', activeThread(), 'mode').items.find(item => item.checked)?.label || null
           : devinModeChip()?.innerText.trim() || CONTROLS.mode()?.innerText.trim() || null,
         ...(devinSurface() ? { surface: devinSurface() } : {}),
         model: agentModelName(),
@@ -1305,7 +1317,7 @@
       ...(devinLog() ? { session: devinSession() } : {}),
       ...(devinSurface() ? { workdir: workdirInfo() } : {}),
       readonly: !hasComposer(),
-      mode: IS_WIN && devinSurface() && activeThread() ? nativeSessionInfo('devin', activeThread(), 'mode').items.find(item => item.checked)?.label || null
+      mode: devinSurface() && activeThread() ? nativeSessionInfo('devin', activeThread(), 'mode').items.find(item => item.checked)?.label || null
         : devinModeChip()?.innerText.trim() || (modeEl ? modeEl.innerText.trim() || modeEl.dataset.mode : null),
       permission: permissionLabel(), effort: effortName(),
       thread: activeThread(),
@@ -1320,8 +1332,8 @@
       ...(codexFacts()?.view ? { codex: codexFacts().view } : {}),
     };
   };
-  const cursorPendingTool = () => {
-    const data = cursorSessionServices()?.data.getComposerDataIfLoaded(remoteContext.threadId);
+  const cursorPendingTool = (thread = remoteContext?.threadId || activeThread()) => {
+    const data = cursorSessionServices()?.data.getComposerDataIfLoaded(thread);
     const capability = data?.capabilities.find(capability => typeof capability.getPendingUserDecisionGroup === 'function');
     const decisions = capability?.getPendingUserDecisionGroup()() || [];
     return { data, capability, decisions };
@@ -1342,13 +1354,16 @@
     ...(kind === 'assistant' ? { bodyFormat: 'markdown', h: esc(text).replace(/\n/g, '<br>') } : {}),
     ...(images.length ? { images } : {}) });
   const cursorMessageImages = message => (message.context?.selectedImages || []).map(image => image.path);
-  const nativeConversationChat = async (history, limit) => {
-    const { app, threadId: thread } = remoteContext;
+  const nativeConversationChat = async (history, limit, beforeItem = null, context = remoteContext) => {
+    const { app, threadId: thread } = context;
     let items = [], earlier = false, before = 0, questions = null, title = '', draft, performanceData;
     if (app === 'cursor') {
-      const { data, capability, decisions } = cursorPendingTool();
+      const { data, capability, decisions } = cursorPendingTool(thread);
       performanceData = data;
-      const end = history && Number.isFinite(remoteContext.before) ? remoteContext.before : data.fullConversationHeadersOnly.length;
+      const end = history && typeof beforeItem === 'string'
+        ? data.fullConversationHeadersOnly.findIndex(row => beforeItem === row.bubbleId || beforeItem.startsWith(row.bubbleId + ':'))
+        : history && Number.isFinite(context.before) ? context.before : data.fullConversationHeadersOnly.length;
+      if (end < 0) throw new Error('历史起点已变化，请重新读取会话');
       const headers = data.fullConversationHeadersOnly.slice(Math.max(0, end - limit), end);
       const messages = await cursorMessages(thread, data, headers);
       const pending = new Map(decisions.map(decision => [decision.toolCallId, decision]));
@@ -1377,15 +1392,17 @@
         done: todos.filter(todo => todo.status === 'completed').length,
         items: todos.map(todo => ({ t: todo.content, status: todo.status === 'completed' ? 'done' : todo.status })) });
       title = data.name || ''; draft = data.text;
-      earlier = headers.length < data.fullConversationHeadersOnly.length;
+      earlier = end > headers.length;
       before = data.fullConversationHeadersOnly.indexOf(headers[0]);
-      questions = cursorNativeQuestions();
+      if (!history) questions = cursorNativeQuestions();
     } else {
       const data = devinSessionData(thread) || fusionDevinState(thread).data;
       performanceData = data;
       const failure = Object.entries(devinAgentRequests(thread)).findLast(([, request]) => request.method === 'session/prompt' && request.params?.sessionId === thread);
       const failed = failure?.[1].status === 'failed';
-      const messages = devinMessages(thread, data), end = history && Number.isFinite(remoteContext.before) ? remoteContext.before : messages.length;
+      const messages = devinMessages(thread, data), end = history && typeof beforeItem === 'string'
+        ? Number(/^acp(\d+)/.exec(beforeItem)?.[1]) : history && Number.isFinite(context.before) ? context.before : messages.length;
+      if (!Number.isFinite(end)) throw new Error('历史起点已变化，请重新读取会话');
       const selected = messages.slice(Math.max(0, end - limit), end);
       for (const message of selected) {
         const id = 'acp' + messages.indexOf(message);
@@ -1416,6 +1433,10 @@
       else if (activeThread() === thread) questions = devinQuestions();
       items = items.map(item => ({ ...item, src: 'devin' }));
     }
+    if (history) {
+      for (const item of items) { delete item.b; delete item.actions; delete item.btnItem; }
+      return { thread, items, earlier, before };
+    }
     const scopes = [], run = agentRun(app, thread, scopes), changed = items.filter(item => item.kind === 'edit').length;
     const waiting = nativeWaiting(app, thread);
     if (app === 'devin' && questions?.requests?.length) Object.assign(waiting, {
@@ -1427,7 +1448,7 @@
       queued: app === 'cursor' ? (cursorPendingTool().data.queueItems || []).map(item => ({ id: item.id, t: item.query, src: 'cursor' })) : [],
       questions, changed, subagents: [], earlier, historyBefore: before,
       model: agentModelName(), effort: effortName(), permission: null, context: app === 'devin' ? contextPct() : null,
-      ...(IS_WIN && (app === 'devin' || app === 'cursor') ? { mode: nativeSessionInfo(app, thread, 'mode').items.find(item => item.checked)?.label || null } : {}),
+      ...((app === 'devin' || app === 'cursor') ? { mode: nativeSessionInfo(app, thread, 'mode').items.find(item => item.checked)?.label || null } : {}),
       performance: nativePerformance(app, thread, run, agentModelName(), performanceData),
       ...(draft !== undefined ? { draft } : {}),
       ...(app === 'devin' ? { surface: devinSurface(), session: { key: thread, cwd: remoteContext.cwd }, workdir: { cwd: remoteContext.cwd } } : {}),

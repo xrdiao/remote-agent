@@ -27,6 +27,10 @@ export class CodexState extends EventEmitter {
     this.threads = new Map();
     this.requests = new Map();
     this.queues = new Map();
+    this.drafts = new Map();
+    this.draftTimes = new Map();
+    this.nativeDrafts = new Map();
+    this.manualCompactions = new Set();
     this.loading = new Map();
     this.queueReads = new Map();
     this.queueRevisions = new Map();
@@ -39,6 +43,7 @@ export class CodexState extends EventEmitter {
       for (const thread of this.threads.values()) thread.disconnected = error.message;
       this.requests.clear();
       this.queues.clear();
+      this.manualCompactions.clear();
       this.retryAttempts.clear();
       for (const id of this.statistics.keys()) if (!this.owns(id)) this.statistics.delete(id);
       this.changed('', error);
@@ -51,6 +56,15 @@ export class CodexState extends EventEmitter {
     fs.writeFileSync(this.file, JSON.stringify([...this.records.values()]), { mode: 0o600 });
   }
   owns(id) { return this.records.has(id); }
+  draft(id, text, at = Date.now()) {
+    if (text !== undefined) {
+      const changed = text !== this.drafts.get(id);
+      this.drafts.set(id, text);
+      this.draftTimes.set(id, at);
+      if (changed) cdpRead.run(null, () => withOperation(null, () => this.emit('draftChanged', id)));
+    }
+    return this.drafts.get(id) || '';
+  }
   changed(id, error) { cdpRead.run(null, () => withOperation(null, () => this.emit('changed', id, error))); }
   subscribe(id, fn) {
     const listener = (thread, error) => { if (!thread || !id || thread === id) fn(error); };
@@ -112,7 +126,7 @@ export class CodexState extends EventEmitter {
     this.records.set(thread.id, { id: thread.id, cwd: thread.cwd, title: thread.name || thread.preview || previous?.title || '新会话',
       updatedAt: thread.updatedAt, createdAt: thread.createdAt, statistics: this.statisticsFor(thread.id), ...(previous?.untitled ? { untitled: true } : {}) });
     this.save();
-    if (IS_WIN && previous?.title !== this.records.get(thread.id).title)
+    if (previous?.title !== this.records.get(thread.id).title)
       cdpRead.run(null, () => withOperation(null, () => this.emit('catalogChanged', thread.id)));
   }
 
@@ -171,7 +185,12 @@ export class CodexState extends EventEmitter {
 
   async fork(id, turnId) {
     const source = await this.load(id);
-    const result = await this.client.request('thread/fork', { threadId: id, lastTurnId: turnId, deferGoalContinuation: true });
+    const settings = source.settings;
+    const result = await this.client.request('thread/fork', { threadId: id, lastTurnId: turnId, deferGoalContinuation: true,
+      cwd: source.cwd, model: settings.model || source.model,
+      approvalPolicy: settings.approvalPolicy, approvalsReviewer: settings.approvalsReviewer,
+      sandbox: { readOnly: 'read-only', workspaceWrite: 'workspace-write', dangerFullAccess: 'danger-full-access' }[settings.sandboxPolicy?.type],
+      config: { model_reasoning_effort: settings.effort ?? settings.reasoningEffort ?? null } });
     const thread = { ...result.thread, settings: threadSettings(result), generation: this.client.generation };
     if (!samePath(path.resolve(localFilePath(thread.cwd)), path.resolve(localFilePath(source.cwd)))) throw new Error('Codex 分叉会话的项目与源会话不一致');
     const original = this.statisticsFor(id), early = this.statisticsFor(thread.id);
@@ -181,6 +200,13 @@ export class CodexState extends EventEmitter {
     this.remember(thread);
     this.changed(thread.id);
     return thread;
+  }
+
+  async compact(id) {
+    await this.load(id);
+    this.manualCompactions.add(id);
+    try { await this.client.request('thread/compact/start', { threadId: id }); }
+    catch (error) { this.manualCompactions.delete(id); throw error; }
   }
 
   readQueue(id) {
@@ -246,14 +272,16 @@ export class CodexState extends EventEmitter {
         for (const [key, request] of this.requests) if (request.params.threadId === id && request.params.turnId === p.turn.id) this.requests.delete(key);
         thread.updatedAt = Math.floor(Date.now() / 1000);
         this.remember(thread);
-        if (IS_WIN) cdpRead.run(null, () => withOperation(null, () => this.emit('catalogChanged', id)));
+        cdpRead.run(null, () => withOperation(null, () => this.emit('catalogChanged', id)));
       }
     } else if (method === 'item/started' || method === 'item/completed') {
       const turn = thread.turns.find(turn => turn.id === p.turnId);
       if (turn) {
         const previous = turn.items.find(item => item.id === p.item.id);
-        if (previous) Object.assign(previous, p.item);
-        else turn.items.push(p.item);
+        const item = p.item.type === 'contextCompaction' ? { ...p.item, source: previous?.source || (this.manualCompactions.has(id) ? 'manual' : 'auto') } : p.item;
+        if (previous) Object.assign(previous, item);
+        else turn.items.push(item);
+        if (item.type === 'contextCompaction' && method === 'item/completed') this.manualCompactions.delete(id);
       }
     } else if (method.startsWith('item/') && method.endsWith('Delta') || method === 'item/agentMessage/delta' || method === 'item/plan/delta') {
       const item = thread.turns.find(turn => turn.id === p.turnId)?.items.find(item => item.id === p.itemId);
@@ -384,7 +412,7 @@ export class CodexState extends EventEmitter {
     return this.chat(id, 40, thread);
   }
 
-  chat(id, limit = 40, thread = this.threads.get(id)) {
+  chat(id, limit = 40, thread = this.threads.get(id), tools = null) {
     const turn = thread.disconnected ? null : busyTurn(thread), latest = thread.turns.at(-1), items = [];
     const all = thread.turns.flatMap(row => {
       const last = row.status === 'completed' && row.items.findLast(item => item.type === 'agentMessage' && item.text);
@@ -402,11 +430,20 @@ export class CodexState extends EventEmitter {
       } else if (item.type === 'reasoning') {
         const text = (item.summary?.length ? item.summary : item.content || []).join('\n');
         if (text) items.push({ ...base, k: 'thinking', t: '思考\n' + text, live: !thread.disconnected && owner.status === 'inProgress' });
-      } else if (item.type === 'commandExecution') items.push({ ...base, k: 'tool', src: 'codex', kind: 'command', t: item.command,
-        cmd: item.command, output: item.aggregatedOutput || '', status: item.status, exitCode: item.exitCode });
-      else if (item.type === 'fileChange') items.push({ ...base, k: 'tool', src: 'codex', kind: 'file', t: item.changes.map(row => row.path).join('\n'), output: item.changes.map(row => row.diff).join('\n'), status: item.status });
-      else if (item.type === 'mcpToolCall') items.push({ ...base, k: 'tool', src: 'codex', kind: 'command', t: `${item.server} · ${item.tool}`, output: JSON.stringify(item.result || item.error || ''), status: item.status });
+      } else if (item.type === 'contextCompaction') items.push({ ...base, k: 'notice', kind: 'compaction',
+        t: `${owner.status === 'inProgress' ? '正在' : owner.status === 'completed' ? '已完成' : '已中断'}${item.source === 'auto' || item.source === 'automatic' ? '自动' : ''}压缩上下文`, live: owner.status === 'inProgress' });
+      else if (item.type === 'commandExecution') items.push({ ...base, k: 'tool', src: 'codex', kind: 'command', t: item.command.slice(0, 240),
+        ...(!tools || tools.has(item.id) ? { cmd: item.command, output: item.aggregatedOutput || '' } : {}), status: item.status, exitCode: item.exitCode });
+      else if (item.type === 'fileChange') {
+        const details = !tools || tools.has(item.id);
+        const diff = details ? item.changes.flatMap(row => [['…', row.path], ...(row.diff || '').split('\n').map(line =>
+          /^(--- |\+\+\+ |@@)/.test(line) ? ['…', line] : /^[+-]/.test(line) ? [line[0], line.slice(1)] : [' ', line.replace(/^ /, '')])]) : [];
+        items.push({ ...base, k: 'tool', src: 'codex', kind: 'edit', t: item.changes.map(row => row.path).join(', ').slice(0, 240), f: item.changes[0]?.path,
+          ...(details ? { diff, add: diff.filter(([type]) => type === '+').length, del: diff.filter(([type]) => type === '-').length } : {}), status: item.status });
+      } else if (item.type === 'mcpToolCall') items.push({ ...base, k: 'tool', src: 'codex', kind: 'command', t: `${item.server} · ${item.tool}`.slice(0, 240),
+        ...(!tools || tools.has(item.id) ? { output: JSON.stringify(item.result || item.error || '') } : {}), status: item.status });
     }
+    if (tools) for (const item of items) if (item.k === 'tool') { item.lazy = true; item.details = tools.has(item.i); }
     if (thread.disconnected) items.push({ i: id + ':disconnected', k: 'notice', t: 'Codex 后台中断，结果待核对：' + thread.disconnected });
     if (!thread.disconnected && (latest?.error || thread.error)) items.push({ i: id + ':error', k: 'notice', t: latest?.error?.message || thread.error,
       ...(capacityFailure(latest) ? { kind: 'capacity', b: ['重试'], btnItem: latest.id, actions: ['capacity-retry'] } : {}) });
@@ -443,7 +480,8 @@ export class CodexState extends EventEmitter {
       this.remember(this.threads.get(id));
     } else if (action === 'archive') {
       await this.client.request('thread/archive', { threadId: id });
-      this.records.delete(id); this.threads.delete(id); this.queues.delete(id); this.statistics.delete(id); this.save();
+      this.manualCompactions.delete(id);
+      this.records.delete(id); this.threads.delete(id); this.queues.delete(id); this.drafts.delete(id); this.draftTimes.delete(id); this.nativeDrafts.delete(id); this.statistics.delete(id); this.save();
       this.retryAttempts.delete(id);
     } else throw new Error('不支持的 Codex 会话操作');
     this.changed(id);

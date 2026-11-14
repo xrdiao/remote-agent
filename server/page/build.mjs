@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isLocalFileReference, codeBlockHtml, elicitationFields } from '../../lib/shared-rules.mjs';
-import { IS_WIN, normPath, localFilePath, pathKey, samePath, localFileUri, uriFilePath } from '../../lib/platform.mjs';
+import { IS_WIN, normPath, windowsFilePath, posixFilePath, localFilePath, pathKey, samePath, localFileUri, uriFilePath } from '../../lib/platform.mjs';
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const FRAGMENTS = [
@@ -18,6 +18,8 @@ const fileURLToPath = value => {
   if (/%2f/i.test(uri.pathname)) throw new TypeError('File URL path must not include encoded / characters');
   return decodeURIComponent(uri.pathname);
 };
+const windowsFilePath = ${windowsFilePath.toString()};
+const posixFilePath = ${posixFilePath.toString()};
 const localFilePath = ${localFilePath.toString()};
 const pathKey = ${pathKey.toString()};
 const samePath = ${samePath.toString()};

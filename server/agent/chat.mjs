@@ -1,7 +1,7 @@
 // 对话：聊天轮询、历史加载、发送与附件
 import fs from 'node:fs';
 import path from 'node:path';
-import { IS_MAC, IS_WIN, mod, pathKey } from '../../lib/platform.mjs';
+import { IS_MAC, mod, pathKey } from '../../lib/platform.mjs';
 import { codexContext } from '../windows.mjs';
 import { cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
@@ -204,6 +204,18 @@ export const methods = {
     const sendGen = this.sendGen || 0;
     const draftGeneration = this.draftGeneration, draftRevision = this.draftRevision;
     const readDraft = !this.mentionBusy && !this.draftWriting && !this.queueEditing;
+    let toolDetailsRead;
+    const enrichTools = async chat => {
+      if (this.app !== 'codex') return;
+      for (const item of chat.items) if (item.src === 'codex' && item.lazy) {
+        delete item.cmd; delete item.output; delete item.diff; delete item.add; delete item.del;
+        item.details = false;
+      }
+      if (!this.expandedTools?.size) return;
+      toolDetailsRead ||= cdp.evaluate(helpersCall(`nativeSessionInfo('codex', ${JSON.stringify(this.threadId)}, 'toolDetails', ${JSON.stringify([...this.expandedTools])})`));
+      const details = new Map((await toolDetailsRead).map(item => [item.i, item]));
+      for (const item of chat.items) if (details.has(item.i)) Object.assign(item, details.get(item.i));
+    };
     const publish = chat => {
       cdpRead.getStore()?.throwIfAborted();
       this.emit({ t: 'chat', sel: this.selectionKey(), chat });
@@ -235,11 +247,7 @@ export const methods = {
         const initial = { ...chat, items: chat.items.map(it => ({ ...it })) };
         delete initial.draft;
         this.mergeCodexItems(initial);
-        if (IS_WIN && this.app === 'codex') initial.items = initial.items.map(item => {
-          if (item.k !== 'tool') return item;
-          const { cmd, output, diff, ...summary } = item;
-          return summary;
-        });
+        await enrichTools(initial);
         this.lastExtractedChat = extracted;
         this.fillThinking(initial);
         this.retainThinking(initial);
@@ -326,6 +334,7 @@ export const methods = {
       this.lastBusy = !!chat.busy;
       if (!this.liveRead(cdp, sel)) return;
       this.mergeCodexItems(chat);
+      await enrichTools(chat);
       const draft = chat.draft;
       delete chat.draft;
       if (immediate && this.app !== 'codex') {
@@ -528,6 +537,12 @@ export const methods = {
     this.emit({ t: 'status', ok: true, msg: '已停止 Agent' });
   },
   async scrollChat(dy, automatic = false, history = false, beforeOrder = null, known = [], details = false) {
+    if (history && (this.app === 'cursor' || this.app === 'devin')) {
+      const cdp = this.cdp, sel = this.sel, thread = this.threadId;
+      const page = await cdp.evaluate(helpersCall(`nativeSessionInfo(${JSON.stringify(this.app)}, ${JSON.stringify(thread)}, 'history', ${JSON.stringify(beforeOrder)})`));
+      if (!this.liveRead(cdp, sel) || page.thread !== thread) return;
+      return page;
+    }
     if (this.app === 'codex' && history) {
       const cdp = this.cdp, sel = this.sel, thread = this.threadId;
       const page = await cdp.evaluate(helpersCall(`codexHistoryPage(${JSON.stringify(beforeOrder)}, ${JSON.stringify(known)}, ${details === true})`));
@@ -807,6 +822,11 @@ export const methods = {
   async setDraft(text) {
     if (this.app === 'fusion' || text.length > 20000) return false;
     if (!this.cdp) return false;
+    if (this.app === 'codex') {
+      const value = await nativeWindow(this.cdp).composerCall(`nativeSessionInfo('codex', ${JSON.stringify(this.threadId)}, 'draft', ${JSON.stringify(text)})`, { app: 'codex', threadId: this.threadId });
+      if (value === text) this.lastDraft = value;
+      return value === text;
+    }
     const native = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return (!${JSON.stringify(this.selectedThread || '')} || h.activeThread() === ${JSON.stringify(this.selectedThread || '')}) && (h.composerDraft() === ${JSON.stringify(text)} || h.setComposerDraft(${JSON.stringify(text)})) ? { draft: h.composerDraft() } : null; })()`);
     if (native) { this.lastDraft = native.draft; return true; }
     return false;

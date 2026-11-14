@@ -23,6 +23,9 @@ import { voiceEngines } from '../server/voice/config.mjs';
 import { uploadPathKey } from '../lib/uploads.mjs';
 import { read, fragment } from './page-fixture.mjs';
 import { PAGE_SRC } from '../server/page/build.mjs';
+import * as posixPlatform from '../lib/platform/posix.mjs';
+import * as windowsFiles from '../server/http/transfer/windows.mjs';
+import * as posixFiles from '../server/http/transfer/posix.mjs';
 
 const run = promisify(execFile);
 function platformFixture(files = [], python = {}) {
@@ -49,6 +52,10 @@ function platformFixture(files = [], python = {}) {
       return args.join(' ').includes('Get-NetTCPConnection') ? 'D:\\Portable\\Cursor\\Cursor.exe' : 'C:\r\nD:\r\n';
     },
   });
+  context.windowsPlatform = vm.runInContext('(()=>{' + read('lib/platform/windows.mjs').replace(/^import .*;\n/gm, '').replace(/^export /gm, '')
+    .replaceAll('import.meta.url', JSON.stringify(new URL('../lib/platform/windows.mjs', import.meta.url).href))
+    + '\nreturn {windowsFilePath,localFileUri,uriFilePath,validLocalName,localDrives,winInstallDirs,launchCommand,pidByPort,findBin,projectPathAllowed,projectParent,projectDrives,nativeLauncher};})()', context);
+  context.posixPlatform = posixPlatform;
   vm.runInContext(read('lib/platform.mjs').replace(/^import .*;\n/gm, '').replace(/^export /gm, '')
     .replaceAll('import.meta.url', JSON.stringify(new URL('../lib/platform.mjs', import.meta.url).href))
     + '\nthis.api = { findBin, localDrives };', context);
@@ -91,18 +98,17 @@ test('POSIX file URI decoding matches Node on both the server and the injected p
 });
 
 test('upload naming keeps POSIX basename behavior and applies Windows name rules only on Windows', async () => {
-  const platform = read('lib/platform.mjs');
-  const validName = fragment(platform, 'export function validLocalName(', 'const USER_DIRS =').replace('export ', '');
   const body = fragment(read('server/http/api.mjs'), "  if (route === '/api/upload'", "  if (route === '/api/devices')");
   for (const windows of [false, true]) {
     const files = new Map(), names = [], context = vm.createContext({ IS_WIN: windows, path: windows ? path.win32 : path.posix,
       URL, Buffer, DATA_DIR: windows ? 'C:/agent' : '/agent', crypto: { randomUUID: () => 'new-id' },
+      filePlatform: windows ? windowsFiles : posixFiles, validLocalName: (windows ? windowsFiles : posixFiles).validName,
       device: { id: 'paired-device' }, json: (_req, _res, status, data) => ({ status, data }),
       uploadDocument: name => name.endsWith('.txt'), imageTypes: {}, localFilePath: value => localFilePath(value, windows),
       registerUpload: (_root, _id, file) => names.push(file.name), updateUpload() {}, removeUpload() {},
       fs: { writeFileSync: (file, content) => files.set(file, content.toString()) },
     });
-    vm.runInContext(validName + '\nasync function upload(req, res, route) {' + body + '}', context);
+    vm.runInContext('async function upload(req, res, route) {' + body + '}', context);
     for (const name of ['report\\2026.txt', 'folder/report.txt', 'NUL.txt', 'report.txt']) {
       const req = { method: 'POST', url: '/api/upload?' + new URLSearchParams({ name }) };
       req[Symbol.asyncIterator] = async function* () { yield Buffer.from('payload'); };
@@ -174,8 +180,8 @@ test('Cursor Windows native services become available without an agent status ro
   const instantiationService = { _services: { _entries: new Map(Object.keys(services).map(id => [id, id])) },
     invokeFunction: fn => fn({ get: id => services[id] }) };
   let ready = false;
-  const context = vm.createContext({ IS_WIN: true, window: {}, doc: { querySelector: selector => {
-    assert.equal(selector, '.vscode-model-picker__trigger');return ready ? anchor : null;
+  const context = vm.createContext({ IS_WIN: true, window: {}, doc: { querySelectorAll: selector => {
+    assert.equal(selector, '.ui-agent-status-dot, .vscode-model-picker__trigger');return ready ? [anchor] : [];
   } }, codexFiberProps: element => element ? [{ services: { workspace: { instantiationService } } }] : [] });
   vm.runInContext(fragment(read('server/page/session-actions.js'), '  const cursorSessionInstantiation =', '  const nativeSessionContext =')
     + '\nthis.services = cursorSessionServices;', context);
@@ -186,7 +192,7 @@ test('Cursor Windows native services become available without an agent status ro
   assert.equal(context.services(), context.window.__remoteAgentCursorServices);
 });
 
-test('Windows Cursor startup waits for native services; Linux keeps its original readiness', () => {
+test('Cursor startup waits for native services on Windows and Ubuntu', () => {
   const source = fragment(read('server/page/agents.js'), '  const agentStartupState =', '  const cursorChatReady =');
   for (const windows of [false, true]) {
     let ready = false;
@@ -194,7 +200,7 @@ test('Windows Cursor startup waits for native services; Linux keeps its original
       agentList: () => [], activeThread: () => 'empty', hasComposer: () => true, modelButton: () => ({}),
       extract: () => ({ items: [] }) });
     const startup = vm.runInContext(source + '\nagentStartupState;', context);
-    assert.equal(startup('cursor', true) === null, windows);
+    assert.equal(startup('cursor', true), null);
     ready = true;
     assert.equal(startup('cursor', true).thread, 'empty');
   }
@@ -209,22 +215,22 @@ test('Windows Cursor model reads and changes retain the bound thread instead of 
       fastInfo: () => null, agentModelName: () => states[context.threadId], effortItems: () => [],
     }))()`,
   });
-  const source = fragment(read('server/apps/cursor.mjs'), 'async readWindowsCursorMenu(', 'async withCursorUiRead(');
+  const source = fragment(read('server/apps/cursor.mjs'), 'async readCursorMenu(', 'async withCursorUiRead(');
   const methods = vm.runInContext('({' + source + '})', context);
   const session = { sel: 'bound', threadId: 'bound', selectionKey: () => 'cursor|window|bound',
     cdp: { evaluate: expression => vm.runInContext(expression, context) },
     emit: message => context.emitted.push(message), refreshModelChat: async () => {} };
-  await methods.readWindowsCursorMenu.call(session, 'model', 7);
+  await methods.readCursorMenu.call(session, 'model', 7);
   assert.equal(context.emitted[0].items.find(item => item.checked).label, 'Model A');
   assert.deepEqual({ ...context.states }, { bound: 'Model A', foreground: 'Model B' });
-  await methods.pickWindowsCursorMenu.call(session, 'model', 'Model B');
+  await methods.pickCursorMenu.call(session, 'model', 'Model B');
   assert.equal(context.states.bound, 'Model B');
-  await methods.pickWindowsCursorMenu.call(session, 'model', 'Model A');
+  await methods.pickCursorMenu.call(session, 'model', 'Model A');
   assert.equal(context.states.foreground, 'Model B');assert.equal(context.states.bound, 'Model A');
   assert.deepEqual(Array.from(context.selected), ['bound', 'bound']);
 });
 
-test('Cursor model dispatch is Windows-only and leaves Linux native menu calls intact', async () => {
+test('Cursor model dispatch shares the bound native menu on Windows and Ubuntu', async () => {
   const source = read('server/agent/menus.mjs');
   const readMenu = fragment(source, '  async readMenu(', '  async closeMenus(');
   const pickMenu = source.slice(source.indexOf('  async pickMenu('), source.lastIndexOf('\n};'));
@@ -233,8 +239,8 @@ test('Cursor model dispatch is Windows-only and leaves Linux native menu calls i
     const context = vm.createContext({ IS_WIN: windows, helpersCall: value => value, PAGE_SRC: 'native-page' });
     const methods = vm.runInContext('({' + readMenu + pickMenu + '})', context);
     const session = { app: 'cursor', sel: 'A', selectionKey: () => 'cursor|window|A',
-      readWindowsCursorMenu: async () => calls.push('windows-read'),
-      pickWindowsCursorMenu: async () => calls.push('windows-pick'), withCursorUiRead: fn => fn(),
+      readCursorMenu: async () => calls.push('windows-read'),
+      pickCursorMenu: async () => calls.push('windows-pick'), withCursorUiRead: fn => fn(),
       adapter: { pickModelMenu: async () => { calls.push('linux-pick');return true; } },
       emit: message => replies.push(message),
       cdp: { evaluate: async expression => expression.includes('modelItemsFast') ? [{ label: 'Linux native' }]
@@ -242,8 +248,7 @@ test('Cursor model dispatch is Windows-only and leaves Linux native menu calls i
     };
     await methods.readMenu.call(session, 'model', 7);
     await methods.pickMenu.call(session, 'model', 'Model A');
-    if (windows) assert.deepEqual(calls, ['windows-read','windows-pick']);
-    else { assert.deepEqual(calls, ['linux-pick']);assert.equal(replies[0].items[0].label, 'Linux native'); }
+    assert.deepEqual(calls, ['windows-read','windows-pick']);
   }
 });
 

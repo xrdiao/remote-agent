@@ -14,6 +14,19 @@ import { NativeWindow } from '../server/native-windows.mjs';
 import { nativePage, read, fragment } from './page-fixture.mjs';
 import { registerUpload, removeUpload } from '../lib/uploads.mjs';
 
+for (const control of ['codexTogglePlan', 'codexToggleIde']) test(`Codex ${control} supplies the complete native query without consuming the draft`, async () => {
+  let on = false;
+  const draft = 'keep this draft\nsecond line', queries = [];
+  const session = { cdp: { evaluate: async () => ({ view: { plan: on, ide: { on } } }) },
+    codexPrompt: async () => draft, emit() {},
+    codexPick: async query => {
+      assert.equal(query.text.slice(0, query.start) + query.text.slice(query.caret), draft);
+      queries.push(query); on = !on;
+    } };
+  await codexMethods[control].call(session);
+  assert.equal(queries.length, 1); assert.equal(await session.codexPrompt(), draft);
+});
+
 for (const revision of ['first', 'renamed']) {
   test(`Codex discovers merged modules and renamed exports, retaining native per-thread drafts: ${revision}`, async () => {
     fs.mkdirSync('_shots', { recursive: true });
@@ -279,7 +292,7 @@ test('Codex draft references keep their existing rich-input path and unavailable
   await assert.rejects(adapter.typeDraft.call({ cdp: { evaluate: async () => false } }, 'body', []), /输入尚未就绪/);
 });
 
-function codexMultilineDraft(paragraphText = false) {
+function codexMultilineDraft(paragraphText = false, innerRealm = false) {
   const submissions = [], writes = [];
   const paragraph = content => ({ type: 'paragraph', content: content == null ? [] : Array.isArray(content) ? content : [content] });
   let nodes = [paragraph(null)];
@@ -294,10 +307,29 @@ function codexMultilineDraft(paragraphText = false) {
     getBoundingClientRect: () => ({ width: 40, height: 20 }),
     __reactFiberFixture: { memoizedProps: { composerController: controller, conversationId: 'recalled', submitDisabled: false,
       handleSubmit: options => submissions.push({ options, text: controller.getText(), persisted: controller.getPersistedText() }) } } };
-  const doc = { querySelector: () => null, querySelectorAll: selector => selector === '.ProseMirror[contenteditable="true"]' || selector === '.ProseMirror' ? [editor] : [] };
+  const doc = { getElementById: () => null, querySelector: () => null, querySelectorAll: selector => selector === '.ProseMirror[contenteditable="true"]' || selector === '.ProseMirror' ? [editor] : [] };
   const document = { getElementById: () => ({ contentDocument: doc }) };
-  return { page: nativePage(document), controller, submissions, writes };
+  const page = innerRealm ? vm.runInNewContext(PAGE_SRC.slice(0, -2) + '({app:"codex",threadId:"recalled"})',
+    { document: doc, window: {}, getComputedStyle: () => ({ visibility: 'visible' }) }) : nativePage(document);
+  return { page, controller, submissions, writes };
 }
+
+test('Codex bound inner realm writes the visible native editor using its existing transaction', () => {
+  const h = codexMultilineDraft(false, true);
+  assert.equal(h.page.setComposerDraft('native\nvisible draft'), true);
+  assert.equal(h.page.codexPromptPayload(), 'native\nvisible draft'); assert.equal(h.writes.length, 1);
+});
+
+test('Codex thread drafts update the visible editor or retained state by thread and retain compare-before-clear', async () => {
+  const values = new Map([['A', 'old A'], ['B', 'old B']]), writes = [];
+  const draft = vm.runInNewContext(fragment(read('server/page/composer.js'), '  const codexConversationDraft =', '  const pickComposer =') + 'codexConversationDraft;', {
+    codexComposerScope: async id => ({ scope: { get: () => values.get(id) }, composer: { text: {},
+      editDraft: (_scope, edit) => { const next = { prompt: values.get(id) }; edit(next); values.set(id, next.prompt); writes.push(['retained', id]); } } }),
+    codexVisibleThread: () => 'A', setComposerDraft: text => { values.set('A', text); writes.push(['visible', 'A']); },
+  });
+  assert.equal(await draft('A', 'new A'), 'new A'); assert.equal(await draft('B', 'new B'), 'new B');
+  assert.equal(await draft('A', '', 'old A'), 'new A'); assert.deepEqual(writes, [['visible', 'A'], ['retained', 'B']]);
+});
 
 test('Codex multiline and long input validates its native payload instead of layout paragraph separators', async () => {
   const h = codexMultilineDraft(true);
