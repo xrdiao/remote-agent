@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { findBin } from '../../lib/platform.mjs';
 import path from 'node:path';
 import os from 'node:os';
 import { execFile } from 'node:child_process';
@@ -25,7 +26,7 @@ async function documentText(file, extension) {
   if (extension !== '.doc') return parseDocument(file.path);
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ra-opencode-doc-'));
   try {
-    await run('libreoffice', [`-env:UserInstallation=${pathToFileURL(path.join(directory, 'profile')).href}`,
+    await run(findBin('libreoffice'), [`-env:UserInstallation=${pathToFileURL(path.join(directory, 'profile')).href}`,
       '--headless', '--convert-to', 'docx', '--outdir', directory, file.path], { windowsHide: true });
     const converted = path.join(directory, path.basename(file.path, path.extname(file.path)) + '.docx');
     return await parseDocument(converted);

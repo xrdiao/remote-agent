@@ -1,3 +1,4 @@
+import { localFilePath } from '../../lib/platform.mjs';
 import { OPENCODE_URL } from '../config.mjs';
 import crypto from 'node:crypto';
 
@@ -16,6 +17,7 @@ export class OpenCodeClient {
 
   async request(route, { directory, query = {}, method = 'GET', body, signal, response = false } = {}) {
     const url = new URL(this.url + route);
+    if (directory != null) directory = localFilePath(directory);
     for (const [key, value] of Object.entries({ directory, ...query }))
       if (value != null) url.searchParams.set(key, value);
     const result = await fetch(url, { method, signal,

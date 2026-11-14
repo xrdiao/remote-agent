@@ -10,6 +10,10 @@
     return [...doc.querySelectorAll('.tab.active')].some(tab => onScreen(tab) && /settings/i.test(tab.getAttribute('aria-label') || tab.innerText || ''));
   };
   const clickSettingsButton = () => {
+    if (IS_WIN && devinSurface()) {
+      const api = codexFiberProps(document.querySelector('#chat'), Infinity).find(props => props.vscodeAPI?.executeCommand)?.vscodeAPI;
+      return api ? api.executeCommand('workbench.action.openWindsurfSettings').then(() => true) : false;
+    }
     const b = [...doc.querySelectorAll('button, a, [role=button]')].find(e => onScreen(e) && /^(Settings|Open Cursor Settings|Devin Settings)$/.test(e.getAttribute('aria-label') || ''));
     if (!b) return false;
     b.scrollIntoView({ block: 'nearest', inline: 'nearest' });
@@ -82,7 +86,7 @@
   };
   const desktopSettingsData = (section = '', app = '') => {
     const cursor = app === 'devin' ? null : settingsPanel();
-    const root = cursor || [...doc.querySelectorAll('.editor-instance')].find(e => vis(e) && [...e.querySelectorAll('button')].some(b => nativeLabel(b.textContent.trim(), 'Plan information')));
+    const root = cursor || devinSettingsRoot();
     if (!root) return { sections: [], nav: [], current: '', choices: [] };
     const mark = el => { el.dataset.remoteSetting ||= crypto.randomUUID(); return el.dataset.remoteSetting; };
     const nav = cursor ? [...root.querySelectorAll('.cursor-settings-sidebar-nav-cell')].map(e => e.textContent.trim()).filter(name => name !== 'VS Code Settings') : devinSettingsNav();
@@ -117,7 +121,13 @@
     return { sections, nav, current, choices };
   };
   const desktopSettingsNav = (section, app = '') => {
-    const root = app === 'devin' ? [...doc.querySelectorAll('.editor-instance')].find(e => vis(e) && [...e.querySelectorAll('button')].some(b => nativeLabel(b.textContent.trim(), 'Plan information'))) : settingsPanel();
+    const root = app === 'devin' ? devinSettingsRoot() : settingsPanel();
+    if (IS_WIN && app === 'devin') {
+      const group = [...(root?.querySelectorAll('section') || [])].find(e => e.querySelector('h2')?.textContent.trim() === section);
+      if (!group) return false;
+      group.scrollIntoView({ block: 'start' });
+      return true;
+    }
     const button = root && [...root.querySelectorAll(app === 'devin' ? 'button' : '.cursor-settings-sidebar-nav-cell')].find(e => e.textContent.trim() === section);
     if (!button) return false;
     button.scrollIntoView({block:'nearest'}); button.click(); return true;
@@ -199,7 +209,12 @@
   };
 
   const DEVIN_SETTINGS_NAV = ['General', 'Plan information', 'Extensions', 'Agents', 'Configuration', 'Customizations', 'User interface', 'Devin Tab', 'Shortcuts', 'Advanced'];
-  const devinSettingsNav = () => [...doc.querySelectorAll('button')].filter(e => onScreen(e) && DEVIN_SETTINGS_NAV.some(label => nativeLabel((e.innerText || '').trim(), label))).map(e => (e.innerText || '').trim());
+  const devinSettingsRoot = () => [...doc.querySelectorAll('.editor-instance')].find(e => vis(e) && (IS_WIN
+    ? e.querySelector('section[aria-label=general]')
+    : [...e.querySelectorAll('button')].some(b => nativeLabel(b.textContent.trim(), 'Plan information'))));
+  const devinSettingsNav = () => IS_WIN
+    ? [...(devinSettingsRoot()?.querySelectorAll('section > div > h2') || [])].map(e => e.textContent.trim())
+    : [...doc.querySelectorAll('button')].filter(e => onScreen(e) && DEVIN_SETTINGS_NAV.some(label => nativeLabel((e.innerText || '').trim(), label))).map(e => (e.innerText || '').trim());
   const devinSettingsClick = name => {
     const b = [...doc.querySelectorAll('button')].find(e => onScreen(e) && (e.innerText || '').trim() === name);
     if (!b) return false;
@@ -207,7 +222,7 @@
     return true;
   };
   const devinSettingsCards = () => {
-    const root = [...doc.querySelectorAll('.editor-instance')].find(e => onScreen(e) && [...e.querySelectorAll('button')].some(b => nativeLabel(b.textContent.trim(), 'Plan information')));
+    const root = IS_WIN ? devinSettingsRoot() : [...doc.querySelectorAll('.editor-instance')].find(e => onScreen(e) && [...e.querySelectorAll('button')].some(b => nativeLabel(b.textContent.trim(), 'Plan information')));
     if (!root) return [];
     const seen = new Set();
     const items = [];

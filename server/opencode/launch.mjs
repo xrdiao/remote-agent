@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { findBin, launchCommand } from '../../lib/platform.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
@@ -18,7 +19,8 @@ async function ready() {
 export async function detectOpenCode() {
   if (await ready()) return { app: 'opencode', name: 'OpenCode', status: 'reused' };
   try {
-    await run('opencode', ['--version'], { timeout: 5000, windowsHide: true });
+    const { command, args } = launchCommand(findBin('opencode'), ['--version']);
+    await run(command, args, { timeout: 5000, windowsHide: true });
     return { app: 'opencode', name: 'OpenCode', status: 'installed' };
   } catch (error) {
     return { app: 'opencode', name: 'OpenCode', status: error.code === 'ENOENT' ? 'missing' : 'failed', reason: error.message };
@@ -32,7 +34,8 @@ export async function launchOpenCode() {
   const output = fs.openSync(log, 'a', 0o600);
   let child;
   try {
-    child = spawn('opencode', ['serve', '--hostname', url.hostname, '--port', url.port || '80'], {
+    const { command, args } = launchCommand(findBin('opencode'), ['serve', '--hostname', url.hostname, '--port', url.port || '80']);
+    child = spawn(command, args, {
       cwd: os.homedir(), detached: true, windowsHide: true, stdio: ['ignore', output, output],
     });
   } finally { fs.closeSync(output); }

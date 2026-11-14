@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { localFilePath, pathKey } from '../../lib/platform.mjs';
 import { workspaces } from '../../lib/files.mjs';
 import { commitFusion, fusionProject, fusionEffect, newFusionAttempt, fusionAttemptWorkIds, NATIVE_UNSETTLED } from './state.mjs';
 import { FUSION_TIERS, validateExecution, validateCost, modelQuery, fusionModelView } from './cost.mjs';
@@ -269,14 +270,17 @@ function findTask(controller, id) {
   return task;
 }
 function currentPlan(work) { return work.plans.find(row => row.id === work.planId); }
-function within(root, file) {
-  const relative = path.posix.relative(path.posix.resolve('/', root), path.posix.resolve('/', file));
-  return relative !== '..' && !relative.startsWith('../') && !path.posix.isAbsolute(relative);
+function within(root, file, project) {
+  const paths = project.host ? path.posix : path;
+  const identity = value => project.host ? value : pathKey(localFilePath(value));
+  const base = identity(project.root);
+  const relative = paths.relative(paths.resolve(base, identity(root)), paths.resolve(base, identity(file)));
+  return relative !== '..' && !relative.startsWith('..' + paths.sep) && !paths.isAbsolute(relative);
 }
 function authorize(work, task) {
   const plan = currentPlan(work);
   if (!plan?.confirmed) throw new Error('方案尚未确认，不能派工');
-  for (const file of task.scope) if (!plan.scope.some(root => within(root, file)))
+  for (const file of task.scope) if (!plan.scope.some(root => within(root, file, work.project)))
     throw new Error(`任务范围未获授权：${file}。已登记的方案路径为 ${JSON.stringify(plan.scope)}；路径中不能附加说明，请主控核对 plan.scope。`);
   if (['stopping', 'stopped'].includes(work.status)) throw new Error('该工作项已停止派工');
 }
@@ -425,7 +429,7 @@ export function applyFusionControl(controller, action, native, { catalog } = {})
       }
       if (typeof action.requiresConfirmation !== 'boolean') throw new Error('方案需要明确是否要求用户确认');
       const old = currentPlan(work);
-      const required = action.requiresConfirmation || !!old?.requiresConfirmation && (!old.confirmed || action.scope.some(file => !old.scope.some(root => within(root, file))));
+      const required = action.requiresConfirmation || !!old?.requiresConfirmation && (!old.confirmed || action.scope.some(file => !old.scope.some(root => within(root, file, work.project))));
       const plan = { id: crypto.randomUUID(), summary: action.summary, scope: action.scope, criteria: action.criteria,
         requiresConfirmation: required, confirmed: !required, policyEvidence: action.policyEvidence || '', created: Date.now() };
       work.plans.push(plan); work.planId = plan.id; work.candidate = null;

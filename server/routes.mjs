@@ -19,6 +19,7 @@ import { writeTextFile } from '../lib/files.mjs';
 import { fileAction } from '../lib/file-actions.mjs';
 import os from 'node:os';
 import { terminalService } from './terminal-service.mjs';
+import { IS_WIN } from '../lib/platform.mjs';
 
 // One entry per message type the phone can send (auth/ack are handled inside ws.mjs itself).
 //   pre      — runs in handle() before the read-only/focus split, without a cdp
@@ -216,9 +217,9 @@ export const ROUTES = {
     fast: true,
     fastRun: (s, m) => launchAgents(s, m.apps, () => ROUTES.connAgents.pre(s).catch(() => {})),
   },
-  mode: { switchRead: true, connection: true, fast: (_s, m) => m.mode === 'terminal',
+  mode: { switchRead: !IS_WIN, connection: true, fast: (_s, m) => m.mode === 'terminal',
     fastRun: (s, m) => s.setMode(m.mode), pre: (s, m) => s.setMode(m.mode) },
-  visible: { switchRead: true, connection: true,
+  visible: { switchRead: !IS_WIN, connection: true,
     fast: s => s.mode === 'terminal', fastRun: (s, m) => ROUTES.visible.pre(s, m),
     pre: (s, m) => {
       s.notifyVisible = Boolean(m.watching);
@@ -462,10 +463,11 @@ export const ROUTES = {
     run: async (s, m) => {
       if (s.app === 'devin') return s.adapter.answerRequest.call(s, m);
       if (s.app !== 'codex') return;
+      const call = method => IS_WIN ? nativeWindow(s.cdp).composerCall(method) : s.cdp.evaluate(helpersCall(method));
       if (m.field != null) {
-        if (!await s.cdp.evaluate(helpersCall(`codexRequestField(${JSON.stringify(String(m.id))}, ${Number(m.field)}, ${JSON.stringify(String(m.value || ''))})`))) throw new Error('请求输入框已不存在');
+        if (!await call(`codexRequestField(${JSON.stringify(String(m.id))}, ${Number(m.field)}, ${JSON.stringify(String(m.value || ''))})`)) throw new Error('请求输入框已不存在');
       } else {
-        const acted = await s.cdp.evaluate(helpersCall(`codexRequestAction(${JSON.stringify(String(m.id))}, ${Number(m.n)}, ${JSON.stringify(m.fields || [])}, ${m.advance === true})`));
+        const acted = await call(`codexRequestAction(${JSON.stringify(String(m.id))}, ${Number(m.n)}, ${JSON.stringify(m.fields || [])}, ${m.advance === true})`);
         if (!acted) {
           const pos = await s.cdp.evaluate(helpersCall(`codexRequestTarget(${JSON.stringify(String(m.id))}, ${Number(m.n)})`));
           if (!pos) throw new Error('请求已经处理或不存在');

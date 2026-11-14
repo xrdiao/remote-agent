@@ -48,8 +48,9 @@ function stopWorker(runtime, reason = 'engine switched', engineId = '') {
   return runtime.stopping;
 }
 export async function loadWorker(engineId = voiceStatus().engineId, client, deviceId) {
+  if (engineId === 'qwen' && process.platform !== 'linux') throw new Error('Qwen vLLM 语音目前仅支持 Linux / NVIDIA GPU；Windows 请使用 Sherpa');
   const config = voiceEngines().find(engine => engine.id === engineId);
-  if (!config) return Promise.reject(new Error('所选语音引擎未安装，请在电脑运行 npm run voice:setup（Qwen 加 -- --engine qwen）并同意安装'));
+  if (!config) return Promise.reject(new Error('所选语音引擎未安装，请在电脑运行 npm run voice:setup 并同意安装'));
   let runtime = runtimes.get(engineId);
   if (!runtime) { runtime = { worker: null, loading: null, activating: null, sessions: new Map(), clients: new Map(), lastDevice: '', state: 'preparing', idleTimer: null }; runtimes.set(engineId, runtime); }
   if (client) { runtime.clients.set(client, deviceId); clearTimeout(runtime.idleTimer); runtime.idleTimer = null; }
@@ -113,7 +114,7 @@ function spawnRuntime(engineId, runtime, config) {
     controller.signal.throwIfAborted();
     return new Promise((resolve, reject) => {
       const child = spawn(config.python, [...(engineId === 'qwen' ? ['-I'] : []), '-u', fileURLToPath(new URL(config.script, import.meta.url)), config.model], {
-        stdio: ['pipe', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
         ...(env ? { env } : {}),
       });
       runtime.worker = child;
@@ -176,7 +177,8 @@ function scheduleIdleRelease(engineId, runtime) {
       const started = Date.now();
       await waitWorkerExit(stopWorker(runtime, 'idle release', engineId));
       if (runtime.clients.size) return;
-      const config = voiceEngines().find(engine => engine.id === engineId);
+      if (engineId === 'qwen' && process.platform !== 'linux') throw new Error('Qwen vLLM 语音目前仅支持 Linux / NVIDIA GPU；Windows 请使用 Sherpa');
+  const config = voiceEngines().find(engine => engine.id === engineId);
       if (!config) return;
       spawnRuntime(engineId, runtime, config);
       try { await runtime.loading; } catch { return; }

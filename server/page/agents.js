@@ -63,7 +63,7 @@
       const root = window.vscode?.context?.configuration?.()?.workspace?.uri?.path;
       const open = new Set(devinTabs().map(t => t.id));
       open.add(activeThread());
-      states = states.filter(s => open.has(s.thread) || nativeSessions.some(record => record.sessionId === s.thread && record.cwd === root));
+      states = states.filter(s => open.has(s.thread) || nativeSessions.some(record => record.sessionId === s.thread && samePath(record.cwd, root)));
     }
     const configuration = window.vscode?.context?.configuration?.();
     return { ready: !!configuration?.workspace || hasComposer(),
@@ -229,12 +229,12 @@
   };
   const cursorSelectProject = (root, host = '', newWorkspace = false) => {
     if (newWorkspace) return cursorSessionServices().nativeHost.openWindow([
-      { workspaceUri: { $mid: 1, scheme: 'file', authority: '', path: root, query: '', fragment: '' } },
+      { workspaceUri: { $mid: 1, ...localFileUri(root), query: '', fragment: '' } },
     ], { forceNewWindow: true, cursorForceNewWindow: true });
     const picker = cursorProjectPicker();
     const row = picker?.recentProjects?.find(p => {
       const uri = p.workspaceIdentifier?.uri;
-      return (uri?.fsPath || uri?.path) === root && (uri.scheme === 'file' ? '' : uri.authority.replace(/^ssh-remote\+/, '')) === host;
+      return samePath(uri?.scheme === 'file' ? uriFilePath(uri) : uri?.path, root, !host) && (uri.scheme === 'file' ? '' : uri.authority.replace(/^ssh-remote\+/, '')) === host;
     });
     if (!row) return false;
     picker.onSelectTarget({ type: 'workspace', id: row.workspaceIdentifier, displayName: row.name, repoUrls: row.repoUrls });
@@ -244,7 +244,7 @@
     const el = [...doc.querySelectorAll('[data-glass-agent-id]')].find(e => !id || e.getAttribute('data-glass-agent-id') === id);
     const props = el && codexFiberProps(el, 24).find(p => p.agentWorkspace);
     const uri = props?.agentWorkspace.workspaceIdentifier?.uri || (!id && cursorProjectPicker()?.selectedTarget?.id?.uri);
-    return uri ? { root: uri.fsPath || uri.path, host: uri.scheme === 'file' ? '' : uri.authority.replace(/^ssh-remote\+/, '') } : null;
+    return uri ? { root: uri.scheme === 'file' ? uriFilePath(uri) : uri.path, host: uri.scheme === 'file' ? '' : uri.authority.replace(/^ssh-remote\+/, '') } : null;
   };
   const agentList = () => {
     const composers = cursorSessionServices()?.data.allComposersData.allComposers || [];
@@ -259,7 +259,7 @@
       const repository = codexFiberProps(row).find(p => p.data?.kind === 'sidebar-agent')?.data?.dropSectionId?.replace(/^repo:/, '') || '';
       const projects = recentProjects.filter(p => p.repoUrls?.includes(repository));
       const uri = projects.length === 1 ? projects[0].workspaceIdentifier?.uri : null;
-      const workspace = cursorWorkspace(id) || (uri && { root: uri.fsPath || uri.path, host: uri.scheme === 'file' ? '' : uri.authority.replace(/^ssh-remote\+/, '') });
+      const workspace = cursorWorkspace(id) || (uri && { root: uri.scheme === 'file' ? uriFilePath(uri) : uri.path, host: uri.scheme === 'file' ? '' : uri.authority.replace(/^ssh-remote\+/, '') });
       const group = row.closest('[data-sidebar-group]')?.querySelector('[data-sidebar-group-label]')?.textContent.trim() || '';
       return {
         id,
@@ -331,6 +331,7 @@
     return [...lis, ...welcome.filter(a => !seen.has(a.id))];
   };
   const agentStartupState = (app, inputReady = false) => {
+    if (IS_WIN && app === 'cursor' && !cursorSessionServices()) return null;
     if (app === 'codex') {
       const client = codexQueryClient();
       const recent = client?.getQueryData(['recent-conversations-meta', 'updated_at', '[]', 'live']);
@@ -438,7 +439,7 @@
       const questions = codexAsyncQuestionState(thread, manager.hostId).questions;
       return { waiting: requests.length || questions.length ? JSON.stringify([thread, ...requests.map(request => [request.method, request.params.turnId, request.id]), ...questions.map(state => state.question.id)]) : null,
         waitingText: [...requests.map(request => (request.params.questions || []).map(question => question.question).join('\n') || request.params.command || request.params.reason || ''), ...questions.map(state => state.question.title)].join('\n'),
-        workspace: conversation.cwd || '', nativeOwner: manager.getStreamRole(thread)?.role === 'owner' };
+        workspace: manager.hostId === 'local' ? localFilePath(conversation.cwd || '') : conversation.cwd || '', nativeOwner: manager.getStreamRole(thread)?.role === 'owner' };
     }
     if (app === 'cursor') {
       const data = cursorSessionServices()?.data.getComposerDataIfLoaded(thread);
@@ -451,14 +452,14 @@
           const tool = capability.getBubbleDataByToolCallId(decision.toolCallId);
           return tool?.params?.questions?.map(question => question.prompt).join('\n') || tool?.params?.command || tool?.name || '';
         }).join('\n'), nativeOwner: !!data.conversationActionManager && !data.conversationActionManager.signal.aborted,
-        ...(uri ? { workspace: uri.fsPath || uri.path } : {}) };
+        ...(uri ? { workspace: uri.scheme === 'file' ? uriFilePath(uri) : uri.path } : {}) };
     }
     const session = devinSessionRecord(thread);
     if (!session) return null;
     const requests = Object.values(devinClientRequests(thread)).filter(request => request.status === 'pending'
       && request.request.params?.sessionId === thread);
     return { waiting: requests.length ? JSON.stringify([thread, ...requests.map(request => request.request.id)]) : null,
-      waitingText: requests.map(request => request.request.params?.toolCall?.title || '').join('\n'), workspace: session.cwd || '' };
+      waitingText: requests.map(request => request.request.params?.toolCall?.title || '').join('\n'), workspace: localFilePath(session.cwd || '') };
   };
   const agentStates = (app = '') => {
     const state = agentState();
@@ -470,7 +471,7 @@
       const session = app === 'devin' ? devinSessionRecord(row.thread) : null;
       if (app === 'codex' && !managers.has(host)) managers.set(host, codexConversationManager(null, scopes, host));
       const run = agentRun(app, row.thread, scopes, managers.get(host));
-      return { ...row, ...(session?.cwd ? { workspace: session.cwd } : {}), ...(run ? { run, busy: run.status === 'running' || !!row.busy,
+      return { ...row, ...(session?.cwd ? { workspace: localFilePath(session.cwd) } : {}), ...(run ? { run, busy: run.status === 'running' || !!row.busy,
         ...(run.status !== 'unknown' ? { runId: app + ':' + run.id, runAt: run.startedAt } : {}) } : {}) };
     };
     let generation = null;

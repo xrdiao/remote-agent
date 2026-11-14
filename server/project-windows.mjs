@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from '../lib/auth.mjs';
-import { normPath } from '../lib/platform.mjs';
+import { IS_WIN, localFilePath, samePath, pathKey } from '../lib/platform.mjs';
+import { parseAgentRef } from '../lib/shared-rules.mjs';
 import { x11ActiveWindow } from '../lib/x11.mjs';
 import { readLibrary, sessionId, syncLibrarySessions } from '../lib/session-library.mjs';
 import { EDITORS, CODEX_CDP_URL } from './config.mjs';
@@ -14,6 +15,9 @@ import { windowLeased, leaseWindow } from './window-use.mjs';
 
 const file = path.join(DATA_DIR, 'project-windows.json');
 const saved = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { idleMinutes: 30, enabled: true, windows: {}, sessions: {} };
+for (const row of Object.values(saved.windows)) if (!row.host) row.root = localFilePath(row.root);
+for (const row of Object.values(saved.sessions)) if (!row.host) row.workspace = localFilePath(row.workspace);
+const unsupportedReason = 'Windows 暂不支持自动回收项目窗口';
 const key = (app, id) => app + ':' + String(id).replace(/^(cursor|devin|codex):/, '');
 let scanning = false;
 let activityWriteTimer;
@@ -41,7 +45,7 @@ export function ownedProjectWindow(app, id) {
 
 export function trackProjectWindow(app, page, root, created = false) {
   const k = key(app, page.id), old = saved.windows[k];
-  saved.windows[k] = { ...old, app, id: page.id, root, title: page.title, owned: created || !!old?.owned, lastUsed: Date.now(), closed: false };
+  saved.windows[k] = { ...old, app, id: page.id, root: localFilePath(root), title: page.title, owned: created || !!old?.owned, lastUsed: Date.now(), closed: false };
   persist();
 }
 export function fusionTargets() {
@@ -59,7 +63,7 @@ export function clearLegacyFusionWindows() {
   persist();
 }
 export function rememberFusionSession(app, id, project, windowId) {
-  saved.sessions[app + ':' + sessionId(app, id)] = { id, workspace: project.root, host: project.host || '', ownerWindow: windowId };
+  saved.sessions[app + ':' + sessionId(app, id)] = { id, workspace: project.host ? project.root : localFilePath(project.root), host: project.host || '', ownerWindow: windowId };
   persist();
 }
 export function touchProjectWindow(app, id) {
@@ -106,8 +110,8 @@ export function reconcileSessionCatalog(app, catalog) {
     const id = sessionId(app, row.id), k = app + ':' + id;
     if (!readLibrary()[app]?.[id]?.favorite || !row.workspace || row.host) continue;
     const previous = saved.sessions[k];
-    if (previous?.workspace === row.workspace && !previous.host) continue;
-    saved.sessions[k] = { ...previous, id: previous?.id || row.id, workspace: row.workspace, host: '' };
+    if (previous && samePath(previous.workspace, row.workspace) && !previous.host) continue;
+    saved.sessions[k] = { ...previous, id: previous?.id || row.id, workspace: localFilePath(row.workspace), host: '' };
     changed = true;
   }
   for (const [id, state] of states) if (state === 'deleted' && readLibrary()[app]?.[id]?.deleted && saved.sessions[app + ':' + id]) {
@@ -126,10 +130,10 @@ export function catalogSessions(app, rows, currentWindow) {
   for (const row of rows) {
     if (row.ui || row.dormant) continue;
     const id = sessionId(app, row.id);
-    const win = row.id.startsWith('project:') ? decodeURIComponent(row.id.split(':')[1]) : row.id.startsWith('thread:') ? row.id.split(':')[1] : currentWindow;
+    const win = /^(?:project|thread):/.test(row.id) ? parseAgentRef(row.id).windowId : currentWindow;
     const root = row.workspace || saved.windows[key(app, win)]?.root;
     if (!id || !root || row.host) continue;
-    const value = { ...row, workspace: root, ownerWindow: win, id: row.id };
+    const value = { ...row, workspace: localFilePath(root), ownerWindow: win, id: row.id };
     if (JSON.stringify(saved.sessions[app + ':' + id]) !== JSON.stringify(value)) { saved.sessions[app + ':' + id] = value; changed = true; }
   }
   if (changed) persist();
@@ -178,7 +182,7 @@ function held(row) {
   if (row.keep) return '已设置保留';
   if (Object.entries(readLibrary()[row.app] || {}).some(([id, state]) => {
     const session = saved.sessions[row.app + ':' + id];
-    return state.favorite && !state.deleted && session && !session.host && normPath(session.workspace) === normPath(row.root);
+    return state.favorite && !state.deleted && session && !session.host && samePath(session.workspace, row.root);
   })) return '项目包含收藏会话';
   if (windowLeased(row.app, row.id) || windowLeased(row.app, row.app + ':' + row.id)) return '正在执行窗口操作';
   const same = id => key(row.app, id) === key(row.app, row.id);
@@ -208,7 +212,7 @@ export async function probeProjectWindow(row, page, scan = null) {
       agent = await chat.evaluate(probe);
     }
     if (!agent?.agentKnown || agent.agentBusy) return { reason: 'Agent 正在运行或状态无法确认' };
-    const processKey = row.root;
+    const processKey = pathKey(row.root);
     if (scan && !scan.processes.has(processKey)) scan.processes.set(processKey, projectProcesses(row.root));
     const processes = await (scan ? scan.processes.get(processKey) : projectProcesses(row.root));
     if (!processes || processes.length) return { reason: processes ? '项目进程或后台命令仍在运行' : '无法确认后台进程状态' };
@@ -251,12 +255,13 @@ export async function scanProjectWindows(closeIdle = true) {
         }
         const row = saved.windows[k];
         row.closed = false;
+        if (IS_WIN) { row.reason = unsupportedReason; continue; }
         if (!row.owned || !closeIdle || !saved.enabled) continue;
         const editor = new Cdp(page.webSocketDebuggerUrl);
         try {
           await editor.connect();
           const roots = await editorRoots(editor, row.app);
-          if (roots.length !== 1 || roots[0].host || normPath(roots[0].root) !== normPath(row.root)) {
+          if (roots.length !== 1 || roots[0].host || !samePath(roots[0].root, row.root)) {
             row.owned = false; row.reason = '项目已在电脑端变化，请重新纳入管理'; continue;
           }
         } finally { editor.close(); }
@@ -294,6 +299,7 @@ export async function scanProjectWindows(closeIdle = true) {
   } finally { scanning = false; }
 }
 export function projectWindowSettings(change) {
+  if (IS_WIN && change) throw new Error(unsupportedReason);
   if (change) {
     if (typeof change.enabled === 'boolean') saved.enabled = change.enabled;
     if (Number.isFinite(change.idleMinutes) && change.idleMinutes >= 1) saved.idleMinutes = change.idleMinutes;
@@ -307,7 +313,7 @@ export function projectWindowSettings(change) {
     }
     persist();
   }
-  return { enabled: saved.enabled, idleMinutes: saved.idleMinutes, windows: Object.entries(saved.windows).filter(([, row]) => !row.closed).map(([id, row]) => ({ ...row, key: id })) };
+  return { supported: !IS_WIN, reason: IS_WIN ? unsupportedReason : '', enabled: !IS_WIN && saved.enabled, idleMinutes: saved.idleMinutes, windows: Object.entries(saved.windows).filter(([, row]) => !row.closed).map(([id, row]) => ({ ...row, key: id })) };
 }
 export function startProjectWindowCleanup() {
   const timer = setInterval(() => scanProjectWindows().catch(error => console.log('[window cleanup]', error.message)), 60000);

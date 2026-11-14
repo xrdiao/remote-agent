@@ -21,6 +21,7 @@ import { uploads, removeUpload, registerUpload, updateUpload } from '../../lib/u
 import { overviewSnapshot, overviewPreview } from '../overview.mjs';
 import { manageOverviewSession } from '../overview-actions.mjs';
 import { uploadDocument, imageTypes } from '../../lib/shared-rules.mjs';
+import { IS_WIN, validLocalName, localFilePath } from '../../lib/platform.mjs';
 
 // A device is usable once paired and, when 2FA asks for it, re-verified.
 function deviceFor(req) {
@@ -220,12 +221,14 @@ export async function handleApi(req, res, route) {
   }
   if (route === '/api/upload' && req.method === 'POST') {
     const query = new URL(req.url, 'http://localhost').searchParams;
-    const name = path.basename(query.get('name') || '');
+    const rawName = query.get('name') || '';
+    const name = IS_WIN ? rawName : path.basename(rawName);
+    if (IS_WIN && !validLocalName(name)) return json(req, res, 400, { error: '文件名无效，请检查非法字符或 Windows 保留名称' });
     const image = query.get('image'), type = query.get('type');
     if (image ? !Object.values(imageTypes).includes(type) : !uploadDocument(name)) return json(req, res, 400, { error: image ? '只支持 PNG / JPEG / GIF / WebP 图片' : '目前支持文档、表格、文本和代码文件' });
     const id = crypto.randomUUID();
     const dir = path.join(DATA_DIR, 'uploads', id);
-    const filePath = path.join(dir, name);
+    const filePath = localFilePath(path.join(dir, name));
     const file = { name, path: filePath, sel: query.get('sel') || '', deviceId: device.id, pending: !image, request: req, complete: false };
     if (image) Object.assign(file, { image: true, clientImageId: image, type });
     try {

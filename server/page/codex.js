@@ -350,7 +350,8 @@
     }
     return null;
   };
-  const codexNativeManager = () => codexConversationManager(remoteContext.threadId, codexHistoryScopes(), remoteContext.host || 'local');
+  const codexRequestThread = () => remoteContext?.threadId || codexThread();
+  const codexNativeManager = () => codexConversationManager(codexRequestThread(), codexHistoryScopes(), remoteContext ? remoteContext.host || 'local' : null);
   const codexAsyncQuestionState = (thread, host = 'local', scopes = codexHistoryScopes()) => {
     const sources = new Map();
     let group;
@@ -359,31 +360,56 @@
       if (value instanceof doc.defaultView.Map) sources.set(source.key, source);
       if (value?.get?.(thread)?.selectedQuestionKey) { group = value.get(thread); sources.set(source.key, source); }
     }
-    if (!group) return { sources, questions: [] };
-    const questions = [];
-    for (const itemId of group.questionIds) {
-      const key = JSON.stringify({ entityKey: group.selectedQuestionKey.entityKey, hostId: host, itemId, threadId: thread });
-      for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
-        const source = codexHistoryBinding(scope, bindings.get(key)), value = source?.get();
-        if (!value?.question || value.question.id !== itemId) continue;
+    const questions = new Map();
+    for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
+      for (const [encoded, binding] of bindings) {
+        if (typeof encoded !== 'string' || !encoded.startsWith('{"entityKey":')) continue;
+        const key = JSON.parse(encoded);
+        if (key.threadId !== thread || key.hostId !== host) continue;
+        const source = codexHistoryBinding(scope, binding), value = source?.get();
+        if (!value?.question || value.question.id !== key.itemId) continue;
         sources.set(source.key, source);
         if (!value.isSkipped && (value.lastSubmission == null || value.draft.trim() !== value.lastSubmission))
-          questions.push({ ...value, selected: itemId === group.selectedQuestionKey.itemId });
+          questions.set(key.itemId, { ...value, key, selected: key.itemId === group?.selectedQuestionKey.itemId });
       }
     }
-    return { sources, questions };
+    return { sources, questions: [...questions.values()] };
   };
-  const codexAsyncQuestionRows = () => codexAsyncQuestionState(remoteContext.threadId, remoteContext.host || 'local').questions
-    .filter(state => state.selected).map(state => ({ id: 'async:' + state.question.id, text: state.question.title,
+  const codexAsyncQuestionRows = () => {
+    const manager = codexNativeManager();
+    if (!manager) return [];
+    const { questions } = codexAsyncQuestionState(codexRequestThread(), manager.hostId);
+    const selected = questions.find(state => state.selected) || questions[0];
+    return (selected ? [selected] : []).map(state => ({ id: 'async:' + state.question.id, text: state.question.title,
       buttons: [...state.question.options.map(option => ({ label: typeof option === 'string' ? option : option.label, disabled: state.isSubmitting })),
         { label: 'Skip', disabled: state.isSubmitting }, { label: 'Send', disabled: state.isSubmitting || !state.draft?.trim() }],
       fields: [{ label: '回答', value: state.draft || '', type: 'text', options: null }] }));
+  };
+  const codexOpenQuestion = async id => {
+    const thread = codexRequestThread(), manager = codexNativeManager();
+    const question = codexAsyncQuestionState(thread, manager.hostId).questions.find(state => 'async:' + state.question.id === id);
+    if (!question) throw new Error('这条问题已不在所选会话的待回答列表中');
+    const [native, { scope }] = await Promise.all([codexNativeModule('questions'), codexComposerScope(thread)]);
+    if (thread !== codexRequestThread()) throw new Error('会话已切换，请重新打开问题');
+    scope.set(native.groups, manager.hostId, current => {
+      const groups = new doc.defaultView.Map(current);
+      groups.set(thread, nativeValue({ selectedQuestionKey: question.key, questionIds: [question.key.itemId] }));
+      return groups;
+    });
+    const started = Date.now();
+    do {
+      if (thread !== codexRequestThread()) throw new Error('会话已切换，请重新打开问题');
+      if (codexRequests().find(row => row.id === id)?.buttons.some(button => button.action)) return;
+      await new Promise(resolve => setTimeout(resolve, 16));
+    } while (Date.now() - started < 1200);
+    throw new Error('问题控件尚未就绪，请重试');
+  };
   const codexNativeRequests = () => {
-    const conversation = codexNativeManager()?.getConversation(remoteContext.threadId);
-    return (conversation?.requests || []).filter(request => request.params?.threadId === remoteContext.threadId);
+    const thread = codexRequestThread(), conversation = codexNativeManager()?.getConversation(thread);
+    return (conversation?.requests || []).filter(request => request.params?.threadId === thread);
   };
   const codexNativeRequestId = request => (request.method === 'item/tool/requestUserInput' ? 'async:' : 'approval:')
-    + JSON.stringify([remoteContext.threadId, request.params.turnId, request.id]);
+    + JSON.stringify([codexRequestThread(), request.params.turnId, request.id]);
   const codexNativeRequestRows = () => codexNativeRequests().filter(request => request.method !== 'item/tool/call').map(request => {
     const p = request.params, id = codexNativeRequestId(request);
     if (request.method === 'item/tool/requestUserInput') {
@@ -402,7 +428,7 @@
   const codexNativeRequestAction = async (id, n, fields) => {
     const request = codexNativeRequests().find(request => codexNativeRequestId(request) === id);
     if (!request) throw new Error('这条请求已不在所选会话的待处理列表中');
-    const manager = codexNativeManager(), thread = remoteContext.threadId, p = request.params;
+    const manager = codexNativeManager(), thread = codexRequestThread(), p = request.params;
     if (request.method === 'item/tool/requestUserInput') {
       const options = p.questions.length === 1 ? p.questions[0].options || [] : [], skip = n === options.length;
       const answers = Object.fromEntries(p.questions.map((question, index) => {
@@ -450,6 +476,10 @@
   const codexRequests = () => {
     if (remoteContext?.app === 'codex') return [...codexNativeRequestRows(), ...codexAsyncQuestionRows(), ...codexQueueConfirmRequests()];
     if (!activeThread()) return [];
+    if (IS_WIN) {
+      const native = codexNativeRequestRows();
+      if (native.length) return [...native, ...codexQueueConfirmRequests()];
+    }
     const rows = new Map(codexQueueConfirmRequests().map(row => [row.id, row]));
     const asyncSkips = new Set();
     const query = selector => [...new Set([doc, document])].flatMap(d => [...d.querySelectorAll(selector)]);
@@ -565,6 +595,7 @@
       if (!options.length && text === 'Codex 请求') continue;
       if (!rows.has(id)) rows.set(id, { id, text: text || buttons.filter(b => b.el.matches('[role="radio"]')).map(b => b.label).join(' / ') || 'Codex 请求', buttons, fields: fieldRows });
     }
+    if (IS_WIN) for (const row of codexAsyncQuestionRows()) if (!rows.has(row.id)) rows.set(row.id, row);
     return [...rows.values()].filter(row => row.id.startsWith('async:') || row.id.startsWith('approval:') || row.text.trim() !== 'Codex 请求');
   };
   const codexRequestData = () => {
@@ -580,6 +611,10 @@
       return true;
     }
     if (remoteContext?.app === 'codex') return codexNativeRequestAction(id, n, fields);
+    if (IS_WIN) {
+      if (codexNativeRequests().some(request => codexNativeRequestId(request) === id)) return codexNativeRequestAction(id, n, fields);
+      if (id.startsWith('async:') && !codexRequests().find(row => row.id === id)?.buttons.some(button => button.action)) await codexOpenQuestion(id);
+    }
     for (const field of fields) {
       if (!codexRequestField(id, field.n, field.value)) throw new Error('请求输入框已不存在');
     }
@@ -617,6 +652,9 @@
   };
   const codexRequestField = (id, n, value) => {
     const field = codexRequests().find(r => r.id === id)?.fields[n];
+    if (IS_WIN && !remoteContext && id.startsWith('async:') && field && !field.el && !field.onChange
+        && !codexNativeRequests().some(request => codexNativeRequestId(request) === id))
+      return codexOpenQuestion(id).then(() => codexRequestField(id, n, value));
     if (field?.onChange) { field.onChange(value); return true; }
     const el = field?.el;
     if (!el) return false;

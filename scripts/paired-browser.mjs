@@ -41,7 +41,7 @@ async function checkIdentity(config) {
 async function launch(executable, args, env, name) {
   fs.mkdirSync(LOGS, { recursive: true });
   const log = fs.openSync(path.join(LOGS, name + '.log'), 'a');
-  const child = spawn(executable, args, { cwd: ROOT, env: { ...process.env, ...env }, detached: true, stdio: ['ignore', log, log] });
+  const child = spawn(executable, args, { cwd: ROOT, env: { ...process.env, ...env }, detached: true, windowsHide: true, stdio: ['ignore', log, log] });
   fs.closeSync(log);
   return new Promise((resolve, reject) => {
     child.once('error', reject);

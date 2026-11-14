@@ -6,6 +6,7 @@ import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
 import vm from 'node:vm';
 import pty from 'node-pty';
+import { IS_WIN, findBin, localFilePath } from '../lib/platform.mjs';
 import headless from '@xterm/headless';
 import { TerminalService, terminalService } from '../server/terminal-service.mjs';
 import { ROUTES } from '../server/routes.mjs';
@@ -27,11 +28,11 @@ class FakePty extends EventEmitter {
   onExit(callback) { this.on('exit', callback); }
   write(data) { this.writes.push(data); }
   resize(cols, rows) { this.sizes.push([cols, rows]); }
-  kill() { this.killed = true; }
+  kill() { this.killed = true; this.emit('exit', { exitCode: 0, signal: 0 }); }
 }
 function fixture({ ready = true, spawned } = {}) {
   const children = [];
-  const service = new TerminalService({ shell: '/bin/bash', env: { LANG: 'C.UTF-8' }, spawn: (shell, args, options) => {
+  const service = new TerminalService({ shell: IS_WIN ? findBin('bash') : '/bin/bash', env: { LANG: 'C.UTF-8' }, spawn: (shell, args, options) => {
     const child = new FakePty();
     children.push({ child, shell, args, options });
     spawned?.(child);
@@ -75,8 +76,9 @@ test('RA terminals preserve explicit project directories and sizes independently
   assert.notEqual(a.id, b.id);
   assert.equal(children[0].options.cwd, a.cwd);
   assert.equal(children[0].options.cols, 120); assert.equal(children[0].options.rows, 50);
+  if (IS_WIN) assert.equal(children[0].options.useConpty, true);
   assert.equal(children[1].options.cwd, b.cwd);
-  assert.deepEqual(children[0].args, ['--rcfile', path.resolve('server/terminal-shell.bash'), '-i']);
+  assert.deepEqual(children[0].args, ['--rcfile', localFilePath(path.resolve('server/terminal-shell.bash')), '-i']);
   const stop = await service.subscribe(a.id, () => {}); stop();
   assert.equal(children[0].child.killed, false);
   assert.equal(service.list().length, 2);
@@ -218,6 +220,29 @@ test('terminal subscriptions detach independently of native binding and shell li
   session.stopTerminalUpdates();
 });
 
+test('Windows reconnection restores connection mode and presence before opening a surviving terminal', async t => {
+  const source = (await fs.readFile(new URL('../server/routes.mjs', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
+  const start = source.indexOf('  mode: {'), end = source.indexOf('  lang:', start);
+  const sameWindow = (session, message) => !message.sel || message.sel.split('|', 2).join('|') === session.selectionKey().split('|', 2).join('|');
+  for (const windows of [false, true]) {
+    const routes = vm.runInNewContext('({' + source.slice(start, end) + '})', { IS_WIN: windows });
+    const meta = await terminalService.create({ cwd: directory });t.after(() => terminalService.close(meta.id));
+    const events = [], session = { mode: 'chat', visible: false, selectionKey: () => 'cursor|fresh|', emit: message => events.push(message),
+      stopTerminalUpdates: Session.prototype.stopTerminalUpdates, selectTerminal: Session.prototype.selectTerminal,
+      setMode: async function(mode) { this.mode = mode; } };
+    const requests = [{ t: 'mode', mode: 'terminal', sel: 'codex|old|A' }, { t: 'visible', v: true, sel: 'codex|old|A' }];
+    for (const message of requests) {
+      const route = routes[message.t];
+      if (route.switchRead && !sameWindow(session, message)) continue;
+      if (message.t === 'mode') await route.fastRun(session, message);else route.pre(session, message);
+    }
+    await session.selectTerminal(meta.id, 'restored');
+    assert.equal(events.some(message => message.t === 'termSnapshot' && message.subscription === 'restored'), windows);
+    assert.equal(routes.mode.switchRead, !windows);assert.equal(routes.visible.switchRead, !windows);
+    session.stopTerminalUpdates();
+  }
+});
+
 test('terminal creation and close reuse computer-owned operation receipts, never raw input', () => {
   const session = { deviceId: crypto.randomUUID(), app: 'codex', mode: 'terminal', selectionKey: () => 'native|selection' };
   const packets = [], client = { readyState: 1, send: packet => packets.push(JSON.parse(packet)) };
@@ -249,16 +274,14 @@ test('PTY input does not enter native focus and stale subscriptions reject befor
   assert.throws(() => ROUTES.key.run(session, { focus: 'terminal', key: 'Enter' }), /更新手机页面/);
 });
 
-test('Codex project creation rejects a desktop thread that moved before the project read', async () => {
-  let selected = 'conversation-A', reads = 0;
-  const nativeHelpers = { codexThread: () => selected, codexCurrentProject: () => { reads++; return { root: '/project/A', host: '' }; } };
+test('Codex terminal creation uses the bound conversation project when the desktop displays another thread', async () => {
+  const reads = [];
+  const nativeHelpers = { nativeSessionInfo: (app, id, kind) => { reads.push([app, id, kind]); return { cwd: '/project/A', host: '' }; } };
   const { PAGE_SRC } = await import('../server/page/build.mjs');
   const context = { threadId: 'conversation-A', cdp: { evaluate: expression => vm.runInNewContext(
     expression.replace(PAGE_SRC, 'nativeHelpers'), { nativeHelpers }) } };
   assert.equal((await codexAdapter.terminalProject.call(context)).root, '/project/A');
-  selected = 'conversation-B';
-  await assert.rejects(codexAdapter.terminalProject.call(context), /电脑端会话已切换/);
-  assert.equal(reads, 1);
+  assert.deepEqual(reads, [['codex', 'conversation-A', 'context']]);
 });
 
 const frontendSource = await fs.readFile(new URL('../app/js/terminal.js', import.meta.url), 'utf8');
@@ -322,6 +345,17 @@ test('explicit creation and selection supersede an older automatic list and crea
   h.receive({ t: 'termCreated', requestId: request.requestId, terminal: { id: 'terminal-C' } });
   assert.deepEqual(h.effects, []);
   assert.equal(h.context.currentTerminalId, 'terminal-B');
+});
+
+test('new conversation terminals use the selection at creation instead of an earlier origin snapshot', () => {
+  const h = frontendTerminal();
+  h.context.terminalOrigin = { computer: 'computer-A', source: 'conversation', sel: 'codex|window|old-thread' };
+  h.context.viewSel = 'codex|window|current-thread';
+  const start = frontendSource.indexOf('function createRaTerminal('), end = frontendSource.indexOf('function removeRaTerminal(', start);
+  vm.runInContext(frontendSource.slice(start, end), h.context);
+  h.context.createRaTerminal();
+  const packet = h.effects.find(effect => effect[0] === 'send')[1];
+  assert.equal(packet.source, 'conversation'); assert.equal(packet.sel, h.context.viewSel);
 });
 
 async function frontendTerminalTools() {
@@ -418,7 +452,7 @@ test('visual frame layout still fits its viewport and scales without terminal cr
   assert.equal(context.screen.style.left, '0px'); assert.equal(context.screen.style.top, '0px');
 });
 
-test('real Ubuntu PTY uses requested cwd and size and supports no-echo input', { timeout: 15000 }, async t => {
+test('real Ubuntu PTY uses requested cwd and size and supports no-echo input', { skip: IS_WIN, timeout: 15000 }, async t => {
   const service = new TerminalService({ shell: '/bin/bash', spawn: (shell, args, options) => pty.spawn(shell, ['--noprofile', ...args],
     { ...options, env: { ...options.env, PS1: 'RA> ', PROMPT_COMMAND: '' } }) });
   t.after(() => service.dispose());
@@ -451,7 +485,7 @@ test('real Ubuntu PTY uses requested cwd and size and supports no-echo input', {
   assert(restored[0].data.includes('__RA_LENGTH__18'));
 });
 
-test('textbox completion, multiline submit, history and foreground input use the same Bash PTY', { timeout: 15000 }, async t => {
+test('textbox completion, multiline submit, history and foreground input use the same Bash PTY', { skip: IS_WIN, timeout: 15000 }, async t => {
   await fs.writeFile(path.join(directory, '补全 fixture.txt'), '');
   await fs.writeFile(path.join(directory, 'completion-one'), '');
   await fs.writeFile(path.join(directory, 'completion-two'), '');

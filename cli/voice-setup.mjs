@@ -9,6 +9,7 @@ import { ASR_DIR, ASR_PYTHON, ASR_MODEL, QWEN_CONFIG } from '../server/voice/con
 const { values } = parseArgs({ options: { engine: { type: 'string', default: 'sherpa' }, dir: { type: 'string' } } });
 if (!['sherpa', 'qwen'].includes(values.engine)) throw new Error('--engine 只能是 sherpa 或 qwen');
 const qwen = values.engine === 'qwen';
+if (qwen && process.platform !== 'linux') throw new Error('Qwen vLLM 语音目前仅支持 Linux / NVIDIA GPU；Windows 请使用 Sherpa');
 const directory = path.resolve(values.dir || path.join(ASR_DIR, 'qwen'));
 const pythonPath = qwen ? path.join(directory, 'venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python') : ASR_PYTHON;
 const modelPath = qwen ? path.join(directory, 'model') : ASR_MODEL;
@@ -23,13 +24,12 @@ if (!/^y(es)?$/i.test(answer.trim())) process.exit(0);
 const run = (cmd, args) => new Promise((resolve, reject) => {
   const env = { ...process.env };
   if (qwen) { delete env.PYTHONPATH; delete env.PYTHONHOME; env.PYTHONNOUSERSITE = '1'; }
-  const child = spawn(cmd, args, { stdio: 'inherit', env });
+  const child = spawn(cmd, args, { stdio: 'inherit', env, windowsHide: true });
   child.on('error', reject);
   child.on('exit', code => code === 0 ? resolve() : reject(new Error(`${cmd} 退出：${code}`)));
 });
 try {
   const python = process.env.ASR_SETUP_PYTHON || (process.platform === 'win32' ? 'py' : 'python3');
-  if (qwen && process.platform !== 'linux') throw new Error('Qwen 官方 vLLM 安装入口目前需要 Linux；本平台请继续使用 CPU Sherpa');
   await run(python, [...(process.platform === 'win32' && !process.env.ASR_SETUP_PYTHON ? ['-3'] : []), '-m', 'venv', qwen ? path.join(directory, 'venv') : path.join(ASR_DIR, 'venv')]);
   await run(pythonPath, ['-m', 'pip', 'install', ...(qwen ? ['qwen-asr[vllm]==0.0.6'] : ['sherpa-onnx==1.13.8', 'numpy>=1.26,<3'])]);
   if (qwen) await run(pythonPath, ['-c', 'import torch; from qwen_asr import Qwen3ASRModel; assert torch.cuda.is_available(), "Qwen 流式识别需要可用的 NVIDIA GPU"']);

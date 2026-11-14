@@ -1,3 +1,5 @@
+import { IS_WIN, localFilePath } from '../lib/platform.mjs';
+import { parseAgentRef } from '../lib/shared-rules.mjs';
 import { Cdp, cdpRead } from './cdp.mjs';
 import { listWindows, codexWindows } from './windows.mjs';
 import { CODEX_CDP_URL } from './config.mjs';
@@ -18,7 +20,7 @@ import { leaseWindow, windowOperationLocked } from './window-use.mjs';
 import {visualCapture, visualWindows, isWayland} from './visual/capture.mjs';
 import { rememberSelection, lastSelection } from '../lib/auth.mjs';
 import { editorRoots } from '../lib/files.mjs';
-import { NativeCdp, nativeWindow, nativeWindowAt, nativeTargets, subscribeCatalog } from './native-windows.mjs';
+import { NativeCdp, nativeWindow, nativeWindowAt, nativeTargets, nativeSessionCatalog, subscribeCatalog, windowsCursorSource } from './native-windows.mjs';
 import { captureOperation } from './operations.mjs';
 import { terminalService } from './terminal-service.mjs';
 import { codexBackend, CODEX_BACKEND } from './codex/state.mjs';
@@ -119,7 +121,12 @@ export class Session extends AgentContext {
         this.chatUpdatesStop = source.subscribe(error => {
           if (!this.visible || this.mode !== 'chat' || this.cdp !== cdp) return;
           if (error) this.emit({ t: 'status', ok: false, msg: error.message });
-          else this.pollChat(true).catch(() => {});
+          else if (IS_WIN && this.app === 'cursor') {
+            const newer = this.bindingReady && !this.switchingThread && windowsCursorSource(this.threadId);
+            const read = newer && newer.cdp.wsUrl !== cdp.wsUrl
+              ? cdpRead.run(null, () => this.attach({ id: newer.win.id, windowId: newer.win.id, threadId: this.threadId })) : this.pollChat(true);
+            read.catch(error => this.emit({ t: 'status', ok: false, msg: error.message }));
+          } else this.pollChat(true).catch(() => {});
         });
         if (firstScreen) await this.pollChat(true, true);
         else await this.pollChat(true);
@@ -259,11 +266,24 @@ export class Session extends AgentContext {
 
   async attach(target, windows) {
     let req = target && typeof target === 'object' ? target : { id: target || '' };
-    const app = String(req.id || '').split(':')[0];
+    const app = String(req.id || '').replace(/:.*$/, '');
     if (req.restore) {
       const saved = lastSelection(this.deviceId, app);
       if (saved) req = { ...req, ...saved };
     }
+    if (IS_WIN && app === 'cursor' && req.threadId && !req.project && !req.projectSwitch && !this.fusionBinding) {
+      const row = nativeSessionCatalog('cursor')?.rows.find(row => row.id === req.threadId);
+      if (row?.workspace) req = { ...req, project: { root: row.workspace, host: row.host || '' } };
+    }
+    if (IS_WIN && app === 'cursor' && req.threadId && !req.projectSwitch && !this.fusionBinding) {
+      const source = windowsCursorSource(req.threadId);
+      if (source) {
+        const context = await source.cdp.evaluate(helpersCall(`nativeSessionInfo('cursor', ${JSON.stringify(req.threadId)}, 'context')`));
+        if (!req.project || this.projectMatches(context.roots, req.project.root, req.project.host))
+          req = { ...req, id: source.win.id, windowId: source.win.id, project: null };
+      }
+    }
+    if (req.project && !req.project.host) req = { ...req, project: { ...req.project, root: localFilePath(req.project.root) } };
     if (app === 'opencode') return AGENT_REGISTRY.opencode.adapter.attach.call(this, req);
     if (app === 'codex' && !this.fusionBinding && !req.nativeOwner && (req.windowId === CODEX_BACKEND || codexBackend.owns(req.threadId)
       || !req.projectSwitch && (req.threadId && AGENT_REGISTRY.codex.adapter.backendThread(req.threadId, req.project?.host)
@@ -390,7 +410,7 @@ export class Session extends AgentContext {
     this.selectionHome = false;
     this.windowId = selection.windowId;
     if (win.app === 'codex') this.codexPageId = selection.windowId;
-    this.codexOwnerRoot = selection.nativeOwner?.cwd || '';
+    this.codexOwnerRoot = localFilePath(selection.nativeOwner?.cwd || '');
     this.threadId = thread;
     this.selectedThread = thread;
     this.targetId = win.id;
@@ -505,7 +525,7 @@ export class Session extends AgentContext {
   navigationFailed(message, error) {
     this.catalogUpdatesStop?.();
     this.catalogUpdatesStop = null;
-    const app = message.t === 'attach' ? String(message.id || '').split(':')[0] || this.app : this.app;
+    const app = message.t === 'attach' ? String(message.id || '').replace(/:.*$/, '') || this.app : this.app;
     const failure = error.message;
     if (this.app !== app) this.detach();
     this.bindingReady = false;
@@ -524,7 +544,7 @@ export class Session extends AgentContext {
     this.threadId = this.selectedThread = '';
     this.app = app;
     if (!this.cdp) this.windowId = this.targetId = '';
-    this.emit({ t: 'attachFailed', home: true, ready: false, app, id: this.targetId || app,
+    this.emit({ t: 'attachFailed', home: true, ready: false, app, appName: this.appMessage('{app}'), id: this.targetId || app,
       windowId: this.windowId || '', threadId: '', sel: this.selectionKey(), connected: !!this.cdp,
       navigationId: message.navigationId, message: failure });
   }
@@ -624,7 +644,7 @@ export class Session extends AgentContext {
   async handle(msg) {
     const route = resolveRoute(this, msg.t);
     if (route?.native && this.app !== 'opencode') return this.dispatch(msg, route);
-    const target = msg.id?.startsWith('project:') ? decodeURIComponent(msg.id.split(':')[1]) : msg.id?.startsWith('thread:') ? msg.id.split(':')[1] : this.windowId;
+    const target = /^(?:project|thread):/.test(msg.id || '') ? parseAgentRef(msg.id).windowId : this.windowId;
     if (windowOperationLocked(this.app, target, this)) throw new Error('窗口正在批量处理会话，请稍后操作');
     const release = leaseWindow(this.app, this.windowId, this);
     if (!['ping', 'visible', 'usage', 'agents', 'connAgents', 'windows', 'sessionLibrary', 'sessionActions'].includes(msg.t)) touchProjectWindow(this.app, this.windowId);

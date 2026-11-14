@@ -612,6 +612,36 @@ for (const native of [true, false]) test(`Codex receipt uses native serialized M
   else { const call = h.calls.find(call => Array.isArray(call) && call[0] === 'wait'); assert.equal(call[2], serialized); assert.equal(call[3], 'literal **bold** and C:\\tmp'); }
 });
 
+for (const app of ['codex', 'devin']) for (const draft of ['', 'unsent draft']) for (const concurrent of [false, true, 'switch']) {
+  test(`${app} queue edit restores ${draft ? 'nonempty' : 'empty'} draft, concurrent=${concurrent}`, async () => {
+    let composer = draft, scope = 'selected';
+    const events = [], writes = [], cdp = { async evaluate(expression) {
+      if (expression === FOCUS_COMPOSER) return true;
+      assert(expression.endsWith('.composerDraft()')); return composer;
+    } };
+    const context = { app, cdp, draftGeneration: 0, assertSelectedThread: async () => {}, selectionKey: () => scope,
+      queueAction: async () => { composer = 'old queue text'; },
+      adapter: { async editQueued(id, text) {
+        assert.equal(id, 'queue'); assert.equal(text, 'edited queue text'); composer = text;
+        if (concurrent === true) this.queueEditing.request = { text: 'new phone draft', revision: 7, draftEpoch: 'epoch' };
+        if (concurrent === 'switch') scope = 'other';
+        return { queued: true };
+      } },
+      async key(key) { if (key === 'Backspace') composer = ''; },
+      async typeText(text, target) { assert.equal(target, cdp); writes.push(text); composer += text; },
+      emit: event => events.push(event),
+    };
+    assert.deepEqual(await chatMethods.editQueued.call(context, 'queue', 'edited queue text'), { queued: true });
+    if (concurrent === 'switch') { assert.deepEqual(writes, []); assert.equal(composer, 'edited queue text'); }
+    else {
+      const expected = concurrent ? 'new phone draft' : draft;
+      assert.equal(composer, expected); assert.equal(context.lastDraft, expected); assert.deepEqual(writes, [expected]);
+      if (concurrent) assert.deepEqual(events, [{ t: 'draftAck', sel: 'selected', ok: true, text: expected, read: false, draftEpoch: 'epoch', revision: 7 }]);
+    }
+    assert.equal(context.queueEditing, null); assert.equal(context.draftGeneration, 2);
+  });
+}
+
 for (const queued of [true, false]) test(`Codex queue edit confirms native ${queued ? 'queue' : 'already admitted message'}`, async () => {
   const calls = [], before = { thread: 'thread', messages: [{ id: 'old-user' }], queued: [{ id: 'old-queue' }] };
   const accepted = queued ? { queued: true, queueId: 'new-queue' } : { queued: false, messageId: 'new-user' };
@@ -723,7 +753,7 @@ test('native accepted and explicitly not-sent callbacks settle only their own su
 test('normal Codex read includes the paused queue confirmation once rather than a generic duplicate dialog', () => {
   const dialog = {}, row = { id: 'queue-confirm:thread', dialog, text: 'paused queue', buttons: [{ label: 'keep' }], fields: [] };
   const document = { querySelectorAll: selector => selector === '[role=dialog]' ? [dialog] : [] };
-  const context = vm.createContext({ remoteContext: null, activeThread: () => 'thread', codexQueueConfirmRequests: () => [row],
+  const context = vm.createContext({ IS_WIN: false, remoteContext: null, activeThread: () => 'thread', codexQueueConfirmRequests: () => [row],
     doc: document, document, vis: () => true });
   const source = fs.readFileSync(new URL('../server/page/codex.js', import.meta.url), 'utf8');
   vm.runInContext(source.slice(source.indexOf('  const codexRequests ='), source.indexOf('  const codexRequestData =')) + ';globalThis.read=codexRequests;', context);

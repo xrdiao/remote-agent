@@ -10,6 +10,7 @@ import { findBin } from '../lib/platform.mjs';
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const isMac = process.platform === 'darwin';
+const isWin = process.platform === 'win32';
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 const ask = async (q, def = '') => (await rl.question(def ? `${q} [${def}] ` : `${q} `)).trim() || def;
@@ -31,8 +32,8 @@ console.log('\n== Remote Agent 安装向导 ==\n');
 
 console.log('1/4 检查依赖');
 const missing = [];
-if (!has('cloudflared')) missing.push(['cloudflared', isMac ? 'brew install cloudflared' : 'https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/']);
-if (!has('gh')) missing.push(['gh', isMac ? 'brew install gh' : 'https://cli.github.com/']);
+if (!has('cloudflared')) missing.push(['cloudflared', isWin ? 'winget install --id Cloudflare.cloudflared -e' : isMac ? 'brew install cloudflared' : 'https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/']);
+if (!has('gh')) missing.push(['gh', isWin ? 'winget install --id GitHub.cli -e' : isMac ? 'brew install gh' : 'sudo apt install gh']);
 for (const [name, how] of missing) console.log(`  缺少 ${name}：${how}`);
 if (missing.length && !await yes('  缺少的工具只影响「外网访问 / 固定地址」，是否继续？')) process.exit(1);
 if (!missing.length) console.log('  cloudflared、gh 都已安装');
@@ -57,6 +58,6 @@ if (await yes('  要再加一层 Authenticator 二次验证吗（Google / Micros
 
 console.log(`
 完成！还差两步：
-  1. 用 ./scripts/start-cursor.sh 重启 Cursor（带调试端口），手机才能控制它。
+  1. ${isWin ? '在 PowerShell 执行 .\\window_start\\start-agents.ps1 -Apps cursor' : '用 ./scripts/start-cursor.sh 重启 Cursor'}（带调试端口），手机才能控制它。
   2. 运行 npm run pair，用手机扫码配对。以后每台新手机都这样配对一次。`);
 rl.close();

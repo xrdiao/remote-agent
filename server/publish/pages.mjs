@@ -10,7 +10,7 @@ import { appUrl, offerFirstPairing } from '../util.mjs';
 
 export function run(cmd, args, input, { signal } = {}) {
   return new Promise((resolve, reject) => {
-    const p = spawn(cmd === 'gh' ? findBin('gh') : cmd, args, { stdio: ['pipe', 'pipe', 'pipe'], signal });
+    const p = spawn(cmd === 'gh' ? findBin('gh') : cmd, args, { stdio: ['pipe', 'pipe', 'pipe'], signal, windowsHide: true });
     let out = '', err = '';
     p.stdout.on('data', d => { out += d; });
     p.stderr.on('data', d => { err += d; });

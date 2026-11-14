@@ -8,13 +8,16 @@ import vm from 'node:vm';
 import { fileAction } from '../lib/file-actions.mjs';
 import { readFile } from '../lib/files.mjs';
 import { localFilePath } from '../lib/platform.mjs';
+import { read } from './page-fixture.mjs';
 import { beginOperation, captureOperation, withOperation } from '../server/operations.mjs';
 
 const base = new URL('../_shots/file-actions-tests/', import.meta.url);
 await fsp.mkdir(base, { recursive: true });
 async function fixture(t) {
-  const directory = await fsp.mkdtemp(path.join(base.pathname, 'case-'));
-  t.after(() => fsp.rm(directory, { recursive: true, force: true }));
+  const directory = await fsp.mkdtemp(path.join(localFilePath(base.pathname), 'case-'));
+  t.after(() => fsp.rm(directory, {
+    recursive: true, force: true, maxRetries: process.platform === 'win32' ? 12 : 0,
+  }));
   return directory;
 }
 
@@ -50,11 +53,10 @@ test('a folder cannot replace itself or be pasted into its own descendant', asyn
   }
 });
 
-test('ZIP creation and extraction preserve content, Unicode, empty directories and skip inner links', async t => {
+test('ZIP creation and extraction preserve content, Unicode and empty directories', async t => {
   const directory = await fixture(t), source = path.join(directory, '来源 目录');
   await fsp.mkdir(path.join(source, '空文件夹'), { recursive: true });
   await fsp.writeFile(path.join(source, 'hello.txt'), 'hello\n');
-  await fsp.symlink(source, path.join(source, 'cycle'));
   const created = await fileAction({ action: 'zip', directory, paths: [source], name: '测试.zip' });
   assert.equal(created.results[0].ok, true);
   const unpacked = await fileAction({ action: 'extract', directory, paths: [created.results[0].path] });
@@ -62,8 +64,25 @@ test('ZIP creation and extraction preserve content, Unicode, empty directories a
   const output = path.join(unpacked.results[0].path, path.basename(source));
   assert.equal(await fsp.readFile(path.join(output, 'hello.txt'), 'utf8'), 'hello\n');
   assert.equal((await fsp.stat(path.join(output, '空文件夹'))).isDirectory(), true);
-  await assert.rejects(fsp.stat(path.join(output, 'cycle')), { code: 'ENOENT' });
   assert.equal((await fsp.readdir(directory)).some(name => name.startsWith('.remote-agent-')), false);
+});
+
+test('ZIP creation excludes inner directory links', async t => {
+  const directory = await fixture(t), source = path.join(directory, 'source');
+  await fsp.mkdir(source);
+  await fsp.writeFile(path.join(source, 'keep.txt'), 'keep');
+  try { await fsp.symlink(source, path.join(source, 'cycle'), process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch (error) {
+    if (['EISDIR', 'ENOTSUP', 'EPERM'].includes(error.code)) { t.skip('当前文件系统或权限不支持目录链接：' + error.code); return; }
+    throw error;
+  }
+  const created = await fileAction({ action: 'zip', directory, paths: [source], name: 'links.zip' });
+  assert.equal(created.results[0].ok, true);
+  const unpacked = await fileAction({ action: 'extract', directory, paths: [created.results[0].path] });
+  assert.equal(unpacked.results[0].ok, true);
+  const output = path.join(unpacked.results[0].path, 'source');
+  assert.equal(await fsp.readFile(path.join(output, 'keep.txt'), 'utf8'), 'keep');
+  await assert.rejects(fsp.stat(path.join(output, 'cycle')), { code: 'ENOENT' });
 });
 
 test('a failed extraction leaves an existing destination and archive unchanged', async t => {
@@ -92,7 +111,7 @@ test('file operations retain partial results instead of repeating successful mov
 });
 
 async function chatImageContext(directory, Cdp) {
-  const code = await fsp.readFile(new URL('../server/chat-images.mjs', import.meta.url), 'utf8');
+  const code = read('server/chat-images.mjs');
   const context = vm.createContext({ fs, path, crypto, Buffer, DATA_DIR: directory, localFilePath, readFile, Cdp, helpersCall: code => code });
   vm.runInContext(code.replace(/^import .*;\n/gm, '').replace(/\bexport /g, '') + '\nthis.wire=chatForWire;this.readImage=readChatImage;', context);
   return context;

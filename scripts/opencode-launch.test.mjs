@@ -5,14 +5,15 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { EventEmitter } from 'node:events';
 import { promisify } from 'node:util';
+import { read } from './page-fixture.mjs';
 
-const read = file => fs.readFileSync(new URL('../' + file, import.meta.url), 'utf8');
 const moduleSource = file => read(file).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
 
 function launcher({ running = false, missing = false, exits = false } = {}) {
   const calls = [], children = [];
   let healthy = running;
   const context = vm.createContext({ path, URL, AbortSignal, promisify, Date, console,
+    findBin: app => app, launchCommand: (command, args) => ({ command, args }),
     DATA_DIR: '/test/.agent-remote', os: { homedir: () => '/test' }, process: { argv: [] },
     fs: { mkdirSync() {}, openSync: () => 7, closeSync: fd => calls.push({ closed: fd }) },
     OpenCodeClient: class {

@@ -2,7 +2,11 @@
 [[ -f ~/.bashrc ]] && source ~/.bashrc
 
 _ra_emit() { printf '\033]777;RA;%s;%s\007' "$1" "$2"; }
-_ra_prompt() { _ra_emit prompt "$(printf %s "$PWD" | base64 -w0)"; }
+_ra_prompt() {
+    local cwd="$PWD"
+    [[ "$RA_WINDOWS" == 1 ]] && cwd="$(pwd -W)"
+    _ra_emit prompt "$(printf %s "$cwd" | base64 -w0)"
+}
 _ra_input() { _ra_emit input "$(printf '%s\0%s' "$READLINE_POINT" "$READLINE_LINE" | base64 -w0)"; }
 _ra_clear() { READLINE_LINE=; READLINE_POINT=0; }
 _ra_history() {

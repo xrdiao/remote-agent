@@ -3,9 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import test from 'node:test';
+import { localFilePath } from '../lib/platform.mjs';
 import { NativeWindow } from '../server/native-windows.mjs';
 import { adapter as codexAdapter } from '../server/apps/codex.mjs';
 import { adapter as cursorAdapter } from '../server/apps/cursor.mjs';
+import { AgentContext } from '../server/agent/context.mjs';
 import { read, fragment, createPageContext } from './page-fixture.mjs';
 
 function batchFixture(cancel = false) {
@@ -15,7 +17,7 @@ function batchFixture(cancel = false) {
     { id: 'thread:backend:busy', app: 'codex' }, { id: 'thread:backend:fusion', app: 'codex' },
     { id: 'thread:backend:missing', app: 'codex' },
   ];
-  const common = vm.runInContext(read('server/agent/session-actions.mjs').replace(/^import .*;\n/gm, '').replace('export const methods', 'const methods') + '\nmethods;', vm.createContext({
+  const common = vm.runInContext(read('server/agent/session-actions.mjs').replace(/^import .*;\n/gm, '').replace('export const methods', 'const methods') + '\nmethods;', createPageContext({
     sessionId: (_app, id) => id.split(':').at(-1), helpersCall: value => value,
     fusionBindingInUse: (_app, id) => id === 'fusion', leaseWindow: (_app, id) => () => releases.push(id),
   }));
@@ -30,7 +32,7 @@ function batchFixture(cancel = false) {
     async evaluate(call) { return call === 'codexThread()' ? 'N' : { thread: 'N', busy: false }; }
     close() { calls.push('close'); }
   }
-  const routes = vm.runInContext(fragment(read('server/apps/codex.mjs'), 'const backendRoutes =', 'function serializedCodexPrompt') + '\nbackendRoutes;', vm.createContext({
+  const routes = vm.runInContext(fragment(read('server/apps/codex.mjs'), 'const backendRoutes =', 'function serializedCodexPrompt') + '\nbackendRoutes;', createPageContext({
     CODEX_BACKEND: 'backend', path, AgentContext: Context, NativeCdp: Cdp, helpersCall: value => value,
     nativeTargets: () => [{ app: 'codex', pageId: 'desktop', ws: 'ws' }], nativeSessionCatalog: () => ({ rows: [] }), backendAgentRows: () => [],
     publishSessionChange: (_app, id, value) => calls.push(['publish', id, value.action]),
@@ -77,7 +79,7 @@ test('existing desktop batch still uses the same fresh native archive checks', a
 });
 
 test('backend chat subscription cleanup removes its retry registration on return, switch and hide', async () => {
-  const calls = [], context = vm.createContext({ awaitCdpRead: promise => promise,
+  const calls = [], context = createPageContext({ awaitCdpRead: promise => promise,
     codexBackend: { load: async () => {}, subscribe: () => () => {}, clearRetry: owner => calls.push(owner) },
     watchChatUpdates: () => () => calls.push('unsubscribe'), backendPublish: () => {},
     backendRoutes: { codexRetry: () => calls.push('configure') },
@@ -91,7 +93,7 @@ test('backend chat subscription cleanup removes its retry registration on return
 test('retry menu distinguishes backend continuation from desktop Retry clicks', () => {
   for (const backend of [true, false]) {
     let html;
-    const context = vm.createContext({ currentComputer: () => ({ windowId: backend ? 'backend' : 'desktop' }),
+    const context = createPageContext({ currentComputer: () => ({ windowId: backend ? 'backend' : 'desktop' }),
       codexAutoRetryEnabled: () => true, codexAutoRetryCount: () => 2, openSheet: (_kind, value) => { html = value; }, $: () => ({}) });
     vm.runInContext(fragment(read('app/js/sheets.js'), 'function showCodexRetryMenu(', 'function toggleCodexAutoRetry(') + '\nshowCodexRetryMenu();', context);
     assert.equal(html.includes('离开对话页后停止'), backend); assert.equal(html.includes('自动点击电脑端 Retry'), !backend);
@@ -204,7 +206,7 @@ test('Cursor adopts the actual workspace thread only after its Agent panel is re
 
 test('Devin cross-project creation completes in one switch before reading the new first screen', async () => {
   const calls = [], controller = new AbortController();
-  const context = createPageContext({ path, crypto: { randomUUID: () => 'request' },
+  const context = createPageContext({ IS_WIN: false, path, crypto: { randomUUID: () => 'request' },
     safeHomePath: real => ({ real }), cdpRead: { getStore: () => controller.signal }, helpersCall: value => value,
   });
   const methods = vm.runInContext('({' + fragment(read('server/agent/projects.mjs'), '  async useProject(', '  async resumeProjectSwitch(') + '})', context);
@@ -441,7 +443,7 @@ function codexQuestionReader(questions = [{ id: 'choice', question: '请选择�
     if (selector === 'button' || selector.startsWith('button, input')) return [...(state.mounted ? [skip] : []), ...state.controls];
     return [];
   } };
-  const context = createPageContext({ codexThread: () => 'native-thread', codexRootProps: () => [], remoteContext: null, doc, document: doc, activeThread: () => state.thread, vis: () => true,
+  const context = createPageContext({ codexThread: () => 'native-thread', codexConversationManager: () => null, codexHistoryScopes: () => [], codexRootProps: () => [], remoteContext: null, doc, document: doc, activeThread: () => state.thread, vis: () => true,
     codexQueueConfirmRequests: () => [], codexFiberProps: el => el.props || [], codexPoint: () => ({ x: 1, y: 2 }), setTimeout });
   vm.runInContext(fragment(read('server/page/codex.js'), '  const codexAsyncRequestFiber =', '  const codexImage =')
     + '\nthis.data=codexRequestData;this.field=codexRequestField;this.action=codexRequestAction;', context);
@@ -716,6 +718,7 @@ function devinCreation({ active = 'acp/devin-cli/old', appearAfter = 0, recordDe
   const finish = vm.runInContext('({' + fragment(read('server/agent/projects.mjs'), '  async finishProject() {', '  projectName() {') + '})', context);
   const sessionCwd = () => activeNow === NEW ? newCwd : cwd;
   const session = { ...newChat, ...finish, app: 'devin', mode: 'chat',
+    devinWindowRoots: async () => [{ root: '/project' }],
     pendingProject: { root: '/project', threadId: '', newSession: true },
     threadId: 'acp/devin-cli/old', selectedThread: 'acp/devin-cli/old',
     adapter: { newChat: async function () { await this.devinNewChat(); } },
@@ -819,12 +822,14 @@ for (const app of ['cursor', 'devin', 'codex', 'opencode']) test(`failed project
   const scope = createPageContext({ forgetSelection: () => assert.fail('successful persisted selection was discarded') });
   const fn = vm.runInContext('({' + fragment(read('server/session.mjs'), '  navigationFailed(', '  // Warms') + '}).navigationFailed', scope);
   const session = { app, deviceId: 'one-entry', cdp: null, rememberedSelection: 'A', threadId: 'A', selectedThread: 'A',
+    appMessage: AgentContext.prototype.appMessage,
     chatWatchGeneration: 0, stopChatUpdates: () => calls.push('stop'), clearViewState: () => calls.push('clear'),
     selectionKey: () => app + '||', emit: message => emitted.push(message), selectionStore: saved };
   scope.clearInterval = () => {};
   fn.call(session, { t: 'openProject', path: '/missing' }, new Error('missing directory'));
   assert.equal(session.selectionStore, saved); assert.equal(session.selectionStore.threadId, 'A');
   assert.equal(session.bindingReady, false); assert.equal(emitted[0].t, 'attachFailed'); assert.equal(emitted[0].message, 'missing directory');
+  assert.equal(emitted[0].appName, session.appMessage('{app}'));
   assert.deepEqual(calls, ['stop', 'clear']);
 });
 
@@ -879,7 +884,7 @@ test('deferred Cursor project binding leaves native session opening to finishPro
         throw Error(call);
       }
     }
-    const context = vm.createContext({ NativeCdp: Connection, helpersCall: value => value,
+    const context = createPageContext({ NativeCdp: Connection, helpersCall: value => value,
       nativeWindow: () => ({ itemCache: new Map(), start: async () => {}, setThread() {} }),
       resetThinkingCaches() {}, appPlans: [], hasLaunched: () => false,
     });
@@ -899,7 +904,7 @@ test('deferred Cursor project binding leaves native session opening to finishPro
 
 test('an existing Codex writer opens its exact thread without the project-window navigation path', async () => {
   const calls = [], events = [];
-  const context = vm.createContext({
+  const context = createPageContext({
     NativeCdp: class {
       constructor(wsUrl) { this.wsUrl = wsUrl; }
       async connect() {}
@@ -940,11 +945,11 @@ test('Cursor cold history opens from persisted headers, retains native menu meta
   assert.equal(listed[1].group, 'Native group');
 });
 
-function projectAttachFixture(app, { catalogReady = true, targetOpen = false } = {}) {
+function projectAttachFixture(app, { catalogReady = true, targetOpen = false, windows = false, catalog = [] } = {}) {
   const calls = [], page = id => ({ id: app === 'codex' ? app : `${app}:${id}`, app, pageId: id,
     ws: `ws-${id}`, chatWs: `chat-${id}`, roots: [{ root: `/${id}` }] });
   const pages = [page('A'), ...(targetOpen ? [page('B')] : [])];
-  const context = vm.createContext({ cdpRead: { getStore: () => null }, hasLaunched: () => false,
+  const context = createPageContext({ IS_WIN: windows, windowsCursorSource: () => null, nativeSessionCatalog: () => ({ rows: catalog }), cdpRead: { getStore: () => null }, hasLaunched: () => false,
     lastSelection: () => null, CODEX_BACKEND: 'backend', CODEX_CDP_URL: 'native', helpersCall: value => value,
     codexBackend: { owns: id => id === 'backend-thread' }, nativeTargets: () => pages,
     nativeWindowAt: ws => ({ roots: catalogReady ? pages.find(row => row.ws === ws).roots : [] }),
@@ -970,6 +975,18 @@ function projectAttachFixture(app, { catalogReady = true, targetOpen = false } =
   };
   return { session, calls };
 }
+
+test('Windows Cursor card attachment uses the session project instead of its catalog carrier window', async () => {
+  for (const windows of [true, false]) {
+    const { session, calls } = projectAttachFixture('cursor', { windows,
+      catalog: [{ id: 'native-B', workspace: '/B', host: '' }] });
+    await session.attach({ id: 'cursor:A', windowId: 'cursor:A', threadId: 'native-B' });
+    assert.deepEqual(calls, windows ? [
+      { kind: 'desktop', window: 'cursor:A', thread: '', deferred: true },
+      { kind: 'project', root: '/B', newSession: false, thread: 'native-B', ownerWindow: 'cursor:A' },
+    ] : [{ kind: 'desktop', window: 'cursor:A', thread: 'native-B', deferred: false }]);
+  }
+});
 
 test('project attachment and cold reconnect preserve the target using the native backend or desktop carrier', async () => {
   for (const app of ['codex', 'cursor', 'devin']) for (const initial of [false, true]) {
@@ -1030,7 +1047,26 @@ test('Codex project and session-menu entries share the backend binding for legac
   await methods.openAgent.call(session, 'thread:closed-window:legacy');
   assert.equal(calls[0].threadId, 'legacy');
   await methods.useProject.call(session, process.cwd(), false, 'legacy');
-  assert.equal(calls[1].threadId, 'legacy'); assert.equal(calls[1].project.root, process.cwd());
+  assert.equal(calls[1].threadId, 'legacy'); assert.equal(calls[1].project.root, localFilePath(process.cwd()));
+});
+
+test('a cold Cursor catalog is loading until native services appear and is readable on retry', async () => {
+  const page = pageContext({ codexFiberProps: () => [], doc: { defaultView: {}, querySelector: () => null },
+    agentList: () => [], activeThread: () => '' });
+  assert.equal(await page.info('cursor', '', 'list'), null);
+  page.window.__remoteAgentCursorServices = { composer: { composerChatService: {
+    _workspaceContextService: { getWorkspace: () => ({ id: 'workspace', folders: [] }) },
+  } }, data: {
+    allComposersData: { allComposers: [] }, whenInitialComposerDataLoaded: async () => {},
+    _storageService: { collectionQuery: async () => [] },
+  } };
+  assert.deepEqual(Array.from(await page.info('cursor', '', 'list')), []);
+});
+
+test('Cursor does not mistake an unread native-window catalog for a ready empty session list', async () => {
+  const emitted = [], cdp = { nativeWindow: { catalog: [], catalogAt: 0 }, evaluate: async () => null };
+  await cursorAdapter.listAgents.call({ cdp }, true, true, message => emitted.push(message));
+  assert.deepEqual(emitted, [{ list: [], loading: true }]);
 });
 
 test('Cursor context and catalog agree on a cold thread project in another window', async () => {

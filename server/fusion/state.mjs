@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { workspaces } from '../../lib/files.mjs';
 import { readState, saveState, computerId, forgetSelection } from '../../lib/auth.mjs';
-import { normPath, pathKey, findBin } from '../../lib/platform.mjs';
+import { normPath, pathKey, findBin, localFilePath } from '../../lib/platform.mjs';
 import { fusionStore } from './store.mjs';
 
 export const fusionRuns = fusionStore.data.owners;
@@ -160,16 +160,17 @@ export function fusionWindowInUse(window) {
 
 // Shared native project identity, also used by ordinary sessions.
 export function fusionProject(root, host = '') {
-  if (!root || !path.isAbsolute(root)) return null;
+  root = host ? root : localFilePath(root);
+  if (!root || !(host ? path.posix : path).isAbsolute(root)) return null;
   root = host ? path.posix.normalize(root) : fs.existsSync(root) ? fs.realpathSync(root) : path.normalize(root);
-  root = normPath(root);
+  root = host ? normPath(root) : localFilePath(root);
   return { id: JSON.stringify([host, pathKey(root, !host)]), root, host, name: path.posix.basename(root) || root };
 }
 export function fusionCursorProjects() {
   const projects = new Map();
   for (const workspace of workspaces().filter(value => !value.host && (value.sources || [value.source]).includes('cursor'))) {
     try {
-      const remote = execFileSync(findBin('git'), ['-C', workspace.root, 'config', '--get', 'remote.origin.url'], { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      const remote = execFileSync(findBin('git'), ['-C', workspace.root, 'config', '--get', 'remote.origin.url'], { encoding: 'utf8', timeout: 1000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
       const repository = remote.replace(/^\w+:\/\//, '').replace(/^.*@/, '').replace(':', '/').replace(/\.git$/, '').replace(/\/$/, '');
       const project = fusionProject(workspace.root);
       if (!projects.has(repository)) projects.set(repository, project);

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from '../../lib/auth.mjs';
+import { IS_WIN } from '../../lib/platform.mjs';
 
 export class FusionStore {
   constructor(file = path.join(DATA_DIR, 'fusion.json')) {
@@ -12,7 +13,12 @@ export class FusionStore {
     fs.mkdirSync(path.dirname(this.file), { recursive: true, mode: 0o700 });
     const temporary = this.file + '.pending';
     fs.writeFileSync(temporary, JSON.stringify(value), { mode: 0o600 });
-    fs.renameSync(temporary, this.file);
+    try { fs.renameSync(temporary, this.file); }
+    catch (error) {
+      if (!IS_WIN || error.code !== 'EPERM') throw error;
+      // Windows can reject an atomic replacement transiently after closing the file.
+      fs.renameSync(temporary, this.file);
+    }
   }
   replace(controller, next) {
     const owner = this.data.owners[controller.deviceId];

@@ -1,3 +1,4 @@
+import { parseAgentRef } from '../../lib/shared-rules.mjs';
 import { Cdp } from '../cdp.mjs';
 import { listWindows } from '../windows.mjs';
 import { helpersCall } from '../page/build.mjs';
@@ -21,7 +22,7 @@ export const methods = {
     const progress = done => this.emit({ t: 'sessionBatchProgress', app, requestId, total: rows.length, results, done, cancelled: batch.cancelled });
     progress(false);
     try {
-      for (const window of new Set((app === 'opencode' ? [] : rows).map(row => row.id.startsWith('project:') ? decodeURIComponent(row.id.split(':')[1]) : row.id.startsWith('thread:') ? row.id.split(':')[1] : this.targetId))) releases.push(leaseWindow(app, window, this, true));
+      for (const window of new Set((app === 'opencode' ? [] : rows).map(row => /^(?:project|thread):/.test(row.id) ? parseAgentRef(row.id).windowId : this.targetId))) releases.push(leaseWindow(app, window, this, true));
       for (const row of rows) {
         if (batch.cancelled || this.app !== app) break;
         try {
@@ -54,7 +55,7 @@ export const methods = {
     const app = this.app;
     if (!['cursor', 'devin'].includes(app)) throw new Error('当前 Agent 不支持此操作');
     let windowId = this.targetId;
-    if (String(value).startsWith('project:')) windowId = decodeURIComponent(value.split(':')[1]);
+    if (String(value).startsWith('project:')) windowId = parseAgentRef(value).windowId;
     const id = sessionId(app, value);
     if (!id) throw new Error('没有读取到会话标识，请刷新会话列表');
     const own = windowId === this.targetId;

@@ -1,3 +1,4 @@
+import { IS_WIN, localFilePath } from '../lib/platform.mjs';
 import { Cdp, cdpRead, awaitCdpRead } from './cdp.mjs';
 import { watchChat } from './agent/updates.mjs';
 import { PAGE_SRC, helpersCall } from './page/build.mjs';
@@ -54,6 +55,7 @@ async function refreshSessionCatalog(source, changed) {
     }));
     const catalog = app === 'devin' ? mergeDevinCatalogs(catalogs) : catalogs[0];
     if (!catalog.ready) return;
+    catalog.rows = catalog.rows.map(row => row.host || !row.workspace ? row : { ...row, workspace: localFilePath(row.workspace) });
     if (app === 'codex' && catalog.unknown?.length) {
       const states = await codexSessionStates(catalog.unknown, catalog.rows.map(row => row.path).filter(Boolean));
       for (const [id, state] of states) {
@@ -109,6 +111,15 @@ export class NativeCdp extends Cdp {
 }
 
 export function nativeWindow(cdp) { return cdp?.nativeWindow; }
+export function windowsCursorSource(thread) {
+  let selected, updatedAt = 0;
+  for (const source of windows.values()) {
+    if (source.win?.app !== 'cursor') continue;
+    const state = source.snapshot?.states.find(row => row.thread === thread);
+    if (state?.nativeUpdatedAt > updatedAt) { selected = source; updatedAt = state.nativeUpdatedAt; }
+  }
+  return selected;
+}
 export const nativeWindowAt = url => windows.get(url);
 export function configureNativeRetry(deviceId, source, settings) {
   for (const window of windows.values()) window.retrySettings.delete(deviceId);
@@ -335,7 +346,9 @@ export class NativeWindow {
       const result = await this.cdp.evaluate(`(async () => {
         const h = ${PAGE_SRC};
         const chat = await h.extract(false, [], ${app === 'codex' ? 80 : 0}, ${app === 'cursor'});
-        return { chat, activeTab: h.activeChatTab(), states: h.agentStates(${JSON.stringify(app)}),
+        const activeTab = h.activeChatTab(), states = h.agentStates(${JSON.stringify(app)});
+        ${IS_WIN && app === 'cursor' ? "for (const state of states) state.nativeUpdatedAt = h.nativeSessionInfo('cursor', state.thread, 'connection')?.updatedAt || 0;" : ''}
+        return { chat, activeTab, states,
           surface: h.devinSurface(),
         };
       })()`);
@@ -351,6 +364,15 @@ export class NativeWindow {
       this.readRevision = revision;
       this.updatedAt = Date.now();
       if (changed) withOperation(null, () => { for (const notify of this.listeners) notify(); });
+      if (changed && IS_WIN && app === 'cursor') withOperation(null, () => {
+        for (const source of windows.values()) {
+          if (source === this || source.win?.app !== 'cursor') continue;
+          const thread = source.snapshot?.chat?.thread;
+          const previous = source.snapshot?.states.find(row => row.thread === thread)?.nativeUpdatedAt || 0;
+          if (result.states.some(row => row.thread === thread && row.nativeUpdatedAt > previous))
+            for (const notify of source.listeners) notify();
+        }
+      });
       return result;
     }).catch(error => {
       if (!controller.signal.aborted && this.readError !== error.message) {
@@ -375,6 +397,8 @@ export class NativeWindow {
       await this.connect();
       const catalog = await this.cdp.evaluate(helpersCall(app === 'codex' ? 'codexChatRows(true)'
         : app === 'devin' ? 'sessionPickerRows(true)' : "nativeSessionInfo('cursor', '', 'list')"));
+      if (catalog === null) return;
+      for (const row of catalog) if (!row.host && row.workspace) row.workspace = localFilePath(row.workspace);
       this.catalog = catalog;
       this.catalogAt = Date.now();
       const key = JSON.stringify(catalog.map(row => [row.id, row.title, row.workspace, row.host, row.current, row.running]));

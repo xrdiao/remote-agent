@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import crypto from 'node:crypto';
+import { IS_WIN, normPath, localFilePath, localFileUri, uriFilePath, pathKey, samePath, validLocalName } from '../lib/platform.mjs';
+import { parseAgentRef } from '../lib/shared-rules.mjs';
 import { PAGE_SRC } from '../server/page/build.mjs';
 import '../app/js/shared-rules.js';
 
-export const read = file => fs.readFileSync(new URL('../' + file, import.meta.url), 'utf8');
+export const read = file => fs.readFileSync(new URL('../' + file, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 export function fragment(source, start, end) {
   const a = source.indexOf(start), b = source.indexOf(end, a + start.length);
   assert(a >= 0 && b > a, start);
@@ -13,6 +15,7 @@ export function fragment(source, start, end) {
 }
 export function createPageContext(extra) {
   const context = vm.createContext({ RemoteAgentRules: globalThis.RemoteAgentRules,
+    IS_WIN, normPath, localFilePath, localFileUri, uriFilePath, pathKey, samePath, validLocalName, parseAgentRef,
     getComputedStyle: () => ({ visibility: 'visible' }), ...extra });
   context.importScripts = (...files) => files.forEach(file => vm.runInContext(read('app/' + file.split('?')[0]), context));
   return context;

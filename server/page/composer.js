@@ -7,6 +7,7 @@
         return [local, exported];
       }));
       if (role === 'scope') return { scope: names.get(source.match(/function ([\w$]+)\([^)]*\)\{[^}]*\.retainedScopeEntries\.get\([^}]*new Map\([^}]*\.chain\)/)[1]) };
+      if (role === 'questions') return { groups: names.get(source.match(/function [\w$]+\(([\w$]+),[\w$]+,[\w$]+\)\{\1\.set\(([\w$]+),[\w$]+\([\w$]+\),[\w$]+=>\{[^{}]*new Map/)[2]) };
       if (role === 'composer') {
         const state = source.match(/([\w$]+)=[\w$]+\([\w$]+,\(\{get:([\w$]+)\}\)=>\(\{\.\.\.\2\([\w$]+\),prompt:\2\(([\w$]+)\)\}\)\)/);
         const edit = source.match(/function ([\w$]+)\([^)]*\)\{let [\w$]+=[\w$]+\.get\([\w$]+\)\?\?\{prompt:(?:``|""|''),pullRequestChecks:\[\]\}/);
@@ -18,12 +19,14 @@
         .find(match => names.has(match[1]) && [...match[2].matchAll(/([\w$]+)\(\)/g)].some(call => call[1] === initializeClass))[1];
       return { initialize: names.get(initialize), createInputs: names.get(create[1]) };
     };
-    if (!modules.has('graph')) modules.set('graph', (async () => {
-      const markers = { scope: '.retainedScopeEntries.get(', composer: 'discardRetainedDraft', creation: 'async readCreationInputs(' };
+    const graph = kind === 'questions' ? 'questionsGraph' : 'graph';
+    if (!modules.has(graph)) modules.set(graph, (async () => {
+      const markers = kind === 'questions' ? { questions: /selectedQuestionKey:[\w$]+,questionIds:\[[\w$]+\.itemId\]/ }
+        : { scope: '.retainedScopeEntries.get(', composer: 'discardRetainedDraft', creation: 'async readCreationInputs(' };
       const pending = [[...doc.scripts].find(script => script.src).src], seen = new Set(pending), found = {};
       for (const url of pending) {
         const source = await (await fetch(url)).text();
-        for (const [role, marker] of Object.entries(markers)) if (!found[role] && source.includes(marker)) found[role] = { url, bindings: bindingsFor(role, source) };
+        for (const [role, marker] of Object.entries(markers)) if (!found[role] && (typeof marker === 'string' ? source.includes(marker) : marker.test(source))) found[role] = { url, bindings: bindingsFor(role, source) };
         if (Object.keys(found).length === Object.keys(markers).length) return found;
         for (const match of source.matchAll(/\b(?:from\s*|import\s*\(\s*)["'`]([^"'`]+\.js)["'`]/g)) {
           const next = new URL(match[1], url).href;
@@ -33,7 +36,7 @@
       throw new Error('Codex 原生输入模块未提供所需入口');
     })());
     if (!modules.has(kind)) modules.set(kind, (async () => {
-      const { url, bindings } = (await modules.get('graph'))[kind];
+      const { url, bindings } = (await modules.get(graph))[kind];
       const native = await import(url);
       if (kind === 'scope') return native[bindings.scope];
       if (kind === 'creation') { native[bindings.initialize](); return native[bindings.createInputs]; }

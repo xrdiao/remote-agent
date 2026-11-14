@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import test from 'node:test';
+import { localFilePath, samePath, pathKey } from '../lib/platform.mjs';
+import { parseAgentRef } from '../lib/shared-rules.mjs';
 import { FusionScheduler } from '../server/fusion/scheduler.mjs';
 
 const source = fs.readFileSync(new URL('../server/project-windows.mjs', import.meta.url), 'utf8')
@@ -26,7 +28,8 @@ function fixture({ favorite = false, keep = false, owned = true, failClose = fal
   const saved = { enabled: true, idleMinutes: 1, sessions: { 'cursor:session': { id: 'session', workspace: '/project', ownerWindow: 'old-window' } },
     windows: Object.fromEntries(pages.map(p => ['cursor:' + p.id, { app: 'cursor', id: p.id, root: p.id === 'one' ? '/project' : '/other', owned: p.id === 'one' && owned, keep: p.id === 'one' && keep, lastUsed: Date.now() - 120000 }])) };
   const context = vm.createContext({
-    path, Buffer, Date, URL, AbortSignal, setTimeout: fn => { fn(); return { unref() {} }; }, clearTimeout() {},
+    path, Buffer, Date, URL, AbortSignal, IS_WIN: false, localFilePath, samePath, pathKey, parseAgentRef,
+    setTimeout: fn => { fn(); return { unref() {} }; }, clearTimeout() {},
     process: { platform: 'linux', env: { DISPLAY: ':0' }, getuid: () => 1000, pid: 9999 },
     fs: { existsSync: () => true, readFileSync: () => JSON.stringify(saved), mkdirSync() {}, writeFileSync() {},
       promises: {

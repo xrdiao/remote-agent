@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { localFilePath, samePath } from '../../lib/platform.mjs';
 import os from 'node:os';
 import { openCode } from '../opencode/state.mjs';
 import { cdpRead, awaitCdpRead } from '../cdp.mjs';
@@ -99,9 +100,9 @@ async function bind(s, req) {
   if (req.threadId && !native) throw new Error('OpenCode 会话已不存在');
   const directory = safeHomePath(req.project?.root || native?.directory || req.windowId ||
     [...openCode.sessions.values()].sort((a, b) => b.time.updated - a.time.updated)[0]?.directory || os.homedir()).real;
-  if (native && native.directory !== directory) throw new Error('OpenCode 会话不属于所选项目');
+  if (native && !samePath(native.directory, directory)) throw new Error('OpenCode 会话不属于所选项目');
   const thread = native || (!req.newSession && [...openCode.sessions.values()]
-    .filter(row => row.directory === directory).sort((a, b) => b.time.updated - a.time.updated)[0]);
+    .filter(row => samePath(row.directory, directory)).sort((a, b) => b.time.updated - a.time.updated)[0]);
   if (thread) await openCode.loadMessages(thread.id);
   cdpRead.getStore()?.throwIfAborted();
   s.detach();
@@ -134,6 +135,7 @@ async function ensureSession(s) {
   if (s.threadId) return;
   const model = openCode.selection(s.openCodeDirectory);
   const native = await openCode.client.request('/session', { directory: s.openCodeDirectory, method: 'POST', body: {}, signal: cdpRead.getStore() });
+  native.directory = localFilePath(native.directory);
   cdpRead.getStore()?.throwIfAborted();
   openCode.sessions.set(native.id, native);
   s.threadId = s.selectedThread = native.id;
@@ -153,6 +155,7 @@ export async function manageOpenCodeSession(id, action, name) {
   if (action === 'actions') return { actions: ['rename', 'archive', 'delete'] };
   if (action === 'rename') {
     const updated = await openCode.client.request(`/session/${id}`, { directory, method: 'PATCH', body: { title: name }, signal: cdpRead.getStore() });
+    updated.directory = localFilePath(updated.directory);
     openCode.sessions.set(id, updated);
     publishSessionChange('opencode', id, { action: 'rename', title: updated.title });
   } else if (action === 'archive') {
@@ -352,7 +355,7 @@ const routes = {
   },
   async saveFile(m) {
     const file = await resolveLocal({ root: this.openCodeDirectory, host: '' }, m.path);
-    const relative = path.relative(this.openCodeDirectory, file.path);
+    const relative = path.relative(localFilePath(this.openCodeDirectory), localFilePath(file.path));
     if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) throw new Error('只能修改当前项目里的文件');
     const size = await writeTextFile(file.path, m.text);
     this.emit({ t: 'saved', requestId: m.requestId, path: m.path, host: '', ok: true, size });

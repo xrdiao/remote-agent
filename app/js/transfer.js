@@ -48,7 +48,7 @@ function renderTransferPage() {
   $('transferDownloadFooter').hidden = !downloading;
   $('transferUploadFooter').hidden = downloading || picking;
   $('transferPickerFooter').hidden = !picking;
-  $('transferUseDirectory').disabled = !transferPicker?.home;
+  $('transferUseDirectory').disabled = !transferPicker?.path;
   $('transferSelectMenu').hidden = picking;
   $('transferArchiveHint').hidden = picking;
   $('transferBrowserLabel').textContent = picking ? '选择电脑接收目录' : '电脑文件';
@@ -58,18 +58,18 @@ function renderTransferPage() {
   $('transferUploadTarget').textContent = transferUploadPath || '正在读取目录…';
   const directory = transferCurrentDirectory();
   if (directory) {
-    $('transferParent').disabled = directory.path === directory.parent;
-    $('transferPath').value = directory.path;
-    $('transferPathButton').textContent = directory.path;
-    $('transferPathButton').title = directory.path + '（点击编辑）';
+    $('transferParent').disabled = directory.atRoots || directory.parent == null && directory.os !== 'win32';
+    $('transferPath').value = directory.path || '';
+    $('transferPathButton').textContent = directory.atRoots ? '磁盘' : directory.path;
+    $('transferPathButton').title = (directory.atRoots ? '磁盘' : directory.path) + '（点击编辑）';
     $('transferRoots').innerHTML = '<option value="" disabled selected>磁盘</option>' + (directory.roots || []).map(root => `<option value="${esc(root)}">${esc(root)}</option>`).join('');
     renderTransferRows();
   }
   transferCount();
   const selected = transferSelection.size > 0;
   for (const id of ['transferCopy', 'transferCut', 'transferZip', 'transferExtract']) $(id).disabled = !selected || !!transferFileOperation || !!transferPicker;
-  for (const id of ['transferNewFile', 'transferNewFolder']) $(id).disabled = !directory || !!transferFileOperation;
-  $('transferPaste').disabled = !directory || !!transferFileOperation || !transferClipboard || transferClipboard.computer !== transferComputer.id;
+  for (const id of ['transferNewFile', 'transferNewFolder']) $(id).disabled = !directory?.path || !!transferFileOperation;
+  $('transferPaste').disabled = !directory?.path || !!transferFileOperation || !transferClipboard || transferClipboard.computer !== transferComputer.id;
   renderTransferUploads();
 }
 function renderTransferRows() {
@@ -100,11 +100,11 @@ async function openTransfer(id = currentComputer().id) {
   renderTransferPage();
   if (!transferDirectory) await transferBrowse(transferDirectories[id]?.download || '');
 }
-async function transferBrowse(directory) {
+async function transferBrowse(directory, roots = false) {
   const request = ++transferRequest, picking = !!transferPicker;
   transferStatus('正在读取目录…');
   try {
-    const response = await api('/api/transfer/list?path=' + encodeURIComponent(directory), { computer: transferComputer });
+    const response = await api('/api/transfer/list?' + (roots ? 'roots=1' : 'path=' + encodeURIComponent(directory || '')), { computer: transferComputer });
     const data = await response.json();
     if (request !== transferRequest) return;
     if (!response.ok) throw Error(data.error);
@@ -140,8 +140,8 @@ addEventListener('popstate', () => {
 $('transferPathButton').onclick = () => { $('transferPathForm').hidden = !$('transferPathForm').hidden; if (!$('transferPathForm').hidden) $('transferPath').focus(); };
 $('transferPathForm').onsubmit = e => { e.preventDefault(); transferBrowse($('transferPath').value); };
 $('transferHome').onclick = () => { $('transferMore').open = false; transferBrowse(transferCurrentDirectory()?.home || ''); };
-$('transferParent').onclick = () => transferBrowse(transferCurrentDirectory()?.parent || '');
-$('transferRefresh').onclick = () => { $('transferMore').open = false; transferBrowse(transferCurrentDirectory()?.path || ''); };
+$('transferParent').onclick = () => { const directory = transferCurrentDirectory(); return transferBrowse(directory.parent, directory.os === 'win32' && directory.parent == null); };
+$('transferRefresh').onclick = () => { $('transferMore').open = false; transferBrowse(transferCurrentDirectory()?.path || '', !!transferCurrentDirectory()?.atRoots); };
 $('transferRoots').onchange = e => { $('transferMore').open = false; transferBrowse(e.target.value); };
 $('transferChangeTarget').onclick = () => {
   transferPicker = { path: transferUploadPath, entries: [] };

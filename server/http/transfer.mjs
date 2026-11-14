@@ -9,9 +9,10 @@ import { listDevices, needsTotp } from '../../lib/auth.mjs';
 import { json, readBody, SECURITY_HEADERS, corsHeaders } from './static.mjs';
 import { buildFilePreview } from '../file-preview.mjs';
 import { collisionPath } from '../../lib/file-actions.mjs';
+import { IS_WIN, localFilePath, localDrives, samePath, pathKey, validLocalName } from '../../lib/platform.mjs';
 
 const downloads = new Map();
-const localPath = value => path.resolve(value || os.homedir());
+const localPath = value => localFilePath(path.resolve(localFilePath(value || os.homedir())));
 
 export async function transferApi(req, res, route, device) {
   const query = new URL(req.url, 'http://localhost').searchParams;
@@ -19,24 +20,21 @@ export async function transferApi(req, res, route, device) {
   try {
     if (route === '/api/transfer/list' && req.method === 'GET') {
       const browsing = query.get('browse') === '1', atRoots = query.get('roots') === '1';
-      const roots = process.platform === 'win32'
-        ? (await Promise.all('ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(async c => { const drive = c + ':\\'; try { await fsp.access(drive); return drive; } catch { return null; } }))).filter(Boolean)
-        : ['/'];
-      if (atRoots && process.platform === 'win32') return json(req, res, 200, { path: '', parent: null, os: process.platform, roots, entries: roots.map(root => ({ name: root, path: root, directory: true, selectable: true })) });
-      const directory = atRoots ? '/' : browsing ? path.resolve(query.get('base') || os.homedir(), query.get('path') || '.') : localPath(query.get('path'));
+      const roots = IS_WIN ? localDrives().map(drive => drive + ':/') : ['/'];
+      if (atRoots && IS_WIN) return json(req, res, 200, { path: null, parent: null, atRoots: true, home: localFilePath(os.homedir()), os: process.platform, roots, entries: roots.map(root => ({ name: root, path: root, directory: true, selectable: true })) });
+      const directory = atRoots ? '/' : browsing ? localFilePath(path.resolve(localFilePath(query.get('base') || os.homedir()), localFilePath(query.get('path') || '.'))) : localPath(query.get('path'));
       if (browsing && (await fsp.stat(directory)).isFile()) return json(req, res, 200, { file: directory });
       const entries = await fsp.readdir(directory, { withFileTypes: true });
       const rows = await Promise.all(entries.map(async entry => {
-        const file = path.join(directory, entry.name);
+        const file = localFilePath(path.join(directory, entry.name));
         try {
           const stat = await fsp.stat(file);
           return { name: entry.name, path: file, directory: stat.isDirectory(), size: stat.size, link: entry.isSymbolicLink(), selectable: stat.isDirectory() || stat.isFile() };
         } catch { return { name: entry.name, path: file, selectable: false }; }
       }));
       rows.sort((a, b) => Number(!!b.directory) - Number(!!a.directory) || a.name.localeCompare(b.name));
-      let parent = path.dirname(directory);
-      if ((browsing || atRoots) && parent === directory) parent = process.platform === 'win32' ? '' : null;
-      return json(req, res, 200, { path: directory, parent, home: os.homedir(), roots, entries: rows, os: process.platform });
+      const parent = samePath(path.dirname(directory), directory) ? null : localFilePath(path.dirname(directory));
+      return json(req, res, 200, { path: directory, parent, atRoots: false, home: localFilePath(os.homedir()), roots, entries: rows, os: process.platform });
     }
     if (route === '/api/transfer/preview' && req.method === 'GET') {
       const file = localPath(query.get('path')), stat = await fsp.stat(file);
@@ -47,7 +45,7 @@ export async function transferApi(req, res, route, device) {
     if (route === '/api/transfer/download' && req.method === 'POST') {
       const { paths } = JSON.parse(await readBody(req, 1024 * 1024));
       if (!Array.isArray(paths) || !paths.length) throw Error('请选择文件或文件夹');
-      const files = [...new Set(paths.map(localPath))];
+      const files = [...new Map(paths.map(value => { const file = localPath(value); return [pathKey(file), file]; })).values()];
       const stats = await Promise.all(files.map(file => fsp.stat(file)));
       if (stats.some(s => !s.isFile() && !s.isDirectory())) throw Error('只能下载普通文件或文件夹');
       const archive = files.length > 1 || stats[0].isDirectory();
@@ -61,9 +59,10 @@ export async function transferApi(req, res, route, device) {
       const directory = localPath(query.get('directory'));
       const relative = query.get('name') || '';
       if (!relative || relative.includes('\\') || relative.includes('\0') || path.posix.isAbsolute(relative) || relative.split('/').some(p => !p || p === '.' || p === '..') || /^[A-Za-z]:/.test(relative)) throw Error('文件路径无效');
+      if (!relative.split('/').every(validLocalName)) throw Error('文件路径包含无效的文件名');
       const mode = query.get('mode');
       if (!['rename', 'replace', 'skip'].includes(mode)) throw Error('请选择同名文件的处理方式');
-      let target = path.join(directory, ...relative.split('/'));
+      let target = localFilePath(path.join(directory, ...relative.split('/')));
       await fsp.mkdir(path.dirname(target), { recursive: true });
       const original = target;
       let suffix = 1;

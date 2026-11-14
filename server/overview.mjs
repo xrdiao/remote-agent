@@ -2,7 +2,7 @@ import { nativeTargets, nativeWindowAt, nativeSessionCatalog } from './native-wi
 import { windowName } from '../lib/notify.mjs';
 import { allFusionRuns, fusionSummary, FUSION_ACTIVE } from './fusion/state.mjs';
 import { readLibrary, sessionId } from '../lib/session-library.mjs';
-import { samePath, normPath, pathKey } from '../lib/platform.mjs';
+import { IS_WIN, samePath, normPath, pathKey } from '../lib/platform.mjs';
 import { workspaceLabel } from '../lib/files.mjs';
 import path from 'node:path';
 import { storedProjectSession, fusionTargets } from './project-windows.mjs';
@@ -42,7 +42,8 @@ export function overviewSnapshot(deviceId) {
     const belongs = row => row.workspace
       ? roots.some(root => (root.host || '') === (row.host || '') && samePath(root.root, row.workspace, !row.host))
       : !!row.workspaceId && workspaceIds.has(row.workspaceId);
-    const projectRows = new Map([...rows].filter(([, row]) => belongs(row) || win.app === 'devin' && row.workspace && !row.host));
+    const projectRows = new Map([...rows].filter(([, row]) => belongs(row)
+      || win.app === 'devin' && row.workspace && !row.host || IS_WIN && win.app === 'cursor' && row.workspace));
     for (const [key, row] of local) if (belongs(row) || !row.workspace && win.app === 'cursor')
       projectRows.set(key, { ...rows.get(key), ...row, lastUsed: row.lastUsed || rows.get(key)?.lastUsed || 0 });
     for (const state of source.overviewStates()) {
@@ -71,6 +72,7 @@ export function overviewSnapshot(deviceId) {
         favorite: record?.favorite === true, lastMessageAt: Number(record?.lastMessageAt) || 0,
         workspace, host,
       };
+      if (IS_WIN && win.app === 'devin' && value.statusKnown && s.busy === false && value.run?.status === 'unknown') value.run = null;
       const identity = JSON.stringify([project, key]), previous = collected.get(identity);
       const quality = Number(!!s.run && s.run.status !== 'unknown') * 4 + Number(!!s.run) * 2
         + Number(key === sessionId(win.app, snap?.chat?.thread));
@@ -91,10 +93,13 @@ export function overviewSnapshot(deviceId) {
       tasks: null, actions: [], changed: 0, lastUsed: row.updatedAt * 1000 });
   }
   for (const row of api.windows) projects.set(row.projectId, row);
-  const windows = [...projects.values()], locations = [...new Map(windows.filter(row => row.workspace)
-    .map(row => [JSON.stringify([row.host, pathKey(row.workspace, !row.host)]), { root: row.workspace, host: row.host }])).values()];
+  const windows = [...projects.values()];
+  const locationKey = row => JSON.stringify([row.host || '', pathKey(row.workspace, !row.host)]);
+  const byLocation = new Map(windows.filter(row => row.workspace)
+    .map(row => [locationKey(row), { root: row.workspace, host: row.host || '' }]));
+  const locations = [...byLocation.values()];
   for (const row of windows.filter(row => row.workspace)) {
-    const location = locations.find(value => value.root === row.workspace && value.host === row.host);
+    const location = byLocation.get(locationKey(row));
     const label = workspaceLabel(location, locations);
     row.project = [label.name, label.detail].filter(Boolean).join(' · ');
   }

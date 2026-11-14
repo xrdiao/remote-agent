@@ -1,20 +1,29 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, execFileSync } from 'node:child_process';
-import { IS_WIN, findBin } from '../../lib/platform.mjs';
+import { spawn, execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
+import { IS_WIN, findBin, samePath } from '../../lib/platform.mjs';
 import { DATA_DIR, readState, saveState } from '../../lib/auth.mjs';
 import { PORT, PUBLISH_REPO } from '../config.mjs';
 import { publishUrl } from './pages.mjs';
 import { offerFirstPairing } from '../util.mjs';
+const run = promisify(execFile);
+
+function windowsTunnelPids() {
+  const bin = findBin('cloudflared');
+  const name = path.basename(bin).replace(/'/g, "''");
+  const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    `[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); ConvertTo-Json -InputObject @(Get-CimInstance Win32_Process -Filter "Name = '${name.toLowerCase().endsWith('.exe') ? name : name + '.exe'}'" | Select-Object ProcessId, CommandLine, ExecutablePath) -Compress`],
+    { encoding: 'utf8', windowsHide: true });
+  return JSON.parse(out).filter(item => (!path.isAbsolute(bin) || samePath(item.ExecutablePath, bin))
+    && new RegExp(`--url(?:=|\\s+)["']?http://127\\.0\\.0\\.1:${PORT}(?:["'\\s]|$)`).test(item.CommandLine)).map(item => item.ProcessId);
+}
 
 export function findTunnelPid() {
   try {
     const pids = [];
     if (IS_WIN) {
-      const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', "ConvertTo-Json -InputObject @(Get-CimInstance Win32_Process -Filter \"Name = 'cloudflared.exe'\" | Select-Object ProcessId, CommandLine) -Compress"], { encoding: 'utf8', windowsHide: true });
-      for (const item of JSON.parse(out)) {
-        if (new RegExp(`127\\.0\\.0\\.1:${PORT}\\b`).test(item.CommandLine)) pids.push(item.ProcessId);
-      }
+      pids.push(...windowsTunnelPids());
     } else {
       const out = execFileSync('ps', ['-eo', 'pid=,args='], { encoding: 'utf8' });
       for (const line of out.split('\n')) {
@@ -90,7 +99,7 @@ function announceTunnel(state) {
   if (PUBLISH_REPO) publishTunnel(state);
   else {
     console.log('隧道在后台运行，重启中继会沿用当前地址。');
-    console.log(`要彻底关掉公网：kill ${state.pid}`);
+    console.log(`要彻底关掉公网：${IS_WIN ? `taskkill /PID ${state.pid} /T /F` : `kill ${state.pid}`}`);
     offerFirstPairing();
   }
 }
@@ -107,7 +116,7 @@ function launchTunnel() {
   let child;
   try {
     child = spawn(findBin('cloudflared'), ['tunnel', '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', '--url', `http://127.0.0.1:${PORT}`], {
-      detached: true, stdio: ['ignore', fd, fd],
+      detached: true, windowsHide: true, stdio: ['ignore', fd, fd],
     });
   } catch { fs.closeSync(fd); missing(); return; }
   fs.closeSync(fd);
@@ -123,7 +132,10 @@ async function checkTunnel() {
   try {
     const state = tunnel;
     let alive = !state.exited && !!state.pid;
-    if (alive) { try { process.kill(state.pid, 0); } catch { alive = false; } }
+    if (alive) {
+      if (IS_WIN) alive = windowsTunnelPids().includes(state.pid);
+      else { try { process.kill(state.pid, 0); } catch { alive = false; } }
+    }
     if (!alive) { launchTunnel(); return; }
     if (state.restarting) return;
     if (!state.url && state.owned) state.url = loggedUrl();
@@ -137,7 +149,15 @@ async function checkTunnel() {
       console.log('!! 隧道持续未就绪，正在重新建立连接。');
       state.restarting = true;
       clearTimeout(state.publishTimer);
-      try { process.kill(state.pid, 'SIGTERM'); } catch { state.exited = true; }
+      if (IS_WIN) {
+        try {
+          await run('taskkill.exe', ['/PID', String(state.pid), '/T', '/F'], { windowsHide: true });
+          if (windowsTunnelPids().includes(state.pid)) throw new Error('cloudflared 进程尚未退出');
+          state.exited = true;
+        } catch (error) { state.restarting = false; throw error; }
+      } else {
+        try { process.kill(state.pid, 'SIGTERM'); } catch { state.exited = true; }
+      }
     }
   } finally { checking = false; }
 }

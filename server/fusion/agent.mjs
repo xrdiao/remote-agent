@@ -8,7 +8,7 @@ import { NativeCdp, nativeWindow } from '../native-windows.mjs';
 import { EDITORS, CODEX_CDP_URL } from '../config.mjs';
 import { codexWindows, editorWorkbenches } from '../windows.mjs';
 import { editorRoots } from '../../lib/files.mjs';
-import { findBin } from '../../lib/platform.mjs';
+import { findBin, localFilePath } from '../../lib/platform.mjs';
 import { helpersCall } from '../page/build.mjs';
 import { rememberFusionSession } from '../project-windows.mjs';
 import { fusionProject, fusionLive, publishFusion, fusionEvent } from './state.mjs';
@@ -24,10 +24,11 @@ const executeFile = promisify(execFile);
 export async function fusionWorkspaceSnapshot(project, scope = []) {
   if (project.host) return { available: false, reason: '远程工作区差异需由原生 Agent 提供证据', at: Date.now() };
   const git = findBin('git');
-  const options = { cwd: project.root, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 };
-  const paths = scope.length ? scope : ['.'];
+  const root = localFilePath(project.root);
+  const options = { cwd: root, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, windowsHide: true };
+  const paths = scope.length ? scope.map(value => localFilePath(value)) : ['.'];
   const scopedFiles = await Promise.all(scope.map(async name => {
-    const file = path.resolve(project.root, name);
+    const file = path.resolve(root, localFilePath(name));
     try {
       const stat = await fs.stat(file);
       return { path: name, exists: true, directory: stat.isDirectory(),
@@ -41,7 +42,7 @@ export async function fusionWorkspaceSnapshot(project, scope = []) {
       executeFile(git, ['ls-files', '--others', '--exclude-standard', '-z', '--', ...paths], options),
     ]);
     const files = await Promise.all(untracked.stdout.split('\0').filter(Boolean).map(async name => ({ path: name,
-      sha256: crypto.createHash('sha256').update(await fs.readFile(path.join(project.root, name))).digest('hex') })));
+      sha256: crypto.createHash('sha256').update(await fs.readFile(path.join(root, name))).digest('hex') })));
     return { available: true, at: Date.now(), source: '执行边界的 Git 工作区与指定文件快照', status: status.stdout, diff: diff.stdout, untracked: files, files: scopedFiles };
   } catch (error) { return { available: false, at: Date.now(), reason: error.message, files: scopedFiles }; }
 }

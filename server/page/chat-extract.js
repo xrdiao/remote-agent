@@ -351,6 +351,14 @@
     const update = () => changed();
     const refresh = () => {
       const state = codexHistoryState(), wanted = new Map();
+      if (IS_WIN && state.thread) {
+        const manager = codexNativeManager();
+        if (manager) {
+          wanted.set('requests:' + manager.hostId + ':' + state.thread, () => manager.addConversationCallback(state.thread, update));
+          for (const [key, source] of codexAsyncQuestionState(state.thread, manager.hostId).sources)
+            wanted.set(key, () => source.subscribe(update));
+        }
+      }
       for (const [key, source] of state.atoms) wanted.set(key, () => source.subscribe(update));
       for (const scope of state.scopes) if (scope.contextVersionAtom && typeof scope.store?.sub === 'function')
         wanted.set(scope, () => scope.store.sub(scope.contextVersionAtom, update));
@@ -433,8 +441,9 @@
       if (user) return user;
       if (item.type === 'agentMessage') return { type: 'assistant-message', responseAnnotationTargetId: item.id, content: item.text, phase: item.phase, completed: done };
       if (item.type === 'reasoning') return { type: 'reasoning', id: item.id, content: [...(item.summary || []), ...(item.content || [])].map(t => typeof t === 'string' ? t : t.text || '').join('\n'), completed: complete };
-      if (item.type === 'commandExecution') return { type: 'exec', callId: item.id, cmd: [item.command], executionStatus: item.status };
-      if (item.type === 'fileChange') return { type: 'patch', callId: item.id, changes: Object.fromEntries((item.changes || []).map(c => [c.path, c])) };
+      if (item.type === 'commandExecution') return { type: 'exec', callId: item.id, cmd: [item.command], executionStatus: item.status,
+        output: { aggregatedOutput: item.aggregatedOutput, exitCode: item.exitCode } };
+      if (item.type === 'fileChange') return { type: 'patch', callId: item.id, executionStatus: item.status, changes: Object.fromEntries((item.changes || []).map(c => [c.path, c])) };
       if (item.type === 'plan') return { type: 'todo-list', id: item.id, plan: item.plan || [] };
       if (item.type === 'mcpToolCall') return { ...item, type: 'mcp-tool-call' };
       if (item.type === 'dynamicToolCall') return { ...item, type: 'dynamic-tool-call' };
@@ -599,11 +608,17 @@
         if (item.phase === 'commentary') out.push({ i: id, k: 'thinking', t: `工作过程\n${item.content}`, live: !item.completed });
         else out.push({ i: id, k: 'assistant', t: item.content, completed: item.completed, htmlRead: !!block, bodyFormat: block ? 'html' : 'markdown', h: block ? clean(block) : esc(item.content).replace(/\n/g, '<br>'), ...(block ? { images: messageImages(block) } : {}) });
       } else if (item.type === 'exec') {
-        out.push({ i: id, k: 'tool', t: (item.cmd || []).join('\n').slice(0, 240), done: finished,
+        const cmd = (item.cmd || []).join('\n');
+        out.push({ i: id, k: 'tool', src: 'codex', kind: 'command', t: cmd.slice(0, 240), cmd,
+          output: item.output?.aggregatedOutput || '', exitCode: item.output?.exitCode, status: item.executionStatus, done: finished,
           ...(item.approvalRequestId != null || ['failed', 'declined'].includes(item.executionStatus) || (item.output?.exitCode != null && item.output.exitCode !== 0) ? { keep: true } : {}) });
       } else if (item.type === 'patch') {
         const files = Object.keys(item.changes || {});
-        out.push({ i: id, k: 'tool', t: `修改 ${files.join(', ')}`.slice(0, 240), f: files[0], done: finished });
+        const diff = files.flatMap(file => [['…', file], ...(item.changes[file].diff || '').split('\n')
+          .map(line => /^(--- |\+\+\+ |@@)/.test(line) ? ['…', line] : /^[+-]/.test(line) ? [line[0], line.slice(1)] : [' ', line.startsWith(' ') ? line.slice(1) : line])]);
+        out.push({ i: id, k: 'tool', src: 'codex', kind: 'edit', t: `修改 ${files.join(', ')}`.slice(0, 240), f: files[0],
+          diff, add: diff.filter(([type]) => type === '+').length, del: diff.filter(([type]) => type === '-').length,
+          status: item.executionStatus, done: finished });
       } else if (item.type === 'todo-list') {
         const steps = Array.isArray(item.plan) ? item.plan : (Array.isArray(item.items) ? item.items : []);
         const tasks = steps.map(step => ({
@@ -1178,7 +1193,8 @@
         questions: codexThread() ? { codex: true, requests: codexRequestData() } : pendingCodexRequests.length ? { codex: true, requests: pendingCodexRequests } : null,
         ...(devinSurface() ? { session: devinSession(), workdir: workdirInfo() } : {}),
         readonly: !hasComposer(),
-        mode: devinModeChip()?.innerText.trim() || CONTROLS.mode()?.innerText.trim() || null,
+        mode: IS_WIN && devinSurface() && activeThread() ? nativeSessionInfo('devin', activeThread(), 'mode').items.find(item => item.checked)?.label || null
+          : devinModeChip()?.innerText.trim() || CONTROLS.mode()?.innerText.trim() || null,
         ...(devinSurface() ? { surface: devinSurface() } : {}),
         model: agentModelName(),
         permission: permissionLabel(), effort: effortName(),
@@ -1289,7 +1305,8 @@
       ...(devinLog() ? { session: devinSession() } : {}),
       ...(devinSurface() ? { workdir: workdirInfo() } : {}),
       readonly: !hasComposer(),
-      mode: devinModeChip()?.innerText.trim() || (modeEl ? modeEl.innerText.trim() || modeEl.dataset.mode : null),
+      mode: IS_WIN && devinSurface() && activeThread() ? nativeSessionInfo('devin', activeThread(), 'mode').items.find(item => item.checked)?.label || null
+        : devinModeChip()?.innerText.trim() || (modeEl ? modeEl.innerText.trim() || modeEl.dataset.mode : null),
       permission: permissionLabel(), effort: effortName(),
       thread: activeThread(),
       title: agentState()?.title || '',
@@ -1410,6 +1427,7 @@
       queued: app === 'cursor' ? (cursorPendingTool().data.queueItems || []).map(item => ({ id: item.id, t: item.query, src: 'cursor' })) : [],
       questions, changed, subagents: [], earlier, historyBefore: before,
       model: agentModelName(), effort: effortName(), permission: null, context: app === 'devin' ? contextPct() : null,
+      ...(IS_WIN && (app === 'devin' || app === 'cursor') ? { mode: nativeSessionInfo(app, thread, 'mode').items.find(item => item.checked)?.label || null } : {}),
       performance: nativePerformance(app, thread, run, agentModelName(), performanceData),
       ...(draft !== undefined ? { draft } : {}),
       ...(app === 'devin' ? { surface: devinSurface(), session: { key: thread, cwd: remoteContext.cwd }, workdir: { cwd: remoteContext.cwd } } : {}),

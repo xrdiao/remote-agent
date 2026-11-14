@@ -4,6 +4,7 @@ import {fileURLToPath} from 'node:url';
 import {spawn, execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {DATA_DIR} from '../../lib/auth.mjs';
+import {findBin} from '../../lib/platform.mjs';
 
 const run = promisify(execFile);
 const dir = path.dirname(fileURLToPath(import.meta.url));
@@ -19,7 +20,7 @@ export async function visualWindows() {
   let text;
   if (process.platform === 'win32') {
     const script = fs.readFileSync(path.join(dir, 'windows.ps1'), 'utf8');
-    text = (await run('powershell.exe', ['-NoProfile', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')])).stdout;
+    text = (await run('powershell.exe', ['-NoProfile', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {windowsHide: true})).stdout;
   } else if (process.platform === 'linux') {
     text = (await run('/usr/bin/python3', [path.join(dir, 'linux.py'), 'list'])).stdout;
   } else throw new Error('绘图与仿真窗口查看目前支持 Windows 和 Linux');
@@ -70,12 +71,13 @@ class VisualCapture {
       target = (await visualWindows()).find(w => w.id === id);
       if (!target) throw new Error('绘图或仿真窗口已关闭，请重新选择');
     }
+    const command = wayland ? '/usr/bin/python3' : findBin('ffmpeg');
     this.stop();
     this.update({state: wayland ? 'permission' : 'starting', title: target?.title || '', message: wayland ? '需要在电脑端选择并授权绘图或仿真窗口' : '正在读取窗口画面…'});
     const args = wayland ? [path.join(dir, 'linux.py'), 'capture', stateFile, id === 'restore' ? 'restore' : 'select']
       : ['-hide_banner', '-loglevel', 'error', '-f', process.platform === 'win32' ? 'gdigrab' : 'x11grab', '-framerate', '8', ...(process.platform === 'linux' ? ['-probesize', '32', '-analyzeduration', '0', '-window_id', target.id] : []), '-i', process.platform === 'win32' ? `hwnd=${target.id}` : process.env.DISPLAY,
         '-an', '-vf', "scale='min(1280,iw)':-2", '-c:v', 'mjpeg', '-q:v', '5', '-threads', '1', '-f', 'image2pipe', 'pipe:1'];
-    const child = spawn(wayland ? '/usr/bin/python3' : 'ffmpeg', args, {stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true});
+    const child = spawn(command, args, {stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true});
     this.child = child;
     if (!wayland) save({...saved(), id: target.id});
     let buffer = Buffer.alloc(0), error = '';

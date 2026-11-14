@@ -23,6 +23,11 @@ function devinRuntimeFixture(extra) {
     devinClientRequests: () => store().getState().acp.clientRequests || {},
     devinSend: (provider, request, requestId) => store().dispatch({ provider, request, requestId, sender: extra.nativeModule?.tryGetAcpSingleton('sendAgentRequest') }),
     devinWatch: changed => ({ stop: store().subscribe(changed), refresh() {} }),
+    nativeSessionInfo: (app, id, catalog) => {
+      assert.equal(app, 'devin'); assert.equal(catalog, 'mode');
+      const mode = store().getState().acp.perSession[id]?.mode;
+      return { items: mode ? [{ label: mode, checked: true }] : [] };
+    },
     ...extra,
   };
 }
@@ -1160,14 +1165,15 @@ function devinWorkerFixture(thread = 'worker-thread') {
 test('Devin bound transcript context follows A/B while the visible desktop conversation stays separate', async () => {
   const h = devinWorkerFixture('A');
   try {
-    h.state.perSession.A = { messages: [], status: { contextUsage: { used: 14230, size: 262000 } } };
-    h.state.perSession.B = { messages: [], status: { contextUsage: { used: 800, size: 1000 } } };
-    h.state.perSession['other-thread'] = { messages: [], status: { contextUsage: { used: 900, size: 1000 } } };
+    h.state.perSession.A = { messages: [], mode: 'Code', status: { contextUsage: { used: 14230, size: 262000 } } };
+    h.state.perSession.B = { messages: [], mode: 'Plan', status: { contextUsage: { used: 800, size: 1000 } } };
+    h.state.perSession['other-thread'] = { messages: [], mode: 'Ask', status: { contextUsage: { used: 900, size: 1000 } } };
     h.context.devinSessionRecord = id => ({ ...h.session, sessionId: id });
     const read = async id => {
       h.context.remoteContext.threadId = id;
       const chat = await h.context.chat(false, 80);
       assert.equal(chat.thread, id);
+      assert.equal(chat.mode, h.context.IS_WIN ? h.state.perSession[id].mode : undefined);
       return chat.context && JSON.parse(JSON.stringify(chat.context));
     };
     assert.deepEqual(await read('A'), { pct: 5, basis: 'used' });
@@ -1320,7 +1326,7 @@ test('a background Codex free-text question can send its answer to the exact nat
       params: { threadId: 'worker', turnId: 'turn', questions: [{ id: 'q', question: '请补充说明', options: [] }] } }] }),
     replyWithUserInputResponse: async (...args) => replies.push(args),
   };
-  const context = createNativeContext({ remoteContext: { threadId: 'worker' }, codexNativeManager: () => manager, nativeValue: value => value });
+  const context = createNativeContext({ remoteContext: { threadId: 'worker' }, codexRequestThread: () => 'worker', codexNativeManager: () => manager, nativeValue: value => value });
   vm.runInContext(source.slice(start, end) + '\nthis.rows = codexNativeRequestRows; this.answer = codexNativeRequestAction;', context);
   const row = context.rows()[0];
   assert.equal(row.buttons[1].label, 'Send'); assert.notEqual(row.buttons[1].disabled, true);

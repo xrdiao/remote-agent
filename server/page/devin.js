@@ -167,6 +167,10 @@
   };
   // The current layout can change inside an IDE window without changing its window configuration.
   const devinSurface = () => {
+    if (IS_WIN) {
+      const shell = document.querySelector('.desktop-shell-root');
+      if (shell) return getComputedStyle(shell).visibility === 'hidden' ? 'editor' : 'agent';
+    }
     const modes = [...document.querySelectorAll('button[id*="devin-editor-mode-menu"]')];
     if (modes.length) {
       const picker = modes.find(vis);
@@ -212,6 +216,13 @@
     return index >= 0 ? index : null;
   };
   const surfaceTarget = (to, select = false) => {
+    if (IS_WIN && select) {
+      const api = codexFiberProps(document.querySelector('#chat'), Infinity)
+        .find(props => props.vscodeAPI?.executeCommand)?.vscodeAPI;
+      if (!api) throw new Error('Devin 原生视图切换入口尚未就绪');
+      return api.executeCommand(to === 'agent' ? 'workbench.action.switchToWindsurfAgentWindowMode'
+        : 'workbench.action.switchFromWindsurfAgentWindowToNormalMode').then(() => true);
+    }
     const seg = [...document.querySelectorAll(`button.switch-segment.${to}-segment`)].find(vis);
     if (seg) { if (select) { seg.click(); return true; } return center(seg); }
     const picker = [...document.querySelectorAll('button[id*="devin-editor-mode-menu"]')].find(vis);

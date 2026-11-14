@@ -1,3 +1,5 @@
+import { IS_WIN, localFilePath } from '../../lib/platform.mjs';
+import { windowsCursorSource } from '../native-windows.mjs';
 import { windowRoots, editorRoots } from '../../lib/files.mjs';
 import { mod } from '../../lib/platform.mjs';
 import { helpersCall, PAGE_SRC } from '../page/build.mjs';
@@ -43,6 +45,9 @@ export const adapter = {
 
   async openAgent(id, title = '') {
     if (!id || id.length > 200) throw new Error('这条 Agent 已经不在列表里');
+    const source = IS_WIN && !this.fusionBinding && windowsCursorSource(id);
+    if (source && source.cdp.wsUrl !== this.cdp.wsUrl)
+      return this.attach({ id: source.win.id, windowId: source.win.id, threadId: id });
     const switching = this.switchingThread;
     let confirmed = false;
     this.switchingThread = true;
@@ -78,19 +83,19 @@ export const adapter = {
   },
 
   async listAgents(silent, readOnly, emit) {
-    const list = readOnly && this.cdp.nativeWindow?.catalog ? structuredClone(this.cdp.nativeWindow.catalog)
+    const list = readOnly && this.cdp.nativeWindow?.catalogAt ? structuredClone(this.cdp.nativeWindow.catalog)
       : await this.cdp.evaluate(helpersCall("nativeSessionInfo('cursor', '', 'list')"));
-    emit({ list: list || [] });
+    emit({ list: list || [], loading: list === null });
   },
 
   async currentRoots() {
     if (this.threadId) {
       const context = await this.cdp.evaluate(helpersCall(`nativeSessionInfo('cursor', ${JSON.stringify(this.threadId)}, 'context')`));
-      return context.roots.filter(root => !root.host);
+      return context.roots.filter(root => !root.host).map(root => ({ ...root, root: localFilePath(root.root) }));
     }
     if (this.winTitle === 'Cursor Agents') {
       const workspace = await this.cdp.evaluate(helpersCall('cursorWorkspace()'));
-      return workspace && !workspace.host ? [workspace] : [];
+      return workspace && !workspace.host ? [{ ...workspace, root: localFilePath(workspace.root) }] : [];
     }
     return (await editorRoots(this.editorCdp, 'cursor')).filter(w => !w.host);
   },
@@ -201,6 +206,40 @@ export const adapter = {
 };
 
 export const methods = {
+async readWindowsCursorMenu(kind, requestId) {
+  const sel = this.sel, context = { app: 'cursor', threadId: this.threadId };
+  const data = await this.cdp.evaluate(`(async () => {
+    const h = ${PAGE_SRC.slice(0, -2)}(${JSON.stringify(context)});
+    await h.nativeSessionInfo('cursor', ${JSON.stringify(this.threadId)}, 'context');
+    return { items: ${kind === 'mode' ? `h.nativeSessionInfo('cursor', ${JSON.stringify(this.threadId)}, 'mode').items` : kind === 'model' ? 'h.modelItemsFast()' : 'h.effortItems(true)'},
+      fast: h.fastInfo(), model: h.agentModelName() };
+  })()`);
+  if (kind === 'model' && !data.items?.length) throw new Error('Cursor 原生模型列表尚未就绪，请重试');
+  if (kind === 'mode' && !data.items?.length) throw new Error('该 Cursor 会话未提供原生模式选项');
+  if (this.sel === sel) this.emit({ t: 'menu', kind, ...data, requestId, sel: this.selectionKey() });
+},
+
+async pickWindowsCursorMenu(kind, label) {
+  const context = { app: 'cursor', threadId: this.threadId };
+  const confirmed = await this.cdp.evaluate(`(async () => {
+    const h = ${PAGE_SRC.slice(0, -2)}(${JSON.stringify(context)});
+    await h.nativeSessionInfo('cursor', ${JSON.stringify(this.threadId)}, 'context');
+    const label = ${JSON.stringify(label)};
+    if (${JSON.stringify(kind)} === 'mode') {
+      if (!await h.nativeSessionAction('cursor', ${JSON.stringify(this.threadId)}, 'mode', label)) return false;
+      return h.nativeSessionInfo('cursor', ${JSON.stringify(this.threadId)}, 'mode').items.some(item => item.checked && item.label === label);
+    }
+    if (${JSON.stringify(kind)} === 'model') {
+      if (!await h.nativeSessionAction('cursor', ${JSON.stringify(this.threadId)}, 'model', label)) return false;
+      return h.modelItemsFast().some(item => item.checked && item.label === label);
+    }
+    if (!await h.pickEffort(label)) return false;
+    return h.effortItems().some(item => item.checked && item.label === label);
+  })()`);
+  if (!confirmed) throw new Error('Cursor 尚未确认设置，请重新读取原生菜单');
+  await this.refreshModelChat();
+},
+
 async withCursorUiRead(fn) {
   const cdp = this.cdp, sel = this.sel, key = cdp.wsUrl;
   const previous = cursorUiReads.get(key);

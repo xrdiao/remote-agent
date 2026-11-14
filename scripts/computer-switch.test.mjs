@@ -117,7 +117,7 @@ function harness({ sameSelection = false, count = 2 } = {}) {
     function setAgentList(key, value) { agentLists.set(key, value); }
     function syncNotify() { trace.push(['notify', currentComputer().id]); }
     function openComputerEntry(url, id) { trace.push(['entry', url, id]); }
-    function openSheet(kind) { sheetKind=kind;trace.push(['sheet', kind]); }
+    function openSheet(kind, html = '') { sheetKind=kind;$('sheet').innerHTML=html;trace.push(['sheet', kind]); }
     function esc(value) { return value; }
     var bootCalls = 0, overviewRefreshes = 0, overviewFetches = [];
     var ovList = JSON.parse(store.get('computers')).map((c,index)=>({id:c.id,c,index})), ovSt = new Map();
@@ -141,7 +141,7 @@ function harness({ sameSelection = false, count = 2 } = {}) {
   const projectSheets = read('app/js/sheets.js');
   run(projectSheets.slice(projectSheets.indexOf('function projectSheet('), projectSheets.indexOf('function showProjects(')));
   run(core.slice(core.indexOf('function requestAgentCatalog()'), core.indexOf('function openAgentList(')));
-  run(gate.slice(gate.indexOf('function newComputerConnection('), gate.indexOf('const connLaunchStatus')));
+  run(gate.slice(gate.indexOf('const CONN_AGENTS ='), gate.indexOf('const connLaunchStatus')));
   run(gate.slice(gate.indexOf('function connReadFailed('), gate.indexOf('function connRetryCurrent(')));
   run(net);
   run(core.slice(core.indexOf('function desktopAction(obj)'), core.indexOf('\n\n', core.indexOf('function setWindowReady(ready)'))));
@@ -207,6 +207,41 @@ function harness({ sameSelection = false, count = 2 } = {}) {
   return { run, state, settle, link, open, start, attached, deliver, switchTo, bothReady, records, trace, sockets, flushDraft,
     timers, advance, jump: ms => { now += ms; } };
 }
+
+test('selection messages without appName keep the connected application display name', () => {
+  const h = harness();
+  for (const [app, name] of [['cursor', 'Cursor'], ['devin', 'Devin'], ['codex', 'Codex']]) {
+    h.run(`applySelection({ app: '${app}', id: '${app}', sel: '${app}|window|thread', home: true }, false)`);
+    assert.equal(h.run('currentAppName'), name);
+  }
+});
+
+test('model reads carry request ownership, show matching items, and finish on errors or disconnect', async () => {
+  const h = harness(); await h.start(); h.attached(0);
+  h.run(`var menuSheetKind = '', menuRefreshTimer = 0, menuCache = new Map();
+    var MENU_TITLE = { model: '选择模型' };
+    function capabilityState() { return { available: windowReady }; }
+    function lruPut(map, key, value) { map.set(key, value); }
+    function showMenu(kind, items) { openSheet('menu'); trace.push(['models', items]); }`);
+  const sheets = read('app/js/sheets.js');
+  h.run(sheets.slice(sheets.indexOf('const menuCacheKey ='), sheets.indexOf('function showMenu(kind,')));
+  h.run(`requestMenu('model', '读取模型列表…')`);
+  const request = h.link(0).socket.sent.findLast(message => message.t === 'openMenu');
+  assert.equal(request.sel, h.state().viewSel);
+  h.deliver(0, { t: 'menu', kind: 'model', requestId: request.requestId, sel: request.sel,
+    items: [{ label: 'native-model', checked: true }] });
+  assert.equal(h.trace.findLast(row => row[0] === 'models')[1][0].checked, true);
+  assert.equal(h.run('menuPending'), null);
+  h.run(`menuCache.clear(); requestMenu('model', '读取模型列表…')`);
+  const second = h.link(0).socket.sent.findLast(message => message.t === 'openMenu');
+  h.deliver(0, { t: 'menu', kind: 'model', requestId: second.requestId, sel: second.sel, error: '原生模型读取失败' });
+  assert.match(h.run("$('sheet').innerHTML"), /原生模型读取失败/);
+  h.run(`requestMenu('model', '读取模型列表…')`);
+  await h.link(0).socket.close();
+  assert.match(h.run("$('sheet').innerHTML"), /电脑连接已断开/);
+  assert.equal(h.run('menuPending'), null);
+  assert.equal(h.sockets.some(socket => socket.sent.some(message => message.t === 'pickMenu')), false);
+});
 
 test('ready computer switches onto its existing session and can send immediately without boot/auth/attach', async () => {
   const h = harness(); await h.bothReady();

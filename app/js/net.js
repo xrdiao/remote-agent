@@ -197,11 +197,14 @@ function applySelection(m, clearChat = true) {
   const fusionChanged = 'fusionController' in m;
   if (fusionChanged) activeFusionController = m.fusionController;
   if (m.app) {
-    currentApp = m.app; currentAppName = m.appName; currentWindow = m.id;
+    currentApp = m.app;
+    currentAppName = currentApp === 'fusion' ? 'Fusion' : CONN_AGENTS.find(agent => agent.app === currentApp)?.name || I18N.tr('当前应用');
+    currentWindow = m.id;
     capabilityOwner = m.app; agentCapabilities = m.capabilities || null;
     updateAppText();
   }
   const changed = (m.sel || '') !== viewSel;
+  if (changed && sheetKind === 'menu' && menuPending) showMenuError(menuPending.kind, '会话已切换，请重新读取菜单');
   if (changed) { if (typeof cancelVoice === 'function') cancelVoice(); menuRequest++; saveDraft(); }
   // A new chat gets its thread id once it materializes: keep its pending echoes attached to it.
   if (changed && viewSel.endsWith('|') && (m.sel || '').startsWith(viewSel)) for (const p of pendingEchoes) if (p.sel === viewSel) p.sel = m.sel;
@@ -1226,6 +1229,7 @@ async function connect(resumeLink = null) {
   base = link.relay;
   link.closed = async event => {
     if (gen !== connGen) return;
+    if (sheetKind === 'menu' && menuPending) showMenuError(menuPending.kind, '电脑连接已断开，请重新读取菜单');
     resetLatency();
     setWindowReady(false);
     cancelConnectionWork();
@@ -1371,7 +1375,7 @@ async function connect(resumeLink = null) {
       renderContext(null);
       $('quotaMeters').innerHTML = '';
       $('quotaMeters').title = '';
-      renderQuota(quotaCache.get(quotaKey()) || { missing: true, quota: [], limits: [] });
+      renderQuota({ missing: true, quota: [], limits: [] });
       if (selectionReady) send({ t: 'appTheme', dark: document.documentElement.dataset.theme !== 'light' });
       if (m.initial) metadataWindow = `${connGen}|${currentApp}|${m.windowId || ''}`;
       if (mode !== 'chat' && selectionReady) refreshSelectionMetadata(m.initial === true);
@@ -1432,7 +1436,7 @@ async function connect(resumeLink = null) {
     else if (m.t === 'docs') showDocs(m);
     else if (m.t === 'settings') { if (m.codex && m.requestId !== codexSettingsRequest) return; finishPending(['正在读取设置…', '正在修改…', '正在保存指令…']); m.codex ? showCodexSettings(m) : showSettings(m.sections || [], m.nav || [], m.current || '', m.choices || []); }
     else if (m.t === 'usage') {
-      if (currentApp === 'fusion' || (m.sel && viewSel && m.sel !== viewSel)) return;
+      if (currentApp === 'fusion' || !windowReady || !viewSel || m.sel !== viewSel) return;
       if (m.plan) { appPlans = { ...appPlans, [currentApp]: m.plan }; updateTitle(); }
       if (m.missing) status('没有额度数据');
       renderQuota(m);
@@ -1460,6 +1464,7 @@ async function connect(resumeLink = null) {
       if (m.requestId != null && (m.requestId !== menuRequest || m.requestId !== menuPending?.requestId
         || m.kind !== menuPending.kind || menuPending.sel !== viewSel)) return;
       if (m.error) return showMenuError(m.kind, m.error);
+      if (m.requestId != null) menuPending = null;
       lruPut(menuCache, menuCacheKey(m.kind), m, 24);
       if (m.requestId == null && !(sheetKind === 'menu' && menuSheetKind === m.kind)) return;
       showMenu(m.kind, m.items, m.max, m.fusion, m.fast, m.model, false, m.pricing);

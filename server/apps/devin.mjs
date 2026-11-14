@@ -1,9 +1,9 @@
 import path from 'node:path';
 import { windowRoots, editorRoots } from '../../lib/files.mjs';
 import { agentMarks } from '../../lib/marks.mjs';
-import { IS_WIN, mod } from '../../lib/platform.mjs';
+import { IS_WIN, mod, localFilePath, samePath } from '../../lib/platform.mjs';
 import { listWindows } from '../windows.mjs';
-import { Cdp, cdpRead } from '../cdp.mjs';
+import { Cdp, cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { FOCUS_COMPOSER } from '../agent/context.mjs';
 import { activateQueuedAction } from '../agent/queued-action.mjs';
@@ -105,10 +105,10 @@ export const adapter = {
   async currentRoots() {
     if (this.threadId) {
       const context = await this.cdp.evaluate(helpersCall(`nativeSessionInfo('devin', ${JSON.stringify(this.threadId.replace(/^tab:/, ''))}, 'context')`));
-      return context.roots;
+      return context.roots.map(root => root.host ? root : { ...root, root: localFilePath(root.root) });
     }
     const session = await this.cdp.evaluate(helpersCall('devinSession()'));
-    if (session?.surface === 'agent') return session.cwd ? [{ root: session.cwd, host: null, source: 'devin', workspaceFile: '' }] : [];
+    if (session?.surface === 'agent') return session.cwd ? [{ root: localFilePath(session.cwd), host: null, source: 'devin', workspaceFile: '' }] : [];
     return (await editorRoots(this.editorCdp, 'devin')).filter(w => !w.host);
   },
 
@@ -223,6 +223,22 @@ export const adapter = {
 };
 
 export const methods = {
+async devinWindowRoots(cdp = this.editorCdp) {
+  return (await editorRoots(cdp, IS_WIN ? 'code' : 'devin')).map(root => ({ ...root, source: 'devin' }));
+},
+async readWindowsDevinMode(requestId) {
+  const sel = this.sel, thread = this.threadId;
+  const data = await this.cdp.evaluate(helpersCall(`nativeSessionInfo('devin', ${JSON.stringify(thread)}, 'mode')`, { app: 'devin', threadId: thread }));
+  if (!data.items.length) throw new Error('该 Devin 会话未提供原生模式选项');
+  if (this.sel === sel) this.emit({ t: 'menu', kind: 'mode', ...data, requestId, sel: this.selectionKey() });
+},
+
+async pickWindowsDevinMode(label) {
+  const thread = this.threadId;
+  await this.cdp.evaluate(helpersCall(`nativeSessionAction('devin', ${JSON.stringify(thread)}, 'mode', ${JSON.stringify(label)})`, { app: 'devin', threadId: thread }));
+  await this.refreshModelChat();
+},
+
 
 // Devin virtualizes its transcript: only rows near the viewport stay mounted, so a poll
 // sees a sliding window of acp-indexed rows. Merge each window into per-session history
@@ -445,8 +461,8 @@ syncSession(chat) {
   if (this.app !== 'devin' || !sess) return;
   // Keep the session's real working directory so the phone's project label is right
   // even when the window itself has no folder ("Untitled (Workspace)").
-  if ((sess.cwd || '') !== this.sessionCwd) {
-    this.sessionCwd = sess.cwd || '';
+  if (!samePath(sess.cwd || '', this.sessionCwd || '')) {
+    this.sessionCwd = localFilePath(sess.cwd || '');
     this.emit({ t: 'thread', windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(), project: this.projectName() });
   }
   const key = chat.thread || sess.key;
@@ -558,7 +574,7 @@ async devinProjectWindows(windows) {
     try {
       await cdp.connect();
       if (await cdp.evaluate(helpersCall('devinSurface()')) !== 'editor') return null;
-      return { ...window, project: (await editorRoots(cdp, 'devin'))[0] };
+      return { ...window, project: (await (IS_WIN ? this.devinWindowRoots(cdp) : editorRoots(cdp, 'devin')))[0] };
     } finally { cdp.close(); }
   }));
   return result.filter(Boolean);
@@ -570,32 +586,38 @@ async setSurface(to, target) {
   const session = target || await this.cdp.evaluate(helpersCall('devinSession()'));
   if (session?.surface === want) return this.emit({ t: 'status', ok: true, msg: want === 'editor' ? '已在 Editor 界面' : '已在 Agent 界面' });
   const control = await this.cdp.evaluate(helpersCall(`surfaceTarget(${JSON.stringify(want)}, true)`));
-  if (control) {
-    if (!await this.waitFor(`devinSurface() === ${JSON.stringify(want)}`)) throw new Error('Devin 视图切换没有生效');
-    this.cdp.nativeWindow?.invalidate();
-  }
-  for (const window of (await listWindows(null, 'devin')).filter(w => w.app === 'devin')
-    .sort((a, b) => Number(b.id === this.windowId) - Number(a.id === this.windowId))) {
-    const cdp = new Cdp(window.ws);
-    try {
-      await cdp.connect();
-      if (await cdp.evaluate(helpersCall('devinSurface()')) !== want) continue;
-      if (want === 'editor' && session.cwd && !this.projectMatches(await editorRoots(cdp, 'devin'), session.cwd)) continue;
-      const previousCdp = this.cdp, switching = this.switchingThread;
-      this.switchingThread = true;
+  const deadline = Date.now() + 30000;
+  do {
+    for (const window of (await listWindows(null, 'devin')).filter(w => w.app === 'devin')
+      .sort((a, b) => Number(b.id === this.windowId) - Number(a.id === this.windowId))) {
+      const cdp = new Cdp(window.ws);
       try {
-        const binding = await this.openBound(window, window.ws, null, { windowId: window.id, threadId: session?.key || '', deferred: true });
-        if (await this.checkProjectTrust({ threadId: session?.key || '' }, binding?.trust)) return;
-        if (session?.key) await this.adapter.openAgent.call(this, session.key);
-        this.bindingReady = true;
-        this.emit({ t: 'status', ok: true, msg: want === 'editor' ? '已切到 Editor 界面' : '已切到 Agent 界面' });
-      } finally {
-        if (switching) this.switchingThread = switching;
-        else await this.resumeProjectSwitch(previousCdp);
-      }
-      return;
-    } finally { cdp.close(); }
-  }
+        await cdp.connect();
+        if (await cdp.evaluate(helpersCall('devinSurface()')) !== want) continue;
+        if (want === 'editor' && session?.cwd) {
+          const roots = IS_WIN ? await this.devinWindowRoots(cdp) : await editorRoots(cdp, 'devin');
+          if (!this.projectMatches(roots, session.cwd)) continue;
+        }
+        this.cdp.nativeWindow?.invalidate();
+        const previousCdp = this.cdp, switching = this.switchingThread;
+        this.switchingThread = true;
+        try {
+          const binding = await this.openBound(window, window.ws, null, { windowId: window.id, threadId: session?.key || '', deferred: true });
+          if (await this.checkProjectTrust({ threadId: session?.key || '' }, binding?.trust)) return;
+          if (session?.key) await this.adapter.openAgent.call(this, session.key);
+          this.bindingReady = true;
+          this.emit({ t: 'status', ok: true, msg: want === 'editor' ? '已切到 Editor 界面' : '已切到 Agent 界面' });
+        } finally {
+          if (switching) this.switchingThread = switching;
+          else await this.resumeProjectSwitch(previousCdp);
+        }
+        return;
+      } finally { cdp.close(); }
+    }
+    if (!control) break;
+    await awaitCdpRead(new Promise(resolve => setTimeout(resolve, 120)));
+  } while (Date.now() < deadline);
+  if (control) throw new Error('Devin 尚未打开对应视图，请检查电脑端视图切换状态后重试');
   if (want === 'editor' && session?.cwd) return this.useProject(session.cwd, false, session.key);
   throw new Error('没有找到对应的 Devin 窗口');
 },

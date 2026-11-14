@@ -2,6 +2,7 @@
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { appPlans } from './context.mjs';
 import { nativeWindow } from '../native-windows.mjs';
+import { IS_WIN } from '../../lib/platform.mjs';
 
 export const methods = {
   refreshModelChat() {
@@ -72,23 +73,24 @@ export const methods = {
   },
   async fetchUsage(request) {
     const automatic = !request.manual;
-    const cdp = this.cdp, sel = this.sel;
+    const cdp = this.cdp, sel = this.sel, selection = this.selectionKey(), app = this.app;
+    const current = () => this.liveRead(cdp, sel) && this.app === app && this.selectionKey() === selection;
     let context;
     try { context = await this.adapter.usageContext.call(this); }
     catch { context = undefined; }
-    if (context !== undefined && cdp === this.cdp && this.liveRead(cdp, sel)) this.emit({ t: 'usage', sel: this.selectionKey(), context });
-    if (!this.liveRead(cdp, sel)) return;
+    if (context !== undefined && cdp === this.cdp && current()) this.emit({ t: 'usage', sel: selection, context });
+    if (!current()) return;
     try {
       const account = await this.adapter.accountUsage.call(this, request, automatic);
-      if (!this.liveRead(cdp, sel)) return;
-      if (typeof account?.plan === 'string' && account.plan) appPlans[this.app] = account.plan;
-      if (!account && !request.manual) { this.emit({ t: 'usage', sel: this.selectionKey(), ...(context === undefined ? {} : { context }) }); return; }
+      if (!current()) return;
+      if (typeof account?.plan === 'string' && account.plan) appPlans[app] = account.plan;
+      if (!account && !request.manual) { this.emit({ t: 'usage', sel: selection, ...(context === undefined ? {} : { context }) }); return; }
       if (!account) throw new Error('没有读到额度');
-      this.emit({ t: 'usage', sel: this.selectionKey(), updated: Date.now(), ...(context === undefined ? {} : { context }), ...account });
+      this.emit({ t: 'usage', sel: selection, updated: Date.now(), ...(context === undefined ? {} : { context }), ...account });
     } catch (e) {
-      if (!this.liveRead(cdp, sel)) return;
+      if (!current()) return;
       const error = /timeout|timed out|超时/i.test(e.message) ? '额度查询超时' : !this.cdp ? '电脑连接已断开' : '额度接口请求失败';
-      this.emit({ t: 'usage', sel: this.selectionKey(), error, detail: e.message, automatic: !request.manual, ...(context === undefined ? {} : { context }) });
+      this.emit({ t: 'usage', sel: selection, error, detail: e.message, automatic: !request.manual, ...(context === undefined ? {} : { context }) });
     }
   },
   async pressControl(name) {
@@ -114,6 +116,9 @@ export const methods = {
       ? this.withCursorUiRead(read) : read();
   },
   async readMenu(kind, requestId) {
+    if (IS_WIN && this.app === 'devin' && kind === 'mode') return this.readWindowsDevinMode(requestId);
+    if (IS_WIN && this.app === 'cursor' && (kind === 'model' || kind === 'effort' || kind === 'mode'))
+      return this.readWindowsCursorMenu(kind, requestId);
     const sel = this.sel;
     if (this.app === 'codex' && (kind === 'model' || kind === 'effort')) {
       const data = await this.cdp.evaluate(`(() => {
@@ -258,6 +263,9 @@ export const methods = {
     if (effort) this.emit({ t: 'menu', kind: 'effort', ...effort, sel: this.selectionKey() });
   },
   async pickMenu(kind, label, name) {
+    if (IS_WIN && this.app === 'devin' && kind === 'mode') return this.pickWindowsDevinMode(label);
+    if (IS_WIN && this.app === 'cursor' && (kind === 'model' || kind === 'effort' || kind === 'mode'))
+      return this.withCursorUiRead(() => this.pickWindowsCursorMenu(kind, label));
     if (kind === 'fast') {
       const on = label === 'on';
       if (!await this.cdp.evaluate(helpersCall(`pickFast(${on})`))) {

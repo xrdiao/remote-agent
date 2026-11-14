@@ -47,7 +47,7 @@ function saveEntry(entry) {
 }
 export async function ensureFixedEntry({ ask, interactive }) {
   try { await run('gh', ['--version']); }
-  catch { throw new Error('个人固定入口需要 GitHub CLI：Ubuntu 执行 sudo apt install gh，然后重新运行'); }
+  catch { throw new Error('个人固定入口需要 GitHub CLI：' + (process.platform === 'win32' ? 'Windows 执行 winget install --id GitHub.cli -e，安装后重开终端' : process.platform === 'darwin' ? 'macOS 执行 brew install gh' : 'Ubuntu 执行 sudo apt install gh') + '，然后重新运行'); }
   try { await run('gh', ['auth', 'status']); }
   catch {
     console.log('需要登录自己的 GitHub 账号，以检查并更新个人固定入口。');

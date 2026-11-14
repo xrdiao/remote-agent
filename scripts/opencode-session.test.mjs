@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { localFilePath } from '../lib/platform.mjs';
 import { EventEmitter } from 'node:events';
 import { cdpRead } from '../server/cdp.mjs';
 import { createDocuments } from './fixtures/opencode-documents.mjs';
@@ -311,7 +312,7 @@ test('OpenCode confirms a send only after the matching native user message is sa
   await session.handle({ t: 'pickMenu', kind: 'effort', label: 'high' });
   await session.handle({ t: 'send', text: 'read files', requestId: 'receipt-one', draftEpoch: 'epoch' });
   const prompt = requests.find(row => row.route.endsWith('/prompt_async'));
-  assert.equal(prompt.options.directory, root.slice(0, -1));
+  assert.equal(prompt.options.directory, localFilePath(root));
   assert.equal(prompt.options.body.variant, 'high');
   assert.equal(events.find(row => row.t === 'sent').pending, true);
   assert.equal(events.some(row => row.t === 'sent' && !row.pending), false);

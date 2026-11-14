@@ -1,12 +1,12 @@
 // 对话：聊天轮询、历史加载、发送与附件
 import fs from 'node:fs';
 import path from 'node:path';
-import { IS_MAC, mod } from '../../lib/platform.mjs';
+import { IS_MAC, IS_WIN, mod, pathKey } from '../../lib/platform.mjs';
 import { codexContext } from '../windows.mjs';
 import { cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { FOCUS_COMPOSER } from './context.mjs';
-import { uploads, pendingUploads, uploadAttachments, removeUpload, updateUpload } from '../../lib/uploads.mjs';
+import { uploads, uploadPathKey, pendingUploads, uploadAttachments, removeUpload, updateUpload } from '../../lib/uploads.mjs';
 import { rememberSessionMessage, observeSessionTitle, readLibrary } from '../../lib/session-library.mjs';
 import { nativeWindow } from '../native-windows.mjs';
 import { normalizeReceiptText, withoutAttachmentLabels } from '../../lib/shared-rules.mjs';
@@ -229,12 +229,17 @@ export const methods = {
       if (!this.acceptsChat(chat)) return;
       this.syncSession(chat);
       for (const file of uploads.values()) if (file.pending && file.awaitingReceipt && file.sel === this.selectionKey()
-        && chat?.items.some(item => item.k === 'human' && item.t?.split('\n').includes(file.path))) updateUpload(file, { pending: false });
+        && chat?.items.some(item => item.k === 'human' && item.t?.split('\n').some(line => pathKey(line) === uploadPathKey(file)))) updateUpload(file, { pending: false });
       const extracted = chat && JSON.stringify({ ...chat, draft: undefined });
       if ((this.app !== 'codex' || state.requested && !state.sent) && chat && chat.thread === (this.threadId || '') && (!this.lastChat || extracted !== this.lastExtractedChat || state.requested && !state.sent)) {
         const initial = { ...chat, items: chat.items.map(it => ({ ...it })) };
         delete initial.draft;
         this.mergeCodexItems(initial);
+        if (IS_WIN && this.app === 'codex') initial.items = initial.items.map(item => {
+          if (item.k !== 'tool') return item;
+          const { cmd, output, diff, ...summary } = item;
+          return summary;
+        });
         this.lastExtractedChat = extracted;
         this.fillThinking(initial);
         this.retainThinking(initial);
@@ -471,7 +476,7 @@ export const methods = {
             await this.typeText(draft || '', editing.cdp);
             return await editing.cdp.evaluate(helpersCall('composerDraft()')) === (draft || '').replace(/\n+$/g, '');
           };
-          const ok = this.app === 'codex' && !draft ? true : await restore().catch(() => false);
+          const ok = await restore().catch(() => false);
           if (ok) this.lastDraft = draft || '';
           if (request) this.emit({ t: 'draftAck', sel: editing.sel, ok, text: draft, read: request.text === undefined, draftEpoch: request.draftEpoch || '', revision: request.revision });
         }

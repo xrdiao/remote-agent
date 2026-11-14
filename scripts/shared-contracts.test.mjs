@@ -6,7 +6,7 @@ import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { notificationTarget, notificationKey } from '../lib/shared-rules.mjs';
 import { uploads, removeUpload, registerUpload, updateUpload, initializeUploads, removeDeviceUploads } from '../lib/uploads.mjs';
-import { read, fragment } from './page-fixture.mjs';
+import { read, fragment, createPageContext } from './page-fixture.mjs';
 import { gitBlobSha } from '../server/publish/pages.mjs';
 
 test('Live Activity forwarding retains every required Swift attribute, including the computer identity', () => {
@@ -77,7 +77,7 @@ test('device upload removal cancels in-flight requests and also reads ownership 
 for (const revoked of [false, true]) test(`HTTP upload persists completion and cannot finish after device removal: revoked=${revoked}`, async () => {
   const root = fs.mkdtempSync('_shots/http-upload-'), id = 'http-document', req = new PassThrough();
   req.url = '/api/upload?name=sample.txt&sel=scope'; req.method = 'POST';
-  const context = vm.createContext({ fs, path, URL, Buffer, DATA_DIR: root, crypto: { randomUUID: () => id },
+  const context = createPageContext({ fs, path, URL, Buffer, DATA_DIR: root, crypto: { randomUUID: () => id },
     registerUpload, updateUpload, removeUpload, uploads, uploadDocument: () => true,
     json: (_req, _res, status, body) => ({ status, body }), imageTypes: {} });
   const source = fragment(read('server/http/api.mjs'), "  if (route === '/api/upload' &&", "  if (route === '/api/devices')");

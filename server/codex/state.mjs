@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { IS_WIN, localFilePath, samePath } from '../../lib/platform.mjs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { CodexClient } from './client.mjs';
@@ -21,7 +22,7 @@ export class CodexState extends EventEmitter {
     super();
     this.client = client;
     this.file = file;
-    this.records = new Map(file && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')).map(row => [row.id, row]) : []);
+    this.records = new Map(file && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')).map(row => [row.id, { ...row, cwd: localFilePath(row.cwd) }]) : []);
     this.statistics = new Map([...this.records].map(([id, row]) => [id, row.statistics || {}]));
     this.threads = new Map();
     this.requests = new Map();
@@ -106,17 +107,21 @@ export class CodexState extends EventEmitter {
     return this.statistics.get(id);
   }
   remember(thread) {
+    thread.cwd = localFilePath(thread.cwd);
     const previous = this.records.get(thread.id);
     this.records.set(thread.id, { id: thread.id, cwd: thread.cwd, title: thread.name || thread.preview || previous?.title || '新会话',
       updatedAt: thread.updatedAt, createdAt: thread.createdAt, statistics: this.statisticsFor(thread.id), ...(previous?.untitled ? { untitled: true } : {}) });
     this.save();
+    if (IS_WIN && previous?.title !== this.records.get(thread.id).title)
+      cdpRead.run(null, () => withOperation(null, () => this.emit('catalogChanged', thread.id)));
   }
 
   async create(cwd) {
+    cwd = localFilePath(cwd);
     await this.client.connect();
     const result = await this.client.request('thread/start', { cwd });
     const thread = { ...result.thread, settings: threadSettings(result), generation: this.client.generation };
-    if (path.resolve(thread.cwd) !== path.resolve(cwd)) throw new Error('Codex 返回的会话项目与所选目录不一致');
+    if (!samePath(path.resolve(localFilePath(thread.cwd)), path.resolve(cwd))) throw new Error('Codex 返回的会话项目与所选目录不一致');
     // Native naming commits an empty thread before it can be restored after process exit.
     await this.client.request('thread/name/set', { threadId: thread.id, name: '新会话' });
     thread.name = '新会话';
@@ -138,7 +143,7 @@ export class CodexState extends EventEmitter {
         thread = { ...result.thread, settings: threadSettings(result), generation: this.client.generation };
         if (thread.id !== id) throw new Error('Codex 返回的会话 ID 与所选会话不一致');
         const previous = this.records.get(id);
-        if (previous && path.resolve(thread.cwd) !== path.resolve(previous.cwd)) throw new Error('Codex 原生会话项目已变化，请重新选择项目');
+        if (previous && !samePath(path.resolve(localFilePath(thread.cwd)), path.resolve(localFilePath(previous.cwd)))) throw new Error('Codex 原生会话项目已变化，请重新选择项目');
         this.threads.set(id, thread);
         this.remember(thread);
       }
@@ -152,6 +157,7 @@ export class CodexState extends EventEmitter {
     await this.load(id);
     const revision = this.threads.get(id).revision || 0;
     const { thread } = await this.client.request('thread/read', { threadId: id, includeTurns: true });
+    thread.cwd = localFilePath(thread.cwd);
     const old = this.threads.get(id);
     if ((old.revision || 0) !== revision) {
       const current = new Map(old.turns.map(turn => [turn.id, turn]));
@@ -167,7 +173,7 @@ export class CodexState extends EventEmitter {
     const source = await this.load(id);
     const result = await this.client.request('thread/fork', { threadId: id, lastTurnId: turnId, deferGoalContinuation: true });
     const thread = { ...result.thread, settings: threadSettings(result), generation: this.client.generation };
-    if (path.resolve(thread.cwd) !== path.resolve(source.cwd)) throw new Error('Codex 分叉会话的项目与源会话不一致');
+    if (!samePath(path.resolve(localFilePath(thread.cwd)), path.resolve(localFilePath(source.cwd)))) throw new Error('Codex 分叉会话的项目与源会话不一致');
     const original = this.statisticsFor(id), early = this.statisticsFor(thread.id);
     this.statistics.set(thread.id, Object.fromEntries(thread.turns.filter(turn => original[turn.id] || early[turn.id]).map(turn =>
       [turn.id, structuredClone({ ...original[turn.id], ...early[turn.id], model: original[turn.id]?.model || early[turn.id]?.model })])));
@@ -240,6 +246,7 @@ export class CodexState extends EventEmitter {
         for (const [key, request] of this.requests) if (request.params.threadId === id && request.params.turnId === p.turn.id) this.requests.delete(key);
         thread.updatedAt = Math.floor(Date.now() / 1000);
         this.remember(thread);
+        if (IS_WIN) cdpRead.run(null, () => withOperation(null, () => this.emit('catalogChanged', id)));
       }
     } else if (method === 'item/started' || method === 'item/completed') {
       const turn = thread.turns.find(turn => turn.id === p.turnId);
@@ -412,7 +419,7 @@ export class CodexState extends EventEmitter {
     const requests = this.requestRows(id);
     return { thread: id, title: thread.name || this.records.get(id)?.title || thread.preview, items, busy: !!turn,
       model: settings.model || thread.model || '', effort: settings.effort ?? settings.reasoningEffort ?? thread.reasoningEffort,
-      permission: settings.approvalsReviewer === 'auto_review' ? 'Approve for me' : settings.sandboxPolicy?.type === 'dangerFullAccess' ? 'Full access' : 'Ask for approval',
+      permission: settings.approvalsReviewer === 'auto_review' || IS_WIN && settings.approvalsReviewer === 'guardian_subagent' ? 'Approve for me' : settings.sandboxPolicy?.type === 'dangerFullAccess' ? 'Full access' : 'Ask for approval',
       context: usage ? { used: usage.last.totalTokens, max: usage.modelContextWindow, pct: usage.modelContextWindow ? usage.last.totalTokens / usage.modelContextWindow * 100 : null } : null,
       queued: (this.queues.get(id) || []).map(row => ({ id: row.id, t: textInput(row.input), src: 'codex', messageId: `${id}:user-message:${row.clientUserMessageId}` })),
       questions: { codex: true, requests }, global: [], subagents: [], changed: 0,

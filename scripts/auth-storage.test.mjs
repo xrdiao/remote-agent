@@ -4,13 +4,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import vm from 'node:vm';
+import { read } from './page-fixture.mjs';
 
-const source = fs.readFileSync(new URL('../lib/auth.mjs', import.meta.url), 'utf8')
+const source = read('lib/auth.mjs')
   .replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
 
 function storage(initial = {}) {
   const files = new Map(Object.entries(initial)), errors = new Map(), writes = [], removedUploads = [];
-  const context = vm.createContext({ path, Buffer, crypto, os: { homedir: () => '/fixture', hostname: () => 'fixture' },
+  const context = vm.createContext({ path: path.posix, Buffer, crypto, os: { homedir: () => '/fixture', hostname: () => 'fixture' },
     removeDeviceUploads: (root, id) => removedUploads.push({ root, id }),
     fs: {
       readFileSync(file) {

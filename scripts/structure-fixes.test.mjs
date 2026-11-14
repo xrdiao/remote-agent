@@ -11,14 +11,152 @@ import { PAGE_SRC } from '../server/page/build.mjs';
 import { AgentContext, FOCUS_COMPOSER } from '../server/agent/context.mjs';
 import { ensurePairedBrowser } from './paired-browser.mjs';
 import { writeTextFile } from '../lib/files.mjs';
+import { localFilePath } from '../lib/platform.mjs';
 import { methods as sessionMethods } from '../server/agent/session-actions.mjs';
 import { methods as menuMethods } from '../server/agent/menus.mjs';
 import { methods as projectMethods } from '../server/agent/projects.mjs';
 import { methods as codexMethods } from '../server/apps/codex.mjs';
+import { methods as devinMethods } from '../server/apps/devin.mjs';
 import { methods as chatMethods } from '../server/agent/chat.mjs';
 import { ROUTES, flag } from '../server/routes.mjs';
 import { cdpRead, awaitCdpRead } from '../server/cdp.mjs';
+import { NativeCdp, windowsCursorSource } from '../server/native-windows.mjs';
 import { read, fragment as part, createPageContext, nativePage } from './page-fixture.mjs';
+
+test('native Codex binding exposes Windows follower connections while Linux remains owner-only', () => {
+  const source = part(read('server/page/session-actions.js'), "    if (IS_WIN && app === 'codex' && catalog === 'connection')", "    if (catalog === 'cleanup'");
+  for (const IS_WIN of [true, false]) for (const role of ['owner', 'follower', null]) {
+    const info = vm.runInContext('(function(app,id,catalog){' + source + '})', createPageContext({ IS_WIN,
+      codexHistoryScopes: () => [], codexConversationManager: (id, scopes, host) => {
+        assert.equal(id, 'target'); assert.equal(host, 'local');
+        return { getStreamRole: thread => { assert.equal(thread, 'target'); return role ? { role } : null; },
+          getConversation: thread => { assert.equal(thread, 'target'); return { cwd: '/target-project' }; },
+          resumeConversation: () => assert.fail('must not resume an existing native connection') };
+      },
+    }));
+    assert.deepEqual(JSON.parse(JSON.stringify(info('codex', 'target', 'owner'))), role === 'owner' ? { cwd: '/target-project' } : null);
+    if (IS_WIN) assert.deepEqual(JSON.parse(JSON.stringify(info('codex', 'target', 'connection'))), role === 'owner' || role === 'follower'
+      ? { cwd: '/target-project', role } : null);
+  }
+});
+
+test('Windows Codex catalog synchronization waits behind an existing native refresh without selecting a chat', async () => {
+  const prefix = part(read('server/page/session-actions.js'), '  const nativeSessionInfo =', "    if (app === 'codex' && catalog === 'owner')");
+  for (const IS_WIN of [true, false]) {
+    let finish;
+    const calls = [], pending = new Promise(resolve => { finish = resolve; });
+    const info = vm.runInContext(prefix + "return 'original path'; }; nativeSessionInfo;", createPageContext({ IS_WIN,
+      codexHistoryScopes: () => [], codexConversationManager: (id, scopes, host) => {
+        assert.equal(id, null); assert.equal(host, 'local');
+        return { refreshRecentConversations: options => { calls.push(options); return pending; } };
+      },
+      codexQueryClient: () => ({ refetchQueries: async (query, options) => { calls.push({ query, options }); } }),
+    }));
+    let settled = false;
+    const result = Promise.resolve(info('codex', '', 'refreshCatalog')).then(value => { settled = true; return value; });
+    await Promise.resolve();
+    if (IS_WIN) { assert.equal(settled, false); assert.deepEqual(JSON.parse(JSON.stringify(calls)), [{ afterCurrent: true }]); }
+    else assert.deepEqual(calls, []);
+    finish(); assert.equal(await result, IS_WIN ? true : 'original path');
+    if (IS_WIN) assert.deepEqual(JSON.parse(JSON.stringify(calls[1])), { query: { queryKey: ['recent-conversations-meta'], type: 'all' }, options: { throwOnError: true, cancelRefetch: false } });
+  }
+});
+
+test('Windows Devin reads every native mode from its bound session and sends only that session configuration', async () => {
+  const calls = [], modes = [{ value: 'accept-edits', name: 'Code' }, { value: 'smart', name: 'Smart' },
+    { value: 'ask', name: 'Ask' }, { value: 'plan', name: 'Plan' }, { value: 'bypass', name: 'Bypass Permissions' }];
+  const record = { providerId: 'native-provider', configOptions: [{ id: 'mode', category: 'mode', currentValue: 'smart', options: modes }] };
+  const context = createPageContext({ IS_WIN: true, devinSessionRecord: id => { assert.equal(id, 'bound-A'); return record; },
+    devinSend: async (provider, request) => { calls.push({ provider, request }); record.configOptions[0].currentValue = request.params.value; },
+  });
+  const infoPrefix = part(read('server/page/session-actions.js'), '  const nativeSessionInfo =', "    if (IS_WIN && app === 'codex' && catalog === 'refreshCatalog')");
+  const info = vm.runInContext(infoPrefix + '}; nativeSessionInfo;', context);
+  const data = info('devin', 'bound-A', 'mode');
+  assert.deepEqual(Array.from(data.items, row => row.label), modes.map(row => row.name));
+  assert.deepEqual(Array.from(data.items.filter(row => row.checked), row => row.label), ['Smart']);
+  assert.deepEqual(calls, []);
+  const action = part(read('server/page/session-actions.js'), "    if (IS_WIN && action === 'mode' && app === 'devin')", "    if (action === 'model' && app === 'devin')");
+  const select = vm.runInContext('(async function(app,id,action,name){' + action + '})', context);
+  await select('devin', 'bound-A', 'mode', 'Plan');
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [{ provider: 'native-provider', request: { method: 'session/set_config_option', params: { sessionId: 'bound-A', configId: 'mode', value: 'plan' } } }]);
+  assert.equal(info('devin', 'bound-A', 'mode').items.find(row => row.checked).label, 'Plan');
+  await assert.rejects(select('devin', 'bound-A', 'mode', 'not-native'), /原生候选/);
+  assert.equal(calls.length, 1);
+});
+
+test('Windows Cursor mode choices use the bound composer handle and preserve the desktop composer', async () => {
+  const selected = new Map([['bound-A', 'agent'], ['desktop-B', 'chat']]);
+  const modes = [{ id: 'agent', name: 'Agent' }, { id: 'plan', name: 'Plan' }, { id: 'chat', name: 'Ask' }];
+  const calls = [], service = { getAllModes: () => modes,
+    getComposerUnifiedMode: id => { assert.equal(typeof id, 'string'); return selected.get(id); },
+    setComposerUnifiedMode: (handle, mode) => { calls.push([handle.id, mode]); selected.set(handle.id, mode); },
+  };
+  const doc = { getElementById: () => null, querySelector: () => null, querySelectorAll: () => [] };
+  const page = vm.runInContext(PAGE_SRC.replace(/const IS_WIN = (?:true|false);/, 'const IS_WIN = true;'), createPageContext({ document: doc,
+    window: { __remoteAgentCursorModes: service,
+      __remoteAgentCursorServices: { data: { getComposerHandleById: async id => ({ id }) } } } }));
+  const info = page.nativeSessionInfo('cursor', 'bound-A', 'mode');
+  assert.deepEqual(Array.from(info.items, row => row.label), ['Agent', 'Plan', 'Ask']);
+  assert.deepEqual(Array.from(info.items.filter(row => row.checked), row => row.label), ['Agent']);
+  assert.deepEqual(calls, []);
+  assert.equal(await page.nativeSessionAction('cursor', 'bound-A', 'mode', 'Plan'), true);
+  assert.deepEqual(calls, [['bound-A', 'plan']]);
+  assert.equal(selected.get('desktop-B'), 'chat');
+  await assert.rejects(page.nativeSessionAction('cursor', 'bound-A', 'mode', 'not-native'), /原生候选/);
+});
+
+test('Windows Devin mode adapter keeps reads and late menu results assigned to their original selection', async () => {
+  let complete;
+  const events = [], evaluations = [];
+  const session = { sel: 1, threadId: 'bound-A', selectionKey: () => 'devin|bound-A',
+    cdp: { evaluate: expression => { evaluations.push(expression); return new Promise(resolve => { complete = resolve; }); } },
+    emit: value => events.push(value), refreshModelChat: async () => events.push('refresh'),
+  };
+  const stale = devinMethods.readWindowsDevinMode.call(session, 1);
+  session.sel = 2; complete({ items: [{ label: 'Code', checked: true }] }); await stale;
+  assert.deepEqual(events, []);
+  const current = devinMethods.readWindowsDevinMode.call(session, 2);
+  complete({ items: [{ label: 'Code', checked: true }, { label: 'Plan', checked: false }] }); await current;
+  assert.equal(events[0].requestId, 2); assert.equal(events[0].kind, 'mode'); assert.equal(events[0].sel, 'devin|bound-A');
+  const pick = devinMethods.pickWindowsDevinMode.call(session, 'Plan'); complete(true); await pick;
+  assert(evaluations[2].endsWith('.nativeSessionAction(\'devin\', "bound-A", \'mode\', "Plan")'));
+  assert(evaluations.every(expression => expression.includes('"app":"devin","threadId":"bound-A"')));
+  assert.equal(events.at(-1), 'refresh');
+});
+
+test('Windows Devin foreground snapshots use native session modes instead of retained chip text', () => {
+  const source = read('server/page/chat-extract.js');
+  const fields = [...source.matchAll(/^( +)mode: IS_WIN && devinSurface\(\)[^\n]*\n[^\n]*/gm)].map(match => match[0]);
+  assert.equal(fields.length, 2);
+  for (const field of fields) for (const IS_WIN of [true, false]) {
+    const result = vm.runInContext('({' + field + '}).mode', createPageContext({ IS_WIN,
+      activeThread: () => 'bound-A', devinSurface: () => 'editor',
+      nativeSessionInfo: (app, id, kind) => { assert.equal(app, 'devin'); assert.equal(id, 'bound-A'); assert.equal(kind, 'mode'); return { items: [{ label: 'Plan', checked: true }] }; },
+      devinModeChip: () => ({ innerText: 'Bypass Permissions' }),
+    }));
+    assert.equal(result, IS_WIN ? 'Plan' : 'Bypass Permissions');
+  }
+});
+
+test('Devin mode menu dispatch is Windows-only and Linux retains the original control path', async () => {
+  const source = read('server/agent/menus.mjs').slice(read('server/agent/menus.mjs').indexOf('export const methods =')).replace('export const', 'const');
+  for (const IS_WIN of [true, false]) {
+    const methods = vm.runInContext(source + '\nmethods;', createPageContext({ IS_WIN }));
+    const calls = [], session = { app: 'devin',
+      readWindowsDevinMode: id => calls.push(['read', id]), pickWindowsDevinMode: label => calls.push(['pick', label]),
+      cdp: { evaluate: async () => { throw Error('original Linux control path'); } },
+      closeMenus: async () => { throw Error('original Linux control path'); }, pressControl: async () => { throw Error('original Linux control path'); },
+    };
+    if (IS_WIN) {
+      await methods.readMenu.call(session, 'mode', 3); await methods.pickMenu.call(session, 'mode', 'Plan');
+      assert.deepEqual(calls, [['read', 3], ['pick', 'Plan']]);
+    } else {
+      await assert.rejects(methods.readMenu.call(session, 'mode', 3), /original Linux control path/);
+      await assert.rejects(methods.pickMenu.call(session, 'mode', 'Plan'), /original Linux control path/);
+      assert.deepEqual(calls, []);
+    }
+  }
+});
 
 for (const selector of ['.composer-bar [contenteditable="true"]', '.auxiliarybar [contenteditable="true"]']) {
   test(`shared composer targeting reads, writes and focuses ${selector} without selecting history`, () => {
@@ -334,6 +472,35 @@ test('Codex imageView survives stored history without a mounted native turn', ()
   assert.equal(image.images[0], input.path); assert.equal(image.keep, true);
 });
 
+test('Codex stored turns retain full command output and every file diff without changing pagination identity', () => {
+  const command = 'echo ' + 'full command '.repeat(30), output = 'full output\n'.repeat(30);
+  const rawItems = [
+    { id: 'exec', type: 'commandExecution', command, aggregatedOutput: output, exitCode: 2, status: 'failed' },
+    { id: 'patch', type: 'fileChange', status: 'completed', changes: [
+      { path: 'a.txt', diff: '--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n context' },
+      { path: 'b.txt', diff: '+second' },
+    ] },
+  ];
+  const context = createPageContext({ codexUserItem: () => null, CAPACITY_ERROR: /capacity/,
+    codexThread: () => 'thread', codexForkProps: () => null, codexFiberProps: () => [],
+    doc: { querySelectorAll: () => [] }, source: { metadata: { status: 'completed' }, rawItems,
+      positions: new Map(rawItems.map((item, index) => [item.id, index])), nativeComplete: true, ids: rawItems.map(item => item.id) } });
+  const source = read('server/page/chat-extract.js');
+  vm.runInContext(part(source, '  const codexStoredTurn =', '  const codexLatestEntry =')
+    + part(source, '  const codexTurnItems =', '  const codexReadPage =')
+    + '\nthis.turn=codexStoredTurn({},null,false,source);this.items=codexTurnItems(null,{turn,turnNumber:2});', context);
+  const items = JSON.parse(JSON.stringify(context.items));
+  assert.equal(items[0].cmd, command); assert.equal(items[0].output, output);
+  assert.equal(items[0].exitCode, 2); assert.equal(items[0].keep, true); assert.equal(items[0].kind, 'command');
+  assert.equal(items[0].status, 'failed'); assert.equal(items[0].order, 20000);
+  assert.equal(items[1].i, 'thread:patch:patch'); assert.equal(items[1].order, 20001);
+  assert.equal(items[1].add, 2); assert.equal(items[1].del, 1); assert.equal(items[1].status, 'completed');
+  assert.equal(items[1].done, true); assert.equal(items[1].kind, 'edit');
+  assert.deepEqual(items[1].diff, [['…', 'a.txt'], ['…', '--- a/a.txt'], ['…', '+++ b/a.txt'],
+    ['…', '@@ -1 +1 @@'], ['-', 'old'], ['+', 'new'], [' ', 'context'], ['…', 'b.txt'], ['+', 'second']]);
+  assert.equal(items.length, 2);
+});
+
 test('terminal input reads the live prompt rather than candidate output retained by shell integration', () => {
   let value = 'user@host:~$ cat folder ';
   const terminal = { element: { dataset: { remoteTerminal: 'terminal' } },
@@ -541,7 +708,7 @@ test('Cursor stop control is identified by its native state independently of the
 for (const label of ['Context: 35%', 'Context usage: 35%', '上下文用量：35%']) {
   test(`Codex context percentage reads its verified native label: ${label}`, () => {
     const button = nativeNode({ 'aria-label': label });
-    const doc = { getElementById: () => null, querySelectorAll: () => [button] };
+    const doc = { getElementById: () => null, querySelector: () => null, querySelectorAll: () => [button] };
     const result = nativePage(doc).contextPct();
     assert.equal(result.pct, 35); assert.equal(result.basis, 'used');
   });
@@ -570,12 +737,14 @@ test('Devin translated controls share the native translation keys for new sessio
   assert(page.devinQueueTarget(0, 'send')); assert(page.devinQueueTarget(0, 'remove')); assert(page.devinQueueClearTarget());
 });
 
-test('Devin settings navigation reads the native translated section names', () => {
+test('Ubuntu Devin settings navigation reads the native translated section names', () => {
   const editor = fiber(nativeNode(), [{ value: { i18n: { t: key => ({ 'localSettings.sections.general': 'translated general', 'localSettings.sections.planInformation': 'translated plan' })[key] || key } } }]);
   const buttons = ['translated general', 'translated plan', 'unrelated'].map(innerText => nativeNode({}, { innerText }));
   const doc = { getElementById: () => null,
     querySelectorAll: selector => selector.includes('data-slate-editor') ? [editor] : selector === 'button' ? buttons : [] };
-  const page = nativePage(doc, { innerHeight: 1000, innerWidth: 1000 });
+  const page = vm.runInContext(PAGE_SRC.replace(/const IS_WIN = (true|false);/, 'const IS_WIN = false;'), createPageContext({
+    document: doc, window: {}, innerHeight: 1000, innerWidth: 1000,
+  }));
   assert.deepEqual(Array.from(page.devinSettingsNav()), ['translated general', 'translated plan']);
 });
 
@@ -1199,7 +1368,7 @@ test('native window snapshots await Cursor text before publishing and keep the o
     const calls = [], chat = { thread: 'A', items: [{ i: 'latest', k: 'assistant', t: '已完成读取' }] };
     const helper = { extract(...args) { calls.push(args); return app === 'cursor' ? Promise.resolve(chat) : chat; },
       activeChatTab: () => '', agentStates: () => [], devinSurface: () => null, agentList: () => [], nativeSessionInfo: async () => [], codexChatRows: () => [] };
-    const context = { cdpRead, awaitCdpRead, AbortController, PAGE_SRC: 'helper', helpersCall: call => call,
+    const context = { cdpRead, awaitCdpRead, AbortController, IS_WIN: false, PAGE_SRC: 'helper', helpersCall: call => call,
       refreshSessionCatalog: async () => {}, publishCatalog() {}, withOperation: (_operation, action) => action() };
     const methods = vm.runInNewContext('({' + part(read('server/native-windows.mjs'), '  async read(fresh = false)', '  interval()').replace('\n  readCatalog()', ',\n  readCatalog()') + '})', context);
     const source = { revision: 1, win: { app }, runStates: new Map(), listeners: new Set(), connect: async () => {}, retryCapacity() {},
@@ -1217,7 +1386,7 @@ test('native window snapshots await Cursor text before publishing and keep the o
 
 function readingWindow() {
   const calls = [];
-  const context = { cdpRead, awaitCdpRead, AbortController, PAGE_SRC: '{}', helpersCall: call => call,
+  const context = { cdpRead, awaitCdpRead, AbortController, IS_WIN: false, PAGE_SRC: '{}', helpersCall: call => call,
     refreshSessionCatalog: async () => {}, publishCatalog() {}, withOperation: (_operation, action) => action() };
   const methods = vm.runInNewContext('({' + part(read('server/native-windows.mjs'), '  async read(fresh = false)', '  interval()').replace('\n  readCatalog()', ',\n  readCatalog()') + '})', context);
   const source = { revision: 1, readRevision: 0, snapshot: null, catalogKey: null,
@@ -1295,14 +1464,14 @@ test('repeated opening after long native conversations retains the latest thread
   }
 });
 
-function firstBodyFixture({ target = 'A', actual = 'A' } = {}) {
+function firstBodyFixture({ target = 'A', actual = 'A', windows = false, items = [{ i: 'last', k: 'assistant', t: '最新正文' }] } = {}) {
   let finishContext, resolved = 0;
   const events = [], context = new Promise(resolve => { finishContext = resolve; });
   const methods = vm.runInNewContext('({' + part(read('server/agent/chat.mjs'), '  async pollChatRead(immediate, state)', '  async sendPanelRect()') + '})', {
-    cdpRead, awaitCdpRead, nativeWindow: () => null, PAGE_SRC: '{}', uploads: new Map(), readLibrary: () => ({}),
+    cdpRead, awaitCdpRead, IS_WIN: windows, nativeWindow: () => null, PAGE_SRC: '{}', uploads: new Map(), readLibrary: () => ({}),
     rememberSessionMessage() {}, codexContext: () => context,
   });
-  const cdp = { evaluate: async () => ({ thread: actual, model: 'Codex', items: [{ i: 'last', k: 'assistant', t: '最新正文' }], draft: 'native draft' }) };
+  const cdp = { evaluate: async () => ({ thread: actual, model: 'Codex', items, draft: 'native draft' }) };
   const source = { app: 'codex', cdp, threadId: target, sel: 1, selectionKey: () => 'codex|window|' + source.threadId,
     liveRead: (readCdp, sel) => source.cdp === readCdp && source.sel === sel,
     acceptsChat: chat => chat?.thread === source.threadId, syncSession() {}, emit: event => events.push(event),
@@ -1331,6 +1500,27 @@ test('Codex first body preserves context enrichment and rejects a body from anot
   assert.equal(h.events.at(-1).chat.context.pct, 25);
   const other = firstBodyFixture({ actual: 'B' }); await other.run();
   assert.equal(other.events.length, 0); assert.equal(other.resolved(), 0);
+});
+
+for (const windows of [true, false]) test(`Codex first body stages tool payload only on Windows=${windows}`, async () => {
+  const items = [{ i: 'last', k: 'assistant', t: '最新正文' },
+    { i: 'exec', k: 'tool', kind: 'command', t: 'command', cmd: 'full command', output: 'large output'.repeat(2000), exitCode: 0 },
+    { i: 'patch', k: 'tool', kind: 'edit', t: '修改 a.txt', f: 'a.txt', diff: [['+', 'line']] }];
+  const h = firstBodyFixture({ windows, items });
+  h.source.mergeCodexItems = chat => { h.source.cached = chat.items; };
+  const work = h.run();
+  await new Promise(resolve => setImmediate(resolve));
+  const first = h.events[0].chat;
+  assert.equal(h.resolved(), 1); assert.equal(first.items[0].t, '最新正文');
+  assert.equal(first.items[1].i, 'exec'); assert.equal(first.items[1].exitCode, 0);
+  if (windows) {
+    assert.equal(first.items[1].cmd, undefined); assert.equal(first.items[1].output, undefined);
+    assert.equal(first.items[2].diff, undefined); assert(JSON.stringify(first).length < 1000);
+  } else assert.deepEqual(JSON.parse(JSON.stringify(first.items)), items);
+  assert.equal(h.source.cached[1].output, items[1].output);
+  h.finishContext({ pct: 25 }); await work;
+  const full = h.events.filter(event => event.t === 'chat').at(-1).chat;
+  assert.deepEqual(full.items, items); assert.equal(full.context.pct, 25);
 });
 
 for (const kind of ['thread', 'computer', 'mode']) {
@@ -2773,7 +2963,7 @@ function usageMeters() {
   };
   let clock = 0;
   const context = createPageContext({ document, Event, $: node, currentComputer: () => computer, lastChat: null, performance: { now: () => clock }, Date: class extends Date { static now() { return 100000 + clock; } },
-    currentApp: 'codex', viewSel: 'codex|window-A|thread-A', esc: String, ready: true, status() {} });
+    currentApp: 'codex', viewSel: 'codex|window-A|thread-A', windowReady: true, esc: String, ready: true, status() {} });
   context.ovComposerReady = key => context.ready && key === 'card';
   const source = read('app/js/sheets.js');
   vm.runInContext(part(source, 'function fusionUsageBars(', 'function showTerminals(')
@@ -2806,6 +2996,61 @@ test('context stays scoped to a conversation while quota stays scoped to its com
   h.context.viewSel = 'codex|window-B|thread-B'; assert.deepEqual(h.data(), { context: null, quota: [] });
   h.context.viewSel = 'codex|window-A|thread-A'; h.computer.id = 'computer-B';
   assert.deepEqual(h.data(), { context: null, quota: [] });
+});
+
+test('disconnect clears displayed usage and a failed read cannot retain an old quota percentage', () => {
+  const h = usageMeters();
+  h.context.renderQuota({ context: 62, bars: [{ label: 'Weekly', pct: 68, basis: 'remaining' }] });
+  h.context.windowReady = false;
+  h.context.document.dispatchEvent(new Event('composer-state'));
+  assert.deepEqual(h.data(), { context: null, quota: [] });
+  assert.equal(h.node('meterCtxPct').textContent, '未获取');
+  assert.doesNotMatch(h.node('quotaMeters').innerHTML, /68%/);
+  h.context.windowReady = true;
+  h.context.renderQuota({ bars: [{ label: 'Weekly', pct: 56, basis: 'remaining' }] });
+  h.context.renderQuota({ error: '额度接口请求失败', automatic: true });
+  assert.deepEqual(h.data().quota, []);
+  assert.match(h.node('quotaMeters').innerHTML, /未获取/);
+  assert.equal(h.node('quotaStatus').textContent, '额度接口请求失败');
+});
+
+test('Linux Devin view switching follows a new matching project window while the original remains in agent mode', async () => {
+  const calls = [], surfaces = { old: 'agent', wrong: 'editor', target: 'editor' };
+  let scans = 0;
+  const context = createPageContext({ IS_WIN: false, helpersCall: value => value, awaitCdpRead: value => value,
+    setTimeout: resolve => resolve(),
+    listWindows: async () => (++scans === 1 ? ['old', 'wrong'] : ['old', 'wrong', 'target'])
+      .map(id => ({ id, app: 'devin', ws: id })),
+    editorRoots: async cdp => [{ root: cdp.id === 'target' ? '/project' : '/other-project' }],
+    Cdp: class {
+      constructor(id) { this.id = id; }
+      async connect() {}
+      async evaluate() { return surfaces[this.id]; }
+      close() { calls.push(['close', this.id]); }
+    },
+  });
+  const switchSurface = vm.runInContext('({' + part(read('server/apps/devin.mjs'), 'async setSurface(', '// The IDE history') + '}).setSurface', context);
+  const session = { app: 'devin', windowId: 'old', cdp: { evaluate: async () => true },
+    projectMatches: (roots, cwd) => roots[0].root === cwd,
+    openBound: async window => { calls.push(['bind', window.id]); }, checkProjectTrust: async () => false,
+    adapter: { openAgent: async id => calls.push(['thread', id]) }, resumeProjectSwitch: async () => {}, emit() {},
+  };
+  await switchSurface.call(session, 'editor', { surface: 'agent', key: 'bound-thread', cwd: '/project' });
+  assert.equal(scans, 2); assert.equal(session.bindingReady, true);
+  assert.deepEqual(calls.filter(row => row[0] === 'bind'), [['bind', 'target']]);
+  assert(calls.some(row => row[0] === 'thread' && row[1] === 'bound-thread'));
+  assert.equal(surfaces.old, 'agent');
+});
+
+test('usage reads cannot relabel a previous selection result as the newly bound thread', async () => {
+  let finish;
+  const emitted = [], session = { app: 'codex', sel: 1, cdp: {}, selection: 'codex|window|old',
+    selectionKey() { return this.selection; }, liveRead: () => true, emit: value => emitted.push(value),
+    adapter: { usageContext: () => new Promise(resolve => { finish = resolve; }),
+      accountUsage: () => { throw new Error('Must not query quota for a superseded selection'); } } };
+  const readUsage = menuMethods.fetchUsage.call(session, { manual: true });
+  session.selection = 'codex|window|new'; finish(62); await readUsage;
+  assert.deepEqual(emitted, []);
 });
 
 test('OpenCode context preserves native token details and distinguishes unknown usage from zero', () => {
@@ -3286,10 +3531,10 @@ test('peer loss during background still requires fresh proof to recover the reta
   assert.equal(recovered.backgroundTimer, null);
 });
 
-function overviewDirectory() {
+function overviewDirectory(overrides = {}) {
   const targets = [], sources = new Map(), catalogs = new Map(), library = {}, saved = { windows: {}, sessions: {} }, fusionRuns = {};
   const codexBackend = { records: new Map(), states: () => [], owns: id => codexBackend.records.has(id) };
-  const context = createPageContext({ path, Date, process: { platform: 'linux' }, saved, fusionRuns,
+  const context = createPageContext({ IS_WIN: false, path, Date, process: { platform: 'linux' }, saved, fusionRuns,
     codexBackend, CODEX_BACKEND: 'backend',
     openCode: { overview: () => ({ windows: [], sessions: [] }) },
     key: (app, id) => app + ':' + id.replace(/^(cursor|devin|codex):/, ''),
@@ -3299,6 +3544,7 @@ function overviewDirectory() {
     samePath: (a, b) => a === b, windowName: title => title, workspaces: () => { throw Error('Do not rescan workspace storage'); },
     FUSION_ACTIVE: [], fusionSummary: value => value, allFusionRuns: () => Object.values(fusionRuns).flatMap(value => value.runs),
     fusionMainWindow: (app, id) => Object.values(fusionRuns).flatMap(value => value.runs).some(run => run.bindings.some(binding => binding.role === 'main' && binding.app === app && binding.windowId === id)),
+    ...overrides,
   });
   context.codexAdapter = vm.runInContext('({' + part(read('server/apps/codex.mjs'), '  backendThread(', '  closeBackendSettings(') + '})', context);
   vm.runInContext(part(read('lib/files.mjs'), 'export function workspaceLabel(', '// Returns the size').replace('export ', '')
@@ -3312,6 +3558,51 @@ function overviewDirectory() {
       sources.set(id, source); return source;
     }, snapshot: () => JSON.parse(JSON.stringify(context.overviewSnapshot('device'))) };
 }
+
+test('Windows Cursor cards include other project sessions from the complete catalog with their own directories', () => {
+  for (const IS_WIN of [true, false]) {
+    const h = overviewDirectory({ IS_WIN });
+    const source = h.add('cursor', 'carrier', '/project/A');
+    source.catalog = [{ id: 'A', workspace: '/project/A' }, { id: 'B', workspace: '/project/B' }];
+    h.catalogs.set('cursor', { rows: [...source.catalog, { id: 'archived', workspace: '/project/B', archived: true }] });
+    const snapshot = h.snapshot();
+    assert.deepEqual(snapshot.sessions.map(row => row.threadId).sort(), IS_WIN ? ['A', 'B'] : ['A']);
+    if (IS_WIN) {
+      const row = snapshot.sessions.find(row => row.threadId === 'B');
+      assert.equal(row.workspace, '/project/B');
+      assert.equal(row.projectId, JSON.stringify(['cursor', '', '/project/B']));
+    }
+  }
+});
+
+test('Windows Devin idle cards use confirmed current activity without treating an unknown historical turn as completed', () => {
+  for (const IS_WIN of [true, false]) for (const busy of [false, true]) for (const statusKnown of [true, false]) {
+    const h = overviewDirectory({ IS_WIN });
+    const source = h.add('devin', 'window', '/project/A');
+    h.catalogs.set('devin', { rows: [{ id: 'thread', workspace: '/project/A', running: busy }] });
+    source.snapshot.states = [{ thread: 'thread', busy, statusKnown, run: { id: 'historic', status: 'unknown' } }];
+    const row = h.snapshot().sessions[0];
+    assert.equal(row.busy, busy);
+    assert.equal(row.statusKnown, statusKnown);
+    assert.deepEqual(row.run, IS_WIN && !busy && statusKnown ? null : { id: 'historic', status: 'unknown' });
+    const cards = overviewCards(); cards.apply({ ...row, threadId: 'thread' });
+    assert.equal(cards.rows()[0].state, busy ? 'run' : IS_WIN && statusKnown ? 'idle' : 'unknown');
+    assert.equal(Object.keys(cards.done).length, 0);
+  }
+});
+
+test('overview labels share normalized Windows identities including an omitted local host', () => {
+  const h = overviewDirectory({
+    normPath: value => localFilePath(value, true),
+    pathKey: (value, local) => local ? localFilePath(value, true).toLowerCase() : value,
+  });
+  const source = h.add('cursor', 'window', '/C:/Project/Work');
+  delete source.roots[0].host;
+  source.catalog = [{ id: 'thread', workspace: 'c:\\Project\\Work', title: 'thread' }];
+  const first = h.snapshot(), second = h.snapshot();
+  assert(first.windows.length > 0); assert(first.windows.every(row => row.project.includes('Work')));
+  assert.deepEqual(second.windows, first.windows);
+});
 
 test('a Codex background thread visible in a native catalog has one card with its actual API carrier', () => {
   const h = overviewDirectory();
@@ -3926,6 +4217,7 @@ function sharedFileBrowser(readDirectory = () => ({ path: '/project', parent: '/
   let selected = computers[0];
   const node = id => {
     if (!nodes.has(id)) nodes.set(id, { innerHTML: '', value: '', scrollTop: 0,
+      querySelector: selector => selector === '.computerFileActions' && node('sheet').innerHTML.includes('computerFileActions') ? node('computerFileActions') : null,
       addEventListener: (event, handler) => handlers.set(event, handler), replaceChildren() { this.innerHTML = ''; },
       focus() { context.document.activeElement = this; }, setSelectionRange() {},
     });
@@ -3996,13 +4288,66 @@ test('the two Editor entries share one browser with different initial paths and 
   assert(current.node('sheet').innerHTML.indexOf('computerFilePathForm') < current.node('sheet').innerHTML.indexOf('data-computer-path'));
 });
 
+test('typed project paths are read exactly and a failed next read cannot keep old folder actions', async () => {
+  const target = 'D:/audit/work';
+  const h = sharedFileBrowser(url => {
+    const path = url.searchParams.get('path');
+    if (path === target + '/missing') throw new Error('目录不存在');
+    return { path, os: 'win32', entries: [{ name: 'hello.txt', path: path + '/hello.txt', directory: false, selectable: true }] };
+  });
+  await h.open('computer-two', { path: 'D:/audit', project: { owner: { computer: 'computer-two', app: 'cursor' } } });
+  h.type(target);
+  h.handlers.get('submit')({ target: { id: 'computerFilePathForm' }, preventDefault() {} });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(new URL(h.requests.at(-1).route, 'http://fixture').searchParams.get('path'), target);
+  assert.equal(h.state().directory.path, target);
+  assert.match(h.node('sheet').innerHTML, /hello.txt/);
+  assert.match(h.node('sheet').innerHTML, /data-computer-project="open"/);
+  const pending = h.context.browseComputerFiles(target + '/missing');
+  assert.equal(h.state().directory.path, target);
+  assert.doesNotMatch(h.node('sheet').innerHTML, /hello.txt/);
+  assert.doesNotMatch(h.node('sheet').innerHTML, /data-computer-project="open"/);
+  await pending;
+  assert.match(h.node('sheet').innerHTML, /目录不存在/);
+  assert.doesNotMatch(h.node('sheet').innerHTML, /hello.txt/);
+  assert.doesNotMatch(h.node('sheet').innerHTML, /data-computer-project="open"/);
+});
+
+for (const [os, initial] of [['linux', '/home/alice/project'], ['win32', 'D:/audit/project']]) {
+  test(`${os} file browsing preserves the successful directory for relative retries and parent navigation`, async () => {
+    const paths = os === 'linux' ? path.posix : path.win32;
+    const h = sharedFileBrowser(url => {
+      const input = url.searchParams.get('path');
+      if (input === 'missing') throw new Error('目录不存在');
+      const directory = paths.resolve(url.searchParams.get('base') || (os === 'linux' ? '/home/alice' : 'C:/Users/alice'), input);
+      return { path: directory, parent: paths.dirname(directory), os, entries: [
+        { name: 'hello.txt', path: paths.join(directory, 'hello.txt'), directory: false, selectable: true },
+      ] };
+    });
+    await h.open('computer-two', { path: initial, project: { owner: null } });
+    const confirmed = h.state().directory;
+    await h.context.browseComputerFiles('missing');
+    assert.equal(h.state().directory, confirmed);
+    assert(h.node('sheet').innerHTML.includes(`data-computer-path="${confirmed.parent}"`));
+    await h.context.browseComputerFiles('src');
+    const retry = new URL(h.requests.at(-1).route, 'http://fixture');
+    assert.equal(retry.searchParams.get('base'), confirmed.path);
+    assert.equal(h.state().directory.path, paths.join(confirmed.path, 'src'));
+    assert.match(h.node('sheet').innerHTML, /hello.txt/);
+    assert.match(h.node('sheet').innerHTML, /data-computer-project="open"/);
+    await h.context.browseComputerFiles(h.state().directory.parent);
+    assert.equal(h.state().directory.path, confirmed.path);
+  });
+}
+
 test('file and project browsing share completion while project choices include directories only', async () => {
   for (const project of [null, { owner: { computer: 'computer-two', app: 'cursor' } }]) {
     const h = sharedFileBrowser(); await h.open('computer-two', { path: '/project', project });
     h.type('/project/re'); await h.context.completeComputerPath();
     assert.equal(h.node('computerFilePath').value, project ? '/project/reports/' : '/project/re');
     assert.equal(h.requests.every(request => request.computer === 'computer-two'), true);
-    assert.equal(h.node('sheet').innerHTML.includes('readme.txt'), !project);
+    assert.equal(h.node('sheet').innerHTML.includes('readme.txt'), true);
+    if (project) assert.match(h.node('sheet').innerHTML, /data-computer-path="\/project\/readme.txt"[^>]*disabled/);
     if (project) assert(h.node('sheet').innerHTML.includes('data-computer-project="open"'));
   }
 });
@@ -4022,7 +4367,7 @@ test('hidden entries default to hidden and the shared browser remembers the swit
   assert.equal(h.state().directory.entries.length, 5);
   assert.equal(h.node('sheet').scrollTop, 64);
   assert(h.node('sheet').innerHTML.includes('data-computer-path="/project/.git"'));
-  assert(!h.node('sheet').innerHTML.includes('data-computer-path="/project/.env"'));
+  assert(h.node('sheet').innerHTML.includes('data-computer-path="/project/.env"'));
   await h.context.browseComputerFiles('/project');
   assert.equal(h.state().hideHidden, false);
   await h.open('computer-one', { path: '/project' });
@@ -4408,6 +4753,7 @@ test('a computer save writes once outside known projects, preserves permissions 
   const directory = fs.mkdtempSync(new URL('computer-save-', parent)), file = path.join(directory, 'fixture.txt');
   try {
     fs.writeFileSync(file, 'before', { mode: 0o751 });
+    const originalMode = fs.statSync(file).mode & 0o777;
     const h = operationFixture(); h.message = { t: 'saveComputerFile', operationId: crypto.randomUUID(), requestId: 1, path: file, text: 'after' };
     let writes = 0;
     const route = vm.runInNewContext('({' + part(read('server/routes.mjs'), '  saveComputerFile:', '  overviewManage:') + '}).saveComputerFile', {
@@ -4417,7 +4763,7 @@ test('a computer save writes once outside known projects, preserves permissions 
     h.session.emit = message => captureOperation(h.session, message);
     const first = beginOperation(h.session, h.message);
     await withOperation(first.operation, () => route.fastRun(h.session, h.message)); first.operation.finish();
-    assert.equal(fs.readFileSync(file, 'utf8'), 'after'); assert.equal(fs.statSync(file).mode & 0o777, 0o751);
+    assert.equal(fs.readFileSync(file, 'utf8'), 'after'); assert.equal(fs.statSync(file).mode & 0o777, originalMode);
     assert.equal(first.operation.app, ''); assert.equal(first.operation.sel, '');
     const packets = [], stop = subscribeOperations(h.session.deviceId, { readyState: 1, send: raw => packets.push(JSON.parse(raw)) });
     const duplicate = beginOperation(h.session, h.message);
@@ -4704,16 +5050,16 @@ test('OpenCode preview limits the current turn to 600 characters and the latest 
   assert.equal(selected.tools.size, 0); assert.equal(selected.rows.length, 2);
 });
 
-test('Cursor empty composer resolves its native services before transcript rows exist', () => {
+test('Cursor empty composer resolves services beyond deeply nested menu and layout providers', () => {
   const status = {}, data = { getComposerDataIfLoaded: id => ({ composerId: id, fullConversationHeadersOnly: [] }) };
   const services = { composerService: {}, composerDataService: data, backgroundComposerService: {}, nativeHostService: {} };
   const instantiationService = { _services: { _entries: new Map(Object.keys(services).map(id => [id, null])) },
     invokeFunction: fn => fn({ get: id => services[id] }) };
   let lookups = 0;
-  const context = createPageContext({ window: {}, doc: { querySelector: selector => { assert.equal(selector, '.ui-agent-status-dot'); return status; } },
-    modelButton: () => assert.fail('service discovery must not depend on the model button'), codexFiberProps: element => {
+  const context = createPageContext({ IS_WIN: false, window: {}, doc: { querySelector: selector => { assert.equal(selector, '.ui-agent-status-dot'); return status; } },
+    modelButton: () => assert.fail('service discovery must not depend on the model button'), codexFiberProps: (element, depth) => {
       assert.equal(element, status); lookups++;
-      return [{ services: { workspace: { instantiationService } } }];
+      return [...Array(184).fill({}), { services: { workspace: { instantiationService } } }].slice(0, depth);
     } });
   vm.runInContext(part(read('server/page/session-actions.js'), '  const cursorSessionInstantiation =', '  const nativeSessionContext =')
     + '\nglobalThis.readServices = cursorSessionServices;', context);
@@ -5036,4 +5382,115 @@ test('Codex queued original follows an explicit queue edit and its execution mes
   const chat = { thread: 'A', items: [{ i: 'executed-message', nativeIds: ['queue-after'], k: 'human', t: edited + '\\\n' }] };
   h.context.lastChat = chat; h.context.recallInput(-1);
   assert.equal(h.input.value, edited);
+});
+
+for (const IS_WIN of [false, true]) test('Cursor loaded connection metadata is Windows only: ' + IS_WIN, () => {
+  const prefix = part(read('server/page/session-actions.js'), '  const nativeSessionInfo =', "    if (IS_WIN && app === 'cursor' && catalog === 'mode')");
+  const info = vm.runInContext(prefix + "return 'original'; }; nativeSessionInfo;", createPageContext({ IS_WIN,
+    cursorSessionServices: () => ({ data: { getComposerDataIfLoaded: id => id === 'A' ? { lastUpdatedAt: 10, conversationCheckpointLastUpdatedAt: 20 } : null } }),
+  }));
+  assert.equal(info('cursor', 'A', 'connection')?.updatedAt || info('cursor', 'A', 'connection'), IS_WIN ? 20 : 'original');
+  if (IS_WIN) assert.equal(info('cursor', 'missing', 'connection'), null);
+});
+
+test('Windows Cursor chooses the freshest loaded conversation across windows and not an unrelated thread', t => {
+  const a = new NativeCdp('ws://qa-cursor-older'), b = new NativeCdp('ws://qa-cursor-newer');
+  t.after(() => { a.nativeWindow.close(); b.nativeWindow.close(); });
+  for (const [cdp, id, updatedAt] of [[a, 'old', 10], [b, 'new', 20]]) {
+    cdp.nativeWindow.win = { app: 'cursor', id };
+    cdp.nativeWindow.snapshot = { chat: { thread: 'A' }, states: [{ thread: 'A', nativeUpdatedAt: updatedAt }] };
+  }
+  assert.equal(windowsCursorSource('A'), b.nativeWindow); assert.equal(windowsCursorSource('B'), undefined);
+  a.nativeWindow.snapshot.states[0].nativeUpdatedAt = 30;
+  assert.equal(windowsCursorSource('A'), a.nativeWindow);
+});
+
+for (const IS_WIN of [false, true]) test('Devin desktop workspace reading uses the correct platform configuration: ' + IS_WIN, async () => {
+  const calls = [], source = part(read('server/apps/devin.mjs'), 'async devinWindowRoots(', 'async readWindowsDevinMode(');
+  const methods = vm.runInContext('({' + source + '})', createPageContext({ IS_WIN,
+    editorRoots: async (cdp, app) => { calls.push([cdp, app]); return [{ root: '/desktop-project', source: app }]; },
+  }));
+  const cdp = {}, roots = await methods.devinWindowRoots.call({ editorCdp: cdp });
+  assert.equal(calls[0][1], IS_WIN ? 'code' : 'devin'); assert.equal(roots[0].root, '/desktop-project'); assert.equal(roots[0].source, 'devin');
+});
+
+test('Windows Devin settings read section navigation without requiring the removed plan button', () => {
+  const button = nativeNode({ 'aria-label': 'Open editor settings' }, { dataset: {}, tagName: 'BUTTON', textContent: 'Open editor settings', innerText: 'Open editor settings',
+    parentElement: { innerText: 'General editor preferences' }, closest: () => null });
+  const heading = { textContent: 'General' }, group = { querySelector: () => heading, querySelectorAll: () => [button],
+    cloneNode: () => ({ querySelectorAll: () => [], textContent: 'General' }), scrollIntoView() {} };
+  const root = nativeNode({}, { querySelector: selector => selector === 'section[aria-label=general]' ? group : null,
+    querySelectorAll: selector => selector === 'section' ? [group] : selector === 'section > div > h2' ? [heading] : [] });
+  const doc = { getElementById: () => null, querySelectorAll: selector => selector === '.editor-instance' ? [root] : [] };
+  const page = vm.runInContext(PAGE_SRC.replace(/const IS_WIN = (true|false);/, 'const IS_WIN = true;'), createPageContext({ document: doc, window: {}, crypto }));
+  const data = page.desktopSettingsData('', 'devin');
+  assert.equal(data.sections.length, 1); assert.equal(data.nav[0], 'General'); assert.equal(data.current, 'General');
+  assert.equal(page.desktopSettingsNav('General', 'devin'), true);
+});
+
+test('Codex folded native questions are read without a selected group and stay scoped to thread and host', () => {
+  const bind = (key, question, more = {}) => [JSON.stringify(key), { value: { get: () => ({ question, draft: '', lastSubmission: null, ...more }), subscribe: () => () => {} } }];
+  const key = { entityKey: 'turn', hostId: 'local', itemId: 'q-A', threadId: 'A' };
+  const scope = { familyBindings: new Map([['questions', new Map([
+    bind(key, { id: 'q-A', title: 'Question A', options: ['one'] }),
+    bind({ ...key, itemId: 'q-B', threadId: 'B' }, { id: 'q-B' }),
+    bind({ ...key, itemId: 'remote', hostId: 'ssh' }, { id: 'remote' }),
+    bind({ ...key, itemId: 'answered' }, { id: 'answered' }, { lastSubmission: '', draft: '' }),
+  ])]]) };
+  const source = part(read('server/page/codex.js'), '  const codexAsyncQuestionState =', '  const codexAsyncQuestionRows =');
+  const context = createPageContext({ codexHistoryScopes: () => [scope], doc: { defaultView: { Map } },
+    codexHistoryBinding: (_scope, binding) => binding && ({ key: binding.value, get: binding.value.get, subscribe: binding.value.subscribe }),
+  });
+  const reader = vm.runInContext(source + 'codexAsyncQuestionState;', context), state = reader('A', 'local');
+  assert.deepEqual(Array.from(state.questions, item => item.question.id), ['q-A']);
+  assert.equal(state.questions[0].key.threadId, 'A'); assert.equal(state.sources.size, 2);
+});
+
+
+test('native Codex question module loads the original group state without loading composer modules', async t => {
+  const folder = fs.mkdtempSync('_shots/codex-question-module-');
+  t.after(() => fs.rmSync(folder, { recursive: true, force: true }));
+  fs.writeFileSync(folder + '/entry.js', 'import { n } from "./questions.js";');
+  fs.writeFileSync(folder + '/questions.js', 'const state={},groups={resolve(){}};const host=k=>k.hostId;const batch=(_s,fn)=>fn();function write(s,k,v){s.set(groups,host(k),m=>{if((m.get(k.threadId)??null)===v)return m;let next=new Map(m);return v==null?next.delete(k.threadId):next.set(k.threadId,v),next})}function choose(s,k){if(s.get(state,k)==null)return;let g=k;batch(s,()=>{write(s,g,{selectedQuestionKey:k,questionIds:[k.itemId]})})}export{groups as n};');
+  const base = new URL('../' + folder + '/', import.meta.url), window = {}, document = { getElementById: () => null, scripts: [{ src: new URL('entry.js', base).href }] };
+  const fetch = async url => ({ text: async () => fs.readFileSync(new URL(url), 'utf8') });
+  const source = PAGE_SRC.replace('return { historyAtStart', 'return { codexNativeModule, historyAtStart');
+  const page = new Function('document', 'window', 'fetch', 'return ' + source)(document, window, fetch);
+  const native = await page.codexNativeModule('questions');
+  assert.equal(typeof native.groups.resolve, 'function');
+  assert.equal(window.__remoteAgentNativeModules.has('graph'), false);
+});
+
+
+for (const IS_WIN of [true, false]) test('Codex question operations use the correct native realm: Windows=' + IS_WIN, async () => {
+  const calls = [], routes = vm.runInContext('({' + part(read('server/routes.mjs'), '  codexRequest: {', '  opencodeQuestion: {') + '})', createPageContext({ IS_WIN,
+    nativeWindow: cdp => cdp.nativeWindow, helpersCall: method => method, questionDone() {}, questionFailed() {},
+  }));
+  const session = { app: 'codex', cdp: { nativeWindow: { composerCall: async method => { calls.push(['inner', method]); return true; } },
+    evaluate: async method => { calls.push(['original', method]); return true; } }, pollChat: async () => {} };
+  await routes.codexRequest.run(session, { id: 'async:A', field: 0, value: 'draft' });
+  await routes.codexRequest.run(session, { id: 'async:A', n: 1, fields: [{ n: 0, value: 'answer' }] });
+  assert.deepEqual(calls.map(call => call[0]), IS_WIN ? ['inner', 'inner'] : ['original', 'original']);
+  assert(calls[0][1].includes('codexRequestField')); assert(calls[1][1].includes('codexRequestAction'));
+});
+
+test('opening a folded Codex question updates only its native host and thread group', async () => {
+  const groups = {}, writes = [], key = { entityKey: 'turn-A', hostId: 'local', itemId: 'q-A', threadId: 'A' };
+  let selected = false;
+  const accessor = { set(atom, host, update) {
+    assert.equal(atom, groups); assert.equal(host, 'local');
+    const before = new Map([['B', { selectedQuestionKey: { itemId: 'q-B' } }]]), after = update(before);
+    assert.equal(before.has('A'), false); assert.equal(after.get('B'), before.get('B'));
+    writes.push(after.get('A')); selected = true;
+  } };
+  const source = part(read('server/page/codex.js'), '  const codexOpenQuestion =', '  const codexNativeRequests =');
+  const context = createPageContext({ codexRequestThread: () => 'A', codexNativeManager: () => ({ hostId: 'local' }),
+    codexAsyncQuestionState: () => ({ questions: [{ question: { id: 'q-A' }, key }] }),
+    codexComposerScope: async thread => { assert.equal(thread, 'A'); return { scope: accessor }; },
+    codexNativeModule: async kind => { assert.equal(kind, 'questions'); return { groups }; },
+    codexRequests: () => selected ? [{ id: 'async:q-A', buttons: [{ action() {} }] }] : [],
+    nativeValue: value => value, doc: { defaultView: { Map } },
+  });
+  await vm.runInContext(source + 'codexOpenQuestion;', context)('async:q-A');
+  assert.deepEqual(JSON.parse(JSON.stringify(writes)), [{ selectedQuestionKey: key, questionIds: ['q-A'] }]);
 });

@@ -13,10 +13,24 @@ globalThis.RemoteAgentRules = (() => {
       : message.t === 'queue' ? message.action !== 'read'
       : ['stop', 'pickMenu', 'question', 'codexRequest', 'click', 'subagent', 'saveFile', 'sessionManage', 'sessionBatch', 'codexRename', 'codexArchive'].includes(message.t);
   };
+  const parseAgentRef = value => {
+    const text = String(value || ''), first = text.indexOf(':');
+    if (first < 0) return { kind: '', windowId: '', id: text };
+    const kind = text.slice(0, first), rest = text.slice(first + 1);
+    const start = /^\/?[a-z]:[\\/]/i.test(rest) ? rest.indexOf(':') + 1 : 0;
+    const separator = rest.indexOf(':', start);
+    if (!['project', 'thread', 'new', 'project-new'].includes(kind)) return { kind, windowId: '', id: rest };
+    if (kind === 'new' && /^[a-z]:[\\/]/i.test(rest)) return { kind, windowId: '', id: decodeURIComponent(rest) };
+    if (separator < 0) {
+      const value = decodeURIComponent(rest);
+      return kind === 'new' && /^(?:\/|\\|[a-z]:[\\/]|file:\/\/)/i.test(value)
+        ? { kind, windowId: '', id: value } : { kind, windowId: value, id: '' };
+    }
+    return { kind, windowId: decodeURIComponent(rest.slice(0, separator)), id: decodeURIComponent(rest.slice(separator + 1)) };
+  };
   const parseSessionRef = (app, value) => {
     let id = String(value || '');
-    if (id.startsWith('project:')) id = decodeURIComponent(id.split(':').slice(2).join(':'));
-    if (app === 'codex' && id.startsWith('thread:')) id = id.split(':').slice(2).join(':');
+    if (id.startsWith('project:') || app === 'codex' && id.startsWith('thread:')) id = parseAgentRef(id).id;
     return app === 'devin' ? id.replace(/^tab:/, '') : id;
   };
   const isLocalFileReference = href => /^(?:file:\/\/|\/|~\/|[A-Za-z]:[\\/]|\.{1,2}\/)/.test(href)
@@ -42,6 +56,6 @@ globalThis.RemoteAgentRules = (() => {
   };
   const normalizeReceiptText = value => (value || '').replace(/\s+/g, ' ').trim();
   const withoutAttachmentLabels = value => (value || '').replace(/(?:^|\n)\[(?:图片|附件) \d+\](?:\n\[(?:图片|附件) \d+\])*$/, '');
-  return { desktopAction, parseSessionRef, isLocalFileReference, codeBlockHtml, notificationTarget, notificationKey,
+  return { desktopAction, parseAgentRef, parseSessionRef, isLocalFileReference, codeBlockHtml, notificationTarget, notificationKey,
     titleParts, cleanWindowTitle, parseWindowTitle, normalizeReceiptText, withoutAttachmentLabels, textExtensions, documentExtensions, imageTypes, previewImageTypes, uploadAccept, uploadDocument };
 })();

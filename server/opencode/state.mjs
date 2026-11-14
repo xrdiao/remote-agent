@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { localFilePath, pathKey } from '../../lib/platform.mjs';
 import { OpenCodeClient, readEvents } from './client.mjs';
 import { cdpRead } from '../cdp.mjs';
 import { withOperation } from '../operations.mjs';
@@ -60,7 +61,7 @@ export class OpenCodeState {
       const [sessions, catalog, config] = await Promise.all([
         this.client.sessions(), this.client.request('/config/providers'), this.client.request('/config'),
       ]);
-      this.sessions = new Map(sessions.filter(row => !row.parentID && !row.time.archived).map(row => [row.id, row]));
+      this.sessions = new Map(sessions.filter(row => !row.parentID && !row.time.archived).map(row => [row.id, { ...row, directory: localFilePath(row.directory) }]));
       this.models.clear();
       for (const provider of catalog.providers)
         for (const model of Object.values(provider.models)) this.models.set(`${provider.id}/${model.id}`, {
@@ -68,7 +69,7 @@ export class OpenCodeState {
         });
       this.defaultModel = config.model;
       this.statuses.clear(); this.permissions.clear(); this.questions.clear();
-      await Promise.all([...new Set(sessions.map(row => row.directory))].map(async directory => {
+      await Promise.all([...new Set(sessions.map(row => localFilePath(row.directory)))].map(async directory => {
         const [statuses, permissions, questions] = await Promise.all([
           this.client.request('/session/status', { directory }), this.client.request('/permission', { directory }),
           this.client.request('/question', { directory }),
@@ -144,7 +145,7 @@ export class OpenCodeState {
     this.revision++;
     switch (event.type) {
       case 'session.created': case 'session.updated':
-        if (!p.info.parentID && !p.info.time.archived) this.sessions.set(p.info.id, p.info);
+        if (!p.info.parentID && !p.info.time.archived) this.sessions.set(p.info.id, { ...p.info, directory: localFilePath(p.info.directory) });
         else { this.sessions.delete(p.info.id); this.forgetAutomatic(p.info.id); }
         break;
       case 'session.deleted':
@@ -346,15 +347,15 @@ export class OpenCodeState {
   overview() {
     const windows = new Map(), sessions = [];
     for (const session of this.sessions.values()) {
-      const root = session.directory, projectId = JSON.stringify(['opencode', '', root]);
+      const root = session.directory, projectId = JSON.stringify(['opencode', '', pathKey(root)]);
       const project = path.basename(root) || root;
-      windows.set(root, { projectId, win: 'opencode', windowId: root, app: 'opencode', workspace: root, host: '', project });
+      windows.set(pathKey(root), { projectId, win: 'opencode', windowId: root, app: 'opencode', workspace: root, host: '', project });
       const rows = this.messageRows(session.id);
       const lastReply = rows.findLast(row => row.info.role === 'assistant'
         && [...row.parts.values()].some(part => part.type === 'text' && !part.synthetic && part.text?.trim()));
       const chat = this.chat(session.id, { rows: lastReply ? [lastReply] : [], tools: new Set() });
       const last = chat.items.findLast(row => row.k === 'assistant')?.t || '';
-      sessions.push({ ...windows.get(root), threadId: session.id, title: session.title,
+      sessions.push({ ...windows.get(pathKey(root)), threadId: session.id, title: session.title,
         busy: chat.busy, waiting: chat.waiting, waitingText: chat.waitingText, last,
         run: null, statusKnown: this.connected, startedAt: 0, tasks: null, actions: [],
         changed: chat.changed, lastUsed: session.time.updated, lastMessageAt: session.time.updated });
