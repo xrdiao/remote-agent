@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v464'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v467'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false;
 let windowReady = false;
@@ -40,6 +40,13 @@ const agentListKey = () => (currentComputer()?.key || '') + ':' + currentApp + (
 function receiveAgents(m) {
   if (m.app && m.app !== currentApp) return;
   if (m.sel && m.sel !== viewSel) return;
+  if (m.loading) {
+    if (sheetKind === 'agents') {
+      showAgents(m.list || []);
+      $('sheet').insertAdjacentHTML('afterbegin', `<p class="hint" role="status">${I18N.tr('正在读取原生会话目录，请稍后重试')}</p>`);
+    }
+    return;
+  }
   if (m.error) {
     finishPending(['正在读取 Agent 列表…']);
     if (sheetKind === 'agents') {

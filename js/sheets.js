@@ -49,7 +49,7 @@ function interruptSessionBatch() {
   status('批量操作已中断，请刷新列表确认已完成结果', false);
 }
 function showProjectWindows(m) {
-  openSheet('project-windows', `<h3>项目窗口</h3><button class="opt" data-window-enabled="${m.enabled ? '0' : '1'}"><span class="lbl">自动关闭空闲窗口</span><span class="switch${m.enabled ? ' on' : ''}"></span></button><label class="pSec">空闲分钟数<input data-window-idle type="number" min="1" value="${m.idleMinutes}"></label>${m.windows.map(w => `<div class="pSec">${esc(({cursor:'Cursor',devin:'Devin',codex:'Codex'})[w.app] + ' · ' + w.title)}</div><div class="hint">${esc(w.root)}<br>${esc(w.reason || (w.owned ? '已纳入自动管理' : '未纳入自动管理'))}</div><button class="opt" data-window-key="${esc(w.key)}" data-window-owned="${w.owned ? '0' : '1'}">${w.owned ? '退出自动管理' : '纳入自动管理'}</button><button class="opt" data-window-key="${esc(w.key)}" data-window-keep="${w.keep ? '0' : '1'}">${w.keep ? '取消保留' : '始终保留此窗口'}</button>`).join('')}`);
+  openSheet('project-windows', `<h3>项目窗口</h3>${m.reason ? `<p class="hint">${esc(m.reason)}</p>` : ''}<button class="opt" ${m.supported === false ? 'disabled' : ''} data-window-enabled="${m.enabled ? '0' : '1'}"><span class="lbl">自动关闭空闲窗口</span><span class="switch${m.enabled ? ' on' : ''}"></span></button><label class="pSec">空闲分钟数<input ${m.supported === false ? 'disabled' : ''} data-window-idle type="number" min="1" value="${m.idleMinutes}"></label>${m.windows.map(w => `<div class="pSec">${esc(({cursor:'Cursor',devin:'Devin',codex:'Codex'})[w.app] + ' · ' + w.title)}</div><div class="hint">${esc(w.root)}<br>${esc(w.reason || (w.owned ? '已纳入自动管理' : '未纳入自动管理'))}</div><button class="opt" ${m.supported === false ? 'disabled' : ''} data-window-key="${esc(w.key)}" data-window-owned="${w.owned ? '0' : '1'}">${w.owned ? '退出自动管理' : '纳入自动管理'}</button><button class="opt" ${m.supported === false ? 'disabled' : ''} data-window-key="${esc(w.key)}" data-window-keep="${w.keep ? '0' : '1'}">${w.keep ? '取消保留' : '始终保留此窗口'}</button>`).join('')}`);
   $('sheet').querySelector('[data-window-idle]').onchange = e => send({ t: 'projectWindowSet', change: { idleMinutes: Number(e.target.value) } });
 }
 const agentOpenedKey = thread => `${currentComputer()?.id || ''}|${currentAppName}|${thread}`;
@@ -477,11 +477,11 @@ function showComputerFiles() {
   const state = computerFiles, dir = state.directory;
   const field = document.activeElement?.id === 'computerFilePath' ? document.activeElement : null;
   const selection = field && [field.selectionStart, field.selectionEnd];
-  const entries = state.roots ? state.roots.map(p => ({ name: p.name, path: p.path, directory: true, selectable: true })) : dir?.entries || [];
-  const rows = computerFileEntries(state, entries).map(e => `<button class="opt editorEntry${e.directory ? ' editorFolder' : ''}" data-computer-path="${esc(e.path)}" data-computer-directory="${!!e.directory}" ${e.selectable ? '' : 'disabled'}>${fileEntryIcon(e.directory)}<span class="lbl ovRaw">${esc(e.name)}</span>${e.directory ? '<span class="editorEntryArrow" aria-hidden="true">›</span>' : `<span class="sub">${e.selectable ? fmtSize(e.size) : I18N.tr('不可读取')}</span>`}</button>`).join('');
+  const entries = state.message || state.error ? [] : state.roots ? state.roots.map(p => ({ name: p.name, path: p.path, directory: true, selectable: true })) : dir?.entries || [];
+  const rows = computerFileEntries(state, entries).map(e => `<button class="opt editorEntry${e.directory ? ' editorFolder' : ''}" data-computer-path="${esc(e.path)}" data-computer-directory="${!!e.directory}" ${e.selectable ? '' : 'disabled'}>${fileEntryIcon(e.directory)}<span class="lbl ovRaw">${esc(e.name)}</span>${e.directory ? '<span class="editorEntryArrow" aria-hidden="true">›</span>' : `<span class="sub">${e.selectable ? fmtSize(e.size) : state.project ? I18N.tr('仅可选择文件夹') : I18N.tr('不可读取')}</span>`}</button>`).join('');
   const owner = state.project?.owner;
   const context = owner ? ` · Fusion · ${OV_AGENT[owner.app]}` : '';
-  const actions = state.project && dir ? '<div class="computerFileActions"><button class="opt" data-computer-project="open">打开此文件夹</button><button class="opt" data-computer-project="chat">在此项目新建会话</button><button class="opt" data-computer-project="new">新建项目并创建会话</button></div>' : '';
+  const actions = state.project && dir && !state.message && !state.error && state.path === dir.path ? '<div class="computerFileActions"><button class="opt" data-computer-project="open">打开此文件夹</button><button class="opt" data-computer-project="chat">在此项目新建会话</button><button class="opt" data-computer-project="new">新建项目并创建会话</button></div>' : '';
   openSheet('computer-files', `<h3>${I18N.tr(state.project ? '选择文件夹' : '打开文件')}</h3><p class="hint ovRaw">${esc(state.computer.name + context)}</p><form id="computerFilePathForm" class="computerFilePath"><input id="computerFilePath" class="ovRaw" aria-label="${I18N.tr('文件路径')}" placeholder="${I18N.tr('输入路径')}" value="${esc(state.path)}" autocomplete="off" autocapitalize="off" spellcheck="false"><button type="button" data-computer-complete title="Tab">${I18N.tr('补全')} ⇥</button><button type="submit">${I18N.tr('前往')}</button></form><div id="computerFileCompletions"></div><div class="computerFileNav"><button type="button" data-computer-path="${esc(dir?.parent ?? '')}" data-computer-directory="true" ${dir?.parent == null ? 'disabled' : ''}>${I18N.tr('返回上一级')}</button><button type="button" data-computer-root>${I18N.tr('根目录')}</button></div><label class="opt computerFileHidden"><span class="lbl">${I18N.tr('不显示隐藏文件和文件夹')}</span><input id="computerFileHideHidden" type="checkbox" role="switch"${state.hideHidden ? ' checked' : ''}><span class="switch${state.hideHidden ? ' on' : ''}" aria-hidden="true"></span></label>${actions}<p id="computerFileStatus" class="hint${state.error ? ' err' : ''}" role="status">${esc(I18N.tr(state.message))}</p>${rows || (!state.message ? `<div class="hint">${I18N.tr('此目录暂无可显示的文件')}</div>` : '')}`);
   $('sheet').scrollTop = state.scroll;
   if (selection) { $('computerFilePath').focus(); $('computerFilePath').setSelectionRange(...selection); }
@@ -748,7 +748,7 @@ function requestMenu(kind, loadingMsg) {
   clearTimeout(menuRefreshTimer);
   if (kind === 'model' || kind === 'effort') {
     const state = capabilityState(kind);
-    if (!state.available) return status(state.reason, false);
+    if (!state.available) return showMenuError(kind, state.reason);
   }
   const cached = menuCache.get(menuCacheKey(kind));
   if (cached) {
@@ -763,6 +763,7 @@ function requestMenu(kind, loadingMsg) {
   }
 }
 function showMenuError(kind, message) {
+  menuPending = null;
   menuSheetKind = kind;
   openSheet('menu', `<h3>${MENU_TITLE[kind] || ''}</h3><p class="hint" role="alert">${esc(I18N.tr(message))}</p>`);
   status(message, false);
@@ -1048,6 +1049,7 @@ function quotaMeterData(m) {
     .map(b => ({ ...b, pct: meterPercent(b.pct), basis: b.basis || 'used' }));
 }
 function currentUsageMeters() {
+  if (!windowReady) return { context: null, quota: [] };
   return { context: contextMeterOwner === contextMeterScope() ? contextInfo : null,
     quota: quotaMeterOwner === quotaKey() && !quotaInfo.missing ? quotaMeterData(quotaInfo) : [] };
 }
@@ -1163,10 +1165,15 @@ for (const id of ['meters', 'title']) new MutationObserver(queueFitMeters).obser
 window.addEventListener('resize', queueFitMeters);
 const quotaCache = new Map();
 const quotaKey = () => [currentComputer()?.id || '', ...viewSel.split('|').slice(0, 2)].join('|');
+document.addEventListener('composer-state', () => {
+  if (windowReady) return;
+  renderContext(null);
+  renderQuota({ missing: true, quota: [], limits: [] });
+});
 function renderQuota(m) {
   if ('context' in m) renderContext(m.context);
   if (m.context?.source === 'opencode' && !m.automatic) finishPending(['正在读取上下文…']);
-  if (m.error) { $('quotaStatus').textContent = m.error; $('quotaStatus').title = $('quotaMeters').title = m.detail || m.error; if (!m.automatic) status('额度刷新失败：' + m.error, false); return; }
+  if (m.error) { renderQuota({ missing: true, quota: [], limits: [] }); $('quotaStatus').textContent = m.error; $('quotaStatus').title = $('quotaMeters').title = m.detail || m.error; if (!m.automatic) status('额度刷新失败：' + m.error, false); return; }
   if (!m.cached || m.updated > (quotaCache.get(quotaKey())?.updated || 0)) $('quotaStatus').textContent = '';
   if (m.refreshError) { $('quotaStatus').textContent = '刷新失败，显示桌面缓存'; $('quotaStatus').title = m.refreshError; }
 

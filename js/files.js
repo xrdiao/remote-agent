@@ -11,7 +11,8 @@ let readingFile = null;
 let computerFiles = null;
 let returnToBrowser = null;
 function computerFileEntries(state, entries) {
-  return entries.filter(e => (!state.project || e.directory) && (!state.hideHidden || !e.name.startsWith('.')));
+  return entries.filter(e => !state.hideHidden || !e.name.startsWith('.'))
+    .map(e => state.project && !e.directory ? { ...e, selectable: false } : e);
 }
 async function computerFileRequest(computer, route, opts = {}) {
   const response = await api(route, { ...opts, computer });
@@ -48,16 +49,17 @@ function receiveCurrentFiles(m) {
 }
 async function browseComputerFiles(path, roots = false) {
   const state = computerFiles, request = ++state.request;
+  const base = state.directory?.path || '';
   state.completion++;
   state.path = path; state.message = '正在读取目录…'; state.error = false; state.scroll = 0;
   showComputerFiles();
-  const query = new URLSearchParams(roots ? { roots: '1' } : { browse: '1', path, base: state.directory?.path || '' });
+  const query = new URLSearchParams(roots ? { roots: '1' } : { browse: '1', path, base });
   try {
     const data = await computerFileRequest(state.computer, '/api/transfer/list?' + query);
     if (computerFiles !== state || state.request !== request || sheetKind !== 'computer-files') return;
     if (data.file) {
       if (state.project) throw new Error('请选择文件夹');
-      state.path = state.directory?.path || ''; state.message = '';
+      state.path = base; state.message = '';
       openFile(data.file, '', false, state.computer);
       return closeSheet();
     }
@@ -109,6 +111,8 @@ $('sheet').addEventListener('keydown', e => {
 $('sheet').addEventListener('input', e => {
   if (e.target.id !== 'computerFilePath') return;
   computerFiles.path = e.target.value; computerFiles.completion++;
+  const actions = $('sheet').querySelector('.computerFileActions');
+  if (actions) actions.hidden = computerFiles.path !== computerFiles.directory?.path;
   $('computerFileCompletions').replaceChildren();
 });
 $('sheet').addEventListener('change', e => {

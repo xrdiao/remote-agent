@@ -180,7 +180,7 @@ function resumeTerminal() {
   requestTerminals(true);
 }
 function enterTerminalMode(fromChat) {
-  if (fromChat && terminalOrigin?.source !== 'computer') terminalOrigin = { computer: currentComputer()?.id, source: 'conversation', sel: viewSel };
+  if (fromChat && terminalOrigin?.source !== 'computer') terminalOrigin = { computer: currentComputer()?.id, source: 'conversation' };
   terminalOrigin ||= { computer: currentComputer()?.id, source: 'computer' };
   if (authed) resumeTerminal();
   else { terminalDisconnected(); terminalMessage('正在连接电脑…'); }
@@ -219,7 +219,7 @@ function createRaTerminal() {
   terminalCreateRequest = { requestId: crypto.randomUUID(), computer };
   terminalMessage('正在新建终端…');
   send({ t: 'newTerminal', requestId: terminalCreateRequest.requestId, source: origin.source,
-    ...(origin.source === 'conversation' ? { sel: origin.sel } : {}) });
+    ...(origin.source === 'conversation' ? { sel: viewSel } : {}) });
 }
 function removeRaTerminal(id) {
   send({ t: 'closeTerminal', id, requestId: crypto.randomUUID() });
