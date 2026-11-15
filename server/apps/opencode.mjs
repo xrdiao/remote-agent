@@ -76,6 +76,7 @@ function confirmSend(s, requestID, pending) {
 
 function watch(s) {
   return watchChatUpdates(s, refresh => openCode.subscribe(id => {
+    while (openCode.childSessions.has(id)) id = openCode.childSessions.get(id).parentID;
     if (id && id !== s.threadId) return;
     refresh();
   }), sent => {
@@ -104,7 +105,7 @@ async function bind(s, req) {
   if (native && !samePath(native.directory, directory)) throw new Error('OpenCode 会话不属于所选项目');
   const thread = native || (!req.newSession && [...openCode.sessions.values()]
     .filter(row => samePath(row.directory, directory)).sort((a, b) => b.time.updated - a.time.updated)[0]);
-  if (thread) await openCode.loadMessages(thread.id);
+  if (thread) await Promise.all([openCode.loadMessages(thread.id), openCode.loadTasks(thread.id)]);
   cdpRead.getStore()?.throwIfAborted();
   s.detach();
   s.clearViewState();
@@ -231,7 +232,7 @@ const routes = {
   },
   async refresh() {
     await awaitCdpRead(openCode.connect());
-    if (this.threadId) await openCode.loadMessages(this.threadId);
+    if (this.threadId) await Promise.all([openCode.loadMessages(this.threadId), openCode.loadTasks(this.threadId)]);
     publish(this);
   },
   async scrollChat(m) {
@@ -252,9 +253,20 @@ const routes = {
     }
     this.emit({ t: 'historyDone', sel, requestId: m.requestId, earlier: hasEarlier(id, page) });
   },
-  toolDetails(m) {
+  async toolDetails(m) {
     if (m.sel !== this.selectionKey()) return;
-    const page = this.openCodePages.get(this.threadId);
+    const id = this.threadId, page = this.openCodePages.get(id);
+    if (m.open) {
+      const part = openCode.messageRows(id).flatMap(row => [...row.parts.values()]).find(part => part.id === m.i);
+      const childId = part?.state?.metadata?.sessionId;
+      if (childId) {
+        const child = await openCode.client.request(`/session/${childId}`, { directory: this.openCodeDirectory, signal: cdpRead.getStore() });
+        if (child.parentID !== id) throw new Error('子 Agent 不属于当前会话');
+        openCode.childSessions.set(childId, { ...child, directory: localFilePath(child.directory) });
+        await Promise.all([openCode.loadMessages(childId), openCode.loadTasks(childId)]);
+      }
+      if (m.sel !== this.selectionKey()) return;
+    }
     if (m.open) page.tools.add(m.i);
     else page.tools.delete(m.i);
     publish(this);

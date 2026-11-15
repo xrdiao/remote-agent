@@ -30,6 +30,39 @@
       updatedAt: row?.updated_at, latest_message_event_at: row?.latest_message_event_at,
       _meta: { ...info?._meta, 'cognition.ai/isArchived': row?.is_archived === true } };
   };
+  const devinMessageItems = (messages, prefix = 'acp', start = 0) => messages.flatMap((message, index) => {
+    const id = prefix + (start + index), items = [];
+    if (['user_message', 'agent_message', 'agent_thought'].includes(message.kind)) {
+      const blocks = message.content || [];
+      if (blocks.some(block => block._meta?.['cognition.ai/isOptimistic'])) return [];
+      const text = devinMessageText(blocks);
+      const images = blocks.filter(block => block.content?.type === 'image').map(block => `data:${block.content.mimeType};base64,${block.content.data}`);
+      const at = Date.parse(blocks.find(block => block._meta?.['cognition.ai/timestamp'])?._meta['cognition.ai/timestamp'] || '') || 0;
+      if (message.kind === 'agent_thought') items.push({ i: id + ':think', k: 'thinking', t: `Thoughts\n${text}` });
+      else if (text || images.length) items.push(nativeMarkdownItem(id, message.kind === 'user_message' ? 'human' : 'assistant', text, at, images));
+    } else if (message.kind === 'tool_call') {
+      const tool = message.content;
+      items.push({ i: id, k: 'tool', src: 'devin', kind: tool.kind || 'other', t: tool.title || '',
+        cmd: typeof tool.rawInput?.command === 'string' ? tool.rawInput.command : '',
+        output: (tool.content || []).filter(block => block.type === 'content' && block.content?.type === 'text').map(block => block.content.text).join('\n').slice(0, 4000),
+        ...(tool.locations?.[0]?.path ? { f: tool.locations[0].path } : {}),
+        done: tool.status === 'completed', ...(tool.status === 'failed' ? { keep: true } : {}) });
+      const images = (tool.content || []).filter(block => block.type === 'content' && block.content?.type === 'image')
+        .map(block => `data:${block.content.mimeType};base64,${block.content.data}`);
+      if (images.length) items.push(nativeMarkdownItem(id + ':images', 'assistant', '', 0, images));
+    } else if (message.kind === 'plan') {
+      const entries = message.content.entries;
+      items.push({ i: id, k: 'tasks', total: entries.length, done: entries.filter(step => step.status === 'completed').length,
+        items: entries.map(step => ({ t: step.content, status: step.status === 'completed' ? 'done' : step.status })) });
+    } else if (['subagent', 'scripted_run', 'workflow_run'].includes(message.kind)) {
+      const child = message.childMessages, offset = Math.max(0, child.length - 60);
+      items.push({ i: id, k: 'tool', src: 'devin', kind: 'other', t: message.title || message.task || '子 Agent',
+        status: message.status, done: message.status !== 'running',
+        children: [{ id: id + ':' + (message.runId || message.agentId || message.scriptedRunId || message.workflowRunId),
+          title: message.title || message.task || '子 Agent', items: devinMessageItems(child.slice(offset), id + ':child:', offset) }] });
+    }
+    return items.map(item => ({ ...item, src: 'devin' }));
+  });
   const devinSessions = () => devinClient().listedSessions().map(row => devinSessionRecord(row.sessionId));
   const devinRequestRecords = () => window.__remoteAgentDevinRequests ||= new Map();
   const devinAgentRequests = id => {

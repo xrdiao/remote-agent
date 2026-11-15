@@ -10,6 +10,8 @@ export class OpenCodeState {
     this.client = client;
     this.saveApprovals = saveApprovals;
     this.sessions = new Map();
+    this.childSessions = new Map();
+    this.todos = new Map();
     this.messages = new Map();
     this.historyPages = new Map();
     this.statuses = new Map();
@@ -62,6 +64,7 @@ export class OpenCodeState {
         this.client.sessions(), this.client.request('/config/providers'), this.client.request('/config'),
       ]);
       this.sessions = new Map(sessions.filter(row => !row.parentID && !row.time.archived).map(row => [row.id, { ...row, directory: localFilePath(row.directory) }]));
+      this.childSessions = new Map(sessions.filter(row => row.parentID && !row.time.archived).map(row => [row.id, { ...row, directory: localFilePath(row.directory) }]));
       this.models.clear();
       for (const provider of catalog.providers)
         for (const model of Object.values(provider.models)) this.models.set(`${provider.id}/${model.id}`, {
@@ -145,15 +148,17 @@ export class OpenCodeState {
     this.revision++;
     switch (event.type) {
       case 'session.created': case 'session.updated':
-        if (!p.info.parentID && !p.info.time.archived) this.sessions.set(p.info.id, { ...p.info, directory: localFilePath(p.info.directory) });
-        else { this.sessions.delete(p.info.id); this.forgetAutomatic(p.info.id); }
+        if (!p.info.time.archived) (p.info.parentID ? this.childSessions : this.sessions).set(p.info.id, { ...p.info, directory: localFilePath(p.info.directory) });
+        else { this.sessions.delete(p.info.id); this.childSessions.delete(p.info.id); this.forgetAutomatic(p.info.id); }
         break;
       case 'session.deleted':
         this.sessions.delete(p.info.id); this.messages.delete(p.info.id); this.historyPages.delete(p.info.id); this.selections.delete(p.info.id);
+        this.childSessions.delete(p.info.id); this.todos.delete(p.info.id);
         this.forgetAutomatic(p.info.id);
         break;
       case 'session.status': this.statuses.set(p.sessionID, p.status); break;
       case 'session.idle': this.statuses.set(p.sessionID, { type: 'idle' }); break;
+      case 'todo.updated': this.todos.set(p.sessionID, { items: p.todos, revision: this.revision }); break;
       case 'message.updated': {
         const message = this.message(p.info.sessionID, p.info.id);
         Object.assign(message, { info: p.info, revision: this.revision });
@@ -216,7 +221,8 @@ export class OpenCodeState {
 
   async loadMessages(id, before, signal = cdpRead.getStore()) {
     const revision = this.revision;
-    const page = await this.client.messages(id, this.sessions.get(id).directory, before, signal);
+    const directory = (this.sessions.get(id) || this.childSessions.get(id)).directory;
+    const page = await this.client.messages(id, directory, before, signal);
     for (const row of page.rows) {
       const message = this.message(id, row.info.id);
       if (message.revision <= revision) message.info = row.info;
@@ -231,8 +237,14 @@ export class OpenCodeState {
     return page;
   }
 
+  async loadTasks(id, signal = cdpRead.getStore()) {
+    const revision = this.revision, directory = (this.sessions.get(id) || this.childSessions.get(id)).directory;
+    const items = await this.client.request(`/session/${id}/todo`, { directory, signal });
+    if ((this.todos.get(id)?.revision || 0) <= revision) this.todos.set(id, { items, revision });
+  }
+
   selection(id) {
-    const session = this.sessions.get(id);
+    const session = this.sessions.get(id) || this.childSessions.get(id);
     const native = session?.model;
     return this.selections.get(id) || { key: native ? `${native.providerID}/${native.id}` : this.defaultModel,
       variant: native?.variant && native.variant !== 'default' ? native.variant : '' };
@@ -264,8 +276,8 @@ export class OpenCodeState {
     return [...this.messages.get(id)?.values() || []].sort((a, b) => (a.info.time?.created || 0) - (b.info.time?.created || 0) || a.info.id.localeCompare(b.info.id));
   }
 
-  chat(id, { rows, tools } = {}) {
-    const session = this.sessions.get(id), items = [];
+  chat(id, { rows, tools, children = true } = {}) {
+    const session = this.sessions.get(id) || this.childSessions.get(id), items = [];
     const messages = this.messageRows(id);
     for (const { info, parts } of rows || messages) {
       const start = items.length;
@@ -300,7 +312,13 @@ export class OpenCodeState {
         }
         if (part.type === 'reasoning' && part.text?.trim()) items.push({ i: part.id, k: 'thinking', t: '思考\n' + (part.text || ''), live: !info.time?.completed });
         if (part.type === 'tool') {
-          items.push(toolItem(part, !tools || tools.has(part.id)));
+          const item = toolItem(part, !tools || tools.has(part.id));
+          const childId = part.state.metadata?.sessionId;
+          if (children && item.details && childId && this.messages.has(childId)) item.children = [{
+            id: childId, title: this.childSessions.get(childId)?.title || part.state.input?.description || '子 Agent',
+            items: this.chat(childId, { rows: this.messageRows(childId).slice(-30), tools: new Set(), children: false }).items,
+          }];
+          items.push(item);
           const images = (part.state.attachments || []).filter(file => file.mime.startsWith('image/')).map(file => file.url);
           if (images.length) items.push({ i: part.id + ':images', k: 'assistant', t: '', images });
         }
@@ -308,6 +326,10 @@ export class OpenCodeState {
       if (info.error) items.push({ i: info.id + ':error', k: 'notice', t: info.error.data?.message || info.error.name });
       for (let i = start; i < items.length; i++) items[i].order = info.time?.created || 0;
     }
+    const todos = this.todos.get(id)?.items || [];
+    if (todos.length) items.push({ i: id + ':tasks', k: 'tasks', total: todos.length,
+      done: todos.filter(todo => todo.status === 'completed').length,
+      items: todos.map(todo => ({ t: todo.content, status: todo.status === 'completed' ? 'done' : todo.status })) });
     const permissions = [...this.permissions.values()].filter(p => p.sessionID === id);
     const questions = [...this.questions.values()].filter(p => p.sessionID === id);
     for (const p of permissions) items.push({ i: 'permission:' + p.id, k: 'tool', src: 'opencode', kind: 'command',
@@ -340,7 +362,7 @@ export class OpenCodeState {
       durationMs,
       tokens: tokens ? { input: tokens.input, output: tokens.output, reasoning: tokens.reasoning, cacheRead: tokens.cache.read, cacheWrite: tokens.cache.write } : null,
       cacheRate: tokens && cacheInput > 0 ? Math.round(tokens.cache.read / cacheInput * 1000) / 10 : null } : null;
-    return { thread: id, title: session?.title || '', items, busy,
+    return { thread: id, title: session?.title || '', items, busy, tasks: this.taskProgress(id),
       model: model?.name || selected.key || '', effort: selected.variant || '默认（服务端）',
       permission: this.approvalMode(id), context, performance,
       generation: performance ? { start: user?.time?.created || performance.startedAt, end: busy ? null : performance.completedAt } : null,
@@ -348,6 +370,12 @@ export class OpenCodeState {
       waiting: questions.length ? 'question' : permissions.length ? 'approval' : '',
       waitingText: questions[0]?.questions[0]?.question || permissions[0]?.patterns.join(' · ') || '',
     };
+  }
+
+  taskProgress(id) {
+    const todos = this.todos.get(id)?.items || [];
+    return todos.length ? { done: todos.filter(todo => todo.status === 'completed').length, total: todos.length,
+      current: todos.find(todo => todo.status === 'in_progress')?.content || '' } : null;
   }
 
   overview() {
@@ -363,7 +391,7 @@ export class OpenCodeState {
       const last = chat.items.findLast(row => row.k === 'assistant')?.t || '';
       sessions.push({ ...windows.get(pathKey(root)), threadId: session.id, title: session.title,
         busy: chat.busy, waiting: chat.waiting, waitingText: chat.waitingText, last,
-        run: null, statusKnown: this.connected, startedAt: 0, tasks: null, actions: [],
+        run: null, statusKnown: this.connected, startedAt: 0, tasks: this.taskProgress(session.id), actions: [],
         changed: chat.changed, lastUsed: session.time.updated, lastMessageAt: session.time.updated });
     }
     return { windows: [...windows.values()], sessions };
@@ -377,6 +405,7 @@ function toolItem(part, details = true) {
   const diff = details ? (meta.diff || '').split('\n').filter(line => /^[ +\-]/.test(line) && !/^(---|\+\+\+)/.test(line)).map(line => [line[0], line.slice(1)]) : [];
   const f = input.filePath || meta.filepath || '';
   return { i: part.id, k: 'tool', src: 'opencode', kind,
+    ...(part.tool === 'task' && meta.sessionId ? { childId: meta.sessionId } : {}),
     t: (state.status === 'error' ? '错误：' : '') + part.tool + ' ' + (state.title || input.pattern || f),
     f, chips: f ? [f] : [], lazy: true, details,
     ...(details ? { cmd: input.command || '', output: state.error || state.output || '', diff } : {}),

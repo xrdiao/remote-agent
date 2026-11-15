@@ -648,7 +648,7 @@ export class Session extends AgentContext {
   }
 
   async followCodexOwner(msg) {
-    if (this.codexBackend && !codexBackend.hasWriter(this.threadId)) {
+    if (this.codexBackend) {
       const owner = await this.adapter.backendOwner(this.threadId);
       if (owner) {
         const previous = this.selectionKey(), files = pendingUploads(previous);
@@ -661,7 +661,19 @@ export class Session extends AgentContext {
   }
 
   async handle(msg) {
-    if (['send', 'pickMenu', 'queue', 'codexRequest', 'codexPlan', 'codexPick'].includes(msg.t))
+    const command = this.app === 'codex' && ['send', 'pickMenu', 'queue', 'codexRequest', 'codexPlan', 'codexPick'].includes(msg.t)
+      && !(msg.t === 'send' && msg.submit === false) && !(msg.t === 'queue' && msg.action === 'read');
+    if (!command) return this.handleSelected(msg);
+    const thread = this.threadId;
+    return codexBackend.runCommand(thread || this.windowId, () => {
+      cdpRead.getStore()?.throwIfAborted();
+      if (this.app !== 'codex' || this.threadId !== thread) throw new Error('会话已切换，请在当前会话重新操作');
+      return this.handleSelected(msg);
+    });
+  }
+
+  async handleSelected(msg) {
+    if (['send', 'pickMenu', 'queue', 'codexRequest', 'codexPlan', 'codexPick', 'stop'].includes(msg.t))
       msg = await this.followCodexOwner(msg);
     const route = resolveRoute(this, msg.t);
     if (route?.native && this.app !== 'opencode') return this.dispatch(msg, route);

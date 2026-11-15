@@ -25,6 +25,8 @@ itemsEl.addEventListener('click', async e => {
     const box = tr.closest('.toolrow');
     box.classList.add('anim');
     box.classList.toggle('open');
+    const children = box.querySelector(':scope > .taskChildren');
+    if (children) children.hidden = !box.classList.contains('open');
     if (['opencode', 'codex'].includes(currentApp) && tr.dataset.lazy) {
       const open = box.classList.contains('open');
       if (open) openCodeTools.add(box.dataset.i);
@@ -302,9 +304,11 @@ function syncCodexAutoRetry(chat, stale = false, sel = viewSel) {
   const signature = JSON.stringify(settings);
   if (signature !== codexRetryConfig && send(settings)) codexRetryConfig = signature;
 }
-function renderItem(it) {
+function renderItem(it, readOnly = false) {
+  if (readOnly) it = { ...it, lazy: false, b: [], actions: [], agents: [] };
   const el = document.createElement('div');
   el.className = 'msg ' + it.k;
+  el.dataset.i = it.i;
   if (it.k === 'notice') {
     el.innerHTML = `<span>${esc(it.t || '')}</span>`;
     el.classList.toggle('capacity', it.kind === 'capacity');
@@ -321,10 +325,10 @@ function renderItem(it) {
     const time = stamp ? `<time datetime="${stamp.toISOString()}" title="${esc(stamp.toLocaleString())}">${esc(stamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }))}</time>` : '';
     el.innerHTML = `<div class="humanContent"><div class="bubble">${mh?.any ? mh.html : esc(it.t || '')}</div><div class="messageMeta">${time}<button data-copy-message>复制</button></div></div>`;
     if (mh?.any) typesetMath(el);
-    if (it.src === 'devin') el.insertAdjacentHTML('beforeend', `<div class="rv"><button class="foldBtn" data-fold="${esc(it.i)}" title="折叠这一轮">▾</button><span class="turnSum"></span><button class="revertBtn" data-revert="${esc(it.i)}">回到这里</button></div>`);
+    if (it.src === 'devin' && !readOnly) el.insertAdjacentHTML('beforeend', `<div class="rv"><button class="foldBtn" data-fold="${esc(it.i)}" title="折叠这一轮">▾</button><span class="turnSum"></span><button class="revertBtn" data-revert="${esc(it.i)}">回到这里</button></div>`);
   }
   // it.h comes from the whitelist sanitizer in server/page/common.js (clean): plain tags only, text escaped.
-  else if (it.k === 'assistant') { el.copyText = it.t || ''; el.innerHTML = currentApp === 'codex' || currentApp === 'cursor' && it.bodyFormat === 'markdown' ? codexReplyHtml(it) : currentApp === 'opencode' ? codexMarkdown.render(it.t || '') : it.h || ''; dressMessage(el); }
+  else if (it.k === 'assistant') { el.copyText = it.t || ''; el.innerHTML = currentApp === 'codex' || it.bodyFormat === 'markdown' ? codexReplyHtml(it) : currentApp === 'opencode' ? codexMarkdown.render(it.t || '') : it.h || ''; dressMessage(el); }
   else if (it.k === 'opencodeQuestion') {
     el.innerHTML = `<form data-opencode-question="${esc(it.requestID)}">${it.questions.map((question, qi) =>
       `<fieldset data-opencode-answer data-multiple="${question.multiple === true}"><legend class="ovRaw">${esc(question.header)} · ${esc(question.question)}</legend>${question.options.map(option =>
@@ -348,6 +352,18 @@ function renderItem(it) {
   else el.textContent = it.t || '';
   if (it.k === 'opencodeQuestion') restoreOpenCodeAnswers(el.querySelector('form'));
   if (it.agents?.length) el.insertAdjacentHTML('beforeend', '<div class="btns agentActions"></div>');
+  if (it.children?.length) {
+    const children = document.createElement('div');
+    children.className = 'taskChildren';
+    children.hidden = it.lazy && !openCodeTools.has(it.i);
+    for (const child of it.children) {
+      const details = document.createElement('details');
+      details.className = 'tcard'; details.dataset.task = child.id; details.open = taskOpen.has(child.id);
+      const summary = document.createElement('summary'); summary.className = 'tprog-head'; summary.textContent = '子 Agent · ' + child.title;
+      details.append(summary, ...child.items.map(item => renderItem(item, true))); children.append(details);
+    }
+    el.append(children);
+  }
   if (it.images?.length) {
     el.insertAdjacentHTML('beforeend', it.images.filter(src => /^(https?:|data:image\/|chat-image:)/.test(src)).map(src => src.startsWith('chat-image:')
       ? `<a class="${it.k === 'human' ? 'sentImage' : ''}" target="_blank" rel="noopener"><img data-chat-image="${esc(src.slice(11))}" alt="生成的图片" style="max-width:100%;border-radius:8px"></a>`

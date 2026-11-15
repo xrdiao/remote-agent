@@ -683,6 +683,7 @@ function visibleChatItems(items, busy, retained = new Set()) {
   const shown = executionRecordsShown();
   const latestTurn = busy ? Math.max(0, items.findLastIndex(it => it.k === 'human')) : items.length;
   return items.filter((it, n) => {
+    if (it.k === 'tool' && (it.childId || it.children?.length || it.agents?.length)) return true;
     if (it.k === 'tool' && retained.has(String(it.i))) return true;
     if (it.k === 'tool' && it.src === 'codex' && it.kind === 'edit') return true;
     if (!executionRecord(it)) return !(it.k === 'tool' && it.done);
@@ -1848,7 +1849,7 @@ function dressMessage(el) {
     if (/^https?:\/\/\S+$/i.test(t) && !code.closest('a')) {
       const a = document.createElement('a'); a.href = t; a.textContent = t; code.replaceChildren(a); return;
     }
-    if (!code.closest('a') && /^[^\s`<>]+\.(?:png|jpe?g|gif|webp|svg|bmp)$/i.test(t)) {
+    if (!code.closest('a') && !/[\s`<>]/.test(t) && (RemoteAgentRules.uploadDocument(t) || Object.keys(RemoteAgentRules.previewImageTypes).some(ext => t.toLowerCase().endsWith(ext)))) {
       code.dataset.file = t;
       return;
     }

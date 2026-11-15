@@ -15,6 +15,46 @@ async function withTools(c, app, inspect) {
 }
 
 export default [
+  { id: 'conversation.tasks', title: '原生任务清单、完成进度及折叠状态', refs: ['F07', 'F18'], mode: 'read', apps: true, async run(c, app) {
+    const target = await c.target(app); await c.open(target);
+    const task = await c.b.read("lastChat.items.findLast(item=>item.k==='tasks')||null");
+    if (!task) throw new Unavailable('当前样本没有原生任务清单，需登记含任务的 A 样本');
+    c.equal(task.done, task.items.filter(item => item.status === 'done').length, '进度与任务状态一致');
+    c.equal(task.total, task.items.length, '任务总数与清单一致');
+    const selector = '#items details' + by('data-task', task.i), original = await c.b.read(`document.querySelector(${attr(selector)}).open`);
+    try {
+      if (!original) await c.b.click(selector + '>summary');
+      c.equal(await c.b.read(`document.querySelector(${attr(selector)}).querySelectorAll('.tlist>li').length`), task.total, '展开显示全部任务项');
+      await c.b.home(); await c.open(target);
+      await c.b.wait(`document.querySelector(${attr(selector)})?.open`, '任务折叠状态在重新进入后保留');
+    } finally { if (!original && await c.b.has(selector + '>summary')) await c.b.click(selector + '>summary'); }
+    return { done: task.done, total: task.total };
+  } },
+  { id: 'conversation.subtasks', title: '子 Agent 执行内容与父会话归属', refs: ['F07', 'F18'], mode: 'read', apps: true, async run(c, app) {
+    return withTools(c, app, async () => {
+      const parent = await c.b.read('lastChat.thread');
+      let tool = await c.b.read("lastChat.items.find(item=>item.children?.length||item.agents?.length||item.childId)||null");
+      while (!tool && await c.b.has('#older')) {
+        await c.b.click('#older'); await c.b.wait('!historyRequest&&!historyRendering', '查找原生子任务历史页');
+        tool = await c.b.read("lastChat.items.find(item=>item.children?.length||item.agents?.length||item.childId)||null");
+      }
+      if (!tool) throw new Unavailable('当前样本没有子 Agent，需登记包含子任务的 long 样本');
+      const row = '#items ' + by('data-i', tool.i);
+      if (tool.agents?.length && !tool.children?.length) {
+        try {
+          await c.b.click(row + ' [data-codex-agent]');
+          await c.b.wait(`lastChat.thread===${attr(tool.agents[0].id)}&&!chatStale`, '原生子会话正文');
+          c.check(await c.b.read('lastChat.items.length>0'), '子会话确有执行内容');
+        } finally { await c.open(await c.target(app, 'long')); }
+      } else {
+        if (tool.lazy && !tool.details) await c.b.click(row + ' [data-ttoggle]');
+        await c.b.wait(`document.querySelector(${attr(row)})?.querySelector('.taskChildren details .msg')`, '原生子 Agent 执行内容');
+        await c.b.click(row + ' .taskChildren details>summary');
+        c.equal(await c.b.read('lastChat.thread'), parent, '查看内嵌子任务不切换父会话');
+      }
+      return { parent, tool: tool.i };
+    });
+  } },
   { id: 'conversation.codex-diff', title: 'Codex 原生修改、新建文件的差异区块和行数', refs: ['F07', 'F10', 'F18'], mode: 'generate', apps: ['codex'], async run(c, app) {
     const target = await c.target(app, 'diff', true), file = path.join(target.root, 'existing.txt'), added = path.join(target.root, 'added.txt');
     const lines = Array.from({ length: 30 }, (_, i) => 'unchanged line ' + i); lines[15] = 'old value';

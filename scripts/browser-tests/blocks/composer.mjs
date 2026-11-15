@@ -2,8 +2,38 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { attr, by } from '../context.mjs';
 import { Unavailable } from '../browser.mjs';
+import { Cdp } from '../../../server/cdp.mjs';
+import { codexWindows } from '../../../server/windows.mjs';
+import { CODEX_CDP_URL } from '../../../server/config.mjs';
+import { PAGE_SRC, helpersCall } from '../../../server/page/build.mjs';
 
 export default [
+  { id: 'composer.codex-writer', title: '桌面进程持有会话时手机使用同一写入者发送', refs: ['F06', 'F16', 'F17'], mode: 'generate', apps: ['codex'], async run(c, app) {
+    const page = (await codexWindows(CODEX_CDP_URL)).find(page => page.chatWs);
+    if (!page) throw new Unavailable('此场景需要已打开的 Codex 桌面窗口');
+    const target = await c.target(app, 'writer', true), native = new Cdp(page.chatWs);
+    await native.connect();
+    const original = await native.evaluate(helpersCall('codexThread()'));
+    try {
+      await c.b.home();
+      const prefix = PAGE_SRC.slice(0, PAGE_SRC.lastIndexOf('  return { historyAtStart'));
+      const owner = await native.evaluate(prefix + `return (async()=>{
+        const manager=codexConversationManager(${attr(target.thread)},codexHistoryScopes(),'local');
+        await manager.resumeConversation(nativeValue({conversationId:${attr(target.thread)},model:null,reasoningEffort:null,workspaceRoots:[${attr(target.root)}],collaborationMode:null}));
+        return nativeSessionInfo('codex',${attr(target.thread)},'connection');
+      })();})()`);
+      c.check(owner?.loaded, '原生 app-server 确实已加载该测试会话');
+      await c.open(target);
+      const marker = c.marker + '-WRITER', receipt = await c.send(target, `只回复 ${marker}，不要读写文件或运行工具。`);
+      c.equal(receipt.pending, 0, '桌面持有时手机收到确定发送回执');
+      c.equal(receipt.draftLength, 0, '发送成功清空手机草稿');
+      c.check(await c.b.read(`lastChat.items.some(item=>item.k==='assistant'&&item.t?.includes(${attr(marker)}))`), '同一原生会话返回真实回复');
+      return { thread: target.thread, nativeLoaded: owner.loaded, role: owner.role };
+    } finally {
+      if (original && await native.evaluate(helpersCall('codexThread()')) !== original) await native.evaluate(helpersCall(`openCodexThread(${attr(original)})`));
+      native.close();
+    }
+  } },
   { id: 'composer.drafts', title: '正文和卡片草稿、A/B 隔离', refs: ['F06'], mode: 'write', apps: true, async run(c, app) {
     const a = await c.target(app, 'A', true), b = await c.target(app, 'B', true);
     const av = c.marker + '-A', bv = c.marker + '-B';

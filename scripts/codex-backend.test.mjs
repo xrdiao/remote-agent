@@ -5,7 +5,8 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { CodexClient } from '../server/codex/client.mjs';
-import { CodexState } from '../server/codex/state.mjs';
+import { CodexState, codexBackend } from '../server/codex/state.mjs';
+import { Session } from '../server/session.mjs';
 import { generatedImageSource, readCodexImage } from '../server/codex/images.mjs';
 import { adapter as codexAdapter } from '../server/apps/codex.mjs';
 import { resolveRoute } from '../server/routes.mjs';
@@ -18,6 +19,74 @@ import fs from 'node:fs';
 import { read, fragment, createPageContext } from './page-fixture.mjs';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
+
+test('phone commands share a per-thread FIFO without selecting a primary phone', async () => {
+  const { state } = fixture(), events = [];
+  let release;
+  const first = state.runCommand('A', async () => { events.push('phone-1'); await new Promise(resolve => { release = resolve; }); return 'one'; });
+  const second = state.runCommand('A', async () => { events.push('phone-2'); return 'two'; });
+  const other = state.runCommand('B', async () => { events.push('other-thread'); });
+  await other;
+  assert.deepEqual(events, ['phone-1', 'other-thread']);
+  release(); assert.deepEqual(await Promise.all([first, second]), ['one', 'two']);
+  assert.deepEqual(events, ['phone-1', 'other-thread', 'phone-2']); assert.equal(state.commands.size, 0);
+});
+
+test('a failed phone operation is reported once and does not block the next phone', async () => {
+  const { state } = fixture(), events = [];
+  const first = state.runCommand('A', () => { events.push('first'); throw new Error('rejected'); });
+  const second = state.runCommand('A', () => { events.push('second'); return 'accepted'; });
+  await assert.rejects(first, /rejected/); assert.equal(await second, 'accepted');
+  assert.deepEqual(events, ['first', 'second']); assert.equal(state.commands.size, 0);
+});
+
+test('queued phone commands retain their request context and cannot follow an A/B switch', async () => {
+  const events = []; let release;
+  const phone = name => ({ app: 'codex', threadId: 'phone-order-test', windowId: 'backend',
+    handleSelected: async message => { events.push([name, message.t, currentOperation()?.requestId]); if (name === 'one') await new Promise(resolve => { release = resolve; }); } });
+  const one = phone('one'), two = phone('two');
+  const first = withOperation({ requestId: 'first' }, () => Session.prototype.handle.call(one, { t: 'send' }));
+  const second = withOperation({ requestId: 'second' }, () => Session.prototype.handle.call(two, { t: 'send' }));
+  await tick(); assert.deepEqual(events, [['one', 'send', 'first']]);
+  await Session.prototype.handle.call(two, { t: 'send', submit: false });
+  assert.deepEqual(events.at(-1), ['two', 'send', undefined]);
+  two.threadId = 'different-thread'; release(); await first;
+  await assert.rejects(second, /会话已切换/); assert.equal(codexBackend.commands.size, 0);
+});
+
+test('writer lookup waits for a pending background release before choosing the write route', async () => {
+  const id = 'release-order-test'; let release;
+  codexBackend.writers.add(id);
+  codexBackend.releasing.set(id, { promise: new Promise(resolve => { release = resolve; }) });
+  let settled = false;
+  try {
+    const owner = codexAdapter.backendOwner(id).then(value => { settled = true; return value; });
+    await tick(); assert.equal(settled, false);
+    release(); assert.equal(await owner, null);
+  } finally { codexBackend.releasing.delete(id); codexBackend.writers.delete(id); }
+});
+
+test('native writer discovery includes loaded threads outside the visible view and IPC followers', async () => {
+  for (const [role, loaded, cached] of [[undefined, true, false], ['follower', false, true], ['owner', true, true], [undefined, false, true]]) {
+    const calls = [], manager = {
+      getStreamRole: () => role ? { role } : undefined,
+      getConversation: () => cached ? { cwd: '/target-project' } : undefined,
+      async sendRequest(method, params) {
+        calls.push({ method, params });
+        return method === 'thread/loaded/list' ? { data: loaded ? ['target'] : [] } : { thread: { cwd: '/target-project' } };
+      },
+    };
+    const source = fragment(read('server/page/session-actions.js'), '  const nativeSessionInfo =', '  const nativeSessionAction =');
+    const info = vm.runInContext(source + '\nnativeSessionInfo;', createPageContext({
+      codexConversationManager: () => manager, codexHistoryScopes: () => [], nativeValue: value => value, localFilePath,
+    }));
+    const result = await info('codex', 'target', 'connection');
+    if (!role && !loaded) assert.equal(result, null);
+    else { assert.equal(result.cwd, '/target-project'); assert.equal(result.role, role); assert.equal(result.loaded, loaded); }
+    assert.equal(calls[0].method, 'thread/loaded/list');
+    if (!cached) assert.equal(calls[1].params.threadId, 'target');
+  }
+});
 
 test('Codex creation releases its idle native writer; reading does not resume it', async () => {
   const { state, client } = fixture();
@@ -597,7 +666,7 @@ test('legacy binding reuses the exact native writer and does not resume or creat
 
 test('writer lookup scans both windows and selects owner rather than visible follower', async () => {
   const closed = [], calls = [], context = createPageContext({ CODEX_CDP_URL: 'native',
-    codexBackend: { hasWriter: () => false }, helpersCall: value => value,
+    codexBackend: { hasWriter: () => false, releasing: new Map() }, helpersCall: value => value,
     codexWindows: async () => ['follower', 'writer'].map(id => ({ pageId: id, chatWs: id })),
     Cdp: class {
       constructor(ws) { this.ws = ws; }
@@ -627,7 +696,7 @@ test('native legacy routing preserves remote sessions and every Fusion binding',
 test('Windows binds a native follower when its writer is external and prefers a visible owner across windows', async () => {
   for (const roles of [['follower'], ['follower', 'owner'], [null, 'follower', 'owner']]) {
     const closed = [], context = createPageContext({ IS_WIN: true, CODEX_CDP_URL: 'native',
-      codexBackend: { hasWriter: () => false }, helpersCall: value => value,
+      codexBackend: { hasWriter: () => false, releasing: new Map() }, helpersCall: value => value,
       codexWindows: async () => roles.map((role, i) => ({ pageId: String(i), chatWs: String(i) })),
       Cdp: class {
         constructor(ws) { this.index = Number(ws); }

@@ -94,7 +94,7 @@ export function overviewSnapshot(deviceId) {
     api.windows.push(win);
     api.sessions.push({ ...win, threadId: row.id, title: row.title, busy: !!state?.busy, waiting: state?.waiting || question.waiting, waitingText: state?.waitingText || question.waitingText,
       last: state?.last || '', run: state?.run || null, statusKnown: !!state || !!question.waiting, startedAt: state?.generation?.start || 0,
-      tasks: null, actions: [], changed: 0, lastUsed: row.updatedAt * 1000 });
+      tasks: state?.tasks || null, actions: [], changed: 0, lastUsed: row.updatedAt * 1000 });
   }
   for (const row of api.windows) projects.set(row.projectId, row);
   const windows = [...projects.values()];
@@ -171,12 +171,12 @@ export async function overviewPreview(deviceId, { win, windowId, threadId }) {
     const turn = chat.items.slice(Math.max(0, start));
     const text = turn.filter(row => ['human', 'assistant'].includes(row.k)).map(row => row.t).join('\n\n').slice(-600);
     return { win, windowId, threadId, available: true, last: (chat.items.findLast(row => row.k === 'assistant')?.t || '').slice(-600), text,
-      model: chat.model, effort: chat.effort, tasks: null,
+      model: chat.model, effort: chat.effort, tasks: chat.tasks,
       tools: turn.filter(row => row.k === 'tool').slice(-3).map(row => ({ id: row.i, label: row.t.slice(0, 240), state: row.status === 'completed' ? 'done' : row.status === 'failed' ? 'error' : 'run' })) };
   }
   if (session.app === 'opencode') {
     await openCode.connect();
-    await openCode.loadMessages(threadId);
+    await Promise.all([openCode.loadMessages(threadId), openCode.loadTasks(threadId)]);
     const rows = openCode.messageRows(threadId);
     const turn = rows.findLastIndex(row => row.info.role === 'user' && [...row.parts.values()].some(part => part.type === 'text' && !part.synthetic && part.text?.trim()));
     const chat = openCode.chat(threadId, { rows: rows.slice(Math.max(0, turn)), tools: new Set() });
@@ -184,7 +184,7 @@ export async function overviewPreview(deviceId, { win, windowId, threadId }) {
     const text = chat.items.filter(row => ['human', 'assistant'].includes(row.k)).map(row => row.t).join('\n\n').slice(-600);
     return { win, windowId, threadId, available: true,
       last: (chat.items.findLast(row => row.k === 'assistant')?.t || '').slice(-600), text,
-      model: chat.model, effort: chat.effort, tasks: null,
+      model: chat.model, effort: chat.effort, tasks: chat.tasks,
       tools: chat.items.filter(row => row.k === 'tool').slice(-3).map(row => ({ id: row.i, label: row.t.slice(0, 240),
         state: row.status === 'error' ? 'error' : row.status === 'completed' ? 'done' : 'run' })) };
   }

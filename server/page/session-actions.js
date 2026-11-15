@@ -201,7 +201,9 @@
         const tools = messages.slice(messages.findLastIndex(m => m.kind === 'user_message') + 1).filter(m => m.kind === 'tool_call').map(m => ({
           id: m.content.toolCallId || m.id, label: m.content.title, status: m.content.status,
         }));
-        return { ...summary(devinMessageText(message?.content)), status: status(), ...nativePreviewActivity(tools, model) };
+        const task = devinMessageItems(messages).findLast(item => item.k === 'tasks');
+        const tasks = task ? { done: task.done, total: task.total, current: task.items.find(item => item.status === 'in_progress')?.t || '' } : null;
+        return { ...summary(devinMessageText(message?.content)), status: status(), ...nativePreviewActivity(tools, model, '', tasks) };
       });
     }
     const scopes = codexHistoryScopes();
@@ -316,11 +318,17 @@
     if (app === 'codex' && catalog === 'refreshCatalog')
       return codexConversationManager(null, codexHistoryScopes(), 'local').refreshRecentConversations({ afterCurrent: true })
         .then(() => codexQueryClient().refetchQueries({ queryKey: ['recent-conversations-meta'], type: 'all' }, { throwOnError: true, cancelRefetch: false })).then(() => true);
-    if (app === 'codex' && catalog === 'connection') {
+    if (app === 'codex' && catalog === 'connection') return (async () => {
       const manager = codexConversationManager(id, codexHistoryScopes(), 'local');
-      const role = manager?.getStreamRole(id)?.role;
-      return role === 'owner' || role === 'follower' ? { cwd: localFilePath(manager.getConversation(id).cwd), role } : null;
-    }
+      if (!manager) return null;
+      const role = manager.getStreamRole(id)?.role;
+      const loaded = await manager.sendRequest('thread/loaded/list', nativeValue({}));
+      const local = loaded.data.includes(id);
+      if (!local && role !== 'owner' && role !== 'follower') return null;
+      const conversation = manager.getConversation(id)
+        || (await manager.sendRequest('thread/read', nativeValue({ threadId: id, includeTurns: false }))).thread;
+      return { cwd: localFilePath(conversation.cwd), role, loaded: local };
+    })();
     if (app === 'codex' && catalog === 'owner') {
       const manager = codexConversationManager(id, codexHistoryScopes(), 'local');
       return manager?.getStreamRole(id)?.role === 'owner' ? { cwd: localFilePath(manager.getConversation(id).cwd) } : null;

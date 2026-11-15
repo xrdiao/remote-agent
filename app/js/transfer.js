@@ -183,16 +183,25 @@ $('transferAll').onclick = () => {
 function clearTransferSelection() { transferSelection.clear(); renderTransferPage(); $('transferSelectMenu').open = false; }
 $('transferClear').onclick = clearTransferSelection;
 $('transferClearFooter').onclick = clearTransferSelection;
+async function downloadComputerFiles(computer, paths) {
+  const response = await api('/api/transfer/download', { computer, method: 'POST', body: JSON.stringify({ paths }) });
+  const data = await response.json();
+  if (!response.ok) throw Error(data.error);
+  const link = document.createElement('a');
+  link.href = computer.relay + data.url; link.download = data.name; link.textContent = '点此下载 ' + data.name;
+  document.body.append(link); link.click(); link.remove();
+  return link;
+}
 $('transferDownload').onclick = async () => {
-  const downloadBase = transferComputer.relay;
+  const computer = transferComputer, paths = [...transferSelection.keys()];
   $('transferDownload').disabled = true;
   transferStatus('正在准备下载…');
   try {
-    const response = await api('/api/transfer/download', { computer: transferComputer, method: 'POST', body: JSON.stringify({ paths: [...transferSelection.keys()] }) });
-    const data = await response.json();
-    if (!response.ok) throw Error(data.error);
-    const link = document.createElement('a'); link.href = downloadBase + data.url; link.download = data.name; link.textContent = '点此下载 ' + data.name;
-    $('transferStatus').replaceChildren(link); link.click();
+    const link = await downloadComputerFiles(computer, paths);
+    if (transferComputer.id !== computer.id) return;
+    for (const file of paths) transferSelection.delete(file);
+    renderTransferPage();
+    $('transferStatus').replaceChildren(link);
   } catch (error) { transferStatus(error.message, true); }
   finally { transferCount(); }
 };

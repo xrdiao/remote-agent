@@ -455,7 +455,8 @@
       if (item.type === 'commandExecution') return { type: 'exec', callId: item.id, cmd: [item.command], executionStatus: item.status,
         output: { aggregatedOutput: item.aggregatedOutput, exitCode: item.exitCode } };
       if (item.type === 'fileChange') return { type: 'patch', callId: item.id, executionStatus: item.status, changes: Object.fromEntries((item.changes || []).map(c => [c.path, c])) };
-      if (item.type === 'plan') return { type: 'todo-list', id: item.id, plan: item.plan || [] };
+      if (item.type === 'plan') return { type: 'assistant-message', responseAnnotationTargetId: item.id, content: item.text || '', completed: done };
+      if (item.type === 'todo-list') return item;
       if (item.type === 'mcpToolCall') return { ...item, type: 'mcp-tool-call' };
       if (item.type === 'dynamicToolCall') return { ...item, type: 'dynamic-tool-call' };
       if (item.type === 'collabAgentToolCall') return item;
@@ -1389,6 +1390,14 @@
       if (todos.length) items.push({ i: thread + ':tasks', k: 'tasks', total: todos.length,
         done: todos.filter(todo => todo.status === 'completed').length,
         items: todos.map(todo => ({ t: todo.content, status: todo.status === 'completed' ? 'done' : todo.status })) });
+      if (data.subagentComposerIds.length) {
+        const agents = await Promise.all(data.subagentComposerIds.map(async id => {
+          const peek = await cursorSessionServices().data.composerDataHandleManager.peekComposerData(id);
+          const child = peek?.source === 'memory' ? peek.handle.data : peek?.data;
+          return { id, title: child?.name || id };
+        }));
+        items.push({ i: thread + ':subagents', k: 'tool', t: '子 Agent', agents });
+      }
       title = data.name || ''; draft = data.text;
       earlier = end > headers.length;
       before = data.fullConversationHeadersOnly.indexOf(headers[0]);
@@ -1402,28 +1411,7 @@
         ? Number(/^acp(\d+)/.exec(beforeItem)?.[1]) : history && Number.isFinite(context.before) ? context.before : messages.length;
       if (!Number.isFinite(end)) throw new Error('历史起点已变化，请重新读取会话');
       const selected = messages.slice(Math.max(0, end - limit), end);
-      for (const message of selected) {
-        const id = 'acp' + messages.indexOf(message);
-        if (message.kind === 'user_message' || message.kind === 'agent_message' || message.kind === 'agent_thought') {
-          const blocks = message.content || [];
-          if (blocks.some(block => block._meta?.['cognition.ai/isOptimistic'])) continue;
-          const text = devinMessageText(blocks);
-          const images = blocks.filter(block => block.content?.type === 'image').map(block => `data:${block.content.mimeType};base64,${block.content.data}`);
-          const at = Date.parse(blocks.find(block => block._meta?.['cognition.ai/timestamp'])?._meta['cognition.ai/timestamp'] || '') || 0;
-          if (message.kind === 'agent_thought') items.push({ i: id + ':think', k: 'thinking', t: `Thoughts\n${text}` });
-          else if (text || images.length) items.push(nativeMarkdownItem(id, message.kind === 'user_message' ? 'human' : 'assistant', text, at, images));
-        } else if (message.kind === 'tool_call') {
-          const tool = message.content;
-          items.push({ i: id, k: 'tool', src: 'devin', kind: tool.kind || 'other', t: tool.title || '',
-            cmd: typeof tool.rawInput?.command === 'string' ? tool.rawInput.command : '',
-            output: (tool.content || []).filter(block => block.type === 'content' && block.content?.type === 'text').map(block => block.content.text).join('\n').slice(0, 4000),
-            ...(tool.locations?.[0]?.path ? { f: tool.locations[0].path } : {}),
-            done: tool.status === 'completed', ...(tool.status === 'failed' ? { keep: true } : {}) });
-          const images = (tool.content || []).filter(block => block.type === 'content' && block.content?.type === 'image')
-            .map(block => `data:${block.content.mimeType};base64,${block.content.data}`);
-          if (images.length) items.push(nativeMarkdownItem(id + ':images', 'assistant', '', 0, images));
-        }
-      }
+      items.push(...devinMessageItems(selected, 'acp', Math.max(0, end - limit)));
       const session = devinSessionRecord(thread);
       if (failed)
         items.push({ i: 'acp' + messages.length + ':error', k: 'tool', kind: 'error', t: failure[1].errorMessage, keep: true });

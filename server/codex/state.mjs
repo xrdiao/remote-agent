@@ -27,6 +27,7 @@ export class CodexState extends EventEmitter {
     this.records = new Map(file && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')).map(row => [row.id, { ...row, cwd: localFilePath(row.cwd) }]) : []);
     this.statistics = new Map([...this.records].map(([id, row]) => [id, row.statistics || {}]));
     this.threads = new Map();
+    this.childChats = new Map();
     this.requests = new Map();
     this.queues = new Map();
     this.drafts = new Map();
@@ -34,6 +35,7 @@ export class CodexState extends EventEmitter {
     this.nativeDrafts = new Map();
     this.manualCompactions = new Set();
     this.loading = new Map();
+    this.commands = new Map();
     this.writers = new Set();
     this.releasing = new Map();
     this.using = new Map();
@@ -66,6 +68,14 @@ export class CodexState extends EventEmitter {
   }
   owns(id) { return this.records.has(id); }
   hasWriter(id) { return this.writers.has(id); }
+  async runCommand(id, action) {
+    const previous = this.commands.get(id) || Promise.resolve();
+    const command = previous.then(action, action);
+    this.commands.set(id, command);
+    try { return await command; }
+    finally { if (this.commands.get(id) === command) this.commands.delete(id); }
+  }
+
   async withWriter(id, action) {
     this.using.set(id, (this.using.get(id) || 0) + 1);
     try { return await action(await this.load(id)); }
@@ -311,6 +321,10 @@ export class CodexState extends EventEmitter {
       this.queueRevisions.set(id, (this.queueRevisions.get(id) || 0) + 1);
       this.readQueue(id).catch(error => this.changed(id, error));
     } else if (method === 'serverRequest/resolved') this.requests.delete(p.requestId);
+    else if (method === 'turn/plan/updated') {
+      const rows = this.statisticsFor(id);
+      rows[p.turnId] = { ...rows[p.turnId], plan: p.plan };
+    }
     else if (method === 'turn/started' || method === 'turn/completed') {
       const old = thread.turns.find(turn => turn.id === p.turn.id);
       if (old) {
@@ -477,7 +491,8 @@ export class CodexState extends EventEmitter {
     const turn = thread.disconnected ? null : busyTurn(thread), latest = thread.turns.at(-1), items = [];
     const all = thread.turns.flatMap(row => {
       const last = row.status === 'completed' && row.items.findLast(item => item.type === 'agentMessage' && item.text);
-      return row.items.map(item => ({ item, turn: row, fork: item === last }));
+      const plan = this.statistics.get(id)?.[row.id]?.plan || [];
+      return [...row.items, ...(plan.length ? [{ type: 'todo-list', id: row.id + ':tasks', plan }] : [])].map(item => ({ item, turn: row, fork: item === last }));
     });
     for (const { item, turn: owner, fork } of all.slice(-limit)) {
       const base = { i: item.id, order: owner.startedAt * 1000 || thread.createdAt * 1000 };
@@ -488,6 +503,10 @@ export class CodexState extends EventEmitter {
       } else if (item.type === 'agentMessage' || item.type === 'plan') {
         if (item.text) items.push({ ...base, k: 'assistant', bodyFormat: 'markdown', t: item.text,
           ...(fork ? { b: ['Fork chat from here'], btnItem: owner.id, actions: ['fork'] } : {}) });
+      } else if (item.type === 'todo-list') {
+        items.push({ ...base, k: 'tasks', total: item.plan.length,
+          done: item.plan.filter(step => step.status === 'completed').length,
+          items: item.plan.map(step => ({ t: step.step, status: step.status === 'completed' ? 'done' : step.status })) });
       } else if (item.type === 'reasoning') {
         const text = (item.summary?.length ? item.summary : item.content || []).join('\n');
         if (text) items.push({ ...base, k: 'thinking', t: '思考\n' + text, live: !thread.disconnected && owner.status === 'inProgress' });
@@ -506,6 +525,12 @@ export class CodexState extends EventEmitter {
         const diff = details ? codexFileDiff(item.changes) : null;
         items.push({ ...base, k: 'tool', src: 'codex', kind: 'edit', t: item.changes.map(row => row.path).join(', ').slice(0, 240), f: item.changes[0]?.path,
           ...(details ? diff : {}), status: item.status });
+      } else if (item.type === 'collabAgentToolCall') {
+        const details = !tools || tools.has(item.id);
+        items.push({ ...base, k: 'tool', src: 'codex', kind: 'other', t: `${item.tool} · ${item.status}`, status: item.status,
+          ...(details ? { output: JSON.stringify(item.agentsStates || {}), children: (item.receiverThreadIds || []).filter(child => this.childChats.has(child)).map(child => ({
+            id: child, title: item.agentsStates?.[child]?.nickname || child, items: this.childChats.get(child).items,
+          })) } : {}) });
       } else if (item.type === 'mcpToolCall') items.push({ ...base, k: 'tool', src: 'codex', kind: 'command', t: `${item.server} · ${item.tool}`.slice(0, 240),
         ...(!tools || tools.has(item.id) ? { output: JSON.stringify(item.result || item.error || '') } : {}), status: item.status });
     }
@@ -520,7 +545,9 @@ export class CodexState extends EventEmitter {
       .map(([key, value]) => [key, value - (baseline[key] || 0)])) : null;
     const durationMs = latest?.durationMs ?? (latest?.startedAt ? ((latest.completedAt || Date.now() / 1000) - latest.startedAt) * 1000 : null);
     const requests = this.requestRows(id);
+    const task = items.findLast(item => item.k === 'tasks');
     return { thread: id, title: thread.name || this.records.get(id)?.title || thread.preview, items, busy: !!turn,
+      tasks: task ? { done: task.done, total: task.total, current: task.items.find(item => item.status === 'in_progress')?.t || '' } : null,
       run: latest ? { id: latest.id, status: turn ? 'running' : ({ interrupted: 'stopped', failed: 'error' }[latest.status] || latest.status),
         startedAt: latest.startedAt * 1000, completedAt: latest.completedAt * 1000 } : null,
       model: settings.model || thread.model || '', effort: settings.effort ?? settings.reasoningEffort ?? thread.reasoningEffort,
@@ -561,7 +588,7 @@ export class CodexState extends EventEmitter {
       const chat = this.chat(id);
       return { thread: id, title: chat.title, busy: chat.busy, waiting: chat.waiting, waitingText: chat.waitingText,
         last: chat.items.findLast(item => item.k === 'assistant')?.t || '', generation: chat.generation,
-        runId: chat.run?.id || '', run: chat.run };
+        runId: chat.run?.id || '', run: chat.run, tasks: chat.tasks };
     });
   }
   close() { this.client.close(); }

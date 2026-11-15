@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { attr, by } from '../context.mjs';
+import { Unavailable } from '../browser.mjs';
 
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 async function sample(c) {
@@ -34,8 +35,88 @@ async function transferOperation(c, selector, name) {
   if (name) await c.b.dialog(name, () => c.b.click(selector)); else await c.b.click(selector);
   await c.b.wait("!transferFileOperation&&document.getElementById('transferStatus').textContent==='文件操作已完成'", '文件操作及目录刷新回执');
 }
+async function referenceDocuments(root) {
+  const { ZipFile } = await import('yazl'), zip = new ZipFile();
+  zip.addBuffer(Buffer.from('<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>'), '[Content_Types].xml');
+  zip.addBuffer(Buffer.from('<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>'), '_rels/.rels');
+  zip.addBuffer(Buffer.from('<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>REFERENCE_CONTENT</w:t></w:r></w:p></w:body></w:document>'), 'word/document.xml');
+  zip.end(); const chunks = []; for await (const chunk of zip.outputStream) chunks.push(chunk);
+  await fs.writeFile(path.join(root, 'RAQA_reference.docx'), Buffer.concat(chunks));
+  const objects = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>', '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] >>'];
+  let pdf = '%PDF-1.4\n', offsets = [0]; for (let i = 0; i < objects.length; i++) { offsets.push(Buffer.byteLength(pdf)); pdf += `${i + 1} 0 obj\n${objects[i]}\nendobj\n`; }
+  const xref = Buffer.byteLength(pdf); pdf += `xref\n0 4\n0000000000 65535 f \n${offsets.slice(1).map(offset => String(offset).padStart(10, '0') + ' 00000 n \n').join('')}trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  await fs.writeFile(path.join(root, 'RAQA_reference.pdf'), pdf);
+}
 
 export default [
+  { id: 'files.zip-download', title: 'ZIP 查看页下载原压缩包并核对字节', refs: ['F10', 'F12'], mode: 'write', async run(c) {
+    const { root } = await sample(c), name = '测试 归档.zip', file = path.join(root, name);
+    const { ZipFile } = await import('yazl'), zip = new ZipFile();
+    zip.addBuffer(Buffer.from(c.marker), '测试 文件.txt'); zip.end();
+    const chunks = []; for await (const chunk of zip.outputStream) chunks.push(chunk);
+    const bytes = Buffer.concat(chunks); await fs.writeFile(file, bytes);
+    const downloads = path.resolve(c.directory, 'zip-downloads'); await fs.mkdir(downloads, { recursive: true });
+    await c.b.cdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: downloads, eventsEnabled: true });
+    try {
+      await browse(c, root); await c.b.click(by('data-computer-path', file.replaceAll(path.sep, '/')));
+      await c.b.wait(`fileDownload?.path===${attr(file.replaceAll(path.sep, '/'))}&&!readingFile&&!document.getElementById('vDownload').hidden`, 'ZIP 查看页下载入口');
+      c.check(await c.b.read("document.getElementById('vBody').textContent.includes('ZIP 压缩包')"), 'ZIP 显示文件说明');
+      c.check(await c.b.read("document.getElementById('vEdit').hidden"), 'ZIP 不进入文本编辑');
+      await c.b.click('#vDownload');
+      const destination = path.join(downloads, name), deadline = Date.now() + c.options.timeout; let actual;
+      while (Date.now() < deadline) { try { actual = await fs.readFile(destination); break; } catch (error) { if (error.code !== 'ENOENT') throw error; } await new Promise(resolve => setTimeout(resolve, 100)); }
+      c.check(!!actual, '浏览器实际下载 ZIP'); c.equal(hash(actual), hash(bytes), '压缩包原始字节保持一致');
+      return { bytes: actual.length, sha256: hash(actual) };
+    } finally {
+      await c.b.cdp.send('Browser.setDownloadBehavior', { behavior: 'default' });
+      if (await c.b.has('#vClose')) await c.b.click('#vClose'); await c.b.dismiss();
+    }
+  } },
+  { id: 'files.native-references', title: '真实回复中的 PDF／Word 文件引用与普通代码', refs: ['F07', 'F10'], mode: 'generate', apps: true, async run(c, app) {
+    const target = await c.target(app, 'file-references', true); await referenceDocuments(target.root); await c.open(target);
+    await c.send(target, '这是文件引用显示测试。不要调用任何工具，只逐字回复以下三段行内代码，保留反引号：`RAQA_reference.pdf`、`RAQA_reference.docx`、`print(12345678)`。不要附加其他内容。');
+    await c.b.wait('!chatFrame&&!scrollFrame&&!chatScrolling&&!deferredScrollRender', '生成后的正文呈现完成');
+    for (const name of ['RAQA_reference.pdf', 'RAQA_reference.docx']) {
+      const selector = '#items code' + by('data-file', name);
+      c.check(await c.b.has(selector), '真实回复识别文件引用：' + name);
+      c.check(!await c.b.read(`document.querySelector(${attr(selector)}).classList.contains('copyable')`), '文件名不被当作复制代码');
+      const before = await c.b.read('fileRequestId'); await c.b.click(selector);
+      try {
+        await c.b.wait(`fileRequestId>${before}`, '点击文件进入读取链路');
+        await c.b.wait(`fileDownload?.path?.endsWith(${attr(name)})&&!readingFile&&!document.getElementById('vDownload').hidden`, '原生会话文件引用预览');
+        if (name.endsWith('.docx')) c.check(await c.b.read("viewing?.text?.includes('REFERENCE_CONTENT')"), 'Word 读取的是实际文档正文');
+        else await c.b.wait("document.querySelector('#vBody canvas')", '实际 PDF 渲染');
+      } finally { if (await c.b.has('#vClose')) await c.b.click('#vClose'); }
+    }
+    c.check(await c.b.read("[...document.querySelectorAll('#items code.copyable')].some(e=>e.textContent==='print(12345678)')"), '普通代码继续复制');
+    return { documents: 2 };
+  } },
+  { id: 'files.references', title: '正文文件名打开预览，普通代码保留复制', refs: ['F07', 'F10'], mode: 'read', apps: true, async run(c, app) {
+    await c.open(await c.target(app));
+    const reference = await c.b.read("[...document.querySelectorAll('#items code[data-file]')].find(e=>/\\.(pdf|docx)$/i.test(e.dataset.file))?.dataset.file||null");
+    if (!reference) throw new Unavailable('需要正文含真实 PDF／Word 文件引用的样本，未用伪造消息代替');
+    c.check(!await c.b.read(`document.querySelector('#items code'+${attr(by('data-file', reference))}).classList.contains('copyable')`), '文件引用不走代码复制');
+    await c.b.click('#items code' + by('data-file', reference));
+    try {
+      await c.b.wait("document.getElementById('viewer').classList.contains('open')&&!readingFile&&!document.getElementById('vDownload').hidden", '实际文件预览及下载入口');
+      c.check(await c.b.read('!!fileDownload?.path'), '引用已解析为实际文件路径');
+    } finally { await c.b.click('#vClose'); }
+    return { reference };
+  } },
+  { id: 'files.preview-download', title: '文件预览下载原始字节并保持预览', refs: ['F10', 'F12'], mode: 'write', async run(c) {
+    const { root, file } = await sample(c), downloads = path.resolve(c.directory, 'preview-downloads'); await fs.mkdir(downloads, { recursive: true });
+    await c.b.cdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: downloads, eventsEnabled: true });
+    try {
+      await browse(c, root); await c.b.click(by('data-computer-path', file.replaceAll(path.sep, '/')));
+      await c.b.wait('!!fileDownload&&!readingFile', '文件预览'); await c.b.click('#vDownload');
+      const destination = path.join(downloads, path.basename(file)), deadline = Date.now() + c.options.timeout;
+      let actual;
+      while (Date.now() < deadline) { try { actual = await fs.readFile(destination); break; } catch (error) { if (error.code !== 'ENOENT') throw error; } await new Promise(resolve => setTimeout(resolve, 100)); }
+      c.check(!!actual, '预览下载产生实际文件'); c.equal(hash(actual), hash(await fs.readFile(file)), '下载原文件字节一致');
+      c.check(await c.b.has('#vClose'), '下载后保持文件预览');
+      return { bytes: actual.length, sha256: hash(actual) };
+    } finally { await c.b.cdp.send('Browser.setDownloadBehavior', { behavior: 'default' }); if (await c.b.has('#vClose')) await c.b.click('#vClose'); await c.b.dismiss(); }
+  } },
   { id: 'files.editor', title: '浏览、预览、保存并核对磁盘字节', refs: ['F10', 'W07'], mode: 'write', async run(c) {
     const { root, file } = await sample(c); await browse(c, root);
     await c.b.click(by('data-computer-path', file.replaceAll(path.sep, '/')));
@@ -112,6 +193,7 @@ export default [
     await transferPath(c, destination); await c.b.click('#transferUseDirectory');
     await c.b.files('#transferFileInput', [source]); await c.b.click('#transferStart');
     await c.b.wait('!transferUploading&&transferUploads.length===0', '上传完成');
+    c.check(await c.b.read("document.getElementById('transferFileInput').value===''&&document.getElementById('transferStart').disabled"), '上传后清空文件选择并禁用重复提交');
     const actual = await fs.readFile(path.join(destination, path.basename(source)));
     c.equal(hash(actual), hash(bytes), '上传后的文件哈希一致'); await c.b.click('#transferClose');
     return { bytes: actual.length, sha256: hash(actual) };
@@ -123,6 +205,8 @@ export default [
       await c.b.menu('transfer'); await c.b.click('#transferDownloadTab'); await transferPath(c, root);
       const index = await c.b.read(`transferDirectory.entries.findIndex(e=>e.path===${attr(file.replaceAll(path.sep, '/'))})`);
       c.check(index >= 0, '下载目录包含测试文件'); await c.b.click(by('data-transfer-check', index)); await c.b.click('#transferDownload');
+      await c.b.wait("transferSelection.size===0&&document.getElementById('transferDownload').disabled", '下载后清除本批勾选');
+      c.check(!await c.b.read("[...document.querySelectorAll('[data-transfer-check]')].some(e=>e.checked)"), '下载列表不残留勾选');
       const destination = path.join(downloads, path.basename(file)), deadline = Date.now() + c.options.timeout;
       let actual;
       while (Date.now() < deadline) { try { actual = await fs.readFile(destination); break; } catch (error) { if (error.code !== 'ENOENT') throw error; } await new Promise(resolve => setTimeout(resolve, 100)); }

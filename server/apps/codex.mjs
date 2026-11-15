@@ -313,6 +313,15 @@ const backendRoutes = {
   async refresh() { await codexBackend.refresh(this.threadId); backendPublish(this); },
   async toolDetails(m) {
     if (m.sel !== this.selectionKey()) return;
+    if (this.codexBackend && m.open) {
+      const item = codexBackend.threads.get(this.threadId).turns.flatMap(turn => turn.items).find(item => item.id === m.i);
+      if (item?.type === 'collabAgentToolCall') {
+        await Promise.all((item.receiverThreadIds || []).map(async id => {
+          codexBackend.childChats.set(id, await codexBackend.readChat(id));
+        }));
+        if (m.sel !== this.selectionKey()) return;
+      }
+    }
     this.expandedTools ||= new Set();
     if (m.open) this.expandedTools.add(m.i); else this.expandedTools.delete(m.i);
     if (this.codexBackend) return backendPublish(this);
@@ -528,6 +537,7 @@ export const adapter = {
   backendRoutes,
   routes: { toolDetails: backendRoutes.toolDetails },
   async backendOwner(id) {
+    await codexBackend.releasing.get(id)?.promise;
     if (codexBackend.hasWriter(id)) return null;
     const pages = await codexWindows(CODEX_CDP_URL);
     const matches = await Promise.all(pages.filter(page => page.chatWs).map(async page => {
