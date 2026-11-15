@@ -1297,17 +1297,17 @@ test('Codex mutations follow the current desktop writer and carry pending upload
   for (const type of ['send', 'pickMenu', 'queue', 'codexRequest', 'codexPlan', 'codexPick', 'refresh']) {
     const calls = [], upload = { sel: 'backend:A', pending: true };
     const context = createPageContext({
-      codexBackend: { hasWriter: () => false },
+      codexBackend: { hasWriter: () => false, runCommand: (_key, fn) => fn() }, cdpRead: { getStore: () => null },
       pendingUploads: key => { assert.equal(key, 'backend:A'); return [['file', upload]]; },
       updateUpload: (file, fields) => Object.assign(file, fields),
       resolveRoute: () => ({ native: true }),
     });
-    const methods = vm.runInContext('({' + fragment(read('server/session.mjs'), '  async followCodexOwner(', '  async handle(').trimEnd() + ',\n' + fragment(read('server/session.mjs'), '  async handle(msg) {', '  async dispatch(') + '})', context);
+    const methods = vm.runInContext('({' + fragment(read('server/session.mjs'), '  async followCodexOwner(', '  async handle(').trimEnd() + ',\n' + fragment(read('server/session.mjs'), '  async handle(msg) {', '  async handleSelected(').trimEnd() + ',\n' + fragment(read('server/session.mjs'), '  async handleSelected(', '  async dispatch(') + '})', context);
     const session = { app: 'codex', codexBackend: true, threadId: 'A', windowId: 'backend',
       adapter: { backendOwner: async id => { calls.push(['owner', id]); return { pageId: 'desktop', cwd: '/A' }; } },
       selectionKey() { return this.windowId + ':' + this.threadId; },
       async attach(req) { calls.push(['attach', req]); this.codexBackend = false; this.windowId = req.windowId; },
-      followCodexOwner: methods.followCodexOwner,
+      followCodexOwner: methods.followCodexOwner, handleSelected: methods.handleSelected,
       dispatch: async function (msg) { calls.push(['dispatch', this.windowId, msg.t, msg.sel]); },
     };
     const message = { t: type, sel: 'backend:A' };
