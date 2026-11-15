@@ -828,7 +828,7 @@ export const methods = {
       return value === text;
     }
     const native = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return (!${JSON.stringify(this.selectedThread || '')} || h.activeThread() === ${JSON.stringify(this.selectedThread || '')}) && (h.composerDraft() === ${JSON.stringify(text)} || h.setComposerDraft(${JSON.stringify(text)})) ? { draft: h.composerDraft() } : null; })()`);
-    if (native) { this.lastDraft = native.draft; return true; }
+    if (native?.draft === text.replace(/\n+$/g, '')) { this.lastDraft = native.draft; return true; }
     return false;
   },
   async syncAttachments() {

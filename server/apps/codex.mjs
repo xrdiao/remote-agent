@@ -121,7 +121,7 @@ async function bindBackend(s, req) {
     : req.threadId ? null : safeHomePath(s.codexDirectory || os.homedir()).real;
   const id = req.threadId || (!req.newSession && [...codexBackend.records.values()].filter(row => samePath(path.resolve(localFilePath(row.cwd)), directory))
     .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))[0]?.id);
-  if (id && (!codexBackend.threads.has(id) || codexBackend.threads.get(id).disconnected)) {
+  if (id && !codexBackend.hasWriter(id)) {
     const owner = await adapter.backendOwner(id);
     if (owner) {
       if (directory && !samePath(path.resolve(localFilePath(owner.cwd)), directory)) throw new Error('Codex 会话不属于所选项目');
@@ -130,7 +130,7 @@ async function bindBackend(s, req) {
       return;
     }
   }
-  const thread = await awaitCdpRead(id ? codexBackend.load(id) : codexBackend.create(directory));
+  const thread = await awaitCdpRead(id ? codexBackend.read(id) : codexBackend.create(directory));
   directory = safeHomePath(directory || thread.cwd).real;
   if (!samePath(path.resolve(localFilePath(thread.cwd)), directory)) throw new Error('Codex 会话不属于所选项目');
   cdpRead.getStore()?.throwIfAborted();
@@ -302,10 +302,13 @@ const backendRoutes = {
     } finally { this.draftWriting = false; }
     this.emit({ t: 'draftAck', sel: key, ok: true, text, read, draftEpoch: m.draftEpoch || '', revision: m.revision });
   },
-  async stop() {
-    const thread = await codexBackend.load(this.threadId);
-    const turn = thread.turns.findLast(turn => turn.status === 'inProgress');
-    if (turn) await codexBackend.client.request('turn/interrupt', { threadId: this.threadId, turnId: turn.id });
+  async stop(m) {
+    m = await this.followCodexOwner(m);
+    if (!this.codexBackend) return this.handle(m);
+    return codexBackend.withWriter(this.threadId, async thread => {
+      const turn = thread.turns.findLast(turn => turn.status === 'inProgress');
+      if (turn) await codexBackend.client.request('turn/interrupt', { threadId: this.threadId, turnId: turn.id });
+    });
   },
   async refresh() { await codexBackend.refresh(this.threadId); backendPublish(this); },
   async toolDetails(m) {
@@ -349,8 +352,10 @@ const backendRoutes = {
     else if (m.kind === 'permission') update = { approvalPolicy: m.label === 'Full access' ? 'never' : 'on-request', approvalsReviewer: m.label === 'Approve for me' ? (IS_WIN ? 'guardian_subagent' : 'auto_review') : 'user', sandboxPolicy: { type: m.label === 'Full access' ? 'dangerFullAccess' : 'workspaceWrite', ...(m.label === 'Full access' ? {} : { writableRoots: [this.codexDirectory], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false }) } };
     else if (m.kind === 'fast') update = { serviceTier: m.label === 'on' || m.label === 'Fast' ? 'fast' : null };
     else throw new Error('当前后台没有此设置');
-    await codexBackend.client.request('thread/settings/update', { threadId: this.threadId, ...update });
-    Object.assign(codexBackend.threads.get(this.threadId).settings, update);
+    await codexBackend.withWriter(this.threadId, async thread => {
+      await codexBackend.client.request('thread/settings/update', { threadId: this.threadId, ...update });
+      Object.assign(thread.settings, update); codexBackend.remember(thread);
+    });
     if (m.kind === 'fast') this.emit({ t: 'fastState', sel: this.selectionKey(), fast: { on: update.serviceTier === 'fast' } });
     codexBackend.changed(this.threadId);
   },
@@ -368,15 +373,17 @@ const backendRoutes = {
     backendPublish(this);
   },
   async queue(m) {
-    const id = this.threadId, row = codexBackend.queues.get(id)?.find(row => row.id === m.id);
-    if (!row) throw new Error('排队消息已不存在');
-    if (m.action === 'read') return row.input.filter(part => part.type === 'text').map(part => part.text).join('\n');
-    if (m.action === 'edit') await codexBackend.client.request('thread/queue/update', { threadId: id, queuedSubmissionId: m.id,
-      input: [{ type: 'text', text: m.text }, ...row.input.filter(part => part.type !== 'text')] });
-    else if (m.action === 'send') await codexBackend.startQueued(id, m.id);
-    else await codexBackend.client.request('thread/queue/delete', { threadId: id, queuedSubmissionId: m.id });
-    await codexBackend.readQueue(id);
-    return { queued: m.action !== 'send' };
+    return codexBackend.withWriter(this.threadId, async () => {
+      const id = this.threadId, row = codexBackend.queues.get(id)?.find(row => row.id === m.id);
+      if (!row) throw new Error('排队消息已不存在');
+      if (m.action === 'read') return row.input.filter(part => part.type === 'text').map(part => part.text).join('\n');
+      if (m.action === 'edit') await codexBackend.client.request('thread/queue/update', { threadId: id, queuedSubmissionId: m.id,
+        input: [{ type: 'text', text: m.text }, ...row.input.filter(part => part.type !== 'text')] });
+      else if (m.action === 'send') await codexBackend.startQueued(id, m.id);
+      else await codexBackend.client.request('thread/queue/delete', { threadId: id, queuedSubmissionId: m.id });
+      await codexBackend.readQueue(id);
+      return { queued: m.action !== 'send' };
+    });
   },
   attachments() { this.emit({ t: 'attachments', sel: this.selectionKey(), list: uploadAttachments(this.selectionKey()) }); },
   image(m) {
@@ -420,12 +427,15 @@ const backendRoutes = {
       ...(limits ? { plan: limits.planType || '', limits: [limits.primary, limits.secondary].filter(Boolean).map(row => ({ label: row.windowDurationMins < 1440 ? '5h' : 'Weekly', pct: row.usedPercent, basis: 'used', reset: new Date(row.resetsAt * 1000).toLocaleString('zh-CN') })) } : {}) });
   },
   async codexPlan() {
-    const thread = codexBackend.threads.get(this.threadId), settings = thread.settings;
-    const collaborationMode = { mode: settings.collaborationMode?.mode === 'plan' ? 'default' : 'plan',
-      settings: { model: settings.model || thread.model, reasoning_effort: settings.effort ?? settings.reasoningEffort ?? null } };
-    await codexBackend.client.request('thread/settings/update', { threadId: this.threadId, collaborationMode });
-    settings.collaborationMode = collaborationMode;
-    codexBackend.changed(this.threadId);
+    return codexBackend.withWriter(this.threadId, async thread => {
+      const settings = thread.settings;
+      const collaborationMode = { mode: settings.collaborationMode?.mode === 'plan' ? 'default' : 'plan',
+        settings: { model: settings.model || thread.model, reasoning_effort: settings.effort ?? settings.reasoningEffort ?? null } };
+      await codexBackend.client.request('thread/settings/update', { threadId: this.threadId, collaborationMode });
+      settings.collaborationMode = collaborationMode;
+      codexBackend.remember(thread);
+      codexBackend.changed(this.threadId);
+    });
   },
   async codexSkills() { this.emit({ t: 'codexSkills', rows: await backendSkills(this) }); },
   async mentionQuery(m) {
@@ -453,7 +463,7 @@ const backendRoutes = {
     await this.batchSessions(m.ids, m.requestId, async row => {
       const { windowId, id } = parseAgentRef(row.id);
       if (windowId === CODEX_BACKEND) {
-        const thread = await codexBackend.load(id);
+        const thread = await codexBackend.read(id);
         if (thread.turns.some(turn => turn.status === 'inProgress')) throw new Error('会话正在运行，已跳过');
         return backendRoutes.codexArchive.call(this, { id: row.id });
       }
@@ -518,7 +528,7 @@ export const adapter = {
   backendRoutes,
   routes: { toolDetails: backendRoutes.toolDetails },
   async backendOwner(id) {
-    if (codexBackend.threads.has(id) && !codexBackend.threads.get(id).disconnected) return null;
+    if (codexBackend.hasWriter(id)) return null;
     const pages = await codexWindows(CODEX_CDP_URL);
     const matches = await Promise.all(pages.filter(page => page.chatWs).map(async page => {
       const cdp = new Cdp(page.chatWs);
@@ -536,7 +546,7 @@ export const adapter = {
   closeBackendSettings() { return closeBackendSettings(this); },
   attachBackend(req) { return bindBackend(this, req); },
   async setBackendMode() {
-    await awaitCdpRead(codexBackend.load(this.threadId));
+    if (!codexBackend.threads.has(this.threadId)) await awaitCdpRead(codexBackend.read(this.threadId));
     const questionSources = this.codexNativeQuestions = new Map();
     if (!this.visible) { backendPublish(this); return; }
     const stop = watchChatUpdates(this, refresh => {
@@ -552,7 +562,9 @@ export const adapter = {
         const changed = error => {
           if (error) { this.emit({ t: 'status', ok: false, msg: error.message }); return; }
           const requests = source.conversationView(context).snapshot?.chat?.questions?.requests || [];
-          questionSources.set(source, { context, requests }); refresh();
+          questionSources.set(source, { context, requests });
+          if (codexBackend.hasWriter(context.threadId)) refresh();
+          else codexBackend.read(context.threadId).then(refresh, changed);
         };
         stops.push(source.subscribe(changed, context));
         source.readConversation(context).then(() => changed(), changed);
@@ -561,7 +573,11 @@ export const adapter = {
     }, sent => backendPublish(this, sent));
     const draftChanged = id => { if (id === this.threadId) backendPublishDraft(this); };
     codexBackend.on('draftChanged', draftChanged);
-    this.chatUpdatesStop = () => { codexBackend.off('draftChanged', draftChanged); codexBackend.clearRetry(this); stop(); questionSources.clear(); };
+    const threadId = this.threadId;
+    this.chatUpdatesStop = () => {
+      codexBackend.off('draftChanged', draftChanged); codexBackend.clearRetry(this); stop(); questionSources.clear();
+      codexBackend.releaseIdle(threadId).catch(error => this.emit({ t: 'status', ok: false, msg: error.message }));
+    };
     if (this.codexRetrySettings) backendRoutes.codexRetry.call(this, this.codexRetrySettings);
     await this.adapter.syncBackendDraft.call(this);
     backendPublish(this);

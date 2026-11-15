@@ -353,7 +353,8 @@
       if (connector?.status !== 'connected') throw new Error('Devin 原生连接尚未就绪');
       return { title: session.title || '', archived: session._meta?.['cognition.ai/isArchived'] === true,
         running: ['active', 'pending', 'canceling'].includes(session.status),
-        actions: [...(connector.capabilities?._meta?.['cognition.ai/sessionRename'] ? ['rename'] : []), 'archive',
+        actions: [...(connector.capabilities?._meta?.['cognition.ai/sessionRename'] ? ['rename'] : []),
+          ...(connector.capabilities?._meta?.['cognition.ai/sessionArchiving'] ? ['archive'] : []),
           ...(connector.capabilities?.sessionCapabilities?.delete ? ['delete'] : [])] };
     })();
     if (app === 'cursor' && ['actions', 'list'].includes(catalog)) return (async () => {

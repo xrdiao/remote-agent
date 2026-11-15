@@ -6,6 +6,7 @@ import { Cdp } from './cdp.mjs';
 import { helpersCall } from './page/build.mjs';
 import { localFilePath } from '../lib/platform.mjs';
 import { readFile } from '../lib/files.mjs';
+import { readCodexImage } from './codex/images.mjs';
 
 const directory = path.join(DATA_DIR, 'chat-images');
 const reading = new Map();
@@ -13,7 +14,9 @@ const reading = new Map();
 function imageReference(source, wsUrl = '') {
   const data = /^data:image\/([a-z0-9.+-]+);base64,([\s\S]+)$/i.exec(source);
   if (!data) {
-    if (!wsUrl || source.startsWith('chat-image:')) return source;
+    if (source.startsWith('chat-image:')) return source;
+    const local = path.isAbsolute(localFilePath(source));
+    if (!wsUrl && !local && !source.startsWith('codex-file:')) return source;
     const id = crypto.createHash('sha256').update(wsUrl + '\n' + source).digest('hex') + '.source';
     const file = path.join(directory, id);
     if (!fs.existsSync(file)) {
@@ -47,7 +50,9 @@ export async function readChatImage(id) {
       try {
         const filePath = localFilePath(source.source);
         let data;
-        if (filePath && path.isAbsolute(filePath)) {
+        if (source.source.startsWith('codex-file:')) {
+          data = await readCodexImage(source.source.slice('codex-file:'.length));
+        } else if (filePath && path.isAbsolute(filePath)) {
           const stat = await fs.promises.stat(filePath);
           data = (await readFile(filePath, stat.size)).image;
           if (!data) throw new Error('文件不是图片');

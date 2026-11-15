@@ -13,6 +13,12 @@ export class Context {
     this.owned = []; this.terminals = []; this.fusion = []; this.data = new Map();
     this.marker = 'RAQA-' + path.basename(directory); this.cleanup = { sessions: [], terminals: [], errors: [] };
     this.assertions = [];
+    this.prerequisites = new Map();
+  }
+  async prerequisite(key, action) {
+    if (this.prerequisites.has(key)) throw new Unavailable(`前置条件 ${key} 已失败：${this.prerequisites.get(key)}`);
+    try { return await action(); }
+    catch (error) { this.prerequisites.set(key, error.message); error.prerequisite ||= key; throw error; }
   }
   check(value, message) { this.assertions.push(message); assert(value, message); }
   equal(actual, expected, message) { this.assertions.push(message); assert.equal(actual, expected, message); }
@@ -34,24 +40,30 @@ export class Context {
   }
   async target(app, slot = 'A', owned = false) {
     if (owned) {
+      if (['fold', 'models', 'commands', 'terminal'].includes(slot)) slot = 'A';
       const previous = this.owned.find(row => row.app === app && row.slot === slot);
-      return previous || this.create(app, slot);
+      const target = await this.prerequisite(`create:${app}:${slot}`, async () => previous || this.create(app, slot));
+      if (!target.thread && this.test?.id !== 'sessions.project')
+        throw new Unavailable('OpenCode 项目已打开；原生会话 ID 在首次发送后创建，此场景需 full 套件先持久化隔离会话');
+      return target;
     }
     const rows = await this.rows(app), selected = this.options.targets?.[app]?.[slot];
+    if (slot === 'long' && !selected) throw new Unavailable(`${app} 需要通过 --targets 登记真实 long 会话，不用普通空闲会话替代`);
     const target = selected ? rows.find(row => row.thread === selected) : rows.find(row => row.thread && row.state !== 'run');
     if (!target) throw new Unavailable(`${app} 没有可读的空闲会话`);
     return target;
   }
-  async reveal(target) {
+  async reveal(target, level = 'projects') {
+    await this.refreshTarget(target);
     const b = this.b; await b.home();
-    await b.click('#ovLevels [data-v="projects"]');
+    await b.click(`#ovLevels [data-v="${level}"]`);
     const project = `[data-ov="proj"]${by('data-id', target.project)}`;
-    if (!await b.has(project)) {
-      const fold = `[data-ov="fold"]${by('data-id', target.comp)}`;
-      if (await b.has(fold)) await b.click(fold);
-    }
-    await b.click(project);
     const card = by('data-ov-session', target.key);
+    if (await b.read(`ovCollapsed.has(${attr(target.comp)})`)) {
+      const fold = `[data-ov="fold"]${by('data-id', target.comp)}`;
+      await b.click(fold);
+    }
+    if (level === 'projects') await b.click(project);
     if (!await b.has(card)) {
       const groups = await b.read("[...document.querySelectorAll('[data-ov=group][aria-expanded=false]')].map(e=>e.dataset.id)");
       for (const group of groups) { await b.click(`[data-ov="group"]${by('data-id', group)}`); if (await b.has(card)) break; }
@@ -60,13 +72,19 @@ export class Context {
     return card;
   }
   async open(target) {
-    const b = this.b, card = await this.reveal(target), started = Date.now();
-    await b.click(`${card} [data-ov="full"]`);
-    const outcome = await b.wait(`ovOpening?.phase==='error'?{error:ovOpening.message}:
-      windowReady&&!navigationPending&&lastChat?.thread===${attr(target.thread)}&&currentApp===${attr(target.app)}&&document.body.classList.contains('conv')?{ready:true}:null`, '会话新鲜首屏');
-    if (outcome.error) throw new Error('会话打开失败：' + outcome.error);
-    Object.assign(target, await b.read("({win:currentWindow,window:viewSel.split('|')[1]})"));
-    return { elapsedMs: Date.now() - started, ...await b.snapshot() };
+    return this.prerequisite(`open:${target.app}:${target.thread || target.root}`, async () => {
+      if (!target.thread) {
+        const started = Date.now(); await this.openProject(target);
+        return { elapsedMs: Date.now() - started, ...await this.b.snapshot() };
+      }
+      const b = this.b, card = await this.reveal(target), started = Date.now();
+      await b.click(`${card} [data-ov="full"]`);
+      const outcome = await b.wait(`ovOpening?.phase==='error'?{error:ovOpening.message}:
+        windowReady&&!navigationPending&&lastChat?.thread===${attr(target.thread)}&&currentApp===${attr(target.app)}&&document.body.classList.contains('conv')?{ready:true}:null`, '会话新鲜首屏');
+      if (outcome.error) throw new Error('会话打开失败：' + outcome.error);
+      await this.refreshTarget(target);
+      return { elapsedMs: Date.now() - started, ...await b.snapshot() };
+    });
   }
   async expand(target) {
     const card = await this.reveal(target);
@@ -77,30 +95,51 @@ export class Context {
   async create(app, slot) {
     const b = this.b, seed = await this.target(app), root = path.resolve(this.directory, 'projects', app, slot);
     await fs.mkdir(root, { recursive: true }); await this.open(seed);
+    const target = { app, comp: this.computer, thread: '', root, slot, owned: true };
+    this.owned.push(target); await this.persistResources();
+    await this.openProject(target);
+    if (app === 'opencode' && this.options.suite === 'full')
+      await this.send(target, `只回复 ${this.marker}-SESSION，不运行工具或修改文件。`);
+    if (target.thread) await this.refreshTarget(target);
+    target.projectRead = await this.verifyProject(target);
+    await this.persistResources(); return target;
+  }
+  async refreshTarget(target) {
+    if (!target.thread) return target;
+    const row = await this.b.wait(`ovRecs().find(r=>r.comp===${attr(target.comp)}&&r.app===${attr(target.app)}&&r.threadId===${attr(target.thread)})||null`, '按原生身份定位会话');
+    Object.assign(target, { key: row.key, project: row.project, window: row.windowId, win: row.win });
+    return target;
+  }
+  async openProject(target) {
+    const b = this.b, { app, root } = target;
     await b.click('#pickAgents'); await b.click('#sheet [data-act="projects"]');
     await b.fill('#computerFilePath', root);
     await b.click('#computerFilePathForm button[type="submit"]');
     await b.wait(`computerFiles?.directory?.path===${attr(root.replaceAll(path.sep, '/'))}&&!computerFiles?.message`, '测试项目目录');
     const previous = await b.read('lastChat?.thread');
     await b.click('[data-computer-project="chat"]');
-    await b.wait(`(windowReady&&lastChat?.thread&&lastChat.thread!==${attr(previous)})||!!document.querySelector('[data-project-trust="yes"]')`, '项目创建或信任确认');
+    const ready = app === 'opencode'
+      ? `windowReady&&!navigationPending&&currentApp==='opencode'&&viewSel.split('|')[1]===${attr(root.replaceAll(path.sep, '/'))}&&lastChat?.empty&&!lastChat.thread`
+      : `windowReady&&!navigationPending&&lastChat?.thread&&lastChat.thread!==${attr(previous)}&&currentApp===${attr(app)}`;
+    await b.wait(`(${ready})||!!document.querySelector('[data-project-trust="yes"]')`, '项目创建或信任确认');
     if (await b.has('[data-project-trust="yes"]')) await b.click('[data-project-trust="yes"]');
-    await b.wait(`windowReady&&!navigationPending&&lastChat?.thread&&lastChat.thread!==${attr(previous)}&&currentApp===${attr(app)}`, '新建会话', this.options.timeout);
-    const thread = await b.read('lastChat.thread');
-    const row = await b.wait(`ovRecs().find(r=>r.comp===${attr(this.computer)}&&r.app===${attr(app)}&&r.threadId===${attr(thread)})||null`, '新建会话目录');
-    const target = { key: row.key, project: row.project, app, comp: row.comp, thread, window: row.windowId, win: row.win, root, slot };
-    this.owned.push(target); await this.persistResources();
-    await this.verifyProject(target); return target;
+    await b.wait(ready, app === 'opencode' ? '新项目输入已就绪（尚未持久化会话）' : '新建会话');
+    Object.assign(target, await b.read("({thread:lastChat.thread,win:currentWindow,window:viewSel.split('|')[1]})"));
+    await this.persistResources();
   }
   async verifyProject(target) {
-    const rows = await this.overview();
-    const row = rows.sessions.find(row => row.app === target.app && row.threadId === target.thread);
-    assert(row, '原生目录没有新会话');
-    const actual = row.workspace || row.cwd;
-    assert(actual, '原生目录未返回项目路径');
     const normalize = value => process.platform === 'win32' ? path.resolve(value).replaceAll('\\', '/').toLowerCase() : path.resolve(value);
-    assert.equal(normalize(actual), normalize(target.root), '项目归属不一致');
-    return { thread: target.thread, root: target.root };
+    if (!target.thread) {
+      assert.equal(normalize(await this.b.read("viewSel.split('|')[1]")), normalize(target.root), '未持久化项目归属一致');
+      assert.equal(await this.b.read('lastChat?.empty'), true, '首次发送前保留原生空会话');
+      return { thread: '', root: target.root, persisted: false };
+    }
+    const started = Date.now(), first = (await this.overview()).sessions.find(row => row.app === target.app && row.threadId === target.thread);
+    const match = `r.app===${attr(target.app)}&&r.threadId===${attr(target.thread)}`;
+    await this.b.wait(`(async()=>{const d=await(await api('/api/overview')).json(),r=d.sessions.find(r=>${match});
+      const p=r?.workspace||r?.cwd||'';return ${process.platform === 'win32' ? "p.replaceAll('\\\\','/').toLowerCase()" : 'p'}===${attr(normalize(target.root))}})()`, '原生目录确认新项目归属');
+    await this.refreshTarget(target);
+    return { thread: target.thread, root: target.root, firstRoot: first?.workspace || first?.cwd || '', confirmedMs: Date.now() - started };
   }
   async overview() { return this.b.read("(async()=>{const r=await api('/api/overview');if(!r.ok)throw Error('原生目录 HTTP '+r.status);return r.json()})()"); }
   async preview(target) {
@@ -113,23 +152,40 @@ export class Context {
     await this.b.fill(selector, value);
   }
   async draft(value, selector = '#text') {
-    await this.input(value, selector);
-    await this.b.wait('draftAckRevision===draftRevision', '原生草稿回执');
+    const sel = await this.b.read('viewSel');
+    return this.prerequisite('draft:' + sel, async () => {
+      const events = this.b.events.length;
+      await this.input(value, selector);
+      const { revision, epoch } = await this.b.read('({revision:draftRevision,epoch:draftEpoch})');
+      await this.b.wait('draftAckRevision===draftRevision', '原生草稿回执', this.options.timeout, () => {
+        const rejected = this.b.events.slice(events).find(e => e.type === 'draft-ack' && e.sel === sel && e.epoch === epoch && e.revision === revision && e.ok === false);
+        return rejected && Object.assign(new Error(`原生拒绝草稿回执（revision ${revision}）`), { kind: 'product' });
+      });
+    });
   }
   async send(target, text, options = {}) {
     const b = this.b;
-    assert(this.owned.some(row => row.thread === target.thread && row.app === target.app)
-      || this.fusion.some(row => row.thread === target.thread && row.app === target.app), '发送目标必须属于本轮');
-    assert.equal(await b.read('lastChat?.thread'), target.thread, '发送前目标发生变化');
-    const before = await b.read('(lastChat?.items||[]).filter(i=>i.k===\'human\').map(i=>i.i)');
-    if (text) await this.draft(text);
-    await b.click(options.now ? '#sendNow' : '#send');
-    await b.wait(`pendingSends.size===0&&(lastChat?.items||[]).some(i=>i.k==='human'&&!${JSON.stringify(before)}.includes(i.i)${text ? `&&i.t?.includes(${attr(text)})` : '&&i.images?.length'})`, '原生发送接受', this.options.timeout);
-    const receipt = await b.read(`({thread:lastChat.thread,draftLength:text.value.length,pending:pendingSends.size,
-      ids:lastChat.items.filter(i=>i.k==='human'&&!${JSON.stringify(before)}.includes(i.i)).map(i=>i.i)})`);
-    assert.equal(receipt.ids.length, 1, '同一次发送出现重复原生用户消息');
-    if (options.complete !== false) await b.wait('!lastChat.busy', '原生生成完成', this.options.generationTimeout);
-    return receipt;
+    return this.prerequisite(`send:${target.app}:${target.thread || target.root}`, async () => {
+      assert(this.owned.includes(target)
+        || this.owned.some(row => row.thread && row.thread === target.thread && row.app === target.app)
+        || this.fusion.some(row => row.thread === target.thread && row.app === target.app), '发送目标必须属于本轮');
+      assert.equal(await b.read('lastChat?.thread'), target.thread, '发送前目标发生变化');
+      const before = await b.read('(lastChat?.items||[]).filter(i=>i.k===\'human\').map(i=>i.i)');
+      if (text) await this.draft(text);
+      await b.click(options.now ? '#sendNow' : '#send');
+      await b.wait(`pendingSends.size===0&&(lastChat?.items||[]).some(i=>i.k==='human'&&!${JSON.stringify(before)}.includes(i.i)${text ? `&&i.t?.includes(${attr(text)})` : '&&i.images?.length'})`, '原生发送接受', this.options.timeout);
+      if (!target.thread) {
+        target.thread = await b.read('lastChat.thread');
+        assert(target.thread, '首次发送获得真实会话 ID');
+        await this.persistResources(); await this.refreshTarget(target);
+      }
+      const receipt = await b.read(`({thread:lastChat.thread,draftLength:text.value.length,pending:pendingSends.size,
+        ids:lastChat.items.filter(i=>i.k==='human'&&!${JSON.stringify(before)}.includes(i.i)).map(i=>i.i)})`);
+      assert.equal(receipt.ids.length, 1, '同一次发送出现重复原生用户消息');
+      if (options.complete !== false) await this.prerequisite(`generation:${target.app}:${target.thread}`,
+        () => b.wait('!lastChat.busy', '原生生成完成', this.options.generationTimeout));
+      return receipt;
+    });
   }
   async menu(kind) {
     const b = this.b; await b.dismiss();
@@ -150,9 +206,9 @@ export class Context {
   async cleanupSession(target) {
     const b = this.b; await b.dismiss();
     const card = await this.reveal(target); await b.hold(`${card} .ov-title`);
-    await b.wait("sheetKind==='agent-actions'", '会话管理菜单');
+    await b.wait("sheetKind==='agent-actions'&&!document.querySelector('#sheet [role=status]')&&document.querySelector('#sheet [data-agent-action=rename]')", '原生会话管理操作加载');
     const archive = '#sheet [data-agent-action="archive"]', remove = '#sheet [data-agent-action="delete"]';
-    const selector = await b.has(archive) ? archive : remove;
+    const selector = await b.has(remove) ? remove : archive;
     if (!await b.has(selector)) throw new Error('本轮测试会话没有原生归档或删除入口');
     await b.click(selector);
     if (await b.has('#askOk')) await b.click('#askOk');
@@ -188,7 +244,14 @@ export class Context {
       } catch (error) { this.cleanup.errors.push({ terminal: id, error: error.message }); }
     }
     for (const target of this.owned.slice().reverse()) {
-      try { await this.cleanupSession(target); this.cleanup.sessions.push({ thread: target.thread, ok: true }); }
+      try {
+        if (!target.thread) {
+          const row = (await this.overview()).sessions.find(row => row.app === target.app && (row.workspace || row.cwd) === target.root);
+          if (row) { target.thread = row.threadId; await this.persistResources(); }
+        }
+        if (target.thread) await this.cleanupSession(target);
+        this.cleanup.sessions.push({ thread: target.thread, root: target.root, ok: true });
+      }
       catch (error) { this.cleanup.errors.push({ thread: target.thread, error: error.message }); }
     }
     try {

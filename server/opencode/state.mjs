@@ -286,18 +286,24 @@ export class OpenCodeState {
       }
       const hasContent = partsArr.some(p =>
         (p.type === 'text' && !p.synthetic && (p.text || '').trim()) ||
-        (p.type === 'reasoning' && p.text?.trim()) || p.type === 'tool');
+        (p.type === 'reasoning' && p.text?.trim()) || p.type === 'tool' || p.type === 'file' && p.mime.startsWith('image/'));
       if (compaction && !hasContent) {
         items.push({ i: info.id, k: 'notice', kind: 'compaction', t: label, order: info.time?.created || 0 });
         continue;
       }
       for (const part of partsArr) {
+        if (part.type === 'file' && part.mime.startsWith('image/'))
+          items.push({ i: part.id, k: 'assistant', t: '', images: [part.url] });
         if (part.type === 'text') {
           if (part.synthetic || !part.text?.trim()) continue;
           items.push({ i: part.id, k: 'assistant', t: part.text || '' });
         }
         if (part.type === 'reasoning' && part.text?.trim()) items.push({ i: part.id, k: 'thinking', t: '思考\n' + (part.text || ''), live: !info.time?.completed });
-        if (part.type === 'tool') items.push(toolItem(part, !tools || tools.has(part.id)));
+        if (part.type === 'tool') {
+          items.push(toolItem(part, !tools || tools.has(part.id)));
+          const images = (part.state.attachments || []).filter(file => file.mime.startsWith('image/')).map(file => file.url);
+          if (images.length) items.push({ i: part.id + ':images', k: 'assistant', t: '', images });
+        }
       }
       if (info.error) items.push({ i: info.id + ':error', k: 'notice', t: info.error.data?.message || info.error.name });
       for (let i = start; i < items.length; i++) items[i].order = info.time?.created || 0;

@@ -28,13 +28,13 @@ export default [
     c.check(ids.length>0, '实际出现原生文件修改条目');
     let adds = 0, dels = 0; const paths = new Set();
     for (const id of ids) {
-      const row = '#items ' + by('data-i', id); await c.b.click(row + ' [data-ttoggle]');
+      const row = '#items ' + by('data-i', id); await c.b.click(row + ' [data-ttoggle] .chev');
       const edit = await c.b.wait(`lastChat.items.find(i=>i.i===${attr(id)}&&i.details)||null`, '原生差异详情');
       c.check(edit.add != null && edit.del != null, '差异行数来自真实原生数据');
       c.check(!edit.diff.some(([, text])=>text==='unchanged line 0'||text==='unchanged line 29'), '未展示远处的未改动代码');
       c.check(await c.b.has(row + ' .tdiff'), '真实页面展示差异区块');
       for (const [kind, text] of edit.diff) if (kind==='…'&&/existing\.txt$|added\.txt$/.test(text)) paths.add(path.basename(text));
-      adds += edit.add; dels += edit.del; await c.b.click(row + ' [data-ttoggle]');
+      adds += edit.add; dels += edit.del; await c.b.click(row + ' [data-ttoggle] .chev');
     }
     c.equal(adds, 3, '合计三行新增'); c.equal(dels, 1, '合计一行删除');
     c.check(paths.has('existing.txt')&&paths.has('added.txt'), '两份文件都有差异详情');
@@ -45,14 +45,15 @@ export default [
     const target = await c.target(app); const state = await c.open(target), native = await c.preview(target);
     c.equal(state.thread, target.thread, '正文读取正确会话'); c.equal(native.threadId, target.thread, '原生摘要读取同一会话');
     const body = await c.b.read("({items:lastChat.items.length,rendered:document.getElementById('items').textContent.trim().length})");
-    c.check(body.items === 0 || body.rendered > 0, '有原生条目时正文不是空白'); return body;
+    if (!body.items) throw new Unavailable('所选会话没有正文，需配置包含消息的 A 样本；空会话不作为正文同步通过');
+    c.check(body.rendered > 0, '非空原生会话正文实际渲染'); return body;
   } },
   { id: 'conversation.history', title: '历史分页、消息身份及首屏不变', refs: ['F07', 'F18', 'R07', 'S04'], mode: 'read', apps: true, async run(c, app) {
     const target = await c.target(app, 'long'); await c.open(target);
     const before = await c.b.read('({ids:lastChat.items.map(i=>i.i),earlier:lastChat.earlier,cursor:lastChat.historyBefore})');
     if (!await c.b.has('#older')) throw new Unavailable('所选会话没有更早历史；需要 --targets 配置 long 会话');
     const backend = app === 'codex' && await c.b.read("viewSel.startsWith('codex|backend|')");
-    if (backend) c.equal(before.ids.length, 40, 'Codex 后台首屏保持 40 项');
+    if (backend) c.equal(before.ids.length, 60, 'Codex 后台首屏保持 60 项');
     await c.b.click('#older'); await c.b.wait('!historyRequest&&!historyRendering', '历史分页');
     const after = await c.b.read('({ids:lastChat.items.map(i=>i.i),thread:lastChat.thread,cursor:historyCursor})');
     c.equal(after.thread, target.thread, '分页不改变会话'); c.equal(new Set(after.ids).size, after.ids.length, '历史按 ID 去重');

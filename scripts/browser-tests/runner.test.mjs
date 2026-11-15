@@ -5,10 +5,11 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { cleanupProjects as windowsCleanup } from './platform/windows.mjs';
 import { cleanupProjects as posixCleanup } from './platform/posix.mjs';
-import { parse, execute } from './run.mjs';
+import { parse, execute, lockProfile } from './run.mjs';
+import { Context } from './context.mjs';
 import { catalog, plan } from './catalog.mjs';
 import { verdict } from './report.mjs';
-import { Unavailable } from './browser.mjs';
+import { Browser, Unavailable } from './browser.mjs';
 import { distribution } from './blocks/stress.mjs';
 
 test('目录覆盖审计编号，场景唯一且写入不会混入默认 smoke', () => {
@@ -37,6 +38,36 @@ test('失败、缺样本和未执行独立记账，后续场景继续，禁止�
 });
 test('真实样本分位数保留慢尾部，不以平均值掩盖卡住', () => {
   const stats = distribution([20, 10, 30, 40, 1000]); assert.equal(stats.p95, 1000); assert.equal(stats.median, 30);
+});
+
+test('失败的前置条件只阻断同一目标，不重复等待，也不阻断独立功能', async () => {
+  const context = new Context({}, {}, '_shots/runner-prerequisites');
+  let calls = 0;
+  const fail = () => { calls++; throw Error('native draft rejected'); };
+  await assert.rejects(context.prerequisite('draft:devin:A', fail), /native draft rejected/);
+  await assert.rejects(context.prerequisite('draft:devin:A', fail), Unavailable);
+  assert.equal(calls, 1);
+  assert.equal(await context.prerequisite('draft:devin:B', () => 'B'), 'B');
+  assert.equal(await context.prerequisite('menu:devin:A', () => 'menu'), 'menu');
+});
+
+test('显式草稿拒绝立即结束等待，收尾失败保留原始错误', async () => {
+  const rejected = Object.assign(Error('native draft rejected'), { kind: 'product' });
+  const b = new Browser({ evaluate: async () => false }, '_shots/runner-errors');
+  await assert.rejects(b.wait('false', 'draft', 20000, () => rejected), error => error === rejected);
+  const context = { assertions: [], b: { events: [], steps: [], snapshot: async () => ({}), screenshot: async () => '',
+    dismiss: async () => { throw Error('cannot close preview'); } } };
+  const [row] = await execute(context, [{ id: 'draft', mode: 'read', refs: ['F06'], run() { throw rejected; } }], 'smoke');
+  assert.equal(row.reason, 'native draft rejected');
+  assert.equal(row.cleanupError, 'cannot close preview');
+  assert.equal(row.failureKind, 'product');
+});
+
+test('同一个配对浏览器配置互斥，释放后可以再次运行', async () => {
+  const profile = path.resolve('_shots/runner-lock-profile-' + process.pid);
+  const release = await lockProfile(profile);
+  try { await assert.rejects(lockProfile(profile), Unavailable); } finally { await release(); }
+  const next = await lockProfile(profile); await next();
 });
 
 test('Windows cleanup pins the isolated computer before releasing its backend and removes only the run projects', async t => {

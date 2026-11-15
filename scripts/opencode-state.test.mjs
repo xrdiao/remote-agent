@@ -6,6 +6,22 @@ const native = (id, directory = '/project') => ({ id, directory, title: id, time
 const info = { id: 'msg_1', sessionID: 'ses_1', role: 'assistant', time: { created: 10 } };
 const part = { id: 'prt_1', messageID: 'msg_1', sessionID: 'ses_1', type: 'text', text: 'A' };
 
+test('OpenCode assistant files and tool attachments stay visible independently of folded tool details', () => {
+  const state = new OpenCodeState({}); state.sessions.set('ses_1', native('ses_1'));
+  state.apply({ type: 'message.updated', properties: { info: { ...info, time: { created: 10, completed: 11 } } } });
+  const image = 'data:image/png;base64,cGljdHVyZQ==';
+  for (const entry of [
+    { ...part, id: 'file', type: 'file', mime: 'image/png', url: image },
+    { ...part, id: 'tool', type: 'tool', tool: 'draw', state: { status: 'completed', input: {}, output: '', attachments: [{ mime: 'image/png', url: image }, { mime: 'text/plain', url: 'file:///note.txt' }] } },
+  ]) state.apply({ type: 'message.part.updated', properties: { part: entry } });
+  const items = state.chat('ses_1', { tools: new Set() }).items;
+  assert.deepEqual(items.filter(row => row.images).map(row => ({ id: row.i, kind: row.k, images: row.images })), [
+    { id: 'file', kind: 'assistant', images: [image] }, { id: 'tool:images', kind: 'assistant', images: [image] },
+  ]);
+  assert.equal(items.find(row => row.i === 'tool').details, false);
+  assert.equal(state.chat('other').items.length, 0);
+});
+
 test('OpenCode snapshot merging preserves deltas that arrive during a history read', async () => {
   let complete;
   const state = new OpenCodeState({ messages: () => new Promise(resolve => { complete = resolve; }) });

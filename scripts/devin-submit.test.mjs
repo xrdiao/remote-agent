@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import vm from 'node:vm';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import { PAGE_SRC } from '../server/page/build.mjs';
 import { methods as chatMethods } from '../server/agent/chat.mjs';
 import { adapter as devinAdapter } from '../server/apps/devin.mjs';
@@ -10,6 +11,42 @@ import { ROUTES } from '../server/routes.mjs';
 const SESSION = 'acp/devin-cli/sess-1';
 const plain = value => JSON.parse(JSON.stringify(value));
 const NATIVE = 'devin-' + SESSION;
+
+test('Devin tool image content produces a visible assistant image independently of tool details', async () => {
+  const source = fs.readFileSync(new URL('../server/page/chat-extract.js', import.meta.url), 'utf8');
+  const messages = [{ kind: 'tool_call', content: { title: 'Draw', status: 'completed', content: [
+    { type: 'content', content: { type: 'image', mimeType: 'image/png', data: 'cGljdHVyZQ==' } },
+    { type: 'content', content: { type: 'text', text: 'done' } },
+  ] } }];
+  const context = vm.createContext({ esc: s => s, remoteContext: { app: 'devin', threadId: SESSION }, devinSessionData: () => ({}),
+    devinAgentRequests: () => ({}), devinMessages: () => messages, devinSessionRecord: () => ({ title: 'Owned' }),
+    devinNativeRequests: () => [], activeThread: () => 'another' });
+  vm.runInContext(source.slice(source.indexOf('  const nativeMarkdownItem ='), source.indexOf('  const contextPct =')) + ';this.chat=nativeConversationChat;', context);
+  const result = await context.chat(true, 60);
+  assert.equal(result.thread, SESSION);
+  assert.deepEqual(plain(result.items.find(row => row.i === 'acp0:images')), { i: 'acp0:images', k: 'assistant', t: '', bodyFormat: 'markdown', h: '', images: ['data:image/png;base64,cGljdHVyZQ=='], src: 'devin' });
+});
+
+test('Devin draft confirmation reads Slate state before its DOM commits, including clearing', () => {
+  const source = fs.readFileSync(new URL('../server/page/composer.js', import.meta.url), 'utf8');
+  const editor = { children: [{ text: 'before' }], apply() {}, string: ([i]) => editor.children[i].text };
+  const element = { hasAttribute: name => name === 'data-slate-editor', get innerText() { throw Error('DOM has not committed'); } };
+  const document = { getElementById: () => null };
+  const page = vm.runInNewContext(source.slice(source.indexOf('  const composerSlate ='), source.indexOf('  const composerFocused ='))
+    + ';({read:composerDraft})', { document, doc: document, composerTarget: () => element, codexFiberProps: () => [{ editor }] });
+  for (const [nodes, expected] of [[[{ text: 'first' }, { text: 'second' }], 'first\nsecond'], [[{ text: '' }], '']]) {
+    editor.children = nodes;
+    assert.equal(page.read(), expected);
+  }
+});
+
+test('Devin draft ACK requires readback of the requested native text', async () => {
+  for (const draft of ['requested', 'older']) {
+    const context = { app: 'devin', selectedThread: SESSION, cdp: { evaluate: async () => ({ draft }) } };
+    assert.equal(await chatMethods.setDraft.call(context, 'requested'), draft === 'requested');
+    assert.equal(context.lastDraft, draft === 'requested' ? draft : undefined);
+  }
+});
 
 function nativePage({ busy = true, question = false, staleQuestion = false, acceptQueue = true, mounted = true } = {}) {
   const calls = { submit: 0, enqueue: 0, sendNow: 0, answers: [], released: 0, requests: [], order: [] };

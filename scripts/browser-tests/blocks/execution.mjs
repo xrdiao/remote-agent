@@ -30,7 +30,10 @@ export default [
   } },
   { id: 'execution.stop', title: '原生生成中停止并恢复可编辑', refs: ['F06', 'F17'], mode: 'generate', apps: true, async run(c, app) {
     const target = await generating(c, app); await c.b.click('#stop');
+    await c.b.wait("!!document.querySelector('#askOk')", '停止确认');
+    await c.b.click('#askOk');
     await c.b.wait('!lastChat.busy', '原生停止', c.options.generationTimeout);
+    if (app === 'codex') c.equal(await c.b.read('lastChat.run?.status'), 'stopped', 'Codex 本轮由停止操作结束');
     c.check(await c.b.read("!document.getElementById('text').disabled"), '停止后输入框可编辑');
     await c.draft(c.marker + '-AFTER-STOP'); c.equal(await c.b.read('text.value'), c.marker + '-AFTER-STOP', '停止后草稿可正常写入');
     await c.draft(''); return { thread: target.thread };

@@ -74,10 +74,16 @@
     return scope.get(composer.text);
   };
   const pickComposer = eds => chooseComposer(doc, eds);
+  const composerSlate = ed => codexFiberProps(ed, Infinity).flatMap(p => Object.values(p || {}))
+    .find(v => v && typeof v === 'object' && typeof v.apply === 'function' && Array.isArray(v.children));
   const composerDraft = () => {
     if (document.getElementById('active-frame')) return codexPromptText() || '';
     const ed = composerTarget(doc);
-    if (!ed || ed.querySelector('[data-slate-placeholder]')) return '';
+    if (!ed) return '';
+    if (ed.hasAttribute('data-slate-editor')) {
+      const slate = composerSlate(ed);
+      return slate.children.map((_, i) => slate.string([i])).join('\n').replace(/\n+$/g, '');
+    }
     return (ed.innerText || '').replace(/\n+$/g, '');
   };
   const composerFocused = () => {
@@ -139,8 +145,7 @@
       return composerDraft() === text.replace(/\n+$/g, '');
     }
     // Devin Slate: find the editor object on the fiber.
-    const slate = codexFiberProps(ed, Infinity).flatMap(p => Object.values(p || {}))
-      .find(v => v && typeof v === 'object' && typeof v.apply === 'function' && Array.isArray(v.children));
+    const slate = composerSlate(ed);
     if (slate) {
       let path = [], node = { children: slate.children }, last = { text: '' };
       while (node?.children?.length) { path.push(node.children.length - 1); node = node.children[node.children.length - 1]; }
@@ -181,8 +186,7 @@
       const selection = view.state.selection.constructor.near(view.state.doc.resolve(caret + 1));
       view.dispatch(view.state.tr.setSelection(selection));
     } else {
-      const slate = codexFiberProps(ed, Infinity).flatMap(p => Object.values(p || {}))
-        .find(v => v && typeof v.apply === 'function' && Array.isArray(v.children));
+      const slate = composerSlate(ed);
       const children = structuredClone(slate.children), selection = structuredClone(slate.selection);
       doc.__remoteMentionRestore = () => {
         children.forEach((node, n) => slate.apply({ type: 'insert_node', path: [n], node }));

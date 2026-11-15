@@ -1033,7 +1033,7 @@ function finishQuestion(m) {
   if (m.ok && request) {
     const answerKey = [currentComputer()?.id || '', viewSel, 'chat', pending.message.id].join('|');
     drafts.delete(answerKey); draftMentions.delete(answerKey);
-    if (pending.message.id.startsWith('async:') && (pending.message.advance || pending.message.n === request.buttons.length - 1)) {
+    if (pending.message.id.startsWith('async:') && (pending.message.advance || pending.message.n >= request.buttons.length - 2)) {
       qnState = { ...qnState, requests: qnState.requests.filter(r => r.id !== pending.message.id) };
     }
     if (questionCompose?.id === pending.message.id) {

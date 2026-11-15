@@ -12,6 +12,7 @@ import { FUSION_OWNER, fusionControllerView } from './fusion/owner.mjs';
 import { fusionRunner } from './fusion/runner.mjs';
 import { resolveRoute, SKIP, flag } from './routes.mjs';
 import { chatForWire } from './chat-images.mjs';
+import { pendingUploads, updateUpload } from '../lib/uploads.mjs';
 import { watchChat } from './agent/updates.mjs';
 import { AGENT_REGISTRY } from './apps/index.mjs';
 import { sessionRows } from '../lib/session-library.mjs';
@@ -579,6 +580,8 @@ export class Session extends AgentContext {
 
   detach() {
     this.releaseBackendSettings();
+    if (this.codexBackend) cdpRead.run(null, () => codexBackend.releaseIdle(this.threadId))
+      .catch(error => this.emit({ t: 'status', ok: false, msg: error.message }));
     if (this.app === 'opencode') this.adapter.detach.call(this);
     this.catalogUpdatesStop?.();
     this.catalogUpdatesStop = null;
@@ -644,7 +647,22 @@ export class Session extends AgentContext {
     return fusionRunner(this.fusionRun);
   }
 
+  async followCodexOwner(msg) {
+    if (this.codexBackend && !codexBackend.hasWriter(this.threadId)) {
+      const owner = await this.adapter.backendOwner(this.threadId);
+      if (owner) {
+        const previous = this.selectionKey(), files = pendingUploads(previous);
+        await this.attach({ id: 'codex', windowId: owner.pageId, threadId: this.threadId, nativeOwner: { cwd: owner.cwd } });
+        for (const [, file] of files) updateUpload(file, { sel: this.selectionKey() });
+        if (msg.sel === previous) return { ...msg, sel: this.selectionKey() };
+      }
+    }
+    return msg;
+  }
+
   async handle(msg) {
+    if (['send', 'pickMenu', 'queue', 'codexRequest', 'codexPlan', 'codexPick'].includes(msg.t))
+      msg = await this.followCodexOwner(msg);
     const route = resolveRoute(this, msg.t);
     if (route?.native && this.app !== 'opencode') return this.dispatch(msg, route);
     const target = /^(?:project|thread):/.test(msg.id || '') ? parseAgentRef(msg.id).windowId : this.windowId;

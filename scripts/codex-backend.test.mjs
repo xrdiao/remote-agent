@@ -6,6 +6,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { CodexClient } from '../server/codex/client.mjs';
 import { CodexState } from '../server/codex/state.mjs';
+import { generatedImageSource, readCodexImage } from '../server/codex/images.mjs';
 import { adapter as codexAdapter } from '../server/apps/codex.mjs';
 import { resolveRoute } from '../server/routes.mjs';
 import { cdpRead, awaitCdpRead } from '../server/cdp.mjs';
@@ -17,6 +18,74 @@ import fs from 'node:fs';
 import { read, fragment, createPageContext } from './page-fixture.mjs';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
+
+test('Codex creation releases its idle native writer; reading does not resume it', async () => {
+  const { state, client } = fixture();
+  const thread = await state.create('/A');
+  assert.equal(state.hasWriter(thread.id), false);
+  assert.equal(client.sent.find(row => row.method === 'thread/start').params.config.thread_unload_delay_secs, 0);
+  client.sent.length = 0;
+  await state.read(thread.id); await state.readChat(thread.id);
+  assert.equal(client.sent.some(row => row.method === 'thread/resume'), false);
+  assert.equal(state.hasWriter(thread.id), false);
+});
+
+test('Codex reconnects a read-only view without restoring its native writer', async () => {
+  const { state, client } = fixture(), thread = await state.create('/read-reconnect');
+  client.emit('disconnected', new Error('temporary exit'));
+  assert.ok(state.chat(thread.id).items.some(row => /后台中断/.test(row.t)));
+  await state.read(thread.id);
+  assert.equal(state.hasWriter(thread.id), false);
+  assert.equal(state.chat(thread.id).items.some(row => /后台中断/.test(row.t)), false);
+});
+
+test('Codex retains active turns, questions and queued work, releasing only after native close', async () => {
+  const { state, client } = fixture(), thread = await state.create('/A');
+  await state.send(thread.id, [{ type: 'text', text: 'work' }], '', 'work');
+  assert.equal(state.hasWriter(thread.id), true);
+  const request = { id: 7, method: 'item/tool/requestUserInput', params: { threadId: thread.id, turnId: 'turn', questions: [{ id: 'q', question: '?', options: [] }] } };
+  client.emit('request', request);
+  await state.releaseIdle(thread.id); assert.equal(state.hasWriter(thread.id), true);
+  state.answer(thread.id, state.requestRows(thread.id)[0].id, 0);
+  assert.deepEqual(client.sent.find(row => row.id === 7).result, { answers: { q: { answers: [] } } });
+  state.queues.set(thread.id, [{ id: 'queue' }]);
+  client.emit('notification', { method: 'turn/completed', params: { threadId: thread.id, turn: { id: 'turn', status: 'completed', items: [] } } });
+  await tick(); assert.equal(state.hasWriter(thread.id), true);
+  state.queues.set(thread.id, []);
+  const release = state.releaseIdle(thread.id);
+  assert.equal(state.hasWriter(thread.id), true, 'unsubscribe response alone is not a released writer');
+  await release; assert.equal(state.hasWriter(thread.id), false);
+});
+
+test('Codex image generation supports native saved files, inline results and file IDs in streamed/history items', async () => {
+  const { state } = fixture(), thread = await state.create('/images');
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB';
+  assert.equal(generatedImageSource({ status: 'completed', result: png }), 'data:image/png;base64,' + png);
+  assert.equal(generatedImageSource({ status: 'completed', result: '', fileId: 'file-1' }), 'codex-file:file-1');
+  assert.equal(generatedImageSource({ status: 'inProgress', result: png }), null);
+  thread.turns.push({ id: 'images', status: 'completed', items: [
+    { id: 'pending', type: 'imageGeneration', status: 'inProgress' },
+    { id: 'saved', type: 'imageGeneration', status: 'completed', savedPath: '/images/out.png', fileId: 'file-1' },
+    { id: 'failed', type: 'imageGeneration', status: 'failed', failure: { type: 'usageLimitExceeded' } },
+  ] });
+  const rows = state.chat(thread.id).items;
+  assert.equal(rows[0].live, true);
+  assert.equal(rows[1].k, 'assistant'); assert.deepEqual(rows[1].images, ['/images/out.png']);
+  assert.match(rows[2].t, /usageLimitExceeded/);
+});
+
+test('Codex file-ID image download uses native login only for URL resolution and keeps credentials off the image host', async () => {
+  const calls = [], bytes = Buffer.from('image');
+  const result = await readCodexImage('file / 1', { readAuth: async () => JSON.stringify({ tokens: { access_token: 'private', account_id: 'account' } }),
+    request: async (url, options) => {
+      calls.push({ url, options });
+      return calls.length === 1 ? { ok: true, json: async () => ({ download_url: 'https://images.example/signed' }) }
+        : { ok: true, headers: new Headers({ 'content-type': 'image/png' }), arrayBuffer: async () => bytes };
+    } });
+  assert.equal(result, 'data:image/png;base64,' + bytes.toString('base64'));
+  assert.match(calls[0].url, /file%20%2F%201$/); assert.equal(calls[0].options.headers.authorization, 'Bearer private');
+  assert.equal(calls[1].options, undefined);
+});
 
 function backendRoutesFor(extra) {
   return vm.runInContext(fragment(read('server/apps/codex.mjs'), 'function backendCommands(', 'async function syncCodexCatalog(')
@@ -116,6 +185,26 @@ test('backend viewers receive retained desktop questions and release their scope
   assert.equal(published.at(-1).length, 0);
   await assert.rejects(methods.codexRequest.call(session, { id: 'async:other-thread', n: 0 }), /不属于当前会话/);
   session.chatUpdatesStop(); assert.deepEqual(closed, ['draft', '/questions']); assert.equal(session.codexNativeQuestions.size, 0);
+});
+
+test('desktop transcript changes refresh a released backend view without claiming its writer', async () => {
+  const { state, client } = fixture(), thread = await state.create('/desktop-updates');
+  const desktop = structuredClone(thread), request = client.request;
+  client.request = async (method, params) => method === 'thread/read' ? { thread: structuredClone(desktop) } : request(method, params);
+  let changed;
+  const source = { subscribe(fn, context) { if (context) changed = fn; return () => {}; },
+    readConversation: async () => ({}), conversationView: () => ({ snapshot: { chat: { questions: { requests: [] } } } }) };
+  const context = createPageContext({ codexBackend: state, awaitCdpRead, nativeTargets: () => [{ app: 'codex', ws: 'native' }],
+    nativeWindowAt: () => source, watchChatUpdates: (_session, subscribe) => subscribe(() => {}), backendPublish() {} });
+  const setMode = vm.runInContext('({' + fragment(read('server/apps/codex.mjs'), '  async setBackendMode(', '  async syncBackendDraft(') + '}).setBackendMode;', context);
+  const session = { threadId: thread.id, visible: true, adapter: { syncBackendDraft: async () => {} }, emit() {} };
+  await setMode.call(session); await tick();
+  desktop.turns.push({ id: 'desktop-turn', status: 'completed', items: [{ id: 'desktop-answer', type: 'agentMessage', text: 'new desktop answer' }] });
+  changed(); await tick();
+  assert.equal(state.chat(thread.id).items.at(-1).t, 'new desktop answer');
+  assert.equal(state.hasWriter(thread.id), false);
+  assert.equal(client.sent.some(row => row.method === 'thread/resume'), false);
+  session.chatUpdatesStop();
 });
 
 test('backend chat combines native RPC and retained desktop questions without duplicate request identities', async () => {
@@ -338,7 +427,13 @@ function fixture(file = null, State = CodexState) {
   client.request = async (method, params) => {
     client.sent.push({ method, params });
     if (method === 'thread/start') return { thread: { id: params.cwd, cwd: params.cwd, turns: [], createdAt: 1, updatedAt: 1 }, model: 'test' };
-    if (method === 'thread/resume') return { thread: { id: params.threadId, cwd: params.threadId, turns: [], createdAt: 1, updatedAt: 1 }, model: 'test' };
+    if (method === 'thread/resume') {
+      const { settings = {}, disconnected, ...thread } = state.threads.get(params.threadId) || { id: params.threadId, cwd: params.threadId, turns: [], createdAt: 1, updatedAt: 1 };
+      const { sandboxPolicy, effort, ...rest } = settings;
+      return { ...rest, thread, sandbox: sandboxPolicy, reasoningEffort: effort, model: settings.model || 'test' };
+    }
+    if (method === 'thread/read') return { thread: state.threads.get(params.threadId) };
+    if (method === 'thread/unsubscribe') { queueMicrotask(() => client.emit('notification', { method: 'thread/closed', params: { threadId: params.threadId } })); return { status: 'unsubscribed' }; }
     if (method === 'thread/fork') {
       const source = state.threads.get(params.threadId), end = source.turns.findIndex(turn => turn.id === params.lastTurnId);
       return { thread: structuredClone({ ...source, id: source.id + ':fork', turns: source.turns.slice(0, end + 1) }), model: 'test' };
@@ -359,7 +454,7 @@ function fixture(file = null, State = CodexState) {
 function stateForPlatform(IS_WIN) {
   const source = fragment(read('server/codex/state.mjs'), 'export const CODEX_BACKEND', 'export const codexBackend').replace(/^export /gm, '');
   return vm.runInContext(source + '\nCodexState;', createPageContext({ IS_WIN, fs, path, EventEmitter,
-    DATA_DIR: '.', cdpRead, withOperation }));
+    DATA_DIR: '.', cdpRead, withOperation, generatedImageSource }));
 }
 
 for (const IS_WIN of [true, false]) {
@@ -389,16 +484,16 @@ for (const IS_WIN of [true, false]) {
     assert.equal(events[0].requestId, 7); assert.equal(events[0].sel, 'own-A');
     for (const label of ['Approve for me', 'Ask for approval', 'Approve for me', 'Full access']) {
       await routes.pickMenu.call(session, { kind: 'permission', label });
-      const { params } = client.sent.at(-1);
+      const { params } = client.sent.findLast(row => row.method === 'thread/settings/update');
       assert.equal(params.threadId, thread.id);
       assert.equal(params.approvalPolicy, label === 'Full access' ? 'never' : 'on-request');
       assert.equal(params.sandboxPolicy.type, label === 'Full access' ? 'dangerFullAccess' : 'workspaceWrite');
       assert.equal(params.approvalsReviewer, label === 'Approve for me' ? (IS_WIN ? 'guardian_subagent' : 'auto_review') : 'user');
       assert.equal(state.chat(thread.id).permission, label);
     }
-    thread.settings = { approvalsReviewer: 'auto_review' };
+    state.threads.get(thread.id).settings = { approvalsReviewer: 'auto_review' };
     assert.equal(state.chat(thread.id).permission, 'Approve for me');
-    thread.settings = { approvalsReviewer: 'guardian_subagent' };
+    state.threads.get(thread.id).settings = { approvalsReviewer: 'guardian_subagent' };
     assert.equal(state.chat(thread.id).permission, IS_WIN ? 'Approve for me' : 'Ask for approval');
   });
 }
@@ -461,7 +556,7 @@ test('legacy backend binding uses the native directory instead of the previously
     safeHomePath: real => ({ real }), CODEX_BACKEND: 'backend', cdpRead, awaitCdpRead: promise => promise,
     rememberSelection: (_device, selected) => events.push(selected), backendAttached() {},
     adapter: { backendOwner: async () => null },
-    codexBackend: { records: new Map(), threads: new Map(), load: async id => ({ id, cwd: '/B' }) } });
+    codexBackend: { hasWriter: () => false, read: async id => ({ id, cwd: '/B' }) } });
   const bind = vm.runInContext(fragment(read('server/apps/codex.mjs'), 'async function bindBackend(', 'async function backendSettingsOwner(') + '\nbindBackend;', context);
   const session = { codexDirectory: '/A', threadId: 'A', detach() {}, clearViewState() {}, setMode: async () => {} };
   await bind(session, { threadId: 'legacy' });
@@ -490,7 +585,7 @@ test('legacy binding reuses the exact native writer and does not resume or creat
   const calls = [], context = createPageContext({ path: path.posix, os: { homedir: () => '/home' },
     safeHomePath: real => ({ real }),
     adapter: { backendOwner: async id => ({ pageId: 'writer-window', cwd: '/B', id }) },
-    codexBackend: { records: new Map(), threads: new Map() } });
+    codexBackend: { hasWriter: () => false } });
   const bind = vm.runInContext(fragment(read('server/apps/codex.mjs'), 'async function bindBackend(', 'async function backendSettingsOwner(') + '\nbindBackend;', context);
   const session = { codexDirectory: '/A', attach: async req => calls.push(req), projectReady: value => calls.push(value) };
   await bind(session, { threadId: 'desktop', project: { root: '/B' }, initial: true });
@@ -502,7 +597,7 @@ test('legacy binding reuses the exact native writer and does not resume or creat
 
 test('writer lookup scans both windows and selects owner rather than visible follower', async () => {
   const closed = [], calls = [], context = createPageContext({ CODEX_CDP_URL: 'native',
-    codexBackend: { threads: new Map() }, helpersCall: value => value,
+    codexBackend: { hasWriter: () => false }, helpersCall: value => value,
     codexWindows: async () => ['follower', 'writer'].map(id => ({ pageId: id, chatWs: id })),
     Cdp: class {
       constructor(ws) { this.ws = ws; }
@@ -532,7 +627,7 @@ test('native legacy routing preserves remote sessions and every Fusion binding',
 test('Windows binds a native follower when its writer is external and prefers a visible owner across windows', async () => {
   for (const roles of [['follower'], ['follower', 'owner'], [null, 'follower', 'owner']]) {
     const closed = [], context = createPageContext({ IS_WIN: true, CODEX_CDP_URL: 'native',
-      codexBackend: { threads: new Map() }, helpersCall: value => value,
+      codexBackend: { hasWriter: () => false }, helpersCall: value => value,
       codexWindows: async () => roles.map((role, i) => ({ pageId: String(i), chatWs: String(i) })),
       Cdp: class {
         constructor(ws) { this.index = Number(ws); }
@@ -728,7 +823,7 @@ test('forking preserves native history through the chosen turn, source identity 
   assert.equal(state.records.get(child.id).cwd, '/A');
   assert.deepEqual(client.sent.find(row => row.method === 'thread/fork').params,
     { threadId: '/A', lastTurnId: 'turn-1', deferGoalContinuation: true, cwd: '/A', model: 'test',
-      approvalPolicy: 'on-request', approvalsReviewer: 'auto_review', sandbox: 'workspace-write', config: { model_reasoning_effort: 'high' } });
+      approvalPolicy: 'on-request', approvalsReviewer: 'auto_review', sandbox: 'workspace-write', config: { model_reasoning_effort: 'high', thread_unload_delay_secs: 0 } });
   assert.equal(client.sent.some(row => row.method === 'turn/start'), false);
 });
 
@@ -915,13 +1010,22 @@ test('MCP multi-select validates native options and counts while retaining faile
   }
 });
 
+test('backend fast stop follows the desktop owner without resuming a second writer', async () => {
+  const routes = backendRoutesFor({ codexBackend: { withWriter() { assert.fail('must use the desktop writer'); } } });
+  let stopped;
+  const session = { codexBackend: true, async followCodexOwner(m) { this.codexBackend = false; return { ...m, sel: 'desktop:A' }; },
+    handle: async m => { stopped = m; } };
+  await routes.stop.call(session, { t: 'stop', sel: 'backend:A' });
+  assert.equal(stopped.sel, 'desktop:A'); assert.equal(stopped.t, 'stop');
+});
+
 test('disconnect retains transcript while removing active execution and stop resumes the native thread', async () => {
   const { state, client } = fixture(), thread = await state.create('/A');
   thread.turns.push({ id: 'running', status: 'inProgress', items: [{ id: 'body', type: 'agentMessage', text: 'last known answer' }] });
   client.emit('disconnected', new Error('native exit'));
   const chat = state.chat('/A'); assert.equal(chat.busy, false); assert.equal(chat.items[0].t, 'last known answer');
   assert(chat.items.some(item => /结果待核对/.test(item.t)));
-  const routes = backendRoutesFor({ codexBackend: state }); await routes.stop.call({ threadId: '/A' });
+  const routes = backendRoutesFor({ codexBackend: state }); await routes.stop.call({ threadId: '/A', codexBackend: true, followCodexOwner: async m => m }, { t: 'stop' });
   assert.equal(client.sent.filter(row => row.method === 'thread/resume').length, 1);
   assert.equal(state.chat('/A').items.some(item => /后台中断/.test(item.t)), false);
 });
@@ -929,6 +1033,7 @@ test('disconnect retains transcript while removing active execution and stop res
 for (const mode of ['idle', 'active', 'already-started', 'disconnect']) test(`queued send-now follows authoritative native turn completion: ${mode}`, async () => {
   const { state, client } = fixture(), thread = await state.create('/A');
   const queued = { id: 'queue-one', clientUserMessageId: 'user-one', input: [{ type: 'text', text: 'queued text' }] };
+  state.writers.add('/A');
   state.queues.set('/A', [queued]);
   if (mode !== 'idle') thread.turns.push({ id: 'running', status: 'inProgress', items: [] });
   const original = client.request;

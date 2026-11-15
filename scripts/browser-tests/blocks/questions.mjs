@@ -8,8 +8,8 @@ export default [
       await c.b.click('#pickPlan'); await c.b.wait('lastChat.codex?.plan===true', '原生计划模式回执');
     }
     await c.send(a, `请使用提问工具问一个问题：${c.marker} 选择哪个测试值？选项为 QA_ONE 和 QA_TWO。只提问并等待，不执行工具或修改文件。`, { complete: false });
-    try { await c.b.wait("!!(lastChat.questions?.requests?.length||lastChat.questions?.list?.length||lastChat.items.some(i=>i.k==='opencodeQuestion'))", '原生问题', c.options.generationTimeout); }
-    catch { throw new Unavailable('模型没有产生原生问题；普通文本问句不能计为问题卡片通过'); }
+    const outcome = await c.b.wait("(lastChat.questions?.requests?.length||lastChat.questions?.list?.length||lastChat.items.some(i=>i.k==='opencodeQuestion'))?'question':!lastChat.busy?'completed':null", '原生问题或本轮结束', c.options.generationTimeout);
+    if (outcome === 'completed') throw new Unavailable('模型已完成但没有产生原生问题；普通文本问句不能计为问题卡片通过');
     const draft = '#qnBar input[data-request^="async:"][data-field]:not([type="password"]):not(:disabled)';
     const edited = await c.b.has(draft);
     if (edited) await c.b.fill(draft, 'QA_ONE');

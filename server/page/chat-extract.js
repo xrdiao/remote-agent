@@ -1419,6 +1419,9 @@
             output: (tool.content || []).filter(block => block.type === 'content' && block.content?.type === 'text').map(block => block.content.text).join('\n').slice(0, 4000),
             ...(tool.locations?.[0]?.path ? { f: tool.locations[0].path } : {}),
             done: tool.status === 'completed', ...(tool.status === 'failed' ? { keep: true } : {}) });
+          const images = (tool.content || []).filter(block => block.type === 'content' && block.content?.type === 'image')
+            .map(block => `data:${block.content.mimeType};base64,${block.content.data}`);
+          if (images.length) items.push(nativeMarkdownItem(id + ':images', 'assistant', '', 0, images));
         }
       }
       const session = devinSessionRecord(thread);

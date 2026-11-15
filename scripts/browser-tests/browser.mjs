@@ -33,14 +33,23 @@ export class Browser {
       browser.events.push({ type: 'network-error', path: request?.path, cancelled: !!event.canceled, message: event.errorText });
       browser.requests.delete(event.requestId);
     });
+    cdp.on('Network.webSocketFrameReceived', event => {
+      if (event.response.opcode !== 1) return;
+      let message;
+      try { message = JSON.parse(event.response.payloadData); } catch { return; }
+      if (message.t === 'draftAck') browser.events.push({ type: 'draft-ack', at: Date.now(),
+        sel: message.sel, epoch: message.draftEpoch, revision: message.revision, ok: message.ok });
+    });
     await cdp.send('Runtime.enable'); await cdp.send('Network.enable'); await cdp.send('Page.enable');
     if (process.platform === 'win32') await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true });
     return browser;
   }
   read(expression) { return this.cdp.evaluate(expression); }
-  async wait(expression, label, timeout = this.timeout) {
+  async wait(expression, label, timeout = this.timeout, failure) {
     const deadline = Date.now() + timeout;
     do {
+      const error = failure?.();
+      if (error) throw error;
       const value = await this.read(expression);
       if (value) return value;
       await pause(100);
@@ -116,7 +125,14 @@ export class Browser {
     await this.cdp.send('DOM.setFileInputFiles', { nodeId, files: paths });
     this.steps.push({ action: 'upload', selector, count: paths.length });
   }
-  async dismiss() { if (await this.has('#sheet.open')) await this.click('#shade', { edge: true }); }
+  async dismiss() {
+    const unexpected = [];
+    if (await this.has('#askNo')) { unexpected.push('confirmation'); await this.click('#askNo'); }
+    if (await this.has('#sheet.open')) await this.click('#shade', { edge: true });
+    if (await this.has('#viewer.open #vClose')) { unexpected.push('file-preview'); await this.click('#vClose'); }
+    if (await this.has('[data-ov="batch-exit"]')) { unexpected.push('batch-selection'); await this.click('[data-ov="batch-exit"]'); }
+    return unexpected;
+  }
   async home() {
     await this.dismiss();
     if (await this.read("document.body.classList.contains('conv')")) {

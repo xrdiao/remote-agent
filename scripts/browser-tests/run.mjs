@@ -10,6 +10,19 @@ import { apps, blocks, catalog, plan, enabled } from './catalog.mjs';
 import { report, verdict } from './report.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
+export async function lockProfile(profile) {
+  const directory = path.join(root, '_shots/browser-tests/locks');
+  await fs.mkdir(directory, { recursive: true });
+  const file = path.join(directory, createHash('sha256').update(path.resolve(root, profile)).digest('hex') + '.lock');
+  let handle;
+  try { handle = await fs.open(file, 'wx'); }
+  catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    throw Object.assign(new Unavailable(`此配对浏览器已有执行器占用；确认旧进程结束后再移除锁：${file}`), { kind: 'environment' });
+  }
+  await handle.writeFile(JSON.stringify({ pid: process.pid, profile, started: new Date().toISOString() }));
+  return async () => { await handle.close(); await fs.unlink(file); };
+}
 export function parse(argv) {
   const options = { suite: 'smoke', registry: path.join(root, '_shots/paired-browser.json'),
     blocks: [], cases: [], apps: [...apps], timeout: 20000, generationTimeout: 120000,
@@ -46,11 +59,14 @@ export async function execute(context, selected, suite, record = () => {}, resul
     else {
       record(`${test.id}${test.app ? '/' + test.app : ''}…`);
       try {
+        context.test = test;
         row.evidence = await test.run(context, test.app);
-        if (context.assertions.length === assertions) throw new Error('场景没有执行任何断言');
+        if (context.assertions.length === assertions) throw Object.assign(new Error('场景没有执行任何断言'), { kind: 'automation' });
         row.status = 'passed';
       } catch (error) {
         row.status = error instanceof Unavailable ? 'blocked' : 'failed'; row.reason = error.message;
+        row.failureKind = error.kind || (error instanceof Unavailable ? 'prerequisite' : 'undetermined');
+        row.prerequisite = error.prerequisite;
         row.error = { name: error.name, stack: error.stack };
         try { row.state = await context.b.snapshot(); } catch (error) { row.snapshotError = error.message; }
         try { row.screenshot = await context.b.screenshot(`${test.id}-${test.app || 'shared'}`); } catch (error) { row.screenshotError = error.message; }
@@ -59,9 +75,17 @@ export async function execute(context, selected, suite, record = () => {}, resul
         row.events = context.b.events.slice(events); row.durationMs = Date.now() - start;
         // A real uncaught page error is a failure even if a button-level assertion passed.
         if (row.status === 'passed' && row.events.some(event => event.type === 'exception')) {
-          row.status = 'failed'; row.reason = '场景期间出现未捕获的浏览器异常';
+          row.status = 'failed'; row.reason = '场景期间出现未捕获的浏览器异常'; row.failureKind = 'product';
         }
-        try { await context.b.dismiss(); } catch (error) { row.status = 'failed'; row.reason = `场景收尾失败：${error.message}`; }
+        try {
+          row.dismissed = await context.b.dismiss();
+          if (row.dismissed?.length && row.status === 'passed') {
+            row.status = 'failed'; row.failureKind = 'automation'; row.reason = '场景遗留遮挡界面：' + row.dismissed.join(', ');
+          }
+        } catch (error) {
+          row.cleanupError = error.message;
+          if (row.status === 'passed') { row.status = 'failed'; row.failureKind = 'automation'; row.reason = `场景收尾失败：${error.message}`; }
+        }
       }
     }
     results.push(row); await record(row);
@@ -83,11 +107,12 @@ export async function main(argv = process.argv.slice(2)) {
     document: 'docs/testing/full-functional-audit-v445-20261111.md', results: [],
     scope: { apps: options.apps, blocks: options.blocks, cases: options.cases },
     proof: '本机既有配对 Chrome；真实手机和另一平台未验收' };
-  let browser, context;
+  let browser, context, release;
   try {
     data.revision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
     data.diffSha256 = createHash('sha256').update(execFileSync('git', ['diff', '--', 'app', 'server', 'lib'], { cwd: root })).digest('hex');
     const registry = JSON.parse(await fs.readFile(path.resolve(options.registry), 'utf8'));
+    release = await lockProfile(registry.browser.profile);
     options.registryConfig = registry;
     options.appUrl = registry.appUrl;
     if (options.targetFile) options.targets = JSON.parse(await fs.readFile(path.resolve(options.targetFile), 'utf8'));
@@ -101,7 +126,7 @@ export async function main(argv = process.argv.slice(2)) {
         await fs.appendFile(path.join(directory, 'progress.jsonl'), JSON.stringify(row) + '\n'); }
     }, data.results);
   } catch (error) {
-    data.results.push({ id: 'runner.setup', title: '配对环境和执行初始化', refs: ['F01'], status: 'blocked', reason: error.message });
+    data.results.push({ id: 'runner.setup', title: '配对环境和执行初始化', refs: ['F01'], status: 'blocked', failureKind: 'environment', reason: error.message });
     for (const test of selected) if (!data.results.some(row => row.id === test.id && row.app === test.app))
       data.results.push({ id: test.id, title: test.title, refs: test.refs, app: test.app, status: 'not-run', reason: '环境初始化或执行中断' });
   } finally {
@@ -109,7 +134,7 @@ export async function main(argv = process.argv.slice(2)) {
       if (context?.original) data.cleanup = await context.finish();
       if (data.cleanup?.errors?.length) data.results.push({ id: 'runner.cleanup', title: '恢复原现场并清理本轮资源', refs: ['F05', 'X12'], status: 'failed', reason: JSON.stringify(data.cleanup.errors) });
     } catch (error) { data.results.push({ id: 'runner.cleanup', title: '恢复与清理异常', refs: ['F05'], status: 'failed', reason: error.message }); }
-    finally { browser?.close(); }
+    finally { browser?.close(); await release?.(); }
     data.finished = new Date().toISOString(); await report(directory, data);
   }
   console.log(`报告：${path.relative(root, directory)}/report.md`); return verdict(data.results);

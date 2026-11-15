@@ -301,6 +301,7 @@ test('closing an old settings owner after a session change never releases the ne
 for (const operation of ['detach', 'suspend']) test(`${operation} releases backend settings without stopping the background thread`, () => {
   const calls = [], context = createPageContext({ setTimeout, clearTimeout, clearInterval,
     cdpRead: { run: (_signal, fn) => fn() }, console,
+    codexBackend: { releaseIdle: async id => calls.push('release-idle:' + id) },
   });
   const source = read('server/session.mjs');
   const release = fragment(source, '  releaseBackendSettings() {', '  detach() {');
@@ -311,7 +312,7 @@ for (const operation of ['detach', 'suspend']) test(`${operation} releases backe
     stopChatUpdates() {}, stopTerminalUpdates() {}, stopVisual() {},
   };
   session[operation]();
-  assert.deepEqual(calls, ['release-settings']);
+  assert.deepEqual(calls, operation === 'detach' ? ['release-settings', 'release-idle:background'] : ['release-settings']);
   assert.equal(session.threadId, 'background');
 });
 
@@ -320,6 +321,31 @@ function pageContext(extra = {}, source = read('server/page/session-actions.js')
   vm.runInContext(source + '\nthis.info = nativeSessionInfo; this.action = nativeSessionAction;', context);
   return context;
 }
+
+test('Devin advertises archive only for a connector with native sessionArchiving capability', async () => {
+  for (const supported of [false, true]) {
+    const calls = [], session = { providerId: 'devin-cli', title: 'Owned', _meta: {} };
+    const source = read('server/page/session-actions.js').replaceAll("await import('@exa/chat-client')", 'nativeModule');
+    const context = pageContext({
+      nativeModule: { tryGetAcpSingleton: () => ({ getConnectorById: () => ({ status: 'connected', capabilities: {
+        _meta: { 'cognition.ai/sessionRename': true, 'cognition.ai/sessionArchiving': supported }, sessionCapabilities: { delete: {} },
+      } }) }) },
+      devinSessionRecord: () => session, devinSessionMenu: () => null,
+      devinSend: async (_provider, request) => { calls.push(request); session._meta['cognition.ai/isArchived'] = true; },
+      doc: { querySelectorAll: () => [] },
+    }, source);
+    const info = await context.info('devin', 'owned', 'actions');
+    assert.equal(info.actions.includes('archive'), supported);
+    assert.equal(info.actions.includes('delete'), true);
+    if (supported) {
+      assert.equal((await context.action('devin', 'owned', 'archive')).confirmed, true);
+      assert.equal(calls[0].method, 'session/archive');
+    } else {
+      await assert.rejects(context.action('devin', 'owned', 'archive'), /没有对应的原生操作入口/);
+      assert.equal(calls.length, 0);
+    }
+  }
+});
 
 test('Codex ownership uses native stream role, not the visible thread or cached conversation', () => {
   for (const role of ['owner', 'follower', undefined]) {
@@ -427,7 +453,8 @@ test('Cursor Lexical draft writes reconcile native transactions for text, newlin
   const doc = { getElementById: () => null }, ed = { __lexicalEditor: editor };
   const context = createPageContext({ remoteContext: { app: 'cursor' }, doc, document: doc,
     composerTarget: () => ed, composerDraft: () => value.replace(/\n+$/g, '') });
-  vm.runInContext(fragment(read('server/page/composer.js'), '  const setComposerDraft =', '  // Typeahead queries') + '\nthis.write = setComposerDraft;', context);
+  vm.runInContext(fragment(read('server/page/composer.js'), '  const composerSlate =', '  const composerDraft =')
+    + fragment(read('server/page/composer.js'), '  const setComposerDraft =', '  // Typeahead queries') + '\nthis.write = setComposerDraft;', context);
   for (const draft of ['single line', 'first\nsecond\n\nlast\n', '']) {
     assert.equal(context.write(draft), true); assert.equal(value, draft);
   }
@@ -1261,5 +1288,37 @@ test('Devin cold native connection initializes its module once and reload resets
     source.cdp.handlers.get('Runtime.executionContextsCleared')();
     await source.connect();
     assert.equal(calls.filter(call => call === 'native-api').length, app === 'devin' ? 2 : 0);
+  }
+});
+
+
+test('Codex mutations follow the current desktop writer and carry pending uploads to the actual binding', async () => {
+  for (const type of ['send', 'pickMenu', 'queue', 'codexRequest', 'codexPlan', 'codexPick', 'refresh']) {
+    const calls = [], upload = { sel: 'backend:A', pending: true };
+    const context = createPageContext({
+      codexBackend: { hasWriter: () => false },
+      pendingUploads: key => { assert.equal(key, 'backend:A'); return [['file', upload]]; },
+      updateUpload: (file, fields) => Object.assign(file, fields),
+      resolveRoute: () => ({ native: true }),
+    });
+    const methods = vm.runInContext('({' + fragment(read('server/session.mjs'), '  async followCodexOwner(', '  async handle(').trimEnd() + ',\n' + fragment(read('server/session.mjs'), '  async handle(msg) {', '  async dispatch(') + '})', context);
+    const session = { app: 'codex', codexBackend: true, threadId: 'A', windowId: 'backend',
+      adapter: { backendOwner: async id => { calls.push(['owner', id]); return { pageId: 'desktop', cwd: '/A' }; } },
+      selectionKey() { return this.windowId + ':' + this.threadId; },
+      async attach(req) { calls.push(['attach', req]); this.codexBackend = false; this.windowId = req.windowId; },
+      followCodexOwner: methods.followCodexOwner,
+      dispatch: async function (msg) { calls.push(['dispatch', this.windowId, msg.t, msg.sel]); },
+    };
+    const message = { t: type, sel: 'backend:A' };
+    await methods.handle.call(session, message);
+    assert.equal(message.sel, 'backend:A', 'original operation scope stays unchanged');
+    if (type === 'refresh') {
+      assert.deepEqual(calls, [['dispatch', 'backend', type, 'backend:A']]);
+      assert.equal(upload.sel, 'backend:A');
+    } else {
+      assert.deepEqual(calls.map(row => row[0]), ['owner', 'attach', 'dispatch']);
+      assert.equal(calls[1][1].nativeOwner.cwd, '/A'); assert.equal(calls[1][1].threadId, 'A');
+      assert.deepEqual(calls[2], ['dispatch', 'desktop', type, 'desktop:A']); assert.equal(upload.sel, 'desktop:A');
+    }
   }
 });

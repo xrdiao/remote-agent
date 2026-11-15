@@ -14,6 +14,34 @@ import { NativeWindow } from '../server/native-windows.mjs';
 import { nativePage, read, fragment } from './page-fixture.mjs';
 import { registerUpload, removeUpload } from '../lib/uploads.mjs';
 
+test('Codex Skip invokes the native button workflow and confirms the question disappeared', async () => {
+  const source = read('server/page/codex.js');
+  let skipped = false, clicks = 0;
+  const skip = { innerText: 'Skip', click() { clicks++; skipped = true; } };
+  const doc = { querySelectorAll: selector => selector === '[data-request-input-dismiss]' && !skipped ? [skip] : [] };
+  const props = { questionIndex: 0, questions: [{ id: 'one', question: '?', options: ['One'], draft: '' }],
+    onSkip() { assert.fail('onSkip alone omits close/next handling'); }, onDraftChange() {}, onSubmit() {} };
+  const context = vm.createContext({ doc, document: doc, remoteContext: { threadId: 'A' },
+    codexRequestThread: () => 'A', codexNativeRequestRows: () => [], codexAsyncQuestionRows: () => [], codexQueueConfirmRequests: () => [],
+    codexAsyncRequestFiber: () => ({ fiber: { key: 'one', memoizedProps: props }, owner: { conversationId: 'A' } }), codexNativeRequests: () => [] });
+  vm.runInContext(source.slice(source.indexOf('  const codexRequests ='), source.indexOf('  const codexRequestField ='))
+    + ';this.skip=()=>codexRequestAction("async:one",1);', context);
+  assert.equal(await context.skip(), true); assert.equal(clicks, 1); assert.equal(skipped, true);
+});
+
+test('Codex Skip receipt clears only a confirmed question and preserves other pending questions', () => {
+  for (const ok of [true, false]) {
+    const pending = { sel: 'A', scope: 'A', message: { id: 'async:one', n: 1 } };
+    const context = vm.createContext({ questionSubmissions: new Map([['reply', pending]]), qnPending: pending,
+      qnState: { requests: [{ id: 'async:one', buttons: [{}, {}, {}] }, { id: 'async:two', buttons: [{}, {}] }] },
+      viewSel: 'A', questionScope: () => 'A', clearQuestionDraft() {}, qnDrafts: new Map(), currentComputer: () => ({ id: 'computer' }),
+      drafts: new Map(), draftMentions: new Map(), questionCompose: null, renderQuestions() {}, status() {}, qnSig: 'old' });
+    vm.runInContext(fragment(read('app/js/history.js'), 'function finishQuestion(', 'function renderQuestions(') + ';this.finish=finishQuestion;', context);
+    context.finish({ requestId: 'reply', ok });
+    assert.deepEqual(Array.from(context.qnState.requests, row => row.id), ok ? ['async:two'] : ['async:one', 'async:two']);
+  }
+});
+
 for (const control of ['codexTogglePlan', 'codexToggleIde']) test(`Codex ${control} supplies the complete native query without consuming the draft`, async () => {
   let on = false;
   const draft = 'keep this draft\nsecond line', queries = [];

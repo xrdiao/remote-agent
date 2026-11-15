@@ -41,7 +41,8 @@ export default [
     c.check(await c.b.read('lastChat.items.length>0'), '分叉有原会话历史'); return { thread, ...after };
   } },
   { id: 'sessions.batch', title: '批量管理与取消入口', refs: ['F05'], mode: 'write', apps: true, async run(c, app) {
-    const a = await c.target(app, 'A', true); await c.reveal(a); await c.b.menu('overviewBatch');
+    const a = await c.target(app, 'A', true); await c.reveal(a, 'sessions');
+    await c.b.menu('overviewBatch');
     await c.b.wait('!!ovBatch', '批量管理');
     await c.b.click(`${by('data-ov-session', a.key)} .ov-title`);
     c.equal(await c.b.read('ovBatch.selected.size'), 1, '批量目标只选本轮会话');

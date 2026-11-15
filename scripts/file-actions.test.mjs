@@ -82,12 +82,12 @@ async function chatImageContext(directory, Cdp) {
   return context;
 }
 
-test('native local images remain available after the original file and window disappear', async t => {
+for (const ws of ['', 'ws://native-window']) test(`native local images remain available after the original file and window disappear: ${ws ? 'window' : 'backend'}`, async t => {
   const directory = await fixture(t), source = path.join(directory, 'image.png');
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aS1kAAAAASUVORK5CYII=', 'base64');
   await fsp.writeFile(source, png);
   const context = await chatImageContext(directory, class { constructor() { assert.fail('local images must not reconnect to the native window'); } });
-  const image = context.wire({ items: [{ i: 'own-image', images: [source] }] }, 'ws://native-window').items[0].images[0];
+  const image = context.wire({ items: [{ i: 'own-image', images: [source] }] }, ws).items[0].images[0];
   assert.match(image, /^chat-image:/);
   const first = await context.readImage(image.slice(11));
   assert.deepEqual(await fsp.readFile(first.file), png);
