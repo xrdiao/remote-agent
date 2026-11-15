@@ -187,7 +187,7 @@ function batchFixture(cancel = false) {
     CODEX_BACKEND: 'backend', path, AgentContext: Context, NativeCdp: Cdp, helpersCall: value => value,
     nativeTargets: () => [{ app: 'codex', pageId: 'desktop', ws: 'ws' }], nativeSessionCatalog: () => ({ rows: [] }), backendAgentRows: () => [],
     publishSessionChange: (_app, id, value) => calls.push(['publish', id, value.action]),
-    codexBackend: { load: async id => {
+    codexBackend: { read: async id => {
       if (id === 'missing') throw Error('sample missing');
       return { turns: id === 'busy' ? [{ status: 'inProgress' }] : [] };
     }, manage: async id => archived.push('thread:backend:' + id) },
@@ -231,11 +231,11 @@ test('existing desktop batch still uses the same fresh native archive checks', a
 
 test('backend chat subscription cleanup removes its retry registration on return, switch and hide', async () => {
   const calls = [], backend = Object.assign(new EventEmitter(), {
-    load: async () => {}, subscribe: () => () => {}, clearRetry: owner => calls.push(owner),
+    threads: new Map([['A', {}]]), read: async () => {}, releaseIdle: async () => {}, subscribe: () => () => {}, clearRetry: owner => calls.push(owner),
   });
   const context = createPageContext({ awaitCdpRead: promise => promise,
     codexBackend: backend,
-    watchChatUpdates: () => () => calls.push('unsubscribe'), backendPublish: () => {},
+    watchChatUpdates: () => () => calls.push('unsubscribe'), backendPublish: () => {}, nativeTargets: () => [],
     backendRoutes: { codexRetry: () => calls.push('configure') },
   });
   const method = vm.runInContext('({' + fragment(read('server/apps/codex.mjs'), '  async setBackendMode(', '  async sendBackendMessage(') + '}).setBackendMode', context);
@@ -587,6 +587,7 @@ function codexQuestionReader(questions = [{ id: 'choice', question: '请选择�
     onDraftChange(value) { state.drafts.push(value); },
     onSubmit(value) { state.submitted.push(value); state.mounted = false; },
   } };
+  skip.click = () => form.memoizedProps.onSkip();
   const root = { stateNode: {} }, parent = { memoizedProps: owner, return: root, child: form }, host = { stateNode: skip, return: form };
   root.stateNode.current = root; root.child = parent; form.return = parent; form.child = host; skip.__reactFiberFixture = host;
   const doc = { querySelectorAll(selector) {
