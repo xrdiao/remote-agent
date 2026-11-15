@@ -1206,7 +1206,7 @@ body.term .appAvatar::after { display: none; }
 #viewer .names { flex: 1; min-width: 0; line-height: 1.25; }
 #vName { font-size: 15px; font-weight: 600; color: var(--fg-hi); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #vPath { font-size: 11.5px; color: var(--fg-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
-#vEdit, #vFind, #vWrap { flex: none; font-size: 12px; padding: 0 10px; min-height: 30px; background: transparent; border: 1px solid var(--line-2); color: var(--fg-2); }
+#vEdit, #vDownload, #vFind, #vWrap { flex: none; font-size: 12px; padding: 0 10px; min-height: 30px; background: transparent; border: 1px solid var(--line-2); color: var(--fg-2); }
 #vTools, #vSearch { flex: none; display: flex; gap: 6px; padding: 4px 10px; overflow-x: auto; align-items: center; background: var(--s1); border-bottom: 1px solid var(--line); font-size: 12px; }
 #vTools button { flex: none; padding: 0 10px; min-height: 30px; font-size: 12px; }
 #vTools button.on { background: var(--accent-tint); color: var(--accent-text); }
