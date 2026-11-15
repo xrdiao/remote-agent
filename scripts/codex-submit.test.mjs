@@ -14,6 +14,8 @@ import { NativeWindow } from '../server/native-windows.mjs';
 import { nativePage, read, fragment } from './page-fixture.mjs';
 import { registerUpload, removeUpload } from '../lib/uploads.mjs';
 
+const plain = value => JSON.parse(JSON.stringify(value));
+
 test('Codex Skip invokes the native button workflow and confirms the question disappeared', async () => {
   const source = read('server/page/codex.js');
   let skipped = false, clicks = 0;
@@ -607,7 +609,7 @@ for (const native of [true, false]) test(`Codex receipt uses native serialized M
   else { const call = h.calls.find(call => Array.isArray(call) && call[0] === 'wait'); assert.equal(call[2], serialized); assert.equal(call[3], 'literal **bold** and C:\\tmp'); }
 });
 
-for (const app of ['codex', 'devin']) for (const draft of ['', 'unsent draft']) for (const concurrent of [false, true, 'switch']) {
+for (const app of ['devin']) for (const draft of ['', 'unsent draft']) for (const concurrent of [false, true, 'switch']) {
   test(`${app} queue edit restores ${draft ? 'nonempty' : 'empty'} draft, concurrent=${concurrent}`, async () => {
     let composer = draft, scope = 'selected';
     const events = [], writes = [], cdp = { async evaluate(expression) {
@@ -637,26 +639,60 @@ for (const app of ['codex', 'devin']) for (const draft of ['', 'unsent draft']) 
   });
 }
 
-for (const queued of [true, false]) test(`Codex queue edit confirms native ${queued ? 'queue' : 'already admitted message'}`, async () => {
-  const calls = [], before = { thread: 'thread', messages: [{ id: 'old-user' }], queued: [{ id: 'old-queue' }] };
-  const accepted = queued ? { queued: true, queueId: 'new-queue' } : { queued: false, messageId: 'new-user' };
-  const cdp = { nativeWindow: { async composerCall(call) {
-    assert.equal(call, `nativeSessionInfo('codex', "thread", 'draft')`); return 'literal \\*bold\\*';
-  } }, async evaluate(expression) {
-    calls.push(expression);
-    if (expression.endsWith('.queueEditing() === "old-queue"')) return true;
-    if (expression.endsWith('.codexSendState()')) return before;
-    if (expression.endsWith('.codexSelectPrompt()')) return true;
-    if (expression.endsWith('.submitCodexMessage("queue")')) return true;
-    if (expression.includes('.waitCodexReceipt(')) {
-      const args = JSON.parse('[' + expression.slice(expression.lastIndexOf('.waitCodexReceipt(') + 18, -1) + ']');
-      assert.deepEqual(args[0], before); assert.equal(args[1], 'literal \\*bold\\*'); assert.equal(args[2], 'literal *bold*'); assert.equal(args[3], false); return accepted;
-    }
-    throw Error('unexpected queue edit read');
-  }, async send(method, params) { assert.equal(method, 'Input.insertText'); assert.equal(params.text, 'literal *bold*'); } };
-  const context = { cdp, codexFocusPrompt: async () => true, pollChat: async () => calls.push('poll') };
-  assert.deepEqual(await adapter.editQueued.call(context, 'old-queue', 'literal *bold*'), accepted);
-  assert(calls.includes('poll'));
+test('Codex queue editing delegates an in-place update without reading or changing the composer', async () => {
+  const draft = 'unrelated draft', request = { id: 'queue', text: 'edited **text**' };
+  const context = { app: 'codex', lastDraft: draft, assertSelectedThread: async () => {},
+    cdp: { evaluate() { assert.fail('queue updates must not read or replace the draft'); } },
+    queueAction() { assert.fail('queue updates must not take messages out for editing'); },
+    adapter: { editQueued: async (id, text) => { assert.equal(id, request.id); assert.equal(text, request.text); return { queued: true, queueId: id }; } } };
+  assert.deepEqual(await chatMethods.editQueued.call(context, request.id, request.text), { queued: true, queueId: 'queue' });
+  assert.equal(context.lastDraft, draft); assert.equal(context.queueEditing, undefined);
+});
+
+for (const outcome of ['saved', 'wrong-text', 'wrong-id', 'missing', 'switched']) test(`Codex native queue update preserves identity and attachments: ${outcome}`, async () => {
+  const calls = [], attachment = { type: 'localImage', path: '/test/image.png' }, text = 'literal **bold**';
+  const context = vm.createContext({ nativeValue: value => value, codexThread: () => 'thread', codexNativeManager: () => ({ turnCoordinator: { loadMessages: async () => {}, readState: () => ({}) }, async sendRequest(method, params) {
+    calls.push([method, params]);
+    if (method === 'thread/queue/list') return !params.cursor ? { data: [], nextCursor: 'page-two' }
+      : { data: outcome === 'missing' ? [] : [{ id: 'queue', input: [{ type: 'text', text: 'old' }, attachment] }], nextCursor: null };
+    assert.equal(method, 'thread/queue/update');
+    assert.deepEqual(plain(params.input), [{ type: 'text', text }, attachment]);
+    return { queuedSubmission: { id: outcome === 'wrong-id' ? 'another' : 'queue', input: [{ type: 'text', text: outcome === 'wrong-text' ? 'old' : text }, attachment] } };
+  } }), codexQueueController() { assert.fail('must not enter native edit mode'); } });
+  vm.runInContext(fragment(read('server/page/codex.js'), '  const codexQueueAction =', '  // Read pending native cards') + ';this.update=codexQueueAction;', context);
+  const pending = context.update('queue', 'update', outcome === 'switched' ? 'other' : 'thread', text);
+  if (outcome === 'saved') assert.deepEqual(plain(await pending), { queued: true, queueId: 'queue' });
+  else if (outcome === 'switched') { assert.equal(await pending, false); assert.equal(calls.length, 0); }
+  else await assert.rejects(pending, outcome === 'missing' ? /已不存在/ : /回执/);
+  assert.equal(calls.some(([method]) => method === 'turn/start' || method === 'thread/queue/delete'), false);
+});
+
+for (const persist of [true, false]) test(`Codex desktop local queue update confirms durable content without taking over the composer (persist=${persist})`, async () => {
+  const contextData = { prompt: 'old', imageAttachments: [{ id: 'image' }], fileAttachments: [{ path: '/test/file.txt' }] };
+  let stored = [{ id: 'before', text: 'keep' }, { id: 'queue', text: 'old', editableMarkdown: 'old', context: contextData }, { id: 'after', text: 'keep' }];
+  const coordinator = { pending: new Map(), loadMessages: async () => {}, readState: () => ({ thread: stored }),
+    update(thread, id, change) { assert.equal(thread, 'thread'); const next = stored.map(row => row.id === id ? change(row) : row);
+      this.pending.set(thread, { write: Promise.resolve().then(() => { if (persist) stored = next; }) }); },
+    options: { storage: { load: async () => ({ thread: stored }) } } };
+  const context = vm.createContext({ nativeValue: value => value, codexThread: () => 'thread', codexNativeManager: () => ({ turnCoordinator: coordinator,
+    sendRequest() { assert.fail('desktop local queue must use its own coordinator'); } }), codexQueueController() { assert.fail('must not take the queue into the composer'); } });
+  vm.runInContext(fragment(read('server/page/codex.js'), '  const codexQueueAction =', '  // Read pending native cards') + ';this.update=codexQueueAction;', context);
+  const pending = context.update('queue', 'update', 'thread', 'new **text**');
+  if (persist) {
+    assert.deepEqual(plain(await pending), { queued: true, queueId: 'queue' });
+    assert.deepEqual(stored.map(row => row.id), ['before', 'queue', 'after']);
+    assert.equal(stored[1].context.prompt, 'new **text**'); assert.equal(stored[1].editableMarkdown, 'new **text**');
+    assert.equal(stored[1].context.imageAttachments, contextData.imageAttachments); assert.equal(stored[1].context.fileAttachments, contextData.fileAttachments);
+  } else await assert.rejects(pending, /尚未确认/);
+});
+
+test('Codex desktop adapter publishes only after its native queue update receipt', async () => {
+  const calls = [], result = { queued: true, queueId: 'queue' };
+  const session = { threadId: 'thread', cdp: { evaluate: async expression => {
+    assert(expression.endsWith('.codexQueueAction("queue", "update", "thread", "new text")')); calls.push('update'); return result;
+  } }, pollChat: async force => { assert.equal(force, true); calls.push('read'); } };
+  assert.deepEqual(await adapter.editQueued.call(session, 'queue', 'new text'), result);
+  assert.deepEqual(calls, ['update', 'read']);
 });
 
 for (const queued of [true, false]) test(`page receipt distinguishes queued Markdown from serialized admission (queued=${queued})`, async () => {

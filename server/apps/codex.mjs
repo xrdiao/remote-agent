@@ -728,30 +728,9 @@ export const adapter = {
   },
 
   async editQueued(id, text) {
-    const wait = async call => {
-      const deadline = Date.now() + 4800;
-      while (Date.now() < deadline) {
-        let value;
-        try { value = await this.cdp.evaluate(helpersCall(call), { timeout: deadline - Date.now() }); }
-        catch (error) {
-          if (!cdpRead.getStore()?.aborted && Date.now() >= deadline) return null;
-          throw error;
-        }
-        if (value) return value;
-        await awaitCdpRead(new Promise(resolve => setTimeout(resolve, Math.min(120, Math.max(0, deadline - Date.now())))));
-      }
-      return null;
-    };
-    if (!await wait(`queueEditing() === ${JSON.stringify(String(id))}`)) throw new Error('Codex 没有进入对应队列消息的编辑状态');
-    const before = await this.cdp.evaluate(helpersCall('codexSendState()'));
-    await this.codexFocusPrompt();
-    await this.cdp.evaluate(helpersCall('codexSelectPrompt()'));
-    await this.cdp.send('Input.insertText', { text });
-    const expected = (await serializedCodexPrompt(this.cdp, before.thread)).trim();
-    if (!await this.cdp.evaluate(helpersCall('submitCodexMessage("queue")'))) throw new Error('Codex 保存排队消息的按钮不可用');
-    const result = await this.cdp.evaluate(helpersCall(`waitCodexReceipt(${JSON.stringify(before)}, ${JSON.stringify(expected)}, ${JSON.stringify(text.trim())}, false)`), { timeout: 6000 });
-    if (!result) throw new Error('Codex 尚未确认排队消息已保存，请核对队列后重试');
-    this.pollChat(true).catch(() => {});
+    const result = await this.cdp.evaluate(helpersCall(`codexQueueAction(${JSON.stringify(String(id))}, "update", ${JSON.stringify(this.threadId)}, ${JSON.stringify(text)})`));
+    if (!result) throw new Error('Codex 排队消息已不属于当前会话');
+    await this.pollChat(true);
     return result;
   },
 

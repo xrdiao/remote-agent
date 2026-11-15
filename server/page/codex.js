@@ -321,8 +321,35 @@
     }
     return null;
   };
-  const codexQueueAction = async (id, action, thread = '') => {
+  const codexQueueAction = async (id, action, thread = '', text = '') => {
     if (thread && codexThread() !== thread) return false;
+    if (action === 'update') {
+      const threadId = thread || codexThread(), manager = codexNativeManager();
+      const coordinator = manager.turnCoordinator;
+      await coordinator.loadMessages(threadId);
+      if (coordinator.readState()[threadId]?.some(row => row.id === id)) {
+        coordinator.update(threadId, id, row => nativeValue({ ...row, text, context: { ...row.context, prompt: text },
+          ...(row.editableMarkdown != null ? { editableMarkdown: text } : {}) }));
+        await coordinator.pending.get(threadId)?.write;
+        const stored = (await coordinator.options.storage.load())[threadId]?.find(row => row.id === id);
+        if (!stored || stored.text !== text || stored.context.prompt !== text)
+          throw new Error('Codex 尚未确认排队消息已保存，请核对队列后重试');
+        return { queued: true, queueId: id };
+      }
+      let cursor, queued;
+      do {
+        const page = await manager.sendRequest('thread/queue/list', nativeValue({ threadId, cursor }));
+        queued = page.data.find(row => row.id === id);
+        cursor = page.nextCursor;
+      } while (!queued && cursor);
+      if (!queued) throw new Error('排队消息已不存在');
+      const { queuedSubmission } = await manager.sendRequest('thread/queue/update', nativeValue({
+        threadId, queuedSubmissionId: id, input: [{ type: 'text', text }, ...queued.input.filter(part => part.type !== 'text')],
+      }));
+      if (queuedSubmission.id !== id || queuedSubmission.input.filter(part => part.type === 'text').map(part => part.text).join('\n') !== text)
+        throw new Error('Codex 队列保存回执与修改内容不一致');
+      return { queued: true, queueId: id };
+    }
     const controller = codexQueueController();
     if (action === 'edit' && controller?.editingMessageId === id) return true;
     if (!codexQueued().some(m => m.id === id)) return false;

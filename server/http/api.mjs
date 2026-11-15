@@ -288,19 +288,22 @@ export async function handleApi(req, res, route) {
   }
   if (route === '/api/push/key') return json(req, res, 200, { key: pushPublicKey() });
   if (route === '/api/push/state' && req.method === 'GET') {
-    return json(req, res, 200, { subscribed: Boolean(device.push || device.apns), enabled: Boolean(device.push || device.apns) && device.pushEnabled !== false });
+    const subscribed = Boolean(device.apns || device.push && device.pushKey === pushPublicKey());
+    return json(req, res, 200, { subscribed, enabled: subscribed && device.pushEnabled !== false,
+      key: pushPublicKey(), endpoint: device.push?.endpoint || '', subscriptionKey: device.pushKey || '' });
   }
   if (route === '/api/push/state' && req.method === 'POST') {
     const { enabled } = await readJson(req);
     if (typeof enabled !== 'boolean') return json(req, res, 400, { error: '通知状态无效' });
-    if (enabled && !device.push && !device.apns) return json(req, res, 409, { error: '请先注册浏览器通知' });
+    if (enabled && !device.apns && (!device.push || device.pushKey !== pushPublicKey())) return json(req, res, 409, { error: '请重新开启浏览器通知' });
     updateDevice(device.id, { pushEnabled: enabled });
     return json(req, res, 200, { ok: true });
   }
   if (route === '/api/push/subscribe' && req.method === 'POST') {
-    const { sub } = await readJson(req);
+    const { sub, applicationServerKey } = await readJson(req);
     if (!/^https:\/\//.test(sub?.endpoint || '') || !sub.keys?.p256dh || !sub.keys?.auth) return json(req, res, 400, { error: '订阅信息无效' });
-    updateDevice(device.id, { push: { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } }, pushEnabled: true });
+    if (applicationServerKey !== pushPublicKey()) return json(req, res, 409, { error: '通知公钥已变化，请重新开启通知' });
+    updateDevice(device.id, { push: { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } }, pushKey: applicationServerKey, pushEnabled: true });
     return json(req, res, 200, { ok: true });
   }
   if (route === '/api/push/apns' && req.method === 'POST') {
@@ -312,7 +315,7 @@ export async function handleApi(req, res, route) {
     return json(req, res, 200, { ok: true });
   }
   if (route === '/api/push/unsubscribe' && req.method === 'POST') {
-    updateDevice(device.id, { push: null, apns: null });
+    updateDevice(device.id, { push: null, pushKey: null, apns: null });
     return json(req, res, 200, { ok: true });
   }
   if (route === '/api/push/test' && req.method === 'POST') {

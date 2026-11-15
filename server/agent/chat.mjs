@@ -462,6 +462,7 @@ export const methods = {
   async editQueued(id, text) {
     if (!text.trim()) throw new Error('内容不能为空；不想要这条就点「删除」');
     await this.assertSelectedThread();
+    if (this.app === 'codex') return this.adapter.editQueued.call(this, id, text);
     const editing = { cdp: this.cdp, sel: this.selectionKey(), draft: await this.cdp.evaluate(helpersCall('composerDraft()')) };
     this.queueEditing = editing;
     this.draftGeneration++;

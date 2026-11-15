@@ -80,6 +80,8 @@ export default [
       throw new Unavailable('原生生成已结束或当前不提供排队窗口；没有制造假排队');
     const marker = c.marker + '-QUEUED'; await c.draft(`只回复 ${marker}`); await c.b.click('#send');
     const queued = await c.b.wait(`lastChat.queued?.find(q=>q.t?.includes(${attr(marker)}))||null`, '原生队列接受');
+    const draft = app === 'codex' ? c.marker + '-UNSENT-DRAFT' : '';
+    if (draft) await c.draft(draft);
     if (!await c.b.has(`#queueBar ${by('data-q', queued.id)}[data-a="edit"]`)) await c.b.click('#queueBar [data-qfold]');
     await c.b.click(`#queueBar ${by('data-q', queued.id)}[data-a="edit"]`);
     if (app === 'devin') {
@@ -91,10 +93,12 @@ export default [
       await c.b.fill('#qEdit', `只回复 ${marker}-EDIT`); await c.b.click('#qSave');
       await c.b.wait(`lastChat.queued?.some(q=>q.id===${attr(queued.id)}&&q.t?.includes('-EDIT'))`, '原生队列修改');
       c.check(await c.b.read(`lastChat.queued.some(q=>q.id===${attr(queued.id)})`), '修改保持原队列身份');
+      if (draft) c.equal(await c.b.read('text.value'), draft, '原位修改队列不覆盖正文草稿');
       await c.b.dismiss(); await c.b.click(`#queueBar ${by('data-q', queued.id)}[data-a="remove"]`);
       if (await c.b.has('#askOk')) await c.b.click('#askOk');
       await c.b.wait(`!lastChat.queued?.some(q=>q.id===${attr(queued.id)})`, '队列删除确认');
     }
+    if (draft) await c.draft('');
     await c.b.dismiss(); await c.b.wait('!lastChat.busy', '原执行结束', c.options.generationTimeout);
     c.check(await c.b.read(`!lastChat.items.some(i=>i.k==='human'&&i.t?.includes(${attr(marker)}))`), '删除或取回的队列未误执行');
     return { queue: queued.id, action: app === 'devin' ? 'take-out' : 'edit-remove' };

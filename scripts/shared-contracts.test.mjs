@@ -159,3 +159,113 @@ test('Pages sync uses the selected repository and branch, uploading changed file
   assert.equal(calls.filter(call => call.route.endsWith('/git/commits')).length, 1);
   assert.equal(calls.at(-1).body.sha, 'new-commit');
 });
+
+function pushBrowser() {
+  let computer = { id: 'A', key: 'computer-A' }, beforeKey;
+  const records = new Map([['A', { key: 'AQ', subscribed: false, enabled: false }], ['B', { key: 'Ag', subscribed: false, enabled: false }]]);
+  const registrations = [], posts = [], calls = [], messages = [];
+  const scope = id => `https://qa.example/app/push/${id}/`;
+  const subscription = (reg, key) => ({ endpoint: 'https://push.example/' + reg.scope.split('/').at(-2) + '/' + key,
+    options: { applicationServerKey: Uint8Array.from(Buffer.from(key, 'base64url')).buffer },
+    async unsubscribe() { calls.push(['unsubscribe', reg.scope]); reg.sub = null; return true; },
+    toJSON() { return { endpoint: this.endpoint, keys: { p256dh: 'public', auth: 'auth' } }; },
+  });
+  const serviceWorker = { getRegistrations: async () => registrations, async register(script, options) {
+    calls.push(['register', script, options.scope]);
+    let reg = registrations.find(r => r.scope === options.scope);
+    if (!reg) {
+      reg = { scope: options.scope, active: {}, pushManager: {
+        getSubscription: async () => reg.sub,
+        subscribe: async options => (reg.sub = subscription(reg, Buffer.from(options.applicationServerKey).toString('base64url'))),
+      } };
+      registrations.push(reg);
+    }
+    return reg;
+  } };
+  const context = vm.createContext({ window: { isSecureContext: true, PushManager: {}, Notification: {}, agentRemoteServiceWorker: Promise.resolve({}) },
+    navigator: { serviceWorker }, Notification: { permission: 'granted' }, location: { href: 'https://qa.example/app/' }, URL, APP_VERSION: 'v478', inApp: false,
+    currentComputer: () => computer, b64u: key => Uint8Array.from(Buffer.from(key, 'base64url')),
+    api: async route => { const record = records.get(computer.id); if (route === '/api/push/key') await beforeKey?.(); return { ok: true, json: async () => ({ ...record }) }; },
+    post: async (route, body) => { posts.push({ computer: computer.id, route, body }); const record = records.get(computer.id);
+      Object.assign(record, route === '/api/push/subscribe' ? { endpoint: body.sub.endpoint, subscriptionKey: body.applicationServerKey, subscribed: true, enabled: true } : { enabled: body.enabled });
+      return { ok: true }; }, status: (...args) => messages.push(args), $: () => null, setTimeout,
+  });
+  vm.runInContext(fragment(read('app/js/notify.js'), '/* ---------- notifications', 'function noticeTarget(')
+    + ';this.notify={enable:enableNotify,sync:syncNotify,disable:disableNotify,state:()=>({on:notifyOn,subscribed:notifySubscribed})};', context);
+  return { api: context.notify, records, registrations, posts, calls, messages, scope, subscription,
+    select(id) { computer = { id, key: 'computer-' + id }; }, waitForKey(fn) { beforeKey = fn; } };
+}
+
+test('Web Push subscriptions isolate computers and replace only the selected computer mismatched key', async () => {
+  const h = pushBrowser();
+  const legacy = { scope: 'https://qa.example/app/', pushManager: { getSubscription() { assert.fail('must not reuse the app-wide subscription'); } } };
+  h.registrations.push(legacy);
+  await h.api.enable(); h.select('B'); await h.api.enable();
+  assert.deepEqual(h.posts.map(row => [row.computer, row.body.applicationServerKey]), [['A', 'AQ'], ['B', 'Ag']]);
+  assert(h.registrations.some(row => row.scope === h.scope('A'))); assert(h.registrations.some(row => row.scope === h.scope('B')));
+  h.select('A'); h.records.get('A').key = 'Aw'; await h.api.sync(); assert.equal(h.api.state().on, false);
+  await h.api.enable(); assert.deepEqual(h.calls.filter(row => row[0] === 'unsubscribe'), [['unsubscribe', h.scope('A')]]);
+  assert.equal(h.registrations.find(row => row.scope === h.scope('B')).sub.endpoint.endsWith('/Ag'), true);
+  assert.equal(h.posts.at(-1).body.applicationServerKey, 'Aw');
+});
+
+test('Web Push state checks the actual endpoint and key; reopening preserves a disabled subscription', async () => {
+  const h = pushBrowser(); await h.api.enable(); await h.api.sync(); assert.equal(h.api.state().on, true);
+  h.records.get('A').endpoint = 'https://push.example/stale'; await h.api.sync(); assert.equal(h.api.state().on, false);
+  await h.api.enable(); await h.api.disable(); await h.api.sync();
+  assert.equal(h.api.state().on, false); assert.equal(h.api.state().subscribed, true);
+  assert.equal(h.calls.some(row => row[0] === 'unsubscribe'), false);
+  assert.equal(h.posts.filter(row => row.route === '/api/push/subscribe').length, 2);
+});
+
+test('a Web Push enable completing after computer selection changes cannot register with the new relay', async () => {
+  const h = pushBrowser(); let resolve;
+  h.waitForKey(() => new Promise(done => { resolve = done; }));
+  const pending = h.api.enable(); h.select('B'); resolve(); await pending;
+  assert.equal(h.posts.length, 0); assert.equal(h.registrations.length, 0);
+});
+
+test('push subscription routes reject a foreign public key and report the registered endpoint and key', async () => {
+  const updates = [], body = {}, context = { pushPublicKey: () => 'current-key', readJson: async () => body,
+    json: (_req, _res, status, value) => ({ status, value }), updateDevice: (_id, value) => updates.push(value) };
+  const route = vm.runInNewContext('(async(req,res,route,device)=>{' + fragment(read('server/http/api.mjs'), "  if (route === '/api/push/key')", "  if (route === '/api/push/apns'") + '})', context);
+  body.sub = { endpoint: 'https://push.example/own', keys: { p256dh: 'public', auth: 'auth' } }; body.applicationServerKey = 'foreign-key';
+  assert.equal((await route({ method: 'POST' }, {}, '/api/push/subscribe', { id: 'A' })).status, 409); assert.equal(updates.length, 0);
+  body.applicationServerKey = 'current-key';
+  assert.equal((await route({ method: 'POST' }, {}, '/api/push/subscribe', { id: 'A' })).status, 200);
+  assert.equal(updates[0].pushKey, 'current-key');
+  const device = { id: 'A', ...updates[0] }, state = await route({ method: 'GET' }, {}, '/api/push/state', device);
+  assert.equal(state.value.endpoint, body.sub.endpoint); assert.equal(state.value.subscriptionKey, 'current-key');
+  const old = await route({ method: 'GET' }, {}, '/api/push/state', { ...device, pushKey: 'old' });
+  assert.equal(old.value.subscribed, false); assert.equal(old.value.enabled, false);
+  body.enabled = true;
+  assert.equal((await route({ method: 'POST' }, {}, '/api/push/state', { ...device, pushKey: 'old' })).status, 409);
+  assert.equal((await route({ method: 'POST' }, {}, '/api/push/state', { id: 'A', apns: {} })).status, 200);
+});
+
+for (const changed of [false, true]) test(`VAPID mismatch invalidates only its original subscription (replaced=${changed})`, async () => {
+  const device = { id: 'A', name: 'Test', lastSeen: Date.now(), push: { endpoint: 'https://push.example/old' }, pushKey: 'old-key' }, updates = [];
+  const context = vm.createContext({ DATA_DIR: '.', path, computerId: () => 'computer-A', listDevices: () => [device],
+    updateDevice: (_id, value) => updates.push(value), console: { log() {} }, webpush: { async sendNotification() {
+      if (changed) device.push = { endpoint: 'https://push.example/new' };
+      throw { statusCode: 400, body: '{"reason":"VapidPkHashMismatch"}' };
+    } } });
+  vm.runInContext(fragment(read('lib/notify.mjs'), 'const POLL_MS =', '/* ---------- Web Push keys')
+    + fragment(read('lib/notify.mjs'), 'const streams =', '// The push service signs').replace(/^export /gm, '') + ';this.deliver=deliver;this.settle=()=>Promise.all([...pushChains.values()]);', context);
+  await context.deliver({ kind: 'test', win: '', title: 'Test', body: 'Test' }, 'A'); await context.settle();
+  assert.equal(updates.length, changed ? 0 : 1);
+  if (!changed) assert.deepEqual(JSON.parse(JSON.stringify(updates[0])), { push: null, pushKey: null });
+});
+
+test('per-computer push worker keeps notification clicks on the app entry and preserves target identity', async () => {
+  const handlers = new Map(), opened = [], shown = [], cache = new Map(), target = { computer: 'A', win: 'codex', windowId: 'desktop', threadId: 'thread-A' };
+  const self = { location: { href: 'https://qa.example/app/push-sw.js?v=478' }, registration: { scope: 'https://qa.example/app/push/A/', showNotification: async (title, options) => shown.push({ title, options }) },
+    addEventListener: (name, handler) => handlers.set(name, handler), clients: { matchAll: async () => [], openWindow: async url => opened.push(url) } };
+  vm.runInNewContext(read('app/push-sw.js'), { self, URL, Response, importScripts() {}, RemoteAgentRules: { notificationTarget, notificationKey },
+    caches: { open: async () => ({ match: async key => cache.get(key), put: async (key, value) => cache.set(key, value) }) } });
+  let pending;
+  handlers.get('push')({ data: { text: () => JSON.stringify({ ...target, kind: 'done', title: 'Done', seq: 1 }) }, waitUntil: value => { pending = value; } }); await pending;
+  assert.deepEqual(shown[0].options.data.computer, 'A'); assert.equal(shown[0].options.icon, 'https://qa.example/app/icon-192.png');
+  handlers.get('notificationclick')({ notification: { data: shown[0].options.data, close() {} }, waitUntil: value => { pending = value; } }); await pending;
+  assert.equal(new URL(opened[0]).pathname, '/app/'); assert.deepEqual(JSON.parse(decodeURIComponent(new URL(opened[0]).hash.slice(5))), target);
+});
