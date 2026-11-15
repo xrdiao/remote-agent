@@ -246,7 +246,18 @@ function leaveEdit() {
   $('vTools').hidden = true;
   $('vSearch').hidden = true;
 }
+let fileComputer = null, fileDownload = null;
+$('vDownload').onclick = async () => {
+  const target = fileDownload;
+  $('vDownload').disabled = true;
+  try { await downloadComputerFiles(target.computer, [target.path]); }
+  catch (error) { status(error.message); }
+  finally { if (fileDownload === target) $('vDownload').disabled = false; }
+};
 async function openFile(ref, diff = '', fromChanges = false, computer = null) {
+  fileComputer = { ...(computer || currentComputer()) };
+  fileDownload = null;
+  $('vDownload').hidden = true;
   const requestId = ++fileRequestId;
   finishFileRead();
   finishFileSave();
@@ -280,6 +291,9 @@ async function openFile(ref, diff = '', fromChanges = false, computer = null) {
 
 function showFile(m) {
   if (!$('viewer').classList.contains('open') || m.loading) return;
+  fileDownload = m.path && !m.error && !m.host ? { computer: m.computer || fileComputer, path: m.path } : null;
+  $('vDownload').hidden = !fileDownload;
+  $('vDownload').disabled = false;
   finishFileRead();
   stopVideo();
   leaveEdit();
@@ -293,6 +307,11 @@ function showFile(m) {
   const body = $('vBody');
   if (m.error) {
     body.innerHTML = `<div class="note err">${esc(m.error)}</div>${m.computer ? '' : `<div class="note">${esc(appMessage('可以切到「画面」在 {app} 里打开'))}</div>`}`;
+    return;
+  }
+  if (m.downloadOnly) {
+    $('vWrap').hidden = true;
+    body.innerHTML = '<div class="note">ZIP 压缩包，请点击上方“下载”保存原文件。</div>';
     return;
   }
   if (m.video) {
