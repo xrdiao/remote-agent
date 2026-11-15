@@ -39,7 +39,33 @@ const swReady = async () => {
   }
   return registration;
 };
-const pushSub = async () => webPush() ? (await swReady()).pushManager.getSubscription() : null;
+const pushScope = () => new URL('push/' + encodeURIComponent(currentComputer().id) + '/', location.href).href;
+const pushKeyMatches = (sub, key) => {
+  const actual = new Uint8Array(sub.options.applicationServerKey), expected = b64u(key);
+  return actual.length === expected.length && actual.every((byte, i) => byte === expected[i]);
+};
+const pushSub = async () => {
+  if (!webPush()) return null;
+  const scope = pushScope(), registrations = await navigator.serviceWorker.getRegistrations();
+  return registrations.find(reg => reg.scope === scope)?.pushManager.getSubscription() || null;
+};
+async function pushRegistration() {
+  const reg = await navigator.serviceWorker.register('push-sw.js?v=' + APP_VERSION, { scope: pushScope(), updateViaCache: 'none' });
+  if (!reg.active) {
+    const worker = reg.installing || reg.waiting;
+    await new Promise((resolve, reject) => {
+      const changed = () => {
+        if (worker.state === 'activated' || worker.state === 'redundant') {
+          worker.removeEventListener('statechange', changed);
+          if (worker.state === 'activated') resolve();
+          else reject(new Error('通知 Service Worker 安装失败'));
+        }
+      };
+      worker.addEventListener('statechange', changed); changed();
+    });
+  }
+  return reg;
+}
 const nativeConfig = () => JSON.stringify({ app: appAddress(), key: store.get('key') || '', token: store.get('token') || '', id: currentComputer()?.id || '' });
 
 // After every connect, read this device's saved setting without enabling a retained subscription.
@@ -61,8 +87,9 @@ async function syncNotify() {
       if (!response.ok) throw new Error('读取通知状态失败');
       const state = await response.json();
       if (!current()) return;
-      notifySubscribed = state.subscribed && Boolean(sub);
-      notifyOn = state.enabled && Boolean(sub);
+      notifySubscribed = Boolean(sub) && pushKeyMatches(sub, state.key)
+        && sub.endpoint === state.endpoint && state.subscriptionKey === state.key;
+      notifyOn = state.enabled && notifySubscribed;
     }
   } catch {}
   if (current()) paintNotifySwitch();
@@ -110,20 +137,21 @@ async function enableNotify() {
   if (!current()) return;
   if (permission !== 'granted') return status('没有通知权限，请在系统设置里允许本 App 发通知', false);
   try {
-    let r;
-    if (notifySubscribed) r = await post('/api/push/state', { enabled: true });
-    else {
-      const reg = await swReady();
-      if (!current()) return;
-      let sub = await reg.pushManager.getSubscription();
-      if (!sub) {
-        const { key } = await api('/api/push/key').then(r => r.json());
-        if (!current()) return;
-        sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64u(key) });
-      }
-      if (!current()) return;
-      r = await post('/api/push/subscribe', { sub: sub.toJSON() });
+    const response = await api('/api/push/key');
+    if (!response.ok) throw new Error('读取通知公钥失败');
+    const { key } = await response.json();
+    if (!current()) return;
+    const reg = await pushRegistration();
+    if (!current()) return;
+    let sub = await reg.pushManager.getSubscription();
+    if (sub && !pushKeyMatches(sub, key)) {
+      await sub.unsubscribe();
+      sub = null;
     }
+    if (!current()) return;
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64u(key) });
+    if (!current()) return;
+    const r = await post('/api/push/subscribe', { sub: sub.toJSON(), applicationServerKey: key });
     if (!current()) return;
     if (!r.ok) throw new Error((await r.json()).error || '注册失败');
     notifySubscribed = true;

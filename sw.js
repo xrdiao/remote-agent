@@ -1,10 +1,9 @@
 // Caches the app shell so the installed app opens instantly; live data (url.json, relay) always goes to the network.
-importScripts('js/shared-rules.js?v=465');
+importScripts('push-sw.js?v=478');
 const CACHE_PREFIX = 'remote-agent:' + self.registration.scope + ':';
-const CACHE = CACHE_PREFIX + 'v477'; // keep in sync with APP_VERSION in js/core.js
-const NOTICES = CACHE_PREFIX + 'notices';
-const SHELL = ['js/shared-rules.js?v=465', 'js/ui-helpers.js?v=449', './', 'index.html',   'app.css?v=462', 'i18n.js?v=433', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'logo.png',
-  'js/core.js?v=477', 'js/fusion.js?v=453', 'js/gate.js?v=430', 'js/auth.js?v=207', 'js/net.js?v=474',   'js/sheets.js?v=467', 'js/notify.js?v=455', 'js/mode.js?v=386', 'js/chat.js?v=474',
+const CACHE = CACHE_PREFIX + 'v478'; // keep in sync with APP_VERSION in js/core.js
+const SHELL = ['push-sw.js?v=478', 'js/shared-rules.js?v=465', 'js/ui-helpers.js?v=449', './', 'index.html',   'app.css?v=462', 'i18n.js?v=433', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'logo.png',
+  'js/core.js?v=478', 'js/fusion.js?v=453', 'js/gate.js?v=430', 'js/auth.js?v=207', 'js/net.js?v=474',   'js/sheets.js?v=467', 'js/notify.js?v=478', 'js/mode.js?v=386', 'js/chat.js?v=474',
   'js/history.js?v=477', 'js/files.js?v=467', 'js/screen.js?v=382',   'js/terminal.js?v=466', 'js/composer.js?v=472', 'js/voice.js?v=449', 'js/local-voice.js?v=391', 'js/voice-worklet.js?v=133',
   'js/transfer.js?v=465', 'js/scanner.js',
   'js/latency.js?v=367', 'js/image-editor.js?v=447', 'js/overview.js?v=475',
@@ -56,51 +55,4 @@ self.addEventListener('fetch', e => {
     })
     .catch(() => caches.open(CACHE).then(cache => cache.match(e.request)));
   })());
-});
-
-let pushTask = Promise.resolve();
-// iOS revokes push permission if a push arrives without a visible notification, so every push shows one.
-function showPush(text) {
-  const task = pushTask.then(() => deliverPush(text));
-  pushTask = task.catch(() => {});
-  return task;
-}
-async function deliverPush(text) {
-  let d = {};
-  try { d = JSON.parse(text); } catch {}
-  const tag = RemoteAgentRules.notificationKey(d, true) || 'remote-agent';
-  const seq = Number(d.seq) || 0;
-  const cache = await caches.open(NOTICES);
-  const key = new URL('__push_seq__?tag=' + encodeURIComponent(tag), self.registration.scope).href;
-  const previous = await cache.match(key);
-  if (seq && seq <= Number(previous ? await previous.text() : 0)) return;
-  await self.registration.showNotification(d.title || 'Remote Agent', {
-    body: d.body || '',
-    tag,
-    renotify: true,
-    icon: 'icon-192.png',
-    badge: 'icon-192.png',
-    data: { ...RemoteAgentRules.notificationTarget(d), seq, createdAt: Number(d.createdAt) || 0 },
-  });
-  if (seq) await cache.put(key, new Response(String(seq)));
-}
-self.addEventListener('push', e => e.waitUntil(showPush(e.data ? e.data.text() : '')));
-
-// Tapping a notification opens that window and thread. Receiving the push does not.
-self.addEventListener('notificationclick', e => {
-  e.notification.close();
-  const data = e.notification.data || {};
-  const payload = JSON.stringify(RemoteAgentRules.notificationTarget(data));
-  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
-    const entry = new URL(self.registration.scope);
-    const client = list.find(client => {
-      const url = new URL(client.url);
-      return url.origin === entry.origin && (url.pathname === entry.pathname || url.pathname === entry.pathname + 'index.html');
-    });
-    if (client) {
-      client.postMessage({ openWin: payload });
-      return client.focus();
-    }
-    return self.clients.openWindow(self.registration.scope + '#win=' + encodeURIComponent(payload));
-  }));
 });
