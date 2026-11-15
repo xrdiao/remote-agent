@@ -410,10 +410,10 @@ export class CodexState extends EventEmitter {
     if (this.threads.has(id) && !this.threads.get(id).disconnected) return this.chat(id);
     await this.client.connect();
     const { thread } = await this.client.request('thread/read', { threadId: id, includeTurns: true });
-    return this.chat(id, 40, thread);
+    return this.chat(id, 60, thread);
   }
 
-  chat(id, limit = 40, thread = this.threads.get(id), tools = null) {
+  chat(id, limit = 60, thread = this.threads.get(id), tools = null) {
     const turn = thread.disconnected ? null : busyTurn(thread), latest = thread.turns.at(-1), items = [];
     const all = thread.turns.flatMap(row => {
       const last = row.status === 'completed' && row.items.findLast(item => item.type === 'agentMessage' && item.text);
@@ -455,6 +455,8 @@ export class CodexState extends EventEmitter {
     const durationMs = latest?.durationMs ?? (latest?.startedAt ? ((latest.completedAt || Date.now() / 1000) - latest.startedAt) * 1000 : null);
     const requests = this.requestRows(id);
     return { thread: id, title: thread.name || this.records.get(id)?.title || thread.preview, items, busy: !!turn,
+      run: latest ? { id: latest.id, status: turn ? 'running' : ({ interrupted: 'stopped', failed: 'error' }[latest.status] || latest.status),
+        startedAt: latest.startedAt * 1000, completedAt: latest.completedAt * 1000 } : null,
       model: settings.model || thread.model || '', effort: settings.effort ?? settings.reasoningEffort ?? thread.reasoningEffort,
       permission: settings.approvalsReviewer === 'auto_review' || IS_WIN && settings.approvalsReviewer === 'guardian_subagent' ? 'Approve for me' : settings.sandboxPolicy?.type === 'dangerFullAccess' ? 'Full access' : 'Ask for approval',
       context: usage ? { used: usage.last.totalTokens, max: usage.modelContextWindow, pct: usage.modelContextWindow ? usage.last.totalTokens / usage.modelContextWindow * 100 : null } : null,
@@ -488,11 +490,10 @@ export class CodexState extends EventEmitter {
   }
   states() {
     return [...this.threads.keys()].map(id => {
-      const chat = this.chat(id), turn = this.threads.get(id).turns.at(-1);
+      const chat = this.chat(id);
       return { thread: id, title: chat.title, busy: chat.busy, waiting: chat.waiting, waitingText: chat.waitingText,
         last: chat.items.findLast(item => item.k === 'assistant')?.t || '', generation: chat.generation,
-        runId: turn?.id || '', run: turn ? { id: turn.id, status: chat.busy ? 'running' : ({ interrupted: 'stopped', failed: 'error' }[turn.status] || turn.status),
-          startedAt: turn.startedAt * 1000, completedAt: turn.completedAt * 1000 } : null };
+        runId: chat.run?.id || '', run: chat.run };
     });
   }
   close() { this.client.close(); }

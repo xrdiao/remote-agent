@@ -416,6 +416,22 @@ test('a bound Codex async question uses its native controls instead of being mis
   assert.equal(h.data().length, 0);
 });
 
+test('hidden Codex question controls keep their scoped native edit, submit and skip callbacks', async () => {
+  for (const skip of [false, true]) {
+    const h = codexQuestionReader(); h.context.vis = () => false;
+    h.context.remoteContext = { app: 'codex', threadId: h.state.thread };
+    let skipped = 0;
+    h.form.memoizedProps.onSkip = () => { skipped++; h.state.mounted = false; };
+    const request = h.data()[0]; assert(request);
+    await h.field(request.id, 0, 'hidden native answer');
+    assert.equal(h.data()[0].fields[0].value, 'hidden native answer');
+    assert.equal(await h.action(request.id, request.buttons.length - (skip ? 2 : 1), []), true);
+    assert.equal(h.state.submitted.length, skip ? 0 : 1); assert.equal(skipped, skip ? 1 : 0);
+    assert.equal(h.data().length, 0);
+    h.context.remoteContext.threadId = 'other-thread'; assert.equal(h.data().length, 0);
+  }
+});
+
 test('a native RPC question and its mounted desktop form remain one request', () => {
   const h = codexQuestionReader(), answers = [];
   const manager = { hostId: 'local', getConversation: () => ({ requests: [{ id: 0, method: 'item/tool/requestUserInput',

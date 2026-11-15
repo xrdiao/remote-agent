@@ -140,6 +140,20 @@ function stripCode(src) {
     }
     return i;
   };
+  const scanRegex = i => {
+    blank(i++);
+    let bracket = false;
+    while (i < src.length) {
+      const c = src[i];
+      blank(i++);
+      if (c === '\\') { if (i < src.length) blank(i++); continue; }
+      if (c === '[') bracket = true;
+      else if (c === ']') bracket = false;
+      else if (c === '/' && !bracket) break;
+    }
+    while (/[a-z]/i.test(src[i] || '') && i < src.length) blank(i++);
+    return i;
+  };
   const scan = (i, end) => {
     let depth = 0;
     while (i < src.length) {
@@ -154,6 +168,12 @@ function stripCode(src) {
         blank(i); if (i + 1 < src.length) blank(i + 1); i += 2;
         continue;
       }
+      if (c === '/') {
+        const before = src.slice(0, i).trimEnd();
+        if (!before || /[=(:,\[!&|?{};>]$/.test(before) || /\b(?:return|case|throw|yield|void|typeof|delete|in|of)$/.test(before)) {
+          i = scanRegex(i); continue;
+        }
+      }
       if (c === "'" || c === '"' || c === '`') { i = scanStr(i, c); continue; }
       i++;
     }
@@ -164,7 +184,7 @@ function stripCode(src) {
 }
 
 // Balanced bracket group starting at s[i] === open → [innerText, index just past the closer].
-const groupAt = (s, i, open, close) => {
+const groupAt = (s, i, open = '(', close = ')') => {
   let depth = 0;
   for (let j = i; j < s.length; j++) {
     if (s[j] === open) depth++;
@@ -196,7 +216,7 @@ modFiles.forEach((f, n) => {
 modFiles.forEach((f, n) => {
   const s = strippedSrc[n];
   const imported = new Set(), local = new Set();
-  for (const m of s.matchAll(/(?:^|[^\w$])import\s+([A-Za-z_$\s{},*]*?)\s+from\b/g))
+  for (const m of s.matchAll(/(?:^|[^\w$])import\s+([\w$\s{},*]*?)\s+from\b/g))
     for (const id of m[1].matchAll(new RegExp(IDENT, 'g')))
       if (id[0] !== 'as' && id[0] !== 'from') imported.add(id[0]);
   // const/let/var/class: simple names, destructuring groups, and later declarators in a list.

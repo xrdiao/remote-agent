@@ -61,3 +61,17 @@ test('archive and delete clear recorded status without removing favorites on unr
   assert.equal(api.storedSessionStatus('cursor', 'same-id'), null);
   assert.equal(api.storedSessionStatus('devin', 'same-id'), null);
 });
+
+test('fresh pending questions persist despite unknown run state; older observations cannot replace them', () => {
+  const first = library();
+  first.api.rememberSessionStatuses([row('codex')], 30);
+  const pending = row('codex', { statusKnown: false, waiting: 'question', run: { status: 'unknown' } });
+  assert.equal(first.api.rememberSessionStatuses([pending], 50), true);
+  const restored = library(first.files);
+  assert.equal(restored.api.storedSessionStatus('codex', 'same-id').waiting, 'approval');
+  assert.equal(restored.api.storedSessionStatus('codex', 'same-id').run, null);
+  assert.equal(restored.api.rememberSessionStatuses([row('codex')], 40), false);
+  assert.equal(restored.api.storedSessionStatus('codex', 'same-id').at, 50);
+  assert.equal(restored.api.rememberSessionStatuses([row('codex', { run: null })], 60), true);
+  assert.equal(restored.api.storedSessionStatus('codex', 'same-id').waiting, '');
+});

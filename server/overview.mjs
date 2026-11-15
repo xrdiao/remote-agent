@@ -65,7 +65,7 @@ export function overviewSnapshot(deviceId) {
       const value = {
         win: id, windowId, threadId: key, app: win.app, projectId: project, title: record?.title || s.title || '未命名会话',
         busy: !!s.busy, waiting: s.waiting || '', waitingText: s.waitingText || '', last: preview?.available ? preview.last : s.last || '',
-        run: s.run || null, statusKnown: s.statusKnown ?? (typeof s.busy === 'boolean' || !!s.run),
+        run: s.run || null, statusKnown: s.statusKnown ?? (!!s.busy || !!s.waiting || !!s.run),
         startedAt: s.busy ? (s.run?.startedAt || (Number.isFinite(s.runAt) ? s.runAt : Number.isFinite(s.generation?.start) ? s.generation.start : 0)) : 0,
         tasks: s.tasks?.total > 0 ? { done: s.tasks.done, total: s.tasks.total, current: s.tasks.current || '' } : null,
         actions: s.actions || [], devin: !!s.devin, changed: s.changed || 0, acceptAll: !!s.acceptAll, changes: s.changes || null, lastUsed: Number.isFinite(s.lastUsed) ? s.lastUsed : 0,
@@ -86,10 +86,11 @@ export function overviewSnapshot(deviceId) {
   const backendStates = new Map(codexBackend.states().map(row => [row.thread, row]));
   for (const row of codexBackend.records.values()) {
     const state = backendStates.get(row.id), workspace = localFilePath(row.cwd), key = projectId('codex', workspace, '', CODEX_BACKEND);
+    const question = codexAdapter.backendQuestionState(row.id);
     const win = { projectId: key, win: 'codex', windowId: CODEX_BACKEND, app: 'codex', workspace, host: '', project: path.basename(workspace) };
     api.windows.push(win);
-    api.sessions.push({ ...win, threadId: row.id, title: row.title, busy: !!state?.busy, waiting: state?.waiting || '', waitingText: state?.waitingText || '',
-      last: state?.last || '', run: state?.run || null, statusKnown: !!state, startedAt: state?.generation?.start || 0,
+    api.sessions.push({ ...win, threadId: row.id, title: row.title, busy: !!state?.busy, waiting: state?.waiting || question.waiting, waitingText: state?.waitingText || question.waitingText,
+      last: state?.last || '', run: state?.run || null, statusKnown: !!state || !!question.waiting, startedAt: state?.generation?.start || 0,
       tasks: null, actions: [], changed: 0, lastUsed: row.updatedAt * 1000 });
   }
   for (const row of api.windows) projects.set(row.projectId, row);
@@ -157,10 +158,13 @@ export async function overviewPreview(deviceId, { win, windowId, threadId }) {
       try {
         await cdp.connect();
         const value = await cdp.evaluate(helpersCall(`nativeSessionInfo('codex', ${JSON.stringify(threadId)}, 'preview')`));
+        if (value.status) rememberSessionStatuses([{ ...value.status, app: 'codex', threadId }]);
         return { ...value, win, windowId, threadId };
       } finally { cdp.close(); }
     }
     const chat = await codexBackend.readChat(threadId), start = chat.items.findLastIndex(row => row.k === 'human');
+    const question = codexAdapter.backendQuestionState(threadId);
+    rememberSessionStatuses([{ app: 'codex', threadId, busy: chat.busy, waiting: chat.waiting || question.waiting, run: chat.run }]);
     const turn = chat.items.slice(Math.max(0, start));
     const text = turn.filter(row => ['human', 'assistant'].includes(row.k)).map(row => row.t).join('\n\n').slice(-600);
     return { win, windowId, threadId, available: true, last: (chat.items.findLast(row => row.k === 'assistant')?.t || '').slice(-600), text,
@@ -173,6 +177,7 @@ export async function overviewPreview(deviceId, { win, windowId, threadId }) {
     const rows = openCode.messageRows(threadId);
     const turn = rows.findLastIndex(row => row.info.role === 'user' && [...row.parts.values()].some(part => part.type === 'text' && !part.synthetic && part.text?.trim()));
     const chat = openCode.chat(threadId, { rows: rows.slice(Math.max(0, turn)), tools: new Set() });
+    rememberSessionStatuses([{ app: 'opencode', threadId, busy: chat.busy, waiting: chat.waiting, run: null, statusKnown: openCode.connected }]);
     const text = chat.items.filter(row => ['human', 'assistant'].includes(row.k)).map(row => row.t).join('\n\n').slice(-600);
     return { win, windowId, threadId, available: true,
       last: (chat.items.findLast(row => row.k === 'assistant')?.t || '').slice(-600), text,

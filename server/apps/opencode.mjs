@@ -6,7 +6,7 @@ import { cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { safeHomePath, projectList, createProjectFolder } from '../agent/projects.mjs';
 import { rememberSelection } from '../../lib/auth.mjs';
 import { resolveLocal, writeTextFile } from '../../lib/files.mjs';
-import { publishSessionChange, rememberSessionMessage, removeLibrarySession } from '../../lib/session-library.mjs';
+import { publishSessionChange, rememberSessionMessage, removeLibrarySession, rememberSessionStatuses } from '../../lib/session-library.mjs';
 import { currentOperation, withOperation } from '../operations.mjs';
 import { createMessageID } from '../opencode/client.mjs';
 import { uploads, pendingUploads, uploadAttachments, removeUpload, updateUpload } from '../../lib/uploads.mjs';
@@ -29,7 +29,7 @@ function attached(s, initial = false) {
     sel: s.selectionKey(), ready: true, initial });
 }
 
-const PAGE_SIZE = 20;
+const PAGE_SIZE = 30;
 const messageKey = row => ({ created: row.info.time?.created || 0, id: row.info.id });
 const beforeMessage = (row, key) => (row.info.time?.created || 0) < key.created
   || (row.info.time?.created || 0) === key.created && row.info.id.localeCompare(key.id) < 0;
@@ -51,6 +51,7 @@ function publish(s, sent) {
     model: openCode.models.get(selected.key)?.name || selected.key,
     effort: selected.variant || '默认（服务端）', permission: '手动审批', context: openCode.context(s.openCodeDirectory),
     global: [], questions: null, queued: [], subagents: [] };
+  rememberSessionStatuses([{ app: 'opencode', threadId: chat.thread, busy: chat.busy, waiting: chat.waiting, run: null, statusKnown: openCode.connected }]);
   s.emit({ t: 'chat', sel: s.selectionKey(), chat: { ...chat, windowed: true, earlier: !!page && hasEarlier(s.threadId, page), empty: !s.threadId } }, sent);
 }
 

@@ -15,6 +15,12 @@ export default [
     if (edited) await c.b.fill(draft, 'QA_ONE');
     const identity = "JSON.stringify(lastChat.questions?.requests?.map(r=>r.id)||lastChat.questions?.list?.map(r=>r.question)||lastChat.items.filter(i=>i.k==='opencodeQuestion').map(i=>i.requestID))";
     const before = await c.b.read(identity);
+    if (app === 'codex') {
+      const card = await c.expand(a);
+      await c.b.wait(`ovRecs().find(r=>r.comp===${attr(a.comp)}&&r.threadId===${attr(a.thread)})?.state==='wait'`, '问题卡片待确认状态');
+      const badge = await c.b.read(`document.querySelector(${attr(card + ' .ov-badge')}).textContent`);
+      c.check(!/\d{1,2}:\d{2}|上次|Last:/.test(badge), '卡片状态不附带时间');
+    }
     await c.open(b); await c.open(a);
     c.equal(await c.b.read(identity), before, 'A 的问题身份没有被 B 替换');
     if (edited) c.equal(await c.b.read(`document.querySelector(${attr(draft)}).value`), 'QA_ONE', '返回后保留本轮问题的未发答案');

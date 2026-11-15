@@ -10,7 +10,7 @@ import { AgentContext, FOCUS_COMPOSER, codexUsage } from '../agent/context.mjs';
 import { resetThinkingCaches } from '../agent/thinking-cache.mjs';
 import { computerId, saveState } from '../../lib/auth.mjs';
 import { conversationProjects, fusionProject, allFusionRuns } from '../fusion/state.mjs';
-import { removeLibrarySession, publishSessionChange, rememberSessionMessage } from '../../lib/session-library.mjs';
+import { removeLibrarySession, publishSessionChange, rememberSessionMessage, rememberSessionStatuses } from '../../lib/session-library.mjs';
 import { NativeCdp, nativeWindowAt, nativeSessionCatalog, nativeTargets } from '../native-windows.mjs';
 import { currentOperation } from '../operations.mjs';
 import { codexBackend, CODEX_BACKEND } from '../codex/state.mjs';
@@ -44,15 +44,33 @@ function backendAttached(s, initial = false) {
     capabilities: { ...capabilities, extraActions: false } });
 }
 
+function backendQuestionState(id) {
+  const requests = new Map();
+  let waiting = '', waitingText = '';
+  for (const win of nativeTargets().filter(win => win.app === 'codex')) {
+    const source = nativeWindowAt(win.ws);
+    const local = state => !state?.host || state.host === 'local';
+    const snapshots = [...source.conversations.values()].filter(view => view.snapshot?.chat?.thread === id && local(view.snapshot.state));
+    const status = source.overviewStates().find(row => row.thread === id && local(row));
+    if (source.snapshot?.chat?.thread === id && status) snapshots.push({ at: source.updatedAt, snapshot: source.snapshot });
+    const current = snapshots.sort((a, b) => b.at - a.at)[0]?.snapshot.chat;
+    for (const row of current?.questions?.requests || []) requests.set(row.id, row);
+    if (status?.waiting) { waiting = 'approval'; waitingText = status.waitingText || ''; }
+  }
+  return { requests: [...requests.values()], waiting: requests.size ? 'approval' : waiting,
+    waitingText: [...requests.values()].map(row => row.text).join('\n') || waitingText };
+}
+
 function backendPublish(s, sent) {
   if (!codexBackend.threads.has(s.threadId)) return false;
-  const chat = codexBackend.chat(s.threadId, s.codexHistoryLimit || 40, undefined, s.expandedTools || new Set());
+  const chat = codexBackend.chat(s.threadId, s.codexHistoryLimit || 60, undefined, s.expandedTools || new Set());
   const requests = new Map(chat.questions.requests.map(row => [row.id, row]));
-  for (const value of s.codexNativeQuestions?.values() || [])
-    for (const row of value.requests) if (!requests.has(row.id)) requests.set(row.id, row);
+  const native = backendQuestionState(s.threadId);
+  for (const row of native.requests) if (!requests.has(row.id)) requests.set(row.id, row);
   chat.questions.requests = [...requests.values()];
-  chat.waiting = requests.size ? 'approval' : '';
-  chat.waitingText = chat.questions.requests[0]?.text || '';
+  chat.waiting = requests.size ? 'approval' : native.waiting;
+  chat.waitingText = chat.questions.requests[0]?.text || native.waitingText;
+  rememberSessionStatuses([{ app: 'codex', threadId: s.threadId, busy: chat.busy, waiting: chat.waiting, run: chat.run }]);
   s.emit({ t: 'chat', sel: s.selectionKey(), chat }, sent);
   backendPublishDraft(s);
   return true;
@@ -126,7 +144,7 @@ async function bindBackend(s, req) {
   s.threadId = s.selectedThread = thread.id;
   s.bindingReady = true;
   s.selectionHome = false;
-  s.codexHistoryLimit = 40;
+  s.codexHistoryLimit = 60;
   rememberSelection(s.deviceId, { id: 'codex', app: 'codex', windowId: CODEX_BACKEND, threadId: thread.id, project: { root: thread.cwd, host: '' } });
   backendAttached(s, req.initial === true);
   await s.setMode(s.mode, true);
@@ -220,7 +238,7 @@ const backendRoutes = {
     let clicked = false;
     try {
       if (m.sel !== this.selectionKey()) throw new Error('会话已切换，请使用当前会话的按钮');
-      if (!['fork', 'capacity-retry'].includes(m.actionId) || !codexBackend.chat(this.threadId, this.codexHistoryLimit || 40).items.some(item => item.btnItem === m.item && item.actions?.[m.n] === m.actionId))
+      if (!['fork', 'capacity-retry'].includes(m.actionId) || !codexBackend.chat(this.threadId, this.codexHistoryLimit || 60).items.some(item => item.btnItem === m.item && item.actions?.[m.n] === m.actionId))
         throw new Error('请求已更新，请查看最新选项');
       if (m.actionId === 'capacity-retry') await codexBackend.retry(this.threadId, m.item);
       else {
@@ -496,6 +514,7 @@ async function readCodexMenu(context, button, select = items => items.length ? i
 }
 
 export const adapter = {
+  backendQuestionState,
   backendRoutes,
   routes: { toolDetails: backendRoutes.toolDetails },
   async backendOwner(id) {

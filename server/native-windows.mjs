@@ -7,6 +7,7 @@ import { bindOperation, publishDesktopState, withOperation } from './operations.
 import { AgentContext } from './agent/context.mjs';
 import { projectSessionIds, reconcileSessionCatalog, updateProjectWindowTargets } from './project-windows.mjs';
 import { codexSessionStates } from './windows.mjs';
+import { rememberSessionStatuses } from '../lib/session-library.mjs';
 
 // Native connections and read state belong to windows, not to a phone's current view.
 const windows = new Map();
@@ -262,6 +263,7 @@ export class NativeWindow {
       await this.connect();
       const previous = !state.busy && state.lastUsed > 0 && entry.lastUsed === state.lastUsed ? entry.value : null;
       const value = await this.cdp.evaluate(helpersCall(`nativeSessionInfo(${JSON.stringify(this.win.app)}, ${JSON.stringify(threadId)}, 'preview', ${JSON.stringify(previous || null)})`), { timeout: 15000 });
+      if (value.status) rememberSessionStatuses([{ ...value.status, app: this.win.app, threadId }]);
       const chat = this.snapshot?.chat;
       if (chat?.thread === threadId) {
         value.model = chat.model || value.model;
@@ -309,7 +311,7 @@ export class NativeWindow {
     view.reading = cdpRead.run(null, async () => {
       await this.connect();
       const [chat, composer] = await Promise.all([
-        this.cdp.evaluate(helpersCall(`extract(false, [], ${context.app === 'codex' ? 80 : 0})`, context)),
+        this.cdp.evaluate(helpersCall(`extract(false, [], ${context.app === 'codex' ? 120 : 0})`, context)),
         context.app === 'codex' ? this.composerCall(`nativeSessionInfo('codex', ${JSON.stringify(context.threadId)}, 'composer')`, context) : null,
       ]);
       if (chat && composer) chat.codex = { ...chat.codex,
@@ -319,6 +321,7 @@ export class NativeWindow {
       const state = chat?._nativeState;
       if (chat) delete chat._nativeState;
       const result = { chat, state }, key = JSON.stringify(result), changed = view.key !== key;
+      if (state) rememberSessionStatuses([{ ...state, app: context.app, threadId: state.thread }]);
       view.snapshot = result; view.key = key; view.readRevision = revision; view.at = Date.now();
       if (changed) withOperation(null, () => { for (const listener of view.listeners) listener(); });
       return result;
@@ -347,7 +350,7 @@ export class NativeWindow {
       await this.connect();
       const result = await this.cdp.evaluate(`(async () => {
         const h = ${PAGE_SRC};
-        const chat = await h.extract(false, [], ${app === 'codex' ? 80 : 0}, ${app === 'cursor'});
+        const chat = await h.extract(false, [], ${app === 'codex' ? 120 : 0}, ${app === 'cursor'});
         const activeTab = h.activeChatTab(), states = h.agentStates(${JSON.stringify(app)});
         ${app === 'cursor' ? "for (const state of states) state.nativeUpdatedAt = h.nativeSessionInfo('cursor', state.thread, 'connection')?.updatedAt || 0;" : ''}
         return { chat, activeTab, states,
@@ -355,6 +358,7 @@ export class NativeWindow {
         };
       })()`);
       controller.signal.throwIfAborted();
+      rememberSessionStatuses((result.states || []).map(state => ({ ...state, app, threadId: state.thread })));
       for (const state of result.states || []) if (state.run && state.run.status !== 'unknown') this.runStates.set(state.thread, state.run);
       this.readCatalog().catch(error => publishCatalog(app, error));
       const key = JSON.stringify(result);

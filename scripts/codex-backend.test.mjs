@@ -119,13 +119,50 @@ test('backend viewers receive retained desktop questions and release their scope
 });
 
 test('backend chat combines native RPC and retained desktop questions without duplicate request identities', async () => {
-  const chat = { questions: { codex: true, requests: [{ id: 'same', text: 'native' }] } }, sent = [];
-  const context = createPageContext({ codexBackend: { threads: new Map([['A', {}]]), chat: () => structuredClone(chat) }, backendPublishDraft() {} });
-  const publish = vm.runInContext(fragment(read('server/apps/codex.mjs'), 'function backendPublish(', 'function backendPublishDraft(') + 'backendPublish;', context);
-  publish({ threadId: 'A', selectionKey: () => 'A', codexNativeQuestions: new Map([['window', { requests: [{ id: 'same', text: 'duplicate' }, { id: 'async:folded', text: 'question' }] }]]), emit: message => sent.push(message) });
+  const chat = { questions: { codex: true, requests: [{ id: 'same', text: 'native' }] }, busy: false, run: { id: 'turn-A', status: 'stopped' } }, sent = [], statuses = [];
+  const requests = [{ id: 'same', text: 'duplicate' }, { id: 'async:folded', text: 'question' }];
+  const source = { conversations: new Map([['A', { at: 1, snapshot: { chat: { thread: 'A', questions: { requests } } } }]]), overviewStates: () => [] };
+  const context = createPageContext({ codexBackend: { threads: new Map([['A', {}]]), chat: () => structuredClone(chat) },
+    nativeTargets: () => [{ app: 'codex', ws: 'native' }], nativeWindowAt: () => source, backendPublishDraft() {}, rememberSessionStatuses: rows => statuses.push(...rows) });
+  const publish = vm.runInContext(fragment(read('server/apps/codex.mjs'), 'function backendQuestionState(', 'function backendPublishDraft(') + 'backendPublish;', context);
+  publish({ threadId: 'A', selectionKey: () => 'A', emit: message => sent.push(message) });
   assert.deepEqual(Array.from(sent[0].chat.questions.requests, row => row.id), ['same', 'async:folded']);
   assert.equal(sent[0].chat.questions.requests[0].text, 'native');
   assert.equal(sent[0].chat.waiting, 'approval');
+  assert.equal(statuses[0].threadId, 'A'); assert.equal(statuses[0].waiting, 'approval');
+  assert.equal(statuses[0].run.status, 'stopped');
+});
+
+test('backend first screen grows to sixty items, keeps lazy tools and preserves history pagination', async () => {
+  const { state } = fixture(null), thread = await state.create('/first-screen');
+  thread.turns = [{ id: 'turn', startedAt: 10, completedAt: 20, status: 'completed', items: Array.from({ length: 90 }, (_, n) =>
+    n % 2 ? { id: 'item-' + n, type: 'commandExecution', command: 'echo sample', aggregatedOutput: 'large output' }
+      : { id: 'item-' + n, type: 'agentMessage', text: 'message-' + n }) }];
+  const chat = state.chat(thread.id, undefined, undefined, new Set());
+  assert.equal(chat.items.length, 60); assert.equal(chat.items[0].i, 'item-30'); assert.equal(chat.earlier, true);
+  assert(chat.items.filter(item => item.k === 'tool').every(item => item.lazy && !item.details && item.output === undefined));
+  assert.equal(state.chat(thread.id, 220).items.length, 90);
+  assert.deepEqual(state.states()[0].run, chat.run); assert.equal(chat.run.status, 'completed');
+});
+
+test('backend overview and body share pending questions, clear fresh answers and isolate thread and host', () => {
+  const request = { id: 'async:A', text: 'Question A' };
+  const source = { conversations: new Map([
+    ['A', { at: 10, snapshot: { chat: { thread: 'A', questions: { requests: [request] } }, state: { host: '' } } }],
+    ['B', { at: 10, snapshot: { chat: { thread: 'B', questions: { requests: [{ id: 'async:B' }] } } } }],
+    ['ssh', { at: 30, snapshot: { chat: { thread: 'A', questions: { requests: [{ id: 'foreign' }] } }, state: { host: 'ssh' } } }],
+  ]), overviewStates: () => [] };
+  const context = createPageContext({ nativeTargets: () => [{ app: 'codex', ws: 'native' }], nativeWindowAt: () => source });
+  const facts = vm.runInContext(fragment(read('server/apps/codex.mjs'), 'function backendQuestionState(', 'function backendPublish(') + 'backendQuestionState;', context);
+  assert.deepEqual(Array.from(facts('A').requests, row => row.id), ['async:A']);
+  assert.equal(facts('A').waiting, 'approval'); assert.equal(facts('A').waitingText, 'Question A');
+  source.conversations.set('A', { at: 40, snapshot: { chat: { thread: 'A', questions: { requests: [] } } } });
+  assert.equal(facts('A').waiting, ''); assert.equal(facts('B').waiting, 'approval');
+  source.conversations.delete('A');
+  source.overviewStates = () => [{ thread: 'A', host: '', waiting: 'native-question', waitingText: 'still pending', run: { status: 'stopped' } }];
+  assert.equal(facts('A').waiting, 'approval'); assert.equal(facts('A').waitingText, 'still pending');
+  source.overviewStates = () => [];
+  assert.equal(facts('A').waiting, '');
 });
 
 test('a desktop draft read finishing after a phone write or thread switch cannot overwrite the shared draft', async () => {

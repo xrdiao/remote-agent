@@ -481,7 +481,7 @@
     const rows = new Map([...native, ...codexAsyncQuestionRows(), ...codexQueueConfirmRequests()].map(row => [row.id, row]));
     const asyncSkips = new Set();
     const query = selector => [...new Set([doc, document])].flatMap(d => [...d.querySelectorAll(selector)]);
-    for (const skip of query('[data-request-input-dismiss]').filter(vis)) {
+    for (const skip of query('[data-request-input-dismiss]')) {
       const { fiber, owner } = codexAsyncRequestFiber(skip) || {};
       let props = fiber?.memoizedProps;
       if (!props) continue;
@@ -508,6 +508,7 @@
             native.onDraftChange({ answers: next, questionIndex: index });
           },
           onQuestionChange: questionIndex => { indexHook.queue.dispatch(questionIndex); native.onDraftChange({ answers, questionIndex }); },
+          onSkip: native.onSkip,
           onSubmit: () => native.onSubmit(answers),
         };
       }
@@ -517,7 +518,7 @@
       const id = 'async:' + question.id;
       if (remoteContext && !rows.has(id) && owner?.conversationId !== codexRequestThread()) continue;
       const buttons = question.options.map(option => ({ label: option, selected: question.draft === option, disabled: !!props.isSubmitting, action: () => props.onDraftChange(option) }));
-      buttons.push({ el: skip, label: skip.innerText || 'Skip', disabled: !!props.isSubmitting });
+      buttons.push({ el: skip, label: skip.innerText || 'Skip', disabled: !!props.isSubmitting, action: props.onSkip });
       buttons.push({ label: index < props.questions.length - 1 ? 'Next' : props.hasSubmitted ? 'Send update' : 'Send', disabled: !!props.isSubmitting || !question.draft.trim(), submit: index === props.questions.length - 1, action: () => index < props.questions.length - 1 ? props.onQuestionChange(index + 1) : props.onSubmit() });
       rows.set(id, { id, submissionKey: fiber.key, text: question.question, buttons, fields: [{ label: '回答', value: question.draft, type: question.type || 'text', options: question.type === 'select' ? question.options.map(value => ({ value, label: value })) : null, onChange: props.onDraftChange }] });
     }

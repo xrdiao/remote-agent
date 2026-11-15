@@ -9,6 +9,26 @@ import { uploads, removeUpload, registerUpload, updateUpload, initializeUploads,
 import { read, fragment, createPageContext } from './page-fixture.mjs';
 import { gitBlobSha } from '../server/publish/pages.mjs';
 
+test('import scanner recognizes browser methods and still reports missing bare calls', () => {
+  const scanner = fragment(read('scripts/check.mjs'), 'function stripCode(', '/* 5. app-shell');
+  const modules = ['client', 'composer', 'connection', 'conversation', 'models', 'overview', 'questions', 'sessions']
+    .map(name => `scripts/browser-tests/blocks/${name}.mjs`);
+  modules.push('scripts/browser-tests/browser.mjs', 'server/publish/pages.mjs', 'scripts/page-fixture.mjs');
+  const failures = [];
+  const run = (modFiles, fileSystem) => vm.runInNewContext(scanner, {
+    fs: fileSystem, modFiles, fail: message => failures.push(message), rel: file => file, console: { log() {} },
+  });
+  run(modules, fs);
+  assert.deepEqual(failures, []);
+  const files = {
+    'exports.mjs': 'export function run() {} export function read() {} export function x11ActiveWindow() {}',
+    'bound.mjs': 'import { x11ActiveWindow } from "./exports.mjs"; x11ActiveWindow(); const pattern = /^file:\\/\\//; function read() {} read(); const ratio = 4 / 2;',
+    'missing.mjs': 'run(); read();',
+  };
+  run(Object.keys(files), { readFileSync: file => files[file] });
+  assert.deepEqual(failures, ['missing imports: missing.mjs: read, run']);
+});
+
 test('Live Activity forwarding retains every required Swift attribute, including the computer identity', () => {
   const source = read('push-service/index.mjs');
   const fields = fragment(source, 'const cut =', 'async function register(')

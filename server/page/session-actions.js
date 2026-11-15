@@ -161,6 +161,10 @@
     return headers.map(header => stored.get(header.bubbleId) || data.conversationMap[header.bubbleId]).filter(Boolean);
   };
   const nativeSessionPreview = async (app, id, previous) => {
+    const status = (scopes = [], manager = null, host = '') => {
+      const run = agentRun(app, id, scopes, manager), waiting = nativeWaiting(app, id, manager);
+      return { threadId: id, host, run, busy: run?.status === 'running', ...waiting, statusKnown: !!run || !!waiting };
+    };
     const summary = value => {
       const text = String(value || '').replace(/\s+/g, ' ').trim();
       return { available: true, last: text.slice(-600), text };
@@ -178,7 +182,7 @@
         const tool = m.toolFormerData;
         return { id: tool.toolCallId || m.bubbleId, label: tool.toolCall?.tool?.value?.description || tool.params?.commandDescription || tool.name, status: tool.error ? 'error' : tool.status };
       });
-      return { ...summary(messages.findLast(m => m?.text?.trim())?.text), ...nativePreviewActivity(tools, model?.clientDisplayName || model?.inputboxShortModelName || selected?.modelId || data.modelConfig?.modelName, '', tasks) };
+      return { ...summary(messages.findLast(m => m?.text?.trim())?.text), status: status(), ...nativePreviewActivity(tools, model?.clientDisplayName || model?.inputboxShortModelName || selected?.modelId || data.modelConfig?.modelName, '', tasks) };
     }
     if (app === 'devin') {
       return devinReadSession(id, () => {
@@ -190,7 +194,7 @@
         const tools = messages.slice(messages.findLastIndex(m => m.kind === 'user_message') + 1).filter(m => m.kind === 'tool_call').map(m => ({
           id: m.content.toolCallId || m.id, label: m.content.title, status: m.content.status,
         }));
-        return { ...summary(devinMessageText(message?.content)), ...nativePreviewActivity(tools, model) };
+        return { ...summary(devinMessageText(message?.content)), status: status(), ...nativePreviewActivity(tools, model) };
       });
     }
     const scopes = codexHistoryScopes();
@@ -205,7 +209,7 @@
     let items = sources.flatMap(source => source.rawItems).filter(Boolean);
     let historical = false;
     if (!items.some(item => ['agentMessage', 'userMessage'].includes(item.type))) {
-      if (previous?.historical) return previous;
+      if (previous?.historical) return { ...previous, status: status(scopes, manager, host === 'local' ? '' : host) };
       if (!manager || manager.hostId !== 'local') return { available: false };
       const { thread } = await manager.requestClient.sendRequest('thread/read', { threadId: id, includeTurns: true }, { priority: 'background', source: 'thread_list' });
       items = (thread.turns || []).flatMap(turn => turn.items || []);
@@ -221,7 +225,7 @@
       const item = source.rawItems.find(item => item && row.i.endsWith(':' + item.id));
       return { id: item?.id || row.i, label: row.t, status: item?.status };
     });
-    return { ...summary(text(items.findLast(item => text(item)?.trim()) || {})), historical,
+    return { ...summary(text(items.findLast(item => text(item)?.trim()) || {})), historical, status: status(scopes, manager, host === 'local' ? '' : host),
       ...nativePreviewActivity(tools, conversation?.latestModel, conversation?.latestThreadSettings?.effort, tasks) };
   };
   const nativeSessionCleanup = async (app, id, perform = false) => {

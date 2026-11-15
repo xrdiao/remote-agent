@@ -35,6 +35,19 @@ export default [
     c.equal((await c.b.snapshot()).thread, b.thread, '最终目标仍为 B');
     return { from: a.thread, to: b.thread, elapsedMs: first.elapsedMs };
   } },
+  { id: 'overview.status', title: '正文和展开卡片状态保存及刷新恢复', refs: ['F03', 'R01'], mode: 'read', apps: true, async run(c, app) {
+    const target = await c.target(app); await c.open(target);
+    const status = `sharedAgentRecord(${attr(target.thread)},${attr(app)}).statuses`;
+    await c.b.wait(`Object.keys(${status}||{}).length>0`, '正文状态保存回执');
+    await c.expand(target); await c.preview(target);
+    const saved = await c.b.read(`JSON.stringify(${status})`);
+    c.check(!!saved, '展开卡片后有已保存状态');
+    await c.b.cdp.send('Page.reload', { ignoreCache: true });
+    await c.b.wait('typeof authed!=="undefined"&&authed&&ws?.readyState===1', '刷新后恢复原配对连接');
+    await c.b.wait(`JSON.stringify(${status})===${attr(saved)}`, '刷新后恢复相同会话状态');
+    c.equal(await c.b.read(`JSON.stringify(${status})`), saved, '保存的会话状态跨刷新保留');
+    return { thread: target.thread, restored: true };
+  } },
   { id: 'overview.favorite', title: '收藏状态保存和恢复', refs: ['F03', 'F05'], mode: 'write', apps: true, async run(c, app) {
     const target = await c.target(app, 'A', true), card = await c.reveal(target);
     const before = await c.b.read(`ovRecs().find(r=>r.key===${attr(target.key)})?.favorite===true`);

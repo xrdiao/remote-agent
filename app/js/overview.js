@@ -269,9 +269,6 @@ function ovProjects(all) {
 }
 function ovBadge(r) {
   if (r.off) return ovT('离线');
-  if (r.cachedStatusAt) return (I18N.lang === 'en' ? 'Last: ' : '上次：')
-    + ovBadge({ ...r, cachedStatusAt: 0, dormant: false }) + ' · '
-    + new Date(r.cachedStatusAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   if (r.dormant && !r.cachedStatusAt) return ovT('项目未打开');
   if (r.state === 'wait') return r.fusion ? ovT('等你确认') : r.wait.startsWith('q:') ? ovT('问题') : ovT('待确认');
   if (r.state === 'run') return r.fusion ? fusionStatus(r.status) : ovT(ovS.proj ? '正在工作' : '运行中');

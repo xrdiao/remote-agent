@@ -227,7 +227,7 @@ export const methods = {
       const known = (this.itemCache?.get(this.threadId || '')?.completeTurns || []).map(([id]) => id);
       const source = nativeWindow(cdp);
       const chat = source?.win ? structuredClone((await source.read(state.requested && !state.sent)).chat)
-        : await cdp.evaluate(`(() => { const h = ${PAGE_SRC}, chat = h.extract(false, ${JSON.stringify(known)}, ${this.app === 'codex' && !this.fusionBinding ? 80 : 0}); if (chat) chat.subagent = !!(${JSON.stringify(child)} && h.activeChatTab() === ${JSON.stringify(child)} && chat.readonly); return chat; })()`);
+        : await cdp.evaluate(`(() => { const h = ${PAGE_SRC}, chat = h.extract(false, ${JSON.stringify(known)}, ${this.app === 'codex' && !this.fusionBinding ? 120 : 0}); if (chat) chat.subagent = !!(${JSON.stringify(child)} && h.activeChatTab() === ${JSON.stringify(child)} && chat.readonly); return chat; })()`);
       if (chat && source?.win) chat.subagent = !!(child && source.snapshot.activeTab === child && chat.readonly);
       if (chat) delete chat._revision;
       return chat;

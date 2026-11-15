@@ -1164,9 +1164,9 @@
     return { ...chat, items, performance: nativePerformance('cursor', chat.thread, agentRun('cursor', chat.thread), chat.model, data) };
   };
   const extract = (history = false, knownTurns = [], pageSize = 0, nativeCursor = false) => {
-    if (nativeCursor) return cursorCurrentChat(extract(history, knownTurns), pageSize || 80);
-    if (remoteContext?.app === 'codex') return codexConversationChat(history, pageSize || 80);
-    if (remoteContext) return nativeConversationChat(history, pageSize || 80);
+    if (nativeCursor) return cursorCurrentChat(extract(history, knownTurns), pageSize || 120);
+    if (remoteContext?.app === 'codex') return codexConversationChat(history, pageSize || 120);
+    if (remoteContext) return nativeConversationChat(history, pageSize || 120);
     const imagePreview = codexImagePreview();
     const log = devinLog();
     const panel = log || (devinSurface() ? null : findPanel());
