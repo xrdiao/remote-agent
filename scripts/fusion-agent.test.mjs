@@ -12,6 +12,22 @@ import { NativeAgentProvider, nativeAgentProvider, registerNativeAgentProvider }
 import { FusionMcpServer } from '../server/fusion/mcp.mjs';
 import { fusionProject } from '../server/fusion/state.mjs';
 import { createPageContext } from './page-fixture.mjs';
+import { openCodexSidebar } from '../server/platform/windows/codex.mjs';
+
+test('Windows Codex sidebar opens in the focused target and confirms the native command once', async () => {
+  const calls = [], cdp = { send: async (method, params) => calls.push({ method, params }), evaluate: async expression => { calls.push({ expression }); return true; } };
+  await openCodexSidebar(cdp, Date.now() + 1000, async nextStageDeadline => {
+    assert.ok(nextStageDeadline() >= Date.now() + 24990);
+    assert.equal(calls.at(-1).expression.includes('quick-input-widget'), true);
+    assert.deepEqual(calls.filter(row => row.method === 'Emulation.setFocusEmulationEnabled').map(row => row.params.enabled), [true]);
+    calls.push({ ready: true });
+  });
+  assert.equal(calls.filter(row => row.method === 'Page.bringToFront').length, 1);
+  assert.equal(calls.filter(row => row.method === 'Input.insertText').length, 1);
+  assert.equal(calls.filter(row => row.method === 'Input.dispatchKeyEvent' && row.params.key === 'Enter').length, 2);
+  assert.deepEqual(calls.filter(row => row.method === 'Emulation.setFocusEmulationEnabled').map(row => row.params.enabled), [true, false]);
+  assert.ok(calls.some(row => row.expression?.includes('aria-selected')));
+});
 
 // Transcript/control fixtures inject the shared adapter contract; native-engine behavior is covered in devin-submit.test.mjs.
 function devinRuntimeFixture(extra) {

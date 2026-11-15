@@ -1,5 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { cleanupProjects as windowsCleanup } from './platform/windows.mjs';
+import { cleanupProjects as posixCleanup } from './platform/posix.mjs';
 import { parse, execute } from './run.mjs';
 import { catalog, plan } from './catalog.mjs';
 import { verdict } from './report.mjs';
@@ -32,4 +37,31 @@ test('失败、缺样本和未执行独立记账，后续场景继续，禁止�
 });
 test('真实样本分位数保留慢尾部，不以平均值掩盖卡住', () => {
   const stats = distribution([20, 10, 30, 40, 1000]); assert.equal(stats.p95, 1000); assert.equal(stats.median, 30);
+});
+
+test('Windows cleanup pins the isolated computer before releasing its backend and removes only the run projects', async t => {
+  const base = path.resolve('_shots/browser-platform-tests'); await fs.mkdir(base, { recursive: true });
+  const directory = await fs.mkdtemp(path.join(base, 'owned-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const dataDir = path.join(directory, 'identity'), projects = path.join(directory, 'projects');
+  await fs.mkdir(dataDir); await fs.mkdir(projects);
+  const key = Buffer.alloc(32, 7), computer = createHash('sha256').update(key).digest('hex').slice(0, 16);
+  await fs.writeFile(path.join(dataDir, 'url-key'), key.toString('base64url'));
+  await fs.writeFile(path.join(projects, 'evidence.txt'), 'owned');
+  const registry = { appUrl: 'http://127.0.0.1:3941/', relay: { dataDir } };
+  let released = false;
+  const run = async (_exe, _args, options) => {
+    assert.equal(await fs.readFile(path.join(projects, 'evidence.txt'), 'utf8'), 'owned');
+    assert.equal(options.windowsHide, true); released = true; return { stdout: '[12,13]' };
+  };
+  const idle = async () => ({ sessions: [] });
+  await assert.rejects(windowsCleanup(directory, registry, 'other-computer', idle, run), /电脑身份/);
+  await assert.rejects(windowsCleanup(directory, registry, computer,
+    async () => ({ sessions: [{ app: 'codex', windowId: 'backend', busy: true }] }), run), /仍有运行/);
+  assert.equal(released, false);
+  assert.deepEqual(await windowsCleanup(directory, registry, computer, idle, run), { projectsRemoved: true, backendProcessesStopped: [12, 13] });
+  assert.equal(released, true); await assert.rejects(fs.access(projects), { code: 'ENOENT' });
+  assert.equal(await fs.readFile(path.join(dataDir, 'url-key'), 'utf8'), key.toString('base64url'));
+  await fs.mkdir(projects); await posixCleanup(directory);
+  await assert.rejects(fs.access(projects), { code: 'ENOENT' });
 });

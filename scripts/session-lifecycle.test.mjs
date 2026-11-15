@@ -6,10 +6,160 @@ import test from 'node:test';
 import { EventEmitter } from 'node:events';
 
 import { NativeWindow } from '../server/native-windows.mjs';
+import { samePath } from '../lib/platform.mjs';
 
 import { adapter as cursorAdapter } from '../server/apps/cursor.mjs';
 import { AgentContext } from '../server/agent/context.mjs';
 import { read, fragment, createPageContext } from './page-fixture.mjs';
+
+test('Codex catalog pages and missing threads are read in separate native calls', async () => {
+  const requests = [], source = { win: { id: 'window-A' }, cdp: { async evaluate(call) {
+    const request = vm.runInNewContext(call, { nativeSessionInfo: (_app, query) => query }); requests.push(request);
+    if (!request.threads) return { ready: true, rows: [{ id: request.cursor ? 'second' : 'first' }], nextCursor: request.cursor ? null : 'page-2' };
+    return { ready: true, rows: request.ids.map(id => ({ id })), removed: [], unknown: [] };
+  } } };
+  const readCatalog = vm.runInNewContext(fragment(read('server/native-windows.mjs'), 'async function readCodexCatalog(', 'function mergeDevinCatalogs(') + '\nreadCodexCatalog;', { helpersCall: value => value });
+  const result = await readCatalog(source, ['first', ...Array.from({ length: 8 }, (_, i) => 'old-' + i)]);
+  assert.deepEqual(requests.map(row => row.threads ? row.ids.length : row.cursor), [null, 'page-2', 6, 2]);
+  assert.equal(result.rows.length, 10);
+  source.cdp.evaluate = async () => { throw Error('CDP timeout'); };
+  await assert.rejects(readCatalog(source, []), /window-A.*目录分页.*CDP timeout/);
+});
+
+for (const app of ['cursor', 'devin', 'codex']) test(`closing ${app} atomically removes its target before overview reads and discovery can rebuild it`, async () => {
+  const source = url => ({ cdp: { wsUrl: url, close() {} }, win: { app }, clients: new Set(), listeners: new Set(),
+    sends: new Map(), retrySettings: new Map(), runStates: new Map(), conversations: new Map(),
+    overviewStates: () => [], start: async () => {} });
+  const a = source('A'), b = source('B'), windows = new Map([['A', a], ['B', b]]), targets = ['A', 'B'].map(ws => ({ ws, id: ws, app: ws === 'A' ? app : 'codex' }));
+  b.win.app = 'codex';
+  const context = createPageContext({ windows, initialTargets: targets, publishCatalog: () => {}, updateProjectWindowTargets: () => {},
+    setInterval: () => ({ unref() {} }), NativeWindow: class { constructor(url) { Object.assign(this, source(url)); } },
+    nativeWindowAt: url => windows.get(url) });
+  const text = read('server/native-windows.mjs');
+  vm.runInContext('let targets=initialTargets, discover=null, discovering=null, discoveryAt=0;this.nativeTargets=()=>targets;'
+    + 'this.close=({' + fragment(text, '  close(error =', '\n}\n\nexport function startNativeWindows') + '}).close;'
+    + text.slice(text.indexOf('export function startNativeWindows')).replace('export ', '') + '\nthis.start=startNativeWindows;', context);
+  const questions = vm.runInContext(fragment(read('server/apps/codex.mjs'), 'function backendQuestionState(', 'function backendPublish(') + '\nbackendQuestionState;', context);
+  context.close.call(a);
+  assert.equal(windows.has('A'), false); assert.deepEqual(Array.from(context.nativeTargets(), row => row.ws), ['B']);
+  assert.equal(questions('thread').requests.length, 0);
+  context.start(async () => targets); await new Promise(resolve => setImmediate(resolve));
+  assert.ok(windows.has('A')); assert.equal(context.nativeTargets().length, 2);
+  assert.equal(questions('thread').requests.length, 0);
+});
+
+test('background catalog errors are retained for directory reads without replacing the chat status', async () => {
+  const source = read('server/session.mjs'), start = source.indexOf('      this.catalogUpdatesStop = subscribeCatalog(app, error => {');
+  const block = source.slice(start, source.indexOf('\n    }', start));
+  let changed;
+  const events = [], cdp = {}, session = { app: 'codex', cdp, visible: true, bindingReady: true,
+    emit: event => events.push(event), listAgents: async () => events.push('directory') };
+  const context = createPageContext({ session, subscribeCatalog: (_app, callback) => { changed = callback; }, cdpRead: { run: (_signal, work) => work() }, console });
+  vm.runInContext('(function(){const cdp=this.cdp, app=this.app;' + block + '}).call(session)', context);
+  const error = Error('slow catalog'); changed(error);
+  assert.equal(session.catalogError.error, error); assert.equal(events.length, 0);
+  changed(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(session.catalogError, null); assert.deepEqual(events, ['directory']);
+});
+
+test('a successful unchanged catalog clears the previous failed synchronization state', async () => {
+  const events = []; let failing = false;
+  const source = { win: { app: 'codex', id: 'target' }, connect: async () => {}, cdp: { evaluate: async () => {
+    if (failing) throw Error('slow native page');
+    return { ready: true, rows: [{ id: 'kept' }], nextCursor: null };
+  } } };
+  const context = createPageContext({ windows: new Map(), withOperation: (_context, work) => work(), helpersCall: value => value,
+    projectSessionIds: () => [], reconcileSessionCatalog: () => false, console: { error() {} } });
+  const api = vm.runInContext(fragment(read('server/native-windows.mjs'), 'const catalogListeners =', 'let discover =').replace(/export /g, '')
+    + '\n({refresh:refreshSessionCatalog, subscribe:subscribeCatalog, state:()=>catalogReads.get("codex")});', context);
+  api.subscribe('codex', error => events.push(error));
+  await api.refresh(source, false); const first = api.state().catalog;
+  api.state().at = 0; failing = true; await api.refresh(source, false);
+  assert.equal(api.state().catalog, first); assert.ok(api.state().error);
+  api.state().at = 0; failing = false; await api.refresh(source, false);
+  assert.equal(api.state().error, null); assert.equal(events.length, 3);
+  assert.equal(events[0], undefined); assert.match(events[1].message, /target.*目录分页/); assert.equal(events[2], undefined);
+});
+
+test('Devin binding loads the native handle before asking for its session context', async () => {
+  let loaded = false;
+  const context = pageContext({ window: { __remoteAgentDevinDirectory: new Map([['old-session', { workspace: '/A' }]]) },
+    devinReadSession: async (id, read) => { assert.equal(id, 'old-session'); loaded = true; return read(); },
+    devinSessionRecord: id => { assert.equal(loaded, true); return { sessionId: id, providerId: 'devin-cli', cwd: '/A' }; } });
+  const result = await context.info('devin', 'old-session', 'bind');
+  assert.equal(result.cwd, '/A'); assert.equal(result.threadId, 'old-session');
+});
+
+test('Devin CLI cwd comes from its directory while content and mode remain on the native handle', () => {
+  const mode = [{ category: 'mode', value: 'smart' }], state = { sessionInfo: { configOptions: mode } };
+  const native = { isKnownSession: () => true, getSessionRow: () => null, sessionProviderId: () => 'devin-cli',
+    sessionTitle: () => 'old', sessionCwdOf: () => '/other-window', sessionConfigOptions: () => [], deriveAgentStatus: () => ({}) };
+  const context = createPageContext({ window: { __remoteAgentDevinNative: native,
+    __remoteAgentDevinDirectory: new Map([['acp/devin-cli/old', { workspace: '/real-project' }]]) }, devinSessionData: () => state });
+  vm.runInContext("const devinClient=()=>window.__remoteAgentDevinNative;const devinNativeId=id=>'devin-'+id;"
+    + fragment(read('server/page/devin.js'), '  const devinSessionRecord =', '  const devinSessions =') + '\nthis.record=devinSessionRecord;', context);
+  const actual = context.record('acp/devin-cli/old');
+  assert.equal(actual.cwd, '/real-project'); assert.equal(actual.configOptions, mode);
+});
+
+test('projectless Devin cloud sessions keep their existing empty-root context', async () => {
+  const context = pageContext({ devinSessionRecord: () => ({ providerId: 'devin-cloud', cwd: '' }) });
+  const actual = await context.info('devin', 'cloud', 'context');
+  assert.equal(actual.cwd, ''); assert.equal(actual.roots.length, 0);
+});
+
+test('Devin native open accepts a catalog session that has not been loaded in the window', async () => {
+  const calls = [], api = { executeCommand: async (...args) => calls.push(args) };
+  const doc = { querySelector: () => ({}) };
+  const context = pageContext({ doc, document: doc, codexFiberProps: () => [{ vscodeAPI: api }],
+    devinSessionRecord: () => { assert.fail('An unopened session has no native record yet'); },
+    devinNativeId: id => 'devin-' + id, nativeModule: { encodeOpenCascadeIdInChatPanelPayload: id => ({ id }) },
+  }, read('server/page/session-actions.js').replaceAll("await import('@exa/chat-client')", 'nativeModule'));
+  assert.equal(await context.action('devin', 'acp/devin-cli/old', 'open'), true);
+  assert.equal(calls[0][0], 'devin.sendChatActionMessage');
+  assert.equal(calls[0][1].payload.id, 'devin-acp/devin-cli/old');
+});
+
+test('Devin global catalog rows select the matching workbench and distinguish unloaded sessions', () => {
+  const row = { id: 'old', workspace: '/A', title: 'old' };
+  const source = (id, root, updatedAt) => ({ roots: [{ root }], catalog: [], snapshot: { chat: {} }, previews: new Map(), updatedAt, overviewStates: () => [] });
+  const a = source('A', '/A', 1), b = source('B', '/B', 10), sources = new Map([['A', a], ['B', b]]);
+  const context = createPageContext({ process, path, nativeTargets: () => ['A', 'B'].map(id => ({ id, app: 'devin', ws: id })),
+    nativeWindowAt: id => sources.get(id), nativeSessionCatalog: app => app === 'devin' ? { rows: [row] } : { rows: [] },
+    fusionTargets: () => ({ windows: new Set(), sessions: new Set() }), readLibrary: () => ({}), sessionId: (_app, id) => id || '',
+    windowName: value => value, workspaceLabel: project => ({ name: project.root }),
+    openCode: { overview: () => ({ windows: [], sessions: [] }) }, codexBackend: { states: () => [], records: new Map() },
+    allFusionRuns: () => [], fusionSummary: value => value, storedSessionStatus: () => null,
+  });
+  const snapshot = vm.runInContext(read('server/overview.mjs').replace(/^import .*;\n/gm, '').replace(/export /g, '') + '\noverviewSnapshot;', context);
+  let actual = snapshot().sessions[0]; assert.equal(actual.windowId, 'A'); assert.equal(actual.dormant, true);
+  a.catalog = [row]; actual = snapshot().sessions[0]; assert.equal(actual.windowId, 'A'); assert.equal(actual.dormant, false);
+});
+
+test('Fusion Codex readiness includes native models while ordinary Ubuntu attachment keeps its original checks', async () => {
+  const context = createPageContext({ IS_WIN: false, cdpRead: { getStore: () => null }, helpersCall: value => value });
+  const ready = vm.runInContext('({' + fragment(read('server/agent/projects.mjs'), '  async ensureCodexReady(', '  async newProject(') + '}).ensureCodexReady', context);
+  for (const fusionBinding of [false, true]) {
+    const calls = [], session = { fusionBinding, windowId: 'A', cdp: { wsUrl: 'chat', evaluate: async () => ({ thread: '' }) }, editorCdp: {},
+      checkCodexLogin: async () => false, waitFor: async call => { calls.push(call); return true; } };
+    assert.equal(await ready.call(session, { id: 'A' }, false), true);
+    assert.deepEqual(calls, fusionBinding ? ['modelItemsFast(true)?.length > 0'] : []);
+  }
+});
+
+test('Cursor uses a project carrier instead of an empty Agents window with a loaded historical composer', () => {
+  const source = (id, roots, thread, updatedAt) => ({ win: { app: 'cursor', id }, roots,
+    snapshot: { chat: { thread }, states: [{ thread: 'history', nativeUpdatedAt: updatedAt }] } });
+  const glass = source('agents', [], 'bc-cloud', 100), project = source('project', [{ root: '/A' }], 'other', 10);
+  const windows = new Map([['agents', glass], ['project', project]]);
+  const select = vm.runInNewContext(fragment(read('server/native-windows.mjs'), 'export function cursorSource(', 'export const nativeWindowAt').replace('export ', '') + '\ncursorSource;', { windows, samePath });
+  assert.equal(select('history', { root: '/A' }), project);
+  assert.equal(select('history', { root: '/B' }), undefined);
+  windows.delete('project');
+  assert.equal(select('history'), undefined);
+  glass.snapshot.chat.thread = 'history';
+  assert.equal(select('history'), glass);
+});
 
 function batchFixture(cancel = false) {
   const calls = [], events = [], archived = [], releases = [];
@@ -228,29 +378,61 @@ test('Cursor project replacement calls the selected window native host with forc
   assert.deepEqual(JSON.parse(JSON.stringify(calls)), [[[{ folderUri: { scheme: 'file', path: '/B' } }], { forceReuseWindow: true }]]);
 });
 
-for (const result of ['archive', 'delete', 'clear']) {
-  test(`Cursor removal uses the persisted native outcome: ${result}`, async () => {
+for (const result of ['archive', 'delete']) for (const count of [1, 2]) {
+  test(`Cursor removal uses the persisted native outcome: ${result}, ${count} composers`, async () => {
     const row = { composerId: 'target', name: 'target' }, other = { composerId: 'other' };
-    let headers = [row, other], loaded = result === 'clear' ? [row] : [row, other], empty = false;
+    let headers = count === 1 ? [row] : [row, other], loaded = headers;
     const data = { get allComposersData() { return { allComposers: loaded }; },
       async whenInitialComposerDataLoaded() {},
       async getComposerHandleById(id) { return { data: loaded.find(row => row.composerId === id) }; },
       _storageService: { collectionQuery: async () => headers.map(row => JSON.stringify(row)) },
-      getComposerDataIfLoaded: () => ({ fullConversationHeadersOnly: empty ? [] : ['message'] }),
+      getComposerDataIfLoaded: () => ({ fullConversationHeadersOnly: ['message'] }),
     };
     const composer = {
       composerChatService: { _workspaceContextService: { getWorkspace: () => ({ id: 'workspace', folders: [] }) } },
       async deleteComposer(id) {
-        assert.equal(id, 'target'); loaded = [other];
-        headers = result === 'archive' ? [{ ...row, isArchived: true }, other] : [other];
+        assert.equal(id, 'target'); loaded = loaded.filter(item => item !== row);
+        headers = result === 'archive' ? headers.map(item => item === row ? { ...row, isArchived: true } : item) : loaded;
       },
-      async resetComposer(id) { assert.equal(id, 'target'); empty = true; headers = [row]; },
+      async resetComposer() { assert.fail('Deletion must not reset the last composer'); },
     };
     const context = pageContext({ window: { __remoteAgentCursorServices: { data, composer } } });
     const actual = await context.action('cursor', 'target', 'delete');
     assert.equal(actual.confirmed, true); assert.equal(actual.action, result);
   });
 }
+
+test('Cursor Lexical draft writes reconcile native transactions for text, newlines and clearing', () => {
+  let updating = false, updates = 0, value = '';
+  class Text {
+    constructor(text) { assert.equal(updating, true); this.text = text; }
+    getTextContent() { return this.text; }
+  }
+  class LineBreak extends Text { constructor() { super('\n'); } }
+  class Paragraph {
+    constructor() { assert.equal(updating, true); this.children = []; }
+    append(node) { this.children.push(node); }
+    getTextContent() { return this.children.map(child => child.getTextContent()).join(''); }
+  }
+  const root = { children: [], clear() { assert.equal(updating, true); this.children = []; }, append(node) { this.children.push(node); } };
+  const editor = {
+    _nodes: new Map([['paragraph', { klass: Paragraph }], ['text', { klass: Text }], ['linebreak', { klass: LineBreak }]]),
+    getEditorState: () => ({ _nodeMap: new Map([['root', root]]) }),
+    update(callback, options) {
+      assert.equal(options.discrete, true); updating = true;
+      try { callback(); } finally { updating = false; }
+      value = root.children.map(child => child.getTextContent()).join('\n'); updates++;
+    },
+  };
+  const doc = { getElementById: () => null }, ed = { __lexicalEditor: editor };
+  const context = createPageContext({ remoteContext: { app: 'cursor' }, doc, document: doc,
+    composerTarget: () => ed, composerDraft: () => value.replace(/\n+$/g, '') });
+  vm.runInContext(fragment(read('server/page/composer.js'), '  const setComposerDraft =', '  // Typeahead queries') + '\nthis.write = setComposerDraft;', context);
+  for (const draft of ['single line', 'first\nsecond\n\nlast\n', '']) {
+    assert.equal(context.write(draft), true); assert.equal(value, draft);
+  }
+  assert.equal(updates, 3);
+});
 
 for (const outcome of ['archive', 'clear', 'delete']) {
   test(`server records ${outcome} without turning other native outcomes into deletion`, async () => {
@@ -946,8 +1128,20 @@ function projectAttachFixture(app, { catalogReady = true, targetOpen = false, wi
       calls.push({ kind: 'project', root, newSession, thread, ownerWindow });
     },
   };
-  return { session, calls };
+  return { session, calls, context };
 }
+
+test('Cursor rechecks the actual workspace when a reused window still has cached roots from its previous project', async () => {
+  const { session, calls, context } = projectAttachFixture('cursor');
+  context.cursorSource = () => ({ win: { id: 'cursor:stale' },
+    cdp: { evaluate: async () => ({ roots: [{ root: '/A' }] }) } });
+  context.editorRoots = async () => [{ root: '/B' }];
+  await session.attach({ id: 'cursor', threadId: 'history-A', project: { root: '/A' } });
+  assert.equal(calls.at(-1).kind, 'project');
+  assert.equal(calls.at(-1).root, '/A');
+  assert.equal(calls.at(-1).thread, 'history-A');
+  assert.equal(calls.some(row => row.window === 'cursor:stale'), false);
+});
 
 test('Codex legacy threads use the backend even when the old project window is open', async () => {
   const { session, calls } = projectAttachFixture('codex', { targetOpen: true });

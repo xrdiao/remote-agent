@@ -86,7 +86,8 @@ export class Session extends AgentContext {
       const cdp = this.cdp, app = this.app;
       this.catalogUpdatesStop = subscribeCatalog(app, error => {
         if (!this.visible || this.cdp !== cdp || this.app !== app || this.switchingThread || !this.bindingReady) return;
-        if (error) return this.emit({ t: 'status', ok: false, msg: '会话目录同步失败：' + error.message });
+        this.catalogError = error ? { app, error } : null;
+        if (error) return;
         if (this.catalogRefresh?.cdp === cdp) { this.catalogRefresh.again = true; return; }
         const refresh = this.catalogRefresh = { cdp, again: false };
         cdpRead.run(null, async () => {
@@ -96,7 +97,8 @@ export class Session extends AgentContext {
             await this.listAgents(true, true);
           } while (refresh.again);
         }).catch(error => {
-          if (this.cdp === cdp && this.app === app) this.emit({ t: 'status', ok: false, msg: '会话目录同步失败：' + error.message });
+          this.catalogError = { app, error };
+          console.error(`[catalog:${app}] ${error.message}`);
         }).finally(() => { if (this.catalogRefresh === refresh) this.catalogRefresh = null; });
       });
     }
@@ -271,15 +273,16 @@ export class Session extends AgentContext {
       const saved = lastSelection(this.deviceId, app);
       if (saved) req = { ...req, ...saved };
     }
-    if (app === 'cursor' && req.threadId && !req.project && !req.projectSwitch && !this.fusionBinding) {
-      const row = nativeSessionCatalog('cursor')?.rows.find(row => row.id === req.threadId);
+    if (['cursor', 'devin'].includes(app) && req.threadId && !req.project && !req.projectSwitch && !this.fusionBinding) {
+      const row = nativeSessionCatalog(app)?.rows.find(row => row.id === req.threadId);
       if (row?.workspace) req = { ...req, project: { root: row.workspace, host: row.host || '' } };
     }
     if (app === 'cursor' && req.threadId && !req.projectSwitch && !this.fusionBinding) {
-      const source = cursorSource(req.threadId);
+      const source = cursorSource(req.threadId, req.project);
       if (source) {
         const context = await source.cdp.evaluate(helpersCall(`nativeSessionInfo('cursor', ${JSON.stringify(req.threadId)}, 'context')`));
-        if (context.projectless || !req.project || this.projectMatches(context.roots, req.project.root, req.project.host))
+        const roots = await editorRoots(source.cdp, 'cursor'), expected = req.project || context.roots[0];
+        if (context.projectless ? !roots.length : expected && this.projectMatches(roots, expected.root, expected.host))
           req = { ...req, id: source.win.id, windowId: source.win.id, project: null };
       }
     }

@@ -291,7 +291,7 @@ test('OpenCode confirms a send only after the matching native user message is sa
   await session.handle({ t: 'pickMenu', kind: 'effort', label: 'high' });
   await session.handle({ t: 'send', text: 'read files', requestId: 'receipt-one', draftEpoch: 'epoch' });
   const prompt = requests.find(row => row.route.endsWith('/prompt_async'));
-  assert.equal(prompt.options.directory, path.resolve(localFilePath(root)));
+  assert.equal(prompt.options.directory, localFilePath(path.resolve(root)));
   assert.equal(prompt.options.body.variant, 'high');
   assert.equal(events.find(row => row.t === 'sent').pending, true);
   assert.equal(events.some(row => row.t === 'sent' && !row.pending), false);

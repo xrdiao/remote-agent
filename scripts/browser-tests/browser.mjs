@@ -34,6 +34,7 @@ export class Browser {
       browser.requests.delete(event.requestId);
     });
     await cdp.send('Runtime.enable'); await cdp.send('Network.enable'); await cdp.send('Page.enable');
+    if (process.platform === 'win32') await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true });
     return browser;
   }
   read(expression) { return this.cdp.evaluate(expression); }

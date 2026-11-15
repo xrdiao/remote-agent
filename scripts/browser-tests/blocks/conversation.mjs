@@ -3,6 +3,17 @@ import { Unavailable } from '../browser.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
+async function withTools(c, app, inspect) {
+  await c.open(await c.target(app, 'long'));
+  const shown = await c.b.read('executionRecordsShown()');
+  try {
+    if (!shown) { await c.b.menu('executionToggle'); await c.b.dismiss(); }
+    return await inspect();
+  } finally {
+    if (!shown) { await c.b.menu('executionToggle'); await c.b.dismiss(); }
+  }
+}
+
 export default [
   { id: 'conversation.codex-diff', title: 'Codex 原生修改、新建文件的差异区块和行数', refs: ['F07', 'F10', 'F18'], mode: 'generate', apps: ['codex'], async run(c, app) {
     const target = await c.target(app, 'diff', true), file = path.join(target.root, 'existing.txt'), added = path.join(target.root, 'added.txt');
@@ -51,11 +62,11 @@ export default [
     return { initial: before.ids.length, after: after.ids.length, cursor: after.cursor };
   } },
   { id: 'conversation.details', title: '工具与文件差异实际展开和收起', refs: ['F07', 'F18', 'R08'], mode: 'read', apps: true, async run(c, app) {
-    await c.open(await c.target(app, 'long'));
+    return withTools(c, app, async () => {
     const selector = '#items [data-ttoggle]';
     if (!await c.b.has(selector)) throw new Unavailable('当前首屏没有可展开的工具，需要含工具的 long 会话');
     const before = await c.b.read("(()=>{const e=document.querySelector('#items [data-ttoggle]').closest('[data-i]');return{id:e.dataset.i,open:e.classList.contains('open')}})()");
-    const row = '#items ' + by('data-i', before.id), toggle = row + ' [data-ttoggle]';
+    const row = '#items ' + by('data-i', before.id), toggle = row + ' [data-ttoggle] .chev';
     try {
       if (before.open) await c.b.click(toggle);
       c.check(await c.b.read(`!document.querySelector(${attr(row)}).classList.contains('open')`), '指定工具确实处于收起状态');
@@ -68,12 +79,15 @@ export default [
       if (await c.b.read(`document.querySelector(${attr(row)}).classList.contains('open')`) !== before.open) await c.b.click(toggle);
     }
     return { item: before.id };
+    });
   } },
   { id: 'conversation.layout', title: '横竖屏工具与输入区域不越界', refs: ['F07', 'F15', 'R03', 'R08'], mode: 'read', apps: true, async run(c, app) {
-    await c.open(await c.target(app, 'long')); const sizes = [];
+    return withTools(c, app, async () => {
+    const sizes = [];
     if (!await c.b.has('#items .toolrow')) throw new Unavailable('当前会话没有工具容器，需配置含工具的 long 样本');
     try { for (const [width, height] of [[402, 874], [874, 402]]) {
       await c.b.viewport(width, height);
+      await c.b.settled();
       const measured = await c.b.read(`(()=>{const bounds=document.getElementById('items').getBoundingClientRect();return {
         documentOverflow:document.documentElement.scrollWidth-innerWidth,tools:[...document.querySelectorAll('#items .toolrow')].map(e=>({left:e.getBoundingClientRect().left,right:e.getBoundingClientRect().right})),
         composer:(()=>{const r=document.getElementById('text').closest('footer').getBoundingClientRect();return{left:r.left,right:r.right}})(),left:bounds.left,right:bounds.right}})()`);
@@ -81,8 +95,9 @@ export default [
       c.check(measured.tools.every(tool => tool.left >= measured.left - 1 && tool.right <= measured.right + 1), '工具调用容器位于正文范围');
       c.check(measured.composer.left >= -1 && measured.composer.right <= width + 1, '输入区域位于视口范围');
       sizes.push({ width, height, tools: measured.tools.length });
-    } } finally { await c.b.viewport(c.original.width, c.original.height); }
+    } } finally { await c.b.viewport(c.original.width, c.original.height); await c.b.settled(); }
     return { sizes, evidence: 'Chrome 尺寸模拟，非手机安全区验收' };
+    });
   } },
   { id: 'conversation.empty-bubbles', title: 'OpenCode 完成后无空助手气泡', refs: ['F17', 'F18', 'R10'], mode: 'read', apps: ['opencode'], async run(c, app) {
     await c.open(await c.target(app));

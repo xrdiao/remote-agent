@@ -6,7 +6,7 @@ import vm from 'node:vm';
 import { parseSessionRef } from '../lib/shared-rules.mjs';
 
 const source = fs.readFileSync(new URL('../lib/session-library.mjs', import.meta.url), 'utf8')
-  .replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
+  .replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, '');
 function library(files = new Map(), computer = 'first') {
   let writes = 0;
   const context = vm.createContext({ path, Date, JSON, parseSessionRef, DATA_DIR: '/' + computer,

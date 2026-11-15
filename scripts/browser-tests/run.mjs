@@ -88,6 +88,7 @@ export async function main(argv = process.argv.slice(2)) {
     data.revision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
     data.diffSha256 = createHash('sha256').update(execFileSync('git', ['diff', '--', 'app', 'server', 'lib'], { cwd: root })).digest('hex');
     const registry = JSON.parse(await fs.readFile(path.resolve(options.registry), 'utf8'));
+    options.registryConfig = registry;
     options.appUrl = registry.appUrl;
     if (options.targetFile) options.targets = JSON.parse(await fs.readFile(path.resolve(options.targetFile), 'utf8'));
     data.browser = await ensurePairedBrowser(registry);

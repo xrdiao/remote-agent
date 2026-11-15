@@ -2987,6 +2987,7 @@ test('Windows Devin idle cards use confirmed current activity without treating a
     h.catalogs.set('devin', { rows: [{ id: 'thread', workspace: '/project/A', running: busy }] });
     source.snapshot.states = [{ thread: 'thread', busy, statusKnown, run: { id: 'historic', status: 'unknown' } }];
     const row = h.snapshot().sessions[0];
+    assert.equal(row.dormant, false);
     assert.equal(row.busy, busy);
     assert.equal(row.statusKnown, statusKnown);
     assert.deepEqual(row.run, !busy && statusKnown ? null : { id: 'historic', status: 'unknown' });

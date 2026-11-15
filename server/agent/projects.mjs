@@ -7,7 +7,8 @@ import { spawn } from 'node:child_process';
 import { workspaces, windowRoots, workspaceLabel, editorRoots } from '../../lib/files.mjs';
 import { IS_WIN, IS_MAC, mod, normPath, findBin, localFilePath, pathKey, samePath, projectPathAllowed, projectDrives, projectParent, nativeLauncher, launchCommand } from '../../lib/platform.mjs';
 import { Cdp, cdpRead, awaitCdpRead } from '../cdp.mjs';
-import { nativeWindowAt } from '../native-windows.mjs';
+import { NativeCdp, nativeWindowAt } from '../native-windows.mjs';
+import { openCodexSidebar as openCodexSidebarWindows } from '../platform/windows/codex.mjs';
 import { listWindows, codexWindows } from '../windows.mjs';
 import { CDP_URL, DEVIN_CDP_URL, CODEX_CDP_URL, EDITORS } from '../config.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
@@ -388,7 +389,8 @@ export const methods = {
   },
   // Waits for the Codex webview of a just-opened window, then binds this.cdp to it.
   async ensureCodexReady(target, needThread) {
-    const deadline = Math.min(cdpRead.getStore()?.deadline || Infinity, Date.now() + 25000);
+    const operationDeadline = cdpRead.getStore()?.deadline || Infinity;
+    let deadline = Math.min(operationDeadline, Date.now() + 25000);
     const pageOf = pages => pages.find(p => p.pageId === target.id);
     const openSidebar = async () => {
       const editorCdp = new Cdp(target.ws || target.webSocketDebuggerUrl);
@@ -402,23 +404,25 @@ export const methods = {
     let pages = this.cdp !== this.editorCdp && this.windowId === target.id
       ? [{ ...target, pageId: target.id, chatWs: this.cdp.wsUrl }]
       : await codexWindows(CODEX_CDP_URL, false, target.id);
+    const ready = async nextStageDeadline => {
     if (!pageOf(pages)?.chatWs) {
       // A window that just opened (or just left Restricted Mode) can take a while
       // to activate the Codex extension: re-issue the command every 5 s.
-      await openSidebar();
+      if (!IS_WIN) await openSidebar();
       this.emit({ t: 'status', ok: true, msg: '正在等待 Codex 就绪…' });
       let nextCmd = Date.now() + 5000;
       while (!pageOf(pages)?.chatWs && Date.now() < deadline) {
         if (this.pendingProject?.trust) return;
         await new Promise(r => setTimeout(r, 150));
         pages = await codexWindows(CODEX_CDP_URL, false, target.id);
-        if (!pageOf(pages)?.chatWs && Date.now() >= nextCmd) {
+        if (!IS_WIN && !pageOf(pages)?.chatWs && Date.now() >= nextCmd) {
           nextCmd = Date.now() + 5000;
           await openSidebar().catch(() => {});
         }
       }
       if (!pageOf(pages)?.chatWs) throw new Error('项目已打开，但 Codex 侧边栏尚未就绪');
     }
+    if (IS_WIN) deadline = Math.min(operationDeadline, nextStageDeadline());
     if (this.cdp === this.editorCdp) {
       const page = pageOf(pages);
       await this.openBound({ id: 'codex', app: 'codex', title: page.rawTitle || target.title, ws: page.ws, port: CODEX_CDP_URL },
@@ -430,7 +434,18 @@ export const methods = {
       || await this.waitFor('agentStartupState("codex", true)', Math.max(0, Math.ceil((deadline - Date.now()) / 120)));
     if (!state) throw new Error('项目已打开，但 Codex 会话数据尚未就绪');
     if (state.login) { await this.checkCodexLogin(); return false; }
+    if (this.fusionBinding && !await this.waitFor('modelItemsFast(true)?.length > 0', Math.max(0, Math.ceil((deadline - Date.now()) / 120))))
+      throw new Error('Codex 侧边栏已打开，但主工作台的原生模型目录尚未就绪');
     return true;
+    };
+    if (IS_WIN && !pageOf(pages)?.chatWs) {
+      const editorCdp = new NativeCdp(target.ws || target.webSocketDebuggerUrl, 'codex');
+      try {
+        await editorCdp.connect();
+        return await openCodexSidebarWindows(editorCdp, deadline, ready);
+      } finally { editorCdp.close(); }
+    }
+    return ready(() => deadline);
   },
   async newProject(parent, name, newSession = false) {
     const folder = createProjectFolder(parent, name);
@@ -596,6 +611,8 @@ export const methods = {
     if (statusMsg) this.emit({ t: 'status', ok: true, msg: statusMsg });
   },
   async listAgents(silent = false, readOnly = false, projectWindow = '', checkTrust = false) {
+    if (!silent && this.catalogError?.app === this.app)
+      this.emit({ t: 'status', ok: false, msg: '会话目录同步失败：' + this.catalogError.error.message });
     if (this.app === 'devin' && !readOnly && !projectWindow) await this.ensureDevinIde();
     if ((!readOnly || checkTrust) && !projectWindow && await this.checkProjectTrust({ prompt: true })) return;
     const cdp = this.cdp, sel = this.sel, app = this.app, selection = this.selectionKey();

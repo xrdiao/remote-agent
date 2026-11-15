@@ -8,7 +8,7 @@ import { parseAgentRef } from '../lib/shared-rules.mjs';
 import { FusionScheduler } from '../server/fusion/scheduler.mjs';
 
 const source = fs.readFileSync(new URL('../server/project-windows.mjs', import.meta.url), 'utf8')
-  .replace(/^import .*;\n/gm, '').replace(/^export /gm, '').replaceAll('import.meta.url', JSON.stringify(new URL('../server/project-windows.mjs', import.meta.url).href));
+  .replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, '').replaceAll('import.meta.url', JSON.stringify(new URL('../server/project-windows.mjs', import.meta.url).href));
 
 test('automatic window binding is stable across discovery order and switches only after a new successful binding', () => {
   const h = fixture();

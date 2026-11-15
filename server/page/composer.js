@@ -124,6 +124,20 @@
       cmd.setContent({ type: 'doc', content });
       return composerDraft() === text.replace(/\n+$/g, '');
     }
+    const lexical = ed.__lexicalEditor;
+    if (lexical) {
+      lexical.update(() => {
+        const root = lexical.getEditorState()._nodeMap.get('root');
+        const Paragraph = lexical._nodes.get('paragraph').klass, Text = lexical._nodes.get('text').klass, LineBreak = lexical._nodes.get('linebreak').klass;
+        const paragraph = new Paragraph();
+        text.split('\n').forEach((line, i) => {
+          if (i) paragraph.append(new LineBreak());
+          if (line) paragraph.append(new Text(line));
+        });
+        root.clear(); root.append(paragraph);
+      }, { discrete: true });
+      return composerDraft() === text.replace(/\n+$/g, '');
+    }
     // Devin Slate: find the editor object on the fiber.
     const slate = codexFiberProps(ed, Infinity).flatMap(p => Object.values(p || {}))
       .find(v => v && typeof v === 'object' && typeof v.apply === 'function' && Array.isArray(v.children));

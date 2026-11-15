@@ -5,6 +5,7 @@ import { Unavailable, pause } from './browser.mjs';
 
 export const attr = value => JSON.stringify(String(value));
 export const by = (name, value) => `[${name}=${attr(value)}]`;
+const platform = await import(process.platform === 'win32' ? './platform/windows.mjs' : './platform/posix.mjs');
 
 export class Context {
   constructor(browser, options, directory) {
@@ -18,7 +19,7 @@ export class Context {
   async start() {
     this.original = await this.b.read(`({computer:currentComputer()?.id,target:winBinding?.target||(lastChat?.thread?{computer:currentComputer()?.id,win:currentApp,windowId:viewSel.split('|')[1],threadId:lastChat.thread}:null),mode,
       overview:{...ovS},conversation:document.body.classList.contains('conv'),width:innerWidth,height:innerHeight,
-      theme:store.get('theme')||'dark',language:I18N.lang,draft:text.value,
+      theme:store.get('theme')||'dark',language:I18N.lang,draft:text.value,inputExpanded:document.getElementById('composerFold').getAttribute('aria-expanded'),
       expanded:[...ovExpanded],collapsed:[...ovCollapsed]})`);
     this.computer = this.options.computer || this.original.computer;
     if (!this.computer) throw new Unavailable('没有已配对的执行电脑');
@@ -64,6 +65,7 @@ export class Context {
     const outcome = await b.wait(`ovOpening?.phase==='error'?{error:ovOpening.message}:
       windowReady&&!navigationPending&&lastChat?.thread===${attr(target.thread)}&&currentApp===${attr(target.app)}&&document.body.classList.contains('conv')?{ready:true}:null`, '会话新鲜首屏');
     if (outcome.error) throw new Error('会话打开失败：' + outcome.error);
+    Object.assign(target, await b.read("({win:currentWindow,window:viewSel.split('|')[1]})"));
     return { elapsedMs: Date.now() - started, ...await b.snapshot() };
   }
   async expand(target) {
@@ -76,7 +78,7 @@ export class Context {
     const b = this.b, seed = await this.target(app), root = path.resolve(this.directory, 'projects', app, slot);
     await fs.mkdir(root, { recursive: true }); await this.open(seed);
     await b.click('#pickAgents'); await b.click('#sheet [data-act="projects"]');
-    await b.click('#sheet [data-project-path]'); await b.fill('#computerFilePath', root);
+    await b.fill('#computerFilePath', root);
     await b.click('#computerFilePathForm button[type="submit"]');
     await b.wait(`computerFiles?.directory?.path===${attr(root.replaceAll(path.sep, '/'))}&&!computerFiles?.message`, '测试项目目录');
     const previous = await b.read('lastChat?.thread');
@@ -105,8 +107,13 @@ export class Context {
     const query = new URLSearchParams({ win: target.win, windowId: target.window, threadId: target.thread });
     return this.b.read(`(async()=>{const r=await api(${attr('/api/overview/preview?' + query)});if(!r.ok)throw Error('原生摘要 HTTP '+r.status);return r.json()})()`);
   }
-  async draft(value, selector = '#text') {
+  async input(value, selector = '#text') {
+    if (selector === '#text' && await this.b.read("document.getElementById('composerFold').getAttribute('aria-expanded')==='false'"))
+      await this.b.click('#composerFold');
     await this.b.fill(selector, value);
+  }
+  async draft(value, selector = '#text') {
+    await this.input(value, selector);
     await this.b.wait('draftAckRevision===draftRevision', '原生草稿回执');
   }
   async send(target, text, options = {}) {
@@ -132,8 +139,13 @@ export class Context {
     if (selectors[kind] && await b.has(selectors[kind])) await b.click(selectors[kind]);
     else await b.menu(kind);
     }
-    await b.wait(`!menuPending&&document.querySelectorAll('#sheet [data-kind=${attr(kind)}]').length>0`, kind + ' 原生候选');
+    await b.wait(`!menuPending&&menuSheetKind===${attr(kind)}`, kind + ' 原生菜单响应');
+    const error = await b.read("document.querySelector('#sheet [role=alert]')?.textContent");
+    if (error) throw new Error(error);
     return b.read(`[...document.querySelectorAll('#sheet [data-kind=${attr(kind)}]')].map(e=>({label:e.dataset.label,checked:e.classList.contains('cur'),disabled:e.disabled}))`);
+  }
+  async terminalMenu() {
+    if (await this.b.read('sheetKind') !== 'terminals') await this.b.click('#pickTerms');
   }
   async cleanupSession(target) {
     const b = this.b; await b.dismiss();
@@ -167,8 +179,9 @@ export class Context {
       try {
         const owner = this.owned.find(row => row.thread === terminal.thread && row.app === terminal.app);
         await this.open(owner); await b.click('#tabTerm');
-        await b.click('#pickTerms'); await b.click(by('data-term-del', id)); await b.click('#askOk');
-        await b.click('#pickTerms');
+        await this.terminalMenu();
+        await b.click(by('data-term-del', id)); await b.click('#askOk');
+        await this.terminalMenu();
         await b.wait(`!document.querySelector(${attr(by('data-term', id))})`, '终端关闭后从原生列表移除');
         await b.dismiss();
         this.cleanup.terminals.push({ id, ok: true });
@@ -187,6 +200,8 @@ export class Context {
         if (row) await this.open(row);
         else throw new Error('原会话已不在目录中，保留现场');
         if (this.original.mode === 'terminal') await b.click('#tabTerm');
+        if (this.original.mode === 'chat' && await b.read("document.getElementById('composerFold').getAttribute('aria-expanded')") !== this.original.inputExpanded)
+          await b.click('#composerFold');
       }
       if (!this.original.conversation) await b.home();
       if (await b.has(`#ovLevels [data-v=${attr(this.original.overview.level)}]`))
@@ -195,7 +210,10 @@ export class Context {
       this.cleanup.restored = await b.snapshot();
       assert.equal(await b.read('text.value'), this.original.draft, '原草稿未恢复');
     } catch (error) { this.cleanup.errors.push({ restore: error.message }); }
-    if (!this.cleanup.errors.length && this.owned.length) await fs.rm(path.join(this.directory, 'projects'), { recursive: true });
+    if (!this.cleanup.errors.length && this.owned.length) {
+      try { this.cleanup.platform = await platform.cleanupProjects(this.directory, this.options.registryConfig, this.computer, () => this.overview()); }
+      catch (error) { this.cleanup.errors.push({ projects: error.message }); }
+    }
     await this.persistResources(); return this.cleanup;
   }
 }

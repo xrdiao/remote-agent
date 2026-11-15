@@ -1,4 +1,4 @@
-import { localFilePath } from '../lib/platform.mjs';
+import { localFilePath, samePath } from '../lib/platform.mjs';
 import { Cdp, cdpRead, awaitCdpRead } from './cdp.mjs';
 import { watchChat } from './agent/updates.mjs';
 import { PAGE_SRC, helpersCall } from './page/build.mjs';
@@ -20,8 +20,37 @@ export function subscribeCatalog(app, changed) {
   return () => listeners.delete(changed);
 }
 const publishCatalog = (app, error) => withOperation(null, () => {
+  if (error) {
+    const read = catalogReads.get(app);
+    if (read) read.error = error;
+    console.error(`[catalog:${app}] ${error.message}`);
+  }
   for (const changed of catalogListeners.get(app) || []) changed(error);
 });
+async function readCodexCatalog(source, ids) {
+  const catalog = { ready: true, complete: false, rows: [], removed: [], unknown: [] };
+  const page = async request => {
+    try {
+      return await source.cdp.evaluate(helpersCall(`nativeSessionInfo('codex', ${JSON.stringify(request)}, true)`));
+    } catch (error) {
+      throw new Error(`${source.win.id} ${request.threads ? '核验会话 ' + request.ids.join(',') : '目录分页 ' + (request.cursor || '首页')}：${error.message}`, { cause: error });
+    }
+  };
+  let cursor = null;
+  do {
+    const result = await page({ cursor });
+    if (!result.ready) return result;
+    catalog.rows.push(...result.rows);
+    cursor = result.nextCursor;
+  } while (cursor);
+  const active = new Set(catalog.rows.map(row => row.id)), missing = ids.filter(id => !active.has(id));
+  for (let i = 0; i < missing.length; i += 6) {
+    const result = await page({ threads: true, ids: missing.slice(i, i + 6) });
+    if (!result.ready) return result;
+    for (const key of ['rows', 'removed', 'unknown']) catalog[key].push(...result[key]);
+  }
+  return catalog;
+}
 function mergeDevinCatalogs(catalogs) {
   const ready = catalogs.filter(catalog => catalog.ready), rows = new Map(), removedAt = {};
   for (const catalog of ready) {
@@ -52,6 +81,7 @@ async function refreshSessionCatalog(source, changed) {
     const sources = app === 'devin' ? [...new Set([source, ...[...windows.values()].filter(window => window.win?.app === app)])] : [source];
     const catalogs = await Promise.all(sources.map(async window => {
       await window.connect();
+      if (app === 'codex') return readCodexCatalog(window, projectSessionIds(app));
       return window.cdp.evaluate(helpersCall(`nativeSessionInfo(${JSON.stringify(app)}, ${JSON.stringify(projectSessionIds(app))}, true)`), { timeout: 30000 });
     }));
     const catalog = app === 'devin' ? mergeDevinCatalogs(catalogs) : catalogs[0];
@@ -64,9 +94,10 @@ async function refreshSessionCatalog(source, changed) {
         else catalog.rows.push({ id, archived: state === 'archived' });
       }
     }
-    const first = !read.catalog, reconciled = reconcileSessionCatalog(app, catalog);
+    const first = !read.catalog, recovered = !!read.error, reconciled = reconcileSessionCatalog(app, catalog);
     read.catalog = catalog;
-    if (first || changed || reconciled) publishCatalog(app);
+    read.error = null;
+    if (first || changed || reconciled || recovered) publishCatalog(app);
   })().catch(error => publishCatalog(app, error)).finally(() => {
     read.promise = null;
     const pending = read.pending;
@@ -112,10 +143,12 @@ export class NativeCdp extends Cdp {
 }
 
 export function nativeWindow(cdp) { return cdp?.nativeWindow; }
-export function cursorSource(thread) {
+export function cursorSource(thread, project = null) {
   let selected, updatedAt = 0;
   for (const source of windows.values()) {
     if (source.win?.app !== 'cursor') continue;
+    if (!source.roots?.length && source.snapshot?.chat?.thread !== thread) continue;
+    if (project && !source.roots?.some(root => (root.host || '') === (project.host || '') && samePath(root.root, project.root, !project.host))) continue;
     const state = source.snapshot?.states.find(row => row.thread === thread);
     if (state?.nativeUpdatedAt > updatedAt) { selected = source; updatedAt = state.nativeUpdatedAt; }
   }
@@ -402,7 +435,9 @@ export class NativeWindow {
     this.catalogReading = cdpRead.run(null, async () => {
       await this.connect();
       const catalog = await this.cdp.evaluate(helpersCall(app === 'codex' ? 'codexChatRows(true)'
-        : app === 'devin' ? 'sessionPickerRows(true)' : "nativeSessionInfo('cursor', '', 'list')"));
+        : app === 'devin' ? 'sessionPickerRows(true)' : "nativeSessionInfo('cursor', '', 'list')")).catch(error => {
+          throw new Error(`${this.win.id} 窗口会话列表：${error.message}`, { cause: error });
+        });
       if (catalog === null) return;
       for (const row of catalog) if (!row.host && row.workspace) row.workspace = localFilePath(row.workspace);
       this.catalog = catalog;
@@ -543,6 +578,9 @@ export class NativeWindow {
   close(error = new Error('原生窗口已关闭')) {
     if (windows.get(this.cdp.wsUrl) !== this) return;
     windows.delete(this.cdp.wsUrl);
+    const count = targets.length;
+    targets = targets.filter(target => target.ws !== this.cdp.wsUrl);
+    if (targets.length !== count && this.win?.app) publishCatalog(this.win.app);
     this.reading?.controller.abort(error);
     this.receiptRead?.controller.abort(error);
     this.stopWatch?.();

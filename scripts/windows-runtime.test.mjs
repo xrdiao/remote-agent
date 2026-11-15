@@ -425,10 +425,12 @@ test('Windows rejects unsupported Qwen runtime and automatic window cleanup expl
 });
 
 test('missing node-pty and unsupported Windows shells return explicit errors', { skip: !IS_WIN }, async () => {
-  const missing = new TerminalService({ spawn: null });
-  await assert.rejects(missing.create({ cwd: 'C:/project' }), /无法加载 node-pty/);
+  const source = fragment(read('server/terminal/windows.mjs'), 'export function spawnPty(', 'export function command(').replace(/^export /gm, '');
+  const spawn = vm.runInNewContext(source + '\nspawnPty', { pty: null, loadError: new Error('missing dependency fixture') });
+  const missing = new TerminalService({ spawn });
+  await assert.rejects(missing.create({ cwd: process.cwd() }), /无法加载 node-pty/);
   const shell = new TerminalService({ shell: 'C:/Windows/System32/cmd.exe', spawn: () => assert.fail('unsupported shell spawned') });
-  await assert.rejects(shell.create({ cwd: 'C:/project' }), /仅支持 Git Bash/);
+  await assert.rejects(shell.create({ cwd: process.cwd() }), /仅支持 Git Bash/);
 });
 
 test('Windows tunnel restart checks executable, origin and actual process exit before replacement', async () => {

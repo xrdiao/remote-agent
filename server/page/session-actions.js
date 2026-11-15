@@ -52,8 +52,13 @@
       const roots = uris.map(uri => ({ root: uri.scheme === 'file' ? uriFilePath(uri) : uri.path, host: uri.scheme === 'file' ? '' : uri.authority.replace(/^ssh-remote\+/, '') }));
       return { app, threadId: id, host: roots[0]?.host || '', cwd: roots[0]?.root || '', roots, projectless: uris.length === 0 };
     }
-    const session = devinSessionRecord(id);
+    let session = devinSessionRecord(id);
     if (!session) throw new Error('Devin 原生目录中没有这个会话');
+    if (session.providerId === 'devin-cli' && !window.__remoteAgentDevinDirectory?.has(id)) {
+      await nativeSessionCatalog('devin', [id]);
+      session = devinSessionRecord(id);
+    }
+    if (session.providerId === 'devin-cli' && !session.cwd) throw new Error('Devin 原生目录尚未提供这个会话的项目路径');
     return { app, threadId: id, provider: session.providerId, host: '', cwd: localFilePath(session.cwd || ''), roots: session.cwd ? [{ root: localFilePath(session.cwd), host: '' }] : [] };
   };
   const devinSessionMenu = id => {
@@ -114,14 +119,15 @@
       for (const request of requests) times.set(request.params.sessionId, Math.max(times.get(request.params.sessionId) || 0, request.completedAt));
       const removed = requests.filter(request => request.method === 'session/delete' && !known.has(request.params.sessionId)).map(request => request.params.sessionId);
       const missing = ids.filter(id => cliReady && id.startsWith(cliPrefix) && !known.has(id));
-      return { ready: true, complete: false,
-        rows: sessions.map(row => {
+      const rows = sessions.map(row => {
           const current = displayed.get(row.sessionId) || row;
           return { id: row.sessionId, archived: current._meta?.['cognition.ai/isArchived'] === true,
             at: Math.max(Date.parse(current.updatedAt) || 0, times.get(row.sessionId) || 0),
             title: current.title || row.title || '', workspace: localFilePath(row.cwd || current.cwd || ''), host: '',
             lastUsed: Date.parse(current.updatedAt || row.updatedAt) || 0, running: ['active', 'pending', 'canceling'].includes(current.status) };
-        }),
+        });
+      window.__remoteAgentDevinDirectory = new Map(rows.map(row => [row.id, row]));
+      return { ready: true, complete: false, rows,
         removed, removedAt: Object.fromEntries(removed.map(id => [id, times.get(id)])), missing, cliReady, at };
     }
     const manager = codexConversationManager(null, codexHistoryScopes(), 'local');
@@ -129,14 +135,15 @@
     const client = manager.requestClient, rows = [], active = new Set();
     const catalogRow = (row, archived) => ({ id: row.id, archived, path: row.path, title: row.name || '',
       workspace: localFilePath(row.cwd || ''), host: '', running: row.status?.type === 'active', lastUsed: (row.updatedAt || 0) * 1000 });
-    let cursor = null;
-    do {
-      const page = await client.sendRequest('thread/list', { archived: false, cursor, limit: 100, modelProviders: null, sourceKinds: null, sortKey: 'updated_at', useStateDbOnly: true }, { priority: 'background', source: 'thread_list' });
+    const request = Array.isArray(ids) ? { ids } : ids;
+    let nextCursor = null;
+    if (!request.threads) {
+      const page = await client.sendRequest('thread/list', { archived: false, cursor: request.cursor || null, limit: 100, modelProviders: null, sourceKinds: null, sortKey: 'updated_at', useStateDbOnly: true }, { priority: 'background', source: 'thread_list' });
       for (const row of page.data) { active.add(row.id); rows.push(catalogRow(row, false)); }
-      cursor = page.nextCursor;
-    } while (cursor);
+      nextCursor = page.nextCursor;
+    }
     const removed = [], unknown = [];
-    for (let i = 0; i < ids.length; i += 6) await Promise.all(ids.slice(i, i + 6).filter(id => !active.has(id)).map(async id => {
+    await Promise.all((request.ids || []).filter(id => !active.has(id)).map(async id => {
       try {
         const { thread } = await client.sendRequest('thread/read', { threadId: id, includeTurns: false }, { priority: 'background', source: 'thread_list' });
         rows.push({ ...catalogRow(thread, /[\\/]archived_sessions[\\/]/.test(thread.path || '')), id });
@@ -146,7 +153,7 @@
         else throw error;
       }
     }));
-    return { ready: true, complete: false, rows, removed, unknown };
+    return { ready: true, complete: false, rows, removed, unknown, nextCursor };
   };
   const nativePreviewActivity = (tools, model, effort = '', tasks = null) => {
     const states = { completed: 'done', complete: 'done', in_progress: 'run', inProgress: 'run', running: 'run', failed: 'error', error: 'error', declined: 'error' };
@@ -381,6 +388,7 @@
     })();
     if (catalog === 'sendError') return window.__remoteAgentNativeSubmissions?.get(previous) || null;
     if (catalog === 'bind') return (async () => {
+      if (app === 'devin') return devinReadSession(id, () => nativeSessionContext(app, id));
       const context = await nativeSessionContext(app, id);
       if (app === 'cursor') {
         const handles = window.__remoteAgentNativeHandles ||= new Map();
@@ -393,8 +401,6 @@
             workspaceRoots: context.roots.map(row => row.root), collaborationMode: manager.getConversation(id)?.latestCollaborationMode || null }));
           if (state.status === 'not-ready') throw new Error('Codex 原生会话尚未就绪');
         }
-      } else if (app === 'devin') {
-        await devinReadSession(id, () => true);
       }
       return context;
     })();
@@ -488,7 +494,7 @@
       const native = await import('@exa/chat-client');
       const api = codexFiberProps(document.querySelector('#chat'), Infinity)
         .find(props => props.vscodeAPI?.executeCommand)?.vscodeAPI;
-      if (!api || !devinSessionRecord(id)) throw new Error('Devin 原生会话导航尚未就绪');
+      if (!api) throw new Error('Devin 原生会话导航尚未就绪');
       await api.executeCommand('devin.sendChatActionMessage', {
         actionType: 'openCascadeIdInChatPanel', payload: native.encodeOpenCascadeIdInChatPanelPayload(devinNativeId(id)),
       });
@@ -693,8 +699,7 @@
           await services.data.syncComposerHeadersFromCanonicalStorage();
         }
       } else if (action === 'delete') {
-        if (services.data.allComposersData.allComposers.length > 1) await services.composer.deleteComposer(id);
-        else await services.composer.resetComposer(id);
+        await services.composer.deleteComposer(id);
       } else throw new Error('此会话不支持这个操作');
       const after = (await nativeSessionCatalog('cursor')).rows.find(c => c.id === id);
       const empty = services.data.getComposerDataIfLoaded(id)?.fullConversationHeadersOnly?.length === 0;

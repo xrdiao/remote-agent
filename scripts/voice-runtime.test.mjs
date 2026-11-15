@@ -6,7 +6,7 @@ import { EventEmitter } from 'node:events';
 import { fileURLToPath } from 'node:url';
 
 const source = fs.readFileSync(new URL('../server/voice/service.mjs', import.meta.url), 'utf8')
-  .replace(/^import .*;\n/gm, '').replace(/^export /gm, '')
+  .replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, '')
   .replaceAll('import.meta.url', JSON.stringify(new URL('../server/voice/service.mjs', import.meta.url).href));
 const settle = () => new Promise(resolve => setImmediate(resolve));
 

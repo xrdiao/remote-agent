@@ -5,7 +5,23 @@ export default [
   { id: 'models.read', title: '模型、强度和权限原生菜单', refs: ['F08', 'W03', 'W04', 'M02'], mode: 'read', apps: true, async run(c, app) {
     await c.open(await c.target(app)); const evidence = {};
     for (const kind of ['model', 'effort']) {
-      const choices = await c.menu(kind); c.check(choices.length > 0, kind + ' 存在实际候选');
+      const capability = await c.b.read(`capabilityState(${attr(kind)})`);
+      if (!capability.supported) {
+        if (kind === 'effort') {
+          await c.menu('model');
+          c.check(!await c.b.has('#sheet [data-effort-open]'), '原生不支持强度时，模型菜单没有强度入口');
+          await c.b.dismiss();
+        } else c.check(!await c.b.has('#pickModel'), '原生不支持模型时，没有模型入口');
+        evidence[kind] = { supported: false, reason: capability.reason }; continue;
+      }
+      if (!capability.available) throw new Unavailable(capability.reason);
+      const choices = await c.menu(kind);
+      if (kind === 'effort' && !choices.length) {
+        const actual = await c.b.read("capabilityState('effort')");
+        c.check(!actual.available && !!actual.reason, '空强度列表具有原生不可用原因');
+        evidence[kind] = { available: false, reason: actual.reason }; await c.b.dismiss(); continue;
+      }
+      c.check(choices.length > 0, kind + ' 存在实际候选');
       evidence[kind] = choices.map(row => row.label); await c.b.dismiss();
     }
     if (app === 'codex') {

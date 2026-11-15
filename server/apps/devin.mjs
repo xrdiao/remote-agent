@@ -701,6 +701,8 @@ async confirmDevinThread(id, statusMsg = '已切换 Agent', tries = 12, interval
   for (let i = 0; i <= tries; i++) {
     const thread = await this.cdp.evaluate(helpersCall('activeThread()'));
     if (thread === id) {
+      await this.cdp.evaluate(helpersCall(`nativeSessionInfo('devin', ${JSON.stringify(id)}, 'bind')`));
+      if (!await this.cdp.evaluate(helpersCall('hasComposer()'))) continue;
       if (this.threadId !== thread) this.clearViewState();
       this.threadId = this.selectedThread = thread;
       this.publishThread(statusMsg);
@@ -731,7 +733,7 @@ async openEditorChat() {
   }
   if (!await this.waitFor('transcriptVisible()', 250)) throw new Error('聊天面板没有打开');
   this.resetDevinView();
-  await this.pollChat();
+  if (!this.switchingThread) await this.pollChat();
   this.emit({ t: 'status', ok: true, msg: '聊天面板已打开' });
 },
 

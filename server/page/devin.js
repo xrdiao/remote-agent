@@ -22,9 +22,10 @@
     const native = devinClient(), key = devinNativeId(id);
     if (!native.isKnownSession(key)) return null;
     const row = native.getSessionRow(key), data = devinSessionData(id), info = data?.sessionInfo;
+    const providerId = native.sessionProviderId(key), directory = window.__remoteAgentDevinDirectory?.get(id.replace(/^devin-/, ''));
     const active = data?.promptInFlight || data?.pendingPrompts > 0 || row && native.deriveAgentStatus(row).isWorking;
-    return { ...info, sessionId: id.replace(/^devin-/, ''), providerId: native.sessionProviderId(key),
-      title: info?.title || native.sessionTitle(key) || '', cwd: info?.cwd || native.sessionCwdOf(key) || '',
+    return { ...info, sessionId: id.replace(/^devin-/, ''), providerId,
+      title: info?.title || native.sessionTitle(key) || '', cwd: providerId === 'devin-cli' ? directory?.workspace || '' : info?.cwd || native.sessionCwdOf(key) || '',
       configOptions: info?.configOptions || native.sessionConfigOptions(key), status: data?.loadStatus === 'failed' ? 'unknown_error' : active ? 'active' : 'idle',
       updatedAt: row?.updated_at, latest_message_event_at: row?.latest_message_event_at,
       _meta: { ...info?._meta, 'cognition.ai/isArchived': row?.is_archived === true } };

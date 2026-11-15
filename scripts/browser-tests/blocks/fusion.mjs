@@ -29,11 +29,13 @@ async function create(c) {
   const run = { id: found.id, app, root, thread: found.main?.target?.threadId || '' };
   c.fusion.push(run); await c.persistResources();
   await b.wait("!!document.getElementById('fusionConfigForm')", '工作台设置');
-  if (await b.has('[data-fusion-prepare]')) await b.click('[data-fusion-prepare]');
+  if (!(await current(c, run.id)).main.preparing && await b.has('[data-fusion-prepare]')) await b.click('[data-fusion-prepare]');
   await b.wait(`!fusionWorkspaces.get(${attr(c.computer)})?.runs.find(r=>r.id===${attr(run.id)})?.main.preparing`, '主 Agent 准备');
   if (await b.has('[data-fusion-trust]')) {
     await b.click('[data-fusion-trust]'); await b.click('[data-project-trust="yes"]');
   }
+  const preparation = await current(c, run.id);
+  if (preparation.main.error) throw new Error(preparation.main.error);
   const model = await b.read("document.querySelector('#fusionConfigForm [name=model]')?.options[1]?.value");
   if (model) await b.select('#fusionConfigForm [name="model"]', model);
   const effort = await b.read("document.querySelector('#fusionConfigForm [name=effort]')?.options[1]?.value");

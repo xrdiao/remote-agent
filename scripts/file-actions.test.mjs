@@ -126,7 +126,7 @@ test('chat-image HTTP failures return 502 while missing and successful images ke
     fs: { ...fs, createReadStream: file => ({ pipe: res => { res.file = file; return res; } }) },
   });
   const code = await fsp.readFile(new URL('../server/http/api.mjs', import.meta.url), 'utf8');
-  vm.runInContext(code.replace(/^import .*;\n/gm, '').replace(/\bexport /g, '') + '\nthis.api=handleApi;', context);
+  vm.runInContext(code.replace(/^import .*;\r?\n/gm, '').replace(/\bexport /g, '') + '\nthis.api=handleApi;', context);
   const request = async id => {
     const res = { writeHead(status, headers) { this.status = status; this.headers = headers; } };
     await context.api({ method: 'GET', headers: {} }, res, '/api/chat-image/' + id);

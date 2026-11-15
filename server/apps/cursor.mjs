@@ -46,18 +46,22 @@ export const adapter = {
   async openAgent(id, title = '') {
     if (!id || id.length > 200) throw new Error('这条 Agent 已经不在列表里');
     const source = !this.fusionBinding && cursorSource(id);
-    if (source && source.cdp.wsUrl !== this.cdp.wsUrl)
-      return this.attach({ id: source.win.id, windowId: source.win.id, threadId: id });
+    if (source && source.cdp.wsUrl !== this.cdp.wsUrl) {
+      const context = await source.cdp.evaluate(helpersCall(`nativeSessionInfo('cursor', ${JSON.stringify(id)}, 'context')`));
+      const roots = await editorRoots(source.cdp, 'cursor');
+      if (context.projectless ? !roots.length : context.roots.some(root => this.projectMatches(roots, root.root, root.host)))
+        return this.attach({ id: source.win.id, windowId: source.win.id, threadId: id });
+    }
     const switching = this.switchingThread;
     let confirmed = false;
     this.switchingThread = true;
     try {
       await this.cdp.evaluate(`(async () => {
         const h = ${PAGE_SRC}, id = ${JSON.stringify(id)};
-        const info = await h.nativeSessionInfo('cursor', id, 'actions');
+        const info = await h.nativeSessionInfo('cursor', id, 'context');
         if (!window.__remoteAgentCursorServices) throw new Error('Cursor 原生会话目录尚未就绪');
         if (!info) throw new Error('Cursor 原生目录中没有这个会话');
-        if (info.archived) throw new Error('这个 Cursor 会话已归档');
+        if (window.__remoteAgentCursorServices.data.getComposerDataIfLoaded(id)?.isArchived) throw new Error('这个 Cursor 会话已归档');
         if (h.activeThread() !== id) await window.__remoteAgentCursorServices.composer.openComposer(id);
       })()`);
       for (let i = 0; i <= 12; i++) {
